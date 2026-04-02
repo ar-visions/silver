@@ -630,7 +630,13 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         /* ------------------------------------------------------------
         * Phase 6: store
         * ------------------------------------------------------------ */
-        LLVMBuildStore(B, res->value, store_target);
+        // for struct construction results (unloaded alloca), alias the evar
+        // to the struct alloca directly instead of storing a pointer
+        if (res->au && res->au->is_struct && !res->loaded &&
+            LLVMGetInstructionOpcode(res->value) == LLVMAlloca) {
+            L->value = res->value;
+        } else
+            LLVMBuildStore(B, res->value, store_target);
 
         // sync load so LLDB sees stored value
         //if (a->debug) {
@@ -2731,7 +2737,7 @@ enode convertible(etype fr, etype to) {
         return (enode)true;
     if (ma->au == typeid(Au_t) && mb->au == typeid(ARef))
         return (enode)true;
-    if (ma->au->is_class && mb->au->is_pointer && (mb->au->src == typeid(u8) || mb->au->src == typeid(i8)))
+    if (ma->au->is_class && mb->au->is_pointer)
         return (enode)true;
     if (ma->au->is_pointer && mb->au == typeid(Au))
         return (enode)true;
@@ -3914,7 +3920,11 @@ enode aether_e_vector(aether a, etype t, enode shape_data) {
     efunc f_alloc    = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
     enode metas_node = e_meta_ids(a, tc->meta_a, tc->meta_b);
-    return e_fn_call(a, f_alloc, a( e_typeid(a, tc), _i32(0), shape_data, metas_node ), false);
+    bool is_shape = shape_data && canonical(shape_data) && canonical(shape_data)->au == typeid(shape);
+    if (is_shape)
+        return e_fn_call(a, f_alloc, a( e_typeid(a, tc), _i32(0), shape_data, metas_node ), false);
+    enode count = shape_data ? shape_data : (enode)_i32(0);
+    return e_fn_call(a, f_alloc, a( e_typeid(a, tc), count, e_null(a, etypeid(shape)), metas_node ), false);
 }
 
 enode aether_e_alloc(aether a, etype mdl) {
@@ -3997,7 +4007,7 @@ etype prefer_mdl(etype m0, etype m1) {
 
 enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_expr) {
     aether mod = a;
-    etype rmdl  = false_expr ? (etype)prefer_mdl((etype)true_expr, (etype)false_expr) :  (etype)true_expr;
+    etype rmdl  = false_expr ? (etype)prefer_mdl((etype)true_expr, (etype)false_expr) :  (etype)cond_expr;
 
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, rmdl);
@@ -4031,7 +4041,7 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
     LLVMPositionBuilderAtEnd(mod->builder, else_block);
     enode default_expr = !false_expr ? e_create(a, (etype)rmdl, (Au)true_expr) : null;
     if (false_expr) false_expr = e_create(a, (etype)rmdl, (Au)false_expr);
-    LLVMValueRef false_value = !false_expr ? true_expr->value : false_expr->value;
+    LLVMValueRef false_value = !false_expr ? default_expr->value : false_expr->value;
     LLVMBuildBr(mod->builder, merge_block);  // Jump to merge block after the "else" block
 
     // Step 5: Build the "merge" block and add a phi enode to unify values
@@ -5969,8 +5979,7 @@ none etype_implement(etype t, bool w) { sequencer
         if (t->au->ident && strcmp(t->au->ident, "mat4f") == 0) {
             t = t;
         }
-        LLVMStructSetBody(t->lltype, struct_members, count, 1);
-
+        LLVMStructSetBody(t->lltype, struct_members, count, au->is_c ? 0 : 1);
 
     } else if (is_enum(t)) {
         /*

@@ -9,6 +9,9 @@ ifdef [ apple ]
         >> mkdir -p {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/
         >> ln -s {root_path}/platform/native/lib/libMoltenVK.dylib {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
 
+#import KhronosGroup:Vulkan-ValidationLayers/vulkan-sdk-1.4.341.0
+#     -DVULKAN_HEADERS_INSTALL_DIR={install}
+
 import KhronosGroup:Vulkan-Tools/734638e
      -DVULKAN_HEADERS_INSTALL_DIR={install}
      -DMOLTENVK_REPO_ROOT={root_path}/checkout/MoltenVK
@@ -327,16 +330,14 @@ class vk_context
     public  allocator           : VmaAllocator
     intern  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
 
-    intern gltf_quad: path [ 'models/uv-quad2.gltf' ]
+    public gltf_quad: path [ 'models/uv-quad2.gltf' ]
     intern quad_m:    GltfModel
 
-    construct [ u: Au ]
+    func init [ ]
+        printf[ "instance = %p, addr = %p\n", instance, ref instance ]
         get_required_extensions[ a ]
         enable_validation: bool false
-        ifdef [ debug ]
-            enable_validation = true
         validation_layer: symbol [ (enable_validation) ? "VK_LAYER_KHRONOS_validation" : null ]
-        instance: VkInstance
         app_info: VkApplicationInfo [
             sType:              VK_STRUCTURE_TYPE_APPLICATION_INFO,
             pApplicationName:   "trinity",
@@ -355,13 +356,14 @@ class vk_context
             ppEnabledLayerNames:     ref validation_layer
         ], null, ref instance ]
 
-        expect result == VK_SUCCESS, 'failed to create Vulkan instance, error: {i32[ result ]}'
+        expect result == VK_SUCCESS, "failed to create Vulkan instance"
 
         if [ enable_validation ]
             _vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr[ instance, "vkCreateDebugUtilsMessengerEXT" ]
             expect _vkCreateDebugUtilsMessengerEXT, "cannot find vk debug function"
 
-        quad_m = gltf_quad.load[ typeid[ GltfModel ], null ]
+        gltf_quad2: path [ 'models/uv-quad2.gltf' ]
+        quad_m = gltf_quad2.load[ typeid[ GltfModel ], null ]
 
     func quad_shader [ ] -> UVQuad
         q: UVQuad [ vk: a, name: 'uv-quad' ]
@@ -1351,117 +1353,119 @@ class Texture
                 if [ img ]
                     width  = img.width
                     height = img.height
-            el
+            el [ sampler ]
                 width  = 4
                 height = 4
                 ansio  = 0
                 placeholder_image[ sampler, 4, ref fill, ref sampler_size, ref format ]
                 vk_format = vk_format_fn[ format, false ]
-            usage: VkImageUsageFlags [ 0 ]
-            if [ is_depth ]
-                usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
-            el [ swap ]
-                usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
-            el
-                usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | 
-                        VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
-                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
-                        VK_IMAGE_USAGE_SAMPLED_BIT
-            
-            if [ !vk_format && format ]
-                vk_format = vk_format_fn[ format, linear ]
-            
-            alloc_info: VmaAllocationCreateInfo [
-                usage:         VMA_MEMORY_USAGE_AUTO,
-                requiredFlags: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-            ]
-            expect vmaCreateImage[ vk.allocator, VkImageCreateInfo [
-                sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                imageType:     VK_IMAGE_TYPE_2D,
-                format:        vk_format,
-                flags:         (layer_count >= 6) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
-                extent:        VkExtent3D [ width, height, 1 ],
-                mipLevels:     mip_levels,
-                arrayLayers:   layer_count,
-                samples:       VK_SAMPLE_COUNT_1_BIT,
-                tiling:        VK_IMAGE_TILING_OPTIMAL,
-                usage:         usage,
-                sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
-                initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
-            ], alloc_info, ref vk_image, ref vma_alloc, null ] == VK_SUCCESS, "Failed to create VkImage"
+            if [ width > 0 || vk_image ]
+                usage: VkImageUsageFlags [ 0 ]
+                if [ is_depth ]
+                    usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                el [ swap ]
+                    usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+                el
+                    usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
+                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
+                            VK_IMAGE_USAGE_SAMPLED_BIT
 
-            if [ sampler_size > 0 ]
-                transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
-                expect !is_depth, "unexpected"
-                cmd: Command [ vk: vk ]
-                cmd.begin[]
-                staging: Buffer [ vk: vk, size: sampler_size, u_src: true, u_shader: true,
-                    m_host_visible: true, m_host_coherent: true,
-                    data: (img) ? img.data : fill ]
-                vkCmdCopyBufferToImage[ cmd.cmd, staging.vk_buffer, vk_image,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, VkBufferImageCopy [
-                        bufferOffset:      0,
-                        bufferRowLength:   0,
-                        bufferImageHeight: 0,
-                        imageSubresource:  VkImageSubresourceLayers [
+                if [ !vk_format && format ]
+                    vk_format = vk_format_fn[ format, linear ]
+
+                if [ !vk_image ]
+                    alloc_info: VmaAllocationCreateInfo [
+                        usage:         VMA_MEMORY_USAGE_AUTO,
+                        requiredFlags: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                    ]
+                    expect vmaCreateImage[ vk.allocator, VkImageCreateInfo [
+                        sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                        imageType:     VK_IMAGE_TYPE_2D,
+                        format:        vk_format,
+                        flags:         (layer_count >= 6) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                        extent:        VkExtent3D [ width, height, 1 ],
+                        mipLevels:     mip_levels,
+                        arrayLayers:   layer_count,
+                        samples:       VK_SAMPLE_COUNT_1_BIT,
+                        tiling:        VK_IMAGE_TILING_OPTIMAL,
+                        usage:         usage,
+                        sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
+                        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+                    ], alloc_info, ref vk_image, ref vma_alloc, null ] == VK_SUCCESS, "Failed to create VkImage"
+
+                if [ sampler_size > 0 ]
+                    transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+                    expect !is_depth, "unexpected"
+                    cmd: Command [ vk: vk ]
+                    cmd.begin[]
+                    staging: Buffer [ vk: vk, size: sampler_size, u_src: true, u_shader: true,
+                        m_host_visible: true, m_host_coherent: true,
+                        data: (img) ? img.data : fill ]
+                    vkCmdCopyBufferToImage[ cmd.cmd, staging.vk_buffer, vk_image,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, VkBufferImageCopy [
+                            bufferOffset:      0,
+                            bufferRowLength:   0,
+                            bufferImageHeight: 0,
+                            imageSubresource:  VkImageSubresourceLayers [
+                                aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                                mipLevel:       0,
+                                baseArrayLayer: 0,
+                                layerCount:     layer_count
+                            ],
+                            imageOffset: VkOffset3D [ 0, 0, 0 ],
+                            imageExtent: VkExtent3D [ width, height, 1 ]
+                        ]]
+                    cmd.submit[ ]
+                    vkDeviceWaitIdle[ vk.device ]
+                    vk.create_mipmaps[ vk_image, width, height, mip_levels, layer_count ]
+                    vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                if [ !vk_image_view ]
+                    view_type: (layer_count >  6) ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY :
+                               (layer_count == 6) ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D
+                    viewInfo: VkImageViewCreateInfo [
+                        sType:    VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                        image:    vk_image,
+                        viewType: view_type,
+                        format:   vk_format,
+                        components: VkComponentMapping [
+                            r: VK_COMPONENT_SWIZZLE_IDENTITY,
+                            g: VK_COMPONENT_SWIZZLE_IDENTITY,
+                            b: VK_COMPONENT_SWIZZLE_IDENTITY,
+                            a: VK_COMPONENT_SWIZZLE_IDENTITY
+                        ],
+                        subresourceRange: VkImageSubresourceRange [
                             aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
-                            mipLevel:       0,
+                            baseMipLevel:   0,
+                            levelCount:     mip_levels,
                             baseArrayLayer: 0,
                             layerCount:     layer_count
-                        ],
-                        imageOffset: VkOffset3D [ 0, 0, 0 ],
-                        imageExtent: VkExtent3D [ width, height, 1 ]
-                    ]]
-                cmd.submit[ ]
-                vkDeviceWaitIdle[ vk.device ]
-                vk.create_mipmaps[ vk_image, width, height, mip_levels, layer_count ]
-                vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-        if [ !vk_image_view ]
-            view_type: (layer_count >  6) ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY :
-                       (layer_count == 6) ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D
-            viewInfo: VkImageViewCreateInfo [
-                sType:    VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                image:    vk_image,
-                viewType: view_type,
-                format:   vk_format,
-                components: VkComponentMapping [
-                    r: VK_COMPONENT_SWIZZLE_IDENTITY,
-                    g: VK_COMPONENT_SWIZZLE_IDENTITY,
-                    b: VK_COMPONENT_SWIZZLE_IDENTITY,
-                    a: VK_COMPONENT_SWIZZLE_IDENTITY
-                ],
-                subresourceRange: VkImageSubresourceRange [
-                    aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
-                    baseMipLevel:   0,
-                    levelCount:     mip_levels,
-                    baseArrayLayer: 0,
-                    layerCount:     layer_count
-                ]
-            ]
-            res: vkCreateImageView[ vk.device, viewInfo, null, ref vk_image_view ]
-            expect res == VK_SUCCESS, "Failed to create VkImageView"
-        if [ !vk_sampler ]
-            address_mode: (layer_count >= 6) ?
-                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT
-            samplerInfo: VkSamplerCreateInfo [
-                sType:                   VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                magFilter:               VK_FILTER_LINEAR,
-                minFilter:               VK_FILTER_LINEAR,
-                addressModeU:            address_mode,
-                addressModeV:            address_mode,
-                addressModeW:            address_mode,
-                anisotropyEnable:        (ansio > 0) ? VK_TRUE : VK_FALSE,
-                maxAnisotropy:           ansio,
-                minLod:                  0.0,
-                maxLod:                  f32 mip_levels,
-                borderColor:             VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
-                unnormalizedCoordinates: VK_FALSE,
-                compareEnable:           VK_FALSE,
-                compareOp:               VK_COMPARE_OP_ALWAYS,
-                mipmapMode:              VK_SAMPLER_MIPMAP_MODE_LINEAR
-            ]
-            r: vkCreateSampler[ vk.device, samplerInfo, null, ref vk_sampler ]
-            expect r == VK_SUCCESS, "Failed to create VkSampler"
+                        ]
+                    ]
+                    res: vkCreateImageView[ vk.device, viewInfo, null, ref vk_image_view ]
+                    expect res == VK_SUCCESS, "Failed to create VkImageView"
+                if [ !vk_sampler ]
+                    address_mode: (layer_count >= 6) ?
+                        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT
+                    samplerInfo: VkSamplerCreateInfo [
+                        sType:                   VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                        magFilter:               VK_FILTER_LINEAR,
+                        minFilter:               VK_FILTER_LINEAR,
+                        addressModeU:            address_mode,
+                        addressModeV:            address_mode,
+                        addressModeW:            address_mode,
+                        anisotropyEnable:        (ansio > 0) ? VK_TRUE : VK_FALSE,
+                        maxAnisotropy:           ansio,
+                        minLod:                  0.0,
+                        maxLod:                  f32 mip_levels,
+                        borderColor:             VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+                        unnormalizedCoordinates: VK_FALSE,
+                        compareEnable:           VK_FALSE,
+                        compareOp:               VK_COMPARE_OP_ALWAYS,
+                        mipmapMode:              VK_SAMPLER_MIPMAP_MODE_LINEAR
+                    ]
+                    r: vkCreateSampler[ vk.device, samplerInfo, null, ref vk_sampler ]
+                    expect r == VK_SUCCESS, "Failed to create VkSampler"
 
     func dealloc [ ]
         vkDestroySampler[ vk.device, vk_sampler, null ]
@@ -1475,7 +1479,6 @@ class Texture
 
 
 Texture Display
-    context vk                  : vk_context
     intern glfw                 : handle
     expect width                : u32
     expect height               : u32
@@ -1675,6 +1678,7 @@ Texture Display
 
             glfwSetFramebufferSizeCallback [ glfw, ref handle_glfw_framebuffer_size ]
 
+            printf["vk instance of %p\n", vk.instance]
             # vulkan surface
             result: glfwCreateWindowSurface[ vk.instance, glfw, null, ref surface ]
             expect result == VK_SUCCESS, "Failed to create Vulkan surface"
@@ -1936,15 +1940,11 @@ shader Convolve
 
 
 abstract app media_app
-    mutable w   : Display*
-    mutable vk  : vk_context
-    intern  arg : object
-    
-    func initialize [ win: Display* ]
-        w = win
-        win.update_canvas[] # ?
-        render*[] # should be called before the targets update, so we have a list of targets
-        win.resize[w.width, w.height]
+    mutable w     : Display*
+    mutable vk    : vk_context
+    intern  arg   : object
+    public width  : i32
+    public height : i32
         
     func run [ ] -> i32
         next_second : epoch_millis[] / 1000
@@ -1973,6 +1973,7 @@ abstract app media_app
             return
         puts 'starting vk'
         vk = vk_context[]
+        printf["set vk to %p on %p\n", vk, a]
 
     func dealloc [ ]
         glfwTerminate[]
@@ -2186,10 +2187,9 @@ func get_required_extensions [ vk: vk_context ]
     glfw_extensions: ref symbol [ glfwGetRequiredInstanceExtensions[ ref count ] ]
     result: new symbol [ count + 4 ]
     memcpy[ result, glfw_extensions, count * sizeof[ symbol ] ]
-    if [ !windows ]
+    ifdef [ apple ]
         result[count] = "VK_KHR_portability_enumeration"
         count += 1
-    ifdef [ apple ]
         result[count] = "VK_KHR_get_physical_device_properties2"
         count += 1
     ifdef [ debug ]
@@ -2198,8 +2198,7 @@ func get_required_extensions [ vk: vk_context ]
     verbose: getenv[ "VERBOSE" ] != null
     for [ i: i32 0, i < count, i += 1 ]
         vk.instance_exts.push strdup[ result[i] ]
-        if [ verbose ]
-            puts "instance extension: {result[i]}"
+        printf "instance extension: %s\n", vk.instance_exts[i]
 
 
 func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ] 

@@ -595,22 +595,27 @@ Display Window
 
 
 abstract media_app trinity
-    expect vk           : vk_context
     intern msaa_samples : i64
     public on_render    : Render
 
-    w : Window 
-    # this is an elaboration; auto-view-cast without actually adding a new member
+    w : Window # this is an elaboration (its Display defined in vulkan)
     # it may even do an additional run-time instance check; it will have the same visibility
-
+    func init[]
+        no-op
+    
     func run[] -> i32
+        puts 'running trinity'
+        printf["our (trinity) vk is %p on %p\n", vk, a]
+        w = Window[ vk:vk, width:(width) ?? 888, height:(height) ?? 888 ]
+        w.update_canvas[] # ?
+        render*[] # should be called before the targets update, so we have a list of targets
+        w.resize[w.width, w.height]
         return super.run[]
 
     func render[]
-        elements : on_render[ w ] # type from on_render
-        #render : map element[ string ]
+        elements : on_render[ w ]
+
         if [ elements ]
-            #w.ux.update_all[ render ]
             w.ux.update_all[ elements ]
 
         w.ux.animate[]
@@ -618,8 +623,9 @@ abstract media_app trinity
             w.compose .clear [ '#000' ]
             w.colorize.clear [ '#000' ]
             w.glyph   .clear [ '#000' ]
+        
         w.overlay.clear[ '#0000' ]
-        w.draw_element[ w.ux.root ]
+        w.draw_element [ w.ux.root ]
         w.draw[]
 
 
