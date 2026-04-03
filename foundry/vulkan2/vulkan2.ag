@@ -330,7 +330,6 @@ class vk_context
     public  allocator           : VmaAllocator
     intern  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
 
-    public gltf_quad: path [ 'models/uv-quad2.gltf' ]
     intern quad_m:    GltfModel
 
     func init [ ]
@@ -362,8 +361,76 @@ class vk_context
             _vkCreateDebugUtilsMessengerEXT = vkGetInstanceProcAddr[ instance, "vkCreateDebugUtilsMessengerEXT" ]
             expect _vkCreateDebugUtilsMessengerEXT, "cannot find vk debug function"
 
+        # enumerate physical devices
+        device_count: u32 0
+        vkEnumeratePhysicalDevices[ instance, ref device_count, null ]
+        expect device_count > 0, "failed to find GPUs with Vulkan support"
+        physical_devices: local VkPhysicalDevice [ device_count ]
+        vkEnumeratePhysicalDevices[ instance, ref device_count, physical_devices ]
+        physical_device = physical_devices[0]
+
+        printf [ "physical_device = %p\n", physical_device ]
+
+        # check device extensions
+        ext_count: u32 0
+        vkEnumerateDeviceExtensionProperties[ physical_device, null, ref ext_count, null ]
+        expect ext_count > 0, "failed to find device extensions"
+        extensions: local VkExtensionProperties [ ext_count ]
+        vkEnumerateDeviceExtensionProperties[ physical_device, null, ref ext_count, extensions ]
+        swapchain_supported: bool false
+        device_extensions : local symbol [1] [ VK_KHR_SWAPCHAIN_EXTENSION_NAME ]
+        for [ i: u32 0, i < ext_count, i += 1 ]
+            device_exts.push[ extensions[i].extensionName ]
+            if [ strcmp[ extensions[i].extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME ] == 0 ]
+                swapchain_supported = true
+        expect swapchain_supported, "VK_KHR_swapchain not supported by physical device"
+
+        # query device features
+        buffer_addr_features: VkPhysicalDeviceBufferDeviceAddressFeatures [
+            sType:               VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
+            bufferDeviceAddress: VK_TRUE
+        ]
+        features2: VkPhysicalDeviceFeatures2 [
+            sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+            pNext: ref buffer_addr_features
+        ]
+        vkGetPhysicalDeviceFeatures2[ physical_device, ref features2 ]
+
+        # create logical device
+        queue_priority: f32 1.0
+        result = vkCreateDevice[ physical_device, VkDeviceCreateInfo [
+            sType:                   VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            pNext:                   ref features2,
+            queueCreateInfoCount:    1,
+            pQueueCreateInfos:       VkDeviceQueueCreateInfo [
+                sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                queueFamilyIndex:    0,
+                queueCount:          1,
+                pQueuePriorities:    ref queue_priority
+            ],
+            enabledExtensionCount:   1,
+            ppEnabledExtensionNames: device_extensions
+        ], null, ref device ]
+        expect result == VK_SUCCESS, "cannot create logical device"
+        queue_family_index = -1
+
+        # create VMA allocator
+        result = vmaCreateAllocator[ VmaAllocatorCreateInfo [
+            physicalDevice:    physical_device,
+            device:            device,
+            instance:          instance,
+            vulkanApiVersion:  VK_API_VERSION_1_2,
+            pVulkanFunctions:  null,
+            flags:             VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT
+        ], ref allocator ]
+        expect result == VK_SUCCESS, "cannot create vma allocator"
+
         gltf_quad2: path [ 'models/uv-quad2.gltf' ]
-        quad_m = gltf_quad.load[ typeid[ GltfModel ], null ]
+        quad_m = gltf_quad2.load[ typeid[ GltfModel ], null ]
+
+
+
+
 
     func quad_shader [ ] -> UVQuad
         q: UVQuad [ vk: a, name: 'uv-quad' ]
@@ -1275,8 +1342,8 @@ class Buffer
 
 
 class Texture
-    context vk : vk_context
-    public w  : Display
+    public vk               : vk_context
+    public w                : Display
     public format           : Pixel
     public sampler          : object
     public width            : i32
@@ -1286,14 +1353,16 @@ class Texture
     public layer_count      : i32
     public surface          : Surface
     public linear           : bool
+    public silly_test4      : bool
+    public title            : string 'default title'
+    
     intern vk_layout        : VkImageLayout
     intern vk_format        : VkFormat
     intern vk_image         : VkImage
     intern vk_image_view    : VkImageView
     intern vk_sampler       : VkSampler
     intern vma_alloc        : VmaAllocation
-    
-    
+
     func resize [ w_new: i32, h_new: i32 ] -> Texture
         if [ w_new == width && h_new == height ]
             return a
@@ -1480,8 +1549,6 @@ class Texture
 
 Texture Display
     intern glfw                 : handle
-    expect width                : u32
-    expect height               : u32
     public mouse                : vec2f
     public ux                   : Composer
     intern swap_model           : Model
@@ -1500,9 +1567,8 @@ Texture Display
     intern swap_image_count     : u32
     intern swap_image_current   : u32
     intern ev                   : Event
-    public on_surface           : hook
+    #public on_surface          : hook -- where was this thing
     public format               : Pixel
-    public title                : string
     mutable debug_value          : f32
     public current_swap_index   : i32
     public text_event           : EventDispatch
@@ -1663,10 +1729,11 @@ Texture Display
             width  = 1200
             height = 1200
 
+        surf : handle
         # glfw window + vulkan surface
         if [ !backbuffer ]
             glfwWindowHint[ GLFW_CLIENT_API, GLFW_NO_API ]
-            glfw = glfwCreateWindow[ width, height, (title) ? title : "trinity", null, null ]
+            glfw = glfwCreateWindow[ width, height, title, null, null ]
             expect glfw, "Failed to create GLFW window"
 
             # glfw callbacks
@@ -1680,11 +1747,13 @@ Texture Display
 
             printf["vk instance of %p\n", vk.instance]
             # vulkan surface
-            result: glfwCreateWindowSurface[ vk.instance, glfw, null, ref surface ]
+            result: glfwCreateWindowSurface[ vk.instance, glfw, null, ref surf ]
             expect result == VK_SUCCESS, "Failed to create Vulkan surface"
 
         # finish device
-        on_surface[ux] # <-- called trinity_finish here, telling it we have a surface now
+        surface = surf
+        printf[ "surface is set to %p (%p) wh = %i %i\n", surf, surface, width, height ]
+        vk.attach[ surf ]
 
         # surface capabilities + formats
         if [ !backbuffer ]

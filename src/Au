@@ -168,6 +168,7 @@ typedef double                 *ref_f64;
     int             elements; \
     int             typesize; \
     int             isize; \
+    int             icount; \
     u64             ident_hash; \
     void*           fn; \
     ffi_method_t*   ffi; \
@@ -632,7 +633,7 @@ forward(any)
     M(AA,BB, i, method, public, Au,     get_property,   symbol) \
     M(AA,BB, i, method, public, Au,     vrealloc,       sz) \
     M(AA,BB, i, method, public, Au_t,   meta_index,     i32) \
-    M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, i32, u64, u64, u64) \
+    M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, i32, u64, u64, u64, i32) \
     M(AA,BB, s, method, public, Au_t,   def,            Au_t, symbol, u32, u64) \
     M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef, symbol, i32) \
     M(AA,BB, s, method, public, Au_t,   def_arg,        Au_t, symbol, Au_t, u64) \

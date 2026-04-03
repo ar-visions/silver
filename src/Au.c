@@ -1920,7 +1920,7 @@ lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
     return a;
 }
 
-Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize) {
+Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize, i32 icount) {
     type->member_type       = member_type;
     memset(&type->members, 0, sizeof(micro));
     memset(&type->args,    0, sizeof(micro));
@@ -1937,6 +1937,7 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
         type->typesize      = typesize;
     type->table_size        = context ? context->table_size : 0; // [in module-init] increment with additional functions that do not overload
     type->isize             = isize;
+    type->icount            = icount;
     if (context)
         memcpy(&type->ft, &context->ft, context->table_size);
 
@@ -2159,6 +2160,7 @@ none push_type(Au_t type, Au_t to_mod) {
         def_member(au_t, "elements",      typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, elements);
         def_member(au_t, "typesize",      typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, typesize);
         def_member(au_t, "isize",         typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, isize);
+        def_member(au_t, "icount",       typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, icount);
         def_member(au_t, "ident_hash",   typeid(u64),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, ident_hash);
         def_member(au_t, "fn",            typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, fn);
         def_member(au_t, "ffi",           typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, ffi);

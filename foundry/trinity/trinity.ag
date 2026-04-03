@@ -606,7 +606,7 @@ abstract media_app trinity
     func run[] -> i32
         puts 'running trinity'
         printf["our (trinity) vk is %p on %p\n", vk, a]
-        w = Window[ vk:vk, width:(width) ?? 888, height:(height) ?? 888 ]
+        w = Window[ vk:vk, title:'orbiter', width:(width) ?? 888, height:(height) ?? 888 ]
         w.update_canvas[] # ?
         render*[] # should be called before the targets update, so we have a list of targets
         w.resize[w.width, w.height]
