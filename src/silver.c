@@ -1225,6 +1225,7 @@ void silver_init(silver a) {
     if (!update_product) {
         a->product = hold(absolute(a->product_link));
         set(silver_compiled, (Au)a->name, (Au)_bool(true));
+        module_erase(a->au, null);
         return;
     }
 
@@ -2113,7 +2114,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
     a->source_raw = (string)hold(input_string);
 
     list symbols = list();
-    string special = string(".{}$,<>()![]/+*:=#~");
+    string special = string(".{}$,<>()![]/+*:=#~@");
     i32 special_ln = len(special);
     for (int i = 0; i < special_ln; i++)
         push(symbols, (Au)unicode_char((i32)special->chars[i]));
@@ -2952,6 +2953,12 @@ enode invoke_sub(silver a, enode sub) {
 etype shape_pointer(silver, Au, enode);
 
 enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { sequencer
+    
+    // this is more useful than anyone realizes, being in the center of the stack here in read_enode
+    // likely needs implementation in read_etype since thats a very common place
+    if (!a->no_build && read_if(a, "@"))
+        raise(SIGTRAP);
+
     bool      cmode     = is_cmode(a);
     array     expr      = null;
     token     peek      = peek(a);
@@ -3037,6 +3044,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     // handle typed operations, converting to our expected model (if no difference, it passes through)
     if (a->expr_level > 0 && peek && (is_alpha(peek) || eq(peek, "struct"))) {
+        if (seq == 1067) {
+            seq = seq;
+        }
         etype mdl_found = read_etype(a, null);
         if (mdl_found) {
             // here we must 'peek' at a body; which if not available we go default
@@ -3089,6 +3099,10 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     Au lit = read_literal(a, null);
     if (lit) {
+        if (seq == 3010) {
+            int test2 = 2;
+            test2    += 2;
+        }
         a->expr_level++;
         enode res = e_operand(a, lit, mdl_expect);
         a->expr_level--;
@@ -6067,6 +6081,17 @@ enode assign_builder(silver a, enode targ, array post_const) { sequencer
 // works for class and module init
 void silver_build_user_initializer(silver a, enode prop) {
     if (prop && prop->au && prop->au->member_type == AU_MEMBER_VAR && prop->initializer) {
+        // skip if this member was already set by constructor props
+        if (a->init_props && prop->au->ident) {
+            bool in_props = false;
+            pairs(a->init_props, p) {
+                string k = (string)instanceof(p->key, string);
+                if (k && strcmp(k->chars, prop->au->ident) == 0) {
+                    in_props = true; break;
+                }
+            }
+            if (in_props) return;
+        }
 
         verify (!instanceof(prop->initializer, enode), "unexpected enode");
         array initializer = (array)prop->initializer;
@@ -7443,6 +7468,10 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
     }
 
 
+    if (seq == 160) {
+        int test2 = 2;
+        test2    += 2;
+    }
 
     bool is_explicit = is_explicit_ref(mem);
     bool is_compound = op_val > OPType__assign && op_val <= OPType__assign_left;

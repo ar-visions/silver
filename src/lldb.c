@@ -534,9 +534,84 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
         return di_struct;
     }
 
-    // ── allocate the member array ──
-    LLVMMetadataRef* members = calloc(member_count, sizeof(LLVMMetadataRef));
+    // ── allocate the member array (+1 for __fbits) ──
+    bool has_fbits = type_au->is_class && !type_au->is_system && !type_au->is_c &&
+        type_au->module != typeid(Au)->module;
+    LLVMMetadataRef* members = calloc(member_count + (has_fbits ? 1 : 0), sizeof(LLVMMetadataRef));
     int midx = 0;
+
+    // ── emit __fbits as first member for Silver classes ──
+    if (has_fbits && et && et->lltype) {
+        // create the fbits struct debug type with per-field bitfield members
+        LLVMMetadataRef fbits_di;
+        {
+            Au_t var_list[128];
+            int bit_count = 0;
+            Au_t bf_chain[64];
+            int bf_chain_n = 0;
+            Au_t cur = type_au;
+            while (cur && cur != typeid(Au) && bf_chain_n < 64) {
+                bf_chain[bf_chain_n++] = cur;
+                if (cur->context == cur) break;
+                cur = cur->context;
+            }
+            // two passes: publics first, then interns (matches LLVM struct order)
+            // accounts for hidden intern members via icount
+            for (int ci = bf_chain_n - 1; ci >= 0 && bit_count < 128; ci--) {
+                Au_t level = bf_chain[ci];
+                // pass 0: publics
+                for (int i = 0; i < level->members.count; i++) {
+                    Au_t m = (Au_t)level->members.origin[i];
+                    if (m->member_type != AU_MEMBER_VAR || m->is_static) continue;
+                    if (m->access_type == interface_intern) continue;
+                    if (bit_count < 128)
+                        var_list[bit_count++] = m;
+                }
+                // pass 1: visible interns + hidden count
+                int visible_interns = 0;
+                for (int i = 0; i < level->members.count; i++) {
+                    Au_t m = (Au_t)level->members.origin[i];
+                    if (m->member_type != AU_MEMBER_VAR || m->is_static) continue;
+                    if (m->access_type != interface_intern) continue;
+                    if (bit_count < 128)
+                        var_list[bit_count++] = m;
+                    visible_interns++;
+                }
+                int hidden = level->icount - visible_interns;
+                if (hidden > 0) bit_count += hidden; // skip hidden intern bit positions
+            }
+            LLVMMetadataRef bit_type = LLVMDIBuilderCreateBasicType(
+                a->dbg_builder, "u64", 3, 64, DW_ATE_unsigned, LLVMDIFlagZero);
+            LLVMMetadataRef* fbits_members = calloc(bit_count, sizeof(LLVMMetadataRef));
+            for (int bi = 0; bi < bit_count; bi++) {
+                cstr name = var_list[bi]->ident ? var_list[bi]->ident : "_";
+                u32  storage_offset = (bi / 64) * 8;
+                fbits_members[bi] = LLVMDIBuilderCreateBitFieldMemberType(
+                    a->dbg_builder, a->compile_unit,
+                    name, strlen(name),
+                    a->file, 0,
+                    1,                // size: 1 bit
+                    bi,               // offset in bits from struct start
+                    storage_offset,   // storage offset in bytes
+                    LLVMDIFlagZero, bit_type);
+            }
+            char fbits_name[256];
+            snprintf(fbits_name, sizeof(fbits_name), "%s_fbits", type_au->ident);
+            fbits_di = LLVMDIBuilderCreateStructType(
+                a->dbg_builder, a->compile_unit,
+                fbits_name, strlen(fbits_name),
+                a->file, 0,
+                128, 64, LLVMDIFlagZero, null,
+                fbits_members, bit_count, 0, null,
+                fbits_name, strlen(fbits_name));
+            free(fbits_members);
+        }
+        members[midx++] = LLVMDIBuilderCreateMemberType(
+            a->dbg_builder, a->compile_unit,
+            "__fbits", 7, a->file, 0,
+            128, 64, 0,
+            LLVMDIFlagZero, fbits_di);
+    }
 
     // ── walk the inheritance chain (base first) ──
     // collect the chain into an array so we emit base members first

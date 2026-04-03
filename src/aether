@@ -173,6 +173,9 @@ forward(evar)
     M(X, Y, i, prop,     public,  Au_t,                     top) \
     M(X, Y, i, prop,     public,  string,                   dbg_init) \
     M(X, Y, i, prop,     public,  string,                   dbg_implement) \
+    M(X, Y, i, prop,     public,  string,                   break_id) \
+    M(X, Y, i, prop,     public,  map,                      init_props) \
+    M(X, Y, i, prop,     public,  handle,                   init_fbits) \
     M(X, Y, i, prop,     public,  array,                    imports) \
     M(X, Y, i, vargs,    public,  none,                     eprint, symbol) \
     M(X, Y, i, method,   public,  none,                     e_vector_init, etype, enode, array) \
@@ -201,7 +204,6 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_break, catcher) \
     M(X, Y, i, method,   public,  enode,                    e_continue, catcher) \
     M(X, Y, i, method,   public,  none,                     e_memcpy, enode, enode, Au_t) \
-    M(X, Y, i, method,   public,  enode,                    compatible, etype, string, AFlag, array) \
     M(X, Y, i, method,   public,  enode,                    e_operand, Au, etype) \
     M(X, Y, i, method,   public,  enode,                    e_short_circuit, OPType, enode) \
     M(X, Y, i, method,   public,  enode,                    e_op, OPType, string, Au, Au) \
