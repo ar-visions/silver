@@ -1837,14 +1837,14 @@ alias ShaderModuleRef : ref VkShaderModule
 
 class shader
     context vk : vk_context
-    public name : string
-    public vert : string
-    public frag : string
-    public comp : string
+    public name         : string
+    public vert         : path
+    public frag         : path
+    public comp         : path
     public reload_count : i32
-    intern vk_vert : VkShaderModule
-    intern vk_frag : VkShaderModule
-    intern vk_comp : VkShaderModule
+    intern vk_vert      : VkShaderModule
+    intern vk_frag      : VkShaderModule
+    intern vk_comp      : VkShaderModule
 
     func vertex   [] -> GLSL none {}
 
@@ -1871,6 +1871,8 @@ class shader
             return "uint"
         if [ t == typeid[ bool ] ]
             return "bool"
+        if [ t == typeid[ none ] ]
+            return "void"
         return null
 
     func glsl_header [ stage: ShaderStage ] -> string
@@ -1895,8 +1897,7 @@ class shader
                     continue
                 result = '{result}    {gtype} {mem.ident};\n'
             scan = scan.context
-        ubo_inst: type.ident
-        result = '{result}}} {ubo_inst};\n\n'
+        result = '{result}}} ubo;\n\n'
 
         # attribs: samplers, vertex i/o, fragment i/o
         binding:      i32 [ 1 ]
@@ -1985,6 +1986,8 @@ class shader
                 # call method with defaults to get body
                 body: symbol [ Au.method_call[ mem, null ] ]
 
+                expect strlen[body], 'body not set on function {arg_mem.ident}'
+
                 # emit function
                 result = '{result}{ret_name} {mem.ident}({arg_str}) {{\n{body}\n}}\n\n'
                     
@@ -1998,38 +2001,26 @@ class shader
 
         return result
 
-    intern func replace_includes [ src: cstr, dst: cstr ] 
-        src_file: fopen[ src, "r" ]
-        expect src_file, "source not found"
-        dst_file: fopen[ dst, "w" ]
-        expect dst_file, "destination not found"
-        buf: local i8[4096]
-        while [ fgets[ buf, 4096, src_file ] ]
-            include_start: strstr[ buf, "#include <" ]
-            if [ include_start ]
-                include_end: strstr[ include_start, ">" ]
-                if [ include_end ]
-                    import_name: local i8[256]
-                    test2: include_start + 10
-                    name_length: include_end - test2
-                    if [ name_length >= 256 ]
-                        fprintf[ stderr, "error: import name too long\n" ]
-                        exit[ 2 ]
-                    strncpy[ import_name, include_start + 10, name_length ]
-                    import_name[name_length] = 0
-                    import_path: 'shaders/{import_name}'
-                    import_file: fopen[ import_path.chars, "r" ]
-                    if [ !import_file ]
-                        fprintf[ stderr, "error: Failed to open import file: %s\n", import_name ]
-                        exit[ 2 ]
-                    while [ fgets[ buf, 4096, import_file ] ]
-                        fputs[ buf, dst_file ]
-                    fclose[ import_file ]
-                    continue
-            fputs[ buf, dst_file ]
-        fclose[ src_file ]
-        fclose[ dst_file ]
-
+    func generate_shaders [ ]
+        type:   Au_t [ typeid[ a ] ]
+        paths:  array path [ vert, frag, comp ]
+        stages: array i32  [ 0, 1, 2 ]
+        for [ i: 0, i < 3, i += 1 ]
+            p: paths[i]
+            if [ !p ]
+                continue
+            stage: (i == 0) ? ShaderStage.vertex : (i == 1) ? ShaderStage.fragment : ShaderStage.compute
+            src: glsl_header[ stage ]
+            if [ !src ]
+                continue
+            fp: fopen[ p.chars, "w" ]
+            if [ !fp ]
+                printf[ "failed to write shader: %s\n", p.chars ]
+                continue
+            fputs[ src.chars, fp ]
+            fclose[ fp ]
+            printf[ "generated shader: %s\n", p.chars ]
+    
     func uniform_transfer [ data2: ref u8, type: Au_t ] -> i64
         instance:a
         expect instance inherits shader, "shader instance not provided"
@@ -2050,16 +2041,16 @@ class shader
         return index
 
     intern func reload [ ] -> bool
-        names:  new string[3]          [ fragment[], vertex[], compute[] ]
-        values: new ShaderModuleRef[3] [ ref vk_frag, ref vk_vert, ref vk_comp ]
+        paths:  array path [ vert, frag, comp ]
+        values: new ShaderModuleRef[3] [ ref vk_vert, ref vk_frag, ref vk_comp ]
         found:      false
         recompiled: false
         for [ i: 0, i < 3, i += 1 ]
-            nm: names[i]
+            nm: paths[i]
             if [ !nm ]
                 continue
             input: path '{nm}'
-            if [ !nm || !input.exists[] ]
+            if [ !input.exists[] ]
                 continue
             spv_file: '{nm}.spv'
             found = true
@@ -2067,17 +2058,13 @@ class shader
             spv_stat:    struct stat
             src_exists: stat[ input.chars, ref source_stat ] == 0
             spv_exists: stat[ spv_file.chars, ref spv_stat ] == 0
-            #make_spv : !spv_exists || source_stat.st_mtime > spv_stat.st_mtime
             ifdef [ linux ]
                 make_spv: !spv_exists || source_stat.st_mtim.tv_sec > spv_stat.st_mtim.tv_sec
             ifdef [ apple ]
                 make_spv: !spv_exists || source_stat.st_mtimespec.tv_sec > spv_stat.st_mtimespec.tv_sec
 
             if [ make_spv ]
-                ext_s: input.ext[]
-                tmp: path.path_tempfile[ ext_s.chars ]
-                replace_includes[ input.chars, tmp.chars ]
-                cmd: 'glslangValidator -V100 --target-env vulkan1.2 {tmp} -o {spv_file}'
+                cmd: 'glslangValidator -V100 --target-env vulkan1.2 {nm} -o {spv_file}'
                 puts 'compiling shader: {cmd}'
                 result: system[ cmd.chars ]
                 if [ result != 0 ]
@@ -2121,13 +2108,14 @@ class shader
     func init [ ]
         if [ !vk ]
             return
-        frag = 'shaders/{name}.frag'
-        vert = 'shaders/{name}.vert'
-        comp = 'shaders/{name}.comp'
         if [ !name ]
             ty: typeid[ a ]
             expect ty != typeid[ shader ], "base shader usage requires a shader name"
             name = ty.ident
+        vert = 'shaders/{name}.vert'
+        frag = 'shaders/{name}.frag'
+        comp = 'shaders/{name}.comp'
+        generate_shaders[ ]
         reload[ ]
 
     func dealloc [ ]
