@@ -96,6 +96,7 @@ token aether_peek_safe(silver);
 // however we usually have the option to do both (expr-level-0)
 static array read_expression(silver a, etype *mdl_res, bool *is_const);
 static array read_enode_tokens(silver a);
+enode ternary_expr_builder(silver a, array expr_tokens, Au unused);
 
 token silver_element(silver, num);
 
@@ -3297,16 +3298,19 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         etype mdl = read_etype(a, null);
         validate(read_if(a, "["), "expected [ after local Type");
         shape sh = (shape)read_literal(a, typeid(shape));
-        i64 count;
+        i64   count = 0;
+        enode esize = null;
         if (sh) {
             count = shape_total(sh);
         } else {
-            enode esize = parse_expression(a, etypeid(i64), true, true);
-            validate(esize->literal, "local requires constant size");
-            count = *(i64*)esize->literal;
+            esize = parse_expression(a, etypeid(i64), true, true);
+            if (esize->literal)
+                count = *(i64*)esize->literal;
         }
         validate(read_if(a, "]"), "expected ] after local Type [");
-        enode arr = e_stack_array(a, mdl, count);
+        enode arr = (count > 0) ?
+            e_stack_array(a, mdl, count) :
+            e_stack_array_dynamic(a, mdl, esize);
         if (read_if(a, "[")) {
             array nodes = array(64);
             while (peek(a) && !next_is(a, "]")) {
@@ -3436,7 +3440,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     // unary negation
     else if (read_if(a, "-")) {
         enode expr = read_enode(a, null, false, true);
-        validate(canonical(expr)->au->is_integral || canonical(expr)->au->is_realistic,
+        validate(a->no_build || canonical(expr)->au->is_integral || canonical(expr)->au->is_realistic,
             "negation requires numeric type");
         return e_create(a,
             mdl_expect, (Au)e_neg(a, expr));
@@ -5208,10 +5212,14 @@ enode silver_parse_ternary(silver a, enode expr, etype mdl_expect, bool load) {
         enode expr_true = parse_expression(a, mdl_expect, false, load);
         return e_ternary(a, expr, expr_true, null);
     }
-    enode expr_true = parse_expression(a, mdl_expect, false, load);
+    bool is_const = false;
+    etype mdl_true = mdl_expect;
+    array true_tokens = read_expression(a, &mdl_true, &is_const);
     verify(read_if(a, ":"), "expected : after expression");
-    enode expr_false = parse_expression(a, mdl_expect, false, load);
-    return e_ternary(a, expr, expr_true, expr_false);
+    etype mdl_false = mdl_expect;
+    array false_tokens = read_expression(a, &mdl_false, &is_const);
+    subprocedure build_expr = subproc(a, ternary_expr_builder, null);
+    return e_ternary_deferred(a, expr, true_tokens, false_tokens, build_expr);
 }
 
 // these are for public, intern, etc; Au-Type enums, not someting the user defines in silver context
@@ -6834,13 +6842,14 @@ enode parse_continue(silver a) {
 static array read_expression(silver a, etype *mdl_res, bool *is_const) {
     array exprs = array(32);
     int start = a->cursor;
+    bool prev_no_build = a->no_build;
     a->no_build = true;
     a->is_const_op = true; // set this, and it can only &= to true with const ops; any build op sets to false
     bool use_hint = mdl_res && *mdl_res;
     enode n = parse_expression(a, use_hint ? *mdl_res : null, use_hint, true);
     if (mdl_res)
         *mdl_res = (etype)n;
-    a->no_build = false;
+    a->no_build = prev_no_build;
     int e = a->cursor;
     for (int i = start; i < e; i++) {
         push(exprs, (Au)a->tokens->origin[i]);
@@ -7496,8 +7505,13 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         mem->au->context = ctx;
         mem->au->member_type = AU_MEMBER_VAR;
         Au_t rhs_type = au_arg_type((Au)R);
+        // decay fixed-size char arrays (char[N]) to cstr for variable inference
+        if (rhs_type && rhs_type->elements > 0 && rhs_type->src &&
+            (rhs_type->src == typeid(i8) || rhs_type->src == typeid(u8)))
+            rhs_type = typeid(cstr);
         mem->au->src = (is_bind_ref && bind_type) ? bind_type->au :
             (bind_type && bind_type->au->is_class && rhs_type && !rhs_type->is_class) ? bind_type->au :
+            (bind_type && rhs_type && rhs_type->elements > 0 && !bind_type->au->elements) ? bind_type->au :
             rhs_type;
         mem->au->is_const = is_const;
         Au meta_a_src = bind_type && bind_type->meta_a ? bind_type->meta_a :
@@ -7534,6 +7548,17 @@ enode expr_builder(silver a, array cond_tokens, etype mdl_scope) {
     pop_tokens(a, false);
     a->expr_level--;
     return cond_expr;
+}
+
+enode ternary_expr_builder(silver a, array expr_tokens, Au unused) {
+    a->expr_level++;
+    push_tokens(a, (tokens)expr_tokens, 0);
+    a->statement_origin = peek(a);
+    enode expr = parse_expression(a, null, false, true);
+    validate(a->cursor == len(expr_tokens), "expected ternary expression, found remaining: %o", peek(a));
+    pop_tokens(a, false);
+    a->expr_level--;
+    return expr;
 }
 
 enode cond_builder(silver a, array cond_tokens, Au unused) {

@@ -642,8 +642,16 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         if (res->au && res->au->is_struct && !res->loaded &&
             LLVMGetInstructionOpcode(res->value) == LLVMAlloca) {
             L->value = res->value;
-        } else
-            LLVMBuildStore(B, res->value, store_target);
+        } else {
+            LLVMValueRef store_val = res->value;
+            if (!res->loaded && !is_struct(res->au) &&
+                LLVMGetInstructionOpcode(store_val) == LLVMGetElementPtr) {
+                etype rt = u(etype, res->au);
+                if (rt)
+                    store_val = LLVMBuildLoad2(B, lltype(rt), store_val, "assign_load");
+            }
+            LLVMBuildStore(B, store_val, store_target);
+        }
 
         // sync load so LLDB sees stored value
         //if (a->debug) {
@@ -2570,7 +2578,17 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super) { sequence
     free(arg_types);
 
     if (is_struct(rtype) && !is_void_) {
+        // alloca in entry block so it dominates all uses (e.g. across if/else branches)
+        LLVMBasicBlockRef current   = LLVMGetInsertBlock(B);
+        LLVMValueRef      func      = LLVMGetBasicBlockParent(current);
+        LLVMBasicBlockRef entry     = LLVMGetEntryBasicBlock(func);
+        LLVMValueRef      first_inst = LLVMGetFirstInstruction(entry);
+        if (first_inst)
+            LLVMPositionBuilderBefore(B, first_inst);
+        else
+            LLVMPositionBuilderAtEnd(B, entry);
         LLVMValueRef tmp = LLVMBuildAlloca(B, lltype(rtype), "struct-ret");
+        LLVMPositionBuilderAtEnd(B, current);
         LLVMBuildStore(B, R, tmp);
         return enode(mod, a, au, rtype->au, loaded, false, value, tmp);
     }
@@ -3403,7 +3421,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
         a->direct = saved_direct;
         efunc f_hold_members = (efunc)u(efunc,
             find_member(etypeid(Au)->au, "hold_members", AU_MEMBER_FUNC, 0, false));
-        e_fn_call(a, f_hold_members, a(alloc), false);
+        //e_fn_call(a, f_hold_members, a(alloc), false);
 
     } else {
         res = e_fn_call(a, f_initialize, a(alloc), false);
@@ -4168,6 +4186,56 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
     return enode(mod, mod, loaded, true, au, rmdl->au, value, phi_node);
 }
 
+enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, array false_tokens, subprocedure expr_builder) {
+    // build both branches deferred so member accesses don't happen before the null check
+    if (a->no_build) {
+        invoke(expr_builder, (Au)true_tokens);
+        enode false_node = (enode)invoke(expr_builder, (Au)false_tokens);
+        return e_noop(a, (etype)false_node);
+    }
+
+    LLVMBasicBlockRef current_block = LLVMGetInsertBlock(B);
+    LLVMValueRef      pb         = LLVMGetBasicBlockParent(current_block);
+    LLVMBasicBlockRef then_block  = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "ternary_then");
+    LLVMBasicBlockRef else_block  = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "ternary_else");
+    LLVMBasicBlockRef merge_block = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "ternary_merge");
+
+    // branch on condition
+    LLVMValueRef condition_value = cond_expr->value;
+    if (LLVMGetTypeKind(LLVMTypeOf(condition_value)) == LLVMPointerTypeKind) {
+        condition_value = LLVMBuildICmp(B, LLVMIntNE,
+            condition_value, LLVMConstNull(LLVMTypeOf(condition_value)), "ternary.nonnull");
+    }
+    LLVMBuildCondBr(B, condition_value, then_block, else_block);
+
+    // then block: parse + codegen true expression
+    LLVMPositionBuilderAtEnd(B, then_block);
+    enode true_node = (enode)invoke(expr_builder, (Au)true_tokens);
+    LLVMValueRef true_value = true_node->value;
+    LLVMBasicBlockRef true_final = LLVMGetInsertBlock(B);
+    LLVMBuildBr(B, merge_block);
+
+    // else block: parse + codegen false expression
+    LLVMPositionBuilderAtEnd(B, else_block);
+    enode false_node = (enode)invoke(expr_builder, (Au)false_tokens);
+
+    // determine result type
+    etype rmdl = (etype)prefer_mdl((etype)true_node, (etype)false_node);
+    false_node = e_create(a, rmdl, (Au)false_node);
+    LLVMValueRef false_value = false_node->value;
+    LLVMBasicBlockRef false_final = LLVMGetInsertBlock(B);
+    LLVMBuildBr(B, merge_block);
+
+    // merge with phi
+    LLVMPositionBuilderAtEnd(B, merge_block);
+    LLVMTypeRef result_type = LLVMTypeOf(true_value);
+    LLVMValueRef phi_node = LLVMBuildPhi(B, result_type, "ternary_result");
+    LLVMAddIncoming(phi_node, &true_value,  &true_final,  1);
+    LLVMAddIncoming(phi_node, &false_value, &false_final, 1);
+
+    return enode(mod, a, loaded, true, au, rmdl->au, value, phi_node);
+}
+
 enode aether_e_builder(aether a, subprocedure cond_builder) {
     if (!a->no_build) {
         LLVMBasicBlockRef block = LLVMGetInsertBlock(B);
@@ -4654,8 +4722,12 @@ enode aether_e_if_else(
         invoke(expr_builder, exprs->origin[i]);
 
         LLVMBasicBlockRef end_then = LLVMGetInsertBlock(B);
-        if (!LLVMGetBasicBlockTerminator(end_then))
+        if (!LLVMGetBasicBlockTerminator(end_then)) {
+            // use the if-condition's debug location for the merge branch,
+            // not the last statement in the then-body
+            debug_emit(a);
             LLVMBuildBr(B, merge);
+        }
 
         // next condition (or final else)
         if (else_block != merge)
@@ -4669,11 +4741,17 @@ enode aether_e_if_else(
         invoke(expr_builder, exprs->origin[ln_conds]);
 
         LLVMBasicBlockRef end_else = LLVMGetInsertBlock(B);
-        if (!LLVMGetBasicBlockTerminator(end_else))
+        if (!LLVMGetBasicBlockTerminator(end_else)) {
+            debug_emit(a);
             LLVMBuildBr(B, merge);
+        }
     }
 
     LLVMPositionBuilderAtEnd(B, merge);
+    // reset debug location to the if-statement itself so the merge block
+    // does not inherit the last line of the then/else body — prevents
+    // debugger from stopping on inner-block lines during fallthrough
+    debug_emit(a);
 
     return enode(
         mod,    a,          // note: 'mod' must exist in your scope; otherwise replace with your module ref
@@ -8231,6 +8309,24 @@ enode aether_e_stack_array(aether a, etype elem_type, i32 count) {
     Au_t arr_au = def(a->au, null, AU_MEMBER_TYPE, 0);
     arr_au->src = elem_type->au;
     arr_au->elements = count;
+    arr_au->is_pointer = true;
+    return enode(mod, a, value, alloc, loaded, false, au, arr_au);
+}
+
+enode aether_e_stack_array_dynamic(aether a, etype elem_type, enode count_expr) {
+    a->is_const_op = false;
+    if (a->no_build) return e_noop(a, elem_type);
+    etype elem = u(etype, elem_type->au);
+    if (!elem) elem = elem_type;
+    etype_implement(elem_type, false);
+    LLVMTypeRef  lt        = lltype(elem_type);
+    enode        loaded_ct = count_expr->loaded ? count_expr : e_load(a, count_expr, null);
+    LLVMValueRef count_val = loaded_ct->value;
+    count_val = LLVMBuildIntCast2(B, count_val, LLVMInt32Type(), false, "local_sz");
+    LLVMValueRef alloc     = LLVMBuildArrayAlloca(B, lt, count_val, "stack_arr_dyn");
+    Au_t arr_au = def(a->au, null, AU_MEMBER_TYPE, 0);
+    arr_au->src        = elem_type->au;
+    arr_au->elements   = 0;
     arr_au->is_pointer = true;
     return enode(mod, a, value, alloc, loaded, false, au, arr_au);
 }

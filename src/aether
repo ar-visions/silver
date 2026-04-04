@@ -220,6 +220,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_if_else, array, array, subprocedure, subprocedure) \
     M(X, Y, i, method,   public,  enode,                    e_init, enode, map, efunc, enode) \
     M(X, Y, i, method,   public,  enode,                    e_ternary, enode, enode, enode) \
+    M(X, Y, i, method,   public,  enode,                    e_ternary_deferred, enode, array, array, subprocedure) \
     M(X, Y, i, method,   public,  enode,                    e_primitive_convert, enode, etype) \
     M(X, Y, i, method,   public,  enode,                    e_direct_cast, enode, etype) \
     M(X, Y, i, method,   public,  enode,                    e_noop, etype) \
@@ -234,6 +235,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_math, i32, enode) \
     M(X, Y, i, method,   public,  enode,                    e_math2, i32, enode, enode) \
     M(X, Y, i, method,   public,  enode,                    e_stack_array, etype, i32) \
+    M(X, Y, i, method,   public,  enode,                    e_stack_array_dynamic, etype, enode) \
     M(X, Y, i, method,   public,  none,                     e_inc, enode, num) \
     M(X, Y, i, method,   public,  none,                     e_print_node, enode) \
     M(X, Y, i, method,   public,  enode,                    e_or, Au, Au) \

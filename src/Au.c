@@ -2773,11 +2773,18 @@ Au method_call(Au_t m, array args) {
     ffi_method_t* a = m->ffi;
     const num max_args = 8;
     none* arg_values[max_args];
-    assert(args->count == a->atypes->count, "arg count mismatch");
-    for (num i = 0; i < args->count; i++) {
+    
+    // populate provided args, create default objects for any missing
+    for (num i = 0; i < a->atypes->count; i++) {
         Au_t arg_type = (Au_t)a->atypes->origin[i];
-        arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ? 
-            (none*)args->origin[i] : (none*)&args->origin[i];
+        if (args && i < args->count) {
+            arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ?
+                (none*)args->origin[i] : (none*)&args->origin[i];
+        } else {
+            Au def = alloc(arg_type, 1, null, null);
+            arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ?
+                (none*)def : (none*)&def;
+        }
     }
     none* result[8]; /// enough space to handle all primitive data
     ffi_call((ffi_cif*)a->ffi_cif, a->address, result, arg_values);
@@ -4550,6 +4557,11 @@ string string_interpolate(string a, Au ff) {
     while (*s) {
         if (*s == '{') {
             if (s[1] == '{') {
+                if (prev) {
+                    append_count(res, prev, (sz)(s - prev));
+                    prev = null;
+                }
+                append(res, "{");
                 s += 2;
                 continue;
             } else {
@@ -4592,6 +4604,11 @@ string string_interpolate(string a, Au ff) {
             }
         } else if (*s == '}') {
             verify(s[1] == '}', "missing extra '}'", 2);
+            if (prev) {
+                append_count(res, prev, (sz)(s - prev));
+                prev = null;
+            }
+            append(res, "}");
             s += 2;
         } else if (!prev) {
             prev = s++;
