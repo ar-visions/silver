@@ -1960,42 +1960,42 @@ class shader
         scan = type
         while [ scan != typeid[ shader ] ]
             for [ i: 0, i < scan.members.count, i += 1 ]
-                mem: Au_t [ scan.members.origin[i] ]
-                if [ mem.member_type != 5 ]
+                method: Au_t [ scan.members.origin[i] ]
+                if [ method.member_type != 5 ]
                     continue
-                if [ !mem.src || !mem.src.meta.b ]
+                if [ !method.src || !method.src.meta.b ]
                     continue
-                if [ strcmp[ mem.ident, "fragment" ] == 0 || strcmp[ mem.ident, "vertex" ] == 0 || strcmp[ mem.ident, "compute" ] == 0 ]
+                if [ strcmp[ method.ident, "fragment" ] == 0 || strcmp[ method.ident, "vertex" ] == 0 || strcmp[ method.ident, "compute" ] == 0 ]
                     continue
-                rtype : Au_t [ mem.src.meta.b ]
+                rtype : Au_t [ method.src.meta.b ]
                 ret_name: glsl_type_name[ rtype ]
                 if [ !ret_name ]
                     ret_name = "void"
 
-                # build arg list from mem.args (skip first arg which is self)
+                # build arg list from method.args (skip first arg which is self)
                 arg_str: string [ '' ]
-                for [ j: 1, j < mem.args.count, j += 1 ]
-                    arg_mem: Au_t [ mem.args.origin[j] ]
-                    atype: glsl_type_name[ arg_mem.src ]
+                for [ j: 1, j < method.args.count, j += 1 ]
+                    arg: Au_t [ method.args.origin[j] ]
+                    atype: glsl_type_name[ arg.src ]
                     if [ !atype ]
                         continue
                     if [ j > 1 ]
                         arg_str = '{arg_str}, '
-                    arg_str = '{arg_str}{atype} {arg_mem.ident}'
+                    arg_str = '{arg_str}{atype} {arg.ident}'
 
-                # call method with defaults to get body
-                body: symbol [ Au.method_call[ mem, null ] ]
+                # call method with defaults (null) to get body
+                body: symbol [ Au.method_call[ method, null ] ]
 
-                expect strlen[body], 'body not set on function {arg_mem.ident}'
+                expect strlen[body], 'body not set on function {method.ident}'
 
                 # emit function
-                result = '{result}{ret_name} {mem.ident}({arg_str}) {{\n{body}\n}}\n\n'
+                result = '{result}{ret_name} {method.ident}({arg_str}) {{\n{body}\n}}\n\n'
                     
         # emit void main() from the stage entry point
         main_name: (stage == ShaderStage.vertex) ? "vertex" : (stage == ShaderStage.fragment) ? "fragment" : "compute"
-        main_mem:  Au_t [ find_member[ type, main_name, 5, 0, true ] ]
-        if [ main_mem ]
-            main_body: symbol [ Au.method_call[ main_mem, null ] ]
+        main_member:  Au_t [ find_member[ type, main_name, 5, 0, true ] ]
+        if [ main_member ]
+            main_body: symbol [ Au.method_call[ main_member, null ] ]
             if [ main_body ]
                 result = '{result}void main() {{\n{main_body}\n}}\n'
 
@@ -2003,10 +2003,10 @@ class shader
 
     func generate_shaders [ ]
         type:   Au_t [ typeid[ a ] ]
-        paths:  array path [ vert, frag, comp ]
-        stages: array i32  [ 0, 1, 2 ]
+        paths:  local path [3] [ vert, frag, comp ]
+        stages: local i32  [3] [ 0, 1, 2 ]
         for [ i: 0, i < 3, i += 1 ]
-            p: paths[i]
+            p: path paths[i]
             if [ !p ]
                 continue
             stage: (i == 0) ? ShaderStage.vertex : (i == 1) ? ShaderStage.fragment : ShaderStage.compute
