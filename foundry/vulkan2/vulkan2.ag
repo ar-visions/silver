@@ -35,6 +35,11 @@ import <vk_mem_alloc.h>
 import <sys/stat.h>
 
 # used with shader type to manage layout-binding
+enum ShaderStage
+    vertex   : 0
+    fragment : 1
+    compute  : 2
+
 class LayoutBinding
     type    : Au_t
     id      : int
@@ -42,24 +47,16 @@ class LayoutBinding
     format  : Au_t
 
 class VertexInput
-    type    : Au_t
-    construct [ t:Au_t ]
-        type = t
+    public type : Au_t
 
 class VertexOutput
-    type    : Au_t
-    construct [ t:Au_t ]
-        type = t
+    public type : Au_t
 
 class FragmentInput
-    type    : Au_t
-    construct [ t:Au_t ]
-        type = t
+    public type : Au_t
 
 class FragmentOutput
-    type    : Au_t
-    construct [ t:Au_t ]
-        type = t
+    public type : Au_t
 
 class Composer
     mutable w:Display
@@ -325,7 +322,7 @@ class vk_context
     public  queue_family_index  : i32 -1
     public  rt_support          : bool
     public  instance_exts       : array cstr [ alloc:128, unmanaged:true ]
-    public  device_exts         : array cstr [ alloc:128, unmanaged:true ]
+    public  device_exts         : array cstr [ alloc:128, unmanaged:true ] # theres... too many of them.
     intern  debug               : VkDebugUtilsMessengerEXT
     public  allocator           : VmaAllocator
     intern  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
@@ -369,19 +366,24 @@ class vk_context
         vkEnumeratePhysicalDevices[ instance, ref device_count, physical_devices ]
         physical_device = physical_devices[0]
 
-        printf [ "physical_device = %p\n", physical_device ]
-
         # check device extensions
         ext_count: u32 0
         vkEnumerateDeviceExtensionProperties[ physical_device, null, ref ext_count, null ]
         expect ext_count > 0, "failed to find device extensions"
         extensions: local VkExtensionProperties [ ext_count ]
-        vkEnumerateDeviceExtensionProperties[ physical_device, null, ref ext_count, extensions ]
+        res2 : VkResult vkEnumerateDeviceExtensionProperties[ physical_device, null, ref ext_count, extensions ]
+        
+
+        ext2 : symbol extensions[0].extensionName
+        printf[ "res2 = %i, ext2 = %s\n", res2, ext2 ]
         swapchain_supported: bool false
-        device_extensions : local symbol [1] [ VK_KHR_SWAPCHAIN_EXTENSION_NAME ]
+        swapchain_ext : symbol VK_KHR_SWAPCHAIN_EXTENSION_NAME
         for [ i: u32 0, i < ext_count, i += 1 ]
-            device_exts.push[ extensions[i].extensionName ]
-            if [ strcmp[ extensions[i].extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME ] == 0 ]
+            ext : extensions[i].extensionName
+            device_exts.push[ ext ]
+            printf [ "vk-device-extension: %s\n", ext ]
+            if [ strcmp[ ext, VK_KHR_SWAPCHAIN_EXTENSION_NAME ] == 0 ]
+                printf [ "supported swapchain: %s\n", ext ]
                 swapchain_supported = true
         expect swapchain_supported, "VK_KHR_swapchain not supported by physical device"
 
@@ -409,8 +411,9 @@ class vk_context
                 pQueuePriorities:    ref queue_priority
             ],
             enabledExtensionCount:   1,
-            ppEnabledExtensionNames: device_extensions
+            ppEnabledExtensionNames: ref swapchain_ext
         ], null, ref device ]
+        
         expect result == VK_SUCCESS, "cannot create logical device"
         queue_family_index = -1
 
@@ -465,6 +468,7 @@ class vk_context
         expect queue_family_count > 0, "failed to find queue families"
         queue_families: new VkQueueFamilyProperties [ queue_family_count ]
         vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, ref queue_family_count, queue_families ]
+        
         found: false
         if [ !surface ]
             queue_family_index = 0
@@ -477,7 +481,7 @@ class vk_context
                     queue_family_index = i
                     found = true
                     break
-        free[ queue_families ]
+        
         expect found, "failed to find a suitable graphics and presentation queue family"
 
     intern func find_memory_type [ type_filter: u32, flags: VkMemoryPropertyFlags ] -> u32
@@ -1344,7 +1348,7 @@ class Buffer
 class Texture
     public vk               : vk_context
     public w                : Display
-    public format           : Pixel
+    public pixel_format     : Pixel [ Pixel.rgba8 ]
     public sampler          : object
     public width            : i32
     public height           : i32
@@ -1399,6 +1403,8 @@ class Texture
 
     func init [ ]
         expect vk, "vk_context not specified"
+        if [ !vk_image && !sampler && !w ]
+            return
         img2 : (sampler to Image)
         img3 : (sampler to Image)
         img :  sampler inherits Image
@@ -1409,14 +1415,15 @@ class Texture
             mip_levels = 1
         if [ !layer_count ]
             layer_count = 1
-        if [ !vk_format && format ]
-            vk_format = vk_format_fn[ format, linear ]
+        if [ !vk_format && pixel_format ]
+            vk_format = vk_format_fn[ pixel_format, linear ]
         is_depth: vk_format == VK_FORMAT_D32_SFLOAT
         if [ vk_image ]
             expect vk_format, "expected format"
         el
             if [ width > 0 || img ]
-                format       = (img) ? img.format : format
+                printf[ "img = %p\n", img ]
+                pixel_format = (img) ? img.format : pixel_format
                 sampler_size = (img) ? img.byte_count[] : 0
                 ansio        = (img) ? 4 : 0
                 if [ img ]
@@ -1426,8 +1433,8 @@ class Texture
                 width  = 4
                 height = 4
                 ansio  = 0
-                placeholder_image[ sampler, 4, ref fill, ref sampler_size, ref format ]
-                vk_format = vk_format_fn[ format, false ]
+                placeholder_image[ sampler, 4, ref fill, ref sampler_size, ref pixel_format ]
+                vk_format = vk_format_fn[ pixel_format, false ]
             if [ width > 0 || vk_image ]
                 usage: VkImageUsageFlags [ 0 ]
                 if [ is_depth ]
@@ -1440,15 +1447,34 @@ class Texture
                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
                             VK_IMAGE_USAGE_SAMPLED_BIT
 
-                if [ !vk_format && format ]
-                    vk_format = vk_format_fn[ format, linear ]
+                if [ !vk_format && pixel_format ]
+                    vk_format = vk_format_fn[ pixel_format, linear ]
 
-                if [ !vk_image ]
+                if [ !vk_image && vk_format ]
                     alloc_info: VmaAllocationCreateInfo [
-                        usage:         VMA_MEMORY_USAGE_AUTO,
-                        requiredFlags: VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+                        usage: VMA_MEMORY_USAGE_GPU_ONLY
                     ]
-                    expect vmaCreateImage[ vk.allocator, VkImageCreateInfo [
+                    printf[ "vk.allocator = %p, vk_format = %i\n", vk.allocator, vk_format ]
+
+                    printf[ "usage=%d width=%d height=%d mip=%d layers=%d format=%d\n", usage, width, height, mip_levels, layer_count, vk_format ]
+
+                    test_image: VkImage
+                    res_test: vkCreateImage[ vk.device, VkImageCreateInfo [
+                        sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                        imageType:     VK_IMAGE_TYPE_2D,
+                        format:        vk_format,
+                        extent:        VkExtent3D [ width, height, 1 ],
+                        mipLevels:     1,
+                        arrayLayers:   1,
+                        samples:       VK_SAMPLE_COUNT_1_BIT,
+                        tiling:        VK_IMAGE_TILING_OPTIMAL,
+                        usage:         usage,
+                        sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
+                        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+                    ], null, ref test_image ]
+                    printf[ "vkCreateImage result=%d\n", res_test ]
+
+                    res22 : VkResult vmaCreateImage[ vk.allocator, VkImageCreateInfo [
                         sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                         imageType:     VK_IMAGE_TYPE_2D,
                         format:        vk_format,
@@ -1461,7 +1487,9 @@ class Texture
                         usage:         usage,
                         sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
                         initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
-                    ], alloc_info, ref vk_image, ref vma_alloc, null ] == VK_SUCCESS, "Failed to create VkImage"
+                    ], alloc_info, ref vk_image, ref vma_alloc, null ]
+
+                    expect res22 == VK_SUCCESS, "Failed to create VkImage: {res22}"
 
                 if [ sampler_size > 0 ]
                     transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
@@ -1823,6 +1851,152 @@ class shader
     func fragment [] -> GLSL none {}
 
     func compute  [] -> GLSL none {}
+
+    func glsl_type_name [ t: Au_t ] -> cstr
+        if [ t == typeid[ mat4f ] ]
+            return "mat4"
+        if [ t == typeid[ mat3f ] ]
+            return "mat3"
+        if [ t == typeid[ vec4f ] ]
+            return "vec4"
+        if [ t == typeid[ vec3f ] ]
+            return "vec3"
+        if [ t == typeid[ vec2f ] ]
+            return "vec2"
+        if [ t == typeid[ f32 ] ]
+            return "float"
+        if [ t == typeid[ i32 ] ]
+            return "int"
+        if [ t == typeid[ u32 ] ]
+            return "uint"
+        if [ t == typeid[ bool ] ]
+            return "bool"
+        return null
+
+    func glsl_header [ stage: ShaderStage ] -> string
+        type:   Au_t [ typeid[ a ] ]
+        result: string [ '#version 450\n\n' ]
+
+        # UBO from mutable members
+        ubo_name: type.ident
+        result = '{result}layout(set = 0, binding = 0) uniform {ubo_name} {{\n'
+        scan: Au_t [ type ]
+        while [ scan != typeid[ shader ] ]
+            for [ i: 0, i < scan.members.count, i += 1 ]
+                mem: Au_t [ scan.members.origin[i] ]
+                if [ mem.member_type != 4 ]
+                    continue
+                if [ mem.traits & (1 << 56) ]
+                    continue
+                if [ mem.typesize == 0 ]
+                    continue
+                gtype: glsl_type_name[ mem.src ]
+                if [ !gtype ]
+                    continue
+                result = '{result}    {gtype} {mem.ident};\n'
+            scan = scan.context
+        ubo_inst: type.ident
+        result = '{result}}} {ubo_inst};\n\n'
+
+        # attribs: samplers, vertex i/o, fragment i/o
+        binding:      i32 [ 1 ]
+        vert_loc_in:  i32 [ 0 ]
+        vert_loc_out: i32 [ 0 ]
+        frag_loc_in:  i32 [ 0 ]
+        frag_loc_out: i32 [ 0 ]
+        scan = type
+
+        while [ scan != typeid[ shader ] ]
+            for [ i: 0, i < scan.members.count, i += 1 ]
+                mem: Au_t [ scan.members.origin[i] ]
+                if [ !(mem.traits & (1 << 56)) ] # AU_TRAIT_IS_ATTRIB
+                    continue
+                val: mem.value
+                if [ !val ]
+                    continue
+                
+                if [ val inherits LayoutBinding ]
+                    lb: (val to LayoutBinding)
+                    is_cube: lb.id == 9
+                    stype: (is_cube) ? "samplerCube" : "sampler2D"
+                    if [ lb.count > 1 ]
+                        result = '{result}layout(set = 0, binding = {binding}) uniform {stype} tx_{mem.ident}[{lb.count}];\n'
+                    el
+                        result = '{result}layout(set = 0, binding = {binding}) uniform {stype} tx_{mem.ident};\n'
+                    binding += 1
+                
+                el [ val inherits VertexInput && stage == ShaderStage.vertex ]
+                    vi: (val to VertexInput)
+                    gtype: glsl_type_name[ vi.type ]
+                    if [ gtype ]
+                        result = '{result}layout(location = {vert_loc_in}) in {gtype} {mem.ident};\n'
+                    vert_loc_in += 1
+
+                el [ val inherits VertexOutput && stage == ShaderStage.vertex ]
+                    vo: (val to VertexOutput)
+                    gtype: glsl_type_name[ vo.type ]
+                    if [ gtype ]
+                        result = '{result}layout(location = {vert_loc_out}) out {gtype} {mem.ident};\n'
+                    vert_loc_out += 1
+
+                el [ val inherits FragmentInput && stage == ShaderStage.fragment ]
+                    fi: (val to FragmentInput)
+                    gtype: glsl_type_name[ fi.type ]
+                    if [ gtype ]
+                        result = '{result}layout(location = {frag_loc_in}) in {gtype} {mem.ident};\n'
+                    frag_loc_in += 1
+
+                el [ val inherits FragmentOutput && stage == ShaderStage.fragment ]
+                    fo: (val to FragmentOutput)
+                    gtype: glsl_type_name[ fo.type ]
+                    if [ gtype ]
+                        result = '{result}layout(location = {frag_loc_out}) out {gtype} {mem.ident};\n'
+                    frag_loc_out += 1
+                
+            scan = scan.context
+
+
+        scan = type
+        while [ scan != typeid[ shader ] ]
+            for [ i: 0, i < scan.members.count, i += 1 ]
+                mem: Au_t [ scan.members.origin[i] ]
+                if [ mem.member_type != 5 ]
+                    continue
+                if [ !mem.src || !mem.src.meta.b ]
+                    continue
+                if [ strcmp[ mem.ident, "fragment" ] == 0 || strcmp[ mem.ident, "vertex" ] == 0 || strcmp[ mem.ident, "compute" ] == 0 ]
+                    continue
+                rtype : Au_t [ mem.src.meta.b ]
+                ret_name: glsl_type_name[ rtype ]
+                if [ !ret_name ]
+                    ret_name = "void"
+
+                # build arg list from mem.args (skip first arg which is self)
+                arg_str: string [ '' ]
+                for [ j: 1, j < mem.args.count, j += 1 ]
+                    arg_mem: Au_t [ mem.args.origin[j] ]
+                    atype: glsl_type_name[ arg_mem.src ]
+                    if [ !atype ]
+                        continue
+                    if [ j > 1 ]
+                        arg_str = '{arg_str}, '
+                    arg_str = '{arg_str}{atype} {arg_mem.ident}'
+
+                # call method with defaults to get body
+                body: symbol [ Au.method_call[ mem, null ] ]
+
+                # emit function
+                result = '{result}{ret_name} {mem.ident}({arg_str}) {{\n{body}\n}}\n\n'
+                    
+        # emit void main() from the stage entry point
+        main_name: (stage == ShaderStage.vertex) ? "vertex" : (stage == ShaderStage.fragment) ? "fragment" : "compute"
+        main_mem:  Au_t [ find_member[ type, main_name, 5, 0, true ] ]
+        if [ main_mem ]
+            main_body: symbol [ Au.method_call[ main_mem, null ] ]
+            if [ main_body ]
+                result = '{result}void main() {{\n{main_body}\n}}\n'
+
+        return result
 
     intern func replace_includes [ src: cstr, dst: cstr ] 
         src_file: fopen[ src, "r" ]
