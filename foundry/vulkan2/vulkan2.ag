@@ -2096,7 +2096,7 @@ class shader
             mod: VkShaderModule
             vkResult: vkCreateShaderModule[ vk.device, createInfo, null, ref mod ]
             if [ vkResult != VK_SUCCESS ]
-                puts "failed to create vulkan shader module"
+                puts 'failed to create vulkan shader module: {spv_file}'
                 free[ spirv ]
                 exit[ 1 ]
             values[i] = mod
@@ -2110,7 +2110,7 @@ class shader
             return
         if [ !name ]
             ty: typeid[ a ]
-            expect ty != typeid[ shader ], "base shader usage requires a shader name"
+            expect ty != typeid[ shader ], "shader requires a subclass"
             name = ty.ident
         vert = 'shaders/{name}.vert'
         frag = 'shaders/{name}.frag'
