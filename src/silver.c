@@ -7242,7 +7242,9 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
         enode index_expr = null;
         Au_t idx      = null;
         Au_t fallback = null;
-        if (r) {
+        if (is_indexable_ptr && !inherits(au_rec, typeid(collective))) {
+            r = null;
+        } else if (r) {
             // select best indexer overload by matching argument type
             if (len(args) == 1) {
                 enode inner      = (enode)args->origin[0];
