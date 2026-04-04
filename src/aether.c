@@ -3663,6 +3663,10 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         canonical(input)->au->src == mdl->au->src)
         return input;
 
+    // same-type class identity: no conversion needed
+    if (input && canonical(input) == canonical(mdl))
+        return input;
+
     // type identity cast
     if (is_au_t((Au)mdl) && is_au_t(args)) {
         enode n = instanceof(args, enode);
