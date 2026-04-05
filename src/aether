@@ -194,6 +194,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_default_value, etype) \
     M(X, Y, i, method,   public,  enode,                    e_builder, subprocedure) \
     M(X, Y, i, method,   public,  none,                     build_user_initializer, etype) \
+    M(X, Y, i, method,   public,  enode,                    build_attrib_value, evar) \
     M(X, Y, i, method,   public,  enode,                    e_subroutine, etype, array, subprocedure) \
     M(X, Y, i, method,   public,  none,                     e_cmp_code, enode, comparison, enode, code, code) \
     M(X, Y, i, method,   public,  enode,                    e_cmp, enode, enode) \

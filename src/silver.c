@@ -1599,7 +1599,8 @@ static enode read_keywords(silver a) {
     efunc f_alloc = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
     efunc f_push  = (efunc)u(efunc, find_member(etypeid(collective)->au, "push", AU_MEMBER_FUNC, 0, true));
     enode res = e_fn_call(a, f_alloc, a(
-        e_typeid(a, etypeid(tokens)), _i32(1), e_null(a, etypeid(shape)), e_null(a, etypeid(Au))), false);
+        e_typeid(a, etypeid(tokens)), _i32(1), e_null(a, etypeid(shape)),
+        e_null(a, etypeid(Au_t)), e_null(a, etypeid(Au))), false);
     res->au = etypeid(tokens)->au;
     for (int i = 0; i < len(toks); i++) {
         string s = (string)toks->origin[i];
@@ -2100,6 +2101,37 @@ string trim_annotation(string input) {
 
 string unicode_char(i32);
 
+static bool is_char_uni(string crop, i64* out) {
+    if (crop->chars[0] != '\'') return false;
+    // 'a' — single character
+    if (crop->count == 3) {
+        *out = (i64)(u8)crop->chars[1];
+        return true;
+    }
+    // '\n' '\t' '\r' '\0' '\\' '\''
+    if (crop->count == 4 && crop->chars[1] == '\\') {
+        switch (crop->chars[2]) {
+            case 'n':  *out = '\n'; return true;
+            case 'r':  *out = '\r'; return true;
+            case 't':  *out = '\t'; return true;
+            case '0':  *out = '\0'; return true;
+            case '\\': *out = '\\'; return true;
+            case '\'': *out = '\''; return true;
+            default:   *out = (i64)(u8)crop->chars[2]; return true;
+        }
+    }
+    // '\xN' through '\xFFFFFFFF'
+    if (crop->count >= 5 && crop->count <= 12 &&
+        crop->chars[1] == '\\' && crop->chars[2] == 'x') {
+        int hlen = crop->count - 4;
+        char hex[9] = {0};
+        memcpy(hex, &crop->chars[3], hlen);
+        *out = strtol(hex, NULL, 16);
+        return true;
+    }
+    return false;
+}
+
 static array parse_tokens(silver a, Au input, array output) { sequencer
     string input_string;
     Au_t type = isa(input);
@@ -2147,6 +2179,11 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
     while (index < length) {
         i32 chr = idx(input_string, index);
 
+        if (chr == '\'' && strncmp(&input_string->chars[index], "\'\'", 2) == 0) {
+            int test2 = 2;
+            test2    += 2;
+        }
+        
         if (isspace(chr)) {
             if (chr == '\n') {
                 line_num += 1;
@@ -2218,9 +2255,6 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
             continue;
         }
 
-        if (strncmp(&input_string->chars[index], "99998.0", 7) == 0)
-            input_string = input_string;
-
         string name = scan_map(mapping, input_string, index);
         if (name && len(name) == 1 && name->chars[0] == '-' && index + 1 < length && isdigit(idx(input_string, index + 1))) {
             token prev = (token)last_element(tokens);
@@ -2238,6 +2272,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                 indent, indent,
                 source, src,
                 line, line_num,
+                neighbor, index > 0 && !isspace(idx(input_string, index - 1)),
                 column, index - line_start);
             push(tokens, (Au)t);
             index += len(name);
@@ -2301,17 +2336,16 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
 
             index += 1;
             string crop = mid(input_string, start, index - start);
-            // single character in quotes → i8 literal (including escaped: '\\', '\'')
-            bool is_escaped_char = len(crop) == 4 && crop->chars[0] == crop->chars[3] &&
-                (crop->chars[0] == '\'' || crop->chars[0] == '"') && crop->chars[1] == '\\';
-            if ((len(crop) == 3 && (crop->chars[0] == '\'' || crop->chars[0] == '"')) || is_escaped_char) {
-                i64 char_val = is_escaped_char ? (i64)(u8)crop->chars[2] : (i64)(u8)crop->chars[1];
+            // single character in quotes → i8 literal
+            i64 char_val;
+            if (is_char_uni(crop, &char_val)) {
                 push(tokens, (Au)token(
                     chars, crop->chars,
                     indent, indent,
                     source, src,
                     line, line_num,
                     literal, _i64(char_val),
+                    neighbor, start > 0 && !isspace(idx(input_string, start - 1)),
                     column, start - line_start));
                 continue;
             }
@@ -2332,16 +2366,23 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
             if (cmode && l && chr == '\"' && isa(l->literal) == typeid(const_string)) {
                 string s  = mid((string)l->literal, 0, len((string)l->literal) - 1);
                 string s2 = mid(l, 1, len(l) - 2);
+                s2 = unescape(s2);
                 concat(s, s2);
                 drop(l->literal);
                 l->literal = hold((Au)s);
-            } else
+            } else {
+                string content = mid(crop, 1, len(crop) - 2);
+                content = unescape(content);
+                Au     lit = (Au)hold((quote_char == '\'') ? (Au)content : (Au)const_string(chars, cstring(content)));
                 push(tokens, (Au)token(
                                 chars, crop->chars,
                                 indent, indent,
                                 source, src,
                                 line, line_num,
+                                literal, lit,
+                                neighbor, start > 0 && !isspace(idx(input_string, start - 1)),
                                 column, start - line_start));
+            }
             continue;
         }
 
@@ -2365,6 +2406,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                     source,  src,
                     line,    line_num,
                     literal, literal,
+                    neighbor, start > 0 && !isspace(idx(input_string, start - 1)),
                     column,  start - line_start));
             continue;
         }
@@ -2409,6 +2451,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                          indent, indent,
                          source, src,
                          line, line_num,
+                         neighbor, start > 0 && !isspace(idx(input_string, start - 1)),
                          column, start - line_start));
     }
     return tokens;
@@ -2440,6 +2483,10 @@ string silver_read_string(silver a) {
         string token_s = string(n->chars);
         string result = mid(token_s, 1, token_s->count - 2);
         next(a);
+        if (result->chars[0] == '\'') {
+            int test2 = 2;
+            test2    += 2;
+        }
         return result;
     }
     return null;
@@ -3104,6 +3151,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             int test2 = 2;
             test2    += 2;
         }
+        if (isa(lit) == typeid(i64) && mdl_expect &&
+           (mdl_expect->au == typeid(string) || mdl_expect->au == typeid(symbol) || mdl_expect->au == typeid(const_string)))
+            lit = (Au)unicode_char(*(i64*)lit);
         a->expr_level++;
         enode res = e_operand(a, lit, mdl_expect);
         a->expr_level--;
@@ -3476,6 +3526,10 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             // ref type expr — cast expr to ref type
             etype cast_type = read_etype(a, null);
             etype ref_type = pointer((aether)a, (Au)cast_type);
+            if (seq == 17510) {
+                int test2 = 2;
+                test2    += 2;
+            }
             enode expr = read_enode(a, null, false, true);
             return e_create(a, ref_type, (Au)expr);
         }
@@ -3504,7 +3558,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     //printf("seq = %i\n", seq);
 
-    if (seq == 3102) {
+    if (seq == 15438) {
         seq = seq;
     }
     // we may only support a limited set of C functionality for #define macros
@@ -3518,7 +3572,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     validate(!instanceof(mem, edecl), "'%s' parsed as declaration but expected expression (name conflicts with type?)", mem->au->ident);
     validate(mem, "unexpected token '%o'", peek(a));
-    if (load && !is_loaded((Au)mem))
+    if (load && !is_loaded((Au)mem) && (!is_struct(mem) || is_ptr(mem)))
         mem = enode_value(mem, false);
     Au info = head(mem);
     return (f && mdl_expect) ? e_create(a, mdl_expect, (Au)mem) : (enode)mem;
@@ -4159,16 +4213,16 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     if (next_is(a, "[")) {
         inline_expr = read_body(a);
     } else if (next_is(a, "{")) {
-        // capture { ... } as raw tokens for inline return (e.g. -> GLSL { ... })
+        // capture { ... } as raw tokens, excluding outer { }
         array raw = array(32);
-        push(raw, (Au)peek(a)); // include the {
-        consume(a);
+        consume(a); // skip opening {
         int depth = 1;
         while (depth > 0 && peek(a)) {
             token t = peek(a);
             if (eq(t, "{")) depth++;
             if (eq(t, "}")) depth--;
-            push(raw, (Au)t);
+            if (depth > 0) // skip closing }
+                push(raw, (Au)t);
             consume(a);
         }
         const_tokens = raw;
@@ -4193,6 +4247,8 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     au->alt     = rec_ctx ? cstr_copy(symbol_name((Au)fname)->chars) : null;
     au->ident   = cstr_copy(name->chars); // free other instance
     au->rtype   = rtype->au;
+    if (rtype->meta_a) au->meta.a = (Au_t)rtype->meta_a;
+    if (rtype->meta_b) au->meta.b = rtype->meta_b;
 
     // validate override return type matches base
     if (override && override->rtype && rtype->au != override->rtype)
@@ -4217,6 +4273,10 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     array b = inline_expr ? inline_expr : (array)read_body(a);
     // all instances of func enode need special handling to bind the unique user space to it; or, we could make efunc
 
+    if (seq == 33) {
+        int test2 = 2;
+        test2    += 2;
+    }
     efunc func = efunc(
         mod,    (aether)a,
         au,     au,
@@ -5441,8 +5501,7 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
     // commaless type-matching only applies inside brackets [ ]
     bool* matched = calloc(ln, sizeof(bool));
     if (offset > 0) matched[0] = true; // self/target already placed
-    bool  comma_mode = !read_br; // no brackets = positional (old behavior)
-
+    bool  comma_mode = (ln == 1 + fn->au->is_imethod) || !read_br; // no brackets = positional (old behavior)
     while (i + offset < ln || fn->au->is_vargs) {
         Au_t   arg_decl = (Au_t)micro_get((micro_*)m, i + offset);
         Au_t   src  = (Au_t)au_arg_type((Au)arg_decl);
@@ -6131,6 +6190,18 @@ void silver_build_user_initializer(silver a, enode prop) {
     }
 }
 
+// build attrib initializer: parse tokens and return the constructed object
+enode silver_build_attrib_value(silver a, evar var) {
+    if (!var || !var->initializer) return null;
+    array init_tokens = (array)var->initializer;
+    if (!len(init_tokens)) return null;
+    push_tokens((aether)a, (tokens)init_tokens, 0);
+    etype attrib_type = etype_prep(a, var->au->src);
+    enode constructed = parse_expression(a, attrib_type, false, true);
+    pop_tokens((aether)a, false);
+    return constructed;
+}
+
 i64 path_wait_for_change(path, i64, i64);
 
 static string uccase(string s) {
@@ -6594,33 +6665,37 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             preamble((Au)f, null);
 
         if (f->const_tokens) {
-            // join all tokens into one string
+            // join all tokens into one string, preserving line breaks and indentation
             string joined = string();
             int last_line = -1;
             for (int i = 0; i < len(f->const_tokens); i++) {
                 token t = (token)f->const_tokens->origin[i];
-                if (last_line >= 0 && t->line != last_line)
-                    append(joined, "\n");
-                else if (len(joined) > 0)
+                if (last_line < 0 || t->line != last_line) {
+                    if (last_line >= 0) append(joined, "\n");
+                    for (int j = 0; j < t->indent; j++)
+                        append(joined, " ");
+                } else if (!t->neighbor) {
                     append(joined, " ");
+                }
                 concat(joined, string(t->chars));
                 last_line = t->line;
             }
-            // allocate GLSL with meta, set body, return
+            // allocate GLSL and construct with symbol
             etype rtype = u(etype, f->au->rtype);
             Au_t  rtype_au = rtype->au;
-            enode meta_a_node = rtype_au->meta.a ?
-                e_typeid(a, u(etype, rtype_au->meta.a)) : e_null(a, etypeid(Au_t));
-            enode metas = e_meta_ids((aether)a, (Au)meta_a_node, null);
+            enode meta_a_node = f->au->meta.a ?
+                e_typeid(a, u(etype, f->au->meta.a)) : e_null(a, etypeid(Au_t));
             efunc f_alloc = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
             enode glsl = e_fn_call(a, f_alloc, a(
-                e_typeid(a, rtype), _i32(1), e_null(a, etypeid(shape)), metas), false);
+                e_typeid(a, rtype), _i32(1), e_null(a, etypeid(shape)),
+                meta_a_node, e_null(a, etypeid(Au))), false);
             glsl->au = rtype_au;
-            glsl = e_init(a, glsl, null, null, null);
-            // set body member
-            enode body_prop = access(glsl, string("body"));
+            // find symbol constructor and call via e_init
+            Au_t ctr_au = find_member(rtype_au, "with_symbol", AU_MEMBER_CONSTRUCT, 0, true);
+            efunc ctr = ctr_au ? u(efunc, ctr_au) : null;
             const_string jstr = const_string(chars, joined->chars);
-            e_assign(a, body_prop, (Au)jstr, OPType__assign);
+            enode sym_node = e_operand(a, (Au)jstr, etypeid(symbol));
+            glsl = e_init(a, glsl, null, ctr, sym_node);
             e_fn_return(a, (Au)glsl);
         } else if (f->remote_func) {
             // the user may implement their own init/dealloc inbetween pre-amble

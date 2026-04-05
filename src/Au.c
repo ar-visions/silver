@@ -959,10 +959,21 @@ bool Au_is_class    (Au t) {
     Au_t au = au_arg_type(t);
     return au && au != typeid(Au_t) && au->is_class;
 }
-bool Au_is_struct  (Au t) { return au_arg(t)->is_struct; }
+bool Au_is_struct  (Au t) {
+    Au_t au = au_arg_type(t);
+    if (!au || au->is_pointer) return false;
+    return au->is_struct;
+}
 bool Au_is_opaque  (Au t) {
     Au_t au = au_arg(t);
     if (au->is_struct && au->members.count == 0) return true;
+    return false;
+}
+bool Au_is_system  (Au t) {
+    Au_t au = au_arg(t);
+    if (au->is_system) return true;
+    au = au_arg_type((Au_t)au);
+    if (au->is_system) return true;
     return false;
 }
 bool Au_is_func(Au t) {
@@ -1759,6 +1770,7 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
 
 Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b) {
     Au_t prop = def(context, ident, AU_MEMBER_VAR, traits);
+    verify(type, "def_prop: src/type is null for %s.%s", context->ident, ident);
     prop->type      = type;
     prop->offset    = offset;
     //prop->abi_size  = abi_size;
@@ -1797,7 +1809,8 @@ Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
 }
 
 Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
-        u32 access_type, u32 operator_type, u64 traits, ARef value, symbol alt, i32 index) {
+        u32 access_type, u32 operator_type, u64 traits, ARef value, symbol alt, i32 index,
+        Au_t meta_a, Au meta_b) {
     Au_t func = def(type, ident, AU_MEMBER_TYPE, traits);
     func->rtype         = rtype;
     func->member_type   = member_type;
@@ -1806,6 +1819,8 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
     func->value         = (object)value;
     func->alt           = alt ? cstr_copy((cstr)alt) : null;
     func->index         = index;
+    func->meta.a        = meta_a;
+    func->meta.b        = meta_b;
     if (alt && strcmp(alt, "keras_train") == 0) {
         alt = alt;
     }
@@ -1912,7 +1927,7 @@ bool lambda_cast_bool(lambda a) {
 }
 
 lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
-    lambda a = (lambda)alloc_new(typeid(lambda), 0, null, null);
+    lambda a = (lambda)alloc_new(typeid(lambda), 0, null, null, null);
     a->au      = au;
     a->fn      = fn;
     a->target  = target;
@@ -2399,11 +2414,6 @@ static none init_recur(Au a, Au_t current, raw last_init) {
     none(*init)(Au) = au_f->ft.init;
     init_recur(a, current->context, (raw)init);
     if (init && init != (none*)last_init) {
-        if (current->ident && (strcmp(current->ident, "orbiter") == 0 ||
-            strcmp(current->ident, "trinity") == 0 ||
-            strcmp(current->ident, "media_app") == 0))
-            fprintf(stderr, "init_recur: %s type=%p init=%p last=%p\n",
-                current->ident, (void*)current, (void*)init, (void*)last_init);
         init(a);
     }
 }
@@ -2706,30 +2716,32 @@ void alloc_validate() {
     }
 }
 
-Au alloc(Au_t type, num count, shape shape_data, Au_t* meta) {
+Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
 
     sz alloc_count = shape_data ? shape_total(shape_data) : (count ? count : 1);
     Au a = alloc_instance(type,
         _sz + type->typesize * alloc_count, true);
+
+    if (meta_a == typeid(f32)) {
+        printf("GLSL Au origin = %p\n", a);
+    }
     a->type       = type;
     a->data       = &a[1];
     a->count      = alloc_count;
     a->alloc      = alloc_count;
     a->data_shape = hold(shape_data);
-    if (meta && type->meta.a) {
-        if (meta[0]) a->meta[0] = (Au)meta[0];
-        if (meta[1]) a->meta[1] = (Au)meta[1];
-    }
+    if (meta_a) a->meta_a = meta_a;
+    if (meta_b) a->meta_b = meta_b;
     if (tracing)
         tracing[tracing_count++] = a->data;
-    
+
     return a->data;
 }
 
-Au alloc_new(Au_t type, num count, shape shape_data, Au_t* meta) {
-    return alloc(type, count, shape_data, meta);
+Au alloc_new(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b) {
+    return alloc(type, count, shape_data, meta_a, meta_b);
 }
 
 Au alloc2(Au_t type, Au_t scalar, shape s) {
@@ -2781,7 +2793,7 @@ Au method_call(Au_t m, array args) {
             arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ?
                 (none*)args->origin[i] : (none*)&args->origin[i];
         } else {
-            Au def = alloc(arg_type, 1, null, null);
+            Au def = alloc(arg_type, 1, null, null, null);
             arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ?
                 (none*)def : (none*)&def;
         }
@@ -2791,7 +2803,7 @@ Au method_call(Au_t m, array args) {
     if (a->rtype->traits & AU_TRAIT_PRIMITIVE)
         return primitive(a->rtype, result);
     else if (a->rtype->traits & AU_TRAIT_ENUM) {
-        Au res = alloc(a->rtype, 1, null, null);
+        Au res = alloc(a->rtype, 1, null, null, null);
         verify(a->rtype->src == typeid(i32), "i32 enums supported");
         *((i32*)res) = *(i32*)result;
         return res;
@@ -3095,7 +3107,7 @@ map arguments(int argc, cstrs argv, map default_values, Au default_key) {
 }
 
 Au primitive(Au_t type, none* data) {
-    Au copy = alloc(type, 1, null, null);
+    Au copy = alloc(type, 1, null, null, null);
     memcpy(copy, data, type->typesize);
     return copy;
 }
@@ -3411,7 +3423,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
     /// construct with map of fields
     if (!(type->traits & AU_TRAIT_PRIMITIVE) && data_type == typeid(map)) {
         map m = (map)data;
-        result = alloc(type, 1, null, null);
+        result = alloc(type, 1, null, null, null);
         pairs(m, i) {
             verify(isa(i->key) == typeid(string),
                 "expected string key when constructing Au from map");
@@ -3431,20 +3443,20 @@ Au construct_with(Au_t type, Au data, ctx context) {
                 Au_t arg = au_arg_type(micro_get(&mem->args, 1));
                 /// no meaningful way to do this generically, we prefer to call these first
                 if (arg == typeid(path) && data_type == typeid(string)) {
-                    result = alloc(type, 1, null, null);
+                    result = alloc(type, 1, null, null, null);
                     result = ((Au(*)(Au, path))addr)(result, path(((string)data)));
                     verify(Au_validator(result), "invalid Au");
                     break;
                 }
                 if ((arg == typeid(cstr) || arg == typeid(symbol)) && 
                         data_type == typeid(string)) {
-                    result = alloc(type, 1, null, null);
+                    result = alloc(type, 1, null, null, null);
                     result = ((Au(*)(Au, cstr))addr)(result, ((string)data)->chars);
                     verify(Au_validator(result), "invalid Au");
                     break;
                 }
                 if (arg == data_type) {
-                    result = alloc(type, 1, null, null);
+                    result = alloc(type, 1, null, null, null);
                     result = ((Au(*)(Au, Au))addr)(result, data);
                     verify(Au_validator(result), "invalid Au");
                     break;
@@ -3478,7 +3490,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
             v = evalue (type, (cstr)((string)data)->chars);
         else
             v = evalue (type, null);
-        result = alloc(type, 1, null, null);
+        result = alloc(type, 1, null, null, null);
         *((i32*)result) = (i32)v;
     }
 
@@ -3487,7 +3499,7 @@ Au construct_with(Au_t type, Au data, ctx context) {
     if ((type->traits & AU_TRAIT_PRIMITIVE) && (data_type == typeid(string) ||
                                                data_type == typeid(cstr)   ||
                                                data_type == typeid(symbol))) {
-        result = alloc(type, 1, null, null);
+        result = alloc(type, 1, null, null, null);
         if (data_type == typeid(string))
             Au_with_cereal(result, (cereal) { .value = (cstr)((string)data)->chars } );
         else
@@ -3505,13 +3517,13 @@ Au construct_with(Au_t type, Au data, ctx context) {
             u64 combine = mem->type->traits & data_type->traits;
             if (combine & AU_TRAIT_INTEGRAL) {
                 i64 v = read_integer(data);
-                result = alloc(type, 1, null, null);
+                result = alloc(type, 1, null, null, null);
                      if (mem->type == typeid(i8))   ((none(*)(Au, i8))  addr)(result, (i8)  v);
                 else if (mem->type == typeid(i16))  ((none(*)(Au, i16)) addr)(result, (i16) v);
                 else if (mem->type == typeid(i32))  ((none(*)(Au, i32)) addr)(result, (i32) v);
                 else if (mem->type == typeid(i64))  ((none(*)(Au, i64)) addr)(result, (i64) v);
             } else if (combine & AU_TRAIT_REALISTIC) {
-                result = alloc(type, 1, null, null);
+                result = alloc(type, 1, null, null, null);
                 if (mem->type == typeid(f64))
                     ((none(*)(Au, double))addr)(result, (double)*(float*)data);
                 else
@@ -3519,17 +3531,17 @@ Au construct_with(Au_t type, Au data, ctx context) {
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
-                result = alloc(type, 1, null, null);
+                result = alloc(type, 1, null, null, null);
                 ((none(*)(Au, cstr))addr)(result, (cstr)data);
                 break;
             } else if ((mem->type == typeid(string)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
-                result = alloc(type, 1, null, null);
+                result = alloc(type, 1, null, null, null);
                 ((none(*)(Au, string))addr)(result, string((symbol)data));
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(string))) {
-                result = alloc(type, 1, null, null);
+                result = alloc(type, 1, null, null, null);
                 ((none(*)(Au, cstr))addr)(result, (cstr)((string)data)->chars);
                 break;
             }
@@ -3677,7 +3689,7 @@ Au Au_member_object(Au a, Au_t m) {
     Au result;
     ARef   member_ptr = (ARef)((cstr)a + m->offset);
     if (is_inlay || is_primitive) {
-        result = alloc(m->type, 1, null, null);
+        result = alloc(m->type, 1, null, null, null);
         memcpy(result, member_ptr, m->type->typesize);
     } else {
         result = *member_ptr;
@@ -4025,7 +4037,7 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
         return primitive(typeid(i32), &v);
     }
     return type ? (Au)
-        ((Au_f*)type)->ft.with_cereal(alloc(type, 1, null, null), (cereal) { .value = (cstr)res->chars }) :
+        ((Au_f*)type)->ft.with_cereal(alloc(type, 1, null, null, null), (cereal) { .value = (cstr)res->chars }) :
         (Au)res;
 }
 
@@ -4447,6 +4459,47 @@ string string_escape(string input) {
     return res;
 }
 
+string string_unescape(string input) {
+    int input_len = len(input);
+    cstr buf = calloc(input_len + 1, 1);
+    int pos = 0;
+    for (int i = 0; i < input_len; i++) {
+        if (input->chars[i] == '\\' && i + 1 < input_len) {
+            switch (input->chars[i + 1]) {
+                case 'n':  buf[pos++] = '\n'; i++; break;
+                case 'r':  buf[pos++] = '\r'; i++; break;
+                case 't':  buf[pos++] = '\t'; i++; break;
+                case '0':  buf[pos++] = '\0'; i++; break;
+                case '\\': buf[pos++] = '\\'; i++; break;
+                case '\'': buf[pos++] = '\''; i++; break;
+                case '"':  buf[pos++] = '"';  i++; break;
+                case 'x': {
+                    int h = 0;
+                    char hex[3] = {0};
+                    if (i + 2 < input_len && isxdigit(input->chars[i + 2]))
+                        hex[h++] = input->chars[i + 2];
+                    if (i + 3 < input_len && isxdigit(input->chars[i + 3]))
+                        hex[h++] = input->chars[i + 3];
+                    if (h > 0) {
+                        buf[pos++] = (char)strtol(hex, NULL, 16);
+                        i += 1 + h;
+                    } else {
+                        buf[pos++] = input->chars[i];
+                    }
+                    break;
+                }
+                default:   buf[pos++] = input->chars[i]; break;
+            }
+        } else {
+            buf[pos++] = input->chars[i];
+        }
+    }
+    buf[pos] = '\0';
+    string res = string(chars, buf, ref_length, pos);
+    free(buf);
+    return res;
+}
+
 none  string_dealloc(string a) {
     printf("string_dealloc: %s", a->chars);
     free((cstr)a->chars);
@@ -4480,36 +4533,32 @@ static inline char just_a_dash(char a) {
 }
 
 array string_split_parts(string a) {
-    array res = array(alloc, 32);
-    cstr s = (cstr)a->chars;
-    cstr prev = null;
+    array  res = array(alloc, 32);
+    cstr   s   = (cstr)a->chars;
+    string buf = string(alloc, 256);
+
     while (*s) {
-        if (*s == '{') {
-            if (s[1] == '{') {
-                if (!prev) prev = s;
-                s += 2;
-                continue;
+        if (*s == '{' && s[1] == '{') {
+            append(buf, "{");
+            s += 2;
+        } else if (*s == '}' && s[1] == '}') {
+            append(buf, "}");
+            s += 2;
+        } else if (*s == '{') {
+            // flush literal
+            if (len(buf) > 0) {
+                push(res, (Au)ipart(is_expr, false, content, buf));
+                buf = string(alloc, 256);
             }
-            if (prev) {
-                string lit = (string)const_string(chars, prev, ref_length, (sz)(s - prev));
-                ipart p = ipart(is_expr, false, content, lit);
-                push(res, (Au)p);
-                prev = null;
-            }
-            if (s[1] == 0)
-                break;
+            // scan expression
             s++;
-            int depth = 1;
+            int  depth = 1;
             cstr expr_start = s;
             while (*s && depth > 0) {
-                if (*s == '{') {
-                    if (s[1] == '{') { s += 2; continue; }
-                    depth++;
-                } else if (*s == '}') {
-                    if (s[1] == '}') { s += 2; continue; }
-                    depth--;
-                    if (depth == 0) break;
-                } else if (*s == '\'' || *s == '"') {
+                if      (*s == '{' && s[1] == '{') { s += 2; continue; }
+                else if (*s == '{') depth++;
+                else if (*s == '}') { depth--; if (depth == 0) break; }
+                else if (*s == '\'' || *s == '"') {
                     char q = *s++;
                     while (*s && *s != q) {
                         if (*s == '\\' && s[1] == q) s += 2;
@@ -4524,23 +4573,17 @@ array string_split_parts(string a) {
             cstr expr_end = s;
             while (expr_end > expr_start && isspace(*(expr_end - 1))) expr_end--;
             string expr = string(chars, expr_start, ref_length, (sz)(expr_end - expr_start));
-            ipart p = ipart(is_expr, true, content, expr);
-            push(res, (Au)p);
+            push(res, (Au)ipart(is_expr, true, content, expr));
             s++;
-        } else if (*s == '}') {
-            verify(s[1] == '}', "single unmatched }");
-            if (!prev) prev = s;
-            s += 2;
         } else {
-            if (!prev) prev = s;
+            char c[2] = { *s, 0 };
+            append(buf, c);
             s++;
         }
     }
-    if (prev) {
-        string lit = (string)const_string(chars, prev, ref_length, (sz)(s - prev));
-        ipart p = ipart(is_expr, false, content, lit);
-        push(res, (Au)p);
-    }
+    if (len(buf) > 0)
+        push(res, (Au)ipart(is_expr, false, content, buf));
+
     return res;
 }
 
@@ -4659,6 +4702,8 @@ string string_mid(string a, num start, num len) {
         start = a->count + start;
     if (start < 0)
         start = 0;
+    if (len <= 0)
+        return new(string, alloc, 1);
     if (start + len > a->count)
         len = a->count - start;
     return new(string, chars, &a->chars[start], ref_length, len);
@@ -4827,40 +4872,22 @@ none string_init(string a) {
 
 
 string string_with_uchar(string a, uchar value) {
-    // Check if the value is within the BMP (U+0000 - U+FFFF)
-    if (value <= 0xFFFF) {
-        a->count = 1;
-        a->chars = calloc(8, 1);
-        ((cstr)a->chars)[0] = (char)value;
-    } else {
-        // Encode Unicode code point as UTF-8
-        a->count = 0;
-        char buf[4];
-        int len = 0;
-        if (value <= 0x7F) {
-            buf[len++] = (char)value;
-        } else if (value <= 0x7FF) {
-            buf[len++] = 0xC0 | ((value >> 6) & 0x1F);
-            buf[len++] = 0x80 | (value & 0x3F);
-        } else if (value <= 0xFFFF) {
-            buf[len++] = 0xE0 | ((value >> 12) & 0x0F);
-            buf[len++] = 0x80 | ((value >> 6) & 0x3F);
-            buf[len++] = 0x80 | (value & 0x3F);
-        } else if (value <= 0x10FFFF) {
-            buf[len++] = 0xF0 | ((value >> 18) & 0x07);
-            buf[len++] = 0x80 | ((value >> 12) & 0x3F);
-            buf[len++] = 0x80 | ((value >> 6) & 0x3F);
-            buf[len++] = 0x80 | (value & 0x3F);
-        } else {
-            // Invalid Unicode code point
-            a->count = 0;
-            a->chars = NULL;
-            return a;
-        }
-        a->count = len;
-        a->chars = calloc(len + 1, 1);
-        memcpy((cstr)a->chars, buf, len);
-    }
+    char buf[4];
+    int  n = 0;
+    if      (value < 0x80)     { buf[n++] = value; }
+    else if (value < 0x800)    { buf[n++] = 0xC0 | (value >> 6);
+                                 buf[n++] = 0x80 | (value & 0x3F); }
+    else if (value < 0x10000)  { buf[n++] = 0xE0 | (value >> 12);
+                                 buf[n++] = 0x80 | ((value >> 6) & 0x3F);
+                                 buf[n++] = 0x80 | (value & 0x3F); }
+    else if (value <= 0x10FFFF){ buf[n++] = 0xF0 | (value >> 18);
+                                 buf[n++] = 0x80 | ((value >> 12) & 0x3F);
+                                 buf[n++] = 0x80 | ((value >> 6) & 0x3F);
+                                 buf[n++] = 0x80 | (value & 0x3F); }
+    else                       { a->count = 0; a->chars = NULL; return a; }
+    a->count = n;
+    a->chars = calloc(n + 1, 1);
+    memcpy((cstr)a->chars, buf, n);
     return a;
 }
 
@@ -4936,7 +4963,7 @@ Au Au_copy(Au a) {
     Au f = header(a);
     assert(f->count > 0, "invalid count");
     Au_t type = isa(a);
-    Au b = alloc(type, f->count, null, null);
+    Au b = alloc(type, f->count, null, null, null);
     memcpy(b, a, f->type->typesize * f->count);
     Au_hold_members(b);
     return b;
@@ -5343,7 +5370,7 @@ num abso(num i) {
 vector vector_vslice(vector a, num from, num to) {
     Au      f   = head(a);
     num count = (1 + abso(from - to)); // + 31 & ~31;
-    Au res = alloc(f->type, 1, null, null);
+    Au res = alloc(f->type, 1, null, null, null);
     Au res_f = head(res);
     u8* src   = (u8*)f->data;
     u8* dst   = null;
@@ -6453,7 +6480,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             if (type->traits & AU_TRAIT_ENUM) {
                 // its possible we could reference a context variable within this enum [ value-area ]
                 // in which case, we could effectively look it up
-                Au evalue = alloc(type, 1, null, null);
+                Au evalue = alloc(type, 1, null, null, null);
                 string enum_symbol = parse_symbol(scan, &scan, context);
                 verify(enum_symbol, "enum symbol expected");
                 verify(*scan == ']', "expected ']' after enum symbol");
@@ -6465,7 +6492,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
 
                 res = evalue;
             } else if (type->traits & AU_TRAIT_STRUCT) {
-                Au svalue = alloc(type, 1, null, null);
+                Au svalue = alloc(type, 1, null, null, null);
                 for (num i = 0; i < type->members.count; i++) {
                     Au_t m = (Au_t)type->members.origin[i];
                     if (!(m->member_type == AU_MEMBER_VAR)) continue;
@@ -6686,7 +6713,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
     } else if (schema->meta.a == typeid(f32)) { // should support all vector types of f32 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(f32), context);
         int vcount = len(arb);
-        res = alloc(typeid(f32), vcount, null, null);
+        res = alloc(typeid(f32), vcount, null, null, null);
         int n = 0;
         each(arb, Au, a) {
             Au_t a_type = isa(a);
@@ -6708,7 +6735,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
         // this should contain multiple arrays of scalar values; we want to convert each array to our 'scalar_type'
         // for instance, we may parse [[1,2,3,4,5...16],...] mat4x4's; we merely need to validate vmember_count and vmember_type and convert
         // if we have a vmember_count of 0 then we are dealing with a single primitive type
-        vector vres = (vector)alloc(schema, 1, null, null);
+        vector vres = (vector)alloc(schema, 1, null, null, null);
         vres->data_shape = new_shape(count, 0);
         Au_initialize((Au)vres);
         i8* data = (i8*)vdata(vres);
@@ -7410,7 +7437,7 @@ Au fdata_file_read(fdata f, Au_t type) {
         bytes[nbytes] = 0;
         return (Au)string(bytes); 
     }
-    Au o = alloc(type, 1, null, null);
+    Au o = alloc(type, 1, null, null, null);
     sz size = isa(o)->typesize;
     f->location += size;
     verify(type->traits & AU_TRAIT_PRIMITIVE, "not a primitive type");

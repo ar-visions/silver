@@ -20,6 +20,10 @@
 #define _N_ARGS_a_9(TYPE, a,b,c,d,e,f,g,h,i) _N_ARGS_a_8(TYPE,a,b,c,d,e,f,g,h), TC_a(i)
 #define _N_ARGS_a_10(TYPE, a,b,c,d,e,f,g,h,i,j) \
     _N_ARGS_a_9(TYPE,a,b,c,d,e,f,g,h,i), TC_a(j)
+#define _N_ARGS_a_11(TYPE, a,b,c,d,e,f,g,h,i,j,k) \
+    _N_ARGS_a_10(TYPE,a,b,c,d,e,f,g,h,i,j), TC_a(k)
+#define _N_ARGS_a_12(TYPE, a,b,c,d,e,f,g,h,i,j,k,l) \
+    _N_ARGS_a_11(TYPE,a,b,c,d,e,f,g,h,i,j,k), TC_a(l)
 #define _N_ARGS_HELPER2_a(TYPE,N,...) _COMBINE_a(_N_ARGS_a_,N)(TYPE, ## __VA_ARGS__)
 #define _N_ARGS_a(TYPE,...)          _N_ARGS_HELPER2_a(TYPE, _ARG_COUNT_a(__VA_ARGS__), ## __VA_ARGS__)
 #define a(...) array_of(_N_ARGS_a(a, ## __VA_ARGS__), null)
@@ -220,7 +224,7 @@
 
 #define new0(T, ...) \
     ({ \
-        T instance = (T)alloc(typeid(T), 1, null, (Au_t*)null); \
+        T instance = (T)alloc(typeid(T), 1, null, null, null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
         Au_initialize((Au)instance); \
         instance; \
@@ -228,7 +232,7 @@
 
 #define Au_allocate(T, ...) \
     ({ \
-        T instance = (T)alloc(typeid(T), 1, null, (Au_t*)null); \
+        T instance = (T)alloc(typeid(T), 1, null, null, null); \
         _N_ARGS(instance, ## __VA_ARGS__); \
         instance; \
     })

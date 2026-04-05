@@ -612,7 +612,8 @@ forward(any)
     M(AA,BB, i, prop, Au_public, i64,       alloc) \
     M(AA,BB, i, prop, Au_public, i64,       count) \
     M(AA,BB, i, prop, Au_public, u32,       iflags) \
-    M(AA,BB, i, array, Au_public, Au, 8, meta) \
+    M(AA,BB, i, prop, Au_public, Au_t, meta_a) \
+    M(AA,BB, i, prop, Au_public, Au,   meta_b) \
     M(AA,BB, i, method, public, i32,    compare, AA) \
     M(AA,BB, i, method, public, none,   init) \
     M(AA,BB, i, method, public, none,   dealloc) \
@@ -635,7 +636,7 @@ forward(any)
     M(AA,BB, i, method, public, Au_t,   meta_index,     i32) \
     M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, i32, u64, u64, u64, i32) \
     M(AA,BB, s, method, public, Au_t,   def,            Au_t, symbol, u32, u64) \
-    M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef, symbol, i32) \
+    M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef, symbol, i32, Au_t, Au) \
     M(AA,BB, s, method, public, Au_t,   def_arg,        Au_t, symbol, Au_t, u64) \
     M(AA,BB, s, method, public, Au_t,   def_test,       Au_t, ARef) \
     M(AA,BB, s, method, public, Au_t,   def_meta,       Au_t, symbol, Au_t) \
@@ -677,9 +678,9 @@ forward(any)
     M(AA,BB, i, method, public, bool,   is_meta) \
     M(AA,BB, i, method, public, bool,   is_meta_compatible, Au) \
     M(AA,BB, s, vargs,  public, Au,     formatter, Au_t, bool, handle, Au, i32, symbol) \
-    M(AA,BB, s, method, public, Au,     alloc, Au_t, num, shape, Au_ts) \
+    M(AA,BB, s, method, public, Au,     alloc, Au_t, num, shape, Au_t, Au) \
     M(AA,BB, s, method, public, Au,     method_call, Au_t, array) \
-    M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_ts) \
+    M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_t, Au) \
     M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, cstr, i32, i32) \
     M(AA,BB, s, method, public, string, estring, Au_t, i32) \
     M(AA,BB, s, method, public, i32,    evalue, Au_t, cstr) \
@@ -732,6 +733,7 @@ forward(any)
     M(AA,BB, i, guard, public, bool, is_unsign,     Au) \
     M(AA,BB, i, guard, public, bool, is_ptr,        Au) \
     M(AA,BB, i, guard, public, bool, is_enum,       Au) \
+    M(AA,BB, i, guard, public, bool, is_system,     Au) \
     M(AA,BB, i, guard, public, bool, is_type,       Au) \
     M(AA,BB, i, ctr,   public, cereal) \
     M(AA,BB, i, ctr,   public, cstrs) \
@@ -1566,6 +1568,7 @@ declare_class(ipart)
     M(AA,BB, i, method,  public, string, lcase) \
     M(AA,BB, i, method,  public, array,  split, symbol) \
     M(AA,BB, i, method,  public, string, escape) \
+    M(AA,BB, i, method,  public, string, unescape) \
     M(AA,BB, i, method,  public, num,    index_of, symbol) \
     M(AA,BB, i, method,  public, num,    rindex_of, symbol) \
     M(AA,BB, i, method,  public, none,   append, symbol) \
@@ -1658,6 +1661,7 @@ declare_class(async)
     M(AA,BB, i, prop,    public, string, annotation) \
     M(AA,BB, i, prop,    public, Au,     literal) \
     M(AA,BB, i, prop,    public, bool,   cmode) \
+    M(AA,BB, i, prop,    public, bool,   neighbor) \
     M(AA,BB, i, method,  public, Au_t,   get_type) \
     M(AA,BB, i, method,  public, string, location) \
     M(AA,BB, i, method,  public, Au, get_literal, Au_t) \
