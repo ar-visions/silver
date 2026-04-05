@@ -342,6 +342,45 @@ Test by compiling and running foundry projects:
 make && ./platform/native/debug/silver foundry/ai-test/ai-test.ag
 ```
 
+## Aether Codegen Best Practices
+
+### e_assign Phase 6 Store Logic
+The store path in `e_assign` (aether.c ~line 640) has three cases for the RHS (`res`):
+
+1. **Struct alloca alias** (res is unloaded alloca of a struct): If `L` already has its own alloca, **copy** the struct data (load + store) instead of aliasing `L->value = res->value`. Aliasing orphans L's original alloca — GDB and subsequent loads will read uninitialized memory. Only alias when L has no storage yet (initial declaration).
+
+2. **GEP from array/member access** (res is unloaded GEP): Load through the GEP before storing. Skipped for:
+   - Fixed-size arrays (`elements > 0`): the GEP pointer IS the value (array-to-pointer decay)
+   - Opaque handle types (ancestor struct with 0 members, e.g. VkPhysicalDevice_T): these are pointer handles, not real structs
+
+3. **Everything else**: Direct store of `res->value`.
+
+### etype Resolution Chain
+When looking up an etype for codegen (`u(etype, au)`), the result may have `lltype = NULL` if the Au_t is a variable member rather than the type itself. Fallback chain:
+```c
+etype rt = u(etype, res->au);                          // try member's etype
+if (!rt || !rt->lltype) rt = u(etype, au_arg_type(...)); // try resolved type
+if (!rt || !rt->lltype) rt = etype_prep(a, ...);         // force create
+```
+
+### `is_struct` Semantics
+`Au_is_struct` uses `au_arg_type` to resolve through aliases and variables to the underlying type. Key behaviors:
+- Returns `false` for pointer types (`au->is_pointer`)
+- Opaque Vulkan handles (e.g. VkPhysicalDevice → alias → ptr → opaque struct) return `false` because `au_arg_type` stops at the pointer
+- Use `au_ancestor()` when you need to walk past pointers to the terminal type (e.g. for opaque checks)
+- `is_struct` vs `au->is_struct`: the function resolves through aliases; the field checks the Au_t directly
+
+### Alias-to-Pointer Types in etype_init
+C typedef aliases to pointer types (e.g. `typedef VkPhysicalDevice_T* VkPhysicalDevice`) can fall into the named struct branch of `etype_init` because `is_rec()` resolves through to the underlying struct. When the alias src chain leads to a pointer (`au_arg_type` returns an Au_t with `is_pointer`), set `lltype = LLVMPointerTypeInContext(...)` instead of creating a named LLVM struct.
+
+### `e_create` Same-Type Identity
+`e_create` has an identity shortcut: `if (canonical(input) == canonical(mdl)) return input`. This avoids unnecessary allocas for same-type conversions. If disabled for structs, `e_create` builds a temp alloca that e_assign's alias path may hijack — causing the orphaned-alloca bug described above.
+
+### `au_arg` vs `au_arg_type` vs `au_ancestor`
+- **`au_arg(t)`**: If t is a variable (AU_MEMBER_VAR), returns `t->src`. Otherwise returns t. Does NOT resolve aliases.
+- **`au_arg_type(t)`**: Like `au_arg`, but then walks the `src` chain through aliases. Stops at pointers and funcptrs.
+- **`au_ancestor(au)`**: Walks `src` chain unconditionally to the terminal type. Goes through pointers. Stops at enums. Use for opaque type detection.
+
 ## Recent Compiler Discoveries
 
 ### Type Resolution

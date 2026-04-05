@@ -522,9 +522,9 @@ Display Window
 
     func update_canvas [ ]
         # compose  || (omitting this to show actual issue with parse member not being part of read-enode)
-        compose  = (Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        colorize = (colorize || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        overlay  = (overlay  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        compose  = Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]
+        colorize = Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]
+        overlay  = Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]
         glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
         compose .clear[ string[ "#008"  ] ]
         colorize.clear[ string[ "#fff"  ] ]

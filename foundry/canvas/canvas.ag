@@ -549,12 +549,18 @@ Target Canvas
 	public format	  : Pixel[Pixel.rgba8]
 
 	func init [ ]
+		printf[ "canvas init 1\n" ]
 		ui_shader = CanvasUI [ vk: vk ]
+		printf[ "canvas init 2\n" ]
 		models = [ Model [ vk: vk, w: w, s: ui_shader ] ]
+		printf[ "canvas init 3\n" ]
 		path   = CanvasPath []
+		printf[ "canvas init 4\n" ]
 		states = array CanvasState []
+		printf[ "canvas init 5\n" ]
 		depth  = 0
 		save
+		printf[ "canvas init done\n" ]
 
 	func resize [ rw: i32, rh: i32 ] -> Canvas
 		width  = rw
@@ -634,6 +640,9 @@ Target Canvas
 				blur_rad: 0.0
 			]
 			states.push[ st ]
+
+			st2 : CanvasState [ states[0] ]
+			i : bool true
 		el
 			prev : states[depth - 1]
 			states.push[ prev ]
@@ -826,7 +835,7 @@ Target Canvas
 		ui_shader.grad_c0  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 		ui_shader.grad_c1  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
-	func setup_gradient [ st: CanvasState ] -> f32
+	func setup_gradient [ st: ref CanvasState ] -> f32
 		if [ st.fill_grad && st.fill_grad.kind != GradientType.none ]
 			g : Gradient st.fill_grad
 			ui_shader.grad0 = vec4f [ g.x0, g.y0, g.x1, g.y1 ]
@@ -842,7 +851,7 @@ Target Canvas
 
 	func fill_rect_fast [ x: f32, y: f32, rw: f32, rh: f32 ]
 		expect depth >= 0, "no canvas state"
-		st : states[depth - 1]
+		st : CanvasState [ states[depth - 1] ]
 		tx : st.transform.apply_x [ x, y ]
 		ty : st.transform.apply_y [ x, y ]
 		tw : rw * st.transform.ma
@@ -851,7 +860,7 @@ Target Canvas
 		mode : setup_gradient [ st ]
 		ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, mode ]
 		draw[]
-
+		
 	func fill_rounded_rect_fast [ x: f32, y: f32, rw: f32, rh: f32, rx: f32, ry: f32 ]
 		st : states[depth - 1]
 		tx : st.transform.apply_x [ x, y ]

@@ -458,6 +458,7 @@ class vk_context
     public  instance_exts       : array cstr [ alloc:128, unmanaged:true ]
     public  device_exts         : array cstr [ alloc:128, unmanaged:true ] # theres... too many of them.
     intern  debug               : VkDebugUtilsMessengerEXT
+    intern  props               : VkPhysicalDeviceMemoryProperties
     public  allocator           : VmaAllocator
     intern  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
 
@@ -551,6 +552,9 @@ class vk_context
         expect result == VK_SUCCESS, "cannot create logical device"
         queue_family_index = -1
 
+        # query memory properties for find_memory_type
+        vkGetPhysicalDeviceMemoryProperties[ physical_device, ref props ]
+
         # create VMA allocator
         result = vmaCreateAllocator[ VmaAllocatorCreateInfo [
             physicalDevice:    physical_device,
@@ -619,10 +623,12 @@ class vk_context
         expect found, "failed to find a suitable graphics and presentation queue family"
 
     intern func find_memory_type [ type_filter: u32, flags: VkMemoryPropertyFlags ] -> u32
-        props: VkPhysicalDeviceMemoryProperties
-        vkGetPhysicalDeviceMemoryProperties[ physical_device, ref props ]
+        printf[ "type_filter: %i\n", type_filter ]
+        printf[ "flags: %i\n",       flags ]
         for [ i: u32 0, i < props.memoryTypeCount, i += 1 ]
+            printf[ "props.memoryTypes[i].propertyFlags: %i\n", u32[props.memoryTypes[i].propertyFlags] ]
             if [ (type_filter & (1 << i)) && (props.memoryTypes[i].propertyFlags & flags) == flags ]
+                printf["found index\n"]
                 return i
         fault "could not find memory type"
         return 0
@@ -1435,7 +1441,7 @@ class Buffer
         expect result == VK_SUCCESS, "failed to map buffer memory"
         return mapped
 
-    func unmap [ ] 
+    func unmap [ ]
         expect vma_alloc, "expected memory"
         vmaUnmapMemory[ vk.allocator, vma_alloc ]
 
@@ -1536,10 +1542,56 @@ class Texture
                 0, mip_levels, 0, layer_count, vk_format == VK_FORMAT_D32_SFLOAT ]
             vk_layout = new_layout
 
+    func hex_dump [ name: symbol, data: ref u8, size: i32 ]
+        printf[ "%s (%d bytes):\n", name, size ]
+        for [ i: i32 0, i < size, i += 1 ]
+            b: u8 data[ i ]
+            printf[ "%02x ", u32[b] ]
+            if [ (i + 1) % 16 == 0 ]
+                printf[ "\n" ]
+        if [ size % 16 != 0 ]    
+            printf[ "\n" ]
+
+    func test_vma [ ]                                                   
+        allocator: VmaAllocator                                         
+        result: vmaCreateAllocator[ VmaAllocatorCreateInfo [            
+            physicalDevice:    vk.physical_device,                         
+            device:            vk.device,                                  
+            instance:          vk.instance,                                
+            vulkanApiVersion:  VK_API_VERSION_1_2,                      
+            pVulkanFunctions:  null,                                    
+            flags: VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT                      
+        ], ref allocator ]                                            
+        printf[ "vmaCreateAllocator: %d\n", result ]                    
+        if [ result == VK_SUCCESS ]                                 
+            vk_image:  VkImage                                          
+            vma_alloc: VmaAllocation                                    
+            result = vmaCreateImage[ allocator, VkImageCreateInfo [   
+                sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,     
+                imageType:     VK_IMAGE_TYPE_2D,                      
+                format:        VK_FORMAT_R8G8B8A8_UNORM,                
+                extent:        VkExtent3D [ 888, 888, 1 ],            
+                mipLevels:     1,                                       
+                arrayLayers:   1,                                     
+                samples:       VK_SAMPLE_COUNT_1_BIT,                   
+                tiling:        VK_IMAGE_TILING_OPTIMAL,             
+                usage:         VK_IMAGE_USAGE_SAMPLED_BIT,              
+                sharingMode:   VK_SHARING_MODE_EXCLUSIVE,             
+                initialLayout: VK_IMAGE_LAYOUT_UNDEFINED                
+            ], VmaAllocationCreateInfo [
+                usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE              
+            ], ref vk_image, ref vma_alloc, null ]                      
+            printf[ "vmaCreateImage: %d\n", result ]                  
+            if [ result == VK_SUCCESS ]                                 
+                vmaDestroyImage[ allocator, vk_image, vma_alloc ]       
+            vmaDestroyAllocator[ allocator ] 
+            
     func init [ ]
         expect vk, "vk_context not specified"
         if [ !vk_image && !sampler && !w ]
             return
+
+        #test_vma[]
 
         printf["vk_format = %i\n", (vk_format to i32)]
         img2 : (sampler to Image)
@@ -1587,46 +1639,33 @@ class Texture
                 if [ !vk_format && pixel_format ]
                     vk_format = vk_format_fn[ pixel_format, linear ]
 
+                info : VkImageCreateInfo [
+                    sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                    imageType:     VK_IMAGE_TYPE_2D,
+                    format:        vk_format,
+                    flags:         (layer_count >= 6) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                    extent:        VkExtent3D [ width, height, 1 ],
+                    mipLevels:     mip_levels,
+                    arrayLayers:   layer_count,
+                    samples:       VK_SAMPLE_COUNT_1_BIT,
+                    tiling:        VK_IMAGE_TILING_OPTIMAL,
+                    usage:         usage,
+                    sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
+                    initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+                ]
+                printf[ "sType=%d imageType=%d format=%d flags=%d\n", info.sType,   
+                    info.imageType, info.format, info.flags ]                           
+                printf[ "extent=%d,%d,%d mip=%d layers=%d samples=%d\n",
+                    info.extent.width, info.extent.height, info.extent.depth,           
+                    info.mipLevels, info.arrayLayers, info.samples ]
+                #hex_dump[ "vkImageCreateInfo", ref info, sizeof VkImageCreateInfo ]
+
                 if [ !vk_image && vk_format ]
                     alloc_info: VmaAllocationCreateInfo [
-                        usage: VMA_MEMORY_USAGE_GPU_ONLY
+                        usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
                     ]
-                    printf[ "vk.allocator = %p, vk_format = %i\n", vk.allocator, vk_format ]
-
-                    printf[ "usage=%d width=%d height=%d mip=%d layers=%d format=%d\n", usage, width, height, mip_levels, layer_count, vk_format ]
-##
-                    test_image: VkImage
-                    res_test: vkCreateImage[ vk.device, VkImageCreateInfo [
-                        sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                        imageType:     VK_IMAGE_TYPE_2D,
-                        format:        vk_format,
-                        extent:        VkExtent3D [ width, height, 1 ],
-                        mipLevels:     1,
-                        arrayLayers:   1,
-                        samples:       VK_SAMPLE_COUNT_1_BIT,
-                        tiling:        VK_IMAGE_TILING_OPTIMAL,
-                        usage:         usage,
-                        sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
-                        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
-                    ], null, ref test_image ]
-                    printf[ "vkCreateImage result=%d\n", res_test ]
-##
-                    res22 : VkResult vmaCreateImage[ vk.allocator, VkImageCreateInfo [
-                        sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                        imageType:     VK_IMAGE_TYPE_2D,
-                        format:        vk_format,
-                        flags:         (layer_count >= 6) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
-                        extent:        VkExtent3D [ width, height, 1 ],
-                        mipLevels:     mip_levels,
-                        arrayLayers:   layer_count,
-                        samples:       VK_SAMPLE_COUNT_1_BIT,
-                        tiling:        VK_IMAGE_TILING_OPTIMAL,
-                        usage:         usage,
-                        sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
-                        initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
-                    ], alloc_info, ref vk_image, ref vma_alloc, null ]
-
-                    expect res22 == VK_SUCCESS, "Failed to create VkImage: {res22}"
+                    result: vmaCreateImage[ vk.allocator, info, alloc_info, ref vk_image, ref vma_alloc, null ]
+                    expect result == VK_SUCCESS, "Failed to create VkImage: {result}"
 
                 if [ sampler_size > 0 ]
                     transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
@@ -1932,11 +1971,7 @@ Texture Display
             expect format_count > 0, "No surface formats found"
             formats: new VkSurfaceFormatKHR [ format_count ]
             vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, surface, ref format_count, formats ]
-            f2 : VkSurfaceFormatKHR
-            f2 = formats[0]
-            f3 : VkSurfaceFormatKHR[ formats[0] ]
-            f4 : formats[0]
-            f5 : VkSurfaceFormatKHR formats[0]
+
             surface_format = formats[0]
             for [ i: u32 0, i < format_count, i += 1 ]
                 if [ formats[i].format == VK_FORMAT_B8G8R8A8_UNORM ]
@@ -2037,16 +2072,18 @@ class shader
         if [ !main_member || main_member.context == typeid[shader] ]
             return null
 
+
         # UBO from mutable members
         ubo_name: type.ident
         result = '{result}layout(set = 0, binding = 0) uniform {ubo_name} {{\n'
         scan: Au_t [ type ]
         while [ scan != typeid[ shader ] ]
             for [ i: 0, i < scan.members.count, i += 1 ]
-                mem: Au_t [ scan.members.origin[i] ]
+                mem: scan.members.origin[i]
+                printf["member: %s\n", mem.ident]
+                
                 if [ mem.member_type != 4 ]
                     continue
-
                 if [ !mem.src || mem.traits & (1 << 56) ] continue
                 gtype: glsl_type_name[ mem.src ]
                 if [ !gtype ]
@@ -2150,9 +2187,10 @@ class shader
                     arg_str = '{arg_str}{atype} {arg.ident}'
 
                 # call method with defaults (null) to get body
-                glsl: GLSL Au [ Au.method_call[ method, null ] ]
+                glsl: GLSL Au Au.method_call[ method, null ]
 
-                l : strlen[ glsl.body ]
+                #l : strlen[ glsl.body ]
+                l : strlen[glsl.body]
                 expect l, 'body not set on function {method.ident}'
 
                 # emit function
@@ -2164,13 +2202,13 @@ class shader
         main_result: GLSL Au [ Au.method_call[ main_member, null ] ]
         if [ main_result ]
             result = '{result}void main() {{\n{main_result.body}\n}}\n'
-
         return result
 
     func generate_shaders [ ]
         type:   Au_t [ typeid[ a ] ]
         paths:  local path [3] [ vert, frag, comp ]
         stages: local i32  [3] [ 0, 1, 2 ]
+        
         for [ i: 0, i < 3, i += 1 ]
             p: path paths[i]
             if [ !p ]
@@ -2718,8 +2756,8 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
     ups[4] = vec3f [  0, -1,  0 ]
     ups[5] = vec3f [  0, -1,  0 ]
     eye: vec3f [ 0, 0, 0 ]
-    vk_image:  local VkImage[2]
-    vma_alloc: local VmaAllocation[2]
+    vk_image:   local VkImage[2]
+    vma_alloc:  local VmaAllocation[2]
     image_info: VkImageCreateInfo [
         sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         imageType:     VK_IMAGE_TYPE_2D,
