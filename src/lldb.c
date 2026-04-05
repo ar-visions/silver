@@ -1021,25 +1021,28 @@ static LLVMMetadataRef debug_object_header_type(aether a, Au_t schema) {
             LLVMDIFlagZero, ftype);
     }
 
-    // meta[8] - array of 8 object pointers
+    // meta_a and meta_b - type descriptor pointers
     {
         LLVMMetadataRef u8_di = LLVMDIBuilderCreateBasicType(
             a->dbg_builder, "u8", 2, 8,
             DW_ATE_unsigned_char, LLVMDIFlagZero);
         LLVMMetadataRef obj_ptr = LLVMDIBuilderCreatePointerType(
-            a->dbg_builder, u8_di, ptr_bits, 0, 0, "object", 6);
-        LLVMMetadataRef subrange = LLVMDIBuilderGetOrCreateSubrange(
-            a->dbg_builder, 0, 8);
-        LLVMMetadataRef arr_type = LLVMDIBuilderCreateArrayType(
-            a->dbg_builder, ptr_bits * 8, ptr_bits, obj_ptr, &subrange, 1);
+            a->dbg_builder, u8_di, ptr_bits, 0, 0, "ptr", 3);
 
         members[midx++] = LLVMDIBuilderCreateMemberType(
             a->dbg_builder, a->compile_unit,
-            "meta", 4,
+            "meta_a", 6,
             a->file, 0,
-            ptr_bits * 8, ptr_bits,
-            offsetof(struct _object, meta) * 8,
-            LLVMDIFlagZero, arr_type);
+            ptr_bits, ptr_bits,
+            offsetof(struct _object, meta_a) * 8,
+            LLVMDIFlagZero, obj_ptr);
+        members[midx++] = LLVMDIBuilderCreateMemberType(
+            a->dbg_builder, a->compile_unit,
+            "meta_b", 6,
+            a->file, 0,
+            ptr_bits, ptr_bits,
+            offsetof(struct _object, meta_b) * 8,
+            LLVMDIFlagZero, obj_ptr);
     }
 
     // f - trailing object pointer

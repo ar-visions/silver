@@ -41,6 +41,11 @@ enum GradientType
 # ---- GPU shader for UI rendering ----
 # members become uniforms, name maps to shaders/CanvasUI.vert/.frag
 
+enum CanvasUISurface
+	atlas: 0
+	image: 1
+
+
 shader CanvasUI
 	mutable viewport   : vec2f
 	mutable rect       : vec4f
@@ -51,9 +56,132 @@ shader CanvasUI
 	mutable grad0      : vec4f     # Gradient endpoints / tex rect
 	mutable grad_c0    : vec4f     # Gradient stop color 0
 	mutable grad_c1    : vec4f     # Gradient stop color 1
-	attrib  color      : LayoutBinding [
-		type:typeid[ Surface ], id: Surface.color, count:1, format:typeid[ rgba8 ]
+	attrib  atlas      : LayoutBinding [
+		type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format:typeid[ u8 ]
 	]
+	attrib  image      : LayoutBinding [
+		type:typeid[ CanvasUISurface ], id: CanvasUISurface.image, count:1, format:typeid[ rgba8 ]
+	]
+
+	attrib  a_pos      : VertexInput    [ type:typeid[ vec2f ] ]
+	attrib  v_pos      : VertexOutput   [ type:typeid[ vec2f ] ]
+	attrib  o_color    : FragmentOutput [ type:typeid[ vec4f ] ]
+
+	# ---- per-corner rounded rect SDF ----
+	func sdf_rounded_rect [ p: vec2f, center: vec2f, half_size: vec2f, r: vec4f ] -> GLSL float {
+		vec2 q = p - center;
+		float cr = (q.x >= 0.0)
+			? ((q.y >= 0.0) ? r.z : r.y)
+			: ((q.y >= 0.0) ? r.w : r.x);
+		cr = min(cr, min(half_size.x, half_size.y));
+		vec2 d = abs(q) - half_size + vec2(cr);
+		return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - cr;
+	}
+
+	# ---- gradient evaluation ----
+	func eval_gradient [ p: vec2f, mode: f32 ] -> GLSL vec4f {
+		vec2  g0     = ubo.grad0.xy;
+		vec2  g1     = ubo.grad0.zw;
+		float t;
+		if (mode == 1.0) {{
+			vec2  d      = g1 - g0;
+			float len_sq = dot(d, d);
+			t = (len_sq > 0.0001) ? clamp(dot(p - g0, d) / len_sq, 0.0, 1.0) : 0.0;
+		}} else if (mode == 2.0) {{
+			float dist = length(p - g0);
+			float span = g1.y - g1.x;
+			t = (span > 0.0001) ? clamp((dist - g1.x) / span, 0.0, 1.0) : 0.0;
+		}} else {{
+			vec2  d     = p - g0;
+			float angle = atan(d.y, d.x) - g1.x;
+			if (angle < 0.0) angle += 6.2831853;
+			t = clamp(angle / 6.2831853, 0.0, 1.0);
+		}}
+		return mix(ubo.grad_c0, ubo.grad_c1, t);
+	}
+
+	# ---- vertex shader ----
+	func vertex [] -> GLSL none {
+		float pad = 1.0 + ubo.params.z;
+		vec2  lo  = ubo.rect.xy - vec2(pad);
+		vec2  hi  = ubo.rect.xy + ubo.rect.zw + vec2(pad);
+		vec2  px  = mix(lo, hi, a_pos);
+		v_pos     = px;
+		vec2 ndc  = (px / ubo.viewport) * 2.0 - 1.0;
+		gl_Position = vec4(ndc, 0.0, 1.0);
+	}
+
+	# ---- fragment shader ----
+	func fragment [] -> GLSL none {
+		float mode         = ubo.params.w;
+		float stroke_width = ubo.params.x;
+		float opacity      = ubo.params.y;
+		float blur         = ubo.params.z;
+		vec2  center       = ubo.rect.xy + ubo.rect.zw * 0.5;
+		vec2  half_size    = ubo.rect.zw * 0.5;
+		float dist         = sdf_rounded_rect(v_pos, center, half_size, ubo.radii);
+
+		// text: sample glyph atlas
+		if (mode == 4.0) {{
+			vec2  uv = (v_pos - ubo.rect.xy) / ubo.rect.zw;
+			uv       = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
+			float a  = texture(atlas, uv).r;
+			o_color  = ubo.fill_color * vec4(1.0, 1.0, 1.0, a) * opacity;
+			return;
+		}}
+
+		// image: sample texture, clip to rounded rect
+		if (mode == 5.0) {{
+			vec2 uv    = (v_pos - ubo.rect.xy) / ubo.rect.zw;
+			uv         = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
+			vec4 texel = texture(image, uv);
+			float aa   = 1.0 - smoothstep(-0.5, 0.5, dist);
+			o_color    = texel * aa * opacity;
+			return;
+		}}
+
+		// SDF path: sample distance field texture
+		if (mode == 6.0) {{
+			vec2  uv    = (v_pos - ubo.rect.xy) / ubo.rect.zw;
+			uv          = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
+			float sd    = texture(image, uv).r;
+			float d_sdf = (0.5 - sd) * 2.0;
+			float path_aa;
+			if (stroke_width > 0.0) {{
+				float half_w = stroke_width * 0.5;
+				float outer  = 1.0 - smoothstep(-0.5, 0.5, abs(d_sdf) - half_w);
+				o_color      = ubo.fill_color * vec4(1.0, 1.0, 1.0, outer) * opacity;
+			}} else {{
+				path_aa = 1.0 - smoothstep(-0.5, 0.5, d_sdf);
+				o_color = ubo.fill_color * vec4(1.0, 1.0, 1.0, path_aa) * opacity;
+			}}
+			return;
+		}}
+
+		// fill: solid or gradient
+		vec4 fill = (mode >= 1.0 && mode <= 3.0)
+			? eval_gradient(v_pos, mode)
+			: ubo.fill_color;
+
+		// AA at shape boundary
+		float aa = (blur > 0.0)
+			? 1.0 - smoothstep(-blur, blur, dist)
+			: 1.0 - smoothstep(-0.5, 0.5, dist);
+
+		// stroke: SDF ring between outer and inner boundary
+		vec4 color;
+		if (stroke_width > 0.0) {{
+			float fill_aa = 1.0 - smoothstep(-0.5, 0.5, dist + stroke_width);
+			float ring    = max(aa - fill_aa, 0.0);
+			color = fill * fill_aa + ubo.stroke_clr * ring;
+		}} else {{
+			color = fill * aa;
+		}}
+		
+		o_color = color * opacity;
+	}
+
+
 
 # ---- path point with optional control points ----
 
@@ -713,6 +841,7 @@ Target Canvas
 	# ---- drawing ----
 
 	func fill_rect_fast [ x: f32, y: f32, rw: f32, rh: f32 ]
+		expect depth >= 0, "no canvas state"
 		st : states[depth - 1]
 		tx : st.transform.apply_x [ x, y ]
 		ty : st.transform.apply_y [ x, y ]

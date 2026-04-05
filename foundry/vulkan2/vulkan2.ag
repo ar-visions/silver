@@ -12,6 +12,10 @@ ifdef [ apple ]
 #import KhronosGroup:Vulkan-ValidationLayers/vulkan-sdk-1.4.341.0
 #     -DVULKAN_HEADERS_INSTALL_DIR={install}
 
+import KhronosGroup:glslang/715c850
+    -DVULKAN_HEADERS_INSTALL_DIR={install}
+    -DENABLE_OPT=0
+
 import KhronosGroup:Vulkan-Tools/734638e
      -DVULKAN_HEADERS_INSTALL_DIR={install}
      -DMOLTENVK_REPO_ROOT={root_path}/checkout/MoltenVK
@@ -115,6 +119,8 @@ class Target
             if [ reduce ]
                 reduction.resize[ width / 4, height / 4 ]
         el
+            ii: i32 w.surface_format.format
+            printf[ "caller vk_format is %i\n", w.surface_format.format]
             color = Texture [ vk: vk, w: w, width: width, height: height,
                 vk_format: w.surface_format.format, swap: !backbuffer,
                 surface: Surface.color, vk_image: vk_swap_image ]
@@ -149,9 +155,9 @@ class Target
     public func draw [ ] 
         index: u32 [ 0 ]
         for [ i: 0, i < 1 + reduce, i += 1 ]
-            if [ i == 0 && color ]
+            if [ i == 0 && bool[ color ] ]
                 color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-            el [ i == 1 && reduction ]
+            el [ i == 1 && bool[ reduction ] ]
                 reduction.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 sync_fence[]
             
@@ -235,6 +241,134 @@ class Target
         vkDestroyFence[ vk.device, vk_fence, null ]
         vkDestroySemaphore[ vk.device, vk_image_available_semaphore, null ]
         vkDestroySemaphore[ vk.device, vk_render_finished_semaphore, null ]
+
+    func init []
+        backbuffer : !vk_swap_image
+
+        # allocate command buffer
+        cmdAllocInfo : VkCommandBufferAllocateInfo [
+            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool:        vk.command_pool,
+            level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount: 1
+        ]
+        result : vkAllocateCommandBuffers[ vk.device, ref cmdAllocInfo, ref vk_command_buffer ]
+        expect result == VK_SUCCESS, "failed to allocate command buffers"
+
+        # create render pass
+        attachments : local VkAttachmentDescription [2] [
+            VkAttachmentDescription [
+                format:         w.surface_format.format,
+                samples:        VK_SAMPLE_COUNT_1_BIT,
+                loadOp:         VK_ATTACHMENT_LOAD_OP_CLEAR,
+                storeOp:        VK_ATTACHMENT_STORE_OP_STORE,
+                stencilLoadOp:  VK_ATTACHMENT_LOAD_OP_CLEAR,
+                stencilStoreOp: VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                initialLayout:  VK_IMAGE_LAYOUT_UNDEFINED,
+                finalLayout:    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+            ],
+            VkAttachmentDescription [
+                format:         VK_FORMAT_D32_SFLOAT,
+                samples:        VK_SAMPLE_COUNT_1_BIT,
+                loadOp:         VK_ATTACHMENT_LOAD_OP_CLEAR,
+                storeOp:        VK_ATTACHMENT_STORE_OP_STORE,
+                stencilLoadOp:  VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                stencilStoreOp: VK_ATTACHMENT_STORE_OP_STORE,
+                initialLayout:  VK_IMAGE_LAYOUT_UNDEFINED,
+                finalLayout:    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+            ]
+        ]
+
+        color_attachment_ref : VkAttachmentReference [
+            attachment: 0,
+            layout:     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+        ]
+
+        depth_attachment_ref : VkAttachmentReference [
+            attachment: 1,
+            layout:     VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        ]
+
+        subpass : VkSubpassDescription [
+            pipelineBindPoint:       VK_PIPELINE_BIND_POINT_GRAPHICS,
+            colorAttachmentCount:    1,
+            pColorAttachments:       ref color_attachment_ref,
+            pDepthStencilAttachment: ref depth_attachment_ref,
+            pResolveAttachments:     null
+        ]
+
+        # subpass dependencies for proper image layout transitions
+        dependencies : local VkSubpassDependency [2] [
+            VkSubpassDependency [
+                srcSubpass:      VK_SUBPASS_EXTERNAL,
+                dstSubpass:      0,
+                srcStageMask:    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                dstStageMask:    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                srcAccessMask:   VK_ACCESS_MEMORY_READ_BIT,
+                dstAccessMask:   VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                dependencyFlags: VK_DEPENDENCY_BY_REGION_BIT
+            ],
+            VkSubpassDependency [
+                srcSubpass:      0,
+                dstSubpass:      VK_SUBPASS_EXTERNAL,
+                srcStageMask:    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                dstStageMask:    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                srcAccessMask:   VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                dstAccessMask:   VK_ACCESS_MEMORY_READ_BIT,
+                dependencyFlags: VK_DEPENDENCY_BY_REGION_BIT
+            ]
+        ]
+
+        render_pass_info : VkRenderPassCreateInfo [
+            sType:           VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            attachmentCount: 2,
+            pAttachments:    attachments,
+            subpassCount:    1,
+            pSubpasses:      ref subpass,
+            dependencyCount: 2,
+            pDependencies:   dependencies
+        ]
+
+        n_passes : i32 [ 1 + (reduce) ? 1 : 0 ]
+        for [ i: 0, i < n_passes, i += 1 ]
+            if [ i == 1 ]
+                render_pass_info.dependencyCount = 1
+                render_pass_info.attachmentCount = 1
+                subpass.pDepthStencilAttachment  = null
+            result = vkCreateRenderPass[ vk.device, ref render_pass_info, null, ref vk_render_pass[i] ]
+            expect result == VK_SUCCESS, "failed to create render pass"
+
+        if [ !backbuffer ]
+            semaphore_info : VkSemaphoreCreateInfo [
+                sType: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+            ]
+            result = vkCreateSemaphore[ vk.device, ref semaphore_info, null, ref vk_image_available_semaphore ]
+            expect result == VK_SUCCESS, "failed to create image available semaphore"
+            result = vkCreateSemaphore[ vk.device, ref semaphore_info, null, ref vk_render_finished_semaphore ]
+            expect result == VK_SUCCESS, "failed to create render finished semaphore"
+
+        fenceInfo : VkFenceCreateInfo [
+            sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            flags: VK_FENCE_CREATE_SIGNALED_BIT
+        ]
+        result = vkCreateFence[ vk.device, ref fenceInfo, null, ref vk_fence ]
+        expect result == VK_SUCCESS, "failed to create fence"
+
+        if [ reduce ]
+            reduce_model = Model [ vk: vk, w: w, s: vk.reduce_shader[ ] ]
+
+        # create or resize color/depth textures and framebuffer
+        update[]
+
+        if [ reduce ]
+            reduce_model.samplers = map Au [string] [ "color": color ]
+
+        for [m:Model] in models
+            m.finish[ a, 0 ]
+
+        if [ reduce ]
+            reduce_model.finish[ a, 1 ]
+
 
 struct mat3f
     m : local float[3x3]
@@ -364,7 +498,7 @@ class vk_context
         expect device_count > 0, "failed to find GPUs with Vulkan support"
         physical_devices: local VkPhysicalDevice [ device_count ]
         vkEnumeratePhysicalDevices[ instance, ref device_count, physical_devices ]
-        physical_device = physical_devices[0]
+        physical_device = @physical_devices[0]
 
         # check device extensions
         ext_count: u32 0
@@ -675,13 +809,14 @@ class uniforms
 alias RType : Au
 
 # the GLSL type is used at design-time to give 
-class GLSL : RType[ symbol ]
+class GLSL : RType
     public body  : symbol
     public rtype : Au_t
     construct [ t:symbol ]
+        info  : Au.header[ a ]
         body  = t
-        self  : typeid[ a ]
-        rtype = self.meta.a
+        rtype = info.meta_a
+        puts 'GLSL constructing function to return {rtype.ident}'
 
 class Pipeline
     context vk              : vk_context
@@ -1247,7 +1382,7 @@ class Buffer
         vkCmdPipelineBarrier [ cmd,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 0, 0, 0, 0, 1, VkImageMemoryBarrier [
+            0, 0, null, 0, null, 1, VkImageMemoryBarrier [
             sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             srcAccessMask:       VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             dstAccessMask:       VK_ACCESS_TRANSFER_READ_BIT,
@@ -1405,6 +1540,8 @@ class Texture
         expect vk, "vk_context not specified"
         if [ !vk_image && !sampler && !w ]
             return
+
+        printf["vk_format = %i\n", (vk_format to i32)]
         img2 : (sampler to Image)
         img3 : (sampler to Image)
         img :  sampler inherits Image
@@ -1457,7 +1594,7 @@ class Texture
                     printf[ "vk.allocator = %p, vk_format = %i\n", vk.allocator, vk_format ]
 
                     printf[ "usage=%d width=%d height=%d mip=%d layers=%d format=%d\n", usage, width, height, mip_levels, layer_count, vk_format ]
-
+##
                     test_image: VkImage
                     res_test: vkCreateImage[ vk.device, VkImageCreateInfo [
                         sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -1473,7 +1610,7 @@ class Texture
                         initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
                     ], null, ref test_image ]
                     printf[ "vkCreateImage result=%d\n", res_test ]
-
+##
                     res22 : VkResult vmaCreateImage[ vk.allocator, VkImageCreateInfo [
                         sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                         imageType:     VK_IMAGE_TYPE_2D,
@@ -1846,6 +1983,16 @@ class shader
     intern vk_frag      : VkShaderModule
     intern vk_comp      : VkShaderModule
 
+    func indent [ s: symbol ] -> string
+        str: string[s]
+        sp : array string [ str.split["\n"] ]
+        res: string[alloc:str.count * 2]
+        for [line:string] in sp
+            res.append["\t"]
+            res.concat[line]
+            res.append["\n"]
+        return res
+
     func vertex   [] -> GLSL none {}
 
     func fragment [] -> GLSL none {}
@@ -1879,6 +2026,12 @@ class shader
         type:   Au_t [ typeid[ a ] ]
         result: string [ '#version 450\n\n' ]
 
+        # emit void main() from the stage entry point
+        main_name: (stage == ShaderStage.vertex) ? "vertex" : (stage == ShaderStage.fragment) ? "fragment" : "compute"
+        main_member:  Au_t [ find_member[ type, main_name, 5, 0, true ] ]
+        if [ !main_member || main_member.context == typeid[shader] ]
+            return null
+
         # UBO from mutable members
         ubo_name: type.ident
         result = '{result}layout(set = 0, binding = 0) uniform {ubo_name} {{\n'
@@ -1888,19 +2041,18 @@ class shader
                 mem: Au_t [ scan.members.origin[i] ]
                 if [ mem.member_type != 4 ]
                     continue
-                if [ mem.traits & (1 << 56) ]
-                    continue
-                if [ mem.typesize == 0 ]
-                    continue
+
+                if [ !mem.src || mem.traits & (1 << 56) ] continue
                 gtype: glsl_type_name[ mem.src ]
                 if [ !gtype ]
                     continue
                 result = '{result}    {gtype} {mem.ident};\n'
             scan = scan.context
+        
         result = '{result}}} ubo;\n\n'
 
         # attribs: samplers, vertex i/o, fragment i/o
-        binding:      i32 [ 1 ]
+        binding:      i32 [ 0 ]
         vert_loc_in:  i32 [ 0 ]
         vert_loc_out: i32 [ 0 ]
         frag_loc_in:  i32 [ 0 ]
@@ -1909,21 +2061,23 @@ class shader
 
         while [ scan != typeid[ shader ] ]
             for [ i: 0, i < scan.members.count, i += 1 ]
-                mem: Au_t [ scan.members.origin[i] ]
+                mem: Au_t[ scan.members.origin[i] ]
+                if [ mem.member_type != 4 ]
+                    continue
                 if [ !(mem.traits & (1 << 56)) ] # AU_TRAIT_IS_ATTRIB
                     continue
-                val: mem.value
-                if [ !val ]
+                val: Au [ mem.value ]
+                if [ !mem.value ]
                     continue
                 
                 if [ val inherits LayoutBinding ]
-                    lb: (val to LayoutBinding)
+                    lb: LayoutBinding[val]
                     is_cube: lb.id == 9
                     stype: (is_cube) ? "samplerCube" : "sampler2D"
                     if [ lb.count > 1 ]
-                        result = '{result}layout(set = 0, binding = {binding}) uniform {stype} tx_{mem.ident}[{lb.count}];\n'
+                        result = '{result}layout(set = 1, binding = {binding}) uniform {stype} {mem.ident}[{lb.count}];\n'
                     el
-                        result = '{result}layout(set = 0, binding = {binding}) uniform {stype} tx_{mem.ident};\n'
+                        result = '{result}layout(set = 1, binding = {binding}) uniform {stype} {mem.ident};\n'
                     binding += 1
                 
                 el [ val inherits VertexInput && stage == ShaderStage.vertex ]
@@ -1939,6 +2093,13 @@ class shader
                     if [ gtype ]
                         result = '{result}layout(location = {vert_loc_out}) out {gtype} {mem.ident};\n'
                     vert_loc_out += 1
+
+                el [ val inherits VertexOutput && stage == ShaderStage.fragment ]
+                    vo: (val to VertexOutput)
+                    gtype: glsl_type_name[ vo.type ]
+                    if [ gtype ]
+                        result = '{result}layout(location = {frag_loc_in}) in {gtype} {mem.ident};\n'
+                    frag_loc_in += 1
 
                 el [ val inherits FragmentInput && stage == ShaderStage.fragment ]
                     fi: (val to FragmentInput)
@@ -1963,17 +2124,17 @@ class shader
                 method: Au_t [ scan.members.origin[i] ]
                 if [ method.member_type != 5 ]
                     continue
-                if [ !method.src || !method.src.meta.b ]
+                if [ !method.src || !method.meta.a ]
                     continue
                 if [ strcmp[ method.ident, "fragment" ] == 0 || strcmp[ method.ident, "vertex" ] == 0 || strcmp[ method.ident, "compute" ] == 0 ]
                     continue
-                rtype : Au_t [ method.src.meta.b ]
+                rtype : Au_t [ method.meta.a ]
                 ret_name: glsl_type_name[ rtype ]
                 if [ !ret_name ]
                     ret_name = "void"
 
                 # build arg list from method.args (skip first arg which is self)
-                arg_str: string [ '' ]
+                arg_str: ''
                 for [ j: 1, j < method.args.count, j += 1 ]
                     arg: Au_t [ method.args.origin[j] ]
                     atype: glsl_type_name[ arg.src ]
@@ -1984,20 +2145,20 @@ class shader
                     arg_str = '{arg_str}{atype} {arg.ident}'
 
                 # call method with defaults (null) to get body
-                body: symbol [ Au.method_call[ method, null ] ]
+                glsl: GLSL Au [ Au.method_call[ method, null ] ]
 
-                expect strlen[body], 'body not set on function {method.ident}'
+                l : strlen[ glsl.body ]
+                expect l, 'body not set on function {method.ident}'
 
                 # emit function
-                result = '{result}{ret_name} {method.ident}({arg_str}) {{\n{body}\n}}\n\n'
+                result = '{result}{ret_name} {method.ident}({arg_str}) {{\n{glsl.body}\n}}\n\n'
+            
+            scan = scan.context
                     
         # emit void main() from the stage entry point
-        main_name: (stage == ShaderStage.vertex) ? "vertex" : (stage == ShaderStage.fragment) ? "fragment" : "compute"
-        main_member:  Au_t [ find_member[ type, main_name, 5, 0, true ] ]
-        if [ main_member ]
-            main_body: symbol [ Au.method_call[ main_member, null ] ]
-            if [ main_body ]
-                result = '{result}void main() {{\n{main_body}\n}}\n'
+        main_result: GLSL Au [ Au.method_call[ main_member, null ] ]
+        if [ main_result ]
+            result = '{result}void main() {{\n{main_result.body}\n}}\n'
 
         return result
 
@@ -2013,13 +2174,15 @@ class shader
             src: glsl_header[ stage ]
             if [ !src ]
                 continue
-            fp: fopen[ p.chars, "w" ]
+            fp: fopen[ p, "w" ]
             if [ !fp ]
                 printf[ "failed to write shader: %s\n", p.chars ]
                 continue
-            fputs[ src.chars, fp ]
+            fputs[ src, fp ]
             fclose[ fp ]
             printf[ "generated shader: %s\n", p.chars ]
+                
+        puts "generated all shaders"
     
     func uniform_transfer [ data2: ref u8, type: Au_t ] -> i64
         instance:a
@@ -2029,9 +2192,9 @@ class shader
         for [ m: 0, m < type.members.count, m += 1 ]
             mem: Au_t [ type.members.origin[m] ]
             if [ mem.member_type == 4 ]
-                type_size: mem.typesize
-                if [ type_size == 0 ]
+                if [ !mem.src ]
                     continue
+                type_size: mem.src.typesize
                 if [ mem.src.traits & (1 << 8) || mem.src.traits & (1 << 0) ] # struct or primitive are both inlay
                     memcpy[ ref data2[index], ref src[mem.offset], type_size ]
                 el
@@ -2046,29 +2209,29 @@ class shader
         found:      false
         recompiled: false
         for [ i: 0, i < 3, i += 1 ]
-            nm: paths[i]
-            if [ !nm ]
+            shader_file: paths[i]
+            if [ !shader_file ]
                 continue
-            input: path '{nm}'
+            input: path '{shader_file}'
             if [ !input.exists[] ]
                 continue
-            spv_file: '{nm}.spv'
+            spv_file: path '{shader_file}.spv'
             found = true
             source_stat: struct stat
             spv_stat:    struct stat
-            src_exists: stat[ input.chars, ref source_stat ] == 0
-            spv_exists: stat[ spv_file.chars, ref spv_stat ] == 0
+            src_exists: stat[ input, ref source_stat ] == 0
+            spv_exists: stat[ spv_file, ref spv_stat ] == 0
             ifdef [ linux ]
                 make_spv: !spv_exists || source_stat.st_mtim.tv_sec > spv_stat.st_mtim.tv_sec
             ifdef [ apple ]
                 make_spv: !spv_exists || source_stat.st_mtimespec.tv_sec > spv_stat.st_mtimespec.tv_sec
 
             if [ make_spv ]
-                cmd: 'glslangValidator -V100 --target-env vulkan1.2 {nm} -o {spv_file}'
+                cmd: 'glslangValidator -V100 --target-env vulkan1.2 {shader_file} -o {spv_file}'
                 puts 'compiling shader: {cmd}'
-                result: system[ cmd.chars ]
+                result: system[ cmd ]
                 if [ result != 0 ]
-                    puts 'shader compilation failed for: {nm}'
+                    puts 'shader compilation failed for: {shader_file}'
                     exit[ 1 ]
                 recompiled = true
             el
@@ -2101,6 +2264,7 @@ class shader
                 exit[ 1 ]
             values[i] = mod
             free[ spirv ]
+
 
         expect found, 'shader not found: {name}'
         return recompiled
@@ -2216,9 +2380,7 @@ intern func trinity_log [severity: VkDebugUtilsMessageSeverityFlagBitsEXT, types
 
 
 intern func image_release_buffer [ a: Image ] -> object
-    test2: handle[ a.res2 ]
-    b: Buffer[ handle[ a.res2 ] ]
-    b2: Buffer[ handle[ a.res2 ] ]
+    b:  Buffer [ handle[ a.res2 ] ]
     vk: vk_context [ b.vk ]
     vmaUnmapMemory[ vk.allocator, b.vma_alloc ]
     vmaDestroyBuffer[ vk.allocator, b.vk_buffer, b.vma_alloc ]
@@ -2551,8 +2713,8 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
     ups[4] = vec3f [  0, -1,  0 ]
     ups[5] = vec3f [  0, -1,  0 ]
     eye: vec3f [ 0, 0, 0 ]
-    vk_image:  VkImage[2]
-    vma_alloc: VmaAllocation[2]
+    vk_image:  local VkImage[2]
+    vma_alloc: local VmaAllocation[2]
     image_info: VkImageCreateInfo [
         sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         imageType:     VK_IMAGE_TYPE_2D,
@@ -2696,37 +2858,37 @@ func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size:
 
     s: i32 [ size * size ]
     if [ data_f32 ]
-        f32_fill: ref f32 [ fill ]
+        f32_fill: ref f32 [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             f32_fill[i] = data_f32[0]
         format = Pixel.f32 # <---  /src/silver/src/aether.c:467 / /src/silver/foundry/vulkan/vulkan.ag:267:8 :: L-value not a pointer (cannot assign to value)
         sampler_size = s * sizeof[ f32 ]
     el [ data_i8 ]
-        u8_fill: ref u8 [ fill ]
+        u8_fill: ref u8 [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             u8_fill[i] = data_i8[0]
         format = Pixel.u8
         sampler_size = s * sizeof[ i8 ]
     el [ data_rgbf ]
-        v3_fill: ref rgbf [ fill ]
+        v3_fill: ref rgbf [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             v3_fill[i] = data_rgbf[0]
         format = Pixel.rgbf32
         sampler_size = s * sizeof[ rgbf ]
     el [ data_rgb8 ]
-        v3_fill: ref rgb8 [ fill ]
+        v3_fill: ref rgb8 [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             v3_fill[i] = data_rgb8[0]
         format = Pixel.rgb8
         sampler_size = s * sizeof[ rgb8 ]
     el [ data_rgbaf ]
-        v4_fill: ref rgbaf [ fill ]
+        v4_fill: ref rgbaf [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             v4_fill[i] = data_rgbaf[0]
         format = Pixel.rgbaf32
         sampler_size = s * sizeof[ rgbaf ]
     el [ data_rgba8 ]
-        v4_fill: ref rgba8 [ fill ]
+        v4_fill: ref rgba8 [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             v4_fill[i] = data_rgba8[0]
         format = Pixel.rgba8

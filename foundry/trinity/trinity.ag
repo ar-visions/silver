@@ -612,6 +612,7 @@ abstract media_app trinity
         w.resize[w.width, w.height]
         return super.run[]
 
+##
     func render[]
         elements : on_render[ w ]
 
@@ -626,6 +627,13 @@ abstract media_app trinity
         
         w.overlay.clear[ '#0000' ]
         w.draw_element [ w.ux.root ]
+        w.draw[]
+##
+
+    func render[]
+        if [ w.compose ]
+            w.compose.set_fill_color[ 0xFF0000FF ]
+            w.compose.fill_rect_fast[ 100.0, 100.0, 200.0, 200.0 ]
         w.draw[]
 
 
@@ -739,10 +747,11 @@ class StyleBlock
         for [ q: StyleQualifier ] in quals
             best_this : f32 [ 0.0 ]
             while [ true ]
+                ty_handle   : handle [ q.ty ]
                 id_match    : bool [ q.id && q.id == cur.id ]
                 id_reject   : bool [ q.id && !id_match ]
-                type_match  : bool [ q.ty && (typeid[ cur ] inherits typeid[ q.ty ]) ]
-                type_reject : bool [ q.ty && !type_match ]
+                type_match  : bool [ ty_handle && (typeid[ cur ] inherits typeid[ q.ty ]) ]
+                type_reject : bool [ ty_handle && !type_match ]
                 state_match : bool [ score_state && q.state ]
                 if [ state_match ]
                     expect q.state.count > 0, 'null state'
