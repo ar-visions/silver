@@ -1238,8 +1238,18 @@ void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
                     pointer_bits(a), 0, 0,
                     tname, strlen(tname));
             }
+        } else if (arg_no > 0) {
+            // struct parameter: passed as pointer in Silver
+            LLVMMetadataRef struct_di = debug_struct_type(a, var_type, false);
+            if (struct_di) {
+                cstr tname = var_type->ident ? var_type->ident : "ptr";
+                di_type = LLVMDIBuilderCreatePointerType(
+                    a->dbg_builder, struct_di,
+                    pointer_bits(a), 0, 0,
+                    tname, strlen(tname));
+            }
         } else {
-            // value-type struct: use the struct type directly
+            // value-type struct local: use the struct type directly
             di_type = debug_struct_type(a, var_type, false);
         }
     }
@@ -1329,9 +1339,18 @@ void emit_debug_params(aether a, efunc fn) {
         } else {
             // regular parameter: use proper type
             Au_t arg_type = arg->src;
-            if (arg_type && (arg_type->is_struct || !arg_type->is_pointer &&
-                            !arg_type->is_class)) {
-                di_type = debug_type_for(a, arg_type, false);
+            if (arg_type && arg_type->is_struct) {
+                // struct params are passed by pointer in Silver
+                LLVMMetadataRef struct_di = debug_struct_type(a, arg_type, false);
+                if (struct_di) {
+                    cstr tname = arg_type->ident ? arg_type->ident : "ptr";
+                    di_type = LLVMDIBuilderCreatePointerType(
+                        a->dbg_builder, struct_di,
+                        pointer_bits(a), 0, 0,
+                        tname, strlen(tname));
+                } else {
+                    di_type = debug_type_for(a, arg_type, false);
+                }
             } else if (arg_type && (arg_type->is_class || arg_type->is_pointer)) {
                 LLVMMetadataRef target_di = null;
                 Au_t real_target = arg_type->is_pointer ? arg_type->src : arg_type;

@@ -177,7 +177,16 @@ LLVMValueRef emit_clock_ns(aether a, cstr label) {
     LLVMTypeRef i64t = LLVMInt64TypeInContext(a->module_ctx);
     LLVMTypeRef timespec_type = LLVMStructTypeInContext(
         a->module_ctx, (LLVMTypeRef[]){ i64t, i64t }, 2, false);
+    // hoist alloca to entry block so it doesn't corrupt the stack in return blocks
+    LLVMBasicBlockRef current = LLVMGetInsertBlock(B);
+    LLVMBasicBlockRef entry   = LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current));
+    LLVMValueRef      first   = LLVMGetFirstInstruction(entry);
+    if (first)
+        LLVMPositionBuilderBefore(B, first);
+    else
+        LLVMPositionBuilderAtEnd(B, entry);
     LLVMValueRef ts = LLVMBuildAlloca(B, timespec_type, label);
+    LLVMPositionBuilderAtEnd(B, current);
     LLVMBuildCall2(B, a->clock_gettime_type, a->clock_gettime_fn,
         (LLVMValueRef[]){
             LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 1, 0), ts
