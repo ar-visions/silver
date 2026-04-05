@@ -664,8 +664,18 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
                     etype rt = u(etype, res->au);
                     if (!rt || !rt->lltype) rt = u(etype, au_arg_type((Au)res->au));
                     if (!rt || !rt->lltype) rt = etype_prep(a, au_arg_type((Au)res->au));
-                    if (rt && rt->lltype)
-                        store_val = LLVMBuildLoad2(B, rt->lltype, store_val, "assign_load");
+                    if (rt && rt->lltype) {
+                        LLVMTypeRef load_ty = rt->lltype;
+                        // if L is a pointer-sized alloca but rt is a large struct,
+                        // the source is an array of pointers — load ptr, not struct
+                        if (L->au && (L->au->is_pointer || L->au->is_class ||
+                            (L->au->src && (L->au->src->is_pointer || L->au->src->is_class)))) {
+                            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
+                            if (load_ty != ptr_ty && LLVMGetTypeKind(load_ty) == LLVMStructTypeKind)
+                                load_ty = ptr_ty;
+                        }
+                        store_val = LLVMBuildLoad2(B, load_ty, store_val, "assign_load");
+                    }
                 }
             }
             LLVMBuildStore(B, store_val, store_target);
@@ -2180,6 +2190,8 @@ etype formatter_type(aether a, cstr input) {
         case 'u': return etypeid(u32);
         case 'f': case 'F': case 'e': case 'E': case 'g': case 'G':
                   return etypeid(f64);
+        case 'x': case 'X':
+                  return etypeid(u32);
         case 's': return etypeid(symbol);
         case 'p': return u(etype, etypeid(symbol)->au->ptr);
     }
@@ -3826,9 +3838,16 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             if (is_enumerable) {
                 etype_implement(input_type, false);
             }
-            boxed->au = is_enumerable ? 
+            boxed->au = is_enumerable ?
                 u(etype, input_type->au->src)->au : canonical(input_type)->au;
-            LLVMBuildStore(B, input->value, boxed->value);
+            if (!input->loaded && is_struct(input) && input_type->lltype) {
+                // struct boxing: memcpy from alloca into boxed data
+                u64 sz = LLVMABISizeOfType(a->target_data, input_type->lltype);
+                LLVMBuildMemCpy(B, boxed->value, 1, input->value, 1,
+                    LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), sz, false));
+            } else {
+                LLVMBuildStore(B, input->value, boxed->value);
+            }
             return value(canonical(mdl), 
                 LLVMBuildBitCast(B, boxed->value, lltype(canonical(mdl)), "box_to_au"));
         }
@@ -4103,7 +4122,15 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                             src_ptr = LLVMGetOperand(src_ptr, 0);
                         LLVMBuildMemCpy(B, gep, 4, src_ptr, 4, LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), sz, false));
                     } else {
-                        LLVMBuildStore(B, fields[i], gep);
+                        LLVMValueRef store_val = fields[i];
+                        // struct field from unloaded alloca: load struct value first
+                        // but only if the target field is a struct, not a pointer
+                        if (LLVMGetInstructionOpcode(store_val) == LLVMAlloca &&
+                            smem && smem->src && smem->src->is_struct && !smem->src->is_pointer) {
+                            LLVMTypeRef field_ty = LLVMStructGetTypeAtIndex(lltype(mdl), i);
+                            store_val = LLVMBuildLoad2(B, field_ty, store_val, "field_load");
+                        }
+                        LLVMBuildStore(B, store_val, gep);
                     }
                 }
             }
@@ -4559,8 +4586,7 @@ enode aether_e_for(aether a,
 
     if (in_expr && (inherits(in_expr->au, typeid(map)) || inherits(in_expr->au, typeid(array)))) {
         debug_emit(a);
-        if (a->iterator_guard) {
-            // ---- null guard: skip loop if collection is null ----
+        {   // ---- null guard: skip loop if collection is null ----
             LLVMValueRef coll_ptr = in_expr->value;
             LLVMValueRef is_null  = LLVMBuildICmp(B, LLVMIntEQ, coll_ptr,
                 LLVMConstNull(LLVMTypeOf(coll_ptr)), "coll.null");
@@ -4951,15 +4977,17 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
 
     LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
     LLVMValueRef base = n->value;
-    if (!n->loaded) {
+    if (!n->loaded && !(n->au->elements > 0)) {
         base = LLVMBuildLoad2(B, ptr_ty, base, "base_ptr");
     }
 
-    // resolve element type: walk through VAR->src and pointer->src
+    // resolve element type: walk through VAR->src, pointer->src, and array->src
     Au_t elem_au = au;
     if (elem_au->member_type == AU_MEMBER_VAR)
         elem_au = elem_au->src;
     if (elem_au->is_pointer || elem_au->is_explicit_ref)
+        elem_au = elem_au->src;
+    if (elem_au->elements > 0 && elem_au->src)
         elem_au = elem_au->src;
     verify(elem_au, "e_offset: no element type on %s", au->ident ? au->ident : "?");
     LLVMTypeRef elem_ty = lltype(u(etype, elem_au));
@@ -7610,8 +7638,8 @@ none aether_init(aether a) {
     //path src_path = a->module;
     //push(a->include_paths, (Au)src_path);
 
-    a->coverage = a->debug;
-    a->timing_enabled = a->debug;
+    a->coverage = false; //a->debug;
+    a->timing_enabled = false; //a->debug;
 }
 
 none aether_dealloc(aether a) {
