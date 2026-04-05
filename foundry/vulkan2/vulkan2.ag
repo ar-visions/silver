@@ -498,7 +498,7 @@ class vk_context
         expect device_count > 0, "failed to find GPUs with Vulkan support"
         physical_devices: local VkPhysicalDevice [ device_count ]
         vkEnumeratePhysicalDevices[ instance, ref device_count, physical_devices ]
-        physical_device = @physical_devices[0]
+        physical_device = physical_devices[0]
 
         # check device extensions
         ext_count: u32 0
@@ -1932,6 +1932,11 @@ Texture Display
             expect format_count > 0, "No surface formats found"
             formats: new VkSurfaceFormatKHR [ format_count ]
             vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, surface, ref format_count, formats ]
+            f2 : VkSurfaceFormatKHR
+            f2 = formats[0]
+            f3 : VkSurfaceFormatKHR[ formats[0] ]
+            f4 : formats[0]
+            f5 : VkSurfaceFormatKHR formats[0]
             surface_format = formats[0]
             for [ i: u32 0, i < format_count, i += 1 ]
                 if [ formats[i].format == VK_FORMAT_B8G8R8A8_UNORM ]

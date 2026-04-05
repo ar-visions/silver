@@ -642,20 +642,31 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         // to the struct alloca directly instead of storing a pointer
         if (res->au && res->au->is_struct && !res->loaded &&
             LLVMGetInstructionOpcode(res->value) == LLVMAlloca) {
-            L->value = res->value;
+            if (L->value && LLVMGetInstructionOpcode(L->value) == LLVMAlloca && L->value != res->value) {
+                // L already has storage — copy struct data instead of aliasing
+                etype st = u(etype, res->au);
+                if (!st || !st->lltype) st = etype_prep(a, au_arg_type((Au)res->au));
+                if (st && st->lltype) {
+                    LLVMValueRef loaded = LLVMBuildLoad2(B, st->lltype, res->value, "struct_cp");
+                    LLVMBuildStore(B, loaded, L->value);
+                } else {
+                    L->value = res->value;
+                }
+            } else {
+                L->value = res->value;
+            }
         } else {
             LLVMValueRef store_val = res->value;
-            if (!res->loaded && !is_struct(res->au) && LLVMGetInstructionOpcode(store_val) == LLVMGetElementPtr) {
-                etype rt = u(etype, res->au);
-                if (!rt) rt = u(etype, au_arg_type((Au)res->au));
-                if (rt && rt->lltype)
-                    store_val = LLVMBuildLoad2(B, rt->lltype, store_val, "assign_load");
-            }
-            // loaded pointer to struct: load struct through pointer before storing
-            if (res->loaded && L->au && is_struct((Au)L) && !L->au->is_pointer) {
-                etype st = u(etype, au_arg_type((Au)L->au));
-                if (st && st->lltype)
-                    store_val = LLVMBuildLoad2(B, st->lltype, store_val, "struct_deref");
+            if (!res->loaded && LLVMGetInstructionOpcode(store_val) == LLVMGetElementPtr) {
+                bool skip = res->au->elements > 0 ||
+                    (is_struct(res->au) && is_opaque((Au)au_ancestor(au_arg_type((Au)res->au))));
+                if (!skip) {
+                    etype rt = u(etype, res->au);
+                    if (!rt || !rt->lltype) rt = u(etype, au_arg_type((Au)res->au));
+                    if (!rt || !rt->lltype) rt = etype_prep(a, au_arg_type((Au)res->au));
+                    if (rt && rt->lltype)
+                        store_val = LLVMBuildLoad2(B, rt->lltype, store_val, "assign_load");
+                }
             }
             LLVMBuildStore(B, store_val, store_target);
         }
@@ -3728,8 +3739,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         return input;
 
     // same-type class identity: no conversion needed
-    // skip for structs where the input is still a pointer needing load
-    if (input && canonical(input) == canonical(mdl) && !mdl->au->is_struct)
+    if (input && canonical(input) == canonical(mdl))
         return input;
 
     // type identity cast
@@ -5755,8 +5765,14 @@ none etype_init(etype t) {
             if (src_e && lltype(src_e))
                 t->lltype = lltype(src_e);
         }
-        if (!t->lltype)
-            t->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
+        if (!t->lltype) {
+            // alias to pointer type: use ptr, not a named struct
+            Au_t resolved = au_arg_type((Au)au);
+            if (resolved && resolved->is_pointer)
+                t->lltype = LLVMPointerTypeInContext(a->module_ctx, 0);
+            else
+                t->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
+        }
         if (au != typeid(Au_t) && !au->is_system)
             etype_ptr(a, t->au, null);
     } else if (is_enum(t)) {
