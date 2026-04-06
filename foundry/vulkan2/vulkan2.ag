@@ -188,7 +188,6 @@ class Target
                 offset: VkOffset2D [ 0, 0 ],
                 extent: VkExtent2D [ fw, fh ]
             ] ]
-
             clear_values: local VkClearValue [2]
             clear_values[0].color.float32[0] = clear_color.x
             clear_values[0].color.float32[1] = clear_color.y
@@ -197,25 +196,7 @@ class Target
             clear_values[1].depthStencil.depth   = 1.0
             clear_values[1].depthStencil.stencil = 0
 
-            render_pass : VkRenderPass [ vk_render_pass[i] ]
-
-            printf[ "render_pass 2 = %p\n", render_pass ]
-
-            printf[ "vk_render_pass = %p\n", @VkRenderPass[vk_render_pass[i]] ]
-            printf[ "vk_framebuffer = %p\n", vk_framebuffer[i] ]
-
             render_pass_info : VkRenderPassBeginInfo [
-                sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-                renderPass:      render_pass,
-                framebuffer:     vk_framebuffer[i],
-                renderArea:      VkRect2D [
-                    offset: VkOffset2D [ 0, 0 ],
-                    extent: VkExtent2D [ fw, fh ]
-                ],
-                clearValueCount: 2,
-                pClearValues:    clear_values
-            ]
-            vkCmdBeginRenderPass[ frame, VkRenderPassBeginInfo [
                 sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                 renderPass:      vk_render_pass[i],
                 framebuffer:     vk_framebuffer[i],
@@ -225,7 +206,9 @@ class Target
                 ],
                 clearValueCount: 2,
                 pClearValues:    clear_values
-            ], VK_SUBPASS_CONTENTS_INLINE ]
+            ]
+            vkCmdBeginRenderPass[
+                frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
 
             if [ i == 0 ]
                 for [ m: Model ] in models
@@ -1852,6 +1835,8 @@ Texture Display
             if [ resized && r.models ]
                 for [ m: Model ] in r.models
                     m.rebind_model[ ]
+        last_target = list.last_element[]
+        printf[ "last_target = %p\n", last_target ]
         resized = true
         if [ !backbuffer ]
             capabilities: VkSurfaceCapabilitiesKHR
