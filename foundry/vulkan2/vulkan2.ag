@@ -197,9 +197,24 @@ class Target
             clear_values[1].depthStencil.depth   = 1.0
             clear_values[1].depthStencil.stencil = 0
 
-            printf[ "vk_render_pass = %p\n", vk_render_pass[i] ]
+            render_pass : VkRenderPass [ vk_render_pass[i] ]
+
+            printf[ "render_pass 2 = %p\n", render_pass ]
+
+            printf[ "vk_render_pass = %p\n", @VkRenderPass[vk_render_pass[i]] ]
             printf[ "vk_framebuffer = %p\n", vk_framebuffer[i] ]
 
+            render_pass_info : VkRenderPassBeginInfo [
+                sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                renderPass:      render_pass,
+                framebuffer:     vk_framebuffer[i],
+                renderArea:      VkRect2D [
+                    offset: VkOffset2D [ 0, 0 ],
+                    extent: VkExtent2D [ fw, fh ]
+                ],
+                clearValueCount: 2,
+                pClearValues:    clear_values
+            ]
             vkCmdBeginRenderPass[ frame, VkRenderPassBeginInfo [
                 sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                 renderPass:      vk_render_pass[i],
@@ -209,7 +224,7 @@ class Target
                     extent: VkExtent2D [ fw, fh ]
                 ],
                 clearValueCount: 2,
-                pClearValues:    ref clear_values[0]
+                pClearValues:    clear_values
             ], VK_SUBPASS_CONTENTS_INLINE ]
 
             if [ i == 0 ]
@@ -341,7 +356,7 @@ class Target
             pDependencies:   dependencies
         ]
 
-        n_passes : i32 [ 1 + (reduce) ? 1 : 0 ]
+        n_passes : i32 [ 1 + ((reduce) ? 1 : 0) ]
         for [ i: 0, i < n_passes, i += 1 ]
             if [ i == 1 ]
                 render_pass_info.dependencyCount = 1

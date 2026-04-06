@@ -3857,7 +3857,8 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         etype input_type = canonical(input);
         etype canon     = canonical(input);
         bool  input_estr = canon == etypeid(symbol) || canon == etypeid(cstr);
-        if (!is_system(input) && !is_ptr(input) && mdl->au == typeid(Au) && !input_estr && (is_enum(canonical(input)) || is_struct(input) || is_prim(input))) {
+        if (!is_system(input) && (!is_ptr(input) || input_estr) && mdl->au == typeid(Au) && 
+                (is_enum(canonical(input)) || is_struct(input) || is_prim(input) || input_estr)) {
             a->is_const_op = false;
             if (a->no_build) return e_noop(a, mdl);
             

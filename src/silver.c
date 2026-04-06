@@ -554,7 +554,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
                 L = e_op(a, op_stack[sp], method_stack[sp],
                          (Au)lhs_stack[sp], (Au)L);
             }
-            return e_create(a, expect, L);
+            return e_create(a, expect, (Au)L);
             //return L;
         }
         
@@ -5549,6 +5549,9 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
                 push(values, (Au)expr);
             }
         } else {
+            // load unloaded pointer values (e.g. opaque handle from new array offset)
+            if (!ref_arg && !is_loaded((Au)expr) && is_ptr(expr))
+                expr = enode_value(expr, true);
             push(values, (Au)expr);
         }
         i++;

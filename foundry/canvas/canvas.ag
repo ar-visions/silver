@@ -629,7 +629,7 @@ Target Canvas
         if [ size % 16 != 0 ]    
             printf[ "\n" ]
 
-	func clear [ color: object ]
+	func clear [ color: Au ]
 		save[]
 		set_fill_color[ sk_color[ color ] ]
 		path.clear[]
