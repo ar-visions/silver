@@ -7195,6 +7195,9 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             }
             a->statement_origin = peek(a);
             v = (Au)parse_expression(a, mdl_field, true, true);
+            // load unloaded pointer values (e.g. opaque handle from new array offset)
+            if (v && instanceof(v, enode) && !is_loaded(v) && is_ptr(v))
+                v = (Au)enode_value((enode)v, true);
         } else {
             a->statement_origin = peek(a);
         }
