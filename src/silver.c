@@ -512,7 +512,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
     }
     if (!L)
         return null;
-    
+
     // Iterative precedence climbing without recursion
     // We use a stack to handle higher-precedence right-hand operands
     // Stack holds: pending left operands and their operator info
@@ -554,7 +554,8 @@ static enode reverse_descent(silver a, etype expect) { sequencer
                 L = e_op(a, op_stack[sp], method_stack[sp],
                          (Au)lhs_stack[sp], (Au)L);
             }
-            return L;
+            return e_create(a, expect, L);
+            //return L;
         }
         
         // reduce any stacked operators that are same or tighter precedence
@@ -3578,7 +3579,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     if (load && !is_loaded((Au)mem) && (!is_struct(mem) || is_ptr(mem)))
         mem = enode_value(mem, false);
     Au info = head(mem);
-    return (f && mdl_expect) ? e_create(a, mdl_expect, (Au)mem) : (enode)mem;
+    // convert to expected type, but don't narrow to bool here —
+    // that would destroy information needed by comparison operators (== !=).
+    // the caller (parse_expression) handles the final bool conversion via e_create.
+    if (f && mdl_expect && !(mdl_expect->au == typeid(bool) && !is_bool(mem)))
+        return e_create(a, mdl_expect, (Au)mem);
+    return (enode)mem;
 }
 
 enode parse_switch(silver a);
