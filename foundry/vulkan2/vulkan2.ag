@@ -435,6 +435,7 @@ class Layout
 
     # transition image from this layout to Target layout
     intern func transition [ vk: vk_context, img: VkImage, trans_to: Layout, r: image_range ]
+        printf[ "current layout %p\n", layout ]
         cmd: Command [ vk: vk ]
         cmd.begin
         barrier: VkImageMemoryBarrier [
@@ -1561,8 +1562,9 @@ class Texture
     
     func transition [ new_layout: i32 ] 
         if [ vk_layout != new_layout ]
+            is_d32 : bool [ vk_format == VK_FORMAT_D32_SFLOAT ]
             vk.transition_image_layout[ vk_image, vk_layout, new_layout,
-                0, mip_levels, 0, layer_count, vk_format == VK_FORMAT_D32_SFLOAT ]
+                0, mip_levels, 0, layer_count, @vk_format == VK_FORMAT_D32_SFLOAT ]
             vk_layout = new_layout
 
     func hex_dump [ name: symbol, data: ref u8, size: i32 ]
