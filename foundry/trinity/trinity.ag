@@ -522,14 +522,14 @@ Display Window
 
     func update_canvas [ ]
         # compose  || (omitting this to show actual issue with parse member not being part of read-enode)
-        compose  = Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]
-        colorize = Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]
-        overlay  = Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]
+        compose  = (compose  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        colorize = (colorize || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        overlay  = (overlay  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
         glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        compose .clear[ string[ "#008"  ] ]
-        colorize.clear[ string[ "#fff"  ] ]
-        overlay .clear[ string[ "#fff0" ] ]
-        glyph   .clear[ string[ "#000"  ] ]
+        compose .clear[ "#008"  ]
+        colorize.clear[ "#fff"  ]
+        overlay .clear[ "#fff0" ]
+        glyph   .clear[ "#000"  ]
         #sk_sync[] -- hopefully no need to have a global flush
 
     public func resize [ w: i32, h: i32 ] -> Window
