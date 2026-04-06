@@ -467,3 +467,14 @@ C typedef aliases to pointer types (e.g. `typedef VkPhysicalDevice_T* VkPhysical
 - Schema registered in Au.c bootstrap with `origin`, `count`, `alloc` members.
 - `etype_init` creates LLVM struct body and sets member indices + `is_implemented`.
 - `Au_ts` (pointer to Au_t array): `is_pointer = true`, `src = typeid(Au_t)` set in etype_init.
+
+## Current Issues
+
+### `read_enode` bool narrowing (fixed, in testing)
+- `read_enode` was converting operands to `mdl_expect` (e.g., i32 → bool) before binary operators like `==` could use the natural type. This caused `vk_format == VK_FORMAT_D32_SFLOAT` to codegen as `(bool)vk_format == (bool)126` → `true == true` when passed inline as a function argument.
+- Fix: `read_enode` line 3581 no longer narrows non-bool types to bool. The caller (`parse_expression`) handles the final conversion via `e_create`.
+- Variable init (`is_d32: bool [ expr ]`) was unaffected because `typed_expr` calls `parse_expression` with `hint=false`, so `reverse_descent` got `null` expect. Function args use `hint=true`, which passed `expect=bool` into `reverse_descent` → `read_enode`, triggering the premature conversion.
+
+### Ternary precedence in binary expressions
+- `width / (i == 0) ? 1 : 4` parses as `(width / (i == 0)) ? 1 : 4` instead of `width / ((i == 0) ? 1 : 4)`.
+- When `(expr)` appears as a right-hand operand and is followed by `?`, the parser should recognize the entire ternary `(expr) ? a : b` as the operand, since `(expr)?` is Silver's ternary marker.
