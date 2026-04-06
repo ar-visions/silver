@@ -17,6 +17,9 @@ make clean              # cleans generated headers
 silver trinity --watch    # file watcher mode
 silver trinity --clean    # force rebuild all imports
 silver trinity --release  # release build
+
+# Primary development workflow — always use -v --clean --run together
+silver orbiter -v --clean --run
 ```
 
 - `make` defaults to debug. Debug binary goes to `platform/native/debug/silver`. Release binary goes to `platform/native/bin/silver`.
@@ -289,9 +292,14 @@ Au `map` uses hash buckets; `pairs(map, i)` iterates via `i->key`/`i->value` lin
 
 ### Running the compiler under GDB
 ```bash
-LD_LIBRARY_PATH=/src/silver/platform/native/lib:$LD_LIBRARY_PATH \
-  gdb --args ./platform/native/debug/silver trinity
+# Always use -v --clean when debugging compiler issues
+VK_LAYER_PATH=/src/silver/install/share/vulkan/explicit_layer.d \
+LD_LIBRARY_PATH=/src/silver/platform/native/lib:/src/silver/install/lib:/src/silver/install/debug:$LD_LIBRARY_PATH \
+  gdb --args ./platform/native/debug/silver orbiter -v --clean --run
 ```
+
+### CRITICAL: Never delete third-party import builds
+**NEVER delete anything under `install/build/`, `checkout/`, or any cmake/meson build directories for imported third-party projects.** These are cached builds of large C++ projects (Vulkan-ValidationLayers, SPIRV-Tools, etc.) that take a very long time to rebuild. Deleting them forces a full rebuild from scratch.
 
 ### Key debugging techniques
 - **Always use GDB with breakpoints** — never guess from source alone.

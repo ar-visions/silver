@@ -5,7 +5,8 @@
     M(X, Y, i, prop,     public,  token,  version) \
     M(X, Y, i, prop,     public,  path,   module_file) \
     M(X, Y, i, prop,     public,  path,   project_path) \
-    M(X, Y, i, prop,     public,  path,   module_path)
+    M(X, Y, i, prop,     public,  path,   module_path) \
+    M(X, Y, i, prop,     public,  map,    env_vars)
 declare_class(exports)
 
 // Clint M. Strandhagen -- the motivation for orbiter, which we design in silver
