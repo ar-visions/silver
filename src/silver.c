@@ -766,16 +766,19 @@ void silver_parse(silver a) {
         else if (strstr(p->chars, "mips"))                                   target_arch = "mips";
         else if (strstr(p->chars, "riscv"))                                  target_arch = "riscv64";
     }
-
+#ifndef NDEBUG
+    Au_t m_debug = def_member(a->au, "debug",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
+#endif
     Au_t m_mac   = def_member(a->au, "apple",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_lin   = def_member(a->au, "linux",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_win   = def_member(a->au, "windows", typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_x86   = def_member(a->au, "x86_64",  typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_arm64 = def_member(a->au, "arm64",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
 
-    etype_register((aether)a, (Au)m_mac,   (Au)hold(e_operand(a, _bool(target_mac),                        etypeid(bool))), false);
-    etype_register((aether)a, (Au)m_lin,   (Au)hold(e_operand(a, _bool(target_lin),                        etypeid(bool))), false);
-    etype_register((aether)a, (Au)m_win,   (Au)hold(e_operand(a, _bool(target_win),                        etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_debug, (Au)hold(e_operand(a, _bool(true),       etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_mac,   (Au)hold(e_operand(a, _bool(target_mac), etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_lin,   (Au)hold(e_operand(a, _bool(target_lin), etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_win,   (Au)hold(e_operand(a, _bool(target_win), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_x86,   (Au)hold(e_operand(a, _bool(strcmp(target_arch, "x86_64") == 0), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_arm64, (Au)hold(e_operand(a, _bool(strcmp(target_arch, "arm64")  == 0), etypeid(bool))), false);
 
@@ -5733,6 +5736,29 @@ Au parse_field(silver a, etype key_type) {
 enode parse_export(silver a) {
     sequencer;
     validate(read_if(a, "export"), "expected export keyword");
+
+    // export KEY: 'value' — environment variable export
+    token t = peek(a);
+    if (t && t->chars[0] >= 'A' && t->chars[0] <= 'Z') {
+        string key = read_alpha(a);
+        validate(key, "expected environment variable name");
+        validate(read_if(a, ":"), "expected : after export key");
+        string val = read_string(a);
+        validate(val, "expected string value for export");
+        val = interpolate(val, (Au)a);
+        silver og = a->is_external ? a->is_external : a;
+        exports exp = (exports)get(og->exports, (Au)string(a->name->chars));
+        if (!exp) {
+            exp = exports(module_path, a->module_path, module_file, a->module_file,
+                          project_path, a->project_path);
+            set(og->exports, (Au)string(a->name->chars), (Au)exp);
+        }
+        if (!exp->env_vars)
+            exp->env_vars = map(hsize, 8);
+        set(exp->env_vars, (Au)key, (Au)val);
+        return e_noop(a, null);
+    }
+
     a->exported_version = read_compacted(a);
     verify(len(a->exported_version), "expected version");
 
@@ -5743,8 +5769,8 @@ enode parse_export(silver a) {
         module_file,    a->module_file,
         project_path,   a->project_path,
         version,        a->exported_version));
-        
-    // a hash can be made of the entire module-dir, 
+
+    // a hash can be made of the entire module-dir,
     // not so efficient to compute back from git data
     // encompassing all resources in folder is not what we want, though -- nor would we track artifacts
 
@@ -6657,8 +6683,19 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             push_lambda_members((aether)a, f);
 
         // we need to initialize the schemas first, then we can actually perform user-based inits
-        if (f->au->is_mod_init)
+        if (f->au->is_mod_init) {
             build_module_initializer(a, (enode)f);
+            // emit setenv calls for exported environment variables
+            silver og = a->is_external ? a->is_external : a;
+            exports exp = (exports)get(og->exports, (Au)string(a->name->chars));
+            if (exp && exp->env_vars) {
+                pairs(exp->env_vars, ev) {
+                    string key = (string)ev->key;
+                    string val = (string)ev->value;
+                    e_setenv((aether)a, key->chars, val->chars);
+                }
+            }
+        }
 
         // before the preamble we handle guard
         if (preamble)
