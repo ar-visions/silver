@@ -1,4 +1,5 @@
 export 0.1.0
+export VK_LAYER_PATH: '{install}/share/vulkan/explicit_layer.d'
 
 import KhronosGroup:Vulkan-Headers/29184b9
 
@@ -9,8 +10,16 @@ ifdef [ apple ]
         >> mkdir -p {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/
         >> ln -s {root_path}/platform/native/lib/libMoltenVK.dylib {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
 
-#import KhronosGroup:Vulkan-ValidationLayers/vulkan-sdk-1.4.341.0
-#     -DVULKAN_HEADERS_INSTALL_DIR={install}
+import KhronosGroup:SPIRV-Headers/vulkan-sdk-1.4.341.0
+
+import KhronosGroup:SPIRV-Tools/vulkan-sdk-1.4.341.0
+    -DSPIRV-Headers_SOURCE_DIR={root_path}/checkout/SPIRV-Headers
+
+import KhronosGroup:Vulkan-Utility-Libraries/vulkan-sdk-1.4.341.0
+    -DVULKAN_HEADERS_INSTALL_DIR={install}
+
+import KhronosGroup:Vulkan-ValidationLayers/vulkan-sdk-1.4.341.0
+    -DVULKAN_HEADERS_INSTALL_DIR={install}
 
 import KhronosGroup:glslang/715c850
     -DVULKAN_HEADERS_INSTALL_DIR={install}
@@ -188,6 +197,9 @@ class Target
             clear_values[1].depthStencil.depth   = 1.0
             clear_values[1].depthStencil.stencil = 0
 
+            printf[ "vk_render_pass = %p\n", vk_render_pass[i] ]
+            printf[ "vk_framebuffer = %p\n", vk_framebuffer[i] ]
+
             vkCmdBeginRenderPass[ frame, VkRenderPassBeginInfo [
                 sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                 renderPass:      vk_render_pass[i],
@@ -197,7 +209,7 @@ class Target
                     extent: VkExtent2D [ fw, fh ]
                 ],
                 clearValueCount: 2,
-                pClearValues:    clear_values
+                pClearValues:    ref clear_values[0]
             ], VK_SUBPASS_CONTENTS_INLINE ]
 
             if [ i == 0 ]
@@ -417,18 +429,18 @@ class Layout
         
         for [ i: 0, i < 7, i += 1 ]
             if [ defaults[i].layout == l ]
-                return ref defaults[i]
+                return defaults[i]
         
         return null
 
     # transition image from this layout to Target layout
-    intern func transition [ vk: vk_context, img: VkImage, to: Layout, r: image_range ] 
+    intern func transition [ vk: vk_context, img: VkImage, trans_to: Layout, r: image_range ]
         cmd: Command [ vk: vk ]
         cmd.begin
         barrier: VkImageMemoryBarrier [
             sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             oldLayout:           layout,
-            newLayout:           to.layout,
+            newLayout:           trans_to.layout,
             srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
             dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
             image:               img,
@@ -441,8 +453,8 @@ class Layout
             ]
         ]
         barrier.srcAccessMask = access
-        barrier.dstAccessMask = to.access
-        vkCmdPipelineBarrier[ cmd.cmd, stage, to.stage, 0, 0, null, 0, null, 1, ref barrier ]
+        barrier.dstAccessMask = trans_to.access
+        vkCmdPipelineBarrier[ cmd.cmd, stage, trans_to.stage, 0, 0, null, 0, null, 1, ref barrier ]
         cmd.submit
 
 
@@ -467,7 +479,7 @@ class vk_context
     func init [ ]
         printf[ "instance = %p, addr = %p\n", instance, ref instance ]
         get_required_extensions[ a ]
-        enable_validation: bool false
+        enable_validation: bool true
         validation_layer: symbol [ (enable_validation) ? "VK_LAYER_KHRONOS_validation" : null ]
         app_info: VkApplicationInfo [
             sType:              VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -640,9 +652,20 @@ class vk_context
             expect queue, "Failed to retrieve graphics queue"
             vk: handle[ a ]
             if [ _vkCreateDebugUtilsMessengerEXT ]
-                result2: _vkCreateDebugUtilsMessengerEXT[ instance, # at base...
-                 VkDebugUtilsMessengerCreateInfoEXT [ sType: VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,messageType:     VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT     |VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT  |VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,pfnUserCallback: ref trinity_log,pUserData:       vk], null, ref debug ]
+                result2: _vkCreateDebugUtilsMessengerEXT[
+                    instance, # at base...
+                    VkDebugUtilsMessengerCreateInfoEXT[
+                        sType: VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+                        messageSeverity: VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                            VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+                        messageType: VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                            VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+                        pfnUserCallback: ref trinity_log, pUserData: vk
+                    ],
+                    null, ref debug
+                ]
                 expect result2 == VK_SUCCESS, "debug messenger" # at base... one above has 1 extra space, and the error shows... i am not sure where to look
+                
             pool_info: VkCommandPoolCreateInfo [
                 sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                 queueFamilyIndex: queue_family_index,
@@ -1664,8 +1687,9 @@ class Texture
                     alloc_info: VmaAllocationCreateInfo [
                         usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
                     ]
+                    printf[ "ptr = %p\n", vma_alloc ]
                     result: vmaCreateImage[ vk.allocator, info, alloc_info, ref vk_image, ref vma_alloc, null ]
-                    expect result == VK_SUCCESS, "Failed to create VkImage: {result}"
+                    expect result == VK_SUCCESS, 'failed to create VkImage: {i32[result]}'
 
                 if [ sampler_size > 0 ]
                     transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
@@ -2418,7 +2442,7 @@ abstract app media_app
 
 intern func trinity_log [severity: VkDebugUtilsMessageSeverityFlagBitsEXT, types: VkDebugUtilsMessageTypeFlagsEXT, callbackData:   ref VkDebugUtilsMessengerCallbackDataEXT, userData:       handle ] -> bool
     if [ severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ]
-        puts "vulkan: %s", callbackData.pMessage
+        printf[ "validator: %s", callbackData.pMessage ]
     return false
 
 

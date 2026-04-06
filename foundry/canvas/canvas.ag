@@ -619,6 +619,16 @@ Target Canvas
 	func current_state [] -> CanvasState
 		return states[depth - 1]
 
+    func hex_dump [ name: symbol, data: ref u8, size: i32 ]
+        printf[ "%s (%d bytes) data ptr = %p :\n", name, size, data ]
+        for [ i: i32 0, i < size, i += 1 ]
+            b: u8 data[ i ]
+            printf[ "%02x ", u32[b] ]
+            if [ (i + 1) % 16 == 0 ]
+                printf[ "\n" ]
+        if [ size % 16 != 0 ]    
+            printf[ "\n" ]
+
 	func clear [ color: object ]
 		save[]
 		set_fill_color[ sk_color[ color ] ]
@@ -640,9 +650,6 @@ Target Canvas
 				blur_rad: 0.0
 			]
 			states.push[ st ]
-
-			st2 : CanvasState [ states[0] ]
-			i : bool true
 		el
 			prev : states[depth - 1]
 			states.push[ prev ]

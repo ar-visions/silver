@@ -678,7 +678,22 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
                     }
                 }
             }
-            LLVMBuildStore(B, store_val, store_target);
+            // loaded pointer to struct target: memcpy through pointer
+            if (res->loaded && L->au && is_struct((Au)L) && !L->au->is_pointer &&
+                LLVMGetTypeKind(LLVMTypeOf(store_val)) == LLVMPointerTypeKind &&
+                LLVMGetInstructionOpcode(store_target) == LLVMAlloca) {
+                etype st = u(etype, L->au->src ? L->au->src : L->au);
+                if (!st || !st->lltype) st = etype_prep(a, au_arg_type((Au)L->au));
+                if (st && st->lltype) {
+                    u64 sz = LLVMABISizeOfType(a->target_data, st->lltype);
+                    LLVMBuildMemCpy(B, store_target, 1, store_val, 1,
+                        LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), sz, false));
+                } else {
+                    LLVMBuildStore(B, store_val, store_target);
+                }
+            } else {
+                LLVMBuildStore(B, store_val, store_target);
+            }
         }
 
         // sync load so LLDB sees stored value
@@ -1903,9 +1918,33 @@ none aether_e_vector_init(aether a, etype element_type, enode vec, array nodes) 
             enode node = (enode)nodes->origin[i];
             LLVMValueRef idx = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), i, 0);
             LLVMValueRef gep = LLVMBuildGEP2(B, lltype(element_type), vec->value, &idx, 1, "elem.ptr");
-            LLVMBuildStore(B, node->value, gep);
+            LLVMValueRef val = node->value;
+            if (!node->loaded)
+                val = LLVMBuildLoad2(B, lltype(element_type), val, "struct_cp");
+            LLVMBuildStore(B, val, gep);
         }
     }
+}
+
+none aether_e_setenv(aether a, symbol key, symbol val) {
+    if (a->no_build) return;
+    LLVMValueRef fn = LLVMGetNamedFunction(a->module_ref, "setenv");
+    if (!fn) {
+        LLVMTypeRef args[] = { LLVMPointerTypeInContext(a->module_ctx, 0),
+                               LLVMPointerTypeInContext(a->module_ctx, 0),
+                               LLVMInt32TypeInContext(a->module_ctx) };
+        LLVMTypeRef fn_ty = LLVMFunctionType(LLVMInt32TypeInContext(a->module_ctx), args, 3, 0);
+        fn = LLVMAddFunction(a->module_ref, "setenv", fn_ty);
+    }
+    LLVMTypeRef args_ty[] = { LLVMPointerTypeInContext(a->module_ctx, 0),
+                              LLVMPointerTypeInContext(a->module_ctx, 0),
+                              LLVMInt32TypeInContext(a->module_ctx) };
+    LLVMTypeRef fn_ty = LLVMFunctionType(LLVMInt32TypeInContext(a->module_ctx), args_ty, 3, 0);
+    LLVMValueRef k  = LLVMBuildGlobalStringPtr(B, key, "env_key");
+    LLVMValueRef v  = LLVMBuildGlobalStringPtr(B, val, "env_val");
+    LLVMValueRef ow = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 0, 0);
+    LLVMValueRef call_args[] = { k, v, ow };
+    LLVMBuildCall2(B, fn_ty, fn, call_args, 3, "");
 }
 
 static enode e_meta_a_node(aether a, Au meta_a) {
@@ -4058,6 +4097,10 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                     enode value = (m->elements > 0) ?
                         (enode)instanceof(i->value, enode) :
                         e_operand(a, i->value, u(etype, m->src));
+                    // unloaded pointer variable used as struct pointer field: load the pointer
+                    // ref expressions produce loaded=true, so they skip this
+                    if (!value->loaded && m->src && m->src->is_pointer)
+                        value = e_load(a, value, null);
                     if (all_const && !LLVMIsConstant(value->value))
                         all_const = false;
 
@@ -4123,12 +4166,19 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                         LLVMBuildMemCpy(B, gep, 4, src_ptr, 4, LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), sz, false));
                     } else {
                         LLVMValueRef store_val = fields[i];
-                        // struct field from unloaded alloca: load struct value first
-                        // but only if the target field is a struct, not a pointer
-                        if (LLVMGetInstructionOpcode(store_val) == LLVMAlloca &&
-                            smem && smem->src && smem->src->is_struct && !smem->src->is_pointer) {
-                            LLVMTypeRef field_ty = LLVMStructGetTypeAtIndex(lltype(mdl), i);
-                            store_val = LLVMBuildLoad2(B, field_ty, store_val, "field_load");
+                        if (LLVMGetInstructionOpcode(store_val) == LLVMAlloca) {
+                            LLVMTypeRef alloc_ty = LLVMGetAllocatedType(store_val);
+                            LLVMTypeKind kind    = LLVMGetTypeKind(alloc_ty);
+                            if (kind == LLVMArrayTypeKind) {
+                                // array alloca (local array var): load the stored pointer
+                                LLVMTypeRef field_ty = LLVMStructGetTypeAtIndex(lltype(mdl), i);
+                                store_val = LLVMBuildLoad2(B, field_ty, store_val, "field_deref");
+                            } else if (smem && smem->src && smem->src->is_struct && !smem->src->is_pointer) {
+                                // embedded struct: copy struct data, not the pointer
+                                LLVMTypeRef field_ty = LLVMStructGetTypeAtIndex(lltype(mdl), i);
+                                store_val = LLVMBuildLoad2(B, field_ty, store_val, "struct_val");
+                            }
+                            // else: struct alloca for pointer field (ref x) — address is the value
                         }
                         LLVMBuildStore(B, store_val, gep);
                     }
@@ -4978,7 +5028,12 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
     LLVMValueRef base = n->value;
     if (!n->loaded && !(n->au->elements > 0)) {
-        base = LLVMBuildLoad2(B, ptr_ty, base, "base_ptr");
+        // for ref params, n->value may be the raw parameter (already a pointer)
+        // only load if the value is an alloca (stored param) not the param itself
+        if (n->au->is_explicit_ref && LLVMGetInstructionOpcode(base) != LLVMAlloca)
+            ; // base is already the pointer value
+        else
+            base = LLVMBuildLoad2(B, ptr_ty, base, "base_ptr");
     }
 
     // resolve element type: walk through VAR->src, pointer->src, and array->src
