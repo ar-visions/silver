@@ -3307,10 +3307,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             verify(read_if(a, "]"), "expected closing-bracket after typeid");
         Au_t f_typeid = find_member(typeid(Au), "__typeid", AU_MEMBER_FUNC, 0, false);
         return e_fn_call(a, u(efunc, f_typeid), a(expr), false);
-    }    
+    }
 
     if (!cmode && read_if(a, "new")) {
         etype mdl = read_etype(a, null);
+        etype mdl_c = canonical(mdl);
+        if (mdl_c) mdl = mdl_c;
         enode esize = null;
         shape sh  = null;
         if (read_if(a, "[")) {
@@ -3727,9 +3729,9 @@ enode parse_statement(silver a)
                 eq(def_name, "alias") || next_is_class(a, false));
             if (is_type)
                 a->has_module_type = true;
-            if (a->has_module_func && (is_type || is_enum))
+            if (a->strict && a->has_module_func && (is_type || is_enum))
                 validate(false, "type definitions must appear before functions at module level");
-            if (a->has_module_type && is_enum)
+            if (a->strict && a->has_module_type && is_enum)
                 validate(false, "enum definitions must appear before class/struct/alias at module level");
         }
 
@@ -7102,8 +7104,8 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         mdl = resolve(mdl);
     }
 
-    etype key = is_mdl_map ? u(etype, mdl->meta_a) : null;
-    etype val = is_mdl_map ? u(etype, mdl->meta_b) : null;
+    etype key = is_mdl_map ? u(etype, mdl->meta_b) : null;
+    etype val = is_mdl_map ? u(etype, mdl->meta_a) : null;
 
     if (!key) key = etypeid(string);
     if (!val) val = etypeid(Au);
@@ -7147,6 +7149,13 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
             k = (Au)const_string(chars, name->chars);
         } else if (key && key != etypeid(string)) {
             k = (Au)parse_expression(a, key, false, true);
+            is_enode_key = true;
+        } else if (is_mdl_map) {
+            // map with string keys: read literal and convert to runtime string
+            token t = peek(a);
+            string name = (string)read_literal(a, typeid(string));
+            validate(name, "expected literal string key");
+            k = (Au)e_create(a, key ? key : etypeid(string), (Au)name);
             is_enode_key = true;
         } else {
             token t = peek(a);
