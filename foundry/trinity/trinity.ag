@@ -1896,7 +1896,8 @@ Texture Display
             
             if [ !vk_swap_images ]
                 count : swap_image_count
-                vk_swap_images = new VkImage [ count ]
+                puts 'VkImage typesize: {sizeof[VkImage]}' 
+                vk_swap_images = new VkImage [ 3 ]
 
             if [ !swap_renders ]
                 swap_renders = array Render [ alloc: swap_image_count ]
