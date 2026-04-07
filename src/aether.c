@@ -3253,7 +3253,10 @@ static bool au_is_c(Au_t au) {
 }
 
 enode aether_e_typeid(aether a, etype mdl) { sequencer
-    mdl = canonical(mdl);
+    etype original = mdl;
+    // don't canonicalize funcptr/lambda types — canonical follows src to return type (none/void)
+    if (!mdl || (!mdl->au->is_funcptr && !mdl->au->is_lambda))
+        mdl = canonical(mdl);
 
     if (a->debug_typeid) {
         fprintf(stderr, "  e_typeid[quants]: mdl=%s(%p) module=%s ptr=%d is_ptr=%d is_rec=%d\n",
@@ -3263,13 +3266,6 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
         a->debug_typeid = false;
     }
 
-    // link back to ref_i8 etc
-    // fixing this in canonical seems to have issues
-    //if (seq == 56) {
-    //    mdl = canonical(mdl);
-    //    seq = seq;
-    //}
-
     // pointer types with their shapes need registration
     // for this we merely need to def() them
     if (is_ptr(mdl) && !is_rec(mdl) && mdl->au->src->is_primitive && mdl->au->src->ptr) {
@@ -3278,7 +3274,6 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
         etype t = elookup(ref_primitive);
         if (t) {
             mdl = t;
-            //mdl = u(etype, mdl->au->src->ptr);
             implement_type_id(mdl);
         }
     }
@@ -3293,26 +3288,40 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
         return e_runtime_type((enode)mdl);
     }
 
-    if (!mdl->type_id) {
-        bool is_c = false;
-        Au_t src = mdl->au;
-        while (src) {
-            if (src->is_c) {
-                is_c = true;
-                break;
-            }
-            src = src->src;
-        }
-        if (is_c || (is_module(mdl->au) || !mdl->au->module->is_au)) {
-            // external C type: create minimal type registration (size only, no member metadata)
-            implement_type_id(mdl);
+    // for alias types (e.g. VkImage, VkFramebuffer), register type_id on the
+    // alias itself so the ident is preserved (canonical strips it away)
+    etype to_register = (original->au->is_alias && original->au->ident) ? original : mdl;
+
+    // anonymous pointer to named opaque struct (e.g. VmaAllocator_T*):
+    // use the src type for registration since the pointer wrapper has no ident
+    if (!to_register->au->ident && to_register->au->is_pointer && to_register->au->src) {
+        etype src_e = u(etype, to_register->au->src);
+        if (src_e && src_e->au->ident)
+            to_register = src_e;
+    }
+
+    if (!to_register->type_id) {
+        bool is_c = au_is_c(to_register->au);
+        if (is_c || (is_module(to_register->au) || !to_register->au->module->is_au)) {
+            implement_type_id(to_register);
         }
     }
 
     a->is_const_op = false;
-    enode n = resolve_typeid(a, (Au)mdl);
+    // try the original alias first, then canonical, then the resolved to_register
+    enode n = resolve_typeid(a, (Au)original);
+    if (!n && original != mdl)
+        n = resolve_typeid(a, (Au)mdl);
+    if (!n && to_register != mdl && to_register != original)
+        n = resolve_typeid(a, (Au)to_register);
     if (!n) {
-        n = resolve_typeid(a, (Au)etypeid(Au)); // for schema objects and such
+        // only Au-family types (Au, Au_t, schema) may fall back to Au's type_id
+        bool is_au_family = mdl->au == typeid(Au) || mdl->au == typeid(Au_t) ||
+                            mdl->au->is_schema || is_au_type((Au)mdl->au);
+        verify(is_au_family, "no type_id registered for %s",
+               original->au->ident ? original->au->ident :
+               (to_register->au->ident ? to_register->au->ident : "(anonymous)"));
+        n = resolve_typeid(a, (Au)etypeid(Au));
     }
     verify(n, "schema instance not found for %o [%i]", mdl, seq);
     return n;
@@ -5796,8 +5805,15 @@ none etype_init(etype t) {
             if (!convert_prim_target && !struct_by_ref && !arg->is_explicit_ref) {
                 mdl = etype_prep(a, t);
             }
-            arg_types[index++] = lltype((convert_prim_target || struct_by_ref || arg->is_explicit_ref) ? 
-                pointer(a, (Au)t) : mdl);
+            // funcptr/lambda args are always pointer type; also catch void (from
+            // imported lambdas whose arg->src resolved to 'none' via def_arg)
+            Au_t resolved_t = au_arg_type((Au)t);
+            bool is_fp = is_func_ptr((Au)t) || is_lambda((Au)t) ||
+                         resolved_t->is_funcptr || resolved_t->is_lambda ||
+                         t == etypeid(none)->au;
+            arg_types[index++] = (convert_prim_target || struct_by_ref || arg->is_explicit_ref) ?
+                lltype(pointer(a, (Au)t)) :
+                (is_fp ? LLVMPointerTypeInContext(a->module_ctx, 0) : lltype(mdl));
         }
 
         if (is_lambda(au)) {
@@ -6025,26 +6041,10 @@ etype implement_type_id(etype t) {
     aether a  = t->mod;
     Au_t   au = t->au;
 
-    if (au->ident && strcmp(au->ident, "VkImage") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
-
     if (t->schema) {
         etype tt = u(etype, t->au);
         if (t && tt->type_id)
             return u(etype, t->schema->au->ptr);
-    }
-
-    if (t->au->ident && strstr(t->au->ident, "app")) {
-        t = t;
-    }
-    
-    
-
-    if (au->ident && strcmp(au->ident, "VkImage") == 0) {
-        int test2 = 2;
-        test2    += 2;
     }
 
     // schema must have it's static_value set to the instance
@@ -6850,14 +6850,7 @@ none aether_build_module_initializer(aether a, enode init) {
 
             arg_list(mem, arg) {
                 etype arg_type = u(etype, arg->src);
-                
-                static int i = 0;
-                i++;
-                //if (i == 6)
-                //    arg_type = arg_type;
-                //if (i >= 6)
-                //    arg_type = resolve(arg_type);
-                
+
                 e_fn_call(a, fn_def_arg, a(
                     fn,
                     const_string(chars, arg->ident),
@@ -6916,8 +6909,9 @@ none aether_build_module_initializer(aether a, enode init) {
         bool is_class_t  = is_class(mdl);
         bool is_struct_t = is_struct(mdl);
         bool is_enum_t   = is_enum(mdl);
+        bool is_alias_t  = mdl->au->is_alias || (mdl->au->is_pointer && !is_class_t);
 
-        if (!is_class_t && !is_struct_t && !is_enum_t)
+        if (!is_class_t && !is_struct_t && !is_enum_t && !is_alias_t)
             continue;
 
         // intern classes still need emplace for typesize
@@ -6930,11 +6924,13 @@ none aether_build_module_initializer(aether a, enode init) {
         // calculate internal size and count
         u64 isize = 0;
         i32 icount = 0;
-        members(tau, mem) {
-            if (mem->member_type == AU_MEMBER_VAR &&
-                mem->access_type == interface_intern) {
-                isize += mem->typesize;
-                icount++;
+        if (!is_alias_t) {
+            members(tau, mem) {
+                if (mem->member_type == AU_MEMBER_VAR &&
+                    mem->access_type == interface_intern) {
+                    isize += mem->typesize;
+                    icount++;
+                }
             }
         }
 
