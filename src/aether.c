@@ -1728,7 +1728,7 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
 static evar lookup_by_unique_type(aether a, Au_t required_type) {
     evar match = null;
     int  count = 0;
-    
+
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
 
@@ -2205,8 +2205,9 @@ bool aether_e_fn_return(aether a, Au o) {
         else {
             enode conv = e_create(a, (etype)u(etype, f->au->rtype), o);
             enode ret_val = enode_value(conv, true);
-            if (!ret_val->loaded && f->au->rtype->is_struct) {
-                etype rtype = (etype)u(etype, f->au->rtype);
+            etype rtype = (etype)u(etype, f->au->rtype);
+            if (rtype && rtype->au->is_struct &&
+                LLVMGetTypeKind(LLVMTypeOf(ret_val->value)) == LLVMPointerTypeKind) {
                 LLVMBuildRet(B, LLVMBuildLoad2(B, lltype(rtype), ret_val->value, "struct_ret"));
             } else
                 LLVMBuildRet(B, ret_val->value);
@@ -3243,7 +3244,16 @@ enode e_runtime_type(enode instance) {
     return value(etypeid(Au_t), LLVMBuildLoad2(B, i8_ptr_ty, header_cast, "runtime_type"));
 }
 
+static bool au_is_c(Au_t au) {
+    while (au) {
+        if (au->is_c) return true;
+        au = au->src;
+    }
+    return false;
+}
+
 enode aether_e_typeid(aether a, etype mdl) { sequencer
+    etype orig = mdl;
     mdl = canonical(mdl);
 
     if (a->debug_typeid) {
@@ -3274,16 +3284,23 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
         }
     }
 
+    // imported C alias-to-pointer types (e.g. VkImage): canonical loses the
+    // alias name, so register the original named type instead
+    if (orig != mdl && !orig->type_id && orig->au->is_alias && au_is_c(orig->au)) {
+        implement_type_id(orig);
+        mdl = orig;
+    }
+
     if (a->no_build)
         return e_noop(a, etypeid(Au_t));
-    
+
     if (!mdl)
         return e_null(a, etypeid(Au_t));
 
     if (instanceof(mdl, enode) && ((enode)mdl)->value) { // so we can take in member variables
         return e_runtime_type((enode)mdl);
     }
-    
+
     if (!mdl->type_id) {
         bool is_c = false;
         Au_t src = mdl->au;
@@ -3303,7 +3320,8 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
     a->is_const_op = false;
     enode n = resolve_typeid(a, (Au)mdl);
     if (!n) {
-        n = resolve_typeid(a, (Au)etypeid(Au)); // for schema objects and such
+        verify(mdl->au->is_schema || mdl->au == typeid(Au_t), "type_id not found for %o [%i]", mdl, seq);
+        n = resolve_typeid(a, (Au)etypeid(Au)); // for schema objects only
     }
     verify(n, "schema instance not found for %o [%i]", mdl, seq);
     return n;
@@ -4209,13 +4227,13 @@ enode aether_e_vector(aether a, etype t, enode shape_data) {
 
     efunc f_alloc    = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
-    enode ma = e_meta_a_node(a, tc->meta_a);
-    enode mb = e_meta_b_node(a, tc->meta_b);
+    enode ma = e_meta_a_node(a, t->meta_a ? t->meta_a : (tc ? tc->meta_a : null));
+    enode mb = e_meta_b_node(a, t->meta_b ? t->meta_b : (tc ? tc->meta_b : null));
     bool is_shape = shape_data && canonical(shape_data) && canonical(shape_data)->au == typeid(shape);
     if (is_shape)
-        return e_fn_call(a, f_alloc, a( e_typeid(a, tc), _i32(0), shape_data, ma, mb ), false);
+        return e_fn_call(a, f_alloc, a( e_typeid(a, t), _i32(0), shape_data, ma, mb ), false);
     enode count = shape_data ? shape_data : (enode)_i32(0);
-    return e_fn_call(a, f_alloc, a( e_typeid(a, tc), count, e_null(a, etypeid(shape)), ma, mb ), false);
+    return e_fn_call(a, f_alloc, a( e_typeid(a, t), count, e_null(a, etypeid(shape)), ma, mb ), false);
 }
 
 enode aether_e_alloc(aether a, etype mdl) {
@@ -6013,7 +6031,14 @@ etype get_type_t_ptr(etype t) {
 }
 
 etype implement_type_id(etype t) {
-    aether a = t->mod;
+    aether a  = t->mod;
+    Au_t   au = t->au;
+
+    if (au->ident && strcmp(au->ident, "VkImage") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     if (t->schema) {
         etype tt = u(etype, t->au);
         if (t && tt->type_id)
@@ -6024,7 +6049,12 @@ etype implement_type_id(etype t) {
         t = t;
     }
     
-    Au_t au = t->au;
+    
+
+    if (au->ident && strcmp(au->ident, "VkImage") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
 
     // schema must have it's static_value set to the instance
     if (!t->schema)
@@ -6033,7 +6063,21 @@ etype implement_type_id(etype t) {
     etype mt = etype_ptr(a, t->schema->au, null);
     mt->au->is_typeid = true;
     mt->au->is_imported = a->is_Au_import;
-    
+    if (mt->au->ident && strcmp(mt->au->ident, "VkImage") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+    // resolve typesize for aliases/pointers to opaque types (e.g. VkImage)
+    if (!au->typesize) {
+        Au_t walk = au;
+        while (walk && !walk->typesize)
+            walk = walk->src;
+        if (walk && walk->typesize)
+            au->typesize = walk->typesize;
+        else if (is_ptr(au))
+            au->typesize = LLVMPointerSize(a->target_data);
+    }
+
     Au_t au_type = au_lookup("Au");
     verify(au_type->ptr, "expected ptr type on Au");
 
@@ -6886,7 +6930,8 @@ none aether_build_module_initializer(aether a, enode init) {
         bool is_struct_t = is_struct(mdl);
         bool is_enum_t   = is_enum(mdl);
 
-        if (!is_class_t && !is_struct_t && !is_enum_t)
+        bool is_c_ptr = mdl->au->is_alias && au_is_c(mdl->au) && is_ptr(mdl);
+        if (!is_class_t && !is_struct_t && !is_enum_t && !is_c_ptr)
             continue;
 
         // intern classes still need emplace for typesize
