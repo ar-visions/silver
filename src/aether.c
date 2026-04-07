@@ -568,12 +568,12 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     etype mem_type = evar_type((evar)L);
 
     LLVMValueRef store_target = L->value;
-    if (L->au->is_explicit_ref && op_val > OPType__bind) {
+    if (L->au->is_explicit_ref && op_val > OPType__assign) {
         if (is_struct(L->au->src)) {
             // struct refs: L->value is already the pointer to struct
             store_target = L->value;
         } else {
-            // primitive refs: L->value is alloca holding the pointer, load it
+            // compound operators (+=, -=, etc): dereference the ref to modify pointed-to data
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
             store_target = LLVMBuildLoad2(B, ptr_ty, L->value, "ref_target");
         }
