@@ -3253,7 +3253,6 @@ static bool au_is_c(Au_t au) {
 }
 
 enode aether_e_typeid(aether a, etype mdl) { sequencer
-    etype orig = mdl;
     mdl = canonical(mdl);
 
     if (a->debug_typeid) {
@@ -3282,13 +3281,6 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
             //mdl = u(etype, mdl->au->src->ptr);
             implement_type_id(mdl);
         }
-    }
-
-    // imported C alias-to-pointer types (e.g. VkImage): canonical loses the
-    // alias name, so register the original named type instead
-    if (orig != mdl && !orig->type_id && orig->au->is_alias && au_is_c(orig->au)) {
-        implement_type_id(orig);
-        mdl = orig;
     }
 
     if (a->no_build)
@@ -3320,8 +3312,7 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
     a->is_const_op = false;
     enode n = resolve_typeid(a, (Au)mdl);
     if (!n) {
-        verify(mdl->au->is_schema || mdl->au == typeid(Au_t), "type_id not found for %o [%i]", mdl, seq);
-        n = resolve_typeid(a, (Au)etypeid(Au)); // for schema objects only
+        n = resolve_typeid(a, (Au)etypeid(Au)); // for schema objects and such
     }
     verify(n, "schema instance not found for %o [%i]", mdl, seq);
     return n;
@@ -6063,10 +6054,6 @@ etype implement_type_id(etype t) {
     etype mt = etype_ptr(a, t->schema->au, null);
     mt->au->is_typeid = true;
     mt->au->is_imported = a->is_Au_import;
-    if (mt->au->ident && strcmp(mt->au->ident, "VkImage") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
     // resolve typesize for aliases/pointers to opaque types (e.g. VkImage)
     if (!au->typesize) {
         Au_t walk = au;
@@ -6930,8 +6917,7 @@ none aether_build_module_initializer(aether a, enode init) {
         bool is_struct_t = is_struct(mdl);
         bool is_enum_t   = is_enum(mdl);
 
-        bool is_c_ptr = mdl->au->is_alias && au_is_c(mdl->au) && is_ptr(mdl);
-        if (!is_class_t && !is_struct_t && !is_enum_t && !is_c_ptr)
+        if (!is_class_t && !is_struct_t && !is_enum_t)
             continue;
 
         // intern classes still need emplace for typesize
