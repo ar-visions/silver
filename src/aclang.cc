@@ -874,6 +874,10 @@ public:
             Au_t alias = def_type(aether_top_scope(e), name.c_str(), AU_TRAIT_ALIAS | AU_TRAIT_IS_C);
             //alias->module = e->current_import->au;
             alias->src = underlying;
+            if (underlying->typesize)
+                alias->typesize = underlying->typesize;
+            else if (underlying->is_pointer)
+                alias->typesize = sizeof(void*);
         }
         return true;
     }
