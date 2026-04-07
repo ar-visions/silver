@@ -3312,7 +3312,6 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     if (!cmode && read_if(a, "new")) {
         etype mdl = read_etype(a, null);
         etype mdl_c = canonical(mdl);
-        if (mdl_c) mdl = mdl_c;
         enode esize = null;
         shape sh  = null;
         if (read_if(a, "[")) {
@@ -3320,7 +3319,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             sh = instanceof(esize->literal, shape);
             validate(read_if(a, "]"), "expected closing-bracket after new Type [");
         }
-        etype  ptr_type = (etype)shape_pointer(a, (Au)mdl->au, esize);
+        etype  ptr_type = (etype)shape_pointer(a, (Au)(mdl_c ? mdl_c : mdl)->au, esize);
         enode  vec      = e_vector(a, mdl, esize);
  
         /// parse optional constant data: new i32[4x4] [ 1 2 3 4, 1 1 1 1, ... ]
