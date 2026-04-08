@@ -4096,13 +4096,28 @@ real clampf(real i, real mn, real mx) {
 
 none vector_init(vector a);
 
+// grow the vector's user-space `origin` buffer to hold at least `alloc` elements.
+// the buffer is sized in `vdata_stride` units (scalar size for primitive vectors,
+// pointer size for object vectors). updates a->alloc; leaves a->count alone.
+static void vector_grow(vector a, sz alloc) {
+    if (alloc <= a->alloc) return;
+    sz   stride = vdata_stride((Au)a);
+    u8*  prev   = (u8*)a->origin;
+    u8*  data   = calloc(alloc, stride);
+    if (prev && a->count > 0)
+        memcpy(data, prev, a->count * stride);
+    if (prev) free(prev);
+    a->origin = (Au*)data;
+    a->alloc  = alloc;
+}
+
 vector vector_with_i32(vector a, i32 count) {
-    vrealloc((Au)a, count);
+    vector_grow(a, count);
     return a;
 }
 
 sz vector_len(vector a) {
-    return header((Au)a)->count;
+    return a->count;
 }
 
 // we want hashmap to do less memory refs than map; also no ordering needed
@@ -5122,7 +5137,7 @@ none list_push_item(list a, item i) {
 }
 
 Au list_push(list a, Au e) {
-    item n = Au_hold((Au)item());
+    item n = (item)Au_hold((Au)item());
     n->value = a->unmanaged ? e : Au_hold(e);
     if (a->last) {
         a->last->next = n;
@@ -5310,105 +5325,104 @@ Au Au_vrealloc(Au a, sz alloc) {
     return i->data;
 }
 
+
 none vector_init(vector a) {
     Au f = head(a);
-    f->count = 0;
-    f->scalar = (f->type && f->type->meta.a) ? meta_index(a, 0) : a->type ? a->type : typeid(i8);
-    f->data_shape  = hold(a->data_shape);
+    a->count   = 0;
+    f->scalar  = (f->type && f->type->meta.a) ? meta_index((Au)a, 0)
+                : a->type ? a->type : typeid(i8);
+    f->data_shape = hold(a->data_shape);
     verify(f->scalar, "scalar not set");
     if (f->data_shape)
         a->alloc = shape_total(f->data_shape);
-    vrealloc((Au)a, a->alloc);
+    if (a->alloc > 0)
+        vector_grow(a, a->alloc);
 }
 
 vector vector_with_path(vector a, path file_path) {
     Au f = head(a);
     f->scalar = typeid(i8);
-    
     verify(exists(file_path), "file %o does not exist", file_path);
     FILE* ff = fopen(cstring(file_path), "rb");
     fseek(ff, 0, SEEK_END);
     sz flen = ftell(ff);
     fseek(ff, 0, SEEK_SET);
 
-    vrealloc((Au)a, flen);
-    f->count = flen;
-    size_t n = fread(f->data, 1, flen, ff);
-    verify(n == flen, "could not read file: %o", f);
+    vector_grow(a, flen);
+    a->count = flen;
+    size_t n = fread(a->origin, 1, flen, ff);
+    verify(n == flen, "could not read file: %o", a);
     fclose(ff);
     return a;
 }
 
 ARef vector_vget(vector a, num index) {
     num location = index * a->type->typesize;
-    i8* arb = (i8*)vdata(a);
+    i8* arb = (i8*)a->origin;
     return (ARef)&arb[location];
 }
 
 none vector_vset(vector a, num index, ARef element) {
     num location = index * a->type->typesize;
-    i8* arb = (i8*)vdata(a);
-    memcpy(&arb[location], element, a->type->typesize); 
+    i8* arb = (i8*)a->origin;
+    memcpy(&arb[location], element, a->type->typesize);
 }
 
 Au vector_resize(vector a, sz size) {
-    vrealloc((Au)a, size);
-    Au f = head(a);
-    f->count = size;
-    return f->data;
+    vector_grow(a, size);
+    a->count = size;
+    return (Au)a->origin;
 }
 
 Au vector_reallocate(vector a, sz size) {
-    vrealloc((Au)a, size);
-    Au f = head(a);
-    return f->data;
+    vector_grow(a, size);
+    return a->origin;
 }
 
 none vector_vconcat(vector a, ARef any, num count) {
     if (count <= 0) return;
-    Au_t type = vdata_type(a);
+    Au_t type = vdata_type((Au)a);
+    if (a->alloc < a->count + count)
+        vector_grow(a, (a->alloc << 1) + 32 + count);
+
+    u8* ptr  = (u8*)a->origin;
+    i64 size = vdata_stride((Au)a);
+    memcpy(&ptr[a->count * size], any, size * count);
+    a->count += count;
     Au f = head(a);
-    if (f->alloc < f->count + count)
-        vrealloc(a, (f->alloc << 1) + 32 + count);
-    
-    u8* ptr  = (u8*)vdata(a);
-    i64 size = vdata_stride(a);
-    memcpy(&ptr[f->count * size], any, size * count);
-    f->count += count;
     if (f->data_shape)
-        f->data_shape->data[f->data_shape->count - 1] = f->count;
+        f->data_shape->data[f->data_shape->count - 1] = a->count;
 }
 
 none vector_vpush(vector a, Au any) {
     vector_vconcat(a, (ARef)any, 1);
 }
 
-num abso(num i) { 
+num abso(num i) {
     return (i < 0) ? -i : i;
 }
 
 vector vector_vslice(vector a, num from, num to) {
-    Au      f   = head(a);
-    num count = (1 + abso(from - to)); // + 31 & ~31;
-    Au res = alloc(f->type, 1, null, null, null);
-    Au res_f = head(res);
-    u8* src   = (u8*)f->data;
-    u8* dst   = null;
-    fault("implement vector_slice allocator");
-    i64 stride = vdata_stride(a);
-    if (from <  to)
+    Au   f      = head(a);
+    num  count  = (1 + abso(from - to));
+    Au   res    = alloc(f->type, 1, null, null, null);
+    vector vres = (vector)res;
+    Au_initialize(res);
+    vector_grow(vres, count);
+    u8* src    = (u8*)a->origin;
+    u8* dst    = (u8*)vres->origin;
+    i64 stride = vdata_stride((Au)a);
+    if (from < to)
         memcpy(dst, &src[from * stride], count * stride);
     else
-        for (int i = from; i > to; i--, dst++)
-            memcpy(dst, &src[i * stride], count * stride);
-    res_f->data = (Au)dst;
-    Au_initialize(res);
-    return (vector)res;
+        for (int i = from; i > to; i--, dst += stride)
+            memcpy(dst, &src[i * stride], stride);
+    vres->count = count;
+    return vres;
 }
 
 sz vector_count(vector a) {
-    Au f = head(a);
-    return f->count;
+    return a->count;
 }
 
 define_class(vector, collective);
@@ -6759,7 +6773,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
         vector vres = (vector)alloc(schema, 1, null, null, null);
         vres->data_shape = new_shape(count, 0);
         Au_initialize((Au)vres);
-        i8* data = (i8*)vdata(vres);
+        i8* data = (i8*)vres->origin;
         int index = 0;
         each (prelim, Au, o) {
             Au_t itype = isa(o);

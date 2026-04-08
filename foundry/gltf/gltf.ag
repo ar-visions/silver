@@ -301,9 +301,22 @@ class AssetDesc
 class GltfBuffer
     public byteLength:      u64
     public uri:             path
-    public data:            vector
-    func init [] 
-        data = vector [ uri ]
+    public data:            ref u8
+    func init []
+        if [ !uri ]
+            return
+        fp: fopen[ uri.chars, "rb" ]
+        if [ !fp ]
+            puts 'GltfBuffer: failed to open {uri.chars}'
+            return
+        fseek[ fp, 0, SEEK_END ]
+        length: i64 [ ftell[ fp ] ]
+        rewind[ fp ]
+        buf: new u8 [ length ]
+        fread[ buf, 1, length, fp ]
+        fclose[ fp ]
+        data       = buf
+        byteLength = length
 
     # implemented in C as test
     func test [] -> bool 
