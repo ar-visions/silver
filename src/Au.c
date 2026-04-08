@@ -972,7 +972,7 @@ bool Au_is_opaque  (Au t) {
 bool Au_is_system  (Au t) {
     Au_t au = au_arg(t);
     if (au->is_system) return true;
-    au = au_arg_type((Au_t)au);
+    au = au_arg_type((Au)au);
     if (au->is_system) return true;
     return false;
 }
@@ -1354,20 +1354,20 @@ Au array_getter_num(array a, num i) {
 }
 
 static Au* array_indexer(array a, Au ai) {
-    num* n = (num*)instance_of(ai, typeid(num));
     num offset = 0;
-    if (n) {
+    num*    n = (num*)instance_of(ai, typeid(num));
+    if (!n) n = (i64*)instance_of(ai, typeid(i64));
+    
+    if  (n) {
         offset = *n;
     } else {
         shape i = instanceof(ai, shape);
-        verify(i, "expected shape");
+        //verify(i, "expected shape");
 
         verify(a->data_shape, "array has no shape");
-
-        verify(i->count <= a->data_shape->count,
+        verify(i && (i->count <= a->data_shape->count),
             "shape index rank exceeds array rank");
 
-        u64 offset = 0;
         u64 stride = 1;
 
         // compute strides from the back (row-major)
@@ -2419,6 +2419,7 @@ none debug() {
 
 static none init_recur(Au a, Au_t current, raw last_init) {
     Au_t map_type = typeid(map);
+    if (!current) return;
     if (current == (Au_t)&Au_Au_i.type) return;
     Au_f* au_f = ((Au_f*)current);
     none(*init)(Au) = au_f->ft.init;
@@ -2480,7 +2481,10 @@ bool f64_is_zero(f64* a)    { return *a == 0.0; }
 
 Au Au_initialize(Au a) {
     Au   f = header(a);
-    if (f->type->traits & AU_TRAIT_USER_INIT) return a; 
+    if (f->type->traits & AU_TRAIT_USER_INIT) return a;
+    // primitives, enums, and other non-class types have no init chain
+    // or hold_members vtable; skip them
+    if (f->type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) return a;
 
     #ifndef NDEBUG
     Au_validator(a);
@@ -3035,16 +3039,20 @@ none Au_hold_members(Au a) {
     while (type != typeid(Au)) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = (Au_t)type->members.origin[i];
+            if (mem->member_type != AU_MEMBER_VAR) continue;
             Au   *mdata = (Au*)((cstr)a + mem->offset);
-            if (mem->member_type == AU_MEMBER_VAR)
-                if (!is_inlay(mem) && *mdata) {
-                    if (mem->meta.a == typeid(weak))
-                        continue;
-                    Au member_value = *mdata;
-                    Au head = header(member_value);
-                    if (head->managed)
-                        head->refs++;
-                }
+            if (!is_inlay(mem) && *mdata) {
+                if (mem->meta.a == typeid(weak))
+                    continue;
+
+                if (type->ident && strstr(type->ident, "Pbr"))
+                    printf("type (%s) base addr = %p, prop = %s, offset = %i, member_type = %d\n",
+                        type->ident, a, mem->ident, (int)mem->offset, (int)mem->member_type);
+                Au member_value = *mdata;
+                Au head = header(member_value);
+                if (head->managed)
+                    head->refs++;
+            }
         }
         type = type->context;
     }
@@ -3444,9 +3452,9 @@ Au construct_with(Au_t type, Au data, ctx context) {
     }
     /// check for identical constructor
     Au_t au = type;
-    while (au != typeid(Au)) {
-        for (num i = 0; i < type->members.count; i++) {
-            Au_t mem = (Au_t)type->members.origin[i];
+    while (au && au != typeid(Au)) {
+        for (num i = 0; i < au->members.count; i++) {
+            Au_t mem = (Au_t)au->members.origin[i];
             
             if (!result && mem->member_type == AU_MEMBER_CONSTRUCT) {
                 none* addr = mem->value;
@@ -4252,21 +4260,22 @@ none map_set(map m, Au k, Au v) {
         vtype->ident, m->last_type->ident, info->source, info->line);
     m->last_type = vtype;
     
+    Au info2 = header(v);
     if (i->value) {
         if (i->value != v) {
             if (!m->unmanaged) drop(i->value);
-            i->value = m->unmanaged ? v : hold(v);
+            i->value = m->unmanaged ? v : Au_hold(v);
         } else {
             return;
         }
     } else {
-        i->value = m->unmanaged ? v : hold(v);
+        i->value = m->unmanaged ? v : Au_hold(v);
     }
 
     bool in_fifo = i->ref != null;
     if (!in_fifo) {
         item ref = (item)list_push((list)m, v);
-        ref->key = m->unmanaged ? k : hold(k);
+        ref->key = m->unmanaged ? k : Au_hold(k);
         ref->ref = (Au)i; // these reference each other
         i->ref = (Au)ref;
     }
@@ -5113,8 +5122,8 @@ none list_push_item(list a, item i) {
 }
 
 Au list_push(list a, Au e) {
-    item n = hold(item());
-    n->value = a->unmanaged ? e : hold(e);
+    item n = Au_hold((Au)item());
+    n->value = a->unmanaged ? e : Au_hold(e);
     if (a->last) {
         a->last->next = n;
         n->prev       = a->last;
@@ -6554,7 +6563,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             else if (force_f32 || schema == typeid(f32)) {
                 res = _f32(strtof(origin, &scan));
                 if (force_f32)
-                    scan++; // f++
+                    scan++;
             }
             else
                 res = _f64(strtod(origin, &scan));
@@ -6639,8 +6648,9 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                 else
                     scan = ws(&scan[1]);
             }
-            Au value = parse_object(scan, (Au_t)(mem ? mem->type : null),
-                mem->meta.a, &scan, context);
+            Au value = parse_object(scan,
+                (Au_t)(mem ? mem->type : (is_map ? meta_type : null)),
+                mem ? mem->meta.a : null, &scan, context);
             
             //if (!value)
             //    return null;
