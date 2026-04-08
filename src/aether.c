@@ -6197,13 +6197,16 @@ none etype_implement(etype t, bool w) { sequencer
         etype mdl = etype_prep(a, au->src);
         LLVMTypeRef type = lltype(mdl);
 
-        // if module member or C extern, then its a global value
-        if (!au->context->context || (au->is_c && au->is_static)) {
+        // if module member or C extern, then its a global value.
+        // a struct/class with null context is a record, NOT a module — don't
+        // promote its fields to LLVM globals.
+        bool parent_is_record = au->context && (au->context->is_struct || au->context->is_class);
+        if ((!au->context->context && !parent_is_record) || (au->is_c && au->is_static)) {
             // mod->is_Au_import indicates this is coming from a lib, or we are making a new global
-            bool is_external = ((module && au->access_type == interface_public) || 
+            bool is_external = ((module && au->access_type == interface_public) ||
                 a->is_Au_import || au->is_system || (au->is_c && au->is_static));
             LLVMValueRef G = is_external ?
-                LLVMFetchGlobal(a->module_ref, type, (cstr)llvm_id(a, (symbol)au->ident)) : 
+                LLVMFetchGlobal(a->module_ref, type, (cstr)llvm_id(a, (symbol)au->ident)) :
                 LLVMAddGlobal(a->module_ref, type, (cstr)llvm_id(a, (symbol)au->ident));
             LLVMLinkage linkage = is_external ?
                 LLVMExternalLinkage : LLVMInternalLinkage;
