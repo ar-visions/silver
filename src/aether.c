@@ -298,8 +298,17 @@ enode enode_value(enode mem, bool force_load) { sequencer
         Au_t au = au_arg_type((Au)mem);
         if (!force_load && is_struct(au))
             return mem;
-        if (au->elements > 0)
+        if (au->elements > 0) {
+            // direct stack array enode: value IS the array — return as-is.
+            // variable holding a stack array pointer: value is alloca ptr — load it.
+            if (mem->value && LLVMGetInstructionOpcode(mem->value) == LLVMAlloca &&
+                LLVMGetTypeKind(LLVMGetAllocatedType(mem->value)) == LLVMPointerTypeKind) {
+                LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
+                LLVMValueRef loaded = LLVMBuildLoad2(B, ptr_ty, mem->value, "var_arr_load");
+                return enode(mod, a, value, loaded, loaded, true, au, au);
+            }
             return mem;
+        }
 
         string id = f(string, "load_%i_%s", seq, mem->au->ident ? mem->au->ident : "");
         Au info = head(mem);
@@ -638,12 +647,23 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         /* ------------------------------------------------------------
         * Phase 6: store
         * ------------------------------------------------------------ */
+        // load variables that hold a pointer (e.g. local stack array vars):
+        // res->value is the alloca slot, but the store needs the stored pointer
+        if (!res->loaded && res->au && res->au->member_type == AU_MEMBER_VAR &&
+            res->au->src && (res->au->src->is_pointer || res->au->src->elements > 0) &&
+            res->value && LLVMGetInstructionOpcode(res->value) == LLVMAlloca) {
+            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
+            LLVMValueRef ld = LLVMBuildLoad2(B, ptr_ty, res->value, "store_ptr_load");
+            res = enode(mod, a, au, res->au, value, ld, loaded, true);
+        }
+
         // for struct construction results (unloaded alloca), alias the evar
         // to the struct alloca directly instead of storing a pointer
         if (res->au && res->au->is_struct && !res->loaded &&
             LLVMGetInstructionOpcode(res->value) == LLVMAlloca) {
-            if (L->value && LLVMGetInstructionOpcode(L->value) == LLVMAlloca && L->value != res->value) {
-                // L already has storage — copy struct data instead of aliasing
+            if (L->value && L->value != res->value) {
+                // L already has destination storage (alloca, GEP, arg, etc.)
+                // copy struct data instead of aliasing
                 etype st = u(etype, res->au);
                 if (!st || !st->lltype) st = etype_prep(a, au_arg_type((Au)res->au));
                 if (st && st->lltype) {
@@ -2620,6 +2640,16 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super) { sequence
                     is_prim(au_arg_type((Au)arg_mem)))
                     conv = enode_value(conv, true);
 
+                // load variables that hold a pointer (e.g. local stack array vars):
+                // the function expects a pointer value, but conv->value is the alloca slot
+                if (!conv->loaded && !arg_mem->is_explicit_ref &&
+                    conv->au && conv->au->member_type == AU_MEMBER_VAR &&
+                    conv->au->src && (conv->au->src->is_pointer || conv->au->src->elements > 0)) {
+                    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
+                    LLVMValueRef ld = LLVMBuildLoad2(B, ptr_ty, conv->value, "arg_ptr_load");
+                    conv = enode(mod, a, au, conv->au, value, ld, loaded, true);
+                }
+
                 arg_values[index] = conv->value;
                 if (funcptr)
                     arg_types[index] = lltype(arg_t);
@@ -3804,8 +3834,17 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
 
     // C array decay: type with elements > 0 is already a pointer to its element type
     if (input && is_ptr(mdl) && canonical(input)->au->elements > 0 &&
-        canonical(input)->au->src == mdl->au->src)
+        canonical(input)->au->src == mdl->au->src) {
+        // if input is an unloaded variable holding a pointer (e.g. local stack array var),
+        // load the alloca slot to get the actual array pointer
+        if (!input->loaded && input->au && input->au->member_type == AU_MEMBER_VAR &&
+            input->value && LLVMGetInstructionOpcode(input->value) == LLVMAlloca) {
+            LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
+            LLVMValueRef ld = LLVMBuildLoad2(B, ptr_ty, input->value, "decay_load");
+            return enode(mod, a, au, input->au, value, ld, loaded, true);
+        }
         return input;
+    }
 
     // same-type class identity: no conversion needed
     if (input && canonical(input) == canonical(mdl))
@@ -4120,6 +4159,16 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                     // ref expressions produce loaded=true, so they skip this
                     if (!value->loaded && m->src && m->src->is_pointer)
                         value = e_load(a, value, null);
+                    // unloaded stack-array variable assigned to pointer field: load the alloca slot
+                    // (var has au->src = arr_au with is_pointer + elements > 0)
+                    if (!value->loaded && value->au && value->au->member_type == AU_MEMBER_VAR &&
+                        value->au->src && (value->au->src->is_pointer || value->au->src->elements > 0) &&
+                        value->value && LLVMGetInstructionOpcode(value->value) == LLVMAlloca &&
+                        LLVMGetTypeKind(LLVMGetAllocatedType(value->value)) == LLVMPointerTypeKind) {
+                        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
+                        LLVMValueRef ld = LLVMBuildLoad2(B, ptr_ty, value->value, "field_ptr_load");
+                        value = enode(mod, a, au, value->au, value, ld, loaded, true);
+                    }
                     if (all_const && !LLVMIsConstant(value->value))
                         all_const = false;
 
@@ -5048,9 +5097,9 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     LLVMValueRef base = n->value;
     if (!n->loaded && !(n->au->elements > 0)) {
         // for ref params, n->value may be the raw parameter (already a pointer)
-        // only load if the value is an alloca (stored param) not the param itself
-        if (n->au->is_explicit_ref && LLVMGetInstructionOpcode(base) != LLVMAlloca)
-            ; // base is already the pointer value
+        // only skip load if the value is a function argument (not alloca or GEP)
+        if (n->au->is_explicit_ref && LLVMIsAArgument(base))
+            ; // base is already the pointer value (function parameter)
         else
             base = LLVMBuildLoad2(B, ptr_ty, base, "base_ptr");
     }
@@ -6330,7 +6379,11 @@ none etype_implement(etype t, bool w) { sequencer
                         // get largest union member
                         Au src_info = head(src);
                         etype s = u(etype, src);
-                        if (m->is_inlay)
+                        if (m->is_explicit_ref) {
+                            // ref T fields: laid out as a pointer in the struct.
+                            // src is unwrapped to T, so wrap it back to T* for the LLVM type.
+                            struct_members[index] = lltype(pointer(a, (Au)src));
+                        } else if (m->is_inlay)
                             struct_members[index] = src->is_class ? s->lltype : lltype(s);
                         else {
                             enum AU_MEMBER memtype = s->au->member_type;
@@ -6415,6 +6468,25 @@ none etype_implement(etype t, bool w) { sequencer
             t = t;
         }
         LLVMStructSetBody(t->lltype, struct_members, count, au->is_c ? 0 : 1);
+
+        // assign byte offsets to members so reflection (JSON parser, hold_members)
+        // can do raw pointer arithmetic via mem->offset
+        // only set offsets that haven't been explicitly assigned (current value 0);
+        // C-defined types set their offsets via offsetof() at registration time
+        if (!au->is_union) {
+            each(cl, etype, tt) {
+                if (multi_Au && tt->au == typeid(Au)) continue;
+                for (int i = 0; i < tt->au->members.count; i++) {
+                    Au_t m = (Au_t)tt->au->members.origin[i];
+                    if (m->member_type != AU_MEMBER_VAR) continue;
+                    if (m->is_static || m->is_elaborate) continue;
+                    if (m->offset != 0) continue;
+                    if (m->index < 0 || m->index >= (int)LLVMCountStructElementTypes(t->lltype))
+                        continue;
+                    m->offset = LLVMOffsetOfElement(a->target_data, t->lltype, m->index);
+                }
+            }
+        }
 
     } else if (is_enum(t)) {
         /*
@@ -6602,7 +6674,9 @@ none etype_implement(etype t, bool w) { sequencer
 
     if (!was_implemented)
     if (!au->is_void && !is_opaque(au) && !is_func((Au)au) && t->lltype) {
-        if (au->elements && LLVMGetTypeKind(t->lltype) != LLVMArrayTypeKind)
+        // wrap as fixed-size array only when this Au is not itself a pointer.
+        // is_pointer + elements = "pointer to N elements" (decayed array), lltype stays ptr.
+        if (au->elements && !au->is_pointer && LLVMGetTypeKind(t->lltype) != LLVMArrayTypeKind)
             t->lltype = LLVMArrayType(t->lltype, au->elements);
         /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// ///
                     au->abi_size   = LLVMABISizeOfType(a->target_data, t->lltype) * 8;
@@ -7049,10 +7123,13 @@ none aether_build_module_initializer(aether a, enode init) {
                     }
                 }
 
+                etype prop_type = mem->is_explicit_ref ?
+                    pointer(a, (Au)mem->src) :
+                    canonical(u(etype, mem->src));
                 e_fn_call(a, fn_def_prop, a(
                     type_id,
                     const_string(chars, mem->ident),
-                    e_typeid(a, canonical(u(etype, mem->src))),
+                    e_typeid(a, prop_type),
                     _u64(mem->traits),
                     _u32(mem->offset),
                     _u32(mem->abi_size),

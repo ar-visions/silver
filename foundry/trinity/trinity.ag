@@ -161,10 +161,14 @@ class Render
             if [ reduce ]
                 reduction.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         
+        if [ !color.vk_image_view ]
+            return
         for [ i: 0, i < 1 + reduce, i += 1 ]
             vk_view_attachments: local VkImageView [2]
             vk_view_attachments[0] = (i == 0) ? color.vk_image_view : reduction.vk_image_view
             vk_view_attachments[1] = depth.vk_image_view
+            info : header[ color ] 
+            printf[ "color.vk_image_view = %p\n", color.vk_image_view]
             result: vkCreateFramebuffer[ vk.device, VkFramebufferCreateInfo [
                 sType:           VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
                 renderPass:      vk_render_pass[i],
@@ -174,6 +178,9 @@ class Render
                 height:          height / ((i == 0) ? 1 : 4),
                 layers:          1
             ], null, ref vk_framebuffer[i] ]
+            
+            printf[ "ref of frame = %p\n", ref vk_framebuffer[i] ]
+
             expect result == VK_SUCCESS, "Failed to create framebuffer"
 
     public func draw [ ] 
@@ -204,6 +211,9 @@ class Render
                 extent: VkExtent2D [ fw, fh ]
             ] ]
             clear_values: local VkClearValue [2]
+            printf[ "  Render.draw iter=%d reduce=%d swap=%p clear=[%f,%f,%f,%f]\n",
+                i, reduce, vk_swap_image,
+                clear_color.x, clear_color.y, clear_color.z, clear_color.w ]
             clear_values[0].color.float32[0] = clear_color.x
             clear_values[0].color.float32[1] = clear_color.y
             clear_values[0].color.float32[2] = clear_color.z
@@ -226,7 +236,9 @@ class Render
                 frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
 
             if [ i == 0 ]
+                printf[ "    Render.draw models=%i\n", models.count ]
                 for [ m: Model ] in models
+                    printf[ "      model.pipelines=%i\n", m.pipelines.count ]
                     for [ p: Pipeline ] in m.pipelines
                         # must be done in trinity
                         #if [ m.transform_count && (p.s inherits PBR) ]
@@ -449,7 +461,7 @@ class Layout
 
     # transition image from this layout to Render layout
     intern func transition [ vk: vk_context, img: VkImage, trans_to: Layout, r: image_range ]
-        printf[ "current layout %p\n", layout ]
+        #printf[ "current layout %p\n", layout ]
         cmd: Command [ vk: vk ]
         cmd.begin
         barrier: VkImageMemoryBarrier [
@@ -890,7 +902,7 @@ class Pipeline
             resources.drop[  ]
             resources = null
 
-    public   func draw [ f: handle ] 
+    public   func draw [ f: handle ]
         if [ !resources ]
             bind_resources[]
         if [ s.reload[ ] ]
@@ -963,8 +975,6 @@ class Pipeline
                 meta_type:  at.format
                 expect meta_type, "meta data not set on Surface/extension"
                 all: Surface_resources[ enum_type, enum_value, a ]
-                expect mem.value == 0 && all.count == 1 || all.count == mem.value,
-                    "unexpected len(samplers) for value on LayoutBinding"
                 for [ res: gpu ] in all
                     expect res inherits gpu, "expected gpu resource"
                     res.sync[ w ]
@@ -1057,7 +1067,19 @@ class Pipeline
             attr_count: 0
             attributes: new VkVertexInputAttributeDescription [ vbo.member_count ]
 
+            # count VertexInput attribs the shader actually consumes
+            shader_input_count: 0
+            shader_schema: typeid[ s ]
+            while [ shader_schema != typeid[ shader ] ]
+                for [ si: 0, si < shader_schema.members.count, si += 1 ]
+                    sm: Au_t [ shader_schema.members.origin[si] ]
+                    if [ sm.src == typeid[ VertexInput ] ]
+                        shader_input_count += 1
+                shader_schema = shader_schema.context
+
             for [ i: 0, i < vbo.member_count, i +=1 ]
+                if [ i >= shader_input_count ]
+                    break
                 mem: ref vbo.members[i]
                 attributes[attr_count].binding  = 0
                 attributes[attr_count].location = attr_count
@@ -1240,31 +1262,45 @@ class Model
             for [ p: Pipeline ] in pipelines
                 p.rebind[]
 
-    public func finish [ r_target: Render, render_id: i32 ] 
+    public func finish [ r_target: Render, render_id: i32 ]
         r = r_target
         pipelines = array Pipeline [ alloc: 16 ]
         is_clear: !r.models || r.models.count == 0
-        
+        printf[ "Model.finish: is_clear=%d s=%p id=%p nodes=%p quad_m=%p\n",
+            is_clear, s, id, nodes, vk.quad_m ]
+
         if [ !s && !is_clear ]
             s = vk.quad_shader[ ]
-        
+
         if [ !id && !is_clear ]
             # default quad if no Model
             id = vk.quad_m
-        
+
+        printf[ "Model.finish: after defaults s=%p id=%p\n", s, id ]
+        if [ id ]
+            printf[ "Model.finish: id.nodes count=%i\n", id.nodes.count ]
+
         if [ is_clear ]
+            puts 'Model.finish: branch=is_clear'
             model_init_pipeline[ a, null, null, null ]
         el [ nodes ]
+            puts 'Model.finish: branch=nodes'
             for [ n: gltf_node ] in nodes
                 for [ p: gltf_part ] in n.parts
                     model_init_pipeline[ a, n.id, p.id, (p.s) ? p.s : s ]
         el [ id ]
+            puts 'Model.finish: branch=id'
             for [ n: Node ] in id.nodes
                 has_mesh: n.AF_query_name[ "mesh" ]
+                printf[ "  node has_mesh=%d\n", has_mesh ]
                 if [ has_mesh ]
                     mesh: id.meshes [ n.mesh ]
+                    printf[ "  mesh prims=%i\n", mesh.primitives.count ]
                     for [ prim: Primitive ] in mesh.primitives
                         model_init_pipeline[ a, n, prim, s ]
+        el
+            puts 'Model.finish: branch=NONE (no path matched!)'
+        printf[ "Model.finish: pipelines after=%i\n", pipelines.count ]
 
     func init [ ]
         if [ !vk ]
@@ -1628,6 +1664,8 @@ class Texture
             
     func init [ ]
         expect vk, "vk_context not specified"
+        fmt: i32 [ vk_format ]
+        puts 'Texture.init: width={width} height={height} vk_format={fmt}'
         if [ !vk_image && !sampler && !w ]
             return
 
@@ -1664,122 +1702,124 @@ class Texture
                 ansio  = 0
                 placeholder_image[ sampler, 4, ref fill, ref sampler_size, ref pixel_format ]
                 vk_format = vk_format_fn[ pixel_format, false ]
-            if [ width > 0 || vk_image ]
-                usage: VkImageUsageFlags [ 0 ]
-                if [ is_depth ]
-                    usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
-                el [ swap ]
-                    usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
-                el
-                    usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                            VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
-                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
-                            VK_IMAGE_USAGE_SAMPLED_BIT
+        if [ width > 0 || vk_image ]
+            usage: VkImageUsageFlags [ 0 ]
+            if [ is_depth ]
+                usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+            el [ swap ]
+                usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT
+            el
+                usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
+                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
+                        VK_IMAGE_USAGE_SAMPLED_BIT
 
-                if [ !vk_format && pixel_format ]
-                    vk_format = vk_format_fn[ pixel_format, linear ]
+            if [ !vk_format && pixel_format ]
+                vk_format = vk_format_fn[ pixel_format, linear ]
 
-                info : VkImageCreateInfo [
-                    sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-                    imageType:     VK_IMAGE_TYPE_2D,
-                    format:        vk_format,
-                    flags:         (layer_count >= 6) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
-                    extent:        VkExtent3D [ width, height, 1 ],
-                    mipLevels:     mip_levels,
-                    arrayLayers:   layer_count,
-                    samples:       VK_SAMPLE_COUNT_1_BIT,
-                    tiling:        VK_IMAGE_TILING_OPTIMAL,
-                    usage:         usage,
-                    sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
-                    initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+            info : VkImageCreateInfo [
+                sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                imageType:     VK_IMAGE_TYPE_2D,
+                format:        vk_format,
+                flags:         (layer_count >= 6) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0,
+                extent:        VkExtent3D [ width, height, 1 ],
+                mipLevels:     mip_levels,
+                arrayLayers:   layer_count,
+                samples:       VK_SAMPLE_COUNT_1_BIT,
+                tiling:        VK_IMAGE_TILING_OPTIMAL,
+                usage:         usage,
+                sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
+                initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+            ]
+            printf[ "sType=%d imageType=%d format=%d flags=%d\n", info.sType,
+                info.imageType, info.format, info.flags ]
+            printf[ "extent=%d,%d,%d mip=%d layers=%d samples=%d\n",
+                info.extent.width, info.extent.height, info.extent.depth,
+                info.mipLevels, info.arrayLayers, info.samples ]
+            #hex_dump[ "vkImageCreateInfo", ref info, sizeof VkImageCreateInfo ]
+
+            if [ !vk_image && vk_format ]
+                alloc_info: VmaAllocationCreateInfo [
+                    usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
                 ]
-                printf[ "sType=%d imageType=%d format=%d flags=%d\n", info.sType,   
-                    info.imageType, info.format, info.flags ]                           
-                printf[ "extent=%d,%d,%d mip=%d layers=%d samples=%d\n",
-                    info.extent.width, info.extent.height, info.extent.depth,           
-                    info.mipLevels, info.arrayLayers, info.samples ]
-                #hex_dump[ "vkImageCreateInfo", ref info, sizeof VkImageCreateInfo ]
+                printf[ "ptr = %p\n", vma_alloc ]
+                result: vmaCreateImage[ vk.allocator, info, alloc_info, ref vk_image, ref vma_alloc, null ]
+                expect result == VK_SUCCESS, 'failed to create VkImage: {i32[result]}'
 
-                if [ !vk_image && vk_format ]
-                    alloc_info: VmaAllocationCreateInfo [
-                        usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
-                    ]
-                    printf[ "ptr = %p\n", vma_alloc ]
-                    result: vmaCreateImage[ vk.allocator, info, alloc_info, ref vk_image, ref vma_alloc, null ]
-                    expect result == VK_SUCCESS, 'failed to create VkImage: {i32[result]}'
-
-                if [ sampler_size > 0 ]
-                    transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
-                    expect !is_depth, "unexpected"
-                    cmd: Command [ vk: vk ]
-                    cmd.begin[]
-                    staging: Buffer [ vk: vk, size: sampler_size, u_src: true, u_shader: true,
-                        m_host_visible: true, m_host_coherent: true,
-                        data: (img) ? img.data : fill ]
-                    vkCmdCopyBufferToImage[ cmd.cmd, staging.vk_buffer, vk_image,
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, VkBufferImageCopy [
-                            bufferOffset:      0,
-                            bufferRowLength:   0,
-                            bufferImageHeight: 0,
-                            imageSubresource:  VkImageSubresourceLayers [
-                                aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
-                                mipLevel:       0,
-                                baseArrayLayer: 0,
-                                layerCount:     layer_count
-                            ],
-                            imageOffset: VkOffset3D [ 0, 0, 0 ],
-                            imageExtent: VkExtent3D [ width, height, 1 ]
-                        ]]
-                    cmd.submit[ ]
-                    vkDeviceWaitIdle[ vk.device ]
-                    vk.create_mipmaps[ vk_image, width, height, mip_levels, layer_count ]
-                    vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                if [ !vk_image_view ]
-                    view_type: (layer_count >  6) ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY :
-                               (layer_count == 6) ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D
-                    viewInfo: VkImageViewCreateInfo [
-                        sType:    VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-                        image:    vk_image,
-                        viewType: view_type,
-                        format:   vk_format,
-                        components: VkComponentMapping [
-                            r: VK_COMPONENT_SWIZZLE_IDENTITY,
-                            g: VK_COMPONENT_SWIZZLE_IDENTITY,
-                            b: VK_COMPONENT_SWIZZLE_IDENTITY,
-                            a: VK_COMPONENT_SWIZZLE_IDENTITY
-                        ],
-                        subresourceRange: VkImageSubresourceRange [
+            if [ sampler_size > 0 ]
+                transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+                expect !is_depth, "unexpected"
+                cmd: Command [ vk: vk ]
+                cmd.begin[]
+                staging: Buffer [ vk: vk, size: sampler_size, u_src: true, u_shader: true,
+                    m_host_visible: true, m_host_coherent: true,
+                    data: (img) ? img.data : fill ]
+                vkCmdCopyBufferToImage[ cmd.cmd, staging.vk_buffer, vk_image,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, VkBufferImageCopy [
+                        bufferOffset:      0,
+                        bufferRowLength:   0,
+                        bufferImageHeight: 0,
+                        imageSubresource:  VkImageSubresourceLayers [
                             aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
-                            baseMipLevel:   0,
-                            levelCount:     mip_levels,
+                            mipLevel:       0,
                             baseArrayLayer: 0,
                             layerCount:     layer_count
-                        ]
+                        ],
+                        imageOffset: VkOffset3D [ 0, 0, 0 ],
+                        imageExtent: VkExtent3D [ width, height, 1 ]
+                    ]]
+                cmd.submit[ ]
+                vkDeviceWaitIdle[ vk.device ]
+                vk.create_mipmaps[ vk_image, width, height, mip_levels, layer_count ]
+                vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            puts 'before view: width={width} height={height}'
+            if [ !vk_image_view ]
+                view_type: (layer_count >  6) ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY :
+                           (layer_count == 6) ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D
+                viewInfo: VkImageViewCreateInfo [
+                    sType:    VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                    image:    vk_image,
+                    viewType: view_type,
+                    format:   vk_format,
+                    components: VkComponentMapping [
+                        r: VK_COMPONENT_SWIZZLE_IDENTITY,
+                        g: VK_COMPONENT_SWIZZLE_IDENTITY,
+                        b: VK_COMPONENT_SWIZZLE_IDENTITY,
+                        a: VK_COMPONENT_SWIZZLE_IDENTITY
+                    ],
+                    subresourceRange: VkImageSubresourceRange [
+                        aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                        baseMipLevel:   0,
+                        levelCount:     mip_levels,
+                        baseArrayLayer: 0,
+                        layerCount:     layer_count
                     ]
-                    res: vkCreateImageView[ vk.device, viewInfo, null, ref vk_image_view ]
-                    expect res == VK_SUCCESS, "Failed to create VkImageView"
-                if [ !vk_sampler ]
-                    address_mode: (layer_count >= 6) ?
-                        VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT
-                    samplerInfo: VkSamplerCreateInfo [
-                        sType:                   VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                        magFilter:               VK_FILTER_LINEAR,
-                        minFilter:               VK_FILTER_LINEAR,
-                        addressModeU:            address_mode,
-                        addressModeV:            address_mode,
-                        addressModeW:            address_mode,
-                        anisotropyEnable:        (ansio > 0) ? VK_TRUE : VK_FALSE,
-                        maxAnisotropy:           ansio,
-                        minLod:                  0.0,
-                        maxLod:                  f32 mip_levels,
-                        borderColor:             VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
-                        unnormalizedCoordinates: VK_FALSE,
-                        compareEnable:           VK_FALSE,
-                        compareOp:               VK_COMPARE_OP_ALWAYS,
-                        mipmapMode:              VK_SAMPLER_MIPMAP_MODE_LINEAR
-                    ]
-                    r: vkCreateSampler[ vk.device, samplerInfo, null, ref vk_sampler ]
-                    expect r == VK_SUCCESS, "Failed to create VkSampler"
+                ]
+                res: vkCreateImageView[ vk.device, viewInfo, null, ref vk_image_view ]
+                printf[ "image_view = %p\n", vk_image_view ]
+                expect res == VK_SUCCESS, "Failed to create VkImageView"
+            if [ !vk_sampler ]
+                address_mode: (layer_count >= 6) ?
+                    VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT
+                samplerInfo: VkSamplerCreateInfo [
+                    sType:                   VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                    magFilter:               VK_FILTER_LINEAR,
+                    minFilter:               VK_FILTER_LINEAR,
+                    addressModeU:            address_mode,
+                    addressModeV:            address_mode,
+                    addressModeW:            address_mode,
+                    anisotropyEnable:        (ansio > 0) ? VK_TRUE : VK_FALSE,
+                    maxAnisotropy:           ansio,
+                    minLod:                  0.0,
+                    maxLod:                  f32 mip_levels,
+                    borderColor:             VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+                    unnormalizedCoordinates: VK_FALSE,
+                    compareEnable:           VK_FALSE,
+                    compareOp:               VK_COMPARE_OP_ALWAYS,
+                    mipmapMode:              VK_SAMPLER_MIPMAP_MODE_LINEAR
+                ]
+                r: vkCreateSampler[ vk.device, samplerInfo, null, ref vk_sampler ]
+                expect r == VK_SUCCESS, "Failed to create VkSampler"
 
     func dealloc [ ]
         vkDestroySampler[ vk.device, vk_sampler, null ]
@@ -1896,24 +1936,24 @@ Texture Display
             
             if [ !vk_swap_images ]
                 count : swap_image_count
-                puts 'VkImage typesize: {sizeof[VkImage]}' 
-                vk_swap_images = new VkImage [ 3 ]
+                vk_swap_images = new VkImage [ count ]
 
             if [ !swap_renders ]
                 swap_renders = array Render [ alloc: swap_image_count ]
-
+            el
+                swap_renders.clear[]
+            
             vkGetSwapchainImagesKHR[ vk.device, swapchain, ref swap_image_count, vk_swap_images ]
             swap_image_current = 0
             for [ i: 0, i < swap_image_count, i += 1 ]
-                #swap_renders.origin[i].drop[]
-                swap_renders[i] = Render [
+                swap_renders += Render [
                     vk:vk,   w:a,
                     width:         width,
                     height:        height,
                     vk_swap_image: vk_swap_images[i],
+                    clear_color:   vec4f [ 0.0, 0.0, 1.0, 1.0 ],
                     models:        array Model [ swap_model ]
                 ]
-            swap_renders.count = swap_image_count
             semaphore_frame = swap_renders.first_element[]
             swap_render_current = swap_renders.origin[0]
         return a
@@ -1921,7 +1961,7 @@ Texture Display
     func final_target [ ] -> Render
         return list.last_element[]
 
-    func draw [ ] 
+    func draw [ ]
         for [ r: Render, id: string ] in element_targets
             r.draw[]
             r.sync_fence[]
@@ -1938,6 +1978,10 @@ Texture Display
                 swap_render_current = swap_renders[swap_image_current]
                 last_render[].color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                printf[ "  swap_render_current swap=%p reduce=%d clear=[%f,%f,%f,%f]\n",
+                    swap_render_current.vk_swap_image, swap_render_current.reduce,
+                    swap_render_current.clear_color.x, swap_render_current.clear_color.y,
+                    swap_render_current.clear_color.z, swap_render_current.clear_color.w ]
                 swap_render_current.draw[]
                 last_render[].color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 presentInfo: VkPresentInfoKHR [
@@ -2301,7 +2345,7 @@ class shader
 
     intern func reload [ ] -> bool
         paths:  array path [ vert, frag, comp ]
-        values: new ShaderModuleRef[3] [ ref vk_vert, ref vk_frag, ref vk_comp ]
+        values: new VkShaderModule[3] [ vk_vert, vk_frag, vk_comp ]
         found:      false
         recompiled: false
         for [ i: 0, i < 3, i += 1 ]
@@ -2361,6 +2405,9 @@ class shader
             values[i] = mod
             free[ spirv ]
 
+        vk_vert = values[0]
+        vk_frag = values[1]
+        vk_comp = values[2]
 
         expect found, 'shader not found: {name}'
         return recompiled
@@ -2411,7 +2458,7 @@ shader UVQuad
     }
 
     func fragment [] -> GLSL none {
-        fragColor = vec4(texture(color, v_uv).xyz, 1.0);
+        fragColor = vec4(1.0, 0.0, 1.0, 1.0);
     }
 
 
@@ -4397,10 +4444,10 @@ intern func pixel_from_format [ f: VkFormat, channels: ref i32 ] -> Pixel
 
 
     
-func pbr_defaults [] -> pbrMetallicRoughness
-    static pbr: pbrMetallicRoughness
+func pbr_defaults [] -> PbrMetallicRoughness
+    static pbr: PbrMetallicRoughness
     if [ !pbr ]
-        pbr = pbrMetallicRoughness[]
+        pbr = PbrMetallicRoughness[]
         pbr.baseColorFactor            = vec4f [ 1, 0, 0, 1 ]
         pbr.metallicFactor             = 1.0
         pbr.roughnessFactor            = 1.0
@@ -4442,8 +4489,8 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, p: Pip
                 sampler: (tx) ? tx.hold[] : img.hold[] ]
             result.push[ res ]
     
-    pbr_default: pbrMetallicRoughness [ pbr_defaults[] ]
-    pbr:         pbrMetallicRoughness [ (p.material) ? p.material.pbr : pbr_default ]
+    pbr_default: PbrMetallicRoughness [ pbr_defaults[] ]
+    pbr:         PbrMetallicRoughness [ (p.material) ? p.material.pbrMetallicRoughness : pbr_default ]
     s:           shader [ p.s ]
     
     if [ !result.count ]
@@ -4541,7 +4588,7 @@ intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ]
     w.mouse.y = y
     w.ev.mouse.pos.x = w.mouse.x
     w.ev.mouse.pos.y = w.mouse.y
-    w.ux.move_event[ w.ev ]
+    #w.ux.move_event[ w.ev ]
 
 
 func get_required_extensions [ vk: vk_context ] 
@@ -5386,7 +5433,7 @@ Display Window
 
     func update_canvas [ ]
         compose = (compose || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        compose.clear[ string[ "#000" ] ]
+        compose.clear[ string[ "#f0f" ] ]
         #if [ composite ]
         #    colorize = (colorize || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
         #    overlay  = (overlay  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
@@ -5402,7 +5449,7 @@ Display Window
                 samplers: textures
             ]
             r_view = Render [ vk: vk, w: a, wscale: 1.0,
-                clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+                clear_color: vec4f [ 0.0, 1.0, 0.0, 1.0 ],
                 models: array Model [ m_view ] ]
             list += r_view
 
@@ -5472,7 +5519,7 @@ abstract media_app trinity
     intern msaa_samples : i64
     public on_render    : FRender
 
-    w : Window # this is an elaboration (its Display defined in vulkan)
+    #w : Window # this is an elaboration (its Display defined in vulkan)
     # it may even do an additional run-time instance check; it will have the same visibility
     func init[]
         no-op
@@ -5480,10 +5527,11 @@ abstract media_app trinity
     func run[] -> i32
         puts 'running trinity'
         printf["our (trinity) vk is %p on %p\n", vk, a]
-        w = Window[ vk:vk, title:'orbiter', width:(width) ?? 888, height:(height) ?? 888 ]
-        w.update_canvas[] # ?
+        window : Window[ vk:vk, title:'orbiter', width:(width) ?? 888, height:(height) ?? 888 ]
+        w = window
+        window.update_canvas[] # ?
         render*[] # should be called before the targets update, so we have a list of targets
-        w.resize[w.width, w.height]
+        window.resize[window.width, window.height]
         return super.run[]
 
 ##
@@ -5505,10 +5553,11 @@ abstract media_app trinity
 ##
 
     func render[]
-        if [ w.compose ]
-            w.compose.set_fill_color[ 0xFF0000FF ]
-            w.compose.fill_rect_fast[ 100.0, 100.0, 200.0, 200.0 ]
-        w.draw[]
+        window : (w to Window)
+        #if [ window.compose ]
+        #    window.compose.set_fill_color[ 0xFF0000FF ]
+        #    window.compose.fill_rect_fast[ 100.0, 100.0, 200.0, 200.0 ]
+        window.draw[]
 
 
 class LineInfo

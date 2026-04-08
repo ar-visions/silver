@@ -313,7 +313,7 @@ class TextureInfo
     public texCoord:        u32
     public scale:           f32
 
-class pbrMetallicRoughness
+class PbrMetallicRoughness
     public ior:                          f32
     public baseColorFactor:              vec4f
     public baseColorTexture:             TextureInfo
@@ -355,7 +355,7 @@ class pbrMetallicRoughness
 
 class Material
     public name:             string
-    public pbr:              pbrMetallicRoughness
+    public pbrMetallicRoughness: PbrMetallicRoughness
     public normalTexture:    TextureInfo
     public occlusionTexture: TextureInfo
     public emissiveTexture:  TextureInfo
