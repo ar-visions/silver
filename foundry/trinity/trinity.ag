@@ -2787,7 +2787,7 @@ shader CanvasUI
         }} else {{
             color = fill * aa;
         }}
-        
+
         o_color = color * opacity;
     }
 
@@ -3553,14 +3553,16 @@ Render Canvas
         spread : f32 [ 4.0 ]
         sdf_sz : i32 [ sdf_w * sdf_h ]
         tex    : sdf_to_r8 [ sdf, sdf_sz, spread ]
-        free [ sdf ]
+        # NOTE: `free [sdf]` removed — `new T[N]` returns an Au-managed pointer
+        # (header lives BEFORE the user-space data), not a raw malloc result.
+        # Calling glibc free on it crashes. Au refcounting will release it.
 
         # update persistent SDF Texture
         sdf_img : Image [ width: sdf_w, height: sdf_h, format: Pixel.u8, data: tex ]
         if [ sdf_tex ]
             sdf_tex.drop[]
         sdf_tex = Texture [ vk: vk, sampler: sdf_img, width: sdf_w, height: sdf_h, surface: Surface.color ]
-        free [ tex ]
+        # NOTE: `free [tex]` removed for same reason as `free [sdf]` above.
 
         # set up covering rect with padding for AA
         setup_shader [ st, bx0 - pad, by0 - pad, bw + pad * 2.0, bh + pad * 2.0 ]
@@ -3912,7 +3914,7 @@ func flatten_arc [ pts: array PathPt, cx: f32, cy: f32, r: f32, angle0: f32, ang
 
 # flatten all curves in path, return flat line-only path
 func path_flatten [ src: CanvasPath, tol: f32 ] -> array PathPt
-    flat : array PathPt []
+    flat : array PathPt [ alloc: 64 ]
     n    : src.points.count
     px   : f32 [ 0.0 ]
     py   : f32 [ 0.0 ]
@@ -4188,7 +4190,8 @@ func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: 
             # min distance from cell's edge list
             md : f32 [ 999999.0 ]
             for [ ci: i32 0, ci < nc, ci += 1 ]
-                e : SDFEdge edges[grid_data[cell_off + ci]]
+                edge_idx : i32 [ grid_data[cell_off + ci] ]
+                e : SDFEdge edges[edge_idx]
                 d : sdf_seg_dist [ e.x0, e.y0, e.x1, e.y1, px, py ]
                 if [ d < md ]
                     md = d
@@ -4196,7 +4199,8 @@ func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: 
             # winding from row-binned edges only
             wn : i32 [ 0 ]
             for [ ri: i32 0, ri < nre, ri += 1 ]
-                e : SDFEdge edges[row_data[re_off + ri]]
+                edge_idx2 : i32 [ row_data[re_off + ri] ]
+                e : SDFEdge edges[edge_idx2]
                 if [ e.y0 <= py ]
                     if [ e.y1 > py ]
                         cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
@@ -5433,23 +5437,7 @@ Display Window
     func update_canvas [ ]
         compose = (compose || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
         compose.update[]
-        compose.clear[ string[ "#000" ] ]
-        # draw a few visible test rects so we can verify the canvas is producing pixels
-        compose.save[]
-        compose.set_fill_color[ sk_color[ string[ "#0ff" ] ] ]
-        compose.rect_to[ 100.0, 100.0, 200.0, 200.0 ]
-        compose.draw_fill[]
-        compose.restore[]
-        compose.save[]
-        compose.set_fill_color[ sk_color[ string[ "#ff0" ] ] ]
-        compose.rect_to[ 350.0, 200.0, 250.0, 150.0 ]
-        compose.draw_fill[]
-        compose.restore[]
-        compose.save[]
-        compose.set_fill_color[ sk_color[ string[ "#f0f" ] ] ]
-        compose.rect_to[ 200.0, 400.0, 400.0, 100.0 ]
-        compose.draw_fill[]
-        compose.restore[]
+        compose.clear[ string[ "#f0f" ] ]
         #if [ composite ]
         #    colorize = (colorize || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
         #    overlay  = (overlay  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
