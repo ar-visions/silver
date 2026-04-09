@@ -2710,6 +2710,10 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super) { sequence
     free(arg_values);
     free(arg_types);
 
+    // propagate the return type's meta_a (e.g. PathPt for `array PathPt`) onto
+    // the result enode so downstream codegen sees a fully-typed array.
+    Au result_meta_a = rtype ? rtype->meta_a : null;
+
     enode result;
     if (is_struct(rtype) && !is_void_) {
         // alloca in entry block so it dominates all uses (e.g. across if/else branches)
@@ -2724,9 +2728,9 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super) { sequence
         LLVMValueRef tmp = LLVMBuildAlloca(B, lltype(rtype), "struct-ret");
         LLVMPositionBuilderAtEnd(B, current);
         LLVMBuildStore(B, R, tmp);
-        result = enode(mod, a, au, rtype->au, loaded, false, value, tmp);
+        result = enode(mod, a, au, rtype->au, meta_a, result_meta_a, loaded, false, value, tmp);
     } else {
-        result = enode(mod, a, au, rtype->au, loaded, true, value, R);
+        result = enode(mod, a, au, rtype->au, meta_a, result_meta_a, loaded, true, value, R);
     }
 
     return result;

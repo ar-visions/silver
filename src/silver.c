@@ -4193,6 +4193,10 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         if (!t) t = read_etype(a, null); // we need to avoid the literal check in here!
         validate(t, "expected alpha-numeric identity for type or name, found %o", peek(a));
         Au_t arg = alloc_arg(au, n ? n->chars : null, t->au);
+        // propagate meta (e.g. PathPt for `array PathPt`) onto the arg Au_t so
+        // the parameter retains its element type for indexing/copying
+        if (t->meta_a) arg->meta.a = (Au_t)t->meta_a;
+        if (t->meta_b) arg->meta.b = t->meta_b;
         arg->is_inlay = is_inlay;
         arg->is_explicit_ref = is_ref;
 
