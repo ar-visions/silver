@@ -540,7 +540,18 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     enode rR = e_operand(a, R, null);
     bool  is_init      = !L->au;
     bool  is_reassign  = L->au && L->au->is_assigned;
-    bool  is_class_set = L->target && L->au && L->au->is_class;
+    // unmanaged members are raw slots — the runtime must NOT participate in
+    // their lifecycle. context members point at an enclosing/owning thing, so
+    // a strong ref would either create cycles or extend lifetime upward; they
+    // are weak by definition. Members whose literal type is `Au` (the generic
+    // bag-of-anything base) also opt out — the runtime can't reason about a
+    // type it can't see, so the user manages those slots. Gating is_class_set
+    // here suppresses both the prev/rel tracking below AND the retain/release
+    // pair in Phase 7.
+    bool  is_class_set = L->target && L->au && L->au->src->is_class &&
+        !(L->au->traits & AU_TRAIT_UNMANAGED) &&
+        !L->au->is_context &&
+        L->au->src != typeid(Au);
 
     enode prev = null;
     bool  rel  = false;
@@ -759,7 +770,10 @@ etype etype_ptr(aether a, Au_t au, enode eshape) {
         au_ptr = au->ptr;
     } else if (eshape) {
         // we can use Au_t with enode as well as literal shape for data-shape
-        au_ptr = def(a->au, null, AU_MEMBER_TYPE, 0);
+        // AU_TRAIT_SHAPED marks this as `new T[N]` (or similar shaped alloc),
+        // so the indexing dispatch never tries to call T's getter on it —
+        // shaped operands always use raw pointer arithmetic.
+        au_ptr = def(a->au, null, AU_MEMBER_TYPE, AU_TRAIT_SHAPED);
         au_ptr->is_pointer  = true;
         au_ptr->src = au;
         // when the shape is a literal int or shape, propagate the element
@@ -1768,40 +1782,62 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
 
 #define evar_is(n, id) (n->au && n->au->ident && strcmp(n->au->ident, id) == 0)
 
-static evar lookup_by_unique_type(aether a, Au_t required_type) {
-    evar match = null;
-    int  count = 0;
+static enode lookup_by_unique_type(aether a, Au_t required_type) {
+    // walk innermost scope first; first match wins. previously this
+    // counted all matches and errored on ambiguity, but in practice the
+    // innermost scope is the right answer and forcing the user to
+    // disambiguate every time was friction without benefit.
+    efunc enc_fn = context_func(a);
+    enode self   = enc_fn ? enc_fn->target : null;
 
     for (int i = len(a->lexical) - 1; i >= 0; i--) {
         Au_t ctx = (Au_t)a->lexical->origin[i];
 
-        members(ctx, mem) {
-            if (mem->member_type != AU_MEMBER_VAR) continue;
-            evar v = u(evar, mem);
-            if (!v) continue;
-            Au_t var_type = au_arg_type((Au)mem);
-            if (var_type == required_type || inherits(var_type, required_type)) {
-                match = v;
-                count++;
+        // walk the inheritance chain for class scopes (per inherits() in
+        // Au.c, parent classes are reached via au->context). without this
+        // walk, inherited members of the enclosing class are invisible to
+        // context resolution and the user has to redeclare them locally.
+        Au_t walk = ctx;
+        bool walk_is_record = false;
+        while (walk && walk != typeid(Au)) {
+            walk_is_record = (walk->member_type == AU_MEMBER_TYPE) &&
+                             (walk->is_class || walk->is_struct);
+
+            members(walk, mem) {
+                if (mem->member_type != AU_MEMBER_VAR) continue;
+                Au_t var_type = au_arg_type((Au)mem);
+                if (var_type != required_type && !inherits(var_type, required_type))
+                    continue;
+                // class/struct scopes: materialize via self.member access so
+                // the value is properly fetched (LLVMGetParam, GEP, etc.)
+                // instead of grabbing a possibly-stale cached evar.
+                if (walk_is_record && self) {
+                    Au_t self_au = au_arg_type((Au)self->au);
+                    if (self_au && (self_au == walk || inherits(self_au, walk)))
+                        return access(self, string(mem->ident));
+                }
+                evar v = u(evar, mem);
+                if (v) return (enode)v;
             }
-        }
-        arg_list(ctx, mem) {
-            if (mem->member_type != AU_MEMBER_VAR) continue;
-            evar v = u(evar, mem);
-            if (!v) continue;
-            Au_t var_type = au_arg_type((Au)mem);
-            if (var_type == required_type || inherits(var_type, required_type)) {
-                match = v;
-                count++;
+            arg_list(walk, mem) {
+                if (mem->member_type != AU_MEMBER_VAR) continue;
+                Au_t var_type = au_arg_type((Au)mem);
+                if (var_type != required_type && !inherits(var_type, required_type))
+                    continue;
+                evar v = u(evar, mem);
+                if (v) return (enode)v;
             }
+            // only walk parent chain for class/struct scopes; non-record
+            // lexical scopes (functions, statements, modules) don't have
+            // a meaningful inheritance chain to walk via ->context.
+            if (walk->member_type != AU_MEMBER_TYPE) break;
+            if (!walk->is_class && !walk->is_struct) break;
+            if (walk->context == walk) break;
+            walk = walk->context;
         }
     }
-    
-    verify(count <= 1,
-        "ambiguous context: found %i variables of type %s in scope, explicit binding required",
-        count, required_type->ident);
-    
-    return match;
+
+    return null;
 }
 
 // resolve all context members on a newly allocated instance 
@@ -1825,9 +1861,16 @@ void aether_e_assign_if_null(aether a, enode prop, Au value) {
     LLVMPositionBuilderAtEnd(B, merge_bb);
 }
 
+bool etype_inherits(etype mdl, etype base);
+
 static void resolve_context_members(enode target, map user_provides) {
     aether a = target->mod;
     if (a->no_build)
+        return;
+    // entrypoint allocation: the module is responsible for wiring its own
+    // context (it owns the lifecycle), so the auto-resolver would just
+    // fail or pick the wrong slot. build_entrypoint sets this flag.
+    if (a->skip_context_resolve)
         return;
 
     // canonical resolves types from enode, as well as dissolves any aliases
@@ -1846,14 +1889,27 @@ static void resolve_context_members(enode target, map user_provides) {
             Au_t  required_type = mem->src;
 
             if (!found) {
-                scope_var = (enode)lookup_by_unique_type(a, required_type);
-                verify(scope_var,
-                    "required context member '%s' of type '%s' not found in scope",
-                    mem->ident, required_type->ident);
+                // self-context: if the just-allocated `target` already
+                // satisfies the requirement (its type IS or inherits from
+                // required_type), bind the context to target itself. Covers
+                // cases like `Window : Display` where Texture wants `w :
+                // Display` — the Window we're constructing IS the Display.
+                etype target_t = canonical(target);
+                etype req_t    = u(etype, required_type);
+                if (target_t && req_t &&
+                    (target_t->au == required_type ||
+                     etype_inherits(target_t, req_t))) {
+                    scope_var = target;
+                } else {
+                    scope_var = lookup_by_unique_type(a, required_type);
+                    verify(scope_var,
+                        "required context member '%s' of type '%s' not found in scope",
+                        mem->ident, required_type->ident);
+                }
             } else {
                 etype ctx = u(etype, required_type);
-                verify(canonical(found) == canonical(ctx),
-                    "user provided context %o not compatible with %o", found, ctx);
+                verify(etype_inherits(canonical(found), canonical(ctx)),
+                    "user provided context %o not compatible with %o", canonical(found), canonical(ctx));
             }
 
             // if prop is already set, we should not overwrite it!.. this means some form of branching here
@@ -2306,8 +2362,6 @@ enode aether_e_is(aether a, enode L, Au R) {
     enode R_ptr  = e_operand(a, R, null);
     return aether_e_eq(a, L_ptr, R_ptr);
 }
-
-bool etype_inherits(etype mdl, etype base);
 
 
 // short-circuit two already-evaluated bool enodes
@@ -5587,7 +5641,13 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     e_fn_call(a, Au_engage, a(u(evar, argv)), false);
 
     // create main class ( i think this is not working )
+    // skip context resolution: the module owns its own bootstrap and will
+    // wire context members itself. The auto-resolver has no useful scope
+    // to look in here anyway (we're in the synthetic main).
+    bool saved_skip_ctx = a->skip_context_resolve;
+    a->skip_context_resolve = true;
     enode m = e_create(a, main_class, (Au)u(evar, argv)); // a loop would be nice, since none of our members will be ref+1'd yet
+    a->skip_context_resolve = saved_skip_ctx;
     Au_t fn_run = find_member(main_spec->au, "run", AU_MEMBER_FUNC, 0, false);
     
     enode r = e_fn_call(a, (efunc)u(efunc, fn_run), a(m), false);
@@ -8666,7 +8726,7 @@ enode aether_e_stack_array(aether a, etype elem_type, i32 count) {
     LLVMTypeRef lt = lltype(elem_type);
     LLVMTypeRef arr_type = LLVMArrayType(lt, count);
     LLVMValueRef alloc = LLVMBuildAlloca(B, arr_type, "stack_arr");
-    Au_t arr_au = def(a->au, null, AU_MEMBER_TYPE, 0);
+    Au_t arr_au = def(a->au, null, AU_MEMBER_TYPE, AU_TRAIT_SHAPED);
     arr_au->src = elem_type->au;
     arr_au->elements = count;
     arr_au->is_pointer = true;
@@ -8684,7 +8744,7 @@ enode aether_e_stack_array_dynamic(aether a, etype elem_type, enode count_expr) 
     LLVMValueRef count_val = loaded_ct->value;
     count_val = LLVMBuildIntCast2(B, count_val, LLVMInt32Type(), false, "local_sz");
     LLVMValueRef alloc     = LLVMBuildArrayAlloca(B, lt, count_val, "stack_arr_dyn");
-    Au_t arr_au = def(a->au, null, AU_MEMBER_TYPE, 0);
+    Au_t arr_au = def(a->au, null, AU_MEMBER_TYPE, AU_TRAIT_SHAPED);
     arr_au->src        = elem_type->au;
     arr_au->elements   = 0;
     arr_au->is_pointer = true;
