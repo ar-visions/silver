@@ -3563,7 +3563,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     //printf("seq = %i\n", seq);
 
-    if (seq == 15438) {
+    if (seq == 17476) {
         seq = seq;
     }
     // we may only support a limited set of C functionality for #define macros
@@ -6434,7 +6434,33 @@ void silver_write_header(silver a) {
             string n   = cname(type_name((Au)m));
             array  acl = etype_class_list(u(etype, m));
 
+            // silver user classes carry an `fbits` prefix at struct offset 0
+            // (a {i64, i64} bitset tracking which props were set during
+            // construction). It is added by aether.c as the leading struct
+            // member when emitting the LLVM type, but ONLY for the first
+            // silver class in the inheritance chain — subclasses inherit
+            // the parent's fbits via the parent's section. The C struct
+            // needs the same 16 bytes of space at the same place, otherwise
+            // C-side `a->field` reads land at the wrong offset.
+            bool is_silver_class = m->is_class && !m->is_system && !m->is_c &&
+                m->module != typeid(Au)->module;
+            bool parent_is_silver_class = m->context && m->context->is_class &&
+                !m->context->is_system && !m->context->is_c &&
+                m->context->module != typeid(Au)->module &&
+                m->context != typeid(Au);
+            bool has_fbits = is_silver_class && !parent_is_silver_class;
+
             write(module_f, "#define %o_schema(A,B,...)", n);
+            if (has_fbits) {
+                // i_prop_intern doesn't emit a C struct field (its INST_U
+                // expansion is empty), so use `public` to actually reserve
+                // 16 bytes at the start of the struct. Naming the fields
+                // with underscores keeps them out of normal use.
+                line(module_f, "\\", n);
+                write(module_f, "M(A,B, i,prop,public,i64,__fbits_0)");
+                line(module_f, "\\", n);
+                write(module_f, "M(A,B, i,prop,public,i64,__fbits_1)");
+            }
             members(m, mi) {
                 line(module_f, "\\", n);
                 string mn = cname(string(mi->ident));
@@ -7644,7 +7670,9 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         mem->au->member_type = AU_MEMBER_VAR;
         Au_t rhs_type = au_arg_type((Au)R);
         // decay fixed-size char arrays (char[N]) to cstr for variable inference
-        if (rhs_type && rhs_type->elements > 0 && rhs_type->src &&
+        // — only when the RHS is a string literal. An explicit `local u8[N]`
+        // stack-array allocation should keep its array type.
+        if (R->literal && rhs_type && rhs_type->elements > 0 && rhs_type->src &&
             (rhs_type->src == typeid(i8) || rhs_type->src == typeid(u8)))
             rhs_type = typeid(cstr);
         mem->au->src = (is_bind_ref && bind_type) ? bind_type->au :
