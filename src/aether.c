@@ -698,10 +698,20 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
                     }
                 }
             }
-            // loaded pointer to struct target: memcpy through pointer
-            if (res->loaded && L->au && is_struct((Au)L) && !L->au->is_pointer &&
-                LLVMGetTypeKind(LLVMTypeOf(store_val)) == LLVMPointerTypeKind &&
-                LLVMGetInstructionOpcode(store_target) == LLVMAlloca) {
+            // pointer-to-struct source → struct alloca target: memcpy the
+            // struct bytes. covers:
+            //   (a) loaded pointer to struct (e.g. function return)
+            //   (b) struct-typed function arg used as initializer for a
+            //       local struct var (`t : a`). silver marks struct args
+            //       as loaded=false, but the LLVM value IS a pointer, so
+            //       a plain LLVMBuildStore writes sizeof(ptr)=8 bytes of
+            //       the pointer into the first 8 bytes of the struct
+            //       alloca, corrupting the local — every field read then
+            //       returns garbage from the pointer bit pattern.
+            bool dst_is_struct = L->au && is_struct((Au)L) && !L->au->is_pointer;
+            bool val_is_ptr    = LLVMGetTypeKind(LLVMTypeOf(store_val)) == LLVMPointerTypeKind;
+            bool dst_is_alloca = LLVMGetInstructionOpcode(store_target) == LLVMAlloca;
+            if (dst_is_struct && val_is_ptr && dst_is_alloca) {
                 etype st = u(etype, L->au->src ? L->au->src : L->au);
                 if (!st || !st->lltype) st = etype_prep(a, au_arg_type((Au)L->au));
                 if (st && st->lltype) {
@@ -752,6 +762,19 @@ etype etype_ptr(aether a, Au_t au, enode eshape) {
         au_ptr = def(a->au, null, AU_MEMBER_TYPE, 0);
         au_ptr->is_pointer  = true;
         au_ptr->src = au;
+        // when the shape is a literal int or shape, propagate the element
+        // count so this looks like a real fixed-size array (matches what
+        // `local Type[N]` produces via e_stack_array). without this, `new T[N]`
+        // is just a plain pointer and downstream code can't tell the size.
+        if (eshape && eshape->literal) {
+            Au_t lit_type = isa(eshape->literal);
+            if (lit_type == typeid(i64))
+                au_ptr->elements = (i32)*(i64*)eshape->literal;
+            else if (lit_type == typeid(i32))
+                au_ptr->elements = *(i32*)eshape->literal;
+            else if (lit_type == typeid(shape))
+                au_ptr->elements = (i32)shape_total((shape)eshape->literal);
+        }
     }
 
     if (!u(etype, au_ptr)) {
@@ -3229,8 +3252,20 @@ enode etype_access(etype target, string name) { sequencer
         }
     }
     LLVMValueRef base = tnode->value;
-    // loaded struct value (not pointer) — need alloca for GEP or extractvalue
+    // loaded struct value (not pointer) — need alloca for GEP or extractvalue.
+    // BUT: if the LLVM value is already a pointer (e.g. returned from an array
+    // getter like `states[i]`), use it directly. Silver's `loaded` flag and
+    // the silver-side canonical type both say "struct value" in that case,
+    // but the underlying LLVM value is a pointer — allocating + storing
+    // would copy the pointer's bytes into a local struct and field writes
+    // would land in a throwaway alloca instead of the real array element.
     bool is_loaded_struct = tnode->loaded && !is_ptr(canonical((enode)target));
+    if (is_loaded_struct) {
+        LLVMTypeRef base_llty = LLVMTypeOf(base);
+        if (LLVMGetTypeKind(base_llty) == LLVMPointerTypeKind) {
+            is_loaded_struct = false;
+        }
+    }
     if (is_loaded_struct) {
         if (t->lltype && !LLVMIsOpaqueStruct(t->lltype)) {
             LLVMValueRef tmp = LLVMBuildAlloca(B, t->lltype, "tmp.val");

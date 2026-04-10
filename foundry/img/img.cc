@@ -63,7 +63,11 @@ none Image_init(Image a) {
     if (!a->channels)
         a->channels = f == Pixel_none ? 1 : f == Pixel_rgba8   ? 4 : f == Pixel_rgbf32 ? 4 :
                       f == Pixel_u8   ? 1 : f == Pixel_rgbaf32 ? 4 : 1;
-    
+
+    fprintf(stderr,
+        "Image_init: a=%p w=%d h=%d format=%d source=%p uri=%p (Image*=%p +offsetof=source@%zu)\n",
+        a, a->width, a->height, (int)f, a->source, a->uri, a, offsetof(struct _Image, source));
+
     if (a->source) {
         Au source_header = header((Au)a->source);
         info->data    = Au_hold(a->source);

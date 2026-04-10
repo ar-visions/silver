@@ -71,6 +71,25 @@ class LayoutBinding
     count   : u32
     format  : Au_t
 
+# storage image binding for compute shaders. emits
+#   layout(<glsl_format>, set=1, binding=N) writeonly uniform image2D <name>;
+# the host provides a Texture (created with VK_IMAGE_USAGE_STORAGE_BIT) via
+# the same name-to-instance map used for sampler bindings.
+class StorageImage
+    type    : Au_t
+    id      : int
+    count   : u32
+    format  : Au_t
+
+# storage buffer binding for compute shaders. emits
+#   layout(std430, set=1, binding=N) readonly buffer <name>_t { vec4 <name>[]; };
+# host provides a Buffer (created with u_storage = true) via the samplers map.
+class StorageBuffer
+    type    : Au_t
+    id      : int
+    count   : u32
+    format  : Au_t
+
 class VertexInput
     public type : Au_t
 
@@ -180,7 +199,6 @@ class Render
             ], null, ref vk_framebuffer[i] ]
             
             printf[ "ref of frame = %p\n", ref vk_framebuffer[i] ]
-
             expect result == VK_SUCCESS, "Failed to create framebuffer"
 
     public func draw [ ]
@@ -211,9 +229,9 @@ class Render
                 extent: VkExtent2D [ fw, fh ]
             ] ]
             clear_values: local VkClearValue [2]
-            printf[ "  Render.draw iter=%d reduce=%d swap=%p clear=[%f,%f,%f,%f]\n",
-                i, reduce, vk_swap_image,
-                clear_color.x, clear_color.y, clear_color.z, clear_color.w ]
+            #printf[ "  Render.draw iter=%d reduce=%d swap=%p clear=[%f,%f,%f,%f]\n",
+            #    i, reduce, vk_swap_image,
+            #    clear_color.x, clear_color.y, clear_color.z, clear_color.w ]
             clear_values[0].color.float32[0] = clear_color.x
             clear_values[0].color.float32[1] = clear_color.y
             clear_values[0].color.float32[2] = clear_color.z
@@ -236,9 +254,9 @@ class Render
                 frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
 
             if [ i == 0 ]
-                printf[ "    Render.draw models=%i\n", models.count ]
+                #printf[ "    Render.draw models=%i\n", models.count ]
                 for [ m: Model ] in models
-                    printf[ "      model.pipelines=%i\n", m.pipelines.count ]
+                    #printf[ "      model.pipelines=%i\n", m.pipelines.count ]
                     for [ p: Pipeline ] in m.pipelines
                         # must be done in trinity
                         #if [ m.transform_count && (p.s inherits PBR) ]
@@ -831,33 +849,39 @@ class uniforms
 
     func init [ ]
         type_list:  array Au_t [ unmanaged: true ]
-        ty:     typeid[ s ]
+        # use the runtime type via the Au header — `typeid[ s ]` returns the
+        # static declared type of the field (`shader`), not the actual subclass
+        # (e.g. CanvasUI). without this we'd never iterate any subclass members.
+        hdr:    Au [ Au.header[ s ] ]
+        ty:     Au_t [ hdr.type ]
 
         while [ ty != typeid[ shader ] ]
             type_list += ty
             ty = ty.context
 
         type_list = type_list.reverse[]
-        
+
         u_index:  0
         total_uniform: i32 [ 0 ]
 
-        for [ i: type_list.first, i, i = i.next ]
-            ty = i.value
-            u_size: uniform_size[ ty ]
+        # type_list is an `array`, not a `list` — iterate with `for ... in`,
+        # NOT linked-list-style `i = i.next`. The previous code used .first /
+        # .next which silently produced no iterations and left u_buffers empty,
+        # which made every shader's `ubo` descriptor invalid at draw time.
+        printf[ "uniforms.init: s=%p type_list.count=%i\n", s, type_list.count ]
+        for [ tn: Au_t ] in type_list
+            u_size: uniform_size[ tn ]
+            printf[ "  type_list[%s]: uniform_size=%i\n", tn.ident, u_size ]
             total_uniform += u_size
-        
-        #u_buffers = [ ]
-        u_memory  = new u8 [ total_uniform ]
-        
-        data2: ref u_memory[u_index]
 
-        for [ i: type_list.first, i, i = i.next ]
-            ty = i.value
-            u_size: uniform_size[ ty ]
+        printf[ "uniforms.init: total_uniform=%i\n", total_uniform ]
+        u_memory  = new u8 [ total_uniform ]
+
+        for [ tn: Au_t ] in type_list
+            u_size: uniform_size[ tn ]
             uniform_buf: Buffer [ vk: vk, size: u_size,
                 u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
-                data: ref u_memory[u_index], user: ty ]
+                data: ref u_memory[u_index], user: tn ]
             u_buffers.push [ uniform_buf ]
             u_index += u_size
 
@@ -884,7 +908,12 @@ class Pipeline
     public default_model    : mat4f
     public shader_reloads   : i32
     public material         : Material
-    public samplers         : map Au[string]
+    mutable samplers        : map Au[string]
+    # explicit dispatch group counts for compute pipelines. when any of
+    # these are > 0 they override the default of memory.vertex_count, 1, 1.
+    mutable dispatch_x      : i32
+    mutable dispatch_y      : i32
+    mutable dispatch_z      : i32
     intern resources        : array gpu
     intern shader_uniforms  : uniforms
     intern vbo              : gpu
@@ -899,12 +928,14 @@ class Pipeline
 
     public   func rebind [ ] 
         if [ resources ]
-            resources.drop[  ]
             resources = null
 
     public   func draw [ f: handle ]
+        #printf[ "Pipeline.draw: name=%s resources=%p vk_render=%p vk_compute=%p\n",
+        #    (name) ? name.chars : "(null)", resources, vk_render, vk_compute ]
         if [ !resources ]
             bind_resources[]
+            #printf[ "  Pipeline.draw: bound resources, count=%i\n", resources.count ]
         if [ s.reload[ ] ]
             reassemble[]
         for [ g: gpu ] in resources
@@ -914,9 +945,17 @@ class Pipeline
         shader_uniforms.update[ ]
         if [ vk_compute ]
             vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_COMPUTE, vk_compute ]
+            # bind BOTH descriptor sets (set 0 = uniforms, set 1 = sampler/storage).
+            # the original code only bound set 0 because the compute-on-vbo
+            # pattern didn't have any storage bindings; the SDF compute does.
             vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_COMPUTE,
-                layout, 0, 1, ref bind, 0, null ]
-            vkCmdDispatch[ frame, memory.vertex_count, 1, 1 ]
+                layout, 0, 2, descriptor_sets, 0, null ]
+            # explicit dispatch counts override the default vertex-buffer-driven
+            # workgroup count from the C foundation's compute-on-vbo pattern.
+            dx: i32 [ (dispatch_x > 0) ? dispatch_x : ((memory) ? memory.vertex_count : 1) ]
+            dy: i32 [ (dispatch_y > 0) ? dispatch_y : 1 ]
+            dz: i32 [ (dispatch_z > 0) ? dispatch_z : 1 ]
+            vkCmdDispatch[ frame, dx, dy, dz ]
         if [ vk_render ]
             vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_render ]
             offsets: local VkDeviceSize[ 1 ] [ 0 ]
@@ -930,23 +969,40 @@ class Pipeline
             el
                 vkCmdDraw[ frame, vbo.vertex_count, 1, 0, 0 ]
 
-    public   func bind_resources [ ] 
-        total_samplers: 0
-        sampler_binds:  0
-        uniform_count:  0
+    public   func bind_resources [ ]
+        # set 0 = uniform buffers (UBOs from shader mutable fields)
+        # set 1 = mixed bag of samplers + storage images + storage buffers
+        # bindings within set 1 are assigned in source-order across all
+        # attrib types so the binding numbers match what glsl_header emits.
+        # parallel info arrays: each set 1 binding occupies the SAME slot
+        # in image_infos[i] OR storage_buf_infos[i] (never both). this is
+        # simpler than separate counters at the cost of array bindings
+        # (count > 1) — none of our shaders use those today.
+        sampler_count:         0       # for COMBINED_IMAGE_SAMPLER pool sizing
+        set1_binds:            0       # binding count for set 1 (mixed types)
+        uniform_count:         0
+        storage_image_count:   0
+        storage_buffer_count:  0
         sampler_bindings: local VkDescriptorSetLayoutBinding[32]
         uniform_bindings: local VkDescriptorSetLayoutBinding[32]
         buffer_infos:     local VkDescriptorBufferInfo[32]
-        image_infos:      local VkDescriptorImageInfo[64]
-        sampler_counts:   local i32[32]
+        image_infos:      local VkDescriptorImageInfo[32]
+        storage_buf_infos: local VkDescriptorBufferInfo[32]
         descriptor_writes: local VkWriteDescriptorSet[32]
         resources = array gpu [ alloc: 32 ]
         if [ vbo ]
             vbo.sync[ w ]
             resources.push[ vbo ]
-        stage_flags: VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+        # storage descriptors need to be visible from the compute stage too;
+        # for graphics-only shaders the COMPUTE bit is harmless.
+        stage_flags: VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT
         shader_uniforms = uniforms [ vk: vk, s: s ]
+        s_hdr:       Au [ Au.header[ s ] ]
+        shader_type: Au_t [ s_hdr.type ]
+        printf[ "bind_resources: shader=%p s.ident=%s u_buffers.count=%i\n",
+            s, shader_type.ident, shader_uniforms.u_buffers.count ]
         for [ b: Buffer ] in shader_uniforms.u_buffers
+            printf[ "  uniform[%i]: vk_buffer=%p size=%i\n", uniform_count, b.vk_buffer, b.size ]
             uniform_bindings[uniform_count] = VkDescriptorSetLayoutBinding [
                 binding:         uniform_count,
                 descriptorType:  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -959,39 +1015,93 @@ class Pipeline
                 range:  b.size
             ]
             uniform_count += 1
-        
-        # walk shader schema
-        shader_schema: typeid[ s ]
+
+        # walk shader schema — same caveat as uniforms.init: typeid[ s ] gives
+        # the declared field type `shader`, we need the runtime subclass.
+        sh_hdr:        Au [ Au.header[ s ] ]
+        shader_schema: Au_t [ sh_hdr.type ]
         while [ shader_schema != typeid[ shader ] ]
             for [ i: 0, i < shader_schema.members.count, i += 1 ]
                 mem: Au_t [ shader_schema.members.origin[i] ]
-                # we need to create an instance to get this info
-                if [ mem.src != typeid[ LayoutBinding ] ]
-                    continue
 
-                at : LayoutBinding s.get_property[ mem.ident ]
-                enum_type:  at.type
-                enum_value: at.id
-                meta_type:  at.format
-                expect meta_type, "meta data not set on Surface/extension"
-                all: Surface_resources[ enum_type, enum_value, a ]
-                for [ res: gpu ] in all
+                # ---- sampled image (LayoutBinding) ----
+                if [ mem.src == typeid[ LayoutBinding ] ]
+                    at : LayoutBinding s.get_property[ mem.ident ]
+                    enum_type:  at.type
+                    enum_value: at.id
+                    meta_type:  at.format
+                    expect meta_type, "meta data not set on Surface/extension"
+                    all: Surface_resources[ enum_type, enum_value, meta_type, a ]
+                    expect all.count == 1, "binding arrays (count > 1) not supported in this code path"
+                    res: gpu [ all[0] ]
                     expect res inherits gpu, "expected gpu resource"
                     res.sync[ w ]
                     resources.push[ res ]
-                    image_infos[total_samplers] = VkDescriptorImageInfo [
+                    image_infos[set1_binds] = VkDescriptorImageInfo [
                         sampler:     res.tx.vk_sampler,
                         imageView:   res.tx.vk_image_view,
                         imageLayout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                     ]
-                    total_samplers += 1
-                sampler_bindings[sampler_binds] = VkDescriptorSetLayoutBinding [
-                    binding:         sampler_binds,
-                    descriptorType:  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                    descriptorCount: all.count,
-                    stageFlags:      stage_flags
-                ]
-                sampler_binds += 1
+                    sampler_bindings[set1_binds] = VkDescriptorSetLayoutBinding [
+                        binding:         set1_binds,
+                        descriptorType:  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                        descriptorCount: 1,
+                        stageFlags:      stage_flags
+                    ]
+                    set1_binds    += 1
+                    sampler_count += 1
+
+                # ---- storage image (writeonly, for compute) ----
+                el [ mem.src == typeid[ StorageImage ] ]
+                    found_tx: Texture
+                    for [ img: Image, name: string ] in a.samplers
+                        if [ strcmp[ name.chars, mem.ident ] == 0 ]
+                            tx: Texture [ img inherits Texture ]
+                            if [ tx ]
+                                found_tx = tx
+                                break
+                    expect found_tx, "no Texture provided in samplers map for storage image attrib"
+                    found_tx.transition[ VK_IMAGE_LAYOUT_GENERAL ]
+                    image_infos[set1_binds] = VkDescriptorImageInfo [
+                        sampler:     null,
+                        imageView:   found_tx.vk_image_view,
+                        imageLayout: VK_IMAGE_LAYOUT_GENERAL
+                    ]
+                    sampler_bindings[set1_binds] = VkDescriptorSetLayoutBinding [
+                        binding:         set1_binds,
+                        descriptorType:  VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                        descriptorCount: 1,
+                        stageFlags:      stage_flags
+                    ]
+                    set1_binds          += 1
+                    storage_image_count += 1
+
+                # ---- storage buffer (readonly, for compute input) ----
+                el [ mem.src == typeid[ StorageBuffer ] ]
+                    # Buffer doesn't inherit from Image, so iterate samplers as
+                    # Au to avoid an unsafe Image cast on Buffer entries.
+                    found_buf: Buffer
+                    for [ b2_au: Au, name: string ] in a.samplers
+                        if [ strcmp[ name.chars, mem.ident ] == 0 ]
+                            bb: Buffer [ b2_au inherits Buffer ]
+                            if [ bb ]
+                                found_buf = bb
+                                break
+                    expect found_buf, "no Buffer provided in samplers map for storage buffer attrib"
+                    storage_buf_infos[set1_binds] = VkDescriptorBufferInfo [
+                        buffer: found_buf.vk_buffer,
+                        offset: 0,
+                        range:  found_buf.size
+                    ]
+                    sampler_bindings[set1_binds] = VkDescriptorSetLayoutBinding [
+                        binding:         set1_binds,
+                        descriptorType:  VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                        descriptorCount: 1,
+                        stageFlags:      stage_flags
+                    ]
+                    set1_binds            += 1
+                    storage_buffer_count  += 1
+
             shader_schema = shader_schema.context
         vkCreateDescriptorSetLayout[ vk.device, VkDescriptorSetLayoutCreateInfo [
             sType:        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -1000,10 +1110,10 @@ class Pipeline
         ], null, ref descriptor_layouts[0] ]
         vkCreateDescriptorSetLayout[ vk.device, VkDescriptorSetLayoutCreateInfo [
             sType:        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            bindingCount: sampler_binds,
+            bindingCount: set1_binds,
             pBindings:    sampler_bindings
         ], null, ref descriptor_layouts[1] ]
-        sizes: local VkDescriptorPoolSize[2]
+        sizes: local VkDescriptorPoolSize[4]
         desc: VkDescriptorPoolCreateInfo [
             sType:         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             poolSizeCount: 0,
@@ -1014,9 +1124,17 @@ class Pipeline
             sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
             sizes[desc.poolSizeCount].descriptorCount = uniform_count
             desc.poolSizeCount += 1
-        if [ sampler_binds ]
+        if [ sampler_count > 0 ]
             sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
-            sizes[desc.poolSizeCount].descriptorCount = total_samplers
+            sizes[desc.poolSizeCount].descriptorCount = sampler_count
+            desc.poolSizeCount += 1
+        if [ storage_image_count ]
+            sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+            sizes[desc.poolSizeCount].descriptorCount = storage_image_count
+            desc.poolSizeCount += 1
+        if [ storage_buffer_count ]
+            sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+            sizes[desc.poolSizeCount].descriptorCount = storage_buffer_count
             desc.poolSizeCount += 1
         vkCreateDescriptorPool[ vk.device, desc, null, ref descriptor_pool ]
         vkAllocateDescriptorSets[ vk.device, VkDescriptorSetAllocateInfo [
@@ -1034,22 +1152,38 @@ class Pipeline
                 descriptorCount: 1,
                 pBufferInfo:     ref buffer_infos[i]
             ]
-        i_image: 0
-        for [ i: 0, i < sampler_binds, i += 1 ]
-            descriptor_writes[uniform_count + i] = VkWriteDescriptorSet [
-                sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                dstSet:          descriptor_sets[1],
-                dstBinding:      i,
-                descriptorType:  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                descriptorCount: sampler_bindings[i].descriptorCount,
-                pImageInfo:      ref image_infos[i_image]
-            ]
-            i_image += sampler_bindings[i].descriptorCount
+        for [ i: 0, i < set1_binds, i += 1 ]
+            dtype: VkDescriptorType [ sampler_bindings[i].descriptorType ]
+            if [ dtype == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ]
+                descriptor_writes[uniform_count + i] = VkWriteDescriptorSet [
+                    sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    pNext:           null,
+                    dstSet:          descriptor_sets[1],
+                    dstBinding:      i,
+                    dstArrayElement: 0,
+                    descriptorType:  dtype,
+                    descriptorCount: 1,
+                    pBufferInfo:     ref storage_buf_infos[i]
+                ]
+            el
+                descriptor_writes[uniform_count + i] = VkWriteDescriptorSet [
+                    sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    pNext:           null,
+                    dstSet:          descriptor_sets[1],
+                    dstBinding:      i,
+                    dstArrayElement: 0,
+                    descriptorType:  dtype,
+                    descriptorCount: 1,
+                    pImageInfo:      ref image_infos[i]
+                ]
         vkUpdateDescriptorSets[ vk.device,
-            uniform_count + sampler_binds, descriptor_writes, 0, null ]
+            uniform_count + set1_binds, descriptor_writes, 0, null ]
 
-    public func reassemble [ ] 
-        expect vbo, "no vbo or memory provided to form a compute or graphical pipeline"
+    public func reassemble [ ]
+        # vbo is OPTIONAL: a compute-only pipeline (no graphics) has no vbo
+        # and skips the entire vertex/raster/fragment block. it still needs
+        # the pipeline layout (set 0 = uniforms, set 1 = sampler/storage)
+        # so descriptor sets bind correctly.
         pipeline_layout_info: VkPipelineLayoutCreateInfo [
             sType:                  VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
             setLayoutCount:         2,
@@ -1058,7 +1192,15 @@ class Pipeline
         ]
         result: vkCreatePipelineLayout[ vk.device, pipeline_layout_info, null, ref layout ]
         expect result == VK_SUCCESS, "Failed to create pipeline layout"
-        if [ vbo ]
+        # If the shader is compute-only (has vk_comp but no vk_vert/vk_frag),
+        # always create a compute pipeline regardless of whether the Model
+        # framework saddled us with a default-quad vbo. Without this, the
+        # compute model goes through the el[id] branch in Model.finish (which
+        # assigns vk.quad_m as the default mesh) and ends up in the graphics
+        # pipeline create path with a null vk_vert — vkCreateGraphicsPipelines
+        # then fails the validator with "module is VK_NULL_HANDLE".
+        is_compute_only: bool [ s && s.vk_comp != null && !s.vk_vert ]
+        if [ vbo && !is_compute_only ]
             binding_description: VkVertexInputBindingDescription [
                 binding:   0,
                 stride:    vbo.vertex_size,
@@ -1069,7 +1211,8 @@ class Pipeline
 
             # count VertexInput attribs the shader actually consumes
             shader_input_count: 0
-            shader_schema: typeid[ s ]
+            ra_hdr:        Au [ Au.header[ s ] ]
+            shader_schema: Au_t [ ra_hdr.type ]
             while [ shader_schema != typeid[ shader ] ]
                 for [ si: 0, si < shader_schema.members.count, si += 1 ]
                     sm: Au_t [ shader_schema.members.origin[si] ]
@@ -1148,12 +1291,18 @@ class Pipeline
                 rasterizationSamples: VK_SAMPLE_COUNT_1_BIT,
                 sampleShadingEnable:  VK_TRUE
             ]
+            # pre-multiplied alpha blending (Porter-Duff "over"):
+            #   result.rgb = src.rgb + dst.rgb * (1 - src.a)
+            #   result.a   = src.a   + dst.a   * (1 - src.a)
+            # fragment shader is responsible for emitting rgb already
+            # multiplied by alpha. this composes correctly through any
+            # number of stages without darkening at AA edges.
             color_blend_attachment: VkPipelineColorBlendAttachmentState [
                 blendEnable:         VK_TRUE,
-                srcColorBlendFactor: VK_BLEND_FACTOR_SRC_ALPHA,
+                srcColorBlendFactor: VK_BLEND_FACTOR_ONE,
                 dstColorBlendFactor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
                 colorBlendOp:        VK_BLEND_OP_ADD,
-                srcAlphaBlendFactor: VK_BLEND_FACTOR_SRC_ALPHA,
+                srcAlphaBlendFactor: VK_BLEND_FACTOR_ONE,
                 dstAlphaBlendFactor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
                 alphaBlendOp:        VK_BLEND_OP_ADD,
                 colorWriteMask:      VK_COLOR_COMPONENT_R_BIT |
@@ -1254,7 +1403,7 @@ class Model
     public id               : GltfModel
     public nodes            : array gltf_node
     public s                : shader
-    public samplers         : map Au[string] [ ]
+    mutable samplers        : map Au[string] [ ]
     public pipelines        : array Pipeline
 
     public func rebind_model [ ] 
@@ -1438,7 +1587,7 @@ class Buffer
     public m_device_local   : bool
     public m_host_visible   : bool
     public m_host_coherent  : bool
-    intern user             : ARef
+    intern user             : Au_t
     intern vma_alloc        : VmaAllocation
     intern vk_buffer        : VkBuffer
 
@@ -1549,12 +1698,19 @@ class Buffer
             alloc_info.requiredFlags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
         if [ data || m_host_visible ]
             alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-        result: vmaCreateBuffer[ vk.allocator, buffer_info, alloc_info, ref vk_buffer, ref vma_alloc, null ]
+        # ask VMA to fill in the persistently-mapped pointer for us
+        vma_info: VmaAllocationInfo
+        result: vmaCreateBuffer[ vk.allocator, buffer_info, alloc_info, ref vk_buffer, ref vma_alloc, ref vma_info ]
         expect result == VK_SUCCESS, "failed to create buffer"
         if [ data ]
+            # caller-provided source data: copy in once.
             mapped: mmap[]
             memcpy[ mapped, data, size ]
             unmap[]
+        el [ m_host_visible && vma_info.pMappedData ]
+            # no source data but host-visible: expose VMA's persistent mapping
+            # as `data` so callers can write directly without re-mapping.
+            data = vma_info.pMappedData
 
     func dealloc [ ]
         vmaDestroyBuffer[ vk.allocator, vk_buffer, vma_alloc ]
@@ -1572,6 +1728,7 @@ class Texture
     public layer_count      : i32
     public surface          : Surface
     public linear           : bool
+    public is_storage       : bool   # adds VK_IMAGE_USAGE_STORAGE_BIT for compute write
     public silly_test4      : bool
     public title            : string 'default title'
     
@@ -1659,9 +1816,40 @@ class Texture
             ], ref vk_image, ref vma_alloc, null ]                      
             printf[ "vmaCreateImage: %d\n", result ]                  
             if [ result == VK_SUCCESS ]                                 
-                vmaDestroyImage[ allocator, vk_image, vma_alloc ]       
-            vmaDestroyAllocator[ allocator ] 
-            
+                vmaDestroyImage[ allocator, vk_image, vma_alloc ]
+            vmaDestroyAllocator[ allocator ]
+
+    # upload raw bytes into the existing vk_image. assumes the image was
+    # already created at width x height with the right format. used by
+    # Canvas's per-draw SDF generation to push fresh distance-field data
+    # into the canvas's stable sdf_tex without recreating the texture.
+    func upload [ data: ARef, byte_count: i32 ]
+        expect vk, "vk_context not specified"
+        expect vk_image, "vk_image not yet created"
+        transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        cmd: Command [ vk: vk ]
+        cmd.begin[]
+        staging: Buffer [ vk: vk, size: byte_count, u_src: true,
+            m_host_visible: true, m_host_coherent: true,
+            data: data ]
+        vkCmdCopyBufferToImage[ cmd.cmd, staging.vk_buffer, vk_image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, VkBufferImageCopy [
+                bufferOffset:      0,
+                bufferRowLength:   0,
+                bufferImageHeight: 0,
+                imageSubresource:  VkImageSubresourceLayers [
+                    aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                    mipLevel:       0,
+                    baseArrayLayer: 0,
+                    layerCount:     1
+                ],
+                imageOffset: VkOffset3D [ 0, 0, 0 ],
+                imageExtent: VkExtent3D [ width, height, 1 ]
+            ]]
+        cmd.submit[ ]
+        vkDeviceWaitIdle[ vk.device ]
+        transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+
     func init [ ]
         expect vk, "vk_context not specified"
         fmt: i32 [ vk_format ]
@@ -1677,7 +1865,7 @@ class Texture
         img :  sampler inherits Image
         ansio: 4
         sampler_size: i32 [ 0 ]
-        fill: u8[256]
+        fill: local u8[256]
         if [ !mip_levels ]
             mip_levels = 1
         if [ !layer_count ]
@@ -1713,6 +1901,8 @@ class Texture
                         VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
                         VK_IMAGE_USAGE_SAMPLED_BIT
+            if [ is_storage ]
+                usage |= VK_IMAGE_USAGE_STORAGE_BIT
 
             if [ !vk_format && pixel_format ]
                 vk_format = vk_format_fn[ pixel_format, linear ]
@@ -1977,10 +2167,10 @@ Texture Display
                 swap_render_current = swap_renders[swap_image_current]
                 last_render[].color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                printf[ "  swap_render_current swap=%p reduce=%d clear=[%f,%f,%f,%f]\n",
-                    swap_render_current.vk_swap_image, swap_render_current.reduce,
-                    swap_render_current.clear_color.x, swap_render_current.clear_color.y,
-                    swap_render_current.clear_color.z, swap_render_current.clear_color.w ]
+                #printf[ "  swap_render_current swap=%p reduce=%d clear=[%f,%f,%f,%f]\n",
+                #    swap_render_current.vk_swap_image, swap_render_current.reduce,
+                #    swap_render_current.clear_color.x, swap_render_current.clear_color.y,
+                #    swap_render_current.clear_color.z, swap_render_current.clear_color.w ]
                 swap_render_current.draw[]
                 last_render[].color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 presentInfo: VkPresentInfoKHR [
@@ -2069,9 +2259,16 @@ Texture Display
             formats: new VkSurfaceFormatKHR [ format_count ]
             vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, surface, ref format_count, formats ]
 
+            # prefer sRGB-encoded format so the GPU does gamma-correct
+            # blending automatically (linear math in shader, sRGB on disk).
+            # this fixes the perceptual luminance dip when alpha-blending
+            # between saturated complementary colors.
             surface_format = formats[0]
             for [ i: u32 0, i < format_count, i += 1 ]
-                if [ formats[i].format == VK_FORMAT_B8G8R8A8_UNORM ]
+                if [ formats[i].format == VK_FORMAT_B8G8R8A8_SRGB ]
+                    surface_format = formats[i]
+            for [ i: u32 0, i < format_count, i += 1 ]
+                if [ formats[i].format == VK_FORMAT_R8G8B8A8_SRGB ]
                     surface_format = formats[i]
 
             # present mode
@@ -2095,7 +2292,7 @@ Texture Display
             extent.width  = u32[ w_i ]
             extent.height = u32[ h_i ]
         el
-            surface_format.format     = (format == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM
+            surface_format.format     = (format == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_SRGB
             surface_format.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
             extent.width  = width
             extent.height = height
@@ -2169,6 +2366,12 @@ class shader
         if [ !main_member || main_member.context == typeid[shader] ]
             return null
 
+        # local size for compute stage. fixed at 16x16 — matches the
+        # canvas_sdf.comp prototype. could be made per-shader configurable
+        # via a class field if other compute shaders need different sizes.
+        if [ stage == ShaderStage.compute ]
+            result = '{result}layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;\n\n'
+
 
         # UBO from mutable members
         ubo_name: type.ident
@@ -2179,9 +2382,8 @@ class shader
                 mem: scan.members.origin[i]
                 printf["member: %s\n", mem.ident]
                 
-                if [ mem.member_type != 4 ]
+                if [ !is_uniform_field[ mem ] ]
                     continue
-                if [ !mem.src || mem.traits & (1 << 56) ] continue
                 gtype: glsl_type_name[ mem.src ]
                 if [ !gtype ]
                     continue
@@ -2218,7 +2420,20 @@ class shader
                     el
                         result = '{result}layout(set = 1, binding = {binding}) uniform {stype} {mem.ident};\n'
                     binding += 1
-                
+
+                el [ val inherits StorageImage ]
+                    si: StorageImage[val]
+                    # GLSL format qualifier from the meta type. only the formats
+                    # we actually use are mapped; extend as needed.
+                    img_fmt: (si.format == typeid[ f32 ]) ? "r32f" :
+                             (si.format == typeid[ rgbaf ]) ? "rgba32f" : "r32f"
+                    result = '{result}layout({img_fmt}, set = 1, binding = {binding}) writeonly uniform image2D {mem.ident};\n'
+                    binding += 1
+
+                el [ val inherits StorageBuffer ]
+                    result = '{result}layout(std430, set = 1, binding = {binding}) readonly buffer {mem.ident}_t {{ vec4 {mem.ident}[]; }};\n'
+                    binding += 1
+
                 el [ val inherits VertexInput && stage == ShaderStage.vertex ]
                     vi: (val to VertexInput)
                     gtype: glsl_type_name[ vi.type ]
@@ -2329,11 +2544,13 @@ class shader
         expect instance inherits shader, "shader instance not provided"
         index: num [ 0 ]
         src: ref u8 [ instance ]
+        #printf[ "uniform_transfer: type=%s members.count=%i\n",
+        #    type.ident, type.members.count ]
         for [ m: 0, m < type.members.count, m += 1 ]
             mem: Au_t [ type.members.origin[m] ]
-            if [ mem.member_type == 4 ]
-                if [ !mem.src ]
-                    continue
+            # use the same filter as uniform_size / glsl_header so the buffer
+            # layout (offsets and contents) matches the GLSL UBO declaration.
+            if [ is_uniform_field[ mem ] ]
                 type_size: mem.src.typesize
                 if [ mem.src.traits & (1 << 8) || mem.src.traits & (1 << 0) ] # struct or primitive are both inlay
                     memcpy[ ref data2[index], ref src[mem.offset], type_size ]
@@ -2656,8 +2873,92 @@ enum CanvasUISurface
     image: 1
 
 
+# CanvasUISurface enum extension for storage bindings used by the SDF
+# compute pipeline. these IDs are not used by the named-sampler loop in
+# Surface_resources (the storage path looks them up by attrib name in the
+# samplers map directly), so they only need to be unique within the enum.
+enum CanvasSDFSurface
+    edges:   0
+    sdf_out: 1
+
+
+# Compute shader that builds an SDF from a list of edges. ported from
+# foundry/shaders.bak/canvas/canvas_sdf.comp with the push_constant block
+# replaced by UBO mutables (silver doesn't currently support push consts)
+# and the bindings expressed via Silver's StorageBuffer/StorageImage attribs.
+#
+# Workgroup size is 16x16. Caller must dispatch ceil(tw/16) x ceil(th/16) x 1.
+shader CanvasSDFCompute
+    # UBO params (was push constant in the original .comp file)
+    mutable wx     : f32
+    mutable wy     : f32
+    mutable ww     : f32
+    mutable wh     : f32
+    mutable tw     : i32
+    mutable th     : i32
+    mutable ne     : i32
+    mutable spread : f32
+
+    # storage buffer for edges (vec4 each: x0, y0, x1, y1)
+    attrib  edges    : StorageBuffer [
+        type:typeid[ CanvasSDFSurface ], id: CanvasSDFSurface.edges,   count:1, format:typeid[ vec4f ]
+    ]
+    # storage image for SDF output (R32F)
+    attrib  sdf_out  : StorageImage  [
+        type:typeid[ CanvasSDFSurface ], id: CanvasSDFSurface.sdf_out, count:1, format:typeid[ f32 ]
+    ]
+
+    func compute [] -> GLSL none {
+        ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+        if (gid.x >= ubo.tw || gid.y >= ubo.th) return;
+
+        float sx = ubo.ww / float(ubo.tw);
+        float sy = ubo.wh / float(ubo.th);
+        float px = ubo.wx + (float(gid.x) + 0.5) * sx;
+        float py = ubo.wy + (float(gid.y) + 0.5) * sy;
+        vec2  pt = vec2(px, py);
+
+        // min distance to any edge
+        float md = 999999.0;
+        for (int i = 0; i < ubo.ne; i++) {{
+            vec2 a = edges[i].xy;
+            vec2 b = edges[i].zw;
+            vec2 ab = b - a;
+            vec2 ap = pt - a;
+            float t = clamp(dot(ap, ab) / max(dot(ab, ab), 1e-12), 0.0, 1.0);
+            vec2 closest = a + t * ab;
+            md = min(md, length(pt - closest));
+        }}
+
+        // winding number for inside/outside
+        int wn = 0;
+        for (int i = 0; i < ubo.ne; i++) {{
+            vec2 a = edges[i].xy;
+            vec2 b = edges[i].zw;
+            if (a.y <= py) {{
+                if (b.y > py) {{
+                    float c = (b.x - a.x) * (py - a.y) - (px - a.x) * (b.y - a.y);
+                    if (c > 0.0) wn++;
+                }}
+            }} else {{
+                if (b.y <= py) {{
+                    float c = (b.x - a.x) * (py - a.y) - (px - a.x) * (b.y - a.y);
+                    if (c < 0.0) wn--;
+                }}
+            }}
+        }}
+
+        md = min(md, ubo.spread);
+        float sdf = (wn != 0) ? -md : md;
+
+        imageStore(sdf_out, gid, vec4(sdf, 0.0, 0.0, 0.0));
+    }
+
+
 shader CanvasUI
-    mutable viewport   : vec2f
+    # vec4s declared first so silver's packed buffer layout matches GLSL
+    # std140 alignment. vec2f viewport is last so it lands at the end
+    # without upsetting the vec4 16-byte alignment of every other field.
     mutable rect       : vec4f
     mutable radii      : vec4f
     mutable fill_color : vec4f
@@ -2666,6 +2967,17 @@ shader CanvasUI
     mutable grad0      : vec4f     # Gradient endpoints / tex rect
     mutable grad_c0    : vec4f     # Gradient stop color 0
     mutable grad_c1    : vec4f     # Gradient stop color 1
+    # stroke options: (join, cap, miter_limit, reserved)
+    # join values match silver's Join enum: 0=none, 1=miter (square),
+    # 2=round, 3=bevel — only miter vs round affect the rect SDF outer
+    # corner shape; cap and miter_limit are for path strokes (TODO).
+    mutable stroke_opts : vec4f
+    # 2D affine transform packed as 2 vec4s (avoid std140 mat3 padding):
+    #   xform_row0 = (ma, mb, mc, md)  -- the 2x2 linear part [ma mb; mc md]
+    #   xform_row1 = (tx, ty, 0, 0)    -- translation
+    mutable xform_row0 : vec4f
+    mutable xform_row1 : vec4f
+    mutable viewport   : vec2f
     attrib  atlas      : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format:typeid[ u8 ]
     ]
@@ -2712,28 +3024,71 @@ shader CanvasUI
 
     # ---- vertex shader ----
     func vertex [] -> GLSL none {
-        float pad = 1.0 + ubo.params.z;
-        vec2  lo  = ubo.rect.xy - vec2(pad);
-        vec2  hi  = ubo.rect.xy + ubo.rect.zw + vec2(pad);
-        vec2  px  = mix(lo, hi, a_pos);
-        v_pos     = px;
-        vec2 ndc  = (px / ubo.viewport) * 2.0 - 1.0;
-        gl_Position = vec4(ndc, 0.0, 1.0);
+        // local-space rect (no transform yet)
+        // pad = 1px AA + blur (params.z) + half stroke width (params.x)
+        // so the covering quad fully contains the AA edge, blur falloff,
+        // AND the outer half of any centered stroke band.
+        float pad      = 1.0 + ubo.params.z + ubo.params.x * 0.5;
+        vec2  lo_local = ubo.rect.xy - vec2(pad);
+        vec2  hi_local = ubo.rect.xy + ubo.rect.zw + vec2(pad);
+
+        // 2D affine: world = mat2(ma,mc, mb,md) * local + (tx,ty)
+        mat2 M = mat2(ubo.xform_row0.x, ubo.xform_row0.z,
+                      ubo.xform_row0.y, ubo.xform_row0.w);
+        vec2 T = ubo.xform_row1.xy;
+
+        // transform all 4 local corners to world space, then take their AABB.
+        // this is the post-transform bounding box that the rasterizer needs
+        // to cover so rotated/scaled rects don't get clipped.
+        vec2 c0 = M * vec2(lo_local.x, lo_local.y) + T;
+        vec2 c1 = M * vec2(hi_local.x, lo_local.y) + T;
+        vec2 c2 = M * vec2(lo_local.x, hi_local.y) + T;
+        vec2 c3 = M * vec2(hi_local.x, hi_local.y) + T;
+        vec2 lo_world = min(min(c0, c1), min(c2, c3));
+        vec2 hi_world = max(max(c0, c1), max(c2, c3));
+
+        // pick this vertex's corner of the world-space AABB
+        vec2 wpx = mix(lo_world, hi_world, a_pos);
+        v_pos    = wpx;
+        vec2 ndc = (wpx / ubo.viewport) * 2.0 - 1.0;
+        gl_Position = vec4(-ndc, 0.0, 1.0);
     }
 
     # ---- fragment shader ----
     func fragment [] -> GLSL none {
+        #o_color = vec4(0.0, 0.0, 1.0, 1.0);
+        #return;
+
         float mode         = ubo.params.w;
         float stroke_width = ubo.params.x;
         float opacity      = ubo.params.y;
         float blur         = ubo.params.z;
+
+        // inverse-transform v_pos (world space, from vertex stage) back to
+        // local space, where ubo.rect lives. for an affine M*p + T, the
+        // inverse is M^-1 * (p - T). 2x2 inverse: 1/det * [d -b; -c a].
+        // guard against zero determinant (uninitialized transform) to
+        // avoid NaN fragments — fall back to identity.
+        mat2 M    = mat2(ubo.xform_row0.x, ubo.xform_row0.z,
+                         ubo.xform_row0.y, ubo.xform_row0.w);
+        vec2 T    = ubo.xform_row1.xy;
+        float det = M[0].x * M[1].y - M[0].y * M[1].x;
+        mat2 Minv;
+        if (abs(det) < 1e-6) {{
+            Minv = mat2(1.0, 0.0, 0.0, 1.0);
+        }} else {{
+            Minv = mat2( M[1].y, -M[0].y,
+                        -M[1].x,  M[0].x) / det;
+        }}
+        vec2 lpos = Minv * (v_pos - T);
+
         vec2  center       = ubo.rect.xy + ubo.rect.zw * 0.5;
         vec2  half_size    = ubo.rect.zw * 0.5;
-        float dist         = sdf_rounded_rect(v_pos, center, half_size, ubo.radii);
+        float dist         = sdf_rounded_rect(lpos, center, half_size, ubo.radii);
 
         // text: sample glyph atlas
         if (mode == 4.0) {{
-            vec2  uv = (v_pos - ubo.rect.xy) / ubo.rect.zw;
+            vec2  uv = (lpos - ubo.rect.xy) / ubo.rect.zw;
             uv       = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
             float a  = texture(atlas, uv).r;
             o_color  = ubo.fill_color * vec4(1.0, 1.0, 1.0, a) * opacity;
@@ -2742,7 +3097,7 @@ shader CanvasUI
 
         // image: sample texture, clip to rounded rect
         if (mode == 5.0) {{
-            vec2 uv    = (v_pos - ubo.rect.xy) / ubo.rect.zw;
+            vec2 uv    = (lpos - ubo.rect.xy) / ubo.rect.zw;
             uv         = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
             vec4 texel = texture(image, uv);
             float aa   = 1.0 - smoothstep(-0.5, 0.5, dist);
@@ -2750,47 +3105,79 @@ shader CanvasUI
             return;
         }}
 
-        // SDF path: sample distance field texture
+        // SDF path: sample R32F distance field. raw signed distance in
+        // world pixels, written either by the CPU sdf_generate path or by
+        // the CanvasSDFCompute compute shader. negative = inside.
         if (mode == 6.0) {{
-            vec2  uv    = (v_pos - ubo.rect.xy) / ubo.rect.zw;
-            uv          = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
-            float sd    = texture(image, uv).r;
-            float d_sdf = (0.5 - sd) * 2.0;
-            float path_aa;
-            if (stroke_width > 0.0) {{
-                float half_w = stroke_width * 0.5;
-                float outer  = 1.0 - smoothstep(-0.5, 0.5, abs(d_sdf) - half_w);
-                o_color      = ubo.fill_color * vec4(1.0, 1.0, 1.0, outer) * opacity;
-            }} else {{
-                path_aa = 1.0 - smoothstep(-0.5, 0.5, d_sdf);
-                o_color = ubo.fill_color * vec4(1.0, 1.0, 1.0, path_aa) * opacity;
+            vec2  uv     = (lpos - ubo.rect.xy) / ubo.rect.zw;
+            uv           = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
+            if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {{
+                o_color = vec4(0.0);
+                return;
             }}
+            float dist_p = texture(image, uv).r;
+
+            // screen-space AA — fwidth gives ~1 pixel either side of the
+            // edge regardless of transform / zoom. blur extends it.
+            float wp     = fwidth(dist_p) + blur;
+            float half_w = stroke_width * 0.5;
+
+            // fill: 1 wherever dist_p is negative (inside the shape)
+            float fill_cov   = 1.0 - smoothstep(-wp, wp, dist_p);
+            // stroke band: width stroke_width centered on the path edge
+            float stroke_cov = (stroke_width > 0.0)
+                ? (1.0 - smoothstep(-wp, wp, abs(dist_p) - half_w))
+                : 0.0;
+
+            vec4 fill_p   = vec4(ubo.fill_color.rgb * ubo.fill_color.a * fill_cov,
+                                 ubo.fill_color.a   * fill_cov);
+            vec4 stroke_p = vec4(ubo.stroke_clr.rgb * ubo.stroke_clr.a * stroke_cov,
+                                 ubo.stroke_clr.a   * stroke_cov);
+            o_color = (stroke_p + fill_p * (1.0 - stroke_p.a)) * opacity;
             return;
         }}
 
         // fill: solid or gradient
         vec4 fill = (mode >= 1.0 && mode <= 3.0)
-            ? eval_gradient(v_pos, mode)
+            ? eval_gradient(lpos, mode)
             : ubo.fill_color;
 
-        // AA at shape boundary
-        float aa = (blur > 0.0)
-            ? 1.0 - smoothstep(-blur, blur, dist)
-            : 1.0 - smoothstep(-0.5, 0.5, dist);
+        // screen-space AA: fwidth(dist) is how much dist changes between
+        // adjacent screen fragments, so the smoothstep range stays ~1
+        // pixel on each side of the edge regardless of any transform
+        // (rotation/scale/zoom). blur extends the softening beyond that
+        // base width for shadow/halo effects.
+        float w = fwidth(dist) + blur;
 
-        // stroke: SDF ring between outer and inner boundary
-        vec4 color;
-        if (stroke_width > 0.0) {{
-            float fill_aa = 1.0 - smoothstep(-0.5, 0.5, dist + stroke_width);
-            float ring    = max(aa - fill_aa, 0.0);
-            color = fill * fill_aa + ubo.stroke_clr * ring;
-        }} else {{
-            color = fill * aa;
+        // combined fill + stroke in one pass:
+        //   fill_cov   = 1 inside the shape shrunk inward by half-stroke
+        //   stroke_cov = 1 in a band of width stroke_width centered on edge
+        // when stroke_width == 0 the stroke band collapses, fill_cov uses
+        // dist directly, and the result is the unstroked AA fill.
+        //
+        // stroke_opts.x is the join enum: 1 = miter (square outer corner),
+        // others = round. for miter, recompute the stroke distance using
+        // chebyshev (L-inf) so iso-contours past the edge are concentric
+        // squares instead of rounded rects. fill always uses the rounded
+        // sdf so corner radii still work.
+        float half_w = stroke_width * 0.5;
+        float dist_stroke = dist;
+        if (ubo.stroke_opts.x == 1.0) {{
+            vec2 d_local = abs(lpos - center) - half_size;
+            dist_stroke  = max(d_local.x, d_local.y);
         }}
+        float fill_cov   = 1.0 - smoothstep(-w, w, dist + half_w);
+        float stroke_cov = 1.0 - smoothstep(-w, w, abs(dist_stroke) - half_w);
 
-        o_color = color * opacity;
+        // PRE-MULTIPLIED ALPHA: rgb pre-multiplied by coverage. composing
+        // through multiple stages stays correct (no double-darkening).
+        // stroke renders OVER fill via Porter-Duff "over": stroke + fill * (1 - stroke.a).
+        vec4 fill_p   = vec4(fill.rgb         * fill.a         * fill_cov,
+                             fill.a           * fill_cov);
+        vec4 stroke_p = vec4(ubo.stroke_clr.rgb * ubo.stroke_clr.a * stroke_cov,
+                             ubo.stroke_clr.a   * stroke_cov);
+        o_color = (stroke_p + fill_p * (1.0 - stroke_p.a)) * opacity;
     }
-
 
 
 # ---- path point with optional control points ----
@@ -2827,48 +3214,52 @@ struct affine
 
 
     func translate [ dx: f32, dy: f32 ] -> affine
-        t:a
         return affine [
-            ma: t.ma, mb: t.mb, mc: t.mc, md: t.md,
-            tx: t.tx + t.ma * dx + t.mb * dy,
-            ty: t.ty + t.mc * dx + t.md * dy
+            ma: ma, mb: mb, mc: mc, md: md,
+            tx: tx + ma * dx + mb * dy,
+            ty: ty + mc * dx + md * dy
         ]
 
 
     func scale [ s: f32 ] -> affine
-        t:a
         return affine [
-            ma: t.ma * s, mb: t.mb * s,
-            mc: t.mc * s, md: t.md * s,
-            tx: t.tx, ty: t.ty
+            ma: ma * s, mb: mb * s,
+            mc: mc * s, md: md * s,
+            tx: tx, ty: ty
         ]
 
 
     func rotate [ radians: f32 ] -> affine
-        t  : a
         cs : cos[ radians ]
         sn : sin[ radians ]
         return affine [
-            ma: t.ma * cs + t.mb * sn,
-            mb: t.mb * cs - t.ma * sn,
-            mc: t.mc * cs + t.md * sn,
-            md: t.md * cs - t.mc * sn,
-            tx: t.tx, ty: t.ty
+            ma: ma * cs + mb * sn,
+            mb: mb * cs - ma * sn,
+            mc: mc * cs + md * sn,
+            md: md * cs - mc * sn,
+            tx: tx, ty: ty
         ]
 
 
     func multiply [ q: affine ] -> affine
 
         return affine [
-            ma: a.ma * q.ma + a.mb * q.mc,
-            mb: a.ma * q.mb + a.mb * q.md,
-            mc: a.mc * q.ma + a.md * q.mc,
-            md: a.mc * q.mb + a.md * q.md,
-            tx: a.ma * q.tx + a.mb * q.ty + a.tx,
-            ty: a.mc * q.tx + a.md * q.ty + a.ty
+            ma: ma * q.ma + mb * q.mc,
+            mb: ma * q.mb + mb * q.md,
+            mc: mc * q.ma + md * q.mc,
+            md: mc * q.mb + md * q.md,
+            tx: ma * q.tx + mb * q.ty + tx,
+            ty: mc * q.tx + md * q.ty + ty
         ]
 
 # ---- path class ----
+# Internally journals every move/line/curve op into `points`. The Canvas
+# draw path keeps a snapshot of the previous draw's `points` plus its
+# computed edge list AND bounding box — on the next draw, if the ops are
+# byte-for-byte identical, we skip the de Casteljau flatten + edge extract
+# + storage buffer upload entirely. Invisible to the user: they keep
+# calling the normal Canvas API; the cache hits whenever the geometry
+# hasn't changed (e.g. a static shape rotating via the canvas affine).
 class CanvasPath
     public points    : array PathPt
     public start_x   : f32
@@ -2876,6 +3267,15 @@ class CanvasPath
     public cursor_x  : f32
     public cursor_y  : f32
     public is_closed  : bool
+    # cached flatten/extract result from the previous draw of this path.
+    # cached_points is the snapshot of `points` that produced cached_edges.
+    intern cached_points : array PathPt
+    intern cached_edges  : array SDFEdge
+    intern cached_bx0    : f32
+    intern cached_by0    : f32
+    intern cached_bw     : f32
+    intern cached_bh     : f32
+    intern cached_valid  : bool
 
     func init []
         points = array PathPt []
@@ -3157,20 +3557,58 @@ Render Canvas
     intern ui_shader  : CanvasUI
     intern sdf_tex    : Texture
     public format	  : Pixel[Pixel.rgba8]
+    # current 2D affine — held directly on Canvas because writing back
+    # into states[depth-1].transform via array-of-struct field assignment
+    # doesn't stick (silver returns a copy, edits the copy, drops it).
+    mutable cur_xform  : affine
+    mutable xform_stack : array affine
+    # ---- gpu sdf compute path ----
+    # toggle this to switch between CPU SDF (sdf_generate + sdf_to_r8 + upload)
+    # and GPU compute SDF (CanvasSDFCompute writes directly into sdf_tex).
+    public  gpu_sdf          : bool
+    intern  sdf_compute      : CanvasSDFCompute
+    intern  edge_buf         : Buffer       # storage buffer holding flattened edge list
+    intern  edge_buf_capacity : i32         # max edges the buffer can hold
 
     func init [ ]
-        printf[ "canvas init 1\n" ]
+        printf[ "Canvas.init: vk=%p w=%p width=%i height=%i\n", vk, w, width, height ]
+        clear_color = vec4f [ 0.22, 0.0, 0.44, 1.0 ]
+        cur_xform   = affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
+        xform_stack = array affine [ ]
         ui_shader = CanvasUI [ vk: vk ]
-        printf[ "canvas init 2\n" ]
-        models = [ Model [ vk: vk, w: w, s: ui_shader ] ]
-        printf[ "canvas init 3\n" ]
+        # R32F + STORAGE_BIT so the compute shader can imageStore distances
+        # directly and the fragment shader still samples it as a texture.
+        sdf_tex = Texture [ vk: vk, w: w, width: 512, height: 512,
+            pixel_format: Pixel.f32, surface: Surface.color, is_storage: true ]
+        canvas_samplers : map Au[string] [ 'image': sdf_tex ]
+        graphics_model : Model [ vk: vk, w: w, s: ui_shader, samplers: canvas_samplers ]
+
+        # GPU SDF compute model
+        sdf_compute = CanvasSDFCompute [ vk: vk ]
+        edge_buf_capacity = 1024
+        edge_bytes : i32 [ edge_buf_capacity * 16 ]
+        edge_buf = Buffer [ vk: vk, size: edge_bytes,
+            u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        compute_samplers : map Au[string] [ 'edges': edge_buf, 'sdf_out': sdf_tex ]
+        compute_model : Model [ vk: vk, w: w, s: sdf_compute, samplers: compute_samplers ]
+        # compute first, then graphics samples the result
+        models = [ compute_model, graphics_model ]
+
+        for [ m: Model ] in models
+            m.finish[ a, 0 ]
+            printf[ "  Canvas.init: model.pipelines.count=%i\n", m.pipelines.count ]
         path   = CanvasPath []
-        printf[ "canvas init 4\n" ]
         states = array CanvasState []
-        printf[ "canvas init 5\n" ]
         depth  = 0
         save
-        printf[ "canvas init done\n" ]
+
+    # invoke the inherited Render pipeline once all canvas state has been
+    # built up. drives framebuffer/extent setup, runs the render pass, and
+    # blocks until the GPU has finished writing the color attachment.
+    func flush []
+        update[]
+        draw[]
+        sync_fence[]
 
     func resize [ rw: i32, rh: i32 ] -> Canvas
         width  = rw
@@ -3263,12 +3701,17 @@ Render Canvas
         el
             prev : states[depth - 1]
             states.push[ prev ]
+        # snapshot the current transform so restore[] can roll it back.
+        xform_stack.push[ cur_xform ]
         depth += 1
 
     func restore []
         if [ depth > 1 ]
             states.pop[]
             depth -= 1
+        if [ xform_stack.count > 0 ]
+            cur_xform = xform_stack[ xform_stack.count - 1 ]
+            xform_stack.pop[]
 
     func set_font [ c: Canvas, fnt: CanvasFont ]
         c.font = fnt
@@ -3335,38 +3778,21 @@ Render Canvas
         states[depth - 1].transform = states[depth - 1].transform.rotate [ radians ]
 
     # ---- path building (delegate to CanvasPath) ----
+    # path coords are stored in LOCAL space; the GPU vertex shader applies
+    # ubo.xform per draw. that lets the same path be drawn with multiple
+    # transforms without rebuilding it (and matches Web Canvas semantics).
 
     func move_to [ x: f32, y: f32 ]
-        st : CanvasState states[depth - 1]
-        tx : st.transform.apply_x [ x, y ]
-        ty : st.transform.apply_y [ x, y ]
-        path.move_to [ tx, ty ]
+        path.move_to [ x, y ]
 
     func line_to [ x: f32, y: f32 ]
-        st : CanvasState states[depth - 1]
-        tx : st.transform.apply_x [ x, y ]
-        ty : st.transform.apply_y [ x, y ]
-        path.line_to [ tx, ty ]
+        path.line_to [ x, y ]
 
     func quad_to [ cx: f32, cy: f32, x: f32, y: f32 ]
-        st : CanvasState states[depth - 1]
-        path.quad_to [
-            st.transform.apply_x [ cx, cy ],
-            st.transform.apply_y [ cx, cy ],
-            st.transform.apply_x [ x, y ],
-            st.transform.apply_y [ x, y ]
-        ]
+        path.quad_to [ cx, cy, x, y ]
 
     func cubic_to [ c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32 ]
-        st : CanvasState states[depth - 1]
-        path.cubic_to [
-            st.transform.apply_x [ c1x, c1y ],
-            st.transform.apply_y [ c1x, c1y ],
-            st.transform.apply_x [ c2x, c2y ],
-            st.transform.apply_y [ c2x, c2y ],
-            st.transform.apply_x [ x, y ],
-            st.transform.apply_y [ x, y ]
-        ]
+        path.cubic_to [ c1x, c1y, c2x, c2y, x, y ]
 
     func arc_to [ x1: f32, y1: f32, x2: f32, y2: f32, radius: f32 ]
         st : CanvasState states[depth - 1]
@@ -3379,22 +3805,13 @@ Render Canvas
         ]
 
     func rect_to [ x: f32, y: f32, rw: f32, rh: f32 ]
-        st : CanvasState states[depth - 1]
-        tx : st.transform.apply_x [ x, y ]
-        ty : st.transform.apply_y [ x, y ]
-        # approximate width/height under transform
-        tw : rw * st.transform.ma
-        th : rh * st.transform.md
-        path.add_rect [ tx, ty, tw, th ]
+        path.add_rect [ x, y, rw, rh ]
 
     func rounded_rect_to [ x: f32, y: f32, rw: f32, rh: f32, rx: f32, ry: f32 ]
-        st : CanvasState states[depth - 1]
-        tx : st.transform.apply_x [ x, y ]
-        ty : st.transform.apply_y [ x, y ]
-        tw : rw * st.transform.ma
-        th : rh * st.transform.md
-        sr : rx * st.transform.ma
-        path.add_rounded_rect [ tx, ty, tw, th, sr, ry * st.transform.md ]
+        path.add_rounded_rect [ x, y, rw, rh, rx, ry ]
+
+    func close_path []
+        path.close_path[]
 
     func arc [ cx: f32, cy: f32, radius: f32, start_angle: f32, end_angle: f32 ]
         st : CanvasState states[depth - 1]
@@ -3451,6 +3868,27 @@ Render Canvas
         ui_shader.grad0    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         ui_shader.grad_c0  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         ui_shader.grad_c1  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        # stroke options: x = join enum (0=none,1=miter,2=round,3=bevel)
+        ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, 0.0, 0.0 ]
+        # 2D affine transform packed as two vec4s for the vertex shader
+        # to apply: world_px = mat2(ma,mc, mb,md) * local_px + (tx,ty)
+        ui_shader.xform_row0 = vec4f [ st.transform.ma, st.transform.mb,
+                                       st.transform.mc, st.transform.md ]
+        ui_shader.xform_row1 = vec4f [ st.transform.tx, st.transform.ty, 0.0, 0.0 ]
+        # print the full UBO contents we just wrote, so we can compare
+        # what silver thinks it's sending vs what the GPU actually reads.
+        printf[ "setup_shader ubo:\n" ]
+        printf[ "  rect       = (%f, %f, %f, %f)\n", rx, ry, rw, rh ]
+        printf[ "  fill_color = (%f, %f, %f, %f)\n",
+            ui_shader.fill_color.x, ui_shader.fill_color.y,
+            ui_shader.fill_color.z, ui_shader.fill_color.w ]
+        printf[ "  params     = (sw=%f, op=%f, blur=%f, mode=%f)\n",
+            st.stroke_width, st.opacity, st.blur_rad, 0.0 ]
+        printf[ "  xform_row0 = (ma=%f, mb=%f, mc=%f, md=%f)\n",
+            st.transform.ma, st.transform.mb, st.transform.mc, st.transform.md ]
+        printf[ "  xform_row1 = (tx=%f, ty=%f, 0, 0)\n",
+            st.transform.tx, st.transform.ty ]
+        printf[ "  viewport   = (%f, %f)\n", f32 width, f32 height ]
 
     func setup_gradient [ st: ref CanvasState ] -> f32
         if [ st.fill_grad && st.fill_grad.kind != GradientType.none ]
@@ -3508,70 +3946,142 @@ Render Canvas
 
     func draw_fill_preserve []
         st   : states[depth - 1]
-        flat : path_flatten [ path, 4.0 ]
-        n    : flat.count
-        if [ n == 0 ]
-            return
+        # ---- ordered-guess cache check ----
+        # if path.points byte-matches the snapshot from the previous draw,
+        # the de Casteljau flatten + edge extract + bounding box are all
+        # also the same — reuse them and skip the work. invisible to the
+        # user: they keep calling the normal Canvas API; the cache hits
+        # whenever the geometry hasn't changed (e.g. a static shape that
+        # just rotates via the canvas affine transform).
+        cache_hit : bool [ false ]
+        pcount    : i32  [ path.points.count ]
+        if [ pcount > 0 && path.cached_valid && path.cached_points
+          && path.cached_points.count == pcount ]
+            same : bool [ true ]
+            for [ pi: i32 0, pi < pcount && same, pi += 1 ]
+                a_pt : PathPt path.points[pi]
+                b_pt : PathPt path.cached_points[pi]
+                if [ a_pt.cmd != b_pt.cmd
+                  || a_pt.x   != b_pt.x   || a_pt.y   != b_pt.y
+                  || a_pt.cx1 != b_pt.cx1 || a_pt.cy1 != b_pt.cy1
+                  || a_pt.cx2 != b_pt.cx2 || a_pt.cy2 != b_pt.cy2 ]
+                    same = false
+            cache_hit = same
 
-        # compute bounding box
-        bx0 : f32 [ 999999.0 ]
-        by0 : f32 [ 999999.0 ]
-        bx1 : f32 [ -999999.0 ]
-        by1 : f32 [ -999999.0 ]
-        for [ i: i32 0, i < n, i += 1 ]
-            pt : PathPt flat[i]
-            if [ pt.x < bx0 ]
-                bx0 = pt.x
-            if [ pt.y < by0 ]
-                by0 = pt.y
-            if [ pt.x > bx1 ]
-                bx1 = pt.x
-            if [ pt.y > by1 ]
-                by1 = pt.y
+        # bounding box in local-space (the GPU vertex shader transforms it)
+        bx0 : f32
+        by0 : f32
+        bw  : f32
+        bh  : f32
+        edges : array SDFEdge
+        n     : i32
 
-        # clip to visible area
-        bx0 = max [ bx0, f32 st.clip_x ]
-        by0 = max [ by0, f32 st.clip_y ]
-        bx1 = min [ bx1, f32 st.clip_x + st.clip_w ]
-        by1 = min [ by1, f32 st.clip_y + st.clip_h ]
+        if [ cache_hit ]
+            bx0 = path.cached_bx0
+            by0 = path.cached_by0
+            bw  = path.cached_bw
+            bh  = path.cached_bh
+            edges = path.cached_edges
+            n     = edges.count
+        el
+            flat : path_flatten [ path, 0.25 ]
+            n    = flat.count
+            if [ n == 0 ]
+                return
+            bx0 = 999999.0
+            by0 = 999999.0
+            bx1 : f32 [ -999999.0 ]
+            by1 : f32 [ -999999.0 ]
+            for [ i: i32 0, i < n, i += 1 ]
+                pt : PathPt flat[i]
+                if [ pt.x < bx0 ]
+                    bx0 = pt.x
+                if [ pt.y < by0 ]
+                    by0 = pt.y
+                if [ pt.x > bx1 ]
+                    bx1 = pt.x
+                if [ pt.y > by1 ]
+                    by1 = pt.y
+            bw = bx1 - bx0
+            bh = by1 - by0
+            edges = sdf_extract_edges [ flat ]
+            n     = edges.count
+            # snapshot the path op log + flatten/extract result for the next call
+            path.cached_points = array PathPt [ ]
+            for [ pi: i32 0, pi < pcount, pi += 1 ]
+                cp : PathPt path.points[pi]
+                path.cached_points.push[ cp ]
+            path.cached_edges = edges
+            path.cached_bx0   = bx0
+            path.cached_by0   = by0
+            path.cached_bw    = bw
+            path.cached_bh    = bh
+            path.cached_valid = true
 
-        bw : f32 [ bx1 - bx0 ]
-        bh : f32 [ by1 - by0 ]
         if [ bw < 0.5 || bh < 0.5 ]
             return
 
-        # generate SDF Texture from path edges
-        # Texture size proportional to visible bounds, capped for performance
-        pad    : f32 [ 2.0 ]
-        sdf_w  : clamp [ i64 bw + 4, 16, 512 ]
-        sdf_h  : clamp [ i64 bh + 4, 16, 512 ]
-        sdf    : sdf_generate [ flat, bx0, by0, bw, bh, sdf_w, sdf_h, pad ]
-        if [ !sdf ]
-            return
+        # path classification: a primitive axis-aligned rect produces
+        # exactly 5 PathPt entries (4 corners + close = 4 edges).
+        # anything else (curves, chamfers, polygons) goes through the
+        # SDF-from-path generator and gets sampled by mode 6.
+        if [ pcount == 5 && n == 4 ]
+            # primitive rect — use the in-shader rect SDF (mode 0)
+            setup_shader [ st, bx0, by0, bw, bh ]
+            ui_shader.fill_color = color_to_vec4 [ st.fill_color ]
+            ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+            ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, f32 DrawMode.solid ]
+        el
+            # arbitrary path — GPU compute SDF. on cache miss the edge list
+            # was just extracted above; on cache hit we reuse the edges that
+            # are already in the storage buffer from the previous frame and
+            # only need to refresh the UBO params (transform may have moved).
+            sdf_w  : i32 [ 512 ]
+            sdf_h  : i32 [ 512 ]
+            pad    : f32 [ maxf [ 4.0, st.stroke_width * 0.5 + 4.0 ] ]
+            spread : f32 [ maxf [ 8.0, st.stroke_width * 0.5 + 4.0 ] ]
+            pbx : f32 [ bx0 - pad ]
+            pby : f32 [ by0 - pad ]
+            pbw : f32 [ bw  + pad * 2.0 ]
+            pbh : f32 [ bh  + pad * 2.0 ]
 
-        # convert to R8 for GPU upload
-        spread : f32 [ 4.0 ]
-        sdf_sz : i32 [ sdf_w * sdf_h ]
-        tex    : sdf_to_r8 [ sdf, sdf_sz, spread ]
-        # NOTE: `free [sdf]` removed — `new T[N]` returns an Au-managed pointer
-        # (header lives BEFORE the user-space data), not a raw malloc result.
-        # Calling glibc free on it crashes. Au refcounting will release it.
+            ne : i32 [ edges.count ]
+            expect ne <= edge_buf_capacity, "edge buffer too small for path"
+            if [ !cache_hit ]
+                # pack edges into the storage buffer (4 floats per edge).
+                # only on cache miss — on hit, the buffer is already valid.
+                edge_data : ref f32 [ edge_buf.data ]
+                for [ ei: i32 0, ei < ne, ei += 1 ]
+                    e : edges[ei]
+                    edge_data[ei * 4 + 0] = e.x0
+                    edge_data[ei * 4 + 1] = e.y0
+                    edge_data[ei * 4 + 2] = e.x1
+                    edge_data[ei * 4 + 3] = e.y1
+            # compute shader UBO params
+            sdf_compute.wx     = pbx
+            sdf_compute.wy     = pby
+            sdf_compute.ww     = pbw
+            sdf_compute.wh     = pbh
+            sdf_compute.tw     = sdf_w
+            sdf_compute.th     = sdf_h
+            sdf_compute.ne     = ne
+            sdf_compute.spread = spread
+            # workgroup count: ceil(tw/16) x ceil(th/16) x 1
+            wg_x : i32 [ (sdf_w + 15) / 16 ]
+            wg_y : i32 [ (sdf_h + 15) / 16 ]
+            cmod : Model models[0]
+            cmod.pipelines[0].dispatch_x = wg_x
+            cmod.pipelines[0].dispatch_y = wg_y
+            cmod.pipelines[0].dispatch_z = 1
 
-        # update persistent SDF Texture
-        sdf_img : Image [ width: sdf_w, height: sdf_h, format: Pixel.u8, data: tex ]
-        if [ sdf_tex ]
-            sdf_tex.drop[]
-        sdf_tex = Texture [ vk: vk, sampler: sdf_img, width: sdf_w, height: sdf_h, surface: Surface.color ]
-        # NOTE: `free [tex]` removed for same reason as `free [sdf]` above.
-
-        # set up covering rect with padding for AA
-        setup_shader [ st, bx0 - pad, by0 - pad, bw + pad * 2.0, bh + pad * 2.0 ]
-        ui_shader.fill_color = color_to_vec4 [ st.fill_color ]
-
-        # UV rect maps covering quad to [0..1] over SDF Texture
-        ui_shader.grad0 = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
-        ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, f32 DrawMode.sdf_path ]
-        draw[]
+            setup_shader [ st, pbx, pby, pbw, pbh ]
+            ui_shader.fill_color = color_to_vec4 [ st.fill_color ]
+            ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+            j : f32 [ st.stroke_join ]
+            c : f32 [ st.stroke_cap ]
+            ui_shader.stroke_opts = vec4f [ j, c, 0.0, spread ]
+            ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, DrawMode.sdf_path ]
+        flush[]
 
     func draw_stroke []
         draw_stroke_preserve
@@ -3614,6 +4124,7 @@ Render Canvas
         if [ bw < 0.5 || bh < 0.5 ]
             return
 
+        f : flat
         # SDF for stroke: unsigned distance to path edges
         # the shader will threshold at stroke_width/2 for the ring
         pad    : f32 [ 2.0 ]
@@ -3623,22 +4134,20 @@ Render Canvas
         if [ !sdf ]
             return
 
-        spread : f32 [ half_w + 2.0 ]
+        spread : f32 [ half_w + 4.0 ]
         sdf_sz : i32 [ sdf_w * sdf_h ]
         tex    : sdf_to_r8 [ sdf, sdf_sz, spread ]
-        free [ sdf ]
-
-        sdf_img2 : Image [ width: sdf_w, height: sdf_h, format: Pixel.u8, data: tex ]
-        if [ sdf_tex ]
-            sdf_tex.drop[]
-        sdf_tex = Texture [ vk: vk, sampler: sdf_img2, width: sdf_w, height: sdf_h, surface: Surface.color ]
-        free [ tex ]
+        sdf_tex.upload tex, sdf_sz
 
         setup_shader [ st, bx0 - pad, by0 - pad, bw + pad * 2.0, bh + pad * 2.0 ]
         ui_shader.fill_color = color_to_vec4 [ st.stroke_color ]
         ui_shader.grad0 = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+        # stroke_opts.w carries the SDF spread for fragment shader decode
+        j : f32 st.stroke_join
+        c : f32 st.stroke_cap
+        ui_shader.stroke_opts = vec4f [ j, c, 0.0, spread ]
         ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, f32 DrawMode.sdf_path ]
-        draw[]
+        flush[]
 
 
 # ---- text rendering with FreeType ----
@@ -3840,21 +4349,21 @@ func maxf [ x: f32, y: f32 ] -> f32
 # flatten quadratic bezier to line segments, appending to edges
 # p0 -> p1 (control) -> p2
 func flatten_quad [ pts: array PathPt, x0: f32, y0: f32, cx: f32, cy: f32, x1: f32, y1: f32, tol: f32 ]
-    # midpoint check for flatness
-    mx : 0.5 * x0 + x1 - cx
-    my : 0.5 * y0 + y1 - cy
+    # flatness: deviation of control point from chord midpoint
+    mx : 0.5 * (x0 + x1) - cx
+    my : 0.5 * (y0 + y1) - cy
     if [ mx * mx + my * my < tol * tol ]
         pt : PathPt [ cmd: path_cmd.line, x: x1, y: y1 ]
         pts.push[ pt ]
         return
 
-    # subdivide at t=0.5
-    ax : 0.5 * x0 + cx
-    ay : 0.5 * y0 + cy
-    bx : 0.5 * cx + x1
-    by : 0.5 * cy + y1
-    abx : 0.5 * ax + bx
-    aby : 0.5 * ay + by
+    # de Casteljau at t=0.5
+    ax  : 0.5 * (x0 + cx)
+    ay  : 0.5 * (y0 + cy)
+    bx  : 0.5 * (cx + x1)
+    by  : 0.5 * (cy + y1)
+    abx : 0.5 * (ax + bx)
+    aby : 0.5 * (ay + by)
 
     flatten_quad [ pts, x0, y0, ax, ay, abx, aby, tol ]
     flatten_quad [ pts, abx, aby, bx, by, x1, y1, tol ]
@@ -3863,7 +4372,7 @@ func flatten_quad [ pts: array PathPt, x0: f32, y0: f32, cx: f32, cy: f32, x1: f
 # flatten cubic bezier to line segments
 # p0 -> c1 -> c2 -> p1
 func flatten_cubic [ pts: array PathPt, x0: f32, y0: f32, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x1: f32, y1: f32, tol: f32 ]
-    # flatness test: max deviation of control points from line p0-p1
+    # flatness test: deviation of control points from chord at t=1/3, 2/3
     dx : x1 - x0
     dy : y1 - y0
     d2 : abs[ c1x - x0 - dx * 0.333 ] + abs[ c1y - y0 - dy * 0.333 ]
@@ -3874,19 +4383,19 @@ func flatten_cubic [ pts: array PathPt, x0: f32, y0: f32, c1x: f32, c1y: f32, c2
         pts.push[ pt ]
         return
 
-    # de casteljau at t=0.5
-    m01x  : 0.5 * x0 + c1x
-    m01y  : 0.5 * y0 + c1y
-    m12x  : 0.5 * c1x + c2x
-    m12y  : 0.5 * c1y + c2y
-    m23x  : 0.5 * c2x + x1
-    m23y  : 0.5 * c2y + y1
-    m012x : 0.5 * m01x + m12x
-    m012y : 0.5 * m01y + m12y
-    m123x : 0.5 * m12x + m23x
-    m123y : 0.5 * m12y + m23y
-    mx    : 0.5 * m012x + m123x
-    my    : 0.5 * m012y + m123y
+    # de Casteljau at t=0.5 — midpoints, not weighted sums
+    m01x  : 0.5 * (x0   + c1x)
+    m01y  : 0.5 * (y0   + c1y)
+    m12x  : 0.5 * (c1x  + c2x)
+    m12y  : 0.5 * (c1y  + c2y)
+    m23x  : 0.5 * (c2x  + x1)
+    m23y  : 0.5 * (c2y  + y1)
+    m012x : 0.5 * (m01x + m12x)
+    m012y : 0.5 * (m01y + m12y)
+    m123x : 0.5 * (m12x + m23x)
+    m123y : 0.5 * (m12y + m23y)
+    mx    : 0.5 * (m012x + m123x)
+    my    : 0.5 * (m012y + m123y)
 
     flatten_cubic [ pts, x0, y0, m01x, m01y, m012x, m012y, mx, my, tol ]
     flatten_cubic [ pts, mx, my, m123x, m123y, m23x, m23y, x1, y1, tol ]
@@ -3991,41 +4500,30 @@ func conic_gradient[ cx: f32, cy: f32, start_angle: f32 ] -> Gradient
 
 
 
-# extract line segments from flattened path (move/line/close only)
+# extract line segments from flattened path. callers must close paths
+# explicitly via line_to back to start (CanvasPath.close_path does this),
+# so no closing-edge synthesis here. degenerate (zero-length) segments
+# are skipped.
 func sdf_extract_edges [ flat: array PathPt ] -> array SDFEdge
     edges : array SDFEdge []
     n     : flat.count
     px    : f32 [ 0.0 ]
     py    : f32 [ 0.0 ]
-    sx    : f32 [ 0.0 ]
-    sy    : f32 [ 0.0 ]
+    have_cursor : bool [ false ]
     for [ i: i32 0, i < n, i += 1 ]
         pt : PathPt flat[i]
-        switch [ pt.cmd ]
-        case path_cmd.move
-            # close previous sub-path implicitly if needed
-            if [ i > 0 && (px != sx || py != sy) ]
-                ce : SDFEdge [ x0: px, y0: py, x1: sx, y1: sy ]
-                edges.push[ ce ]
-            sx = pt.x
-            sy = pt.y
+        if [ pt.cmd == path_cmd.move ]
             px = pt.x
             py = pt.y
-        case path_cmd.line
-            e : SDFEdge [ x0: px, y0: py, x1: pt.x, y1: pt.y ]
-            edges.push[ e ]
+            have_cursor = true
+        el [ pt.cmd == path_cmd.line ]
+            if [ have_cursor ]
+                if [ px != pt.x || py != pt.y ]
+                    e : SDFEdge [ x0: px, y0: py, x1: pt.x, y1: pt.y ]
+                    edges.push[ e ]
             px = pt.x
             py = pt.y
-        case path_cmd.close
-            if [ px != sx || py != sy ]
-                e : SDFEdge [ x0: px, y0: py, x1: sx, y1: sy ]
-                edges.push[ e ]
-            px = sx
-            py = sy
-    # close final sub-path if not closed
-    if [ px != sx || py != sy ]
-        ce : SDFEdge [ x0: px, y0: py, x1: sx, y1: sy ]
-        edges.push[ ce ]
+            have_cursor = true
     return edges
 
 
@@ -4187,20 +4685,23 @@ func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: 
             cell_off : grid_offsets[cell_idx]
             nc       : grid_counts[cell_idx]
 
-            # min distance from cell's edge list
+            # min distance from ALL edges (no cell binning) — same reason
+            # as the winding loop: edge counts are small enough that the
+            # optimization isn't worth the bug surface.
             md : f32 [ 999999.0 ]
-            for [ ci: i32 0, ci < nc, ci += 1 ]
-                edge_idx : i32 [ grid_data[cell_off + ci] ]
-                e : SDFEdge edges[edge_idx]
+            for [ ei3: i32 0, ei3 < ne, ei3 += 1 ]
+                e : SDFEdge edges[ei3]
                 d : sdf_seg_dist [ e.x0, e.y0, e.x1, e.y1, px, py ]
                 if [ d < md ]
                     md = d
 
-            # winding from row-binned edges only
+            # winding number using ALL edges (no row binning). path counts
+            # are tiny (5-50 edges), so the O(W*H*E) cost is fine and we
+            # avoid any subtle precedence/round-off bugs in the row-bin
+            # offsets that were dropping edges from the test.
             wn : i32 [ 0 ]
-            for [ ri: i32 0, ri < nre, ri += 1 ]
-                edge_idx2 : i32 [ row_data[re_off + ri] ]
-                e : SDFEdge edges[edge_idx2]
+            for [ ei2: i32 0, ei2 < ne, ei2 += 1 ]
+                e : SDFEdge edges[ei2]
                 if [ e.y0 <= py ]
                     if [ e.y1 > py ]
                         cross : (e.x1 - e.x0) * (py - e.y0) - (px - e.x0) * (e.y1 - e.y0)
@@ -4319,10 +4820,6 @@ expect func test [ vk: vk_context ] -> bool
     c.set_fill_color[ 0x00000000 ]
     c.draw_fill[]
     c.restore[]
-
-    # render
-    c.draw[]
-    c.sync_fence[]
 
     # fetch Texture and verify
     img: (c.color to Image)
@@ -4477,9 +4974,14 @@ func pbr_defaults [] -> PbrMetallicRoughness
     return pbr
 
 
-func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, p: Pipeline ] -> array gpu
+func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_type: Au_t, p: Pipeline ] -> array gpu
     res: gpu
     result: array gpu [ alloc: 32 ]
+
+    # only resolve named samplers if the LayoutBinding is on the standard
+    # Surface enum — other enums (e.g. CanvasUISurface) just need a dummy
+    # binding so descriptor set creation succeeds.
+    is_surface_enum: bool [ surface_enum_type == typeid[ Surface ] ]
 
     for [ img: Image, name: string ] in p.samplers
         ia: Au.evalue[ surface_enum_type, name ]
@@ -4506,30 +5008,56 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, p: Pip
             pbr.baseColorFactor.y,
             pbr.baseColorFactor.z,
             pbr.baseColorFactor.w ]
-        zero:     i64 0
-        single:   shape.shape_from[ 1, ref zero ]
-        switch [ surface_value ]
-        case Surface.normal
-            res = gpu [ vk: p.vk, name: "normal",   sampler: new rgbaf [ 1 ] [ f_normal ] ]
-        case Surface.metal
-            res = gpu [ vk: p.vk, name: "metal",    sampler:  new f32 [ 1 ] [ pbr.metallicFactor ] ]
-        case Surface.rough
-            res = gpu [ vk: p.vk, name: "rough",    sampler: new f32 [ 1 ] [ pbr.roughnessFactor ] ]
-        case Surface.emission
-            expect pbr.emissiveStrength / 8.0 <= 1.0, "refactor emissiveStrength"
-            res = gpu [ vk: p.vk, name: "emission", sampler: new rgbaf [ single ] [ f_zero ] ]
-        case Surface.height
-            res = gpu [ vk: p.vk, name: "height",   sampler: new f32 [ single ] [ 0.5 ] ]
-        case Surface.ao
-            res = gpu [ vk: p.vk, name: "ao",       sampler: new f32 [ single ] [ 1.0 ] ]
-        case Surface.ior
-            res = gpu [ vk: p.vk, name: "ior",      sampler: new f32 [ single ] [ pbr.ior ] ]
-        case Surface.color
-            res = gpu [ vk: p.vk, name: "color",    sampler: new rgbaf [ single ] [ f_color ] ]
-        case Surface.environment
-            res = gpu [ vk: p.vk, name: "environment", sampler: new rgbaf [ single ] [ f_one ] ]
-        default
-            fault "Unhandled Surface enum value"
+        one:      i64 1
+        single:   shape.shape_from[ 1, ref one ]
+        if [ !is_surface_enum ]
+            # not a Surface enum (e.g. CanvasUISurface.atlas/.image): the
+            # int value of surface_value is meaningless to the Surface switch
+            # below — atlas=0 would alias Surface.none, image=1 would alias
+            # Surface.color, and we'd materialize the wrong PBR sampler. Bind
+            # a single 1x1 dummy texture whose texel TYPE matches the
+            # LayoutBinding's declared format, so the Vulkan image format
+            # the gpu helper picks (via Texture's `sampler inherits ref T`
+            # dispatch in placeholder_image) matches what the shader expects.
+            # placeholder_image's data_i8 branch now accepts both ref i8 and
+            # ref u8 — allocate the LayoutBinding's declared format directly.
+            if [ meta_type == typeid[ u8 ] || meta_type == typeid[ i8 ] ]
+                res = gpu [ vk: p.vk, name: "dummy_u8",
+                    sampler: new u8 [ 1 ] [ u8 255 ] ]
+            el [ meta_type == typeid[ rgba8 ] ]
+                white_rgba8: rgba8 [ 255, 255, 255, 255 ]
+                res = gpu [ vk: p.vk, name: "dummy_rgba8",
+                    sampler: new rgba8 [ 1 ] [ white_rgba8 ] ]
+            el [ meta_type == typeid[ f32 ] ]
+                res = gpu [ vk: p.vk, name: "dummy_f32",
+                    sampler: new f32 [ 1 ] [ 1.0 ] ]
+            el
+                res = gpu [ vk: p.vk, name: "dummy",
+                    sampler: new rgbaf [ 1 ] [ f_one ] ]
+        el
+            switch [ surface_value ]
+            case Surface.normal
+                res = gpu [ vk: p.vk, name: "normal",   sampler: new rgbaf [ 1 ] [ f_normal ] ]
+            case Surface.metal
+                res = gpu [ vk: p.vk, name: "metal",    sampler:  new f32 [ 1 ] [ pbr.metallicFactor ] ]
+            case Surface.rough
+                res = gpu [ vk: p.vk, name: "rough",    sampler: new f32 [ 1 ] [ pbr.roughnessFactor ] ]
+            case Surface.emission
+                expect pbr.emissiveStrength / 8.0 <= 1.0, "refactor emissiveStrength"
+                res = gpu [ vk: p.vk, name: "emission", sampler: new rgbaf [ single ] [ f_zero ] ]
+            case Surface.height
+                res = gpu [ vk: p.vk, name: "height",   sampler: new f32 [ single ] [ 0.5 ] ]
+            case Surface.ao
+                res = gpu [ vk: p.vk, name: "ao",       sampler: new f32 [ single ] [ 1.0 ] ]
+            case Surface.ior
+                res = gpu [ vk: p.vk, name: "ior",      sampler: new f32 [ single ] [ pbr.ior ] ]
+            case Surface.color
+                res = gpu [ vk: p.vk, name: "color",    sampler: new rgbaf [ single ] [ f_color ] ]
+            case Surface.environment
+                res = gpu [ vk: p.vk, name: "environment", sampler: new rgbaf [ single ] [ f_one ] ]
+            default
+                res = gpu [ vk: p.vk, name: "dummy",
+                    sampler: new rgbaf [ single ] [ f_one ] ]
         result.push[ res ]
     return result
 
@@ -4691,6 +5219,7 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ]
         mdl_mat = mdl_mat.rotate[ n.rotation ]
         mdl_mat = mdl_mat.translate[ n.translation ]
     
+    s_type : typeid[ s ]
     pipe: Pipeline [ vk: vk, w: m.w, name: (n) ? n.name : null,
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat,
         material: material, samplers: m.samplers ]
@@ -4785,7 +5314,6 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
     q: quatf [ v ]
     conv_shader.env = mat4f.identity[]
     conv_shader.env = conv_shader.env.rotate[ q ]
-    w.list.drop[]
     w.list = [ r_conv ]
     # last_render is now computed from list
     for [ a_i: 0, a_i < cube_count, a_i += 1 ]
@@ -4853,60 +5381,69 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
     return img.user
 
 
+# single source of truth for "is this member a uniform field": a mutable
+# VAR with a real source type and no attrib trait. used by both
+# uniform_size and glsl_header so the GLSL UBO declaration and the
+# host-side buffer size always agree.
+func is_uniform_field [ mem: Au_t ] -> bool
+    return mem.member_type == 4 && bool[mem.src] && !(mem.traits & (1 << 56))
+
 func uniform_size [ type: Au_t ] -> num
     total: num [ 0 ]
     ty: Au_t [ type ]
     while [ ty ]
         for [ m: 0, m < ty.members.count, m += 1 ]
             mem: Au_t [ ty.members.origin[m] ]
-            if [ mem.member_type == 4 ]
-                total += mem.typesize
+            if [ is_uniform_field[ mem ] ]
+                total += mem.src.typesize
         ty = ty.context
         if [ ty == typeid[ shader ] ]
             break
     return total
 
 
-func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size: ref i32, format: ref Pixel ] 
-    data_i8:    sampler inherits ref i8
-    data_f32:   sampler inherits ref f32
-    data_rgb8:  sampler inherits ref rgb8
-    data_rgbf:  sampler inherits ref rgbf
-    data_rgba8: sampler inherits ref rgba8
-    data_rgbaf: sampler inherits ref rgbaf
-
+func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size: ref i32, format: ref Pixel ]
+    cl : typeid[sampler]
     s: i32 [ size * size ]
-    if [ data_f32 ]
+
+    if [ cl == typeid[f32] ]
+        data_f32: ref f32 [ sampler ]
         f32_fill: ref f32 [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             f32_fill[i] = data_f32[0]
         format = Pixel.f32 # <---  /src/silver/src/aether.c:467 / /src/silver/foundry/vulkan/vulkan.ag:267:8 :: L-value not a pointer (cannot assign to value)
         sampler_size = s * sizeof[ f32 ]
-    el [ data_i8 ]
+    el [ cl == (typeid[i8], typeid[u8]) ]
+        data_i8:    ref i8    [ sampler ]
+        data_u8:    ref u8    [ sampler ]
         u8_fill: ref u8 [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             u8_fill[i] = data_i8[0]
         format = Pixel.u8
         sampler_size = s * sizeof[ i8 ]
-    el [ data_rgbf ]
+    el [ cl == typeid[rgbf] ]
+        data_rgbf:  ref rgbf  [ sampler ]
         v3_fill: ref rgbf [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             v3_fill[i] = data_rgbf[0]
         format = Pixel.rgbf32
         sampler_size = s * sizeof[ rgbf ]
-    el [ data_rgb8 ]
+    el [ cl == typeid[rgb8] ]
+        data_rgb8:  ref rgb8 [ sampler ]
         v3_fill: ref rgb8 [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             v3_fill[i] = data_rgb8[0]
         format = Pixel.rgb8
         sampler_size = s * sizeof[ rgb8 ]
-    el [ data_rgbaf ]
+    el [ cl == typeid[rgbaf] ]
+        data_rgbaf:  ref rgbaf  [ sampler ]
         v4_fill: ref rgbaf [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             v4_fill[i] = data_rgbaf[0]
         format = Pixel.rgbaf32
         sampler_size = s * sizeof[ rgbaf ]
-    el [ data_rgba8 ]
+    el [ cl == typeid[rgba8] ]
+        data_rgba8:  ref rgba8  [ sampler ]
         v4_fill: ref rgba8 [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             v4_fill[i] = data_rgba8[0]
@@ -5556,11 +6093,41 @@ abstract media_app trinity
         w.draw[]
 ##
 
+    mutable angle : f32
+
     func render[]
         window : (w to Window)
-        #if [ window.compose ]
-        #    window.compose.set_fill_color[ 0xFF0000FF ]
-        #    window.compose.fill_rect_fast[ 100.0, 100.0, 200.0, 200.0 ]
+        # rotate a 200x100 white rect around its (100, 200) origin.
+        # the rect is centered at the origin so the rotation pivots there.
+        if [ window.compose ]
+            angle += 0.01
+            window.compose.path.clear[]
+
+            window.compose.save[]
+            window.compose.translate[ 444.0, 444.0 ]
+            window.compose.rotate[ angle ]
+            ##
+            window.compose.rect_to[ -100.0, -50.0, 200.0, 100.0 ]
+            window.compose.set_stroke_color[ 0xFFFFAA00 ]
+            window.compose.set_stroke_width[ 16.0 ]
+            window.compose.set_stroke_join[ Join.miter ]
+            window.compose.set_fill_color[ 0xFFFFFFFF ]
+            window.compose.draw_fill[]
+            ##
+            window.compose.path.clear[]
+            window.compose.move_to[ 0.0, 20.0 ]
+            window.compose.line_to[ 20.0, 0.0 ]
+            window.compose.line_to[ 200.0, 0.0 ]
+            # right edge as a cubic bezier bulging outward to the right
+            window.compose.cubic_to[ 180.0, 88.0, 180.0, 75.0, 200.0, 100.0 ]
+            window.compose.line_to[ 0.0, 100.0 ]
+            window.compose.close_path[]
+            window.compose.set_stroke_color[ 0xFFFFAA00 ]
+            window.compose.set_stroke_width[ 4.0 ]                  
+            window.compose.set_fill_color[ 0xFFFFFFFF ]
+            window.compose.draw_fill[]
+
+            window.compose.restore[]
         window.draw[]
 
 
@@ -6960,7 +7527,7 @@ func distance [ a:i8, b:i8 ] -> i64
     return abs[ sz[ a ] - sz[ b ] ]
 
 
-func is_alpha2 [ c: i8 ] -> bool                                                                                                     
+func is_alpha2 [ c: i8 ] -> bool
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 
 

@@ -1311,6 +1311,13 @@ Au array_push(array a, Au b) {
     if (!a->origin || a->alloc == a->count) {
         array_expand(a);
     }
+    // unmanaged arrays hold raw non-Au pointers (cstr from strdup, OS handles,
+    // etc). Their elements have no Au header — skip isa(b)/header reads and
+    // the hold; just store the pointer.
+    if (a->unmanaged) {
+        a->origin[a->count++] = b;
+        return b;
+    }
     Au_t t = isa(a);
     Au_t vtype = isa(b);
     Au info = (Au)head(a);
@@ -1321,8 +1328,8 @@ Au array_push(array a, Au b) {
 
     if (Au_is_meta((Au)a) && Au_meta_index((Au)a, 0) != typeid(Au))
         assert(Au_is_meta_compatible((Au)a, (Au)b), "not meta compatible");
-    
-    a->origin[a->count++] = (a->unmanaged ? b : Au_hold(b));
+
+    a->origin[a->count++] = Au_hold(b);
     return b;
 }
 
