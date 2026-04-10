@@ -3699,9 +3699,12 @@ enode parse_statement(silver a)
     u64 traits = 0;
     interface access = interface_undefined;
 
-    if (rec_top && next_is(a, "flux")) { // adds more capacity to objects
-        access = interface_public;
+    if (rec_top && read_if(a, "mutable")) {
+        access = interface_mutable;
         traits = AU_TRAIT_IS_FLUX;
+    } else if (rec_top && read_if(a, "manual")) {
+        access = interface_public;
+        traits = AU_TRAIT_UNMANAGED;
     } else if (rec_top && read_if(a, "attrib")) {
         access = interface_public;
         traits = AU_TRAIT_STATIC | AU_TRAIT_IS_ATTRIB;
@@ -3739,8 +3742,10 @@ enode parse_statement(silver a)
 
     if (access == interface_context)
         access = access;
-    
+
     bool is_static = read_if(a, "static") != null;
+    if (read_if(a, "unmanaged"))
+        traits |= AU_TRAIT_UNMANAGED;
 
     validate(!is_struct(top) || (!access || access == interface_public),
         "unexpected access level found in struct");
@@ -5286,6 +5291,17 @@ enode silver_parse_ternary(silver a, enode expr, etype mdl_expect, bool load) {
         enode expr_true = parse_expression(a, mdl_expect, false, load);
         return e_ternary(a, expr, expr_true, null);
     }
+    // ternary condition MUST be parenthesized: `(cond) ? a : b`. silver
+    // does not parse a bare-condition `cond ? a : b` correctly — what looks
+    // like a ternary without parens is something else syntactically (the
+    // `?` ends up bound to a constructor-style cast or similar), and silently
+    // produces null/garbage at runtime. Catch it here at parse time.
+    {
+        token prev = (token)silver_element(a, -2);
+        bool  paren = prev && prev->chars && prev->chars[0] == ')' && prev->chars[1] == 0;
+        validate(paren,
+            "ternary condition must be parenthesized: write `(cond) ? a : b`, not `cond ? a : b`");
+    }
     bool is_const = false;
     etype mdl_true = mdl_expect;
     array true_tokens = read_expression(a, &mdl_true, &is_const);
@@ -6465,7 +6481,8 @@ void silver_write_header(silver a) {
                 line(module_f, "\\", n);
                 string mn = cname(string(mi->ident));
                 u8 header_access = mi->access_type ? mi->access_type : interface_public;
-                if (header_access == interface_mutable) header_access = interface_public;
+                if (header_access == interface_mutable || header_access == interface_manual)
+                    header_access = interface_public;
                 string access_type = estring(typeid(interface), header_access);
 
                 if (is_func((Au)mi)) {
@@ -7404,7 +7421,26 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
         enode index_expr = null;
         Au_t idx      = null;
         Au_t fallback = null;
-        if (is_indexable_ptr && !inherits(au_rec, typeid(collective))) {
+        // Shaped allocations (`local T[N]`, `new T[N]`) are flagged with
+        // AU_TRAIT_SHAPED on their au — those NEVER call the element type's
+        // getter, even if T inherits one (e.g. `path` inherits `string`'s
+        // `i32 getter(i32)`). Shaped operands always use raw pointer
+        // arithmetic via the e_offset path.
+        //
+        // For non-shaped class instances (e.g. a `string` variable), the
+        // class IS heap-allocated so is_indexable_ptr is true, but if the
+        // class declares an indexer getter we want THAT — `text[i]` on a
+        // string should produce a byte via the `i32 getter(i32)`, not a
+        // ptr-sized GEP into text-as-array-of-pointers.
+        // walk through to the underlying type — for a referenced variable,
+        // mem->au is the var (member_type=AU_MEMBER_VAR), not the type, so
+        // the shape trait lives on mem->au->src (or further down via
+        // au_arg_type for aliases).
+        Au_t mem_type  = au_arg_type((Au)mem);
+        bool is_shaped = (mem_type && mem_type->is_shaped) || mem->au->is_shaped;
+        Au_t has_getter = (!is_shaped && au_rec) ?
+            find_member(au_rec, null, AU_MEMBER_GETTER, 0, true) : null;
+        if (is_indexable_ptr && !inherits(au_rec, typeid(collective)) && !has_getter) {
             r = null;
         } else if (r) {
             // select best indexer overload by matching argument type
@@ -7611,15 +7647,11 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
                 mem->au->ident, owner->ident);
         }
     }
-    // context members are set at construction only
-    if (mem->au->access_type == interface_context && mem->au->context) {
-        Au_t owner = mem->au->context;
-        efunc fn   = context_func(a);
-        bool in_init = fn && (fn->au->member_type == AU_MEMBER_CONSTRUCT ||
-            (fn->au->ident && strcmp(fn->au->ident, "init") == 0));
-        validate(in_init, "cannot assign to context member '%s' outside of init/construct",
-            mem->au->ident);
-    }
+    // context members were previously locked to init/construct, but bootstrapping
+    // isn't always shaped that neatly — call sites need to wire owner pointers
+    // back through context slots after the fact. The lifecycle gate in
+    // e_assign already keeps these slots weak (no auto hold/drop), so the
+    // restriction here was protecting the wrong thing.
     if (seq == 11 || seq == 12) {
         mem = mem;
     }
