@@ -823,11 +823,12 @@ declare_class(collective)
     enum_value       (E,T,Y, intern,     1) \
     enum_value       (E,T,Y, public,     2) \
     enum_value       (E,T,Y, mutable,    3) \
-    enum_value       (E,T,Y, guard,      4) \
-    enum_value       (E,T,Y, expect,     5) \
-    enum_value       (E,T,Y, abstract,   6) \
-    enum_value       (E,T,Y, context,    7) \
-    enum_value       (E,T,Y, keyword,    8)
+    enum_value       (E,T,Y, manual,     4) \
+    enum_value       (E,T,Y, guard,      5) \
+    enum_value       (E,T,Y, expect,     6) \
+    enum_value       (E,T,Y, abstract,   7) \
+    enum_value       (E,T,Y, context,    8) \
+    enum_value       (E,T,Y, keyword,    9)
 declare_enum(interface)
 
 #define comparison_module_ Au
@@ -1596,7 +1597,7 @@ declare_class(ipart)
     M(AA,BB, i, ctr,     public, f64) \
     M(AA,BB, i, operator, public, none,   _assign_add,  string) \
     M(AA,BB, i, operator, public, string, _add,         string) \
-    M(AA,BB, i, getter,   public, i32, num) \
+    M(AA,BB, i, getter,   public, i32, i64) \
     M(AA,BB, i, override, method, len) \
     M(AA,BB, i, override, method, hash) \
     M(AA,BB, i, override, method, compare) \

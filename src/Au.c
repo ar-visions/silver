@@ -3375,7 +3375,7 @@ Au Au_with_cstrs(Au a, cstrs argv) {
     while (rtype && rtype != typeid(Au)) {
         for (num i = 0; i < rtype->members.count; i++) {
             Au_t m = (Au_t)rtype->members.origin[i];
-            if (m->member_type == AU_MEMBER_VAR && m->is_required && m->offset) {
+            if (m->member_type == AU_MEMBER_VAR && m->is_required && !m->is_context && m->offset) {
                 Au val = *(Au*)((cstr)a + m->offset);
                 verify(val, "expected %s", m->ident);
             }
@@ -4707,7 +4707,7 @@ string string_interpolate(string a, Au ff) {
     return res;
 }
 
-i32   string_getter_num(string a, num index) {
+i32   string_getter_i64(string a, i64 index) {
     if (index < 0)
         index += a->count;
     if (index >= a->count)
@@ -5383,7 +5383,7 @@ Au vector_resize(vector a, sz size) {
 
 Au vector_reallocate(vector a, sz size) {
     vector_grow(a, size);
-    return a->origin;
+    return (Au)a->origin;
 }
 
 none vector_vconcat(vector a, ARef any, num count) {

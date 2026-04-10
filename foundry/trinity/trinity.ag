@@ -103,7 +103,7 @@ class FragmentOutput
     public type : Au_t
 
 class Composer
-    mutable w:Display
+    context w:Display
     func key_event    [ Event  ] return
     func wheel_event  [ Event  ] return
     func press_event  [ Event  ] return
@@ -114,8 +114,8 @@ class Composer
     func animate      [ ]        return
 
 class Render
-    expect  vk                             : vk_context
-    public  w                              : Display
+    context vk                             : vk_context
+    context w                              : Display
     public  id                             : i32
     mutable wscale                         : f32
     mutable width                          : i32
@@ -199,6 +199,7 @@ class Render
             ], null, ref vk_framebuffer[i] ]
             
             printf[ "ref of frame = %p\n", ref vk_framebuffer[i] ]
+
             expect result == VK_SUCCESS, "Failed to create framebuffer"
 
     public func draw [ ]
@@ -239,6 +240,17 @@ class Render
             clear_values[1].depthStencil.depth   = 1.0
             clear_values[1].depthStencil.stencil = 0
 
+            # compute dispatches must be recorded OUTSIDE the render pass.
+            # Pipeline.dispatch is a no-op for graphics-only pipelines, so this
+            # loop is safe to run over every pipeline.
+            if [ i == 0 ]
+                for [ m: Model ] in models
+                    for [ p: Pipeline ] in m.pipelines
+                        p.dispatch[ frame ]
+            el
+                for [ p: Pipeline ] in reduce_model.pipelines
+                    p.dispatch[ frame ]
+
             render_pass_info : VkRenderPassBeginInfo [
                 sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                 renderPass:      vk_render_pass[i],
@@ -268,7 +280,7 @@ class Render
             el
                 for [ p: Pipeline ] in reduce_model.pipelines
                     p.draw[ frame ]
-            
+
             vkCmdEndRenderPass[ frame ]
             vkEndCommandBuffer[ frame ]
             s_flags: VkPipelineStageFlags [ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
@@ -522,6 +534,7 @@ class vk_context
     intern quad_m:    GltfModel
 
     func init [ ]
+        hold[]
         printf[ "instance = %p, addr = %p\n", instance, ref instance ]
         get_required_extensions[ a ]
         enable_validation: bool true
@@ -900,7 +913,7 @@ class GLSL : RType
 
 class Pipeline
     context vk              : vk_context
-    public w                : Display
+    context w               : Display
     expect r                : Render
     expect s                : shader
     expect name             : string
@@ -915,6 +928,7 @@ class Pipeline
     mutable dispatch_y      : i32
     mutable dispatch_z      : i32
     intern resources        : array gpu
+    intern storage_textures : array Texture
     intern shader_uniforms  : uniforms
     intern vbo              : gpu
     intern memory           : gpu
@@ -930,12 +944,49 @@ class Pipeline
         if [ resources ]
             resources = null
 
-    public   func draw [ f: handle ]
-        #printf[ "Pipeline.draw: name=%s resources=%p vk_render=%p vk_compute=%p\n",
-        #    (name) ? name.chars : "(null)", resources, vk_render, vk_compute ]
+    # vkCmdDispatch is illegal inside an active render pass, so the compute path
+    # is split out and called by Render.draw BEFORE vkCmdBeginRenderPass. The
+    # graphics path stays in `draw` and runs inside the render pass.
+    public   func dispatch [ f: handle ]
+        if [ !vk_compute ]
+            return
         if [ !resources ]
             bind_resources[]
-            #printf[ "  Pipeline.draw: bound resources, count=%i\n", resources.count ]
+        if [ s.reload[ ] ]
+            reassemble[]
+        frame: VkCommandBuffer [ f ]
+        # in-band barrier: storage images must be in GENERAL when the compute
+        # shader writes them. Recording the barrier into the main command buffer
+        # (rather than out-of-band) is required so the validator's per-command-
+        # buffer layout tracking sees a consistent transition.
+        for [ t: Texture ] in storage_textures
+            t.transition_in[ f, VK_IMAGE_LAYOUT_GENERAL ]
+        shader_uniforms.update[ ]
+        vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_COMPUTE, vk_compute ]
+        # bind BOTH descriptor sets (set 0 = uniforms, set 1 = sampler/storage).
+        # the original code only bound set 0 because the compute-on-vbo
+        # pattern didn't have any storage bindings; the SDF compute does.
+        vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_COMPUTE,
+            layout, 0, 2, descriptor_sets, 0, null ]
+        # explicit dispatch counts override the default vertex-buffer-driven
+        # workgroup count from the C foundation's compute-on-vbo pattern.
+        dx: i32 [ (dispatch_x > 0) ? dispatch_x : ((memory) ? memory.vertex_count : 1) ]
+        dy: i32 [ (dispatch_y > 0) ? dispatch_y : 1 ]
+        dz: i32 [ (dispatch_z > 0) ? dispatch_z : 1 ]
+        vkCmdDispatch[ frame, dx, dy, dz ]
+        # in-band barrier: now that the compute write is recorded, transition
+        # storage images to SHADER_READ_ONLY_OPTIMAL so downstream graphics
+        # pipelines that sample them are happy. Must happen before the render
+        # pass begins (image-layout barriers are restricted inside an active
+        # render pass), and recording it here keeps it ordered with the dispatch.
+        for [ t: Texture ] in storage_textures
+            t.transition_in[ f, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+
+    public   func draw [ f: handle ]
+        if [ !vk_render ]
+            return
+        if [ !resources ]
+            bind_resources[]
         if [ s.reload[ ] ]
             reassemble[]
         for [ g: gpu ] in resources
@@ -943,31 +994,17 @@ class Pipeline
                 g.tx.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         frame: VkCommandBuffer [ f ]
         shader_uniforms.update[ ]
-        if [ vk_compute ]
-            vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_COMPUTE, vk_compute ]
-            # bind BOTH descriptor sets (set 0 = uniforms, set 1 = sampler/storage).
-            # the original code only bound set 0 because the compute-on-vbo
-            # pattern didn't have any storage bindings; the SDF compute does.
-            vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_COMPUTE,
-                layout, 0, 2, descriptor_sets, 0, null ]
-            # explicit dispatch counts override the default vertex-buffer-driven
-            # workgroup count from the C foundation's compute-on-vbo pattern.
-            dx: i32 [ (dispatch_x > 0) ? dispatch_x : ((memory) ? memory.vertex_count : 1) ]
-            dy: i32 [ (dispatch_y > 0) ? dispatch_y : 1 ]
-            dz: i32 [ (dispatch_z > 0) ? dispatch_z : 1 ]
-            vkCmdDispatch[ frame, dx, dy, dz ]
-        if [ vk_render ]
-            vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_render ]
-            offsets: local VkDeviceSize[ 1 ] [ 0 ]
-            vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                layout, 0, 2, descriptor_sets, 0, null ]
-            vkCmdBindVertexBuffers[ frame, 0, 1, ref vbo.vertex.vk_buffer, offsets ]
-            if [ vbo.index ]
-                vkCmdBindIndexBuffer[ frame, vbo.index.vk_buffer, 0,
-                    vbo.index_type[ ] ]
-                vkCmdDrawIndexed[ frame, vbo.index_count, 1, 0, 0, 0 ]
-            el
-                vkCmdDraw[ frame, vbo.vertex_count, 1, 0, 0 ]
+        vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_render ]
+        offsets: local VkDeviceSize[ 1 ] [ 0 ]
+        vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            layout, 0, 2, descriptor_sets, 0, null ]
+        vkCmdBindVertexBuffers[ frame, 0, 1, ref vbo.vertex.vk_buffer, offsets ]
+        if [ vbo.index ]
+            vkCmdBindIndexBuffer[ frame, vbo.index.vk_buffer, 0,
+                vbo.index_type[ ] ]
+            vkCmdDrawIndexed[ frame, vbo.index_count, 1, 0, 0, 0 ]
+        el
+            vkCmdDraw[ frame, vbo.vertex_count, 1, 0, 0 ]
 
     public   func bind_resources [ ]
         # set 0 = uniform buffers (UBOs from shader mutable fields)
@@ -989,7 +1026,8 @@ class Pipeline
         image_infos:      local VkDescriptorImageInfo[32]
         storage_buf_infos: local VkDescriptorBufferInfo[32]
         descriptor_writes: local VkWriteDescriptorSet[32]
-        resources = array gpu [ alloc: 32 ]
+        resources        = array gpu [ alloc: 32 ]
+        storage_textures = array Texture [ alloc: 8 ]
         if [ vbo ]
             vbo.sync[ w ]
             resources.push[ vbo ]
@@ -1062,6 +1100,7 @@ class Pipeline
                                 break
                     expect found_tx, "no Texture provided in samplers map for storage image attrib"
                     found_tx.transition[ VK_IMAGE_LAYOUT_GENERAL ]
+                    storage_textures.push[ found_tx ]
                     image_infos[set1_binds] = VkDescriptorImageInfo [
                         sampler:     null,
                         imageView:   found_tx.vk_image_view,
@@ -1396,10 +1435,10 @@ class gltf_node
 
 class Model
     context vk              : vk_context
-    public w                : Display
+    context w               : Display
     public r                : Render
-    mutable transforms       : ref mat4f null
-    mutable transform_count  : i32
+    mutable transforms      : ref mat4f null
+    mutable transform_count : i32
     public id               : GltfModel
     public nodes            : array gltf_node
     public s                : shader
@@ -1452,8 +1491,7 @@ class Model
         printf[ "Model.finish: pipelines after=%i\n", pipelines.count ]
 
     func init [ ]
-        if [ !vk ]
-            vk = w.vk
+        vk = w.vk.hold[]
 
 
 struct mouse_state
@@ -1717,8 +1755,8 @@ class Buffer
 
 
 class Texture
-    public vk               : vk_context
-    public w                : Display
+    context vk              : vk_context
+    context w               : Display
     public pixel_format     : Pixel [ Pixel.rgba8 ]
     public sampler          : object
     public width            : i32
@@ -1768,12 +1806,46 @@ class Texture
         return res
     
 
-    func transition [ new_layout: i32 ] 
+    func transition [ new_layout: i32 ]
         if [ vk_layout != new_layout ]
             is_d32 : bool [ vk_format == VK_FORMAT_D32_SFLOAT ]
             vk.transition_image_layout[ vk_image, vk_layout, new_layout,
                 0, mip_levels, 0, layer_count, vk_format == VK_FORMAT_D32_SFLOAT ]
             vk_layout = new_layout
+
+    # in-band variant: records vkCmdPipelineBarrier into the given command
+    # buffer rather than spinning up its own. needed when the same image must
+    # flip layouts mid-frame (compute write -> graphics sample), since out-of-
+    # band transitions can't be reconciled by the validator's per-command-buffer
+    # layout tracking.
+    func transition_in [ f: handle, new_layout: i32 ]
+        if [ vk_layout == new_layout ]
+            return
+        src: Layout.find[ vk_layout ]
+        dst: Layout.find[ new_layout ]
+        expect src && dst, "layout not found"
+        is_depth: bool [ vk_format == VK_FORMAT_D32_SFLOAT ]
+        barrier: VkImageMemoryBarrier [
+            sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            pNext:               null,
+            oldLayout:           vk_layout,
+            newLayout:           new_layout,
+            srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            image:               vk_image,
+            subresourceRange:    VkImageSubresourceRange [
+                aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
+                baseMipLevel:   0,
+                levelCount:     mip_levels,
+                baseArrayLayer: 0,
+                layerCount:     layer_count
+            ],
+            srcAccessMask:       src.access,
+            dstAccessMask:       dst.access
+        ]
+        cmd: VkCommandBuffer [ f ]
+        vkCmdPipelineBarrier[ cmd, src.stage, dst.stage, 0, 0, null, 0, null, 1, ref barrier ]
+        vk_layout = new_layout
 
     func hex_dump [ name: symbol, data: ref u8, size: i32 ]
         printf[ "%s (%d bytes):\n", name, size ]
@@ -1845,6 +1917,36 @@ class Texture
                 ],
                 imageOffset: VkOffset3D [ 0, 0, 0 ],
                 imageExtent: VkExtent3D [ width, height, 1 ]
+            ]]
+        cmd.submit[ ]
+        vkDeviceWaitIdle[ vk.device ]
+        transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+
+    # upload a sub-rectangle of bytes into the existing vk_image. used by
+    # the glyph atlas to drop a freshly-rasterized glyph bitmap into its
+    # packed slot without re-uploading the entire atlas.
+    func upload_region [ dst_x: i32, dst_y: i32, dst_w: i32, dst_h: i32, data: ARef, byte_count: i32 ]
+        expect vk, "vk_context not specified"
+        expect vk_image, "vk_image not yet created"
+        transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        cmd: Command [ vk: vk ]
+        cmd.begin[]
+        staging: Buffer [ vk: vk, size: byte_count, u_src: true,
+            m_host_visible: true, m_host_coherent: true,
+            data: data ]
+        vkCmdCopyBufferToImage[ cmd.cmd, staging.vk_buffer, vk_image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, VkBufferImageCopy [
+                bufferOffset:      0,
+                bufferRowLength:   0,
+                bufferImageHeight: 0,
+                imageSubresource:  VkImageSubresourceLayers [
+                    aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                    mipLevel:       0,
+                    baseArrayLayer: 0,
+                    layerCount:     1
+                ],
+                imageOffset: VkOffset3D [ dst_x, dst_y, 0 ],
+                imageExtent: VkExtent3D [ dst_w, dst_h, 1 ]
             ]]
         cmd.submit[ ]
         vkDeviceWaitIdle[ vk.device ]
@@ -2054,12 +2156,21 @@ Texture Display
     public release_event        : EventDispatch
     public wheel_event          : EventDispatch
     intern resized              : bool
+    # debounced resize: GLFW emits framebuffer_size continuously while dragging.
+    # We don't recreate the swapchain on every callback (would hitch the frame).
+    # Instead the callback stamps pending dimensions + a timestamp, and
+    # Display.draw triggers resize once the user has been idle for >= debounce.
+    intern pending_w            : i32
+    intern pending_h            : i32
+    intern last_resize_t        : f64
+    intern resize_debounce_s    : f64 [ 0.222 ]
+    intern in_callback_draw     : bool
     public backbuffer           : bool
     func last_render [] -> Render
         return list.last_element[]
 
 
-    func update_canvas[ ] return
+    func update [ ] return
     
     func resize [ w_new: i32, h_new: i32 ] -> Display
 
@@ -2085,24 +2196,29 @@ Texture Display
         printf[ "last_render = %p\n", last_render[] ]
         resized = true
         if [ !backbuffer ]
-            capabilities: VkSurfaceCapabilitiesKHR
-            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, surface, ref capabilities ]
-            if [ capabilities.currentExtent.width != UINT32_MAX ]
-                width  = capabilities.currentExtent.width
-                height = capabilities.currentExtent.height
-        if [ !backbuffer ]
+            # Re-query into a stack local. The intern `surface_caps` ref field
+            # only holds a raw pointer to the new'd struct from init; on later
+            # resizes that allocation has been recycled and reading
+            # currentTransform/minImageCount yields garbage (e.g. 0x5555),
+            # which fails the validator on preTransform.
+            caps: VkSurfaceCapabilitiesKHR
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, surface, ref caps ]
+            if [ caps.currentExtent.width != UINT32_MAX ]
+                width  = caps.currentExtent.width
+                height = caps.currentExtent.height
             old_swapchain: swapchain
             result: vkCreateSwapchainKHR[ vk.device, VkSwapchainCreateInfoKHR [
                 sType:                 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+                pNext:                 null,
                 surface:               surface,
-                minImageCount:         surface_caps.minImageCount,
+                minImageCount:         caps.minImageCount,
                 imageFormat:           surface_format.format,
                 imageColorSpace:       surface_format.colorSpace,
                 imageExtent:           VkExtent2D [ width, height ],
                 imageArrayLayers:      1,
                 imageUsage:            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                 imageSharingMode:      VK_SHARING_MODE_EXCLUSIVE,
-                preTransform:          surface_caps.currentTransform,
+                preTransform:          caps.currentTransform,
                 compositeAlpha:        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
                 presentMode:           present_mode,
                 clipped:               VK_TRUE,
@@ -2151,6 +2267,18 @@ Texture Display
         return list.last_element[]
 
     func draw [ ]
+        # debounced swapchain recreate: only run when the user has stopped
+        # dragging for at least resize_debounce_s. During the drag itself, the
+        # window system stretches the existing swapchain image — this is the
+        # accepted trade for not hitching every callback.
+        if [ pending_w > 0 && pending_h > 0 ]
+            now: f64 [ glfwGetTime[] ]
+            if [ now - last_resize_t >= resize_debounce_s ]
+                if [ pending_w != width || pending_h != height ]
+                    resize[ pending_w, pending_h ]
+                pending_w     = 0
+                pending_h     = 0
+                last_resize_t = 0.0
         for [ r: Render, id: string ] in element_targets
             r.draw[]
             r.sync_fence[]
@@ -2161,7 +2289,13 @@ Texture Display
             result: vkAcquireNextImageKHR[ vk.device, swapchain, UINT64_MAX,
                 semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
             if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
-                handle_glfw_framebuffer_size[ glfw, width, height ]
+                # swapchain is out-of-date because the surface has been resized.
+                # Don't recurse through handle_glfw_framebuffer_size — it would
+                # clobber any pending resize state with the (still-old) Display
+                # dimensions and stop the debounce check from ever firing.
+                # Skip presenting this frame; the next debounce tick will run
+                # the real resize against the most recent pending dimensions.
+                ii: 0
             el
                 expect result == VK_SUCCESS, "failed to acquire swapchain image"
                 swap_render_current = swap_renders[swap_image_current]
@@ -2208,6 +2342,7 @@ Texture Display
         return result
 
     func init [ ]
+        hold[]
         if [ !format ]
             format = Pixel.rgba8
         if [ !list ]
@@ -2307,7 +2442,7 @@ Texture Display
 alias ShaderModuleRef : ref VkShaderModule
 
 class shader
-    expect vk : vk_context
+    context vk          : vk_context
     public name         : string
     public vert         : path
     public frag         : path
@@ -3086,12 +3221,20 @@ shader CanvasUI
         vec2  half_size    = ubo.rect.zw * 0.5;
         float dist         = sdf_rounded_rect(lpos, center, half_size, ubo.radii);
 
-        // text: sample glyph atlas
+        // text: sample glyph atlas — DEBUG: visualize UV+atlas separately.
+        //   red   = uv.x (atlas UV after grad0 mapping)
+        //   green = uv.y
+        //   blue  = atlas sample (raw, no fill_color)
+        // if you see a red/green gradient with no blue, the UVs are being
+        // computed but the atlas binding is the 1x1 dummy (sampling 1.0
+        // would make blue = 1.0 instead of 0.0). if it's solid (no gradient)
+        // the UV calc is degenerate. if blue varies with the glyph shape,
+        // the atlas IS bound and rasterized.
         if (mode == 4.0) {{
             vec2  uv = (lpos - ubo.rect.xy) / ubo.rect.zw;
             uv       = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
             float a  = texture(atlas, uv).r;
-            o_color  = ubo.fill_color * vec4(1.0, 1.0, 1.0, a) * opacity;
+            o_color  = vec4(uv.x, uv.y, a, 1.0);
             return;
         }}
 
@@ -3553,7 +3696,8 @@ Render Canvas
     public path       : CanvasPath
     mutable states    : array CanvasState
     public depth      : i32
-    public font       : CanvasFont
+    mutable font      : CanvasFont
+    public glyph_atlas : GlyphAtlas
     intern ui_shader  : CanvasUI
     intern sdf_tex    : Texture
     public format	  : Pixel[Pixel.rgba8]
@@ -3572,15 +3716,27 @@ Render Canvas
 
     func init [ ]
         printf[ "Canvas.init: vk=%p w=%p width=%i height=%i\n", vk, w, width, height ]
-        clear_color = vec4f [ 0.22, 0.0, 0.44, 1.0 ]
+        clear_color = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         cur_xform   = affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
         xform_stack = array affine [ ]
+        VK : vk
         ui_shader = CanvasUI [ vk: vk ]
         # R32F + STORAGE_BIT so the compute shader can imageStore distances
         # directly and the fragment shader still samples it as a texture.
         sdf_tex = Texture [ vk: vk, w: w, width: 512, height: 512,
             pixel_format: Pixel.f32, surface: Surface.color, is_storage: true ]
-        canvas_samplers : map Au[string] [ 'image': sdf_tex ]
+        # one r8 glyph atlas per canvas, bound as the `atlas` sampler the
+        # CanvasUI shader's mode-4 text path samples from.
+        glyph_atlas = GlyphAtlas [ vk: vk, w: w, size: 1024 ]
+        # default font load — assigning to `font` here works because we're
+        # inside Canvas.init (implicit self), bypassing the chained-write
+        # issue with `outside.compose.font = fnt` from trinity.render.
+        ft_lib_h : handle ft_init[]
+        font = CanvasFont [ ft_lib: ft_lib_h, uri: 'fonts/Genos-Regular.ttf', size_px: 64 ]
+        #font.hold[]
+        printf[ "Canvas.init: self=%p AFTER font assign, font.size_px=%i\n",
+            a, (font) ? font.size_px : -1 ]
+        canvas_samplers : map Au[string] [ 'image': sdf_tex, 'atlas': glyph_atlas.texture ]
         graphics_model : Model [ vk: vk, w: w, s: ui_shader, samplers: canvas_samplers ]
 
         # GPU SDF compute model
@@ -3622,8 +3778,8 @@ Render Canvas
         n   : text.count
         w   : f32 [ 0.0 ]
         tw  : f32 [ 0.0 ]
-        for [ i: i32 0, i < n, i += 1 ]
-            cp : u32 [ text[i] ]
+        for [ i: i64 0, i < n, i += 1 ]
+            cp : text[i]
             g  : font.get_glyph [ cp ]
             if [ g.cached ]
                 tw += f32 g.advance
@@ -3823,29 +3979,49 @@ Render Canvas
         ]
 
     func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, use_ellipsis: bool ] -> rect
+        printf[ "draw_text: self=%p ENTER text-count=%i depth=%i font=%p\n",
+            a, text.count, depth, font ]
         st  : CanvasState [ states[depth - 1] ]
-        fnt : CanvasFont  [ st.font ? st.font : font ]
+        printf[ "draw_text: st.font=%p canvas-font=%p\n", st.font, font ]
+        fnt : CanvasFont  [ (st.font) ? st.font : font ]
         if [ !fnt ]
+            printf[ "draw_text: self=%p EARLY RETURN no font\n", a ]
             return bounds
-        display : string [ use_ellipsis ? text_ellipsis[ text, bounds.w ] : text ]
+        display : string [ (use_ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
         tm  : TextMetrics [ measure_text[ display ] ]
         tx  : f32 [ bounds.x + (bounds.w - tm.w) * align.x + offset.x ]
         ty  : f32 [ bounds.y + tm.ascent + (bounds.h - tm.h) * align.y + offset.y ]
-        save[]
-        translate[ tx, ty ]
+        printf[ "draw_text: tx=%f ty=%f tm.w=%f display.count=%i\n",
+            tx, ty, tm.w, display.count ]
+
+        # text path: each glyph is rasterized once into the canvas's r8
+        # glyph atlas, then drawn as a single textured quad sampled in
+        # mode-4 (DrawMode.text) by CanvasUI's fragment shader. the
+        # alpha is multiplied by st.fill_color so the text picks up
+        # whatever color the canvas state has set.
+        atlas_size : f32 [ f32 glyph_atlas.size ]
+        pen_x      : f32 [ tx ]
+        pen_y      : f32 [ ty ]
         for [ i: i32 0, i < display.count, i += 1 ]
-            cp : u32 [ display[i] ]
-            g  : fnt.get_glyph[ cp ]
-            if [ g.cached ]
-                gx :  f32[ g.bearing_x ]
-                gy : -f32[ g.bearing_y ]
-                gw :  f32[ g.bmp_w ]
-                gh :  f32[ g.bmp_h ]
-                rect_to[ gx, gy, gw, gh ]
-                draw_fill[]
-                path.clear[]
-                translate[ f32[ g.advance ], 0.0 ]
-        restore[]
+            cp   : u32 [ display[i] ]
+            slot : GlyphAtlasSlot [ glyph_atlas.get[ fnt, cp ] ]
+            if [ slot.cached && slot.atlas_w > 0 && slot.atlas_h > 0 ]
+                gx : f32 [ pen_x + f32 slot.bearing_x ]
+                gy : f32 [ pen_y - f32 slot.bearing_y ]
+                gw : f32 [ f32 slot.atlas_w ]
+                gh : f32 [ f32 slot.atlas_h ]
+                u0 : f32 [ f32 slot.atlas_x / atlas_size ]
+                v0 : f32 [ f32 slot.atlas_y / atlas_size ]
+                u1 : f32 [ f32 (slot.atlas_x + slot.atlas_w) / atlas_size ]
+                v1 : f32 [ f32 (slot.atlas_y + slot.atlas_h) / atlas_size ]
+                setup_shader[ st, gx, gy, gw, gh ]
+                ui_shader.fill_color = color_to_vec4[ st.fill_color ]
+                ui_shader.grad0      = vec4f [ u0, v0, u1, v1 ]
+                ui_shader.params     = vec4f [ st.stroke_width, st.opacity, st.blur_rad, f32 DrawMode.text ]
+                printf[ "draw_text: mode=4 cp=%u rect=(%f,%f %fx%f) uv=(%f,%f %f,%f)\n",
+                    cp, gx, gy, gw, gh, u0, v0, u1, v1 ]
+                flush[]
+            pen_x += f32 slot.advance
         return rect [ x: tx, y: ty - tm.ascent, w: tm.w, h: tm.h ]
 
     # ---- GPU draw helpers ----
@@ -3877,6 +4053,7 @@ Render Canvas
         ui_shader.xform_row1 = vec4f [ st.transform.tx, st.transform.ty, 0.0, 0.0 ]
         # print the full UBO contents we just wrote, so we can compare
         # what silver thinks it's sending vs what the GPU actually reads.
+        ##
         printf[ "setup_shader ubo:\n" ]
         printf[ "  rect       = (%f, %f, %f, %f)\n", rx, ry, rw, rh ]
         printf[ "  fill_color = (%f, %f, %f, %f)\n",
@@ -3889,6 +4066,7 @@ Render Canvas
         printf[ "  xform_row1 = (tx=%f, ty=%f, 0, 0)\n",
             st.transform.tx, st.transform.ty ]
         printf[ "  viewport   = (%f, %f)\n", f32 width, f32 height ]
+        ##
 
     func setup_gradient [ st: ref CanvasState ] -> f32
         if [ st.fill_grad && st.fill_grad.kind != GradientType.none ]
@@ -4031,6 +4209,7 @@ Render Canvas
             ui_shader.fill_color = color_to_vec4 [ st.fill_color ]
             ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, f32 DrawMode.solid ]
+            printf[ "draw_fill: mode=0 (solid rect) rect=(%f,%f %fx%f)\n", bx0, by0, bw, bh ]
         el
             # arbitrary path — GPU compute SDF. on cache miss the edge list
             # was just extracted above; on cache hit we reuse the edges that
@@ -4052,7 +4231,7 @@ Render Canvas
                 # only on cache miss — on hit, the buffer is already valid.
                 edge_data : ref f32 [ edge_buf.data ]
                 for [ ei: i32 0, ei < ne, ei += 1 ]
-                    e : edges[ei]
+                    e : SDFEdge edges[ei]
                     edge_data[ei * 4 + 0] = e.x0
                     edge_data[ei * 4 + 1] = e.y0
                     edge_data[ei * 4 + 2] = e.x1
@@ -4081,6 +4260,7 @@ Render Canvas
             c : f32 [ st.stroke_cap ]
             ui_shader.stroke_opts = vec4f [ j, c, 0.0, spread ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, DrawMode.sdf_path ]
+            printf[ "draw_fill: mode=6 (sdf_path) rect=(%f,%f %fx%f) edges=%i\n", pbx, pby, pbw, pbh, ne ]
         flush[]
 
     func draw_stroke []
@@ -4184,8 +4364,10 @@ struct GlyphEntry
 
 # font face wrapper around FreeType
 class CanvasFont
+    expect ft_lib     : handle
+    expect uri        : string
+    expect size_px    : i32
     intern ft_face    : FT_Face
-    public size_px    : i32
     public ascent     : f32
     public descent    : f32
     public line_height : f32
@@ -4193,12 +4375,10 @@ class CanvasFont
     public cache      : array GlyphEntry
     public cache_size : i32
 
-    
-    construct [ ft_lib: handle, uri: string, size: i32 ]
-        err  : i32 FT_New_Face [ ft_lib, uri, 0, ref ft_face ]
+    func init []
+        err  : i32 FT_New_Face [ ft_lib, uri.chars, 0, ref ft_face ]
         expect err == 0, 'failed to load font: {uri}'
-        size_px  = size
-        FT_Set_Pixel_Sizes [ ft_face, 0, size ]
+        FT_Set_Pixel_Sizes [ ft_face, 0, size_px ]
 
         # extract metrics from face
         xscale      : i64 ft_face.size.metrics.x_scale
@@ -4289,6 +4469,108 @@ class CanvasFont
         ]
         cache.push[ entry ]
         return entry
+
+
+# atlas slot for one glyph: where in the atlas it lives + the layout
+# metrics needed to position the glyph quad relative to the pen.
+struct GlyphAtlasSlot
+    codepoint  : u32
+    size_px    : i32
+    atlas_x    : i32
+    atlas_y    : i32
+    atlas_w    : i32
+    atlas_h    : i32
+    bearing_x  : i32
+    bearing_y  : i32
+    advance    : i32
+    cached     : bool
+
+
+# r8 glyph atlas with a simple shelf packer. each font instance owns one.
+# layout: rows of fixed `shelf_height` filled left to right; when the
+# current shelf is full a new shelf starts below. when the atlas is full
+# we currently just stop accepting new glyphs (TODO: LRU evict).
+class GlyphAtlas
+    public  vk          : vk_context
+    public  w           : Display
+    public  size        : i32       # square atlas dimension
+    intern  texture     : Texture
+    intern  slots       : array GlyphAtlasSlot
+    intern  shelf_x     : i32
+    intern  shelf_y     : i32
+    intern  shelf_h     : i32
+    intern  staging     : ref u8    # scratch buffer for upload (atlas-sized)
+
+    func init []
+        if [ size == 0 ]
+            size = 1024
+        texture = Texture [ vk: vk, w: w, width: size, height: size,
+            pixel_format: Pixel.u8, surface: Surface.color ]
+        slots   = array GlyphAtlasSlot []
+        shelf_x = 0
+        shelf_y = 0
+        shelf_h = 0
+
+    func find [ codepoint: u32, size_px: i32 ] -> GlyphAtlasSlot
+        n : slots.count
+        for [ i: i32 0, i < n, i += 1 ]
+            s : GlyphAtlasSlot slots[i]
+            if [ s.cached && s.codepoint == codepoint && s.size_px == size_px ]
+                return s
+        return GlyphAtlasSlot [ cached: false ]
+
+    # rasterize-and-pack a single glyph from `font` into the atlas. on
+    # cache hit the existing slot is returned without re-uploading.
+    func get [ font: CanvasFont, codepoint: u32 ] -> GlyphAtlasSlot
+        existing : GlyphAtlasSlot find [ codepoint, font.size_px ]
+        if [ existing.cached ]
+            return existing
+
+        g : GlyphEntry font.get_glyph [ codepoint ]
+        if [ !g.cached ]
+            return GlyphAtlasSlot [ cached: false ]
+
+        gw : i32 [ g.bmp_w ]
+        gh : i32 [ g.bmp_h ]
+
+        # zero-area glyphs (e.g. space) still need a slot for advance metrics
+        # but no atlas pixels — record an empty rect at the current pen.
+        if [ gw == 0 || gh == 0 ]
+            slot : GlyphAtlasSlot [
+                codepoint: codepoint, size_px: font.size_px,
+                atlas_x: 0, atlas_y: 0, atlas_w: 0, atlas_h: 0,
+                bearing_x: g.bearing_x, bearing_y: g.bearing_y,
+                advance: g.advance, cached: true ]
+            slots.push[ slot ]
+            return slot
+
+        # shelf packer: try current shelf, wrap to a new one if too wide.
+        if [ shelf_x + gw > size ]
+            shelf_y += shelf_h
+            shelf_x  = 0
+            shelf_h  = 0
+        if [ shelf_y + gh > size ]
+            # atlas full — fail soft. Caller treats !cached as "skip glyph".
+            return GlyphAtlasSlot [ cached: false ]
+        if [ gh > shelf_h ]
+            shelf_h = gh
+
+        ax : i32 [ shelf_x ]
+        ay : i32 [ shelf_y ]
+        shelf_x += gw
+
+        # one-shot upload of just this glyph's bitmap into its packed slot.
+        texture.upload_region[ ax, ay, gw, gh, g.bitmap, gw * gh ]
+        printf[ "GlyphAtlas.get: uploaded cp=%u at (%i,%i) %ix%i bytes=%i\n",
+            codepoint, ax, ay, gw, gh, gw * gh ]
+
+        slot : GlyphAtlasSlot [
+            codepoint: codepoint, size_px: font.size_px,
+            atlas_x: ax, atlas_y: ay, atlas_w: gw, atlas_h: gh,
+            bearing_x: g.bearing_x, bearing_y: g.bearing_y,
+            advance: g.advance, cached: true ]
+        slots.push[ slot ]
+        return slot
 
 
 # ---- FreeType library singleton ----
@@ -4734,7 +5016,7 @@ func sdf_to_r8 [ sdf: ref f32, count: i32, spread: f32 ] -> ref u8
 
 func ft_init [] -> handle
     if [ !ft_library ]
-        err : i32 FT_Init_FreeType [ ref handle ft_library ]
+        err : i32 FT_Init_FreeType [ ref ft_library ]
         expect err == 0, 'FreeType init failed'
     return ft_library
 
@@ -4852,8 +5134,8 @@ expect func test [ vk: vk_context ] -> bool
 
 
 abstract app media_app
-    mutable w     : Display*
-    mutable vk    : vk_context
+    context  w     : Display*
+    context  vk    : vk_context
     intern  arg   : object
     public width  : i32
     public height : i32
@@ -5063,10 +5345,25 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
 
 
 # --- GLFW callbacks ---
-intern func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i32, height: i32 ] 
+intern func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i32, height: i32 ]
     if [ width == 0 && height == 0 ]
         return
-    return
+    w: (glfwGetWindowUserPointer[ glfw_window ] to Display)
+    if [ !w ]
+        return
+    w.pending_w     = width
+    w.pending_h     = height
+    w.last_resize_t = glfwGetTime[]
+    # On most platforms glfwPollEvents enters a modal nested loop while the
+    # user is dragging the window border, so the main render loop never runs
+    # and canvas drawing freezes. GLFW callbacks DO fire during the modal
+    # loop — pump a frame here so the window keeps painting. The recursion
+    # guard prevents looping when this handler is reached from inside
+    # Display.draw via the VK_ERROR_OUT_OF_DATE_KHR path.
+    if [ !w.in_callback_draw ]
+        w.in_callback_draw = true
+        w.draw[]
+        w.in_callback_draw = false
 
 
 intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] 
@@ -5386,7 +5683,7 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
 # uniform_size and glsl_header so the GLSL UBO declaration and the
 # host-side buffer size always agree.
 func is_uniform_field [ mem: Au_t ] -> bool
-    return mem.member_type == 4 && bool[mem.src] && !(mem.traits & (1 << 56))
+    return mem.member_type == 4 && mem.access_type == (0,2,3,4) && bool[mem.src] && !(mem.traits & (1 << 56))
 
 func uniform_size [ type: Au_t ] -> num
     total: num [ 0 ]
@@ -5943,6 +6240,10 @@ Display Window
     public overlay              : Canvas
     public glyph                : Canvas
 
+    public target               : Render
+
+    public composite            : false
+
     # this needs to be in trinity in form of a declarative stack for our rendering pipeline
     # if we can do such a thing for elements, we should be able to express it
     mutable m_reduce             : Model
@@ -5966,15 +6267,93 @@ Display Window
     mutable m_view               : Model
     mutable r_view               : Render
 
+    mutable is_setup             : bool
 
 
-    public composite : bool
-
-
-    func update_canvas [ ]
+    func update [ ]
+        ft  : ft_init[]
+        fnt : CanvasFont [ ft_lib: ft, uri: 'fonts/Genos-Regular.ttf', size_px: 64 ]
+        
         compose = (compose || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
         compose.update[]
         compose.clear[ string[ "#f0f" ] ]
+        compose.font = fnt
+
+        if [ !is_setup && composite ]
+            is_setup = true
+            #sk_set_bs[ target.color ]
+            vk: vk_context[ a.vk ]
+            m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': target.color ] ]
+            r_reduce  = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
+
+            m_reduce0 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce.color ] ]
+            r_reduce0 = Render [ vk: vk, w: a, wscale: 0.5, models: array Model [ m_reduce0 ] ]
+
+            m_reduce1 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
+            r_reduce1 = Render [ vk: vk, w: a, wscale: 0.25, models: array Model [ m_reduce1 ] ]
+
+            fbv : BlurV [ vk: vk, name: 'blur-v', reduction_scale: 4.0 ]
+            m_blur_v  = Model  [ w: a, s: fbv, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
+            r_blur_v  = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_blur_v ] ]
+
+            fbl : Blur [ vk: vk, name: 'blur', reduction_scale: 4.0 ]
+            m_blur    = Model  [ w: a, s: fbl, samplers: map Texture[string] [ 'color': r_blur_v.color ] ]
+            r_blur    = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_blur ] ]
+
+            m_reduce2 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
+            r_reduce2 = Render [ vk: vk, w: a, wscale: 0.125, models: array Model [ m_reduce2 ] ]
+
+            m_reduce3 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce2.color ] ]
+            r_reduce3 = Render [ vk: vk, w: a, wscale: 0.0625, models: array Model [ m_reduce3 ] ]
+
+            bv : BlurV [ vk: vk, name: 'blur-v', reduction_scale: 16.0 ]
+            m_frost_v = Model  [ w: a,   s: bv, samplers: map Texture[string] [ 'color': r_reduce3.color ] ]
+            r_frost_v = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_frost_v ] ]
+
+            bl : Blur [ vk: vk, name: 'blur', reduction_scale: 16.0 ]
+            m_frost   = Model  [ w: a,   s: bl, samplers: map Texture[string] [ 'color': r_frost_v.color ] ]
+            r_frost   = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_frost ] ]
+
+            m_view    = Model [ w: w, s: UXCompose [ vk: vk, name: 'ux' ],
+                samplers: map Texture[string] [
+                    'background': target.color,
+                    'frost':      r_frost.color,
+                    'blur':       r_blur.color,
+                    'compose':    compose.color,
+                    'colorize':   colorize.color,
+                    'overlay':    overlay.color,
+                    'glyph':      glyph.color
+                ]
+            ]
+
+            r_view    = Render [ vk: vk, w: a, wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
+                models: array Model [ m_view ] ]
+
+            ux_shader : UXCompose [ m_view.s ]
+            ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
+            ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
+
+            list = array Render [
+                target, r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
+                r_reduce2, r_reduce3, r_frost_v, r_frost,
+                r_view ]
+
+        el [ !is_setup ]
+            is_setup = true
+            textures : map Texture[string] [
+                'background': compose.color # also add 'overlay': compose.overlay
+            ]
+            m_view = Model [ vk: vk, w: a, s:
+                UXSimple [ vk: vk, name: 'simple' ],
+                    samplers: textures
+                ]
+            r_view = Render [ vk: vk, w: a, wscale: 1.0,
+                clear_color: [ 0.011, 0.022, 0.044, 1.0 ], models:
+                    [ m_view ]
+            ]
+            
+            list = array Render [ r_view ]
+
         #if [ composite ]
         #    colorize = (colorize || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
         #    overlay  = (overlay  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
@@ -5982,21 +6361,12 @@ Display Window
         #    colorize.clear[ string[ "#fff"  ] ]
         #    overlay .clear[ string[ "#fff0" ] ]
         #    glyph   .clear[ string[ "#000"  ] ]
-        if [ !m_view ]
-            textures : map Texture[string] [
-                'background': compose.color
-            ]
-            m_view = Model [ vk: vk, w: a, s: UXSimple [ vk: vk, name: 'simple' ],
-                samplers: textures
-            ]
-            r_view = Render [ vk: vk, w: a, wscale: 1.0,
-                clear_color: vec4f [ 0.0, 1.0, 0.0, 1.0 ],
-                models: array Model [ m_view ] ]
-            list += r_view
+
+
 
     public func resize [ w: i32, h: i32 ] -> Window
         super.resize[ w, h ]
-        update_canvas[]
+        update[]
         return a
 
     public func draw_element [ e: element* ]
@@ -6066,13 +6436,12 @@ abstract media_app trinity
         no-op
     
     func run[] -> i32
-        puts 'running trinity'
-        printf["our (trinity) vk is %p on %p\n", vk, a]
         window : Window[ vk:vk, title:'orbiter', width:(width) ?? 888, height:(height) ?? 888 ]
         w = window
-        window.update_canvas[] # ?
-        render*[] # should be called before the targets update, so we have a list of targets
-        window.resize[window.width, window.height]
+        w.update*[]
+        
+        render*[]
+        w.resize[w.width, w.height]
         return super.run[]
 
 ##
@@ -6101,24 +6470,40 @@ abstract media_app trinity
         # the rect is centered at the origin so the rotation pivots there.
         if [ window.compose ]
             angle += 0.01
+
+            # text test: font loaded inside Canvas.init, just draw a label
+            # in a tight bounds box centered at the window midpoint.
+            window.compose.set_fill_color[ 0xFFFFFFFF ]
+            window.compose.draw_text[
+                'Aura',
+                rect [ x: 344.0, y: 396.0, w: 200.0, h: 96.0 ],
+                vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ],
+                false ]
+##
             window.compose.path.clear[]
 
             window.compose.save[]
             window.compose.translate[ 444.0, 444.0 ]
             window.compose.rotate[ angle ]
-            ##
-            window.compose.rect_to[ -100.0, -50.0, 200.0, 100.0 ]
-            window.compose.set_stroke_color[ 0xFFFFAA00 ]
-            window.compose.set_stroke_width[ 16.0 ]
-            window.compose.set_stroke_join[ Join.miter ]
-            window.compose.set_fill_color[ 0xFFFFFFFF ]
-            window.compose.draw_fill[]
-            ##
+
             window.compose.path.clear[]
             window.compose.move_to[ 0.0, 20.0 ]
             window.compose.line_to[ 20.0, 0.0 ]
             window.compose.line_to[ 200.0, 0.0 ]
-            # right edge as a cubic bezier bulging outward to the right
+            window.compose.cubic_to[ 180.0, 88.0, 180.0, 75.0, 200.0, 100.0 ]
+            window.compose.line_to[ 0.0, 100.0 ]
+            window.compose.close_path[]
+            window.compose.set_stroke_color[ 0xFFFFAA00 ]
+            window.compose.set_stroke_width[ 4.0 ]                  
+            window.compose.set_fill_color[ 0xFFFFFFFF ]
+            window.compose.draw_fill[]
+
+            window.compose.path.clear[]
+            window.compose.translate[ 44.0, 44.0 ]
+            window.compose.move_to[ 0.0, 20.0 ]
+            window.compose.line_to[ 20.0, 0.0 ]
+            window.compose.line_to[ 200.0, 0.0 ]
             window.compose.cubic_to[ 180.0, 88.0, 180.0, 75.0, 200.0, 100.0 ]
             window.compose.line_to[ 0.0, 100.0 ]
             window.compose.close_path[]
@@ -6128,6 +6513,8 @@ abstract media_app trinity
             window.compose.draw_fill[]
 
             window.compose.restore[]
+##
+
         window.draw[]
 
 
@@ -6890,87 +7277,6 @@ element World
         w.overlay.set_texture[ (target.reduction) ? target.reduction : target.color ]
         w.overlay.draw_fill[]
 
-World Stage
-    public frost : bool
-
-    func init []
-        w : Window [ ux.w ]
-        vk: w.vk
-        
-        load[ w ]
-
-        if [ frost ]
-            #sk_set_bs[ target.color ]
-            
-            w.m_reduce  = Model  [ w: w, samplers: map Texture[string] [ 'color': target.color ] ]
-            w.r_reduce  = Render [ vk: vk, w: w, wscale: 1.0, models: array Model [ w.m_reduce ] ]
-
-            w.m_reduce0 = Model  [ w: w, samplers: map Texture[string] [ 'color': w.r_reduce.color ] ]
-            w.r_reduce0 = Render [ vk: vk, w: w, wscale: 0.5, models: array Model [ w.m_reduce0 ] ]
-
-            w.m_reduce1 = Model  [ w: w, samplers: map Texture[string] [ 'color': w.r_reduce0.color ] ]
-            w.r_reduce1 = Render [ vk: vk, w: w, wscale: 0.25, models: array Model [ w.m_reduce1 ] ]
-
-            fbv : BlurV [ vk: w.vk, name: 'blur-v', reduction_scale: 4.0 ]
-            w.m_blur_v  = Model  [ w: w, s: fbv, samplers: map Texture[string] [ 'color': w.r_reduce1.color ] ]
-            w.r_blur_v  = Render [ vk: vk, w: w, wscale: 1.0, models: array Model [ w.m_blur_v ] ]
-
-            fbl : Blur [ vk: w.vk, name: 'blur', reduction_scale: 4.0 ]
-            w.m_blur    = Model  [ w: w, s: fbl, samplers: map Texture[string] [ 'color': w.r_blur_v.color ] ]
-            w.r_blur    = Render [ vk: vk, w: w, wscale: 1.0, models: array Model [ w.m_blur ] ]
-
-            w.m_reduce2 = Model  [ w: w, samplers: map Texture[string] [ 'color': w.r_reduce1.color ] ]
-            w.r_reduce2 = Render [ vk: vk, w: w, wscale: 0.125, models: array Model [ w.m_reduce2 ] ]
-
-            w.m_reduce3 = Model  [ w: w, samplers: map Texture[string] [ 'color': w.r_reduce2.color ] ]
-            w.r_reduce3 = Render [ vk: vk, w: w, wscale: 0.0625, models: array Model [ w.m_reduce3 ] ]
-
-            bv : BlurV [ vk: w.vk, name: 'blur-v', reduction_scale: 16.0 ]
-            w.m_frost_v = Model  [ w: w, s: bv, samplers: map Texture[string] [ 'color': w.r_reduce3.color ] ]
-            w.r_frost_v = Render [ vk: vk, w: w, wscale: 1.0, models: array Model [ w.m_frost_v ] ]
-
-            bl : Blur [ vk: w.vk, name: 'blur', reduction_scale: 16.0 ]
-            w.m_frost   = Model  [ w: w, s: bl, samplers: map Texture[string] [ 'color': w.r_frost_v.color ] ]
-            w.r_frost   = Render [ vk: vk, w: w, wscale: 1.0, models: array Model [ w.m_frost ] ]
-
-            w.m_view    = Model [ w: w, s: UXCompose [ vk: vk, name: 'ux' ],
-                samplers: map Texture[string] [
-                    'background': target.color,
-                    'frost':      w.r_frost.color,
-                    'blur':       w.r_blur.color,
-                    'compose':    w.compose.color,
-                    'colorize':   w.colorize.color,
-                    'overlay':    w.overlay.color,
-                    'glyph':      w.glyph.color
-                ]
-            ]
-
-            w.r_view    = Render [ vk: vk, w: w, wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
-                models: array Model [ w.m_view ] ]
-
-            ux_shader : UXCompose [ w.m_view.s ]
-            ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
-            ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
-        el
-            w.m_view = Model [ vk: vk, w: w, s: UXSimple [ vk: vk, name: 'simple' ],
-                samplers: map Texture[string] [
-                    'background': target.color,
-                    'overlay':    w.overlay.color
-                ]
-            ]
-            w.r_view = Render [ vk: vk, w: w, wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
-                models: array Model [ w.m_view ] ]
-
-        if [ frost ]
-            w.list = array Render [
-                target, w.r_reduce, w.r_reduce0, w.r_reduce1, w.r_blur_v, w.r_blur,
-                w.r_reduce2, w.r_reduce3, w.r_frost_v, w.r_frost,
-                w.r_view ]
-            # r_view is last in list
-        el
-            w.list = array Render [ target, w.r_view ]
-            # r_view is last in list
-
 element Pane
 
 element Button
@@ -7527,7 +7833,7 @@ func distance [ a:i8, b:i8 ] -> i64
     return abs[ sz[ a ] - sz[ b ] ]
 
 
-func is_alpha2 [ c: i8 ] -> bool
+func is_alpha2 [ c: i8 ] -> bool                                                                                                     
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 
 
