@@ -669,13 +669,25 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         }
 
         // for struct construction results (unloaded alloca), alias the evar
-        // to the struct alloca directly instead of storing a pointer
-        if (res->au && res->au->is_struct && !res->loaded &&
-            LLVMGetInstructionOpcode(res->value) == LLVMAlloca) {
+        // to the struct alloca directly instead of storing a pointer.
+        //
+        // gate on is_struct() (the function) rather than res->au->is_struct
+        // (the field): a local struct var like `m: mat4f` has res->au of
+        // member_type=VAR with src=mat4f, so the field check is false but
+        // au_arg_type resolves to the mat4f Au_t whose is_struct field is
+        // true. without this resolve, `earth.model = m` falls into the
+        // lower branch and bottoms out in a plain LLVMBuildStore that
+        // writes 8 bytes of the alloca pointer into the destination.
+        if (res->au && !res->loaded &&
+            LLVMGetInstructionOpcode(res->value) == LLVMAlloca &&
+            is_struct((Au)res->au)) {
             if (L->value && L->value != res->value) {
                 // L already has destination storage (alloca, GEP, arg, etc.)
-                // copy struct data instead of aliasing
-                etype st = u(etype, res->au);
+                // copy struct data instead of aliasing. follow ->src first
+                // so a variable Au_t resolves to its underlying type's
+                // etype, whose lltype is the struct (not a pointer slot).
+                etype st = u(etype, res->au->src ? res->au->src : (Au_t)res->au);
+                if (!st || !st->lltype) st = u(etype, res->au);
                 if (!st || !st->lltype) st = etype_prep(a, au_arg_type((Au)res->au));
                 if (st && st->lltype) {
                     LLVMValueRef loaded = LLVMBuildLoad2(B, st->lltype, res->value, "struct_cp");
@@ -2982,8 +2994,15 @@ enode convertible(etype fr, etype to) {
 
     if (ma == mb)
         return (enode)true;
-    if (ma->au->is_struct && mb->au->is_struct && ma->au->typesize == mb->au->typesize && ma->au->typesize > 0)
-        return (enode)true;
+    // NOTE: same-size struct → struct is intentionally NOT a free
+    // bitcast. distinct struct types (e.g. vec4f and quatf, both four
+    // f32s) often need a real conversion via a registered constructor
+    // (`quatf_with_vec4f` does the axis-angle → quaternion math). letting
+    // them alias here short-circuits past the records branch below where
+    // constructable() finds the ctor — silently producing a verbatim
+    // copy of the bytes instead of a meaningful conversion. fall through
+    // and let constructable() do its job; if no ctor exists e_create's
+    // verify will fault loudly rather than emitting a wrong bitcast.
     if (ma->au->is_pointer && ma->au->src && ma->au->src->is_struct && mb->au->is_struct &&
         ma->au->src->typesize == mb->au->typesize && mb->au->typesize > 0)
         return (enode)true;
@@ -3849,6 +3868,23 @@ enode e_convert_or_cast(aether a, etype output, enode input) {
         if (output->au->elements > 0)
             return enode(mod, a, value, input->value, loaded, input->loaded, au, output->au);
         if (output->au == typeid(bool)) {
+            // unloaded indexer/alloca slot (e.g. `arr[i]` where arr is
+            // a numeric/handle array): input->value is the *slot address*,
+            // not the element. comparing the address to null always
+            // returns true ("ptr_to_bool" against an alloca/GEP). load
+            // the element first, then compare against zero of the
+            // element's actual type. this is what makes `if [arr[i]]`
+            // work for null handles inside arrays.
+            if (!input->loaded) {
+                etype elem = canonical(input);
+                LLVMTypeRef et = elem && elem->lltype
+                    ? lltype(elem)
+                    : LLVMPointerTypeInContext(a->module_ctx, 0);
+                LLVMValueRef loaded_v = LLVMBuildLoad2(B, et, input->value, "slot_to_bool_load");
+                return value(output,
+                    LLVMBuildICmp(B, LLVMIntNE, loaded_v,
+                        LLVMConstNull(et), "slot_to_bool"));
+            }
             return value(output,
                 LLVMBuildICmp(B, LLVMIntNE, input->value,
                     LLVMConstNull(LLVMPointerTypeInContext(a->module_ctx, 0)), "ptr_to_bool"));
@@ -6327,15 +6363,25 @@ none etype_implement(etype t, bool w) { sequencer
             // if au->is_static then we need to create a global for it
             n->loaded = false;
             if (au->is_static && au->member_type == AU_MEMBER_VAR) {
-                // this likely may just skip setting value; defer it to be set later
+                // class-static var: emit/reuse a single LLVM global named
+                // <Class>_<member>. evar_init can run more than once for
+                // the same static member (member registration vs access
+                // site), and a bare LLVMAddGlobal would auto-disambiguate
+                // the duplicate (Layout_defaults and Layout_defaults.1),
+                // splitting writes from reads. always look up by name
+                // first and only create if absent.
                 evar static_node = instanceof(t, evar);
                 verify(static_node, "expected evar");
                 string c_name = f(string, "%s_%s", au->context->ident, au->ident);
-                LLVMValueRef global = a->is_Au_import ? 
-                    LLVMFetchGlobal(a->module_ref, type, (cstr)llvm_id(a, c_name->chars)) :
-                    LLVMAddGlobal(a->module_ref, type, (cstr)llvm_id(a, c_name->chars));
-                LLVMSetLinkage(global, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
-                if (!a->is_Au_import) LLVMSetInitializer(global, LLVMConstNull(type));
+                cstr  c_id    = (cstr)llvm_id(a, c_name->chars);
+                LLVMValueRef global = LLVMGetNamedGlobal(a->module_ref, c_id);
+                if (!global) {
+                    global = a->is_Au_import ?
+                        LLVMFetchGlobal(a->module_ref, type, c_id) :
+                        LLVMAddGlobal  (a->module_ref, type, c_id);
+                    LLVMSetLinkage(global, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
+                    if (!a->is_Au_import) LLVMSetInitializer(global, LLVMConstNull(type));
+                }
                 static_node->value = global;
                 static_node->loaded = false;
             } else if (!au->is_static) {
@@ -6460,12 +6506,22 @@ none etype_implement(etype t, bool w) { sequencer
                     if (m->is_static ) {
                         if (pass == 1) continue;
                         if (m->is_c && m->is_static) continue;
+                        // reuse an existing global if one was already
+                        // emitted by evar_init for this static member;
+                        // otherwise LLVM auto-disambiguates duplicates
+                        // (e.g. Layout_defaults vs Layout_defaults.1) and
+                        // writes go to one global while metadata uses
+                        // the other.
                         string c_name = f(string, "%s_%s", au->ident, m->ident);
-                        LLVMValueRef global = a->is_Au_import ?
-                            LLVMFetchGlobal(a->module_ref, lltype(u(etype, m->src)), (cstr)llvm_id(a, c_name->chars)) :
-                            LLVMAddGlobal(a->module_ref, lltype(u(etype, m->src)), (cstr)llvm_id(a, c_name->chars));
-                        LLVMSetLinkage(global, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
-                        if (!a->is_Au_import) LLVMSetInitializer(global, LLVMConstNull(lltype(u(etype, m->src))));
+                        cstr   c_id   = (cstr)llvm_id(a, c_name->chars);
+                        LLVMValueRef global = LLVMGetNamedGlobal(a->module_ref, c_id);
+                        if (!global) {
+                            global = a->is_Au_import ?
+                                LLVMFetchGlobal(a->module_ref, lltype(u(etype, m->src)), c_id) :
+                                LLVMAddGlobal  (a->module_ref, lltype(u(etype, m->src)), c_id);
+                            LLVMSetLinkage(global, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
+                            if (!a->is_Au_import) LLVMSetInitializer(global, LLVMConstNull(lltype(u(etype, m->src))));
+                        }
                         evar static_node = u(evar, m) ? u(evar, m) : evar(mod, a, au, m, value, global, loaded, false);
 
                     } else {
@@ -7288,6 +7344,21 @@ none aether_build_module_initializer(aether a, enode init) {
         }
         if (au->member_type == AU_MEMBER_VAR && var && var->initializer) {
             build_user_initializer(a, u(etype, au));
+        }
+    }
+
+    // static class members with initializers also emit here, in module init.
+    // (per-instance constructors deliberately skip statics — see build_init_preamble.)
+    pairs(a->user_type_ids, ti) {
+        etype mdl = instanceof(ti->key, etype);
+        if (!mdl || !mdl->au) continue;
+        if (!is_class(mdl) && !is_struct(mdl)) continue;
+        members(mdl->au, smem) {
+            if (smem->member_type != AU_MEMBER_VAR) continue;
+            if (!smem->is_static) continue;
+            evar svar = u(evar, smem);
+            if (!svar || !svar->initializer) continue;
+            build_user_initializer(a, u(etype, smem));
         }
     }
     pop_scope(a);
