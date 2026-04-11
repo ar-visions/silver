@@ -9,13 +9,11 @@
 #define vec3f_(...) structure_of(vec3f __VA_OPT__(,) __VA_ARGS__)
 
 #define vec_define_methods(N, T, C) \
-    N N##_with_floats_t(T* f) { \
-        N result = {}; \
+    none N##_with_floats_t(N* a, T* f) { \
         if (f) \
-            memcpy(&result, f, sizeof(T) * C); \
+            memcpy(a, f, sizeof(T) * C); \
         else \
-            memset(&result, 0, sizeof(T) * C); \
-        return result; \
+            memset(a, 0, sizeof(T) * C); \
     } \
     N N##_scale(N* a, f32 n) { \
         N res = *a; \
@@ -224,43 +222,39 @@ rect create_rect(vec2f v0, vec2f v1) {
     return r;
 }
 
-mat4f mat4f_with_floats_t(f32* f) {
-    mat4f a = {};
+none mat4f_with_floats_t(mat4f* a, f32* f) {
     if (f)
-        memcpy(&a, f, sizeof(f32) * 16);
+        memcpy(a, f, sizeof(f32) * 16);
     else {
-        a.m[4 * 0 + 0] = 1.0f;
-        a.m[4 * 1 + 1] = 1.0f;
-        a.m[4 * 2 + 2] = 1.0f;
-        a.m[4 * 3 + 3] = 1.0f;
+        a->m[4 * 0 + 0] = 1.0f;
+        a->m[4 * 1 + 1] = 1.0f;
+        a->m[4 * 2 + 2] = 1.0f;
+        a->m[4 * 3 + 3] = 1.0f;
     }
-    return a;
 }
 
-quatf quatf_with_floats_t(f32* f) {
-    quatf a = {};
-    a.x = f[0];
-    a.y = f[1];
-    a.z = f[2];
-    a.w = f[3]; 
-    return a;
+none quatf_with_floats_t(quatf* a, f32* f) {
+    a->x = f[0];
+    a->y = f[1];
+    a->z = f[2];
+    a->w = f[3]; 
 }
 
 f32 degrees(f32 rads) { return rads * (180.0f / M_PI); }
 f32 radians(f32 degs) { return degs * (M_PI / 180.0f); }
 
-vec4f vec4f_with_vec3f(vec3f* a) {
-    return vec4f(a->x, a->y, a->z, 1.0);
+none vec4f_with_vec3f(vec4f* a, vec3f* f) {
+    a->x = f->x;
+    a->y = f->y;
+    a->z = f->z;
+    a->w = 0.0f;
 }
 
 vec3f vec3f_cross(vec3f* a, vec3f* b) {
-    f32 f[3] = {
+    return vec3f(
         a->y * b->z - a->z * b->y,
         a->z * b->x - a->x * b->z,
-        a->x * b->y - a->y * b->x
-    };
-    vec3f v = vec3f((floats_t)f);
-    return v;
+        a->x * b->y - a->y * b->x);
 }
 
 vec3f vec3f_rand() {
@@ -273,21 +267,18 @@ vec3f vec3f_rand() {
 }
 
 /// vec4f treated as axis x/y/z + theta (w) args
-quatf quatf_with_vec4f(vec4f* v) {
-    quatf q = {}; 
+none quatf_with_vec4f(quatf* q, vec4f* v) {
     f32   theta        = v->w;
     f32   half_theta   = theta * 0.5f;
     f32   s_half_theta = sinf(half_theta);
-    q.x = v->x * s_half_theta;
-    q.y = v->y * s_half_theta;
-    q.z = v->z * s_half_theta;
-    q.w = cosf(half_theta);
-    return q;
+    q->x = v->x * s_half_theta;
+    q->y = v->y * s_half_theta;
+    q->z = v->z * s_half_theta;
+    q->w = cosf(half_theta);
 }
 
 
-mat4f mat4f_with_quatf(quatf* q) {
-    mat4f mat = {}; 
+none mat4f_with_quatf(mat4f* mat, quatf* q) {
     /// values are at mat->values[0...15] [ row-major ]
     f32 x = q->x, y = q->y, z = q->z, w = q->w;
     f32 xx = x * x;
@@ -301,26 +292,25 @@ mat4f mat4f_with_quatf(quatf* q) {
     f32 wz = w * z;
 
     // Fill matrix values in row-major order
-    mat.m[0]  = 1.0f - 2.0f * (yy + zz); // Row 1, Col 1
-    mat.m[1]  = 2.0f * (xy - wz);        // Row 1, Col 2
-    mat.m[2]  = 2.0f * (xz + wy);        // Row 1, Col 3
-    mat.m[3]  = 0.0f;                    // Row 1, Col 4
+    mat->m[0]  = 1.0f - 2.0f * (yy + zz); // Row 1, Col 1
+    mat->m[1]  = 2.0f * (xy - wz);        // Row 1, Col 2
+    mat->m[2]  = 2.0f * (xz + wy);        // Row 1, Col 3
+    mat->m[3]  = 0.0f;                    // Row 1, Col 4
 
-    mat.m[4]  = 2.0f * (xy + wz);        // Row 2, Col 1
-    mat.m[5]  = 1.0f - 2.0f * (xx + zz); // Row 2, Col 2
-    mat.m[6]  = 2.0f * (yz - wx);        // Row 2, Col 3
-    mat.m[7]  = 0.0f;                    // Row 2, Col 4
+    mat->m[4]  = 2.0f * (xy + wz);        // Row 2, Col 1
+    mat->m[5]  = 1.0f - 2.0f * (xx + zz); // Row 2, Col 2
+    mat->m[6]  = 2.0f * (yz - wx);        // Row 2, Col 3
+    mat->m[7]  = 0.0f;                    // Row 2, Col 4
 
-    mat.m[8]  = 2.0f * (xz - wy);        // Row 3, Col 1
-    mat.m[9]  = 2.0f * (yz + wx);        // Row 3, Col 2
-    mat.m[10] = 1.0f - 2.0f * (xx + yy); // Row 3, Col 3
-    mat.m[11] = 0.0f;                    // Row 3, Col 4
+    mat->m[8]  = 2.0f * (xz - wy);        // Row 3, Col 1
+    mat->m[9]  = 2.0f * (yz + wx);        // Row 3, Col 2
+    mat->m[10] = 1.0f - 2.0f * (xx + yy); // Row 3, Col 3
+    mat->m[11] = 0.0f;                    // Row 3, Col 4
 
-    mat.m[12] = 0.0f;                    // Row 4, Col 1
-    mat.m[13] = 0.0f;                    // Row 4, Col 2
-    mat.m[14] = 0.0f;                    // Row 4, Col 3
-    mat.m[15] = 1.0f;                    // Row 4, Col 4
-    return mat;
+    mat->m[12] = 0.0f;                    // Row 4, Col 1
+    mat->m[13] = 0.0f;                    // Row 4, Col 2
+    mat->m[14] = 0.0f;                    // Row 4, Col 3
+    mat->m[15] = 1.0f;                    // Row 4, Col 4
 }
  
 none mat4f_set_identity(mat4f* a) {
@@ -372,26 +362,30 @@ mat4f mat4f_translate(mat4f* a, vec3f* offsets) {
 }
 
 mat4f mat4f_look_at(vec3f* eye, vec3f* target, vec3f* up) {
+    // standard right-handed lookAt (OpenGL/glm convention)
+    //   f = normalize(target - eye)    forward: eye → target
+    //   s = normalize(cross(f, up))    side / right
+    //   u = cross(s, f)                orthogonalized up
+    // view-space z-basis is -f (camera looks down -z).
 
-    //mat4f res = {};
-    //mat4x4_look_at(&res, *(vec3*)eye, *(vec3*)target, *(vec3*)up);
-    //return res;
-    //LINMATH_H_FUNC void mat4x4_look_at(mat4x4 m, vec3 const eye, vec3 const center, vec3 const up)
+    vec3f f_tmp = vec3f_sub(target, eye);
+    vec3f f     = vec3f_normalize(&f_tmp);
+    vec3f s_tmp = vec3f_cross(&f, up);
+    vec3f s     = vec3f_normalize(&s_tmp);
+    vec3f u     = vec3f_cross(&s, &f);
 
-    vec3f diff    = vec3f_sub(target, eye);
-    vec3f forward = vec3f_normalize(&diff); // Z-axis (points away from target)
-    vec3f rcross  = vec3f_cross(up, &forward);
-    vec3f right   = vec3f_normalize(&rcross);  // X-axis
-    vec3f new_up  = vec3f_cross(&forward, &right); // Y-axis (orthogonalized)
-
-    // construct the view matrix
+    // column-major storage: m[col*4 + row]
     mat4f r = {};
-    r.m[ 0] = right.x;  r.m[ 1] = new_up.x;  r.m[ 2] = forward.x;  r.m[ 3] = 0.0f;
-    r.m[ 4] = right.y;  r.m[ 5] = new_up.y;  r.m[ 6] = forward.y;  r.m[ 7] = 0.0f;
-    r.m[ 8] = right.z;  r.m[ 9] = new_up.z;  r.m[10] = forward.z;  r.m[11] = 0.0f;
-    r.m[12] = -vec3f_dot(&right,   eye);
-    r.m[13] = -vec3f_dot(&new_up,  eye);
-    r.m[14] = -vec3f_dot(&forward, eye);
+    // col 0
+    r.m[ 0] =  s.x;  r.m[ 1] =  u.x;  r.m[ 2] = -f.x;  r.m[ 3] = 0.0f;
+    // col 1
+    r.m[ 4] =  s.y;  r.m[ 5] =  u.y;  r.m[ 6] = -f.y;  r.m[ 7] = 0.0f;
+    // col 2
+    r.m[ 8] =  s.z;  r.m[ 9] =  u.z;  r.m[10] = -f.z;  r.m[11] = 0.0f;
+    // col 3 (translation: undo the eye position)
+    r.m[12] = -vec3f_dot(&s, eye);
+    r.m[13] = -vec3f_dot(&u, eye);
+    r.m[14] =  vec3f_dot(&f, eye);
     r.m[15] = 1.0f;
     return r;
 }
@@ -492,7 +486,12 @@ mat4f mat4f_inverse(mat4f* mat) {
 }
 
 mat4f mat4f_identity() {
-    return mat4f((floats_t)null);
+    mat4f r = {};
+    r.m[ 0] = 1.0f;
+    r.m[ 5] = 1.0f;
+    r.m[10] = 1.0f;
+    r.m[15] = 1.0f;
+    return r;
 }
 
 mat4f mat4f_perspective(f32 y_fov, f32 aspect, f32 n, f32 f) {
@@ -596,8 +595,8 @@ vector_impl(rgba8, rgba8)
 vector_impl(rgba16, rgba16)
 vector_impl(rgbaf, rgbaf)
 
-rgbaf rgbaf_with_vec4f(vec4f* v4) {
-    return *(rgbaf*)v4;
+none rgbaf_with_vec4f(rgbaf* a, vec4f* v4) {
+    *a = *(rgbaf*)v4;
 }
 
 define_struct(rgb8,   u8,  u8,  u8)
