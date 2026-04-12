@@ -6081,6 +6081,7 @@ enum UXSurface
     colorize    : 4
     overlay     : 5
     glyph       : 6
+    glyph_subtract : 7
 
 enum Fill : f32
     none      : 0.00f
@@ -6092,6 +6093,7 @@ enum CanvasType
     compose     : 1
     colorize    : 2
     glyph       : 3
+    glyph_subtract : 4
 
 enum Pattern
     none : 0
@@ -6521,6 +6523,7 @@ Display Window
     public colorize             : Canvas
     public overlay              : Canvas
     public glyph                : Canvas
+    public glyph_subtract       : Canvas
 
     public background           : Render
 
@@ -6566,15 +6569,18 @@ Display Window
         # all four are allocated up front so the sampler set is fully
         # populated by the time m_view is built.
         if [ composite ]
-            colorize = (colorize || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-            overlay  = (overlay  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-            glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-            colorize.update[]
-            overlay .update[]
-            glyph   .update[]
-            colorize.clear[ string[ "#000" ] ]
-            overlay .clear[ string[ "#000" ] ]
-            glyph   .clear[ string[ "#000" ] ]
+            colorize       = (colorize       || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+            overlay        = (overlay        || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+            glyph          = (glyph          || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+            glyph_subtract = (glyph_subtract || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+            colorize      .update[]
+            overlay       .update[]
+            glyph         .update[]
+            glyph_subtract.update[]
+            colorize      .clear[ string[ "#000" ] ]
+            overlay       .clear[ string[ "#000" ] ]
+            glyph         .clear[ string[ "#000" ] ]
+            glyph_subtract.clear[ string[ "#000" ] ]
 
         if [ !is_setup && composite ]
             is_setup = true
@@ -6627,13 +6633,14 @@ Display Window
 
             m_view    = Model [ w: w, s: UXCompose [ vk: vk, name: 'ux' ],
                 samplers: map Texture[string] [
-                    'background': background.color,
-                    'frost':      r_frost.color,
-                    'blur':       r_blur.color,
-                    'compose':    compose.color,
-                    'colorize':   colorize.color,
-                    'overlay':    overlay.color,
-                    'glyph':      glyph.color
+                    'background':     background.color,
+                    'frost':          r_frost.color,
+                    'blur':           r_blur.color,
+                    'compose':        compose.color,
+                    'colorize':       colorize.color,
+                    'overlay':        overlay.color,
+                    'glyph':          glyph.color,
+                    'glyph_subtract': glyph_subtract.color
                 ]
             ]
 
@@ -6682,7 +6689,7 @@ Display Window
 
     public func draw_element [ e: element* ]
         expect e inherits element, 'e is not an element'
-        canvas_arr : new Canvas[4] [ overlay, compose, colorize, glyph ]
+        canvas_arr : new Canvas[5] [ overlay, compose, colorize, glyph, glyph_subtract ]
         rel : rect [ (e.parent) ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
             rect [ x: 0, y: 0, w: width, h: height ] ]
@@ -6803,17 +6810,18 @@ abstract media_app trinity
         #   overlay  — pictures / icons (straight-alpha rgba)
         #   glyph    — text mask; UXCompose mixes colorize.rgb in
         #              wherever glyph.r > 0
-        if [ window.compose && window.glyph && window.colorize && window.overlay ]
+        if [ window.composite ]
             angle += 0.01
             # per-frame clears (matches the C reference defaults):
             #   compose  #008  — dark blue: background ramp + slight luma
             #   colorize #fff  — white color source for glyph mix
             #   overlay  #fff0 — transparent white (overlay uses alpha)
             #   glyph    #000  — black: text drawn on top adds the mask
-            window.compose .clear[ '#888'  ]
-            window.colorize.clear[ '#fff'  ]
-            window.overlay .clear[ '#fff0' ]
-            window.glyph   .clear[ '#000'  ]
+            window.compose       .clear[ '#f88'  ]
+            window.colorize      .clear[ '#fff'  ]
+            window.overlay       .clear[ '#fff0' ]
+            window.glyph         .clear[ '#000'  ]
+            window.glyph_subtract.clear[ '#000'  ]
 
             # text writes the alpha mask into glyph; UXCompose then
             # mixes colorize.rgb (white) over the background ramp
@@ -7888,13 +7896,14 @@ shader UXCompose
     mutable low_color    : vec4f
     mutable high_color   : vec4f
 
-    attrib background : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.background,  count:1, format: typeid[ rgba8 ] ]
-    attrib frost      : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.frost,       count:1, format: typeid[ rgba8 ] ]
-    attrib blur       : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.blur,        count:1, format: typeid[ rgba8 ] ]
-    attrib compose    : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.compose,     count:1, format: typeid[ rgba8 ] ]
-    attrib colorize   : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.colorize,    count:1, format: typeid[ rgba8 ] ]
-    attrib overlay    : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.overlay,     count:1, format: typeid[ rgba8 ] ]
-    attrib glyph      : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.glyph,       count:1, format: typeid[ rgba8 ] ]
+    attrib background     : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.background,     count:1, format: typeid[ rgba8 ] ]
+    attrib frost          : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.frost,          count:1, format: typeid[ rgba8 ] ]
+    attrib blur           : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.blur,           count:1, format: typeid[ rgba8 ] ]
+    attrib compose        : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.compose,        count:1, format: typeid[ rgba8 ] ]
+    attrib colorize       : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.colorize,       count:1, format: typeid[ rgba8 ] ]
+    attrib overlay        : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.overlay,        count:1, format: typeid[ rgba8 ] ]
+    attrib glyph          : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.glyph,          count:1, format: typeid[ rgba8 ] ]
+    attrib glyph_subtract : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.glyph_subtract, count:1, format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -7926,38 +7935,50 @@ shader UXCompose
 
     func vertex [] -> GLSL none {
         v_uv        = uv;
-        gl_Position = vec4(-pos.x, -pos.y, 0.0, 1.0);
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
     }
 
     func fragment [] -> GLSL none {
-    
-    fragColor = texture(background, v_uv);
-    return;
 
         // compose channel assignment:
         //   .r — blur amount (sharp → blur → frost)
         //   .g — absolute hue replacement (>0 enables, value is the new HSV hue)
         //   .b — luminance adjust (0.5 neutral)
-        //   .a — colorize amount: how much the colorize.rgb layer bleeds
-        //        onto the background after the hue rotate
-        vec4  comp     = texture(compose,  v_uv);
-        vec3  col      = texture(colorize, v_uv).xyz;
-        vec4  over     = texture(overlay,  v_uv);
-        float gl       = texture(glyph,    v_uv).x;
+        //   .a — unused (bg colorize amount lives on colorize.a now)
+        // colorize:    rgba paint surface — .rgb is the bleed color, .a is
+        //              how much of it lerps onto the (post-effects) background.
+        // glyph:       single-channel coverage mask in .x. exploded to vec3
+        //              before the subtractive tint runs.
+        // glyph_subtract: rgba subtractive tint — .rgb is subtracted from the
+        //              broadcast glyph mask to land on the displayed color.
+        //              caller stores (1 - desired_color) here, so painting
+        //              (0,1,1) cyan yields red text. default cleared to black
+        //              = identity = white text needs no painting.
+        // overlay:     straight-alpha rgba sprites/icons.
+        vec4  comp     = texture(compose,        v_uv);
+        vec4  col      = texture(colorize,       v_uv);
+        vec4  over     = texture(overlay,        v_uv);
+        float gly      = texture(glyph,          v_uv).x;
+        vec4  gly_sub  = texture(glyph_subtract, v_uv);
+        float luminance = 1.0 - ((comp.b - 0.5020) * 2.0);
 
+        fragColor = mix(
+                texture(glyph, v_uv).rgba,
+                texture(glyph,       v_uv).rgba,
+                (comp.r - 0.5020) / (1.0 - 0.5020)) * luminance;
+        return;
 
-        float lum_adj  = 1.0 - ((comp.b - 0.5020) * 2.0);
         vec3  f;
         if (comp.r < 0.5020) {{
             f = mix(
                 texture(background, v_uv).rgb,
                 texture(blur,       v_uv).rgb,
-                comp.r / 0.5020) * lum_adj;
+                comp.r / 0.5020) * luminance;
         }} else {{
             f = mix(
                 texture(blur,       v_uv).rgb,
                 texture(frost,      v_uv).rgb,
-                (comp.r - 0.5020) / (1.0 - 0.5020)) * lum_adj;
+                (comp.r - 0.5020) / (1.0 - 0.5020)) * luminance;
         }}
         if (comp.g > 0.0) {{
             float hue = comp.g;
@@ -7965,15 +7986,18 @@ shader UXCompose
             vec3  clr = vec3(comp.g, hsv.y, hsv.z);
             f = hsv2rgb(clr);
         }}
-        // colorize amount: lerp the (already hue-rotated) background toward
-        // colorize.rgb by compose.a. 0 = no colorize on bg, 1 = full replace.
-        if (comp.a > 0.0) {{
-            f = mix(f, col, comp.a);
+        // background colorize: lerp the (post-effects) background toward
+        // colorize.rgb by colorize.a. 0 = no bleed, 1 = full replace.
+        if (col.a > 0.0) {{
+            f = mix(f, col.rgb, col.a);
         }}
-        f = mix(f, over.rgb, 0.0);
-        if (gl > 0.001) {{
-            f = mix(f, col, gl);
-        }}
+        f = mix(f, over.rgb, over.a);
+        // glyph: explode the scalar mask to vec3 and subtract the tint to
+        // land on the final text color, clamped to 0. white text needs zero
+        // painting in glyph_subtract because subtracting black is identity.
+        // composite via the mask itself as coverage.
+        vec3 text_rgb = max(vec3(gly) - gly_sub.rgb, vec3(0.0));
+        f = f * (1.0 - gly) + text_rgb;
         fragColor = vec4(f, 1.0);
     }
 
