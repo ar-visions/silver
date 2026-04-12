@@ -95,6 +95,7 @@ declare_class(exports)
     M(X, Y, i, method,   public,  none,   build) \
     M(X, Y, i, ctr,      public,  path) \
     M(X, Y, i, override, method,  build_user_initializer) \
+    M(X, Y, i, override, method,  emit_override_init) \
     M(X, Y, i, override, method,  build_attrib_value) \
     M(X, Y, i, override, method,  init)
 declare_class_4(silver, aether, emodule, etype)

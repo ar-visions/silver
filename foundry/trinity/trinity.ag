@@ -708,7 +708,7 @@ class vk_context
         vkDestroyDevice[ device, null ]
         vkDestroyInstance[ instance, null ]
 
-    func set_queue_index [ surface: handle ] 
+    func set_queue_index [ vk_surface: handle ] 
         queue_family_count: u32 0
         vkGetPhysicalDeviceQueueFamilyProperties[
             physical_device, ref queue_family_count, null ]
@@ -717,13 +717,13 @@ class vk_context
         vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, ref queue_family_count, queue_families ]
         
         found: false
-        if [ !surface ]
+        if [ !vk_surface ]
             queue_family_index = 0
             found = true
         el
             for [ i: u32 0, i < queue_family_count, i += 1 ]
                 present_support: VkBool32 [ VK_FALSE ]
-                vkGetPhysicalDeviceSurfaceSupportKHR[ physical_device, i, surface, ref present_support ]
+                vkGetPhysicalDeviceSurfaceSupportKHR[ physical_device, i, vk_surface, ref present_support ]
                 if [ queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && present_support ]
                     queue_family_index = i
                     found = true
@@ -742,9 +742,9 @@ class vk_context
         fault "could not find memory type"
         return 0
 
-    func attach [ surface:handle ] 
+    func attach [ vk_surface:handle ] 
         if [ queue_family_index == -1 ]
-            set_queue_index[ surface ]
+            set_queue_index[ vk_surface ]
             vkGetDeviceQueue[ device, queue_family_index, 0, ref queue ]
             expect queue, "Failed to retrieve graphics queue"
             vk: handle[ a ]
@@ -2188,8 +2188,8 @@ Texture Display
     mutable list                 : array Render
     intern swap_renders         : array Render
     intern vk_swap_images       : ref   VkImage
-    intern surface              : VkSurfaceKHR
-    intern swapchain            : VkSwapchainKHR
+    intern vk_surface           : VkSurfaceKHR
+    intern vk_swapchain         : VkSwapchainKHR
     intern surface_caps         : ref VkSurfaceCapabilitiesKHR
     intern surface_format       : VkSurfaceFormatKHR
     intern present_mode         : VkPresentModeKHR
@@ -2257,15 +2257,15 @@ Texture Display
             # currentTransform/minImageCount yields garbage (e.g. 0x5555),
             # which fails the validator on preTransform.
             caps: VkSurfaceCapabilitiesKHR
-            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, surface, ref caps ]
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, ref caps ]
             if [ caps.currentExtent.width != UINT32_MAX ]
                 width  = caps.currentExtent.width
                 height = caps.currentExtent.height
-            old_swapchain: swapchain
+            old_swapchain: vk_swapchain
             result: vkCreateSwapchainKHR[ vk.device, VkSwapchainCreateInfoKHR [
                 sType:                 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
                 pNext:                 null,
-                surface:               surface,
+                surface:               vk_surface,
                 minImageCount:         caps.minImageCount,
                 imageFormat:           surface_format.format,
                 imageColorSpace:       surface_format.colorSpace,
@@ -2278,7 +2278,7 @@ Texture Display
                 presentMode:           present_mode,
                 clipped:               VK_TRUE,
                 oldSwapchain:          (old_swapchain != null) ? old_swapchain : null
-            ], null, ref swapchain ]
+            ], null, ref vk_swapchain ]
             expect result == VK_SUCCESS, "Failed to create swapchain"
             if [ old_swapchain != null ]
                 vkDestroySwapchainKHR[ vk.device, old_swapchain, null ]
@@ -2293,7 +2293,7 @@ Texture Display
                 ]
                 swap_model = Model [ vk: vk, w: a, samplers: samplers ]
 
-            vkGetSwapchainImagesKHR[ vk.device, swapchain, ref swap_image_count, null ]
+            vkGetSwapchainImagesKHR[ vk.device, vk_swapchain, ref swap_image_count, null ]
             
             if [ !vk_swap_images ]
                 count : swap_image_count
@@ -2304,7 +2304,7 @@ Texture Display
             el
                 swap_renders.clear[]
             
-            vkGetSwapchainImagesKHR[ vk.device, swapchain, ref swap_image_count, vk_swap_images ]
+            vkGetSwapchainImagesKHR[ vk.device, vk_swapchain, ref swap_image_count, vk_swap_images ]
             swap_image_current = 0
             for [ i: 0, i < swap_image_count, i += 1 ]
                 swap_renders += Render [
@@ -2341,7 +2341,7 @@ Texture Display
             r.draw[]
             r.sync_fence[]
         if [ swap_renders ]
-            result: vkAcquireNextImageKHR[ vk.device, swapchain, UINT64_MAX,
+            result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
                 semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
             if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
                 # swapchain is out-of-date because the surface has been resized.
@@ -2365,7 +2365,7 @@ Texture Display
                 presentInfo: VkPresentInfoKHR [
                     sType:              VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                     swapchainCount:     1,
-                    pSwapchains:        ref swapchain,
+                    pSwapchains:        ref vk_swapchain,
                     pImageIndices:      ref swap_image_current,
                     waitSemaphoreCount: 1,
                     pWaitSemaphores:    ref semaphore_frame.vk_render_finished_semaphore
@@ -2432,22 +2432,22 @@ Texture Display
             expect result == VK_SUCCESS, "Failed to create Vulkan surface"
 
         # finish device
-        surface = surf
-        printf[ "surface is set to %p (%p) wh = %i %i\n", surf, surface, width, height ]
+        vk_surface = surf
+        printf[ "surface is set to %p (%p) wh = %i %i\n", surf, vk_surface, width, height ]
         vk.attach[ surf ]
 
         # surface capabilities + formats
         if [ !backbuffer ]
             surface_caps = new VkSurfaceCapabilitiesKHR [ 1 ]
-            result: vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, surface, surface_caps ]
+            result: vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, surface_caps ]
             expect result == VK_SUCCESS, "Failed to query surface capabilities"
 
             # surface format
             format_count: u32 [ 0 ]
-            vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, surface, ref format_count, null ]
+            vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, vk_surface, ref format_count, null ]
             expect format_count > 0, "No surface formats found"
             formats: new VkSurfaceFormatKHR [ format_count ]
-            vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, surface, ref format_count, formats ]
+            vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, vk_surface, ref format_count, formats ]
 
             # use linear UNORM swap format — shader writes raw values and
             # the display reads them as-is (no automatic linear→sRGB
@@ -2462,11 +2462,11 @@ Texture Display
             # present mode
             present_mode_count: u32 [ 0 ]
             vkGetPhysicalDeviceSurfacePresentModesKHR[
-                vk.physical_device, surface, ref present_mode_count, null ]
+                vk.physical_device, vk_surface, ref present_mode_count, null ]
             expect present_mode_count > 0, "No present modes found"
             present_modes: new VkPresentModeKHR [ present_mode_count ]
             vkGetPhysicalDeviceSurfacePresentModesKHR[
-                vk.physical_device, surface, ref present_mode_count, present_modes ]
+                vk.physical_device, vk_surface, ref present_mode_count, present_modes ]
             present_mode = VK_PRESENT_MODE_FIFO_KHR
             for [ i: u32 0, i < present_mode_count, i += 1 ]
                 if [ present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR ]
@@ -2487,8 +2487,8 @@ Texture Display
 
     func dealloc [ ]
         if [ !backbuffer ]
-            vkDestroySwapchainKHR[ vk.device, swapchain, null ]
-            vkDestroySurfaceKHR[ vk.instance, surface, null ]
+            vkDestroySwapchainKHR[ vk.device, vk_swapchain, null ]
+            vkDestroySurfaceKHR[ vk.instance, vk_surface, null ]
             glfwDestroyWindow[ glfw ]
 
 
@@ -3271,9 +3271,7 @@ shader CanvasUI
         vec2 hi_world = max(max(c0, c1), max(c2, c3));
 
         // pick this vertex's corner of the world-space AABB
-        // a_pos is in [-1,1] (from uv-quad2 model); remap to [0,1] for mix
-        vec2 t   = a_pos * 0.5 + 0.5;
-        vec2 wpx = mix(lo_world, hi_world, t);
+        vec2 wpx = mix(lo_world, hi_world, a_pos);
         v_pos    = wpx;
         vec2 ndc = (wpx / ubo.viewport) * 2.0 - 1.0;
         gl_Position = vec4(ndc, 0.0, 1.0);
@@ -3818,16 +3816,16 @@ struct CanvasState
 
 # ---- Canvas class (GPU draw-list builder) ----
 Render Canvas
-    public path       : CanvasPath
-    mutable states    : array CanvasState
-    public depth      : i32
-    mutable font      : CanvasFont
+    public path        : CanvasPath
+    mutable states     : array CanvasState
+    public state_depth : i32
+    mutable font       : CanvasFont
     public glyph_atlas : GlyphAtlas
-    intern ui_shader  : CanvasUI
-    intern sdf_tex    : Texture
-    public format	  : Pixel[Pixel.rgba8]
+    intern ui_shader   : CanvasUI
+    intern sdf_tex     : Texture
+    public format	   : Pixel[Pixel.rgba8]
     # current 2D affine — held directly on Canvas because writing back
-    # into states[depth-1].transform via array-of-struct field assignment
+    # into states[state_depth-1].transform via array-of-struct field assignment
     # doesn't stick (silver returns a copy, edits the copy, drops it).
     mutable cur_xform  : affine
     mutable xform_stack : array affine
@@ -3835,6 +3833,7 @@ Render Canvas
     # toggle this to switch between CPU SDF (sdf_generate + sdf_to_r8 + upload)
     # and GPU compute SDF (CanvasSDFCompute writes directly into sdf_tex).
     public  gpu_sdf          : bool
+    public  load_existing    : bool [ true ]
     intern  sdf_compute      : CanvasSDFCompute
     intern  edge_buf         : Buffer       # storage buffer holding flattened edge list
     intern  edge_buf_capacity : i32         # max edges the buffer can hold
@@ -3939,7 +3938,7 @@ Render Canvas
 
         path   = CanvasPath []
         states = array CanvasState []
-        depth  = 0
+        state_depth  = 0
         save
 
     # invoke the inherited Render pipeline once all canvas state has been
@@ -4034,7 +4033,7 @@ Render Canvas
     # ---- state stack ----
 
     func current_state [] -> CanvasState
-        return states[depth - 1]
+        return states[state_depth - 1]
 
     func hex_dump [ name: symbol, data: ref u8, size: i32 ]
         #printf[ "%s (%d bytes) data ptr = %p :\n", name, size, data ]
@@ -4052,10 +4051,11 @@ Render Canvas
         # to color.vk_image for reasons we still need to track down) and
         # writes the pixels directly. cheaper too.
         clr : sk_color[ color ]
+        clear_color = clr
         reset[ clr ]
 
     func save []
-        if [ depth == 0 ]
+        if [ state_depth == 0 ]
             st : CanvasState [
                 fill_color:    vec4f[0,0,0,1],
                 stroke_color:  vec4f[0,0,0,1],
@@ -4071,16 +4071,16 @@ Render Canvas
             ]
             states.push[ st ]
         el
-            prev : states[depth - 1]
+            prev : states[state_depth - 1]
             states.push[ prev ]
         # snapshot the current transform so restore[] can roll it back.
         xform_stack.push[ cur_xform ]
-        depth += 1
+        state_depth += 1
 
     func restore []
-        if [ depth > 1 ]
+        if [ state_depth > 1 ]
             states.pop[]
-            depth -= 1
+            state_depth -= 1
         if [ xform_stack.count > 0 ]
             cur_xform = xform_stack[ xform_stack.count - 1 ]
             xform_stack.pop[]
@@ -4091,63 +4091,63 @@ Render Canvas
     # ---- state setters ----
 
     func fill_color [ color: Au ]
-        states[depth - 1].fill_color = sk_color[ color ]
+        states[state_depth - 1].fill_color = sk_color[ color ]
 
     func stroke_color [ c: Au ]
-        states[depth - 1].stroke_color = sk_color[ c ]
+        states[state_depth - 1].stroke_color = sk_color[ c ]
 
     func stroke_width [ sw: f32 ]
-        states[depth - 1].stroke_width = sw
+        states[state_depth - 1].stroke_width = sw
 
     func set_stroke_size [ sw: f32 ]
-        states[depth - 1].stroke_width = sw
+        states[state_depth - 1].stroke_width = sw
 
     func set_stroke_cap [ c: Cap ]
-        states[depth - 1].stroke_cap = c
+        states[state_depth - 1].stroke_cap = c
 
     func set_stroke_join [ j: Join ]
-        states[depth - 1].stroke_join = j
+        states[state_depth - 1].stroke_join = j
 
     func set_opacity [ o: f32 ]
-        states[depth - 1].opacity = o
+        states[state_depth - 1].opacity = o
 
     func set_blur_radius [ br: f32 ]
-        states[depth - 1].blur_rad = br
+        states[state_depth - 1].blur_rad = br
 
     func set_fill_gradient [ g: Gradient ]
-        states[depth - 1].fill_grad = g
+        states[state_depth - 1].fill_grad = g
 
     func set_stroke_gradient [ g: Gradient ]
-        states[depth - 1].stroke_grad = g
+        states[state_depth - 1].stroke_grad = g
 
     func clear_fill_gradient []
-        states[depth - 1].fill_grad = null
+        states[state_depth - 1].fill_grad = null
 
     func clear_stroke_gradient []
-        states[depth - 1].stroke_grad = null
+        states[state_depth - 1].stroke_grad = null
 
     func set_clip [ x: i32, y: i32, cw: i32, ch: i32 ]
         # intersect with parent clip
-        st : CanvasState states[depth - 1]
+        st : CanvasState states[state_depth - 1]
         nx0 : i32 [ maxi [ x, st.clip_x ] ]
         ny0 : i32 [ maxi [ y, st.clip_y ] ]
         nx1 : i32 [ mini [ x + cw, st.clip_x + st.clip_w ] ]
         ny1 : i32 [ mini [ y + ch, st.clip_y + st.clip_h ] ]
-        states[depth - 1].clip_x = nx0
-        states[depth - 1].clip_y = ny0
-        states[depth - 1].clip_w = maxi [ nx1 - nx0, 0 ]
-        states[depth - 1].clip_h = maxi [ ny1 - ny0, 0 ]
+        states[state_depth - 1].clip_x = nx0
+        states[state_depth - 1].clip_y = ny0
+        states[state_depth - 1].clip_w = maxi [ nx1 - nx0, 0 ]
+        states[state_depth - 1].clip_h = maxi [ ny1 - ny0, 0 ]
 
     # ---- transform ----
 
     func translate [ tx: f32, ty: f32 ]
-        states[depth - 1].transform = states[depth - 1].transform.translate [ tx, ty ]
+        states[state_depth - 1].transform = states[state_depth - 1].transform.translate [ tx, ty ]
 
     func scale [ s: f32 ]
-        states[depth - 1].transform = states[depth - 1].transform.scale [ s ]
+        states[state_depth - 1].transform = states[state_depth - 1].transform.scale [ s ]
 
     func rotate [ radians: f32 ]
-        states[depth - 1].transform = states[depth - 1].transform.rotate [ radians ]
+        states[state_depth - 1].transform = states[state_depth - 1].transform.rotate [ radians ]
 
     # ---- path building (delegate to CanvasPath) ----
     # path coords are stored in LOCAL space; the GPU vertex shader applies
@@ -4167,7 +4167,7 @@ Render Canvas
         path.cubic_to [ c1x, c1y, c2x, c2y, x, y ]
 
     func arc_to [ x1: f32, y1: f32, x2: f32, y2: f32, radius: f32 ]
-        st : CanvasState states[depth - 1]
+        st : CanvasState states[state_depth - 1]
         path.arc_to [
             st.transform.apply_x [ x1, y1 ],
             st.transform.apply_y [ x1, y1 ],
@@ -4186,7 +4186,7 @@ Render Canvas
         path.close_path[]
 
     func arc [ cx: f32, cy: f32, radius: f32, start_angle: f32, end_angle: f32 ]
-        st : CanvasState states[depth - 1]
+        st : CanvasState states[state_depth - 1]
         path.add_arc [
             st.transform.apply_x [ cx, cy ],
             st.transform.apply_y [ cx, cy ],
@@ -4330,8 +4330,8 @@ Render Canvas
     # ---- drawing ----
 
     func fill_rect_fast [ x: f32, y: f32, rw: f32, rh: f32 ]
-        expect depth >= 0, "no canvas state"
-        st : CanvasState [ states[depth - 1] ]
+        expect state_depth >= 0, "no canvas state"
+        st : CanvasState [ states[state_depth - 1] ]
         tx : st.transform.apply_x [ x, y ]
         ty : st.transform.apply_y [ x, y ]
         tw : rw * st.transform.ma
@@ -4342,7 +4342,7 @@ Render Canvas
         draw[]
         
     func fill_rounded_rect_fast [ x: f32, y: f32, rw: f32, rh: f32, rx: f32, ry: f32 ]
-        st : states[depth - 1]
+        st : states[state_depth - 1]
         tx : st.transform.apply_x [ x, y ]
         ty : st.transform.apply_y [ x, y ]
         tw : rw * st.transform.ma
@@ -4355,7 +4355,7 @@ Render Canvas
         draw[]
 
     func clip_rect [ r_x: f32, r_y: f32, r_w: f32, r_h: f32, rx: f32, ry: f32 ]
-        st : states[depth - 1]
+        st : states[state_depth - 1]
         tx : i32 [ i32 st.transform.apply_x [ r_x, r_y ] ]
         ty : i32 [ i32 st.transform.apply_y [ r_x, r_y ] ]
         tw : i32 [ i32 r_w * st.transform.ma ]
@@ -4366,17 +4366,17 @@ Render Canvas
         no-op
 
     func fill_offset [ v: f32 ]
-        states[depth - 1].fill_offset = v
+        states[state_depth - 1].fill_offset = v
 
     func stroke_offset [ v: f32 ]
-        states[depth - 1].stroke_offset = v
+        states[state_depth - 1].stroke_offset = v
 
     func rounded [ tl: f32, tr: f32, br: f32, bl: f32 ]
-        states[depth - 1].corner_radii = vec4f [ tl, tr, br, bl ]
+        states[state_depth - 1].corner_radii = vec4f [ tl, tr, br, bl ]
 
     func paint []
 
-        st   : states[depth - 1]
+        st   : states[state_depth - 1]
         # ---- ordered-guess cache check ----
         # if path.points byte-matches the snapshot from the previous draw,
         # the de Casteljau flatten + edge extract + bounding box are all
@@ -6779,6 +6779,12 @@ abstract media_app trinity
 
             window.compose.fill_color[ '#ff0' ]
             window.compose.rect_to[ 32, 64, 256, 128 ]
+            window.compose.fill_offset[ 0 ]
+            window.compose.stroke_offset[ 0 ]
+            window.compose.paint[]
+
+            window.compose.fill_color[ '#ff0' ]
+            window.compose.rect_to[ 32, 64 + 128 + 4, 256, 128 ]
             window.compose.fill_offset[ 0 ]
             window.compose.stroke_offset[ 0 ]
             window.compose.paint[]

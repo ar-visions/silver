@@ -196,6 +196,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_default_value, etype) \
     M(X, Y, i, method,   public,  enode,                    e_builder, subprocedure) \
     M(X, Y, i, method,   public,  none,                     build_user_initializer, etype) \
+    M(X, Y, i, method,   public,  none,                     emit_override_init, enode, Au_t) \
     M(X, Y, i, method,   public,  enode,                    build_attrib_value, evar) \
     M(X, Y, i, method,   public,  enode,                    e_subroutine, etype, array, subprocedure) \
     M(X, Y, i, method,   public,  none,                     e_cmp_code, enode, comparison, enode, code, code) \
@@ -227,6 +228,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_primitive_convert, enode, etype) \
     M(X, Y, i, method,   public,  enode,                    e_direct_cast, enode, etype) \
     M(X, Y, i, method,   public,  enode,                    e_noop, etype) \
+    M(X, Y, i, method,   public,  enode,                    e_inherited_access, enode, Au_t) \
     M(X, Y, i, method,   public,  enode,                    e_addr_of, enode, etype) \
     M(X, Y, i, method,   public,  enode,                    e_bitwise_not, enode) \
     M(X, Y, i, method,   public,  enode,                    e_not, enode) \
