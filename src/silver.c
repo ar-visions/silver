@@ -706,6 +706,7 @@ Au build_init_preamble(enode f, Au arg) {
 
     members(rec->au, mem) {
         if (mem->is_static) continue; // statics emit from module init, not per-instance
+        if (mem->is_override) continue; // overrides are emitted in e_init, not the preamble
         enode n = u(enode, mem);
         if (n && n->initializer)
             build_user_initializer(a, (etype)n);
@@ -3966,6 +3967,27 @@ enode parse_statement(silver a)
                 mem->au->src = mem->au->src->src;
                 mem->is_explicit_ref = true;
             }
+
+            // override: redeclaring an inherited member to change its default
+            // initializer. the type must match the inherited slot; no new
+            // storage is added — just a different initializer is emitted at
+            // construction time for this subclass.
+            // members from Au itself are not user-defined overrides — skip.
+            if (rec_top && rec_top->au->context) {
+                Au_t inherited = find_member(rec_top->au->context,
+                    (cstr)mem->au->ident, AU_MEMBER_VAR, 0, true);
+                if (inherited && inherited->context != typeid(Au)) {
+                    // default-override only when the type is an exact match.
+                    // refinement (type differs) falls through as a shadow for
+                    // now; proper refinement requires rebinding `a` to alloc
+                    // during initializer parse.
+                    bool exact_type = mem->au->src == inherited->src &&
+                        mem->au->meta.a == inherited->meta.a;
+                    if (exact_type) {
+                        mem->au->is_override = true;
+                    }
+                }
+            }
             if (access == interface_public && rec_top) {
                 Au_t src = mem->au->src;
                 if (src && src->is_c && !src->is_primitive && !src->is_struct && !src->is_enum && !src->typesize)
@@ -6254,7 +6276,7 @@ void silver_build_user_initializer(silver a, enode prop) {
             enode L = access(instance, string(prop->au->ident));
             enode set = is_set((enode)instance, (evar)prop);
             assign_if_cond((aether)a, (enode)L, set, set_if);
-            
+
         } else {
 
             bool   is_module_mem = prop->au->context == a->au;
@@ -6268,6 +6290,24 @@ void silver_build_user_initializer(silver a, enode prop) {
             pop_tokens(a, false);
         }
     }
+}
+
+// emit an override-member's initializer at construction time. `alloc` is the
+// instance being constructed; `override_member` is the derived-class member
+// with is_override=true. the assignment targets the INHERITED slot so base
+// class init code reads the overridden value.
+void silver_emit_override_init(silver a, enode instance, Au_t override_member) {
+    if (!override_member || !override_member->is_override) return;
+    enode prop = u(enode, override_member);
+    if (!prop || !prop->initializer) return;
+    array initializer = (array)prop->initializer;
+    if (!len(initializer)) return;
+    a->statement_origin = (token)initializer->origin[0];
+    array post_const = parse_const(a, initializer);
+    subprocedure set_if = subproc(a, assign_builder, post_const);
+    enode L = e_inherited_access((aether)a, instance, override_member);
+    enode always_false = e_operand((aether)a, _bool(false), etypeid(bool));
+    assign_if_cond((aether)a, L, always_false, set_if);
 }
 
 // build attrib initializer: parse tokens and return the constructed object
