@@ -678,7 +678,7 @@ class vk_context
 
     func quad_shader [ ] -> UVQuad
         if [ quad_s ]
-            return (quad_s to UVQuad)
+            return UVQuad[quad_s]
         q: UVQuad [ vk: a, name: 'uv-quad' ]
         q.model = mat4f.identity[]
         eye:    vec3f [ 0.0, 0.0, 2.0 ]
@@ -691,7 +691,7 @@ class vk_context
 
     func reduce_shader [ ] -> UVReduce
         if [ reduce_s ]
-            return (reduce_s to UVReduce)
+            return UVReduce[reduce_s]
         q: UVReduce [ vk: a, name: 'uv-reduce' ]
         q.model = mat4f.identity[]
         eye:    vec3f [ 0.0, 0.0, 2.0 ]
@@ -2020,11 +2020,6 @@ class Texture
         if [ !vk_image && !sampler && !w ]
             return
 
-        #test_vma[]
-
-        printf["vk_format = %i\n", (vk_format to i32)]
-        img2 : (sampler to Image)
-        img3 : (sampler to Image)
         img :  sampler inherits Image
         ansio: 4
         sampler_size: i32 [ 0 ]
@@ -3203,7 +3198,9 @@ shader CanvasUI
     #   xform_row1 = (tx, ty, 0, 0)    -- translation
     mutable xform_row0 : vec4f
     mutable xform_row1 : vec4f
-    mutable viewport   : vec2f
+    mutable viewport      : vec2f
+    mutable fill_offset   : f32
+    mutable stroke_offset : f32
     attrib  atlas      : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format:typeid[ u8 ]
     ]
@@ -3274,7 +3271,9 @@ shader CanvasUI
         vec2 hi_world = max(max(c0, c1), max(c2, c3));
 
         // pick this vertex's corner of the world-space AABB
-        vec2 wpx = mix(lo_world, hi_world, a_pos);
+        // a_pos is in [-1,1] (from uv-quad2 model); remap to [0,1] for mix
+        vec2 t   = a_pos * 0.5 + 0.5;
+        vec2 wpx = mix(lo_world, hi_world, t);
         v_pos    = wpx;
         vec2 ndc = (wpx / ubo.viewport) * 2.0 - 1.0;
         gl_Position = vec4(ndc, 0.0, 1.0);
@@ -3356,11 +3355,12 @@ shader CanvasUI
             float wp     = fwidth(dist_p) + blur;
             float half_w = stroke_width * 0.5;
 
-            // fill: 1 wherever dist_p is negative (inside the shape)
-            float fill_cov   = 1.0 - smoothstep(-wp, wp, dist_p);
+            // fill: 1 wherever dist_p is negative (inside the shape).
+            // offset biases the SDF: positive = expand outward.
+            float fill_cov   = 1.0 - smoothstep(-wp, wp, dist_p - ubo.fill_offset);
             // stroke band: width stroke_width centered on the path edge
             float stroke_cov = (stroke_width > 0.0)
-                ? (1.0 - smoothstep(-wp, wp, abs(dist_p) - half_w))
+                ? (1.0 - smoothstep(-wp, wp, abs(dist_p - ubo.stroke_offset) - half_w))
                 : 0.0;
 
             vec4 fill_p   = vec4(ubo.fill_color.rgb * ubo.fill_color.a * fill_cov,
@@ -3808,6 +3808,9 @@ struct CanvasState
     clip_w          : i32
     clip_h          : i32
     blur_rad        : f32
+    fill_offset     : f32
+    stroke_offset   : f32
+    corner_radii    : vec4f
     fill_grad       : Gradient
     stroke_grad     : Gradient
     font      	    : CanvasFont
@@ -4063,14 +4066,17 @@ Render Canvas
     func save []
         if [ depth == 0 ]
             st : CanvasState [
-                fill_color:   0xFF000000,
-                stroke_color: 0xFF000000,
-                stroke_width: 0.0,
-                opacity:      1.0,
-                transform:    affine.identity [],
+                fill_color:    0xFF000000,
+                stroke_color:  0xFF000000,
+                stroke_width:  0.0,
+                opacity:       1.0,
+                transform:     affine.identity [],
                 clip_x: 0, clip_y: 0,
                 clip_w: width, clip_h: height,
-                blur_rad: 0.0
+                blur_rad:      0.0,
+                fill_offset:   0.0,
+                stroke_offset: 0.0,
+                corner_radii:  vec4f [ 0.0, 0.0, 0.0, 0.0 ]
             ]
             states.push[ st ]
         el
@@ -4093,13 +4099,13 @@ Render Canvas
 
     # ---- state setters ----
 
-    func set_fill_color [ c: u32 ]
-        states[depth - 1].fill_color = c
+    func fill_color [ c: Au ]
+        states[depth - 1].fill_color = sk_color[ c ]
 
-    func set_stroke_color [ c: u32 ]
-        states[depth - 1].stroke_color = c
+    func stroke_color [ c: Au ]
+        states[depth - 1].stroke_color = sk_color[ c ]
 
-    func set_stroke_width [ sw: f32 ]
+    func stroke_width [ sw: f32 ]
         states[depth - 1].stroke_width = sw
 
     func set_stroke_size [ sw: f32 ]
@@ -4182,7 +4188,7 @@ Render Canvas
     func rect_to [ x: f32, y: f32, rw: f32, rh: f32 ]
         path.add_rect [ x, y, rw, rh ]
 
-    func rounded_rect_to [ x: f32, y: f32, rw: f32, rh: f32, rx: f32, ry: f32 ]
+    func rounded_rect [ x: f32, y: f32, rw: f32, rh: f32, rx: f32, ry: f32 ]
         path.add_rounded_rect [ x, y, rw, rh, rx, ry ]
 
     func close_path []
@@ -4285,10 +4291,12 @@ Render Canvas
     func setup_shader [ st: CanvasState, rx: f32, ry: f32, rw: f32, rh: f32 ]
         ui_shader.viewport = vec2f [ f32 width, f32 height ]
         ui_shader.rect     = vec4f [ rx, ry, rw, rh ]
-        ui_shader.fill_color = color_to_vec4 [ st.fill_color ]
-        ui_shader.stroke_clr = color_to_vec4 [ st.stroke_color ]
+        ui_shader.fill_color    = color_to_vec4 [ st.fill_color ]
+        ui_shader.stroke_clr   = color_to_vec4 [ st.stroke_color ]
+        ui_shader.fill_offset   = st.fill_offset
+        ui_shader.stroke_offset = st.stroke_offset
         ui_shader.params   = vec4f [ st.stroke_width, st.opacity, st.blur_rad, 0.0 ]
-        ui_shader.radii    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        ui_shader.radii    = st.corner_radii
         ui_shader.grad0    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         ui_shader.grad_c0  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         ui_shader.grad_c1  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
@@ -4366,11 +4374,21 @@ Render Canvas
     func set_texture [ tx: Texture ]
         no-op
 
-    func draw_fill []
-        draw_fill_preserve
+    func fill_offset [ v: f32 ]
+        states[depth - 1].fill_offset = v
+
+    func stroke_offset [ v: f32 ]
+        states[depth - 1].stroke_offset = v
+
+    func rounded [ tl: f32, tr: f32, br: f32, bl: f32 ]
+        states[depth - 1].corner_radii = vec4f [ tl, tr, br, bl ]
+
+    func paint []
+        draw_preserve
+        flush[]
         path.reset
 
-    func draw_fill_preserve []
+    func draw_preserve []
         st   : states[depth - 1]
         # ---- ordered-guess cache check ----
         # if path.points byte-matches the snapshot from the previous draw,
@@ -4509,73 +4527,7 @@ Render Canvas
             ui_shader.stroke_opts = vec4f [ j, c, 0.0, spread ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, DrawMode.sdf_path ]
             printf[ "draw_fill: mode=6 (sdf_path) rect=(%f,%f %fx%f) edges=%i\n", pbx, pby, pbw, pbh, ne ]
-        flush[]
 
-    func draw_stroke []
-        draw_stroke_preserve
-        path.reset
-
-    func draw_stroke_preserve []
-        st : CanvasState states[depth - 1]
-        if [ st.stroke_width <= 0.0 ]
-            return
-        flat : path_flatten [ path, 4.0 ]
-        n    : flat.count
-        if [ n == 0 ]
-            return
-
-        # bounding box expanded by stroke width
-        bx0 : f32 [ 999999.0 ]
-        by0 : f32 [ 999999.0 ]
-        bx1 : f32 [ -999999.0 ]
-        by1 : f32 [ -999999.0 ]
-        half_w : f32 [ st.stroke_width * 0.5 ]
-        for [ i: i32 0, i < n, i += 1 ]
-            pt : PathPt flat[i]
-            if [ pt.x - half_w < bx0 ]
-                bx0 = pt.x - half_w
-            if [ pt.y - half_w < by0 ]
-                by0 = pt.y - half_w
-            if [ pt.x + half_w > bx1 ]
-                bx1 = pt.x + half_w
-            if [ pt.y + half_w > by1 ]
-                by1 = pt.y + half_w
-
-        # clip to visible area
-        bx0 = maxf [ bx0, f32 st.clip_x ]
-        by0 = maxf [ by0, f32 st.clip_y ]
-        bx1 = minf [ bx1, f32 st.clip_x + st.clip_w ]
-        by1 = minf [ by1, f32 st.clip_y + st.clip_h ]
-
-        bw : f32 [ bx1 - bx0 ]
-        bh : f32 [ by1 - by0 ]
-        if [ bw < 0.5 || bh < 0.5 ]
-            return
-
-        f : flat
-        # SDF for stroke: unsigned distance to path edges
-        # the shader will threshold at stroke_width/2 for the ring
-        pad    : f32 [ 2.0 ]
-        sdf_w  : i32 [ clampi [ i32 bw + 4, 16, 512 ] ]
-        sdf_h  : i32 [ clampi [ i32 bh + 4, 16, 512 ] ]
-        sdf    : sdf_generate [ flat, bx0, by0, bw, bh, sdf_w, sdf_h, pad ]
-        if [ !sdf ]
-            return
-
-        spread : f32 [ half_w + 4.0 ]
-        sdf_sz : i32 [ sdf_w * sdf_h ]
-        tex    : sdf_to_r8 [ sdf, sdf_sz, spread ]
-        sdf_tex.upload tex, sdf_sz
-
-        setup_shader [ st, bx0 - pad, by0 - pad, bw + pad * 2.0, bh + pad * 2.0 ]
-        ui_shader.fill_color = color_to_vec4 [ st.stroke_color ]
-        ui_shader.grad0 = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
-        # stroke_opts.w carries the SDF spread for fragment shader decode
-        j : f32 st.stroke_join
-        c : f32 st.stroke_cap
-        ui_shader.stroke_opts = vec4f [ j, c, 0.0, spread ]
-        ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, f32 DrawMode.sdf_path ]
-        flush[]
 
 
 # ---- text rendering with FreeType ----
@@ -5371,8 +5323,8 @@ expect func test [ vk: vk_context ] -> bool
     c.path.close_path[]
 
     c.save[]
-    c.set_fill_color[ 0xFF3366AA ]
-    c.draw_fill[]
+    c.fill_color[ '#3366AA' ]
+    c.paint[]
 
     # inner cutout (opposite winding)
     c.path.clear[]
@@ -5380,12 +5332,12 @@ expect func test [ vk: vk_context ] -> bool
     c.path.cubic_to[ 550.0, 300.0, 650.0, 400.0, 600.0, 500.0 ]
     c.path.cubic_to[ 550.0, 600.0, 400.0, 550.0, 450.0, 350.0 ]
     c.path.close_path[]
-    c.set_fill_color[ 0x00000000 ]
-    c.draw_fill[]
+    c.fill_color[ '#0000' ]
+    c.paint[]
     c.restore[]
 
     # fetch Texture and verify
-    img: (c.color to Image)
+    img: Image[c.color]
     p: path 'canvas_test.png'
     p.save[ img, null ]
     puts 'wrote canvas_test.png'
@@ -5775,18 +5727,18 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ]
             mem:        ref members[k]
             bv:         mdl.bufferViews[ mem.ac.bufferView ]
             b:          mdl.buffers[ bv.buffer ]
-            src_base:   (b.data to ref i8)
+            src_base:   ref i8[b.data]
             src:        ref src_base[bv.byteOffset]
             stride:     mem.ac.stride
 
             for [ j: 0, j < vertex_count, j += 1 ]
                 data_dst: ref vdata[j * vertex_size + mem.offset]
-                dst:  (data_dst to ref i8)
+                dst:  ref i8[data_dst]
                 data_src: ref src[j * stride]
-                src0: (data_src to ref i8)
+                src0: ref i8[data_src]
                 memcpy[ dst, src0, mem.size ]
 
-        view:  (ibuffer.data to ref i8)
+        view:  ref i8[ibuffer.data]
         i_src: ref view [ iview.byteOffset  ]
 
         memcpy[ idata, i_src, iview.byteLength ]
@@ -6590,7 +6542,7 @@ Display Window
             # trinity.load_scene[] to load gltf + textures + create the
             # earth/ocean/cloud Models and assign w.background.
             if [ app_object ]
-                t : (app_object to trinity)
+                t : trinity[app_object]
                 if [ t ]
                     t.load_scene*[]
             # if no background scene was wired up, fall back to a single
@@ -6708,9 +6660,9 @@ Display Window
                 b : layer.bounds
                 rx:f32 layer.radius[0]
                 ry:f32 layer.radius[1]
-                cv.rounded_rect_to[ b.x, b.y, b.w, b.h, rx, ry ]
-                cv.set_fill_color[ sk_color[ layer.color ] ]
-                cv.draw_fill[]
+                cv.rounded_rect[ b.x, b.y, b.w, b.h, rx, ry ]
+                cv.fill_color[ layer.color ]
+                cv.paint[]
                 cv.restore[]
 
             border : layer inherits Border
@@ -6722,9 +6674,9 @@ Display Window
                 b : rect [ layer.bounds ]
                 rx:f32 layer.radius[0]
                 ry:f32 layer.radius[1]
-                cv.rounded_rect_to[ b.x, b.y, b.w, b.h, rx, ry ]
-                cv.set_stroke_color[ sk_color[ border.color ] ]
-                cv.draw_stroke[]
+                cv.rounded_rect[ b.x, b.y, b.w, b.h, rx, ry ]
+                cv.stroke_color[ border.color ]
+                cv.paint[]
                 cv.restore[]
 
             txt : layer inherits TextLayer
@@ -6735,7 +6687,7 @@ Display Window
                 y0 : f32 txt.yalign
                 al : vec2f [ x0, y0 ]
                 offset : vec2f [ x: 0.0, y: 0.0 ]
-                cv.set_fill_color[ sk_color[ layer.color ] ]
+                cv.fill_color[ layer.color ]
                 cv.draw_text[ txt.label, b, al, offset, false ]
                 cv.restore[]
 
@@ -6747,7 +6699,9 @@ Display Window
 abstract media_app trinity
     intern msaa_samples : i64
     public on_render    : FRender
-
+    intern istroke      : f32 0
+    intern ifill        : f32 0
+    
     #w : Window # this is an elaboration (its Display defined in vulkan)
     # it may even do an additional run-time instance check; it will have the same visibility
     func init[]
@@ -6798,7 +6752,7 @@ abstract media_app trinity
     mutable angle : f32
 
     func render[]
-        window : (w to Window)
+        window : Window[w]
         # let the subclass refresh background-scene uniforms (model/view/
         # proj/time on its shaders) before any pipeline draws so the next
         # vkCmdDraw uploads the latest frame's values.
@@ -6812,30 +6766,37 @@ abstract media_app trinity
         #              wherever glyph.r > 0
         if [ window.composite ]
             angle += 0.01
-            # per-frame clears (matches the C reference defaults):
-            #   compose  #008  — dark blue: background ramp + slight luma
-            #   colorize #fff  — white color source for glyph mix
-            #   overlay  #fff0 — transparent white (overlay uses alpha)
-            #   glyph    #000  — black: text drawn on top adds the mask
-            window.compose       .clear[ '#f88'  ]
-            window.colorize      .clear[ '#fff'  ]
-            window.overlay       .clear[ '#fff0' ]
+            ifill    +=  0.0001
+            istroke  +=  0
+            if [ifill >  16.0]
+                ifill = -16.0
+            
+            window.compose       .clear[ '#00f'  ] # 888 = default
+            window.colorize      .clear[ '#000'  ]
+            window.overlay       .clear[ '#0000' ] # the only one that needs an alpha layer
             window.glyph         .clear[ '#000'  ]
             window.glyph_subtract.clear[ '#000'  ]
 
             # text writes the alpha mask into glyph; UXCompose then
             # mixes colorize.rgb (white) over the background ramp
             # wherever glyph.r > 0.
-            window.glyph.set_fill_color[ 0xFFFFFFFF ]
+            window.glyph.fill_color[ '#fff' ]
             window.glyph.draw_text[
                 'Aura',
                 rect [ x: 144.0, y: 196.0, w: 200.0, h: 96.0 ],
                 vec2f [ 0.5, 0.5 ],
                 vec2f [ 0.0, 0.0 ],
                 false ]
+
+            window.compose.path.clear[]
+            window.compose.fill_color[ '#fff' ]
+            window.compose.rect_to[ 32, 64, 256, 128 ]
+            window.compose.fill_offset[ ifill ]
+            window.compose.stroke_offset[ istroke ]
+            window.compose.paint[]
+            window.compose.fill_color[ '#000' ]
 ##
             window.compose.path.clear[]
-
             window.compose.save[]
             window.compose.translate[ 444.0, 444.0 ]
             window.compose.rotate[ angle ]
@@ -6847,10 +6808,10 @@ abstract media_app trinity
             window.compose.cubic_to[ 180.0, 88.0, 180.0, 75.0, 200.0, 100.0 ]
             window.compose.line_to[ 0.0, 100.0 ]
             window.compose.close_path[]
-            window.compose.set_stroke_color[ 0xFFFFAA00 ]
-            window.compose.set_stroke_width[ 4.0 ]                  
-            window.compose.set_fill_color[ 0xFFFFFFFF ]
-            window.compose.draw_fill[]
+            window.compose.stroke_color[ '#FFAA00' ]
+            window.compose.stroke_width[ 4.0 ]                  
+            window.compose.fill_color[ '#fff' ]
+            window.compose.paint[]
 
             window.compose.path.clear[]
             window.compose.translate[ 44.0, 44.0 ]
@@ -6860,10 +6821,10 @@ abstract media_app trinity
             window.compose.cubic_to[ 180.0, 88.0, 180.0, 75.0, 200.0, 100.0 ]
             window.compose.line_to[ 0.0, 100.0 ]
             window.compose.close_path[]
-            window.compose.set_stroke_color[ 0xFFFFAA00 ]
-            window.compose.set_stroke_width[ 4.0 ]                  
-            window.compose.set_fill_color[ 0xFFFFFFFF ]
-            window.compose.draw_fill[]
+            window.compose.stroke_color[ '#FFAA00' ]
+            window.compose.stroke_width[ 4.0 ]                  
+            window.compose.fill_color[ '#fff' ]
+            window.compose.paint[]
 
             window.compose.restore[]
 ##
@@ -7153,10 +7114,10 @@ struct XCoord
 
     func mix [ other: XCoord, f: f32 ] -> XCoord
         return XCoord [
-            x_type:  (mix[ (x_type to f32),   (other.x_type   to f32), f ]) to XAlign,
-            offset:   mix[  offset,            other.offset,           f ],
-            percent: (mix[ (percent to f32),  (other.percent  to f32), f ]) to bool,
-            relative:(mix[ (relative to f32), (other.relative to f32), f ]) to bool
+            x_type:  XAlign[mix[ f32[x_type],   f32[other.x_type],   f ]],
+            offset:         mix[     offset,        other.offset,    f ],
+            percent: bool[  mix[ f32[percent],  f32[other.percent],  f ]],
+            relative:bool[mix[ f32[relative], f32[other.relative], f ]]
         ]
 
 
@@ -7187,17 +7148,17 @@ struct YCoord
         r : f32 [ (rel && relative) ? rel.h * relative : 0.0 ]
         hsz : f32 [ (vto - from) / 2.0 ]
         if [ y_type < YAlign.middle ]
-            M : f32 [ (y_type to f32) * 2.0 ]
+            M : f32 [ f32[y_type] * 2.0 ]
             return from + hsz * M + val + r
-        R : f32 [ ((y_type to f32) - (YAlign.middle to f32)) * 2.0 ]
+        R : f32 [ (f32[y_type] - f32[YAlign.middle]) * 2.0 ]
         return from + ((hsz + val) * (1.0 - R)) + ((hsz * 2.0 - val) * R) + r
 
     func mix [ other: YCoord, f: f32 ] -> YCoord
         return YCoord [
-            y_type:  (mix[ (y_type   to f32),  (other.y_type   to f32), f ]) to YAlign,
-            offset:   mix[ offset,              other.offset,           f ],
-            percent: (mix[ (percent  to f32),  (other.percent  to f32), f ]) to bool,
-            relative:(mix[ (relative to f32),  (other.relative to f32), f ]) to bool
+            y_type:   YAlign[ mix[ f32[y_type],   f32[other.y_type],   f ] ],
+            offset:           mix[ offset,         other.offset,        f ],
+            percent:  bool[   mix[ f32[percent],   f32[other.percent],  f ] ],
+            relative: bool[   mix[ f32[relative],  f32[other.relative], f ] ]
         ]
 
 
@@ -7628,7 +7589,7 @@ element World
             return
 
         w.overlay.set_texture[ (target.reduction) ? target.reduction : target.color ]
-        w.overlay.draw_fill[]
+        w.overlay.paint[]
 
 element Pane
 
@@ -7955,20 +7916,18 @@ shader UXCompose
         //              (0,1,1) cyan yields red text. default cleared to black
         //              = identity = white text needs no painting.
         // overlay:     straight-alpha rgba sprites/icons.
+
         vec4  comp     = texture(compose,        v_uv);
         vec4  col      = texture(colorize,       v_uv);
         vec4  over     = texture(overlay,        v_uv);
         float gly      = texture(glyph,          v_uv).x;
         vec4  gly_sub  = texture(glyph_subtract, v_uv);
         float luminance = 1.0 - ((comp.b - 0.5020) * 2.0);
-
-        fragColor = mix(
-                texture(glyph, v_uv).rgba,
-                texture(glyph,       v_uv).rgba,
-                (comp.r - 0.5020) / (1.0 - 0.5020)) * luminance;
-        return;
-
         vec3  f;
+
+        fragColor = comp;
+    return;
+        
         if (comp.r < 0.5020) {{
             f = mix(
                 texture(background, v_uv).rgb,
