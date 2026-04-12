@@ -478,3 +478,10 @@ C typedef aliases to pointer types (e.g. `typedef VkPhysicalDevice_T* VkPhysical
 ### Ternary precedence in binary expressions
 - `width / (i == 0) ? 1 : 4` parses as `(width / (i == 0)) ? 1 : 4` instead of `width / ((i == 0) ? 1 : 4)`.
 - When `(expr)` appears as a right-hand operand and is followed by `?`, the parser should recognize the entire ternary `(expr) ? a : b` as the operand, since `(expr)?` is Silver's ternary marker.
+
+### Indexer-as-rvalue in arithmetic / comparison contexts
+- Companion to the `if [ arr[i] ]` bool-coercion bug we fixed in `e_convert_or_cast` (aether.c). The bool-conversion path now loads through unloaded slots, but `e_op` (binary operators / comparisons) still doesn't.
+- Reproduces in `sk_color`: `h: ref u8 [s.chars]; if [h[0] == '#']` evaluates the comparison against the slot address, not the byte. trinity.ag:5290 had to be worked around with `h0 : i8 [h[0]]` to force a load via `e_assign`'s coerce step before the comparison.
+- Fix: in aether `e_op` (and anywhere else that consumes an enode in a value context), check `input->loaded` and `e_load` if the enode is an unloaded indexer/GEP whose element type is a primitive. The bool-coercion fix in `e_convert_or_cast` is a model — same pattern in `e_op`'s operand prep, plus any other rvalue context (return value, function arg coerce, etc.).
+- Reproducible by indexing `ref u8` / `new VkShaderModule[N]` and comparing the result to a literal.
+

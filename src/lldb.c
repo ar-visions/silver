@@ -691,6 +691,21 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
                 m_bits  = bits_for_type(a, msrc);
                 m_align = align_for_type(a, msrc);
             }
+
+            // fixed-size array member (e.g. mat4f.m : f32[16]) — wrap the
+            // element type in a DWARF array type and scale the size up so
+            // lldb shows m as f32[N], not as a single scalar.
+            if (m->elements > 0) {
+                LLVMMetadataRef subrange = LLVMDIBuilderGetOrCreateSubrange(
+                    a->dbg_builder, 0, (i64)m->elements);
+                member_di = LLVMDIBuilderCreateArrayType(
+                    a->dbg_builder,
+                    (u64)m_bits * (u64)m->elements,
+                    m_align,
+                    member_di,
+                    &subrange, 1);
+                m_bits = (u32)((u64)m_bits * (u64)m->elements);
+            }
             // compute offset from LLVM struct layout
             u64 offset_bits;
             if (et && et->lltype && m->index >= 0 &&
