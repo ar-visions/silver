@@ -1932,6 +1932,7 @@ declare_struct(vec2f, f32)
     s_method(O, Y, public, rect, create_rect, vec2f, vec2f)
 declare_class(rect)
 
+
 #define mat4f_schema(O, Y, T, ...) \
     i_struct_array  (O, Y, f32,   16, m) \
     i_struct_ctr(O, Y, floats_t) \
