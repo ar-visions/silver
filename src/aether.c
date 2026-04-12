@@ -3359,6 +3359,29 @@ enode etype_access(etype target, string name) { sequencer
             gep_index, id->chars));
 }
 
+// return an enode addressing the base-class slot that `override_member`
+// shadows. `override_member` is a derived-class member with is_override=true;
+// its inherited twin lives somewhere in the context chain above. we view the
+// instance as the base class (same pointer, narrower static type) so that
+// find_member/GEP resolves to the inherited slot instead of the derived
+// shadow (which has the same name but a different index).
+enode aether_e_inherited_access(aether a, enode instance, Au_t override_member) {
+    if (!override_member || !override_member->context || !override_member->context->context)
+        return access(instance, string(override_member ? override_member->ident : ""));
+    Au_t inherited = find_member(override_member->context->context,
+        (cstr)override_member->ident, AU_MEMBER_VAR, 0, true);
+    if (!inherited) return access(instance, string(override_member->ident));
+    etype base_et = u(etype, inherited->context);
+    if (!base_et || !base_et->lltype) base_et = etype_prep(a, inherited->context);
+    // direct GEP against the base class's lltype using the inherited member's
+    // index. the derived instance's struct begins with the base class layout,
+    // so Canvas* + base_et->lltype + inherited->index targets the right slot.
+    string id = f(string, "override_access_%s", inherited->ident);
+    LLVMValueRef gep = LLVMBuildStructGEP2(B, base_et->lltype,
+        instance->value, inherited->index, id->chars);
+    return enode(mod, a, au, inherited, loaded, false, value, gep);
+}
+
 enode resolve_typeid(aether a, Au mdl) {
     Au_t au = au_arg(mdl);
     if (au->is_pointer && au->src->is_class) {
@@ -3682,6 +3705,38 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
 
     // 3. resolve context members from scope
     resolve_context_members(alloc, props);
+
+    // 3b. apply override initializers BEFORE any class init runs — a derived
+    // class can redeclare an inherited member with a different default (e.g.
+    // Canvas overrides Render's `load_existing : bool`). The override must
+    // land on the INHERITED slot so a base class init that reads it (e.g.
+    // Render.init -> update[] -> render-pass creation) sees the overridden
+    // value. also mark the inherited slot's fbit so the base preamble's
+    // is_set check skips redefaulting it.
+    if (alloc_type && alloc_type->is_class) {
+        u64 ov_mask0 = 0, ov_mask1 = 0;
+        Au_t cur = alloc_type;
+        while (cur && cur != typeid(Au)) {
+            // only classes 2+ past Au (direct children of Au have no base to override)
+            if (cur->context && cur->context != typeid(Au)) {
+                for (int i = 0; i < cur->members.count; i++) {
+                    Au_t mb = (Au_t)cur->members.origin[i];
+                    if (mb->member_type != AU_MEMBER_VAR || !mb->is_override) continue;
+                    Au_t inherited = find_member(cur->context,
+                        (cstr)mb->ident, AU_MEMBER_VAR, 0, true);
+                    if (!inherited) continue;
+                    enode n = u(enode, mb);
+                    if (n && n->initializer) emit_override_init(a, alloc, mb);
+                    int idx = fbits_index(alloc_type, inherited);
+                    if      (idx >= 0 && idx < 64) ov_mask0 |= 1ULL << idx;
+                    else if (idx >= 64)            ov_mask1 |= 1ULL << (idx % 64);
+                }
+            }
+            if (cur->context == cur) break;
+            cur = cur->context;
+        }
+        if (ov_mask0 || ov_mask1) mark_set(alloc, ov_mask0, ov_mask1);
+    }
 
     // 4. call init chain — direct for concrete types, Au_initialize for polymorphic
     map saved_init_props = a->init_props;
@@ -6428,7 +6483,7 @@ none etype_implement(etype t, bool w) { sequencer
             if (!multi_Au || tt->au != typeid(Au))
                 for (int i = 0; i < tt->au->members.count; i++) {
                     Au_t m = (Au_t)tt->au->members.origin[i];
-                    if (m->member_type == AU_MEMBER_VAR && !m->is_static && !m->is_elaborate)
+                    if (m->member_type == AU_MEMBER_VAR && !m->is_static && !m->is_elaborate && !m->is_override)
                         count++;
                 }
 
@@ -6493,7 +6548,12 @@ none etype_implement(etype t, bool w) { sequencer
                     etype_implement(u(etype, m), false);
                 }
                 else if (m->member_type == AU_MEMBER_VAR) {
-                    if (m->is_elaborate) {
+                    if (m->is_elaborate || m->is_override) {
+                        // elaborate: retype an inherited slot (no new storage).
+                        // override: redeclare an inherited member to provide a
+                        // different default initializer (no new storage).
+                        // both reuse the base class's slot index — the subclass
+                        // member is metadata only.
                         Au_t base_m = find_member(tt->au->context, m->ident, AU_MEMBER_VAR, 0, true);
                         if (base_m) m->index = base_m->index;
                         continue;
@@ -6845,6 +6905,7 @@ none etype_implement(etype t, bool w) { sequencer
 }
 
 void aether_build_user_initializer(aether a, etype m) { }
+void aether_emit_override_init(aether a, enode alloc, Au_t override_member) { }
 enode aether_build_attrib_value(aether a, evar var) { return null; }
 
 enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, string return_name)
