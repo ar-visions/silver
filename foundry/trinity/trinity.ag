@@ -3183,7 +3183,7 @@ shader CanvasUI
     mutable rect       : vec4f
     mutable radii      : vec4f
     mutable fill_color : vec4f
-    mutable stroke_clr : vec4f
+    mutable stroke_color : vec4f
     mutable params     : vec4f     # stroke_width, opacity, blur, mode
     mutable grad0      : vec4f     # Gradient endpoints / tex rect
     mutable grad_c0    : vec4f     # Gradient stop color 0
@@ -3365,8 +3365,8 @@ shader CanvasUI
 
             vec4 fill_p   = vec4(ubo.fill_color.rgb * ubo.fill_color.a * fill_cov,
                                  ubo.fill_color.a   * fill_cov);
-            vec4 stroke_p = vec4(ubo.stroke_clr.rgb * ubo.stroke_clr.a * stroke_cov,
-                                 ubo.stroke_clr.a   * stroke_cov);
+            vec4 stroke_p = vec4(ubo.stroke_color.rgb * ubo.stroke_color.a * stroke_cov,
+                                 ubo.stroke_color.a   * stroke_cov);
             o_color = (stroke_p + fill_p * (1.0 - stroke_p.a)) * opacity;
             return;
         }}
@@ -3408,9 +3408,10 @@ shader CanvasUI
         // stroke renders OVER fill via Porter-Duff "over": stroke + fill * (1 - stroke.a).
         vec4 fill_p   = vec4(fill.rgb         * fill.a         * fill_cov,
                              fill.a           * fill_cov);
-        vec4 stroke_p = vec4(ubo.stroke_clr.rgb * ubo.stroke_clr.a * stroke_cov,
-                             ubo.stroke_clr.a   * stroke_cov);
+        vec4 stroke_p = vec4(ubo.stroke_color.rgb * ubo.stroke_color.a * stroke_cov,
+                             ubo.stroke_color.a   * stroke_cov);
         o_color = (stroke_p + fill_p * (1.0 - stroke_p.a)) * opacity;
+        #o_color = vec4(0.0, 1.0, 0.0, 1.0);
     }
 
 
@@ -3796,8 +3797,8 @@ struct SDFEdge
 
 # ---- Canvas state entry ----
 struct CanvasState
-    fill_color      : u32
-    stroke_color    : u32
+    fill_color      : vec4f
+    stroke_color    : vec4f
     stroke_width    : f32
     stroke_cap      : Cap
     stroke_join     : Join
@@ -3945,7 +3946,7 @@ Render Canvas
     # built up. drives framebuffer/extent setup, runs the render pass, and
     # blocks until the GPU has finished writing the color attachment.
     func flush []
-        update[]
+        #update[]
         draw[]
         sync_fence[]
 
@@ -4050,24 +4051,14 @@ Render Canvas
         # mode-0 fill path in Canvas.flush (which currently doesn't paint
         # to color.vk_image for reasons we still need to track down) and
         # writes the pixels directly. cheaper too.
-        c  : u32 [ sk_color[ color ] ]
-        ru : u32 [ (c >> 16) & 0xFF ]
-        gu : u32 [ (c >>  8) & 0xFF ]
-        bu : u32 [  c        & 0xFF ]
-        au : u32 [ (c >> 24) & 0xFF ]
-        v  : vec4f [
-            f32[ ru ] / 255.0,
-            f32[ gu ] / 255.0,
-            f32[ bu ] / 255.0,
-            f32[ au ] / 255.0
-        ]
-        reset[ v ]
+        clr : sk_color[ color ]
+        reset[ clr ]
 
     func save []
         if [ depth == 0 ]
             st : CanvasState [
-                fill_color:    0xFF000000,
-                stroke_color:  0xFF000000,
+                fill_color:    vec4f[0,0,0,1],
+                stroke_color:  vec4f[0,0,0,1],
                 stroke_width:  0.0,
                 opacity:       1.0,
                 transform:     affine.identity [],
@@ -4099,8 +4090,8 @@ Render Canvas
 
     # ---- state setters ----
 
-    func fill_color [ c: Au ]
-        states[depth - 1].fill_color = sk_color[ c ]
+    func fill_color [ color: Au ]
+        states[depth - 1].fill_color = sk_color[ color ]
 
     func stroke_color [ c: Au ]
         states[depth - 1].stroke_color = sk_color[ c ]
@@ -4289,17 +4280,17 @@ Render Canvas
         ]
 
     func setup_shader [ st: CanvasState, rx: f32, ry: f32, rw: f32, rh: f32 ]
-        ui_shader.viewport = vec2f [ f32 width, f32 height ]
-        ui_shader.rect     = vec4f [ rx, ry, rw, rh ]
-        ui_shader.fill_color    = color_to_vec4 [ st.fill_color ]
-        ui_shader.stroke_clr   = color_to_vec4 [ st.stroke_color ]
+        ui_shader.viewport      = vec2f [ f32 width, f32 height ]
+        ui_shader.rect          = vec4f [ rx, ry, rw, rh ]
+        ui_shader.fill_color    = st.fill_color # color_to_vec4 [ st.fill_color ]
+        ui_shader.stroke_color  = st.stroke_color # color_to_vec4 [ st.stroke_color ]
         ui_shader.fill_offset   = st.fill_offset
         ui_shader.stroke_offset = st.stroke_offset
-        ui_shader.params   = vec4f [ st.stroke_width, st.opacity, st.blur_rad, 0.0 ]
-        ui_shader.radii    = st.corner_radii
-        ui_shader.grad0    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        ui_shader.grad_c0  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        ui_shader.grad_c1  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        ui_shader.params        = vec4f [ st.stroke_width, st.opacity, st.blur_rad, 0.0 ]
+        ui_shader.radii         = st.corner_radii
+        ui_shader.grad0         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        ui_shader.grad_c0       = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        ui_shader.grad_c1       = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         # stroke options: x = join enum (0=none,1=miter,2=round,3=bevel)
         ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, 0.0, 0.0 ]
         # 2D affine transform packed as two vec4s for the vertex shader
@@ -4384,11 +4375,7 @@ Render Canvas
         states[depth - 1].corner_radii = vec4f [ tl, tr, br, bl ]
 
     func paint []
-        draw_preserve
-        flush[]
-        path.reset
 
-    func draw_preserve []
         st   : states[depth - 1]
         # ---- ordered-guess cache check ----
         # if path.points byte-matches the snapshot from the previous draw,
@@ -4472,10 +4459,10 @@ Render Canvas
         if [ pcount == 5 && n == 4 ]
             # primitive rect — use the in-shader rect SDF (mode 0)
             setup_shader [ st, bx0, by0, bw, bh ]
-            ui_shader.fill_color = color_to_vec4 [ st.fill_color ]
+            ui_shader.fill_color = st.fill_color
             ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, f32 DrawMode.solid ]
-            printf[ "draw_fill: mode=0 (solid rect) rect=(%f,%f %fx%f)\n", bx0, by0, bw, bh ]
+            #printf[ "draw_fill: mode=0 (solid rect) rect=(%f,%f %fx%f)\n", bx0, by0, bw, bh ]
         el
             # arbitrary path — GPU compute SDF. on cache miss the edge list
             # was just extracted above; on cache hit we reuse the edges that
@@ -4520,7 +4507,7 @@ Render Canvas
             cmod.pipelines[0].dispatch_z = 1
 
             setup_shader [ st, pbx, pby, pbw, pbh ]
-            ui_shader.fill_color = color_to_vec4 [ st.fill_color ]
+            ui_shader.fill_color = st.fill_color
             ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
             j : f32 [ st.stroke_join ]
             c : f32 [ st.stroke_cap ]
@@ -4528,6 +4515,8 @@ Render Canvas
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, DrawMode.sdf_path ]
             printf[ "draw_fill: mode=6 (sdf_path) rect=(%f,%f %fx%f) edges=%i\n", pbx, pby, pbw, pbh, ne ]
 
+        flush[]
+        path.clear[]
 
 
 # ---- text rendering with FreeType ----
@@ -5242,13 +5231,13 @@ func nib [ n: i8 ] -> i8
         return 10 + (n - 'A')
     return 0
 
-func sk_color [ clr: Au ] -> u32
+func sk_color [ clr: Au ] -> vec4f
     type: typeid[ clr ]
     ia: i32 [ 255 ]
     ir: i32
     ig: i32
     ib: i32
-    if [ type == typeid[ string ] ]
+    if [ type == typeid[ string ] || type == typeid[ symbol ] ]
         s: string [ clr ]
         h: ref u8 [ s.chars ]
         # NB: typed-locals around the byte indexer to force a load. silver
@@ -5305,7 +5294,14 @@ func sk_color [ clr: Au ] -> u32
         ia = c.a * 255.0
     el
         fault 'implement color conversion for type {type.ident}'
-    return u32[ ib | (ig << 8) | (ir << 16) | (ia << 24) ]
+
+    res : vec4f [
+        f32[ ir ] / 255.0,
+        f32[ ig ] / 255.0,
+        f32[ ib ] / 255.0,
+        f32[ ia ] / 255.0
+    ]
+    return res
 
 
 
@@ -6766,35 +6762,29 @@ abstract media_app trinity
         #              wherever glyph.r > 0
         if [ window.composite ]
             angle += 0.01
-            ifill    +=  0.0001
-            istroke  +=  0
-            if [ifill >  16.0]
-                ifill = -16.0
-            
-            window.compose       .clear[ '#00f'  ] # 888 = default
-            window.colorize      .clear[ '#000'  ]
-            window.overlay       .clear[ '#0000' ] # the only one that needs an alpha layer
-            window.glyph         .clear[ '#000'  ]
-            window.glyph_subtract.clear[ '#000'  ]
 
-            # text writes the alpha mask into glyph; UXCompose then
-            # mixes colorize.rgb (white) over the background ramp
-            # wherever glyph.r > 0.
-            window.glyph.fill_color[ '#fff' ]
+            window.compose       .clear[ '#00f'  ] # 888 = default
+            window.colorize      .clear[ "#000"  ]
+            window.overlay       .clear[ "#0000" ] # the only one that needs an alpha layer
+            window.glyph         .clear[ "#000"  ]
+            window.glyph_subtract.clear[ "#000"  ]
+
+            window.glyph.fill_color[ "#fff" ]
             window.glyph.draw_text[
-                'Aura',
+                "Aura",
                 rect [ x: 144.0, y: 196.0, w: 200.0, h: 96.0 ],
                 vec2f [ 0.5, 0.5 ],
                 vec2f [ 0.0, 0.0 ],
                 false ]
 
-            window.compose.path.clear[]
-            window.compose.fill_color[ '#fff' ]
+            window.compose.fill_color[ '#ff0' ]
             window.compose.rect_to[ 32, 64, 256, 128 ]
-            window.compose.fill_offset[ ifill ]
-            window.compose.stroke_offset[ istroke ]
+            window.compose.fill_offset[ 0 ]
+            window.compose.stroke_offset[ 0 ]
             window.compose.paint[]
-            window.compose.fill_color[ '#000' ]
+
+            window.compose.fill_color[ "#000" ]
+
 ##
             window.compose.path.clear[]
             window.compose.save[]
@@ -8003,8 +7993,8 @@ class DrawState
     public y                    : f32
     public w                    : f32
     public h                    : f32
-    public fill_color           : u32
-    public stroke_color         : u32
+    public fill_color           : vec4f
+    public stroke_color         : vec4f
     public opacity              : f32
 
     public func set_default [ ] 
@@ -8012,8 +8002,8 @@ class DrawState
         stroke_cap   = Cap.round
         stroke_join  = Join.round
         stroke_size  = 0
-        fill_color   = sk_color[ "#000" ]
-        stroke_color = sk_color[ "#000" ]
+        fill_color   = vec4f[0,0,0,1]
+        stroke_color = vec4f[0,0,0,1]
         opacity      = 1.0
 
 
