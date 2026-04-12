@@ -1380,7 +1380,7 @@
     m->access_type = interface_public; \
     m->alt = #T "_" #N; \
     Type_i(T).type . ft.N = & T## _ ## N; \
-    set_args_array(m, emit_types(T, A, A, A __VA_OPT__(,) __VA_ARGS__)); \
+    set_args_array(m, emit_types(A, A, A __VA_OPT__(,) __VA_ARGS__)); \
     m->type    = typeid(R); \
 }
 

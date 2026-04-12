@@ -705,6 +705,7 @@ Au build_init_preamble(enode f, Au arg) {
     etype  rec = f->target ? resolve((etype)f->target) : (etype)a;
 
     members(rec->au, mem) {
+        if (mem->is_static) continue; // statics emit from module init, not per-instance
         enode n = u(enode, mem);
         if (n && n->initializer)
             build_user_initializer(a, (etype)n);
@@ -2819,8 +2820,25 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                 }
 
                 // first token + : means new declaration — but only at expression level 0
-                if (first && mem && next_is(a, ":") && a->expr_level == 0)
+                if (first && mem && next_is(a, ":") && a->expr_level == 0) {
+                    // disallow declaring a local that shadows a member of
+                    // the enclosing class. silently shadowing a field is
+                    // a footgun: subsequent `name = ...` writes go to the
+                    // local, not the field, and the field stays at its
+                    // default forever (e.g. `proj : mat4f.perspective[...]`
+                    // inside Earth.init while Earth has `mutable proj : mat4f`).
+                    // force the user to either rename the local or use
+                    // `=` to assign the field.
+                    if (rec_top && mem->au &&
+                        mem->au->member_type == AU_MEMBER_VAR &&
+                        mem->au->context == rec_top->au) {
+                        validate(false,
+                            "local '%o' shadows class member '%s.%o': "
+                            "use '=' to assign the field, or rename the local",
+                            alpha, rec_top->au->ident, alpha);
+                    }
                     mem = null;
+                }
 
                 if (!mem) {
                     token tm1 = element(a, -2); // sorry for the mess (coin-flip)
@@ -5573,6 +5591,12 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
             // load unloaded pointer values (e.g. opaque handle from new array offset)
             if (!ref_arg && !is_loaded((Au)expr) && is_ptr(expr))
                 expr = enode_value(expr, true);
+            // varargs: also load unloaded *primitive* indexer results so
+            // printf %f / %i don't end up reading slot GEP pointer bytes
+            // instead of the actual value at that slot. this is the
+            // companion to the e_convert_or_cast bool-coercion fix.
+            if (fn->au->is_vargs && !ref_arg && !is_loaded((Au)expr))
+                expr = enode_value(expr, true);
             push(values, (Au)expr);
         }
         i++;
@@ -6224,7 +6248,7 @@ void silver_build_user_initializer(silver a, enode prop) {
         subprocedure set_if = subproc(a, assign_builder, post_const);
         efunc  ctx = context_func(a);
 
-        if (is_class(prop->au->context)) {
+        if (is_class(prop->au->context) && !prop->au->is_static) {
             Au_t    f  = (Au_t)ctx->au->args.origin[0];
             evar instance = (evar)u(enode, (Au_t)f);
             enode L = access(instance, string(prop->au->ident));
@@ -7080,6 +7104,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     bool was_ptr = false;
     int  iter = 0;
 
+    
     if (!is_fields && !is_mdl_map) {
         array args = array(alloc, 32);
         bool  first = true;
