@@ -7,7 +7,7 @@
             "request":          "launch",
             "preLaunchTask":    "build-silver-debug",
             "program":          "${workspaceFolder}/install/debug/silver",
-            "args":             [ "orbiter", "-v", "--run" ],
+            "args":             [ "orbiter", "--run" ],
             "cwd":              "${workspaceFolder}",
             "stopOnEntry":      false,
             "env": {

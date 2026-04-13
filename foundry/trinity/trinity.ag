@@ -102,16 +102,11 @@ class FragmentInput
 class FragmentOutput
     public type : Au_t
 
-class Composer
-    context w:Display
-    func key_event    [ Event  ] return
-    func wheel_event  [ Event  ] return
-    func press_event  [ Event  ] return
-    func release_event[ Event  ] return
-    func text_event   [ Event  ] return
-    func move_event   [ Event  ] return
-    func update_all   [ obj:Au ] return
-    func animate      [ ]        return
+# GLSL opaque sampler types. Silver doesn't need to know their layout;
+# they exist as named types so shader function signatures can pass them through.
+class sampler2D
+class sampler3D
+class samplerCube
 
 class Render
     context vk                             : vk_context
@@ -811,8 +806,8 @@ class vk_context
                                 VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mipWidth, mipHeight, 1 ] ],
                             dstSubresource: VkImageSubresourceLayers [
                                 aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: i, baseArrayLayer: f, layerCount: 1 ],
-                                dstOffsets: [
-                                    VkOffset3D [ 0, 0, 0 ], VkOffset3D [ max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], 1 ] ] ],
+                            dstOffsets: [
+                                VkOffset3D [ 0, 0, 0 ], VkOffset3D [ max[ 1, mipWidth / 2 ], max[ 1, mipHeight / 2 ], 1 ] ] ],
                         VK_FILTER_LINEAR ]
                     cmd.submit
                     transition_image_layout[ vk_image,
@@ -997,14 +992,34 @@ class Pipeline
     intern descriptor_layouts : new VkDescriptorSetLayout [ 2 ] # fixed-size descriptor arrays
     intern descriptor_sets    : new VkDescriptorSet       [ 2 ]
     intern descriptor_pool    : VkDescriptorPool
+    intern image_slot         : i32 [ -1 ]
     intern bind               : VkDescriptorSet
     intern vk_render          : VkPipeline
     intern vk_compute         : VkPipeline
     intern layout             : VkPipelineLayout
 
-    public   func rebind [ ] 
+    public   func rebind [ ]
         if [ resources ]
             resources = null
+
+    public   func rebind_image [ tx: Texture ]
+        if [ image_slot < 0 ] return
+        tx.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        info : VkDescriptorImageInfo [
+            sampler:     tx.vk_sampler,
+            imageView:   tx.vk_image_view,
+            imageLayout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        ]
+        write : VkWriteDescriptorSet [
+            sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            pNext:           null,
+            dstSet:          descriptor_sets[1],
+            dstBinding:      image_slot,
+            descriptorCount: 1,
+            descriptorType:  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            pImageInfo:      ref info
+        ]
+        vkUpdateDescriptorSets[ vk.device, 1, ref write, 0, null ]
 
     # vkCmdDispatch is illegal inside an active render pass, so the compute path
     # is split out and called by Render.draw BEFORE vkCmdBeginRenderPass. The
@@ -1139,6 +1154,8 @@ class Pipeline
                     expect res inherits gpu, "expected gpu resource"
                     res.sync[ w ]
                     resources.push[ res ]
+                    if [ strcmp[ mem.ident, 'image' ] == 0 ]
+                        image_slot = set1_binds
                     image_infos[set1_binds] = VkDescriptorImageInfo [
                         sampler:     res.tx.vk_sampler,
                         imageView:   res.tx.vk_image_view,
@@ -2205,7 +2222,6 @@ class Texture
 Texture Display
     intern glfw                 : handle
     public mouse                : vec2f
-    public ux                   : Composer
     intern swap_model           : Model
     public element_targets      : map   Render [string]
     mutable list                 : array Render
@@ -2249,7 +2265,10 @@ Texture Display
 
 
     func update [ ] return
-    
+
+    func draw_screen    [ ] return
+    func draw_compose[ ] return
+
     func resize [ w_new: i32, h_new: i32 ] -> Display
         width  = w_new
         height = h_new
@@ -2355,9 +2374,11 @@ Texture Display
         for [ r: Render, id: string ] in element_targets
             r.draw[]
             r.sync_fence[]
+        draw_compose[]
         for [ r: Render ] in list
             r.draw[]
             r.sync_fence[]
+        draw_screen[]
         if [ swap_renders ]
             result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
                 semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
@@ -2560,6 +2581,12 @@ class shader
             return "bool"
         if [ t == typeid[ none ] ]
             return "void"
+        if [ t == typeid[ sampler2D ] ]
+            return "sampler2D"
+        if [ t == typeid[ sampler3D ] ]
+            return "sampler3D"
+        if [ t == typeid[ samplerCube ] ]
+            return "samplerCube"
         return null
 
     func glsl_header [ stage: ShaderStage ] -> string
@@ -3121,6 +3148,11 @@ enum CanvasSDFSurface
     sdf_out: 1
 
 
+enum BlurPair
+    low:  0
+    high: 1
+
+
 # Compute shader that builds an SDF from a list of edges. ported from
 # foundry/shaders.bak/canvas/canvas_sdf.comp with the push_constant block
 # replaced by UBO mutables (silver doesn't currently support push consts)
@@ -3447,8 +3479,9 @@ shader CanvasUI
 # the vbo per call and a dedicated text_render renders it via its own
 # render pass over the canvas's color attachment in a single vkCmdDraw.
 shader CanvasText
-    mutable viewport : vec2f
     mutable text_color : vec4f
+    mutable viewport : vec2f
+    
 
     attrib  atlas    : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format: typeid[ u8 ]
@@ -3469,7 +3502,8 @@ shader CanvasText
         // blend state on the text Pipeline (straight_alpha flag) so the
         // result composes as rgb*a + dst*(1-a). this looked best in testing.
         float a = texture(atlas, v_uv).r;
-        o_color = vec4(ubo.text_color.x, ubo.text_color.y, ubo.text_color.z, a);
+        //o_color = vec4(ubo.text_color.x, ubo.text_color.y, ubo.text_color.z, a);
+        o_color = vec4(ubo.text_color.rgb * ubo.text_color.a * a, ubo.text_color.a * a);
     }
 
 
@@ -3851,8 +3885,9 @@ Render Canvas
     public state_depth : i32
     mutable font       : CanvasFont
     public glyph_atlas : GlyphAtlas
-    intern ui_shader   : CanvasUI
-    intern sdf_tex     : Texture
+    intern ui_shader     : CanvasUI
+    intern sdf_tex       : Texture
+    intern image_override : Texture
     public format	   : Pixel[Pixel.rgba8]
     # current 2D affine — held directly on Canvas because writing back
     # into states[state_depth-1].transform via array-of-struct field assignment
@@ -3877,6 +3912,14 @@ Render Canvas
     intern  text_model       : Model        # holds text_pipeline; lives in text_render.models
     intern  text_render      : Render       # own Render targeting canvas color
     intern  text_max_verts   : i32 [ 4096 ]
+    # ---- blur cascade (built in init) ----
+    # 8 reduction stages (1/2, 1/4, ..., 1/256); per-stage blur_v + blur_h.
+    # Canvas.blur[radius] picks stage k = clamp(ceil(log2(radius/4)), 0, 7)
+    # and runs reductions 0..k then blur_v[k] then blur_h[k].
+    intern  blur_count       : i32 [ 8 ]
+    intern  blur_stages      : array Render
+    intern  blur_v_arr       : array Render
+    intern  blur_h_arr       : array Render
 
     func init [ ]
         printf[ "Canvas.init: vk=%p w=%p width=%i height=%i\n", vk, w, width, height ]
@@ -3965,6 +4008,36 @@ Render Canvas
         text_model.r = text_render
         text_render.models = array Model [ text_model ]
         text_vbo.vertex_count = 0
+
+        # ---- blur cascade: 8 stages halving each time (1/2 .. 1/256)
+        blur_stages = array Render [ alloc: blur_count ]
+        blur_v_arr  = array Render [ alloc: blur_count ]
+        blur_h_arr  = array Render [ alloc: blur_count ]
+        # pass 1: reductions + per-stage vertical blur (both at the reduced scale)
+        prev_tx    : Texture [ a.color ]
+        scale      : f32 [ 1.0 ]
+        for [ i: i32 0, i < blur_count, i += 1 ]
+            scale *= 0.5
+            m_r  : Model  [ w: w, samplers: map Texture[string] [ 'color': prev_tx ] ]
+            r_r  : Render [ vk: vk, w: w, wscale: scale, models: array Model [ m_r ] ]
+            blur_stages.push[ r_r ]
+
+            bv_s : CanvasBlurV [ vk: vk, name: 'canvas-blur-v' ]
+            m_v  : Model  [ w: w, s: bv_s, samplers: map Texture[string] [ 'color': r_r.color ] ]
+            r_v  : Render [ vk: vk, w: w, wscale: scale, models: array Model [ m_v ] ]
+            blur_v_arr.push[ r_v ]
+
+            prev_tx = r_r.color
+
+        # pass 2: per-pair horizontal blur + mix; low=blur_v[k], high=blur_v[k+1]
+        for [ i: i32 0, i < blur_count, i += 1 ]
+            hi_idx : i32 [ (i + 1 < blur_count) ? i + 1 : i ]
+            rv_lo  : Render [ blur_v_arr[i] ]
+            rv_hi  : Render [ blur_v_arr[hi_idx] ]
+            bh_s : CanvasBlurH [ vk: vk, name: 'canvas-blur-h' ]
+            m_h  : Model  [ w: w, s: bh_s, samplers: map Texture[string] [ 'low': rv_lo.color, 'high': rv_hi.color ] ]
+            r_h  : Render [ vk: vk, w: w, color: a.color, wscale: 1.0, models: array Model [ m_h ] ]
+            blur_h_arr.push[ r_h ]
 
         path   = CanvasPath []
         states = array CanvasState []
@@ -4116,11 +4189,11 @@ Render Canvas
 
     # ---- state setters ----
 
-    func fill_color [ color: Au ]
+    func fill_color [ color: string ]
         states[state_depth - 1].fill_color = sk_color[ color ]
 
-    func stroke_color [ c: Au ]
-        states[state_depth - 1].stroke_color = sk_color[ c ]
+    func stroke_color [ color: string ]
+        states[state_depth - 1].stroke_color = sk_color[ color ]
 
     func stroke_width [ sw: f32 ]
         states[state_depth - 1].stroke_width = sw
@@ -4223,6 +4296,7 @@ Render Canvas
     func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, use_ellipsis: bool ] -> rect
         if [ !font ]
             return bounds
+        
         display : string [ (use_ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
         tm  : TextMetrics [ measure_text[ display ] ]
         tx  : f32 [ bounds.x + (bounds.w - tm.w) * align.x + offset.x ]
@@ -4232,12 +4306,15 @@ Render Canvas
         # (two triangles, no index buffer). vertex layout: vec2f pos, vec2f uv.
         # text_render then runs ONE render pass with ONE vkCmdDraw covering
         # the entire string regardless of glyph count.
+        st : CanvasState states[state_depth - 1]
         atlas_size : f32 [ f32 glyph_atlas.size ]
         text_shader.viewport = vec2f [ f32 width, f32 height ]
+        text_shader.text_color = st.fill_color
         verts : ref f32 [ text_vbo.vertex_data ]
         vi    : i32 [ 0 ]
         pen_x : f32 [ tx ]
         pen_y : f32 [ ty ]
+
         for [ i: i32 0, i < display.count, i += 1 ]
             cp   : u32 [ display[i] ]
             slot : GlyphAtlasSlot [ glyph_atlas.get[ font, cp ] ]
@@ -4404,6 +4481,53 @@ Render Canvas
     func rounded [ tl: f32, tr: f32, br: f32, bl: f32 ]
         states[state_depth - 1].corner_radii = vec4f [ tl, tr, br, bl ]
 
+    func draw_canvas [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
+        image_override = src.color
+        path.clear[]
+        path.add_rect[ x, y, rw, rh ]
+        paint[]
+        image_override = null
+
+    # blur canvas.color in place.
+    # blur_reduce: quad-samples canvas.color at 1/4 size
+    # blur_v:      vertical gaussian on the reduced source
+    # blur_h:      horizontal gaussian, writes back to canvas.color
+    func blur [ radius: f32 ]
+        if [ radius < 1.0 ] return
+        # smooth stage selection: k_lo = floor(log2(radius/4)),
+        # frac = fractional part, mix between blur_v[k_lo] and blur_v[k_lo+1].
+        lg   : f32 [ log2[ radius / 4.0 ] ]
+        if [ lg < 0.0 ] lg = 0.0
+        max_lg : f32 [ f32[ blur_count - 1 ] ]
+        if [ lg > max_lg ] lg = max_lg
+        k_lo : i32 [ i32[ lg ] ]
+        k_hi : i32 [ (k_lo + 1 < blur_count) ? k_lo + 1 : k_lo ]
+        frac : f32 [ lg - f32 k_lo ]
+
+        ruv : f32 [ radius / (4.0 * f32 height) ]
+        # vbv uniforms: radius_uv only
+        vbv_lo : CanvasBlurV blur_v_arr[k_lo].models[0].s
+        vbv_hi : CanvasBlurV blur_v_arr[k_hi].models[0].s
+        vbv_lo.radius_uv = ruv
+        vbv_hi.radius_uv = ruv
+        vbh : CanvasBlurH blur_h_arr[k_lo].models[0].s
+        vbh.radius_uv  = ruv
+        vbh.mix_factor = frac
+
+        color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        # always run the full cascade so both low/high are populated
+        for [ i: i32 0, i <= k_hi, i += 1 ]
+            s : Render blur_stages[i]
+            s.update[] s.draw[] s.sync_fence[]
+        bv_lo : Render blur_v_arr[k_lo]
+        bv_lo.update[] bv_lo.draw[] bv_lo.sync_fence[]
+        if [ k_hi != k_lo ]
+            bv_hi : Render blur_v_arr[k_hi]
+            bv_hi.update[] bv_hi.draw[] bv_hi.sync_fence[]
+        color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+        bh : Render blur_h_arr[k_lo]
+        bh.update[] bh.draw[] bh.sync_fence[]
+
     func paint []
 
         st   : states[state_depth - 1]
@@ -4487,12 +4611,18 @@ Render Canvas
         # anything else (curves, chamfers, polygons) goes through the
         # SDF-from-path generator and gets sampled by mode 6.
         if [ pcount == 5 && n == 4 ]
-            # primitive rect — use the in-shader rect SDF (mode 0)
+            # primitive rect — use the in-shader rect SDF (mode 0), or
+            # mode 5 (image) if draw_canvas set image_override.
             setup_shader [ st, bx0, by0, bw, bh ]
             ui_shader.fill_color = st.fill_color
             ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
-            ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, f32 DrawMode.solid ]
-            #printf[ "draw_fill: mode=0 (solid rect) rect=(%f,%f %fx%f)\n", bx0, by0, bw, bh ]
+            mode : f32 [ (image_override) ? f32 DrawMode.image : f32 DrawMode.solid ]
+            ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, mode ]
+            if [ image_override && models && models.count > 0 ]
+                cmod : Model models[0]
+                if [ cmod.pipelines && cmod.pipelines.count > 0 ]
+                    p : Pipeline cmod.pipelines[0]
+                    p.rebind_image[ image_override ]
         el
             # arbitrary path — GPU compute SDF. on cache miss the edge list
             # was just extracted above; on cache hit we reuse the edges that
@@ -5282,10 +5412,12 @@ func sk_color [ clr: string ] -> vec4f
                 ir = nib[ h1 ] << 4 | nib[ h1 ]
                 ig = nib[ h2 ] << 4 | nib[ h2 ]
                 ib = nib[ h3 ] << 4 | nib[ h3 ]
+            
             case 4
                 ir = nib[ h1 ] << 4 | nib[ h1 ]
                 ig = nib[ h2 ] << 4 | nib[ h2 ]
                 ib = nib[ h3 ] << 4 | nib[ h3 ]
+            
             case 9
                 h4 : i8 [ h[4] ]
                 h5 : i8 [ h[5] ]
@@ -5296,6 +5428,7 @@ func sk_color [ clr: string ] -> vec4f
                 ir = nib[ h1 ] << 4 | nib[ h2 ]
                 ig = nib[ h3 ] << 4 | nib[ h4 ]
                 ib = nib[ h5 ] << 4 | nib[ h6 ]
+            
             case 7
                 h4 : i8 [ h[4] ]
                 h5 : i8 [ h[5] ]
@@ -5303,6 +5436,18 @@ func sk_color [ clr: string ] -> vec4f
                 ir = nib[ h1 ] << 4 | nib[ h2 ]
                 ig = nib[ h3 ] << 4 | nib[ h4 ]
                 ib = nib[ h5 ] << 4 | nib[ h6 ]
+            
+    el [ h0 == 'r' ]
+        has_a : bool [ clr.count >= 5 && h[3] == 'a' ]
+        lp    : i32 [ (has_a) ? 4 : 3 ]
+        inner : clr.mid[ lp + 1, clr.count - lp - 2 ]
+        sp    : array string [ inner.split[ ',' ] ]
+        ir    = i32[ sp[0].real_value[] ]
+        ig    = i32[ sp[1].real_value[] ]
+        ib    = i32[ sp[2].real_value[] ]
+
+        if [ sp.count >= 4 ]
+            ia = i32[ sp[3].real_value[] * 255.0 ]
     el
         fault['unknown color format: {clr}']
     
@@ -5601,7 +5746,7 @@ intern func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i
 
 
 intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] 
-    w: (glfwGetWindowUserPointer[ win ] to Display)
+    w: (glfwGetWindowUserPointer[ win ] to Window)
     if [ action == GLFW_PRESS && (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN) ]
         w.debug_value += (key == GLFW_KEY_UP) ? 1.0 : -1.0
     w.ev.clear[]
@@ -5611,47 +5756,47 @@ intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, act
     w.ev.key.meta      = (mods & GLFW_MOD_SUPER) != 0
     w.ev.key.shift     = (mods & GLFW_MOD_SHIFT) != 0
     w.ev.key.alt       = (mods & GLFW_MOD_ALT)   != 0
-    w.ux.key_event[ w.ev ]
+    w.key_event[ w.ev ]
 
 
 intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ] 
-    w: (glfwGetWindowUserPointer[ win ] to Display)
+    w: (glfwGetWindowUserPointer[ win ] to Window)
     w.ev.clear[]
     w.ev.mouse.pos.x         = w.mouse.x
     w.ev.mouse.pos.y         = w.mouse.y
     w.ev.mouse.wheel_delta.y = y
-    w.ux.wheel_event[ w.ev ]
+    w.wheel_event[ w.ev ]
 
 
 intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods: i32 ] 
-    w: (glfwGetWindowUserPointer[ win ] to Display)
+    w: (glfwGetWindowUserPointer[ win ] to Window)
     w.ev.clear[]
     w.ev.mouse.pos.x  = w.mouse.x
     w.ev.mouse.pos.y  = w.mouse.y
     w.ev.mouse.button = id - GLFW_MOUSE_BUTTON_LEFT
     w.ev.mouse.state  = action == GLFW_PRESS
     if [ w.ev.mouse.state ]
-        w.ux.press_event[ w.ev ]
+        w.press_event[ w.ev ]
     el
-        w.ux.release_event[ w.ev ]
+        w.release_event[ w.ev ]
 
 
 intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ] 
-    w: (glfwGetWindowUserPointer[ win ] to Display)
+    w: (glfwGetWindowUserPointer[ win ] to Window)
     expect !w.ev.key.text, "unexpected text state"
     w.ev.clear[]
     w.ev.key.text = i32[ code_point ]
-    w.ux.text_event[ w.ev ]
+    w.text_event[ w.ev ]
 
 
 intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ] 
-    w: (glfwGetWindowUserPointer[ win ] to Display)
+    w: (glfwGetWindowUserPointer[ win ] to Window)
     w.ev.clear[]
     w.mouse.x = x
     w.mouse.y = y
     w.ev.mouse.pos.x = w.mouse.x
     w.ev.mouse.pos.y = w.mouse.y
-    #w.ux.move_event[ w.ev ]
+    #w.move_event[ w.ev ]
 
 
 func get_required_extensions [ vk: vk_context ] 
@@ -6030,7 +6175,6 @@ enum UXSurface
     colorize    : 4
     overlay     : 5
     glyph       : 6
-    glyph_subtract : 7
 
 enum Fill : f32
     none      : 0.00f
@@ -6042,7 +6186,6 @@ enum CanvasType
     compose     : 1
     colorize    : 2
     glyph       : 3
-    glyph_subtract : 4
 
 enum Pattern
     none : 0
@@ -6097,7 +6240,7 @@ class element
     public focus        : EventDispatch
     public blur         : EventDispatch
     public cursor       : vec2f
-    intern ux           : UXComposer
+    intern ux           : Window
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
     intern transitions  : map StyleTransition[string]
@@ -6155,9 +6298,43 @@ class element
 
 alias StyleTransitions : map StyleTransition[string]
 
-Composer UXComposer
-    public app                  : object
-    public w                    : Window
+
+Display Window
+    
+    mutable app_object          : app
+
+    public compose              : Canvas
+    public colorize             : Canvas
+    public overlay              : Canvas
+    public glyph                : Canvas
+    public screen               : Canvas
+
+    public background           : Render
+
+    mutable m_reduce             : Model
+    mutable r_reduce             : Render
+    mutable m_reduce0            : Model
+    mutable r_reduce0            : Render
+    mutable m_reduce1            : Model
+    mutable r_reduce1            : Render
+    mutable m_reduce2            : Model
+    mutable r_reduce2            : Render
+    mutable m_reduce3            : Model
+    mutable r_reduce3            : Render
+    mutable m_blur_v             : Model
+    mutable r_blur_v             : Render
+    mutable m_blur               : Model
+    mutable r_blur               : Render
+    mutable m_frost_v            : Model
+    mutable r_frost_v            : Render
+    mutable m_frost              : Model
+    mutable r_frost              : Render
+    mutable m_view               : Model
+    mutable r_view               : Render
+
+    mutable is_setup             : bool
+
+
     intern root_styles          : map Style[string]
     public root                 : element
     mutable capture             : element
@@ -6248,7 +6425,7 @@ Composer UXComposer
         root.animate_within[ ]
         remove_invalid[]
 
-    func update [ parent: element, rendered: map element[string] ]
+    func update_element [ parent: element, rendered: map element[string] ]
         target : Au [ app ]
 
         # mark for umount
@@ -6300,7 +6477,7 @@ Composer UXComposer
 
             irender : instance.render[ changed ]
             if [ !irender ] irender = instance.elements
-            if [  irender ] update[ instance, irender ]
+            if [  irender ] update_element[ instance, irender ]
 
         # perform umount on elements not updated in render
         retry : true
@@ -6325,7 +6502,7 @@ Composer UXComposer
             restyle = st.check_reload[]
         if [ restyle ]
             apply_style[ root, root_styles, null ]
-        update[ root, render ]
+        update_element[ root, render ]
 
     public func invalidate []
         if [ root ] root.invalidate_element[ ]
@@ -6459,79 +6636,36 @@ Composer UXComposer
             context_pressed = null
         if [ !action_pressed && !context_pressed ]
             release_capture[ capture ]
-
-
-
-Display Window
     
-    ux : UXComposer[w:a]
-
-    mutable app_object          : app
-
-    public compose              : Canvas
-    public colorize             : Canvas
-    public overlay              : Canvas
-    public glyph                : Canvas
-    public glyph_subtract       : Canvas
-
-    public background           : Render
-
-    public composite            : true
-
-    # this needs to be in trinity in form of a declarative stack for our rendering pipeline
-    # if we can do such a thing for elements, we should be able to express it
-    mutable m_reduce             : Model
-    mutable r_reduce             : Render
-    mutable m_reduce0            : Model
-    mutable r_reduce0            : Render
-    mutable m_reduce1            : Model
-    mutable r_reduce1            : Render
-    mutable m_reduce2            : Model
-    mutable r_reduce2            : Render
-    mutable m_reduce3            : Model
-    mutable r_reduce3            : Render
-    mutable m_blur_v             : Model
-    mutable r_blur_v             : Render
-    mutable m_blur               : Model
-    mutable r_blur               : Render
-    mutable m_frost_v            : Model
-    mutable r_frost_v            : Render
-    mutable m_frost              : Model
-    mutable r_frost              : Render
-    mutable m_view               : Model
-    mutable r_view               : Render
-
-    mutable is_setup             : bool
-
-
     func update [ ]
 
         compose = (compose || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
         compose.update[]
         compose.clear[ string[ "#888" ] ]
 
-        # composite mode binds four canvas layers into UXCompose:
+        # composite mode binds four canvas layers into UXBackground:
         #   compose  — main paint surface (rect/path/draw_text)
-        #   colorize — hue-shift mask (UXCompose .g channel)
+        #   colorize — hue-shift mask (UXBackground .g channel)
         #   overlay  — straight-alpha overlay layer
-        #   glyph    — text glyph mask (UXCompose .x channel)
+        #   glyph    — text glyph mask (UXBackground .x channel)
         # all four are allocated up front so the sampler set is fully
         # populated by the time m_view is built.
-        if [ composite ]
-            colorize       = (colorize       || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-            overlay        = (overlay        || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-            glyph          = (glyph          || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-            glyph_subtract = (glyph_subtract || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-            colorize      .update[]
-            overlay       .update[]
-            glyph         .update[]
-            glyph_subtract.update[]
-            colorize      .clear[ string[ "#000" ] ]
-            overlay       .clear[ string[ "#000" ] ]
-            glyph         .clear[ string[ "#000" ] ]
-            glyph_subtract.clear[ string[ "#000" ] ]
+        colorize       = (colorize       || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        overlay        = (overlay        || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        glyph          = (glyph          || Canvas [ w:a, vk: vk, format: Pixel.u8,    :width, :height ]).resize[ width, height ]
+        screen         = (screen         || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
 
-        if [ !is_setup && composite ]
+        colorize.update[]
+        overlay .update[]
+        glyph   .update[]
+        screen  .update[]
+
+        colorize.clear[ string[ "#000" ] ]
+        overlay .clear[ string[ "#000" ] ]
+        glyph   .clear[ string[ "#000" ] ]
+        screen  .clear[ string[ "#000" ] ]
+
+        if [ !is_setup ]
             is_setup = true
             vk: vk_context[ a.vk ]
 
@@ -6576,23 +6710,23 @@ Display Window
             m_frost   = Model  [ w: a,   s: bl, samplers: map Texture[string] [ 'color': r_frost_v.color ] ]
             r_frost   = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_frost ] ]
 
-            m_view    = Model [ w: w, s: UXCompose [ vk: vk, name: 'ux' ],
+            m_view    = Model [ w: w, s: UXBackground [ vk: vk, name: 'ux' ],
                 samplers: map Texture[string] [
                     'background':     background.color,
                     'frost':          r_frost.color,
                     'blur':           r_blur.color,
                     'compose':        compose.color,
                     'colorize':       colorize.color,
-                    'overlay':        overlay.color,
-                    'glyph':          glyph.color,
-                    'glyph_subtract': glyph_subtract.color
+                    'overlay':        overlay.color
                 ]
             ]
 
-            r_view    = Render [ vk: vk, w: a, wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
+            r_view    = Render [ vk: vk, w: a,
+                color: screen.color,
+                wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
                 models: array Model [ m_view ] ]
 
-            ux_shader : UXCompose [ m_view.s ]
+            ux_shader : UXBackground [ m_view.s ]
             ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
             ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
 
@@ -6601,22 +6735,6 @@ Display Window
                 r_reduce2, r_reduce3, r_frost_v, r_frost,
                 r_view ]
 
-        el [ !is_setup ]
-            is_setup = true
-            textures : map Texture[string] [
-                'background': compose.color # also add 'overlay': compose.overlay
-            ]
-            m_view = Model [ vk: vk, w: a, s:
-                UXSimple [ vk: vk, name: 'simple' ],
-                    samplers: textures
-                ]
-            r_view = Render [ vk: vk, w: a, wscale: 1.0,
-                clear_color: [ 0.011, 0.022, 0.044, 1.0 ], models:
-                    [ m_view ]
-            ]
-            
-            list = array Render [ r_view ]
-
 
 
     public func resize [ w: i32, h: i32 ] -> Window
@@ -6624,9 +6742,30 @@ Display Window
         update[]
         return a
 
+    mutable blur_anim : f32
+
+    func draw_compose []
+        if [ !compose ] return
+        x : f32 [ f32[ width  - 256 ] ]
+        y : f32 [ f32[ height - 256 ] ]
+        compose.fill_color[ '#008' ]
+        compose.rect_to[ x, y, 256.0, 256.0 ]
+        compose.paint[]
+
+    func draw_screen []
+        if [ !screen ] return
+        screen.fill_color[ '#f00' ]
+        screen.rect_to[ 64.0, 64.0, 240.0, 120.0 ]
+        screen.paint[]
+        screen.draw[]
+        screen.sync_fence[]
+        blur_anim += 0.002
+        r : f32 [ (sin[ blur_anim ] * 0.5 + 0.5) * 256.0 ]
+        screen.blur[ r ]
+
     public func draw_element [ e: element* ]
         expect e inherits element, 'e is not an element'
-        canvas_arr : new Canvas[5] [ overlay, compose, colorize, glyph, glyph_subtract ]
+        canvas_arr : new Canvas[3] [ overlay, compose, colorize ]
         rel : rect [ (e.parent) ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
             rect [ x: 0, y: 0, w: width, h: height ] ]
@@ -6712,9 +6851,9 @@ abstract media_app trinity
         elements : on_render[ w ]
 
         if [ elements ]
-            w.ux.update_all[ elements ]
+            w.update_all[ elements ]
 
-        w.ux.animate[]
+        w.animate[]
         if [ w.compose && w.colorize && w.glyph ]
             w.compose .clear [ '#000' ]
             w.colorize.clear [ '#000' ]
@@ -6727,34 +6866,33 @@ abstract media_app trinity
 
     mutable angle : f32
 
-    # test-render
+    # 22
     func render[]
         window : Window[w]
         update_scene*[]
-        if [ window.composite ]
-            angle += 0.01
 
-            window.compose       .clear[ '#f08'  ] # 888 = default
-            window.colorize      .clear[ "#000"  ] #
-            window.overlay       .clear[ "#0000" ] # the only one that needs an alpha layer
-            window.glyph         .clear[ "#fff0" ]
+        angle += 0.01
 
-            window.glyph.fill_color[ "#00f" ]
-            window.glyph.draw_text[
-                "Aura",
-                rect [ x: 144.0, y: 196.0, w: 200.0, h: 96.0 ],
-                vec2f [ 0.5, 0.5 ],
-                vec2f [ 0.0, 0.0 ],
-                false ]
+        window.compose  .clear[ '#f08'  ] # 888 = default
+        window.colorize .clear[ '#000'  ] #
+        window.overlay  .clear[ '#0000' ] # the only one that needs an alpha layer
+        window.glyph    .clear[ '#0000' ]
+        window.glyph    .fill_color[ "rgba(255, 0, 0, 1)" ]
+        window.glyph    .draw_text[
+            "Aura",
+            rect [ x: 144.0, y: 196.0, w: 200.0, h: 96.0 ],
+            vec2f [ 0.5, 0.5 ],
+            vec2f [ 0.0, 0.0 ],
+            false ]
 
 ##
-            window.compose.fill_color[ '#ff0' ]
-            window.compose.stroke_color[ '#222' ]
-            window.compose.rect_to[ window.width - 128, 16, 512, 128 ]
-            window.compose.fill_offset[ 0 ]
-            window.compose.stroke_offset[ 0 ]
-            window.compose.stroke_width[ 4 ]
-            window.compose.paint[]
+        window.compose.fill_color[ '#ff0' ]
+        window.compose.stroke_color[ '#222' ]
+        window.compose.rect_to[ window.width - 128, 16, 512, 128 ]
+        window.compose.fill_offset[ 0 ]
+        window.compose.stroke_offset[ 0 ]
+        window.compose.stroke_width[ 4 ]
+        window.compose.paint[]
 ##
         window.draw[]
 
@@ -7452,9 +7590,6 @@ element World
     public scale        : array Scaling
     public update       : EventDispatch
 
-    func init []
-        expect ux, 'ux not set'
-
     func load [ w: Window ]
         if [ !target ]
             width  : int ((bounds) ? (bounds.w) : (w.width))  * render_scale
@@ -7534,8 +7669,6 @@ class IBL
     public placeholder : i32
 
 
-# attribute: type + value, name baked into enum
-# class names first-class in inheritance; [args] as meta-members
 shader PBR
     mutable pos      : vec4f
     mutable dir      : vec4f
@@ -7691,9 +7824,6 @@ shader PBR
         gl_Position    = m * vec4(a_pos, 1.0);
     }
 
-# buffer and command classes moved to vulkan.ag
-# buffer_transfer stays here (depends on Window)
-
 
 shader BlurV
     mutable model : mat4f
@@ -7777,7 +7907,102 @@ shader Blur
     }
 
 
-shader UXCompose
+# CanvasBlurV — samples a mipped source at a fractional LOD with a
+# vertical gaussian kernel. the mip chain (populated by Canvas.blur
+# via vkCmdBlitImage) provides the wide reduce+resample; this pass
+# blurs vertically across the entire output at full res.
+shader CanvasBlurV
+    mutable model     : mat4f
+    mutable view      : mat4f
+    mutable proj      : mat4f
+    mutable radius_uv : f32
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func gaussian [ x: float, sigma: float ] -> GLSL float {
+        const float PI = 3.14159265359;
+        return exp(-(x * x) / (2.0 * sigma * sigma)) / (sqrt(2.0 * PI) * sigma);
+    }
+
+    func fragment [] -> GLSL none {
+        const int   kernel_size = 9;
+        const float sigma       = 2.0;
+        vec2  offset            = vec2(0.0, ubo.radius_uv);
+        float weight_sum        = gaussian(0.0, sigma);
+        vec4  result            = texture(color, v_uv) * weight_sum;
+        for (int i = 1; i <= kernel_size / 2; ++i) {{
+            float w      = gaussian(float(i), sigma);
+            vec2  shift  = offset * float(i);
+            result      += texture(color, v_uv + shift) * w;
+            result      += texture(color, v_uv - shift) * w;
+            weight_sum  += 2.0 * w;
+        }}
+        fragColor = vec4((result / weight_sum).xyz, 1.0);
+    }
+
+
+# CanvasBlurH — final stage. samples blur_v output at LOD 0 (full res,
+# already V-blurred) and applies a horizontal gaussian. fine-tune
+# kernel width comes from the fixed sigma; the mip LOD on V carried
+# the wide-radius reduce.
+shader CanvasBlurH
+    mutable model      : mat4f
+    mutable view       : mat4f
+    mutable proj       : mat4f
+    mutable radius_uv  : f32
+    mutable mix_factor : f32
+    attrib low  : LayoutBinding [ type:typeid[ BlurPair ], id:BlurPair.low,  count:1, format: typeid[ rgba8 ] ]
+    attrib high : LayoutBinding [ type:typeid[ BlurPair ], id:BlurPair.high, count:1, format: typeid[ rgba8 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func gaussian [ x: float, sigma: float ] -> GLSL float {
+        const float PI = 3.14159265359;
+        return exp(-(x * x) / (2.0 * sigma * sigma)) / (sqrt(2.0 * PI) * sigma);
+    }
+
+    func blur_sample [ s: sampler2D, st: vec2f, off: vec2f, sigma: f32 ] -> GLSL vec4f {
+        const int kernel_size = 9;
+        float weight_sum = gaussian(0.0, sigma);
+        vec4  result     = texture(s, st) * weight_sum;
+        for (int i = 1; i <= kernel_size / 2; ++i) {{
+            float w      = gaussian(float(i), sigma);
+            vec2  shift  = off * float(i);
+            result      += texture(s, st + shift) * w;
+            result      += texture(s, st - shift) * w;
+            weight_sum  += 2.0 * w;
+        }}
+        return result / weight_sum;
+    }
+
+    func fragment [] -> GLSL none {
+        const float sigma  = 2.0;
+        vec2  offset       = vec2(ubo.radius_uv, 0.0);
+        vec4  lo           = blur_sample(low,  v_uv, offset, sigma);
+        vec4  hi           = blur_sample(high, v_uv, offset, sigma);
+        vec4  m            = mix(lo, hi, ubo.mix_factor);
+        fragColor          = vec4(m.xyz, 1.0);
+    }
+
+
+shader UXBackground
     mutable model        : mat4f
     mutable view         : mat4f
     mutable proj         : mat4f
@@ -7790,8 +8015,6 @@ shader UXCompose
     attrib compose        : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.compose,        count:1, format: typeid[ rgba8 ] ]
     attrib colorize       : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.colorize,       count:1, format: typeid[ rgba8 ] ]
     attrib overlay        : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.overlay,        count:1, format: typeid[ rgba8 ] ]
-    attrib glyph          : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.glyph,          count:1, format: typeid[ rgba8 ] ]
-    attrib glyph_subtract : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.glyph_subtract, count:1, format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -7826,11 +8049,11 @@ shader UXCompose
         gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
     }
 
+    # 44
     func fragment [] -> GLSL none {
         vec4  comp     = texture(compose,        v_uv);
         vec4  col      = texture(colorize,       v_uv);
         vec4  over     = texture(overlay,        v_uv);
-        vec4  gly      = texture(glyph,          v_uv);
         float luminance = 1.0 - ((comp.b - 0.5020) * 2.0);
         vec3  f;
         
@@ -7854,38 +8077,8 @@ shader UXCompose
         }
 
         f = mix(f, over.rgb, over.a);
-        f = mix(f, gly.rgb,  gly.a);
 
         fragColor = vec4(f, 1.0);
-    }
-
-
-shader UXSimple
-    mutable model : mat4f
-    mutable view  : mat4f
-    mutable proj  : mat4f
-
-    attrib background : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.background,  count:1, format: typeid[ rgba8 ] ]
-
-    attrib a_pos      : VertexInput    [ type:typeid[ vec2f ] ]
-    attrib v_uv       : VertexOutput   [ type:typeid[ vec2f ] ]
-    attrib o_color    : FragmentOutput [ type:typeid[ vec4f ] ]
-
-    func init [ ]
-        model = mat4f.identity[]
-        eye:    vec3f [ 0.0, 0.0, 2.0 ]
-        center: vec3f [ 0.0, 0.0, 0.0 ]
-        up:     vec3f [ 0.0, 1.0, 0.0 ]
-        view  = mat4f.look_at[ eye, center, up ]
-        proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
-
-    func vertex [] -> GLSL none {
-        v_uv        = a_pos * 0.5 + 0.5;
-        gl_Position = vec4(a_pos, 0.0, 1.0);
-    }
-
-    func fragment [] -> GLSL none {
-        o_color = texture(background, v_uv);
     }
 
 
