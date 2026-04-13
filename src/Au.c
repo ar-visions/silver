@@ -3161,6 +3161,7 @@ Au _bool(bool data) { return primitive(typeid(bool), &data); }
 none Au_init(Au a) { }
 
 none Au_drop_members(Au a) {
+    return;
     Au   f = header((Au)a);
     Au_t type = f->type;
     while (type != typeid(Au)) {
