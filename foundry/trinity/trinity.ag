@@ -132,6 +132,11 @@ class Render
     # same color texture (e.g. a text-on-canvas overlay sharing the canvas's
     # color attachment).
     public  load_existing                  : bool
+    # opt IN to depth: 3D scenes that need depth testing set this to
+    # true. 2D passes (blur, reduction, compose, text) leave it false
+    # and skip the depth texture entirely — halving texture churn on
+    # resize.
+    public  use_depth                      : bool
     intern  reduce_model                   : Model
     intern  vk_command_buffer              : VkCommandBuffer
     intern  vk_swap_image                  : VkImage
@@ -158,7 +163,13 @@ class Render
         
         if [ width == last_width && height == last_height ]
             return
-        
+
+        # wait for this Render's own in-flight frame before tearing down
+        # its attachments / framebuffers. replaces the global vkDeviceWaitIdle
+        # Display.resize used to do — each Render fences only its own work.
+        if [ last_width > 0 && last_height > 0 ]
+            sync_fence[]
+
         last_width  = width
         last_height = height
             
@@ -174,8 +185,9 @@ class Render
             color = Texture [ vk: vk, w: w, width: width, height: height,
                 vk_format: w.surface_format.format, swap: !backbuffer,
                 surface: Surface.color, vk_image: vk_swap_image ]
-            depth = Texture [ vk: vk, w: w, width: width, height: height,
-                vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer ]
+            if [ use_depth ]
+                depth = Texture [ vk: vk, w: w, width: width, height: height,
+                    vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer ]
             if [ reduce ]
                 reduction = Texture [ vk: vk, w: w, width: width / 4, height: height / 4,
                     vk_format: w.surface_format.format, swap: !backbuffer ]
@@ -312,6 +324,7 @@ class Render
         expect result == VK_SUCCESS, "fence wait failed"
 
     func dealloc [ ]
+        return
         for [ i: 0, i < 2, i += 1 ]
             vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
             vkDestroyRenderPass[ vk.device, vk_render_pass[i], null ]
@@ -343,12 +356,12 @@ class Render
         # supplied — used by color-only overlays (e.g. text on canvas).
         color_load_op  : VkAttachmentLoadOp [ (load_existing) ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR ]
         color_init_lay : VkImageLayout      [ (load_existing) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED ]
-        # depth is wanted unless this is a load_existing layer (text /
-        # overlay passes that share an existing color attachment with no
-        # depth test). update's el-branch creates color+depth together for
-        # the lazy-init case, so this matches what'll exist at framebuffer
+        # depth is wanted only when the caller opts in with use_depth.
+        # 2D passes (blur, reduction, compose, overlay, text) leave it
+        # off. update's el-branch creates color+depth together when
+        # use_depth is set, so this matches what'll exist at framebuffer
         # time.
-        has_depth_init : bool [ (load_existing) ? false : true ]
+        has_depth_init : bool [ use_depth ]
         attachments : local VkAttachmentDescription [2] [
             VkAttachmentDescription [
                 format:         w.surface_format.format,
@@ -878,10 +891,14 @@ class gpu
                 tx = img.user
             el [ img && img.surface == Surface.environment ]
                 tx = environment[ vk, img, vec3f [ 0.0, 1.0, 0.0 ], radians[ 90.0 ] ]
+                if [ img ]
+                    img.user = tx
             el
                 # this should handle primitive refs
                 tx = Texture [ vk: vk, sampler: sampler,
                     surface: (img) ? img.surface : Surface.color ]
+                if [ img ]
+                    img.user = tx
 
     func init [ ]
         if [ vertex_size ] vertex_data = new i8 [ vertex_size * vertex_count ]
@@ -1843,7 +1860,10 @@ class Texture
             return a
         width  = w_new
         height = h_new
-        vkDeviceWaitIdle[ vk.device ]
+        # no vkDeviceWaitIdle — the owning Render's sync_fence[] (called from
+        # its update[] before it reaches texture resize) already waited for
+        # that Render's in-flight work. device-wide waits here compound to
+        # seconds across the full composite chain.
         dealloc     [ ]
         init        [ ]
         hold_members[ ]
@@ -2171,7 +2191,10 @@ class Texture
     func dealloc [ ]
         vkDestroySampler[ vk.device, vk_sampler, null ]
         vkDestroyImageView[ vk.device, vk_image_view, null ]
-        vmaDestroyImage[ vk.allocator, vk_image, vma_alloc ]
+        # swap textures wrap a VkImage owned by the swapchain — destroying the
+        # swapchain already invalidated it; we must NOT call vmaDestroyImage.
+        if [ !swap ]
+            vmaDestroyImage[ vk.allocator, vk_image, vma_alloc ]
         vk_layout     = VK_IMAGE_LAYOUT_UNDEFINED
         vma_alloc     = null
         vk_image      = null
@@ -2218,7 +2241,7 @@ Texture Display
     intern pending_w            : i32
     intern pending_h            : i32
     intern last_resize_t        : f64
-    intern resize_debounce_s    : f64 [ 0.222 ]
+    intern resize_debounce_s    : f64 [ 0.188 ]
     intern in_callback_draw     : bool
     public backbuffer           : bool
     func last_render [] -> Render
@@ -2228,11 +2251,6 @@ Texture Display
     func update [ ] return
     
     func resize [ w_new: i32, h_new: i32 ] -> Display
-
-        mstr : string 'wow'
-        m2   : array string [ mstr ]
-
-        vkDeviceWaitIdle[ vk.device ]
         width  = w_new
         height = h_new
         extent.width  = w_new
@@ -3249,9 +3267,11 @@ shader CanvasUI
     func vertex [] -> GLSL none {
         // local-space rect (no transform yet)
         // pad = 1px AA + blur (params.z) + half stroke width (params.x)
-        // so the covering quad fully contains the AA edge, blur falloff,
-        // AND the outer half of any centered stroke band.
-        float pad      = 1.0 + ubo.params.z + ubo.params.x * 0.5;
+        // + max(0, fill_offset) so outward-expanded fill stays inside the quad
+        // + max(0, stroke_offset) so an outward-shifted stroke band isn't clipped.
+        float pad      = 1.0 + ubo.params.z + ubo.params.x * 0.5
+                             + max(ubo.fill_offset,   0.0)
+                             + max(ubo.stroke_offset, 0.0);
         vec2  lo_local = ubo.rect.xy - vec2(pad);
         vec2  hi_local = ubo.rect.xy + ubo.rect.zw + vec2(pad);
 
@@ -3270,8 +3290,10 @@ shader CanvasUI
         vec2 lo_world = min(min(c0, c1), min(c2, c3));
         vec2 hi_world = max(max(c0, c1), max(c2, c3));
 
-        // pick this vertex's corner of the world-space AABB
-        vec2 wpx = mix(lo_world, hi_world, a_pos);
+        // pick this vertex's corner of the world-space AABB.
+        // a_pos comes from uv-quad2 in [-1,1]; remap to [0,1] for mix.
+        vec2 t   = a_pos * 0.5 + 0.5;
+        vec2 wpx = mix(lo_world, hi_world, t);
         v_pos    = wpx;
         vec2 ndc = (wpx / ubo.viewport) * 2.0 - 1.0;
         gl_Position = vec4(ndc, 0.0, 1.0);
@@ -3398,8 +3420,14 @@ shader CanvasUI
             vec2 d_local = abs(lpos - center) - half_size;
             dist_stroke  = max(d_local.x, d_local.y);
         }}
-        float fill_cov   = 1.0 - smoothstep(-w, w, dist + half_w);
-        float stroke_cov = 1.0 - smoothstep(-w, w, abs(dist_stroke) - half_w);
+        // fill_offset biases the SDF inward (negative = expand outward);
+        // stroke_offset shifts the stroke band similarly. stroke_cov gates on
+        // stroke_width > 0 — otherwise smoothstep at dist=0 yields 0.5 and
+        // draws a half-alpha edge band even with zero stroke.
+        float fill_cov   = 1.0 - smoothstep(-w, w, dist - ubo.fill_offset + half_w);
+        float stroke_cov = (stroke_width > 0.0)
+            ? (1.0 - smoothstep(-w, w, abs(dist_stroke - ubo.stroke_offset) - half_w))
+            : 0.0;
 
         // PRE-MULTIPLIED ALPHA: rgb pre-multiplied by coverage. composing
         // through multiple stages stays correct (no double-darkening).
@@ -3420,6 +3448,8 @@ shader CanvasUI
 # render pass over the canvas's color attachment in a single vkCmdDraw.
 shader CanvasText
     mutable viewport : vec2f
+    mutable text_color : vec4f
+
     attrib  atlas    : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format: typeid[ u8 ]
     ]
@@ -3439,7 +3469,7 @@ shader CanvasText
         // blend state on the text Pipeline (straight_alpha flag) so the
         // result composes as rgb*a + dst*(1-a). this looked best in testing.
         float a = texture(atlas, v_uv).r;
-        o_color = vec4(1.0, 1.0, 1.0, a);
+        o_color = vec4(ubo.text_color.x, ubo.text_color.y, ubo.text_color.z, a);
     }
 
 
@@ -4045,11 +4075,7 @@ Render Canvas
         if [ size % 16 != 0 ]    
             printf[ "\n" ]
 
-    func clear [ color: Au ]
-        # full-canvas clear via vkCmdClearColorImage — bypasses the SDF
-        # mode-0 fill path in Canvas.flush (which currently doesn't paint
-        # to color.vk_image for reasons we still need to track down) and
-        # writes the pixels directly. cheaper too.
+    func clear [ color: string ]
         clr : sk_color[ color ]
         clear_color = clr
         reset[ clr ]
@@ -4261,6 +4287,10 @@ Render Canvas
         text_vbo.vertex_count = vi
         if [ text_vbo.vertex && vi > 0 ]
             text_vbo.vertex.update[ text_vbo.vertex_data ]
+            # text_render isn't in Display.list so nothing else refreshes its
+            # framebuffer after a resize — call update here so it rebuilds
+            # against the current color.vk_image_view before we draw.
+            text_render.update[]
             # submit via text_render — its render pass uses LOAD_OP_LOAD on
             # canvas color so the text composites on top of whatever the
             # canvas just drew. one render pass, one vkCmdDraw, fence-waited.
@@ -5231,70 +5261,51 @@ func nib [ n: i8 ] -> i8
         return 10 + (n - 'A')
     return 0
 
-func sk_color [ clr: Au ] -> vec4f
-    type: typeid[ clr ]
+func sk_color [ clr: string ] -> vec4f
     ia: i32 [ 255 ]
     ir: i32
     ig: i32
     ib: i32
-    if [ type == typeid[ string ] || type == typeid[ symbol ] ]
-        s: string [ clr ]
-        h: ref u8 [ s.chars ]
-        # NB: typed-locals around the byte indexer to force a load. silver
-        # currently returns the slot address from `h[i]` rather than the
-        # value (related to the `if [arr[i]]` aether bug we partly fixed in
-        # e_convert_or_cast — comparison/load paths still need the same
-        # treatment). binding to a typed local triggers the load via
-        # e_assign's coerce step.
-        h0 : i8 [ h[0] ]
-        if [ h0 == '#' ]
-            sz: s.count
-            h1 : i8 [ h[1] ]
-            h2 : i8 [ h[2] ]
-            h3 : i8 [ h[3] ]
-            switch [ sz ]
-                case 5
-                    h4 : i8 [ h[4] ]
-                    ia = nib[ h4 ] << 4 | nib[ h4 ]
-                    ir = nib[ h1 ] << 4 | nib[ h1 ]
-                    ig = nib[ h2 ] << 4 | nib[ h2 ]
-                    ib = nib[ h3 ] << 4 | nib[ h3 ]
-                case 4
-                    ir = nib[ h1 ] << 4 | nib[ h1 ]
-                    ig = nib[ h2 ] << 4 | nib[ h2 ]
-                    ib = nib[ h3 ] << 4 | nib[ h3 ]
-                case 9
-                    h4 : i8 [ h[4] ]
-                    h5 : i8 [ h[5] ]
-                    h6 : i8 [ h[6] ]
-                    h7 : i8 [ h[7] ]
-                    h8 : i8 [ h[8] ]
-                    ia = nib[ h7 ] << 4 | nib[ h8 ]
-                    ir = nib[ h1 ] << 4 | nib[ h2 ]
-                    ig = nib[ h3 ] << 4 | nib[ h4 ]
-                    ib = nib[ h5 ] << 4 | nib[ h6 ]
-                case 7
-                    h4 : i8 [ h[4] ]
-                    h5 : i8 [ h[5] ]
-                    h6 : i8 [ h[6] ]
-                    ir = nib[ h1 ] << 4 | nib[ h2 ]
-                    ig = nib[ h3 ] << 4 | nib[ h4 ]
-                    ib = nib[ h5 ] << 4 | nib[ h6 ]
-    el [ type == typeid[ rgba8 ] ]
-        c: rgba [ clr ]
-        ir = c.r
-        ig = c.g
-        ib = c.b
-        ia = c.a
-    el [ type == typeid[ rgba ] || type == typeid[ rgbaf ] ]
-        c: rgba [ clr ]
-        ir = c.r * 255.0
-        ig = c.g * 255.0
-        ib = c.b * 255.0
-        ia = c.a * 255.0
-    el
-        fault 'implement color conversion for type {type.ident}'
 
+    h: ref u8 [ clr.chars ]
+    h0 : i8 [ h[0] ]
+    if [ h0 == '#' ]
+        sz: clr.count
+        h1 : i8 [ h[1] ]
+        h2 : i8 [ h[2] ]
+        h3 : i8 [ h[3] ]
+
+        switch [ sz ]
+            case 5
+                h4 : i8 [ h[4] ]
+                ia = nib[ h4 ] << 4 | nib[ h4 ]
+                ir = nib[ h1 ] << 4 | nib[ h1 ]
+                ig = nib[ h2 ] << 4 | nib[ h2 ]
+                ib = nib[ h3 ] << 4 | nib[ h3 ]
+            case 4
+                ir = nib[ h1 ] << 4 | nib[ h1 ]
+                ig = nib[ h2 ] << 4 | nib[ h2 ]
+                ib = nib[ h3 ] << 4 | nib[ h3 ]
+            case 9
+                h4 : i8 [ h[4] ]
+                h5 : i8 [ h[5] ]
+                h6 : i8 [ h[6] ]
+                h7 : i8 [ h[7] ]
+                h8 : i8 [ h[8] ]
+                ia = nib[ h7 ] << 4 | nib[ h8 ]
+                ir = nib[ h1 ] << 4 | nib[ h2 ]
+                ig = nib[ h3 ] << 4 | nib[ h4 ]
+                ib = nib[ h5 ] << 4 | nib[ h6 ]
+            case 7
+                h4 : i8 [ h[4] ]
+                h5 : i8 [ h[5] ]
+                h6 : i8 [ h[6] ]
+                ir = nib[ h1 ] << 4 | nib[ h2 ]
+                ig = nib[ h3 ] << 4 | nib[ h4 ]
+                ib = nib[ h5 ] << 4 | nib[ h6 ]
+    el
+        fault['unknown color format: {clr}']
+    
     res : vec4f [
         f32[ ir ] / 255.0,
         f32[ ig ] / 255.0,
@@ -5583,12 +5594,6 @@ intern func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i
     w.pending_w     = width
     w.pending_h     = height
     w.last_resize_t = glfwGetTime[]
-    # On most platforms glfwPollEvents enters a modal nested loop while the
-    # user is dragging the window border, so the main render loop never runs
-    # and canvas drawing freezes. GLFW callbacks DO fire during the modal
-    # loop — pump a frame here so the window keeps painting. The recursion
-    # guard prevents looping when this handler is reached from inside
-    # Display.draw via the VK_ERROR_OUT_OF_DATE_KHR path.
     if [ !w.in_callback_draw ]
         w.in_callback_draw = true
         w.draw[]
@@ -5908,10 +5913,6 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
     return img.user
 
 
-# single source of truth for "is this member a uniform field": a mutable
-# VAR with a real source type and no attrib trait. used by both
-# uniform_size and glsl_header so the GLSL UBO declaration and the
-# host-side buffer size always agree.
 func is_uniform_field [ mem: Au_t ] -> bool
     return mem.member_type == 4 && mem.access_type == (0,2,3,4) && bool[mem.src] && !(mem.traits & (1 << 56))
 
@@ -5938,7 +5939,7 @@ func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size:
         f32_fill: ref f32 [ ref fill ]
         for [ i: 0, i < s, i += 1 ]
             f32_fill[i] = data_f32[0]
-        format = Pixel.f32 # <---  /src/silver/src/aether.c:467 / /src/silver/foundry/vulkan/vulkan.ag:267:8 :: L-value not a pointer (cannot assign to value)
+        format = Pixel.f32
         sampler_size = s * sizeof[ f32 ]
     el [ cl == (typeid[i8], typeid[u8]) ]
         data_i8:    ref i8    [ sampler ]
@@ -6172,7 +6173,7 @@ Composer UXComposer
     public buttons              : array i32[16x1]
     public on_render            : hook
 
-    # Au runtime introspection — member iteration for args/style application
+
     public func apply_args [ inst: element, e: element ] -> array string
         ty      : typeid[ e ]
         changed : array string [ ]
@@ -6533,21 +6534,17 @@ Display Window
         if [ !is_setup && composite ]
             is_setup = true
             vk: vk_context[ a.vk ]
-            # let the app build its background scene Render here, before
-            # the composite chain materializes. orbiter overrides
-            # trinity.load_scene[] to load gltf + textures + create the
-            # earth/ocean/cloud Models and assign w.background.
+
             if [ app_object ]
                 t : trinity[app_object]
                 if [ t ]
                     t.load_scene*[]
-            # if no background scene was wired up, fall back to a single
-            # clear-color Render so the composite chain has something to
-            # reduce / blur.
+
             if [ !background ]
                 background = Render [ vk: vk, w: a, wscale: 1.0,
                     clear_color: vec4f [ 0.05, 0.02, 0.08, 1.0 ] ]
                 background.update[]
+            
             m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': background.color ] ]
             r_reduce  = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
 
@@ -6620,14 +6617,6 @@ Display Window
             
             list = array Render [ r_view ]
 
-        #if [ composite ]
-        #    colorize = (colorize || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        #    overlay  = (overlay  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        #    glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        #    colorize.clear[ string[ "#fff"  ] ]
-        #    overlay .clear[ string[ "#fff0" ] ]
-        #    glyph   .clear[ string[ "#000"  ] ]
-
 
 
     public func resize [ w: i32, h: i32 ] -> Window
@@ -6698,20 +6687,11 @@ abstract media_app trinity
     intern istroke      : f32 0
     intern ifill        : f32 0
     
-    #w : Window # this is an elaboration (its Display defined in vulkan)
-    # it may even do an additional run-time instance check; it will have the same visibility
+
     func init[]
         no-op
 
-    # subclass hook: build the background scene Render and assign
-    # w.background before the composite chain materializes during resize.
-    # default no-op — leaves Window.update[] to auto-create a clear-color
-    # background.
     func load_scene [] return
-
-    # subclass hook: per-frame uniform refresh for the background scene
-    # (model/view/proj/time on shader instances). called from render[]
-    # before any drawing so the next Pipeline.draw uploads fresh values.
     func update_scene [] return
 
     func run[] -> i32
@@ -6747,29 +6727,19 @@ abstract media_app trinity
 
     mutable angle : f32
 
+    # test-render
     func render[]
         window : Window[w]
-        # let the subclass refresh background-scene uniforms (model/view/
-        # proj/time on its shaders) before any pipeline draws so the next
-        # vkCmdDraw uploads the latest frame's values.
         update_scene*[]
-        # composite layering:
-        #   compose  — pane backgrounds (UXCompose .r/.b drive the
-        #              background→blur→frost ramp + luminance)
-        #   colorize — color source for the glyph mask
-        #   overlay  — pictures / icons (straight-alpha rgba)
-        #   glyph    — text mask; UXCompose mixes colorize.rgb in
-        #              wherever glyph.r > 0
         if [ window.composite ]
             angle += 0.01
 
-            window.compose       .clear[ '#00f'  ] # 888 = default
-            window.colorize      .clear[ "#000"  ]
+            window.compose       .clear[ '#f08'  ] # 888 = default
+            window.colorize      .clear[ "#000"  ] #
             window.overlay       .clear[ "#0000" ] # the only one that needs an alpha layer
-            window.glyph         .clear[ "#000"  ]
-            window.glyph_subtract.clear[ "#000"  ]
+            window.glyph         .clear[ "#fff0" ]
 
-            window.glyph.fill_color[ "#fff" ]
+            window.glyph.fill_color[ "#00f" ]
             window.glyph.draw_text[
                 "Aura",
                 rect [ x: 144.0, y: 196.0, w: 200.0, h: 96.0 ],
@@ -6777,54 +6747,15 @@ abstract media_app trinity
                 vec2f [ 0.0, 0.0 ],
                 false ]
 
+##
             window.compose.fill_color[ '#ff0' ]
-            window.compose.rect_to[ 32, 64, 256, 128 ]
+            window.compose.stroke_color[ '#222' ]
+            window.compose.rect_to[ window.width - 128, 16, 512, 128 ]
             window.compose.fill_offset[ 0 ]
             window.compose.stroke_offset[ 0 ]
+            window.compose.stroke_width[ 4 ]
             window.compose.paint[]
-
-            window.compose.fill_color[ '#ff0' ]
-            window.compose.rect_to[ 32, 64 + 128 + 4, 256, 128 ]
-            window.compose.fill_offset[ 0 ]
-            window.compose.stroke_offset[ 0 ]
-            window.compose.paint[]
-
-            window.compose.fill_color[ "#000" ]
-
 ##
-            window.compose.path.clear[]
-            window.compose.save[]
-            window.compose.translate[ 444.0, 444.0 ]
-            window.compose.rotate[ angle ]
-
-            window.compose.path.clear[]
-            window.compose.move_to[ 0.0, 20.0 ]
-            window.compose.line_to[ 20.0, 0.0 ]
-            window.compose.line_to[ 200.0, 0.0 ]
-            window.compose.cubic_to[ 180.0, 88.0, 180.0, 75.0, 200.0, 100.0 ]
-            window.compose.line_to[ 0.0, 100.0 ]
-            window.compose.close_path[]
-            window.compose.stroke_color[ '#FFAA00' ]
-            window.compose.stroke_width[ 4.0 ]                  
-            window.compose.fill_color[ '#fff' ]
-            window.compose.paint[]
-
-            window.compose.path.clear[]
-            window.compose.translate[ 44.0, 44.0 ]
-            window.compose.move_to[ 0.0, 20.0 ]
-            window.compose.line_to[ 20.0, 0.0 ]
-            window.compose.line_to[ 200.0, 0.0 ]
-            window.compose.cubic_to[ 180.0, 88.0, 180.0, 75.0, 200.0, 100.0 ]
-            window.compose.line_to[ 0.0, 100.0 ]
-            window.compose.close_path[]
-            window.compose.stroke_color[ '#FFAA00' ]
-            window.compose.stroke_width[ 4.0 ]                  
-            window.compose.fill_color[ '#fff' ]
-            window.compose.paint[]
-
-            window.compose.restore[]
-##
-
         window.draw[]
 
 
@@ -7896,63 +7827,35 @@ shader UXCompose
     }
 
     func fragment [] -> GLSL none {
-
-        // compose channel assignment:
-        //   .r — blur amount (sharp → blur → frost)
-        //   .g — absolute hue replacement (>0 enables, value is the new HSV hue)
-        //   .b — luminance adjust (0.5 neutral)
-        //   .a — unused (bg colorize amount lives on colorize.a now)
-        // colorize:    rgba paint surface — .rgb is the bleed color, .a is
-        //              how much of it lerps onto the (post-effects) background.
-        // glyph:       single-channel coverage mask in .x. exploded to vec3
-        //              before the subtractive tint runs.
-        // glyph_subtract: rgba subtractive tint — .rgb is subtracted from the
-        //              broadcast glyph mask to land on the displayed color.
-        //              caller stores (1 - desired_color) here, so painting
-        //              (0,1,1) cyan yields red text. default cleared to black
-        //              = identity = white text needs no painting.
-        // overlay:     straight-alpha rgba sprites/icons.
-
         vec4  comp     = texture(compose,        v_uv);
         vec4  col      = texture(colorize,       v_uv);
         vec4  over     = texture(overlay,        v_uv);
-        float gly      = texture(glyph,          v_uv).x;
-        vec4  gly_sub  = texture(glyph_subtract, v_uv);
+        vec4  gly      = texture(glyph,          v_uv);
         float luminance = 1.0 - ((comp.b - 0.5020) * 2.0);
         vec3  f;
-
-        fragColor = comp;
-    return;
         
-        if (comp.r < 0.5020) {{
+        if (comp.r < 0.5020) {
             f = mix(
                 texture(background, v_uv).rgb,
                 texture(blur,       v_uv).rgb,
                 comp.r / 0.5020) * luminance;
-        }} else {{
+        } else {
             f = mix(
                 texture(blur,       v_uv).rgb,
                 texture(frost,      v_uv).rgb,
                 (comp.r - 0.5020) / (1.0 - 0.5020)) * luminance;
-        }}
-        if (comp.g > 0.0) {{
+        }
+
+        if (comp.g > 0.0) {
             float hue = comp.g;
             vec3  hsv = rgb2hsv(f);
             vec3  clr = vec3(comp.g, hsv.y, hsv.z);
             f = hsv2rgb(clr);
-        }}
-        // background colorize: lerp the (post-effects) background toward
-        // colorize.rgb by colorize.a. 0 = no bleed, 1 = full replace.
-        if (col.a > 0.0) {{
-            f = mix(f, col.rgb, col.a);
-        }}
+        }
+
         f = mix(f, over.rgb, over.a);
-        // glyph: explode the scalar mask to vec3 and subtract the tint to
-        // land on the final text color, clamped to 0. white text needs zero
-        // painting in glyph_subtract because subtracting black is identity.
-        // composite via the mask itself as coverage.
-        vec3 text_rgb = max(vec3(gly) - gly_sub.rgb, vec3(0.0));
-        f = f * (1.0 - gly) + text_rgb;
+        f = mix(f, gly.rgb,  gly.a);
+
         fragColor = vec4(f, 1.0);
     }
 
