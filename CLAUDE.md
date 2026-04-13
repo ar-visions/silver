@@ -336,6 +336,10 @@ bool  e = is_enum((Au)some_enode);  // check if type is enum (resolves through v
 bool  p = is_prim((Au)some_enode);  // check if primitive
 ```
 
+## Code Style
+
+**No comments unless absolutely necessary.** Default to zero. Don't narrate what code does — names already do that. Don't explain fixes, don't reference specific callers or application concepts (trinity is a library; it must never mention `earth`, `orbiter`, etc.). Only write a comment when the WHY is a hidden constraint, a subtle invariant, or a workaround that would surprise a reader. Single line, never multi-paragraph.
+
 ## Testing
 
 `expect func` declares a test — the compiler verifies it returns true:
@@ -762,21 +766,33 @@ Never use goto statements in this codebase.
 
 **How to apply:** Use early returns, break, continue, or restructure logic with if/else instead of goto.
 
-========== feedback_no_gui_access.md ==========
+========== feedback_run_and_debug.md ==========
 ---
-name: Don't run silver with --run
-description: Running silver with --run segfaults in Claude's shell. Compile without --run; user runs for visual verification.
+name: Run and debug the app — stop inferring from source alone
+description: Always run and screenshot the app before proposing changes. Use gdb for crashes. Never speculate from source; get actual evidence.
 type: feedback
-originSessionId: bfc52629-94ea-4e48-bebf-f379ae155ab0
 ---
-`./platform/native/debug/silver <proj> --run` segfaults (exit 139) in Claude's shell. Unknown exact cause — assumed to be display/Vulkan env related, but not verified. Do not claim categorical inability to run GUI apps; the failure is specific to this command path.
+**Run and debug everything yourself.** Don't ask the user to run. Don't propose fixes based on source reading. Get actual evidence first.
 
-**Why:** User was harmed by weeks of Claude silently running `--run`, getting segfaults, and not reporting them — then making decisions as if tests had passed. Separately, claiming "I can't run GUI apps" was overstated: only this specific path was verified broken.
+Standard workflow for visual/runtime verification:
+1. `silver <project>` (compile only, no `--run`)
+2. `./platform/native/debug/<project> &` (run binary in background)
+3. `/src/silver/screenshot.sh` (waits for the window by name, screenshots just it to /tmp/screenshot.png, then kills the app)
+4. `Read /tmp/screenshot.png` to see what actually rendered
+
+For crashes / undefined behavior:
+- `gdb --args ./platform/native/debug/<project>` for runtime crashes
+- `gdb --args ./platform/native/debug/silver <project> --clean` for compiler crashes
+- Read validator output verbatim — it names the bug
+
+**Why:** Inferring from source produces plausible theories that are usually wrong. Running produces ground truth. The user explicitly said: "its not development when you dont run it."
 
 **How to apply:**
-- To verify builds: run `silver <proj> --clean` (no `--run`). That compiles and tags; success means the code built.
-- For visual/runtime verification: ask the user to run it and screenshot. Do NOT run with `--run`.
-- If a new command segfaults: report it immediately, do not hide the exit code.
+- Bug reported → run the app first, get evidence
+- Theory about cause → verify by running before proposing a fix
+- If a run reveals something different from my theory, drop the theory; don't defend it
+- Never use `silver <project> --run` inside this shell — segfaults. Compile, then run the binary separately, always.
+- Always report the literal outcome: exit codes, validator messages, pixel values, stack traces
 
 ========== feedback_no_hacks.md ==========
 ---
@@ -1116,7 +1132,7 @@ Do NOT eagerly start tool calls, background tasks, or chains of work. Wait for t
 - [feedback_flag_test_stubs.md](feedback_flag_test_stubs.md) — Proactively flag stranded test stubs (early returns, hardcoded debug constants, commented experiments) when reading nearby code
 - [project_if_to_switch.md](project_if_to_switch.md) — Future: if/else parses into switch/native-switch in aether, unifying control flow and freeing `default` keyword
 - [feedback_screenshot_debug.md](feedback_screenshot_debug.md) — Always screenshot the window when debugging visual/rendering issues — use /src/silver/screenshot.sh
-- [feedback_no_gui_access.md](feedback_no_gui_access.md) — Shell has no display; GUI apps segfault. Say so immediately, never pretend to run them.
+- [feedback_run_and_debug.md](feedback_run_and_debug.md) — Run and screenshot the app before proposing changes; use gdb for crashes; never infer from source alone
 
 ========== project_context_weak.md ==========
 ---
