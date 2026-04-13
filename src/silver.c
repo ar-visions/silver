@@ -2672,7 +2672,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     token t1 = element(a, 1);
     bool new_bind = t1 && eq(t1, ":");
     
-    if (seq == 956) {
+    if (seq == 13890) {
         seq = seq;
     }
 
@@ -2882,7 +2882,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
             Au_t mem_type = isa(mem);
             bool b0, b1, b2, b3, b4;
-            if (seq == 8351) {
+            if (seq == 13890) {
                 seq = seq;
             }
 
@@ -7390,7 +7390,7 @@ static bool peek_fields(silver a) {
 enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
     push_current(a);
 
-    if (seq == 111) {
+    if (seq == 803) {
         seq = seq;
     }
     macro is_macro = instanceof(mem, macro);
@@ -7552,6 +7552,7 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
                 index_expr  = e_fn_call(a, (efunc)u(efunc, idx), a(mem, inner), false);
                 etype rtype = u(etype, idx->rtype);
 
+                Au info = header(mem);
                 // propagate design-time meta type for member access
                 // convert Au -> meta_a (for collective types: array, map, etc.)
                 Au_t meta_a = mem->au->meta.a ? mem->au->meta.a :

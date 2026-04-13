@@ -3268,8 +3268,15 @@ enode etype_access(etype target, string name) { sequencer
 
     // signal we're doing something non-const
     a->is_const_op = false;
-    if (a->no_build)
-        return e_noop(a, u(etype, au_arg_type((Au)m)));
+    if (a->no_build) {
+        // match the normal-path return: use `m` (the member descriptor) as
+        // au so downstream mem->au->meta.a reads the member's declared meta
+        // (e.g. `array Model` → Model), not the resolved type's default.
+        return enode(mod, a, loaded, false,
+            au, m,
+            meta_a, m->meta.a ? (Au)m->meta.a : null,
+            meta_b, m->meta.b ? m->meta.b      : null);
+    }
 
     enode tnode = (enode)target;
     string id = f(string, "enode_access_%i", seq);
@@ -3349,9 +3356,19 @@ enode etype_access(etype target, string name) { sequencer
             return enode(mod, a, au, m, loaded, true, debug_id, id, value, extracted);
         }
     }
+    // meta propagation: prefer the member's declared meta (e.g. `array Model`
+    // stores meta.a = Model on the member descriptor). fall back to the
+    // target enode's instance meta so accesses through a typed parent carry
+    // its generic params forward.
+    Au inst_meta_a = m->meta.a ? (Au)m->meta.a :
+        (instanceof(target, enode) ? ((enode)target)->meta_a : null);
+    Au inst_meta_b = m->meta.b ? m->meta.b :
+        (instanceof(target, enode) ? ((enode)target)->meta_b : null);
     return enode(
         mod,    a,
         au,     m,
+        meta_a, inst_meta_a,
+        meta_b, inst_meta_b,
         loaded, false,
         debug_id, id,
         value,  LLVMBuildStructGEP2(
@@ -5065,7 +5082,10 @@ enode aether_e_for(aether a,
 }
 
 enode aether_e_noop(aether a, etype mdl) {
-    enode op = enode(mod, a, loaded, false, au, mdl ? mdl->au : etypeid(none)->au);
+    enode op = enode(mod, a, loaded, false,
+        au, mdl ? mdl->au : etypeid(none)->au,
+        meta_a, mdl ? mdl->meta_a : null,
+        meta_b, mdl ? mdl->meta_b : null);
     return op;
 }
 
@@ -7839,12 +7859,10 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
         fprintf(stderr, "dumped to /tmp/crashing.ll\n");
         fflush(stderr);
     }
-    if (a->verbose) {
-        verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll), &err), "print-to-module: %s (path: %s)", err ? err : "unknown", cstring(*ll));
-        print("wrote %s", cstring(*ll));
-        if (LLVMWriteBitcodeToFile(a->module_ref, cstring(*bc)) != 0)
-            fault("LLVMWriteBitcodeToFile failed");
-    }
+    verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll), &err), "print-to-module: %s (path: %s)", err ? err : "unknown", cstring(*ll));
+    print("wrote %s", cstring(*ll));
+    if (LLVMWriteBitcodeToFile(a->module_ref, cstring(*bc)) != 0)
+        fault("LLVMWriteBitcodeToFile failed");
     validation_error  = LLVMVerifyModule(a->module_ref, LLVMReturnStatusAction, &err);
     validation_error |= LLVMVerifyModule(a->module_ref, LLVMPrintMessageAction, &err);
 
