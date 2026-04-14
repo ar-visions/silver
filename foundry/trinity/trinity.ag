@@ -2266,8 +2266,8 @@ Texture Display
 
     func update [ ] return
 
-    func draw_screen    [ ] return
-    func draw_compose[ ] return
+    func on_screen    [ ] return
+    func on_compose[ ] return
 
     func resize [ w_new: i32, h_new: i32 ] -> Display
         width  = w_new
@@ -2374,11 +2374,11 @@ Texture Display
         for [ r: Render, id: string ] in element_targets
             r.draw[]
             r.sync_fence[]
-        draw_compose[]
+        on_compose[]
         for [ r: Render ] in list
             r.draw[]
             r.sync_fence[]
-        draw_screen[]
+        on_screen[]
         if [ swap_renders ]
             result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
                 semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
@@ -3248,6 +3248,12 @@ shader CanvasUI
     #   xform_row1 = (tx, ty, 0, 0)    -- translation
     mutable xform_row0 : vec4f
     mutable xform_row1 : vec4f
+    mutable inner_glow_color : vec4f
+    mutable outer_glow_color : vec4f
+    # x = inner_glow_px, y = outer_glow_px, z = decay_k, w = reserved
+    mutable glow_params   : vec4f
+    # inner_ofs.xy, outer_ofs.zw — pixel offsets for directional glow
+    mutable glow_ofs      : vec4f
     mutable viewport      : vec2f
     mutable fill_offset   : f32
     mutable stroke_offset : f32
@@ -3271,6 +3277,32 @@ shader CanvasUI
         cr = min(cr, min(half_size.x, half_size.y));
         vec2 d = abs(q) - half_size + vec2(cr);
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - cr;
+    }
+
+    # smoothed rounded-rect distance used for inner glow.
+    # the standard SDF has a 45° gradient kink inside the "core rect"
+    # because max(d.x, d.y) picks one axis or the other. That kink shows
+    # up in the inner-glow iso-contours as a visible wedge along the
+    # corner diagonals. Replacing max with a quadratic soft-max smooths
+    # the iso-contours without moving the zero crossing meaningfully.
+    func smax [ a: f32, b: f32, k: f32 ] -> GLSL float {
+        float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
+        return mix(a, b, h) + k*h*(1.0-h);
+    }
+
+    func sdf_rounded_rect_glow [ p: vec2f, center: vec2f, half_size: vec2f, r: vec4f, soften: f32 ] -> GLSL float {
+        vec2 q = p - center;
+        float cr = (q.x >= 0.0)
+            ? ((q.y >= 0.0) ? r.z : r.y)
+            : ((q.y >= 0.0) ? r.w : r.x);
+        cr = min(cr, min(half_size.x, half_size.y));
+        vec2 d = abs(q) - half_size + vec2(cr);
+        // soft-max for inside smoothness; scales with corner radius AND
+        // the caller-provided `soften` (typically the glow pixel radius).
+        // wider glow → smoother iso-contours; zero crossing stays accurate.
+        float k = max(cr * 0.5, soften * 0.5);
+        k = max(k, 1.0);
+        return min(smax(d.x, d.y, k), 0.0) + length(max(d, 0.0)) - cr;
     }
 
     # ---- gradient evaluation ----
@@ -3419,7 +3451,26 @@ shader CanvasUI
                                  ubo.fill_color.a   * fill_cov);
             vec4 stroke_p = vec4(ubo.stroke_color.rgb * ubo.stroke_color.a * stroke_cov,
                                  ubo.stroke_color.a   * stroke_cov);
-            o_color = (stroke_p + fill_p * (1.0 - stroke_p.a)) * opacity;
+            float inner_px = ubo.glow_params.x;
+            float outer_px = ubo.glow_params.y;
+            float K        = ubo.glow_params.z;
+            vec4 outer_p = vec4(0.0);
+            if (outer_px > 0.0 && dist_p > 0.0) {{
+                float t = clamp(dist_p / outer_px, 0.0, 1.0);
+                float a = pow(1.0 - t, K) * ubo.outer_glow_color.a;
+                outer_p = vec4(ubo.outer_glow_color.rgb * a, a);
+            }}
+            vec4 inner_p = vec4(0.0);
+            if (inner_px > 0.0 && dist_p < 0.0) {{
+                float t = clamp(-dist_p / inner_px, 0.0, 1.0);
+                float a = pow(1.0 - t, K) * ubo.inner_glow_color.a;
+                inner_p = vec4(ubo.inner_glow_color.rgb * a, a);
+            }}
+            vec4 c = outer_p;
+            c = fill_p   + c        * (1.0 - fill_p.a);
+            c = inner_p  + c        * (1.0 - inner_p.a);
+            c = stroke_p + c        * (1.0 - stroke_p.a);
+            o_color = c * opacity;
             return;
         }}
 
@@ -3468,7 +3519,38 @@ shader CanvasUI
                              fill.a           * fill_cov);
         vec4 stroke_p = vec4(ubo.stroke_color.rgb * ubo.stroke_color.a * stroke_cov,
                              ubo.stroke_color.a   * stroke_cov);
-        o_color = (stroke_p + fill_p * (1.0 - stroke_p.a)) * opacity;
+        // power-curve decay: I(t) = (1-t)^K. K=1 linear, K=4 steep drop.
+        // zero at t=1, and near zero long before that — e.g. K=4 → 90% point = 0.0001.
+        float inner_px = ubo.glow_params.x;
+        float outer_px = ubo.glow_params.y;
+        float K        = ubo.glow_params.z;
+        vec4 outer_p = vec4(0.0);
+        if (outer_px > 0.0) {{
+            // shift sample point opposite the offset so the glow APPEARS
+            // shifted in the +offset direction
+            vec2 p_o = lpos - ubo.glow_ofs.zw;
+            float d_o = sdf_rounded_rect(p_o, center, half_size, ubo.radii);
+            if (d_o > 0.0) {{
+                float t = clamp(d_o / outer_px, 0.0, 1.0);
+                float a = pow(1.0 - t, K) * ubo.outer_glow_color.a;
+                outer_p = vec4(ubo.outer_glow_color.rgb * a, a);
+            }}
+        }}
+        vec4 inner_p = vec4(0.0);
+        if (inner_px > 0.0) {{
+            vec2 p_i = lpos - ubo.glow_ofs.xy;
+            float dist_g = sdf_rounded_rect_glow(p_i, center, half_size, ubo.radii, inner_px);
+            if (dist_g < 0.0 && dist <= 0.0) {{
+                float t = clamp(-dist_g / inner_px, 0.0, 1.0);
+                float a = pow(1.0 - t, K) * ubo.inner_glow_color.a;
+                inner_p = vec4(ubo.inner_glow_color.rgb * a, a);
+            }}
+        }}
+        vec4 c = outer_p;
+        c = fill_p   + c * (1.0 - fill_p.a);
+        c = inner_p  + c * (1.0 - inner_p.a);
+        c = stroke_p + c * (1.0 - stroke_p.a);
+        o_color = c * opacity;
         #o_color = vec4(0.0, 1.0, 0.0, 1.0);
     }
 
@@ -3859,24 +3941,33 @@ struct SDFEdge
 
 # ---- Canvas state entry ----
 struct CanvasState
-    fill_color      : vec4f
-    stroke_color    : vec4f
-    stroke_width    : f32
-    stroke_cap      : Cap
-    stroke_join     : Join
-    opacity         : f32
-    transform       : affine
-    clip_x          : i32
-    clip_y          : i32
-    clip_w          : i32
-    clip_h          : i32
-    blur_rad        : f32
-    fill_offset     : f32
-    stroke_offset   : f32
-    corner_radii    : vec4f
-    fill_grad       : Gradient
-    stroke_grad     : Gradient
-    font      	    : CanvasFont
+    fill_color        : vec4f
+    stroke_color      : vec4f
+    stroke_width      : f32
+    stroke_cap        : Cap
+    stroke_join       : Join
+    opacity           : f32
+    transform         : affine
+    clip_x            : i32
+    clip_y            : i32
+    clip_w            : i32
+    clip_h            : i32
+    blur_rad          : f32
+    fill_offset       : f32
+    stroke_offset     : f32
+    corner_radii      : vec4f
+    fill_grad         : Gradient
+    stroke_grad       : Gradient
+    font      	      : CanvasFont
+    inner_glow_color  : vec4f
+    inner_glow_px     : f32
+    inner_glow_ofs    : vec2f
+    outer_glow_color  : vec4f
+    outer_glow_px     : f32
+    outer_glow_ofs    : vec2f
+    # power-curve exponent for glow alpha. larger = steeper cliff near edge
+    # with a long flat tail; smaller = gentler, more visible spread.
+    glow_falloff      : f32
 
 # ---- Canvas class (GPU draw-list builder) ----
 Render Canvas
@@ -4198,6 +4289,23 @@ Render Canvas
     func stroke_width [ sw: f32 ]
         states[state_depth - 1].stroke_width = sw
 
+    func inner_glow [ color: string, px: f32 ]
+        states[state_depth - 1].inner_glow_color = sk_color[ color ]
+        states[state_depth - 1].inner_glow_px    = px
+
+    func inner_glow_offset [ x: f32, y: f32 ]
+        states[state_depth - 1].inner_glow_ofs = vec2f [ x, y ]
+
+    func outer_glow [ color: string, px: f32 ]
+        states[state_depth - 1].outer_glow_color = sk_color[ color ]
+        states[state_depth - 1].outer_glow_px    = px
+
+    func outer_glow_offset [ x: f32, y: f32 ]
+        states[state_depth - 1].outer_glow_ofs = vec2f [ x, y ]
+
+    func glow_falloff [ k: f32 ]
+        states[state_depth - 1].glow_falloff = k
+
     func set_stroke_size [ sw: f32 ]
         states[state_depth - 1].stroke_width = sw
 
@@ -4405,6 +4513,12 @@ Render Canvas
         ui_shader.xform_row0 = vec4f [ st.transform.ma, st.transform.mb,
                                        st.transform.mc, st.transform.md ]
         ui_shader.xform_row1 = vec4f [ st.transform.tx, st.transform.ty, 0.0, 0.0 ]
+        ui_shader.inner_glow_color = st.inner_glow_color
+        ui_shader.outer_glow_color = st.outer_glow_color
+        k : f32 [ (st.glow_falloff > 0.0) ? st.glow_falloff : 6.0 ]
+        ui_shader.glow_params = vec4f [ st.inner_glow_px, st.outer_glow_px, k, 0.0 ]
+        ui_shader.glow_ofs    = vec4f [ st.inner_glow_ofs.x, st.inner_glow_ofs.y,
+                                        st.outer_glow_ofs.x, st.outer_glow_ofs.y ]
         # print the full UBO contents we just wrote, so we can compare
         # what silver thinks it's sending vs what the GPU actually reads.
         ##
@@ -6744,24 +6858,30 @@ Display Window
 
     mutable blur_anim : f32
 
-    func draw_compose []
+    func on_compose []
         if [ !compose ] return
-        x : f32 [ f32[ width  - 256 ] ]
-        y : f32 [ f32[ height - 256 ] ]
+        compose.clear[ '#f0b' ]
+        compose.save[]
         compose.fill_color[ '#008' ]
-        compose.rect_to[ x, y, 256.0, 256.0 ]
+        compose.inner_glow[ '#804', 32 ]
+        compose.rounded[ 16.0, 16.0, 16.0, 16.0 ]
+        compose.rect_to[ 64.0, 64.0, 512.0, 512.0 ]
         compose.paint[]
+        #compose.blur[ 16.0 ]
+        compose.rect_to[ 64.0 - 0.5, 64.0 - 0.5, 512.0, 512.0 ]
+        compose.stroke_width[ 1.0 ]
+        compose.stroke_color[ '#f00' ]
+        compose.fill_color[ '#0000' ]
+        compose.paint[]
+        compose.restore[]
 
-    func draw_screen []
+    func on_screen []
         if [ !screen ] return
-        screen.fill_color[ '#f00' ]
-        screen.rect_to[ 64.0, 64.0, 240.0, 120.0 ]
+        #screen.fill_color[ '#f00' ]
+        #screen.rect_to[ 64.0, 64.0, 240.0, 120.0 ]
         screen.paint[]
         screen.draw[]
         screen.sync_fence[]
-        blur_anim += 0.002
-        r : f32 [ (sin[ blur_anim ] * 0.5 + 0.5) * 256.0 ]
-        screen.blur[ r ]
 
     public func draw_element [ e: element* ]
         expect e inherits element, 'e is not an element'
