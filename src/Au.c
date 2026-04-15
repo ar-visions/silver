@@ -3653,6 +3653,7 @@ none serialize(Au_t type, string res, Au a) {
         else if (type == typeid(f64)) len = sprintf(buf, "%f",   *(f64*)a);
         else if (type == typeid(f32)) len = sprintf(buf, "%f",   *(f32*)a);
         else if (type == typeid(cstr)) len = sprintf(buf, "%s",  *(cstr*)a);
+        else if (type == typeid(uchar)) len = sprintf(buf, "%c",  *(uchar*)a);
         else if (type == typeid(symbol)) len = sprintf(buf, "%s",  *(cstr*)a);
         else if (type == typeid(hook)) len = sprintf(buf, "%p",  *(hook*)a);
         else {
@@ -7756,7 +7757,7 @@ define_class(item, Au)
 
 define_class(collective, Au)
 define_class(list,    collective, Au)
-define_class(array,   collective, Au, shape)
+define_class(array,   collective, Au)
 define_class(map,     collective, Au, Au)
 define_class(ctx,            map)
 define_class(subprocedure,    Au)

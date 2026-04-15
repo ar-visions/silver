@@ -1,5 +1,11 @@
 # Silver
 
+## Rule #1 — Never question the build state
+
+Do NOT suggest `make clean`, doubt that a rebuild happened, or ask "did silver rebuild." The user's build system works. If a change doesn't appear to take effect, the bug is in the code, not the cache. Trust the user's runtime output as reflecting the current code state, always.
+
+---
+
 Silver is a systems programming language with an LLVM backend. It compiles `.ag` source files into native binaries via LLVM IR. The compiler itself is written in C, built on the **Au** object system.
 
 ## Build & Run

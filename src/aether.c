@@ -192,7 +192,12 @@ LLVMTypeRef _lltype(etype);
         literal, l, au, au_lookup(stringify(f##b)), \
         loaded, true, value, LLVMConstReal(lltype(elookup(stringify(f##b))), *(f##b*)l))
 
+#define uchar_value(l) \
+    enode(mod, a, \
+        literal, l, au, au_lookup(stringify(uchar)), \
+        loaded, true, value, LLVMConstInt(lltype(elookup(stringify(uchar))), *(uchar*)l, 0))
 
+    
 #define value(m,vr) enode(mod, a, value, vr, au, (m)->au, loaded, true)
 
 #define B a->builder
@@ -1066,6 +1071,15 @@ enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
         return value(bool_t, LLVMBuildICmp(B, cmp->ui_pred, L->value, R->value, N));
     }
 
+    // load unloaded primitive slots (e.g. `scan[0]` indexer) before any
+    // compare. without this, the slot pointer gets ptrtoint'd in the pointer
+    // mismatch path below — comparing the address's low byte to the literal
+    // (e.g. `scan[0] == '{'` becomes "is the slot pointer's low byte 123").
+    if (!L->loaded && is_prim(L->au))
+        L = e_load(a, L, null);
+    if (!R->loaded && is_prim(R->au))
+        R = e_load(a, R, null);
+
     // normalize operands to common arithmetic type BEFORE any comparison
     // result is always bool, but operands must match each other
     // enum operands: compare as their underlying integer type (i32)
@@ -1510,6 +1524,7 @@ enode e_operand_primitive(aether a, Au op) {
     else if (Au_instance_of(op, typeid(sz)))  return  int_value(64, op); // instanceof is a bit broken here and we could fix the generic; its not working with aliases
     else if (Au_instance_of(op, typeid(f32))) return  f32_value(32, op);
     else if (Au_instance_of(op, typeid(f64))) return  f64_value(64, op);
+    else if (Au_instance_of(op, typeid(uchar))) return  uchar_value(op);
     else if (Au_instance_of(op, typeid(symbol))) {
         return enode(mod, a, loaded, true,
             value, const_cstr(a, (cstr)op, strlen((symbol)op)),
@@ -2799,9 +2814,9 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super) { sequence
     free(arg_values);
     free(arg_types);
 
-    // propagate the return type's meta_a (e.g. PathPt for `array PathPt`) onto
-    // the result enode so downstream codegen sees a fully-typed array.
-    Au result_meta_a = rtype ? rtype->meta_a : null;
+    // the method's target type IS the return's meta_a (e.g. string.split
+    // on a string returns array<string>; qq.split → result_meta_a = string).
+    Au result_meta_a = target_type ? (Au)target_type->au : null;
 
     enode result;
     if (is_struct(rtype) && !is_void_) {
@@ -3623,6 +3638,8 @@ void mark_set(enode n, u64 mask0, u64 mask1) {
     }
 }
 
+
+
 // assign default only if prop was not set by constructor
 void assign_if_cond(aether a, enode targ, enode cond, subprocedure expr_builder) {
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(B);
@@ -3660,8 +3677,11 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     efunc f_initialize = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "initialize", AU_MEMBER_FUNC, 0, false));
 
-    // 1. call constructor if provided
-    if (ctr && ctr_input)
+    // 1. call constructor if provided.
+    // `post construct` (flagged via is_default on the ctr au) defers to after
+    // the init chain — so skip here and call at the tail.
+    bool is_post_ctr = ctr && ctr->au->is_default;
+    if (ctr && ctr_input && !is_post_ctr)
         e_fn_call(a, ctr, a(alloc, ctr_input), false);
 
     // 2. set ALL props BEFORE init and mark fbits
@@ -3780,7 +3800,9 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     }
     a->init_props = saved_init_props;
 
-
+    // post construct runs AFTER init chain
+    if (is_post_ctr && ctr_input)
+        e_fn_call(a, ctr, a(alloc, ctr_input), false);
 
     res->au     = alloc->au;
     res->meta_a = hold(alloc->meta_a);
@@ -3878,7 +3900,7 @@ enode e_create_from_array(aether a, etype t, array ar) {
         LLVMSetInitializer(glob, const_arr);
         const_vector = enode(mod, a, au, ptr->au, loaded, false, value, glob);
     }
-
+ 
     if (t->au == typeid(array)) {
         // set alloc size, unmanaged, and assorted flags before init
         enode prop_alloc     = etype_access((etype)res, string("alloc"));
@@ -3906,7 +3928,13 @@ enode e_create_from_array(aether a, etype t, array ar) {
         } else {
             for (int i = 0; i < ln; i++) {
                 Au element = ar->origin[i];
-                e_fn_call(a, f_push, a(res, element), false);
+                enode n = instanceof(element, enode);
+                if (!t->meta_a) {
+                    t->meta_a = t->meta_a;
+                }
+                validate(t->meta_a, "expected meta type on array");
+                enode conv = e_create(a, u(etype, t->meta_a), element);
+                e_fn_call(a, f_push, a(res, conv), false);
             }
         }
     } else if (ln == 0) {
@@ -3925,7 +3953,7 @@ enode e_convert_or_cast(aether a, etype output, enode input) {
 
     // if input is an unloaded primitive, load it first so we can do proper conversion
     if (!input->loaded && is_prim(canonical(input)) && is_prim(output)) {
-        input = enode_value(input, false);  // load it
+        input = enode_value(input, true);  // load it
     }
 
     Au_t itype = isa(input);
@@ -4011,6 +4039,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         }
 
     etype base = base_model(mdl);
+    etype og_mdl = mdl;
     mdl = mdl ? canonical(mdl) : null;
     if (!mdl || (base == etypeid(none) && input)) {
         // never perform any conversion for any level of none, if we already have enode data
@@ -4219,9 +4248,9 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
     } else if (!ctr && cmdl) {
         // ---- class without constructor ----
         if (instanceof(args, array)) {
-            return e_create_from_array(a, mdl, (array)args);
+            return e_create_from_array(a, og_mdl ? og_mdl : mdl, (array)args);
         } else if (instanceof(args, map)) {
-            return e_create_from_map(a, mdl, (map)args);
+            return e_create_from_map(a, og_mdl ? og_mdl : mdl, (map)args);
         } else if (instanceof(args, shape)) {
             shape sh = (shape)args;
             array indices = array(alloc, 32);
@@ -4231,10 +4260,11 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             res->literal = (Au)hold(sh);
         } else {
             // default class creation: alloc + e_init
-            enode alloc = e_alloc(a, mdl);
+            etype m = og_mdl ? og_mdl : mdl;
+            enode alloc = e_alloc(a, m);
             alloc->is_alloc = !a->building_initializer;
-            alloc->meta_a   = hold(mdl->meta_a);
-            alloc->meta_b   = hold(mdl->meta_b);
+            alloc->meta_a   = hold(m->meta_a);
+            alloc->meta_b   = hold(m->meta_b);
             res = e_init(a, alloc, null, null, null);
         }
 
@@ -5308,11 +5338,15 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
             base = LLVMBuildLoad2(B, ptr_ty, base, "base_ptr");
     }
 
-    // resolve element type: walk through VAR->src, pointer->src, and array->src
+    // resolve element type: walk through VAR->src, pointer->src, and array->src.
+    // if the VAR is is_explicit_ref, the ref flag already accounts for one
+    // level of indirection — don't strip the underlying pointer as well, or
+    // `ref cstr[0]` would collapse from cstr down to i8.
+    bool var_is_ref = au->member_type == AU_MEMBER_VAR && au->is_explicit_ref;
     Au_t elem_au = au;
     if (elem_au->member_type == AU_MEMBER_VAR)
         elem_au = elem_au->src;
-    if (elem_au->is_pointer || elem_au->is_explicit_ref)
+    if (!var_is_ref && (elem_au->is_pointer || elem_au->is_explicit_ref))
         elem_au = elem_au->src;
     if (elem_au->elements > 0 && elem_au->src)
         elem_au = elem_au->src;
@@ -5380,7 +5414,18 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
     etype F = canonical(expr);
     etype T = canonical(rtype);
 
-    // 
+    // uchar literal → string: synthesize const_string at compile time from
+    // the known codepoint. avoids the Au_cast_string runtime path.
+    if (expr->literal && isa(expr->literal) == typeid(uchar) &&
+        (T->au == typeid(string) || T->au == typeid(cstr) || T->au == typeid(symbol))) {
+        extern string unicode_char(i32);
+        i32 ch = *(i32*)expr->literal;
+        string s = unicode_char(ch);
+        Au s_lit = (Au)const_string(chars, (cstr)s->chars);
+        return e_operand(a, s_lit, rtype);
+    }
+
+    //
     if (is_prim(F->au) && T->au == typeid(string)) {
         // Calculate total size: Au header + primitive value
         u64 au_size = typeid(Au)->abi_size / 8;
@@ -5415,11 +5460,13 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
             LLVMPointerTypeInContext(a->module_ctx, 0), "typed_ptr");
         LLVMBuildStore(B, expr->value, typed_ptr);
         
-        // Call Au_cast_string
+        // Call Au_cast_string. Au_cast_string expects the DATA pointer
+        // (isa() walks back by one _Au header to find the type). Passing
+        // the header base would point isa at offset -108 (garbage).
         Au_t fn_cast = find_member(typeid(Au), "cast_string", AU_MEMBER_CAST, 0, false);
         verify(u(efunc, fn_cast), "Au_cast_string not found");
-        
-        enode au_arg = enode(mod, a, value, au_ptr, loaded, false, au, typeid(Au));
+
+        enode au_arg = enode(mod, a, value, typed_ptr, loaded, false, au, typeid(Au));
         return e_fn_call(a, u(efunc, fn_cast), a(au_arg), false);
     }
     
