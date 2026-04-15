@@ -1368,11 +1368,12 @@ static Au* array_indexer(array a, Au ai) {
     if  (n) {
         offset = *n;
     } else {
+        Au info = header(ai);
         shape i = instanceof(ai, shape);
         //verify(i, "expected shape");
 
-        verify(a->data_shape, "array has no shape");
-        verify(i && (i->count <= a->data_shape->count),
+        verify(!i || a->data_shape, "array has no shape");
+        verify(!i || (a->data_shape && i->count <= a->data_shape->count),
             "shape index rank exceeds array rank");
 
         u64 stride = 1;
@@ -2305,11 +2306,11 @@ Au_t find_type(symbol name, Au_t m) {
         Au_t mod = (Au_t)modules.origin[i];
         if (mod && (!m || m == mod)) {
             // skip if not specifically tareting this module, and it has a namespace (not global)
-            if (m != mod && mod->is_namespace && mod->ident && strlen(mod->ident))
+            if (m && m != mod) // && mod->is_namespace && mod->ident && strlen(mod->ident))
                 continue;
             for (int i = 0; i < mod->members.count; i++) {
                 Au_t type = (Au_t)mod->members.origin[i];
-                if (strcmp(name, type->ident) == 0)
+                if (type->ident && strcmp(name, type->ident) == 0)
                     return type;
             }
         }
@@ -3650,7 +3651,7 @@ none serialize(Au_t type, string res, Au a) {
         else if (type == typeid(u32)) len = sprintf(buf, "%u",   *(u32*)a);
         else if (type == typeid(u16)) len = sprintf(buf, "%hu",  *(u16*)a);
         else if (type == typeid(u8))  len = sprintf(buf, "%hhu", *(u8*) a);
-        else if (type == typeid(f64)) len = sprintf(buf, "%f",   *(f64*)a);
+        else if (type == typeid(f64)) len = sprintf(buf, "%fwith ",   *(f64*)a);
         else if (type == typeid(f32)) len = sprintf(buf, "%f",   *(f32*)a);
         else if (type == typeid(cstr)) len = sprintf(buf, "%s",  *(cstr*)a);
         else if (type == typeid(uchar)) len = sprintf(buf, "%c",  *(uchar*)a);

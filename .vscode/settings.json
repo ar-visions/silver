@@ -150,5 +150,8 @@
         "x509.h": "c"
     },
     "cmake.configureOnOpen": false,
-    "C_Cpp.errorSquiggles": "enabled"
+    "C_Cpp.errorSquiggles": "enabled",
+    "css.lint.unknownProperties": "ignore",
+    "scss.lint.unknownProperties": "ignore",
+    "less.lint.unknownProperties": "ignore"
 }
