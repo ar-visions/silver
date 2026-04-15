@@ -1,0 +1,51 @@
+
+element.root {
+    layers.compose:
+        ctype:          compose
+        fill_color:     #afc
+        radius:         0
+}
+
+element.root / background.space {
+    region:             l0 t0 r0 b0
+}
+
+Pane.main {
+    region:             l32 t32 r290 b32
+}
+
+Editor {
+    region:             l10 t10 r1 b20
+
+    layers.base:
+        region:         0
+        fill_offset:    0
+        fill_color:     #fff
+
+    layers.border:
+        region:         -1
+        stroke_offset:  -1
+        stroke_width:    2
+        stroke_color:   #fff
+
+    layers.text:
+        region:         -22
+        label:          'a string.. probably goes into a string holder called text, without saying text'
+        editable:       true
+        selectable:     true
+        multiline:      true
+}
+
+Editor : hovered, pressed {
+    layers.base:
+        fill_color:     #ff0
+}
+
+View / button.button1 {
+    layers.face:
+        label:          "button"
+        region:         l8 t8 r8 b8
+        ctype:          overlay
+        stroke_width:   4
+        stroke_color:   #fff
+}

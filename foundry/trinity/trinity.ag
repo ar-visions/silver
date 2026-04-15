@@ -2370,14 +2370,19 @@ Texture Display
                 pending_w     = 0
                 pending_h     = 0
                 last_resize_t = 0.0
+        
         for [ r: Render, id: string ] in element_targets
             r.draw[]
             r.sync_fence[]
+        
         on_compose[]
+
         for [ r: Render ] in list
             r.draw[]
             r.sync_fence[]
+        
         on_screen[]
+
         if [ swap_renders ]
             result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
                 semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
@@ -6414,10 +6419,9 @@ enum Fill : f32
     frost     : 1.00
 
 enum CanvasType
-    overlay     : 0
+    screen      : 0
     compose     : 1
     colorize    : 2
-    glyph       : 3
 
 enum Pattern
     none : 0
@@ -6435,17 +6439,16 @@ alias Elements : map    element [ string ]
 alias FRender  : lambda Elements[ Display ]
 
 class element
-    mutable parent      : element
-    mutable area        : Region
-    mutable bounds      : rect
-    mutable value       : object
-    mutable id          : string
-    mutable flags       : i64
-    public ltest : Layer
-    public layers       : array Layer
-    mutable elements    : Elements
-    mutable tags        : array string
-    mutable group       : string
+    mutable parent          : element
+    mutable area            : Region
+    mutable bounds          : rect
+    mutable value           : object
+    mutable id              : string
+    mutable flags           : i64
+    mutable layers          : map Layer[string]
+    mutable elements        : Elements
+    mutable tags            : array string
+    mutable group           : string
     mutable tab_index    : i32
     mutable scroll       : vec2f
     mutable ghost        : bool
@@ -6533,7 +6536,7 @@ alias StyleTransitions : map StyleTransition[string]
 
 Display Window
     
-    mutable app_object          : app
+    mutable app_object          : trinity*
 
     public compose              : Canvas
     public colorize             : Canvas
@@ -6579,8 +6582,6 @@ Display Window
     mutable shift               : bool
     mutable alt                 : bool
     public st                   : Style
-    public buttons              : array i32
-    public on_render            : hook
 
 
     public func apply_args [ inst: element, e: element ] -> array string
@@ -6648,6 +6649,42 @@ Display Window
                 el [ !ct ]
                     inst.member_set[ member, best.instance ]
             ty = ty.context
+
+        # dotted keys: <collection>.<key> routes sub-block entries into a map entry
+        for [ dentries: StyleEntries, prop: string ] in style_avail
+            dot : num [ prop.index_of[ '.' ] ]
+            if [ dot <= 0 ]
+                continue
+            coll_name : string [ prop.mid[ 0, dot ].trim[] ]
+            key_name  : string [ prop.mid[ dot + 1, prop.count - dot - 1 ].trim[] ]
+            if [ exceptions && exceptions.index_of[ prop ] >= 0 ]
+                continue
+            dbest : st.best_match[ inst, prop, dentries ]
+            if [ !dbest ]
+                continue
+            sub_bl : StyleBlock [ dbest.value ]
+            if [ !sub_bl ]
+                continue
+            if [ coll_name != 'layers' ]
+                continue
+            if [ !inst.layers ]
+                inst.layers = map Layer[string] [ ]
+            layer : Layer [ inst.layers[ key_name ] ]
+            if [ !layer ]
+                layer = Layer [ ]
+                inst.layers[ key_name ] = layer
+            lty : Au_t [ typeid[ layer ] ]
+            for [ se: StyleEntry, sekey: string ] in sub_bl.entries
+                if [ !se || !se.member ]
+                    continue
+                lmem : Au_t [ find_member[ lty, se.member.chars, AU_MEMBER_VAR, 0, true ] ]
+                if [ !lmem ]
+                    continue
+                if [ !se.instance ]
+                    se.instance = (se.value to typeid[ lmem.src ])
+                if [ se.instance ]
+                    layer.member_set[ lmem, se.instance ]
+            changed.push[ prop ]
         return changed
 
     public func animate []
@@ -6976,20 +7013,39 @@ Display Window
 
     mutable blur_anim : f32
 
+
     func on_compose []
         if [ !compose ] return
-        compose.clear        [ '#00a' ]
-        compose.save         []
+        
+        compose.clear [ '#80a' ]
+        compose.save  []
+    
+        if [ app_object ]
+            elements : app_object.on_render[ a ]
+            
+            if [ elements ]
+                update_all[ elements ]
+            
+            animate[]
+            if [ root ]
+                draw_element[ root, CanvasType.compose ]
+        
+        compose.restore []
+
+        compose.save    []
         compose.fill_color   [ '#808' ]
         compose.inner_glow   [ '#f04', 32 ]
         compose.inner_shadow [ '#f0a', 32 ]
-        compose.outer_glow   [ '#f0c', 64 ]
-        compose.outer_shadow [ '#f0c', 64 ]
+        compose.outer_glow   [ '#f0c', 16 ]
+        compose.outer_shadow [ '#f0c', 16 ]
         compose.rounded      [ 14.0, 14.0, 14.0, 14.0 ]
         compose.rect_to      [ 64.0, 64.0, 512.0, 512.0 ]
         compose.stroke_width [ 1.0 ]
         compose.stroke_color [ '#f00' ]
         compose.stroke_shadow[ '#f05' ]
+
+
+
         compose.paint        []
        #compose.blur[ 16.0 ]
         compose.restore[]
@@ -7046,7 +7102,7 @@ Display Window
         screen.draw[]
         screen.sync_fence[]
 
-    public func draw_element [ e: element* ]
+    public func draw_element [ e: element*, stage: CanvasType ]
         expect e inherits element, 'e is not an element'
         canvas_arr : new Canvas[3] [ overlay, compose, colorize ]
         rel : rect [ (e.parent) ?
@@ -7057,57 +7113,59 @@ Display Window
         e.bounds = e.area.rectangle[ rel, null ]
 
         # compute layer bounds and draw each layer
-        for [ layer: Layer ] in e.layers
-            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null ] : e.bounds
+        for [ layer: Layer, lkey: string ] in e.layers
+            if [ layer.ctype != stage ]
+                continue
+            layer.bounds = (layer.region) ? layer.region.rectangle[ e.bounds, null ] : e.bounds
             cv : Canvas [ canvas_arr[layer.ctype] ]
+            b  : rect   [ layer.bounds ]
+            rx : f32    [ (layer.radius && layer.radius.count > 0) ? layer.radius[0] : 0.0 ]
+            ry : f32    [ (layer.radius && layer.radius.count > 1) ? layer.radius[1] : rx  ]
 
-            fill : layer inherits FillLayer
-            if [ fill && layer.color ]
+            if [ layer.fill_color && layer.fill_color.a > 0.0 ]
                 cv.save[]
-                b : layer.bounds
-                rx:f32 layer.radius[0]
-                ry:f32 layer.radius[1]
                 cv.rounded_rect[ b.x, b.y, b.w, b.h, rx, ry ]
-                cv.fill_color[ layer.color ]
+                cv.fill_color[ layer.fill_color ]
                 cv.paint[]
                 cv.restore[]
 
-            border : layer inherits Border
-            if [ border && border.color && border.size > 0.0 ]
+            if [ layer.stroke_color && layer.stroke_width > 0.0 && layer.stroke_color.a > 0.0 ]
                 cv.save[]
-                cv.set_stroke_size[ border.size ]
-                cv.set_stroke_cap[ border.cap ]
-                cv.set_stroke_join[ border.join ]
-                b : rect [ layer.bounds ]
-                rx:f32 layer.radius[0]
-                ry:f32 layer.radius[1]
+                cv.set_stroke_size[ layer.stroke_width ]
+                cv.set_stroke_cap  [ layer.stroke_cap  ]
+                cv.set_stroke_join [ layer.stroke_join ]
                 cv.rounded_rect[ b.x, b.y, b.w, b.h, rx, ry ]
-                cv.stroke_color[ border.color ]
+                cv.stroke_color[ layer.stroke_color ]
                 cv.paint[]
                 cv.restore[]
 
-            txt : layer inherits TextLayer
-            if [ txt && txt.label ]
+            if [ layer.label && layer.label.count > 0 ]
                 cv.save[]
-                b : rect [ layer.bounds ]
-                x0 : f32 txt.xalign
-                y0 : f32 txt.yalign
-                al : vec2f [ x0, y0 ]
-                offset : vec2f [ x: 0.0, y: 0.0 ]
-                cv.fill_color[ layer.color ]
-                cv.draw_text[ txt.label, b, al, offset, false ]
+                align  : vec2f [ x: layer.label_align .x, y: layer.label_align .y ]
+                offset : vec2f [ x: layer.label_offset.x, y: layer.label_offset.y ]
+                cv.fill_color[ layer.label_color ]
+                cv.draw_text[ layer.label, b, align, offset, false ]
                 cv.restore[]
 
         e.draw[ a ]
         for [ ee: element, id: string ] in e.elements
-            draw_element[ ee ]
+            draw_element[ ee, stage ]
 
 
 abstract media_app trinity
     intern msaa_samples : i64
-    public on_render    : FRender
     intern istroke      : f32 0
     intern ifill        : f32 0
+
+    public func on_render [ w: Window ] -> Elements
+        return Elements [
+            "root": [
+                elements: [
+                    "one": Button[],
+                    "two": Button[]
+                ]
+            ]
+        ]
     
 
     func init[]
@@ -7182,13 +7240,14 @@ class StyleEntry
     mutable bl       : StyleBlock
     mutable instance : object
 
-alias StyleEntries : array StyleEntry
+alias StyleEntries   : array StyleEntry
+alias StyleEntryMap  : map   StyleEntry [ string ]
 
 
 class StyleBlock
     mutable parent  : StyleBlock
-    public quals    : array StyleQualifier
-    public entries  : StyleEntries
+    mutable quals   : array StyleQualifier
+    public entries  : StyleEntryMap
     public blocks   : array StyleBlock
     public types    : array Au_t
 
@@ -7284,21 +7343,21 @@ class StyleBlock
                     if [ addr ]
                         state_match = bool[ addr ]
                 state_reject : bool [ score_state && q.state && !state_match ]
-                if [ !id_reject && !type_reject && !state_reject ]
-                    sc : f64 [ i64[ id_match ] << 1 | i64[ type_match ] | i64[ state_match ] << 2 ]
-                    best_this = max[ sc, best_this ]
-                el
-                    best_this = 0.0
-                if [ q.parent && best_this > 0.0 ]
-                    q   = q.parent
-                    cur = (cur.parent) ? cur.parent : element[]
-                el
+                if [ id_reject || type_reject || state_reject ]
                     return 0.0
+                sc : f64 [ i64[ id_match ] << 1 | i64[ type_match ] | i64[ state_match ] << 2 ]
+                best_this = max[ sc, best_this ]
+                if [ !q.parent ]
+                    if [ q.anchored && cur.parent ]
+                        return 0.0
+                    break
+                q   = q.parent
+                cur = (cur.parent) ? cur.parent : element[]
             best_sc = max[ best_sc, best_this ]
         return (best_sc > 0.0) ? 1.0 : 0.0
 
     func init []
-        if [ !entries ] entries = StyleEntries     [ ]
+        if [ !entries ] entries = StyleEntryMap    [ ]
         if [ !blocks  ] blocks  = array StyleBlock [ ]
         if [ !types   ] types   = array Au_t       [ ]
 
@@ -7312,9 +7371,10 @@ class Style
     intern  mod_time  : i64
     intern  reloaded  : bool
     intern  loaded    : bool
+    intern  visited   : array string
 
     func cache_block [ bl: StyleBlock ]
-        for [ e: StyleEntry ] in bl.entries
+        for [ e: StyleEntry, k: string ] in bl.entries
             cache : members [ e.member ]
             if [ !cache ]
                 cache = StyleEntries[]
@@ -7341,10 +7401,44 @@ class Style
         return ret
 
     func process [ code: string ]
-        base = array StyleBlock [ ]
-        sc : cstr [ code.chars ]
-        while [ sc && sc[0] ]
-            base.push [ StyleBlock [ ref sc ] ]
+        if [ !base    ] base    = array StyleBlock [ ]
+        if [ !visited ] visited = array string     [ ]
+        lines : array CSSLine [ split_css[ code ] ]
+        i : i32 [ 0 ]
+        while [ i < lines.count ]
+            content : string [ lines[i].content ]
+            if [ content == '}' ]
+                i += 1
+                continue
+            if [ content.count >= 7 && content.mid[ 0, 7 ] == '@import' ]
+                rest : string [ content.mid[ 7, content.count - 7 ].trim[] ]
+                expect rest.count >= 2, '@import expects quoted path'
+                qt : i8 [ rest.chars[0] ]
+                expect qt == '"' || qt == '\'', '@import expects quoted path'
+                k : i32 [ 1 ]
+                while [ k < rest.count && rest.chars[k] != qt ]
+                    k += 1
+                name : string [ rest.mid[ 1, k - 1 ] ]
+                p    : path   'style/{name}'
+                key  : string [ p ]
+                if [ visited.index_of[ key ] < 0 ]
+                    visited.push[ key ]
+                    sub : string [ p.load[ typeid[ string ], null ] ]
+                    process[ sub ]
+                i += 1
+                continue
+            if [ content.last[] == '{' ]
+                content = content.mid[ 0, content.count - 1 ].trim[]
+            end_idx : i32 [ i + 1 ]
+            while [ end_idx < lines.count && lines[end_idx].indent > 0 ]
+                end_idx += 1
+            bl : StyleBlock [ ]
+            sc : cstr [ content.chars ]
+            bl.quals = parse_qualifiers[ bl, ref sc ]
+            parse_block_body[ bl, lines, i + 1, end_idx - 1, 0 ]
+            validate_block[ bl ]
+            base.push[ bl ]
+            i = end_idx
 
     func cache_members [ ]
         for [ b: StyleBlock ] in base
@@ -7760,6 +7854,7 @@ class StyleQualifier
     mutable oper     : string
     mutable value    : string
     mutable parent   : object
+    mutable anchored : bool
 
 
 class StyleSelection
@@ -7782,13 +7877,13 @@ class Mixable
 
 
 Mixable Shadow
-    public blur : f32
-    public color : rgba
-    public offset : vec2f
+    public blur     : f32
+    public color    : rgba
+    public offset   : vec2f
 
 Mixable Glow
-    public blur : f32
-    public color : rgba
+    public blur     : f32
+    public color    : rgba
 
 # only for background elements
 Mixable Transform
@@ -7796,48 +7891,69 @@ Mixable Transform
     public scale    : vec2f
     public Rotation : f32
 
-class Background
-    public img          : Image
-    public trans        : Transform
-    public repeat       : Pattern
-    #public construct [ string ]
-    #public func mix [ Background, f32 ] -> Background
+Mixable Align
+    public x        : XAlign
+    public y        : YAlign
+
 
 alias Radius : array f32
 
-# layers constructed with field inference
-# constructors: Type [ any str ]
+enum Blend
+    normal:   0
+    multiply: 1
+    screen:   2
+    overlay:  3
+    add:      4
+
+
 class Layer
-    public ctype    : CanvasType
-    public area     : Region
-    mutable bounds  : rect
-    public radius   : Radius
-    public shadow   : Shadow
-    public color    : rgba
-    public background : Background
-    public overflow   : Clip
-    public opacity    : f32
-    #public construct [ string ]
-    #public func mix [ Layer, f32 ] -> Layer
+    public ctype               : CanvasType
+    public region              : Region
+    mutable bounds             : rect
+    public radius              : Radius
 
+    public fill_color          : rgba
+    public fill_offset         : f32
+    public fill_shadow         : Shadow
+    public fill_glow           : Glow
 
-Layer TextLayer
-    public font   : Font
-    public xalign : XAlign
-    public yalign : YAlign
-    public label  : string
+    public stroke_color        : rgba
+    public stroke_width        : f32
+    public stroke_offset       : f32
+    public stroke_shadow       : Shadow
+    public stroke_glow         : Glow
+    public stroke_cap          : Cap
+    public stroke_join         : Join
+    public stroke_miter        : f32
+    public stroke_dash         : array f32
+    public stroke_dash_offset  : f32
 
+    public label               : string
+    public label_color         : rgba
+    public label_shadow        : Shadow
+    public label_glow          : Glow
+    public label_align         : Align
+    public label_offset        : vec2f
 
-# all by value except miter:v
-Layer Border
-    public size     : f32
-    public cap      : Cap
-    public join     : Join
-    public miter    : f32
-    public dash     : array f32
+    public font                : Font
+    public line_height         : f32
+    public letter_spacing      : f32
+    public word_wrap           : bool
+    public editable            : bool
+    public selectable          : bool
+    public multiline           : bool
 
+    public image_source        : Image
+    public image_align         : Align
+    public image_tranform      : Transform
+    public image_repeat        : Pattern
 
-Layer FillLayer
+    public blend               : Blend
+    public transform           : Transform
+    public overflow            : Clip
+    public clip                : bool
+    public unclip              : bool
+    public opacity             : f32
 
 
 # scrolling requires defined children Region
@@ -7912,16 +8028,12 @@ element World
                         mat = mat.translate[ t.value ]
                     m.transforms[i] = mat
 
-        if [ typeid[ a ] == typeid[ Background ] ]
-            return
-
         w.overlay.set_texture[ (target.reduction) ? target.reduction : target.color ]
         w.overlay.paint[]
 
-element Pane
-
+element View
+element Group
 element Button
-
 
 shader Basic
     public proj  : mat4f
@@ -8426,14 +8538,11 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
     end   : cstr   [ null ]
     scan  : cstr   [ start ]
     qstr  : string [ null ]
-    while [ scan[0] ]
-        if [ !scan[0] || scan[0] == '{' ]
-            end  = scan
-            qstr = string [ chars: start, ref_length: distance[ start, scan ] ]
-            break
+    while [ scan[0] && scan[0] != '{' ]
         scan += 1
-    if [ !qstr ]
-        end = scan
+    end  = scan
+    qstr = string [ chars: start, ref_length: distance[ start, scan ] ]
+    if [ !qstr.count ]
         p[0] = end
         return null
     quals  : array string [ qstr.split[ ',' ] ]
@@ -8442,6 +8551,10 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
 
     for [ qs: string ] in quals
         qq : string [ qs.trim[] ]
+        anchored : bool [ false ]
+        if [ qq.count && qq.chars[0] == '/' ]
+            anchored = true
+            qq       = qq.mid[ 1, qq.count - 1 ].trim[]
         if [ !qq.count ]
             continue
         v : StyleQualifier[ bl:bl ]
@@ -8471,7 +8584,7 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
                 el
                     v.type = q.trim[]
             if [ v.type ]
-                v.ty = Au.module_lookup[ v.type.chars ]
+                v.ty = Au.find_type[ v.type.chars, null ]
                 expect v.ty, 'type must exist: {v.type}'
                 if [ bl.types.index_of[ v.ty ] == -1 ]
                     bl.types.push[ v.ty ]
@@ -8491,8 +8604,97 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
                     v.state = tail
             processed = v
             v.hold_members[]
+        if [ anchored ]
+            v.anchored = true
     p[0] = end
     return result
+
+
+class CSSLine
+    public indent  : i32
+    public content : string
+
+
+func split_css [ code: string ] -> array CSSLine
+    result : array CSSLine [ ]
+    sc : cstr [ code.chars ]
+    while [ sc[0] ]
+        ind : i32 [ 0 ]
+        while [ sc[0] == ' ' || sc[0] == '\t' ]
+            if [ sc[0] == '\t' ]
+                ind += 4
+            el
+                ind += 1
+            sc += 1
+        if [ !sc[0] ]
+            break
+        if [ sc[0] == '\n' ]
+            sc += 1
+            continue
+        if [ sc[0] == '/' && sc[1] == '/' ]
+            while [ sc[0] && sc[0] != '\n' ]
+                sc += 1
+            continue
+        if [ sc[0] == '/' && sc[1] == '*' ]
+            sc += 2
+            while [ sc[0] && !(sc[0] == '*' && sc[1] == '/') ]
+                sc += 1
+            if [ sc[0] ]
+                sc += 2
+            continue
+        start : cstr [ sc ]
+        while [ sc[0] && sc[0] != '\n' ]
+            sc += 1
+        c : string [ chars: start, ref_length: distance[start, sc] ]
+        c = c.trim[]
+        if [ c.count ]
+            result.push[ CSSLine [ indent: ind, content: c ] ]
+    return result
+
+
+func validate_entries [ entries: StyleEntryMap, ty: Au_t ]
+    for [ se: StyleEntry, prop: string ] in entries
+        dot  : prop.index_of[ '.' ]
+        name : (dot > 0) ? prop.mid[ 0, dot ].trim[] : prop
+        mem  : Au.find_member[ ty, name.chars, AU_MEMBER_VAR, 0, true ]
+        expect mem, 'css: type {ty.ident} has no member {name} (from property {prop})'
+        if [ dot > 0 ]
+            sub_bl : (se.value to StyleBlock)
+            if [ sub_bl && mem.meta.a ]
+                validate_entries[ sub_bl.entries, mem.meta.a ]
+
+
+func validate_block [ bl: StyleBlock ]
+    for [ ty: Au_t ] in bl.types
+        validate_entries[ bl.entries, ty ]
+
+
+func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: i32, base_indent: i32 ]
+    j : i32 [ first ]
+    while [ j <= last ]
+        ind : i32    [ lines[j].indent  ]
+        lc  : string [ lines[j].content ]
+        if [ ind <= base_indent || lc == '}' ]
+            j += 1
+            continue
+        ci : num [ lc.index_of[ ':' ] ]
+        expect ci > 0, 'expected key: value'
+        member  : string [ lc.mid[ 0, ci ].trim[] ]
+        val_str : string [ lc.mid[ ci + 1, lc.count - (ci + 1) ].trim[] ]
+        for [ k: i32 0, k < member.count, k += 1 ]
+            if [ member.chars[k] == '-' ]
+                member.chars[k] = '_'
+        sub_end : i32 [ j ]
+        while [ sub_end + 1 <= last && lines[sub_end + 1].indent > ind ]
+            sub_end += 1
+        if [ val_str.count == 0 && sub_end > j ]
+            inner : StyleBlock [ ]
+            parse_block_body[ inner, lines, j + 1, sub_end, ind ]
+            bl.entries[ member ] = StyleEntry [ member: member, value: inner, bl: bl ]
+            j = sub_end + 1
+            continue
+        bl.entries[ member ] = StyleEntry [ member: member, value: val_str, bl: bl ]
+        j += 1
 
 
 func is_cmt[c: symbol] -> bool [ c[0] == '/' && c[1] == '*' ]
