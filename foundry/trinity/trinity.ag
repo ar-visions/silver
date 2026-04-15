@@ -319,7 +319,6 @@ class Render
         expect result == VK_SUCCESS, "fence wait failed"
 
     func dealloc [ ]
-        return
         for [ i: 0, i < 2, i += 1 ]
             vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
             vkDestroyRenderPass[ vk.device, vk_render_pass[i], null ]
@@ -3255,7 +3254,7 @@ shader CanvasUI
     mutable outer_shadow_color : vec4f
     # x = inner_glow_px, y = outer_glow_px, z = decay_k, w = inner_shadow_px
     mutable glow_params   : vec4f
-    # x = outer_shadow_px, y = reserved, z/w reserved
+    # x = outer_shadow_px, y = hue_shift (deg), z = sat_mul, w = val_mul
     mutable glow_params2  : vec4f
     # inner_ofs.xy, outer_shadow_ofs.zw — pixel offsets
     mutable glow_ofs      : vec4f
@@ -3272,6 +3271,22 @@ shader CanvasUI
     attrib  a_pos      : VertexInput    [ type:typeid[ vec2f ] ]
     attrib  v_pos      : VertexOutput   [ type:typeid[ vec2f ] ]
     attrib  o_color    : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    # ---- HSV helpers (for colorize) ----
+    func rgb2hsv [ c: vec3f ] -> GLSL vec3f {
+        vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+        vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+        vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+        float d = q.x - min(q.w, q.y);
+        float e = 1.0e-10;
+        return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+    }
+
+    func hsv2rgb [ c: vec3f ] -> GLSL vec3f {
+        vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+        vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+        return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+    }
 
     # ---- per-corner rounded rect SDF ----
     func sdf_rounded_rect [ p: vec2f, center: vec2f, half_size: vec2f, r: vec4f ] -> GLSL float {
@@ -3488,9 +3503,17 @@ shader CanvasUI
             c = inner_p  + c        * (1.0 - inner_p.a);
             c = stroke_p + c        * (1.0 - stroke_p.a);
             o_color = c * opacity;
-        // 8-bit quantization dither — breaks up banding on soft gradients.
-        float _d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 4.0;
-        o_color.rgb += vec3((_d - 0.5) / 255.0);
+            if (o_color.a > 0.0 &&
+                (ubo.glow_params2.y != 0.0 || ubo.glow_params2.z != 1.0 || ubo.glow_params2.w != 1.0)) {{
+                vec3 _rgb = o_color.rgb / max(o_color.a, 1.0e-6);
+                vec3 _hsv = rgb2hsv(_rgb);
+                _hsv.x = fract(_hsv.x + ubo.glow_params2.y / 360.0);
+                _hsv.y = clamp(_hsv.y * ubo.glow_params2.z, 0.0, 1.0);
+                _hsv.z = _hsv.z * ubo.glow_params2.w;
+                o_color.rgb = hsv2rgb(_hsv) * o_color.a;
+            }}
+            float _d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 4.0;
+            o_color.rgb += vec3((_d - 0.5) / 255.0);
             return;
         }}
 
@@ -3596,6 +3619,15 @@ shader CanvasUI
         c = bevel_p  + c * (1.0 - bevel_p.a);
         c = stroke_p + c * (1.0 - stroke_p.a);
         o_color = c * opacity;
+        if (o_color.a > 0.0 &&
+            (ubo.glow_params2.y != 0.0 || ubo.glow_params2.z != 1.0 || ubo.glow_params2.w != 1.0)) {{
+            vec3 _rgb = o_color.rgb / max(o_color.a, 1.0e-6);
+            vec3 _hsv = rgb2hsv(_rgb);
+            _hsv.x = fract(_hsv.x + ubo.glow_params2.y / 360.0);
+            _hsv.y = clamp(_hsv.y * ubo.glow_params2.z, 0.0, 1.0);
+            _hsv.z = _hsv.z * ubo.glow_params2.w;
+            o_color.rgb = hsv2rgb(_hsv) * o_color.a;
+        }}
         // 8-bit quantization dither — breaks up banding on soft gradients.
         float _d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 8.0;
         o_color.rgb += vec3((_d - 0.5) / 255.0) * c.xyz;
@@ -4021,6 +4053,10 @@ struct CanvasState
     # power-curve exponent for glow alpha. larger = steeper cliff near edge
     # with a long flat tail; smaller = gentler, more visible spread.
     glow_falloff      : f32
+    # HSV colorize on final output. defaults (0, 1, 1) = identity.
+    hue_shift         : f32
+    sat_mul           : f32
+    val_mul           : f32
 
 # ---- Canvas class (GPU draw-list builder) ----
 Render Canvas
@@ -4377,6 +4413,11 @@ Render Canvas
     func glow_falloff [ k: f32 ]
         states[state_depth - 1].glow_falloff = k
 
+    func colorize [ hue: f32, sat: f32, val: f32 ]
+        states[state_depth - 1].hue_shift = hue
+        states[state_depth - 1].sat_mul   = sat
+        states[state_depth - 1].val_mul   = val
+
     func set_stroke_size [ sw: f32 ]
         states[state_depth - 1].stroke_width = sw
 
@@ -4591,7 +4632,9 @@ Render Canvas
         ui_shader.outer_shadow_color  = st.outer_shadow_color
         k : f32 [ (st.glow_falloff > 0.0) ? st.glow_falloff : 6.0 ]
         ui_shader.glow_params  = vec4f [ st.inner_glow_px, st.outer_glow_px, k, st.inner_shadow_px ]
-        ui_shader.glow_params2 = vec4f [ st.outer_shadow_px, 0.0, 0.0, 0.0 ]
+        sat : f32 [ (st.sat_mul != 0.0) ? st.sat_mul : 1.0 ]
+        val : f32 [ (st.val_mul != 0.0) ? st.val_mul : 1.0 ]
+        ui_shader.glow_params2 = vec4f [ st.outer_shadow_px, st.hue_shift, sat, val ]
         ui_shader.glow_ofs     = vec4f [ st.inner_glow_ofs.x, st.inner_glow_ofs.y,
                                          st.outer_shadow_ofs.x, st.outer_shadow_ofs.y ]
         # print the full UBO contents we just wrote, so we can compare
@@ -6536,7 +6579,7 @@ Display Window
     mutable shift               : bool
     mutable alt                 : bool
     public st                   : Style
-    public buttons              : array i32[16x1]
+    public buttons              : array i32
     public on_render            : hook
 
 
@@ -6935,7 +6978,7 @@ Display Window
 
     func on_compose []
         if [ !compose ] return
-        compose.clear        [ '#80a' ]
+        compose.clear        [ '#00a' ]
         compose.save         []
         compose.fill_color   [ '#808' ]
         compose.inner_glow   [ '#f04', 32 ]
@@ -7074,12 +7117,15 @@ abstract media_app trinity
     func update_scene [] return
 
     func run[] -> i32
-        window : Window[ vk:vk, title:'orbiter', width:(width) ?? 888, height:(height) ?? 888 ]
+        window : Window[ app_object: a, title:'orbiter', st: Style [ a ], 
+            width:(width) ?? 1488, height:(height) ?? 888 ]
+        expect window.vk, "context didnt work"
+
         w = window
         # hand the trinity instance to the Window so its update[] can call
         # back into load_scene*[] before the composite chain references
         # the background. orbiter (any trinity subclass) is the app_object.
-        window.app_object = a
+        # load style/<app_class>.css via Au_t.ident on `a` (the app instance)
         w.update*[]
 
         render*[]
@@ -7146,11 +7192,13 @@ class StyleBlock
     public blocks   : array StyleBlock
     public types    : array Au_t
 
-    construct [ p_sc: ref cstr ]
-        sc : cstr [ p_sc[0] ]
+    post construct [ p_sc: ref cstr ]
+        sc : cstr p_sc
         ws[ ref sc ]
         expect sc[0] == '.' || is_alpha2[sc[0]], 'expected Type[.id], or .id'
+        puts 'sc = {sc}'
         quals = parse_qualifiers[ a, ref sc ]
+        puts 'sc = {sc}'
         sc += 1
         ws[ ref sc ]
         while [ sc[0] && sc[0] != '}' ]
@@ -7250,10 +7298,9 @@ class StyleBlock
         return (best_sc > 0.0) ? 1.0 : 0.0
 
     func init []
-        if [ !entries ]
-            entries = StyleEntries [ ]
-        if [ !blocks ]
-            blocks = array StyleBlock [ ]
+        if [ !entries ] entries = StyleEntries     [ ]
+        if [ !blocks  ] blocks  = array StyleBlock [ ]
+        if [ !types   ] types   = array Au_t       [ ]
 
 
 class Style
@@ -7356,7 +7403,7 @@ class Style
         loaded   = true
         reloaded = true
 
-    construct [ app_instance: object ]
+    construct [ app_instance: trinity ]
         app_type  : typeid app_instance
         root_type : string app_type.ident
         p         : path   'style/{root_type}.css'
@@ -8392,13 +8439,14 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
     quals  : array string [ qstr.split[ ',' ] ]
     result : array StyleQualifier [ ]
     ops    : array string [ '!=', '>=', '<=', '>', '<', '=' ]
+
     for [ qs: string ] in quals
         qq : string [ qs.trim[] ]
         if [ !qq.count ]
             continue
         v : StyleQualifier[ bl:bl ]
         result.push[ v ]
-        parent_to_child : array string [ qq.split[ '/' ] ]
+        parent_to_child : qq.split[ '/' ]
         processed : StyleQualifier [ null ]
         for [ i: i32 parent_to_child.count - 1, i >= 0, i -= 1 ]
             q : string [ parent_to_child[i].trim[] ]
@@ -8476,7 +8524,7 @@ func scan_to [ p_cursor: ref cstr, chars: string ] -> bool
                 qt2 = !qt2
         sl = cursor[0] == '\\'
         if [ !qt && !qt2 ]
-            if [ chars.index_of[ cursor[0] ] >= 0 ]
+            if [ chars.index_of[ ref cursor[0] ] >= 0 ]
                 p_cursor[0] = cursor
                 return true
         cursor += 1

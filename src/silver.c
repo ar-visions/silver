@@ -439,7 +439,7 @@ static inline enode expr_load(enode result, bool load) {
 }
 
 static enode parse_expression(silver a, etype expect, bool hint, bool load) { sequencer
-    if (seq == 2024)
+    if (seq == 21804)
         seq = seq;
     if (is_rec(expect) && next_is(a, "[")) {
         // collections and structs go straight to parse_object
@@ -2342,15 +2342,16 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
 
             index += 1;
             string crop = mid(input_string, start, index - start);
-            // single character in quotes → i8 literal
+            // single character in quotes → uchar (unicode codepoint) literal
             i64 char_val;
             if (is_char_uni(crop, &char_val)) {
+                uchar uc = (uchar)char_val;
                 push(tokens, (Au)token(
                     chars, crop->chars,
                     indent, indent,
                     source, src,
                     line, line_num,
-                    literal, _i64(char_val),
+                    literal, primitive(typeid(uchar), &uc),
                     neighbor, start > 0 && !isspace(idx(input_string, start - 1)),
                     column, start - line_start));
                 continue;
@@ -3115,7 +3116,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     // handle typed operations, converting to our expected model (if no difference, it passes through)
     if (a->expr_level > 0 && peek && (is_alpha(peek) || eq(peek, "struct"))) {
-        if (seq == 1067) {
+        if (seq == 27257) {
             seq = seq;
         }
         etype mdl_found = read_etype(a, null);
@@ -3170,7 +3171,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     Au lit = read_literal(a, null);
     if (lit) {
-        if (seq == 3010) {
+        Au info = header(lit);
+        if (seq == 27115) {
             int test2 = 2;
             test2    += 2;
         }
@@ -3582,7 +3584,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     //printf("seq = %i\n", seq);
 
-    if (seq == 17476) {
+    if (seq == 27257) {
         seq = seq;
     }
     // we may only support a limited set of C functionality for #define macros
@@ -3815,7 +3817,7 @@ enode parse_statement(silver a)
     bool      is_setter = !f && !is_static && !(is_func|is_lambda) && !is_cast && !is_oper && !is_ctr && !is_getter ?
         read_if(a, "setter")     != null : false;
 
-    if (seq == 1125) {
+    if (seq == 3848) {
         int test2 = 2;
         test2    += 2;
     }
@@ -5510,7 +5512,7 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
 
     token pk00 = peek(a);
 
-    if (seq == 857) {
+    if (seq == 1224) {
         seq = seq;
     }
 
@@ -7134,7 +7136,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     token pk4 = peek(a);
     validate(within_expr || read_if(a, "["), "expected [");
     token pk5 = peek(a);
-    if (seq == 20)
+    if (seq == 721)
         seq = seq;
     //print("seq %i\n", seq);
     bool is_fields = peek_fields(a) || inherits(mdl->au, typeid(map));
@@ -7308,6 +7310,15 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                         mdl_field = u(etype, mem->src);
                         if (!mdl_field)
                             mdl_field = (etype)etype_prep((silver)a, mem->src);
+                        // propagate the member's meta so parse_expression sees
+                        // the right element type (e.g. models: array Model → meta_a=Model).
+                        // check both mem->meta_a (direct) and mem->au->meta.a.
+                        Au_t member_meta_a = mdl->meta_a ? (Au_t)mdl->meta_a : mem->meta.a;
+                        Au   member_meta_b = mdl->meta_b ? (Au)  mdl->meta_b : mem->meta.b;
+                        if (mdl_field && member_meta_a && !mdl_field->meta_a) {
+                            mdl_field = etype(mod, (aether)a, au, mdl_field->au,
+                                meta_a, (Au)member_meta_a, meta_b, member_meta_b);
+                        }
                     }
                 }
             } else if (is_mdl_map) {
@@ -7552,7 +7563,7 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
                 index_expr  = e_fn_call(a, (efunc)u(efunc, idx), a(mem, inner), false);
                 etype rtype = u(etype, idx->rtype);
 
-                Au info = header(mem);
+                Au info = header((Au)mem);
                 // propagate design-time meta type for member access
                 // convert Au -> meta_a (for collective types: array, map, etc.)
                 Au_t meta_a = mem->au->meta.a ? mem->au->meta.a :
@@ -7580,8 +7591,8 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
                 index_expr = e_offset(a, mem, (Au)first_index, in_ref);
 
             if (in_ref) {
-                if (index_expr->au->src)
-                    index_expr->au = index_expr->au->src;
+                //if (index_expr->au->src)
+                //    index_expr->au = index_expr->au->src;
                 index_expr->loaded = false;
             }
         }
