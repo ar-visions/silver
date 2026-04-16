@@ -3428,7 +3428,9 @@ bool constructs_with(Au_t type, Au_t with_type) {
     for (num i = 0; i < type->members.count; i++) {
         Au_t mem = (Au_t)type->members.origin[i];
         if ((mem->member_type & AU_MEMBER_CONSTRUCT) != 0) {
-            if (mem->type == with_type)
+            if (mem->args.count < 2) continue;
+            Au_t arg = au_arg_type(micro_get(&mem->args, 1));
+            if (arg == with_type)
                 return true;
         }
     }
