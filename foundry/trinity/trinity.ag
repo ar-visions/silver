@@ -6620,7 +6620,7 @@ Display Window
                     continue
                 # lazily create instance from string value
                 if [ !best.instance ]
-                    best.instance = (best.value to typeid[ member.src ]) # convert from string this way
+                    best.instance = (best.value to member.src) # convert from string this way
                 expect best.instance, 'instance must be initialized'
                 changed.push[ prop ]
                 cur : inst.member_object[ member ]
@@ -7372,6 +7372,7 @@ class Style
     intern  reloaded  : bool
     intern  loaded    : bool
     intern  visited   : array string
+    intern  errors    : array string
 
     func cache_block [ bl: StyleBlock ]
         for [ e: StyleEntry, k: string ] in bl.entries
@@ -7403,6 +7404,7 @@ class Style
     func process [ code: string ]
         if [ !base    ] base    = array StyleBlock [ ]
         if [ !visited ] visited = array string     [ ]
+        if [ !errors  ] errors  = array string     [ ]
         lines : array CSSLine [ split_css[ code ] ]
         i : i32 [ 0 ]
         while [ i < lines.count ]
@@ -7436,9 +7438,15 @@ class Style
             sc : cstr [ content.chars ]
             bl.quals = parse_qualifiers[ bl, ref sc ]
             parse_block_body[ bl, lines, i + 1, end_idx - 1, 0 ]
-            validate_block[ bl ]
+            validate_block[ bl, errors ]
             base.push[ bl ]
             i = end_idx
+
+    func report_errors [ ]
+        if [ errors && errors.count ]
+            for [ msg: string ] in errors
+                puts '{msg}'
+            fault 'css: {errors.count} error(s)'
 
     func cache_members [ ]
         for [ b: StyleBlock ] in base
@@ -7457,7 +7465,7 @@ class Style
         return match
 
     func compute [ n: element ] -> map StyleEntries[string]
-        avail : map StyleEntries[string]
+        avail : map StyleEntries[string][]
         ty    : Au_t [ typeid[ n ] ]
         expect n inherits element, 'must inherit element'
         while [ ty != typeid[ Au ] ]
@@ -7493,6 +7501,7 @@ class Style
         mod_time  = p.modified_time[ ]
         members   = map StyleEntries[string] []
         process[ style_str ]
+        report_errors[]
         cache_members[]
         loaded   = true
         reloaded = true
@@ -7608,19 +7617,23 @@ class Region
         set = true
 
     construct [ s: string ]
-        aa : array string [ s.split[ ' ' ] ]
-        if [ a.count == 4 ]
+        aa : s.split[ ' ' ]
+        if [ aa.count == 4 ]
             l = XCoord [ aa[0] ]
             t = YCoord [ aa[1] ]
             r = XCoord [ aa[2] ]
             b = YCoord [ aa[3] ]
-        el [ a.count == 1 ]
+        el [ aa.count == 1 ]
             l = XCoord [ aa[0] ]
             t = YCoord [ aa[0] ]
             r = XCoord [ aa[0] ]
             b = YCoord [ aa[0] ]
         set = true
 
+    construct [ cs : cstr ]
+        s : string[cs]
+        construct [ s ]
+    
     func rectangle_offset [ rel: rect ] -> rect
         area: a
         reg: Region
@@ -7947,6 +7960,11 @@ class Layer
     public image_align         : Align
     public image_tranform      : Transform
     public image_repeat        : Pattern
+
+    public background_gradient : Gradient
+    public background_radius   : f32
+    public background_origin   : vec2f
+    public background_to       : vec2f
 
     public blend               : Blend
     public transform           : Transform
@@ -8617,56 +8635,59 @@ class CSSLine
 
 func split_css [ code: string ] -> array CSSLine
     result : array CSSLine [ ]
-    sc : cstr [ code.chars ]
-    while [ sc[0] ]
+    n : num [ code.count ]
+    i : num [ 0 ]
+    while [ i < n ]
         ind : i32 [ 0 ]
-        while [ sc[0] == ' ' || sc[0] == '\t' ]
-            if [ sc[0] == '\t' ]
+        while [ i < n && (code.chars[i] == ' ' || code.chars[i] == '\t') ]
+            if [ code.chars[i] == '\t' ]
                 ind += 4
             el
                 ind += 1
-            sc += 1
-        if [ !sc[0] ]
+            i += 1
+        if [ i >= n ]
             break
-        if [ sc[0] == '\n' ]
-            sc += 1
+        if [ code.chars[i] == '\n' ]
+            i += 1
             continue
-        if [ sc[0] == '/' && sc[1] == '/' ]
-            while [ sc[0] && sc[0] != '\n' ]
-                sc += 1
+        if [ i + 1 < n && code.chars[i] == '/' && code.chars[i + 1] == '/' ]
+            while [ i < n && code.chars[i] != '\n' ]
+                i += 1
             continue
-        if [ sc[0] == '/' && sc[1] == '*' ]
-            sc += 2
-            while [ sc[0] && !(sc[0] == '*' && sc[1] == '/') ]
-                sc += 1
-            if [ sc[0] ]
-                sc += 2
+        if [ i + 1 < n && code.chars[i] == '/' && code.chars[i + 1] == '*' ]
+            i += 2
+            while [ i + 1 < n && !(code.chars[i] == '*' && code.chars[i + 1] == '/') ]
+                i += 1
+            if [ i + 1 < n ]
+                i += 2
             continue
-        start : cstr [ sc ]
-        while [ sc[0] && sc[0] != '\n' ]
-            sc += 1
-        c : string [ chars: start, ref_length: distance[start, sc] ]
-        c = c.trim[]
+        line_start : num [ i ]
+        while [ i < n && code.chars[i] != '\n' ]
+            i += 1
+        line_len : num [ i - line_start ]
+        c : string [ code.mid[ line_start, line_len ].trim[] ]
         if [ c.count ]
             result.push[ CSSLine [ indent: ind, content: c ] ]
     return result
 
 
-func validate_entries [ entries: StyleEntryMap, ty: Au_t ]
+func validate_entries [ entries: StyleEntryMap, ty: Au_t, errors: array string ]
     for [ se: StyleEntry, prop: string ] in entries
         dot  : prop.index_of[ '.' ]
         name : (dot > 0) ? prop.mid[ 0, dot ].trim[] : prop
         mem  : Au.find_member[ ty, name.chars, AU_MEMBER_VAR, 0, true ]
-        expect mem, 'css: type {ty.ident} has no member {name} (from property {prop})'
+        if [ !mem ]
+            errors.push[ string 'css: type {ty.ident} has no member {name} (from property {prop})' ]
+            continue
         if [ dot > 0 ]
             sub_bl : (se.value to StyleBlock)
             if [ sub_bl && mem.meta.a ]
-                validate_entries[ sub_bl.entries, mem.meta.a ]
+                validate_entries[ sub_bl.entries, mem.meta.a, errors ]
 
 
-func validate_block [ bl: StyleBlock ]
+func validate_block [ bl: StyleBlock, errors: array string ]
     for [ ty: Au_t ] in bl.types
-        validate_entries[ bl.entries, ty ]
+        validate_entries[ bl.entries, ty, errors ]
 
 
 func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: i32, base_indent: i32 ]
