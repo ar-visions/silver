@@ -2791,6 +2791,8 @@ class shader
                     fclose[ rfp ]
             if [ !should_write ]
                 continue
+            cwd : path.path_cwd[]
+            p.parent_dir[].make_dir[]
             fp: fopen[ p, "w" ]
             if [ !fp ]
                 printf[ "failed to write shader: %s\n", p.chars ]
@@ -7091,6 +7093,8 @@ Display Window
                 screen.draw[]
                 screen.sync_fence[]
         ##
+
+        ##
         screen.fill_color[ "#fff" ]
         screen.font_size [ 32 ]
         screen.draw_text[
@@ -7099,6 +7103,8 @@ Display Window
             vec2f [ 0.5, 0.5 ],
             vec2f [ 0.0, 0.0 ],
             false ]
+        ##
+        
         screen.draw[]
         screen.sync_fence[]
 
@@ -7119,8 +7125,14 @@ Display Window
             layer.bounds = (layer.region) ? layer.region.rectangle[ e.bounds, null ] : e.bounds
             cv : Canvas [ canvas_arr[layer.ctype] ]
             b  : rect   [ layer.bounds ]
-            rx : f32    [ (layer.radius && layer.radius.count > 0) ? layer.radius[0] : 0.0 ]
-            ry : f32    [ (layer.radius && layer.radius.count > 1) ? layer.radius[1] : rx  ]
+            rx : f32 [ 0.0 ]
+            ry : f32 [ 0.0 ]
+            if [ layer.radius && layer.radius.count > 0 ]
+                rx = layer.radius[0]
+            if [ layer.radius && layer.radius.count > 1 ]
+                ry = layer.radius[1]
+            el
+                ry = rx
 
             if [ layer.fill_color && layer.fill_color.a > 0.0 ]
                 cv.save[]
@@ -7159,7 +7171,7 @@ abstract media_app trinity
 
     public func on_render [ w: Window ] -> Elements
         return Elements [
-            "root": [
+            "root": element [
                 elements: [
                     "one": Button[],
                     "two": Button[]
@@ -7175,7 +7187,8 @@ abstract media_app trinity
     func update_scene [] return
 
     func run[] -> i32
-        window : Window[ app_object: a, title:'orbiter', st: Style [ a ], 
+        type : typeid[a]
+        window : Window[ app_object: a, title:type.ident, st: Style [ a ], 
             width:(width) ?? 1488, height:(height) ?? 888 ]
         expect window.vk, "context didnt work"
 

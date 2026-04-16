@@ -4563,16 +4563,18 @@ bool inherits(Au_t src, Au_t check) {
     if (!src) return false;
     if (src->member_type == AU_MEMBER_VAR)
         src = src->src;
+    while (src && src->is_alias && src->src && src->src != src)
+        src = src->src;
+    while (check && check->is_alias && check->src && check->src != check)
+        check = check->src;
     while (src && src != typeid(Au)) {
         if (src == check) return true;
         if (src->context == src) break;
         src = src->context;
     }
-    if ((src   == typeid(Au) || src   == typeid(Au)) &&
-        (check == typeid(Au) || check == typeid(Au))) {
+    if (src == typeid(Au) && check == typeid(Au))
         return true;
-    }
-    return src == check; // true for Au against Au
+    return src == check;
 }
 
 static inline char just_a_dash(char a) {

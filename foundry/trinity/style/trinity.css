@@ -22,3 +22,10 @@ View / Button.button1 {
         stroke_width:   4
         stroke_color:   #fff
 }
+
+Button {
+    layers.bg:
+        ctype:          compose
+        fill_color:     #f8a
+        region:         l0 t0 r0 b0
+}

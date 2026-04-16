@@ -779,6 +779,9 @@ none etype_implement(etype t, bool);
 etype etype_ptr(aether a, Au_t au, enode eshape) {
     verify(au && (isa(au) == typeid(Au_t_f)), "ptr requires Au_t, given %s", isa(au)->ident);
     verify(isa(au) != typeid(etype), "etype_ptr unexpected type");
+    // aliases share their ptr with the target — no separate ref wrapper
+    while (au && au->is_alias && au->src && au->src != au)
+        au = au->src;
     Au_t au_ptr = au->ptr;
     if (!eshape && !au_ptr) {
         au->ptr = def(a->au, null, AU_MEMBER_TYPE, 0);
@@ -859,6 +862,9 @@ etype etype_traits(Au input, int traits) {
     //}
     //return (au->traits & traits) == traits ? ((etype)u(etype, au)) : null;
     verify(a, "type context unknown");
+    // aliases forward to their target's traits
+    while (au && au->is_alias && au->src && au->src != au)
+        au = au->src;
     etype u = u(etype, au);
     return (u->au->traits & traits) == traits ? u : null;
 }
@@ -2463,13 +2469,17 @@ enode aether_e_short_circuit(aether a, OPType optype, enode L) {
     enode R = (enode)a->parse_expr((Au)a, null);
 
     // if R can't convert to L's type, fall back to bool for both.
-    // primitives (i32, f32, etc.) and null pointers have no "missing value" —
+    // numeric primitives (i32, f32, etc.) have no "missing value" —
     // value-preservation via constructor-based conversion silently allocates
     // (e.g. array_with_i32 wraps a count as a new array). only preserve when
-    // both sides are non-primitive AND convertible without a ctor detour.
-    bool lp = is_prim((etype)L_conv->au) || L_conv->au == typeid(bool);
-    bool rp = is_prim((etype)R->au)      || R->au      == typeid(bool);
-    if (lp || rp || !convertible((etype)R, rtype)) {
+    // both sides are non-numeric AND convertible without a ctor detour.
+    // pointer-shaped primitives (ARef, handle, cstr) keep value semantics —
+    // they compare against null naturally, just like class/pointer types.
+    Au_t L_au = L_conv->au;
+    Au_t R_au = R->au;
+    bool ln = L_au->is_integral || L_au->is_realistic || L_au == typeid(bool);
+    bool rn = R_au->is_integral || R_au->is_realistic || R_au == typeid(bool);
+    if (ln || rn || !convertible((etype)R, rtype)) {
         rtype = m_bool;
         L_conv = L_bool;
     }
@@ -3056,13 +3066,13 @@ enode convertible(etype fr, etype to) {
         enode mcast = castable(ma, mb);
         return mcast ? mcast : (enode)true;
     }
-    if (ma->au->is_pointer && mb->au == typeid(Au))
+    if (is_ptr(ma->au) && mb->au == typeid(Au))
         return (enode)true;
     if ((is_func(ma) || is_func(resolve(ma)) || ma->au->is_funcptr) && mb->au->is_funcptr)
         return (enode)true;
     if (ma->au->is_funcptr && mb->au == typeid(bool))
         return (enode)true;
-    if ((ma->au->is_class || ma->au->is_pointer) && mb->au == typeid(bool))
+    if ((is_class(ma->au) || ma->au->is_pointer) && mb->au == typeid(bool))
         return (enode)true;
 
     // pointer to i8/u8 is cstr-compatible (converts to string, cstr, symbol)
@@ -3457,6 +3467,12 @@ static bool au_is_c(Au_t au) {
 
 enode aether_e_typeid(aether a, etype mdl) { sequencer
     etype original = mdl;
+
+    if (mdl && mdl->au && mdl->au->ident) {
+        if (strcmp(mdl->au->ident, "Elements") == 0) {
+            mdl = mdl;
+        }
+    }
     // don't canonicalize funcptr/lambda types — canonical follows src to return type (none/void)
     if (!mdl || (!mdl->au->is_funcptr && !mdl->au->is_lambda))
         mdl = canonical(mdl);
@@ -3510,6 +3526,10 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
         }
     }
 
+    if (mdl->au->is_alias && !mdl->type_id)
+        implement_type_id(mdl);
+
+
     a->is_const_op = false;
     // try the original alias first, then canonical, then the resolved to_register
     enode n = resolve_typeid(a, (Au)original);
@@ -3539,10 +3559,8 @@ bool is_au_t(Au a) {
 }
 
 bool is_map(etype t) {
-    if (instanceof(t, etype) && t->au == typeid(map) || t->au->context == typeid(map)) {
-        return true;
-    }
-    return false;
+    if (!instanceof(t, etype) || !t->au) return false;
+    return inherits(t->au, typeid(map));
 }
 
 
@@ -4039,7 +4057,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
     
     enode input = (enode)instanceof(args, enode);
 
-        if (input && input->au->ident && strcmp(input->au->ident, "binding") == 0) {
+        if (mdl && mdl->au->ident && strcmp(mdl->au->ident, "Elements") == 0) {
             int test2 = 2;
             test2    += 2;
         }
@@ -4185,7 +4203,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 LLVMBuildBitCast(B, boxed->value, lltype(canonical(mdl)), "box_to_au"));
         }
 
-        if (seq == 2156) {
+        if (seq == 113774) {
             seq = seq;
         }
 
@@ -6178,24 +6196,29 @@ none etype_init(etype t) {
         etype_create(a, au->src);
         t->lltype = LLVMArrayType(lltype(u(etype, au->src)), au->elements);
     } else if (named && (!instanceof(t, enode) && (is_rec((Au)t) || au->is_union || au == typeid(Au_t)))) {
-        // non-pointer alias: don't create own lltype, resolve from src
-        if (au->src && au->src != au && !au->is_pointer &&
-            (au->src->is_struct || au->src->is_union) &&
-            au->member_type == AU_MEMBER_TYPE) {
-            etype src_e = u(etype, au->src);
-            if (src_e && lltype(src_e))
-                t->lltype = lltype(src_e);
+        // aliases never own their lltype — resolution walks src
+        if (au->is_alias) {
+            // leave t->lltype null; canonical/u(etype, src) provides type info
+        } else {
+            // non-pointer alias: don't create own lltype, resolve from src
+            if (au->src && au->src != au && !au->is_pointer &&
+                (au->src->is_struct || au->src->is_union) &&
+                au->member_type == AU_MEMBER_TYPE) {
+                etype src_e = u(etype, au->src);
+                if (src_e && lltype(src_e))
+                    t->lltype = lltype(src_e);
+            }
+            if (!t->lltype) {
+                // alias to pointer type: use ptr, not a named struct
+                Au_t resolved = au_arg_type((Au)au);
+                if (resolved && resolved->is_pointer)
+                    t->lltype = LLVMPointerTypeInContext(a->module_ctx, 0);
+                else
+                    t->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
+            }
+            if (au != typeid(Au_t) && !au->is_system)
+                etype_ptr(a, t->au, null);
         }
-        if (!t->lltype) {
-            // alias to pointer type: use ptr, not a named struct
-            Au_t resolved = au_arg_type((Au)au);
-            if (resolved && resolved->is_pointer)
-                t->lltype = LLVMPointerTypeInContext(a->module_ctx, 0);
-            else
-                t->lltype = LLVMStructCreateNamed(a->module_ctx, cstr_copy(au->ident));
-        }
-        if (au != typeid(Au_t) && !au->is_system)
-            etype_ptr(a, t->au, null);
     } else if (is_enum(t)) {
         etype_prep(a, au->src);
         t->lltype = lltype(au->src ? u(etype, au->src) : etypeid(i32));
@@ -6392,6 +6415,10 @@ etype implement_type_id(etype t) {
     etype_implement(au_t, false);
     
     if (!au->ident) return null;
+
+    if (strcmp(au->ident, "Elements") == 0) {
+        au = au;
+    }
     string name = is_module(au) ?
         f(string, "%s_m", au->ident) :
         f(string, "%o_%s_i", symbol_name(
@@ -7303,10 +7330,17 @@ none aether_build_module_initializer(aether a, enode init) {
         //aether_eputs(a, f(string, "%o: var", type_id->au));
         if (!mdl->au->typesize) continue; // skip opaque types (e.g. GLFWwindow)
 
+        // class/struct aliases: pass src as context so emplace_type's
+        // memcpy(&type->ft, &context->ft, context->table_size) copies the
+        // target's method table. primitive/enum aliases keep their
+        // original context (nothing meaningful to inherit).
+        bool alias_to_rec = is_alias_t && tau->src &&
+                            (tau->src->traits & (AU_TRAIT_CLASS | AU_TRAIT_STRUCT));
+        Au_t emplace_ctx = alias_to_rec ? tau->src : tau->context;
         e_fn_call(a, fn_emplace, a(
             type_id,
-            tau->context ? e_typeid(a, u(etype, tau->context)) : e_null(a, etypeid(Au_t)),
-            tau->src     ? e_typeid(a, u(etype, tau->src))     : e_null(a, etypeid(Au_t)),
+            emplace_ctx ? e_typeid(a, u(etype, emplace_ctx)) : e_null(a, etypeid(Au_t)),
+            tau->src     ? e_typeid(a, u(etype, tau->src))    : e_null(a, etypeid(Au_t)),
             module_type_id,
             const_string(chars, tau->ident),
             _u64(tau->member_type),

@@ -834,7 +834,13 @@ void silver_parse(silver a) {
                 pop_tokens(a, false);
                 if (target) {
                     alias_au->src = target->au;
-                    etype_register((aether)a, (Au)alias_au, (Au)hold(target), true);
+                    alias_au->meta.a = target->meta_a;
+                    alias_au->meta.b = target->meta_b;
+                    etype ealias = etype(mod, a, au, alias_au,
+                        meta_a, alias_au->meta.a, meta_b, alias_au->meta.b);
+                    ealias = ealias;
+                    etype_register((aether)a, (Au)alias_au, (Au)hold(ealias), true);
+                    e_typeid((aether)a, u(etype, alias_au));
                     resolved++;
                 }
             }
@@ -879,6 +885,14 @@ void silver_parse(silver a) {
         if (is_func((Au)mem) && !mem->is_system && e != a->fn_init && !e->user_built)
             build_fn(a, (efunc)e, null, null);
     }
+
+
+    members(a->au, mem) {
+        etype e = u(etype, mem);
+        if (e && e->au->is_alias)
+            e_typeid(a, (etype)e);
+    }
+
 
     // when done parsing, we are able to create a module schema (type_id definition) and the evar instance for the type_id (module_m with info/type)
     implement_type_id((etype)a);
@@ -1308,20 +1322,8 @@ void silver_init(silver a) {
                     push(a->implements, (Au)files[i]);
                 }
             
-            string bp = a->breakpoint;
-            Au info = head(bp);
-
-            Au_t mod2 = (Au_t)0x7ffff7eb7c30;
-            if (mod2) {
-                mod2 = mod2;
-            }
-
             parse(a);
 
-            Au_t mod4 = (Au_t)0x7ffff7eb7c30;
-            if (mod4) {
-                mod4 = mod4;
-            }
             // print all expected defs not used
             if (len(a->defs_expect))
                 pairs(a->defs_expect, i) {
@@ -4311,11 +4313,18 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     if (rtype->meta_a) au->meta.a = (Au_t)rtype->meta_a;
     if (rtype->meta_b) au->meta.b = rtype->meta_b;
 
-    // validate override return type matches base
-    if (override && override->rtype && rtype->au != override->rtype)
-        validate(inherits(rtype->au, override->rtype),
+    // validate override return type matches base (resolve aliases on both sides)
+    if (override && override->rtype && rtype->au != override->rtype) {
+        Au_t r_resolved = rtype->au;
+        while (r_resolved && r_resolved->is_alias && r_resolved->src)
+            r_resolved = r_resolved->src;
+        Au_t o_resolved = override->rtype;
+        while (o_resolved && o_resolved->is_alias && o_resolved->src)
+            o_resolved = o_resolved->src;
+        validate(r_resolved == o_resolved || inherits(r_resolved, o_resolved),
             "override '%s' return type '%s' does not match base return type '%s'",
             au->ident, rtype->au->ident, override->rtype->ident);
+    }
 
     bool is_using = read_if(a, "using") != null;
     codegen cgen = null;
@@ -7141,7 +7150,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     //print("seq %i\n", seq);
     bool is_fields = peek_fields(a) || inherits(mdl->au, typeid(map));
     token pk6 = peek(a);
-    bool is_mdl_map = mdl->au == typeid(map);
+    bool is_mdl_map = inherits(mdl->au, typeid(map));
     bool is_mdl_collective = inherits(mdl->au, typeid(collective));
     bool was_ptr = false;
     int  iter = 0;
