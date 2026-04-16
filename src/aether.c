@@ -2462,8 +2462,14 @@ enode aether_e_short_circuit(aether a, OPType optype, enode L) {
     LLVMPositionBuilderAtEnd(B, eval_r_block);
     enode R = (enode)a->parse_expr((Au)a, null);
 
-    // if R can't convert to L's type, fall back to bool for both
-    if (!convertible((etype)R, rtype)) {
+    // if R can't convert to L's type, fall back to bool for both.
+    // primitives (i32, f32, etc.) and null pointers have no "missing value" —
+    // value-preservation via constructor-based conversion silently allocates
+    // (e.g. array_with_i32 wraps a count as a new array). only preserve when
+    // both sides are non-primitive AND convertible without a ctor detour.
+    bool lp = is_prim((etype)L_conv->au) || L_conv->au == typeid(bool);
+    bool rp = is_prim((etype)R->au)      || R->au      == typeid(bool);
+    if (lp || rp || !convertible((etype)R, rtype)) {
         rtype = m_bool;
         L_conv = L_bool;
     }
