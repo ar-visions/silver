@@ -2398,11 +2398,13 @@ i32 evalue(Au_t type, cstr cs) {
             return *(i32*)enum_member_value(type, mem);
         }
     }
-    for (num i = 0; i < type->members.count; i++) {
-        Au_t mem = (Au_t)type->members.origin[i];
-        if ((mem->member_type & AU_MEMBER_ENUMV) &&
-            (tolower(mem->ident[0]) == tolower(cs[0]))) {
-            return *(i32*)enum_member_value(type, mem);
+    if (single) {
+        for (num i = 0; i < type->members.count; i++) {
+            Au_t mem = (Au_t)type->members.origin[i];
+            if ((mem->member_type & AU_MEMBER_ENUMV) &&
+                (tolower(mem->ident[0]) == tolower(cs[0]))) {
+                return *(i32*)enum_member_value(type, mem);
+            }
         }
     }
     fault("enum not found");
