@@ -8,6 +8,8 @@
   },
   "icon": "icon.png",
   "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:ag"],
+  "main": "./extension.js",
   "contributes": {
     "languages": [
       {

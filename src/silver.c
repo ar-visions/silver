@@ -3046,10 +3046,6 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     silver    module    = !cmode && (top->is_namespace) ? a : null;
     enode     mem       = null;
 
-    if (peek(a)->line == 565) {
-        a = a;
-    }
-
     if (!cmode && read_if(a, "[")) {
         // C fixed-size array: read N elements of the element type
         if (mdl_expect && mdl_expect->au->elements > 0 && mdl_expect->au->src) {
@@ -4324,6 +4320,24 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         validate(r_resolved == o_resolved || inherits(r_resolved, o_resolved),
             "override '%s' return type '%s' does not match base return type '%s'",
             au->ident, rtype->au->ident, override->rtype->ident);
+    }
+
+    // validate override arg count and types match base
+    if (override) {
+        validate(au->args.count == override->args.count,
+            "override '%s' has %i args, base has %i",
+            au->ident, au->args.count, override->args.count);
+        for (int oi = 0; oi < au->args.count && oi < override->args.count; oi++) {
+            Au_t arg_au   = (Au_t)au->args.origin[oi];
+            Au_t arg_base = (Au_t)override->args.origin[oi];
+            Au_t a_src = arg_au->src;
+            Au_t b_src = arg_base->src;
+            while (a_src && a_src->is_alias && a_src->src) a_src = a_src->src;
+            while (b_src && b_src->is_alias && b_src->src) b_src = b_src->src;
+            validate(a_src == b_src || inherits(a_src, b_src),
+                "override '%s' arg %i type '%s' does not match base type '%s'",
+                au->ident, oi, arg_au->src->ident, arg_base->src->ident);
+        }
     }
 
     bool is_using = read_if(a, "using") != null;
