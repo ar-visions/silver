@@ -3735,7 +3735,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
 
     // 2b. verify required members were provided
     Au_t alloc_type = alloc->au;
-    if (alloc_type && alloc_type->is_class &&
+    if (alloc_type && is_class(alloc_type) &&
         !inherits(alloc_type, typeid(map)) &&
         !inherits(alloc_type, typeid(array))) {
         Au_t ctx = alloc_type;
@@ -4546,7 +4546,7 @@ enode aether_e_alloc(aether a, etype mdl) {
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, mdl), _i32(0), e_null(a, etypeid(shape)),
         e_meta_a_node(a, mdl->meta_a), e_meta_b_node(a, mdl->meta_b) ), false);
-    res->au = mdl->au->is_class ? mdl->au : pointer(a, (Au)mdl)->au;
+    res->au = is_class(mdl) ? au_arg_type((Au)mdl->au) : pointer(a, (Au)mdl)->au;
     return res;
 }
 

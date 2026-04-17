@@ -834,10 +834,10 @@ void silver_parse(silver a) {
                 pop_tokens(a, false);
                 if (target) {
                     alias_au->src = target->au;
-                    alias_au->meta.a = target->meta_a;
+                    alias_au->meta.a = (Au_t)target->meta_a;
                     alias_au->meta.b = target->meta_b;
-                    etype ealias = etype(mod, a, au, alias_au,
-                        meta_a, alias_au->meta.a, meta_b, alias_au->meta.b);
+                    etype ealias = etype(mod, (aether)a, au, alias_au,
+                        meta_a, (Au)alias_au->meta.a, meta_b, alias_au->meta.b);
                     ealias = ealias;
                     etype_register((aether)a, (Au)alias_au, (Au)hold(ealias), true);
                     e_typeid((aether)a, u(etype, alias_au));
