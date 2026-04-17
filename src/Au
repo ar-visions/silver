@@ -117,9 +117,7 @@ typedef struct cereal { char* value; } cereal;
 // typedef struct _object*         Au;
 typedef struct _Au**             ARef; /// registered for a generic raw, but we must transition to use 'raw' in cases where they are not Au-allocations
 typedef float*                  floats_t;
-#ifndef __cplusplus
 typedef i32                     uchar;
-#endif
 
 typedef cstr*                   cstrs;
 typedef void*                   raw;        // abstract types are void*
@@ -1561,8 +1559,8 @@ declare_class(ipart)
     M(AA,BB, i, prop,    public, u64,    h) \
     M(AA,BB, i, method,  public, bool,   is_numeric) \
     M(AA,BB, i, method,  public, none,   alloc_ahead, i64) \
-    M(AA,BB, i, method,  public, i32,    first) \
-    M(AA,BB, i, method,  public, i32,    last) \
+    M(AA,BB, i, method,  public, uchar,  first) \
+    M(AA,BB, i, method,  public, uchar,  last) \
     M(AA,BB, i, method,  public, f64,    real_value) \
     M(AA,BB, i, method,  public, i64,    integer_value) \
     M(AA,BB, i, method,  public, string, ucase) \

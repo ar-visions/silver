@@ -6697,10 +6697,11 @@ Display Window
         remove_invalid[]
 
     func update_element [ parent: element, rendered: map element[string] ]
-        target : Au [ app ]
+        if [!parent.elements] parent.elements = Elements[] #break
+        target : Au [ app ] #break
 
         # mark for umount
-        for [ e:element, id:string ] in parent.elements
+        for [ e:element, id:string ] in parent.emlements
             e.flags |= 1
 
         # iterate through rendered elements
@@ -7533,7 +7534,7 @@ struct XCoord
     percent  : bool
 
     construct [ sx: string ]
-        f         : string [ sx.first[] ]
+        f         : string[sx.first[]]
         x_type    = XAlign[f]
         sx_offset : sx.mid[ 1, sx.count - 1 ]
         if [ sx_offset.last[] == '%' ]
