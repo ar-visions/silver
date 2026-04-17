@@ -1954,6 +1954,15 @@ lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
 }
 
 Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize, i32 icount) {
+    if (strcmp(ident, "Toolbar") == 0) {
+        ident = ident;
+    }
+    if (strcmp(ident, "Group") == 0) {
+        ident = ident;
+    }
+    if (strcmp(ident, "element") == 0) {
+        ident = ident;
+    }
     type->member_type       = member_type;
     memset(&type->members, 0, sizeof(micro));
     memset(&type->args,    0, sizeof(micro));
@@ -2491,10 +2500,11 @@ bool f64_is_zero(f64* a)    { return *a == 0.0; }
 
 Au Au_initialize(Au a) {
     Au   f = header(a);
-    if (f->type->traits & AU_TRAIT_USER_INIT) return a;
+    // user-init is now implemented at design-time
+    //if (f->type->traits & AU_TRAIT_USER_INIT) return a;
     // primitives, enums, and other non-class types have no init chain
     // or hold_members vtable; skip them
-    if (f->type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) return a;
+    if (f->type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) return a; // isolate these cases and remove this code
 
     #ifndef NDEBUG
     Au_validator(a);
@@ -7541,15 +7551,6 @@ u64 fdata_hash(fdata a) {
 Au_t_f
 */
 
-int aclass2_run(aclass2 a) {
-    printf("aclass2 run\n");
-    return 0;
-}
-
-none aclass2_init(aclass2 a) {
-    printf("aclass2\n");
-}
-
 i32 app_run(app a) {
     return 0;
 }
@@ -7662,9 +7663,8 @@ define_class(mutex, Au)
 
 define_class(srcfile, Au);
 
-define_class   (app, Au)
-
-define_class(aclass2, app)
+define_class(app, Au)
+define_class(ielement, Au)
 
 define_class(coverage, Au)
 

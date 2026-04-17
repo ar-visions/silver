@@ -837,7 +837,7 @@ etype pointer(aether mod, Au a) {
     return etype_ptr(mod, au, null);
 }
 
-etype etype_traits(Au input, int traits) {
+etype _etype_traits(Au input, int traits, bool poly) {
     Au_t au;
     bool is_etype = false;
     aether a = null;
@@ -851,22 +851,31 @@ etype etype_traits(Au input, int traits) {
         au = ((enode)input)->au;
         a  = ((enode)input)->mod;
     }
-    else if (isa(input) == typeid(Au_t_f)) { // this wont work at the moment without module context
+    else if (isa(input) == typeid(Au_t_f)) {
         verify(lltype(etypeid(Au_t_f)), "no type found on %o 2", input);
         au = (Au_t)input;
     }
     verify(au, "unhandled input");
-    //if (au->is_class) {
-    //    verify(au->ptr, "expected ptr for class");
-    //    au = au->ptr;
-    //}
-    //return (au->traits & traits) == traits ? ((etype)u(etype, au)) : null;
     verify(a, "type context unknown");
     // aliases forward to their target's traits
     while (au && au->is_alias && au->src && au->src != au)
         au = au->src;
+    if (poly) {
+        Au_t walk = au;
+        while (walk) {
+            if ((walk->traits & traits) == traits)
+                return u(etype, au);
+            if (walk->context == walk || walk == typeid(Au)) break;
+            walk = walk->context;
+        }
+        return null;
+    }
     etype u = u(etype, au);
     return (u->au->traits & traits) == traits ? u : null;
+}
+
+etype etype_traits(Au input, int traits) {
+    return _etype_traits(input, traits, false);
 }
 
 /// C type rules implemented
@@ -2621,7 +2630,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super) { sequence
     if (!target_type || (!is_struct((Au)target_type->au->src) && !is_struct((Au)target_type)))
 
     if (!fn->is_super && !is_super && fn->au->access_type != interface_intern &&
-        (is_abstract || (!a->direct && first_arg && !first_is_alloc &&
+        (is_abstract || (((!a->direct && first_arg) || (first_arg && first_arg->is_any)) && !first_is_alloc &&
          fn->au->context != typeid(Au) && fn->au->is_imethod && !funcptr &&
          !(target_type && target_type->target && target_type->target->avoid_ftable)))) {
 
@@ -4283,13 +4292,13 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             res = eshape_from_indices(a, indices);
             res->literal = (Au)hold(sh);
         } else {
-            // default class creation: alloc + e_init
+            // default class creation: alloc + e_init (skip for user_init types)
             etype m = og_mdl ? og_mdl : mdl;
             enode alloc = e_alloc(a, m);
             alloc->is_alloc = !a->building_initializer;
             alloc->meta_a   = hold(m->meta_a);
             alloc->meta_b   = hold(m->meta_b);
-            res = e_init(a, alloc, null, null, null);
+            res = alloc->au->is_user_init ? alloc : e_init(a, alloc, null, null, null);
         }
 
     } else if (ctr) {
@@ -4313,7 +4322,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             alloc->is_alloc = !a->building_initializer;
             alloc->meta_a   = hold(mdl->meta_a);
             alloc->meta_b   = hold(mdl->meta_b);
-            res = e_init(a, alloc, null, ctr, input);
+            res = alloc->au->is_user_init ? alloc : e_init(a, alloc, null, ctr, input);
         }
 
 
@@ -5829,9 +5838,10 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     bool saved_skip_ctx = a->skip_context_resolve;
     a->skip_context_resolve = true;
     enode m = e_create(a, main_class, (Au)u(evar, argv)); // a loop would be nice, since none of our members will be ref+1'd yet
+    m->is_any = true;
     a->skip_context_resolve = saved_skip_ctx;
     Au_t fn_run = find_member(main_spec->au, "run", AU_MEMBER_FUNC, 0, false);
-    
+
     enode r = e_fn_call(a, (efunc)u(efunc, fn_run), a(m), false);
 
     // give a full-coverage-report to number one
@@ -7359,7 +7369,7 @@ none aether_build_module_initializer(aether a, enode init) {
 
         // C-imported types: size-only registration, no member/function metadata
 
-        i64 max_ft_end = 0;
+        i64 max_ft_end = tau->context ? tau->context->table_size : 0;
         if (!tau->is_c)
         members(tau, mem) {
             if (mem->access_type == interface_intern)
@@ -9148,6 +9158,17 @@ efunc aether_function(aether a, etype place, string ident, etype rtype, array ar
 etype aether_record(aether a, etype place, etype based, string ident, u32 traits) { sequencer
     Au_t au = def(place->au, ident->chars, AU_MEMBER_TYPE, traits);
     au->context = (traits & AU_TRAIT_STRUCT) ? null : (based ? based->au : etypeid(Au)->au);
+
+    // propagate is_user_init from ancestor chain
+    Au_t walk = au->context;
+    while (walk && walk != typeid(Au)) {
+        if (walk->is_user_init) {
+            au->is_user_init = true;
+            break;
+        }
+        if (walk->context == walk) break;
+        walk = walk->context;
+    }
 
     etype n = etype(mod, a, au, au);
     return n;

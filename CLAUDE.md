@@ -72,8 +72,6 @@ import:     <external dependency with git ref>
 install:    <headers to install>
 ```
 
-**Do not guess at .g keywords.** `.g` files are parsed by the silver compiler with a specific fixed grammar. Adding unrecognized keys silently does nothing or errors. If a module needs a build flag, confirm the grammar in `silver.c` (the .g parser) before editing — don't extrapolate from generic build-manifest conventions.
-
 ## Au Object System
 
 Au is the C-based object/type system underlying everything. Key concepts:

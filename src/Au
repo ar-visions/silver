@@ -1754,9 +1754,10 @@ declare_class(line)
     M(X,Y, i, method, public, i32, run)
 declare_class(app)
 
-#define aclass2_schema(AA,BB,...)
+#define ielement_module_ Au
+#define ielement_schema(X,Y,...)
+declare_class(ielement)
 
-declare_class_2(aclass2, app)
 
 #define coverage_module_ Au
 #define coverage_schema(X,Y,...) \

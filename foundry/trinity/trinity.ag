@@ -473,7 +473,7 @@ class Render
 struct mat3f
     m : local float[3x3]
 
-    
+
 class Layout
     static defaults    : new Layout [7]
     static initialized : bool
@@ -6413,7 +6413,6 @@ enum UXSurface
     compose     : 3
     colorize    : 4
     overlay     : 5
-    glyph       : 6
 
 enum Fill : f32
     none      : 0.00f
@@ -6440,7 +6439,8 @@ enum Clip
 alias Elements : map    element [ string ]
 alias FRender  : lambda Elements[ Display ]
 
-class element
+# this Au type indicates we do not have an 'init' called
+ielement element
     mutable parent          : element
     mutable area            : Region
     mutable bounds          : rect
@@ -6498,7 +6498,7 @@ class element
     public func draw [ w: Window ]
         return
 
-    public func render [ changed: array string ] -> Elements
+    public func render [ ] -> Elements
         return null
 
     func invalidate_element [ ]
@@ -6586,9 +6586,9 @@ Display Window
     public st                   : Style
 
 
-    public func apply_args [ inst: element, e: element ] -> array string
+    public func apply_args [ inst: element, e: element ] -> bool
         ty      : typeid[ e ]
-        changed : array string [ ]
+        changed : false
         while [ ty != typeid[ Au ] ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 mem : Au_t ty.members.origin[m]
@@ -6599,13 +6599,13 @@ Display Window
                 if [ to_val && from_val != to_val ]
                     if [ from_val.compare[ to_val ] != 0 ]
                         inst.member_set[ mem, to_val ]
-                        changed.push[ string[ mem.ident ] ]
+                        changed = true
             ty = ty.context
         return changed
 
-    public func apply_style [ inst: element, style_avail: map StyleEntries[string], exceptions: array string ] -> array string
+    
+    public func apply_style [ inst: element, style_avail: map StyleEntries[string] ]
         ty      : Au_t [ typeid[ inst ] ]
-        changed : array string [ ]
         while [ ty != typeid[ Au ] ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 member : Au_t ty.members.origin[m]
@@ -6615,8 +6615,6 @@ Display Window
                 entries : style_avail [ prop ]
                 if [ !entries ]
                     continue
-                if [ exceptions && exceptions.index_of[ prop ] >= 0 ]
-                    continue
                 best : st.best_match[ inst, prop, entries ]
                 if [ !best ]
                     continue
@@ -6624,7 +6622,6 @@ Display Window
                 if [ !best.instance ]
                     best.instance = (best.value to member.src) # convert from string this way
                 expect best.instance, 'instance must be initialized'
-                changed.push[ prop ]
                 cur : inst.member_object[ member ]
                 # transition handling
                 t  : StyleTransition [ best.trans ]
@@ -6659,8 +6656,8 @@ Display Window
                 continue
             coll_name : string [ prop.mid[ 0, dot ].trim[] ]
             key_name  : string [ prop.mid[ dot + 1, prop.count - dot - 1 ].trim[] ]
-            if [ exceptions && exceptions.index_of[ prop ] >= 0 ]
-                continue
+            #if [ exceptions && exceptions.index_of[ prop ] >= 0 ]
+            #    continue
             dbest : st.best_match[ inst, prop, dentries ]
             if [ !dbest ]
                 continue
@@ -6686,8 +6683,6 @@ Display Window
                     se.instance = (se.value to typeid[ lmem.src ])
                 if [ se.instance ]
                     layer.member_set[ lmem, se.instance ]
-            changed.push[ prop ]
-        return changed
 
     public func animate []
         if [ !root ]
@@ -6697,17 +6692,17 @@ Display Window
         remove_invalid[]
 
     func update_element [ parent: element, rendered: map element[string] ]
-        if [!parent.elements] parent.elements = Elements[] #break
-        target : Au [ app ] #break
+        if [!parent.elements] parent.elements = Elements[]
 
         # mark for umount
-        for [ e:element, id:string ] in parent.emlements
+        for [ e:element, id:string ] in parent.elements
             e.flags |= 1
 
         # iterate through rendered elements
         for [ e:element, id:string ] in rendered
-            ee : element parent.elements[ id ]
-            instance : element (parent.elements) ? parent.elements[ id ] : null
+            instance : element* parent.elements[ id ]
+            changed  : bool
+            new_inst : false
             restyle  = restyle || e.restyle
 
             if [ instance ]
@@ -6720,8 +6715,6 @@ Display Window
                     instance.hold_members[]
                     restyle = true
 
-            changed  : array string [ null ]
-            new_inst : bool [ false ]
             if [ !instance ]
                 new_inst         = true
                 restyle          = true
@@ -6729,25 +6722,22 @@ Display Window
                 instance.id      = id
                 instance.ux      = a
                 instance.parent  = parent
-                instance.init[]
+                instance.initialize[]
                 instance.hold_members[]
                 if [ !parent.elements ]
                     parent.elements = map element[string] [ ]
                 parent.elements[ id ] = instance
+                changed = true
             el [ !restyle ]
                 changed = apply_args[ instance, e ]
-                restyle = changed.index_of[ 'tags' ] >= 0
 
-            if [ restyle ]
+            if [ changed ]
                 e.restyle = false
-                avail     : st.compute[ instance ]
-                styled    : apply_style[ instance, avail, changed ]
-                if [ styled && changed ]
-                    for [ prop: string ] in styled
-                        if [ changed.index_of[ prop ] == -1 ]
-                            changed.push[ prop ]
-
-            irender : instance.render[ changed ]
+                avail  : st.compute[ instance ]
+                apply_style[ instance, avail ]
+                 
+            inst: typeid[instance]
+            irender : instance.render[]
             if [ !irender ] irender = instance.elements
             if [  irender ] update_element[ instance, irender ]
 
@@ -6773,7 +6763,7 @@ Display Window
         if [ !restyle ]
             restyle = st.check_reload[]
         if [ restyle ]
-            apply_style[ root, root_styles, null ]
+            apply_style[ root, root_styles ]
         update_element[ root, render ]
 
     public func invalidate []
@@ -7023,18 +7013,13 @@ Display Window
         compose.clear [ '#80a' ]
         compose.save  []
     
-        if [ app_object ]
-            elements : app_object.on_render[ a ]
-            
-            if [ elements ]
-                update_all[ elements ]
-            
-            animate[]
-            if [ root ]
-                draw_element[ root, CanvasType.compose ]
+        elements : app_object.on_render[ a ]
+        update_all[ elements ]
+        animate[]
+        draw_element[ root, CanvasType.compose ]
         
         compose.restore []
-
+##
         compose.save    []
         compose.fill_color   [ '#808' ]
         compose.inner_glow   [ '#f04', 32 ]
@@ -7046,54 +7031,18 @@ Display Window
         compose.stroke_width [ 1.0 ]
         compose.stroke_color [ '#f00' ]
         compose.stroke_shadow[ '#f05' ]
-
-
+##
 
         compose.paint        []
-       #compose.blur[ 16.0 ]
         compose.restore[]
 
     func on_screen []
         if [ !screen ] return
+
+        draw_element[ root, CanvasType.screen ]
+            
         #screen.fill_color[ '#f00' ]
         #screen.rect_to[ 64.0, 64.0, 240.0, 120.0 ]
-
-        ##
-        screen.save         []
-        screen.fill_color   [ '#0004' ]
-        screen.inner_glow   [ '#000a', 8 ]
-        screen.inner_shadow [ '#000a', 4 ]
-        screen.stroke_width [ 1.0 ]
-        screen.stroke_color [ '#8af4' ]
-        screen.stroke_shadow[ '#8af8' ]
-        screen.rounded      [ 8.0, 8.0, 8.0, 8.0 ]
-        screen.rect_to      [ 64.0 + 8.0 - 0.5, 64.0 + 32.0 - 0.5, 512.0 - 8.0 - 8.0, 512.0 - 32.0 - 8.0 + 0.5 ]
-        screen.paint[]
-        screen.restore[]
-        screen.draw[]
-        screen.sync_fence[]
-        
-        for [ii:int 0, ii < 2, ii += 1]
-            for [i:int 0, i < 4, i += 1]
-                screen.save         []
-                screen.fill_color   [ '#fff1' ]
-                screen.inner_glow   [ '#fff4', 1 ]
-                screen.inner_shadow [ '#fff4', 1 ]
-                screen.stroke_width [ 0.5 ]
-                screen.stroke_color [ '#8af4' ]
-                screen.stroke_shadow[ '#224a' ]
-                xp: ii * (256.0 + 32.0 - 8.0)
-                screen.rounded      [ 2.0, 2.0, 2.0, 2.0 ]
-                screen.rect_to      [
-                    xp + 64.0 + 8.0 + 8.0 - 0.5,
-                    (i * 4.0) + 64.0 + 32.0 - 24.0 - 0.5,
-                    256.0 - 32.0 - 8.0 - 8.0 - 8.0,
-                    1.0 + 0.5 ]
-                screen.paint[]
-                screen.restore[]
-                screen.draw[]
-                screen.sync_fence[]
-        ##
 
         ##
         screen.fill_color[ "#fff" ]
@@ -7117,6 +7066,8 @@ Display Window
             rect [ x: 0, y: 0, w: width, h: height ] ]
 
         # compute element bounds from its area
+        if [ !e.area ]
+            e.area = Region [ 0.0 ]
         e.bounds = e.area.rectangle[ rel, null ]
 
         # compute layer bounds and draw each layer
@@ -7179,7 +7130,6 @@ abstract media_app trinity
                 ]
             ]
         ]
-    
 
     func init[]
         no-op
@@ -7187,6 +7137,7 @@ abstract media_app trinity
     func load_scene [] return
     func update_scene [] return
 
+         
     func run[] -> i32
         type : typeid[a]
         window : Window[ app_object: a, title:type.ident, st: Style [ a ], 
@@ -7194,12 +7145,7 @@ abstract media_app trinity
         expect window.vk, "context didnt work"
 
         w = window
-        # hand the trinity instance to the Window so its update[] can call
-        # back into load_scene*[] before the composite chain references
-        # the background. orbiter (any trinity subclass) is the app_object.
-        # load style/<app_class>.css via Au_t.ident on `a` (the app instance)
         w.update*[]
-
         render*[]
         w.resize[w.width, w.height]
         return super.run[]
@@ -7254,7 +7200,12 @@ class StyleEntry
     mutable bl       : StyleBlock
     mutable instance : object
 
-alias StyleEntries   : array StyleEntry
+class StyleEntries
+    key     : string
+    entries : array StyleEntry
+    next    : StyleEntries
+
+
 alias StyleEntryMap  : map   StyleEntry [ string ]
 
 
@@ -7392,27 +7343,33 @@ class Style
         for [ e: StyleEntry, k: string ] in bl.entries
             cache : members [ e.member ]
             if [ !cache ]
-                cache = StyleEntries[]
+                cache = StyleEntries[
+                    entries: array StyleEntry []
+                ]
                 members.set[ e.member, cache ]
             found : false
-            for [ cb: StyleBlock ] in cache
+            for [ cb: StyleBlock ] in cache.entries
                 found |= cb == bl
             if [ !found ]
-                cache.push[ bl ]
+                cache.entries.push[ bl ]
         for [ s: StyleBlock ] in bl.blocks
             cache_block [ s ]
 
     func applicable [ n: element, prop_name: string, result: StyleEntries ] -> bool
+        if [ prop_name == 'layers' ]
+            prop_name2: 22
+            prop_name2 += 22
         blocks : members[ prop_name ]
-        ty     : typeid[ n ]
         ret    : false
-        result.clear[]
-        for [ block: StyleBlock ] in blocks
-            if [ !block.types.count || block.types.index_of[ ty ] >= 0 ]
-                f : block.entries[ prop_name ]
-                if [ f && block.score[ n, false ] > 0 ]
-                    result.push[ f ]
-                    ret = true
+        if [ blocks ]
+            element_ty : typeid[ n ]
+            result.entries.clear[]
+            for [ block: StyleBlock ] in blocks.entries
+                if [ !block.types.count || block.types.index_of[ element_ty ] >= 0 ]
+                    f : block.entries[ prop_name ]
+                    if [ f && block.score[ n, false ] > 0 ]
+                        result.entries.push[ f ]
+                        ret = true
         return ret
 
     func process [ code: string ]
@@ -7466,10 +7423,10 @@ class Style
         for [ b: StyleBlock ] in base
             cache_block[ b ]
 
-    func best_match [ n: element, prop_name: string, entries: array StyleEntry ] -> StyleEntry
+    func best_match [ n: element, prop_name: string, entries: StyleEntries ] -> StyleEntry
         match      : StyleEntry [ null ]
         best_score : f32 [ 0.0 ]
-        for [ e: StyleEntry ] in entries
+        for [ e: StyleEntry ] in entries.entries
             bl : StyleBlock [ e.bl ]
             sc : f32 [ bl.score[ n, true ] ]
             if [ sc > 0.0 && sc >= best_score ]
@@ -7483,7 +7440,9 @@ class Style
         ty    : Au_t [ typeid[ n ] ]
         expect n inherits element, 'must inherit element'
         while [ ty != typeid[ Au ] ]
-            all : array StyleEntry [ ]
+            all : StyleEntries [
+                entries: array StyleEntry []
+            ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 mem : Au_t [ ty.members.origin[m] ]
                 if [ mem.member_type != AU_MEMBER_VAR || mem.access_type == 1 ] # 1 == intern!
@@ -7491,7 +7450,9 @@ class Style
                 name : string [ mem.ident ]
                 if [ applicable[ n, name, all ] ]
                     avail[ name ] = all
-                    all = array  StyleEntry[ ]
+                    all = StyleEntries [
+                        entries: array StyleEntry []
+                    ]
             ty = ty.context
         return avail
 
@@ -7664,7 +7625,7 @@ class Region
         bv : b.plot[ win.y, win.y + win.h, ref t, tv,  rel ]
         return rect [ x: lv, y: tv, w: rv - lv, h: bv - tv ]
 
-    func mix [ other: Region, f: f32 ] -> Region
+    func mix [ other: Region, f: f64 ] -> Region
         reg : Region [ set: true ]
         reg.l = l.mix[ other.l, f ]
         reg.t = t.mix[ other.t, f ]
@@ -7710,7 +7671,7 @@ class Rotation
         axis.z = sp[2].real_value[]
         degs   = sp[3].real_value[]
 
-    public func mix [ b: Rotation, f: f32 ] -> Rotation
+    public func mix [ b: Rotation, f: f64 ] -> Rotation
         return Rotation [
             axis: axis.mix[ b.axis, f ],
             degs: mix[ degs, b.degs, f ]
@@ -7730,7 +7691,7 @@ class Translation
         value.y = sp[1].real_value[]
         value.z = sp[2].real_value[]
 
-    public func mix [ b: Translation, f: f32 ] -> Translation
+    public func mix [ b: Translation, f: f64 ] -> Translation
         return Translation []
 
 
@@ -7899,7 +7860,7 @@ class arg
     public is_inlay : bool
 
 class Mixable
-    public func mix [ b:Mixable, f:f32 ] -> Mixable
+    public func mix [ b:Mixable, f:f64 ] -> Mixable
         return Mixable[]
 
 
@@ -8064,8 +8025,19 @@ element World
         w.overlay.paint[]
 
 element View
+    func render[] -> Elements
+        return null
+
 element Group
+    func render[] -> Elements
+        return null
+
 element Button
+    func render[] -> Elements
+        puts 'render?'
+        return null
+
+Group Toolbar
 
 shader Basic
     public proj  : mat4f

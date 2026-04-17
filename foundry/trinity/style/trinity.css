@@ -1,31 +1,4 @@
 
 element.root {
-    layers.compose:
-        ctype:          compose
-        fill_color:     #afc
-        radius:         0
-}
-
-element.root {
     area:             l0 t0 r0 b0
-}
-
-View.main {
-    area:             l32 t32 r290 b32
-}
-
-View / Button.button1 {
-    layers.face:
-        label:          "button"
-        region:         l8 t8 r8 b8
-        ctype:          overlay
-        stroke_width:   4
-        stroke_color:   #fff
-}
-
-Button {
-    layers.bg:
-        ctype:          compose
-        fill_color:     #f8a
-        region:         l0 t0 r0 b0
 }
