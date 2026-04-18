@@ -4065,6 +4065,24 @@ struct CanvasState
     sat_mul           : f32
     val_mul           : f32
 
+
+func sk_color [ clr: rgba ] -> vec4f
+    if [ !clr ] 
+        return vec4f [
+            f32[ 0 ],
+            f32[ 0 ],
+            f32[ 0 ],
+            f32[ 1 ]
+        ]
+    res : vec4f [
+        f32[ clr.r ],
+        f32[ clr.g ],
+        f32[ clr.b ],
+        f32[ clr.a ]
+    ]
+    return res
+
+
 # ---- Canvas class (GPU draw-list builder) ----
 Render Canvas
     public path        : CanvasPath
@@ -4335,7 +4353,7 @@ Render Canvas
         if [ size % 16 != 0 ]    
             printf[ "\n" ]
 
-    func clear [ color: string ]
+    func clear [ color: rgba ]
         clr : sk_color[ color ]
         clear_color = clr
         reset[ clr ]
@@ -4378,10 +4396,10 @@ Render Canvas
         if [ font ] font.set_size[ px ]
     # ---- state setters ----
 
-    func fill_color [ color: string ]
+    func fill_color [ color: rgba ]
         states[state_depth - 1].fill_color = sk_color[ color ]
 
-    func stroke_color [ color: string ]
+    func stroke_color [ color: rgba ]
         c : vec4f [ sk_color[ color ] ]
         states[state_depth - 1].stroke_color        = c
         states[state_depth - 1].stroke_shadow_color = c
@@ -4389,7 +4407,7 @@ Render Canvas
     func stroke_width [ sw: f32 ]
         states[state_depth - 1].stroke_width = sw
 
-    func inner_glow [ color: string, px: f32 ]
+    func inner_glow [ color: rgba, px: f32 ]
         c : vec4f [ sk_color[ color ] ]
         states[state_depth - 1].inner_glow_color   = c
         states[state_depth - 1].inner_glow_px      = px
@@ -4399,18 +4417,18 @@ Render Canvas
     func inner_glow_offset [ x: f32, y: f32 ]
         states[state_depth - 1].inner_glow_ofs = vec2f [ x, y ]
 
-    func inner_shadow [ color: string, px: f32 ]
+    func inner_shadow [ color: rgba, px: f32 ]
         states[state_depth - 1].inner_shadow_color = sk_color[ color ]
         states[state_depth - 1].inner_shadow_px    = px
 
-    func stroke_shadow [ color: string ]
+    func stroke_shadow [ color: rgba ]
         states[state_depth - 1].stroke_shadow_color = sk_color[ color ]
 
-    func outer_glow [ color: string, px: f32 ]
+    func outer_glow [ color: rgba, px: f32 ]
         states[state_depth - 1].outer_glow_color = sk_color[ color ]
         states[state_depth - 1].outer_glow_px    = px
 
-    func outer_shadow [ color: string, px: f32 ]
+    func outer_shadow [ color: rgba, px: f32 ]
         states[state_depth - 1].outer_shadow_color = sk_color[ color ]
         states[state_depth - 1].outer_shadow_px    = px
 
@@ -5630,75 +5648,6 @@ func nib [ n: i8 ] -> i8
         return 10 + (n - 'A')
     return 0
 
-func sk_color [ clr: string ] -> vec4f
-    ia: i32 [ 255 ]
-    ir: i32
-    ig: i32
-    ib: i32
-
-    h: ref u8 [ clr.chars ]
-    h0 : i8 [ h[0] ]
-    if [ h0 == '#' ]
-        sz: clr.count
-        h1 : i8 [ h[1] ]
-        h2 : i8 [ h[2] ]
-        h3 : i8 [ h[3] ]
-
-        switch [ sz ]
-            case 5
-                h4 : i8 [ h[4] ]
-                ia = nib[ h4 ] << 4 | nib[ h4 ]
-                ir = nib[ h1 ] << 4 | nib[ h1 ]
-                ig = nib[ h2 ] << 4 | nib[ h2 ]
-                ib = nib[ h3 ] << 4 | nib[ h3 ]
-            
-            case 4
-                ir = nib[ h1 ] << 4 | nib[ h1 ]
-                ig = nib[ h2 ] << 4 | nib[ h2 ]
-                ib = nib[ h3 ] << 4 | nib[ h3 ]
-            
-            case 9
-                h4 : i8 [ h[4] ]
-                h5 : i8 [ h[5] ]
-                h6 : i8 [ h[6] ]
-                h7 : i8 [ h[7] ]
-                h8 : i8 [ h[8] ]
-                ia = nib[ h7 ] << 4 | nib[ h8 ]
-                ir = nib[ h1 ] << 4 | nib[ h2 ]
-                ig = nib[ h3 ] << 4 | nib[ h4 ]
-                ib = nib[ h5 ] << 4 | nib[ h6 ]
-            
-            case 7
-                h4 : i8 [ h[4] ]
-                h5 : i8 [ h[5] ]
-                h6 : i8 [ h[6] ]
-                ir = nib[ h1 ] << 4 | nib[ h2 ]
-                ig = nib[ h3 ] << 4 | nib[ h4 ]
-                ib = nib[ h5 ] << 4 | nib[ h6 ]
-            
-    el [ h0 == 'r' ]
-        has_a : bool [ clr.count >= 5 && h[3] == 'a' ]
-        lp    : i32 [ (has_a) ? 4 : 3 ]
-        inner : clr.mid[ lp + 1, clr.count - lp - 2 ]
-        sp    : array string [ inner.split[ ',' ] ]
-        ir    = i32[ sp[0].real_value[] ]
-        ig    = i32[ sp[1].real_value[] ]
-        ib    = i32[ sp[2].real_value[] ]
-
-        if [ sp.count >= 4 ]
-            ia = i32[ sp[3].real_value[] * 255.0 ]
-    el
-        fault['unknown color format: {clr}']
-    
-    res : vec4f [
-        f32[ ir ] / 255.0,
-        f32[ ig ] / 255.0,
-        f32[ ib ] / 255.0,
-        f32[ ia ] / 255.0
-    ]
-    return res
-
-
 
 expect func test [ vk: vk_context ] -> bool
     w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true, width: 1024, height: 1024 ]
@@ -6604,6 +6553,34 @@ Display Window
         return changed
 
     
+    public func transition_or_set [ inst: element, value_holder:Au, cur:Au, member:Au_t, prop:string, best:StyleEntry ]
+        # transition handling
+        t  : best.trans
+        ct : StyleTransition
+        should_trans : false
+        if [ t ]
+            if [ !inst.transitions ]
+                inst.transitions = StyleTransitions [ ]
+            ct = inst.transitions[ prop ]
+            if [ !ct ]
+                ct = t.copy[]
+                ct.reference = t
+                should_trans = true
+                inst.transitions[ prop ] = ct
+            el
+                should_trans = ct.reference != t
+        el [ inst.transitions ]
+            inst.transitions.rm[ prop ]
+        
+        if [ ct && should_trans ]
+            ct.from     = (cur) ? cur : best.instance
+            ct.to       = best.instance
+            ct.type     = typeid[ best.instance ]
+            ct.start    = epoch_millis[]
+        el [ !ct ]
+            value_holder.member_set[ member, best.instance ]
+    
+    
     public func apply_style [ inst: element, style_avail: map StyleEntries[string] ]
         ty      : Au_t [ typeid[ inst ] ]
         while [ ty != typeid[ Au ] ]
@@ -6615,74 +6592,57 @@ Display Window
                 entries : style_avail [ prop ]
                 if [ !entries ]
                     continue
-                best : st.best_match[ inst, prop, entries ]
-                if [ !best ]
-                    continue
-                # lazily create instance from string value
-                if [ !best.instance ]
-                    best.instance = (best.value to member.src) # convert from string this way
-                expect best.instance, 'instance must be initialized'
-                cur : inst.member_object[ member ]
-                # transition handling
-                t  : StyleTransition [ best.trans ]
-                ct : StyleTransition
-                should_trans : false
-                if [ t ]
-                    if [ !inst.transitions ]
-                        inst.transitions = StyleTransitions [ ]
-                    ct = inst.transitions[ prop ]
-                    if [ !ct ]
-                        ct = t.copy[]
-                        ct.reference = t
-                        should_trans = true
-                        inst.transitions[ prop ] = ct
-                    el
-                        should_trans = ct.reference != t
-                el [ inst.transitions ]
-                    inst.transitions.rm[ prop ]
-                if [ ct && should_trans ]
-                    ct.from     = (cur) ? cur : best.instance
-                    ct.to       = best.instance
-                    ct.type     = typeid[ best.instance ]
-                    ct.start    = epoch_millis[]
-                el [ !ct ]
-                    inst.member_set[ member, best.instance ]
+                first : (entries[0] to StyleEntry)
+
+                # we sometimes have to create a map for 'layers' as well as a Layer instance inside
+                if [ first.bl.property && first.bl.key ]
+                    member_map : Au_t
+                    member_container : map Layer[string]
+                    # find the layers member Au_t
+                    member_map = Au.find_member [ typeid[inst], first.bl.property.chars, AU_MEMBER_VAR, 0, true ]
+                    expect member_map, 'member not found on {ty.ident}: {first.bl.property}'
+                    member_container = inst.member_object[ member_map ]
+                    inner_inst_type : member_map.meta.a # Layer
+
+                    # create new map if null
+                    if [!member_container]
+                        member_container = map Layer[string][]
+                        inst.member_set[member_map, member_container]
+
+                    for [ best : StyleEntry ] in entries
+                        # find layer by name (key), creating a default if not found
+                        layer_inst : member_container.get[best.bl.key]
+                        if [!layer_inst]
+                            layer_inst = Au.new_object[inner_inst_type, null, null]
+                            member_container.set[best.bl.key, layer_inst]
+                        
+                        layer_member : Au.find_member[ inner_inst_type, best.member, AU_MEMBER_VAR, 0, true ]
+                        expect layer_member, 'member not found on {inner_inst_type.ident}: {best.member}'
+                        if [ !best.instance ]
+                            best.instance = (best.value to layer_member.src)
+                            
+                        cur : layer_inst.member_object[ layer_member ]
+                        if [ !cur ]
+                            cur = best.instance
+
+                        transition_or_set[ inst, layer_inst, cur, layer_member, '{member.ident}.{best.member}', best ]
+
+                el
+                    best : st.best_match[ inst, prop, entries ]
+                    if [ !best ]
+                        continue
+
+                    if [ !best.instance ]
+                        best.instance = (best.value to member.src)
+
+                    cur : inst.member_object[ member ]
+                    if [ !cur ]
+                        cur = best.instance
+
+                    transition_or_set[ inst, inst, cur, member, prop, best ]
+                
             ty = ty.context
 
-        # dotted keys: <collection>.<key> routes sub-block entries into a map entry
-        for [ dentries: StyleEntries, prop: string ] in style_avail
-            dot : num [ prop.index_of[ '.' ] ]
-            if [ dot <= 0 ]
-                continue
-            coll_name : string [ prop.mid[ 0, dot ].trim[] ]
-            key_name  : string [ prop.mid[ dot + 1, prop.count - dot - 1 ].trim[] ]
-            #if [ exceptions && exceptions.index_of[ prop ] >= 0 ]
-            #    continue
-            dbest : st.best_match[ inst, prop, dentries ]
-            if [ !dbest ]
-                continue
-            sub_bl : StyleBlock [ dbest.value ]
-            if [ !sub_bl ]
-                continue
-            if [ coll_name != 'layers' ]
-                continue
-            if [ !inst.layers ]
-                inst.layers = map Layer[string] [ ]
-            layer : Layer [ inst.layers[ key_name ] ]
-            if [ !layer ]
-                layer = Layer [ ]
-                inst.layers[ key_name ] = layer
-            lty : Au_t [ typeid[ layer ] ]
-            for [ se: StyleEntry, sekey: string ] in sub_bl.entries
-                if [ !se || !se.member ]
-                    continue
-                lmem : Au_t [ find_member[ lty, se.member.chars, AU_MEMBER_VAR, 0, true ] ]
-                if [ !lmem ]
-                    continue
-                if [ !se.instance ]
-                    se.instance = (se.value to typeid[ lmem.src ])
-                if [ se.instance ]
-                    layer.member_set[ lmem, se.instance ]
 
     public func animate []
         if [ !root ]
@@ -7074,7 +7034,7 @@ Display Window
         for [ layer: Layer, lkey: string ] in e.layers
             if [ layer.ctype != stage ]
                 continue
-            layer.bounds = (layer.region) ? layer.region.rectangle[ e.bounds, null ] : e.bounds
+            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null ] : e.bounds
             cv : Canvas [ canvas_arr[layer.ctype] ]
             b  : rect   [ layer.bounds ]
             rx : f32 [ 0.0 ]
@@ -7105,7 +7065,9 @@ Display Window
 
             if [ layer.label && layer.label.count > 0 ]
                 cv.save[]
-                align  : vec2f [ x: layer.label_align .x, y: layer.label_align .y ]
+                align  : vec2f [
+                    x: (layer.label_align) ? layer.label_align.x : 0,
+                    y: (layer.label_align) ? layer.label_align.y : 0 ]
                 offset : vec2f [ x: layer.label_offset.x, y: layer.label_offset.y ]
                 cv.fill_color[ layer.label_color ]
                 cv.draw_text[ layer.label, b, align, offset, false ]
@@ -7200,12 +7162,7 @@ class StyleEntry
     mutable bl       : StyleBlock
     mutable instance : object
 
-class StyleEntries
-    key     : string
-    entries : array StyleEntry
-    next    : StyleEntries
-
-
+alias StyleEntries   : array StyleEntry
 alias StyleEntryMap  : map   StyleEntry [ string ]
 
 
@@ -7215,6 +7172,8 @@ class StyleBlock
     public entries  : StyleEntryMap
     public blocks   : array StyleBlock
     public types    : array Au_t
+    mutable key     : string
+    mutable property : string
 
     post construct [ p_sc: ref cstr ]
         sc : cstr p_sc
@@ -7339,36 +7298,46 @@ class Style
     intern  visited   : array string
     intern  errors    : array string
 
-    func cache_block [ bl: StyleBlock ]
+    func cache_block [ bl: StyleBlock, depth:int ]
         for [ e: StyleEntry, k: string ] in bl.entries
             cache : members [ e.member ]
             if [ !cache ]
-                cache = StyleEntries[
-                    entries: array StyleEntry []
-                ]
+                cache = array StyleBlock[]
                 members.set[ e.member, cache ]
             found : false
-            for [ cb: StyleBlock ] in cache.entries
+            for [ cb: StyleBlock ] in cache
                 found |= cb == bl
             if [ !found ]
-                cache.entries.push[ bl ]
+                cache.push[ bl ]
+        
+        # 
         for [ s: StyleBlock ] in bl.blocks
-            cache_block [ s ]
+            if [s.property]
+                cache : members [ s.property ]
+                if [ !cache ]
+                    cache = array StyleBlock[]
+                    members[s.property] = cache
+                cache.push[ s ] # we merely associate the 'layers' property for example
+            el
+                expect depth == 0, "incompatible css depth"
+                cache_block [ s, depth + 1 ] # we want to enforce just 1 depth from root
 
     func applicable [ n: element, prop_name: string, result: StyleEntries ] -> bool
-        if [ prop_name == 'layers' ]
-            prop_name2: 22
-            prop_name2 += 22
         blocks : members[ prop_name ]
+        ty     : typeid[ n ]
         ret    : false
-        if [ blocks ]
-            element_ty : typeid[ n ]
-            result.entries.clear[]
-            for [ block: StyleBlock ] in blocks.entries
-                if [ !block.types.count || block.types.index_of[ element_ty ] >= 0 ]
+        result.clear[]
+        for [ block: StyleBlock ] in blocks
+            if [ !block.types.count || block.types.index_of[ ty ] >= 0 ]
+                if [ block.key && block.property ]
+                    if [ block.score[ n, false ] > 0 ]
+                        for [ f:StyleEntry, name:string ] in block.entries
+                            result.push[ f ]
+                        ret = true
+                el
                     f : block.entries[ prop_name ]
                     if [ f && block.score[ n, false ] > 0 ]
-                        result.entries.push[ f ]
+                        result.push[ f ]
                         ret = true
         return ret
 
@@ -7421,12 +7390,12 @@ class Style
 
     func cache_members [ ]
         for [ b: StyleBlock ] in base
-            cache_block[ b ]
+            cache_block[ b, 0 ]
 
-    func best_match [ n: element, prop_name: string, entries: StyleEntries ] -> StyleEntry
+    func best_match [ n: element, prop_name: string, entries: array StyleEntry ] -> StyleEntry
         match      : StyleEntry [ null ]
         best_score : f32 [ 0.0 ]
-        for [ e: StyleEntry ] in entries.entries
+        for [ e: StyleEntry ] in entries
             bl : StyleBlock [ e.bl ]
             sc : f32 [ bl.score[ n, true ] ]
             if [ sc > 0.0 && sc >= best_score ]
@@ -7440,9 +7409,7 @@ class Style
         ty    : Au_t [ typeid[ n ] ]
         expect n inherits element, 'must inherit element'
         while [ ty != typeid[ Au ] ]
-            all : StyleEntries [
-                entries: array StyleEntry []
-            ]
+            all : array StyleEntry [ ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 mem : Au_t [ ty.members.origin[m] ]
                 if [ mem.member_type != AU_MEMBER_VAR || mem.access_type == 1 ] # 1 == intern!
@@ -7450,9 +7417,7 @@ class Style
                 name : string [ mem.ident ]
                 if [ applicable[ n, name, all ] ]
                     avail[ name ] = all
-                    all = StyleEntries [
-                        entries: array StyleEntry []
-                    ]
+                    all = array  StyleEntry[ ]
             ty = ty.context
         return avail
 
@@ -7493,19 +7458,22 @@ struct XCoord
     offset   : f32
     relative : bool
     percent  : bool
-
+    
     construct [ sx: string ]
-        f         : string[sx.first[]]
-        x_type    = XAlign[f]
-        sx_offset : sx.mid[ 1, sx.count - 1 ]
-        if [ sx_offset.last[] == '%' ]
-            sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
-            percent   = true
-        if [ sx_offset ]
-            if [ sx_offset.last[] == '+' ]
+        f : string[sx.first[]]
+        if [ isdigit[f.chars[0]]]
+            offset = f.real_value[]
+        el
+            x_type    = XAlign[f]
+            sx_offset : sx.mid[ 1, sx.count - 1 ]
+            if [ sx_offset.last[] == '%' ]
                 sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
-                relative  = true
-        offset = sx_offset.real_value[]
+                percent   = true
+            if [ sx_offset ]
+                if [ sx_offset.last[] == '+' ]
+                    sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
+                    relative  = true
+            offset = sx_offset.real_value[]
 
     func plot [ from: f32, vto: f32, left: ref XCoord, left_val: f32, rel: rect ] -> f32
         val : f32 [ mix[ offset, offset * (vto - from), percent ] ]
@@ -7536,17 +7504,20 @@ struct YCoord
     percent  : bool
 
     construct [ sy: string ]
-        f         : string [ sy.first[] ]
-        y_type    = YAlign[ f ]
-        sy_offset : sy.mid[ 1, sy.count - 1 ]
-        if [ sy_offset.last[] == '%' ]
-            sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
-            percent   = true
-        if [ sy_offset ]
-            if [ sy_offset.last[] == '+' ]
+        f : string [ sy.first[] ]
+        if [ isdigit[f.chars[0]]]
+            offset = f.real_value[]
+        el
+            y_type    = YAlign[ f ]
+            sy_offset : sy.mid[ 1, sy.count - 1 ]
+            if [ sy_offset.last[] == '%' ]
                 sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
-                relative  = true
-        offset = sy_offset.real_value[]
+                percent   = true
+            if [ sy_offset ]
+                if [ sy_offset.last[] == '+' ]
+                    sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
+                    relative  = true
+            offset = sy_offset.real_value[]
 
     func plot [ from: f32, vto: f32, top: ref YCoord, top_val: f32, rel: rect ] -> f32
         val : f32 [ mix[ offset, offset * (vto - from), percent ] ]
@@ -7896,7 +7867,7 @@ enum Blend
 
 class Layer
     public ctype               : CanvasType
-    public region              : Region
+    public area                : Region
     mutable bounds             : rect
     public radius              : Radius
 
@@ -8695,9 +8666,16 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
         while [ sub_end + 1 <= last && lines[sub_end + 1].indent > ind ]
             sub_end += 1
         if [ val_str.count == 0 && sub_end > j ]
-            inner : StyleBlock [ ]
+            inner : StyleBlock [ quals:bl.quals, types:bl.types ]
             parse_block_body[ inner, lines, j + 1, sub_end, ind ]
-            bl.entries[ member ] = StyleEntry [ member: member, value: inner, bl: bl ]
+            dot : num [ member.index_of[ '.' ] ]
+            if [ dot > 0 ]
+                inner.key      = member.mid[ dot + 1, member.count - dot - 1 ]
+                inner.property = member.mid[ 0, dot ]
+                inner.parent = bl
+                bl.blocks.push[ inner ]
+            el
+                bl.entries[ member ] = StyleEntry [ member: member, value: inner, bl: bl ]
             j = sub_end + 1
             continue
         bl.entries[ member ] = StyleEntry [ member: member, value: val_str, bl: bl ]
