@@ -2792,6 +2792,12 @@ Au alloc2(Au_t type, Au_t scalar, shape s) {
     return a->data;
 }
 
+Au new_object(Au_t type, Au_t meta_a, Au meta_b) {
+    Au a = alloc_new(type, 1, null, meta_a, meta_b);
+    Au_initialize(a);
+    return a;
+}
+
 ffi_method_t* method_with_address(handle address, Au_t rtype, micro* args, Au_t method_owner) {
     const num max_args = 16;
     ffi_method_t* method = calloc(1, sizeof(ffi_method_t));
