@@ -2356,6 +2356,16 @@ i32 Au_AF_query_name(Au a, cstr name) {
     return (i32)AF_get(f, m->index);
 }
 
+bool Au_AF_get_member(Au a, Au_t mem) {
+    u64* f = Au_AF_bits(a);
+    return AF_get(f, mem->index);
+}
+
+none Au_AF_set_member(Au a, Au_t mem) {
+    u64* f = Au_AF_bits(a);
+    AF_set(f, mem->index);
+}
+
 bool Au_validator(Au a) {
     Au_t type = isa(a);
 
@@ -3722,10 +3732,10 @@ bool Au_member_set(Au a, Au_t m, Au value) {
             m->type->typesize : vtype->typesize;
         memcpy(member_ptr, value, sz);
     } else if ((Au)*member_ptr != value) {
-        drop(*member_ptr);
+        //drop(*member_ptr);
         *member_ptr = value;
     }
-    Au_AF_set_name(a, m->ident);
+    Au_AF_set_name(a, m->ident); // we know index from m, and may set it more efficiently
     return true;
 }
 

@@ -621,6 +621,8 @@ forward(any)
     M(AA,BB, i, method, public, callback, binding,   Au, bool, Au_t, Au_t, symbol, symbol) \
     M(AA,BB, i, method, public, ref_u64, AF_bits) \
     M(AA,BB, i, method, public, none,   AF_set_id,      i32) \
+    M(AA,BB, i, method, public, none,   AF_set_member,  Au_t) \
+    M(AA,BB, i, method, public, bool,   AF_get_member,  Au_t) \
     M(AA,BB, i, method, public, none,   AF_set_name,    cstr) \
     M(AA,BB, i, method, public, i32,    AF_query_name,  cstr) \
     M(AA,BB, i, guard,  public, Au,     instance_of,    Au, Au_t) \
