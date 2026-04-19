@@ -1588,7 +1588,10 @@ map array_cast_map(array a) {
 }
 
 num array_index_of(array a, Au b) {
-    if (a->unmanaged) {
+    // Au_t (type descriptors) have no Au header — isa(au_t) is null.
+    // Compare by pointer for those; use content compare for real Au objects.
+    bool is_au_t = b && isa(b) == typeid(Au_t_f);
+    if (a->unmanaged || is_au_t) {
         for (num i = 0; i < a->count; i++) {
             if (a->origin[i] == b)
                 return i;
@@ -3674,7 +3677,7 @@ none serialize(Au_t type, string res, Au a) {
         else if (type == typeid(f64)) len = sprintf(buf, "%fwith ",   *(f64*)a);
         else if (type == typeid(f32)) len = sprintf(buf, "%f",   *(f32*)a);
         else if (type == typeid(cstr)) len = sprintf(buf, "%s",  *(cstr*)a);
-        else if (type == typeid(uchar)) len = sprintf(buf, "%c",  *(uchar*)a);
+        else if (type == typeid(unichar)) len = sprintf(buf, "%c",  *(unichar*)a);
         else if (type == typeid(symbol)) len = sprintf(buf, "%s",  *(cstr*)a);
         else if (type == typeid(hook)) len = sprintf(buf, "%p",  *(hook*)a);
         else {
@@ -4938,7 +4941,7 @@ none string_init(string a) {
 }
 
 
-string string_with_uchar(string a, uchar value) {
+string string_with_unichar(string a, unichar value) {
     char buf[4];
     int  n = 0;
     if      (value < 0x80)     { buf[n++] = value; }
@@ -4960,7 +4963,7 @@ string string_with_uchar(string a, uchar value) {
 
 string unicode_char(i32 value) {
     string s = string();
-    string_with_uchar(s, value);
+    string_with_unichar(s, value);
     return s;
 }
 
@@ -7719,7 +7722,7 @@ define_primitive(bf16,   numeric, AU_TRAIT_REALISTIC)
 define_primitive(fp16,   numeric, AU_TRAIT_REALISTIC)
 define_primitive(f32,    numeric, AU_TRAIT_REALISTIC)
 define_primitive(f64,    numeric, AU_TRAIT_REALISTIC)
-define_primitive(uchar,  numeric, 0) // stricter type matching with this
+define_primitive(unichar, numeric, 0) // stricter type matching with this
 define_primitive(AFlag,  numeric, AU_TRAIT_INTEGRAL | AU_TRAIT_UNSIGNED)
 define_primitive(cstr,   string_like, AU_TRAIT_POINTER, i8)
 define_primitive(symbol, string_like, AU_TRAIT_CONST | AU_TRAIT_POINTER, i8)
