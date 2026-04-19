@@ -3706,6 +3706,38 @@ void mark_set(enode n, u64 mask0, u64 mask1) {
 
 
 
+// emit override-member assignments for a class. called from e_init (the
+// normal path) AND from e_create when e_init is skipped because the class
+// is is_user_init — without this, the override values declared in a subclass
+// body (e.g. Button's `focusable : true`) are silently dropped.
+// walk the class chain and mark the fbits for inherited slots that have
+// overrides. the actual store is emitted inside each class's own init[]
+// preamble (see silver.c build_init_preamble) so cross-module construction
+// sites don't need to resolve the originating module's evar registry.
+void aether_apply_overrides(aether a, enode alloc) {
+    Au_t alloc_type = alloc->au;
+    if (!alloc_type || !alloc_type->is_class) return;
+    u64 ov_mask0 = 0, ov_mask1 = 0;
+    Au_t cur = alloc_type;
+    while (cur && cur != typeid(Au)) {
+        if (cur->context && cur->context != typeid(Au)) {
+            for (int i = 0; i < cur->members.count; i++) {
+                Au_t mb = (Au_t)cur->members.origin[i];
+                if (mb->member_type != AU_MEMBER_VAR || !mb->is_override) continue;
+                Au_t inherited = find_member(cur->context,
+                    (cstr)mb->ident, AU_MEMBER_VAR, 0, true);
+                if (!inherited) continue;
+                int idx = fbits_index(alloc_type, inherited);
+                if      (idx >= 0 && idx < 64) ov_mask0 |= 1ULL << idx;
+                else if (idx >= 64)            ov_mask1 |= 1ULL << (idx % 64);
+            }
+        }
+        if (cur->context == cur) break;
+        cur = cur->context;
+    }
+    if (ov_mask0 || ov_mask1) mark_set(alloc, ov_mask0, ov_mask1);
+}
+
 // assign default only if prop was not set by constructor
 void assign_if_cond(aether a, enode targ, enode cond, subprocedure expr_builder) {
     LLVMBasicBlockRef cur = LLVMGetInsertBlock(B);
@@ -3812,34 +3844,9 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     // 3b. apply override initializers BEFORE any class init runs — a derived
     // class can redeclare an inherited member with a different default (e.g.
     // Canvas overrides Render's `load_existing : bool`). The override must
-    // land on the INHERITED slot so a base class init that reads it (e.g.
-    // Render.init -> update[] -> render-pass creation) sees the overridden
-    // value. also mark the inherited slot's fbit so the base preamble's
-    // is_set check skips redefaulting it.
-    if (alloc_type && alloc_type->is_class) {
-        u64 ov_mask0 = 0, ov_mask1 = 0;
-        Au_t cur = alloc_type;
-        while (cur && cur != typeid(Au)) {
-            // only classes 2+ past Au (direct children of Au have no base to override)
-            if (cur->context && cur->context != typeid(Au)) {
-                for (int i = 0; i < cur->members.count; i++) {
-                    Au_t mb = (Au_t)cur->members.origin[i];
-                    if (mb->member_type != AU_MEMBER_VAR || !mb->is_override) continue;
-                    Au_t inherited = find_member(cur->context,
-                        (cstr)mb->ident, AU_MEMBER_VAR, 0, true);
-                    if (!inherited) continue;
-                    enode n = u(enode, mb);
-                    if (n && n->initializer) emit_override_init(a, alloc, mb);
-                    int idx = fbits_index(alloc_type, inherited);
-                    if      (idx >= 0 && idx < 64) ov_mask0 |= 1ULL << idx;
-                    else if (idx >= 64)            ov_mask1 |= 1ULL << (idx % 64);
-                }
-            }
-            if (cur->context == cur) break;
-            cur = cur->context;
-        }
-        if (ov_mask0 || ov_mask1) mark_set(alloc, ov_mask0, ov_mask1);
-    }
+    // land on the INHERITED slot so a base class init that reads it sees the
+    // overridden value.
+    aether_apply_overrides(a, alloc);
 
     // 4. call init chain — direct for concrete types, Au_initialize for polymorphic
     map saved_init_props = a->init_props;
@@ -4325,13 +4332,21 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             res = eshape_from_indices(a, indices);
             res->literal = (Au)hold(sh);
         } else {
-            // default class creation: alloc + e_init (skip for user_init types)
+            // default class creation: alloc + e_init. for is_user_init types
+            // (element subclasses etc.) we skip the init chain, but still emit
+            // override-member assignments so subclass declarations like
+            // `focusable : true` actually land on the instance.
             etype m = og_mdl ? og_mdl : mdl;
             enode alloc = e_alloc(a, m);
             alloc->is_alloc = !a->building_initializer;
             alloc->meta_a   = hold(m->meta_a);
             alloc->meta_b   = hold(m->meta_b);
-            res = alloc->au->is_user_init ? alloc : e_init(a, alloc, null, null, null);
+            if (alloc->au->is_user_init) {
+                aether_apply_overrides(a, alloc);
+                res = alloc;
+            } else {
+                res = e_init(a, alloc, null, null, null);
+            }
         }
 
     } else if (ctr) {
@@ -4355,7 +4370,12 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             alloc->is_alloc = !a->building_initializer;
             alloc->meta_a   = hold(mdl->meta_a);
             alloc->meta_b   = hold(mdl->meta_b);
-            res = alloc->au->is_user_init ? alloc : e_init(a, alloc, null, ctr, input);
+            if (alloc->au->is_user_init) {
+                aether_apply_overrides(a, alloc);
+                res = alloc;
+            } else {
+                res = e_init(a, alloc, null, ctr, input);
+            }
         }
 
 
@@ -4811,7 +4831,11 @@ enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, ar
     LLVMAddIncoming(phi_node, &true_value,  &true_final,  1);
     LLVMAddIncoming(phi_node, &false_value, &false_final, 1);
 
-    return enode(mod, a, loaded, true, au, rmdl->au, value, phi_node);
+    // build the enode, then force the value field directly in case the
+    // prop-pair constructor silently loses LLVMValueRef in specific shapes
+    enode result = enode(mod, a, loaded, true, au, rmdl->au);
+    result->value = phi_node;
+    return result;
 }
 
 enode aether_e_builder(aether a, subprocedure cond_builder) {
