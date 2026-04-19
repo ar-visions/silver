@@ -1434,7 +1434,7 @@ static void silver_module() {
         ">", string("greater"),
         "<=", string("less_eq"),
         "<", string("less"),
-        //"??", string("value_default"), -- these two exist as branches off () parenthesis. as such their scope is clear
+        "??", string("value_default"),
         //"?:", string("cond_value"),
         ":", string("bind"), // dynamic behavior on this, turns into "equal" outside of parse-assignment
         "=", string("assign"),
@@ -2155,7 +2155,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
     a->source_raw = (string)hold(input_string);
 
     list symbols = list();
-    string special = string(".{}$,<>()![]/+*:=#~@");
+    string special = string(".{}$,<>()![]/+*:=#~@|&^?");
     i32 special_ln = len(special);
     for (int i = 0; i < special_ln; i++)
         push(symbols, (Au)unicode_char((i32)special->chars[i]));
@@ -2347,13 +2347,13 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
             // single character in quotes → uchar (unicode codepoint) literal
             i64 char_val;
             if (is_char_uni(crop, &char_val)) {
-                uchar uc = (uchar)char_val;
+                unichar uc = (unichar)char_val;
                 push(tokens, (Au)token(
                     chars, crop->chars,
                     indent, indent,
                     source, src,
                     line, line_num,
-                    literal, primitive(typeid(uchar), &uc),
+                    literal, primitive(typeid(unichar), &uc),
                     neighbor, start > 0 && !isspace(idx(input_string, start - 1)),
                     column, start - line_start));
                 continue;
@@ -5353,8 +5353,14 @@ enode silver_parse_ternary(silver a, enode expr, etype mdl_expect, bool load) {
     if (!read_if(a, "?")) {
         if (!read_if(a, "??"))
             return expr;
-        enode expr_true = parse_expression(a, mdl_expect, false, load);
-        return e_ternary(a, expr, expr_true, null);
+        // short-circuit: (cond) ?? expr — expr is only evaluated when cond
+        // is non-null, else the result is zero/null of typeof(expr). Read the
+        // true expression as tokens and defer codegen into the then_block.
+        bool  is_const = false;
+        etype mdl_true = mdl_expect;
+        array true_tokens = read_expression(a, &mdl_true, &is_const);
+        subprocedure build_expr = subproc(a, ternary_expr_builder, null);
+        return e_coalesce_deferred(a, expr, true_tokens, build_expr);
     }
     // ternary condition MUST be parenthesized: `(cond) ? a : b`. silver
     // does not parse a bare-condition `cond ? a : b` correctly — what looks
@@ -5597,6 +5603,26 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
     bool* matched = calloc(ln, sizeof(bool));
     if (offset > 0) matched[0] = true; // self/target already placed
     bool  comma_mode = (ln == 1 + fn->au->is_imethod) || !read_br; // no brackets = positional (old behavior)
+
+    // if any top-level comma exists inside the brackets, user is using
+    // positional syntax — don't start in commaless mode. otherwise the
+    // first arg gets type-matched to some slot N and placed at values[N],
+    // leaving values[0..N-1] null, and subsequent comma args pile on at
+    // the end producing a phantom arg count.
+    if (read_br && !comma_mode) {
+        int depth = 0;
+        for (int k = a->cursor; k < len(a->tokens); k++) {
+            token t = (token)a->tokens->origin[k];
+            if (eq(t, "[") || eq(t, "(") || eq(t, "{")) depth++;
+            else if (eq(t, "]") || eq(t, ")") || eq(t, "}")) {
+                if (depth == 0) break;
+                depth--;
+            } else if (depth == 0 && eq(t, ",")) {
+                comma_mode = true;
+                break;
+            }
+        }
+    }
     while (i + offset < ln || fn->au->is_vargs) {
         Au_t   arg_decl = (Au_t)micro_get((micro_*)m, i + offset);
         Au_t   src  = (Au_t)au_arg_type((Au)arg_decl);
@@ -6554,6 +6580,7 @@ void silver_write_header(silver a) {
                 m->context->module != typeid(Au)->module &&
                 m->context != typeid(Au);
             bool has_fbits = is_silver_class && !parent_is_silver_class;
+            has_fbits = false; // disabled: do not inject __fbits as first member
 
             write(module_f, "#define %o_schema(A,B,...)", n);
             if (has_fbits) {
@@ -7740,9 +7767,13 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
                                strcmp(fn->au->ident, "dealloc") == 0 ||
                                strcmp(fn->au->ident, "copy") == 0)));
         if (!in_lifecycle) {
+            // inside any class method we allow writing to public members on
+            // other objects. `mutable` is for outsiders that aren't inside a
+            // method context (e.g. module-level code). `intern` remains strict.
             Au_t owner = mem->au->context;
-            Au_t ctx   = context_record(a) ? context_record(a)->au : null;
-            validate(ctx && (ctx == owner || inherits(ctx, owner)),
+            bool in_method = fn != null;
+            bool is_mutable = in_method || owner->is_au_native;
+            validate(is_mutable,
                 "cannot assign to public member '%s' outside of %s (use mutable)",
                 mem->au->ident, owner->ident);
         }

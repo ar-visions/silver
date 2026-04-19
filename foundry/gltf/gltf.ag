@@ -261,10 +261,11 @@ class Node
     mutable joint_index:     i32
     mutable processed:       bool
     mutable mx_joints:       Au
-    func primitive [mdl: GltfModel, n: cstr] -> Primitive
+
+    func get_primitive [mdl: GltfModel, n: cstr] -> Primitive
         m: mdl.meshes[mesh]
         if [m]
-            return m.primitive [n]
+            return m.get_primitive [n]
         return null
 
 class Primitive
@@ -283,7 +284,7 @@ class Mesh
     public primitives:      array Primitive
     public weights:         array f32
     public extras:          MeshExtras
-    func primitive [n: cstr] -> Primitive
+    func get_primitive [n: cstr] -> Primitive
         for [p: Primitive] in primitives
             if [strcmp [p.name, n] == 0]
                 return p

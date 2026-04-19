@@ -117,7 +117,7 @@ typedef struct cereal { char* value; } cereal;
 // typedef struct _object*         Au;
 typedef struct _Au**             ARef; /// registered for a generic raw, but we must transition to use 'raw' in cases where they are not Au-allocations
 typedef float*                  floats_t;
-typedef i32                     uchar;
+typedef i32                     unichar;
 
 typedef cstr*                   cstrs;
 typedef void*                   raw;        // abstract types are void*
@@ -533,7 +533,7 @@ typedef Au_t* Au_ts;
             type_ref->context           = (base_ref != type_ref) ? (__typeof__(type_ref->context))base_ref : null; \
             type_ref->module            = module_lookup((cstr)MODULE); \
             type_ref->typesize          = TYPE_SZ; \
-            type_ref->traits            = AU_TRAIT_IS_AU | TRAIT; \
+            type_ref->traits            = AU_TRAIT_IS_AU | AU_TRAIT_IS_AU_NATIVE | TRAIT; \
             head(type_ref)->type = typeid(Au_t_f); \
             if (((Au_t)type_ref)->is_funcptr) { \
                 set_args_array((Au_t)type_ref, emit_types(__VA_ARGS__)); \
@@ -1107,8 +1107,8 @@ declare_abstract(imported)
 #define floats_t_schema(X,Y,...)        raw_schema(X,Y,...)
 
 #ifndef __cplusplus
-#define uchar_module_ Au
-#define uchar_schema(X,Y,...)           raw_schema(X,Y,...)
+#define unichar_module_ Au
+#define unichar_schema(X,Y,...)           raw_schema(X,Y,...)
 #endif
 
 /// meta gives us access to one token we can override with (F)
@@ -1163,7 +1163,7 @@ declare_primitive(num,              numeric)
 declare_primitive(sz,               numeric)
 
 #ifndef __cplusplus
-declare_primitive(uchar,            numeric)
+declare_primitive(unichar,          numeric)
 #endif
 
 declare_primitive(cstr,             string_like)
@@ -1560,8 +1560,8 @@ declare_class(ipart)
     M(AA,BB, i, prop,    public, u64,    h) \
     M(AA,BB, i, method,  public, bool,   is_numeric) \
     M(AA,BB, i, method,  public, none,   alloc_ahead, i64) \
-    M(AA,BB, i, method,  public, uchar,  first) \
-    M(AA,BB, i, method,  public, uchar,  last) \
+    M(AA,BB, i, method,  public, unichar,  first) \
+    M(AA,BB, i, method,  public, unichar,  last) \
     M(AA,BB, i, method,  public, f64,    real_value) \
     M(AA,BB, i, method,  public, i64,    integer_value) \
     M(AA,BB, i, method,  public, string, ucase) \

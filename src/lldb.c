@@ -412,6 +412,20 @@ LLVMMetadataRef debug_enum_type(aether a, Au_t type_au) {
     u32 bits = bits_for_type(a, type_au);
     u32 align = align_for_type(a, type_au);
 
+    // float-backed enums (e.g. `enum XAlign : f32`) can't be a DWARF
+    // enumeration_type — DW_TAG_enumeration_type requires an integer base
+    // and enumerator values must be integers. Emit as a float basic type
+    // named after the enum so lldb renders the field as its float value.
+    bool is_float = type_au->src && type_au->src->is_realistic;
+    if (is_float) {
+        LLVMMetadataRef result = LLVMDIBuilderCreateBasicType(
+            a->dbg_builder,
+            type_au->ident, strlen(type_au->ident),
+            bits, DW_ATE_float, LLVMDIFlagZero);
+        if (et) et->lldebug = result;
+        return result;
+    }
+
     // build the underlying integer type for the enum
     bool is_signed = type_au->is_signed;
     LLVMMetadataRef underlying = LLVMDIBuilderCreateBasicType(
@@ -535,8 +549,9 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
     }
 
     // ── allocate the member array (+1 for __fbits) ──
-    bool has_fbits = type_au->is_class && !type_au->is_system && !type_au->is_c &&
+    bool has_fbits = type_au->is_class && !type_au->is_system && !type_au->is_c && !type_au->is_au_native &&
         type_au->module != typeid(Au)->module;
+    
     LLVMMetadataRef* members = calloc(member_count + (has_fbits ? 1 : 0), sizeof(LLVMMetadataRef));
     int midx = 0;
 

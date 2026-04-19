@@ -11,6 +11,11 @@ import <stdlib.h>
 import <math.h>
 import <vk_mem_alloc.h>
 import <sys/stat.h>
+import <sys/ioctl.h>
+import <sys/mman.h>
+import <fcntl.h>
+import <unistd.h>
+import <linux/videodev2.h>
 
 export 0.1.0
 export VK_LAYER_PATH: '{install}/share/vulkan/explicit_layer.d'
@@ -561,6 +566,7 @@ class vk_context
     intern  props               : VkPhysicalDeviceMemoryProperties
     public  allocator           : VmaAllocator
     intern  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
+    intern  _vkGetMemoryFdPropertiesKHR     : PFN_vkGetMemoryFdPropertiesKHR
 
     intern quad_m:    GltfModel
     # cached default shaders. constructing a fresh UVQuad / UVReduce per
@@ -632,6 +638,14 @@ class vk_context
                 swapchain_supported = true
         expect swapchain_supported, "VK_KHR_swapchain not supported by physical device"
 
+        # device-level extensions required for DMA-BUF import (Camera):
+        enabled_dev_exts : new symbol [ 5 ]
+        enabled_dev_exts[0] = VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        enabled_dev_exts[1] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME
+        enabled_dev_exts[2] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME
+        enabled_dev_exts[3] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME
+        enabled_dev_exts[4] = VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME
+
         # query device features
         buffer_addr_features: VkPhysicalDeviceBufferDeviceAddressFeatures [
             sType:               VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES,
@@ -655,12 +669,15 @@ class vk_context
                 queueCount:          1,
                 pQueuePriorities:    ref queue_priority
             ],
-            enabledExtensionCount:   1,
-            ppEnabledExtensionNames: ref swapchain_ext
+            enabledExtensionCount:   5,
+            ppEnabledExtensionNames: enabled_dev_exts
         ], null, ref device ]
         
         expect result == VK_SUCCESS, "cannot create logical device"
         queue_family_index = -1
+
+        # load extension function pointer for dmabuf import
+        _vkGetMemoryFdPropertiesKHR = vkGetDeviceProcAddr[ device, "vkGetMemoryFdPropertiesKHR" ]
 
         # query memory properties for find_memory_type
         vkGetPhysicalDeviceMemoryProperties[ physical_device, ref props ]
@@ -931,13 +948,10 @@ class uniforms
         # NOT linked-list-style `i = i.next`. The previous code used .first /
         # .next which silently produced no iterations and left u_buffers empty,
         # which made every shader's `ubo` descriptor invalid at draw time.
-        printf[ "uniforms.init: s=%p type_list.count=%i\n", s, type_list.count ]
         for [ tn: Au_t ] in type_list
             u_size: uniform_size[ tn ]
-            printf[ "  type_list[%s]: uniform_size=%i\n", tn.ident, u_size ]
             total_uniform += u_size
 
-        printf[ "uniforms.init: total_uniform=%i\n", total_uniform ]
         u_memory  = new u8 [ total_uniform ]
 
         for [ tn: Au_t ] in type_list
@@ -959,7 +973,6 @@ class GLSL : RType
         info  : Au.header[ a ]
         body  = t
         rtype = info.meta_a
-        puts 'GLSL constructing function to return {rtype.ident}'
 
 class Pipeline
     context vk              : vk_context
@@ -1115,10 +1128,8 @@ class Pipeline
         shader_uniforms = uniforms [ vk: vk, s: s ]
         s_hdr:       Au [ Au.header[ s ] ]
         shader_type: Au_t [ s_hdr.type ]
-        printf[ "bind_resources: shader=%p s.ident=%s u_buffers.count=%i\n",
-            s, shader_type.ident, shader_uniforms.u_buffers.count ]
+
         for [ b: Buffer ] in shader_uniforms.u_buffers
-            printf[ "  uniform[%i]: vk_buffer=%p size=%i\n", uniform_count, b.vk_buffer, b.size ]
             uniform_bindings[uniform_count] = VkDescriptorSetLayoutBinding [
                 binding:         uniform_count,
                 descriptorType:  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1475,7 +1486,6 @@ class Pipeline
                 subpass:             0,
                 basePipelineHandle:  null
             ]
-            puts 'creating pipeline for {name}'
             result = vkCreateGraphicsPipelines[
                 vk.device, null, 1, pipeline_info, null, ref vk_render ]
             expect result == VK_SUCCESS, "pipeline creation fail"
@@ -1548,8 +1558,6 @@ class Model
         r = r_target
         pipelines = array Pipeline [ alloc: 16 ]
         is_clear: !r.models || r.models.count == 0
-        printf[ "Model.finish: is_clear=%d s=%p id=%p nodes=%p quad_m=%p\n",
-            is_clear, s, id, nodes, vk.quad_m ]
 
         if [ !s && !is_clear ]
             s = vk.quad_shader[ ]
@@ -1557,10 +1565,6 @@ class Model
         if [ !id && !is_clear ]
             # default quad if no Model
             id = vk.quad_m
-
-        printf[ "Model.finish: after defaults s=%p id=%p\n", s, id ]
-        if [ id ]
-            printf[ "Model.finish: id.nodes count=%i\n", id.nodes.count ]
 
         if [ is_clear ]
             puts 'Model.finish: branch=is_clear'
@@ -1915,12 +1919,14 @@ class Texture
     # flip layouts mid-frame (compute write -> graphics sample), since out-of-
     # band transitions can't be reconciled by the validator's per-command-buffer
     # layout tracking.
+    
     func transition_in [ f: handle, new_layout: i32 ]
         if [ vk_layout == new_layout ]
             return
         src: Layout.find[ vk_layout ]
         dst: Layout.find[ new_layout ]
         expect src && dst, "layout not found"
+        expect vk_image, "Texture.transition_in: vk_image is null (texture not initialized)"
         is_depth: bool [ vk_format == VK_FORMAT_D32_SFLOAT ]
         barrier: VkImageMemoryBarrier [
             sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -1942,8 +1948,9 @@ class Texture
         ]
         cmd: VkCommandBuffer [ f ]
         vkCmdPipelineBarrier[ cmd, src.stage, dst.stage, 0, 0, null, 0, null, 1, ref barrier ]
-        vk_layout = new_layout
+        vk_layout = new_layout 
 
+        
     func hex_dump [ name: symbol, data: ref u8, size: i32 ]
         printf[ "%s (%d bytes):\n", name, size ]
         for [ i: i32 0, i < size, i += 1 ]
@@ -2054,6 +2061,7 @@ class Texture
         fmt: i32 [ vk_format ]
         puts 'Texture.init: width={width} height={height} vk_format={fmt}'
         if [ !vk_image && !sampler && !w ]
+            puts 'Texture.init: early return — no vk_image, no sampler, no w'
             return
 
         img :  sampler inherits Image
@@ -2071,7 +2079,6 @@ class Texture
             expect vk_format, "expected format"
         el
             if [ width > 0 || img ]
-                printf[ "img = %p\n", img ]
                 pixel_format = (img) ? img.format : pixel_format
                 sampler_size = (img) ? img.byte_count[] : 0
                 ansio        = (img) ? 4 : 0
@@ -2128,6 +2135,7 @@ class Texture
                 ]
                 result: vmaCreateImage[ vk.allocator, info, alloc_info, ref vk_image, ref vma_alloc, null ]
                 expect result == VK_SUCCESS, 'failed to create VkImage: {i32[result]}'
+                expect vk_image, 'vmaCreateImage returned success but vk_image is null'
 
             if [ sampler_size > 0 ]
                 transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
@@ -2179,7 +2187,6 @@ class Texture
                     ]
                 ]
                 res: vkCreateImageView[ vk.device, viewInfo, null, ref vk_image_view ]
-                printf[ "image_view = %p\n", vk_image_view ]
                 expect res == VK_SUCCESS, "Failed to create VkImageView"
             if [ !vk_sampler ]
                 address_mode: (layer_count >= 6) ?
@@ -2617,8 +2624,6 @@ class shader
         while [ scan != typeid[ shader ] ]
             for [ i: 0, i < scan.members.count, i += 1 ]
                 mem: scan.members.origin[i]
-                printf["member: %s\n", mem.ident]
-                
                 if [ !is_uniform_field[ mem ] ]
                     continue
                 gtype: glsl_type_name[ mem.src ]
@@ -2799,10 +2804,7 @@ class shader
                 continue
             fputs[ src, fp ]
             fclose[ fp ]
-            printf[ "generated shader: %s\n", p.chars ]
 
-        puts "generated all shaders"
-    
     func uniform_transfer [ data2: ref u8, type: Au_t ] -> i64
         instance:a
         expect instance inherits shader, "shader instance not provided"
@@ -3120,6 +3122,7 @@ enum DrawMode
     text        : 4
     image       : 5
     sdf_path    : 6
+    image_r     : 7
 
 # ---- path command tags ----
 enum path_cmd
@@ -3453,6 +3456,16 @@ shader CanvasUI
             return;
         }}
 
+        // image_r: sample R8 texture as grayscale (broadcast .r)
+        if (mode == 7.0) {{
+            vec2 uv  = (lpos - ubo.rect.xy) / ubo.rect.zw;
+            uv       = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
+            float l  = texture(image, uv).r;
+            float aa = 1.0 - smoothstep(-0.5, 0.5, dist);
+            o_color  = vec4(l, l, l, 1.0) * aa * opacity;
+            return;
+        }}
+
         // SDF path: sample R32F distance field. raw signed distance in
         // world pixels, written either by the CPU sdf_generate path or by
         // the CanvasSDFCompute compute shader. negative = inside.
@@ -3519,8 +3532,8 @@ shader CanvasUI
                 _hsv.z = _hsv.z * ubo.glow_params2.w;
                 o_color.rgb = hsv2rgb(_hsv) * o_color.a;
             }}
-            float _d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 4.0;
-            o_color.rgb += vec3((_d - 0.5) / 255.0);
+            //float _d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 4.0;
+            //o_color.rgb += vec3((_d - 0.5) / 255.0);
             return;
         }}
 
@@ -4046,6 +4059,8 @@ struct CanvasState
     fill_grad         : Gradient
     stroke_grad       : Gradient
     font      	      : CanvasFont
+    font_size         : i32
+    line_height       : f32
     inner_glow_color   : vec4f
     inner_glow_px      : f32
     inner_glow_ofs     : vec2f
@@ -4147,7 +4162,7 @@ Render Canvas
         # inside Canvas.init (implicit self), bypassing the chained-write
         # issue with `outside.compose.font = fnt` from trinity.render.
         ft_lib_h : handle ft_init[]
-        font = CanvasFont [ ft_lib: ft_lib_h, uri: 'fonts/Genos-Regular.ttf', size_px: 64 ]
+        font = CanvasFont [ ft_lib: ft_lib_h, uri: 'fonts/OxygenMono-Regular.ttf', size_px: 22 ]
         #font.hold[]
         printf[ "Canvas.init: self=%p AFTER font assign, font.size_px=%i\n",
             a, (font) ? font.size_px : -1 ]
@@ -4247,7 +4262,9 @@ Render Canvas
         path   = CanvasPath []
         states = array CanvasState []
         state_depth  = 0
-        save
+        save[]
+        defaults : CanvasState [ states[state_depth - 1] ]
+        defaults.font_size = 22
 
     # invoke the inherited Render pipeline once all canvas state has been
     # built up. drives framebuffer/extent setup, runs the render pass, and
@@ -4295,6 +4312,8 @@ Render Canvas
     # ---- text measurement ----
 
     func measure_text [ text: string ] -> TextMetrics
+        ensure_font[]
+        st : CanvasState states[state_depth - 1]
         n   : text.count
         w   : f32 [ 0.0 ]
         tw  : f32 [ 0.0 ]
@@ -4303,12 +4322,16 @@ Render Canvas
             g  : font.get_glyph [ cp ]
             if [ g.cached ]
                 tw += f32 g.advance
+        # state.line_height is a multiplier (CSS-style): 1.0 = natural,
+        # 1.5 = 150% of the font's intrinsic line height. 0 = unset → 1.0.
+        scale : f32 [ (st.line_height > 0.0) ? st.line_height : 1.0 ]
+        lh    : f32 [ font.line_height * scale ]
         return TextMetrics [
             w:           tw,
-            h:           font.ascent - font.descent,
+            h:           lh,
             ascent:      font.ascent,
             descent:     font.descent,
-            line_height: font.line_height,
+            line_height: lh,
             cap_height:  font.cap_height
         ]
 
@@ -4393,7 +4416,18 @@ Render Canvas
         font = fnt
 
     func font_size [ px: i32 ]
-        if [ font ] font.set_size[ px ]
+        states[state_depth - 1].font_size = px
+
+    func line_height [ px: f32 ]
+        states[state_depth - 1].line_height = px
+
+    # sync the shared CanvasFont's freetype face to this canvas's current
+    # font_size before any glyph/metrics call. avoids bleeding size changes
+    # from one canvas into another when they share a font.
+    intern func ensure_font []
+        sz : i32 [ states[state_depth - 1].font_size ]
+        if [ font && sz > 0 && sz != font.size_px ]
+            font.set_size[ sz ]
     # ---- state setters ----
 
     func fill_color [ color: rgba ]
@@ -4538,14 +4572,16 @@ Render Canvas
             start_angle, end_angle
         ]
 
-    func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, use_ellipsis: bool ] -> rect
+    func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, overflow: Overflow ] -> rect
         if [ !font ]
             return bounds
-        
-        display : string [ (use_ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
+
+        display : string [ (overflow == Overflow.ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
         tm  : TextMetrics [ measure_text[ display ] ]
         tx  : f32 [ bounds.x + (bounds.w - tm.w) * align.x + offset.x ]
-        ty  : f32 [ bounds.y + tm.ascent + (bounds.h - tm.h) * align.y + offset.y ]
+        # cap-height-box centering — baseline sits cap_height below bounds.y at
+        # align.y=0, capitals optically centered at align.y=0.5 for most UI text.
+        ty  : f32 [ bounds.y + tm.cap_height + (bounds.h - tm.cap_height) * align.y + offset.y ]
 
         # build per-glyph quad vertices into text_vbo. 6 verts per glyph
         # (two triangles, no index buffer). vertex layout: vec2f pos, vec2f uv.
@@ -4557,8 +4593,12 @@ Render Canvas
         text_shader.text_color = st.fill_color
         verts : ref f32 [ text_vbo.vertex_data ]
         vi    : i32 [ 0 ]
-        pen_x : f32 [ tx ]
-        pen_y : f32 [ ty ]
+        # text shader bakes vertex positions in viewport pixels and doesn't
+        # use the canvas transform — apply the current translate here so nested
+        # element translates (draw_element's cv.translate per child) land the
+        # text at the right pixel instead of canvas origin.
+        pen_x : f32 [ tx + st.transform.tx ]
+        pen_y : f32 [ ty + st.transform.ty ]
 
         for [ i: i32 0, i < display.count, i += 1 ]
             cp   : u32 [ display[i] ]
@@ -4745,6 +4785,20 @@ Render Canvas
         paint[]
         image_override = null
 
+    # paint `tex` into `dst` using the full texture as source.
+    func draw_image [ tex: Texture, dst: rect ]
+        image_override = tex
+        path.clear[]
+        path.add_rect[ dst.x, dst.y, dst.w, dst.h ]
+        paint[]
+        image_override = null
+        if [ models ]
+            for [ mi: i32 0, mi < models.count, mi += 1 ]
+                cmod : Model models[mi]
+                if [ cmod.pipelines && cmod.pipelines.count > 0 ]
+                    p : Pipeline cmod.pipelines[0]
+                    p.rebind_image[ sdf_tex ]
+
     # blur canvas.color in place.
     # blur_reduce: quad-samples canvas.color at 1/4 size
     # blur_v:      vertical gaussian on the reduced source
@@ -4873,13 +4927,16 @@ Render Canvas
             setup_shader [ st, bx0, by0, bw, bh ]
             ui_shader.fill_color = st.fill_color
             ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
-            mode : f32 [ (image_override) ? f32 DrawMode.image : f32 DrawMode.solid ]
+            is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
+            img_mode : f32  [ (is_r8) ? f32 DrawMode.image_r : f32 DrawMode.image ]
+            mode     : f32  [ (image_override) ? img_mode : f32 DrawMode.solid ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, mode ]
-            if [ image_override && models && models.count > 0 ]
-                cmod : Model models[0]
-                if [ cmod.pipelines && cmod.pipelines.count > 0 ]
-                    p : Pipeline cmod.pipelines[0]
-                    p.rebind_image[ image_override ]
+            if [ image_override && models ]
+                for [ mi: i32 0, mi < models.count, mi += 1 ]
+                    cmod : Model models[mi]
+                    if [ cmod.pipelines && cmod.pipelines.count > 0 ]
+                        p : Pipeline cmod.pipelines[0]
+                        p.rebind_image[ image_override ]
         el
             # arbitrary path — GPU compute SDF. on cache miss the edge list
             # was just extracted above; on cache hit we reuse the edges that
@@ -4930,7 +4987,7 @@ Render Canvas
             c : f32 [ st.stroke_cap ]
             ui_shader.stroke_opts = vec4f [ j, c, 0.0, spread ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, DrawMode.sdf_path ]
-            printf[ "draw_fill: mode=6 (sdf_path) rect=(%f,%f %fx%f) edges=%i\n", pbx, pby, pbw, pbh, ne ]
+            #printf[ "draw_fill: mode=6 (sdf_path) rect=(%f,%f %fx%f) edges=%i\n", pbx, pby, pbw, pbh, ne ]
 
         flush[]
         path.clear[]
@@ -5971,7 +6028,7 @@ intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods:
 
 intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ] 
     w: (glfwGetWindowUserPointer[ win ] to Window)
-    expect !w.ev.key.text, "unexpected text state"
+    #expect !w.ev.key.text, "unexpected text state"
     w.ev.clear[]
     w.ev.key.text = i32[ code_point ]
     w.text_event[ w.ev ]
@@ -6355,6 +6412,12 @@ enum YAlign : f32
     bottom    : 1.0
     height    : 2.0
 
+enum Overflow
+    clip     : 0
+    ellipsis : 1
+    visible  : 2
+    wrap     : 3
+
 enum UXSurface
     background  : 0
     frost       : 1
@@ -6396,6 +6459,7 @@ ielement element
     mutable value           : object
     mutable id              : string
     mutable flags           : i64
+    mutable label           : string
     mutable layers          : map Layer[string]
     mutable elements        : Elements
     mutable tags            : array string
@@ -6410,23 +6474,25 @@ ielement element
     mutable hovered      : bool
     mutable pressed      : bool
     mutable focused      : bool
-    public action       : EventDispatch
-    public alternate    : EventDispatch
-    public wheel        : EventDispatch
-    public text         : EventDispatch
-    public hover        : EventDispatch
-    public leave        : EventDispatch
-    public key_down     : EventDispatch
-    public key_up       : EventDispatch
-    public press        : EventDispatch
-    public move         : EventDispatch
-    public release      : EventDispatch
-    public got_capture  : EventDispatch
-    public lost_capture : EventDispatch
-    public focus        : EventDispatch
-    public blur         : EventDispatch
+    # focusable = true lets the window transfer focus to this element on
+    # mouse-press. containers/decorations default to false; buttons and
+    # text controls opt in.
+    public  focusable    : bool
     public cursor       : vec2f
     intern ux           : Window
+
+    # input event hooks. return true to swallow; false to let the window
+    # continue to the app-level handler. both element and the app get a
+    # chance at each event: element first, then app_object.
+    public func on_click   [ ev: Event ] -> bool  return false
+    public func on_press   [ ev: Event ] -> bool  return false
+    public func on_release [ ev: Event ] -> bool  return false
+    public func on_hover   [ ev: Event ] -> bool  return false
+    public func on_leave   [ ev: Event ] -> bool  return false
+    public func on_move    [ ev: Event ] -> bool  return false
+    public func on_wheel   [ ev: Event ] -> bool  return false
+    public func on_key     [ ev: Event ] -> bool  return false
+    public func on_char    [ ev: Event ] -> bool  return false
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
     intern transitions  : map StyleTransition[string]
@@ -6519,6 +6585,7 @@ Display Window
     mutable r_view               : Render
 
     mutable is_setup             : bool
+    mutable user_compose         : bool
 
 
     intern root_styles          : map Style[string]
@@ -6610,22 +6677,31 @@ Display Window
                         inst.member_set[member_map, member_container]
 
                     for [ best : StyleEntry ] in entries
+
+                        if [ best.bl.score[ inst, false ] == 0 ]
+                            continue
+                        
                         # find layer by name (key), creating a default if not found
                         layer_inst : member_container.get[best.bl.key]
                         if [!layer_inst]
                             layer_inst = Au.new_object[inner_inst_type, null, null]
                             member_container.set[best.bl.key, layer_inst]
                         
+                        layer_debug : Layer [ member_container.get[best.bl.key] ]
+
                         layer_member : Au.find_member[ inner_inst_type, best.member, AU_MEMBER_VAR, 0, true ]
                         expect layer_member, 'member not found on {inner_inst_type.ident}: {best.member}'
+                       
                         if [ !best.instance ]
                             best.instance = (best.value to layer_member.src)
-                            
+                            test2 : rgba [ best.instance ]
+                            test2 = test2
                         cur : layer_inst.member_object[ layer_member ]
                         if [ !cur ]
                             cur = best.instance
 
                         transition_or_set[ inst, layer_inst, cur, layer_member, '{member.ident}.{best.member}', best ]
+                        layer_member = layer_member
 
                 el
                     best : st.best_match[ inst, prop, entries ]
@@ -6674,6 +6750,7 @@ Display Window
                     instance.init[]
                     instance.hold_members[]
                     restyle = true
+                    changed = true
 
             if [ !instance ]
                 new_inst         = true
@@ -6737,16 +6814,13 @@ Display Window
             if [ capture ]
                 capture.captured = false
                 capture.restyle  = true
-                ux_event[ capture, capture.lost_capture, null ]
             if [ e && !e.ghost ]
                 capture = e
                 capture.captured = true
                 capture.restyle  = true
-                ux_event[ capture, e.got_capture, null ]
 
     public func release_capture [ e: element ]
         if [ capture && capture == e ]
-            ux_event[ capture, capture.lost_capture, null ]
             capture = null
 
     public func set_focus [ e: element ]
@@ -6754,18 +6828,15 @@ Display Window
             if [ focus ]
                 focus.focused = false
                 focus.restyle = true
-                ux_event[ focus, focus.blur, null ]
             if [ e && !e.ghost ]
                 focus = e
                 focus.focused = true
                 focus.restyle = true
-                ux_event[ focus, e.focus, null ]
 
     public func release_focus [ e: element ]
         if [ focus && focus == e ]
             focus.focused = false
             focus.restyle = true
-            ux_event[ focus, focus.blur, null ]
             focus = null
 
     public func find_target [ e: element, ev: Event, must: element ] -> element
@@ -6781,7 +6852,8 @@ Display Window
         ev.mouse.pos.x = lx + e.scroll.x
         ev.mouse.pos.y = ly + e.scroll.y
         for [ child: element, id: string ] in e.elements
-            hit   : element [ find_target[ child, ev, must ] ]
+            hit   : find_target[ child, ev, must ]
+            t : typeid[hit]
             if [ hit ]
                 return hit
         ev.mouse.pos.x = x
@@ -6789,40 +6861,85 @@ Display Window
         return (!must || must == e) ? e : null
 
     public func text_event [ ev: Event ]
-        if [ focus ]
-            ux_event[ focus, focus.text, ev ]
+        ev.target = focus
+        if [ focus && focus.on_char[ ev ] ] return
+        if [ app_object && app_object.on_char[ ev ] ] return
 
     public func key_event [ ev: Event ]
-        if [ focus ]
-            ux_event[ focus, focus.key_down, ev ]
+        ev.target = focus
+        if [ focus && focus.on_key[ ev ] ] return
+        if [ app_object && app_object.on_key[ ev ] ] return
 
+    # recursive bubble: from deepest element up through parents, each gets
+    # a chance to consume. stops on first `true` return. after the element
+    # chain, the app sees it; finally window's default handler runs (focus
+    # transfer, capture, pressed/hovered bookkeeping) regardless of consume.
     public func move_event [ ev: Event ]
         f : element [ find_target[ root, ev, null ] ]
-        a : element [ (capture) ? find_target[ root, ev, capture ] : f ]
+        m : element [ (capture) ? find_target[ root, ev, capture ] : f ]
+        # hover / leave bubble
         if [ hovered != f ]
             if [ hovered ]
                 hovered.restyle = true
                 hovered.hovered = false
-                ux_event[ hovered, hovered.leave, ev ]
+                leave_consumed : bool [ false ]
+                for [ e: element* hovered, e && !leave_consumed, e = e.parent ]
+                    ev.target = e
+                    if [ e.on_leave[ ev ] ] leave_consumed = true
+                if [ !leave_consumed && app_object ]
+                    ev.target = hovered
+                    app_object.on_leave[ ev ]
             hovered = f
             if [ f ]
                 hovered.restyle = true
                 hovered.hovered = true
-                ux_event[ f, f.hover, ev ]
-        if [ a ]
-            ux_event[ a, a.move, ev ]
+                hover_consumed : bool [ false ]
+                for [ e: element* f, e && !hover_consumed, e = e.parent ]
+                    ev.target = e
+                    if [ e.on_hover[ ev ] ] hover_consumed = true
+                if [ !hover_consumed && app_object ]
+                    ev.target = f
+                    app_object.on_hover[ ev ]
+        # move bubble
+        if [ m ]
+            move_consumed : bool [ false ]
+            for [ e: element* m, e && !move_consumed, e = e.parent ]
+                ev.target = e
+                if [ e.on_move[ ev ] ] move_consumed = true
+            if [ !move_consumed && app_object ]
+                ev.target = m
+                app_object.on_move[ ev ]
 
     public func wheel_event [ ev: Event ]
-        for [ f: element find_target[ root, ev, capture ], f, f = f.parent ]
-            ux_event[ f, f.wheel, ev ]
-            if [ ev.no_propagation ]
-                return
+        target_el : element [ (capture) ? capture : (focus) ? focus : find_target[ root, ev, null ] ]
+        consumed_w : bool [ false ]
+        for [ e: element* target_el, e && !consumed_w, e = e.parent ]
+            ev.target = e
+            if [ e.on_wheel[ ev ] || ev.no_propagation ] consumed_w = true
+        if [ !consumed_w && app_object ]
+            ev.target = target_el
+            app_object.on_wheel[ ev ]
+        # window default: scroll focused/target element (no-op hook for now)
 
     public func press_event [ ev: Event ]
         release_capture[ capture ]
         f : element [ find_target[ root, ev, null ] ]
-        if [ f ]
-            ux_event[ f, f.press, ev ]
+        # element bubble. element* gives poly dispatch so subclasses
+        # (Button, CameraView, ...) see their own on_press override.
+        consumed_p : bool [ false ]
+        for [ e: element* f, e && !consumed_p, e = e.parent ]
+            cl : typeid[e]
+            ev.target = e
+            if [ e.on_press[ ev ] ] consumed_p = true
+        # app
+        if [ !consumed_p && app_object ]
+            ev.target = f
+            app_object.on_press[ ev ]
+        # window defaults: focus transfer on left button (only focusable
+        # elements get focus — buttons, text controls, etc. opt in), then
+        # capture, then pressed/hovered state bookkeeping.
+        if [ ev.mouse.button == 0 && f && f.focusable && !ev.no_default ]
+            set_focus[ f ]
         if [ !capture ]
             set_capture[ f ]
         if [ ev.mouse.button == 0 ]
@@ -6838,8 +6955,13 @@ Display Window
 
     public func release_event [ ev: Event ]
         f : element [ find_target[ root, ev, capture ] ]
-        if [ f ]
-            ux_event[ f, f.release, ev ]
+        consumed_r : bool [ false ]
+        for [ e: element* f, e && !consumed_r, e = e.parent ]
+            ev.target = e
+            if [ e.on_release[ ev ] ] consumed_r = true
+        if [ !consumed_r && app_object ]
+            ev.target = f
+            app_object.on_release[ ev ]
         if [ ev.mouse.button == 0 ]
             if [ action_pressed ]
                 action_pressed.restyle = true
@@ -6848,12 +6970,16 @@ Display Window
                 f.restyle = true
                 f.pressed = false
             if [ f && action_pressed == f && f.hovered ]
-                ux_event[ f, f.action, ev ]
+                consumed_c : bool [ false ]
+                for [ e: element* f, e && !consumed_c, e = e.parent ]
+                    ev.target = e
+                    if [ e.on_click[ ev ] ] consumed_c = true
+                if [ !consumed_c && app_object ]
+                    ev.target = f
+                    app_object.on_click[ ev ]
             action_pressed  = null
             context_pressed = null
         el [ ev.mouse.button == 1 ]
-            if [ f && action_pressed == f && f.hovered ]
-                ux_event[ f, f.alternate, ev ]
             action_pressed  = null
             context_pressed = null
         if [ !action_pressed && !context_pressed ]
@@ -6970,17 +7096,16 @@ Display Window
     func on_compose []
         if [ !compose ] return
         
-        compose.clear [ '#80a' ]
-        compose.save  []
-    
-        elements : app_object.on_render[ a ]
-        update_all[ elements ]
-        animate[]
-        draw_element[ root, CanvasType.compose ]
-        
-        compose.restore []
+        compose.save    [ ]
+        compose.clear   [ '#80a' ]
+        update_all      [ app_object.on_render[ a ] ]
+        animate         [ ]
+        draw_element    [ root, CanvasType.compose, null ]
+        compose.paint   [ ]
+        compose.sync_fence[ ]
+        compose.restore [ ]
 ##
-        compose.save    []
+        compose.save[]
         compose.fill_color   [ '#808' ]
         compose.inner_glow   [ '#f04', 32 ]
         compose.inner_shadow [ '#f0a', 32 ]
@@ -6991,20 +7116,21 @@ Display Window
         compose.stroke_width [ 1.0 ]
         compose.stroke_color [ '#f00' ]
         compose.stroke_shadow[ '#f05' ]
-##
-
-        compose.paint        []
+        compose.paint[]
         compose.restore[]
+##
 
     func on_screen []
         if [ !screen ] return
 
-        draw_element[ root, CanvasType.screen ]
-            
-        #screen.fill_color[ '#f00' ]
-        #screen.rect_to[ 64.0, 64.0, 240.0, 120.0 ]
+        screen.save[]
+        
+        app_object.on_canvas[ screen ]
 
+        draw_element[ root, CanvasType.screen, null ]
         ##
+        screen.fill_color[ '#f00' ]
+        screen.rect_to[ 64.0, 64.0, 240.0, 120.0 ]
         screen.fill_color[ "#fff" ]
         screen.font_size [ 32 ]
         screen.draw_text[
@@ -7014,13 +7140,14 @@ Display Window
             vec2f [ 0.0, 0.0 ],
             false ]
         ##
-        
-        screen.draw[]
+        screen.paint[]
         screen.sync_fence[]
+        screen.restore[]
 
-    public func draw_element [ e: element*, stage: CanvasType ]
+    public func draw_element [ e: element*, stage: CanvasType, last:element ]
         expect e inherits element, 'e is not an element'
-        canvas_arr : new Canvas[3] [ overlay, compose, colorize ]
+        canvas_arr : new Canvas[3] [ screen, compose, colorize ]
+        cv : canvas_arr[stage]
         rel : rect [ (e.parent) ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
             rect [ x: 0, y: 0, w: width, h: height ] ]
@@ -7028,60 +7155,82 @@ Display Window
         # compute element bounds from its area
         if [ !e.area ]
             e.area = Region [ 0.0 ]
-        e.bounds = e.area.rectangle[ rel, null ]
+        e.bounds = e.area.rectangle[ rel, null, (last) ?? last.bounds ]
+        element_text : (e.label && e.label.count) ?? e.label
 
         # compute layer bounds and draw each layer
         for [ layer: Layer, lkey: string ] in e.layers
             if [ layer.ctype != stage ]
                 continue
-            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null ] : e.bounds
-            cv : Canvas [ canvas_arr[layer.ctype] ]
+            
+            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null ] : e.bounds
+            layer.bounds.x -= e.bounds.x
+            layer.bounds.y -= e.bounds.y
+            
             b  : rect   [ layer.bounds ]
             rx : f32 [ 0.0 ]
             ry : f32 [ 0.0 ]
-            if [ layer.radius && layer.radius.count > 0 ]
-                rx = layer.radius[0]
-            if [ layer.radius && layer.radius.count > 1 ]
-                ry = layer.radius[1]
-            el
-                ry = rx
+            if [ layer.radius ]
+                rx = layer.radius.rx
+                ry = layer.radius.ry
 
-            if [ layer.fill_color && layer.fill_color.a > 0.0 ]
-                cv.save[]
-                cv.rounded_rect[ b.x, b.y, b.w, b.h, rx, ry ]
-                cv.fill_color[ layer.fill_color ]
-                cv.paint[]
-                cv.restore[]
+            if [ [ layer.fill_color && layer.fill_color.a > 0.0] || [layer.stroke_color && layer.stroke_color.a > 0.0] ]
+                cv.save             [ ]
+                cv.set_stroke_size  [ layer.stroke_width ]
+                cv.set_stroke_cap   [ layer.stroke_cap  ]
+                cv.set_stroke_join  [ layer.stroke_join ]
+                cv.rect_to          [ b.x, b.y, b.w, b.h ]
+                cv.rounded_rect     [ b.x, b.y, b.w, b.h, rx, ry ]
+                cv.fill_color       [ layer.fill_color ]
+                cv.stroke_color     [ layer.stroke_color ]
+                cv.paint            [ ]
+                cv.restore          [ ]
 
-            if [ layer.stroke_color && layer.stroke_width > 0.0 && layer.stroke_color.a > 0.0 ]
-                cv.save[]
-                cv.set_stroke_size[ layer.stroke_width ]
-                cv.set_stroke_cap  [ layer.stroke_cap  ]
-                cv.set_stroke_join [ layer.stroke_join ]
-                cv.rounded_rect[ b.x, b.y, b.w, b.h, rx, ry ]
-                cv.stroke_color[ layer.stroke_color ]
-                cv.paint[]
-                cv.restore[]
-
-            if [ layer.label && layer.label.count > 0 ]
+            label : (layer.label && layer.label.count > 0) ?? layer.label
+            if [ element_text || label ]
                 cv.save[]
                 align  : vec2f [
                     x: (layer.label_align) ? layer.label_align.x : 0,
                     y: (layer.label_align) ? layer.label_align.y : 0 ]
-                offset : vec2f [ x: layer.label_offset.x, y: layer.label_offset.y ]
-                cv.fill_color[ layer.label_color ]
-                cv.draw_text[ layer.label, b, align, offset, false ]
-                cv.restore[]
+                offset : vec2f  [ x: layer.label_offset.x, y: layer.label_offset.y ]
+                cv.fill_color   [ layer.label_color ]
+                cv.font_size    [ layer.label_size ]
+                cv.line_height  [ layer.label_height ]
+                cv.draw_text    [ (label) ? label : element_text, b, align, offset, layer.label_overflow ]
+                cv.restore      [ ]
 
         e.draw[ a ]
+        last_2 : element
         for [ ee: element, id: string ] in e.elements
-            draw_element[ ee, stage ]
+            cv.save[]
+            if [ ee.bounds ]
+                cv.translate[ ee.bounds.x, ee.bounds.y ]
+            draw_element[ ee, stage, last_2 ]
+            last_2 = ee
+            cv.restore[]
 
 
 abstract media_app trinity
     intern msaa_samples : i64
     intern istroke      : f32 0
     intern ifill        : f32 0
+
+    public func on_canvas [ cv: Canvas ]
+        return
+
+    # input event hooks. return true to swallow; otherwise just observe.
+    # ev.target is the element the event was dispatched to (null if none).
+    # elements get these virtuals first (they can intercept); if the element
+    # returns false or there's no target, the app sees it here.
+    public func on_click   [ ev: Event ] -> bool  return false
+    public func on_press   [ ev: Event ] -> bool  return false
+    public func on_release [ ev: Event ] -> bool  return false
+    public func on_hover   [ ev: Event ] -> bool  return false
+    public func on_leave   [ ev: Event ] -> bool  return false
+    public func on_move    [ ev: Event ] -> bool  return false
+    public func on_wheel   [ ev: Event ] -> bool  return false
+    public func on_key     [ ev: Event ] -> bool  return false
+    public func on_char    [ ev: Event ] -> bool  return false
 
     public func on_render [ w: Window ] -> Elements
         return Elements [
@@ -7210,9 +7359,10 @@ class StyleBlock
                 vlen     : distance[ vstart, cur ]
                 cb_value : string[ chars: vstart, ref_length: vlen ]
                 cb_value = cb_value.trim[]
-                qs       : cb_value.mid[  0, 1 ] == '"'
-                qe       : cb_value.mid[ -1, 1 ] == '"'
-                if [ qs && qe ]
+                q0       : string [ cb_value.mid[  0, 1 ] ]
+                q1       : string [ cb_value.mid[ -1, 1 ] ]
+                is_q     : bool [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
+                if [ is_q ]
                     cs : cstr [ cb_value.chars ]
                     cb_value = parse_quoted[ ref cs, cb_value.count ]
                 param : string [ null ]
@@ -7252,6 +7402,7 @@ class StyleBlock
     public func score [ n: element, score_state: bool ] -> f32
         best_sc : f32 [ 0.0 ]
         cur     : element [ n ]
+
         for [ q: StyleQualifier ] in quals
             best_this : f32 [ 0.0 ]
             while [ true ]
@@ -7475,12 +7626,14 @@ struct XCoord
                     relative  = true
             offset = sx_offset.real_value[]
 
-    func plot [ from: f32, vto: f32, left: ref XCoord, left_val: f32, rel: rect ] -> f32
-        val : f32 [ mix[ offset, offset * (vto - from), percent ] ]
+    func plot [ from: f32, vto: f32, left: ref XCoord, left_val: f32, rel: rect, last: rect ] -> f32
+        val : mix[ offset, offset * (vto - from), f32[percent] ]
         if [ x_type > XAlign.right ]
             expect (left.x_type <= XAlign.right), 'invalid left-operand (xcoord)'
             return left_val + val
         r : f32 [ (rel && relative) ? rel.w * relative : 0.0 ]
+        if [ relative && last ]
+            r += last.x + last.w
         hsz : f32 [ (vto - from) / 2.0 ]
         if [ x_type < XAlign.middle ]
             M : f32 [ f32[x_type] * 2.0 ]
@@ -7519,12 +7672,14 @@ struct YCoord
                     relative  = true
             offset = sy_offset.real_value[]
 
-    func plot [ from: f32, vto: f32, top: ref YCoord, top_val: f32, rel: rect ] -> f32
+    func plot [ from: f32, vto: f32, top: ref YCoord, top_val: f32, rel: rect, last: rect ] -> f32
         val : f32 [ mix[ offset, offset * (vto - from), percent ] ]
         if [ y_type > YAlign.bottom ]
             expect top.y_type <= YAlign.bottom, 'invalid top-operand (ycoord)'
             return top_val + val
         r : f32 [ (rel && relative) ? rel.h * relative : 0.0 ]
+        if [ relative && last ]
+            r += last.y + last.h
         hsz : f32 [ (vto - from) / 2.0 ]
         if [ y_type < YAlign.middle ]
             M : f32 [ f32[y_type] * 2.0 ]
@@ -7573,27 +7728,20 @@ class Region
             l = XCoord [ aa[0] ]
             t = YCoord [ aa[0] ]
             r = XCoord [ aa[0] ]
+            r.x_type = XAlign.right
             b = YCoord [ aa[0] ]
+            b.y_type = YAlign.bottom
         set = true
 
     construct [ cs : cstr ]
         s : string[cs]
         construct [ s ]
-    
-    func rectangle_offset [ rel: rect ] -> rect
-        area: a
-        reg: Region
-        if [ !area ]
-            reg = Region [ 0.0 ]
-            area = reg
-        rect: area.rectangle[ rel, null ]
-        return rect
 
-    func rectangle [ win: rect, rel: rect ] -> rect
-        lv : l.plot[ win.x, win.x + win.w, null,  0.0, rel ]
-        rv : r.plot[ win.x, win.x + win.w, ref l, lv,  rel ]
-        tv : t.plot[ win.y, win.y + win.h, null,  0.0, rel ]
-        bv : b.plot[ win.y, win.y + win.h, ref t, tv,  rel ]
+    func rectangle [ win: rect, rel: rect, last: rect ] -> rect
+        lv : l.plot[ win.x, win.x + win.w, null,  0.0, rel, last ]
+        rv : r.plot[ win.x, win.x + win.w, ref l, lv,  rel, last ]
+        tv : t.plot[ win.y, win.y + win.h, null,  0.0, rel, last ]
+        bv : b.plot[ win.y, win.y + win.h, ref t, tv,  rel, last ]
         return rect [ x: lv, y: tv, w: rv - lv, h: bv - tv ]
 
     func mix [ other: Region, f: f64 ] -> Region
@@ -7855,7 +8003,21 @@ Mixable Align
     public y        : YAlign
 
 
-alias Radius : array f32
+Mixable Radius
+    public rx : f32
+    public ry : f32
+
+    construct [ f: f32 ]
+        rx = f
+        ry = f
+    construct [ f: string ]
+        sp : f.split[' ']
+        if [sp.count == 1]
+            rx = sp[0].real_value[]
+            ry = rx
+        el
+            rx = sp[0].real_value[]
+            ry = sp[1].real_value[]
 
 enum Blend
     normal:   0
@@ -7891,8 +8053,11 @@ class Layer
     public label_color         : rgba
     public label_shadow        : Shadow
     public label_glow          : Glow
-    public label_align         : Align
+    public label_size          : f32 [ 22.0 ]
+    public label_height        : f32 [ 1.0 ]
+    public label_align         : Align [ x: XAlign.middle, y: YAlign.middle ]
     public label_offset        : vec2f
+    public label_overflow      : Overflow [ Overflow.ellipsis ]
 
     public font                : Font
     public line_height         : f32
@@ -8004,11 +8169,450 @@ element Group
         return null
 
 element Button
+    focusable : true
+
     func render[] -> Elements
-        puts 'render?'
         return null
 
 Group Toolbar
+    func render[] -> Elements
+        return null
+
+
+class Camera
+    mutable vk         : vk_context
+    mutable w          : Display
+    public  device     : string '/dev/video6'
+    public  width      : i32    340
+    public  height     : i32    340
+    public  buffer_count : i32  3
+    public  cpu_upload : bool   true   # CPU memcpy → staging → image (reliable).
+                                       # false = import dmabuf as VkBuffer (zero-copy but NVIDIA issues).
+
+    intern  fd         : i32    -1
+    intern  cam_bufs   : ref VkBuffer        # ring of dmabuf-imported buffers (cpu_upload=false)
+    intern  cam_mem    : ref VkDeviceMemory  # imported memory per buffer    (cpu_upload=false)
+    intern  staging_buf: VkBuffer            # single persistent staging buffer (cpu_upload=true)
+    intern  staging_mem: VkDeviceMemory
+    intern  staging_ptr: ref u8              # mapped pointer into staging
+    intern  mm_ptrs    : ref handle          # mmap'd CPU pointer per buffer (brightness sampling)
+    intern  mm_sizes   : ref u32
+    intern  cam_image  : VkImage             # GPU-aligned image target (NVIDIA demands row pad)
+    intern  cam_image_mem : VkDeviceMemory
+    intern  current_idx: i32    0
+    intern  prev_idx   : i32   -1
+    intern  prev_bright: u64    0
+    intern  row_pitch  : u32    0            # bytesperline from v4l2_pix_format
+    intern  dump_count : i32    0            # frames seen, for warmup delay before test dump
+    intern  best_sum   : u64    0            # peak brightness seen so far
+    intern  best_bytes : ref u8              # copy of brightest frame seen
+
+    # camera output texture — latest frame is blitted into this image.
+    public  image      : Texture
+    public  src_rect   : rect
+
+    func init []
+        fd = open[ device.chars, O_RDWR | O_NONBLOCK ]
+        expect fd >= 0, 'camera: failed to open {device}'
+        printf[ "sizeof v4l2_buffer silver=%u vs kernel=88\n", sizeof[v4l2_buffer] ]
+
+        # set pixel format: GREY at requested dimensions
+        vfmt : v4l2_format [ ]
+        vfmt.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE
+        vfmt.fmt.pix.width       = width
+        vfmt.fmt.pix.height      = height
+        vfmt.fmt.pix.pixelformat = V4L2_PIX_FMT_GREY
+        vfmt.fmt.pix.field       = V4L2_FIELD_NONE
+        # VIDIOC_S_FMT = _IOWR('V', 5, struct v4l2_format) = 0xC0D05605 on x86-64.
+        # hardcoded to bypass silver-side sizeof(struct v4l2_format) vs kernel mismatch.
+        err : i32 [ ioctl[ fd, 0xC0D05605, ref vfmt ] ]
+        printf "%i\n", sizeof[v4l2_format]
+        if [ err != 0 ]
+            perror[ 'camera: VIDIOC_S_FMT' ]
+        expect err == 0, 'camera: VIDIOC_S_FMT failed'
+        width     = vfmt.fmt.pix.width
+        height    = vfmt.fmt.pix.height
+        row_pitch = vfmt.fmt.pix.bytesperline
+        printf[ "camera: S_FMT ok w=%i h=%i bpl=%u sizeimage=%u\n",
+            width, height, row_pitch, vfmt.fmt.pix.sizeimage ]
+
+        # request MMAP buffers (DMA-BUF-exportable)
+        req : v4l2_requestbuffers [ ]
+        req.count  = buffer_count
+        req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+        req.memory = V4L2_MEMORY_MMAP
+        err = ioctl[ fd, VIDIOC_REQBUFS, ref req ]
+        expect err == 0, 'camera: VIDIOC_REQBUFS failed'
+        buffer_count = req.count
+
+        cam_bufs  = new VkBuffer       [ buffer_count ]
+        cam_mem   = new VkDeviceMemory [ buffer_count ]
+        mm_ptrs   = new handle         [ buffer_count ]
+        mm_sizes  = new u32            [ buffer_count ]
+
+        # export each v4l2 buffer as a DMA-BUF fd and import as a VkImage.
+        # also mmap each buffer for CPU-side brightness sampling (for the
+        # strobing-IR brightest-of-last-two logic).
+        for [ i: i32 0, i < buffer_count, i += 1 ]
+            qb : v4l2_buffer [ ]
+            qb.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+            qb.memory = V4L2_MEMORY_MMAP
+            qb.index  = i
+            err = ioctl[ fd, VIDIOC_QUERYBUF, ref qb ]
+            expect err == 0, 'camera: VIDIOC_QUERYBUF {i} failed'
+            printf[ "camera: QUERYBUF %i -> length=%u m.offset=%u memory=%u bytesused=%u\n",
+                i, qb.length, qb.m.offset, qb.memory, qb.bytesused ]
+
+            ptr : handle mmap[ null, qb.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, qb.m.offset ]
+            expect ptr != MAP_FAILED, 'camera: mmap {i} failed'
+            mm_ptrs [i] = ptr
+            mm_sizes[i] = qb.length
+
+            if [ !cpu_upload ]
+                exb : v4l2_exportbuffer [ ]
+                exb.type  = V4L2_BUF_TYPE_VIDEO_CAPTURE
+                exb.index = i
+                exb.flags = O_RDWR
+                err = ioctl[ fd, VIDIOC_EXPBUF, ref exb ]
+                expect err == 0, 'camera: VIDIOC_EXPBUF {i} failed'
+                import_dmabuf[ i, exb.fd, qb.length ]
+
+        # queue all buffers back to the driver
+        for [ i: i32 0, i < buffer_count, i += 1 ]
+            qbuf : v4l2_buffer [ ]
+            qbuf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+            qbuf.memory = V4L2_MEMORY_MMAP
+            qbuf.index  = i
+            err = ioctl[ fd, VIDIOC_QBUF, ref qbuf ]
+            expect err == 0, 'camera: VIDIOC_QBUF {i} failed'
+
+        bt : i32 V4L2_BUF_TYPE_VIDEO_CAPTURE
+        err = ioctl[ fd, VIDIOC_STREAMON, ref bt ]
+        expect err == 0, 'camera: VIDIOC_STREAMON failed'
+
+        # single GPU-aligned VkImage that each frame's buffer will be copied
+        # into. whatever row padding NVIDIA demands, the image picks its own
+        # layout — the copy handles conversion from tight-packed dmabuf.
+        img_info : VkImageCreateInfo [
+            sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            imageType:     VK_IMAGE_TYPE_2D,
+            format:        VK_FORMAT_R8_UNORM,
+            extent:        VkExtent3D [ width, height, 1 ],
+            mipLevels:     1,
+            arrayLayers:   1,
+            samples:       VK_SAMPLE_COUNT_1_BIT,
+            tiling:        VK_IMAGE_TILING_OPTIMAL,
+            usage:         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
+            initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+        ]
+        err = vkCreateImage[ vk.device, ref img_info, null, ref cam_image ]
+        expect err == 0, 'camera: vkCreateImage (cam_image) failed'
+        expect cam_image, 'camera: cam_image is null after vkCreateImage'
+
+        # allocate memory for cam_image (device-local, not imported)
+        img_req : VkMemoryRequirements [ ]
+        vkGetImageMemoryRequirements[ vk.device, cam_image, ref img_req ]
+        img_alloc : VkMemoryAllocateInfo [
+            sType:          VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize: img_req.size,
+            memoryTypeIndex: 0   # first type that matches (device memory on most configs)
+        ]
+        # pick a memory type that matches the image's requirements
+        for [ k: u32 0, k < 32, k += 1 ]
+            if [ img_req.memoryTypeBits & (u32[1] << k) ]
+                img_alloc.memoryTypeIndex = k
+                break
+        err = vkAllocateMemory[ vk.device, ref img_alloc, null, ref cam_image_mem ]
+        expect err == 0, 'camera: vkAllocateMemory (cam_image) failed'
+        err = vkBindImageMemory[ vk.device, cam_image, cam_image_mem, 0 ]
+        expect err == 0, 'camera: vkBindImageMemory (cam_image) failed'
+
+        # in cpu_upload mode: allocate one persistent HOST_VISIBLE|COHERENT
+        # staging buffer. each frame we memcpy from the mmap'd v4l2 buffer
+        # and vkCmdCopyBufferToImage into cam_image. NVIDIA's dmabuf import
+        # of v4l2-system-RAM fds is silently inert, so this is the default.
+        if [ cpu_upload ]
+            sbuf_sz : u32 [ width * height ]
+            sbci : VkBufferCreateInfo [
+                sType:       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                size:        sbuf_sz,
+                usage:       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                sharingMode: VK_SHARING_MODE_EXCLUSIVE
+            ]
+            err = vkCreateBuffer[ vk.device, ref sbci, null, ref staging_buf ]
+            expect err == 0, 'camera: vkCreateBuffer (staging) failed'
+
+            sreq : VkMemoryRequirements [ ]
+            vkGetBufferMemoryRequirements[ vk.device, staging_buf, ref sreq ]
+            # pick first HOST_VISIBLE + HOST_COHERENT memory type matching buffer reqs
+            s_type_idx : u32 [ 0 ]
+            for [ k: u32 0, k < vk.props.memoryTypeCount, k += 1 ]
+                if [ sreq.memoryTypeBits & (u32[1] << k) ]
+                    flags : u32 [ vk.props.memoryTypes[k].propertyFlags ]
+                    needed : u32 [ VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ]
+                    if [ (flags & needed) == needed ]
+                        s_type_idx = k
+                        break
+            smai : VkMemoryAllocateInfo [
+                sType:           VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                allocationSize:  sreq.size,
+                memoryTypeIndex: s_type_idx
+            ]
+            err = vkAllocateMemory[ vk.device, ref smai, null, ref staging_mem ]
+            expect err == 0, 'camera: vkAllocateMemory (staging) failed'
+            err = vkBindBufferMemory[ vk.device, staging_buf, staging_mem, 0 ]
+            expect err == 0, 'camera: vkBindBufferMemory (staging) failed'
+            err = vkMapMemory[ vk.device, staging_mem, 0, sreq.size, 0, ref staging_ptr ]
+            expect err == 0, 'camera: vkMapMemory (staging) failed'
+
+        image = Texture [ vk: vk, w: w, width: width, height: height,
+            pixel_format: Pixel.u8, surface: Surface.color ]
+        expect image, 'camera: image creation failed'
+
+    # import a dma-buf fd as a VkBuffer. buffers have no row-pitch constraints
+    # (unlike images on NVIDIA), so we can import the tight-packed camera data
+    # directly. a single aligned VkImage receives vkCmdCopyBufferToImage per
+    # frame, and the blit runs image→image.
+    intern func import_dmabuf [ idx: i32, dma_fd: i32, byte_size: u32 ]
+        ext : VkExternalMemoryBufferCreateInfo [ ]
+        ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO
+        ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+
+        bci : VkBufferCreateInfo [ ]
+        bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
+        bci.pNext       = ref ext
+        bci.size        = byte_size
+        bci.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+        bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE
+
+        buf : VkBuffer [ null ]
+        err : i32 [ vkCreateBuffer[ vk.device, ref bci, null, ref buf ] ]
+        expect err == 0, 'camera: vkCreateBuffer (dmabuf) failed'
+        expect buf, 'camera: buf is null after vkCreateBuffer'
+
+        mreq : VkMemoryRequirements [ ]
+        vkGetBufferMemoryRequirements[ vk.device, buf, ref mreq ]
+
+        fd_props : VkMemoryFdPropertiesKHR [ ]
+        fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
+        expect vk._vkGetMemoryFdPropertiesKHR, 'camera: vkGetMemoryFdPropertiesKHR not loaded'
+        err = vk._vkGetMemoryFdPropertiesKHR[ vk.device,
+            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, ref fd_props ]
+        expect err == 0, 'camera: vkGetMemoryFdPropertiesKHR failed'
+
+        allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+        expect allowed != 0, 'camera: no memory type compatible with dmabuf fd'
+        mem_type_index : u32 [ 0 ]
+        for [ k: u32 0, k < 32, k += 1 ]
+            if [ allowed & (u32[1] << k) ]
+                mem_type_index = k
+                break
+
+        # dedicated allocation bound to the buffer — required on some drivers
+        # for imported dmabuf memory.
+        ded : VkMemoryDedicatedAllocateInfo [ ]
+        ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+        ded.buffer = buf
+
+        imp : VkImportMemoryFdInfoKHR [ ]
+        imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
+        imp.pNext      = ref ded
+        imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+        imp.fd         = dma_fd
+
+        mai : VkMemoryAllocateInfo [ ]
+        mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+        mai.pNext           = ref imp
+        mai.allocationSize  = byte_size
+        mai.memoryTypeIndex = mem_type_index
+
+        mem : VkDeviceMemory [ null ]
+        err = vkAllocateMemory[ vk.device, ref mai, null, ref mem ]
+        expect err == 0, 'camera: vkAllocateMemory (import fd) failed'
+        err = vkBindBufferMemory[ vk.device, buf, mem, 0 ]
+        expect err == 0, 'camera: vkBindBufferMemory failed'
+
+        cam_bufs[ idx ] = buf
+        cam_mem [ idx ] = mem
+
+    # sample average brightness of a 16x16 region at the center of the
+    # mmap'd buffer. cheap and enough to distinguish strobed-on vs off frames.
+    intern func brightness_of [ idx: i32 ] -> u64
+        ptr : ref u8 [ mm_ptrs[idx] ]
+        stride : i32 [ width ]
+        cx : i32 [ width  / 2 - 8 ]
+        cy : i32 [ height / 2 - 8 ]
+        sum : u64 [ 0 ]
+        for [ yy: i32 0, yy < 16, yy += 1 ]
+            row : i32 [ (cy + yy) * stride + cx ]
+            for [ xx: i32 0, xx < 16, xx += 1 ]
+                sum += u64[ ptr[ row + xx ] ]
+        return sum
+
+    func update []
+        if [ fd < 0 ]
+            return
+        deq : v4l2_buffer [ ]
+        deq.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+        deq.memory = V4L2_MEMORY_MMAP
+        err : i32 [ ioctl[ fd, VIDIOC_DQBUF, ref deq ] ]
+        if [ err != 0 ]
+            return
+        current_idx = deq.index
+        #printf[ "DQBUF: idx=%u bytesused=%u flags=0x%x seq=%u\n",
+        #    deq.index, deq.bytesused, deq.flags, deq.sequence ]
+
+        # IR strobe sync: always blit the brighter of the latest two frames.
+        # when the strobe fires, the lit frame wins; between strobes the
+        # prior lit frame persists. previous buffer is held across update
+        # calls so we can still read from it; the older one gets requeued.
+        cur_bright : u64 [ brightness_of[ current_idx ] ]
+        use_prev : bool [ prev_idx >= 0 && prev_bright > cur_bright ]
+        blit_idx : i32 [ (use_prev) ? prev_idx : current_idx ]
+
+        if [ image ]
+            cmd : Command [ vk: vk ]
+            cmd.begin[]
+
+            # make host (v4l2/kernel DMA) writes to the imported dmabuf
+            # visible to the GPU transfer stage. without this NVIDIA reads
+            # stale/uninitialized memory in vkCmdCopyBufferToImage.
+            host_bar : VkMemoryBarrier [
+                sType:         VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                srcAccessMask: VK_ACCESS_HOST_WRITE_BIT,
+                dstAccessMask: VK_ACCESS_TRANSFER_READ_BIT
+            ]
+            vkCmdPipelineBarrier[ cmd.cmd,
+                VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 1, ref host_bar, 0, null, 0, null ]
+
+            # cam_image UNDEFINED → TRANSFER_DST for the buffer→image copy
+            cam_barrier : VkImageMemoryBarrier [
+                sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
+                newLayout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+                dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+                image: cam_image,
+                subresourceRange: VkImageSubresourceRange [
+                    aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+                    levelCount: 1, layerCount: 1 ],
+                srcAccessMask: 0,
+                dstAccessMask: VK_ACCESS_TRANSFER_WRITE_BIT
+            ]
+            vkCmdPipelineBarrier[ cmd.cmd,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, null, 0, null, 1, ref cam_barrier ]
+
+            # copy dmabuf-backed buffer into the aligned GPU image (tight pack → aligned)
+            copy : VkBufferImageCopy [
+                bufferOffset:      0,
+                bufferRowLength:   0,    # 0 = tight
+                bufferImageHeight: 0,
+                imageSubresource:  VkImageSubresourceLayers [
+                    aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                    mipLevel:       0,
+                    baseArrayLayer: 0,
+                    layerCount:     1
+                ],
+                imageOffset: VkOffset3D [ 0, 0, 0 ],
+                imageExtent: VkExtent3D [ width, height, 1 ]
+            ]
+            src_buf : VkBuffer [ (cpu_upload) ? staging_buf : cam_bufs[ blit_idx ] ]
+            if [ cpu_upload ]
+                src_ptr : ref u8 [ mm_ptrs[ blit_idx ] ]
+                memcpy[ staging_ptr, src_ptr, width * height ]
+            vkCmdCopyBufferToImage[ cmd.cmd,
+                src_buf, cam_image,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, ref copy ]
+
+            # cam_image TRANSFER_DST → TRANSFER_SRC for the blit
+            cam_barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+            cam_barrier.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+            cam_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
+            cam_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT
+            vkCmdPipelineBarrier[ cmd.cmd,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 0, null, 0, null, 1, ref cam_barrier ]
+
+            # image: any → TRANSFER_DST before blit, back to SHADER_READ after
+            image.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+
+            sx0 : i32 [ i32 [ src_rect.x ] ]
+            sy0 : i32 [ i32 [ src_rect.y ] ]
+            sx1 : i32 [ i32 [ src_rect.x + src_rect.w ] ]
+            sy1 : i32 [ i32 [ src_rect.y + src_rect.h ] ]
+            blit : VkImageBlit [
+                srcSubresource: VkImageSubresourceLayers [
+                    aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, layerCount: 1 ],
+                srcOffsets: [
+                    VkOffset3D [ x: sx0, y: sy0, z: 0 ],
+                    VkOffset3D [ x: sx1, y: sy1, z: 1 ] ],
+                dstSubresource: VkImageSubresourceLayers [
+                    aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, layerCount: 1 ],
+                dstOffsets: [
+                    VkOffset3D [ x: 0, y: 0, z: 0 ],
+                    VkOffset3D [ x: width, y: height, z: 1 ] ]
+            ]
+            vkCmdBlitImage[ cmd.cmd,
+                cam_image,      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                image.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1, ref blit, VK_FILTER_LINEAR ]
+
+            image.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+            cmd.submit[]
+
+        # hold current frame's buffer as prev for next round's comparison;
+        # return the older prev buffer to the kernel.
+        if [ prev_idx >= 0 ]
+            qb : v4l2_buffer [ ]
+            qb.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+            qb.memory = V4L2_MEMORY_MMAP
+            qb.index  = prev_idx
+            ioctl[ fd, VIDIOC_QBUF, ref qb ]
+        prev_idx    = current_idx
+        prev_bright = cur_bright
+
+    func dealloc []
+        if [ fd < 0 ] return
+        bt : i32 V4L2_BUF_TYPE_VIDEO_CAPTURE
+        ioctl[ fd, VIDIOC_STREAMOFF, ref bt ]
+        for [ i: i32 0, i < buffer_count, i += 1 ]
+            if [ !cpu_upload ]
+                vkDestroyBuffer[ vk.device, cam_bufs[i], null ]
+                vkFreeMemory   [ vk.device, cam_mem[i],  null ]
+            munmap[ mm_ptrs[i], mm_sizes[i] ]
+        if [ staging_buf ]
+            vkUnmapMemory  [ vk.device, staging_mem ]
+            vkDestroyBuffer[ vk.device, staging_buf, null ]
+            vkFreeMemory   [ vk.device, staging_mem, null ]
+        if [ cam_image ]
+            vkDestroyImage[ vk.device, cam_image, null ]
+            vkFreeMemory  [ vk.device, cam_image_mem, null ]
+        close[ fd ]
+        fd = -1
+
+
+element CameraView
+    public camera   : Camera
+    public src_rect : rect
+    mutable once : bool
+
+    func draw [ w: Window ]
+        if [ !camera ] return
+        if [ !once ]
+            camera.src_rect = src_rect
+            camera.update[]
+            once = true
+        cv : Canvas w.screen
+        cv.draw_image[ camera.image, rect [ x: 0, y: 0, w: a.bounds.w, h: a.bounds.h ] ]
+        cv.paint[]
+        cv.sync_fence[]
+        once = false
+
+    func render [] -> Elements
+        return null
 
 shader Basic
     public proj  : mat4f
@@ -8484,16 +9088,17 @@ scalar ns : i64
 
 func parse_quoted [ cursor: ref cstr, max_len: sz ] -> string
     first : cstr [ cursor[0] ]
-    if [ first[0] != '"' ]                                                                                                          
+    if [ first[0] != '"' && first[0] != '\'' ]
         return ''
-    cursor[0] += 1                                                                            
+    quote_ch : i8 [ first[0] ]
+    cursor[0] += 1
     start : cstr [ cursor[0] ]
     s     : cstr [ start ]
-    last_slash : false                 
-    while [ s[0] != 0 ]           
+    last_slash : false
+    while [ s[0] != 0 ]
         if [ s[0] == '\\' ]
             last_slash = true
-        el [ s[0] == '"' && !last_slash ]
+        el [ s[0] == quote_ch && !last_slash ]
             break
         el
             last_slash = false
@@ -8722,6 +9327,7 @@ func scan_to [ p_cursor: ref cstr, chars: string ] -> bool
 func distance [ a:i8, b:i8 ] -> i64
     return abs[ sz[ a ] - sz[ b ] ]
 
+    
 
 func is_alpha2 [ c: i8 ] -> bool                                                                                                     
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
