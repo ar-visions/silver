@@ -704,12 +704,21 @@ Au build_init_preamble(enode f, Au arg) {
     silver a = (silver)f->mod;
     etype  rec = f->target ? resolve((etype)f->target) : (etype)a;
 
+    // emit default + override initializers as part of this class's own init[].
+    // baking overrides into the class's init means every construction site —
+    // regardless of which module is constructing — gets the override store
+    // via the normal init call, without cross-module evar lookup at each site.
     members(rec->au, mem) {
         if (mem->is_static) continue; // statics emit from module init, not per-instance
-        if (mem->is_override) continue; // overrides are emitted in e_init, not the preamble
         enode n = u(enode, mem);
-        if (n && n->initializer)
+        if (!n || !n->initializer) continue;
+        if (mem->is_override) {
+            // override targets the inherited slot via e_inherited_access
+            enode self = f->target ? (enode)f->target : null;
+            if (self) emit_override_init(a, self, mem);
+        } else {
             build_user_initializer(a, (etype)n);
+        }
     }
     return null;
 }
@@ -5353,14 +5362,8 @@ enode silver_parse_ternary(silver a, enode expr, etype mdl_expect, bool load) {
     if (!read_if(a, "?")) {
         if (!read_if(a, "??"))
             return expr;
-        // short-circuit: (cond) ?? expr — expr is only evaluated when cond
-        // is non-null, else the result is zero/null of typeof(expr). Read the
-        // true expression as tokens and defer codegen into the then_block.
-        bool  is_const = false;
-        etype mdl_true = mdl_expect;
-        array true_tokens = read_expression(a, &mdl_true, &is_const);
-        subprocedure build_expr = subproc(a, ternary_expr_builder, null);
-        return e_coalesce_deferred(a, expr, true_tokens, build_expr);
+        enode expr_true = parse_expression(a, mdl_expect, false, load);
+        return e_ternary(a, expr, expr_true, null);
     }
     // ternary condition MUST be parenthesized: `(cond) ? a : b`. silver
     // does not parse a bare-condition `cond ? a : b` correctly — what looks
