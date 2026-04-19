@@ -6849,16 +6849,20 @@ Display Window
         ly : f32  [ y - b.y ]
         if [ !must && (lx < 0.0 || ly < 0.0 || lx >= b.w || ly >= b.h) ]
             return null
+        
         ev.mouse.pos.x = lx + e.scroll.x
         ev.mouse.pos.y = ly + e.scroll.y
+
         for [ child: element, id: string ] in e.elements
-            hit   : find_target[ child, ev, must ]
-            t : typeid[hit]
+            hit : find_target[ child, ev, must ]
+            t   : typeid[hit]
             if [ hit ]
                 return hit
+        
         ev.mouse.pos.x = x
         ev.mouse.pos.y = y
-        return (!must || must == e) ? e : null
+    
+        return ( !must || must == e ) ? e : null
 
     public func text_event [ ev: Event ]
         ev.target = focus
@@ -6923,7 +6927,7 @@ Display Window
 
     public func press_event [ ev: Event ]
         release_capture[ capture ]
-        f : element [ find_target[ root, ev, null ] ]
+        f : find_target[ root, ev, null ]
         # element bubble. element* gives poly dispatch so subclasses
         # (Button, CameraView, ...) see their own on_press override.
         consumed_p : bool [ false ]
@@ -6931,6 +6935,8 @@ Display Window
             cl : typeid[e]
             ev.target = e
             if [ e.on_press[ ev ] ] consumed_p = true
+        
+        au : typeid[ f ]
         # app
         if [ !consumed_p && app_object ]
             ev.target = f
@@ -7155,8 +7161,8 @@ Display Window
         # compute element bounds from its area
         if [ !e.area ]
             e.area = Region [ 0.0 ]
-        e.bounds = e.area.rectangle[ rel, null, (last) ?? last.bounds ]
-        element_text : (e.label && e.label.count) ?? e.label
+        e.bounds = e.area.rectangle[ rel, null, (last) ? last.bounds : null ]
+        element_text : (e.label && e.label.count) ? e.label : null
 
         # compute layer bounds and draw each layer
         for [ layer: Layer, lkey: string ] in e.layers
