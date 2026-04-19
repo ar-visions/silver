@@ -628,7 +628,7 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
                         verify(Lt, "expected user structure for member %s", mem->ident);
                         verify(Lt->au->args.count == 2,
                             "expected 2 arguments for operator method");
-                        res = e_fn_call(a, (efunc)Lt, a(cur, rR), false);
+                        res = e_fn_call(a, (efunc)Lt, a(cur, rR), false, true);
                         no_store = true;
                         break;
                     }
@@ -1172,7 +1172,7 @@ enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
         Au_t fn = find_member(L->au, "compare", AU_MEMBER_FUNC, 0, true);
         verify(fn, "class %s has no compare() method", L->au->ident);
 
-        enode cmp_result = e_fn_call(a, (efunc)u(enode, fn), a(L, R), false);
+        enode cmp_result = e_fn_call(a, (efunc)u(enode, fn), a(L, R), false, true);
         LLVMValueRef zero = LLVMConstInt(lltype(cmp_result), 0, false);
 
         return value(bool_t,
@@ -1271,7 +1271,7 @@ enode aether_e_eq(aether a, enode L, enode R) {
         Au_t fn = find_member(L->au, "compare", AU_MEMBER_FUNC, 0, true);
         verify(fn, "class %s has no compare() method", L->au->ident);
 
-        enode cmp = e_fn_call(a, u(efunc, fn), a(L, R), false);
+        enode cmp = e_fn_call(a, u(efunc, fn), a(L, R), false, true);
 
         // compare result against zero (i64 or i32)
         LLVMValueRef zero = LLVMConstInt(lltype(cmp), 0, false);
@@ -1386,7 +1386,7 @@ enode aether_e_eq_prev(aether a, enode L, enode R) {
             // check if R is compatible with argument
             // if users want to allow different data types, we need to make the argument more generic
             // this is better than overloads since the code is in one place
-            return e_fn_call(a, eq, a(L, R), false);
+            return e_fn_call(a, eq, a(L, R), false, true);
         }
     } else if (Ls || Rs) {
         // iterate through struct members, checking against each with recursion
@@ -1594,7 +1594,7 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
                 if (Rt) {
                     verify(Rt->au->args.count == 2,
                         "expected 2 arguments for reverse operator method");
-                    return e_fn_call(a, (efunc)Rt, a(RV, LV), false);  // note: R is self, L is the arg
+                    return e_fn_call(a, (efunc)Rt, a(RV, LV), false, true);  // note: R is self, L is the arg
                 }
             }
         }
@@ -1617,7 +1617,7 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
             if  (Lt) {
                 verify(Lt->au->args.count == 2,
                     "expected 2 argument for operator method");
-                return e_fn_call(a, (efunc)Lt, a(mL, RV), false);
+                return e_fn_call(a, (efunc)Lt, a(mL, RV), false, true);
             }
         }
     }
@@ -1630,7 +1630,7 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
             Au_t f_op = find_member(typeid(Au), "__op", AU_MEMBER_FUNC, 0, false);
             if (f_op) {
                 enode op_val = e_operand(a, _i32(optype), etypeid(i32));
-                return e_fn_call(a, u(efunc, f_op), a(op_val, LV, RV), false);
+                return e_fn_call(a, u(efunc, f_op), a(op_val, LV, RV), false, true);
             }
         }
     }
@@ -2540,7 +2540,7 @@ enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
     if (!find_member(mem->au, "fn", AU_MEMBER_VAR, 0, false)) {
         // treat as function pointer call
         mem->au->is_funcptr = true;
-        return e_fn_call(a, mem, user_args, false);
+        return e_fn_call(a, mem, user_args, false, false);
     }
 
     // declared lambda instance — access fn and ctx
@@ -2557,10 +2557,12 @@ enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
 
     fn_ptr->meta_a = hold(mem->meta_a);
     fn_ptr->meta_b = hold(mem->meta_b);
-    return e_fn_call(a, fn_ptr, args, false);
+    return e_fn_call(a, fn_ptr, args, false, false);
 }
 
-enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super) { sequencer
+enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_poly) { sequencer
+    static i64 test = 0;
+    test++;
     bool funcptr = is_func_ptr((Au)fn);
     if (!funcptr && !fn->used)
          fn->used = true;
@@ -2645,12 +2647,14 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super) { sequence
     // -----------------------------------------------------------------------
     // If this is an instance method, we must look up the implementation 
     // in the runtime type's vtable (ft) rather than using the static symbol.
-    if (!target_type || (!is_struct((Au)target_type->au->src) && !is_struct((Au)target_type)))
 
-    if (!fn->is_super && !is_super && fn->au->access_type != interface_intern &&
+    bool extra_qualifiers = !fn->is_super && !is_super && fn->au->access_type != interface_intern &&
         (is_abstract || (((!a->direct && first_arg) || (first_arg && first_arg->is_any)) && !first_is_alloc &&
          fn->au->context != typeid(Au) && fn->au->is_imethod && !funcptr &&
-         !(target_type && target_type->target && target_type->target->avoid_ftable)))) {
+         !(target_type && target_type->target && target_type->target->avoid_ftable))) &&
+         (!target_type || (!is_struct((Au)target_type->au->src) && !is_struct((Au)target_type)));
+        
+    if ((is_poly || (first_arg && first_arg->is_any)) && extra_qualifiers) {
 
         verify(n_args > 0, "instance method %o requires 'this' argument", fn);
         
@@ -3260,14 +3264,14 @@ enode eshape_from_indices(aether a, array indices) {
     verify(shape_from_fn, "shape_from function not found");
 
     // Call shape_from(count, data)
-    return e_fn_call(a, (efunc)u(efunc, shape_from_fn), a(count_node, data_node), false);
+    return e_fn_call(a, (efunc)u(efunc, shape_from_fn), a(count_node, data_node), false, false);
 }
 
 void aether_eputs(aether a, string output) {
     if (a->no_build) return;
 
     //efunc  fn_puts = (efunc)elookup("puts");
-    //e_fn_call(a, fn_puts, a(const_string(chars, output->chars)));
+    //e_fn_call(a, fn_puts, a(const_string(chars, output->chars)), false);
 }
 
 enode etype_access(etype target, string name) { sequencer
@@ -3780,7 +3784,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     // the init chain — so skip here and call at the tail.
     bool is_post_ctr = ctr && ctr->au->is_default;
     if (ctr && ctr_input && !is_post_ctr)
-        e_fn_call(a, ctr, a(alloc, ctr_input), false);
+        e_fn_call(a, ctr, a(alloc, ctr_input), false, false);
 
     // 2. set ALL props BEFORE init and mark fbits
     if (props) {
@@ -3790,7 +3794,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
             if (instanceof(k, enode)) {
                 efunc f_set_prop = (efunc)u(efunc,
                     find_member(etypeid(Au)->au, "set_property", AU_MEMBER_FUNC, 0, false));
-                e_fn_call(a, f_set_prop, a(alloc, k, i->value), false);
+                e_fn_call(a, f_set_prop, a(alloc, k, i->value), false, false);
             } else {
                 enode prop = access(alloc, (string)k);
                 e_assign(a, prop, i->value, OPType__assign);
@@ -3861,7 +3865,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
             if (mdl->au == typeid(Au)) continue;
             Au_t init_mem = find_member(mdl->au, "init", AU_MEMBER_FUNC, 0, false);
             efunc  init_f = u(efunc, init_mem);
-            if (init_f) e_fn_call(a, init_f, a(alloc), false);
+            if (init_f) e_fn_call(a, init_f, a(alloc), false, false);
         }
         a->direct = saved_direct;
         efunc f_hold_members = (efunc)u(efunc,
@@ -3869,13 +3873,13 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
         //e_fn_call(a, f_hold_members, a(alloc), false);
 
     } else {
-        res = e_fn_call(a, f_initialize, a(alloc), false);
+        res = e_fn_call(a, f_initialize, a(alloc), false, false);
     }
     a->init_props = saved_init_props;
 
     // post construct runs AFTER init chain
     if (is_post_ctr && ctr_input)
-        e_fn_call(a, ctr, a(alloc, ctr_input), false);
+        e_fn_call(a, ctr, a(alloc, ctr_input), false, false);
 
     res->au     = alloc->au;
     res->meta_a = hold(alloc->meta_a);
@@ -3894,7 +3898,7 @@ enode e_create_from_map(aether a, etype t, map m) {
     efunc cur = context_func(a);
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, t), _i32(1), e_null(a, etypeid(shape)),
-        e_meta_a_node(a, t->meta_a), e_meta_b_node(a, t->meta_b)), false);
+        e_meta_a_node(a, t->meta_a), e_meta_b_node(a, t->meta_b)), false, false);
     res->au   = t->au;
     res->meta_a = hold(t->meta_a);
     res->meta_b = hold(t->meta_b);
@@ -3903,9 +3907,9 @@ enode e_create_from_map(aether a, etype t, map m) {
         // map type: initialize first, then populate entries
         efunc f_initialize = (efunc)u(efunc,
             find_member(etypeid(Au)->au, "initialize", AU_MEMBER_FUNC, 0, false));
-        e_fn_call(a, f_initialize, a(res), false);
+        e_fn_call(a, f_initialize, a(res), false, false);
         pairs(m, i) {
-            e_fn_call(a, f_mset, a(res, i->key, i->value), false);
+            e_fn_call(a, f_mset, a(res, i->key, i->value), false, false);
         }
     } else {
         // class type: use e_init with the property map
@@ -3916,19 +3920,16 @@ enode e_create_from_map(aether a, etype t, map m) {
 }
 
 
-// ============================================================================
-// revised e_create_from_array — now uses e_init for the class path
-// ============================================================================
 enode e_create_from_array(aether a, etype t, array ar) {
     if (a->no_build) return e_noop(a, t);
 
     efunc f_alloc      = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new",  AU_MEMBER_FUNC, 0, false));
-    efunc f_push       = (efunc)u(efunc, find_member(etypeid(collective)->au, "push", AU_MEMBER_FUNC, 0, true));
+    efunc f_push       = (efunc)u(efunc, find_member(etypeid(array)->au, "push",       AU_MEMBER_FUNC, 0, true));
     efunc f_push_vdata = (efunc)u(efunc, find_member(etypeid(array)->au, "push_vdata", AU_MEMBER_FUNC, 0, true));
 
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, t), _i32(1), e_null(a, etypeid(shape)),
-        e_meta_a_node(a, t->meta_a), e_meta_b_node(a, t->meta_b)), false);
+        e_meta_a_node(a, t->meta_a), e_meta_b_node(a, t->meta_b)), false, false);
     res->au = t->au;
     
     bool  all_const = t->au == typeid(array) && !a->building_initializer;
@@ -3997,7 +3998,7 @@ enode e_create_from_array(aether a, etype t, array ar) {
 
         // populate after init
         if (const_vector) {
-            e_fn_call(a, f_push_vdata, a(res, const_vector, array_len, e_typeid(a, element_type)), false);
+            e_fn_call(a, f_push_vdata, a(res, const_vector, array_len, e_typeid(a, element_type)), false, false);
         } else {
             for (int i = 0; i < ln; i++) {
                 Au element = ar->origin[i];
@@ -4007,7 +4008,7 @@ enode e_create_from_array(aether a, etype t, array ar) {
                 }
                 validate(t->meta_a, "expected meta type on array");
                 enode conv = e_create(a, u(etype, t->meta_a), element);
-                e_fn_call(a, f_push, a(res, conv), false);
+                e_fn_call(a, f_push, a(res, conv), false, false);
             }
         }
     } else if (ln == 0) {
@@ -4099,9 +4100,6 @@ etype get_etype(enode n) {
 }
 
 
-// ============================================================================
-// revised e_create — class init paths now delegate to e_init
-// ============================================================================
 enode aether_e_create(aether a, etype mdl, Au args) { sequencer
     
     enode input = (enode)instanceof(args, enode);
@@ -4191,7 +4189,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         
         enode targ = n_mdl->target;
         array args = a(n_mdl->published_type, n_mdl, n_mdl->target, ctx_alloc);
-        enode res = e_fn_call(a, f_create, args, false);
+        enode res = e_fn_call(a, f_create, args, false, false);
         res->meta_a = hold(n_mdl->meta_a);
         res->meta_b = hold(n_mdl->meta_b);
         return res;
@@ -4233,7 +4231,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 e_null(a, etypeid(shape)),
                 e_meta_a_node(a, input_type->meta_a),
                 e_meta_b_node(a, input_type->meta_b)
-            ), false);
+            ), false, false);
             bool is_enumerable = is_enum(input_type);
             if (is_enumerable) {
                 etype_implement(input_type, false);
@@ -4262,7 +4260,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             Au_t f_convert = find_member(typeid(Au), "__convert", AU_MEMBER_FUNC, 0, false);
             if (f_convert) {
                 enode type_node = e_typeid(a, mdl);
-                enode result = e_fn_call(a, u(efunc, f_convert), a(type_node, input), false);
+                enode result = e_fn_call(a, u(efunc, f_convert), a(type_node, input), false, false);
                 return e_convert_or_cast(a, canonical(mdl), result);
             }
         }
@@ -4277,7 +4275,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
         if (fn && fn->au->member_type == AU_MEMBER_CONSTRUCT) {
             ctr = (efunc)fmem;
         } else if (fn && fn->au->member_type == AU_MEMBER_CAST) {
-            return e_fn_call(a, fn, a(input), false);
+            return e_fn_call(a, fn, a(input), false, true);
         } else
             fault("unknown error");
     }
@@ -4363,7 +4361,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             // we have to call the constructor on this one..
             // the value is the pointer though since its not loaded
             LLVMBuildStore(B, LLVMConstNull(lltype(mdl)), res->value);
-            e_fn_call(a, ctr, a(res, input), false);
+            e_fn_call(a, ctr, a(res, input), false, false);
 
         } else {
             enode alloc = e_alloc(a, mdl);
@@ -4608,9 +4606,9 @@ enode aether_e_vector(aether a, etype t, enode shape_data) {
     enode mb = e_meta_b_node(a, t->meta_b ? t->meta_b : (tc ? tc->meta_b : null));
     bool is_shape = shape_data && canonical(shape_data) && canonical(shape_data)->au == typeid(shape);
     if (is_shape)
-        return e_fn_call(a, f_alloc, a( e_typeid(a, t), _i32(0), shape_data, ma, mb ), false);
+        return e_fn_call(a, f_alloc, a( e_typeid(a, t), _i32(0), shape_data, ma, mb ), false, false);
     enode count = shape_data ? shape_data : (enode)_i32(0);
-    return e_fn_call(a, f_alloc, a( e_typeid(a, t), count, e_null(a, etypeid(shape)), ma, mb ), false);
+    return e_fn_call(a, f_alloc, a( e_typeid(a, t), count, e_null(a, etypeid(shape)), ma, mb ), false, false);
 }
 
 enode aether_e_alloc(aether a, etype mdl) {
@@ -4618,7 +4616,7 @@ enode aether_e_alloc(aether a, etype mdl) {
         find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, mdl), _i32(0), e_null(a, etypeid(shape)),
-        e_meta_a_node(a, mdl->meta_a), e_meta_b_node(a, mdl->meta_b) ), false);
+        e_meta_a_node(a, mdl->meta_a), e_meta_b_node(a, mdl->meta_b) ), false, false);
     res->au = is_class(mdl) ? au_arg_type((Au)mdl->au) : pointer(a, (Au)mdl)->au;
     return res;
 }
@@ -5611,7 +5609,7 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
         verify(u(efunc, fn_cast), "Au_cast_string not found");
 
         enode au_arg = enode(mod, a, value, typed_ptr, loaded, false, au, typeid(Au));
-        return e_fn_call(a, u(efunc, fn_cast), a(au_arg), false);
+        return e_fn_call(a, u(efunc, fn_cast), a(au_arg), false, true);
     }
     
     LLVMValueRef V = expr->value;
@@ -5902,14 +5900,14 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
         etype_implement((etype)main_fn, false);
 
         push_scope(a, (Au)main_fn);
-        e_fn_call(a, module_init_fn, null, false);
+        e_fn_call(a, module_init_fn, null, false, false);
 
         Au_t fn_run = find_member(cov_spec->au, "run", AU_MEMBER_FUNC, 0, false);
         verify(fn_run, "coverage abstract missing run method");
 
         each(cov_classes, etype, cls) {
             enode inst = e_create(a, cls, null);
-            e_fn_call(a, (efunc)u(efunc, fn_run), a(inst), false);
+            e_fn_call(a, (efunc)u(efunc, fn_run), a(inst), false, true);
         }
 
         report_coverage(a);
@@ -5929,18 +5927,18 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     etype_implement((etype)main_fn, false);
 
     push_scope(a, (Au)main_fn);
-    e_fn_call(a, module_init_fn, null, false);
+    e_fn_call(a, module_init_fn, null, false, false);
 
     // phase 2: lock sandbox — no more dlopen/exec from this point
     Au_t au_sandbox_lock = find_member(typeid(Au), "au_sandbox_lock", AU_MEMBER_FUNC, 0, false);
     if (au_sandbox_lock) {
         efunc f_lock = u(efunc, au_sandbox_lock);
-        if (f_lock) e_fn_call(a, f_lock, null, false);
+        if (f_lock) e_fn_call(a, f_lock, null, false, false);
     }
 
     // call engage
     efunc Au_engage = u(efunc, find_member(typeid(Au), "engage", AU_MEMBER_FUNC, 0, false));
-    e_fn_call(a, Au_engage, a(u(evar, argv)), false);
+    e_fn_call(a, Au_engage, a(u(evar, argv)), false, false);
 
     // create main class ( i think this is not working )
     // skip context resolution: the module owns its own bootstrap and will
@@ -5953,7 +5951,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     a->skip_context_resolve = saved_skip_ctx;
     Au_t fn_run = find_member(main_spec->au, "run", AU_MEMBER_FUNC, 0, false);
 
-    enode r = e_fn_call(a, (efunc)u(efunc, fn_run), a(m), false);
+    enode r = e_fn_call(a, (efunc)u(efunc, fn_run), a(m), false, true);
 
     // give a full-coverage-report to number one
     report_coverage(a);
@@ -7301,7 +7299,7 @@ none aether_build_module_initializer(aether a, enode init) {
     Au_t sandbox_init_fn = find_member(typeid(Au), "au_sandbox_init", AU_MEMBER_FUNC, 0, false);
     if (sandbox_init_fn) {
         efunc f_sandbox = u(efunc, sandbox_init_fn);
-        if (f_sandbox) e_fn_call(a, f_sandbox, null, false);
+        if (f_sandbox) e_fn_call(a, f_sandbox, null, false, false);
     }
 
     aether_eputs(a, f(string, "%o: initializing", a));
@@ -7310,7 +7308,7 @@ none aether_build_module_initializer(aether a, enode init) {
     {
         efunc fn_check = efind(efunc, etypeid(Au), typeid_string);
         enode str_tid  = e_typeid(a, etypeid(string));
-        e_fn_call(a, fn_check, a(str_tid), false);
+        e_fn_call(a, fn_check, a(str_tid), false, false);
     }
 
     if (a->coverage)
@@ -7360,7 +7358,7 @@ none aether_build_module_initializer(aether a, enode init) {
         _u64(module_base->typesize),
         _u64(module_isize),
         _i32(module_icount)
-    ), false);
+    ), false, false);
 
     // define public functions at the module level; this effectively imports
     members(module_base, mem) {
@@ -7388,7 +7386,7 @@ none aether_build_module_initializer(aether a, enode init) {
                 _i32(mem->index),
                 mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                 mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au))
-            ), false);
+            ), false, false);
 
             arg_list(mem, arg) {
                 etype arg_type = u(etype, arg->src);
@@ -7398,7 +7396,7 @@ none aether_build_module_initializer(aether a, enode init) {
                     const_string(chars, arg->ident),
                     e_typeid(a, arg_type),
                     _i64(0)
-                ), false);
+                ), false, false);
             }
         }
 
@@ -7430,7 +7428,7 @@ none aether_build_module_initializer(aether a, enode init) {
                 e_null(a, null),
                 mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                 e_meta_b
-            ), false);
+            ), false, false);
         }
     }
 
@@ -7497,7 +7495,7 @@ none aether_build_module_initializer(aether a, enode init) {
             _u64(mdl->au->typesize),
             _u64(isize),
             _i32(icount)
-        ), false);
+        ), false, false);
 
         // export class meta (e.g. GLSL<Au>)
         if (tau->meta.a) {
@@ -7534,7 +7532,7 @@ none aether_build_module_initializer(aether a, enode init) {
                     _i32(mem->index),
                     mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                     mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au))
-                ), false);
+                ), false, false);
 
                 // structs have no vtable — skip function pointer slot assignment
                 if (!is_struct_t) {
@@ -7561,7 +7559,7 @@ none aether_build_module_initializer(aether a, enode init) {
                         const_string(chars, arg->ident),
                         e_typeid(a, arg_type),
                         _i64(0)
-                    ), false);
+                    ), false, false);
                 }
 
                 if (is_lambda((Au)mem)) {
@@ -7594,7 +7592,7 @@ none aether_build_module_initializer(aether a, enode init) {
                     if (constructed && constructed->value) {
                         efunc fn_hold = efind(efunc, etypeid(Au), hold);
                         if (fn_hold)
-                            e_attrib_val = e_fn_call(a, fn_hold, a(constructed), false);
+                            e_attrib_val = e_fn_call(a, fn_hold, a(constructed), false, false);
                     }
                 }
 
@@ -7611,7 +7609,7 @@ none aether_build_module_initializer(aether a, enode init) {
                     e_attrib_val,
                     mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                     e_meta_b
-                ), false);
+                ), false, false);
             } else if (mem->member_type == AU_MEMBER_ENUMV) {
                 static int seq = 0;
                 seq++;
@@ -7626,7 +7624,7 @@ none aether_build_module_initializer(aether a, enode init) {
                     type_id,
                     const_string(chars, mem->ident),
                     val
-                ), false);
+                ), false, false);
 
             } else if (mem->member_type == AU_MEMBER_TYPE) {
                 // not allowed (types embedded in types)
@@ -7647,7 +7645,7 @@ none aether_build_module_initializer(aether a, enode init) {
             LLVMBuildStore(B, ts_val, ts_slot);
         }
 
-        e_fn_call(a, fn_push, a(type_id, module_type_id), false);
+        e_fn_call(a, fn_push, a(type_id, module_type_id), false, false);
     }
 
     // polymorphism works now
@@ -8448,7 +8446,7 @@ void aether_e_print_node(aether a, enode n) {
         enode as_cstr = e_create(a, etypeid(cstr), (Au)n);
         enode fmt_node = enode(mod, a, au, etypeid(cstr)->au, loaded, true,
             value, const_cstr(a, "%s", 2));
-        e_fn_call(a, printf_fn, a(fmt_node, as_cstr), false);
+        e_fn_call(a, printf_fn, a(fmt_node, as_cstr), false, false);
         return;
     }
 
@@ -8464,7 +8462,7 @@ void aether_e_print_node(aether a, enode n) {
     verify(fmt, "eprint_node: unsupported type: %o", n);
     enode fmt_node = enode(mod, a, au, etypeid(cstr)->au, loaded, true,
         value, const_cstr(a, fmt, strlen(fmt)));
-    e_fn_call(a, printf_fn, a(fmt_node, n), false);
+    e_fn_call(a, printf_fn, a(fmt_node, n), false, false);
 }
 
 // f = format string; this is evaluated from nodes given at runtime
@@ -8625,7 +8623,7 @@ enode aether_e_cmp(aether a, enode L, enode R) {
         Au_t eq = find_member(L->au, "compare", AU_MEMBER_FUNC, 0, true);
         if (eq) {
             verify(eq->rtype == typeid(i32), "compare function must return i32, found %o", eq->rtype);
-            return e_fn_call(a, (efunc)u(efunc, eq), a(L, R), false);
+            return e_fn_call(a, (efunc)u(efunc, eq), a(L, R), false, false);
         }
 
         LLVMValueRef lt = LLVMBuildICmp(B, LLVMIntULT, L->value, R->value, "cmp_lt");
@@ -9209,7 +9207,7 @@ enode enode_retain(enode mem) {
     a->is_const_op = false;
     if (mdl->au->is_class && !a->no_build) {
         efunc fn_hold = (efunc)u(efunc, find_member(etypeid(Au)->au, "hold", AU_MEMBER_FUNC, 0, true));
-        e_fn_call(a, fn_hold, a(mem), false);
+        e_fn_call(a, fn_hold, a(mem), false, false);
     }
     return mem;
 }
@@ -9221,7 +9219,7 @@ enode enode_emit_release(enode mem) {
     a->is_const_op = false;
     if (mdl->au->is_class && !a->no_build) {
         efunc fn_drop = (efunc)u(efunc, find_member(etypeid(Au)->au, "drop", AU_MEMBER_FUNC, 0, true));
-        e_fn_call(a, fn_drop, a(mem), false);
+        e_fn_call(a, fn_drop, a(mem), false, false);
     }
     return mem;
 }

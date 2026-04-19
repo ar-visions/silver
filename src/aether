@@ -256,7 +256,7 @@ forward(evar)
     M(X, Y, i, method,   public,  enode,                    e_zero, enode) \
     M(X, Y, i, method,   public,  enode,                    e_assign, enode, Au, OPType) \
     M(X, Y, i, method,   public,  none,                     e_assign_if_null, enode, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_fn_call, efunc, array, bool) \
+    M(X, Y, i, method,   public,  enode,                    e_fn_call, efunc, array, bool, bool) \
     M(X, Y, i, method,   public,  enode,                    lambda_fcall, efunc, array) \
     M(X, Y, i, method,   public,  enode,                    e_is, enode, Au) \
     M(X, Y, i, method,   public,  enode,                    e_inherits, enode, Au) \

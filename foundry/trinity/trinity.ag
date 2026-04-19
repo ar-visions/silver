@@ -2379,16 +2379,16 @@ Texture Display
                 last_resize_t = 0.0
         
         for [ r: Render, id: string ] in element_targets
-            r.draw[]
-            r.sync_fence[]
+            r.draw*[]
+            r.sync_fence*[]
         
-        on_compose[]
+        on_compose*[]
 
         for [ r: Render ] in list
-            r.draw[]
-            r.sync_fence[]
+            r.draw*[]
+            r.sync_fence*[]
         
-        on_screen[]
+        on_screen*[]
 
         if [ swap_renders ]
             result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
@@ -4829,15 +4829,15 @@ Render Canvas
         # always run the full cascade so both low/high are populated
         for [ i: i32 0, i <= k_hi, i += 1 ]
             s : Render blur_stages[i]
-            s.update[] s.draw[] s.sync_fence[]
+            s.update*[] s.draw*[] s.sync_fence[]
         bv_lo : Render blur_v_arr[k_lo]
-        bv_lo.update[] bv_lo.draw[] bv_lo.sync_fence[]
+        bv_lo.update*[] bv_lo.draw*[] bv_lo.sync_fence[]
         if [ k_hi != k_lo ]
             bv_hi : Render blur_v_arr[k_hi]
-            bv_hi.update[] bv_hi.draw[] bv_hi.sync_fence[]
+            bv_hi.update*[] bv_hi.draw*[] bv_hi.sync_fence[]
         color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
         bh : Render blur_h_arr[k_lo]
-        bh.update[] bh.draw[] bh.sync_fence[]
+        bh.update*[] bh.draw*[] bh.sync_fence[]
 
     func paint []
 
@@ -5781,7 +5781,7 @@ abstract app media_app
                 next_second  = second
                 frames = 0
             frames += 1
-            render []
+            render*[]
 
         return 0
 
@@ -6041,7 +6041,7 @@ intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ]
     w.mouse.y = y
     w.ev.mouse.pos.x = w.mouse.x
     w.ev.mouse.pos.y = w.mouse.y
-    #w.move_event[ w.ev ]
+    w.move_event[ w.ev ]
 
 
 func get_required_extensions [ vk: vk_context ] 
@@ -6541,7 +6541,8 @@ ielement element
                 ms  : i64 [ cur_millis - ct.start ]
                 p   : f64 [ ct.pos[ f64[ ms ] / f64[ dur ] ] ]
                 if [ ct.type && ct.from && ct.to ]
-                    mixed : mix[ ct.from, ct.to, p ]
+                    from_t : typeid[ ct.from ]
+                    mixed : ct.from.mix*[ ct.to, p ]
                     if [ ct.location ]
                         ct.location = mixed
         for [ ee: element, id: string ] in elements
@@ -6610,12 +6611,20 @@ Display Window
                 mem : Au_t ty.members.origin[m]
                 if [ mem.member_type != AU_MEMBER_VAR || mem.ident == 'elements' ]
                     continue
+                
+                # if property not set on the newly created element, this is a default value (does not apply)
+                is_set   : e.AF_get_member[mem]
+                if [ !is_set ]
+                    continue
+                
+                # when user set, these apply if different
                 from_val : inst.member_object[ mem ]
                 to_val   :    e.member_object[ mem ]
-                if [ to_val && from_val != to_val ]
+                if [ is_set && to_val && from_val != to_val ]
                     if [ from_val.compare[ to_val ] != 0 ]
                         inst.member_set[ mem, to_val ]
                         changed = true
+                
             ty = ty.context
         return changed
 
@@ -6678,7 +6687,7 @@ Display Window
 
                     for [ best : StyleEntry ] in entries
 
-                        if [ best.bl.score[ inst, false ] == 0 ]
+                        if [ best.bl.score[ inst, true ] == 0 ]
                             continue
                         
                         # find layer by name (key), creating a default if not found
@@ -6694,8 +6703,7 @@ Display Window
                        
                         if [ !best.instance ]
                             best.instance = (best.value to layer_member.src)
-                            test2 : rgba [ best.instance ]
-                            test2 = test2
+
                         cur : layer_inst.member_object[ layer_member ]
                         if [ !cur ]
                             cur = best.instance
@@ -6740,32 +6748,37 @@ Display Window
             changed  : bool
             new_inst : false
             restyle  = restyle || e.restyle
+            brand_new : false
 
             if [ instance ]
                 instance.flags &= ~1
                 if [ !instance.id ]
-                    instance.id     = id
-                    instance.ux     = a
-                    instance.parent = parent
-                    instance.init[]
-                    instance.hold_members[]
-                    restyle = true
-                    changed = true
+                    brand_new = true # component within element map
 
-            if [ !instance ]
+            if [ brand_new || !instance ]
                 new_inst         = true
                 restyle          = true
-                instance         = e.hold[]
+                instance         = (instance) ? instance : e.hold[]
                 instance.id      = id
                 instance.ux      = a
                 instance.parent  = parent
-                instance.initialize[]
-                instance.hold_members[]
+
                 if [ !parent.elements ]
                     parent.elements = map element[string] [ ]
-                parent.elements[ id ] = instance
+
+                if [ !brand_new ]
+                    parent.elements[ id ] = instance
+
+                instance.initialize[] # context can be given here
+                instance.hold_members[]
+                changed = true
+            el [ instance.restyle ]
+                instance.restyle = false
                 changed = true
             el [ !restyle ]
+                if [ instance inherits Button ]
+                    test :  2
+                    test += 2
                 changed = apply_args[ instance, e ]
 
             if [ changed ]
@@ -6881,22 +6894,27 @@ Display Window
     public func move_event [ ev: Event ]
         f : element [ find_target[ root, ev, null ] ]
         m : element [ (capture) ? find_target[ root, ev, capture ] : f ]
-        # hover / leave bubble
+        # hover / leave bubble — flip state bools and set restyle; the next
+        # update_element pass picks up restyle and re-applies CSS.
         if [ hovered != f ]
-            if [ hovered ]
-                hovered.restyle = true
-                hovered.hovered = false
+            prev : element [ hovered ]
+            if [ prev ]
+                prev.hovered = false
+                prev.restyle = true
                 leave_consumed : bool [ false ]
-                for [ e: element* hovered, e && !leave_consumed, e = e.parent ]
+                for [ e: element* prev, e && !leave_consumed, e = e.parent ]
                     ev.target = e
                     if [ e.on_leave[ ev ] ] leave_consumed = true
                 if [ !leave_consumed && app_object ]
-                    ev.target = hovered
+                    ev.target = prev
                     app_object.on_leave[ ev ]
             hovered = f
             if [ f ]
-                hovered.restyle = true
-                hovered.hovered = true
+                if [ f inherits Button ]
+                    test :  22
+                    test += 22
+                f.hovered = true
+                f.restyle = true
                 hover_consumed : bool [ false ]
                 for [ e: element* f, e && !hover_consumed, e = e.parent ]
                     ev.target = e
@@ -7104,7 +7122,7 @@ Display Window
         
         compose.save    [ ]
         compose.clear   [ '#80a' ]
-        update_all      [ app_object.on_render[ a ] ]
+        update_all      [ app_object.on_render*[ a ] ]
         animate         [ ]
         draw_element    [ root, CanvasType.compose, null ]
         compose.paint   [ ]
@@ -7131,7 +7149,7 @@ Display Window
 
         screen.save[]
         
-        app_object.on_canvas[ screen ]
+        app_object.on_canvas*[ screen ]
 
         draw_element[ root, CanvasType.screen, null ]
         ##
@@ -7192,7 +7210,7 @@ Display Window
                 cv.paint            [ ]
                 cv.restore          [ ]
 
-            label : (layer.label && layer.label.count > 0) ?? layer.label
+            label : string (layer.label && layer.label.count > 0) ? layer.label : null
             if [ element_text || label ]
                 cv.save[]
                 align  : vec2f [
@@ -7205,7 +7223,7 @@ Display Window
                 cv.draw_text    [ (label) ? label : element_text, b, align, offset, layer.label_overflow ]
                 cv.restore      [ ]
 
-        e.draw[ a ]
+        e.draw*[ a ]
         last_2 : element
         for [ ee: element, id: string ] in e.elements
             cv.save[]
@@ -7334,9 +7352,7 @@ class StyleBlock
         sc : cstr p_sc
         ws[ ref sc ]
         expect sc[0] == '.' || is_alpha2[sc[0]], 'expected Type[.id], or .id'
-        puts 'sc = {sc}'
         quals = parse_qualifiers[ a, ref sc ]
-        puts 'sc = {sc}'
         sc += 1
         ws[ ref sc ]
         while [ sc[0] && sc[0] != '}' ]
@@ -7375,6 +7391,9 @@ class StyleBlock
                 value : object [ null ]
                 ai    : num    [ cb_value.index_of[ '[' ] ]
                 ci    : num    [ cb_value.index_of[ ',' ] ]
+                if [ ci != -1 ]
+                    puts 'ci'
+                    ci = ci
                 if [ ai != -1 && (ci == -1 || ai < ci) ]
                     ae    : num[ cb_value.index_of[ ']' ] ]
                     expect ae != -1, 'expected ] character'
@@ -7394,6 +7413,9 @@ class StyleBlock
                     param = (ci >= 0) ? cb_value.mid[ ci + 1, cb_value.count - (ci + 1) ].trim[] : null
                     value = (ci >= 0) ? cb_value.mid[ 0, ci ].trim[] : cb_value
                 trans : StyleTransition [ (param) ? StyleTransition[ param ] : null ]
+                if [ trans ]
+                    puts 'trans'
+                    trans = trans
                 expect member, 'member cannot be blank'
                 expect value,  'value cannot be blank'
                 entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: a ]
@@ -7420,9 +7442,12 @@ class StyleBlock
                 state_match : bool [ score_state && q.state ]
                 if [ state_match ]
                     expect q.state.count > 0, 'null state'
-                    addr : cur.get_property[ q.state ]
-                    if [ addr ]
-                        state_match = bool[ addr ]
+                    current : Au cur.get_property[ q.state ]
+                    if [ current.cast_bool[ ] ]
+                        state_match = true
+                    el
+                        state_match = false
+                    
                 state_reject : bool [ score_state && q.state && !state_match ]
                 if [ id_reject || type_reject || state_reject ]
                     return 0.0
@@ -7823,6 +7848,18 @@ class Translation
 class TimeCoord
     millis : i64
 
+    construct [ s:string ]
+        if [ s.ends_with['ns'] ]
+            millis = s.integer_value[] / 1000000
+        el [ s.ends_with['ms'] ]
+            millis = s.integer_value[]
+        el [ s.ends_with['sec'] ]
+            millis = s.real_value[] * 1000
+
+    construct [ s:cstr ]
+        str : string[s]
+        construct [ str ]
+    
     construct [ nanoseconds: ns ]
         millis = i64[ nanoseconds ] / 1000000
 
@@ -9131,7 +9168,7 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
     if [ !qstr.count ]
         p[0] = end
         return null
-    quals  : array string [ qstr.split[ ',' ] ]
+    quals  : qstr.split[ ',' ]
     result : array StyleQualifier [ ]
     ops    : array string [ '!=', '>=', '<=', '>', '<', '=' ]
 
@@ -9289,7 +9326,14 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
                 bl.entries[ member ] = StyleEntry [ member: member, value: inner, bl: bl ]
             j = sub_end + 1
             continue
-        bl.entries[ member ] = StyleEntry [ member: member, value: val_str, bl: bl ]
+        # indent parser: split off transition suffix (e.g. "#84a, 444ms") so
+        # `:hovered { fill_color: #84a, 444ms }` populates StyleEntry.trans
+        # the same way the `;`-delimited parser already does.
+        ci2   : num    [ val_str.index_of[ ',' ] ]
+        param : string [ (ci2 >= 0) ? val_str.mid[ ci2 + 1, val_str.count - (ci2 + 1) ].trim[] : null ]
+        value : string [ (ci2 >= 0) ? val_str.mid[ 0, ci2 ].trim[] : val_str ]
+        trans : (param) ? StyleTransition[ param ] : null
+        bl.entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: bl ]
         j += 1
 
 
