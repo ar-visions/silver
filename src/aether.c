@@ -192,10 +192,10 @@ LLVMTypeRef _lltype(etype);
         literal, l, au, au_lookup(stringify(f##b)), \
         loaded, true, value, LLVMConstReal(lltype(elookup(stringify(f##b))), *(f##b*)l))
 
-#define uchar_value(l) \
+#define unichar_value(l) \
     enode(mod, a, \
-        literal, l, au, au_lookup(stringify(uchar)), \
-        loaded, true, value, LLVMConstInt(lltype(elookup(stringify(uchar))), *(uchar*)l, 0))
+        literal, l, au, au_lookup(stringify(unichar)), \
+        loaded, true, value, LLVMConstInt(lltype(elookup(stringify(unichar))), *(unichar*)l, 0))
 
     
 #define value(m,vr) enode(mod, a, value, vr, au, (m)->au, loaded, true)
@@ -1097,11 +1097,15 @@ enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
 
     // normalize operands to common arithmetic type BEFORE any comparison
     // result is always bool, but operands must match each other
-    // enum operands: compare as their underlying integer type (i32)
+    // enum operands: compare as the enum's declared backing type (f32/f64
+    // for `: f32`-style enums, i32 otherwise) — otherwise float enum values
+    // like 0.0/0.5/1.0 all truncate to 0 and comparisons collapse.
     if (is_enum(L) || is_enum(R)) {
-        etype int_type = etypeid(i32);
-        L = e_create(a, int_type, (Au)L);
-        R = e_create(a, int_type, (Au)R);
+        Au_t enum_au = is_enum(L) ? au_arg_type((Au)L) : au_arg_type((Au)R);
+        Au_t back = enum_au ? enum_au->src : null;
+        etype cmp_type = (back && back->is_realistic) ? u(etype, back) : etypeid(i32);
+        L = e_create(a, cmp_type, (Au)L);
+        R = e_create(a, cmp_type, (Au)R);
     } else {
         etype operand_type = determine_rtype(a, OPType__add, (etype)L, (etype)R);
         L = e_create(a, operand_type, (Au)L);
@@ -1539,7 +1543,7 @@ enode e_operand_primitive(aether a, Au op) {
     else if (Au_instance_of(op, typeid(sz)))  return  int_value(64, op); // instanceof is a bit broken here and we could fix the generic; its not working with aliases
     else if (Au_instance_of(op, typeid(f32))) return  f32_value(32, op);
     else if (Au_instance_of(op, typeid(f64))) return  f64_value(64, op);
-    else if (Au_instance_of(op, typeid(uchar))) return  uchar_value(op);
+    else if (Au_instance_of(op, typeid(unichar))) return  unichar_value(op);
     else if (Au_instance_of(op, typeid(symbol))) {
         return enode(mod, a, loaded, true,
             value, const_cstr(a, (cstr)op, strlen((symbol)op)),
@@ -2361,10 +2365,24 @@ etype formatter_type(aether a, cstr input) {
     cstr p = input;
     // skip flags/width/precision
     while (*p && strchr("-+ #0123456789.", *p)) p++;
-    if (strncmp(p, "lld", 3) == 0 || 
+    if (strncmp(p, "lld", 3) == 0 ||
         strncmp(p, "lli", 3) == 0) return etypeid(i64);
     if (strncmp(p, "llu", 3) == 0) return etypeid(u64);
-    
+    if (strncmp(p, "llx", 3) == 0 ||
+        strncmp(p, "llX", 3) == 0) return etypeid(u64);
+
+    // single-l and z modifiers (long / size_t) — u64 on Linux x86-64
+    if (strncmp(p, "ld", 2) == 0 ||
+        strncmp(p, "li", 2) == 0) return etypeid(i64);
+    if (strncmp(p, "lu", 2) == 0) return etypeid(u64);
+    if (strncmp(p, "lx", 2) == 0 ||
+        strncmp(p, "lX", 2) == 0) return etypeid(u64);
+    if (strncmp(p, "zd", 2) == 0 ||
+        strncmp(p, "zi", 2) == 0) return etypeid(i64);
+    if (strncmp(p, "zu", 2) == 0) return etypeid(u64);
+    if (strncmp(p, "zx", 2) == 0 ||
+        strncmp(p, "zX", 2) == 0) return etypeid(u64);
+
     switch (*p) {
         case 'd': case 'i':
                   return etypeid(i32); 
@@ -2746,32 +2764,45 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super) { sequence
                 arg_types[index] = lltype(n);
             } else {
                 Au_t  fn_decl = funcptr ? au_arg_type((Au)fn->au) : fn->au;
-                Au_t  arg_mem = (Au_t) micro_get(&fn_decl->args, i);
-                evar  arg     = (evar) u(evar, arg_mem);
+                // for declared args, coerce to the arg's type. for varargs past
+                // the declared count, arg_mem is null and we pass the argument
+                // through with its own type (vargs have no fixed shape).
+                int   decl_count = fn_decl->args.count;
+                Au_t  arg_mem    = (i < decl_count) ? (Au_t) micro_get(&fn_decl->args, i) : null;
+                evar  arg     = arg_mem ? (evar) u(evar, arg_mem) : null;
                 enode n       = (enode)instanceof(arg_value, enode);
                 if (index == fmt_idx) {
                     Au_t au_str = isa(n->literal);
                     Au fmt = n ? (Au)instanceof(n->literal, const_string) : null;
                     verify(fmt, "formatter functions require literal, constant strings");
                 }
-                etype arg_t   = arg_mem->is_explicit_ref ?
-                    pointer(a, (Au)u(etype, au_arg_type((Au)arg_mem))) :
-                    u(etype, au_arg_type((Au)arg_mem));
-                enode conv    = arg_mem->is_explicit_ref ?
-                    (enode)instanceof(arg_value, enode) :
-                    e_create(a, arg_t, arg_value);
-
-                if (arg_mem && arg_mem->is_inlay) // honor the inlay attribute; 'must pass by value and not just think we are'
-                    conv = enode_value(conv, true);
-
-                // load primitives that are still unloaded (pointer to element)
-                if (!conv->loaded && !arg_mem->is_explicit_ref && !arg_mem->is_pointer &&
-                    is_prim(au_arg_type((Au)arg_mem)))
-                    conv = enode_value(conv, true);
+                enode conv;
+                etype arg_t = null;
+                if (arg_mem) {
+                    arg_t = arg_mem->is_explicit_ref ?
+                        pointer(a, (Au)u(etype, au_arg_type((Au)arg_mem))) :
+                        u(etype, au_arg_type((Au)arg_mem));
+                    conv = arg_mem->is_explicit_ref ?
+                        (enode)instanceof(arg_value, enode) :
+                        e_create(a, arg_t, arg_value);
+                    if (arg_mem->is_inlay)
+                        conv = enode_value(conv, true);
+                    if (!conv->loaded && !arg_mem->is_explicit_ref && !arg_mem->is_pointer &&
+                        is_prim(au_arg_type((Au)arg_mem)))
+                        conv = enode_value(conv, true);
+                } else {
+                    // vararg: pass through; load unloaded primitives so varargs
+                    // get values, not slot pointers.
+                    conv = (enode)instanceof(arg_value, enode);
+                    if (conv && !conv->loaded && is_prim(conv->au))
+                        conv = enode_value(conv, true);
+                    arg_t = (etype)conv->au ? u(etype, conv->au) : null;
+                }
 
                 // load variables that hold a pointer (e.g. local stack array vars):
                 // the function expects a pointer value, but conv->value is the alloca slot
-                if (!conv->loaded && !arg_mem->is_explicit_ref &&
+                bool not_ref = !arg_mem || !arg_mem->is_explicit_ref;
+                if (!conv->loaded && not_ref &&
                     conv->au && conv->au->member_type == AU_MEMBER_VAR &&
                     conv->au->src && (conv->au->src->is_pointer || conv->au->src->elements > 0)) {
                     LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
@@ -2780,7 +2811,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super) { sequence
                 }
 
                 arg_values[index] = conv->value;
-                if (funcptr)
+                if (funcptr && arg_t)
                     arg_types[index] = lltype(arg_t);
             }
             i++;
@@ -3623,8 +3654,9 @@ enode is_set(enode n, evar prop) {
     Au_t au = t->au;
 
     // only Silver user classes have fbits at index 0
-    bool has_fbits = au->is_class && !au->is_system && !au->is_c &&
+    bool has_fbits = au->is_class && !au->is_system && !au->is_c && !au->is_au_native &&
         au->module != typeid(Au)->module;
+
     if (!has_fbits) {
         // no fbits — always return false (default always applies)
         return enode(mod, a, au, etypeid(bool)->au, value,
@@ -3650,8 +3682,9 @@ void mark_set(enode n, u64 mask0, u64 mask1) {
     etype t = canonical((etype)n);
     Au_t au = t->au;
 
-    bool has_fbits = au->is_class && !au->is_system && !au->is_c &&
+    bool has_fbits = au->is_class && !au->is_system && !au->is_c && !au->is_au_native &&
         au->module != typeid(Au)->module;
+    
     if (!has_fbits) return;
 
     LLVMValueRef fbits_struct = LLVMBuildStructGEP2(B, t->lltype, n->value, 0, "fbits");
@@ -4346,7 +4379,18 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                     LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), i, false)
                 };
                 LLVMValueRef gep = LLVMBuildGEP2(B, lltype(mdl), alloc, idx, 2, "c_arr_elem");
-                LLVMBuildStore(B, val->value, gep);
+                // for struct element types, val->value is an alloca pointer —
+                // memcpy the bytes through. a plain `store ptr` would write
+                // the 8-byte alloca address into a 12+ byte struct slot and
+                // downstream memcpy would pull garbage (VkOffset3D offsets
+                // ending up as stack addresses was the triggering case).
+                if (is_struct(elem_type) && !val->loaded) {
+                    u64 sz = LLVMABISizeOfType(a->target_data, elem_lltype);
+                    LLVMBuildMemCpy(B, gep, 0, val->value, 0,
+                        LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), sz, 0));
+                } else {
+                    LLVMBuildStore(B, val->value, gep);
+                }
             }
             res = enode(mod, a, value, alloc, loaded, false, au, mdl->au);
             return res;
@@ -4675,6 +4719,49 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
 
     // Return some enode or result if necessary (a.g., a enode indicating the overall structure)
     return enode(mod, mod, loaded, true, au, rmdl->au, value, phi_node);
+}
+
+enode aether_e_coalesce_deferred(aether a, enode cond_expr, array true_tokens, subprocedure expr_builder) {
+    // (cond) ?? expr — short-circuit: if cond is non-null, return expr; else
+    // return the zero/null of typeof(expr). The true branch is evaluated INSIDE
+    // the then_block so a null cond doesn't trigger a null-dereference.
+    if (a->no_build) {
+        enode true_node = (enode)invoke(expr_builder, (Au)true_tokens);
+        return e_noop(a, (etype)true_node);
+    }
+
+    LLVMBasicBlockRef current_block = LLVMGetInsertBlock(B);
+    LLVMValueRef      pb         = LLVMGetBasicBlockParent(current_block);
+    LLVMBasicBlockRef then_block  = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "coalesce_then");
+    LLVMBasicBlockRef else_block  = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "coalesce_else");
+    LLVMBasicBlockRef merge_block = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "coalesce_merge");
+
+    // branch on cond != null (works for pointers and primitives)
+    LLVMValueRef condition_value = cond_expr->value;
+    condition_value = LLVMBuildICmp(B, LLVMIntNE,
+        condition_value, LLVMConstNull(LLVMTypeOf(condition_value)), "coalesce.nonnull");
+    LLVMBuildCondBr(B, condition_value, then_block, else_block);
+
+    // then block: parse + codegen true expression inside the guarded branch
+    LLVMPositionBuilderAtEnd(B, then_block);
+    enode true_node = (enode)invoke(expr_builder, (Au)true_tokens);
+    LLVMValueRef true_value = true_node->value;
+    LLVMBasicBlockRef true_final = LLVMGetInsertBlock(B);
+    LLVMBuildBr(B, merge_block);
+
+    // else block: zero/null of the true expression's type
+    LLVMPositionBuilderAtEnd(B, else_block);
+    LLVMValueRef false_value = LLVMConstNull(LLVMTypeOf(true_value));
+    LLVMBasicBlockRef false_final = LLVMGetInsertBlock(B);
+    LLVMBuildBr(B, merge_block);
+
+    // merge with phi
+    LLVMPositionBuilderAtEnd(B, merge_block);
+    LLVMValueRef phi_node = LLVMBuildPhi(B, LLVMTypeOf(true_value), "coalesce_result");
+    LLVMAddIncoming(phi_node, &true_value,  &true_final,  1);
+    LLVMAddIncoming(phi_node, &false_value, &false_final, 1);
+
+    return enode(mod, a, loaded, true, au, true_node->au, value, phi_node);
 }
 
 enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, array false_tokens, subprocedure expr_builder) {
@@ -5447,9 +5534,9 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
     etype F = canonical(expr);
     etype T = canonical(rtype);
 
-    // uchar literal → string: synthesize const_string at compile time from
+    // unichar literal → string: synthesize const_string at compile time from
     // the known codepoint. avoids the Au_cast_string runtime path.
-    if (expr->literal && isa(expr->literal) == typeid(uchar) &&
+    if (expr->literal && isa(expr->literal) == typeid(unichar) &&
         (T->au == typeid(string) || T->au == typeid(cstr) || T->au == typeid(symbol))) {
         extern string unicode_char(i32);
         i32 ch = *(i32*)expr->literal;
@@ -6241,7 +6328,7 @@ none etype_init(etype t) {
         t->lltype = LLVMInt8TypeInContext(a->module_ctx);
     else if (au == typeid(i16) || au == typeid(u16))
         t->lltype = LLVMInt16TypeInContext(a->module_ctx);
-    else if (au == typeid(i32) || au == typeid(u32) || au == typeid(AFlag) || au == typeid(uchar))
+    else if (au == typeid(i32) || au == typeid(u32) || au == typeid(AFlag) || au == typeid(unichar))
         t->lltype = LLVMInt32TypeInContext(a->module_ctx);
     else if (au == typeid(i64) || au == typeid(u64) || au == typeid(num))
         t->lltype = LLVMInt64TypeInContext(a->module_ctx);
@@ -6602,8 +6689,9 @@ none etype_implement(etype t, bool w) { sequencer
         }
 
         // Silver classes get a per-class fbits struct as first member
-        bool has_fbits = is_class(t) && !au->is_system && !au->is_c &&
+        bool has_fbits = is_class(t) && !au->is_system && !au->is_c && !au->is_au_native &&
             au->module != typeid(Au)->module;
+
         LLVMTypeRef fbits_type = null;
         if (has_fbits) {
             count += 1; // one fbits struct element
@@ -6618,6 +6706,7 @@ none etype_implement(etype t, bool w) { sequencer
         LLVMTypeRef* struct_members = calloc(count + 2, sizeof(LLVMTypeRef));
         LLVMTypeRef largest = null;
         int ilargest = 0;
+        unsigned union_align = 1; // track max alignment of union members
 
         if (has_fbits) {
             struct_members[0] = fbits_type;
@@ -6740,9 +6829,17 @@ none etype_implement(etype t, bool w) { sequencer
                         }
                         verify(abi_member, "type has no size: %s.%s", au->ident, m->ident);
                         m->typesize = abi_member;
-                        if (au->is_union && abi_member > ilargest) {
-                            largest  = struct_members[index];
-                            ilargest = abi_member;
+                        if (au->is_union) {
+                            unsigned mem_align = LLVMABIAlignmentOfType(a->target_data, struct_members[index]);
+                            if (abi_member > ilargest) {
+                                largest  = struct_members[index];
+                                ilargest = abi_member;
+                            }
+                            if (mem_align > union_align)
+                                union_align = mem_align;
+                            if (au->ident && strcmp(au->ident, "v4l2_format") == 0)
+                                printf("v4l2_format union member %s size=%d align=%u\n",
+                                    m->ident ? m->ident : "?", abi_member, mem_align);
                         }
                         m->index = au->is_union ? 0 : index;
                         index++;
@@ -6789,13 +6886,31 @@ none etype_implement(etype t, bool w) { sequencer
 
         if (au->is_union) {
             count = 1;
-            struct_members[0] = largest;
+            // round union size up to union_align and build body as an array of
+            // integers of width=union_align bytes so LLVM picks up the correct
+            // alignment. the raw [N x u8] representation has align=1 which
+            // causes containing structs (e.g. v4l2_format with a pointer-holding
+            // member) to miscompute sizeof vs the C kernel ABI.
+            int padded = (ilargest + (int)union_align - 1) & ~((int)union_align - 1);
+            int elem_bits = (int)union_align * 8;
+            LLVMTypeRef elem  = LLVMIntTypeInContext(a->module_ctx, elem_bits);
+            struct_members[0] = LLVMArrayType(elem, padded / (int)union_align);
+            if (au->ident && strcmp(au->ident, "v4l2_format") == 0)
+                printf("v4l2_format union: ilargest=%d union_align=%u padded=%d body=[%d x i%d]\n",
+                    ilargest, union_align, padded, padded / (int)union_align, elem_bits);
         }
 
         if (t->au->ident && strcmp(t->au->ident, "mat4f") == 0) {
             t = t;
         }
         LLVMStructSetBody(t->lltype, struct_members, count, au->is_c ? 0 : 1);
+
+        if (au->ident && strcmp(au->ident, "v4l2_format") == 0) {
+            unsigned final_size  = LLVMABISizeOfType(a->target_data, t->lltype);
+            unsigned final_align = LLVMABIAlignmentOfType(a->target_data, t->lltype);
+            printf("v4l2_format final: size=%u align=%u count=%d\n",
+                final_size, final_align, count);
+        }
 
         // assign byte offsets to members so reflection (JSON parser, hold_members)
         // can do raw pointer arithmetic via mem->offset

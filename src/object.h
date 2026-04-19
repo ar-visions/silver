@@ -89,6 +89,7 @@ typedef enum AU_MEMBER AFlag;
 #define AU_TRAIT_IS_ATTRIB   ((int64_t) 1 << 56)
 #define AU_TRAIT_UNMANAGED   ((int64_t) 1 << 57)
 #define AU_TRAIT_SHAPED      ((int64_t) 1 << 58)
+#define AU_TRAIT_IS_AU_NATIVE ((int64_t) 1 << 59)
 
 typedef bool(*global_init_fn)();
 
@@ -255,6 +256,7 @@ typedef struct _Au_t {
             u64 is_attrib    : 1;
             u64 is_unmanaged : 1;
             u64 is_shaped    : 1;
+            u64 is_au_native : 1;
         };
         u64 traits;
     };
