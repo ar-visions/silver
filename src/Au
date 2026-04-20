@@ -1817,6 +1817,7 @@ static inline f32 f32_mix(f32 a, f32 b, f32 f) {
 /// use i_struct_ctr for structs.. this is because we cannot separate * from the token
 #define vec_methods(O, Y, T, ...) \
     i_struct_ctr(O,Y, floats_t) \
+    i_struct_ctr(O,Y, string) \
     i_struct_method(O, Y, T,      length) \
     i_struct_method_1(O, Y, O,    add,       O) \
     i_struct_method_1(O, Y, O,    sub,       O) \
