@@ -1158,15 +1158,30 @@ enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
 
     // 3. Class → null check is pointer compare, otherwise use compare() method
     if (is_class(L) || is_class(R)) {
+        if (!is_class(L)) {
+            enode tmp = L; L = R; R = tmp;
+        }
+
+        // for == / != : use pointer identity (icmp) unless L declares its
+        // OWN compare (context below Au) OR L is typeid(Au) itself (generic
+        // operand, can't prove no-override at compile time). find_member
+        // with search_inherited=true may surface Au.compare even when the
+        // class doesn't override it, so check the member's context to tell
+        // "truly owned" from "merely inherited".
         bool L_null = LLVMIsNull(L->value);
         bool R_null = LLVMIsNull(R->value);
+        if (L_null || R_null || optype == OPType__equal || optype == OPType__not_equal) {
+            Au_t own_cmp = find_member(L->au, "compare", AU_MEMBER_FUNC, 0, true);
+            bool has_own = own_cmp && own_cmp->context != typeid(Au);
+            if (L_null || R_null || !has_own || own_cmp->context == typeid(Au)) {
+                return value(bool_t,
+                    LLVMBuildICmp(B, cmp->ui_pred, L->value, R->value, N));
+            }
+        }
+
         if (L_null || R_null) {
             return value(bool_t,
                 LLVMBuildICmp(B, cmp->ui_pred, L->value, R->value, N));
-        }
-
-        if (!is_class(L)) {
-            enode tmp = L; L = R; R = tmp;
         }
 
         Au_t fn = find_member(L->au, "compare", AU_MEMBER_FUNC, 0, true);
@@ -2650,7 +2665,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
 
     bool extra_qualifiers = !fn->is_super && !is_super && fn->au->access_type != interface_intern &&
         (is_abstract || (((!a->direct && first_arg) || (first_arg && first_arg->is_any)) && !first_is_alloc &&
-         fn->au->context != typeid(Au) && fn->au->is_imethod && !funcptr &&
+         fn->au->is_imethod && !funcptr &&
          !(target_type && target_type->target && target_type->target->avoid_ftable))) &&
          (!target_type || (!is_struct((Au)target_type->au->src) && !is_struct((Au)target_type)));
         

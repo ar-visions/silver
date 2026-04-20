@@ -15,6 +15,24 @@
         else \
             memset(a, 0, sizeof(T) * C); \
     } \
+    none N##_with_string(N* a, string f) { \
+        T* out = (T*)a; \
+        int i = 0; \
+        if (f && f->chars) { \
+            char* s = (char*)f->chars; \
+            char* e = NULL; \
+            while (i < C && *s) { \
+                while (*s && !(*s == '-' || *s == '+' || *s == '.' || \
+                    (*s >= '0' && *s <= '9'))) s++; \
+                if (!*s) break; \
+                double v = strtod(s, &e); \
+                if (e == s) break; \
+                out[i++] = (T)v; \
+                s = e; \
+            } \
+        } \
+        while (i < C) out[i++] = (T)0; \
+    } \
     N N##_scale(N* a, f32 n) { \
         N res = *a; \
         T* src = (T*)a, *f = (T*)&res.x; \
@@ -201,12 +219,13 @@ rgba rgba_with_string(rgba a, string s) {
     return rgba_with_cstr(a, s->chars);
 }
 
-rgba rgba_mix(rgba a, rgba b, f32 f) {
+rgba rgba_mix(rgba a, rgba b, f64 f) {
+    f32 t = (f32)f;
     return rgba(
-        r, a->r * (1.0f - f) + b->r * f,
-        g, a->g * (1.0f - f) + b->g * f,
-        b, a->r * (1.0f - f) + b->b * f,
-        a, a->a * (1.0f - f) + b->a * f);
+        r, a->r * (1.0f - t) + b->r * t,
+        g, a->g * (1.0f - t) + b->g * t,
+        b, a->b * (1.0f - t) + b->b * t,
+        a, a->a * (1.0f - t) + b->a * t);
 }
 
 define_class(rgba, Au)

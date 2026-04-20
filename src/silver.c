@@ -1121,8 +1121,9 @@ void silver_init(silver a) {
     } else
         defs_hash = string("");
 
-#if defined(__SANITIZE_ADDRESS__) || defined(__has_feature) && __has_feature(address_sanitizer)
-    a->asan         = true;
+//#if defined(__SANITIZE_ADDRESS__) || defined(__has_feature) && __has_feature(address_sanitizer)
+#ifndef NDEBUG
+    //a->asan         = true;
 #endif
     a->exports      = map(hsize, 16);
     a->build_dir    = f(path, "%o/%s", a->install, a->debug ? "debug" : "release");
