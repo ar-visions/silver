@@ -1,0 +1,41 @@
+GalleryDock
+	layers.body:
+		ctype: compose
+		fill_color: #06080c
+		radius: 28
+	layers.title:
+		ctype: screen
+		area: l0 t0 r0 h72
+		label_color: #f7fbff
+		label_size: 30
+
+GalleryCard
+	layers.frame:
+		ctype: compose
+		fill_color: #0d1117
+		stroke_color: #263241
+		stroke_width: 1
+		radius: 22
+	layers.title:
+		ctype: screen
+		area: l0 b46 r0 h46
+		label_color: #edf3fb
+		label_size: 18
+
+GalleryCard:hovered
+	layers.frame:
+		fill_color: #121823, 160ms
+		stroke_color: #3a4e67, 160ms
+
+GalleryEmpty
+	layers.body:
+		ctype: compose
+		fill_color: #0d1117
+		stroke_color: #263241
+		stroke_width: 1
+		radius: 22
+	layers.title:
+		ctype: screen
+		area: l0 t0 r0 b0
+		label_color: #edf3fb
+		label_size: 18

@@ -1,0 +1,157 @@
+import trinity
+
+intern func gallery_model_paths [] -> array path
+    local_root    : path [ 'models' ]
+    fallback_root : path [ '../trinity/models' ]
+    roots         : array path [ local_root, fallback_root ]
+
+    for [ i: i32 0, i < roots.count, i += 1 ]
+        root  : path       [ roots[i] ]
+        paths : array path [ ]
+
+        if [ !root.exists[] || !root.is_dir[] ]
+            continue
+
+        paths = root.ls[ '.gltf', false ]
+        if [ paths.count ]
+            return paths
+
+    return array path [ ]
+
+
+World GalleryPreview
+    public  source      : path
+    mutable scene       : GltfModel
+    mutable shader      : PBR
+
+    func load [ w: Window ]
+        if [ !source ]
+            return
+
+        if [ !scene ]
+            eye          : vec3f [ 1.8, 1.3, 2.6 ]
+            center       : vec3f [ 0.0, 0.25, 0.0 ]
+            up           : vec3f [ 0.0, 1.0, 0.0 ]
+            aspect       : f32   [ (bounds && bounds.h > 0.0) ? bounds.w / bounds.h : 1.0 ]
+            preview_name : string[ source.filename[] ]
+
+            scene        = GltfModel [ source.load[ typeid[ GltfModel ], null ] ]
+            shader       = PBR [ vk: w.vk, name: preview_name ]
+            shader.pos   = vec4f [ eye.x, eye.y, eye.z, 1.0 ]
+            shader.view  = mat4f.look_at[ eye, center, up ]
+            shader.proj  = mat4f.perspective[ radians[ 32.0 ], aspect, 0.1, 32.0 ]
+            clear_color  = vec4f [ 0.04, 0.05, 0.07, 1.0 ]
+            rotate       = array Rotation [ Rotation [ vec4f [ 0.0, 1.0, 0.0, 28.0 ] ] ]
+            scale        = array Scaling  [ Scaling  [ vec3f [ 0.9, 0.9, 0.9 ] ] ]
+            models       = array Model    [ Model [ vk: w.vk, w: w, id: scene, s: shader ] ]
+
+        if [ shader ]
+            eye    : vec3f [ 1.8, 1.3, 2.6 ]
+            center : vec3f [ 0.0, 0.25, 0.0 ]
+            up     : vec3f [ 0.0, 1.0, 0.0 ]
+            aspect : f32   [ (bounds && bounds.h > 0.0) ? bounds.w / bounds.h : 1.0 ]
+
+            shader.pos  = vec4f [ eye.x, eye.y, eye.z, 1.0 ]
+            shader.view = mat4f.look_at[ eye, center, up ]
+            shader.proj = mat4f.perspective[ radians[ 32.0 ], aspect, 0.1, 32.0 ]
+
+        if [ !target ]
+            width  : int [ ((bounds) ? bounds.w : w.width) * render_scale ]
+            height : int [ ((bounds) ? bounds.h : w.height) * render_scale ]
+
+            target = Render [
+                vk:          w.vk,
+                w:           w,
+                width:       width,
+                height:      height,
+                reduce:      (render_scale == 4.0) ? true : false,
+                use_depth:   true,
+                clear_color: clear_color,
+                models:      models
+            ]
+            w.element_targets[id] = target
+        el
+            target.models      = models
+            target.clear_color = clear_color
+
+
+Button GalleryCard
+    public source : path
+
+    func init []
+        if [ !label ]
+            label = source.stem[]
+
+    func render [] -> Elements
+        return Elements [
+            'preview': GalleryPreview [
+                area:   Region [ 'l14 t14 r14 b60' ],
+                source: source
+            ]
+        ]
+
+
+Group GalleryEmpty
+    func init []
+        if [ !label ]
+            label = 'No .gltf models found in gallery/models or trinity/models'
+
+
+Group GalleryDock
+    public sources     : array path
+    public title       : string
+    public padding     : f32 24.0
+    public gap         : f32 24.0
+    public columns     : i32 4
+    public card_width  : f32 280.0
+    public card_height : f32 320.0
+
+    func init []
+        if [ !title ]
+            title = 'Gallery'
+        if [ !label ]
+            label = title
+
+    func render [] -> Elements
+        cards    : Elements [ ]
+        title_h  : f32      72.0
+
+        if [ !sources || !sources.count ]
+            cards['empty'] = GalleryEmpty [
+                area: Region [ 'l24 t88 w420 h120' ]
+            ]
+            return cards
+
+        for [ i: i32 0, i < sources.count, i += 1 ]
+            model_path : path   [ sources[i] ]
+            col        : i32    [ i % columns ]
+            row        : i32    [ i / columns ]
+            x          : f32    [ padding + col * (card_width  + gap) ]
+            y          : f32    [ padding + title_h + row * (card_height + gap) ]
+            item_id    : string [ '{i}_{model_path.stem[]}' ]
+            item_area  : string [ 'l{x} t{y} w{card_width} h{card_height}' ]
+
+            cards[item_id] = GalleryCard [
+                area:   Region [ item_area ],
+                source: model_path
+            ]
+
+        return cards
+
+
+media_app Gallery
+    public model_paths : array path
+
+    func init []
+        width       = 1520
+        height      = 960
+        model_paths = gallery_model_paths[]
+
+    public func on_render [ w: Window ] -> Elements
+        return Elements [
+            'dock': GalleryDock [
+                area:    Region [ 'l24 t24 r24 b24' ],
+                title:   'Gallery',
+                sources: model_paths
+            ]
+        ]

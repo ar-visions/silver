@@ -11,11 +11,19 @@ import <stdlib.h>
 import <math.h>
 import <vk_mem_alloc.h>
 import <sys/stat.h>
-import <sys/ioctl.h>
-import <sys/mman.h>
-import <fcntl.h>
-import <unistd.h>
-import <linux/videodev2.h>
+
+ifdef [ linux ]
+	import <sys/ioctl.h>
+	import <sys/mman.h>
+	import <fcntl.h>
+	import <unistd.h>
+	import <linux/videodev2.h>
+
+ifdef [ apple ]
+	import Foundation.framework
+	import AVFoundation.framework
+	import CoreMedia.framework
+	import CoreVideo.framework
 
 export 0.1.0
 export VK_LAYER_PATH: '{install}/share/vulkan/explicit_layer.d'
@@ -627,8 +635,13 @@ class vk_context
 
         ext2 : symbol extensions[0].extensionName
         printf[ "res2 = %i, ext2 = %s\n", res2, ext2 ]
-        swapchain_supported: bool false
-        swapchain_ext : symbol VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        swapchain_supported   : bool false
+        portability_supported : bool false
+        ext_mem_supported     : bool false
+        ext_mem_fd_supported  : bool false
+        dmabuf_supported      : bool false
+        drm_mod_supported     : bool false
+        swapchain_ext         : symbol VK_KHR_SWAPCHAIN_EXTENSION_NAME
         for [ i: u32 0, i < ext_count, i += 1 ]
             ext : extensions[i].extensionName
             device_exts.push[ ext ]
@@ -636,15 +649,39 @@ class vk_context
             if [ strcmp[ ext, VK_KHR_SWAPCHAIN_EXTENSION_NAME ] == 0 ]
                 printf [ "supported swapchain: %s\n", ext ]
                 swapchain_supported = true
+            if [ strcmp[ ext, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME ] == 0 ]
+                ext_mem_supported = true
+            if [ strcmp[ ext, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME ] == 0 ]
+                ext_mem_fd_supported = true
+            if [ strcmp[ ext, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME ] == 0 ]
+                dmabuf_supported = true
+            if [ strcmp[ ext, VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME ] == 0 ]
+                drm_mod_supported = true
+            if [ strcmp[ ext, "VK_KHR_portability_subset" ] == 0 ]
+                portability_supported = true
         expect swapchain_supported, "VK_KHR_swapchain not supported by physical device"
 
-        # device-level extensions required for DMA-BUF import (Camera):
-        enabled_dev_exts : new symbol [ 5 ]
-        enabled_dev_exts[0] = VK_KHR_SWAPCHAIN_EXTENSION_NAME
-        enabled_dev_exts[1] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME
-        enabled_dev_exts[2] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME
-        enabled_dev_exts[3] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME
-        enabled_dev_exts[4] = VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME
+        enabled_dev_exts  : new symbol [ 6 ]
+        enabled_ext_count : u32 0
+        enabled_dev_exts[ enabled_ext_count ] = VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        enabled_ext_count += 1
+
+        ifdef [ linux ]
+            if [ ext_mem_supported && ext_mem_fd_supported && dmabuf_supported ]
+                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME
+                enabled_ext_count += 1
+                enabled_dev_exts[ enabled_ext_count ] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME
+                enabled_ext_count += 1
+                enabled_dev_exts[ enabled_ext_count ] = VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME
+                enabled_ext_count += 1
+                if [ drm_mod_supported ]
+                    enabled_dev_exts[ enabled_ext_count ] = VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME
+                    enabled_ext_count += 1
+
+        ifdef [ apple ]
+            if [ portability_supported ]
+                enabled_dev_exts[ enabled_ext_count ] = "VK_KHR_portability_subset"
+                enabled_ext_count += 1
 
         # query device features
         buffer_addr_features: VkPhysicalDeviceBufferDeviceAddressFeatures [
@@ -669,15 +706,16 @@ class vk_context
                 queueCount:          1,
                 pQueuePriorities:    ref queue_priority
             ],
-            enabledExtensionCount:   5,
+            enabledExtensionCount:   enabled_ext_count,
             ppEnabledExtensionNames: enabled_dev_exts
         ], null, ref device ]
         
         expect result == VK_SUCCESS, "cannot create logical device"
         queue_family_index = -1
 
-        # load extension function pointer for dmabuf import
-        _vkGetMemoryFdPropertiesKHR = vkGetDeviceProcAddr[ device, "vkGetMemoryFdPropertiesKHR" ]
+        ifdef [ linux ]
+            if [ ext_mem_supported && ext_mem_fd_supported && dmabuf_supported ]
+                _vkGetMemoryFdPropertiesKHR = vkGetDeviceProcAddr[ device, "vkGetMemoryFdPropertiesKHR" ]
 
         # query memory properties for find_memory_type
         vkGetPhysicalDeviceMemoryProperties[ physical_device, ref props ]
@@ -6501,15 +6539,15 @@ ielement element
     # input event hooks. return true to swallow; false to let the window
     # continue to the app-level handler. both element and the app get a
     # chance at each event: element first, then app_object.
-    public func on_click   [ ev: Event ] -> bool  return false
-    public func on_press   [ ev: Event ] -> bool  return false
-    public func on_release [ ev: Event ] -> bool  return false
-    public func on_hover   [ ev: Event ] -> bool  return false
-    public func on_leave   [ ev: Event ] -> bool  return false
-    public func on_move    [ ev: Event ] -> bool  return false
-    public func on_wheel   [ ev: Event ] -> bool  return false
-    public func on_key     [ ev: Event ] -> bool  return false
-    public func on_char    [ ev: Event ] -> bool  return false
+    public func on_click   [ ev: Event ] return
+    public func on_press   [ ev: Event ] return
+    public func on_release [ ev: Event ] return
+    public func on_hover   [ ev: Event ] return
+    public func on_leave   [ ev: Event ] return
+    public func on_move    [ ev: Event ] return
+    public func on_wheel   [ ev: Event ] return
+    public func on_key     [ ev: Event ] return
+    public func on_char    [ ev: Event ] return
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
     intern transitions  : map StyleTransition[Au_t]
@@ -6955,8 +6993,8 @@ Display Window
             move_consumed : bool [ false ]
             for [ e: element* m, e && !move_consumed, e = e.parent ]
                 ev.target = e
-                if [ e.on_move[ ev ] ] move_consumed = true
-            if [ !move_consumed && app_object ]
+                e.on_move[ ev ]
+            if [ !ev.no_propagation && app_object ]
                 ev.target = m
                 app_object.on_move[ ev ]
 
@@ -6965,8 +7003,8 @@ Display Window
         consumed_w : bool [ false ]
         for [ e: element* target_el, e && !consumed_w, e = e.parent ]
             ev.target = e
-            if [ e.on_wheel[ ev ] || ev.no_propagation ] consumed_w = true
-        if [ !consumed_w && app_object ]
+            e.on_wheel[ ev ]
+        if [ !ev.no_propagation && app_object ]
             ev.target = target_el
             app_object.on_wheel[ ev ]
         # window default: scroll focused/target element (no-op hook for now)
@@ -6977,14 +7015,16 @@ Display Window
         # element bubble. element* gives poly dispatch so subclasses
         # (Button, CameraView, ...) see their own on_press override.
         consumed_p : bool [ false ]
-        for [ e: element* f, e && !consumed_p, e = e.parent ]
+        for [ e: element* f, e, e = e.parent ]
             cl : typeid[e]
             ev.target = e
-            if [ e.on_press[ ev ] ] consumed_p = true
+            e.on_press[ ev ]
+            if [ ev.no_propagation ]
+                break
         
         au : typeid[ f ]
         # app
-        if [ !consumed_p && app_object ]
+        if [ !ev.no_propagation && app_object ]
             ev.target = f
             app_object.on_press[ ev ]
         # window defaults: focus transfer on left button (only focusable
@@ -7022,11 +7062,12 @@ Display Window
                 f.restyle = true
                 f.pressed = false
             if [ f && action_pressed == f && f.hovered ]
-                consumed_c : bool [ false ]
-                for [ e: element* f, e && !consumed_c, e = e.parent ]
+                for [ e: element* f, e, e = e.parent ]
                     ev.target = e
-                    if [ e.on_click[ ev ] ] consumed_c = true
-                if [ !consumed_c && app_object ]
+                    e.on_click[ ev ]
+                    if [ ev.no_propagation ]
+                        break
+                if [ !ev.no_propagation && app_object ]
                     ev.target = f
                     app_object.on_click[ ev ]
             action_pressed  = null
@@ -7299,17 +7340,17 @@ abstract media_app trinity
     # ev.target is the element the event was dispatched to (null if none).
     # elements get these virtuals first (they can intercept); if the element
     # returns false or there's no target, the app sees it here.
-    public func on_click   [ ev: Event ] -> bool  return false
-    public func on_press   [ ev: Event ] -> bool  return false
-    public func on_release [ ev: Event ] -> bool  return false
-    public func on_hover   [ ev: Event ] -> bool  return false
-    public func on_leave   [ ev: Event ] -> bool  return false
-    public func on_move    [ ev: Event ] -> bool  return false
-    public func on_wheel   [ ev: Event ] -> bool  return false
-    public func on_key     [ ev: Event ] -> bool  return false
-    public func on_char    [ ev: Event ] -> bool  return false
+    public func on_click   [ ev: Event ] return
+    public func on_press   [ ev: Event ] return
+    public func on_release [ ev: Event ] return
+    public func on_hover   [ ev: Event ] return
+    public func on_leave   [ ev: Event ] return
+    public func on_move    [ ev: Event ] return
+    public func on_wheel   [ ev: Event ] return
+    public func on_key     [ ev: Event ] return
+    public func on_char    [ ev: Event ] return
 
-    public func on_render [ w: Window ] -> Elements
+    public func on_render  [ w: Window ] -> Elements
         return Elements [
             "root": element [
                 elements: [
@@ -7319,12 +7360,9 @@ abstract media_app trinity
             ]
         ]
 
-    func init[]
-        no-op
-
-    func load_scene [] return
+    func init         [] return
+    func load_scene   [] return
     func update_scene [] return
-
          
     func run[] -> i32
         type : typeid[a]
@@ -7333,30 +7371,10 @@ abstract media_app trinity
         expect window.vk, "context didnt work"
 
         w = window
-        w.update*[]
-        render*[]
+        w.update *[]
+        render   *[]
         w.resize[w.width, w.height]
         return super.run[]
-
-##
-    func render[]
-        elements : on_render[ w ]
-
-        if [ elements ]
-            w.update_all[ elements ]
-
-        w.animate[]
-        if [ w.compose && w.colorize && w.glyph ]
-            w.compose .clear [ '#000' ]
-            w.colorize.clear [ '#000' ]
-            w.glyph   .clear [ '#000' ]
-        
-        w.overlay.clear[ '#0000' ]
-        w.draw_element [ w.ux.root ]
-        w.draw[]
-##
-
-    mutable angle : f32
 
     # 22
     func render[]
@@ -8290,115 +8308,46 @@ Group Toolbar
 
 
 class Camera
-    mutable vk         : vk_context
-    mutable w          : Display
-    public  device     : string '/dev/video6'
-    public  width      : i32    340
-    public  height     : i32    340
-    public  buffer_count : i32  3
-    public  cpu_upload : bool   true   # CPU memcpy → staging → image (reliable).
-                                       # false = import dmabuf as VkBuffer (zero-copy but NVIDIA issues).
+    mutable vk            : vk_context
+    mutable w             : Display
+    public  device        : string '/dev/video6'
+    public  width         : i32    340
+    public  height        : i32    340
+    public  buffer_count  : i32    3
+    public  cpu_upload    : bool   true   # CPU memcpy → staging → image (reliable).
+                                          # false = import dmabuf as VkBuffer (zero-copy but NVIDIA issues).
 
-    intern  fd         : i32    -1
-    intern  cam_bufs   : ref VkBuffer        # ring of dmabuf-imported buffers (cpu_upload=false)
-    intern  cam_mem    : ref VkDeviceMemory  # imported memory per buffer    (cpu_upload=false)
-    intern  staging_buf: VkBuffer            # single persistent staging buffer (cpu_upload=true)
-    intern  staging_mem: VkDeviceMemory
-    intern  staging_ptr: ref u8              # mapped pointer into staging
-    intern  mm_ptrs    : ref handle          # mmap'd CPU pointer per buffer (brightness sampling)
-    intern  mm_sizes   : ref u32
-    intern  cam_image  : VkImage             # GPU-aligned image target (NVIDIA demands row pad)
+    intern  backend       : handle
+    intern  fd            : i32    -1
+    intern  cam_bufs      : ref VkBuffer        # ring of dmabuf-imported buffers (cpu_upload=false)
+    intern  cam_mem       : ref VkDeviceMemory  # imported memory per buffer    (cpu_upload=false)
+    intern  staging_buf   : VkBuffer            # single persistent staging buffer (cpu_upload=true)
+    intern  staging_mem   : VkDeviceMemory
+    intern  staging_ptr   : ref u8              # mapped pointer into staging
+    intern  mm_ptrs       : ref handle          # mmap'd CPU pointer per buffer (brightness sampling)
+    intern  mm_sizes      : ref u32
+    intern  cam_image     : VkImage             # GPU-aligned image target (NVIDIA demands row pad)
     intern  cam_image_mem : VkDeviceMemory
-    intern  current_idx: i32    0
-    intern  prev_idx   : i32   -1
-    intern  prev_bright: u64    0
-    intern  row_pitch  : u32    0            # bytesperline from v4l2_pix_format
-    intern  dump_count : i32    0            # frames seen, for warmup delay before test dump
-    intern  best_sum   : u64    0            # peak brightness seen so far
-    intern  best_bytes : ref u8              # copy of brightest frame seen
+    intern  current_idx   : i32    0
+    intern  prev_idx      : i32   -1
+    intern  prev_bright   : u64    0
+    intern  row_pitch     : u32    0         # bytesperline from v4l2_pix_format
+    intern  dump_count    : i32    0         # frames seen, for warmup delay before test dump
+    intern  best_sum      : u64    0         # peak brightness seen so far
+    intern  best_bytes    : ref u8           # copy of brightest frame seen
 
     # camera output texture — latest frame is blitted into this image.
-    public  image      : Texture
-    public  src_rect   : rect
+    public  image         : Texture
+    public  src_rect      : rect
 
-    func init []
-        fd = open[ device.chars, O_RDWR | O_NONBLOCK ]
-        expect fd >= 0, 'camera: failed to open {device}'
-        printf[ "sizeof v4l2_buffer silver=%u vs kernel=88\n", sizeof[v4l2_buffer] ]
+    ifdef [ apple ]
+        intern func backend_init []
+        intern func backend_copy [ dst: ref u8, dst_bytes: u32 ] -> bool
+        intern func backend_dealloc []
 
-        # set pixel format: GREY at requested dimensions
-        vfmt : v4l2_format [ ]
-        vfmt.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE
-        vfmt.fmt.pix.width       = width
-        vfmt.fmt.pix.height      = height
-        vfmt.fmt.pix.pixelformat = V4L2_PIX_FMT_GREY
-        vfmt.fmt.pix.field       = V4L2_FIELD_NONE
-        # VIDIOC_S_FMT = _IOWR('V', 5, struct v4l2_format) = 0xC0D05605 on x86-64.
-        # hardcoded to bypass silver-side sizeof(struct v4l2_format) vs kernel mismatch.
-        err : i32 [ ioctl[ fd, 0xC0D05605, ref vfmt ] ]
-        printf "%i\n", sizeof[v4l2_format]
-        if [ err != 0 ]
-            perror[ 'camera: VIDIOC_S_FMT' ]
-        expect err == 0, 'camera: VIDIOC_S_FMT failed'
-        width     = vfmt.fmt.pix.width
-        height    = vfmt.fmt.pix.height
-        row_pitch = vfmt.fmt.pix.bytesperline
-        printf[ "camera: S_FMT ok w=%i h=%i bpl=%u sizeimage=%u\n",
-            width, height, row_pitch, vfmt.fmt.pix.sizeimage ]
-
-        # request MMAP buffers (DMA-BUF-exportable)
-        req : v4l2_requestbuffers [ ]
-        req.count  = buffer_count
-        req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
-        req.memory = V4L2_MEMORY_MMAP
-        err = ioctl[ fd, VIDIOC_REQBUFS, ref req ]
-        expect err == 0, 'camera: VIDIOC_REQBUFS failed'
-        buffer_count = req.count
-
-        cam_bufs  = new VkBuffer       [ buffer_count ]
-        cam_mem   = new VkDeviceMemory [ buffer_count ]
-        mm_ptrs   = new handle         [ buffer_count ]
-        mm_sizes  = new u32            [ buffer_count ]
-
-        # export each v4l2 buffer as a DMA-BUF fd and import as a VkImage.
-        # also mmap each buffer for CPU-side brightness sampling (for the
-        # strobing-IR brightest-of-last-two logic).
-        for [ i: i32 0, i < buffer_count, i += 1 ]
-            qb : v4l2_buffer [ ]
-            qb.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
-            qb.memory = V4L2_MEMORY_MMAP
-            qb.index  = i
-            err = ioctl[ fd, VIDIOC_QUERYBUF, ref qb ]
-            expect err == 0, 'camera: VIDIOC_QUERYBUF {i} failed'
-            printf[ "camera: QUERYBUF %i -> length=%u m.offset=%u memory=%u bytesused=%u\n",
-                i, qb.length, qb.m.offset, qb.memory, qb.bytesused ]
-
-            ptr : handle mmap[ null, qb.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, qb.m.offset ]
-            expect ptr != MAP_FAILED, 'camera: mmap {i} failed'
-            mm_ptrs [i] = ptr
-            mm_sizes[i] = qb.length
-
-            if [ !cpu_upload ]
-                exb : v4l2_exportbuffer [ ]
-                exb.type  = V4L2_BUF_TYPE_VIDEO_CAPTURE
-                exb.index = i
-                exb.flags = O_RDWR
-                err = ioctl[ fd, VIDIOC_EXPBUF, ref exb ]
-                expect err == 0, 'camera: VIDIOC_EXPBUF {i} failed'
-                import_dmabuf[ i, exb.fd, qb.length ]
-
-        # queue all buffers back to the driver
-        for [ i: i32 0, i < buffer_count, i += 1 ]
-            qbuf : v4l2_buffer [ ]
-            qbuf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
-            qbuf.memory = V4L2_MEMORY_MMAP
-            qbuf.index  = i
-            err = ioctl[ fd, VIDIOC_QBUF, ref qbuf ]
-            expect err == 0, 'camera: VIDIOC_QBUF {i} failed'
-
-        bt : i32 V4L2_BUF_TYPE_VIDEO_CAPTURE
-        err = ioctl[ fd, VIDIOC_STREAMON, ref bt ]
-        expect err == 0, 'camera: VIDIOC_STREAMON failed'
+    intern func init_gpu []
+        expect width  > 0, 'camera: invalid width {width}'
+        expect height > 0, 'camera: invalid height {height}'
 
         # single GPU-aligned VkImage that each frame's buffer will be copied
         # into. whatever row padding NVIDIA demands, the image picks its own
@@ -8416,7 +8365,7 @@ class Camera
             sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
             initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
         ]
-        err = vkCreateImage[ vk.device, ref img_info, null, ref cam_image ]
+        err : i32 [ vkCreateImage[ vk.device, ref img_info, null, ref cam_image ] ]
         expect err == 0, 'camera: vkCreateImage (cam_image) failed'
         expect cam_image, 'camera: cam_image is null after vkCreateImage'
 
@@ -8424,11 +8373,10 @@ class Camera
         img_req : VkMemoryRequirements [ ]
         vkGetImageMemoryRequirements[ vk.device, cam_image, ref img_req ]
         img_alloc : VkMemoryAllocateInfo [
-            sType:          VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-            allocationSize: img_req.size,
-            memoryTypeIndex: 0   # first type that matches (device memory on most configs)
+            sType:           VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize:  img_req.size,
+            memoryTypeIndex: 0
         ]
-        # pick a memory type that matches the image's requirements
         for [ k: u32 0, k < 32, k += 1 ]
             if [ img_req.memoryTypeBits & (u32[1] << k) ]
                 img_alloc.memoryTypeIndex = k
@@ -8438,10 +8386,6 @@ class Camera
         err = vkBindImageMemory[ vk.device, cam_image, cam_image_mem, 0 ]
         expect err == 0, 'camera: vkBindImageMemory (cam_image) failed'
 
-        # in cpu_upload mode: allocate one persistent HOST_VISIBLE|COHERENT
-        # staging buffer. each frame we memcpy from the mmap'd v4l2 buffer
-        # and vkCmdCopyBufferToImage into cam_image. NVIDIA's dmabuf import
-        # of v4l2-system-RAM fds is silently inert, so this is the default.
         if [ cpu_upload ]
             sbuf_sz : u32 [ width * height ]
             sbci : VkBufferCreateInfo [
@@ -8455,11 +8399,10 @@ class Camera
 
             sreq : VkMemoryRequirements [ ]
             vkGetBufferMemoryRequirements[ vk.device, staging_buf, ref sreq ]
-            # pick first HOST_VISIBLE + HOST_COHERENT memory type matching buffer reqs
             s_type_idx : u32 [ 0 ]
             for [ k: u32 0, k < vk.props.memoryTypeCount, k += 1 ]
                 if [ sreq.memoryTypeBits & (u32[1] << k) ]
-                    flags : u32 [ vk.props.memoryTypes[k].propertyFlags ]
+                    flags  : u32 [ vk.props.memoryTypes[k].propertyFlags ]
                     needed : u32 [ VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ]
                     if [ (flags & needed) == needed ]
                         s_type_idx = k
@@ -8480,114 +8423,13 @@ class Camera
             pixel_format: Pixel.u8, surface: Surface.color ]
         expect image, 'camera: image creation failed'
 
-    # import a dma-buf fd as a VkBuffer. buffers have no row-pitch constraints
-    # (unlike images on NVIDIA), so we can import the tight-packed camera data
-    # directly. a single aligned VkImage receives vkCmdCopyBufferToImage per
-    # frame, and the blit runs image→image.
-    intern func import_dmabuf [ idx: i32, dma_fd: i32, byte_size: u32 ]
-        ext : VkExternalMemoryBufferCreateInfo [ ]
-        ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO
-        ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+    intern func blit_from [ src_buf: VkBuffer ]
+        if [ !image ] return
 
-        bci : VkBufferCreateInfo [ ]
-        bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
-        bci.pNext       = ref ext
-        bci.size        = byte_size
-        bci.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
-        bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE
+        cmd : Command [ vk: vk ]
+        cmd.begin[]
 
-        buf : VkBuffer [ null ]
-        err : i32 [ vkCreateBuffer[ vk.device, ref bci, null, ref buf ] ]
-        expect err == 0, 'camera: vkCreateBuffer (dmabuf) failed'
-        expect buf, 'camera: buf is null after vkCreateBuffer'
-
-        mreq : VkMemoryRequirements [ ]
-        vkGetBufferMemoryRequirements[ vk.device, buf, ref mreq ]
-
-        fd_props : VkMemoryFdPropertiesKHR [ ]
-        fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
-        expect vk._vkGetMemoryFdPropertiesKHR, 'camera: vkGetMemoryFdPropertiesKHR not loaded'
-        err = vk._vkGetMemoryFdPropertiesKHR[ vk.device,
-            VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, ref fd_props ]
-        expect err == 0, 'camera: vkGetMemoryFdPropertiesKHR failed'
-
-        allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
-        expect allowed != 0, 'camera: no memory type compatible with dmabuf fd'
-        mem_type_index : u32 [ 0 ]
-        for [ k: u32 0, k < 32, k += 1 ]
-            if [ allowed & (u32[1] << k) ]
-                mem_type_index = k
-                break
-
-        # dedicated allocation bound to the buffer — required on some drivers
-        # for imported dmabuf memory.
-        ded : VkMemoryDedicatedAllocateInfo [ ]
-        ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
-        ded.buffer = buf
-
-        imp : VkImportMemoryFdInfoKHR [ ]
-        imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
-        imp.pNext      = ref ded
-        imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
-        imp.fd         = dma_fd
-
-        mai : VkMemoryAllocateInfo [ ]
-        mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
-        mai.pNext           = ref imp
-        mai.allocationSize  = byte_size
-        mai.memoryTypeIndex = mem_type_index
-
-        mem : VkDeviceMemory [ null ]
-        err = vkAllocateMemory[ vk.device, ref mai, null, ref mem ]
-        expect err == 0, 'camera: vkAllocateMemory (import fd) failed'
-        err = vkBindBufferMemory[ vk.device, buf, mem, 0 ]
-        expect err == 0, 'camera: vkBindBufferMemory failed'
-
-        cam_bufs[ idx ] = buf
-        cam_mem [ idx ] = mem
-
-    # sample average brightness of a 16x16 region at the center of the
-    # mmap'd buffer. cheap and enough to distinguish strobed-on vs off frames.
-    intern func brightness_of [ idx: i32 ] -> u64
-        ptr : ref u8 [ mm_ptrs[idx] ]
-        stride : i32 [ width ]
-        cx : i32 [ width  / 2 - 8 ]
-        cy : i32 [ height / 2 - 8 ]
-        sum : u64 [ 0 ]
-        for [ yy: i32 0, yy < 16, yy += 1 ]
-            row : i32 [ (cy + yy) * stride + cx ]
-            for [ xx: i32 0, xx < 16, xx += 1 ]
-                sum += u64[ ptr[ row + xx ] ]
-        return sum
-
-    func update []
-        if [ fd < 0 ]
-            return
-        deq : v4l2_buffer [ ]
-        deq.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
-        deq.memory = V4L2_MEMORY_MMAP
-        err : i32 [ ioctl[ fd, VIDIOC_DQBUF, ref deq ] ]
-        if [ err != 0 ]
-            return
-        current_idx = deq.index
-        #printf[ "DQBUF: idx=%u bytesused=%u flags=0x%x seq=%u\n",
-        #    deq.index, deq.bytesused, deq.flags, deq.sequence ]
-
-        # IR strobe sync: always blit the brighter of the latest two frames.
-        # when the strobe fires, the lit frame wins; between strobes the
-        # prior lit frame persists. previous buffer is held across update
-        # calls so we can still read from it; the older one gets requeued.
-        cur_bright : u64 [ brightness_of[ current_idx ] ]
-        use_prev : bool [ prev_idx >= 0 && prev_bright > cur_bright ]
-        blit_idx : i32 [ (use_prev) ? prev_idx : current_idx ]
-
-        if [ image ]
-            cmd : Command [ vk: vk ]
-            cmd.begin[]
-
-            # make host (v4l2/kernel DMA) writes to the imported dmabuf
-            # visible to the GPU transfer stage. without this NVIDIA reads
-            # stale/uninitialized memory in vkCmdCopyBufferToImage.
+        if [ !cpu_upload ]
             host_bar : VkMemoryBarrier [
                 sType:         VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                 srcAccessMask: VK_ACCESS_HOST_WRITE_BIT,
@@ -8597,111 +8439,302 @@ class Camera
                 VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0, 1, ref host_bar, 0, null, 0, null ]
 
-            # cam_image UNDEFINED → TRANSFER_DST for the buffer→image copy
-            cam_barrier : VkImageMemoryBarrier [
-                sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
-                newLayout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
-                dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
-                image: cam_image,
-                subresourceRange: VkImageSubresourceRange [
-                    aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
-                    levelCount: 1, layerCount: 1 ],
-                srcAccessMask: 0,
-                dstAccessMask: VK_ACCESS_TRANSFER_WRITE_BIT
-            ]
-            vkCmdPipelineBarrier[ cmd.cmd,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                0, 0, null, 0, null, 1, ref cam_barrier ]
+        cam_barrier : VkImageMemoryBarrier [
+            sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
+            newLayout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            image: cam_image,
+            subresourceRange: VkImageSubresourceRange [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+                levelCount: 1, layerCount: 1 ],
+            srcAccessMask: 0,
+            dstAccessMask: VK_ACCESS_TRANSFER_WRITE_BIT
+        ]
+        vkCmdPipelineBarrier[ cmd.cmd,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, null, 0, null, 1, ref cam_barrier ]
 
-            # copy dmabuf-backed buffer into the aligned GPU image (tight pack → aligned)
-            copy : VkBufferImageCopy [
-                bufferOffset:      0,
-                bufferRowLength:   0,    # 0 = tight
-                bufferImageHeight: 0,
-                imageSubresource:  VkImageSubresourceLayers [
-                    aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
-                    mipLevel:       0,
-                    baseArrayLayer: 0,
-                    layerCount:     1
-                ],
-                imageOffset: VkOffset3D [ 0, 0, 0 ],
-                imageExtent: VkExtent3D [ width, height, 1 ]
-            ]
-            src_buf : VkBuffer [ (cpu_upload) ? staging_buf : cam_bufs[ blit_idx ] ]
-            if [ cpu_upload ]
-                src_ptr : ref u8 [ mm_ptrs[ blit_idx ] ]
-                memcpy[ staging_ptr, src_ptr, width * height ]
-            vkCmdCopyBufferToImage[ cmd.cmd,
-                src_buf, cam_image,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, ref copy ]
+        copy : VkBufferImageCopy [
+            bufferOffset:      0,
+            bufferRowLength:   0,
+            bufferImageHeight: 0,
+            imageSubresource:  VkImageSubresourceLayers [
+                aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                mipLevel:       0,
+                baseArrayLayer: 0,
+                layerCount:     1
+            ],
+            imageOffset: VkOffset3D [ 0, 0, 0 ],
+            imageExtent: VkExtent3D [ width, height, 1 ]
+        ]
+        vkCmdCopyBufferToImage[ cmd.cmd,
+            src_buf, cam_image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, ref copy ]
 
-            # cam_image TRANSFER_DST → TRANSFER_SRC for the blit
-            cam_barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-            cam_barrier.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
-            cam_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
-            cam_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT
-            vkCmdPipelineBarrier[ cmd.cmd,
-                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                0, 0, null, 0, null, 1, ref cam_barrier ]
+        cam_barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+        cam_barrier.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+        cam_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
+        cam_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT
+        vkCmdPipelineBarrier[ cmd.cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, null, 0, null, 1, ref cam_barrier ]
 
-            # image: any → TRANSFER_DST before blit, back to SHADER_READ after
-            image.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        image.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
 
-            sx0 : i32 [ i32 [ src_rect.x ] ]
-            sy0 : i32 [ i32 [ src_rect.y ] ]
-            sx1 : i32 [ i32 [ src_rect.x + src_rect.w ] ]
-            sy1 : i32 [ i32 [ src_rect.y + src_rect.h ] ]
-            blit : VkImageBlit [
-                srcSubresource: VkImageSubresourceLayers [
-                    aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, layerCount: 1 ],
-                srcOffsets: [
-                    VkOffset3D [ x: sx0, y: sy0, z: 0 ],
-                    VkOffset3D [ x: sx1, y: sy1, z: 1 ] ],
-                dstSubresource: VkImageSubresourceLayers [
-                    aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, layerCount: 1 ],
-                dstOffsets: [
-                    VkOffset3D [ x: 0, y: 0, z: 0 ],
-                    VkOffset3D [ x: width, y: height, z: 1 ] ]
-            ]
-            vkCmdBlitImage[ cmd.cmd,
-                cam_image,      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                image.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                1, ref blit, VK_FILTER_LINEAR ]
+        sx0 : i32 [ i32 [ src_rect.x ] ]
+        sy0 : i32 [ i32 [ src_rect.y ] ]
+        sx1 : i32 [ i32 [ src_rect.x + src_rect.w ] ]
+        sy1 : i32 [ i32 [ src_rect.y + src_rect.h ] ]
+        blit : VkImageBlit [
+            srcSubresource: VkImageSubresourceLayers [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, layerCount: 1 ],
+            srcOffsets: [
+                VkOffset3D [ x: sx0, y: sy0, z: 0 ],
+                VkOffset3D [ x: sx1, y: sy1, z: 1 ] ],
+            dstSubresource: VkImageSubresourceLayers [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, layerCount: 1 ],
+            dstOffsets: [
+                VkOffset3D [ x: 0, y: 0, z: 0 ],
+                VkOffset3D [ x: width, y: height, z: 1 ] ]
+        ]
+        vkCmdBlitImage[ cmd.cmd,
+            cam_image,      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            image.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, ref blit, VK_FILTER_LINEAR ]
 
-            image.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
-            cmd.submit[]
+        image.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        cmd.submit[]
 
-        # hold current frame's buffer as prev for next round's comparison;
-        # return the older prev buffer to the kernel.
-        if [ prev_idx >= 0 ]
-            qb : v4l2_buffer [ ]
-            qb.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
-            qb.memory = V4L2_MEMORY_MMAP
-            qb.index  = prev_idx
-            ioctl[ fd, VIDIOC_QBUF, ref qb ]
-        prev_idx    = current_idx
-        prev_bright = cur_bright
-
-    func dealloc []
-        if [ fd < 0 ] return
-        bt : i32 V4L2_BUF_TYPE_VIDEO_CAPTURE
-        ioctl[ fd, VIDIOC_STREAMOFF, ref bt ]
-        for [ i: i32 0, i < buffer_count, i += 1 ]
-            if [ !cpu_upload ]
-                vkDestroyBuffer[ vk.device, cam_bufs[i], null ]
-                vkFreeMemory   [ vk.device, cam_mem[i],  null ]
-            munmap[ mm_ptrs[i], mm_sizes[i] ]
+    intern func release_gpu []
         if [ staging_buf ]
             vkUnmapMemory  [ vk.device, staging_mem ]
             vkDestroyBuffer[ vk.device, staging_buf, null ]
             vkFreeMemory   [ vk.device, staging_mem, null ]
+            staging_buf = null
+            staging_mem = null
+            staging_ptr = null
         if [ cam_image ]
             vkDestroyImage[ vk.device, cam_image, null ]
             vkFreeMemory  [ vk.device, cam_image_mem, null ]
-        close[ fd ]
-        fd = -1
+            cam_image     = null
+            cam_image_mem = null
+
+    func init []
+        ifdef [ linux ]
+            fd = open[ device.chars, O_RDWR | O_NONBLOCK ]
+            expect fd >= 0, 'camera: failed to open {device}'
+            printf[ "sizeof v4l2_buffer silver=%u vs kernel=88\n", sizeof[v4l2_buffer] ]
+
+            vfmt : v4l2_format [ ]
+            vfmt.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE
+            vfmt.fmt.pix.width       = width
+            vfmt.fmt.pix.height      = height
+            vfmt.fmt.pix.pixelformat = V4L2_PIX_FMT_GREY
+            vfmt.fmt.pix.field       = V4L2_FIELD_NONE
+            err : i32 [ ioctl[ fd, 0xC0D05605, ref vfmt ] ]
+            printf "%i\n", sizeof[v4l2_format]
+            if [ err != 0 ]
+                perror[ 'camera: VIDIOC_S_FMT' ]
+            expect err == 0, 'camera: VIDIOC_S_FMT failed'
+            width     = vfmt.fmt.pix.width
+            height    = vfmt.fmt.pix.height
+            row_pitch = vfmt.fmt.pix.bytesperline
+            printf[ "camera: S_FMT ok w=%i h=%i bpl=%u sizeimage=%u\n",
+                width, height, row_pitch, vfmt.fmt.pix.sizeimage ]
+
+            if [ !cpu_upload && !vk._vkGetMemoryFdPropertiesKHR ]
+                puts 'camera: DMA-BUF unavailable; using CPU upload'
+                cpu_upload = true
+
+            req : v4l2_requestbuffers [ ]
+            req.count  = buffer_count
+            req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+            req.memory = V4L2_MEMORY_MMAP
+            err = ioctl[ fd, VIDIOC_REQBUFS, ref req ]
+            expect err == 0, 'camera: VIDIOC_REQBUFS failed'
+            buffer_count = req.count
+
+            cam_bufs = new VkBuffer       [ buffer_count ]
+            cam_mem  = new VkDeviceMemory [ buffer_count ]
+            mm_ptrs  = new handle         [ buffer_count ]
+            mm_sizes = new u32            [ buffer_count ]
+
+            for [ i: i32 0, i < buffer_count, i += 1 ]
+                qb : v4l2_buffer [ ]
+                qb.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+                qb.memory = V4L2_MEMORY_MMAP
+                qb.index  = i
+                err = ioctl[ fd, VIDIOC_QUERYBUF, ref qb ]
+                expect err == 0, 'camera: VIDIOC_QUERYBUF {i} failed'
+                printf[ "camera: QUERYBUF %i -> length=%u m.offset=%u memory=%u bytesused=%u\n",
+                    i, qb.length, qb.m.offset, qb.memory, qb.bytesused ]
+
+                ptr : handle mmap[ null, qb.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, qb.m.offset ]
+                expect ptr != MAP_FAILED, 'camera: mmap {i} failed'
+                mm_ptrs [i] = ptr
+                mm_sizes[i] = qb.length
+
+                if [ !cpu_upload ]
+                    exb : v4l2_exportbuffer [ ]
+                    exb.type  = V4L2_BUF_TYPE_VIDEO_CAPTURE
+                    exb.index = i
+                    exb.flags = O_RDWR
+                    err = ioctl[ fd, VIDIOC_EXPBUF, ref exb ]
+                    expect err == 0, 'camera: VIDIOC_EXPBUF {i} failed'
+                    import_dmabuf[ i, exb.fd, qb.length ]
+
+            for [ i: i32 0, i < buffer_count, i += 1 ]
+                qbuf : v4l2_buffer [ ]
+                qbuf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+                qbuf.memory = V4L2_MEMORY_MMAP
+                qbuf.index  = i
+                err = ioctl[ fd, VIDIOC_QBUF, ref qbuf ]
+                expect err == 0, 'camera: VIDIOC_QBUF {i} failed'
+
+            bt : i32 V4L2_BUF_TYPE_VIDEO_CAPTURE
+            err = ioctl[ fd, VIDIOC_STREAMON, ref bt ]
+            expect err == 0, 'camera: VIDIOC_STREAMON failed'
+
+        ifdef [ apple ]
+            cpu_upload = true
+            backend_init[]
+            expect backend, 'camera: failed to initialize macOS camera'
+
+        init_gpu[]
+
+    ifdef [ linux ]
+        intern func import_dmabuf [ idx: i32, dma_fd: i32, byte_size: u32 ]
+            ext : VkExternalMemoryBufferCreateInfo [ ]
+            ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO
+            ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+
+            bci : VkBufferCreateInfo [ ]
+            bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
+            bci.pNext       = ref ext
+            bci.size        = byte_size
+            bci.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+            bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE
+
+            buf : VkBuffer [ null ]
+            err : i32 [ vkCreateBuffer[ vk.device, ref bci, null, ref buf ] ]
+            expect err == 0, 'camera: vkCreateBuffer (dmabuf) failed'
+            expect buf, 'camera: buf is null after vkCreateBuffer'
+
+            mreq : VkMemoryRequirements [ ]
+            vkGetBufferMemoryRequirements[ vk.device, buf, ref mreq ]
+
+            fd_props : VkMemoryFdPropertiesKHR [ ]
+            fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
+            expect vk._vkGetMemoryFdPropertiesKHR, 'camera: vkGetMemoryFdPropertiesKHR not loaded'
+            err = vk._vkGetMemoryFdPropertiesKHR[ vk.device,
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, ref fd_props ]
+            expect err == 0, 'camera: vkGetMemoryFdPropertiesKHR failed'
+
+            allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+            expect allowed != 0, 'camera: no memory type compatible with dmabuf fd'
+            mem_type_index : u32 [ 0 ]
+            for [ k: u32 0, k < 32, k += 1 ]
+                if [ allowed & (u32[1] << k) ]
+                    mem_type_index = k
+                    break
+
+            ded : VkMemoryDedicatedAllocateInfo [ ]
+            ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+            ded.buffer = buf
+
+            imp : VkImportMemoryFdInfoKHR [ ]
+            imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
+            imp.pNext      = ref ded
+            imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+            imp.fd         = dma_fd
+
+            mai : VkMemoryAllocateInfo [ ]
+            mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+            mai.pNext           = ref imp
+            mai.allocationSize  = byte_size
+            mai.memoryTypeIndex = mem_type_index
+
+            mem : VkDeviceMemory [ null ]
+            err = vkAllocateMemory[ vk.device, ref mai, null, ref mem ]
+            expect err == 0, 'camera: vkAllocateMemory (import fd) failed'
+            err = vkBindBufferMemory[ vk.device, buf, mem, 0 ]
+            expect err == 0, 'camera: vkBindBufferMemory failed'
+
+            cam_bufs[ idx ] = buf
+            cam_mem [ idx ] = mem
+
+        intern func brightness_of [ idx: i32 ] -> u64
+            ptr    : ref u8 [ mm_ptrs[idx] ]
+            stride : i32    [ width ]
+            cx     : i32    [ width  / 2 - 8 ]
+            cy     : i32    [ height / 2 - 8 ]
+            sum    : u64    [ 0 ]
+            for [ yy: i32 0, yy < 16, yy += 1 ]
+                row : i32 [ (cy + yy) * stride + cx ]
+                for [ xx: i32 0, xx < 16, xx += 1 ]
+                    sum += u64[ ptr[ row + xx ] ]
+            return sum
+
+    func update []
+        ifdef [ linux ]
+            if [ fd < 0 ]
+                return
+            deq : v4l2_buffer [ ]
+            deq.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+            deq.memory = V4L2_MEMORY_MMAP
+            err : i32 [ ioctl[ fd, VIDIOC_DQBUF, ref deq ] ]
+            if [ err != 0 ]
+                return
+            current_idx = deq.index
+
+            cur_bright : u64  [ brightness_of[ current_idx ] ]
+            use_prev   : bool [ prev_idx >= 0 && prev_bright > cur_bright ]
+            blit_idx   : i32  [ (use_prev) ? prev_idx : current_idx ]
+
+            if [ cpu_upload ]
+                src_ptr : ref u8 [ mm_ptrs[ blit_idx ] ]
+                memcpy[ staging_ptr, src_ptr, width * height ]
+                blit_from[ staging_buf ]
+            el
+                blit_from[ cam_bufs[ blit_idx ] ]
+
+            if [ prev_idx >= 0 ]
+                qb : v4l2_buffer [ ]
+                qb.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+                qb.memory = V4L2_MEMORY_MMAP
+                qb.index  = prev_idx
+                ioctl[ fd, VIDIOC_QBUF, ref qb ]
+            prev_idx    = current_idx
+            prev_bright = cur_bright
+            return
+
+        ifdef [ apple ]
+            if [ !backend || !staging_ptr ]
+                return
+            if [ backend_copy[ staging_ptr, width * height ] ]
+                blit_from[ staging_buf ]
+
+    func dealloc []
+        ifdef [ linux ]
+            if [ fd >= 0 ]
+                bt : i32 V4L2_BUF_TYPE_VIDEO_CAPTURE
+                ioctl[ fd, VIDIOC_STREAMOFF, ref bt ]
+                for [ i: i32 0, i < buffer_count, i += 1 ]
+                    if [ !cpu_upload ]
+                        vkDestroyBuffer[ vk.device, cam_bufs[i], null ]
+                        vkFreeMemory   [ vk.device, cam_mem[i],  null ]
+                    munmap[ mm_ptrs[i], mm_sizes[i] ]
+                close[ fd ]
+                fd = -1
+
+        ifdef [ apple ]
+            if [ backend ]
+                backend_dealloc[]
+                backend = null
+
+        release_gpu[]
 
 
 element CameraView

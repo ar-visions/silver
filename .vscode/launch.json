@@ -40,6 +40,25 @@
             ]
         },
         {
+            "name":             "gallery",
+            "type":             "lldb",
+            "request":          "launch",
+            "preLaunchTask":    "build-silver-debug",
+            "program":          "${workspaceFolder}/install/debug/silver",
+            "args":             [ "gallery", "-v", "--clean", "--run" ],
+            "cwd":              "${workspaceFolder}",
+            "stopOnEntry":      false,
+            "env": {
+                "LD_LIBRARY_PATH":  "${workspaceFolder}/install/lib",
+                "IMPORT":           "${workspaceFolder}/install",
+                "ASAN_OPTIONS":     "detect_leaks=0",
+                "VK_LAYER_PATH":    "${workspaceFolder}/install/share/vulkan/explicit_layer.d"
+            },
+            "initCommands": [
+                "settings set target.process.stop-on-exec false"
+            ]
+        },
+        {
             "name":             "silver 0.88 debug",
             "type":             "lldb",
             "request":          "launch",

@@ -139,6 +139,12 @@ static symbol shared   = "-dynamiclib";
 #define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
 
 string symbol_name(Au obj);
+static bool target_is_apple(silver a);
+static bool is_cpp_source_ext(silver a, string ext);
+static bool is_native_source_ext(silver a, string ext);
+static cstr source_lang_flag(silver a, string ext);
+static string framework_name(string fw);
+static string framework_import_name(array mpath, string single);
 
 static bool is_dbg(import t, string query, cstr name, bool is_remote) {
     cstr dbg = (cstr)query->chars; // getenv("DBG");
@@ -1322,10 +1328,13 @@ void silver_init(silver a) {
         attempt() {
             string m = stem(a->module);
             path i_gen = f(path, "%o/%o.i", a->module_path, m);
+            bool target_apple = target_is_apple(a);
             path c_file = f(path, "%o/%o.c", a->module_path, m);
             path cc_file = f(path, "%o/%o.cc", a->module_path, m);
-            path files[2] = {c_file, cc_file};
-            for (int i = 0; i < 2; i++)
+            path mm_file = f(path, "%o/%o.mm", a->module_path, m);
+            path files[3] = {c_file, cc_file, mm_file};
+            int file_count = target_apple ? 3 : 2;
+            for (int i = 0; i < file_count; i++)
                 if (exists(files[i])) {
                     if (!a->implements)
                         a->implements = array(2);
@@ -4801,7 +4810,7 @@ string import_libs(array input, map output, map fw_output) {
             string n = mid(t, 2, len(t) - 2);
             set(output, n, _bool(true));
         } else if (starts_with(t, "-framework") && i + 1 < len(input)) {
-            string fw = (string)input->origin[++i];
+            string fw = framework_name((string)input->origin[++i]);
             set(fw_output, fw, _bool(true));
         }
     }
@@ -4837,6 +4846,56 @@ static bool command_exists(cstr cmd) {
     char buf[256];
     snprintf(buf, sizeof(buf), "command -v %s >/dev/null 2>&1", cmd);
     return system(buf) == 0;
+}
+
+static bool target_is_apple(silver a) {
+    if (a->platform && len(a->platform) && cmp(a->platform, "native") != 0) {
+        string p = a->platform;
+        return strstr(p->chars, "apple")  != NULL ||
+               strstr(p->chars, "ios")    != NULL ||
+               strstr(p->chars, "darwin") != NULL ||
+               strstr(p->chars, "macos")  != NULL ||
+               strstr(p->chars, "osx")    != NULL;
+    }
+    return SILVER_IS_MAC;
+}
+
+static bool is_cpp_source_ext(silver a, string ext) {
+    return ext && (
+        eq(ext, "cc") || eq(ext, "cpp") || eq(ext, "cxx") ||
+        (target_is_apple(a) && eq(ext, "mm"))
+    );
+}
+
+static bool is_native_source_ext(silver a, string ext) {
+    return ext && (eq(ext, "c") || eq(ext, "rs") || is_cpp_source_ext(a, ext));
+}
+
+static cstr source_lang_flag(silver a, string ext) {
+    return ext && target_is_apple(a) && eq(ext, "mm") ? "-x objective-c++" : "";
+}
+
+static string framework_name(string fw) {
+    if (fw && ends_with(fw, ".framework"))
+        return mid(fw, 0, len(fw) - 10);
+    return fw;
+}
+
+static string framework_import_name(array mpath, string single) {
+    if (single && ends_with(single, ".framework"))
+        return framework_name(single);
+    if (!mpath || len(mpath) < 2)
+        return null;
+    string tail = (string)mpath->origin[len(mpath) - 1];
+    if (!tail || strcmp(tail->chars, "framework") != 0)
+        return null;
+    string fw = string(alloc, 32);
+    for (int i = 0; i < len(mpath) - 1; i++) {
+        if (len(fw))
+            append(fw, ".");
+        concat(fw, (string)mpath->origin[i]);
+    }
+    return len(fw) ? fw : null;
 }
 
 static bool is_branchy(string n) {
@@ -5038,12 +5097,13 @@ string compile_implements(silver a, array files, string cflags) {
     each(files, path, i) {
         string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
         string ext      = ext(i);
-        bool   is_cpp   = eq(ext, "cc") || eq(ext, "cpp");
+        bool   is_cpp   = is_cpp_source_ext(a, ext);
         cstr   compiler = is_cpp ? "clang++" : "clang";
         cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
+        cstr   lang_flag = source_lang_flag(a, ext);
         string st       = stem(i);
-        verify(exec(a->verbose, "%o/bin/%s %s %s %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
-            install, compiler, std_flag, sysroot_flag, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
+        verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
+            install, compiler, std_flag, lang_flag, sysroot_flag, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
             "failed to compile %o", i);
         if (len(objs)) append(objs, " ");
         concat(objs, i_name);
@@ -5147,15 +5207,18 @@ none silver_build(silver a) {
         if (len(a->implements))
             write_header(a);
 
-        // compile .c/.cc implementations inside docker
+        // compile .c/.cc/.mm implementations inside docker
         string objs = string();
         each(a->implements, path, i) {
             string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
             string ext      = ext(i);
-            cstr   compiler = eq(ext, ".cc") ? "clang++" : "clang";
+            bool   is_cpp   = is_cpp_source_ext(a, ext);
+            cstr   compiler = is_cpp ? "clang++" : "clang";
+            cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
+            cstr   lang_flag = source_lang_flag(a, ext);
             string st       = stem(i);
-            verify(exec(a->verbose, "%o /silver/platform/native/bin/%s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
-                docker_pre, compiler, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
+            verify(exec(a->verbose, "%o /silver/platform/native/bin/%s %s %s %o %s -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au",
+                docker_pre, compiler, std_flag, lang_flag, cflags, a->debug ? "-g" : "", i, i_name, install, st, install, install) == 0,
                 "failed to compile %o (platform: %o)", i, a->platform);
             if (len(objs)) append(objs, " ");
             concat(objs, i_name);
@@ -5165,7 +5228,7 @@ none silver_build(silver a) {
         bool has_cpp_d = false;
         each(a->implements, path, impl) {
             string ext_d = ext(impl);
-            if (eq(ext_d, "cc") || eq(ext_d, "cpp")) { has_cpp_d = true; break; }
+            if (is_cpp_source_ext(a, ext_d)) { has_cpp_d = true; break; }
         }
         cstr linker_d  = has_cpp_d ? "clang++" : "clang";
         cstr cpp_libs_d = has_cpp_d ? "-stdlib=libc++" : "";
@@ -5242,7 +5305,7 @@ none silver_build(silver a) {
     bool has_cpp = false;
     each(a->implements, path, impl) {
         string ext = ext(impl);
-        if (eq(ext, "cc") || eq(ext, "cpp")) { has_cpp = true; break; }
+        if (is_cpp_source_ext(a, ext)) { has_cpp = true; break; }
     }
     cstr linker   = has_cpp ? "clang++" : "clang";
 #ifdef __APPLE__
@@ -5333,11 +5396,17 @@ path module_exists(silver a, array idents, bool binary_finary, bool* is_bin) {
     }
 
     // it could be a sub module
-    path c = f(path, "%o/%o.c", a->module, stem(to_path));
-    path sfc = absolute(c);
-    if (file_exists("%o", sfc)) {
-        *is_bin = false;
-        return sfc;
+    path c  = f(path, "%o/%o.c",  a->module, stem(to_path));
+    path cc = f(path, "%o/%o.cc", a->module, stem(to_path));
+    path mm = f(path, "%o/%o.mm", a->module, stem(to_path));
+    path files[3] = {c, cc, mm};
+    int file_count = target_is_apple(a) ? 3 : 2;
+    for (int i = 0; i < file_count; i++) {
+        path sfc = absolute(files[i]);
+        if (file_exists("%o", sfc)) {
+            *is_bin = false;
+            return sfc;
+        }
     }
 
     if (binary_finary && len(idents) == 1) {
@@ -6076,13 +6145,24 @@ enode parse_import(silver a) {
     
     string external_name = null;
     path   external_product = null;
+    string framework = framework_import_name(mpath, single);
+    bool   is_framework_import = !!framework;
+
+    if (is_framework_import) {
+        if (!a->frameworks)
+            a->frameworks = map(16);
+        set(a->frameworks, framework_name(framework), _bool(true));
+        if (!len(includes))
+            push(includes, (Au)f(path, "%o/%o.h", framework, framework));
+    }
 
     if (read_if(a, "from")) {
         uri = hold(read_alpha(a)); // todo: compact neighboring tokens with https:// and git://
         validate(uri, "expected uri");
     }
 
-    if (!is_codegen && aa && !bb && !commit) {
+    if (is_framework_import) {
+    } else if (!is_codegen && aa && !bb && !commit) {
         path m = module_exists(a, mpath, true, &is_binary); // useful to resolve in either case
 
         if (!is_binary && m) {
@@ -6132,7 +6212,7 @@ enode parse_import(silver a) {
                 set(a->libs, (Au)mid(t, 2, len(t) - 2), (Au)_bool(true));
                 has_link = true;
             } else if (starts_with(t, "-framework") && fi + 1 < len(all_config)) {
-                string fw = (string)all_config->origin[++fi];
+                string fw = framework_name((string)all_config->origin[++fi]);
                 set(a->frameworks, fw, _bool(true));
             }
         }
@@ -6145,7 +6225,7 @@ enode parse_import(silver a) {
     } else if (module_source) {
         path module = parent_dir(module_source);
         bool ag = eq(ext(module_source), "ag");
-        bool c  = eq(ext(module_source), "c");
+        bool c  = is_native_source_ext(a, ext(module_source));
         verify(!ag || compare(stem(module_source), stem(module)) == 0, "silver expects identical module stem");
 
         
@@ -6204,9 +6284,9 @@ enode parse_import(silver a) {
         namespace = hold(string(is_codegen->ident));
     }
 
-    // .c sub-module: compile, and include .h if present
+    // native sub-module: compile, and include .h if present
     string ext = module_source ? ext(module_source) : null;
-    if (module_source && (eq(ext, "c") || eq(ext, "cc") || eq(ext, "rs"))) {
+    if (module_source && is_native_source_ext(a, ext)) {
         path   dir    = parent_dir(module_source);
         string name   = stem(module_source);
         path   header = f(path, "%o/%o.h", dir, name);
@@ -6227,7 +6307,7 @@ enode parse_import(silver a) {
 
     bool import_Au = !!external_name;
 
-    if (!external_name) {
+    if (!external_name && !is_framework_import) {
         if (project)
             external_name = project;
         else if (aa)
