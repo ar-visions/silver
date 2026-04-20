@@ -2517,7 +2517,7 @@ Au Au_initialize(Au a) {
     //if (f->type->traits & AU_TRAIT_USER_INIT) return a;
     // primitives, enums, and other non-class types have no init chain
     // or hold_members vtable; skip them
-    if (f->type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) return a; // isolate these cases and remove this code
+    if (f->type->traits & (AU_TRAIT_STRUCT | AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) return a; // isolate these cases and remove this code
 
     #ifndef NDEBUG
     Au_validator(a);
@@ -3504,21 +3504,21 @@ Au construct_with(Au_t type, Au data, ctx context) {
                 /// no meaningful way to do this generically, we prefer to call these first
                 if (arg == typeid(path) && data_type == typeid(string)) {
                     result = alloc(type, 1, null, null, null);
-                    result = ((Au(*)(Au, path))addr)(result, path(((string)data)));
-                    verify(Au_validator(result), "invalid Au");
+                    ((none(*)(Au, path))addr)(result, path(((string)data)));
+                    verify(is_struct(type) || Au_validator(result), "invalid Au");
                     break;
                 }
                 if ((arg == typeid(cstr) || arg == typeid(symbol)) && 
                         data_type == typeid(string)) {
                     result = alloc(type, 1, null, null, null);
-                    result = ((Au(*)(Au, cstr))addr)(result, ((string)data)->chars);
-                    verify(Au_validator(result), "invalid Au");
+                    ((none(*)(Au, cstr))addr)(result, ((string)data)->chars);
+                    verify(is_struct(type) || Au_validator(result), "invalid Au");
                     break;
                 }
                 if (arg == data_type) {
                     result = alloc(type, 1, null, null, null);
-                    result = ((Au(*)(Au, Au))addr)(result, data);
-                    verify(Au_validator(result), "invalid Au");
+                    ((none(*)(Au, Au))addr)(result, data);
+                    verify(is_struct(type) || Au_validator(result), "invalid Au");
                     break;
                 }
             } else if (context && result && mdata) {
@@ -3752,6 +3752,8 @@ Au Au_member_object(Au a, Au_t m) {
     if (is_inlay || is_primitive) {
         result = alloc(m->type, 1, null, null, null);
         memcpy(result, member_ptr, m->type->typesize);
+        // issue with having a separate state with object header; it doesnt make enough sense, too
+        //result = (Au)member_ptr;
     } else {
         result = *member_ptr;
     }
@@ -3764,7 +3766,7 @@ string Au_cast_string(Au a) {
     // convenient feature of new object abi
     if (type == typeid(Au_t_f)) {
         type = (Au_t)a;
-        return f(string, "wtf");
+        //return f(string, "wtf");
         if (type->is_pointer && !type->ident) {
             return f(string, "ref %s", type->src->ident);
         }
@@ -4097,6 +4099,9 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
         i32 v = evalue(type, (cstr)res->chars);
         return primitive(typeid(i32), &v);
     }
+    if (type && is_struct(type))
+        return construct_with(type, res, null);
+
     return type ? (Au)
         ((Au_f*)type)->ft.with_cereal(alloc(type, 1, null, null, null), (cereal) { .value = (cstr)res->chars }) :
         (Au)res;
@@ -6257,10 +6262,11 @@ none* primitive_ffi_arb(Au_t ptype) {
 
 
 static none copy_file(path from, path to) {
-    path f_to = is_dir(to) ? f(path, "%o/%o", to, filename(from)) : (path)hold(to);
+    bool own = is_dir(to);
+    path f_to = own ? f(path, "%o/%o", to, filename(from)) : to;
     FILE *src = fopen(cstring(from), "rb");
     FILE *dst = fopen(cstring(f_to), "wb");
-    drop(f_to);
+    if (own) drop(f_to);
     verify(src && dst, "copy_file: cannot open file");
 
     char buffer[8192];

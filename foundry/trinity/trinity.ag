@@ -3738,6 +3738,14 @@ struct affine
         ]
 
 
+    func scale_xy [ sx: f32, sy: f32 ] -> affine
+        return affine [
+            ma: ma * sx, mb: mb * sy,
+            mc: mc * sx, md: md * sy,
+            tx: tx, ty: ty
+        ]
+
+
     func rotate [ radians: f32 ] -> affine
         cs : cos[ radians ]
         sn : sin[ radians ]
@@ -4523,6 +4531,9 @@ Render Canvas
 
     func scale [ s: f32 ]
         states[state_depth - 1].transform = states[state_depth - 1].transform.scale [ s ]
+
+    func scale_xy [ sx: f32, sy: f32 ]
+        states[state_depth - 1].transform = states[state_depth - 1].transform.scale_xy [ sx, sy ]
 
     func rotate [ radians: f32 ]
         states[state_depth - 1].transform = states[state_depth - 1].transform.rotate [ radians ]
@@ -6127,7 +6138,7 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ]
                 dst:  ref i8[data_dst]
                 data_src: ref src[j * stride]
                 src0: ref i8[data_src]
-                memcpy[ dst, src0, mem.size ]
+                memcpy[ dst, src0, mem.size ] # highlight these in the variables list
 
         view:  ref i8[ibuffer.data]
         i_src: ref view [ iview.byteOffset  ]
@@ -6466,6 +6477,12 @@ ielement element
     mutable group           : string
     mutable tab_index    : i32
     mutable scroll       : vec2f
+    # per-element 2D transform. scale default (1,1), rotate in radians,
+    # transform_origin normalized to element bounds (0.5,0.5 = center).
+    # all three are transitionable via CSS just like colors.
+    mutable scale            : vec2f
+    mutable rotate           : f32
+    mutable transform_origin : vec2f
     mutable ghost        : bool
     mutable captured     : bool
     mutable selectable   : bool
@@ -6495,7 +6512,7 @@ ielement element
     public func on_char    [ ev: Event ] -> bool  return false
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
-    intern transitions  : map StyleTransition[string]
+    intern transitions  : map StyleTransition[Au_t]
     intern restyle : bool
 
     public func set_capture []
@@ -6529,27 +6546,29 @@ ielement element
             found = false
             for [ ct:StyleTransition, k:object ] in e.transitions
                 if [ ct.invalidate ]
+                    puts 'transitions: before rm count={e.transitions.count}'
                     e.transitions.rm[ k ]
+                    puts 'transitions: after  rm count={e.transitions.count}'
                     found = true
                     return
 
     intern func animate_within [ ]
         if [ transitions ]
             cur_millis : i64 [ epoch_millis[] ]
-            for [ ct: StyleTransition, k: string ] in transitions
+            for [ ct: StyleTransition, k: Au_t ] in transitions
                 dur : i64 [ ct.duration.get_millis[] ]
                 ms  : i64 [ cur_millis - ct.start ]
                 p   : f64 [ ct.pos[ f64[ ms ] / f64[ dur ] ] ]
                 if [ ct.type && ct.from && ct.to ]
                     from_t : typeid[ ct.from ]
                     mixed : ct.from.mix*[ ct.to, p ]
-                    if [ ct.location ]
-                        ct.location = mixed
+                    ct.container.member_set[ ct.member, mixed ]
+
         for [ ee: element, id: string ] in elements
             ee.animate_within[ ]
 
 
-alias StyleTransitions : map StyleTransition[string]
+alias StyleTransitions : map StyleTransition[Au_t]
 
 
 Display Window
@@ -6629,7 +6648,7 @@ Display Window
         return changed
 
     
-    public func transition_or_set [ inst: element, value_holder:Au, cur:Au, member:Au_t, prop:string, best:StyleEntry ]
+    public func transition_or_set [ inst:element, value_holder:Au, cur:Au, member:Au_t, best:StyleEntry ]
         # transition handling
         t  : best.trans
         ct : StyleTransition
@@ -6637,27 +6656,30 @@ Display Window
         if [ t ]
             if [ !inst.transitions ]
                 inst.transitions = StyleTransitions [ ]
-            ct = inst.transitions[ prop ]
+            ct = inst.transitions[ member ]
             if [ !ct ]
                 ct = t.copy[]
                 ct.reference = t
                 should_trans = true
-                inst.transitions[ prop ] = ct
+                inst.transitions[ member ] = ct
             el
                 should_trans = ct.reference != t
         el [ inst.transitions ]
-            inst.transitions.rm[ prop ]
+            inst.transitions.rm[ member ]
         
         if [ ct && should_trans ]
             ct.from     = (cur) ? cur : best.instance
             ct.to       = best.instance
             ct.type     = typeid[ best.instance ]
             ct.start    = epoch_millis[]
+            ct.member   = member
+            ct.container = value_holder
         el [ !ct ]
             value_holder.member_set[ member, best.instance ]
     
     
     public func apply_style [ inst: element, style_avail: map StyleEntries[string] ]
+        puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
         ty      : Au_t [ typeid[ inst ] ]
         while [ ty != typeid[ Au ] ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
@@ -6668,6 +6690,7 @@ Display Window
                 entries : style_avail [ prop ]
                 if [ !entries ]
                     continue
+                puts 'apply_style:   {prop} entries={entries.count}'
                 first : (entries[0] to StyleEntry)
 
                 # we sometimes have to create a map for 'layers' as well as a Layer instance inside
@@ -6708,7 +6731,7 @@ Display Window
                         if [ !cur ]
                             cur = best.instance
 
-                        transition_or_set[ inst, layer_inst, cur, layer_member, '{member.ident}.{best.member}', best ]
+                        transition_or_set[ inst, layer_inst, cur, layer_member, best ]
                         layer_member = layer_member
 
                 el
@@ -6723,7 +6746,7 @@ Display Window
                     if [ !cur ]
                         cur = best.instance
 
-                    transition_or_set[ inst, inst, cur, member, prop, best ]
+                    transition_or_set[ inst, inst, cur, member, best ]
                 
             ty = ty.context
 
@@ -6897,8 +6920,12 @@ Display Window
         # hover / leave bubble — flip state bools and set restyle; the next
         # update_element pass picks up restyle and re-applies CSS.
         if [ hovered != f ]
+            puts 'hover: changed (prev={(hovered) ? hovered.id : null}, new={(f) ? f.id : null})'
             prev : element [ hovered ]
             if [ prev ]
+                puts 'hover: leaving {prev.id}'
+                if [ prev inherits Button ]
+                    prev = prev
                 prev.hovered = false
                 prev.restyle = true
                 leave_consumed : bool [ false ]
@@ -6910,6 +6937,7 @@ Display Window
                     app_object.on_leave[ ev ]
             hovered = f
             if [ f ]
+                puts 'hover: entering {f.id}'
                 if [ f inherits Button ]
                     test :  22
                     test += 22
@@ -7182,6 +7210,29 @@ Display Window
         e.bounds = e.area.rectangle[ rel, null, (last) ? last.bounds : null ]
         element_text : (e.label && e.label.count) ? e.label : null
 
+        # per-element 2D transform around a transform-origin pivot. scale and
+        # rotate default to identity when the element hasn't declared them;
+        # treat (0,0) scale as identity so zero-init doesn't collapse the
+        # element to a point. transform_origin is normalized to bounds —
+        # (0.5, 0.5) = center; if origin is zero too, default to center.
+        sx       : f32  [ (e.scale.x != 0.0) ? e.scale.x : 1.0 ]
+        sy       : f32  [ (e.scale.y != 0.0) ? e.scale.y : 1.0 ]
+        has_rot  : bool [ e.rotate != 0.0 ]
+        has_sc   : bool [ sx != 1.0 || sy != 1.0 ]
+        xform    : bool [ has_rot || has_sc ]
+        if [ xform ]
+            ox : f32 [ (e.transform_origin.x != 0.0) ? e.transform_origin.x : 0.5 ]
+            oy : f32 [ (e.transform_origin.y != 0.0) ? e.transform_origin.y : 0.5 ]
+            pivot_x : f32 [ e.bounds.w * ox ]
+            pivot_y : f32 [ e.bounds.h * oy ]
+            cv.save[]
+            cv.translate[ pivot_x, pivot_y ]
+            if [ has_rot ]
+                cv.rotate[ e.rotate ]
+            if [ has_sc ]
+                cv.scale_xy[ sx, sy ]
+            cv.translate[ -pivot_x, -pivot_y ]
+
         # compute layer bounds and draw each layer
         for [ layer: Layer, lkey: string ] in e.layers
             if [ layer.ctype != stage ]
@@ -7223,6 +7274,8 @@ Display Window
                 cv.draw_text    [ (label) ? label : element_text, b, align, offset, layer.label_overflow ]
                 cv.restore      [ ]
 
+        if [ xform ]
+            cv.restore[]
         e.draw*[ a ]
         last_2 : element
         for [ ee: element, id: string ] in e.elements
@@ -7439,14 +7492,26 @@ class StyleBlock
                 id_reject   : bool [ q.id && !id_match ]
                 type_match  : bool [ ty_handle && (typeid[ cur ] inherits typeid[ q.ty ]) ]
                 type_reject : bool [ ty_handle && !type_match ]
+                # state pseudo-classes. q.states holds the full list (e.g.
+                # :hovered:pressed). ALL states must be truthy on this element
+                # for the selector to match. the q.oper path (state OP value)
+                # still uses the single q.state since op-mode takes one state.
                 state_match : bool [ score_state && q.state ]
                 if [ state_match ]
                     expect q.state.count > 0, 'null state'
-                    current : Au cur.get_property[ q.state ]
-                    if [ current.cast_bool[ ] ]
-                        state_match = true
+                    if [ q.oper || !q.states || q.states.count <= 1 ]
+                        current : Au cur.get_property[ q.state ]
+                        state_match = current && current.cast_bool[ ]
                     el
-                        state_match = false
+                        all_match : bool [ true ]
+                        for [ s : string ] in q.states
+                            if [ s.count == 0 ]
+                                continue
+                            scurrent : Au cur.get_property[ s ]
+                            if [ !scurrent || !scurrent.cast_bool[ ] ]
+                                all_match = false
+                                break
+                        state_match = all_match
                     
                 state_reject : bool [ score_state && q.state && !state_match ]
                 if [ id_reject || type_reject || state_reject ]
@@ -7877,23 +7942,24 @@ class StyleTransition
     public easing       : Ease
     public dir          : Direction
     public duration     : TimeCoord
-    intern from         : object
-    intern to           : object
+    manual from         : object
+    manual to           : object
     intern start        : i64
     intern invalidate   : bool
     intern reference    : StyleTransition
     intern is_inlay     : bool
     intern type         : Au_t
-    intern location     : ref object
-
+    intern member       : Au_t
+    intern container    : Au
+    
     construct [ s: string ]
-        sp : array string [ s.split[ ' ' ] ]
+        sp : s.split[ ' ' ]
         ln : i32 [ sp.count ]
         # syntax: 500ms [ease [out]]
         dur_string : string [ sp[0] ]
         duration   = TimeCoord [ dur_string ]
-        easing     = (ln > 1) ? Ease[ sp[1] ]      : Ease.linear
-        dir        = (ln > 2) ? Direction[ sp[2] ]  : Direction.inward
+        easing     = (ln > 1) ? Ease[      sp[1] ] :      Ease.linear
+        dir        = (ln > 2) ? Direction[ sp[2] ] : Direction.inward
 
     func pos [ tf: f64 ] -> f64
         x : f64 [ clamp[ tf, 0.0, 1.0 ] ]
@@ -8000,7 +8066,8 @@ class StyleQualifier
     expect  bl       : StyleBlock
     mutable type     : string
     mutable id       : string
-    mutable state    : string
+    mutable state    : string             # first state (kept for op path: state OP value)
+    mutable states   : array string       # all states when no op, e.g. :hovered:pressed
     mutable oper     : string
     mutable value    : string
     mutable parent   : object
@@ -9224,7 +9291,15 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
                         v.value = tail.mid[ istart, tail.count - istart ].trim[]
                         break
                 if [ !is_op ]
-                    v.state = tail
+                    # tail may contain multiple states joined by '&' — e.g.
+                    # ':hovered&pressed'. all states listed must be truthy
+                    # on the element for the selector to match. full boolean
+                    # expression trees (|, !, parens) come later.
+                    v.states = tail.split[ '&' ]
+                    for [ k: i64 0, k < v.states.count, k += 1 ]
+                        s : v.states[k]
+                        v.states[k] = s.trim[]
+                    v.state = v.states[0]
             processed = v
             v.hold_members[]
         if [ anchored ]
@@ -9374,8 +9449,14 @@ func scan_to [ p_cursor: ref cstr, chars: string ] -> bool
     return false
 
 
-func distance [ a:i8, b:i8 ] -> i64
-    return abs[ sz[ a ] - sz[ b ] ]
+func distance [ a:cstr, b:cstr ] -> i64
+    aa : sz[ a ]
+    bb : sz[ b ]
+    invalid_result : abs [ sz[ a ] - sz[ b ] ]
+    val : abs [ aa - bb ]
+    if [ val > 100 ]
+        val = val
+    return val
 
     
 
