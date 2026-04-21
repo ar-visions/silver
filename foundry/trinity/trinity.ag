@@ -3306,6 +3306,9 @@ shader CanvasUI
     mutable glow_params2  : vec4f
     # inner_ofs.xy, outer_shadow_ofs.zw — pixel offsets
     mutable glow_ofs      : vec4f
+    # fill gradient anchors in world-pixel space (x = p0.xy, y = p1.xy).
+    # gated on grad_c1.a > 0; stroke_opts.z carries the mirror bit.
+    mutable fill_grad_pts : vec4f
     mutable viewport      : vec2f
     mutable fill_offset   : f32
     mutable stroke_offset : f32
@@ -3534,8 +3537,26 @@ shader CanvasUI
                 ? (1.0 - smoothstep(-wp, wp, abs(dist_p - ubo.stroke_offset) - half_w))
                 : 0.0;
 
-            vec4 fill_p   = vec4(ubo.fill_color.rgb * ubo.fill_color.a * fill_cov,
-                                 ubo.fill_color.a   * fill_cov);
+            // two-color fill gradient. grad_c0 = fill_color, grad_c1 = the
+            // second color (alpha 0 disables). anchors are WORLD-space pixels
+            // in fill_grad_pts (p0.xy / p1.xy), so the dot uses v_pos (world),
+            // NOT lpos (element-local). mirror via stroke_opts.z.
+            vec4 fill_c = ubo.fill_color;
+            if (ubo.grad_c1.a > 0.0) {{
+                vec2  gp0 = ubo.fill_grad_pts.xy;
+                vec2  gp1 = ubo.fill_grad_pts.zw;
+                vec2  gd  = gp1 - gp0;
+                float gl2 = dot(gd, gd);
+                float gt  = (gl2 > 0.0001)
+                    ? clamp(dot(v_pos - gp0, gd) / gl2, 0.0, 1.0)
+                    : 0.0;
+                if (ubo.stroke_opts.z > 0.5) {{
+                    gt = abs(2.0 * gt - 1.0);
+                }}
+                fill_c = mix(ubo.grad_c0, ubo.grad_c1, gt);
+            }}
+            vec4 fill_p   = vec4(fill_c.rgb * fill_c.a * fill_cov,
+                                 fill_c.a   * fill_cov);
             vec4 stroke_p = vec4(ubo.stroke_color.rgb * ubo.stroke_color.a * stroke_cov,
                                  ubo.stroke_color.a   * stroke_cov);
             float inner_px = ubo.glow_params.x;
@@ -3707,9 +3728,10 @@ shader CanvasUI
 shader CanvasText
     mutable text_color     : vec4f
     mutable text_grad      : vec4f     # second color for gradient; alpha 0 = solid
-    mutable text_rect      : vec4f     # x, y, w, h of the label's bounding rect
-    mutable text_color_pos : vec2f     # normalized 0..1 position of text_color inside text_rect
-    mutable text_grad_pos  : vec2f     # normalized 0..1 position of text_grad  inside text_rect
+    # canvas stays literal — positions below are world-space pixels, already
+    # resolved by the element layer from whatever unit convention it uses.
+    mutable text_color_pos : vec2f
+    mutable text_grad_pos  : vec2f
     mutable grad_params    : vec4f     # x = mirror (0/1), y/z/w reserved
     mutable viewport       : vec2f
 
@@ -3736,25 +3758,30 @@ shader CanvasText
         // result composes as rgb*a + dst*(1-a). this looked best in testing.
         float a = texture(atlas, v_uv).r;
 
-        // two-color gradient across the label rect when text_grad.a > 0.
-        // positions are normalized (0..1) inside text_rect. mirror (default)
-        // reflects the ramp so text_color sits at both endpoints of the axis
-        // and text_grad sits at the midpoint — the chrome/reflected look.
-        vec3 rgb = ubo.text_color.rgb;
-        if (ubo.text_grad.a > 0.0 && ubo.text_rect.z > 0.5 && ubo.text_rect.w > 0.5) {{
-            vec2  uvn = vec2((v_pos.x - ubo.text_rect.x) / ubo.text_rect.z,
-                             (v_pos.y - ubo.text_rect.y) / ubo.text_rect.w);
-            vec2  p0  = ubo.text_color_pos;
-            vec2  p1  = ubo.text_grad_pos;
-            vec2  d   = p1 - p0;
+        // two-color gradient when text_grad.a > 0. positions are already in
+        // world-space pixels (element layer converted from its own unit
+        // convention). mirror reflects the ramp so text_color sits at the
+        // endpoints and text_grad at the midpoint — the chrome look.
+        vec3  rgb    = ubo.text_color.rgb;
+        float alpha  = ubo.text_color.a;
+        if (ubo.text_grad.a > 0.0) {{
+            vec2  p0     = ubo.text_color_pos;
+            vec2  p1     = ubo.text_grad_pos;
+            vec2  d      = p1 - p0;
             float len_sq = dot(d, d);
-            float t = (len_sq > 0.0001) ? clamp(dot(uvn - p0, d) / len_sq, 0.0, 1.0) : 0.0;
+            float t      = (len_sq > 0.0001)
+                ? clamp(dot(v_pos - p0, d) / len_sq, 0.0, 1.0)
+                : 0.0;
             if (ubo.grad_params.x > 0.5) {{
+                // mirrored: label_color (the focal color) sits at the midpoint
+                // of the axis — i.e. on the cursor when bound — and label_grad
+                // sits at the endpoints (and beyond, via the clamp above).
                 t = abs(2.0 * t - 1.0);
             }}
-            rgb = mix(ubo.text_color.rgb, ubo.text_grad.rgb, t);
+            rgb   = mix(ubo.text_color.rgb, ubo.text_grad.rgb, t);
+            alpha = mix(ubo.text_color.a,   ubo.text_grad.a,   t);
         }}
-        o_color = vec4(rgb, ubo.text_color.a * a);
+        o_color = vec4(rgb, alpha * a);
     }
 
 
@@ -4135,8 +4162,8 @@ struct CanvasState
     fill_offset       : f32
     stroke_offset     : f32
     corner_radii      : vec4f
-    fill_grad         : Gradient
-    stroke_grad       : Gradient
+    fill_gradient     : Gradient
+    stroke_gradient   : Gradient
     font      	      : CanvasFont
     font_size         : i32
     line_height       : f32
@@ -4158,6 +4185,17 @@ struct CanvasState
     hue_shift         : f32
     sat_mul           : f32
     val_mul           : f32
+    # text gradient — second color + axis anchors in world pixels. alpha 0 on
+    # text_grad disables the gradient entirely (falls back to fill_color).
+    text_grad         : vec4f
+    text_color_pos    : vec2f
+    text_grad_pos     : vec2f
+    text_grad_mirror  : bool
+    # fill gradient — same model as text. alpha 0 on fill_grad = off.
+    fill_grad         : vec4f
+    fill_color_pos    : vec2f
+    fill_grad_pos     : vec2f
+    fill_grad_mirror  : bool
 
 
 func sk_color [ clr: rgba ] -> vec4f
@@ -4473,7 +4511,18 @@ Render Canvas
                 blur_rad:      0.0,
                 fill_offset:   0.0,
                 stroke_offset: 0.0,
-                corner_radii:  vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+                corner_radii:  vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                # gradient defaults: alpha-0 colors disable the gradient paths,
+                # so anchors/mirror only matter when a layer actually sets a
+                # gradient color. mirror defaults to true (reflected).
+                text_grad:         vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                text_color_pos:    vec2f [ 0.0, 0.0 ],
+                text_grad_pos:     vec2f [ 0.0, 0.0 ],
+                text_grad_mirror:  true,
+                fill_grad:         vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                fill_color_pos:    vec2f [ 0.0, 0.0 ],
+                fill_grad_pos:     vec2f [ 0.0, 0.0 ],
+                fill_grad_mirror:  true
             ]
             states.push[ st ]
         el
@@ -4519,6 +4568,39 @@ Render Canvas
 
     func stroke_width [ sw: f32 ]
         states[state_depth - 1].stroke_width = sw
+
+    func text_grad [ color: rgba ]
+        # null rgba must mean "no gradient" (alpha 0), not opaque black.
+        # sk_color(null) returns (0,0,0,1), which would enable the gradient
+        # path with black as the far color.
+        states[state_depth - 1].text_grad = (color) ? sk_color[ color ] : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+
+    func text_color_pos [ x: f32, y: f32 ]
+        states[state_depth - 1].text_color_pos = vec2f [ x, y ]
+
+    func text_grad_pos [ x: f32, y: f32 ]
+        states[state_depth - 1].text_grad_pos = vec2f [ x, y ]
+
+    func text_grad_mirror [ m: bool ]
+        states[state_depth - 1].text_grad_mirror = m
+
+    func fill_grad [ color: rgba ]
+        states[state_depth - 1].fill_grad = sk_color[ color ]
+
+    func fill_color_pos [ x: f32, y: f32 ]
+        states[state_depth - 1].fill_color_pos = vec2f [ x, y ]
+
+    func fill_grad_pos [ x: f32, y: f32 ]
+        states[state_depth - 1].fill_grad_pos = vec2f [ x, y ]
+
+    func fill_grad_mirror [ m: bool ]
+        states[state_depth - 1].fill_grad_mirror = m
+
+    func transform_tx [] -> f32
+        return states[state_depth - 1].transform.tx
+
+    func transform_ty [] -> f32
+        return states[state_depth - 1].transform.ty
 
     func inner_glow [ color: rgba, px: f32 ]
         c : vec4f [ sk_color[ color ] ]
@@ -4572,16 +4654,16 @@ Render Canvas
         states[state_depth - 1].blur_rad = br
 
     func set_fill_gradient [ g: Gradient ]
-        states[state_depth - 1].fill_grad = g
+        states[state_depth - 1].fill_gradient = g
 
     func set_stroke_gradient [ g: Gradient ]
-        states[state_depth - 1].stroke_grad = g
+        states[state_depth - 1].stroke_gradient = g
 
     func clear_fill_gradient []
-        states[state_depth - 1].fill_grad = null
+        states[state_depth - 1].fill_gradient = null
 
     func clear_stroke_gradient []
-        states[state_depth - 1].stroke_grad = null
+        states[state_depth - 1].stroke_gradient = null
 
     func set_clip [ x: i32, y: i32, cw: i32, ch: i32 ]
         # intersect with parent clip
@@ -4671,8 +4753,12 @@ Render Canvas
         # the entire string regardless of glyph count.
         st : CanvasState states[state_depth - 1]
         atlas_size : f32 [ f32 glyph_atlas.size ]
-        text_shader.viewport = vec2f [ f32 width, f32 height ]
-        text_shader.text_color = st.fill_color
+        text_shader.viewport       = vec2f [ f32 width, f32 height ]
+        text_shader.text_color     = st.fill_color
+        text_shader.text_grad      = vec4f [ 0.0, 0.0, 1.0, 1.0 ]  # DEBUG: force BLUE
+        text_shader.text_color_pos = st.text_color_pos
+        text_shader.text_grad_pos  = st.text_grad_pos
+        text_shader.grad_params    = vec4f [ 1.0, 0.0, 0.0, 0.0 ]  # DEBUG: force mirror on
         verts : ref f32 [ text_vbo.vertex_data ]
         vi    : i32 [ 0 ]
         # text shader bakes vertex positions in viewport pixels and doesn't
@@ -4802,8 +4888,8 @@ Render Canvas
         ##
 
     func setup_gradient [ st: ref CanvasState ] -> f32
-        if [ st.fill_grad && st.fill_grad.kind != GradientType.none ]
-            g : Gradient st.fill_grad
+        if [ st.fill_gradient && st.fill_gradient.kind != GradientType.none ]
+            g : Gradient st.fill_gradient
             ui_shader.grad0 = vec4f [ g.x0, g.y0, g.x1, g.y1 ]
             n : g.stops.count
             if [ n >= 1 ]
@@ -5068,9 +5154,19 @@ Render Canvas
             setup_shader [ st, pbx, pby, pbw, pbh ]
             ui_shader.fill_color = st.fill_color
             ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+            ui_shader.grad_c0 = st.fill_color
+            ui_shader.grad_c1 = vec4f [ st.fill_grad.x, st.fill_grad.y, st.fill_grad.z, st.fill_grad.w ]
+
+            ui_shader.grad_c0 = st.fill_color
+            ui_shader.grad_c1 = st.fill_grad
+            
+            ui_shader.fill_grad_pts = vec4f [
+                st.fill_color_pos.x, st.fill_color_pos.y,
+                st.fill_grad_pos.x,  st.fill_grad_pos.y ]
             j : f32 [ st.stroke_join ]
             c : f32 [ st.stroke_cap ]
-            ui_shader.stroke_opts = vec4f [ j, c, 0.0, spread ]
+            mirror_bit : f32 [ (st.fill_grad_mirror) ? 1.0 : 0.0 ]
+            ui_shader.stroke_opts = vec4f [ j, c, mirror_bit, spread ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, DrawMode.sdf_path ]
             #printf[ "draw_fill: mode=6 (sdf_path) rect=(%f,%f %fx%f) edges=%i\n", pbx, pby, pbw, pbh, ne ]
 
@@ -6655,10 +6751,10 @@ ielement element
                         ct.container.member_set[ ct.member, mixed ]
 
         if [ bindings ]
-            for [ b: Binding, k: string ] in bindings
-                v : a.member_object[ b.src ]
+            for [ e: StyleEntry, k: string ] in bindings
+                v : a.member_object[ e.bound_src ]
                 if [ v ]
-                    b.container.member_set[ b.member, v ]
+                    e.container.member_set[ e.bound_mem, v ]
 
         for [ ee: element, id: string ] in elements
             ee.animate_within[ ]
@@ -6749,10 +6845,13 @@ Display Window
         # skip the transition/value path entirely.
         if [ best.binding ]
             if [ !inst.bindings ]
-                inst.bindings = map Binding [ string ] [ ]
+                inst.bindings = map StyleEntry [ string ] [ ]
             src_m : Au_t [ Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ] ]
             if [ src_m ]
-                inst.bindings[ member.ident ] = Binding [ container: value_holder, member: member, src: src_m ]
+                best.container = value_holder
+                best.bound_mem = member
+                best.bound_src = src_m
+                inst.bindings[ member.ident ] = best
             return
 
         # transition handling
@@ -7389,12 +7488,35 @@ Display Window
             
             if [ [ layer.fill_color && layer.fill_color.a > 0.0] || [layer.stroke_color && layer.stroke_color.a > 0.0] ]
                 cv.save             [ ]
+                # crisp-pixel offset: odd stroke widths need to straddle the
+                # pixel grid at half-pixel centers. stroke of 1 → (0.5, 0.5),
+                # stroke of 2 → (0, 0).
+                sw_int : i32 [ i32 layer.stroke_width ]
+                crisp  : f32 [ ((sw_int % 2) == 1) ? 0.5 : 0.0 ]
+                if [ crisp > 0.0 ]
+                    cv.translate    [ crisp, crisp ]
                 cv.set_stroke_size  [ layer.stroke_width ]
                 cv.set_stroke_cap   [ layer.stroke_cap  ]
                 cv.set_stroke_join  [ layer.stroke_join ]
-                cv.rounded_rect     [ b.x, b.y, b.w, b.h, 8, 8 ]
+                cv.rounded_rect     [ b.x, b.y, b.w, b.h, rx, ry ]
                 cv.fill_color       [ layer.fill_color ]
                 cv.stroke_color     [ layer.stroke_color ]
+                # fill gradient anchors — same element-unit → world-pixel
+                # convention as the label gradient. axis straddles the anchor
+                # so mirror puts the highlight ON the anchor point.
+                fp_x : f32 [ (abs[layer.fill_color_pos.x] < 1.0) ? layer.fill_color_pos.x * e.bounds.w : layer.fill_color_pos.x ]
+                fp_y : f32 [ (abs[layer.fill_color_pos.y] < 1.0) ? layer.fill_color_pos.y * e.bounds.h : layer.fill_color_pos.y ]
+                # DEBUG: hardcoded to test whether layer fields reach here.
+                f_rad : f32 [ layer.fill_gradient_radius ]
+                f_ang : f32 [ radians[ layer.fill_gradient_degrees ] ]
+                f_hx  : f32 [ cosf[ f_ang ] * f_rad * 0.5 ]
+                f_hy  : f32 [ sinf[ f_ang ] * f_rad * 0.5 ]
+                f_ax  : f32 [ cv.transform_tx[] + fp_x ]
+                f_ay  : f32 [ cv.transform_ty[] + fp_y ]
+                cv.fill_grad        [ layer.fill_gradient ]
+                cv.fill_color_pos   [ f_ax - f_hx, f_ay - f_hy ]
+                cv.fill_grad_pos    [ f_ax + f_hx, f_ay + f_hy ]
+                cv.fill_grad_mirror [ layer.fill_gradient_mirror ]
                 cv.paint            [ ]
                 cv.restore          [ ]
 
@@ -7408,6 +7530,28 @@ Display Window
                 cv.fill_color   [ layer.label_color ]
                 cv.font_size    [ layer.label_size ]
                 cv.line_height  [ layer.label_height ]
+                # gradient anchor: element-unit → world-pixel. |v| < 1 means
+                # a fraction of e.bounds; otherwise pixels. the axis straddles
+                # the anchor point (p0 = anchor - halfDir, p1 = anchor + halfDir)
+                # so mirror puts the highlight ON the anchor (cursor-following
+                # chrome). direction is label_grad_degrees from +x (screen
+                # coords: 0 = right, 90 = down).
+                cp_x : f32 [ (abs[layer.label_color_pos.x] < 1.0) ? layer.label_color_pos.x * e.bounds.w : layer.label_color_pos.x ]
+                cp_y : f32 [ (abs[layer.label_color_pos.y] < 1.0) ? layer.label_color_pos.y * e.bounds.h : layer.label_color_pos.y ]
+                rad  : f32 [ layer.label_gradient_radius ]
+                ang  : f32 [ radians[ layer.label_gradient_degrees ] ]
+                hx   : f32 [ cosf[ ang ] * rad * 0.5 ]
+                hy   : f32 [ sinf[ ang ] * rad * 0.5 ]
+                # canvas transform is already at the element's world origin
+                # (parent called cv.translate[e.bounds.x, e.bounds.y] before
+                # recursing). v_pos in the shader is world-space, so the
+                # anchor must use the transform, not e.bounds.x/y.
+                ax   : f32 [ cv.transform_tx[] + cp_x ]
+                ay   : f32 [ cv.transform_ty[] + cp_y ]
+                cv.text_grad        [ layer.label_gradient ]
+                cv.text_color_pos   [ ax - hx, ay - hy ]
+                cv.text_grad_pos    [ ax + hx, ay + hy ]
+                cv.text_grad_mirror [ layer.label_gradient_mirror ]
                 cv.draw_text    [ (label) ? label : element_text, b, align, offset, layer.label_overflow ]
                 cv.restore      [ ]
 
@@ -8267,7 +8411,12 @@ class Layer
     mutable bounds             : rect
     public radius              : Radius
 
-    public fill_color          : rgba
+    public fill_color               : rgba
+    public fill_color_pos           : vec2f
+    public fill_gradient            : rgba
+    public fill_gradient_radius     : f32
+    public fill_gradient_degrees    : f32
+    public fill_gradient_mirror     : bool
     public fill_offset         : f32
     public fill_shadow         : Shadow
     public fill_glow           : Glow
@@ -8285,11 +8434,11 @@ class Layer
 
     public label               : string
     public label_color         : rgba
-    public label_color_pos     : vec2f [ 0.0, 0.0 ]
-    public label_grad          : rgba
-    public label_grad_pos      : vec2f [ 0.0, 1.0 ]
-    public label_grad_radius   : f32   [ 1.0 ]
-    public label_grad_mirror   : bool  [ true ]
+    public label_color_pos     : vec2f
+    public label_gradient          : rgba
+    public label_gradient_radius   : f32
+    public label_gradient_degrees  : f32
+    public label_gradient_mirror   : bool
     public label_shadow        : Shadow
     public label_glow          : Glow
     public label_size          : f32   [ 22.0 ]
