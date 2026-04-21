@@ -1013,6 +1013,7 @@ public:
             Printer->BeginSourceFile(LO, nullptr);
             Begun = true;
         }
+        DiagnosticConsumer::HandleDiagnostic(L, Info);
         Printer->HandleDiagnostic(L, Info);
     }
 };
@@ -1281,11 +1282,12 @@ none aether_import_includes(aether a) {
     llvm::ArrayRef<symbol> cmdline_args(compilation_args);
     Diags->setSuppressSystemWarnings(true);
 
-    CompilerInvocation::CreateFromArgs(
+    bool invocation_ok = CompilerInvocation::CreateFromArgs(
         *Invocation,
         cmdline_args,
         *Diags
     );
+    verify(invocation_ok && !Diags->hasErrorOccurred(), "failed to build clang import invocation for %o", c);
 
     CompilerInstance* compiler = new CompilerInstance(Invocation);
     auto& LO = Invocation->getLangOpts();
@@ -1318,10 +1320,14 @@ none aether_import_includes(aether a) {
         std::make_unique<MacroCollector2>(instance));
     compiler->createASTContext();
     ASTContext& ctx = compiler->getASTContext();
+    compiler->getPreprocessor().getBuiltinInfo().initializeBuiltins(
+        compiler->getPreprocessor().getIdentifierTable(),
+        compiler->getPreprocessor().getLangOpts());
 
     if (true) {
         AetherASTConsumer2 consumer(a);
         ParseAST(compiler->getPreprocessor(), &consumer, ctx);
+        verify(!Diags->hasErrorOccurred(), "failed to build import model for %o", c);
     } else {
         /*
         AetherEmitAction2 act(e);
@@ -1479,11 +1485,12 @@ path aether_include(aether e, Au inc, string ns) {
     llvm::ArrayRef<symbol> cmdline_args(compilation_args);
     Diags->setSuppressSystemWarnings(true);
 
-    CompilerInvocation::CreateFromArgs(
+    bool invocation_ok = CompilerInvocation::CreateFromArgs(
         *Invocation,
         cmdline_args,
         *Diags
     );
+    verify(invocation_ok && !Diags->hasErrorOccurred(), "failed to build clang import invocation for %o", c);
 
     CompilerInstance* compiler = new CompilerInstance(Invocation);
     auto& LO = Invocation->getLangOpts();
@@ -1516,13 +1523,18 @@ path aether_include(aether e, Au inc, string ns) {
         std::make_unique<MacroCollector2>(instance));
     compiler->createASTContext();
     ASTContext& ctx = compiler->getASTContext();
+    compiler->getPreprocessor().getBuiltinInfo().initializeBuiltins(
+        compiler->getPreprocessor().getIdentifierTable(),
+        compiler->getPreprocessor().getLangOpts());
 
     if (is_header) {
         AetherASTConsumer2 consumer(e);
         ParseAST(compiler->getPreprocessor(), &consumer, ctx);
+        verify(!Diags->hasErrorOccurred(), "failed to build import model for %o", c);
     } else {
         AetherEmitAction2 act(e);
         compiler->ExecuteAction(act);
+        verify(!Diags->hasErrorOccurred(), "failed to build import model for %o", ipath);
         std::unique_ptr<llvm::Module> M = act.takeModule();
         LLVMModuleRef cMod = M ? wrap(M.release()) : nullptr;
         //(instance)->module = cMod;
