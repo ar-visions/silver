@@ -1,0 +1,44 @@
+/* trinity!  ..help. */
+@import "trinity.css"
+
+Editor {
+    area:             l10 t10 r1 b20
+
+    layers.base:
+        area:           0
+        fill_offset:    0
+        fill_color:     #fff
+
+    layers.border:
+        area:           -1
+        stroke_offset:  -1
+        stroke_width:    2
+        stroke_color:   #fff
+
+    layers.text:
+        area:           -22
+        label:          'a string.. probably goes into a string holder called text, without saying text'
+        editable:       true
+        selectable:     true
+        multiline:      true
+}
+
+Editor:hovered, Editor:pressed {
+    layers.base:
+        fill_color:     #ff0
+}
+
+/* this should be a comment */
+World.iris {
+    rotate:             [0 1 0 30deg, 1 0 0 -30deg]
+    scale:              1.44 1.44 1.44
+    area:               l0 b256 w256 h256
+}
+
+World.iris:hovered {
+    rotate:             [0 1 0 30deg, 1 0 0 -40deg], 400ms
+}
+
+World.iris:pressed {
+    rotate:             [0 1 0 30deg, 1 0 0 0deg], 400ms
+}

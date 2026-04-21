@@ -1,0 +1,285 @@
+<!--
+ - hyperspace
+ - basic jscript example showing a parallax effect on cube
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>hyperspace unit cube</title>
+    <style>
+        body { margin: 0; }
+        .videoView {
+            position: relative;
+            float: left;
+            width: 48%;
+        }
+        video {
+            transform: rotateY(180deg);
+            -webkit-transform: rotateY(180deg);
+            -moz-transform: rotateY(180deg);
+        }
+        .output_canvas {
+            position: absolute;
+            left: 0px;
+            top: 0px;
+            transform: rotateY(180deg);
+            -webkit-transform: rotateY(180deg);
+            -moz-transform: rotateY(180deg);
+        }
+    </style>
+</head>
+<body>
+    <div id="liveView" class="videoView">
+        <div style="position: absolute;">
+            <video id="webcam" autoplay playsinline></video>
+            <canvas class="output_canvas" id="output_canvas"></canvas>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.module.js';
+        import vision from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+
+        const { FaceLandmarker, FilesetResolver, DrawingUtils } = vision;
+        const vertexShader = `
+
+uniform vec3 uObserverPosition;  // Observer position in world coordinates
+uniform vec2 uScreenSize;        // Screen dimensions in physical units
+uniform float uDistanceToScreen; // Distance from observer to screen
+uniform float near;              // Near clipping plane
+uniform float far;               // Far clipping plane
+
+varying vec3 vPosition; // Pass-through for debugging in the fragment shader
+
+void main() {
+    vec4 worldPosition = vec4(position, 1.0);
+
+    // Calculate the relative position of the vertex from the observer
+    vec3 relativePosition = worldPosition.xyz - uObserverPosition;
+
+    // Dynamic field of view based on the screen size and distance to the screen
+    float fovX = 2.0 * atan((uScreenSize.x / 2.0) / uDistanceToScreen);
+    float fovY = 2.0 * atan((uScreenSize.y / 2.0) / uDistanceToScreen);
+
+    // Calculate skew based on observer's position
+    float skewX = uObserverPosition.x / -uObserverPosition.z; // Horizontal skew
+    float skewY = uObserverPosition.y / -uObserverPosition.z * 1.5; // Vertical skew
+
+    // Perspective projection matrix (constructed dynamically)
+    mat4 projectionMatrix = mat4(
+        vec4(1.0 / tan(fovX / 2.0), 0.0, 0.0, skewX),
+        vec4(0.0, 1.0 / tan(fovY / 2.0), 0.0, skewY),
+        vec4(0.0, 0.0, -(far + near) / (far - near), -1.0),
+        vec4(0.0, 0.0, -(2.0 * far * near) / (far - near), 0.0)
+    );
+
+    
+    vec3 up    = vec3(0.0, 1.0, 0.0); // "Up" direction in world space
+    vec3 zAxis = normalize(vec3(0.0, 0.0, 0.0) - uObserverPosition); // Corrected: target - position
+    vec3 xAxis = normalize(cross(up, zAxis)); // Right direction: Perpendicular to "up" and "forward"
+    vec3 yAxis = cross(zAxis, xAxis); // Recalculate "up" direction to ensure orthogonality
+
+    // Create the view matrix
+    vec3 obs = normalize(vec3(dot(xAxis, uObserverPosition), dot(yAxis, uObserverPosition), dot(zAxis, uObserverPosition))) * uDistanceToScreen;
+
+    mat4 viewMatrix = mat4(
+        vec4(xAxis, 0.0),
+        vec4(yAxis, 0.0),
+        vec4(-zAxis, 0.0),
+        vec4(obs, 1.0)
+    );
+
+    // Combine view and projection transformations
+    gl_Position = projectionMatrix * viewMatrix * worldPosition;
+
+    // Pass through vertex position for debugging
+    vPosition = worldPosition.xyz;
+}
+
+
+        `;
+
+        const fragmentShader = `
+varying vec3 vPosition;
+void main() {
+    vec3 color = vec3(1.0, 0.133, 1.0);
+    gl_FragColor = vec4(color, 1.0);
+}
+        `;
+
+        // Scene setup
+        const near = 1.0;
+        const far  = 100.0;
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(85, window.innerWidth / window.innerHeight, near, far);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x1611ab);
+        document.body.appendChild(renderer.domElement);
+
+        // Cube setup
+        // 8 inch cube, centered at z=-8 (screen plane at z=0)
+        const vertices = [
+            [-4, -4, 0], [4, -4, 0], [4, 4, 0], [-4, 4, 0],    // Front face (at screen)
+            [-4, -4, 8], [4, -4, 8], [4, 4, 8], [-4, 4, 8]     // Back face (8" deep)
+        ];
+
+        const edges = [
+            [0, 1], [1, 2], [2, 3], [3, 0],
+            [4, 5], [5, 6], [6, 7], [7, 4],
+            [0, 4], [1, 5], [2, 6], [3, 7]
+        ];
+
+        const geometry = new THREE.BufferGeometry();
+        const edgeVertices = new Float32Array(edges.flatMap(edge => [
+            ...vertices[edge[0]],
+            ...vertices[edge[1]]
+        ]));
+        geometry.setAttribute('position', new THREE.BufferAttribute(edgeVertices, 3));
+
+        const material = new THREE.ShaderMaterial({
+            vertexShader,
+            fragmentShader,
+            uniforms: {
+                uObserverPosition: { value: new THREE.Vector3(0, 0, -12) }, // Initial observer position
+                uScreenSize: { value: new THREE.Vector2(26, 15) },          // Screen dimensions (width, height)
+                uDistanceToScreen: { value: 12.0 },                         // Distance to screen
+                near: { value: near },
+                far: { value: far }
+            }
+        });
+
+        const cube = new THREE.LineSegments(geometry, material);
+        scene.add(cube);
+
+        // Face tracking setup
+        let faceLandmarker;
+        let webcamRunning = false;
+        let runningMode = "IMAGE";
+        const video = document.getElementById("webcam");
+        const canvasElement = document.getElementById("output_canvas");
+        const canvasCtx = canvasElement.getContext("2d");
+        const drawingUtils = new DrawingUtils(canvasCtx);
+        let lastVideoTime = -1;
+        let results = undefined;
+        let left = { x: 0.5, y: 0, z: 0 };
+        let right = { x: 0.5, y: 0, z: 0 };
+        const videoWidth = 480;
+
+        async function createFaceLandmarker() {
+            const filesetResolver = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+            );
+            faceLandmarker = await FaceLandmarker.createFromOptions(filesetResolver, {
+                baseOptions: {
+                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+                    delegate: "GPU"
+                },
+                outputFaceBlendshapes: true,
+                runningMode,
+                numFaces: 1
+            });
+        }
+
+        async function enableCam() {
+            webcamRunning = true;
+            const constraints = {
+                video: {
+                    width: { ideal: 640 },
+                    height: { ideal: 380 }
+                }
+            };
+            navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+                video.srcObject = stream;
+                video.addEventListener("loadeddata", predictWebcam);
+            });
+        }
+
+        async function predictWebcam() {
+            if (!faceLandmarker) return;
+
+            const radio = video.videoHeight / video.videoWidth;
+            video.style.width = videoWidth + "px";
+            video.style.height = videoWidth * radio + "px";
+            canvasElement.style.width = videoWidth + "px";
+            canvasElement.style.height = videoWidth * radio + "px";
+            canvasElement.width = video.videoWidth;
+            canvasElement.height = video.videoHeight;
+
+            if (runningMode === "IMAGE") {
+                runningMode = "VIDEO";
+                await faceLandmarker.setOptions({ runningMode });
+            }
+
+            let startTimeMs = performance.now();
+            if (lastVideoTime !== video.currentTime) {
+                lastVideoTime = video.currentTime;
+                results = faceLandmarker.detectForVideo(video, startTimeMs);
+            }
+
+            if (results.faceLandmarks) {
+                for (const landmarks of results.faceLandmarks) {
+                    drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_TESSELATION, { color: "#C0C0C070", lineWidth: 1 });
+                    drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE, { color: "#FF3030" });
+                    drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYEBROW, { color: "#FF3030" });
+                    drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_LEFT_EYE, { color: "#30FF30" });
+                    drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_LEFT_EYEBROW, { color: "#30FF30" });
+                    drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, { color: "#E0E0E0" });
+                    drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_LIPS, { color: "#E0E0E0" });
+                    drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_RIGHT_IRIS, { color: "#FF3030" });
+                    drawingUtils.drawConnectors(landmarks, FaceLandmarker.FACE_LANDMARKS_LEFT_IRIS, { color: "#30FF30" });
+
+                    left = landmarks[468];
+                    right = landmarks[473];
+                }
+            }
+
+            if (webcamRunning) {
+                window.requestAnimationFrame(predictWebcam);
+            }
+        }
+
+        camera.position.z = 16.0;
+        camera.lookAt(0, 0, 0);
+
+
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        await createFaceLandmarker();
+        await enableCam();
+
+                // Screen and observer settings
+        const screenWidth = 26; // Screen width in inches
+        const screenHeight = 15; // Screen height in inches
+        const distanceToScreen = 12; // Distance from observer to screen in inches
+
+        // Update uniforms in the animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Calculate observer position from face tracking
+            const observer_x = ((left.x + right.x) / 2 - 0.5) * screenWidth;
+            const observer_y = ((0.5 + 0.5) / 2 - 0.5) * screenHeight;
+
+            // Pass updated uniforms to the shader
+            material.uniforms.uObserverPosition.value.set(-observer_x, -observer_y, -distanceToScreen);
+            material.uniforms.uScreenSize.value.set(screenWidth, screenHeight);
+            material.uniforms.uDistanceToScreen.value = distanceToScreen;
+
+            // Render the scene
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+    </script>
+</body>
+</html>

@@ -1,0 +1,1035 @@
+import vec
+import img
+import gltf
+import trinity
+
+import <stdio.h>
+    -lm
+
+enum EarthSurface
+    color        : 0
+    normal       : 1
+    elevation    : 2
+    water        : 3
+    water_blur   : 4
+    cloud        : 5
+    bathymetry   : 6
+    lights       : 7
+
+enum PurpleSurface
+    color        : 0
+    cloud        : 1
+
+
+enum Language
+    C      : 0
+    python : 1
+    CSharp : 2
+    VBasic : 3
+
+
+shader Earth
+    mutable model   : mat4f
+    mutable view    : mat4f
+    mutable proj    : mat4f
+    mutable cam_pos : vec4f
+    mutable time    : f32
+
+    attrib color        : LayoutBinding [ type:typeid[ EarthSurface ], id:EarthSurface.color,      count:1, format: typeid[ rgba8 ] ]
+    attrib normal       : LayoutBinding [ type:typeid[ EarthSurface ], id:EarthSurface.normal,     count:1, format: typeid[ rgba8 ] ]
+    attrib elevation    : LayoutBinding [ type:typeid[ EarthSurface ], id:EarthSurface.elevation,  count:1, format: typeid[ rgba8 ] ]
+    attrib water        : LayoutBinding [ type:typeid[ EarthSurface ], id:EarthSurface.water,      count:1, format: typeid[ rgba8 ] ]
+    attrib water_blur   : LayoutBinding [ type:typeid[ EarthSurface ], id:EarthSurface.water_blur, count:1, format: typeid[ rgba8 ] ]
+    attrib cloud        : LayoutBinding [ type:typeid[ EarthSurface ], id:EarthSurface.cloud,      count:1, format: typeid[ rgba8 ] ]
+    attrib bathymetry   : LayoutBinding [ type:typeid[ EarthSurface ], id:EarthSurface.bathymetry, count:1, format: typeid[ rgba8 ] ]
+    attrib lights       : LayoutBinding [ type:typeid[ EarthSurface ], id:EarthSurface.lights,     count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_normal     : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib v_tangent    : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_bitangent  : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
+
+    attrib f_normal     : FragmentInput [ type:typeid[ vec3f ] ]
+    attrib f_uv         : FragmentInput [ type:typeid[ vec2f ] ]
+
+    attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        fov_deg : f32 60.0f
+        aspect  : f32 1920.0f / 1080.0f
+        near    : f32 0.1f
+        far     : f32 100.0f
+        eye2    : vec3f [0.0f,  0.0f,  1.5f]
+        target2 : vec3f [0.0f,  0.0f,  0.0f]
+        up2     : vec3f [0.0f, -1.0f,  0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[70.0f], 1.0f, 0.1f, 100.0f]
+        view    = mat4f.look_at    [eye2, target2, up2]
+
+    func rotateY [ angle: f32 ] -> GLSL mat3f {
+        float c = cos(angle);
+        float s = sin(angle);
+        return mat3(
+            vec3(c, 0.0, -s),
+            vec3(0.0, 1.0, 0.0),
+            vec3(s, 0.0, c)
+        );
+    }
+
+    func sdf_sphere [ p: vec3f, radius: f32, squash: f32 ] -> GLSL float {
+        // squash factor < 1.0 flattens vertically
+        vec3 q = vec3(p.x, p.y / squash, p.z);
+        return length(q) - radius;
+    }
+
+    func sdf_cylinder [ p: vec3f, h: f32, r: f32 ] -> GLSL float {
+        vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h);
+        return min(max(d.x, d.y), 0.0) + length(max(d, vec2(0.0)));
+    }
+
+    # permutation function
+    func permute4 [ x: vec4f ] -> GLSL vec4f {
+        return mod((x * 34.0 + 1.0) * x, vec4(289.0));
+    }
+
+    # fast inverse sqrt
+    func taylorInvSqrt4 [ r: vec4f ] -> GLSL vec4f {
+        return 1.79284291400159 - 0.85373472095314 * r;
+    }
+
+    # smootherstep fade curve
+    func fade [ t: vec3f ] -> GLSL vec3f {
+        return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+    }
+
+    # basic perlin 3D noise
+    func perlin3D [ P: vec3f ] -> GLSL float {
+        vec3 Pi0 = mod(floor(P), vec3(289.0));
+        vec3 Pi1 = mod(Pi0 + vec3(1.0), vec3(289.0));
+        vec3 Pf0 = fract(P);
+        vec3 Pf1 = Pf0 - vec3(1.0);
+
+        vec4 ix = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
+        vec4 iy = vec4(Pi0.y, Pi0.y, Pi1.y, Pi1.y);
+        vec4 iz0 = vec4(Pi0.z);
+        vec4 iz1 = vec4(Pi1.z);
+
+        vec4 ixy = permute4(permute4(ix) + iy);
+        vec4 ixy0 = permute4(ixy + iz0);
+        vec4 ixy1 = permute4(ixy + iz1);
+
+        vec4 gx0 = fract(ixy0 / 7.0) * 2.0 - 1.0;
+        vec4 gy0 = fract(floor(ixy0 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz0 = 1.0 - abs(gx0) - abs(gy0);
+
+        vec4 gx1 = fract(ixy1 / 7.0) * 2.0 - 1.0;
+        vec4 gy1 = fract(floor(ixy1 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz1 = 1.0 - abs(gx1) - abs(gy1);
+
+        vec4 sz0 = step(gz0, vec4(0.0));
+        gx0 -= sz0 * (step(0.0, gx0) - 0.5);
+        gy0 -= sz0 * (step(0.0, gy0) - 0.5);
+
+        vec4 sz1 = step(gz1, vec4(0.0));
+        gx1 -= sz1 * (step(0.0, gx1) - 0.5);
+        gy1 -= sz1 * (step(0.0, gy1) - 0.5);
+
+        vec3 g000 = vec3(gx0.x, gy0.x, gz0.x);
+        vec3 g100 = vec3(gx0.y, gy0.y, gz0.y);
+        vec3 g010 = vec3(gx0.z, gy0.z, gz0.z);
+        vec3 g110 = vec3(gx0.w, gy0.w, gz0.w);
+        vec3 g001 = vec3(gx1.x, gy1.x, gz1.x);
+        vec3 g101 = vec3(gx1.y, gy1.y, gz1.y);
+        vec3 g011 = vec3(gx1.z, gy1.z, gz1.z);
+        vec3 g111 = vec3(gx1.w, gy1.w, gz1.w);
+
+        vec4 norm0 = taylorInvSqrt4(vec4(dot(g000, g000), dot(g010, g010), dot(g100, g100), dot(g110, g110)));
+        g000 *= norm0.x;
+        g010 *= norm0.y;
+        g100 *= norm0.z;
+        g110 *= norm0.w;
+        vec4 norm1 = taylorInvSqrt4(vec4(dot(g001, g001), dot(g011, g011), dot(g101, g101), dot(g111, g111)));
+        g001 *= norm1.x;
+        g011 *= norm1.y;
+        g101 *= norm1.z;
+        g111 *= norm1.w;
+
+        float n000 = dot(g000, Pf0);
+        float n100 = dot(g100, vec3(Pf1.x, Pf0.y, Pf0.z));
+        float n010 = dot(g010, vec3(Pf0.x, Pf1.y, Pf0.z));
+        float n110 = dot(g110, vec3(Pf1.xy, Pf0.z));
+        float n001 = dot(g001, vec3(Pf0.xy, Pf1.z));
+        float n101 = dot(g101, vec3(Pf1.x, Pf0.y, Pf1.z));
+        float n011 = dot(g011, vec3(Pf0.x, Pf1.yz));
+        float n111 = dot(g111, Pf1);
+
+        vec3 fade_xyz = fade(Pf0);
+        vec4 n_z = mix(vec4(n000, n100, n010, n110), vec4(n001, n101, n011, n111), fade_xyz.z);
+        vec2 n_yz = mix(n_z.xy, n_z.zw, fade_xyz.y);
+        float n_xyz = mix(n_yz.x, n_yz.y, fade_xyz.x);
+
+        return n_xyz * 0.5 + 0.5;
+    }
+
+    # fractal brownian motion (fbm) using perlin noise
+    func fbm [ pos: vec3f, y_translate: f32 ] -> GLSL float {
+        float value = 0.0;
+        float amplitude = 0.5;
+        float frequency = 0.1;
+        for (int i = 0; i < 6; ++i) {
+            value += amplitude * perlin3D(pos * frequency + vec3(0.0, y_translate * 11.0, 0.0));
+            amplitude *= 0.5;
+            frequency *= 2.0;
+        }
+        return value;
+    }
+
+    # applies atmospheric limb tint to a surface color. blue during day,
+    # warm at terminator. vdir must be world-space (cam_pos - world_pos).
+    func atmos_tint [ surf: vec3f, n: vec3f, vdir: vec3f, sdir: vec3f ] -> GLSL vec3f {
+        float ndv      = max(dot(n, vdir), 0.0);
+        float raw_sl   = dot(n, sdir);
+        float cosZ     = max(raw_sl, -0.10);
+        float air_mass = 1.0 / (cosZ + 0.22);
+
+        vec3  sigma         = vec3(0.06, 0.15, 0.38);
+        vec3  transmittance = exp(-sigma * air_mass);
+        float sun_intensity = smoothstep(-0.10, 0.18, raw_sl);
+        vec3  sun_c         = transmittance * (0.4 + 1.8 * sun_intensity);
+
+        // atmospheric extinction — wide GENTLE fade from surface through blue
+        // atmosphere into space clear-color, no hard silhouette during day.
+        float limb_rim  = pow(1.0 - ndv, 5.0);
+        float limb_soft = pow(1.0 - ndv, 2.2);
+        float limb_wide = pow(1.0 - ndv, 0.9);    // very wide soft ramp
+        float day_f     = smoothstep(0.00, 0.35, raw_sl);
+        float grazing   = smoothstep(-0.20, 0.08, raw_sl) * smoothstep(0.55, 0.08, raw_sl);
+
+        vec3  rayleigh = vec3(0.14, 0.40, 0.92);
+        vec3  tint     = rayleigh * day_f * 0.70 + sun_c * grazing * 1.6;
+
+        // fade to scene clear color at silhouette, matches background exactly.
+        vec3  space_c    = vec3(0.088, 0.088, 0.188);
+        vec3  surf_faded = mix(surf, space_c, clamp(limb_wide, 0.0, 1.0));
+
+        // in-scatter tint peaks INSIDE the disk (gated by ndv), NOT at the
+        // silhouette — so silhouette pixel = space_c = background, no edge.
+        float in_scatter = ndv * limb_soft;
+        float mix_amt    = in_scatter * (0.15 + 0.40 * day_f);
+        return mix(surf_faded, tint, clamp(mix_amt, 0.0, 0.50));
+    }
+
+    func fragment[] -> GLSL none {
+        vec2 uv = v_uv;
+
+        // === Lighting setup ===
+        // locals are prefixed (n_/w_/b_/e_/l_/c_) so they don't shadow the
+        // sampler2Ds named `normal`/`water`/`bathymetry`/`elevation`/`lights`/`color`.
+        vec3 n_view   = normalize(v_normal);
+        vec3 sun_dir  = normalize(vec3(0.2, 0.0, 0.8)); // fixed light source
+        vec3 view_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+
+        vec3  normal_map        = texture(normal, v_uv).rgb * 2.0 - 1.0;
+        mat3  TBN               = mat3(normalize(v_tangent), normalize(v_bitangent), n_view);
+        vec3  perturbed_normal2 = normalize(TBN * normal_map);
+
+        float NdotL    = max(dot(perturbed_normal2, sun_dir), 0.0);
+        vec3  half_dir = normalize(sun_dir + view_dir);
+        float spec     = pow(max(dot(perturbed_normal2, half_dir), 0.0), 28.0);
+
+        // === Textures ===
+        vec3  albedo = texture(color, uv).rgb;
+
+        float w_amt  = texture(water, uv).r;
+        float clouds = texture(cloud,      uv).r;
+        float e_amt  = texture(elevation,  uv).r;
+        float b_amt  = texture(bathymetry, uv).r;
+        float l_amt  = texture(lights,     uv).r;
+
+        // === Water coloring ===
+        vec3 water_color = mix(vec3(0.0, 0.1, 0.1), vec3(0.2, 0.6, 1.0), b_amt);
+        albedo = mix(albedo, water_color, w_amt);
+
+        // === Elevation / bathymetry tint ===
+        float elevation_effect = smoothstep(0.5, 1.0, e_amt);
+        float bathy_effect     = w_amt * smoothstep(0.0, 0.5, b_amt);
+        vec3  terrain_tint     = mix(vec3(0.8, 0.6, 0.3), vec3(0.2, 0.4, 0.7), bathy_effect);
+        albedo = mix(albedo, terrain_tint, 0.3 * bathy_effect + 0.2 * elevation_effect);
+
+        // === Specular reflection on water ===
+        float edge_fade = pow(1.0 - dot(perturbed_normal2, view_dir), 2.0);
+        vec3  specular  = vec3(1.0) * spec * 0.4 * w_amt;
+        specular       += vec3(1.0) * w_amt * edge_fade;
+
+        // === Ambient + Diffuse ===
+        float ambient = 0.01;
+        vec3  final   = albedo * (ambient + NdotL) + specular;
+
+        // === Optional Gamma Correction (sRGB)
+        vec3 f1 = pow(final, vec3(1.0 / 1.8));
+        vec3 f2 = pow(final, vec3(1.0 / 6.4));
+
+        float NdotV = max(0.0, pow(1.0 - dot(perturbed_normal2, view_dir), 1.0)) * 2.0;
+
+        // animated FBM-based distortion
+        float t = ubo.time * 0.2;
+        vec3  offset  = vec3(uv * 50.0, t * 0.3) * 10.0;
+        float noise_x = fbm(offset + vec3(100.0, 0.0, 0.0), 0.0);
+        float noise_y = fbm(offset + vec3(0.0, 500.0, 0.0), 0.0);
+        float noise_z = fbm(offset + vec3(0.0, 0.0,  15.0), 0.0);
+
+        vec3 distortion       = normalize(vec3(noise_x, noise_y, noise_z) * 2.0 - 1.0) * 0.06;
+        vec3 perturbed_normal = normalize(perturbed_normal2 + distortion);
+
+        float spec2 = 0.0;
+
+        // === Add tight central specular glint ===
+        spec2 += max(0.0, pow(dot(n_view, view_dir), 244.0) * 0.88);
+
+        float e = texture(elevation, v_uv).x;
+
+        vec3 earth_rgb = mix(f1, f2, spec2) + vec3(e * 2.2 * spec2) * vec3(0.8, 1.0, 0.8);
+        earth_rgb      = atmos_tint(earth_rgb, n_view, view_dir, sun_dir);
+        fragColor      = vec4(earth_rgb, 1.0);
+
+        //fragColor = vec4(0.0, 0.0, 1.0, 1.0);
+    }
+
+    func vertex[] -> GLSL none {
+        const float M_PI = 3.1415926535897932384;
+
+        v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
+        float theta = v_uv.x * 2.0 * M_PI; // longitude
+        float phi   = v_uv.y * M_PI;       // latitude
+
+        // Tangent: derivative of position w.r.t. u (around equator)
+        v_tangent = normalize(vec3(-sin(theta), 0.0, cos(theta)));
+
+        // Bitangent: derivative w.r.t. v (from pole to pole)
+        v_bitangent = normalize(cross(v_tangent, a_pos)); // orthogonalized
+
+        // Correctly rotate normal into world space
+        mat3 normal_matrix = transpose(inverse(mat3(ubo.model)));
+        v_normal    = normalize(normal_matrix * a_normal);
+        v_tangent   = normalize(normal_matrix * v_tangent);
+        v_bitangent = normalize(normal_matrix * v_bitangent);
+
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+
+Earth Ocean
+    func fragment[] -> GLSL none {
+        vec2 uv = v_uv;
+
+        // === Lighting setup ===
+        // locals are prefixed (n_/w_/c_/b_) so they don't shadow the
+        // sampler2Ds named `normal`/`water`/`cloud`/`bathymetry`/etc.
+        vec3 n_view = normalize(v_normal);
+
+        // animated FBM-based distortion
+        float t = ubo.time * 0.2;
+        vec3 offset = vec3(uv * 100.0, t * 0.3) * 5.0;
+        float noise_x = fbm(offset + vec3(100.0, 0.0, 0.0), 0.0);
+        float noise_y = fbm(offset + vec3(0.0, 500.0, 0.0), 0.0);
+        float noise_z = fbm(offset + vec3(0.0, 0.0, 15.0), 0.0);
+
+        vec3 distortion = normalize(vec3(noise_x, noise_y, noise_z) * 2.0 - 1.0) * 0.084;
+        vec3 perturbed_normal = normalize(n_view + distortion);
+
+        vec3 sun_dir  = normalize(vec3(0.2, 0.0, 0.8));
+        vec3 view_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+
+        float NdotL   = max(dot(perturbed_normal, sun_dir), 0.0);
+        vec3 half_dir = normalize(sun_dir + view_dir);
+
+        // sharp Blinn-Phong highlight — tight sun glint on water.
+        // fresnel boost makes grazing-angle water mirror-like.
+        float spec    = pow(max(dot(perturbed_normal, half_dir), 0.0), 96.0);
+        float fresnel = pow(1.0 - max(dot(perturbed_normal, view_dir), 0.0), 5.0);
+        spec          = (spec + fresnel * 0.3) * 3.0;
+
+        // === Textures ===
+        const float kernel[7] = float[](
+            0.006, 0.061, 0.242, 0.383, 0.242, 0.061, 0.006
+        );
+
+        vec2 texel = 1.0 / vec2(textureSize(cloud, 0));
+        float c_amt = 0.0;
+
+        for (int i = -3; i <= 3; ++i) {
+            for (int j = -3; j <= 3; ++j) {
+                vec2 offset = vec2(i, j) * texel * 2.0;
+                float weight = kernel[i + 3] * kernel[j + 3];
+                c_amt += texture(cloud, uv + offset).r * weight;
+            }
+        }
+
+        float w_amt = (texture(water, uv).r + texture(water_blur, uv).r) / 2.0;
+
+        // === Water coloring ===
+        vec3 water_color = vec3(0.022, 0.11, 0.22);
+
+        // === Specular reflection on water ===
+        float edge_fade = pow(1.0 - dot(n_view, view_dir), 2.0);
+        // sun glint scaled by NdotL so we don't see highlights on night side
+        vec3 s1 = vec3(1.0, 0.98, 0.92) * spec * w_amt * NdotL;
+        s1 += vec3(0.1, 0.2, 0.3) * w_amt * edge_fade;
+
+        float ambient = 0.005;
+
+        water_color -= c_amt * (0.22 * (1.0 - (2.0 * spec)));
+        vec3 final = water_color * (ambient + NdotL) + s1;
+
+        float facing = max(0.0, pow(dot(n_view, view_dir), 144.0) * 0.44);
+        vec3 glint   = vec3(1.0) * facing;
+
+        float b_amt = texture(bathymetry, uv).r;
+        vec3 water_color2 = vec3(0.4, 0.4, 0.4) * b_amt;
+
+        vec4 ocean_out = mix(vec4(water_color2 + glint, w_amt), vec4(final, w_amt), 1.0 - (glint.x * 1.44));
+        ocean_out.rgb  = atmos_tint(ocean_out.rgb, n_view, view_dir, sun_dir);
+        fragColor      = ocean_out;
+    }
+
+    func vertex[] -> GLSL none {
+        v_uv           = vec2(1.0 - a_uv.x, a_uv.y);
+
+        // Correctly rotate normal into world space
+        mat3 normal_matrix = transpose(inverse(mat3(ubo.model)));
+        v_normal = normalize(normal_matrix * a_normal);
+
+        float scale     = 0.00044;
+        vec3  surface   = a_pos + (a_normal * 1.0 * scale);
+        vec4  wpos      = ubo.model * vec4(surface, 1.0);
+        v_world_pos     = wpos;
+        gl_Position     = ubo.proj * ubo.view * wpos;
+    }
+
+Earth Cloud
+    # cloud needs an extra per-vertex varying so the fragment can divide
+    # the per-pixel cloud sample by a smoothed local average. computed in
+    # the vertex shader via a 7-tap separable kernel.
+    attrib v_cloud_avg  : VertexOutput [ type:typeid[ f32 ] ]
+
+    func vertex[] -> GLSL none {
+        v_uv = vec2(1.0 - a_uv.x, a_uv.y);
+
+        // Correctly rotate normal into world space
+        mat3 normal_matrix = transpose(inverse(mat3(ubo.model)));
+        v_normal = normalize(normal_matrix * a_normal);
+
+        // === Pre-blur the cloud sample with a 7-tap separable kernel,
+        //     so the fragment can do `cloud / (2.0 - v_cloud_avg)` for
+        //     a smoother contrast normalization than the raw sample.
+        const float kernel[7] = float[](
+            0.006, 0.061, 0.242, 0.383, 0.242, 0.061, 0.006
+        );
+
+        vec2  texel = 1.0 / vec2(textureSize(cloud, 0));
+        float c_avg = 0.0;
+
+        for (int i = -3; i <= 3; ++i) {
+            for (int j = -3; j <= 3; ++j) {
+                vec2  offset = vec2(i, j) * texel * 2.0;
+                float weight = kernel[i + 3] * kernel[j + 3];
+                c_avg += texture(cloud, v_uv + offset).r * weight;
+            }
+        }
+
+        v_cloud_avg = c_avg;
+
+        float scale   = 0.008; //0.0044 + clouds * 0.0044;
+        vec3  surface = a_pos + (a_normal * 1.0 * scale);
+        vec4  wpos    = ubo.model * vec4(surface, 1.0);
+        v_world_pos   = wpos;
+        gl_Position   = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment[] -> GLSL none {
+        vec2 uv = v_uv;
+
+        vec3 n_view   = normalize(v_normal);
+        vec3 sun_dir  = normalize(vec3(0.2, 0.0, 0.8)); // fixed light source
+        vec3 view_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+
+        float NdotL    = max(dot(n_view, sun_dir), 0.0);
+        vec3  half_dir = normalize(sun_dir + view_dir);
+        float spec     = pow(max(dot(n_view, half_dir), 0.0), 128.0);
+
+        float c_amt = texture(cloud, uv).x / (2.0 - v_cloud_avg);
+
+        float ndv = max(dot(n_view, view_dir), 0.0);
+        // silhouette fade: ramps back to 0 at the geometric limb so we don't
+        // slam a bright rim into jagged mesh-edge pixels. widened further for
+        // a very gentle transition into the background.
+        float silh_fade = smoothstep(0.0, 0.24, ndv);
+        float edge      = pow(1.0 - ndv, 4.0) * silh_fade;
+        float rim       = pow(1.0 - ndv, 2.0) * silh_fade;
+
+        // === physical sun color through atmosphere — Beer/Rayleigh.
+        // air_mass ≈ 1/cos(zenith) = 1/NdotL; clamped so terminator still glows.
+        // per-channel optical depth: blue scatters ~5x red, giving the real
+        // white→yellow→orange→red progression as the sun descends toward horizon.
+        float raw_sl = dot(n_view, sun_dir);
+        // Kasten-Young-ish soft secant: flattens air_mass near the horizon
+        // so reds/yellows don't blow out saturation at the terminator.
+        float cosZ     = max(raw_sl, -0.10);
+        float air_mass = 1.0 / (cosZ + 0.22);
+
+        vec3  sigma         = vec3(0.06, 0.15, 0.38);
+        vec3  transmittance = exp(-sigma * air_mass);
+
+        float sun_intensity = smoothstep(-0.10, 0.18, raw_sl);
+        vec3  sun_color     = transmittance * (0.4 + 1.8 * sun_intensity);
+
+        float day     = smoothstep(0.00, 0.35, raw_sl);
+        // grazing = terminator aura strength (peaks where sun just grazes horizon)
+        float grazing = smoothstep(-0.20, 0.08, raw_sl) * smoothstep(0.55, 0.08, raw_sl);
+
+        vec3 base_color = vec3(1.0) * (0.12 + 0.88 * day);
+        vec3 haze_color = mix(base_color, sun_color, edge);
+
+        // === Day atmosphere = ULTRA soft extended glow, not a glass dome.
+        // wide gaussian so the color bleeds far into the disk AND out toward
+        // space; low alpha overall means the cloud shell lets earth show
+        // through while gaining an atmospheric glow on top.
+        vec3  col_deep   = vec3(0.25, 0.55, 0.98);
+        vec3  col_light  = vec3(0.55, 0.75, 1.00);
+        float band       = exp(-pow((ndv - 0.18) / 0.22, 2.0));   // much wider, peak deeper in
+        float inward     = smoothstep(0.02, 0.25, ndv);
+        vec3  limb_c     = mix(col_light, col_deep, inward);
+        float alpha_fade = smoothstep(0.0, 0.10, ndv);
+        vec3  day_limb   = limb_c * band * alpha_fade * 0.55 * day;
+        float day_haze   = band * alpha_fade * 0.55 * day;
+
+        // === aura: warm crescent at terminator limb — smooth everywhere,
+        // silh_fade guarantees no sharp edge at silhouette.
+        float aura_gain = grazing * edge * 2.0;
+        vec3  aura      = sun_color * aura_gain;
+
+        // === aurora: uses the same fbm as Earth/Ocean distortion, integrated
+        // across the atmosphere depth. the cloud shell sits from earth surface
+        // up to atmosphere top; sample several depths along world-space and sum
+        // for a volumetric look. night-side only, polar-concentrated.
+        float night_f = smoothstep(0.05, -0.25, raw_sl);
+        float polar   = pow(1.0 - abs(n_view.y), 1.5);
+        float t_a     = ubo.time * 0.25;
+        // ray-march 4 altitude slices along the view direction. stepping
+        // inward toward earth gives parallax + color stratification — lower
+        // altitudes emit green (atomic oxygen ~557nm), higher emit magenta/
+        // red (~630nm + nitrogen pinks). summed + weighted by altitude.
+        // === TRUE volumetric ray-march through a VIRTUAL aurora shell.
+        // aurora in reality spans ~100-400km altitude (0.016-0.063 units).
+        // we march through that entire thick volume, NOT the thin cloud shell.
+        // ray/sphere intersections give real slice; 12 samples along it.
+        vec3  ro      = ubo.cam_pos.xyz;
+        vec3  rd      = normalize(v_world_pos.xyz - ro);
+        float R_top   = 1.062;                         // aurora top (~400km)
+        float R_bot   = 1.015;                         // aurora bottom (~90km)
+        float R_earth = 1.000;
+        float b       = dot(ro, rd);
+        float c_top   = dot(ro, ro) - R_top   * R_top;
+        float c_bot   = dot(ro, ro) - R_bot   * R_bot;
+        float c_earth = dot(ro, ro) - R_earth * R_earth;
+
+        float disc_top   = b * b - c_top;
+        float disc_bot   = b * b - c_bot;
+        float disc_earth = b * b - c_earth;
+
+        // ray must enter the top shell for aurora to exist along it
+        float t_enter = -b - sqrt(max(disc_top, 0.0));
+        float t_exit  = -b + sqrt(max(disc_top, 0.0));
+
+        // clip to the near side of the bottom shell (first earth-ward boundary)
+        if (disc_bot > 0.0) {
+            float t_bot_near = -b - sqrt(disc_bot);
+            if (t_bot_near > t_enter) t_exit = min(t_exit, t_bot_near);
+        }
+        // clip against earth occlusion (ray hits earth before aurora exit)
+        if (disc_earth > 0.0) {
+            float t_earth = -b - sqrt(disc_earth);
+            if (t_earth > t_enter) t_exit = min(t_exit, t_earth);
+        }
+
+        float slice_len = max(t_exit - t_enter, 0.0);
+        vec3  aur_low   = vec3(0.15, 1.00, 0.55);
+        vec3  aur_high  = vec3(0.85, 0.30, 0.90);
+        vec3  aur_sum   = vec3(0.0);
+        float dens      = 0.0;
+
+        // 12-sample ray-march — real 3D positions, altitude colors, front-to-back.
+        for (int i = 0; i < 12; i++) {
+            float ki  = (float(i) + 0.5) / 12.0;
+            vec3  wp  = ro + rd * (t_enter + slice_len * ki);
+            float alt = length(wp) - R_earth;
+            float alt_n = clamp((alt - (R_bot - R_earth)) / (R_top - R_bot), 0.0, 1.0);
+
+            if (disc_top <= 0.0 || slice_len <= 0.0) break;
+
+            // lower frequency + softer threshold = larger, hazier shapes,
+            // still gated so aurora has form rather than a smooth fog.
+            vec3  sp   = wp * 28.0 + vec3(0.0, t_a + ki * 2.0, 0.0);
+            float ss   = fbm(sp, ki * 0.4);
+            float sc   = smoothstep(0.44, 0.72, ss);
+            // front-to-back attenuation keeps parallax readable
+            float atten = 1.0 - ki * 0.35;
+            aur_sum += mix(aur_high, aur_low, alt_n) * sc * atten;
+            dens    += sc * atten;
+        }
+
+        float curtain = smoothstep(0.4, 3.0, dens);
+        vec3  aur_col = aur_sum / max(dens, 0.01);
+        // depth proxy through haze — limb looks through more atmosphere.
+        // silh_fade keeps aurora from clipping hard at the mesh silhouette.
+        float depth_f  = pow(1.0 - ndv, 2.0) * silh_fade;
+        float aurora_g = night_f * polar * curtain * depth_f * 2.2;
+        vec3  aurora   = aur_col * aurora_g;
+
+        vec3  color_out   = haze_color + aura + day_limb + aurora;
+        float cloud_alpha = c_amt + edge * 0.4 + aura_gain * 0.5 + day_haze * 0.7 + aurora_g * 0.8;
+
+        fragColor = vec4(color_out, cloud_alpha);
+    }
+
+
+shader Purple
+    mutable model   : mat4f
+    mutable view    : mat4f
+    mutable proj    : mat4f
+    mutable cam_pos : vec4f
+    mutable time    : f32
+    attrib  color : LayoutBinding [ type:typeid[ PurpleSurface ], id:PurpleSurface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib  cloud : LayoutBinding [ type:typeid[ PurpleSurface ], id:PurpleSurface.cloud, count:1, format: typeid[ rgba8 ] ]
+    
+    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_normal     : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib v_tangent    : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_bitangent  : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
+
+    attrib f_normal     : FragmentInput [ type:typeid[ vec3f ] ]
+    attrib f_uv         : FragmentInput [ type:typeid[ vec2f ] ]
+
+    attrib outColor     : FragmentOutput[ type:typeid[ vec4f ] ]
+
+
+    func init[]
+        fov_deg : f32 60.0f
+        aspect  : f32 1920.0f / 1080.0f
+        near    : f32 0.1f
+        far     : f32 100.0f
+        eye2    : vec3f [0.0f,  0.0f,  1.5f]
+        target2 : vec3f [0.0f,  0.0f,  0.0f]
+        up2     : vec3f [0.0f, -1.0f,  0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[70.0f], 1.0f, 0.1f, 100.0f]
+        view    = mat4f.look_at    [eye2, target2, up2]
+
+
+    func rotateY [ angle: f32 ] -> GLSL mat3f {
+        float c = cos(angle);
+        float s = sin(angle);
+        return mat3(
+            vec3(c, 0.0, -s),
+            vec3(0.0, 1.0, 0.0),
+            vec3(s, 0.0, c)
+        );
+    }
+
+    func sdf_sphere [ p: vec3f, radius: f32, squash: f32 ] -> GLSL float {
+        // squash factor < 1.0 flattens vertically
+        vec3 q = vec3(p.x, p.y / squash, p.z);
+        return length(q) - radius;
+    }
+
+    func sdf_cylinder [ p: vec3f, h: f32, r: f32 ] -> GLSL float {
+        vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h);
+        return min(max(d.x, d.y), 0.0) + length(max(d, vec2(0.0)));
+    }
+
+    # permutation function
+    func permute4 [ x: vec4f ] -> GLSL vec4f {
+        return mod((x * 34.0 + 1.0) * x, vec4(289.0));
+    }
+
+    # fast inverse sqrt
+    func taylorInvSqrt4 [ r: vec4f ] -> GLSL vec4f {
+        return 1.79284291400159 - 0.85373472095314 * r;
+    }
+
+    # smootherstep fade curve
+    func fade [ t: vec3f ] -> GLSL vec3f {
+        return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+    }
+
+    # basic perlin 3D noise
+    func perlin3D [ P: vec3f ] -> GLSL float {
+        vec3 Pi0 = mod(floor(P), vec3(289.0));
+        vec3 Pi1 = mod(Pi0 + vec3(1.0), vec3(289.0));
+        vec3 Pf0 = fract(P);
+        vec3 Pf1 = Pf0 - vec3(1.0);
+
+        vec4 ix = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
+        vec4 iy = vec4(Pi0.y, Pi0.y, Pi1.y, Pi1.y);
+        vec4 iz0 = vec4(Pi0.z);
+        vec4 iz1 = vec4(Pi1.z);
+
+        vec4 ixy = permute4(permute4(ix) + iy);
+        vec4 ixy0 = permute4(ixy + iz0);
+        vec4 ixy1 = permute4(ixy + iz1);
+
+        vec4 gx0 = fract(ixy0 / 7.0) * 2.0 - 1.0;
+        vec4 gy0 = fract(floor(ixy0 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz0 = 1.0 - abs(gx0) - abs(gy0);
+
+        vec4 gx1 = fract(ixy1 / 7.0) * 2.0 - 1.0;
+        vec4 gy1 = fract(floor(ixy1 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz1 = 1.0 - abs(gx1) - abs(gy1);
+
+        vec4 sz0 = step(gz0, vec4(0.0));
+        gx0 -= sz0 * (step(0.0, gx0) - 0.5);
+        gy0 -= sz0 * (step(0.0, gy0) - 0.5);
+
+        vec4 sz1 = step(gz1, vec4(0.0));
+        gx1 -= sz1 * (step(0.0, gx1) - 0.5);
+        gy1 -= sz1 * (step(0.0, gy1) - 0.5);
+
+        vec3 g000 = vec3(gx0.x, gy0.x, gz0.x);
+        vec3 g100 = vec3(gx0.y, gy0.y, gz0.y);
+        vec3 g010 = vec3(gx0.z, gy0.z, gz0.z);
+        vec3 g110 = vec3(gx0.w, gy0.w, gz0.w);
+        vec3 g001 = vec3(gx1.x, gy1.x, gz1.x);
+        vec3 g101 = vec3(gx1.y, gy1.y, gz1.y);
+        vec3 g011 = vec3(gx1.z, gy1.z, gz1.z);
+        vec3 g111 = vec3(gx1.w, gy1.w, gz1.w);
+
+        vec4 norm0 = taylorInvSqrt4(vec4(dot(g000, g000), dot(g010, g010), dot(g100, g100), dot(g110, g110)));
+        g000 *= norm0.x;
+        g010 *= norm0.y;
+        g100 *= norm0.z;
+        g110 *= norm0.w;
+        vec4 norm1 = taylorInvSqrt4(vec4(dot(g001, g001), dot(g011, g011), dot(g101, g101), dot(g111, g111)));
+        g001 *= norm1.x;
+        g011 *= norm1.y;
+        g101 *= norm1.z;
+        g111 *= norm1.w;
+
+        float n000 = dot(g000, Pf0);
+        float n100 = dot(g100, vec3(Pf1.x, Pf0.y, Pf0.z));
+        float n010 = dot(g010, vec3(Pf0.x, Pf1.y, Pf0.z));
+        float n110 = dot(g110, vec3(Pf1.xy, Pf0.z));
+        float n001 = dot(g001, vec3(Pf0.xy, Pf1.z));
+        float n101 = dot(g101, vec3(Pf1.x, Pf0.y, Pf1.z));
+        float n011 = dot(g011, vec3(Pf0.x, Pf1.yz));
+        float n111 = dot(g111, Pf1);
+
+        vec3 fade_xyz = fade(Pf0);
+        vec4 n_z = mix(vec4(n000, n100, n010, n110), vec4(n001, n101, n011, n111), fade_xyz.z);
+        vec2 n_yz = mix(n_z.xy, n_z.zw, fade_xyz.y);
+        float n_xyz = mix(n_yz.x, n_yz.y, fade_xyz.x);
+
+        return n_xyz * 0.5 + 0.5;
+    }
+
+    # fractal brownian motion (fbm) using perlin noise
+    func fbm [ pos: vec3f, y_translate: f32 ] -> GLSL float {
+        float value = 0.0;
+        float amplitude = 0.5;
+        float frequency = 0.1;
+        for (int i = 0; i < 6; ++i) {
+            value += amplitude * perlin3D(pos * frequency + vec3(0.0, y_translate * 11.0, 0.0));
+            amplitude *= 0.5;
+            frequency *= 2.0;
+        }
+        return value;
+    }
+
+    func fragment [] -> GLSL none {
+        vec2 uv = v_uv;
+
+        // === Lighting setup ===
+        vec3  normal   = normalize(v_normal);
+        vec3  sun_dir  = normalize(vec3(0.2, 0.0, 0.8)); // fixed light source
+        vec3  view_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+
+        // animated FBM-based distortion
+        float t          = ubo.time * 0.2; // pass this as uniform in seconds
+        vec3  offset     = vec3(uv * 10.0, t * 0.3) * 5.0;
+        float noise_x    = fbm(offset + vec3(100.0 + (1.0 - (uv.y - 0.5)) * 100.0, 0.0, 0.0), 0.0);
+        float noise_y    = fbm(offset + vec3(0.0, 500.0, 0.0), 0.0);
+        float noise_z    = fbm(offset + vec3(0.0, 0.0, 15.0), 0.0);
+
+        vec3  distortion = normalize(vec3(noise_x, noise_y, noise_z) * 2.0 - 1.0) * 0.188;
+
+        float NdotL      = max(dot(normal, sun_dir), 0.0);
+        vec3  half_dir   = normalize(view_dir);
+        float spec       = pow(max(dot(normal, half_dir), 0.0) * 0.9, 12.0); // shininess
+
+        float edge_fade   = pow(1.0 - dot(normal, view_dir), 2.0);
+        vec3 s1           = vec3(1.0) * spec  * 10.4;
+        s1 += vec3(0.3, 0.0, 0.6) * edge_fade;
+
+        vec3  color1   = texture(color, uv).rgb;
+        vec3  cloud1   = texture(color, uv).rgb;
+        outColor       = vec4(distortion + s1 * color1 + cloud1, 1.0);
+    }
+
+    func vertex[] -> GLSL none {
+        const float M_PI = 3.1415926535897932384;
+
+        v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
+        float theta = v_uv.x * 2.0 * M_PI; // longitude
+        float phi   = v_uv.y * M_PI;       // latitude
+
+        // Tangent: derivative of position w.r.t. u (around equator)
+        v_tangent = normalize(vec3(-sin(theta), 0.0, cos(theta)));
+
+        // Bitangent: derivative w.r.t. v (from pole to pole)
+        v_bitangent = normalize(cross(v_tangent, a_pos)); // orthogonalized
+
+        // Correctly rotate normal into world space
+        mat3 normal_matrix = transpose(inverse(mat3(ubo.model)));
+        v_normal    = normalize(normal_matrix * a_normal);
+        v_tangent   = normalize(normal_matrix * v_tangent);
+        v_bitangent = normalize(normal_matrix * v_bitangent);
+
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+shader Aura
+    mutable model          : mat4f
+    mutable view           : mat4f
+    mutable proj           : mat4f
+    mutable v_model        : mat4f
+    mutable v_view         : mat4f
+    mutable v_proj         : mat4f
+    mutable time           : f32
+    mutable thrust         : f32
+    mutable magnitude      : f32
+    mutable colors         : f32
+    mutable halo_space     : f32
+    mutable halo_separate  : f32
+    mutable halo_attenuate : f32
+    mutable halo_thickness : f32
+    mutable pad0           : f32
+    mutable pad1           : f32
+    mutable pad2           : f32
+    public  cv             : Canvas
+    public  core           : Canvas
+    public  beam           : Canvas
+    intern  w              : Window
+
+    # attrib are static members for properties; generic class handlers use this information for operation
+    attrib  color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:2, format: typeid[ rgba8 ] ]
+
+    func init []
+        cv_size : i32 [ 128 ]
+
+        cv   = Canvas [ vk: vk, format: Pixel.rgba8, width: cv_size, height: cv_size ]
+        core = Canvas [ vk: vk, format: Pixel.rgba8, width: cv_size, height: cv_size ]
+        beam = Canvas [ vk: vk, format: Pixel.rgba8, width: cv_size, height: cv_size ]
+
+        # outer color
+        core.clear[ '#0000' ]
+        core.rect_to[ 0, 0, 800, 800 ]
+        core.fill_color[ '#f00' ]
+        core.paint[]
+
+        # inner core
+        core.arc[ 400.0, 400.0, 100.0, 0.0, 360.0 ]
+        core.fill_color[ '#a0f' ]
+        core.paint[]
+
+        # core mantle
+        core.arc[ 400.0, 400.0, 40.0, 0.0, 360.0 ]
+        core.fill_color[ '#aff' ]
+        core.paint[]
+
+        # beam
+        beam.clear[ '#0000' ]
+        beam.rect_to[ 0, 0, 800, 800 ]
+        beam.fill_color[ '#00f' ]
+        beam.paint[]
+        beam.arc[ 400.0, 400.0, 40.0, 0.0, 360.0 ]
+        beam.fill_color[ '#aff' ]
+        beam.paint[]
+
+ 
+PBR Orbiter
+    mutable pos_radius      : vec4f
+    mutable normal_falloff  : vec4f
+    mutable color_intensity : vec4f
+    mutable moment          : f32
+    mutable moment_amount   : f32
+    mutable moment_angle    : f32
+
+    func init []
+        no-op
+
+
+element Editor
+    lang : Language
+    time : f32
+
+
+trinity orbiter
+    public earth_gltf    : GltfModel
+    public purple_gltf   : GltfModel
+    public orbiter_gltf  : GltfModel
+    public quad_gltf     : GltfModel
+    public earth_model   : Model
+    public ocean_model   : Model
+    public cloud_model   : Model
+    public purple_model  : Model
+    public orbiter_scene : array Model
+    public earth         : Earth
+    public purple        : Purple
+    public ocean         : Ocean
+    public cloud         : Cloud
+    public au            : Aura
+    public orb           : Orbiter
+    public time          : f32
+    public env           : Image
+    public models        : array Model
+
+    
+    mutable angle        : f32
+
+    func init []
+        width:  1488
+        height: 888
+
+    func load_scene []
+        # 1) load the earth gltf mesh — shared by earth/ocean/cloud passes
+        gltf_path : path 'models/earth.gltf'
+        earth_gltf = gltf_path.load[ typeid[ GltfModel ], null ]
+
+        earth = Earth [ vk: vk ]
+        ocean = Ocean [ vk: vk ]
+        cloud = Cloud [ vk: vk ]
+        #purple = Purple [ vk: vk ]
+
+        color : Image [ uri: path 'textures/earth-color-8192x4096.png', surface: EarthSurface.color ]
+        earth_samplers : map Image [string] [
+            'color':      color,
+            'normal':     Image [ uri: path 'textures/earth-normal-8192x4096.png',     surface: EarthSurface.normal ],
+            'elevation':  Image [ uri: path 'textures/earth-elevation-8192x4096.png',  surface: EarthSurface.elevation ],
+            'water':      Image [ uri: path 'textures/earth-water-8192x4096.png',      surface: EarthSurface.water ],
+            'water_blur': Image [ uri: path 'textures/earth-water-blur-8192x4096.png', surface: EarthSurface.water_blur ],
+            'cloud':      Image [ uri: path 'textures/earth-cloud-8192x4096.png',      surface: EarthSurface.cloud ],
+            'bathymetry': Image [ uri: path 'textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
+            'lights':     Image [ uri: path 'textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
+        ]
+        ##
+        purple_samplers : map Image [string] [
+            'color':      Image [ uri: path 'textures/purple-color-8192x4096.png',      surface: PurpleSurface.color ],
+            'cloud':      Image [ uri: path 'textures/purple-cloud-8192x4096.png',      surface: PurpleSurface.cloud ]
+        ]
+        ##
+        window : (w to Window)
+        cloud_straight_alpha : bool true
+        
+        earth_model = Model [ vk: vk, w: window, id: earth_gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
+        ocean_model = Model [ vk: vk, w: window, id: earth_gltf, s: ocean, samplers: earth_samplers, straight_alpha: true ]
+        cloud_model = Model [ vk: vk, w: window, id: earth_gltf, s: cloud, samplers: earth_samplers, straight_alpha: true ]
+        models      = [ earth_model, ocean_model, cloud_model ]
+        ##
+        purple_model = Model [ vk: vk, w: window, id: earth_gltf, s: purple, samplers: purple_samplers, straight_alpha: true ]
+        models = [ purple_model ]
+        ##
+
+        window.background = Render [ vk: vk, w: window, wscale: 1.0,
+            clear_color: vec4f [ 0.088, 0.088, 0.188, 1.0 ],
+            models:      models ]
+
+    
+    func update_scene []
+        if [time == 0.0]
+            time = -54.0
+        # ---- 16:9 astronaut/ISS orbital perspective ----
+        # earth at origin, radius=1.0. altitude = h/R (0.063 ≈ ISS 400km).
+        # tilt = angle off nadir; 75° puts horizon in upper-third of a 16:9 frame.
+        altitude : f32 [ 0.063 ]
+        eye_dist : f32 [ 1.0 + altitude ]
+        tilt     : f32 [ radians[ 50.0 ] ]
+        aspect   : f32 [ 16.0 / 9.0 ]
+
+        # camera orbits around the earth (Y axis); earth stays fixed so the
+        # sunlight direction sweeps across the surface as we go around.
+        time -= 0.0044
+        puts 'time = {time}'
+        orbit_a : f32 [ radians[ time ] ]
+        co      : f32 [ cos[ orbit_a ] ]
+        so      : f32 [ sin[ orbit_a ] ]
+
+        # local camera frame (earth at origin, eye on +Z, looking toward -Z
+        # with a tilt that puts horizon in upper-third)
+        ex_l  : f32 [ 0.0 ]
+        ey_l  : f32 [ 0.0 ]
+        ez_l  : f32 [ eye_dist ]
+        fx_l  : f32 [ -sin[ tilt ] ]
+        fy_l  : f32 [ 0.0 ]
+        fz_l  : f32 [ -cos[ tilt ] ]
+        tx_l  : f32 [ ex_l + fx_l * 2.0 ]
+        ty_l  : f32 [ ey_l + fy_l * 2.0 ]
+        tz_l  : f32 [ ez_l + fz_l * 2.0 ]
+        ux_l  : f32 [ 1.0 ]
+        uy_l  : f32 [ 0.0 ]
+        uz_l  : f32 [ 0.0 ]
+
+        # rotate each vector around Y by orbit_a
+        _eye2    : vec3f [  co * ex_l + so * ez_l, ey_l, -so * ex_l + co * ez_l ]
+        _target2 : vec3f [  co * tx_l + so * tz_l, ty_l, -so * tx_l + co * tz_l ]
+        _up2     : vec3f [  co * ux_l + so * uz_l, uy_l, -so * ux_l + co * uz_l ]
+
+        _model   : mat4f.identity   []
+        _proj    : mat4f.perspective[ radians[ 60.0 ], aspect, 0.001, 10.0 ]
+        _view    : mat4f.look_at    [ _eye2, _target2, _up2 ]
+
+        # earth no longer spins — only the optional axial tilt stays
+        tilt_axis : vec4f [ 1.0, 0.0, 0.0, radians[ 0 ] ]
+        q_tilt    : quatf [ tilt_axis ]
+        m : mat4f.identity[]
+        m = m.rotate[ q_tilt ]
+
+        earth.model = m
+        earth.view  = _view
+        earth.proj  = _proj
+
+        ocean.model = m
+        ocean.view  = _view
+        ocean.proj  = _proj
+
+        cloud.model = m
+        cloud.view  = _view
+        cloud.proj  = _proj
+
+        _cam : vec4f [ _eye2.x, _eye2.y, _eye2.z, 1.0 ]
+
+        earth.time    = time
+        ocean.time    = time
+        cloud.time    = time
+        earth.cam_pos = _cam
+        ocean.cam_pos = _cam
+        cloud.cam_pos = _cam
+##
+        purple.time = time
+        purple.model = m
+        purple.view  = _view
+        purple.proj  = _proj
+
+##

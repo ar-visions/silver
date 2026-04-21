@@ -1,0 +1,22 @@
+{
+    "name":   "hyperspace",
+    "version":"0.1.2",
+    "import": [
+        "ion",
+        {
+            "name":     "tensorflow",
+            "version":  "2.12.0",
+            "url":      "https://github.com/tensorflow/tensorflow",
+            "cmake":    { "path": "./tensorflow/lite", "args":[] },
+            "commit":   "0db597d",
+            "platforms": ["win"]
+        },
+        {
+            "name":     "FastNoiseLite",
+            "version":  "2.12.0",
+            "url":      "https://github.com/Auburn/FastNoiseLite",
+            "commit":   "ee2f4eaeaffeaa599342544b22e62cb2f9cea570",
+            "resource": true
+        }
+    ]
+}
