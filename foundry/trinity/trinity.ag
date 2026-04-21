@@ -4570,10 +4570,7 @@ Render Canvas
         states[state_depth - 1].stroke_width = sw
 
     func text_grad [ color: rgba ]
-        # null rgba must mean "no gradient" (alpha 0), not opaque black.
-        # sk_color(null) returns (0,0,0,1), which would enable the gradient
-        # path with black as the far color.
-        states[state_depth - 1].text_grad = (color) ? sk_color[ color ] : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[state_depth - 1].text_grad = sk_color[ color ]
 
     func text_color_pos [ x: f32, y: f32 ]
         states[state_depth - 1].text_color_pos = vec2f [ x, y ]
@@ -4736,37 +4733,12 @@ Render Canvas
             start_angle, end_angle
         ]
 
-    func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, overflow: Overflow ] -> rect
-        if [ !font ]
-            return bounds
-
-        display : string [ (overflow == Overflow.ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
-        tm  : TextMetrics [ measure_text[ display ] ]
-        tx  : f32 [ bounds.x + (bounds.w - tm.w) * align.x + offset.x ]
-        # cap-height-box centering — baseline sits cap_height below bounds.y at
-        # align.y=0, capitals optically centered at align.y=0.5 for most UI text.
-        ty  : f32 [ bounds.y + tm.cap_height + (bounds.h - tm.cap_height) * align.y + offset.y ]
-
-        # build per-glyph quad vertices into text_vbo. 6 verts per glyph
-        # (two triangles, no index buffer). vertex layout: vec2f pos, vec2f uv.
-        # text_render then runs ONE render pass with ONE vkCmdDraw covering
-        # the entire string regardless of glyph count.
-        st : CanvasState states[state_depth - 1]
+    func draw_text_pass [ display: string, tm: TextMetrics, pen_x_in: f32, pen_y_in: f32 ]
         atlas_size : f32 [ f32 glyph_atlas.size ]
-        text_shader.viewport       = vec2f [ f32 width, f32 height ]
-        text_shader.text_color     = st.fill_color
-        text_shader.text_grad      = vec4f [ 0.0, 0.0, 1.0, 1.0 ]  # DEBUG: force BLUE
-        text_shader.text_color_pos = st.text_color_pos
-        text_shader.text_grad_pos  = st.text_grad_pos
-        text_shader.grad_params    = vec4f [ 1.0, 0.0, 0.0, 0.0 ]  # DEBUG: force mirror on
         verts : ref f32 [ text_vbo.vertex_data ]
         vi    : i32 [ 0 ]
-        # text shader bakes vertex positions in viewport pixels and doesn't
-        # use the canvas transform — apply the current translate here so nested
-        # element translates (draw_element's cv.translate per child) land the
-        # text at the right pixel instead of canvas origin.
-        pen_x : f32 [ tx + st.transform.tx ]
-        pen_y : f32 [ ty + st.transform.ty ]
+        pen_x : f32 [ pen_x_in ]
+        pen_y : f32 [ pen_y_in ]
 
         for [ i: i32 0, i < display.count, i += 1 ]
             cp   : u32 [ display[i] ]
@@ -4778,15 +4750,11 @@ Render Canvas
                 y0 : f32 [ pen_y - f32 slot.bearing_y ]
                 x1 : f32 [ x0 + f32 slot.atlas_w ]
                 y1 : f32 [ y0 + f32 slot.atlas_h ]
-                # half-texel inset so bilinear sampling never reads past
-                # the glyph's atlas slot into a neighboring glyph (the
-                # vertical seams between letters were exactly that bleed).
                 u0 : f32 [ (f32 slot.atlas_x                   + 0.5) / atlas_size ]
                 v0 : f32 [ (f32 slot.atlas_y                   + 0.5) / atlas_size ]
                 u1 : f32 [ (f32 (slot.atlas_x + slot.atlas_w)  - 0.5) / atlas_size ]
                 v1 : f32 [ (f32 (slot.atlas_y + slot.atlas_h)  - 0.5) / atlas_size ]
                 base : i32 [ vi * 4 ]
-                # tri 0: (x0,y0) (x1,y0) (x0,y1)
                 verts[ base +  0 ] = x0
                 verts[ base +  1 ] = y0
                 verts[ base +  2 ] = u0
@@ -4799,7 +4767,6 @@ Render Canvas
                 verts[ base +  9 ] = y1
                 verts[ base + 10 ] = u0
                 verts[ base + 11 ] = v1
-                # tri 1: (x1,y0) (x1,y1) (x0,y1)
                 verts[ base + 12 ] = x1
                 verts[ base + 13 ] = y0
                 verts[ base + 14 ] = u1
@@ -4817,16 +4784,46 @@ Render Canvas
         text_vbo.vertex_count = vi
         if [ text_vbo.vertex && vi > 0 ]
             text_vbo.vertex.update[ text_vbo.vertex_data ]
-            # text_render isn't in Display.list so nothing else refreshes its
-            # framebuffer after a resize — call update here so it rebuilds
-            # against the current color.vk_image_view before we draw.
             text_render.update[]
-            # submit via text_render — its render pass uses LOAD_OP_LOAD on
-            # canvas color so the text composites on top of whatever the
-            # canvas just drew. one render pass, one vkCmdDraw, fence-waited.
             text_render.draw[]
             text_render.sync_fence[]
-        #printf[ "draw_text: %i glyphs -> %i verts in text_vbo\n", display.count, vi ]
+
+    func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, overflow: Overflow, shadow: Shadow ] -> rect
+        if [ !font ]
+            return bounds
+
+        display : string [ (overflow == Overflow.ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
+        tm  : TextMetrics [ measure_text[ display ] ]
+        tx  : f32 [ bounds.x + (bounds.w - tm.w) * align.x + offset.x ]
+        # cap-height-box centering — baseline sits cap_height below bounds.y at
+        # align.y=0, capitals optically centered at align.y=0.5 for most UI text.
+        ty  : f32 [ bounds.y + tm.cap_height + (bounds.h - tm.cap_height) * align.y + offset.y ]
+
+        st : CanvasState states[state_depth - 1]
+        text_shader.viewport = vec2f [ f32 width, f32 height ]
+        pen_x : f32 [ tx + st.transform.tx ]
+        pen_y : f32 [ ty + st.transform.ty ]
+
+        # shadow pass: one draw at offset with the shadow color, no gradient.
+        # runs BEFORE the main text so the text composites on top.
+        has_shadow : bool [ shadow && shadow.color && shadow.color.a > 0.0 ]
+        if [ has_shadow ]
+            text_shader.text_color     = sk_color[ shadow.color ]
+            text_shader.text_grad      = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+            text_shader.text_color_pos = vec2f [ 0.0, 0.0 ]
+            text_shader.text_grad_pos  = vec2f [ 0.0, 0.0 ]
+            text_shader.grad_params    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+            sx : f32 [ (shadow.offset) ? shadow.offset.x : 0.0 ]
+            sy : f32 [ (shadow.offset) ? shadow.offset.y : 0.0 ]
+            draw_text_pass[ display, tm, pen_x + sx, pen_y + sy ]
+
+        # main pass: full text_color + optional gradient.
+        text_shader.text_color     = st.fill_color
+        text_shader.text_grad      = st.text_grad
+        text_shader.text_color_pos = st.text_color_pos
+        text_shader.text_grad_pos  = st.text_grad_pos
+        text_shader.grad_params    = vec4f [ (st.text_grad_mirror) ? 1.0 : 0.0, 0.0, 0.0, 0.0 ]
+        draw_text_pass[ display, tm, pen_x, pen_y ]
         return rect [ x: tx, y: ty - tm.ascent, w: tm.w, h: tm.h ]
 
     # ---- GPU draw helpers ----
@@ -7552,7 +7549,11 @@ Display Window
                 cv.text_color_pos   [ ax - hx, ay - hy ]
                 cv.text_grad_pos    [ ax + hx, ay + hy ]
                 cv.text_grad_mirror [ layer.label_gradient_mirror ]
-                cv.draw_text    [ (label) ? label : element_text, b, align, offset, layer.label_overflow ]
+                lsh : Shadow [
+                    color:  layer.label_shadow,
+                    offset: layer.label_shadow_offset,
+                    blur:   layer.label_shadow_blur ]
+                cv.draw_text    [ (label) ? label : element_text, b, align, offset, layer.label_overflow, lsh ]
                 cv.restore      [ ]
 
         if [ xform ]
@@ -8366,6 +8367,17 @@ Mixable Shadow
     public color    : rgba
     public offset   : vec2f
 
+    # CSS-friendly constructors. format: "<color>" | "<color> <ox> <oy>" |
+    # "<color> <ox> <oy> <blur>".
+    construct [ s: string ]
+        aa : s.split[ ' ' ]
+        if [ aa.count >= 1 ]
+            color = rgba[ aa[0] ]
+        if [ aa.count >= 3 ]
+            offset = vec2f [ aa[1].real_value[], aa[2].real_value[] ]
+        if [ aa.count >= 4 ]
+            blur = f32 aa[3].real_value[]
+
 Mixable Glow
     public blur     : f32
     public color    : rgba
@@ -8439,7 +8451,9 @@ class Layer
     public label_gradient_radius   : f32
     public label_gradient_degrees  : f32
     public label_gradient_mirror   : bool
-    public label_shadow        : Shadow
+    public label_shadow        : rgba
+    public label_shadow_offset : vec2f
+    public label_shadow_blur   : f32
     public label_glow          : Glow
     public label_size          : f32   [ 22.0 ]
     public label_height        : f32 [ 1.0 ]
