@@ -947,14 +947,12 @@ LLVMTypeRef _lltype(etype e) {
     
     etype prev = e;
 
-    while (au && e && !e->lltype) {
+    while (au && (!e || (e && !e->lltype))) {
         au = au->src;
         e  = u(etype, au);
-        if (!e) {
-            e = e;
-            break;
-        }
     }
+
+    if (!e) e = u(etype, au);
 
     if (e->au->is_class) {
         verify(e->au->ptr, "expected ptr for class");
@@ -8107,6 +8105,7 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
         LLVMPrintModuleToFile(a->module_ref, "/tmp/crashing.ll", &err);
         fprintf(stderr, "dumped to /tmp/crashing.ll\n");
         fflush(stderr);
+        return false;
     }
     verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll), &err), "print-to-module: %s (path: %s)", err ? err : "unknown", cstring(*ll));
     print("wrote %s", cstring(*ll));
@@ -8114,6 +8113,13 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
         fault("LLVMWriteBitcodeToFile failed");
     validation_error  = LLVMVerifyModule(a->module_ref, LLVMReturnStatusAction, &err);
     validation_error |= LLVMVerifyModule(a->module_ref, LLVMPrintMessageAction, &err);
+    if (validation_error) {
+        fprintf(stderr, "LLVM verify failed: %s\n", err ? err : "unknown");
+        LLVMPrintModuleToFile(a->module_ref, "/tmp/crashing.ll", &err);
+        fprintf(stderr, "dumped to /tmp/crashing.ll\n");
+        fflush(stderr);
+        return false;
+    }
 
     return true;
 }

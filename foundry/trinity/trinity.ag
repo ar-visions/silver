@@ -1,3 +1,5 @@
+export 0.1.0
+export VK_LAYER_PATH: '{install}/share/vulkan/explicit_layer.d'
 
 # imports reflected as headers
 import gltf
@@ -18,15 +20,6 @@ ifdef [ linux ]
 	import <fcntl.h>
 	import <unistd.h>
 	import <linux/videodev2.h>
-
-ifdef [ apple ]
-	import Foundation.framework
-	import AVFoundation.framework
-	import CoreMedia.framework
-	import CoreVideo.framework
-
-export 0.1.0
-export VK_LAYER_PATH: '{install}/share/vulkan/explicit_layer.d'
 
 import KhronosGroup:Vulkan-Headers/29184b9
 
@@ -9025,11 +9018,11 @@ class Camera
             prev_bright = cur_bright
             return
 
-        ifdef [ apple ]
-            if [ !backend || !staging_ptr ]
-                return
-            if [ backend_copy[ staging_ptr, width * height ] ]
-                blit_from[ staging_buf ]
+	        ifdef [ apple ]
+	            if [ backend == null || staging_ptr == null ]
+	                return
+	            if [ backend_copy[ staging_ptr, width * height ] ]
+	                blit_from[ staging_buf ]
 
     func dealloc []
         ifdef [ linux ]
@@ -9050,6 +9043,9 @@ class Camera
                 backend = null
 
         release_gpu[]
+
+ifdef [ apple ]
+    func camera_devices [] -> array string
 
 
 element CameraView

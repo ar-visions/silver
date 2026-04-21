@@ -4875,6 +4875,46 @@ static cstr source_lang_flag(silver a, string ext) {
     return ext && target_is_apple(a) && eq(ext, "mm") ? "-x objective-c++" : "";
 }
 
+static void collect_mm_frameworks(silver a, array sources) {
+    if (!target_is_apple(a) || !sources)
+        return;
+    if (!a->frameworks)
+        a->frameworks = map(16);
+
+    each(sources, path, src) {
+        string sx = ext(src);
+        if (!sx || !eq(sx, "mm"))
+            continue;
+
+        string content = (string)load(src, typeid(string), null);
+        if (!content || !content->chars)
+            continue;
+
+        cstr line = content->chars;
+        while (line && *line) {
+            cstr line_end = strchr(line, '\n');
+            if (!line_end)
+                line_end = line + strlen(line);
+
+            cstr scan = line;
+            while (scan < line_end && isspace((unsigned char)*scan))
+                scan++;
+
+            if (!strncmp(scan, "#import <", 9) || !strncmp(scan, "#include <", 10)) {
+                cstr open  = strchr(scan, '<');
+                cstr slash = open ? strchr(open + 1, '/') : null;
+                if (open && slash && slash < line_end && isupper((unsigned char)open[1])) {
+                    string fw = string(chars, open + 1, ref_length, (sz)(slash - open - 1));
+                    if (len(fw))
+                        set(a->frameworks, fw, _bool(true));
+                }
+            }
+
+            line = *line_end ? line_end + 1 : line_end;
+        }
+    }
+}
+
 static string framework_name(string fw) {
     if (fw && ends_with(fw, ".framework"))
         return mid(fw, 0, len(fw) - 10);
@@ -5150,7 +5190,7 @@ static void deploy_resources(path src, path dst) {
 // build with optional bc path; if no bc path we use the project file system
 none silver_build(silver a) {
     path ll = null, bc = null;
-    emit(a, (ARef)&ll, (ARef)&bc);
+    verify(emit(a, (ARef)&ll, (ARef)&bc), "compilation failed");
     verify(bc != null, "compilation failed");
 
     //bool   is_debug   = a->debug;
@@ -5170,6 +5210,7 @@ none silver_build(silver a) {
     if (a->product) drop(a->product);
 
     a->product = hold(product);
+    collect_mm_frameworks(a, a->implements);
 
     // platform dispatch: compile and link inside docker for non-native targets
     if (a->platform && len(a->platform) && cmp(a->platform, "native") != 0) {
@@ -5233,14 +5274,21 @@ none silver_build(silver a) {
         cstr linker_d  = has_cpp_d ? "clang++" : "clang";
         cstr cpp_libs_d = has_cpp_d ? "-stdlib=libc++" : "";
         string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
-        verify(exec(a->verbose, "%o /silver/platform/native/bin/%s %s %s %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o %s",
+        string fw_flags_d = string("");
+        if (target_is_apple(a) && a->frameworks) {
+            pairs(a->frameworks, fw_i) {
+                if (len(fw_flags_d)) append(fw_flags_d, " ");
+                concat(fw_flags_d, f(string, "-framework %o", (string)fw_i->key));
+            }
+        }
+        verify(exec(a->verbose, "%o /silver/platform/native/bin/%s %s %s %s %o %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o %o %s",
             docker_pre, linker_d,
             a->is_library ? shared : "", a->debug ? "-g" : "",
             a->is_library ? "-Wl,-Bsymbolic" : "",
             isysroot, a->build_dir, a->name, objs,
             a->product,
             a->build_dir,
-            install, a->build_dir, install, libs, cflags, cpp_libs_d) == 0,
+            install, a->build_dir, install, libs, cflags, fw_flags_d, cpp_libs_d) == 0,
             "link failed (platform: %o)", a->platform);
 
         unlink(a->product_link->chars);
@@ -5316,14 +5364,12 @@ none silver_build(silver a) {
 #endif
     string isysroot = a->isysroot ? f(string, "-isysroot %o ", a->isysroot) : string("");
     string fw_flags = string("");
-#ifdef __APPLE__
-    if (a->frameworks) {
+    if (target_is_apple(a) && a->frameworks) {
         pairs(a->frameworks, fw_i) {
             if (len(fw_flags)) append(fw_flags, " ");
             concat(fw_flags, f(string, "-framework %o", (string)fw_i->key));
         }
     }
-#endif
     verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o %o %s",
         install, linker, a->is_library ? shared : "", a->debug ? "-g" : "",
 
