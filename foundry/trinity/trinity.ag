@@ -3392,6 +3392,11 @@ shader CanvasUI
             if (angle < 0.0) angle += 6.2831853;
             t = clamp(angle / 6.2831853, 0.0, 1.0);
         }}
+        // mirrored/reflected variant — applies to any gradient kind.
+        // A at the ends (t=0,1), B at the midpoint (t=0.5).
+        if (ubo.stroke_opts.z > 0.5) {{
+            t = abs(2.0 * t - 1.0);
+        }}
         return mix(ubo.grad_c0, ubo.grad_c1, t);
     }
 
@@ -3600,7 +3605,8 @@ shader CanvasUI
         // sdf so corner radii still work.
         float half_w = stroke_width * 0.5;
         float dist_stroke = dist;
-        if (ubo.stroke_opts.x == 1.0) {{
+        float max_r = max(max(ubo.radii.x, ubo.radii.y), max(ubo.radii.z, ubo.radii.w));
+        if (ubo.stroke_opts.x == 1.0 && max_r <= 0.0) {{
             vec2 d_local = abs(lpos - center) - half_size;
             dist_stroke  = max(d_local.x, d_local.y);
         }}
@@ -3699,9 +3705,14 @@ shader CanvasUI
 # the vbo per call and a dedicated text_render renders it via its own
 # render pass over the canvas's color attachment in a single vkCmdDraw.
 shader CanvasText
-    mutable text_color : vec4f
-    mutable viewport : vec2f
-    
+    mutable text_color     : vec4f
+    mutable text_grad      : vec4f     # second color for gradient; alpha 0 = solid
+    mutable text_rect      : vec4f     # x, y, w, h of the label's bounding rect
+    mutable text_color_pos : vec2f     # normalized 0..1 position of text_color inside text_rect
+    mutable text_grad_pos  : vec2f     # normalized 0..1 position of text_grad  inside text_rect
+    mutable grad_params    : vec4f     # x = mirror (0/1), y/z/w reserved
+    mutable viewport       : vec2f
+
 
     attrib  atlas    : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format: typeid[ u8 ]
@@ -3709,10 +3720,12 @@ shader CanvasText
     attrib  a_pos    : VertexInput    [ type:typeid[ vec2f ] ]
     attrib  a_uv     : VertexInput    [ type:typeid[ vec2f ] ]
     attrib  v_uv     : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib  v_pos    : VertexOutput   [ type:typeid[ vec2f ] ]
     attrib  o_color  : FragmentOutput [ type:typeid[ vec4f ] ]
 
     func vertex [] -> GLSL none {
-        v_uv = a_uv;
+        v_uv  = a_uv;
+        v_pos = a_pos;
         vec2 ndc = (a_pos / ubo.viewport) * 2.0 - 1.0;
         gl_Position = vec4(ndc.x, ndc.y, 0.0, 1.0);
     }
@@ -3722,8 +3735,26 @@ shader CanvasText
         // blend state on the text Pipeline (straight_alpha flag) so the
         // result composes as rgb*a + dst*(1-a). this looked best in testing.
         float a = texture(atlas, v_uv).r;
-        //o_color = vec4(ubo.text_color.x, ubo.text_color.y, ubo.text_color.z, a);
-        o_color = vec4(ubo.text_color.rgb, ubo.text_color.a * a);
+
+        // two-color gradient across the label rect when text_grad.a > 0.
+        // positions are normalized (0..1) inside text_rect. mirror (default)
+        // reflects the ramp so text_color sits at both endpoints of the axis
+        // and text_grad sits at the midpoint — the chrome/reflected look.
+        vec3 rgb = ubo.text_color.rgb;
+        if (ubo.text_grad.a > 0.0 && ubo.text_rect.z > 0.5 && ubo.text_rect.w > 0.5) {{
+            vec2  uvn = vec2((v_pos.x - ubo.text_rect.x) / ubo.text_rect.z,
+                             (v_pos.y - ubo.text_rect.y) / ubo.text_rect.w);
+            vec2  p0  = ubo.text_color_pos;
+            vec2  p1  = ubo.text_grad_pos;
+            vec2  d   = p1 - p0;
+            float len_sq = dot(d, d);
+            float t = (len_sq > 0.0001) ? clamp(dot(uvn - p0, d) / len_sq, 0.0, 1.0) : 0.0;
+            if (ubo.grad_params.x > 0.5) {{
+                t = abs(2.0 * t - 1.0);
+            }}
+            rgb = mix(ubo.text_color.rgb, ubo.text_grad.rgb, t);
+        }}
+        o_color = vec4(rgb, ubo.text_color.a * a);
     }
 
 
@@ -3999,6 +4030,8 @@ class Gradient
     public y1       : f32
     # radial: center + radius (x0,y0 = center, x1 = inner radius, y1 = outer radius)
     # conic:  x0,y0 = center, x1 = start angle
+    # mirror: reflect the ramp (Photoshop "Reflected"): A at ends, B at midpoint
+    public mirror   : bool
 
     func init []
         stops = array GradientStop []
@@ -4777,7 +4810,10 @@ Render Canvas
                 ui_shader.grad_c0 = color_to_vec4 [ g.stops[0].color ]
             if [ n >= 2 ]
                 ui_shader.grad_c1 = color_to_vec4 [ g.stops[n - 1].color ]
+            # stash the mirror bit on stroke_opts.z (0 otherwise in UI paths)
+            ui_shader.stroke_opts.z = (g.mirror) ? 1.0 : 0.0
             return f32 [i32[g.kind]]
+        ui_shader.stroke_opts.z = 0.0
         return 0.0
 
     # ---- drawing ----
@@ -6550,7 +6586,8 @@ ielement element
     public func on_char    [ ev: Event ] return
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
-    intern transitions  : map StyleTransition[Au_t]
+    intern transitions  : map StyleTransition[string]
+    intern bindings     : map StyleEntry[string]
     intern restyle : bool
 
     public func set_capture []
@@ -6571,42 +6608,63 @@ ielement element
     public func render [ ] -> Elements
         return null
 
-    func invalidate_element [ ]
-        e : a
-        if [ e && e.transitions ]
-            for [ ct: StyleTransition, k: string ] in e.transitions
-                ct.invalidate = true
+    func invalidate_transitions [ ]
+        for [ ct:StyleTransition, k:string ] in transitions
+            ct.invalidate = true
+        
+        for [ e:element, k:string ] in elements
+            e.invalidate_transitions[]
 
     func remove_invalid_transitions [ ]
-        e: a
-        found : true
-        while [ found ]
-            found = false
-            for [ ct:StyleTransition, k:object ] in e.transitions
+        iterate : true
+        del : false
+        while [ iterate ]
+            iterate = false
+            for [ ct:StyleTransition, k:string ] in transitions
                 if [ ct.invalidate ]
-                    puts 'transitions: before rm count={e.transitions.count}'
-                    e.transitions.rm[ k ]
-                    puts 'transitions: after  rm count={e.transitions.count}'
-                    found = true
-                    return
+                    transitions.rm[ k ]
+                    iterate = true
+                    del = true
+                    puts 'deleted one'
+                    #restyle = true # these overwrite each other, which might be a flaw in design because we must 
+                    break
+                el
+                    puts 'valid? value = {ct.dbg_val}'
+
+        if [ del ]
+            puts 'deleted transitions, count left: {transitions.count}'
+            
+        for [ e:element, k:string ] in elements
+            e.remove_invalid_transitions[]
+
 
     intern func animate_within [ ]
         if [ transitions ]
             cur_millis : i64 [ epoch_millis[] ]
-            for [ ct: StyleTransition, k: Au_t ] in transitions
+            for [ ct: StyleTransition, k: string ] in transitions
                 dur : i64 [ ct.duration.get_millis[] ]
                 ms  : i64 [ cur_millis - ct.start ]
                 p   : f64 [ ct.pos[ f64[ ms ] / f64[ dur ] ] ]
                 if [ ct.type && ct.from && ct.to ]
                     from_t : typeid[ ct.from ]
-                    mixed : ct.from.mix*[ ct.to, p ]
-                    ct.container.member_set[ ct.member, mixed ]
+                    if [ (from_t.traits & (1 << 8)) != 0 ]
+                        dst : ct.container.member_ref[ ct.member ]
+                        #Au.mix_structs[ from_t, dst, ct.from, ct.to, p ]
+                    el
+                        mixed : ct.from.mix*[ ct.to, p ]
+                        ct.container.member_set[ ct.member, mixed ]
+
+        if [ bindings ]
+            for [ b: Binding, k: string ] in bindings
+                v : a.member_object[ b.src ]
+                if [ v ]
+                    b.container.member_set[ b.member, v ]
 
         for [ ee: element, id: string ] in elements
             ee.animate_within[ ]
 
 
-alias StyleTransitions : map StyleTransition[Au_t]
+alias StyleTransitions : map StyleTransition[string]
 
 
 Display Window
@@ -6687,37 +6745,58 @@ Display Window
 
     
     public func transition_or_set [ inst:element, value_holder:Au, cur:Au, member:Au_t, best:StyleEntry ]
+        # binding handling: value is sourced from inst.<best.binding> every frame.
+        # skip the transition/value path entirely.
+        if [ best.binding ]
+            if [ !inst.bindings ]
+                inst.bindings = map Binding [ string ] [ ]
+            src_m : Au_t [ Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ] ]
+            if [ src_m ]
+                inst.bindings[ member.ident ] = Binding [ container: value_holder, member: member, src: src_m ]
+            return
+
         # transition handling
         t  : best.trans
         ct : StyleTransition
         should_trans : false
+        mem : string[ member.ident ]
+
         if [ t ]
             if [ !inst.transitions ]
                 inst.transitions = StyleTransitions [ ]
-            ct = inst.transitions[ member ]
+            
+            ct = inst.transitions[ mem ]
             if [ !ct ]
                 ct = t.copy[]
                 ct.reference = t
                 should_trans = true
-                inst.transitions[ member ] = ct
+                inst.transitions[ mem ] = ct
             el
-                should_trans = ct.reference != t
+                ct.invalidate = false
+                should_trans = true # ct.reference != t
+        
         el [ inst.transitions ]
-            inst.transitions.rm[ member ]
+            inst.transitions.rm[ mem ]
         
         if [ ct && should_trans ]
             ct.from     = (cur) ? cur : best.instance
+            ct.dbg_val  = best.value
             ct.to       = best.instance
             ct.type     = typeid[ best.instance ]
             ct.start    = epoch_millis[]
             ct.member   = member
+            ct.invalidate = false
             ct.container = value_holder
+            s : new char [ 256 ]
+            sprintf [ s, "%p", ct ]
+            puts 'invalidate = false, key = {mem} on element {inst.id}, (best.value = {best.value}, ct = {s})'
+
         el [ !ct ]
             value_holder.member_set[ member, best.instance ]
     
     
     public func apply_style [ inst: element, style_avail: map StyleEntries[string] ]
-        puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
+        #puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
         ty      : Au_t [ typeid[ inst ] ]
         while [ ty != typeid[ Au ] ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
@@ -6728,7 +6807,7 @@ Display Window
                 entries : style_avail [ prop ]
                 if [ !entries ]
                     continue
-                puts 'apply_style:   {prop} entries={entries.count}'
+                #puts 'apply_style:   {prop} entries={entries.count}'
                 first : (entries[0] to StyleEntry)
 
                 # we sometimes have to create a map for 'layers' as well as a Layer instance inside
@@ -6769,6 +6848,7 @@ Display Window
                         if [ !cur ]
                             cur = best.instance
 
+                        #printf [ "setting layer member {%s} from css line {%i} (%p)\n", layer_member.ident, best.line, best.member ]
                         transition_or_set[ inst, layer_inst, cur, layer_member, best ]
                         layer_member = layer_member
 
@@ -6792,9 +6872,8 @@ Display Window
     public func animate []
         if [ !root ]
             return
-        invalidate[]
-        root.animate_within[ ]
-        remove_invalid[]
+
+        root.animate_within [ ]
 
     func update_element [ parent: element, rendered: map element[string] ]
         if [!parent.elements] parent.elements = Elements[]
@@ -6806,9 +6885,8 @@ Display Window
         # iterate through rendered elements
         for [ e:element, id:string ] in rendered
             instance : element* parent.elements[ id ]
-            changed  : bool
+            changed  : bool e.restyle
             new_inst : false
-            restyle  = restyle || e.restyle
             brand_new : false
 
             if [ instance ]
@@ -6818,8 +6896,8 @@ Display Window
 
             if [ brand_new || !instance ]
                 new_inst         = true
-                restyle          = true
                 instance         = (instance) ? instance : e.hold[]
+                instance.restyle = true
                 instance.id      = id
                 instance.ux      = a
                 instance.parent  = parent
@@ -6836,10 +6914,9 @@ Display Window
             el [ instance.restyle ]
                 instance.restyle = false
                 changed = true
-            el [ !restyle ]
-                if [ instance inherits Button ]
-                    test :  2
-                    test += 2
+            el [ restyle ]
+                changed = true
+            el
                 changed = apply_args[ instance, e ]
 
             if [ changed ]
@@ -6866,22 +6943,24 @@ Display Window
                     break
 
     public func update_all [ render: Elements ]
-        restyle = false
         if [ !root ]
             root    = element [ id: string[ 'root' ] ]
             root_styles = st.compute[ root ]
             restyle = true
-        if [ !restyle ]
-            restyle = st.check_reload[]
-        if [ restyle ]
+        
+        force_restyle : (!restyle) ? st.check_reload[] : false
+
+        # when we invoke a restyle it needs to go over everything, not just the element in question.
+        if [ force_restyle || restyle ]
+            puts 'restyling..'
+            root.invalidate_transitions[ ]
             apply_style[ root, root_styles ]
+
         update_element[ root, render ]
-
-    public func invalidate []
-        if [ root ] root.invalidate_element[ ]
-
-    public func remove_invalid []
-        if [ root ] root.remove_invalid_transitions[ ]
+        if [ force_restyle || restyle ]
+            root.remove_invalid_transitions [ ]
+            puts 'removed invalid transitions'
+        restyle = false
 
     public func set_capture [ e: element ]
         if [ capture != e ]
@@ -6921,6 +7000,7 @@ Display Window
         y : f32   [ ev.mouse.pos.y ]
         lx : f32  [ x - b.x ]
         ly : f32  [ y - b.y ]
+
         if [ !must && (lx < 0.0 || ly < 0.0 || lx >= b.w || ly >= b.h) ]
             return null
         
@@ -6955,17 +7035,24 @@ Display Window
     public func move_event [ ev: Event ]
         f : element [ find_target[ root, ev, null ] ]
         m : element [ (capture) ? find_target[ root, ev, capture ] : f ]
+        # store the hit element's local cursor so properties like
+        # label_color_pos can be driven by the mouse at draw time.
+        if [ f ]
+            f.cursor = ev.mouse.pos
         # hover / leave bubble — flip state bools and set restyle; the next
         # update_element pass picks up restyle and re-applies CSS.
         if [ hovered != f ]
-            puts 'hover: changed (prev={(hovered) ? hovered.id : null}, new={(f) ? f.id : null})'
+            #puts 'hover: changed (prev={(hovered) ? hovered.id : null}, new={(f) ? f.id : null})'
             prev : element [ hovered ]
             if [ prev ]
                 puts 'hover: leaving {prev.id}'
                 if [ prev inherits Button ]
                     prev = prev
+                    puts 'should restyle'
                 prev.hovered = false
                 prev.restyle = true
+                restyle = true
+                
                 leave_consumed : bool [ false ]
                 for [ e: element* prev, e && !leave_consumed, e = e.parent ]
                     ev.target = e
@@ -6975,12 +7062,13 @@ Display Window
                     app_object.on_leave[ ev ]
             hovered = f
             if [ f ]
-                puts 'hover: entering {f.id}'
+                #puts 'hover: entering {f.id}'
                 if [ f inherits Button ]
                     test :  22
                     test += 22
                 f.hovered = true
                 f.restyle = true
+                restyle = true
                 hover_consumed : bool [ false ]
                 for [ e: element* f, e && !hover_consumed, e = e.parent ]
                     ev.target = e
@@ -7041,6 +7129,8 @@ Display Window
             if [ f ]
                 f.restyle = true
                 f.pressed = true
+                restyle = true
+            
             action_pressed = f
         el [ ev.mouse.button == 1 ]
             context_pressed = f
@@ -7061,6 +7151,8 @@ Display Window
             if [ f ]
                 f.restyle = true
                 f.pressed = false
+                restyle = true
+            
             if [ f && action_pressed == f && f.hovered ]
                 for [ e: element* f, e, e = e.parent ]
                     ev.target = e
@@ -7248,7 +7340,11 @@ Display Window
         # compute element bounds from its area
         if [ !e.area ]
             e.area = Region [ 0.0 ]
-        e.bounds = e.area.rectangle[ rel, null, (last) ? last.bounds : null ]
+
+        if [!e.bounds] e.bounds = rect[] 
+        bounds : e.area.rectangle[ rel, null, (last) ? last.bounds : null ]
+        memcpy[ e.bounds, bounds, sizeof[f32] * 4 ]
+
         element_text : (e.label && e.label.count) ? e.label : null
 
         # per-element 2D transform around a transform-origin pivot. scale and
@@ -7279,7 +7375,7 @@ Display Window
             if [ layer.ctype != stage ]
                 continue
             
-            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null ] : e.bounds
+            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null ] : e.bounds.copy[]
             layer.bounds.x -= e.bounds.x
             layer.bounds.y -= e.bounds.y
             
@@ -7290,13 +7386,13 @@ Display Window
                 rx = layer.radius.rx
                 ry = layer.radius.ry
 
+            
             if [ [ layer.fill_color && layer.fill_color.a > 0.0] || [layer.stroke_color && layer.stroke_color.a > 0.0] ]
                 cv.save             [ ]
                 cv.set_stroke_size  [ layer.stroke_width ]
                 cv.set_stroke_cap   [ layer.stroke_cap  ]
                 cv.set_stroke_join  [ layer.stroke_join ]
-                cv.rect_to          [ b.x, b.y, b.w, b.h ]
-                cv.rounded_rect     [ b.x, b.y, b.w, b.h, rx, ry ]
+                cv.rounded_rect     [ b.x, b.y, b.w, b.h, 8, 8 ]
                 cv.fill_color       [ layer.fill_color ]
                 cv.stroke_color     [ layer.stroke_color ]
                 cv.paint            [ ]
@@ -7400,11 +7496,20 @@ class Text
     public lines   : array LineInfo
 
 class StyleEntry
-    mutable member   : string
-    mutable value    : string
-    mutable trans    : StyleTransition
-    mutable bl       : StyleBlock
-    mutable instance : object
+    mutable member    : string
+    mutable value     : string
+    mutable trans     : StyleTransition
+    mutable bl        : StyleBlock
+    mutable instance  : object
+    mutable line      : i32
+    # when set, `value` is the name of a field on the target element; the value
+    # is re-read from inst.<binding> every frame (not converted at parse time).
+    mutable binding   : string
+    # resolved when a bound entry is registered on an instance:
+    # container.member_set(bound_mem, inst.member_object[bound_src]) each frame.
+    mutable container : Au
+    mutable bound_mem : Au_t
+    mutable bound_src : Au_t
 
 alias StyleEntries   : array StyleEntry
 alias StyleEntryMap  : map   StyleEntry [ string ]
@@ -7962,6 +8067,7 @@ class StyleTransition
     public duration     : TimeCoord
     manual from         : object
     manual to           : object
+    intern dbg_val      : string
     intern start        : i64
     intern invalidate   : bool
     intern reference    : StyleTransition
@@ -8179,9 +8285,14 @@ class Layer
 
     public label               : string
     public label_color         : rgba
+    public label_color_pos     : vec2f [ 0.0, 0.0 ]
+    public label_grad          : rgba
+    public label_grad_pos      : vec2f [ 0.0, 1.0 ]
+    public label_grad_radius   : f32   [ 1.0 ]
+    public label_grad_mirror   : bool  [ true ]
     public label_shadow        : Shadow
     public label_glow          : Glow
-    public label_size          : f32 [ 22.0 ]
+    public label_size          : f32   [ 22.0 ]
     public label_height        : f32 [ 1.0 ]
     public label_align         : Align [ x: XAlign.middle, y: YAlign.middle ]
     public label_offset        : vec2f
@@ -8745,7 +8856,8 @@ element CameraView
     func draw [ w: Window ]
         if [ !camera ] return
         if [ !once ]
-            camera.src_rect = src_rect
+            camera.src_rect = (src_rect) ? src_rect :
+                rect [ x: 0.0, y: 0.0, w: f32[ camera.width ], h: f32[ camera.height ] ]
             camera.update[]
             once = true
         cv : Canvas w.screen
@@ -9199,7 +9311,7 @@ class DrawState
     public opacity              : f32
 
     public func set_default [ ] 
-        font         = Font[ size: 22, uri: path 'fonts/Sofia-Sans-Condensed.ttf' ]
+        font         = Font[ size: 22, uri: path 'fonts/YanoneKaffeesatz-VariableFont_wght.ttf' ]
         stroke_cap   = Cap.round
         stroke_join  = Join.round
         stroke_size  = 0
@@ -9344,12 +9456,14 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
 class CSSLine
     public indent  : i32
     public content : string
+    public line    : i32
 
 
 func split_css [ code: string ] -> array CSSLine
     result : array CSSLine [ ]
-    n : num [ code.count ]
-    i : num [ 0 ]
+    n      : num [ code.count ]
+    i      : num [ 0 ]
+    ln     : i32 [ 1 ]
     while [ i < n ]
         ind : i32 [ 0 ]
         while [ i < n && (code.chars[i] == ' ' || code.chars[i] == '\t') ]
@@ -9361,7 +9475,8 @@ func split_css [ code: string ] -> array CSSLine
         if [ i >= n ]
             break
         if [ code.chars[i] == '\n' ]
-            i += 1
+            i  += 1
+            ln += 1
             continue
         if [ i + 1 < n && code.chars[i] == '/' && code.chars[i + 1] == '/' ]
             while [ i < n && code.chars[i] != '\n' ]
@@ -9370,17 +9485,20 @@ func split_css [ code: string ] -> array CSSLine
         if [ i + 1 < n && code.chars[i] == '/' && code.chars[i + 1] == '*' ]
             i += 2
             while [ i + 1 < n && !(code.chars[i] == '*' && code.chars[i + 1] == '/') ]
+                if [ code.chars[i] == '\n' ]
+                    ln += 1
                 i += 1
             if [ i + 1 < n ]
                 i += 2
             continue
         line_start : num [ i ]
+        cur_line   : i32 [ ln ]
         while [ i < n && code.chars[i] != '\n' ]
             i += 1
         line_len : num [ i - line_start ]
         c : string [ code.mid[ line_start, line_len ].trim[] ]
         if [ c.count ]
-            result.push[ CSSLine [ indent: ind, content: c ] ]
+            result.push[ CSSLine [ indent: ind, content: c, line: cur_line ] ]
     return result
 
 
@@ -9431,7 +9549,7 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
                 inner.parent = bl
                 bl.blocks.push[ inner ]
             el
-                bl.entries[ member ] = StyleEntry [ member: member, value: inner, bl: bl ]
+                bl.entries[ member ] = StyleEntry [ member: member, value: inner, bl: bl, line: lines[j].line ]
             j = sub_end + 1
             continue
         # indent parser: split off transition suffix (e.g. "#84a, 444ms") so
@@ -9441,7 +9559,10 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
         param : string [ (ci2 >= 0) ? val_str.mid[ ci2 + 1, val_str.count - (ci2 + 1) ].trim[] : null ]
         value : string [ (ci2 >= 0) ? val_str.mid[ 0, ci2 ].trim[] : val_str ]
         trans : (param) ? StyleTransition[ param ] : null
-        bl.entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: bl ]
+        # {name} => per-frame binding to inst.<name>, not a value to convert.
+        is_bind : bool [ value.count >= 2 && value.chars[0] == '{' && value.chars[value.count - 1] == '}' ]
+        bname   : string [ (is_bind) ? value.mid[ 1, value.count - 2 ].trim[] : null ]
+        bl.entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: bl, line: lines[j].line, binding: bname ]
         j += 1
 
 

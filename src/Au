@@ -659,6 +659,8 @@ forward(any)
     M(AA,BB, s, method, public, Au,     __convert,      Au_t, Au) \
     M(AA,BB, s, method, public, Au,     __op,           i32, Au, Au) \
     M(AA,BB, i, method, public, Au,     mix,            Au, f64) \
+    M(AA,BB, s, method, public, none,   mix_structs,    Au_t, Au, Au, Au, f64) \
+    M(AA,BB, i, method, public, Au,     member_ref,     Au_t) \
     M(AA,BB, s, method, public, none,   auto_free) \
     M(AA,BB, i, method, public, Au,     initialize) \
     M(AA,BB, s, method, public, none,   module_erase,   Au_t, symbol) \
@@ -742,6 +744,7 @@ forward(any)
     M(AA,BB, i, cast,  public, Au_t) \
     M(AA,BB, i, cast,  public, bool)
 
+    
 #define Au_intern_footer(AA)
 
 #define Au_intern(AA,YY,...) Au_schema(AA,YY,__VA_ARGS__)

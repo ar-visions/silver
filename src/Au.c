@@ -3647,6 +3647,35 @@ Au Au_mix(Au a, Au target, f64 amount) {
     return result;
 }
 
+Au Au_member_ref(Au container, Au_t m) {
+    if (m->member_type != AU_MEMBER_VAR) return null;
+    return (Au)((char*)container + m->offset);
+}
+
+none mix_structs(Au_t type, Au dst, Au a, Au b, f64 t) {
+    f64 inv = 1.0 - t;
+    for (int i = 0; i < type->members.count; i++) {
+        Au_t m = (Au_t)type->members.origin[i];
+        if (m->member_type != AU_MEMBER_VAR) continue;
+        Au_t  st = m->type;
+        u32   o  = m->offset;
+        char* pa = (char*)a   + o;
+        char* pb = (char*)b   + o;
+        char* po = (char*)dst + o;
+             if (st == typeid(f32)) *(f32*)po = (f32)((f64)*(f32*)pa * inv + (f64)*(f32*)pb * t);
+        else if (st == typeid(f64)) *(f64*)po = *(f64*)pa * inv + *(f64*)pb * t;
+        else if (st == typeid(i32)) *(i32*)po = (i32)((f64)*(i32*)pa * inv + (f64)*(i32*)pb * t);
+        else if (st == typeid(u32)) *(u32*)po = (u32)((f64)*(u32*)pa * inv + (f64)*(u32*)pb * t);
+        else if (st == typeid(i16)) *(i16*)po = (i16)((f64)*(i16*)pa * inv + (f64)*(i16*)pb * t);
+        else if (st == typeid(u16)) *(u16*)po = (u16)((f64)*(u16*)pa * inv + (f64)*(u16*)pb * t);
+        else if (st == typeid(i8))  *(i8*) po = (i8) ((f64)*(i8*) pa * inv + (f64)*(i8*) pb * t);
+        else if (st == typeid(u8))  *(u8*) po = (u8) ((f64)*(u8*) pa * inv + (f64)*(u8*) pb * t);
+        else if (st == typeid(i64)) *(i64*)po = (i64)((f64)*(i64*)pa * inv + (f64)*(i64*)pb * t);
+        else if (st == typeid(u64)) *(u64*)po = (u64)((f64)*(u64*)pa * inv + (f64)*(u64*)pb * t);
+        else memcpy(po, (t < 0.5) ? (void*)pa : (void*)pb, st->typesize);
+    }
+}
+
 Au __op(i32 optype, Au L, Au R) {
     Au_t type = isa(L);
     Au_t op_mem = null;
@@ -4100,7 +4129,7 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
         return primitive(typeid(i32), &v);
     }
     if (type && is_struct(type))
-        return construct_with(type, res, null);
+        return construct_with(type, (Au)res, null);
 
     return type ? (Au)
         ((Au_f*)type)->ft.with_cereal(alloc(type, 1, null, null, null), (cereal) { .value = (cstr)res->chars }) :
