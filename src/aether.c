@@ -9189,14 +9189,14 @@ enode aether_e_not(aether a, enode L) {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
 
-    if (!L->loaded && !is_ptr(L) && !is_class(L))
+    if (!L->loaded && !is_ptr(L) && !is_class(L) && !is_func_ptr((Au)L))
         L = enode_value(L, true);
 
     LLVMValueRef result;
     etype Lm = canonical(L);
     verify(convertible(Lm, etypeid(bool)),
         "cannot apply '!' to %o (not convertible to bool)", Lm);
-    if (is_ptr(Lm) || is_class(Lm)) {
+    if (is_ptr(Lm) || is_class(Lm) || is_func_ptr((Au)Lm)) {
         // for pointers, compare with null
         result = LLVMBuildICmp(B, LLVMIntEQ, L->value,
             LLVMConstNull(LLVMTypeOf(L->value)), "ptr-not");
