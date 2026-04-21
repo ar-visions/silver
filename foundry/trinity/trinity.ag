@@ -160,7 +160,7 @@ class Render
     public func hash[] -> u64
         return u64[handle[a]]
 
-    public func update [ ] 
+    public func update [ ]
         backbuffer: !vk_swap_image
         width  = (wscale > 0) ? w.width  * wscale : width
         height = (wscale > 0) ? w.height * wscale : height
@@ -168,9 +168,12 @@ class Render
         if [ !width || !height ]
             fault "width / height or wscale not set on render Render"
             exit[ 0 ]
-        
-        if [ width == last_width && height == last_height ]
-            return
+
+        printf[ "Render.update: this=%p w=%i h=%i last=%ix%i backbuf=%i\n",
+                a, width, height, last_width, last_height, (backbuffer) ? 1 : 0 ]
+        # no dimension-based early return — even with same dims, a sibling
+        # Render may have rebuilt the shared color Texture's view and our
+        # framebuffer now holds a dangling handle. always rebuild.
 
         # wait for this Render's own in-flight frame before tearing down
         # its attachments / framebuffers. replaces the global vkDeviceWaitIdle
@@ -181,6 +184,19 @@ class Render
         last_width  = width
         last_height = height
             
+        # for swap-backed renders the Texture wraps vk_swap_image which
+        # Display.resize just recreated — a plain resize would try to build a
+        # new view off the stale handle. drop and rebuild in the el branch.
+        if [ color && !backbuffer ]
+            color.dealloc[]
+            color = null
+            if [ depth ]
+                depth.dealloc[]
+                depth = null
+            if [ reduce && reduction ]
+                reduction.dealloc[]
+                reduction = null
+
         if [ color ]
             color.resize[ width, height ]
             if [ depth ]
@@ -212,6 +228,11 @@ class Render
         # color-only render passes (e.g. text overlay) skip the depth view.
         has_depth : bool [ (depth) ? true : false ]
         for [ i: 0, i < 1 + reduce, i += 1 ]
+            # destroy the old framebuffer so we don't leak — and so nothing can
+            # reuse its stale (now-dangling) attachment handles.
+            if [ vk_framebuffer[i] ]
+                vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
+                vk_framebuffer[i] = null
             vk_view_attachments: local VkImageView [2]
             vk_view_attachments[0] = (i == 0) ? color.vk_image_view : reduction.vk_image_view
             if [ has_depth ]
@@ -282,6 +303,9 @@ class Render
                 for [ p: Pipeline ] in reduce_model.pipelines
                     p.dispatch[ frame ]
 
+            printf[ "Render.draw: this=%p fb[%i]=%p rp[%i]=%p color=%p color.view=%p\n",
+                    a, i, vk_framebuffer[i], i, vk_render_pass[i],
+                    color, (color) ? color.vk_image_view : null ]
             render_pass_info : VkRenderPassBeginInfo [
                 sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                 renderPass:      vk_render_pass[i],
@@ -7363,12 +7387,27 @@ Display Window
                 background, r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
                 r_reduce2, r_reduce3, r_frost_v, r_frost,
                 r_view ]
+        el
+            # after first-time setup, resize just needs to refresh every
+            # sub-render's framebuffer and rebind each Model's descriptor sets
+            # so samplers point at the rebuilt canvas color views.
+            if [ list ]
+                for [ r: Render ] in list
+                    r.update[]
+                for [ r: Render ] in list
+                    if [ r.models ]
+                        for [ m: Model ] in r.models
+                            m.rebind_model[]
 
-
+    mutable resizing : bool
 
     public func resize [ w: i32, h: i32 ] -> Window
+        resizing = true
+        if [ vk && vk.device ]
+            vkDeviceWaitIdle[ vk.device ]
         super.resize[ w, h ]
         update[]
+        resizing = false
         return a
 
     mutable blur_anim : f32
@@ -7376,6 +7415,7 @@ Display Window
 
     func on_compose []
         if [ !compose ] return
+        if [ resizing ] return
         
         compose.save    [ ]
         compose.clear   [ '#80a' ]
@@ -7403,6 +7443,7 @@ Display Window
 
     func on_screen []
         if [ !screen ] return
+        if [ resizing ] return
 
         screen.save[]
         
