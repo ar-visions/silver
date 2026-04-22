@@ -401,4 +401,6 @@ declare_class_3(static_array, array, collective)
     M(X, Y, i, prop,     public,  bool,    is_au_rt)
 declare_class_3(import, enamespace, etype)
 
+void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq);
+
 #endif

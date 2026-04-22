@@ -1948,7 +1948,7 @@ bool lambda_cast_bool(lambda a) {
 }
 
 lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
-    lambda a = (lambda)alloc_new(typeid(lambda), 0, null, null, null);
+    lambda a = (lambda)alloc_new(typeid(lambda), 0, null, null, null, __FILE__, __LINE__, 0);
     a->au      = au;
     a->fn      = fn;
     a->target  = target;
@@ -2718,12 +2718,11 @@ none auto_free() {
     // only managed objects go into af
     for (num i = 2; i < af_count; i++) {
         Au a = af[i];
-        if (a) a->managed = 1;
-        continue;
         
-        if (a && a->refs == 0)
+        if (a && a->refs == 0) {
+            print("auto freeing data from %s:%i", a->source, a->line);
             Au_free(&a[1]);
-        else if (a)
+        } else if (a)
             a->managed = 1; // says i am not in the list, but managed
     }
     af_count = 2;
@@ -2747,9 +2746,19 @@ Au alloc_dbg(Au_t type, num count, cstr source, int line, int sequence) {
 static ARef  tracing = null;
 static int   tracing_count = 0;
 
+static int total_objects;
+
 void alloc_trace() {
     tracing = calloc(1024 * 100, sizeof(ARef));
     tracing_count = 0;
+}
+
+
+int get_total_objects(Au_t type) {
+    if (type) {
+        return type->global_count;
+    }
+    return total_objects;
 }
 
 void alloc_validate() {
@@ -2771,9 +2780,6 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b) {
     Au a = alloc_instance(type,
         _sz + type->typesize * alloc_count, true);
 
-    if (meta_a == typeid(f32)) {
-        printf("GLSL Au origin = %p\n", a);
-    }
     a->type       = type;
     a->data       = &a[1];
     a->count      = alloc_count;
@@ -2784,11 +2790,18 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b) {
     if (tracing)
         tracing[tracing_count++] = a->data;
 
+    total_objects++;
     return a->data;
 }
 
-Au alloc_new(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b) {
-    return alloc(type, count, shape_data, meta_a, meta_b);
+Au alloc_new(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
+             symbol source, i32 line, i64 seq) {
+    Au a  = alloc(type, count, shape_data, meta_a, meta_b);
+    Au hd = header(a);
+    hd->source   = (cstr)source;
+    hd->line     = line;
+    hd->sequence = (i32)seq;
+    return a;
 }
 
 Au alloc2(Au_t type, Au_t scalar, shape s) {
@@ -2806,7 +2819,7 @@ Au alloc2(Au_t type, Au_t scalar, shape s) {
 }
 
 Au new_object(Au_t type, Au_t meta_a, Au meta_b) {
-    Au a = alloc_new(type, 1, null, meta_a, meta_b);
+    Au a = alloc_new(type, 1, null, meta_a, meta_b, __FILE__, __LINE__, 0);
     Au_initialize(a);
     return a;
 }
@@ -5094,9 +5107,12 @@ Au Au_hold(Au a) {
 
 none Au_free(Au a) {
     Au       aa = header(a);
+    // C-imported types are flat memory — no init/dealloc/hold/drop vtable.
+    // just free the allocation and skip the chain walk entirely.
+    bool     is_c = aa->type && aa->type->is_c;
     Au_f*  type = (Au_f*)aa->type;
     none* prev = null;
-    Au_f*   cur = type;
+    Au_f*   cur = is_c ? null : type;
     while (cur) {
         if (prev != cur->ft.dealloc) {
             cur->ft.dealloc(a);
@@ -5120,6 +5136,7 @@ none Au_free(Au a) {
         printf("global_count < 0 for type %s\n", type->ident);
     
     aa->refs = -8888;
+    total_objects--;
     free(aa);
 #else
     free(aa);
@@ -5130,22 +5147,9 @@ none Au_free(Au a) {
 none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
-    
     if (info->managed && --info->refs <= 0) {
-        if (info->refs < 0) {
-            info = info;
-        }
-        af[info->managed] = null; // the first 2 managed items are always null, so even if managed == 1 (not using af) then its zero anyway
-        
-        /*
-        if (info->af_index > 0) {
-            info->type->af->af4[info->af_index] = null;
-            info->af_index = 0;
-        }
-        */
-        
+        af[info->managed] = null;
         Au_free(a);
-
     }
 }
 
