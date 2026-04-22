@@ -1625,9 +1625,12 @@ static enode read_keywords(silver a) {
     // build tokens object at runtime: alloc + push each string
     efunc f_alloc = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
     efunc f_push  = (efunc)u(efunc, find_member(etypeid(collective)->au, "push", AU_MEMBER_FUNC, 0, true));
+    enode n_src; Au n_line, n_seq;
+    alloc_origin_args((aether)a, &n_src, &n_line, &n_seq);
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, etypeid(tokens)), _i32(1), e_null(a, etypeid(shape)),
-        e_null(a, etypeid(Au_t)), e_null(a, etypeid(Au))), false, false);
+        e_null(a, etypeid(Au_t)), e_null(a, etypeid(Au)),
+        (Au)n_src, n_line, n_seq), false, false);
     res->au = etypeid(tokens)->au;
     for (int i = 0; i < len(toks); i++) {
         string s = (string)toks->origin[i];
@@ -6450,11 +6453,17 @@ void silver_build_user_initializer(silver a, enode prop) {
 
         verify (!instanceof(prop->initializer, enode), "unexpected enode");
         array initializer = (array)prop->initializer;
-        if (len(initializer))
-            a->statement_origin = (token)initializer->origin[0];
         array post_const = parse_const(a, (array)prop->initializer);
         subprocedure set_if = subproc(a, assign_builder, post_const);
         efunc  ctx = context_func(a);
+
+        // establish statement_origin so deep aether allocations in this
+        // init path can stamp source/line on every Au they create.
+        token saved_origin = a->statement_origin;
+        if (len(initializer))
+            a->statement_origin = (token)initializer->origin[0];
+        else if (ctx && ctx->origin_token)
+            a->statement_origin = ctx->origin_token;
 
         if (is_class(prop->au->context) && !prop->au->is_static) {
             Au_t    f  = (Au_t)ctx->au->args.origin[0];
@@ -6472,9 +6481,10 @@ void silver_build_user_initializer(silver a, enode prop) {
 
             etype mdl = canonical(prop);
             e_assign(a, L, (Au)parse_expression(a, mdl, false, true), OPType__assign);
-            
+
             pop_tokens(a, false);
         }
+        a->statement_origin = saved_origin;
     }
 }
 
@@ -6715,7 +6725,6 @@ void silver_write_header(silver a) {
                 m->context->module != typeid(Au)->module &&
                 m->context != typeid(Au);
             bool has_fbits = is_silver_class && !parent_is_silver_class;
-            has_fbits = false; // disabled: do not inject __fbits as first member
 
             write(module_f, "#define %o_schema(A,B,...)", n);
             if (has_fbits) {
@@ -7031,9 +7040,12 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             enode meta_a_node = f->au->meta.a ?
                 e_typeid(a, u(etype, f->au->meta.a)) : e_null(a, etypeid(Au_t));
             efunc f_alloc = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
+            enode gn_src; Au gn_line, gn_seq;
+            alloc_origin_args((aether)a, &gn_src, &gn_line, &gn_seq);
             enode glsl = e_fn_call(a, f_alloc, a(
                 e_typeid(a, rtype), _i32(1), e_null(a, etypeid(shape)),
-                meta_a_node, e_null(a, etypeid(Au))), false, false);
+                meta_a_node, e_null(a, etypeid(Au)),
+                (Au)gn_src, gn_line, gn_seq), false, false);
             glsl->au = rtype_au;
             // find symbol constructor and call via e_init
             Au_t ctr_au = find_member(rtype_au, "with_symbol", AU_MEMBER_CONSTRUCT, 0, true);

@@ -658,6 +658,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   __typeid,       Au) \
     M(AA,BB, s, method, public, Au,     __convert,      Au_t, Au) \
     M(AA,BB, s, method, public, Au,     __op,           i32, Au, Au) \
+    M(AA,BB, s, method, public, i32,    get_total_objects,    Au_t) \
     M(AA,BB, i, method, public, Au,     mix,            Au, f64) \
     M(AA,BB, s, method, public, none,   mix_structs,    Au_t, Au, Au, Au, f64) \
     M(AA,BB, i, method, public, Au,     member_ref,     Au_t) \
@@ -683,7 +684,7 @@ forward(any)
     M(AA,BB, s, method, public, Au,     alloc, Au_t, num, shape, Au_t, Au) \
     M(AA,BB, s, method, public, Au,     method_call, Au_t, array) \
     M(AA,BB, s, method, public, Au,     new_object, Au_t, Au_t, Au) \
-    M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_t, Au) \
+    M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_t, Au, symbol, i32, i64) \
     M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, cstr, i32, i32) \
     M(AA,BB, s, method, public, string, estring, Au_t, i32) \
     M(AA,BB, s, method, public, i32,    evalue, Au_t, cstr) \
