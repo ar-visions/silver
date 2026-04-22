@@ -26,7 +26,7 @@
             "request":          "launch",
             "preLaunchTask":    "build-silver-debug",
             "program":          "${workspaceFolder}/install/debug/silver",
-            "args":             [ "hyperspace", "-v", "--clean", "--run" ],
+            "args":             [ "hyperspace", "--run" ],
             "cwd":              "${workspaceFolder}",
             "stopOnEntry":      false,
             "env": {

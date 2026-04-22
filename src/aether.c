@@ -255,6 +255,8 @@ void emit_coverage_register(aether);
 void coverage_set_func_name(u32 func_id, char* name);
 
 // set debug source location on the IR builder
+void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq);
+
 void emit_debug_loc(aether a, u32 line, u32 column) {
     if (!a->debug || !a->compile_unit || a->no_build) return;
     LLVMMetadataRef scope = debug_scope(a);
@@ -275,7 +277,7 @@ LLVMValueRef LLVMFetchGlobal(LLVMModuleRef module_ref, LLVMTypeRef type, cstr na
 
 etype etype_copy(etype mem) {
     Au_t au = isa(mem);
-    etype n = (etype)alloc_new(au, 1, null, null, null);
+    etype n = (etype)alloc_new(au, 1, null, null, null, __FILE__, __LINE__, 0);
     memcpy(n, mem, au->typesize);
     hold_members((Au)n);
     return n;
@@ -3909,9 +3911,12 @@ enode e_create_from_map(aether a, etype t, map m) {
     efunc f_alloc    = (efunc)u(efunc, find_member(etypeid(Au)->au, "alloc_new",  AU_MEMBER_FUNC, 0, false));
     efunc f_mset     = (efunc)u(efunc, find_member(etypeid(map)->au, "set",       AU_MEMBER_FUNC, 0, false));
     efunc cur = context_func(a);
+    enode n_src; Au n_line, n_seq;
+    alloc_origin_args(a, &n_src, &n_line, &n_seq);
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, t), _i32(1), e_null(a, etypeid(shape)),
-        e_meta_a_node(a, t->meta_a), e_meta_b_node(a, t->meta_b)), false, false);
+        e_meta_a_node(a, t->meta_a), e_meta_b_node(a, t->meta_b),
+        (Au)n_src, n_line, n_seq), false, false);
     res->au   = t->au;
     res->meta_a = hold(t->meta_a);
     res->meta_b = hold(t->meta_b);
@@ -3940,11 +3945,14 @@ enode e_create_from_array(aether a, etype t, array ar) {
     efunc f_push       = (efunc)u(efunc, find_member(etypeid(array)->au, "push",       AU_MEMBER_FUNC, 0, true));
     efunc f_push_vdata = (efunc)u(efunc, find_member(etypeid(array)->au, "push_vdata", AU_MEMBER_FUNC, 0, true));
 
+    enode n_src; Au n_line, n_seq;
+    alloc_origin_args(a, &n_src, &n_line, &n_seq);
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, t), _i32(1), e_null(a, etypeid(shape)),
-        e_meta_a_node(a, t->meta_a), e_meta_b_node(a, t->meta_b)), false, false);
+        e_meta_a_node(a, t->meta_a), e_meta_b_node(a, t->meta_b),
+        (Au)n_src, n_line, n_seq), false, false);
     res->au = t->au;
-    
+
     bool  all_const = t->au == typeid(array) && !a->building_initializer;
     int   ln = len(ar);
     enode array_len = e_operand(a, _i64(ln), etypeid(i64));
@@ -4238,12 +4246,15 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
 
             efunc f_alloc    = (efunc)u(efunc,
                 find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
+            enode bxn_src; Au bxn_line, bxn_seq;
+            alloc_origin_args(a, &bxn_src, &bxn_line, &bxn_seq);
             enode boxed      = e_fn_call(a, f_alloc, a(
                 e_typeid(a, input_type),
                 _i32(1),
                 e_null(a, etypeid(shape)),
                 e_meta_a_node(a, input_type->meta_a),
-                e_meta_b_node(a, input_type->meta_b)
+                e_meta_b_node(a, input_type->meta_b),
+                (Au)bxn_src, bxn_line, bxn_seq
             ), false, false);
             bool is_enumerable = is_enum(input_type);
             if (is_enumerable) {
@@ -4618,18 +4629,47 @@ enode aether_e_vector(aether a, etype t, enode shape_data) {
     enode ma = e_meta_a_node(a, t->meta_a ? t->meta_a : (tc ? tc->meta_a : null));
     enode mb = e_meta_b_node(a, t->meta_b ? t->meta_b : (tc ? tc->meta_b : null));
     bool is_shape = shape_data && canonical(shape_data) && canonical(shape_data)->au == typeid(shape);
+    enode n_src; Au n_line, n_seq;
+    alloc_origin_args(a, &n_src, &n_line, &n_seq);
     if (is_shape)
-        return e_fn_call(a, f_alloc, a( e_typeid(a, t), _i32(0), shape_data, ma, mb ), false, false);
+        return e_fn_call(a, f_alloc, a( e_typeid(a, t), _i32(0), shape_data, ma, mb,
+            (Au)n_src, n_line, n_seq ), false, false);
     enode count = shape_data ? shape_data : (enode)_i32(0);
-    return e_fn_call(a, f_alloc, a( e_typeid(a, t), count, e_null(a, etypeid(shape)), ma, mb ), false, false);
+    return e_fn_call(a, f_alloc, a( e_typeid(a, t), count, e_null(a, etypeid(shape)), ma, mb,
+        (Au)n_src, n_line, n_seq ), false, false);
+}
+
+void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq) {
+    // prefer statement_origin — set by the parser for the current statement
+    // and is the right "allocation hint" for deep aether paths.
+    token tk   = a->statement_origin ? a->statement_origin : aether_peek_safe(a);
+    static int orphan_count = 0;
+    if (!tk || !tk->source || !tk->line) {
+        ++orphan_count;
+    }
+    cstr  src  = (tk && tk->source) ? ((string)tk->source)->chars : "";
+    i32   sln  = (tk) ? (i32)tk->line : 0;
+    *out_src   = enode(mod, a, au, etypeid(symbol)->au, loaded, true,
+        value, const_cstr(a, src, (i32)strlen(src)));
+    *out_line  = (Au)_i32(sln);
+    if (a->coverage && a->coverage_seq_global && !a->no_build) {
+        LLVMTypeRef i64t = LLVMInt64TypeInContext(a->module_ctx);
+        LLVMValueRef v = LLVMBuildLoad2(B, i64t, a->coverage_seq_global, "alloc_seq");
+        *out_seq = (Au)enode(mod, a, au, etypeid(i64)->au, loaded, true, value, v);
+    } else {
+        *out_seq = _i64(0);
+    }
 }
 
 enode aether_e_alloc(aether a, etype mdl) {
     efunc f_alloc = (efunc)u(efunc,
         find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
+    enode n_src; Au n_line, n_seq;
+    alloc_origin_args(a, &n_src, &n_line, &n_seq);
     enode res = e_fn_call(a, f_alloc, a(
         e_typeid(a, mdl), _i32(0), e_null(a, etypeid(shape)),
-        e_meta_a_node(a, mdl->meta_a), e_meta_b_node(a, mdl->meta_b) ), false, false);
+        e_meta_a_node(a, mdl->meta_a), e_meta_b_node(a, mdl->meta_b),
+        (Au)n_src, n_line, n_seq ), false, false);
     res->au = is_class(mdl) ? au_arg_type((Au)mdl->au) : pointer(a, (Au)mdl)->au;
     return res;
 }

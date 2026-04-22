@@ -162,11 +162,8 @@ class Render
             fault "width / height or wscale not set on render Render"
             exit[ 0 ]
 
-        printf[ "Render.update: this=%p w=%i h=%i last=%ix%i backbuf=%i\n",
-                a, width, height, last_width, last_height, (backbuffer) ? 1 : 0 ]
-        # no dimension-based early return — even with same dims, a sibling
-        # Render may have rebuilt the shared color Texture's view and our
-        # framebuffer now holds a dangling handle. always rebuild.
+        if [ width == last_width && height == last_height ]
+            return
 
         # wait for this Render's own in-flight frame before tearing down
         # its attachments / framebuffers. replaces the global vkDeviceWaitIdle
@@ -197,8 +194,6 @@ class Render
             if [ reduce ]
                 reduction.resize[ width / 4, height / 4 ]
         el
-            ii: i32 w.surface_format.format
-            printf[ "caller vk_format is %i\n", w.surface_format.format]
             color = Texture [ vk: vk, w: w, width: width, height: height,
                 vk_format: w.surface_format.format, swap: !backbuffer,
                 surface: Surface.color, vk_image: vk_swap_image ]
@@ -230,8 +225,7 @@ class Render
             vk_view_attachments[0] = (i == 0) ? color.vk_image_view : reduction.vk_image_view
             if [ has_depth ]
                 vk_view_attachments[1] = depth.vk_image_view
-            info : header[ color ]
-            printf[ "color.vk_image_view = %p\n", color.vk_image_view]
+            
             n_att : i32 [ (i == 0) ? ((has_depth) ? 2 : 1) : 1 ]
             result: vkCreateFramebuffer[ vk.device, VkFramebufferCreateInfo [
                 sType:           VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -242,8 +236,6 @@ class Render
                 height:          height / ((i == 0) ? 1 : 4),
                 layers:          1
             ], null, ref vk_framebuffer[i] ]
-
-            printf[ "ref of frame = %p\n", ref vk_framebuffer[i] ]
 
             expect result == VK_SUCCESS, "Failed to create framebuffer"
 
@@ -296,9 +288,6 @@ class Render
                 for [ p: Pipeline ] in reduce_model.pipelines
                     p.dispatch[ frame ]
 
-            printf[ "Render.draw: this=%p fb[%i]=%p rp[%i]=%p color=%p color.view=%p\n",
-                    a, i, vk_framebuffer[i], i, vk_render_pass[i],
-                    color, (color) ? color.vk_image_view : null ]
             render_pass_info : VkRenderPassBeginInfo [
                 sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
                 renderPass:      vk_render_pass[i],
@@ -651,7 +640,6 @@ class vk_context
         
 
         ext2 : symbol extensions[0].extensionName
-        printf[ "res2 = %i, ext2 = %s\n", res2, ext2 ]
         swapchain_supported   : bool false
         portability_supported : bool false
         ext_mem_supported     : bool false
@@ -791,8 +779,8 @@ class vk_context
         queue_family_count: u32 0
         vkGetPhysicalDeviceQueueFamilyProperties[
             physical_device, ref queue_family_count, null ]
-        expect queue_family_count > 0, "failed to find queue families"
-        queue_families: new VkQueueFamilyProperties [ queue_family_count ]
+        #expect queue_family_count > 0, "failed to find queue families"
+        queue_families: new VkQueueFamilyProperties [ queue_family_count ] # auto freeing data from /src/silver/foundry/trinity/trinity.ag:784
         vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, ref queue_family_count, queue_families ]
         
         found: false
@@ -1088,9 +1076,6 @@ class Pipeline
         ]
         vkUpdateDescriptorSets[ vk.device, 1, ref write, 0, null ]
 
-    # vkCmdDispatch is illegal inside an active render pass, so the compute path
-    # is split out and called by Render.draw BEFORE vkCmdBeginRenderPass. The
-    # graphics path stays in `draw` and runs inside the render pass.
     public   func dispatch [ f: handle ]
         if [ !vk_compute ]
             return
@@ -1099,10 +1084,6 @@ class Pipeline
         if [ s.reload[ ] ]
             reassemble[]
         frame: VkCommandBuffer [ f ]
-        # in-band barrier: storage images must be in GENERAL when the compute
-        # shader writes them. Recording the barrier into the main command buffer
-        # (rather than out-of-band) is required so the validator's per-command-
-        # buffer layout tracking sees a consistent transition.
         for [ t: Texture ] in storage_textures
             t.transition_in[ f, VK_IMAGE_LAYOUT_GENERAL ]
         shader_uniforms.update[ ]
@@ -1622,26 +1603,18 @@ class Model
             id = vk.quad_m
 
         if [ is_clear ]
-            puts 'Model.finish: branch=is_clear'
             model_init_pipeline[ a, null, null, null ]
         el [ nodes ]
-            puts 'Model.finish: branch=nodes'
             for [ n: gltf_node ] in nodes
                 for [ p: gltf_part ] in n.parts
                     model_init_pipeline[ a, n.id, p.id, (p.s) ? p.s : s ]
         el [ id ]
-            puts 'Model.finish: branch=id'
             for [ n: Node ] in id.nodes
                 has_mesh: n.AF_query_name[ "mesh" ]
-                printf[ "  node has_mesh=%d\n", has_mesh ]
                 if [ has_mesh ]
                     mesh: id.meshes [ n.mesh ]
-                    printf[ "  mesh prims=%i\n", mesh.primitives.count ]
                     for [ prim: Primitive ] in mesh.primitives
                         model_init_pipeline[ a, n, prim, s ]
-        el
-            puts 'Model.finish: branch=NONE (no path matched!)'
-        printf[ "Model.finish: pipelines after=%i\n", pipelines.count ]
 
     func init [ ]
         vk = w.vk.hold[]
@@ -1666,7 +1639,7 @@ struct keyboard_state
 # forward declarations need resolver support
 # process same way, different gen method (make_class -> make_decl)
 class Event
-    mutable target         : Au
+    mutable target         : element
     mutable mouse          : mouse_state
     mutable key            : keyboard_state
     mutable no_default     : bool
@@ -2113,10 +2086,7 @@ class Texture
 
     func init [ ]
         expect vk, "vk_context not specified"
-        fmt: i32 [ vk_format ]
-        puts 'Texture.init: width={width} height={height} vk_format={fmt}'
         if [ !vk_image && !sampler && !w ]
-            puts 'Texture.init: early return — no vk_image, no sampler, no w'
             return
 
         img :  sampler inherits Image
@@ -2177,12 +2147,6 @@ class Texture
                 sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
                 initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
             ]
-            printf[ "sType=%d imageType=%d format=%d flags=%d\n", info.sType,
-                info.imageType, info.format, info.flags ]
-            printf[ "extent=%d,%d,%d mip=%d layers=%d samples=%d\n",
-                info.extent.width, info.extent.height, info.extent.depth,
-                info.mipLevels, info.arrayLayers, info.samples ]
-            #hex_dump[ "vkImageCreateInfo", ref info, sizeof VkImageCreateInfo ]
 
             if [ !vk_image && vk_format ]
                 alloc_info: VmaAllocationCreateInfo [
@@ -2218,7 +2182,7 @@ class Texture
                 vkDeviceWaitIdle[ vk.device ]
                 vk.create_mipmaps[ vk_image, width, height, mip_levels, layer_count ]
                 vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            puts 'before view: width={width} height={height}'
+            
             if [ !vk_image_view ]
                 view_type: (layer_count >  6) ? VK_IMAGE_VIEW_TYPE_CUBE_ARRAY :
                            (layer_count == 6) ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D
@@ -2283,6 +2247,12 @@ class Texture
 Texture Display
     intern glfw                 : handle
     public mouse                : vec2f
+    # borderless fullscreen state — saved windowed pos/size so we can restore.
+    intern fs_active            : bool
+    intern fs_saved_x           : i32
+    intern fs_saved_y           : i32
+    intern fs_saved_w           : i32
+    intern fs_saved_h           : i32
     intern swap_model           : Model
     public element_targets      : map   Render [string]
     mutable list                 : array Render
@@ -2330,7 +2300,10 @@ Texture Display
     func on_screen    [ ] return
     func on_compose[ ] return
 
-    func resize [ w_new: i32, h_new: i32 ] -> Display
+    func set_fullscreen [ on: bool ]
+        return
+
+    public func resize [ w_new: i32, h_new: i32 ] -> Display
         width  = w_new
         height = h_new
         extent.width  = w_new
@@ -2346,7 +2319,7 @@ Texture Display
             if [ resized && r.models ]
                 for [ m: Model ] in r.models
                     m.rebind_model[ ]
-        printf[ "last_render = %p\n", last_render[] ]
+
         resized = true
         if [ !backbuffer ]
             # Re-query into a stack local. The intern `surface_caps` ref field
@@ -2428,7 +2401,7 @@ Texture Display
             now: f64 [ glfwGetTime[] ]
             if [ now - last_resize_t >= resize_debounce_s ]
                 if [ pending_w != width || pending_h != height ]
-                    resize[ pending_w, pending_h ]
+                    resize*[ pending_w, pending_h ]
                 pending_w     = 0
                 pending_h     = 0
                 last_resize_t = 0.0
@@ -4276,7 +4249,6 @@ Render Canvas
     intern  blur_h_arr       : array Render
 
     func init [ ]
-        printf[ "Canvas.init: vk=%p w=%p width=%i height=%i\n", vk, w, width, height ]
         # default: transparent — canvas can be used as an overlay layer.
         # call reset[ vec4f ] to force a direct image clear (bypasses any
         # render-pass blending) when you need a hard wipe of the pixels.
@@ -4298,8 +4270,6 @@ Render Canvas
         ft_lib_h : handle ft_init[]
         font = CanvasFont [ ft_lib: ft_lib_h, uri: 'fonts/OxygenMono-Regular.ttf', size_px: 22 ]
         #font.hold[]
-        printf[ "Canvas.init: self=%p AFTER font assign, font.size_px=%i\n",
-            a, (font) ? font.size_px : -1 ]
         canvas_samplers : map Au[string] [ 'image': sdf_tex, 'atlas': glyph_atlas.texture ]
         graphics_model : Model [ vk: vk, w: w, s: ui_shader, samplers: canvas_samplers ]
 
@@ -4316,7 +4286,6 @@ Render Canvas
 
         for [ m: Model ] in models
             m.finish[ a, 0 ]
-            printf[ "  Canvas.init: model.pipelines.count=%i\n", m.pipelines.count ]
 
         # ---- text rendering: own Render layered over canvas color ----
         # by this point Render base init has already created `color`/`depth`,
@@ -4339,8 +4308,7 @@ Render Canvas
         text_vbo = gpu [ vk: vk, name: 'text',
             members: text_members, member_count: text_mcount,
             vertex_size: text_vsize, vertex_count: text_vcount ]
-        printf[ "Canvas.init: text_vbo vertex_size=%i vertex_count=%i vertex_data=%p\n",
-            text_vbo.vertex_size, text_vbo.vertex_count, ref text_vbo.vertex_data ]
+
         text_vbo.sync[ w ]
         # text_render is constructed BEFORE its pipeline so we have a Render
         # for the pipeline's `r` field. We pass color pre-set so this Render
@@ -5306,8 +5274,6 @@ class CanvasFont
         slot : ft_face.glyph
         bw   : i32 [ slot.bitmap.width ]
         bh   : i32 [ slot.bitmap.rows ]
-        printf[ "FT glyph cp=%u: %ix%i pitch=%i pixel_mode=%i\n",
-            codepoint, bw, bh, slot.bitmap.pitch, slot.bitmap.pixel_mode ]
 
         # copy bitmap (FT reuses its internal buffer)
         bmp : ref u8 [ null ]
@@ -5430,9 +5396,6 @@ class GlyphAtlas
 
         # one-shot upload of just this glyph's bitmap into its packed slot.
         texture.upload_region[ ax, ay, gw, gh, g.bitmap, gw * gh ]
-        printf[ "GlyphAtlas.get: uploaded cp=%u at (%i,%i) %ix%i bytes=%i\n",
-            codepoint, ax, ay, gw, gh, gw * gh ]
-
         slot : GlyphAtlasSlot [
             codepoint: codepoint, size_px: font.size_px,
             atlas_x: ax, atlas_y: ay, atlas_w: gw, atlas_h: gh,
@@ -5977,6 +5940,8 @@ abstract app media_app
                 frames = 0
             frames += 1
             render*[]
+            #Au.auto_free[]
+            puts 'total objects: {Au.get_total_objects[null]}'
 
         return 0
 
@@ -6664,8 +6629,8 @@ ielement element
     # per-element 2D transform. scale default (1,1), rotate in radians,
     # transform_origin normalized to element bounds (0.5,0.5 = center).
     # all three are transitionable via CSS just like colors.
-    mutable scale            : vec2f
-    mutable rotate           : f32
+    mutable scaling      : vec2f
+    mutable rotation     : f32
     mutable transform_origin : vec2f
     mutable ghost        : bool
     mutable captured     : bool
@@ -7065,14 +7030,12 @@ Display Window
 
         # when we invoke a restyle it needs to go over everything, not just the element in question.
         if [ force_restyle || restyle ]
-            puts 'restyling..'
             root.invalidate_transitions[ ]
             apply_style[ root, root_styles ]
 
         update_element[ root, render ]
         if [ force_restyle || restyle ]
             root.remove_invalid_transitions [ ]
-            puts 'removed invalid transitions'
         restyle = false
 
     public func set_capture [ e: element ]
@@ -7133,13 +7096,13 @@ Display Window
 
     public func text_event [ ev: Event ]
         ev.target = focus
-        if [ focus && focus.on_char[ ev ] ] return
-        if [ app_object && app_object.on_char[ ev ] ] return
+        if [ focus && focus.on_char*[ ev ] ] return
+        if [ app_object && app_object.on_char*[ ev ] ] return
 
     public func key_event [ ev: Event ]
         ev.target = focus
-        if [ focus && focus.on_key[ ev ] ] return
-        if [ app_object && app_object.on_key[ ev ] ] return
+        if [ focus && focus.on_key*[ ev ] ] return
+        if [ app_object && app_object.on_key*[ ev ] ] return
 
     # recursive bubble: from deepest element up through parents, each gets
     # a chance to consume. stops on first `true` return. after the element
@@ -7158,10 +7121,8 @@ Display Window
             #puts 'hover: changed (prev={(hovered) ? hovered.id : null}, new={(f) ? f.id : null})'
             prev : element [ hovered ]
             if [ prev ]
-                puts 'hover: leaving {prev.id}'
                 if [ prev inherits Button ]
                     prev = prev
-                    puts 'should restyle'
                 prev.hovered = false
                 prev.restyle = true
                 restyle = true
@@ -7169,10 +7130,10 @@ Display Window
                 leave_consumed : bool [ false ]
                 for [ e: element* prev, e && !leave_consumed, e = e.parent ]
                     ev.target = e
-                    if [ e.on_leave[ ev ] ] leave_consumed = true
+                    if [ e.on_leave*[ ev ] ] leave_consumed = true
                 if [ !leave_consumed && app_object ]
                     ev.target = prev
-                    app_object.on_leave[ ev ]
+                    app_object.on_leave*[ ev ]
             hovered = f
             if [ f ]
                 #puts 'hover: entering {f.id}'
@@ -7185,29 +7146,29 @@ Display Window
                 hover_consumed : bool [ false ]
                 for [ e: element* f, e && !hover_consumed, e = e.parent ]
                     ev.target = e
-                    if [ e.on_hover[ ev ] ] hover_consumed = true
+                    if [ e.on_hover*[ ev ] ] hover_consumed = true
                 if [ !hover_consumed && app_object ]
                     ev.target = f
-                    app_object.on_hover[ ev ]
+                    app_object.on_hover*[ ev ]
         # move bubble
         if [ m ]
             move_consumed : bool [ false ]
             for [ e: element* m, e && !move_consumed, e = e.parent ]
                 ev.target = e
-                e.on_move[ ev ]
+                e.on_move*[ ev ]
             if [ !ev.no_propagation && app_object ]
                 ev.target = m
-                app_object.on_move[ ev ]
+                app_object.on_move*[ ev ]
 
     public func wheel_event [ ev: Event ]
         target_el : element [ (capture) ? capture : (focus) ? focus : find_target[ root, ev, null ] ]
         consumed_w : bool [ false ]
         for [ e: element* target_el, e && !consumed_w, e = e.parent ]
             ev.target = e
-            e.on_wheel[ ev ]
+            e.on_wheel*[ ev ]
         if [ !ev.no_propagation && app_object ]
             ev.target = target_el
-            app_object.on_wheel[ ev ]
+            app_object.on_wheel*[ ev ]
         # window default: scroll focused/target element (no-op hook for now)
 
     public func press_event [ ev: Event ]
@@ -7219,7 +7180,7 @@ Display Window
         for [ e: element* f, e, e = e.parent ]
             cl : typeid[e]
             ev.target = e
-            e.on_press[ ev ]
+            e.on_press*[ ev ]
             if [ ev.no_propagation ]
                 break
         
@@ -7227,7 +7188,7 @@ Display Window
         # app
         if [ !ev.no_propagation && app_object ]
             ev.target = f
-            app_object.on_press[ ev ]
+            app_object.on_press*[ ev ]
         # window defaults: focus transfer on left button (only focusable
         # elements get focus — buttons, text controls, etc. opt in), then
         # capture, then pressed/hovered state bookkeeping.
@@ -7253,10 +7214,10 @@ Display Window
         consumed_r : bool [ false ]
         for [ e: element* f, e && !consumed_r, e = e.parent ]
             ev.target = e
-            if [ e.on_release[ ev ] ] consumed_r = true
+            if [ e.on_release*[ ev ] ] consumed_r = true
         if [ !consumed_r && app_object ]
             ev.target = f
-            app_object.on_release[ ev ]
+            app_object.on_release*[ ev ]
         if [ ev.mouse.button == 0 ]
             if [ action_pressed ]
                 action_pressed.restyle = true
@@ -7269,12 +7230,12 @@ Display Window
             if [ f && action_pressed == f && f.hovered ]
                 for [ e: element* f, e, e = e.parent ]
                     ev.target = e
-                    e.on_click[ ev ]
+                    e.on_click*[ ev ]
                     if [ ev.no_propagation ]
                         break
                 if [ !ev.no_propagation && app_object ]
                     ev.target = f
-                    app_object.on_click[ ev ]
+                    app_object.on_click*[ ev ]
             action_pressed  = null
             context_pressed = null
         el [ ev.mouse.button == 1 ]
@@ -7284,28 +7245,20 @@ Display Window
             release_capture[ capture ]
     
     func update [ ]
+        # DEBUG step 3: full canvases + full composition chain using UX shader.
+        compose  = (compose  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        colorize = (colorize || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        overlay  = (overlay  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.u8,    :width, :height ]).resize[ width, height ]
+        screen   = (screen   || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
 
-        compose = (compose || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        compose.update[]
-        compose.clear[ string[ "#888" ] ]
-
-        # composite mode binds four canvas layers into UXBackground:
-        #   compose  — main paint surface (rect/path/draw_text)
-        #   colorize — hue-shift mask (UXBackground .g channel)
-        #   overlay  — straight-alpha overlay layer
-        #   glyph    — text glyph mask (UXBackground .x channel)
-        # all four are allocated up front so the sampler set is fully
-        # populated by the time m_view is built.
-        colorize       = (colorize       || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        overlay        = (overlay        || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        glyph          = (glyph          || Canvas [ w:a, vk: vk, format: Pixel.u8,    :width, :height ]).resize[ width, height ]
-        screen         = (screen         || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
-
+        compose .update[]
         colorize.update[]
         overlay .update[]
         glyph   .update[]
         screen  .update[]
 
+        compose .clear[ string[ "#888" ] ]
         colorize.clear[ string[ "#000" ] ]
         overlay .clear[ string[ "#000" ] ]
         glyph   .clear[ string[ "#000" ] ]
@@ -7324,7 +7277,7 @@ Display Window
                 background = Render [ vk: vk, w: a, wscale: 1.0,
                     clear_color: vec4f [ 0.05, 0.02, 0.08, 1.0 ] ]
                 background.update[]
-            
+
             m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': background.color ] ]
             r_reduce  = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
 
@@ -7381,9 +7334,6 @@ Display Window
                 r_reduce2, r_reduce3, r_frost_v, r_frost,
                 r_view ]
         el
-            # after first-time setup, resize just needs to refresh every
-            # sub-render's framebuffer and rebind each Model's descriptor sets
-            # so samplers point at the rebuilt canvas color views.
             if [ list ]
                 for [ r: Render ] in list
                     r.update[]
@@ -7393,6 +7343,35 @@ Display Window
                             m.rebind_model[]
 
     mutable resizing : bool
+
+    # borderless fullscreen toggle — no video mode change, just sizes the
+    # window to fit the monitor and removes decorations. restores on exit.
+    func set_fullscreen [ on: bool ]
+        if [ on == fs_active ]
+            return
+        if [ on ]
+            # remember windowed geometry
+            sx : i32
+            sy : i32
+            sw : i32
+            sh : i32
+            glfwGetWindowPos [ glfw, ref sx, ref sy ]
+            glfwGetWindowSize[ glfw, ref sw, ref sh ]
+            fs_saved_x = sx
+            fs_saved_y = sy
+            fs_saved_w = sw
+            fs_saved_h = sh
+            mon  : glfwGetPrimaryMonitor[]
+            mode : ref GLFWvidmode [ glfwGetVideoMode[ mon ] ]
+            # real fullscreen: GLFW sets _NET_WM_STATE_FULLSCREEN so the
+            # taskbar is hidden. passing the native refresh rate avoids a
+            # video-mode change.
+            glfwSetWindowMonitor[ glfw, mon, 0, 0,
+                mode.width, mode.height, mode.refreshRate ]
+        el
+            glfwSetWindowMonitor[ glfw, null, fs_saved_x, fs_saved_y,
+                fs_saved_w, fs_saved_h, 0 ]
+        fs_active = on
 
     public func resize [ w: i32, h: i32 ] -> Window
         resizing = true
@@ -7409,7 +7388,16 @@ Display Window
     func on_compose []
         if [ !compose ] return
         if [ resizing ] return
-        
+
+        compose.save    [ ]
+        compose.clear   [ '#80a' ]
+        update_all      [ app_object.on_render*[ a ] ]
+        animate         [ ]
+        draw_element    [ root, CanvasType.compose, null ]
+        compose.paint   [ ]
+        compose.sync_fence[ ]
+        compose.restore [ ]
+
         compose.save    [ ]
         compose.clear   [ '#80a' ]
         update_all      [ app_object.on_render*[ a ] ]
@@ -7439,7 +7427,7 @@ Display Window
         if [ resizing ] return
 
         screen.save[]
-        
+
         app_object.on_canvas*[ screen ]
 
         draw_element[ root, CanvasType.screen, null ]
@@ -7482,9 +7470,9 @@ Display Window
         # treat (0,0) scale as identity so zero-init doesn't collapse the
         # element to a point. transform_origin is normalized to bounds —
         # (0.5, 0.5) = center; if origin is zero too, default to center.
-        sx       : f32  [ (e.scale.x != 0.0) ? e.scale.x : 1.0 ]
-        sy       : f32  [ (e.scale.y != 0.0) ? e.scale.y : 1.0 ]
-        has_rot  : bool [ e.rotate != 0.0 ]
+        sx       : f32  [ (e.scaling.x != 0.0) ? e.scaling.x : 1.0 ]
+        sy       : f32  [ (e.scaling.y != 0.0) ? e.scaling.y : 1.0 ]
+        has_rot  : bool [ e.rotation != 0.0 ]
         has_sc   : bool [ sx != 1.0 || sy != 1.0 ]
         xform    : bool [ has_rot || has_sc ]
         if [ xform ]
@@ -7495,7 +7483,7 @@ Display Window
             cv.save[]
             cv.translate[ pivot_x, pivot_y ]
             if [ has_rot ]
-                cv.rotate[ e.rotate ]
+                cv.rotate[ e.rotation ]
             if [ has_sc ]
                 cv.scale_xy[ sx, sy ]
             cv.translate[ -pivot_x, -pivot_y ]
@@ -7655,8 +7643,8 @@ abstract media_app trinity
     func render[]
         window : Window[w]
         update_scene*[]
-        window.colorize .clear[ '#000'  ] #
-        window.overlay  .clear[ '#0000' ] # the only one that needs an alpha layer
+        if [ window.colorize ] window.colorize.clear[ '#000'  ]
+        if [ window.overlay  ] window.overlay .clear[ '#0000' ]
         window.draw[]
 
 
@@ -7746,9 +7734,6 @@ class StyleBlock
                 value : object [ null ]
                 ai    : num    [ cb_value.index_of[ '[' ] ]
                 ci    : num    [ cb_value.index_of[ ',' ] ]
-                if [ ci != -1 ]
-                    puts 'ci'
-                    ci = ci
                 if [ ai != -1 && (ci == -1 || ai < ci) ]
                     ae    : num[ cb_value.index_of[ ']' ] ]
                     expect ae != -1, 'expected ] character'
@@ -9752,16 +9737,33 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
                 bl.entries[ member ] = StyleEntry [ member: member, value: inner, bl: bl, line: lines[j].line ]
             j = sub_end + 1
             continue
-        # indent parser: split off transition suffix (e.g. "#84a, 444ms") so
-        # `:hovered { fill_color: #84a, 444ms }` populates StyleEntry.trans
-        # the same way the `;`-delimited parser already does.
-        ci2   : num    [ val_str.index_of[ ',' ] ]
-        param : string [ (ci2 >= 0) ? val_str.mid[ ci2 + 1, val_str.count - (ci2 + 1) ].trim[] : null ]
-        value : string [ (ci2 >= 0) ? val_str.mid[ 0, ci2 ].trim[] : val_str ]
+        bi      : num    [ val_str.index_of[ '[' ] ]
+        cm      : num    [ val_str.index_of[ ',' ] ]
+        param   : string [ null ]
+        value   : object [ null ]
+        value_s : string [ null ]
+        if [ bi != -1 && (cm == -1 || bi < cm) ]
+            be : num [ val_str.index_of[ ']' ] ]
+            expect be != -1, 'expected ] character'
+            items : val_str.mid[ bi + 1, be - 1 ].trim[]
+            rl    : val_str.count - be
+            param = val_str.mid[ be + 1, rl ].trim[]
+            if [ param.first[] == ',' ]
+                param = param.mid[ 1, param.count - 1 ].trim[]
+            el
+                param = null
+            sp : items.split[ ',' ]
+            value = array string [ sp.count ]
+            v : array string [ value ]
+            for [ raw: string ] in sp
+                v.push[ raw.trim[] ]
+        el
+            param   = (cm >= 0) ? val_str.mid[ cm + 1, val_str.count - (cm + 1) ].trim[] : null
+            value_s = (cm >= 0) ? val_str.mid[ 0, cm ].trim[] : val_str
+            value   = value_s
         trans : (param) ? StyleTransition[ param ] : null
-        # {name} => per-frame binding to inst.<name>, not a value to convert.
-        is_bind : bool [ value.count >= 2 && value.chars[0] == '{' && value.chars[value.count - 1] == '}' ]
-        bname   : string [ (is_bind) ? value.mid[ 1, value.count - 2 ].trim[] : null ]
+        is_bind : bool [ value_s && value_s.count >= 2 && value_s.chars[0] == '{' && value_s.chars[value_s.count - 1] == '}' ]
+        bname   : string [ (is_bind) ? value_s.mid[ 1, value_s.count - 2 ].trim[] : null ]
         bl.entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: bl, line: lines[j].line, binding: bname ]
         j += 1
 

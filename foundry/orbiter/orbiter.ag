@@ -913,6 +913,13 @@ trinity orbiter
         width:  1488
         height: 888
 
+    public func on_render [ w: Window ] -> Elements
+        return Elements [
+            "test22": Button [ label: 'test22' ],
+            "test44": Button [ label: 'test44' ],
+        ]
+
+
     func load_scene []
         # 1) load the earth gltf mesh — shared by earth/ocean/cloud passes
         gltf_path : path 'models/earth.gltf'
@@ -923,7 +930,8 @@ trinity orbiter
         cloud = Cloud [ vk: vk ]
         #purple = Purple [ vk: vk ]
 
-        color : Image [ uri: path 'textures/earth-color-8192x4096.png', surface: EarthSurface.color ]
+        u : path 'textures/earth-color-8192x4096.png'
+        color : Image [ uri: u, surface: EarthSurface.color ]
         earth_samplers : map Image [string] [
             'color':      color,
             'normal':     Image [ uri: path 'textures/earth-normal-8192x4096.png',     surface: EarthSurface.normal ],

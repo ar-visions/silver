@@ -10,25 +10,37 @@ trinity hyperspace
     func init []
         width  : 1280
         height : 800
-        active = 'capture-look'
+        active = 'record-looks'
 
     mutable cam0 : Camera
     mutable cam1 : Camera
 
 
     public func on_canvas [ cv: Canvas ]
-        if [!fullscreen] return
-        return
+        if [ !fullscreen ]
+            super.on_canvas[ cv ]
+            return
+        side : f32 [ 256.0 ]
+        x    : f32 [ (f32 cv.width  - side) * 0.5 ]
+        y    : f32 [ (f32 cv.height - side) * 0.5 ]
+        cv.save[]
+        cv.fill_color   [ '#fff' ]
+        cv.rounded_rect [ x, y, side, side, 0, 0 ]
+        cv.paint        [ ]
+        cv.restore      [ ]
 
     public func on_key [ ev: Event ]
         if [ ev.key.state && ev.key.unicode == 256 && fullscreen ]   # GLFW_KEY_ESCAPE
             fullscreen = false
+            w.set_fullscreen*[ false ]
             ev.stop_propagation[]
 
     public func on_click [ ev: Event ]
         e : (ev.target to element)
         if [ !e ] return
         if [ e.id == 'record-looks'     ]
+            fullscreen = true
+            w.set_fullscreen*[ true ]
             puts 'record looks'
         el [ e.id == 'annotate-targets' ]
             puts 'annotate targets'
@@ -42,11 +54,15 @@ trinity hyperspace
     # we need a kind of dataset selector
     # when we train, we'll train with multiple datasets
     public func on_render [ w: Window ] -> Elements
-        if [ !cam0 ]
-            cam0 = Camera [ vk: w.vk, w: w, device: '/dev/video6', width: 340, height: 340 ]
-        if [ !cam1 ]
-            cam1 = Camera [ vk: w.vk, w: w, device: '/dev/video2', width: 340, height: 340 ]
-        if [ fullscreen ] return null
+
+        #if [ !cam0 ]
+        #    cam0 = Camera [ vk: w.vk, w: w, device: '/dev/video6', width: 340, height: 340 ]
+        #if [ !cam1 ]
+        #    cam1 = Camera [ vk: w.vk, w: w, device: '/dev/video2', width: 340, height: 340 ]
+
+        if [ fullscreen ]
+            return null
+        
         return Elements [
             "toolbar": Toolbar [
                 elements: Elements [
@@ -55,7 +71,7 @@ trinity hyperspace
                     "train":            Button [ label: 'train' ],
                     "testbed":          Button [ label: 'testbed' ]
                 ]
-            ],
-            "camera0": CameraView [ camera: cam0 ],
-            "camera1": CameraView [ camera: cam1 ]
+            ]#,
+            #"camera0": CameraView [ camera: cam0 ],
+            #"camera1": CameraView [ camera: cam1 ]
         ]

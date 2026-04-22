@@ -17,7 +17,6 @@ Editor {
 
     layers.text:
         area:           -22
-        label:          'a string.. probably goes into a string holder called text, without saying text'
         editable:       true
         selectable:     true
         multiline:      true
@@ -26,6 +25,32 @@ Editor {
 Editor:hovered, Editor:pressed {
     layers.base:
         fill_color:     #ff0
+}
+
+Button {
+    area:               l8 t8+ w88 h44
+    layers.face:
+        label_color:            #fff
+        label_gradient:         #000
+        label_gradient_radius:  180.0
+        label_gradient_degrees: 0
+        label_gradient_mirror:  true
+        label_color_pos:        0.5 0.5
+        label_size:             22
+        label_shadow:           #000
+        label_shadow_blur:      4
+        label_shadow_offset:    2 2
+
+        fill_color:             #222
+        fill_gradient:          #000
+        fill_gradient_radius:   180.0
+        fill_gradient_degrees:  0
+        fill_gradient_mirror:   true
+        fill_color_pos:         0.5 0.5
+        
+        radius:            4
+        stroke_width:      1
+        stroke_color:      #222
 }
 
 /* this should be a comment */
