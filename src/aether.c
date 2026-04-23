@@ -1508,7 +1508,7 @@ enode aether_e_interpolate(aether a, string str) { sequencer
             val = e_create(a, mdl, (Au)cs);
         }
         if (!accum)
-            accum = e_add(a, (Au)e_create(a, mdl, (Au)const_string(chars, "")), (Au)val);
+            accum = val;
         else
             accum = e_add(a, (Au)accum, (Au)val);
     }
