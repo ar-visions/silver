@@ -18,8 +18,12 @@ ifdef [ linux ]
 	import <sys/ioctl.h>
 	import <sys/mman.h>
 	import <fcntl.h>
-	import <unistd.h>
-	import <linux/videodev2.h>
+
+import <unistd.h>
+    +_DEFAULT_SOURCE
+    +_XOPEN_SOURCE=500
+
+import <linux/videodev2.h>
 
 import KhronosGroup:Vulkan-Headers/29184b9
 
@@ -64,6 +68,8 @@ import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
     -DFT_DISABLE_BZIP2=TRUE
 
 
+
+func usleep[u64]
 
 # used with shader type to manage layout-binding
 enum ShaderStage
@@ -338,6 +344,7 @@ class Render
         expect result == VK_SUCCESS, "fence wait failed"
 
     func dealloc [ ]
+        info : header[a]
         for [ i: 0, i < 2, i += 1 ]
             vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
             vkDestroyRenderPass[ vk.device, vk_render_pass[i], null ]
@@ -500,6 +507,7 @@ class Layout
     public access : VkAccessFlags
     public stage  : VkPipelineStageFlags
     
+
     static func find [ l: VkImageLayout ] -> Layout
         if [ !initialized ]
             #defaults = new Layout [7]
@@ -1740,7 +1748,7 @@ class Command
 class Buffer
     context vk              : vk_context
     expect size             : i64
-    public data             : ARef
+    manual data             : ARef
     public u_src            : bool
     public u_dst            : bool
     public u_shader         : bool
@@ -2245,6 +2253,7 @@ class Texture
 
 
 Texture Display
+    intern semaphore_frame      : Render
     intern glfw                 : handle
     public mouse                : vec2f
     # borderless fullscreen state — saved windowed pos/size so we can restore.
@@ -2260,12 +2269,12 @@ Texture Display
     intern vk_swap_images       : ref   VkImage
     intern vk_surface           : VkSurfaceKHR
     intern vk_swapchain         : VkSwapchainKHR
+    
     intern surface_caps         : ref VkSurfaceCapabilitiesKHR
+    intern swap_render_current  : Render
     intern surface_format       : VkSurfaceFormatKHR
     intern present_mode         : VkPresentModeKHR
     intern extent               : VkExtent2D
-    intern swap_render_current  : Render
-    intern semaphore_frame      : Render
     intern swap_image_count     : u32
     intern swap_image_current   : u32
     intern ev                   : Event
@@ -2291,14 +2300,19 @@ Texture Display
     intern resize_debounce_s    : f64 [ 0.188 ]
     intern in_callback_draw     : bool
     public backbuffer           : bool
+
+
     func last_render [] -> Render
         return list.last_element[]
 
+    func update[ ]
+        return
 
-    func update [ ] return
-
-    func on_screen    [ ] return
-    func on_compose[ ] return
+    func on_screen[ ]
+        return
+    
+    func on_compose[ ]
+        return
 
     func set_fullscreen [ on: bool ]
         return
@@ -2389,6 +2403,7 @@ Texture Display
             swap_render_current = swap_renders.origin[0]
         return a
 
+        
     func final_target [ ] -> Render
         return list.last_element[]
 
@@ -2475,6 +2490,7 @@ Texture Display
         return result
 
     func init [ ]
+        printf[ "semaphore_frame = %p\n", semaphore_frame ]
         hold[]
         if [ !format ]
             format = Pixel.rgba8
@@ -2517,7 +2533,11 @@ Texture Display
         # surface capabilities + formats
         if [ !backbuffer ]
             surface_caps = new VkSurfaceCapabilitiesKHR [ 1 ]
-            result: vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, surface_caps ]
+            printf["val44 = %p\n", swap_render_current]
+
+            result: vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, ref surface_caps[0] ]
+            printf["val22 = %p\n", swap_render_current]
+
             expect result == VK_SUCCESS, "Failed to query surface capabilities"
 
             # surface format
@@ -2564,6 +2584,7 @@ Texture Display
             extent.height = height
 
     func dealloc [ ]
+        info : header[ a ]
         if [ !backbuffer ]
             vkDestroySwapchainKHR[ vk.device, vk_swapchain, null ]
             vkDestroySurfaceKHR[ vk.instance, vk_surface, null ]
@@ -2880,10 +2901,11 @@ class shader
             spv_stat:    struct stat
             src_exists: stat[ input, ref source_stat ] == 0
             spv_exists: stat[ spv_file, ref spv_stat ] == 0
+            #make_spv: false -- this is needed now, and thats wrong
             ifdef [ linux ]
-                make_spv: !spv_exists || source_stat.st_mtim.tv_sec > spv_stat.st_mtim.tv_sec
+                make_spv : !spv_exists || source_stat.st_mtim.tv_sec > spv_stat.st_mtim.tv_sec
             ifdef [ apple ]
-                make_spv: !spv_exists || source_stat.st_mtimespec.tv_sec > spv_stat.st_mtimespec.tv_sec
+                make_spv : !spv_exists || source_stat.st_mtimespec.tv_sec > spv_stat.st_mtimespec.tv_sec
 
             if [ make_spv ]
                 cmd: 'glslangValidator -V100 --target-env vulkan1.2 {shader_file} -o {spv_file}'
@@ -3882,17 +3904,21 @@ class CanvasPath
 
     func init []
         points = array PathPt []
+        points.hold[]
 
     func reset []
-        clear points
+        points.clear[]
         start_x  = 0.0
         start_y  = 0.0
         cursor_x = 0.0
         cursor_y = 0.0
         is_closed = false
 
+
     func move_to [ x: f32, y: f32 ]
         pt : PathPt [ cmd: path_cmd.move, x: x, y: y ]
+        info_cv : header [ a ]
+        info : header[ points ]
         points.push[ pt ]
         start_x  = x
         start_y  = y
@@ -4026,10 +4052,10 @@ class CanvasPath
 
     func clear[]
         points  = array PathPt []
+        info : header[points]
         start_x = 0.0
         start_y = 0.0
         is_closed = false
-
 
 # gradient stop: color at a position [0..1]
 struct GradientStop
@@ -4362,6 +4388,7 @@ Render Canvas
             blur_h_arr.push[ r_h ]
 
         path   = CanvasPath []
+        path.hold[]
         states = array CanvasState []
         state_depth  = 0
         save[]
@@ -4703,7 +4730,9 @@ Render Canvas
     func rect_to [ x: f32, y: f32, rw: f32, rh: f32 ]
         path.add_rect [ x, y, rw, rh ]
 
+    
     func rounded_rect [ x: f32, y: f32, rw: f32, rh: f32, rx: f32, ry: f32 ]
+        info : header[ path ]
         path.add_rounded_rect [ x, y, rw, rh, rx, ry ]
 
     func close_path []
@@ -5932,6 +5961,12 @@ abstract app media_app
         next_second : epoch_millis[] / 1000
         frames      : 0
 
+        Au.auto_free[true]
+        #while [ true ]
+        #    s : string['this is a string']
+        #    Au.auto_free[false]
+        #    usleep[ 10000 ]
+
         while [ !glfwWindowShouldClose[ w.glfw ] ]
             glfwPollEvents[]
             second : epoch_millis[] / 1000
@@ -5940,8 +5975,11 @@ abstract app media_app
                 frames = 0
             frames += 1
             render*[]
-            #Au.auto_free[]
-            puts 'total objects: {Au.get_total_objects[null]}'
+            Au.auto_free[false]
+            buf : local char [ 255 ]
+            sprintf[ buf, "total: %i\n", Au.get_total_objects[null]]
+            puts buf
+            #puts 'total objects: {Au.get_total_objects[null]}'
 
         return 0
 
@@ -6793,6 +6831,9 @@ Display Window
     public st                   : Style
 
 
+    func init[]
+        puts 'window constructing'
+
     public func apply_args [ inst: element, e: element ] -> bool
         ty      : typeid[ e ]
         changed : false
@@ -7431,6 +7472,7 @@ Display Window
         app_object.on_canvas*[ screen ]
 
         draw_element[ root, CanvasType.screen, null ]
+
         ##
         screen.fill_color[ '#f00' ]
         screen.rect_to[ 64.0, 64.0, 240.0, 120.0 ]
@@ -7475,6 +7517,8 @@ Display Window
         has_rot  : bool [ e.rotation != 0.0 ]
         has_sc   : bool [ sx != 1.0 || sy != 1.0 ]
         xform    : bool [ has_rot || has_sc ]
+
+
         if [ xform ]
             ox : f32 [ (e.transform_origin.x != 0.0) ? e.transform_origin.x : 0.5 ]
             oy : f32 [ (e.transform_origin.y != 0.0) ? e.transform_origin.y : 0.5 ]
@@ -7505,7 +7549,7 @@ Display Window
                 ry = layer.radius.ry
 
             
-            if [ [ layer.fill_color && layer.fill_color.a > 0.0] || [layer.stroke_color && layer.stroke_color.a > 0.0] ]
+            if [ (layer.fill_color && layer.fill_color.a > 0.0) || (layer.stroke_color && layer.stroke_color.a > 0.0) ]
                 cv.save             [ ]
                 # crisp-pixel offset: odd stroke widths need to straddle the
                 # pixel grid at half-pixel centers. stroke of 1 → (0.5, 0.5),
@@ -7540,7 +7584,8 @@ Display Window
                 cv.restore          [ ]
 
             label : string (layer.label && layer.label.count > 0) ? layer.label : null
-            if [ element_text || label ]
+            
+            if [ (element_text || label) ]
                 cv.save[]
                 align  : vec2f [
                     x: (layer.label_align) ? layer.label_align.x : 0,
@@ -7581,6 +7626,7 @@ Display Window
         if [ xform ]
             cv.restore[]
         e.draw*[ a ]
+
         last_2 : element
         for [ ee: element, id: string ] in e.elements
             cv.save[]
@@ -7589,7 +7635,6 @@ Display Window
             draw_element[ ee, stage, last_2 ]
             last_2 = ee
             cv.restore[]
-
 
 abstract media_app trinity
     intern msaa_samples : i64

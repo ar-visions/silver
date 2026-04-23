@@ -275,6 +275,20 @@ LLVMValueRef LLVMFetchGlobal(LLVMModuleRef module_ref, LLVMTypeRef type, cstr na
     return g;
 }
 
+LLVMValueRef entry_alloca(aether a, LLVMTypeRef ty, cstr name) {
+    LLVMBasicBlockRef current    = LLVMGetInsertBlock(B);
+    LLVMBasicBlockRef entry      = LLVMGetEntryBasicBlock(LLVMGetBasicBlockParent(current));
+    LLVMValueRef      first_inst = LLVMGetFirstInstruction(entry);
+    if (first_inst)
+        LLVMPositionBuilderBefore(B, first_inst);
+    else
+        LLVMPositionBuilderAtEnd(B, entry);
+    LLVMValueRef v = LLVMBuildAlloca(B, ty, name);
+    LLVMPositionBuilderAtEnd(B, current);
+    return v;
+}
+
+
 etype etype_copy(etype mem) {
     Au_t au = isa(mem);
     etype n = (etype)alloc_new(au, 1, null, null, null, __FILE__, __LINE__, 0);
@@ -555,17 +569,18 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     // type it can't see, so the user manages those slots. Gating is_class_set
     // here suppresses both the prev/rel tracking below AND the retain/release
     // pair in Phase 7.
-    bool  is_class_set = L->target && L->au && L->au->src->is_class &&
+    bool  is_class_set = L->au && L->au->src && L->au->src->is_class &&
         !(L->au->traits & AU_TRAIT_UNMANAGED) &&
         !L->au->is_context &&
         L->au->src != typeid(Au);
 
-    enode prev = null;
-    bool  rel  = false;
-
-    if (is_class_set) {
-        prev = instanceof(R, enode);
-        rel  = prev && prev->value != L->value;
+    // `=` on a class member: hold the new value and drop the previous one.
+    // `:` (first binding) has no previous value to drop — only the hold.
+    bool is_reassign_op = op_val == OPType__assign && !is_init;
+    LLVMValueRef prev_value = null;
+    if (is_class_set && is_reassign_op) {
+        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
+        prev_value = LLVMBuildLoad2(B, ptr_ty, L->value, "prev_ref");
     }
 
     /* ------------------------------------------------------------
@@ -768,8 +783,13 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
      * ------------------------------------------------------------ */
     if (is_class_set) {
         retain(L);
-        if (rel)
-            emit_release(prev);
+        if (prev_value) {
+            efunc fn_drop = (efunc)u(efunc,
+                find_member(etypeid(Au)->au, "drop", AU_MEMBER_FUNC, 0, true));
+            etype L_type = (etype)evar_type((evar)L);
+            enode prev_node = enode(mod, a, au, L_type->au, value, prev_value, loaded, true);
+            e_fn_call(a, fn_drop, a(prev_node), false, false);
+        }
     }
 
     return res;
@@ -1692,7 +1712,7 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
         // allocate result array
         LLVMTypeRef lt       = lltype(elem_ty);
         LLVMTypeRef arr_type = LLVMArrayType(lt, count);
-        LLVMValueRef result  = LLVMBuildAlloca(B, arr_type, "arr_op_result");
+        LLVMValueRef result  = entry_alloca(a, arr_type, "arr_op_result");
 
         // loop: for i = 0; i < count; i++
         LLVMBasicBlockRef entry_bb = LLVMGetInsertBlock(B);
@@ -2175,7 +2195,7 @@ enode aether_e_meta_ids(aether a, Au meta_a, Au meta_b) {
     enode metas[] = { meta_a_node, meta_b_node };
     LLVMTypeRef elemTy = lltype(atype_vector);
     LLVMTypeRef arrTy  = LLVMArrayType(elemTy, 2);
-    LLVMValueRef arr_alloc = LLVMBuildAlloca(B, arrTy, "meta_ids");
+    LLVMValueRef arr_alloc = entry_alloca(a, arrTy, "meta_ids");
     LLVMBuildStore(B, LLVMConstNull(arrTy), arr_alloc);
 
     for (int i = 0; i < 2; i++) {
@@ -2224,7 +2244,7 @@ enode aether_e_expect(aether a, enode cond, enode msg) {
     static int expect_seq = 0;
     char name[64];
     snprintf(name, sizeof(name), "_expect_%d", expect_seq++);
-    LLVMValueRef alloc = LLVMBuildAlloca(B, LLVMInt1TypeInContext(a->module_ctx), name);
+    LLVMValueRef alloc = entry_alloca(a, LLVMInt1TypeInContext(a->module_ctx), name);
     LLVMBuildStore(B, test, alloc);
 
     // branch: if false, trap; otherwise continue
@@ -2904,7 +2924,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
             LLVMPositionBuilderBefore(B, first_inst);
         else
             LLVMPositionBuilderAtEnd(B, entry);
-        LLVMValueRef tmp = LLVMBuildAlloca(B, lltype(rtype), "struct-ret");
+        LLVMValueRef tmp = entry_alloca(a, lltype(rtype), "struct-ret");
         LLVMPositionBuilderAtEnd(B, current);
         LLVMBuildStore(B, R, tmp);
         result = enode(mod, a, au, rtype->au, meta_a, result_meta_a, loaded, false, value, tmp);
@@ -2919,7 +2939,9 @@ static bool is_same(etype a, etype b) {
     return resolve(a) == resolve(b) && ref_level((Au)a) == ref_level((Au)b);
 }
 
-enode castable(etype fr, etype to) { 
+enode constructable(etype fr, etype to);
+
+enode castable(etype fr, etype to) {
     aether a = fr->mod;
     bool fr_ptr = is_ptr(fr);
     if (((fr_ptr && !is_class(fr)) || is_prim(fr)) && is_bool(to))
@@ -2932,6 +2954,13 @@ enode castable(etype fr, etype to) {
         return (enode)true;
     
     if (is_generic(fr) && is_class(to))
+        return (enode)true;
+
+    // class ↔ class on the same inheritance chain: pointer cast (unless an
+    // explicit constructor exists for this pair — those take precedence)
+    if (fr->au && to->au && fr->au->is_class && to->au->is_class &&
+        (inherits(fr->au, to->au) || inherits(to->au, fr->au)) &&
+        !constructable(fr, to))
         return (enode)true;
     
     /// primitives may be converted to Au-type Au
@@ -3125,6 +3154,12 @@ enode convertible(etype fr, etype to) {
         enode mcast = castable(ma, mb);
         return mcast ? mcast : (enode)true;
     }
+    // class ↔ class on the same inheritance chain: pointer cast, unless an
+    // explicit constructor exists for this pair.
+    if (ma->au->is_class && mb->au->is_class &&
+        (inherits(ma->au, mb->au) || inherits(mb->au, ma->au)) &&
+        !constructable(ma, mb))
+        return (enode)true;
     if (is_ptr(ma->au) && mb->au == typeid(Au))
         return (enode)true;
     if ((is_func(ma) || is_func(resolve(ma)) || ma->au->is_funcptr) && mb->au->is_funcptr)
@@ -3250,7 +3285,7 @@ enode eshape_from_indices(aether a, array indices) {
 
     // Allocate stack space for the i64 array (data field)
     LLVMTypeRef arr_t = LLVMArrayType(lltype(etypeid(i64)), count);
-    LLVMValueRef data_alloc = LLVMBuildAlloca(B, arr_t, "shape_data");
+    LLVMValueRef data_alloc = entry_alloca(a, arr_t, "shape_data");
 
     // Store each index expression into the data array
     for (i32 i = 0; i < count; i++) {
@@ -3323,7 +3358,7 @@ enode etype_access(etype target, string name) { sequencer
         // primitive method receiver must be addressable
         if (is_prim(n->au->src) && !is_addressable(n)) {
             etype res = resolve(n);
-            LLVMValueRef temp = LLVMBuildAlloca(B, lltype(res), "prim.recv.addr");
+            LLVMValueRef temp = entry_alloca(a, lltype(res), "prim.recv.addr");
             LLVMBuildStore(B, n->value, temp);
             n = value(pointer(a, (Au)n->au->src), temp);
         }
@@ -3438,7 +3473,7 @@ enode etype_access(etype target, string name) { sequencer
     }
     if (is_loaded_struct) {
         if (t->lltype && !LLVMIsOpaqueStruct(t->lltype)) {
-            LLVMValueRef tmp = LLVMBuildAlloca(B, t->lltype, "tmp.val");
+            LLVMValueRef tmp = entry_alloca(a, t->lltype, "tmp.val");
             LLVMBuildStore(B, base, tmp);
             base = tmp;
         } else {
@@ -3883,9 +3918,11 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
             if (init_f) e_fn_call(a, init_f, a(alloc), false, false);
         }
         a->direct = saved_direct;
-        efunc f_hold_members = (efunc)u(efunc,
-            find_member(etypeid(Au)->au, "hold_members", AU_MEMBER_FUNC, 0, false));
-        //e_fn_call(a, f_hold_members, a(alloc), false);
+        if (alloc->au && alloc->au->is_class) {
+            efunc f_hold_members = (efunc)u(efunc,
+                find_member(etypeid(Au)->au, "hold_members", AU_MEMBER_FUNC, 0, false));
+            e_fn_call(a, f_hold_members, a(alloc), false, false);
+        }
 
     } else {
         res = e_fn_call(a, f_initialize, a(alloc), false, false);
@@ -4381,7 +4418,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
 
         if (is_struct(mdl)) {
             res = enode(mod, a, loaded, false, value,
-                LLVMBuildAlloca(B, lltype(mdl), "alloca-ptr"), au, mdl->au);
+                entry_alloca(a, lltype(mdl), "alloca-ptr"), au, mdl->au);
             // we have to call the constructor on this one..
             // the value is the pointer though since its not loaded
             LLVMBuildStore(B, LLVMConstNull(lltype(mdl)), res->value);
@@ -4412,7 +4449,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             LLVMTypeRef elem_lltype = lltype(elem_type);
             int elems = mdl->au->elements;
             verify(ln <= elems, "too many elements (%i) for C array[%i]", ln, elems);
-            LLVMValueRef alloc = LLVMBuildAlloca(B, lltype(mdl), "c_array");
+            LLVMValueRef alloc = entry_alloca(a, lltype(mdl), "c_array");
             for (int i = 0; i < ln; i++) {
                 enode val = (enode)ar->origin[i];
                 val = e_create(a, elem_type, (Au)val);
@@ -4558,7 +4595,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
 
             // struct alloca + field stores
             res = enode(mod, a, loaded, false, value,
-                LLVMBuildAlloca(B, lltype(mdl), "alloca-mdl"), au, mdl->au);
+                entry_alloca(a, lltype(mdl), "alloca-mdl"), au, mdl->au);
             res = e_zero(a, res);
             int mem_idx = 0;
             for (int i = 0; i < field_count; i++) {
@@ -4605,7 +4642,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             free(fields);
         } else if (is_ptr(mdl) && !args) {
             res = enode(mod, a, loaded, false, value,
-                LLVMBuildAlloca(B, lltype(mdl), "alloca-ptr"), au, mdl->au);
+                entry_alloca(a, lltype(mdl), "alloca-ptr"), au, mdl->au);
             LLVMBuildStore(B, LLVMConstNull(lltype(mdl)), res->value);
         } else 
             res = e_operand(a, args, mdl);
@@ -4625,7 +4662,7 @@ enode aether_e_vector(aether a, etype t, enode shape_data) {
     etype tc = canonical(t);
 
     efunc f_alloc    = (efunc)u(efunc,
-        find_member(etypeid(Au)->au, "alloc_new", AU_MEMBER_FUNC, 0, false));
+        find_member(etypeid(Au)->au, "alloc_vector", AU_MEMBER_FUNC, 0, false));
     enode ma = e_meta_a_node(a, t->meta_a ? t->meta_a : (tc ? tc->meta_a : null));
     enode mb = e_meta_b_node(a, t->meta_b ? t->meta_b : (tc ? tc->meta_b : null));
     bool is_shape = shape_data && canonical(shape_data) && canonical(shape_data)->au == typeid(shape);
@@ -5150,7 +5187,7 @@ enode aether_e_for(aether a,
         enode first_node = etype_access((etype)in_expr, string("first"));
 
         LLVMTypeRef  cursor_type = LLVMPointerType(item_type->lltype, 0);
-        LLVMValueRef cursor      = LLVMBuildAlloca(B, cursor_type, "cursor");
+        LLVMValueRef cursor      = entry_alloca(a, cursor_type, "cursor");
         LLVMValueRef first_val   = first_node->loaded ? first_node->value :
             LLVMBuildLoad2(B, cursor_type, first_node->value, "first.val");
         LLVMBuildStore(B, first_val, cursor);
@@ -5211,7 +5248,7 @@ enode aether_e_for(aether a,
         
         // alloca for index: i32 = 0
         LLVMTypeRef  i32_type = LLVMInt32Type();
-        LLVMValueRef idx      = LLVMBuildAlloca(B, i32_type, "for.idx");
+        LLVMValueRef idx      = entry_alloca(a, i32_type, "for.idx");
         LLVMBuildStore(B, LLVMConstInt(i32_type, 0, false), idx);
         LLVMBuildBr(B, cond);
 
@@ -5629,7 +5666,7 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
         
         // Allocate Au + primitive space on stack
         LLVMTypeRef byte_array = LLVMArrayType(LLVMInt8TypeInContext(a->module_ctx), total_size);
-        LLVMValueRef temp_alloca = LLVMBuildAlloca(B, byte_array, "au_prim_temp");
+        LLVMValueRef temp_alloca = entry_alloca(a, byte_array, "au_prim_temp");
         
         // Cast to Au*
         LLVMTypeRef au_struct_type = etypeid(Au)->lltype;
@@ -5732,7 +5769,7 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
         // cast primitives to pointers of temporary; this works for target values however may be a bit lieniant for other cases
         bool make_temp = is_prim(F->au) && is_ptr(T) && resolve(T) == F;
         if (make_temp) {
-            V = LLVMBuildAlloca(B, lltype(F), "prim_addr");
+            V = entry_alloca(a, lltype(F), "prim_addr");
             LLVMBuildStore(B, expr->value, V);
         }
         if (!make_temp)
@@ -6727,7 +6764,7 @@ none etype_implement(etype t, bool w) { sequencer
                     LLVMPositionBuilderBefore(B, first_instr);
                 else
                     LLVMPositionBuilderAtEnd(B, entry_block);
-                n->value = LLVMBuildAlloca(B, type, id);
+                n->value = entry_alloca(a, type, id);
                 LLVMPositionBuilderAtEnd(B, current_block);
 
                 if (n->au->src && n->au->src->src) {
@@ -8877,7 +8914,7 @@ static enode vector_binary_op(aether a, enode L, enode R, scalar_op_fn op, cstr 
     LLVMTypeRef lt = lltype(common);
     LLVMTypeRef i32_ty = LLVMInt32TypeInContext(a->module_ctx);
     LLVMTypeRef arr_type = LLVMArrayType(lt, count);
-    LLVMValueRef out = LLVMBuildAlloca(B, arr_type, name);
+    LLVMValueRef out = entry_alloca(a, arr_type, name);
 
     LLVMBasicBlockRef entry_bb = LLVMGetInsertBlock(B);
     LLVMValueRef fn = LLVMGetBasicBlockParent(entry_bb);
@@ -8981,7 +9018,7 @@ enode aether_e_clamp(aether a, enode val, enode lo, enode hi) {
     LLVMTypeRef lt = lltype(common);
     LLVMTypeRef i32_ty = LLVMInt32TypeInContext(a->module_ctx);
     LLVMTypeRef arr_type = LLVMArrayType(lt, count);
-    LLVMValueRef out = LLVMBuildAlloca(B, arr_type, "vclamp");
+    LLVMValueRef out = entry_alloca(a, arr_type, "vclamp");
 
     LLVMBasicBlockRef entry_bb = LLVMGetInsertBlock(B);
     LLVMValueRef fn = LLVMGetBasicBlockParent(entry_bb);
@@ -9093,7 +9130,7 @@ enode aether_e_math(aether a, i32 op, enode val) {
     // array: emit loop
     i32 count = val_au->elements;
     LLVMTypeRef arr_type = LLVMArrayType(lt, count);
-    LLVMValueRef out = LLVMBuildAlloca(B, arr_type, "math_arr");
+    LLVMValueRef out = entry_alloca(a, arr_type, "math_arr");
     LLVMTypeRef i32_ty = LLVMInt32TypeInContext(a->module_ctx);
 
     LLVMBasicBlockRef entry_bb = LLVMGetInsertBlock(B);
@@ -9170,7 +9207,7 @@ enode aether_e_stack_array(aether a, etype elem_type, i32 count) {
     etype_implement(elem_type, false);
     LLVMTypeRef lt = lltype(elem_type);
     LLVMTypeRef arr_type = LLVMArrayType(lt, count);
-    LLVMValueRef alloc = LLVMBuildAlloca(B, arr_type, "stack_arr");
+    LLVMValueRef alloc = entry_alloca(a, arr_type, "stack_arr");
     Au_t arr_au = def(a->au, null, AU_MEMBER_TYPE, AU_TRAIT_SHAPED);
     arr_au->src = elem_type->au;
     arr_au->elements = count;
