@@ -2714,14 +2714,14 @@ Au alloc_instance(Au_t type, int n_bytes, bool managed) {
 
 none Au_free(Au a);
 
-none auto_free() {
+none auto_free(bool reset_only) {
     // only managed objects go into af
     for (num i = 2; i < af_count; i++) {
         Au a = af[i];
         
         if (a && a->refs == 0) {
-            print("auto freeing data from %s:%i", a->source, a->line);
-            Au_free(&a[1]);
+            //print("auto freeing data from %s:%i", a->source, a->line);
+            if (!reset_only) Au_free(&a[1]);
         } else if (a)
             a->managed = 1; // says i am not in the list, but managed
     }
@@ -2798,6 +2798,21 @@ Au alloc_new(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
              symbol source, i32 line, i64 seq) {
     Au a  = alloc(type, count, shape_data, meta_a, meta_b);
     Au hd = header(a);
+    hd->source   = (cstr)source;
+    hd->line     = line;
+    hd->sequence = (i32)seq;
+    return a;
+}
+
+// N-slot reference holder — the held type's dealloc chain does NOT apply to
+// the holder's raw buffer; slots are user-managed refs.
+#define AU_IF_HOLDER 0x02
+
+Au alloc_vector(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
+                symbol source, i32 line, i64 seq) {
+    Au a  = alloc(type, count, shape_data, meta_a, meta_b);
+    Au hd = header(a);
+    hd->iflags  |= AU_IF_HOLDER;
     hd->source   = (cstr)source;
     hd->line     = line;
     hd->sequence = (i32)seq;
@@ -3093,7 +3108,7 @@ none Au_hold_members(Au a) {
             Au_t mem = (Au_t)type->members.origin[i];
             if (mem->member_type != AU_MEMBER_VAR) continue;
             Au   *mdata = (Au*)((cstr)a + mem->offset);
-            if (!is_inlay(mem) && *mdata) {
+            if (!mem->is_unmanaged && !mem->is_static && !is_inlay(mem) && *mdata) {
                 if (mem->meta.a == typeid(weak))
                     continue;
 
@@ -5110,9 +5125,12 @@ none Au_free(Au a) {
     // C-imported types are flat memory — no init/dealloc/hold/drop vtable.
     // just free the allocation and skip the chain walk entirely.
     bool     is_c = aa->type && aa->type->is_c;
+    // reference holder (`new Type[N]`): the held type's dealloc chain does
+    // NOT apply to the holder's raw buffer; slots are user-managed refs.
+    bool     is_holder = (aa->iflags & AU_IF_HOLDER) != 0;
     Au_f*  type = (Au_f*)aa->type;
     none* prev = null;
-    Au_f*   cur = is_c ? null : type;
+    Au_f*   cur = (is_c || is_holder) ? null : type;
     while (cur) {
         if (prev != cur->ft.dealloc) {
             cur->ft.dealloc(a);
