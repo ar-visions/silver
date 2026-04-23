@@ -2421,55 +2421,56 @@ Texture Display
                 pending_h     = 0
                 last_resize_t = 0.0
         
-        for [ r: Render, id: string ] in element_targets
-            r.draw*[]
-            r.sync_fence*[]
+        #for [ r: Render, id: string ] in element_targets
+        #    r.draw*[]
+        #    r.sync_fence*[]
         
-        on_compose*[]
+        #on_compose*[]
 
-        for [ r: Render ] in list
-            r.draw*[]
-            r.sync_fence*[]
+        #for [ r: Render ] in list
+        #    r.draw*[]
+        #    r.sync_fence*[]
         
-        on_screen*[]
+        #on_screen*[]
 
-        if [ swap_renders ]
-            result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
-                semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
-            if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
-                # swapchain is out-of-date because the surface has been resized.
-                # Don't recurse through handle_glfw_framebuffer_size — it would
-                # clobber any pending resize state with the (still-old) Display
-                # dimensions and stop the debounce check from ever firing.
-                # Skip presenting this frame; the next debounce tick will run
-                # the real resize against the most recent pending dimensions.
-                ii: 0
-            el
-                expect result == VK_SUCCESS, "failed to acquire swapchain image"
-                swap_render_current = swap_renders[swap_image_current]
-                last_render[].color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
-                swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                #printf[ "  swap_render_current swap=%p reduce=%d clear=[%f,%f,%f,%f]\n",
-                #    swap_render_current.vk_swap_image, swap_render_current.reduce,
-                #    swap_render_current.clear_color.x, swap_render_current.clear_color.y,
-                #    swap_render_current.clear_color.z, swap_render_current.clear_color.w ]
-                swap_render_current.draw[]
-                last_render[].color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                presentInfo: VkPresentInfoKHR [
-                    sType:              VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                    swapchainCount:     1,
-                    pSwapchains:        ref vk_swapchain,
-                    pImageIndices:      ref swap_image_current,
-                    waitSemaphoreCount: 1,
-                    pWaitSemaphores:    ref semaphore_frame.vk_render_finished_semaphore
-                ]
-                swap_render_current.color.transition[ VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
-                result = vkQueuePresentKHR[ vk.queue, presentInfo ]
-                swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                semaphore_frame = swap_renders[semaphore_frame == swap_renders.first_element[]]
-                if [ result != VK_ERROR_OUT_OF_DATE_KHR && result != VK_SUBOPTIMAL_KHR ]
-                    expect result == VK_SUCCESS, "present"
-                    swap_render_current.sync_fence[]
+        if [false]
+            if [ swap_renders ]
+                result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
+                    semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
+                if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
+                    # swapchain is out-of-date because the surface has been resized.
+                    # Don't recurse through handle_glfw_framebuffer_size — it would
+                    # clobber any pending resize state with the (still-old) Display
+                    # dimensions and stop the debounce check from ever firing.
+                    # Skip presenting this frame; the next debounce tick will run
+                    # the real resize against the most recent pending dimensions.
+                    ii: 0
+                el
+                    expect result == VK_SUCCESS, "failed to acquire swapchain image"
+                    swap_render_current = swap_renders[swap_image_current]
+                    last_render[].color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+                    swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                    #printf[ "  swap_render_current swap=%p reduce=%d clear=[%f,%f,%f,%f]\n",
+                    #    swap_render_current.vk_swap_image, swap_render_current.reduce,
+                    #    swap_render_current.clear_color.x, swap_render_current.clear_color.y,
+                    #    swap_render_current.clear_color.z, swap_render_current.clear_color.w ]
+                    swap_render_current.draw[]
+                    last_render[].color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                    presentInfo: VkPresentInfoKHR [
+                        sType:              VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                        swapchainCount:     1,
+                        pSwapchains:        ref vk_swapchain,
+                        pImageIndices:      ref swap_image_current,
+                        waitSemaphoreCount: 1,
+                        pWaitSemaphores:    ref semaphore_frame.vk_render_finished_semaphore
+                    ]
+                    swap_render_current.color.transition[ VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
+                    result = vkQueuePresentKHR[ vk.queue, presentInfo ]
+                    swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                    semaphore_frame = swap_renders[semaphore_frame == swap_renders.first_element[]]
+                    if [ result != VK_ERROR_OUT_OF_DATE_KHR && result != VK_SUBOPTIMAL_KHR ]
+                        expect result == VK_SUCCESS, "present"
+                        swap_render_current.sync_fence[]
 
                     
     cast -> Image
@@ -7683,10 +7684,11 @@ abstract media_app trinity
     # 22
     func render[]
         window : Window[w]
-        update_scene*[]
-        if [ window.colorize ] window.colorize.clear[ '#000'  ]
-        if [ window.overlay  ] window.overlay .clear[ '#0000' ]
-        window.draw[]
+        #update_scene*[]
+        #if [ window.colorize ] window.colorize.clear[ '#000'  ]
+        s : string['another']
+        #if [ window.overlay  ] window.overlay .clear[ '#0000' ]
+        #window.draw[]
 
 
 class LineInfo
