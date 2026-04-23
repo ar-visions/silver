@@ -1307,7 +1307,7 @@ void silver_init(silver a) {
         if (retry) {
             print("awaiting iteration: %o", a->module);
             
-            auto_free();
+            auto_free(false);
             mtime = silver_watch(a, a->module, mtime, 0); // it was easiest to fork path's implementation and add arks
             print("rebuilding...");
             drop(a->tokens);
@@ -1628,7 +1628,7 @@ static enode read_keywords(silver a) {
     enode n_src; Au n_line, n_seq;
     alloc_origin_args((aether)a, &n_src, &n_line, &n_seq);
     enode res = e_fn_call(a, f_alloc, a(
-        e_typeid(a, etypeid(tokens)), _i32(1), e_null(a, etypeid(shape)),
+        e_typeid(a, etypeid(tokens)), _i32(0), e_null(a, etypeid(shape)),
         e_null(a, etypeid(Au_t)), e_null(a, etypeid(Au)),
         (Au)n_src, n_line, n_seq), false, false);
     res->au = etypeid(tokens)->au;
@@ -3762,6 +3762,9 @@ enode parse_statement(silver a)
 
     //bool is_default = !access ? read_if(a, "default") != null : false;
     bool has_access = access != interface_undefined;
+    if (access == interface_intern && next_is(a, "")) {
+
+    }
     validate(!(has_access && rec_top && is_struct(rec_top)),
         "access levels are not applicable to struct members");
 
@@ -4079,6 +4082,8 @@ enode parse_statement(silver a)
         } else {
             // default
             validate(!assign_enum, "unexpected assignment");
+            //validate((!mem || mem->au->member_type != AU_MEMBER_VAR) || !f,
+            //    "orphaned member expression in function");
         }
         
     } else {
@@ -6782,8 +6787,13 @@ void silver_write_header(silver a) {
                     }
                     bool   has_meta = mi->args.count > 0;
                     string prop_type   = cname(type_name((Au)mi));
-                    write(module_f, "M(A,B, %o,prop,%o,%o,%o%s%o)",
-                        i, access_type, prop_type, mn, has_meta ? "," : "", meta);
+                    // is_explicit_ref members ARE pointers (8 bytes). i_ref_*
+                    // expands `R* N;` so declare_class_N sees a pointer slot
+                    // matching LLVM's ptr emit. plain prop would emit `R N;`
+                    // and inline the struct — layout drift.
+                    symbol kind = mi->is_explicit_ref ? "ref" : "prop";
+                    write(module_f, "M(A,B, %o,%s,%o,%o,%o%s%o)",
+                        i, kind, access_type, prop_type, mn, has_meta ? "," : "", meta);
                 }
             }
             line(module_f, "\n");
