@@ -308,7 +308,9 @@ enode enode_value(enode mem, bool force_load) { sequencer
     //aether a = mem->mod;
     //etype mdl = etype_prep(a, au_arg_type((Au)mem->au));
 
-    if (!mem->loaded && (force_load || !is_struct(canonical(mem))) && !mem->au->is_imethod && (force_load || mem->au->member_type != AU_MEMBER_TYPE) && (!is_func((Au)mem) || is_func_ptr((Au)mem))) {
+    if (!mem->loaded && (force_load || !is_struct(canonical(mem)) || mem->au->is_explicit_ref) && 
+        !mem->au->is_imethod && (force_load || mem->au->member_type != AU_MEMBER_TYPE) &&
+       (!is_func((Au)mem) || is_func_ptr((Au)mem))) {
         if (mem->au->ident && strstr(mem->au->ident, "SND_PCM_STREAM") != NULL) {
             mem = mem; // breakpoint: loading SND_PCM_STREAM enum
         }
@@ -317,7 +319,7 @@ enode enode_value(enode mem, bool force_load) { sequencer
         if (a->no_build) return e_noop(a, (etype)mem);
 
         Au_t au = au_arg_type((Au)mem);
-        if (!force_load && is_struct(au))
+        if (!force_load && is_struct(au) && !mem->au->is_explicit_ref)
             return mem;
         if (au->elements > 0) {
             // direct stack array enode: value IS the array — return as-is.

@@ -445,7 +445,7 @@ static inline enode expr_load(enode result, bool load) {
 }
 
 static enode parse_expression(silver a, etype expect, bool hint, bool load) { sequencer
-    if (seq == 21804)
+    if (seq == 12998)
         seq = seq;
     if (is_rec(expect) && next_is(a, "[")) {
         // collections and structs go straight to parse_object
@@ -3609,7 +3609,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     //printf("seq = %i\n", seq);
 
-    if (seq == 27257) {
+    if (seq == 15535) {
         seq = seq;
     }
     // we may only support a limited set of C functionality for #define macros
@@ -5677,7 +5677,7 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
         seq = seq;
     }
 
-    if (strcmp(f->au->ident, "nib") == 0) {
+    if (strcmp(f->au->ident, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR") == 0) {
         f = f;
     }
 

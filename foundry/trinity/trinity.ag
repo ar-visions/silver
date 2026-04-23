@@ -2533,11 +2533,7 @@ Texture Display
         # surface capabilities + formats
         if [ !backbuffer ]
             surface_caps = new VkSurfaceCapabilitiesKHR [ 1 ]
-            printf["val44 = %p\n", swap_render_current]
-
-            result: vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, ref surface_caps[0] ]
-            printf["val22 = %p\n", swap_render_current]
-
+            result: vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, surface_caps ]
             expect result == VK_SUCCESS, "Failed to query surface capabilities"
 
             # surface format
