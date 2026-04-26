@@ -567,20 +567,22 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     // their lifecycle. context members point at an enclosing/owning thing, so
     // a strong ref would either create cycles or extend lifetime upward; they
     // are weak by definition. Members whose literal type is `Au` (the generic
-    // bag-of-anything base) also opt out — the runtime can't reason about a
-    // type it can't see, so the user manages those slots. Gating is_class_set
-    // here suppresses both the prev/rel tracking below AND the retain/release
-    // pair in Phase 7.
+    // bag-of-anything base) also opt out — generics require manual hold/drop.
     bool  is_class_set = L->au && L->au->src && L->au->src->is_class &&
         !(L->au->traits & AU_TRAIT_UNMANAGED) &&
         !L->au->is_context &&
         L->au->src != typeid(Au);
 
+    // hold/drop only on actual member slots, not local scope variables.
+    // evar->is_local is set in silver.c when the variable is defined inside a function body.
+    evar lv = instanceof(L, evar);
+    bool is_member_slot = !lv || !lv->is_local;
+
     // `=` on a class member: hold the new value and drop the previous one.
     // `:` (first binding) has no previous value to drop — only the hold.
     bool is_reassign_op = op_val == OPType__assign && !is_init;
     LLVMValueRef prev_value = null;
-    if (is_class_set && is_reassign_op) {
+    if (is_class_set && is_member_slot && is_reassign_op) {
         LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
         prev_value = LLVMBuildLoad2(B, ptr_ty, L->value, "prev_ref");
     }
@@ -783,8 +785,8 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     /* ------------------------------------------------------------
      * Phase 7: lifetime management
      * ------------------------------------------------------------ */
-    if (is_class_set) {
-        retain(L);
+    if (is_class_set && is_member_slot) {
+        if (is_reassign_op && !a->init_props_retain_skip) retain(L);
         if (prev_value) {
             efunc fn_drop = (efunc)u(efunc,
                 find_member(etypeid(Au)->au, "drop", AU_MEMBER_FUNC, 0, true));
@@ -1507,9 +1509,12 @@ enode aether_e_interpolate(aether a, string str) { sequencer
             const_string cs = const_string(chars, s->content->chars, ref_length, s->content->count);
             val = e_create(a, mdl, (Au)cs);
         }
-        if (!accum)
+        if (!accum && !s->is_expr)
             accum = val;
-        else
+        else if (!accum) {
+            enode fresh = e_create(a, mdl, (Au)const_string(chars, ""));
+            accum = e_add(a, (Au)fresh, (Au)val);
+        } else
             accum = e_add(a, (Au)accum, (Au)val);
     }
     a->expr_level--;
@@ -3841,6 +3846,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     // 2. set ALL props BEFORE init and mark fbits
     if (props) {
         u64 mask0 = 0, mask1 = 0;
+        a->init_props_retain_skip = true;
         pairs(props, i) {
             Au k = i->key;
             if (instanceof(k, enode)) {
@@ -3861,6 +3867,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
             }
         }
         if (mask0 || mask1) mark_set(alloc, mask0, mask1);
+        a->init_props_retain_skip = false;
     }
 
     // 2b. verify required members were provided
@@ -6779,7 +6786,7 @@ none etype_implement(etype t, bool w) { sequencer
         } else if (is_func(au->context)) {
             verify(n->value, "expected evar to be set for arg");
             verify(isa(t) == typeid(evar) || isa(t) == typeid(enode), "expected evar/enode instance for arg");
-            n->loaded = au->is_explicit_ref ? false : !is_struct(au_arg_type((Au)au));
+            n->loaded = au->is_explicit_ref ? au->src->is_c : !is_struct(au_arg_type((Au)au));
         }
 
         return;
@@ -8428,7 +8435,7 @@ none enode_init(enode n) {
     if (is_func((Au)n->au->context) && !n->symbol_name) {
         int offset = 0;
 
-        if (n->au->ident && strcmp(n->au->ident, "learning_rate2") == 0) {
+        if (n->au->context && strcmp(n->au->context->ident, "handle_glfw_framebuffer_size") == 0) {
             n = n;
         }
         if (is_lambda((Au)n->au->context))
@@ -8442,7 +8449,7 @@ none enode_init(enode n) {
             etype_implement((etype)fn, false);
         }
         n->value  = LLVMGetParam(fn->value, n->arg_index + offset);
-        n->loaded = n->au->is_explicit_ref ? false : (!is_struct(n->au->src) && !n->au->is_inlay);
+        n->loaded = n->au->is_explicit_ref ? n->au->src->is_c : (!is_struct(n->au->src) && !n->au->is_inlay);
     } else if (n->symbol_name && !n->value) {
         LLVMValueRef g = LLVMGetNamedGlobal  (a->module_ref, n->symbol_name->chars);
         if (!g)      g = LLVMGetNamedFunction(a->module_ref, n->symbol_name->chars);
