@@ -96,6 +96,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  path,                     module_path) \
     M(X, Y, i, prop,     public,  path,                     project_path) \
     M(X, Y, i, prop,     public,  bool,                     building_initializer) \
+    M(X, Y, i, prop,     public,  bool,                     init_props_retain_skip) \
     M(X, Y, i, prop,     public,  bool,                     direct) \
     M(X, Y, i, prop,     public,  bool,                     import_c) \
     M(X, Y, i, prop,     public,  bool,                     release) \
@@ -342,6 +343,7 @@ forward(evar)
 declare_class_2(enode, etype)
 
 #define evar_schema(X, Y, ...) \
+    M(X, Y, i, prop,     public,  bool,            is_local) \
     M(X, Y, i, prop,     public,  map,             placeholder)
 declare_class_3(evar, enode, etype)
 
