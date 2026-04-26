@@ -1,6 +1,12 @@
 # Silver
 
-## Rule #1 — Never question the build state
+## Rule #1 — NEVER perform git operations
+
+DO NOT run `git checkout`, `git reset`, `git restore`, `git clean`, or any other git command that modifies or discards file contents. These operations destroy work irreversibly. The only git commands permitted are read-only: `git status`, `git diff`, `git log`, `git blame`. If asked to "revert" something, edit the file directly — never use git to do it.
+
+---
+
+## Rule #2 — Never question the build state
 
 Do NOT suggest `make clean`, doubt that a rebuild happened, or ask "did silver rebuild." The user's build system works. If a change doesn't appear to take effect, the bug is in the code, not the cache. Trust the user's runtime output as reflecting the current code state, always.
 running silver with --clean will always rebuild the module
