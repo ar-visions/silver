@@ -54,9 +54,6 @@ shader Earth
     attrib v_bitangent  : VertexOutput  [ type:typeid[ vec3f ] ]
     attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
 
-    attrib f_normal     : FragmentInput [ type:typeid[ vec3f ] ]
-    attrib f_uv         : FragmentInput [ type:typeid[ vec2f ] ]
-
     attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
 
     func init[]
@@ -619,9 +616,6 @@ shader Purple
     attrib v_bitangent  : VertexOutput  [ type:typeid[ vec3f ] ]
     attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
 
-    attrib f_normal     : FragmentInput [ type:typeid[ vec3f ] ]
-    attrib f_uv         : FragmentInput [ type:typeid[ vec2f ] ]
-
     attrib outColor     : FragmentOutput[ type:typeid[ vec4f ] ]
 
 
@@ -919,10 +913,9 @@ trinity orbiter
         return Elements [
             "test22": Button [ label:'test22' ],
             "test44": Button [ label:'test44' ],
-            "edit"  : Editor [ ],
-            "avatar": World  []
+            #"edit"  : Editor [ ]
+            "avatar": World  [ model_path: 'models/orbiter4.gltf', shader_type: 'PBR', environment_path: 'images/forest.exr' ]
         ]
-
 
     func load_scene []
         # 1) load the earth gltf mesh — shared by earth/ocean/cloud passes

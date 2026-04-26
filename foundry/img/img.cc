@@ -64,9 +64,9 @@ none Image_init(Image a) {
         a->channels = f == Pixel_none ? 1 : f == Pixel_rgba8   ? 4 : f == Pixel_rgbf32 ? 4 :
                       f == Pixel_u8   ? 1 : f == Pixel_rgbaf32 ? 4 : 1;
 
-    fprintf(stderr,
-        "Image_init: a=%p w=%d h=%d format=%d source=%p uri=%p (Image*=%p +offsetof=source@%zu)\n",
-        a, a->width, a->height, (int)f, a->source, a->uri, a, offsetof(struct _Image, source));
+    if (!a->pixel_size && a->channels)
+        a->pixel_size = (f == Pixel_rgbaf32 || f == Pixel_f32 || f == Pixel_rgbf32)
+            ? (int)(sizeof(f32) * a->channels) : a->channels;
 
     if (a->source) {
         Au source_header = header((Au)a->source);
@@ -74,12 +74,13 @@ none Image_init(Image a) {
         info->scalar  = source_header->scalar;
         info->count   = source_header->count;
         info->data_shape = (shape)Au_hold((Au)source_header->data_shape);
+        a->pixels = (u8*)a->source;
         return;
     }
 
     if (!a->uri) {
         Au_t pixel_type =
-            f == Pixel_none ? (Au_t)_typeid(i8) : f == Pixel_rgba8   ? 
+            f == Pixel_none ? (Au_t)_typeid(i8) : f == Pixel_rgba8   ?
                 (Au_t)_typeid(rgba8) : f == Pixel_rgbf32 ? (Au_t)_typeid(vec3f) :
             f == Pixel_u8   ? (Au_t)_typeid(i8) : f == Pixel_rgbaf32 ?
                 (Au_t)_typeid(vec4f) : (Au_t)_typeid(f32);
@@ -90,12 +91,13 @@ none Image_init(Image a) {
                 (Au_t)_typeid(f32) : (Au_t)_typeid(f32);
 
         if (a->res_bits) {
-            info->data = (Au)a->res_bits; // we leave this up to res, but may support fallback cases where thats not provided
+            info->data = (Au)a->res_bits;
+            a->pixels = (u8*)a->res_bits;
         } else {
-            /// validate with channels if set?
             i64 dims[] = { a->height, a->width, pixel_type->typesize };
-            info->data = alloc2(
-                pixel_type, component_type, shape_from(3, dims));
+            u8* bytes = (u8*)alloc2(pixel_type, component_type, shape_from(3, dims));
+            info->data = (Au)bytes;
+            a->pixels = bytes;
         }
         return;
     }
@@ -145,6 +147,7 @@ none Image_init(Image a) {
         info->count = total_floats;
         info->scalar = (Au_t)_typeid(f32);
         info->data = (Au)data;
+        a->pixels = (u8*)data;
     } else if (string_eq(ext, "png")) {
         FILE* file = fopen(uri, "rb");
         assert (file);
@@ -184,6 +187,7 @@ none Image_init(Image a) {
         info->scalar = (bit_depth == 16) ? (Au_t)_typeid(u16) : (Au_t)_typeid(u8);
         info->data   = (Au)data;
         a->pixel_size  = (bit_depth / 8) * a->channels;
+        a->pixels = (u8*)data;
     }
 }
 

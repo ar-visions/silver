@@ -1011,6 +1011,18 @@ class GLSL : RType
         body  = t
         rtype = info.meta_a
 
+GLSL FragGLSL : RType
+    construct [ t:symbol ]
+        info  : Au.header[ a ]
+        body  = t
+        rtype = info.meta_a
+
+GLSL VertGLSL : RType
+    construct [ t:symbol ]
+        info  : Au.header[ a ]
+        body  = t
+        rtype = info.meta_a
+
 class Pipeline
     context vk              : vk_context
     context w               : Display
@@ -1768,26 +1780,8 @@ class Buffer
         vkBeginCommandBuffer [ cmd, VkCommandBufferBeginInfo [
             sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
-        vkCmdPipelineBarrier [ cmd,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            0, 0, null, 0, null, 1, VkImageMemoryBarrier [
-            sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            srcAccessMask:       VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            dstAccessMask:       VK_ACCESS_TRANSFER_READ_BIT,
-            oldLayout:           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            newLayout:           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            image:               tx.vk_image,
-            subresourceRange:    VkImageSubresourceRange [
-                aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
-                baseMipLevel:   0,
-                levelCount:     1,
-                baseArrayLayer: 0,
-                layerCount:     1 ] ] ]
-        prev: VkImageLayout
-        if [ tx ] # window did not do this <---- so you need a state for transfer source
-            prev = tx.vk_layout
-            tx.transition [ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+        prev: VkImageLayout [ tx.vk_layout ]
+        tx.transition [ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
         vkCmdCopyImageToBuffer [ cmd, tx.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1,
             VkBufferImageCopy [
                 bufferOffset:      0,
@@ -1807,8 +1801,7 @@ class Buffer
             pCommandBuffers:    ref cmd ], null ]
         vkQueueWaitIdle [ vk.queue ]
         vkFreeCommandBuffers [ vk.device, vk.command_pool, 1, ref cmd ]
-        if [ tx ]
-            tx.transition [ prev ] # same thing here -- we do not do this on window (same state as above)
+        tx.transition [ prev ]
 
     func update [ d: ARef ]
         if [ !size ]
@@ -1918,7 +1911,8 @@ class Texture
         channels: i32 [ 0 ]
         pixel: pixel_from_format[ vk_format, ref channels ]
         expect pixel != 0, "unsupported format for texture_cast_image"
-        b: Buffer [ vk: vk, size: width * height * channels,
+        bpp: i32 [ (pixel == Pixel.rgbaf32 || pixel == Pixel.f32) ? channels * 4 : channels ]
+        b: Buffer [ vk: vk, size: width * height * bpp,
             u_dst: true, m_host_visible: true, m_host_coherent: true ]
         b.transfer a
         res: Image [
@@ -2094,8 +2088,6 @@ class Texture
             mip_levels = 1
         if [ !layer_count ]
             layer_count = 1
-        if [ !vk_format && pixel_format ]
-            vk_format = vk_format_fn[ pixel_format, linear ]
         is_depth: vk_format == VK_FORMAT_D32_SFLOAT
         if [ vk_image ]
             expect vk_format, "expected format"
@@ -2160,7 +2152,7 @@ class Texture
                 cmd.begin[]
                 staging: Buffer [ vk: vk, size: sampler_size, u_src: true, u_shader: true,
                     m_host_visible: true, m_host_coherent: true,
-                    data: (img) ? img.data : fill ]
+                    data: (img) ? img.pixels : fill ]
                 vkCmdCopyBufferToImage[ cmd.cmd, staging.vk_buffer, vk_image,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, VkBufferImageCopy [
                         bufferOffset:      0,
@@ -2770,8 +2762,11 @@ class shader
                         arg_str = '{arg_str}, '
                     arg_str = '{arg_str}{atype} {arg.ident}'
 
-                # call method with defaults (null) to get body
                 glsl: GLSL Au Au.method_call[ method, null ]
+                if [ stage == ShaderStage.vertex && glsl inherits FragGLSL ]
+                    continue
+                if [ stage == ShaderStage.fragment && glsl inherits VertGLSL ]
+                    continue
 
                 #l : strlen[ glsl.body ]
                 l : strlen[glsl.body]
@@ -3045,9 +3040,9 @@ shader Env
     func fragment [] -> GLSL none {
         const float PI = 3.14159265359;
         vec3  R  = normalize(v_dir);
-        vec2  eq = vec2(0.5 + atan(R.z, R.x) / (2.0  * PI),
-                              acos(R.y)      /         PI);
-        outColor = texture(color, eq);
+        vec2  eq = vec2(0.5 + atan(R.z, R.x) / (2.0 * PI),
+                              acos(R.y)       /        PI);
+        outColor = vec4(texture(color, eq).rgb, 1.0);
     }
 
 
@@ -6040,7 +6035,7 @@ func pbr_defaults [] -> PbrMetallicRoughness
     static pbr: PbrMetallicRoughness
     if [ !pbr ]
         pbr = PbrMetallicRoughness[]
-        pbr.baseColorFactor            = vec4f [ 1, 0, 0, 1 ]
+        pbr.baseColorFactor            = vec4f [ 1, 1, 1, 1 ]
         pbr.metallicFactor             = 1.0
         pbr.roughnessFactor            = 1.0
         pbr.emissiveFactor             = vec3f [ 0, 0, 0 ]
@@ -6346,7 +6341,7 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
     w.resize[ w.extent.width, w.extent.height ]
     clone2: Image [
         source: img.vdata[], width: img.width, height: img.height,
-        format: Pixel.rgbaf32, surface: Surface.color ]
+        format: img.format, surface: Surface.color ]
     gltf_path: path 'models/env.gltf'
     mdl_data:  GltfModel [ gltf_path.load[ typeid[ GltfModel ], null ] ]
     e:         Env [ vk: vk, name: 'env' ]
@@ -7021,10 +7016,11 @@ Display Window
 
         # iterate through rendered elements
         for [ e:element, id:string ] in rendered
-            instance : element* parent.elements[ id ]
-            changed  : bool e.restyle
-            new_inst : false
+            instance  : element* parent.elements[ id ]
+            changed   : bool e.restyle
+            new_inst  : false
             brand_new : false
+            call_init : false
 
             if [ instance ]
                 instance.flags &= ~1
@@ -7065,8 +7061,8 @@ Display Window
                 if [ imember ]
                     home_object.member_set[ imember, instance ]
                  
-                instance.initialize[] # context can be given here
-                instance.hold_members[]
+                instance.set_context_from[ home_object ]
+                call_init = true
                 changed = true
             el [ instance.restyle ]
                 instance.restyle = false
@@ -7080,8 +7076,14 @@ Display Window
                 e.restyle = false
                 avail  : st.compute[ instance ]
                 apply_style[ instance, avail, home_object ]
-                 
-            inst: typeid[instance]
+
+                # init finally called after context and style is applied
+                # our holds are too many for properties applied in style, though.
+                if [ call_init ]
+                    instance.initialize[] 
+                    instance.hold_members[]
+
+            inst    : typeid[ instance ]
             irender : instance.render[]
             if [ !irender ] irender = instance.elements
             if [  irender ] update_element[ instance, irender ]
@@ -8575,18 +8577,19 @@ Layer Children
 
 
 element World
-    context vk          : vk_context
-    intern target       : Render
-    intern model        : Model
-    intern s            : shader
-    public model_path   : string
-    public shader_type  : string
-    public render_scale : f32 1.0
-    public clear_color  : vec4f
-    public rotate       : array Rotation
-    public translate    : array Translation
-    public scale        : array Scaling
-    public update       : EventDispatch
+    context vk               : vk_context
+    intern target            : Render
+    intern model             : Model
+    intern s                 : shader
+    public model_path        : string
+    public shader_type       : string
+    public environment_path  : string
+    public render_scale      : f32
+    public clear_color       : vec4f
+    public rotate            : array Rotation
+    public translate         : array Translation
+    public scale             : array Scaling
+    public update            : EventDispatch
 
     func init [ ]
         if [ model_path ]
@@ -8598,22 +8601,34 @@ element World
         width  : int ((bounds) ? (bounds.w) : (w_ref.width))  * render_scale
         height : int ((bounds) ? (bounds.h) : (w_ref.height)) * render_scale
 
-        f : Au.find_type [ shader_type.chars, null ]
-        s     = Au.new_object[ f, null, null, false ]
-        s.vk  = vk
-        s.initialize[]
+        if [ shader_type && shader_type.count ]
+            f : Au_t [ Au.find_type [ shader_type.chars, null ] ]
+            if [ f ]
+                s     = Au.new_object[ f, null, null, false ]
+                s.vk  = vk
+                s.initialize[]
+                if [ model ]
+                    model.s = s
+
+        if [ model && environment_path && environment_path.count ]
+            env_img  : Image [ uri: path[ environment_path ], surface: Surface.environment ]
+            env_axis : vec3f [ 0.0, 1.0, 0.0 ]
+            env_tex  : environment[ vk, env_img, env_axis, 0.0 ]
+            model.samplers[ 'environment' ] = env_tex
 
         target = Render [
             vk:          vk,
             w:           w_ref,
             width:       width,
             height:      height,
+            use_depth:   true,
             reduce:      (render_scale == 4.0) ? true : false,
             clear_color: clear_color,
             models:      (model) ? array Model [ model ] : null ]
         w_ref.element_targets[ id ] = target
 
     func draw [ w: Window ]
+        if [ !target ] return
         #expect update, 'update subs not set'
 
         width  : i32 [ bounds.w * render_scale ]
@@ -8621,6 +8636,16 @@ element World
         target.width  = width
         target.height = height
         target.wscale = 0.0
+
+        pbr : PBR [ s ]
+        if [ pbr ]
+            eye_pos : vec3f [ 0.0f,  3.5f, -2.0f ]
+            tgt_pos : vec3f [ 0.0f,  0.0f,  0.0f ]
+            up_vec  : vec3f [ 0.0f, -1.0f,  0.0f ]
+            pbr.model = mat4f.identity[]
+            pbr.proj  = mat4f.perspective[ radians[ 40.0f ], 1.0f, 0.1f, 100.0f ]
+            pbr.view  = mat4f.look_at[ eye_pos, tgt_pos, up_vec ]
+            pbr.pos   = vec4f [ 0.0f, 3.5f, -2.0f, 1.0f ]
 
         target.update[]
 
@@ -8655,8 +8680,8 @@ element World
                         mat = mat.translate[ t.value ]
                     m.transforms[i] = mat
 
-        w.overlay.set_texture[ (target.reduction) ? target.reduction : target.color ]
-        w.overlay.paint[]
+        tex : Texture [ target.color ]
+        w.screen.draw_image[ tex, bounds ]
 
 element View
     func render[] -> Elements
@@ -9162,8 +9187,8 @@ shader PBR
     attrib a_pos        : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_normal     : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_uv         : VertexInput    [ type:typeid[ vec2f ] ]
-    attrib a_color_0    : VertexInput    [ type:typeid[ vec4f ] ]
-    attrib a_color_1    : VertexInput    [ type:typeid[ vec4f ] ]
+    #attrib a_color_0    : VertexInput    [ type:typeid[ vec4f ] ]
+    #attrib a_color_1    : VertexInput    [ type:typeid[ vec4f ] ]
     attrib v_world_normal : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_world_pos    : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_view_pos     : VertexOutput [ type:typeid[ vec3f ] ]
@@ -9228,7 +9253,7 @@ shader PBR
         return (diffuse + specular) * NdotL;
     }
 
-    func perturbNormal [ N: vec3f, V: vec3f, texcoord: vec2f ] -> GLSL vec3f {
+    func perturbNormal [ N: vec3f, V: vec3f, texcoord: vec2f ] -> FragGLSL vec3f {
         vec3 map = texture(normal, texcoord).rgb * 2.0 - 1.0;
         vec3 q1  = dFdx(v_world_pos);
         vec3 q2  = dFdy(v_world_pos);
@@ -9240,46 +9265,50 @@ shader PBR
         return normalize(TBN * map);
     }
 
-    func parallaxMapping [ texCoords: vec2f, viewDir: vec3f ] -> GLSL vec2f {
+    func parallaxMapping [ texCoords: vec2f, viewDir: vec3f ] -> FragGLSL vec2f {
         float height_scale = 0.04;
         float h = texture(height, texCoords).r;
         vec2  p = viewDir.xy / viewDir.z * (h * height_scale);
         return texCoords - p;
     }
 
-    func environmentMapping [ R: vec3f, roughness: float ] -> GLSL vec3f {
+    func environmentMapping [ R: vec3f, roughness: float ] -> FragGLSL vec3f {
         float lod   = roughness * 7.0;
         float lodf  = floor(lod);
         float lodfr = lod - lodf;
         int   mip0  = int(lodf);
         int   mip1  = min(mip0 + 1, 7);
-        vec3  s0    = texture(environment, vec4(R, mip0)).rgb;
-        vec3  s1    = texture(environment, vec4(R, mip1)).rgb;
+        vec3  s0    = textureLod(environment, R, float(mip0)).rgb;
+        vec3  s1    = textureLod(environment, R, float(mip1)).rgb;
         return mix(s0, s1, lodfr);
     }
 
-    func calculatePBR [ texCoords: vec2f, worldPos: vec3f, n: vec3f, viewPos: vec3f ] -> GLSL vec4f {
+    func calculatePBR [ texCoords: vec2f, worldPos: vec3f, n: vec3f, viewPos: vec3f ] -> FragGLSL vec4f {
         vec3 cameraPos      = ubo.pos.xyz;
         vec3 V              = normalize(cameraPos - worldPos);
-        vec2 texCoordsMapped = parallaxMapping(texCoords, V);
-        vec4  baseColor     = texture(color,    texCoordsMapped);
-        float mat_ior       = texture(ior,      texCoordsMapped).r;
-        float metallic      = texture(metal,    texCoordsMapped).r;
-        float roughness     = texture(rough,    texCoordsMapped).r;
-        float mat_ao        = texture(ao,       texCoordsMapped).r;
-        vec3  emit          = texture(emission, texCoordsMapped).rgb;
-        float intensity     = texture(emission, texCoordsMapped).a;
+        vec4  baseColor     = texture(color,    texCoords);
+        float mat_ior       = texture(ior,      texCoords).r;
+        float metallic      = texture(metal,    texCoords).r;
+        float roughness     = texture(rough,    texCoords).r;
+        float mat_ao        = texture(ao,       texCoords).r;
+        vec3  emit          = texture(emission, texCoords).rgb;
+        float intensity     = texture(emission, texCoords).a;
         vec3  rough_color   = baseColor.rgb;
-        vec3  N             = perturbNormal(n, V, texCoordsMapped);
+        vec3  N             = n; //perturbNormal(n, V, texCoords);
+        float NdotV         = max(dot(N, V), 0.0);
+        float nonMetalF0    = pow((mat_ior - 1.0) / (mat_ior + 1.0), 2.0);
+        vec3  F0            = mix(vec3(nonMetalF0), rough_color, metallic);
+        vec3  F             = F_Schlick(F0, NdotV);
+        vec3  kD            = (vec3(1.0) - F) * (1.0 - metallic);
         vec3  R             = reflect(-V, N);
-        vec3  envColor      = environmentMapping(R, roughness);
-        vec3  ambient       = envColor * rough_color * mat_ao;
+        vec3  envRefl       = environmentMapping(R, roughness);
+        vec3  ibl           = kD * rough_color * 0.1 * mat_ao + envRefl * F * mat_ao;
         vec3  lightDir      = normalize(vec3(1.0, 1.0, 1.0));
         vec3  lightColor    = vec3(1.0);
         vec3  Lo            = BRDF(lightDir, V, N, rough_color, mat_ior, metallic, roughness) * lightColor;
-        vec3  result        = ambient + Lo + emit * intensity;
+        vec3  result        = ibl + Lo + emit * intensity;
         result              = linearToSRGB(result);
-        return vec4(result, baseColor.a);
+        return vec4(vec3(result), baseColor.a);
     }
 
     func fragment [] -> GLSL none {
@@ -9287,14 +9316,12 @@ shader PBR
     }
 
     func vertex [] -> GLSL none {
-        mat4 m         = ubo.proj * ubo.view * ubo.model;
-        mat4 wm        = ubo.model;
-        vec4 world_pos = wm * vec4(a_pos, 1.0);
+        vec4 world_pos = ubo.model * vec4(a_pos, 1.0);
         v_world_normal = mat3(transpose(inverse(ubo.model))) * a_normal;
         v_world_pos    = world_pos.xyz;
-        v_view_pos     = inverse(ubo.view)[3].xyz;
+        v_view_pos     = ubo.pos.xyz;
         v_uv           = a_uv;
-        gl_Position    = m * vec4(a_pos, 1.0);
+        gl_Position    = ubo.proj * ubo.view * world_pos;
     }
 
 

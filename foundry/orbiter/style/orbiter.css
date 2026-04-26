@@ -3,15 +3,15 @@
 
 
 World.avatar {
-    model_path:     "models/orbiter.gltf"
+    model_path:     "models/orbiter4.gltf"
     shader_type:    "PBR"
-    render_scale:   4.0
-    clear_color:    1 0 0 1
-    rotate:         [ 0 0 1 10 ]
+    render_scale:   1.0
+    clear_color:    0 0 0 1
+    rotate:         [ 0 0 0 0deg ]
     translate:      [ 0 0 0 ]
-    scale:          [ 1 1 1 ]
+    scale:          [ 1.0 1.0 1.0 ]
 
-    area: l100 t256 w512 h512
+    area: l100 t100 w1024 h1024
 }
 
 Editor {

@@ -113,7 +113,8 @@ class Image
     user:           Au
     res2:           handle
     res_dealloc:    hook
-    res_bits:       ARef
+    manual res_bits: ARef
+    manual pixels:  ref u8
 
     construct [ i:symbol ]
         uri = path i
@@ -236,8 +237,8 @@ class Image
         return width * height * pixel_size
 
     func get[ y:num ] -> Au
-        data : ref u8 vdata[]
-        return ref data [ pixel_size * width * y ]
+        row : ref u8 vdata[]
+        return ref row [ pixel_size * width * y ]
 
 
 # all 4 opencv functions implemented in img.cc

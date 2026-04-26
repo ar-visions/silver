@@ -8560,6 +8560,9 @@ etype silver_read_def(silver a, interface access) {
             read_if(a, ">"); // consume > if present (from < > syntax)
         }
 
+        if (inherits(mdl->au, typeid(ielement)))
+            mdl->au->is_user_init = true;
+
         mdl->body = (tokens)read_body(a);
 
     } else if (is_scalar) {

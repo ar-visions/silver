@@ -3920,6 +3920,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
         bool saved_direct = a->direct;
         a->direct = true;
         array chain = etype_class_list(canonical((etype)alloc));
+        if (!alloc->au->is_user_init)
         each(chain, etype, mdl) {
             if (mdl->au == typeid(Au)) continue;
             Au_t init_mem = find_member(mdl->au, "init", AU_MEMBER_FUNC, 0, false);

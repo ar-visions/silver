@@ -3106,7 +3106,7 @@ none Au_hold_members(Au a) {
             Au_t mem = (Au_t)type->members.origin[i];
             if (mem->member_type != AU_MEMBER_VAR) continue;
             Au   *mdata = (Au*)((cstr)a + mem->offset);
-            if (!mem->is_unmanaged && !mem->is_static && *mdata) {
+            if (!mem->is_unmanaged && !mem->is_static && mem->type != typeid(ARef) && *mdata) {
                 bool hold = (!is_inlay(mem) && mem->type->is_class) ||
                              mem->type->is_shaped;
                 if (!hold) continue;
@@ -5205,7 +5205,7 @@ none Au_free(Au a) {
     bool     is_holder = (aa->iflags & AU_IF_HOLDER) != 0;
     Au_f*  type = (Au_f*)aa->type;
     none* prev = null;
-    Au_f*   cur = (is_c || is_holder) ? null : type;
+    Au_f*   cur = (is_c || is_holder || aa->type->is_struct) ? null : type;
     while (cur) {
         if (prev != cur->ft.dealloc) {
             cur->ft.dealloc(a);
