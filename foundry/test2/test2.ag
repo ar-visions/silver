@@ -4,23 +4,11 @@
 export 0.8.8
 
 import <stdio.h>
-import trinity
 
-func test_vbasic[ arg: i32 ] -> bool
-    s: string['hi']
-    
-    if [ s inherits array ]
-        return false
-
-    # arg = 2 # NOT allowed!
-
-    r : ref s
-    r = string['hello']
-
-    r2: string[ 'r2' ]
-    r3: string[ 'r3' ]
-    r4: string[ 'r4' ]
-
-    ss: Au s
-
-    return ss is string
+app test
+    func init[]
+        Au.auto_free[true]
+        while [ true ]
+            s : 'this is a string'
+            s.drop[]
+            Au.auto_free[ false ]

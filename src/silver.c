@@ -3609,7 +3609,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     //printf("seq = %i\n", seq);
 
-    if (seq == 15535) {
+    if (seq == 28267) {
         seq = seq;
     }
     // we may only support a limited set of C functionality for #define macros
@@ -4160,7 +4160,7 @@ static int next_function_index(Au_t mdl) {
 
 efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPType op_type, string op_name) {
     sequencer
-    if (mem->ident && strcmp(mem->ident, "init") == 0) {
+    if (mem->ident && strcmp(mem->ident, "handle_glfw_framebuffer_size") == 0) {
         mem = mem;
     }
     if (member_type == AU_MEMBER_CONSTRUCT) {
@@ -8011,6 +8011,8 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         mem = (enode)evar(mod, (aether)a, au, mem->au,
             loaded, false, meta_a, R->meta_a, meta_b, R->meta_b,
             is_explicit_ref, is_bind_ref);
+
+        ((evar)mem)->is_local = context_func((aether)a) != null;
 
         if (seq == 7) {
             seq = seq;

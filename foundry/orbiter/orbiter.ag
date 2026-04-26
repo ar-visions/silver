@@ -906,17 +906,21 @@ trinity orbiter
     public env           : Image
     public models        : array Model
 
-    
     mutable angle        : f32
+
+    public test44 : Button
+
 
     func init []
         width:  1488
         height: 888
-
+    
     public func on_render [ w: Window ] -> Elements
         return Elements [
-            "test22": Button [ label: 'test22' ],
-            "test44": Button [ label: 'test44' ],
+            "test22": Button [ label:'test22' ],
+            "test44": Button [ label:'test44' ],
+            "edit"  : Editor [ ],
+            "avatar": World  []
         ]
 
 
@@ -979,7 +983,6 @@ trinity orbiter
         # camera orbits around the earth (Y axis); earth stays fixed so the
         # sunlight direction sweeps across the surface as we go around.
         time -= 0.0044
-        puts 'time = {time}'
         orbit_a : f32 [ radians[ time ] ]
         co      : f32 [ cos[ orbit_a ] ]
         so      : f32 [ sin[ orbit_a ] ]

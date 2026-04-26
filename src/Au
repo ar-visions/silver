@@ -632,6 +632,8 @@ forward(any)
     M(AA,BB, i, method, public, none,   drop_members) \
     M(AA,BB, i, method, public, Au,     set_property,   symbol, Au) \
     M(AA,BB, i, method, public, Au,     get_property,   symbol) \
+    M(AA,BB, i, method, public, none,   call_construct, Au) \
+    M(AA,BB, i, method, public, Au,     get_property_by_type,   Au_t) \
     M(AA,BB, i, method, public, Au,     vrealloc,       sz) \
     M(AA,BB, i, method, public, Au_t,   meta_index,     i32) \
     M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, i32, u64, u64, u64, i32) \
@@ -672,6 +674,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   global) \
     M(AA,BB, s, method, public, Au_t,   scope_lookup,   array, string) \
     M(AA,BB, s, method, public, Au_t,   current_module) \
+    M(AA,BB, i, method, public, none,   set_context_from,  Au) \
     M(AA,BB, i, method, public, Au,     member_object,  Au_t) \
     M(AA,BB, i, method, public, bool,   member_set, Au_t, Au) \
     M(AA,BB, s, method, public, Au,     header, Au) \
@@ -683,7 +686,7 @@ forward(any)
     M(AA,BB, s, vargs,  public, Au,     formatter, Au_t, bool, handle, Au, i32, symbol) \
     M(AA,BB, s, method, public, Au,     alloc, Au_t, num, shape, Au_t, Au) \
     M(AA,BB, s, method, public, Au,     method_call, Au_t, array) \
-    M(AA,BB, s, method, public, Au,     new_object, Au_t, Au_t, Au) \
+    M(AA,BB, s, method, public, Au,     new_object, Au_t, Au_t, Au, bool) \
     M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_t, Au, symbol, i32, i64) \
     M(AA,BB, s, method, public, Au,     alloc_vector, Au_t, num, shape, Au_t, Au, symbol, i32, i64) \
     M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, cstr, i32, i32) \
@@ -1607,6 +1610,7 @@ declare_class(ipart)
     M(AA,BB, i, override, method, hash) \
     M(AA,BB, i, override, method, compare) \
     M(AA,BB, i, override, method, init) \
+    M(AA,BB, i, override, method, dealloc) \
     M(AA,BB, i, override, cast,   bool) \
     M(AA,BB, i, override, method, copy)
 declare_class(string)

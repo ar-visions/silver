@@ -309,16 +309,8 @@ class Render
                 frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
 
             if [ i == 0 ]
-                #printf[ "    Render.draw models=%i\n", models.count ]
                 for [ m: Model ] in models
-                    #printf[ "      model.pipelines=%i\n", m.pipelines.count ]
                     for [ p: Pipeline ] in m.pipelines
-                        # must be done in trinity
-                        #if [ m.transform_count && (p.s inherits PBR) ]
-                        #    s: PBR [ p.s ]
-                        #    s.model = p.default_model
-                        #    for [ j: 0, j < m.transform_count, j += 1 ]
-                        #        s.model = m.transforms[j].mul[s.model]
                         p.draw[ frame ]
             el
                 for [ p: Pipeline ] in reduce_model.pipelines
@@ -356,6 +348,10 @@ class Render
 
     func init []
         backbuffer : !vk_swap_image
+        vk_framebuffer.hold[]
+        vk_render_pass.hold[]
+        vk_framebuffer.hold[]
+        vk_render_pass.hold[]
 
         # allocate command buffer
         cmdAllocInfo : VkCommandBufferAllocateInfo [
@@ -367,20 +363,8 @@ class Render
         result : vkAllocateCommandBuffers[ vk.device, ref cmdAllocInfo, ref vk_command_buffer ]
         expect result == VK_SUCCESS, "failed to allocate command buffers"
 
-        # create render pass
-        # color loadOp/initialLayout depend on load_existing: when true the
-        # render pass preserves whatever's already in the color attachment
-        # (LOAD), so this Render layers on top of an earlier pass that wrote
-        # into the same texture. otherwise it CLEARs as usual.
-        # depth attachment is omitted entirely when no depth Texture was
-        # supplied — used by color-only overlays (e.g. text on canvas).
         color_load_op  : VkAttachmentLoadOp [ (load_existing) ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR ]
         color_init_lay : VkImageLayout      [ (load_existing) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED ]
-        # depth is wanted only when the caller opts in with use_depth.
-        # 2D passes (blur, reduction, compose, overlay, text) leave it
-        # off. update's el-branch creates color+depth together when
-        # use_depth is set, so this matches what'll exist at framebuffer
-        # time.
         has_depth_init : bool [ use_depth ]
         attachments : local VkAttachmentDescription [2] [
             VkAttachmentDescription [
@@ -600,6 +584,7 @@ class vk_context
     # one cached instance per type sidesteps the race entirely.
     intern quad_s:    Au
     intern reduce_s:  Au
+    intern shaders:   array shader
 
     func init [ ]
         hold[]
@@ -904,7 +889,7 @@ class vk_context
         src.transition[ a, img, dst, r ]
 
 
-class gpu
+class Gpu
     context vk           : vk_context
     expect name          : cstr
     public sampler       : Au
@@ -933,6 +918,7 @@ class gpu
         # vbo/ibo maintained on init only
         if [ vertex_size && !vertex ]
             comp: compute
+            i : header[ vertex_data ]
             vertex = Buffer [ vk: vk, size: vertex_size * vertex_count,
                 u_storage: comp, u_vertex: !comp, u_dst: !comp, u_shader: !comp,
                 m_host_visible: true, m_host_coherent: true,
@@ -1046,11 +1032,11 @@ class Pipeline
     # color blend factors from ONE → SRC_ALPHA so the result composes
     # correctly: rgb*a + dst*(1 - a). default false (premul).
     public straight_alpha   : bool
-    intern resources        : array gpu
+    intern resources        : array Gpu
     intern storage_textures : array Texture
     intern shader_uniforms  : uniforms
-    intern vbo              : gpu
-    intern memory           : gpu
+    intern vbo              : Gpu
+    intern memory           : Gpu
     intern dumped           : bool
     intern descriptor_layouts : new VkDescriptorSetLayout [ 2 ] # fixed-size descriptor arrays
     intern descriptor_sets    : new VkDescriptorSet       [ 2 ]
@@ -1089,7 +1075,7 @@ class Pipeline
             return
         if [ !resources ]
             bind_resources[]
-        if [ s.reload[ ] ]
+        if [ s.reload[ ] && !w.resizing ]
             reassemble[]
         frame: VkCommandBuffer [ f ]
         for [ t: Texture ] in storage_textures
@@ -1120,9 +1106,9 @@ class Pipeline
             return
         if [ !resources ]
             bind_resources[]
-        if [ s.reload[ ] ]
+        if [ s.reload[ ] && !w.resizing ]
             reassemble[]
-        for [ g: gpu ] in resources
+        for [ g: Gpu ] in resources
             if [ g.tx ]
                 g.tx.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         frame: VkCommandBuffer [ f ]
@@ -1132,6 +1118,7 @@ class Pipeline
         offsets: local VkDeviceSize[ 1 ] [ 0 ]
         vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS,
             layout, 0, 2, descriptor_sets, 0, null ]
+
         vkCmdBindVertexBuffers[ frame, 0, 1, ref vbo.vertex.vk_buffer, offsets ]
         if [ vbo.index ]
             vkCmdBindIndexBuffer[ frame, vbo.index.vk_buffer, 0,
@@ -1142,14 +1129,6 @@ class Pipeline
             vkCmdDraw[ frame, vbo.vertex_count, 1, 0, 0 ]
 
     public   func bind_resources [ ]
-        # set 0 = uniform buffers (UBOs from shader mutable fields)
-        # set 1 = mixed bag of samplers + storage images + storage buffers
-        # bindings within set 1 are assigned in source-order across all
-        # attrib types so the binding numbers match what glsl_header emits.
-        # parallel info arrays: each set 1 binding occupies the SAME slot
-        # in image_infos[i] OR storage_buf_infos[i] (never both). this is
-        # simpler than separate counters at the cost of array bindings
-        # (count > 1) — none of our shaders use those today.
         sampler_count:         0       # for COMBINED_IMAGE_SAMPLER pool sizing
         set1_binds:            0       # binding count for set 1 (mixed types)
         uniform_count:         0
@@ -1161,7 +1140,7 @@ class Pipeline
         image_infos:      local VkDescriptorImageInfo[32]
         storage_buf_infos: local VkDescriptorBufferInfo[32]
         descriptor_writes: local VkWriteDescriptorSet[32]
-        resources        = array gpu [ alloc: 32 ]
+        resources        = array Gpu [ alloc: 32 ]
         storage_textures = array Texture [ alloc: 8 ]
         if [ vbo ]
             vbo.sync[ w ]
@@ -1170,6 +1149,7 @@ class Pipeline
         # for graphics-only shaders the COMPUTE bit is harmless.
         stage_flags: VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT
         shader_uniforms = uniforms [ vk: vk, s: s ]
+        shader_uniforms.hold[]
         s_hdr:       Au [ Au.header[ s ] ]
         shader_type: Au_t [ s_hdr.type ]
 
@@ -1204,8 +1184,8 @@ class Pipeline
                     expect meta_type, "meta data not set on Surface/extension"
                     all: Surface_resources[ enum_type, enum_value, meta_type, a ]
                     expect all.count == 1, "binding arrays (count > 1) not supported in this code path"
-                    res: gpu [ all[0] ]
-                    expect res inherits gpu, "expected gpu resource"
+                    res: Gpu [ all[0] ]
+                    expect res inherits Gpu, "expected Gpu resource"
                     res.sync[ w ]
                     resources.push[ res ]
                     if [ strcmp[ mem.ident, 'image' ] == 0 ]
@@ -1551,7 +1531,7 @@ class Pipeline
 
     func init [ ]
         bind_resources[]
-        # serialize pipeline construction against any in-flight gpu work.
+        # serialize pipeline construction against any in-flight Gpu work.
         # the composite chain builds ~10 pipelines back-to-back during
         # Window.update, and without this fence the validator occasionally
         # caught modules / descriptor sets in a half-built state when the
@@ -1623,6 +1603,10 @@ class Model
                     mesh: id.meshes [ n.mesh ]
                     for [ prim: Primitive ] in mesh.primitives
                         model_init_pipeline[ a, n, prim, s ]
+
+    construct [ p: string ]
+        gltf_path : path [ p ]
+        id = gltf_path.load[ typeid[ GltfModel ], null ]
 
     func init [ ]
         vk = w.vk.hold[]
@@ -1743,6 +1727,10 @@ class Command
             commandBufferCount: 1
         ]
         vkAllocateCommandBuffers[ vk.device, alloc_info, ref cmd ]
+
+    func dealloc [ ]
+        if [ cmd ]
+            vkFreeCommandBuffers[ vk.device, vk.command_pool, 1, ref cmd ]
 
 
 class Buffer
@@ -1885,7 +1873,8 @@ class Buffer
             data = vma_info.pMappedData
 
     func dealloc [ ]
-        vmaDestroyBuffer[ vk.allocator, vk_buffer, vma_alloc ]
+        return
+        #vmaDestroyBuffer[ vk.allocator, vk_buffer, vma_alloc ]
 
 
 class Texture
@@ -2281,6 +2270,7 @@ Texture Display
     #public on_surface          : hook -- where was this thing
     public format               : Pixel
     mutable debug_value          : f32
+    mutable resizing             : bool
     public current_swap_index   : i32
     public text_event           : EventDispatch
     public move_event           : EventDispatch
@@ -2392,13 +2382,15 @@ Texture Display
             vkGetSwapchainImagesKHR[ vk.device, vk_swapchain, ref swap_image_count, vk_swap_images ]
             swap_image_current = 0
             for [ i: 0, i < swap_image_count, i += 1 ]
-                swap_renders += Render [
+                r : Render [
                     vk:vk,   w:a,
                     width:         width,
                     height:        height,
                     vk_swap_image: vk_swap_images[i],
                     models:        array Model [ swap_model ]
                 ]
+                swap_renders += r
+                r.hold[]
             semaphore_frame = swap_renders.first_element[]
             swap_render_current = swap_renders.origin[0]
         return a
@@ -2408,10 +2400,6 @@ Texture Display
         return list.last_element[]
 
     func draw [ ]
-        # debounced swapchain recreate: only run when the user has stopped
-        # dragging for at least resize_debounce_s. During the drag itself, the
-        # window system stretches the existing swapchain image — this is the
-        # accepted trade for not hitching every callback.
         if [ pending_w > 0 && pending_h > 0 ]
             now: f64 [ glfwGetTime[] ]
             if [ now - last_resize_t >= resize_debounce_s ]
@@ -2421,56 +2409,52 @@ Texture Display
                 pending_h     = 0
                 last_resize_t = 0.0
         
-        #for [ r: Render, id: string ] in element_targets
-        #    r.draw*[]
-        #    r.sync_fence*[]
+        for [ r: Render, id: string ] in element_targets
+            r.draw*[]
+            r.sync_fence*[]
         
-        #on_compose*[]
+        on_compose*[]
 
-        #for [ r: Render ] in list
-        #    r.draw*[]
-        #    r.sync_fence*[]
+        for [ r: Render ] in list
+            r.draw*[]
+            r.sync_fence*[]
         
-        #on_screen*[]
+        on_screen*[]
 
-        if [false]
-            if [ swap_renders ]
-                result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
-                    semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
-                if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
-                    # swapchain is out-of-date because the surface has been resized.
-                    # Don't recurse through handle_glfw_framebuffer_size — it would
-                    # clobber any pending resize state with the (still-old) Display
-                    # dimensions and stop the debounce check from ever firing.
-                    # Skip presenting this frame; the next debounce tick will run
-                    # the real resize against the most recent pending dimensions.
-                    ii: 0
-                el
-                    expect result == VK_SUCCESS, "failed to acquire swapchain image"
-                    swap_render_current = swap_renders[swap_image_current]
-                    last_render[].color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
-                    swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                    #printf[ "  swap_render_current swap=%p reduce=%d clear=[%f,%f,%f,%f]\n",
-                    #    swap_render_current.vk_swap_image, swap_render_current.reduce,
-                    #    swap_render_current.clear_color.x, swap_render_current.clear_color.y,
-                    #    swap_render_current.clear_color.z, swap_render_current.clear_color.w ]
-                    swap_render_current.draw[]
-                    last_render[].color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                    presentInfo: VkPresentInfoKHR [
-                        sType:              VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                        swapchainCount:     1,
-                        pSwapchains:        ref vk_swapchain,
-                        pImageIndices:      ref swap_image_current,
-                        waitSemaphoreCount: 1,
-                        pWaitSemaphores:    ref semaphore_frame.vk_render_finished_semaphore
-                    ]
-                    swap_render_current.color.transition[ VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
-                    result = vkQueuePresentKHR[ vk.queue, presentInfo ]
-                    swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                    semaphore_frame = swap_renders[semaphore_frame == swap_renders.first_element[]]
-                    if [ result != VK_ERROR_OUT_OF_DATE_KHR && result != VK_SUBOPTIMAL_KHR ]
-                        expect result == VK_SUCCESS, "present"
-                        swap_render_current.sync_fence[]
+        if [ swap_renders ]
+            a.hold[] #test
+            result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
+                semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
+            if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
+                ii: 0
+            el
+                expect result == VK_SUCCESS, "failed to acquire swapchain image"
+                swap_render_current = swap_renders[swap_image_current]
+                last_render[].color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+                swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                #printf[ "  swap_render_current swap=%p reduce=%d clear=[%f,%f,%f,%f]\n",
+                #    swap_render_current.vk_swap_image, swap_render_current.reduce,
+                #    swap_render_current.clear_color.x, swap_render_current.clear_color.y,
+                #    swap_render_current.clear_color.z, swap_render_current.clear_color.w ]
+                info : Au.header[swap_render_current]
+                swap_render_current.hold[]
+                swap_render_current.draw[]
+                last_render[].color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                presentInfo: VkPresentInfoKHR [
+                    sType:              VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                    swapchainCount:     1,
+                    pSwapchains:        ref vk_swapchain,
+                    pImageIndices:      ref swap_image_current,
+                    waitSemaphoreCount: 1,
+                    pWaitSemaphores:    ref semaphore_frame.vk_render_finished_semaphore
+                ]
+                swap_render_current.color.transition[ VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
+                result = vkQueuePresentKHR[ vk.queue, presentInfo ]
+                swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+                semaphore_frame = swap_renders[semaphore_frame == swap_renders.first_element[]]
+                if [ result != VK_ERROR_OUT_OF_DATE_KHR && result != VK_SUBOPTIMAL_KHR ]
+                    expect result == VK_SUCCESS, "present"
+                    swap_render_current.sync_fence[]
 
                     
     cast -> Image
@@ -2883,6 +2867,7 @@ class shader
     intern func reload [ ] -> bool
         paths:  array path [ vert, frag, comp ]
         values: new VkShaderModule[3] [ vk_vert, vk_frag, vk_comp ]
+        values.hold[]
         found:      false
         recompiled: false
         for [ i: 0, i < 3, i += 1 ]
@@ -2892,6 +2877,8 @@ class shader
             input: path '{shader_file}'
             if [ !input.exists[] ]
                 continue
+            if [ strstr[ shader_file.chars, "Earth" ]]
+                shader_file = shader_file
             spv_file: path '{shader_file}.spv'
             found = true
             source_stat: struct stat
@@ -4244,7 +4231,7 @@ Render Canvas
     # doesn't stick (silver returns a copy, edits the copy, drops it).
     mutable cur_xform  : affine
     mutable xform_stack : array affine
-    # ---- gpu sdf compute path ----
+    # ---- Gpu sdf compute path ----
     # toggle this to switch between CPU SDF (sdf_generate + sdf_to_r8 + upload)
     # and GPU compute SDF (CanvasSDFCompute writes directly into sdf_tex).
     public  gpu_sdf          : bool
@@ -4257,7 +4244,7 @@ Render Canvas
     # text_render shares the canvas's color/depth and uses LOAD_OP_LOAD so
     # the text quads composite on top of whatever the canvas just drew.
     intern  text_shader      : CanvasText
-    intern  text_vbo         : gpu          # custom (vec2 pos, vec2 uv) layout
+    intern  text_vbo         : Gpu          # custom (vec2 pos, vec2 uv) layout
     intern  text_pipeline    : Pipeline     # bound to text_shader + text_vbo
     intern  text_model       : Model        # holds text_pipeline; lives in text_render.models
     intern  text_render      : Render       # own Render targeting canvas color
@@ -4328,7 +4315,7 @@ Render Canvas
         text_vsize  : i32 [ 16 ]
         text_vcount : i32 [ text_max_verts ]
         text_mcount : i32 [ 2 ]
-        text_vbo = gpu [ vk: vk, name: 'text',
+        text_vbo = Gpu [ vk: vk, name: 'text',
             members: text_members, member_count: text_mcount,
             vertex_size: text_vsize, vertex_count: text_vcount ]
 
@@ -4422,12 +4409,14 @@ Render Canvas
             baseArrayLayer: 0,
             layerCount:     1
         ]
+        
         cmd : Command [ vk: vk ]
         cmd.begin[]
         vkCmdClearColorImage[ cmd.cmd, color.vk_image,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ref cv, 1, ref rng ]
         cmd.submit[]
         color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+        
 
     func resize [ rw: i32, rh: i32 ] -> Canvas
         width  = rw
@@ -5958,11 +5947,7 @@ abstract app media_app
         next_second : epoch_millis[] / 1000
         frames      : 0
 
-        Au.auto_free[true]
-        #while [ true ]
-        #    s : string['this is a string']
-        #    Au.auto_free[false]
-        #    usleep[ 10000 ]
+        Au.auto_free[true] # must perform all required holds here
 
         while [ !glfwWindowShouldClose[ w.glfw ] ]
             glfwPollEvents[]
@@ -5973,10 +5958,9 @@ abstract app media_app
             frames += 1
             render*[]
             Au.auto_free[false]
-            buf : local char [ 255 ]
-            sprintf[ buf, "total: %i\n", Au.get_total_objects[null]]
-            puts buf
-            #puts 'total objects: {Au.get_total_objects[null]}'
+            #buf : local char [ 255 ]
+            #sprintf[ buf, "total: %i", Au.get_total_objects[null]]
+            #puts buf
 
         return 0
 
@@ -6081,9 +6065,9 @@ func pbr_defaults [] -> PbrMetallicRoughness
     return pbr
 
 
-func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_type: Au_t, p: Pipeline ] -> array gpu
-    res: gpu
-    result: array gpu [ alloc: 32 ]
+func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_type: Au_t, p: Pipeline ] -> array Gpu
+    res: Gpu
+    result: array Gpu [ alloc: 32 ]
 
     # only resolve named samplers if the LayoutBinding is on the standard
     # Surface enum — other enums (e.g. CanvasUISurface) just need a dummy
@@ -6098,7 +6082,7 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
             tx = re.color
         if [ ia == surface_value ]
             expect tx || (img inherits Image), "expected Texture or Image"
-            res = gpu [ vk: p.vk, name: Au.estring[ surface_enum_type, surface_value ],
+            res = Gpu [ vk: p.vk, name: Au.estring[ surface_enum_type, surface_value ],
                 sampler: (tx) ? tx.hold[] : img.hold[] ]
             result.push[ res ]
     
@@ -6129,41 +6113,41 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
             # placeholder_image's data_i8 branch now accepts both ref i8 and
             # ref u8 — allocate the LayoutBinding's declared format directly.
             if [ meta_type == typeid[ u8 ] || meta_type == typeid[ i8 ] ]
-                res = gpu [ vk: p.vk, name: "dummy_u8",
+                res = Gpu [ vk: p.vk, name: "dummy_u8",
                     sampler: new u8 [ 1 ] [ u8 255 ] ]
             el [ meta_type == typeid[ rgba8 ] ]
                 white_rgba8: rgba8 [ 255, 255, 255, 255 ]
-                res = gpu [ vk: p.vk, name: "dummy_rgba8",
+                res = Gpu [ vk: p.vk, name: "dummy_rgba8",
                     sampler: new rgba8 [ 1 ] [ white_rgba8 ] ]
             el [ meta_type == typeid[ f32 ] ]
-                res = gpu [ vk: p.vk, name: "dummy_f32",
+                res = Gpu [ vk: p.vk, name: "dummy_f32",
                     sampler: new f32 [ 1 ] [ 1.0 ] ]
             el
-                res = gpu [ vk: p.vk, name: "dummy",
+                res = Gpu [ vk: p.vk, name: "dummy",
                     sampler: new rgbaf [ 1 ] [ f_one ] ]
         el
             switch [ surface_value ]
             case Surface.normal
-                res = gpu [ vk: p.vk, name: "normal",   sampler: new rgbaf [ 1 ] [ f_normal ] ]
+                res = Gpu [ vk: p.vk, name: "normal",   sampler: new rgbaf [ 1 ] [ f_normal ] ]
             case Surface.metal
-                res = gpu [ vk: p.vk, name: "metal",    sampler:  new f32 [ 1 ] [ pbr.metallicFactor ] ]
+                res = Gpu [ vk: p.vk, name: "metal",    sampler:  new f32 [ 1 ] [ pbr.metallicFactor ] ]
             case Surface.rough
-                res = gpu [ vk: p.vk, name: "rough",    sampler: new f32 [ 1 ] [ pbr.roughnessFactor ] ]
+                res = Gpu [ vk: p.vk, name: "rough",    sampler: new f32 [ 1 ] [ pbr.roughnessFactor ] ]
             case Surface.emission
                 expect pbr.emissiveStrength / 8.0 <= 1.0, "refactor emissiveStrength"
-                res = gpu [ vk: p.vk, name: "emission", sampler: new rgbaf [ single ] [ f_zero ] ]
+                res = Gpu [ vk: p.vk, name: "emission", sampler: new rgbaf [ single ] [ f_zero ] ]
             case Surface.height
-                res = gpu [ vk: p.vk, name: "height",   sampler: new f32 [ single ] [ 0.5 ] ]
+                res = Gpu [ vk: p.vk, name: "height",   sampler: new f32 [ single ] [ 0.5 ] ]
             case Surface.ao
-                res = gpu [ vk: p.vk, name: "ao",       sampler: new f32 [ single ] [ 1.0 ] ]
+                res = Gpu [ vk: p.vk, name: "ao",       sampler: new f32 [ single ] [ 1.0 ] ]
             case Surface.ior
-                res = gpu [ vk: p.vk, name: "ior",      sampler: new f32 [ single ] [ pbr.ior ] ]
+                res = Gpu [ vk: p.vk, name: "ior",      sampler: new f32 [ single ] [ pbr.ior ] ]
             case Surface.color
-                res = gpu [ vk: p.vk, name: "color",    sampler: new rgbaf [ single ] [ f_color ] ]
+                res = Gpu [ vk: p.vk, name: "color",    sampler: new rgbaf [ single ] [ f_color ] ]
             case Surface.environment
-                res = gpu [ vk: p.vk, name: "environment", sampler: new rgbaf [ single ] [ f_one ] ]
+                res = Gpu [ vk: p.vk, name: "environment", sampler: new rgbaf [ single ] [ f_one ] ]
             default
-                res = gpu [ vk: p.vk, name: "dummy",
+                res = Gpu [ vk: p.vk, name: "dummy",
                     sampler: new rgbaf [ single ] [ f_one ] ]
         result.push[ res ]
     return result
@@ -6173,7 +6157,8 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
 intern func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i32, height: i32 ]
     if [ width == 0 && height == 0 ]
         return
-    w: (glfwGetWindowUserPointer[ glfw_window ] to Display)
+    win : glfwGetWindowUserPointer[ glfw_window ]
+    w: (win to Display)
     if [ !w ]
         return
     w.pending_w     = width
@@ -6208,7 +6193,7 @@ intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ]
     w.wheel_event[ w.ev ]
 
 
-intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods: i32 ] 
+intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods: i32 ]
     w: (glfwGetWindowUserPointer[ win ] to Window)
     w.ev.clear[]
     w.ev.mouse.pos.x  = w.mouse.x
@@ -6238,7 +6223,6 @@ intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ]
     w.ev.mouse.pos.y = w.mouse.y
     w.move_event[ w.ev ]
 
-
 func get_required_extensions [ vk: vk_context ] 
     count : u32 0
     glfw_extensions: ref symbol [ glfwGetRequiredInstanceExtensions[ ref count ] ]
@@ -6262,7 +6246,7 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ]
     mdl:      m.id
     vk:       m.vk
     r:        m.r
-    vbo:      gpu    [ null ]
+    vbo:      Gpu    [ null ]
     mdl_mat:  mat4f.identity[]
     material: Material [ null ]
 
@@ -6301,11 +6285,12 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ]
             vertex_count = ac.count
             member_count += 1
         
-        vbo = gpu [ vk: vk, name: name,
+        vbo = Gpu [ vk: vk, name: name,
             members: members, member_count: member_count,
             vertex_size: vertex_size, vertex_count: vertex_count,
             index_size: index_size, index_count: index_count ]
-        
+        vbo.hold[]
+
         vdata: ref i8 [ vbo.vertex_data ]
         idata: ref i8 [ vbo.index_data ]
 
@@ -6336,12 +6321,18 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ]
         mdl_mat = mdl_mat.translate[ n.translation ]
     
     s_type : typeid[ s ]
+    info : Au.header [ vbo ]
     pipe: Pipeline [ vk: vk, w: m.w, name: (n) ? n.name : null,
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat,
         material: material, samplers: m.samplers,
         straight_alpha: m.straight_alpha ]
-
+    s.hold[]
+    pipe.hold[]
+    vbo.hold[]
     m.pipelines.push[ pipe ]
+    s.hold[]
+    pipe.hold[]
+    vbo.hold[]
 
 
 func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] -> Texture
@@ -6648,6 +6639,7 @@ alias FRender  : lambda Elements[ Display ]
 
 # this Au type indicates we do not have an 'init' called
 ielement element
+    context ux              : Window
     mutable parent          : element
     mutable area            : Region
     mutable bounds          : rect
@@ -6655,32 +6647,29 @@ ielement element
     mutable id              : string
     mutable flags           : i64
     mutable label           : string
+    public  label2          : string
     mutable layers          : map Layer[string]
     mutable elements        : Elements
     mutable tags            : array string
     mutable group           : string
-    mutable tab_index    : i32
-    mutable scroll       : vec2f
+    mutable tab_index       : i32
+    mutable scroll          : vec2f
     # per-element 2D transform. scale default (1,1), rotate in radians,
     # transform_origin normalized to element bounds (0.5,0.5 = center).
     # all three are transitionable via CSS just like colors.
-    mutable scaling      : vec2f
-    mutable rotation     : f32
+    mutable scaling         : vec2f
+    mutable rotation        : f32
     mutable transform_origin : vec2f
-    mutable ghost        : bool
-    mutable captured     : bool
-    mutable selectable   : bool
-    mutable selected     : bool
-    mutable disabled     : bool
-    mutable hovered      : bool
-    mutable pressed      : bool
-    mutable focused      : bool
-    # focusable = true lets the window transfer focus to this element on
-    # mouse-press. containers/decorations default to false; buttons and
-    # text controls opt in.
-    public  focusable    : bool
-    public cursor       : vec2f
-    intern ux           : Window
+    mutable ghost           : bool
+    mutable captured        : bool
+    mutable selectable      : bool
+    mutable selected        : bool
+    mutable disabled        : bool
+    mutable hovered         : bool
+    mutable pressed         : bool
+    mutable focused         : bool
+    public  focusable       : bool
+    public cursor           : vec2f
 
     # input event hooks. return true to swallow; false to let the window
     # continue to the app-level handler. both element and the app get a
@@ -6897,7 +6886,7 @@ Display Window
         if [ ct && should_trans ]
             ct.from     = (cur) ? cur : best.instance
             ct.dbg_val  = best.value
-            ct.to       = best.instance
+            ct.to       = best.instance.hold[]
             ct.type     = typeid[ best.instance ]
             ct.start    = epoch_millis[]
             ct.member   = member
@@ -6908,10 +6897,10 @@ Display Window
             puts 'invalidate = false, key = {mem} on element {inst.id}, (best.value = {best.value}, ct = {s})'
 
         el [ !ct ]
+            info : header[ best.instance ]
             value_holder.member_set[ member, best.instance ]
     
-    
-    public func apply_style [ inst: element, style_avail: map StyleEntries[string] ]
+    public func apply_style [ inst: element, style_avail: map StyleEntries[string], home_object:Au ]
         #puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
         ty      : Au_t [ typeid[ inst ] ]
         while [ ty != typeid[ Au ] ]
@@ -6949,7 +6938,7 @@ Display Window
                         # find layer by name (key), creating a default if not found
                         layer_inst : member_container.get[best.bl.key]
                         if [!layer_inst]
-                            layer_inst = Au.new_object[inner_inst_type, null, null]
+                            layer_inst = Au.new_object[inner_inst_type, null, null, true]
                             member_container.set[best.bl.key, layer_inst]
                         
                         layer_debug : Layer [ member_container.get[best.bl.key] ]
@@ -6959,6 +6948,7 @@ Display Window
                        
                         if [ !best.instance ]
                             best.instance = (best.value to layer_member.src)
+                            best.instance.hold[]
 
                         cur : layer_inst.member_object[ layer_member ]
                         if [ !cur ]
@@ -6974,7 +6964,33 @@ Display Window
                         continue
 
                     if [ !best.instance ]
-                        best.instance = (best.value to member.src)
+                        info      : header [ best.value ]
+                        val_type  : Au_t [ info.type ]
+                        meta_type : Au_t [ member.meta.a ]
+                        if [ val_type == typeid[ array ] && member.src == typeid[ array ] && meta_type ]
+                            src_arr  : (best.value to array string)
+                            dst_arr  : array Au [ ]
+                            for [ s: string ] in src_arr
+                                obj : Au.new_object[ meta_type, null, null, false ]
+                                obj.set_context_from[ home_object ]
+                                obj.call_construct[ s ]
+                                dst_arr.push[ obj ]
+                            best.instance = dst_arr
+                        el [ member.src == typeid[ Au_t ] ]
+                            str : (best.value to string)
+                            found_type : Au.find_type[ str.chars, null ]
+                            if [ found_type ]
+                                inst.member_set[ member, found_type ]
+                            continue
+                        el
+                            if [ member.src.traits & (1 << 11) ]
+                                best.instance = Au.new_object[ member.src, null, null, false ]
+                                best.instance.set_context_from[ home_object ]
+                                best.instance.call_construct[ best.value ]
+                            el
+                                best.instance = (best.value to member.src)
+                        
+                        best.instance.hold[]
 
                     cur : inst.member_object[ member ]
                     if [ !cur ]
@@ -6993,6 +7009,11 @@ Display Window
 
     func update_element [ parent: element, rendered: map element[string] ]
         if [!parent.elements] parent.elements = Elements[]
+
+        # obtain instance of parent
+        # if a parent reads element within another subclass it contains, then it has access.to
+        home_type   : Au_t
+        home_object : element
 
         # mark for umount
         for [ e:element, id:string ] in parent.elements
@@ -7024,6 +7045,26 @@ Display Window
                 if [ !brand_new ]
                     parent.elements[ id ] = instance
 
+                # auto-bind instance to 'home' if defined
+                if [ !home_type ]
+                    home_type   = typeid[ parent ]
+                    home_object = parent
+                    if [ home_type == typeid[ element ]]
+                        while [ home_object ]
+                            home_object = home_object.parent
+                            if [ !home_object ]
+                                break
+                            home_type   = typeid[ home_object ]
+                            if [ home_type != typeid[ element ]]
+                                break
+                    if [ !home_object ]
+                        home_object = (parent.ux.app_object to element)
+                        home_type   = typeid[ home_object ]
+                
+                imember : find_member[ home_type, id.chars, AU_MEMBER_VAR, 0, true ]
+                if [ imember ]
+                    home_object.member_set[ imember, instance ]
+                 
                 instance.initialize[] # context can be given here
                 instance.hold_members[]
                 changed = true
@@ -7038,7 +7079,7 @@ Display Window
             if [ changed ]
                 e.restyle = false
                 avail  : st.compute[ instance ]
-                apply_style[ instance, avail ]
+                apply_style[ instance, avail, home_object ]
                  
             inst: typeid[instance]
             irender : instance.render[]
@@ -7060,7 +7101,7 @@ Display Window
 
     public func update_all [ render: Elements ]
         if [ !root ]
-            root    = element [ id: string[ 'root' ] ]
+            root    = element [ id: string[ 'root' ], ux:a ]
             root_styles = st.compute[ root ]
             restyle = true
         
@@ -7069,7 +7110,7 @@ Display Window
         # when we invoke a restyle it needs to go over everything, not just the element in question.
         if [ force_restyle || restyle ]
             root.invalidate_transitions[ ]
-            apply_style[ root, root_styles ]
+            apply_style[ root, root_styles, null ]
 
         update_element[ root, render ]
         if [ force_restyle || restyle ]
@@ -7380,8 +7421,6 @@ Display Window
                         for [ m: Model ] in r.models
                             m.rebind_model[]
 
-    mutable resizing : bool
-
     # borderless fullscreen toggle — no video mode change, just sizes the
     # window to fit the monitor and removes decorations. restores on exit.
     func set_fullscreen [ on: bool ]
@@ -7435,30 +7474,6 @@ Display Window
         compose.paint   [ ]
         compose.sync_fence[ ]
         compose.restore [ ]
-
-        compose.save    [ ]
-        compose.clear   [ '#80a' ]
-        update_all      [ app_object.on_render*[ a ] ]
-        animate         [ ]
-        draw_element    [ root, CanvasType.compose, null ]
-        compose.paint   [ ]
-        compose.sync_fence[ ]
-        compose.restore [ ]
-##
-        compose.save[]
-        compose.fill_color   [ '#808' ]
-        compose.inner_glow   [ '#f04', 32 ]
-        compose.inner_shadow [ '#f0a', 32 ]
-        compose.outer_glow   [ '#f0c', 16 ]
-        compose.outer_shadow [ '#f0c', 16 ]
-        compose.rounded      [ 14.0, 14.0, 14.0, 14.0 ]
-        compose.rect_to      [ 64.0, 64.0, 512.0, 512.0 ]
-        compose.stroke_width [ 1.0 ]
-        compose.stroke_color [ '#f00' ]
-        compose.stroke_shadow[ '#f05' ]
-        compose.paint[]
-        compose.restore[]
-##
 
     func on_screen []
         if [ !screen ] return
@@ -7684,11 +7699,10 @@ abstract media_app trinity
     # 22
     func render[]
         window : Window[w]
-        #update_scene*[]
-        #if [ window.colorize ] window.colorize.clear[ '#000'  ]
-        s : string['another']
-        #if [ window.overlay  ] window.overlay .clear[ '#0000' ]
-        #window.draw[]
+        update_scene*[]
+        if [ window.colorize ] window.colorize.clear[ '#000'  ]
+        if [ window.overlay  ] window.overlay .clear[ '#0000' ]
+        window.draw[]
 
 
 class LineInfo
@@ -7720,6 +7734,10 @@ class StyleEntry
     mutable container : Au
     mutable bound_mem : Au_t
     mutable bound_src : Au_t
+
+    func dealloc []
+        if [ instance ]
+            instance.drop[]
 
 alias StyleEntries   : array StyleEntry
 alias StyleEntryMap  : map   StyleEntry [ string ]
@@ -7813,6 +7831,7 @@ class StyleBlock
     public func score [ n: element, score_state: bool ] -> f32
         best_sc : f32 [ 0.0 ]
         cur     : element [ n ]
+        ux      : Window [ n.ux ]
 
         for [ q: StyleQualifier ] in quals
             best_this : f32 [ 0.0 ]
@@ -8038,7 +8057,7 @@ struct XCoord
     
     construct [ sx: string ]
         f : string[sx.first[]]
-        if [ isdigit[f.chars[0]]]
+        if [ f.chars[0] == '-' || isdigit[f.chars[0]]]
             offset = f.real_value[]
         el
             x_type    = XAlign[f]
@@ -8084,7 +8103,7 @@ struct YCoord
 
     construct [ sy: string ]
         f : string [ sy.first[] ]
-        if [ isdigit[f.chars[0]]]
+        if [ f.chars[0] == '-' || isdigit[f.chars[0]]]
             offset = f.real_value[]
         el
             y_type    = YAlign[ f ]
@@ -8412,12 +8431,13 @@ class StyleSelection
     public end : i64
     public entry : StyleEntry
 
-
+##
 class arg
     public name     : string
     public value    : object
     public offset   : i32
     public is_inlay : bool
+##
 
 class Mixable
     public func mix [ b:Mixable, f:f64 ] -> Mixable
@@ -8555,8 +8575,12 @@ Layer Children
 
 
 element World
-    public target       : Render
-    public models       : array Model
+    context vk          : vk_context
+    intern target       : Render
+    intern model        : Model
+    intern s            : shader
+    public model_path   : string
+    public shader_type  : string
     public render_scale : f32 1.0
     public clear_color  : vec4f
     public rotate       : array Rotation
@@ -8564,23 +8588,33 @@ element World
     public scale        : array Scaling
     public update       : EventDispatch
 
-    func load [ w: Window ]
-        if [ !target ]
-            width  : int ((bounds) ? (bounds.w) : (w.width))  * render_scale
-            height : int ((bounds) ? (bounds.h) : (w.height)) * render_scale
-            target = Render [
-                vk:             w.vk,
-                w:              w,
-                width:          width,
-                height:         height,
-                reduce:         (render_scale == 4.0) ? true : false,
-                clear_color:    clear_color,
-                models:         models]
-            w.element_targets[id] = target
-        
+    func init [ ]
+        if [ model_path ]
+            model = Model [ vk: vk ]
+            gltf  : path [ model_path ]
+            model.id = gltf.load[ typeid[ GltfModel ], null ]
+
+        w_ref : Window [ ux ]
+        width  : int ((bounds) ? (bounds.w) : (w_ref.width))  * render_scale
+        height : int ((bounds) ? (bounds.h) : (w_ref.height)) * render_scale
+
+        f : Au.find_type [ shader_type.chars, null ]
+        s     = Au.new_object[ f, null, null, false ]
+        s.vk  = vk
+        s.initialize[]
+
+        target = Render [
+            vk:          vk,
+            w:           w_ref,
+            width:       width,
+            height:      height,
+            reduce:      (render_scale == 4.0) ? true : false,
+            clear_color: clear_color,
+            models:      (model) ? array Model [ model ] : null ]
+        w_ref.element_targets[ id ] = target
+
     func draw [ w: Window ]
         #expect update, 'update subs not set'
-        load[ w ]
 
         width  : i32 [ bounds.w * render_scale ]
         height : i32 [ bounds.h * render_scale ]
@@ -8598,7 +8632,7 @@ element World
         ar : rotate
         as : scale
 
-        if [ at || ar || as ]
+        if [ model && (at || ar || as) ]
             for [ m: Model ] in target.models
                 ln0 : i32 [ (at) ? at.count : 0 ]
                 ln1 : i32 [ (ar) ? ar.count : 0 ]
@@ -8608,9 +8642,9 @@ element World
                 m.transform_count = ln
                 for [ i: i32 0, i < ln, i += 1 ]
                     mat : mat4f.identity[]
-                    s : Scaling [ (as) ? as.peek[ i ] : null ]
-                    if [ s ]
-                        mat = mat.scale[ s.value ]
+                    sc : Scaling [ (as) ? as.peek[ i ] : null ]
+                    if [ sc ]
+                        mat = mat.scale[ sc.value ]
                     r : Rotation [ (ar) ? ar.peek[ i ] : null ]
                     if [ r ]
                         v   : vec4f [ r.axis.x, r.axis.y, r.axis.z, radians[ r.degs ] ]
@@ -9799,10 +9833,21 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
             value = array string [ sp.count ]
             v : array string [ value ]
             for [ raw: string ] in sp
-                v.push[ raw.trim[] ]
+                s  : raw.trim[]
+                if [ s.count >= 2 ]
+                    q0 : string [ s.mid[  0, 1 ] ]
+                    q1 : string [ s.mid[ -1, 1 ] ]
+                    if [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
+                        s = s.mid[ 1, s.count - 2 ]
+                v.push[ s ]
         el
             param   = (cm >= 0) ? val_str.mid[ cm + 1, val_str.count - (cm + 1) ].trim[] : null
             value_s = (cm >= 0) ? val_str.mid[ 0, cm ].trim[] : val_str
+            if [ value_s && value_s.count >= 2 ]
+                q0 : string [ value_s.mid[  0, 1 ] ]
+                q1 : string [ value_s.mid[ -1, 1 ] ]
+                if [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
+                    value_s = value_s.mid[ 1, value_s.count - 2 ]
             value   = value_s
         trans : (param) ? StyleTransition[ param ] : null
         is_bind : bool [ value_s && value_s.count >= 2 && value_s.chars[0] == '{' && value_s.chars[value_s.count - 1] == '}' ]
