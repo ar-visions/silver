@@ -297,6 +297,16 @@ none quatf_with_vec4f(quatf* q, vec4f* v) {
 }
 
 
+quatf quatf_mul(quatf* a, quatf* b) {
+    quatf r;
+    r.w = a->w * b->w - a->x * b->x - a->y * b->y - a->z * b->z;
+    r.x = a->w * b->x + a->x * b->w + a->y * b->z - a->z * b->y;
+    r.y = a->w * b->y - a->x * b->z + a->y * b->w + a->z * b->x;
+    r.z = a->w * b->z + a->x * b->y - a->y * b->x + a->z * b->w;
+    return r;
+}
+
+
 none mat4f_with_quatf(mat4f* mat, quatf* q) {
     /// values are at mat->values[0...15] [ row-major ]
     f32 x = q->x, y = q->y, z = q->z, w = q->w;

@@ -1249,6 +1249,7 @@ void silver_init(silver a) {
     }
 
     if (a->clean) update_product = true;
+    if (a->run && !a->is_external) update_product = true;
 
     a->mod = (aether)a;
     // prevent duplicate compilation in a session
@@ -1368,20 +1369,6 @@ void silver_init(silver a) {
 
             exporter(a);
 
-            if (a->run) {
-                string arg_str = string(alloc, 32);
-                int argc = len(a->run) + 2;
-                char** argv = calloc(argc, sizeof(char*));
-                argv[0] = a->product->chars;
-                int i = 1;
-                each(a->run, Au, arg) {
-                    argv[i++] = cast(string, arg)->chars;
-                }
-                argv[i] = NULL; // Brannigans law
-                execvp(argv[0], argv);
-                fprintf(stderr, "execvp failed for %s: %s\n", argv[0], strerror(errno));
-                _exit(1);
-            }
         }
         on_error() {
             mtime = current_time();
@@ -1394,6 +1381,20 @@ void silver_init(silver a) {
 
     unload_libs(a);
     module_erase(a->au, null);
+
+    if (a->run) {
+        int argc = len(a->run) + 2;
+        char** argv = calloc(argc, sizeof(char*));
+        argv[0] = a->product->chars;
+        int i = 1;
+        each(a->run, Au, arg) {
+            argv[i++] = cast(string, arg)->chars;
+        }
+        argv[i] = NULL; // Brannigans law
+        execvp(argv[0], argv);
+        fprintf(stderr, "execvp failed for %s: %s\n", argv[0], strerror(errno));
+        _exit(1);
+    }
 }
 
 static string op_lang_token(string name) {
@@ -5159,6 +5160,29 @@ string compile_implements(silver a, array files, string cflags) {
     return objs;
 }
 
+static void deploy_resources(path src, path dst);
+
+static void hardlink_resources(path src, path dst) {
+    DIR *dir = opendir(src->chars);
+    if (!dir) return;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        path s = form(path, "%o/%s", src, entry->d_name);
+        path d = form(path, "%o/%s", dst, entry->d_name);
+        if (entry->d_type == DT_DIR) {
+            make_dir(d);
+            hardlink_resources(s, d);
+        } else {
+            struct stat st;
+            if (lstat(d->chars, &st) == 0)
+                unlink(d->chars);
+            link(s->chars, d->chars);
+        }
+    }
+    closedir(dir);
+}
+
 // recursively deploy resource files from src into dst
 // directories merge; duplicate files are an error
 // only copies when filesize or mtime differs; preserves original timestamp
@@ -5406,14 +5430,24 @@ none silver_build(silver a) {
     }
 
     // deploy resource files into share/{app-name}/
-    // directories merge across modules; file collisions are an error
+    // debug: symlink each resource dir so edits are live without redeploy
+    // release: copy files
     if (len(a->resources) && !a->is_library) {
         path share = f(path, "%o/share/%o", install, a->name);
         make_dir(share);
         each(a->resources, path, res) {
             path dst = f(path, "%o/%o", share, stem(res));
-            make_dir(dst);
-            deploy_resources(res, dst);
+            // if dst is a stale directory symlink, remove it before creating the real dir
+            struct stat dsts;
+            if (lstat(dst->chars, &dsts) == 0 && S_ISLNK(dsts.st_mode))
+                unlink(dst->chars);
+            if (a->debug) {
+                make_dir(dst);
+                hardlink_resources(res, dst);
+            } else {
+                make_dir(dst);
+                deploy_resources(res, dst);
+            }
         }
     }
 
