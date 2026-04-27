@@ -1,17 +1,40 @@
 /* trinity!  ..help. */
 @import "trinity.css"
 
+Toolbar {
+    area: l0 t0 w64 b0
+    layers.compose:
+        ctype: compose
+        fill_color: #f0a
+
+    layers.compose0:
+        ctype: compose
+        fill_color: #ffa
+        area: l64 t0 w2 b0
+    
+    layers.base:
+        fill_color: #fff1
+}
 
 World.avatar {
-    model_path:     "models/orbiter4.gltf"
-    shader_type:    "PBR"
-    render_scale:   1.0
-    clear_color:    0 0 0 1
-    rotate:         [ 0 0 0 0deg ]
-    translate:      [ 0 0 0 ]
-    scale:          [ 1.0 1.0 1.0 ]
+    model_path:         "models/orbiter4.gltf"
+    shader_type:        "PBR"
+    environment_path:   "images/night.exr"
+    environment_yaw:    0.0
+    environment_pitch:  20.0
+    render_scale:       4.0
+    clear_color:        0 0 0 0
+    rotate:             [ 0 1 0 30deg, 1 0 0 20deg ]
+    eye_pos:            0.0 3.5 -2.0
+    target_pos:         0.0 0.0 0.0
+    up_vec:             0.0 -1.0 0.0
+    fov:                30.0
 
-    area: l100 t100 w1024 h1024
+    area: l100 t100 w512 h512
+}
+
+World.avatar:hovered {
+    rotate:             [ 0 1 0 30deg, 1 0 0 10deg ]
 }
 
 Editor {

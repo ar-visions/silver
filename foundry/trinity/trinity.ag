@@ -199,6 +199,9 @@ class Render
                 depth.resize[ width, height ]
             if [ reduce ]
                 reduction.resize[ width / 4, height / 4 ]
+            if [ reduce && reduce_model ]
+                reduce_model.samplers = map Au[string] [ "color": color ]
+                reduce_model.rebind_model[]
         el
             color = Texture [ vk: vk, w: w, width: width, height: height,
                 vk_format: w.surface_format.format, swap: !backbuffer,
@@ -445,6 +448,7 @@ class Render
                 render_pass_info.dependencyCount = 1
                 render_pass_info.attachmentCount = 1
                 subpass.pDepthStencilAttachment  = null
+                attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             result = vkCreateRenderPass[ vk.device, ref render_pass_info, null, ref vk_render_pass[i] ]
             expect result == VK_SUCCESS, "failed to create render pass"
 
@@ -1603,18 +1607,18 @@ class Model
             id = vk.quad_m
 
         if [ is_clear ]
-            model_init_pipeline[ a, null, null, null ]
+            model_init_pipeline[ a, null, null, null, render_id ]
         el [ nodes ]
             for [ n: gltf_node ] in nodes
                 for [ p: gltf_part ] in n.parts
-                    model_init_pipeline[ a, n.id, p.id, (p.s) ? p.s : s ]
+                    model_init_pipeline[ a, n.id, p.id, (p.s) ? p.s : s, render_id ]
         el [ id ]
             for [ n: Node ] in id.nodes
                 has_mesh: n.AF_query_name[ "mesh" ]
                 if [ has_mesh ]
                     mesh: id.meshes [ n.mesh ]
                     for [ prim: Primitive ] in mesh.primitives
-                        model_init_pipeline[ a, n, prim, s ]
+                        model_init_pipeline[ a, n, prim, s, render_id ]
 
     construct [ p: string ]
         gltf_path : path [ p ]
@@ -3093,29 +3097,19 @@ shader Convolve
         return alphaSq / (3.14159265359 * denom * denom);
     }
 
-    func computeBasisVectors [ N: vec3f, S: vec3f, T: vec3f ] -> GLSL none {
-        T = cross(N, vec3(0.0, 1.0, 0.0));
-        T = mix(cross(N, vec3(1.0, 0.0, 0.0)), T, step(0.00001, dot(T, T)));
-        T = normalize(T);
-        S = normalize(cross(N, T));
-    }
-
-    func tangentToWorld [ v: vec3f, N: vec3f, S: vec3f, T: vec3f ] -> GLSL vec3f {
-        return S * v.x + T * v.y + N * v.z;
-    }
-
     func prefilterEnvMap [ R: vec3f, roughness: float, numSamples: i32 ] -> GLSL vec3f {
-        vec3 N = R;
-        vec3 Lo = N;
-        vec3 S, T;
-        computeBasisVectors(N, S, T);
-        vec3 color = vec3(0.0);
+        vec3  N  = R;
+        vec3  Lo = N;
+        vec3  T  = normalize(cross(N, abs(N.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+        vec3  S  = normalize(cross(N, T));
+        vec3  color  = vec3(0.0);
         float weight = 0.0;
-        vec2 envMapSize = vec2(textureSize(environment, 0));
+        vec2  envMapSize = vec2(textureSize(environment, 0));
         float wt = 4.0 * 3.14159265359 / (6.0 * envMapSize.x * envMapSize.y);
         for (uint i = 0; i < uint(numSamples); ++i) {{
-            vec2 u = sampleHammersley(i, numSamples);
-            vec3 Lh = tangentToWorld(sampleGGX(u.x, u.y, roughness), N, S, T);
+            vec2 u  = sampleHammersley(i, numSamples);
+            vec3 h  = sampleGGX(u.x, u.y, roughness);
+            vec3 Lh = S * h.x + T * h.y + N * h.z;
             vec3 Li = 2.0 * dot(Lo, Lh) * Lh - Lo;
             float cosLi = dot(N, Li);
             if (cosLi > 0.0) {{
@@ -3132,7 +3126,7 @@ shader Convolve
 
     func fragment [] -> GLSL none {
         vec3  R          = normalize(v_dir);
-        float roughness  = ubo.roughness_samples.x * ubo.roughness_samples.x;
+        float roughness  = ubo.roughness_samples.x;
         int   numSamples = int(ubo.roughness_samples.y);
         outColor = (roughness < 0.01)
             ? texture(environment, R)
@@ -6035,7 +6029,7 @@ func pbr_defaults [] -> PbrMetallicRoughness
     static pbr: PbrMetallicRoughness
     if [ !pbr ]
         pbr = PbrMetallicRoughness[]
-        pbr.baseColorFactor            = vec4f [ 1, 1, 1, 1 ]
+        pbr.baseColorFactor            = vec4f [ 0, 0, 1, 1 ]
         pbr.metallicFactor             = 1.0
         pbr.roughnessFactor            = 1.0
         pbr.emissiveFactor             = vec3f [ 0, 0, 0 ]
@@ -6084,7 +6078,12 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
     pbr_default: PbrMetallicRoughness [ pbr_defaults[] ]
     pbr:         PbrMetallicRoughness [ (p.material) ? p.material.pbrMetallicRoughness : pbr_default ]
     s:           shader [ p.s ]
-    
+
+    printf[ "Surface_resources: material=%p pbr=%p baseColor=(%f,%f,%f,%f) metallic=%f\n",
+        p.material, pbr,
+        pbr.baseColorFactor.x, pbr.baseColorFactor.y, pbr.baseColorFactor.z, pbr.baseColorFactor.w,
+        pbr.metallicFactor ]
+
     if [ !result.count ]
         f_normal: rgbaf [ 0.5, 0.5, 1.0, 1.0 ]
         f_zero:   rgbaf [ 0.0, 0.0, 0.0, 0.0 ]
@@ -6129,14 +6128,19 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
             case Surface.rough
                 res = Gpu [ vk: p.vk, name: "rough",    sampler: new f32 [ 1 ] [ pbr.roughnessFactor ] ]
             case Surface.emission
-                expect pbr.emissiveStrength / 8.0 <= 1.0, "refactor emissiveStrength"
-                res = Gpu [ vk: p.vk, name: "emission", sampler: new rgbaf [ single ] [ f_zero ] ]
+                f_emit: rgbaf [
+                    pbr.emissiveFactor.x,
+                    pbr.emissiveFactor.y,
+                    pbr.emissiveFactor.z,
+                    min[ 1.0, pbr.emissiveStrength ] ]
+                res = Gpu [ vk: p.vk, name: "emission", sampler: new rgbaf [ single ] [ f_emit ] ]
             case Surface.height
                 res = Gpu [ vk: p.vk, name: "height",   sampler: new f32 [ single ] [ 0.5 ] ]
             case Surface.ao
                 res = Gpu [ vk: p.vk, name: "ao",       sampler: new f32 [ single ] [ 1.0 ] ]
             case Surface.ior
-                res = Gpu [ vk: p.vk, name: "ior",      sampler: new f32 [ single ] [ pbr.ior ] ]
+                ior_val: f32 [ (pbr.ior > 0.0) ? pbr.ior : 1.5 ]
+                res = Gpu [ vk: p.vk, name: "ior",      sampler: new f32 [ single ] [ ior_val ] ]
             case Surface.color
                 res = Gpu [ vk: p.vk, name: "color",    sampler: new rgbaf [ single ] [ f_color ] ]
             case Surface.environment
@@ -6237,7 +6241,7 @@ func get_required_extensions [ vk: vk_context ]
         printf "instance extension: %s\n", vk.instance_exts[i]
 
 
-func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ] 
+func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render_id: i32 ]
     mdl:      m.id
     vk:       m.vk
     r:        m.r
@@ -6258,6 +6262,13 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ]
         material = (mdl.materials && mdl.materials.count > mat_id) ?
             mdl.materials[ mat_id ] :
             (mdl.materials) ? mdl.materials.first_element[] : null
+        if [ material ]
+            printf[ "model_init_pipeline: mat_id=%d materials_count=%d material=%p baseColor=(%f,%f,%f,%f)\n",
+                mat_id, mdl.materials.count, material,
+                material.pbrMetallicRoughness.baseColorFactor.x,
+                material.pbrMetallicRoughness.baseColorFactor.y,
+                material.pbrMetallicRoughness.baseColorFactor.z,
+                material.pbrMetallicRoughness.baseColorFactor.w ]
         index:        0
         vertex_size:  0
         vertex_count: 0
@@ -6318,7 +6329,7 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader ]
     s_type : typeid[ s ]
     info : Au.header [ vbo ]
     pipe: Pipeline [ vk: vk, w: m.w, name: (n) ? n.name : null,
-        r: m.r, s: s, vbo: vbo, default_model: mdl_mat,
+        r: m.r, s: s, vbo: vbo, default_model: mdl_mat, render_id: render_id,
         material: material, samplers: m.samplers,
         straight_alpha: m.straight_alpha ]
     s.hold[]
@@ -6379,8 +6390,8 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
         initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
     ]
     alloc_info: VmaAllocationCreateInfo [ usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE ]
+    image_info.arrayLayers = 6
     for [ i: 0, i < 2, i += 1 ]
-        image_info.arrayLayers = (i == 0) ? 6 : 6 * cube_count
         res: vmaCreateImage[ vk.allocator, image_info, alloc_info, ref vk_image[i], ref vma_alloc[i], null ]
         expect res == VK_SUCCESS, "could not create image with vmaCreateImage"
     cmd: Command [ vk: vk ]
@@ -6421,61 +6432,37 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
     # last_render is now computed from list
     for [ a_i: 0, a_i < cube_count, a_i += 1 ]
         roughness: f32[ a_i ] / f32[ mip_levels - 1 ]
+        mip_size:  i32 max[ 1, size >> a_i ]
         conv_shader.roughness_samples = vec2f [ roughness, 1024.0 ]
         for [ f: 0, f < 6, f += 1 ]
-            face_id: a_i * 6 + f
             conv_shader.view = mat4f.look_at[ eye, dirs[f], ups[f] ]
             final: w.last_render[]
             w.draw[]
             final.color.transition[ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
             vk.transition_image_layout vk_image[1],
-                VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 1, face_id, 1, false
-            region: VkImageCopy [
-                srcSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: 0,       layerCount: 1 ],
-                dstSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0, baseArrayLayer: face_id, layerCount: 1 ],
-                extent:         VkExtent3D [ size, size, 1 ]
-            ]
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                a_i, 1, f, 1, false
             cmd.begin[]
-            vkCmdCopyImage[ cmd.cmd,
+            vkCmdBlitImage[ cmd.cmd,
                 final.color.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                vk_image[1], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                1, ref region ]
+                vk_image[1],          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1, VkImageBlit [
+                    srcSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0,    baseArrayLayer: 0, layerCount: 1 ],
+                    srcOffsets:     [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ size,     size,     1 ] ],
+                    dstSubresource: VkImageSubresourceLayers [ aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: a_i, baseArrayLayer: f, layerCount: 1 ],
+                    dstOffsets:     [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mip_size, mip_size, 1 ] ]
+                ], VK_FILTER_LINEAR ]
             cmd.submit[]
-            for [ mi: u32 1, mi < mip_levels, mi += 1 ]
-                mip_size_src: size >> (mi - 1)
-                mip_size_dst: size >> mi
-                vk.transition_image_layout vk_image[1],
-                    (mi == 1) ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, mi - 1, 1, face_id, 1, false
-                vk.transition_image_layout vk_image[1],
-                    VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mi, 1, face_id, 1, false
-                cmd.begin[]
-                vkCmdBlitImage[ cmd.cmd,
-                    vk_image[1], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    vk_image[1], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    1, VkImageBlit [
-                        srcSubresource: VkImageSubresourceLayers [
-                            aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: mi - 1, baseArrayLayer: face_id, layerCount: 1 ],
-                        srcOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mip_size_src, mip_size_src, 1 ] ],
-                        dstSubresource: VkImageSubresourceLayers [
-                            aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: mi, baseArrayLayer: face_id, layerCount: 1 ],
-                        dstOffsets: [ VkOffset3D [ 0, 0, 0 ], VkOffset3D [ mip_size_dst, mip_size_dst, 1 ] ]
-                    ], VK_FILTER_LINEAR ]
-                cmd.submit[]
             final.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-    for [ face_id: 0, face_id < 6 * cube_count, face_id += 1 ]
-        for [ mi: 0, mi < mip_levels, mi += 1 ]
+    for [ f: 0, f < 6, f += 1 ]
+        for [ mi: 0, mi < cube_count, mi += 1 ]
             vk.transition_image_layout vk_image[1],
-                (mi == mip_levels - 1) ?
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL :
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                mi, 1, face_id, 1, false
+                mi, 1, f, 1, false
     convolve: Texture [ vk: vk, vk_image: vk_image[1], vma_alloc: vma_alloc[1],
         surface: Surface.environment, vk_format: w.surface_format.format,
-        mip_levels: mip_levels, layer_count: 6 * cube_count  ]
+        mip_levels: cube_count, layer_count: 6 ]
     #cmd.drop[  ]
     #w.drop[ ]
     #cube.drop[ ]
@@ -6887,9 +6874,9 @@ Display Window
             ct.member   = member
             ct.invalidate = false
             ct.container = value_holder
-            s : new char [ 256 ]
-            sprintf [ s, "%p", ct ]
-            puts 'invalidate = false, key = {mem} on element {inst.id}, (best.value = {best.value}, ct = {s})'
+            #s : new char [ 256 ]
+            #sprintf [ s, "%p", ct ]
+            #puts 'invalidate = false, key = {mem} on element {inst.id}, (best.value = {best.value}, ct = {s})'
 
         el [ !ct ]
             info : header[ best.instance ]
@@ -7964,7 +7951,7 @@ class Style
                 if [ visited.index_of[ key ] < 0 ]
                     visited.push[ key ]
                     sub : string [ p.load[ typeid[ string ], null ] ]
-                    process[ sub ]
+                    if [ sub ] process[ sub ]
                 i += 1
                 continue
             if [ content.last[] == '{' ]
@@ -8576,113 +8563,6 @@ Layer Children
     public scroll : vec2f
 
 
-element World
-    context vk               : vk_context
-    intern target            : Render
-    intern model             : Model
-    intern s                 : shader
-    public model_path        : string
-    public shader_type       : string
-    public environment_path  : string
-    public render_scale      : f32
-    public clear_color       : vec4f
-    public rotate            : array Rotation
-    public translate         : array Translation
-    public scale             : array Scaling
-    public update            : EventDispatch
-
-    func init [ ]
-        if [ model_path ]
-            model = Model [ vk: vk ]
-            gltf  : path [ model_path ]
-            model.id = gltf.load[ typeid[ GltfModel ], null ]
-
-        w_ref : Window [ ux ]
-        width  : int ((bounds) ? (bounds.w) : (w_ref.width))  * render_scale
-        height : int ((bounds) ? (bounds.h) : (w_ref.height)) * render_scale
-
-        if [ shader_type && shader_type.count ]
-            f : Au_t [ Au.find_type [ shader_type.chars, null ] ]
-            if [ f ]
-                s     = Au.new_object[ f, null, null, false ]
-                s.vk  = vk
-                s.initialize[]
-                if [ model ]
-                    model.s = s
-
-        if [ model && environment_path && environment_path.count ]
-            env_img  : Image [ uri: path[ environment_path ], surface: Surface.environment ]
-            env_axis : vec3f [ 0.0, 1.0, 0.0 ]
-            env_tex  : environment[ vk, env_img, env_axis, 0.0 ]
-            model.samplers[ 'environment' ] = env_tex
-
-        target = Render [
-            vk:          vk,
-            w:           w_ref,
-            width:       width,
-            height:      height,
-            use_depth:   true,
-            reduce:      (render_scale == 4.0) ? true : false,
-            clear_color: clear_color,
-            models:      (model) ? array Model [ model ] : null ]
-        w_ref.element_targets[ id ] = target
-
-    func draw [ w: Window ]
-        if [ !target ] return
-        #expect update, 'update subs not set'
-
-        width  : i32 [ bounds.w * render_scale ]
-        height : i32 [ bounds.h * render_scale ]
-        target.width  = width
-        target.height = height
-        target.wscale = 0.0
-
-        pbr : PBR [ s ]
-        if [ pbr ]
-            eye_pos : vec3f [ 0.0f,  3.5f, -2.0f ]
-            tgt_pos : vec3f [ 0.0f,  0.0f,  0.0f ]
-            up_vec  : vec3f [ 0.0f, -1.0f,  0.0f ]
-            pbr.model = mat4f.identity[]
-            pbr.proj  = mat4f.perspective[ radians[ 40.0f ], 1.0f, 0.1f, 100.0f ]
-            pbr.view  = mat4f.look_at[ eye_pos, tgt_pos, up_vec ]
-            pbr.pos   = vec4f [ 0.0f, 3.5f, -2.0f, 1.0f ]
-
-        target.update[]
-
-        #expect update, '{id}_update sub not declared by the app'
-        ev : Event[ target: a ]
-        update.invoke[ ev ]
-
-        at : translate
-        ar : rotate
-        as : scale
-
-        if [ model && (at || ar || as) ]
-            for [ m: Model ] in target.models
-                ln0 : i32 [ (at) ? at.count : 0 ]
-                ln1 : i32 [ (ar) ? ar.count : 0 ]
-                ln2 : i32 [ (as) ? as.count : 0 ]
-                ln  : i32 [ (ln0 > ln1 && ln0 > ln2) ? ln0 : (ln1 > ln0 && ln1 > ln2) ? ln1 : ln2 ]
-                m.transforms      = new mat4f [ ln ]
-                m.transform_count = ln
-                for [ i: i32 0, i < ln, i += 1 ]
-                    mat : mat4f.identity[]
-                    sc : Scaling [ (as) ? as.peek[ i ] : null ]
-                    if [ sc ]
-                        mat = mat.scale[ sc.value ]
-                    r : Rotation [ (ar) ? ar.peek[ i ] : null ]
-                    if [ r ]
-                        v   : vec4f [ r.axis.x, r.axis.y, r.axis.z, radians[ r.degs ] ]
-                        q   : quatf[ v ]
-                        mat = mat.rotate[ q ]
-                    t : Translation [ (at) ? at.peek[ i ] : null ]
-                    if [ t ]
-                        mat = mat.translate[ t.value ]
-                    m.transforms[i] = mat
-
-        tex : Texture [ target.color ]
-        w.screen.draw_image[ tex, bounds ]
-
 element View
     func render[] -> Elements
         return null
@@ -9166,163 +9046,6 @@ shader Basic
 class IBL
     public placeholder : i32
 
-
-shader PBR
-    mutable pos      : vec4f
-    mutable dir      : vec4f
-    mutable model    : mat4f
-    mutable view     : mat4f
-    mutable proj     : mat4f
-
-    attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
-    attrib normal       : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
-    attrib emission     : LayoutBinding [ type:typeid[ Surface ], id:Surface.emission,     count:1, format: typeid[ rgbaf ] ]
-    attrib rough        : LayoutBinding [ type:typeid[ Surface ], id:Surface.rough,        count:1, format: typeid[ u8 ] ]
-    attrib metal        : LayoutBinding [ type:typeid[ Surface ], id:Surface.metal,        count:1, format: typeid[ u8 ] ]
-    attrib height       : LayoutBinding [ type:typeid[ Surface ], id:Surface.height,       count:1, format: typeid[ f32 ] ]
-    attrib ao           : LayoutBinding [ type:typeid[ Surface ], id:Surface.ao,           count:1, format: typeid[ u8 ] ]
-    attrib ior          : LayoutBinding [ type:typeid[ Surface ], id:Surface.ior,          count:1, format: typeid[ f32 ] ]
-    attrib environment  : LayoutBinding [ type:typeid[ Surface ], id:Surface.environment,  count:1, format: typeid[ rgbaf ] ]
-
-    attrib a_pos        : VertexInput    [ type:typeid[ vec3f ] ]
-    attrib a_normal     : VertexInput    [ type:typeid[ vec3f ] ]
-    attrib a_uv         : VertexInput    [ type:typeid[ vec2f ] ]
-    #attrib a_color_0    : VertexInput    [ type:typeid[ vec4f ] ]
-    #attrib a_color_1    : VertexInput    [ type:typeid[ vec4f ] ]
-    attrib v_world_normal : VertexOutput [ type:typeid[ vec3f ] ]
-    attrib v_world_pos    : VertexOutput [ type:typeid[ vec3f ] ]
-    attrib v_view_pos     : VertexOutput [ type:typeid[ vec3f ] ]
-    attrib v_uv           : VertexOutput [ type:typeid[ vec2f ] ]
-    attrib fragColor      : FragmentOutput [ type:typeid[ vec4f ] ]
-
-    func init [ ]
-        proj  = mat4f.identity[]
-        model = mat4f.identity[]
-        view  = mat4f.identity[]
-
-    func pow2 [ x: float ] -> GLSL float {
-        return x * x;
-    }
-
-    func pow5 [ x: float ] -> GLSL float {
-        float x2 = x * x;
-        return x2 * x2 * x;
-    }
-
-    func sRGBToLinear [ srgbColor: vec3f ] -> GLSL vec3f {
-        return pow(srgbColor, vec3(2.2));
-    }
-
-    func linearToSRGB [ srgbColor: vec3f ] -> GLSL vec3f {
-        return pow(srgbColor, vec3(1.0/2.2));
-    }
-
-    func F_Schlick [ f0: vec3f, cos_theta: float ] -> GLSL vec3f {
-        return f0 + (1.0 - f0) * pow5(1.0 - cos_theta);
-    }
-
-    func D_GGX [ roughness: float, NdotH: float ] -> GLSL float {
-        float alpha    = pow2(roughness);
-        float alpha_sq = pow2(alpha);
-        float denom    = pow2(NdotH) * (alpha_sq - 1.0) + 1.0;
-        return alpha_sq / (3.14159265359 * pow2(denom));
-    }
-
-    func G_Smith [ roughness: float, NdotV: float, NdotL: float ] -> GLSL float {
-        float k    = pow2(roughness + 1.0) / 8.0;
-        float G1_V = NdotV / max((NdotV * (1.0 - k) + k), 0.0001);
-        float G1_L = NdotL / max((NdotL * (1.0 - k) + k), 0.0001);
-        return G1_V * G1_L;
-    }
-
-    func BRDF [ L: vec3f, V: vec3f, N: vec3f, albedo: vec3f, mat_ior: float, metallic: float, roughness: float ] -> GLSL vec3f {
-        roughness = max(roughness, 0.05);
-        vec3  H     = normalize(L + V);
-        float NdotL = max(dot(N, L), 0.0);
-        float NdotV = max(dot(N, V), 0.0);
-        float NdotH = max(dot(N, H), 0.0);
-        float HdotV = max(dot(H, V), 0.0);
-        float nonMetalF0 = pow((mat_ior - 1.0) / (mat_ior + 1.0), 2.0);
-        vec3  F0       = mix(vec3(nonMetalF0), albedo, metallic);
-        vec3  F        = F_Schlick(F0, HdotV);
-        float D        = D_GGX(roughness, NdotH);
-        float G        = G_Smith(roughness, NdotV, NdotL);
-        vec3  specular = (D * F * G) / max(4.0 * NdotV * NdotL, 0.0001);
-        vec3  kD       = (vec3(1.0) - F) * (1.0 - metallic);
-        vec3  diffuse  = kD * albedo / 3.14159265359;
-        return (diffuse + specular) * NdotL;
-    }
-
-    func perturbNormal [ N: vec3f, V: vec3f, texcoord: vec2f ] -> FragGLSL vec3f {
-        vec3 map = texture(normal, texcoord).rgb * 2.0 - 1.0;
-        vec3 q1  = dFdx(v_world_pos);
-        vec3 q2  = dFdy(v_world_pos);
-        vec2 st1 = dFdx(texcoord);
-        vec2 st2 = dFdy(texcoord);
-        vec3 T   = normalize(q1 * st2.y - q2 * st1.y);
-        vec3 B   = normalize(cross(N, T));
-        mat3 TBN = mat3(T, B, N);
-        return normalize(TBN * map);
-    }
-
-    func parallaxMapping [ texCoords: vec2f, viewDir: vec3f ] -> FragGLSL vec2f {
-        float height_scale = 0.04;
-        float h = texture(height, texCoords).r;
-        vec2  p = viewDir.xy / viewDir.z * (h * height_scale);
-        return texCoords - p;
-    }
-
-    func environmentMapping [ R: vec3f, roughness: float ] -> FragGLSL vec3f {
-        float lod   = roughness * 7.0;
-        float lodf  = floor(lod);
-        float lodfr = lod - lodf;
-        int   mip0  = int(lodf);
-        int   mip1  = min(mip0 + 1, 7);
-        vec3  s0    = textureLod(environment, R, float(mip0)).rgb;
-        vec3  s1    = textureLod(environment, R, float(mip1)).rgb;
-        return mix(s0, s1, lodfr);
-    }
-
-    func calculatePBR [ texCoords: vec2f, worldPos: vec3f, n: vec3f, viewPos: vec3f ] -> FragGLSL vec4f {
-        vec3 cameraPos      = ubo.pos.xyz;
-        vec3 V              = normalize(cameraPos - worldPos);
-        vec4  baseColor     = texture(color,    texCoords);
-        float mat_ior       = texture(ior,      texCoords).r;
-        float metallic      = texture(metal,    texCoords).r;
-        float roughness     = texture(rough,    texCoords).r;
-        float mat_ao        = texture(ao,       texCoords).r;
-        vec3  emit          = texture(emission, texCoords).rgb;
-        float intensity     = texture(emission, texCoords).a;
-        vec3  rough_color   = baseColor.rgb;
-        vec3  N             = n; //perturbNormal(n, V, texCoords);
-        float NdotV         = max(dot(N, V), 0.0);
-        float nonMetalF0    = pow((mat_ior - 1.0) / (mat_ior + 1.0), 2.0);
-        vec3  F0            = mix(vec3(nonMetalF0), rough_color, metallic);
-        vec3  F             = F_Schlick(F0, NdotV);
-        vec3  kD            = (vec3(1.0) - F) * (1.0 - metallic);
-        vec3  R             = reflect(-V, N);
-        vec3  envRefl       = environmentMapping(R, roughness);
-        vec3  ibl           = kD * rough_color * 0.1 * mat_ao + envRefl * F * mat_ao;
-        vec3  lightDir      = normalize(vec3(1.0, 1.0, 1.0));
-        vec3  lightColor    = vec3(1.0);
-        vec3  Lo            = BRDF(lightDir, V, N, rough_color, mat_ior, metallic, roughness) * lightColor;
-        vec3  result        = ibl + Lo + emit * intensity;
-        result              = linearToSRGB(result);
-        return vec4(vec3(result), baseColor.a);
-    }
-
-    func fragment [] -> GLSL none {
-        fragColor = calculatePBR(v_uv, v_world_pos, normalize(v_world_normal), v_view_pos);
-    }
-
-    func vertex [] -> GLSL none {
-        vec4 world_pos = ubo.model * vec4(a_pos, 1.0);
-        v_world_normal = mat3(transpose(inverse(ubo.model))) * a_normal;
-        v_world_pos    = world_pos.xyz;
-        v_view_pos     = ubo.pos.xyz;
-        v_uv           = a_uv;
-        gl_Position    = ubo.proj * ubo.view * world_pos;
-    }
 
 
 shader BlurV

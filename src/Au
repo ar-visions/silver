@@ -1908,7 +1908,8 @@ declare_struct(vec3f, f32)
     i_struct_prop(O,Y,f32, x) \
     i_struct_prop(O,Y,f32, y) \
     i_struct_prop(O,Y,f32, z) \
-    i_struct_prop(O,Y,f32, w)
+    i_struct_prop(O,Y,f32, w) \
+    i_struct_method_1(O, Y, O, mul, O)
 declare_struct(quatf)
 
 #define rgba_schema(AA,BB,...) \

@@ -529,8 +529,8 @@ Earth Cloud
         // ray/sphere intersections give real slice; 12 samples along it.
         vec3  ro      = ubo.cam_pos.xyz;
         vec3  rd      = normalize(v_world_pos.xyz - ro);
-        float R_top   = 1.062;                         // aurora top (~400km)
-        float R_bot   = 1.015;                         // aurora bottom (~90km)
+        float R_top   = 1.044;                         // aurora top (~400km)
+        float R_bot   = 1.022;                         // aurora bottom (~90km)
         float R_earth = 1.000;
         float b       = dot(ro, rd);
         float c_top   = dot(ro, ro) - R_top   * R_top;
@@ -804,7 +804,559 @@ shader Purple
         gl_Position = ubo.proj * ubo.view * wpos;
     }
 
+
+shader PBR
+    mutable pos      : vec4f
+    mutable dir      : vec4f
+    mutable model    : mat4f
+    mutable view     : mat4f
+    mutable proj     : mat4f
+    mutable env_yaw   : f32
+    mutable env_pitch : f32
+
+    attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
+    attrib normal       : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
+    attrib emission     : LayoutBinding [ type:typeid[ Surface ], id:Surface.emission,     count:1, format: typeid[ rgbaf ] ]
+    attrib rough        : LayoutBinding [ type:typeid[ Surface ], id:Surface.rough,        count:1, format: typeid[ u8 ] ]
+    attrib metal        : LayoutBinding [ type:typeid[ Surface ], id:Surface.metal,        count:1, format: typeid[ u8 ] ]
+    attrib height       : LayoutBinding [ type:typeid[ Surface ], id:Surface.height,       count:1, format: typeid[ f32 ] ]
+    attrib ao           : LayoutBinding [ type:typeid[ Surface ], id:Surface.ao,           count:1, format: typeid[ u8 ] ]
+    attrib ior          : LayoutBinding [ type:typeid[ Surface ], id:Surface.ior,          count:1, format: typeid[ f32 ] ]
+    attrib environment  : LayoutBinding [ type:typeid[ Surface ], id:Surface.environment,  count:1, format: typeid[ rgbaf ] ]
+
+    attrib a_pos        : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput    [ type:typeid[ vec2f ] ]
+    #attrib a_color_0    : VertexInput    [ type:typeid[ vec4f ] ]
+    #attrib a_color_1    : VertexInput    [ type:typeid[ vec4f ] ]
+    attrib v_world_normal : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_world_pos    : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_view_pos     : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_uv           : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib fragColor      : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        proj  = mat4f.identity[]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+
+    func pow2 [ x: float ] -> GLSL float {
+        return x * x;
+    }
+
+    func pow5 [ x: float ] -> GLSL float {
+        float x2 = x * x;
+        return x2 * x2 * x;
+    }
+
+    func sRGBToLinear [ srgbColor: vec3f ] -> GLSL vec3f {
+        return pow(srgbColor, vec3(2.2));
+    }
+
+    func linearToSRGB [ srgbColor: vec3f ] -> GLSL vec3f {
+        return pow(srgbColor, vec3(1.0/2.2));
+    }
+
+    func F_Schlick [ f0: vec3f, cos_theta: float ] -> GLSL vec3f {
+        return f0 + (1.0 - f0) * pow5(1.0 - cos_theta);
+    }
+
+    func F_SchlickRoughness [ f0: vec3f, cos_theta: float, roughness: float ] -> GLSL vec3f {
+        return f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow5(clamp(1.0 - cos_theta, 0.0, 1.0));
+    }
+
+    func D_GGX [ roughness: float, NdotH: float ] -> GLSL float {
+        float alpha    = pow2(roughness);
+        float alpha_sq = pow2(alpha);
+        float denom    = pow2(NdotH) * (alpha_sq - 1.0) + 1.0;
+        return alpha_sq / (3.14159265359 * pow2(denom));
+    }
+
+    func G_Smith [ roughness: float, NdotV: float, NdotL: float ] -> GLSL float {
+        float k    = pow2(roughness + 1.0) / 8.0;
+        float G1_V = NdotV / max((NdotV * (1.0 - k) + k), 0.0001);
+        float G1_L = NdotL / max((NdotL * (1.0 - k) + k), 0.0001);
+        return G1_V * G1_L;
+    }
+
+    func BRDF [ L: vec3f, V: vec3f, N: vec3f, albedo: vec3f, mat_ior: float, metallic: float, roughness: float ] -> GLSL vec3f {
+        roughness = max(roughness, 0.05);
+        vec3  H     = normalize(L + V);
+        float NdotL = max(dot(N, L), 0.0);
+        float NdotV = max(dot(N, V), 0.0);
+        float NdotH = max(dot(N, H), 0.0);
+        float HdotV = max(dot(H, V), 0.0);
+        float nonMetalF0 = pow((mat_ior - 1.0) / (mat_ior + 1.0), 2.0);
+        vec3  F0       = mix(vec3(nonMetalF0), albedo, metallic);
+        vec3  F        = F_Schlick(F0, HdotV);
+        float D        = D_GGX(roughness, NdotH);
+        float G        = G_Smith(roughness, NdotV, NdotL);
+        vec3  specular = (D * F * G) / max(4.0 * NdotV * NdotL, 0.0001);
+        vec3  kD       = (vec3(1.0) - F) * (1.0 - metallic);
+        vec3  diffuse  = kD * albedo / 3.14159265359;
+        return (diffuse + specular) * NdotL;
+    }
+
+    func perturbNormal [ N: vec3f, V: vec3f, texcoord: vec2f ] -> FragGLSL vec3f {
+        vec3  map = texture(normal, texcoord).rgb * 2.0 - 1.0;
+        if (dot(map.xy, map.xy) < 0.001) return N;
+        vec3  q1  = dFdx(v_world_pos);
+        vec3  q2  = dFdy(v_world_pos);
+        vec2  st1 = dFdx(texcoord);
+        vec2  st2 = dFdy(texcoord);
+        float det = st1.x * st2.y - st2.x * st1.y;
+        if (abs(det) < 1e-5) return N;
+        float inv = 1.0 / det;
+        vec3  T   = normalize((q1 * st2.y - q2 * st1.y) * inv);
+        T         = normalize(T - dot(T, N) * N);
+        vec3  B   = normalize(cross(N, T));
+        mat3  TBN = mat3(T, B, N);
+        return normalize(TBN * map);
+    }
+
+    func parallaxMapping [ texCoords: vec2f, viewDir: vec3f ] -> FragGLSL vec2f {
+        float height_scale = 0.04;
+        float h = texture(height, texCoords).r;
+        vec2  p = viewDir.xy / viewDir.z * (h * height_scale);
+        return texCoords - p;
+    }
+
+    func rotate_env [ v: vec3f, yaw: float, pitch: float ] -> GLSL vec3f {
+        float cy = cos(yaw);   float sy = sin(yaw);
+        vec3  vy = vec3(cy * v.x + sy * v.z, v.y, -sy * v.x + cy * v.z);
+        float cp = cos(pitch); float sp = sin(pitch);
+        return vec3(vy.x, cp * vy.y - sp * vy.z, sp * vy.y + cp * vy.z);
+    }
+
+    func environmentMapping [ R: vec3f, roughness: float ] -> FragGLSL vec3f {
+        vec3  dRdx    = dFdx(R);
+        vec3  dRdy    = dFdy(R);
+        float variance = dot(dRdx, dRdx) + dot(dRdy, dRdy);
+        float mipBias = clamp(log2(1.0 + variance * 48.0), 0.0, 6.0);
+        float lod     = clamp(roughness * 7.0 + mipBias, 0.0, 7.0);
+        return textureLod(environment, R, lod).rgb;
+    }
+
+    func ACESFilm [ x: vec3f ] -> GLSL vec3f {
+        float a = 2.51; float b = 0.03; float c = 2.43; float d = 0.59; float e = 0.14;
+        return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
+    }
+
+    func EnvBRDFApprox [ roughness: float, NdotV: float ] -> GLSL vec2f {
+        vec4 c0 = vec4(-1.0, -0.0275, -0.572,  0.022);
+        vec4 c1 = vec4( 1.0,  0.0425,  1.04,  -0.04);
+        vec4 r  = roughness * c0 + c1;
+        float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+        return vec2(-1.04, 1.04) * a004 + r.zw;
+    }
+
+    func calculatePBR [ texCoords: vec2f, worldPos: vec3f, n: vec3f, viewPos: vec3f ] -> FragGLSL vec4f {
+        vec3  cameraPos  = ubo.pos.xyz;
+        vec3  V          = normalize(cameraPos - worldPos);
+        vec4  baseColor  = texture(color,    texCoords);
+        float mat_ior    = texture(ior,      texCoords).r;
+        float metallic   = texture(metal,    texCoords).r;
+        float roughness  = texture(rough,    texCoords).r;
+        float mat_ao     = texture(ao,       texCoords).r;
+        vec3  emit       = texture(emission, texCoords).rgb;
+        float intensity  = texture(emission, texCoords).a;
+        vec3  albedo     = baseColor.rgb;
+        vec3  N          = perturbNormal(n, V, texCoords);
+        float NdotV      = max(dot(N, V), 0.0);
+        float nonMetalF0 = pow((mat_ior - 1.0) / (mat_ior + 1.0), 2.0);
+        vec3  F0         = mix(vec3(nonMetalF0), albedo, metallic);
+        // IBL Fresnel with roughness bias (reference PBR)
+        vec3  F          = F_SchlickRoughness(F0, NdotV, roughness);
+        vec3  kD         = (vec3(1.0) - F) * (1.0 - metallic);
+
+        // Diffuse IBL
+        vec3  N_env      = rotate_env(N, ubo.env_yaw, ubo.env_pitch);
+        vec3  irradiance = environmentMapping(N_env, 1.0);
+        vec3  diffuse    = kD * albedo * irradiance;
+
+        // Specular IBL
+        vec3  R          = reflect(-V, N);
+        vec3  R_env      = rotate_env(R, ubo.env_yaw, ubo.env_pitch);
+        vec3  prefilt    = environmentMapping(R_env, roughness);
+        vec2  brdf       = EnvBRDFApprox(roughness, NdotV);
+        vec3  specular   = prefilt * (F0 * brdf.x + brdf.y);
+
+        // --- engine glow: emission-masked orange, peaks on surfaces perpendicular to beam axis ---
+        vec3  beam_up   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
+        float ring_lit  = intensity * max(0.0, 1.0 - abs(dot(N, beam_up)));
+        vec3  eng_light = vec3(ring_lit * 8.0, ring_lit * 3.0, 0.0);
+
+        // blue point light shining on metallic surfaces
+        vec3  eng_pos   = (ubo.model * vec4(0.0, -0.3, 0.0, 1.0)).xyz;
+        float eng_dist  = length(worldPos - eng_pos);
+        float eng_f     = max(0.0, 1.0 - eng_dist / 0.5);
+        float eng_att   = eng_f * eng_f;
+        vec3  eng_L     = normalize(eng_pos - worldPos);
+        float lateral   = smoothstep(0.0, 0.707, dot(N, eng_L));
+        vec3  blue_light = metallic * eng_att * lateral * vec3(0.3, 0.6, 2.0);
+
+        vec3 core_contrib = emit * max(0.0, 1.0 - abs(dot(N, beam_up)));
+
+        vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light;
+        result           = pow(ACESFilm(result), vec3(1.0 / 2.2));
+        return vec4(result, baseColor.a);
+    }
+
+    func fragment [] -> GLSL none {
+        fragColor = calculatePBR(v_uv, v_world_pos, normalize(v_world_normal), v_view_pos);
+    }
+
+    func vertex [] -> GLSL none {
+        vec4 world_pos = ubo.model * vec4(a_pos, 1.0);
+        v_world_normal = mat3(transpose(inverse(ubo.model))) * a_normal;
+        v_world_pos    = world_pos.xyz;
+        v_view_pos     = ubo.pos.xyz;
+        v_uv           = a_uv;
+        gl_Position    = ubo.proj * ubo.view * world_pos;
+    }
+
 shader Aura
+	mutable model   : mat4f
+	mutable view    : mat4f
+	mutable proj    : mat4f
+	mutable cam_pos : vec4f
+	mutable time    : f32
+
+	attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
+	attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
+	attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+	attrib v_ray     : VertexOutput   [ type:typeid[ vec3f ] ]
+	attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+	func init []
+		model = mat4f.identity[]
+		view  = mat4f.identity[]
+		proj  = mat4f.identity[]
+
+	func vertex[] -> GLSL none {
+		vec2 ndc       = a_pos.xy;
+		vec4 view_ray  = inverse(ubo.proj) * vec4(ndc, 1.0, 1.0);
+		view_ray.xyz  /= view_ray.w;
+		v_ray          = transpose(mat3(ubo.view)) * view_ray.xyz;
+		v_uv           = a_uv;
+		gl_Position    = vec4(ndc, 0.0, 1.0);
+	}
+
+
+	func fragment[] -> GLSL none {
+		vec3 ro = ubo.cam_pos.xyz;
+		vec3 rd = normalize(v_ray);
+
+		// beam originates at orbiter center, shoots upward along model +Y, fades with distance
+		vec3  beam_o = (ubo.model * vec4(0.0, -0.5, 0.0, 1.0)).xyz;
+		vec3  beam_d = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
+		float beam_l = 5.0;
+		float beam_r = 0.48;
+
+		// orthonormal frame perpendicular to beam_d for spiral computation
+		vec3 up_ref  = abs(beam_d.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+		vec3 b_tang  = normalize(cross(up_ref, beam_d));
+		vec3 b_binor = cross(beam_d, b_tang);
+
+		// ray vs infinite cylinder along beam_d through beam_o
+		vec3  oc  = ro - beam_o;
+		vec3  rdp = rd - dot(rd, beam_d) * beam_d;
+		vec3  ocp = oc - dot(oc, beam_d) * beam_d;
+		float a   = dot(rdp, rdp);
+		float b   = 2.0 * dot(rdp, ocp);
+		float cc  = dot(ocp, ocp) - beam_r * beam_r;
+		float dsc = b * b - 4.0 * a * cc;
+
+		if (dsc < 0.0 || a < 1e-6) { fragColor = vec4(0.0); return; }
+
+		float sq      = sqrt(dsc);
+		float t0      = (-b - sq) / (2.0 * a);
+		float t1      = (-b + sq) / (2.0 * a);
+		if (t1 < 0.0) { fragColor = vec4(0.0); return; }
+
+		float t_enter = max(t0, 0.0);
+		float t_exit  = t1;
+
+		// cap to beam length along beam_d
+		float s0  = dot(oc, beam_d);
+		float drd = dot(rd, beam_d);
+		if (abs(drd) > 1e-6) {
+			float tc0 = -s0 / drd;
+			float tc1 = (beam_l - s0) / drd;
+			t_enter = max(t_enter, min(tc0, tc1));
+			t_exit  = min(t_exit,  max(tc0, tc1));
+		}
+		if (t_exit <= t_enter) { fragColor = vec4(0.0); return; }
+
+		float dt    = (t_exit - t_enter) / 48.0;
+		vec3  col   = vec3(0.0);
+		float alpha = 0.0;
+		float ta    = ubo.time * 2.0;
+
+		for (int i = 0; i < 48; i++) {
+			if (alpha > 0.97) break;
+
+			float t   = t_enter + (float(i) + 0.5) * dt;
+			vec3  p   = ro + rd * t;
+			float at  = clamp(dot(p - beam_o, beam_d), 0.0, beam_l);
+			vec3  pax = beam_o + beam_d * at;
+			vec3  rv  = p - pax;
+			float r      = length(rv);
+			float taper  = max(0.08, 1.0 - at / beam_l * 0.70);
+			float rn     = r / (beam_r * taper);
+ 
+			// plasma: turbulent multi-frequency interference concentrating at core
+			float plasma = sin(p.x * 14.0 + p.z *  9.0 + ta * 5.2) * 0.33
+			             + sin(p.y * 11.0 + p.x * 16.0 - ta * 4.3) * 0.33
+			             + sin(p.z * 18.0 + p.y * 12.0 + ta * 6.1) * 0.34;
+			plasma = clamp(plasma * 0.5 + 0.5, 0.0, 1.0);
+ 
+			// ripples: sharp rings traveling along beam axis toward viewer
+			float ripple = pow(max(sin(at * 11.0 - ta * 7.5) * 0.5 + 0.5, 0.0), 2.5);
+
+			// spirals: 3-arm helix winding along axis, attenuating outward
+			float uc     = dot(rv, b_tang);
+			float vc     = dot(rv, b_binor);
+			float ang    = atan(vc, uc);
+			float sphase = ang * 3.0 + at * 6.0 - ta * 3.8;
+			float spiral = pow(max(sin(sphase) * 0.5 + 0.5, 0.0), 1.5);
+
+			// density: gaussian base modulated by plasma/ripples/spirals
+			float inner   = 1.0 - smoothstep(0.0, 0.30, rn);
+			float shell   = smoothstep(0.0, 0.30, rn) * (1.0 - smoothstep(0.30, 1.0, rn));
+			float outer   = max(0.0, 1.0 - rn);
+			float base    = exp(-rn * rn * 7.0);
+			float mod     = inner  * (0.5 + plasma * 0.5)
+			              + shell  * ripple * 0.5
+			              + outer  * spiral * 0.4;
+			float axis_f  = at / beam_l;
+			float f       = max(0.0, 1.0 - at / 2.0);
+			float fade    = f * f;
+			float density = base * clamp(mod, 0.0, 1.0) * fade;
+
+			// fade in at origin, tip fade handled by smoothstep above
+			float cap     = smoothstep(0.0, 0.06, axis_f);
+
+			// color: plasma white-orange core -> blue shaft -> purple halo
+			vec3 c_core  = vec3(2.8, 1.5, 0.4);
+			vec3 c_shaft = vec3(0.4, 0.7, 3.2);
+			vec3 c_halo  = vec3(0.45, 0.08, 1.4);
+			vec3 sc      = mix(c_core,  c_shaft, smoothstep(0.0,  0.20, rn));
+			sc           = mix(sc,      c_halo,  smoothstep(0.30, 0.85, rn));
+
+			float emit = density * dt * 18.0 * cap;
+
+            emit *= 1.0;
+			col       += sc * emit * (1.0 - alpha);
+			alpha     += emit * (1.0 - alpha);
+		}
+
+		// -- funnel plasma: bowl-shaped swirling layer over the turbine face --
+		// rim sits at model origin (flat at outer edge), apex is cone_h below
+		vec3  disk_o  = (ubo.model * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+		float disk_r  = 0.22;
+		float cone_h  = 0.16;
+		float r_inner = 0.04;
+		vec3  apex    = disk_o - beam_d * cone_h;
+		float cos2phi = (cone_h * cone_h) / (cone_h * cone_h + disk_r * disk_r);
+ 
+		vec3  foc = ro - apex;
+		float fAd = dot(rd, beam_d);
+		float fBd = dot(foc, beam_d);
+		float fqa = dot(rd, rd) * cos2phi - fAd * fAd;
+		float fqb = 2.0 * (dot(foc, rd) * cos2phi - fAd * fBd);
+		float fqc = dot(foc, foc) * cos2phi - fBd * fBd;
+		float fdisc = fqb * fqb - 4.0 * fqa * fqc;
+		if (false && fdisc >= 0.0 && abs(fqa) > 1e-8) {
+			float fsq  = sqrt(fdisc);
+			float ft0  = (-fqb - fsq) / (2.0 * fqa);
+			float ft1  = (-fqb + fsq) / (2.0 * fqa);
+			float ft_hit  = -1.0;
+			float fat_hit = 0.0;
+			vec3  fpr_hit = vec3(0.0);
+			for (int fi = 0; fi < 2; fi++) {
+				float ftc = (fi == 0) ? min(ft0, ft1) : max(ft0, ft1);
+				if (ftc < 1e-4) continue;
+				vec3  fpc = ro + rd * ftc;
+				float fat = dot(fpc - apex, beam_d);
+				if (fat < 0.0 || fat > cone_h) continue;
+				vec3  fpr = fpc - apex - fat * beam_d;
+				if (length(fpr) < r_inner) continue;
+				ft_hit  = ftc;
+				fat_hit = fat;
+				fpr_hit = fpr;
+				break;
+			}
+			if (ft_hit >= 0.0) {
+				float fuc  = dot(fpr_hit, b_tang);
+				float fvc  = dot(fpr_hit, b_binor);
+				float frn  = fat_hit / cone_h;
+				float fr   = length(fpr_hit);
+				// slow swirl + turbulent drift
+				float sw  = ta * 2.888;
+				float rcs = cos(sw), rss = sin(sw);
+				float rx  = fuc * rcs - fvc * rss;
+				float ry  = fuc * rss + fvc * rcs;
+				// -fr*K makes crests travel inward toward center
+				float n1 = sin(rx * 7.0  + ry * 5.3  - fr * 9.0  - ta * 1.4) * sin(ry * 9.1  - rx * 3.7 - fr * 7.0 + ta * 1.1);
+				float n2 = sin(rx * 12.3 - ry * 8.7  - fr * 11.0 + ta * 1.2) * sin(rx * 4.1  + ry * 11.3 - fr * 6.0 + ta * 0.9);
+				float n3 = sin(rx * 5.7  + ry * 14.1 - fr * 8.0  - ta * 1.3);
+				float fplasma = clamp(n1 * 0.45 + n2 * 0.35 + n3 * 0.13 + 0.55, 0.0, 1.0);
+				float fradial  = smoothstep(0.0, 0.06, frn) * (1.0 - smoothstep(0.82, 1.0, frn));
+				// tokamak palette: white-hot core -> magenta -> deep crimson rim
+				vec3  fc_core  = vec3(4.5, 3.0, 4.2);
+				vec3  fc_mid   = vec3(3.2, 0.15, 1.8);
+				vec3  fc_rim   = vec3(1.0, 0.02, 0.08);
+				vec3  fsc = mix(fc_core, fc_mid, smoothstep(0.0,  0.35, frn));
+				fsc       = mix(fsc,     fc_rim, smoothstep(0.35, 0.82, frn));
+				float fa  = fplasma * fradial * 0.90;
+				col  += fsc * fa * (1.0 - alpha);
+				alpha = clamp(alpha + fa * (1.0 - alpha), 0.0, 1.0);
+			}
+		}
+
+		fragColor = vec4(col, clamp(alpha, 0.0, 1.0));
+	}
+
+
+element World
+    context vk               : vk_context
+    intern target            : Render
+    intern model             : Model
+    intern s                 : shader
+    intern aura              : Aura
+    intern aura_model        : Model
+    public model_path        : string
+    public shader_type       : string
+    public environment_path  : string
+    public render_scale      : f32
+    public clear_color       : vec4f
+    public rotate            : array Rotation
+    public translate         : array Translation
+    public scale             : array Scaling
+    public update            : EventDispatch
+    public eye_pos           : vec3f
+    public target_pos        : vec3f
+    public up_vec            : vec3f
+    public fov               : f32
+    public environment_yaw   : f32
+    public environment_pitch : f32
+
+    intern placeholder_degs  : f32
+
+    func init [ ]
+        if [ model_path ]
+            model = Model [ vk: vk ]
+            gltf  : path [ model_path ]
+            model.id = gltf.load[ typeid[ GltfModel ], null ]
+
+        if [ shader_type && shader_type.count ]
+            f : Au_t [ Au.find_type [ shader_type.chars, null ] ]
+            if [ f ]
+                s     = Au.new_object[ f, null, null, false ]
+                s.vk  = vk
+                s.initialize[]
+                if [ model ]
+                    model.s = s
+
+        if [ model && environment_path && environment_path.count ]
+            env_img  : Image [ uri: path[ environment_path ], surface: Surface.environment ]
+            env_axis : vec3f [ 0.0, 1.0, 0.0 ]
+            env_tex  : environment[ vk, env_img, env_axis, 0.0 ]
+            model.samplers[ 'environment' ] = env_tex
+
+
+    func create_target[]
+        w_ref : Window [ ux ]
+        if [ target ]
+            return
+
+        if [ !aura ]
+            aura = Aura [ vk: vk ]
+
+        aura_model = Model [ vk: vk, w: w_ref ]
+        aura_model.s = aura
+
+        all_models : array Model [ alloc: 4 ]
+        if [ model ] all_models.push[ model ]
+        all_models.push[ aura_model ]
+
+        width  : i32 [ bounds.w * render_scale ]
+        height : i32 [ bounds.h * render_scale ]
+        target = Render [
+            vk:          vk,
+            w:           w_ref,
+            width:       width,
+            height:      height,
+            use_depth:   true,
+            reduce:      (render_scale == 4.0) ? true : false,
+            clear_color: clear_color,
+            models:      all_models ]
+        w_ref.element_targets[ id ] = target
+
+        target.width  = width
+        target.height = height
+        target.wscale = 0.0
+
+    func draw [ w: Window ]
+        #expect update, 'update subs not set'
+
+        create_target[]
+        if [ !target ] return
+        
+        # build model transform from rotate/translate/scale
+        model_mat : mat4f.identity[]
+        s0 : Scaling    [ (scale     && scale.count     > 0) ? scale.peek[0]     : null ]
+        t0 : Translation[ (translate && translate.count > 0) ? translate.peek[0] : null ]
+        #if [ s0 ]
+        #    model_mat = model_mat.scale[ s0.value ]
+        placeholder_degs += 0.22
+        for [r:Rotation] in rotate
+            v     : vec4f [ r.axis.x, r.axis.y, r.axis.z, radians[ r.degs ] ]
+            q     : quatf [ v ]
+            r_mat : mat4f [ mat4f.identity[].rotate[ q ] ]
+            model_mat = r_mat.mul[ model_mat ]
+        #if [ t0 ]
+        #    model_mat = model_mat.translate[ t0.value ]
+
+
+        e_pos : vec3f [ (eye_pos.x != 0.0 || eye_pos.y != 0.0 || eye_pos.z != 0.0) ? eye_pos : vec3f [ 0.0f, 3.5f, -2.0f ] ]
+        t_pos : vec3f [ (target_pos.x != 0.0 || target_pos.y != 0.0 || target_pos.z != 0.0) ? target_pos : vec3f [ 0.0f, 0.0f, 0.0f ] ]
+        u_vec : vec3f [ (up_vec.x != 0.0 || up_vec.y != 0.0 || up_vec.z != 0.0) ? up_vec : vec3f [ 0.0f, -1.0f, 0.0f ] ]
+        f     : f32   [ (fov > 0.0) ? fov : 40.0f ]
+        _proj : mat4f [ mat4f.perspective[ radians[ f ], 1.0f, 0.1f, 100.0f ] ]
+        _view : mat4f [ mat4f.look_at[ e_pos, t_pos, u_vec ] ]
+        _pos  : vec4f [ e_pos.x, e_pos.y, e_pos.z, 1.0f ]
+
+        pbr : PBR [ s ]
+        if [ pbr ]
+            pbr.model   = model_mat
+            pbr.proj    = _proj
+            pbr.view    = _view
+            pbr.pos     = _pos
+            pbr.env_yaw   = radians[ environment_yaw ]
+            pbr.env_pitch = radians[ environment_pitch ]
+
+        if [ aura ]
+            aura.model   = model_mat
+            aura.proj    = _proj
+            aura.view    = _view
+            aura.cam_pos = _pos
+            aura.time    += 0.01
+
+
+        target.update[]
+
+        #expect update, '{id}_update sub not declared by the app'
+        ev : Event[ target: a ]
+        update.invoke[ ev ]
+
+        tex : Texture [ (target.reduce && target.reduction) ? target.reduction : target.color ]
+        w.screen.draw_image[ tex, bounds ]
+
+
+##
+shader Aura2
     mutable model          : mat4f
     mutable view           : mat4f
     mutable proj           : mat4f
@@ -862,7 +1414,8 @@ shader Aura
         beam.fill_color[ '#aff' ]
         beam.paint[]
 
- 
+ ##
+
 PBR Orbiter
     mutable pos_radius      : vec4f
     mutable normal_falloff  : vec4f
@@ -873,6 +1426,7 @@ PBR Orbiter
 
     func init []
         no-op
+
 
 
 element Editor
@@ -904,18 +1458,16 @@ trinity orbiter
 
     public test44 : Button
 
-
     func init []
         width:  1488
         height: 888
     
     public func on_render [ w: Window ] -> Elements
         return Elements [
-            "test22": Button [ label:'test22' ],
-            "test44": Button [ label:'test44' ],
-            #"edit"  : Editor [ ]
-            "avatar": World  [ model_path: 'models/orbiter4.gltf', shader_type: 'PBR', environment_path: 'images/forest.exr' ]
-        ]
+            "toolbar": Toolbar [
+
+            ],
+            "avatar": World  [ ] ]
 
     func load_scene []
         # 1) load the earth gltf mesh — shared by earth/ocean/cloud passes
@@ -975,7 +1527,7 @@ trinity orbiter
 
         # camera orbits around the earth (Y axis); earth stays fixed so the
         # sunlight direction sweeps across the surface as we go around.
-        time -= 0.0044
+        time -= 0.0244
         orbit_a : f32 [ radians[ time ] ]
         co      : f32 [ cos[ orbit_a ] ]
         so      : f32 [ sin[ orbit_a ] ]

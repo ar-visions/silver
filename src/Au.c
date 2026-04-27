@@ -3258,7 +3258,7 @@ none Au_drop_members(Au a) {
                 //printf("Au_dealloc: drop member %s.%s (%s)\n", type->ident, m->ident, m->type->ident);
                 Au*  ref = (Au*)((u8*)a + m->offset);
                 Au info = head(*ref);
-                drop(*ref);
+                Au_drop(*ref);
                 *ref = null;
             }
         }
@@ -3831,6 +3831,13 @@ bool Au_member_set(Au a, Au_t m, Au value) {
     if (m->type->is_struct) {
         verify(m->type->typesize == vtype->typesize * vinfo->count,
             "vector size mismatch for %s", m->ident);
+    
+        if (strcmp(m->ident, "baseColorFactor") == 0) {    
+            float* fv = (float*)value;                            
+            printf("member_set baseColorFactor: src=(%f,%f,-%f,%f) vtype=%s vcount=%d\n", 
+                fv[0], fv[1], fv[2], fv[3], vtype->ident, (int)vinfo->count);
+        }
+
         memcpy(member_ptr, value, m->type->typesize);
     } else if (m->type->is_enum || m->type->is_inlay || m->type->is_primitive) {
         Au_t ref = m->type->meta.a;
@@ -6824,7 +6831,8 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             }
 
             if (!json_type && !mem && !is_map && !context) {
-                print("property '%o' not found in type: %s", name, use_schema->ident);
+                printf("parse_object: unknown field '%s' in type %s, near: %.40s\n",
+                    name ? name->chars : "?", use_schema ? use_schema->ident : "?", scan);
                 return null;
             }
             
@@ -6890,14 +6898,23 @@ static array parse_array_objects(cstr* s, Au_t element_type, ctx context) {
             scan = ws(&scan[1]);
             break;
         }
+        cstr before = scan;
         Au a = parse_object(scan, element_type, null, &scan, context);
+        if (!scan) {
+            if (element_type) printf("parse_array_objects: parse_object returned null scan for element_type=%s, near: %.40s\n", element_type->ident, before);
+            break;
+        }
         push(res, a);
         scan = ws(scan);
         if (scan && scan[0] == ',') {
             scan = ws(&scan[1]);
             continue;
         }
+        if (scan && scan[0] != ']') {
+            if (element_type) printf("parse_array_objects: unexpected char '%c' after element, near: %.40s\n", scan[0], scan);
+        }
     }
+    if (element_type) printf("parse_array_objects: element_type=%s count=%d\n", element_type->ident, len(res));
     *s = scan;
     return res;
 }
@@ -6909,6 +6926,11 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
     Au res = null;
     if (!schema || (schema == typeid(array) || schema->src == typeid(array))) {
         Au_t element_type = meta_type ? meta_type : (schema ? schema->meta.a : typeid(map));
+        printf("parse_array: schema=%s src=%s meta.a=%s element_type=%s near: %.40s\n",
+            schema ? schema->ident : "null",
+            (schema && schema->src) ? schema->src->ident : "null",
+            (schema && schema->meta.a) ? schema->meta.a->ident : "null",
+            element_type ? element_type->ident : "null", scan);
         res = (Au)parse_array_objects(&scan, element_type, context);
     } else if (schema->meta.a == typeid(i64)) { // should support all vector types of i64 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(i64), context);
@@ -6920,6 +6942,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
             ((i64*)res)[n++] = *(i64*)a;
         }
     } else if (schema->meta.a == typeid(f32)) { // should support all vector types of f32 (needs type bounds check with vmember_count)
+        printf("parse_array f32-vec schema=%s near: %.60s\n", schema->ident, scan);
         array arb = parse_array_objects(&scan, typeid(f32), context);
         int vcount = len(arb);
         res = alloc(typeid(f32), vcount, null, null, null);
@@ -6931,6 +6954,9 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
             else if (a_type == typeid(f64)) ((f32*)res)[n++] =  (float)*(double*)a;
             else fault("unexpected type");
         }
+        printf("parse_array f32-vec result: count=%d vals=", vcount);
+        for (int _i = 0; _i < vcount && _i < 4; _i++) printf("%f ", ((float*)res)[_i]);
+        printf("\n");
     } else if (constructs_with(schema, typeid(array))) {
         // i forget where we use this!
         array arb = parse_array_objects(&scan, typeid(i64), context);
@@ -7016,6 +7042,7 @@ static string extract_context(cstr src, cstr *endptr) {
 }
 
 Au parse(Au_t schema, cstr s, ctx context) {
+    printf("parse: schema=%s\n", schema ? schema->ident : "null");
     if (context) {
         if (!ctx_checksums) ctx_checksums = hold(map(hsize, 32));
         string key = f(string, "%p", context);
