@@ -5162,7 +5162,7 @@ string compile_implements(silver a, array files, string cflags) {
 
 static void deploy_resources(path src, path dst);
 
-static void hardlink_resources(path src, path dst) {
+static void symlink_resources(path src, path dst) {
     DIR *dir = opendir(src->chars);
     if (!dir) return;
     struct dirent *entry;
@@ -5170,14 +5170,15 @@ static void hardlink_resources(path src, path dst) {
         if (entry->d_name[0] == '.') continue;
         path s = form(path, "%o/%s", src, entry->d_name);
         path d = form(path, "%o/%s", dst, entry->d_name);
+        path abs_s = absolute(s);
         if (entry->d_type == DT_DIR) {
             make_dir(d);
-            hardlink_resources(s, d);
+            symlink_resources(s, d);
         } else {
             struct stat st;
             if (lstat(d->chars, &st) == 0)
                 unlink(d->chars);
-            link(s->chars, d->chars);
+            symlink(abs_s->chars, d->chars);
         }
     }
     closedir(dir);
@@ -5443,7 +5444,7 @@ none silver_build(silver a) {
                 unlink(dst->chars);
             if (a->debug) {
                 make_dir(dst);
-                hardlink_resources(res, dst);
+                symlink_resources(res, dst);
             } else {
                 make_dir(dst);
                 deploy_resources(res, dst);
@@ -7337,10 +7338,11 @@ static array read_expression(silver a, etype *mdl_res, bool *is_const) {
 static array read_enode_tokens(silver a) {
     array exprs = array(32);
     int s = a->cursor;
+    bool prev_no_build = a->no_build;
     a->no_build = true;
     a->is_const_op = true; // set this, and it can only &= to true with const ops; any build op sets to false
     enode n = read_enode(a, null, false, true);
-    a->no_build = false;
+    a->no_build = prev_no_build;
     int e = a->cursor;
     for (int i = s; i < e; i++) {
         push(exprs, (Au)a->tokens->origin[i]);

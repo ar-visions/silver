@@ -1689,13 +1689,606 @@ struct EventDispatch
         callbacks += call
 
 
-class SVG
-    public w        : f32
-    public h        : f32
-    public rw       : f32
-    public rh       : f32
-    public svg_dom  : handle
+# ---- SVG model ----
 
+enum SVGOp
+    move  : 0
+    line  : 1
+    cubic : 2
+    quad  : 3
+    close : 4
+
+
+struct SVGCmd
+    op : SVGOp
+    x  : f32
+    y  : f32
+    x1 : f32
+    y1 : f32
+    x2 : f32
+    y2 : f32
+
+
+class SVGShape
+    public cmds        : array SVGCmd
+    public fill        : rgba
+    public stroke      : rgba
+    public sw          : f32
+    public fill_none   : bool
+    public stroke_none : bool
+    public opacity     : f32
+
+
+class SVGModel
+    public w          : f32
+    public h          : f32
+    public shapes     : array SVGShape
+    public cache      : Canvas
+    public cache_rw   : f32
+    public cache_rh   : f32
+
+    construct [ src: path ]
+        expect src.exists, 'svg-path does not exist: {src}'
+        f : string src.load[ typeid[string], null ]
+        load[ f ]
+
+    construct [ p: string ]
+        src : path [ p ]
+        expect src.exists, 'svg-path does not exist: {p}'
+        f : src.load[ typeid[string], null ]
+        load[ f ]
+
+    public func load [ text: string ]
+        parser   : SVGParser []
+        root     : SVGNode parser.parse_doc[ text ]
+        if [ !root ]
+            return
+        svg_node : SVGNode null
+        if [ root.tag == 'svg' ]
+            svg_node = root
+        el
+            for [ c: SVGNode ] in root.children
+                if [ c.tag == 'svg' ]
+                    svg_node = c
+                    break
+        if [ !svg_node ]
+            return
+        vb_x : f32 0.0
+        vb_y : f32 0.0
+        vb   : string svg_node.attr[ 'viewBox' ]
+        if [ vb ]
+            vp : array string vb.split[ ' ' ]
+            if [ vp.count >= 4 ]
+                vb_x = f32 vp[0].real_value[]
+                vb_y = f32 vp[1].real_value[]
+                w    = f32 vp[2].real_value[]
+                h    = f32 vp[3].real_value[]
+        if [ w == 0.0 ] w = svg_node.attr_f[ 'width',  0.0 ]
+        if [ h == 0.0 ] h = svg_node.attr_f[ 'height', 0.0 ]
+        if [ w == 0.0 && h > 0.0 ] w = h
+        if [ h == 0.0 && w > 0.0 ] h = w
+        if [ w == 0.0 ] w = 100.0
+        if [ h == 0.0 ] h = 100.0
+        xf0 : affine affine.identity[].translate[ -vb_x, -vb_y ]
+        st0 : SVGState [
+            fill:          vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+            stroke:        vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+            sw:            1.0,
+            fill_none:     false,
+            stroke_none:   true,
+            fill_opacity:  1.0,
+            stroke_opacity:1.0,
+            opacity:       1.0
+        ]
+        shapes = array SVGShape []
+        shapes.hold[]
+        svg_walk[ shapes, svg_node.children, xf0, st0 ]
+        #max_shapes : i32 512
+        #while [ shapes.count > max_shapes ]
+        #    shapes.pop[]
+
+    public func render [ cv: Canvas, ox: f32, oy: f32, rw_in: f32, rh_in: f32 ]
+        if [ !shapes || shapes.count == 0 ]
+            return
+        sx      : f32 (w > 0.0) ? rw_in / w : 1.0
+        sy      : f32 (h > 0.0) ? rh_in / h : 1.0
+        s       : f32 min[ sx, sy ]
+        off_x   : f32 ox + (rw_in - w * s) * 0.5
+        off_y   : f32 oy + (rh_in - h * s) * 0.5
+        for [ shape: SVGShape ] in shapes
+            fc : rgba[ '#00000000' ]
+            sc : rgba[ '#00000000' ]
+            if [ !shape.fill_none && shape.fill ]
+                fc.r = shape.fill.r
+                fc.g = shape.fill.g
+                fc.b = shape.fill.b
+                fc.a = shape.fill.a
+            if [ !shape.stroke_none && shape.stroke ]
+                sc.r = shape.stroke.r
+                sc.g = shape.stroke.g
+                sc.b = shape.stroke.b
+                sc.a = shape.stroke.a
+            cv.save[]
+            cv.set_opacity[ shape.opacity ]
+            cv.fill_color [ fc ]
+            cv.stroke_color[ sc ]
+            sw_ : f32 (shape.stroke_none) ? 0.0 : shape.sw * s
+            cv.set_stroke_size[ sw_ ]
+            for [ cmd: SVGCmd ] in shape.cmds
+                cx_ : f32 off_x + cmd.x * s
+                cy_ : f32 off_y + cmd.y * s
+                if [ cmd.op == SVGOp.move ]
+                    cv.move_to[ cx_, cy_ ]
+                el [ cmd.op == SVGOp.line ]
+                    cv.line_to[ cx_, cy_ ]
+                el [ cmd.op == SVGOp.cubic ]
+                    cv.cubic_to[
+                        off_x + cmd.x1 * s, off_y + cmd.y1 * s,
+                        off_x + cmd.x2 * s, off_y + cmd.y2 * s,
+                        cx_, cy_ ]
+                el [ cmd.op == SVGOp.quad ]
+                    cv.quad_to[
+                        off_x + cmd.x1 * s, off_y + cmd.y1 * s,
+                        cx_, cy_ ]
+                el [ cmd.op == SVGOp.close ]
+                    cv.close_path[]
+            cv.paint[]
+            cv.restore[]
+
+
+# ---- SVG parse-time state ----
+
+struct SVGState
+    fill          : vec4f
+    stroke        : vec4f
+    sw            : f32
+    fill_none     : bool
+    stroke_none   : bool
+    fill_opacity  : f32
+    stroke_opacity: f32
+    opacity       : f32
+
+
+
+# ---- SVG XML node ----
+
+class SVGNode
+    public tag      : string
+    public attrs    : map string[string]
+    public children : array SVGNode
+
+    func attr [ name: string ] -> string
+        return (attrs) ? attrs[ name ] : null
+
+    func attr_f [ name: string, def: f32 ] -> f32
+        v : string attr[ name ]
+        if [ v ]
+            return f32 v.real_value[]
+        return def
+
+
+# ---- SVG XML parser ----
+
+class SVGParser
+    intern src : string
+    intern pos : num
+
+    func at [] -> i32
+        if [ pos < src.count ]
+            return src.chars[pos]
+        return 0
+
+    func next [ n_: num ] -> i32
+        p : num pos + n_
+        if [ p < src.count ]
+            return src.chars[p]
+        return 0
+
+    func skip_ws []
+        while [ pos < src.count ]
+            c : i32 src.chars[pos]
+            if [ c == ' ' || c == '\t' || c == '\n' || c == '\r' ]
+                pos += 1
+            el
+                break
+
+    func is_name_ch [ c: i32 ] -> bool
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c == '_' || c == '-' || c == ':' || c == '.'
+
+    func read_name [] -> string
+        s : num pos
+        while [ pos < src.count && is_name_ch[ src.chars[pos] ] ]
+            pos += 1
+        return src.mid[ s, pos - s ]
+
+    func read_quoted [] -> string
+        q : i32 src.chars[pos]
+        if [ q != '"' && q != '\'' ]
+            return null
+        pos += 1
+        s : num pos
+        while [ pos < src.count && src.chars[pos] != q ]
+            pos += 1
+        v : string src.mid[ s, pos - s ]
+        if [ pos < src.count ] pos += 1
+        return v
+
+    func parse_attrs [] -> map string[string]
+        m : map string[string][]
+        while [ pos < src.count ]
+            skip_ws[]
+            c : i32 at[]
+            if [ c == '>' || c == '/' || c == 0 ]
+                break
+            name : string read_name[]
+            if [ name.count == 0 ]
+                pos += 1
+                continue
+            skip_ws[]
+            if [ at[] == '=' ]
+                pos += 1
+                skip_ws[]
+                val : string read_quoted[]
+                if [ val ] m.set[ name, val ]
+        return m
+
+    func parse_element [] -> SVGNode
+        if [ at[] != '<' ]
+            return null
+        pos += 1
+        c : i32 at[]
+        if [ c == '!' ]
+            pos += 1
+            if [ at[] == '-' && next[1] == '-' ]
+                pos += 2
+                while [ pos + 2 < src.count ]
+                    if [ src.chars[pos] == '-' && src.chars[pos+1] == '-' && src.chars[pos+2] == '>' ]
+                        pos += 3
+                        return null
+                    pos += 1
+            el
+                while [ pos < src.count && at[] != '>' ] pos += 1
+                if [ pos < src.count ] pos += 1
+            return null
+        if [ c == '?' ]
+            while [ pos + 1 < src.count ]
+                if [ src.chars[pos] == '?' && src.chars[pos+1] == '>' ]
+                    pos += 2
+                    return null
+                pos += 1
+            return null
+        if [ c == '/' ]
+            pos -= 1
+            return null
+        tag : string read_name[]
+        if [ tag.count == 0 ]
+            while [ pos < src.count && at[] != '>' ] pos += 1
+            if [ pos < src.count ] pos += 1
+            return null
+        skip_ws[]
+        node : SVGNode [ tag: tag, attrs: parse_attrs[], children: array SVGNode[] ]
+        skip_ws[]
+        if [ at[] == '/' ]
+            pos += 1
+            if [ at[] == '>' ] pos += 1
+            return node
+        if [ at[] == '>' ] pos += 1
+        while [ pos < src.count ]
+            skip_ws[]
+            if [ pos >= src.count ] break
+            if [ at[] == '<' ]
+                if [ next[1] == '/' ]
+                    while [ pos < src.count && at[] != '>' ] pos += 1
+                    if [ pos < src.count ] pos += 1
+                    return node
+                child : SVGNode parse_element[]
+                if [ child ] node.children.push[ child ]
+            el
+                while [ pos < src.count && at[] != '<' ] pos += 1
+        return node
+
+    func parse_doc [ text: string ] -> SVGNode
+        src = text
+        pos = 0
+        root : SVGNode null
+        while [ pos < src.count ]
+            skip_ws[]
+            if [ pos >= src.count ] break
+            if [ at[] == '<' ]
+                n_ : SVGNode parse_element[]
+                if [ n_ && n_.tag.count > 0 && !root ]
+                    root = n_
+            el
+                pos += 1
+        return root
+
+
+# ---- SVG path builder ----
+
+class SVGPathBuilder
+    intern d   : string
+    intern pos : num
+    intern n   : num
+    intern cx  : f32
+    intern cy  : f32
+    intern sx  : f32
+    intern sy  : f32
+    intern lx  : f32
+    intern ly  : f32
+    intern cmds: array SVGCmd
+
+    func skip_sep []
+        while [ pos < n ]
+            c : i32 d.chars[pos]
+            if [ c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ',' ]
+                pos += 1
+            el
+                break
+
+    func read_num [] -> f32
+        skip_sep[]
+        s : num pos
+        has_dot : bool false
+        if [ pos < n && (d.chars[pos] == '-' || d.chars[pos] == '+') ]
+            pos += 1
+        while [ pos < n ]
+            c : i32 d.chars[pos]
+            if [ c >= '0' && c <= '9' ]
+                pos += 1
+            el [ c == '.' && !has_dot ]
+                has_dot = true
+                pos += 1
+            el [ (c == 'e' || c == 'E') && pos > s ]
+                pos += 1
+                if [ pos < n && (d.chars[pos] == '-' || d.chars[pos] == '+') ]
+                    pos += 1
+                has_dot = true
+            el
+                break
+        return (pos > s) ? f32 d.mid[ s, pos - s ].real_value[] : 0.0
+
+    func cmd_move [ xf: affine, x: f32, y: f32 ]
+        tx : f32 xf.apply_x[ x, y ]
+        ty : f32 xf.apply_y[ x, y ]
+        cmds.push[ SVGCmd [ op: SVGOp.move, x: tx, y: ty, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0 ] ]
+        cx = x
+        cy = y
+        sx = x
+        sy = y
+        lx = cx
+        ly = cy
+
+    func cmd_line [ xf: affine, x: f32, y: f32 ]
+        tx : f32 xf.apply_x[ x, y ]
+        ty : f32 xf.apply_y[ x, y ]
+        cmds.push[ SVGCmd [ op: SVGOp.line, x: tx, y: ty, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0 ] ]
+        cx = x
+        cy = y
+        lx = cx
+        ly = cy
+
+    func cmd_cubic [ xf: affine, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32 ]
+        cmds.push[ SVGCmd [
+            op: SVGOp.cubic,
+            x:  xf.apply_x[ x,   y   ], y:  xf.apply_y[ x,   y   ],
+            x1: xf.apply_x[ c1x, c1y ], y1: xf.apply_y[ c1x, c1y ],
+            x2: xf.apply_x[ c2x, c2y ], y2: xf.apply_y[ c2x, c2y ]
+        ] ]
+        lx = c2x
+        ly = c2y
+        cx = x
+        cy = y
+
+    func cmd_quad [ xf: affine, qx: f32, qy: f32, x: f32, y: f32 ]
+        cmds.push[ SVGCmd [
+            op: SVGOp.quad,
+            x:  xf.apply_x[ x,  y  ], y:  xf.apply_y[ x,  y  ],
+            x1: xf.apply_x[ qx, qy ], y1: xf.apply_y[ qx, qy ],
+            x2: 0.0, y2: 0.0
+        ] ]
+        lx = qx
+        ly = qy
+        cx = x
+        cy = y
+
+    func cmd_close []
+        cmds.push[ SVGCmd [ op: SVGOp.close, x: 0.0, y: 0.0, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0 ] ]
+        cx = sx
+        cy = sy
+        lx = cx
+        ly = cy
+
+    func arc_seg [ xf: affine, ecx: f32, ecy: f32, rx: f32, ry: f32, cph: f32, sph: f32, t1: f32, t2: f32 ]
+        cs1 : f32 cos[ t1 ]
+        sn1 : f32 sin[ t1 ]
+        cs2 : f32 cos[ t2 ]
+        sn2 : f32 sin[ t2 ]
+        dt  : f32 t2 - t1
+        ht  : f32 dt * 0.5
+        tht : f32 tan[ ht ]
+        alp : f32 sin[ dt ] * (f32 sqrt[ 4.0 + 3.0 * tht * tht ] - 1.0) / 3.0
+        p1x : f32 ecx + rx * cs1 * cph - ry * sn1 * sph
+        p1y : f32 ecy + rx * cs1 * sph + ry * sn1 * cph
+        p2x : f32 ecx + rx * cs2 * cph - ry * sn2 * sph
+        p2y : f32 ecy + rx * cs2 * sph + ry * sn2 * cph
+        dx1 : f32 rx * (-sn1) * cph - ry * cs1 * sph
+        dy1 : f32 rx * (-sn1) * sph + ry * cs1 * cph
+        dx2 : f32 rx * (-sn2) * cph - ry * cs2 * sph
+        dy2 : f32 rx * (-sn2) * sph + ry * cs2 * cph
+        cmd_cubic[ xf, p1x + alp*dx1, p1y + alp*dy1, p2x - alp*dx2, p2y - alp*dy2, p2x, p2y ]
+
+    func do_arc [ xf: affine, x2: f32, y2: f32, rx_: f32, ry_: f32, phi_deg: f32, la: i32, sw_: i32 ]
+        x1 : f32 cx
+        y1 : f32 cy
+        if [ x1 == x2 && y1 == y2 ] return
+        if [ rx_ == 0.0 || ry_ == 0.0 ]
+            cmd_line[ xf, x2, y2 ]
+            return
+        rx  : f32 abs[ rx_ ]
+        ry  : f32 abs[ ry_ ]
+        phi : f32 radians[ phi_deg ]
+        cph : f32 cos[ phi ]
+        sph : f32 sin[ phi ]
+        dx  : f32 (x1 - x2) * 0.5
+        dy  : f32 (y1 - y2) * 0.5
+        x1p : f32  cph * dx + sph * dy
+        y1p : f32 -sph * dx + cph * dy
+        lam : f32 (x1p*x1p)/(rx*rx) + (y1p*y1p)/(ry*ry)
+        if [ lam > 1.0 ]
+            sl : f32 sqrt[ lam ]
+            rx *= sl
+            ry *= sl
+        num_ : f32 rx*rx*ry*ry - rx*rx*y1p*y1p - ry*ry*x1p*x1p
+        den_ : f32 rx*rx*y1p*y1p + ry*ry*x1p*x1p
+        sq   : f32 (num_ > 0.0 && den_ > 0.0) ? f32 sqrt[ num_ / den_ ] : 0.0
+        if [ la == sw_ ] sq = -sq
+        cxp  : f32  sq * rx * y1p / ry
+        cyp  : f32 -sq * ry * x1p / rx
+        ecx  : f32 cph*cxp - sph*cyp + (x1+x2)*0.5
+        ecy  : f32 sph*cxp + cph*cyp + (y1+y2)*0.5
+        ux   : f32 (x1p - cxp) / rx
+        uy   : f32 (y1p - cyp) / ry
+        vx   : f32 (-x1p - cxp) / rx
+        vy   : f32 (-y1p - cyp) / ry
+        th1  : f32 atan2[ uy, ux ]
+        dth  : f32 atan2[ vy, vx ] - th1
+        if [ sw_ == 0 && dth > 0.0 ]  dth -= 6.28318530
+        el [ sw_ != 0 && dth < 0.0 ] dth += 6.28318530
+        nc_  : i32 ceil[ abs[ dth ] / 1.5707963 ]
+        ns   : i32 (nc_ > 1) ? nc_ : 1
+        dt   : f32 dth / f32 ns
+        for [ i: i32 0, i < ns, i += 1 ]
+            arc_seg[ xf, ecx, ecy, rx, ry, cph, sph, th1 + dt * f32 i, th1 + dt * f32 (i+1) ]
+
+    func build [ d_str: string, xf: affine ] -> array SVGCmd
+        d = d_str
+        n = d.count
+        pos = 0
+        cx = 0.0
+        cy = 0.0
+        sx = 0.0
+        sy = 0.0
+        lx = 0.0
+        ly = 0.0
+        cmds = array SVGCmd []
+        cmd_ : i32 0
+        while [ pos < n ]
+            skip_sep[]
+            if [ pos >= n ] break
+            c : i32 d.chars[pos]
+            is_cmd : bool (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+            if [ is_cmd ]
+                cmd_ = c
+                pos += 1
+                skip_sep[]
+                if [ cmd_ == 'Z' || cmd_ == 'z' ]
+                    cmd_close[]
+                    continue
+                if [ pos >= n ] break
+            if [ cmd_ == 'M' ]
+                x : f32 read_num[]
+                y : f32 read_num[]
+                cmd_move[ xf, x, y ]
+                cmd_ = 'L'
+            el [ cmd_ == 'm' ]
+                x : f32 cx + read_num[]
+                y : f32 cy + read_num[]
+                cmd_move[ xf, x, y ]
+                cmd_ = 'l'
+            el [ cmd_ == 'L' ]
+                x : f32 read_num[]
+                y : f32 read_num[]
+                cmd_line[ xf, x, y ]
+            el [ cmd_ == 'l' ]
+                x : f32 cx + read_num[]
+                y : f32 cy + read_num[]
+                cmd_line[ xf, x, y ]
+            el [ cmd_ == 'H' ]
+                cmd_line[ xf, read_num[], cy ]
+            el [ cmd_ == 'h' ]
+                cmd_line[ xf, cx + read_num[], cy ]
+            el [ cmd_ == 'V' ]
+                cmd_line[ xf, cx, read_num[] ]
+            el [ cmd_ == 'v' ]
+                cmd_line[ xf, cx, cy + read_num[] ]
+            el [ cmd_ == 'C' ]
+                c1x : f32 read_num[]
+                c1y : f32 read_num[]
+                c2x : f32 read_num[]
+                c2y : f32 read_num[]
+                x   : f32 read_num[]
+                y   : f32 read_num[]
+                cmd_cubic[ xf, c1x, c1y, c2x, c2y, x, y ]
+            el [ cmd_ == 'c' ]
+                c1x : f32 cx + read_num[]
+                c1y : f32 cy + read_num[]
+                c2x : f32 cx + read_num[]
+                c2y : f32 cy + read_num[]
+                x   : f32 cx + read_num[]
+                y   : f32 cy + read_num[]
+                cmd_cubic[ xf, c1x, c1y, c2x, c2y, x, y ]
+            el [ cmd_ == 'S' ]
+                rc1x : f32 2.0*cx - lx
+                rc1y : f32 2.0*cy - ly
+                c2x  : f32 read_num[]
+                c2y : f32 read_num[]
+                x    : f32 read_num[]
+                y   : f32 read_num[]
+                cmd_cubic[ xf, rc1x, rc1y, c2x, c2y, x, y ]
+            el [ cmd_ == 's' ]
+                rc1x : f32 2.0*cx - lx
+                rc1y : f32 2.0*cy - ly
+                c2x  : f32 cx + read_num[]
+                c2y : f32 cy + read_num[]
+                x    : f32 cx + read_num[]
+                y   : f32 cy + read_num[]
+                cmd_cubic[ xf, rc1x, rc1y, c2x, c2y, x, y ]
+            el [ cmd_ == 'Q' ]
+                qx : f32 read_num[]
+                qy : f32 read_num[]
+                x  : f32 read_num[]
+                y  : f32 read_num[]
+                cmd_quad[ xf, qx, qy, x, y ]
+            el [ cmd_ == 'q' ]
+                qx : f32 cx + read_num[]
+                qy : f32 cy + read_num[]
+                x  : f32 cx + read_num[]
+                y  : f32 cy + read_num[]
+                cmd_quad[ xf, qx, qy, x, y ]
+            el [ cmd_ == 'T' ]
+                rqx : f32 2.0*cx - lx
+                rqy : f32 2.0*cy - ly
+                x   : f32 read_num[]
+                y   : f32 read_num[]
+                cmd_quad[ xf, rqx, rqy, x, y ]
+            el [ cmd_ == 't' ]
+                rqx : f32 2.0*cx - lx
+                rqy : f32 2.0*cy - ly
+                x   : f32 cx + read_num[]
+                y : f32 cy + read_num[]
+                cmd_quad[ xf, rqx, rqy, x, y ]
+            el [ cmd_ == 'A' ]
+                irx : f32 read_num[]
+                iry : f32 read_num[]
+                iph : f32 read_num[]
+                ila : i32 i32 read_num[]
+                isw : i32 i32 read_num[]
+                x   : f32 read_num[]
+                y : f32 read_num[]
+                do_arc[ xf, x, y, irx, iry, iph, ila, isw ]
+            el [ cmd_ == 'a' ]
+                irx : f32 read_num[]
+                iry : f32 read_num[]
+                iph : f32 read_num[]
+                ila : i32 i32 read_num[]
+                isw : i32 i32 read_num[]
+                x   : f32 cx + read_num[]
+                y : f32 cy + read_num[]
+                do_arc[ xf, x, y, irx, iry, iph, ila, isw ]
+            el
+                pos += 1
+        return cmds
 
 
 struct vertex_member_t
@@ -3850,6 +4443,299 @@ struct affine
             ty: mc * q.tx + md * q.ty + ty
         ]
 
+
+func svg_color [ s: string ] -> rgba
+    if [ !s || s == 'none' || s == 'transparent' ]
+        return rgba[ '#00000000' ]
+    if [ s.starts_with[ 'rgb' ] ]
+        i0 : num s.index_of[ '(' ]
+        i1 : num s.index_of[ ')' ]
+        if [ i0 >= 0 && i1 > i0 ]
+            inner  : string s.mid[ i0 + 1, i1 - i0 - 1 ]
+            parts  : inner.split[ ',' ]
+            rr : f32 0.0
+            gg : f32 0.0
+            bb : f32 0.0
+            aa : f32 1.0
+            if [ parts.count >= 1 ] rr = f32 parts[0].trim[].real_value[]
+            if [ parts.count >= 2 ] gg = f32 parts[1].trim[].real_value[]
+            if [ parts.count >= 3 ] bb = f32 parts[2].trim[].real_value[]
+            if [ parts.count >= 4 ] aa = f32 parts[3].trim[].real_value[]
+            c : rgba rgba[ '#000000' ]
+            c.r = rr / 255.0
+            c.g = gg / 255.0
+            c.b = bb / 255.0
+            c.a = aa
+            return c
+    return rgba[ s ]
+
+
+func svg_color_v [ s: string ] -> vec4f
+    c : rgba svg_color[ s ]
+    return vec4f [ c.r, c.g, c.b, c.a ]
+
+func svg_parse_transform [ s: string ] -> affine
+    result : affine affine.identity[]
+    if [ !s || s.count == 0 ]
+        return result
+    pos : num 0
+    n   : num s.count
+    while [ pos < n ]
+        while [ pos < n && (s.chars[pos] == ' ' || s.chars[pos] == '\t' || s.chars[pos] == ',') ]
+            pos += 1
+        if [ pos >= n ]
+            break
+        ns : num pos
+        while [ pos < n && s.chars[pos] != '(' ]
+            pos += 1
+        fname : string s.mid[ ns, pos - ns ].trim[]
+        if [ pos < n ] pos += 1
+        as_ : num pos
+        while [ pos < n && s.chars[pos] != ')' ]
+            pos += 1
+        astr : string s.mid[ as_, pos - as_ ]
+        if [ pos < n ] pos += 1
+        raw : array string astr.split[ ',' ]
+        if [ raw.count <= 1 ] raw = astr.split[ ' ' ]
+        v : array string []
+        for [ p: string ] in raw
+            t : string p.trim[]
+            if [ t.count > 0 ] v.push[ t ]
+        f0 : f32 (v.count > 0) ? v[0].real_value[] : 0.0
+        f1 : f32 (v.count > 1) ? v[1].real_value[] : 0.0
+        f2 : f32 (v.count > 2) ? f32 v[2].real_value[] : 0.0
+        f3 : f32 (v.count > 3) ? v[3].real_value[] : 0.0
+        f4 : f32 (v.count > 4) ? v[4].real_value[] : 0.0
+        f5 : f32 (v.count > 5) ? v[5].real_value[] : 0.0
+        tf : affine affine.identity[]
+        if [ fname == 'translate' ]
+            tf = tf.translate[ f0, f1 ]
+        el [ fname == 'scale' ]
+            tf = (v.count == 1) ? tf.scale[ f0 ] : tf.scale_xy[ f0, f1 ]
+        el [ fname == 'rotate' ]
+            rad : f32 f32 radians[ f0 ]
+            if [ v.count > 2 ]
+                tf = tf.translate[ f1, f2 ].rotate[ rad ].translate[ -f1, -f2 ]
+            el
+                tf = tf.rotate[ rad ]
+        el [ fname == 'matrix' ]
+            tf = affine [ ma: f0, mb: f2, mc: f1, md: f3, tx: f4, ty: f5 ]
+        el [ fname == 'skewX' ]
+            tf = affine [ ma: 1.0, mb: f32 tan[ f32 radians[ f0 ] ], mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
+        el [ fname == 'skewY' ]
+            tf = affine [ ma: 1.0, mb: 0.0, mc: f32 tan[ f32 radians[ f0 ] ], md: 1.0, tx: 0.0, ty: 0.0 ]
+        result = result.multiply[ tf ]
+    return result
+
+
+func svg_resolve_state [ node: SVGNode, parent: SVGState ] -> SVGState
+    st : SVGState parent
+    # parse inline style attribute
+    sattr : string node.attr[ 'style' ]
+    if [ sattr ]
+        decls : array string sattr.split[ ';' ]
+        for [ d: string ] in decls
+            ci : num d.index_of[ ':' ]
+            if [ ci > 0 ]
+                prop : string d.mid[ 0, ci ].trim[]
+                val  : string d.mid[ ci + 1, d.count - (ci + 1) ].trim[]
+                if [ prop == 'fill' ]
+                    st.fill_none = val == 'none'
+                    st.fill = svg_color_v[ val ]
+                el [ prop == 'stroke' ]
+                    st.stroke_none = val == 'none'
+                    st.stroke = svg_color_v[ val ]
+                el [ prop == 'stroke-width' ]
+                    st.sw = f32 val.real_value[]
+                el [ prop == 'opacity' ]
+                    st.opacity = f32 val.real_value[]
+                el [ prop == 'fill-opacity' ]
+                    st.fill_opacity = f32 val.real_value[]
+                el [ prop == 'stroke-opacity' ]
+                    st.stroke_opacity = f32 val.real_value[]
+    # direct attributes override style
+    fa : string node.attr[ 'fill' ]
+    if [ fa ]
+        st.fill_none = fa == 'none'
+        if [ !st.fill_none ] st.fill = svg_color_v[ fa ]
+    sa : string node.attr[ 'stroke' ]
+    if [ sa ]
+        st.stroke_none = sa == 'none'
+        if [ !st.stroke_none ] st.stroke = svg_color_v[ sa ]
+    swa : string node.attr[ 'stroke-width' ]
+    if [ swa ] st.sw = f32 swa.real_value[]
+    oa  : string node.attr[ 'opacity' ]
+    if [ oa ] st.opacity = f32 oa.real_value[]
+    foa : string node.attr[ 'fill-opacity' ]
+    if [ foa ] st.fill_opacity = f32 foa.real_value[]
+    soa : string node.attr[ 'stroke-opacity' ]
+    if [ soa ] st.stroke_opacity = f32 soa.real_value[]
+    return st
+
+
+func svg_make_shape [ cmds: array SVGCmd, st: SVGState ] -> SVGShape
+    fc : rgba rgba[ '#00000000' ]
+    sc : rgba rgba[ '#00000000' ]
+    if [ !st.fill_none ]
+        fc.r = st.fill.x
+        fc.g = st.fill.y
+        fc.b = st.fill.z
+        fc.a = st.fill.w * st.fill_opacity
+    if [ !st.stroke_none ]
+        sc.r = st.stroke.x
+        sc.g = st.stroke.y
+        sc.b = st.stroke.z
+        sc.a = st.stroke.w * st.stroke_opacity
+    return SVGShape [
+        cmds:        cmds,
+        fill:        fc,
+        stroke:      sc,
+        sw:          st.sw,
+        fill_none:   st.fill_none,
+        stroke_none: st.stroke_none,
+        opacity:     st.opacity
+    ]
+
+# ---- SVG tree walker ----
+
+func svg_kappa_rect [ xf: affine, x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32 ] -> array SVGCmd
+    pb : SVGPathBuilder []
+    pb.cmds = array SVGCmd []
+    pb.cx = 0.0
+    pb.cy = 0.0
+    pb.sx = 0.0
+    pb.sy = 0.0
+    pb.lx = 0.0
+    pb.ly = 0.0
+    if [ rx == 0.0 && ry == 0.0 ]
+        pb.cmd_move[ xf, x,   y   ]
+        pb.cmd_line[ xf, x+w, y   ]
+        pb.cmd_line[ xf, x+w, y+h ]
+        pb.cmd_line[ xf, x,   y+h ]
+        pb.cmd_close[]
+    el
+        rxi : f32 min[ rx, w*0.5 ]
+        ryi : f32 min[ ry, h*0.5 ]
+        k   : f32 0.5522847
+        kx  : f32 rxi * k
+        ky  : f32 ryi * k
+        pb.cmd_move [ xf, x + rxi,        y               ]
+        pb.cmd_line [ xf, x + w - rxi,    y               ]
+        pb.cmd_cubic[ xf, x + w - rxi + kx, y,            x + w, y + ryi - ky,   x + w,       y + ryi   ]
+        pb.cmd_line [ xf, x + w,          y + h - ryi     ]
+        pb.cmd_cubic[ xf, x + w,          y + h - ryi + ky, x + w - rxi + kx, y + h, x + w - rxi, y + h ]
+        pb.cmd_line [ xf, x + rxi,        y + h           ]
+        pb.cmd_cubic[ xf, x + rxi - kx,   y + h,          x, y + h - ryi + ky,   x,           y + h - ryi ]
+        pb.cmd_line [ xf, x,              y + ryi         ]
+        pb.cmd_cubic[ xf, x,              y + ryi - ky,   x + rxi - kx, y,       x + rxi,     y           ]
+        pb.cmd_close[]
+    return pb.cmds
+
+
+func svg_kappa_ellipse [ xf: affine, ccx: f32, ccy: f32, rx: f32, ry: f32 ] -> array SVGCmd
+    pb : SVGPathBuilder []
+    pb.cmds = array SVGCmd []
+    pb.cx = 0.0
+    pb.cy = 0.0
+    pb.sx = 0.0
+    pb.sy = 0.0
+    pb.lx = 0.0
+    pb.ly = 0.0
+    k  : f32 0.5522847
+    kx : f32 rx * k
+    ky : f32 ry * k
+    pb.cmd_move [ xf, ccx + rx, ccy       ]
+    pb.cmd_cubic[ xf, ccx + rx, ccy + ky,   ccx + kx, ccy + ry,   ccx,        ccy + ry ]
+    pb.cmd_cubic[ xf, ccx - kx, ccy + ry,   ccx - rx, ccy + ky,   ccx - rx,   ccy      ]
+    pb.cmd_cubic[ xf, ccx - rx, ccy - ky,   ccx - kx, ccy - ry,   ccx,        ccy - ry ]
+    pb.cmd_cubic[ xf, ccx + kx, ccy - ry,   ccx + rx, ccy - ky,   ccx + rx,   ccy      ]
+    pb.cmd_close[]
+    return pb.cmds
+
+
+func svg_parse_pts [ xf: affine, pts: string ] -> array SVGCmd
+    pb  : SVGPathBuilder []
+    pb.cmds = array SVGCmd []
+    pb.cx = 0.0
+    pb.cy = 0.0
+    pb.sx = 0.0
+    pb.sy = 0.0
+    pb.lx = 0.0
+    pb.ly = 0.0
+    toks : array string pts.split[ ' ' ]
+    first : bool true
+    for [ tok: string ] in toks
+        t : string tok.trim[]
+        if [ t.count == 0 ] continue
+        ci : num t.index_of[ ',' ]
+        if [ ci > 0 ]
+            xv : f32 f32 t.mid[ 0, ci ].trim[].real_value[]
+            yv : f32 f32 t.mid[ ci+1, t.count-(ci+1) ].trim[].real_value[]
+            if [ first ]
+                pb.cmd_move[ xf, xv, yv ]
+                first = false
+            el
+                pb.cmd_line[ xf, xv, yv ]
+    return pb.cmds
+
+
+func svg_walk [ shapes: array SVGShape, nodes: array SVGNode, xf: affine, state: SVGState ]
+    for [ node: SVGNode ] in nodes
+        disp : string node.attr[ 'display' ]
+        if [ disp && disp == 'none' ]
+            continue
+        st  : SVGState svg_resolve_state[ node, state ]
+        tfa : string node.attr[ 'transform' ]
+        lxf : affine (tfa) ? xf.multiply[ svg_parse_transform[ tfa ] ] : xf
+        tag : string node.tag
+
+        if [ tag == 'g' || tag == 'svg' ]
+            svg_walk[ shapes, node.children, lxf, st ]
+        el [ tag == 'path' ]
+            d : string node.attr[ 'd' ]
+            if [ d && d.count > 0 ]
+                pb   : SVGPathBuilder []
+                shapes.push[ svg_make_shape[ pb.build[ d, lxf ], st ] ]
+        el [ tag == 'rect' ]
+            rx_: f32 node.attr_f[ 'rx', 0.0 ]
+            ry_: f32 node.attr_f[ 'ry', 0.0 ]
+            if [ rx_ == 0.0 ] rx_ = ry_
+            if [ ry_ == 0.0 ] ry_ = rx_
+            cmds : array SVGCmd svg_kappa_rect[ lxf,
+                node.attr_f[ 'x', 0.0 ], node.attr_f[ 'y', 0.0 ],
+                node.attr_f[ 'width', 0.0 ], node.attr_f[ 'height', 0.0 ],
+                rx_, ry_ ]
+            shapes.push[ svg_make_shape[ cmds, st ] ]
+        el [ tag == 'circle' ]
+            r : f32 node.attr_f[ 'r', 0.0 ]
+            cmds : array SVGCmd svg_kappa_ellipse[ lxf, node.attr_f[ 'cx', 0.0 ], node.attr_f[ 'cy', 0.0 ], r, r ]
+            shapes.push[ svg_make_shape[ cmds, st ] ]
+        el [ tag == 'ellipse' ]
+            cmds : array SVGCmd svg_kappa_ellipse[ lxf,
+                node.attr_f[ 'cx', 0.0 ], node.attr_f[ 'cy', 0.0 ],
+                node.attr_f[ 'rx', 0.0 ], node.attr_f[ 'ry', 0.0 ] ]
+            shapes.push[ svg_make_shape[ cmds, st ] ]
+        el [ tag == 'line' ]
+            pb : SVGPathBuilder []
+            pb.cmds = array SVGCmd []
+            pb.cx = 0.0
+            pb.cy = 0.0
+            pb.sx = 0.0
+            pb.sy = 0.0
+            pb.lx = 0.0
+            pb.ly = 0.0
+            pb.cmd_move[ lxf, node.attr_f[ 'x1', 0.0 ], node.attr_f[ 'y1', 0.0 ] ]
+            pb.cmd_line[ lxf, node.attr_f[ 'x2', 0.0 ], node.attr_f[ 'y2', 0.0 ] ]
+            shapes.push[ svg_make_shape[ pb.cmds, st ] ]
+        el [ tag == 'polyline' || tag == 'polygon' ]
+            pts : string node.attr[ 'points' ]
+            if [ pts && pts.count > 0 ]
+                cmds : array SVGCmd svg_parse_pts[ lxf, pts ]
+                if [ tag == 'polygon' ]
+                    cmds.push[ SVGCmd [ op: SVGOp.close, x: 0.0, y: 0.0, x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0 ] ]
+                shapes.push[ svg_make_shape[ cmds, st ] ]
+
+
 # ---- path class ----
 # Internally journals every move/line/curve op into `points`. The Canvas
 # draw path keeps a snapshot of the previous draw's `points` plus its
@@ -4935,6 +5821,63 @@ Render Canvas
     func rounded [ tl: f32, tr: f32, br: f32, bl: f32 ]
         states[state_depth - 1].corner_radii = vec4f [ tl, tr, br, bl ]
 
+    func draw_svg [ mdl: SVGModel, ox: f32, oy: f32, rw: f32, rh: f32 ]
+        if [ !mdl || !mdl.shapes || mdl.shapes.count == 0 ]
+            return
+        if [ !mdl.cache || mdl.cache_rw != rw || mdl.cache_rh != rh ]
+            mdl.cache    = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: i32(rw), height: i32(rh) ]
+            mdl.cache.update[]
+            printf[ "draw_svg: cache=%p color=%p fb=%p rp=%p w=%d h=%d\n",
+                mdl.cache, mdl.cache.color, mdl.cache.vk_framebuffer[0], mdl.cache.vk_render_pass[0],
+                mdl.cache.width, mdl.cache.height ]
+            mdl.cache_rw = rw
+            mdl.cache_rh = rh
+            sx    : f32 (mdl.w > 0.0) ? rw / mdl.w : 1.0
+            sy    : f32 (mdl.h > 0.0) ? rh / mdl.h : 1.0
+            s     : f32 min[ sx, sy ]
+            off_x : f32 (rw - mdl.w * s) * 0.5
+            off_y : f32 (rh - mdl.h * s) * 0.5
+            for [ shape: SVGShape ] in mdl.shapes
+                fc : rgba rgba[ '#00000000' ]
+                sc : rgba rgba[ '#00000000' ]
+                if [ !shape.fill_none && shape.fill ]
+                    fc.r = shape.fill.r
+                    fc.g = shape.fill.g
+                    fc.b = shape.fill.b
+                    fc.a = shape.fill.a
+                if [ !shape.stroke_none && shape.stroke ]
+                    sc.r = shape.stroke.r
+                    sc.g = shape.stroke.g
+                    sc.b = shape.stroke.b
+                    sc.a = shape.stroke.a
+                mdl.cache.save[]
+                mdl.cache.set_opacity[ shape.opacity ]
+                mdl.cache.fill_color[ fc ]
+                mdl.cache.stroke_color[ sc ]
+                sw_ : f32 (shape.stroke_none) ? 0.0 : shape.sw * s
+                mdl.cache.set_stroke_size[ sw_ ]
+                for [ cmd: SVGCmd ] in shape.cmds
+                    cx_ : f32 off_x + cmd.x * s
+                    cy_ : f32 off_y + cmd.y * s
+                    if [ cmd.op == SVGOp.move ]
+                        mdl.cache.move_to[ cx_, cy_ ]
+                    el [ cmd.op == SVGOp.line ]
+                        mdl.cache.line_to[ cx_, cy_ ]
+                    el [ cmd.op == SVGOp.cubic ]
+                        mdl.cache.cubic_to[
+                            off_x + cmd.x1 * s, off_y + cmd.y1 * s,
+                            off_x + cmd.x2 * s, off_y + cmd.y2 * s,
+                            cx_, cy_ ]
+                    el [ cmd.op == SVGOp.quad ]
+                        mdl.cache.quad_to[
+                            off_x + cmd.x1 * s, off_y + cmd.y1 * s,
+                            cx_, cy_ ]
+                    el [ cmd.op == SVGOp.close ]
+                        mdl.cache.close_path[]
+                mdl.cache.paint[]
+                mdl.cache.restore[]
+        draw_canvas[ mdl.cache, ox, oy, rw, rh ]
+
     func draw_canvas [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
         image_override = src.color
         path.clear[]
@@ -5109,7 +6052,16 @@ Render Canvas
             pbh : f32 [ bh  + pad * 2.0 ]
 
             ne : i32 [ edges.count ]
-            expect ne <= edge_buf_capacity, "edge buffer too small for path"
+            if [ ne > edge_buf_capacity ]
+                while [ ne > edge_buf_capacity ]
+                    edge_buf_capacity *= 2
+                new_bytes : i32 [ edge_buf_capacity * 16 ]
+                edge_buf = Buffer [ vk: vk, size: new_bytes,
+                    u_storage: true, m_host_visible: true, m_host_coherent: true ]
+                cmod_grow : Model models[0]
+                cmod_grow.samplers = map Au[string] [ 'edges': edge_buf, 'sdf_out': sdf_tex ]
+                cmod_grow.rebind_model[]
+                path.cached_valid = false
             if [ !cache_hit ]
                 # pack edges into the storage buffer (4 floats per edge).
                 # only on cache miss — on hit, the buffer is already valid.
@@ -5154,7 +6106,6 @@ Render Canvas
             mirror_bit : f32 [ (st.fill_grad_mirror) ? 1.0 : 0.0 ]
             ui_shader.stroke_opts = vec4f [ j, c, mirror_bit, spread ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, DrawMode.sdf_path ]
-            #printf[ "draw_fill: mode=6 (sdf_path) rect=(%f,%f %fx%f) edges=%i\n", pbx, pby, pbw, pbh, ne ]
 
         flush[]
         path.clear[]
@@ -7095,6 +8046,9 @@ Display Window
             restyle = true
         
         force_restyle : (!restyle) ? st.check_reload[] : false
+        if [ force_restyle ]
+            root_styles = st.compute[ root ]
+            restyle     = true
 
         # when we invoke a restyle it needs to go over everything, not just the element in question.
         if [ force_restyle || restyle ]
@@ -7456,7 +8410,7 @@ Display Window
         if [ resizing ] return
 
         compose.save    [ ]
-        compose.clear   [ '#80a' ]
+        compose.clear   [ '#00a' ]
         update_all      [ app_object.on_render*[ a ] ]
         animate         [ ]
         draw_element    [ root, CanvasType.compose, null ]
@@ -7550,7 +8504,7 @@ Display Window
                 ry = layer.radius.ry
 
             
-            if [ (layer.fill_color && layer.fill_color.a > 0.0) || (layer.stroke_color && layer.stroke_color.a > 0.0) ]
+            if [ (layer.fill_color && layer.fill_color.a > 0.0) || (layer.stroke_color && layer.stroke_color.a > 0.0) || layer.inner_glow ]
                 cv.save             [ ]
                 # crisp-pixel offset: odd stroke widths need to straddle the
                 # pixel grid at half-pixel centers. stroke of 1 → (0.5, 0.5),
@@ -7581,8 +8535,13 @@ Display Window
                 cv.fill_color_pos   [ f_ax - f_hx, f_ay - f_hy ]
                 cv.fill_grad_pos    [ f_ax + f_hx, f_ay + f_hy ]
                 cv.fill_grad_mirror [ layer.fill_gradient_mirror ]
+                if [ layer.inner_glow ]
+                    cv.inner_glow   [ layer.inner_glow.color, layer.inner_glow.blur ]
                 cv.paint            [ ]
                 cv.restore          [ ]
+
+            if [ layer.image_svg ]
+                cv.draw_svg[ layer.image_svg, b.x, b.y, b.w, b.h ]
 
             label : string (layer.label && layer.label.count > 0) ? layer.label : null
             
@@ -7951,7 +8910,7 @@ class Style
                 if [ visited.index_of[ key ] < 0 ]
                     visited.push[ key ]
                     sub : string [ p.load[ typeid[ string ], null ] ]
-                    if [ sub ] process[ sub ]
+                    process[ sub ]
                 i += 1
                 continue
             if [ content.last[] == '{' ]
@@ -8453,6 +9412,13 @@ Mixable Glow
     public blur     : f32
     public color    : rgba
 
+    construct [ s: string ]
+        aa : s.split[ ' ' ]
+        if [ aa.count >= 1 ]
+            color = rgba[ aa[0] ]
+        if [ aa.count >= 2 ]
+            blur = f32 aa[1].real_value[]
+
 # only for background elements
 Mixable Transform
     public offset   : vec2f
@@ -8503,6 +9469,7 @@ class Layer
     public fill_offset         : f32
     public fill_shadow         : Shadow
     public fill_glow           : Glow
+    public inner_glow          : Glow
 
     public stroke_color        : rgba
     public stroke_width        : f32
@@ -8540,6 +9507,7 @@ class Layer
     public selectable          : bool
     public multiline           : bool
 
+    public image_svg           : SVGModel
     public image_source        : Image
     public image_align         : Align
     public image_tranform      : Transform

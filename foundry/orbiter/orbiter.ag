@@ -1433,6 +1433,8 @@ element Editor
     lang : Language
     time : f32
 
+element Tiger
+
 
 trinity orbiter
     public earth_gltf    : GltfModel
@@ -1465,10 +1467,17 @@ trinity orbiter
     public func on_render [ w: Window ] -> Elements
         return Elements [
             "toolbar": Toolbar [
-
+                elements: Elements [
+                    "test88":  Button [ label:'button2' ],
+                    "test44":  Button [ label:'button4' ]
+                    "test882": Button [ label:'button8' ]
+                    "test442": Button [ label:'button16' ]
+                ]
             ],
-            "avatar": World  [ ] ]
-
+            "avatar": World  [ ]
+            "tiger":  Tiger []
+        ]
+ 
     func load_scene []
         # 1) load the earth gltf mesh — shared by earth/ocean/cloud passes
         gltf_path : path 'models/earth.gltf'

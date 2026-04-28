@@ -2,18 +2,46 @@
 @import "trinity.css"
 
 Toolbar {
-    area: l0 t0 w64 b0
+    area: l-8 t-8 w132 b-8
     layers.compose:
         ctype: compose
         fill_color: #f0a
 
-    layers.compose0:
-        ctype: compose
-        fill_color: #ffa
-        area: l64 t0 w2 b0
-    
+    layers.border:
+        fill_color: #fff4
+        area: l132 t0 w1 b0
+
+    layers.border2:
+        fill_color: #0004
+        area: l133 t0 w1 b0
+
     layers.base:
-        fill_color: #fff1
+        fill_color:         #fff1
+        inner_glow:         #fff1 16
+}
+
+
+Button {
+    area:               l16 t16+ r12 h44
+    layers.face:
+        label_color:            #fffa
+        label_size:             16
+        fill_color:             #fff0
+        radius:                 4
+        stroke_width:           1
+        stroke_color:           #0004
+}
+
+Tiger {
+    area:               l800 t64 w512 h512
+    layers.svg:
+        fill_color:     #004
+        image_svg:      "images/tiger.svg"
+}
+
+Button:hovered {
+    layers.face:
+        fill_color:             #22f1
 }
 
 World.avatar {
@@ -61,27 +89,6 @@ Editor {
 Editor:hovered, Editor:pressed {
     layers.base:
         fill_color:     #ff0
-}
-
-Button {
-    area:               l8 t8+ w88 h44
-    layers.face:
-        label_color:            #fff
-        label_size:             22
-        fill_color:             #222
-        radius:                 4
-        stroke_width:           1
-        stroke_color:           #222
-}
-
-Button:hovered {
-    layers.face:
-        label_color:            #a0f
-        label_size:             22
-        fill_color:             #222
-        radius:                 4
-        stroke_width:           1
-        stroke_color:           #222
 }
 
 /* this should be a comment */
