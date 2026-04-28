@@ -5287,8 +5287,14 @@ enode aether_e_for(aether a,
 
         if (val_var) {
             enode val_node = value(etypeid(Au), elem);
-            enode val_cast = e_create(a, canonical(val_var), (Au)val_node);
-            LLVMBuildStore(B, val_cast->value, val_var->value);
+            etype cv       = canonical(val_var);
+            enode val_cast = e_create(a, cv, (Au)val_node);
+            if (!val_cast->loaded && is_struct(cv) && !is_ptr(cv)) {
+                LLVMValueRef sv = LLVMBuildLoad2(B, lltype(cv), val_cast->value, "struct_elem");
+                LLVMBuildStore(B, sv, val_var->value);
+            } else {
+                LLVMBuildStore(B, val_cast->value, val_var->value);
+            }
         }
 
         if (key_var) {
