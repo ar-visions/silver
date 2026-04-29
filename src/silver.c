@@ -8328,7 +8328,9 @@ enode parse_for(silver a) { sequencer
 
     token after         = null;
     array all           = read_within(a); // null if no [...] after for
+    bool  reverse       = read_if(a, "reverse") != null;
     enode in_expr       = read_if(a, "in") ? parse_expression(a, null, false, true) : null;
+    validate(!reverse || in_expr, "reverse requires 'in' collection");
     array init_exprs    = array(alloc, 32);
     array cond_exprs    = array(alloc, 32);
     array step_exprs    = array(alloc, 32);
@@ -8436,7 +8438,7 @@ enode parse_for(silver a) { sequencer
     enode res = e_for(a,
         init_exprs, cond_exprs, body, step_exprs,
         build_init, build_cond, build_body, build_step,
-        do_while, in_expr, val_var, key_var);
+        do_while, in_expr, val_var, key_var, reverse);
     pop_scope(a);
 
     if (!in_expr && len(init_exprs)) // only pop init scope when init vars were declared

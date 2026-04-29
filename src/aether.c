@@ -1195,7 +1195,7 @@ enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
         bool L_null = LLVMIsNull(L->value);
         bool R_null = LLVMIsNull(R->value);
         if (L_null || R_null || optype == OPType__equal || optype == OPType__not_equal) {
-            Au_t own_cmp = find_member(L->au, "compare", AU_MEMBER_FUNC, 0, true);
+            Au_t own_cmp = find_member(L->au, "compare", 0, 0, true);
             bool has_own = own_cmp && own_cmp->context != typeid(Au);
             if (L_null || R_null || !has_own || own_cmp->context == typeid(Au)) {
                 return value(bool_t,
@@ -1208,7 +1208,7 @@ enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
                 LLVMBuildICmp(B, cmp->ui_pred, L->value, R->value, N));
         }
 
-        Au_t fn = find_member(L->au, "compare", AU_MEMBER_FUNC, 0, true);
+        Au_t fn = find_member(L->au, "compare", 0, 0, true);
         verify(fn, "class %s has no compare() method", L->au->ident);
 
         enode cmp_result = e_fn_call(a, (efunc)u(enode, fn), a(L, R), false, true);
@@ -5154,7 +5154,8 @@ enode aether_e_for(aether a,
                    bool do_while,
                    enode in_expr,
                    evar val_var,
-                   evar key_var)
+                   evar key_var,
+                   bool reverse)
 {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, null);
@@ -5191,30 +5192,28 @@ enode aether_e_for(aether a,
     statements st = context_code(a);
 
     if (in_expr && inherits(in_expr->au, typeid(map))) {
-        // ---- map iteration via item linked list ----
+        // ---- map iteration via item linked list (first→next or last→prev) ----
         etype item_type = etypeid(item);
 
-        enode first_node = etype_access((etype)in_expr, string("first"));
+        enode start_node = etype_access((etype)in_expr, string(reverse ? "last" : "first"));
 
         LLVMTypeRef  cursor_type = LLVMPointerType(item_type->lltype, 0);
         LLVMValueRef cursor      = entry_alloca(a, cursor_type, "cursor");
-        LLVMValueRef first_val   = first_node->loaded ? first_node->value :
-            LLVMBuildLoad2(B, cursor_type, first_node->value, "first.val");
-        LLVMBuildStore(B, first_val, cursor);
+        LLVMValueRef start_val   = start_node->loaded ? start_node->value :
+            LLVMBuildLoad2(B, cursor_type, start_node->value, "start.val");
+        LLVMBuildStore(B, start_val, cursor);
         LLVMBuildBr(B, cond);
 
         // ---- cond: cursor != null ----
         LLVMPositionBuilderAtEnd(B, cond);
         LLVMValueRef cur_val  = LLVMBuildLoad2(B, cursor_type, cursor, "cur");
         LLVMValueRef null_val = LLVMConstNull(cursor_type);
-        LLVMValueRef cmp      = LLVMBuildICmp(B, LLVMIntNE, cur_val, null_val, "has_next");
+        LLVMValueRef cmp      = LLVMBuildICmp(B, LLVMIntNE, cur_val, null_val, "has_item");
         LLVMBuildCondBr(B, cmp, body, merge);
 
         // ---- body: extract key/value, bind, run user body ----
         LLVMPositionBuilderAtEnd(B, body);
 
-        // keep for-header debug loc for iteration var stores
-        // so LLDB sees them populated before the body's first line
         enode cur_enode = value(pointer(a, (Au)item_type->au),
             LLVMBuildLoad2(B, cursor_type, cursor, "cur.body"));
 
@@ -5239,15 +5238,15 @@ enode aether_e_for(aether a,
         a->statement_origin = saved_origin;
         LLVMBuildBr(B, step);
 
-        // ---- step: cursor = cursor->next ----
+        // ---- step: cursor = cursor->next / cursor->prev ----
         LLVMPositionBuilderAtEnd(B, step);
         debug_emit(a);
         enode step_enode = value(pointer(a, (Au)item_type->au),
             LLVMBuildLoad2(B, cursor_type, cursor, "cur.step"));
-        enode next_node = etype_access((etype)step_enode, string("next"));
-        LLVMValueRef next_val = next_node->loaded ? next_node->value :
-            LLVMBuildLoad2(B, cursor_type, next_node->value, "next.val");
-        LLVMBuildStore(B, next_val, cursor);
+        enode adv_node = etype_access((etype)step_enode, string(reverse ? "prev" : "next"));
+        LLVMValueRef adv_val = adv_node->loaded ? adv_node->value :
+            LLVMBuildLoad2(B, cursor_type, adv_node->value, "adv.val");
+        LLVMBuildStore(B, adv_val, cursor);
         LLVMBuildBr(B, cond);
 
     } else if (in_expr && inherits(in_expr->au, typeid(array))) {
@@ -5256,18 +5255,24 @@ enode aether_e_for(aether a,
         enode count_node = etype_access((etype)in_expr, string("count"));
         enode origin     = etype_access((etype)in_expr, string("origin"));
         
-        // alloca for index: i32 = 0
-        LLVMTypeRef  i32_type = LLVMInt32Type();
-        LLVMValueRef idx      = entry_alloca(a, i32_type, "for.idx");
-        LLVMBuildStore(B, LLVMConstInt(i32_type, 0, false), idx);
+        // alloca for index
+        LLVMTypeRef  i32_type  = LLVMInt32Type();
+        LLVMValueRef idx       = entry_alloca(a, i32_type, "for.idx");
+        LLVMValueRef count_val = LLVMBuildLoad2(B, i32_type, count_node->value, "count");
+        if (reverse) {
+            LLVMValueRef init_val = LLVMBuildSub(B, count_val, LLVMConstInt(i32_type, 1, false), "idx.init");
+            LLVMBuildStore(B, init_val, idx);
+        } else {
+            LLVMBuildStore(B, LLVMConstInt(i32_type, 0, false), idx);
+        }
         LLVMBuildBr(B, cond);
 
-        // ---- cond: idx < count ----
+        // ---- cond ----
         LLVMPositionBuilderAtEnd(B, cond);
-        LLVMValueRef idx_val   = LLVMBuildLoad2(B, i32_type, idx, "idx");
-
-        LLVMValueRef count_val = LLVMBuildLoad2(B, i32_type, count_node->value, "count");
-        LLVMValueRef cmp       = LLVMBuildICmp(B, LLVMIntSLT, idx_val, count_val, "idx.lt.count");
+        LLVMValueRef idx_val = LLVMBuildLoad2(B, i32_type, idx, "idx");
+        LLVMValueRef cmp     = reverse
+            ? LLVMBuildICmp(B, LLVMIntSGE, idx_val, LLVMConstInt(i32_type, 0, false), "idx.ge.0")
+            : LLVMBuildICmp(B, LLVMIntSLT, idx_val, count_val, "idx.lt.count");
         LLVMBuildCondBr(B, cmp, body, merge);
 
         // ---- body: extract element, bind, run user body ----
@@ -5312,12 +5317,13 @@ enode aether_e_for(aether a,
         a->statement_origin = saved_origin;
         LLVMBuildBr(B, step);
 
-        // ---- step: idx += 1 ----
+        // ---- step: idx += 1 / idx -= 1 ----
         LLVMPositionBuilderAtEnd(B, step);
         debug_emit(a);
         LLVMValueRef idx_step = LLVMBuildLoad2(B, i32_type, idx, "idx.step");
-        LLVMValueRef idx_next = LLVMBuildAdd(B, idx_step, 
-            LLVMConstInt(i32_type, 1, false), "idx.inc");
+        LLVMValueRef idx_next = reverse
+            ? LLVMBuildSub(B, idx_step, LLVMConstInt(i32_type, 1, false), "idx.dec")
+            : LLVMBuildAdd(B, idx_step, LLVMConstInt(i32_type, 1, false), "idx.inc");
         LLVMBuildStore(B, idx_next, idx);
         LLVMBuildBr(B, cond);
         
