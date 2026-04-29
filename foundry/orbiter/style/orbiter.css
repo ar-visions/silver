@@ -26,22 +26,29 @@ Button {
     layers.face:
         label_color:            #fffa
         label_size:             16
-        fill_color:             #fff0
+        fill_gradient:          radial
+        fill_color:             #444
+        fill_gradient_color:    #000a
+        fill_color_pos:         0.5 1.0
         radius:                 4
         stroke_width:           1
-        stroke_color:           #0004
+        stroke_color:           #fff4
+        fill_gradient_radius:   80
 }
 
-Tiger {
-    area:               l800 t64 w512 h512
+Button.start {
+    area:               l16 t16+ r12 h88
     layers.svg:
-        fill_color:     #004
-        image_svg:      "images/tiger.svg"
+        area:           8
+        image_svg:      "images/orbiter.svg"
+        image_align:    0.5 0.5
 }
 
 Button:hovered {
     layers.face:
-        fill_color:             #22f1
+        fill_color:             #888
+        fill_color_pos:         {cursor}, filter 0.5
+        label_color:            #fff
 }
 
 World.avatar {
@@ -52,7 +59,7 @@ World.avatar {
     environment_pitch:  20.0
     render_scale:       4.0
     clear_color:        0 0 0 0
-    rotate:             [ 0 1 0 30deg, 1 0 0 20deg ]
+    rotate:             [ 0 1 0 30deg, 1 0 0 20deg ], 222ms cubic outward
     eye_pos:            0.0 3.5 -2.0
     target_pos:         0.0 0.0 0.0
     up_vec:             0.0 -1.0 0.0
@@ -62,7 +69,11 @@ World.avatar {
 }
 
 World.avatar:hovered {
-    rotate:             [ 0 1 0 30deg, 1 0 0 10deg ]
+    rotate:             [ 0 1 0 30deg, 1 0 0 10deg ], 222ms cubic outward
+}
+
+World.avatar:pressed {
+    rotate:             [ 0 1 0 30deg, 1 0 0 0deg ], 88ms cubic outward
 }
 
 Editor {

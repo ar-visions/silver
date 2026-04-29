@@ -249,14 +249,14 @@ class Render
             expect result == VK_SUCCESS, "Failed to create framebuffer"
 
     public func draw [ ]
+        if [ !vk_framebuffer[0] ]
+            return
         index: u32 [ 0 ]
         for [ i: 0, i < 1 + reduce, i += 1 ]
-            if [ i == 0 && bool[ color ] ]
-                color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-            el [ i == 1 && bool[ reduction ] ]
+            if [ i == 1 && bool[ reduction ] ]
                 reduction.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 sync_fence[]
-            
+
             vkResetFences[ vk.device, 1, ref vk_fence ]
             frame: VkCommandBuffer [ vk_command_buffer ]
             vkResetCommandBuffer[ frame, 0 ]
@@ -264,6 +264,8 @@ class Render
                 sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                 flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
             ] ]
+            if [ i == 0 && bool[ color ] ]
+                color.transition_in[ frame, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
             fw: i32 [ (i == 0) ? width : width / 4 ]
             fh: i32 [ (i == 0) ? height : height / 4 ]
@@ -1597,7 +1599,7 @@ class Model
     public func finish [ r_target: Render, render_id: i32 ]
         r = r_target
         pipelines = array Pipeline [ alloc: 16 ]
-        is_clear: !r.models || r.models.count == 0
+        is_clear: (!r.models || r.models.count == 0) && !a.s
 
         if [ !s && !is_clear ]
             s = vk.quad_shader[ ]
@@ -2069,6 +2071,16 @@ class SVGPathBuilder
         ly = cy
 
     func cmd_cubic [ xf: affine, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32 ]
+        dc1x : f32 c1x - cx
+        dc1y : f32 c1y - cy
+        if [ dc1x * dc1x + dc1y * dc1y < 0.0001 ]
+            cmd_line[ xf, x, y ]
+            lx = c2x
+            ly = c2y
+            cx = x
+            cy = y
+            return
+        
         cmds.push[ SVGCmd [
             op: SVGOp.cubic,
             x:  xf.apply_x[ x,   y   ], y:  xf.apply_y[ x,   y   ],
@@ -2526,7 +2538,7 @@ class Texture
     func transition [ new_layout: i32 ]
         if [ vk_layout != new_layout ]
             is_d32 : bool [ vk_format == VK_FORMAT_D32_SFLOAT ]
-            vk.transition_image_layout[ vk_image, vk_layout, new_layout,
+            vk.transition_image_layout[ vk_image, VK_IMAGE_LAYOUT_UNDEFINED, new_layout,
                 0, mip_levels, 0, layer_count, vk_format == VK_FORMAT_D32_SFLOAT ]
             vk_layout = new_layout
 
@@ -2537,17 +2549,14 @@ class Texture
     # layout tracking.
     
     func transition_in [ f: handle, new_layout: i32 ]
-        if [ vk_layout == new_layout ]
-            return
-        src: Layout.find[ vk_layout ]
         dst: Layout.find[ new_layout ]
-        expect src && dst, "layout not found"
+        expect dst, "layout not found"
         expect vk_image, "Texture.transition_in: vk_image is null (texture not initialized)"
         is_depth: bool [ vk_format == VK_FORMAT_D32_SFLOAT ]
         barrier: VkImageMemoryBarrier [
             sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             pNext:               null,
-            oldLayout:           vk_layout,
+            oldLayout:           VK_IMAGE_LAYOUT_UNDEFINED,
             newLayout:           new_layout,
             srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
             dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
@@ -2559,11 +2568,11 @@ class Texture
                 baseArrayLayer: 0,
                 layerCount:     layer_count
             ],
-            srcAccessMask:       src.access,
+            srcAccessMask:       0,
             dstAccessMask:       dst.access
         ]
         cmd: VkCommandBuffer [ f ]
-        vkCmdPipelineBarrier[ cmd, src.stage, dst.stage, 0, 0, null, 0, null, 1, ref barrier ]
+        vkCmdPipelineBarrier[ cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, dst.stage, 0, 0, null, 0, null, 1, ref barrier ]
         vk_layout = new_layout 
 
         
@@ -3607,12 +3616,13 @@ shader UVReduce
         vec2 tsize = textureSize(color, 0);
         vec2 texel = 1.0 / vec2(tsize);
         vec4 sum   = vec4(0.0);
-        for (int dy = -1; dy <= 2; dy++)
-            for (int dx = -1; dx <= 2; dx++) {{
-                vec2 offset = vec2(dx, dy) * texel;
+        for (int dy = 0; dy <= 3; dy++)
+            for (int dx = 0; dx <= 3; dx++) {{
+                vec2 offset = (vec2(dx, dy) - 1.5) * texel;
                 sum += texture(color, v_uv + offset);
             }}
-        fragColor = sum * (1.0 / 16.0);
+        vec4 avg  = sum * (1.0 / 16.0);
+        fragColor = vec4((avg.rgb + avg.rgb * avg.a) / 2.0, avg.a);
     }
 
 
@@ -3885,9 +3895,13 @@ shader CanvasUI
     # inner_ofs.xy, outer_shadow_ofs.zw — pixel offsets
     mutable glow_ofs      : vec4f
     # fill gradient anchors in world-pixel space (x = p0.xy, y = p1.xy).
-    # gated on grad_c1.a > 0; stroke_opts.z carries the mirror bit.
-    mutable fill_grad_pts : vec4f
-    mutable viewport      : vec2f
+    # gated on grad_c1.a > 0; stroke_opts.z carries the fill grad mode.
+    mutable fill_grad_pts   : vec4f
+    # stroke gradient anchors; gated on stroke_grad_c1.a > 0.
+    # stroke_opts.w carries the stroke grad mode (0=linear,1=mirror,2=radial).
+    mutable stroke_grad_pts : vec4f
+    mutable stroke_grad_c1  : vec4f
+    mutable viewport        : vec2f
     mutable fill_offset   : f32
     mutable stroke_offset : f32
     attrib  atlas      : LayoutBinding [
@@ -4123,20 +4137,48 @@ shader CanvasUI
             if (ubo.grad_c1.a > 0.0) {{
                 vec2  gp0 = ubo.fill_grad_pts.xy;
                 vec2  gp1 = ubo.fill_grad_pts.zw;
-                vec2  gd  = gp1 - gp0;
-                float gl2 = dot(gd, gd);
-                float gt  = (gl2 > 0.0001)
-                    ? clamp(dot(v_pos - gp0, gd) / gl2, 0.0, 1.0)
-                    : 0.0;
-                if (ubo.stroke_opts.z > 0.5) {{
-                    gt = abs(2.0 * gt - 1.0);
+                float gt;
+                if (ubo.stroke_opts.z > 1.5) {{
+                    float radius = length(gp1 - gp0);
+                    gt = (radius > 0.0001)
+                        ? clamp(length(v_pos - gp0) / radius, 0.0, 1.0)
+                        : 0.0;
+                }} else {{
+                    vec2  gd  = gp1 - gp0;
+                    float gl2 = dot(gd, gd);
+                    gt = (gl2 > 0.0001)
+                        ? clamp(dot(v_pos - gp0, gd) / gl2, 0.0, 1.0)
+                        : 0.0;
+                    if (ubo.stroke_opts.z > 0.5) {{
+                        gt = abs(2.0 * gt - 1.0);
+                    }}
                 }}
                 fill_c = mix(ubo.grad_c0, ubo.grad_c1, gt);
             }}
             vec4 fill_p   = vec4(fill_c.rgb * fill_c.a * fill_cov,
                                  fill_c.a   * fill_cov);
-            vec4 stroke_p = vec4(ubo.stroke_color.rgb * ubo.stroke_color.a * stroke_cov,
-                                 ubo.stroke_color.a   * stroke_cov);
+            vec4 stroke_c6 = ubo.stroke_color;
+            if (ubo.stroke_grad_c1.a > 0.0) {{
+                vec2  sgp0 = ubo.stroke_grad_pts.xy;
+                vec2  sgp1 = ubo.stroke_grad_pts.zw;
+                float sgt;
+                if (ubo.stroke_opts.w > 1.5) {{
+                    float sradius = length(sgp1 - sgp0);
+                    sgt = (sradius > 0.0001)
+                        ? clamp(length(v_pos - sgp0) / sradius, 0.0, 1.0)
+                        : 0.0;
+                }} else {{
+                    vec2  sgd  = sgp1 - sgp0;
+                    float sgl2 = dot(sgd, sgd);
+                    sgt = (sgl2 > 0.0001)
+                        ? clamp(dot(v_pos - sgp0, sgd) / sgl2, 0.0, 1.0)
+                        : 0.0;
+                    if (ubo.stroke_opts.w > 0.5) {{ sgt = abs(2.0 * sgt - 1.0); }}
+                }}
+                stroke_c6 = mix(ubo.stroke_color, ubo.stroke_grad_c1, sgt);
+            }}
+            vec4 stroke_p = vec4(stroke_c6.rgb * stroke_c6.a * stroke_cov,
+                                 stroke_c6.a   * stroke_cov);
             float inner_px = ubo.glow_params.x;
             float outer_px = ubo.glow_params.y;
             float K        = ubo.glow_params.z;
@@ -4241,9 +4283,29 @@ shader CanvasUI
         vec4 fill_p   = vec4(fill.rgb * fill.a * fill_cov, fill.a * fill_cov);
         // stroke color is beveled: lit edges use stroke_color, dark edges use
         // stroke_shadow_color. falls back to stroke_color if shadow not set.
-        vec4 stroke_c = ubo.stroke_color;
+        vec4 stroke_c_base = ubo.stroke_color;
+        if (ubo.stroke_grad_c1.a > 0.0) {{
+            vec2  sgp0 = ubo.stroke_grad_pts.xy;
+            vec2  sgp1 = ubo.stroke_grad_pts.zw;
+            float sgt;
+            if (ubo.stroke_opts.w > 1.5) {{
+                float sradius = length(sgp1 - sgp0);
+                sgt = (sradius > 0.0001)
+                    ? clamp(length(v_pos - sgp0) / sradius, 0.0, 1.0)
+                    : 0.0;
+            }} else {{
+                vec2  sgd  = sgp1 - sgp0;
+                float sgl2 = dot(sgd, sgd);
+                sgt = (sgl2 > 0.0001)
+                    ? clamp(dot(v_pos - sgp0, sgd) / sgl2, 0.0, 1.0)
+                    : 0.0;
+                if (ubo.stroke_opts.w > 0.5) {{ sgt = abs(2.0 * sgt - 1.0); }}
+            }}
+            stroke_c_base = mix(ubo.stroke_color, ubo.stroke_grad_c1, sgt);
+        }}
+        vec4 stroke_c = stroke_c_base;
         if (ubo.stroke_shadow_color.a > 0.001) {{
-            stroke_c = mix(ubo.stroke_shadow_color, ubo.stroke_color, lit_side);
+            stroke_c = mix(ubo.stroke_shadow_color, stroke_c_base, lit_side);
         }}
         vec4 stroke_p = vec4(stroke_c.rgb * stroke_c.a * stroke_cov,
                              stroke_c.a   * stroke_cov);
@@ -5070,7 +5132,13 @@ struct CanvasState
     fill_grad         : vec4f
     fill_color_pos    : vec2f
     fill_grad_pos     : vec2f
-    fill_grad_mirror  : bool
+    fill_grad_mirror   : bool
+    fill_grad_radial   : bool
+    stroke_grad        : vec4f
+    stroke_color_pos   : vec2f
+    stroke_grad_pos    : vec2f
+    stroke_grad_mirror : bool
+    stroke_grad_radial : bool
 
 
 func sk_color [ clr: rgba ] -> vec4f
@@ -5144,7 +5212,7 @@ Render Canvas
         ui_shader = CanvasUI [ vk: vk ]
         # R32F + STORAGE_BIT so the compute shader can imageStore distances
         # directly and the fragment shader still samples it as a texture.
-        sdf_tex = Texture [ vk: vk, w: w, width: 512, height: 512,
+        sdf_tex = Texture [ vk: vk, w: w, width: width / 2, height: height / 2,
             pixel_format: Pixel.f32, surface: Surface.color, is_storage: true ]
         # one r8 glyph atlas per canvas, bound as the `atlas` sampler the
         # CanvasUI shader's mode-4 text path samples from.
@@ -5203,7 +5271,7 @@ Render Canvas
         # just drew (LOAD_OP_LOAD).
         text_render = Render [ vk: vk, w: w,
             color: a.color,
-            wscale: 1.0, load_existing: true ]
+            width: width, height: height, load_existing: true ]
         text_pipeline = Pipeline [ vk: vk, w: w, name: string 'text',
             r: text_render, s: text_shader, vbo: text_vbo,
             samplers: map Au[string] [ 'atlas': glyph_atlas.texture ],
@@ -5243,7 +5311,7 @@ Render Canvas
             rv_hi  : Render [ blur_v_arr[hi_idx] ]
             bh_s : CanvasBlurH [ vk: vk, name: 'canvas-blur-h' ]
             m_h  : Model  [ w: w, s: bh_s, samplers: map Texture[string] [ 'low': rv_lo.color, 'high': rv_hi.color ] ]
-            r_h  : Render [ vk: vk, w: w, color: a.color, wscale: 1.0, models: array Model [ m_h ] ]
+            r_h  : Render [ vk: vk, w: w, color: a.color, width: width, height: height, models: array Model [ m_h ] ]
             blur_h_arr.push[ r_h ]
 
         path   = CanvasPath []
@@ -5395,7 +5463,13 @@ Render Canvas
                 fill_grad:         vec4f [ 0.0, 0.0, 0.0, 0.0 ],
                 fill_color_pos:    vec2f [ 0.0, 0.0 ],
                 fill_grad_pos:     vec2f [ 0.0, 0.0 ],
-                fill_grad_mirror:  true
+                fill_grad_mirror:   false,
+                fill_grad_radial:   false,
+                stroke_grad:        vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                stroke_color_pos:   vec2f [ 0.0, 0.0 ],
+                stroke_grad_pos:    vec2f [ 0.0, 0.0 ],
+                stroke_grad_mirror: false,
+                stroke_grad_radial: false
             ]
             states.push[ st ]
         el
@@ -5465,6 +5539,24 @@ Render Canvas
 
     func fill_grad_mirror [ m: bool ]
         states[state_depth - 1].fill_grad_mirror = m
+
+    func fill_grad_radial [ r: bool ]
+        states[state_depth - 1].fill_grad_radial = r
+
+    func stroke_grad [ color: rgba ]
+        states[state_depth - 1].stroke_grad = sk_color[ color ]
+
+    func stroke_color_pos [ x: f32, y: f32 ]
+        states[state_depth - 1].stroke_color_pos = vec2f [ x, y ]
+
+    func stroke_grad_pos [ x: f32, y: f32 ]
+        states[state_depth - 1].stroke_grad_pos = vec2f [ x, y ]
+
+    func stroke_grad_mirror [ m: bool ]
+        states[state_depth - 1].stroke_grad_mirror = m
+
+    func stroke_grad_radial [ r: bool ]
+        states[state_depth - 1].stroke_grad_radial = r
 
     func transform_tx [] -> f32
         return states[state_depth - 1].transform.tx
@@ -5720,9 +5812,11 @@ Render Canvas
         ui_shader.stroke_offset = st.stroke_offset
         ui_shader.params        = vec4f [ st.stroke_width, st.opacity, st.blur_rad, 0.0 ]
         ui_shader.radii         = st.corner_radii
-        ui_shader.grad0         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        ui_shader.grad_c0       = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        ui_shader.grad_c1       = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        ui_shader.grad0           = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        ui_shader.grad_c0         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        ui_shader.grad_c1         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        ui_shader.stroke_grad_pts = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        ui_shader.stroke_grad_c1  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         # stroke options: x = join enum (0=none,1=miter,2=round,3=bevel)
         ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, 0.0, 0.0 ]
         # 2D affine transform packed as two vec4s for the vertex shader
@@ -5824,19 +5918,45 @@ Render Canvas
     func draw_svg [ mdl: SVGModel, ox: f32, oy: f32, rw: f32, rh: f32 ]
         if [ !mdl || !mdl.shapes || mdl.shapes.count == 0 ]
             return
+        if [ rw < 1.0 || rh < 1.0 ]
+            return
         if [ !mdl.cache || mdl.cache_rw != rw || mdl.cache_rh != rh ]
-            mdl.cache    = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: i32(rw), height: i32(rh) ]
+            cw4 : i32 [ i32(rw) * 4 ]
+            ch4 : i32 [ i32(rh) * 4 ]
+            mdl.cache    = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: cw4, height: ch4, reduce: true, load_existing: true ]
             mdl.cache.update[]
-            printf[ "draw_svg: cache=%p color=%p fb=%p rp=%p w=%d h=%d\n",
-                mdl.cache, mdl.cache.color, mdl.cache.vk_framebuffer[0], mdl.cache.vk_render_pass[0],
-                mdl.cache.width, mdl.cache.height ]
+            mdl.cache.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
             mdl.cache_rw = rw
             mdl.cache_rh = rh
-            sx    : f32 (mdl.w > 0.0) ? rw / mdl.w : 1.0
-            sy    : f32 (mdl.h > 0.0) ? rh / mdl.h : 1.0
+            # compute actual content bounding box from path data
+            # (SVG document w/h may not match content after Inkscape edits)
+            bx0 : f32 999999.0
+            by0 : f32 999999.0
+            bx1 : f32 -999999.0
+            by1 : f32 -999999.0
+            for [ sh2: SVGShape ] in mdl.shapes
+                for [ c2: SVGCmd ] in sh2.cmds
+                    if [ c2.x  < bx0 ] bx0 = c2.x
+                    if [ c2.y  < by0 ] by0 = c2.y
+                    if [ c2.x  > bx1 ] bx1 = c2.x
+                    if [ c2.y  > by1 ] by1 = c2.y
+                    if [ c2.x1 < bx0 ] bx0 = c2.x1
+                    if [ c2.y1 < by0 ] by0 = c2.y1
+                    if [ c2.x1 > bx1 ] bx1 = c2.x1
+                    if [ c2.y1 > by1 ] by1 = c2.y1
+                    if [ c2.x2 < bx0 ] bx0 = c2.x2
+                    if [ c2.y2 < by0 ] by0 = c2.y2
+                    if [ c2.x2 > bx1 ] bx1 = c2.x2
+                    if [ c2.y2 > by1 ] by1 = c2.y2
+            cw    : f32 (bx1 > bx0) ? bx1 - bx0 : mdl.w
+            ch    : f32 (by1 > by0) ? by1 - by0 : mdl.h
+            rw4   : f32 [ f32(cw4) ]
+            rh4   : f32 [ f32(ch4) ]
+            sx    : f32 (cw > 0.0) ? rw4 / cw : 1.0
+            sy    : f32 (ch > 0.0) ? rh4 / ch : 1.0
             s     : f32 min[ sx, sy ]
-            off_x : f32 (rw - mdl.w * s) * 0.5
-            off_y : f32 (rh - mdl.h * s) * 0.5
+            off_x : f32 (rw4 - cw * s) * 0.5 - bx0 * s
+            off_y : f32 (rh4 - ch * s) * 0.5 - by0 * s
             for [ shape: SVGShape ] in mdl.shapes
                 fc : rgba rgba[ '#00000000' ]
                 sc : rgba rgba[ '#00000000' ]
@@ -5854,7 +5974,7 @@ Render Canvas
                 mdl.cache.set_opacity[ shape.opacity ]
                 mdl.cache.fill_color[ fc ]
                 mdl.cache.stroke_color[ sc ]
-                sw_ : f32 (shape.stroke_none) ? 0.0 : shape.sw * s
+                sw_ : f32 (shape.stroke_none || shape.sw <= 0.0) ? 0.0 : shape.sw * s
                 mdl.cache.set_stroke_size[ sw_ ]
                 for [ cmd: SVGCmd ] in shape.cmds
                     cx_ : f32 off_x + cmd.x * s
@@ -5879,11 +5999,17 @@ Render Canvas
         draw_canvas[ mdl.cache, ox, oy, rw, rh ]
 
     func draw_canvas [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
-        image_override = src.color
+        image_override = (src.reduction) ? src.reduction : src.color
         path.clear[]
         path.add_rect[ x, y, rw, rh ]
         paint[]
         image_override = null
+        if [ models ]
+            for [ mi: i32 0, mi < models.count, mi += 1 ]
+                cmod : Model models[mi]
+                if [ cmod.pipelines && cmod.pipelines.count > 0 ]
+                    p : Pipeline cmod.pipelines[0]
+                    p.rebind_image[ sdf_tex ]
 
     # paint `tex` into `dst` using the full texture as source.
     func draw_image [ tex: Texture, dst: rect ]
@@ -6042,8 +6168,8 @@ Render Canvas
             # was just extracted above; on cache hit we reuse the edges that
             # are already in the storage buffer from the previous frame and
             # only need to refresh the UBO params (transform may have moved).
-            sdf_w  : i32 [ 512 ]
-            sdf_h  : i32 [ 512 ]
+            sdf_w  : i32 [ width / 2 ]
+            sdf_h  : i32 [ height / 2 ]
             pad    : f32 [ maxf [ 4.0, st.stroke_width * 0.5 + 4.0 ] ]
             spread : f32 [ maxf [ 8.0, st.stroke_width * 0.5 + 4.0 ] ]
             pbx : f32 [ bx0 - pad ]
@@ -6103,8 +6229,13 @@ Render Canvas
                 st.fill_grad_pos.x,  st.fill_grad_pos.y ]
             j : f32 [ st.stroke_join ]
             c : f32 [ st.stroke_cap ]
-            mirror_bit : f32 [ (st.fill_grad_mirror) ? 1.0 : 0.0 ]
-            ui_shader.stroke_opts = vec4f [ j, c, mirror_bit, spread ]
+            grad_mode   : f32 [ (st.fill_grad_radial)   ? 2.0 : (st.fill_grad_mirror)   ? 1.0 : 0.0 ]
+            s_grad_mode : f32 [ (st.stroke_grad_radial) ? 2.0 : (st.stroke_grad_mirror) ? 1.0 : 0.0 ]
+            ui_shader.stroke_opts     = vec4f [ j, c, grad_mode, s_grad_mode ]
+            ui_shader.stroke_grad_c1  = st.stroke_grad
+            ui_shader.stroke_grad_pts = vec4f [
+                st.stroke_color_pos.x, st.stroke_color_pos.y,
+                st.stroke_grad_pos.x,  st.stroke_grad_pos.y ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, DrawMode.sdf_path ]
 
         flush[]
@@ -6586,7 +6717,9 @@ func sdf_extract_edges [ flat: array PathPt ] -> array SDFEdge
             have_cursor = true
         el [ pt.cmd == path_cmd.line ]
             if [ have_cursor ]
-                if [ px != pt.x || py != pt.y ]
+                edx : f32 pt.x - px
+                edy : f32 pt.y - py
+                if [ edx * edx + edy * edy > 0.01 ]
                     e : SDFEdge [ x0: px, y0: py, x1: pt.x, y1: pt.y ]
                     edges.push[ e ]
             px = pt.x
@@ -7619,8 +7752,8 @@ ielement element
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
     intern transitions  : map StyleTransition[string]
-    intern bindings     : map StyleEntry[string]
-    intern restyle : bool
+    intern restyle  : bool
+    intern volatile : bool
 
     public func set_capture []
         ux.set_capture[ a ]
@@ -7654,17 +7787,12 @@ ielement element
             iterate = false
             for [ ct:StyleTransition, k:string ] in transitions
                 if [ ct.invalidate ]
+                    if [ ct.from ] ct.from.drop[]
+                    if [ ct.to   ] ct.to.drop[]
                     transitions.rm[ k ]
                     iterate = true
                     del = true
-                    puts 'deleted one'
-                    #restyle = true # these overwrite each other, which might be a flaw in design because we must 
                     break
-                el
-                    puts 'valid? value = {ct.dbg_val}'
-
-        if [ del ]
-            puts 'deleted transitions, count left: {transitions.count}'
             
         for [ e:element, k:string ] in elements
             e.remove_invalid_transitions[]
@@ -7682,15 +7810,21 @@ ielement element
                     if [ (from_t.traits & (1 << 8)) != 0 ]
                         dst : ct.container.member_ref[ ct.member ]
                         #Au.mix_structs[ from_t, dst, ct.from, ct.to, p ]
+                    el [ ct.from inherits collective ]
+                        fa  : array Rotation ct.from
+                        ta  : array Rotation ct.to
+                        if [ fa && ta ]
+                            n   : i32 [ (fa.count < ta.count) ? fa.count : ta.count ]
+                            res : array Rotation []
+                            for [ i: i32 0, i < n, i += 1 ]
+                                res.push[ fa[i].mix[ ta[i], p ] ]
+                            ct.container.member_set[ ct.member, res ]
                     el
                         mixed : ct.from.mix*[ ct.to, p ]
                         ct.container.member_set[ ct.member, mixed ]
 
-        if [ bindings ]
-            for [ e: StyleEntry, k: string ] in bindings
-                v : a.member_object[ e.bound_src ]
-                if [ v ]
-                    e.container.member_set[ e.bound_mem, v ]
+        if [ volatile ]
+            restyle = true
 
         for [ ee: element, id: string ] in elements
             ee.animate_within[ ]
@@ -7737,6 +7871,9 @@ Display Window
 
 
     intern root_styles          : map Style[string]
+    intern last_frame_ms        : i64
+    intern frame_factor         : f32
+    intern frame_seq            : i32
     public root                 : element
     mutable capture             : element
     mutable focus               : element
@@ -7780,29 +7917,15 @@ Display Window
 
     
     public func transition_or_set [ inst:element, value_holder:Au, cur:Au, member:Au_t, best:StyleEntry ]
-        # binding handling: value is sourced from inst.<best.binding> every frame.
-        # skip the transition/value path entirely.
-        if [ best.binding ]
-            if [ !inst.bindings ]
-                inst.bindings = map StyleEntry [ string ] [ ]
-            src_m : Au_t [ Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ] ]
-            if [ src_m ]
-                best.container = value_holder
-                best.bound_mem = member
-                best.bound_src = src_m
-                inst.bindings[ member.ident ] = best
-            return
-
         # transition handling
-        t  : best.trans
-        ct : StyleTransition
+        t            : best.trans
+        ct           : StyleTransition
         should_trans : false
-        mem : string[ member.ident ]
+        mem          : string [ member.ident ]
 
         if [ t ]
             if [ !inst.transitions ]
                 inst.transitions = StyleTransitions [ ]
-            
             ct = inst.transitions[ mem ]
             if [ !ct ]
                 ct = t.copy[]
@@ -7811,30 +7934,76 @@ Display Window
                 inst.transitions[ mem ] = ct
             el
                 ct.invalidate = false
-                should_trans = true # ct.reference != t
-        
+                should_trans = true
         el [ inst.transitions ]
             inst.transitions.rm[ mem ]
-        
-        if [ ct && should_trans ]
-            ct.from     = (cur) ? cur : best.instance
-            ct.dbg_val  = best.value
-            ct.to       = best.instance.hold[]
-            ct.type     = typeid[ best.instance ]
-            ct.start    = epoch_millis[]
-            ct.member   = member
-            ct.invalidate = false
-            ct.container = value_holder
-            #s : new char [ 256 ]
-            #sprintf [ s, "%p", ct ]
-            #puts 'invalidate = false, key = {mem} on element {inst.id}, (best.value = {best.value}, ct = {s})'
 
-        el [ !ct ]
-            info : header[ best.instance ]
-            value_holder.member_set[ member, best.instance ]
+        if [ ct && should_trans ]
+            if [ ct.from ] ct.from.drop[]
+            if [ ct.to   ] ct.to.drop[]
+            ct.from      = (cur) ? cur.hold[] : best.instance.hold[]
+            ct.dbg_val   = best.value
+            ct.to        = best.instance.hold[]
+            ct.type      = typeid[ best.instance ]
+            ct.start     = epoch_millis[]
+            ct.member    = member
+            ct.invalidate = false
+            ct.container  = value_holder
+            return
+
+        float_count : i32 [ member.src.typesize / 4 ]
+        dst_ptr     : ref f32 [ value_holder.member_ref[ member ] ]
+        is_fcp      : bool [ strcmp[ member.ident, 'fill_color_pos' ] == 0 ]
+
+        # binding: read source member directly from element and apply (with optional filter)
+        if [ best.binding ]
+            src_m : Au_t [ Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ] ]
+            if [ src_m ]
+                src_ptr : ref f32 [ inst.member_ref[ src_m ] ]
+                if [ is_fcp ]
+                    printf [ "[%d] bind-before  dst=%.3f,%.3f  src=%.3f,%.3f  filter=%.2f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1], src_ptr[0], src_ptr[1], best.filter ]
+                if [ best.filter > 0.0 ]
+                    decay : f32 [ pow[ best.filter, inst.ux.frame_factor ] ]
+                    for [ i: i32 0, i < float_count, i += 1 ]
+                        dst_ptr[i] = dst_ptr[i] + (src_ptr[i] - dst_ptr[i]) * (1.0 - decay)
+                el
+                    for [ i: i32 0, i < float_count, i += 1 ]
+                        dst_ptr[i] = src_ptr[i]
+                if [ is_fcp ]
+                    printf [ "[%d] bind-after   dst=%.3f,%.3f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1] ]
+                inst.volatile = true
+            return
+
+        # filter: EMA dst in-place toward best.instance; snap from zero on first use
+        if [ best.filter > 0.0 ]
+            target_ptr  : ref f32 [ best.instance ]
+            if [ is_fcp ]
+                printf [ "[%d] filt-before  dst=%.3f,%.3f  target=%.3f,%.3f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1], target_ptr[0], target_ptr[1] ]
+            unset       : true
+            for [ i: i32 0, i < float_count, i += 1 ]
+                if [ dst_ptr[i] != 0.0 ] unset = false
+            if [ unset ]
+                for [ i: i32 0, i < float_count, i += 1 ]
+                    dst_ptr[i] = target_ptr[i]
+            el
+                decay : f32 [ pow[ best.filter, inst.ux.frame_factor ] ]
+                for [ i: i32 0, i < float_count, i += 1 ]
+                    if [ target_ptr[i] != 0.0 ]
+                        dst_ptr[i] = dst_ptr[i] + (target_ptr[i] - dst_ptr[i]) * (1.0 - decay)
+                    el
+                        dst_ptr[i] = dst_ptr[i] * decay
+            if [ is_fcp ]
+                printf [ "[%d] filt-after   dst=%.3f,%.3f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1] ]
+            inst.volatile = true
+            return
+
+        if [ is_fcp ]
+            printf [ "[%d] static-set  member=%s\n", inst.ux.frame_seq, member.ident ]
+        value_holder.member_set[ member, best.instance ]
     
     public func apply_style [ inst: element, style_avail: map StyleEntries[string], home_object:Au ]
         #puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
+        inst.volatile = false
         ty      : Au_t [ typeid[ inst ] ]
         while [ ty != typeid[ Au ] ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
@@ -7864,32 +8033,44 @@ Display Window
                         inst.member_set[member_map, member_container]
 
                     for [ best : StyleEntry ] in entries
-
-                        if [ best.bl.score[ inst, true ] == 0 ]
+                        score : i32 [ best.bl.score[ inst, true ] ]
+                        if [ score == 0 ]
                             continue
-                        
+
+                        # skip if another entry for the same layer+member has a higher score
+                        skip : false
+                        for [ other : StyleEntry ] in entries
+                            if [ other == best ] continue
+                            if [ strcmp[ other.member.chars, best.member.chars ] != 0 || strcmp[ other.bl.key.chars, best.bl.key.chars ] != 0 ] continue
+                            if [ other.bl.score[ inst, true ] > score ]
+                                skip = true
+                                break
+                        if [ skip ] continue
+
                         # find layer by name (key), creating a default if not found
                         layer_inst : member_container.get[best.bl.key]
                         if [!layer_inst]
                             layer_inst = Au.new_object[inner_inst_type, null, null, true]
                             member_container.set[best.bl.key, layer_inst]
-                        
-                        layer_debug : Layer [ member_container.get[best.bl.key] ]
+                        layer_inst.hold[]
 
                         layer_member : Au.find_member[ inner_inst_type, best.member, AU_MEMBER_VAR, 0, true ]
                         expect layer_member, 'member not found on {inner_inst_type.ident}: {best.member}'
-                       
+
                         if [ !best.instance ]
-                            best.instance = (best.value to layer_member.src)
+                            if [ layer_member.src.traits & (1 << 11) ]
+                                best.instance = Au.new_object[ layer_member.src, null, null, false ]
+                                best.instance.set_context_from[ home_object ]
+                                best.instance.call_construct[ best.value ]
+                            el
+                                best.instance = (best.value to layer_member.src)
                             best.instance.hold[]
 
                         cur : layer_inst.member_object[ layer_member ]
                         if [ !cur ]
                             cur = best.instance
 
-                        #printf [ "setting layer member {%s} from css line {%i} (%p)\n", layer_member.ident, best.line, best.member ]
                         transition_or_set[ inst, layer_inst, cur, layer_member, best ]
-                        layer_member = layer_member
 
                 el
                     best : st.best_match[ inst, prop, entries ]
@@ -7938,6 +8119,10 @@ Display Window
         if [ !root ]
             return
 
+        now          : i64 [ epoch_millis[] ]
+        frame_factor = (1.0 / 60.0) / (last_frame_ms > 0) ? f32[ now - last_frame_ms ] / 1000.0 : 0.016
+        last_frame_ms = now
+        frame_seq += 1
         root.animate_within [ ]
 
     func update_element [ parent: element, rendered: map element[string] ]
@@ -8101,7 +8286,13 @@ Display Window
 
         if [ !must && (lx < 0.0 || ly < 0.0 || lx >= b.w || ly >= b.h) ]
             return null
-        
+
+        # update cursor on every element in the traversal path — cursor is
+        # always live on all controls, normalized to element-local [0..1].
+        bw : f32 [ (b.w > 0.0) ? b.w : 1.0 ]
+        bh : f32 [ (b.h > 0.0) ? b.h : 1.0 ]
+        e.cursor = vec2f [ x: lx / bw, y: ly / bh ]
+
         ev.mouse.pos.x = lx + e.scroll.x
         ev.mouse.pos.y = ly + e.scroll.y
 
@@ -8133,10 +8324,6 @@ Display Window
     public func move_event [ ev: Event ]
         f : element [ find_target[ root, ev, null ] ]
         m : element [ (capture) ? find_target[ root, ev, capture ] : f ]
-        # store the hit element's local cursor so properties like
-        # label_color_pos can be driven by the mouse at draw time.
-        if [ f ]
-            f.cursor = ev.mouse.pos
         # hover / leave bubble — flip state bools and set restyle; the next
         # update_element pass picks up restyle and re-applies CSS.
         if [ hovered != f ]
@@ -8522,19 +8709,42 @@ Display Window
                 # fill gradient anchors — same element-unit → world-pixel
                 # convention as the label gradient. axis straddles the anchor
                 # so mirror puts the highlight ON the anchor point.
-                fp_x : f32 [ (abs[layer.fill_color_pos.x] < 1.0) ? layer.fill_color_pos.x * e.bounds.w : layer.fill_color_pos.x ]
-                fp_y : f32 [ (abs[layer.fill_color_pos.y] < 1.0) ? layer.fill_color_pos.y * e.bounds.h : layer.fill_color_pos.y ]
+                fp_x : f32 [ layer.fill_color_pos.x * e.bounds.w ]
+                fp_y : f32 [ layer.fill_color_pos.y * e.bounds.h ]
                 # DEBUG: hardcoded to test whether layer fields reach here.
                 f_rad : f32 [ layer.fill_gradient_radius ]
-                f_ang : f32 [ radians[ layer.fill_gradient_degrees ] ]
-                f_hx  : f32 [ cosf[ f_ang ] * f_rad * 0.5 ]
-                f_hy  : f32 [ sinf[ f_ang ] * f_rad * 0.5 ]
                 f_ax  : f32 [ cv.transform_tx[] + fp_x ]
                 f_ay  : f32 [ cv.transform_ty[] + fp_y ]
-                cv.fill_grad        [ layer.fill_gradient ]
-                cv.fill_color_pos   [ f_ax - f_hx, f_ay - f_hy ]
-                cv.fill_grad_pos    [ f_ax + f_hx, f_ay + f_hy ]
-                cv.fill_grad_mirror [ layer.fill_gradient_mirror ]
+                cv.fill_grad        [ layer.fill_gradient_color ]
+                if [ layer.fill_gradient == GradientType.radial ]
+                    cv.fill_color_pos   [ f_ax, f_ay ]
+                    cv.fill_grad_pos    [ f_ax + f_rad, f_ay ]
+                    cv.fill_grad_radial [ true ]
+                    cv.fill_grad_mirror [ false ]
+                el [ layer.fill_gradient == GradientType.linear ]
+                    cv.fill_color_pos   [ f_ax, f_ay ]
+                    cv.fill_grad_pos    [ f_ax + f_rad, f_ay ]
+                    cv.fill_grad_radial [ false ]
+                    cv.fill_grad_mirror [ false ]
+                el
+                    cv.fill_grad_radial [ false ]
+                    cv.fill_grad_mirror [ false ]
+                # stroke gradient — same anchor as fill (cursor position)
+                s_rad : f32 [ layer.stroke_gradient_radius ]
+                cv.stroke_grad      [ layer.stroke_gradient_color ]
+                if [ layer.stroke_gradient == GradientType.radial ]
+                    cv.stroke_color_pos [ f_ax, f_ay ]
+                    cv.stroke_grad_pos  [ f_ax + s_rad, f_ay ]
+                    cv.stroke_grad_radial [ true ]
+                    cv.stroke_grad_mirror [ false ]
+                el [ layer.stroke_gradient == GradientType.linear ]
+                    cv.stroke_color_pos [ f_ax, f_ay ]
+                    cv.stroke_grad_pos  [ f_ax + s_rad, f_ay ]
+                    cv.stroke_grad_radial [ false ]
+                    cv.stroke_grad_mirror [ false ]
+                el
+                    cv.stroke_grad_radial [ false ]
+                    cv.stroke_grad_mirror [ false ]
                 if [ layer.inner_glow ]
                     cv.inner_glow   [ layer.inner_glow.color, layer.inner_glow.blur ]
                 cv.paint            [ ]
@@ -8545,7 +8755,7 @@ Display Window
 
             label : string (layer.label && layer.label.count > 0) ? layer.label : null
             
-            if [ (element_text || label) ]
+            if [ (element_text || label) && layer.label_size > 0 ]
                 cv.save[]
                 align  : vec2f [
                     x: (layer.label_align) ? layer.label_align.x : 0,
@@ -8560,8 +8770,8 @@ Display Window
                 # so mirror puts the highlight ON the anchor (cursor-following
                 # chrome). direction is label_grad_degrees from +x (screen
                 # coords: 0 = right, 90 = down).
-                cp_x : f32 [ (abs[layer.label_color_pos.x] < 1.0) ? layer.label_color_pos.x * e.bounds.w : layer.label_color_pos.x ]
-                cp_y : f32 [ (abs[layer.label_color_pos.y] < 1.0) ? layer.label_color_pos.y * e.bounds.h : layer.label_color_pos.y ]
+                cp_x : f32 [ layer.label_color_pos.x * e.bounds.w ]
+                cp_y : f32 [ layer.label_color_pos.y * e.bounds.h ]
                 rad  : f32 [ layer.label_gradient_radius ]
                 ang  : f32 [ radians[ layer.label_gradient_degrees ] ]
                 hx   : f32 [ cosf[ ang ] * rad * 0.5 ]
@@ -8672,7 +8882,7 @@ class StyleEntry
     mutable value     : string
     mutable trans     : StyleTransition
     mutable bl        : StyleBlock
-    mutable instance  : object
+    manual instance  : object
     mutable line      : i32
     # when set, `value` is the name of a field on the target element; the value
     # is re-read from inst.<binding> every frame (not converted at parse time).
@@ -8682,6 +8892,7 @@ class StyleEntry
     mutable container : Au
     mutable bound_mem : Au_t
     mutable bound_src : Au_t
+    mutable filter    : f32
 
     func dealloc []
         if [ instance ]
@@ -8761,13 +8972,17 @@ class StyleBlock
                 el
                     param = (ci >= 0) ? cb_value.mid[ ci + 1, cb_value.count - (ci + 1) ].trim[] : null
                     value = (ci >= 0) ? cb_value.mid[ 0, ci ].trim[] : cb_value
+                filter_val : f32 [ 0.0 ]
+                if [ param && param.count >= 7 && param.mid[ 0, 7 ] == 'filter ' ]
+                    filter_val = f32[ param.mid[ 7, param.count - 7 ].trim[] ]
+                    param = null
                 trans : StyleTransition [ (param) ? StyleTransition[ param ] : null ]
                 if [ trans ]
                     puts 'trans'
                     trans = trans
                 expect member, 'member cannot be blank'
                 expect value,  'value cannot be blank'
-                entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: a ]
+                entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: a, filter: filter_val ]
                 sc += 1
                 ws[ ref sc ]
         expect !sc[0] || sc[0] == '}', 'expected closed-brace'
@@ -9184,9 +9399,13 @@ class Rotation
         degs   = sp[3].real_value[]
 
     public func mix [ b: Rotation, f: f64 ] -> Rotation
+        ft : f32 [ f ]
         return Rotation [
-            axis: axis.mix[ b.axis, f ],
-            degs: mix[ degs, b.degs, f ]
+            axis: vec3f [
+                x: axis.x + (b.axis.x - axis.x) * ft,
+                y: axis.y + (b.axis.y - axis.y) * ft,
+                z: axis.z + (b.axis.z - axis.z) * ft ],
+            degs: degs + (b.degs - degs) * ft
         ]
 
 
@@ -9462,14 +9681,17 @@ class Layer
 
     public fill_color               : rgba
     public fill_color_pos           : vec2f
-    public fill_gradient            : rgba
+    public fill_gradient            : GradientType
+    public fill_gradient_color      : rgba
     public fill_gradient_radius     : f32
-    public fill_gradient_degrees    : f32
-    public fill_gradient_mirror     : bool
     public fill_offset         : f32
     public fill_shadow         : Shadow
     public fill_glow           : Glow
     public inner_glow          : Glow
+
+    public stroke_gradient          : GradientType
+    public stroke_gradient_color    : rgba
+    public stroke_gradient_radius   : f32
 
     public stroke_color        : rgba
     public stroke_width        : f32
@@ -10567,10 +10789,14 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
                 if [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
                     value_s = value_s.mid[ 1, value_s.count - 2 ]
             value   = value_s
+        filter_val : f32 [ 0.0 ]
+        if [ param && param.count >= 7 && param.mid[ 0, 7 ] == 'filter ' ]
+            filter_val = f32[ param.mid[ 7, param.count - 7 ].trim[] ]
+            param = null
         trans : (param) ? StyleTransition[ param ] : null
         is_bind : bool [ value_s && value_s.count >= 2 && value_s.chars[0] == '{' && value_s.chars[value_s.count - 1] == '}' ]
         bname   : string [ (is_bind) ? value_s.mid[ 1, value_s.count - 2 ].trim[] : null ]
-        bl.entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: bl, line: lines[j].line, binding: bname ]
+        bl.entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: bl, line: lines[j].line, binding: bname, filter: filter_val ]
         j += 1
 
 
