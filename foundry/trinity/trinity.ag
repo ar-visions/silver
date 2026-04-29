@@ -7736,6 +7736,7 @@ ielement element
     mutable focused         : bool
     public  focusable       : bool
     public cursor           : vec2f
+    mutable maps_populated  : bool
 
     # input event hooks. return true to swallow; false to let the window
     # continue to the app-level handler. both element and the app get a
@@ -8001,14 +8002,40 @@ Display Window
             printf [ "[%d] static-set  member=%s\n", inst.ux.frame_seq, member.ident ]
         value_holder.member_set[ member, best.instance ]
     
+
+    # needs copies
     public func apply_style [ inst: element, style_avail: map StyleEntries[string], home_object:Au ]
         #puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
         inst.volatile = false
-        ty      : Au_t [ typeid[ inst ] ]
+        
 
+        # create layers in the order they render
+        if [ !inst.maps_populated ]
+            inst.maps_populated = true
+            for [ ty : Au_t [ typeid[ inst ] ], ty != typeid[ Au ], ty = ty.context ]
+                for [ m: i32 0, m < ty.members.count, m += 1 ]
+                    member : Au_t ty.members.origin[m]
+                    if [ member.member_type != AU_MEMBER_VAR || member.ident == 'elements' ]
+                        continue
+                    prop    : string [ member.ident ]
+                    entries : style_avail [ prop ]
+                    for [ entry : StyleEntry ] in entries
+                        if [ !(entry.bl.property && entry.bl.key) ]
+                            continue
+                        entry.member_map = Au.find_member [ typeid[inst], entry.bl.property.chars, AU_MEMBER_VAR, 0, true ]
+                        expect entry.member_map, 'member not found on {ty.ident}: {entry.bl.property}'
+                        member_container : (inst.member_object[ entry.member_map ] to map Layer[string])
+                        if [ !member_container ]
+                            member_container = map Layer[string][]
+                            inst.member_set[ entry.member_map, member_container ]
+                            member_container.hold[]
+                        if [ !member_container.contains[entry.bl.key] ]
+                            layer_inst : Au.new_object[entry.member_map.meta.a, null, null, true]
+                            member_container[entry.bl.key] = layer_inst
+
+        
         applied : map StyleEntry[string][]
-
-        while [ ty != typeid[ Au ] ]
+        for [ ty : Au_t [ typeid[ inst ] ], ty != typeid[ Au ], ty = ty.context ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 member : Au_t ty.members.origin[m]
                 if [ member.member_type != AU_MEMBER_VAR || member.ident == 'elements' ]
@@ -8022,20 +8049,8 @@ Display Window
 
                 # we sometimes have to create a map for 'layers' as well as a Layer instance inside
                 if [ first.bl.property && first.bl.key ]
-                    member_map : Au_t
-                    member_container : map Layer[string]
                     # find the layers member Au_t
-                    member_map = Au.find_member [ typeid[inst], first.bl.property.chars, AU_MEMBER_VAR, 0, true ]
-                    expect member_map, 'member not found on {ty.ident}: {first.bl.property}'
-                    member_container = inst.member_object[ member_map ]
-                    inner_inst_type : member_map.meta.a # Layer
-
-                    # create new map if null
-                    if [!member_container]
-                        member_container = map Layer[string][]
-                        inst.member_set[member_map, member_container]
-
-                    for [ best : StyleEntry ] reverse in entries
+                    for [ best : StyleEntry ] in entries
                         score : best.bl.score[ inst, true ]
                         if [ score == 0 ]
                             continue
@@ -8044,15 +8059,13 @@ Display Window
                             continue
                         applied[f] = best
 
+                        member_container : (inst.member_object[ best.member_map ] to map Layer[string])
+                        expect member_container, "expected member_container"
+
                         # find layer by name (key), creating a default if not found
                         layer_inst : member_container.get[best.bl.key]
-                        if [!layer_inst]
-                            layer_inst = Au.new_object[inner_inst_type, null, null, true]
-                            member_container.set[best.bl.key, layer_inst]
-                        layer_inst.hold[]
-
-                        layer_member : Au.find_member[ inner_inst_type, best.member, AU_MEMBER_VAR, 0, true ]
-                        expect layer_member, 'member not found on {inner_inst_type.ident}: {best.member}'
+                        layer_member : Au.find_member[ first.member_map.meta.a, best.member, AU_MEMBER_VAR, 0, true ]
+                        expect layer_member, 'member not found on {first.member_map.meta.a.ident}: {best.member}'
 
                         if [ !best.instance ]
                             if [ layer_member.src.traits & (1 << 11) ]
@@ -8108,8 +8121,6 @@ Display Window
                         cur = best.instance
 
                     transition_or_set[ inst, inst, cur, member, best ]
-                
-            ty = ty.context
 
 
     public func animate []
@@ -8890,6 +8901,7 @@ class StyleEntry
     mutable bound_mem : Au_t
     mutable bound_src : Au_t
     mutable filter    : f32
+    manual  member_map : Au_t
 
     func dealloc []
         if [ instance ]
@@ -9083,7 +9095,7 @@ class Style
         ty     : typeid[ n ]
         ret    : false
         result.clear[]
-        for [ block: StyleBlock ] in blocks
+        for [ block: StyleBlock ] reverse in blocks
             if [ !block.types.count || block.types.index_of[ ty ] >= 0 ]
                 if [ block.key && block.property ]
                     if [ block.score[ n, false ] > 0 ]
@@ -9152,7 +9164,7 @@ class Style
     # the best match is the first match
     func best_match [ n: element, prop_name: string, entries: array StyleEntry ] -> StyleEntry
         match      : StyleEntry [ null ]
-        for [ e: StyleEntry ] reverse in entries
+        for [ e: StyleEntry ] in entries
             bl : StyleBlock [ e.bl ]
             sc : bl.score[ n, true ]
             if [ sc > 0 ]
