@@ -7953,14 +7953,14 @@ Display Window
 
         float_count : i32 [ member.src.typesize / 4 ]
         dst_ptr     : ref f32 [ value_holder.member_ref[ member ] ]
-        is_fcp      : bool [ strcmp[ member.ident, 'fill_color_pos' ] == 0 ]
+        is_f_color : bool [ strcmp[ member.ident, 'fill_color_pos' ] == 0 ]
 
         # binding: read source member directly from element and apply (with optional filter)
         if [ best.binding ]
             src_m : Au_t [ Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ] ]
             if [ src_m ]
                 src_ptr : ref f32 [ inst.member_ref[ src_m ] ]
-                if [ is_fcp ]
+                if [ is_f_color ]
                     printf [ "[%d] bind-before  dst=%.3f,%.3f  src=%.3f,%.3f  filter=%.2f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1], src_ptr[0], src_ptr[1], best.filter ]
                 if [ best.filter > 0.0 ]
                     decay : f32 [ pow[ best.filter, inst.ux.frame_factor ] ]
@@ -7969,7 +7969,7 @@ Display Window
                 el
                     for [ i: i32 0, i < float_count, i += 1 ]
                         dst_ptr[i] = src_ptr[i]
-                if [ is_fcp ]
+                if [ is_f_color ]
                     printf [ "[%d] bind-after   dst=%.3f,%.3f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1] ]
                 inst.volatile = true
             return
@@ -7977,7 +7977,7 @@ Display Window
         # filter: EMA dst in-place toward best.instance; snap from zero on first use
         if [ best.filter > 0.0 ]
             target_ptr  : ref f32 [ best.instance ]
-            if [ is_fcp ]
+            if [ is_f_color ]
                 printf [ "[%d] filt-before  dst=%.3f,%.3f  target=%.3f,%.3f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1], target_ptr[0], target_ptr[1] ]
             unset       : true
             for [ i: i32 0, i < float_count, i += 1 ]
@@ -7992,12 +7992,12 @@ Display Window
                         dst_ptr[i] = dst_ptr[i] + (target_ptr[i] - dst_ptr[i]) * (1.0 - decay)
                     el
                         dst_ptr[i] = dst_ptr[i] * decay
-            if [ is_fcp ]
+            if [ is_f_color ]
                 printf [ "[%d] filt-after   dst=%.3f,%.3f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1] ]
             inst.volatile = true
             return
 
-        if [ is_fcp ]
+        if [ is_f_color ]
             printf [ "[%d] static-set  member=%s\n", inst.ux.frame_seq, member.ident ]
         value_holder.member_set[ member, best.instance ]
     
@@ -8005,6 +8005,9 @@ Display Window
         #puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
         inst.volatile = false
         ty      : Au_t [ typeid[ inst ] ]
+
+        applied : map StyleEntry[string][]
+
         while [ ty != typeid[ Au ] ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 member : Au_t ty.members.origin[m]
@@ -8032,20 +8035,14 @@ Display Window
                         member_container = map Layer[string][]
                         inst.member_set[member_map, member_container]
 
-                    for [ best : StyleEntry ] in entries
-                        score : i32 [ best.bl.score[ inst, true ] ]
+                    for [ best : StyleEntry ] reverse in entries
+                        score : best.bl.score[ inst, true ]
                         if [ score == 0 ]
                             continue
-
-                        # skip if another entry for the same layer+member has a higher score
-                        skip : false
-                        for [ other : StyleEntry ] in entries
-                            if [ other == best ] continue
-                            if [ strcmp[ other.member.chars, best.member.chars ] != 0 || strcmp[ other.bl.key.chars, best.bl.key.chars ] != 0 ] continue
-                            if [ other.bl.score[ inst, true ] > score ]
-                                skip = true
-                                break
-                        if [ skip ] continue
+                        f : (best.bl.key) ? '{best.member}.{best.bl.key}' : best.member
+                        if [ applied[f] ]
+                            continue
+                        applied[f] = best
 
                         # find layer by name (key), creating a default if not found
                         layer_inst : member_container.get[best.bl.key]
@@ -8991,13 +8988,13 @@ class StyleBlock
         p_sc[0] = sc
 
 
-    public func score [ n: element, score_state: bool ] -> f32
-        best_sc : f32 [ 0.0 ]
+    public func score [ n: element, score_state: bool ] -> i64
+        best_sc : i64 [ 0 ]
         cur     : element [ n ]
         ux      : Window [ n.ux ]
 
         for [ q: StyleQualifier ] in quals
-            best_this : f32 [ 0.0 ]
+            best_this : i64 [ 0 ]
             while [ true ]
                 ty_handle   : handle [ q.ty ]
                 id_match    : bool [ q.id && q.id == cur.id ]
@@ -9028,7 +9025,7 @@ class StyleBlock
                 state_reject : bool [ score_state && q.state && !state_match ]
                 if [ id_reject || type_reject || state_reject ]
                     return 0.0
-                sc : f64 [ i64[ id_match ] << 1 | i64[ type_match ] | i64[ state_match ] << 2 ]
+                sc : i64[ id_match ] << 1 | i64[ type_match ] | i64[ state_match ] << 2
                 best_this = max[ sc, best_this ]
                 if [ !q.parent ]
                     if [ q.anchored && cur.parent ]
@@ -9037,7 +9034,7 @@ class StyleBlock
                 q   = q.parent
                 cur = (cur.parent) ? cur.parent : element[]
             best_sc = max[ best_sc, best_this ]
-        return (best_sc > 0.0) ? 1.0 : 0.0
+        return best_sc
 
     func init []
         if [ !entries ] entries = StyleEntryMap    [ ]
@@ -9098,6 +9095,7 @@ class Style
                     if [ f && block.score[ n, false ] > 0 ]
                         result.push[ f ]
                         ret = true
+        
         return ret
 
     func process [ code: string ]
@@ -9151,16 +9149,17 @@ class Style
         for [ b: StyleBlock ] in base
             cache_block[ b, 0 ]
 
+    # the best match is the first match
     func best_match [ n: element, prop_name: string, entries: array StyleEntry ] -> StyleEntry
         match      : StyleEntry [ null ]
-        best_score : f32 [ 0.0 ]
-        for [ e: StyleEntry ] in entries
+        for [ e: StyleEntry ] reverse in entries
             bl : StyleBlock [ e.bl ]
-            sc : f32 [ bl.score[ n, true ] ]
-            if [ sc > 0.0 && sc >= best_score ]
+            sc : bl.score[ n, true ]
+            if [ sc > 0 ]
                 match      = bl.entries[ prop_name ]
                 expect match, 'should have matched'
-                best_score = sc
+                break
+
         return match
 
     func compute [ n: element ] -> map StyleEntries[string]
