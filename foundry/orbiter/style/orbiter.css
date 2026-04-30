@@ -23,13 +23,14 @@ Toolbar {
 
 Button {
     area:               l16 t16+ r12 h44
+    scaling:            1.0 1.0, filter 0.8
     layers.face:
         label_color:            #fffa
         label_size:             16
         fill_gradient:          radial
-        fill_color:             #444
-        fill_gradient_color:    #000a
-        fill_color_pos:         0.5 1.0
+        fill_color:             #fff4
+        fill_gradient_color:    #fff2
+        fill_color_pos:         0.5 1.0, filter 0.7
         radius:                 4
         stroke_width:           1
         stroke_color:           #fff4
@@ -46,17 +47,31 @@ Button.start {
 
 Button:hovered {
     layers.face:
-        fill_color:             #888
-        fill_color_pos:         {cursor}, filter 0.5
+        fill_color:             #fa08
+        fill_gradient_color:    #f804
+        fill_color_pos:         {cursor}, filter 0.7
         label_color:            #fff
 }
 
+Button:pressed {
+    scaling:            0.9 0.9, filter 0.8
+    layers.face:
+        fill_color:             #2af8
+        fill_gradient_color:    #28f4
+        fill_color_pos:         {cursor}, filter 0.7
+        label_color:            #fff
+        
+}
+
 World.avatar {
-    model_path:         "models/orbiter4.gltf"
+    model_path:         "models/orbiter16.gltf"
     shader_type:        "PBR"
     environment_path:   "images/night.exr"
     environment_yaw:    0.0
-    environment_pitch:  20.0
+    environment_pitch:  0.0
+    blend_rings:        1.0
+    blend_haze:         1.0
+    blend_bands:        1.0
     render_scale:       4.0
     clear_color:        0 0 0 0
     rotate:             [ 0 1 0 30deg, 1 0 0 20deg ], 222ms cubic outward
@@ -64,8 +79,10 @@ World.avatar {
     target_pos:         0.0 0.0 0.0
     up_vec:             0.0 -1.0 0.0
     fov:                30.0
-
-    area: l100 t100 w512 h512
+    blend_bands:        0.2
+    blend_rings:        0.2
+    blend_haze:         1.0
+    area: r576 b576 r64 b64
 }
 
 World.avatar:hovered {

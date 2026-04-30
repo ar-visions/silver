@@ -7940,6 +7940,8 @@ Display Window
             inst.transitions.rm[ mem ]
 
         if [ ct && should_trans ]
+            if [ cur            ] cur.hold[]
+            if [ best.instance  ] best.instance.hold[]
             if [ ct.from ] ct.from.drop[]
             if [ ct.to   ] ct.to.drop[]
             ct.from      = (cur) ? cur.hold[] : best.instance.hold[]
@@ -7950,6 +7952,8 @@ Display Window
             ct.member    = member
             ct.invalidate = false
             ct.container  = value_holder
+            if [ cur            ] cur.drop[]
+            if [ best.instance  ] best.instance.drop[]
             return
 
         float_count : i32 [ member.src.typesize / 4 ]
@@ -8003,36 +8007,39 @@ Display Window
         value_holder.member_set[ member, best.instance ]
     
 
+    public func cache_style [ inst:element, style_avail: map StyleEntries[string], force_update:bool ]
+        if [ inst.maps_populated && !force_update ]
+            return
+
+        inst.maps_populated = true
+        for [ ty : Au_t [ typeid[ inst ] ], ty != typeid[ Au ], ty = ty.context ]
+            for [ m: i32 0, m < ty.members.count, m += 1 ]
+                member : Au_t ty.members.origin[m]
+                if [ member.member_type != AU_MEMBER_VAR || member.ident == 'elements' ]
+                    continue
+                prop    : string [ member.ident ]
+                entries : style_avail [ prop ]
+                for [ entry : StyleEntry ] in entries
+                    if [ !(entry.bl.property && entry.bl.key) ]
+                        continue
+                    entry.member_map = Au.find_member [ typeid[inst], entry.bl.property.chars, AU_MEMBER_VAR, 0, true ]
+                    expect entry.member_map, 'member not found on {ty.ident}: {entry.bl.property}'
+                    member_container : (inst.member_object[ entry.member_map ] to map Layer[string])
+                    if [ !member_container ]
+                        member_container = map Layer[string][]
+                        inst.member_set[ entry.member_map, member_container ]
+                        member_container.hold[]
+                    if [ !member_container.contains[entry.bl.key] ]
+                        layer_inst : Au.new_object[entry.member_map.meta.a, null, null, true]
+                        member_container[entry.bl.key] = layer_inst
+
     # needs copies
     public func apply_style [ inst: element, style_avail: map StyleEntries[string], home_object:Au ]
         #puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
         inst.volatile = false
         
-
         # create layers in the order they render
-        if [ !inst.maps_populated ]
-            inst.maps_populated = true
-            for [ ty : Au_t [ typeid[ inst ] ], ty != typeid[ Au ], ty = ty.context ]
-                for [ m: i32 0, m < ty.members.count, m += 1 ]
-                    member : Au_t ty.members.origin[m]
-                    if [ member.member_type != AU_MEMBER_VAR || member.ident == 'elements' ]
-                        continue
-                    prop    : string [ member.ident ]
-                    entries : style_avail [ prop ]
-                    for [ entry : StyleEntry ] in entries
-                        if [ !(entry.bl.property && entry.bl.key) ]
-                            continue
-                        entry.member_map = Au.find_member [ typeid[inst], entry.bl.property.chars, AU_MEMBER_VAR, 0, true ]
-                        expect entry.member_map, 'member not found on {ty.ident}: {entry.bl.property}'
-                        member_container : (inst.member_object[ entry.member_map ] to map Layer[string])
-                        if [ !member_container ]
-                            member_container = map Layer[string][]
-                            inst.member_set[ entry.member_map, member_container ]
-                            member_container.hold[]
-                        if [ !member_container.contains[entry.bl.key] ]
-                            layer_inst : Au.new_object[entry.member_map.meta.a, null, null, true]
-                            member_container[entry.bl.key] = layer_inst
-
+        cache_style[inst, style_avail, false]
         
         applied : map StyleEntry[string][]
         for [ ty : Au_t [ typeid[ inst ] ], ty != typeid[ Au ], ty = ty.context ]
@@ -8058,6 +8065,9 @@ Display Window
                         if [ applied[f] ]
                             continue
                         applied[f] = best
+
+                        if [!best.member_map]
+                            cache_style[inst, style_avail, true]
 
                         member_container : (inst.member_object[ best.member_map ] to map Layer[string])
                         expect member_container, "expected member_container"

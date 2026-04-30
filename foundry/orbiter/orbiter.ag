@@ -470,6 +470,8 @@ Earth Cloud
         float silh_fade = smoothstep(0.0, 0.24, ndv);
         float edge      = pow(1.0 - ndv, 4.0) * silh_fade;
         float rim       = pow(1.0 - ndv, 2.0) * silh_fade;
+        float limb_wide = pow(1.0 - ndv, 0.9);
+        c_amt *= clamp(1.0 - limb_wide, 0.0, 1.0);
 
         // === physical sun color through atmosphere — Beer/Rayleigh.
         // air_mass ≈ 1/cos(zenith) = 1/NdotL; clamped so terminator still glows.
@@ -811,8 +813,12 @@ shader PBR
     mutable model    : mat4f
     mutable view     : mat4f
     mutable proj     : mat4f
-    mutable env_yaw   : f32
-    mutable env_pitch : f32
+    mutable env_yaw    : f32
+    mutable env_pitch  : f32
+    mutable time       : f32
+    mutable blend_rings : f32
+    mutable blend_haze  : f32
+    mutable blend_bands : f32
 
     attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
     attrib normal       : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
@@ -824,15 +830,15 @@ shader PBR
     attrib ior          : LayoutBinding [ type:typeid[ Surface ], id:Surface.ior,          count:1, format: typeid[ f32 ] ]
     attrib environment  : LayoutBinding [ type:typeid[ Surface ], id:Surface.environment,  count:1, format: typeid[ rgbaf ] ]
 
-    attrib a_pos        : VertexInput    [ type:typeid[ vec3f ] ]
-    attrib a_normal     : VertexInput    [ type:typeid[ vec3f ] ]
-    attrib a_uv         : VertexInput    [ type:typeid[ vec2f ] ]
-    #attrib a_color_0    : VertexInput    [ type:typeid[ vec4f ] ]
-    #attrib a_color_1    : VertexInput    [ type:typeid[ vec4f ] ]
+    attrib a_color_0      : VertexInput    [ type:typeid[ vec4f ] ]
+    attrib a_pos          : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_normal       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_uv           : VertexInput    [ type:typeid[ vec2f ] ]
     attrib v_world_normal : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_world_pos    : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_view_pos     : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_uv           : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_color        : VertexOutput [ type:typeid[ vec4f ] ]
     attrib fragColor      : FragmentOutput [ type:typeid[ vec4f ] ]
 
     func init [ ]
@@ -950,6 +956,29 @@ shader PBR
         return vec2(-1.04, 1.04) * a004 + r.zw;
     }
 
+    func nhash [ p: vec3f ] -> GLSL float {
+        p = fract(p * 0.3183099 + vec3(0.1));
+        p *= 17.0;
+        return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+    }
+
+    func vnoise [ p: vec3f ] -> GLSL float {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(mix(nhash(i),              nhash(i+vec3(1,0,0)), f.x),
+                       mix(nhash(i+vec3(0,1,0)),  nhash(i+vec3(1,1,0)), f.x), f.y),
+                   mix(mix(nhash(i+vec3(0,0,1)),  nhash(i+vec3(1,0,1)), f.x),
+                       mix(nhash(i+vec3(0,1,1)),  nhash(i+vec3(1,1,1)), f.x), f.y), f.z);
+    }
+
+    func pfog [ p: vec3f ] -> GLSL float {
+        float v  = 0.500 * vnoise(p);
+              v += 0.250 * vnoise(p * 2.01);
+              v += 0.125 * vnoise(p * 4.03);
+        return v / 0.875;
+    }
+
     func calculatePBR [ texCoords: vec2f, worldPos: vec3f, n: vec3f, viewPos: vec3f ] -> FragGLSL vec4f {
         vec3  cameraPos  = ubo.pos.xyz;
         vec3  V          = normalize(cameraPos - worldPos);
@@ -983,8 +1012,10 @@ shader PBR
 
         // --- engine glow: emission-masked orange, peaks on surfaces perpendicular to beam axis ---
         vec3  beam_up   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
-        float ring_lit  = intensity * max(0.0, 1.0 - abs(dot(N, beam_up)));
-        vec3  eng_light = vec3(ring_lit * 8.0, ring_lit * 3.0, 0.0);
+        float ring_ang  = pow(max(0.0, 1.0 - abs(dot(N, beam_up))), 2.4);
+        float eng_pulse = pow(0.5 + 0.5 * sin(ubo.time * 1.3), 3.0);
+        float ring_lit  = intensity * ring_ang * eng_pulse;
+        vec3  eng_light = vec3(ring_lit * 12.0, ring_lit * 4.0, 0.0);
 
         // blue point light shining on metallic surfaces
         vec3  eng_pos   = (ubo.model * vec4(0.0, -0.3, 0.0, 1.0)).xyz;
@@ -995,7 +1026,7 @@ shader PBR
         float lateral   = smoothstep(0.0, 0.707, dot(N, eng_L));
         vec3  blue_light = metallic * eng_att * lateral * vec3(0.3, 0.6, 2.0);
 
-        vec3 core_contrib = emit * max(0.0, 1.0 - abs(dot(N, beam_up)));
+        vec3 core_contrib = emit * v_color.r;
 
         vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light;
         result           = pow(ACESFilm(result), vec3(1.0 / 2.2));
@@ -1003,7 +1034,37 @@ shader PBR
     }
 
     func fragment [] -> GLSL none {
-        fragColor = calculatePBR(v_uv, v_world_pos, normalize(v_world_normal), v_view_pos);
+        vec4  pbr   = calculatePBR(v_uv, v_world_pos, normalize(v_world_normal), v_view_pos);
+
+        // B channel: circular rings (XZ plane), pink -> blue -> transparent
+        float dist1   = length(v_world_pos.xz);
+        float wave1   = 0.5 + 0.5 * sin(dist1 * 10.0 - ubo.time * 10.0);
+        float vis1    = smoothstep(0.10, 0.20, wave1);
+        float is_pink = smoothstep(0.60, 0.74, wave1);
+        vec3  col1    = mix(vec3(0.1, 0.55, 1.0), vec3(1.0, 0.2, 0.8), is_pink);
+        float mask1   = vis1 * v_color.b * ubo.blend_rings;
+
+        // G channel: hazy noise, light and dark purple
+        float haze  = pfog(v_world_pos * 3.0 + vec3(0.0, ubo.time * 0.25, 0.0));
+        vec3  col2  = mix(vec3(0.25, 0.0, 0.45), vec3(0.75, 0.3, 1.0), haze);
+        float mask2 = haze * v_color.g * ubo.blend_haze;
+
+        // R channel: Y-axis waves (vertical bands), yellow -> orange -> transparent
+        float wave3  = 0.5 + 0.5 * sin(v_world_pos.y * 8.0 - ubo.time * 10.0);
+        float vis3   = smoothstep(0.10, 0.22, wave3);
+        float is_yel = smoothstep(0.58, 0.72, wave3);
+        vec3  col3   = mix(vec3(1.0, 0.35, 0.0), vec3(1.0, 0.9, 0.1), is_yel);
+        float mask3  = vis3 * v_color.r * ubo.blend_bands;
+
+        vec4  base  = pbr;
+              base  = mix(base, vec4(col1, 1.0), clamp(mask1, 0.0, 1.0));
+              base  = mix(base, vec4(col2, 1.0), clamp(mask2, 0.0, 1.0));
+              base  = mix(base, vec4(col3, 1.0), clamp(mask3, 0.0, 1.0));
+            
+        fragColor   = base
+            + vec4(col1 * max(0.0, mask1 - 0.5) * 4.0, 0.0)
+            + vec4(col2 * max(0.0, mask2 - 0.5) * 2.0, 0.0)
+            + vec4(col3 * max(0.0, mask3 - 0.5) * 4.0, 0.0);
     }
 
     func vertex [] -> GLSL none {
@@ -1012,6 +1073,7 @@ shader PBR
         v_world_pos    = world_pos.xyz;
         v_view_pos     = ubo.pos.xyz;
         v_uv           = a_uv;
+        v_color        = a_color_0;
         gl_Position    = ubo.proj * ubo.view * world_pos;
     }
 
@@ -1241,6 +1303,9 @@ element World
     public fov               : f32
     public environment_yaw   : f32
     public environment_pitch : f32
+    public blend_rings       : f32
+    public blend_haze        : f32
+    public blend_bands       : f32
 
     intern placeholder_degs  : f32
 
@@ -1334,8 +1399,12 @@ element World
             pbr.proj    = _proj
             pbr.view    = _view
             pbr.pos     = _pos
-            pbr.env_yaw   = radians[ environment_yaw ]
-            pbr.env_pitch = radians[ environment_pitch ]
+            pbr.env_yaw    = radians[ environment_yaw ]
+            pbr.env_pitch  = radians[ environment_pitch ]
+            pbr.time       = placeholder_degs * 0.015
+            pbr.blend_rings = blend_rings
+            pbr.blend_haze  = blend_haze
+            pbr.blend_bands = blend_bands
 
         if [ aura ]
             aura.model   = model_mat
@@ -1352,7 +1421,7 @@ element World
         update.invoke[ ev ]
 
         tex : Texture [ (target.reduce && target.reduction) ? target.reduction : target.color ]
-        w.screen.draw_image[ tex, bounds ]
+        w.screen.draw_image[ tex, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
 
 ##
