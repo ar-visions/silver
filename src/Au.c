@@ -5247,7 +5247,7 @@ none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
     if (info->managed && --info->refs <= 0) {
-        af[info->managed] = null;
+        af[info->managed]  = null;
         Au_free(a);
     }
 }
