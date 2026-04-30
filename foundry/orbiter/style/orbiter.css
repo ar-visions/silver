@@ -20,6 +20,10 @@ Toolbar {
         inner_glow:         #fff1 16
 }
 
+Toolbar.right {
+    area: r-8 t-8 w256 b-8
+}
+
 
 Button {
     area:               l16 t16+ r12 h44
@@ -64,9 +68,9 @@ Button:pressed {
 }
 
 World.avatar {
-    model_path:         "models/orbiter16.gltf"
+    model_path:         "models/orbiter32.gltf"
     shader_type:        "PBR"
-    environment_path:   "images/night.exr"
+    environment_path:   "images/forest.exr"
     environment_yaw:    0.0
     environment_pitch:  0.0
     blend_rings:        1.0
@@ -121,8 +125,24 @@ Editor:hovered, Editor:pressed {
 
 /* this should be a comment */
 World.iris {
-    rotate:             [0 1 0 30deg, 1 0 0 -30deg]
-    scale:              1.44 1.44 1.44
+    model_path:         "models/orbiter32.gltf"
+    shader_type:        "PBR"
+    environment_path:   "images/night.exr"
+    environment_yaw:    0.0
+    environment_pitch:  0.0
+    blend_rings:        1.0
+    blend_haze:         1.0
+    blend_bands:        1.0
+    render_scale:       2.0
+    clear_color:        0 0 0 0
+    rotate:             [ 0 1 0 30deg, 1 0 0 -30deg ]
+    eye_pos:            0.0 3.5 -2.0
+    target_pos:         0.0 0.0 0.0
+    up_vec:             0.0 -1.0 0.0
+    fov:                30.0
+    blend_bands:        0.2
+    blend_rings:        0.2
+    blend_haze:         1.0
     area:               l0 b256 w256 h256
 }
 

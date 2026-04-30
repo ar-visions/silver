@@ -49,9 +49,9 @@
       "name": "top",
       "pbrMetallicRoughness": {
         "baseColorFactor": [
-          0.06303029507398605,
-          0.06303029507398605,
-          0.06303029507398605,
+          0.26303029507398605,
+          0.12303029507398605,
+          0.32303029507398605,
           1
         ],
         "metallicFactor": 0.8924731016159058,
@@ -63,13 +63,13 @@
       "name": "flower",
       "pbrMetallicRoughness": {
         "baseColorFactor": [
-          0.4793205261230469,
-          0.39435356855392456,
-          0.29876890778541565,
+          1.44,
+          0.81,
+          1.46,
           1
         ],
         "metallicFactor": 1,
-        "roughnessFactor": 0.3010752201080322
+        "roughnessFactor": 0.2
       }
     },
     {

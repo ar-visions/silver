@@ -1011,10 +1011,11 @@ shader PBR
         vec3  specular   = prefilt * (F0 * brdf.x + brdf.y);
 
         // --- engine glow: emission-masked orange, peaks on surfaces perpendicular to beam axis ---
+        // suppressed on spoke geometry (v_color.b=1) so gold PBR shows through
         vec3  beam_up   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
         float ring_ang  = pow(max(0.0, 1.0 - abs(dot(N, beam_up))), 2.4);
         float eng_pulse = pow(0.5 + 0.5 * sin(ubo.time * 1.3), 3.0);
-        float ring_lit  = intensity * ring_ang * eng_pulse;
+        float ring_lit  = intensity * ring_ang * eng_pulse * (1.0 - v_color.b);
         vec3  eng_light = vec3(ring_lit * 12.0, ring_lit * 4.0, 0.0);
 
         // blue point light shining on metallic surfaces
@@ -1026,9 +1027,16 @@ shader PBR
         float lateral   = smoothstep(0.0, 0.707, dot(N, eng_L));
         vec3  blue_light = metallic * eng_att * lateral * vec3(0.3, 0.6, 2.0);
 
+        // bottom core face: downward-facing surface glows as a warm plasma pool
+        // no IOR texture on this material so drive purely from normal, not intensity
+        float is_bottom  = pow(max(0.0, -dot(N, beam_up)), 3.0);
+        float core_pulse = 0.72 + 0.28 * sin(ubo.time * 2.1);
+        vec3  core_glow  = vec3(2.0, 0.7, 0.08) * is_bottom * core_pulse * 4.0;
+        specular        *= (1.0 - is_bottom * 0.95);
+
         vec3 core_contrib = emit * v_color.r;
 
-        vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light;
+        vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow;
         result           = pow(ACESFilm(result), vec3(1.0 / 2.2));
         return vec4(result, baseColor.a);
     }
@@ -1036,18 +1044,21 @@ shader PBR
     func fragment [] -> GLSL none {
         vec4  pbr   = calculatePBR(v_uv, v_world_pos, normalize(v_world_normal), v_view_pos);
 
-        // B channel: circular rings (XZ plane), pink -> blue -> transparent
+        // B channel: circular rings (XZ plane), mostly transparent purple
         float dist1   = length(v_world_pos.xz);
         float wave1   = 0.5 + 0.5 * sin(dist1 * 10.0 - ubo.time * 10.0);
-        float vis1    = smoothstep(0.10, 0.20, wave1);
-        float is_pink = smoothstep(0.60, 0.74, wave1);
-        vec3  col1    = mix(vec3(0.1, 0.55, 1.0), vec3(1.0, 0.2, 0.8), is_pink);
-        float mask1   = vis1 * v_color.b * ubo.blend_rings;
+        float vis1    = smoothstep(0.82, 0.95, wave1);
+        vec3  col1    = vec3(0.5, 0.1, 1.0);
+        float mask1   = vis1 * v_color.b * ubo.blend_rings * 1.2;
 
-        // G channel: hazy noise, light and dark purple
-        float haze  = pfog(v_world_pos * 3.0 + vec3(0.0, ubo.time * 0.25, 0.0));
-        vec3  col2  = mix(vec3(0.25, 0.0, 0.45), vec3(0.75, 0.3, 1.0), haze);
-        float mask2 = haze * v_color.g * ubo.blend_haze;
+        // G channel: fast perlin stream racing around the ring
+        float phi_g  = atan(v_world_pos.z, v_world_pos.x);
+        float sp     = phi_g * 3.82 + ubo.time * 8.0;
+        float pg1    = sin(sp * 0.4) * sin(sp * 3.7 + 1.3);
+        float pg2    = sin(sp * 5.3 + 2.1) * sin(sp * 1.9 - 0.7) * 0.5;
+        float stream = clamp((pg1 * 0.67 + pg2 * 0.33) * 0.07 + 0.88, 0.0, 1.0);
+        vec3  col2   = mix(vec3(0.0, 0.25, 0.4), vec3(0.5, 0.45, 1.0), stream);
+        float mask2  = stream * v_color.g * ubo.blend_haze;
 
         // R channel: Y-axis waves (vertical bands), yellow -> orange -> transparent
         float wave3  = 0.5 + 0.5 * sin(v_world_pos.y * 8.0 - ubo.time * 10.0);
@@ -1056,10 +1067,15 @@ shader PBR
         vec3  col3   = mix(vec3(1.0, 0.35, 0.0), vec3(1.0, 0.9, 0.1), is_yel);
         float mask3  = vis3 * v_color.r * ubo.blend_bands;
 
+        // suppress vertex-color effects on the bottom core face
+        vec3  beam_up_f = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
+        float is_bot_f  = pow(max(0.0, -dot(normalize(v_world_normal), beam_up_f)), 3.0);
+        float vc_fade   = 1.0 - is_bot_f;
+
         vec4  base  = pbr;
-              base  = mix(base, vec4(col1, 1.0), clamp(mask1, 0.0, 1.0));
-              base  = mix(base, vec4(col2, 1.0), clamp(mask2, 0.0, 1.0));
-              base  = mix(base, vec4(col3, 1.0), clamp(mask3, 0.0, 1.0));
+              base  = mix(base, vec4(col1, 1.0), clamp(mask1 * vc_fade, 0.0, 1.0));
+              base  = mix(base, vec4(col2, 1.0), clamp(mask2 * vc_fade, 0.0, 1.0));
+              base  = mix(base, vec4(col3, 1.0), clamp(mask3 * vc_fade, 0.0, 1.0));
             
         fragColor   = base
             + vec4(col1 * max(0.0, mask1 - 0.5) * 4.0, 0.0)
@@ -1105,28 +1121,48 @@ shader Aura
 	}
 
 
+	func nhash [ p: vec3f ] -> GLSL float {
+		p = fract(p * 0.3183099 + vec3(0.1));
+		p *= 17.0;
+		return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+	}
+
+	func vnoise [ p: vec3f ] -> GLSL float {
+		vec3 i = floor(p);
+		vec3 f = fract(p);
+		f = f * f * (3.0 - 2.0 * f);
+		return mix(mix(mix(nhash(i),              nhash(i+vec3(1,0,0)), f.x),
+		               mix(nhash(i+vec3(0,1,0)),  nhash(i+vec3(1,1,0)), f.x), f.y),
+		           mix(mix(nhash(i+vec3(0,0,1)),  nhash(i+vec3(1,0,1)), f.x),
+		               mix(nhash(i+vec3(0,1,1)),  nhash(i+vec3(1,1,1)), f.x), f.y), f.z);
+	}
+
+	func pfog [ p: vec3f ] -> GLSL float {
+		float v  = 0.500 * vnoise(p);
+		      v += 0.250 * vnoise(p * 2.01);
+		      v += 0.125 * vnoise(p * 4.03);
+		return v / 0.875;
+	}
+
 	func fragment[] -> GLSL none {
 		vec3 ro = ubo.cam_pos.xyz;
 		vec3 rd = normalize(v_ray);
 
-		// beam originates at orbiter center, shoots upward along model +Y, fades with distance
 		vec3  beam_o = (ubo.model * vec4(0.0, -0.5, 0.0, 1.0)).xyz;
 		vec3  beam_d = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
 		float beam_l = 5.0;
 		float beam_r = 0.48;
-
-		// orthonormal frame perpendicular to beam_d for spiral computation
+		float aura_r = 0.62;
 		vec3 up_ref  = abs(beam_d.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
 		vec3 b_tang  = normalize(cross(up_ref, beam_d));
 		vec3 b_binor = cross(beam_d, b_tang);
 
-		// ray vs infinite cylinder along beam_d through beam_o
 		vec3  oc  = ro - beam_o;
 		vec3  rdp = rd - dot(rd, beam_d) * beam_d;
 		vec3  ocp = oc - dot(oc, beam_d) * beam_d;
 		float a   = dot(rdp, rdp);
 		float b   = 2.0 * dot(rdp, ocp);
-		float cc  = dot(ocp, ocp) - beam_r * beam_r;
+		float cc  = dot(ocp, ocp) - aura_r * aura_r;
 		float dsc = b * b - 4.0 * a * cc;
 
 		if (dsc < 0.0 || a < 1e-6) { fragColor = vec4(0.0); return; }
@@ -1139,7 +1175,6 @@ shader Aura
 		float t_enter = max(t0, 0.0);
 		float t_exit  = t1;
 
-		// cap to beam length along beam_d
 		float s0  = dot(oc, beam_d);
 		float drd = dot(rd, beam_d);
 		if (abs(drd) > 1e-6) {
@@ -1157,7 +1192,6 @@ shader Aura
 
 		for (int i = 0; i < 48; i++) {
 			if (alpha > 0.97) break;
-
 			float t   = t_enter + (float(i) + 0.5) * dt;
 			vec3  p   = ro + rd * t;
 			float at  = clamp(dot(p - beam_o, beam_d), 0.0, beam_l);
@@ -1166,24 +1200,20 @@ shader Aura
 			float r      = length(rv);
 			float taper  = max(0.08, 1.0 - at / beam_l * 0.70);
 			float rn     = r / (beam_r * taper);
- 
-			// plasma: turbulent multi-frequency interference concentrating at core
+
 			float plasma = sin(p.x * 14.0 + p.z *  9.0 + ta * 5.2) * 0.33
 			             + sin(p.y * 11.0 + p.x * 16.0 - ta * 4.3) * 0.33
 			             + sin(p.z * 18.0 + p.y * 12.0 + ta * 6.1) * 0.34;
 			plasma = clamp(plasma * 0.5 + 0.5, 0.0, 1.0);
- 
-			// ripples: sharp rings traveling along beam axis toward viewer
+
 			float ripple = pow(max(sin(at * 11.0 - ta * 7.5) * 0.5 + 0.5, 0.0), 2.5);
 
-			// spirals: 3-arm helix winding along axis, attenuating outward
 			float uc     = dot(rv, b_tang);
 			float vc     = dot(rv, b_binor);
 			float ang    = atan(vc, uc);
 			float sphase = ang * 3.0 + at * 6.0 - ta * 3.8;
 			float spiral = pow(max(sin(sphase) * 0.5 + 0.5, 0.0), 1.5);
 
-			// density: gaussian base modulated by plasma/ripples/spirals
 			float inner   = 1.0 - smoothstep(0.0, 0.30, rn);
 			float shell   = smoothstep(0.0, 0.30, rn) * (1.0 - smoothstep(0.30, 1.0, rn));
 			float outer   = max(0.0, 1.0 - rn);
@@ -1193,13 +1223,9 @@ shader Aura
 			              + outer  * spiral * 0.4;
 			float axis_f  = at / beam_l;
 			float f       = max(0.0, 1.0 - at / 2.0);
-			float fade    = f * f;
-			float density = base * clamp(mod, 0.0, 1.0) * fade;
-
-			// fade in at origin, tip fade handled by smoothstep above
+			float density = base * clamp(mod, 0.0, 1.0) * f * f;
 			float cap     = smoothstep(0.0, 0.06, axis_f);
 
-			// color: plasma white-orange core -> blue shaft -> purple halo
 			vec3 c_core  = vec3(2.8, 1.5, 0.4);
 			vec3 c_shaft = vec3(0.4, 0.7, 3.2);
 			vec3 c_halo  = vec3(0.45, 0.08, 1.4);
@@ -1207,77 +1233,312 @@ shader Aura
 			sc           = mix(sc,      c_halo,  smoothstep(0.30, 0.85, rn));
 
 			float emit = density * dt * 18.0 * cap;
-
-            emit *= 1.0;
-			col       += sc * emit * (1.0 - alpha);
-			alpha     += emit * (1.0 - alpha);
-		}
-
-		// -- funnel plasma: bowl-shaped swirling layer over the turbine face --
-		// rim sits at model origin (flat at outer edge), apex is cone_h below
-		vec3  disk_o  = (ubo.model * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-		float disk_r  = 0.22;
-		float cone_h  = 0.16;
-		float r_inner = 0.04;
-		vec3  apex    = disk_o - beam_d * cone_h;
-		float cos2phi = (cone_h * cone_h) / (cone_h * cone_h + disk_r * disk_r);
- 
-		vec3  foc = ro - apex;
-		float fAd = dot(rd, beam_d);
-		float fBd = dot(foc, beam_d);
-		float fqa = dot(rd, rd) * cos2phi - fAd * fAd;
-		float fqb = 2.0 * (dot(foc, rd) * cos2phi - fAd * fBd);
-		float fqc = dot(foc, foc) * cos2phi - fBd * fBd;
-		float fdisc = fqb * fqb - 4.0 * fqa * fqc;
-		if (false && fdisc >= 0.0 && abs(fqa) > 1e-8) {
-			float fsq  = sqrt(fdisc);
-			float ft0  = (-fqb - fsq) / (2.0 * fqa);
-			float ft1  = (-fqb + fsq) / (2.0 * fqa);
-			float ft_hit  = -1.0;
-			float fat_hit = 0.0;
-			vec3  fpr_hit = vec3(0.0);
-			for (int fi = 0; fi < 2; fi++) {
-				float ftc = (fi == 0) ? min(ft0, ft1) : max(ft0, ft1);
-				if (ftc < 1e-4) continue;
-				vec3  fpc = ro + rd * ftc;
-				float fat = dot(fpc - apex, beam_d);
-				if (fat < 0.0 || fat > cone_h) continue;
-				vec3  fpr = fpc - apex - fat * beam_d;
-				if (length(fpr) < r_inner) continue;
-				ft_hit  = ftc;
-				fat_hit = fat;
-				fpr_hit = fpr;
-				break;
-			}
-			if (ft_hit >= 0.0) {
-				float fuc  = dot(fpr_hit, b_tang);
-				float fvc  = dot(fpr_hit, b_binor);
-				float frn  = fat_hit / cone_h;
-				float fr   = length(fpr_hit);
-				// slow swirl + turbulent drift
-				float sw  = ta * 2.888;
-				float rcs = cos(sw), rss = sin(sw);
-				float rx  = fuc * rcs - fvc * rss;
-				float ry  = fuc * rss + fvc * rcs;
-				// -fr*K makes crests travel inward toward center
-				float n1 = sin(rx * 7.0  + ry * 5.3  - fr * 9.0  - ta * 1.4) * sin(ry * 9.1  - rx * 3.7 - fr * 7.0 + ta * 1.1);
-				float n2 = sin(rx * 12.3 - ry * 8.7  - fr * 11.0 + ta * 1.2) * sin(rx * 4.1  + ry * 11.3 - fr * 6.0 + ta * 0.9);
-				float n3 = sin(rx * 5.7  + ry * 14.1 - fr * 8.0  - ta * 1.3);
-				float fplasma = clamp(n1 * 0.45 + n2 * 0.35 + n3 * 0.13 + 0.55, 0.0, 1.0);
-				float fradial  = smoothstep(0.0, 0.06, frn) * (1.0 - smoothstep(0.82, 1.0, frn));
-				// tokamak palette: white-hot core -> magenta -> deep crimson rim
-				vec3  fc_core  = vec3(4.5, 3.0, 4.2);
-				vec3  fc_mid   = vec3(3.2, 0.15, 1.8);
-				vec3  fc_rim   = vec3(1.0, 0.02, 0.08);
-				vec3  fsc = mix(fc_core, fc_mid, smoothstep(0.0,  0.35, frn));
-				fsc       = mix(fsc,     fc_rim, smoothstep(0.35, 0.82, frn));
-				float fa  = fplasma * fradial * 0.90;
-				col  += fsc * fa * (1.0 - alpha);
-				alpha = clamp(alpha + fa * (1.0 - alpha), 0.0, 1.0);
-			}
+			col   += sc * emit * (1.0 - alpha);
+			alpha += emit * (1.0 - alpha);
 		}
 
 		fragColor = vec4(col, clamp(alpha, 0.0, 1.0));
+	}
+
+##
+		// ── tokamak plasma torus ─────────────────────────────────────────
+		// Magnetic axis ring at major radius R0_tor in the plane perpendicular
+		// to beam_d through disk_o.  Temperature T(r) = (1-norm^2)^1.8 peaks
+		// at the axis.  Helical field-line coordinate xi = phi - q*theta + time
+		// drives structural modulation independent of wall proximity.
+		{
+			float R0_tor = 0.28;
+			float a_tor  = 0.10;
+			float t_tor  = ubo.time * 1.5;
+			vec3  tor_o  = disk_o - beam_d * 0.22;
+
+			// bounding slab along torus axis (beam_d through tor_o)
+			float rd_ax  = dot(rd, beam_d);
+			float ro_ax  = dot(ro - tor_o, beam_d);
+			float ts0_t, ts1_t;
+			if (abs(rd_ax) > 1e-5) {
+				float tv0 = (-a_tor - ro_ax) / rd_ax;
+				float tv1 = ( a_tor - ro_ax) / rd_ax;
+				ts0_t = min(tv0, tv1); ts1_t = max(tv0, tv1);
+			} else {
+				ts0_t = (abs(ro_ax) <= a_tor) ? 0.0 : 1.0;
+				ts1_t = (abs(ro_ax) <= a_tor) ? 1e9 : 0.0;
+			}
+
+			// bounding outer cylinder in torus plane (radius R0_tor + a_tor)
+			float bRt  = R0_tor + a_tor;
+			vec3  oc_t = (ro - tor_o) - ro_ax * beam_d;
+			vec3  rd_p = rd - rd_ax * beam_d;
+			float ca_t = dot(rd_p, rd_p);
+			float cb_t = 2.0 * dot(rd_p, oc_t);
+			float cc_t = dot(oc_t, oc_t) - bRt * bRt;
+			float dc_t = cb_t * cb_t - 4.0 * ca_t * cc_t;
+			float tc0_t, tc1_t;
+			if (ca_t < 1e-8 || dc_t < 0.0) {
+				tc0_t = 0.0; tc1_t = 1e9;
+			} else {
+				float sq_t = sqrt(dc_t);
+				tc0_t = (-cb_t - sq_t) / (2.0 * ca_t);
+				tc1_t = (-cb_t + sq_t) / (2.0 * ca_t);
+				if (tc0_t > tc1_t) { float tmp = tc0_t; tc0_t = tc1_t; tc1_t = tmp; }
+			}
+
+			float t_te = max(max(ts0_t, tc0_t), 0.0);
+			float t_tx = min(ts1_t, tc1_t);
+
+			if (t_tx > t_te) {
+				float dt_t = (t_tx - t_te) / 32.0;
+				for (int pi = 0; pi < 32; pi++) {
+					if (alpha > 0.97) break;
+					float tt   = t_te + (float(pi) + 0.5) * dt_t;
+					vec3  p    = ro + rd * tt;
+					vec3  rel  = p - tor_o;
+					float axp  = dot(rel, beam_d);
+					vec3  radp = rel - axp * beam_d;
+					float r_xz = length(radp);
+					float r_m  = length(vec2(r_xz - R0_tor, axp));
+					float norm = r_m / a_tor;
+					if (norm >= 1.0) continue;
+
+					float T_    = pow(max(0.0, 1.0 - norm * norm), 1.8);
+					float phi_t = atan(dot(rel, b_binor), dot(rel, b_tang));
+
+					// 24 thick radial spokes (matching petal divisions), streaming inward
+					// quadratic r_s: outer edge (norm=1) accelerates faster than inner, like a suction funnel
+					float r_s    = norm * norm + t_tor * 0.6;
+					float jitter = sin(phi_t * 48.0 + r_s * 23.0 + t_tor * 1.5) * 0.08;
+					float spoke  = smoothstep(0.00, 0.99, abs(sin(phi_t * 13.0 + 3.14159 / 48.0 + jitter + t_tor * 0.04)));
+				// seamless 3D value noise: (cos·R, sin·R, r_s) avoids phi_t seam
+					vec3 p3   = vec3(cos(phi_t) * 1.91, sin(phi_t) * 1.91, r_s * 3.5);
+					vec3 i3   = floor(p3);
+					vec3 f3   = fract(p3);  f3 = f3 * f3 * (3.0 - 2.0 * f3);
+					float h000 = fract(sin(dot(i3,               vec3(127.1,311.7,74.7)))*43758.5);
+					float h100 = fract(sin(dot(i3+vec3(1,0,0),  vec3(127.1,311.7,74.7)))*43758.5);
+					float h010 = fract(sin(dot(i3+vec3(0,1,0),  vec3(127.1,311.7,74.7)))*43758.5);
+					float h110 = fract(sin(dot(i3+vec3(1,1,0),  vec3(127.1,311.7,74.7)))*43758.5);
+					float h001 = fract(sin(dot(i3+vec3(0,0,1),  vec3(127.1,311.7,74.7)))*43758.5);
+					float h101 = fract(sin(dot(i3+vec3(1,0,1),  vec3(127.1,311.7,74.7)))*43758.5);
+					float h011 = fract(sin(dot(i3+vec3(0,1,1),  vec3(127.1,311.7,74.7)))*43758.5);
+					float h111 = fract(sin(dot(i3+vec3(1,1,1),  vec3(127.1,311.7,74.7)))*43758.5);
+					float n0  = mix(mix(mix(h000,h100,f3.x),mix(h010,h110,f3.x),f3.y),
+					                mix(mix(h001,h101,f3.x),mix(h011,h111,f3.x),f3.y),f3.z);
+					vec3 p3b  = p3 * 2.1 + vec3(3.7,9.2,5.5);
+					vec3 i3b  = floor(p3b);
+					vec3 f3b  = fract(p3b);  f3b = f3b * f3b * (3.0 - 2.0 * f3b);
+					float g000 = fract(sin(dot(i3b,              vec3(127.1,311.7,74.7)))*43758.5);
+					float g100 = fract(sin(dot(i3b+vec3(1,0,0), vec3(127.1,311.7,74.7)))*43758.5);
+					float g010 = fract(sin(dot(i3b+vec3(0,1,0), vec3(127.1,311.7,74.7)))*43758.5);
+					float g110 = fract(sin(dot(i3b+vec3(1,1,0), vec3(127.1,311.7,74.7)))*43758.5);
+					float g001 = fract(sin(dot(i3b+vec3(0,0,1), vec3(127.1,311.7,74.7)))*43758.5);
+					float g101 = fract(sin(dot(i3b+vec3(1,0,1), vec3(127.1,311.7,74.7)))*43758.5);
+					float g011 = fract(sin(dot(i3b+vec3(0,1,1), vec3(127.1,311.7,74.7)))*43758.5);
+					float g111 = fract(sin(dot(i3b+vec3(1,1,1), vec3(127.1,311.7,74.7)))*43758.5);
+					float n1  = mix(mix(mix(g000,g100,f3b.x),mix(g010,g110,f3b.x),f3b.y),
+					                mix(mix(g001,g101,f3b.x),mix(g011,g111,f3b.x),f3b.y),f3b.z);
+					float perlin = n0 * 0.67 + n1 * 0.33;
+					float struc  = spoke * smoothstep(0.2, 0.8, perlin);
+					float dens   = T_ * struc;
+
+					vec3 pc = mix(
+						mix(vec3(0.5, 0.2, 1.0), vec3(0.2, 0.6, 1.0), T_),
+						vec3(1.0, 1.0, 1.0), T_ * T_);
+
+					float emit = dens * dt_t * 4.0;
+					col   += pc * emit * (1.0 - alpha);
+					alpha += emit * (1.0 - alpha);
+				}
+			}
+		}
+
+		// ── central cylinder void: volumetric fog fill ───────────────────────
+		// Marched into separate cv_col/cv_alpha so beam alpha saturation can't
+		// block it — blended behind the main result at the end.
+		vec3  cv_col   = vec3(0.0);
+		float cv_alpha = 0.0;
+		{
+			float cv_r  = 0.6;
+			float cv_h  = 0.18;
+			float pulse = 0.55 + 0.45 * sin(ubo.time * 1.3);
+
+			float rax  = dot(rd, beam_d);
+			if (abs(rax) > 1e-5) {
+				float o_ax = dot(ro - disk_o, beam_d);
+				float t_a  = -o_ax / rax;
+				float t_b  = (-cv_h - o_ax) / rax;
+				float t_s  = max(min(t_a, t_b), 0.0);
+				float t_e  = max(t_a, t_b);
+				if (t_e > t_s) {
+					float dt_c = (t_e - t_s) / 16.0;
+					for (int ci = 0; ci < 16; ci++) {
+						float tc  = t_s + (float(ci) + 0.5) * dt_c;
+						vec3  sp  = ro + rd * tc;
+						vec3  rel = sp - disk_o;
+						float ax  = dot(rel, beam_d);
+						float r_c = length(rel - ax * beam_d);
+						float cv_ri = 0.5;   // inner radius — hollow cylinder
+					if (r_c < cv_ri || r_c > cv_r || ax > 0.0 || ax < -cv_h) continue;
+
+							float dep  = smoothstep(0.0, 0.015, -ax);
+						float ripple = pfog(sp * 4.0 + vec3(0.0, ubo.time * 0.3, ubo.time * 0.12));
+						// near-solid base density — noise only modulates ±20% for shimmer
+						float dens = dep * (0.8 + 0.2 * ripple) * pulse;
+						float emi  = dens * dt_c * 55.0;
+
+						vec3 gc = mix(vec3(0.02, 0.55, 1.0), vec3(0.08, 0.3, 0.75), ripple);
+						cv_col   += gc * emi * (1.0 - cv_alpha);
+						cv_alpha += emi * (1.0 - cv_alpha);
+					}
+				}
+			}
+		}
+
+		// additive: ring fog glows over whatever is in that annulus
+		col   += cv_col;
+		alpha  = max(alpha, cv_alpha);
+
+		fragColor = vec4(col, clamp(alpha, 0.0, 1.0));
+	}
+##
+
+shader Plasma
+	mutable model   : mat4f
+	mutable view    : mat4f
+	mutable proj    : mat4f
+	mutable time    : f32
+	mutable eye_pos : vec4f
+
+	attrib a_color      : VertexInput    [ type:typeid[ vec4f ] ]
+	attrib a_pos        : VertexInput    [ type:typeid[ vec3f ] ]
+	attrib a_normal     : VertexInput    [ type:typeid[ vec3f ] ]
+	attrib v_world_pos  : VertexOutput   [ type:typeid[ vec3f ] ]
+	attrib v_local_pos  : VertexOutput   [ type:typeid[ vec3f ] ]
+	attrib v_normal     : VertexOutput   [ type:typeid[ vec3f ] ]
+	attrib v_color      : VertexOutput   [ type:typeid[ vec4f ] ]
+	attrib fragColor    : FragmentOutput [ type:typeid[ vec4f ] ]
+
+	func init []
+		model = mat4f.identity[]
+		view  = mat4f.identity[]
+		proj  = mat4f.identity[]
+
+	func nhash [ p: vec3f ] -> GLSL float {
+		p = fract(p * 0.3183099 + vec3(0.1));
+		p *= 17.0;
+		return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+	}
+
+	func vnoise [ p: vec3f ] -> GLSL float {
+		vec3 i = floor(p);
+		vec3 f = fract(p);
+		f = f * f * (3.0 - 2.0 * f);
+		return mix(mix(mix(nhash(i),             nhash(i+vec3(1,0,0)), f.x),
+		               mix(nhash(i+vec3(0,1,0)), nhash(i+vec3(1,1,0)), f.x), f.y),
+		           mix(mix(nhash(i+vec3(0,0,1)), nhash(i+vec3(1,0,1)), f.x),
+		               mix(nhash(i+vec3(0,1,1)), nhash(i+vec3(1,1,1)), f.x), f.y), f.z);
+	}
+
+	func pfog [ p: vec3f ] -> GLSL float {
+		float v  = 0.500 * vnoise(p);
+		      v += 0.250 * vnoise(p * 2.01);
+		      v += 0.125 * vnoise(p * 4.03);
+		return v / 0.875;
+	}
+
+	func vertex [] -> GLSL none {
+		float t    = ubo.time;
+		float mask = 1.0 - dot(a_color.rgb, vec3(0.299, 0.587, 0.114));
+
+		vec2 dir1 = vec2(cos(t * 0.70),        sin(t * 0.70));
+		vec2 dir2 = vec2(cos(t * 0.50 + 1.05), sin(t * 0.50 + 1.05));
+		vec2 dir3 = vec2(cos(t * 0.30 + 2.09), sin(t * 0.30 + 2.09));
+
+		vec2  xz   = a_pos.xz;
+		float w1   = sin(dot(xz, dir1) * 14.0 + t * 3.2);
+		float w2   = sin(dot(xz, dir2) * 11.0 + t * 2.4);
+		float w3   = sin(dot(xz, dir3) *  8.0 + t * 1.8);
+		float wave = (w1 * 0.50 + w2 * 0.33 + w3 * 0.17) * mask;
+		float amp  = 0.0;
+		vec3 displaced = a_pos + ((1.0 - a_color.r) * a_normal * wave * amp);
+
+		float dw1dx = cos(dot(xz, dir1) * 14.0 + t * 3.2) * 14.0 * dir1.x;
+		float dw1dz = cos(dot(xz, dir1) * 14.0 + t * 3.2) * 14.0 * dir1.y;
+		float dw2dx = cos(dot(xz, dir2) * 11.0 + t * 2.4) * 11.0 * dir2.x;
+		float dw2dz = cos(dot(xz, dir2) * 11.0 + t * 2.4) * 11.0 * dir2.y;
+		float dw3dx = cos(dot(xz, dir3) *  8.0 + t * 1.8) *  8.0 * dir3.x;
+		float dw3dz = cos(dot(xz, dir3) *  8.0 + t * 1.8) *  8.0 * dir3.y;
+		float dx    = (dw1dx * 0.50 + dw2dx * 0.33 + dw3dx * 0.17) * mask * amp;
+		float dz    = (dw1dz * 0.50 + dw2dz * 0.33 + dw3dz * 0.17) * mask * amp;
+
+		vec3 n_perturbed = normalize(a_normal + vec3(-dx, 0.0, -dz) * sign(a_normal.y + 0.001));
+		vec3 n_final     = mix(a_normal, n_perturbed, mask);
+		vec4 wpos      = ubo.model * vec4(displaced, 1.0);
+		v_world_pos    = wpos.xyz;
+		v_local_pos    = a_pos;
+		v_normal       = normalize(mat3(ubo.model) * n_final);
+		v_color        = a_color;
+		gl_Position    = ubo.proj * ubo.view * wpos;
+	}
+
+	func fragment [] -> GLSL none {
+		// torus cross-section depth: 0=edge 1=ring-centre-width
+		float R_mean    = 0.513;
+		float R_hw      = 0.065;
+		float r_px      = length(v_local_pos.xz);
+		float rd_px     = clamp(abs(r_px - R_mean) / R_hw, 0.0, 1.0);
+		float torus_col = sqrt(1.0 - rd_px * rd_px);
+		float edge_fade = clamp(torus_col / 0.1, 0.0, 1.0);
+
+		vec3  col   = vec3(0.0);
+		float alpha = 0.0;
+
+		// hot zone: sharp band at torus_col=0.25, no effect past ~0.05 from peak
+		float hot_dist   = (torus_col - 0.25) / 0.05;
+		float hot_factor = exp(-hot_dist * hot_dist * 4.0);
+
+		vec3 c_hot    = vec3(0.65, 0.95, 1.00);  // bright cyan-white at hot zone
+		vec3 c_cool   = vec3(0.00, 0.05, 0.30);  // deep navy elsewhere
+		vec3 base_col = mix(c_cool, c_hot, hot_factor);
+
+		// denser plasma in the hot zone band
+		float op_scale = 0.25 + 0.75 * hot_factor;
+
+		// polar coords for rotating noise frames
+		float angle = atan(v_local_pos.z, v_local_pos.x);
+		float r     = length(v_local_pos.xz);
+		float ang1  = angle + ubo.time * 0.6;
+		float ang2  = angle - ubo.time * 0.4;
+		vec3  p1    = vec3(cos(ang1) * r, v_local_pos.y, sin(ang1) * r);
+		vec3  p2    = vec3(cos(ang2) * r, v_local_pos.y, sin(ang2) * r);
+
+		for (int i = 0; i < 32; i++) {
+			float df    = float(i) / 31.0;
+			float d1    = pfog(p1 * 5.0 + vec3(0.0, ubo.time * 0.20, df * 1.5));
+			float d2    = pfog(p2 * 8.0 + vec3(0.0, df * 2.0,        ubo.time * 0.25));
+			float noise = clamp(d1 * 0.6 + d2 * 0.4, 0.0, 1.0);
+			noise       = noise * noise;  // sharpen blobs
+
+			float da  = (1.0 - alpha) * noise * 0.18 * op_scale;
+			col      += base_col * da;
+			alpha    += da;
+			if (alpha > 0.95) break;
+		}
+
+		if (alpha < 0.01) discard;
+
+		// subtle surface specular
+		vec3  view_dir = normalize(ubo.eye_pos.xyz - v_world_pos);
+		vec3  nrm      = normalize(v_normal);
+		vec3  L1       = normalize(vec3(0.3, 3.0, -0.8));
+		float spec1    = pow(max(dot(nrm, normalize(view_dir + L1)), 0.0), 320.0);
+		vec3  L2       = normalize(vec3(-0.8, 1.2, 1.0));
+		float spec2    = pow(max(dot(nrm, normalize(view_dir + L2)), 0.0), 80.0) * 0.25;
+		float cosA     = max(dot(nrm, view_dir), 0.0);
+		float fresnel  = 0.04 + 0.96 * pow(1.0 - cosA, 4.0);
+		float spec     = clamp((spec1 + spec2) * (1.0 + fresnel * 1.5), 0.0, 0.6);
+		col  += spec * vec3(0.88, 0.96, 1.0) * 0.3;
+		alpha = clamp(alpha + spec * 0.05, 0.0, 1.0);
+
+		fragColor = vec4(col, clamp(alpha * edge_fade, 0.0, 1.0));
 	}
 
 
@@ -1288,6 +1549,7 @@ element World
     intern s                 : shader
     intern aura              : Aura
     intern aura_model        : Model
+    intern plasma            : Plasma
     public model_path        : string
     public shader_type       : string
     public environment_path  : string
@@ -1341,6 +1603,10 @@ element World
 
         aura_model = Model [ vk: vk, w: w_ref ]
         aura_model.s = aura
+
+        if [ model ]
+            plasma = Plasma [ vk: vk ]
+            model.transparent_s = plasma
 
         all_models : array Model [ alloc: 4 ]
         if [ model ] all_models.push[ model ]
@@ -1405,6 +1671,13 @@ element World
             pbr.blend_rings = blend_rings
             pbr.blend_haze  = blend_haze
             pbr.blend_bands = blend_bands
+
+        if [ plasma ]
+            plasma.model   = model_mat
+            plasma.view    = _view
+            plasma.proj    = _proj
+            plasma.time    = placeholder_degs * 0.030
+            plasma.eye_pos = _pos
 
         if [ aura ]
             aura.model   = model_mat

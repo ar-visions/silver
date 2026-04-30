@@ -1050,6 +1050,7 @@ class Pipeline
     # color blend factors from ONE → SRC_ALPHA so the result composes
     # correctly: rgb*a + dst*(1 - a). default false (premul).
     public straight_alpha   : bool
+    public depth_no_write   : bool
     intern resources        : array Gpu
     intern storage_textures : array Texture
     intern shader_uniforms  : uniforms
@@ -1503,10 +1504,12 @@ class Pipeline
                 pDynamicStates:    dynamic_states
             ]
 
+            dw: VkBool32 [ VK_TRUE ]
+            if [ depth_no_write ] dw = VK_FALSE
             depth_stencil: VkPipelineDepthStencilStateCreateInfo [
                 sType:                 VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                 depthTestEnable:       VK_TRUE,
-                depthWriteEnable:      VK_TRUE,
+                depthWriteEnable:      dw,
                 depthCompareOp:        VK_COMPARE_OP_LESS,
                 depthBoundsTestEnable: VK_FALSE,
                 stencilTestEnable:     VK_FALSE
@@ -1590,8 +1593,9 @@ class Model
     # forwarded to every Pipeline this Model builds; toggle for shaders that
     # emit unpremultiplied alpha (e.g. cloud, text overlay).
     public straight_alpha   : bool
+    public transparent_s    : shader
 
-    public func rebind_model [ ] 
+    public func rebind_model [ ]
         if [ pipelines ]
             for [ p: Pipeline ] in pipelines
                 p.rebind[]
@@ -1609,18 +1613,29 @@ class Model
             id = vk.quad_m
 
         if [ is_clear ]
-            model_init_pipeline[ a, null, null, null, render_id ]
+            model_init_pipeline[ a, null, null, null, render_id, false ]
         el [ nodes ]
             for [ n: gltf_node ] in nodes
                 for [ p: gltf_part ] in n.parts
-                    model_init_pipeline[ a, n.id, p.id, (p.s) ? p.s : s, render_id ]
+                    model_init_pipeline[ a, n.id, p.id, (p.s) ? p.s : s, render_id, false ]
         el [ id ]
             for [ n: Node ] in id.nodes
                 has_mesh: n.AF_query_name[ "mesh" ]
                 if [ has_mesh ]
                     mesh: id.meshes [ n.mesh ]
                     for [ prim: Primitive ] in mesh.primitives
-                        model_init_pipeline[ a, n, prim, s, render_id ]
+                        base_a: f32 [ 1.0 ]
+                        mat_id: prim.material
+                        if [ id.materials && id.materials.count > mat_id ]
+                            mat: id.materials[ mat_id ]
+                            base_a = mat.pbrMetallicRoughness.baseColorFactor.w
+                        is_alpha: base_a > 0.0 && base_a < 1.0
+                        if [ !is_alpha ]
+                            model_init_pipeline[ a, n, prim, s, render_id, false ]
+                        if [ is_alpha ]
+                            ts: shader [ transparent_s ]
+                            if [ !ts ] ts = s
+                            model_init_pipeline[ a, n, prim, ts, render_id, true ]
 
     construct [ p: string ]
         gltf_path : path [ p ]
@@ -7325,7 +7340,7 @@ func get_required_extensions [ vk: vk_context ]
         printf "instance extension: %s\n", vk.instance_exts[i]
 
 
-func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render_id: i32 ]
+func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render_id: i32, transparent: bool ]
     mdl:      m.id
     vk:       m.vk
     r:        m.r
@@ -7346,13 +7361,6 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
         material = (mdl.materials && mdl.materials.count > mat_id) ?
             mdl.materials[ mat_id ] :
             (mdl.materials) ? mdl.materials.first_element[] : null
-        if [ material ]
-            printf[ "model_init_pipeline: mat_id=%d materials_count=%d material=%p baseColor=(%f,%f,%f,%f)\n",
-                mat_id, mdl.materials.count, material,
-                material.pbrMetallicRoughness.baseColorFactor.x,
-                material.pbrMetallicRoughness.baseColorFactor.y,
-                material.pbrMetallicRoughness.baseColorFactor.z,
-                material.pbrMetallicRoughness.baseColorFactor.w ]
         index:        0
         vertex_size:  0
         vertex_count: 0
@@ -7412,10 +7420,11 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
     
     s_type : typeid[ s ]
     info : Au.header [ vbo ]
+    sa: bool [ transparent || m.straight_alpha ]
     pipe: Pipeline [ vk: vk, w: m.w, name: (n) ? n.name : null,
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat, render_id: render_id,
         material: material, samplers: m.samplers,
-        straight_alpha: m.straight_alpha ]
+        straight_alpha: sa, depth_no_write: transparent ]
     s.hold[]
     pipe.hold[]
     vbo.hold[]
