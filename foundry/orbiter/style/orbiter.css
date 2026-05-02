@@ -70,12 +70,9 @@ Button:pressed {
 World.avatar {
     model_path:         "models/orbiter32.gltf"
     shader_type:        "PBR"
-    environment_path:   "images/forest.exr"
+    environment_path:   "images/night.exr"
     environment_yaw:    0.0
     environment_pitch:  0.0
-    blend_rings:        1.0
-    blend_haze:         1.0
-    blend_bands:        1.0
     render_scale:       4.0
     clear_color:        0 0 0 0
     rotate:             [ 0 1 0 30deg, 1 0 0 20deg ], 222ms cubic outward
@@ -86,7 +83,7 @@ World.avatar {
     blend_bands:        0.2
     blend_rings:        0.2
     blend_haze:         1.0
-    area: r576 b576 r64 b64
+    area: r888 b888 r64 b64
 }
 
 World.avatar:hovered {
