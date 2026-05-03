@@ -2155,6 +2155,7 @@ none push_type(Au_t type, Au_t to_mod) {
         int Au_t_ft_size = sizeof(((Au_t_f*)typeid(Au_t_f))->ft);
         verify(Au_ft_size == Au_t_ft_size, "Au_f->ft not identical to Au_t_f->ft");
         memcpy(&Au_Au_t_f_i.type.ft, &typeid(Au)->ft, Au_ft_size);
+        typeid(Au)->table_size = Au_ft_size;
         head(typeid(Au_t))->type = Au_Au_t_f_i.info.type;
     }
     
@@ -2524,6 +2525,7 @@ Au Au_initialize(Au a) {
     #endif
 
     init_recur(a, f->type, null);
+    Au_t_f* ptr = (Au_t_f*)isa(a);
     hold_members(a);
     return a;
 }
@@ -3152,6 +3154,7 @@ none Au_set_context_from(Au target, Au source) {
             Au_t mem = (Au_t)type->members.origin[i];
             if (mem->member_type != AU_MEMBER_VAR || !mem->is_context) continue;
             Au val = Au_get_property_by_type(source, mem->type);
+            Au_t_f* fn = (Au_t_f*)isa(target);
             if (val) member_set(target, mem, val);
         }
         type = type->context;
@@ -3719,6 +3722,9 @@ Au_t __typeid(Au input) {
 }
 
 Au __convert(Au_t type, Au value) {
+    Au_t vtype = isa(value);
+    if (vtype == type)
+        return value;
     return formatter(type, false, null, (Au)false, 0, "%o", value);
 }
 
@@ -5198,6 +5204,8 @@ Au Au_hold(Au a) {
 none Au_free(Au a) {
     Au       aa = header(a);
     char ch = aa->type->ident[0];
+
+    return;
     if (ch == 'V') {
         return;
     }
@@ -6914,7 +6922,7 @@ static array parse_array_objects(cstr* s, Au_t element_type, ctx context) {
             if (element_type) printf("parse_array_objects: unexpected char '%c' after element, near: %.40s\n", scan[0], scan);
         }
     }
-    if (element_type) printf("parse_array_objects: element_type=%s count=%d\n", element_type->ident, len(res));
+    if (element_type) printf("parse_array_objects: element_type=%s count=%i\n", element_type->ident, (int)len(res));
     *s = scan;
     return res;
 }
