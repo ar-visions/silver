@@ -303,10 +303,13 @@ class GltfBuffer
     public byteLength:      u64
     public uri:             path
     public data:            ref u8
+    
+    
     func init []
         if [ !uri ]
             return
-        fp: fopen[ uri.chars, "rb" ]
+        str : string[ uri ]
+        fp: fopen[ (str.starts_with['models/']) ? uri : 'models/{uri}', "rb" ]
         if [ !fp ]
             puts 'GltfBuffer: failed to open {uri.chars}'
             return
@@ -318,9 +321,6 @@ class GltfBuffer
         fclose[ fp ]
         data       = buf
         byteLength = length
-
-    # implemented in C as test
-    func test [] -> bool 
 
 class TextureInfo
     public index:           i64

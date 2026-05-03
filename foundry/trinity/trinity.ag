@@ -278,9 +278,8 @@ class Render
                 extent: VkExtent2D [ fw, fh ]
             ] ]
             clear_values: local VkClearValue [2]
-            #printf[ "  Render.draw iter=%d reduce=%d swap=%p clear=[%f,%f,%f,%f]\n",
-            #    i, reduce, vk_swap_image,
-            #    clear_color.x, clear_color.y, clear_color.z, clear_color.w ]
+            mc : i64 [ models.count ]
+
             clear_values[0].color.float32[0] = clear_color.x
             clear_values[0].color.float32[1] = clear_color.y
             clear_values[0].color.float32[2] = clear_color.z
@@ -293,6 +292,7 @@ class Render
             # loop is safe to run over every pipeline.
             if [ i == 0 ]
                 for [ m: Model ] in models
+                    pc : i64 [ m.pipelines.count ]
                     for [ p: Pipeline ] in m.pipelines
                         p.dispatch[ frame ]
             el
@@ -594,7 +594,6 @@ class vk_context
 
     func init [ ]
         hold[]
-        printf[ "instance = %p, addr = %p\n", instance, ref instance ]
         get_required_extensions[ a ]
         enable_validation: bool true
         validation_layer: symbol [ (enable_validation) ? "VK_LAYER_KHRONOS_validation" : null ]
@@ -649,7 +648,6 @@ class vk_context
         for [ i: u32 0, i < ext_count, i += 1 ]
             ext : extensions[i].extensionName
             device_exts.push[ ext ]
-            printf [ "vk-device-extension: %s\n", ext ]
             if [ strcmp[ ext, VK_KHR_SWAPCHAIN_EXTENSION_NAME ] == 0 ]
                 printf [ "supported swapchain: %s\n", ext ]
                 swapchain_supported = true
@@ -798,12 +796,8 @@ class vk_context
         expect found, "failed to find a suitable graphics and presentation queue family"
 
     intern func find_memory_type [ type_filter: u32, flags: VkMemoryPropertyFlags ] -> u32
-        printf[ "type_filter: %i\n", type_filter ]
-        printf[ "flags: %i\n",       flags ]
         for [ i: u32 0, i < props.memoryTypeCount, i += 1 ]
-            printf[ "props.memoryTypes[i].propertyFlags: %i\n", u32[props.memoryTypes[i].propertyFlags] ]
             if [ (type_filter & (1 << i)) && (props.memoryTypes[i].propertyFlags & flags) == flags ]
-                printf["found index\n"]
                 return i
         fault "could not find memory type"
         return 0
@@ -984,26 +978,14 @@ class uniforms
 
         type_list = type_list.reverse[]
 
-        u_index:  0
-        total_uniform: i32 [ 0 ]
-
-        # type_list is an `array`, not a `list` — iterate with `for ... in`,
-        # NOT linked-list-style `i = i.next`. The previous code used .first /
-        # .next which silently produced no iterations and left u_buffers empty,
-        # which made every shader's `ubo` descriptor invalid at draw time.
-        for [ tn: Au_t ] in type_list
-            u_size: uniform_size[ tn ]
-            total_uniform += u_size
-
-        u_memory  = new u8 [ total_uniform ]
-
-        for [ tn: Au_t ] in type_list
-            u_size: uniform_size[ tn ]
-            uniform_buf: Buffer [ vk: vk, size: u_size,
-                u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
-                data: ref u_memory[u_index], user: tn ]
-            u_buffers.push [ uniform_buf ]
-            u_index += u_size
+        hdr2:   Au [ Au.header[ s ] ]
+        leaf:   Au_t [ hdr2.type ]
+        total_uniform: i32 [ uniform_size[ leaf ] ]
+        u_memory = new u8 [ total_uniform ]
+        uniform_buf: Buffer [ vk: vk, size: total_uniform,
+            u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
+            data: ref u_memory[0], user: leaf ]
+        u_buffers.push [ uniform_buf ]
 
 # lets declare something about how we want to use this meta-A type slot
 alias RType : Au
@@ -1142,7 +1124,6 @@ class Pipeline
         if [ vbo.index ]
             vkCmdBindIndexBuffer[ frame, vbo.index.vk_buffer, 0,
                 vbo.index_type[ ] ]
-            #printf["draw %s idx=%i vtx=%i\n", name.chars, vbo.index_count, vbo.vertex_count]
             vkCmdDrawIndexed[ frame, vbo.index_count, 1, 0, 0, 0 ]
         el
             vkCmdDraw[ frame, vbo.vertex_count, 1, 0, 0 ]
@@ -1170,7 +1151,6 @@ class Pipeline
         shader_uniforms = uniforms [ vk: vk, s: s ]
         shader_uniforms.hold[]
         s_hdr:       Au [ Au.header[ s ] ]
-        shader_type: Au_t [ s_hdr.type ]
 
         for [ b: Buffer ] in shader_uniforms.u_buffers
             uniform_bindings[uniform_count] = VkDescriptorSetLayoutBinding [
@@ -1186,11 +1166,11 @@ class Pipeline
             ]
             uniform_count += 1
 
-        # walk shader schema — same caveat as uniforms.init: typeid[ s ] gives
-        # the declared field type `shader`, we need the runtime subclass.
+        # walk shader schema — typeid[s] gives the static `shader` type; read
+        # the runtime subclass from the Au object header instead.
         sh_hdr:        Au [ Au.header[ s ] ]
         shader_schema: Au_t [ sh_hdr.type ]
-        while [ shader_schema != typeid[ shader ] ]
+        while [ shader_schema && shader_schema != typeid[ shader ] ]
             for [ i: 0, i < shader_schema.members.count, i += 1 ]
                 mem: Au_t [ shader_schema.members.origin[i] ]
 
@@ -1200,6 +1180,9 @@ class Pipeline
                     enum_type:  at.type
                     enum_value: at.id
                     meta_type:  at.format
+                    if [ !meta_type ]
+                        at = LayoutBinding s.get_property[ mem.ident ]
+                        meta_type = meta_type
                     expect meta_type, "meta data not set on Surface/extension"
                     all: Surface_resources[ enum_type, enum_value, meta_type, a ]
                     expect all.count == 1, "binding arrays (count > 1) not supported in this code path"
@@ -1276,6 +1259,7 @@ class Pipeline
                     storage_buffer_count  += 1
 
             shader_schema = shader_schema.context
+
         vkCreateDescriptorSetLayout[ vk.device, VkDescriptorSetLayoutCreateInfo [
             sType:        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
             bindingCount: uniform_count,
@@ -1620,6 +1604,14 @@ class Model
                     model_init_pipeline[ a, n.id, p.id, (p.s) ? p.s : s, render_id, false ]
         el [ id ]
             for [ n: Node ] in id.nodes
+                if [ s && s.groups && s.groups.count > 0 ]
+                    matched: false
+                    for [ g: string ] in s.groups
+                        if [ strcmp[ g.chars, n.name.chars ] == 0 ]
+                            matched = true
+                            break
+                    if [ !matched ]
+                        continue
                 has_mesh: n.AF_query_name[ "mesh" ]
                 if [ has_mesh ]
                     mesh: id.meshes [ n.mesh ]
@@ -1629,7 +1621,7 @@ class Model
                         if [ id.materials && id.materials.count > mat_id ]
                             mat: id.materials[ mat_id ]
                             base_a = mat.pbrMetallicRoughness.baseColorFactor.w
-                        is_alpha: base_a > 0.0 && base_a < 1.0
+                        is_alpha: (base_a > 0.0 && base_a < 1.0) || s.transparent
                         if [ !is_alpha ]
                             model_init_pipeline[ a, n, prim, s, render_id, false ]
                         if [ is_alpha ]
@@ -2610,8 +2602,8 @@ class Texture
             vulkanApiVersion:  VK_API_VERSION_1_2,                      
             pVulkanFunctions:  null,                                    
             flags: VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT                      
-        ], ref allocator ]                                            
-        printf[ "vmaCreateAllocator: %d\n", result ]                    
+        ], ref allocator ]
+
         if [ result == VK_SUCCESS ]                                 
             vk_image0:  VkImage                                          
             vma_alloc0: VmaAllocation                                    
@@ -2629,8 +2621,7 @@ class Texture
                 initialLayout: VK_IMAGE_LAYOUT_UNDEFINED                
             ], VmaAllocationCreateInfo [
                 usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE              
-            ], ref vk_image0, ref vma_alloc0, null ]                      
-            printf[ "vmaCreateImage: %d\n", result ]                  
+            ], ref vk_image0, ref vma_alloc0, null ]                  
             if [ result == VK_SUCCESS ]                                 
                 vmaDestroyImage[ allocator, vk_image, vma_alloc ]
             vmaDestroyAllocator[ allocator ]
@@ -3045,10 +3036,7 @@ Texture Display
                 swap_render_current = swap_renders[swap_image_current]
                 last_render[].color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                #printf[ "  swap_render_current swap=%p reduce=%d clear=[%f,%f,%f,%f]\n",
-                #    swap_render_current.vk_swap_image, swap_render_current.reduce,
-                #    swap_render_current.clear_color.x, swap_render_current.clear_color.y,
-                #    swap_render_current.clear_color.z, swap_render_current.clear_color.w ]
+
                 info : Au.header[swap_render_current]
                 swap_render_current.hold[]
                 swap_render_current.draw[]
@@ -3088,7 +3076,6 @@ Texture Display
         return result
 
     func init [ ]
-        printf[ "semaphore_frame = %p\n", semaphore_frame ]
         hold[]
         if [ !format ]
             format = Pixel.rgba8
@@ -3118,7 +3105,6 @@ Texture Display
 
             glfwSetFramebufferSizeCallback [ glfw, ref handle_glfw_framebuffer_size ]
 
-            printf["vk instance of %p\n", vk.instance]
             # vulkan surface
             result: glfwCreateWindowSurface[ vk.instance, glfw, null, ref surf ]
             expect result == VK_SUCCESS, "Failed to create Vulkan surface"
@@ -3194,9 +3180,25 @@ class shader
     public frag         : path
     public comp         : path
     public reload_count : i32
+
+    # used by elements which make shader instances central to drawing order
+    public model_id     : string
+    public env_id       : string
+    public groups       : array string
+    public materials    : array string # this is one or the other
+    public transparent  : bool
+    
     intern vk_vert      : VkShaderModule
     intern vk_frag      : VkShaderModule
     intern vk_comp      : VkShaderModule
+
+    func context_chain [] -> array Au_t
+        r: array Au_t []
+        f: typeid [ a ]
+        while [ f && f != typeid[ shader ] ]
+            r.push[f]
+            f = f.context
+        return r.reverse[]
 
     func indent [ s: symbol ] -> string
         str: string[s]
@@ -3213,6 +3215,9 @@ class shader
     func fragment [] -> GLSL none {}
 
     func compute  [] -> GLSL none {}
+
+    func set_frame [ model_mat: mat4f, view_mat: mat4f, proj_mat: mat4f, ep: vec4f, t: f32 ]
+        return
 
     func glsl_type_name [ t: Au_t ] -> cstr
         if [ t == typeid[ mat4f ] ]
@@ -3260,21 +3265,19 @@ class shader
             result = '{result}layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;\n\n'
 
 
-        # UBO from mutable members
+        # UBO from mutable members — emit base-first to match C struct layout
         ubo_name: type.ident
         result = '{result}layout(set = 0, binding = 0) uniform {ubo_name} {{\n'
-        scan: Au_t [ type ]
-        while [ scan != typeid[ shader ] ]
-            for [ i: 0, i < scan.members.count, i += 1 ]
-                mem: scan.members.origin[i]
+        chain: context_chain[]
+        for [ sc:Au_t ] in chain
+            for [ mem:Au_t ] in sc.members
                 if [ !is_uniform_field[ mem ] ]
                     continue
                 gtype: glsl_type_name[ mem.src ]
                 if [ !gtype ]
                     continue
                 result = '{result}    {gtype} {mem.ident};\n'
-            scan = scan.context
-        
+
         result = '{result}}} ubo;\n\n'
 
         # attribs: samplers, vertex i/o, fragment i/o
@@ -3283,11 +3286,9 @@ class shader
         vert_loc_out: i32 [ 0 ]
         frag_loc_in:  i32 [ 0 ]
         frag_loc_out: i32 [ 0 ]
-        scan = type
 
-        while [ scan != typeid[ shader ] ]
-            for [ i: 0, i < scan.members.count, i += 1 ]
-                mem: Au_t[ scan.members.origin[i] ]
+        for [ scan : Au_t ] in chain
+            for [ mem:Au_t ] in scan.members
                 if [ mem.member_type != 4 ]
                     continue
                 if [ !(mem.traits & (1 << 56)) ] # AU_TRAIT_IS_ATTRIB
@@ -3353,11 +3354,10 @@ class shader
                     if [ gtype ]
                         result = '{result}layout(location = {frag_loc_out}) out {gtype} {mem.ident};\n'
                     frag_loc_out += 1
-                
-            scan = scan.context
 
 
-        scan = type
+        # for methods, its preferrable to go top down since we may handle overrides easier
+        scan : type
         while [ scan != typeid[ shader ] ]
             for [ i: 0, i < scan.members.count, i += 1 ]
                 method: Au_t [ scan.members.origin[i] ]
@@ -3417,6 +3417,7 @@ class shader
             src: glsl_header[ stage ]
             if [ !src ]
                 continue
+            
             # only write the .vert/.frag/.comp if its content has actually
             # changed. a redundant rewrite bumps mtime and forces an
             # unnecessary glslangValidator recompile (which used to race
@@ -3425,6 +3426,7 @@ class shader
             # GLSL inside the .ag file silently has no effect because the
             # stale on-disk shader keeps loading. compare byte-for-byte
             # and only skip when truly identical.
+
             should_write : bool true
             if [ p.exists[] ]
                 rfp : fopen[ p, "rb" ]
@@ -3463,21 +3465,20 @@ class shader
             return 192
 ##
         index: num [ 0 ]
-        
-        #printf[ "uniform_transfer: type=%s members.count=%i\n",
-        #    type.ident, type.members.count ]
-        for [ m: 0, m < type.members.count, m += 1 ]
-            mem: Au_t [ type.members.origin[m] ]
-            # use the same filter as uniform_size / glsl_header so the buffer
-            # layout (offsets and contents) matches the GLSL UBO declaration.
-            if [ is_uniform_field[ mem ] ]
-                type_size: mem.src.typesize
-                if [ (mem.src.traits & (1 << 8)) || (mem.src.traits & (1 << 0)) ] # struct or primitive are both inlay
-                    memcpy[ ref data2[index], ref src[mem.offset], type_size ]
-                el
-                    dst_ptr: (ref src[mem.offset] to ref handle)
-                    memcpy[ ref data2[index], dst_ptr, type_size ] # we can also call the vdata on this one, however i dont think we'll ever want to do this in Au lol. we kinda did for a vector concept but i dont like it!
-                index += type_size
+        ty2: Au_t [ type ]
+        classes : context_chain[]
+        for [ ty2: Au_t ] in classes
+            for [ m: 0, m < ty2.members.count, m += 1 ]
+                mem: Au_t [ ty2.members.origin[m] ]
+                if [ is_uniform_field[ mem ] ]
+                    type_size: mem.src.typesize
+                    if [ (mem.src.traits & (1 << 8)) || (mem.src.traits & (1 << 0)) ]
+                        memcpy[ ref data2[index], ref src[mem.offset], type_size ]
+                    el
+                        dst_ptr: (ref src[mem.offset] to ref handle)
+                        memcpy[ ref data2[index], dst_ptr, type_size ]
+                    index += type_size
+
         return index
 
     intern func reload [ ] -> bool
@@ -3572,11 +3573,13 @@ class shader
         vkDestroyShaderModule[ vk.device, vk_comp, null ]
 
 
-shader UVQuad
-    mutable model : mat4f
-    mutable view  : mat4f
-    mutable proj  : mat4f
+shader ModelViewProject
+    mutable model   : mat4f
+    mutable view    : mat4f
+    mutable proj    : mat4f
+    mutable time    : f32
 
+ModelViewProject UVQuad
     attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
     #attrib Surface [ color ] : 1, rgba8
 
@@ -3603,10 +3606,7 @@ shader UVQuad
     }
 
 
-shader UVReduce
-    mutable model : mat4f
-    mutable view  : mat4f
-    mutable proj  : mat4f
+ModelViewProject UVReduce
     attrib  color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
@@ -7023,14 +7023,13 @@ expect func test [ vk: vk_context ] -> bool
     return avg_a > 10 && (avg_r > 0 || avg_g > 0 || avg_b > 0)
 
 
-
 abstract app media_app
-    context  w     : Display*
-    context  vk    : vk_context
-    intern  arg   : object
-    public width  : i32
-    public height : i32
-        
+    context w      : Display*
+    context vk     : vk_context
+    intern  arg    : object
+    public  width  : i32
+    public  height : i32
+
     func run [ ] -> i32
         next_second : epoch_millis[] / 1000
         frames      : 0
@@ -7062,9 +7061,7 @@ abstract app media_app
             fault "glfw does not support vulkan"
             glfwTerminate[]
             return
-        puts 'starting vk'
         vk = vk_context[]
-        printf["set vk to %p on %p\n", vk, a]
 
     func dealloc [ ]
         glfwTerminate[]
@@ -7714,6 +7711,7 @@ alias FRender  : lambda Elements[ Display ]
 
 # this Au type indicates we do not have an 'init' called
 ielement element
+    context vk              : vk_context
     context ux              : Window
     mutable parent          : element
     mutable area            : Region
@@ -7724,6 +7722,8 @@ ielement element
     mutable label           : string
     public  label2          : string
     mutable layers          : map Layer[string]
+    mutable shaders         : map shader[string]
+    #mutable bindings        : map ModelBind[string]
     mutable elements        : Elements
     mutable tags            : array string
     mutable group           : string
@@ -7894,6 +7894,7 @@ Display Window
     mutable mouse               : vec2f
     mutable shift               : bool
     mutable alt                 : bool
+    mutable time                : f64
     public st                   : Style
 
 
@@ -7942,7 +7943,7 @@ Display Window
                 ct.reference = t
                 should_trans = true
                 inst.transitions[ mem ] = ct
-            el
+            el [ ct.invalidate ]
                 ct.invalidate = false
                 should_trans = true
         el [ inst.transitions ]
@@ -8001,14 +8002,20 @@ Display Window
                     dst_ptr[i] = target_ptr[i]
             el
                 decay : f32 [ pow[ best.filter, inst.ux.frame_factor ] ]
+                moving : false
                 for [ i: i32 0, i < float_count, i += 1 ]
+                    delta : f32 [ target_ptr[i] - dst_ptr[i] ]
+                    if [ delta > 0.0001 || delta < -0.0001 ]
+                        moving = true
                     if [ target_ptr[i] != 0.0 ]
-                        dst_ptr[i] = dst_ptr[i] + (target_ptr[i] - dst_ptr[i]) * (1.0 - decay)
+                        dst_ptr[i] = dst_ptr[i] + delta * (1.0 - decay)
                     el
                         dst_ptr[i] = dst_ptr[i] * decay
+                if [ moving ]
+                    inst.volatile = true
             if [ is_f_color ]
                 printf [ "[%d] filt-after   dst=%.3f,%.3f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1] ]
-            inst.volatile = true
+            #inst.volatile = true
             return
 
         if [ is_f_color ]
@@ -8016,7 +8023,7 @@ Display Window
         value_holder.member_set[ member, best.instance ]
     
 
-    public func cache_style [ inst:element, style_avail: map StyleEntries[string], force_update:bool ]
+    public func cache_style [ inst:element, style_avail: map StyleEntries[string], force_update:bool, home_object:Au ]
         if [ inst.maps_populated && !force_update ]
             return
 
@@ -8033,14 +8040,24 @@ Display Window
                         continue
                     entry.member_map = Au.find_member [ typeid[inst], entry.bl.property.chars, AU_MEMBER_VAR, 0, true ]
                     expect entry.member_map, 'member not found on {ty.ident}: {entry.bl.property}'
-                    member_container : (inst.member_object[ entry.member_map ] to map Layer[string])
-                    if [ !member_container ]
-                        member_container = map Layer[string][]
-                        inst.member_set[ entry.member_map, member_container ]
-                        member_container.hold[]
-                    if [ !member_container.contains[entry.bl.key] ]
-                        layer_inst : Au.new_object[entry.member_map.meta.a, null, null, true]
-                        member_container[entry.bl.key] = layer_inst
+                    meta_type : Au_t [ entry.member_map.meta.a ]
+                    mc : (inst.member_object[ entry.member_map ] to map Layer[string])
+                    if [ !mc ]
+                        mc = map Layer[string][]
+                        inst.member_set[ entry.member_map, mc ]
+                        mc.hold[]
+                    if [ !mc.contains[entry.bl.key] ]
+                        inst_type : Au_t [ (entry.bl.type_name && entry.bl.type_name.count) ? Au.find_type[entry.bl.type_name.chars, null] : null ]
+                        if [ !inst_type ]
+                            has_state : bool [ false ]
+                            for [ q: StyleQualifier ] in entry.bl.quals
+                                if [ q.state ] has_state = true
+                            if [ !has_state ] inst_type = meta_type
+                        if [ inst_type ]
+                            n : Au.new_object[inst_type, null, null, false]
+                            n.set_context_from[ home_object ]
+                            n.initialize[]
+                            mc[entry.bl.key] = n
 
     # needs copies
     public func apply_style [ inst: element, style_avail: map StyleEntries[string], home_object:Au ]
@@ -8048,7 +8065,7 @@ Display Window
         inst.volatile = false
         
         # create layers in the order they render
-        cache_style[inst, style_avail, false]
+        cache_style[inst, style_avail, false, home_object]
         
         applied : map StyleEntry[string][]
         for [ ty : Au_t [ typeid[ inst ] ], ty != typeid[ Au ], ty = ty.context ]
@@ -8076,18 +8093,17 @@ Display Window
                         applied[f] = best
 
                         if [!best.member_map]
-                            cache_style[inst, style_avail, true]
+                            cache_style[inst, style_avail, true, home_object]
 
-                        member_container : (inst.member_object[ best.member_map ] to map Layer[string])
-                        expect member_container, "expected member_container"
-
-                        # find layer by name (key), creating a default if not found
-                        layer_inst : member_container.get[best.bl.key]
-                        layer_member : Au.find_member[ first.member_map.meta.a, best.member, AU_MEMBER_VAR, 0, true ]
-                        expect layer_member, 'member not found on {first.member_map.meta.a.ident}: {best.member}'
+                        mc : (inst.member_object[ best.member_map ] to map)
+                        expect mc, "expected map container"
+                        layer_inst  : Au  [ mc.get[best.bl.key] ]
+                        inst_type   : Au_t [ Au.__typeid[layer_inst] ]
+                        layer_member : Au.find_member[ inst_type, best.member, AU_MEMBER_VAR, 0, true ]
+                        expect layer_member, 'member not found on {inst_type.ident}: {best.member}'
 
                         if [ !best.instance ]
-                            if [ layer_member.src.traits & (1 << 11) ]
+                            if [ (layer_member.src.traits & (1 << 11)) && typeid[best.value] != typeid[array] ]
                                 best.instance = Au.new_object[ layer_member.src, null, null, false ]
                                 best.instance.set_context_from[ home_object ]
                                 best.instance.call_construct[ best.value ]
@@ -8230,7 +8246,8 @@ Display Window
                 # init finally called after context and style is applied
                 # our holds are too many for properties applied in style, though.
                 if [ call_init ]
-                    instance.initialize[] 
+                    expect instance.vk, "no vk context set in test2"
+                    instance.initialize[]
                     instance.hold_members[]
 
             inst    : typeid[ instance ]
@@ -8512,7 +8529,7 @@ Display Window
             if [ !background ]
                 background = Render [ vk: vk, w: a, wscale: 1.0,
                     clear_color: vec4f [ 0.05, 0.02, 0.08, 1.0 ] ]
-                background.update[]
+            background.update[]
 
             m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': background.color ] ]
             r_reduce  = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
@@ -8702,8 +8719,9 @@ Display Window
             cv.translate[ -pivot_x, -pivot_y ]
 
         # compute layer bounds and draw each layer
-        for [ layer: Layer, lkey: string ] in e.layers
-            if [ layer.ctype != stage ]
+        for [ layer_au: Au, lkey: string ] in e.layers
+            layer : Layer [ layer_au to Layer ]
+            if [ !layer || layer.ctype != stage ]
                 continue
             
             layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null ] : e.bounds.copy[]
@@ -8936,8 +8954,9 @@ class StyleBlock
     public entries  : StyleEntryMap
     public blocks   : array StyleBlock
     public types    : array Au_t
-    mutable key     : string
-    mutable property : string
+    mutable key       : string
+    mutable property  : string
+    mutable type_name : string
 
     post construct [ p_sc: ref cstr ]
         sc : cstr p_sc
@@ -10256,7 +10275,7 @@ element CameraView
     func render [] -> Elements
         return null
 
-shader Basic
+ModelViewProject Basic
     public proj  : mat4f
     public model : mat4f
     public view  : mat4f
@@ -10267,11 +10286,7 @@ class IBL
     public placeholder : i32
 
 
-
-shader BlurV
-    mutable model : mat4f
-    mutable view : mat4f
-    mutable proj : mat4f
+ModelViewProject BlurV
     mutable reduction_scale : f32
     attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
 
@@ -10309,10 +10324,7 @@ shader BlurV
     }
 
 
-shader Blur
-    mutable model : mat4f
-    mutable view : mat4f
-    mutable proj : mat4f
+ModelViewProject Blur
     mutable reduction_scale : f32
     attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
 
@@ -10354,10 +10366,7 @@ shader Blur
 # vertical gaussian kernel. the mip chain (populated by Canvas.blur
 # via vkCmdBlitImage) provides the wide reduce+resample; this pass
 # blurs vertically across the entire output at full res.
-shader CanvasBlurV
-    mutable model     : mat4f
-    mutable view      : mat4f
-    mutable proj      : mat4f
+ModelViewProject CanvasBlurV
     mutable radius_uv : f32
     attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
@@ -10397,10 +10406,7 @@ shader CanvasBlurV
 # already V-blurred) and applies a horizontal gaussian. fine-tune
 # kernel width comes from the fixed sigma; the mip LOD on V carried
 # the wide-radius reduce.
-shader CanvasBlurH
-    mutable model      : mat4f
-    mutable view       : mat4f
-    mutable proj       : mat4f
+ModelViewProject CanvasBlurH
     mutable radius_uv  : f32
     mutable mix_factor : f32
     attrib low  : LayoutBinding [ type:typeid[ BlurPair ], id:BlurPair.low,  count:1, format: typeid[ rgba8 ] ]
@@ -10445,10 +10451,7 @@ shader CanvasBlurH
     }
 
 
-shader UXBackground
-    mutable model        : mat4f
-    mutable view         : mat4f
-    mutable proj         : mat4f
+ModelViewProject UXBackground
     mutable low_color    : vec4f
     mutable high_color   : vec4f
 
@@ -10771,14 +10774,20 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
         sub_end : i32 [ j ]
         while [ sub_end + 1 <= last && lines[sub_end + 1].indent > ind ]
             sub_end += 1
-        if [ val_str.count == 0 && sub_end > j ]
+        dot_pos : num  [ member.index_of[ '.' ] ]
+        is_type : bool [ dot_pos > 0 && val_str.count > 0 && val_str.chars[0] >= 'A' && val_str.chars[0] <= 'Z' ]
+        if [ (val_str.count == 0 && sub_end > j) || is_type ]
             inner : StyleBlock [ quals:bl.quals, types:bl.types ]
-            parse_block_body[ inner, lines, j + 1, sub_end, ind ]
-            dot : num [ member.index_of[ '.' ] ]
-            if [ dot > 0 ]
-                inner.key      = member.mid[ dot + 1, member.count - dot - 1 ]
-                inner.property = member.mid[ 0, dot ]
+            if [ sub_end > j ]
+                parse_block_body[ inner, lines, j + 1, sub_end, ind ]
+            if [ dot_pos > 0 ]
+                inner.key      = member.mid[ dot_pos + 1, member.count - dot_pos - 1 ]
+                inner.property = member.mid[ 0, dot_pos ]
                 inner.parent = bl
+                if [ is_type ]
+                    inner.type_name = val_str
+                    if [ !inner.entries.contains["name"] ]
+                        inner.entries["name"] = StyleEntry [ member: "name", value: val_str, bl: inner, line: lines[j].line ]
                 bl.blocks.push[ inner ]
             el
                 bl.entries[ member ] = StyleEntry [ member: member, value: inner, bl: bl, line: lines[j].line ]
@@ -10826,7 +10835,8 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
         trans : (param) ? StyleTransition[ param ] : null
         is_bind : bool [ value_s && value_s.count >= 2 && value_s.chars[0] == '{' && value_s.chars[value_s.count - 1] == '}' ]
         bname   : string [ (is_bind) ? value_s.mid[ 1, value_s.count - 2 ].trim[] : null ]
-        bl.entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: bl, line: lines[j].line, binding: bname, filter: filter_val ]
+        se : StyleEntry [ member: member, value: value, trans: trans, bl: bl, line: lines[j].line, binding: bname, filter: filter_val ]
+        bl.entries[ member ] = se
         j += 1
 
 

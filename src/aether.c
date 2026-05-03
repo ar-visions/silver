@@ -5326,7 +5326,78 @@ enode aether_e_for(aether a,
             : LLVMBuildAdd(B, idx_step, LLVMConstInt(i32_type, 1, false), "idx.inc");
         LLVMBuildStore(B, idx_next, idx);
         LLVMBuildBr(B, cond);
-        
+
+    } else if (in_expr && inherits(in_expr->au, typeid(micro))) {
+
+        // ---- micro iteration: inlay struct with origin (Au_t*) + count (i32) ----
+        enode count_node  = etype_access((etype)in_expr, string("count"));
+        enode origin_node = etype_access((etype)in_expr, string("origin"));
+
+        LLVMTypeRef  i32_type  = LLVMInt32Type();
+        LLVMValueRef idx       = entry_alloca(a, i32_type, "micro.idx");
+        LLVMValueRef count_val = LLVMBuildLoad2(B, i32_type, count_node->value, "micro.count");
+        if (reverse) {
+            LLVMValueRef init_val = LLVMBuildSub(B, count_val, LLVMConstInt(i32_type, 1, false), "idx.init");
+            LLVMBuildStore(B, init_val, idx);
+        } else {
+            LLVMBuildStore(B, LLVMConstInt(i32_type, 0, false), idx);
+        }
+        LLVMBuildBr(B, cond);
+
+        // ---- cond ----
+        LLVMPositionBuilderAtEnd(B, cond);
+        LLVMValueRef idx_val = LLVMBuildLoad2(B, i32_type, idx, "micro.idx");
+        LLVMValueRef cmp     = reverse
+            ? LLVMBuildICmp(B, LLVMIntSGE, idx_val, LLVMConstInt(i32_type, 0, false), "idx.ge.0")
+            : LLVMBuildICmp(B, LLVMIntSLT, idx_val, count_val, "idx.lt.count");
+        LLVMBuildCondBr(B, cmp, body, merge);
+
+        // ---- body: load origin[i] as Au_t ----
+        LLVMPositionBuilderAtEnd(B, body);
+        if (st && a->coverage) aether_emit_block_probe(a, st->probe_id);
+
+        LLVMValueRef idx_body   = LLVMBuildLoad2(B, i32_type, idx, "micro.idx.body");
+        LLVMTypeRef  ptr_type   = LLVMPointerType(LLVMInt8Type(), 0);
+        LLVMValueRef origin_ptr = LLVMBuildLoad2(B, ptr_type, origin_node->value, "micro.origin");
+        LLVMValueRef elem_ptr   = LLVMBuildGEP2(B, ptr_type, origin_ptr, &idx_body, 1, "micro.elem.ptr");
+        LLVMValueRef elem       = LLVMBuildLoad2(B, ptr_type, elem_ptr, "micro.elem");
+
+        if (val_var) {
+            enode val_node = value(etypeid(Au), elem);
+            etype cv       = canonical(val_var);
+            enode val_cast = e_create(a, cv, (Au)val_node);
+            if (!val_cast->loaded && is_struct(cv) && !is_ptr(cv)) {
+                LLVMValueRef sv = LLVMBuildLoad2(B, lltype(cv), val_cast->value, "micro.struct_elem");
+                LLVMBuildStore(B, sv, val_var->value);
+            } else {
+                LLVMBuildStore(B, val_cast->value, val_var->value);
+            }
+        }
+
+        if (key_var) {
+            validate(key_var->au->src == typeid(i64) || key_var->au->src == typeid(u64),
+                "micro index-key must be i64/u64");
+            LLVMValueRef idx_i64 = LLVMBuildSExt(B, idx_body, LLVMInt64Type(), "idx.i64");
+            enode idx_node = value(etypeid(i64), idx_i64);
+            enode idx_cast = e_create(a, canonical(key_var), (Au)idx_node);
+            LLVMBuildStore(B, idx_cast->value, key_var->value);
+        }
+
+        token saved_origin_micro = a->statement_origin;
+        invoke(body_builder, (Au)body_exprs);
+        a->statement_origin = saved_origin_micro;
+        LLVMBuildBr(B, step);
+
+        // ---- step ----
+        LLVMPositionBuilderAtEnd(B, step);
+        debug_emit(a);
+        LLVMValueRef idx_step_m = LLVMBuildLoad2(B, i32_type, idx, "micro.idx.step");
+        LLVMValueRef idx_next_m = reverse
+            ? LLVMBuildSub(B, idx_step_m, LLVMConstInt(i32_type, 1, false), "idx.dec")
+            : LLVMBuildAdd(B, idx_step_m, LLVMConstInt(i32_type, 1, false), "idx.inc");
+        LLVMBuildStore(B, idx_next_m, idx);
+        LLVMBuildBr(B, cond);
+
     } else {
         // ---- standard for loop (existing code) ----
         if (len(init_exprs))
@@ -7587,7 +7658,7 @@ none aether_build_module_initializer(aether a, enode init) {
         }
 
         //aether_eputs(a, f(string, "%o: var", type_id->au));
-        if (!mdl->au->typesize) continue; // skip opaque types (e.g. GLFWwindow)
+        if (!mdl->au->typesize && !is_class_t) continue; // skip opaque types (e.g. GLFWwindow); classes still need ft copy
 
         // class/struct aliases: pass src as context so emplace_type's
         // memcpy(&type->ft, &context->ft, context->table_size) copies the
@@ -7755,6 +7826,8 @@ none aether_build_module_initializer(aether a, enode init) {
                 LLVMPointerType(LLVMInt32TypeInContext(a->module_ctx), 0), "table_size_slot");
             LLVMValueRef ts_val = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), max_ft_end, false);
             LLVMBuildStore(B, ts_val, ts_slot);
+            // propagate into the compiler's in-memory Au_t so child modules see correct table_size at compile time
+            tau->table_size = (u32)max_ft_end;
         }
 
         e_fn_call(a, fn_push, a(type_id, module_type_id), false, false);

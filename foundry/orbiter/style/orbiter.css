@@ -64,15 +64,42 @@ Button:pressed {
         fill_gradient_color:    #28f4
         fill_color_pos:         {cursor}, filter 0.7
         label_color:            #fff
-        
+
 }
 
 World.avatar {
-    model_path:         "models/orbiter32.gltf"
-    shader_type:        "PBR"
-    environment_path:   "images/night.exr"
-    environment_yaw:    0.0
-    environment_pitch:  0.0
+
+    shaders.orbiter: PBR
+        pulse_width:    1.0
+        groups:         ["outside","flower","separator"]
+        model_id:       "orbiter32"
+        env_id:         "night"
+
+    shaders.core:    Core
+        pulse_width:    1.0
+        groups:         ["core"]
+        model_id:       "orbiter32"
+    
+    shaders.plasma: Plasma
+        pulse_width:    1.0
+        groups:         ["top_ring"]
+        model_id:       "orbiter32"
+        transparent:    true
+    
+    /*
+    shaders.core:    Core
+        pulse_width:    1.0
+        groups:         ["top_ring"]
+        model_id:       "orbiter32"
+
+    shaders.aura:    Aura
+        pulse_width:    1.0
+        model_id:       "uv-quad2"
+
+    render_scale:       4.0
+    clear_color:        0 0 0 0
+*/
+
     render_scale:       4.0
     clear_color:        0 0 0 0
     rotate:             [ 0 1 0 30deg, 1 0 0 20deg ], 222ms cubic outward
@@ -118,35 +145,4 @@ Editor {
 Editor:hovered, Editor:pressed {
     layers.base:
         fill_color:     #ff0
-}
-
-/* this should be a comment */
-World.iris {
-    model_path:         "models/orbiter32.gltf"
-    shader_type:        "PBR"
-    environment_path:   "images/night.exr"
-    environment_yaw:    0.0
-    environment_pitch:  0.0
-    blend_rings:        1.0
-    blend_haze:         1.0
-    blend_bands:        1.0
-    render_scale:       2.0
-    clear_color:        0 0 0 0
-    rotate:             [ 0 1 0 30deg, 1 0 0 -30deg ]
-    eye_pos:            0.0 3.5 -2.0
-    target_pos:         0.0 0.0 0.0
-    up_vec:             0.0 -1.0 0.0
-    fov:                30.0
-    blend_bands:        0.2
-    blend_rings:        0.2
-    blend_haze:         1.0
-    area:               l0 b256 w256 h256
-}
-
-World.iris:hovered {
-    rotate:             [0 1 0 30deg, 1 0 0 -40deg], 400ms
-}
-
-World.iris:pressed {
-    rotate:             [0 1 0 30deg, 1 0 0 0deg], 400ms
 }

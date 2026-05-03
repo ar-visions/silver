@@ -28,12 +28,8 @@ enum Language
     VBasic : 3
 
 
-shader Earth
-    mutable model   : mat4f
-    mutable view    : mat4f
-    mutable proj    : mat4f
+ModelViewProject Earth
     mutable cam_pos : vec4f
-    mutable time    : f32
 
     attrib color        : LayoutBinding [ type:typeid[ EarthSurface ], id:EarthSurface.color,      count:1, format: typeid[ rgba8 ] ]
     attrib normal       : LayoutBinding [ type:typeid[ EarthSurface ], id:EarthSurface.normal,     count:1, format: typeid[ rgba8 ] ]
@@ -292,9 +288,7 @@ shader Earth
 
         vec3 earth_rgb = mix(f1, f2, spec2) + vec3(e * 2.2 * spec2) * vec3(0.8, 1.0, 0.8);
         earth_rgb      = atmos_tint(earth_rgb, n_view, view_dir, sun_dir);
-        fragColor      = vec4(earth_rgb, 1.0);
-
-        //fragColor = vec4(0.0, 0.0, 1.0, 1.0);
+        fragColor = vec4(earth_rgb, 1.0);
     }
 
     func vertex[] -> GLSL none {
@@ -604,7 +598,7 @@ shader Purple
     mutable view    : mat4f
     mutable proj    : mat4f
     mutable cam_pos : vec4f
-    mutable time    : f32
+    
     attrib  color : LayoutBinding [ type:typeid[ PurpleSurface ], id:PurpleSurface.color, count:1, format: typeid[ rgba8 ] ]
     attrib  cloud : LayoutBinding [ type:typeid[ PurpleSurface ], id:PurpleSurface.cloud, count:1, format: typeid[ rgba8 ] ]
     
@@ -807,15 +801,11 @@ shader Purple
     }
 
 
-shader PBR
+ModelViewProject PBR
     mutable pos      : vec4f
     mutable dir      : vec4f
-    mutable model    : mat4f
-    mutable view     : mat4f
-    mutable proj     : mat4f
     mutable env_yaw    : f32
     mutable env_pitch  : f32
-    mutable time       : f32
     mutable blend_rings  : f32
     mutable blend_haze   : f32
     mutable blend_bands  : f32
@@ -835,18 +825,28 @@ shader PBR
     attrib a_pos          : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_normal       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_uv           : VertexInput    [ type:typeid[ vec2f ] ]
+
     attrib v_world_normal : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_world_pos    : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_local_pos    : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_view_pos     : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_uv           : VertexOutput [ type:typeid[ vec2f ] ]
     attrib v_color        : VertexOutput [ type:typeid[ vec4f ] ]
+    attrib v_eye_pos      : VertexOutput [ type:typeid[ vec3f ] ]
+
     attrib fragColor      : FragmentOutput [ type:typeid[ vec4f ] ]
 
     func init [ ]
         proj  = mat4f.identity[]
         model = mat4f.identity[]
         view  = mat4f.identity[]
+
+    func set_frame [ model_mat: mat4f, view_mat: mat4f, proj_mat: mat4f, ep: vec4f, t: f32 ]
+        model = model_mat
+        view  = view_mat
+        proj  = proj_mat
+        pos   = ep
+        time  = t
 
     func pow2 [ x: float ] -> GLSL float {
         return x * x;
@@ -982,7 +982,7 @@ shader PBR
     }
 
     func calculatePBR [ texCoords: vec2f, worldPos: vec3f, n: vec3f, viewPos: vec3f ] -> FragGLSL vec4f {
-        vec3  cameraPos  = ubo.pos.xyz;
+        vec3  cameraPos  = v_eye_pos.xyz;
         vec3  V          = normalize(cameraPos - worldPos);
         vec4  baseColor  = texture(color,    texCoords);
         float mat_ior    = texture(ior,      texCoords).r;
@@ -1038,7 +1038,23 @@ shader PBR
 
         vec3 core_contrib = emit * v_color.r;
 
-        vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow;
+        // plasma ring pulse — same tangent frame as Aura ring so angular phase matches
+        vec3  rng_o   = (ubo.model * vec4(0.0, -0.162, 0.0, 1.0)).xyz;
+        vec3  rng_d   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
+        vec3  rng_ref = abs(rng_d.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
+        vec3  rng_tg  = normalize(cross(rng_d, rng_ref));
+        vec3  rng_bn  = cross(rng_tg, rng_d);
+        float theta_p = ubo.time * 4.0;
+        vec3  pulse_world = rng_o + 0.522 * (cos(theta_p) * rng_tg + sin(theta_p) * rng_bn);
+        vec3  up_w         = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
+        float pulse_dist   = length(worldPos - pulse_world);
+        float pulse_att    = max(0.0, 1.0 - pulse_dist / 0.8);
+        pulse_att          = pulse_att * pulse_att;
+        vec3  L_pulse      = normalize(pulse_world - worldPos);
+        float source_dot   = abs(dot(N, L_pulse));
+        vec3  plasma_light = vec3(0.1, 0.2, 1.0) * source_dot * pulse_att * ubo.pulse_width * 0.088;
+
+        vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow + plasma_light;
         result           = pow(ACESFilm(result), vec3(1.0 / 2.2));
         return vec4(result, baseColor.a);
     }
@@ -1053,13 +1069,6 @@ shader PBR
         vec3  col1    = vec3(0.5, 0.1, 1.0);
         float mask1   = vis1 * v_color.b * ubo.blend_rings * 1.2;
 
-        // G channel: fast perlin stream racing around the ring
-        float phi_g  = atan(v_local_pos.z, v_local_pos.x);
-        float sp     = phi_g * round(3.14159 / ubo.pulse_width) + ubo.time * 8.0;
-        float stream = 1.0 - clamp(sin(sp * 1.0) * 0.5 + 0.5, 0.0, 1.0);
-        vec3  col2   = mix(vec3(0.05, 0.02, 0.28), vec3(0.50, 0.80, 1.00), stream);
-        float mask2  = stream * v_color.g * ubo.blend_haze;
-
         // R channel: Y-axis waves (vertical bands), yellow -> orange -> transparent
         float wave3  = 0.5 + 0.5 * sin(v_world_pos.y * 8.0 - ubo.time * 10.0);
         float vis3   = smoothstep(0.10, 0.22, wave3);
@@ -1069,13 +1078,9 @@ shader PBR
 
         vec4  base  = pbr;
               base  = mix(base, vec4(col1, 1.0), clamp(mask1, 0.0, 1.0));
-              base  = mix(base, vec4(col2, 1.0), clamp(mask2, 0.0, 1.0));
               base  = mix(base, vec4(col3, 1.0), clamp(mask3, 0.0, 1.0));
-            
-        fragColor   = base
-            + vec4(col1 * max(0.0, mask1 - 0.5) * 4.0, 0.0)
-            + vec4(col2 * max(0.0, mask2 - 0.5) * 2.0, 0.0)
-            + vec4(col3 * max(0.0, mask3 - 0.5) * 4.0, 0.0);
+
+        fragColor = base;
     }
 
     func vertex [] -> GLSL none {
@@ -1083,29 +1088,29 @@ shader PBR
         v_world_normal = mat3(transpose(inverse(ubo.model))) * a_normal;
         v_world_pos    = world_pos.xyz;
         v_local_pos    = a_pos;
-        v_view_pos     = ubo.pos.xyz;
+        v_eye_pos      = inverse(ubo.view)[3].xyz;
+        v_view_pos     = v_eye_pos;
         v_uv           = a_uv;
         v_color        = a_color_0;
         gl_Position    = ubo.proj * ubo.view * world_pos;
     }
 
-shader Aura
-	mutable model   : mat4f
-	mutable view    : mat4f
-	mutable proj    : mat4f
-	mutable cam_pos : vec4f
-	mutable time    : f32
+ModelViewProject Aura
+	mutable pulse_width : f32
 
 	attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
 	attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
 	attrib v_ray     : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_eye_pos : VertexOutput   [ type:typeid[ vec3f ] ]
+
 	attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
 
 	func init []
-		model = mat4f.identity[]
-		view  = mat4f.identity[]
-		proj  = mat4f.identity[]
+		model         = mat4f.identity[]
+		view          = mat4f.identity[]
+		proj          = mat4f.identity[]
+		pulse_width   = 1.0
 
 	func vertex[] -> GLSL none {
 		vec2 ndc       = a_pos.xy;
@@ -1113,6 +1118,7 @@ shader Aura
 		view_ray.xyz  /= view_ray.w;
 		v_ray          = transpose(mat3(ubo.view)) * view_ray.xyz;
 		v_uv           = a_uv;
+        v_eye_pos      = inverse(ubo.view)[3].xyz;
 		gl_Position    = vec4(ndc, 0.0, 1.0);
 	}
 
@@ -1141,7 +1147,7 @@ shader Aura
 	}
 
 	func fragment[] -> GLSL none {
-		vec3  ro    = ubo.cam_pos.xyz;
+		vec3  ro    = v_eye_pos;
 		vec3  rd    = normalize(v_ray);
 		vec3  col   = vec3(0.0);
 		float alpha = 0.0;
@@ -1216,7 +1222,7 @@ shader Aura
 						vec3  c_halo  = vec3(0.45, 0.08, 1.4);
 						vec3  sc = mix(c_core,  c_shaft, smoothstep(0.0,  0.20, rn));
 						sc       = mix(sc,      c_halo,  smoothstep(0.30, 0.85, rn));
-						float emit = dens * bm_dt * 11.0 * cap;
+						float emit = dens * bm_dt * 4.0 * cap;
 						col   += sc * emit * (1.0 - alpha);
 						alpha += emit * (1.0 - alpha);
 					}
@@ -1275,7 +1281,7 @@ shader Aura
 						float rng_pulse  = pow(max(0.0, cos(rng_ang - ubo.time * 4.0)), 8.0);
 						vec3  rng_col    = mix(vec3(0.0, 0.35, 1.0), vec3(1.0, 0.5, 1.0), rng_pulse);
 						float rng_fad    = 1.0 - rng_at / rng_bh;
-						float d          = 10.0 * (0.3 + rng_fg) * rng_center * (0.2 + rng_pulse) * rng_fad * rng_dt;
+						float d          = 10.0 * ubo.pulse_width * (0.3 + rng_fg) * rng_center * (0.2 + rng_pulse) * rng_fad * rng_dt;
 						col   += rng_col * d * (1.0 - alpha);
 						alpha += d * (1.0 - alpha);
 					}
@@ -1446,12 +1452,45 @@ shader Aura
 	}
 ##
 
-shader Plasma
-	mutable model       : mat4f
-	mutable view        : mat4f
-	mutable proj        : mat4f
-	mutable eye_pos     : vec4f
-	mutable time        : f32
+ModelViewProject Core
+    mutable pulse_width : f32
+
+    attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_color      : VertexInput  [ type:typeid[ vec4f ] ]
+    attrib a_pos        : VertexInput  [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput  [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput  [ type:typeid[ vec2f ] ]
+    attrib v_world_pos  : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_normal     : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_uv         : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_eye_pos    : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib fragColor    : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init []
+        pulse_width = 1.0
+
+    func vertex [] -> GLSL none {
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos.xyz;
+        v_normal    = normalize(mat3(ubo.model) * a_normal);
+        v_uv        = a_uv;
+        v_eye_pos   = inverse(ubo.view)[3].xyz;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment [] -> GLSL none {
+        vec4  tex     = texture(color, v_uv);
+        vec3  V       = normalize(v_eye_pos - v_world_pos);
+        vec3  N       = normalize(v_normal);
+        float fresnel = pow(1.0 - max(0.0, dot(N, V)), 3.0);
+        float pulse   = 0.7 + 0.3 * sin(ubo.time * 2.1);
+        vec3  col     = tex.rgb * (1.0 + fresnel * ubo.pulse_width * pulse);
+        fragColor     = vec4(col, tex.a);
+    }
+
+
+ModelViewProject Plasma
 	mutable pulse_width : f32
 
 	attrib a_color      : VertexInput    [ type:typeid[ vec4f ] ]
@@ -1461,38 +1500,12 @@ shader Plasma
 	attrib v_local_pos  : VertexOutput   [ type:typeid[ vec3f ] ]
 	attrib v_normal     : VertexOutput   [ type:typeid[ vec3f ] ]
 	attrib v_color      : VertexOutput   [ type:typeid[ vec4f ] ]
+	attrib v_eye_pos    : VertexOutput   [ type:typeid[ vec3f ] ]
 	attrib fragColor    : FragmentOutput [ type:typeid[ vec4f ] ]
 
 	func init []
-		model       = mat4f.identity[]
-		view        = mat4f.identity[]
-		proj        = mat4f.identity[]
-		time        = 0.0
-		eye_pos     = vec4f [ 0.0, 0.0, 0.0, 1.0 ]
-		pulse_width = 2.0
-
-	func nhash [ p: vec3f ] -> GLSL float {
-		p = fract(p * 0.3183099 + vec3(0.1));
-		p *= 17.0;
-		return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
-	}
-
-	func vnoise [ p: vec3f ] -> GLSL float {
-		vec3 i = floor(p);
-		vec3 f = fract(p);
-		f = f * f * (3.0 - 2.0 * f);
-		return mix(mix(mix(nhash(i),             nhash(i+vec3(1,0,0)), f.x),
-		               mix(nhash(i+vec3(0,1,0)), nhash(i+vec3(1,1,0)), f.x), f.y),
-		           mix(mix(nhash(i+vec3(0,0,1)), nhash(i+vec3(1,0,1)), f.x),
-		               mix(nhash(i+vec3(0,1,1)), nhash(i+vec3(1,1,1)), f.x), f.y), f.z);
-	}
-
-	func pfog [ p: vec3f ] -> GLSL float {
-		float v  = 0.500 * vnoise(p);
-		      v += 0.250 * vnoise(p * 2.01);
-		      v += 0.125 * vnoise(p * 4.03);
-		return v / 0.875;
-	}
+		transparent = true
+		pulse_width  = 2.0
 
 	func vertex [] -> GLSL none {
         v_local_pos    = a_pos;
@@ -1501,91 +1514,43 @@ shader Plasma
 		v_world_pos    = wpos.xyz;
 		v_normal       = normalize(mat3(ubo.model) * a_normal);
 		v_color        = vec4(0.0);
+		v_eye_pos      = inverse(ubo.view)[3].xyz;
 
 		gl_Position    = ubo.proj * ubo.view * wpos;
 	}
 
 	func fragment [] -> GLSL none {
-		float R_inner  = 0.471847;
-		float R_outer  = 0.571937;
-		float y_top    = -0.134619;
-		float y_bottom = -0.162182;
+		float theta = atan(v_local_pos.z, v_local_pos.x);
+		float wave  = sin(theta * 8.0 + ubo.time * 18.0)
+		            * cos(theta * 3.0 + ubo.time *  7.0);
+		vec3 N = normalize(v_normal + v_normal * wave * ubo.pulse_width * 0.2);
 
-		mat4  inv_m = inverse(ubo.model);
-		vec3  ro    = (inv_m * ubo.eye_pos).xyz;
-		vec3  rd    = normalize(v_local_pos - ro);
+		vec3  V    = normalize(v_eye_pos - v_world_pos);
+		vec3  L    = normalize(vec3(0.4, 0.8, -0.4));
+		vec3  H    = normalize(L + V);
 
-		// Find entry/exit through the OUTER cylinder only.
-		// Samples inside the hollow (r < R_inner) get zero contribution.
-		float t_min = 1e30;
-		float t_max = -1e30;
-		bool  found = false;
+		float spec    = pow(max(0.0, dot(N, H)), 80.0);
+		float fresnel = pow(1.0 - max(0.0, dot(N, V)), 3.0);
 
-		float a2 = dot(rd.xz, rd.xz);
-		float b2 = 2.0 * dot(ro.xz, rd.xz);
-		float r2 = dot(ro.xz, ro.xz);
+		vec3  col   = vec3(0.88, 0.94, 1.0) * (spec + fresnel * 0.25);
+		float alpha = clamp(fresnel * 0.55 + spec * 0.9, 0.0, 1.0);
 
-		float disc = b2*b2 - 4.0*a2*(r2 - R_outer*R_outer);
-		if (a2 > 1e-6 && disc >= 0.0) {
-			float sq = sqrt(disc);
-			float t0 = (-b2 - sq) / (2.0*a2);
-			float t1 = (-b2 + sq) / (2.0*a2);
-			if (t0 > 1e-4) { float y = ro.y + rd.y*t0; if (y >= y_bottom && y <= y_top) { t_min=min(t_min,t0); t_max=max(t_max,t0); found=true; } }
-			if (t1 > 1e-4) { float y = ro.y + rd.y*t1; if (y >= y_bottom && y <= y_top) { t_min=min(t_min,t1); t_max=max(t_max,t1); found=true; } }
-		}
-
-		if (abs(rd.y) > 1e-6) {
-			float t = (y_top - ro.y) / rd.y;
-			if (t > 1e-4) { vec3 p = ro + rd*t; if (length(p.xz) <= R_outer) { t_min=min(t_min,t); t_max=max(t_max,t); found=true; } }
-			t = (y_bottom - ro.y) / rd.y;
-			if (t > 1e-4) { vec3 p = ro + rd*t; if (length(p.xz) <= R_outer) { t_min=min(t_min,t); t_max=max(t_max,t); found=true; } }
-		}
-
-		if (!found) { discard; return; }
-
-		float step_dt = (t_max - t_min) / 64.0;
-		float fall    = (R_outer - R_inner) * 0.5;
-		float density = 22.0;
-		vec3  col     = vec3(0.0);
-		float alpha   = 0.0;
-
-		for (int i = 0; i < 64; i++) {
-			vec3  pos = ro + rd * (t_min + (float(i) + 0.5) * step_dt);
-			float r   = length(pos.xz);
-			if (r < R_inner || r > R_outer + 0.001) continue;
-
-			float fog  = pfog(pos * 8.0 + vec3(0.0, ubo.time * 0.5, 0.0));
-			float d    = density * (0.3 + 1.5 * fog);
-
-			float p_in  = max(0.0, 1.0 - (r - R_inner) / fall);
-			p_in  = p_in * p_in;
-			float p_out = max(0.0, 1.0 - (R_outer - r) / fall);
-			p_out = p_out * p_out;
-
-			float fa_in  = (1.0 - alpha) * p_in  * d * step_dt;
-			float fa_out = (1.0 - alpha) * p_out * d * step_dt;
-
-			col   += vec3(1.0, 0.04, 0.0) * fa_in;
-			col   += vec3(0.04, 0.2,  1.0) * fa_out;
-			alpha += fa_in + fa_out;
-			if (alpha > 0.95) break;
-		}
-
-		if (alpha < 0.01) { discard; return; }
-		fragColor = vec4(col, clamp(alpha, 0.0, 1.0));
+		fragColor = vec4(col, alpha);
 	}
 
 
 element World
-    context vk               : vk_context
     intern target            : Render
-    intern model             : Model
+    intern models            : map Model   [string]
+    public shaders           : map shader  [string]
+    public materials         : map Material[string]
+
     intern s                 : shader
     intern aura              : Aura
     intern aura_model        : Model
     intern plasma            : Plasma
     public model_path        : string
-    public shader_type       : string
+    #public shader_type       : string
     public environment_path  : string
     public render_scale      : f32
     public clear_color       : vec4f
@@ -1597,20 +1562,45 @@ element World
     public target_pos        : vec3f
     public up_vec            : vec3f
     public fov               : f32
-    public environment_yaw   : f32
-    public environment_pitch : f32
     public blend_rings       : f32
     public blend_haze        : f32
     public blend_bands       : f32
 
-    intern placeholder_degs  : f32
-
     func init [ ]
-        if [ model_path ]
-            model = Model [ vk: vk ]
-            gltf  : path [ model_path ]
-            model.id = gltf.load[ typeid[ GltfModel ], null ]
+        models = map Model[string][]
+        expect shaders && shaders.count, "no shaders"
 
+    func create_target[]
+        w_ref : Window [ ux ]
+        if [ target ]
+            return
+        
+        all_models : array Model [ alloc: 4 ]
+        env : map Texture[string][]
+        mcache : map GltfModel[string][]
+
+        for [ sh:shader, k:string ] in shaders
+            model    : Model [ vk: vk, w: w_ref, s:sh ]
+            model_id : (sh.model_id) ? sh.model_id : 'uv-quad2'
+            model.id = mcache[model_id]
+            if [!model.id]
+                gltf     : path  [ 'models/{model_id}.gltf' ]
+                expect gltf.exists[], 'model does not exist: {model_id}'
+                model.id = gltf.load[ typeid[ GltfModel ], null ]
+                mcache[model_id] = model.id
+
+            if [ sh.env_id ]
+                env_tex : env[sh.env_id]
+                if [!env_tex]
+                    env_img  : Image [ uri: path['images/{sh.env_id}.exr'], surface:Surface.environment ]
+                    env_axis : vec3f [ 0.0, 1.0, 0.0 ]
+                    env_tex  = environment[ vk, env_img, env_axis, 0.0 ]
+                    env[sh.env_id] = env_tex
+                model.samplers[ 'environment' ] = env_tex
+
+            all_models.push[ model ]
+        
+        ##
         if [ shader_type && shader_type.count ]
             f : Au_t [ Au.find_type [ shader_type.chars, null ] ]
             if [ f ]
@@ -1620,31 +1610,22 @@ element World
                 if [ model ]
                     model.s = s
 
-        if [ model && environment_path && environment_path.count ]
-            env_img  : Image [ uri: path[ environment_path ], surface: Surface.environment ]
-            env_axis : vec3f [ 0.0, 1.0, 0.0 ]
-            env_tex  : environment[ vk, env_img, env_axis, 0.0 ]
-            model.samplers[ 'environment' ] = env_tex
-
-
-    func create_target[]
-        w_ref : Window [ ux ]
-        if [ target ]
-            return
-
         if [ !aura ]
             aura = Aura [ vk: vk ]
+            another : shaders['aura']
+            another = another
 
         aura_model = Model [ vk: vk, w: w_ref ]
         aura_model.s = aura
-
+        
         if [ model ]
             plasma = Plasma [ vk: vk ]
-            model.transparent_s = plasma
+            model.transparent_s = plasma -- we now store .transparent on shader, so the Model generic may use this when referencing transparent_s
 
         all_models : array Model [ alloc: 4 ]
         if [ model ] all_models.push[ model ]
         all_models.push[ aura_model ]
+        ##
 
         width  : i32 [ bounds.w * render_scale ]
         height : i32 [ bounds.h * render_scale ]
@@ -1657,33 +1638,23 @@ element World
             reduce:      (render_scale == 4.0) ? true : false,
             clear_color: clear_color,
             models:      all_models ]
+        
         w_ref.element_targets[ id ] = target
-
         target.width  = width
         target.height = height
         target.wscale = 0.0
 
     func draw [ w: Window ]
-        #expect update, 'update subs not set'
-
         create_target[]
         if [ !target ] return
-        
-        # build model transform from rotate/translate/scale
+
+        # model transform from World-level rotate property
         model_mat : mat4f.identity[]
-        s0 : Scaling    [ (scale     && scale.count     > 0) ? scale.peek[0]     : null ]
-        t0 : Translation[ (translate && translate.count > 0) ? translate.peek[0] : null ]
-        #if [ s0 ]
-        #    model_mat = model_mat.scale[ s0.value ]
-        placeholder_degs += 0.22
         for [r:Rotation] in rotate
             v     : vec4f [ r.axis.x, r.axis.y, r.axis.z, radians[ r.degs ] ]
             q     : quatf [ v ]
             r_mat : mat4f [ mat4f.identity[].rotate[ q ] ]
             model_mat = r_mat.mul[ model_mat ]
-        #if [ t0 ]
-        #    model_mat = model_mat.translate[ t0.value ]
-
 
         e_pos : vec3f [ (eye_pos.x != 0.0 || eye_pos.y != 0.0 || eye_pos.z != 0.0) ? eye_pos : vec3f [ 0.0f, 3.5f, -2.0f ] ]
         t_pos : vec3f [ (target_pos.x != 0.0 || target_pos.y != 0.0 || target_pos.z != 0.0) ? target_pos : vec3f [ 0.0f, 0.0f, 0.0f ] ]
@@ -1693,39 +1664,16 @@ element World
         _view : mat4f [ mat4f.look_at[ e_pos, t_pos, u_vec ] ]
         _pos  : vec4f [ e_pos.x, e_pos.y, e_pos.z, 1.0f ]
 
-        pbr : PBR [ s ]
-        if [ pbr ]
-            pbr.model   = model_mat
-            pbr.proj    = _proj
-            pbr.view    = _view
-            pbr.pos     = _pos
-            pbr.env_yaw    = radians[ environment_yaw ]
-            pbr.env_pitch  = radians[ environment_pitch ]
-            pbr.time       = placeholder_degs * 0.010
-            pbr.blend_rings  = blend_rings
-            pbr.blend_haze   = blend_haze
-            pbr.blend_bands  = blend_bands
-            pbr.pulse_width  = 1.0
-
-        if [ plasma ]
-            plasma.model       = model_mat
-            plasma.view        = _view
-            plasma.proj        = _proj
-            plasma.time        = placeholder_degs * 0.010
-            plasma.eye_pos     = _pos
-            plasma.pulse_width = 1.0
-
-        if [ aura ]
-            aura.model   = model_mat
-            aura.proj    = _proj
-            aura.view    = _view
-            aura.cam_pos = _pos
-            aura.time    += 0.01
-
+        for [ sh:shader, k:string ] in shaders
+            mvp : (sh inherits ModelViewProject)
+            if [ mvp ]
+                mvp.model        = model_mat
+                mvp.proj         = _proj
+                mvp.view         = _view
+                mvp.time         = w.time
 
         target.update[]
 
-        #expect update, '{id}_update sub not declared by the app'
         ev : Event[ target: a ]
         update.invoke[ ev ]
 
@@ -1831,7 +1779,6 @@ trinity orbiter
     public time          : f32
     public env           : Image
     public models        : array Model
-
     mutable angle        : f32
 
     public test44 : Button
@@ -1839,6 +1786,10 @@ trinity orbiter
     func init []
         width:  1488
         height: 888
+
+        aura : Aura[]
+        ty : typeid[aura]
+        ty = ty
     
     public func on_render [ w: Window ] -> Elements
         return Elements [
@@ -1891,7 +1842,7 @@ trinity orbiter
         ##
 
         window.background = Render [ vk: vk, w: window, wscale: 1.0,
-            clear_color: vec4f [ 0.088, 0.088, 0.188, 1.0 ],
+            clear_color: vec4f [ 0.288, 0.088, 0.188, 1.0 ],
             models:      models ]
 
     
