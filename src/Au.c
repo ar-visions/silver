@@ -2727,7 +2727,7 @@ none auto_free(bool reset_only) {
     af_count = 2;
 }
 
-Au alloc_dbg(Au_t type, num count, cstr source, int line, int sequence) {
+Au alloc_dbg(Au_t type, num count, symbol source, i32 line, i32 sequence) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
     Au a = alloc_instance(type, _sz + (type->typesize << 1) * count, true);
@@ -2738,6 +2738,10 @@ Au alloc_dbg(Au_t type, num count, cstr source, int line, int sequence) {
     a->source     = source;
     a->line       = line;
     a->sequence   = sequence;
+    if (!type->is_au_native && !source) {
+        printf("warning: no source binding for allocation %s:%i\n", a->source, a->line);
+        exit(0);
+    }
     return a->data; /// return fields (Au)
 }
 
@@ -2771,7 +2775,7 @@ void alloc_validate() {
     }
 }
 
-Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b) {
+Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b, symbol source, i32 line, i32 seq) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
 
@@ -2784,6 +2788,15 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b) {
     a->count      = alloc_count;
     a->alloc      = alloc_count;
     a->data_shape = hold(shape_data);
+    a->source     = (cstr)source;
+    a->line       = line;
+    a->sequence   = seq;
+
+    if (!type->is_au_native && !source) {
+        printf("warning: no source binding for allocation of type %s\n", type->ident);
+        exit(0);
+    }
+
     if (meta_a) a->meta_a = meta_a;
     if (meta_b) a->meta_b = meta_b;
     if (tracing)
@@ -2793,13 +2806,8 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b) {
 }
 
 Au alloc_new(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
-             symbol source, i32 line, i64 seq) {
-    Au a  = alloc(type, count, shape_data, meta_a, meta_b);
-    Au hd = header(a);
-    hd->source   = (cstr)source;
-    hd->line     = line;
-    hd->sequence = (i32)seq;
-    return a;
+             symbol source, i32 line, i32 seq) {
+    return alloc(type, count, shape_data, meta_a, meta_b, source, line, seq);
 }
 
 // N-slot reference holder — the held type's dealloc chain does NOT apply to
@@ -2807,17 +2815,14 @@ Au alloc_new(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
 #define AU_IF_HOLDER 0x02
 
 Au alloc_vector(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b,
-                symbol source, i32 line, i64 seq) {
-    Au a  = alloc(type, count, shape_data, meta_a, meta_b);
+                symbol source, i32 line, i32 seq) {
+    Au a  = alloc(type, count, shape_data, meta_a, meta_b, source, line, seq);
     Au hd = header(a);
     hd->iflags  |= AU_IF_HOLDER;
-    hd->source   = (cstr)source;
-    hd->line     = line;
-    hd->sequence = (i32)seq;
     return a;
 }
 
-Au alloc2(Au_t type, Au_t scalar, shape s) {
+Au alloc2(Au_t type, Au_t scalar, shape s, symbol source, i32 line, i32 seq) {
     i64 _sz      = sizeof(struct _Au);
     i64 count     = shape_total(s);
     Au a      = alloc_instance(type,
@@ -2828,11 +2833,14 @@ Au alloc2(Au_t type, Au_t scalar, shape s) {
     a->data_shape = hold(s);
     a->count      = count;
     a->alloc      = count;
+    a->source     = source;
+    a->line       = line;
+    a->sequence   = seq;
     return a->data;
 }
 
-Au new_object(Au_t type, Au_t meta_a, Au meta_b, bool call_init) {
-    Au a = alloc_new(type, 1, null, meta_a, meta_b, __FILE__, __LINE__, 0);
+Au new_object(Au_t type, Au_t meta_a, Au meta_b, bool call_init, symbol source, i32 line, i32 seq) {
+    Au a = alloc_new(type, 1, null, meta_a, meta_b, source, line, seq);
     if (call_init)
         Au_initialize(a);
     return a;
@@ -2868,12 +2876,12 @@ Au method_call(Au_t m, array args) {
     
     // populate provided args, create default objects for any missing
     for (num i = 0; i < a->atypes->count; i++) {
-        Au_t arg_type = (Au_t)a->atypes->origin[i];
+        Au_t arg_type = au_arg_type(a->atypes->origin[i]);
         if (args && i < args->count) {
             arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ?
                 (none*)args->origin[i] : (none*)&args->origin[i];
         } else {
-            Au def = alloc(arg_type, 1, null, null, null);
+            Au def = alloc(arg_type, 1, null, null, null, __FILE__, __LINE__, 0);
             arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ?
                 (none*)def : (none*)&def;
         }
@@ -2883,7 +2891,7 @@ Au method_call(Au_t m, array args) {
     if (a->rtype->traits & AU_TRAIT_PRIMITIVE)
         return primitive(a->rtype, result);
     else if (a->rtype->traits & AU_TRAIT_ENUM) {
-        Au res = alloc(a->rtype, 1, null, null, null);
+        Au res = alloc(a->rtype, 1, null, null, null, __FILE__, __LINE__, 0);
         verify(a->rtype->src == typeid(i32), "i32 enums supported");
         *((i32*)res) = *(i32*)result;
         return res;
@@ -3220,7 +3228,7 @@ map arguments(int argc, cstrs argv, map default_values, Au default_key) {
 }
 
 Au primitive(Au_t type, none* data) {
-    Au copy = alloc(type, 1, null, null, null);
+    Au copy = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
     memcpy(copy, data, type->typesize);
     return copy;
 }
@@ -3537,7 +3545,7 @@ Au construct_with(Au_t type, Au data, ctx context) { sequencer
     /// construct with map of fields
     if (!(type->traits & AU_TRAIT_PRIMITIVE) && data_type == typeid(map)) {
         map m = (map)data;
-        result = alloc(type, 1, null, null, null);
+        result = alloc(type, 1, null, null, null, __FILE__, __LINE__, seq);
         pairs(m, i) {
             verify(isa(i->key) == typeid(string),
                 "expected string key when constructing Au from map");
@@ -3557,20 +3565,20 @@ Au construct_with(Au_t type, Au data, ctx context) { sequencer
                 Au_t arg = au_arg_type(micro_get(&mem->args, 1));
                 /// no meaningful way to do this generically, we prefer to call these first
                 if (arg == typeid(path) && data_type == typeid(string)) {
-                    result = alloc(type, 1, null, null, null);
+                    result = alloc(type, 1, null, null, null, __FILE__, __LINE__, seq);
                     ((none(*)(Au, path))addr)(result, path(((string)data)));
                     verify(is_struct(type) || Au_validator(result), "invalid Au");
                     break;
                 }
                 if ((arg == typeid(cstr) || arg == typeid(symbol)) && 
                         data_type == typeid(string)) {
-                    result = alloc(type, 1, null, null, null);
+                    result = alloc(type, 1, null, null, null, __FILE__, __LINE__, seq);
                     ((none(*)(Au, cstr))addr)(result, ((string)data)->chars);
                     verify(is_struct(type) || Au_validator(result), "invalid Au");
                     break;
                 }
                 if (arg == data_type) {
-                    result = alloc(type, 1, null, null, null);
+                    result = alloc(type, 1, null, null, null, __FILE__, __LINE__, seq);
                     ((none(*)(Au, Au))addr)(result, data);
                     verify(is_struct(type) || Au_validator(result), "invalid Au");
                     break;
@@ -3604,7 +3612,7 @@ Au construct_with(Au_t type, Au data, ctx context) { sequencer
             v = evalue (type, (cstr)((string)data)->chars);
         else
             v = evalue (type, null);
-        result = alloc(type, 1, null, null, null);
+        result = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
         *((i32*)result) = (i32)v;
     }
 
@@ -3613,7 +3621,7 @@ Au construct_with(Au_t type, Au data, ctx context) { sequencer
     if ((type->traits & AU_TRAIT_PRIMITIVE) && (data_type == typeid(string) ||
                                                data_type == typeid(cstr)   ||
                                                data_type == typeid(symbol))) {
-        result = alloc(type, 1, null, null, null);
+        result = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
         if (data_type == typeid(string))
             Au_with_cereal(result, (cereal) { .value = (cstr)((string)data)->chars } );
         else
@@ -3631,13 +3639,13 @@ Au construct_with(Au_t type, Au data, ctx context) { sequencer
             u64 combine = mem->type->traits & data_type->traits;
             if (combine & AU_TRAIT_INTEGRAL) {
                 i64 v = read_integer(data);
-                result = alloc(type, 1, null, null, null);
+                result = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
                      if (mem->type == typeid(i8))   ((none(*)(Au, i8))  addr)(result, (i8)  v);
                 else if (mem->type == typeid(i16))  ((none(*)(Au, i16)) addr)(result, (i16) v);
                 else if (mem->type == typeid(i32))  ((none(*)(Au, i32)) addr)(result, (i32) v);
                 else if (mem->type == typeid(i64))  ((none(*)(Au, i64)) addr)(result, (i64) v);
             } else if (combine & AU_TRAIT_REALISTIC) {
-                result = alloc(type, 1, null, null, null);
+                result = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
                 if (mem->type == typeid(f64))
                     ((none(*)(Au, double))addr)(result, (double)*(float*)data);
                 else
@@ -3645,21 +3653,21 @@ Au construct_with(Au_t type, Au data, ctx context) { sequencer
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) && 
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
-                result = alloc(type, 1, null, null, null);
+                result = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
                 ((none(*)(Au, cstr))addr)(result, (cstr)data);
                 break;
             } else if (mem->type == typeid(string) && data_type == typeid(string)) {
-                result = alloc(type, 1, null, null, null);
+                result = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
                 ((none(*)(Au, string))addr)(result, (string)data);
                 break;
             } else if ((mem->type == typeid(string)) &&
                        (data_type == typeid(symbol) || data_type == typeid(cstr))) {
-                result = alloc(type, 1, null, null, null);
+                result = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
                 ((none(*)(Au, string))addr)(result, string((symbol)data));
                 break;
             } else if ((mem->type == typeid(symbol) || mem->type == typeid(cstr)) &&
                        (data_type == typeid(string))) {
-                result = alloc(type, 1, null, null, null);
+                result = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
                 ((none(*)(Au, cstr))addr)(result, (cstr)((string)data)->chars);
                 break;
             }
@@ -3877,7 +3885,7 @@ Au Au_member_object(Au a, Au_t m) {
     Au result;
     ARef   member_ptr = (ARef)((cstr)a + m->offset);
     if (is_inlay || is_primitive) {
-        result = alloc(m->type, 1, null, null, null);
+        result = alloc(m->type, 1, null, null, null, __FILE__, __LINE__, 0);
         memcpy(result, member_ptr, m->type->typesize);
         // issue with having a separate state with object header; it doesnt make enough sense, too
         //result = (Au)member_ptr;
@@ -4230,7 +4238,7 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
         return construct_with(type, (Au)res, null);
 
     return type ? (Au)
-        ((Au_f*)type)->ft.with_cereal(alloc(type, 1, null, null, null), (cereal) { .value = (cstr)res->chars }) :
+        ((Au_f*)type)->ft.with_cereal(alloc(type, 1, null, null, null, __FILE__, __LINE__, 0), (cereal) { .value = (cstr)res->chars }) :
         (Au)res;
 }
 
@@ -5186,7 +5194,7 @@ Au Au_copy(Au a) {
     Au f = header(a);
     assert(f->count > 0, "invalid count");
     Au_t type = isa(a);
-    Au b = alloc(type, f->count, null, null, null);
+    Au b = alloc(type, f->count, null, null, null, __FILE__, __LINE__, 0);
     memcpy(b, a, f->type->typesize * f->count);
     Au_hold_members(b);
     return b;
@@ -5205,7 +5213,6 @@ none Au_free(Au a) {
     Au       aa = header(a);
     char ch = aa->type->ident[0];
 
-    return;
     if (ch == 'V') {
         return;
     }
@@ -5221,6 +5228,10 @@ none Au_free(Au a) {
     Au_f*  type = (Au_f*)aa->type;
     none* prev = null;
     Au_f*   cur = (is_c || is_holder || aa->type->is_struct) ? null : type;
+#ifndef NDEBUG
+    //if (aa->source)
+    //    printf("Au_free type=%s source=%s:%i seq=%i\n", aa->type->ident, aa->source, aa->line, aa->sequence);
+#endif
     while (cur) {
         if (prev != cur->ft.dealloc) {
             cur->ft.dealloc(a);
@@ -5595,7 +5606,7 @@ num abso(num i) {
 vector vector_vslice(vector a, num from, num to) {
     Au   f      = head(a);
     num  count  = (1 + abso(from - to));
-    Au   res    = alloc(f->type, 1, null, null, null);
+    Au   res    = alloc(f->type, 1, null, null, null, __FILE__, __LINE__, 0);
     vector vres = (vector)res;
     Au_initialize(res);
     vector_grow(vres, count);
@@ -6705,7 +6716,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             if (type->traits & AU_TRAIT_ENUM) {
                 // its possible we could reference a context variable within this enum [ value-area ]
                 // in which case, we could effectively look it up
-                Au evalue = alloc(type, 1, null, null, null);
+                Au evalue = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
                 string enum_symbol = parse_symbol(scan, &scan, context);
                 verify(enum_symbol, "enum symbol expected");
                 verify(*scan == ']', "expected ']' after enum symbol");
@@ -6717,7 +6728,7 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
 
                 res = evalue;
             } else if (type->traits & AU_TRAIT_STRUCT) {
-                Au svalue = alloc(type, 1, null, null, null);
+                Au svalue = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
                 for (num i = 0; i < type->members.count; i++) {
                     Au_t m = (Au_t)type->members.origin[i];
                     if (!(m->member_type == AU_MEMBER_VAR)) continue;
@@ -6927,7 +6938,7 @@ static array parse_array_objects(cstr* s, Au_t element_type, ctx context) {
     return res;
 }
 
-static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx context) {
+static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx context) { sequencer
     cstr scan = ws(s);
     verify(*scan == '[', "expected array '['");
     scan = ws(&scan[1]);
@@ -6943,7 +6954,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
     } else if (schema->meta.a == typeid(i64)) { // should support all vector types of i64 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(i64), context);
         int vcount = len(arb);
-        res = alloc2(schema, typeid(i64), new_shape(vcount, 0));
+        res = alloc2(schema, typeid(i64), new_shape(vcount, 0), __FILE__, __LINE__, seq);
         int n = 0;
         each(arb, Au, a) {
             verify(isa(a) == typeid(i64), "expected i64");
@@ -6953,7 +6964,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
         printf("parse_array f32-vec schema=%s near: %.60s\n", schema->ident, scan);
         array arb = parse_array_objects(&scan, typeid(f32), context);
         int vcount = len(arb);
-        res = alloc(typeid(f32), vcount, null, null, null);
+        res = alloc(typeid(f32), vcount, null, null, null, __FILE__, __LINE__, seq);
         int n = 0;
         each(arb, Au, a) {
             Au_t a_type = isa(a);
@@ -6978,7 +6989,7 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
         // this should contain multiple arrays of scalar values; we want to convert each array to our 'scalar_type'
         // for instance, we may parse [[1,2,3,4,5...16],...] mat4x4's; we merely need to validate vmember_count and vmember_type and convert
         // if we have a vmember_count of 0 then we are dealing with a single primitive type
-        vector vres = (vector)alloc(schema, 1, null, null, null);
+        vector vres = (vector)alloc(schema, 1, null, null, null, __FILE__, __LINE__, 0);
         vres->data_shape = new_shape(count, 0);
         Au_initialize((Au)vres);
         i8* data = (i8*)vres->origin;
@@ -7680,7 +7691,7 @@ Au fdata_file_read(fdata f, Au_t type) {
         bytes[nbytes] = 0;
         return (Au)string(bytes); 
     }
-    Au o = alloc(type, 1, null, null, null);
+    Au o = alloc(type, 1, null, null, null, __FILE__, __LINE__, 0);
     sz size = isa(o)->typesize;
     f->location += size;
     verify(type->traits & AU_TRAIT_PRIMITIVE, "not a primitive type");
