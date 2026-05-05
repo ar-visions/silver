@@ -801,7 +801,13 @@ shader Purple
     }
 
 
-ModelViewProject PBR
+ModelViewProject Orbiter 
+    mutable pulse_width  : f32
+    mutable pulse_height : f32
+    mutable flame        : f32
+
+
+Orbiter PBR
     mutable pos      : vec4f
     mutable dir      : vec4f
     mutable env_yaw    : f32
@@ -809,7 +815,6 @@ ModelViewProject PBR
     mutable blend_rings  : f32
     mutable blend_haze   : f32
     mutable blend_bands  : f32
-    mutable pulse_width  : f32
 
     attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
     attrib normal       : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
@@ -840,6 +845,7 @@ ModelViewProject PBR
         proj  = mat4f.identity[]
         model = mat4f.identity[]
         view  = mat4f.identity[]
+        pulse_width = 1.0
 
     func set_frame [ model_mat: mat4f, view_mat: mat4f, proj_mat: mat4f, ep: vec4f, t: f32 ]
         model = model_mat
@@ -1017,17 +1023,30 @@ ModelViewProject PBR
         vec3  beam_up   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
         float ring_ang  = pow(max(0.0, 1.0 - abs(dot(N, beam_up))), 2.4);
         float eng_pulse = pow(0.5 + 0.5 * sin(ubo.time * 1.3), 3.0);
-        float ring_lit  = intensity * ring_ang * eng_pulse * (1.0 - v_color.b);
+        float ring_lit  = 0; //intensity * ring_ang * eng_pulse * (1.0 - v_color.b);
         vec3  eng_light = vec3(ring_lit * 12.0, ring_lit * 4.0, 0.0);
 
         // blue point light shining on metallic surfaces
         vec3  eng_pos   = (ubo.model * vec4(0.0, -0.3, 0.0, 1.0)).xyz;
         float eng_dist  = length(worldPos - eng_pos);
+
+        vec3  eng_pos2   = (ubo.model * vec4(0.0, -0.4, 0.0, 1.0)).xyz;
+        float eng_dist2  = length(worldPos - eng_pos2);
+
         float eng_f     = max(0.0, 1.0 - eng_dist / 0.5);
+        float eng_f2    = max(0.0, 1.0 - eng_dist2 / 0.2);
+
         float eng_att   = eng_f * eng_f;
         vec3  eng_L     = normalize(eng_pos - worldPos);
         float lateral   = smoothstep(0.0, 0.707, dot(N, eng_L));
-        vec3  blue_light = metallic * eng_att * lateral * vec3(0.3, 0.6, 2.0);
+
+        float pulse      = max(0.0, 0.5 + 0.5 * sin(ubo.time * 4.4 * ubo.pulse_width));
+        vec3  hot_off    = vec3(0.3, 0.6, 2.0);
+        vec3  hot_on     = vec3(1.4, 1.0, 0.4);
+        vec3  hot        = mix(hot_off, hot_on, pulse);
+
+        hot = mix(hot, vec3(2.0, 2.0, 2.0), eng_f2);
+        vec3  blue_light = metallic * eng_att * lateral * hot;
 
         // bottom core face: downward-facing surface glows as a warm plasma pool
         // no IOR texture on this material so drive purely from normal, not intensity
@@ -1067,7 +1086,7 @@ ModelViewProject PBR
         float wave1   = 0.5 + 0.5 * sin(dist1 * 10.0 - ubo.time * 10.0);
         float vis1    = smoothstep(0.82, 0.95, wave1);
         vec3  col1    = vec3(0.5, 0.1, 1.0);
-        float mask1   = vis1 * v_color.b * ubo.blend_rings * 1.2;
+        float mask1   = 0.0; //vis1 * v_color.b * ubo.blend_rings * 1.2;
 
         // R channel: Y-axis waves (vertical bands), yellow -> orange -> transparent
         float wave3  = 0.5 + 0.5 * sin(v_world_pos.y * 8.0 - ubo.time * 10.0);
@@ -1095,9 +1114,8 @@ ModelViewProject PBR
         gl_Position    = ubo.proj * ubo.view * world_pos;
     }
 
-ModelViewProject Aura
-	mutable pulse_width : f32
 
+Orbiter Aura
 	attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
 	attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
@@ -1111,6 +1129,7 @@ ModelViewProject Aura
 		view          = mat4f.identity[]
 		proj          = mat4f.identity[]
 		pulse_width   = 1.0
+        pulse_height  = 1.0
 
 	func vertex[] -> GLSL none {
 		vec2 ndc       = a_pos.xy;
@@ -1222,7 +1241,7 @@ ModelViewProject Aura
 						vec3  c_halo  = vec3(0.45, 0.08, 1.4);
 						vec3  sc = mix(c_core,  c_shaft, smoothstep(0.0,  0.20, rn));
 						sc       = mix(sc,      c_halo,  smoothstep(0.30, 0.85, rn));
-						float emit = dens * bm_dt * 4.0 * cap;
+						float emit = dens * bm_dt * 8.0 * ubo.flame * cap;
 						col   += sc * emit * (1.0 - alpha);
 						alpha += emit * (1.0 - alpha);
 					}
@@ -1236,7 +1255,7 @@ ModelViewProject Aura
 		// No p_in/p_out wall-proximity coloring to avoid banding.
 		float rng_Ro  = 0.56;
 		float rng_Ri  = 0.471847;
-		float rng_bh  = 0.4;
+		float rng_bh  = 0.4 * ubo.pulse_height;
 		vec3  rng_o   = (ubo.model * vec4(0.0, -0.162, 0.0, 1.0)).xyz;
 		vec3  rng_d   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
 		vec3  rng_ref = abs(rng_d.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
@@ -1292,169 +1311,9 @@ ModelViewProject Aura
 		fragColor = vec4(col, clamp(alpha, 0.0, 1.0));
 	}
 
-##
-		// ── tokamak plasma torus ─────────────────────────────────────────
-		// Magnetic axis ring at major radius R0_tor in the plane perpendicular
-		// to beam_d through disk_o.  Temperature T(r) = (1-norm^2)^1.8 peaks
-		// at the axis.  Helical field-line coordinate xi = phi - q*theta + time
-		// drives structural modulation independent of wall proximity.
-		{
-			float R0_tor = 0.28;
-			float a_tor  = 0.10;
-			float t_tor  = ubo.time * 1.5;
-			vec3  tor_o  = disk_o - beam_d * 0.22;
 
-			// bounding slab along torus axis (beam_d through tor_o)
-			float rd_ax  = dot(rd, beam_d);
-			float ro_ax  = dot(ro - tor_o, beam_d);
-			float ts0_t, ts1_t;
-			if (abs(rd_ax) > 1e-5) {
-				float tv0 = (-a_tor - ro_ax) / rd_ax;
-				float tv1 = ( a_tor - ro_ax) / rd_ax;
-				ts0_t = min(tv0, tv1); ts1_t = max(tv0, tv1);
-			} else {
-				ts0_t = (abs(ro_ax) <= a_tor) ? 0.0 : 1.0;
-				ts1_t = (abs(ro_ax) <= a_tor) ? 1e9 : 0.0;
-			}
-
-			// bounding outer cylinder in torus plane (radius R0_tor + a_tor)
-			float bRt  = R0_tor + a_tor;
-			vec3  oc_t = (ro - tor_o) - ro_ax * beam_d;
-			vec3  rd_p = rd - rd_ax * beam_d;
-			float ca_t = dot(rd_p, rd_p);
-			float cb_t = 2.0 * dot(rd_p, oc_t);
-			float cc_t = dot(oc_t, oc_t) - bRt * bRt;
-			float dc_t = cb_t * cb_t - 4.0 * ca_t * cc_t;
-			float tc0_t, tc1_t;
-			if (ca_t < 1e-8 || dc_t < 0.0) {
-				tc0_t = 0.0; tc1_t = 1e9;
-			} else {
-				float sq_t = sqrt(dc_t);
-				tc0_t = (-cb_t - sq_t) / (2.0 * ca_t);
-				tc1_t = (-cb_t + sq_t) / (2.0 * ca_t);
-				if (tc0_t > tc1_t) { float tmp = tc0_t; tc0_t = tc1_t; tc1_t = tmp; }
-			}
-
-			float t_te = max(max(ts0_t, tc0_t), 0.0);
-			float t_tx = min(ts1_t, tc1_t);
-
-			if (t_tx > t_te) {
-				float dt_t = (t_tx - t_te) / 32.0;
-				for (int pi = 0; pi < 32; pi++) {
-					if (alpha > 0.97) break;
-					float tt   = t_te + (float(pi) + 0.5) * dt_t;
-					vec3  p    = ro + rd * tt;
-					vec3  rel  = p - tor_o;
-					float axp  = dot(rel, beam_d);
-					vec3  radp = rel - axp * beam_d;
-					float r_xz = length(radp);
-					float r_m  = length(vec2(r_xz - R0_tor, axp));
-					float norm = r_m / a_tor;
-					if (norm >= 1.0) continue;
-
-					float T_    = pow(max(0.0, 1.0 - norm * norm), 1.8);
-					float phi_t = atan(dot(rel, b_binor), dot(rel, b_tang));
-
-					// 24 thick radial spokes (matching petal divisions), streaming inward
-					// quadratic r_s: outer edge (norm=1) accelerates faster than inner, like a suction funnel
-					float r_s    = norm * norm + t_tor * 0.6;
-					float jitter = sin(phi_t * 48.0 + r_s * 23.0 + t_tor * 1.5) * 0.08;
-					float spoke  = smoothstep(0.00, 0.99, abs(sin(phi_t * 13.0 + 3.14159 / 48.0 + jitter + t_tor * 0.04)));
-				// seamless 3D value noise: (cos·R, sin·R, r_s) avoids phi_t seam
-					vec3 p3   = vec3(cos(phi_t) * 1.91, sin(phi_t) * 1.91, r_s * 3.5);
-					vec3 i3   = floor(p3);
-					vec3 f3   = fract(p3);  f3 = f3 * f3 * (3.0 - 2.0 * f3);
-					float h000 = fract(sin(dot(i3,               vec3(127.1,311.7,74.7)))*43758.5);
-					float h100 = fract(sin(dot(i3+vec3(1,0,0),  vec3(127.1,311.7,74.7)))*43758.5);
-					float h010 = fract(sin(dot(i3+vec3(0,1,0),  vec3(127.1,311.7,74.7)))*43758.5);
-					float h110 = fract(sin(dot(i3+vec3(1,1,0),  vec3(127.1,311.7,74.7)))*43758.5);
-					float h001 = fract(sin(dot(i3+vec3(0,0,1),  vec3(127.1,311.7,74.7)))*43758.5);
-					float h101 = fract(sin(dot(i3+vec3(1,0,1),  vec3(127.1,311.7,74.7)))*43758.5);
-					float h011 = fract(sin(dot(i3+vec3(0,1,1),  vec3(127.1,311.7,74.7)))*43758.5);
-					float h111 = fract(sin(dot(i3+vec3(1,1,1),  vec3(127.1,311.7,74.7)))*43758.5);
-					float n0  = mix(mix(mix(h000,h100,f3.x),mix(h010,h110,f3.x),f3.y),
-					                mix(mix(h001,h101,f3.x),mix(h011,h111,f3.x),f3.y),f3.z);
-					vec3 p3b  = p3 * 2.1 + vec3(3.7,9.2,5.5);
-					vec3 i3b  = floor(p3b);
-					vec3 f3b  = fract(p3b);  f3b = f3b * f3b * (3.0 - 2.0 * f3b);
-					float g000 = fract(sin(dot(i3b,              vec3(127.1,311.7,74.7)))*43758.5);
-					float g100 = fract(sin(dot(i3b+vec3(1,0,0), vec3(127.1,311.7,74.7)))*43758.5);
-					float g010 = fract(sin(dot(i3b+vec3(0,1,0), vec3(127.1,311.7,74.7)))*43758.5);
-					float g110 = fract(sin(dot(i3b+vec3(1,1,0), vec3(127.1,311.7,74.7)))*43758.5);
-					float g001 = fract(sin(dot(i3b+vec3(0,0,1), vec3(127.1,311.7,74.7)))*43758.5);
-					float g101 = fract(sin(dot(i3b+vec3(1,0,1), vec3(127.1,311.7,74.7)))*43758.5);
-					float g011 = fract(sin(dot(i3b+vec3(0,1,1), vec3(127.1,311.7,74.7)))*43758.5);
-					float g111 = fract(sin(dot(i3b+vec3(1,1,1), vec3(127.1,311.7,74.7)))*43758.5);
-					float n1  = mix(mix(mix(g000,g100,f3b.x),mix(g010,g110,f3b.x),f3b.y),
-					                mix(mix(g001,g101,f3b.x),mix(g011,g111,f3b.x),f3b.y),f3b.z);
-					float perlin = n0 * 0.67 + n1 * 0.33;
-					float struc  = spoke * smoothstep(0.2, 0.8, perlin);
-					float dens   = T_ * struc;
-
-					vec3 pc = mix(
-						mix(vec3(0.5, 0.2, 1.0), vec3(0.2, 0.6, 1.0), T_),
-						vec3(1.0, 1.0, 1.0), T_ * T_);
-
-					float emit = dens * dt_t * 4.0;
-					col   += pc * emit * (1.0 - alpha);
-					alpha += emit * (1.0 - alpha);
-				}
-			}
-		}
-
-		// ── central cylinder void: volumetric fog fill ───────────────────────
-		// Marched into separate cv_col/cv_alpha so beam alpha saturation can't
-		// block it — blended behind the main result at the end.
-		vec3  cv_col   = vec3(0.0);
-		float cv_alpha = 0.0;
-		{
-			float cv_r  = 0.6;
-			float cv_h  = 0.18;
-			float pulse = 0.55 + 0.45 * sin(ubo.time * 1.3);
-
-			float rax  = dot(rd, beam_d);
-			if (abs(rax) > 1e-5) {
-				float o_ax = dot(ro - disk_o, beam_d);
-				float t_a  = -o_ax / rax;
-				float t_b  = (-cv_h - o_ax) / rax;
-				float t_s  = max(min(t_a, t_b), 0.0);
-				float t_e  = max(t_a, t_b);
-				if (t_e > t_s) {
-					float dt_c = (t_e - t_s) / 16.0;
-					for (int ci = 0; ci < 16; ci++) {
-						float tc  = t_s + (float(ci) + 0.5) * dt_c;
-						vec3  sp  = ro + rd * tc;
-						vec3  rel = sp - disk_o;
-						float ax  = dot(rel, beam_d);
-						float r_c = length(rel - ax * beam_d);
-						float cv_ri = 0.5;   // inner radius — hollow cylinder
-					if (r_c < cv_ri || r_c > cv_r || ax > 0.0 || ax < -cv_h) continue;
-
-							float dep  = smoothstep(0.0, 0.015, -ax);
-						float ripple = pfog(sp * 4.0 + vec3(0.0, ubo.time * 0.3, ubo.time * 0.12));
-						// near-solid base density — noise only modulates ±20% for shimmer
-						float dens = dep * (0.8 + 0.2 * ripple) * pulse;
-						float emi  = dens * dt_c * 55.0;
-
-						vec3 gc = mix(vec3(0.02, 0.55, 1.0), vec3(0.08, 0.3, 0.75), ripple);
-						cv_col   += gc * emi * (1.0 - cv_alpha);
-						cv_alpha += emi * (1.0 - cv_alpha);
-					}
-				}
-			}
-		}
-
-		// additive: ring fog glows over whatever is in that annulus
-		col   += cv_col;
-		alpha  = max(alpha, cv_alpha);
-
-		fragColor = vec4(col, clamp(alpha, 0.0, 1.0));
-	}
-##
-
-ModelViewProject Core
-    mutable pulse_width : f32
-
+Orbiter Core
+    
     attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
     attrib a_color      : VertexInput  [ type:typeid[ vec4f ] ]
@@ -1464,6 +1323,8 @@ ModelViewProject Core
     attrib v_world_pos  : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_normal     : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_uv         : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_color      : VertexOutput [ type:typeid[ vec4f ] ]
+    attrib v_local_pos  : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_eye_pos    : VertexOutput [ type:typeid[ vec3f ] ]
     attrib fragColor    : FragmentOutput [ type:typeid[ vec4f ] ]
 
@@ -1475,24 +1336,49 @@ ModelViewProject Core
         v_world_pos = wpos.xyz;
         v_normal    = normalize(mat3(ubo.model) * a_normal);
         v_uv        = a_uv;
+        v_color     = a_color;
+        v_local_pos = a_pos;
         v_eye_pos   = inverse(ubo.view)[3].xyz;
         gl_Position = ubo.proj * ubo.view * wpos;
     }
 
     func fragment [] -> GLSL none {
-        vec4  tex     = texture(color, v_uv);
-        vec3  V       = normalize(v_eye_pos - v_world_pos);
-        vec3  N       = normalize(v_normal);
-        float fresnel = pow(1.0 - max(0.0, dot(N, V)), 3.0);
-        float pulse   = 0.7 + 0.3 * sin(ubo.time * 2.1);
-        vec3  col     = tex.rgb * (1.0 + fresnel * ubo.pulse_width * pulse);
-        fragColor     = vec4(col, tex.a);
+        vec3  V      = normalize(v_eye_pos - v_world_pos);
+        vec3  N      = normalize(v_normal);
+        float facing = max(0.0, dot(N, V));
+        float pulse  = max(0.0, 0.8 + 0.2 * sin(ubo.time * 4.4 * ubo.pulse_width));
+        float ln     = length(v_local_pos.xz);
+        float inner  = clamp(ln / 0.2, 0.0, 1.0) * (0.7 + (max(0.0, pulse - 0.2) * 1.0 + 0.2) * 0.3);
+        vec4  tex    = textureLod(color, v_uv, pulse * 2.0 + 2.0 * inner);
+        vec3  col;
+        float alpha;
+
+        if (v_color.g > 0.5) {
+            vec3  hot_on0 = mix(vec3(1.8, 0.2, 0.0), vec3(2.5, 1.0, 0.0), 1.0 - inner);
+            vec3  hot_on1 = mix(vec3(0.8, 0.4, 0.0), vec3(1.5, 1.5, 0.0), 1.0 - inner);
+            vec3  hot_off = vec3(0.044, 0.0, 4.4);
+            float f       = clamp(pulse, 0.0, 1.0);
+            vec3  hot     = mix(hot_off, mix(hot_on0, hot_on1, min(1.0, f)), f);
+            float detail = 0.6 + 0.4 * dot(tex.rgb, vec3(0.3 + pulse * 0.3));
+            col          = detail * hot * pulse;
+            if (inner > 0.5) {
+                col = mix(col, vec3(1.44, 1.44, 1.44), (inner - 0.5) * 2.0);
+            }
+            alpha        = tex.a;
+        } else {
+            float r      = max(abs(v_local_pos.x) - 0.52, 0.0);
+            float t      = clamp((r - 0.5) / (0.68 - 0.5), 0.0, 1.0);
+            float glow   = 0.5 + 0.45 * t;
+            float c0     =         -(ln - 0.08) / (0.044    * pulse);
+            float c1     = (1.0 - (-(ln - 0.14) / (0.088))) * pulse;
+            col          = vec3(clamp(max(c0, c1), 0.4, 1.0));
+            alpha        = 1.0;
+        }
+        fragColor = vec4(col, alpha);
     }
 
 
-ModelViewProject Plasma
-	mutable pulse_width : f32
-
+Orbiter Plasma
 	attrib a_color      : VertexInput    [ type:typeid[ vec4f ] ]
 	attrib a_pos        : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_normal     : VertexInput    [ type:typeid[ vec3f ] ]
@@ -1532,7 +1418,7 @@ ModelViewProject Plasma
 		float spec    = pow(max(0.0, dot(N, H)), 80.0);
 		float fresnel = pow(1.0 - max(0.0, dot(N, V)), 3.0);
 
-		vec3  col   = vec3(0.88, 0.94, 1.0) * (spec + fresnel * 0.25);
+		vec3  col   = vec3(1.0) * (spec + fresnel * 0.25);
 		float alpha = clamp(fresnel * 0.55 + spec * 0.9, 0.0, 1.0);
 
 		fragColor = vec4(col, alpha);
@@ -1546,8 +1432,6 @@ element World
     public materials         : map Material[string]
 
     intern s                 : shader
-    intern aura              : Aura
-    intern aura_model        : Model
     intern plasma            : Plasma
     public model_path        : string
     #public shader_type       : string
@@ -1604,7 +1488,7 @@ element World
         if [ shader_type && shader_type.count ]
             f : Au_t [ Au.find_type [ shader_type.chars, null ] ]
             if [ f ]
-                s     = Au.new_object[ f, null, null, false ]
+                s     = Au.new_object[ f, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
                 s.vk  = vk
                 s.initialize[]
                 if [ model ]
@@ -1742,20 +1626,7 @@ shader Aura2
 
  ##
 
-PBR Orbiter
-    mutable pos_radius      : vec4f
-    mutable normal_falloff  : vec4f
-    mutable color_intensity : vec4f
-    mutable moment          : f32
-    mutable moment_amount   : f32
-    mutable moment_angle    : f32
-
-    func init []
-        no-op
-
-
-
-element Editor
+Control Editor
     lang : Language
     time : f32
 
@@ -1774,9 +1645,6 @@ trinity orbiter
     public purple        : Purple
     public ocean         : Ocean
     public cloud         : Cloud
-    public au            : Aura
-    public orb           : Orbiter
-    public time          : f32
     public env           : Image
     public models        : array Model
     mutable angle        : f32
@@ -1784,21 +1652,19 @@ trinity orbiter
     public test44 : Button
 
     func init []
-        width:  1488
-        height: 888
-
-        aura : Aura[]
-        ty : typeid[aura]
-        ty = ty
+        width  = 1888
+        height = 888
     
     public func on_render [ w: Window ] -> Elements
         return Elements [
-            "toolbar": Toolbar [
+            "controls": Group [
                 elements: Elements [
-                    "start":   Button [ ]
+                    "button":  Button [ label: 'Button'  ],
+                    "check":   Check  [ label: 'Check'   ],
+                    "option1": Option [ label: 'Option1' ],
+                    "option2": Option [ label: 'Option2' ]
                 ]
-            ],
-            "avatar": World  [ ]
+            ]
         ]
  
     func load_scene []
@@ -1847,6 +1713,8 @@ trinity orbiter
 
     
     func update_scene []
+        win : (w to Window)
+        time : win.time
         if [time == 0.0]
             time = -54.0
         # ---- 16:9 astronaut/ISS orbital perspective ----
@@ -1859,7 +1727,7 @@ trinity orbiter
 
         # camera orbits around the earth (Y axis); earth stays fixed so the
         # sunlight direction sweeps across the surface as we go around.
-        time -= 0.0244
+        time -= 0.0244 * win.frame_factor
         orbit_a : f32 [ radians[ time ] ]
         co      : f32 [ cos[ orbit_a ] ]
         so      : f32 [ sin[ orbit_a ] ]
@@ -1914,6 +1782,8 @@ trinity orbiter
         earth.cam_pos = _cam
         ocean.cam_pos = _cam
         cloud.cam_pos = _cam
+
+        win.time = time
 ##
         purple.time = time
         purple.model = m

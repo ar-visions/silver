@@ -684,12 +684,12 @@ forward(any)
     M(AA,BB, i, method, public, bool,   is_meta) \
     M(AA,BB, i, method, public, bool,   is_meta_compatible, Au) \
     M(AA,BB, s, vargs,  public, Au,     formatter, Au_t, bool, handle, Au, i32, symbol) \
-    M(AA,BB, s, method, public, Au,     alloc, Au_t, num, shape, Au_t, Au) \
+    M(AA,BB, s, method, public, Au,     alloc, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
     M(AA,BB, s, method, public, Au,     method_call, Au_t, array) \
-    M(AA,BB, s, method, public, Au,     new_object, Au_t, Au_t, Au, bool) \
-    M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_t, Au, symbol, i32, i64) \
-    M(AA,BB, s, method, public, Au,     alloc_vector, Au_t, num, shape, Au_t, Au, symbol, i32, i64) \
-    M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, cstr, i32, i32) \
+    M(AA,BB, s, method, public, Au,     new_object, Au_t, Au_t, Au, bool, symbol, i32, i32) \
+    M(AA,BB, s, method, public, Au,     alloc_new, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
+    M(AA,BB, s, method, public, Au,     alloc_vector, Au_t, num, shape, Au_t, Au, symbol, i32, i32) \
+    M(AA,BB, s, method, public, Au,     alloc_dbg, Au_t, num, symbol, i32, i32) \
     M(AA,BB, s, method, public, string, estring, Au_t, i32) \
     M(AA,BB, s, method, public, i32,    evalue, Au_t, cstr) \
     M(AA,BB, s, method, public, none,   serialize, Au_t, string, Au) \

@@ -588,9 +588,10 @@ class vk_context
     # them out, multiple glslangValidator child processes race on the same
     # .spv output file and one of them ends up with a null vk_vert/vk_frag.
     # one cached instance per type sidesteps the race entirely.
-    intern quad_s:    Au
-    intern reduce_s:  Au
-    intern shaders:   array shader
+    intern quad_s:      Au
+    intern reduce_s:    Au
+    intern shaders:     array shader
+    intern shader_cache: store
 
     func init [ ]
         hold[]
@@ -3187,6 +3188,8 @@ class shader
     public groups       : array string
     public materials    : array string # this is one or the other
     public transparent  : bool
+    public texture      : string
+    public mip_levels   : i32
     
     intern vk_vert      : VkShaderModule
     intern vk_frag      : VkShaderModule
@@ -3383,7 +3386,7 @@ class shader
                         arg_str = '{arg_str}, '
                     arg_str = '{arg_str}{atype} {arg.ident}'
 
-                glsl: GLSL Au Au.method_call[ method, null ]
+                glsl: GLSL Au.method_call[ method, null ]
                 if [ stage == ShaderStage.vertex && glsl inherits FragGLSL ]
                     continue
                 if [ stage == ShaderStage.fragment && glsl inherits VertGLSL ]
@@ -3564,10 +3567,24 @@ class shader
         vert = 'shaders/{name}.vert'
         frag = 'shaders/{name}.frag'
         comp = 'shaders/{name}.comp'
+        if [ !vk.shader_cache ]
+            vk.shader_cache = store[]
+            vk.shader_cache.hold[]
+            
+        cached: shader [ vk.shader_cache.get[ typeid[ a ] ] ]
+        if [ cached ]
+            vk_vert = cached.vk_vert
+            vk_frag = cached.vk_frag
+            vk_comp = cached.vk_comp
+            return
         generate_shaders[ ]
         reload[ ]
+        vk.shader_cache.set[ typeid[ a ], a ]
 
     func dealloc [ ]
+        cached: shader [ vk.shader_cache.get[ typeid[ a ] ] ]
+        if [ cached != a ]
+            return
         vkDestroyShaderModule[ vk.device, vk_vert, null ]
         vkDestroyShaderModule[ vk.device, vk_frag, null ]
         vkDestroyShaderModule[ vk.device, vk_comp, null ]
@@ -4203,24 +4220,18 @@ shader CanvasUI
                 float a = pow(1.0 - t, K) * ubo.outer_glow_color.a;
                 outer_p = vec4(ubo.outer_glow_color.rgb * a, a);
             }}
-            vec4 inner_p = vec4(0.0);
-            if (inner_px > 0.0 && dist_p < 0.0) {{
-                float t = clamp(-dist_p / inner_px, 0.0, 1.0);
-                float a = pow(1.0 - t, K) * ubo.inner_glow_color.a;
-                inner_p = vec4(ubo.inner_glow_color.rgb * a, a);
-            }}
-            vec4 shadow_p = vec4(0.0);
             float shadow_px = ubo.glow_params.w;
-            if (shadow_px > 0.0 && dist_p < 0.0) {{
-                float t = clamp(-dist_p / shadow_px, 0.0, 1.0);
-                float a = pow(1.0 - t, K) * ubo.inner_shadow_color.a;
-                shadow_p = vec4(ubo.inner_shadow_color.rgb * a, a);
+            float glow_px   = max(inner_px, shadow_px);
+            vec4  glow_p    = vec4(0.0);
+            if (glow_px > 0.0) {{
+                float t = clamp(-dist_p / glow_px, 0.0, 1.0);
+                float a = pow(1.0 - t, K) * ubo.inner_glow_color.a * fill_cov;
+                glow_p = vec4(ubo.inner_glow_color.rgb * a, a);
             }}
             vec4 c = outer_p;
-            c = fill_p   + c        * (1.0 - fill_p.a);
-            c = shadow_p + c        * (1.0 - shadow_p.a);
-            c = inner_p  + c        * (1.0 - inner_p.a);
-            c = stroke_p + c        * (1.0 - stroke_p.a);
+            c = fill_p   + c      * (1.0 - fill_p.a);
+            c = glow_p   + c      * (1.0 - glow_p.a);
+            c = stroke_p + c      * (1.0 - stroke_p.a);
             o_color = c * opacity;
             if (o_color.a > 0.0 &&
                 (ubo.glow_params2.y != 0.0 || ubo.glow_params2.z != 1.0 || ubo.glow_params2.w != 1.0)) {{
@@ -4341,15 +4352,15 @@ shader CanvasUI
         }}
         // unified inner bevel pass: blend tint + fade-radius by lit_side.
         vec4 bevel_p = vec4(0.0);
-        if ((inner_px > 0.0 || shadow_px > 0.0) && dist <= 0.0) {{
+        if ((inner_px > 0.0 || shadow_px > 0.0) && fill_cov > 0.0) {{
             float smooth_px    = max(inner_px, shadow_px);
             float dist_g       = sdf_rounded_rect_glow(lpos, center, half_size, ubo.radii, smooth_px);
             float effective_px = mix(shadow_px, inner_px, lit_side);
-            if (dist_g < 0.0 && effective_px > 0.0) {{
+            if (effective_px > 0.0) {{
                 float t     = clamp(-dist_g / effective_px, 0.0, 1.0);
                 float a     = pow(1.0 - t, K);
                 vec4  tint  = mix(ubo.inner_shadow_color, ubo.inner_glow_color, lit_side);
-                float alpha = a * tint.a;
+                float alpha = a * tint.a * fill_cov;
                 bevel_p     = vec4(tint.rgb * alpha, alpha);
             }}
         }}
@@ -5300,21 +5311,27 @@ Render Canvas
         text_vbo.vertex_count = 0
 
         # ---- blur cascade: 8 stages halving each time (1/2 .. 1/256)
+        # stages are sized relative to this canvas (not the app window) so that
+        # sub-canvas blur (e.g. per-layer blur_canvas) gets correct aspect ratio.
         blur_stages = array Render [ alloc: blur_count ]
         blur_v_arr  = array Render [ alloc: blur_count ]
         blur_h_arr  = array Render [ alloc: blur_count ]
         # pass 1: reductions + per-stage vertical blur (both at the reduced scale)
         prev_tx    : Texture [ a.color ]
-        scale      : f32 [ 1.0 ]
+        bscale     : f32 [ 1.0 ]
         for [ i: i32 0, i < blur_count, i += 1 ]
-            scale *= 0.5
+            bscale *= 0.5
+            sw : i32 [ i32[ f32[width]  * bscale + 0.5 ] ]
+            sh : i32 [ i32[ f32[height] * bscale + 0.5 ] ]
+            if [ sw < 1 ] sw = 1
+            if [ sh < 1 ] sh = 1
             m_r  : Model  [ w: w, samplers: map Texture[string] [ 'color': prev_tx ] ]
-            r_r  : Render [ vk: vk, w: w, wscale: scale, models: array Model [ m_r ] ]
+            r_r  : Render [ vk: vk, w: w, width: sw, height: sh, models: array Model [ m_r ] ]
             blur_stages.push[ r_r ]
 
             bv_s : CanvasBlurV [ vk: vk, name: 'canvas-blur-v' ]
             m_v  : Model  [ w: w, s: bv_s, samplers: map Texture[string] [ 'color': r_r.color ] ]
-            r_v  : Render [ vk: vk, w: w, wscale: scale, models: array Model [ m_v ] ]
+            r_v  : Render [ vk: vk, w: w, width: sw, height: sh, models: array Model [ m_v ] ]
             blur_v_arr.push[ r_v ]
 
             prev_tx = r_r.color
@@ -6014,7 +6031,9 @@ Render Canvas
         draw_canvas[ mdl.cache, ox, oy, rw, rh ]
 
     func draw_canvas [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
-        image_override = (src.reduction) ? src.reduction : src.color
+        tex : Texture [ (src.reduction) ? src.reduction : src.color ]
+        tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        image_override = tex
         path.clear[]
         path.add_rect[ x, y, rw, rh ]
         paint[]
@@ -6056,14 +6075,15 @@ Render Canvas
         k_hi : i32 [ (k_lo + 1 < blur_count) ? k_lo + 1 : k_lo ]
         frac : f32 [ lg - f32 k_lo ]
 
-        ruv : f32 [ radius / (4.0 * f32 height) ]
+        ruv_v : f32 [ radius / (4.0 * f32 height) ]
+        ruv_h : f32 [ radius / (4.0 * f32 width)  ]
         # vbv uniforms: radius_uv only
         vbv_lo : CanvasBlurV blur_v_arr[k_lo].models[0].s
         vbv_hi : CanvasBlurV blur_v_arr[k_hi].models[0].s
-        vbv_lo.radius_uv = ruv
-        vbv_hi.radius_uv = ruv
+        vbv_lo.radius_uv = ruv_v
+        vbv_hi.radius_uv = ruv_v
         vbh : CanvasBlurH blur_h_arr[k_lo].models[0].s
-        vbh.radius_uv  = ruv
+        vbh.radius_uv  = ruv_h
         vbh.mix_factor = frac
 
         color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
@@ -6380,7 +6400,7 @@ class CanvasFont
         bmp : ref u8 [ null ]
         if [ bw > 0 && bh > 0 ]
             sz  : i32 [ bw * bh ]
-            bmp = new u8 [ sz ]
+            bmp = malloc [ sz ]
             # FT bitmap may have pitch != width, copy row by row
             for [ row: i32 0, row < bh, row += 1 ]
                 src_off : i32 [ row * slot.bitmap.pitch ]
@@ -7174,12 +7194,12 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
     pbr_default: PbrMetallicRoughness [ pbr_defaults[] ]
     pbr:         PbrMetallicRoughness [ (p.material) ? p.material.pbrMetallicRoughness : pbr_default ]
     s:           shader [ p.s ]
-
+##
     printf[ "Surface_resources: material=%p pbr=%p baseColor=(%f,%f,%f,%f) metallic=%f\n",
         p.material, pbr,
         pbr.baseColorFactor.x, pbr.baseColorFactor.y, pbr.baseColorFactor.z, pbr.baseColorFactor.w,
         pbr.metallicFactor ]
-
+##
     if [ !result.count ]
         f_normal: rgbaf [ 0.5, 0.5, 1.0, 1.0 ]
         f_zero:   rgbaf [ 0.0, 0.0, 0.0, 0.0 ]
@@ -7418,6 +7438,8 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
     s_type : typeid[ s ]
     info : Au.header [ vbo ]
     sa: bool [ transparent || m.straight_alpha ]
+    if [ s.texture && s.texture.count && !m.samplers['color'] ]
+        m.samplers[ 'color' ] = Texture [ w:m.w, vk: vk, mip_levels: s.mip_levels, sampler: Image [ s.texture ] ]
     pipe: Pipeline [ vk: vk, w: m.w, name: (n) ? n.name : null,
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat, render_id: render_id,
         material: material, samplers: m.samplers,
@@ -7681,8 +7703,6 @@ enum UXSurface
     frost       : 1
     blur        : 2
     compose     : 3
-    colorize    : 4
-    overlay     : 5
 
 enum Fill : f32
     none      : 0.00f
@@ -7692,7 +7712,6 @@ enum Fill : f32
 enum CanvasType
     screen      : 0
     compose     : 1
-    colorize    : 2
 
 enum Pattern
     none : 0
@@ -7737,8 +7756,6 @@ ielement element
     mutable transform_origin : vec2f
     mutable ghost           : bool
     mutable captured        : bool
-    mutable selectable      : bool
-    mutable selected        : bool
     mutable disabled        : bool
     mutable hovered         : bool
     mutable pressed         : bool
@@ -7842,14 +7859,18 @@ ielement element
 
 alias StyleTransitions : map StyleTransition[string]
 
+func filter_n[ current:f32, goal:f32, amount:f32, rate:f32 ] -> f32
+    decay : pow[ 1.0f - amount, rate ]
+    if [ goal != 0.0f ]
+        return current + ((goal - current) * (1.0f - decay))
+    el
+        return current * decay
 
 Display Window
     
     mutable app_object          : trinity*
 
     public compose              : Canvas
-    public colorize             : Canvas
-    public overlay              : Canvas
     public glyph                : Canvas
     public screen               : Canvas
 
@@ -7882,7 +7903,8 @@ Display Window
 
     intern root_styles          : map Style[string]
     intern last_frame_ms        : i64
-    intern frame_factor         : f32
+    intern start_ms             : i64
+    mutable frame_factor        : f32
     intern frame_seq            : i32
     public root                 : element
     mutable capture             : element
@@ -7932,7 +7954,7 @@ Display Window
         t            : best.trans
         ct           : StyleTransition
         should_trans : false
-        mem          : string [ member.ident ]
+        mem          : string [ (best.bl && best.bl.key && best.bl.key.count) ? '{best.bl.key}.{member.ident}' : member.ident ]
 
         if [ t ]
             if [ !inst.transitions ]
@@ -7975,8 +7997,7 @@ Display Window
             src_m : Au_t [ Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ] ]
             if [ src_m ]
                 src_ptr : ref f32 [ inst.member_ref[ src_m ] ]
-                if [ is_f_color ]
-                    printf [ "[%d] bind-before  dst=%.3f,%.3f  src=%.3f,%.3f  filter=%.2f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1], src_ptr[0], src_ptr[1], best.filter ]
+
                 if [ best.filter > 0.0 ]
                     decay : f32 [ pow[ best.filter, inst.ux.frame_factor ] ]
                     for [ i: i32 0, i < float_count, i += 1 ]
@@ -7984,16 +8005,13 @@ Display Window
                 el
                     for [ i: i32 0, i < float_count, i += 1 ]
                         dst_ptr[i] = src_ptr[i]
-                if [ is_f_color ]
-                    printf [ "[%d] bind-after   dst=%.3f,%.3f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1] ]
+
                 inst.volatile = true
             return
 
         # filter: EMA dst in-place toward best.instance; snap from zero on first use
         if [ best.filter > 0.0 ]
             target_ptr  : ref f32 [ best.instance ]
-            if [ is_f_color ]
-                printf [ "[%d] filt-before  dst=%.3f,%.3f  target=%.3f,%.3f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1], target_ptr[0], target_ptr[1] ]
             unset       : true
             for [ i: i32 0, i < float_count, i += 1 ]
                 if [ dst_ptr[i] != 0.0 ] unset = false
@@ -8013,15 +8031,11 @@ Display Window
                         dst_ptr[i] = dst_ptr[i] * decay
                 if [ moving ]
                     inst.volatile = true
-            if [ is_f_color ]
-                printf [ "[%d] filt-after   dst=%.3f,%.3f\n", inst.ux.frame_seq, dst_ptr[0], dst_ptr[1] ]
             #inst.volatile = true
             return
 
-        if [ is_f_color ]
-            printf [ "[%d] static-set  member=%s\n", inst.ux.frame_seq, member.ident ]
         value_holder.member_set[ member, best.instance ]
-    
+
 
     public func cache_style [ inst:element, style_avail: map StyleEntries[string], force_update:bool, home_object:Au ]
         if [ inst.maps_populated && !force_update ]
@@ -8035,7 +8049,7 @@ Display Window
                     continue
                 prop    : string [ member.ident ]
                 entries : style_avail [ prop ]
-                for [ entry : StyleEntry ] in entries
+                for [ entry : StyleEntry ] reverse in entries
                     if [ !(entry.bl.property && entry.bl.key) ]
                         continue
                     entry.member_map = Au.find_member [ typeid[inst], entry.bl.property.chars, AU_MEMBER_VAR, 0, true ]
@@ -8054,7 +8068,7 @@ Display Window
                                 if [ q.state ] has_state = true
                             if [ !has_state ] inst_type = meta_type
                         if [ inst_type ]
-                            n : Au.new_object[inst_type, null, null, false]
+                            n : Au.new_object[inst_type, null, null, false, __FILE__, __LINE__, __SEQUENCE__]
                             n.set_context_from[ home_object ]
                             n.initialize[]
                             mc[entry.bl.key] = n
@@ -8104,7 +8118,7 @@ Display Window
 
                         if [ !best.instance ]
                             if [ (layer_member.src.traits & (1 << 11)) && typeid[best.value] != typeid[array] ]
-                                best.instance = Au.new_object[ layer_member.src, null, null, false ]
+                                best.instance = Au.new_object[ layer_member.src, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
                                 best.instance.set_context_from[ home_object ]
                                 best.instance.call_construct[ best.value ]
                             el
@@ -8130,7 +8144,7 @@ Display Window
                             src_arr  : (best.value to array string)
                             dst_arr  : array Au [ ]
                             for [ s: string ] in src_arr
-                                obj : Au.new_object[ meta_type, null, null, false ]
+                                obj : Au.new_object[ meta_type, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
                                 obj.set_context_from[ home_object ]
                                 obj.call_construct[ s ]
                                 dst_arr.push[ obj ]
@@ -8143,7 +8157,7 @@ Display Window
                             continue
                         el
                             if [ member.src.traits & (1 << 11) ]
-                                best.instance = Au.new_object[ member.src, null, null, false ]
+                                best.instance = Au.new_object[ member.src, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
                                 best.instance.set_context_from[ home_object ]
                                 best.instance.call_construct[ best.value ]
                             el
@@ -8163,6 +8177,8 @@ Display Window
             return
 
         now          : i64 [ epoch_millis[] ]
+        if [ !start_ms ] start_ms = now
+        #time         = f64[ now - start_ms ] / 1000.0
         frame_factor = (1.0 / 60.0) / (last_frame_ms > 0) ? f32[ now - last_frame_ms ] / 1000.0 : 0.016
         last_frame_ms = now
         frame_seq += 1
@@ -8249,6 +8265,7 @@ Display Window
                     expect instance.vk, "no vk context set in test2"
                     instance.initialize[]
                     instance.hold_members[]
+                    instance.restyle = true
 
             inst    : typeid[ instance ]
             irender : instance.render[]
@@ -8499,21 +8516,15 @@ Display Window
     
     func update [ ]
         # DEBUG step 3: full canvases + full composition chain using UX shader.
-        compose  = (compose  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        colorize = (colorize || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
-        overlay  = (overlay  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, :width, :height ]).resize[ width, height ]
+        compose  = (compose  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
         glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.u8,    :width, :height ]).resize[ width, height ]
         screen   = (screen   || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
 
         compose .update[]
-        colorize.update[]
-        overlay .update[]
         glyph   .update[]
         screen  .update[]
 
         compose .clear[ string[ "#888" ] ]
-        colorize.clear[ string[ "#000" ] ]
-        overlay .clear[ string[ "#000" ] ]
         glyph   .clear[ string[ "#000" ] ]
         screen  .clear[ string[ "#000" ] ]
 
@@ -8567,9 +8578,7 @@ Display Window
                     'background':     background.color,
                     'frost':          r_frost.color,
                     'blur':           r_blur.color,
-                    'compose':        compose.color,
-                    'colorize':       colorize.color,
-                    'overlay':        overlay.color
+                    'compose':        compose.color
                 ]
             ]
 
@@ -8677,7 +8686,7 @@ Display Window
 
     public func draw_element [ e: element*, stage: CanvasType, last:element ]
         expect e inherits element, 'e is not an element'
-        canvas_arr : new Canvas[3] [ screen, compose, colorize ]
+        canvas_arr : new Canvas[2] [ screen, compose ]
         cv : canvas_arr[stage]
         rel : rect [ (e.parent) ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
@@ -8727,6 +8736,9 @@ Display Window
             layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null ] : e.bounds.copy[]
             layer.bounds.x -= e.bounds.x
             layer.bounds.y -= e.bounds.y
+
+            if [layer.test2]
+                layer.test2 = layer.test2
             
             b  : rect   [ layer.bounds ]
             rx : f32 [ 0.0 ]
@@ -8735,22 +8747,47 @@ Display Window
                 rx = layer.radius.rx
                 ry = layer.radius.ry
 
-            
-            if [ (layer.fill_color && layer.fill_color.a > 0.0) || (layer.stroke_color && layer.stroke_color.a > 0.0) || layer.inner_glow ]
-                cv.save             [ ]
+            # blur setup: draw to per-layer canvas when blur is active.
+            # dirty on first use, size change, or active transition.
+            needs_blur  : bool [ layer.blur_x > 0.0 || layer.blur_y > 0.0 ]
+            draw_cv     : Canvas [ cv ]
+            blur_redraw : bool [ false ]
+
+            if [ needs_blur ]
+                blur_r  : f32 [ (layer.blur_x > layer.blur_y) ? layer.blur_x : layer.blur_y ]
+                pad     : f32 [ blur_r * 2.0 ]
+                bw : i32 [ i32[b.w + pad] + 1 ]
+                bh : i32 [ i32[b.h + pad] + 1 ]
+                if [ !layer.blur_canvas || layer.blur_bw != bw || layer.blur_bh != bh ]
+                    layer.blur_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: bw, height: bh ]
+                    layer.blur_canvas.update[]
+                    layer.blur_bw = bw
+                    layer.blur_bh = bh
+                    layer.blur_dirty = true
+                if [ e.volatile ]
+                    layer.blur_dirty = true
+                if [ layer.blur_dirty ]
+                    layer.blur_canvas.reset[ vec4f[0.0, 0.0, 0.0, 0.0] ]
+                    draw_cv = layer.blur_canvas
+                    draw_cv.save[]
+                    draw_cv.translate[ -b.x + pad * 0.5, -b.y + pad * 0.5 ]
+                    blur_redraw = true
+
+            if [ (!needs_blur || blur_redraw) && ((layer.fill_color && layer.fill_color.a > 0.0) || (layer.stroke_color && layer.stroke_color.a > 0.0) || layer.inner_glow) ]
+                draw_cv.save             [ ]
                 # crisp-pixel offset: odd stroke widths need to straddle the
                 # pixel grid at half-pixel centers. stroke of 1 → (0.5, 0.5),
                 # stroke of 2 → (0, 0).
                 sw_int : i32 [ i32 layer.stroke_width ]
                 crisp  : f32 [ ((sw_int % 2) == 1) ? 0.5 : 0.0 ]
                 if [ crisp > 0.0 ]
-                    cv.translate    [ crisp, crisp ]
-                cv.set_stroke_size  [ layer.stroke_width ]
-                cv.set_stroke_cap   [ layer.stroke_cap  ]
-                cv.set_stroke_join  [ layer.stroke_join ]
-                cv.rounded_rect     [ b.x, b.y, b.w, b.h, rx, ry ]
-                cv.fill_color       [ layer.fill_color ]
-                cv.stroke_color     [ layer.stroke_color ]
+                    draw_cv.translate    [ crisp, crisp ]
+                draw_cv.set_stroke_size  [ layer.stroke_width ]
+                draw_cv.set_stroke_cap   [ layer.stroke_cap  ]
+                draw_cv.set_stroke_join  [ layer.stroke_join ]
+                draw_cv.rounded_rect     [ b.x, b.y, b.w, b.h, rx, ry ]
+                draw_cv.fill_color       [ layer.fill_color ]
+                draw_cv.stroke_color     [ layer.stroke_color ]
                 # fill gradient anchors — same element-unit → world-pixel
                 # convention as the label gradient. axis straddles the anchor
                 # so mirror puts the highlight ON the anchor point.
@@ -8758,57 +8795,57 @@ Display Window
                 fp_y : f32 [ layer.fill_color_pos.y * e.bounds.h ]
                 # DEBUG: hardcoded to test whether layer fields reach here.
                 f_rad : f32 [ layer.fill_gradient_radius ]
-                f_ax  : f32 [ cv.transform_tx[] + fp_x ]
-                f_ay  : f32 [ cv.transform_ty[] + fp_y ]
-                cv.fill_grad        [ layer.fill_gradient_color ]
+                f_ax  : f32 [ draw_cv.transform_tx[] + fp_x ]
+                f_ay  : f32 [ draw_cv.transform_ty[] + fp_y ]
+                draw_cv.fill_grad        [ layer.fill_gradient_color ]
                 if [ layer.fill_gradient == GradientType.radial ]
-                    cv.fill_color_pos   [ f_ax, f_ay ]
-                    cv.fill_grad_pos    [ f_ax + f_rad, f_ay ]
-                    cv.fill_grad_radial [ true ]
-                    cv.fill_grad_mirror [ false ]
+                    draw_cv.fill_color_pos   [ f_ax, f_ay ]
+                    draw_cv.fill_grad_pos    [ f_ax + f_rad, f_ay ]
+                    draw_cv.fill_grad_radial [ true ]
+                    draw_cv.fill_grad_mirror [ false ]
                 el [ layer.fill_gradient == GradientType.linear ]
-                    cv.fill_color_pos   [ f_ax, f_ay ]
-                    cv.fill_grad_pos    [ f_ax + f_rad, f_ay ]
-                    cv.fill_grad_radial [ false ]
-                    cv.fill_grad_mirror [ false ]
+                    draw_cv.fill_color_pos   [ f_ax, f_ay ]
+                    draw_cv.fill_grad_pos    [ f_ax + f_rad, f_ay ]
+                    draw_cv.fill_grad_radial [ false ]
+                    draw_cv.fill_grad_mirror [ false ]
                 el
-                    cv.fill_grad_radial [ false ]
-                    cv.fill_grad_mirror [ false ]
+                    draw_cv.fill_grad_radial [ false ]
+                    draw_cv.fill_grad_mirror [ false ]
                 # stroke gradient — same anchor as fill (cursor position)
                 s_rad : f32 [ layer.stroke_gradient_radius ]
-                cv.stroke_grad      [ layer.stroke_gradient_color ]
+                draw_cv.stroke_grad      [ layer.stroke_gradient_color ]
                 if [ layer.stroke_gradient == GradientType.radial ]
-                    cv.stroke_color_pos [ f_ax, f_ay ]
-                    cv.stroke_grad_pos  [ f_ax + s_rad, f_ay ]
-                    cv.stroke_grad_radial [ true ]
-                    cv.stroke_grad_mirror [ false ]
+                    draw_cv.stroke_color_pos [ f_ax, f_ay ]
+                    draw_cv.stroke_grad_pos  [ f_ax + s_rad, f_ay ]
+                    draw_cv.stroke_grad_radial [ true ]
+                    draw_cv.stroke_grad_mirror [ false ]
                 el [ layer.stroke_gradient == GradientType.linear ]
-                    cv.stroke_color_pos [ f_ax, f_ay ]
-                    cv.stroke_grad_pos  [ f_ax + s_rad, f_ay ]
-                    cv.stroke_grad_radial [ false ]
-                    cv.stroke_grad_mirror [ false ]
+                    draw_cv.stroke_color_pos [ f_ax, f_ay ]
+                    draw_cv.stroke_grad_pos  [ f_ax + s_rad, f_ay ]
+                    draw_cv.stroke_grad_radial [ false ]
+                    draw_cv.stroke_grad_mirror [ false ]
                 el
-                    cv.stroke_grad_radial [ false ]
-                    cv.stroke_grad_mirror [ false ]
+                    draw_cv.stroke_grad_radial [ false ]
+                    draw_cv.stroke_grad_mirror [ false ]
                 if [ layer.inner_glow ]
-                    cv.inner_glow   [ layer.inner_glow.color, layer.inner_glow.blur ]
-                cv.paint            [ ]
-                cv.restore          [ ]
+                    draw_cv.inner_glow   [ layer.inner_glow.color, layer.inner_glow.blur ]
+                draw_cv.paint            [ ]
+                draw_cv.restore          [ ]
 
-            if [ layer.image_svg ]
-                cv.draw_svg[ layer.image_svg, b.x, b.y, b.w, b.h ]
+            if [ (!needs_blur || blur_redraw) && layer.image_svg ]
+                draw_cv.draw_svg[ layer.image_svg, b.x, b.y, b.w, b.h ]
 
             label : string (layer.label && layer.label.count > 0) ? layer.label : null
-            
-            if [ (element_text || label) && layer.label_size > 0 ]
-                cv.save[]
+
+            if [ (!needs_blur || blur_redraw) && (element_text || label) && layer.label_size > 0 && layer.label_color && layer.label_color.a > 0 ]
+                draw_cv.save[]
                 align  : vec2f [
                     x: (layer.label_align) ? layer.label_align.x : 0,
                     y: (layer.label_align) ? layer.label_align.y : 0 ]
                 offset : vec2f  [ x: layer.label_offset.x, y: layer.label_offset.y ]
-                cv.fill_color   [ layer.label_color ]
-                cv.font_size    [ layer.label_size ]
-                cv.line_height  [ layer.label_height ]
+                draw_cv.fill_color   [ layer.label_color ]
+                draw_cv.font_size    [ layer.label_size ]
+                draw_cv.line_height  [ layer.label_height ]
                 # gradient anchor: element-unit → world-pixel. |v| < 1 means
                 # a fraction of e.bounds; otherwise pixels. the axis straddles
                 # the anchor point (p0 = anchor - halfDir, p1 = anchor + halfDir)
@@ -8825,18 +8862,27 @@ Display Window
                 # (parent called cv.translate[e.bounds.x, e.bounds.y] before
                 # recursing). v_pos in the shader is world-space, so the
                 # anchor must use the transform, not e.bounds.x/y.
-                ax   : f32 [ cv.transform_tx[] + cp_x ]
-                ay   : f32 [ cv.transform_ty[] + cp_y ]
-                cv.text_grad        [ layer.label_gradient ]
-                cv.text_color_pos   [ ax - hx, ay - hy ]
-                cv.text_grad_pos    [ ax + hx, ay + hy ]
-                cv.text_grad_mirror [ layer.label_gradient_mirror ]
+                ax   : f32 [ draw_cv.transform_tx[] + cp_x ]
+                ay   : f32 [ draw_cv.transform_ty[] + cp_y ]
+                draw_cv.text_grad        [ layer.label_gradient ]
+                draw_cv.text_color_pos   [ ax - hx, ay - hy ]
+                draw_cv.text_grad_pos    [ ax + hx, ay + hy ]
+                draw_cv.text_grad_mirror [ layer.label_gradient_mirror ]
                 lsh : Shadow [
                     color:  layer.label_shadow,
                     offset: layer.label_shadow_offset,
                     blur:   layer.label_shadow_blur ]
-                cv.draw_text    [ (label) ? label : element_text, b, align, offset, layer.label_overflow, lsh ]
-                cv.restore      [ ]
+                draw_cv.draw_text    [ (label) ? label : element_text, b, align, offset, layer.label_overflow, lsh ]
+                draw_cv.restore      [ ]
+
+            if [ needs_blur ]
+                if [ blur_redraw ]
+                    draw_cv.restore[]
+                    br : f32 [ (layer.blur_x > layer.blur_y) ? layer.blur_x : layer.blur_y ]
+                    layer.blur_canvas.blur[ br ]
+                    layer.blur_dirty = false
+                bpad : f32 [ ((layer.blur_x > layer.blur_y) ? layer.blur_x : layer.blur_y) * 2.0 ]
+                cv.draw_canvas[ layer.blur_canvas, b.x - bpad * 0.5, b.y - bpad * 0.5, b.w + bpad, b.h + bpad ]
 
         if [ xform ]
             cv.restore[]
@@ -8890,7 +8936,7 @@ abstract media_app trinity
     func run[] -> i32
         type : typeid[a]
         window : Window[ app_object: a, title:type.ident, st: Style [ a ], 
-            width:(width) ?? 1488, height:(height) ?? 888 ]
+            width:(width) ?? 1888, height:(height) ?? 888 ]
         expect window.vk, "context didnt work"
 
         w = window
@@ -8903,8 +8949,6 @@ abstract media_app trinity
     func render[]
         window : Window[w]
         update_scene*[]
-        if [ window.colorize ] window.colorize.clear[ '#000'  ]
-        if [ window.overlay  ] window.overlay .clear[ '#0000' ]
         window.draw[]
 
 
@@ -9044,13 +9088,16 @@ class StyleBlock
         ux      : Window [ n.ux ]
 
         for [ q: StyleQualifier ] in quals
+            q.hold[]
+            cur = n
             best_this : i64 [ 0 ]
             while [ true ]
                 ty_handle   : handle [ q.ty ]
-                id_match    : bool [ q.id && q.id == cur.id ]
-                id_reject   : bool [ q.id && !id_match ]
-                type_match  : bool [ ty_handle && (typeid[ cur ] inherits typeid[ q.ty ]) ]
-                type_reject : bool [ ty_handle && !type_match ]
+                id_match    : bool   [ q.id && q.id == cur.id ]
+                id_reject   : bool   [ q.id && !id_match ]
+                type_match  : bool   [ ty_handle && (cur.instance_of[ q.ty ] != null) ]
+                type_reject : bool   [ ty_handle && !type_match ]
+                
                 # state pseudo-classes. q.states holds the full list (e.g.
                 # :hovered:pressed). ALL states must be truthy on this element
                 # for the selector to match. the q.oper path (state OP value)
@@ -9071,18 +9118,21 @@ class StyleBlock
                                 all_match = false
                                 break
                         state_match = all_match
-                    
+
                 state_reject : bool [ score_state && q.state && !state_match ]
                 if [ id_reject || type_reject || state_reject ]
+                    q.drop[]
                     return 0.0
                 sc : i64[ id_match ] << 1 | i64[ type_match ] | i64[ state_match ] << 2
                 best_this = max[ sc, best_this ]
                 if [ !q.parent ]
                     if [ q.anchored && cur.parent ]
+                        q.drop[]
                         return 0.0
                     break
                 q   = q.parent
                 cur = (cur.parent) ? cur.parent : element[]
+            q.drop[]
             best_sc = max[ best_sc, best_this ]
         return best_sc
 
@@ -9134,7 +9184,12 @@ class Style
         ret    : false
         result.clear[]
         for [ block: StyleBlock ] reverse in blocks
-            if [ !block.types.count || block.types.index_of[ ty ] >= 0 ]
+            type_ok : bool [ !block.types.count ]
+            for [ bt: Au_t ] in block.types
+                if [n.instance_of[ bt ]]
+                    type_ok = true
+                    break
+            if [ type_ok ]
                 if [ block.key && block.property ]
                     if [ block.score[ n, false ] > 0 ]
                         for [ f:StyleEntry, name:string ] in block.entries
@@ -9636,7 +9691,7 @@ class StyleQualifier
     mutable states   : array string       # all states when no op, e.g. :hovered:pressed
     mutable oper     : string
     mutable value    : string
-    mutable parent   : object
+    mutable parent   : StyleQualifier
     mutable anchored : bool
 
 
@@ -9724,6 +9779,7 @@ enum Blend
 
 class Layer
     public ctype               : CanvasType
+    public test2               : bool
     public area                : Region
     mutable bounds             : rect
     public radius              : Radius
@@ -9796,6 +9852,13 @@ class Layer
     public unclip              : bool
     public opacity             : f32
 
+    public blur_x           : f32
+    public blur_y           : f32
+    intern blur_canvas      : Canvas
+    intern blur_dirty       : bool
+    intern blur_bw          : i32
+    intern blur_bh          : i32
+
 
 # scrolling requires defined children Region
 Layer Children
@@ -9810,16 +9873,42 @@ element Group
     func render[] -> Elements
         return null
 
-element Button
+element Control
     focusable : true
-
     func render[] -> Elements
         return null
 
-Group Toolbar
+Control Button
     func render[] -> Elements
         return null
 
+Button Check
+    mutable selected : bool
+    func init[]
+        selected = true
+    
+    func on_click[ ev:Event ]
+        selected = !selected
+    
+    func render[] -> Elements
+        return null
+
+Button Option
+    mutable selected : bool
+    func on_click[ ev:Event ]
+        for [ e:element, id:string ] in parent.elements
+            selected = (a == e)
+    
+    func render[] -> Elements
+        return null
+
+element Toolbar
+    func render[] -> Elements
+        return null
+
+Control Edit
+    func render[] -> Elements
+        return null
 
 class Camera
     mutable vk            : vk_context
@@ -10398,7 +10487,7 @@ ModelViewProject CanvasBlurV
             result      += texture(color, v_uv - shift) * w;
             weight_sum  += 2.0 * w;
         }}
-        fragColor = vec4((result / weight_sum).xyz, 1.0);
+        fragColor = result / weight_sum;
     }
 
 
@@ -10447,7 +10536,7 @@ ModelViewProject CanvasBlurH
         vec4  lo           = blur_sample(low,  v_uv, offset, sigma);
         vec4  hi           = blur_sample(high, v_uv, offset, sigma);
         vec4  m            = mix(lo, hi, ubo.mix_factor);
-        fragColor          = vec4(m.xyz, 1.0);
+        fragColor          = m;
     }
 
 
@@ -10459,9 +10548,6 @@ ModelViewProject UXBackground
     attrib frost          : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.frost,          count:1, format: typeid[ rgba8 ] ]
     attrib blur           : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.blur,           count:1, format: typeid[ rgba8 ] ]
     attrib compose        : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.compose,        count:1, format: typeid[ rgba8 ] ]
-    attrib colorize       : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.colorize,       count:1, format: typeid[ rgba8 ] ]
-    attrib overlay        : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.overlay,        count:1, format: typeid[ rgba8 ] ]
-
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
     attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
@@ -10498,8 +10584,6 @@ ModelViewProject UXBackground
     # 44
     func fragment [] -> GLSL none {
         vec4  comp     = texture(compose,        v_uv);
-        vec4  col      = texture(colorize,       v_uv);
-        vec4  over     = texture(overlay,        v_uv);
         float luminance = 1.0 - ((comp.b - 0.5020) * 2.0);
         vec3  f;
         
@@ -10514,15 +10598,6 @@ ModelViewProject UXBackground
                 texture(frost,      v_uv).rgb,
                 (comp.r - 0.5020) / (1.0 - 0.5020)) * luminance;
         }
-
-        if (comp.g > 0.0) {
-            float hue = comp.g;
-            vec3  hsv = rgb2hsv(f);
-            vec3  clr = vec3(comp.g, hsv.y, hsv.z);
-            f = hsv2rgb(clr);
-        }
-
-        f = mix(f, over.rgb, over.a);
 
         fragColor = vec4(f, 1.0);
     }
@@ -10628,6 +10703,7 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
         if [ !qq.count ]
             continue
         v : StyleQualifier[ bl:bl ]
+        v.hold[]
         result.push[ v ]
         parent_to_child : qq.split[ '/' ]
         processed : StyleQualifier [ null ]
@@ -10635,6 +10711,7 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
             q : string [ parent_to_child[i].trim[] ]
             if [ processed ]
                 v.parent = StyleQualifier[ bl:bl ]
+                v.parent.hold[]
                 v = v.parent
             idot : q.index_of[ '.' ]
             icol : q.index_of[ ':' ]
@@ -10656,7 +10733,7 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
             if [ v.type ]
                 v.ty = Au.find_type[ v.type.chars, null ]
                 expect v.ty, 'type must exist: {v.type}'
-                if [ bl.types.index_of[ v.ty ] == -1 ]
+                if [ !processed && bl.types.index_of[ v.ty ] == -1 ]
                     bl.types.push[ v.ty ]
             if [ tail ]
                 is_op : false
@@ -10685,6 +10762,7 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
         if [ anchored ]
             v.anchored = true
     p[0] = end
+    result.hold[]
     return result
 
 

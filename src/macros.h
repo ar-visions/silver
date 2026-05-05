@@ -224,7 +224,7 @@
 
 #define new0(T, ...) \
     ({ \
-        T instance = (T)alloc(typeid(T), 1, null, null, null); \
+        T instance = (T)alloc(typeid(T), 1, null, null, null, __FILE__, __LINE__, 0); \
         _N_ARGS(instance, ## __VA_ARGS__); \
         Au_initialize((Au)instance); \
         instance; \
@@ -232,12 +232,12 @@
 
 #define Au_allocate(T, ...) \
     ({ \
-        T instance = (T)alloc(typeid(T), 1, null, null, null); \
+        T instance = (T)alloc(typeid(T), 1, null, null, null, __FILE__, __LINE__, 0); \
         _N_ARGS(instance, ## __VA_ARGS__); \
         instance; \
     })
 
-#define valloc(T, N)                ((Au)alloc(typeid(T), N, (Au_t*)null))
+#define valloc(T, N)                ((Au)alloc(typeid(T), N, null, null, null, __FILE__, __LINE__, 0))
 #define ftable(TYPE, INSTANCE)      ((TYPE##_f*)((Au)INSTANCE)[-1].type)
 #define isa(INSTANCE)               ((Au_t)(INSTANCE ? (struct _Au_f*)((struct _Au*)INSTANCE - 1)->type : (struct _Au_f*)0))
 // see: javascript; returns null if its not an instance-of; faults if you give it a null

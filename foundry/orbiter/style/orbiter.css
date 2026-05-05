@@ -1,148 +1,53 @@
 /* trinity!  ..help. */
 @import "trinity.css"
 
-Toolbar {
-    area: l-8 t-8 w132 b-8
+Group {
+    area:   l200 t32 w512 h656
     layers.compose:
         ctype: compose
         fill_color: #f0a
-
-    layers.border:
-        fill_color: #fff4
-        area: l132 t0 w1 b0
-
-    layers.border2:
-        fill_color: #0004
-        area: l133 t0 w1 b0
-
+        radius: 16
+        test2: true
+    
     layers.base:
-        fill_color:         #fff1
-        inner_glow:         #fff1 16
+        radius:             16
+        fill_color:         #fff0
+        inner_glow:         #fff4 16
 }
 
-Toolbar.right {
-    area: r-8 t-8 w256 b-8
+Group / Control {
+    area:               l16 t16+ r16 h44
+    layers.compose:
+        ctype:          compose
+        fill_color:     #a0a
+        radius:         16
+    layers.base:
+        fill_color:     #fff0, 1444ms
+        stroke_width:   1
+        stroke_color:   #fff4
+        label_color:    #fff
+        label_size:     17
+        radius:         9
 }
 
-
-Button {
-    area:               l16 t16+ r12 h44
-    scaling:            1.0 1.0, filter 0.8
-    layers.face:
-        label_color:            #fffa
-        label_size:             16
-        fill_gradient:          radial
-        fill_color:             #fff4
-        fill_gradient_color:    #fff2
-        fill_color_pos:         0.5 1.0, filter 0.7
-        radius:                 4
-        stroke_width:           1
-        stroke_color:           #fff4
-        fill_gradient_radius:   80
+Group / Control:hovered {
+    layers.base:
+        fill_color:     #4afa
 }
 
-Button.start {
-    area:               l16 t16+ r12 h88
-    layers.svg:
-        area:           8
-        image_svg:      "images/orbiter.svg"
-        image_align:    0.5 0.5
-}
-
-Button:hovered {
-    layers.face:
-        fill_color:             #fa08
-        fill_gradient_color:    #f804
-        fill_color_pos:         {cursor}, filter 0.7
-        label_color:            #fff
-}
-
-Button:pressed {
-    scaling:            0.9 0.9, filter 0.8
-    layers.face:
-        fill_color:             #2af8
-        fill_gradient_color:    #28f4
-        fill_color_pos:         {cursor}, filter 0.7
-        label_color:            #fff
-
-}
-
-World.avatar {
-
-    shaders.orbiter: PBR
-        pulse_width:    1.0
-        groups:         ["outside","flower","separator"]
-        model_id:       "orbiter32"
-        env_id:         "night"
-
-    shaders.core:    Core
-        pulse_width:    1.0
-        groups:         ["core"]
-        model_id:       "orbiter32"
-    
-    shaders.plasma: Plasma
-        pulse_width:    1.0
-        groups:         ["top_ring"]
-        model_id:       "orbiter32"
-        transparent:    true
-    
-    /*
-    shaders.core:    Core
-        pulse_width:    1.0
-        groups:         ["top_ring"]
-        model_id:       "orbiter32"
-
-    shaders.aura:    Aura
-        pulse_width:    1.0
-        model_id:       "uv-quad2"
-
-    render_scale:       4.0
-    clear_color:        0 0 0 0
-*/
-
-    render_scale:       4.0
-    clear_color:        0 0 0 0
-    rotate:             [ 0 1 0 30deg, 1 0 0 20deg ], 222ms cubic outward
-    eye_pos:            0.0 3.5 -2.0
-    target_pos:         0.0 0.0 0.0
-    up_vec:             0.0 -1.0 0.0
-    fov:                30.0
-    blend_bands:        0.2
-    blend_rings:        0.2
-    blend_haze:         1.0
-    area: r888 b888 r64 b64
-}
 
 World.avatar:hovered {
+    shaders.aura:
+        pulse_width:    2.0, filter 0.8
+        flame:          1.0, filter 0.8
+
     rotate:             [ 0 1 0 30deg, 1 0 0 10deg ], 222ms cubic outward
 }
 
 World.avatar:pressed {
+    shaders.aura:
+        pulse_height:   2.0, filter 0.8
+    
     rotate:             [ 0 1 0 30deg, 1 0 0 0deg ], 88ms cubic outward
 }
 
-Editor {
-    area: l100 t10 r10 h128
-
-    layers.base:
-        area:           0
-        fill_offset:    0
-        fill_color:     #fff
-
-    layers.border:
-        area:           -1
-        stroke_offset:  -1
-        stroke_width:    2
-        stroke_color:   #fff
-
-    layers.text:
-        area:           -22
-        editable:       true
-        selectable:     true
-        multiline:      true
-}
-
-Editor:hovered, Editor:pressed {
-    layers.base:
-        fill_color:     #ff0
-}

@@ -53,8 +53,8 @@ i32 Image_exr(Image a, path uri) {
 }
 
 shape shape_from(i64, i64*);
-Au alloc2(Au_t type, Au_t scalar, shape s);
-Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b);
+Au alloc2(Au_t type, Au_t scalar, shape s, const char* source, int line, int seq);
+Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b, const char* source, int line, int seq);
 
 none Image_init(Image a) {
     Au info = header((Au)a);
@@ -95,7 +95,7 @@ none Image_init(Image a) {
             a->pixels = (u8*)a->res_bits;
         } else {
             i64 dims[] = { a->height, a->width, pixel_type->typesize };
-            u8* bytes = (u8*)alloc2(pixel_type, component_type, shape_from(3, dims));
+            u8* bytes = (u8*)alloc2(pixel_type, component_type, shape_from(3, dims), __FILE__, __LINE__, 0);
             info->data = (Au)bytes;
             a->pixels = bytes;
         }
@@ -125,7 +125,7 @@ none Image_init(Image a) {
         int total_floats = width * height * 4;
 
         i64 dims[] = { height, width, sizeof(f32) };
-        f32* data = (f32*)alloc2((Au_t)_typeid(rgbaf), (Au_t)_typeid(f32), shape_from(3, dims));
+        f32* data = (f32*)alloc2((Au_t)_typeid(rgbaf), (Au_t)_typeid(f32), shape_from(3, dims), __FILE__, __LINE__, 0);
 
         Imf::Array2D<Rgba> pixels;
         pixels.resizeErase(height, width); // [y][x] format
@@ -171,7 +171,7 @@ none Image_init(Image a) {
         png_read_update_info (png, png_info);
         png_bytep* rows = (png_bytep*)malloc (sizeof(png_bytep) * a->height);
         u8*        data = (u8*)alloc(
-            (Au_t)_typeid(u8), a->width * a->height * a->channels * (bit_depth / 8), null, null, null);
+            (Au_t)_typeid(u8), a->width * a->height * a->channels * (bit_depth / 8), null, null, null, __FILE__, __LINE__, 0);
         for (int y = 0; y < a->height; y++) {
             rows[y] = data + (y * a->width * a->channels * (bit_depth / 8));
         }
