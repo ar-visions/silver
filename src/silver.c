@@ -3613,6 +3613,16 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     if (seq == 28267) {
         seq = seq;
     }
+    if (!cmode && (next_is(a, "__FILE__") || next_is(a, "__LINE__") || next_is(a, "__SEQUENCE__"))) {
+        token tk = consume(a);
+        enode n_src; Au n_line, n_seq;
+        alloc_origin_args((aether)a, &n_src, &n_line, &n_seq);
+        if (eq(tk, "__FILE__"))     return n_src;
+        if (eq(tk, "__LINE__"))     return e_operand(a, n_line, etypeid(i32));
+        if (instanceof(n_seq, enode)) return (enode)n_seq;
+        return e_operand(a, n_seq, etypeid(i64));
+    }
+
     // we may only support a limited set of C functionality for #define macros
     mem = parse_member(a, null, null, mdl_expect, from_ref); // we never parse assignment here
 

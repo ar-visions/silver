@@ -473,19 +473,18 @@ originSessionId: bfc52629-94ea-4e48-bebf-f379ae155ab0
 **Standard motion (compile + run + screenshot, one Bash call):**
 ```bash
 export LD_LIBRARY_PATH=/src/silver/platform/native/lib:/src/silver/install/lib:/src/silver/install/debug:$LD_LIBRARY_PATH
-./platform/native/debug/silver orbiter >/dev/null 2>&1 \
+./platform/native/debug/silver orbiter --clean >/dev/null 2>&1 \
   && /src/silver/platform/native/debug/orbiter &>/dev/null &
 bash /src/silver/screenshot.sh
 ```
 - `LD_LIBRARY_PATH` must be exported — silver itself is dynamically linked against the same libs.
-- Run from `/src/silver`. `silver orbiter` (no `--run`) is the compile step; cache-aware.
+- Run from `/src/silver`. `silver orbiter --clean` (no `--run`) is the compile step. **Always use `--clean`. No exceptions.**
 - `&` backgrounds the binary so screenshot.sh's internal sleep can overlap.
 - `screenshot.sh` sleeps 10s (for load) then grabs only the `orbiter` X window by name, writing `/tmp/screenshot.png`. Don't pass any args.
 - After the Bash call returns, `Read /tmp/screenshot.png` to view it.
 
 **Variants:**
-- Force rebuild: `silver orbiter --clean` (propagates to imports).
-- Verbose compile: `silver orbiter -v`.
+- Verbose compile: `silver orbiter -v --clean`.
 - Debug under GDB: `gdb --args /src/silver/platform/native/debug/orbiter`.
 
 **NEVER use `--run`.** Not under any circumstances. Not for GDB, not for debugging, not ever. Compile with `silver orbiter`, run the binary separately. "Run orbiter" = execute the binary silver produced. Burned ~20 commands dodging this; do not repeat.
