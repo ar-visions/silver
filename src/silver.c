@@ -3137,9 +3137,6 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     // handle typed operations, converting to our expected model (if no difference, it passes through)
     if (a->expr_level > 0 && peek && (is_alpha(peek) || eq(peek, "struct"))) {
-        if (seq == 27257) {
-            seq = seq;
-        }
         etype mdl_found = read_etype(a, null);
         if (mdl_found) {
             // here we must 'peek' at a body; which if not available we go default
@@ -3147,11 +3144,16 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             enode res0 = null;
             if (from_ref) mdl_found = pointer((aether)a, (Au)mdl_found);
             if (b) {
+                if (seq == 61)
+                    seq = seq;
+                //bool check_redundant_type = true;
                 array expr = read_initializer(a);
                 if (!len(expr) && read_if(a, "sub")) {
                     res0 = e_create(a, mdl_expect, (Au)parse_sub(a, mdl_found)); 
+                    //check_redundant_type = false;
                 } else if (!len(expr) && read_if(a, "asm")) {
                     res0 = e_create(a, mdl_expect, (Au)parse_asm(a, mdl_found));
+                    //check_redundant_type = false;
                 } else if (expr) {
                     push_tokens(a, (tokens)expr, 0);
                     if (next_is(a, "[") && is_rec(mdl_found))
@@ -3168,6 +3170,12 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                         res0 = e_create(a, mdl_found, (Au)null); // required conversion
                     }
                 }
+                /*
+                we would like a redundant type check, but its difficult to design here
+                verify (!check_redundant_type || !mdl_expect || (res0 && res0->au != mdl_found->au && res0->au != mdl_expect->au),
+                    "type given (%o) is redundant; expression matches %i", mdl_found, seq);
+                */
+                    
             } else if (a->assign_type == OPType__bind &&
                     (from_ref || is_class(mdl_found) || is_ptr(mdl_found))) {
                 res0 = e_null(a, mdl_found);
@@ -3623,8 +3631,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return e_operand(a, n_seq, etypeid(i64));
     }
 
-    // we may only support a limited set of C functionality for #define macros
-    mem = parse_member(a, null, null, mdl_expect, from_ref); // we never parse assignment here
+    mem = parse_member(a, null, null, mdl_expect, from_ref);
 
     if (!mem && cmode) return null;
     if (!mem) {
@@ -3637,11 +3644,10 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     if (load && !is_loaded((Au)mem) && (!is_struct(mem) || is_ptr(mem)))
         mem = enode_value(mem, false);
     Au info = head(mem);
-    // convert to expected type, but don't narrow to bool here —
-    // that would destroy information needed by comparison operators (== !=).
-    // the caller (parse_expression) handles the final bool conversion via e_create.
+
     if (f && mdl_expect && !(mdl_expect->au == typeid(bool) && !is_bool(mem)))
         return e_create(a, mdl_expect, (Au)mem);
+
     return (enode)mem;
 }
 
@@ -3684,7 +3690,7 @@ enode parse_statement(silver a)
             num line = tk->line;
             path src = tk->source;
             string f = filename(src);
-            fprintf(stderr, "[%s:%4lld] ", f->chars, line);
+            fprintf(stderr, "[%s:%-4lld] ", f->chars, line);
             for (int s = 0; s < tk->indent; s++) fputc(' ', stderr);
             for (int i = a->cursor; i < len(a->tokens); i++) {
                 token t = (token)a->tokens->origin[i];
@@ -4253,7 +4259,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         validate(skip || first || read_if(a, ","), "expected comma separator between arguments %i", seq);
         
         bool    is_inlay  = read_if(a, "inlay") != null;    push_current(a);
-        etype   t = read_etype(a, null);            pop_tokens(a, t != null);
+        etype   t         = read_etype(a, null);            pop_tokens(a, t != null);
         string  n         = t ? null : read_alpha(a); // optional
         micro*  ar        = in_context ? (micro*)&au->members : (micro*)&au->args;
 
