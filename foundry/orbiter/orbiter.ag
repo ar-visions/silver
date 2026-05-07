@@ -29,6 +29,9 @@ enum Language
 
 
 ModelViewProject Earth
+    mutable _pad0   : f32
+    mutable _pad1   : f32
+    mutable _pad2   : f32
     mutable cam_pos : vec4f
 
     attrib color        : LayoutBinding [ type:typeid[ EarthSurface ], id:EarthSurface.color,      count:1, format: typeid[ rgba8 ] ]
@@ -53,10 +56,10 @@ ModelViewProject Earth
     attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
 
     func init[]
-        fov_deg : f32 60.0f
-        aspect  : f32 1920.0f / 1080.0f
-        near    : f32 0.1f
-        far     : f32 100.0f
+        fov_deg : 60.0f
+        aspect  : 1920.0f / 1080.0f
+        near    : 0.1f
+        far     : 100.0f
         eye2    : vec3f [0.0f,  0.0f,  1.5f]
         target2 : vec3f [0.0f,  0.0f,  0.0f]
         up2     : vec3f [0.0f, -1.0f,  0.0f]
@@ -1626,9 +1629,63 @@ shader Aura2
 
  ##
 
+Layer EditorLayer
+    public src       : path
+    mutable lines    : array string
+    mutable scroll   : f32
+    mutable sel_line : i32 [ -1 ]
+    mutable lh_cache     : f32 [ 0.0 ]
+    mutable ascent_cache : f32 [ 0.0 ]
+    mutable cap_cache    : f32 [ 0.0 ]
+
+    func load_file []
+        if [ !src ] return
+        content : string [ src.load[ typeid[string], null ] ]
+        if [ !content ] return
+        lines = content.split["\n"]
+
+    func draw [ cv: Canvas ]
+        if [ !lines ]
+            if [ !src ] src = path '/src/silver/src/silver.c'
+            load_file[]
+        if [ !lines ] return
+        lh  : f32 [ (cv.font) ? cv.font.line_height : 22.0 ]
+        lh_cache     = lh
+        ascent_cache = (cv.font) ? cv.font.ascent    : 18.0
+        cap_cache    = (cv.font) ? cv.font.cap_height : 14.0
+        x0  : f32 [ bounds.x ]
+        y0  : f32 [ bounds.y ]
+        if [ sel_line >= 0 ]
+            y_sel : f32 [ y0 + f32[sel_line] * lh - scroll ]
+            if [ y_sel + lh >= bounds.y && y_sel <= bounds.y + bounds.h ]
+                cv.fill_color[ '#264f78' ]
+                cv.close_path[]
+                cv.rect_to[ bounds.x, y_sel + cap_cache - ascent_cache, bounds.w, lh ]
+                cv.paint[]
+        for [ li: 0, li < lines.count, li += 1 ]
+            y : f32 [ y0 + f32[li] * lh - scroll ]
+            if [ y + lh < bounds.y ] continue
+            if [ y > bounds.y + bounds.h ] break
+            cv.fill_color[ '#d4d4d4' ]
+            cv.draw_text[ lines[li],
+                rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                vec2f [ 0.0, 0.0 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        cv.paint[]
+
+
 Control Editor
-    lang : Language
-    time : f32
+    public src      : path
+
+    func on_press [ ev: Event ]
+        ele          : (layers) ?? (layers['content'] to EditorLayer) || return
+        lh           : f32   [ (ele.lh_cache > 0.0) ? ele.lh_cache : 22.0  ]
+        rel_y        : f32   [ ev.mouse.pos.y - ele.bounds.y + ele.scroll  ]
+        li           : clamp [ rel_y / lh, 0, ele.lines.count - 1          ]
+        ele.sel_line = i32 li
+        pristine     = false
+
+    func render [] -> Elements
+        return null
 
 
 trinity orbiter
@@ -1657,6 +1714,17 @@ trinity orbiter
     
     public func on_render [ w: Window ] -> Elements
         return Elements [
+            "toolbar": Toolbar [],
+            "editor-group": Group [
+                elements: Elements [
+                    "editor":  Editor [ src: path '/src/silver/src/silver.c' ]
+                ]
+            ]
+        ]
+    
+##
+        return Elements [
+            "toolbar": Toolbar [],
             "controls": Group [
                 elements: Elements [
                     "button":  Button [ label: 'Button'  ],
@@ -1664,10 +1732,17 @@ trinity orbiter
                     "option1": Option [ label: 'Option1' ],
                     "option2": Option [ label: 'Option2' ]
                 ]
-            ]
+            ],
+            "avatar": World []
         ]
- 
+ ##
+
     func load_scene []
+        window : (w to Window)
+        window.background = Render [ vk: vk, w: window, wscale: 1.0,
+            clear_color: vec4f [ 0.022, 0.088, 0.188, 1.0 ] ]
+
+##
         # 1) load the earth gltf mesh — shared by earth/ocean/cloud passes
         gltf_path : path 'models/earth.gltf'
         earth_gltf = gltf_path.load[ typeid[ GltfModel ], null ]
@@ -1695,7 +1770,6 @@ trinity orbiter
             'cloud':      Image [ uri: path 'textures/purple-cloud-8192x4096.png',      surface: PurpleSurface.cloud ]
         ]
         ##
-        window : (w to Window)
         cloud_straight_alpha : bool true
         
         earth_model = Model [ vk: vk, w: window, id: earth_gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
@@ -1708,7 +1782,7 @@ trinity orbiter
         ##
 
         window.background = Render [ vk: vk, w: window, wscale: 1.0,
-            clear_color: vec4f [ 0.288, 0.088, 0.188, 1.0 ],
+            clear_color: vec4f [ 0.022, 0.088, 0.188, 1.0 ],
             models:      models ]
 
     
@@ -1728,9 +1802,9 @@ trinity orbiter
         # camera orbits around the earth (Y axis); earth stays fixed so the
         # sunlight direction sweeps across the surface as we go around.
         time -= 0.0244 * win.frame_factor
-        orbit_a : f32 [ radians[ time ] ]
-        co      : f32 [ cos[ orbit_a ] ]
-        so      : f32 [ sin[ orbit_a ] ]
+        orbit_a : radians[ time ]
+        co      : cos[ orbit_a ]
+        so      : sin[ orbit_a ]
 
         # local camera frame (earth at origin, eye on +Z, looking toward -Z
         # with a tilt that puts horizon in upper-third)
@@ -1784,6 +1858,9 @@ trinity orbiter
         cloud.cam_pos = _cam
 
         win.time = time
+
+##
+
 ##
         purple.time = time
         purple.model = m

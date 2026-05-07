@@ -278,7 +278,7 @@ class Render
                 extent: VkExtent2D [ fw, fh ]
             ] ]
             clear_values: local VkClearValue [2]
-            mc : i64 [ models.count ]
+            mc : i64 [ (models) ? models.count : 0 ]
 
             clear_values[0].color.float32[0] = clear_color.x
             clear_values[0].color.float32[1] = clear_color.y
@@ -7779,8 +7779,12 @@ ielement element
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
     intern transitions  : map StyleTransition[string]
-    intern restyle  : bool
-    intern volatile : bool
+    intern restyle       : bool
+    intern volatile      : bool
+    intern cache_canvas  : Canvas
+    intern cache_w       : i32
+    intern cache_h       : i32
+    mutable pristine     : bool [ false ]
 
     public func set_capture []
         ux.set_capture[ a ]
@@ -8696,9 +8700,21 @@ Display Window
         if [ !e.area ]
             e.area = Region [ 0.0 ]
 
-        if [!e.bounds] e.bounds = rect[] 
+        if [!e.bounds] e.bounds = rect[]
         bounds : e.area.rectangle[ rel, null, (last) ? last.bounds : null ]
         memcpy[ e.bounds, bounds, sizeof[f32] * 4 ]
+
+        ew : i32 [ i32[ceilf[e.bounds.w]] + 1 ]
+        eh : i32 [ i32[ceilf[e.bounds.h]] + 1 ]
+        if [ ew > 0 && eh > 0 && !e.volatile ]
+            if [ !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ]
+                e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh ]
+                e.cache_canvas.update[]
+                e.cache_w = ew
+                e.cache_h = eh
+                e.pristine = false
+
+        target_cv : Canvas [ (e.cache_canvas && !e.volatile && stage == CanvasType.screen) ? e.cache_canvas : cv ]
 
         element_text : (e.label && e.label.count) ? e.label : null
 
@@ -8727,8 +8743,13 @@ Display Window
                 cv.scale_xy[ sx, sy ]
             cv.translate[ -pivot_x, -pivot_y ]
 
+        redraw : bool [ e.volatile || !e.pristine || stage == CanvasType.compose ]
+        if [ redraw && e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
+            e.cache_canvas.reset[ vec4f[0.0, 0.0, 0.0, 0.0] ]
+
         # compute layer bounds and draw each layer
         for [ layer_au: Au, lkey: string ] in e.layers
+            if [ !redraw ] break
             layer : Layer [ layer_au to Layer ]
             if [ !layer || layer.ctype != stage ]
                 continue
@@ -8736,10 +8757,6 @@ Display Window
             layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null ] : e.bounds.copy[]
             layer.bounds.x -= e.bounds.x
             layer.bounds.y -= e.bounds.y
-
-            if [layer.test2]
-                layer.test2 = layer.test2
-            
             b  : rect   [ layer.bounds ]
             rx : f32 [ 0.0 ]
             ry : f32 [ 0.0 ]
@@ -8750,7 +8767,7 @@ Display Window
             # blur setup: draw to per-layer canvas when blur is active.
             # dirty on first use, size change, or active transition.
             needs_blur  : bool [ layer.blur_x > 0.0 || layer.blur_y > 0.0 ]
-            draw_cv     : Canvas [ cv ]
+            draw_cv     : Canvas [ target_cv ]
             blur_redraw : bool [ false ]
 
             if [ needs_blur ]
@@ -8786,7 +8803,7 @@ Display Window
                 draw_cv.set_stroke_cap   [ layer.stroke_cap  ]
                 draw_cv.set_stroke_join  [ layer.stroke_join ]
                 draw_cv.rounded_rect     [ b.x, b.y, b.w, b.h, rx, ry ]
-                draw_cv.fill_color       [ layer.fill_color ]
+                draw_cv.fill_color       [ (layer.fill_color && layer.fill_color.a > 0.0) ? layer.fill_color : rgba [ '#00000000' ] ]
                 draw_cv.stroke_color     [ layer.stroke_color ]
                 # fill gradient anchors — same element-unit → world-pixel
                 # convention as the label gradient. axis straddles the anchor
@@ -8875,6 +8892,8 @@ Display Window
                 draw_cv.draw_text    [ (label) ? label : element_text, b, align, offset, layer.label_overflow, lsh ]
                 draw_cv.restore      [ ]
 
+            layer.draw*[ draw_cv ]
+
             if [ needs_blur ]
                 if [ blur_redraw ]
                     draw_cv.restore[]
@@ -8882,11 +8901,26 @@ Display Window
                     layer.blur_canvas.blur[ br ]
                     layer.blur_dirty = false
                 bpad : f32 [ ((layer.blur_x > layer.blur_y) ? layer.blur_x : layer.blur_y) * 2.0 ]
-                cv.draw_canvas[ layer.blur_canvas, b.x - bpad * 0.5, b.y - bpad * 0.5, b.w + bpad, b.h + bpad ]
+                target_cv.draw_canvas[ layer.blur_canvas, b.x - bpad * 0.5, b.y - bpad * 0.5, b.w + bpad, b.h + bpad ]
 
         if [ xform ]
             cv.restore[]
-        e.draw*[ a ]
+
+        if [ redraw ]
+            # redirect window canvases so e.draw* sees the cache target
+            prev_screen  : Canvas [ a.screen ]
+            prev_compose : Canvas [ a.compose ]
+            if [ stage == CanvasType.screen ]  a.screen  = target_cv
+            if [ stage == CanvasType.compose ] a.compose = target_cv
+            e.draw*[ a ]
+            a.screen  = prev_screen
+            a.compose = prev_compose
+            if [ !e.volatile && stage == CanvasType.screen ]
+                e.pristine = true
+
+        # blit element cache into parent canvas (screen stage only)
+        if [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
+            cv.draw_canvas[ e.cache_canvas, 0.0, 0.0, f32 ew, f32 eh ]
 
         last_2 : element
         for [ ee: element, id: string ] in e.elements
@@ -9827,13 +9861,6 @@ class Layer
     public label_overflow      : Overflow [ Overflow.ellipsis ]
 
     public font                : Font
-    public line_height         : f32
-    public letter_spacing      : f32
-    public word_wrap           : bool
-    public editable            : bool
-    public selectable          : bool
-    public multiline           : bool
-
     public image_svg           : SVGModel
     public image_source        : Image
     public image_align         : Align
@@ -9858,6 +9885,9 @@ class Layer
     intern blur_dirty       : bool
     intern blur_bw          : i32
     intern blur_bh          : i32
+
+    func draw [ cv: Canvas ]
+        return
 
 
 # scrolling requires defined children Region

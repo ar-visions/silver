@@ -2735,7 +2735,7 @@ Au alloc_dbg(Au_t type, num count, symbol source, i32 line, i32 sequence) {
     a->data       = &a[1];
     a->count      = count;
     a->alloc      = count;
-    a->source     = source;
+    a->source     = (cstr)source;
     a->line       = line;
     a->sequence   = sequence;
     if (!type->is_au_native && !source) {
@@ -4907,8 +4907,9 @@ array string_split(string a, symbol sp) {
     sz   slen = strlen(sp);
     array result = array(32);
     while (next) {
-        cstr   n = strstr(&next[1], sp);
-        string v = string(chars, next, ref_length, n ? (sz)(n - next) : 0);
+        cstr   n = strstr(next, sp);
+        sz     vlen = n ? (sz)(n - next) : strlen(next);
+        string v    = vlen ? string(chars, next, ref_length, vlen) : new(string, alloc, 1);
         next = n ? n + slen : null;
         push(result, (Au)v);
         if (!next || !next[0])

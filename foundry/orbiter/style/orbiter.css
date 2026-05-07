@@ -1,18 +1,49 @@
 /* trinity!  ..help. */
 @import "trinity.css"
 
+Toolbar {
+    layers.compose:
+        ctype: compose
+        fill_color: #f0a
+
+    layers.border:
+        fill_color: #fff4
+        area: l132 t0 w1 b0
+
+    layers.border2:
+        fill_color: #0004
+        area: l133 t0 w1 b0
+
+    layers.base:
+        fill_color:         #fff1
+        inner_glow:         #fff1 16
+}
+
+Toolbar {
+    area: l-8 t-8 w132 b-8
+}
+
+Toolbar.right {
+    area: r-8 t-8 w256 b-8
+}
+
 Group {
     area:   l200 t32 w512 h656
     layers.compose:
         ctype: compose
         fill_color: #f0a
         radius: 16
-        test2: true
     
     layers.base:
         radius:             16
         fill_color:         #fff0
         inner_glow:         #fff4 16
+        stroke_color:       #0004
+        stroke_width:       1
+}
+
+Group.editor-group {
+    area:   l140 t32 r32 b32
 }
 
 Group / Control {
@@ -20,9 +51,9 @@ Group / Control {
     layers.compose:
         ctype:          compose
         fill_color:     #a0a
-        radius:         16
+        radius:         9
     layers.base:
-        fill_color:     #fff0, 1444ms
+        fill_color:     #0000
         stroke_width:   1
         stroke_color:   #fff4
         label_color:    #fff
@@ -32,9 +63,129 @@ Group / Control {
 
 Group / Control:hovered {
     layers.base:
-        fill_color:     #4afa
+        fill_color: #4af4
 }
 
+Group / Check {
+    layers.check:
+        area: l11 t11 w20 h20
+        fill_color:     #0004
+        stroke_width:   1
+        stroke_color:   #fff4
+        radius:         9
+    layers.inner:
+        area: l15 t15 w12 h12
+        fill_color:     #4af0, 222ms cubic
+        inner_glow:     #fff0 8, 222ms cubic
+        stroke_width:   1
+        stroke_color:   #fff0
+        radius:         9
+}
+
+Group / Check:pressed {
+    layers.base:
+        fill_color:     #0000, 222ms cubic
+    layers.inner:
+        area:           l15 t15 w12 h12
+        radius:         7
+        fill_color:     #4af4, 222ms cubic
+}
+
+Group / Check:selected {
+    layers.base:
+        fill_color:     #4af8, 222ms cubic
+    layers.check:
+        fill_color:     #000a
+    layers.inner:
+        fill_color:     #4af, 222ms cubic
+        inner_glow:     #fffa 8, 222ms cubic
+        stroke_color:   #fff8
+}
+
+Group / Check:pressed & selected {
+    layers.base:
+        fill_color:     #4af4, 222ms cubic
+    layers.inner:
+        area:           l17 t17 w8 h8
+        radius:         7
+        fill_color:     #4afa, 222ms cubic
+}
+
+
+Toolbar / Button {
+    area:               l16 t16+ r12 h44
+    layers.face:
+        label_color:            #fffa
+        label_size:             12
+        fill_gradient:          radial
+        fill_color:             #fff4, 444ms cubic
+        radius:                 4
+        stroke_width:           1
+        stroke_color:           #fff4
+        fill_gradient_radius:   80
+}
+
+Toolbar / Button.start {
+    area:               l16 t16+ r12 h88
+    layers.svg:
+        area:           8
+        image_svg:      "images/orbiter.svg"
+        image_align:    0.5 0.5
+}
+
+Toolbar / Button:hovered {
+    layers.face:
+        fill_color:             #fa08, 444ms cubic
+        label_color:            #fff
+}
+
+Toolbar / Button:pressed {
+    scaling:            0.9 0.9, filter 0.8
+    layers.face:
+        fill_color:             #2af8
+        fill_gradient_color:    #28f4
+        fill_color_pos:         {cursor}, filter 0.7
+        label_color:            #fff
+
+}
+
+World.avatar {
+    shaders.orbiter: PBR
+        groups:         ["outside","flower","separator"]
+        model_id:       "orbiter32"
+        env_id:         "night"
+        pulse_width:    1.0, filter 0.8
+    
+    shaders.core:    Core
+        groups:         ["core"]
+        model_id:       "orbiter32"
+        texture:        "textures/core.png"
+        mip_levels:     8
+        pulse_width:    1.0, filter 0.8
+
+    shaders.plasma: Plasma
+        groups:         ["top_ring","flower"]
+        model_id:       "orbiter32"
+        pulse_width:    1.0, filter 0.8
+
+    shaders.aura:    Aura
+        model_id:       "uv-quad2"
+        pulse_width:    4.4, filter 0.8
+        pulse_height:   1.0, filter 0.8
+        flame:          0.0, filter 0.8
+
+    render_scale:       4.0
+    clear_color:        0 0 0 0
+    rotate:             [ 0 1 0 30deg, 1 0 0 20deg ], 222ms cubic outward
+    eye_pos:            0.0 3.5 -2.0
+    target_pos:         0.0 0.0 0.0
+    up_vec:             0.0 -1.0 0.0
+    fov:                30.0
+    blend_bands:        0.2
+    blend_rings:        0.2
+    blend_haze:         1.0
+    area: r888 b888 r64 b64
+}
 
 World.avatar:hovered {
     shaders.aura:
@@ -51,3 +202,17 @@ World.avatar:pressed {
     rotate:             [ 0 1 0 30deg, 1 0 0 0deg ], 88ms cubic outward
 }
 
+
+Editor {
+    area:                   l32 t32 r32 b32
+    layers.base:
+        radius:             8
+        fill_color:         #00f
+    layers.border:
+        radius:             8
+        fill_color:         #0000
+        stroke_width:       1
+        stroke_color:       #aaf4
+    layers.content: EditorLayer
+        area:               l8 t8 r8 b8
+}
