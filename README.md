@@ -11,7 +11,7 @@ Copyright (C) 2017 Kalen Novis White — MIT License
 
 write .c or .cc compilation-units alongside your `.ag` source to out-source methods for your component, with all fields accessible without wrapping or binding code.  it compiles and links automatically with full access to your types. The boundary between languages disappears because the object model is shared — Au, a C runtime with reference counting, type reflection, and single-inheritance, serves C, C++, and silver equally.
 
-**most up-to-date real-world examples of silver code:** [trinity](foundry/trinity.ag) (Vulkan-based composition / SDF compute-canvas)
+**most up-to-date real-world examples of silver code:** [trinity](foundry/trinity/trinity.ag) (Vulkan-based composition / SDF compute-canvas)
 
 **silver is debuggable.** Every build emits full LLDB debug information — source maps, code-coverage, variable inspection, stepping, breakpoints — on every platform. Debug is the default because that's where you spend your time, and production failures on platforms you can't inspect are the failures that end projects. silver targets Linux, macOS, Windows, and embedded ARM from a single source tree with a self-contained SDK.
 
