@@ -2833,7 +2833,7 @@ Au alloc2(Au_t type, Au_t scalar, shape s, symbol source, i32 line, i32 seq) {
     a->data_shape = hold(s);
     a->count      = count;
     a->alloc      = count;
-    a->source     = source;
+    a->source     = (cstr)source;
     a->line       = line;
     a->sequence   = seq;
     return a->data;
@@ -3156,12 +3156,13 @@ Au Au_get_property_by_type(Au a, Au_t find_type) {
 }
 
 none Au_set_context_from(Au target, Au source) {
-    Au_t type = isa(target);
+    Au_t type     = isa(target);
+    Au_t src_type = isa(source);
     while (type && type != typeid(Au)) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = (Au_t)type->members.origin[i];
             if (mem->member_type != AU_MEMBER_VAR || !mem->is_context) continue;
-            Au val = Au_get_property_by_type(source, mem->type);
+            Au val = inherits(src_type, mem->src) ? source : Au_get_property_by_type(source, mem->type);
             Au_t_f* fn = (Au_t_f*)isa(target);
             if (val) member_set(target, mem, val);
         }
@@ -5214,12 +5215,14 @@ none Au_free(Au a) {
     Au       aa = header(a);
     char ch = aa->type->ident[0];
 
+    /*
     if (ch == 'V') {
-        return;
+        if (aa->source)
+            printf("freeing %s:%i (%s)\n", aa->source, aa->line, aa->type->ident);
+        //return;
     }
-    if (ch == 'u') {
-        return;
-    }
+    */
+
     // C-imported types are flat memory — no init/dealloc/hold/drop vtable.
     // just free the allocation and skip the chain walk entirely.
     bool     is_c = aa->type && aa->type->is_c;
@@ -5233,6 +5236,7 @@ none Au_free(Au a) {
     //if (aa->source)
     //    printf("Au_free type=%s source=%s:%i seq=%i\n", aa->type->ident, aa->source, aa->line, aa->sequence);
 #endif
+
     while (cur) {
         if (prev != cur->ft.dealloc) {
             cur->ft.dealloc(a);
@@ -5488,10 +5492,6 @@ Au list_value_by_index(list a, Au at_index) {
     }
     assert(false, "could not fetch item at index %i", at);
     return null;
-}
-
-num list_count(list a) {
-    return a->count;
 }
 
 
@@ -6946,11 +6946,6 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
     Au res = null;
     if (!schema || (schema == typeid(array) || schema->src == typeid(array))) {
         Au_t element_type = meta_type ? meta_type : (schema ? schema->meta.a : typeid(map));
-        printf("parse_array: schema=%s src=%s meta.a=%s element_type=%s near: %.40s\n",
-            schema ? schema->ident : "null",
-            (schema && schema->src) ? schema->src->ident : "null",
-            (schema && schema->meta.a) ? schema->meta.a->ident : "null",
-            element_type ? element_type->ident : "null", scan);
         res = (Au)parse_array_objects(&scan, element_type, context);
     } else if (schema->meta.a == typeid(i64)) { // should support all vector types of i64 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(i64), context);
@@ -6962,7 +6957,6 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
             ((i64*)res)[n++] = *(i64*)a;
         }
     } else if (schema->meta.a == typeid(f32)) { // should support all vector types of f32 (needs type bounds check with vmember_count)
-        printf("parse_array f32-vec schema=%s near: %.60s\n", schema->ident, scan);
         array arb = parse_array_objects(&scan, typeid(f32), context);
         int vcount = len(arb);
         res = alloc(typeid(f32), vcount, null, null, null, __FILE__, __LINE__, seq);
@@ -6974,9 +6968,6 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
             else if (a_type == typeid(f64)) ((f32*)res)[n++] =  (float)*(double*)a;
             else fault("unexpected type");
         }
-        printf("parse_array f32-vec result: count=%d vals=", vcount);
-        for (int _i = 0; _i < vcount && _i < 4; _i++) printf("%f ", ((float*)res)[_i]);
-        printf("\n");
     } else if (constructs_with(schema, typeid(array))) {
         // i forget where we use this!
         array arb = parse_array_objects(&scan, typeid(i64), context);

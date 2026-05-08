@@ -137,10 +137,11 @@ etype etype_prep(aether a, Au_t au) { sequencer
     } else { \
         s = (string)formatter( \
             (Au_t)null, false, stderr, (Au) true, seq, \
-            (symbol) "\n%s:%i%o / %o:%i:%i :: " t, \
-            __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string(""), a->module_file, \
+            (symbol) "\n%o:%i:%i (%s:%i%o) " t, \
+            a->module_file, \
             aether_peek_safe(a)->line, \
-            aether_peek_safe(a)->column __VA_OPT__(,) __VA_ARGS__); \
+            aether_peek_safe(a)->column, \
+            __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string("") __VA_OPT__(,) __VA_ARGS__); \
         if (level_err >= fault_level) { \
             halt(s, aether_peek(a)); \
         } \
@@ -283,7 +284,10 @@ LLVMValueRef entry_alloca(aether a, LLVMTypeRef ty, cstr name) {
         LLVMPositionBuilderBefore(B, first_inst);
     else
         LLVMPositionBuilderAtEnd(B, entry);
+    LLVMMetadataRef saved_loc = LLVMGetCurrentDebugLocation2(B);
+    LLVMSetCurrentDebugLocation2(B, null);
     LLVMValueRef v = LLVMBuildAlloca(B, ty, name);
+    LLVMSetCurrentDebugLocation2(B, saved_loc);
     LLVMPositionBuilderAtEnd(B, current);
     return v;
 }
@@ -794,6 +798,16 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
             enode prev_node = enode(mod, a, au, L_type->au, value, prev_value, loaded, true);
             e_fn_call(a, fn_drop, a(prev_node), false, false);
         }
+    }
+
+    // `new T[N]` vector allocations stored into a member field need a hold so
+    // auto_free doesn't reclaim the backing buffer while the object lives.
+    bool res_is_vector = !no_store && is_member_slot &&
+        res && res->au && (res->au->traits & AU_TRAIT_SHAPED);
+    if (res_is_vector && !a->no_build) {
+        efunc fn_hold = (efunc)u(efunc,
+            find_member(etypeid(Au)->au, "hold", AU_MEMBER_FUNC, 0, true));
+        e_fn_call(a, fn_hold, a(res), false, false);
     }
 
     return res;
@@ -3797,6 +3811,8 @@ void aether_apply_overrides(aether a, enode alloc) {
         cur = cur->context;
     }
     if (ov_mask0 || ov_mask1) mark_set(alloc, ov_mask0, ov_mask1);
+    if (a->emit_overrides)
+        ((void(*)(Au, Au))a->emit_overrides)((Au)a, (Au)alloc);
 }
 
 // assign default only if prop was not set by constructor
