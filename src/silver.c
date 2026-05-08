@@ -61,9 +61,9 @@ token aether_peek_safe(silver);
     } else { \
         s = (string)formatter( \
             (Au_t)null, false, stderr, (Au) true, seq, \
-            (symbol) "\n%s:%i%o :: %o:%i:%i\n" t, \
-            __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string(""), a->module_file, \
-            pk->line, pk->column __VA_OPT__(,) __VA_ARGS__); \
+            (symbol) "\n%o:%i:%i (%s:%i%o)\n" t, \
+            a->module_file, \
+            pk->line, pk->column, __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string("") __VA_OPT__(,) __VA_ARGS__); \
         if (level_err >= fault_level) { \
             halt(s, aether_peek_safe(a)); \
         } \
@@ -1288,7 +1288,9 @@ void silver_init(silver a) {
     //a->parse_enode  = silver_read_enode;
     //a->reverse_descent = reverse_descent;
     a->read_etype     = read_etype;
-    a->prepare_record = (callback)prepare_record_cb;
+    a->prepare_record  = (callback)prepare_record_cb;
+    void silver_emit_overrides_cb(silver, enode);
+    a->emit_overrides  = (callback_extra)silver_emit_overrides_cb;
     a->src_loc      = absolute(path(_SRC ? _SRC : "."));
     verify(dir_exists("%o", a->src_loc), "SRC path does not exist");
 
@@ -3208,6 +3210,11 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         if (isa(lit) == typeid(i64) && mdl_expect &&
            (mdl_expect->au == typeid(string) || mdl_expect->au == typeid(symbol) || mdl_expect->au == typeid(const_string)))
             lit = (Au)unicode_char(*(i64*)lit);
+        else if (isa(lit) == typeid(unichar) && mdl_expect &&
+           (mdl_expect->au == typeid(string) || mdl_expect->au == typeid(symbol) ||
+            mdl_expect->au == typeid(const_string) || mdl_expect->au == typeid(cstr) ||
+            (mdl_expect->au->is_pointer && mdl_expect->au->src == typeid(i8))))
+            lit = (Au)unicode_char(*(unichar*)lit);
         a->expr_level++;
         enode res = e_operand(a, lit, mdl_expect);
         a->expr_level--;
@@ -3817,6 +3824,11 @@ enode parse_statement(silver a)
         "unexpected access level found in struct");
 
     // elaborate keyword: narrow an inherited member's type without adding new storage
+    /*
+    
+    redundant from property overrides
+        its best not to add new keyword when the activity is merely specifying a member without a value
+    
     if (rec_top && read_if(a, "elaborate")) {
         string name = read_alpha(a);
         validate(name, "expected member name after elaborate");
@@ -3833,6 +3845,7 @@ enode parse_statement(silver a)
         etype_register((aether)a, (Au)m, (Au)e, true);
         return e;
     }
+    */
 
     // not yet sold on needing override; its less arguments but you can do that with func init, too
     // also override would need to require the cast and operator
@@ -6560,6 +6573,25 @@ void silver_emit_override_init(silver a, enode instance, Au_t override_member) {
     enode L = e_inherited_access((aether)a, instance, override_member);
     enode always_false = e_operand((aether)a, _bool(false), etypeid(bool));
     assign_if_cond((aether)a, L, always_false, set_if);
+}
+
+// emit all override initializers for alloc before the parent init chain runs.
+// called from aether_apply_overrides via the emit_overrides callback.
+void silver_emit_overrides_cb(silver a, enode alloc) {
+    Au_t alloc_type = alloc->au;
+    if (!alloc_type) return;
+    Au_t cur = alloc_type;
+    while (cur && cur != typeid(Au)) {
+        if (cur->context && cur->context != typeid(Au)) {
+            for (int i = 0; i < cur->members.count; i++) {
+                Au_t mb = (Au_t)cur->members.origin[i];
+                if (mb->member_type == AU_MEMBER_VAR && mb->is_override)
+                    silver_emit_override_init(a, alloc, mb);
+            }
+        }
+        if (cur->context == cur) break;
+        cur = cur->context;
+    }
 }
 
 // build attrib initializer: parse tokens and return the constructed object

@@ -264,7 +264,7 @@ class Render
                 sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                 flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
             ] ]
-            if [ i == 0 && bool[ color ] ]
+            if [ i == 0 && bool[ color ] && color.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 color.transition_in[ frame, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
             fw: i32 [ (i == 0) ? width : width / 4 ]
@@ -983,6 +983,8 @@ class uniforms
         leaf:   Au_t [ hdr2.type ]
         total_uniform: i32 [ uniform_size[ leaf ] ]
         u_memory = new u8 [ total_uniform ]
+        m : (u_memory to Au)
+        m.hold[]
         uniform_buf: Buffer [ vk: vk, size: total_uniform,
             u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
             data: ref u_memory[0], user: leaf ]
@@ -2997,7 +2999,7 @@ Texture Display
                 swap_renders += r
                 r.hold[]
             semaphore_frame = swap_renders.first_element[]
-            swap_render_current = swap_renders.origin[0]
+            swap_render_current = swap_renders[0]
         return a
 
         
@@ -3194,14 +3196,17 @@ class shader
     intern vk_vert      : VkShaderModule
     intern vk_frag      : VkShaderModule
     intern vk_comp      : VkShaderModule
+    intern ctx          : array Au_t
 
     func context_chain [] -> array Au_t
-        r: array Au_t []
-        f: typeid [ a ]
-        while [ f && f != typeid[ shader ] ]
-            r.push[f]
-            f = f.context
-        return r.reverse[]
+        if [!ctx]
+            r: array Au_t []
+            f: typeid [ a ]
+            while [ f && f != typeid[ shader ] ]
+                r.push[f]
+                f = f.context
+            ctx = r.reverse[]
+        return ctx
 
     func indent [ s: symbol ] -> string
         str: string[s]
@@ -5247,7 +5252,7 @@ Render Canvas
         # inside Canvas.init (implicit self), bypassing the chained-write
         # issue with `outside.compose.font = fnt` from trinity.render.
         ft_lib_h : handle ft_init[]
-        font = CanvasFont [ ft_lib: ft_lib_h, uri: 'fonts/OxygenMono-Regular.ttf', size_px: 22 ]
+        font = CanvasFont [ ft_lib: ft_lib_h, uri: 'fonts/SpaceMono-Regular.ttf', size_px: 22 ]
         #font.hold[]
         canvas_samplers : map Au[string] [ 'image': sdf_tex, 'atlas': glyph_atlas.texture ]
         graphics_model : Model [ vk: vk, w: w, s: ui_shader, samplers: canvas_samplers ]
@@ -5749,10 +5754,10 @@ Render Canvas
                 y0 : f32 [ pen_y - f32 slot.bearing_y ]
                 x1 : f32 [ x0 + f32 slot.atlas_w ]
                 y1 : f32 [ y0 + f32 slot.atlas_h ]
-                u0 : f32 [ (f32 slot.atlas_x                   + 0.5) / atlas_size ]
-                v0 : f32 [ (f32 slot.atlas_y                   + 0.5) / atlas_size ]
-                u1 : f32 [ (f32 (slot.atlas_x + slot.atlas_w)  - 0.5) / atlas_size ]
-                v1 : f32 [ (f32 (slot.atlas_y + slot.atlas_h)  - 0.5) / atlas_size ]
+                u0 : f32 [ f32 slot.atlas_x                   / atlas_size ]
+                v0 : f32 [ f32 slot.atlas_y                   / atlas_size ]
+                u1 : f32 [ f32 (slot.atlas_x + slot.atlas_w)  / atlas_size ]
+                v1 : f32 [ f32 (slot.atlas_y + slot.atlas_h)  / atlas_size ]
                 base : i32 [ vi * 4 ]
                 verts[ base +  0 ] = x0
                 verts[ base +  1 ] = y0
@@ -5794,9 +5799,11 @@ Render Canvas
         display : string [ (overflow == Overflow.ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
         tm  : TextMetrics [ measure_text[ display ] ]
         tx  : f32 [ bounds.x + (bounds.w - tm.w) * align.x + offset.x ]
-        # cap-height-box centering — baseline sits cap_height below bounds.y at
-        # align.y=0, capitals optically centered at align.y=0.5 for most UI text.
-        ty  : f32 [ bounds.y + tm.cap_height + (bounds.h - tm.cap_height) * align.y + offset.y ]
+        # align.y=0: ascender top at bounds.y.
+        # align.y=0.5+: optical cap-height centering (blend ascent→cap_height
+        # anchor so the cap midpoint lands at bounds center, not ascent midpoint).
+        lref : f32 [ tm.ascent + (tm.cap_height - tm.ascent) * clamp[ align.y * 2.0, 0.0, 1.0 ] ]
+        ty   : f32 [ bounds.y + lref + (bounds.h - lref) * align.y + offset.y ]
 
         st : CanvasState states[state_depth - 1]
         text_shader.viewport = vec2f [ f32 width, f32 height ]
@@ -7315,6 +7322,9 @@ intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods:
     w.ev.mouse.pos.y  = w.mouse.y
     w.ev.mouse.button = id - GLFW_MOUSE_BUTTON_LEFT
     w.ev.mouse.state  = action == GLFW_PRESS
+    w.ev.key.shift    = (mods & 1) != 0
+    w.ev.key.meta     = (mods & 8) != 0
+    w.ev.key.alt      = (mods & 4) != 0
     if [ w.ev.mouse.state ]
         w.press_event[ w.ev ]
     el
@@ -7870,9 +7880,16 @@ func filter_n[ current:f32, goal:f32, amount:f32, rate:f32 ] -> f32
     el
         return current * decay
 
+struct CursorPos
+    x : f32
+    y : f32
+    h : f32
+
+
 Display Window
-    
+
     mutable app_object          : trinity*
+    mutable cursors             : array CursorPos
 
     public compose              : Canvas
     public glyph                : Canvas
@@ -8073,7 +8090,14 @@ Display Window
                             if [ !has_state ] inst_type = meta_type
                         if [ inst_type ]
                             n : Au.new_object[inst_type, null, null, false, __FILE__, __LINE__, __SEQUENCE__]
+                            ele : (home_object to element)
+                            home_type : typeid[ home_object ]
+                            inst_type : typeid[ inst ]
+                            if [ strcmp[ inst_type.ident, "Editor" ] == 0 ]
+                                test2 :  2
+                                test2 += 2
                             n.set_context_from[ home_object ]
+                            n.set_context_from[ inst ]
                             n.initialize[]
                             mc[entry.bl.key] = n
 
@@ -8367,10 +8391,11 @@ Display Window
             if [ hit ]
                 return hit
         
-        ev.mouse.pos.x = x
-        ev.mouse.pos.y = y
-    
-        return ( !must || must == e ) ? e : null
+        r : element [ ( !must || must == e ) ? e : null ]
+        if [ !r ]
+            ev.mouse.pos.x = x
+            ev.mouse.pos.y = y
+        return r
 
     public func text_event [ ev: Event ]
         ev.target = focus
@@ -8387,7 +8412,9 @@ Display Window
     # chain, the app sees it; finally window's default handler runs (focus
     # transfer, capture, pressed/hovered bookkeeping) regardless of consume.
     public func move_event [ ev: Event ]
+        orig_pos : vec2f [ ev.mouse.pos ]
         f : element [ find_target[ root, ev, null ] ]
+        ev.mouse.pos = orig_pos
         m : element [ (capture) ? find_target[ root, ev, capture ] : f ]
         # hover / leave bubble — flip state bools and set restyle; the next
         # update_element pass picks up restyle and re-applies CSS.
@@ -8455,6 +8482,8 @@ Display Window
             cl : typeid[e]
             ev.target = e
             e.on_press*[ ev ]
+            ev.mouse.pos.x += e.bounds.x - e.scroll.x
+            ev.mouse.pos.y += e.bounds.y - e.scroll.y
             if [ ev.no_propagation ]
                 break
         
@@ -8708,7 +8737,7 @@ Display Window
         eh : i32 [ i32[ceilf[e.bounds.h]] + 1 ]
         if [ ew > 0 && eh > 0 && !e.volatile ]
             if [ !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ]
-                e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh ]
+                e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
                 e.cache_canvas.update[]
                 e.cache_w = ew
                 e.cache_h = eh
@@ -9812,6 +9841,7 @@ enum Blend
 
 
 class Layer
+    context parent             : element
     public ctype               : CanvasType
     public test2               : bool
     public area                : Region
@@ -10651,7 +10681,7 @@ class DrawState
     public opacity              : f32
 
     public func set_default [ ] 
-        font         = Font[ size: 22, uri: path 'fonts/YanoneKaffeesatz-VariableFont_wght.ttf' ]
+        font         = Font[ size: 22, uri: path 'fonts/OxygenMono-Regular.ttf' ]
         stroke_cap   = Cap.round
         stroke_join  = Join.round
         stroke_size  = 0
@@ -10894,8 +10924,6 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
                 inner.parent = bl
                 if [ is_type ]
                     inner.type_name = val_str
-                    if [ !inner.entries.contains["name"] ]
-                        inner.entries["name"] = StyleEntry [ member: "name", value: val_str, bl: inner, line: lines[j].line ]
                 bl.blocks.push[ inner ]
             el
                 bl.entries[ member ] = StyleEntry [ member: member, value: inner, bl: bl, line: lines[j].line ]

@@ -32,18 +32,14 @@ Group {
     layers.compose:
         ctype: compose
         fill_color: #f0a
-        radius: 16
+        radius:             11
     
     layers.base:
-        radius:             16
+        radius:             11
         fill_color:         #fff0
         inner_glow:         #fff4 16
         stroke_color:       #0004
         stroke_width:       1
-}
-
-Group.editor-group {
-    area:   l140 t32 r32 b32
 }
 
 Group / Control {
@@ -59,11 +55,6 @@ Group / Control {
         label_color:    #fff
         label_size:     17
         radius:         9
-}
-
-Group / Control:hovered {
-    layers.base:
-        fill_color: #4af4
 }
 
 Group / Check {
@@ -203,16 +194,14 @@ World.avatar:pressed {
 }
 
 
-Editor {
-    area:                   l32 t32 r32 b32
-    layers.base:
-        radius:             8
-        fill_color:         #00f
-    layers.border:
-        radius:             8
-        fill_color:         #0000
-        stroke_width:       1
-        stroke_color:       #aaf4
-    layers.content: EditorLayer
-        area:               l8 t8 r8 b8
+Group.editor-group {
+    area:   l140 t32 r32 b32
 }
+
+Editor {
+    area:                   10
+    layers.content: EditorLayer
+        area:               8
+        label_height:       1.5
+}
+

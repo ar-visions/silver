@@ -1630,59 +1630,248 @@ shader Aura2
  ##
 
 Layer EditorLayer
-    public src       : path
-    mutable lines    : array string
-    mutable scroll   : f32
-    mutable sel_line : i32 [ -1 ]
-    mutable lh_cache     : f32 [ 0.0 ]
-    mutable ascent_cache : f32 [ 0.0 ]
-    mutable cap_cache    : f32 [ 0.0 ]
+    func on_move [ ev: Event ]
+        editor : Editor[ parent ]
+        if [ !editor || !editor.dragging ] return
+        lh : f32 [ (editor.lh_cache > 0.0) ? editor.lh_cache : 22.0 ]
+        cw : f32 [ (editor.cw_cache > 0.0) ? editor.cw_cache : 8.0 ]
+        rel_y : f32 [ ev.mouse.pos.y + editor.scroll ]
+        rel_x : f32 [ ev.mouse.pos.x ]
+        ln : i32 [ clamp[ rel_y / lh, 0, editor.lines.count - 1 ] ]
+        cl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0, editor.line_get[ ln ].count ] ]
+        editor.sel_line = ln
+        editor.sel_col  = cl
+        editor.pristine = false
 
-    func load_file []
-        if [ !src ] return
-        content : string [ src.load[ typeid[string], null ] ]
-        if [ !content ] return
-        lines = content.split["\n"]
+    func on_release [ ev: Event ]
+        editor : Editor[ parent ]
+        if [ editor ]
+            editor.dragging = false
 
     func draw [ cv: Canvas ]
-        if [ !lines ]
-            if [ !src ] src = path '/src/silver/src/silver.c'
-            load_file[]
-        if [ !lines ] return
-        lh  : f32 [ (cv.font) ? cv.font.line_height : 22.0 ]
-        lh_cache     = lh
-        ascent_cache = (cv.font) ? cv.font.ascent    : 18.0
-        cap_cache    = (cv.font) ? cv.font.cap_height : 14.0
-        x0  : f32 [ bounds.x ]
-        y0  : f32 [ bounds.y ]
-        if [ sel_line >= 0 ]
-            y_sel : f32 [ y0 + f32[sel_line] * lh - scroll ]
-            if [ y_sel + lh >= bounds.y && y_sel <= bounds.y + bounds.h ]
-                cv.fill_color[ '#264f78' ]
-                cv.close_path[]
-                cv.rect_to[ bounds.x, y_sel + cap_cache - ascent_cache, bounds.w, lh ]
-                cv.paint[]
-        for [ li: 0, li < lines.count, li += 1 ]
-            y : f32 [ y0 + f32[li] * lh - scroll ]
+        editor : Editor[ parent ]
+        if [ !editor || !editor.lines ] return
+        lh      : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
+        cw_tm   : TextMetrics [ cv.measure_text[ 'x' ] ]
+        x0      : f32 [ bounds.x ]
+        y0      : f32 [ bounds.y ]
+        fade_h  : f32 [ bounds.h * 0.20 ]
+        fade_s  : f32 [ bounds.y + bounds.h - fade_h ]
+        win     : (parent.ux to Window)
+        w       : win.cursors
+
+        editor.lh_cache = lh
+        editor.cw_cache = cw_tm.w
+
+        for [ li: i32 0, li < editor.lines.count, li += 1 ]
+            y : f32 [ y0 + f32[li] * lh - editor.scroll ]
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
-            cv.fill_color[ '#d4d4d4' ]
-            cv.draw_text[ lines[li],
+            alpha : ((y - bounds.y) < fade_s) ? 1.0 : 1.0 - ((y - fade_s) / fade_h)
+            col   : rgba['#fff']
+            col.a = alpha
+            cv.fill_color[ col ]
+            cv.draw_text[ editor.line_get[ li ],
                 rect [ x: x0, y: y, w: bounds.w, h: lh ],
-                vec2f [ 0.0, 0.0 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-        cv.paint[]
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        cv.paint[ ]
+
+        if [ editor.sel_line >= 0 ]
+            cv.save[ ]
+            cv.stroke_width[ 0.0 ]
+            al          : i32 [ editor.anchor_line ]
+            ac          : i32 [ editor.anchor_col ]
+            sl          : i32 [ editor.sel_line ]
+            sc          : i32 [ editor.sel_col ]
+            before      : bool [ al < sl || (al == sl && ac <= sc) ]
+            start_line  : i32 [ (before) ? al : sl ]
+            start_col   : i32 [ (before) ? ac : sc ]
+            end_line    : i32 [ (before) ? sl : al ]
+            end_col     : i32 [ (before) ? sc : ac ]
+            cw          : f32 [ cw_tm.w ]
+            has_sel : bool [ start_line != end_line || start_col != end_col ]
+            if [ has_sel ]
+                cv.save[ ]
+                for [ li: i32 start_line, li <= end_line, li += 1 ]
+                    y_row  : f32 [ y0 + f32[li] * lh - editor.scroll ]
+                    if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
+                    is_sl  : bool [ li == start_line ]
+                    is_el  : bool [ li == end_line ]
+                    col_x0 : f32 [ (is_sl) ? f32[start_col] * cw : 0.0 ]
+                    col_x1 : f32 [ (is_el) ? f32[end_col] * cw : bounds.w ]
+                    rx     : f32 [ x0 + col_x0 ]
+                    rw     : f32 [ col_x1 - col_x0 ]
+                    cv.fill_color[ '#264f78' ]
+                    cv.rect_to    [ rx, y_row, rw, lh ]
+                    cv.paint      [ ]
+                cv.restore[ ]
+
+                # selected text on top of rects
+                for [ li: i32 start_line, li <= end_line, li += 1 ]
+                    y_row  : f32 [ y0 + f32[li] * lh - editor.scroll ]
+                    if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
+                    is_sl  : bool [ li == start_line ]
+                    is_el  : bool [ li == end_line ]
+                    sc0    : i32  [ (is_sl) ? start_col : 0 ]
+                    sc1    : i32  [ (is_el) ? end_col : editor.line_get[ li ].count ]
+                    seg    : string [ editor.line_get[ li ].mid[ sc0, sc1 - sc0 ] ]
+                    sx     : f32   [ x0 + f32[sc0] * cw ]
+                    cv.fill_color[ '#fff' ]
+                    cv.draw_text[ seg,
+                        rect [ x: sx, y: y_row, w: bounds.w, h: lh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                cv.paint[ ]
+
+            # update global cursor position
+            y_sel : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll ]
+            if [ y_sel + lh >= bounds.y && y_sel <= bounds.y + bounds.h ]
+                prefix : string [ editor.line_get[ editor.sel_line ].mid[ 0, editor.sel_col ] ]
+                tm_c   : TextMetrics [ cv.measure_text[ prefix ] ]
+                cx     : f32 [ x0 + tm_c.w ]
+                cp     : CursorPos [ x: cx, y: y_sel + 2.0, h: lh - 4.0 ]
+                win    : Window    [ parent.ux ]
+                if [ !win.cursors ] win.cursors = array CursorPos []
+                if [ editor.cursor_idx < 0 || editor.cursor_idx >= win.cursors.count ]
+                    win.cursors.push[ cp ]
+                    editor.cursor_idx = win.cursors.count - 1
+                el
+                    while [ w.count <= editor.cursor_idx ]
+                        w += null
+                    
+                    w[ editor.cursor_idx ] = cp
+            
+            cv.restore[ ]
+
 
 
 Control Editor
-    public src      : path
+    public  src      : path
+    mutable lines    : list string
+    mutable scroll   : f32
+    mutable sel_line : i32 [ -1 ]
+    mutable sel_col  : i32 [ 0 ]
+    mutable lh_cache     : f32 [ 0.0 ]
+    mutable cw_cache     : f32 [ 0.0 ]
+    mutable anchor_line  : i32 [ 0 ]
+    mutable anchor_col   : i32 [ 0 ]
+    mutable dragging     : bool
+    mutable cursor_idx   : i32 [ -1 ]
+
+    func line_get [ i: i32 ] -> string
+        return lines.value_by_index[ i ]
+
+    func line_set [ i: i32, val: string ]
+        lines.remove[ i ]
+        lines.insert_after[ val, i - 1 ]
+
+    func load_file []
+        if [ !src ] src = path '/src/silver/src/silver.c'
+        content : string [ src.load[ typeid[string], null ] ]
+        if [ !content ] return
+        parts : array string [ content.split["\n"] ]
+        lines = list string []
+        for [ i: i32 0, i < parts.count, i += 1 ]
+            lines.push[ parts[i] ]
+
+    func init [ ]
+        lines = list string []
+        lines.push[ '' ]
+        load_file[]
+
+    func hit_test [ ev: Event ] -> none
+        ele   : (layers) ? (layers['content'] to EditorLayer) : null
+        if [ !ele ] return
+        lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
+        rel_y : f32 [ (ev.mouse.pos.y - ele.bounds.y) + scroll ]
+        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
+        ln    : i32 [ clamp [ rel_y / lh, 0, lines.count - 1 ] ]
+        cl    : i32 [ clamp [ i32[ round[ rel_x / cw ] ], 0, line_get[ ln ].count ] ]
+        sel_line = ln
+        sel_col  = cl
 
     func on_press [ ev: Event ]
-        ele          : (layers) ?? (layers['content'] to EditorLayer) || return
-        lh           : f32   [ (ele.lh_cache > 0.0) ? ele.lh_cache : 22.0  ]
-        rel_y        : f32   [ ev.mouse.pos.y - ele.bounds.y + ele.scroll  ]
-        li           : clamp [ rel_y / lh, 0, ele.lines.count - 1          ]
-        ele.sel_line = i32 li
-        pristine     = false
+        if [ !ev.key.shift ]
+            hit_test[ ev ]
+            anchor_line = sel_line
+            anchor_col  = sel_col
+            puts 'anchor set to {sel_line}:{sel_col}'
+        el
+            hit_test[ ev ]
+        dragging = true
+        pristine = false
+
+    func on_move [ ev: Event ]
+        if [ dragging ]
+            hit_test[ ev ]
+            pristine = false
+
+    func on_release [ ev: Event ]
+        dragging = false
+
+    func on_char [ ev: Event ]
+        if [ sel_line < 0 ] sel_line = 0
+        row  : i32 [ sel_line ]
+        col  : i32 [ sel_col ]
+        line : string [ line_get[ row ] ]
+        ch   : string [ ev.key.text ]
+        line_set[ row, line.mid[0, col] + ch + line.mid[col, line.count - col] ]
+        sel_col += 1
+        pristine = false
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        if [ sel_line < 0 ] sel_line = 0
+        row  : i32 [ sel_line ]
+        col  : i32 [ sel_col ]
+        key  : i32 [ ev.key.unicode ]
+
+        if [ key == 257 ]
+            line  : string [ line_get[ row ] ]
+            left  : string [ line.mid[0, col] ]
+            right : string [ line.mid[col, line.count - col] ]
+            line_set[ row, left ]
+            lines.insert_after[ right, row ]
+            sel_line += 1
+            sel_col   = 0
+
+        el [ key == 259 ]
+            if [ col > 0 ]
+                line : string [ line_get[ row ] ]
+                line_set[ row, line.mid[0, col - 1] + line.mid[col, line.count - col] ]
+                sel_col -= 1
+            el [ row > 0 ]
+                prev : string [ line_get[ row - 1 ] ]
+                sel_col  = prev.count
+                line_set[ row - 1, prev + line_get[ row ] ]
+                lines.remove[ row ]
+                sel_line -= 1
+
+        el [ key == 265 ]
+            if [ sel_line > 0 ]
+                sel_line -= 1
+                sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
+
+        el [ key == 264 ]
+            if [ sel_line < lines.count - 1 ]
+                sel_line += 1
+                sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
+
+        el [ key == 263 ]
+            if [ col > 0 ]
+                sel_col -= 1
+            el [ row > 0 ]
+                sel_line -= 1
+                sel_col = line_get[ sel_line ].count
+
+        el [ key == 262 ]
+            if [ col < line_get[ row ].count ]
+                sel_col += 1
+            el [ row < lines.count - 1 ]
+                sel_line += 1
+                sel_col = 0
+
+        pristine = false
 
     func render [] -> Elements
         return null
@@ -1719,23 +1908,26 @@ trinity orbiter
                 elements: Elements [
                     "editor":  Editor [ src: path '/src/silver/src/silver.c' ]
                 ]
-            ]
-        ]
-    
-##
-        return Elements [
-            "toolbar": Toolbar [],
-            "controls": Group [
-                elements: Elements [
-                    "button":  Button [ label: 'Button'  ],
-                    "check":   Check  [ label: 'Check'   ],
-                    "option1": Option [ label: 'Option1' ],
-                    "option2": Option [ label: 'Option2' ]
-                ]
             ],
-            "avatar": World []
+            #"avatar": World []
         ]
- ##
+
+    public func on_canvas [ cv: Canvas ]
+        super.on_canvas[ cv ]
+        win : Window [ (w to Window) ]
+        if [ !win || !win.cursors ] return
+        t     : f32 [ f32[ win.time ] ]
+        alpha : f32 [ (sin[ t * 4.4 ] > 0.0) ? 1.0 : 0.0 ]
+        if [ alpha < 0.5 ] return
+        for [ i: i32 0, i < win.cursors.count, i += 1 ]
+            cur : CursorPos [ win.cursors[i] ]
+            cv.save[ ]
+            cv.stroke_width[ 0.0 ]
+            cv.fill_color[ '#fff' ]
+            cv.rect_to[ cur.x, cur.y, 2.0, cur.h ]
+            cv.paint[ ]
+            cv.restore[ ]
+        cv.sync_fence[ ]
 
     func load_scene []
         window : (w to Window)
