@@ -142,6 +142,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  enode,                    last_return) \
     M(X, Y, i, prop,     public,  efunc,                    fn_init) \
     M(X, Y, i, prop,     public,  callback,                 prepare_record) \
+    M(X, Y, i, prop,     public,  callback_extra,           emit_overrides) \
     M(X, Y, i, prop,     public,  callback_extra,           parse_f) \
     M(X, Y, i, prop,     public,  callback,                 parse_enode) \
     M(X, Y, i, prop,     public,  callback,                 parse_expr) \

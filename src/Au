@@ -1269,7 +1269,6 @@ declare_class(item)
     M(AA,BB, i, method, public, none, remove, num) \
     M(AA,BB, i, method, public, none, remove_item, item) \
     M(AA,BB, i, method, public, Au,   value_by_index, Au) \
-    M(AA,BB, i, method, public, num,  count) \
     M(AA,BB, i, override, method, dealloc)
 declare_class_2(list, collective)
 
