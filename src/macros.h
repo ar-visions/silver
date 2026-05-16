@@ -2263,7 +2263,7 @@
 
 #define fault(t, ...) do {\
     static string _topic = null; \
-    if (!_topic) _topic = (string)Au_hold((Au)_new(string, chars, (cstr)__func__)); \
+    if (!_topic) _topic = (string)hold((Au)_new(string, chars, (cstr)__func__)); \
      string res = (string)formatter((Au_t)null, false, stderr, (Au)_topic,  seq, (symbol)t, ## __VA_ARGS__); \
      halt(res, null); \
     } while(0)

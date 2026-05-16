@@ -626,8 +626,8 @@ forward(any)
     M(AA,BB, i, method, public, none,   AF_set_name,    cstr) \
     M(AA,BB, i, method, public, i32,    AF_query_name,  cstr) \
     M(AA,BB, i, guard,  public, Au,     instance_of,    Au, Au_t) \
-    M(AA,BB, i, guard,  public, AA,     hold,           Au) \
-    M(AA,BB, i, guard,  public, none,   drop,           Au) \
+    M(AA,BB, s, method, public, AA,     hold,           Au) \
+    M(AA,BB, s, method, public, none,   drop,           Au) \
     M(AA,BB, i, method, public, none,   hold_members) \
     M(AA,BB, i, method, public, none,   drop_members) \
     M(AA,BB, i, method, public, Au,     set_property,   symbol, Au) \
@@ -2073,6 +2073,11 @@ extern int seq;
 #define sequencer static int _seq; _seq++; int seq = _seq;
 
 none halt(string, token);
+Au   Au_hold(Au);
+none Au_drop(Au);
+
+#define hold(a) (__typeof__(a))hold((Au)(a))
+#define drop(a)                drop((Au)(a))
 
 #define typeis(au, n) (au && au->ident && strcmp(au->ident, #n) == 0)
 
