@@ -2858,13 +2858,14 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     // inside Earth.init while Earth has `mutable proj : mat4f`).
                     // force the user to either rename the local or use
                     // `=` to assign the field.
-                    if (rec_top && mem->au &&
+                    if (f && rec_top && mem->au &&
                         mem->au->member_type == AU_MEMBER_VAR &&
-                        mem->au->context == rec_top->au) {
+                        (mem->au->context == rec_top->au ||
+                         inherits(rec_top->au, mem->au->context))) {
                         validate(false,
                             "local '%o' shadows class member '%s.%o': "
                             "use '=' to assign the field, or rename the local",
-                            alpha, rec_top->au->ident, alpha);
+                            alpha, mem->au->context->ident, alpha);
                     }
                     mem = null;
                 }

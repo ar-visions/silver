@@ -2379,6 +2379,8 @@ Au_t find_module(symbol name) {
 }
 
 Au_t find_type(symbol name, Au_t m) {
+    if (!name)
+        return null;
     for (int i = 0; i < modules.count; i++) {
         Au_t mod = (Au_t)modules.origin[i];
         if (mod && (!m || m == mod)) {
