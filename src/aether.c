@@ -7577,6 +7577,7 @@ none aether_build_module_initializer(aether a, enode init) {
 
         if (is_func(mem) && mem->access_type != interface_intern) {
             efunc mf = (efunc)u(etype, mem);
+            if (!mf) continue;
             mf->used = true;
             etype_implement((etype)mf, false);
 
