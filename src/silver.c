@@ -62,7 +62,7 @@ token aether_peek_safe(silver);
         s = (string)formatter( \
             (Au_t)null, false, stderr, (Au) true, seq, \
             (symbol) "\n%o:%i:%i (%s:%i%o)\n" t, \
-            a->module_file, \
+            (pk->source ? pk->source : a->module_file), \
             pk->line, pk->column, __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string("") __VA_OPT__(,) __VA_ARGS__); \
         if (level_err >= fault_level) { \
             halt(s, aether_peek_safe(a)); \
@@ -885,7 +885,7 @@ void silver_parse(silver a) {
     }
     members(a->au, mem) {
         etype e = u(etype, mem);
-        if (is_func((Au)mem) && !mem->is_system && e != a->fn_init && !e->user_built)
+        if (is_func((Au)mem) && !mem->is_system && e && e != a->fn_init && !e->user_built)
             implement(e, false);
     }
 
@@ -897,7 +897,7 @@ void silver_parse(silver a) {
     }
     members(a->au, mem) {
         etype e = u(etype, mem);
-        if (is_func((Au)mem) && !mem->is_system && e != a->fn_init && !e->user_built)
+        if (is_func((Au)mem) && !mem->is_system && e && e != a->fn_init && !e->user_built)
             build_fn(a, (efunc)e, null, null);
     }
 
@@ -3147,6 +3147,17 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         return e_fn_call(a, ctr_fn, a(self_node, arg), false, false);
     }
 
+    // cast To [ from ] — explicit downcast expression
+    if (!cmode && read_if(a, "cast")) {
+        etype target = read_etype(a, null);
+        validate(target, "expected type after cast");
+        validate(read_if(a, "["), "expected [ after cast type");
+        enode expr = parse_expression(a, null, false, true);
+        validate(expr, "expected expression in cast [ ]");
+        validate(read_if(a, "]"), "expected ] after cast expression");
+        return e_direct_cast(a, expr, target);
+    }
+
     // handle typed operations, converting to our expected model (if no difference, it passes through)
     if (a->expr_level > 0 && peek && (is_alpha(peek) || eq(peek, "struct"))) {
         etype mdl_found = read_etype(a, null);
@@ -3739,7 +3750,7 @@ enode parse_statement(silver a)
     silver    module    = is_module(top) ? a : null;
     etype     rec_top   = is_rec(top) ? u(etype, top) : null;
 
-    if (!a->processed_imports && !next_is(a, "export") && !next_is(a, "import") && !next_is(a, "ifdef")) {
+    if (!a->processed_imports && !next_is(a, "export") && !next_is(a, "import") && !next_is(a, "extend") && !next_is(a, "ifdef")) {
         a->processed_imports = true;
         aether_import_includes((aether)a);
     }
@@ -3777,9 +3788,17 @@ enode parse_statement(silver a)
     
     if (next_is(a, "ifdef")) return parse_ifdef_else(a);
 
+    if (next_is(a, "extend")) {
+        consume(a);
+        string ext_module = read_alpha(a);
+        validate(ext_module && !strcmp(ext_module->chars, a->name->chars),
+            "extend declares '%o' but current module is '%o'", ext_module, a->name);
+        return e_noop(a, null);
+    }
+
     //verify(!next_is(a, "undefined"), "undefined is invalid access-level");
 
-    
+
 
     u64 traits = 0;
     interface access = interface_undefined;
@@ -5522,6 +5541,14 @@ path module_exists(silver a, array idents, bool binary_finary, bool* is_bin) {
     verify(len(idents), "invalid module 'path");
 
     path to_path = cast(path, join(idents, "/"));
+
+    // part file: same module directory, e.g. orbiter/console.ag with 'part orbiter' at top
+    path pf = absolute(f(path, "%o/%o.ag", a->module, stem(to_path)));
+    if (file_exists("%o", pf)) {
+        *is_bin = false;
+        return pf;
+    }
+
     path sf = absolute(f(path, "%o/../%o/%o.ag", a->module, stem(to_path), stem(to_path)));
     if (file_exists("%o", sf)) {
         *is_bin = false;
@@ -6346,7 +6373,8 @@ enode parse_import(silver a) {
         path module = parent_dir(module_source);
         bool ag = eq(ext(module_source), "ag");
         bool c  = is_native_source_ext(a, ext(module_source));
-        verify(!ag || compare(stem(module_source), stem(module)) == 0, "silver expects identical module stem");
+        bool is_extension = ag && compare(parent_dir(module_source), absolute(a->module)) == 0;
+        verify(!ag || is_extension || compare(stem(module_source), stem(module)) == 0, "silver expects identical module stem");
 
         
         // we should turn on object tracking here, as to trace which objects are still in memory after we drop
@@ -6355,8 +6383,30 @@ enode parse_import(silver a) {
         if (c) {
             // handled after 'as' is read
         } else {
-            silver og = a;
-            while (og->is_external) og = og->is_external;
+            if (is_extension) {
+                array ext_toks = array(alloc, 64);
+                parse_tokens(a, (Au)module_source, ext_toks);
+                // strip optional 'extend <name>' header if present, validate name
+                int start = 0;
+                token first = len(ext_toks) ? (token)ext_toks->origin[0] : null;
+                if (first && !strcmp(first->chars, "extend")) {
+                    token name_tok = len(ext_toks) > 1 ? (token)ext_toks->origin[1] : null;
+                    validate(name_tok && !strcmp(name_tok->chars, a->name->chars),
+                        "extend declares '%s' but imported into module '%s'",
+                        name_tok ? name_tok->chars : "?", a->name->chars);
+                    start = 2;
+                }
+                // process extension inline; reset processed_imports so this
+                // extension's imports trigger aether_import_includes fresh
+                a->processed_imports = false;
+                push_tokens(a, (tokens)ext_toks, start);
+                while (a->cursor < len(a->tokens))
+                    parse_statement(a);
+                pop_tokens(a, false);
+                //drop(ext_toks);
+            } else {
+                silver og = a;
+                while (og->is_external) og = og->is_external;
 
             {
                 Au_t f = find_module("vulkan2");
@@ -6386,7 +6436,8 @@ enode parse_import(silver a) {
                 Au_t f4 = find_module("vulkan2");
                 //drop(external); // this is to compensate for the initial hold in silver_init [ quirk for build in init ]
             }
-            set(a->libs, (Au)string(external_product->chars), (Au)_bool(true));
+                set(a->libs, (Au)string(external_product->chars), (Au)_bool(true));
+            } // end else (not frag)
         }
 
     }
