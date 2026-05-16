@@ -120,6 +120,14 @@ class sampler2D
 class sampler3D
 class samplerCube
 
+class Background
+    expect window: Window
+    public color:  rgba
+    public render: Render
+    public models: array Model
+    func update[]
+        return
+
 class Render
     context vk                             : vk_context
     context w                              : Display
@@ -5465,7 +5473,6 @@ Render Canvas
         ensure_font[]
         st : CanvasState states[state_depth - 1]
         n   : text.count
-        w   : f32 [ 0.0 ]
         tw  : f32 [ 0.0 ]
         for [ i: i64 0, i < n, i += 1 ]
             cp : text[i]
@@ -5497,14 +5504,14 @@ Render Canvas
         if [ dots.w >= max_w ]
             return '.'
         target : f32 [ max_w - dots.w ]
-        w : f32 [ 0.0 ]
+        acc : f32 [ 0.0 ]
         cut : i32 [ 0 ]
         for [ i: i32 0, i < n, i += 1 ]
             cp : u32 [ text[i] ]
             g  : font.get_glyph [ cp ]
             if [ g.cached ]
-                w += f32 g.advance
-            if [ w > target ]
+                acc += f32 g.advance
+            if [ acc > target ]
                 cut = i
                 return text.mid [ 0, cut ] + '...'
         return text
@@ -7996,8 +8003,8 @@ Display Window
     public glyph                : Canvas
     public screen               : Canvas
 
-    public background           : Render
-
+    public background            : Background
+    public background_type       : Au_t
     mutable m_reduce             : Model
     mutable r_reduce             : Render
     mutable m_reduce0            : Model
@@ -8651,6 +8658,33 @@ Display Window
         if [ !action_pressed && !context_pressed ]
             release_capture[ capture ]
     
+    func update_background[ type:Au_t ]
+        if [ !background || type != background_type ]
+            if [ background ]
+                drop background
+            
+            background_type = type
+            if [ background_type ]
+                args : map Au[string] [ "window": a ]
+                background = Au.construct_with[ background_type, args, null ]
+                if [ !background.color ]
+                    background.color = rgba[ r:0.022, g:0.088, b:0.188, a:1.0 ]
+                background.render = Render [ vk: a.vk, w: a, wscale: 1.0,
+                    #clear_color: vec4f [ 0.022, 0.088, 0.188, 1.0 ],
+                    clear_color: vec4f [
+                        background.color.r,
+                        background.color.g,
+                        background.color.b, 1.0 ],
+                    models: background.models ]
+            el
+                background = null
+
+            expect (!background || background.render),
+                "no render object found on background"
+
+        if [ background ]
+            background.update[]
+    
     func update [ ]
         # DEBUG step 3: full canvases + full composition chain using UX shader.
         compose  = (compose  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
@@ -8667,59 +8701,56 @@ Display Window
 
         if [ !is_setup ]
             is_setup = true
-            vk: vk_context[ a.vk ]
-
-            if [ app_object ]
-                t : trinity[app_object]
-                if [ t ]
-                    t.load_scene*[]
+            ctx: vk_context[ a.vk ]
 
             if [ !background ]
-                background = Render [ vk: vk, w: a, wscale: 1.0,
-                    clear_color: vec4f [ 0.05, 0.02, 0.08, 1.0 ] ]
-            background.update[]
+                update_background[ background_type ]
 
-            m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': background.color ] ]
-            r_reduce  = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
+            if [ background ]
+                background.render.update[]
+
+            # todo: we need ability to skip this sequence if background is a clear_color
+            m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': background.render.color ] ]
+            r_reduce  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
 
             m_reduce0 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce.color ] ]
-            r_reduce0 = Render [ vk: vk, w: a, wscale: 0.5, models: array Model [ m_reduce0 ] ]
+            r_reduce0 = Render [ vk: ctx, w: a, wscale: 0.5, models: array Model [ m_reduce0 ] ]
 
             m_reduce1 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
-            r_reduce1 = Render [ vk: vk, w: a, wscale: 0.25, models: array Model [ m_reduce1 ] ]
+            r_reduce1 = Render [ vk: ctx, w: a, wscale: 0.25, models: array Model [ m_reduce1 ] ]
 
-            fbv : BlurV [ vk: vk, name: 'blur-v', reduction_scale: 4.0 ]
+            fbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 4.0 ]
             m_blur_v  = Model  [ w: a, s: fbv, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
-            r_blur_v  = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_blur_v ] ]
+            r_blur_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_blur_v ] ]
 
-            fbl : Blur [ vk: vk, name: 'blur', reduction_scale: 4.0 ]
+            fbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 4.0 ]
             m_blur    = Model  [ w: a, s: fbl, samplers: map Texture[string] [ 'color': r_blur_v.color ] ]
-            r_blur    = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_blur ] ]
+            r_blur    = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_blur ] ]
 
             m_reduce2 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
-            r_reduce2 = Render [ vk: vk, w: a, wscale: 0.125, models: array Model [ m_reduce2 ] ]
+            r_reduce2 = Render [ vk: ctx, w: a, wscale: 0.125, models: array Model [ m_reduce2 ] ]
 
             m_reduce3 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce2.color ] ]
-            r_reduce3 = Render [ vk: vk, w: a, wscale: 0.0625, models: array Model [ m_reduce3 ] ]
+            r_reduce3 = Render [ vk: ctx, w: a, wscale: 0.0625, models: array Model [ m_reduce3 ] ]
 
-            bv : BlurV [ vk: vk, name: 'blur-v', reduction_scale: 16.0 ]
+            bv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 16.0 ]
             m_frost_v = Model  [ w: a,   s: bv, samplers: map Texture[string] [ 'color': r_reduce3.color ] ]
-            r_frost_v = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_frost_v ] ]
+            r_frost_v = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_frost_v ] ]
 
-            bl : Blur [ vk: vk, name: 'blur', reduction_scale: 16.0 ]
+            bl : Blur [ vk: ctx, name: 'blur', reduction_scale: 16.0 ]
             m_frost   = Model  [ w: a,   s: bl, samplers: map Texture[string] [ 'color': r_frost_v.color ] ]
-            r_frost   = Render [ vk: vk, w: a, wscale: 1.0, models: array Model [ m_frost ] ]
+            r_frost   = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_frost ] ]
 
-            m_view    = Model [ w: w, s: UXBackground [ vk: vk, name: 'ux' ],
+            m_view    = Model [ w: w, s: UXBackground [ vk: ctx, name: 'ux' ],
                 samplers: map Texture[string] [
-                    'background':     background.color,
+                    'background':     background.render.color,
                     'frost':          r_frost.color,
                     'blur':           r_blur.color,
                     'compose':        compose.color
                 ]
             ]
 
-            r_view    = Render [ vk: vk, w: a,
+            r_view    = Render [ vk: ctx, w: a,
                 color: screen.color,
                 wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
                 models: array Model [ m_view ] ]
@@ -8729,7 +8760,7 @@ Display Window
             ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
 
             list = array Render [
-                background, r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
+                background.render, r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
                 r_reduce2, r_reduce3, r_frost_v, r_frost,
                 r_view ]
         el
@@ -9124,6 +9155,7 @@ Display Window
             cv.restore[]
 
 abstract media_app trinity
+    public background   : string
     intern msaa_samples : i64
     intern istroke      : f32 0
     intern ifill        : f32 0
@@ -9161,8 +9193,9 @@ abstract media_app trinity
          
     func run[] -> i32
         type : typeid[a]
+        background_type : Au.find_type[ (background) ? background.chars : null, null ]
         window : Window[ app_object: a, title:type.ident, st: Style [ a ], 
-            width:(width) ?? 1888, height:(height) ?? 888 ]
+            width:(width) ?? 1888, height:(height) ?? 888, background_type:background_type ]
         expect window.vk, "context didnt work"
 
         w = window

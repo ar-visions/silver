@@ -1,3 +1,5 @@
+export 0.8.8
+
 import vec
 import img
 import gltf
@@ -6,7 +8,6 @@ import trinity
 import <stdio.h>
     -lm
 import <stdlib.h>
-
 import Earth
 import Avatar
 import Editor
@@ -15,33 +16,11 @@ import Console
 Control FileList
 Control DebugPanel
 
-# now we must express orbiter in terms of extension enumeration
-# effectively we must be running it with a current setting, right?
-# oh boy -- do we make 'settings' scoped in silver?
-
 trinity orbiter
-    public earth_gltf    : GltfModel
-    public purple_gltf   : GltfModel
-    public orbiter_gltf  : GltfModel
-    public quad_gltf     : GltfModel
-    public earth_model   : Model
-    public ocean_model   : Model
-    public cloud_model   : Model
-    public purple_model  : Model
-    public orbiter_scene : array Model
-    public earth         : Earth
-    public purple        : Purple
-    public ocean         : Ocean
-    public cloud         : Cloud
-    public env           : Image
-    public models        : array Model
-    mutable angle        : f32
-
-    public test44 : Button
-
     func init []
         width  = 1888
         height = 888
+        background = 'Earth'
     
     public func on_render [ w: Window ] -> Elements
         return Elements [
@@ -65,113 +44,3 @@ trinity orbiter
     public func on_canvas [ cv: Canvas ]
         super.on_canvas[ cv ]
         cv.sync_fence[ ]
-
-    func load_scene []
-        window : (w to Window)
-##
-        # 1) load the earth gltf mesh — shared by earth/ocean/cloud passes
-        gltf_path : path 'models/earth.gltf'
-        earth_gltf = gltf_path.load[ typeid[ GltfModel ], null ]
-
-        earth = Earth [ vk: vk ]
-        ocean = Ocean [ vk: vk ]
-        cloud = Cloud [ vk: vk ]
-        #purple = Purple [ vk: vk ]
-
-        u : path 'textures/earth-color-8192x4096.png'
-        color : Image [ uri: u, surface: EarthSurface.color ]
-        earth_samplers : map Image [string] [
-            'color':      color,
-            'normal':     Image [ uri: path 'textures/earth-normal-8192x4096.png',     surface: EarthSurface.normal ],
-            'elevation':  Image [ uri: path 'textures/earth-elevation-8192x4096.png',  surface: EarthSurface.elevation ],
-            'water':      Image [ uri: path 'textures/earth-water-8192x4096.png',      surface: EarthSurface.water ],
-            'water_blur': Image [ uri: path 'textures/earth-water-blur-8192x4096.png', surface: EarthSurface.water_blur ],
-            'cloud':      Image [ uri: path 'textures/earth-cloud-8192x4096.png',      surface: EarthSurface.cloud ],
-            'bathymetry': Image [ uri: path 'textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
-            'lights':     Image [ uri: path 'textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
-        ]
-
-        cloud_straight_alpha : bool true
-        earth_model = Model [ vk: vk, w: window, id: earth_gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
-        ocean_model = Model [ vk: vk, w: window, id: earth_gltf, s: ocean, samplers: earth_samplers, straight_alpha: true ]
-        cloud_model = Model [ vk: vk, w: window, id: earth_gltf, s: cloud, samplers: earth_samplers, straight_alpha: true ]
-        models      = [ earth_model, ocean_model, cloud_model ]
-##
-        window.background = Render [ vk: vk, w: window, wscale: 1.0,
-            clear_color: vec4f [ 0.022, 0.088, 0.188, 1.0 ],
-            models:      null ]
-
-##
-    func update_scene []
-        win : (w to Window)
-        time : win.time
-        if [time == 0.0]
-            time = -54.0
-        # ---- 16:9 astronaut/ISS orbital perspective ----
-        # earth at origin, radius=1.0. altitude = h/R (0.063 ≈ ISS 400km).
-        # tilt = angle off nadir; 75° puts horizon in upper-third of a 16:9 frame.
-        altitude : f32 [ 0.063 ]
-        eye_dist : f32 [ 1.0 + altitude ]
-        tilt     : f32 [ radians[ 50.0 ] ]
-        aspect   : f32 [ 16.0 / 9.0 ]
-
-        # camera orbits around the earth (Y axis); earth stays fixed so the
-        # sunlight direction sweeps across the surface as we go around.
-        time -= 0.0244 * win.frame_factor
-        orbit_a : radians[ time ]
-        co      : cos[ orbit_a ]
-        so      : sin[ orbit_a ]
-
-        # local camera frame (earth at origin, eye on +Z, looking toward -Z
-        # with a tilt that puts horizon in upper-third)
-        ex_l  : f32 [ 0.0 ]
-        ey_l  : f32 [ 0.0 ]
-        ez_l  : f32 [ eye_dist ]
-        fx_l  : f32 [ -sin[ tilt ] ]
-        fy_l  : f32 [ 0.0 ]
-        fz_l  : f32 [ -cos[ tilt ] ]
-        tx_l  : f32 [ ex_l + fx_l * 2.0 ]
-        ty_l  : f32 [ ey_l + fy_l * 2.0 ]
-        tz_l  : f32 [ ez_l + fz_l * 2.0 ]
-        ux_l  : f32 [ 1.0 ]
-        uy_l  : f32 [ 0.0 ]
-        uz_l  : f32 [ 0.0 ]
-
-        # rotate each vector around Y by orbit_a
-        _eye2    : vec3f [  co * ex_l + so * ez_l, ey_l, -so * ex_l + co * ez_l ]
-        _target2 : vec3f [  co * tx_l + so * tz_l, ty_l, -so * tx_l + co * tz_l ]
-        _up2     : vec3f [  co * ux_l + so * uz_l, uy_l, -so * ux_l + co * uz_l ]
-
-        _model   : mat4f.identity   []
-        _proj    : mat4f.perspective[ radians[ 60.0 ], aspect, 0.001, 10.0 ]
-        _view    : mat4f.look_at    [ _eye2, _target2, _up2 ]
-
-        # earth no longer spins — only the optional axial tilt stays
-        tilt_axis : vec4f [ 1.0, 0.0, 0.0, radians[ 0 ] ]
-        q_tilt    : quatf [ tilt_axis ]
-        m : mat4f.identity[]
-        m = m.rotate[ q_tilt ]
-
-        earth.model = m
-        earth.view  = _view
-        earth.proj  = _proj
-
-        ocean.model = m
-        ocean.view  = _view
-        ocean.proj  = _proj
-
-        cloud.model = m
-        cloud.view  = _view
-        cloud.proj  = _proj
-
-        _cam : vec4f [ _eye2.x, _eye2.y, _eye2.z, 1.0 ]
-
-        earth.time    = time
-        ocean.time    = time
-        cloud.time    = time
-        earth.cam_pos = _cam
-        ocean.cam_pos = _cam
-        cloud.cam_pos = _cam
-
-        win.time = time
-##
