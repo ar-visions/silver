@@ -2,6 +2,47 @@
 
 int seq;
 
+#ifndef NDEBUG
+// AU_SKIP_DROP=TypeName or AU_SKIP_DROP=TypeName.member_name
+// comma-separated, parsed once at first use
+#define AU_SKIP_DROP_MAX 64
+static struct { char type[64]; char member[64]; } au_skip_drop[AU_SKIP_DROP_MAX];
+static int  au_skip_drop_count = -1; // -1 = not yet parsed
+
+static void au_skip_drop_init() {
+    au_skip_drop_count = 0;
+    const char *env = getenv("AU_SKIP_DROP");
+    if (!env) return;
+    char buf[1024];
+    strncpy(buf, env, sizeof(buf) - 1);
+    char *tok = strtok(buf, ",");
+    while (tok && au_skip_drop_count < AU_SKIP_DROP_MAX) {
+        char *dot = strchr(tok, '.');
+        if (dot) {
+            int tlen = dot - tok;
+            strncpy(au_skip_drop[au_skip_drop_count].type,   tok,   tlen < 63 ? tlen : 63);
+            au_skip_drop[au_skip_drop_count].type[tlen < 63 ? tlen : 63] = '\0';
+            strncpy(au_skip_drop[au_skip_drop_count].member, dot+1, 63);
+        } else {
+            strncpy(au_skip_drop[au_skip_drop_count].type,   tok, 63);
+            au_skip_drop[au_skip_drop_count].member[0] = '\0';
+        }
+        au_skip_drop_count++;
+        tok = strtok(NULL, ",");
+    }
+}
+
+static int au_skip_drop_check(const char *type, const char *member) {
+    if (au_skip_drop_count < 0) au_skip_drop_init();
+    for (int i = 0; i < au_skip_drop_count; i++) {
+        if (strcmp(au_skip_drop[i].type, type) != 0) continue;
+        if (au_skip_drop[i].member[0] == '\0') return 1; // whole type
+        if (member && strcmp(au_skip_drop[i].member, member) == 0) return 1;
+    }
+    return 0;
+}
+#endif
+
 //#undef realloc
 #include <ffi.h>
 #undef bool
@@ -845,6 +886,26 @@ bool au_app_verify(const char* path) {
 
 #endif // sandbox.c
 
+#undef hold
+#undef drop
+
+Au Au_hold(Au a) {
+    if (a) {
+        Au f = header(a);
+        if (f->managed == 0) return a; // refs of 0 is unmanaged memory (user managed)
+        f->refs++;
+    }
+    return a;
+}
+
+none Au_drop(Au a);
+
+Au   hold(Au a) { return Au_hold(a); }
+none drop(Au a) { Au_drop(a); }
+
+#define hold(a) (__typeof__(a))hold((Au)(a))
+#define drop(a)                drop((Au)(a))
+
 typedef struct _ffi_method_t {
     micro*          atypes;
     Au_t            rtype;
@@ -1362,11 +1423,14 @@ Au array_getter_num(array a, num i) {
 
 static Au* array_indexer(array a, Au ai) {
     num offset = 0;
+    i32* n32 = null;
     num*    n = (num*)instance_of(ai, typeid(num));
     if (!n) n = (i64*)instance_of(ai, typeid(i64));
-    
+    if (!n) n32 = (i32*)instance_of(ai, typeid(i32));
     if  (n) {
         offset = *n;
+    } else if (n32) {
+        offset = *n32;
     } else {
         Au info = header(ai);
         shape i = instanceof(ai, shape);
@@ -2680,6 +2744,17 @@ ARef af       = null;
 int  af_count = 2; // managed == 1 means its not in the af vector, managed == 0 means we are not managed memory; hold and drop are null ops
 int  af_size  = 0;
 
+none Au_free(Au);
+
+none Au_drop(Au a) {
+    if (!a) return;
+    Au info = header(a);
+    if (info->managed && --info->refs <= 0) {
+        af[info->managed]  = null;
+        Au_free(a);
+    }
+}
+
 static int total_objects;
 
 int alloc_count(Au_t type) {
@@ -2792,6 +2867,9 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b, symbol 
     a->line       = line;
     a->sequence   = seq;
 
+    if (line >= 520 && line <= 570)
+        a->refs = 1;
+
     if (!type->is_au_native && !source) {
         printf("warning: no source binding for allocation of type %s\n", type->ident);
         exit(0);
@@ -2876,7 +2954,7 @@ Au method_call(Au_t m, array args) {
     
     // populate provided args, create default objects for any missing
     for (num i = 0; i < a->atypes->count; i++) {
-        Au_t arg_type = au_arg_type(a->atypes->origin[i]);
+        Au_t arg_type = au_arg_type((Au)a->atypes->origin[i]);
         if (args && i < args->count) {
             arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ?
                 (none*)args->origin[i] : (none*)&args->origin[i];
@@ -3260,6 +3338,10 @@ none Au_init(Au a) { }
 none Au_drop_members(Au a) {
     Au   f = header((Au)a);
     Au_t type = f->type;
+    #ifndef NDEBUG
+    const char *type_ident = (type && type->ident) ? type->ident : "";
+    if (au_skip_drop_check(type_ident, NULL)) return;
+    #endif
     while (type != typeid(Au)) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = (Au_t)type->members.origin[i];
@@ -3267,6 +3349,11 @@ none Au_drop_members(Au a) {
                     !is_inlay(m) && m->type->is_class) {
                 if (m->meta.a == typeid(weak))
                     continue;
+                if (m->traits & AU_TRAIT_UNMANAGED)
+                    continue;
+                #ifndef NDEBUG
+                if (au_skip_drop_check(type_ident, m->ident)) continue;
+                #endif
                 //printf("Au_dealloc: drop member %s.%s (%s)\n", type->ident, m->ident, m->type->ident);
                 Au*  ref = (Au*)((u8*)a + m->offset);
                 Au info = head(*ref);
@@ -5202,18 +5289,9 @@ Au Au_copy(Au a) {
     return b;
 }
 
-Au Au_hold(Au a) {
-    if (a) {
-        Au f = header(a);
-        if (f->managed == 0) return a; // refs of 0 is unmanaged memory (user managed)
-        f->refs++;
-    }
-    return a;
-}
-
 none Au_free(Au a) {
     Au       aa = header(a);
-    char ch = aa->type->ident[0];
+    //char ch = aa->type->ident[0];
 
     /*
     if (ch == 'V') {
@@ -5260,6 +5338,7 @@ none Au_free(Au a) {
         printf("global_count < 0 for type %s\n", type->ident);
     
     aa->refs = -8888;
+    //printf("freeing %s:%i\n", aa->source, aa->line);
     free(aa);
 #else
     free(aa);
@@ -5267,14 +5346,7 @@ none Au_free(Au a) {
 
 }
 
-none Au_drop(Au a) {
-    if (!a) return;
-    Au info = header(a);
-    if (info->managed && --info->refs <= 0) {
-        af[info->managed]  = null;
-        Au_free(a);
-    }
-}
+
 
 /// binding works with delegate callback registration efficiently to 
 /// avoid namespace collisions, and allow enumeration interfaces without override and base Au boilerplate

@@ -5,6 +5,11 @@ import trinity
 
 import <stdio.h>
     -lm
+import <pty.h>
+    -lutil
+import <unistd.h>
+import <fcntl.h>
+import <stdlib.h>
 
 enum EarthSurface
     color        : 0
@@ -1630,6 +1635,9 @@ shader Aura2
  ##
 
 Layer EditorLayer
+    mutable sel_color  : rgba
+    mutable line_color : rgba
+
     func on_move [ ev: Event ]
         editor : Editor[ parent ]
         if [ !editor || !editor.dragging ] return
@@ -1657,9 +1665,6 @@ Layer EditorLayer
         y0      : f32 [ bounds.y ]
         fade_h  : f32 [ bounds.h * 0.20 ]
         fade_s  : f32 [ bounds.y + bounds.h - fade_h ]
-        win     : (parent.ux to Window)
-        w       : win.cursors
-
         editor.lh_cache = lh
         editor.cw_cache = cw_tm.w
 
@@ -1690,8 +1695,26 @@ Layer EditorLayer
             end_col     : i32 [ (before) ? sc : ac ]
             cw          : f32 [ cw_tm.w ]
             has_sel : bool [ start_line != end_line || start_col != end_col ]
+
+            # reset filter when anchor/line changes or direction flips
+            if [ editor.last_sel_line != sl || editor.last_sel_col != ac || editor.last_before != before ]
+                editor.last_sel_line = sl
+                editor.last_sel_col  = ac
+                editor.last_before   = before
+                editor.filter_rect = null
+                editor.filter_next = false
+
+            cur_line_col : rgba [ line_color ? line_color : rgba['#ffffff18'] ]
+            sel_col_val  : rgba [ sel_color  ? sel_color  : rgba['#264f78'] ]
+
+            y_cur : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll ]
+            cv.fill_color[ cur_line_col ]
+            cv.rect_to[ x0, y_cur, bounds.w, lh ]
+            cv.paint[ ]
+
             if [ has_sel ]
                 cv.save[ ]
+                cv.rounded[ 3.0, 3.0, 3.0, 3.0 ]
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
                     y_row  : f32 [ y0 + f32[li] * lh - editor.scroll ]
                     if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
@@ -1701,61 +1724,356 @@ Layer EditorLayer
                     col_x1 : f32 [ (is_el) ? f32[end_col] * cw : bounds.w ]
                     rx     : f32 [ x0 + col_x0 ]
                     rw     : f32 [ col_x1 - col_x0 ]
-                    cv.fill_color[ '#264f78' ]
-                    cv.rect_to    [ rx, y_row, rw, lh ]
+
+                    rr : rect [ x:rx, y:y_row, w:rw, h:lh ]
+                    if [ editor.last_sel_line == li ]
+                        if [ editor.filter_rect ]
+                            rr.x = editor.filter_rect.x * 0.75 + rr.x * 0.25
+                            rr.y = editor.filter_rect.y * 0.75 + rr.y * 0.25
+                            rr.w = editor.filter_rect.w * 0.75 + rr.w * 0.25
+                            rr.h = editor.filter_rect.h * 0.75 + rr.h * 0.25
+
+                        editor.filter_rect = rr
+                        editor.filter_next = true # this needs to snap coords within an epsilon value
+                        editor.needs_frame = true
+
+                    cv.fill_color[ sel_col_val ]
+                    cv.rect_to    [ rr.x, rr.y - 0.5, rr.w, rr.h + 1 ]
                     cv.paint      [ ]
                 cv.restore[ ]
 
-                # selected text on top of rects
+                # selected text on top of rects — draw whole line, crop to selection rect
+                tx : f32 [ cv.transform_tx[] ]
+                ty : f32 [ cv.transform_ty[] ]
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
                     y_row  : f32 [ y0 + f32[li] * lh - editor.scroll ]
                     if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
-                    sc0    : i32  [ (is_sl) ? start_col : 0 ]
-                    sc1    : i32  [ (is_el) ? end_col : editor.line_get[ li ].count ]
-                    seg    : string [ editor.line_get[ li ].mid[ sc0, sc1 - sc0 ] ]
-                    sx     : f32   [ x0 + f32[sc0] * cw ]
+                    col_x0 : f32 [ (is_sl) ? f32[start_col] * cw : 0.0 ]
+                    col_x1 : f32 [ (is_el) ? f32[end_col]   * cw : bounds.w ]
+                    rx     : f32 [ x0 + col_x0 ]
+                    rw     : f32 [ col_x1 - col_x0 ]
+                    use_filter : bool [ editor.last_sel_line == li && editor.filter_rect ]
+                    crop_x : f32 [ (use_filter) ? editor.filter_rect.x : rx ]
+                    crop_w : f32 [ (use_filter) ? editor.filter_rect.w : rw ]
+                    cv.set_text_crop[ tx + crop_x, ty + y_row, tx + crop_x + crop_w, ty + y_row + lh ]
                     cv.fill_color[ '#fff' ]
-                    cv.draw_text[ seg,
-                        rect [ x: sx, y: y_row, w: bounds.w, h: lh ],
+                    cv.draw_text[ editor.line_get[ li ],
+                        rect [ x: x0, y: y_row, w: bounds.w, h: lh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    cv.clear_text_crop[]
                 cv.paint[ ]
 
-            # update global cursor position
-            y_sel : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll ]
-            if [ y_sel + lh >= bounds.y && y_sel <= bounds.y + bounds.h ]
-                prefix : string [ editor.line_get[ editor.sel_line ].mid[ 0, editor.sel_col ] ]
-                tm_c   : TextMetrics [ cv.measure_text[ prefix ] ]
-                cx     : f32 [ x0 + tm_c.w ]
-                cp     : CursorPos [ x: cx, y: y_sel + 2.0, h: lh - 4.0 ]
-                win    : Window    [ parent.ux ]
-                if [ !win.cursors ] win.cursors = array CursorPos []
-                if [ editor.cursor_idx < 0 || editor.cursor_idx >= win.cursors.count ]
-                    win.cursors.push[ cp ]
-                    editor.cursor_idx = win.cursors.count - 1
-                el
-                    while [ w.count <= editor.cursor_idx ]
-                        w += null
-                    
-                    w[ editor.cursor_idx ] = cp
+            if [ parent.focused ]
+                y_sel : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll ]
+                if [ y_sel + lh >= bounds.y && y_sel <= bounds.y + bounds.h ]
+                    use_fr : bool [ has_sel && editor.filter_rect ]
+                    cx : f32
+                    cy : f32
+                    if [ use_fr ]
+                        cx = (before) ? editor.filter_rect.x + editor.filter_rect.w : editor.filter_rect.x
+                        cy = editor.filter_rect.y
+                    el
+                        prefix : string [ editor.line_get[ editor.sel_line ].mid[ 0, editor.sel_col ] ]
+                        cx     = x0 + cv.measure_text[ prefix ].w
+                        cy     = y_sel
+                    cv.fill_color[ '#fff' ]
+                    cv.stroke_width[ 0.0 ]
+                    cv.rect_to[ cx, cy + 2.0, 2.0, lh - 4.0 ]
+                    cv.paint[]
             
             cv.restore[ ]
 
 
 
+Control FileList
+
+Control DebugPanel
+
+struct TermCell
+    ch : i32 [ 32 ]
+
+Layer TermLayer
+    func draw [ cv: Canvas ]
+        con : Console [ (parent to Console) ]
+        if [ !con ] return
+        parent.needs_frame = true
+        con.read_output[]
+        lh      : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
+        cw      : f32 [ cv.measure_text[ 'x' ].w ]
+        x0      : f32 [ bounds.x ]
+        y0      : f32 [ bounds.y ]
+        sc_count    : i32 [ con.scrollback.count ]
+        total_h     : f32 [ f32[sc_count + con.rows] * lh ]
+        max_s       : f32 [ maxf[ total_h - bounds.h, 0.0 ] ]
+        cursor_y    : f32 [ f32[sc_count + con.cy] * lh ]
+        if [ con.scroll > cursor_y ]
+            con.scroll = cursor_y
+        el [ con.scroll < cursor_y + lh - bounds.h ]
+            con.scroll = cursor_y + lh - bounds.h
+        if [ con.scroll < 0.0 ] con.scroll = 0.0
+        if [ con.scroll > max_s ] con.scroll = max_s
+        for [ li: i32 0, li < sc_count, li += 1 ]
+            y : f32 [ y0 + f32[li] * lh - con.scroll ]
+            if [ y + lh < bounds.y ] continue
+            if [ y > bounds.y + bounds.h ] break
+            cv.fill_color[ '#fff' ]
+            cv.draw_text[ con.scrollback.value_by_index[ li ],
+                rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        for [ r: i32 0, r < con.rows, r += 1 ]
+            y : f32 [ y0 + f32[sc_count + r] * lh - con.scroll ]
+            if [ y + lh < bounds.y ] continue
+            if [ y > bounds.y + bounds.h ] break
+            cv.fill_color[ '#fff' ]
+            cv.draw_text[ con.row_to_string[ r ],
+                rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        cv.paint[]
+        cur_px  : f32 [ x0 + f32[con.cx] * cw ]
+        cur_py  : f32 [ y0 + f32[sc_count + con.cy] * lh - con.scroll ]
+        cv.fill_color [ '#ffffff99' ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to     [ cur_px, cur_py, cw, lh ]
+        cv.paint[]
+
+Control Console
+    focusable : true
+    mutable pty_fd     : i32 [ -1 ]
+    mutable pid        : i32 [ 0  ]
+    mutable started    : bool
+    mutable esc_state  : i32 [ 0  ]
+    mutable esc_n0     : i32 [ 0  ]
+    mutable esc_n1     : i32 [ 0  ]
+    mutable esc_n2     : i32 [ 0  ]
+    mutable esc_np     : i32 [ 0  ]
+    mutable cur_save_x : i32 [ 0  ]
+    mutable cur_save_y : i32 [ 0  ]
+    mutable cx         : i32 [ 0  ]
+    mutable cy         : i32 [ 0  ]
+    mutable cols       : i32 [ 80 ]
+    mutable rows       : i32 [ 24 ]
+    mutable screen     : array TermCell
+    mutable scrollback : list string
+    mutable scroll     : f32 [ 0.0 ]
+
+    func clear_screen []
+        for [ i: i32 0, i < rows * cols, i += 1 ]
+            screen[i].ch = 32
+        cx = 0
+        cy = 0
+
+    func row_to_string [ r: i32 ] -> string
+        buf : local i8 [ cols + 1 ]
+        for [ c: i32 0, c < cols, c += 1 ]
+            ch : i32 [ screen[r * cols + c].ch ]
+            buf[c] = i8[ (ch >= 32 && ch < 127) ? ch : 32 ]
+        buf[cols] = 0
+        return string[ ref buf[0] ]
+
+    func scroll_up []
+        scrollback.push[ row_to_string[ 0 ] ]
+        for [ r: i32 0, r < rows - 1, r += 1 ]
+            for [ c: i32 0, c < cols, c += 1 ]
+                screen[r * cols + c].ch = screen[(r + 1) * cols + c].ch
+        for [ c: i32 0, c < cols, c += 1 ]
+            screen[(rows - 1) * cols + c].ch = 32
+
+    func process_byte [ c: i32 ]
+        if [ esc_state == 1 ]
+            esc_state = 0
+            if [ c == 91 ]
+                esc_state = 2
+                esc_n0 = 0
+                esc_n1 = 0
+                esc_n2 = 0
+                esc_np = 0
+            el [ c == 93 ]
+                esc_state = 4
+            el [ c == 40 || c == 41 || c == 42 || c == 43 ]
+                esc_state = 6
+            el [ c == 99 ]
+                clear_screen[]
+            el [ c == 55 ]
+                cur_save_x = cx
+                cur_save_y = cy
+            el [ c == 56 ]
+                cx = cur_save_x
+                cy = cur_save_y
+            return
+        if [ esc_state == 2 ]
+            if [ c >= 48 && c <= 57 ]
+                if [ esc_np == 0 ]
+                    esc_n0 = esc_n0 * 10 + c - 48
+                el [ esc_np == 1 ]
+                    esc_n1 = esc_n1 * 10 + c - 48
+                el
+                    esc_n2 = esc_n2 * 10 + c - 48
+            el [ c == 59 ]
+                esc_np += 1
+            el [ c == 63 || c == 62 || c == 33 || c == 32 ]
+                esc_state = 3
+            el [ c >= 64 && c <= 126 ]
+                n : i32 [ (esc_n0 > 0) ? esc_n0 : 1 ]
+                esc_state = 0
+                if [ c == 65 ]
+                    cy = clamp[ cy - n, 0, rows - 1 ]
+                el [ c == 66 ]
+                    cy = clamp[ cy + n, 0, rows - 1 ]
+                el [ c == 67 ]
+                    cx = clamp[ cx + n, 0, cols - 1 ]
+                el [ c == 68 ]
+                    cx = clamp[ cx - n, 0, cols - 1 ]
+                el [ c == 69 ]
+                    cy = clamp[ cy + n, 0, rows - 1 ]
+                    cx = 0
+                el [ c == 70 ]
+                    cy = clamp[ cy - n, 0, rows - 1 ]
+                    cx = 0
+                el [ c == 71 || c == 96 ]
+                    cx = clamp[ (esc_n0 > 0) ? esc_n0 - 1 : 0, 0, cols - 1 ]
+                el [ c == 72 || c == 102 ]
+                    cy = clamp[ (esc_n0 > 0) ? esc_n0 - 1 : 0, 0, rows - 1 ]
+                    cx = clamp[ (esc_n1 > 0) ? esc_n1 - 1 : 0, 0, cols - 1 ]
+                el [ c == 74 ]
+                    if [ esc_n0 == 0 ]
+                        for [ i: i32 cx, i < cols, i += 1 ]
+                            screen[cy * cols + i].ch = 32
+                        for [ i: i32 cy + 1, i < rows, i += 1 ]
+                            for [ j: i32 0, j < cols, j += 1 ]
+                                screen[i * cols + j].ch = 32
+                    el [ esc_n0 == 1 ]
+                        for [ i: i32 0, i < cy, i += 1 ]
+                            for [ j: i32 0, j < cols, j += 1 ]
+                                screen[i * cols + j].ch = 32
+                        for [ i: i32 0, i <= cx, i += 1 ]
+                            screen[cy * cols + i].ch = 32
+                    el
+                        clear_screen[]
+                el [ c == 75 ]
+                    if [ esc_n0 == 0 ]
+                        for [ i: i32 cx, i < cols, i += 1 ]
+                            screen[cy * cols + i].ch = 32
+                    el [ esc_n0 == 1 ]
+                        for [ i: i32 0, i <= cx, i += 1 ]
+                            screen[cy * cols + i].ch = 32
+                    el
+                        for [ i: i32 0, i < cols, i += 1 ]
+                            screen[cy * cols + i].ch = 32
+                el [ c == 100 ]
+                    cy = clamp[ (esc_n0 > 0) ? esc_n0 - 1 : 0, 0, rows - 1 ]
+                el [ c == 115 ]
+                    cur_save_x = cx
+                    cur_save_y = cy
+                el [ c == 117 ]
+                    cx = cur_save_x
+                    cy = cur_save_y
+            return
+        if [ esc_state == 3 ]
+            if [ (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ]
+                esc_state = 0
+            return
+        if [ esc_state == 4 ]
+            if [ c == 7 ]
+                esc_state = 0
+            el [ c == 27 ]
+                esc_state = 5
+            return
+        if [ esc_state == 5 ]
+            esc_state = (c == 92) ? 0 : 4
+            return
+        if [ esc_state == 6 ]
+            esc_state = 0
+            return
+        if [ c == 27 ]
+            esc_state = 1
+        el [ c == 13 ]
+            cx = 0
+        el [ c == 10 ]
+            cy += 1
+            if [ cy >= rows ]
+                scroll_up[]
+                cy = rows - 1
+        el [ c == 8 ]
+            if [ cx > 0 ] cx -= 1
+        el [ c == 9 ]
+            cx = (cx / 8 + 1) * 8
+            if [ cx >= cols ] cx = cols - 1
+        el [ c >= 32 && c < 127 ]
+            screen[cy * cols + cx].ch = c
+            cx += 1
+            if [ cx >= cols ]
+                cx = 0
+                cy += 1
+                if [ cy >= rows ]
+                    scroll_up[]
+                    cy = rows - 1
+
+    func read_output []
+        if [ pty_fd < 0 ] return
+        buf_c : i8 [ 0 ]
+        for [ i: i32 0, i < 4096, i += 1 ]
+            nr : i32 [ read[ pty_fd, ref buf_c, 1 ] ]
+            if [ nr <= 0 ] break
+            process_byte[ i32 buf_c ]
+
+    func write_input [ data: string ]
+        if [ pty_fd < 0 ] return
+        write[ pty_fd, data.chars, data.count ]
+
+    func init []
+        scrollback = list string []
+        screen = array TermCell []
+        for [ i: i32 0, i < rows * cols, i += 1 ]
+            screen.push[ TermCell [] ]
+        pid = forkpty[ ref pty_fd, null, null, null ]
+        if [ pid == 0 ]
+            setenv[ 'TERM', 'xterm-256color', 1 ]
+            execl[ '/bin/bash', 'bash', null ]
+            _exit[ 1 ]
+        el
+            fcntl[ pty_fd, F_SETFL, O_NONBLOCK ]
+
+    func on_char [ ev: Event ]
+        write_input[ ev.key.text ]
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        k : i32 [ i32 ev.key.unicode ]
+        if [ k == 257 ]
+            write_input[ '\r' ]
+        el [ k == 259 ]
+            write_input[ '\x7f' ]
+        el [ k == 265 ]
+            write_input[ '\x1b[A' ]
+        el [ k == 264 ]
+            write_input[ '\x1b[B' ]
+        el [ k == 263 ]
+            write_input[ '\x1b[D' ]
+        el [ k == 262 ]
+            write_input[ '\x1b[C' ]
+        el [ ev.key.ctrl && k >= 64 && k <= 95 ]
+            b : i8 [ i8[k - 64] ]
+            write[ pty_fd, ref b, 1 ]
+
 Control Editor
-    public  src      : path
-    mutable lines    : list string
-    mutable scroll   : f32
-    mutable sel_line : i32 [ -1 ]
-    mutable sel_col  : i32 [ 0 ]
-    mutable lh_cache     : f32 [ 0.0 ]
-    mutable cw_cache     : f32 [ 0.0 ]
-    mutable anchor_line  : i32 [ 0 ]
-    mutable anchor_col   : i32 [ 0 ]
-    mutable dragging     : bool
-    mutable cursor_idx   : i32 [ -1 ]
+    public  src           : path
+    mutable lines         : list string
+    mutable scroll        : f32
+    mutable sel_line      : i32 [ -1 ]
+    mutable sel_col       : i32 [ 0 ]
+    mutable lh_cache      : f32 [ 0.0 ]
+    mutable cw_cache      : f32 [ 0.0 ]
+    mutable anchor_line   : i32 [ 0 ]
+    mutable anchor_col    : i32 [ 0 ]
+    mutable dragging      : bool
+    mutable cursor_idx    : i32 [ -1 ]
+    mutable last_sel_line : -1
+    mutable last_sel_col  : -1
+    mutable last_before   : false
+    mutable filter_rect   : rect
+    mutable filter_next   : false
 
     func line_get [ i: i32 ] -> string
         return lines.value_by_index[ i ]
@@ -1815,6 +2133,15 @@ Control Editor
         col  : i32 [ sel_col ]
         line : string [ line_get[ row ] ]
         ch   : string [ ev.key.text ]
+        # space on an indent-only line inserts a tab instead
+        #if [ ch == ' ' ]
+        #    left : string [ line.mid[0, col] ]
+        #    all_tabs : bool [ true ]
+        #    for [ i: i32 0, i < left.count, i += 1 ]
+        #        if [ left[i] != 9 ]
+        #            all_tabs = false
+        #            break
+        #    if [ all_tabs ] ch = '\t'
         line_set[ row, line.mid[0, col] + ch + line.mid[col, line.count - col] ]
         sel_col += 1
         pristine = false
@@ -1903,37 +2230,29 @@ trinity orbiter
     
     public func on_render [ w: Window ] -> Elements
         return Elements [
-            "toolbar": Toolbar [],
+            "toolbar":  Toolbar [],
+            "right":    Toolbar [
+                elements: Elements [
+                    "files": FileList [],
+                    "debug": DebugPanel []
+                ]
+            ],
             "editor-group": Group [
                 elements: Elements [
+                    "title":   element [ label: 'silver.c' ]
                     "editor":  Editor [ src: path '/src/silver/src/silver.c' ]
                 ]
             ],
+            "console": Console [],
             #"avatar": World []
         ]
 
     public func on_canvas [ cv: Canvas ]
         super.on_canvas[ cv ]
-        win : Window [ (w to Window) ]
-        if [ !win || !win.cursors ] return
-        t     : f32 [ f32[ win.time ] ]
-        alpha : f32 [ (sin[ t * 4.4 ] > 0.0) ? 1.0 : 0.0 ]
-        if [ alpha < 0.5 ] return
-        for [ i: i32 0, i < win.cursors.count, i += 1 ]
-            cur : CursorPos [ win.cursors[i] ]
-            cv.save[ ]
-            cv.stroke_width[ 0.0 ]
-            cv.fill_color[ '#fff' ]
-            cv.rect_to[ cur.x, cur.y, 2.0, cur.h ]
-            cv.paint[ ]
-            cv.restore[ ]
         cv.sync_fence[ ]
 
     func load_scene []
         window : (w to Window)
-        window.background = Render [ vk: vk, w: window, wscale: 1.0,
-            clear_color: vec4f [ 0.022, 0.088, 0.188, 1.0 ] ]
-
 ##
         # 1) load the earth gltf mesh — shared by earth/ocean/cloud passes
         gltf_path : path 'models/earth.gltf'
@@ -1956,28 +2275,18 @@ trinity orbiter
             'bathymetry': Image [ uri: path 'textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
             'lights':     Image [ uri: path 'textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
         ]
-        ##
-        purple_samplers : map Image [string] [
-            'color':      Image [ uri: path 'textures/purple-color-8192x4096.png',      surface: PurpleSurface.color ],
-            'cloud':      Image [ uri: path 'textures/purple-cloud-8192x4096.png',      surface: PurpleSurface.cloud ]
-        ]
-        ##
+
         cloud_straight_alpha : bool true
-        
         earth_model = Model [ vk: vk, w: window, id: earth_gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
         ocean_model = Model [ vk: vk, w: window, id: earth_gltf, s: ocean, samplers: earth_samplers, straight_alpha: true ]
         cloud_model = Model [ vk: vk, w: window, id: earth_gltf, s: cloud, samplers: earth_samplers, straight_alpha: true ]
         models      = [ earth_model, ocean_model, cloud_model ]
-        ##
-        purple_model = Model [ vk: vk, w: window, id: earth_gltf, s: purple, samplers: purple_samplers, straight_alpha: true ]
-        models = [ purple_model ]
-        ##
-
+##
         window.background = Render [ vk: vk, w: window, wscale: 1.0,
             clear_color: vec4f [ 0.022, 0.088, 0.188, 1.0 ],
-            models:      models ]
+            models:      null ]
 
-    
+##
     func update_scene []
         win : (w to Window)
         time : win.time
@@ -2050,13 +2359,4 @@ trinity orbiter
         cloud.cam_pos = _cam
 
         win.time = time
-
-##
-
-##
-        purple.time = time
-        purple.model = m
-        purple.view  = _view
-        purple.proj  = _proj
-
 ##

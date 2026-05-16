@@ -341,7 +341,7 @@ class Render
         expect result == VK_SUCCESS, "fence wait failed"
 
     func dealloc [ ]
-        info : header[a]
+        info : header[ a ]
         for [ i: 0, i < 2, i += 1 ]
             vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
             vkDestroyRenderPass[ vk.device, vk_render_pass[i], null ]
@@ -353,10 +353,10 @@ class Render
 
     func init []
         backbuffer : !vk_swap_image
-        vk_framebuffer.hold[]
-        vk_render_pass.hold[]
-        vk_framebuffer.hold[]
-        vk_render_pass.hold[]
+        hold vk_framebuffer
+        hold vk_render_pass
+        hold vk_framebuffer
+        hold vk_render_pass
 
         # allocate command buffer
         cmdAllocInfo : VkCommandBufferAllocateInfo [
@@ -372,7 +372,7 @@ class Render
         color_init_lay : VkImageLayout      [ (load_existing) ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED ]
         has_depth_init : bool [ use_depth ]
         attachments : local VkAttachmentDescription [2] [
-            VkAttachmentDescription [
+            [
                 format:         w.surface_format.format,
                 samples:        VK_SAMPLE_COUNT_1_BIT,
                 loadOp:         color_load_op,
@@ -382,7 +382,7 @@ class Render
                 initialLayout:  color_init_lay,
                 finalLayout:    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
             ],
-            VkAttachmentDescription [
+            [
                 format:         VK_FORMAT_D32_SFLOAT,
                 samples:        VK_SAMPLE_COUNT_1_BIT,
                 loadOp:         VK_ATTACHMENT_LOAD_OP_CLEAR,
@@ -414,7 +414,7 @@ class Render
 
         # subpass dependencies for proper image layout transitions
         dependencies : local VkSubpassDependency [2] [
-            VkSubpassDependency [
+            [
                 srcSubpass:      VK_SUBPASS_EXTERNAL,
                 dstSubpass:      0,
                 srcStageMask:    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -423,7 +423,7 @@ class Render
                 dstAccessMask:   VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                 dependencyFlags: VK_DEPENDENCY_BY_REGION_BIT
             ],
-            VkSubpassDependency [
+            [
                 srcSubpass:      0,
                 dstSubpass:      VK_SUBPASS_EXTERNAL,
                 srcStageMask:    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -758,20 +758,20 @@ class vk_context
         if [ reduce_s ]
             return UVReduce[reduce_s]
         q: UVReduce [ vk: a, name: 'uv-reduce' ]
-        q.model = mat4f.identity[]
+        q.model  = mat4f.identity[]
         eye:    vec3f [ 0.0, 0.0, 2.0 ]
         center: vec3f [ 0.0, 0.0, 0.0 ]
         up:     vec3f [ 0.0, 1.0, 0.0 ]
-        q.view = mat4f.look_at[ eye, center, up ]
-        q.proj = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
+        q.view   = mat4f.look_at[ eye, center, up ]
+        q.proj   = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
         reduce_s = q
         return q
 
     func dealloc [ ]
-        vmaDestroyAllocator[ allocator ]
-        vkDeviceWaitIdle[ device ]
-        vkDestroyDevice[ device, null ]
-        vkDestroyInstance[ instance, null ]
+        vmaDestroyAllocator [ allocator ]
+        vkDeviceWaitIdle    [ device ]
+        vkDestroyDevice     [ device, null ]
+        vkDestroyInstance   [ instance, null ]
 
     func set_queue_index [ vk_surface: handle ] 
         queue_family_count: u32 0
@@ -1637,7 +1637,7 @@ class Model
         id = gltf_path.load[ typeid[ GltfModel ], null ]
 
     func init [ ]
-        vk = w.vk.hold[]
+        vk = hold[ w.vk ]
 
 
 struct mouse_state
@@ -1653,6 +1653,7 @@ struct keyboard_state
     meta      : bool
     shift     : bool
     alt       : bool
+    ctrl      : bool
     text      : string
 
 
@@ -1792,8 +1793,7 @@ class SVGModel
             stroke_opacity:1.0,
             opacity:       1.0
         ]
-        shapes = array SVGShape []
-        shapes.hold[]
+        shapes = hold[ array SVGShape [] ]
         svg_walk[ shapes, svg_node.children, xf0, st0 ]
         #max_shapes : i32 512
         #while [ shapes.count > max_shapes ]
@@ -2378,7 +2378,7 @@ class Buffer
     public m_device_local   : bool
     public m_host_visible   : bool
     public m_host_coherent  : bool
-    intern user             : Au_t
+    manual user             : Au_t
     intern vma_alloc        : VmaAllocation
     intern vk_buffer        : VkBuffer
 
@@ -2686,8 +2686,10 @@ class Texture
                 imageOffset: VkOffset3D [ dst_x, dst_y, 0 ],
                 imageExtent: VkExtent3D [ dst_w, dst_h, 1 ]
             ]]
+        staging.hold[]
         cmd.submit[ ]
         vkDeviceWaitIdle[ vk.device ]
+        staging.drop[]
         transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
     func init [ ]
@@ -2812,8 +2814,7 @@ class Texture
                 res: vkCreateImageView[ vk.device, viewInfo, null, ref vk_image_view ]
                 expect res == VK_SUCCESS, "Failed to create VkImageView"
             if [ !vk_sampler ]
-                address_mode: (layer_count >= 6) ?
-                    VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT
+                address_mode: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
                 samplerInfo: VkSamplerCreateInfo [
                     sType:                   VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                     magFilter:               VK_FILTER_LINEAR,
@@ -3941,6 +3942,7 @@ shader CanvasUI
     mutable viewport        : vec2f
     mutable fill_offset   : f32
     mutable stroke_offset : f32
+    mutable stroke_sides  : vec4f
     attrib  atlas      : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.atlas, count:1, format:typeid[ u8 ]
     ]
@@ -4161,10 +4163,29 @@ shader CanvasUI
             // fill: 1 wherever dist_p is negative (inside the shape).
             // offset biases the SDF: positive = expand outward.
             float fill_cov   = 1.0 - smoothstep(-wp, wp, dist_p - ubo.fill_offset);
-            // stroke band: width stroke_width centered on the path edge
-            float stroke_cov = (stroke_width > 0.0)
-                ? (1.0 - smoothstep(-wp, wp, abs(dist_p - ubo.stroke_offset) - half_w))
-                : 0.0;
+            // per-side stroke: SDF depth, nearest-edge side selection.
+            // Transition only within ~wp of the corner equidistant diagonal.
+            float pad_p  = max(4.0, ubo.params.x * 0.5 + 4.0);
+            float sw_t_p = ubo.stroke_sides.x, sw_r_p = ubo.stroke_sides.y;
+            float sw_b_p = ubo.stroke_sides.z, sw_l_p = ubo.stroke_sides.w;
+            float stroke_cov;
+            {{
+                vec2  rel_p = lpos - center;
+                float dt_p  =  rel_p.y + half_size.y - pad_p;
+                float db_p  = -rel_p.y + half_size.y - pad_p;
+                float dr_p  = -rel_p.x + half_size.x - pad_p;
+                float dl_p  =  rel_p.x + half_size.x - pad_p;
+                float dh_p  = min(dt_p, db_p);
+                float dv_p  = min(dr_p, dl_p);
+                float sw_h_p = (dt_p < db_p) ? sw_t_p : sw_b_p;
+                float sw_v_p = (dl_p < dr_p) ? sw_l_p : sw_r_p;
+                float hf_p   = smoothstep(-wp, wp, dv_p - dh_p);
+                float sw_p   = sw_h_p * hf_p + sw_v_p * (1.0 - hf_p);
+                float nd_p   = -dist_p;
+                stroke_cov = (sw_p > 0.0 && stroke_width > 0.0)
+                    ? smoothstep(-wp, wp, nd_p) * (1.0 - smoothstep(sw_p - wp, sw_p + wp, nd_p))
+                    : 0.0;
+            }}
 
             // two-color fill gradient. grad_c0 = fill_color, grad_c1 = the
             // second color (alpha 0 disables). anchors are WORLD-space pixels
@@ -4176,9 +4197,10 @@ shader CanvasUI
                 vec2  gp1 = ubo.fill_grad_pts.zw;
                 float gt;
                 if (ubo.stroke_opts.z > 1.5) {{
-                    float radius = length(gp1 - gp0);
-                    gt = (radius > 0.0001)
-                        ? clamp(length(v_pos - gp0) / radius, 0.0, 1.0)
+                    vec2  radii = gp1 - gp0;
+                    vec2  d     = v_pos - gp0;
+                    gt = (min(abs(radii.x), abs(radii.y)) > 0.0001)
+                        ? clamp(length(vec2(d.x / radii.x, d.y / radii.y)), 0.0, 1.0)
                         : 0.0;
                 }} else {{
                     vec2  gd  = gp1 - gp0;
@@ -4200,9 +4222,10 @@ shader CanvasUI
                 vec2  sgp1 = ubo.stroke_grad_pts.zw;
                 float sgt;
                 if (ubo.stroke_opts.w > 1.5) {{
-                    float sradius = length(sgp1 - sgp0);
-                    sgt = (sradius > 0.0001)
-                        ? clamp(length(v_pos - sgp0) / sradius, 0.0, 1.0)
+                    vec2  sradii = sgp1 - sgp0;
+                    vec2  sd     = v_pos - sgp0;
+                    sgt = (min(abs(sradii.x), abs(sradii.y)) > 0.0001)
+                        ? clamp(length(vec2(sd.x / sradii.x, sd.y / sradii.y)), 0.0, 1.0)
                         : 0.0;
                 }} else {{
                     vec2  sgd  = sgp1 - sgp0;
@@ -4286,10 +4309,29 @@ shader CanvasUI
         // stroke_offset shifts the stroke band similarly. stroke_cov gates on
         // stroke_width > 0 — otherwise smoothstep at dist=0 yields 0.5 and
         // draws a half-alpha edge band even with zero stroke.
-        float fill_cov   = 1.0 - smoothstep(-w, w, dist - ubo.fill_offset + half_w);
-        float stroke_cov = (stroke_width > 0.0)
-            ? (1.0 - smoothstep(-w, w, abs(dist_stroke - ubo.stroke_offset) - half_w))
-            : 0.0;
+        // per-side stroke: SDF depth, nearest-edge side selection.
+        // Transition only within ~w of the corner equidistant diagonal.
+        float sw_t = ubo.stroke_sides.x, sw_r = ubo.stroke_sides.y;
+        float sw_b = ubo.stroke_sides.z, sw_l = ubo.stroke_sides.w;
+        float fill_cov = 1.0 - smoothstep(-w, w, dist - ubo.fill_offset);
+        float stroke_cov;
+        {{
+            vec2  rel = lpos - center;
+            float dt  =  rel.y + half_size.y;
+            float db  = -rel.y + half_size.y;
+            float dr  = -rel.x + half_size.x;
+            float dl  =  rel.x + half_size.x;
+            float dh  = min(dt, db);
+            float dv  = min(dr, dl);
+            float sw_h = (dt < db) ? sw_t : sw_b;
+            float sw_v = (dl < dr) ? sw_l : sw_r;
+            float hf   = smoothstep(-w, w, dv - dh);
+            float sw_s = sw_h * hf + sw_v * (1.0 - hf);
+            float nd   = -dist_stroke;
+            stroke_cov = (sw_s > 0.0 && stroke_width > 0.0)
+                ? smoothstep(-w, w, nd) * (1.0 - smoothstep(sw_s - w, sw_s + w, nd))
+                : 0.0;
+        }}
 
         // PRE-MULTIPLIED ALPHA: rgb pre-multiplied by coverage. composing
         // through multiple stages stays correct (no double-darkening).
@@ -4320,9 +4362,10 @@ shader CanvasUI
             vec2  sgp1 = ubo.stroke_grad_pts.zw;
             float sgt;
             if (ubo.stroke_opts.w > 1.5) {{
-                float sradius = length(sgp1 - sgp0);
-                sgt = (sradius > 0.0001)
-                    ? clamp(length(v_pos - sgp0) / sradius, 0.0, 1.0)
+                vec2  sradii = sgp1 - sgp0;
+                vec2  sd     = v_pos - sgp0;
+                sgt = (min(abs(sradii.x), abs(sradii.y)) > 0.0001)
+                    ? clamp(length(vec2(sd.x / sradii.x, sd.y / sradii.y)), 0.0, 1.0)
                     : 0.0;
             }} else {{
                 vec2  sgd  = sgp1 - sgp0;
@@ -4405,6 +4448,7 @@ shader CanvasText
     mutable text_grad_pos  : vec2f
     mutable grad_params    : vec4f     # x = mirror (0/1), y/z/w reserved
     mutable viewport       : vec2f
+    mutable crop_rect      : vec4f     # x0 y0 x1 y1 world-px; x1<=x0 = no clip
 
 
     attrib  atlas    : LayoutBinding [
@@ -4428,6 +4472,13 @@ shader CanvasText
         // blend state on the text Pipeline (straight_alpha flag) so the
         // result composes as rgb*a + dst*(1-a). this looked best in testing.
         float a = texture(atlas, v_uv).r;
+
+        // crop rect clip: x0 y0 x1 y1 world-space pixels. x1 > x0 = active.
+        if (ubo.crop_rect.z > ubo.crop_rect.x) {{
+            if (v_pos.x < ubo.crop_rect.x || v_pos.x > ubo.crop_rect.z ||
+                v_pos.y < ubo.crop_rect.y || v_pos.y > ubo.crop_rect.w)
+                discard;
+        }}
 
         // two-color gradient when text_grad.a > 0. positions are already in
         // world-space pixels (element layer converted from its own unit
@@ -4959,40 +5010,42 @@ class CanvasPath
         line_to [ x, y + h ]
         close_path
 
-    func add_rounded_rect [ x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32 ]
-        # clamp radii
-        rxx : minf [ rx, w * 0.5 ]
-        ryy : minf [ ry, h * 0.5 ]
-        PI  : f32 [ 3.14159265 ]
-        HP  : f32 [ 1.57079632 ]
+    func add_rounded_rect [ x: f32, y: f32, w: f32, h: f32, tl: f32, tr: f32, br: f32, bl: f32 ]
+        half2 : f32 [ minf[ w, h ] * 0.5 ]
+        r_tl : f32 [ minf[ tl, half2 ] ]
+        r_tr : f32 [ minf[ tr, half2 ] ]
+        r_br : f32 [ minf[ br, half2 ] ]
+        r_bl : f32 [ minf[ bl, half2 ] ]
+        PI   : f32 [ 3.14159265 ]
+        HP   : f32 [ 1.57079632 ]
 
         # top edge (left to right)
-        move_to [ x + rxx, y ]
-        line_to [ x + w - rxx, y ]
+        move_to [ x + r_tl, y ]
+        line_to [ x + w - r_tr, y ]
         # top-right corner
-        flatten_arc [ points, x + w - rxx, y + ryy, rxx, -HP, 0.0 ]
+        flatten_arc [ points, x + w - r_tr, y + r_tr, r_tr, -HP, 0.0 ]
         cursor_x = x + w
-        cursor_y = y + ryy
+        cursor_y = y + r_tr
 
         # right edge
-        line_to [ x + w, y + h - ryy ]
+        line_to [ x + w, y + h - r_br ]
         # bottom-right corner
-        flatten_arc [ points, x + w - rxx, y + h - ryy, rxx, 0.0, HP ]
-        cursor_x = x + w - rxx
+        flatten_arc [ points, x + w - r_br, y + h - r_br, r_br, 0.0, HP ]
+        cursor_x = x + w - r_br
         cursor_y = y + h
 
         # bottom edge (right to left)
-        line_to [ x + rxx, y + h ]
+        line_to [ x + r_bl, y + h ]
         # bottom-left corner
-        flatten_arc [ points, x + rxx, y + h - ryy, rxx, HP, PI ]
+        flatten_arc [ points, x + r_bl, y + h - r_bl, r_bl, HP, PI ]
         cursor_x = x
-        cursor_y = y + h - ryy
+        cursor_y = y + h - r_bl
 
         # left edge
-        line_to [ x, y + ryy ]
+        line_to [ x, y + r_tl ]
         # top-left corner
-        flatten_arc [ points, x + rxx, y + ryy, rxx, PI, PI + HP ]
-        cursor_x = x + rxx
+        flatten_arc [ points, x + r_tl, y + r_tl, r_tl, PI, PI + HP ]
+        cursor_x = x + r_tl
         cursor_y = y
 
         close_path
@@ -5130,6 +5183,7 @@ struct CanvasState
     fill_offset       : f32
     stroke_offset     : f32
     corner_radii      : vec4f
+    stroke_sides      : vec4f
     fill_gradient     : Gradient
     stroke_gradient   : Gradient
     font      	      : CanvasFont
@@ -5170,6 +5224,7 @@ struct CanvasState
     stroke_grad_pos    : vec2f
     stroke_grad_mirror : bool
     stroke_grad_radial : bool
+    text_crop          : vec4f
 
 
 func sk_color [ clr: rgba ] -> vec4f
@@ -5490,6 +5545,7 @@ Render Canvas
                 fill_offset:   0.0,
                 stroke_offset: 0.0,
                 corner_radii:  vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                stroke_sides:  vec4f [ 1.0, 1.0, 1.0, 1.0 ],
                 # gradient defaults: alpha-0 colors disable the gradient paths,
                 # so anchors/mirror only matter when a layer actually sets a
                 # gradient color. mirror defaults to true (reflected).
@@ -5600,6 +5656,12 @@ Render Canvas
 
     func transform_ty [] -> f32
         return states[state_depth - 1].transform.ty
+
+    func set_text_crop [ x0: f32, y0: f32, x1: f32, y1: f32 ]
+        states[state_depth - 1].text_crop = vec4f [ x0, y0, x1, y1 ]
+
+    func clear_text_crop []
+        states[state_depth - 1].text_crop = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
     func inner_glow [ color: rgba, px: f32 ]
         c : vec4f [ sk_color[ color ] ]
@@ -5721,9 +5783,9 @@ Render Canvas
         path.add_rect [ x, y, rw, rh ]
 
     
-    func rounded_rect [ x: f32, y: f32, rw: f32, rh: f32, rx: f32, ry: f32 ]
+    func rounded_rect [ x: f32, y: f32, rw: f32, rh: f32, tl: f32, tr: f32, br: f32, bl: f32 ]
         info : header[ path ]
-        path.add_rounded_rect [ x, y, rw, rh, rx, ry ]
+        path.add_rounded_rect [ x, y, rw, rh, tl, tr, br, bl ]
 
     func close_path []
         path.close_path[]
@@ -5743,6 +5805,10 @@ Render Canvas
         vi    : i32 [ 0 ]
         pen_x : f32 [ pen_x_in ]
         pen_y : f32 [ pen_y_in ]
+        st    : CanvasState [ states[state_depth - 1] ]
+        crop_active : bool [ st.text_crop.z > st.text_crop.x ]
+        crop_x0 : f32 [ st.text_crop.x ]
+        crop_x1 : f32 [ st.text_crop.z ]
 
         for [ i: i32 0, i < display.count, i += 1 ]
             cp   : u32 [ display[i] ]
@@ -5751,8 +5817,12 @@ Render Canvas
                 if [ vi + 6 > text_max_verts ]
                     break
                 x0 : f32 [ pen_x + f32 slot.bearing_x ]
-                y0 : f32 [ pen_y - f32 slot.bearing_y ]
                 x1 : f32 [ x0 + f32 slot.atlas_w ]
+                if [ crop_active && x0 > crop_x1 ] break
+                if [ crop_active && x1 < crop_x0 ]
+                    pen_x += f32 slot.advance
+                    continue
+                y0 : f32 [ pen_y - f32 slot.bearing_y ]
                 y1 : f32 [ y0 + f32 slot.atlas_h ]
                 u0 : f32 [ f32 slot.atlas_x                   / atlas_size ]
                 v0 : f32 [ f32 slot.atlas_y                   / atlas_size ]
@@ -5806,9 +5876,10 @@ Render Canvas
         ty   : f32 [ bounds.y + lref + (bounds.h - lref) * align.y + offset.y ]
 
         st : CanvasState states[state_depth - 1]
-        text_shader.viewport = vec2f [ f32 width, f32 height ]
-        pen_x : f32 [ tx + st.transform.tx ]
-        pen_y : f32 [ ty + st.transform.ty ]
+        text_shader.viewport   = vec2f [ f32 width, f32 height ]
+        text_shader.crop_rect  = st.text_crop
+        pen_x : f32 [ roundf[ tx + st.transform.tx ] ]
+        pen_y : f32 [ roundf[ ty + st.transform.ty ] ]
 
         # shadow pass: one draw at offset with the shadow color, no gradient.
         # runs BEFORE the main text so the text composites on top.
@@ -5851,6 +5922,7 @@ Render Canvas
         ui_shader.stroke_offset = st.stroke_offset
         ui_shader.params        = vec4f [ st.stroke_width, st.opacity, st.blur_rad, 0.0 ]
         ui_shader.radii         = st.corner_radii
+        ui_shader.stroke_sides  = st.stroke_sides
         ui_shader.grad0           = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         ui_shader.grad_c0         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         ui_shader.grad_c1         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
@@ -5953,6 +6025,9 @@ Render Canvas
 
     func rounded [ tl: f32, tr: f32, br: f32, bl: f32 ]
         states[state_depth - 1].corner_radii = vec4f [ tl, tr, br, bl ]
+
+    func stroke_sides [ top: f32, right: f32, bottom: f32, left: f32 ]
+        states[state_depth - 1].stroke_sides = vec4f [ top, right, bottom, left ]
 
     func draw_svg [ mdl: SVGModel, ox: f32, oy: f32, rw: f32, rh: f32 ]
         if [ !mdl || !mdl.shapes || mdl.shapes.count == 0 ]
@@ -7300,9 +7375,10 @@ intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, act
     w.ev.key.unicode   = key
     w.ev.key.scan_code = scan_code
     w.ev.key.state     = action == GLFW_PRESS
-    w.ev.key.meta      = (mods & GLFW_MOD_SUPER) != 0
-    w.ev.key.shift     = (mods & GLFW_MOD_SHIFT) != 0
-    w.ev.key.alt       = (mods & GLFW_MOD_ALT)   != 0
+    w.ev.key.meta      = (mods & GLFW_MOD_SUPER)   != 0
+    w.ev.key.shift     = (mods & GLFW_MOD_SHIFT)   != 0
+    w.ev.key.alt       = (mods & GLFW_MOD_ALT)     != 0
+    w.ev.key.ctrl      = (mods & GLFW_MOD_CONTROL) != 0
     w.key_event[ w.ev ]
 
 
@@ -7331,11 +7407,32 @@ intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods:
         w.release_event[ w.ev ]
 
 
-intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ] 
+intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ]
     w: (glfwGetWindowUserPointer[ win ] to Window)
-    #expect !w.ev.key.text, "unexpected text state"
     w.ev.clear[]
-    w.ev.key.text = i32[ code_point ]
+    cp  : u32 [ code_point ]
+    buf : local i8 [ 5 ]
+    nb  : i32 [ 0 ]
+    if [ cp < 0x80 ]
+        buf[0] = i8[cp]
+        nb = 1
+    el [ cp < 0x800 ]
+        buf[0] = i8[ 0xC0 | (cp >> 6) ]
+        buf[1] = i8[ 0x80 | (cp & 0x3F) ]
+        nb = 2
+    el [ cp < 0x10000 ]
+        buf[0] = i8[ 0xE0 | (cp >> 12) ]
+        buf[1] = i8[ 0x80 | ((cp >> 6) & 0x3F) ]
+        buf[2] = i8[ 0x80 | (cp & 0x3F) ]
+        nb = 3
+    el
+        buf[0] = i8[ 0xF0 | (cp >> 18) ]
+        buf[1] = i8[ 0x80 | ((cp >> 12) & 0x3F) ]
+        buf[2] = i8[ 0x80 | ((cp >> 6) & 0x3F) ]
+        buf[3] = i8[ 0x80 | (cp & 0x3F) ]
+        nb = 4
+    buf[nb] = 0
+    w.ev.key.text = string[ ref buf[0] ]
     w.text_event[ w.ev ]
 
 
@@ -7790,11 +7887,15 @@ ielement element
     #intern selections   : map
     intern transitions  : map StyleTransition[string]
     intern restyle       : bool
-    intern volatile      : bool
+    mutable volatile     : bool
     intern cache_canvas  : Canvas
     intern cache_w       : i32
     intern cache_h       : i32
+    intern cache_ox      : i32
+    intern cache_oy      : i32
     mutable pristine     : bool [ false ]
+    mutable needs_frame  : bool
+    mutable fc           : f32
 
     public func set_capture []
         ux.set_capture[ a ]
@@ -7880,10 +7981,10 @@ func filter_n[ current:f32, goal:f32, amount:f32, rate:f32 ] -> f32
     el
         return current * decay
 
-struct CursorPos
-    x : f32
-    y : f32
-    h : f32
+class CursorPos
+    public x : f32
+    public y : f32
+    public h : f32
 
 
 Display Window
@@ -8105,7 +8206,10 @@ Display Window
     public func apply_style [ inst: element, style_avail: map StyleEntries[string], home_object:Au ]
         #puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
         inst.volatile = false
-        
+        inst.pristine = false
+        inst.maps_populated = false
+        inst.layers = map Layer[string] []
+
         # create layers in the order they render
         cache_style[inst, style_avail, false, home_object]
         
@@ -8725,39 +8829,67 @@ Display Window
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
             rect [ x: 0, y: 0, w: width, h: height ] ]
 
+        # fc must be set before bounds so layout uses the correct scale
+        e.fc = 22.0
+        if [ cv.font ]
+            e.fc = cv.font.line_height
+
         # compute element bounds from its area
         if [ !e.area ]
             e.area = Region [ 0.0 ]
 
         if [!e.bounds] e.bounds = rect[]
-        bounds : e.area.rectangle[ rel, null, (last) ? last.bounds : null ]
+        bounds : e.area.rectangle[ rel, null, (last) ? last.bounds : null, e.fc ]
         memcpy[ e.bounds, bounds, sizeof[f32] * 4 ]
 
-        ew : i32 [ i32[ceilf[e.bounds.w]] + 1 ]
-        eh : i32 [ i32[ceilf[e.bounds.h]] + 1 ]
-        if [ ew > 0 && eh > 0 && !e.volatile ]
-            if [ !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ]
-                e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
-                e.cache_canvas.update[]
-                e.cache_w = ew
-                e.cache_h = eh
-                e.pristine = false
+        # pre-scan layers to measure any outset beyond element bounds
+        margin_l : i32 [ 0 ]
+        margin_t : i32 [ 0 ]
+        margin_r : i32 [ 0 ]
+        margin_b : i32 [ 0 ]
+        for [ psc_au: Au, psc_k: string ] in e.layers
+            psc_lay : Layer [ psc_au to Layer ]
+            if [ !psc_lay || !psc_lay.area ] continue
+            psc_b  : rect [ psc_lay.area.rectangle[ e.bounds, null, null, e.fc ] ]
+            psc_lx : f32  [ psc_b.x - e.bounds.x ]
+            psc_ly : f32  [ psc_b.y - e.bounds.y ]
+            psc_rx : f32  [ psc_b.x + psc_b.w - e.bounds.x - e.bounds.w ]
+            psc_by : f32  [ psc_b.y + psc_b.h - e.bounds.y - e.bounds.h ]
+            if [ psc_lx < 0.0 ]
+                ol : i32 [ i32 ceilf[ 0.0 - psc_lx ] ]
+                if [ ol > margin_l ] margin_l = ol
+            if [ psc_ly < 0.0 ]
+                ot : i32 [ i32 ceilf[ 0.0 - psc_ly ] ]
+                if [ ot > margin_t ] margin_t = ot
+            if [ psc_rx > 0.0 ]
+                or2 : i32 [ i32 ceilf[ psc_rx ] ]
+                if [ or2 > margin_r ] margin_r = or2
+            if [ psc_by > 0.0 ]
+                ob2 : i32 [ i32 ceilf[ psc_by ] ]
+                if [ ob2 > margin_b ] margin_b = ob2
+        if [ margin_l > 0 ] margin_l += 1
+        if [ margin_t > 0 ] margin_t += 1
+        if [ margin_r > 0 ] margin_r += 1
+        if [ margin_b > 0 ] margin_b += 1
+        ew : i32 [ i32[ceilf[e.bounds.w]] + 1 + margin_l + margin_r ]
+        eh : i32 [ i32[ceilf[e.bounds.h]] + 1 + margin_t + margin_b ]
+        if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
+            e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
+            e.cache_canvas.update[]
+            e.cache_w = ew
+            e.cache_h = eh
+            e.cache_ox = margin_l
+            e.cache_oy = margin_t
+            e.pristine = false
 
         target_cv : Canvas [ (e.cache_canvas && !e.volatile && stage == CanvasType.screen) ? e.cache_canvas : cv ]
-
         element_text : (e.label && e.label.count) ? e.label : null
 
-        # per-element 2D transform around a transform-origin pivot. scale and
-        # rotate default to identity when the element hasn't declared them;
-        # treat (0,0) scale as identity so zero-init doesn't collapse the
-        # element to a point. transform_origin is normalized to bounds —
-        # (0.5, 0.5) = center; if origin is zero too, default to center.
         sx       : f32  [ (e.scaling.x != 0.0) ? e.scaling.x : 1.0 ]
         sy       : f32  [ (e.scaling.y != 0.0) ? e.scaling.y : 1.0 ]
         has_rot  : bool [ e.rotation != 0.0 ]
         has_sc   : bool [ sx != 1.0 || sy != 1.0 ]
         xform    : bool [ has_rot || has_sc ]
-
 
         if [ xform ]
             ox : f32 [ (e.transform_origin.x != 0.0) ? e.transform_origin.x : 0.5 ]
@@ -8775,6 +8907,11 @@ Display Window
         redraw : bool [ e.volatile || !e.pristine || stage == CanvasType.compose ]
         if [ redraw && e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
             e.cache_canvas.reset[ vec4f[0.0, 0.0, 0.0, 0.0] ]
+            if [ e.cache_ox > 0 || e.cache_oy > 0 ]
+                target_cv.save[]
+                target_cv.translate[ f32 e.cache_ox, f32 e.cache_oy ]
+
+        e.needs_frame = false
 
         # compute layer bounds and draw each layer
         for [ layer_au: Au, lkey: string ] in e.layers
@@ -8783,15 +8920,19 @@ Display Window
             if [ !layer || layer.ctype != stage ]
                 continue
             
-            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null ] : e.bounds.copy[]
+            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null, e.fc ] : e.bounds.copy[]
             layer.bounds.x -= e.bounds.x
             layer.bounds.y -= e.bounds.y
             b  : rect   [ layer.bounds ]
-            rx : f32 [ 0.0 ]
-            ry : f32 [ 0.0 ]
+            r_tl : f32 [ 0.0 ]
+            r_tr : f32 [ 0.0 ]
+            r_br : f32 [ 0.0 ]
+            r_bl : f32 [ 0.0 ]
             if [ layer.radius ]
-                rx = layer.radius.rx
-                ry = layer.radius.ry
+                r_tl = layer.radius.tl
+                r_tr = layer.radius.tr
+                r_br = layer.radius.br
+                r_bl = layer.radius.bl
 
             # blur setup: draw to per-layer canvas when blur is active.
             # dirty on first use, size change, or active transition.
@@ -8821,17 +8962,22 @@ Display Window
 
             if [ (!needs_blur || blur_redraw) && ((layer.fill_color && layer.fill_color.a > 0.0) || (layer.stroke_color && layer.stroke_color.a > 0.0) || layer.inner_glow) ]
                 draw_cv.save             [ ]
-                # crisp-pixel offset: odd stroke widths need to straddle the
-                # pixel grid at half-pixel centers. stroke of 1 → (0.5, 0.5),
-                # stroke of 2 → (0, 0).
-                sw_int : i32 [ i32 layer.stroke_width ]
+                sw_top   : f32 [ (layer.stroke_width) ? layer.stroke_width.top    : 0.0 ]
+                sw_right : f32 [ (layer.stroke_width) ? layer.stroke_width.right  : 0.0 ]
+                sw_bot   : f32 [ (layer.stroke_width) ? layer.stroke_width.bottom : 0.0 ]
+                sw_left  : f32 [ (layer.stroke_width) ? layer.stroke_width.left   : 0.0 ]
+                sw_max   : f32 [ maxf[ maxf[ sw_top, sw_right ], maxf[ sw_bot, sw_left ] ] ]
+                # crisp-pixel offset: odd max stroke width needs half-pixel nudge
+                sw_int : i32 [ i32 sw_max ]
                 crisp  : f32 [ ((sw_int % 2) == 1) ? 0.5 : 0.0 ]
                 if [ crisp > 0.0 ]
                     draw_cv.translate    [ crisp, crisp ]
-                draw_cv.set_stroke_size  [ layer.stroke_width ]
+                draw_cv.set_stroke_size  [ sw_max ]
                 draw_cv.set_stroke_cap   [ layer.stroke_cap  ]
                 draw_cv.set_stroke_join  [ layer.stroke_join ]
-                draw_cv.rounded_rect     [ b.x, b.y, b.w, b.h, rx, ry ]
+                draw_cv.rounded          [ r_tl, r_tr, r_br, r_bl ]
+                draw_cv.stroke_sides     [ sw_top, sw_right, sw_bot, sw_left ]
+                draw_cv.rounded_rect     [ b.x, b.y, b.w, b.h, r_tl, r_tr, r_br, r_bl ]
                 draw_cv.fill_color       [ (layer.fill_color && layer.fill_color.a > 0.0) ? layer.fill_color : rgba [ '#00000000' ] ]
                 draw_cv.stroke_color     [ layer.stroke_color ]
                 # fill gradient anchors — same element-unit → world-pixel
@@ -8845,29 +8991,39 @@ Display Window
                 f_ay  : f32 [ draw_cv.transform_ty[] + fp_y ]
                 draw_cv.fill_grad        [ layer.fill_gradient_color ]
                 if [ layer.fill_gradient == GradientType.radial ]
+                    f_ry : f32 [ (layer.fill_gradient_radius_y > 0.0) ? layer.fill_gradient_radius_y : f_rad ]
                     draw_cv.fill_color_pos   [ f_ax, f_ay ]
-                    draw_cv.fill_grad_pos    [ f_ax + f_rad, f_ay ]
+                    draw_cv.fill_grad_pos    [ f_ax + f_rad, f_ay + f_ry ]
                     draw_cv.fill_grad_radial [ true ]
                     draw_cv.fill_grad_mirror [ false ]
                 el [ layer.fill_gradient == GradientType.linear ]
                     draw_cv.fill_color_pos   [ f_ax, f_ay ]
-                    draw_cv.fill_grad_pos    [ f_ax + f_rad, f_ay ]
+                    fill_rad : f32 [ layer.fill_gradient_angle * 3.14159265 / 180.0 ]
+                    fill_ext : f32 [ (f_rad > 0.0) ? f_rad : abs[b.w * cos[fill_rad]] + abs[b.h * sin[fill_rad]] ]
+                    draw_cv.fill_grad_pos    [ f_ax + fill_ext * cos[ fill_rad ], f_ay + fill_ext * sin[ fill_rad ] ]
                     draw_cv.fill_grad_radial [ false ]
                     draw_cv.fill_grad_mirror [ false ]
                 el
                     draw_cv.fill_grad_radial [ false ]
                     draw_cv.fill_grad_mirror [ false ]
-                # stroke gradient — same anchor as fill (cursor position)
+                # stroke gradient anchor — independent of fill anchor
+                sp_x  : f32 [ layer.stroke_color_pos.x * e.bounds.w ]
+                sp_y  : f32 [ layer.stroke_color_pos.y * e.bounds.h ]
+                s_ax  : f32 [ draw_cv.transform_tx[] + sp_x ]
+                s_ay  : f32 [ draw_cv.transform_ty[] + sp_y ]
                 s_rad : f32 [ layer.stroke_gradient_radius ]
                 draw_cv.stroke_grad      [ layer.stroke_gradient_color ]
                 if [ layer.stroke_gradient == GradientType.radial ]
-                    draw_cv.stroke_color_pos [ f_ax, f_ay ]
-                    draw_cv.stroke_grad_pos  [ f_ax + s_rad, f_ay ]
+                    s_ry : f32 [ (layer.stroke_gradient_radius_y > 0.0) ? layer.stroke_gradient_radius_y : s_rad ]
+                    draw_cv.stroke_color_pos [ s_ax, s_ay ]
+                    draw_cv.stroke_grad_pos  [ s_ax + s_rad, s_ay + s_ry ]
                     draw_cv.stroke_grad_radial [ true ]
                     draw_cv.stroke_grad_mirror [ false ]
                 el [ layer.stroke_gradient == GradientType.linear ]
-                    draw_cv.stroke_color_pos [ f_ax, f_ay ]
-                    draw_cv.stroke_grad_pos  [ f_ax + s_rad, f_ay ]
+                    draw_cv.stroke_color_pos [ s_ax, s_ay ]
+                    stroke_rad : f32 [ layer.stroke_gradient_angle * 3.14159265 / 180.0 ]
+                    stroke_ext : f32 [ (s_rad > 0.0) ? s_rad : abs[b.w * cos[stroke_rad]] + abs[b.h * sin[stroke_rad]] ]
+                    draw_cv.stroke_grad_pos  [ s_ax + stroke_ext * cos[ stroke_rad ], s_ay + stroke_ext * sin[ stroke_rad ] ]
                     draw_cv.stroke_grad_radial [ false ]
                     draw_cv.stroke_grad_mirror [ false ]
                 el
@@ -8918,7 +9074,11 @@ Display Window
                     color:  layer.label_shadow,
                     offset: layer.label_shadow_offset,
                     blur:   layer.label_shadow_blur ]
+                tx0 : f32 [ draw_cv.transform_tx[] + b.x ]
+                ty0 : f32 [ draw_cv.transform_ty[] + b.y ]
+                draw_cv.set_text_crop[ tx0, ty0, tx0 + b.w, ty0 + b.h ]
                 draw_cv.draw_text    [ (label) ? label : element_text, b, align, offset, layer.label_overflow, lsh ]
+                draw_cv.clear_text_crop[]
                 draw_cv.restore      [ ]
 
             layer.draw*[ draw_cv ]
@@ -8945,11 +9105,14 @@ Display Window
             a.screen  = prev_screen
             a.compose = prev_compose
             if [ !e.volatile && stage == CanvasType.screen ]
-                e.pristine = true
+                if [ e.cache_ox > 0 || e.cache_oy > 0 ]
+                    target_cv.restore[]
+                if [ !e.needs_frame ]
+                    e.pristine = true
 
         # blit element cache into parent canvas (screen stage only)
         if [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
-            cv.draw_canvas[ e.cache_canvas, 0.0, 0.0, f32 ew, f32 eh ]
+            cv.draw_canvas[ e.cache_canvas, 0.0 - f32 e.cache_ox, 0.0 - f32 e.cache_oy, f32 ew, f32 eh ]
 
         last_2 : element
         for [ ee: element, id: string ] in e.elements
@@ -9352,6 +9515,10 @@ class Style
         m : css_path.modified_time[ ]
         if [ mod_time != m ]
             mod_time = m
+            base    = array StyleBlock [ ]
+            visited = array string     [ ]
+            errors  = array string     [ ]
+            members = map StyleEntries[string] []
             process[ css_path.load[ typeid[ string ], null ] ]
             cache_members[]
             loaded   = true
@@ -9384,14 +9551,24 @@ struct XCoord
     offset   : f32
     relative : bool
     percent  : bool
-    
+    pixel    : bool
+
     construct [ sx: string ]
         f : string[sx.first[]]
         if [ f.chars[0] == '-' || isdigit[f.chars[0]]]
-            offset = f.real_value[]
+            sx_r : string [ sx ]
+            if [ sx_r.last[] == 'x' && sx_r.count >= 2 ]
+                if [ sx_r.chars[ sx_r.count - 2 ] == 'p' ]
+                    sx_r  = sx_r.mid[ 0, sx_r.count - 2 ]
+                    pixel = true
+            offset = sx_r.real_value[]
         el
             x_type    = XAlign[f]
             sx_offset : sx.mid[ 1, sx.count - 1 ]
+            if [ sx_offset.last[] == 'x' && sx_offset.count >= 2 ]
+                if [ sx_offset.chars[ sx_offset.count - 2 ] == 'p' ]
+                    sx_offset = sx_offset.mid[ 0, sx_offset.count - 2 ]
+                    pixel     = true
             if [ sx_offset.last[] == '%' ]
                 sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
                 percent   = true
@@ -9401,8 +9578,9 @@ struct XCoord
                     relative  = true
             offset = sx_offset.real_value[]
 
-    func plot [ from: f32, vto: f32, left: ref XCoord, left_val: f32, rel: rect, last: rect ] -> f32
-        val : mix[ offset, offset * (vto - from), f32[percent] ]
+    func plot [ from: f32, vto: f32, left: ref XCoord, left_val: f32, rel: rect, last: rect, fc: f32 ] -> f32
+        fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
+        val  : f32 [ mix[ offset * fc_m, offset * (vto - from), f32[percent] ] ]
         if [ x_type > XAlign.right ]
             expect (left.x_type <= XAlign.right), 'invalid left-operand (xcoord)'
             return left_val + val
@@ -9421,7 +9599,8 @@ struct XCoord
             x_type:  XAlign[mix[ f32[x_type],   f32[other.x_type],   f ]],
             offset:         mix[     offset,        other.offset,    f ],
             percent: bool[  mix[ f32[percent],  f32[other.percent],  f ]],
-            relative:bool[mix[ f32[relative], f32[other.relative], f ]]
+            relative:bool[mix[ f32[relative], f32[other.relative], f ]],
+            pixel:   other.pixel
         ]
 
 
@@ -9430,14 +9609,24 @@ struct YCoord
     offset   : f32
     relative : bool
     percent  : bool
+    pixel    : bool
 
     construct [ sy: string ]
         f : string [ sy.first[] ]
         if [ f.chars[0] == '-' || isdigit[f.chars[0]]]
-            offset = f.real_value[]
+            sy_r : string [ sy ]
+            if [ sy_r.last[] == 'x' && sy_r.count >= 2 ]
+                if [ sy_r.chars[ sy_r.count - 2 ] == 'p' ]
+                    sy_r  = sy_r.mid[ 0, sy_r.count - 2 ]
+                    pixel = true
+            offset = sy_r.real_value[]
         el
             y_type    = YAlign[ f ]
             sy_offset : sy.mid[ 1, sy.count - 1 ]
+            if [ sy_offset.last[] == 'x' && sy_offset.count >= 2 ]
+                if [ sy_offset.chars[ sy_offset.count - 2 ] == 'p' ]
+                    sy_offset = sy_offset.mid[ 0, sy_offset.count - 2 ]
+                    pixel     = true
             if [ sy_offset.last[] == '%' ]
                 sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
                 percent   = true
@@ -9447,8 +9636,9 @@ struct YCoord
                     relative  = true
             offset = sy_offset.real_value[]
 
-    func plot [ from: f32, vto: f32, top: ref YCoord, top_val: f32, rel: rect, last: rect ] -> f32
-        val : f32 [ mix[ offset, offset * (vto - from), percent ] ]
+    func plot [ from: f32, vto: f32, top: ref YCoord, top_val: f32, rel: rect, last: rect, fc: f32 ] -> f32
+        fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
+        val  : f32 [ mix[ offset * fc_m, offset * (vto - from), percent ] ]
         if [ y_type > YAlign.bottom ]
             expect top.y_type <= YAlign.bottom, 'invalid top-operand (ycoord)'
             return top_val + val
@@ -9467,7 +9657,8 @@ struct YCoord
             y_type:   YAlign[ mix[ f32[y_type],   f32[other.y_type],   f ] ],
             offset:           mix[ offset,         other.offset,        f ],
             percent:  bool[   mix[ f32[percent],   f32[other.percent],  f ] ],
-            relative: bool[   mix[ f32[relative],  f32[other.relative], f ] ]
+            relative: bool[   mix[ f32[relative],  f32[other.relative], f ] ],
+            pixel:    other.pixel
         ]
 
 
@@ -9512,12 +9703,14 @@ class Region
         s : string[cs]
         construct [ s ]
 
-    func rectangle [ win: rect, rel: rect, last: rect ] -> rect
-        lv : l.plot[ win.x, win.x + win.w, null,  0.0, rel, last ]
-        rv : r.plot[ win.x, win.x + win.w, ref l, lv,  rel, last ]
-        tv : t.plot[ win.y, win.y + win.h, null,  0.0, rel, last ]
-        bv : b.plot[ win.y, win.y + win.h, ref t, tv,  rel, last ]
-        return rect [ x: lv, y: tv, w: rv - lv, h: bv - tv ]
+    func rectangle [ win: rect, rel: rect, last: rect, fc: f32 ] -> rect
+        lv : l.plot[ win.x, win.x + win.w, null,  0.0, rel, last, fc ]
+        rv : r.plot[ win.x, win.x + win.w, ref l, lv,  rel, last, fc ]
+        tv : t.plot[ win.y, win.y + win.h, null,  0.0, rel, last, fc ]
+        bv : b.plot[ win.y, win.y + win.h, ref t, tv,  rel, last, fc ]
+        rx : f32 [ round[ lv ] ]
+        ry : f32 [ round[ tv ] ]
+        return rect [ x: rx, y: ry, w: round[ rv ] - rx, h: round[ bv ] - ry ]
 
     func mix [ other: Region, f: f64 ] -> Region
         reg : Region [ set: true ]
@@ -9816,21 +10009,69 @@ Mixable Align
     public y        : YAlign
 
 
+func parse_css_px [ s: string ] -> f32
+    t : string [ s.trim[] ]
+    if [ t.ends_with[ 'px' ] ]
+        t = t.mid[ 0, t.count - 2 ]
+    return f32 t.real_value[]
+
 Mixable Radius
-    public rx : f32
-    public ry : f32
+    public tl : f32
+    public tr : f32
+    public br : f32
+    public bl : f32
 
     construct [ f: f32 ]
-        rx = f
-        ry = f
+        tl = f
+        tr = f
+        br = f
+        bl = f
     construct [ f: string ]
         sp : f.split[' ']
-        if [sp.count == 1]
-            rx = sp[0].real_value[]
-            ry = rx
+        if [ sp.count == 1 ]
+            tl = parse_css_px[ sp[0] ]
+            tr = tl
+            br = tl
+            bl = tl
+        el [ sp.count == 2 ]
+            tl = parse_css_px[ sp[0] ]
+            tr = tl
+            br = parse_css_px[ sp[1] ]
+            bl = br
         el
-            rx = sp[0].real_value[]
-            ry = sp[1].real_value[]
+            tl = parse_css_px[ sp[0] ]
+            tr = parse_css_px[ sp[1] ]
+            br = parse_css_px[ sp[2] ]
+            bl = parse_css_px[ sp[3] ]
+
+Mixable Sides
+    public top    : f32
+    public right  : f32
+    public bottom : f32
+    public left   : f32
+
+    construct [ f: f32 ]
+        top = f
+        right = f
+        bottom = f
+        left = f
+    construct [ f: string ]
+        sp : f.split[' ']
+        if [ sp.count == 1 ]
+            top    = parse_css_px[ sp[0] ]
+            right  = top
+            bottom = top
+            left   = top
+        el [ sp.count == 2 ]
+            top    = parse_css_px[ sp[0] ]
+            bottom = top
+            right  = parse_css_px[ sp[1] ]
+            left   = right
+        el
+            top    = parse_css_px[ sp[0] ]
+            right  = parse_css_px[ sp[1] ]
+            bottom = parse_css_px[ sp[2] ]
+            left   = parse_css_px[ sp[3] ]
 
 enum Blend
     normal:   0
@@ -9853,6 +10094,8 @@ class Layer
     public fill_gradient            : GradientType
     public fill_gradient_color      : rgba
     public fill_gradient_radius     : f32
+    public fill_gradient_radius_y   : f32
+    public fill_gradient_angle      : f32
     public fill_offset         : f32
     public fill_shadow         : Shadow
     public fill_glow           : Glow
@@ -9861,17 +10104,19 @@ class Layer
     public stroke_gradient          : GradientType
     public stroke_gradient_color    : rgba
     public stroke_gradient_radius   : f32
-
-    public stroke_color        : rgba
-    public stroke_width        : f32
-    public stroke_offset       : f32
-    public stroke_shadow       : Shadow
-    public stroke_glow         : Glow
-    public stroke_cap          : Cap
-    public stroke_join         : Join
-    public stroke_miter        : f32
-    public stroke_dash         : array f32
-    public stroke_dash_offset  : f32
+    public stroke_gradient_radius_y : f32
+    public stroke_gradient_angle    : f32
+    public stroke_color             : rgba
+    public stroke_color_pos         : vec2f
+    public stroke_width             : Sides
+    public stroke_offset            : f32
+    public stroke_shadow            : Shadow
+    public stroke_glow              : Glow
+    public stroke_cap               : Cap
+    public stroke_join              : Join
+    public stroke_miter             : f32
+    public stroke_dash              : array f32
+    public stroke_dash_offset       : f32
 
     public label               : string
     public label_color         : rgba

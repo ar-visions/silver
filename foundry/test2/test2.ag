@@ -5,10 +5,26 @@ export 0.8.8
 
 import <stdio.h>
 
+# to-fix: array of struct — struct values are stack-allocated; array_push stores
+# a raw stack pointer which becomes dangling after the function returns.
+# on the second push/set the drop() in Au_assign reads garbage and crashes.
+# fix should be in silver codegen: when storing a struct into a persistent slot
+# (array element, map value, class member), emit a heap alloc + memcpy first.
+
+struct Point
+    x : f32
+    y : f32
+
 app test
     func init[]
-        Au.auto_free[true]
-        while [ true ]
-            s : 'this is a string'
-            s.drop[]
-            Au.auto_free[ false ]
+        pts : array Point []
+        p0  : Point [ x: 1.0, y: 2.0 ]
+        pts.push[ p0 ]
+        p1  : Point [ x: 3.0, y: 4.0 ]
+        pts.push[ p1 ]
+        pts[ 0 ] = p1
+        puts 'array of struct: ok'
+        s : string [ 'hello' ]
+        s.hold[]
+        s.drop[]
+        puts 'instance-style smethod: ok'

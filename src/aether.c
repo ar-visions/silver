@@ -313,7 +313,7 @@ enode enode_value(enode mem, bool force_load) { sequencer
     //etype mdl = etype_prep(a, au_arg_type((Au)mem->au));
 
     if (!mem->loaded && (force_load || !is_struct(canonical(mem)) || mem->au->is_explicit_ref) && 
-        !mem->au->is_imethod && (force_load || mem->au->member_type != AU_MEMBER_TYPE) &&
+        !mem->au->is_imethod && !mem->au->is_smethod && (force_load || mem->au->member_type != AU_MEMBER_TYPE) &&
        (!is_func((Au)mem) || is_func_ptr((Au)mem))) {
         if (mem->au->ident && strstr(mem->au->ident, "SND_PCM_STREAM") != NULL) {
             mem = mem; // breakpoint: loading SND_PCM_STREAM enum
@@ -3386,7 +3386,7 @@ enode etype_access(etype target, string name) { sequencer
         
         // if primitive, we need to make a temp on stack (reserving Au header space), and obtain pointer to it
         efunc result = efunc(mod, a, au, m, loaded, true, is_super, is_super_target, target,
-            (m->is_static || m->is_smethod) ? null : n);
+            m->is_static ? null : n);
         if (is_super_target)
             fprintf(stderr, "etype_access super: %s.%s result->is_super=%d\n",
                 m->context ? m->context->ident : "?", m->ident,
@@ -6873,7 +6873,15 @@ none etype_implement(etype t, bool w) { sequencer
                     LLVMPositionBuilderBefore(B, first_instr);
                 else
                     LLVMPositionBuilderAtEnd(B, entry_block);
-                n->value = entry_alloca(a, type, id);
+                // local fixed-size Silver arrays: src type has is_pointer=true (set by
+                // e_stack_array). the variable holds a ptr to the storage — use ptr alloca.
+                // C fixed-size arrays (e.g. char[256] struct members) have is_pointer=false
+                // and keep their array-type alloca.
+                bool is_local_arr = au->src && au->src->is_pointer &&
+                    LLVMGetTypeKind(type) == LLVMArrayTypeKind;
+                LLVMTypeRef alloca_type = is_local_arr ?
+                    LLVMPointerTypeInContext(a->module_ctx, 0) : type;
+                n->value = entry_alloca(a, alloca_type, id);
                 LLVMPositionBuilderAtEnd(B, current_block);
 
                 if (n->au->src && n->au->src->src) {
@@ -7285,7 +7293,8 @@ none etype_implement(etype t, bool w) { sequencer
             test2    += 2;
         }
 
-        Au_t au_target = au->is_imethod ? (Au_t)au->args.origin[0] : null;
+        Au_t au_target = (au->is_imethod || au->is_smethod) && au->args.count > 0 && au->args.origin ?
+            (Au_t)au->args.origin[0] : null;
         
         if (strcmp(fn->au->ident, "apply_x") == 0) {
             int test2 = 2;
@@ -9009,8 +9018,8 @@ static enode vector_binary_op(aether a, enode L, enode R, scalar_op_fn op, cstr 
 
     Au_t L_elem = L_arr ? L_au->src : L_au;
     Au_t R_elem = R_arr ? R_au->src : R_au;
-    etype L_ety = u(etype, L_elem);
-    etype R_ety = u(etype, R_elem);
+    etype L_ety = L_arr ? u(etype, L_elem) : canonical(L);
+    etype R_ety = R_arr ? u(etype, R_elem) : canonical(R);
     etype common = determine_rtype(a, OPType__add, L_ety, R_ety);
 
     if (!L_arr && !R_arr) {

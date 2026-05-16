@@ -2,70 +2,75 @@
 @import "trinity.css"
 
 Toolbar {
+    area: l-8px t-8px w6 b-8px
     layers.compose:
         ctype: compose
         fill_color: #f0a
 
     layers.border:
         fill_color: #fff4
-        area: l132 t0 w1 b0
+        area: l6 t0px w1px b0px
 
     layers.border2:
         fill_color: #0004
-        area: l133 t0 w1 b0
+        area: l6 t0px w2px b0px
 
     layers.base:
         fill_color:         #fff1
         inner_glow:         #fff1 16
 }
 
-Toolbar {
-    area: l-8 t-8 w132 b-8
-}
-
 Toolbar.right {
-    area: r-8 t-8 w256 b-8
+    area: r10 t-8px r0 b-8px
+
+    layers.border:
+        fill_color: #fff4
+        area: l0px t0px w1px b0px
+
+    layers.border2:
+        fill_color: #0004
+        area: l0px t0px w2px b0px
 }
 
 Group {
-    area:   l200 t32 w512 h656
+    area:   l9 t0 w23 h30
     layers.compose:
-        ctype: compose
-        fill_color: #f0a
+        ctype:              compose
+        fill_color:         #f0a
         radius:             11
-    
+
     layers.base:
-        radius:             11
         fill_color:         #fff0
         inner_glow:         #fff4 16
         stroke_color:       #0004
         stroke_width:       1
+        radius:             11
 }
 
 Group / Control {
-    area:               l16 t16+ r16 h44
+    area:               l1 t0+ r1 h2
     layers.compose:
         ctype:          compose
         fill_color:     #a0a
         radius:         9
     layers.base:
         fill_color:     #0000
-        stroke_width:   1
+        stroke_width:   0 1 1 1
         stroke_color:   #fff4
         label_color:    #fff
         label_size:     17
-        radius:         9
+        radius:         0 0 9 9
 }
 
 Group / Check {
     layers.check:
-        area: l11 t11 w20 h20
+        area: l0.5 t0.5 w1.0 h1.0
         fill_color:     #0004
         stroke_width:   1
         stroke_color:   #fff4
         radius:         9
     layers.inner:
-        area: l15 t15 w12 h12
+        area: l0.75 t0.75 w0.5 h0.5
         fill_color:     #4af0, 222ms cubic
         inner_glow:     #fff0 8, 222ms cubic
         stroke_width:   1
@@ -77,7 +82,7 @@ Group / Check:pressed {
     layers.base:
         fill_color:     #0000, 222ms cubic
     layers.inner:
-        area:           l15 t15 w12 h12
+        area:           l15px t15px w12px h12px
         radius:         7
         fill_color:     #4af4, 222ms cubic
 }
@@ -97,14 +102,14 @@ Group / Check:pressed & selected {
     layers.base:
         fill_color:     #4af4, 222ms cubic
     layers.inner:
-        area:           l17 t17 w8 h8
+        area:           l17px t17px w8px h8px
         radius:         7
         fill_color:     #4afa, 222ms cubic
 }
 
 
 Toolbar / Button {
-    area:               l16 t16+ r12 h44
+    area:               l1 t1+ r0.5 h2
     layers.face:
         label_color:            #fffa
         label_size:             12
@@ -117,9 +122,9 @@ Toolbar / Button {
 }
 
 Toolbar / Button.start {
-    area:               l16 t16+ r12 h88
+    area:               l1 t1+ r0.5 h4
     layers.svg:
-        area:           8
+        area:           8px
         image_svg:      "images/orbiter.svg"
         image_align:    0.5 0.5
 }
@@ -146,7 +151,7 @@ World.avatar {
         model_id:       "orbiter32"
         env_id:         "night"
         pulse_width:    1.0, filter 0.8
-    
+
     shaders.core:    Core
         groups:         ["core"]
         model_id:       "orbiter32"
@@ -175,7 +180,7 @@ World.avatar {
     blend_bands:        0.2
     blend_rings:        0.2
     blend_haze:         1.0
-    area: r888 b888 r64 b64
+    area: r40 b40 r3 b3
 }
 
 World.avatar:hovered {
@@ -189,19 +194,105 @@ World.avatar:hovered {
 World.avatar:pressed {
     shaders.aura:
         pulse_height:   2.0, filter 0.8
-    
+
     rotate:             [ 0 1 0 30deg, 1 0 0 0deg ], 88ms cubic outward
 }
 
 
 Group.editor-group {
-    area:   l140 t32 r32 b32
+    area:                       l6.5 t0.5 r10.5 b7.5
+
+    layers.compose:
+        radius:                 0 0 16 16
+
+    layers.bordering:
+        area:                   l0 t24px r0 b0
+        fill_color:             #0000
+        stroke_color:           #fff2
+        stroke_width:           0 1 1 1
+        radius:                 0 0 10 10
+}
+
+Group / element.title {
+    area:                       l0 t0 r0 h24px
+    layers.titlebar:
+        label_color:            #fffa
+        label_size:             12
+        area:                   l0 t0 r0 h24px
+        fill_color:             #23f1
+        inner_glow:             #aaf4 8
+        stroke_color:           #aaf8
+        stroke_width:           0.5 0.5 0 0.5
+        fill_color_pos:         0.5 0
+        fill_gradient:          linear
+        fill_gradient_radius:   22px
+        fill_gradient_color:    #aaf2
+        fill_gradient_angle:    90
+        radius:                 10 10 0 0
+    layers.titlebar_border:
+        area:                   0
+        stroke_color:           #0008
+        stroke_width:           0 0 1 0
+
+}
+
+Console {
+    area:   l5.81 b7 r10.04 b0
+    layers.compose:
+        ctype: compose
+        fill_color: #f0a
+
+    layers.base:
+        fill_color:         #23f1
+        inner_glow:         #fff1 16
+        stroke_color:       #fff2
+        stroke_width:       0.5 0 0 0
+
+    layers.content: TermLayer
+        area:               8px
+        label_height:       1.5
 }
 
 Editor {
-    area:                   10
+    area:                   l0.3 t24px r0.3 b0.3
     layers.content: EditorLayer
-        area:               8
+        area:               8px
         label_height:       1.5
+        line_color:         #ffffff18
+        sel_color:          #264f78
+}
+
+Toolbar.right / Control {
+    area:               l0.5 t0.5+ r0.5 h1
+    
+    layers.header:
+        area:                   l0 t0 r0px h24px
+        fill_color:         #23f1
+        inner_glow:         #aaf4 8
+        stroke_color:       #aaf8
+        stroke_width:       0.5 0.5 0 0.5
+        fill_color_pos:     0.5 0
+        fill_gradient:      linear
+        fill_gradient_radius: 22px
+        fill_gradient_color:    #aaf2
+        fill_gradient_angle:    90
+        radius:                 10 10 0 0
+        label_color:            #fffa
+        label_size:             11
+    
+    layers.list:
+        area:                   l0 t24px r0 b0
+        stroke_color:           #fff4
+        stroke_width:           0 0.5 0.5 0.5
+        fill_color:             #0002
+        radius:                 0 0 9 9
+}
+
+
+Toolbar.right / FileList {
+    area:               l0.5 t0.5+ r0.5 h8
+}
+Toolbar.right / DebugPanel {
+    area:               l0.5 t0.5+ r0.5 b0.5
 }
 
