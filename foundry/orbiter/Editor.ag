@@ -1,0 +1,300 @@
+extend orbiter
+
+
+Layer EditorLayer
+    mutable sel_color  : rgba
+    mutable line_color : rgba
+
+    func on_move [ ev: Event ]
+        editor : Editor[ parent ]
+        if [ !editor || !editor.dragging ] return
+        lh : f32 [ (editor.lh_cache > 0.0) ? editor.lh_cache : 22.0 ]
+        cw : f32 [ (editor.cw_cache > 0.0) ? editor.cw_cache : 8.0 ]
+        rel_y : f32 [ ev.mouse.pos.y + editor.scroll ]
+        rel_x : f32 [ ev.mouse.pos.x ]
+        ln : i32 [ clamp[ rel_y / lh, 0, editor.lines.count - 1 ] ]
+        cl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0, editor.line_get[ ln ].count ] ]
+        editor.sel_line = ln
+        editor.sel_col  = cl
+        editor.pristine = false
+
+    func on_release [ ev: Event ]
+        editor : Editor[ parent ]
+        if [ editor ]
+            editor.dragging = false
+
+    func draw [ cv: Canvas ]
+        editor : Editor[ parent ]
+        if [ !editor || !editor.lines ] return
+        lh      : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
+        cw_tm   : TextMetrics [ cv.measure_text[ 'x' ] ]
+        x0      : f32 [ bounds.x ]
+        y0      : f32 [ bounds.y ]
+        fade_h  : f32 [ bounds.h * 0.20 ]
+        fade_s  : f32 [ bounds.y + bounds.h - fade_h ]
+        editor.lh_cache = lh
+        editor.cw_cache = cw_tm.w
+
+        for [ li: i32 0, li < editor.lines.count, li += 1 ]
+            y : f32 [ y0 + f32[li] * lh - editor.scroll ]
+            if [ y + lh < bounds.y ] continue
+            if [ y > bounds.y + bounds.h ] break
+            alpha : ((y - bounds.y) < fade_s) ? 1.0 : 1.0 - ((y - fade_s) / fade_h)
+            col   : rgba['#fff']
+            col.a = alpha
+            cv.fill_color[ col ]
+            cv.draw_text[ editor.line_get[ li ],
+                rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        cv.paint[ ]
+
+        if [ editor.sel_line >= 0 ]
+            cv.save[ ]
+            cv.stroke_width[ 0.0 ]
+            al          : i32 [ editor.anchor_line ]
+            ac          : i32 [ editor.anchor_col ]
+            sl          : i32 [ editor.sel_line ]
+            sc          : i32 [ editor.sel_col ]
+            before      : bool [ al < sl || (al == sl && ac <= sc) ]
+            start_line  : i32 [ (before) ? al : sl ]
+            start_col   : i32 [ (before) ? ac : sc ]
+            end_line    : i32 [ (before) ? sl : al ]
+            end_col     : i32 [ (before) ? sc : ac ]
+            cw          : f32 [ cw_tm.w ]
+            has_sel : bool [ start_line != end_line || start_col != end_col ]
+
+            # reset filter when anchor/line changes or direction flips
+            if [ editor.last_sel_line != sl || editor.last_sel_col != ac || editor.last_before != before ]
+                editor.last_sel_line = sl
+                editor.last_sel_col  = ac
+                editor.last_before   = before
+                editor.filter_rect = null
+                editor.filter_next = false
+
+            cur_line_col : rgba [ line_color ? line_color : rgba['#ffffff18'] ]
+            sel_col_val  : rgba [ sel_color  ? sel_color  : rgba['#264f78'] ]
+
+            y_cur : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll ]
+            cv.fill_color[ cur_line_col ]
+            cv.rect_to[ x0, y_cur, bounds.w, lh ]
+            cv.paint[ ]
+
+            if [ has_sel ]
+                cv.save[ ]
+                cv.rounded[ 3.0, 3.0, 3.0, 3.0 ]
+                for [ li: i32 start_line, li <= end_line, li += 1 ]
+                    y_row  : f32 [ y0 + f32[li] * lh - editor.scroll ]
+                    if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
+                    is_sl  : bool [ li == start_line ]
+                    is_el  : bool [ li == end_line ]
+                    col_x0 : f32 [ (is_sl) ? f32[start_col] * cw : 0.0 ]
+                    col_x1 : f32 [ (is_el) ? f32[end_col] * cw : bounds.w ]
+                    rx     : f32 [ x0 + col_x0 ]
+                    rw     : f32 [ col_x1 - col_x0 ]
+
+                    rr : rect [ x:rx, y:y_row, w:rw, h:lh ]
+                    if [ editor.last_sel_line == li ]
+                        if [ editor.filter_rect ]
+                            rr.x = editor.filter_rect.x * 0.75 + rr.x * 0.25
+                            rr.y = editor.filter_rect.y * 0.75 + rr.y * 0.25
+                            rr.w = editor.filter_rect.w * 0.75 + rr.w * 0.25
+                            rr.h = editor.filter_rect.h * 0.75 + rr.h * 0.25
+
+                        editor.filter_rect = rr
+                        editor.filter_next = true # this needs to snap coords within an epsilon value
+                        editor.needs_frame = true
+
+                    cv.fill_color[ sel_col_val ]
+                    cv.rect_to    [ rr.x, rr.y - 0.5, rr.w, rr.h + 1 ]
+                    cv.paint      [ ]
+                cv.restore[ ]
+
+                # selected text on top of rects — draw whole line, crop to selection rect
+                tx : f32 [ cv.transform_tx[] ]
+                ty : f32 [ cv.transform_ty[] ]
+                for [ li: i32 start_line, li <= end_line, li += 1 ]
+                    y_row  : f32 [ y0 + f32[li] * lh - editor.scroll ]
+                    if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
+                    is_sl  : bool [ li == start_line ]
+                    is_el  : bool [ li == end_line ]
+                    col_x0 : f32 [ (is_sl) ? f32[start_col] * cw : 0.0 ]
+                    col_x1 : f32 [ (is_el) ? f32[end_col]   * cw : bounds.w ]
+                    rx     : f32 [ x0 + col_x0 ]
+                    rw     : f32 [ col_x1 - col_x0 ]
+                    use_filter : bool [ editor.last_sel_line == li && editor.filter_rect ]
+                    crop_x : f32 [ (use_filter) ? editor.filter_rect.x : rx ]
+                    crop_w : f32 [ (use_filter) ? editor.filter_rect.w : rw ]
+                    cv.set_text_crop[ tx + crop_x, ty + y_row, tx + crop_x + crop_w, ty + y_row + lh ]
+                    cv.fill_color[ '#fff' ]
+                    cv.draw_text[ editor.line_get[ li ],
+                        rect [ x: x0, y: y_row, w: bounds.w, h: lh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    cv.clear_text_crop[]
+                cv.paint[ ]
+
+            if [ parent.focused ]
+                y_sel : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll ]
+                if [ y_sel + lh >= bounds.y && y_sel <= bounds.y + bounds.h ]
+                    use_fr : bool [ has_sel && editor.filter_rect ]
+                    cx : f32
+                    cy : f32
+                    if [ use_fr ]
+                        cx = (before) ? editor.filter_rect.x + editor.filter_rect.w : editor.filter_rect.x
+                        cy = editor.filter_rect.y
+                    el
+                        prefix : string [ editor.line_get[ editor.sel_line ].mid[ 0, editor.sel_col ] ]
+                        cx     = x0 + cv.measure_text[ prefix ].w
+                        cy     = y_sel
+                    cv.fill_color[ '#fff' ]
+                    cv.stroke_width[ 0.0 ]
+                    cv.rect_to[ cx, cy + 2.0, 2.0, lh - 4.0 ]
+                    cv.paint[]
+            
+            cv.restore[ ]
+
+
+Control Editor
+    public  src           : path
+    mutable lines         : list string
+    mutable scroll        : f32
+    mutable sel_line      : i32 [ -1 ]
+    mutable sel_col       : i32 [ 0 ]
+    mutable lh_cache      : f32 [ 0.0 ]
+    mutable cw_cache      : f32 [ 0.0 ]
+    mutable anchor_line   : i32 [ 0 ]
+    mutable anchor_col    : i32 [ 0 ]
+    mutable dragging      : bool
+    mutable cursor_idx    : i32 [ -1 ]
+    mutable last_sel_line : -1
+    mutable last_sel_col  : -1
+    mutable last_before   : false
+    mutable filter_rect   : rect
+    mutable filter_next   : false
+
+    func line_get [ i: i32 ] -> string
+        return lines.value_by_index[ i ]
+
+    func line_set [ i: i32, val: string ]
+        lines.remove[ i ]
+        lines.insert_after[ val, i - 1 ]
+
+    func load_file []
+        if [ !src ] src = path '/src/silver/src/silver.c'
+        content : string [ src.load[ typeid[string], null ] ]
+        if [ !content ] return
+        parts : array string [ content.split["\n"] ]
+        lines = list string []
+        for [ i: i32 0, i < parts.count, i += 1 ]
+            lines.push[ parts[i] ]
+
+    func init [ ]
+        lines = list string []
+        lines.push[ '' ]
+        load_file[]
+
+    func hit_test [ ev: Event ] -> none
+        ele   : (layers) ? (layers['content'] to EditorLayer) : null
+        if [ !ele ] return
+        lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
+        rel_y : f32 [ (ev.mouse.pos.y - ele.bounds.y) + scroll ]
+        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
+        ln    : i32 [ clamp [ rel_y / lh, 0, lines.count - 1 ] ]
+        cl    : i32 [ clamp [ i32[ round[ rel_x / cw ] ], 0, line_get[ ln ].count ] ]
+        sel_line = ln
+        sel_col  = cl
+
+    func on_press [ ev: Event ]
+        if [ !ev.key.shift ]
+            hit_test[ ev ]
+            anchor_line = sel_line
+            anchor_col  = sel_col
+            puts 'anchor set to {sel_line}:{sel_col}'
+        el
+            hit_test[ ev ]
+        dragging = true
+        pristine = false
+
+    func on_move [ ev: Event ]
+        if [ dragging ]
+            hit_test[ ev ]
+            pristine = false
+
+    func on_release [ ev: Event ]
+        dragging = false
+
+    func on_char [ ev: Event ]
+        if [ sel_line < 0 ] sel_line = 0
+        row  : i32 [ sel_line ]
+        col  : i32 [ sel_col ]
+        line : string [ line_get[ row ] ]
+        ch   : string [ ev.key.text ]
+        # space on an indent-only line inserts a tab instead
+        #if [ ch == ' ' ]
+        #    left : string [ line.mid[0, col] ]
+        #    all_tabs : bool [ true ]
+        #    for [ i: i32 0, i < left.count, i += 1 ]
+        #        if [ left[i] != 9 ]
+        #            all_tabs = false
+        #            break
+        #    if [ all_tabs ] ch = '\t'
+        line_set[ row, line.mid[0, col] + ch + line.mid[col, line.count - col] ]
+        sel_col += 1
+        pristine = false
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        if [ sel_line < 0 ] sel_line = 0
+        row  : i32 [ sel_line ]
+        col  : i32 [ sel_col ]
+        key  : i32 [ ev.key.unicode ]
+
+        if [ key == 257 ]
+            line  : string [ line_get[ row ] ]
+            left  : string [ line.mid[0, col] ]
+            right : string [ line.mid[col, line.count - col] ]
+            line_set[ row, left ]
+            lines.insert_after[ right, row ]
+            sel_line += 1
+            sel_col   = 0
+
+        el [ key == 259 ]
+            if [ col > 0 ]
+                line : string [ line_get[ row ] ]
+                line_set[ row, line.mid[0, col - 1] + line.mid[col, line.count - col] ]
+                sel_col -= 1
+            el [ row > 0 ]
+                prev : string [ line_get[ row - 1 ] ]
+                sel_col  = prev.count
+                line_set[ row - 1, prev + line_get[ row ] ]
+                lines.remove[ row ]
+                sel_line -= 1
+
+        el [ key == 265 ]
+            if [ sel_line > 0 ]
+                sel_line -= 1
+                sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
+
+        el [ key == 264 ]
+            if [ sel_line < lines.count - 1 ]
+                sel_line += 1
+                sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
+
+        el [ key == 263 ]
+            if [ col > 0 ]
+                sel_col -= 1
+            el [ row > 0 ]
+                sel_line -= 1
+                sel_col = line_get[ sel_line ].count
+
+        el [ key == 262 ]
+            if [ col < line_get[ row ].count ]
+                sel_col += 1
+            el [ row < lines.count - 1 ]
+                sel_line += 1
+                sel_col = 0
+
+        pristine = false
+
+    func render [] -> Elements
+        return null

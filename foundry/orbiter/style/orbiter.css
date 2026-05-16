@@ -145,7 +145,7 @@ Toolbar / Button:pressed {
 
 }
 
-World.avatar {
+Avatar.avatar {
     shaders.orbiter: PBR
         groups:         ["outside","flower","separator"]
         model_id:       "orbiter32"
@@ -183,7 +183,7 @@ World.avatar {
     area: r40 b40 r3 b3
 }
 
-World.avatar:hovered {
+Avatar.avatar:hovered {
     shaders.aura:
         pulse_width:    2.0, filter 0.8
         flame:          1.0, filter 0.8
@@ -191,7 +191,7 @@ World.avatar:hovered {
     rotate:             [ 0 1 0 30deg, 1 0 0 10deg ], 222ms cubic outward
 }
 
-World.avatar:pressed {
+Avatar.avatar:pressed {
     shaders.aura:
         pulse_height:   2.0, filter 0.8
 

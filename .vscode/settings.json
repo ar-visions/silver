@@ -149,6 +149,7 @@
         "platform.h": "c",
         "x509.h": "c"
     },
+    "explorer.sortOrder": "type",
     "editor.colorDecorators": false,
     "cmake.configureOnOpen": false,
     "C_Cpp.errorSquiggles": "enabled",

@@ -1,0 +1,279 @@
+extend orbiter
+
+import <pty.h>
+    -lutil
+import <unistd.h>
+import <fcntl.h>
+
+struct TermCell
+    ch : i32 [ 32 ]
+
+Layer TermLayer
+    func draw [ cv: Canvas ]
+        con : cast Console [ parent ]
+        if [ !con ] return
+        parent.needs_frame = true
+        con.read_output[]
+        lh          : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
+        cw          : f32 [ cv.measure_text[ 'x' ].w ]
+        x0          : f32 [ bounds.x ]
+        y0          : f32 [ bounds.y ]
+        sc_count    : i32 [ con.scrollback.count ]
+        total_h     : f32 [ sc_count + con.rows ] * lh
+        max_s       : f32 [ maxf[ total_h - bounds.h, 0.0 ] ]
+        cursor_y    : f32 [ sc_count + con.cy ] * lh
+
+        if [ con.scroll > cursor_y ]
+            con.scroll = cursor_y
+        el [ con.scroll < cursor_y + lh - bounds.h ]
+            con.scroll = cursor_y + lh - bounds.h
+        
+        if [ con.scroll < 0.0 ]
+            con.scroll = 0.0
+        if [ con.scroll > max_s ]
+            con.scroll = max_s
+        
+        for [ li: i32 0, li < sc_count, li += 1 ]
+            y : f32 [ y0 + f32[li] * lh - con.scroll ]
+            if [ y + lh < bounds.y ] continue
+            if [ y > bounds.y + bounds.h ] break
+            cv.fill_color[ '#fff' ]
+            cv.draw_text[ con.scrollback.value_by_index[ li ],
+                rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        
+        for [ r: i32 0, r < con.rows, r += 1 ]
+            y : f32 [ y0 + f32[sc_count + r] * lh - con.scroll ]
+            if [ y + lh < bounds.y ] continue
+            if [ y > bounds.y + bounds.h ] break
+            cv.fill_color[ '#fff' ]
+            cv.draw_text[ con.row_to_string[ r ],
+                rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        
+        cv.paint[]
+        cur_px  : f32 [ x0 + f32[con.cx] * cw ]
+        cur_py  : f32 [ y0 + f32[sc_count + con.cy] * lh - con.scroll ]
+        cv.fill_color [ '#ffffff99' ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to     [ cur_px, cur_py, cw, lh ]
+        cv.paint[]
+
+Control Console
+    focusable : true
+    mutable pty_fd     : i32 [ -1 ]
+    mutable pid        : i32 [ 0  ]
+    mutable started    : bool
+    mutable esc_state  : i32 [ 0  ]
+    mutable esc_n0     : i32 [ 0  ]
+    mutable esc_n1     : i32 [ 0  ]
+    mutable esc_n2     : i32 [ 0  ]
+    mutable esc_np     : i32 [ 0  ]
+    mutable cur_save_x : i32 [ 0  ]
+    mutable cur_save_y : i32 [ 0  ]
+    mutable cx         : i32 [ 0  ]
+    mutable cy         : i32 [ 0  ]
+    mutable cols       : i32 [ 80 ]
+    mutable rows       : i32 [ 24 ]
+    mutable screen     : array TermCell
+    mutable scrollback : list string
+    mutable scroll     : f32 [ 0.0 ]
+
+    func clear_screen []
+        for [ i: i32 0, i < rows * cols, i += 1 ]
+            screen[i].ch = 32
+        cx = 0
+        cy = 0
+
+    func row_to_string [ r: i32 ] -> string
+        buf : local i8 [ cols + 1 ]
+        for [ c: i32 0, c < cols, c += 1 ]
+            ch : i32 [ screen[r * cols + c].ch ]
+            buf[c] = i8[ (ch >= 32 && ch < 127) ? ch : 32 ]
+        buf[cols] = 0
+        return string[ ref buf[0] ]
+
+    func scroll_up []
+        scrollback.push[ row_to_string[ 0 ] ]
+        for [ r: i32 0, r < rows - 1, r += 1 ]
+            for [ c: i32 0, c < cols, c += 1 ]
+                screen[r * cols + c].ch = screen[(r + 1) * cols + c].ch
+        for [ c: i32 0, c < cols, c += 1 ]
+            screen[(rows - 1) * cols + c].ch = 32
+
+    func process_byte [ c: i32 ]
+        if [ esc_state == 1 ]
+            esc_state = 0
+            if [ c == 91 ]
+                esc_state = 2
+                esc_n0 = 0
+                esc_n1 = 0
+                esc_n2 = 0
+                esc_np = 0
+            el [ c == 93 ]
+                esc_state = 4
+            el [ c == 40 || c == 41 || c == 42 || c == 43 ]
+                esc_state = 6
+            el [ c == 99 ]
+                clear_screen[]
+            el [ c == 55 ]
+                cur_save_x = cx
+                cur_save_y = cy
+            el [ c == 56 ]
+                cx = cur_save_x
+                cy = cur_save_y
+            return
+        if [ esc_state == 2 ]
+            if [ c >= 48 && c <= 57 ]
+                if [ esc_np == 0 ]
+                    esc_n0 = esc_n0 * 10 + c - 48
+                el [ esc_np == 1 ]
+                    esc_n1 = esc_n1 * 10 + c - 48
+                el
+                    esc_n2 = esc_n2 * 10 + c - 48
+            el [ c == 59 ]
+                esc_np += 1
+            el [ c == 63 || c == 62 || c == 33 || c == 32 ]
+                esc_state = 3
+            el [ c >= 64 && c <= 126 ]
+                n : i32 [ (esc_n0 > 0) ? esc_n0 : 1 ]
+                esc_state = 0
+                if [ c == 65 ]
+                    cy = clamp[ cy - n, 0, rows - 1 ]
+                el [ c == 66 ]
+                    cy = clamp[ cy + n, 0, rows - 1 ]
+                el [ c == 67 ]
+                    cx = clamp[ cx + n, 0, cols - 1 ]
+                el [ c == 68 ]
+                    cx = clamp[ cx - n, 0, cols - 1 ]
+                el [ c == 69 ]
+                    cy = clamp[ cy + n, 0, rows - 1 ]
+                    cx = 0
+                el [ c == 70 ]
+                    cy = clamp[ cy - n, 0, rows - 1 ]
+                    cx = 0
+                el [ c == 71 || c == 96 ]
+                    cx = clamp[ (esc_n0 > 0) ? esc_n0 - 1 : 0, 0, cols - 1 ]
+                el [ c == 72 || c == 102 ]
+                    cy = clamp[ (esc_n0 > 0) ? esc_n0 - 1 : 0, 0, rows - 1 ]
+                    cx = clamp[ (esc_n1 > 0) ? esc_n1 - 1 : 0, 0, cols - 1 ]
+                el [ c == 74 ]
+                    if [ esc_n0 == 0 ]
+                        for [ i: i32 cx, i < cols, i += 1 ]
+                            screen[cy * cols + i].ch = 32
+                        for [ i: i32 cy + 1, i < rows, i += 1 ]
+                            for [ j: i32 0, j < cols, j += 1 ]
+                                screen[i * cols + j].ch = 32
+                    el [ esc_n0 == 1 ]
+                        for [ i: i32 0, i < cy, i += 1 ]
+                            for [ j: i32 0, j < cols, j += 1 ]
+                                screen[i * cols + j].ch = 32
+                        for [ i: i32 0, i <= cx, i += 1 ]
+                            screen[cy * cols + i].ch = 32
+                    el
+                        clear_screen[]
+                el [ c == 75 ]
+                    if [ esc_n0 == 0 ]
+                        for [ i: i32 cx, i < cols, i += 1 ]
+                            screen[cy * cols + i].ch = 32
+                    el [ esc_n0 == 1 ]
+                        for [ i: i32 0, i <= cx, i += 1 ]
+                            screen[cy * cols + i].ch = 32
+                    el
+                        for [ i: i32 0, i < cols, i += 1 ]
+                            screen[cy * cols + i].ch = 32
+                el [ c == 100 ]
+                    cy = clamp[ (esc_n0 > 0) ? esc_n0 - 1 : 0, 0, rows - 1 ]
+                el [ c == 115 ]
+                    cur_save_x = cx
+                    cur_save_y = cy
+                el [ c == 117 ]
+                    cx = cur_save_x
+                    cy = cur_save_y
+            return
+        if [ esc_state == 3 ]
+            if [ (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ]
+                esc_state = 0
+            return
+        if [ esc_state == 4 ]
+            if [ c == 7 ]
+                esc_state = 0
+            el [ c == 27 ]
+                esc_state = 5
+            return
+        if [ esc_state == 5 ]
+            esc_state = (c == 92) ? 0 : 4
+            return
+        if [ esc_state == 6 ]
+            esc_state = 0
+            return
+        if [ c == 27 ]
+            esc_state = 1
+        el [ c == 13 ]
+            cx = 0
+        el [ c == 10 ]
+            cy += 1
+            if [ cy >= rows ]
+                scroll_up[]
+                cy = rows - 1
+        el [ c == 8 ]
+            if [ cx > 0 ] cx -= 1
+        el [ c == 9 ]
+            cx = (cx / 8 + 1) * 8
+            if [ cx >= cols ] cx = cols - 1
+        el [ c >= 32 && c < 127 ]
+            screen[cy * cols + cx].ch = c
+            cx += 1
+            if [ cx >= cols ]
+                cx = 0
+                cy += 1
+                if [ cy >= rows ]
+                    scroll_up[]
+                    cy = rows - 1
+
+    func read_output []
+        if [ pty_fd < 0 ] return
+        buf_c : i8 [ 0 ]
+        for [ i: i32 0, i < 4096, i += 1 ]
+            nr : i32 [ read[ pty_fd, ref buf_c, 1 ] ]
+            if [ nr <= 0 ] break
+            process_byte[ i32 buf_c ]
+
+    func write_input [ data: string ]
+        if [ pty_fd < 0 ] return
+        write[ pty_fd, data.chars, data.count ]
+
+    func init []
+        scrollback = list string []
+        screen = array TermCell []
+        for [ i: i32 0, i < rows * cols, i += 1 ]
+            screen.push[ TermCell [] ]
+        pid = forkpty[ ref pty_fd, null, null, null ]
+        if [ pid == 0 ]
+            setenv[ 'TERM', 'xterm-256color', 1 ]
+            execl[ '/bin/bash', 'bash', null ]
+            _exit[ 1 ]
+        el
+            fcntl[ pty_fd, F_SETFL, O_NONBLOCK ]
+
+    func on_char [ ev: Event ]
+        write_input[ ev.key.text ]
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        k : i32 [ i32 ev.key.unicode ]
+        if [ k == 257 ]
+            write_input[ '\r' ]
+        el [ k == 259 ]
+            write_input[ '\x7f' ]
+        el [ k == 265 ]
+            write_input[ '\x1b[A' ]
+        el [ k == 264 ]
+            write_input[ '\x1b[B' ]
+        el [ k == 263 ]
+            write_input[ '\x1b[D' ]
+        el [ k == 262 ]
+            write_input[ '\x1b[C' ]
+        el [ ev.key.ctrl && k >= 64 && k <= 95 ]
+            b : i8 [ i8[k - 64] ]
+            write[ pty_fd, ref b, 1 ]
