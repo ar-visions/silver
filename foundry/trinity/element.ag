@@ -1,0 +1,221 @@
+extend trinity
+
+# enums export to A-type
+enum Ease
+    linear  : 0
+    quad    : 1
+    cubic   : 2
+    quart   : 3
+    quint   : 4
+    sine    : 5
+    expo    : 6
+    circ    : 7
+    back    : 8
+    elastic : 9
+    bounce  : 10
+
+enum Direction
+    inward  : 0
+    outward : 1
+    in_out  : 2
+
+enum Duration
+    ms : 2
+    ns : 1
+    s  : 3
+
+enum XAlign : f32
+    undefined : 0
+    left      : 0.0
+    middle    : 0.5
+    right     : 1.0
+    width     : 2.0
+
+enum YAlign : f32
+    undefined : 0
+    top       : 0.0
+    middle    : 0.5
+    bottom    : 1.0
+    height    : 2.0
+
+enum Overflow
+    clip     : 0
+    ellipsis : 1
+    visible  : 2
+    wrap     : 3
+
+enum UXSurface
+    background  : 0
+    frost       : 1
+    blur        : 2
+    compose     : 3
+
+enum Fill : f32
+    none      : 0.00f
+    blur      : 0.50f
+    frost     : 1.00
+
+enum CanvasType
+    screen      : 0
+    compose     : 1
+
+enum Pattern
+    none : 0
+    repeat_x : 1
+    repeat_y : 2
+    repeat_xy : 3
+
+enum Clip
+    none : 0
+    clip : 1
+    ellipsis : 2
+
+
+alias Elements : map    element [ string ]
+alias FRender  : lambda Elements[ Display ]
+
+# this Au type indicates we do not have an 'init' called
+ielement element
+    context vk              : vk_context
+    context ux              : Window
+    mutable parent          : element
+    mutable area            : Region
+    mutable bounds          : rect
+    mutable value           : object
+    mutable id              : string
+    mutable flags           : i64
+    mutable label           : string
+    public  label2          : string
+    mutable layers          : map Layer[string]
+    mutable shaders         : map shader[string]
+    #mutable bindings        : map ModelBind[string]
+    mutable elements        : Elements
+    mutable tags            : array string
+    mutable group           : string
+    mutable tab_index       : i32
+    mutable scroll          : vec2f
+    # per-element 2D transform. scale default (1,1), rotate in radians,
+    # transform_origin normalized to element bounds (0.5,0.5 = center).
+    # all three are transitionable via CSS just like colors.
+    mutable scaling         : vec2f
+    mutable rotation        : f32
+    mutable transform_origin : vec2f
+    mutable ghost           : bool
+    mutable captured        : bool
+    mutable disabled        : bool
+    mutable hovered         : bool
+    mutable pressed         : bool
+    mutable focused         : bool
+    public  focusable       : bool
+    public cursor           : vec2f
+    mutable maps_populated  : bool
+
+    # input event hooks. return true to swallow; false to let the window
+    # continue to the app-level handler. both element and the app get a
+    # chance at each event: element first, then app_object.
+    public func on_click   [ ev: Event ] return
+    public func on_press   [ ev: Event ] return
+    public func on_release [ ev: Event ] return
+    public func on_hover   [ ev: Event ] return
+    public func on_leave   [ ev: Event ] return
+    public func on_move    [ ev: Event ] return
+    public func on_wheel   [ ev: Event ] return
+    public func on_key     [ ev: Event ] return
+    public func on_char    [ ev: Event ] return
+    intern style_avail  : map StyleEntries[string]
+    #intern selections   : map
+    intern transitions  : map StyleTransition[string]
+    intern restyle       : bool
+    mutable volatile     : bool
+    intern cache_canvas  : Canvas
+    intern cache_w       : i32
+    intern cache_h       : i32
+    intern cache_ox      : i32
+    intern cache_oy      : i32
+    mutable pristine     : bool [ false ]
+    mutable needs_frame  : bool
+    mutable fc           : f32
+
+    public func set_capture []
+        ux.set_capture[ a ]
+
+    public func release_capture []
+        ux.release_capture[ a ]
+
+    public func set_focus []
+        ux.set_focus[ a ]
+
+    public func release_focus []
+        ux.release_focus[ a ]
+
+    public func draw [ w: Window ]
+        return
+
+    public func render [ ] -> Elements
+        return null
+
+    func invalidate_transitions [ ]
+        for [ ct:StyleTransition, k:string ] in transitions
+            ct.invalidate = true
+        
+        for [ e:element, k:string ] in elements
+            e.invalidate_transitions[]
+
+    func remove_invalid_transitions [ ]
+        iterate : true
+        del : false
+        while [ iterate ]
+            iterate = false
+            for [ ct:StyleTransition, k:string ] in transitions
+                if [ ct.invalidate ]
+                    if [ ct.from ] ct.from.drop[]
+                    if [ ct.to   ] ct.to.drop[]
+                    transitions.rm[ k ]
+                    iterate = true
+                    del = true
+                    break
+            
+        for [ e:element, k:string ] in elements
+            e.remove_invalid_transitions[]
+
+
+    intern func animate_within [ ]
+        if [ transitions ]
+            cur_millis : i64 [ epoch_millis[] ]
+            for [ ct: StyleTransition, k: string ] in transitions
+                dur : i64 [ ct.duration.get_millis[] ]
+                ms  : i64 [ cur_millis - ct.start ]
+                p   : f64 [ ct.pos[ f64[ ms ] / f64[ dur ] ] ]
+                if [ ct.type && ct.from && ct.to ]
+                    from_t : typeid[ ct.from ]
+                    if [ (from_t.traits & (1 << 8)) != 0 ]
+                        dst : ct.container.member_ref[ ct.member ]
+                        #Au.mix_structs[ from_t, dst, ct.from, ct.to, p ]
+                    el [ ct.from inherits collective ]
+                        fa  : array Rotation ct.from
+                        ta  : array Rotation ct.to
+                        if [ fa && ta ]
+                            n   : i32 [ (fa.count < ta.count) ? fa.count : ta.count ]
+                            res : array Rotation []
+                            for [ i: i32 0, i < n, i += 1 ]
+                                res.push[ fa[i].mix[ ta[i], p ] ]
+                            ct.container.member_set[ ct.member, res ]
+                    el
+                        mixed : ct.from.mix*[ ct.to, p ]
+                        ct.container.member_set[ ct.member, mixed ]
+
+        if [ volatile ]
+            restyle = true
+
+        for [ ee: element, id: string ] in elements
+            ee.animate_within[ ]
+
+
+alias StyleTransitions : map StyleTransition[string]
+
+func filter_n[ current:f32, goal:f32, amount:f32, rate:f32 ] -> f32
+    decay : pow[ 1.0f - amount, rate ]
+    if [ goal != 0.0f ]
+        return current + ((goal - current) * (1.0f - decay))
+    el
+        return current * decay

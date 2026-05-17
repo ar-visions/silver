@@ -1,0 +1,456 @@
+extend trinity
+
+
+class Camera
+    mutable vk            : vk_context
+    mutable w             : Display
+    public  device        : string '/dev/video6'
+    public  width         : i32    340
+    public  height        : i32    340
+    public  buffer_count  : i32    3
+    public  cpu_upload    : bool   true   # CPU memcpy → staging → image (reliable).
+                                          # false = import dmabuf as VkBuffer (zero-copy but NVIDIA issues).
+
+    intern  backend       : handle
+    intern  fd            : i32    -1
+    intern  cam_bufs      : ref VkBuffer        # ring of dmabuf-imported buffers (cpu_upload=false)
+    intern  cam_mem       : ref VkDeviceMemory  # imported memory per buffer    (cpu_upload=false)
+    intern  staging_buf   : VkBuffer            # single persistent staging buffer (cpu_upload=true)
+    intern  staging_mem   : VkDeviceMemory
+    intern  staging_ptr   : ref u8              # mapped pointer into staging
+    intern  mm_ptrs       : ref handle          # mmap'd CPU pointer per buffer (brightness sampling)
+    intern  mm_sizes      : ref u32
+    intern  cam_image     : VkImage             # GPU-aligned image target (NVIDIA demands row pad)
+    intern  cam_image_mem : VkDeviceMemory
+    intern  current_idx   : i32    0
+    intern  prev_idx      : i32   -1
+    intern  prev_bright   : u64    0
+    intern  row_pitch     : u32    0         # bytesperline from v4l2_pix_format
+    intern  dump_count    : i32    0         # frames seen, for warmup delay before test dump
+    intern  best_sum      : u64    0         # peak brightness seen so far
+    intern  best_bytes    : ref u8           # copy of brightest frame seen
+
+    # camera output texture — latest frame is blitted into this image.
+    public  image         : Texture
+    public  src_rect      : rect
+
+    ifdef [ apple ]
+        intern func backend_init []
+        intern func backend_copy [ dst: ref u8, dst_bytes: u32 ] -> bool
+        intern func backend_dealloc []
+
+    intern func init_gpu []
+        expect width  > 0, 'camera: invalid width {width}'
+        expect height > 0, 'camera: invalid height {height}'
+
+        # single GPU-aligned VkImage that each frame's buffer will be copied
+        # into. whatever row padding NVIDIA demands, the image picks its own
+        # layout — the copy handles conversion from tight-packed dmabuf.
+        img_info : VkImageCreateInfo [
+            sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            imageType:     VK_IMAGE_TYPE_2D,
+            format:        VK_FORMAT_R8_UNORM,
+            extent:        VkExtent3D [ width, height, 1 ],
+            mipLevels:     1,
+            arrayLayers:   1,
+            samples:       VK_SAMPLE_COUNT_1_BIT,
+            tiling:        VK_IMAGE_TILING_OPTIMAL,
+            usage:         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            sharingMode:   VK_SHARING_MODE_EXCLUSIVE,
+            initialLayout: VK_IMAGE_LAYOUT_UNDEFINED
+        ]
+        err : i32 [ vkCreateImage[ vk.device, ref img_info, null, ref cam_image ] ]
+        expect err == 0, 'camera: vkCreateImage (cam_image) failed'
+        expect cam_image, 'camera: cam_image is null after vkCreateImage'
+
+        # allocate memory for cam_image (device-local, not imported)
+        img_req : VkMemoryRequirements [ ]
+        vkGetImageMemoryRequirements[ vk.device, cam_image, ref img_req ]
+        img_alloc : VkMemoryAllocateInfo [
+            sType:           VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize:  img_req.size,
+            memoryTypeIndex: 0
+        ]
+        for [ k: u32 0, k < 32, k += 1 ]
+            if [ img_req.memoryTypeBits & (u32[1] << k) ]
+                img_alloc.memoryTypeIndex = k
+                break
+        err = vkAllocateMemory[ vk.device, ref img_alloc, null, ref cam_image_mem ]
+        expect err == 0, 'camera: vkAllocateMemory (cam_image) failed'
+        err = vkBindImageMemory[ vk.device, cam_image, cam_image_mem, 0 ]
+        expect err == 0, 'camera: vkBindImageMemory (cam_image) failed'
+
+        if [ cpu_upload ]
+            sbuf_sz : u32 [ width * height ]
+            sbci : VkBufferCreateInfo [
+                sType:       VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                size:        sbuf_sz,
+                usage:       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                sharingMode: VK_SHARING_MODE_EXCLUSIVE
+            ]
+            err = vkCreateBuffer[ vk.device, ref sbci, null, ref staging_buf ]
+            expect err == 0, 'camera: vkCreateBuffer (staging) failed'
+
+            sreq : VkMemoryRequirements [ ]
+            vkGetBufferMemoryRequirements[ vk.device, staging_buf, ref sreq ]
+            s_type_idx : u32 [ 0 ]
+            for [ k: u32 0, k < vk.props.memoryTypeCount, k += 1 ]
+                if [ sreq.memoryTypeBits & (u32[1] << k) ]
+                    flags  : u32 [ vk.props.memoryTypes[k].propertyFlags ]
+                    needed : u32 [ VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ]
+                    if [ (flags & needed) == needed ]
+                        s_type_idx = k
+                        break
+            smai : VkMemoryAllocateInfo [
+                sType:           VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+                allocationSize:  sreq.size,
+                memoryTypeIndex: s_type_idx
+            ]
+            err = vkAllocateMemory[ vk.device, ref smai, null, ref staging_mem ]
+            expect err == 0, 'camera: vkAllocateMemory (staging) failed'
+            err = vkBindBufferMemory[ vk.device, staging_buf, staging_mem, 0 ]
+            expect err == 0, 'camera: vkBindBufferMemory (staging) failed'
+            err = vkMapMemory[ vk.device, staging_mem, 0, sreq.size, 0, ref staging_ptr ]
+            expect err == 0, 'camera: vkMapMemory (staging) failed'
+
+        image = Texture [ vk: vk, w: w, width: width, height: height,
+            pixel_format: Pixel.u8, surface: Surface.color ]
+        expect image, 'camera: image creation failed'
+
+    intern func blit_from [ src_buf: VkBuffer ]
+        if [ !image ] return
+
+        cmd : Command [ vk: vk ]
+        cmd.begin[]
+
+        if [ !cpu_upload ]
+            host_bar : VkMemoryBarrier [
+                sType:         VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                srcAccessMask: VK_ACCESS_HOST_WRITE_BIT,
+                dstAccessMask: VK_ACCESS_TRANSFER_READ_BIT
+            ]
+            vkCmdPipelineBarrier[ cmd.cmd,
+                VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 1, ref host_bar, 0, null, 0, null ]
+
+        cam_barrier : VkImageMemoryBarrier [
+            sType: VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            oldLayout: VK_IMAGE_LAYOUT_UNDEFINED,
+            newLayout: VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            image: cam_image,
+            subresourceRange: VkImageSubresourceRange [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+                levelCount: 1, layerCount: 1 ],
+            srcAccessMask: 0,
+            dstAccessMask: VK_ACCESS_TRANSFER_WRITE_BIT
+        ]
+        vkCmdPipelineBarrier[ cmd.cmd,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, null, 0, null, 1, ref cam_barrier ]
+
+        copy : VkBufferImageCopy [
+            bufferOffset:      0,
+            bufferRowLength:   0,
+            bufferImageHeight: 0,
+            imageSubresource:  VkImageSubresourceLayers [
+                aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                mipLevel:       0,
+                baseArrayLayer: 0,
+                layerCount:     1
+            ],
+            imageOffset: VkOffset3D [ 0, 0, 0 ],
+            imageExtent: VkExtent3D [ width, height, 1 ]
+        ]
+        vkCmdCopyBufferToImage[ cmd.cmd,
+            src_buf, cam_image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, ref copy ]
+
+        cam_barrier.oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+        cam_barrier.newLayout     = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+        cam_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT
+        cam_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT
+        vkCmdPipelineBarrier[ cmd.cmd,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            0, 0, null, 0, null, 1, ref cam_barrier ]
+
+        image.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+
+        sx0 : i32 [ i32 [ src_rect.x ] ]
+        sy0 : i32 [ i32 [ src_rect.y ] ]
+        sx1 : i32 [ i32 [ src_rect.x + src_rect.w ] ]
+        sy1 : i32 [ i32 [ src_rect.y + src_rect.h ] ]
+        blit : VkImageBlit [
+            srcSubresource: VkImageSubresourceLayers [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, layerCount: 1 ],
+            srcOffsets: [
+                VkOffset3D [ x: sx0, y: sy0, z: 0 ],
+                VkOffset3D [ x: sx1, y: sy1, z: 1 ] ],
+            dstSubresource: VkImageSubresourceLayers [
+                aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, layerCount: 1 ],
+            dstOffsets: [
+                VkOffset3D [ x: 0, y: 0, z: 0 ],
+                VkOffset3D [ x: width, y: height, z: 1 ] ]
+        ]
+        vkCmdBlitImage[ cmd.cmd,
+            cam_image,      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            image.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            1, ref blit, VK_FILTER_LINEAR ]
+
+        image.transition_in[ cmd.cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        cmd.submit[]
+
+    intern func release_gpu []
+        if [ staging_buf ]
+            vkUnmapMemory  [ vk.device, staging_mem ]
+            vkDestroyBuffer[ vk.device, staging_buf, null ]
+            vkFreeMemory   [ vk.device, staging_mem, null ]
+            staging_buf = null
+            staging_mem = null
+            staging_ptr = null
+        if [ cam_image ]
+            vkDestroyImage[ vk.device, cam_image, null ]
+            vkFreeMemory  [ vk.device, cam_image_mem, null ]
+            cam_image     = null
+            cam_image_mem = null
+
+    func init []
+        ifdef [ linux ]
+            fd = open[ device.chars, O_RDWR | O_NONBLOCK ]
+            expect fd >= 0, 'camera: failed to open {device}'
+            printf[ "sizeof v4l2_buffer silver=%u vs kernel=88\n", sizeof[v4l2_buffer] ]
+
+            vfmt : v4l2_format [ ]
+            vfmt.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE
+            vfmt.fmt.pix.width       = width
+            vfmt.fmt.pix.height      = height
+            vfmt.fmt.pix.pixelformat = V4L2_PIX_FMT_GREY
+            vfmt.fmt.pix.field       = V4L2_FIELD_NONE
+            err : i32 [ ioctl[ fd, 0xC0D05605, ref vfmt ] ]
+            printf "%i\n", sizeof[v4l2_format]
+            if [ err != 0 ]
+                perror[ 'camera: VIDIOC_S_FMT' ]
+            expect err == 0, 'camera: VIDIOC_S_FMT failed'
+            width     = vfmt.fmt.pix.width
+            height    = vfmt.fmt.pix.height
+            row_pitch = vfmt.fmt.pix.bytesperline
+            printf[ "camera: S_FMT ok w=%i h=%i bpl=%u sizeimage=%u\n",
+                width, height, row_pitch, vfmt.fmt.pix.sizeimage ]
+
+            if [ !cpu_upload && !vk._vkGetMemoryFdPropertiesKHR ]
+                puts 'camera: DMA-BUF unavailable; using CPU upload'
+                cpu_upload = true
+
+            req : v4l2_requestbuffers [ ]
+            req.count  = buffer_count
+            req.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+            req.memory = V4L2_MEMORY_MMAP
+            err = ioctl[ fd, VIDIOC_REQBUFS, ref req ]
+            expect err == 0, 'camera: VIDIOC_REQBUFS failed'
+            buffer_count = req.count
+
+            cam_bufs = new VkBuffer       [ buffer_count ]
+            cam_mem  = new VkDeviceMemory [ buffer_count ]
+            mm_ptrs  = new handle         [ buffer_count ]
+            mm_sizes = new u32            [ buffer_count ]
+
+            for [ i: i32 0, i < buffer_count, i += 1 ]
+                qb : v4l2_buffer [ ]
+                qb.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+                qb.memory = V4L2_MEMORY_MMAP
+                qb.index  = i
+                err = ioctl[ fd, VIDIOC_QUERYBUF, ref qb ]
+                expect err == 0, 'camera: VIDIOC_QUERYBUF {i} failed'
+                printf[ "camera: QUERYBUF %i -> length=%u m.offset=%u memory=%u bytesused=%u\n",
+                    i, qb.length, qb.m.offset, qb.memory, qb.bytesused ]
+
+                ptr : handle mmap[ null, qb.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, qb.m.offset ]
+                expect ptr != MAP_FAILED, 'camera: mmap {i} failed'
+                mm_ptrs [i] = ptr
+                mm_sizes[i] = qb.length
+
+                if [ !cpu_upload ]
+                    exb : v4l2_exportbuffer [ ]
+                    exb.type  = V4L2_BUF_TYPE_VIDEO_CAPTURE
+                    exb.index = i
+                    exb.flags = O_RDWR
+                    err = ioctl[ fd, VIDIOC_EXPBUF, ref exb ]
+                    expect err == 0, 'camera: VIDIOC_EXPBUF {i} failed'
+                    import_dmabuf[ i, exb.fd, qb.length ]
+
+            for [ i: i32 0, i < buffer_count, i += 1 ]
+                qbuf : v4l2_buffer [ ]
+                qbuf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+                qbuf.memory = V4L2_MEMORY_MMAP
+                qbuf.index  = i
+                err = ioctl[ fd, VIDIOC_QBUF, ref qbuf ]
+                expect err == 0, 'camera: VIDIOC_QBUF {i} failed'
+
+            bt : i32 V4L2_BUF_TYPE_VIDEO_CAPTURE
+            err = ioctl[ fd, VIDIOC_STREAMON, ref bt ]
+            expect err == 0, 'camera: VIDIOC_STREAMON failed'
+
+        ifdef [ apple ]
+            cpu_upload = true
+            backend_init[]
+            expect backend, 'camera: failed to initialize macOS camera'
+
+        init_gpu[]
+
+    ifdef [ linux ]
+        intern func import_dmabuf [ idx: i32, dma_fd: i32, byte_size: u32 ]
+            ext : VkExternalMemoryBufferCreateInfo [ ]
+            ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO
+            ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+
+            bci : VkBufferCreateInfo [ ]
+            bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
+            bci.pNext       = ref ext
+            bci.size        = byte_size
+            bci.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+            bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE
+
+            buf : VkBuffer [ null ]
+            err : i32 [ vkCreateBuffer[ vk.device, ref bci, null, ref buf ] ]
+            expect err == 0, 'camera: vkCreateBuffer (dmabuf) failed'
+            expect buf, 'camera: buf is null after vkCreateBuffer'
+
+            mreq : VkMemoryRequirements [ ]
+            vkGetBufferMemoryRequirements[ vk.device, buf, ref mreq ]
+
+            fd_props : VkMemoryFdPropertiesKHR [ ]
+            fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
+            expect vk._vkGetMemoryFdPropertiesKHR, 'camera: vkGetMemoryFdPropertiesKHR not loaded'
+            err = vk._vkGetMemoryFdPropertiesKHR[ vk.device,
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, ref fd_props ]
+            expect err == 0, 'camera: vkGetMemoryFdPropertiesKHR failed'
+
+            allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+            expect allowed != 0, 'camera: no memory type compatible with dmabuf fd'
+            mem_type_index : u32 [ 0 ]
+            for [ k: u32 0, k < 32, k += 1 ]
+                if [ allowed & (u32[1] << k) ]
+                    mem_type_index = k
+                    break
+
+            ded : VkMemoryDedicatedAllocateInfo [ ]
+            ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+            ded.buffer = buf
+
+            imp : VkImportMemoryFdInfoKHR [ ]
+            imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
+            imp.pNext      = ref ded
+            imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+            imp.fd         = dma_fd
+
+            mai : VkMemoryAllocateInfo [ ]
+            mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+            mai.pNext           = ref imp
+            mai.allocationSize  = byte_size
+            mai.memoryTypeIndex = mem_type_index
+
+            mem : VkDeviceMemory [ null ]
+            err = vkAllocateMemory[ vk.device, ref mai, null, ref mem ]
+            expect err == 0, 'camera: vkAllocateMemory (import fd) failed'
+            err = vkBindBufferMemory[ vk.device, buf, mem, 0 ]
+            expect err == 0, 'camera: vkBindBufferMemory failed'
+
+            cam_bufs[ idx ] = buf
+            cam_mem [ idx ] = mem
+
+        intern func brightness_of [ idx: i32 ] -> u64
+            ptr    : ref u8 [ mm_ptrs[idx] ]
+            stride : i32    [ width ]
+            cx     : i32    [ width  / 2 - 8 ]
+            cy     : i32    [ height / 2 - 8 ]
+            sum    : u64    [ 0 ]
+            for [ yy: i32 0, yy < 16, yy += 1 ]
+                row : i32 [ (cy + yy) * stride + cx ]
+                for [ xx: i32 0, xx < 16, xx += 1 ]
+                    sum += u64[ ptr[ row + xx ] ]
+            return sum
+
+    func update []
+        ifdef [ linux ]
+            if [ fd < 0 ]
+                return
+            deq : v4l2_buffer [ ]
+            deq.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+            deq.memory = V4L2_MEMORY_MMAP
+            err : i32 [ ioctl[ fd, VIDIOC_DQBUF, ref deq ] ]
+            if [ err != 0 ]
+                return
+            current_idx = deq.index
+
+            cur_bright : u64  [ brightness_of[ current_idx ] ]
+            use_prev   : bool [ prev_idx >= 0 && prev_bright > cur_bright ]
+            blit_idx   : i32  [ (use_prev) ? prev_idx : current_idx ]
+
+            if [ cpu_upload ]
+                src_ptr : ref u8 [ mm_ptrs[ blit_idx ] ]
+                memcpy[ staging_ptr, src_ptr, width * height ]
+                blit_from[ staging_buf ]
+            el
+                blit_from[ cam_bufs[ blit_idx ] ]
+
+            if [ prev_idx >= 0 ]
+                qb : v4l2_buffer [ ]
+                qb.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
+                qb.memory = V4L2_MEMORY_MMAP
+                qb.index  = prev_idx
+                ioctl[ fd, VIDIOC_QBUF, ref qb ]
+            prev_idx    = current_idx
+            prev_bright = cur_bright
+            return
+
+	        ifdef [ apple ]
+	            if [ backend == null || staging_ptr == null ]
+	                return
+	            if [ backend_copy[ staging_ptr, width * height ] ]
+	                blit_from[ staging_buf ]
+
+    func dealloc []
+        ifdef [ linux ]
+            if [ fd >= 0 ]
+                bt : i32 V4L2_BUF_TYPE_VIDEO_CAPTURE
+                ioctl[ fd, VIDIOC_STREAMOFF, ref bt ]
+                for [ i: i32 0, i < buffer_count, i += 1 ]
+                    if [ !cpu_upload ]
+                        vkDestroyBuffer[ vk.device, cam_bufs[i], null ]
+                        vkFreeMemory   [ vk.device, cam_mem[i],  null ]
+                    munmap[ mm_ptrs[i], mm_sizes[i] ]
+                close[ fd ]
+                fd = -1
+
+        ifdef [ apple ]
+            if [ backend ]
+                backend_dealloc[]
+                backend = null
+
+        release_gpu[]
+
+ifdef [ apple ]
+    func camera_devices [] -> array string
+
+
+element CameraView
+    public camera   : Camera
+    public src_rect : rect
+    mutable once : bool
+
+    func draw [ w: Window ]
+        if [ !camera ] return
+        if [ !once ]
+            camera.src_rect = (src_rect) ? src_rect :
+                rect [ x: 0.0, y: 0.0, w: f32[ camera.width ], h: f32[ camera.height ] ]
+            camera.update[]
+            once = true
+        cv : Canvas w.screen
+        cv.draw_image[ camera.image, rect [ x: 0, y: 0, w: a.bounds.w, h: a.bounds.h ] ]
+        cv.paint[]
+        cv.sync_fence[]
+        once = false
+
+    func render [] -> Elements
+        return null

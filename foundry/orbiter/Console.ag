@@ -15,6 +15,7 @@ Layer TermLayer
         if [ !con ] return
         parent.needs_frame = true
         con.read_output[]
+        if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
         lh          : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
         cw          : f32 [ cv.measure_text[ 'x' ].w ]
         x0          : f32 [ bounds.x ]

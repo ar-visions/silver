@@ -12,18 +12,19 @@ import Earth
 import Avatar
 import Editor
 import Console
+import FileList
 
-Control FileList
 Control DebugPanel
 
 trinity orbiter
     func init []
         width  = 1888
         height = 888
-        background = 'Earth'
+        background = 'Background'
     
     public func on_render [ w: Window ] -> Elements
         return Elements [
+            ##
             "toolbar":  Toolbar [],
             "right":    Toolbar [
                 elements: Elements [
@@ -38,7 +39,8 @@ trinity orbiter
                 ]
             ],
             "console": Console [],
-            #"avatar": Avatar []
+            ##
+            "avatar": Avatar []
         ]
 
     public func on_canvas [ cv: Canvas ]
