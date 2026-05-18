@@ -627,6 +627,7 @@ Orbiter Plasma
 
 element Avatar
     intern target            : Render
+    intern vol_target        : Render
     intern models            : map Model   [string]
     public shaders           : map shader  [string]
     public materials         : map Material[string]
@@ -637,6 +638,7 @@ element Avatar
     #public shader_type       : string
     public environment_path  : string
     public render_scale      : f32
+    public vol_scale         : f32
     public clear_color       : vec4f
     public rotate            : array Rotation
     public translate         : array Translation
@@ -652,26 +654,33 @@ element Avatar
 
     func init [ ]
         models = map Model[string][]
-        expect shaders && shaders.count, "no shaders"
+        if [ render_scale == 0.0 ]
+            render_scale = 1.0
+        if [ !shaders ]
+            shaders = map shader[string] []
+        if [ !shaders.count ]
+            aura : Aura [ vk: vk ]
+            shaders[ 'aura' ] = aura
 
     func create_target[]
         w_ref : Window [ ux ]
-        if [ target ]
+        if [ target || vol_target ]
             return
-        
-        all_models : array Model [ alloc: 4 ]
+
+        geo_models : array Model [ alloc: 4 ]
+        vol_models : array Model [ alloc: 4 ]
         env : map Texture[string][]
         mcache : map GltfModel[string][]
 
         for [ sh:shader, k:string ] in shaders
-            model    : Model [ vk: vk, w: w_ref, s:sh ]
+            m    : Model [ vk: vk, w: w_ref, s:sh ]
             model_id : (sh.model_id) ? sh.model_id : 'uv-quad2'
-            model.id = mcache[model_id]
-            if [!model.id]
+            m.id = mcache[model_id]
+            if [!m.id]
                 gltf     : path  [ 'models/{model_id}.gltf' ]
                 expect gltf.exists[], 'model does not exist: {model_id}'
-                model.id = gltf.load[ typeid[ GltfModel ], null ]
-                mcache[model_id] = model.id
+                m.id = gltf.load[ typeid[ GltfModel ], null ]
+                mcache[model_id] = GltfModel[m.id]
 
             if [ sh.env_id ]
                 env_tex : env[sh.env_id]
@@ -680,10 +689,14 @@ element Avatar
                     env_axis : vec3f [ 0.0, 1.0, 0.0 ]
                     env_tex  = environment[ vk, env_img, env_axis, 0.0 ]
                     env[sh.env_id] = env_tex
-                model.samplers[ 'environment' ] = env_tex
+                m.samplers[ 'environment' ] = env_tex
 
-            all_models.push[ model ]
-        
+            is_vol : bool [ sh inherits Aura ]
+            if [ is_vol ]
+                vol_models.push[ m ]
+            el
+                geo_models.push[ m ]
+
         ##
         if [ shader_type && shader_type.count ]
             f : Au_t [ Au.find_type [ shader_type.chars, null ] ]
@@ -701,7 +714,7 @@ element Avatar
 
         aura_model = Model [ vk: vk, w: w_ref ]
         aura_model.s = aura
-        
+
         if [ model ]
             plasma = Plasma [ vk: vk ]
             model.transparent_s = plasma -- we now store .transparent on shader, so the Model generic may use this when referencing transparent_s
@@ -711,26 +724,41 @@ element Avatar
         all_models.push[ aura_model ]
         ##
 
-        width  : i32 [ bounds.w * render_scale ]
-        height : i32 [ bounds.h * render_scale ]
-        target = Render [
-            vk:          vk,
-            w:           w_ref,
-            width:       width,
-            height:      height,
-            use_depth:   true,
-            reduce:      (render_scale == 4.0) ? true : false,
-            clear_color: clear_color,
-            models:      all_models ]
-        
-        w_ref.element_targets[ id ] = target
-        target.width  = width
-        target.height = height
-        target.wscale = 0.0
+        rs : f32 [ (render_scale > 0.0) ? render_scale : 1.0 ]
+        vs : f32 [ (vol_scale    > 0.0) ? vol_scale    : 0.5 ]
+
+        if [ geo_models.count ]
+            gw : i32 [ bounds.w * rs ]
+            gh : i32 [ bounds.h * rs ]
+            target = Render [
+                vk:          vk,
+                w:           w_ref,
+                width:       gw,
+                height:      gh,
+                use_depth:   true,
+                reduce:      (render_scale == 4.0) ? true : false,
+                clear_color: clear_color,
+                models:      geo_models ]
+            w_ref.element_targets[ id ] = target
+            target.wscale = 0.0
+
+        if [ vol_models.count ]
+            vw : i32 [ bounds.w * rs * vs ]
+            vh : i32 [ bounds.h * rs * vs ]
+            vol_target = Render [
+                vk:          vk,
+                w:           w_ref,
+                width:       vw,
+                height:      vh,
+                use_depth:   false,
+                clear_color: clear_color,
+                models:      vol_models ]
+            w_ref.element_targets[ '{id}-vol' ] = vol_target
+            vol_target.wscale = 0.0
 
     func draw [ w: Window ]
         create_target[]
-        if [ !target ] return
+        if [ !target && !vol_target ] return
 
         # model transform from World-level rotate property
         model_mat : mat4f.identity[]
@@ -756,10 +784,17 @@ element Avatar
                 mvp.view         = _view
                 mvp.time         = w.time
 
-        target.update[]
+        if [ target ]
+            target.update[]
+        if [ vol_target ]
+            vol_target.update[]
 
         ev : Event[ target: a ]
         update.invoke[ ev ]
 
-        tex : Texture [ (target.reduce && target.reduction) ? target.reduction : target.color ]
-        w.screen.draw_image[ tex, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+        b : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
+        if [ target ]
+            geo_tex : Texture [ (target.reduce && target.reduction) ? target.reduction : target.color ]
+            w.screen.draw_image[ geo_tex, b ]
+        if [ vol_target ]
+            w.screen.draw_image[ vol_target.color, b ]

@@ -946,7 +946,6 @@ class Gpu
             img:  sampler inherits Image
             t_tx: sampler inherits Texture
             re:   sampler inherits Render
-            clr:  sampelr inherits rgbaf
             expect !re, "Render given to samplers"
             if [ t_tx ]
                 tx = t_tx
@@ -2745,8 +2744,9 @@ class Texture
                 width  = 4
                 height = 4
                 ansio  = 0
-                placeholder_image[ sampler, 4, ref fill, ref sampler_size, ref pixel_format ]
+                placeholder_image[ sampler, 4, fill, ref sampler_size, ref pixel_format ]
                 vk_format = vk_format_fn[ pixel_format, false ]
+                is_depth  = vk_format == VK_FORMAT_D32_SFLOAT
         if [ width > 0 || vk_image ]
             usage: VkImageUsageFlags [ 0 ]
             if [ is_depth ]
