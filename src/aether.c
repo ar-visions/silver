@@ -4981,7 +4981,7 @@ enode aether_e_native_switch(
 
     catcher switch_cat = catcher(mod, a,
         block, LLVMAppendBasicBlockInContext(a->module_ctx, fn, "switch.end"));
-    push_scope(a, (Au)switch_cat);
+    push_scope(a, (Au)switch_cat, 6);
 
     LLVMBasicBlockRef default_block =
         def_block
@@ -5091,7 +5091,7 @@ enode aether_e_switch(
     enode   switch_val = e_expr; // invoke(expr_builder, expr);
     catcher switch_cat = catcher(mod, a,
         block, LLVMAppendBasicBlockInContext(a->module_ctx, entry, "switch.end"));
-    push_scope(a, (Au)switch_cat);
+    push_scope(a, (Au)switch_cat, 7);
 
     // allocate cats for each case, do NOT build the body yet
     // wrap in cat, store the catcher, not an enode
@@ -5189,7 +5189,7 @@ enode aether_e_for(aether a,
     catcher cat = catcher(mod, a, block, merge, continue_block, step);
     bool saved_cov = a->coverage;
     a->coverage = false;
-    push_scope(a, (Au)cat);
+    push_scope(a, (Au)cat, 8);
     a->coverage = saved_cov;
 
     if (in_expr && (inherits(in_expr->au, typeid(map)) || inherits(in_expr->au, typeid(array)))) {
@@ -6098,7 +6098,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             loaded, true, used, true, has_code, true);
         etype_implement((etype)main_fn, false);
 
-        push_scope(a, (Au)main_fn);
+        push_scope(a, (Au)main_fn, 9);
         e_fn_call(a, module_init_fn, null, false, false);
 
         Au_t fn_run = find_member(cov_spec->au, "run", AU_MEMBER_FUNC, 0, false);
@@ -6125,7 +6125,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
         loaded, true, used, true, has_code, true);
     etype_implement((etype)main_fn, false);
 
-    push_scope(a, (Au)main_fn);
+    push_scope(a, (Au)main_fn, 10);
     e_fn_call(a, module_init_fn, null, false, false);
 
     // phase 2: lock sandbox — no more dlopen/exec from this point
@@ -6250,7 +6250,7 @@ etype struct_from_au(aether a, string name, Au_t au, bool is_system) {
 none push_lambda_members(aether a, efunc f) {
     if (a->no_build) return;
     statements lambda_code = statements(mod, (aether)a);
-    push_scope(a, (Au)lambda_code);
+    push_scope(a, (Au)lambda_code, 11);
     
     Au_t fn = f->au;
     LLVMValueRef context_ptr = f->context_node->value;
@@ -7538,7 +7538,7 @@ none aether_build_module_initializer(aether a, enode init) {
 
     efunc fn_def_test      = efind(efunc, etypeid(Au), def_test);
 
-    push_scope(a, (Au)f);
+    push_scope(a, (Au)f, 12);
 
     // module's own published type id (etype container)
     enode module_type_id = e_typeid(a, (etype)a);
@@ -7862,7 +7862,7 @@ none aether_build_module_initializer(aether a, enode init) {
     // polymorphism works now
     a->direct = false;
     pop_scope(a);
-    push_scope(a, (Au)f);
+    push_scope(a, (Au)f, 13);
     members(module_base, au) {
         evar var = u(evar, au);
         if (au->ident && strcmp(au->ident, "rng_state") == 0) {
@@ -7973,7 +7973,7 @@ Au_t aether_top_scope(aether a) {
     return open ? open : null;
 }
 
-none aether_push_scope(aether a, Au arg) {
+none aether_push_scope(aether a, Au arg, int label) {
     Au_t au = au_arg(arg);
     Au_t auu = au;
     int mtype = au->member_type;
@@ -7996,10 +7996,13 @@ none aether_push_scope(aether a, Au arg) {
 
     efunc prev_fn = context_func(a);
 
-    if (!is_func(au) && au->src && (au->src->is_class || au->src->is_struct))
+    if (!is_func(au) && au->src && (au->src->is_class || au->src->is_struct)) {
+        au->src->reserved = label;
         push(a->lexical, (Au)au->src);
-    else
+    } else {
+        au->reserved = label;
         push(a->lexical, (Au)au);
+    }
 
     statements st = u(statements, au);
     token peek = a->statement_origin ? a->statement_origin : aether_peek(a);
@@ -8203,7 +8206,7 @@ void aether_import_Au(aether a, string ident, Au lib) {
     }
 
     if (lib)
-        push_scope(a, (Au)au_module);
+        push_scope(a, (Au)au_module, 15);
 
     a->import_module = au_module;
 
@@ -8432,13 +8435,13 @@ void aether_reinit_startup(aether a) {
     verify(a->au,       "no module registered for aether");
     verify(g != a->au,  "aether using global module");
 
-    push_scope(a, (Au)g);
+    push_scope(a, (Au)g, 16);
     a->au->is_au = true;
     import_Au(a, string("Au"), null);
     
     a->au->is_namespace = true; // for the 'module' namespace at [1], i think we dont require the name.. or, we set a trait
     a->au->is_nameless  = false; // we have no names, man. no names. we are nameless! -cereal
-    push_scope(a, (Au)a->au);
+    push_scope(a, (Au)a->au, 17);
 } 
 
 none aether_test_write(aether a) {
@@ -8600,7 +8603,7 @@ enode aether_e_subroutine(aether a, etype rtype, array body, subprocedure build_
     
     // position back to entry and run body
     LLVMPositionBuilderAtEnd(B, entry);
-    push_scope(a, (Au)cat);
+    push_scope(a, (Au)cat, 18);
     invoke(build_body, (Au)body);
     
     // branch to merge if body didn't terminate

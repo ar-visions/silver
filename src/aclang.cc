@@ -143,7 +143,7 @@ public:
             verify(found, "silver_module: import not found: %s", name.c_str());
             if (!found) exit(0);
             {
-                aether_push_scope(e, (Au)found);
+                aether_push_scope(e, (Au)found, 1);
                 // inject defines from the import's define_map
                 if (found->define_map) {
                     for (item it = found->define_map->first; it; it = it->next) {
@@ -220,7 +220,7 @@ static void push_context(NamedDecl* decl, aether e) {
         symbol name = s.c_str();
         Au_t m = _find_member(cur, name);
         verify(m, "namespace not found: %s", name);
-        aether_push_scope(e, (Au)m);
+        aether_push_scope(e, (Au)m, 2);
         cur = m;
     }
 }
@@ -593,7 +593,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     rec->typesize = layout.getSize().getQuantity(); // size in bytes
     //rec->record_alignment = layout.getAlignment().getQuantity(); // in bytes
 
-    aether_push_scope(e, (Au)rec);
+    aether_push_scope(e, (Au)rec, 3);
     set_fields(decl, ctx, e, rec);
     array_pop(e->lexical);
     return rec;
@@ -623,7 +623,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
     Au_t parent = aether_top_scope(e);
     Au_t rec = def_class(parent, n);
     //rec->module = e->current_import->au;
-    aether_push_scope(e, (Au)rec);
+    aether_push_scope(e, (Au)rec, 4);
     
     // Handle bases
     const ASTRecordLayout& layout = ctx.getASTRecordLayout(cxx);
@@ -705,7 +705,7 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
     en->is_c = true;
     en->src = au_lookup("i32");
     
-    aether_push_scope(e, (Au)en);
+    aether_push_scope(e, (Au)en, 5);
     
     for (auto it = decl->enumerator_begin(); it != decl->enumerator_end(); ++it) {
         EnumConstantDecl* ec = *it;
@@ -1150,9 +1150,13 @@ none aether_import_includes(aether a) {
     // build source for all includes with pragma inbetween
     path c = f(path, "/tmp/import.c");
     string contents = new0(string, alloc, 1024);
+    bool any_new = false;
     each(a->imports, import, im) {
         if (!im->include_paths || !im->include_paths->count)
             continue;
+        if (im->au->is_closed)
+            continue;
+        any_new = true;
         verify(im->external_name, "external_name (import identity) not set");
         string_concat(contents, f(string, "#pragma silver_module %o\n", im->external_name));
         for (item i = im->define_map ? im->define_map->first : null; i; i = i->next) {
@@ -1166,6 +1170,7 @@ none aether_import_includes(aether a) {
             string_concat(contents, f(string, "#include \"%o\"\n", ipath));
         }
     }
+    if (!any_new) return;
     path_save(c, (Au)contents, null);
 
     symbol compile_unit = c->chars;
