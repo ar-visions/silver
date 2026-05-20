@@ -10,7 +10,7 @@ Layer EditorLayer
         if [ !editor || !editor.dragging ] return
         lh : f32 [ (editor.lh_cache > 0.0) ? editor.lh_cache : 22.0 ]
         cw : f32 [ (editor.cw_cache > 0.0) ? editor.cw_cache : 8.0 ]
-        rel_y : f32 [ ev.mouse.pos.y + editor.scroll ]
+        rel_y : f32 [ ev.mouse.pos.y ]
         rel_x : f32 [ ev.mouse.pos.x ]
         ln : i32 [ clamp[ rel_y / lh, 0, editor.lines.count - 1 ] ]
         cl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0, editor.line_get[ ln ].count ] ]
@@ -32,11 +32,13 @@ Layer EditorLayer
         y0      : f32 [ bounds.y ]
         fade_h  : f32 [ bounds.h * 0.20 ]
         fade_s  : f32 [ bounds.y + bounds.h - fade_h ]
-        editor.lh_cache = lh
-        editor.cw_cache = cw_tm.w
+        editor.lh_cache  = lh
+        editor.cw_cache  = cw_tm.w
+        editor.content_h = f32[ editor.lines.count ] * lh
+        editor.scroll_speed = lh
 
         for [ li: i32 0, li < editor.lines.count, li += 1 ]
-            y : f32 [ y0 + f32[li] * lh - editor.scroll ]
+            y : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
             alpha : ((y - bounds.y) < fade_s) ? 1.0 : 1.0 - ((y - fade_s) / fade_h)
@@ -74,7 +76,7 @@ Layer EditorLayer
             cur_line_col : rgba [ line_color ? line_color : rgba['#ffffff18'] ]
             sel_col_val  : rgba [ sel_color  ? sel_color  : rgba['#264f78'] ]
 
-            y_cur : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll ]
+            y_cur : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll.y ]
             cv.fill_color[ cur_line_col ]
             cv.rect_to[ x0, y_cur, bounds.w, lh ]
             cv.paint[ ]
@@ -83,7 +85,7 @@ Layer EditorLayer
                 cv.save[ ]
                 cv.rounded[ 3.0, 3.0, 3.0, 3.0 ]
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
-                    y_row  : f32 [ y0 + f32[li] * lh - editor.scroll ]
+                    y_row  : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
                     if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
@@ -113,7 +115,7 @@ Layer EditorLayer
                 tx : f32 [ cv.transform_tx[] ]
                 ty : f32 [ cv.transform_ty[] ]
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
-                    y_row  : f32 [ y0 + f32[li] * lh - editor.scroll ]
+                    y_row  : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
                     if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
@@ -133,7 +135,7 @@ Layer EditorLayer
                 cv.paint[ ]
 
             if [ parent.focused ]
-                y_sel : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll ]
+                y_sel : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll.y ]
                 if [ y_sel + lh >= bounds.y && y_sel <= bounds.y + bounds.h ]
                     use_fr : bool [ has_sel && editor.filter_rect ]
                     cx : f32
@@ -156,7 +158,6 @@ Layer EditorLayer
 Control Editor
     public  src           : path
     mutable lines         : list string
-    mutable scroll        : f32
     mutable sel_line      : i32 [ -1 ]
     mutable sel_col       : i32 [ 0 ]
     mutable lh_cache      : f32 [ 0.0 ]
@@ -197,7 +198,7 @@ Control Editor
         if [ !ele ] return
         lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
-        rel_y : f32 [ (ev.mouse.pos.y - ele.bounds.y) + scroll ]
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
         ln    : i32 [ clamp [ rel_y / lh, 0, lines.count - 1 ] ]
         cl    : i32 [ clamp [ i32[ round[ rel_x / cw ] ], 0, line_get[ ln ].count ] ]

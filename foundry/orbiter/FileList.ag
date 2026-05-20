@@ -24,58 +24,87 @@ class FileNode
 Layer FileLayer
     mutable expand_icon   : SVGModel
     mutable collapse_icon : SVGModel
+    public  expand_svg    : string
+    public  collapse_svg  : string
+    public  indent_width  : f32
+    public  icon_col      : f32
+    public  icon_text_gap : f32
+    public  expand_offset   : vec2f
+    public  collapse_offset : vec2f
+    public  sel_color     : string
+    public  sel_oy        : f32
+    public  dir_color     : string
+    public  file_color    : string
+    public  row_spacing   : f32
 
     func draw [ cv: Canvas ]
         fl : FileList[ parent ]
         if [ !fl || !fl.visible ] return
         if [ !expand_icon ]
-            expand_icon   = SVGModel [ path 'images/expand3.svg' ]
-            collapse_icon = SVGModel [ path 'images/collapse3.svg' ]
+            expand_icon   = SVGModel [ path expand_svg ]
+            collapse_icon = SVGModel [ path collapse_svg ]
         cv.font_size[ i32[label_size] ]
-        lh   : f32 [ (cv.font) ? cv.font.line_height : 20.0 ]
+        lh   : f32 [ ((cv.font) ? cv.font.line_height : 20.0) * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
+        fl.row_height  = lh
+        fl.content_y   = bounds.y
+        fl.content_h   = f32[ fl.visible.count ] * lh
+        fl.view_h      = bounds.h
+        fl.scroll_speed = lh
         x0   : f32 [ bounds.x ]
         y0   : f32 [ bounds.y ]
-        iw   : f32 [ 12.0 ]
-        icol : f32 [ 11.0 ]
 
+        cv.clip_rect[ bounds.x, bounds.y, bounds.w, bounds.h, 0.0, 0.0 ]
         for [ i: i32 0, i < fl.visible.count, i += 1 ]
             n : FileNode fl.visible[i]
-            y : f32 [ y0 + f32[i] * lh - fl.scroll ]
+            y : f32 [ y0 + f32[i] * lh - fl.scroll.y ]
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
 
             if [ i == fl.sel ]
-                cv.fill_color[ '#264f78' ]
-                cv.rect_to[ x0, y, bounds.w, lh ]
+                cv.fill_color[ sel_color ]
+                cv.rect_to[ x0, y + sel_oy, bounds.w, lh ]
                 cv.paint[]
 
-            ix : f32 [ x0 + icol + f32[n.depth] * iw ]
+            ix : f32 [ x0 + icon_col + icon_text_gap + f32[n.depth] * indent_width ]
             if [ n.is_dir ]
                 icon : SVGModel [ (n.open) ? collapse_icon : expand_icon ]
+                ox   : f32 [ (n.open) ? collapse_offset.x : expand_offset.x ]
+                oy   : f32 [ (n.open) ? collapse_offset.y : expand_offset.y ]
                 pad  : f32 [ (lh - 11.0) * 0.5 ]
-                cv.draw_svg[ icon, round[ x0 + f32[n.depth] * iw ], round[ y + pad ], 11.0, 11.0 ]
+                cv.draw_svg[ icon, round[ x0 + f32[n.depth] * indent_width + ox ], round[ y + pad + oy ], 11.0, 11.0 ]
 
-            cv.fill_color[ (n.is_dir) ? '#7ec8e3' : '#d4d4d4' ]
+            cv.fill_color[ (n.is_dir) ? dir_color : file_color ]
             cv.draw_text[ n.p.filename[],
                 rect [ x: ix, y: y, w: bounds.w - (ix - x0), h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
 
         cv.paint[]
 
-    func on_press [ ev: Event ]
-        fl    : FileList[ parent ]
-        if [ !fl ] return
-        lh    : f32 [ 20.0 ]
-        rel_y : f32 [ ev.mouse.pos.y - bounds.y + fl.scroll ]
-        idx   : i32 [ i32[ rel_y / lh ] ]
-        fl.select[ idx ]
+Option FileList
+    public  root         : path
+    public  pending_open : path
+    mutable root_node    : FileNode
+    mutable visible      : array FileNode
+    mutable sel          : i32   [ -1 ]
+    mutable row_height   : f32   [ 20.0 ]
+    mutable content_y    : f32   [ 0.0 ]
+    mutable view_h       : f32   [ 0.0 ]
 
-Control FileList
-    public  root      : path
-    mutable root_node : FileNode
-    mutable visible   : array FileNode
-    mutable sel       : i32   [ -1 ]
-    mutable scroll    : f32   [ 0.0 ]
+    func on_press [ ev: Event ]
+        rel_y : f32 [ ev.mouse.pos.y - content_y ]
+        if [ rel_y < 0.0 ] return
+        idx   : i32 [ i32[ rel_y / row_height ] ]
+        select[ idx ]
+
+    func on_wheel [ ev: Event ]
+        if [ content_h <= 0.0 ] return
+        vh     : f32 [ (view_h > 0.0) ? view_h : bounds.h ]
+        speed  : f32 [ (scroll_speed > 0.0) ? scroll_speed : 40.0 ]
+        scroll.y += f32[ ev.mouse.wheel_delta.y ] * speed * -1.0
+        if [ scroll.y < 0.0 ] scroll.y = 0.0
+        max_sc : f32 [ content_h - vh ]
+        if [ max_sc > 0.0 && scroll.y > max_sc ] scroll.y = max_sc
+        pristine = false
 
     func init []
         if [ !root ] root = path '/src/silver'
@@ -103,29 +132,39 @@ Control FileList
             if [ n.open ]
                 n.open = false
             el
-                close_siblings[ n ]
+                close_all[ root_node, n ]
                 n.load_children[]
                 n.open = true
             build_visible[]
-        needs_frame = true
+            for [ j: i32 0, j < visible.count, j += 1 ]
+                if [ visible[j] == n ]
+                    sel = j
+                    break
+        if [ !n.is_dir ]
+            pending_open = n.p
+        item_y : f32 [ f32[sel] * row_height ]
+        vh     : f32 [ (view_h > 0.0) ? view_h : content_h ]
+        if [ item_y < scroll.y ]
+            scroll.y = item_y
+        el [ item_y + row_height > scroll.y + vh ]
+            scroll.y = item_y + row_height - vh
+        pristine = false
 
-    func close_siblings [ target: FileNode ]
-        if [ !target.depth ] return
-        parent_node : FileNode find_parent[ root_node, target ]
-        if [ !parent_node || !parent_node.children ] return
-        for [ i: i32 0, i < parent_node.children.count, i += 1 ]
-            sib : FileNode parent_node.children[i]
-            if [ sib != target && sib.open ]
-                sib.open = false
-
-    func find_parent [ node: FileNode, target: FileNode ] -> FileNode
-        if [ !node.children ] return null
+    func close_all [ node: FileNode, keep: FileNode ]
+        if [ !node.children ] return
         for [ i: i32 0, i < node.children.count, i += 1 ]
             child : FileNode node.children[i]
-            if [ child == target ] return node
-            found : FileNode find_parent[ child, target ]
-            if [ found ] return found
-        return null
+            if [ child != keep && child.open && !is_ancestor[ child, keep ] ]
+                child.open = false
+            close_all[ child, keep ]
+
+    func is_ancestor [ node: FileNode, target: FileNode ] -> bool
+        if [ !node.children ] return false
+        for [ i: i32 0, i < node.children.count, i += 1 ]
+            child : FileNode node.children[i]
+            if [ child == target ] return true
+            if [ is_ancestor[ child, target ] ] return true
+        return false
 
     func render [] -> Elements
         return null

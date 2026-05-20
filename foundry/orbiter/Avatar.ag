@@ -361,8 +361,7 @@ Orbiter Aura
 	func pfog [ p: vec3f ] -> GLSL float {
 		float v  = 0.500 * vnoise(p);
 		      v += 0.250 * vnoise(p * 2.01);
-		      v += 0.125 * vnoise(p * 4.03);
-		return v / 0.875;
+		return v / 0.750;
 	}
 
 	func fragment[] -> GLSL none {
@@ -404,8 +403,8 @@ Orbiter Aura
 					t_exit  = min(t_exit,  max(tc0, tc1));
 				}
 				if (t_exit > t_enter) {
-					float bm_dt = (t_exit - t_enter) / 48.0;
-					for (int i = 0; i < 48; i++) {
+					float bm_dt = (t_exit - t_enter) / 32.0;
+					for (int i = 0; i < 32; i++) {
 						if (alpha > 0.97) break;
 						float t   = t_enter + (float(i) + 0.5) * bm_dt;
 						vec3  p   = ro + rd * t;
@@ -484,8 +483,8 @@ Orbiter Aura
 					rng_tx = min(rng_tx, max(tc0, tc1));
 				}
 				if (rng_tx > rng_te) {
-					float rng_dt = (rng_tx - rng_te) / 64.0;
-					for (int j = 0; j < 64; j++) {
+					float rng_dt = (rng_tx - rng_te) / 32.0;
+					for (int j = 0; j < 32; j++) {
 						if (alpha > 0.97) break;
 						vec3  rng_p  = ro + rd * (rng_te + (float(j) + 0.5) * rng_dt);
 						float rng_at = clamp(dot(rng_p - rng_o, rng_d), 0.0, rng_bh);
@@ -653,6 +652,7 @@ element Avatar
     public blend_bands       : f32
 
     func init [ ]
+        volatile = true
         models = map Model[string][]
         if [ render_scale == 0.0 ]
             render_scale = 1.0
@@ -725,7 +725,7 @@ element Avatar
         ##
 
         rs : f32 [ (render_scale > 0.0) ? render_scale : 1.0 ]
-        vs : f32 [ (vol_scale    > 0.0) ? vol_scale    : 0.5 ]
+        vs : f32 [ (vol_scale    > 0.0) ? vol_scale    : 0.25 ]
 
         if [ geo_models.count ]
             gw : i32 [ bounds.w * rs ]
@@ -798,3 +798,4 @@ element Avatar
             w.screen.draw_image[ geo_tex, b ]
         if [ vol_target ]
             w.screen.draw_image[ vol_target.color, b ]
+        needs_frame = true

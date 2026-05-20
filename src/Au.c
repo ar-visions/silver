@@ -5313,6 +5313,8 @@ none Au_free(Au a) {
     none* prev = null;
     Au_f*   cur = (is_c || is_holder || aa->type->is_struct) ? null : type;
 #ifndef NDEBUG
+    //if (aa->line == 894)
+    //    return;
     //if (aa->source)
     //    printf("Au_free type=%s source=%s:%i seq=%i\n", aa->type->ident, aa->source, aa->line, aa->sequence);
 #endif

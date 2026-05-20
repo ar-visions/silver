@@ -94,6 +94,8 @@ ielement element
     mutable group           : string
     mutable tab_index       : i32
     mutable scroll          : vec2f
+    mutable content_h       : f32
+    public  scroll_speed    : f32
     # per-element 2D transform. scale default (1,1), rotate in radians,
     # transform_origin normalized to element bounds (0.5,0.5 = center).
     # all three are transitionable via CSS just like colors.
@@ -119,7 +121,14 @@ ielement element
     public func on_hover   [ ev: Event ] return
     public func on_leave   [ ev: Event ] return
     public func on_move    [ ev: Event ] return
-    public func on_wheel   [ ev: Event ] return
+    public func on_wheel [ ev: Event ]
+        if [ content_h <= 0.0 ] return
+        speed  : f32 [ (scroll_speed > 0.0) ? scroll_speed : 40.0 ]
+        scroll.y += f32[ ev.mouse.wheel_delta.y ] * speed * -1.0
+        if [ scroll.y < 0.0 ] scroll.y = 0.0
+        max_sc : f32 [ content_h - bounds.h ]
+        if [ max_sc > 0.0 && scroll.y > max_sc ] scroll.y = max_sc
+        pristine = false
     public func on_key     [ ev: Event ] return
     public func on_char    [ ev: Event ] return
     intern style_avail  : map StyleEntries[string]
@@ -212,6 +221,163 @@ ielement element
 
 
 alias StyleTransitions : map StyleTransition[string]
+
+
+struct MouseState
+    wheel_delta : vec2f
+    pos         : vec2f
+    button      : i32
+    state       : i32
+
+struct KeyboardState
+    unicode   : u32
+    scan_code : u32
+    state     : i32
+    meta      : bool
+    shift     : bool
+    alt       : bool
+    ctrl      : bool
+    text      : string
+
+
+enum Blend
+    normal:   0
+    multiply: 1
+    screen:   2
+    overlay:  3
+    add:      4
+
+
+class Layer
+    context parent             : element
+    public ctype               : CanvasType
+    public test2               : bool
+    public area                : Region
+    mutable bounds             : rect
+    public radius              : Radius
+
+    public fill_color               : rgba
+    public fill_color_pos           : vec2f
+    public fill_gradient            : GradientType
+    public fill_gradient_color      : rgba
+    public fill_gradient_radius     : f32
+    public fill_gradient_radius_y   : f32
+    public fill_gradient_angle      : f32
+    public fill_offset         : f32
+    public fill_shadow         : Shadow
+    public fill_glow           : Glow
+    public inner_glow          : Glow
+
+    public stroke_gradient          : GradientType
+    public stroke_gradient_color    : rgba
+    public stroke_gradient_radius   : f32
+    public stroke_gradient_radius_y : f32
+    public stroke_gradient_angle    : f32
+    public stroke_color             : rgba
+    public stroke_color_pos         : vec2f
+    public stroke_width             : Sides
+    public stroke_offset            : f32
+    public stroke_shadow            : Shadow
+    public stroke_glow              : Glow
+    public stroke_cap               : Cap
+    public stroke_join              : Join
+    public stroke_miter             : f32
+    public stroke_dash              : array f32
+    public stroke_dash_offset       : f32
+
+    public label               : string
+    public label_color         : rgba
+    public label_color_pos     : vec2f
+    public label_gradient          : rgba
+    public label_gradient_radius   : f32
+    public label_gradient_degrees  : f32
+    public label_gradient_mirror   : bool
+    public label_shadow        : rgba
+    public label_shadow_offset : vec2f
+    public label_shadow_blur   : f32
+    public label_glow          : Glow
+    public label_size          : f32   [ 22.0 ]
+    public label_height        : f32 [ 1.0 ]
+    public label_align         : vec2f [ x: 0.5, y: 0.5 ]
+    public label_offset        : vec2f
+    public label_overflow      : Overflow [ Overflow.ellipsis ]
+    public label_font          : string
+    mutable label_font_cache   : CanvasFont
+
+    public font                : Font
+    public image_svg           : SVGModel
+    public image_scale         : f32 [ 1.0 ]
+    public image_source        : Image
+    public image_align         : Align
+    public image_tranform      : Transform
+    public image_repeat        : Pattern
+
+    public background_gradient : Gradient
+    public background_radius   : f32
+    public background_origin   : vec2f
+    public background_to       : vec2f
+
+    public blend               : Blend
+    public transform           : Transform
+    public overflow            : Clip
+    public clip                : bool
+    public unclip              : bool
+    public opacity             : f32
+
+    public blur_x           : f32
+    public blur_y           : f32
+    intern blur_canvas      : Canvas
+    intern blur_dirty       : bool
+    intern blur_bw          : i32
+    intern blur_bh          : i32
+
+    func draw [ cv: Canvas ]
+        return
+
+
+# forward declarations need resolver support
+# process same way, different gen method (make_class -> make_decl)
+class Event
+    mutable target         : element
+    mutable mouse          : MouseState
+    mutable key            : KeyboardState
+    mutable no_default     : bool
+    mutable no_propagation : bool
+
+    func prevent_default  [ ] 
+        no_default = true
+
+    func is_default [ ] -> bool
+        return !no_default
+
+    func should_propagate [ ] -> bool
+        return !no_propagation
+
+    func stop_propagation [ ] -> bool
+        no_propagation = true
+        return true
+
+    func clear [ ] 
+        target         = null
+        key            = []
+        no_default     = false
+        no_propagation = false
+        mouse.state    = -1
+        mouse.button   = -1
+
+
+alias EventCallback : lambda none [ Event ]
+
+struct EventDispatch
+    callbacks : array EventCallback
+
+    func invoke [ ev : Event ]
+        for [ event_processor : EventCallback ] in callbacks
+            event_processor[ev]
+    
+    operator += [ call : EventCallback ]
+        callbacks += call
+
 
 func filter_n[ current:f32, goal:f32, amount:f32, rate:f32 ] -> f32
     decay : pow[ 1.0f - amount, rate ]

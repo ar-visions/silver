@@ -14,33 +14,118 @@ import Editor
 import Console
 import FileList
 
-Control DebugPanel
+Option  DebugPanel
+Option  CallStack
+Control Tabs
+Control Instances
+
 
 trinity orbiter
+    intern avg_fps    : f32
+    public open_files  : array path
+    public active_idx  : i32
+    public active_panel : string
+
     func init []
-        width  = 1888
-        height = 888
-        background = 'Background'
-    
+        width        = 1888
+        height       = 888
+        background   = 'Background'
+        open_files   = array path []
+        open_files  += path '/src/silver/src/silver.c'
+        open_files  += path '/src/silver/src/aether.c'
+        open_files  += path '/src/silver/src/Au.c'
+        active_idx   = 0
+        active_panel = 'files'
+
+    func open_file [ p: path ]
+        for [ i: i32 0, i < open_files.count, i += 1 ]
+            if [ open_files[i] == p ]
+                active_idx = i
+                return
+        open_files.push[ p ]
+        active_idx = open_files.count - 1
+
+    func set_active [ idx: i32 ]
+        active_idx = idx
+
+    public func pad[ n:i32 ] -> string
+        str : local char[256]
+        sprintf[str, "%04i", n]
+        return str
+
+    func on_click [ ev: Event ]
+        if [ !ev.target ] return
+        if [ ev.target inherits Option ]
+            active_panel = ev.target.id
+            return
+        for [ i: i32 0, i < open_files.count, i += 1 ]
+            key : string 'tab_{i}'
+            if [ ev.target.id == key ]
+                set_active[ i ]
+                return
+
+    func on_press [ ev: Event ]
+        for [ e: element* ev.target, e, e = e.parent ]
+            if [ e inherits FileList ]
+                fl : FileList e
+                if [ fl.pending_open ]
+                    open_file[ fl.pending_open ]
+                    fl.pending_open = null
+                    return
+
     public func on_render [ w: Window ] -> Elements
+        fps : f32 [ w.frame_factor * 60.0 ]
+        avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
+        w.set_title[ 'orbiter | {pad[i32[avg_fps]]} fps' ]
+
+        active_path : path (open_files.count > 0) ? open_files[active_idx] : null
+        active_name : string (active_path) ? active_path.filename[] : string[]
+
+        source_nav : Elements []
+        for [ i: i32 0, i < open_files.count, i += 1 ]
+            p   : path   open_files[i]
+            key : string 'tab_{i}'
+            source_nav[key] = Button [ label: p.filename[] ]
+
+        targets : Elements []
+        targets['silver']     = Button [ label: 'silver'     ]
+        targets['hyperspace'] = Button [ label: 'hyperspace' ]
+        targets['orbiter']    = Button [ label: 'orbiter'    ]
+
+        consoles : Elements []
+        consoles['shell']     = Button [ label: 'shell' ]
+        consoles['lldb']      = Button [ label: 'lldb' ]
+        
         return Elements [
-            ##
-            "toolbar":  Toolbar [],
+            "toolbar":  Toolbar [
+                elements: 
+                    Elements [
+                        'source_nav': Tabs[ elements: source_nav ]
+                    ]
+            ],
             "right":    Toolbar [
                 elements: Elements [
-                    "files": FileList [],
-                    "debug": DebugPanel []
+                    "files":        FileList   [ selected: active_panel == 'files' ]
+                    "callstack":    CallStack  [ selected: active_panel == 'callstack' ]
+                    "debug":        DebugPanel [ selected: active_panel == 'debug' ]
+                    "debug2":       CallStack  [ selected: active_panel == 'debug' ]
                 ]
             ],
             "editor-group": Group [
                 elements: Elements [
-                    "title":   element [ label: 'silver.c' ]
-                    "editor":  Editor [ src: path '/src/silver/src/silver.c' ]
+                    "title":        element [ label: active_name ]
+                    "editor":       Editor  [ src: active_path ]
                 ]
             ],
-            "console": Console [],
-            ##
-            "avatar": Avatar []
+            "instances": Instances [
+                elements: Elements [
+                    "consoles":     Tabs [ elements: consoles ]
+                    "targets":      Tabs [ elements: targets  ]
+                    "actions":      Tabs [ elements: Elements [ "play": Button [] ] ]
+                    "console":      Console []
+                ]
+            ]
+            #"avatar": Avatar []
         ]
 
     public func on_canvas [ cv: Canvas ]
