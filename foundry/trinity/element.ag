@@ -108,6 +108,10 @@ ielement element
     mutable hovered         : bool
     mutable pressed         : bool
     mutable focused         : bool
+    mutable first           : bool
+    mutable last            : bool
+    mutable odd             : bool
+    mutable even            : bool
     public  focusable       : bool
     public cursor           : vec2f
     mutable maps_populated  : bool

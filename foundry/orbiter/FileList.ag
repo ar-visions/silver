@@ -1,5 +1,7 @@
 extend orbiter
 
+import <string.h>
+
 class FileNode
     public p        : path
     public depth    : i32
@@ -40,6 +42,9 @@ Layer FileLayer
     func draw [ cv: Canvas ]
         fl : FileList[ parent ]
         if [ !fl || !fl.visible ] return
+        if [ fl.filter && fl.filter != fl.last_filter ]
+            fl.last_filter = fl.filter
+            fl.build_visible[]
         if [ !expand_icon ]
             expand_icon   = SVGModel [ path expand_svg ]
             collapse_icon = SVGModel [ path collapse_svg ]
@@ -53,20 +58,25 @@ Layer FileLayer
         x0   : f32 [ bounds.x ]
         y0   : f32 [ bounds.y ]
 
-        cv.clip_rect[ bounds.x, bounds.y, bounds.w, bounds.h, 0.0, 0.0 ]
+        clip_y0 : f32 [ bounds.y ]
+        clip_y1 : f32 [ bounds.y + bounds.h ]
+        wtx : f32 [ cv.transform_tx[] ]
+        wty : f32 [ cv.transform_ty[] ]
+        cv.set_text_crop[ wtx + bounds.x, wty + clip_y0, wtx + bounds.x + bounds.w, wty + clip_y1 ]
+
         for [ i: i32 0, i < fl.visible.count, i += 1 ]
             n : FileNode fl.visible[i]
             y : f32 [ y0 + f32[i] * lh - fl.scroll.y ]
-            if [ y + lh < bounds.y ] continue
-            if [ y > bounds.y + bounds.h ] break
+            if [ y + lh < clip_y0 ] continue
+            if [ y > clip_y1 ] break
 
-            if [ i == fl.sel ]
+            if [ i == fl.sel && y >= clip_y0 ]
                 cv.fill_color[ sel_color ]
                 cv.rect_to[ x0, y + sel_oy, bounds.w, lh ]
                 cv.paint[]
 
             ix : f32 [ x0 + icon_col + icon_text_gap + f32[n.depth] * indent_width ]
-            if [ n.is_dir ]
+            if [ n.is_dir && y >= clip_y0 ]
                 icon : SVGModel [ (n.open) ? collapse_icon : expand_icon ]
                 ox   : f32 [ (n.open) ? collapse_offset.x : expand_offset.x ]
                 oy   : f32 [ (n.open) ? collapse_offset.y : expand_offset.y ]
@@ -79,10 +89,13 @@ Layer FileLayer
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
 
         cv.paint[]
+        cv.clear_text_crop[]
 
 Option FileList
     public  root         : path
     public  pending_open : path
+    public  filter       : string
+    mutable last_filter  : string
     mutable root_node    : FileNode
     mutable visible      : array FileNode
     mutable sel          : i32   [ -1 ]
@@ -119,7 +132,11 @@ Option FileList
     func walk [ node: FileNode ]
         if [ !node.children ] return
         for [ i: i32 0, i < node.children.count, i += 1 ]
-            child : FileNode node.children[i]
+            child : node.children[i]
+            if [ filter && filter.count > 0 && !child.is_dir ]
+                fname : child.p.filename[]
+                if [ !strstr[ fname, filter ] ]
+                    continue
             visible.push[ child ]
             if [ child.open ]
                 walk[ child ]
@@ -153,15 +170,14 @@ Option FileList
     func close_all [ node: FileNode, keep: FileNode ]
         if [ !node.children ] return
         for [ i: i32 0, i < node.children.count, i += 1 ]
-            child : FileNode node.children[i]
+            child : node.children[i]
             if [ child != keep && child.open && !is_ancestor[ child, keep ] ]
                 child.open = false
             close_all[ child, keep ]
 
     func is_ancestor [ node: FileNode, target: FileNode ] -> bool
         if [ !node.children ] return false
-        for [ i: i32 0, i < node.children.count, i += 1 ]
-            child : FileNode node.children[i]
+        for [ child:FileNode ] in node.children
             if [ child == target ] return true
             if [ is_ancestor[ child, target ] ] return true
         return false

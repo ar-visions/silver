@@ -19,23 +19,32 @@ Option  CallStack
 Control Tabs
 Control Instances
 
+enum ConsoleKind
+    shell : 0
+    lldb  : 1
 
 trinity orbiter
     intern avg_fps    : f32
     public open_files  : array path
     public active_idx  : i32
-    public active_panel : string
+    public active_panel   : string
+    public active_target  : string
+    public active_console : ConsoleKind
+    public filter_text    : string
 
     func init []
-        width        = 1888
-        height       = 888
-        background   = 'Background'
-        open_files   = array path []
-        open_files  += path '/src/silver/src/silver.c'
-        open_files  += path '/src/silver/src/aether.c'
-        open_files  += path '/src/silver/src/Au.c'
-        active_idx   = 0
-        active_panel = 'files'
+        width          = 1888
+        height         = 888
+        background     = 'Background'
+        open_files     = array path []
+        open_files    += path '/src/silver/src/silver.c'
+        open_files    += path '/src/silver/src/aether.c'
+        open_files    += path '/src/silver/src/Au.c'
+        active_idx     = 0
+        active_panel   = 'files'
+        active_target  = 'silver'
+        active_console = ConsoleKind.shell
+        filter_text    = ''
 
     func open_file [ p: path ]
         for [ i: i32 0, i < open_files.count, i += 1 ]
@@ -56,7 +65,15 @@ trinity orbiter
     func on_click [ ev: Event ]
         if [ !ev.target ] return
         if [ ev.target inherits Option ]
-            active_panel = ev.target.id
+            id : string ev.target.id
+            if [ id == 'silver' || id == 'hyperspace' || id == 'orbiter' ]
+                active_target = id
+            el [ id == 'shell' ]
+                active_console = ConsoleKind.shell
+            el [ id == 'lldb' ]
+                active_console = ConsoleKind.lldb
+            el
+                active_panel = id
             return
         for [ i: i32 0, i < open_files.count, i += 1 ]
             key : string 'tab_{i}'
@@ -73,6 +90,25 @@ trinity orbiter
                     fl.pending_open = null
                     return
 
+    func on_char [ ev: Event ]
+        if [ !ev.target ] return
+        
+        if [ ev.target.id == 'filter_input' ]
+            if [ ev.key.text && ev.key.text.count > 0 ]
+                filter_text = filter_text + ev.key.text
+
+    func on_key [ ev: Event ]
+        if [ !ev.target ] return
+
+        if [ ev.target.id == 'filter_input' ]
+            if [ !ev.key.state ] return
+            k : i32 [ i32 ev.key.unicode ]
+            if [ k == 259 ]
+                if [ filter_text && filter_text.count > 0 ]
+                    filter_text = filter_text.mid[ 0, filter_text.count - 1 ]
+            el [ k == 256 ]
+                filter_text = ''
+
     public func on_render [ w: Window ] -> Elements
         fps : f32 [ w.frame_factor * 60.0 ]
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
@@ -88,13 +124,13 @@ trinity orbiter
             source_nav[key] = Button [ label: p.filename[] ]
 
         targets : Elements []
-        targets['silver']     = Button [ label: 'silver'     ]
-        targets['hyperspace'] = Button [ label: 'hyperspace' ]
-        targets['orbiter']    = Button [ label: 'orbiter'    ]
+        targets['silver']     = Option [ label: 'silver',     selected: active_target == 'silver'     ]
+        targets['hyperspace'] = Option [ label: 'hyperspace', selected: active_target == 'hyperspace' ]
+        targets['orbiter']    = Option [ label: 'orbiter',    selected: active_target == 'orbiter'    ]
 
         consoles : Elements []
-        consoles['shell']     = Button [ label: 'shell' ]
-        consoles['lldb']      = Button [ label: 'lldb' ]
+        consoles['shell'] = Option [ label: 'shell', selected: active_console == ConsoleKind.shell ]
+        consoles['lldb']  = Option [ label: 'lldb',  selected: active_console == ConsoleKind.lldb  ]
         
         return Elements [
             "toolbar":  Toolbar [
@@ -105,6 +141,7 @@ trinity orbiter
             ],
             "right":    Toolbar [
                 elements: Elements [
+                    "filter":       Input      [  ] # we need this implemented for filter_text; Editor and it should effectively share the generic
                     "files":        FileList   [ selected: active_panel == 'files' ]
                     "callstack":    CallStack  [ selected: active_panel == 'callstack' ]
                     "debug":        DebugPanel [ selected: active_panel == 'debug' ]
@@ -122,7 +159,7 @@ trinity orbiter
                     "consoles":     Tabs [ elements: consoles ]
                     "targets":      Tabs [ elements: targets  ]
                     "actions":      Tabs [ elements: Elements [ "play": Button [] ] ]
-                    "console":      Console []
+                    "console":      Console [ session_id: active_target ]
                 ]
             ]
             #"avatar": Avatar []

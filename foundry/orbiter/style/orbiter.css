@@ -131,6 +131,33 @@ Group / element.title {
 
 }
 
+Toolbar.right / Edit {
+    area:                       l0 t0 r0 h1.14
+    layers.header:
+        fill_color:             #0000
+        stroke_width:           0
+        inner_glow:             #0000 0
+        label_color:            #0000
+    layers.face:
+        area:                   8px
+        fill_color:             #fff1
+        stroke_color:           #fff3
+        stroke_width:           0.5
+        radius:                 4
+        label_size:             13
+        label_color:            #fff8
+        label_align:            0.0 0.5
+        label_offset:           8 0
+        label_font:             'fonts/SpaceMono-Regular.ttf'
+}
+
+Toolbar.right / Edit:focused {
+    layers.face:
+        fill_color:             #1246
+        stroke_color:           #8af8
+        label_color:            #ffff
+}
+
 Toolbar.right / Control {
     area:                       l0 t0+ r0 h1.14
     
@@ -310,6 +337,17 @@ Tabs / Button:hovered {
     layers.base:
         fill_color:             #8af2
         inner_glow:             #8af4 16
+}
+
+Tabs / Option:selected {
+    layers.base:
+        fill_color:             #fd06
+        inner_glow:             #fd08 16
+    layers.face:
+        label_color:            #fff
+        label_shadow:           #0008
+        label_shadow_offset:    1 1
+        label_shadow_blur:      3
 }
 
 Avatar.avatar {

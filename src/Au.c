@@ -3253,7 +3253,7 @@ none Au_set_context_from(Au target, Au source) {
 Au Au_get_property(Au a, symbol name) {
     Au_t type = isa(a);
     Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, 0, true);
-    verify(m, "%s not found on Au %s", name, type->ident);
+    if (!m) return null;
     Au *mdata = (Au*)((cstr)a + m->offset);
     Au  value = *mdata;
     return is_inlay(m) ? primitive(m->type, mdata) : value;

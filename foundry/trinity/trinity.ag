@@ -1330,14 +1330,21 @@ Display Window
         if [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
             cv.draw_canvas[ e.cache_canvas, 0.0 - f32 e.cache_ox, 0.0 - f32 e.cache_oy, f32 ew, f32 eh ]
 
-        last_2 : element
+        last_2  : element
+        child_n : i32 [ 0 ]
         for [ ee: element, id: string ] in e.elements
+            ee.first = (child_n == 0)
+            ee.last  = false
+            ee.odd   = (child_n % 2 == 0)
+            ee.even  = (child_n % 2 == 1)
+            child_n += 1
             cv.save[]
             if [ ee.bounds ]
                 cv.translate[ ee.bounds.x, ee.bounds.y ]
             draw_element[ ee, stage, last_2 ]
             last_2 = ee
             cv.restore[]
+        if [ last_2 ] last_2.last = true
 
 
 abstract media_app trinity
@@ -1469,7 +1476,8 @@ element Toolbar
     func render[] -> Elements
         return null
 
-Control Edit
+Option Edit
+    func on_click[ ev:Event ] return
     func render[] -> Elements
         return null
 
