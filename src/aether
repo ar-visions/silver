@@ -280,7 +280,7 @@ forward(evar)
     M(X, Y, i, method,   public,  path,                     include, Au, string) \
     M(X, Y, i, method,   public,  none,                     import_includes) \
     M(X, Y, i, method,   public,  Au_t,                     top_scope) \
-    M(X, Y, i, method,   public,  none,                     push_scope, Au) \
+    M(X, Y, i, method,   public,  none,                     push_scope, Au, i32) \
     M(X, Y, i, method,   public,  Au_t,                     pop_scope) \
     M(X, Y, i, method,   public,  enode,                    e_asm, array, array, etype, string) \
     M(X, Y, i, override, method,  init) \

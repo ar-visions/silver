@@ -2961,7 +2961,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     // we could save it at top and push the top again, but that isnt handled \properly
                     for (int i = 0; i < depth; i++) {
                         etype mm = (etype)get(prev, i);
-                        push_scope(a, (Au)mm);
+                        push_scope(a, (Au)mm, 19);
                     }
                 }
             }
@@ -2984,7 +2984,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         // More chaining - push context for next iteration
         validate(!is_func((Au)mem), "cannot resolve into function");
         if (mem->au && !module) {
-            push_scope(a, (Au)mem);
+            push_scope(a, (Au)mem, 20);
             depth++;
         }
     }
@@ -4174,7 +4174,7 @@ void aether_emit_block_probe(silver, i32);
 
 enode parse_statements(silver a) { sequencer
     statements st = new(statements, mod, (aether)a, au, def(top_scope(a), null, AU_MEMBER_NAMESPACE, 0));
-    push_scope(a, (Au)st);
+    push_scope(a, (Au)st, 21);
     if (seq == 99)
         seq = seq;
     enode vr = null;
@@ -4290,7 +4290,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     bool in_context = false;
 
     // create model entries for the args (enodes created on func init)
-    push_scope(a, (Au)mem);
+    push_scope(a, (Au)mem, 22);
     bool first = true;
     Au_t target = null;
 
@@ -6397,8 +6397,6 @@ enode parse_import(silver a) {
                         name_tok ? name_tok->chars : "?", a->name->chars);
                     start = 2;
                 }
-                // process extension inline; reset processed_imports so this
-                // extension's imports trigger aether_import_includes fresh
                 a->processed_imports = false;
                 push_tokens(a, (tokens)ext_toks, start);
                 while (a->cursor < len(a->tokens))
@@ -7129,7 +7127,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
 
     if (f->has_code && (f->const_tokens || f->inline_return || f->body || preamble)) {
         if (f->target)
-            push_scope(a, (Au)f->target);
+            push_scope(a, (Au)f->target, 23);
 
         // reasonable convention for silver's debugging facility
         // if this is a standard for IDE, then we can rely on this to improve productivity
@@ -7141,7 +7139,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
         a->last_return = null;
         if (len(f->body))
             a->statement_origin = hold((token)f->body->origin[0]);
-        push_scope(a, (Au)f);
+        push_scope(a, (Au)f, 24);
 
         if (is_lambda((Au)f))
             push_lambda_members((aether)a, f);
@@ -7263,7 +7261,7 @@ static void build_record_parse(silver a, etype mrec) {
     verify(mrec->au->is_class || mrec->au->is_struct, "not a record");
     array body = mrec->body ? (array)mrec->body : array();
     push_tokens(a, (tokens)body, 0);
-    push_scope(a, (Au)mrec);
+    push_scope(a, (Au)mrec, 25);
 
     while (peek(a)) {
         parse_statement(a);
@@ -7278,7 +7276,7 @@ static void build_record_implement(silver a, etype mrec) {
     if (mrec->is_elsewhere) return;
     mrec->is_elsewhere = true;
 
-    push_scope(a, (Au)mrec);
+    push_scope(a, (Au)mrec, 26);
     etype_implement(mrec, false);
     if (!mrec->type_id && mrec->au->is_class)
         implement_type_id(mrec);
@@ -7308,7 +7306,7 @@ static void build_record_implement(silver a, etype mrec) {
 /// phase 3: build init and member functions (all LLVM types now complete)
 static void build_record_functions(silver a, etype mrec) {
     if (mrec->au->is_class || mrec->au->is_struct) {
-        push_scope(a, (Au)mrec);
+        push_scope(a, (Au)mrec, 27);
         Au_t m_init = find_member(mrec->au, "init", AU_MEMBER_FUNC, 0, false);
         if (m_init)
             build_fn(a, u(efunc, m_init), build_init_preamble, null);
@@ -8410,7 +8408,7 @@ enode statements_push_builder(silver a, array expr_tokens, Au unused) {
     enode last = null;
     statements s_members = statements(mod, (aether)a, au, def(top_scope(a), null, AU_MEMBER_NAMESPACE, 0));
     push_tokens(a, (tokens)expr_tokens, 0);
-    push_scope(a, (Au)s_members);
+    push_scope(a, (Au)s_members, 28);
     bool first = true;
     while (peek(a)) {
         validate(first || read_if(a, ","), "expected comma between init expressions");
@@ -8441,7 +8439,7 @@ enode parse_for(silver a) { sequencer
     bool  do_while      = false;
 
     statements st = new(statements, mod, (aether)a, au, def(top_scope(a), null, AU_MEMBER_NAMESPACE, 0));
-    push_scope(a, (Au)st);
+    push_scope(a, (Au)st, 29);
 
     // if we use in_expr, then we do not split by :: in a traditional for,
     // we will read statements within all; each of which should be an enode binding from a : operation
@@ -8761,7 +8759,7 @@ etype silver_read_def(silver a, interface access) {
         mdl = etype(mod, (aether)a, au, enum_au);
 
         push_tokens(a, (tokens)enum_body, 0);
-        push_scope(a, (Au)mdl);
+        push_scope(a, (Au)mdl, 30);
         bool is_float_enum = enum_au->src->traits & AU_TRAIT_REALISTIC;
         validate(enum_au->src->is_integral || is_float_enum,
                  "enumeration must be based on integral or float types (i32 default)");
