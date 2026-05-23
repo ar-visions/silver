@@ -4821,7 +4821,7 @@ string string_unescape(string input) {
 none  string_dealloc(string a) {
     free((cstr)a->chars);
 }
-num   string_compare(string a, string b) { return strcmp(a->chars, b->chars); }
+num   string_compare(string a, string b) { if (a == b) return 0; if (!a || !b) return a ? 1 : -1; return strcmp(a->chars, b->chars); }
 num   string_cmp    (string a, symbol b) { return strcmp(a->chars, b); }
 bool  string_eq     (string a, symbol b) { return strcmp(a->chars, b) == 0; }
 
@@ -6707,6 +6707,9 @@ static string parse_json_string(cstr origin, cstr* remainder, ctx context) {
             else if (*scan == 't') push(res,  9);
             else if (*scan == 'b') push(res,  8);
             else if (*scan == '/') push(res, '/');
+            else if (*scan == '"')  push(res, '"');
+            else if (*scan == '\'') push(res, '\'');
+            else if (*scan == '\\') push(res, '\\');
             else if (*scan == 'u') {
                 // Read the next 4 hexadecimal digits and compute the Unicode codepoint
                 uint32_t code = 0;
