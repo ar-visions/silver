@@ -1,0 +1,646 @@
+export 0.1.0
+
+import kkos:oniguruma/f95747b462de672b6f8dbdeb478245ddf061ca53
+
+import <oniguruma.h>
+    -lonig
+import <string.h>
+import <stdio.h>
+
+# --- raw JSON grammar types (deserialized from .tmLanguage.json) ---
+
+class TmRawCapture
+    public name        : string
+    public contentName : string
+    public patterns    : array TmRawRule
+
+class TmRawRule
+    public include             : string
+    public name                : string
+    public contentName         : string
+    public comment             : string
+    public match               : string
+    public begin               : string
+    public end                 : string
+    public while_pat           : string
+    public applyEndPatternLast : bool
+    public captures            : map TmRawCapture[string]
+    public beginCaptures       : map TmRawCapture[string]
+    public endCaptures         : map TmRawCapture[string]
+    public whileCaptures       : map TmRawCapture[string]
+    public patterns            : array TmRawRule
+    public repository          : map TmRawRule[string]
+    public compiled_id         : i64
+
+class TmGrammar
+    public scopeName                  : string
+    public name                       : string
+    public uuid                       : string
+    public version                    : string
+    public fileTypes                  : array string
+    public firstLineMatch             : string
+    public injectionSelector          : string
+    public information_for_contributors : array string
+    public patterns                   : array TmRawRule
+    public repository                 : map TmRawRule[string]
+    public injections                 : map TmRawRule[string]
+
+# --- output types ---
+
+class TmToken
+    public start  : i64
+    public end    : i64
+    public scopes : array string
+
+class TmCaptureIdx
+    public start : i64
+    public end   : i64
+
+class TmMatchResult
+    public rule_id  : i64
+    public captures : array TmCaptureIdx
+
+# --- multi-pattern scanner ---
+
+class TmCompiledRule
+    intern rxs  : ref OnigRegex
+    intern n    : i64
+    intern ids  : array i64
+
+    func find_next [ src: ref u8, len: i64, pos: i64, anchor: i64 ] -> TmMatchResult
+        if [ n == 0 ] return null
+        region : ref OnigRegion [ onig_region_new[] ]
+        winner : ref OnigRegion [ onig_region_new[] ]
+        best_start : i64 [ len ]
+        best_idx   : i64 [ -1 ]
+        for [ i: i64 0, i < n, i += 1 ]
+            rx : OnigRegex [ rxs[i] ]
+            if [ !rx ] continue
+            sf : i64 [ (ids[i] == -1 && anchor >= 0 && anchor <= pos) ? anchor : pos ]
+            r  : i64 [ onig_search[ rx, src, ref src[len], ref src[sf], ref src[len], region, ONIG_OPTION_NONE ] ]
+            if [ r >= 0 && region.beg[0] >= pos && region.beg[0] < best_start ]
+                best_start = region.beg[0]
+                best_idx   = i
+                onig_region_copy[ winner, region ]
+        onig_region_free[ region, 1 ]
+        if [ best_idx < 0 ]
+            onig_region_free[ winner, 1 ]
+            return null
+        res : TmMatchResult []
+        ii : ids[best_idx]
+        puts 'rule_id = {ii}'
+        res.rule_id  = ids[best_idx]
+        nc : i64 [ winner.num_regs ]
+        res.captures = array TmCaptureIdx []
+        for [ i: i64 0, i < nc, i += 1 ]
+            ci : TmCaptureIdx []
+            ci.start = winner.beg[i]
+            ci.end   = winner.end[i]
+            res.captures.push[ ci ]
+        onig_region_free[ winner, 1 ]
+        return res
+
+# --- compiled rule hierarchy ---
+
+class TmCaptureRule
+    public cap_id         : i64
+    public cap_name       : string
+    public cap_cname      : string
+    public cap_retok      : i64
+
+class TmRule
+    public id             : i64
+    public rule_name      : string
+    public content_name   : string
+    public rx_cache       : TmCompiledRule
+    public rx_wcache      : TmCompiledRule
+    public rule_ids       : array i64
+    public has_missing    : bool
+    public begin_src      : string
+    public begin_captures : array TmCaptureRule
+
+TmRule TmMatchRule
+    public captures : array TmCaptureRule
+    public rx_src   : string
+
+TmRule TmIncludeOnlyRule
+
+TmRule TmBeginEndRule
+    public end_src        : string
+    public apply_end_last : bool
+    public end_captures   : array TmCaptureRule
+
+TmRule TmBeginWhileRule
+    public while_src      : string
+    public while_captures : array TmCaptureRule
+
+# --- state stack (linked list, functional-style) ---
+
+class TmState
+    public parent             : TmState
+    public rule_id            : i64
+    public enter_pos          : i64
+    public anchor_pos         : i64
+    public begin_captured_eol : bool
+    public end_rule           : string
+    public depth              : i64
+    public name_scopes        : array string
+    public content_scopes     : array string
+
+# --- line token accumulator ---
+
+class TmLocalStack
+    public scopes  : array string
+    public end_pos : i64
+
+class TmLineTokens
+    intern toks     : array TmToken
+    intern last_end : i64
+
+    func init []
+        toks     = array TmToken []
+        last_end = 0
+
+    func produce [ state: TmState, end_idx: i64 ]
+        produce_scopes[ state.content_scopes, end_idx ]
+
+    func produce_scopes [ scopes: array string, end_idx: i64 ]
+        if [ last_end >= end_idx ] return
+        t : TmToken []
+        t.start  = last_end
+        t.end    = end_idx
+        t.scopes = scopes
+        toks.push[ t ]
+        last_end = end_idx
+
+    func get_result [ state: TmState, line_len: i64 ] -> array TmToken
+        if [ toks.count == 0 ]
+            last_end = -1
+            produce[ state, line_len ]
+            if [ toks.count > 0 ]
+                toks[0].start = 0
+        out : array TmToken []
+        for [ i: i64 0, i < toks.count, i += 1 ]
+            t : TmToken [ toks[i] ]
+            if [ t.start >= line_len ] continue
+            if [ t.end > line_len ] t.end = line_len
+            out.push[ t ]
+        return out
+
+# --- helpers ---
+
+class TmPatternsResult
+    public ids     : array i64
+    public missing : bool
+
+class TmLineResult
+    public tokens : array TmToken
+    public state  : TmState
+
+# --- main tokenizer ---
+
+class TmTokenizer
+    public grammar : TmGrammar
+    intern rules   : array TmRule
+    intern root_id : i64
+    intern last_id : i64
+
+    func init []
+        rules   = array TmRule []
+        rules.push[ null ]
+        root_id = -1
+        last_id = 0
+        onig_init[]
+
+    func get_rule [ id: i64 ] -> TmRule
+        if [ id <= 0 || id >= rules.count ] return null
+        return rules[id]
+
+    func compile_regex [ src: string ] -> OnigRegex
+        if [ !src || src.count == 0 ] return null
+        rx     : OnigRegex [ null ]
+        einfo  : OnigErrorInfo
+        uchars : ref u8 [ src.chars ]
+        r : i64 [ onig_new[ ref rx, uchars, ref uchars[src.count], ONIG_OPTION_NONE, ref OnigEncodingUTF8, ONIG_SYNTAX_DEFAULT, ref einfo ] ]
+        if [ r != ONIG_NORMAL ]
+            printf[ "textmate: compile error: %s\n", uchars ]
+            return null
+        return rx
+
+    func compile_sources [ sources: array string, src_ids: array i64 ] -> TmCompiledRule
+        cnt : i64 [ sources.count ]
+        if [ cnt == 0 ] return null
+        cr : TmCompiledRule []
+        cr.ids = src_ids
+        cr.n   = cnt
+        cr.rxs = new OnigRegex [ cnt ]
+        for [ i: i64 0, i < cnt, i += 1 ]
+            cr.rxs[i] = compile_regex[ sources[i] ]
+        return cr
+
+    func collect_sources [ rule_id: i64, sources: array string, src_ids: array i64 ]
+        rule : TmRule [ get_rule[ rule_id ] ]
+        if [ !rule ]
+            printf[ "textmate: collect_sources: null rule for id=%lld (rules.count=%d)\n", rule_id, rules.count ]
+            return
+        if [ rule inherits TmMatchRule ]
+            mr : TmMatchRule rule
+            sources.push[ mr.rx_src ]
+            src_ids.push[ mr.id ]
+        el [ rule inherits TmBeginEndRule ]
+            br : TmBeginEndRule rule
+            sources.push[ br.begin_src ]
+            src_ids.push[ br.id ]
+        el [ rule inherits TmBeginWhileRule ]
+            bwr : TmBeginWhileRule rule
+            sources.push[ bwr.begin_src ]
+            src_ids.push[ bwr.id ]
+        el [ rule inherits TmIncludeOnlyRule ]
+            io : TmIncludeOnlyRule rule
+            printf[ "textmate: collect_sources: include rule id=%d rule_ids=%d\n", rule_id, io.rule_ids.count ]
+            for [ i: i64 0, i < io.rule_ids.count, i += 1 ]
+                rid : i64 [ io.rule_ids[i] ]
+                collect_sources[ rid, sources, src_ids ]
+        el
+            printf[ "textmate: collect_sources: unknown rule type id=%d\n", rule_id ]
+
+    func build_scanner [ rule: TmRule, end_override: string ] -> TmCompiledRule
+        sources : array string []
+        ids     : array i64 []
+        if [ rule inherits TmBeginEndRule ]
+            br  : TmBeginEndRule rule
+            esrc : string [ end_override || br.end_src ]
+            if [ !br.apply_end_last ]
+                sources.push[ esrc ]
+                ids.push[ -1 ]
+            for [ i: i64 0, i < br.rule_ids.count, i += 1 ]
+                rid : i64 [ br.rule_ids[i] ]
+                collect_sources[ rid, sources, ids ]
+            if [ br.apply_end_last ]
+                sources.push[ esrc ]
+                ids.push[ -1 ]
+        el [ rule inherits TmBeginWhileRule ]
+            bwr : TmBeginWhileRule rule
+            for [ i: i64 0, i < bwr.rule_ids.count, i += 1 ]
+                rid : i64 [ bwr.rule_ids[i] ]
+                collect_sources[ rid, sources, ids ]
+        el [ rule inherits TmIncludeOnlyRule ]
+            io : TmIncludeOnlyRule rule
+            for [ i: i64 0, i < io.rule_ids.count, i += 1 ]
+                rid : io.rule_ids[i]
+                collect_sources[ rid, sources, ids ]
+        el
+            return null
+        printf[ "textmate: build_scanner: %d sources for rule id=%d\n", sources.count, rule.id ]
+        return compile_sources[ sources, ids ]
+
+    func get_scanner [ rule: TmRule, end_override: string ] -> TmCompiledRule
+        if [ rule inherits TmBeginEndRule ]
+            br : TmBeginEndRule rule
+            if [ end_override ] return build_scanner[ rule, end_override ]
+            if [ !br.rx_cache ] br.rx_cache = build_scanner[ rule, null ]
+            return br.rx_cache
+        el [ rule inherits TmIncludeOnlyRule ]
+            io : TmIncludeOnlyRule rule
+            if [ !io.rx_cache ] io.rx_cache = build_scanner[ rule, null ]
+            return io.rx_cache
+        el [ rule inherits TmBeginWhileRule ]
+            bwr : TmBeginWhileRule rule
+            if [ !bwr.rx_cache ] bwr.rx_cache = build_scanner[ rule, null ]
+            return bwr.rx_cache
+        el [ rule inherits TmMatchRule ]
+            mr : TmMatchRule rule
+            if [ mr.rx_cache ] return mr.rx_cache
+            sources : array string []
+            sids    : array i64 []
+            sources.push[ mr.rx_src ]
+            sids.push[ mr.id ]
+            mr.rx_cache = compile_sources[ sources, sids ]
+            return mr.rx_cache
+        return null
+
+    func push_scope [ scopes: array string, scope_name: string ] -> array string
+        if [ !scope_name || scope_name.count == 0 ] return scopes
+        out : array string []
+        for [ i: i64 0, i < scopes.count, i += 1 ]
+            out.push[ scopes[i] ]
+        out.push[ scope_name ]
+        return out
+
+    func new_state [ par: TmState, rule_id: i64, enter_pos: i64, anchor_pos: i64, captured_eol: bool, end_rule: string, nm: array string, cn: array string ] -> TmState
+        s : TmState []
+        s.parent             = par
+        s.rule_id            = rule_id
+        s.enter_pos          = enter_pos
+        s.anchor_pos         = anchor_pos
+        s.begin_captured_eol = captured_eol
+        s.end_rule           = end_rule
+        s.depth              = (par) ? par.depth + 1 : 1
+        s.name_scopes        = nm
+        s.content_scopes     = cn
+        return s
+
+    func state_with_cn [ state: TmState, cn: array string ] -> TmState
+        s : TmState []
+        s.parent             = state.parent
+        s.rule_id            = state.rule_id
+        s.enter_pos          = state.enter_pos
+        s.anchor_pos         = state.anchor_pos
+        s.begin_captured_eol = state.begin_captured_eol
+        s.end_rule           = state.end_rule
+        s.depth              = state.depth
+        s.name_scopes        = state.name_scopes
+        s.content_scopes     = cn
+        return s
+
+    func has_same_rule [ sa: TmState, sb: TmState ] -> bool
+        s : TmState [ sa ]
+        while [ s && s.enter_pos == sb.enter_pos ]
+            if [ s.rule_id == sb.rule_id ] return true
+            s = s.parent
+        return false
+
+    func handle_captures [ src: ref u8, n: i64, state: TmState, toks: TmLineTokens, caps_rules: array TmCaptureRule, caps_idx: array TmCaptureIdx ]
+        if [ !caps_rules || caps_rules.count == 0 ] return
+        if [ !caps_idx   || caps_idx.count   == 0 ] return
+        max_end    : i64 [ caps_idx[0].end ]
+        lstack     : array TmLocalStack []
+        min_cnt    : i64 [ caps_rules.count ]
+        if [ caps_idx.count < min_cnt ] min_cnt = caps_idx.count
+        for [ i: i64 0, i < min_cnt, i += 1 ]
+            cr : TmCaptureRule [ caps_rules[i] ]
+            if [ !cr ] continue
+            ci : TmCaptureIdx [ caps_idx[i] ]
+            if [ ci.end - ci.start == 0 ] continue
+            if [ ci.start > max_end ] break
+            while [ lstack.count > 0 && lstack[lstack.count - 1].end_pos <= ci.start ]
+                top : TmLocalStack [ lstack[lstack.count - 1] ]
+                toks.produce_scopes[ top.scopes, top.end_pos ]
+                lstack.pop[]
+            if [ lstack.count > 0 ]
+                toks.produce_scopes[ lstack[lstack.count - 1].scopes, ci.start ]
+            el
+                toks.produce[ state, ci.start ]
+            cr_name : string [ cr.cap_name ]
+            if [ cr_name && cr_name.count > 0 ]
+                base   : array string [ (lstack.count > 0) ? lstack[lstack.count - 1].scopes : state.content_scopes ]
+                ls     : TmLocalStack []
+                ls.scopes  = push_scope[ base, cr_name ]
+                ls.end_pos = ci.end
+                lstack.push[ ls ]
+        while [ lstack.count > 0 ]
+            top : TmLocalStack [ lstack[lstack.count - 1] ]
+            toks.produce_scopes[ top.scopes, top.end_pos ]
+            lstack.pop[]
+
+    func resolve_include [ inc: string, repo: map TmRawRule[string] ] -> i64
+        if [ !inc ] return -1
+        if [ inc == '$self' || inc == '$base' ]
+            return root_id
+        if [ inc.count > 0 && inc[0] == '#' ]
+            key : string [ inc.mid[ 1, inc.count - 1 ] ]
+            rr : TmRawRule [ repo[key] ]
+            if [ !rr ]
+                printf[ "textmate: resolve_include: '%s' not found in repo (count=%d)\n", key, repo.count ]
+            if [ rr ] return get_compiled_rule_id[ rr, repo ]
+        return -1
+
+    func compile_captures [ caps: map TmRawCapture[string], repo: map TmRawRule[string] ] -> array TmCaptureRule
+        result : array TmCaptureRule []
+        if [ !caps ] return result
+        max_k : i64 [ 0 ]
+        for [ k: i64 1, k <= 20, k += 1 ]
+            ks : string '{k}'
+            if [ caps[ks] ] max_k = k
+        for [ k: i64 0, k <= max_k, k += 1 ]
+            ks  : string '{k}'
+            cap : TmRawCapture [ caps[ks] ]
+            if [ cap ]
+                cr : TmCaptureRule []
+                cr.cap_id    = 0
+                cr.cap_name  = cap.name
+                cr.cap_cname = cap.contentName
+                if [ cap.patterns && cap.patterns.count > 0 ]
+                    inner : TmRawRule []
+                    inner.patterns = cap.patterns
+                    inner.name     = cap.name
+                    cr.cap_retok = get_compiled_rule_id[ inner, repo ]
+                result.push[ cr ]
+            el
+                result.push[ null ]
+        return result
+
+    func compile_raw_patterns [ pats: array TmRawRule, repo: map TmRawRule[string] ] -> TmPatternsResult
+        r : TmPatternsResult []
+        r.ids     = array i64 []
+        r.missing = false
+        if [ !pats || pats.count == 0 ] return r
+        for [ i: i64 0, i < pats.count, i += 1 ]
+            rr : TmRawRule [ pats[i] ]
+            if [ !rr ] continue
+            id : i64 [ -1 ]
+            if [ rr.include ]
+                id = resolve_include[ rr.include, repo ]
+            el
+                id = get_compiled_rule_id[ rr, repo ]
+            if [ id < 0 ]
+                r.missing = true
+                continue
+            printf[ "compile_raw_patterns: pushing id=%lld\n", id ]
+            rule : TmRule [ get_rule[ id ] ]
+            if [ rule inherits TmIncludeOnlyRule ]
+                io : TmIncludeOnlyRule rule
+                if [ io.has_missing && io.rule_ids.count == 0 ]
+                    r.missing = true
+                    continue
+            r.ids.push[ id ]
+        return r
+
+    func get_compiled_rule_id [ rr: TmRawRule, repo: map TmRawRule[string] ] -> i64
+        printf[ "get_compiled_rule_id: compiled_id=%lld\n", rr.compiled_id ]
+        if [ rr.compiled_id > 0 ] return rr.compiled_id
+        last_id += 1
+        id : i64 [ last_id ]
+        rr.compiled_id = id
+        rules.push[ null ]
+        rule : TmRule [ build_rule[ id, rr, repo ] ]
+        rules[id] = rule
+        return id
+
+    func build_rule [ id: i64, rr: TmRawRule, repo: map TmRawRule[string] ] -> TmRule
+        if [ rr.match ]
+            r : TmMatchRule []
+            r.id           = id
+            r.rule_name    = rr.name
+            r.content_name = rr.contentName
+            r.rx_src       = rr.match
+            bc : map TmRawCapture[string]
+            bc = rr.captures
+            r.captures = compile_captures[ bc, repo ]
+            return r
+        el [ !rr.begin ]
+            pats_repo : map TmRawRule[string]
+            if [ rr.repository ]
+                pats_repo = rr.repository
+            el
+                pats_repo = repo
+            r : TmIncludeOnlyRule []
+            r.id           = id
+            r.rule_name    = rr.name
+            r.content_name = rr.contentName
+            cr : TmPatternsResult [ compile_raw_patterns[ rr.patterns, pats_repo ] ]
+            r.rule_ids    = cr.ids
+            r.has_missing = cr.missing
+            return r
+        el [ rr.while_pat ]
+            r : TmBeginWhileRule []
+            r.id           = id
+            r.rule_name    = rr.name
+            r.content_name = rr.contentName
+            r.begin_src    = rr.begin
+            r.while_src    = rr.while_pat
+            bc : map TmRawCapture[string]
+            if [ rr.beginCaptures ]
+                bc = rr.beginCaptures
+            el
+                bc = rr.captures
+            wc : map TmRawCapture[string]
+            if [ rr.whileCaptures ]
+                wc = rr.whileCaptures
+            el
+                wc = rr.captures
+            r.begin_captures = compile_captures[ bc, repo ]
+            r.while_captures = compile_captures[ wc, repo ]
+            cr : TmPatternsResult [ compile_raw_patterns[ rr.patterns, repo ] ]
+            r.rule_ids    = cr.ids
+            r.has_missing = cr.missing
+            return r
+        el
+            r : TmBeginEndRule []
+            r.id              = id
+            r.rule_name       = rr.name
+            r.content_name    = rr.contentName
+            r.begin_src       = rr.begin
+            r.end_src         = rr.end
+            r.apply_end_last  = rr.applyEndPatternLast
+            bc : map TmRawCapture[string]
+            if [ rr.beginCaptures ]
+                bc = rr.beginCaptures
+            el
+                bc = rr.captures
+            ec : map TmRawCapture[string]
+            if [ rr.endCaptures ]
+                ec = rr.endCaptures
+            el
+                ec = rr.captures
+            r.begin_captures = compile_captures[ bc, repo ]
+            r.end_captures   = compile_captures[ ec, repo ]
+            cr : TmPatternsResult [ compile_raw_patterns[ rr.patterns, repo ] ]
+            r.rule_ids    = cr.ids
+            r.has_missing = cr.missing
+            return r
+
+    func ensure_root []
+        if [ root_id >= 0 ] return
+        repo     : map TmRawRule[string]
+        repo = grammar.repository
+        self_raw : TmRawRule []
+        self_raw.patterns = grammar.patterns
+        self_raw.name     = grammar.scopeName
+        last_id += 1
+        root_id  = last_id
+        rules.push[ null ]
+        rule_built : TmRule [ build_rule[ root_id, self_raw, repo ] ]
+        rules[ root_id ] = rule_built
+        root : TmRule [ get_rule[ root_id ] ]
+        if [ root inherits TmIncludeOnlyRule ]
+            io : TmIncludeOnlyRule root
+            printf[ "textmate: root rule_ids.count=%d has_missing=%d\n", io.rule_ids.count, io.has_missing ]
+
+    func tokenize_string [ src: string, uchars: ref u8, n: i64, is_first: bool, pos: i64, state: TmState, toks: TmLineTokens ] -> TmState
+        stopped    : bool [ false ]
+        anchor_pos : i64 [ -1 ]
+        cur_pos    : i64 [ pos ]
+        first      : bool [ is_first ]
+        while [ !stopped ]
+            rule    : TmRule [ get_rule[ state.rule_id ] ]
+            scanner : TmCompiledRule [ get_scanner[ rule, state.end_rule ] ]
+            res     : TmMatchResult [ (scanner) ? scanner.find_next[ uchars, n, cur_pos, anchor_pos ] : null ]
+            if [ !res ]
+                toks.produce[ state, n ]
+                stopped = true
+            el
+                cap0         : TmCaptureIdx [ res.captures[0] ]
+                has_advanced : bool [ cap0.end > cur_pos ]
+                if [ res.rule_id == -1 ]
+                    popped_rule : TmBeginEndRule rule
+                    toks.produce[ state, cap0.start ]
+                    state = state_with_cn[ state, state.name_scopes ]
+                    handle_captures[ uchars, n, state, toks, popped_rule.end_captures, res.captures ]
+                    toks.produce[ state, cap0.end ]
+                    popped : TmState [ state ]
+                    state  = (state.parent) ? state.parent : state
+                    anchor_pos = popped.anchor_pos
+                    if [ !has_advanced && popped.enter_pos == cur_pos ]
+                        state = popped
+                        toks.produce[ state, n ]
+                        stopped = true
+                el
+                    matched : TmRule [ get_rule[ res.rule_id ] ]
+                    toks.produce[ state, cap0.start ]
+                    before_push : TmState [ state ]
+                    nm_scopes   : array string [ push_scope[ state.content_scopes, matched.rule_name ] ]
+                    state = new_state[ state, res.rule_id, cur_pos, anchor_pos, cap0.end == n, null, nm_scopes, nm_scopes ]
+                    if [ matched inherits TmBeginEndRule ]
+                        br : TmBeginEndRule matched
+                        handle_captures[ uchars, n, state, toks, br.begin_captures, res.captures ]
+                        toks.produce[ state, cap0.end ]
+                        anchor_pos = cap0.end
+                        cn_scopes : array string [ push_scope[ nm_scopes, br.content_name ] ]
+                        state = state_with_cn[ state, cn_scopes ]
+                        if [ !has_advanced && has_same_rule[ before_push, state ] ]
+                            state = (state.parent) ? state.parent : state
+                            toks.produce[ state, n ]
+                            stopped = true
+                    el [ matched inherits TmBeginWhileRule ]
+                        bwr : TmBeginWhileRule matched
+                        handle_captures[ uchars, n, state, toks, bwr.begin_captures, res.captures ]
+                        toks.produce[ state, cap0.end ]
+                        anchor_pos = cap0.end
+                        cn_scopes : array string [ push_scope[ nm_scopes, bwr.content_name ] ]
+                        state = state_with_cn[ state, cn_scopes ]
+                        if [ !has_advanced && has_same_rule[ before_push, state ] ]
+                            state = (state.parent) ? state.parent : state
+                            toks.produce[ state, n ]
+                            stopped = true
+                    el
+                        mr : TmMatchRule matched
+                        handle_captures[ uchars, n, state, toks, mr.captures, res.captures ]
+                        toks.produce[ state, cap0.end ]
+                        state = (state.parent) ? state.parent : state
+                        if [ !has_advanced ]
+                            toks.produce[ state, n ]
+                            stopped = true
+                if [ !stopped && cap0.end > cur_pos ]
+                    cur_pos = cap0.end
+                    first   = false
+        return state
+
+    func tokenize_line [ ln: string, prev_state: TmState ] -> TmLineResult
+        ensure_root[]
+        is_first : bool [ !prev_state ]
+        state    : TmState [ prev_state ]
+        if [ !state ]
+            root_scopes : array string []
+            root_scopes.push[ grammar.scopeName ]
+            state = new_state[ null, root_id, -1, -1, false, null, root_scopes, root_scopes ]
+        toks   : TmLineTokens []
+        n      : i64 [ ln.count ]
+        uchars : ref u8 [ ln.chars ]
+        uchars[n] = '\n'
+        final  : TmState [ tokenize_string[ ln, uchars, n + 1, is_first, 0, state, toks ] ]
+        uchars[n] = 0
+        res    : TmLineResult []
+        res.tokens = toks.get_result[ final, n ]
+        res.state  = final
+        return res

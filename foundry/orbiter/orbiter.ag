@@ -4,6 +4,7 @@ import vec
 import img
 import gltf
 import trinity
+import textmate
 
 import <stdio.h>
     -lm
@@ -141,7 +142,7 @@ trinity orbiter
             ],
             "right":    Toolbar [
                 elements: Elements [
-                    "filter":       Input      [  ] # we need this implemented for filter_text; Editor and it should effectively share the generic
+                    "filter":       element    [  ] # we need this implemented for filter_text; Editor and it should effectively share the generic
                     "files":        FileList   [ selected: active_panel == 'files' ]
                     "callstack":    CallStack  [ selected: active_panel == 'callstack' ]
                     "debug":        DebugPanel [ selected: active_panel == 'debug' ]

@@ -359,7 +359,8 @@ Display Window
                             n.set_context_from[ inst ]
                             n.initialize[]
                             mc[entry.bl.key] = n
-
+                            
+                   
     # needs copies
     public func apply_style [ inst: element, style_avail: map StyleEntries[string], home_object:Au ]
         #puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
@@ -404,6 +405,8 @@ Display Window
                         layer_inst  : Au  [ mc.get[best.bl.key] ]
                         inst_type   : Au_t [ Au.__typeid[layer_inst] ]
                         layer_member : Au.find_member[ inst_type, best.member, AU_MEMBER_VAR, 0, true ]
+                        if [ !layer_member ]
+                            continue
                         expect layer_member, 'member not found on {inst_type.ident}: {best.member}'
 
                         if [ !best.instance ]
@@ -617,6 +620,7 @@ Display Window
                 focus = e
                 focus.focused = true
                 focus.restyle = true
+                focus.pristine = false
 
     public func release_focus [ e: element ]
         if [ focus && focus == e ]
@@ -661,11 +665,21 @@ Display Window
         ev.target = focus
         if [ focus && focus.on_char*[ ev ] ] return
         if [ app_object && app_object.on_char*[ ev ] ] return
+        if [ focus && ev.key.text && ev.key.text.count > 0 ]
+            for [ l: Layer, k: string ] in focus.layers
+                if [ l.editable ]
+                    l.on_char[ ev ]
+                    break
 
     public func key_event [ ev: Event ]
         ev.target = focus
         if [ focus && focus.on_key*[ ev ] ] return
         if [ app_object && app_object.on_key*[ ev ] ] return
+        if [ focus ]
+            for [ l: Layer, k: string ] in focus.layers
+                if [ l.editable ]
+                    l.on_key[ ev ]
+                    break
 
     # recursive bubble: from deepest element up through parents, each gets
     # a chance to consume. stops on first `true` return. after the element
@@ -720,6 +734,11 @@ Display Window
             if [ !ev.no_propagation && app_object ]
                 ev.target = m
                 app_object.on_move*[ ev ]
+        if [ focus && focus.text_dragging ]
+            for [ l: Layer, k: string ] in focus.layers
+                if [ l.editable ]
+                    l.on_move[ ev ]
+                    break
 
     public func wheel_event [ ev: Event ]
         target_el : element [ (capture) ? capture : (focus) ? focus : find_target[ root, ev, null ] ]
@@ -735,6 +754,7 @@ Display Window
     public func press_event [ ev: Event ]
         release_capture[ capture ]
         f : find_target[ root, ev, null ]
+        element_pos : vec2f [ ev.mouse.pos ]
         # element bubble. element* gives poly dispatch so subclasses
         # (Button, CameraView, ...) see their own on_press override.
         consumed_p : bool [ false ]
@@ -746,7 +766,7 @@ Display Window
             ev.mouse.pos.y += e.bounds.y - e.scroll.y
             if [ ev.no_propagation ]
                 break
-        
+
         au : typeid[ f ]
         # app
         if [ !ev.no_propagation && app_object ]
@@ -755,8 +775,17 @@ Display Window
         # window defaults: focus transfer on left button (only focusable
         # elements get focus — buttons, text controls, etc. opt in), then
         # capture, then pressed/hovered state bookkeeping.
-        if [ ev.mouse.button == 0 && f && f.focusable && !ev.no_default ]
+        edit_l : Layer [ null ]
+        if [ f ]
+            for [ l: Layer, k: string ] in f.layers
+                if [ l.editable ]
+                    edit_l = l
+                    break
+        if [ ev.mouse.button == 0 && f && (f.focusable || edit_l) && !ev.no_default ]
             set_focus[ f ]
+        if [ edit_l && ev.mouse.button == 0 ]
+            ev.mouse.pos = element_pos
+            edit_l.on_press[ ev ]
         if [ !capture ]
             set_capture[ f ]
         if [ ev.mouse.button == 0 ]
@@ -806,6 +835,11 @@ Display Window
             context_pressed = null
         if [ !action_pressed && !context_pressed ]
             release_capture[ capture ]
+        if [ focus && focus.text_dragging ]
+            for [ l: Layer, k: string ] in focus.layers
+                if [ l.editable ]
+                    l.on_release[ ev ]
+                    break
     
     func update_background[ type:Au_t ]
         if [ !background || type != background_type ]
@@ -1250,7 +1284,7 @@ Display Window
 
             label : string (layer.label && layer.label.count > 0) ? layer.label : null
 
-            if [ (!needs_blur || blur_redraw) && (element_text || label) && layer.label_size > 0 && layer.label_color && layer.label_color.a > 0 ]
+            if [ (!needs_blur || blur_redraw) && !layer.editable && (element_text || label) && layer.label_size > 0 && layer.label_color && layer.label_color.a > 0 ]
                 draw_cv.save[]
                 prev_font : CanvasFont draw_cv.font
                 if [ layer.label_font && layer.label_font.count > 0 ]
@@ -1284,6 +1318,7 @@ Display Window
                 draw_cv.text_color_pos   [ ax - hx, ay - hy ]
                 draw_cv.text_grad_pos    [ ax + hx, ay + hy ]
                 draw_cv.text_grad_mirror [ layer.label_gradient_mirror ]
+
                 lsh : Shadow [
                     color:  layer.label_shadow,
                     offset: layer.label_shadow_offset,
@@ -1291,7 +1326,7 @@ Display Window
                 tx0 : f32 [ draw_cv.transform_tx[] + b.x ]
                 ty0 : f32 [ draw_cv.transform_ty[] + b.y ]
                 draw_cv.set_text_crop[ tx0, ty0, tx0 + b.w, ty0 + b.h ]
-                draw_cv.draw_text    [ (label) ? label : element_text, b, align, offset, layer.label_overflow, lsh ]
+                draw_cv.draw_text    [ (label || element_text), b, align, offset, layer.label_overflow, lsh ]
                 draw_cv.clear_text_crop[]
                 if [ layer.label_font && layer.label_font.count > 0 ]
                     draw_cv.set_font[ prev_font ]

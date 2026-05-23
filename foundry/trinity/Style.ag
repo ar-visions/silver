@@ -939,7 +939,8 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
     while [ scan[0] && scan[0] != '{' ]
         scan += 1
     end  = scan
-    qstr = string [ chars: start, ref_length: distance[ start, scan ] ]
+    ref_len : distance[ start, scan ]
+    qstr = string [ chars: start, ref_length: ref_len ]
     if [ !qstr.count ]
         p[0] = end
         return null
@@ -1201,14 +1202,10 @@ func scan_to [ p_cursor: ref cstr, chars: string ] -> bool
 
 
 func distance [ a:cstr, b:cstr ] -> i64
-    aa : sz[ a ]
-    bb : sz[ b ]
-    invalid_result : abs [ sz[ a ] - sz[ b ] ]
+    aa  : sz[ a ]
+    bb  : sz[ b ]
     val : abs [ aa - bb ]
-    if [ val > 100 ]
-        val = val
     return val
-
     
 
 func is_alpha2 [ c: i8 ] -> bool                                                                                                     

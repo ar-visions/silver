@@ -1316,7 +1316,7 @@ Render Canvas
     func measure_text [ text: string ] -> TextMetrics
         ensure_font[]
         st  : CanvasState states[state_depth - 1]
-        n   : text.count
+        n   : (text) ? text.count : 0
         tw  : f32 [ 0.0 ]
         for [ i: i64 0, i < n, i += 1 ]
             cp : text[i]
@@ -1714,7 +1714,7 @@ Render Canvas
             text_render.sync_fence[]
 
     func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, overflow: Overflow, shadow: Shadow ] -> rect
-        if [ !font ]
+        if [ !text || !font ]
             return bounds
 
         display : string [ (overflow == Overflow.ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]

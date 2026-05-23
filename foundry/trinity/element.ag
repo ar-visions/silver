@@ -115,6 +115,9 @@ ielement element
     public  focusable       : bool
     public cursor           : vec2f
     mutable maps_populated  : bool
+    mutable sel_col         : i32 [ -1 ]
+    mutable anchor_col      : i32 [ 0 ]
+    mutable text_dragging   : bool
 
     # input event hooks. return true to swallow; false to let the window
     # continue to the app-level handler. both element and the app get a
@@ -335,8 +338,134 @@ class Layer
     intern blur_bw          : i32
     intern blur_bh          : i32
 
+    public  editable    : bool
+    mutable lh_cache    : f32  [ 0.0 ]
+    mutable cw_cache    : f32  [ 0.0 ]
+
+    func hit_col [ ev: Event ] -> i32
+        cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
+        text  : string [ (parent.label) ? parent.label : '' ]
+        rel_x : f32 [ ev.mouse.pos.x - bounds.x ]
+        return clamp[ i32[ round[ rel_x / cw ] ], 0, text.count ]
+
+    func on_press [ ev: Event ]
+        if [ parent.sel_col < 0 ] parent.sel_col = 0
+        c : i32 [ hit_col[ ev ] ]
+        if [ !ev.key.shift ]
+            parent.anchor_col = c
+            parent.sel_col    = c
+        el
+            parent.sel_col = c
+        parent.text_dragging = true
+        parent.set_focus[]
+        parent.pristine = false
+
+    func on_move [ ev: Event ]
+        if [ !parent.text_dragging ] return
+        parent.sel_col = hit_col[ ev ]
+        parent.pristine = false
+
+    func on_release [ ev: Event ]
+        parent.text_dragging = false
+
+    func delete_selection [ text: string ] -> bool
+        sc : i32 [ (parent.sel_col < parent.anchor_col) ? parent.sel_col : parent.anchor_col ]
+        ec : i32 [ (parent.sel_col < parent.anchor_col) ? parent.anchor_col : parent.sel_col ]
+        if [ sc == ec ] return false
+        parent.label   = text.mid[ 0, sc ] + text.mid[ ec, text.count - ec ]
+        parent.sel_col    = sc
+        parent.anchor_col = sc
+        return true
+
+    func on_char [ ev: Event ]
+        if [ parent.sel_col < 0 ] parent.sel_col = 0
+        text : string [ (parent.label) ? parent.label : '' ]
+        delete_selection[ text ]
+        text = (parent.label) ? parent.label : ''
+        col  : i32 [ parent.sel_col ]
+        parent.label = text.mid[ 0, col ] + ev.key.text + text.mid[ col, text.count - col ]
+        parent.sel_col += 1
+        parent.anchor_col = parent.sel_col
+        parent.pristine = false
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        if [ parent.sel_col < 0 ] parent.sel_col = 0
+        text : string [ (parent.label) ? parent.label : '' ]
+        col  : i32 [ parent.sel_col ]
+        key  : i32 [ ev.key.unicode ]
+        if [ key == 259 ]
+            if [ !delete_selection[ text ] ]
+                if [ col > 0 ]
+                    parent.label = text.mid[ 0, col - 1 ] + text.mid[ col, text.count - col ]
+                    parent.sel_col -= 1
+            parent.anchor_col = parent.sel_col
+        el [ key == 263 ]
+            if [ parent.sel_col != parent.anchor_col && !ev.key.shift ]
+                sc : i32 [ (parent.sel_col < parent.anchor_col) ? parent.sel_col : parent.anchor_col ]
+                parent.sel_col    = sc
+                parent.anchor_col = sc
+            el [ col > 0 ]
+                parent.sel_col -= 1
+                if [ !ev.key.shift ] parent.anchor_col = parent.sel_col
+        el [ key == 262 ]
+            if [ parent.sel_col != parent.anchor_col && !ev.key.shift ]
+                ec : i32 [ (parent.sel_col > parent.anchor_col) ? parent.sel_col : parent.anchor_col ]
+                parent.sel_col    = ec
+                parent.anchor_col = ec
+            el [ col < text.count ]
+                parent.sel_col += 1
+                if [ !ev.key.shift ] parent.anchor_col = parent.sel_col
+        el [ key == 256 ]
+            parent.label = ''
+            parent.sel_col = 0
+            parent.anchor_col = 0
+        parent.pristine = false
+
     func draw [ cv: Canvas ]
-        return
+        if [ !editable || !cv ] return
+        if [ label_font && label_font.count > 0 ]
+            if [ !label_font_cache ]
+                label_font_cache = CanvasFont [ ft_lib: cv.ft_lib, uri: label_font, size_px: i32[label_size] ]
+            cv.set_font[ label_font_cache ]
+        if [ !cv.font ] return
+        text  : string [ (parent.label) ? parent.label : '' ]
+        tm    : TextMetrics [ cv.measure_text[ text ] ]
+        cw_tm : TextMetrics [ cv.measure_text[ 'x' ] ]
+        lh_cache = cv.font.line_height
+        cw_cache = cw_tm.w
+
+        ax    : f32 [ label_align.x ]
+        ay    : f32 [ label_align.y ]
+        ox    : f32 [ label_offset.x ]
+        oy    : f32 [ label_offset.y ]
+        fh    : f32 [ tm.ascent - tm.descent ]
+        x0    : f32 [ bounds.x + (bounds.w - tm.w) * ax + ox ]
+        y0    : f32 [ bounds.y + tm.ascent + (bounds.h - fh) * ay + oy ]
+        cw    : f32 [ cw_tm.w ]
+
+        col : i32 [ (parent.sel_col >= 0) ? parent.sel_col : 0 ]
+        anc : i32 [ parent.anchor_col ]
+        sc  : i32 [ (col < anc) ? col : anc ]
+        ec  : i32 [ (col < anc) ? anc : col ]
+
+        if [ sc != ec ]
+            cv.fill_color[ '#264f78' ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ x0 + f32[sc] * cw, y0 - tm.ascent + 2.0, f32[ec - sc] * cw, fh - 4.0 ]
+            cv.paint[]
+
+        cv.fill_color[ label_color ]
+        cv.draw_text[ text, bounds, vec2f [ ax, ay ], vec2f [ ox, oy ], Overflow.visible, null ]
+        cv.paint[]
+
+        if [ parent.focused && parent.sel_col >= 0 ]
+            prefix : string [ text.mid[ 0, col ] ]
+            cx : f32 [ x0 + cv.measure_text[ prefix ].w ]
+            cv.fill_color[ '#fff' ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ cx, y0 - tm.ascent + 2.0, 2.0, fh - 4.0 ]
+            cv.paint[]
 
 
 # forward declarations need resolver support

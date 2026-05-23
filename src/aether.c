@@ -218,7 +218,7 @@ string symbol_name(Au obj) {
 #define debug_emit(a) do { \
     token __t = a->statement_origin; \
     if (!__t) __t = aether_peek(a); \
-    if (__t) emit_debug_loc(a, __t->line, __t->column); \
+    if (__t) emit_debug_loc(a, null, __t->line, __t->column); \
 } while(0)
 
 // get the current debug scope: function subprogram or compile_unit fallback
@@ -239,6 +239,7 @@ LLVMMetadataRef debug_pointer_type  (aether a, Au_t type_au);
 LLVMMetadataRef debug_funcptr_type  (aether a, Au_t type_au);
 LLVMMetadataRef debug_subroutine_type(aether a, Au_t fn_au);
 void            emit_debug_function (aether a, efunc fn, bool);
+void            update_current_file (aether a, path source_file);
 void            emit_debug_variable (aether a, enode var, u32 arg_no, u32 line);
 LLVMMetadataRef debug_create_lexical_block(aether a, u32 line, u32 column);
 LLVMMetadataRef debug_au_header_type(aether a, Au_t schema);
@@ -258,7 +259,7 @@ void coverage_set_func_name(u32 func_id, char* name);
 // set debug source location on the IR builder
 void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq);
 
-void emit_debug_loc(aether a, u32 line, u32 column) {
+void emit_debug_loc(aether a, cstr src, u32 line, u32 column) {
     if (!a->debug || !a->compile_unit || a->no_build) return;
     LLVMMetadataRef scope = debug_scope(a);
     if (!scope)
@@ -339,11 +340,16 @@ enode enode_value(enode mem, bool force_load) { sequencer
 
         string id = f(string, "load_%i_%s", seq, mem->au->ident ? mem->au->ident : "");
         Au info = head(mem);
-        // explicit ref members: the struct field holds a pointer, load as ptr
+        // explicit ref: the LLVM param IS the pointer (not a ptr-to-ptr).
+        // When value is a raw function param, return it directly.
+        // When value is an alloca (e.g. debug shadow), load through it.
         if (mem->au->is_explicit_ref) {
+            if (mem->value && LLVMGetValueKind(mem->value) == LLVMArgumentValueKind) {
+                return enode(mod, a, value, mem->value, loaded, true, au, au);
+            }
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
-            LLVMValueRef loaded = LLVMBuildLoad2(B, ptr_ty, mem->value, id->chars);
-            return enode(mod, a, value, loaded, loaded, true, au, au);
+            LLVMValueRef loaded_v = LLVMBuildLoad2(B, ptr_ty, mem->value, id->chars);
+            return enode(mod, a, value, loaded_v, loaded, true, au, au);
         }
         etype type2 = u(etype, au);
         LLVMValueRef loaded = LLVMBuildLoad2(
@@ -6895,6 +6901,36 @@ none etype_implement(etype t, bool w) { sequencer
             verify(n->value, "expected evar to be set for arg");
             verify(isa(t) == typeid(evar) || isa(t) == typeid(enode), "expected evar/enode instance for arg");
             n->loaded = au->is_explicit_ref ? au->src->is_c : !is_struct(au_arg_type((Au)au));
+            /*
+            bool is_struct_type = is_struct(au_arg_type((Au)au));
+            bool is_class_param = !au->is_explicit_ref && !is_struct_type &&
+                au_arg_type((Au)au) && au_arg_type((Au)au)->is_class;
+            if (is_class_param) {
+                // class-type parameters may be reassigned — give them an entry-block
+                // alloca so assignments update the local pointer rather than corrupting
+                // the original object. mark is_local so hold/drop is skipped on reassign
+                // (params are borrowed, not owned, by the callee).
+                LLVMBasicBlockRef cur_block   = LLVMGetInsertBlock(B);
+                LLVMBasicBlockRef entry_block = LLVMGetEntryBasicBlock(
+                    LLVMGetBasicBlockParent(cur_block));
+                LLVMValueRef first_instr = LLVMGetFirstInstruction(entry_block);
+                if (first_instr)
+                    LLVMPositionBuilderBefore(B, first_instr);
+                else
+                    LLVMPositionBuilderAtEnd(B, entry_block);
+                LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
+                char id[256];
+                snprintf(id, sizeof(id), "evar_%s", au->ident ? au->ident : "param");
+                LLVMValueRef raw_param = n->value;
+                n->value  = LLVMBuildAlloca(B, ptr_ty, id);
+                n->loaded = false;
+                LLVMBuildStore(B, raw_param, n->value);
+                LLVMPositionBuilderAtEnd(B, cur_block);
+                evar lv = instanceof(t, evar);
+                if (lv) lv->is_local = true;
+            } else {
+                n->loaded = au->is_explicit_ref ? false : !is_struct_type;
+            }*/
         }
 
         return;
@@ -8032,7 +8068,7 @@ none aether_push_scope(aether a, Au arg, int label) {
         // preamble at the func declaration line
         if (a->debug) {
             token ot = fn->origin_token;
-            emit_debug_loc(a, ot ? ot->line : 0, ot ? ot->column : 0);
+            emit_debug_loc(a, null, ot ? ot->line : 0, ot ? ot->column : 0);
         }
         // emit parameter debug variables (self, args) for LLDB locals view
         emit_debug_params(a, fn);
@@ -8047,7 +8083,7 @@ none aether_push_scope(aether a, Au arg, int label) {
         // set debug location to first body statement BEFORE any user code
         // runs — otherwise sub-expression GEPs inherit the preamble line
         if (a->debug && a->statement_origin)
-            emit_debug_loc(a, a->statement_origin->line, a->statement_origin->column);
+            emit_debug_loc(a, null, a->statement_origin->line, a->statement_origin->column);
     }
 }
 
@@ -8368,6 +8404,7 @@ void llvm_reinit(aether a) {
     path rel = path_cwd(); 
     a->file = LLVMDIBuilderCreateFile(
         a->dbg_builder, a->module_file->chars, len(a->module_file), rel->chars, len(rel));
+    a->current_file = a->file;
 
     a->target_data = LLVMCreateTargetDataLayout(a->target_machine);
     if (a->debug) {
@@ -8447,6 +8484,14 @@ void aether_reinit_startup(aether a) {
 none aether_test_write(aether a) {
     char* err = 0;
     LLVMPrintModuleToFile(a->module_ref, "crashing.ll", &err);
+}
+
+enode aether_sequence_enode(aether a) {
+    LLVMTypeRef  i64t = LLVMInt64TypeInContext(a->module_ctx);
+    LLVMValueRef v    = (a->coverage_seq_local && !a->no_build)
+        ? LLVMBuildLoad2(B, i64t, a->coverage_seq_local, "sequence")
+        : LLVMConstInt(i64t, 0, 0);
+    return enode(mod, a, au, etypeid(i64)->au, loaded, true, value, v);
 }
 
 none aether_init(aether a) {
@@ -8564,7 +8609,10 @@ none enode_init(enode n) {
             etype_implement((etype)fn, false);
         }
         n->value  = LLVMGetParam(fn->value, n->arg_index + offset);
-        n->loaded = n->au->is_explicit_ref ? n->au->src->is_c : (!is_struct(n->au->src) && !n->au->is_inlay);
+        // for explicit ref parameters (e.g. `src: ref u8`), the LLVM arg IS the pointer —
+        // it does not need to be dereferenced to obtain the pointer value
+        //n->loaded = n->au->is_explicit_ref ? n->au->src->is_c : (!is_struct(n->au->src) && !n->au->is_inlay);
+        n->loaded = n->au->is_explicit_ref ? true : (!is_struct(n->au->src) && !n->au->is_inlay);
     } else if (n->symbol_name && !n->value) {
         LLVMValueRef g = LLVMGetNamedGlobal  (a->module_ref, n->symbol_name->chars);
         if (!g)      g = LLVMGetNamedFunction(a->module_ref, n->symbol_name->chars);

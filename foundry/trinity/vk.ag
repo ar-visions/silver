@@ -2621,7 +2621,7 @@ intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, act
     w.ev.clear[]
     w.ev.key.unicode   = key
     w.ev.key.scan_code = scan_code
-    w.ev.key.state     = action == GLFW_PRESS
+    w.ev.key.state     = action == GLFW_PRESS || action == GLFW_REPEAT
     w.ev.key.meta      = (mods & GLFW_MOD_SUPER)   != 0
     w.ev.key.shift     = (mods & GLFW_MOD_SHIFT)   != 0
     w.ev.key.alt       = (mods & GLFW_MOD_ALT)     != 0

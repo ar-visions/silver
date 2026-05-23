@@ -158,6 +158,22 @@ Toolbar.right / Edit:focused {
         label_color:            #ffff
 }
 
+element.filter {
+    area: l0 t0 r0 h1.4
+    focusable: true
+    layers.text:
+        area:                   7px
+        fill_color:             #fff1
+        label_color:            #fff
+        stroke_color:           #fff3
+        stroke_width:           0.5
+        label_align:            0.0 0.5
+        radius:                 4
+        label_size:             14
+        label_font:             'fonts/SpaceMono-Regular.ttf'
+        editable:               true
+}
+
 Toolbar.right / Control {
     area:                       l0 t0+ r0 h1.14
     
@@ -254,6 +270,13 @@ Editor {
         label_height:       1.0
         line_color:         #fff1
         sel_color:          #264f78
+        scope_keyword:      #569cd6
+        scope_string:       #ce9178
+        scope_comment:      #6a9955
+        scope_number:       #b5cea8
+        scope_type:         #4ec9b0
+        scope_function:     #dcdcaa
+        scope_variable:     #9cdcfe
     layers.scrollbar: ScrollLayer
         area:               8px
         thumb_color:        #fff4
