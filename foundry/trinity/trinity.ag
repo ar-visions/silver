@@ -114,13 +114,13 @@ abstract app media_app
             second : epoch_millis[] / 1000
             if [next_second != second]
                 next_second  = second
+                buf : local char [ 128 ]
+                sprintf[ buf, "fps: %i  samplers: %i", frames, vk.sampler_count ]
+                puts buf
                 frames = 0
             frames += 1
             render*[]
             Au.auto_free[false]
-            #buf : local char [ 255 ]
-            #sprintf[ buf, "total: %i", Au.get_total_objects[null]]
-            #puts buf
 
         return 0
 
@@ -274,12 +274,12 @@ Display Window
 
         # binding: read source member directly from element and apply (with optional filter)
         if [ best.binding ]
-            src_m : Au_t [ Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ] ]
+            src_m : Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ]
             if [ src_m ]
                 src_ptr : ref f32 [ inst.member_ref[ src_m ] ]
 
                 if [ best.filter > 0.0 ]
-                    decay : f32 [ pow[ best.filter, inst.ux.frame_factor ] ]
+                    decay : pow[ best.filter, inst.ux.frame_factor ]
                     for [ i: i32 0, i < float_count, i += 1 ]
                         dst_ptr[i] = dst_ptr[i] + (src_ptr[i] - dst_ptr[i]) * (1.0 - decay)
                 el
@@ -322,7 +322,7 @@ Display Window
             return
 
         inst.maps_populated = true
-        for [ ty : Au_t [ typeid[ inst ] ], ty != typeid[ Au ], ty = ty.context ]
+        for [ ty : typeid[ inst ], ty != typeid[ Au ], ty = ty.context ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 member : Au_t ty.members.origin[m]
                 if [ member.member_type != AU_MEMBER_VAR || member.ident == 'elements' ]
@@ -373,7 +373,7 @@ Display Window
         cache_style[inst, style_avail, false, home_object]
         
         applied : map StyleEntry[string][]
-        for [ ty : Au_t [ typeid[ inst ] ], ty != typeid[ Au ], ty = ty.context ]
+        for [ ty : typeid[ inst ], ty != typeid[ Au ], ty = ty.context ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 member : Au_t ty.members.origin[m]
                 if [ member.member_type != AU_MEMBER_VAR || member.ident == 'elements' ]
@@ -402,8 +402,8 @@ Display Window
 
                         mc : (inst.member_object[ best.member_map ] to map)
                         expect mc, "expected map container"
-                        layer_inst  : Au  [ mc.get[best.bl.key] ]
-                        inst_type   : Au_t [ Au.__typeid[layer_inst] ]
+                        layer_inst  : mc.get[best.bl.key]
+                        inst_type   : Au.__typeid[layer_inst]
                         layer_member : Au.find_member[ inst_type, best.member, AU_MEMBER_VAR, 0, true ]
                         if [ !layer_member ]
                             continue
@@ -687,7 +687,7 @@ Display Window
     # transfer, capture, pressed/hovered bookkeeping) regardless of consume.
     public func move_event [ ev: Event ]
         orig_pos : vec2f [ ev.mouse.pos ]
-        f : element [ find_target[ root, ev, null ] ]
+        f : find_target[ root, ev, null ]
         ev.mouse.pos = orig_pos
         m : element [ (capture) ? find_target[ root, ev, capture ] : f ]
         # hover / leave bubble — flip state bools and set restyle; the next
@@ -802,7 +802,7 @@ Display Window
             context_pressed = f
 
     public func release_event [ ev: Event ]
-        f : element [ find_target[ root, ev, capture ] ]
+        f : find_target[ root, ev, capture ]
         consumed_r : bool [ false ]
         for [ e: element* f, e && !consumed_r, e = e.parent ]
             ev.target = e
@@ -870,6 +870,7 @@ Display Window
     
     func update [ ]
         # DEBUG step 3: full canvases + full composition chain using UX shader.
+        printf["these"]
         compose  = (compose  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
         glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.u8,    :width, :height ]).resize[ width, height ]
         screen   = (screen   || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
@@ -1090,7 +1091,7 @@ Display Window
         for [ psc_au: Au, psc_k: string ] in e.layers
             psc_lay : Layer [ psc_au to Layer ]
             if [ !psc_lay || !psc_lay.area ] continue
-            psc_b  : rect [ psc_lay.area.rectangle[ e.bounds, null, null, e.fc ] ]
+            psc_b  : psc_lay.area.rectangle[ e.bounds, null, null, e.fc ]
             psc_lx : f32  [ psc_b.x - e.bounds.x ]
             psc_ly : f32  [ psc_b.y - e.bounds.y ]
             psc_rx : f32  [ psc_b.x + psc_b.w - e.bounds.x - e.bounds.w ]
@@ -1114,6 +1115,7 @@ Display Window
         ew : i32 [ i32[ceilf[e.bounds.w]] + 1 + margin_l + margin_r ]
         eh : i32 [ i32[ceilf[e.bounds.h]] + 1 + margin_t + margin_b ]
         if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
+            puts 'creating new cache Canvas'
             e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
             e.cache_canvas.update[]
             e.cache_w = ew
@@ -1122,7 +1124,8 @@ Display Window
             e.cache_oy = margin_t
             e.pristine = false
 
-        target_cv : Canvas [ (e.cache_canvas && !e.volatile && stage == CanvasType.screen) ? e.cache_canvas : cv ]
+        #puts 'target_cv set'
+        target_cv : (e.cache_canvas && !e.volatile && stage == CanvasType.screen) ? e.cache_canvas : cv
         element_text : (e.label && e.label.count) ? e.label : null
 
         sx       : f32  [ (e.scaling.x != 0.0) ? e.scaling.x : 1.0 ]
@@ -1177,7 +1180,7 @@ Display Window
             # blur setup: draw to per-layer canvas when blur is active.
             # dirty on first use, size change, or active transition.
             needs_blur  : bool [ layer.blur_x > 0.0 || layer.blur_y > 0.0 ]
-            draw_cv     : Canvas [ target_cv ]
+            draw_cv     : target_cv
             blur_redraw : bool [ false ]
 
             if [ needs_blur ]
@@ -1186,6 +1189,7 @@ Display Window
                 bw : i32 [ i32[b.w + pad] + 1 ]
                 bh : i32 [ i32[b.h + pad] + 1 ]
                 if [ !layer.blur_canvas || layer.blur_bw != bw || layer.blur_bh != bh ]
+                    puts 'creating blur Canvas'
                     layer.blur_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: bw, height: bh ]
                     layer.blur_canvas.update[]
                     layer.blur_bw = bw
@@ -1348,8 +1352,8 @@ Display Window
 
         if [ redraw ]
             # redirect window canvases so e.draw* sees the cache target
-            prev_screen  : Canvas [ a.screen ]
-            prev_compose : Canvas [ a.compose ]
+            prev_screen  : a.screen
+            prev_compose : a.compose
             if [ stage == CanvasType.screen ]  a.screen  = target_cv
             if [ stage == CanvasType.compose ] a.compose = target_cv
             e.draw*[ a ]

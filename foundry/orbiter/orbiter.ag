@@ -4,7 +4,6 @@ import vec
 import img
 import gltf
 import trinity
-import textmate
 
 import <stdio.h>
     -lm
@@ -93,22 +92,28 @@ trinity orbiter
 
     func on_char [ ev: Event ]
         if [ !ev.target ] return
-        
-        if [ ev.target.id == 'filter_input' ]
+        puts 'on_char target={ev.target.id} text={ev.key.text}'
+        if [ ev.target.id == 'filter' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
                 filter_text = filter_text + ev.key.text
+                puts 'filter: {filter_text}'
+                fl : FileList ev.target.parent.elements["files"]
+                if [ fl ] fl.pristine = false
 
     func on_key [ ev: Event ]
         if [ !ev.target ] return
 
-        if [ ev.target.id == 'filter_input' ]
+        if [ ev.target.id == 'filter' ]
             if [ !ev.key.state ] return
             k : i32 [ i32 ev.key.unicode ]
+            fl : FileList ev.target.parent.elements["files"]
             if [ k == 259 ]
                 if [ filter_text && filter_text.count > 0 ]
                     filter_text = filter_text.mid[ 0, filter_text.count - 1 ]
+                    if [ fl ] fl.pristine = false
             el [ k == 256 ]
                 filter_text = ''
+                if [ fl ] fl.pristine = false
 
     public func on_render [ w: Window ] -> Elements
         fps : f32 [ w.frame_factor * 60.0 ]
@@ -142,8 +147,8 @@ trinity orbiter
             ],
             "right":    Toolbar [
                 elements: Elements [
-                    "filter":       element    [  ] # we need this implemented for filter_text; Editor and it should effectively share the generic
-                    "files":        FileList   [ selected: active_panel == 'files' ]
+                    "filter":       element    [ label: filter_text ]
+                    "files":        FileList   [ selected: active_panel == 'files', filter: (active_panel == 'files') ? filter_text : '' ]
                     "callstack":    CallStack  [ selected: active_panel == 'callstack' ]
                     "debug":        DebugPanel [ selected: active_panel == 'debug' ]
                     "debug2":       CallStack  [ selected: active_panel == 'debug' ]

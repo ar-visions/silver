@@ -89,8 +89,8 @@ class StyleBlock
                 vlen     : distance[ vstart, cur ]
                 cb_value : string[ chars: vstart, ref_length: vlen ]
                 cb_value = cb_value.trim[]
-                q0       : string [ cb_value.mid[  0, 1 ] ]
-                q1       : string [ cb_value.mid[ -1, 1 ] ]
+                q0       : cb_value.mid[  0, 1 ]
+                q1       : cb_value.mid[ -1, 1 ]
                 is_q     : bool [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
                 if [ is_q ]
                     cs : cstr [ cb_value.chars ]
@@ -269,19 +269,19 @@ class Style
                 i += 1
                 continue
             if [ content.count >= 7 && content.mid[ 0, 7 ] == '@import' ]
-                rest : string [ content.mid[ 7, content.count - 7 ].trim[] ]
+                rest : content.mid[ 7, content.count - 7 ].trim[]
                 expect rest.count >= 2, '@import expects quoted path'
                 qt : i8 [ rest.chars[0] ]
                 expect qt == '"' || qt == '\'', '@import expects quoted path'
                 k : i32 [ 1 ]
                 while [ k < rest.count && rest.chars[k] != qt ]
                     k += 1
-                name : string [ rest.mid[ 1, k - 1 ] ]
+                name : rest.mid[ 1, k - 1 ]
                 p    : path   'style/{name}'
                 key  : string [ p ]
                 if [ visited.index_of[ key ] < 0 ]
                     visited.push[ key ]
-                    sub : string [ p.load[ typeid[ string ], null ] ]
+                    sub : p.load[ typeid[ string ], null ]
                     process[ sub ]
                 i += 1
                 continue
@@ -323,12 +323,12 @@ class Style
 
     func compute [ n: element ] -> map StyleEntries[string]
         avail : map StyleEntries[string][]
-        ty    : Au_t [ typeid[ n ] ]
+        ty    : typeid[ n ]
         expect n inherits element, 'must inherit element'
         while [ ty != typeid[ Au ] ]
             all : array StyleEntry [ ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
-                mem : Au_t [ ty.members.origin[m] ]
+                mem : ty.members.origin[m]
                 if [ mem.member_type != AU_MEMBER_VAR || mem.access_type == 1 ] # 1 == intern!
                     continue
                 name : string [ mem.ident ]
@@ -356,7 +356,7 @@ class Style
 
     construct [ p: path ]
         expect p.exists, 'css path does not exist'
-        style_str : string [ p.load[ typeid[ string ], null ] ]
+        style_str : p.load[ typeid[ string ], null ]
         base      = array StyleBlock [ ]
         css_path  = p
         mod_time  = p.modified_time[ ]
@@ -382,8 +382,8 @@ struct XCoord
     pixel    : bool
 
     construct [ sx: string ]
-        f : string[sx.first[]]
-        if [ f.chars[0] == '-' || isdigit[f.chars[0]]]
+        f : string[ sx.first[] ]
+        if [ f.chars[ 0 ] == '-' || isdigit[f.chars[ 0 ]]]
             sx_r : string [ sx ]
             if [ sx_r.last[] == 'x' && sx_r.count >= 2 ]
                 if [ sx_r.chars[ sx_r.count - 2 ] == 'p' ]
@@ -391,7 +391,7 @@ struct XCoord
                     pixel = true
             offset = sx_r.real_value[]
         el
-            x_type    = XAlign[f]
+            x_type    = XAlign[ f ]
             sx_offset : sx.mid[ 1, sx.count - 1 ]
             if [ sx_offset.last[] == 'x' && sx_offset.count >= 2 ]
                 if [ sx_offset.chars[ sx_offset.count - 2 ] == 'p' ]
@@ -581,7 +581,7 @@ class Rotation
     construct [ s: string ]
         sp : array string [ s.split[ ' ' ] ]
         expect sp.count == 4, 'expected x y z Ndeg'
-        f : string[ sp[3] ]
+        f  : sp[3]
         expect f.ends_with[ 'deg' ], 'expected Ndeg'
         axis.x = sp[0].real_value[]
         axis.y = sp[1].real_value[]
@@ -663,7 +663,7 @@ class StyleTransition
         sp : s.split[ ' ' ]
         ln : i32 [ sp.count ]
         # syntax: 500ms [ease [out]]
-        dur_string : string [ sp[0] ]
+        dur_string : sp[0] 
         duration   = TimeCoord [ dur_string ]
         easing     = (ln > 1) ? Ease[      sp[1] ] :      Ease.linear
         dir        = (ln > 2) ? Direction[ sp[2] ] : Direction.inward
@@ -840,7 +840,7 @@ Mixable Align
 
 
 func parse_css_px [ s: string ] -> f32
-    t : string [ s.trim[] ]
+    t : s.trim[]
     if [ t.ends_with[ 'px' ] ]
         t = t.mid[ 0, t.count - 2 ]
     return f32 t.real_value[]
@@ -949,7 +949,7 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
     ops    : array string [ '!=', '>=', '<=', '>', '<', '=' ]
 
     for [ qs: string ] in quals
-        qq : string [ qs.trim[] ]
+        qq : qs.trim[]
         anchored : bool [ false ]
         if [ qq.count && qq.chars[0] == '/' ]
             anchored = true
@@ -962,7 +962,7 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
         parent_to_child : qq.split[ '/' ]
         processed : StyleQualifier [ null ]
         for [ i: i32 parent_to_child.count - 1, i >= 0, i -= 1 ]
-            q : string [ parent_to_child[i].trim[] ]
+            q : parent_to_child[i].trim[]
             if [ processed ]
                 v.parent = StyleQualifier[ bl:bl ]
                 v.parent.hold[]
@@ -995,7 +995,7 @@ func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
                     if [ tail.index_of[ op_name ] >= 0 ]
                         is_op = true
                         sp    : array string [ tail.split[ op_name ] ]
-                        f     : string [ sp[0] ]
+                        f     : sp[0]
                         v.state = f.trim[]
                         v.oper  = op_name
                         istart : i32 [ f.count + op_name.count ]
@@ -1057,7 +1057,7 @@ func split_css [ code: string ] -> array CSSLine
         while [ i < n && code.chars[i] != '\n' ]
             i += 1
         line_len : num [ i - line_start ]
-        c : string [ code.mid[ line_start, line_len ].trim[] ]
+        c : code.mid[ line_start, line_len ].trim[]
         if [ c.count ]
             result.push[ CSSLine [ indent: ind, content: c, line: cur_line ] ]
     return result
@@ -1092,8 +1092,8 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
             continue
         ci : num [ lc.index_of[ ':' ] ]
         expect ci > 0, 'expected key: value'
-        member  : string [ lc.mid[ 0, ci ].trim[] ]
-        val_str : string [ lc.mid[ ci + 1, lc.count - (ci + 1) ].trim[] ]
+        member  : lc.mid[ 0, ci ].trim[]
+        val_str : lc.mid[ ci + 1, lc.count - (ci + 1) ].trim[]
         for [ k: i32 0, k < member.count, k += 1 ]
             if [ member.chars[k] == '-' ]
                 member.chars[k] = '_'
@@ -1138,8 +1138,8 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
             for [ raw: string ] in sp
                 s  : raw.trim[]
                 if [ s.count >= 2 ]
-                    q0 : string [ s.mid[  0, 1 ] ]
-                    q1 : string [ s.mid[ -1, 1 ] ]
+                    q0 : s.mid[  0, 1 ]
+                    q1 : s.mid[ -1, 1 ]
                     if [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
                         s = s.mid[ 1, s.count - 2 ]
                 v.push[ s ]
@@ -1147,8 +1147,8 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
             param   = (cm >= 0) ? val_str.mid[ cm + 1, val_str.count - (cm + 1) ].trim[] : null
             value_s = (cm >= 0) ? val_str.mid[ 0, cm ].trim[] : val_str
             if [ value_s && value_s.count >= 2 ]
-                q0 : string [ value_s.mid[  0, 1 ] ]
-                q1 : string [ value_s.mid[ -1, 1 ] ]
+                q0 : value_s.mid[  0, 1 ]
+                q1 : value_s.mid[ -1, 1 ]
                 if [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
                     value_s = value_s.mid[ 1, value_s.count - 2 ]
             value   = value_s

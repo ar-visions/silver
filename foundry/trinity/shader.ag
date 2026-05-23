@@ -43,7 +43,7 @@ class shader
 
     func indent [ s: symbol ] -> string
         str: string[s]
-        sp : array string [ str.split["\n"] ]
+        sp : str.split["\n"]
         res: string[alloc:str.count * 2]
         for [line:string] in sp
             res.append["\t"]
@@ -90,12 +90,12 @@ class shader
         return null
 
     func glsl_header [ stage: ShaderStage ] -> string
-        type:   Au_t [ typeid[ a ] ]
+        type:   typeid[ a ]
         result: string [ '#version 450\n\n' ]
 
         # emit void main() from the stage entry point
         main_name: (stage == ShaderStage.vertex) ? "vertex" : (stage == ShaderStage.fragment) ? "fragment" : "compute"
-        main_member:  Au_t [ find_member[ type, main_name, 5, 0, true ] ]
+        main_member:  find_member[ type, main_name, 5, 0, true ]
         if [ !main_member || main_member.context == typeid[shader] ]
             return null
 
@@ -246,7 +246,7 @@ class shader
         return result
 
     func generate_shaders [ ]
-        type:   Au_t [ typeid[ a ] ]
+        type:   typeid[ a ]
         paths:  local path [3] [ vert, frag, comp ]
         stages: local i32  [3] [ 0, 1, 2 ]
 

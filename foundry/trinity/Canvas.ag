@@ -1222,48 +1222,15 @@ Render Canvas
         text_render.models = array Model [ text_model ]
         text_vbo.vertex_count = 0
 
-        # ---- blur cascade: 8 stages halving each time (1/2 .. 1/256)
-        # stages are sized relative to this canvas (not the app window) so that
-        # sub-canvas blur (e.g. per-layer blur_canvas) gets correct aspect ratio.
-        blur_stages = array Render [ alloc: blur_count ]
-        blur_v_arr  = array Render [ alloc: blur_count ]
-        blur_h_arr  = array Render [ alloc: blur_count ]
-        # pass 1: reductions + per-stage vertical blur (both at the reduced scale)
-        prev_tx    : Texture [ a.color ]
-        bscale     : f32 [ 1.0 ]
-        for [ i: i32 0, i < blur_count, i += 1 ]
-            bscale *= 0.5
-            sw : i32 [ i32[ f32[width]  * bscale + 0.5 ] ]
-            sh : i32 [ i32[ f32[height] * bscale + 0.5 ] ]
-            if [ sw < 1 ] sw = 1
-            if [ sh < 1 ] sh = 1
-            m_r  : Model  [ w: w, samplers: map Texture[string] [ 'color': prev_tx ] ]
-            r_r  : Render [ vk: vk, w: w, width: sw, height: sh, models: array Model [ m_r ] ]
-            blur_stages.push[ r_r ]
-
-            bv_s : CanvasBlurV [ vk: vk, name: 'canvas-blur-v' ]
-            m_v  : Model  [ w: w, s: bv_s, samplers: map Texture[string] [ 'color': r_r.color ] ]
-            r_v  : Render [ vk: vk, w: w, width: sw, height: sh, models: array Model [ m_v ] ]
-            blur_v_arr.push[ r_v ]
-
-            prev_tx = r_r.color
-
-        # pass 2: per-pair horizontal blur + mix; low=blur_v[k], high=blur_v[k+1]
-        for [ i: i32 0, i < blur_count, i += 1 ]
-            hi_idx : i32 [ (i + 1 < blur_count) ? i + 1 : i ]
-            rv_lo  : Render [ blur_v_arr[i] ]
-            rv_hi  : Render [ blur_v_arr[hi_idx] ]
-            bh_s : CanvasBlurH [ vk: vk, name: 'canvas-blur-h' ]
-            m_h  : Model  [ w: w, s: bh_s, samplers: map Texture[string] [ 'low': rv_lo.color, 'high': rv_hi.color ] ]
-            r_h  : Render [ vk: vk, w: w, color: a.color, width: width, height: height, models: array Model [ m_h ] ]
-            blur_h_arr.push[ r_h ]
+        # blur cascade is lazy — created on first call to blur[] to avoid
+        # allocating 24 Render/Texture/VkSampler objects on every cache canvas
 
         path   = CanvasPath []
         path.hold[]
         states = array CanvasState []
         state_depth  = 0
         save[]
-        defaults : CanvasState [ states[state_depth - 1] ]
+        defaults : states[state_depth - 1]
         defaults.font_size = 22
 
     # invoke the inherited Render pipeline once all canvas state has been
@@ -1642,7 +1609,7 @@ Render Canvas
         path.close_path[]
 
     func arc [ cx: f32, cy: f32, radius: f32, start_angle: f32, end_angle: f32 ]
-        st : CanvasState states[state_depth - 1]
+        st : states[state_depth - 1]
         path.add_arc [
             st.transform.apply_x [ cx, cy ],
             st.transform.apply_y [ cx, cy ],
@@ -1656,14 +1623,14 @@ Render Canvas
         vi    : i32 [ 0 ]
         pen_x : f32 [ pen_x_in ]
         pen_y : f32 [ pen_y_in ]
-        st    : CanvasState [ states[state_depth - 1] ]
+        st    : states[state_depth - 1]
         crop_active : bool [ st.text_crop.z > st.text_crop.x ]
         crop_x0 : f32 [ st.text_crop.x ]
         crop_x1 : f32 [ st.text_crop.z ]
 
         for [ i: i32 0, i < display.count, i += 1 ]
             cp   : u32 [ display[i] ]
-            slot : GlyphAtlasSlot [ glyph_atlas.get[ font, cp ] ]
+            slot : glyph_atlas.get[ font, cp ]
             if [ slot.cached && slot.atlas_w > 0 && slot.atlas_h > 0 ]
                 if [ vi + 6 > text_max_verts ]
                     break
@@ -1718,7 +1685,7 @@ Render Canvas
             return bounds
 
         display : string [ (overflow == Overflow.ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
-        tm     : TextMetrics [ measure_text[ display ] ]
+        tm     : measure_text[ display ]
         tx     : f32 [ bounds.x + (bounds.w - tm.w) * align.x + offset.x ]
         # Standard: ascender top at bounds.y for align=0, descender bottom at bounds.h for align=1.
         # descent is negative so (ascent - descent) = full font height.
@@ -1728,8 +1695,8 @@ Render Canvas
         st : CanvasState states[state_depth - 1]
         text_shader.viewport   = vec2f [ f32 width, f32 height ]
         text_shader.crop_rect  = st.text_crop
-        pen_x : f32 [ roundf[ tx + st.transform.tx ] ]
-        pen_y : f32 [ roundf[ ty + st.transform.ty ] ]
+        pen_x : roundf[ tx + st.transform.tx ]
+        pen_y : roundf[ ty + st.transform.ty ]
 
         # shadow pass: one draw at offset with the shadow color, no gradient.
         # runs BEFORE the main text so the text composites on top.
@@ -1833,7 +1800,7 @@ Render Canvas
 
     func fill_rect_fast [ x: f32, y: f32, rw: f32, rh: f32 ]
         expect state_depth >= 0, "no canvas state"
-        st : CanvasState [ states[state_depth - 1] ]
+        st : states[state_depth - 1]
         tx : st.transform.apply_x [ x, y ]
         ty : st.transform.apply_y [ x, y ]
         tw : rw * st.transform.ma
@@ -1970,12 +1937,46 @@ Render Canvas
                     p : Pipeline cmod.pipelines[0]
                     p.rebind_image[ sdf_tex ]
 
+    func init_blur []
+        if [ blur_stages ] return
+        blur_stages = array Render [ alloc: blur_count ]
+        blur_v_arr  = array Render [ alloc: blur_count ]
+        blur_h_arr  = array Render [ alloc: blur_count ]
+        prev_tx    : Texture [ a.color ]
+        bscale     : f32 [ 1.0 ]
+        for [ i: i32 0, i < blur_count, i += 1 ]
+            bscale *= 0.5
+            sw : i32 [ i32[ f32[width]  * bscale + 0.5 ] ]
+            sh : i32 [ i32[ f32[height] * bscale + 0.5 ] ]
+            if [ sw < 1 ] sw = 1
+            if [ sh < 1 ] sh = 1
+            m_r  : Model  [ w: w, samplers: map Texture[string] [ 'color': prev_tx ] ]
+            r_r  : Render [ vk: vk, w: w, width: sw, height: sh, models: array Model [ m_r ] ]
+            blur_stages.push[ r_r ]
+
+            bv_s : CanvasBlurV [ vk: vk, name: 'canvas-blur-v' ]
+            m_v  : Model  [ w: w, s: bv_s, samplers: map Texture[string] [ 'color': r_r.color ] ]
+            r_v  : Render [ vk: vk, w: w, width: sw, height: sh, models: array Model [ m_v ] ]
+            blur_v_arr.push[ r_v ]
+
+            prev_tx = r_r.color
+
+        for [ i: i32 0, i < blur_count, i += 1 ]
+            hi_idx : i32 [ (i + 1 < blur_count) ? i + 1 : i ]
+            rv_lo  : blur_v_arr[i]
+            rv_hi  : blur_v_arr[hi_idx]
+            bh_s   : CanvasBlurH [ vk: vk, name: 'canvas-blur-h' ]
+            m_h    : Model       [ w: w, s: bh_s, samplers: map Texture[string] [ 'low': rv_lo.color, 'high': rv_hi.color ] ]
+            r_h    : Render      [ vk: vk, w: w, color: a.color, width: width, height: height, models: array Model [ m_h ] ]
+            blur_h_arr.push[ r_h ]
+
     # blur canvas.color in place.
     # blur_reduce: quad-samples canvas.color at 1/4 size
     # blur_v:      vertical gaussian on the reduced source
     # blur_h:      horizontal gaussian, writes back to canvas.color
     func blur [ radius: f32 ]
         if [ radius < 1.0 ] return
+        init_blur[]
         # smooth stage selection: k_lo = floor(log2(radius/4)),
         # frac = fractional part, mix between blur_v[k_lo] and blur_v[k_lo+1].
         lg   : f32 [ log2[ radius / 4.0 ] ]

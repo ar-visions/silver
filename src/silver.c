@@ -3211,9 +3211,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                     push_tokens(a, (tokens)expr, 0);
                     if (next_is(a, "[") && is_rec(mdl_found))
                         res0 = parse_object(a, mdl_found, false);
-                    else
+                    else {
                         res0 = read_enode(a, mdl_found, false, load);
-
+                    }
                     pop_tokens(a, false);
                 } else {
                     res0 = null; // use default
@@ -3223,11 +3223,6 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                         res0 = e_create(a, mdl_found, (Au)null); // required conversion
                     }
                 }
-                /*
-                we would like a redundant type check, but its difficult to design here
-                verify (!check_redundant_type || !mdl_expect || (res0 && res0->au != mdl_found->au && res0->au != mdl_expect->au),
-                    "type given (%o) is redundant; expression matches %i", mdl_found, seq);
-                */
                     
             } else if (a->assign_type == OPType__bind &&
                     (from_ref || is_class(mdl_found) || is_ptr(mdl_found))) {
@@ -6430,10 +6425,14 @@ enode parse_import(silver a) {
                     start = 2;
                 }
                 a->processed_imports = false;
+                path saved_module_file = hold(a->module_file);
+                a->module_file = hold(module_source);
                 push_tokens(a, (tokens)ext_toks, start);
                 while (a->cursor < len(a->tokens))
                     parse_statement(a);
                 pop_tokens(a, false);
+                drop(a->module_file);
+                a->module_file = saved_module_file;
                 //drop(ext_toks);
             } else {
                 silver og = a;
@@ -6463,8 +6462,6 @@ enode parse_import(silver a) {
                 validate (!external->error, "error importing silver module %o", external);
 
                 drop(external);
-                Au_t f3 = find_module("vulkan2");
-                Au_t f4 = find_module("vulkan2");
                 //drop(external); // this is to compensate for the initial hold in silver_init [ quirk for build in init ]
             }
                 set(a->libs, (Au)string(external_product->chars), (Au)_bool(true));
@@ -7537,9 +7534,13 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
 
             etype t0 = canonical(expr);
             etype t1 = canonical(mdl);
-            
+
             if (t0 == t1) {
-                if (first && !has_more) return expr;
+                if (first && !has_more) {
+                    bool has_meta = mdl->au->meta.a != null;
+                    validate(!expr->from_call || has_meta, "type '%o' is redundant; expression already returns this type", mdl);
+                    return expr;
+                }
             }
             else
             // check if we can perform copies or referenced construction, or convert from/to cast/ctr 

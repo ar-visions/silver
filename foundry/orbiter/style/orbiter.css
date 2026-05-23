@@ -16,7 +16,7 @@ Toolbar {
         area: l4 t0px w2px b0px
 
     layers.base:
-        fill_color:         #fff1
+        fill_color:         #aaa1
         inner_glow:         #fff1 16
 }
 
@@ -168,6 +168,7 @@ element.filter {
         stroke_color:           #fff3
         stroke_width:           0.5
         label_align:            0.0 0.5
+        label_offset:           8 0
         radius:                 4
         label_size:             14
         label_font:             'fonts/SpaceMono-Regular.ttf'
@@ -226,6 +227,7 @@ Instances {
 }
 
 Console {
+    focusable:  true
     area:   l0 t1 r0 b0
     layers.content: TermLayer
         area:               8px
@@ -234,6 +236,7 @@ Console {
 }
 
 FileList {
+    focusable:      true
     layers.content: FileLayer
         area:           l0.1 t1.3 r0.1 b0.1
         label_size:     16
@@ -244,6 +247,9 @@ FileList {
         expand_svg:     "images/collapse3.svg"
         collapse_svg:   "images/expand3.svg"
         sel_color:      #0004
+        sel_border_color: #fff
+        sel_radius:     8
+        sel_pad_r:      10
         sel_oy:         2
         dir_color:      #7ec8e3
         file_color:     #d4d4d4
@@ -264,19 +270,13 @@ DebugPanel {
 
 
 Editor {
+    focusable:              true
     area:                   l0 t48px r0 b0
     layers.content: EditorLayer
         area:               8px
         label_height:       1.0
         line_color:         #fff1
         sel_color:          #264f78
-        scope_keyword:      #569cd6
-        scope_string:       #ce9178
-        scope_comment:      #6a9955
-        scope_number:       #b5cea8
-        scope_type:         #4ec9b0
-        scope_function:     #dcdcaa
-        scope_variable:     #9cdcfe
     layers.scrollbar: ScrollLayer
         area:               8px
         thumb_color:        #fff4

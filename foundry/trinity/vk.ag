@@ -281,7 +281,7 @@ class Render
         expect result == VK_SUCCESS, "fence wait failed"
 
     func dealloc [ ]
-        info : header[ a ]
+        info : Au.header[ a ]
         for [ i: 0, i < 2, i += 1 ]
             vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
             vkDestroyRenderPass[ vk.device, vk_render_pass[i], null ]
@@ -519,6 +519,8 @@ class vk_context
     public  allocator           : VmaAllocator
     intern  _vkCreateDebugUtilsMessengerEXT : PFN_vkCreateDebugUtilsMessengerEXT
     intern  _vkGetMemoryFdPropertiesKHR     : PFN_vkGetMemoryFdPropertiesKHR
+
+    public  sampler_count       : i32
 
     intern quad_m:    GltfModel
     # cached default shaders. constructing a fresh UVQuad / UVReduce per
@@ -859,7 +861,7 @@ class Gpu
         # vbo/ibo maintained on init only
         if [ vertex_size && !vertex ]
             comp: compute
-            i : header[ vertex_data ]
+            i : Au.header[ vertex_data ]
             vertex = Buffer [ vk: vk, size: vertex_size * vertex_count,
                 u_storage: comp, u_vertex: !comp, u_dst: !comp, u_shader: !comp,
                 m_host_visible: true, m_host_coherent: true,
@@ -916,7 +918,7 @@ class uniforms
         # use the runtime type via the Au header — `typeid[ s ]` returns the
         # static declared type of the field (`shader`), not the actual subclass
         # (e.g. CanvasUI). without this we'd never iterate any subclass members.
-        hdr:    Au [ Au.header[ s ] ]
+        hdr:    Au.header[ s ]
         ty:     Au_t [ hdr.type ]
 
         while [ ty != typeid[ shader ] ]
@@ -925,8 +927,8 @@ class uniforms
 
         type_list = type_list.reverse[]
 
-        hdr2:   Au [ Au.header[ s ] ]
-        leaf:   Au_t [ hdr2.type ]
+        hdr2:   Au.header[ s ]
+        leaf:   hdr2.type
         total_uniform: i32 [ uniform_size[ leaf ] ]
         u_memory = new u8 [ total_uniform ]
         m : (u_memory to Au)
@@ -1078,28 +1080,31 @@ class Pipeline
             vkCmdDraw[ frame, vbo.vertex_count, 1, 0, 0 ]
 
     public   func bind_resources [ ]
-        sampler_count:         0       # for COMBINED_IMAGE_SAMPLER pool sizing
-        set1_binds:            0       # binding count for set 1 (mixed types)
+        sampler_count:         0 # for COMBINED_IMAGE_SAMPLER pool sizing
+        set1_binds:            0 # binding count for set 1 (mixed types)
         uniform_count:         0
         storage_image_count:   0
         storage_buffer_count:  0
-        sampler_bindings: local VkDescriptorSetLayoutBinding[32]
-        uniform_bindings: local VkDescriptorSetLayoutBinding[32]
-        buffer_infos:     local VkDescriptorBufferInfo[32]
-        image_infos:      local VkDescriptorImageInfo[32]
-        storage_buf_infos: local VkDescriptorBufferInfo[32]
-        descriptor_writes: local VkWriteDescriptorSet[32]
-        resources        = array Gpu [ alloc: 32 ]
-        storage_textures = array Texture [ alloc: 8 ]
+        sampler_bindings:  local VkDescriptorSetLayoutBinding [32]
+        uniform_bindings:  local VkDescriptorSetLayoutBinding [32]
+        buffer_infos:      local VkDescriptorBufferInfo       [32]
+        image_infos:       local VkDescriptorImageInfo        [32]
+        storage_buf_infos: local VkDescriptorBufferInfo       [32]
+        descriptor_writes: local VkWriteDescriptorSet         [32]
+        resources        = array Gpu     [ alloc: 32 ]
+        storage_textures = array Texture [ alloc: 8  ]
+
         if [ vbo ]
             vbo.sync[ w ]
             resources.push[ vbo ]
         # storage descriptors need to be visible from the compute stage too;
         # for graphics-only shaders the COMPUTE bit is harmless.
-        stage_flags: VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT
+        stage_flags: VK_SHADER_STAGE_VERTEX_BIT   | 
+                     VK_SHADER_STAGE_FRAGMENT_BIT |
+                     VK_SHADER_STAGE_COMPUTE_BIT
         shader_uniforms = uniforms [ vk: vk, s: s ]
         shader_uniforms.hold[]
-        s_hdr:       Au [ Au.header[ s ] ]
+        s_hdr: Au.header[ s ]
 
         for [ b: Buffer ] in shader_uniforms.u_buffers
             uniform_bindings[uniform_count] = VkDescriptorSetLayoutBinding [
@@ -1117,8 +1122,8 @@ class Pipeline
 
         # walk shader schema — typeid[s] gives the static `shader` type; read
         # the runtime subclass from the Au object header instead.
-        sh_hdr:        Au [ Au.header[ s ] ]
-        shader_schema: Au_t [ sh_hdr.type ]
+        sh_hdr:        Au.header[ s ]
+        shader_schema: sh_hdr.type
         while [ shader_schema && shader_schema != typeid[ shader ] ]
             for [ i: 0, i < shader_schema.members.count, i += 1 ]
                 mem: Au_t [ shader_schema.members.origin[i] ]
@@ -1129,18 +1134,21 @@ class Pipeline
                     enum_type:  at.type
                     enum_value: at.id
                     meta_type:  at.format
+
                     if [ !meta_type ]
                         at = LayoutBinding s.get_property[ mem.ident ]
                         meta_type = meta_type
+                    
                     expect meta_type, "meta data not set on Surface/extension"
                     all: Surface_resources[ enum_type, enum_value, meta_type, a ]
                     expect all.count == 1, "binding arrays (count > 1) not supported in this code path"
                     res: Gpu [ all[0] ]
                     expect res inherits Gpu, "expected Gpu resource"
-                    res.sync[ w ]
-                    resources.push[ res ]
+                    res.sync [ w ]
+                    resources.push [ res ]
                     if [ strcmp[ mem.ident, 'image' ] == 0 ]
                         image_slot = set1_binds
+                    
                     image_infos[set1_binds] = VkDescriptorImageInfo [
                         sampler:     res.tx.vk_sampler,
                         imageView:   res.tx.vk_image_view,
@@ -1317,8 +1325,8 @@ class Pipeline
 
             # count VertexInput attribs the shader actually consumes
             shader_input_count: 0
-            ra_hdr:        Au [ Au.header[ s ] ]
-            shader_schema: Au_t [ ra_hdr.type ]
+            ra_hdr:        Au.header[ s ]
+            shader_schema: ra_hdr.type
             while [ shader_schema != typeid[ shader ] ]
                 for [ si: 0, si < shader_schema.members.count, si += 1 ]
                     sm: Au_t [ shader_schema.members.origin[si] ]
@@ -2092,8 +2100,13 @@ class Texture
                 ]
                 r: vkCreateSampler[ vk.device, samplerInfo, null, ref vk_sampler ]
                 expect r == VK_SUCCESS, "Failed to create VkSampler"
+                vk.sampler_count += 1
 
     func dealloc [ ]
+        puts 'dealloc Texture'
+        if [ vk_sampler ]
+            puts 'decrementing samplers'
+            vk.sampler_count -= 1
         vkDestroySampler[ vk.device, vk_sampler, null ]
         vkDestroyImageView[ vk.device, vk_image_view, null ]
         # swap textures wrap a VkImage owned by the swapchain — destroying the
@@ -2438,7 +2451,7 @@ Texture Display
         glfwSetWindowTitle[ glfw, t.chars ]
 
     func dealloc [ ]
-        info : header[ a ]
+        info : Au.header[ a ]
         if [ !backbuffer ]
             vkDestroySwapchainKHR[ vk.device, vk_swapchain, null ]
             vkDestroySurfaceKHR[ vk.instance, vk_surface, null ]
@@ -2504,7 +2517,7 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
                 sampler: (tx) ? tx.hold[] : img.hold[] ]
             result.push[ res ]
     
-    pbr_default: PbrMetallicRoughness [ pbr_defaults[] ]
+    pbr_default: pbr_defaults[]
     pbr:         PbrMetallicRoughness [ (p.material) ? p.material.pbrMetallicRoughness : pbr_default ]
     s:           shader [ p.s ]
 ##

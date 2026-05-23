@@ -430,8 +430,8 @@ class Layer
             cv.set_font[ label_font_cache ]
         if [ !cv.font ] return
         text  : string [ (parent.label) ? parent.label : '' ]
-        tm    : TextMetrics [ cv.measure_text[ text ] ]
-        cw_tm : TextMetrics [ cv.measure_text[ 'x' ] ]
+        tm    : cv.measure_text[ text ]
+        cw_tm : cv.measure_text[ 'x' ]
         lh_cache = cv.font.line_height
         cw_cache = cw_tm.w
 
@@ -460,7 +460,7 @@ class Layer
         cv.paint[]
 
         if [ parent.focused && parent.sel_col >= 0 ]
-            prefix : string [ text.mid[ 0, col ] ]
+            prefix : text.mid[ 0, col ]
             cx : f32 [ x0 + cv.measure_text[ prefix ].w ]
             cv.fill_color[ '#fff' ]
             cv.stroke_width[ 0.0 ]

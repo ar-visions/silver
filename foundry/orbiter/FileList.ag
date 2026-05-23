@@ -24,8 +24,6 @@ class FileNode
                 children.push[ FileNode [ p: e, depth: depth + 1, is_dir: false ] ]
 
 Layer FileLayer
-    mutable expand_icon   : SVGModel
-    mutable collapse_icon : SVGModel
     public  expand_svg    : string
     public  collapse_svg  : string
     public  indent_width  : f32
@@ -34,6 +32,9 @@ Layer FileLayer
     public  expand_offset   : vec2f
     public  collapse_offset : vec2f
     public  sel_color     : string
+    public  sel_border_color : string
+    public  sel_radius    : f32
+    public  sel_pad_r     : f32
     public  sel_oy        : f32
     public  dir_color     : string
     public  file_color    : string
@@ -41,13 +42,15 @@ Layer FileLayer
 
     func draw [ cv: Canvas ]
         fl : FileList[ parent ]
+        #puts 'FileLayer.draw fl={fl} visible={fl.visible}'
         if [ !fl || !fl.visible ] return
+        puts 'FileLayer.draw filter={fl.filter} last={fl.last_filter}'
         if [ fl.filter && fl.filter != fl.last_filter ]
             fl.last_filter = fl.filter
             fl.build_visible[]
-        if [ !expand_icon ]
-            expand_icon   = SVGModel [ path expand_svg ]
-            collapse_icon = SVGModel [ path collapse_svg ]
+        if [ !fl.expand_icon ]
+            fl.expand_icon   = SVGModel [ path expand_svg ]
+            fl.collapse_icon = SVGModel [ path collapse_svg ]
         cv.font_size[ i32[label_size] ]
         lh   : f32 [ ((cv.font) ? cv.font.line_height : 20.0) * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
         fl.row_height  = lh
@@ -71,17 +74,28 @@ Layer FileLayer
             if [ y > clip_y1 ] break
 
             if [ i == fl.sel && y >= clip_y0 ]
+                r : f32 [ (sel_radius > 0.0) ? sel_radius : 0.0 ]
+                cv.save[]
+                cv.rounded[ r, r, r, r ]
                 cv.fill_color[ sel_color ]
-                cv.rect_to[ x0, y + sel_oy, bounds.w, lh ]
+                if [ parent.focused && sel_border_color ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_color[ sel_border_color ]
+                el
+                    cv.stroke_width[ 0.0 ]
+                pr : f32 [ (sel_pad_r > 0.0) ? sel_pad_r : 2.0 ]
+                cv.rect_to[ x0 + 1.5, y + sel_oy + 0.5, bounds.w - 2.0 - pr, lh - 1.0 ]
                 cv.paint[]
+                cv.restore[]
 
-            ix : f32 [ x0 + icon_col + icon_text_gap + f32[n.depth] * indent_width ]
+            xl : f32 [ x0 + 5.0 ]
+            ix : f32 [ xl + icon_col + icon_text_gap + f32[n.depth] * indent_width ]
             if [ n.is_dir && y >= clip_y0 ]
-                icon : SVGModel [ (n.open) ? collapse_icon : expand_icon ]
+                icon : SVGModel [ (n.open) ? fl.collapse_icon : fl.expand_icon ]
                 ox   : f32 [ (n.open) ? collapse_offset.x : expand_offset.x ]
                 oy   : f32 [ (n.open) ? collapse_offset.y : expand_offset.y ]
                 pad  : f32 [ (lh - 11.0) * 0.5 ]
-                cv.draw_svg[ icon, round[ x0 + f32[n.depth] * indent_width + ox ], round[ y + pad + oy ], 11.0, 11.0 ]
+                cv.draw_svg[ icon, round[ xl + f32[n.depth] * indent_width + ox ], round[ y + pad + oy ], 11.0, 11.0 ]
 
             cv.fill_color[ (n.is_dir) ? dir_color : file_color ]
             cv.draw_text[ n.p.filename[],
@@ -92,16 +106,18 @@ Layer FileLayer
         cv.clear_text_crop[]
 
 Option FileList
-    public  root         : path
-    public  pending_open : path
-    public  filter       : string
-    mutable last_filter  : string
-    mutable root_node    : FileNode
-    mutable visible      : array FileNode
-    mutable sel          : i32   [ -1 ]
-    mutable row_height   : f32   [ 20.0 ]
-    mutable content_y    : f32   [ 0.0 ]
-    mutable view_h       : f32   [ 0.0 ]
+    public  root           : path
+    public  pending_open   : path
+    public  filter         : string
+    mutable last_filter    : string
+    mutable root_node      : FileNode
+    mutable visible        : array FileNode
+    mutable sel            : i32      [ -1 ]
+    mutable row_height     : f32      [ 20.0 ]
+    mutable content_y      : f32      [ 0.0 ]
+    mutable view_h         : f32      [ 0.0 ]
+    mutable expand_icon    : SVGModel
+    mutable collapse_icon  : SVGModel
 
     func on_press [ ev: Event ]
         rel_y : f32 [ ev.mouse.pos.y - content_y ]
@@ -119,6 +135,58 @@ Option FileList
         if [ max_sc > 0.0 && scroll.y > max_sc ] scroll.y = max_sc
         pristine = false
 
+    func scroll_to_sel []
+        if [ sel < 0 || !visible || visible.count == 0 ] return
+        item_y : f32 [ f32[sel] * row_height ]
+        vh     : f32 [ (view_h > 0.0) ? view_h : content_h ]
+        if [ item_y < scroll.y ]
+            scroll.y = item_y
+        el [ item_y + row_height > scroll.y + vh ]
+            scroll.y = item_y + row_height - vh
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state || !visible || visible.count == 0 ] return
+        key : i32 [ ev.key.unicode ]
+        if [ key == 265 ]
+            if [ sel > 0 ]
+                sel -= 1
+                scroll_to_sel[]
+                pristine = false
+        el [ key == 264 ]
+            if [ sel < visible.count - 1 ]
+                sel += 1
+                scroll_to_sel[]
+                pristine = false
+        el [ key == 262 ]
+            if [ sel >= 0 && sel < visible.count ]
+                n : FileNode visible[sel]
+                if [ n.is_dir && !n.open ]
+                    close_all[ root_node, n ]
+                    n.load_children[]
+                    n.open = true
+                    build_visible[]
+                    for [ j: i32 0, j < visible.count, j += 1 ]
+                        if [ visible[j] == n ]
+                            sel = j
+                            break
+                    scroll_to_sel[]
+                    pristine = false
+        el [ key == 263 ]
+            if [ sel >= 0 && sel < visible.count ]
+                n : FileNode visible[sel]
+                if [ n.is_dir && n.open ]
+                    n.open = false
+                    build_visible[]
+                    for [ j: i32 0, j < visible.count, j += 1 ]
+                        if [ visible[j] == n ]
+                            sel = j
+                            break
+                    scroll_to_sel[]
+                    pristine = false
+        el [ key == 257 || key == 32 ]
+            if [ sel >= 0 ]
+                select[ sel ]
+
     func init []
         if [ !root ] root = path '/src/silver'
         root_node = FileNode [ p: root, depth: -1, is_dir: true ]
@@ -130,16 +198,23 @@ Option FileList
         walk[ root_node ]
 
     func walk [ node: FileNode ]
+        searching : bool [ filter && filter.count > 0 ]
+        if [ !node.children ]
+            if [ searching && node.is_dir ] node.load_children[]
         if [ !node.children ] return
         for [ i: i32 0, i < node.children.count, i += 1 ]
             child : node.children[i]
-            if [ filter && filter.count > 0 && !child.is_dir ]
-                fname : child.p.filename[]
-                if [ !strstr[ fname, filter ] ]
-                    continue
-            visible.push[ child ]
-            if [ child.open ]
-                walk[ child ]
+            if [ searching ]
+                if [ child.is_dir ]
+                    walk[ child ]
+                el
+                    fname : child.p.filename[]
+                    if [ strstr[ fname.chars, filter.chars ] ]
+                        visible.push[ child ]
+            el
+                visible.push[ child ]
+                if [ child.open ]
+                    walk[ child ]
 
     func select [ idx: i32 ]
         sel = idx

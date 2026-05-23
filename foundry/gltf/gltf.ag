@@ -226,7 +226,7 @@ class GltfTransform
     mutable ichildren:       array i64
 
     func propagate [] 
-        m: (iparent != -1) ? mat4f[ jdata.states[iparent] ] : mat4f.identity[]
+        m: (iparent != -1) ? jdata.states[iparent] : mat4f.identity[]
         jdata.states[istate] = local_mat.mul[ m ]
         for [i: i64] in ichildren
             jdata.transforms[i].propagate

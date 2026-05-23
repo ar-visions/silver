@@ -2,6 +2,12 @@
 
 int seq;
 
+const char* silver_listen;
+
+static void silver_listen_init() {
+    silver_listen = getenv("SILVER_LISTEN");
+}
+
 #ifndef NDEBUG
 // AU_SKIP_DROP=TypeName or AU_SKIP_DROP=TypeName.member_name
 // comma-separated, parsed once at first use
@@ -5093,7 +5099,7 @@ none string_operator__assign_add(string a, string b) {
 }
 
 string string_operator__add(string a, string b) {
-    string res = string(alloc, a->count + b->count + 1);
+    string res = string(alloc, (a ? a->count : 0) + (b ? b->count : 0) + 1);
     concat(res, a);
     concat(res, b);
     return res;

@@ -3,13 +3,6 @@ extend orbiter
 Layer EditorLayer
     mutable sel_color      : rgba
     mutable line_color     : rgba
-    mutable scope_keyword  : rgba
-    mutable scope_string   : rgba
-    mutable scope_comment  : rgba
-    mutable scope_number   : rgba
-    mutable scope_type     : rgba
-    mutable scope_function : rgba
-    mutable scope_variable : rgba
 
     func on_move [ ev: Event ]
         editor : Editor[ parent ]
@@ -29,25 +22,11 @@ Layer EditorLayer
         if [ editor ]
             editor.dragging = false
 
-    func scope_color [ scopes: array string ] -> rgba
-        for [ i: i32 0, i < scopes.count, i += 1 ]
-            s : string [ scopes[i] ]
-            #printf["scope = %s\n", s.chars]
-            if [ s.starts_with['keyword']          ] return ( scope_keyword  ) ? scope_keyword  : rgba['#569cd6']
-            if [ s.starts_with['string']           ] return ( scope_string   ) ? scope_string   : rgba['#ce9178']
-            if [ s.starts_with['comment']          ] return ( scope_comment  ) ? scope_comment  : rgba['#6a9955']
-            if [ s.starts_with['constant.numeric'] ] return ( scope_number   ) ? scope_number   : rgba['#b5cea8']
-            if [ s.starts_with['storage']          ] return ( scope_type     ) ? scope_type     : rgba['#4ec9b0']
-            if [ s.starts_with['entity.name.type'] ] return ( scope_type     ) ? scope_type     : rgba['#4ec9b0']
-            if [ s.starts_with['entity.name']      ] return ( scope_function ) ? scope_function : rgba['#dcdcaa']
-            if [ s.starts_with['variable']         ] return ( scope_variable ) ? scope_variable : rgba['#9cdcfe']
-        return rgba['#d4d4d4']
-
     func draw [ cv: Canvas ]
         editor : Editor[ parent ]
         if [ !editor || !editor.lines ] return
         lh      : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
-        cw_tm   : TextMetrics [ cv.measure_text[ 'x' ] ]
+        cw_tm   : cv.measure_text[ 'x' ]
         x0      : f32 [ bounds.x ]
         y0      : f32 [ bounds.y ]
         fade_h  : f32 [ bounds.h * 0.20 ]
@@ -62,25 +41,13 @@ Layer EditorLayer
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
             alpha : ((y - bounds.y) < fade_s) ? 1.0 : 1.0 - ((y - fade_s) / fade_h)
-            ln    : string [ editor.line_get[ li ] ]
-            res   : TmLineResult [ (editor.line_results && li < editor.line_results.count) ? editor.line_results[li] : null ]
-            if [ res && res.tokens && res.tokens.count > 0 ]
-                for [ ti: i32 0, ti < res.tokens.count, ti += 1 ]
-                    tok  : res.tokens[ti]
-                    span : ln.mid[ tok.start, tok.end - tok.start ]
-                    col  : scope_color[ tok.scopes ]
-                    col.a = alpha
-                    cv.fill_color[ col ]
-                    cv.draw_text[ span,
-                        rect [ x: x0 + f32[tok.start] * cw_tm.w, y: y, w: bounds.w, h: lh ],
-                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-            el
-                col   : rgba['#fff']
-                col.a = alpha
-                cv.fill_color[ col ]
-                cv.draw_text[ ln,
-                    rect [ x: x0, y: y, w: bounds.w, h: lh ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            ln    : editor.line_get[ li ]
+            col   : rgba['#fff']
+            col.a = alpha
+            cv.fill_color[ col ]
+            cv.draw_text[ ln,
+                rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint[ ]
 
         if [ editor.sel_line >= 0 ]
@@ -175,7 +142,7 @@ Layer EditorLayer
                         cx = (before) ? editor.filter_rect.x + editor.filter_rect.w : editor.filter_rect.x
                         cy = editor.filter_rect.y
                     el
-                        prefix : string [ editor.line_get[ editor.sel_line ].mid[ 0, editor.sel_col ] ]
+                        prefix : editor.line_get[ editor.sel_line ].mid[ 0, editor.sel_col ]
                         cx     = x0 + cv.measure_text[ prefix ].w
                         cy     = y_sel
                     cv.fill_color[ '#fff' ]
@@ -202,39 +169,12 @@ Control Editor
     mutable last_before   : false
     mutable filter_rect   : rect
     mutable filter_next   : false
-    intern  tokenizer     : TmTokenizer
-    intern  line_results  : array TmLineResult
-
     func line_get [ i: i32 ] -> string
         return lines.value_by_index[ i ]
 
     func line_set [ i: i32, val: string ]
         lines.remove[ i ]
         lines.insert_after[ val, i - 1 ]
-
-    func grammar_for_path [ p: path ] -> path
-        ext : string [ p.ext[] ]
-        if [ ext == 'c' || ext == 'h' || ext == 'cpp' || ext == 'cc' || ext == 'cxx' ]
-            return path '/src/vscode-textmate/benchmark/c.tmLanguage.json'
-        return null
-
-    func tokenize_all []
-        if [ !tokenizer ] return
-        line_results = array TmLineResult []
-        state : TmState [ null ]
-        for [ i: i32 0, i < lines.count, i += 1 ]
-            ln  : string [ line_get[ i ] ]
-            res : TmLineResult [ tokenizer.tokenize_line[ ln, state ] ]
-            state = res.state
-            line_results.push[ res ]
-            if [ i < 3 ]
-                printf[ "line %d: %d tokens\n", i, res.tokens.count ]
-                for [ ti: i32 0, ti < res.tokens.count, ti += 1 ]
-                    tok : TmToken [ res.tokens[ti] ]
-                    span : string [ ln.mid[ tok.start, tok.end - tok.start ] ]
-                    printf[ "  [%d-%d] '%s'\n", tok.start, tok.end, span ]
-                    for [ si: i32 0, si < tok.scopes.count, si += 1 ]
-                        printf[ "    scope: %s\n", tok.scopes[si] ]
 
     func load_file []
         if [ !src ] src = path '/src/silver/src/silver.c'
@@ -244,13 +184,6 @@ Control Editor
         lines = list string []
         for [ i: i32 0, i < parts.count, i += 1 ]
             lines.push[ parts[i] ]
-        gpath : path [ grammar_for_path[ src ] ]
-        if [ gpath ]
-            g : TmGrammar [ gpath.load[ typeid[TmGrammar], null ] ]
-            if [ g ]
-                tokenizer = TmTokenizer [ grammar: g ]
-                tokenize_all[]
-
     func init [ ]
         lines = list string []
         lines.push[ '' ]
@@ -291,7 +224,7 @@ Control Editor
         if [ sel_line < 0 ] sel_line = 0
         row  : i32 [ sel_line ]
         col  : i32 [ sel_col ]
-        line : string [ line_get[ row ] ]
+        line : line_get[ row ]
         ch   : string [ ev.key.text ]
         # space on an indent-only line inserts a tab instead
         #if [ ch == ' ' ]
@@ -314,9 +247,9 @@ Control Editor
         key  : i32 [ ev.key.unicode ]
 
         if [ key == 257 ]
-            line  : string [ line_get[ row ] ]
-            left  : string [ line.mid[0, col] ]
-            right : string [ line.mid[col, line.count - col] ]
+            line  : line_get[ row    ]
+            left  : line.mid[ 0, col ]
+            right : line.mid[col, line.count - col]
             line_set[ row, left ]
             lines.insert_after[ right, row ]
             sel_line += 1
@@ -324,11 +257,11 @@ Control Editor
 
         el [ key == 259 ]
             if [ col > 0 ]
-                line : string [ line_get[ row ] ]
+                line : line_get[ row ]
                 line_set[ row, line.mid[0, col - 1] + line.mid[col, line.count - col] ]
                 sel_col -= 1
             el [ row > 0 ]
-                prev : string [ line_get[ row - 1 ] ]
+                prev : line_get[ row - 1 ]
                 sel_col  = prev.count
                 line_set[ row - 1, prev + line_get[ row ] ]
                 lines.remove[ row ]
