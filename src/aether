@@ -330,6 +330,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  bool,            used) \
     M(X, Y, i, prop,     public,  tokens,          initializer) \
     M(X, Y, i, prop,     public,  bool,            loaded) \
+    M(X, Y, i, prop,     public,  bool,            from_call) \
     M(X, Y, i, prop,     public,  string,          debug_id) \
     M(X, Y, i, prop,     intern,  LLVMMetadataRef, last_dbg, as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMValueRef,    value, as, ARef) \

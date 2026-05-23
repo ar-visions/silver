@@ -138,7 +138,7 @@ etype etype_prep(aether a, Au_t au) { sequencer
         s = (string)formatter( \
             (Au_t)null, false, stderr, (Au) true, seq, \
             (symbol) "\n%o:%i:%i (%s:%i%o) " t, \
-            a->module_file, \
+            (pk->source ? (Au)f(path, "%s", pk->source) : (Au)a->module_file), \
             aether_peek_safe(a)->line, \
             aether_peek_safe(a)->column, \
             __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string("") __VA_OPT__(,) __VA_ARGS__); \
@@ -2958,7 +2958,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
     } else {
         result = enode(mod, a, au, rtype->au, meta_a, result_meta_a, loaded, true, value, R);
     }
-
+    result->from_call = true;
     return result;
 }
 
@@ -5960,6 +5960,7 @@ void aether_create_type_members(aether a, Au_t ctx) {
         if (mem == typeid(Au_t)) continue;
         etype e = u(etype, mem);
         if (mem->ident && is_au_type(mem) && e && !e->type_id && !mem->is_system && !mem->is_schema) {
+            if (!e->au->ident) continue;
             get_type_t_ptr(e);
             implement_type_id(e);
         }
@@ -6362,7 +6363,9 @@ none etype_init(etype t) {
                 fn_first->src  = typeid(ARef);
 
                 if (!au->is_c) {
-                    array cl = etype_class_list(t);
+                    bool use_src = source_au->is_class && !source_au->is_c && !source_au->is_funcptr;
+                    etype source_etype = use_src ? u(etype, source_au) : null;
+                    array cl = source_etype ? etype_class_list(source_etype) : etype_class_list(t);
                     each (cl,  etype, tt) {
                         for (int ai = 0; ai < tt->au->members.count; ai++) {
                             Au_t ai_mem = (Au_t)tt->au->members.origin[ai];
