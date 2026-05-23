@@ -1024,7 +1024,8 @@ static void exporter(silver a) {
 
 void llvm_reinit(silver);
 void aether_reinit_startup(aether);
-void emit_debug_loc(aether, u32, u32);
+void emit_debug_loc(aether, cstr, u32, u32);
+void update_current_file(aether, path);
 
 // im a module!
 static void write_target_cmake(path sdk_path, cstr system_name, cstr processor,
@@ -1207,6 +1208,23 @@ void silver_init(silver a) {
                 path res = form(path, "%o/%s", a->module_path, entry->d_name);
                 if (index_of(og->resources, (Au)res) < 0)
                     push(og->resources, (Au)hold(res));
+            }
+            closedir(dir);
+        }
+    }
+
+    // check extension modules (.ag files in same dir) — if any are newer, bust the cache
+    {
+        DIR *dir = opendir(a->module_path->chars);
+        if (dir) {
+            struct dirent *entry;
+            while ((entry = readdir(dir)) != NULL) {
+                cstr n = entry->d_name;
+                int  nl = strlen(n);
+                if (nl <= 3 || strcmp(n + nl - 3, ".ag") != 0) continue;
+                path ag = form(path, "%o/%s", a->module_path, n);
+                u64  m  = modified_time(ag);
+                if (m > module_file_m) module_file_m = m;
             }
             closedir(dir);
         }
@@ -1398,6 +1416,7 @@ void silver_init(silver a) {
         _exit(1);
     }
 }
+
 
 static string op_lang_token(string name) {
     pairs(operators, i) {
@@ -2817,6 +2836,12 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     mem = enode_super(rec_top, f->target);
                     is_super = true;
                 }
+                else if (eq(alpha, "sequence")) {
+                    // debug: read the per-statement-block __seq local (coverage_seq_local)
+                    extern enode aether_sequence_enode(aether a);
+                    mem = aether_sequence_enode((aether)a);
+                    break;
+                }
                 else if (!in_rec) {
                     // try implicit 'this' access in instance methods
                     if (!mem && f && f->target) {
@@ -3667,6 +3692,9 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     mem = parse_member(a, null, null, mdl_expect, from_ref);
 
+    verify(!next_is(a, "?") && !next_is(a, "??"),
+        "ternaries require parenthesis: ( condition ) %o", peek(a));
+
     if (!mem && cmode) return null;
     if (!mem) {
         etype unexpected_type = read_etype(a, null);
@@ -3746,7 +3774,9 @@ enode parse_statement(silver a)
     a->setter_fn        = null;
     a->statement_origin = hold(peek(a));
     if (f && a->statement_origin && !a->no_build)
-        emit_debug_loc((aether)a, a->statement_origin->line, a->statement_origin->column);
+        emit_debug_loc((aether)a,
+            a->statement_origin->source->chars,
+            a->statement_origin->line, a->statement_origin->column);
     Au_t      top       = top_scope(a);
     silver    module    = is_module(top) ? a : null;
     etype     rec_top   = is_rec(top) ? u(etype, top) : null;
@@ -4011,6 +4041,8 @@ enode parse_statement(silver a)
                     ftype,
                     traits, op_type, op_name);
                 ((efunc)e)->origin_token = entry;
+                if (entry && entry->source)
+                    ((efunc)e)->source_file = hold((path)entry->source);
                 if (is_post_ctr) e->au->is_default = true; // flag post construct (reuse is_default)
                 e->au->access_type = (u8)access;
                 if (access != interface_intern) {
@@ -7126,6 +7158,8 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
     implement(f, false);
 
     if (f->has_code && (f->const_tokens || f->inline_return || f->body || preamble)) {
+        update_current_file((aether)a, f->source_file);
+
         if (f->target)
             push_scope(a, (Au)f->target, 23);
 
@@ -7913,6 +7947,10 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
                     (mem->meta_a ? ((Au_t)mem->meta_a) : null);
                 if (rtype && rtype == etypeid(Au) && meta_a) {
                     index_expr->au = meta_a;
+                    // getter returns ptr-to-element for primitive types; load through
+                    // the returned data pointer immediately so downstream sees a value
+                    if (meta_a->is_primitive && !meta_a->is_pointer)
+                        index_expr = e_load((aether)a, index_expr, null);
                 }
             }
 

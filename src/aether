@@ -163,6 +163,7 @@ forward(evar)
     M(X, Y, i, prop,     intern,  LLVMContextRef,           module_ctx,              as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMBuilderRef,           builder,                 as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMMetadataRef,          file,                    as, ARef) \
+    M(X, Y, i, prop,     intern,  LLVMMetadataRef,          current_file,            as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMMetadataRef,          compile_unit,            as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMDIBuilderRef,         dbg_builder,             as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMTargetRef,            target_ref,              as, ARef) \
@@ -357,6 +358,7 @@ declare_class_3(evar, enode, etype)
     M(X, Y, i, prop,     intern,  LLVMValueRef,    timing_start_value, as, ARef) \
     M(X, Y, i, prop,     public,  enode,           fptr) \
     M(X, Y, i, prop,     public,  token,           origin_token) \
+    M(X, Y, i, prop,     public,  path,            source_file) \
     M(X, Y, i, prop,     public,  map,             placeholder)
 declare_class_3(efunc, enode, etype)
 

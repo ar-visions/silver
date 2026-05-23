@@ -42,6 +42,7 @@ LLVMMetadataRef debug_typedef_type    (aether a, Au_t type_au);
 LLVMMetadataRef debug_au_header_type  (aether a, Au_t schema);
 LLVMMetadataRef debug_subroutine_type (aether a, Au_t fn_au, bool);
 void            emit_debug_function   (aether a, efunc fn, bool);
+void            update_current_file   (aether a, path source_file);
 void            emit_debug_variable   (aether a, enode var, u32 arg_no, u32 line);
 void            emit_debug_params     (aether a, efunc fn);
 
@@ -1182,12 +1183,38 @@ static LLVMMetadataRef debug_combined_type(aether a, Au_t schema) {
 // signature.  for instance methods, scopes the subprogram inside the class
 // DI type if available.
 // ────────────────────────────────────────────────────────────────────────────
+void update_current_file(aether a, path source_file) {
+    if (!a->debug) return;
+    if (source_file && source_file->chars &&
+        a->module_file && a->module_file->chars &&
+        strcmp(source_file->chars, a->module_file->chars) != 0) {
+        path rel = path_cwd();
+        a->current_file = LLVMDIBuilderCreateFile(
+            a->dbg_builder, source_file->chars, strlen(source_file->chars),
+            rel->chars, len(rel));
+    } else {
+        a->current_file = a->file;
+    }
+}
+
 void emit_debug_function(aether a, efunc fn, bool w) {
     if (!a->debug || !a->compile_unit) return;
     Au_t au = fn->au;
     if (!au->ident) return;
 
     LLVMMetadataRef file_ref = a->file;
+
+    // for functions from extended modules their origin_token->source points to
+    // the actual .ag file (e.g. Canvas.ag), not the parent module (trinity.ag)
+    // source_file is strongly held at parse time — safe to dereference
+    if (fn->source_file && fn->source_file->chars &&
+        a->module_file && a->module_file->chars &&
+        strcmp(fn->source_file->chars, a->module_file->chars) != 0) {
+        path rel = path_cwd();
+        file_ref = LLVMDIBuilderCreateFile(
+            a->dbg_builder, fn->source_file->chars, strlen(fn->source_file->chars),
+            rel->chars, strlen(rel->chars));
+    }
 
     // build the subroutine type with actual parameter types
     LLVMMetadataRef sr_type = debug_subroutine_type(a, au, w);
@@ -1225,6 +1252,7 @@ void emit_debug_function(aether a, efunc fn, bool w) {
 
     etype et_fn = (etype)fn;
     et_fn->llscope = sp;
+    a->current_file = file_ref;
 
     if (fn->value)
         LLVMSetSubprogram(fn->value, sp);
@@ -1574,7 +1602,7 @@ LLVMMetadataRef debug_create_lexical_block(aether a, u32 line, u32 column) {
     return LLVMDIBuilderCreateLexicalBlock(
         a->dbg_builder,
         parent_scope,
-        a->file,
+        a->current_file ? a->current_file : a->file,
         line, column);
 }
 
