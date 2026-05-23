@@ -4,10 +4,6 @@ int seq;
 
 const char* silver_listen;
 
-static void silver_listen_init() {
-    silver_listen = getenv("SILVER_LISTEN");
-}
-
 #ifndef NDEBUG
 // AU_SKIP_DROP=TypeName or AU_SKIP_DROP=TypeName.member_name
 // comma-separated, parsed once at first use

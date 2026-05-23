@@ -157,6 +157,7 @@ forward(evar)
     M(X, Y, i, prop,     intern,  LLVMValueRef,             coverage_probes_global,  as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMValueRef,             coverage_seq_global,     as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMValueRef,             coverage_seq_local,      as, ARef) \
+    M(X, Y, i, prop,     public,  bool,                     listen_active) \
     M(X, Y, i, prop,     intern,  LLVMExecutionEngineRef,   jit,                     as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMBasicBlockRef,        current_if_block,        as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMModuleRef,            module_ref,              as, ARef) \

@@ -3351,6 +3351,40 @@ void aether_eputs(aether a, string output) {
     //e_fn_call(a, fn_puts, a(const_string(chars, output->chars)), false);
 }
 
+#ifndef NDEBUG
+
+static void emit_puts_str(aether a, const char* msg) {
+    LLVMTypeRef i8ptr  = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef i32_ty = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMValueRef gstr  = LLVMBuildGlobalStringPtr(B, msg, "");
+    LLVMTypeRef  puts_args[] = { i8ptr };
+    LLVMTypeRef  puts_ty = LLVMFunctionType(i32_ty, puts_args, 1, 0);
+    LLVMValueRef puts_fn = LLVMGetNamedFunction(a->module_ref, "puts");
+    if (!puts_fn)
+        puts_fn = LLVMAddFunction(a->module_ref, "puts", puts_ty);
+    LLVMValueRef args[] = { gstr };
+    LLVMBuildCall2(B, puts_ty, puts_fn, args, 1, "");
+}
+
+void aether_init_listen(aether a) { }
+
+void aether_emit_listen_entry(aether a, const char* func_name) { }
+
+void aether_emit_listen_line(aether a, const char* msg) {
+    if (!a->listen_active || a->no_build) return;
+    emit_puts_str(a, msg);
+}
+
+bool aether_has_listen(aether a) { return a->listen_active; }
+void aether_clear_listen(aether a) { a->listen_active = false; }
+
+#else
+
+bool aether_has_listen(aether a) { return false; }
+void aether_clear_listen(aether a) { }
+
+#endif
+
 enode etype_access(etype target, string name) { sequencer
     aether a = target->mod;    
     Au_t target_src = target->au->member_type == AU_MEMBER_VAR ? target->au->src : target->au;
@@ -8410,6 +8444,9 @@ void llvm_reinit(aether a) {
     a->current_file = a->file;
 
     a->target_data = LLVMCreateTargetDataLayout(a->target_machine);
+#ifndef NDEBUG
+    aether_init_listen(a);
+#endif
     if (a->debug) {
         a->compile_unit = LLVMDIBuilderCreateCompileUnit(
             a->dbg_builder, LLVMDWARFSourceLanguageC, a->file,
