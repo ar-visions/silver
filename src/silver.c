@@ -13,6 +13,11 @@ void build_fn(silver a, efunc fmem, callback preamble, callback postamble);
 bool is_explicit_ref(enode);
 enode enode_ref(aether, enode, etype);
 void aether_ensure_terminator(aether, enode);
+void aether_init_listen(aether);
+void aether_emit_listen_entry(aether, const char*);
+void aether_emit_listen_line(aether, const char*);
+bool aether_has_listen(aether);
+void aether_clear_listen(aether);
 etype evar_type(evar a);
 enode parse_import(silver a);
 enode parse_export(silver a);
@@ -3772,6 +3777,26 @@ enode parse_statement(silver a)
         emit_debug_loc((aether)a,
             a->statement_origin->source->chars,
             a->statement_origin->line, a->statement_origin->column);
+#ifndef NDEBUG
+    if (f && aether_has_listen((aether)a) && a->statement_origin && !a->no_build) {
+        token tk = a->statement_origin;
+        num   ln = tk->line;
+        char  trace_msg[512];
+        int   pos = 0;
+        // build "[file:line] tokens..." prefix
+        string fn = filename(tk->source);
+        pos += snprintf(trace_msg, sizeof(trace_msg), "[%s:%-4lld] ", fn->chars, ln);
+        for (int j = 0; j < tk->indent && pos < (int)sizeof(trace_msg) - 2; j++)
+            trace_msg[pos++] = ' ';
+        for (int i = a->cursor; i < len(a->tokens) && pos < (int)sizeof(trace_msg) - 2; i++) {
+            token t = (token)a->tokens->origin[i];
+            if (t->line != ln) break;
+            int r = snprintf(trace_msg + pos, sizeof(trace_msg) - pos, "%s ", t->chars);
+            if (r > 0) pos += r;
+        }
+        aether_emit_listen_line((aether)a, trace_msg);
+    }
+#endif
     Au_t      top       = top_scope(a);
     silver    module    = is_module(top) ? a : null;
     etype     rec_top   = is_rec(top) ? u(etype, top) : null;
@@ -7172,6 +7197,22 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             a->statement_origin = hold((token)f->body->origin[0]);
         push_scope(a, (Au)f, 24);
 
+#ifndef NDEBUG
+        {
+            etype rec = context_record(a);
+            const char* cname = (rec && rec->au && rec->au->ident) ? rec->au->ident : null;
+            const char* fname = f->au->ident ? f->au->ident : "?";
+            char listen_key[256];
+            if (cname)
+                snprintf(listen_key, sizeof(listen_key), "%s.%s", cname, fname);
+            else
+                snprintf(listen_key, sizeof(listen_key), "%s", fname);
+            aether_clear_listen((aether)a);
+            if (a->listen && (strcmp(a->listen->chars, "*") == 0 || strcmp(a->listen->chars, listen_key) == 0))
+                ((aether)a)->listen_active = true;
+        }
+#endif
+
         if (is_lambda((Au)f))
             push_lambda_members((aether)a, f);
 
@@ -7277,6 +7318,7 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
         pop_scope(a);
         if (f->target)
             pop_scope(a);
+        aether_clear_listen((aether)a);
     }
 
     // safety: ensure every function with code has a terminator on its last block
