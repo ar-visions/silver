@@ -671,6 +671,10 @@ forward(any)
     M(AA,BB, s, method, public, none,   live_window_set, handle) \
     M(AA,BB, s, method, public, handle, live_vk_get) \
     M(AA,BB, s, method, public, none,   live_vk_set,    handle) \
+    M(AA,BB, s, method, public, handle, live_surface_get) \
+    M(AA,BB, s, method, public, none,   live_surface_set, handle) \
+    M(AA,BB, s, method, public, handle, live_swapchain_get) \
+    M(AA,BB, s, method, public, none,   live_swapchain_set, handle) \
     M(AA,BB, s, method, public, Au_t,   typeid_string,  Au_t) \
     M(AA,BB, s, method, public, none,   validate_meta,  Au_t, Au_t) \
     M(AA,BB, s, method, public, Au_t,   module_lookup,  symbol) \
@@ -719,6 +723,8 @@ forward(any)
     M(AA,BB, s, method, public, none, tap, symbol, hook) \
     M(AA,BB, s, method, public, none, untap, symbol) \
     M(AA,BB, s, method, public, none, engage, cstrs) \
+    M(AA,BB, s, method, public, none, au_set_compiler, Au) \
+    M(AA,BB, s, method, public, bool, au_compile_ready) \
     M(AA,BB, s, vargs, public, map, args, cstrs, symbol) \
     M(AA,BB, s, vargs, public, map, map_of, symbol) \
     M(AA,BB, i, guard, public, bool, is_generic,    Au) \
