@@ -91,9 +91,10 @@ def get_modules(src_dir):
     """get all modules with their info"""
     modules = []
     for src in glob.glob(f"{src_dir}/*.c") + glob.glob(f"{src_dir}/*.cc"):
-        _, deps, links, cflags, target, _ = parse_g_file(Path(src).with_suffix('.g'))
+        _, deps, links, cflags, target, _, libname = parse_g_file(Path(src).with_suffix('.g'))
         modules.append({
             'name': Path(src).stem,
+            'libname': libname,
             'src': src,
             'deps': deps,
             'links': links,
@@ -136,7 +137,8 @@ def resolve_deps(modules, deps, plat, root_p, builddir):
             if dep_mod['target'] == 'static':
                 out.append(f"{root_p}/lib/{plat['lib_pre']}{d}{plat['lib']}")
             elif dep_mod['target'] == 'shared':
-                out.append(f"{root_p}/lib/{plat['lib_pre']}{d}{plat['shared']}")
+                out_name = dep_mod.get('libname') or d
+                out.append(f"{root_p}/lib/{plat['lib_pre']}{out_name}{plat['shared']}")
             elif dep_mod['target'] == 'app':
                 out.append(f"{builddir}/{d}{plat['exe']}")
             else:
@@ -199,7 +201,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     main_mod, target_type = None, None
     project_g = root / "src" / f'{project}.g'
     if project_g.exists():
-        _, _, links, cflags, target_type, _ = parse_g_file(project_g)
+        _, _, links, cflags, target_type, _, _ = parse_g_file(project_g)
         if target_type:
             for m in modules:
                 if m['name'] == project:
@@ -329,7 +331,9 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         flags_var = "cxxflags" if m['is_cxx'] else "cflags"
         
         n.append(f"build {obj}: {rule} {escape_path(norm_path(m['src']))} | {' '.join(deps)}")
-        n.append(f"  {flags_var} = -I{build_p}/src/{m['name']}  ${flags_var} {' '.join(m['cflags'])} -DMODULE=\\\"{m['name']}\\\"")
+        inc_name = m['name'] if os.path.isdir(f"{build_p}/src/{m['name']}") else m['name'].rsplit('-', 1)[0]
+        mod_name = m['libname'] if m.get('libname') else m['name']
+        n.append(f"  {flags_var} = -I{build_p}/src/{inc_name}  ${flags_var} {' '.join(m['cflags'])} -DMODULE=\\\"{mod_name}\\\"")
     n.append("")
     
     # handle extra source files not tied to modules
@@ -373,7 +377,8 @@ def write_ninja(project, root, import_dir, build_dir, plat):
             n.append("")
 
         elif m['target'] == 'shared':
-            output = f"{import_p}/lib/{plat['lib_pre']}{m['name']}{plat['shared']}"
+            out_name = m['libname'] if m.get('libname') else m['name']
+            output = f"{import_p}/lib/{plat['lib_pre']}{out_name}{plat['shared']}"
             install_name = os.path.basename(output)
             n.append(f"build {output}: link_shared {objs} {' '.join(deps)}")
             libs = sorted(set(m['links']))

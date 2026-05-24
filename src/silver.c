@@ -3,6 +3,9 @@
 #include <execinfo.h>
 #include <ports.h>
 
+#ifdef BUILD_LIBRARY
+
+static void silver_module();
 Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type);
 enode e_convert_or_cast(aether a, etype output, enode input);
 
@@ -396,17 +399,6 @@ array compact_tokens(array tokens) {
 string model_keyword() {
     return null;
 }
-
-// orbiter could build silver in this way from .c
-// importing 
-#ifndef BUILD_LIBRARY
-int main(int argc, cstrs argv) {
-    engage(argv);
-    silver a = silver(argv);
-    return 0;
-}
-#endif
-
 
 typedef struct {
     OPType ops[3];
@@ -1075,6 +1067,8 @@ static void prepare_record_cb(Au a_au, Au t_au) {
 void silver_init(silver a) {
     hold(a);
 
+    if (!keywords) silver_module();
+
     bool is_once = !a->watch || a->is_external;
 
     if (a->version) {
@@ -1146,6 +1140,7 @@ void silver_init(silver a) {
     //a->import_cache = map();
     a->artifacts    = array(32);
     a->artifacts_path = f(path, "%o/%o.artifacts", a->build_dir, a->name);
+    a->source_path    = f(path, "%o/%o.source",    a->build_dir, a->name);
     a->resources    = array(32);
 
     verify(a->module && len(a->module), "required argument: module (path/to/module)");
@@ -1256,19 +1251,23 @@ void silver_init(silver a) {
     if (product_exists && product_m > module_file_m) {
 
         if (file_exists("%o", a->artifacts_path) && modified_time(a->artifacts_path) > 0) {
-            fdata f = fdata(read, true, src, a->artifacts_path);
+            FILE *f = fopen(a->artifacts_path->chars, "r");
             u64 newest = 0;
-            while (true) {
-                string art = (string)file_read(f, typeid(string));
-                if (!art) break;
-                path artifact = path(art);
-                u64  m = modified_time(artifact);
-                if  (m > newest) newest = m;
+            if (f) {
+                char buf[4096];
+                while (fgets(buf, sizeof(buf), f)) {
+                    buf[strcspn(buf, "\n")] = '\0';
+                    if (!*buf) continue;
+                    path artifact = path(buf);
+                    u64 m = modified_time(artifact);
+                    if (m > newest) newest = m;
+                }
+                fclose(f);
             }
             if (!newest || newest < module_file_m)
                 update_product = false;
         } else
-            update_product = false; // it has no build artifacts, so we only use the date on itself
+            update_product = false;
     }
 
     if (a->clean) update_product = true;
@@ -1287,6 +1286,16 @@ void silver_init(silver a) {
         a->product = hold(absolute(a->product_link));
         set(silver_compiled, (Au)a->name, (Au)_bool(true));
         module_erase(a->au, null);
+        // silver-host.c is the live-app launcher — always recompile it, never cache
+        {
+            path host_src = f(path, "%s/src/silver-host.c", SILVER);
+            path host_dst = f(path, "%o/%o", a->build_dir, a->name);
+            if (file_exists("%o", host_src) && file_exists("%o", host_dst)) {
+                print("silver-host: %o -> %o", host_src, host_dst);
+                vexec(a->verbose, "silver-host", "gcc %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
+                    a->debug ? "-O0 -g" : "-O2", host_dst, host_src, SILVER, SILVER, SILVER);
+            }
+        }
         return;
     }
 
@@ -1367,7 +1376,11 @@ void silver_init(silver a) {
                     push(a->implements, (Au)files[i]);
                 }
             
+            printf("silver_init: calling parse for module=%s\n",
+                a->name ? a->name->chars : "?");
             parse(a);
+            printf("silver_init: parse done for module=%s\n",
+                a->name ? a->name->chars : "?");
 
             // print all expected defs not used
             if (len(a->defs_expect))
@@ -1399,6 +1412,8 @@ void silver_init(silver a) {
             mtime = current_time();
             retry = !is_once;
             a->error = true;
+            printf("silver_init error: module=%s\n",
+                a->name ? a->name->chars : "?");
         }
         finally()
     } while (!a->is_external && retry); // externals do not watch (your watcher must invoke everything)
@@ -5338,8 +5353,11 @@ static void deploy_resources(path src, path dst) {
 
 // build with optional bc path; if no bc path we use the project file system
 none silver_build(silver a) {
+    printf("silver_build: module=%s\n", a->name ? a->name->chars : "?");
     path ll = null, bc = null;
-    verify(emit(a, (ARef)&ll, (ARef)&bc), "compilation failed");
+    bool emit_ok = emit(a, (ARef)&ll, (ARef)&bc);
+    printf("silver_build: emit_ok=%d ll=%s\n", emit_ok, ll ? ll->chars : "null");
+    verify(emit_ok, "compilation failed");
     verify(bc != null, "compilation failed");
 
     //bool   is_debug   = a->debug;
@@ -5519,6 +5537,8 @@ none silver_build(silver a) {
             concat(fw_flags, f(string, "-framework %o", (string)fw_i->key));
         }
     }
+    if (a->is_library) unlink(a->product->chars);
+
     verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o %o %s",
         install, linker, a->is_library ? shared : "", a->debug ? "-g" : "",
 
@@ -5546,12 +5566,13 @@ none silver_build(silver a) {
 
     }
 
-    // for live_app modules: compile the host launcher as the app binary
+    // for live_app modules: compile the host launcher as the app binary (never cached)
     if (((aether)a)->is_live) {
         path host_src = f(path, "%s/src/silver-host.c", SILVER);
         path host_dst = f(path, "%o/%o", a->build_dir, a->name);
         verify(file_exists("%o", host_src), "silver-host.c not found at %o", host_src);
-        exec(a->verbose, "gcc %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
+        print("silver-host: %o -> %o", host_src, host_dst);
+        vexec(a->verbose, "silver-host", "gcc %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
             a->debug ? "-O0 -g" : "-O2", host_dst, host_src, SILVER, SILVER, SILVER);
     }
 
@@ -5577,12 +5598,21 @@ none silver_build(silver a) {
         }
     }
 
-    // write out each ark we find
-    fdata ar = fdata(write, true, src, a->artifacts_path);
-    each(a->artifacts, path, ark)
-        file_write(ar, (Au)string(ark->chars));
-
-    file_close(ar);
+    // split artifacts: .sos → .artifacts (cache check), .ag/.c → .source (host watch)
+    FILE *ar = fopen(a->artifacts_path->chars, "w");
+    FILE *sr = fopen(a->source_path->chars,    "w");
+    if (sr && a->module_file)
+        fprintf(sr, "%s\n", a->module_file->chars);
+    each(a->artifacts, path, ark) {
+        const char *dot = strrchr(ark->chars, '.');
+        if (dot && (strcmp(dot, ".ag") == 0 || strcmp(dot, ".c") == 0 || strcmp(dot, ".cc") == 0)) {
+            if (sr) fprintf(sr, "%s\n", ark->chars);
+        } else {
+            if (ar) fprintf(ar, "%s\n", ark->chars);
+        }
+    }
+    if (ar) fclose(ar);
+    if (sr) fclose(sr);
 }
 
 bool silver_next_is_neighbor(silver a) {
@@ -8934,6 +8964,19 @@ etype silver_read_def(silver a, interface access) {
     return mdl;
 }
 
+#else
+
+// orbiter could build silver in this way from .c
+// importing 
+int main(int argc, cstrs argv) {
+    engage(argv);
+    silver a = silver(argv);
+    return 0;
+}
+
+#endif
+
+#ifdef BUILD_LIBRARY
 define_class(chatgpt, codegen)
 define_class(claude,  codegen)
 define_class(gemini,  codegen)
@@ -8941,3 +8984,5 @@ define_class(silver, aether)
 define_class(exports, Au)
 
 initializer(silver_module)
+#endif
+

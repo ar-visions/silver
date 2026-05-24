@@ -1,2 +1,2 @@
 type:       app
-modules:    Au net aether
+modules:    silver-lib Au net aether

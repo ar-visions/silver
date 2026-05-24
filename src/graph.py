@@ -74,13 +74,13 @@ def expand_vars(s):
 def parse_g_file(path):
     """parse .g file for deps, link flags, target type, and imports"""
     if not os.path.exists(path):
-        return [], [], [], [], None, []
+        return [], [], [], [], None, [], None
 
     domain, owner, _ = git_remote_info(path)
 
     install_headers = []
     lines = open(path).read().splitlines()
-    deps, links, cflags, target, imports = [], [], [], None, []
+    deps, links, cflags, target, imports, libname = [], [], [], None, [], None
     current_key = None
     i = 0
 
@@ -109,6 +109,9 @@ def parse_g_file(path):
         
             elif current_key == "cflags":
                 cflags.extend(expand_vars(val).split())
+
+            elif current_key == "libname":
+                libname = val.strip()
 
             elif current_key == "import":
                 w4 = val.strip()
@@ -155,4 +158,4 @@ def parse_g_file(path):
 
         i += 1
 
-    return install_headers, deps, links, cflags, target, imports
+    return install_headers, deps, links, cflags, target, imports, libname
