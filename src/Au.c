@@ -2136,6 +2136,18 @@ Au_t module_lookup(symbol name) {
     return def_module(name);
 }
 
+static void* au_live_window = null;
+static void* au_live_vk     = null;
+
+handle live_window_get() { return au_live_window; }
+void   live_window_set(handle w) { au_live_window = w; }
+
+handle live_vk_get() { return au_live_vk; }
+void   live_vk_set(handle vk) {
+    if (au_live_vk) drop(au_live_vk);
+    au_live_vk = vk ? hold(vk) : null;
+}
+
 void module_erase(Au_t module, symbol name) {
     if (!module) return;
     // unregister from list by setting null
@@ -7821,6 +7833,10 @@ i32 app_run(app a) {
     return 0;
 }
 
+void live_app_run(live_app a)     { }
+bool live_app_frame(live_app a)   { return false; }
+void live_app_destroy(live_app a) { }
+
 Au coverage_run(coverage a) {
     return null;
 }
@@ -7930,6 +7946,7 @@ define_class(mutex, Au)
 define_class(srcfile, Au);
 
 define_class(app, Au)
+define_class(live_app, Au)
 define_class(ielement, Au)
 
 define_class(coverage, Au)

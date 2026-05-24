@@ -25,15 +25,32 @@
             "name":             "orbiter",
             "type":             "lldb",
             "request":          "launch",
-            "preLaunchTask":    "build-silver-debug",
-            "program":          "${workspaceFolder}/install/debug/silver",
-            "args":             [ "orbiter", "--listen", "FileLayer.draw", "--run" ],
-            "cwd":              "${workspaceFolder}/install/share/orbiter",
+            "preLaunchTask":    "build-orbiter",
+            "program":          "${workspaceFolder}/platform/native/debug/orbiter",
+            "args":             [],
+            "cwd":              "${workspaceFolder}/platform/native/share/orbiter",
             "stopOnEntry":      false,
             "env": {
-                "LD_LIBRARY_PATH":  "${workspaceFolder}/install/lib",
-                "IMPORT":           "${workspaceFolder}/install",
-                "ASAN_OPTIONS":     "detect_leaks=0 quarantine_size_mb=0",
+                "LD_LIBRARY_PATH":  "${workspaceFolder}/platform/native/lib:${workspaceFolder}/install/lib:${workspaceFolder}/install/debug",
+                "VK_LAYER_PATH":    "${workspaceFolder}/install/share/vulkan/explicit_layer.d",
+                "AU_SKIP_DROP":     "",
+                "SILVER":           "/src/silver"
+            },
+            "initCommands": [
+                "settings set target.process.stop-on-exec false"
+            ]
+        },
+        {
+            "name":             "orbiter (listen FileLayer.draw)",
+            "type":             "lldb",
+            "request":          "launch",
+            "preLaunchTask":    "build-orbiter-listen",
+            "program":          "${workspaceFolder}/platform/native/debug/orbiter",
+            "args":             [],
+            "cwd":              "${workspaceFolder}/platform/native/share/orbiter",
+            "stopOnEntry":      false,
+            "env": {
+                "LD_LIBRARY_PATH":  "${workspaceFolder}/platform/native/lib:${workspaceFolder}/install/lib:${workspaceFolder}/install/debug",
                 "VK_LAYER_PATH":    "${workspaceFolder}/install/share/vulkan/explicit_layer.d",
                 "AU_SKIP_DROP":     ""
             },

@@ -84,27 +84,22 @@
         {
             "label": "build-orbiter",
             "type": "shell",
-			"options": {
-                "cwd": "${workspaceFolder}/../orbiter"
-            },
-            "group": {
-                "kind": "build",
-                "isDefault": true
-            },
-            "presentation": {
-                "reveal": "always",
-                "panel": "shared",
-                "group": "build0",
-                "clear": true
-            },
-			"isBackground": false,
-			"problemMatcher": ["$gcc"],
-            "osx": {
-                "command": "make -j8"
-            },
-            "linux": {
-                "command": "make -j8"
-            }
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": { "kind": "build", "isDefault": false },
+            "presentation": { "reveal": "always", "panel": "shared", "group": "build0", "clear": true },
+            "isBackground": false,
+            "problemMatcher": ["$gcc"],
+            "command": "export LD_LIBRARY_PATH=${workspaceFolder}/platform/native/lib:${workspaceFolder}/install/lib:${workspaceFolder}/install/debug:$LD_LIBRARY_PATH && ${workspaceFolder}/platform/native/debug/silver orbiter --clean"
+        },
+        {
+            "label": "build-orbiter-listen",
+            "type": "shell",
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": { "kind": "build", "isDefault": false },
+            "presentation": { "reveal": "always", "panel": "shared", "group": "build0", "clear": true },
+            "isBackground": false,
+            "problemMatcher": ["$gcc"],
+            "command": "export LD_LIBRARY_PATH=${workspaceFolder}/platform/native/lib:${workspaceFolder}/install/lib:${workspaceFolder}/install/debug:$LD_LIBRARY_PATH && ${workspaceFolder}/platform/native/debug/silver orbiter --clean --listen FileLayer.draw"
         },
         {
             "label": "build-asnes",
