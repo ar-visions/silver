@@ -2218,7 +2218,7 @@ Texture Display
             if [ caps.currentExtent.width != UINT32_MAX ]
                 width  = caps.currentExtent.width
                 height = caps.currentExtent.height
-            old_swapchain: vk_swapchain
+            old_swapchain : VkSwapchainKHR [ Au.live_swapchain_get[] ]
             result: vkCreateSwapchainKHR[ vk.device, VkSwapchainCreateInfoKHR [
                 sType:                 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
                 pNext:                 null,
@@ -2234,9 +2234,10 @@ Texture Display
                 compositeAlpha:        VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
                 presentMode:           present_mode,
                 clipped:               VK_TRUE,
-                oldSwapchain:          (old_swapchain != null) ? old_swapchain : null
+                oldSwapchain:          old_swapchain
             ], null, ref vk_swapchain ]
             expect result == VK_SUCCESS, "Failed to create swapchain"
+            Au.live_swapchain_set[ handle[ vk_swapchain ] ]
             if [ old_swapchain != null ]
                 vkDestroySwapchainKHR[ vk.device, old_swapchain, null ]
         
@@ -2359,7 +2360,6 @@ Texture Display
         return result
 
     func init [ ]
-        hold[]
         if [ !format ]
             format = Pixel.rgba8
         if [ !list ]
@@ -2381,6 +2381,9 @@ Texture Display
                 expect glfw, "Failed to create GLFW window"
                 Au.live_window_set[ glfw ]
 
+            # always refresh title (window is reused on reload, glfwCreateWindow not called again)
+            glfwSetWindowTitle[ glfw, title.chars ]
+
             # re-register callbacks each time (new Display instance on reload)
             glfwSetWindowUserPointer    [ glfw, handle[ a ] ]
             glfwSetKeyCallback          [ glfw, ref handle_glfw_key ]
@@ -2391,13 +2394,16 @@ Texture Display
 
             glfwSetFramebufferSizeCallback [ glfw, ref handle_glfw_framebuffer_size ]
 
-            # vulkan surface
-            result: glfwCreateWindowSurface[ vk.instance, glfw, null, ref surf ]
-            expect result == VK_SUCCESS, "Failed to create Vulkan surface"
+            # reuse persistent surface across hot-reloads — drivers disallow
+            # creating a new surface for the same xcb window after destroying the old one
+            surf = handle Au.live_surface_get[]
+            if [ !surf ]
+                result: glfwCreateWindowSurface[ vk.instance, glfw, null, ref surf ]
+                expect result == VK_SUCCESS, "Failed to create Vulkan surface"
+                Au.live_surface_set[ surf ]
 
         # finish device
         vk_surface = surf
-        printf[ "surface is set to %p (%p) wh = %i %i\n", surf, vk_surface, width, height ]
         vk.attach[ surf ]
 
         # surface capabilities + formats
@@ -2452,11 +2458,12 @@ Texture Display
     public func set_title [ t: string ]
         glfwSetWindowTitle[ glfw, t.chars ]
 
+
     func dealloc [ ]
         info : Au.header[ a ]
         if [ !backbuffer ]
-            vkDestroySwapchainKHR[ vk.device, vk_swapchain, null ]
-            vkDestroySurfaceKHR[ vk.instance, vk_surface, null ]
+            vkDeviceWaitIdle[ vk.device ]
+            # window, surface, swapchain all owned by Au globals — do not destroy here
 
 
 # ---- format conversion ----

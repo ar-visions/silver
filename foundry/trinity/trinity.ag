@@ -123,7 +123,8 @@ abstract live_app media_app
         return !glfwWindowShouldClose[ w.glfw ]
 
     func destroy [ ]
-        return
+        if [ w ]
+            w.drop[]
 
     func render [ ]
         return
@@ -1432,12 +1433,13 @@ abstract media_app trinity
     func update_scene [] return
          
     func run[]
+        puts 'reload 2'
         type : typeid[a]
         background_type : Au.find_type[ (background) ? background.chars : null, null ]
         window : Window[ app_object: a, title:type.ident, st: Style [ a ],
             width:(width) ?? 1888, height:(height) ?? 888, background_type:background_type ]
         expect window.vk, "context didnt work"
-
+        window.hold[]
         w = window
         w.update *[]
         render   *[]

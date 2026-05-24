@@ -2136,8 +2136,25 @@ Au_t module_lookup(symbol name) {
     return def_module(name);
 }
 
-static void* au_live_window = null;
-static void* au_live_vk     = null;
+static void* au_live_window   = null;
+static void* au_live_vk       = null;
+static void* au_live_surface  = null;
+static void* au_live_swapchain = null;
+
+static Au au_compiler = null;
+Au method_vargs(Au a, Au_t mem, int n_args, ...);
+
+void au_set_compiler(Au inst)       { au_compiler = inst; }
+bool au_compile_ready()             { return au_compiler != null; }
+void au_compile_invoke(const char* name) {
+    if (!au_compiler) { printf("au_compile_invoke: no compiler set\n"); return; }
+    Au_t type = isa(au_compiler);
+    Au_t m = find_member(type, "compile", AU_MEMBER_FUNC, 0, true);
+    printf("au_compile_invoke: type=%s compile=%p\n", type ? type->ident : "?", m ? m->value : null);
+    if (!m || !m->value) { printf("au_compile_invoke: compile method not found\n"); return; }
+    typedef void (*compile_fn)(Au, Au);
+    ((compile_fn)m->value)(au_compiler, (Au)string(name));
+}
 
 handle live_window_get() { return au_live_window; }
 void   live_window_set(handle w) { au_live_window = w; }
@@ -2148,15 +2165,20 @@ void   live_vk_set(handle vk) {
     au_live_vk = vk ? hold(vk) : null;
 }
 
+handle live_surface_get()  { return au_live_surface; }
+void   live_surface_set(handle s) { au_live_surface = s; }
+
+handle live_swapchain_get() { return au_live_swapchain; }
+void   live_swapchain_set(handle s) { au_live_swapchain = s; }
+
 void module_erase(Au_t module, symbol name) {
-    if (!module) return;
+    if (!module && !name) return;
     // unregister from list by setting null
     for (int i = 0; i < modules.count; i++) {
         Au_t m = (Au_t)modules.origin[i];
-        if (m && !m->ident) continue;
+        if (!m || (m && !m->ident)) continue;
         
         if (m && module == m || (name && m->ident && strcmp(m->ident, name) == 0)) {
-            //printf("erase: %s\n", m->ident);
             modules.origin[i] = null;
             m->members.count = 0;
             m->args.count = 0;
@@ -3365,6 +3387,8 @@ none Au_drop_members(Au a) {
                     !is_inlay(m) && m->type->is_class) {
                 if (m->meta.a == typeid(weak))
                     continue;
+                if (m->is_context)
+                    continue;
                 if (m->traits & AU_TRAIT_UNMANAGED)
                     continue;
                 #ifndef NDEBUG
@@ -3970,9 +3994,13 @@ bool Au_member_set(Au a, Au_t m, Au value) {
             m->type->typesize : vtype->typesize;
         memcpy(member_ptr, value, sz);
     } else if ((Au)*member_ptr != value) {
-        Au old = *member_ptr;
-        *member_ptr = Au_hold(value);
-        Au_drop(old);
+        if (m->is_context) {
+            *member_ptr = value;
+        } else {
+            Au old = *member_ptr;
+            *member_ptr = Au_hold(value);
+            Au_drop(old);
+        }
     }
     Au_AF_set_name(a, m->ident); // we know index from m, and may set it more efficiently
     return true;

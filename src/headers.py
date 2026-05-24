@@ -53,7 +53,7 @@ def write_import_header(module, paths, env_vars):
         imports = ["Au"]
     else:
         if os.path.isfile(graph_file):
-            _, graph_nodes, _, _, _, _ = parse_g_file(graph_file)
+            _, graph_nodes, _, _, _, _, _ = parse_g_file(graph_file)
             imports = [module] + graph_nodes
         else:
             imports = ["Au", module]
@@ -459,7 +459,7 @@ def process_modules(paths):
         # Check for .g file and get install headers
         graph_file = Path(src_directive) / f"{module}.g"
         if graph_file.exists():
-            install_headers, deps, links, cflags, target, imports = parse_g_file(graph_file)
+            install_headers, deps, links, cflags, target, imports, _ = parse_g_file(graph_file)
             
             # Symlink install headers into the module's generated directory
             module_gen_dir = os.path.join(gen_dir, module)

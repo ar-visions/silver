@@ -4,6 +4,7 @@ import vec
 import img
 import gltf
 import trinity
+import silver
 
 import <stdio.h>
     -lm
@@ -23,7 +24,10 @@ enum ConsoleKind
     shell : 0
     lldb  : 1
 
-trinity orbiter
+#proto compiler ... this is in effect what we are doing, and if we 'wanted' to we could register this for enumeration at runtime
+#    func compiler [ module: string ]
+
+trinity orbiter # implements compiler
     intern avg_fps    : f32
     public open_files  : array path
     public active_idx  : i32
@@ -31,20 +35,29 @@ trinity orbiter
     public active_target  : string
     public active_console : ConsoleKind
     public filter_text    : string
-
+ 
     func init []
+        puts 'init 1'
         width          = 1888
+        puts 'init 2'
         height         = 888
         background     = 'Background'
         open_files     = array path []
         open_files    += path '/src/silver/src/silver.c'
         open_files    += path '/src/silver/src/aether.c'
         open_files    += path '/src/silver/src/Au.c'
-        active_idx     = 0
+        active_idx     = 0 
         active_panel   = 'files'
         active_target  = 'silver'
         active_console = ConsoleKind.shell
         filter_text    = ''
+        puts 'init 3'
+        au_set_compiler[a]
+        puts 'init 4'
+ 
+    func compile [ mod: string ]
+        puts 'try to compile {mod}' 
+        silver [ clean: true, verbose: true, module: mod ]
 
     func open_file [ p: path ]
         for [ i: i32 0, i < open_files.count, i += 1 ]
@@ -100,7 +113,7 @@ trinity orbiter
                 fl : FileList ev.target.parent.elements["files"]
                 if [ fl ] fl.pristine = false
 
-                    
+    
     func on_key [ ev: Event ]
         if [ !ev.target ] return
 
@@ -119,8 +132,8 @@ trinity orbiter
     public func on_render [ w: Window ] -> Elements
         fps : f32 [ w.frame_factor * 60.0 ]
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
-        w.set_title[ 'orbiter 44 | {pad[i32[avg_fps]]} fps' ]
-
+        w.set_title[ 'orbiter 4444 | {pad[i32[avg_fps]]} fps' ]
+    
         active_path : path (open_files.count > 0) ? open_files[active_idx] : null
         active_name : string (active_path) ? active_path.filename[] : string[]
 

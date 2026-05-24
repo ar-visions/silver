@@ -6127,11 +6127,16 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             Au_t fn_frame   = find_member(live_spec->au, "frame",   AU_MEMBER_FUNC, 0, false);
             Au_t fn_destroy = find_member(live_spec->au, "destroy", AU_MEMBER_FUNC, 0, false);
 
-            // --- constructor: module_init + create instance + run ---
-            Au_t au_ctor = def_member(a->au, "__live_ctor", typeid(none), AU_MEMBER_FUNC, 0);
+            // --- silver_live_init(): module_init + create instance + run ---
+            // NOT a global constructor — host calls it explicitly after dlopen so that
+            // dependency .so refcounts are bumped before the old handle is dlclose'd.
+            Au_t au_ctor = def_member(a->au, "silver_live_init", typeid(none), AU_MEMBER_FUNC, 0);
             efunc ctor_fn = efunc(mod, a, au, au_ctor,
                 loaded, true, used, true, has_code, true);
             etype_implement((etype)ctor_fn, false);
+            // give the LLVM function the exported name silver_live_init
+            LLVMSetValueName2(ctor_fn->value, "silver_live_init", strlen("silver_live_init"));
+            LLVMSetLinkage(ctor_fn->value, LLVMExternalLinkage);
             push_scope(a, (Au)ctor_fn, 11);
             e_fn_call(a, module_init_fn, null, false, false);
 
@@ -6147,7 +6152,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))
                 LLVMBuildRetVoid(B);
             pop_scope(a);
-            set_global_construct(a, ctor_fn);
+            // NOT calling set_global_construct — host drives the init sequence
 
 
             // --- silver_live_frame() -> int (1=running, 0=done) ---

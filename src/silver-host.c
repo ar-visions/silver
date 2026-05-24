@@ -11,8 +11,14 @@
 
 typedef int  (*frame_fn)(void);
 typedef void (*destroy_fn)(void);
+typedef void (*init_fn)(void);
+typedef int  (*au_compile_ready_fn)(void);
+typedef void (*au_compile_invoke_fn)(const char*);
 #define FRAME_SYM   "silver_live_frame"
 #define DESTROY_SYM "silver_live_destroy"
+#define INIT_SYM    "silver_live_init"
+
+#define MAX_SOURCES 128
 
 static const char* g_app_name = "app";
 
@@ -49,10 +55,53 @@ static void cd_share(const char* bindir, const char* name) {
 static void* try_dlopen(const char* lib) {
     void* h = NULL;
     for (int i = 0; i < 20 && !h; i++) {
-        h = dlopen(lib, RTLD_NOW | RTLD_GLOBAL);
+        h = dlopen(lib, RTLD_NOW | RTLD_GLOBAL | RTLD_DEEPBIND);
         if (!h) usleep(50000);  // 50ms retry — handles linker write race
     }
     return h;
+}
+
+// dlopen caches by dev+inode. If the linker overwrites the .so in-place (same
+// inode), dlopen returns the old cached handle. Copy to a unique /tmp path to
+// guarantee a fresh inode on every hot-reload.
+static void* reload_dlopen(const char* lib, time_t ts) {
+    char tmp[4096];
+    snprintf(tmp, sizeof(tmp), "/tmp/hotreload_%ld.so", (long)ts);
+    FILE *src = fopen(lib, "rb");
+    FILE *dst = fopen(tmp, "wb");
+    if (src && dst) {
+        char buf[65536];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof(buf), src)) > 0)
+            fwrite(buf, 1, n, dst);
+        fclose(src);
+        fclose(dst);
+        void* h = try_dlopen(tmp);
+        unlink(tmp);  // unlink immediately — dlopen holds the inode open
+        return h;
+    }
+    if (src) fclose(src);
+    if (dst) { fclose(dst); unlink(tmp); }
+    return try_dlopen(lib);  // fallback
+}
+
+typedef struct { char path[4096]; time_t mtime; } source_watch;
+
+static int load_sources(const char* artifacts_path,
+                        source_watch* srcs, int* nsr) {
+    *nsr = 0;
+    FILE *f = fopen(artifacts_path, "r");
+    if (!f) return -1;
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), f) && *nsr < MAX_SOURCES) {
+        buf[strcspn(buf, "\n")] = '\0';
+        if (!*buf) continue;
+        strncpy(srcs[*nsr].path, buf, sizeof(srcs[*nsr].path) - 1);
+        srcs[*nsr].mtime = file_mtime(buf);
+        (*nsr)++;
+    }
+    fclose(f);
+    return 0;
 }
 
 int main(int argc, char** argv) {
@@ -80,6 +129,9 @@ int main(int argc, char** argv) {
     char product[4096];
     snprintf(product, sizeof(product), "%s/%s.product", bindir, name);
 
+    char artifacts[4096];
+    snprintf(artifacts, sizeof(artifacts), "%s/%s.source", bindir, name);
+
     char lib[4096];
     ssize_t n = readlink(product, lib, sizeof(lib) - 1);
     if (n < 0) {
@@ -93,31 +145,77 @@ int main(int argc, char** argv) {
     void* handle = try_dlopen(lib);
     if (!handle) { fprintf(stderr, "%s: dlopen %s: %s\n", name, lib, dlerror()); return 1; }
 
+    // initial startup: call silver_live_init explicitly (not a global constructor)
+    init_fn    do_init    = dlsym(handle, INIT_SYM);
     frame_fn   do_frame   = dlsym(handle, FRAME_SYM);
     destroy_fn do_destroy = dlsym(handle, DESTROY_SYM);
+    if (do_init) do_init();
 
     int    live       = getenv("SILVER") != NULL;
     time_t last_mtime = live ? file_mtime(product) : 0;
 
+    source_watch srcs[MAX_SOURCES];
+    int nsr = 0;
+    if (live) load_sources(artifacts, srcs, &nsr);
+
     while (do_frame && do_frame()) {
         if (!live) continue;
+
+        // watch source files — trigger recompile when any .ag or .c changes
+        for (int i = 0; i < nsr; i++) {
+            time_t cur = file_mtime(srcs[i].path);
+            if (cur != srcs[i].mtime) {
+                fprintf(stdout, "%s: source changed: %s\n", name, srcs[i].path);
+                // use handle (not RTLD_DEFAULT) so we find symbols in transitive deps (libAu.so)
+                au_compile_ready_fn  ready_fn  = (au_compile_ready_fn)dlsym(handle,  "au_compile_ready");
+                au_compile_invoke_fn invoke_fn = (au_compile_invoke_fn)dlsym(handle, "au_compile_invoke");
+                fprintf(stdout, "%s: ready_fn=%p invoke_fn=%p ready=%d\n", name,
+                    (void*)ready_fn, (void*)invoke_fn, ready_fn ? ready_fn() : -1);
+                if (ready_fn && ready_fn() && invoke_fn) {
+                    invoke_fn(name);
+                } else {
+                    char cmd[8192];
+                    snprintf(cmd, sizeof(cmd),
+                        SILVER_ROOT "/platform/native/debug/silver %s &", name);
+                    system(cmd);
+                }
+                // refresh all source mtimes so we don't retrigger until next edit
+                for (int j = 0; j < nsr; j++)
+                    srcs[j].mtime = file_mtime(srcs[j].path);
+                break;
+            }
+        }
+
+        // watch product symlink — reload when .so is relinked
         time_t cur = file_mtime(product);
         if (cur != last_mtime) {
             last_mtime = cur;
             fprintf(stderr, "%s: reloading\n", name);
-            if (do_destroy) do_destroy();
-            dlclose(handle);
+
+            // Load new .so FIRST so dependency refcounts are bumped before old is closed.
             n = readlink(product, lib, sizeof(lib) - 1);
             if (n < 0) break;
             lib[n] = '\0';
-            handle = try_dlopen(lib);
-            if (!handle) {
+            void* new_handle = reload_dlopen(lib, cur);
+            if (!new_handle) {
                 fprintf(stderr, "%s: reload failed: %s\n", name, dlerror());
                 return 1;
             }
-            do_frame   = dlsym(handle, FRAME_SYM);
-            do_destroy = dlsym(handle, DESTROY_SYM);
+
+            // Destroy old instance (uses old code/inst_g) then release old handle
+            if (do_destroy) do_destroy();
+            dlclose(handle);
+
+            // Initialize new instance now that old is gone
+            handle    = new_handle;
+            do_init   = dlsym(handle, INIT_SYM);
+            do_frame  = dlsym(handle, FRAME_SYM);
+            do_destroy= dlsym(handle, DESTROY_SYM);
+            if (do_init) do_init();
             fprintf(stderr, "%s: reload complete\n", name);
+
+            // refresh source watch list from new artifacts
+            load_sources(artifacts, srcs, &nsr);
         }
     }
 
