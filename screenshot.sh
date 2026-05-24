@@ -14,5 +14,6 @@ fi
 # window exists — give the app a couple seconds to finish its first frames
 sleep 3
 import -silent -window "$WID" /tmp/screenshot.png
-# close the app
+# close the app (works for both old orbiter binary and new silver-host)
 pkill -f "platform/native/debug/orbiter$" 2>/dev/null
+pkill -f "silver-host" 2>/dev/null

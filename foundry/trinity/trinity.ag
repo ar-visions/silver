@@ -96,48 +96,56 @@ class Background
     func update[]
         return
 
-abstract app media_app
-    context w      : Display*
-    context vk     : vk_context
-    intern  arg    : object
-    public  width  : i32
-    public  height : i32
+abstract live_app media_app
+    context w           : Display*
+    context vk          : vk_context
+    intern  arg         : object
+    public  width       : i32
+    public  height      : i32
+    intern  next_second : i64
+    intern  frames      : i32
 
-    func run [ ] -> i32
-        next_second : epoch_millis[] / 1000
-        frames      : 0
+    func run [ ]
+        Au.auto_free[true]
 
-        Au.auto_free[true] # must perform all required holds here
+    func frame [ ] -> bool
+        glfwPollEvents[]
+        second : epoch_millis[] / 1000
+        if [ next_second != second ]
+            next_second = second
+            buf : local char [ 128 ]
+            sprintf[ buf, "fps: %i  samplers: %i", frames, vk.sampler_count ]
+            puts buf
+            frames = 0
+        frames += 1
+        render*[]
+        Au.auto_free[false]
+        return !glfwWindowShouldClose[ w.glfw ]
 
-        while [ !glfwWindowShouldClose[ w.glfw ] ]
-            glfwPollEvents[]
-            second : epoch_millis[] / 1000
-            if [next_second != second]
-                next_second  = second
-                buf : local char [ 128 ]
-                sprintf[ buf, "fps: %i  samplers: %i", frames, vk.sampler_count ]
-                puts buf
-                frames = 0
-            frames += 1
-            render*[]
-            Au.auto_free[false]
-
-        return 0
+    func destroy [ ]
+        return
 
     func render [ ]
         return
-    
-    func init [ ] 
-        init_res : glfwInit[]
-        expect init_res, "glfw init"
-        if [ !glfwVulkanSupported[] ]
-            fault "glfw does not support vulkan"
-            glfwTerminate[]
-            return
-        vk = vk_context[]
+
+    func init [ ]
+        next_second = epoch_millis[] / 1000
+        if [ !Au.live_window_get[] ]
+            init_res : glfwInit[]
+            expect init_res, "glfw init"
+            if [ !glfwVulkanSupported[] ]
+                fault "glfw does not support vulkan"
+                glfwTerminate[]
+                return
+        existing_vk : handle Au.live_vk_get[]
+        if [ existing_vk ]
+            vk = (existing_vk to vk_context)
+        el
+            vk = vk_context[]
+            Au.live_vk_set[ handle[vk] ]
 
     func dealloc [ ]
-        glfwTerminate[]
+        destroy[]
 
 
 class CursorPos
@@ -1423,10 +1431,10 @@ abstract media_app trinity
     func load_scene   [] return
     func update_scene [] return
          
-    func run[] -> i32
+    func run[]
         type : typeid[a]
         background_type : Au.find_type[ (background) ? background.chars : null, null ]
-        window : Window[ app_object: a, title:type.ident, st: Style [ a ], 
+        window : Window[ app_object: a, title:type.ident, st: Style [ a ],
             width:(width) ?? 1888, height:(height) ?? 888, background_type:background_type ]
         expect window.vk, "context didnt work"
 
@@ -1434,7 +1442,7 @@ abstract media_app trinity
         w.update *[]
         render   *[]
         w.resize[w.width, w.height]
-        return super.run[]
+        super.run[]
 
     # 22
     func render[]

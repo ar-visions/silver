@@ -119,7 +119,7 @@ trinity orbiter
     public func on_render [ w: Window ] -> Elements
         fps : f32 [ w.frame_factor * 60.0 ]
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
-        w.set_title[ 'orbiter | {pad[i32[avg_fps]]} fps' ]
+        w.set_title[ 'orbiter 44 | {pad[i32[avg_fps]]} fps' ]
 
         active_path : path (open_files.count > 0) ? open_files[active_idx] : null
         active_name : string (active_path) ? active_path.filename[] : string[]

@@ -5546,10 +5546,19 @@ none silver_build(silver a) {
 
     }
 
+    // for live_app modules: compile the host launcher as the app binary
+    if (((aether)a)->is_live) {
+        path host_src = f(path, "%s/src/silver-host.c", SILVER);
+        path host_dst = f(path, "%o/%o", a->build_dir, a->name);
+        verify(file_exists("%o", host_src), "silver-host.c not found at %o", host_src);
+        exec(a->verbose, "gcc %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
+            a->debug ? "-O0 -g" : "-O2", host_dst, host_src, SILVER, SILVER, SILVER);
+    }
+
     // deploy resource files into share/{app-name}/
     // debug: symlink each resource dir so edits are live without redeploy
     // release: copy files
-    if (len(a->resources) && !a->is_library) {
+    if (len(a->resources) && (!a->is_library || ((aether)a)->is_live)) {
         path share = f(path, "%o/share/%o", install, a->name);
         make_dir(share);
         each(a->resources, path, res) {

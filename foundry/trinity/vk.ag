@@ -2373,13 +2373,15 @@ Texture Display
             height = 1200
 
         surf : handle
-        # glfw window + vulkan surface
         if [ !backbuffer ]
-            glfwWindowHint[ GLFW_CLIENT_API, GLFW_NO_API ]
-            glfw = glfwCreateWindow[ width, height, title, null, null ]
-            expect glfw, "Failed to create GLFW window"
+            glfw = handle Au.live_window_get[]
+            if [ !glfw ]
+                glfwWindowHint[ GLFW_CLIENT_API, GLFW_NO_API ]
+                glfw = glfwCreateWindow[ width, height, title.chars, null, null ]
+                expect glfw, "Failed to create GLFW window"
+                Au.live_window_set[ glfw ]
 
-            # glfw callbacks
+            # re-register callbacks each time (new Display instance on reload)
             glfwSetWindowUserPointer    [ glfw, handle[ a ] ]
             glfwSetKeyCallback          [ glfw, ref handle_glfw_key ]
             glfwSetMouseButtonCallback  [ glfw, ref handle_glfw_mouse ]
@@ -2455,7 +2457,6 @@ Texture Display
         if [ !backbuffer ]
             vkDestroySwapchainKHR[ vk.device, vk_swapchain, null ]
             vkDestroySurfaceKHR[ vk.instance, vk_surface, null ]
-            glfwDestroyWindow[ glfw ]
 
 
 # ---- format conversion ----
@@ -2705,7 +2706,7 @@ intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ]
     w.ev.mouse.pos.y = w.mouse.y
     w.move_event[ w.ev ]
 
-func get_required_extensions [ vk: vk_context ] 
+func get_required_extensions [ vk: vk_context ]
     count : u32 0
     glfw_extensions: ref symbol [ glfwGetRequiredInstanceExtensions[ ref count ] ]
     result: new symbol [ count + 4 ]
