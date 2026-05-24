@@ -667,6 +667,10 @@ forward(any)
     M(AA,BB, s, method, public, none,   auto_free,      bool) \
     M(AA,BB, i, method, public, Au,     initialize) \
     M(AA,BB, s, method, public, none,   module_erase,   Au_t, symbol) \
+    M(AA,BB, s, method, public, handle, live_window_get) \
+    M(AA,BB, s, method, public, none,   live_window_set, handle) \
+    M(AA,BB, s, method, public, handle, live_vk_get) \
+    M(AA,BB, s, method, public, none,   live_vk_set,    handle) \
     M(AA,BB, s, method, public, Au_t,   typeid_string,  Au_t) \
     M(AA,BB, s, method, public, none,   validate_meta,  Au_t, Au_t) \
     M(AA,BB, s, method, public, Au_t,   module_lookup,  symbol) \
@@ -1763,6 +1767,13 @@ declare_class(line)
 #define app_schema(X,Y,...) \
     M(X,Y, i, method, public, i32, run)
 declare_class(app)
+
+#define live_app_module_ Au
+#define live_app_schema(X,Y,...) \
+    M(X,Y, i, method, public, none, run) \
+    M(X,Y, i, method, public, bool, frame) \
+    M(X,Y, i, method, public, none, destroy)
+declare_class(live_app)
 
 #define ielement_module_ Au
 #define ielement_schema(X,Y,...)

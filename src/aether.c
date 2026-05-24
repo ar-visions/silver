@@ -6092,6 +6092,159 @@ static void set_global_construct(aether a, efunc fn) {
 static void build_entrypoint(aether a, efunc module_init_fn) {
     Au_t module_base = a->au;
 
+    // check for live_app subclass — builds as .so with exported frame/destroy
+    etype live_spec = etypeid(live_app);
+    if (live_spec && is_class(live_spec)) {
+        etype live_class = null;
+        members(module_base, mem) {
+            if (is_class(mem)) {
+                etype cls = u(etype, mem);
+                if (inherits(cls->au, live_spec->au) && !mem->is_abstract) {
+                    verify(!live_class, "found multiple live_app classes");
+                    live_class = cls;
+                }
+            }
+        }
+        if (live_class) {
+            a->is_library = true;
+            a->is_live    = true;
+
+            LLVMTypeRef ptr_ty  = LLVMPointerTypeInContext(a->module_ctx, 0);
+            LLVMTypeRef void_ty = LLVMVoidTypeInContext(a->module_ctx);
+            LLVMTypeRef i1_ty   = LLVMInt1TypeInContext(a->module_ctx);
+            LLVMTypeRef i32_ty  = LLVMInt32TypeInContext(a->module_ctx);
+            LLVMTypeRef i64_ty  = LLVMInt64TypeInContext(a->module_ctx);
+            LLVMTypeRef fn0_ty  = LLVMFunctionType(void_ty, NULL, 0, false);
+            LLVMTypeRef fn0i_ty = LLVMFunctionType(i32_ty,  NULL, 0, false);
+
+            // module-level global holds instance across frame/destroy calls
+            LLVMValueRef inst_g = LLVMAddGlobal(a->module_ref, ptr_ty, "live_app_g");
+            LLVMSetInitializer(inst_g, LLVMConstNull(ptr_ty));
+            LLVMSetLinkage(inst_g, LLVMInternalLinkage);
+
+            // find virtual method Au_t for vtable dispatch
+            Au_t fn_run     = find_member(live_spec->au, "run",     AU_MEMBER_FUNC, 0, false);
+            Au_t fn_frame   = find_member(live_spec->au, "frame",   AU_MEMBER_FUNC, 0, false);
+            Au_t fn_destroy = find_member(live_spec->au, "destroy", AU_MEMBER_FUNC, 0, false);
+
+            // --- constructor: module_init + create instance + run ---
+            Au_t au_ctor = def_member(a->au, "__live_ctor", typeid(none), AU_MEMBER_FUNC, 0);
+            efunc ctor_fn = efunc(mod, a, au, au_ctor,
+                loaded, true, used, true, has_code, true);
+            etype_implement((etype)ctor_fn, false);
+            push_scope(a, (Au)ctor_fn, 11);
+            e_fn_call(a, module_init_fn, null, false, false);
+
+            bool saved = a->skip_context_resolve;
+            a->skip_context_resolve = true;
+            enode inst = e_create(a, live_class, null);
+            a->skip_context_resolve = saved;
+            inst->is_any = true;
+            LLVMBuildStore(B, inst->value, inst_g);
+
+            if (fn_run) e_fn_call(a, (efunc)u(efunc, fn_run), a(inst), false, false);
+
+            if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))
+                LLVMBuildRetVoid(B);
+            pop_scope(a);
+            set_global_construct(a, ctor_fn);
+
+
+            // --- silver_live_frame() -> int (1=running, 0=done) ---
+            // unique names avoid conflict with live_app method stubs in libAu.so
+            LLVMValueRef frame_fn = LLVMAddFunction(a->module_ref, "silver_live_frame", fn0i_ty);
+            LLVMSetLinkage(frame_fn, LLVMExternalLinkage);
+            LLVMBasicBlockRef frame_bb = LLVMAppendBasicBlockInContext(a->module_ctx, frame_fn, "fentry");
+            LLVMPositionBuilderAtEnd(B, frame_bb);
+            LLVMValueRef running = LLVMConstInt(i32_ty, 1, 0);
+            if (fn_frame) {
+                LLVMValueRef _inst = LLVMBuildLoad2(B, ptr_ty, inst_g, "inst");
+                LLVMValueRef _hdr  = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), _inst,
+                    (LLVMValueRef[]){LLVMConstInt(i64_ty, (i64)-108, true)}, 1, "hdr");
+                LLVMValueRef _tp   = LLVMBuildLoad2(B, ptr_ty, _hdr, "tp");
+                LLVMValueRef _ftb  = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), _tp,
+                    (LLVMValueRef[]){LLVMConstInt(i64_ty, 220, false)}, 1, "ftb");
+                LLVMValueRef _fpa  = LLVMBuildGEP2(B, ptr_ty, _ftb,
+                    (LLVMValueRef[]){LLVMConstInt(i32_ty, fn_frame->index, false)}, 1, "fpa");
+                LLVMValueRef _fp   = LLVMBuildLoad2(B, ptr_ty, _fpa, "fp");
+                LLVMTypeRef  _fty  = LLVMFunctionType(i1_ty, (LLVMTypeRef[]){ptr_ty}, 1, false);
+                LLVMValueRef _r    = LLVMBuildCall2(B, _fty, _fp, (LLVMValueRef[]){_inst}, 1, "r");
+                running = LLVMBuildZExt(B, _r, i32_ty, "running");
+            }
+            LLVMBuildRet(B, running);
+
+            // --- silver_live_destroy() ---
+            LLVMValueRef dtor_fn = LLVMAddFunction(a->module_ref, "silver_live_destroy", fn0_ty);
+            LLVMSetLinkage(dtor_fn, LLVMExternalLinkage);
+            LLVMBasicBlockRef dtor_bb = LLVMAppendBasicBlockInContext(a->module_ctx, dtor_fn, "dentry");
+            LLVMPositionBuilderAtEnd(B, dtor_bb);
+            if (fn_destroy) {
+                LLVMValueRef _inst = LLVMBuildLoad2(B, ptr_ty, inst_g, "inst");
+                LLVMValueRef _hdr  = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), _inst,
+                    (LLVMValueRef[]){LLVMConstInt(i64_ty, (i64)-108, true)}, 1, "hdr");
+                LLVMValueRef _tp   = LLVMBuildLoad2(B, ptr_ty, _hdr, "tp");
+                LLVMValueRef _ftb  = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), _tp,
+                    (LLVMValueRef[]){LLVMConstInt(i64_ty, 220, false)}, 1, "ftb");
+                LLVMValueRef _fpa  = LLVMBuildGEP2(B, ptr_ty, _ftb,
+                    (LLVMValueRef[]){LLVMConstInt(i32_ty, fn_destroy->index, false)}, 1, "fpa");
+                LLVMValueRef _fp   = LLVMBuildLoad2(B, ptr_ty, _fpa, "fp");
+                LLVMTypeRef  _fty  = LLVMFunctionType(void_ty, (LLVMTypeRef[]){ptr_ty}, 1, false);
+                LLVMBuildCall2(B, _fty, _fp, (LLVMValueRef[]){_inst}, 1, "");
+            }
+            // drop the instance so Display/vk_context dealloc chains fire
+            // (cleans up VkSwapchain/VkSurface before the module unloads)
+            Au_t au_drop = find_member(typeid(Au), "drop", AU_MEMBER_FUNC, 0, false);
+            if (au_drop) {
+                efunc fn_drop = u(efunc, au_drop);
+                if (fn_drop && fn_drop->value) {
+                    LLVMValueRef _inst_d = LLVMBuildLoad2(B, ptr_ty, inst_g, "inst_d");
+                    LLVMTypeRef  drop_ty = LLVMFunctionType(void_ty, (LLVMTypeRef[]){ptr_ty}, 1, false);
+                    LLVMBuildCall2(B, drop_ty, fn_drop->value,
+                        (LLVMValueRef[]){_inst_d}, 1, "");
+                }
+            }
+            LLVMBuildStore(B, LLVMConstNull(ptr_ty), inst_g);
+
+            // erase this module from Au's global type registry so the next
+            // dlopen starts with a clean slate (no stale pointers into old .so)
+            Au_t au_module_erase = find_member(typeid(Au), "module_erase", AU_MEMBER_FUNC, 0, false);
+            if (au_module_erase) {
+                efunc fn_erase = u(efunc, au_module_erase);
+                if (fn_erase && fn_erase->value) {
+                    LLVMValueRef mod_name = LLVMBuildGlobalStringPtr(B, a->name->chars, "mod_name");
+                    LLVMTypeRef  erase_ty = LLVMFunctionType(void_ty,
+                        (LLVMTypeRef[]){ptr_ty, ptr_ty}, 2, false);
+                    LLVMBuildCall2(B, erase_ty, fn_erase->value,
+                        (LLVMValueRef[]){LLVMConstNull(ptr_ty), mod_name}, 2, "");
+                }
+            }
+            LLVMBuildRetVoid(B);
+
+            // --- silver_live_set_window(void*) ---
+            // called by the host after each dlopen to pass the persistent GLFW window
+            LLVMTypeRef fn1_ty = LLVMFunctionType(void_ty, (LLVMTypeRef[]){ptr_ty}, 1, false);
+            LLVMValueRef setwin_fn = LLVMAddFunction(a->module_ref, "silver_live_set_window", fn1_ty);
+            LLVMSetLinkage(setwin_fn, LLVMExternalLinkage);
+            LLVMBasicBlockRef setwin_bb = LLVMAppendBasicBlockInContext(a->module_ctx, setwin_fn, "swentry");
+            LLVMPositionBuilderAtEnd(B, setwin_bb);
+            {
+                LLVMValueRef win_arg = LLVMGetParam(setwin_fn, 0);
+                Au_t au_live_window_set = find_member(typeid(Au), "live_window_set", AU_MEMBER_FUNC, 0, false);
+                if (au_live_window_set) {
+                    efunc fn_lws = u(efunc, au_live_window_set);
+                    if (fn_lws && fn_lws->value)
+                        LLVMBuildCall2(B, fn1_ty, fn_lws->value, (LLVMValueRef[]){win_arg}, 1, "");
+                }
+                LLVMBuildRetVoid(B);
+            }
+
+            // Restore B to module_init_fn so silver.c's e_fn_return emits the
+            // module initializer's ret void there, not into dtor_bb.
+            LLVMPositionBuilderAtEnd(B, module_init_fn->entry);
+            return;
+        }
+    }
+
     etype main_spec  = etypeid(app);
     verify(main_spec && is_class(main_spec), "expected app class");
 
