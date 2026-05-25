@@ -8408,10 +8408,6 @@ none aether_import_models(aether a, Au_t ctx, bool au_mode) {
 
 void aether_import_Au(aether a, string ident, Au lib) {
 
-    if (a->component) {
-        int test2 = 2;
-        test2    += 2;
-    }
     a->current_import = (path)(instanceof(lib, Au_t) ? path(((Au_t)lib)->ident) : lib ? (path)lib : path("Au"));
     a->is_Au_import  = true;
     string  lib_name = lib && instanceof(lib, path) ? stem((path)lib) : null;
