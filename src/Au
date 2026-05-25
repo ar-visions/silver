@@ -725,6 +725,7 @@ forward(any)
     M(AA,BB, s, method, public, none, engage, cstrs) \
     M(AA,BB, s, method, public, none, au_set_compiler, Au) \
     M(AA,BB, s, method, public, bool, au_compile_ready) \
+    M(AA,BB, s, method, public, none, au_spawn, callback, Au, Au) \
     M(AA,BB, s, vargs, public, map, args, cstrs, symbol) \
     M(AA,BB, s, vargs, public, map, map_of, symbol) \
     M(AA,BB, i, guard, public, bool, is_generic,    Au) \
@@ -1664,6 +1665,7 @@ declare_class(mutex)
 #define async_schema(AA,BB,...) \
     M(AA,BB, i, prop,    public, hook,  work_fn) \
     M(AA,BB, i, prop,    public, array, work) \
+    M(AA,BB, i, prop,    public, Au,    target) \
     M(AA,BB, i, prop,    intern, mutex, global) \
     M(AA,BB, i, prop,    intern, struct thread_t*, threads, as, ARef) \
     M(AA,BB, i, method,  public, Au,   sync, Au) \

@@ -879,7 +879,6 @@ Display Window
     
     func update [ ]
         # DEBUG step 3: full canvases + full composition chain using UX shader.
-        printf["these"]
         compose  = (compose  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
         glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.u8,    :width, :height ]).resize[ width, height ]
         screen   = (screen   || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]

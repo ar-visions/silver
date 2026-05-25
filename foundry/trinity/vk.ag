@@ -1585,6 +1585,8 @@ class Model
                             ts: shader [ transparent_s ]
                             if [ !ts ] ts = s
                             model_init_pipeline[ a, n, prim, ts, render_id, true ]
+            if [ pipelines.count == 0 ]
+                model_init_pipeline[ a, null, null, s, render_id, false ]
 
     construct [ p: string ]
         gltf_path : path [ p ]

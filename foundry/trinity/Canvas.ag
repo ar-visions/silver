@@ -1143,7 +1143,7 @@ Render Canvas
         # default: transparent — canvas can be used as an overlay layer.
         # call reset[ vec4f ] to force a direct image clear (bypasses any
         # render-pass blending) when you need a hard wipe of the pixels.
-        clear_color = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        clear_color = vec4f [ 0.0, 0.0, 0.0, 1.0 ]
         cur_xform   = affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
         xform_stack = array affine [ ]
         VK : vk

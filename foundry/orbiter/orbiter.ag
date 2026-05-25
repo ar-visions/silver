@@ -37,9 +37,7 @@ trinity orbiter # implements compiler
     public filter_text    : string
  
     func init []
-        puts 'init 1'
         width          = 1888
-        puts 'init 2'
         height         = 888
         background     = 'Background'
         open_files     = array path []
@@ -51,13 +49,16 @@ trinity orbiter # implements compiler
         active_target  = 'silver'
         active_console = ConsoleKind.shell
         filter_text    = ''
-        puts 'init 3'
         au_set_compiler[a]
-        puts 'init 4'
  
+    func compile_fn [ w: Au ]
+        m: string w    
+        #i: silver [ component: true, module: m ]
+
     func compile [ mod: string ]
-        puts 'try to compile {mod}' 
-        silver [ clean: true, verbose: true, module: mod ]
+        puts 'try to compile {mod}'
+        i: silver [ component: true, module: mod ]  
+        #au_spawn[ ref compile_fn, a, mod ]
 
     func open_file [ p: path ]
         for [ i: i32 0, i < open_files.count, i += 1 ]
@@ -136,7 +137,7 @@ trinity orbiter # implements compiler
     
         active_path : path (open_files.count > 0) ? open_files[active_idx] : null
         active_name : string (active_path) ? active_path.filename[] : string[]
-
+       
         source_nav : Elements []
         for [ i: i32 0, i < open_files.count, i += 1 ]
             p   : path   open_files[i]
