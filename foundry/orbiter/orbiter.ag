@@ -49,16 +49,16 @@ trinity orbiter # implements compiler
         active_target  = 'silver'
         active_console = ConsoleKind.shell
         filter_text    = ''
-        #au_set_compiler[a]
+        au_set_compiler[a]
  
     func compile_fn [ w: Au ]
-        m: string w   
-        #i: silver [ component: true, module: m ]  
+        m: string w  
+        i: silver [ component: true, module: m ]  
 
     func compile [ mod: string ]
         puts 'try to compile {mod}'
-        i: silver [ component: true, verbose:true, module: mod ]  
-        #au_spawn[ ref compile_fn, a, mod ]
+        #i: silver [ component: true, verbose:true, module: mod ]  
+        au_spawn[ ref compile_fn, a, mod ]
 
     func open_file [ p: path ]
         for [ i: i32 0, i < open_files.count, i += 1 ]
@@ -133,7 +133,7 @@ trinity orbiter # implements compiler
     public func on_render [ w: Window ] -> Elements
         fps : f32 [ w.frame_factor * 60.0 ]
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
-        w.set_title[ 'orbiter 4444 | {pad[i32[avg_fps]]} fps' ]
+        w.set_title[ 'orbiter 444 | {pad[i32[avg_fps]]} fps' ]
     
         active_path : path (open_files.count > 0) ? open_files[active_idx] : null
         active_name : string (active_path) ? active_path.filename[] : string[]
