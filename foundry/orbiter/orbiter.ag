@@ -25,7 +25,7 @@ enum ConsoleKind
     lldb  : 1
 
 #proto compiler ... this is in effect what we are doing, and if we 'wanted' to we could register this for enumeration at runtime
-#    func compiler [ module: string ]
+#      func compiler [ module: string ]
 
 trinity orbiter # implements compiler
     intern avg_fps    : f32
@@ -49,15 +49,15 @@ trinity orbiter # implements compiler
         active_target  = 'silver'
         active_console = ConsoleKind.shell
         filter_text    = ''
-        au_set_compiler[a]
+        #au_set_compiler[a]
  
     func compile_fn [ w: Au ]
-        m: string w    
-        #i: silver [ component: true, module: m ]
+        m: string w   
+        #i: silver [ component: true, module: m ]  
 
     func compile [ mod: string ]
         puts 'try to compile {mod}'
-        i: silver [ component: true, module: mod ]  
+        i: silver [ component: true, verbose:true, module: mod ]  
         #au_spawn[ ref compile_fn, a, mod ]
 
     func open_file [ p: path ]
