@@ -1195,10 +1195,6 @@ void silver_init(silver a) {
     }
 
     aether_reinit_startup((aether)a);
-
-    if (a->component) {
-        return;
-    }
     
     // discover resource folders within module directory and register on root instance
     {
@@ -1233,9 +1229,7 @@ void silver_init(silver a) {
             closedir(dir);
         }
     }
-        if (a->component) {
-            return;
-        }
+
     // 1ms resolution time comparison (it could be nano-second based)
     bool update_product = true; //!a->is_external;
 
@@ -1278,9 +1272,7 @@ void silver_init(silver a) {
 
     if (a->clean) update_product = true;
     if (a->run && !a->is_external) update_product = true;
-        if (a->component) {
-            return;
-        }
+
     a->mod = (aether)a;
     // prevent duplicate compilation in a session
     static map silver_compiled = null;
@@ -1345,11 +1337,6 @@ void silver_init(silver a) {
     
     if (update_product)
     do {
-
-        if (a->component) {
-            return;
-        }
-
         if (retry) {
             print("awaiting iteration: %o", a->module);
             
@@ -1388,7 +1375,9 @@ void silver_init(silver a) {
             
             printf("silver_init: calling parse for module=%s\n",
                 a->name ? a->name->chars : "?");
+
             parse(a);
+
             printf("silver_init: parse done for module=%s\n",
                 a->name ? a->name->chars : "?");
 
@@ -1429,9 +1418,6 @@ void silver_init(silver a) {
     } while (!a->is_external && retry); // externals do not watch (your watcher must invoke everything)
                                         // they handle their own exceptions
 
-    if (a->component) {
-        return;
-    }
     unload_libs(a);
     module_erase(a->au, null);
 
