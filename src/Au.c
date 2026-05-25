@@ -1720,6 +1720,7 @@ static Au_t   module;
 static micro  modules;
 static array  scope;
 static bool   started = false;
+static pthread_rwlock_t modules_lock = PTHREAD_RWLOCK_INITIALIZER;
 
 u64 au_hash_ident(symbol s) {
     // 3 more lines to not have a string length prior is best
@@ -2128,11 +2129,15 @@ none def_init(func f) {
 }
 
 Au_t module_lookup(symbol name) {
+    pthread_rwlock_rdlock(&modules_lock);
     for (int i = 0; i < modules.count; i++) {
         Au_t m = (Au_t)modules.origin[i];
-        if (m && strcmp(m->ident, name) == 0) // its filled with holes! .. and thats where our geneticists come in
+        if (m && strcmp(m->ident, name) == 0) {
+            pthread_rwlock_unlock(&modules_lock);
             return m;
+        }
     }
+    pthread_rwlock_unlock(&modules_lock);
     return def_module(name);
 }
 
@@ -2173,18 +2178,18 @@ void   live_swapchain_set(handle s) { au_live_swapchain = s; }
 
 void module_erase(Au_t module, symbol name) {
     if (!module && !name) return;
-    // unregister from list by setting null
+    pthread_rwlock_wrlock(&modules_lock);
     for (int i = 0; i < modules.count; i++) {
         Au_t m = (Au_t)modules.origin[i];
         if (!m || (m && !m->ident)) continue;
-        
+
         if (m && module == m || (name && m->ident && strcmp(m->ident, name) == 0)) {
             modules.origin[i] = null;
             m->members.count = 0;
             m->args.count = 0;
-            //return;
         }
     }
+    pthread_rwlock_unlock(&modules_lock);
 }
  
 Au_t global() {
@@ -2206,13 +2211,15 @@ Au_t def_module(symbol next_module) {
         module    = m;
     }
 
+    pthread_rwlock_wrlock(&modules_lock);
     for (int i = 0; i < modules.count; i++)
         if (!modules.origin[i]) {
             modules.origin[i] = (Au_t)m;
+            pthread_rwlock_unlock(&modules_lock);
             return m;
         }
-    
     micro_push((micro_*)&modules, (Au)m);
+    pthread_rwlock_unlock(&modules_lock);
     return m;
 }
 
@@ -2405,31 +2412,37 @@ ARef types(ref_i64 length) {
 }
 
 Au_t find_module(symbol name) {
+    pthread_rwlock_rdlock(&modules_lock);
     for (int i = 0; i < modules.count; i++) {
         Au_t mod = (Au_t)modules.origin[i];
         if (mod && !mod->is_hidden && mod->ident && strcmp(mod->ident, name) == 0) {
-            return mod; // test3 module loaded here after dlopen, however the source of this was not from a dlopen but rather the design-time creation of the namespace module from import()
+            pthread_rwlock_unlock(&modules_lock);
+            return mod;
         }
     }
+    pthread_rwlock_unlock(&modules_lock);
     return null;
 }
 
 Au_t find_type(symbol name, Au_t m) {
     if (!name)
         return null;
+    pthread_rwlock_rdlock(&modules_lock);
     for (int i = 0; i < modules.count; i++) {
         Au_t mod = (Au_t)modules.origin[i];
         if (mod && (!m || m == mod)) {
-            // skip if not specifically tareting this module, and it has a namespace (not global)
-            if (m && m != mod) // && mod->is_namespace && mod->ident && strlen(mod->ident))
+            if (m && m != mod)
                 continue;
-            for (int i = 0; i < mod->members.count; i++) {
-                Au_t type = (Au_t)mod->members.origin[i];
-                if (type->ident && strcmp(name, type->ident) == 0)
+            for (int j = 0; j < mod->members.count; j++) {
+                Au_t type = (Au_t)mod->members.origin[j];
+                if (type->ident && strcmp(name, type->ident) == 0) {
+                    pthread_rwlock_unlock(&modules_lock);
                     return type;
+                }
             }
         }
     }
+    pthread_rwlock_unlock(&modules_lock);
     return null;
 }
 
@@ -2623,7 +2636,7 @@ Au Au_initialize(Au a) {
     if (f->type->traits & (AU_TRAIT_STRUCT | AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) return a; // isolate these cases and remove this code
 
     #ifndef NDEBUG
-    Au_validator(a);
+    //Au_validator(a);
     #endif
 
     init_recur(a, f->type, null);
@@ -2778,9 +2791,9 @@ int command_exec(command cmd, bool verbose) {
     }
 }
 
-ARef af       = null;
-int  af_count = 2; // managed == 1 means its not in the af vector, managed == 0 means we are not managed memory; hold and drop are null ops
-int  af_size  = 0;
+__thread ARef af       = null;
+__thread int  af_count = 2; // managed == 1 means its not in the af vector, managed == 0 means we are not managed memory; hold and drop are null ops
+__thread int  af_size  = 0;
 
 none Au_free(Au);
 
@@ -2788,7 +2801,7 @@ none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
     if (info->managed && --info->refs <= 0) {
-        af[info->managed]  = null;
+        af[info->managed] = null;
         Au_free(a);
     }
 }
@@ -3974,12 +3987,6 @@ bool Au_member_set(Au a, Au_t m, Au value) {
         verify(m->type->typesize == vtype->typesize * vinfo->count,
             "vector size mismatch for %s", m->ident);
     
-        if (strcmp(m->ident, "baseColorFactor") == 0) {    
-            float* fv = (float*)value;                            
-            printf("member_set baseColorFactor: src=(%f,%f,-%f,%f) vtype=%s vcount=%d\n", 
-                fv[0], fv[1], fv[2], fv[3], vtype->ident, (int)vinfo->count);
-        }
-
         memcpy(member_ptr, value, m->type->typesize);
     } else if (m->type->is_enum || m->type->is_inlay || m->type->is_primitive) {
         Au_t ref = m->type->meta.a;
@@ -5083,6 +5090,7 @@ none  string_alloc_ahead(string a, i64 extra_space) {
 }
 
 none  string_append(string a, symbol b) {
+    if (!b) return;
     sz blen = strlen(b);
     alloc_ahead(a, blen);
     memcpy((cstr)&a->chars[a->count], b, blen);
@@ -7206,7 +7214,10 @@ static none async_runner(thread_t* thread) {
     async t = thread->t;
 
     for (; thread->next; unlock(thread->lock)) {
-        t->work_fn(thread->w);
+        if (t->target)
+            ((void(*)(Au,Au))t->work_fn)(t->target, thread->w);
+        else
+            t->work_fn(thread->w);
         lock(thread->lock);
         thread->done = true;
         cond_signal(thread->lock);
@@ -7230,14 +7241,14 @@ none async_init(async t) {
     // (1 by default to grab the next available work; 
     //  or say modulo of work length to use a pool)
     t->threads = (thread_t*)calloc(sizeof(thread_t), n);
-    t->global = mutex(cond, true);
+    t->global = hold(mutex(cond, true));
     for (int i = 0; i < n; i++) {
         thread_t* thread = &t->threads[i];
         thread->index = i;
         thread->w     = get(t->work, i);
         thread->next  = thread->w;
         thread->t     = t;
-        thread->lock  = mutex(cond, true);
+        thread->lock  = hold(mutex(cond, true));
         lock(thread->lock);
         pthread_create(&thread->obj, null, (void*)async_runner, thread);
     }
@@ -7253,6 +7264,23 @@ none async_dealloc(async t) {
         thread_t* thread = &t->threads[i];
         drop(thread->lock);
     }
+}
+
+typedef struct { callback fn; Au target; Au work; } au_spawn_t;
+static void* au_spawn_runner(void* data) {
+    au_spawn_t* s = (au_spawn_t*)data;
+    s->fn(s->target, s->work);
+    free(s);
+    return null;
+}
+void au_spawn(callback fn, Au target, Au work) {
+    au_spawn_t* s = (au_spawn_t*)malloc(sizeof(au_spawn_t));
+    s->fn     = fn;
+    s->target = target;
+    s->work   = work;
+    pthread_t tid;
+    pthread_create(&tid, null, au_spawn_runner, s);
+    pthread_detach(tid);
 }
 
 Au async_sync(async t, Au w) {

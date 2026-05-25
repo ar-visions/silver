@@ -1196,6 +1196,10 @@ void silver_init(silver a) {
 
     aether_reinit_startup((aether)a);
 
+    if (a->component) {
+        return;
+    }
+    
     // discover resource folders within module directory and register on root instance
     {
         silver og = a->is_external ? a->is_external : a;
@@ -1229,7 +1233,9 @@ void silver_init(silver a) {
             closedir(dir);
         }
     }
-
+        if (a->component) {
+            return;
+        }
     // 1ms resolution time comparison (it could be nano-second based)
     bool update_product = true; //!a->is_external;
 
@@ -1272,7 +1278,9 @@ void silver_init(silver a) {
 
     if (a->clean) update_product = true;
     if (a->run && !a->is_external) update_product = true;
-
+        if (a->component) {
+            return;
+        }
     a->mod = (aether)a;
     // prevent duplicate compilation in a session
     static map silver_compiled = null;
@@ -1281,7 +1289,6 @@ void silver_init(silver a) {
         a->product = hold(absolute(a->product_link));
         return;
     }
-
     if (!update_product) {
         a->product = hold(absolute(a->product_link));
         set(silver_compiled, (Au)a->name, (Au)_bool(true));
@@ -1313,7 +1320,6 @@ void silver_init(silver a) {
     //if (!_IMPORT) _IMPORT = cstr_copy(path_cwd()->chars);
     verify(dir_exists("%s", SILVER), "silver environment moved; please re-build for secure builds");
     cstr _SILVER = cstr_copy(absolute(path(SILVER))->chars);
-
     a->imports      = array(32);
     a->parse_f        = parse_tokens;
     a->parse_expr     = parse_expression;
@@ -1339,6 +1345,11 @@ void silver_init(silver a) {
     
     if (update_product)
     do {
+
+        if (a->component) {
+            return;
+        }
+
         if (retry) {
             print("awaiting iteration: %o", a->module);
             
@@ -1358,7 +1369,6 @@ void silver_init(silver a) {
             target, (Au)a, parser, parse_tokens, input, (Au)a->module_file));
         a->stack = hold(array(4));
         a->implements = hold(array());
-
         // our verify infrastructure is now production useful
         attempt() {
             string m = stem(a->module);
@@ -1419,13 +1429,17 @@ void silver_init(silver a) {
     } while (!a->is_external && retry); // externals do not watch (your watcher must invoke everything)
                                         // they handle their own exceptions
 
+    if (a->component) {
+        return;
+    }
     unload_libs(a);
     module_erase(a->au, null);
 
     if (a->run) {
         int argc = len(a->run) + 2;
         char** argv = calloc(argc, sizeof(char*));
-        argv[0] = a->product->chars;
+        path run_binary = a->live_binary ? a->live_binary : a->product;
+        argv[0] = run_binary->chars;
         int i = 1;
         each(a->run, Au, arg) {
             argv[i++] = cast(string, arg)->chars;
@@ -3685,7 +3699,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         // when expr is unloaded, its value is already the address (GEP) —
         // return it directly as a loaded pointer rather than going through
         // e_create which would load and inttoptr the dereferenced value
-        validate(!expr->loaded, "cannot take ref of loaded value");
+        validate(!expr->loaded || is_func((Au)expr->au), "cannot take ref of loaded value");
         enode ref_node = enode_ref((aether)a, expr, ref_type);
         return mdl_expect ? e_create(a, mdl_expect, (Au)ref_node) : ref_node;
     }
@@ -5574,6 +5588,7 @@ none silver_build(silver a) {
         print("silver-host: %o -> %o", host_src, host_dst);
         vexec(a->verbose, "silver-host", "gcc %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
             a->debug ? "-O0 -g" : "-O2", host_dst, host_src, SILVER, SILVER, SILVER);
+        a->live_binary = hold(host_dst);
     }
 
     // deploy resource files into share/{app-name}/

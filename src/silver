@@ -22,6 +22,7 @@ declare_class(exports)
     M(X, Y, i, prop,     intern,  bool,   in_args) \
     M(X, Y, i, prop,     public,  bool,   version) \
     M(X, Y, i, prop,     iobject, path,   product) \
+    M(X, Y, i, prop,     iobject, path,   live_binary) \
     M(X, Y, i, prop,     public,  string, breakpoint) \
     M(X, Y, i, prop,     public,  i32,    etype_level) \
     M(X, Y, i, prop,     public,  i32,    parens_depth) \

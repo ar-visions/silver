@@ -105,6 +105,8 @@ static int load_sources(const char* artifacts_path,
 }
 
 int main(int argc, char** argv) {
+    printf("silver-host main\n");
+
 #ifdef SILVER_ROOT
     setenv("LD_LIBRARY_PATH",
         SILVER_ROOT "/platform/native/lib:"
@@ -151,17 +153,15 @@ int main(int argc, char** argv) {
     destroy_fn do_destroy = dlsym(handle, DESTROY_SYM);
     if (do_init) do_init();
 
-    int    live       = getenv("SILVER") != NULL;
-    time_t last_mtime = live ? file_mtime(product) : 0;
+    time_t last_mtime = file_mtime(product);
 
     source_watch srcs[MAX_SOURCES];
     int nsr = 0;
-    if (live) load_sources(artifacts, srcs, &nsr);
+    load_sources(artifacts, srcs, &nsr);
 
     while (do_frame && do_frame()) {
-        if (!live) continue;
-
         // watch source files — trigger recompile when any .ag or .c changes
+        int force = 0;
         for (int i = 0; i < nsr; i++) {
             time_t cur = file_mtime(srcs[i].path);
             if (cur != srcs[i].mtime) {
@@ -173,6 +173,7 @@ int main(int argc, char** argv) {
                     (void*)ready_fn, (void*)invoke_fn, ready_fn ? ready_fn() : -1);
                 if (ready_fn && ready_fn() && invoke_fn) {
                     invoke_fn(name);
+                    force = 1;
                 } else {
                     char cmd[8192];
                     snprintf(cmd, sizeof(cmd),
@@ -188,7 +189,7 @@ int main(int argc, char** argv) {
 
         // watch product symlink — reload when .so is relinked
         time_t cur = file_mtime(product);
-        if (cur != last_mtime) {
+        if (force || cur != last_mtime) {
             last_mtime = cur;
             fprintf(stderr, "%s: reloading\n", name);
 

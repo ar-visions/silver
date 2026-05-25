@@ -89,6 +89,7 @@ forward(efunc)
 forward(evar)
 
 #define aether_schema(X, Y, ...) \
+    M(X, Y, i, prop,     public,  bool,                     component) \
     M(X, Y, i, prop,     public,  string,                   name) \
     M(X, Y, i, prop,     def,     path,                     module) \
     M(X, Y, i, prop,     public,  path,                     module_file) \
