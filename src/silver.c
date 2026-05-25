@@ -1373,13 +1373,7 @@ void silver_init(silver a) {
                     push(a->implements, (Au)files[i]);
                 }
             
-            printf("silver_init: calling parse for module=%s\n",
-                a->name ? a->name->chars : "?");
-
             parse(a);
-
-            printf("silver_init: parse done for module=%s\n",
-                a->name ? a->name->chars : "?");
 
             // print all expected defs not used
             if (len(a->defs_expect))
@@ -1411,8 +1405,6 @@ void silver_init(silver a) {
             mtime = current_time();
             retry = !is_once;
             a->error = true;
-            printf("silver_init error: module=%s\n",
-                a->name ? a->name->chars : "?");
         }
         finally()
     } while (!a->is_external && retry); // externals do not watch (your watcher must invoke everything)
@@ -5353,10 +5345,8 @@ static void deploy_resources(path src, path dst) {
 
 // build with optional bc path; if no bc path we use the project file system
 none silver_build(silver a) {
-    printf("silver_build: module=%s\n", a->name ? a->name->chars : "?");
     path ll = null, bc = null;
     bool emit_ok = emit(a, (ARef)&ll, (ARef)&bc);
-    printf("silver_build: emit_ok=%d ll=%s\n", emit_ok, ll ? ll->chars : "null");
     verify(emit_ok, "compilation failed");
     verify(bc != null, "compilation failed");
 
