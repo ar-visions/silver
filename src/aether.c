@@ -138,7 +138,7 @@ etype etype_prep(aether a, Au_t au) { sequencer
         s = (string)formatter( \
             (Au_t)null, false, stderr, (Au) true, seq, \
             (symbol) "\n%o:%i:%i (%s:%i%o) " t, \
-            (pk->source ? (Au)f(path, "%s", pk->source) : (Au)a->module_file), \
+            (pk->source ? (Au)pk->source : (Au)a->module_file), \
             aether_peek_safe(a)->line, \
             aether_peek_safe(a)->column, \
             __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string("") __VA_OPT__(,) __VA_ARGS__); \
@@ -303,7 +303,13 @@ etype etype_copy(etype mem) {
 }
 
 enode enode_ref(aether a, enode expr, etype ref_type) {
-    return enode(mod, a, value, expr->value, loaded, true, au, ref_type->au);
+    LLVMValueRef v = expr->value;
+    if (is_func((Au)expr->au)) {
+        efunc fn = u(efunc, expr->au);
+        etype_implement((etype)fn, false);
+        v = fn->value;
+    }
+    return enode(mod, a, value, v, loaded, true, au, ref_type->au);
 }
 
 enode enode_value(enode mem, bool force_load) { sequencer
@@ -8401,6 +8407,11 @@ none aether_import_models(aether a, Au_t ctx, bool au_mode) {
 }
 
 void aether_import_Au(aether a, string ident, Au lib) {
+
+    if (a->component) {
+        int test2 = 2;
+        test2    += 2;
+    }
     a->current_import = (path)(instanceof(lib, Au_t) ? path(((Au_t)lib)->ident) : lib ? (path)lib : path("Au"));
     a->is_Au_import  = true;
     string  lib_name = lib && instanceof(lib, path) ? stem((path)lib) : null;
@@ -8672,8 +8683,9 @@ void aether_reinit_startup(aether a) {
 
     push_scope(a, (Au)g, 16);
     a->au->is_au = true;
+
     import_Au(a, string("Au"), null);
-    
+
     a->au->is_namespace = true; // for the 'module' namespace at [1], i think we dont require the name.. or, we set a trait
     a->au->is_nameless  = false; // we have no names, man. no names. we are nameless! -cereal
     push_scope(a, (Au)a->au, 17);
@@ -8713,6 +8725,7 @@ none aether_init(aether a) {
     a->include_paths    = a(f(path, "%o/include", a->install));
     a->sys_inc_paths    = array(alloc, 32);
     a->sys_exc_paths    = array(alloc, 32);
+    a->lexical          = array(alloc, 32, unmanaged, true, assorted, true);
 
 
 #ifdef _WIN32
