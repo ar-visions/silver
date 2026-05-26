@@ -33,6 +33,7 @@ ifdef [ apple ]
         >> mkdir -p {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/
         >> ln -s {root_path}/platform/native/lib/libMoltenVK.dylib {root_path}/checkout/MoltenVK/Package/Release/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib
 
+
 import KhronosGroup:SPIRV-Headers/vulkan-sdk-1.4.341.0
 
 import KhronosGroup:SPIRV-Tools/vulkan-sdk-1.4.341.0
@@ -220,6 +221,10 @@ Display Window
                 mem : Au_t ty.members.origin[m]
                 if [ mem.member_type != AU_MEMBER_VAR || mem.ident == 'elements' ]
                     continue
+
+                if [ inst.id == "play" && strcmp[ mem.ident, "disable" ] == 0 ]
+                    test2 :  2
+                    test2 += 2
                 
                 # if property not set on the newly created element, this is a default value (does not apply)
                 is_set   : e.AF_get_member[mem]
@@ -548,13 +553,17 @@ Display Window
                 instance.set_context_from[ home_object ]
                 call_init = true
                 changed = true
-            el [ instance.restyle || force ]
-                instance.restyle = false
-                changed = true
             el
-                changed = apply_args[ instance, e ]
-                if [ changed ]
-                    instance.restyle = true
+                if [ instance.id == "play" ]
+                    test2 :  2
+                    test2 += 2
+                args_changed : apply_args[ instance, e ]
+                changed = args_changed || instance.restyle || force
+                if [ args_changed ]
+                    test2 :  2
+                    test2 += 2
+                    args_changed = args_changed
+                instance.restyle = false
 
             if [ changed ]
                 e.restyle = false
@@ -571,6 +580,7 @@ Display Window
 
             inst    : typeid[ instance ]
             irender : instance.render[]
+            if [ !irender ] irender = e.elements
             if [ !irender ] irender = instance.elements
             if [  irender ] update_element[ instance, irender, force ]
 
@@ -599,11 +609,12 @@ Display Window
             restyle     = true
 
         if [ force_restyle ]
+            puts 'force_restyle = {force_restyle}'
             root.invalidate_transitions[ ]
             apply_style[ root, root_styles, null ]
             root.remove_invalid_transitions[ ]
 
-        update_element[ root, render, force_restyle ]
+        update_element[ root, render, restyle ]
         restyle = false
 
     public func set_capture [ e: element ]
@@ -638,7 +649,7 @@ Display Window
             focus = null
 
     public func find_target [ e: element, ev: Event, must: element ] -> element
-        if [ !e || e.disabled || e.ghost ]
+        if [ !e || e.disable || e.ghost ]
             return null
         b : rect  [ e.bounds ]
         x : f32   [ ev.mouse.pos.x ]
@@ -1292,7 +1303,10 @@ Display Window
                 dh : f32 layer.image_svg.h * sc
                 dx : f32 b.x + (b.w - dw) * 0.5
                 dy : f32 b.y + (b.h - dh) * 0.5
+                draw_cv.save[]
+                draw_cv.set_opacity[ (layer.opacity > 0.0) ? layer.opacity : 1.0 ]
                 draw_cv.draw_svg[ layer.image_svg, dx, dy, dw, dh ]
+                draw_cv.restore[]
 
             label : string (layer.label && layer.label.count > 0) ? layer.label : null
 
@@ -1396,6 +1410,7 @@ Display Window
 
 abstract media_app trinity
     public background   : string
+    public title        : string
     intern msaa_samples : i64
     intern istroke      : f32 0
     intern ifill        : f32 0
@@ -1435,7 +1450,7 @@ abstract media_app trinity
         puts 'reload 2'
         type : typeid[a]
         background_type : Au.find_type[ (background) ? background.chars : null, null ]
-        window : Window[ app_object: a, title:type.ident, st: Style [ a ],
+        window : Window[ app_object: a, title:(title) ?? type.ident, st: Style [ a ],
             width:(width) ?? 1888, height:(height) ?? 888, background_type:background_type ]
         expect window.vk, "context didnt work"
         window.hold[]
@@ -1511,10 +1526,11 @@ Button Check
 Button Option
     mutable selected : bool
     func on_click[ ev:Event ]
+        new_state : bool [ !selected ]
         for [ e:element, id:string ] in parent.elements
             op : Option e
             if [ op ]
-                op.selected = (a == e)
+                op.selected = (new_state && a == e)
                 op.restyle  = true
 
     func render[] -> Elements

@@ -563,6 +563,9 @@ bool is_explicit_ref(enode arg) {
     return arg->is_explicit_ref;
 }
 
+static int fbits_index(Au_t type_au, Au_t member);
+static void mark_set(enode n, u64 mask0, u64 mask1);
+
 enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     a->is_const_op = false;
     if (a->no_build)
@@ -799,6 +802,34 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     }
 
     /* ------------------------------------------------------------
+     * Phase 6.5: mark AF bit for direct member field assignment
+     * skip inside init bodies — those are default values, not user-set prop-pairs
+     * ------------------------------------------------------------ */
+    efunc _p65_fn = context_func(a);
+    bool  _in_init = _p65_fn && _p65_fn->au && strcmp(_p65_fn->au->ident, "init") == 0;
+    if (!_in_init && !no_store && is_member_slot && L->value && L->au &&
+        L->au->context && L->au->member_type == AU_MEMBER_VAR &&
+        LLVMGetInstructionOpcode(L->value) == LLVMGetElementPtr) {
+        Au_t parent_type = (Au_t)L->au->context;
+        bool has_fbits = parent_type && parent_type->is_class &&
+            !parent_type->is_system && !parent_type->is_c && !parent_type->is_au_native &&
+            parent_type->module != typeid(Au)->module;
+        if (has_fbits) {
+            etype parent_etype = u(etype, parent_type);
+            if (parent_etype && parent_etype->lltype) {
+                int idx = fbits_index(parent_type, L->au);
+                if (idx >= 0) {
+                    u64 mask0 = (idx <  64) ? (1ULL << idx)        : 0;
+                    u64 mask1 = (idx >= 64) ? (1ULL << (idx % 64)) : 0;
+                    LLVMValueRef base_ptr = LLVMGetOperand(L->value, 0);
+                    enode parent_node = enode(mod, a, value, base_ptr, au, parent_type, loaded, false);
+                    mark_set(parent_node, mask0, mask1);
+                }
+            }
+        }
+    }
+
+    /* ------------------------------------------------------------
      * Phase 7: lifetime management
      * ------------------------------------------------------------ */
     if (is_class_set && is_member_slot) {
@@ -836,7 +867,7 @@ etype etype_ptr(aether a, Au_t au, enode eshape) {
         au = au->src;
     Au_t au_ptr = au->ptr;
     if (!eshape && !au_ptr) {
-        au->ptr = def(a->au, null, AU_MEMBER_TYPE, 0);
+        au->ptr = def(null, null, AU_MEMBER_TYPE, 0);
         au->ptr->is_pointer  = true;
         au->ptr->src = au;
         au_ptr = au->ptr;
@@ -845,7 +876,7 @@ etype etype_ptr(aether a, Au_t au, enode eshape) {
         // AU_TRAIT_SHAPED marks this as `new T[N]` (or similar shaped alloc),
         // so the indexing dispatch never tries to call T's getter on it —
         // shaped operands always use raw pointer arithmetic.
-        au_ptr = def(a->au, null, AU_MEMBER_TYPE, AU_TRAIT_SHAPED);
+        au_ptr = def(null, null, AU_MEMBER_TYPE, AU_TRAIT_SHAPED);
         au_ptr->is_pointer  = true;
         au_ptr->src = au;
         // when the shape is a literal int or shape, propagate the element
@@ -5814,46 +5845,37 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
 
     //
     if (is_prim(F->au) && T->au == typeid(string)) {
-        // Calculate total size: Au header + primitive value
-        u64 au_size = typeid(Au)->abi_size / 8;
-        u64 prim_size = F->au->abi_size / 8;
-        u64 total_size = au_size + prim_size;
-        
-        // Allocate Au + primitive space on stack
-        LLVMTypeRef byte_array = LLVMArrayType(LLVMInt8TypeInContext(a->module_ctx), total_size);
+        // isa(ptr) reads ((struct _Au*)ptr - 1)->type; typesize = sizeof(struct _Au)
+        u64 au_header_size = typeid(Au)->typesize;
+        u64 prim_size      = F->au->abi_size / 8;
+        u64 total_size     = au_header_size + prim_size;
+
+        LLVMTypeRef  i8_ty  = LLVMInt8TypeInContext(a->module_ctx);
+        LLVMTypeRef  i64_ty = LLVMInt64TypeInContext(a->module_ctx);
+        LLVMTypeRef  byte_array  = LLVMArrayType(i8_ty, total_size);
         LLVMValueRef temp_alloca = entry_alloca(a, byte_array, "au_prim_temp");
-        
-        // Cast to Au*
-        LLVMTypeRef au_struct_type = etypeid(Au)->lltype;
-        LLVMTypeRef au_ptr_type = LLVMPointerTypeInContext(a->module_ctx, 0);
-        LLVMValueRef au_ptr = LLVMBuildBitCast(B, temp_alloca, au_ptr_type, "au_ptr");
-        
-        // Zero the whole thing
-        LLVMValueRef zero = LLVMConstInt(LLVMInt8TypeInContext(a->module_ctx), 0, 0);
-        LLVMValueRef size_val = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), total_size, 0);
-        LLVMBuildMemSet(B, temp_alloca, zero, size_val, 1);
-        
-        // Set type field (index 0) directly
-        LLVMValueRef type_gep = LLVMBuildStructGEP2(B, au_struct_type, au_ptr, 0, "type_ptr");
+
+        // zero the whole allocation
+        LLVMValueRef zero   = LLVMConstInt(i8_ty, 0, 0);
+        LLVMValueRef sz_val = LLVMConstInt(i64_ty, total_size, 0);
+        LLVMBuildMemSet(B, temp_alloca, zero, sz_val, 1);
+
+        // type pointer at byte 0 — isa() reads (struct _Au*)data_ptr - 1, which lands here
         enode type_val = e_typeid(a, F);
-        LLVMBuildStore(B, type_val->value, type_gep);
-        
-        // Store primitive value at end (offset = au_size)
-        LLVMValueRef indices[] = { LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), au_size, 0) };
-        LLVMValueRef byte_ptr = LLVMBuildBitCast(B, temp_alloca, 
-            LLVMPointerTypeInContext(a->module_ctx, 0), "");
-        LLVMValueRef data_ptr = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), byte_ptr, indices, 1, "data_ptr");
-        LLVMValueRef typed_ptr = LLVMBuildBitCast(B, data_ptr, 
-            LLVMPointerTypeInContext(a->module_ctx, 0), "typed_ptr");
-        LLVMBuildStore(B, expr->value, typed_ptr);
-        
-        // Call Au_cast_string. Au_cast_string expects the DATA pointer
-        // (isa() walks back by one _Au header to find the type). Passing
-        // the header base would point isa at offset -108 (garbage).
+        LLVMBuildStore(B, type_val->value, temp_alloca);
+
+        // data_ptr = alloca + sizeof(struct _Au)
+        LLVMValueRef hdr_off  = LLVMConstInt(i64_ty, au_header_size, 0);
+        LLVMValueRef data_ptr = LLVMBuildGEP2(B, i8_ty, temp_alloca, &hdr_off, 1, "data_ptr");
+
+        // store primitive value at data_ptr
+        LLVMBuildStore(B, expr->value, data_ptr);
+
+        // Au_cast_string receives the data pointer; isa() finds type at data_ptr - sizeof(struct _Au)
         Au_t fn_cast = find_member(typeid(Au), "cast_string", AU_MEMBER_CAST, 0, false);
         verify(u(efunc, fn_cast), "Au_cast_string not found");
 
-        enode au_arg = enode(mod, a, value, typed_ptr, loaded, false, au, typeid(Au));
+        enode au_arg = enode(mod, a, value, data_ptr, loaded, false, au, typeid(Au));
         return e_fn_call(a, u(efunc, fn_cast), a(au_arg), false, true);
     }
     
@@ -6189,6 +6211,18 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             LLVMSetLinkage(dtor_fn, LLVMExternalLinkage);
             LLVMBasicBlockRef dtor_bb = LLVMAppendBasicBlockInContext(a->module_ctx, dtor_fn, "dentry");
             LLVMPositionBuilderAtEnd(B, dtor_bb);
+            // erase all Silver modules before destroying the instance so module_init
+            // in the reloaded .so starts with a clean registry (no stale Background etc.)
+            {
+                Au_t au_erase_silver = find_member(typeid(Au), "module_erase_silver", AU_MEMBER_FUNC, 0, false);
+                if (au_erase_silver) {
+                    efunc fn_erase = u(efunc, au_erase_silver);
+                    if (fn_erase && fn_erase->value) {
+                        LLVMTypeRef erase_ty = LLVMFunctionType(void_ty, null, 0, false);
+                        LLVMBuildCall2(B, erase_ty, fn_erase->value, null, 0, "");
+                    }
+                }
+            }
             if (fn_destroy) {
                 LLVMValueRef _inst = LLVMBuildLoad2(B, ptr_ty, inst_g, "inst");
                 LLVMValueRef _hdr  = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), _inst,
@@ -6931,14 +6965,14 @@ etype implement_type_id(etype t) {
     // we need to create the %o_i instance inline struct
     bool is_module = au->member_type == AU_MEMBER_MODULE;
     string n = f(string, "%s_%s", au->ident, is_module ? "module" : "info");
-    Au_t type_info = def_type  (a->au, n->chars, AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
+    Au_t type_info = def_type  (null, n->chars, AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
     Au_t type_h    = def_member(type_info, "base", au_type, AU_MEMBER_VAR, AU_TRAIT_SYSTEM | AU_TRAIT_INLAY);
     Au_t type_f    = def_member(type_info, "type", t->schema->au, AU_MEMBER_VAR, AU_TRAIT_SYSTEM | AU_TRAIT_INLAY);
     type_f->index = 1;
     etype au_t = etype(mod, a, au, type_info);
 
     etype_implement(au_t, false);
-    
+
     if (!au->ident) return null;
 
     if (strcmp(au->ident, "Elements") == 0) {
@@ -6949,7 +6983,7 @@ etype implement_type_id(etype t) {
         f(string, "%o_%s_i", symbol_name(
             (Au)string(au->module ? au->module->ident : a->name->chars)), au->ident);
     evar schema_i = evar(mod, a, au, def_member(
-                a->au, name->chars, type_info, AU_MEMBER_VAR,
+                null, name->chars, type_info, AU_MEMBER_VAR,
                 AU_TRAIT_SYSTEM | (a->is_Au_import ? AU_TRAIT_IS_IMPORTED : 0)));
     
     etype_implement((etype)schema_i, false);
@@ -7016,7 +7050,7 @@ none etype_implement(etype t, bool w) { sequencer
         // a struct/class with null context is a record, NOT a module — don't
         // promote its fields to LLVM globals.
         bool parent_is_record = au->context && (au->context->is_struct || au->context->is_class);
-        if ((!au->context->context && !parent_is_record) || (au->is_c && au->is_static)) {
+        if (!au->context || (!au->context->context && !parent_is_record) || (au->is_c && au->is_static)) {
             // mod->is_Au_import indicates this is coming from a lib, or we are making a new global
             bool is_external = ((module && au->access_type == interface_public) ||
                 a->is_Au_import || au->is_system || (au->is_c && au->is_static));
@@ -7323,7 +7357,7 @@ none etype_implement(etype t, bool w) { sequencer
                         m->access_type == interface_intern)
                         ic++;
                 }
-                tt->au->icount = ic;
+                if (!tt->au->icount) tt->au->icount = ic;
             }
 
             // lets define this as a form of byte accessible opaque.
@@ -7589,10 +7623,12 @@ none etype_implement(etype t, bool w) { sequencer
         if (au->elements && !au->is_pointer && LLVMGetTypeKind(t->lltype) != LLVMArrayTypeKind)
             t->lltype = LLVMArrayType(t->lltype, au->elements);
         /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// ///
-                    au->abi_size   = LLVMABISizeOfType(a->target_data, t->lltype) * 8;
+            if (!au->abi_size)
+                au->abi_size   = LLVMABISizeOfType(a->target_data, t->lltype) * 8;
             if (!au->typesize || !au->is_au || au->is_c)
                 au->typesize = LLVMABISizeOfType(a->target_data, t->lltype);
-            au->align_bits = LLVMABIAlignmentOfType(a->target_data, t->lltype) * 8;
+            if (!au->align_bits)
+                au->align_bits = LLVMABIAlignmentOfType(a->target_data, t->lltype) * 8;
         }
 }
 
@@ -8090,6 +8126,7 @@ none aether_build_module_initializer(aether a, enode init) {
             LLVMValueRef ts_val = LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), max_ft_end, false);
             LLVMBuildStore(B, ts_val, ts_slot);
             // propagate into the compiler's in-memory Au_t so child modules see correct table_size at compile time
+            //if (!tau->table_size)
             tau->table_size = (u32)max_ft_end;
         }
 
@@ -8639,6 +8676,8 @@ void aether_unload_libs(aether a) {
 
 // todo: adding methods to header does not update the methods header (requires clean)
 void aether_reinit_startup(aether a) {
+    au_space_begin((void*)a);
+
     a->iteration++;
     a->fn_init        = null;
     a->stack          = array(16);

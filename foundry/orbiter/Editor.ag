@@ -82,7 +82,8 @@ Layer EditorLayer
 
             if [ has_sel ]
                 cv.save[ ]
-                cv.rounded[ 3.0, 3.0, 3.0, 3.0 ]
+                cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
+                pad : 2
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
                     y_row  : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
                     if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
@@ -93,7 +94,8 @@ Layer EditorLayer
                     rx     : f32 [ x0 + col_x0 ]
                     rw     : f32 [ col_x1 - col_x0 ]
 
-                    rr : rect [ x:rx, y:y_row, w:rw, h:lh ]
+                    rr : rect [ x:rx + pad, y:y_row + pad,
+                        w:rw - pad * 2, h:lh - pad * 2 ]
                     if [ editor.last_sel_line == li ]
                         if [ editor.filter_rect ]
                             rr.x = editor.filter_rect.x * 0.75 + rr.x * 0.25

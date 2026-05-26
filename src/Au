@@ -325,7 +325,17 @@ void lazy_init(global_init_fn fn, Au_t);
         AA##_intern (AA, F, __VA_ARGS__) \
         void* __none__; \
     }; \
+    struct AA##_af { \
+        union { \
+            struct { \
+                AA##_intern (AA, AF, __VA_ARGS__) \
+                unsigned long __af_last:1; \
+            };                                    \
+            u64 _afbits[4]; \
+        }; \
+    }; \
     typedef struct _##AA { \
+        struct AA##_af af_bits; \
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern(AA, ISIZE, __VA_ARGS__)]; \
@@ -352,7 +362,18 @@ void lazy_init(global_init_fn fn, Au_t);
         AA##_intern (AA, F, __VA_ARGS__) \
         void* __none__; \
     }; \
+    struct AA##_af { \
+        union { \
+            struct { \
+                BB##_intern (BB, AF, __VA_ARGS__) \
+                AA##_intern (AA, AF, __VA_ARGS__) \
+                unsigned long __af_last:1; \
+            };                                    \
+            u64 _afbits[4]; \
+        }; \
+    }; \
     typedef struct _##AA { \
+        struct AA##_af af_bits; \
         BB##_intern (BB, INST_U, __VA_ARGS__) \
         BB##_intern (BB, INST_L, __VA_ARGS__) \
         u8 BB##_interns [0 BB##_intern (BB, ISIZE, __VA_ARGS__)]; \
@@ -383,7 +404,19 @@ void lazy_init(global_init_fn fn, Au_t);
         AA##_intern (AA, F, __VA_ARGS__) \
         void* __none__; \
     }; \
+    struct AA##_af { \
+        union { \
+            struct { \
+                CC##_intern (CC, AF, __VA_ARGS__) \
+                BB##_intern (BB, AF, __VA_ARGS__) \
+                AA##_intern (AA, AF, __VA_ARGS__) \
+                unsigned long __af_last:1; \
+            };                                    \
+            u64 _afbits[4]; \
+        }; \
+    }; \
     typedef struct _##AA { \
+        struct AA##_af af_bits; \
         CC##_intern (CC, INST_U, __VA_ARGS__) \
         CC##_intern (CC, INST_L, __VA_ARGS__) \
         u8 CC##_interns [0 CC##_intern (CC, ISIZE, __VA_ARGS__)]; \
@@ -422,7 +455,20 @@ void lazy_init(global_init_fn fn, Au_t);
         AA##_intern (AA, F, __VA_ARGS__) \
         void* __none__; \
     }; \
+    struct AA##_af { \
+        union { \
+            struct { \
+                DD##_intern (DD, AF, __VA_ARGS__) \
+                CC##_intern (CC, AF, __VA_ARGS__) \
+                BB##_intern (BB, AF, __VA_ARGS__) \
+                AA##_intern (AA, AF, __VA_ARGS__) \
+                unsigned long __af_last:1; \
+            };                                    \
+            u64 _afbits[4]; \
+        }; \
+    }; \
     typedef struct _##AA { \
+        struct AA##_af af_bits; \
         DD##_intern (DD, INST_U, __VA_ARGS__) \
         DD##_intern (DD, INST_L, __VA_ARGS__) \
         u8 DD##_interns [0 DD##_intern (DD, ISIZE, __VA_ARGS__)]; \
@@ -2068,6 +2114,10 @@ none array_init(array);
 Au_t au_arg(Au a);
 Au_t au_arg_type(Au a);
 Au_t typeid_string(Au_t check);
+void au_space_begin(void* owner);
+void au_space_end(void* owner);
+void au_space_clear(void);
+void module_erase_silver(void);
 none validate_meta(Au_t actual, Au_t expected);
 
 #define weak_module_ Au

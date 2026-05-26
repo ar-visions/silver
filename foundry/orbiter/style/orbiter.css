@@ -16,7 +16,7 @@ Toolbar {
         area: l4 t0px w2px b0px
 
     layers.base:
-        fill_color:         #aaa1
+        fill_color:         #fff1
         inner_glow:         #fff1 16
 }
 
@@ -214,7 +214,7 @@ Toolbar.right / Control:selected {
 }
 
 Instances {
-    area:                       l4.07 b6.9 r10.04 b0
+    area:                       l4.07 b6.9 r10.04 h1.5
     layers.compose:
         ctype: compose
         fill_color: #f0a
@@ -226,6 +226,10 @@ Instances {
         stroke_width:           0.5 0 0 0
 }
 
+Instances:selected {
+    area:                       l4.07 b6.9 r10.04 h7
+}
+
 Console {
     focusable:  true
     area:   l0 t1 r0 b0
@@ -233,6 +237,14 @@ Console {
         area:               8px
         label_height:       1.0
         label_size:         16
+}
+
+CompileConsole {
+    area:   l0 t1 r0 b0
+    layers.content: CompileLayer
+        area:               8px
+        label_height:       1.0
+        label_size:         15
 }
 
 FileList {
@@ -356,10 +368,33 @@ Tabs.actions / Button.play {
         image_align:    0.5 0.5
 }
 
+Tabs.targets / Option.system {
+    area: l6px t6px w1 h1
+    layers.svg:
+        area: 4px
+        image_svg:      "images/menu-icon.svg"
+        image_scale:    1.4
+        image_align:    0.5 0.5
+}
+
+Tabs.targets / Option.system:selected {
+    layers.base:
+        fill_color:     #fd06
+        inner_glow:     #fd08 16
+}
+
 Tabs / Button:hovered {
     layers.base:
         fill_color:             #8af2
         inner_glow:             #8af4 16
+}
+
+Tabs / Option {
+    layers.base:
+        fill_color:             #2481
+        inner_glow:             #8af1 16
+    layers.face:
+        label_color:            #fff
 }
 
 Tabs / Option:selected {
@@ -371,6 +406,21 @@ Tabs / Option:selected {
         label_shadow:           #0008
         label_shadow_offset:    1 1
         label_shadow_blur:      3
+}
+
+Tabs / Option:disable {
+    layers.base:
+        fill_color:             #2480
+        inner_glow:             #0000 0
+    layers.face:
+        label_color:            #fff3
+}
+
+Tabs.actions / Button.play:disable {
+    layers.base:
+        inner_glow:             #0000 0
+    layers.svg:
+        opacity:    0.2
 }
 
 Avatar.avatar {

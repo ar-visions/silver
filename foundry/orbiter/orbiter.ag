@@ -9,6 +9,8 @@ import silver
 import <stdio.h>
     -lm
 import <stdlib.h>
+import <unistd.h>
+import <fcntl.h>
 import Earth
 import Avatar
 import Editor
@@ -19,46 +21,81 @@ Option  DebugPanel
 Option  CallStack
 Control Tabs
 Control Instances
-
-enum ConsoleKind
-    shell : 0
-    lldb  : 1
+    public selected : bool
 
 #proto compiler ... this is in effect what we are doing, and if we 'wanted' to we could register this for enumeration at runtime
 #      func compiler [ module: string ]
 
+func au_space_clear[] -> none
+
 trinity orbiter # implements compiler
-    intern avg_fps    : f32
-    public open_files  : array path
-    public active_idx  : i32
-    public active_panel   : string
-    public active_target  : string
-    public active_console : ConsoleKind
-    public filter_text    : string
+    intern avg_fps       : f32
+    intern target_names  : array string
+    intern target_roots  : array path
+    public open_files    : array path
+    public active_idx    : i32
+    public active_panel  : string
+    public active_target : string
+    public active_console: string
+    public show_console  : bool
+    public filter_text   : string
+    public compile_log   : list string
+    public stdout_log    : list string
+    public nav_root      : path
+    intern stdout_rfd    : i32 [ -1 ]
+    intern stdout_line   : string
  
     func init []
         width          = 1888
         height         = 888
         background     = 'Background'
+        # targets defined once here
+        target_names   = array string []
+        target_roots   = array path []
+        target_names  += 'silver'
+        target_roots  += path '/src/silver'
+        target_names  += 'hyperspace'
+        target_roots  += path '/src/silver/foundry/hyperspace'
         open_files     = array path []
         open_files    += path '/src/silver/src/silver.c'
         open_files    += path '/src/silver/src/aether.c'
         open_files    += path '/src/silver/src/Au.c'
-        active_idx     = 0 
+        active_idx     = 0
         active_panel   = 'files'
-        active_target  = 'silver'
-        active_console = ConsoleKind.shell
+        active_target  = 'system'
+        nav_root       = target_roots[0]
+        active_console = 'shell'
+        show_console   = true
         filter_text    = ''
-        au_set_compiler[a]
+        compile_log    = list string []
+        stdout_log     = list string []
+        stdout_line    = ''
+        #au_set_compiler[a]
  
+    func drain_stdout []
+        if [ stdout_rfd < 0 ] return
+        buf : local i8 [2]
+        buf[1] = 0
+        for [ i: i32 0, i < 4096, i += 1 ]
+            nr : i32 [ read[ stdout_rfd, ref buf[0], 1 ] ]
+            if [ nr <= 0 ] break
+            if [ i32[buf[0]] == 10 ]
+                stdout_log.push[ stdout_line ]
+                stdout_line = ''
+            el
+                stdout_line = stdout_line + string[ ref buf[0] ]
+
     func compile_fn [ w: Au ]
         m: string w  
         i: silver [ component: true, module: m ]  
 
     func compile [ mod: string ]
-        puts 'try to compile {mod}'
-        #i: silver [ component: true, verbose:true, module: mod ]  
-        au_spawn[ ref compile_fn, a, mod ]
+        active_target = 'system'
+        compile_log.push[ 'compiling {mod}...' ]
+        i: silver [ component: true, verbose:true, module: mod ]
+        au_space_clear[]
+        compile_log.push[ 'done: {mod}' ]
+        #au_spawn[ ref compile_fn, a, mod ]
 
     func open_file [ p: path ]
         for [ i: i32 0, i < open_files.count, i += 1 ]
@@ -78,16 +115,29 @@ trinity orbiter # implements compiler
 
     func on_click [ ev: Event ]
         if [ !ev.target ] return
+        puts 'on_click: {ev.target.id}'
         if [ ev.target inherits Option ]
             id : string ev.target.id
-            if [ id == 'silver' || id == 'hyperspace' || id == 'orbiter' ]
-                active_target = id
-            el [ id == 'shell' ]
-                active_console = ConsoleKind.shell
-            el [ id == 'lldb' ]
-                active_console = ConsoleKind.lldb
+            if [ id == 'system' ]
+                active_target = 'system'
+            el [ id == 'shell' || id == 'lldb' ]
+                active_console = (active_console == id) ? '' : id
+                show_console   = active_console.count > 0
+                puts 'show_console: {show_console}'
+                ux      : Window ev.target.ux
+                inst_el : Instances ux.root.elements[ 'instances' ]
+                if [ inst_el ]
+                    inst_el.selected = show_console
             el
-                active_panel = id
+                matched : bool false
+                for [ i: i32 0, i < target_names.count, i += 1 ]
+                    if [ target_names[i] == id ]
+                        active_target = id
+                        nav_root      = target_roots[i]
+                        matched       = true
+                if [ !matched ]
+                    active_panel = id
+            if [ ev.target ] ev.target.ux.restyle = true
             return
         for [ i: i32 0, i < open_files.count, i += 1 ]
             key : string 'tab_{i}'
@@ -131,13 +181,14 @@ trinity orbiter # implements compiler
                 if [ fl ] fl.pristine = false
 
     public func on_render [ w: Window ] -> Elements
+        drain_stdout[]
         fps : f32 [ w.frame_factor * 60.0 ]
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
         w.set_title[ 'orbiter 444 | {pad[i32[avg_fps]]} fps' ]
-    
+
         active_path : path (open_files.count > 0) ? open_files[active_idx] : null
         active_name : string (active_path) ? active_path.filename[] : string[]
-       
+
         source_nav : Elements []
         for [ i: i32 0, i < open_files.count, i += 1 ]
             p   : path   open_files[i]
@@ -145,25 +196,36 @@ trinity orbiter # implements compiler
             source_nav[key] = Button [ label: p.filename[] ]
 
         targets : Elements []
-        targets['silver']     = Option [ label: 'silver',     selected: active_target == 'silver'     ]
-        targets['hyperspace'] = Option [ label: 'hyperspace', selected: active_target == 'hyperspace' ]
-        targets['orbiter']    = Option [ label: 'orbiter',    selected: active_target == 'orbiter'    ]
+        targets['system'] = Option [ selected: active_target == 'system' ]
+        for [ i: i32 0, i < target_names.count, i += 1 ]
+            name : string target_names[i]
+            targets[name] = Option [ label: name, selected: active_target == name ]
 
         consoles : Elements []
-        consoles['shell'] = Option [ label: 'shell', selected: active_console == ConsoleKind.shell ]
-        consoles['lldb']  = Option [ label: 'lldb',  selected: active_console == ConsoleKind.lldb  ]
-        
+        consoles['shell'] = Option [ label: 'shell', selected: active_console == 'shell' ]
+        consoles['lldb']  = Option [ label: 'lldb',  selected: active_console == 'lldb',  disable:active_target == 'system' ]
+
+        inst : Elements []
+        inst['consoles'] = Tabs [ elements: consoles ]
+        inst['targets']  = Tabs [ elements: targets  ]
+        inst['actions']  = Tabs [ elements: Elements [
+            "play": Button [ disable:active_target == 'system' ]
+        ]]
+        if [ active_target == 'system' ]
+            inst['console'] = CompileConsole [ log: stdout_log ]
+        el
+            inst['console'] = Console [ session_id: active_target ]
+
         return Elements [
-            "toolbar":  Toolbar [
-                elements: 
-                    Elements [
-                        'source_nav': Tabs[ elements: source_nav ]
-                    ]
+            "toolbar":      Toolbar [
+                elements:   Elements [
+                    'source_nav': Tabs[ elements: source_nav ]
+                ]
             ],
-            "right":    Toolbar [
+            "right":        Toolbar [
                 elements: Elements [
                     "filter":       element    [ label: filter_text ]
-                    "files":        FileList   [ selected: active_panel == 'files', filter: (active_panel == 'files') ? filter_text : '' ]
+                    "files":        FileList   [ selected: active_panel == 'files', filter: (active_panel == 'files') ? filter_text : '', root: nav_root ]
                     "callstack":    CallStack  [ selected: active_panel == 'callstack' ]
                     "debug":        DebugPanel [ selected: active_panel == 'debug' ]
                     "debug2":       CallStack  [ selected: active_panel == 'debug' ]
@@ -175,15 +237,7 @@ trinity orbiter # implements compiler
                     "editor":       Editor  [ src: active_path ]
                 ]
             ],
-            "instances": Instances [
-                elements: Elements [
-                    "consoles":     Tabs [ elements: consoles ]
-                    "targets":      Tabs [ elements: targets  ]
-                    "actions":      Tabs [ elements: Elements [ "play": Button [] ] ]
-                    "console":      Console [ session_id: active_target ]
-                ]
-            ]
-            #"avatar": Avatar []
+            "instances": Instances [ elements: inst, selected: show_console ]
         ]
 
     public func on_canvas [ cv: Canvas ]

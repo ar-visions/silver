@@ -149,9 +149,23 @@ class StyleBlock
                 ty_handle   : handle [ q.ty ]
                 id_match    : bool   [ q.id && q.id == cur.id ]
                 id_reject   : bool   [ q.id && !id_match ]
-                type_match  : bool   [ ty_handle && (cur.instance_of[ q.ty ] != null) ]
-                type_reject : bool   [ ty_handle && !type_match ]
-                
+
+                # when cur has no parent we are at root — check app_object type instead
+                use_app    : bool [ !cur.parent && ux && ux.app_object ]
+                type_match : bool [ false ]
+                if [ ty_handle ]
+                    if [ use_app ]
+                        check : typeid[ ux.app_object ]
+                        while [ check && check != typeid[ Au ] ]
+                            if [ check == q.ty ] type_match = true
+                            check = check.context
+                        if [ type_match && q.state ]
+                            sv : Au ux.app_object.get_property[ q.state ]
+                            if [ !sv || !Au.cast_bool[ sv ] ] type_match = false
+                    el
+                        type_match = cur.instance_of[ q.ty ] != null
+                type_reject : bool [ ty_handle && !type_match ]
+
                 # state pseudo-classes. q.states holds the full list (e.g.
                 # :hovered:pressed). ALL states must be truthy on this element
                 # for the selector to match. the q.oper path (state OP value)
@@ -159,7 +173,12 @@ class StyleBlock
                 state_match : bool [ score_state && q.state ]
                 if [ state_match ]
                     expect q.state.count > 0, 'null state'
-                    if [ q.oper || !q.states || q.states.count <= 1 ]
+                    if [ use_app && type_match ]
+                        state_val : ux.app_object.get_property[ q.state ]
+                        state_match = state_val && Au.cast_bool [ state_val ]
+                    el [ use_app ]
+                        state_match = false
+                    el [ q.oper || !q.states || q.states.count <= 1 ]
                         current : Au cur.get_property[ q.state ]
                         state_match = current && current.cast_bool[ ]
                     el
@@ -185,7 +204,7 @@ class StyleBlock
                         return 0.0
                     break
                 q   = q.parent
-                cur = (cur.parent) ? cur.parent : element[]
+                cur = (cur.parent) ? cur.parent : cur
             q.drop[]
             best_sc = max[ best_sc, best_this ]
         return best_sc
@@ -240,9 +259,15 @@ class Style
         for [ block: StyleBlock ] reverse in blocks
             type_ok : bool [ !block.types.count ]
             for [ bt: Au_t ] in block.types
-                if [n.instance_of[ bt ]]
+                if [ n.instance_of[ bt ] ]
                     type_ok = true
                     break
+                if [ !type_ok && n.ux && n.ux.app_object ]
+                    check : typeid[ n.ux.app_object ]
+                    while [ check && check != typeid[ Au ] ]
+                        if [ check == bt ] type_ok = true
+                        check = check.context
+                if [ type_ok ] break
             if [ type_ok ]
                 if [ block.key && block.property ]
                     if [ block.score[ n, false ] > 0 ]
@@ -254,7 +279,7 @@ class Style
                     if [ f && block.score[ n, false ] > 0 ]
                         result.push[ f ]
                         ret = true
-        
+
         return ret
 
     func process [ code: string ]
@@ -382,7 +407,8 @@ struct XCoord
     pixel    : bool
 
     construct [ sx: string ]
-        f : string[ sx.first[] ]
+        uni : unichar[ sx.first[] ]
+        f : string[ uni ]
         if [ f.chars[ 0 ] == '-' || isdigit[f.chars[ 0 ]]]
             sx_r : string [ sx ]
             if [ sx_r.last[] == 'x' && sx_r.count >= 2 ]

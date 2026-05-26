@@ -104,7 +104,7 @@ ielement element
     mutable transform_origin : vec2f
     mutable ghost           : bool
     mutable captured        : bool
-    mutable disabled        : bool
+    mutable disable         : bool
     mutable hovered         : bool
     mutable pressed         : bool
     mutable focused         : bool
