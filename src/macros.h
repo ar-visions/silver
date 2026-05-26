@@ -339,7 +339,8 @@
 #define EXPAND_ARGS2(...)            EXPAND_ARGS_HELPER2(COUNT_ARGS(__VA_ARGS__), __VA_ARGS__)
 #define EXPAND_ARGS_HELPER2(N, ...)  combine_tokens(EXPAND_ARGS2_, N)(__VA_ARGS__)
 
-
+#define   i_ctr_interface_AF(X, ARG)
+#define   i_ctr_interface_AF_EXTERN(X, ARG)
 #define   i_ctr_interface_F(X, ARG)
 #define   i_ctr_interface_F_EXTERN(X, ARG)
 #define   i_ctr_interface_ISIZE(X, ARG)  
@@ -357,6 +358,8 @@
 #define   i_ctr_interface_METHOD(X, ARG)
 #define   i_ctr_interface_NMODULE(X, ARG)
 
+#define   i_ctr_public_AF(X, ARG)
+#define   i_ctr_public_AF_EXTERN(X, ARG)
 #define   i_ctr_public_F(X, ARG)
 #define   i_ctr_public_F_EXTERN(X, ARG)
 #define   i_ctr_public_ISIZE(X, ARG)   
@@ -386,6 +389,8 @@
 #define   i_ctr_public_METHOD(X, ARG)      X (*with_##ARG)(X, ARG);
 #define   i_ctr_public_NMODULE(X, ARG)
 
+#define   i_ctr_intern_AF(X, ARG)
+#define   i_ctr_intern_AF_EXTERN(X, ARG)
 #define   i_ctr_intern_F(X, ARG)
 #define   i_ctr_intern_F_EXTERN(X, ARG)
 #define   i_ctr_intern_ISIZE(X, ARG)        
@@ -401,7 +406,8 @@
 #define   i_ctr(X, Y, T, ARG)              i_ctr_##T##_##Y(X, ARG)
 
 
-
+#define   i_prop_opaque_AF(X, R, N)             
+#define   i_prop_opaque_AF_EXTERN(X, R, N)      
 #define   i_prop_opaque_F(X, R, N)              u8 N;
 #define   i_prop_opaque_F_EXTERN(X, R, N)       u8 N;
 #define   i_prop_opaque_ISIZE(X, R, N) 
@@ -419,6 +425,8 @@
 #define   i_prop_opaque_METHOD(X, R, N)
 #define   i_prop_opaque_NMODULE(X, R, N)
 
+#define   i_prop_interface_AF(X, R, N)
+#define   i_prop_interface_AF_EXTERN(X, R, N)
 #define   i_prop_interface_F(X, R, N)
 #define   i_prop_interface_F_EXTERN(X, R, N)
 #define   i_prop_interface_ISIZE(X, R, N)      
@@ -436,6 +444,8 @@
 #define   i_prop_interface_METHOD(X, R, N)
 #define   i_prop_interface_NMODULE(X, R, N)
 
+#define   i_prop_Au_public_AF(X, R, N)
+#define   i_prop_Au_public_AF_EXTERN(X, R, N)
 #define   i_prop_Au_public_F(X, R, N)
 #define   i_prop_Au_public_F_EXTERN(X, R, N)
 #define   i_prop_Au_public_ISIZE(X, R, N)   
@@ -461,6 +471,8 @@
 #define   i_prop_Au_public_METHOD(X, R, N)
 #define   i_prop_Au_public_NMODULE(X, R, N)
 
+#define   i_prop_public_AF(X, R, N)             unsigned long N:1;
+#define   i_prop_public_AF_EXTERN(X, R, N)      unsigned long N:1;
 #define   i_prop_public_F(X, R, N)              u8 N;
 #define   i_prop_public_F_EXTERN(X, R, N)       u8 N;
 #define   i_prop_public_ISIZE(X, R, N)   
@@ -487,6 +499,8 @@
 #define   i_prop_public_METHOD(X, R, N)
 #define   i_prop_public_NMODULE(X, R, N)
 
+#define   i_prop_required_AF(X, R, N)           unsigned long N:1;
+#define   i_prop_required_AF_EXTERN(X, R, N)    unsigned long N:1;
 #define   i_prop_required_F(X, R, N)            u8 N;
 #define   i_prop_required_F_EXTERN(X, R, N)     u8 N;
 #define   i_prop_required_ISIZE(X, R, N)     
@@ -512,7 +526,8 @@
 #define   i_prop_required_NMODULE(X, R, N)
 
 
-
+#define   i_prop_def_AF(X, R, N)           unsigned long N:1;
+#define   i_prop_def_AF_EXTERN(X, R, N)    unsigned long N:1;
 #define   i_prop_def_F(X, R, N)            u8 N;
 #define   i_prop_def_F_EXTERN(X, R, N)     u8 N;
 #define   i_prop_def_ISIZE(X, R, N)     
@@ -540,7 +555,8 @@
 #define   i_prop_def_NMODULE(X, R, N)
 
 
-
+#define   i_prop_intern_AF(X, R, N)             
+#define   i_prop_intern_AF_EXTERN(X, R, N)      
 #define   i_prop_intern_F(X, R, N)              u8 N;
 #define   i_prop_intern_F_EXTERN(X, R, N)       u8 ___intern_##N;
 #define   i_prop_intern_ISIZE(X, R, N)          
@@ -559,6 +575,8 @@
 #define   i_prop_intern_NMODULE(X, R, N)
 
 
+#define   i_prop_iobject_AF(X, R, N)             
+#define   i_prop_iobject_AF_EXTERN(X, R, N)      
 #define   i_prop_iobject_F(X, R, N)              u8 N;
 #define   i_prop_iobject_F_EXTERN(X, R, N)       u8 ___intern_##N;
 #define   i_prop_iobject_ISIZE(X, R, N)          
@@ -583,7 +601,8 @@
 #define   i_prop_iobject_NMODULE(X, R, N)
 
 
-
+#define   i_prop_intern_AF_pad(X, R, N, M2)             
+#define   i_prop_intern_AF_EXTERN_pad(X, R, N, M2) 
 #define   i_prop_intern_F_pad(X, R, N, M2)                u8 N;
 #define   i_prop_intern_F_EXTERN_pad(X, R, N, M2)         u8 ___intern_##N;
 #define   i_prop_intern_ISIZE_pad(X, R, N, M2)            
@@ -601,6 +620,8 @@
 #define   i_prop_intern_METHOD_pad(X, R, N, M2)
 #define   i_prop_intern_NMODULE_pad(X, R, N, M2)
 
+#define   i_prop_public_AF_field(X, R, N)             unsigned long N:1;
+#define   i_prop_public_AF_EXTERN_field(X, R, N)      unsigned long N:1;
 #define   i_prop_public_F_field(X, R, N, M2)            u8 N;
 #define   i_prop_public_F_EXTERN_field(X, R, N, M2)     u8 N;
 #define   i_prop_public_ISIZE_field(X, R, N, M2)        
@@ -624,6 +645,8 @@
 #define   i_prop_public_METHOD_field(X, R, N, M2)
 #define   i_prop_public_NMODULE_field(X, R, N, M2)
 
+#define   i_prop_required_AF_field(X, R, N)             unsigned long N:1;
+#define   i_prop_required_AF_EXTERN_field(X, R, N)      unsigned long N:1;
 #define   i_prop_required_F_field(X, R, N, M2)              u8 N;
 #define   i_prop_required_F_EXTERN_field(X, R, N, M2)       u8 N;
 #define   i_prop_required_ISIZE_field(X, R, N, M2)          +sizeof(R)
@@ -647,8 +670,10 @@
 #define   i_prop_required_METHOD_field(X, R, N, M2)
 #define   i_prop_required_NMODULE_field(X, R, N, M2)
 
+#define   i_prop_intern_AF_field(X, R, N)             
+#define   i_prop_intern_AF_EXTERN_field(X, R, N)      
 #define   i_prop_intern_F_field(X, R, N, M2)                u8 N;
-#define   i_prop_intern_F_EXTERN_field(X, R, N, M2)         
+#define   i_prop_intern_F_EXTERN_field(X, R, N, M2)         u8 ___intern_##N;
 #define   i_prop_intern_ISIZE_field(X, R, N, M2)            +sizeof(R)
 #define   i_prop_intern_INST_U_field(X, R, N, M2)
 #define   i_prop_intern_INST_L_field(X, R, N, M2)             R N;
@@ -663,6 +688,8 @@
 #define   i_prop_intern_METHOD_field(X, R, N, M2)
 #define   i_prop_intern_NMODULE_field(X, R, N, M2)
 
+#define   i_prop_public_AF_meta(X, R, N, M2)            unsigned long N:1;
+#define   i_prop_public_AF_EXTERN_meta(X, R, N, M2)     unsigned long N:1;
 #define   i_prop_public_F_meta(X, R, N, M2)             u8 N;
 #define   i_prop_public_F_EXTERN_meta(X, R, N, M2)      u8 N;
 #define   i_prop_public_ISIZE_meta(X, R, N, M2)            
@@ -687,6 +714,8 @@
 #define   i_prop_public_METHOD_meta(X, R, N, M2)
 #define   i_prop_public_NMODULE_field(X, R, N, M2)
 
+#define   i_prop_required_AF_meta(X, R, N, M2)            unsigned long N:1;
+#define   i_prop_required_AF_EXTERN_meta(X, R, N, M2)     unsigned long N:1;
 #define   i_prop_required_F_meta(X, R, N, M2)           u8 N;
 #define   i_prop_required_F_EXTERN_meta(X, R, N, M2)    u8 N;
 #define   i_prop_required_ISIZE_meta(X, R, N, M2)            
@@ -711,8 +740,10 @@
 #define   i_prop_required_METHOD_meta(X, R, N, M2)
 #define   i_prop_required_NMODULE_field(X, R, N, M2)
 
-#define   i_prop_intern_F_meta(X, R, N, M2)             u8 N;
-#define   i_prop_intern_F_EXTERN_meta(X, R, N, M2)      
+#define   i_prop_intern_AF_meta(X, R, N, M2)            
+#define   i_prop_intern_AF_EXTERN_meta(X, R, N, M2)     
+#define   i_prop_intern_F_meta(X, R, N, M2)                
+#define   i_prop_intern_F_EXTERN_meta(X, R, N, M2)
 #define   i_prop_intern_ISIZE_meta(X, R, N, M2)          +sizeof(R)
 #define   i_prop_intern_INST_U_meta(X, R, N, M2)
 #define   i_prop_intern_INST_L_meta(X, R, N, M2)           R N;
@@ -727,6 +758,8 @@
 #define   i_prop_intern_METHOD_meta(X, R, N, M2)  
 #define   i_prop_intern_NMODULE_meta(X, R, N, M2)
 
+#define   i_prop_public_AF_as(X, R, N, M2)              unsigned long N:1;
+#define   i_prop_public_AF_EXTERN_as(X, R, N, M2)       unsigned long N:1;
 #define   i_prop_public_F_as(X, R, N, M2)               u8 N;
 #define   i_prop_public_F_EXTERN_as(X, R, N, M2)        u8 N;
 #define   i_prop_public_ISIZE_as(X, R, N, M2)           
@@ -751,6 +784,9 @@
 #define   i_prop_public_METHOD_as(X, R, N, M2)
 #define   i_prop_public_NMODULE_meta(X, R, N, M2)
 
+
+#define   i_prop_required_AF_as(X, R, N, M2)              unsigned long N:1;
+#define   i_prop_required_AF_EXTERN_as(X, R, N, M2)       unsigned long N:1;
 #define   i_prop_required_F_as(X, R, N, M2)             u8 N;
 #define   i_prop_required_F_EXTERN_as(X, R, N, M2)      u8 N;
 #define   i_prop_required_ISIZE_as(X, R, N, M2)        
@@ -769,6 +805,9 @@
 #define   i_prop_required_METHOD_as(X, R, N, M2)
 #define   i_prop_required_NMODULE_as(X, R, N, M2)
 
+
+#define   i_prop_intern_AF_as(X, R, N, M2)
+#define   i_prop_intern_AF_EXTERN_as(X, R, N, M2)
 #define   i_prop_intern_F_as(X, R, N, M2)               u8 N;
 #define   i_prop_intern_F_EXTERN_as(X, R, N, M2)        u8 ___intern_##N;
 #define   i_prop_intern_ISIZE_as(X, R, N, M2)          
@@ -787,7 +826,8 @@
 #define   i_prop_intern_NMODULE_as(X, R, N, M2)
 
 
-
+#define   s_prop_public_AF(X, R, N)
+#define   s_prop_public_AF_EXTERN(X, R, N)
 #define   s_prop_public_F(X, R, N)
 #define   s_prop_public_F_EXTERN(X, R, N)
 #define   s_prop_public_ISIZE(X, R, N)   
@@ -812,6 +852,8 @@
 #define   s_prop_public_METHOD(X, R, N)
 #define   s_prop_public_NMODULE(X, R, N)
 
+#define   s_prop_intern_AF(X, R, N)
+#define   s_prop_intern_AF_EXTERN(X, R, N)
 #define   s_prop_intern_F(X, R, N)              
 #define   s_prop_intern_F_EXTERN(X, R, N)       
 #define   s_prop_intern_ISIZE(X, R, N)          
@@ -834,6 +876,8 @@
 
 
 #define   s_module_public_COUNT(X, N, ...)    
+#define   s_module_public_AF(X, N, ...)              
+#define   s_module_public_AF_EXTERN(X, N, ...)      
 #define   s_module_public_F(X, N, ...)              
 #define   s_module_public_F_EXTERN(X, N, ...)       
 #define   s_module_public_ISIZE(X, N, ...)          
@@ -890,7 +934,8 @@
 //#define M(X,Y,I,AA,T ...) \
 //    I##_##T(X, Y, AA __VA_OPT__(,) __VA_ARGS__)
 
-
+#define   i_ref_interface_AF(X, R, N)
+#define   i_ref_interface_AF_EXTERN(X, R, N)
 #define   i_ref_interface_F(X, R, N)
 #define   i_ref_interface_F_EXTERN(X, R, N)
 #define   i_ref_interface_ISIZE(X, R, N)
@@ -907,6 +952,8 @@
 #define   i_ref_interface_METHOD(X, R, N)
 #define   i_ref_interface_NMODULE(X, R, N)
 
+#define   i_origin_public_AF(X, R, N)              
+#define   i_origin_public_AF_EXTERN(X, R, N)       
 #define   i_origin_public_F(X, R, N) u8 N;
 #define   i_origin_public_F_EXTERN(X, R, N) u8 N;
 #define   i_origin_public_ISIZE(X, R, N)        
@@ -933,6 +980,8 @@
 #define i_origin(X, Y, ACCESS, TY, N) i_origin_## ACCESS ##_##Y(X, TY, N)
 
 
+#define   i_ref_public_AF(X, R, N)              unsigned long N:1;
+#define   i_ref_public_AF_EXTERN(X, R, N)       unsigned long N:1;
 #define   i_ref_public_F(X, R, N) u8 N;
 #define   i_ref_public_F_EXTERN(X, R, N) u8 N;
 #define   i_ref_public_ISIZE(X, R, N)        
@@ -956,6 +1005,8 @@
 #define   i_ref_public_METHOD(X, R, N)
 #define   i_ref_public_NMODULE(X, R, N)
 
+#define   i_ref_required_AF(X, R, N)              unsigned long N:1;
+#define   i_ref_required_AF_EXTERN(X, R, N)       unsigned long N:1;
 #define   i_ref_required_F(X, R, N) u8 N;
 #define   i_ref_required_F_EXTERN(X, R, N) u8 N;
 #define   i_ref_required_ISIZE(X, R, N)          
@@ -980,6 +1031,8 @@
 #define   i_ref_required_METHOD(X, R, N)
 #define   i_ref_required_NMODULE(X, R, N)
 
+#define   i_ref_intern_AF(X, R, N)              unsigned long N:1;
+#define   i_ref_intern_AF_EXTERN(X, R, N)       unsigned long N:1;
 #define   i_ref_intern_F(X, R, N) u8 N;
 #define   i_ref_intern_F_EXTERN(X, R, N)
 #define   i_ref_intern_ISIZE(X, R, N)          
@@ -1000,7 +1053,8 @@
 #define   i_ref(X, Y, T, R, N) i_ref_##T##_##Y(X, R, N)
 
 
-
+#define i_attr_AF(           X, ENUM, ID, VALUE, ...)
+#define i_attr_AF_EXTERN(    X, ENUM, ID, VALUE, ...)
 #define i_attr_F(           X, ENUM, ID, VALUE, ...)
 #define i_attr_F_EXTERN(    X, ENUM, ID, VALUE, ...)
 #define i_attr_ISIZE(       X, ENUM, ID, VALUE, ...)
@@ -1045,6 +1099,8 @@
 #define   i_array_interface_METHOD(X, R, S, N)
 #define   i_array_interface_NMODULE(X, R, S, N)
 
+#define   i_array_public_AF(X, R, S, N)        unsigned long N:1;
+#define   i_array_public_AF_EXTERN(X, R, S, N) unsigned long N:1;
 #define   i_array_public_F(X, R, S, N) u8 N;
 #define   i_array_public_F_EXTERN(X, R, S, N) u8 N;
 #define   i_array_public_ISIZE(X, R, S, N)
@@ -1069,6 +1125,8 @@
 #define   i_array_public_METHOD(X, R, S, N)
 #define   i_array_public_NMODULE(X, R, S, N)
 
+#define   i_array_Au_public_AF(X, R, S, N)
+#define   i_array_Au_public_AF_EXTERN(X, R, S, N)
 #define   i_array_Au_public_F(X, R, S, N)
 #define   i_array_Au_public_F_EXTERN(X, R, S, N)
 #define   i_array_Au_public_ISIZE(X, R, S, N)
@@ -1093,6 +1151,8 @@
 #define   i_array_Au_public_METHOD(X, R, S, N)
 #define   i_array_Au_public_NMODULE(X, R, S, N)
 
+#define   i_array_intern_AF(X, R, S, N)                 unsigned long N:1;
+#define   i_array_intern_AF_EXTERN(X, R, S, N)          unsigned long N:1;
 #define   i_array_intern_F(X, R, S, N) u8 N;
 #define   i_array_intern_F_EXTERN(X, R, S, N)
 #define   i_array_intern_ISIZE(X, R, S, N)              
@@ -1396,9 +1456,10 @@
 
 
 
-
-#define   i_inlay_public_F(X, R, N)            u8 N;
-#define   i_inlay_public_F_EXTERN(X, R, N)     u8 N;
+#define   i_inlay_public_AF(X, R, N)              unsigned long N:1;
+#define   i_inlay_public_AF_EXTERN(X, R, N)       unsigned long N:1;
+#define   i_inlay_public_F(X, R, N)               u8 N;
+#define   i_inlay_public_F_EXTERN(X, R, N)        u8 N;
 #define   i_inlay_public_ISIZE(X, R, N)
 #define   i_inlay_public_ISIZE_EXTERN(X, R, N)
 #define   i_inlay_public_INST_U(X, R, N)         struct _##R N;
@@ -1420,6 +1481,8 @@
 #define   i_inlay_public_METHOD(X, R, N)
 #define   i_inlay_public_NMODULE(X, R, N)
 
+#define   i_inlay_required_AF(X, R, N)              unsigned long N:1;
+#define   i_inlay_required_AF_EXTERN(X, R, N)       unsigned long N:1;
 #define   i_inlay_required_F(X, R, N) u8 N;
 #define   i_inlay_required_F_EXTERN(X, R, N) u8 N;
 #define   i_inlay_required_ISIZE(X, R, N)           
@@ -1444,6 +1507,8 @@
 #define   i_inlay_required_METHOD(X, R, N)
 #define   i_inlay_required_NMODULE(X, R, N)
 
+#define   i_inlay_intern_AF(X, R, N)              unsigned long N:1;
+#define   i_inlay_intern_AF_EXTERN(X, R, N)       unsigned long N:1;
 #define   i_inlay_intern_F(X, R, N)               u8 N;
 #define   i_inlay_intern_F_EXTERN(X, R, N)        
 #define   i_inlay_intern_ISIZE(X, R, N)           
@@ -1462,7 +1527,8 @@
 #define   i_inlay_intern_NMODULE(X, R, N) 
 #define   i_inlay(X, Y, T, R, N) i_inlay_##T##_##Y(X, R, N)
 
-
+#define   s_method_interface_AF(X, R, N, ...)
+#define   s_method_interface_AF_EXTERN(X, R, N, ...)
 #define   s_method_interface_F(X, R, N, ...)
 #define   s_method_interface_F_EXTERN(X, R, N, ...)
 #define   s_method_interface_ISIZE(X, R, N, ...)   
@@ -1480,6 +1546,8 @@
 #define   s_method_interface_METHOD(X, R, N, ...)
 #define   s_method_interface_NMODULE(X, R, N, ...)
 
+#define   s_method_public_AF(X, R, N, ...)
+#define   s_method_public_AF_EXTERN(X, R, N, ...)
 #define   s_method_public_F(X, R, N, ...)
 #define   s_method_public_F_EXTERN(X, R, N, ...)
 #define   s_method_public_ISIZE(X, R, N, ...)
@@ -1505,6 +1573,8 @@
 #define   s_method_public_METHOD(X, R, N, ...)
 #define   s_method_public_NMODULE(X, R, N, ...)
 
+#define   s_method_intern_AF(X, R, N, ...)
+#define   s_method_intern_AF_EXTERN(X, R, N, ...)
 #define   s_method_intern_F(X, R, N, ...)
 #define   s_method_intern_F_EXTERN(X, R, N, ...)
 #define   s_method_intern_ISIZE(X, R, N, ...)
@@ -1522,6 +1592,8 @@
 #define   s_method_intern_METHOD(X, R, N, ...)
 #define   s_method_intern_NMODULE(X, R, N, ...)
 
+#define   i_method_interface_AF(X, R, N, ...)
+#define   i_method_interface_AF_EXTERN(X, R, N, ...)
 #define   i_method_interface_F(X, R, N, ...)
 #define   i_method_interface_F_EXTERN(X, R, N, ...)
 #define   i_method_interface_ISIZE(X, R, N, ...)
@@ -1539,6 +1611,8 @@
 #define   i_method_interface_METHOD(X, R, N, ...)
 #define   i_method_interface_NMODULE(X, R, N, ...)
 
+#define   i_method_abstract_AF(    X, R, N, ...)
+#define   i_method_abstract_AF_EXTERN(    X, R, N, ...)
 #define   i_method_abstract_F(    X, R, N, ...)
 #define   i_method_abstract_F_EXTERN(    X, R, N, ...)
 #define   i_method_abstract_ISIZE(X, R, N, ...)
@@ -1568,7 +1642,8 @@
 #define   i_method_abstract_METHOD(X, R, N, ...)          R (*N)(__VA_ARGS__);
 #define   i_method_abstract_NMODULE(X, R, N, ...)
 
-
+#define   i_method_public_AF(    X, R, N, ...)
+#define   i_method_public_AF_EXTERN(    X, R, N, ...)
 #define   i_method_public_F(    X, R, N, ...)
 #define   i_method_public_F_EXTERN(    X, R, N, ...)
 #define   i_method_public_ISIZE(X, R, N, ...)
@@ -1598,6 +1673,8 @@
 #define   i_method_public_METHOD(X, R, N, ...)          R (*N)(__VA_ARGS__);
 #define   i_method_public_NMODULE(X, R, N, ...)
 
+#define   i_method_intern_AF(    X, R, N, ...)
+#define   i_method_intern_AF_EXTERN(    X, R, N, ...)
 #define   i_method_intern_F(    X, R, N, ...)
 #define   i_method_intern_F_EXTERN(    X, R, N, ...)
 #define   i_method_intern_ISIZE(    X, R, N, ...)
@@ -1631,7 +1708,8 @@
 
 
 
-
+#define   i_prim_method_interface_AF(X, R, N, ...)
+#define   i_prim_method_interface_AF_EXTERN(X, R, N, ...)
 #define   i_prim_method_interface_F(X, R, N, ...)
 #define   i_prim_method_interface_F_EXTERN(X, R, N, ...)
 #define   i_prim_method_interface_ISIZE(X, R, N, ...)
@@ -1649,6 +1727,8 @@
 #define   i_prim_method_interface_METHOD(X, R, N, ...)
 #define   i_prim_method_interface_NMODULE(X, R, N, ...)
 
+#define   i_prim_method_public_AF(    X, R, N, ...)
+#define   i_prim_method_public_AF_EXTERN(    X, R, N, ...)
 #define   i_prim_method_public_F(    X, R, N, ...)
 #define   i_prim_method_public_F_EXTERN(    X, R, N, ...)
 #define   i_prim_method_public_ISIZE(X, R, N, ...)
@@ -1683,6 +1763,8 @@
 #define   i_prim_method_public_METHOD(X, R, N, ...)          R (*N)(X* __VA_OPT__(,) __VA_ARGS__);
 #define   i_prim_method_public_NMODULE(X, R, N, ...)
 
+#define   i_prim_method_intern_AF(    X, R, N, ...)
+#define   i_prim_method_intern_AF_EXTERN(    X, R, N, ...)
 #define   i_prim_method_intern_F(    X, R, N, ...)
 #define   i_prim_method_intern_F_EXTERN(    X, R, N, ...)
 #define   i_prim_method_intern_ISIZE(    X, R, N, ...)
@@ -1714,8 +1796,8 @@
 
 
 
-
-
+#define   i_final_public_AF(ORIG,    X, R, N, ...)
+#define   i_final_public_AF_EXTERN(ORIG,    X, R, N, ...)
 #define   i_final_public_F(ORIG,    X, R, N, ...)
 #define   i_final_public_F_EXTERN(ORIG,    X, R, N, ...)
 #define   i_final_public_ISIZE(ORIG,    X, R, N, ...)
@@ -1761,7 +1843,8 @@
 
 
 
-
+#define   i_setter_public_AF(X, R)
+#define   i_setter_public_AF_EXTERN(X, R)
 #define   i_setter_public_F(X, R)
 #define   i_setter_public_F_EXTERN(X, R)
 #define   i_setter_public_ISIZE(X, R)
@@ -1793,7 +1876,8 @@
 #define i_setter(X, Y, T, R, ...) i_setter_##T##_##Y(X, R)
 
 
-
+#define   i_operator_interface_AF(X, R, N, ARG)
+#define   i_operator_interface_AF_EXTERN(X, R, N, ARG)
 #define   i_operator_interface_F(X, R, N, ARG)
 #define   i_operator_interface_F_EXTERN(X, R, N, ARG)
 #define   i_operator_interface_ISIZE(X, R, N, ARG)
@@ -1810,6 +1894,8 @@
 #define   i_operator_interface_METHOD(X, R, N, ARG)
 #define   i_operator_interface_NMODULE(X, R, N, ARG)
 
+#define   i_operator_public_AF(X, R, N, ARG)
+#define   i_operator_public_AF_EXTERN(X, R, N, ARG)
 #define   i_operator_public_F(X, R, N, ARG)
 #define   i_operator_public_F_EXTERN(X, R, N, ARG)
 #define   i_operator_public_ISIZE(X, R, N, ARG)
@@ -1841,6 +1927,8 @@
 #define   i_operator_public_METHOD(X, R, N, ARG)    R (*operator_ ## N)(X, ARG);
 #define   i_operator_public_NMODULE(X, R, N, ARG)
 
+#define   i_operator_intern_AF(X, R, N, ARG)
+#define   i_operator_intern_AF_EXTERN(X, R, N, ARG)
 #define   i_operator_intern_F(X, R, N, ARG)
 #define   i_operator_intern_F_EXTERN(X, R, N, ARG)
 #define   i_operator_intern_ISIZE(X, R, N, ARG)
@@ -1858,6 +1946,8 @@
 #define   i_operator_intern_NMODULE(X, R, N, ARG)
 #define   i_operator(X, Y, T, R, N, ARG)            i_operator_##T##_##Y(X, R, N, ARG)
 
+#define   i_cast_interface_AF(X, R)
+#define   i_cast_interface_AF_EXTERN(X, R)
 #define   i_cast_interface_F(X, R)
 #define   i_cast_interface_F_EXTERN(X, R)
 #define   i_cast_interface_ISIZE(X, R)
@@ -1874,6 +1964,8 @@
 #define   i_cast_interface_METHOD(X, R)
 #define   i_cast_interface_NMODULE(X, R)
 
+#define   i_cast_public_AF(X, R)
+#define   i_cast_public_AF_EXTERN(X, R)
 #define   i_cast_public_F(X, R)
 #define   i_cast_public_F_EXTERN(X, R)
 #define   i_cast_public_ISIZE(X, R)
@@ -1902,6 +1994,8 @@
 #define   i_cast_public_METHOD(X, R)        R (*cast_##R)(X);
 #define   i_cast_public_NMODULE(X, R)
 
+#define   i_cast_intern_AF(X, R)
+#define   i_cast_intern_AF_EXTERN(X, R)
 #define   i_cast_intern_F(X, R)
 #define   i_cast_intern_F_EXTERN(X, R)
 #define   i_cast_intern_ISIZE(X, R)
@@ -1919,6 +2013,8 @@
 #define   i_cast_public_NMODULE(X, R)    
 #define   i_cast(X, Y, T, R)                i_cast_##T##_##Y(X, R)
 
+#define i_getter_interface_AF(X, R, ...)
+#define i_getter_interface_AF_EXTERN(X, R, ...)
 #define i_getter_interface_F(X, R, ...)
 #define i_getter_interface_F_EXTERN(X, R, ...)
 #define i_getter_interface_ISIZE(X, R, ...)
@@ -1935,6 +2031,8 @@
 #define i_getter_interface_METHOD(X, R, ...)
 #define i_getter_interface_NMODULE(X, R, ...)
 
+#define i_getter_public_AF(X, R, ...)
+#define i_getter_public_AF_EXTERN(X, R, ...)
 #define i_getter_public_F(X, R, ...)
 #define i_getter_public_F_EXTERN(X, R, ...)
 #define i_getter_public_ISIZE(X, R, ...)
@@ -1962,6 +2060,8 @@
 #define i_getter_public_METHOD(X, R, ...)                R (*emit_getter_symbol(getter,__VA_ARGS__))(X, ##__VA_ARGS__);
 #define i_getter_public_NMODULE(X, R, ...) 
 
+#define i_getter_intern_AF(X, R, ...)
+#define i_getter_intern_AF_EXTERN(X, R, ...)
 #define i_getter_intern_F(X, R, ...)
 #define i_getter_intern_F_EXTERN(X, R, ...)
 #define i_getter_intern_ISIZE(X, R, ...)
@@ -1979,6 +2079,8 @@
 #define i_getter_intern_NMODULE(X, R, ...)
 #define i_getter(X, Y, T, R, ...)                        i_getter_##T##_##Y(X, R, ##__VA_ARGS__)
 
+#define i_vargs_public_AF(X, R, N, ...)
+#define i_vargs_public_AF_EXTERN(X, R, N, ...)
 #define i_vargs_public_F(X, R, N, ...)
 #define i_vargs_public_F_EXTERN(X, R, N, ...)
 #define i_vargs_public_ISIZE(X, R, N, ...)
@@ -1996,6 +2098,8 @@
 #define i_vargs_public_METHOD(X, R, N, ...)             R (*N)(__VA_ARGS__, ...);
 #define i_vargs_public_NMODULE(X, R, N, ...) 
 
+#define i_vargs_intern_AF(X, R, N, ...)
+#define i_vargs_intern_AF_EXTERN(X, R, N, ...)
 #define i_vargs_intern_F(X, R, N, ...)
 #define i_vargs_intern_F_EXTERN(X, R, N, ...)
 #define i_vargs_intern_ISIZE(X, R, N, ...)
@@ -2013,6 +2117,8 @@
 #define i_vargs_intern_NMODULE(X, R, N, ...)
 #define i_vargs(X, Y, T, R, N, ...)                     i_vargs_##T##_##Y(X, R, N, __VA_ARGS__)
 
+#define s_vargs_public_AF(X, R, N, ...)
+#define s_vargs_public_AF_EXTERN(X, R, N, ...)
 #define s_vargs_public_F(X, R, N, ...)
 #define s_vargs_public_F_EXTERN(X, R, N, ...)
 #define s_vargs_public_ISIZE(X, R, N, ...)
@@ -2031,6 +2137,8 @@
 #define s_vargs_public_METHOD(X, R, N, ...)
 #define s_vargs_public_NMODULE(X, R, N, ...)
 
+#define s_vargs_intern_AF(X, R, N, ...)
+#define s_vargs_intern_AF_EXTERN(X, R, N, ...)
 #define s_vargs_intern_F(X, R, N, ...)
 #define s_vargs_intern_F_EXTERN(X, R, N, ...)
 #define s_vargs_intern_ISIZE(X, R, N, ...)
@@ -2049,6 +2157,8 @@
 #define s_vargs(X, Y, T, R, N, ...)                     s_vargs_##T##_##Y(X, R, N, ##__VA_ARGS__)
 #define t_vargs(X, Y, T, R, N, ...)                     s_vargs_##T##_##Y(X, R, N, Au_t, __VA_ARGS__)
 
+#define i_override_method_AF(X, N)
+#define i_override_method_AF_EXTERN(X, N)
 #define i_override_method_F(X, N)
 #define i_override_method_F_EXTERN(X, N)
 #define i_override_method_ISIZE(X, N)
@@ -2074,6 +2184,8 @@
 #define i_override_method_METHOD(X, N)
 #define i_override_method_NMODULE(X, N)
 
+#define i_override_ctr_AF(X, R)
+#define i_override_ctr_AF_EXTERN(X, R)
 #define i_override_ctr_F(X, R)
 #define i_override_ctr_F_EXTERN(X, R)
 #define i_override_ctr_ISIZE(X, R)
@@ -2098,6 +2210,8 @@
 #define i_override_ctr_METHOD(X, R)
 #define i_override_ctr_NMODULE(X, R)
 
+#define i_override_cast_AF(X, R)
+#define i_override_cast_AF_EXTERN(X, R)
 #define i_override_cast_F(X, R)
 #define i_override_cast_F_EXTERN(X, R)
 #define i_override_cast_ISIZE(X, R)
@@ -2123,6 +2237,8 @@
 #define i_override_cast_METHOD(X, R)
 #define i_override_cast_NMODULE(X, R)
 
+#define i_override_getter_AF(X, R)
+#define i_override_getter_AF_EXTERN(X, R)
 #define i_override_getter_F(X, R)
 #define i_override_getter_F_EXTERN(X, R)
 #define i_override_getter_ISIZE(X, R)

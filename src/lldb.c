@@ -561,7 +561,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
         // create the fbits struct debug type with per-field bitfield members
         LLVMMetadataRef fbits_di;
         {
-            Au_t var_list[128];
+            Au_t var_list[128] = {0};
             int bit_count = 0;
             Au_t bf_chain[64];
             int bf_chain_n = 0;
@@ -600,7 +600,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
                 a->dbg_builder, "u64", 3, 64, DW_ATE_unsigned, LLVMDIFlagZero);
             LLVMMetadataRef* fbits_members = calloc(bit_count, sizeof(LLVMMetadataRef));
             for (int bi = 0; bi < bit_count; bi++) {
-                cstr name = var_list[bi]->ident ? var_list[bi]->ident : "_";
+                cstr name = (var_list[bi] && var_list[bi]->ident) ? var_list[bi]->ident : "_";
                 u32  storage_offset = (bi / 64) * 8;
                 fbits_members[bi] = LLVMDIBuilderCreateBitFieldMemberType(
                     a->dbg_builder, a->compile_unit,

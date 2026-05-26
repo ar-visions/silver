@@ -1722,6 +1722,16 @@ static array  scope;
 static bool   started = false;
 static pthread_rwlock_t modules_lock = PTHREAD_RWLOCK_INITIALIZER;
 
+typedef struct _AuSpace {
+    micro            modules;
+    pthread_rwlock_t lock;
+    struct _AuSpace* parent;
+    void*            parent_owner;
+} AuSpace_t, *AuSpace;
+
+__thread AuSpace au_current_space = null;
+__thread void*   au_space_owner   = null;
+
 u64 au_hash_ident(symbol s) {
     // 3 more lines to not have a string length prior is best
     //return fnv1a_hash(a->chars, a->count, OFFSET_BASIS);
@@ -2178,20 +2188,75 @@ void   live_swapchain_set(handle s) { au_live_swapchain = s; }
 
 void module_erase(Au_t module, symbol name) {
     if (!module && !name) return;
-    pthread_rwlock_wrlock(&modules_lock);
-    for (int i = 0; i < modules.count; i++) {
-        Au_t m = (Au_t)modules.origin[i];
+    micro* mods = au_current_space ? &au_current_space->modules : &modules;
+    pthread_rwlock_t* lk = au_current_space ? &au_current_space->lock : &modules_lock;
+    pthread_rwlock_wrlock(lk);
+    for (int i = 0; i < mods->count; i++) {
+        Au_t m = (Au_t)mods->origin[i];
         if (!m || (m && !m->ident)) continue;
 
         if (m && module == m || (name && m->ident && strcmp(m->ident, name) == 0)) {
-            modules.origin[i] = null;
+            mods->origin[i] = null;
             m->members.count = 0;
             m->args.count = 0;
         }
     }
+    pthread_rwlock_unlock(lk);
+}
+
+// erase all Silver-defined modules (not C-native ones) so module_init
+// in the reloaded .so starts with a clean registry
+void module_erase_silver(void) {
+    pthread_rwlock_wrlock(&modules_lock);
+    for (int i = 0; i < modules.count; i++) {
+        Au_t m = (Au_t)modules.origin[i];
+        if (!m || !m->ident) continue;
+        if (m->is_au_native) continue;   // keep libAu.so system types
+        modules.origin[i] = null;
+        m->members.count = 0;
+        m->args.count = 0;
+    }
     pthread_rwlock_unlock(&modules_lock);
 }
- 
+
+void au_space_begin(void* owner) {
+    if (au_current_space && au_space_owner == owner) {
+        // same owner re-entering (watch mode): reset the existing space
+        free(au_current_space->modules.origin);
+        memset(&au_current_space->modules, 0, sizeof(micro));
+        return;
+    }
+    // new owner: push a new space, saving the current one
+    AuSpace s = (AuSpace)calloc(1, sizeof(AuSpace_t));
+    pthread_rwlock_init(&s->lock, null);
+    s->parent       = au_current_space;
+    s->parent_owner = au_space_owner;
+    au_current_space = s;
+    au_space_owner   = owner;
+}
+
+void au_space_end(void* owner) {
+    if (au_space_owner == owner) {
+        AuSpace s = au_current_space;
+        au_current_space = s->parent;
+        au_space_owner   = s->parent_owner;
+        free(s->modules.origin);
+        pthread_rwlock_destroy(&s->lock);
+        free(s);
+    }
+}
+
+void au_space_clear(void) {
+    while (au_current_space) {
+        AuSpace s = au_current_space;
+        au_current_space = s->parent;
+        free(s->modules.origin);
+        pthread_rwlock_destroy(&s->lock);
+        free(s);
+    }
+    au_space_owner = null;
+}
+
 Au_t global() {
     Au_t au_module_t = isa(au_module);
     return au_module;
@@ -2205,10 +2270,23 @@ Au_t def_module(symbol next_module) {
     m->ident       = cstr_copy((cstr)next_module);
     combine->info.type  = (Au_t)typeid(Au_t_f);
 
-    // first module is registered as main
+    // first global module is registered as main (never overridden by space modules)
     if (!au_module) {
         au_module = m;
         module    = m;
+    }
+
+    if (au_current_space) {
+        pthread_rwlock_wrlock(&au_current_space->lock);
+        for (int i = 0; i < au_current_space->modules.count; i++)
+            if (!au_current_space->modules.origin[i]) {
+                au_current_space->modules.origin[i] = (Au_t)m;
+                pthread_rwlock_unlock(&au_current_space->lock);
+                return m;
+            }
+        micro_push((micro_*)&au_current_space->modules, (Au)m);
+        pthread_rwlock_unlock(&au_current_space->lock);
+        return m;
     }
 
     pthread_rwlock_wrlock(&modules_lock);
@@ -2412,6 +2490,33 @@ ARef types(ref_i64 length) {
 }
 
 Au_t find_module(symbol name) {
+    if (au_current_space) {
+        // search space first — modules created during this compile take priority
+        // but skip empty space modules (cached imports): fall through to global
+        pthread_rwlock_rdlock(&au_current_space->lock);
+        Au_t space_mod = null;
+        for (int i = 0; i < au_current_space->modules.count; i++) {
+            Au_t mod = (Au_t)au_current_space->modules.origin[i];
+            if (mod && !mod->is_hidden && mod->ident && strcmp(mod->ident, name) == 0) {
+                space_mod = mod;
+                break;
+            }
+        }
+        pthread_rwlock_unlock(&au_current_space->lock);
+        if (space_mod && space_mod->members.count > 0)
+            return space_mod;
+        // fall back to global for already-loaded runtime modules (read-only reference)
+        pthread_rwlock_rdlock(&modules_lock);
+        for (int i = 0; i < modules.count; i++) {
+            Au_t mod = (Au_t)modules.origin[i];
+            if (mod && !mod->is_hidden && mod->ident && strcmp(mod->ident, name) == 0) {
+                pthread_rwlock_unlock(&modules_lock);
+                return mod;
+            }
+        }
+        pthread_rwlock_unlock(&modules_lock);
+        return null;
+    }
     pthread_rwlock_rdlock(&modules_lock);
     for (int i = 0; i < modules.count; i++) {
         Au_t mod = (Au_t)modules.origin[i];
@@ -2427,6 +2532,39 @@ Au_t find_module(symbol name) {
 Au_t find_type(symbol name, Au_t m) {
     if (!name)
         return null;
+    if (au_current_space) {
+        // search space modules first
+        pthread_rwlock_rdlock(&au_current_space->lock);
+        for (int i = 0; i < au_current_space->modules.count; i++) {
+            Au_t mod = (Au_t)au_current_space->modules.origin[i];
+            if (mod && (!m || m == mod)) {
+                for (int j = 0; j < mod->members.count; j++) {
+                    Au_t type = (Au_t)mod->members.origin[j];
+                    if (type->ident && strcmp(name, type->ident) == 0) {
+                        pthread_rwlock_unlock(&au_current_space->lock);
+                        return type;
+                    }
+                }
+            }
+        }
+        pthread_rwlock_unlock(&au_current_space->lock);
+        // fall back to global modules (built-ins + already-loaded runtime modules)
+        pthread_rwlock_rdlock(&modules_lock);
+        for (int i = 0; i < modules.count; i++) {
+            Au_t mod = (Au_t)modules.origin[i];
+            if (mod && (!m || m == mod)) {
+                for (int j = 0; j < mod->members.count; j++) {
+                    Au_t type = (Au_t)mod->members.origin[j];
+                    if (type->ident && strcmp(name, type->ident) == 0) {
+                        pthread_rwlock_unlock(&modules_lock);
+                        return type;
+                    }
+                }
+            }
+        }
+        pthread_rwlock_unlock(&modules_lock);
+        return null;
+    }
     pthread_rwlock_rdlock(&modules_lock);
     for (int i = 0; i < modules.count; i++) {
         Au_t mod = (Au_t)modules.origin[i];
@@ -2447,45 +2585,38 @@ Au_t find_type(symbol name, Au_t m) {
 }
 
 AF* Au_AF_bits(Au a) {
-    Au_t type = isa(a);
-    u64* fields = (u64*)((i8*)a + type->typesize - (sizeof(void*) * 2));
-    return fields;
+    return (u64*)a;
 }
 
 void Au_AF_set_id(Au a, int id) {
-    //Au_t t = isa(a);
-    //u64*   f = Au_AF_bits(a);
-    //AF_set(f, id);
+    u64*   f = (u64*)a;
+    AF_set(f, id);
 }
 
 void Au_AF_set_name(Au a, cstr name) {
     Au_t t = isa(a);
     Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
-    u64*   f = Au_AF_bits(a);
-    AF_set(f, m->index);
+    AF_set((u64*)a, m->index);
 }
 
 i32 Au_AF_query_name(Au a, cstr name) {
     Au_t t = isa(a);
     Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
-    u64* f = Au_AF_bits(a);
-    return (i32)AF_get(f, m->index);
+    return (i32)AF_get((u64*)a, m->index);
 }
 
 bool Au_AF_get_member(Au a, Au_t mem) {
-    u64* f = Au_AF_bits(a);
-    return AF_get(f, mem->index);
+    return AF_get((u64*)a, mem->index);
 }
 
 none Au_AF_set_member(Au a, Au_t mem) {
-    u64* f = Au_AF_bits(a);
-    AF_set(f, mem->index);
+    AF_set((u64*)a, mem->index);
 }
 
 bool Au_validator(Au a) {
     Au_t type = isa(a);
 
-    u64* f = Au_AF_bits(a);
+    u64* f = (u64*)a;
     if (((type->required_bits[0] & f[0]) != type->required_bits[0]) ||
         ((type->required_bits[1] & f[1]) != type->required_bits[1])) {
         for (num i = 0; i < type->members.count; i++) {
