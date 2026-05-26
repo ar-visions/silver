@@ -1133,6 +1133,7 @@ void silver_init(silver a) {
 #endif
     a->exports      = map(hsize, 16);
     a->build_dir    = f(path, "%o/%s", a->install, a->debug ? "debug" : "release");
+    string n = string("test44");
     a->product_link = f(path, "%o/%o.product", a->build_dir, a->name);
     a->defs_expect  = map(hsize, 4);
     a->defs_used    = map(hsize, 4);
@@ -1227,6 +1228,39 @@ void silver_init(silver a) {
                 if (m > module_file_m) module_file_m = m;
             }
             closedir(dir);
+        }
+    }
+
+    // check all sources from previous build (stored in .source) — if any import's .ag is newer, bust cache
+    if (file_exists("%o", a->source_path)) {
+        FILE *sf = fopen(a->source_path->chars, "r");
+        if (sf) {
+            char buf[4096];
+            while (fgets(buf, sizeof(buf), sf)) {
+                buf[strcspn(buf, "\n")] = '\0';
+                if (!*buf) continue;
+                path src = path(buf);
+                u64  m   = modified_time(src);
+                if (m > module_file_m) module_file_m = m;
+                // also check sibling .ag files in the same dir (extension modules)
+                path src_dir = parent_dir(src);
+                if (src_dir) {
+                    DIR *dir = opendir(src_dir->chars);
+                    if (dir) {
+                        struct dirent *entry;
+                        while ((entry = readdir(dir)) != NULL) {
+                            cstr n = entry->d_name;
+                            int  nl = strlen(n);
+                            if (nl <= 3 || strcmp(n + nl - 3, ".ag") != 0) continue;
+                            path ag = form(path, "%o/%s", src_dir, n);
+                            u64  am = modified_time(ag);
+                            if (am > module_file_m) module_file_m = am;
+                        }
+                        closedir(dir);
+                    }
+                }
+            }
+            fclose(sf);
         }
     }
 
@@ -1412,6 +1446,7 @@ void silver_init(silver a) {
 
     unload_libs(a);
     module_erase(a->au, null);
+    au_space_end((void*)a);
 
     if (a->run) {
         int argc = len(a->run) + 2;
