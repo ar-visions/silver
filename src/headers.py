@@ -171,7 +171,7 @@ def generate_init_header(module, header_file, init_header):
                 continue
             
             # Generate TC macro
-            f.write(f"#define TC_{class_name}(MEMBER, VALUE) ({{ AF_set((u64*)&instance->__f, FIELD_ID({class_name}, MEMBER)); VALUE; }})\n")
+            f.write(f"#define TC_{class_name}(MEMBER, VALUE) ({{ AF_set((u64*)&instance->af_bits, FIELD_ID({class_name}, MEMBER)); VALUE; }})\n")
             
             # Variadic argument counting macros
             f.write(f"#define _ARG_COUNT_IMPL_{class_name}(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20, _21, _22, N, ...) N\n")
@@ -242,6 +242,12 @@ def generate_methods_header(module, header_file, methods_header):
     
     schema_pattern = r'#define\s+([a-zA-Z_]\w*)_schema\s*\([^)]*\)\s*\\?([\s\S]*?)(?=\n#define|\ndefine_|\ndeclare_|\Z)'
     
+    # static guard patterns: M(AA,BB, s, guard, ...) — direct-call, no vtable
+    # capture (return_type, method_name, extra_arg_types)
+    static_guard_patterns = [
+        r'M\s*\([^,]*,[^,]*,\s*s\s*,\s*guard\s*,[^,]*,\s*([a-zA-Z_*]\w*)\s*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)*)\s*\)',
+        r's_guard\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_*]\w*)\s*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)*)\s*\)',
+    ]
     method_patterns = [
         (r'M\s*\([^,]*,[^,]*,\s*i\s*,\s*final\s*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)*)\s*\)', True, True),
         (r'M\s*\([^,]*,[^,]*,\s*i\s*,\s*guard\s*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)\s*((?:,\s*[a-zA-Z_]\w*)*)\s*\)', True, True),
@@ -251,14 +257,25 @@ def generate_methods_header(module, header_file, methods_header):
         (r'M\s*\([^,]*,[^,]*,\s*i\s*,\s*method\s*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)', False, False),
         (r'i_vargs\s*\([^,]*,[^,]*,[^,]*,[^,]*,\s*([a-zA-Z_]\w*)', False, False),
     ]
-    
+
     processed = set()
     methods = []
-    
+    static_guards = []  # (method_name, ret_type, arg_types) — direct-call, no vtable
+
     for schema_match in re.finditer(schema_pattern, content):
         classname = schema_match.group(1)
         schema_body = schema_match.group(2)
-        
+
+        for pattern in static_guard_patterns:
+            for m in re.finditer(pattern, schema_body):
+                ret_type  = m.group(1).strip()
+                method    = m.group(2).strip()
+                args_str  = m.group(3)
+                arg_types = [t.strip() for t in args_str.split(',') if t.strip()] if args_str else []
+                if method and method not in processed:
+                    processed.add(method)
+                    static_guards.append((method, ret_type, arg_types))
+
         for pattern, null_safe, has_typed_args in method_patterns:
             for method_match in re.finditer(pattern, schema_body):
                 method = method_match.group(1).strip()
@@ -278,6 +295,18 @@ def generate_methods_header(module, header_file, methods_header):
         f.write(f"#ifndef __cplusplus\n")
         f.write("\n")
 
+        # static guards: direct-call macro using plain declared name (no vtable, no Au_ prefix)
+        for method, ret_type, arg_types in static_guards:
+            f.write(f"#ifndef {method}\n")
+            if len(arg_types) <= 1:
+                f.write(f"#define {method}(I) ({method})((Au)(I))\n")
+            else:
+                extra_names = [f"A{i}" for i in range(1, len(arg_types))]
+                extra_casts = ", ".join(f"({t}){n}" for t, n in zip(arg_types[1:], extra_names))
+                macro_args  = "I, " + ", ".join(extra_names)
+                f.write(f"#define {method}({macro_args}) ({method})((Au)(I), {extra_casts})\n")
+            f.write(f"#endif\n")
+
         # methods that should not generate macros (polymorphic dispatch handled by compiler)
         no_macro = {"mix"}
 
@@ -288,8 +317,7 @@ def generate_methods_header(module, header_file, methods_header):
                 # Multiple args: I, A1, A2, ...
                 arg_names  = ["I"] + [f"A{i}" for i in range(1, len(arg_types))]
                 macro_args = ", ".join(arg_names)
-
-                # Cast using the local _i_ (no double-eval of I)
+                itype0 = arg_types[0]
                 cast_args_local = ", ".join(
                     f"({'__typeof__(_i_)' if n == 'I' else t}){('_i_' if n == 'I' else n)}"
                     for t, n in zip(arg_types, arg_names)
@@ -312,9 +340,9 @@ def generate_methods_header(module, header_file, methods_header):
                     f.write(f"#endif\n")
 
             elif len(arg_types) == 1:
-                # Single arg (just instance)
-                itype = arg_types[0]
-                call_local = f"ftableI(_i_)->ft.{method}(({itype})_i_)"
+                # Single arg (just instance) — cast _i_ to declared type for both ftableI and call
+                itype      = arg_types[0]
+                call_local = f"ftableI(({itype})_i_)->ft.{method}(({itype})_i_)"
 
                 if null_safe:
                     f.write(f"#ifndef {method} /* {classname} */\n")

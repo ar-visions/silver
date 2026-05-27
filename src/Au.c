@@ -926,7 +926,7 @@ _Pragma("pack(pop)")
 Au_t au_arg(Au a) {
     verify(!a || isa(a), "unexpected isa result for Au object");
     if (isa(a) == typeid(Au_t_f) || a == (Au)isa(a)) return (Au_t)a;
-    return cast(Au_t, a);
+    return ((Au_f*)a->au)->ft.cast_Au_t(a);
 }
 
 
@@ -988,91 +988,106 @@ Au_t Au_cast_Au_t(Au a) {
     return isa(a);
 }
 
-bool Au_is_au_type(Au a) {
-    Au_t au = au_arg(a);
-    if (au->ident && strlen(au->ident) && au->member_type != AU_MEMBER_TYPE)
-        return false;
-    return au->module && au->module->is_au;
-}
-
-bool Au_is_imported_type(Au a) {
-    Au_t au = au_arg(a);
-    return au->module->is_imported;
-}
-
-bool Au_is_module   (Au t) {
-    Au_t au = au_arg(t);
-    if (au && au->member_type == AU_MEMBER_MODULE)
-        return true;
-    return false;
-}
+bool Au_is_au_type(Au a)       { return is_au_type(a); }
+bool Au_is_imported_type(Au a) { return is_imported_type(a); }
+bool Au_is_module(Au t)        { return is_module(t); }
 
 //extern Au_info Au_Au_i;
 
 //extern Au_info Au_Au_i;
 
 
-bool Au_is_generic  (Au t) { return t && typeid(Au) == au_arg_type(t); }
-bool Au_is_integral (Au t) { return t && au_arg_type(t)->is_integral; }
-bool Au_is_void     (Au t) { return t && typeid(none) == au_arg_type(t); }
-bool Au_is_double   (Au t) { return t && typeid(f64) == au_arg_type(t); }
-bool Au_is_float    (Au t) { return t && typeid(f32) == au_arg_type(t); }
-bool Au_is_realistic(Au t) { return t && au_arg_type(t)->is_realistic; }
-bool Au_is_class    (Au t) {
-    Au_t au = au_arg_type(t);
-    return au && au != typeid(Au_t) && au->is_class;
+#undef is_generic
+#undef is_au_type
+#undef is_imported_type
+#undef is_integral
+#undef is_void
+#undef is_double
+#undef is_float
+#undef is_realistic
+#undef is_class
+#undef is_struct
+#undef is_opaque
+#undef is_system
+#undef is_func
+#undef is_var
+#undef is_lambda
+#undef is_func_ptr
+#undef is_imethod
+#undef is_rec
+#undef is_module
+#undef is_prim
+#undef is_sign
+#undef is_unsign
+#undef is_ptr
+#undef is_enum
+#undef is_bool
+#undef is_type
+
+bool is_generic  (Au au) { return au && typeid(Au) == au_arg_type(au); }
+bool is_integral (Au au) { return au && au_arg_type(au)->is_integral; }
+bool is_void     (Au au) { return au && typeid(none) == au_arg_type(au); }
+bool is_double   (Au au) { return au && typeid(f64) == au_arg_type(au); }
+bool is_float    (Au au) { return au && typeid(f32) == au_arg_type(au); }
+bool is_realistic(Au au) { return au && au_arg_type(au)->is_realistic; }
+bool is_class(Au au) {
+    Au_t t = au_arg_type(au);
+    return t && t != typeid(Au_t) && t->is_class;
 }
-bool Au_is_struct  (Au t) {
-    Au_t au = au_arg_type(t);
-    if (!au || au->is_pointer) return false;
-    return au->is_struct;
+bool is_struct(Au au) {
+    Au_t t = au_arg_type(au);
+    if (!t || t->is_pointer) return false;
+    return t->is_struct;
 }
-bool Au_is_opaque  (Au t) {
-    Au_t au = au_arg(t);
-    if (au->is_struct && au->members.count == 0) return true;
-    return false;
+bool is_opaque(Au au) {
+    Au_t t = au_arg(au);
+    return t && t->is_struct && t->members.count == 0;
 }
-bool Au_is_system  (Au t) {
-    Au_t au = au_arg(t);
-    if (au->is_system) return true;
-    au = au_arg_type((Au)au);
-    if (au->is_system) return true;
-    return false;
+bool is_system(Au au) {
+    Au_t t = au_arg(au);
+    if (!t) return false;
+    if (t->is_system) return true;
+    t = au_arg_type((Au)t);
+    return t && t->is_system;
 }
-bool Au_is_func(Au t) {
-    Au_t au = au_arg_type(t);
-    return au && (au->member_type == AU_MEMBER_FUNC          ||
-                  au->member_type == AU_MEMBER_CAST          ||
-                  au->member_type == AU_MEMBER_GETTER        ||
-                  au->member_type == AU_MEMBER_SETTER        ||
-                  au->member_type == AU_MEMBER_OPERATOR      ||
-                  au->member_type == AU_MEMBER_CONSTRUCT) && (au->ident || au->alt);
+bool is_func(Au au) {
+    Au_t t = au_arg_type(au);
+    return t && (t->member_type == AU_MEMBER_FUNC     ||
+                 t->member_type == AU_MEMBER_CAST      ||
+                 t->member_type == AU_MEMBER_GETTER    ||
+                 t->member_type == AU_MEMBER_SETTER    ||
+                 t->member_type == AU_MEMBER_OPERATOR  ||
+                 t->member_type == AU_MEMBER_CONSTRUCT) && (t->ident || t->alt);
 }
-bool Au_is_var(Au t) {
-    Au_t au = au_arg(t);
-    return au && (au->member_type == AU_MEMBER_VAR) && (au->ident || au->alt);
+bool is_var(Au au) {
+    Au_t t = au_arg(au);
+    return t && (t->member_type == AU_MEMBER_VAR) && (t->ident || t->alt);
 }
-bool Au_is_lambda(Au t) {
-    Au_t au = au_arg_type(t);
-    return Au_is_func(t) && au->is_lambda;
+bool is_lambda(Au au) {
+    Au_t t = au_arg_type(au);
+    return t && is_func(au) && t->is_lambda;
 }
-bool Au_is_func_ptr(Au t) {
-    Au_t au = au_arg_type(t);
-    return au->member_type == AU_MEMBER_TYPE && au->is_funcptr;
+bool is_func_ptr(Au au) {
+    Au_t t = au_arg_type(au);
+    return t && t->member_type == AU_MEMBER_TYPE && t->is_funcptr;
 }
-bool Au_is_imethod (Au t) { return au_arg(t)->member_type == AU_MEMBER_FUNC && au_arg(t)->is_imethod; }
-Au_t Au_is_rec     (Au t) {
-    if (!t) return null;
-    Au_t au = au_arg_type(t);
-    if (au == typeid(ARef) || Au_is_func(t)) return null;
-    if (au->src && au->src->is_class) return au->src;
-    return (au->is_class || au->is_struct) ? au : null;
+bool is_imethod(Au au) {
+    Au_t t = au_arg(au);
+    return t && t->member_type == AU_MEMBER_FUNC && t->is_imethod;
 }
-bool Au_is_prim    (Au t) { return au_arg_type(t)->is_primitive; }
-bool Au_is_sign    (Au t) { return au_arg_type(t)->is_signed; }
-bool Au_is_unsign  (Au t) { return au_arg_type(t)->is_unsigned; }
-bool Au_is_ptr     (Au t) {
-    Au_t a = au_arg(t);
+Au_t is_rec(Au au) {
+    if (!au) return null;
+    Au_t t = au_arg_type(au);
+    if (!t || t == typeid(ARef) || is_func(au)) return null;
+    if (t->src && t->src->is_class) return t->src;
+    return (t->is_class || t->is_struct) ? t : null;
+}
+bool is_prim   (Au au) { Au_t t = au_arg_type(au); return t && t->is_primitive; }
+bool is_sign   (Au au) { Au_t t = au_arg_type(au); return t && t->is_signed; }
+bool is_unsign (Au au) { Au_t t = au_arg_type(au); return t && t->is_unsigned; }
+bool is_ptr(Au au) {
+    Au_t a = au_arg(au);
+    if (!a) return false;
     if (a->is_explicit_ref) return true;
     Au_t walk = a;
     while (walk) {
@@ -1082,9 +1097,47 @@ bool Au_is_ptr     (Au t) {
     }
     return false;
 }
-bool Au_is_enum    (Au t) { return au_arg_type(t)->is_enum; }
-bool Au_is_bool    (Au t) { return typeid(bool) == au_arg_type(t); }
-bool Au_is_type    (Au t) { return au_arg_type(t)->member_type == AU_MEMBER_TYPE; }
+bool is_enum(Au au) { Au_t t = au_arg_type(au); return t && t->is_enum; }
+bool is_bool(Au au) { return typeid(bool) == au_arg_type(au); }
+bool is_type(Au au) { Au_t t = au_arg_type(au); return t && t->member_type == AU_MEMBER_TYPE; }
+bool is_module(Au au) {
+    Au_t a = au_arg(au);
+    return a && a->member_type == AU_MEMBER_MODULE;
+}
+bool is_au_type(Au au) {
+    Au_t a = au_arg(au);
+    if (a->ident && strlen(a->ident) && a->member_type != AU_MEMBER_TYPE)
+        return false;
+    return a->module && a->module->is_au;
+}
+bool is_imported_type(Au au) {
+    Au_t a = au_arg(au);
+    return a->module->is_imported;
+}
+
+bool Au_is_generic  (Au t) { return is_generic  (t); }
+bool Au_is_integral (Au t) { return is_integral (t); }
+bool Au_is_void     (Au t) { return is_void     (t); }
+bool Au_is_double   (Au t) { return is_double   (t); }
+bool Au_is_float    (Au t) { return is_float    (t); }
+bool Au_is_realistic(Au t) { return is_realistic(t); }
+bool Au_is_class    (Au t) { return is_class    (t); }
+bool Au_is_struct   (Au t) { return is_struct   (t); }
+bool Au_is_opaque   (Au t) { return is_opaque   (t); }
+bool Au_is_system   (Au t) { return is_system   (t); }
+bool Au_is_func     (Au t) { return is_func     (t); }
+bool Au_is_var      (Au t) { return is_var      (t); }
+bool Au_is_lambda   (Au t) { return is_lambda   (t); }
+bool Au_is_func_ptr (Au t) { return is_func_ptr (t); }
+bool Au_is_imethod  (Au t) { return is_imethod  (t); }
+Au_t Au_is_rec      (Au t) { return is_rec      (t); }
+bool Au_is_prim     (Au t) { return is_prim     (t); }
+bool Au_is_sign     (Au t) { return is_sign     (t); }
+bool Au_is_unsign   (Au t) { return is_unsign   (t); }
+bool Au_is_ptr      (Au t) { return is_ptr      (t); }
+bool Au_is_enum     (Au t) { return is_enum     (t); }
+bool Au_is_bool     (Au t) { return is_bool     (t); }
+bool Au_is_type     (Au t) { return is_type     (t); }
 
 
 shape shape_with_array(shape a, array dims) {
@@ -1808,7 +1861,7 @@ Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) {
             top_Au  = au == typeid(Au);
         }
         while (au) {
-            if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func(au))
+            if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func((Au)au))
                 for (int ii = 0; ii < au->args.count; ii++) {
                     Au_t m = (Au_t)au->args.origin[ii];
                     if (m->ident && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)) && (!member_type || m->member_type == member_type))
@@ -1817,7 +1870,7 @@ Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) {
             for (int ii = 0; ii < au->members.count; ii++) {
                 Au_t m = (Au_t)au->members.origin[ii];
                 if (au->is_struct || au->is_class) {
-                    if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func(m)) {
+                    if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func((Au)m)) {
                         if (m->ident && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)) && (!member_type || m->member_type == member_type))
                             return m;
                     }
@@ -1853,7 +1906,7 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     struct _Au_combine* cur = calloc(1, sizeof(struct _Au_combine));
     cur->info.refs = 0;
     cur->info.managed = 0;
-    cur->info.type = (Au_t)&Au_Au_t_f_i.type;
+    cur->info.au = (Au_f*)&Au_Au_t_f_i.type;
     
     Au_t au = &cur->type;
     au->member_type = AU_MEMBER_VAR;
@@ -1936,7 +1989,7 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     struct _Au_combine* cur = calloc(1, sizeof(struct _Au_combine));
     cur->info.refs = 0;
     cur->info.managed = 0;
-    cur->info.type = (Au_t)&Au_Au_t_f_i.type;
+    cur->info.au = (Au_f*)&Au_Au_t_f_i.type;
 
     Au_t au = &cur->type;
 
@@ -2017,7 +2070,7 @@ none dealloc_type(Au_t type) {
 }
 
 Au lambda_call(lambda a, Au args) {
-    return a->fn(args, a->context);
+    return a->vfn(args, a->context);
 }
 
 bool lambda_cast_bool(lambda a) {
@@ -2026,8 +2079,8 @@ bool lambda_cast_bool(lambda a) {
 
 lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
     lambda a = (lambda)alloc_new(typeid(lambda), 0, null, null, null, __FILE__, __LINE__, 0);
-    a->au      = au;
-    a->fn      = fn;
+    a->au_t    = au;
+    a->vfn     = fn;
     a->target  = target;
     a->context = hold(context);
     return a;
@@ -2063,7 +2116,7 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     if (context)
         memcpy(&type->ft, &context->ft, context->table_size);
 
-    head(type)->type = typeid(Au_t_f);     
+    head(type)->au = (Au_f*)typeid(Au_t_f);
     
     if (member_type == AU_MEMBER_MODULE) {
         micro_push((micro_*)&modules, (Au)type); // we should error if we ever find a duplicate here
@@ -2268,7 +2321,7 @@ Au_t def_module(symbol next_module) {
     m->member_type = AU_MEMBER_MODULE;
     m->traits      = AU_TRAIT_ALLOCATED | AU_TRAIT_IS_AU;
     m->ident       = cstr_copy((cstr)next_module);
-    combine->info.type  = (Au_t)typeid(Au_t_f);
+    combine->info.au  = (Au_f*)typeid(Au_t_f);
 
     // first global module is registered as main (never overridden by space modules)
     if (!au_module) {
@@ -2332,7 +2385,7 @@ none push_type(Au_t type, Au_t to_mod) {
     }
 
     if (type == typeid(Au)) {
-        Au_Au_t_f_i.info.type = (Au_t)&Au_Au_t_f_i.type;
+        Au_Au_t_f_i.info.au = (Au_f*)&Au_Au_t_f_i.type;
         Au_Au_t_f_i.type.ident = "Au_t";
         Au_Au_t_f_i.type.module = module;
         Au_Au_t_f_i.type.traits = AU_TRAIT_IS_AU | AU_TRAIT_SCHEMA;
@@ -2341,7 +2394,18 @@ none push_type(Au_t type, Au_t to_mod) {
         verify(Au_ft_size == Au_t_ft_size, "Au_f->ft not identical to Au_t_f->ft");
         memcpy(&Au_Au_t_f_i.type.ft, &typeid(Au)->ft, Au_ft_size);
         typeid(Au)->table_size = Au_ft_size;
-        head(typeid(Au_t))->type = Au_Au_t_f_i.info.type;
+        head(typeid(Au_t))->au = Au_Au_t_f_i.info.au;
+
+        // expose the vtable pointer ('au') as an accessible Silver field on Au instances
+        // index=0 matches the has_fn_only vtable slot; is_elaborate=1 prevents etype_implement
+        // from adding a duplicate LLVM struct member (has_fn_only already emits it at slot 0)
+        Au_t au_field = def(typeid(Au), "au", AU_MEMBER_VAR, 0);
+        au_field->access_type = interface_public;
+        au_field->offset      = 0;
+        au_field->type        = typeid(Au_t);
+        au_field->member_type = AU_MEMBER_VAR;
+        au_field->index       = 0;
+        au_field->is_elaborate = 1;
     }
     
     // on first call, we register our basic type structures:
@@ -2584,39 +2648,42 @@ Au_t find_type(symbol name, Au_t m) {
     return null;
 }
 
+static inline u64* af_bits_ptr(Au a) {
+    return (u64*)((u8*)a + sizeof(void*));
+}
+
 AF* Au_AF_bits(Au a) {
-    return (u64*)a;
+    return af_bits_ptr(a);
 }
 
 void Au_AF_set_id(Au a, int id) {
-    u64*   f = (u64*)a;
-    AF_set(f, id);
+    AF_set(af_bits_ptr(a), id);
 }
 
 void Au_AF_set_name(Au a, cstr name) {
     Au_t t = isa(a);
     Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
-    AF_set((u64*)a, m->index);
+    AF_set(af_bits_ptr(a), m->index);
 }
 
 i32 Au_AF_query_name(Au a, cstr name) {
     Au_t t = isa(a);
     Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
-    return (i32)AF_get((u64*)a, m->index);
+    return (i32)AF_get(af_bits_ptr(a), m->index);
 }
 
 bool Au_AF_get_member(Au a, Au_t mem) {
-    return AF_get((u64*)a, mem->index);
+    return AF_get(af_bits_ptr(a), mem->index);
 }
 
 none Au_AF_set_member(Au a, Au_t mem) {
-    AF_set((u64*)a, mem->index);
+    AF_set(af_bits_ptr(a), mem->index);
 }
 
 bool Au_validator(Au a) {
     Au_t type = isa(a);
 
-    u64* f = (u64*)a;
+    u64* f = af_bits_ptr(a);
     if (((type->required_bits[0] & f[0]) != type->required_bits[0]) ||
         ((type->required_bits[1] & f[1]) != type->required_bits[1])) {
         for (num i = 0; i < type->members.count; i++) {
@@ -2764,13 +2831,13 @@ Au Au_initialize(Au a) {
     //if (f->type->traits & AU_TRAIT_USER_INIT) return a;
     // primitives, enums, and other non-class types have no init chain
     // or hold_members vtable; skip them
-    if (f->type->traits & (AU_TRAIT_STRUCT | AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) return a; // isolate these cases and remove this code
+    if (f->au->traits & (AU_TRAIT_STRUCT | AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) return a; // isolate these cases and remove this code
 
     #ifndef NDEBUG
     //Au_validator(a);
     #endif
 
-    init_recur(a, f->type, null);
+    init_recur(a, (Au_t)f->au, null);
     Au_t_f* ptr = (Au_t_f*)isa(a);
     hold_members(a);
     return a;
@@ -2988,8 +3055,9 @@ Au alloc_dbg(Au_t type, num count, symbol source, i32 line, i32 sequence) {
     sz map_sz = sizeof(map);
     sz _sz   = sizeof(struct _Au);
     Au a = alloc_instance(type, _sz + (type->typesize << 1) * count, true);
-    a->type       = type;
+    a->au       = (Au_f*)type;
     a->data       = &a[1];
+    if (type->is_class) *(void**)a->data = (void*)type;
     a->count      = count;
     a->alloc      = count;
     a->source     = (cstr)source;
@@ -3040,17 +3108,15 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b, symbol 
     Au a = alloc_instance(type,
         _sz + type->typesize * alloc_count, true);
 
-    a->type       = type;
+    a->au       = (Au_f*)type;
     a->data       = &a[1];
+    if (type->is_class) *(void**)a->data = (void*)type;
     a->count      = alloc_count;
     a->alloc      = alloc_count;
     a->data_shape = hold(shape_data);
     a->source     = (cstr)source;
     a->line       = line;
     a->sequence   = seq;
-
-    if (line >= 520 && line <= 570)
-        a->refs = 1;
 
     if (!type->is_au_native && !source) {
         printf("warning: no source binding for allocation of type %s\n", type->ident);
@@ -3088,7 +3154,7 @@ Au alloc2(Au_t type, Au_t scalar, shape s, symbol source, i32 line, i32 seq) {
     Au a      = alloc_instance(type,
         _sz + scalar->typesize * count, true);
     a->scalar     = scalar;
-    a->type       = type;
+    a->au       = (Au_f*)type;
     a->data       = &a[1];
     a->data_shape = hold(s);
     a->count      = count;
@@ -3519,7 +3585,7 @@ none Au_init(Au a) { }
 
 none Au_drop_members(Au a) {
     Au   f = header((Au)a);
-    Au_t type = f->type;
+    Au_t type = (Au_t)f->au;
     #ifndef NDEBUG
     const char *type_ident = (type && type->ident) ? type->ident : "";
     if (au_skip_drop_check(type_ident, NULL)) return;
@@ -3551,7 +3617,7 @@ none Au_drop_members(Au a) {
 
 none Au_dealloc(Au a) { 
     Au   f    = header(a);
-    Au_t type = f->type;
+    Au_t type = (Au_t)f->au;
 
     drop_members(a);
     
@@ -3583,7 +3649,7 @@ u64  Au_hash(Au a) {
 bool Au_cast_bool (Au a) {
     Au info = header(a);
     bool has_count = info->count > 0;
-    if (has_count && info->type == typeid(bool))
+    if (has_count && info->au == typeid(bool))
         return *(bool*)a;
 
     return has_count;
@@ -3757,7 +3823,7 @@ Au Au_with_cereal(Au a, cereal _cs) {
     cstr cs = _cs.value;
     sz len = strlen(cs);
     Au        f = header(a);
-    Au_t type = f->type;
+    Au_t type = (Au_t)f->au;
     if      (type == typeid(f64)) sscanf(cs, "%lf",  (f64*)a);
     else if (type == typeid(f32)) sscanf(cs, "%f",   (f32*)a);
     else if (type == typeid(i32)) sscanf(cs, "%i",   (i32*)a);
@@ -3776,14 +3842,14 @@ Au Au_with_cereal(Au a, cereal _cs) {
         return (Au)res;
     }
     else {
-        bool can = constructs_with(f->type, typeid(string));
+        bool can = constructs_with((Au_t)f->au, typeid(string));
         if (can) {
-            return construct_with(f->type, (Au)string(cs), null);
-        } else if (constructs_with(f->type, typeid(cstr))) {
-            return construct_with(f->type, (Au)string(cs), null);
+            return construct_with((Au_t)f->au, (Au)string(cs), null);
+        } else if (constructs_with((Au_t)f->au, typeid(cstr))) {
+            return construct_with((Au_t)f->au, (Au)string(cs), null);
         }
-        constructs_with(f->type, typeid(cstr));
-        printf("implement ctr cstr for %s\n", f->type->ident);
+        constructs_with((Au_t)f->au, typeid(cstr));
+        printf("implement ctr cstr for %s\n", f->au->ident);
         exit(-1);
     }
     return a;
@@ -3839,20 +3905,20 @@ Au construct_with(Au_t type, Au data, ctx context) { sequencer
                 if (arg == typeid(path) && data_type == typeid(string)) {
                     result = alloc(type, 1, null, null, null, __FILE__, __LINE__, seq);
                     ((none(*)(Au, path))addr)(result, path(((string)data)));
-                    verify(is_struct(type) || Au_validator(result), "invalid Au");
+                    verify(is_struct((Au)type) || Au_validator(result), "invalid Au");
                     break;
                 }
-                if ((arg == typeid(cstr) || arg == typeid(symbol)) && 
+                if ((arg == typeid(cstr) || arg == typeid(symbol)) &&
                         data_type == typeid(string)) {
                     result = alloc(type, 1, null, null, null, __FILE__, __LINE__, seq);
                     ((none(*)(Au, cstr))addr)(result, ((string)data)->chars);
-                    verify(is_struct(type) || Au_validator(result), "invalid Au");
+                    verify(is_struct((Au)type) || Au_validator(result), "invalid Au");
                     break;
                 }
                 if (arg == data_type) {
                     result = alloc(type, 1, null, null, null, __FILE__, __LINE__, seq);
                     ((none(*)(Au, Au))addr)(result, data);
-                    verify(is_struct(type) || Au_validator(result), "invalid Au");
+                    verify(is_struct((Au)type) || Au_validator(result), "invalid Au");
                     break;
                 }
             } else if (context && result && mdata) {
@@ -4504,7 +4570,7 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
         i32 v = evalue(type, (cstr)res->chars);
         return primitive(typeid(i32), &v);
     }
-    if (type && is_struct(type))
+    if (type && is_struct((Au)type))
         return construct_with(type, (Au)res, null);
 
     return type ? (Au)
@@ -5467,37 +5533,37 @@ Au Au_copy(Au a) {
     assert(f->count > 0, "invalid count");
     Au_t type = isa(a);
     Au b = alloc(type, f->count, null, null, null, __FILE__, __LINE__, 0);
-    memcpy(b, a, f->type->typesize * f->count);
+    memcpy(b, a, f->au->typesize * f->count);
     Au_hold_members(b);
     return b;
 }
 
 none Au_free(Au a) {
     Au       aa = header(a);
-    //char ch = aa->type->ident[0];
+    //char ch = aa->au->ident[0];
 
     /*
     if (ch == 'V') {
         if (aa->source)
-            printf("freeing %s:%i (%s)\n", aa->source, aa->line, aa->type->ident);
+            printf("freeing %s:%i (%s)\n", aa->source, aa->line, aa->au->ident);
         //return;
     }
     */
 
     // C-imported types are flat memory — no init/dealloc/hold/drop vtable.
     // just free the allocation and skip the chain walk entirely.
-    bool     is_c = aa->type && aa->type->is_c;
+    bool     is_c = aa->au && ((Au_t)aa->au)->is_c;
     // reference holder (`new Type[N]`): the held type's dealloc chain does
     // NOT apply to the holder's raw buffer; slots are user-managed refs.
     bool     is_holder = (aa->iflags & AU_IF_HOLDER) != 0;
-    Au_f*  type = (Au_f*)aa->type;
+    Au_f*  type = (Au_f*)aa->au;
     none* prev = null;
-    Au_f*   cur = (is_c || is_holder || aa->type->is_struct) ? null : type;
+    Au_f*   cur = (is_c || is_holder || ((Au_t)aa->au)->is_struct) ? null : type;
 #ifndef NDEBUG
     //if (aa->line == 894)
     //    return;
     //if (aa->source)
-    //    printf("Au_free type=%s source=%s:%i seq=%i\n", aa->type->ident, aa->source, aa->line, aa->sequence);
+    //    printf("Au_free type=%s source=%s:%i seq=%i\n", aa->au->ident, aa->source, aa->line, aa->sequence);
 #endif
 
     while (cur) {
@@ -5564,7 +5630,7 @@ i64 Au_vdata_stride(Au a) {
 
 Au_t Au_vdata_type(Au a) {
     Au f = header(a);
-    return f->scalar ? f->scalar : f->type;
+    return f->scalar ? f->scalar : (Au_t)f->au;
 }
 
 Au Au_instance_of(Au inst, Au_t type) {
@@ -5788,8 +5854,8 @@ Au Au_vrealloc(Au a, sz alloc) {
 none vector_init(vector a) {
     Au f = head(a);
     a->count   = 0;
-    f->scalar  = (f->type && f->type->meta.a) ? meta_index((Au)a, 0)
-                : a->type ? a->type : typeid(i8);
+    f->scalar  = (f->au && f->au->meta.a) ? meta_index((Au)a, 0)
+                : a->au ? (Au_t)a->au : typeid(i8);
     f->data_shape = hold(a->data_shape);
     verify(f->scalar, "scalar not set");
     if (f->data_shape)
@@ -5816,15 +5882,15 @@ vector vector_with_path(vector a, path file_path) {
 }
 
 ARef vector_vget(vector a, num index) {
-    num location = index * a->type->typesize;
+    num location = index * a->au->typesize;
     i8* arb = (i8*)a->origin;
     return (ARef)&arb[location];
 }
 
 none vector_vset(vector a, num index, ARef element) {
-    num location = index * a->type->typesize;
+    num location = index * a->au->typesize;
     i8* arb = (i8*)a->origin;
-    memcpy(&arb[location], element, a->type->typesize);
+    memcpy(&arb[location], element, a->au->typesize);
 }
 
 Au vector_resize(vector a, sz size) {
@@ -5864,7 +5930,7 @@ num abso(num i) {
 vector vector_vslice(vector a, num from, num to) {
     Au   f      = head(a);
     num  count  = (1 + abso(from - to));
-    Au   res    = alloc(f->type, 1, null, null, null, __FILE__, __LINE__, 0);
+    Au   res    = alloc((Au_t)f->au, 1, null, null, null, __FILE__, __LINE__, 0);
     vector vres = (vector)res;
     Au_initialize(res);
     vector_grow(vres, count);
@@ -8115,6 +8181,12 @@ __int64_t _epoch_millis() {
 
 i64 epoch_millis() {
     return _epoch_millis();
+}
+
+i64 epoch_micros() {
+    struct timeval tv;
+    gettimeofday((struct timeval*)&tv, 0L);
+    return (__int64_t)(tv.tv_sec) * 1000000 + (__int64_t)(tv.tv_usec);
 }
 
 
