@@ -38,7 +38,7 @@ Au_t read_arg_type(Au_t stored_arg);
 forward(enode)
 
 #define etype_schema(X, Y, ...) \
-    M(X, Y, i, prop,     public,  Au_t,            au) \
+    M(X, Y, i, prop,     public,  Au_t,            autype) \
     M(X, Y, i, prop,     intern,  LLVMTypeRef,     lltype,  as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMMetadataRef, llscope, as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMMetadataRef, lldebug, as, ARef) \

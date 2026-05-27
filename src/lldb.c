@@ -1199,7 +1199,7 @@ void update_current_file(aether a, path source_file) {
 
 void emit_debug_function(aether a, efunc fn, bool w) {
     if (!a->debug || !a->compile_unit) return;
-    Au_t au = fn->au;
+    Au_t au = fn->autype;
     if (!au->ident) return;
 
     LLVMMetadataRef file_ref = a->file;
@@ -1267,13 +1267,13 @@ void emit_debug_function(aether a, efunc fn, bool w) {
 // ────────────────────────────────────────────────────────────────────────────
 void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
     if (!a->debug || !a->compile_unit || a->no_build) return;
-    if (!var->au || !var->au->ident || !var->value) return;
+    if (!var->autype || !var->autype->ident || !var->value) return;
     LLVMMetadataRef scope = debug_scope(a);
     if (!scope) return;
 
-    cstr name     = var->au->ident;
+    cstr name     = var->autype->ident;
     u32  name_len = strlen(name);
-    Au_t var_type = var->au->src;
+    Au_t var_type = var->autype->src;
 
     // use the proper type for structs/classes rather than opaque pointer
     LLVMMetadataRef di_type = null;
@@ -1347,14 +1347,14 @@ void emit_debug_params(aether a, efunc fn) {
     if (!a->debug || !a->compile_unit || a->no_build) return;
     if (!fn || !fn->value) return;
 
-    Au_t au = fn->au;
+    Au_t au = fn->autype;
     LLVMMetadataRef scope = ((etype)fn)->llscope;
     if (!scope) return;
 
     int arg_no = 1;
     int llvm_param_idx = 0;
 
-    if (is_lambda(au))
+    if (is_lambda((Au)au))
         llvm_param_idx = 1;
 
     arg_list(au, arg) {
@@ -1380,7 +1380,7 @@ void emit_debug_params(aether a, efunc fn) {
                 // also build the Au header type for the _au synthetic variable
                 etype e = u(etype, arg->src);
                 if (e && e->schema)
-                    struct_au = debug_au_header_type(a, e->schema->au);
+                    struct_au = debug_au_header_type(a, e->schema->autype);
             } else {
                 di_type = debug_type_for(a, arg->src, false);
             }

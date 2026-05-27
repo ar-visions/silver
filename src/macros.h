@@ -238,14 +238,14 @@
     })
 
 #define valloc(T, N)                ((Au)alloc(typeid(T), N, null, null, null, __FILE__, __LINE__, 0))
-#define ftable(TYPE, INSTANCE)      ((TYPE##_f*)((Au)INSTANCE)[-1].type)
-#define isa(INSTANCE)               ((Au_t)(INSTANCE ? (struct _Au_f*)((struct _Au*)INSTANCE - 1)->type : (struct _Au_f*)0))
+#define ftable(TYPE, INSTANCE)      ((TYPE##_f*)((Au)INSTANCE)[-1].au)
+#define isa(INSTANCE)               ((Au_t)(INSTANCE ? (struct _Au_f*)((struct _Au*)INSTANCE - 1)->au : (struct _Au_f*)0))
 // see: javascript; returns null if its not an instance-of; faults if you give it a null
 //#define instanceof(left, type)      Au_instanceof(left, type)
-#define ftableI(I)                  ((__typeof__((I)->__f[0])) ((Au)(I))[-1].type)
-#define implements(I, M)            ({ __typeof__(I) _ii_ = I; ((Au)(_ii_))[-1].type->context && ftableI(_ii_)->ft.M != ((__typeof__((_ii_)->__f[0]))(((Au)(_ii_))[-1].type->context))->ft.M; })
+#define ftableI(I)                  ((__typeof__((I)->au))  ((Au)(I))[-1].au)
+#define implements(I, M)            ({ __typeof__(I) _ii_ = I; ((Au)(_ii_))[-1].au->context && ftableI(_ii_)->ft.M != ((__typeof__((_ii_)->au))(((Au)(_ii_))[-1].au->context))->ft.M; })
 
-#define typeidI(I)                  __typeof__((I)->__f[0])
+#define typeidI(I)                  __typeof__((I)->au)
 
 //#define implements(I, METHOD) \
 //    (ftableI(I)->METHOD != \
@@ -1841,7 +1841,8 @@
 #define   i_guard\
 (X, Y, T, R, N, ...) i_method_##T##_##Y(X, R, N, __VA_ARGS__)
 
-
+#define   s_guard\
+(X, Y, T, R, N, ...) s_method_##T##_##Y(X, R, N, __VA_ARGS__)
 
 #define   i_setter_public_AF(X, R)
 #define   i_setter_public_AF_EXTERN(X, R)

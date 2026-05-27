@@ -207,9 +207,9 @@ typedef double                 *ref_f64;
         u8 __none__; \
     }; \
     typedef struct _ ## Af { \
+        struct _Au_f* au; \
         Af##_intern (Af, INST_U, __VA_ARGS__) \
         Af##_intern (Af, INST_L, __VA_ARGS__) \
-        struct _##Af##_f* __f[2]; \
     } *Af; \
     Af##_schema (Af, DECL) \
     typedef struct _##Af##_f { \
@@ -284,7 +284,7 @@ void lazy_init(global_init_fn fn, Au_t);
 #define define_typed_enum( E, T ) \
     E##_info Type_i(E);\
     static __attribute__((constructor)) bool global_##E() { \
-        Type_i(E).info.type = (Au_t)&Type_i(E).type; \
+        Type_i(E).info.au = (Au_f*)&Type_i(E).type; \
         Type_i(E).info.refs = 1000; \
         E ## _f* type_ref = &Type_i(E).type; \
         Au_t base_ref     = (Au_t)&Type_i(Au).type; \
@@ -304,7 +304,7 @@ void lazy_init(global_init_fn fn, Au_t);
             type_ref->table_size   = sizeof(((E ## _f*)0)->ft); \
             type_ref->typesize     = sizeof(E);          \
             type_ref->traits   = AU_TRAIT_IS_AU | AU_TRAIT_ENUM; \
-            head(type_ref)->type = typeid(Au_t_f); \
+            head(type_ref)->au = (Au_f*)typeid(Au_t_f); \
             E##_schema( E, T, IMPL ); \
             push_type((Au_t)type_ref, type_ref->module); \
             return true; \
@@ -335,11 +335,11 @@ void lazy_init(global_init_fn fn, Au_t);
         }; \
     }; \
     typedef struct _##AA { \
+        struct _##AA##_f* au; \
         struct AA##_af af_bits; \
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern(AA, ISIZE, __VA_ARGS__)]; \
-        struct _##AA##_f* __f[2]; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -373,6 +373,7 @@ void lazy_init(global_init_fn fn, Au_t);
         }; \
     }; \
     typedef struct _##AA { \
+        struct _##AA##_f* au; \
         struct AA##_af af_bits; \
         BB##_intern (BB, INST_U, __VA_ARGS__) \
         BB##_intern (BB, INST_L, __VA_ARGS__) \
@@ -380,7 +381,6 @@ void lazy_init(global_init_fn fn, Au_t);
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
-        struct _##AA##_f* __f[2]; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -416,6 +416,7 @@ void lazy_init(global_init_fn fn, Au_t);
         }; \
     }; \
     typedef struct _##AA { \
+        struct _##AA##_f* au; \
         struct AA##_af af_bits; \
         CC##_intern (CC, INST_U, __VA_ARGS__) \
         CC##_intern (CC, INST_L, __VA_ARGS__) \
@@ -426,7 +427,6 @@ void lazy_init(global_init_fn fn, Au_t);
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
-        struct _##AA##_f* __f[2]; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -468,6 +468,7 @@ void lazy_init(global_init_fn fn, Au_t);
         }; \
     }; \
     typedef struct _##AA { \
+        struct _##AA##_f* au; \
         struct AA##_af af_bits; \
         DD##_intern (DD, INST_U, __VA_ARGS__) \
         DD##_intern (DD, INST_L, __VA_ARGS__) \
@@ -481,7 +482,6 @@ void lazy_init(global_init_fn fn, Au_t);
         AA##_intern (AA, INST_U, __VA_ARGS__) \
         AA##_intern (AA, INST_L, __VA_ARGS__) \
         u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
-        struct _##AA##_f* __f[2]; \
     } *AA; \
     AA##_schema (AA, DECL, __VA_ARGS__) \
     typedef struct _##AA##_f { \
@@ -505,8 +505,8 @@ void lazy_init(global_init_fn fn, Au_t);
     typedef struct _##AA* AA; \
     _Pragma("pack(push, 1)") \
     typedef struct _##AA { \
+        struct _##AA##_f* au; \
         BASE##_intern (AA, INST, __VA_ARGS__) \
-        struct _##AA##_f* __f[2]; \
     } *AA; \
     typedef struct _##AA##_f { \
         Au_f_members(BASE) \
@@ -580,7 +580,7 @@ typedef Au_t* Au_ts;
             type_ref->module            = module_lookup((cstr)MODULE); \
             type_ref->typesize          = TYPE_SZ; \
             type_ref->traits            = AU_TRAIT_IS_AU | AU_TRAIT_IS_AU_NATIVE | TRAIT; \
-            head(type_ref)->type = typeid(Au_t_f); \
+            head(type_ref)->au = (Au_f*)typeid(Au_t_f); \
             if (((Au_t)type_ref)->is_funcptr) { \
                 set_args_array((Au_t)type_ref, emit_types(__VA_ARGS__)); \
             } else { \
@@ -644,7 +644,6 @@ forward(any)
 
 #undef mix
 #define Au_schema(AA,BB,...) \
-    M(AA,BB, i, prop, Au_public, Au_t,      type) \
     M(AA,BB, i, prop, Au_public, shape,     data_shape) \
     M(AA,BB, i, prop, Au_public, Au_t,      scalar) \
     M(AA,BB, i, prop, Au_public, i32,       refs) \
@@ -695,6 +694,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   def_struct,     Au_t, symbol) \
     M(AA,BB, s, method, public, Au_t,   def_func_ptr,   Au_t, symbol) \
     M(AA,BB, s, method, public, i64,    epoch_millis) \
+    M(AA,BB, s, method, public, i64,    epoch_micros) \
     M(AA,BB, s, method, public, Au_t,   def_pointer,    Au_t, Au_t, symbol) \
     M(AA,BB, s, method, public, Au_t,   def_enum,       Au_t, symbol, u64) \
     M(AA,BB, s, method, public, Au_t,   def_enum_value, Au_t, symbol, Au) \
@@ -774,32 +774,32 @@ forward(any)
     M(AA,BB, s, method, public, none, au_spawn, callback, Au, Au) \
     M(AA,BB, s, vargs, public, map, args, cstrs, symbol) \
     M(AA,BB, s, vargs, public, map, map_of, symbol) \
-    M(AA,BB, i, guard, public, bool, is_generic,    Au) \
-    M(AA,BB, i, guard, public, bool, is_au_type,    Au) \
-    M(AA,BB, i, guard, public, bool, is_imported_type, Au) \
-    M(AA,BB, i, guard, public, bool, is_integral,   Au) \
-    M(AA,BB, i, guard, public, bool, is_void,       Au) \
-    M(AA,BB, i, guard, public, bool, is_double,     Au) \
-    M(AA,BB, i, guard, public, bool, is_float,      Au) \
-    M(AA,BB, i, guard, public, bool, is_realistic,  Au) \
-    M(AA,BB, i, guard, public, bool, is_bool,       Au) \
-    M(AA,BB, i, guard, public, bool, is_class,      Au) \
-    M(AA,BB, i, guard, public, bool, is_struct,     Au) \
-    M(AA,BB, i, guard, public, bool, is_opaque,     Au) \
-    M(AA,BB, i, guard, public, bool, is_lambda,     Au) \
-    M(AA,BB, i, guard, public, bool, is_func,       Au) \
-    M(AA,BB, i, guard, public, bool, is_var,        Au) \
-    M(AA,BB, i, guard, public, bool, is_module,     Au) \
-    M(AA,BB, i, guard, public, bool, is_func_ptr,   Au) \
-    M(AA,BB, i, guard, public, bool, is_imethod,    Au) \
-    M(AA,BB, i, guard, public, Au_t, is_rec,        Au) \
-    M(AA,BB, i, guard, public, bool, is_prim,       Au) \
-    M(AA,BB, i, guard, public, bool, is_sign,       Au) \
-    M(AA,BB, i, guard, public, bool, is_unsign,     Au) \
-    M(AA,BB, i, guard, public, bool, is_ptr,        Au) \
-    M(AA,BB, i, guard, public, bool, is_enum,       Au) \
-    M(AA,BB, i, guard, public, bool, is_system,     Au) \
-    M(AA,BB, i, guard, public, bool, is_type,       Au) \
+    M(AA,BB, s, guard, public, bool, is_generic,       Au) \
+    M(AA,BB, s, guard, public, bool, is_au_type,       Au) \
+    M(AA,BB, s, guard, public, bool, is_imported_type, Au) \
+    M(AA,BB, s, guard, public, bool, is_integral,      Au) \
+    M(AA,BB, s, guard, public, bool, is_void,          Au) \
+    M(AA,BB, s, guard, public, bool, is_double,        Au) \
+    M(AA,BB, s, guard, public, bool, is_float,         Au) \
+    M(AA,BB, s, guard, public, bool, is_realistic,     Au) \
+    M(AA,BB, s, guard, public, bool, is_bool,          Au) \
+    M(AA,BB, s, guard, public, bool, is_class,         Au) \
+    M(AA,BB, s, guard, public, bool, is_struct,        Au) \
+    M(AA,BB, s, guard, public, bool, is_opaque,        Au) \
+    M(AA,BB, s, guard, public, bool, is_lambda,        Au) \
+    M(AA,BB, s, guard, public, bool, is_func,          Au) \
+    M(AA,BB, s, guard, public, bool, is_var,           Au) \
+    M(AA,BB, s, guard, public, bool, is_module,        Au) \
+    M(AA,BB, s, guard, public, bool, is_func_ptr,      Au) \
+    M(AA,BB, s, guard, public, bool, is_imethod,       Au) \
+    M(AA,BB, s, guard, public, Au_t, is_rec,           Au) \
+    M(AA,BB, s, guard, public, bool, is_prim,          Au) \
+    M(AA,BB, s, guard, public, bool, is_sign,          Au) \
+    M(AA,BB, s, guard, public, bool, is_unsign,        Au) \
+    M(AA,BB, s, guard, public, bool, is_ptr,           Au) \
+    M(AA,BB, s, guard, public, bool, is_enum,          Au) \
+    M(AA,BB, s, guard, public, bool, is_system,        Au) \
+    M(AA,BB, s, guard, public, bool, is_type,          Au) \
     M(AA,BB, i, ctr,   public, cereal) \
     M(AA,BB, i, ctr,   public, cstrs) \
     M(AA,BB, i, cast,  public, string) \
@@ -870,7 +870,7 @@ typedef struct _collective_abi {
     M(AA,BB, i, prop, public, bool, assorted) \
     M(AA,BB, i, prop, public, bool, hash_only) \
     M(AA,BB, i, prop, public, Au_t, last_type) \
-    M(AA,BB, i, prop, public, Au_t, type) \
+    M(AA,BB, i, prop, public, Au_t, data_type) \
     M(AA,BB, i, prop, public, shape, data_shape) \
     M(AA,BB, i, override, method, init) \
     M(AA,BB, i, method, abstract, Au, push, Au) \
@@ -1531,11 +1531,11 @@ typedef Au(*mix_fn)(Au, Au, f32);
 
 #define lambda_module_ Au
 #define lambda_schema(AA,BB,...) \
-    M(AA,BB, i, prop,   public, Au_t,     au) \
+    M(AA,BB, i, prop,   public, Au_t,     au_t) \
     M(AA,BB, i, prop,   public, Au,       target, meta, weak) \
     M(AA,BB, i, prop,   public, Au,       args) \
     M(AA,BB, i, prop,   public, Au,       context) \
-    M(AA,BB, i, prop,   public, callback, fn) \
+    M(AA,BB, i, prop,   public, callback, vfn) \
     M(AA,BB, i, method, public, Au, call, Au) \
     M(AA,BB, s, method, public, lambda, lambda_instance, Au_t, callback, Au, Au) \
     M(AA,BB, i, override, cast,   bool)
@@ -2114,6 +2114,7 @@ none array_init(array);
 Au_t au_arg(Au a);
 Au_t au_arg_type(Au a);
 Au_t typeid_string(Au_t check);
+
 void au_space_begin(void* owner);
 void au_space_end(void* owner);
 void au_space_clear(void);
