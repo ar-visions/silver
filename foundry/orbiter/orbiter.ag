@@ -178,9 +178,16 @@ trinity orbiter # implements compiler
                     if [ fl ] fl.pristine = false
             el [ k == 256 ]
                 filter_text = ''
-                if [ fl ] fl.pristine = false
+                if [ fl ] fl.pristine = false 
 
     public func on_render [ w: Window ] -> Elements
+##
+        fps : f32 [ w.frame_factor * 60.0 ]
+        avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
+        w.set_title[ 'orbiter 444 | {pad[i32[avg_fps]]} fps' ]
+        return Elements [ "main": element [ ] ]
+
+##
         drain_stdout[]
         fps : f32 [ w.frame_factor * 60.0 ]
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
@@ -193,7 +200,7 @@ trinity orbiter # implements compiler
         for [ i: i32 0, i < open_files.count, i += 1 ]
             p   : path   open_files[i]
             key : string 'tab_{i}'
-            source_nav[key] = Button [ label: p.filename[] ]
+            source_nav[key] = Option [ label: p.filename[], selected: i == active_idx ]
 
         targets : Elements []
         targets['system'] = Option [ selected: active_target == 'system' ]
@@ -209,7 +216,7 @@ trinity orbiter # implements compiler
         inst['consoles'] = Tabs [ elements: consoles ]
         inst['targets']  = Tabs [ elements: targets  ]
         inst['actions']  = Tabs [ elements: Elements [
-            "play": Button [ disable:active_target == 'system' ]
+            "play": Button [ disable: active_target == 'system' ]
         ]]
         if [ active_target == 'system' ]
             inst['console'] = CompileConsole [ log: stdout_log ]
@@ -243,3 +250,4 @@ trinity orbiter # implements compiler
     public func on_canvas [ cv: Canvas ]
         super.on_canvas[ cv ]
         cv.sync_fence[ ]
+

@@ -100,7 +100,7 @@ class Accessor
     public normalized:      bool
     public bufferView:      u64
     public componentType:   ComponentType
-    public type:            CompoundType
+    public type:   CompoundType
     public count:           u64
     public min:             vec3f
     public max:             vec3f

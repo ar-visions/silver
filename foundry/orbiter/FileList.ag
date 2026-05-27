@@ -42,9 +42,8 @@ Layer FileLayer
 
     func draw [ cv: Canvas ]
         fl : FileList[ parent ]
-        #puts 'FileLayer.draw fl={fl} visible={fl.visible}'
         if [ !fl || !fl.visible ] return
-        puts 'FileLayer.draw filter={fl.filter} last={fl.last_filter}'
+        #puts 'FileLayer.draw filter={fl.filter} last={fl.last_filter}'
         if [ fl.filter && fl.filter != fl.last_filter ]
             fl.last_filter = fl.filter
             fl.build_visible[]

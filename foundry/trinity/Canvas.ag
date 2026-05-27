@@ -1150,6 +1150,9 @@ Render Canvas
         ui_shader = CanvasUI [ vk: vk ]
         # R32F + STORAGE_BIT so the compute shader can imageStore distances
         # directly and the fragment shader still samples it as a texture.
+        if [ width <= 0 || height <= 0 ]
+            test2 :  2
+            test2 += 2
         sdf_tex = Texture [ vk: vk, w: w, width: width / 2, height: height / 2,
             pixel_format: Pixel.f32, surface: Surface.color, is_storage: true ]
         # one r8 glyph atlas per canvas, bound as the `atlas` sampler the
@@ -1905,7 +1908,7 @@ Render Canvas
                     el [ cmd.op == SVGOp.close ]
                         mdl.cache.close_path[]
                 mdl.cache.paint[]
-                mdl.cache.restore[]
+                mdl.cache.restore[] 
         draw_canvas[ mdl.cache, ox, oy, rw, rh ]
 
     func draw_canvas [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]

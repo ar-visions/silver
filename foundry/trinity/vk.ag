@@ -919,7 +919,7 @@ class uniforms
         # static declared type of the field (`shader`), not the actual subclass
         # (e.g. CanvasUI). without this we'd never iterate any subclass members.
         hdr:    Au.header[ s ]
-        ty:     Au_t [ hdr.type ]
+        ty:     Au_t [ hdr.au ]
 
         while [ ty != typeid[ shader ] ]
             type_list += ty
@@ -928,7 +928,7 @@ class uniforms
         type_list = type_list.reverse[]
 
         hdr2:   Au.header[ s ]
-        leaf:   hdr2.type
+        leaf:   hdr2.au
         total_uniform: i32 [ uniform_size[ leaf ] ]
         u_memory = new u8 [ total_uniform ]
         m : (u_memory to Au)
@@ -1123,7 +1123,7 @@ class Pipeline
         # walk shader schema — typeid[s] gives the static `shader` type; read
         # the runtime subclass from the Au object header instead.
         sh_hdr:        Au.header[ s ]
-        shader_schema: sh_hdr.type
+        shader_schema: sh_hdr.au
         while [ shader_schema && shader_schema != typeid[ shader ] ]
             for [ i: 0, i < shader_schema.members.count, i += 1 ]
                 mem: Au_t [ shader_schema.members.origin[i] ]
@@ -1326,7 +1326,7 @@ class Pipeline
             # count VertexInput attribs the shader actually consumes
             shader_input_count: 0
             ra_hdr:        Au.header[ s ]
-            shader_schema: ra_hdr.type
+            shader_schema: ra_hdr.au
             while [ shader_schema != typeid[ shader ] ]
                 for [ si: 0, si < shader_schema.members.count, si += 1 ]
                     sm: Au_t [ shader_schema.members.origin[si] ]
@@ -2285,6 +2285,7 @@ Texture Display
         return list.last_element[]
 
     func draw [ ]
+        win : cast Window [ a ]
         draw_seq += 1
         if [ pending_w > 0 && pending_h > 0 ]
             now: f64 [ glfwGetTime[] ]
@@ -2444,6 +2445,11 @@ Texture Display
                 if [ present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR ]
                     present_mode = VK_PRESENT_MODE_MAILBOX_KHR
                     break
+                el [ present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR ]
+                    present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR
+
+            puts (present_mode == VK_PRESENT_MODE_MAILBOX_KHR)   ? 'present: MAILBOX'   :
+                 (present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR) ? 'present: IMMEDIATE' : 'present: FIFO'
 
             # initial window size
             w_i: i32

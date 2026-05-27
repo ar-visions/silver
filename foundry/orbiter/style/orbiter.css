@@ -1,6 +1,12 @@
 /* trinity!  ..help. */
 @import "trinity.css"
 
+element.main {
+    area: l0 t0 r2 b4
+    layers.root_bg:
+        fill_color: #00f
+}
+
 Toolbar {
     area: l0 t0 w4 b0
     layers.compose:
@@ -18,6 +24,7 @@ Toolbar {
     layers.base:
         fill_color:         #fff1
         inner_glow:         #fff1 16
+    
 }
 
 Toolbar.right {
@@ -339,6 +346,7 @@ Tabs / Button {
         label_align:            0.5 0.44
 }
 
+
 Tabs.actions {
     area: l0 t0 w2 h2
 }
@@ -389,6 +397,8 @@ Tabs / Button:hovered {
         inner_glow:             #8af4 16
 }
 
+
+
 Tabs / Option {
     layers.base:
         fill_color:             #2481
@@ -396,6 +406,31 @@ Tabs / Option {
     layers.face:
         label_color:            #fff
 }
+
+Tabs.source_nav / Option {
+    area:                       l6px t6+px r6px h1
+    layers.base:
+        area:                   l0 t0 r15px b0
+        fill_color:             #2481
+        inner_glow:             #8af1 16
+        radius:                 4 0 0 4
+    layers.face:
+        area:                   l0 t0 r15px b0
+        label_color:            #fff
+    layers.dot:
+        area:                   r14px t0px w12px h1
+        radius:                 0 4 4 0
+        fill_color:             #0000
+        stroke_color:           #4f84
+        stroke_width:           0.5
+}
+
+Tabs.source_nav / Option:selected {
+    layers.dot:
+        fill_color:             #f84
+        stroke_color:           #ff8
+}
+
 
 Tabs / Option:selected {
     layers.base:

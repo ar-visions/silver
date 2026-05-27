@@ -187,6 +187,8 @@ Display Window
     mutable m_view               : Model
     mutable r_view               : Render
 
+    mutable test_element : element
+
     mutable is_setup             : bool
     mutable user_compose         : bool
 
@@ -214,32 +216,19 @@ Display Window
         puts 'window constructing'
 
     public func apply_args [ inst: element, e: element ] -> bool
-        ty      : typeid[ e ]
+        if [ typeid[ inst ] != typeid[ e ] ] return false
         changed : false
-        while [ ty != typeid[ Au ] ]
-            for [ m: i32 0, m < ty.members.count, m += 1 ]
-                mem : Au_t ty.members.origin[m]
-                if [ mem.member_type != AU_MEMBER_VAR || mem.ident == 'elements' ]
-                    continue
-
-                if [ inst.id == "play" && strcmp[ mem.ident, "disable" ] == 0 ]
-                    test2 :  2
-                    test2 += 2
-                
-                # if property not set on the newly created element, this is a default value (does not apply)
-                is_set   : e.AF_get_member[mem]
-                if [ !is_set ]
-                    continue
-                
-                # when user set, these apply if different
-                from_val : inst.member_object[ mem ]
-                to_val   :    e.member_object[ mem ]
-                if [ is_set && from_val != to_val ]
-                    if [ !from_val || !to_val || from_val.compare[ to_val ] != 0 ]
-                        inst.member_set[ mem, to_val ]
-                        changed = true
-                
-            ty = ty.context
+        if [ inst.disable != e.disable ]
+            inst.disable = e.disable
+            changed = true
+        if [ inst.label != e.label ]
+            inst.label = e.label
+            changed = true
+        inst_opt : (inst to Option)
+        e_opt    : (e    to Option)
+        if [ inst_opt && e_opt && inst_opt.selected != e_opt.selected ]
+            inst_opt.selected = e_opt.selected
+            changed = true
         return changed
 
     
@@ -334,12 +323,12 @@ Display Window
     public func cache_style [ inst:element, style_avail: map StyleEntries[string], force_update:bool, home_object:Au ]
         if [ inst.maps_populated && !force_update ]
             return
-
+ 
         inst.maps_populated = true
         for [ ty : typeid[ inst ], ty != typeid[ Au ], ty = ty.context ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 member : Au_t ty.members.origin[m]
-                if [ member.member_type != AU_MEMBER_VAR || member.ident == 'elements' ]
+                if [ member.member_type != AU_MEMBER_VAR || strcmp[ member.ident, "elements" ] == 0 ]
                     continue
                 prop    : string [ member.ident ]
                 entries : style_avail [ prop ]
@@ -366,9 +355,6 @@ Display Window
                             ele : (home_object to element)
                             home_type : typeid[ home_object ]
                             inst_type : typeid[ inst ]
-                            if [ strcmp[ inst_type.ident, "Editor" ] == 0 ]
-                                test2 :  2
-                                test2 += 2
                             n.set_context_from[ home_object ]
                             n.set_context_from[ inst ]
                             n.initialize[]
@@ -390,7 +376,7 @@ Display Window
         for [ ty : typeid[ inst ], ty != typeid[ Au ], ty = ty.context ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
                 member : Au_t ty.members.origin[m]
-                if [ member.member_type != AU_MEMBER_VAR || member.ident == 'elements' ]
+                if [ member.member_type != AU_MEMBER_VAR || strcmp[ member.ident, "elements" ] == 0 ]
                     continue
                 prop    : string [ member.ident ]
                 entries : style_avail [ prop ]
@@ -445,7 +431,7 @@ Display Window
 
                     if [ !best.instance ]
                         info      : header [ best.value ]
-                        val_type  : Au_t [ info.type ]
+                        val_type  : Au_t [ info.au ]
                         meta_type : Au_t [ member.meta.a ]
                         if [ val_type == typeid[ array ] && member.src == typeid[ array ] && meta_type ]
                             src_arr  : (best.value to array string)
@@ -517,6 +503,12 @@ Display Window
                     brand_new = true # component within element map
 
             if [ brand_new || !instance ]
+                if [ id == "toolbar" ]
+                    test2 :  2
+                    test2 += 2
+                    win : cast Window[ w ]
+                    win.test_element = e
+                
                 new_inst         = true
                 instance         = (instance) ? instance : e.hold[]
                 instance.restyle = true
@@ -554,15 +546,8 @@ Display Window
                 call_init = true
                 changed = true
             el
-                if [ instance.id == "play" ]
-                    test2 :  2
-                    test2 += 2
                 args_changed : apply_args[ instance, e ]
                 changed = args_changed || instance.restyle || force
-                if [ args_changed ]
-                    test2 :  2
-                    test2 += 2
-                    args_changed = args_changed
                 instance.restyle = false
 
             if [ changed ]
@@ -573,7 +558,7 @@ Display Window
                 # init finally called after context and style is applied
                 # our holds are too many for properties applied in style, though.
                 if [ call_init ]
-                    expect instance.vk, "no vk context set in test2"
+                    expect instance.vk, "no vk context set for new instance"
                     instance.initialize[]
                     instance.hold_members[]
                     instance.restyle = true
@@ -582,7 +567,7 @@ Display Window
             irender : instance.render[]
             if [ !irender ] irender = e.elements
             if [ !irender ] irender = instance.elements
-            if [  irender ] update_element[ instance, irender, force ]
+            if [ irender ] update_element[ instance, irender, force ]
 
         # perform umount on elements not updated in render
         retry : true
@@ -609,12 +594,15 @@ Display Window
             restyle     = true
 
         if [ force_restyle ]
-            puts 'force_restyle = {force_restyle}'
             root.invalidate_transitions[ ]
             apply_style[ root, root_styles, null ]
             root.remove_invalid_transitions[ ]
 
+        t0 : i64 [ epoch_micros[] ]
         update_element[ root, render, restyle ]
+        t1 : i64 [ epoch_micros[] ]
+        dt : i64 [ t1 - t0 ]
+        if [ dt > 100 ] puts 'update_element: {dt}us'
         restyle = false
 
     public func set_capture [ e: element ]
@@ -731,10 +719,6 @@ Display Window
                     app_object.on_leave*[ ev ]
             hovered = f
             if [ f ]
-                #puts 'hover: entering {f.id}'
-                if [ f inherits Button ]
-                    test :  22
-                    test += 22
                 f.hovered = true
                 f.restyle = true
                 restyle = true
@@ -1024,7 +1008,6 @@ Display Window
     func on_compose []
         if [ !compose ] return
         if [ resizing ] return
-
         compose.save    [ ]
         compose.clear   [ '#00a' ]
         update_all      [ app_object.on_render*[ a ] ]
@@ -1037,7 +1020,6 @@ Display Window
     func on_screen []
         if [ !screen ] return
         if [ resizing ] return
-
         screen.save[]
 
         app_object.on_canvas*[ screen ]
@@ -1100,8 +1082,10 @@ Display Window
             if [ e.area.b.percent ] bounds.h = e.area.b.offset * (rel.h - fixed_h)
             if [ e.area.r.percent ] bounds.w = e.area.r.offset * (rel.w - fixed_w)
 
-        memcpy[ e.bounds, bounds, sizeof[f32] * 4 ]
-
+        e.bounds.x = bounds.x
+        e.bounds.y = bounds.y
+        e.bounds.w = bounds.w
+        e.bounds.h = bounds.h
         # pre-scan layers to measure any outset beyond element bounds
         margin_l : i32 [ 0 ]
         margin_t : i32 [ 0 ]
@@ -1116,16 +1100,16 @@ Display Window
             psc_rx : f32  [ psc_b.x + psc_b.w - e.bounds.x - e.bounds.w ]
             psc_by : f32  [ psc_b.y + psc_b.h - e.bounds.y - e.bounds.h ]
             if [ psc_lx < 0.0 ]
-                ol : i32 [ i32 ceilf[ 0.0 - psc_lx ] ]
+                ol : i32 ceilf[ 0.0 - psc_lx ]
                 if [ ol > margin_l ] margin_l = ol
             if [ psc_ly < 0.0 ]
-                ot : i32 [ i32 ceilf[ 0.0 - psc_ly ] ]
+                ot : i32 ceilf[ 0.0 - psc_ly ]
                 if [ ot > margin_t ] margin_t = ot
             if [ psc_rx > 0.0 ]
-                or2 : i32 [ i32 ceilf[ psc_rx ] ]
+                or2 : i32 ceilf[ psc_rx ]
                 if [ or2 > margin_r ] margin_r = or2
             if [ psc_by > 0.0 ]
-                ob2 : i32 [ i32 ceilf[ psc_by ] ]
+                ob2 : i32 ceilf[ psc_by ]
                 if [ ob2 > margin_b ] margin_b = ob2
         if [ margin_l > 0 ] margin_l += 1
         if [ margin_t > 0 ] margin_t += 1
@@ -1134,7 +1118,8 @@ Display Window
         ew : i32 [ i32[ceilf[e.bounds.w]] + 1 + margin_l + margin_r ]
         eh : i32 [ i32[ceilf[e.bounds.h]] + 1 + margin_t + margin_b ]
         if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
-            puts 'creating new cache Canvas'
+            #if [ frame_seq > 1 ]
+            #    fault 'cache-frame2 id={e.id} ew={ew} eh={eh} cw={e.cache_w} ch={e.cache_h} no_cc={!e.cache_canvas}'
             e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
             e.cache_canvas.update[]
             e.cache_w = ew
@@ -1524,7 +1509,7 @@ Button Check
         return null
 
 Button Option
-    mutable selected : bool
+    public selected : bool
     func on_click[ ev:Event ]
         new_state : bool [ !selected ]
         for [ e:element, id:string ] in parent.elements

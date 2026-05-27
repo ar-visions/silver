@@ -267,7 +267,7 @@ typedef struct _Au_t {
     int             isize;
     int             icount;
     u64             ident_hash;
-    void*           fn;
+    void*           vfn;
     ffi_method_t*   ffi;
     micro_          members;
     void*           member_map;
@@ -275,7 +275,7 @@ typedef struct _Au_t {
     meta_t_         meta;
     union {
         u64             required_bits[2];
-        struct _Au_t_f* __f[2];
+        struct _Au_t_f* fn;
     };
     struct {
         void* __none__;

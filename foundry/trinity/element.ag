@@ -102,9 +102,9 @@ ielement element
     mutable scaling         : vec2f
     mutable rotation        : f32
     mutable transform_origin : vec2f
-    mutable ghost           : bool
+    public  ghost           : bool
     mutable captured        : bool
-    mutable disable         : bool
+    public  disable         : bool
     mutable hovered         : bool
     mutable pressed         : bool
     mutable focused         : bool

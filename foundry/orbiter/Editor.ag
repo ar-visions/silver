@@ -71,6 +71,7 @@ Layer EditorLayer
                 editor.last_before   = before
                 editor.filter_rect = null
                 editor.filter_next = false
+            editor.last_scroll_y = editor.scroll.y
 
             cur_line_col : rgba [ (line_color) ? line_color : rgba['#ffffff18'] ]
             sel_col_val  : rgba [ (sel_color)  ? sel_color  : rgba['#264f78'] ]
@@ -81,6 +82,14 @@ Layer EditorLayer
             cv.paint[ ]
 
             if [ has_sel ]
+                for [ li: i32 start_line, li <= end_line, li += 1 ]
+                    if [ li == editor.sel_line ] continue
+                    y_row : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
+                    if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
+                    cv.fill_color[ cur_line_col ]
+                    cv.rect_to[ x0, y_row, bounds.w, lh ]
+                    cv.paint[ ]
+
                 cv.save[ ]
                 cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
                 pad : 2
@@ -97,7 +106,8 @@ Layer EditorLayer
                     rr : rect [ x:rx + pad, y:y_row + pad,
                         w:rw - pad * 2, h:lh - pad * 2 ]
                     if [ editor.last_sel_line == li ]
-                        if [ editor.filter_rect ]
+                        scrolled : bool [ editor.scroll.y != editor.last_scroll_y ]
+                        if [ editor.filter_rect && !scrolled ]
                             rr.x = editor.filter_rect.x * 0.75 + rr.x * 0.25
                             rr.y = editor.filter_rect.y * 0.75 + rr.y * 0.25
                             rr.w = editor.filter_rect.w * 0.75 + rr.w * 0.25
@@ -171,6 +181,7 @@ Control Editor
     mutable last_before   : false
     mutable filter_rect   : rect
     mutable filter_next   : false
+    mutable last_scroll_y : f32
     func line_get [ i: i32 ] -> string
         return lines.value_by_index[ i ]
 

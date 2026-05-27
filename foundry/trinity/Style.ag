@@ -154,16 +154,8 @@ class StyleBlock
                 use_app    : bool [ !cur.parent && ux && ux.app_object ]
                 type_match : bool [ false ]
                 if [ ty_handle ]
-                    if [ use_app ]
-                        check : typeid[ ux.app_object ]
-                        while [ check && check != typeid[ Au ] ]
-                            if [ check == q.ty ] type_match = true
-                            check = check.context
-                        if [ type_match && q.state ]
-                            sv : Au ux.app_object.get_property[ q.state ]
-                            if [ !sv || !Au.cast_bool[ sv ] ] type_match = false
-                    el
-                        type_match = cur.instance_of[ q.ty ] != null
+                    io_r : Au cur.instance_of[ q.ty ]
+                    if [ io_r ] type_match = true
                 type_reject : bool [ ty_handle && !type_match ]
 
                 # state pseudo-classes. q.states holds the full list (e.g.
