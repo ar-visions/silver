@@ -53,7 +53,7 @@
             "env": {
                 "LD_LIBRARY_PATH":  "${workspaceFolder}/install/lib",
                 "IMPORT":           "${workspaceFolder}/install",
-                "ASAN_OPTIONS":     "detect_leaks=0 quarantine_size_mb=0",
+                "ASAN_OPTIONS":     "detect_leaks=0 quarantine_size_mb=0:suppressions=/src/silver/asan.supp",
                 "VK_LAYER_PATH":    "${workspaceFolder}/install/share/vulkan/explicit_layer.d",
                 "AU_SKIP_DROP":     ""
             },
@@ -73,7 +73,7 @@
             "env": {
                 "LD_LIBRARY_PATH":  "${workspaceFolder}/install/lib",
                 "IMPORT":           "${workspaceFolder}/install",
-                "ASAN_OPTIONS":     "detect_leaks=0 quarantine_size_mb=0",
+                "ASAN_OPTIONS":     "detect_leaks=0 quarantine_size_mb=0:suppressions=/src/silver/asan.supp",
                 "VK_LAYER_PATH":    "${workspaceFolder}/install/share/vulkan/explicit_layer.d",
                 "AU_SKIP_DROP":     ""
             },
