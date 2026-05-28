@@ -19,6 +19,8 @@ import FileList
 
 Option  DebugPanel
 Option  CallStack
+Option  FileTab
+    public left : bool
 Control Tabs
 Control Instances
     public selected : bool
@@ -32,9 +34,12 @@ trinity orbiter # implements compiler
     intern avg_fps       : f32
     intern target_names  : array string
     intern target_roots  : array path
-    public open_files    : array path
-    public active_idx    : i32
+    intern target_srcs   : array path
+    public open_files       : array path
+    public active_idx       : i32
+    public active_right_idx : i32 [ -1 ]
     public active_panel  : string
+    public editor_panel  : string
     public active_target : string
     public active_console: string
     public show_console  : bool
@@ -52,16 +57,20 @@ trinity orbiter # implements compiler
         # targets defined once here
         target_names   = array string []
         target_roots   = array path []
+        target_srcs    = array path []
         target_names  += 'silver'
         target_roots  += path '/src/silver'
+        target_srcs   += path '/src/silver/src'
         target_names  += 'hyperspace'
         target_roots  += path '/src/silver/foundry/hyperspace'
+        target_srcs   += path '/src/silver/foundry/hyperspace'
         open_files     = array path []
         open_files    += path '/src/silver/src/silver.c'
         open_files    += path '/src/silver/src/aether.c'
         open_files    += path '/src/silver/src/Au.c'
         active_idx     = 0
         active_panel   = 'files'
+        editor_panel   = 'editor'
         active_target  = 'system'
         nav_root       = target_roots[0]
         active_console = 'shell'
@@ -70,8 +79,37 @@ trinity orbiter # implements compiler
         compile_log    = list string []
         stdout_log     = list string []
         stdout_line    = ''
+        check_stale[]
+        ensure_user_config[]
         #au_set_compiler[a]
+
+    func ensure_user_config []
+        home : string [ getenv[ 'HOME' ] ]
+        if [ !home || home.count == 0 ] return
+        xdg  : string [ getenv[ 'XDG_CONFIG_HOME' ] ]
+        base : string (xdg && xdg.count > 0) ? xdg : '{home}/.config'
+        dir  : path '{base}/orbiter'
+        dir.make_dir[]
+        cfg  : path '{base}/orbiter/orbiter.config'
+        #if [ !cfg.exists[] ]
+        #    cfg.save[ '# orbiter user config\n' ]
  
+    func check_stale []
+        for [ i: i32 0, i < target_names.count, i += 1 ]
+            name    : string target_names[i]
+            src     : path   target_srcs[i]
+            product : path  '/src/silver/platform/native/debug/{name}'
+            if [ !product.exists[] ]
+                compile_log.push[ 'stale (no product): {name}' ]
+                compile[ name ]
+                continue
+            product_mtime : i64 [ product.modified_time[] ]
+            src_mtime     : i64 [ 0 ]
+            src.latest_modified[ ref src_mtime ]
+            if [ src_mtime > product_mtime ]
+                compile_log.push[ 'stale (source newer): {name}' ]
+                compile[ name ]
+
     func drain_stdout []
         if [ stdout_rfd < 0 ] return
         buf : local i8 [2]
@@ -108,18 +146,98 @@ trinity orbiter # implements compiler
     func set_active [ idx: i32 ]
         active_idx = idx
 
+    func sync_tabs []
+        win : cast Window [ w ]
+        tb  : element win.root.elements['toolbar']
+        if [ !tb ] return
+        nav : element tb.elements['source_nav']
+        if [ !nav ] return
+        for [ i: i32 0, i < open_files.count, i += 1 ]
+            key : string 'tab_{i}'
+            op  : Option nav.elements[key]
+            if [ op ]
+                op.selected = (i == active_idx)
+        win.restyle = true
+
+    func sync_editor []
+        win : cast Window [ w ]
+        if [ !win ] return
+        grp : element win.root.elements['editor-group']
+        if [ !grp ] return
+        if [ active_idx >= 0 && active_idx < open_files.count ]
+            p : path open_files[active_idx]
+            title_el : element grp.elements['title']
+            if [ title_el ] title_el.label = p.filename[]
+            ed  : Editor grp.elements['editor']
+            if [ ed ]
+                ed.src = p
+                ed.load_file[]
+                ed.pristine = false
+
+    func sync_active []
+        win : cast Window [ w ]
+        if [ !win ] return
+        inst_el : element win.root.elements[ 'instances' ]
+        if [ !inst_el ] return
+        con_el : element inst_el.elements[ 'console' ]
+        if [ active_target == 'system' ]
+            if [ con_el && !(con_el inherits CompileConsole) ]
+                inst_el.elements.rm[ 'console' ]
+        el
+            con : Console con_el
+            if [ con ]
+                con.session_id = active_target
+                con.pristine   = false
+            el
+                inst_el.elements.rm[ 'console' ]
+        acts : element inst_el.elements[ 'actions' ]
+        if [ acts ]
+            play_el : element acts.elements[ 'play' ]
+            if [ play_el ] play_el.disable = (active_target == 'system')
+        win.restyle = true
+
     public func pad[ n:i32 ] -> string
         str : local char[256]
         sprintf[str, "%04i", n]
         return str
 
-    func on_click [ ev: Event ]
+    func on_press [ ev: Event ]
         if [ !ev.target ] return
-        puts 'on_click: {ev.target.id}'
+        for [ e: element* ev.target, e, e = e.parent ]
+            if [ e inherits FileList ]
+                fl : FileList e
+                if [ fl.pending_open ]
+                    open_file[ fl.pending_open ]
+                    fl.pending_open = null
+                    sync_tabs[]
+                    sync_editor[]
+                    return
+        puts 'on_press: {ev.target.id}'
+        for [ i: i32 0, i < open_files.count, i += 1 ]
+            key : string 'tab_{i}'
+            if [ ev.target.id == key ]
+                rel_x    : f32 [ ev.mouse.pos.x - ev.target.bounds.x ]
+                in_right : bool [ rel_x > ev.target.bounds.w - 14.0 ]
+                if [ ev.key.shift || in_right ]
+                    active_right_idx = (active_right_idx == i) ? -1 : i
+                el
+                    set_active[ i ]
+                    sync_editor[]
+                sync_tabs[]
+                return
+        if [ ev.target.id == 'git' || ev.target.id == 'project' ]
+            editor_panel = (editor_panel == ev.target.id) ? 'editor' : ev.target.id
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        if [ ev.target.id == 'config' ]
+            active_panel = ev.target.id
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
         if [ ev.target inherits Option ]
             id : string ev.target.id
             if [ id == 'system' ]
                 active_target = 'system'
+                sync_active[]
             el [ id == 'shell' || id == 'lldb' ]
                 active_console = (active_console == id) ? '' : id
                 show_console   = active_console.count > 0
@@ -137,22 +255,9 @@ trinity orbiter # implements compiler
                         matched       = true
                 if [ !matched ]
                     active_panel = id
+                if [ matched ] sync_active[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
-        for [ i: i32 0, i < open_files.count, i += 1 ]
-            key : string 'tab_{i}'
-            if [ ev.target.id == key ]
-                set_active[ i ]
-                return
-
-    func on_press [ ev: Event ]
-        for [ e: element* ev.target, e, e = e.parent ]
-            if [ e inherits FileList ]
-                fl : FileList e
-                if [ fl.pending_open ]
-                    open_file[ fl.pending_open ]
-                    fl.pending_open = null
-                    return
 
     func on_char [ ev: Event ]
         if [ !ev.target ] return
@@ -186,21 +291,21 @@ trinity orbiter # implements compiler
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
         w.set_title[ 'orbiter 444 | {pad[i32[avg_fps]]} fps' ]
         return Elements [ "main": element [ ] ]
-
+  
 ##
         drain_stdout[]
         fps : f32 [ w.frame_factor * 60.0 ]
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
-        w.set_title[ 'orbiter 444 | {pad[i32[avg_fps]]} fps' ]
+        w.set_title[ 'orbiter' ]
 
-        active_path : path (open_files.count > 0) ? open_files[active_idx] : null
-        active_name : string (active_path) ? active_path.filename[] : string[]
-
+        active_path         : path (open_files.count > 0) ? open_files[active_idx] : null
+        active_name         : string (active_path) ? active_path.filename[] : string[]
         source_nav : Elements []
         for [ i: i32 0, i < open_files.count, i += 1 ]
             p   : path   open_files[i]
             key : string 'tab_{i}'
-            source_nav[key] = Option [ label: p.filename[], selected: i == active_idx ]
+            source_nav[key] = FileTab [ label: p.filename[], selected: i == active_idx, right_view: i == active_right_idx, left: i != active_right_idx ]
+        source_nav['config'] = Option [ selected: active_panel == 'config' ]
 
         targets : Elements []
         targets['system'] = Option [ selected: active_target == 'system' ]
@@ -209,8 +314,8 @@ trinity orbiter # implements compiler
             targets[name] = Option [ label: name, selected: active_target == name ]
 
         consoles : Elements []
-        consoles['shell'] = Option [ label: 'shell', selected: active_console == 'shell' ]
-        consoles['lldb']  = Option [ label: 'lldb',  selected: active_console == 'lldb',  disable:active_target == 'system' ]
+        consoles['shell'] = Option [ label: 'shell', selected: active_console == 'shell', toggle: true ]
+        consoles['lldb']  = Option [ label: 'lldb',  selected: active_console == 'lldb',  disable:active_target == 'system', toggle: true ]
 
         inst : Elements []
         inst['consoles'] = Tabs [ elements: consoles ]
@@ -221,31 +326,39 @@ trinity orbiter # implements compiler
         if [ active_target == 'system' ]
             inst['console'] = CompileConsole [ log: stdout_log ]
         el
-            inst['console'] = Console [ session_id: active_target ]
+            inst['console'] = Console [ session_id: active_target ] 
 
         return Elements [
             "toolbar":      Toolbar [
                 elements:   Elements [
-                    'source_nav': Tabs[ elements: source_nav ]
+                    'source_nav':     Tabs[ elements: source_nav ]
                 ]
             ],
             "right":        Toolbar [
                 elements: Elements [
-                    "filter":       element    [ label: filter_text ]
                     "files":        FileList   [ selected: active_panel == 'files', filter: (active_panel == 'files') ? filter_text : '', root: nav_root ]
                     "callstack":    CallStack  [ selected: active_panel == 'callstack' ]
                     "debug":        DebugPanel [ selected: active_panel == 'debug' ]
                     "debug2":       CallStack  [ selected: active_panel == 'debug' ]
-                ]
+                    "filter":       element    [ label: filter_text ]
+                ] 
             ],
             "editor-group": Group [
                 elements: Elements [
+                    "title-tabs":   element[
+                        elements: Elements [
+                            "git":          Option [ selected: editor_panel == 'git' ]
+                            "project":      Option [ selected: editor_panel == 'project' ]
+                        ]
+                    ]
                     "title":        element [ label: active_name ]
                     "editor":       Editor  [ src: active_path ]
                 ]
             ],
             "instances": Instances [ elements: inst, selected: show_console ]
         ]
+ 
+        #"avatar":       Avatar     [ transparency: (active_panel == 'debug') ? 0.0 : 1.0 ]
 
     public func on_canvas [ cv: Canvas ]
         super.on_canvas[ cv ]

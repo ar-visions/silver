@@ -108,7 +108,7 @@ class Image
     width:          i32 0
     height:         i32 0
     channels:       i32 0
-    source:         Au null
+    source:         Au
     filter:         Filter
     user:           Au
     res2:           handle

@@ -87,7 +87,7 @@ ielement element
     mutable label           : string
     public  label2          : string
     mutable layers          : map Layer[string]
-    mutable shaders         : map shader[string]
+    mutable shaders         : map shader  [string]
     #mutable bindings        : map ModelBind[string]
     mutable elements        : Elements
     mutable tags            : array string
@@ -110,6 +110,7 @@ ielement element
     mutable focused         : bool
     mutable first           : bool
     mutable last            : bool
+    mutable middle          : bool
     mutable odd             : bool
     mutable even            : bool
     public  focusable       : bool
@@ -136,6 +137,7 @@ ielement element
         max_sc : f32 [ content_h - bounds.h ]
         if [ max_sc > 0.0 && scroll.y > max_sc ] scroll.y = max_sc
         pristine = false
+        ux.will_animate = true
     public func on_key     [ ev: Event ] return
     public func on_char    [ ev: Event ] return
     intern style_avail  : map StyleEntries[string]
@@ -151,6 +153,7 @@ ielement element
     mutable pristine     : bool [ false ]
     mutable needs_frame  : bool
     mutable fc           : f32
+    public  transparency : f32
 
     public func set_capture []
         ux.set_capture[ a ]
@@ -225,6 +228,19 @@ ielement element
 
         for [ ee: element, id: string ] in elements
             ee.animate_within[ ]
+
+    public func is_animating [] -> bool
+        if [ volatile ] return true
+        if [ transitions ]
+            cur_millis : i64 [ epoch_millis[] ]
+            for [ ct: StyleTransition, k: string ] in transitions
+                if [ ct.duration ]
+                    dur : i64 [ ct.duration.get_millis[] ]
+                    ms  : i64 [ cur_millis - ct.start ]
+                    if [ ms < dur ] return true
+        for [ ee: element, id: string ] in elements
+            if [ ee.is_animating[] ] return true
+        return false
 
 
 alias StyleTransitions : map StyleTransition[string]
@@ -330,6 +346,7 @@ class Layer
     public clip                : bool
     public unclip              : bool
     public opacity             : f32
+    public hide                : bool
 
     public blur_x           : f32
     public blur_y           : f32
@@ -357,6 +374,7 @@ class Layer
         el
             parent.sel_col = c
         parent.text_dragging = true
+        parent.set_capture[]
         parent.set_focus[]
         parent.pristine = false
 
@@ -367,6 +385,7 @@ class Layer
 
     func on_release [ ev: Event ]
         parent.text_dragging = false
+        parent.release_capture[]
 
     func delete_selection [ text: string ] -> bool
         sc : i32 [ (parent.sel_col < parent.anchor_col) ? parent.sel_col : parent.anchor_col ]

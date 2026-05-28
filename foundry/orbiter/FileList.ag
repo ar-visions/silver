@@ -133,6 +133,7 @@ Option FileList
         max_sc : f32 [ content_h - vh ]
         if [ max_sc > 0.0 && scroll.y > max_sc ] scroll.y = max_sc
         pristine = false
+        ux.will_animate = true
 
     func scroll_to_sel []
         if [ sel < 0 || !visible || visible.count == 0 ] return

@@ -1127,9 +1127,8 @@ void silver_init(silver a) {
     } else
         defs_hash = string("");
 
-//#if defined(__SANITIZE_ADDRESS__) || defined(__has_feature) && __has_feature(address_sanitizer)
 #ifndef NDEBUG
-    //a->asan         = true;
+    a->asan         = true;
 #endif
     a->exports      = map(hsize, 16);
     a->build_dir    = f(path, "%o/%s", a->install, a->debug ? "debug" : "release");
@@ -1325,8 +1324,8 @@ void silver_init(silver a) {
             path host_dst = f(path, "%o/%o", a->build_dir, a->name);
             if (file_exists("%o", host_src) && file_exists("%o", host_dst)) {
                 print("silver-host: %o -> %o", host_src, host_dst);
-                vexec(a->verbose, "silver-host", "gcc %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
-                    a->debug ? "-O0 -g" : "-O2", host_dst, host_src, SILVER, SILVER, SILVER);
+                vexec(a->verbose, "silver-host", "%s/platform/native/bin/clang %s %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
+                    SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, SILVER, SILVER, SILVER);
             }
         }
         return;
@@ -5602,8 +5601,8 @@ none silver_build(silver a) {
         path host_dst = f(path, "%o/%o", a->build_dir, a->name);
         verify(file_exists("%o", host_src), "silver-host.c not found at %o", host_src);
         print("silver-host: %o -> %o", host_src, host_dst);
-        vexec(a->verbose, "silver-host", "gcc %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
-            a->debug ? "-O0 -g" : "-O2", host_dst, host_src, SILVER, SILVER, SILVER);
+        vexec(a->verbose, "silver-host", "%s/platform/native/bin/clang %s %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
+            SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, SILVER, SILVER, SILVER);
         a->live_binary = hold(host_dst);
     }
 
@@ -6988,19 +6987,7 @@ void silver_write_header(silver a) {
                 !m->context->is_system && !m->context->is_c &&
                 m->context->module != typeid(Au)->module &&
                 m->context != typeid(Au);
-            bool has_fbits = is_silver_class && !parent_is_silver_class;
-
             write(module_f, "#define %o_schema(A,B,...)", n);
-            if (has_fbits) {
-                // i_prop_intern doesn't emit a C struct field (its INST_U
-                // expansion is empty), so use `public` to actually reserve
-                // 16 bytes at the start of the struct. Naming the fields
-                // with underscores keeps them out of normal use.
-                line(module_f, "\\", n);
-                write(module_f, "M(A,B, i,prop,public,i64,__fbits_0)");
-                line(module_f, "\\", n);
-                write(module_f, "M(A,B, i,prop,public,i64,__fbits_1)");
-            }
             members(m, mi) {
                 line(module_f, "\\", n);
                 string mn = cname(string(mi->ident));
@@ -7625,10 +7612,11 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     if (seq == 721)
         seq = seq;
     //print("seq %i\n", seq);
-    bool is_fields = peek_fields(a) || inherits(mdl->autype, typeid(map));
+    Au_t  mdl_au   = au_arg_type(mdl->autype);
+    bool is_fields = peek_fields(a) || inherits(mdl_au, typeid(map));
     token pk6 = peek(a);
-    bool is_mdl_map = inherits(mdl->autype, typeid(map));
-    bool is_mdl_collective = inherits(mdl->autype, typeid(collective));
+    bool is_mdl_map = inherits(mdl_au, typeid(map));
+    bool is_mdl_collective = inherits(mdl_au, typeid(collective));
     bool was_ptr = false;
     int  iter = 0;
 
@@ -7974,6 +7962,9 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
             // (map types; collective reserves first for value)
             etype meta_key_shape = u(etype, mem->meta_b);
             enode expr = parse_expression(a, meta_key_shape, false, true);
+            // coerce to string when map key type is string (e_create is identity if already string)
+            if (expr && meta_key_shape == etypeid(string))
+                expr = e_create(a, meta_key_shape, (Au)expr);
             if (!first_index && expr)
                 first_index = expr;
             push(args, (Au)expr);

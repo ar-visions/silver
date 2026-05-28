@@ -107,6 +107,7 @@ class Render
         if [ !width || !height ]
             fault "width / height or wscale not set on render Render"
             exit[ 0 ]
+        expect width <= 16384 && height <= 16384, 'Render.update: corrupt dimensions {width}x{height}'
 
         if [ width == last_width && height == last_height ]
             return
@@ -413,6 +414,9 @@ class Render
         if [ reduce ]
             reduce_model = Model [ vk: vk, w: w, s: vk.reduce_shader[ ] ]
 
+        if [ width > 2000 ]
+            test2 :  2
+            test2 += 2
         # create or resize color/depth textures and framebuffer
         update[]
 
@@ -2007,6 +2011,12 @@ class Texture
             if [ !vk_format && pixel_format ]
                 vk_format = vk_format_fn[ pixel_format, linear ]
 
+            if [ !(width  > 0 && width  <= 32768) ]
+                test2 :  2
+                test2 += 2
+            if [ !vk_image ]
+                expect width  > 0 && width  <= 16384, 'Texture.init: corrupt width {width}'
+                expect height > 0 && height <= 16384, 'Texture.init: corrupt height {height}'
             info : VkImageCreateInfo [
                 sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                 imageType:     VK_IMAGE_TYPE_2D,

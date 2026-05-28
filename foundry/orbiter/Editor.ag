@@ -17,11 +17,6 @@ Layer EditorLayer
         editor.sel_col  = cl
         editor.pristine = false
 
-    func on_release [ ev: Event ]
-        editor : Editor[ parent ]
-        if [ editor ]
-            editor.dragging = false
-
     func draw [ cv: Canvas ]
         editor : Editor[ parent ]
         if [ !editor || !editor.lines ] return
@@ -65,13 +60,14 @@ Layer EditorLayer
             cw          : f32 [ cw_tm.w ]
             has_sel : bool [ start_line != end_line || start_col != end_col ]
 
+            scrolled : bool [ editor.scroll.y != editor.last_scroll_y ]
+            editor.last_scroll_y = editor.scroll.y
             if [ editor.last_sel_line != sl || editor.last_sel_col != ac || editor.last_before != before ]
                 editor.last_sel_line = sl
                 editor.last_sel_col  = ac
                 editor.last_before   = before
                 editor.filter_rect = null
                 editor.filter_next = false
-            editor.last_scroll_y = editor.scroll.y
 
             cur_line_col : rgba [ (line_color) ? line_color : rgba['#ffffff18'] ]
             sel_col_val  : rgba [ (sel_color)  ? sel_color  : rgba['#264f78'] ]
@@ -102,24 +98,38 @@ Layer EditorLayer
                     col_x1 : f32 [ (is_el) ? f32[end_col] * cw : bounds.w ]
                     rx     : f32 [ x0 + col_x0 ]
                     rw     : f32 [ col_x1 - col_x0 ]
-
+ 
                     rr : rect [ x:rx + pad, y:y_row + pad,
                         w:rw - pad * 2, h:lh - pad * 2 ]
                     if [ editor.last_sel_line == li ]
-                        scrolled : bool [ editor.scroll.y != editor.last_scroll_y ]
-                        if [ editor.filter_rect && !scrolled ]
+                        if [ scrolled ]
+                            editor.filter_rect = null
+                        if [ editor.filter_rect ]
+                            tx : f32 [ rr.x ]
+                            ty : f32 [ rr.y ]
+                            tw : f32 [ rr.w ]
+                            th : f32 [ rr.h ]
                             rr.x = editor.filter_rect.x * 0.75 + rr.x * 0.25
                             rr.y = editor.filter_rect.y * 0.75 + rr.y * 0.25
                             rr.w = editor.filter_rect.w * 0.75 + rr.w * 0.25
                             rr.h = editor.filter_rect.h * 0.75 + rr.h * 0.25
+                            dx : abs[ tx - rr.x ]
+                            dy : abs[ ty - rr.y ]
+                            dw : abs[ tw - rr.w ]
+                            dh : abs[ th - rr.h ]
+                            if [ dx > 0.5 || dy > 0.5 || dw > 0.5 || dh > 0.5 ]
+                                editor.ux.will_animate = true
 
                         editor.filter_rect = rr
                         editor.filter_next = true
                         editor.needs_frame = true
 
-                    cv.fill_color[ sel_col_val ]
-                    cv.rect_to    [ rr.x, rr.y - 0.5, rr.w, rr.h + 1 ]
-                    cv.paint      [ ]
+                    cv.fill_color  [ sel_col_val ]
+                    cv.stroke_color[ rgba['#fff1'] ]
+                    cv.stroke_width[ 0.5 ]
+                    cv.rect_to     [ rr.x, rr.y - 0.5, rr.w, rr.h + 1 ]
+                    cv.paint       [ ]
+                    cv.stroke_width[ 0.0 ]
                 cv.restore[ ]
 
                 tx : f32 [ cv.transform_tx[] ]

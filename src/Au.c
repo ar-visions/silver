@@ -3105,8 +3105,10 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b, symbol 
     sz _sz   = sizeof(struct _Au);
 
     sz alloc_count = shape_data ? shape_total(shape_data) : (count ? count : 1);
-    Au a = alloc_instance(type,
-        _sz + type->typesize * alloc_count, true);
+    sz n_bytes = _sz + type->typesize * alloc_count;
+    if (n_bytes == _sz)
+        printf("alloc: WARNING typesize=0 type=%s _sz=%lld\n", type->ident, (long long)_sz);
+    Au a = alloc_instance(type, n_bytes, true);
 
     a->au       = (Au_f*)type;
     a->data       = &a[1];
@@ -3194,25 +3196,32 @@ ffi_method_t* method_with_address(handle address, Au_t rtype, micro* args, Au_t 
     return method;
 }
 
+__attribute__((no_sanitize("address"))) 
 Au method_call(Au_t m, array args) {
     if (!m->ffi) m->ffi = method_with_address(m->value, m->type, (micro*)&m->args, m->context);
     ffi_method_t* a = m->ffi;
-    const num max_args = 8;
+    const num max_args = 64;
     none* arg_values[max_args];
-    
+    Au    arg_data[max_args];
+
+    memset(arg_values, 0, sizeof(arg_values));
+    memset(arg_data,   0, sizeof(arg_data));
+    printf("method_call: method=%s atypes->count=%d\n", m->ident, (int)a->atypes->count);
     // populate provided args, create default objects for any missing
     for (num i = 0; i < a->atypes->count; i++) {
         Au_t arg_type = au_arg_type((Au)a->atypes->origin[i]);
+        printf("  arg[%d] type=%s typesize=%d is_class=%d\n", (int)i, arg_type ? arg_type->ident : "null", arg_type ? (int)arg_type->typesize : -1, arg_type ? (int)arg_type->is_class : -1);
+        assert(arg_type->typesize > 0 || (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM | AU_TRAIT_ABSTRACT | AU_TRAIT_CLASS)), "arg type %s has zero typesize", arg_type->ident);
         if (args && i < args->count) {
             arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ?
                 (none*)args->origin[i] : (none*)&args->origin[i];
         } else {
-            Au def = alloc(arg_type, 1, null, null, null, __FILE__, __LINE__, 0);
+            arg_data[i] = alloc(arg_type, 1, null, null, null, __FILE__, __LINE__, 0);
             arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ?
-                (none*)def : (none*)&def;
+                (none*)arg_data[i] : (none*)&arg_data[i];
         }
     }
-    none* result[8]; /// enough space to handle all primitive data
+    none* result[64]; /// enough space to handle all primitive data
     ffi_call((ffi_cif*)a->ffi_cif, a->address, result, arg_values);
     if (a->rtype->traits & AU_TRAIT_PRIMITIVE)
         return primitive(a->rtype, result);
@@ -3441,17 +3450,16 @@ none Au_hold_members(Au a) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = (Au_t)type->members.origin[i];
             if (mem->member_type != AU_MEMBER_VAR) continue;
-            Au   *mdata = (Au*)((cstr)a + mem->offset);
-            if (!mem->is_unmanaged && !mem->is_static && mem->type != typeid(ARef) && *mdata) {
-                bool hold = (!is_inlay(mem) && mem->type->is_class) ||
-                             mem->type->is_shaped;
-                if (!hold) continue;
-                if (mem->meta.a == typeid(weak)) continue;
-                Au member_value = *mdata;
-                Au hd = header(member_value);
-                if (hd->managed)
-                    hd->refs++;
-            }
+            if (mem->is_unmanaged || mem->is_static || mem->type == typeid(ARef)) continue;
+            bool hold = (!is_inlay(mem) && mem->type->is_class) || mem->type->is_shaped;
+            if (!hold) continue;
+            if (mem->meta.a == typeid(weak)) continue;
+            Au *mdata = (Au*)((cstr)a + mem->offset);
+            Au member_value = *mdata;
+            if (!member_value) continue;
+            Au hd = header(member_value);
+            if (hd->managed)
+                hd->refs++;
         }
         type = type->context;
     }
@@ -3501,8 +3509,8 @@ Au Au_get_property(Au a, symbol name) {
     Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, 0, true);
     if (!m) return null;
     Au *mdata = (Au*)((cstr)a + m->offset);
-    Au  value = *mdata;
-    return is_inlay(m) ? primitive(m->type, mdata) : value;
+    if (is_inlay(m)) return primitive(m->type, mdata);
+    return *mdata;
 }
 
 map arguments(int argc, cstrs argv, map default_values, Au default_key) {
@@ -5590,9 +5598,9 @@ none Au_free(Au a) {
     
     aa->refs = -8888;
     //printf("freeing %s:%i\n", aa->source, aa->line);
-    free(aa);
+    //free(aa);
 #else
-    free(aa);
+    //free(aa);
 #endif
 
 }

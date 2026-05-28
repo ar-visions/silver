@@ -8,24 +8,26 @@ element.main {
 }
 
 Toolbar {
-    area: l0 t0 w4 b0
+    area: l0 t0 w5.33 b0
     layers.compose:
         ctype: compose
         fill_color: #f0a
 
     layers.border:
         fill_color: #fff4
-        area: l4 t0px w1px b0px
+        area: l5.33 t0px w1px b0px
 
     layers.border2:
         fill_color: #0004
-        area: l4 t0px w2px b0px
+        area: l5.33 t0px w2px b0px
 
     layers.base:
         fill_color:         #fff1
         inner_glow:         #fff1 16
     
 }
+
+
 
 Toolbar.right {
     area: r10 t0 r0 b0
@@ -35,7 +37,7 @@ Toolbar.right {
         area: l1px t0px w1px b0px
 
     layers.border2:
-        fill_color: #fff2
+        fill_color: #fff1
         area: l0px t0px w1px b0px
 }
 
@@ -111,7 +113,7 @@ Group / Check:pressed & selected {
 
 
 Group.editor-group {
-    area:                       l4.07 t0 r10.06 b7
+    area:                       l5.33 t0 r10.06 h100%
 
     layers.compose:
         radius:                 0
@@ -122,21 +124,49 @@ Group.editor-group {
 }
 
 Group / element.title {
-    area:                       l7px t7px r7px h34px
+    area:                       l11px t8px r11px h44px
     layers.base:
         fill_color:             #2480
         inner_glow:             #8af2 26
         radius:                 8
         stroke_width:           0.5
         stroke_color:           #fff2
-    
+
     layers.face:
         label_color:            #fff
         label_size:             19
-        label_align:            0.5 0.25
+        label_align:            0.5 0.3
         label_font:             'fonts/SpaceMono-Regular.ttf'
 
 }
+
+Group.editor-group / Option {
+    area:                       l0+ t7px w2 h1
+    layers.base:
+        fill_color:             #2481
+        inner_glow:             #8af1 16
+        radius:                 8
+        stroke_width:           0.5
+        stroke_color:           #fff2
+    layers.face:
+        fill_color:             #0000
+        stroke_width:           0
+        label_color:            #0000
+    layers.svg:
+        area:                   4px
+        image_align:            0.5 0.5
+        image_scale:            0.7
+        image_svg:              "images/git.svg"
+}
+
+
+Group.editor-group / Option:selected {
+    layers.base:
+        fill_color:             #fa82
+        inner_glow:             #fa85 24
+}
+
+
 
 Toolbar.right / Edit {
     area:                       l0 t0 r0 h1.14
@@ -166,42 +196,50 @@ Toolbar.right / Edit:focused {
 }
 
 element.filter {
-    area: l0 t0 r0 h1.4
+    area: l0 b2.5 r0 h2.5
     focusable: true
+    layers.base:
+        area:                   0
+        fill_color:             #aaf2
     layers.text:
         area:                   7px
-        fill_color:             #fff1
+        fill_color:             #0006
         label_color:            #fff
-        stroke_color:           #fff3
+        stroke_color:           #aafa
         stroke_width:           0.5
         label_align:            0.0 0.5
         label_offset:           8 0
-        radius:                 4
+        radius:                 8px
         label_size:             14
         label_font:             'fonts/SpaceMono-Regular.ttf'
         editable:               true
+    layers.border:
+        area:                   l0 t0 r0 h2px
+        stroke_width:           2 0 0 0
+        stroke_color:           #fff2
 }
 
 Toolbar.right / Control {
-    area:                       l0 t0+ r0 h1.14
+    area:                       l0 t0+ r0 h1.0
     
     layers.header:
-        area:                   l7px t7px r7px h1.0
+        area:                   l0px t0px r0px h0.94
 
-        fill_color:             #2481
-        inner_glow:             #8af1 16
-        radius:                 4
+        fill_color:             #1241
+        inner_glow:             #8af2 24
+        radius:                 0
         stroke_width:           0.5
         stroke_color:           #fff2
         label_color:            #fff
         label_size:             14
         label:                  'Navigator'
+        label_font:             'fonts/SpaceMono-Regular.ttf'
     
     layers.list:
         area:                   l0 1.0 r0 b0
         stroke_color:           #fff4
         stroke_width:           0
-        fill_color:             #0000
+        fill_color:             #0004
         radius:                 0
 }
 
@@ -217,11 +255,11 @@ Toolbar.right / Control.debug2 {
 Toolbar.right / Control:selected {
     area:                       l0 t0+ r0 h100%
     layers.header:
-        fill_color:             #248a
+        fill_color:             #2484
 }
 
 Instances {
-    area:                       l4.07 b6.9 r10.04 h1.5
+    area:                       l5.33 b1.5 r10.04 h1.5
     layers.compose:
         ctype: compose
         fill_color: #f0a
@@ -234,7 +272,7 @@ Instances {
 }
 
 Instances:selected {
-    area:                       l4.07 b6.9 r10.04 h7
+    area:                       l5.33 b6.9 r10.04 h7
 }
 
 Console {
@@ -290,7 +328,7 @@ DebugPanel {
 
 Editor {
     focusable:              true
-    area:                   l0 t48px r0 b0
+    area:                   l0 t52px r0 b0
     layers.content: EditorLayer
         area:               8px
         label_height:       1.0
@@ -309,7 +347,7 @@ Toolbar / Button.start {
     area:               l1 t1+ r0.5 h4
     layers.svg:
         area:           8px
-        image_svg:      "images/orbiter.svg"
+        image_svg:      "images/orbiter4.svg"
         image_align:    0.5 0.5
 }
 
@@ -420,9 +458,31 @@ Tabs.source_nav / Option {
     layers.dot:
         area:                   r14px t0px w12px h1
         radius:                 0 4 4 0
-        fill_color:             #0000
+        fill_color:             #4f84
+        inner_glow:             #4f84 24
         stroke_color:           #4f84
         stroke_width:           0.5
+}
+
+Tabs.source_nav / Option.config {
+    area:           l6px b1.3 w5.4 h1
+
+    layers.base:
+        area:                   l0 t0 r15px b0
+        radius:                 4
+    layers.face:
+        area:                   0
+    layers.dot:
+        hide:                   true
+    layers.svg:
+        area:                   l0 t0 r0.4 b0
+        image_svg:              "images/orbiter4.svg"
+        image_scale:            1.05
+        image_align:            0.5 0.5
+    layers.top:
+        stroke_width:           1 0 0 0
+        stroke_color:           #fff2
+        area:                   l-7px t-6px r8px h1px
 }
 
 Tabs.source_nav / Option:selected {
@@ -432,10 +492,22 @@ Tabs.source_nav / Option:selected {
 }
 
 
+Tabs / Option.config:hovered {
+    layers.base:
+        fill_color:     #8af3
+        inner_glow:     #8af5 16
+}
+
+Tabs / Option.config:selected {
+    layers.base:
+        fill_color:     #fa84
+        inner_glow:     #fa86 24
+}
+
 Tabs / Option:selected {
     layers.base:
-        fill_color:             #fd06
-        inner_glow:             #fd08 16
+        fill_color:             #fa82
+        inner_glow:             #fa85 24
     layers.face:
         label_color:            #fff
         label_shadow:           #0008
@@ -449,6 +521,17 @@ Tabs / Option:disable {
         inner_glow:             #0000 0
     layers.face:
         label_color:            #fff3
+}
+
+Tabs / Option:hovered {
+    layers.base:
+        fill_color:             #8af2
+        inner_glow:             #8af4 16
+}
+
+Tabs.actions / Button.play {
+    layers.svg:
+        opacity:    1.0
 }
 
 Tabs.actions / Button.play:disable {
@@ -493,7 +576,7 @@ Avatar.avatar {
     blend_bands:        0.2
     blend_rings:        0.2
     blend_haze:         1.0
-    area: r40 b40 r3 b3
+    area: l0 t0 w8 h8
 }
 
 Avatar.avatar:hovered {
@@ -509,4 +592,51 @@ Avatar.avatar:pressed {
         pulse_height:   2.0, filter 0.8
 
     rotate:             [ 0 1 0 30deg, 1 0 0 0deg ], 88ms cubic outward
+}
+
+Group / element.title-tabs {
+    area:                       r3 t13px w4 h34px
+
+    layers.compose:
+        fill_color:             #0000
+}
+
+element.title-tabs / Option {
+    area: l0+ t0 w1.2 h34px
+    toggle: true
+    layers.base:
+        fill_color:             #0000
+        inner_glow:             #0000 24
+        radius: 8
+    layers.svg:
+        area:                   4px
+        image_align:            0.5 0.5
+        image_scale:            1.0
+        opacity:                0.5
+}
+
+element.title-tabs / Option:hovered {
+    layers.base:
+        fill_color:             #8af4
+        inner_glow:             #8afa 24
+    layers.svg:
+        opacity:                1.0
+}
+
+element.title-tabs / Option:selected {
+    layers.base:
+        fill_color:             #fa84
+        inner_glow:             #fa85 24
+    layers.svg:
+        opacity:                1.0
+}
+
+element.title-tabs / Option.git {
+    layers.svg:
+        image_svg:              "images/git.svg"
+}
+
+element.title-tabs / Option.project {
+    layers.svg:
+        image_svg:              "images/orbiter4.svg"
 }

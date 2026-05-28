@@ -628,7 +628,7 @@ element Avatar
     intern target            : Render
     intern vol_target        : Render
     intern models            : map Model   [string]
-    public shaders           : map shader  [string]
+    #public shaders           : map shader  [string]
     public materials         : map Material[string]
 
     intern s                 : shader
@@ -656,6 +656,8 @@ element Avatar
         models = map Model[string][]
         if [ render_scale == 0.0 ]
             render_scale = 1.0
+        mem : Au.find_member[ a, "shaders", AU_MEMBER_VAR, 0, true ]
+        head : header [ shaders ]
         if [ !shaders ]
             shaders = map shader[string] []
         if [ !shaders.count ]
@@ -726,6 +728,7 @@ element Avatar
 
         rs : f32 [ (render_scale > 0.0) ? render_scale : 1.0 ]
         vs : f32 [ (vol_scale    > 0.0) ? vol_scale    : 0.25 ]
+        puts 'create_target: bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} render_scale={render_scale} rs={rs}'
 
         if [ geo_models.count ]
             gw : i32 [ bounds.w * rs ]

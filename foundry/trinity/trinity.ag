@@ -110,7 +110,7 @@ abstract live_app media_app
         Au.auto_free[true]
 
     func frame [ ] -> bool
-        glfwPollEvents[]
+        glfwWaitEventsTimeout[ 0.016 ]
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
@@ -118,7 +118,6 @@ abstract live_app media_app
             sprintf[ buf, "fps: %i  samplers: %i", frames, vk.sampler_count ]
             puts buf
             frames = 0
-        frames += 1
         render*[]
         Au.auto_free[false]
         return !glfwWindowShouldClose[ w.glfw ]
@@ -205,7 +204,11 @@ Display Window
     mutable action_pressed      : element
     mutable context_pressed     : element
     mutable restyle             : bool
+    mutable will_animate        : bool
     mutable mouse               : vec2f
+    mutable t_apply_args        : i64
+    mutable t_apply_style       : i64
+    mutable t_render            : i64
     mutable shift               : bool
     mutable alt                 : bool
     mutable time                : f64
@@ -218,6 +221,8 @@ Display Window
     public func apply_args [ inst: element, e: element ] -> bool
         if [ typeid[ inst ] != typeid[ e ] ] return false
         changed : false
+        if [ inst.transparency != e.transparency ]
+            inst.transparency = e.transparency
         if [ inst.disable != e.disable ]
             inst.disable = e.disable
             changed = true
@@ -226,9 +231,13 @@ Display Window
             changed = true
         inst_opt : (inst to Option)
         e_opt    : (e    to Option)
-        if [ inst_opt && e_opt && inst_opt.selected != e_opt.selected ]
-            inst_opt.selected = e_opt.selected
-            changed = true
+        if [ inst_opt && e_opt ]
+            if [ inst_opt.selected != e_opt.selected ]
+                inst_opt.selected = e_opt.selected
+                changed = true
+            if [ inst_opt.right_view != e_opt.right_view ]
+                inst_opt.right_view = e_opt.right_view
+                changed = true
         return changed
 
     
@@ -338,9 +347,15 @@ Display Window
                     entry.member_map = Au.find_member [ typeid[inst], entry.bl.property.chars, AU_MEMBER_VAR, 0, true ]
                     expect entry.member_map, 'member not found on {ty.ident}: {entry.bl.property}'
                     meta_type : Au_t [ entry.member_map.meta.a ]
+                    v : Au inst.member_object[ entry.member_map ]
+                    mtype : typeid[ v ]
                     mc : (inst.member_object[ entry.member_map ] to map Layer[string])
-                    if [ !mc ]
+                    if [ mc && mc.hsize <= 0 ]
+                        info : header [ mc ]
+                        puts 'bad mc: inst={inst.id} member={entry.member_map.ident} hsize={mc.hsize} key={entry.bl.key}'
+                    if [ !mc || mc.hsize <= 0 ]
                         mc = map Layer[string][]
+                        printf["mc object for %s (%p) is %p\n", inst.id.chars, inst, mc]
                         inst.member_set[ entry.member_map, mc ]
                         mc.hold[]
                     if [ !mc.contains[entry.bl.key] ]
@@ -367,7 +382,8 @@ Display Window
         inst.volatile = false
         inst.pristine = false
         inst.maps_populated = false
-        inst.layers = map Layer[string] []
+        if [!inst.layers]
+            inst.layers = map Layer[string] []
 
         # create layers in the order they render
         cache_style[inst, style_avail, false, home_object]
@@ -489,7 +505,13 @@ Display Window
         for [ e:element, id:string ] in parent.elements
             e.flags |= 1
 
+        # count rendered children for positional flags
+        total_rendered : i32 [ 0 ]
+        for [ e:element, id:string ] in rendered
+            total_rendered += 1
+
         # iterate through rendered elements
+        child_pos : i32 [ 0 ]
         for [ e:element, id:string ] in rendered
             instance  : element* parent.elements[ id ]
             changed   : bool e.restyle
@@ -546,14 +568,30 @@ Display Window
                 call_init = true
                 changed = true
             el
-                args_changed : apply_args[ instance, e ]
+                ta0 : i64 [ epoch_micros[] ]
+                args_changed : false #apply_args[ instance, e ]
+                a.t_apply_args += epoch_micros[] - ta0
                 changed = args_changed || instance.restyle || force
                 instance.restyle = false
+
+            new_first  : bool [ child_pos == 0 ]
+            new_last   : bool [ child_pos == total_rendered - 1 ]
+            new_middle : bool [ child_pos > 0 && child_pos < total_rendered - 1 ]
+            if [ instance.first != new_first || instance.last != new_last || instance.middle != new_middle ]
+                instance.first  = new_first
+                instance.last   = new_last
+                instance.middle = new_middle
+                changed = true
+            instance.odd  = (child_pos % 2 == 0)
+            instance.even = (child_pos % 2 == 1)
+            child_pos += 1
 
             if [ changed ]
                 e.restyle = false
                 avail  : st.compute[ instance ]
+                ts0 : i64 [ epoch_micros[] ]
                 apply_style[ instance, avail, home_object ]
+                a.t_apply_style += epoch_micros[] - ts0
 
                 # init finally called after context and style is applied
                 # our holds are too many for properties applied in style, though.
@@ -564,7 +602,9 @@ Display Window
                     instance.restyle = true
 
             inst    : typeid[ instance ]
+            tr0 : i64 [ epoch_micros[] ]
             irender : instance.render[]
+            a.t_render += epoch_micros[] - tr0
             if [ !irender ] irender = e.elements
             if [ !irender ] irender = instance.elements
             if [ irender ] update_element[ instance, irender, force ]
@@ -582,6 +622,11 @@ Display Window
                     parent.elements.rm[ id ]
                     break
 
+    public func is_animating [] -> bool
+        if [ !root ] return true
+        if [ capture ] return true
+        return root.is_animating[]
+
     public func update_all [ render: Elements ]
         if [ !root ]
             root    = element [ id: string[ 'root' ], ux:a ]
@@ -598,11 +643,14 @@ Display Window
             apply_style[ root, root_styles, null ]
             root.remove_invalid_transitions[ ]
 
+        t_apply_args  = 0
+        t_apply_style = 0
+        t_render      = 0
         t0 : i64 [ epoch_micros[] ]
         update_element[ root, render, restyle ]
         t1 : i64 [ epoch_micros[] ]
         dt : i64 [ t1 - t0 ]
-        if [ dt > 100 ] puts 'update_element: {dt}us'
+        if [ dt > 100 ] puts 'update:{dt}us  args:{t_apply_args}us  style:{t_apply_style}us  render:{t_render}us'
         restyle = false
 
     public func set_capture [ e: element ]
@@ -1086,6 +1134,7 @@ Display Window
         e.bounds.y = bounds.y
         e.bounds.w = bounds.w
         e.bounds.h = bounds.h
+        if [ e.transparency >= 1.0 ] return
         # pre-scan layers to measure any outset beyond element bounds
         margin_l : i32 [ 0 ]
         margin_t : i32 [ 0 ]
@@ -1164,7 +1213,7 @@ Display Window
         for [ layer_au: Au, lkey: string ] in e.layers
             if [ !redraw ] break
             layer : Layer [ layer_au to Layer ]
-            if [ !layer || layer.ctype != stage ]
+            if [ !layer || layer.ctype != stage || layer.hide ]
                 continue
             
             layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null, e.fc ] : e.bounds.copy[]
@@ -1376,21 +1425,14 @@ Display Window
         if [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
             cv.draw_canvas[ e.cache_canvas, 0.0 - f32 e.cache_ox, 0.0 - f32 e.cache_oy, f32 ew, f32 eh ]
 
-        last_2  : element
-        child_n : i32 [ 0 ]
+        last_2 : element
         for [ ee: element, id: string ] in e.elements
-            ee.first = (child_n == 0)
-            ee.last  = false
-            ee.odd   = (child_n % 2 == 0)
-            ee.even  = (child_n % 2 == 1)
-            child_n += 1
             cv.save[]
             if [ ee.bounds ]
                 cv.translate[ ee.bounds.x, ee.bounds.y ]
             draw_element[ ee, stage, last_2 ]
             last_2 = ee
             cv.restore[]
-        if [ last_2 ] last_2.last = true
 
 
 abstract media_app trinity
@@ -1448,8 +1490,12 @@ abstract media_app trinity
     # 22
     func render[]
         window : Window[w]
-        update_scene*[]
-        window.draw[]
+        wa : bool [ window.will_animate ]
+        window.will_animate = false
+        if [ window.restyle || wa || window.is_animating[] ]
+            update_scene*[]
+            window.draw[]
+            frames += 1
 
 
 # scrolling requires defined children Region
@@ -1509,8 +1555,14 @@ Button Check
         return null
 
 Button Option
-    public selected : bool
-    func on_click[ ev:Event ]
+    public selected   : bool
+    public right_view : bool
+    public toggle     : bool
+    func on_press[ ev:Event ]
+        if [ ev.mouse.pos.y != (0 ..< 48) ]
+            return
+        if [ selected && !toggle ]
+            return
         new_state : bool [ !selected ]
         for [ e:element, id:string ] in parent.elements
             op : Option e
@@ -1526,7 +1578,7 @@ element Toolbar
         return null
 
 Option Edit
-    func on_click[ ev:Event ] return
+    func on_press[ ev:Event ] return
     func render[] -> Elements
         return null
 
