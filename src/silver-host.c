@@ -54,8 +54,13 @@ static void cd_share(const char* bindir, const char* name) {
 
 static void* try_dlopen(const char* lib) {
     void* h = NULL;
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+    int flags = RTLD_NOW | RTLD_GLOBAL;
+#else
+    int flags = RTLD_NOW | RTLD_GLOBAL | RTLD_DEEPBIND;
+#endif
     for (int i = 0; i < 20 && !h; i++) {
-        h = dlopen(lib, RTLD_NOW | RTLD_GLOBAL | RTLD_DEEPBIND);
+        h = dlopen(lib, flags);
         if (!h) usleep(50000);  // 50ms retry — handles linker write race
     }
     return h;
