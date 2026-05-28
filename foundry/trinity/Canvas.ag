@@ -1153,7 +1153,9 @@ Render Canvas
         if [ width <= 0 || height <= 0 ]
             test2 :  2
             test2 += 2
-        sdf_tex = Texture [ vk: vk, w: w, width: width / 2, height: height / 2,
+        sdf_w : i32 [ max[ width  / 2, 1 ] ]
+        sdf_h : i32 [ max[ height / 2, 1 ] ]
+        sdf_tex = Texture [ vk: vk, w: w, width: sdf_w, height: sdf_h,
             pixel_format: Pixel.f32, surface: Surface.color, is_storage: true ]
         # one r8 glyph atlas per canvas, bound as the `atlas` sampler the
         # CanvasUI shader's mode-4 text path samples from.

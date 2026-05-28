@@ -523,6 +523,9 @@ Display Window
                 instance.flags &= ~1
                 if [ !instance.id ]
                     brand_new = true # component within element map
+                el [ typeid[instance] != typeid[e] ]
+                    parent.elements.rm[ id ]
+                    instance = null
 
             if [ brand_new || !instance ]
                 if [ id == "toolbar" ]

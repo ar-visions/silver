@@ -212,6 +212,7 @@ Layer TermLayer
     func draw [ cv: Canvas ]
         con : cast Console [ parent ]
         if [ !con ] return
+        if [ bounds.h <= 0 ] return
         s : ConsoleSession con.session[]
         if [ !s ] return
         parent.needs_frame = true
@@ -264,7 +265,8 @@ Layer TermLayer
 
 
 Control Console
-    focusable  : true
+    focusable      : true
+    public selected    : bool
     public  session_id : string
     mutable sessions   : map ConsoleSession[string]
 
@@ -328,6 +330,7 @@ Layer CompileLayer
 
 
 Control CompileConsole
+    public selected : bool
     public log : list string
     func init []
         log = list string []

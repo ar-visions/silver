@@ -71,7 +71,7 @@ trinity orbiter # implements compiler
         active_idx     = 0
         active_panel   = 'files'
         editor_panel   = 'editor'
-        active_target  = 'system'
+        active_target  = 'silver'
         nav_root       = target_roots[0]
         active_console = 'shell'
         show_console   = true
@@ -180,16 +180,10 @@ trinity orbiter # implements compiler
         inst_el : element win.root.elements[ 'instances' ]
         if [ !inst_el ] return
         con_el : element inst_el.elements[ 'console' ]
-        if [ active_target == 'system' ]
-            if [ con_el && !(con_el inherits CompileConsole) ]
-                inst_el.elements.rm[ 'console' ]
-        el
-            con : Console con_el
-            if [ con ]
-                con.session_id = active_target
-                con.pristine   = false
-            el
-                inst_el.elements.rm[ 'console' ]
+        con    : Console con_el
+        if [ con && active_target != 'system' ]
+            con.session_id = active_target
+            con.pristine   = false
         acts : element inst_el.elements[ 'actions' ]
         if [ acts ]
             play_el : element acts.elements[ 'play' ]
@@ -323,10 +317,8 @@ trinity orbiter # implements compiler
         inst['actions']  = Tabs [ elements: Elements [
             "play": Button [ disable: active_target == 'system' ]
         ]]
-        if [ active_target == 'system' ]
-            inst['console'] = CompileConsole [ log: stdout_log ]
-        el
-            inst['console'] = Console [ session_id: active_target ] 
+        inst['console'] = Console        [ session_id: active_target, selected: active_target != 'system' ]
+        inst['syslog']  = CompileConsole  [ log: stdout_log,         selected: active_target == 'system'  ]
 
         return Elements [
             "toolbar":      Toolbar [

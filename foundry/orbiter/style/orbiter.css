@@ -277,19 +277,27 @@ Instances:selected {
 
 Console {
     focusable:  true
-    area:   l0 t1 r0 b0
+    area:   l0 t0 r0 h0
     layers.content: TermLayer
         area:               8px
         label_height:       1.0
         label_size:         16
 }
 
-CompileConsole {
+Console:selected {
     area:   l0 t1 r0 b0
+}
+
+CompileConsole {
+    area:   l0 t0 r0 h0
     layers.content: CompileLayer
         area:               8px
         label_height:       1.0
         label_size:         15
+}
+
+CompileConsole:selected {
+    area:   l0 t1 r0 b0
 }
 
 FileList {
