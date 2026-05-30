@@ -47,6 +47,11 @@ trinity orbiter # implements compiler
     intern target_roots  : array path
     intern target_srcs   : array path
     public open_files       : array path
+    # files that have a docked tab, per pane group (the +/- in the editor title
+    # nav). an opened file is a preview until docked; docking pins a tab in that
+    # group. left and right panes keep separate docked lists.
+    public docked_left      : array path
+    public docked_right     : array path
     public active_idx       : i32
     public left_idx         : i32
     public right_idx        : i32
@@ -69,9 +74,17 @@ trinity orbiter # implements compiler
     public file_index    : list string
     public find_prev     : string
     public find_results  : list string
+    # true when the last search hit the result cap (so find_results is an
+    # incomplete prefix). incremental narrowing is only sound from a COMPLETE
+    # result set — when capped, the next keystroke must full-rescan instead.
+    public find_capped   : bool
     # set true by the inotify watch thread when anything under search_dirs
     # changes. the next search rebuilds file_index lazily on the main thread.
     public index_dirty   : bool
+    # true while the background index service is walking the tree. gates the
+    # usleep throttling (only the service yields) and the lazy main-thread build
+    # (we wait for the service instead of double-building).
+    intern indexing      : bool
     # one inotify watch per search dir; keeps file_index fresh (like vscode's
     # file watcher) instead of a once-per-session walk.
     intern index_watches : array watch
@@ -110,6 +123,8 @@ trinity orbiter # implements compiler
         # no files open at start — files open from the FileList (main on click,
         # right pane on shift+click)
         open_files     = array path []
+        docked_left    = array path []
+        docked_right   = array path []
         active_idx     = -1
         left_idx       = -1
         right_idx      = -1
@@ -131,6 +146,9 @@ trinity orbiter # implements compiler
         index_dirty    = false
         index_watches  = array watch []
         start_watching[]
+        # launch the file-search index build in the background at startup
+        indexing       = true
+        au_spawn[ ref index_service, a, null ]
         compile_log    = list string []
         stdout_log     = list string []
         # seed one at silver.c:4 to have something to look at (empty condition
@@ -203,11 +221,45 @@ trinity orbiter # implements compiler
         open_files.push[ p ]
         return open_files.count - 1
 
+    # is this file docked in the given group?
+    func is_docked [ p: path, grp: array path ] -> bool
+        if [ !p || !grp ] return false
+        for [ i: i32 0, i < grp.count, i += 1 ]
+            if [ grp[i] == p ] return true
+        return false
+
+    # dock a file into a group: add its tab (duplicate-checked)
+    func dock [ p: path, grp: array path ]
+        if [ !p || !grp || is_docked[ p, grp ] ] return
+        grp.push[ p ]
+
+    # undock a file from a group: remove its tab
+    func undock [ p: path, grp: array path ]
+        if [ !p || !grp ] return
+        for [ i: i32 0, i < grp.count, i += 1 ]
+            if [ grp[i] == p ]
+                grp.remove[ i ]
+                return
+
+    # build the docked-tab strip for a group: one tab per docked file, the
+    # active file selected. ids are prefix+index so the click handler can map
+    # back to the path. rendered inline in the editor title when not editing.
+    func dock_tabs [ grp: array path, prefix: string, active: path, win: Window ] -> Elements
+        els : Elements []
+        for [ i: i32 0, i < grp.count, i += 1 ]
+            p  : path   grp[i]
+            id : string '{prefix}{i}'
+            els[id] = Option [ label: p.filename[], selected: active && p == active ]
+        return els
+
     # build a flat index of every file path under search_dirs ONCE — the only
     # filesystem cost. per-keystroke search then just filters this in memory
     # (pure silver — no system commands).
     func index_files [ d: path, out: list string, depth: i32 ]
         if [ depth > 8 ] return
+        # throttle the background service so the walk yields the CPU to the UI;
+        # the synchronous (main-thread) path doesn't sleep.
+        if [ indexing ] usleep[ 200 ]
         entries : array [ d.ls[ null, false ] ]
         if [ !entries ] return
         for [ i: i32 0, i < entries.count, i += 1 ]
@@ -217,11 +269,21 @@ trinity orbiter # implements compiler
             el
                 out.push[ '{e}' ]
 
+    # build into a fresh list, then swap it in. probes (left/right pane searches)
+    # read file_index concurrently, so we never mutate the live list in place —
+    # a reader always sees a complete index, old or new.
     func build_index []
-        file_index = list string []
+        tmp : list string []
         for [ d: path ] in search_dirs
-            index_files[ d, file_index, 0 ]
+            index_files[ d, tmp, 0 ]
+        file_index  = tmp
         index_dirty = false
+
+    # the file-search service: launched on a background thread at startup, walks
+    # the tree (throttled) and publishes the index via the swap in build_index.
+    func index_service [ w: Au ]
+        build_index[]
+        indexing = false
 
     # spawn one inotify watch per search dir. the watch runs on its own pthread
     # (Au.watch) and fires on_index_change when anything under the dir changes.
@@ -241,30 +303,70 @@ trinity orbiter # implements compiler
     # rescanning the whole index (substring match is monotonic). full rescan
     # only on backspace / non-extending edits.
     func run_search []
-        if [ file_index.count == 0 || index_dirty ]
-            build_index[]
-            # file_index changed under us — old find_results are stale, so force
-            # a full rescan rather than narrowing from them
-            find_prev = ''
-        narrow : bool [ find_prev.count > 0 && find_text.index_of[ find_prev ] >= 0 ]
+        # NEVER build on the main thread — that walk is the keystroke lag. the
+        # background service owns file_index. if it's missing or a change is
+        # pending (and the service is idle), relaunch the service; the current
+        # search just filters whatever's published so far (instant).
+        if [ (index_dirty || file_index.count == 0) && !indexing ]
+            index_dirty = false
+            indexing    = true
+            find_prev   = ''
+            au_spawn[ ref index_service, a, null ]
+        # narrow from the previous results only if they were COMPLETE — if the
+        # last search capped, find_results is a truncated prefix and a match
+        # could be beyond it, so we must rescan the full index.
+        narrow : bool [ find_prev.count > 0 && find_text.index_of[ find_prev ] >= 0 && !find_capped ]
         base2  : list string [ (narrow) ? find_results : file_index ]
         find_prev = find_text
-        out : list string []
+        # collect matches with their relevance level = right-distance: how far
+        # the right-most occurrence sits from the END of the path. 0 = the match
+        # is at the very end (most relevant), 1 = one char past it, etc. clamp
+        # far distances into the last tier.
+        tiers   : i32 [ 32 ]
+        matches : array string []
+        dists   : array i32 []
+        capped  : bool [ false ]
         if [ find_text && find_text.count > 0 ]
+            ql : i32 [ find_text.count ]
             for [ s: string ] in base2
-                if [ s.index_of[ find_text ] >= 0 ]
-                    out.push[ s ]
-                    if [ out.count >= 500 ] break
+                ridx : i32 [ s.rindex_of[ find_text ] ]
+                if [ ridx >= 0 ]
+                    d : i32 [ s.count - (ridx + ql) ]
+                    if [ d > tiers ] d = tiers
+                    matches.push[ s ]
+                    dists.push[ d ]
+                    if [ matches.count >= 500 ]
+                        capped = true
+                        break
+        # emit ranked: tier 0 first (end matches), then increasing distance.
+        # stable within a tier (preserves index order).
+        out : list string []
+        for [ d: i32 0, d <= tiers, d += 1 ]
+            for [ i: i32 0, i < matches.count, i += 1 ]
+                if [ dists[i] == d ]
+                    out.push[ matches[i] ]
         find_results = out
+        find_capped  = capped
         win : cast Window [ w ]
         if [ !win ] return
         grp : element win.root.elements['editor-group']
         if [ !grp ] return
         eds : element grp.elements['editors']
         ed  : Editor (eds) ? eds.elements['pane'] : null
-        if [ ed && !ed.src ]
-            ed.lines = find_results
-            ed.pristine = false
+        if [ ed ]
+            if [ find_text && find_text.count > 0 ]
+                # actively searching — show the matches over whatever is open
+                # (no longer gated on the pane having no file)
+                ed.lines = find_results
+                ed.pristine = false
+            el [ ed.src ]
+                # query cleared but a file is open — restore the file content
+                ed.load_file[]
+                ed.pristine = false
+            el
+                # finder pane, no file, no query — empty list
+                ed.lines = find_results
+                ed.pristine = false
 
     # open in the main (left) pane
     func open_file [ p: path ]
@@ -272,11 +374,13 @@ trinity orbiter # implements compiler
         left_idx   = idx
         active_idx = idx
         exit_finder[]
+        sync_editor[]
 
     # open in the right pane (split view)
     func open_file_right [ p: path ]
         right_idx  = file_slot[ p ]
         exit_finder[]
+        sync_editor[]
 
     # leave finder/edit mode: clear the typed query and drop focus from the
     # editor title so it returns to showing the (centered) filename, not an
@@ -366,14 +470,14 @@ trinity orbiter # implements compiler
                     fl.pending_open = null
                     sync_editor[]
                     return
-            # clicking a result row in the finder (an editor with no file) opens it
+            # clicking a result row while searching opens it (works whether or
+            # not a file is already open in the pane — driven by an active query,
+            # not by the pane being empty)
             if [ e inherits Editor ]
                 ed : Editor e
-                if [ !ed.src && ed.sel_line >= 0 && ed.sel_line < find_results.count ]
+                if [ find_text && find_text.count > 0 && ed.sel_line >= 0 && ed.sel_line < find_results.count ]
                     hit_path : find_results.value_by_index[ ed.sel_line ]
                     open_file[ path '{hit_path}' ]
-                    find_text = ''
-                    find_results = list string []
                     return
         # >| toggle hides/shows the right file-list panel
         if [ ev.target.id == 'toggle_side' ]
@@ -409,6 +513,36 @@ trinity orbiter # implements compiler
                 return
         if [ ev.target.id == 'git' ]
             editor_panel = (editor_panel == ev.target.id) ? 'editor' : ev.target.id
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        # two buttons: + (dock) adds this file's tab, - (undock) removes it.
+        # the tab goes into the group for the pane the button lives in.
+        if [ ev.target.id == 'dock' || ev.target.id == 'undock' ]
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits Editor ]
+                    ed : Editor e
+                    if [ ed.src ]
+                        grp : array path (ed.id == 'pane-right') ? docked_right : docked_left
+                        if [ ev.target.id == 'dock' ] dock[ ed.src, grp ]
+                        el                            undock[ ed.src, grp ]
+                    break
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        # clicking a docked tab (ltab{i}/rtab{i}) activates that file in its pane
+        tid : string ev.target.id
+        if [ tid.count > 4 && tid.mid[ 0, 4 ] == 'ltab' ]
+            i : i32 [ tid.mid[ 4, tid.count - 4 ].real_value[] ]
+            if [ i >= 0 && i < docked_left.count ]
+                left_idx   = file_slot[ docked_left[i] ]
+                active_idx = left_idx
+                sync_editor[]
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        if [ tid.count > 4 && tid.mid[ 0, 4 ] == 'rtab' ]
+            i : i32 [ tid.mid[ 4, tid.count - 4 ].real_value[] ]
+            if [ i >= 0 && i < docked_right.count ]
+                right_idx = file_slot[ docked_right[i] ]
+                sync_editor[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
         if [ ev.target.id == 'config' ]
@@ -497,8 +631,12 @@ trinity orbiter # implements compiler
                 if [ find_results && find_results.count > 0 ]
                     first_path : find_results.value_by_index[ 0 ]
                     open_file[ path '{first_path}' ]
-                    find_text = ''
-                    find_results = list string []
+            el [ k == 256 ]
+                # esc: drop the query and restore the pane — run_search with an
+                # empty query reloads the file (or empties the pane if none)
+                find_text = ''
+                ev.target.pristine = false
+                run_search[]
 
     public func on_render [ w: Window ] -> Elements
         drain_stdout[]
@@ -511,6 +649,8 @@ trinity orbiter # implements compiler
         active_name         : string (left_path) ? left_path.filename[] : string[]
 
         source_nav : Elements []
+        # the system (menu) tab now lives in the project tab list, leftmost
+        source_nav['system'] = Option [ selected: active_target == 'system' ]
         for [ i: i32 0, i < target_names.count, i += 1 ]
             name : string target_names[i]
             source_nav[name] = ProjectTab [ label: name, selected: active_target == name ]
@@ -521,14 +661,17 @@ trinity orbiter # implements compiler
         editor_els['pane'] = Editor [ src: left_path, breakpoints: breakpoints, code_font_size: code_font_size, elements: Elements [
             "title": EditorTitle [
                 selected: !left_path
-                # label = placeholder (filename, or 'Finder'); the typed query
-                # lives in `edit` (separate storage), rendered over the dim label
+                # not editing: the title renders the docked tabs (in `tabs`).
+                # editing: the search query lives in `edit`, shown over the bar.
                 edit: find_text
-                label: (left_path) ? left_path.filename[] : 'Finder'
+                label: (left_path) ? '' : 'Finder'
                 elements: Elements [
+                    "tabs": element [ elements: dock_tabs[ docked_left, 'ltab', left_path, w ] ]
                     "nav": element [
                         elements: Elements [
                             "git":     Option [ selected: editor_panel == 'git' ]
+                            "undock":  Option [ selected: false ]
+                            "dock":    Option [ selected: false ]
                         ]
                     ]
                 ]
@@ -539,11 +682,14 @@ trinity orbiter # implements compiler
                 "title": EditorTitle [
                     selected: !right_path
                     edit: find_text
-                    label: (right_path) ? right_path.filename[] : 'Finder'
+                    label: (right_path) ? '' : 'Finder'
                     elements: Elements [
+                        "tabs": element [ elements: dock_tabs[ docked_right, 'rtab', right_path, w ] ]
                         "nav": element [
                             elements: Elements [
                                 "git":     Option [ selected: editor_panel == 'git' ]
+                                "undock":  Option [ selected: false ]
+                                "dock":    Option [ selected: false ]
                             ]
                         ]
                     ]
@@ -551,6 +697,7 @@ trinity orbiter # implements compiler
             ]]
 
         return Elements [
+            "toggle_side":  Option [ selected: !show_right, topmost: true ]
             "right":        Toolbar [
                 transparency: (show_right) ? 0.0 : 1.0
                 elements: Elements [
@@ -570,8 +717,7 @@ trinity orbiter # implements compiler
                     "callstack":    CallStack  [ selected: active_panel == 'callstack' ]
                     "debug":        DebugPanel [ selected: active_panel == 'debug' ]
                     "agent":        Option     [ selected: active_panel == 'agent' ]
-                    # 1-unit filter input pinned to the bottom of the navigator.
-                    # topmost so clicks hit it instead of the FileList it overlaps.
+                    # 1-unit filter input pinned to the bottom of the navigator
                     "filter":       element    [ label: 'filter', edit: filter_text ]
                 ]
             ],
@@ -585,16 +731,13 @@ trinity orbiter # implements compiler
                     ]
                     # >| toggle: hide/show the right file-list panel. topmost so
                     # it draws over (and is hit before) the full-area editor view
-                    "toggle_side": Option [ selected: !show_right, topmost: true ]
                 ]
             ],
             
             "instances": Instances [ elements: Elements [
                 'source_nav': Tabs [ elements: source_nav ]
                 'tools':      Tabs [ elements: Elements [
-                    'system': Option [ selected: active_target == 'system' ]
                     'play': Button [ disable: active_target == 'system' ]
-                    
                 ] ]
                 'consoles':   Tabs [ elements: Elements [
                     'shell': Option [ label: 'shell', selected: active_console == 'shell', toggle: true ]

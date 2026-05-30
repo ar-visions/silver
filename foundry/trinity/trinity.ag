@@ -723,13 +723,17 @@ Display Window
         ev.mouse.pos.x = lx + e.scroll.x
         ev.mouse.pos.y = ly + e.scroll.y
 
-        # topmost children paint on top, so they get first crack at the hit
-        for [ child: element, id: string ] in e.elements
+        # hit-test in REVERSE of paint order: children are painted first→last
+        # (later draws on top), so the topmost-drawn sibling must be tested
+        # first. iterate reverse; topmost-flagged children still come before the
+        # rest. this is why a later-declared sibling (e.g. the filter) wins its
+        # own click without needing a per-element topmost.
+        for [ child: element, id: string ] reverse in e.elements
             if [ !child.topmost ] continue
             hit : find_target[ child, ev, must ]
             if [ hit ]
                 return hit
-        for [ child: element, id: string ] in e.elements
+        for [ child: element, id: string ] reverse in e.elements
             if [ child.topmost ] continue
             hit : find_target[ child, ev, must ]
             if [ hit ]
@@ -1153,6 +1157,37 @@ Display Window
                     fixed_w += tb.w
             if [ e.area.b.percent ] bounds.h = e.area.b.offset * (rel.h - fixed_h)
             if [ e.area.r.percent ] bounds.w = e.area.r.offset * (rel.w - fixed_w)
+
+        # content size (wc / hc): measure the element's content, then size to it.
+        # a right anchor (l-slot is right-typed) offsets the element LEFT by its
+        # computed width; a bottom anchor offsets it UP by its computed height.
+        if [ e.area.r.content || e.area.b.content ]
+            cw : f32 [ bounds.w ]
+            ch : f32 [ bounds.h ]
+            if [ e.elements && e.elements.count > 0 ]
+                # content = extent of laid-out children (flow-aware via `last`)
+                prov  : rect [ x: 0.0, y: 0.0, w: 100000.0, h: 100000.0 ]
+                lastc : rect [ null ]
+                maxr  : f32 [ 0.0 ]
+                maxb  : f32 [ 0.0 ]
+                for [ ce: element, ck: string ] in e.elements
+                    if [ !ce.area ] continue
+                    cb : ce.area.rectangle[ prov, null, lastc, e.fc ]
+                    if [ cb.x + cb.w > maxr ] maxr = cb.x + cb.w
+                    if [ cb.y + cb.h > maxb ] maxb = cb.y + cb.h
+                    lastc = cb
+                cw = maxr
+                ch = maxb
+            el [ cv.font && e.label && e.label.count > 0 ]
+                tm : cv.measure_text[ e.label ]
+                cw = tm.w
+                ch = tm.ascent - tm.descent
+            if [ e.area.r.content ]
+                if [ e.area.l.x_type == XAlign.right ] bounds.x = bounds.x - cw
+                bounds.w = cw
+            if [ e.area.b.content ]
+                if [ e.area.t.y_type == YAlign.bottom ] bounds.y = bounds.y - ch
+                bounds.h = ch
 
         e.bounds.x = bounds.x
         e.bounds.y = bounds.y

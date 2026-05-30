@@ -419,6 +419,10 @@ struct XCoord
     relative : bool
     percent  : bool
     pixel    : bool
+    # `wc` = width from content. paired with a right anchor (e.g. r5px), the
+    # element is offset left by its computed width; with a left anchor it grows
+    # rightward. resolved in the layout pass.
+    content  : bool
 
     construct [ sx: string ]
         uni : unichar[ sx.first[] ]
@@ -433,6 +437,10 @@ struct XCoord
         el
             x_type    = XAlign[ f ]
             sx_offset : sx.mid[ 1, sx.count - 1 ]
+            # `wc` — content width (a 'c' after the width marker)
+            if [ x_type == XAlign.width && sx_offset.count > 0 && sx_offset.chars[0] == 'c' ]
+                content   = true
+                sx_offset = sx_offset.mid[ 1, sx_offset.count - 1 ]
             if [ sx_offset.last[] == 'x' && sx_offset.count >= 2 ]
                 if [ sx_offset.chars[ sx_offset.count - 2 ] == 'p' ]
                     sx_offset = sx_offset.mid[ 0, sx_offset.count - 2 ]
@@ -469,7 +477,8 @@ struct XCoord
             offset:         mix[     offset,        other.offset,    f ],
             percent: bool[  mix[ f32[percent],  f32[other.percent],  f ]],
             relative:bool[mix[ f32[relative], f32[other.relative], f ]],
-            pixel:   other.pixel
+            pixel:   other.pixel,
+            content: other.content
         ]
 
 
@@ -479,6 +488,8 @@ struct YCoord
     relative : bool
     percent  : bool
     pixel    : bool
+    # `hc` = height from content (offset up by computed height when bottom-anchored)
+    content  : bool
 
     construct [ sy: string ]
         f : string [ sy.first[] ]
@@ -492,6 +503,10 @@ struct YCoord
         el
             y_type    = YAlign[ f ]
             sy_offset : sy.mid[ 1, sy.count - 1 ]
+            # `hc` — content height (a 'c' after the height marker)
+            if [ y_type == YAlign.height && sy_offset.count > 0 && sy_offset.chars[0] == 'c' ]
+                content   = true
+                sy_offset = sy_offset.mid[ 1, sy_offset.count - 1 ]
             if [ sy_offset.last[] == 'x' && sy_offset.count >= 2 ]
                 if [ sy_offset.chars[ sy_offset.count - 2 ] == 'p' ]
                     sy_offset = sy_offset.mid[ 0, sy_offset.count - 2 ]
@@ -528,7 +543,8 @@ struct YCoord
             offset:           mix[ offset,         other.offset,        f ],
             percent:  bool[   mix[ f32[percent],   f32[other.percent],  f ] ],
             relative: bool[   mix[ f32[relative],  f32[other.relative], f ] ],
-            pixel:    other.pixel
+            pixel:    other.pixel,
+            content:  other.content
         ]
 
 

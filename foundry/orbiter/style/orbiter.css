@@ -169,6 +169,37 @@ Editor / element.title {
         label_color:            #ffff
 }
 
+Editor / element.title / element.tabs {
+    area:                       l52px t5px wc h34px
+}
+
+Editor / element.title / element.tabs / Option {
+    area:                       l0+ t0 w120px h34px
+    layers.base:
+        fill_color:             #2481
+        inner_glow:             #8af1 16
+        radius:                 6
+        stroke_width:           0.5
+        stroke_color:           #fff2
+    layers.face:
+        label_color:            #fffa
+        label_size:             14
+        label_align:            0.5 0.5
+        label_font:             'fonts/SpaceMono-Regular.ttf'
+}
+
+Editor / element.title / element.tabs / Option:selected {
+    layers.base:
+        fill_color:             #fa84
+        inner_glow:             #fa85 24
+    layers.face:
+        label_color:            #ffff
+}
+
+Editor / element.title:focused / element.tabs {
+    transparency:               1.0
+}
+
 
 Group.editor-group / Option {
     area:                       l0+ t7px w2 h1
@@ -204,8 +235,12 @@ Instances {
     layers.base:
         fill_color:             #23f1
         inner_glow:             #fff1 16
-        stroke_color:           #fff2
-        stroke_width:           0.5 0 0 0
+    layers.border:
+        area:                   l0 t43px r0 h1px
+        fill_color:             #0008
+    layers.border2:
+        area:                   l0 t44px r0 h1px
+        fill_color:             #aaf2
 }
 
 Instances:selected {
@@ -352,27 +387,25 @@ Tabs / Option {
 
 /* console header: system menu icon + play button on the left */
 Instances / Tabs.tools {
-    area:                       l0 t0 w2 h1.2
-}
-Instances / Tabs.tools / Option.system {
-    area:                       l6px t6px w1 h1
-    layers.svg:
-        area:                   4px
-        image_svg:              "images/menu.svg"
-        image_scale:            1.4
-        image_align:            0.5 0.5
+    area:                       l0 t0 w1 h1.2
 }
 Instances / Tabs.tools / Button.play {
-    area:                       l6+px t6px w1 h1
+    area:                       l6px t6px w1.5 h1
     layers.svg:
         area:                   4px
         image_svg:              "images/play.svg"
         image_scale:            1.7
         image_align:            0.5 0.5
+        opacity:                1.0
+}
+
+Instances / Tabs.tools / Button.play:disable {
+    layers.svg:
+        opacity:                0.3
 }
 
 Tabs.source_nav {
-    area:                       l2.5 t0 w8 h1.2
+    area:                       l1.7 t0 w8 h1.2
 }
 
 Tabs.source_nav / Option {
@@ -384,6 +417,17 @@ Tabs.source_nav / Option {
     layers.face:
         area:                   l0 t0 r0 b0
         label_align:            0.5 0.5
+}
+
+Tabs.source_nav / Option.system {
+    area:                       l6+px t6px w1 h1
+    layers.face:
+        label_color:            #0000
+    layers.svg:
+        area:                   4px
+        image_svg:              "images/menu.svg"
+        image_scale:            1.4
+        image_align:            0.5 0.5
 }
 
 
@@ -437,7 +481,7 @@ Tabs.actions / Button.play:disable {
 }
 
 /* >| toggle button, top-right of the editor group — icon only, no background */
-Group.editor-group / Option.toggle_side {
+Option.toggle_side {
     area:                       r36px t8px w28px h28px
     layers.svg:
         area:                   3px
@@ -445,19 +489,16 @@ Group.editor-group / Option.toggle_side {
         image_align:            0.5 0.5
         image_scale:            1.5
         opacity:                0.55
-}
 
-Group.editor-group / Option.toggle_side:hovered {
+:hovered
     layers.svg:
         opacity:                1.0
-}
 
-Group.editor-group / Option.toggle_side:selected {
+:selected
     layers.svg:
         image_svg:              "images/side_off.svg"
         opacity:                1.0
 }
-
 
 Avatar.avatar {
     shaders.orbiter: PBR
@@ -513,7 +554,7 @@ Avatar.avatar:pressed {
 }
 
 Editor / element.title / element.nav {
-    area:                       r48px t5px w32px h34px
+    area:                       r5px t5px wc h34px
 }
 
 Editor / element.title / element.nav / Option {
@@ -551,9 +592,16 @@ Editor / element.title / element.nav / Option.git {
         image_svg:              "images/git.svg"
 }
 
-Editor / element.title / element.nav / Option.project {
+Editor / element.title / element.nav / Option.undock {
     layers.svg:
-        image_svg:              "images/orbiter4.svg"
+        image_svg:              "images/collapse2.svg"
+        image_scale:            1.8
+}
+
+Editor / element.title / element.nav / Option.dock {
+    layers.svg:
+        image_svg:              "images/expand2.svg"
+        image_scale:            1.8
 }
 
 
