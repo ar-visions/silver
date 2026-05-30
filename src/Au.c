@@ -1473,7 +1473,11 @@ none array_concat(array a, array b) {
 Au array_getter_num(array a, num i) {
     if (i < 0 || i >= a->count)
         return null;
-    return a->origin[i];
+    Au r = a->origin[i];
+    Au_t type = head(a)->meta_a;
+    //if (type == typeid(i32))
+    //    printf("array_getter_num[i32]: i=%lld result=%p\n", (long long)i, (void*)r);
+    return r;
 }
 
 static Au* array_indexer(array a, Au ai) {
@@ -1541,6 +1545,7 @@ static void Au_assign(Au* slot, Au value, i32 op, bool unmanaged) {
 none array_setter(array a, Au key, Au value, i32 op) {
     Au* val = array_indexer(a, key);
     verify(val, "array setter: index out of bounds");
+    Au_t type = head(a)->meta_a;
     Au_assign(val, value, op, a->unmanaged);
 }
 
@@ -7547,41 +7552,61 @@ struct inotify_event {
 #include <io.h>
 #endif
 
-none watch_init(watch a) {
 #ifndef __APPLE__
-    if (!a->res) return;
-    int fd = inotify_init1(IN_NONBLOCK);
-    if (fd < 0) {
-        perror("inotify_init1");
-        exit(1);
+// recursively register an inotify watch on dir and every subdirectory under it.
+// inotify is per-directory (not recursive), so we walk the tree once at start.
+// hidden entries (dotfiles, .git) are skipped; depth is bounded like the indexer.
+static void watch_add_tree(int fd, const char* dir, int depth) {
+    if (depth > 8) return;
+    inotify_add_watch(fd, dir,
+        IN_MODIFY | IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO);
+    DIR* d = opendir(dir);
+    if (!d) return;
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char p[4096];
+        snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(p, &st) == 0 && S_ISDIR(st.st_mode))
+            watch_add_tree(fd, p, depth + 1);
     }
+    closedir(d);
+}
 
-    int wd = inotify_add_watch(fd, a->res->chars, IN_MODIFY | IN_CREATE | IN_DELETE);
-    if (wd == -1) {
-        perror("inotify_add_watch");
-        exit(1);
-    }
+// thread body: poll inotify for any change under res. on the first event of a
+// batch, fire the callback (target = argument, work = null) so the listener can
+// mark its index stale. heavy work stays on the listener's own thread.
+// no hold/drop here — Au refs are non-atomic, so the object is kept alive by
+// pause()/dealloc joining this thread before any free.
+static void* watch_runner(void* arg) {
+    watch a  = (watch)arg;
+    int   fd = inotify_init1(IN_NONBLOCK);
+    if (fd < 0) return null;
+    a->fd = fd;
+    if (a->res) watch_add_tree(fd, a->res->chars, 0);
 
-    char buf[4096]
+    char buf[8192]
         __attribute__((aligned(__alignof__(struct inotify_event))));
-    
-    while (1) {
-        int len = read(fd, buf, sizeof(buf));
-        if (len <= 0) continue;
 
-        for (char *ptr = buf; ptr < buf + len; ) {
-            struct inotify_event *event = (struct inotify_event *) ptr;
-            printf("Event on %s: ", event->len ? event->name : "file");
-            if (event->mask & IN_CREATE) puts("Created");
-            if (event->mask & IN_DELETE) puts("Deleted");
-            if (event->mask & IN_MODIFY) puts("Modified");
-            ptr += sizeof(struct inotify_event) + event->len;
+    while (a->running) {
+        int len = read(fd, buf, sizeof(buf));
+        if (len > 0) {
+            if (a->running && a->callback)
+                ((callback)a->callback)((Au)a->argument, null);
         }
-        usleep(100000); // throttle
+        usleep(200000); // 200ms tick — pause() takes effect within this window
     }
 
     close(fd);
+    a->fd = -1;
+    return null;
+}
 #endif
+
+none watch_init(watch a) {
+    a->fd      = -1;
+    a->running = false;
 }
 
 none watch_dealloc(watch a) {
@@ -7589,9 +7614,27 @@ none watch_dealloc(watch a) {
 }
 
 none watch_pause(watch a) {
+#ifndef __APPLE__
+    if (!a->running) return;
+    a->running = false;       // runner observes this and exits its loop
+    if (a->tid) {
+        pthread_join((pthread_t)a->tid, null); // wait so it stops touching us
+        a->tid = 0;
+    }
+#endif
 }
 
 none watch_start(watch a) {
+#ifndef __APPLE__
+    if (a->running || !a->res) return;
+    a->running = true;
+    pthread_t tid;
+    if (pthread_create(&tid, null, watch_runner, a) != 0) {
+        a->running = false;
+        return;
+    }
+    a->tid = (i64)tid; // joined in pause()/dealloc; object outlives the thread
+#endif
 }
 
 bool is_alphabetic(char ch) {
