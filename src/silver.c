@@ -1128,7 +1128,7 @@ void silver_init(silver a) {
         defs_hash = string("");
 
 #ifndef NDEBUG
-    a->asan         = true;
+    //a->asan         = true;
 #endif
     a->exports      = map(hsize, 16);
     a->build_dir    = f(path, "%o/%s", a->install, a->debug ? "debug" : "release");
@@ -2764,10 +2764,6 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     bool   in_rec  = rec_top && rec_top->autype == top;
     token t1 = element(a, 1);
     bool new_bind = t1 && eq(t1, ":");
-    
-    if (seq == 13890) {
-        seq = seq;
-    }
 
     if (assign_type) *(OPType*)assign_type = OPType__undefined;
     push_current(a);
@@ -2780,12 +2776,10 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
     if (module) {
         string alpha = peek_alpha(a);
         if (alpha) {
-            enode m = (enode)elookup(alpha->chars); // silly read as string here in int [ silly.len ]
+            enode m = (enode)elookup(alpha->chars);
             etype mdl = m ? resolve(m) : null;
             if (mdl && (m->autype->member_type != AU_MEMBER_VAR && (mdl->autype->member_type == AU_MEMBER_TYPE || mdl->autype->member_type == AU_MEMBER_MODULE)))
                 skip_member_check = true;
-                // might replace type[...] -> i32[array]
-                // specifying a type gives us more types from an open concept
         }
     }
 
@@ -2798,21 +2792,8 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         token pkzip = peek(a);
         bool new_name = in_decl != null || in_rec;
         alpha = read_alpha_macrofilter(a, new_name);
-        if (alpha && !first && eq(alpha, "size")) {
-            mem = mem;
-        }
-        if (alpha && eq(alpha, "x_scale")) {
-            mem = mem;
-        }
         if (!alpha && mem)
             alpha = read_alpha_any(a);
-
-
-
-
-        if (alpha && eq(alpha, "stat")) {
-            mem = mem;
-        }
 
         if (!alpha && first && next_is(a, "super"))
             alpha = read_alpha(a);
@@ -2821,19 +2802,9 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
             if (bare && find_member(scope_mdl->autype, bare->chars, 0, 0, true))
                 alpha = read_alpha(a);
         }
-        if (alpha && eq(alpha, "undefined")) {
-            alpha = alpha;
-        }
+
         if (!first_alpha) first_alpha = alpha;
 
-        if (!(!first || alpha || new_name)) {
-            //print_tokens(a, seq);
-            first = first;
-        }
-        if (seq == 1485) {
-            int test2 = 2;
-            test2    += 2;
-        }
         validate(!first || alpha || new_name,
             "[%i] expected member, found %o ", seq, peek(a) ? peek(a) : (token)string("[empty]"));
 
@@ -2870,10 +2841,6 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
         /// Lookup or resolve member
         if (!ns_found) {
-            if (seq == 956) {
-                int test2 = 2;
-                test2    += 2;
-            }
             // we may only define our own members within our own space
             if (first) {
 
@@ -2894,9 +2861,6 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                         mem = (enode)rlookup((aether)a, alpha);
                         //mem = (enode)elookup(alpha->chars);
 
-                        if (eq(alpha, "ft_face2")) {
-                            alpha = alpha;
-                        }
                         if (mem && !mem->autype->is_static && mem->autype->member_type != AU_MEMBER_TYPE) {
                             etype ftarg = etype_resolve((etype)f->target);
                             if (ftarg && in_context(mem->autype, ftarg->autype)) {
@@ -2987,9 +2951,6 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
             Au_t mem_type = isa(mem);
             bool b0, b1, b2, b3, b4;
-            if (seq == 13890) {
-                seq = seq;
-            }
 
             // setter intercept
             if (next_is(a, "[") && in_decl != typeid(efunc) && in_decl != typeid(macro)) {
@@ -3027,14 +2988,8 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                         pop_scope(a);
                     }
                     prev = reverse(prev);
-
-                    if (strcmp(mem->autype->ident, "run") == 0) {
-                        f = f;
-                    }
-
                     mem = parse_member_expr(a, mem, in_ref);
-                    // inside this expression, we must have the previous scope; 
-                    // we could save it at top and push the top again, but that isnt handled \properly
+
                     for (int i = 0; i < depth; i++) {
                         etype mm = (etype)get(prev, i);
                         push_scope(a, (Au)mm, 19);
@@ -6506,6 +6461,10 @@ enode parse_import(silver a) {
             // handled after 'as' is read
         } else {
             if (is_extension) {
+                // track the extension's source so the host watch list (.source)
+                // includes it — editing e.g. Editor.ag triggers a rebuild.
+                if (index_of(a->artifacts, (Au)module_source) < 0)
+                    push(a->artifacts, (Au)module_source);
                 array ext_toks = array(alloc, 64);
                 parse_tokens(a, (Au)module_source, ext_toks);
                 // strip optional 'extend <name>' header if present, validate name
@@ -6551,6 +6510,19 @@ enode parse_import(silver a) {
                 if (external->module_file) {
                     if (index_of(og->artifacts, (Au)external->module_file) < 0) {
                         push(og->artifacts, (Au)external->module_file);
+                    }
+                }
+                // propagate the external module's source files (its own extends,
+                // e.g. trinity's Canvas.ag / element.ag) into the app's
+                // artifacts so the host watch list (.source) covers them too.
+                if (external->artifacts) {
+                    each (external->artifacts, path, ext_src) {
+                        const char *dot = strrchr(ext_src->chars, '.');
+                        bool is_src = dot && (strcmp(dot, ".ag") == 0 ||
+                                              strcmp(dot, ".c")  == 0 ||
+                                              strcmp(dot, ".cc") == 0);
+                        if (is_src && index_of(og->artifacts, (Au)ext_src) < 0)
+                            push(og->artifacts, (Au)ext_src);
                     }
                 }
                 validate (!external->error, "error importing silver module %o", external);
@@ -8048,13 +8020,19 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
                 // propagate design-time meta type for member access
                 // convert Au -> meta_a (for collective types: array, map, etc.)
                 Au_t meta_a = mem->autype->meta.a ? mem->autype->meta.a :
-                    (mem->meta_a ? ((Au_t)mem->meta_a) : null);
+                    (mem->meta_a ? ((Au_t)mem->meta_a) :
+                    (mem_type ? mem_type->meta.a : null));
                 if (rtype && rtype == etypeid(Au) && meta_a) {
                     index_expr->autype = meta_a;
                     // getter returns ptr-to-element for primitive types; load through
-                    // the returned data pointer immediately so downstream sees a value
-                    if (meta_a->is_primitive && !meta_a->is_pointer)
+                    // the returned data pointer immediately so downstream sees a value.
+                    // e_fn_call sets loaded=true for all non-struct returns, but the
+                    // indexer result is inherently a pointer to the boxed value — treat
+                    // it as unloaded so e_load emits the dereference.
+                    if (meta_a->is_primitive && !meta_a->is_pointer) {
+                        index_expr->loaded = false;
                         index_expr = e_load((aether)a, index_expr, null);
+                    }
                 }
             }
 

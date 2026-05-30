@@ -5302,7 +5302,7 @@ enode aether_e_for(aether a,
     push_scope(a, (Au)cat, 8);
     a->coverage = saved_cov;
 
-    if (in_expr && (inherits(in_expr->autype, typeid(map)) || inherits(in_expr->autype, typeid(array)))) {
+    if (in_expr && (inherits(in_expr->autype, typeid(map)) || inherits(in_expr->autype, typeid(list)) || inherits(in_expr->autype, typeid(array)))) {
         debug_emit(a);
         {   // ---- null guard: skip loop if collection is null ----
             LLVMValueRef coll_ptr = in_expr->value;
@@ -5317,8 +5317,11 @@ enode aether_e_for(aether a,
 
     statements st = context_code(a);
 
-    if (in_expr && inherits(in_expr->autype, typeid(map))) {
-        // ---- map iteration via item linked list (first→next or last→prev) ----
+    if (in_expr && (inherits(in_expr->autype, typeid(map)) || inherits(in_expr->autype, typeid(list)))) {
+        // ---- map/list iteration via item linked list (first→next or last→prev).
+        // both store elements as `item`s off the collective's first/last; map
+        // items carry a key, list items only a value. ----
+        bool  is_list   = inherits(in_expr->autype, typeid(list));
         etype item_type = etypeid(item);
 
         enode start_node = etype_access((etype)in_expr, string(reverse ? "last" : "first"));
@@ -5351,6 +5354,7 @@ enode aether_e_for(aether a,
         }
 
         if (key_var) {
+            validate(!is_list, "for-in over a list has no key (list items carry only a value)");
             enode key_node = etype_access((etype)cur_enode, string("key"));
             key_node = enode_value(key_node, false);
             enode key_cast = e_create(a, canonical(key_var), (Au)key_node);
