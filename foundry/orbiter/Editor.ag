@@ -1,5 +1,9 @@
 extend orbiter
 
+class FileBuf
+    public lines : list string
+    public mtime : i64 [ 0 ]
+
 Layer EditorLayer
     mutable sel_color      : rgba
     mutable line_color     : rgba
@@ -20,31 +24,100 @@ Layer EditorLayer
     func draw [ cv: Canvas ]
         editor : Editor[ parent ]
         if [ !editor || !editor.lines ] return
-        lh      : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
+        # code font size from orbiter's setting (canvas default is large). set it
+        # before measuring so line_height / char width track the chosen size.
+        code_fs : i32 [ (editor.code_font_size > 0) ? editor.code_font_size : 15 ]
+        cv.font_size[ code_fs ]
         cw_tm   : cv.measure_text[ 'x' ]
-        x0      : f32 [ bounds.x ]
+        lh      : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
+        # gutter width = digit count of the last line number * char width + pad.
+        # the code content is pushed right by this width.
+        ndigits : i32 [ 1 ]
+        ncount  : i32 [ editor.lines.count ]
+        while [ ncount >= 10 ]
+            ncount  = ncount / 10
+            ndigits += 1
+        gut_w   : f32 [ f32[ ndigits ] * cw_tm.w + 16.0 ]
+        editor.gutter_w = gut_w
+        x0      : f32 [ bounds.x + gut_w ]
         y0      : f32 [ bounds.y ]
-        fade_h  : f32 [ bounds.h * 0.20 ]
-        fade_s  : f32 [ bounds.y + bounds.h - fade_h ]
+        # edge fade is produced by the element's grayscale mask (per-edge black
+        # inner glow) applied at the cache blit — not a per-line CPU alpha.
+        # asymmetric on purpose: a little on the left so the code's structure
+        # (indent) stays sharp, a lot on the right so long lines dissolve into
+        # space instead of being cut (no horizontal scroll), medium top/bottom.
+        # vec4 = (top, right, bottom, left) px.
+        # TEMP: mask disabled to isolate the command-buffer double-free crash.
+        # if the crash stops with this, the mask path (draw_canvas_masked /
+        # mask_canvas) is the culprit. restore to [32,128,64,32] after.
+        parent.mask_glow = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        # start the top fade at the bottom of the title bar so code scrolls
+        # cleanly under it; fall back to 70px if the title isn't laid out yet.
+        title_bottom : f32 [ 70.0 ] 
+        te : element parent.elements['title']
+        if [ te && te.bounds ] 
+            title_bottom = te.bounds.y + te.bounds.h
+        parent.mask_inset = vec4f [ title_bottom, 0.0, 0.0, 0.0 ]
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
         editor.content_h = f32[ editor.lines.count ] * lh
         editor.scroll_speed = lh
 
+        # clamp scroll to [0, content - viewport] every frame so it can't go
+        # negative (above the top) or past the end of the content.
+        max_scroll : f32 [ editor.content_h - bounds.h ]
+        if [ max_scroll < 0.0 ] max_scroll = 0.0
+        if [ editor.scroll.y < 0.0 ] editor.scroll.y = 0.0
+        if [ editor.scroll.y > max_scroll ] editor.scroll.y = max_scroll
+
+        # clip scrolled text to the editor bounds (world-space px = transform
+        # offset + local bounds). same crop data the shaders read for shapes.
+        wtx : f32 [ cv.transform_tx[] ]
+        wty : f32 [ cv.transform_ty[] ]
+        cv.set_crop[ wtx + bounds.x, wty + bounds.y,
+            wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
+
+        # ---- gutter: per-line flat cells, line numbers, hover + breakpoint ----
+        # breakpoint colors the entire line (full width) behind the code; the
+        # flat cell + right-aligned number sit in the gutter column on the left.
+        cv.stroke_width[ 0.0 ]
+        bp_src : '{editor.src}'
+        # line-number labels render 30% smaller than the code font
+        num_fs  : i32 [ i32[ f32[ code_fs ] * 0.7 ] ]
+        cv.font_size[ num_fs ]
+        for [ li: i32 0, li < editor.lines.count, li += 1 ]
+            yg : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
+            if [ yg + lh < bounds.y ] continue
+            if [ yg > bounds.y + bounds.h ] break
+            bp : editor.breakpoints['{bp_src}:{li + 1}']
+            if [ bp != null ]
+                cv.fill_color[ editor.bp_color[ bp ] ]
+                cv.rect_to[ bounds.x, yg, bounds.w, lh ]
+                cv.paint[ ]
+            cell : rgba [ (editor.hover_line == li) ? rgba['#ffffff18'] : rgba['#ffffff08'] ]
+            cv.fill_color[ cell ]
+            cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
+            cv.paint[ ]
+            cv.fill_color[ rgba['#ffffff80'] ]
+            cv.draw_text[ '{li + 1}',
+                rect [ x: bounds.x, y: yg, w: gut_w - 6.0, h: lh ],
+                vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+
+        # restore the code font before drawing line content
+        cv.font_size[ code_fs ]
         for [ li: i32 0, li < editor.lines.count, li += 1 ]
             y : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
-            alpha : ((y - bounds.y) < fade_s) ? 1.0 : 1.0 - ((y - fade_s) / fade_h)
             ln    : editor.line_get[ li ]
-            col   : rgba['#fff']
-            col.a = alpha
-            cv.fill_color[ col ]
+            cv.fill_color[ rgba['#fff'] ]
             cv.draw_text[ ln,
-                rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                rect [ x: x0, y: y, w: bounds.w - gut_w, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint[ ]
 
+        # crop stays set to the editor bounds: the selection rects, their
+        # text, and the cursor below all clip to it. cleared at draw end.
         if [ editor.sel_line >= 0 ]
             cv.save[ ]
             cv.stroke_width[ 0.0 ]
@@ -74,7 +147,7 @@ Layer EditorLayer
 
             y_cur : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll.y ]
             cv.fill_color[ cur_line_col ]
-            cv.rect_to[ x0, y_cur, bounds.w, lh ]
+            cv.rect_to[ bounds.x, y_cur, bounds.w, lh ]
             cv.paint[ ]
 
             if [ has_sel ]
@@ -83,7 +156,7 @@ Layer EditorLayer
                     y_row : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
                     if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
                     cv.fill_color[ cur_line_col ]
-                    cv.rect_to[ x0, y_row, bounds.w, lh ]
+                    cv.rect_to[ bounds.x, y_row, bounds.w, lh ]
                     cv.paint[ ]
 
                 cv.save[ ]
@@ -95,10 +168,10 @@ Layer EditorLayer
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
                     col_x0 : f32 [ (is_sl) ? f32[start_col] * cw : 0.0 ]
-                    col_x1 : f32 [ (is_el) ? f32[end_col] * cw : bounds.w ]
+                    col_x1 : f32 [ (is_el) ? f32[end_col] * cw : bounds.w - gut_w ]
                     rx     : f32 [ x0 + col_x0 ]
                     rw     : f32 [ col_x1 - col_x0 ]
- 
+
                     rr : rect [ x:rx + pad, y:y_row + pad,
                         w:rw - pad * 2, h:lh - pad * 2 ]
                     if [ editor.last_sel_line == li ]
@@ -140,19 +213,24 @@ Layer EditorLayer
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
                     col_x0 : f32 [ (is_sl) ? f32[start_col] * cw : 0.0 ]
-                    col_x1 : f32 [ (is_el) ? f32[end_col]   * cw : bounds.w ]
+                    col_x1 : f32 [ (is_el) ? f32[end_col]   * cw : bounds.w - gut_w ]
                     rx     : f32 [ x0 + col_x0 ]
                     rw     : f32 [ col_x1 - col_x0 ]
                     use_filter : bool [ editor.last_sel_line == li && editor.filter_rect ]
                     crop_x : f32 [ (use_filter) ? editor.filter_rect.x : rx ]
                     crop_w : f32 [ (use_filter) ? editor.filter_rect.w : rw ]
-                    cv.set_text_crop[ tx + crop_x, ty + y_row, tx + crop_x + crop_w, ty + y_row + lh ]
+                    # X clips to the (animated) selection/filter rect; Y clips
+                    # to the editor bounds so partial rows can't spill on scroll.
+                    cv.set_crop[ tx + crop_x, ty + bounds.y,
+                        tx + crop_x + crop_w, ty + bounds.y + bounds.h ]
                     cv.fill_color[ '#fff' ]
                     cv.draw_text[ editor.line_get[ li ],
-                        rect [ x: x0, y: y_row, w: bounds.w, h: lh ],
+                        rect [ x: x0, y: y_row, w: bounds.w - gut_w, h: lh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-                    cv.clear_text_crop[]
                 cv.paint[ ]
+                # back to full editor-bounds crop for the cursor below
+                cv.set_crop[ tx + bounds.x, ty + bounds.y,
+                    tx + bounds.x + bounds.w, ty + bounds.y + bounds.h ]
 
             if [ parent.focused ]
                 y_sel : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll.y ]
@@ -174,10 +252,17 @@ Layer EditorLayer
 
             cv.restore[ ]
 
+        # release the editor-bounds crop so following elements aren't clipped
+        cv.clear_crop[ ]
+
 
 Control Editor
+    public  selected      : bool
+    public  show_nav      : bool
+    public  editor_mode   : string
     public  src           : path
     mutable lines         : list string
+    mutable file_cache    : map FileBuf[string]
     mutable sel_line      : i32 [ -1 ]
     mutable sel_col       : i32 [ 0 ]
     mutable lh_cache      : f32 [ 0.0 ]
@@ -192,6 +277,21 @@ Control Editor
     mutable filter_rect   : rect
     mutable filter_next   : false
     mutable last_scroll_y : f32
+    # gutter: line under the mouse (hover highlight) and measured gutter width.
+    # breakpoints are app-global, keyed by "source:line" -> condition string,
+    # injected by orbiter (a shared map reference) — a present key colors the
+    # whole line rather than drawing a dot.
+    mutable hover_line    : i32 [ -1 ]
+    mutable gutter_w      : f32 [ 0.0 ]
+    public  breakpoints   : map string[string]
+    # code font size (px), injected by orbiter; gutter labels render smaller.
+    public  code_font_size : i32 [ 15 ]
+
+    # whole-line wash color: conditional (non-empty condition) vs plain.
+    func bp_color [ cond: string ] -> rgba
+        if [ cond && cond.count > 0 ] return rgba['#3b82f638']   # conditional
+        return rgba['#e5394538']                                 # plain
+
     func line_get [ i: i32 ] -> string
         return lines.value_by_index[ i ]
 
@@ -200,14 +300,32 @@ Control Editor
         lines.insert_after[ val, i - 1 ]
 
     func load_file []
-        if [ !src ] src = path '/src/silver/src/silver.c'
+        if [ !src ] return
+        key   : src
+        mtime : i64    [ src.modified_time[] ]
+        buf   : FileBuf file_cache[key]
+        if [ buf && buf.mtime == mtime ]
+            lines = buf.lines
+            return
         content : string [ src.load[ typeid[string], null ] ]
         if [ !content ] return
         parts : array string [ content.split["\n"] ]
-        lines = list string []
+        new_lines : list string []
         for [ i: i32 0, i < parts.count, i += 1 ]
-            lines.push[ parts[i] ]
+            new_lines.push[ parts[i] ]
+        if [ !buf ]
+            buf = FileBuf []
+            file_cache[key] = buf
+        buf.lines = new_lines
+        buf.mtime = mtime
+        lines = new_lines
     func init [ ]
+        file_cache = map FileBuf[string] []
+        # breakpoints is the shared map injected by orbiter. the editor element
+        # is rebuilt every render (a throwaway per frame), and each one's dealloc
+        # drops this ref — so hold it here to balance that drop, otherwise the
+        # shared map's refcount drifts down and it's freed while still in use.
+        if [ breakpoints ] breakpoints.hold[]
         lines = list string []
         lines.push[ '' ]
         load_file[]
@@ -217,14 +335,29 @@ Control Editor
         if [ !ele ] return
         lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
-        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
-        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
+        # +scroll.y inverts the draw's (-scroll.y); -gutter_w skips the gutter
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + scroll.y ]
+        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x - gutter_w ]
         ln    : i32 [ clamp [ rel_y / lh, 0, lines.count - 1 ] ]
         cl    : i32 [ clamp [ i32[ round[ rel_x / cw ] ], 0, line_get[ ln ].count ] ]
         sel_line = ln
         sel_col  = cl
 
     func on_press [ ev: Event ]
+        ele   : (layers) ? (layers['content'] to EditorLayer) : null
+        rel_x : f32 [ (ele) ? ev.mouse.pos.x - ele.bounds.x : 0.0 ]
+        # a click in the gutter toggles a breakpoint on that line rather than
+        # moving the text cursor.
+        if [ ele && rel_x < gutter_w ]
+            lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+            rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + scroll.y ]
+            ln    : i32 [ clamp [ rel_y / lh, 0, lines.count - 1 ] ]
+            key   : '{src}:{ln + 1}'
+            cur   : breakpoints[key]
+            # present -> remove (null); absent -> add a plain breakpoint ('')
+            breakpoints[key] = (cur) ? null : string[]
+            pristine = false
+            return
         if [ !ev.key.shift ]
             hit_test[ ev ]
             anchor_line = sel_line
@@ -238,6 +371,21 @@ Control Editor
     func on_move [ ev: Event ]
         if [ dragging ]
             hit_test[ ev ]
+            pristine = false
+            return
+        # hover line for the gutter highlight (no press)
+        ele : (layers) ? (layers['content'] to EditorLayer) : null
+        if [ !ele ] return
+        lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + scroll.y ]
+        hl    : i32 [ clamp [ rel_y / lh, 0, lines.count - 1 ] ]
+        if [ hl != hover_line ]
+            hover_line = hl
+            pristine = false
+
+    func on_leave [ ev: Event ]
+        if [ hover_line != -1 ]
+            hover_line = -1
             pristine = false
 
     func on_release [ ev: Event ]
@@ -316,5 +464,5 @@ Control Editor
 
         pristine = false
 
-    func render [] -> Elements
+    public func render [] -> Elements
         return null

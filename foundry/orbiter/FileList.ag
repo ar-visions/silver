@@ -64,7 +64,7 @@ Layer FileLayer
         clip_y1 : f32 [ bounds.y + bounds.h ]
         wtx : f32 [ cv.transform_tx[] ]
         wty : f32 [ cv.transform_ty[] ]
-        cv.set_text_crop[ wtx + bounds.x, wty + clip_y0, wtx + bounds.x + bounds.w, wty + clip_y1 ]
+        cv.set_crop[ wtx + bounds.x, wty + clip_y0, wtx + bounds.x + bounds.w, wty + clip_y1 ]
 
         for [ i: i32 0, i < fl.visible.count, i += 1 ]
             n : FileNode fl.visible[i]
@@ -102,7 +102,7 @@ Layer FileLayer
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
 
         cv.paint[]
-        cv.clear_text_crop[]
+        cv.clear_crop[]
 
 Option FileList
     public  root           : path

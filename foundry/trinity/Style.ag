@@ -313,6 +313,28 @@ class Style
             parse_block_body[ bl, lines, i + 1, end_idx - 1, 0 ]
             validate_block[ bl, errors ]
             base.push[ bl ]
+            # nested pseudo-state sections: an indent-0 line beginning with ':'
+            # inside the same braces (e.g. a bare `:focused`) expands into a
+            # separate `<selector><state>` block. lets states be written inline
+            # under their selector instead of as a repeated top-level rule.
+            while [ end_idx < lines.count && lines[end_idx].indent == 0 ]
+                state_line : string [ lines[end_idx].content ]
+                if [ !state_line.count || state_line.chars[0] != ':' ]
+                    break
+                if [ state_line.last[] == '{' ]
+                    state_line = state_line.mid[ 0, state_line.count - 1 ].trim[]
+                state_sel  : content + state_line
+                body_start : i32 [ end_idx + 1 ]
+                body_end   : i32 [ body_start ]
+                while [ body_end < lines.count && lines[body_end].indent > 0 ]
+                    body_end += 1
+                sbl : StyleBlock [ ]
+                ssc : cstr [ state_sel.chars ]
+                sbl.quals = parse_qualifiers[ sbl, ref ssc ]
+                parse_block_body[ sbl, lines, body_start, body_end - 1, 0 ]
+                validate_block[ sbl, errors ]
+                base.push[ sbl ]
+                end_idx = body_end
             i = end_idx
 
     func report_errors [ ]

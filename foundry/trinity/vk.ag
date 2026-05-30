@@ -998,6 +998,7 @@ class Pipeline
     intern descriptor_sets    : new VkDescriptorSet       [ 2 ]
     intern descriptor_pool    : VkDescriptorPool
     intern image_slot         : i32 [ -1 ]
+    intern mask_slot          : i32 [ -1 ]
     intern bind               : VkDescriptorSet
     intern vk_render          : VkPipeline
     intern vk_compute         : VkPipeline
@@ -1020,6 +1021,25 @@ class Pipeline
             pNext:           null,
             dstSet:          descriptor_sets[1],
             dstBinding:      image_slot,
+            descriptorCount: 1,
+            descriptorType:  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            pImageInfo:      ref info
+        ]
+        vkUpdateDescriptorSets[ vk.device, 1, ref write, 0, null ]
+
+    public   func rebind_mask [ tx: Texture ]
+        if [ mask_slot < 0 ] return
+        tx.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        info : VkDescriptorImageInfo [
+            sampler:     tx.vk_sampler,
+            imageView:   tx.vk_image_view,
+            imageLayout: VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        ]
+        write : VkWriteDescriptorSet [
+            sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            pNext:           null,
+            dstSet:          descriptor_sets[1],
+            dstBinding:      mask_slot,
             descriptorCount: 1,
             descriptorType:  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             pImageInfo:      ref info
@@ -1152,6 +1172,8 @@ class Pipeline
                     resources.push [ res ]
                     if [ strcmp[ mem.ident, 'image' ] == 0 ]
                         image_slot = set1_binds
+                    if [ strcmp[ mem.ident, 'mask' ] == 0 ]
+                        mask_slot = set1_binds
                     
                     image_infos[set1_binds] = VkDescriptorImageInfo [
                         sampler:     res.tx.vk_sampler,
@@ -2684,9 +2706,12 @@ intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods:
     w.ev.mouse.pos.y  = w.mouse.y
     w.ev.mouse.button = id - GLFW_MOUSE_BUTTON_LEFT
     w.ev.mouse.state  = action == GLFW_PRESS
-    w.ev.key.shift    = (mods & 1) != 0
+    lshift            : i32 [ glfwGetKey[ win, 340 ] ]
+    rshift            : i32 [ glfwGetKey[ win, 344 ] ]
+    w.ev.key.shift    = lshift == GLFW_PRESS || rshift == GLFW_PRESS
     w.ev.key.meta     = (mods & 8) != 0
     w.ev.key.alt      = (mods & 4) != 0
+    puts 'mouse button={id} state={w.ev.mouse.state} mods={mods} lshift={lshift} rshift={rshift} shift={w.ev.key.shift}'
     if [ w.ev.mouse.state ]
         w.press_event[ w.ev ]
     el

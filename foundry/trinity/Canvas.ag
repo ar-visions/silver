@@ -11,6 +11,7 @@ enum DrawMode
     image       : 5
     sdf_path    : 6
     image_r     : 7
+    image_masked: 8
 
 # ---- path command tags ----
 enum path_cmd
@@ -34,6 +35,7 @@ enum GradientType
 enum CanvasUISurface
     atlas: 0
     image: 1
+    mask:  2
 
 
 # CanvasUISurface enum extension for storage bindings used by the SDF
@@ -163,6 +165,14 @@ shader CanvasUI
     # stroke_opts.w carries the stroke grad mode (0=linear,1=mirror,2=radial).
     mutable stroke_grad_pts : vec4f
     mutable stroke_grad_c1  : vec4f
+    # crop rect (x0 y0 x1 y1 world-px; x1<=x0 = no clip). same data the text
+    # shader uses — fed from CanvasState.crop so shapes and glyphs clip
+    # identically. kept in the vec4 block so tight packing == std140.
+    mutable crop_rect       : vec4f
+    # per-edge inner-glow distances (top, right, bottom, left) in px. when any
+    # component > 0 the inner glow uses nearest-edge selection (like
+    # stroke_sides) instead of the uniform inner_glow_px. drives the edge mask.
+    mutable glow_sides      : vec4f
     mutable viewport        : vec2f
     mutable fill_offset   : f32
     mutable stroke_offset : f32
@@ -172,6 +182,11 @@ shader CanvasUI
     ]
     attrib  image      : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.image, count:1, format:typeid[ rgba8 ]
+    ]
+    # grayscale alpha mask sampled in mode image_masked (8): content * mask.r.
+    # white = keep, black = fade out. rebound per-composite via rebind_mask.
+    attrib  mask       : LayoutBinding [
+        type:typeid[ CanvasUISurface ], id: CanvasUISurface.mask, count:1, format:typeid[ rgba8 ]
     ]
 
     attrib  a_pos      : VertexInput    [ type:typeid[ vec2f ] ]
@@ -303,6 +318,14 @@ shader CanvasUI
         #o_color = vec4(0.0, 0.0, 1.0, 1.0);
         #return;
 
+        // crop rect clip (same test/data as CanvasText): x1>x0 = active.
+        // v_pos is world-space pixels, crop_rect is world-space pixels.
+        if (ubo.crop_rect.z > ubo.crop_rect.x) {{
+            if (v_pos.x < ubo.crop_rect.x || v_pos.x > ubo.crop_rect.z ||
+                v_pos.y < ubo.crop_rect.y || v_pos.y > ubo.crop_rect.w)
+                discard;
+        }}
+
         float mode         = ubo.params.w;
         float stroke_width = ubo.params.x;
         float opacity      = ubo.params.y;
@@ -354,6 +377,19 @@ shader CanvasUI
             vec4 texel = texture(image, uv);
             float aa   = 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = texel * aa * opacity;
+            return;
+        }}
+
+        // image_masked: content texture (image) modulated by a grayscale
+        // mask texture. mask.r = keep factor (white = full, black = fade out).
+        // both sampled with the same uv so the mask aligns 1:1 with content.
+        if (mode == 8.0) {{
+            vec2 uv    = (lpos - ubo.rect.xy) / ubo.rect.zw;
+            uv         = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
+            vec4 texel = texture(image, uv);
+            float m    = texture(mask, uv).r;
+            float aa   = 1.0 - smoothstep(-0.5, 0.5, dist);
+            o_color    = texel * m * aa * opacity;
             return;
         }}
 
@@ -624,7 +660,27 @@ shader CanvasUI
         }}
         // unified inner bevel pass: blend tint + fade-radius by lit_side.
         vec4 bevel_p = vec4(0.0);
-        if ((inner_px > 0.0 || shadow_px > 0.0) && fill_cov > 0.0) {{
+        float gs_sum = ubo.glow_sides.x + ubo.glow_sides.y + ubo.glow_sides.z + ubo.glow_sides.w;
+        if (gs_sum > 0.0 && fill_cov > 0.0) {{
+            // per-edge fade: each side's factor depends ONLY on the
+            // perpendicular distance to that edge, so the fade runs parallel to
+            // the edge (no rounded-rect SDF, no corner curvature). combine with
+            // min → clean square corners, white center, black at the edges.
+            vec2  rel = lpos - center;
+            float dt  =  rel.y + half_size.y;   // dist from top edge
+            float db  = -rel.y + half_size.y;   // dist from bottom edge
+            float dr  = -rel.x + half_size.x;   // dist from right edge
+            float dl  =  rel.x + half_size.x;   // dist from left edge
+            float ft  = (ubo.glow_sides.x > 0.0) ? clamp(dt / ubo.glow_sides.x, 0.0, 1.0) : 1.0;
+            float fr  = (ubo.glow_sides.y > 0.0) ? clamp(dr / ubo.glow_sides.y, 0.0, 1.0) : 1.0;
+            float fb  = (ubo.glow_sides.z > 0.0) ? clamp(db / ubo.glow_sides.z, 0.0, 1.0) : 1.0;
+            float fl  = (ubo.glow_sides.w > 0.0) ? clamp(dl / ubo.glow_sides.w, 0.0, 1.0) : 1.0;
+            float keep = min(min(ft, fr), min(fb, fl));   // 1 center → 0 edges
+            float a    = pow(1.0 - keep, K);              // K=1 → linear ramp
+            vec4  tint = ubo.inner_glow_color;
+            float alpha = a * tint.a * fill_cov;
+            bevel_p     = vec4(tint.rgb * alpha, alpha);
+        }} else if ((inner_px > 0.0 || shadow_px > 0.0) && fill_cov > 0.0) {{
             float smooth_px    = max(inner_px, shadow_px);
             float dist_g       = sdf_rounded_rect_glow(lpos, center, half_size, ubo.radii, smooth_px);
             float effective_px = mix(shadow_px, inner_px, lit_side);
@@ -664,15 +720,20 @@ shader CanvasUI
 # the vbo per call and a dedicated text_render renders it via its own
 # render pass over the canvas's color attachment in a single vkCmdDraw.
 shader CanvasText
+    # std140: silver packs the UBO tightly (uniform_transfer sums type_size with
+    # no padding) but the generated GLSL struct is laid out by std140, which
+    # 16-byte-aligns every vec4. To keep the two in lockstep, declare ALL vec4s
+    # before any vec2 — then tight packing == std140 and crop_rect lands at the
+    # offset the shader actually reads. (vec2s after the vec4s stay 8-aligned.)
     mutable text_color     : vec4f
     mutable text_grad      : vec4f     # second color for gradient; alpha 0 = solid
+    mutable grad_params    : vec4f     # x = mirror (0/1), y/z/w reserved
+    mutable crop_rect      : vec4f     # x0 y0 x1 y1 world-px; x1<=x0 = no clip
     # canvas stays literal — positions below are world-space pixels, already
     # resolved by the element layer from whatever unit convention it uses.
     mutable text_color_pos : vec2f
     mutable text_grad_pos  : vec2f
-    mutable grad_params    : vec4f     # x = mirror (0/1), y/z/w reserved
     mutable viewport       : vec2f
-    mutable crop_rect      : vec4f     # x0 y0 x1 y1 world-px; x1<=x0 = no clip
 
 
     attrib  atlas    : LayoutBinding [
@@ -1075,7 +1136,9 @@ struct CanvasState
     stroke_grad_pos    : vec2f
     stroke_grad_mirror : bool
     stroke_grad_radial : bool
-    text_crop          : vec4f
+    crop          : vec4f
+    # per-edge inner-glow distances (top, right, bottom, left); 0 = uniform glow
+    glow_sides    : vec4f
 
 
 func sk_color [ clr: rgba ] -> vec4f
@@ -1106,6 +1169,7 @@ Render Canvas
     intern ui_shader     : CanvasUI
     intern sdf_tex       : Texture
     intern image_override : Texture
+    intern mask_override  : Texture
     public format	   : Pixel[Pixel.rgba8]
     # current 2D affine — held directly on Canvas because writing back
     # into states[state_depth-1].transform via array-of-struct field assignment
@@ -1166,7 +1230,9 @@ Render Canvas
         ft_lib   = ft_init[]
         font = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/SpaceMono-Regular.ttf', size_px: 22 ]
         #font.hold[]
-        canvas_samplers : map Au[string] [ 'image': sdf_tex, 'atlas': glyph_atlas.texture ]
+        # 'mask' starts bound to sdf_tex as a placeholder; draw_canvas_masked
+        # rebinds it to the real mask texture per composite.
+        canvas_samplers : map Au[string] [ 'image': sdf_tex, 'atlas': glyph_atlas.texture, 'mask': sdf_tex ]
         graphics_model : Model [ vk: vk, w: w, s: ui_shader, samplers: canvas_samplers ]
 
         # GPU SDF compute model
@@ -1480,11 +1546,11 @@ Render Canvas
     func transform_ty [] -> f32
         return states[state_depth - 1].transform.ty
 
-    func set_text_crop [ x0: f32, y0: f32, x1: f32, y1: f32 ]
-        states[state_depth - 1].text_crop = vec4f [ x0, y0, x1, y1 ]
+    func set_crop [ x0: f32, y0: f32, x1: f32, y1: f32 ]
+        states[state_depth - 1].crop = vec4f [ x0, y0, x1, y1 ]
 
-    func clear_text_crop []
-        states[state_depth - 1].text_crop = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+    func clear_crop []
+        states[state_depth - 1].crop = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
     func inner_glow [ color: rgba, px: f32 ]
         c : vec4f [ sk_color[ color ] ]
@@ -1492,6 +1558,15 @@ Render Canvas
         states[state_depth - 1].inner_glow_px      = px
         states[state_depth - 1].inner_shadow_color = c
         states[state_depth - 1].inner_shadow_px    = px
+
+    # per-edge inner glow: distinct fade distance per side (top, right, bottom,
+    # left) in px. nearest-edge selection in the shader (like stroke_sides), so
+    # a line can fade a lot on the right and barely on the left.
+    func inner_glow_sides [ color: rgba, top: f32, right: f32, bottom: f32, left: f32 ]
+        c : vec4f [ sk_color[ color ] ]
+        states[state_depth - 1].inner_glow_color = c
+        states[state_depth - 1].inner_glow_px    = maxf[ maxf[ top, right ], maxf[ bottom, left ] ]
+        states[state_depth - 1].glow_sides       = vec4f [ top, right, bottom, left ]
 
     func inner_glow_offset [ x: f32, y: f32 ]
         states[state_depth - 1].inner_glow_ofs = vec2f [ x, y ]
@@ -1629,9 +1704,9 @@ Render Canvas
         pen_x : f32 [ pen_x_in ]
         pen_y : f32 [ pen_y_in ]
         st    : states[state_depth - 1]
-        crop_active : bool [ st.text_crop.z > st.text_crop.x ]
-        crop_x0 : f32 [ st.text_crop.x ]
-        crop_x1 : f32 [ st.text_crop.z ]
+        crop_active : bool [ st.crop.z > st.crop.x ]
+        crop_x0 : f32 [ st.crop.x ]
+        crop_x1 : f32 [ st.crop.z ]
 
         for [ i: i32 0, i < display.count, i += 1 ]
             cp   : u32 [ display[i] ]
@@ -1699,7 +1774,7 @@ Render Canvas
 
         st : CanvasState states[state_depth - 1]
         text_shader.viewport   = vec2f [ f32 width, f32 height ]
-        text_shader.crop_rect  = st.text_crop
+        text_shader.crop_rect  = st.crop
         pen_x : roundf[ tx + st.transform.tx ]
         pen_y : roundf[ ty + st.transform.ty ]
 
@@ -1737,6 +1812,7 @@ Render Canvas
 
     func setup_shader [ st: CanvasState, rx: f32, ry: f32, rw: f32, rh: f32 ]
         ui_shader.viewport      = vec2f [ f32 width, f32 height ]
+        ui_shader.crop_rect     = st.crop
         ui_shader.rect          = vec4f [ rx, ry, rw, rh ]
         ui_shader.fill_color    = st.fill_color # color_to_vec4 [ st.fill_color ]
         ui_shader.stroke_color  = st.stroke_color # color_to_vec4 [ st.stroke_color ]
@@ -1757,6 +1833,7 @@ Render Canvas
         ui_shader.xform_row0 = vec4f [ st.transform.ma, st.transform.mb,
                                        st.transform.mc, st.transform.md ]
         ui_shader.xform_row1 = vec4f [ st.transform.tx, st.transform.ty, 0.0, 0.0 ]
+        ui_shader.glow_sides          = st.glow_sides
         ui_shader.inner_glow_color    = st.inner_glow_color
         ui_shader.inner_shadow_color  = st.inner_shadow_color
         ui_shader.stroke_shadow_color = st.stroke_shadow_color
@@ -1927,6 +2004,29 @@ Render Canvas
                 if [ cmod.pipelines && cmod.pipelines.count > 0 ]
                     p : Pipeline cmod.pipelines[0]
                     p.rebind_image[ sdf_tex ]
+
+    # composite `src` canvas into the rect, modulated by `mask_src` (grayscale:
+    # white = keep, black = fade). content and mask sampled with the same uv,
+    # so both canvases should share the dst rect's coordinate space.
+    func draw_canvas_masked [ src: Canvas, mask_src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
+        tex  : Texture [ (src.reduction) ? src.reduction : src.color ]
+        mtex : Texture [ (mask_src.reduction) ? mask_src.reduction : mask_src.color ]
+        tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        mtex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        image_override = tex
+        mask_override  = mtex
+        path.clear[]
+        path.add_rect[ x, y, rw, rh ]
+        paint[]
+        image_override = null
+        mask_override  = null
+        if [ models ]
+            for [ mi: i32 0, mi < models.count, mi += 1 ]
+                cmod : Model models[mi]
+                if [ cmod.pipelines && cmod.pipelines.count > 0 ]
+                    p : Pipeline cmod.pipelines[0]
+                    p.rebind_image[ sdf_tex ]
+                    p.rebind_mask[ sdf_tex ]
 
     # paint `tex` into `dst` using the full texture as source.
     func draw_image [ tex: Texture, dst: rect ]
@@ -2106,8 +2206,11 @@ Render Canvas
             ui_shader.fill_color = st.fill_color
             ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
             is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
-            img_mode : f32  [ (is_r8) ? f32 DrawMode.image_r : f32 DrawMode.image ]
-            mode     : f32  [ (image_override) ? img_mode : f32 DrawMode.solid ]
+            # mask_override present → masked composite (content * mask).
+            # otherwise r8 → image_r, rgba → image, none → solid.
+            img_mode : f32  [ (mask_override) ? DrawMode.image_masked
+                            : ((is_r8) ? DrawMode.image_r : DrawMode.image) ]
+            mode     : f32  [ (image_override) ? img_mode : DrawMode.solid ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, mode ]
             if [ image_override && models ]
                 for [ mi: i32 0, mi < models.count, mi += 1 ]
@@ -2115,6 +2218,8 @@ Render Canvas
                     if [ cmod.pipelines && cmod.pipelines.count > 0 ]
                         p : Pipeline cmod.pipelines[0]
                         p.rebind_image[ image_override ]
+                        if [ mask_override ]
+                            p.rebind_mask[ mask_override ]
         el
             # arbitrary path — GPU compute SDF. on cache miss the edge list
             # was just extracted above; on cache hit we reuse the edges that

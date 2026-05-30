@@ -228,12 +228,25 @@ Display Window
             changed = true
         if [ inst.label != e.label ]
             inst.label = e.label
+            # the displayed source changed (e.g. a new file opened in this
+            # editor) — drop any in-progress edit AND release focus so the
+            # element leaves its label-edit state entirely (no stale query, not
+            # stuck dimmed/focused). this is how the element "knows" it was
+            # updated, independent of which path opened the file. release_focus
+            # is a no-op unless this element is the focused one.
+            inst.edit       = ''
+            inst.sel_col    = 0
+            inst.anchor_col = 0
+            release_focus[ inst ]
             changed = true
         inst_opt : (inst to Option)
         e_opt    : (e    to Option)
         if [ inst_opt && e_opt ]
             if [ inst_opt.selected != e_opt.selected ]
                 inst_opt.selected = e_opt.selected
+                changed = true
+            if [ inst_opt.left_view != e_opt.left_view ]
+                inst_opt.left_view = e_opt.left_view
                 changed = true
             if [ inst_opt.right_view != e_opt.right_view ]
                 inst_opt.right_view = e_opt.right_view
@@ -572,7 +585,7 @@ Display Window
                 changed = true
             el
                 ta0 : i64 [ epoch_micros[] ]
-                args_changed : false #apply_args[ instance, e ]
+                args_changed : bool apply_args[ instance, e ]
                 a.t_apply_args += epoch_micros[] - ta0
                 changed = args_changed || instance.restyle || force
                 instance.restyle = false
@@ -653,7 +666,7 @@ Display Window
         update_element[ root, render, restyle ]
         t1 : i64 [ epoch_micros[] ]
         dt : i64 [ t1 - t0 ]
-        if [ dt > 100 ] puts 'update:{dt}us  args:{t_apply_args}us  style:{t_apply_style}us  render:{t_render}us'
+        #if [ dt > 100 ] puts 'update:{dt}us  args:{t_apply_args}us  style:{t_apply_style}us  render:{t_render}us'
         restyle = false
 
     public func set_capture [ e: element ]
@@ -688,7 +701,9 @@ Display Window
             focus = null
 
     public func find_target [ e: element, ev: Event, must: element ] -> element
-        if [ !e || e.disable || e.ghost ]
+        # fully-transparent elements are hidden — ignore them (and their
+        # children) in event hit-testing so they don't capture clicks.
+        if [ !e || e.disable || e.ghost || e.transparency >= 1.0 ]
             return null
         b : rect  [ e.bounds ]
         x : f32   [ ev.mouse.pos.x ]
@@ -708,12 +723,18 @@ Display Window
         ev.mouse.pos.x = lx + e.scroll.x
         ev.mouse.pos.y = ly + e.scroll.y
 
+        # topmost children paint on top, so they get first crack at the hit
         for [ child: element, id: string ] in e.elements
+            if [ !child.topmost ] continue
             hit : find_target[ child, ev, must ]
-            t   : typeid[hit]
             if [ hit ]
                 return hit
-        
+        for [ child: element, id: string ] in e.elements
+            if [ child.topmost ] continue
+            hit : find_target[ child, ev, must ]
+            if [ hit ]
+                return hit
+
         r : element [ ( !must || must == e ) ? e : null ]
         if [ !r ]
             ev.mouse.pos.x = x
@@ -1218,7 +1239,7 @@ Display Window
             layer : Layer [ layer_au to Layer ]
             if [ !layer || layer.ctype != stage || layer.hide ]
                 continue
-            
+
             layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null, e.fc ] : e.bounds.copy[]
             layer.bounds.x -= e.bounds.x
             layer.bounds.y -= e.bounds.y
@@ -1388,9 +1409,9 @@ Display Window
                     blur:   layer.label_shadow_blur ]
                 tx0 : f32 [ draw_cv.transform_tx[] + b.x ]
                 ty0 : f32 [ draw_cv.transform_ty[] + b.y ]
-                draw_cv.set_text_crop[ tx0, ty0, tx0 + b.w, ty0 + b.h ]
+                draw_cv.set_crop[ tx0, ty0, tx0 + b.w, ty0 + b.h ]
                 draw_cv.draw_text    [ (label || element_text), b, align, offset, layer.label_overflow, lsh ]
-                draw_cv.clear_text_crop[]
+                draw_cv.clear_crop[]
                 if [ layer.label_font && layer.label_font.count > 0 ]
                     draw_cv.set_font[ prev_font ]
                 draw_cv.restore      [ ]
@@ -1424,12 +1445,50 @@ Display Window
                 if [ !e.needs_frame ]
                     e.pristine = true
 
-        # blit element cache into parent canvas (screen stage only)
+        # blit element cache into parent canvas (screen stage only). when the
+        # element wants an edge fade, build/refresh a grayscale mask (white
+        # center, black inner glow) sized to the cache and composite through it.
+        mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
         if [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
-            cv.draw_canvas[ e.cache_canvas, 0.0 - f32 e.cache_ox, 0.0 - f32 e.cache_oy, f32 ew, f32 eh ]
+            if [ mask_on ]
+                if [ !e.mask_canvas || e.mask_w != ew || e.mask_h != eh ]
+                    e.mask_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
+                    e.mask_canvas.update[]
+                    e.mask_w = ew
+                    e.mask_h = eh
+                    e.mask_canvas.reset[ vec4f[ 0.0, 0.0, 0.0, 1.0 ] ]
+                    e.mask_canvas.save[]
+                    # linear falloff so the fade is a straight ramp on the edges
+                    e.mask_canvas.glow_falloff[ 1.0 ]
+                    e.mask_canvas.fill_color[ rgba['#fff'] ]
+                    # mask_glow = (top, right, bottom, left) px
+                    e.mask_canvas.inner_glow_sides[ rgba['#000'],
+                        e.mask_glow.x, e.mask_glow.y, e.mask_glow.z, e.mask_glow.w ]
+                    # mask_inset = (top, right, bottom, left) px: shrink the rect
+                    # so the fade starts inset; outside stays fully masked.
+                    mrx : f32 [ e.mask_inset.w ]
+                    mry : f32 [ e.mask_inset.x ]
+                    mrw : f32 [ f32 ew - e.mask_inset.w - e.mask_inset.y ]
+                    mrh : f32 [ f32 eh - e.mask_inset.x - e.mask_inset.z ]
+                    e.mask_canvas.rect_to[ mrx, mry, mrw, mrh ]
+                    e.mask_canvas.paint[]
+                    e.mask_canvas.restore[]
+                cv.draw_canvas_masked[ e.cache_canvas, e.mask_canvas, 0.0 - f32 e.cache_ox, 0.0 - f32 e.cache_oy, f32 ew, f32 eh ]
+            el
+                cv.draw_canvas[ e.cache_canvas, 0.0 - f32 e.cache_ox, 0.0 - f32 e.cache_oy, f32 ew, f32 eh ]
 
         last_2 : element
+        # paint normal children first, then topmost children over them
         for [ ee: element, id: string ] in e.elements
+            if [ ee.topmost ] continue
+            cv.save[]
+            if [ ee.bounds ]
+                cv.translate[ ee.bounds.x, ee.bounds.y ]
+            draw_element[ ee, stage, last_2 ]
+            last_2 = ee
+            cv.restore[]
+        for [ ee: element, id: string ] in e.elements
+            if [ !ee.topmost ] continue
             cv.save[]
             if [ ee.bounds ]
                 cv.translate[ ee.bounds.x, ee.bounds.y ]
@@ -1534,6 +1593,7 @@ element View
         return null
 
 element Group
+    public selected : bool
     func render[] -> Elements
         return null
 
@@ -1559,6 +1619,7 @@ Button Check
 
 Button Option
     public selected   : bool
+    public left_view  : bool
     public right_view : bool
     public toggle     : bool
     func on_press[ ev:Event ]

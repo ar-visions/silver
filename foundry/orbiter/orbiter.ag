@@ -17,10 +17,21 @@ import Editor
 import Console
 import FileList
 
+element EditorView
+    public selected : bool
+
+# editor title bar. `selected` = the "New"/finder state (no file open): shows
+# the magnify and left-aligns the (typed) text. with a file open it's centered
+# and the magnify is hidden. clicking it focuses → editable.
+element EditorTitle
+    public selected : bool
+
 Option  DebugPanel
 Option  CallStack
-Option  FileTab
-    public left : bool
+# left-column tab for a project: a running-process context (process, shell
+# output, lldb). `state` drives the side status light color.
+Option  ProjectTab
+    public state : string
 Control Tabs
 Control Instances
     public selected : bool
@@ -37,16 +48,43 @@ trinity orbiter # implements compiler
     intern target_srcs   : array path
     public open_files       : array path
     public active_idx       : i32
-    public active_right_idx : i32 [ -1 ]
+    public left_idx         : i32
+    public right_idx        : i32
+    public config_side      : i32
     public active_panel  : string
     public editor_panel  : string
     public active_target : string
     public active_console: string
     public show_console  : bool
+    # toggles the right-side file-list panel (the >| button in the editor group)
+    public show_right    : bool [ true ]
     public filter_text   : string
+    # finder search text typed into an editor title (magnify) when it has no file
+    public find_text     : string
+    # directories the finder searches (default: the project path). users add more.
+    public search_dirs   : array path
+    # flat index of every file path under search_dirs (built once, filtered in
+    # memory per keystroke). find_prev caches the last query for incremental
+    # narrowing; find_results is the current match set.
+    public file_index    : list string
+    public find_prev     : string
+    public find_results  : list string
+    # set true by the inotify watch thread when anything under search_dirs
+    # changes. the next search rebuilds file_index lazily on the main thread.
+    public index_dirty   : bool
+    # one inotify watch per search dir; keeps file_index fresh (like vscode's
+    # file watcher) instead of a once-per-session walk.
+    intern index_watches : array watch
     public compile_log   : list string
     public stdout_log    : list string
     public nav_root      : path
+    # breakpoints are app-global, keyed by "source:line" -> condition string
+    # (empty = plain breakpoint, non-empty = conditional). the same map is
+    # handed to every Editor so they all share one set.
+    public breakpoints   : map string[string]
+    # code font size (px) for editors. canvas default is large (~22); this is
+    # the single place to tune it. line-number labels render smaller still.
+    public code_font_size : i32
     intern stdout_rfd    : i32 [ -1 ]
     intern stdout_line   : string
  
@@ -54,6 +92,11 @@ trinity orbiter # implements compiler
         width          = 1888
         height         = 888
         background     = 'Background'
+        # create the shared breakpoint set first so it always exists before any
+        # Editor is built and handed a reference to it.
+        breakpoints    = map string[string] []
+        code_font_size = 19    # ~70% of the large canvas default
+
         # targets defined once here
         target_names   = array string []
         target_roots   = array path []
@@ -64,20 +107,36 @@ trinity orbiter # implements compiler
         target_names  += 'hyperspace'
         target_roots  += path '/src/silver/foundry/hyperspace'
         target_srcs   += path '/src/silver/foundry/hyperspace'
+        # no files open at start — files open from the FileList (main on click,
+        # right pane on shift+click)
         open_files     = array path []
-        open_files    += path '/src/silver/src/silver.c'
-        open_files    += path '/src/silver/src/aether.c'
-        open_files    += path '/src/silver/src/Au.c'
-        active_idx     = 0
+        active_idx     = -1
+        left_idx       = -1
+        right_idx      = -1
         active_panel   = 'files'
         editor_panel   = 'editor'
         active_target  = 'silver'
         nav_root       = target_roots[0]
         active_console = 'shell'
         show_console   = true
+        show_right     = true
         filter_text    = ''
+        find_text      = ''
+        # default search dir is the project path; users can append more
+        search_dirs    = array path []
+        search_dirs   += target_roots[0]
+        file_index     = list string []
+        find_prev      = ''
+        find_results   = list string []
+        index_dirty    = false
+        index_watches  = array watch []
+        start_watching[]
         compile_log    = list string []
         stdout_log     = list string []
+        # seed one at silver.c:4 to have something to look at (empty condition
+        # = a plain breakpoint; a non-empty string would be a conditional one)
+        bp_src : open_files[0]
+        breakpoints['{bp_src}:4'] = string[]
         stdout_line    = ''
         check_stale[]
         ensure_user_config[]
@@ -135,13 +194,101 @@ trinity orbiter # implements compiler
         compile_log.push[ 'done: {mod}' ]
         #au_spawn[ ref compile_fn, a, mod ]
 
-    func open_file [ p: path ]
+    # map a path to its slot in open_files, registering it if not yet present.
+    # (renamed from file_index — that name is the search-index prop; silver is
+    # like swift, a func can't shadow a prop.)
+    func file_slot [ p: path ] -> i32
         for [ i: i32 0, i < open_files.count, i += 1 ]
-            if [ open_files[i] == p ]
-                active_idx = i
-                return
+            if [ open_files[i] == p ] return i
         open_files.push[ p ]
-        active_idx = open_files.count - 1
+        return open_files.count - 1
+
+    # build a flat index of every file path under search_dirs ONCE — the only
+    # filesystem cost. per-keystroke search then just filters this in memory
+    # (pure silver — no system commands).
+    func index_files [ d: path, out: list string, depth: i32 ]
+        if [ depth > 8 ] return
+        entries : array [ d.ls[ null, false ] ]
+        if [ !entries ] return
+        for [ i: i32 0, i < entries.count, i += 1 ]
+            e : path entries[i]
+            if [ e.is_dir[] ]
+                index_files[ e, out, depth + 1 ]
+            el
+                out.push[ '{e}' ]
+
+    func build_index []
+        file_index = list string []
+        for [ d: path ] in search_dirs
+            index_files[ d, file_index, 0 ]
+        index_dirty = false
+
+    # spawn one inotify watch per search dir. the watch runs on its own pthread
+    # (Au.watch) and fires on_index_change when anything under the dir changes.
+    func start_watching []
+        for [ d: path ] in search_dirs
+            iw : watch [ res: d, callback: ref on_index_change, argument: a ]
+            iw.start[]
+            index_watches += iw
+
+    # called FROM the watch thread — keep it trivial. just flag the index stale;
+    # the rebuild happens on the main thread in the next run_search.
+    func on_index_change [ changed: Au ] -> none
+        index_dirty = true
+
+    # filter the cached index by find_text. incremental: if find_text is a
+    # superstring of the previous query, narrow the previous results rather than
+    # rescanning the whole index (substring match is monotonic). full rescan
+    # only on backspace / non-extending edits.
+    func run_search []
+        if [ file_index.count == 0 || index_dirty ]
+            build_index[]
+            # file_index changed under us — old find_results are stale, so force
+            # a full rescan rather than narrowing from them
+            find_prev = ''
+        narrow : bool [ find_prev.count > 0 && find_text.index_of[ find_prev ] >= 0 ]
+        base2  : list string [ (narrow) ? find_results : file_index ]
+        find_prev = find_text
+        out : list string []
+        if [ find_text && find_text.count > 0 ]
+            for [ s: string ] in base2
+                if [ s.index_of[ find_text ] >= 0 ]
+                    out.push[ s ]
+                    if [ out.count >= 500 ] break
+        find_results = out
+        win : cast Window [ w ]
+        if [ !win ] return
+        grp : element win.root.elements['editor-group']
+        if [ !grp ] return
+        eds : element grp.elements['editors']
+        ed  : Editor (eds) ? eds.elements['pane'] : null
+        if [ ed && !ed.src ]
+            ed.lines = find_results
+            ed.pristine = false
+
+    # open in the main (left) pane
+    func open_file [ p: path ]
+        idx : i32 [ file_slot[ p ] ]
+        left_idx   = idx
+        active_idx = idx
+        exit_finder[]
+
+    # open in the right pane (split view)
+    func open_file_right [ p: path ]
+        right_idx  = file_slot[ p ]
+        exit_finder[]
+
+    # leave finder/edit mode: clear the typed query and drop focus from the
+    # editor title so it returns to showing the (centered) filename, not an
+    # editable field.
+    func exit_finder []
+        find_text    = ''
+        find_prev    = ''
+        find_results = list string []
+        win : cast Window [ w ]
+        if [ !win ] return
+        if [ win.focus && win.focus.id == 'title' ]
+            win.release_focus[ win.focus ]
 
     func set_active [ idx: i32 ]
         active_idx = idx
@@ -152,11 +299,15 @@ trinity orbiter # implements compiler
         if [ !tb ] return
         nav : element tb.elements['source_nav']
         if [ !nav ] return
-        for [ i: i32 0, i < open_files.count, i += 1 ]
-            key : string 'tab_{i}'
-            op  : Option nav.elements[key]
-            if [ op ]
-                op.selected = (i == active_idx)
+        # project tabs select by active_target (keys are the project names)
+        for [ i: i32 0, i < target_names.count, i += 1 ]
+            name : string target_names[i]
+            op   : Option nav.elements[name]
+            if [ op ] op.selected = active_target == name && active_panel != 'config'
+        sys : Option nav.elements['system']
+        if [ sys ] sys.selected = active_target == 'system' && active_panel != 'config'
+        cfg : Option nav.elements['config']
+        if [ cfg ] cfg.selected = active_panel == 'config'
         win.restyle = true
 
     func sync_editor []
@@ -164,15 +315,21 @@ trinity orbiter # implements compiler
         if [ !win ] return
         grp : element win.root.elements['editor-group']
         if [ !grp ] return
-        if [ active_idx >= 0 && active_idx < open_files.count ]
-            p : path open_files[active_idx]
-            title_el : element grp.elements['title']
-            if [ title_el ] title_el.label = p.filename[]
-            ed  : Editor grp.elements['editor']
+        eds : element grp.elements['editors']
+        if [ left_idx >= 0 && left_idx < open_files.count ]
+            p  : path open_files[left_idx]
+            ed : Editor (eds) ? eds.elements['pane'] : null
             if [ ed ]
                 ed.src = p
                 ed.load_file[]
                 ed.pristine = false
+        if [ right_idx >= 0 && right_idx < open_files.count ]
+            p  : path open_files[right_idx]
+            er : Editor (eds) ? eds.elements['pane-right'] : null
+            if [ er ]
+                er.src = p
+                er.load_file[]
+                er.pristine = false
 
     func sync_active []
         win : cast Window [ w ]
@@ -181,9 +338,10 @@ trinity orbiter # implements compiler
         if [ !inst_el ] return
         con_el : element inst_el.elements[ 'console' ]
         con    : Console con_el
-        if [ con && active_target != 'system' ]
+        if [ con ]
             con.session_id = active_target
             con.pristine   = false
+            con.set_focus[]
         acts : element inst_el.elements[ 'actions' ]
         if [ acts ]
             play_el : element acts.elements[ 'play' ]
@@ -201,37 +359,73 @@ trinity orbiter # implements compiler
             if [ e inherits FileList ]
                 fl : FileList e
                 if [ fl.pending_open ]
-                    open_file[ fl.pending_open ]
+                    if [ ev.key.shift ]
+                        open_file_right[ fl.pending_open ]
+                    el
+                        open_file[ fl.pending_open ]
                     fl.pending_open = null
-                    sync_tabs[]
                     sync_editor[]
                     return
+            # clicking a result row in the finder (an editor with no file) opens it
+            if [ e inherits Editor ]
+                ed : Editor e
+                if [ !ed.src && ed.sel_line >= 0 && ed.sel_line < find_results.count ]
+                    hit_path : find_results.value_by_index[ ed.sel_line ]
+                    open_file[ path '{hit_path}' ]
+                    find_text = ''
+                    find_results = list string []
+                    return
+        # >| toggle hides/shows the right file-list panel
+        if [ ev.target.id == 'toggle_side' ]
+            show_right = !show_right
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
         puts 'on_press: {ev.target.id}'
         for [ i: i32 0, i < open_files.count, i += 1 ]
             key : string 'tab_{i}'
             if [ ev.target.id == key ]
                 rel_x    : f32 [ ev.mouse.pos.x - ev.target.bounds.x ]
                 in_right : bool [ rel_x > ev.target.bounds.w - 14.0 ]
+                puts 'tab press: shift={ev.key.shift} in_right={in_right} rel_x={rel_x} w={ev.target.bounds.w}'
                 if [ ev.key.shift || in_right ]
-                    active_right_idx = (active_right_idx == i) ? -1 : i
+                    active_panel = 'editor'
+                    if [ left_idx == i ]
+                        left_idx  = right_idx
+                        right_idx = i
+                    el
+                        right_idx = i
+                    set_active[ i ]
+                    sync_editor[]
                 el
+                    active_panel = 'editor'
+                    if [ right_idx == i ]
+                        right_idx = left_idx
+                        left_idx  = i
+                    el
+                        left_idx = i
                     set_active[ i ]
                     sync_editor[]
                 sync_tabs[]
                 return
-        if [ ev.target.id == 'git' || ev.target.id == 'project' ]
+        if [ ev.target.id == 'git' ]
             editor_panel = (editor_panel == ev.target.id) ? 'editor' : ev.target.id
             if [ ev.target ] ev.target.ux.restyle = true
             return
         if [ ev.target.id == 'config' ]
-            active_panel = ev.target.id
-            if [ ev.target ] ev.target.ux.restyle = true
+            rel_x    : f32 [ ev.mouse.pos.x - ev.target.bounds.x ]
+            in_right : bool [ rel_x > ev.target.bounds.w - 14.0 ]
+            if [ ev.key.shift || in_right ]
+                config_side = (config_side == 1) ? 0 : 1
+            el
+                active_panel = 'config'
+            sync_tabs[]
             return
         if [ ev.target inherits Option ]
             id : string ev.target.id
             if [ id == 'system' ]
                 active_target = 'system'
                 sync_active[]
+                ev.no_default = true
             el [ id == 'shell' || id == 'lldb' ]
                 active_console = (active_console == id) ? '' : id
                 show_console   = active_console.count > 0
@@ -249,7 +443,9 @@ trinity orbiter # implements compiler
                         matched       = true
                 if [ !matched ]
                     active_panel = id
-                if [ matched ] sync_active[]
+                if [ matched ]
+                    sync_active[]
+                    ev.no_default = true
             if [ ev.target ] ev.target.ux.restyle = true
             return
 
@@ -260,8 +456,16 @@ trinity orbiter # implements compiler
             if [ ev.key.text && ev.key.text.count > 0 ]
                 filter_text = filter_text + ev.key.text
                 puts 'filter: {filter_text}'
-                fl : FileList ev.target.parent.elements["files"]
+                # filter now lives inside the right nav's title header, so the
+                # FileList is a sibling of the title (two levels up).
+                fl : FileList ev.target.parent.parent.elements["files"]
                 if [ fl ] fl.pristine = false
+        # typing into an editor's title (the finder/magnify control)
+        if [ ev.target.id == 'title' ]
+            if [ ev.key.text && ev.key.text.count > 0 ]
+                find_text = find_text + ev.key.text
+                ev.target.pristine = false
+                run_search[]
 
     
     func on_key [ ev: Event ]
@@ -270,84 +474,134 @@ trinity orbiter # implements compiler
         if [ ev.target.id == 'filter' ]
             if [ !ev.key.state ] return
             k : i32 [ i32 ev.key.unicode ]
-            fl : FileList ev.target.parent.elements["files"]
+            fl : FileList ev.target.parent.parent.elements["files"]
             if [ k == 259 ]
                 if [ filter_text && filter_text.count > 0 ]
                     filter_text = filter_text.mid[ 0, filter_text.count - 1 ]
                     if [ fl ] fl.pristine = false
             el [ k == 256 ]
                 filter_text = ''
-                if [ fl ] fl.pristine = false 
+                if [ fl ] fl.pristine = false
+
+        # finder title: backspace trims, enter opens the typed file
+        if [ ev.target.id == 'title' ]
+            if [ !ev.key.state ] return
+            k : i32 [ i32 ev.key.unicode ]
+            if [ k == 259 ]
+                if [ find_text && find_text.count > 0 ]
+                    find_text = find_text.mid[ 0, find_text.count - 1 ]
+                    ev.target.pristine = false
+                    run_search[]
+            el [ k == 257 ]
+                # enter opens the first matching result
+                if [ find_results && find_results.count > 0 ]
+                    first_path : find_results.value_by_index[ 0 ]
+                    open_file[ path '{first_path}' ]
+                    find_text = ''
+                    find_results = list string []
 
     public func on_render [ w: Window ] -> Elements
-##
-        fps : f32 [ w.frame_factor * 60.0 ]
-        avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
-        w.set_title[ 'orbiter 444 | {pad[i32[avg_fps]]} fps' ]
-        return Elements [ "main": element [ ] ]
-  
-##
         drain_stdout[]
         fps : f32 [ w.frame_factor * 60.0 ]
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
         w.set_title[ 'orbiter' ]
 
-        active_path         : path (open_files.count > 0) ? open_files[active_idx] : null
-        active_name         : string (active_path) ? active_path.filename[] : string[]
-        source_nav : Elements []
-        for [ i: i32 0, i < open_files.count, i += 1 ]
-            p   : path   open_files[i]
-            key : string 'tab_{i}'
-            source_nav[key] = FileTab [ label: p.filename[], selected: i == active_idx, right_view: i == active_right_idx, left: i != active_right_idx ]
-        source_nav['config'] = Option [ selected: active_panel == 'config' ]
+        left_path           : path (left_idx >= 0 && left_idx < open_files.count) ? open_files[left_idx] : null
+        right_path          : path (right_idx >= 0 && right_idx < open_files.count) ? open_files[right_idx] : null
+        active_name         : string (left_path) ? left_path.filename[] : string[]
 
-        targets : Elements []
-        targets['system'] = Option [ selected: active_target == 'system' ]
+        source_nav : Elements []
         for [ i: i32 0, i < target_names.count, i += 1 ]
             name : string target_names[i]
-            targets[name] = Option [ label: name, selected: active_target == name ]
+            source_nav[name] = ProjectTab [ label: name, selected: active_target == name ]
 
-        consoles : Elements []
-        consoles['shell'] = Option [ label: 'shell', selected: active_console == 'shell', toggle: true ]
-        consoles['lldb']  = Option [ label: 'lldb',  selected: active_console == 'lldb',  disable:active_target == 'system', toggle: true ]
-
-        inst : Elements []
-        inst['consoles'] = Tabs [ elements: consoles ]
-        inst['targets']  = Tabs [ elements: targets  ]
-        inst['actions']  = Tabs [ elements: Elements [
-            "play": Button [ disable: active_target == 'system' ]
+        # the main pane is always present and fills the group. with no file it's
+        # a finder (file search results); with a file it's the editor.
+        editor_els : Elements []
+        editor_els['pane'] = Editor [ src: left_path, breakpoints: breakpoints, code_font_size: code_font_size, elements: Elements [
+            "title": EditorTitle [
+                selected: !left_path
+                # label = placeholder (filename, or 'Finder'); the typed query
+                # lives in `edit` (separate storage), rendered over the dim label
+                edit: find_text
+                label: (left_path) ? left_path.filename[] : 'Finder'
+                elements: Elements [
+                    "nav": element [
+                        elements: Elements [
+                            "git":     Option [ selected: editor_panel == 'git' ]
+                        ]
+                    ]
+                ]
+            ]
         ]]
-        inst['console'] = Console        [ session_id: active_target, selected: active_target != 'system' ]
-        inst['syslog']  = CompileConsole  [ log: stdout_log,         selected: active_target == 'system'  ]
+        if [ right_idx >= 0 && right_idx < open_files.count ]
+            editor_els['pane-right'] = Editor [ src: right_path, breakpoints: breakpoints, code_font_size: code_font_size, elements: Elements [
+                "title": EditorTitle [
+                    selected: !right_path
+                    edit: find_text
+                    label: (right_path) ? right_path.filename[] : 'Finder'
+                    elements: Elements [
+                        "nav": element [
+                            elements: Elements [
+                                "git":     Option [ selected: editor_panel == 'git' ]
+                            ]
+                        ]
+                    ]
+                ]
+            ]]
 
         return Elements [
-            "toolbar":      Toolbar [
-                elements:   Elements [
-                    'source_nav':     Tabs[ elements: source_nav ]
-                ]
-            ],
             "right":        Toolbar [
+                transparency: (show_right) ? 0.0 : 1.0
                 elements: Elements [
+                    "title": element [
+                        elements: Elements [
+                            "nav": element [
+                                elements: Elements [
+                                    "files":     Option [ selected: active_panel == 'files' ]
+                                    "callstack": Option [ selected: active_panel == 'callstack' ]
+                                    "debug":     Option [ selected: active_panel == 'debug' ]
+                                    "agent":     Option [ selected: active_panel == 'agent' ]
+                                ]
+                            ]
+                        ]
+                    ]
                     "files":        FileList   [ selected: active_panel == 'files', filter: (active_panel == 'files') ? filter_text : '', root: nav_root ]
                     "callstack":    CallStack  [ selected: active_panel == 'callstack' ]
                     "debug":        DebugPanel [ selected: active_panel == 'debug' ]
-                    "debug2":       CallStack  [ selected: active_panel == 'debug' ]
-                    "filter":       element    [ label: filter_text ]
-                ] 
-            ],
-            "editor-group": Group [
-                elements: Elements [
-                    "title-tabs":   element[
-                        elements: Elements [
-                            "git":          Option [ selected: editor_panel == 'git' ]
-                            "project":      Option [ selected: editor_panel == 'project' ]
-                        ]
-                    ]
-                    "title":        element [ label: active_name ]
-                    "editor":       Editor  [ src: active_path ]
+                    "agent":        Option     [ selected: active_panel == 'agent' ]
+                    # 1-unit filter input pinned to the bottom of the navigator.
+                    # topmost so clicks hit it instead of the FileList it overlaps.
+                    "filter":       element    [ label: 'filter', edit: filter_text ]
                 ]
             ],
-            "instances": Instances [ elements: inst, selected: show_console ]
+            "editor-group": Group [
+                # selected = right panel hidden → the editor group fills its place
+                selected: !show_right
+                elements: Elements [
+                    "editors": EditorView [
+                        selected: left_idx >= 0 && right_idx >= 0
+                        elements: editor_els
+                    ]
+                    # >| toggle: hide/show the right file-list panel. topmost so
+                    # it draws over (and is hit before) the full-area editor view
+                    "toggle_side": Option [ selected: !show_right, topmost: true ]
+                ]
+            ],
+            
+            "instances": Instances [ elements: Elements [
+                'source_nav': Tabs [ elements: source_nav ]
+                'tools':      Tabs [ elements: Elements [
+                    'system': Option [ selected: active_target == 'system' ]
+                    'play': Button [ disable: active_target == 'system' ]
+                    
+                ] ]
+                'consoles':   Tabs [ elements: Elements [
+                    'shell': Option [ label: 'shell', selected: active_console == 'shell', toggle: true ]
+                    'lldb': Option [ label: 'lldb',  selected: active_console == 'lldb',  disable:active_target == 'system', toggle: true ]
+                ] ]
+                'console':    Console [ session_id: active_target, feed: (active_target == 'system') ? stdout_log : null ]
+            ], selected: show_console ]
         ]
  
         #"avatar":       Avatar     [ transparency: (active_panel == 'debug') ? 0.0 : 1.0 ]

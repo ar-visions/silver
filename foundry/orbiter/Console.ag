@@ -27,13 +27,14 @@ class ConsoleSession
     mutable scrollback : list string
     mutable scroll     : f32 [ 0.0 ]
 
-    func start []
-        if [ pty_fd >= 0 ] return
-        puts 'ConsoleSession.start: forking bash'
+    func init []
         scrollback = list string []
         screen = array TermCell []
         for [ i: i32 0, i < rows * cols, i += 1 ]
             screen.push[ TermCell [] ]
+
+    func start []
+        if [ pty_fd >= 0 ] return
         pid = forkpty[ ref pty_fd, null, null, null ]
         if [ pid == 0 ]
             setenv[ 'TERM', 'xterm-256color', 1 ]
@@ -212,17 +213,34 @@ Layer TermLayer
     func draw [ cv: Canvas ]
         con : cast Console [ parent ]
         if [ !con ] return
-        if [ bounds.h <= 0 ] return
         s : ConsoleSession con.session[]
         if [ !s ] return
+        if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
+        lh : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
+        x0 : f32 [ bounds.x ]
+        y0 : f32 [ bounds.y ]
+
+        if [ s.pty_fd < 0 ]
+            if [ !con.feed ] return
+            parent.needs_frame = true
+            parent.ux.will_animate = true
+            n      : i32 [ con.feed.count ]
+            max_s  : f32 [ maxf[ f32[n] * lh - bounds.h, 0.0 ] ]
+            for [ li: i32 0, li < n, li += 1 ]
+                y : f32 [ y0 + f32[li] * lh - max_s ]
+                if [ y + lh < bounds.y ] continue
+                if [ y > bounds.y + bounds.h ] break
+                cv.fill_color[ '#ccc' ]
+                cv.draw_text[ con.feed.value_by_index[ li ],
+                    rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
+            return
+
         parent.needs_frame = true
         parent.ux.will_animate = true
         s.read_output[]
-        if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
-        lh       : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
         cw       : f32 [ cv.measure_text[ 'x' ].w ]
-        x0       : f32 [ bounds.x ]
-        y0       : f32 [ bounds.y ]
         sc_count : i32 [ s.scrollback.count ]
         total_h  : f32 [ f32[sc_count + s.rows] * lh ]
         max_s    : f32 [ maxf[ total_h - bounds.h, 0.0 ] ]
@@ -265,18 +283,18 @@ Layer TermLayer
 
 
 Control Console
-    focusable      : true
-    public selected    : bool
+    focusable  : true
     public  session_id : string
+    public  feed       : list string
     mutable sessions   : map ConsoleSession[string]
 
     func session [] -> ConsoleSession
         sid : string (session_id && session_id.count > 0) ? session_id : 'default'
         s   : ConsoleSession sessions[sid]
         if [ !s ]
-            puts 'Console.session: creating new session sid={sid}'
             s = ConsoleSession []
-            s.start[]
+            if [ sid != 'system' ]
+                s.start[]
             sessions[sid] = s
         return s
 

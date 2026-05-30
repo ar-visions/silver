@@ -85,6 +85,11 @@ ielement element
     mutable id              : string
     mutable flags           : i64
     mutable label           : string
+    # editable text buffer — SEPARATE storage from `label`. `label` is the
+    # app-set display string; when a layer is editable, the user types into
+    # `edit`, never over `label`. label renders as a dim placeholder while
+    # `edit` is empty.
+    mutable edit            : string
     public  label2          : string
     mutable layers          : map Layer[string]
     mutable shaders         : map shader  [string]
@@ -105,6 +110,11 @@ ielement element
     public  ghost           : bool
     mutable captured        : bool
     public  disable         : bool
+    # topmost children paint LAST (drawn over their siblings) and are hit-tested
+    # FIRST (they get the event before siblings underneath them). use for
+    # floating controls that overlap a full-area sibling, e.g. a toggle button
+    # sitting on top of an editor view.
+    public  topmost         : bool
     mutable hovered         : bool
     mutable pressed         : bool
     mutable focused         : bool
@@ -150,6 +160,18 @@ ielement element
     intern cache_h       : i32
     intern cache_ox      : i32
     intern cache_oy      : i32
+    # edge fade mask: when any mask_glow component > 0, the cache blit is
+    # modulated by a grayscale mask canvas (white center, black edges via a
+    # black per-edge inner glow). mask_glow = (top, right, bottom, left) px.
+    # built lazily at the blit, rebuilt on cache resize.
+    intern mask_canvas   : Canvas
+    intern mask_w        : i32
+    intern mask_h        : i32
+    public mask_glow     : vec4f
+    # inset (top, right, bottom, left) px: shrinks the masked rect so the fade
+    # starts inset from each edge. region outside the inset stays fully masked
+    # (e.g. content scrolling under a titlebar). 0 = fade from the edge.
+    public mask_inset    : vec4f
     mutable pristine     : bool [ false ]
     mutable needs_frame  : bool
     mutable fc           : f32
@@ -274,6 +296,10 @@ enum Blend
 class Layer
     context parent             : element
     public ctype               : CanvasType
+    # overlay layers (e.g. a scrollbar) draw on the parent canvas AFTER the
+    # element's cache is composited, so an element edge mask doesn't affect
+    # them — the mask stays scoped to the content layers in the cache.
+    public overlay             : bool
     public test2               : bool
     public area                : Region
     mutable bounds             : rect
@@ -361,7 +387,7 @@ class Layer
 
     func hit_col [ ev: Event ] -> i32
         cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
-        text  : string [ (parent.label) ? parent.label : '' ]
+        text  : string [ (parent.edit) ? parent.edit : '' ]
         rel_x : f32 [ ev.mouse.pos.x - bounds.x ]
         return clamp[ i32[ round[ rel_x / cw ] ], 0, text.count ]
 
@@ -391,18 +417,18 @@ class Layer
         sc : i32 [ (parent.sel_col < parent.anchor_col) ? parent.sel_col : parent.anchor_col ]
         ec : i32 [ (parent.sel_col < parent.anchor_col) ? parent.anchor_col : parent.sel_col ]
         if [ sc == ec ] return false
-        parent.label   = text.mid[ 0, sc ] + text.mid[ ec, text.count - ec ]
+        parent.edit    = text.mid[ 0, sc ] + text.mid[ ec, text.count - ec ]
         parent.sel_col    = sc
         parent.anchor_col = sc
         return true
 
     func on_char [ ev: Event ]
         if [ parent.sel_col < 0 ] parent.sel_col = 0
-        text : string [ (parent.label) ? parent.label : '' ]
+        text : string [ (parent.edit) ? parent.edit : '' ]
         delete_selection[ text ]
-        text = (parent.label) ? parent.label : ''
+        text = (parent.edit) ? parent.edit : ''
         col  : i32 [ parent.sel_col ]
-        parent.label = text.mid[ 0, col ] + ev.key.text + text.mid[ col, text.count - col ]
+        parent.edit = text.mid[ 0, col ] + ev.key.text + text.mid[ col, text.count - col ]
         parent.sel_col += 1
         parent.anchor_col = parent.sel_col
         parent.pristine = false
@@ -410,13 +436,13 @@ class Layer
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
         if [ parent.sel_col < 0 ] parent.sel_col = 0
-        text : string [ (parent.label) ? parent.label : '' ]
+        text : string [ (parent.edit) ? parent.edit : '' ]
         col  : i32 [ parent.sel_col ]
         key  : i32 [ ev.key.unicode ]
         if [ key == 259 ]
             if [ !delete_selection[ text ] ]
                 if [ col > 0 ]
-                    parent.label = text.mid[ 0, col - 1 ] + text.mid[ col, text.count - col ]
+                    parent.edit = text.mid[ 0, col - 1 ] + text.mid[ col, text.count - col ]
                     parent.sel_col -= 1
             parent.anchor_col = parent.sel_col
         el [ key == 263 ]
@@ -436,7 +462,7 @@ class Layer
                 parent.sel_col += 1
                 if [ !ev.key.shift ] parent.anchor_col = parent.sel_col
         el [ key == 256 ]
-            parent.label = ''
+            parent.edit = ''
             parent.sel_col = 0
             parent.anchor_col = 0
         parent.pristine = false
@@ -448,8 +474,16 @@ class Layer
                 label_font_cache = CanvasFont [ ft_lib: cv.ft_lib, uri: label_font, size_px: i32[label_size] ]
             cv.set_font[ label_font_cache ]
         if [ !cv.font ] return
-        text  : string [ (parent.label) ? parent.label : '' ]
-        tm    : cv.measure_text[ text ]
+        # the editable buffer is separate storage; the label is shown as a dim
+        # placeholder ONLY while actively focused with nothing typed yet. with
+        # text, or once focus is lost, the label/text renders at full brightness
+        # (so a just-cleared, unfocused title is bright, not stuck dim). the
+        # caret/selection only ever ride the edit buffer, never the label.
+        etext    : string [ (parent.edit) ? parent.edit : '' ]
+        has_edit : bool   [ etext.count > 0 ]
+        dim      : bool   [ !has_edit && parent.focused ]
+        disp     : string [ (has_edit) ? etext : ((parent.label) ? parent.label : '') ]
+        tm    : cv.measure_text[ disp ]
         cw_tm : cv.measure_text[ 'x' ]
         lh_cache = cv.font.line_height
         cw_cache = cw_tm.w
@@ -468,18 +502,22 @@ class Layer
         sc  : i32 [ (col < anc) ? col : anc ]
         ec  : i32 [ (col < anc) ? anc : col ]
 
-        if [ sc != ec ]
+        if [ has_edit && sc != ec ]
             cv.fill_color[ '#264f78' ]
             cv.stroke_width[ 0.0 ]
             cv.rect_to[ x0 + f32[sc] * cw, y0 - tm.ascent + 2.0, f32[ec - sc] * cw, fh - 4.0 ]
             cv.paint[]
 
-        cv.fill_color[ label_color ]
-        cv.draw_text[ text, bounds, vec2f [ ax, ay ], vec2f [ ox, oy ], Overflow.visible, null ]
+        # half-alpha only for the focused-empty placeholder; otherwise full
+        if [ dim ]
+            cv.fill_color[ rgba [ r: label_color.r, g: label_color.g, b: label_color.b, a: label_color.a * 0.5 ] ]
+        el
+            cv.fill_color[ label_color ]
+        cv.draw_text[ disp, bounds, vec2f [ ax, ay ], vec2f [ ox, oy ], Overflow.visible, null ]
         cv.paint[]
 
         if [ parent.focused && parent.sel_col >= 0 ]
-            prefix : text.mid[ 0, col ]
+            prefix : string [ (has_edit) ? etext.mid[ 0, col ] : '' ]
             cx : f32 [ x0 + cv.measure_text[ prefix ].w ]
             cv.fill_color[ '#fff' ]
             cv.stroke_width[ 0.0 ]

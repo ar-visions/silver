@@ -1689,6 +1689,9 @@ declare_class_2(command, string)
     M(AA,BB, i, prop,    public, path,  res) \
     M(AA,BB, i, prop,    public, ARef,  callback) \
     M(AA,BB, i, prop,    public, ARef,  argument) \
+    M(AA,BB, i, prop,    intern, bool,  running) \
+    M(AA,BB, i, prop,    intern, i32,   fd) \
+    M(AA,BB, i, prop,    intern, i64,   tid) \
     M(AA,BB, i, method,  public, none,  pause) \
     M(AA,BB, i, method,  public, none,  start) \
     M(AA,BB, i, override, method, init)
