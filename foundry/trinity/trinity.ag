@@ -218,6 +218,20 @@ Display Window
     func init[]
         puts 'window constructing'
 
+    # at instance birth, fill the instance's public fields from a source object
+    # (its render parent, then the app) when the source declares a public of the
+    # SAME name and EXACT type. union {src,rtype,type} is the field's type.
+    func attempt_instance_write [ src: element, dst: element ]
+        if [ !src || !dst ] return
+        dt : Au_t typeid[ dst ]
+        for [ m: i32 0, m < dt.members.count, m += 1 ]
+            mem : Au_t dt.members.origin[m]
+            if [ mem.member_type != AU_MEMBER_VAR || mem.access_type != 2 ] continue
+            if [ strcmp[ mem.ident, "elements" ] == 0 ] continue
+            sm : Au_t find_member[ typeid[ src ], mem.ident, AU_MEMBER_VAR, 0, true ]
+            if [ sm && sm.access_type == 2 && sm.src == mem.src ]
+                dst.member_set[ mem, src.member_object[ sm ] ]
+
     public func apply_args [ inst: element, e: element ] -> bool
         if [ typeid[ inst ] != typeid[ e ] ] return false
         changed : false
@@ -581,6 +595,9 @@ Display Window
                     home_object.member_set[ imember, instance ]
                  
                 instance.set_context_from[ home_object ]
+                # inherit public fields by name+type: render parent first, app next
+                attempt_instance_write[ parent, instance ]
+                attempt_instance_write[ (parent.ux.app_object to element), instance ]
                 call_init = true
                 changed = true
             el

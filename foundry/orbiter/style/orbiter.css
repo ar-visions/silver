@@ -132,23 +132,29 @@ EditorView {
 Editor / element.pins {
     area:                       r144px t44px r0 b0
     layers.base:
-        fill_color:             #ffffff08
-        radius:                 6
+        fill_color:             #4af2
+        inner_glow:             #8af4 16
+        fill_gradient:          linear
+        fill_gradient_color:    #2488
+        fill_gradient_angle:    90
+        radius:                 0
+        stroke_width:           0.5
+        stroke_color:           #fff2
 }
 
 Editor / element.pins / Option {
     area:                       l0.1 t0.1+ r0.1 h1.1
     layers.base:
         fill_color:             #2481
-        inner_glow:             #8af1 12
+        inner_glow:             #8af4 16
         radius:                 6
         stroke_width:           0.5
         stroke_color:           #fff2
     layers.face:
         label_color:            #fffc
-        label_size:             13
-        label_align:            0.0 0.5
-        label_offset:           8 0
+        label_size:             16
+        label_align:            0.5 0.5
+        label_offset:           0 0
         label_font:             'fonts/SpaceMono-Regular.ttf'
 }
 

@@ -7237,8 +7237,12 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             else
                 snprintf(listen_key, sizeof(listen_key), "%s", fname);
             aether_clear_listen((aether)a);
-            if (a->listen && (strcmp(a->listen->chars, "*") == 0 || strcmp(a->listen->chars, listen_key) == 0))
+            if (a->listen && (strcmp(a->listen->chars, "*") == 0 || strcmp(a->listen->chars, listen_key) == 0)) {
                 ((aether)a)->listen_active = true;
+                // per-enode value trace only for a NAMED target, never '*' (would 10x the whole binary)
+                if (strcmp(a->listen->chars, "*") != 0)
+                    ((aether)a)->listen_values = true;
+            }
         }
 #endif
 

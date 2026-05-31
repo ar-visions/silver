@@ -1,0 +1,42 @@
+# ============================================================================
+# project — the shared model describing a buildable/runnable silver project.
+#
+# defined in its own shared module so that BOTH orbiter and a user-authored
+# `projects.ag` import the same `Project` type. that single registration is
+# what lets orbiter dlopen a compiled `projects.so` and read back its exported
+# `array Project` with matching Au type identity across the module boundary.
+# ============================================================================
+
+import <stdio.h>
+
+# a single project/target. mirrors the per-module `.g` build descriptor
+# (type/modules) plus the absolute paths orbiter needs to build, stale-check,
+# and run it without resolving names against the running binary's cwd.
+class Project
+    # display + target name (e.g. 'silver', 'hyperspace', 'orbiter')
+    public name     : string
+
+    # project root — the repository/workspace dir the project lives under
+    public root     : path
+
+    # ABSOLUTE module path handed to the compiler (the dir containing the
+    # .g/.ag, or the .ag file itself). absolute on purpose: this is the fix for
+    # compile[] resolving a bare name against the wrong cwd.
+    public module   : path
+
+    # source dir/file watched for staleness (compared against `product` mtime).
+    # usually the same as `module`, but kept separate for multi-dir sources.
+    public src      : path
+
+    # built artifact: the binary for an app, or lib<name>.so for a shared module
+    public product  : path
+
+    # build kind, mirroring the .g `type:` field — 'app' | 'shared'
+    public kind     : string
+
+    # dependency module names, mirroring the .g `modules:` field
+    public modules  : array string
+
+    # run configuration (used once we can launch from orbiter)
+    public run_args : array string
+    public run_cwd  : path

@@ -44,6 +44,16 @@ Control Instances
 
 func au_space_clear[] -> none
 
+# resident set size as a fraction of total physical RAM (0..1), 0 if unknown.
+# used as a runaway-leak guard so the app bails out before it locks the machine.
+func au_mem_fraction[] -> f32
+
+# redirect our stdout/stderr into a pipe so we can show our own printf/puts in
+# the system console. returns the non-blocking read fd; au_stdout_orig is a dup
+# of the real stdout so drain_stdout can tee output back to the terminal.
+func au_capture_stdout[] -> i32
+func au_stdout_orig[]    -> i32
+
 trinity orbiter # implements compiler
     intern avg_fps       : f32
     intern target_names  : array string
@@ -107,6 +117,7 @@ trinity orbiter # implements compiler
     # the single place to tune it. line-number labels render smaller still.
     public code_font_size : i32
     intern stdout_rfd    : i32 [ -1 ]
+    intern stdout_orig   : i32 [ -1 ]
     intern stdout_line   : string
  
     func init []
@@ -168,6 +179,12 @@ trinity orbiter # implements compiler
         bp_src : open_files[0]
         breakpoints['{bp_src}:4'] = string[]
         stdout_line    = ''
+        # route our own stdout/stderr into the system console
+        stdout_rfd     = au_capture_stdout[]
+        stdout_orig    = au_stdout_orig[]
+        # guaranteed line so the system console shows content even without capture
+        stdout_log.push[ 'orbiter: system console online' ]
+        printf[ "orbiter: stdout capture active (rfd=%i orig=%i)\n", stdout_rfd, stdout_orig ]
         check_stale[]
         ensure_user_config[]
         #au_set_compiler[a]
@@ -206,6 +223,8 @@ trinity orbiter # implements compiler
         for [ i: i32 0, i < 4096, i += 1 ]
             nr : i32 [ read[ stdout_rfd, ref buf[0], 1 ] ]
             if [ nr <= 0 ] break
+            # silent tee to the real terminal so output still shows there too
+            if [ stdout_orig >= 0 ] write[ stdout_orig, ref buf[0], 1 ]
             if [ i32[buf[0]] == 10 ]
                 stdout_log.push[ stdout_line ]
                 stdout_line = ''
@@ -485,6 +504,7 @@ trinity orbiter # implements compiler
         con    : Console con_el
         if [ con ]
             con.session_id = active_target
+            con.feed       = stdout_log
             con.pristine   = false
             con.set_focus[]
         acts : element inst_el.elements[ 'actions' ]
@@ -681,10 +701,27 @@ trinity orbiter # implements compiler
                 # esc: drop the query and restore the pane — run_search with an
                 # empty query reloads the file (or empties the pane if none)
                 find_text = ''
-                ev.target.pristine = false
+                ev.target.pristine = false 
                 run_search[]
 
+    # 3-arg helper for the listen demo — returns the sum.
+    func sum3 [ x: i32, y: i32, z: i32 ] -> i32
+        return x + y + z
+
+    # small render-path method used as a --listen target to exercise per-statement
+    # method logging — its trace shows up in the system console.
+    func render_tick []
+        fc : i32 [ 1 ]
+        fc += 1
+        r : i32 [ sum3[ fc, 2, 3 ] + 2 ]
+
     public func on_render [ w: Window ] -> Elements
+        # runaway-leak guard: if our RSS passes 20% of physical RAM, quit before
+        # the leak thrashes the machine into a solid lock. cheap (/proc read).
+        if [ au_mem_fraction[] > 0.20 ]
+            puts 'orbiter: memory exceeded 20% of system RAM — quitting '
+            exit[ 1 ]
+        render_tick[]
         drain_stdout[]
         index_step[]
         fps : f32 [ w.frame_factor * 60.0 ]
