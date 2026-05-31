@@ -9,11 +9,11 @@
 #include <signal.h>
 #include <execinfo.h>
 
-typedef int  (*frame_fn)(void);
-typedef void (*destroy_fn)(void);
-typedef void (*init_fn)(void);
-typedef int  (*au_compile_ready_fn)(void);
-typedef void (*au_compile_invoke_fn)(const char*);
+typedef int        (*frame_fn)(void);
+typedef void       (*destroy_fn)(void);
+typedef void       (*init_fn)(void);
+typedef int        (*au_compile_ready_fn)(void);
+typedef void       (*au_compile_invoke_fn)(const char*);
 #define FRAME_SYM   "silver_live_frame"
 #define DESTROY_SYM "silver_live_destroy"
 #define INIT_SYM    "silver_live_init"
