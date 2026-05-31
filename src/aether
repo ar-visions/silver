@@ -160,6 +160,9 @@ forward(evar)
     M(X, Y, i, prop,     intern,  LLVMValueRef,             coverage_seq_global,     as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMValueRef,             coverage_seq_local,      as, ARef) \
     M(X, Y, i, prop,     public,  bool,                     listen_active) \
+    M(X, Y, i, prop,     public,  bool,                     listen_values) \
+    M(X, Y, i, prop,     public,  bool,                     listen_emitting) \
+    M(X, Y, i, prop,     intern,  token,                    listen_last_token, as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMExecutionEngineRef,   jit,                     as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMBasicBlockRef,        current_if_block,        as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMModuleRef,            module_ref,              as, ARef) \
@@ -325,6 +328,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  enode,           target) \
     M(X, Y, i, prop,     public,  bool,            is_super) \
     M(X, Y, i, prop,     public,  bool,            is_alloc) \
+    M(X, Y, i, prop,     public,  bool,            is_assign) \
     M(X, Y, i, prop,     public,  bool,            avoid_ftable) \
     M(X, Y, i, prop,     public,  string,          symbol_name) \
     M(X, Y, i, prop,     public,  enode,           published_type) \
