@@ -35,6 +35,9 @@ Option  ProjectTab
 Control Tabs
 Control Instances
     public selected : bool
+    # full-width (right toolbar hidden) — drives the :wide style so the console
+    # spans the whole window instead of leaving a gap where the toolbar was.
+    public wide     : bool
 
 #proto compiler ... this is in effect what we are doing, and if we 'wanted' to we could register this for enumeration at runtime
 #      func compiler [ module: string ]
@@ -52,6 +55,10 @@ trinity orbiter # implements compiler
     # group. left and right panes keep separate docked lists.
     public docked_left      : array path
     public docked_right     : array path
+    # cached git-diff state per pane, refreshed when a file opens (not per frame)
+    # so the git button's enabled state never forks git during render.
+    intern left_diff        : bool
+    intern right_diff       : bool
     public active_idx       : i32
     public left_idx         : i32
     public right_idx        : i32
@@ -81,10 +88,11 @@ trinity orbiter # implements compiler
     # set true by the inotify watch thread when anything under search_dirs
     # changes. the next search rebuilds file_index lazily on the main thread.
     public index_dirty   : bool
-    # true while the background index service is walking the tree. gates the
-    # usleep throttling (only the service yields) and the lazy main-thread build
-    # (we wait for the service instead of double-building).
-    intern indexing      : bool
+    # incremental index build: a work queue of directories still to walk (with
+    # their depths), drained a chunk per frame so the build never blocks the UI
+    # and results grow progressively. building stays true until the queue drains.
+    intern index_queue   : array path
+    intern index_building : bool
     # one inotify watch per search dir; keeps file_index fresh (like vscode's
     # file watcher) instead of a once-per-session walk.
     intern index_watches : array watch
@@ -125,6 +133,11 @@ trinity orbiter # implements compiler
         open_files     = array path []
         docked_left    = array path []
         docked_right   = array path []
+        # a few default pins so the column has content to look at
+        docked_left   += path '/src/silver/LICENSE'
+        docked_left   += path '/src/silver/Makefile'
+        docked_left   += path '/src/silver/README.md'
+        docked_left   += path '/src/silver/CLAUDE.md'
         active_idx     = -1
         left_idx       = -1
         right_idx      = -1
@@ -146,9 +159,8 @@ trinity orbiter # implements compiler
         index_dirty    = false
         index_watches  = array watch []
         start_watching[]
-        # launch the file-search index build in the background at startup
-        indexing       = true
-        au_spawn[ ref index_service, a, null ]
+        # kick off the incremental index build (runs a chunk per frame)
+        start_index[]
         compile_log    = list string []
         stdout_log     = list string []
         # seed one at silver.c:4 to have something to look at (empty condition
@@ -241,6 +253,33 @@ trinity orbiter # implements compiler
                 grp.remove[ i ]
                 return
 
+    # shell out to git for a file and report whether it has a diff. only called
+    # when a file is opened — never during render, so the per-frame path stays
+    # fork-free; callers cache the result in left_diff / right_diff.
+    # diff --name-only against HEAD scopes the work to the one file and skips the
+    # whole-worktree untracked scan that makes `status` cost ~0.5s in this repo
+    # (it vendors checkout/llvm-project).
+    func git_diff [ p: path ] -> bool
+        if [ !p ] return false
+        dir : path p.directory[]
+        cmd : command 'git -C "{dir}" diff --no-ext-diff --name-only HEAD -- "{p}" 2>/dev/null'
+        out : string cmd.run[ false ]
+        return out && out.count > 0
+
+    # build the editor-title nav (git + dock toggle) for a pane. the git button
+    # only appears for a real on-disk source and is enabled only when git sees a
+    # diff. the dock button is a single toggle: '-' (undock) when the file is
+    # already docked, '+' (dock) when it isn't. a new/unsaved file shows neither.
+    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window ] -> Elements
+        nav : Elements []
+        if [ p && p.exists[] ]
+            nav['git'] = Option [ selected: editor_panel == 'git', disable: !has_diff ]
+            if [ is_docked[ p, grp ] ]
+                nav['undock'] = Option [ selected: false ]
+            el
+                nav['dock'] = Option [ selected: false ]
+        return Elements [ "nav": element [ elements: nav ] ]
+
     # build the docked-tab strip for a group: one tab per docked file, the
     # active file selected. ids are prefix+index so the click handler can map
     # back to the path. rendered inline in the editor title when not editing.
@@ -252,38 +291,41 @@ trinity orbiter # implements compiler
             els[id] = Option [ label: p.filename[], selected: active && p == active ]
         return els
 
-    # build a flat index of every file path under search_dirs ONCE — the only
-    # filesystem cost. per-keystroke search then just filters this in memory
-    # (pure silver — no system commands).
-    func index_files [ d: path, out: list string, depth: i32 ]
-        if [ depth > 8 ] return
-        # throttle the background service so the walk yields the CPU to the UI;
-        # the synchronous (main-thread) path doesn't sleep.
-        if [ indexing ] usleep[ 200 ]
-        entries : array [ d.ls[ null, false ] ]
-        if [ !entries ] return
-        for [ i: i32 0, i < entries.count, i += 1 ]
-            e : path entries[i]
-            if [ e.is_dir[] ]
-                index_files[ e, out, depth + 1 ]
-            el
-                out.push[ '{e}' ]
-
-    # build into a fresh list, then swap it in. probes (left/right pane searches)
-    # read file_index concurrently, so we never mutate the live list in place —
-    # a reader always sees a complete index, old or new.
-    func build_index []
-        tmp : list string []
+    # (re)start the incremental index build: clear the index and seed the work
+    # queue with the search dirs. index_step[] drains it over subsequent frames.
+    func start_index []
+        file_index   = list string []
+        index_queue  = array path []
         for [ d: path ] in search_dirs
-            index_files[ d, tmp, 0 ]
-        file_index  = tmp
-        index_dirty = false
+            index_queue.push[ d ]
+        index_building = true
+        index_dirty    = false
 
-    # the file-search service: launched on a background thread at startup, walks
-    # the tree (throttled) and publishes the index via the swap in build_index.
-    func index_service [ w: Au ]
-        build_index[]
-        indexing = false
+    # one frame's worth of indexing: pop directories off the queue (DFS) under a
+    # time budget, pushing files into file_index and subdirs back onto the queue.
+    # results grow progressively; the UI never blocks for more than the budget.
+    # the file cap bounds runaway trees (no depth limit needed).
+    func index_step []
+        if [ !index_building ] return
+        t0 : i64 [ epoch_micros[] ]
+        while [ index_queue.count > 0 ]
+            n : i32 [ index_queue.count - 1 ]
+            d : path index_queue[n]
+            index_queue.remove[ n ]
+            entries : array [ d.ls[ null, false ] ]
+            if [ entries ]
+                for [ i: i32 0, i < entries.count, i += 1 ]
+                    e : path entries[i]
+                    if [ e.is_dir[] ]
+                        index_queue.push[ e ]
+                    el
+                        file_index.push[ e ]
+            if [ file_index.count >= 100000 ]
+                index_building = false
+                return
+            if [ epoch_micros[] - t0 > 4000 ] break
+        if [ index_queue.count == 0 ]
+            index_building = false
 
     # spawn one inotify watch per search dir. the watch runs on its own pthread
     # (Au.watch) and fires on_index_change when anything under the dir changes.
@@ -303,15 +345,12 @@ trinity orbiter # implements compiler
     # rescanning the whole index (substring match is monotonic). full rescan
     # only on backspace / non-extending edits.
     func run_search []
-        # NEVER build on the main thread — that walk is the keystroke lag. the
-        # background service owns file_index. if it's missing or a change is
-        # pending (and the service is idle), relaunch the service; the current
-        # search just filters whatever's published so far (instant).
-        if [ (index_dirty || file_index.count == 0) && !indexing ]
-            index_dirty = false
-            indexing    = true
-            find_prev   = ''
-            au_spawn[ ref index_service, a, null ]
+        # never walk the tree on a keystroke — that's the lag. the incremental
+        # builder owns file_index. if a change is pending and we're idle, restart
+        # the incremental build; this search just filters what's there (instant).
+        if [ index_dirty && !index_building ]
+            find_prev = ''
+            start_index[]
         # narrow from the previous results only if they were COMPLETE — if the
         # last search capped, find_results is a truncated prefix and a match
         # could be beyond it, so we must rescan the full index.
@@ -373,12 +412,14 @@ trinity orbiter # implements compiler
         idx : i32 [ file_slot[ p ] ]
         left_idx   = idx
         active_idx = idx
+        left_diff  = git_diff[ p ]
         exit_finder[]
         sync_editor[]
 
     # open in the right pane (split view)
     func open_file_right [ p: path ]
         right_idx  = file_slot[ p ]
+        right_diff = git_diff[ p ]
         exit_finder[]
         sync_editor[]
 
@@ -476,12 +517,18 @@ trinity orbiter # implements compiler
             if [ e inherits Editor ]
                 ed : Editor e
                 if [ find_text && find_text.count > 0 && ed.sel_line >= 0 && ed.sel_line < find_results.count ]
-                    hit_path : find_results.value_by_index[ ed.sel_line ]
-                    open_file[ path '{hit_path}' ]
+                    hit_path : path find_results.value_by_index[ ed.sel_line ]
+                    open_file[ hit_path ]
                     return
         # >| toggle hides/shows the right file-list panel
         if [ ev.target.id == 'toggle_side' ]
             show_right = !show_right
+            # Instances is a Control, not an Option, so apply_args won't sync its
+            # custom `wide` flag — set it directly so the console spans full width
+            # (no gap) when the right toolbar is hidden.
+            ux      : Window ev.target.ux
+            inst_el : Instances ux.root.elements[ 'instances' ]
+            if [ inst_el ] inst_el.wide = !show_right
             if [ ev.target ] ev.target.ux.restyle = true
             return
         puts 'on_press: {ev.target.id}'
@@ -515,7 +562,8 @@ trinity orbiter # implements compiler
             editor_panel = (editor_panel == ev.target.id) ? 'editor' : ev.target.id
             if [ ev.target ] ev.target.ux.restyle = true
             return
-        # two buttons: + (dock) adds this file's tab, - (undock) removes it.
+        # one toggle button rendered as either + (dock, id 'dock') or - (undock,
+        # id 'undock') depending on whether this file is already in the group.
         # the tab goes into the group for the pane the button lives in.
         if [ ev.target.id == 'dock' || ev.target.id == 'undock' ]
             for [ e: element* ev.target, e, e = e.parent ]
@@ -528,21 +576,19 @@ trinity orbiter # implements compiler
                     break
             if [ ev.target ] ev.target.ux.restyle = true
             return
-        # clicking a docked tab (ltab{i}/rtab{i}) activates that file in its pane
+        # clicking a pin (pin{i}) inside an editor opens that docked file from
+        # the pane's own list (left vs right)
         tid : string ev.target.id
-        if [ tid.count > 4 && tid.mid[ 0, 4 ] == 'ltab' ]
-            i : i32 [ tid.mid[ 4, tid.count - 4 ].real_value[] ]
-            if [ i >= 0 && i < docked_left.count ]
-                left_idx   = file_slot[ docked_left[i] ]
-                active_idx = left_idx
-                sync_editor[]
-            if [ ev.target ] ev.target.ux.restyle = true
-            return
-        if [ tid.count > 4 && tid.mid[ 0, 4 ] == 'rtab' ]
-            i : i32 [ tid.mid[ 4, tid.count - 4 ].real_value[] ]
-            if [ i >= 0 && i < docked_right.count ]
-                right_idx = file_slot[ docked_right[i] ]
-                sync_editor[]
+        if [ tid.count > 3 && tid.mid[ 0, 3 ] == 'pin' ]
+            i : i32 [ tid.mid[ 3, tid.count - 3 ].real_value[] ]
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits Editor ]
+                    ed : Editor e
+                    if [ ed.id == 'pane-right' ]
+                        if [ i >= 0 && i < docked_right.count ] open_file_right[ docked_right[i] ]
+                    el
+                        if [ i >= 0 && i < docked_left.count ] open_file[ docked_left[i] ]
+                    break
             if [ ev.target ] ev.target.ux.restyle = true
             return
         if [ ev.target.id == 'config' ]
@@ -629,8 +675,8 @@ trinity orbiter # implements compiler
             el [ k == 257 ]
                 # enter opens the first matching result
                 if [ find_results && find_results.count > 0 ]
-                    first_path : find_results.value_by_index[ 0 ]
-                    open_file[ path '{first_path}' ]
+                    first_path : path find_results.value_by_index[ 0 ]
+                    open_file[ first_path ]
             el [ k == 256 ]
                 # esc: drop the query and restore the pane — run_search with an
                 # empty query reloads the file (or empties the pane if none)
@@ -640,6 +686,7 @@ trinity orbiter # implements compiler
 
     public func on_render [ w: Window ] -> Elements
         drain_stdout[]
+        index_step[]
         fps : f32 [ w.frame_factor * 60.0 ]
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
         w.set_title[ 'orbiter' ]
@@ -655,46 +702,39 @@ trinity orbiter # implements compiler
             name : string target_names[i]
             source_nav[name] = ProjectTab [ label: name, selected: active_target == name ]
 
+        # the in-editor pin list + 144px content inset appear while editing the
+        # title (focused — even before a letter is typed) or a query is active.
+        searching  : bool [ (w.focus && w.focus.id == 'title') || (find_text && find_text.count > 0) ]
+
         # the main pane is always present and fills the group. with no file it's
-        # a finder (file search results); with a file it's the editor.
+        # a finder (file search results); with a file it's the editor. when
+        # searching, a vertical pin list renders inside the editor's right 144px.
         editor_els : Elements []
-        editor_els['pane'] = Editor [ src: left_path, breakpoints: breakpoints, code_font_size: code_font_size, elements: Elements [
-            "title": EditorTitle [
-                selected: !left_path
-                # not editing: the title renders the docked tabs (in `tabs`).
-                # editing: the search query lives in `edit`, shown over the bar.
-                edit: find_text
-                label: (left_path) ? '' : 'Finder'
-                elements: Elements [
-                    "tabs": element [ elements: dock_tabs[ docked_left, 'ltab', left_path, w ] ]
-                    "nav": element [
-                        elements: Elements [
-                            "git":     Option [ selected: editor_panel == 'git' ]
-                            "undock":  Option [ selected: false ]
-                            "dock":    Option [ selected: false ]
-                        ]
-                    ]
-                ]
-            ]
-        ]]
+        pane_els : Elements []
+        pane_els['title'] = EditorTitle [
+            selected: !left_path
+            edit: find_text
+            label: (left_path) ? left_path.filename[] : 'Finder'
+            elements: title_nav[ left_path, docked_left, left_diff, w ]
+        ]
+        if [ searching ]
+            pane_els['pins'] = element [ elements: dock_tabs[ docked_left, 'pin', left_path, w ] ]
+        editor_els['pane'] = Editor [ src: left_path, breakpoints: breakpoints, code_font_size: code_font_size, elements: pane_els ]
+
         if [ right_idx >= 0 && right_idx < open_files.count ]
-            editor_els['pane-right'] = Editor [ src: right_path, breakpoints: breakpoints, code_font_size: code_font_size, elements: Elements [
-                "title": EditorTitle [
-                    selected: !right_path
-                    edit: find_text
-                    label: (right_path) ? '' : 'Finder'
-                    elements: Elements [
-                        "tabs": element [ elements: dock_tabs[ docked_right, 'rtab', right_path, w ] ]
-                        "nav": element [
-                            elements: Elements [
-                                "git":     Option [ selected: editor_panel == 'git' ]
-                                "undock":  Option [ selected: false ]
-                                "dock":    Option [ selected: false ]
-                            ]
-                        ]
-                    ]
-                ]
-            ]]
+            pr_els : Elements []
+            pr_els['title'] = EditorTitle [
+                selected: !right_path
+                edit: find_text
+                label: (right_path) ? right_path.filename[] : 'Finder'
+                elements: title_nav[ right_path, docked_right, right_diff, w ]
+            ]
+            if [ searching ]
+                pr_els['pins'] = element [ elements: dock_tabs[ docked_right, 'pin', right_path, w ] ]
+            editor_els['pane-right'] = Editor [ src: right_path, breakpoints: breakpoints, code_font_size: code_font_size, elements: pr_els ]
+
+        egroup_els : Elements []
+        egroup_els['editors'] = EditorView [ selected: left_idx >= 0 && right_idx >= 0, elements: editor_els ]
 
         return Elements [
             "toggle_side":  Option [ selected: !show_right, topmost: true ]
@@ -713,25 +753,23 @@ trinity orbiter # implements compiler
                             ]
                         ]
                     ]
-                    "files":        FileList   [ selected: active_panel == 'files', filter: (active_panel == 'files') ? filter_text : '', root: nav_root ]
-                    "callstack":    CallStack  [ selected: active_panel == 'callstack' ]
-                    "debug":        DebugPanel [ selected: active_panel == 'debug' ]
-                    "agent":        Option     [ selected: active_panel == 'agent' ]
+                    # only the active panel is shown AND hit-tested. non-active
+                    # panels are made fully transparent so find_target skips them
+                    # (they overlap the same area; otherwise the last-painted one
+                    # captures every click under reverse hit-testing).
+                    "files":        FileList   [ selected: active_panel == 'files', transparency: (active_panel == 'files')     ? 0.0 : 1.0, filter: (active_panel == 'files') ? filter_text : '', root: nav_root ]
+                    "callstack":    CallStack  [ selected: active_panel == 'callstack', transparency: (active_panel == 'callstack') ? 0.0 : 1.0 ]
+                    "debug":        DebugPanel [ selected: active_panel == 'debug', transparency: (active_panel == 'debug')     ? 0.0 : 1.0 ]
+                    "agent":        Option     [ selected: active_panel == 'agent', transparency: (active_panel == 'agent')     ? 0.0 : 1.0 ]
                     # 1-unit filter input pinned to the bottom of the navigator
                     "filter":       element    [ label: 'filter', edit: filter_text ]
                 ]
             ],
             "editor-group": Group [
-                # selected = right panel hidden → the editor group fills its place
+                # selected = right panel hidden → the editor group fills its place.
+                # elements (editors + optional pin column) built above in egroup_els.
                 selected: !show_right
-                elements: Elements [
-                    "editors": EditorView [
-                        selected: left_idx >= 0 && right_idx >= 0
-                        elements: editor_els
-                    ]
-                    # >| toggle: hide/show the right file-list panel. topmost so
-                    # it draws over (and is hit before) the full-area editor view
-                ]
+                elements: egroup_els
             ],
             
             "instances": Instances [ elements: Elements [
@@ -744,7 +782,7 @@ trinity orbiter # implements compiler
                     'lldb': Option [ label: 'lldb',  selected: active_console == 'lldb',  disable:active_target == 'system', toggle: true ]
                 ] ]
                 'console':    Console [ session_id: active_target, feed: (active_target == 'system') ? stdout_log : null ]
-            ], selected: show_console ]
+            ], selected: show_console, wide: !show_right ]
         ]
  
         #"avatar":       Avatar     [ transparency: (active_panel == 'debug') ? 0.0 : 1.0 ]

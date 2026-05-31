@@ -108,7 +108,7 @@ Group / Check {
 }
 
 Group.editor-group {
-    area:                       l0 t0 r10.06 h100%
+    area:                       l0 t0 r10.06 b6.9
 
     layers.compose:
         radius:                 0
@@ -118,12 +118,46 @@ Group.editor-group {
         radius:                 0
 
 :selected
-    area: l0 t0 r0 h100%
+    area: l0 t0 r0 b6.9
 }
 
 
 EditorView {
     area:                       l0 t0 r0 b0
+}
+
+/* vertical pin list INSIDE the editor's right 144px (right-anchored, flush to
+   the title/right/bottom edges — matches the EditorLayer's 144px content inset).
+   only while searching (the pins child is only added then). */
+Editor / element.pins {
+    area:                       r144px t44px r0 b0
+    layers.base:
+        fill_color:             #ffffff08
+        radius:                 6
+}
+
+Editor / element.pins / Option {
+    area:                       l0.1 t0.1+ r0.1 h1.1
+    layers.base:
+        fill_color:             #2481
+        inner_glow:             #8af1 12
+        radius:                 6
+        stroke_width:           0.5
+        stroke_color:           #fff2
+    layers.face:
+        label_color:            #fffc
+        label_size:             13
+        label_align:            0.0 0.5
+        label_offset:           8 0
+        label_font:             'fonts/SpaceMono-Regular.ttf'
+}
+
+Editor / element.pins / Option:selected {
+    layers.base:
+        fill_color:             #fa84
+        inner_glow:             #fa85 20
+    layers.face:
+        label_color:            #ffff
 }
 
 /* a lone pane fills the whole view; only a real split (both panes, EditorView
@@ -169,38 +203,6 @@ Editor / element.title {
         label_color:            #ffff
 }
 
-Editor / element.title / element.tabs {
-    area:                       l52px t5px wc h34px
-}
-
-Editor / element.title / element.tabs / Option {
-    area:                       l0+ t0 w120px h34px
-    layers.base:
-        fill_color:             #2481
-        inner_glow:             #8af1 16
-        radius:                 6
-        stroke_width:           0.5
-        stroke_color:           #fff2
-    layers.face:
-        label_color:            #fffa
-        label_size:             14
-        label_align:            0.5 0.5
-        label_font:             'fonts/SpaceMono-Regular.ttf'
-}
-
-Editor / element.title / element.tabs / Option:selected {
-    layers.base:
-        fill_color:             #fa84
-        inner_glow:             #fa85 24
-    layers.face:
-        label_color:            #ffff
-}
-
-Editor / element.title:focused / element.tabs {
-    transparency:               1.0
-}
-
-
 Group.editor-group / Option {
     area:                       l0+ t7px w2 h1
     layers.base:
@@ -241,10 +243,12 @@ Instances {
     layers.border2:
         area:                   l0 t44px r0 h1px
         fill_color:             #aaf2
-}
-
-Instances:selected {
+:wide
+    area:                       l0 b1.5 r0 h1.5
+:selected
     area:                       l0 b6.9 r10.04 h7
+:selected&wide
+    area:                       l0 b6.9 r0 h7
 }
 
 Console {
@@ -294,13 +298,13 @@ Editor {
     focusable:              true
     area:                   l0+ t0 w50% b0
     layers.content: EditorLayer
-        area:               l8px t52px r8px b8px
+        area:               l0 t45px r0 b0
         label_height:       1.0
         line_color:         #fff1
         sel_color:          #264f78
     layers.scrollbar: ScrollLayer
         overlay:            true
-        area:               l8px t52px r8px b8px
+        area:               l0 t44px r0 b0
         thumb_color:        #fff4
         thumb_w:            6
         thumb_min_h:        32
