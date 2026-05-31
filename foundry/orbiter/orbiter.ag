@@ -701,7 +701,7 @@ trinity orbiter # implements compiler
                 # esc: drop the query and restore the pane — run_search with an
                 # empty query reloads the file (or empties the pane if none)
                 find_text = ''
-                ev.target.pristine = false 
+                ev.target.pristine = false
                 run_search[]
 
     # 3-arg helper for the listen demo — returns the sum.
