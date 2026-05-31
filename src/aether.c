@@ -2898,7 +2898,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
             }
             if (fmt_idx >= 0 && i > fmt_idx)
                 break;
-
+ 
             if (is_lambda(fn)) {
                 verify(instanceof(arg_value, enode), "expected enode for runtime function call");
                 enode n = (enode)arg_value;
@@ -3452,8 +3452,9 @@ void aether_emit_listen_line(aether a, const char* msg) {
     emit_puts_str(a, msg);
 }
 
-// per-enode value trace: only for a NAMED --listen target (listen_values), never
-// for '*'. associates the value with the CURRENT source token and emits one line
+// per-enode value trace (any listen_values target, including '*' now that the
+// user wants the full thing). associates the value with the CURRENT source token
+// and emits one line
 // per token ("    <token-text> = <value>") — if the token hasn't advanced since
 // the last emit, skip (so a statement's many internal enodes collapse to one line
 // per source token). RAW printf (no e_fn_call -> dodges the formatter validation,
@@ -3462,7 +3463,21 @@ void aether_emit_listen_line(aether a, const char* msg) {
 void aether_emit_listen_value(aether a, enode n) {
     if (!a->listen_values || a->no_build)       return;
     if (!n || !n->value || !n->loaded)          return; // need the scalar value, not an address
-    if (!LLVMGetInsertBlock(B))                 return; // must be inside a function body
+    LLVMBasicBlockRef _ibb = LLVMGetInsertBlock(B);
+    if (!_ibb)                                  return; // must be inside a function body
+    // n->value must belong to the CURRENT function (or be a module constant) — a
+    // param/instruction from another function can't be referenced here, or LLVM
+    // fails with "argument in another function". surfaces under '*', where param
+    // enodes for other functions get init'd while we're positioned elsewhere.
+    {
+        LLVMValueRef _cf = LLVMGetBasicBlockParent(_ibb), _vf = null, _v = n->value;
+        if (LLVMIsAArgument(_v))         _vf = LLVMGetParamParent(_v);
+        else if (LLVMIsAInstruction(_v)) {
+            LLVMBasicBlockRef _vb = LLVMGetInstructionParent(_v);
+            _vf = _vb ? LLVMGetBasicBlockParent(_vb) : null;
+        }
+        if (_vf && _vf != _cf) return; // value lives in another function
+    }
     LLVMTypeRef  vt     = LLVMTypeOf(n->value);
     LLVMTypeKind vk     = LLVMGetTypeKind(vt);
     LLVMTypeRef  i32_ty = LLVMInt32TypeInContext(a->module_ctx);
