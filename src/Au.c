@@ -54,6 +54,7 @@ static int au_skip_drop_check(const char *type, const char *member) {
 #include <limits.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <fcntl.h>
 #undef bool
 
 #ifdef __APPLE__
@@ -2315,6 +2316,72 @@ void au_space_clear(void) {
     au_space_owner = null;
 }
 
+// resident set size as a fraction of total physical RAM. reads /proc/self/statm
+// (field 2 = resident pages) and sysconf for page size + physical page count.
+// returns 0 when it can't be determined so callers treat that as "no guard".
+float au_mem_fraction(void) {
+    FILE* f = fopen("/proc/self/statm", "r");
+    if (!f) return 0.0f;
+    long size_pages = 0, rss_pages = 0;
+    int n = fscanf(f, "%ld %ld", &size_pages, &rss_pages);
+    fclose(f);
+    if (n < 2 || rss_pages <= 0) return 0.0f;
+    long page = sysconf(_SC_PAGESIZE);
+    long phys = sysconf(_SC_PHYS_PAGES);
+    if (page <= 0 || phys <= 0) return 0.0f;
+    double rss_bytes  = (double)rss_pages * (double)page;
+    double phys_bytes = (double)phys      * (double)page;
+    return (float)(rss_bytes / phys_bytes);
+}
+
+// redirect this process's stdout (and stderr) into a pipe so the app can read
+// its own printf/puts output. returns the READ end (non-blocking) for draining.
+// au_stdout_orig() hands back a dup of the original stdout so callers can tee
+// output back to the real terminal. key quirk handled: once fd 1 is a pipe (not
+// a tty), glibc full-buffers stdout, so we force it unbuffered or nothing ever
+// shows. write end is non-blocking too, so a flood drops bytes instead of
+// deadlocking the single-threaded drain loop. returns -1 on failure.
+//
+// INSTRUMENTED: logs to /tmp/orbiter_cap.log and runs an in-process round-trip
+// self-test so we can see whether the redirect actually took effect (the log fd
+// is its own descriptor, unaffected by the dup2 of 1/2).
+static int g_stdout_orig = -1;
+
+int au_capture_stdout(void) {
+    FILE* dbg = fopen("/tmp/orbiter_cap.log", "a");
+    int fds[2];
+    if (pipe(fds) != 0) {
+        if (dbg) { fprintf(dbg, "au_capture_stdout: pipe() failed errno=%d\n", errno); fclose(dbg); }
+        return -1;
+    }
+    int orig = dup(STDOUT_FILENO);
+    int r1   = dup2(fds[1], STDOUT_FILENO);
+    int r2   = dup2(fds[1], STDERR_FILENO);
+    close(fds[1]);                                   // fd 1/2 now hold the write end
+    fcntl(fds[0],        F_SETFL, O_NONBLOCK);       // drain never blocks when empty
+    fcntl(STDOUT_FILENO, F_SETFL, O_NONBLOCK);       // printf drops instead of hanging when full
+    setvbuf(stdout, NULL, _IONBF, 0);                // unbuffered: output reaches the pipe immediately
+    setvbuf(stderr, NULL, _IONBF, 0);
+    g_stdout_orig = orig;
+
+    // round-trip self-test: write straight to the (now redirected) fd 1 and read
+    // it back off the pipe. if this lands, the redirect works in-process.
+    static const char msg[] = "CAPTURE_SELFTEST\n";
+    ssize_t w = write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+    usleep(2000);
+    char tb[64];
+    ssize_t rd = read(fds[0], tb, sizeof(tb) - 1);
+    if (rd > 0) tb[rd] = 0; else tb[0] = 0;
+    if (dbg) {
+        fprintf(dbg, "au_capture_stdout: orig=%d rfd=%d dup2(out)=%d dup2(err)=%d selftest_write=%zd read=%zd got='%s'\n",
+            orig, fds[0], r1, r2, w, rd, tb);
+        fclose(dbg);
+    }
+    return fds[0];
+}
+
+int au_stdout_orig(void) { return g_stdout_orig; }
+
 Au_t global() {
     Au_t au_module_t = isa(au_module);
     return au_module;
@@ -3762,13 +3829,14 @@ Au Au_with_cstrs(Au a, cstrs argv) {
             while (type != typeid(Au)) {
                 for (num i = 0; i < type->members.count; i++) {
                     Au_t m = (Au_t)type->members.origin[i];
-                    if ((m->member_type == AU_MEMBER_VAR) && 
+                    if ((m->member_type == AU_MEMBER_VAR) &&
                         ( single &&        m->ident[0] == arg[1]) ||
                         (!single && strcmp(m->ident,     &arg[2]) == 0)) {
                         mem = m;
                         break;
                     }
                 }
+                if (mem) break; // most-derived match wins; don't let a base class clobber it
                 type = type->context;
             }
             verify(mem, "member not found: %s", &arg[1 + !single]);

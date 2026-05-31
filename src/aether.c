@@ -566,6 +566,8 @@ bool is_explicit_ref(enode arg) {
 static int fbits_index(Au_t type_au, Au_t member);
 static void mark_set(enode n, u64 mask0, u64 mask1);
 
+void aether_emit_listen_value(aether a, enode n); // defined below (debug listen trace)
+
 enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     a->is_const_op = false;
     if (a->no_build)
@@ -800,6 +802,11 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         //    LLVMBuildLoad2(B, LLVMTypeOf(res->value), store_target, "dbg.sync");
         //}
     }
+
+    // listen value trace: an assignment is unique per line, so force the assigned
+    // value out (is_assign bypasses the per-token dedupe in the emit). this is the
+    // value enode_init can't catch, since assign reuses an existing node.
+    if (res) { res->is_assign = true; aether_emit_listen_value(a, res); }
 
     /* ------------------------------------------------------------
      * Phase 6.5: mark AF bit for direct member field assignment
@@ -3445,13 +3452,57 @@ void aether_emit_listen_line(aether a, const char* msg) {
     emit_puts_str(a, msg);
 }
 
+// per-enode value trace: only for a NAMED --listen target (listen_values), never
+// for '*'. associates the value with the CURRENT source token and emits one line
+// per token ("    <token-text> = <value>") — if the token hasn't advanced since
+// the last emit, skip (so a statement's many internal enodes collapse to one line
+// per source token). RAW printf (no e_fn_call -> dodges the formatter validation,
+// no enodes -> no enode_init recursion). loaded int/float scalars only, with the
+// C-vararg promotions printf needs (small ints -> i32, f32 -> double).
+void aether_emit_listen_value(aether a, enode n) {
+    if (!a->listen_values || a->no_build)       return;
+    if (!n || !n->value || !n->loaded)          return; // need the scalar value, not an address
+    if (!LLVMGetInsertBlock(B))                 return; // must be inside a function body
+    LLVMTypeRef  vt     = LLVMTypeOf(n->value);
+    LLVMTypeKind vk     = LLVMGetTypeKind(vt);
+    LLVMTypeRef  i32_ty = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMTypeRef  dbl_ty = LLVMDoubleTypeInContext(a->module_ctx);
+    const char*  conv   = null;
+    LLVMValueRef arg    = null;
+    if (vk == LLVMIntegerTypeKind) {
+        unsigned bits = LLVMGetIntTypeWidth(vt);
+        if      (bits <  32) { arg = LLVMBuildZExt(B, n->value, i32_ty, ""); conv = "%i";   }
+        else if (bits == 32) { arg = n->value;                              conv = "%i";   }
+        else                 { arg = n->value;                              conv = "%lli"; }
+    } else if (vk == LLVMFloatTypeKind)  { arg = LLVMBuildFPExt(B, n->value, dbl_ty, ""); conv = "%f"; }
+    else if   (vk == LLVMDoubleTypeKind) { arg = n->value;                              conv = "%f"; }
+    if (!conv) return; // pointers / structs / strings: skip for now
+    // associate with the current source token; one emit per token — except an
+    // assignment result (is_assign), which is unique per line and always forced.
+    token tk = aether_peek_safe(a);
+    if (!n->is_assign && (!tk || tk == a->listen_last_token)) return;
+    a->listen_last_token = tk;
+    const char* nm = (tk->chars && tk->chars[0]) ? tk->chars : "(value)";
+    char full[300];
+    snprintf(full, sizeof(full), "    %s = %s\n", nm, conv); // nm is token text (no '%'); conv is the spec
+    LLVMTypeRef  i8ptr     = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMValueRef gstr      = LLVMBuildGlobalStringPtr(B, full, "");
+    LLVMTypeRef  printf_ty = LLVMFunctionType(i32_ty, &i8ptr, 1, /*variadic*/1);
+    LLVMValueRef printf_fn = LLVMGetNamedFunction(a->module_ref, "printf");
+    if (!printf_fn)
+        printf_fn = LLVMAddFunction(a->module_ref, "printf", printf_ty);
+    LLVMValueRef args[] = { gstr, arg };
+    LLVMBuildCall2(B, printf_ty, printf_fn, args, 2, "");
+}
+
 bool aether_has_listen(aether a) { return a->listen_active; }
-void aether_clear_listen(aether a) { a->listen_active = false; }
+void aether_clear_listen(aether a) { a->listen_active = false; a->listen_values = false; }
 
 #else
 
 bool aether_has_listen(aether a) { return false; }
 void aether_clear_listen(aether a) { }
+void aether_emit_listen_value(aether a, enode n) { }
 
 #endif
 
@@ -8909,6 +8960,8 @@ none enode_init(enode n) {
         n->value  = g;
         n->loaded = false; // globals are already addresses
     }
+    // per-enode value trace for a named --listen target (no-op otherwise)
+    aether_emit_listen_value(a, n);
 }
 
 none enode_dealloc(enode a) {
