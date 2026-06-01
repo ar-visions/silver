@@ -3074,17 +3074,7 @@ none Au_free(Au);
 none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
-    if (!info->managed) return;
-    i32 n = __atomic_sub_fetch(&info->refs, 1, __ATOMIC_SEQ_CST);
-    if (info->au && info->au->ident && strcmp(info->au->ident, "Canvas") == 0) {
-        void*  bt[10];
-        int    nb = backtrace(bt, 10);
-        char** s  = backtrace_symbols(bt, nb);
-        printf("DROPPING Canvas (%p) refs now %i\n", (void*)a, (i32)n);
-        for (int i = 2; i < nb && i < 7; i++) printf("    %s\n", s[i]);
-        free(s);
-    }
-    if (n <= 0) {
+    if (info->managed && __atomic_sub_fetch(&info->refs, 1, __ATOMIC_SEQ_CST) <= 0) {
         af[info->managed] = null;
         Au_free(a);
     }
@@ -3546,8 +3536,8 @@ none Au_hold_members(Au a) {
             Au hd = header(member_value);
             if (hd->managed) {
                 __atomic_fetch_add(&hd->refs, 1, __ATOMIC_SEQ_CST);
-                if (strcmp(hd->au->ident, "Canvas") == 0) {
-                    printf("(hold members) holding Canvas (%p) with refs now set to %i\n", *mdata, hd->refs);
+                if (hd->refs <= 0 && strcmp(hd->au->ident, "Canvas") == 0) {
+                    printf("(hold members) holding FREED Canvas (%p) with refs now set to %i\n", *mdata, hd->refs);
                 }
             }
         }
