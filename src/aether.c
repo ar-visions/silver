@@ -3565,10 +3565,7 @@ enode etype_access(etype target, string name) { sequencer
         // if primitive, we need to make a temp on stack (reserving Au header space), and obtain pointer to it
         efunc result = efunc(mod, a, autype, m, loaded, true, is_super, is_super_target, target,
             m->is_static ? null : n);
-        if (is_super_target)
-            fprintf(stderr, "etype_access super: %s.%s result->is_super=%d\n",
-                m->context ? m->context->ident : "?", m->ident,
-                result->is_super);
+
         return (enode)result;
     }
 
@@ -7510,17 +7507,7 @@ none etype_implement(etype t, bool w) { sequencer
                     ilargest, union_align, padded, padded / (int)union_align, elem_bits);
         }
 
-        if (t->autype->ident && strcmp(t->autype->ident, "mat4f") == 0) {
-            t = t;
-        }
         LLVMStructSetBody(t->lltype, struct_members, count, au->is_c ? 0 : 1);
-
-        if (au->ident && strcmp(au->ident, "v4l2_format") == 0) {
-            unsigned final_size  = LLVMABISizeOfType(a->target_data, t->lltype);
-            unsigned final_align = LLVMABIAlignmentOfType(a->target_data, t->lltype);
-            printf("v4l2_format final: size=%u align=%u count=%d\n",
-                final_size, final_align, count);
-        }
 
         // assign byte offsets to members so reflection (JSON parser, hold_members)
         // can do raw pointer arithmetic via mem->offset
