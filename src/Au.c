@@ -893,14 +893,59 @@ bool au_app_verify(const char* path) {
 #undef hold
 #undef drop
 
+#ifndef NDEBUG
+// ---- ref provenance (debug) -------------------------------------------------
+// track which source:line holds each live ref, for ONE type at a time. off
+// until au_track(name) is called. only the tracked type pays anything; every
+// other object and all call sites are untouched (no signature/header change).
+static cstr au_track_type = NULL;
+typedef struct { Au obj; void* bt[6]; int n; } au_prov_t;
+static au_prov_t* au_prov = NULL;
+static int au_prov_count = 0, au_prov_alloc = 0;
+
+none au_track(symbol name) { au_track_type = (cstr)name; }
+
+static bool au_prov_match(Au a) {
+    if (!au_track_type) return false;
+    Au f = header(a);
+    return f->au && f->au->ident && strcmp(f->au->ident, au_track_type) == 0;
+}
+static void au_prov_push(Au a) {
+    if (au_prov_count == au_prov_alloc) {
+        au_prov_alloc = au_prov_alloc ? au_prov_alloc * 2 : 256;
+        au_prov = (au_prov_t*)realloc(au_prov, au_prov_alloc * sizeof(au_prov_t));
+    }
+    au_prov_t* e = &au_prov[au_prov_count++];
+    e->obj = a;
+    e->n   = backtrace(e->bt, 6);
+}
+static void au_prov_pop(Au a) {
+    for (int i = au_prov_count - 1; i >= 0; i--)
+        if (au_prov[i].obj == a) { au_prov[i] = au_prov[--au_prov_count]; return; }
+}
+// dump the live holders of `a` (their source:line via symbolized stacks).
+none au_prov_dump(Au a) {
+    Au f = header(a);
+    printf("=== %i live holders of %s %p ===\n",
+        (i32)f->refs, (f->au && f->au->ident) ? f->au->ident : "?", (void*)a);
+    for (int i = 0; i < au_prov_count; i++) {
+        if (au_prov[i].obj != a) continue;
+        char** s = backtrace_symbols(au_prov[i].bt, au_prov[i].n);
+        printf("  held by:\n");
+        for (int j = 2; j < au_prov[i].n && j < 5; j++) printf("    %s\n", s[j]);
+        free(s);
+    }
+}
+#endif
+
 Au Au_hold(Au a) {
     if (a) {
         Au f = header(a);
         if (f->managed == 0) return a; // refs of 0 is unmanaged memory (user managed)
-        __atomic_fetch_add(&f->refs, 1, __ATOMIC_SEQ_CST);
-        if (f->refs <= 0 && strcmp(f->au->ident, "Canvas") == 0) {
-            printf("holding FREED Canvas (%p) with refs now set to %i\n", a, f->refs);
-        }
+        __atomic_fetch_add((i32*)__builtin_assume_aligned(&f->refs, 4), 1, __ATOMIC_SEQ_CST);
+#ifndef NDEBUG
+        if (au_prov_match(a)) au_prov_push(a);
+#endif
     }
     return a;
 }
@@ -3074,7 +3119,12 @@ none Au_free(Au);
 none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
-    if (info->managed && __atomic_sub_fetch(&info->refs, 1, __ATOMIC_SEQ_CST) <= 0) {
+    if (!info->managed) return;
+    i32 n = __atomic_sub_fetch((i32*)__builtin_assume_aligned(&info->refs, 4), 1, __ATOMIC_SEQ_CST);
+#ifndef NDEBUG
+    if (au_prov_match(a)) au_prov_pop(a);
+#endif
+    if (n <= 0) {
         af[info->managed] = null;
         Au_free(a);
     }
@@ -3535,7 +3585,7 @@ none Au_hold_members(Au a) {
             if (!member_value) continue;
             Au hd = header(member_value);
             if (hd->managed) {
-                __atomic_fetch_add(&hd->refs, 1, __ATOMIC_SEQ_CST);
+                __atomic_fetch_add((i32*)__builtin_assume_aligned(&hd->refs, 4), 1, __ATOMIC_SEQ_CST);
                 if (hd->refs <= 0 && strcmp(hd->au->ident, "Canvas") == 0) {
                     printf("(hold members) holding FREED Canvas (%p) with refs now set to %i\n", *mdata, hd->refs);
                 }
