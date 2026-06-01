@@ -413,6 +413,16 @@ class Style
         construct [ p ]
 
 
+# a coord bound to an app-object variable: `r[varname:default]`. axis records
+# which edge (XAlign/YAlign value); varname is the public field on the app object
+# the coord reads each layout; dflt is the fallback used before/without that field.
+# this is the primitive that replaces vsplit/hsplit controls — two coords binding
+# the same varname share one app value, so their seam is implicitly draggable.
+class BindCoord
+    public axis    : i32
+    public varname : string
+    public dflt    : f32
+
 struct XCoord
     x_type   : XAlign
     offset   : f32
@@ -437,23 +447,30 @@ struct XCoord
         el
             x_type    = XAlign[ f ]
             sx_offset : sx.mid[ 1, sx.count - 1 ]
-            # `wc` — content width (a 'c' after the width marker)
-            if [ x_type == XAlign.width && sx_offset.count > 0 && sx_offset.chars[0] == 'c' ]
-                content   = true
-                sx_offset = sx_offset.mid[ 1, sx_offset.count - 1 ]
-            if [ sx_offset.last[] == 'x' && sx_offset.count >= 2 ]
-                if [ sx_offset.chars[ sx_offset.count - 2 ] == 'p' ]
-                    sx_offset = sx_offset.mid[ 0, sx_offset.count - 2 ]
-                    pixel     = true
-            if [ sx_offset.last[] == '%' ]
-                sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
-                percent   = true
-            if [ sx_offset ]
-                if [ sx_offset.last[] == '+' ]
+            # bound coord `@varname=default` — offset is the default; the BindCoord
+            # itself lives on the Region (a class), never in this value struct.
+            if [ sx_offset.count >= 1 && sx_offset.chars[0] == '@' ]
+                inner : string sx_offset.mid[ 1, sx_offset.count - 1 ]
+                parts : inner.split[ '=' ]
+                offset = (parts.count > 1) ? parts[1].real_value[] : 0.0
+            el
+                # `wc` — content width (a 'c' after the width marker)
+                if [ x_type == XAlign.width && sx_offset.count > 0 && sx_offset.chars[0] == 'c' ]
+                    content   = true
+                    sx_offset = sx_offset.mid[ 1, sx_offset.count - 1 ]
+                if [ sx_offset.last[] == 'x' && sx_offset.count >= 2 ]
+                    if [ sx_offset.chars[ sx_offset.count - 2 ] == 'p' ]
+                        sx_offset = sx_offset.mid[ 0, sx_offset.count - 2 ]
+                        pixel     = true
+                if [ sx_offset.last[] == '%' ]
                     sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
-                    relative  = true
-            offset = sx_offset.real_value[]
-            if [ percent ] offset /= 100.0
+                    percent   = true
+                if [ sx_offset ]
+                    if [ sx_offset.last[] == '+' ]
+                        sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
+                        relative  = true
+                offset = sx_offset.real_value[]
+                if [ percent ] offset /= 100.0
 
     func plot [ from: f32, vto: f32, left: ref XCoord, left_val: f32, rel: rect, last: rect, fc: f32 ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
@@ -503,23 +520,30 @@ struct YCoord
         el
             y_type    = YAlign[ f ]
             sy_offset : sy.mid[ 1, sy.count - 1 ]
-            # `hc` — content height (a 'c' after the height marker)
-            if [ y_type == YAlign.height && sy_offset.count > 0 && sy_offset.chars[0] == 'c' ]
-                content   = true
-                sy_offset = sy_offset.mid[ 1, sy_offset.count - 1 ]
-            if [ sy_offset.last[] == 'x' && sy_offset.count >= 2 ]
-                if [ sy_offset.chars[ sy_offset.count - 2 ] == 'p' ]
-                    sy_offset = sy_offset.mid[ 0, sy_offset.count - 2 ]
-                    pixel     = true
-            if [ sy_offset.last[] == '%' ]
-                sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
-                percent   = true
-            if [ sy_offset ]
-                if [ sy_offset.last[] == '+' ]
+            # bound coord `@varname=default` — offset is the default; the BindCoord
+            # itself lives on the Region (a class), never in this value struct.
+            if [ sy_offset.count >= 1 && sy_offset.chars[0] == '@' ]
+                inner : string sy_offset.mid[ 1, sy_offset.count - 1 ]
+                parts : inner.split[ '=' ]
+                offset = (parts.count > 1) ? parts[1].real_value[] : 0.0
+            el
+                # `hc` — content height (a 'c' after the height marker)
+                if [ y_type == YAlign.height && sy_offset.count > 0 && sy_offset.chars[0] == 'c' ]
+                    content   = true
+                    sy_offset = sy_offset.mid[ 1, sy_offset.count - 1 ]
+                if [ sy_offset.last[] == 'x' && sy_offset.count >= 2 ]
+                    if [ sy_offset.chars[ sy_offset.count - 2 ] == 'p' ]
+                        sy_offset = sy_offset.mid[ 0, sy_offset.count - 2 ]
+                        pixel     = true
+                if [ sy_offset.last[] == '%' ]
                     sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
-                    relative  = true
-            offset = sy_offset.real_value[]
-            if [ percent ] offset /= 100.0
+                    percent   = true
+                if [ sy_offset ]
+                    if [ sy_offset.last[] == '+' ]
+                        sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
+                        relative  = true
+                offset = sy_offset.real_value[]
+                if [ percent ] offset /= 100.0
 
     func plot [ from: f32, vto: f32, top: ref YCoord, top_val: f32, rel: rect, last: rect, fc: f32 ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
@@ -548,11 +572,26 @@ struct YCoord
         ]
 
 
+# parse `<axis>[varname:default]` into a BindCoord, else null. lives on the Region
+# (a class) so the value coord structs stay free of managed refs.
+func coord_bind [ tok: string, axis: i32 ] -> BindCoord
+    if [ !tok || tok.count < 3 ] return null
+    if [ tok.chars[1] != '@' ] return null
+    inner : string tok.mid[ 2, tok.count - 2 ]
+    parts : inner.split[ '=' ]
+    dv    : f32 [ (parts.count > 1) ? parts[1].real_value[] : 0.0 ]
+    return BindCoord [ axis: axis, varname: parts[0], dflt: dv ]
+
 class Region
     public l   : XCoord
     public t   : YCoord
     public r   : XCoord
     public b   : YCoord
+    # bound edges (null unless `<axis>[var:default]`); on the class, not the structs
+    public bind_l : BindCoord
+    public bind_t : BindCoord
+    public bind_r : BindCoord
+    public bind_b : BindCoord
     public set : bool
 
     construct [ f: f32 ]
@@ -576,6 +615,10 @@ class Region
             t = YCoord [ aa[1] ]
             r = XCoord [ aa[2] ]
             b = YCoord [ aa[3] ]
+            bind_l = coord_bind[ aa[0], i32[ XAlign.left ] ]
+            bind_t = coord_bind[ aa[1], i32[ YAlign.top ] ]
+            bind_r = coord_bind[ aa[2], i32[ XAlign.right ] ]
+            bind_b = coord_bind[ aa[3], i32[ YAlign.bottom ] ]
         el [ aa.count == 1 ]
             l = XCoord [ aa[0] ]
             t = YCoord [ aa[0] ]

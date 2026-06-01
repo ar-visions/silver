@@ -154,6 +154,16 @@ class CursorPos
     public y : f32
     public h : f32
 
+# a draggable layout seam — a bound coord's edge. mem/app is the app field a drag
+# writes (via member_ref); axis 0 = x (l/r → horizontal drag), 1 = y (t/b → vertical);
+# sign +1 for left/top anchors, -1 for right/bottom; fc = px-per-unit at that edge.
+class BindSeam
+    public mem  : Au_t
+    public app  : Au
+    public axis : i32
+    public sign : f32
+    public fc   : f32
+
 
 Display Window
     mutable app_object          : trinity*
@@ -206,6 +216,13 @@ Display Window
     mutable restyle             : bool
     mutable will_animate        : bool
     mutable mouse               : vec2f
+    # layout-seam drag: seam_hover = bound edge under the cursor this hit-test;
+    # seam_drag = the one being dragged; start_m/v = mouse axis + var at drag start
+    mutable seam_hover          : BindSeam
+    mutable seam_hl             : rect
+    mutable seam_drag           : BindSeam
+    mutable seam_start_m        : f32
+    mutable seam_start_v        : f32
     mutable t_apply_args        : i64
     mutable t_apply_style       : i64
     mutable t_render            : i64
@@ -717,6 +734,36 @@ Display Window
             focus.restyle = true
             focus = null
 
+    # build a seam descriptor for a child's bound coord edge (app field via member_ref)
+    func make_seam [ bc: BindCoord, c: element, axis: i32, sign: f32 ] -> BindSeam
+        if [ !bc || !c.ux || !c.ux.app_object ] return null
+        ap : Au c.ux.app_object
+        m  : find_member[ typeid[ ap ], bc.varname.chars, AU_MEMBER_VAR, 0, true ]
+        if [ !m ] return null
+        return BindSeam [ mem: m, app: ap, axis: axis, sign: sign, fc: c.fc ]
+
+    # is the mouse (in this child's coordinate space) on a bound edge's 4px inset
+    # slider band? bands run from the edge INTO the control (the embedded-on-edges
+    # model — no centered origin). sets seam_hover when hit.
+    func seam_check [ c: element, mx: f32, my: f32 ]
+        if [ !c.area ] return
+        if [ !(c.area.bind_l || c.area.bind_t || c.area.bind_r || c.area.bind_b) ] return
+        b : rect c.bounds
+        # band is the slot's element edge; drag sign follows the coord's ANCHOR
+        # (bottom/right-anchored offsets shrink as the mouse moves toward them).
+        if      [ c.area.bind_t && mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + 4.0 ]
+            seam_hover = make_seam[ c.area.bind_t, c, 1, (c.area.t.y_type == YAlign.bottom) ? -1.0 : 1.0 ]
+            seam_hl    = rect [ x: b.x, y: b.y, w: b.w, h: 4.0 ]
+        el [ c.area.bind_b && mx >= b.x && mx <= b.x + b.w && my >= b.y + b.h - 4.0 && my <= b.y + b.h ]
+            seam_hover = make_seam[ c.area.bind_b, c, 1, (c.area.b.y_type == YAlign.bottom) ? -1.0 : 1.0 ]
+            seam_hl    = rect [ x: b.x, y: b.y + b.h - 4.0, w: b.w, h: 4.0 ]
+        el [ c.area.bind_l && my >= b.y && my <= b.y + b.h && mx >= b.x && mx <= b.x + 4.0 ]
+            seam_hover = make_seam[ c.area.bind_l, c, 0, (c.area.l.x_type == XAlign.right) ? -1.0 : 1.0 ]
+            seam_hl    = rect [ x: b.x, y: b.y, w: 4.0, h: b.h ]
+        el [ c.area.bind_r && my >= b.y && my <= b.y + b.h && mx >= b.x + b.w - 4.0 && mx <= b.x + b.w ]
+            seam_hover = make_seam[ c.area.bind_r, c, 0, (c.area.r.x_type == XAlign.right) ? -1.0 : 1.0 ]
+            seam_hl    = rect [ x: b.x + b.w - 4.0, y: b.y, w: 4.0, h: b.h ]
+
     public func find_target [ e: element, ev: Event, must: element ] -> element
         # fully-transparent elements are hidden — ignore them (and their
         # children) in event hit-testing so they don't capture clicks.
@@ -739,6 +786,12 @@ Display Window
 
         ev.mouse.pos.x = lx + e.scroll.x
         ev.mouse.pos.y = ly + e.scroll.y
+
+        # seam detection: a child's bound edge is a draggable slider. mouse and
+        # child.bounds are both in THIS element's local space here, so the inset
+        # band test is in the right relative coordinate space.
+        for [ sc: element, scid: string ] in e.elements
+            seam_check[ sc, ev.mouse.pos.x, ev.mouse.pos.y ]
 
         # hit-test in REVERSE of paint order: children are painted first→last
         # (later draws on top), so the topmost-drawn sibling must be tested
@@ -787,6 +840,17 @@ Display Window
     # chain, the app sees it; finally window's default handler runs (focus
     # transfer, capture, pressed/hovered bookkeeping) regardless of consume.
     public func move_event [ ev: Event ]
+        # active seam drag: write the app var from the mouse delta (px / fc → units,
+        # signed by the anchor). next layout reflows; skip normal hover/move.
+        if [ seam_drag ]
+            cur : f32 [ (seam_drag.axis == 0) ? ev.mouse.pos.x : ev.mouse.pos.y ]
+            sc  : f32 [ (seam_drag.fc > 0.0) ? seam_drag.fc : 1.0 ]
+            dp  : ref f32 [ seam_drag.app.member_ref[ seam_drag.mem ] ]
+            dp[0] = seam_start_v + (cur - seam_start_m) / sc * seam_drag.sign
+            restyle = true
+            return
+        seam_hover = null
+        seam_hl    = rect[]
         orig_pos : vec2f [ ev.mouse.pos ]
         f : find_target[ root, ev, null ]
         ev.mouse.pos = orig_pos
@@ -850,7 +914,18 @@ Display Window
 
     public func press_event [ ev: Event ]
         release_capture[ capture ]
+        world_m : vec2f [ ev.mouse.pos ]   # world coords before find_target mangles it
+        seam_hover = null
+        seam_hl    = rect[]
         f : find_target[ root, ev, null ]
+        # a bound seam under the cursor wins the press: start a drag instead of
+        # pressing an element. the seam writes its app var as the mouse moves.
+        if [ seam_hover ]
+            seam_drag    = seam_hover
+            seam_start_m = (seam_hover.axis == 0) ? world_m.x : world_m.y
+            sp : ref f32 [ seam_hover.app.member_ref[ seam_hover.mem ] ]
+            seam_start_v = sp[0]
+            return
         element_pos : vec2f [ ev.mouse.pos ]
         # element bubble. element* gives poly dispatch so subclasses
         # (Button, CameraView, ...) see their own on_press override.
@@ -899,6 +974,10 @@ Display Window
             context_pressed = f
 
     public func release_event [ ev: Event ]
+        # end an active seam drag; don't dispatch a release to elements
+        if [ seam_drag ]
+            seam_drag = null
+            return
         f : find_target[ root, ev, capture ]
         consumed_r : bool [ false ]
         for [ e: element* f, e && !consumed_r, e = e.parent ]
@@ -1119,6 +1198,12 @@ Display Window
 
         draw_element[ root, CanvasType.screen, null ]
 
+        # highlight the hovered/dragged layout seam band so it's visibly grabbable
+        if [ seam_hl && seam_hl.w > 0.0 && seam_hl.h > 0.0 ]
+            screen.fill_color[ '#ffcc00cc' ]
+            screen.rect_to[ seam_hl.x, seam_hl.y, seam_hl.w, seam_hl.h ]
+            screen.paint[]
+
         ##
         screen.fill_color[ '#f00' ]
         screen.rect_to[ 64.0, 64.0, 240.0, 120.0 ]
@@ -1135,10 +1220,22 @@ Display Window
         screen.sync_fence[]
         screen.restore[]
 
+    # resolve a bound coord against the app object: read the named f32 field via
+    # member_ref (the app object is the only scope — never the element/parent).
+    # a missing field falls back to the coord's inline default.
+    func bind_value [ b: BindCoord, app_obj: Au ] -> f32
+        if [ !b || !app_obj ] return 0.0
+        m : find_member[ typeid[ app_obj ], b.varname.chars, AU_MEMBER_VAR, 0, true ]
+        if [ !m ] return b.dflt
+        p : ref f32 [ app_obj.member_ref[ m ] ]
+        return p[0]
+
     public func draw_element [ e: element*, stage: CanvasType, last:element ]
         expect e inherits element, 'e is not an element'
-        canvas_arr : new Canvas[2] [ screen, compose ]
-        cv : canvas_arr[stage]
+        # select target canvas directly. (was: new Canvas[2] [screen,compose]
+        # then index — that per-call vector dropped its elements on teardown
+        # without holding them on init, underflowing screen/compose to 0.)
+        cv : (stage == CanvasType.screen) ? screen : compose
         rel : rect [ (e.parent) ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
             rect [ x: 0, y: 0, w: width, h: height ] ]
@@ -1153,6 +1250,15 @@ Display Window
             e.area = Region [ 0.0 ]
 
         if [!e.bounds] e.bounds = rect[]
+
+        # resolve any bound coords (`r[varname:default]`) against the app object so
+        # the live variable drives layout — read each frame, so a drag reflows.
+        if [ e.ux && e.ux.app_object && e.area ]
+            app_obj : Au e.ux.app_object
+            if [ e.area.bind_l ] e.area.l.offset = bind_value[ e.area.bind_l, app_obj ]
+            if [ e.area.bind_t ] e.area.t.offset = bind_value[ e.area.bind_t, app_obj ]
+            if [ e.area.bind_r ] e.area.r.offset = bind_value[ e.area.bind_r, app_obj ]
+            if [ e.area.bind_b ] e.area.b.offset = bind_value[ e.area.bind_b, app_obj ]
 
         bounds : e.area.rectangle[ rel, null, (last) ? last.bounds : null, e.fc ]
 
@@ -1245,7 +1351,11 @@ Display Window
         if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
             #if [ frame_seq > 1 ]
             #    fault 'cache-frame2 id={e.id} ew={ew} eh={eh} cw={e.cache_w} ch={e.cache_h} no_cc={!e.cache_canvas}'
+            if [ e.cache_canvas ]
+                cchdr : Au.header[ e.cache_canvas ]
+                puts 'cache_canvas replace id={e.id} refs={cchdr.refs}'
             e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
+            printf["cache_canvas new instance=%p\n", e.cache_canvas]
             e.cache_canvas.update[]
             e.cache_w = ew
             e.cache_h = eh
@@ -1483,14 +1593,20 @@ Display Window
             cv.restore[]
 
         if [ redraw ]
-            # redirect window canvases so e.draw* sees the cache target
-            prev_screen  : a.screen
-            prev_compose : a.compose
+            # redirect window canvases so e.draw* sees the cache target.
+            # hold the saved canvases: `a.screen = target_cv` is a `=` reassign
+            # that drops the field's previous value, and the save is a borrow
+            # (no hold) — without this, the reassign frees screen/compose when
+            # nothing else pads their refcount. released after the restore.
+            prev_screen  : hold[ a.screen ]
+            prev_compose : hold[ a.compose ]
             if [ stage == CanvasType.screen ]  a.screen  = target_cv
             if [ stage == CanvasType.compose ] a.compose = target_cv
             e.draw*[ a ]
             a.screen  = prev_screen
             a.compose = prev_compose
+            drop[ prev_screen ]
+            drop[ prev_compose ]
             if [ !e.volatile && stage == CanvasType.screen ]
                 if [ e.cache_ox > 0 || e.cache_oy > 0 ]
                     target_cv.restore[]

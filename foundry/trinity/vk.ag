@@ -969,7 +969,7 @@ GLSL VertGLSL : RType
 class Pipeline
     context vk              : vk_context
     context w               : Display
-    expect r                : Render
+    context r               : Render   # render target; weak back-ref (canvas→model→pipeline owns down; r points back up — avoids a cycle)
     expect s                : shader
     expect name             : string
     public render_id        : i32
@@ -1548,7 +1548,7 @@ class gltf_node
 class Model
     context vk              : vk_context
     context w               : Display
-    public r                : Render
+    context r               : Render   # render target; weak back-ref (target owns the Model — avoids a Canvas<->Model cycle)
     mutable transforms      : ref mat4f null
     mutable transform_count : i32
     public id               : GltfModel

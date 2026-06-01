@@ -78,6 +78,8 @@ trinity orbiter # implements compiler
     public active_target : string
     public active_console: string
     public show_console  : bool
+    # bound layout var: editor-group bottom (= console top) seam, draggable
+    public console_h     : f32 [ 6.9 ]
     # toggles the right-side file-list panel (the >| button in the editor group)
     public show_right    : bool [ true ]
     public filter_text   : string
@@ -116,8 +118,12 @@ trinity orbiter # implements compiler
     # code font size (px) for editors. canvas default is large (~22); this is
     # the single place to tune it. line-number labels render smaller still.
     public code_font_size : i32
+    intern booted        : bool
     intern stdout_rfd    : i32 [ -1 ]
     intern stdout_orig   : i32 [ -1 ]
+    # route stdout into the in-app system console. false = leave stdout alone so
+    # all prints go straight to the terminal (debugging). flip to true to re-enable.
+    intern capture_stdout : bool [ false ]
     intern stdout_line   : string
  
     func init []
@@ -179,11 +185,8 @@ trinity orbiter # implements compiler
         bp_src : open_files[0]
         breakpoints['{bp_src}:4'] = string[]
         stdout_line    = ''
-        # route our own stdout/stderr into the system console
-        stdout_rfd     = au_capture_stdout[]
-        stdout_orig    = au_stdout_orig[]
-        # guaranteed line so the system console shows content even without capture
-        stdout_log.push[ 'orbiter: system console online' ]
+        # capture is deferred to the first on_render so load-time prints don't get
+        # routed into a console that isn't initialized/updating yet.
         printf[ "orbiter: stdout capture active (rfd=%i orig=%i)\n", stdout_rfd, stdout_orig ]
         check_stale[]
         ensure_user_config[]
@@ -722,7 +725,15 @@ trinity orbiter # implements compiler
             puts 'orbiter: memory exceeded 20% of system RAM — quitting '
             exit[ 1 ]
         render_tick[]
-        drain_stdout[]
+        # skip the first frame (styles/Regions parse during it) so its prints hit
+        # the terminal; capture from the second frame on, once the console is live.
+        if [ capture_stdout ]
+            if [ !booted ]
+                booted = true
+            el [ stdout_rfd < 0 ]
+                stdout_rfd  = au_capture_stdout[]
+                stdout_orig = au_stdout_orig[]
+            drain_stdout[]
         index_step[]
         fps : f32 [ w.frame_factor * 60.0 ]
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
@@ -808,7 +819,7 @@ trinity orbiter # implements compiler
                 selected: !show_right
                 elements: egroup_els
             ],
-            
+
             "instances": Instances [ elements: Elements [
                 'source_nav': Tabs [ elements: source_nav ]
                 'tools':      Tabs [ elements: Elements [

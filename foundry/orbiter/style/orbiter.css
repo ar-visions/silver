@@ -235,13 +235,13 @@ Group.editor-group / Option {
 
 
 Instances {
-    area:                       l0 b1.5 r10.04 h1.5
+    area:                       l0 b@console_h=6.9 r10.04 b0
     layers.compose:
         ctype: compose
         fill_color: #f0a
 
     layers.base:
-        fill_color:             #23f1
+        fill_color:             #24f1
         inner_glow:             #fff1 16
     layers.border:
         area:                   l0 t43px r0 h1px
@@ -249,12 +249,6 @@ Instances {
     layers.border2:
         area:                   l0 t44px r0 h1px
         fill_color:             #aaf2
-:wide
-    area:                       l0 b1.5 r0 h1.5
-:selected
-    area:                       l0 b6.9 r10.04 h7
-:selected&wide
-    area:                       l0 b6.9 r0 h7
 }
 
 Console {

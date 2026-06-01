@@ -1937,6 +1937,10 @@ Render Canvas
             ps   : i32 [ (mdl.pixel_scale > 0) ? mdl.pixel_scale : 4 ]
             cw4  : i32 [ i32(mdl.w) * ps ]
             ch4  : i32 [ i32(mdl.h) * ps ]
+            if [ mdl.cache ]
+                chdr : Au.header[ mdl.cache ]
+                if [ chdr.refs > 1 ]
+                    puts 'SVG cache replace: refs={chdr.refs} (held elsewhere — wont free)'
             mdl.cache    = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: cw4, height: ch4, reduce: false, load_existing: true ]
             mdl.cache.update[]
             mdl.cache.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
