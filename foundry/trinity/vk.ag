@@ -538,10 +538,10 @@ class vk_context
     intern reduce_s:    Au
     intern shaders:     array shader
     intern shader_cache: store
-    # shared font cache keyed by "uri@size" — CanvasFont does a FreeType
-    # FT_New_Face (file parse) per construction, so without this every cache
-    # canvas rebuild re-parsed the .ttf (a per-resize-frame load). stored as Au
-    # since CanvasFont lives in Canvas.ag; Canvas casts on the way out.
+    # font cache keyed by "name@size". each entry is born at its size and is
+    # NEVER mutated (no set_size on a shared instance) and NEVER unloaded —
+    # loaded once, borrowed by every canvas. stored as Au (CanvasFont lives in
+    # Canvas.ag); Canvas casts on the way out.
     mutable font_cache: map Au [ string ]
 
     func init [ ]
@@ -2733,7 +2733,6 @@ intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods:
     w.ev.key.shift    = lshift == GLFW_PRESS || rshift == GLFW_PRESS
     w.ev.key.meta     = (mods & 8) != 0
     w.ev.key.alt      = (mods & 4) != 0
-    puts 'mouse button={id} state={w.ev.mouse.state} mods={mods} lshift={lshift} rshift={rshift} shift={w.ev.key.shift}'
     if [ w.ev.mouse.state ]
         w.press_event[ w.ev ]
     el

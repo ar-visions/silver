@@ -31,7 +31,7 @@ Toolbar {
 }
 
 Toolbar.right {
-    area: r10 t0 r0 b0
+    area: r@right_w=10|0|0 t0 r0 b0
 
     layers.border:
         fill_color: #fff0
@@ -108,7 +108,7 @@ Group / Check {
 }
 
 Group.editor-group {
-    area:                       l0 t0 r10.06 b@console_h=6.9
+    area:                       l0 t0 r@right_w=10|0|0 b@console_h=6.9|0|50
 
     layers.compose:
         radius:                 0
@@ -235,7 +235,7 @@ Group.editor-group / Option {
 
 
 Instances {
-    area:                       l0 b@console_h=6.9 r10.04 b0
+    area:                       l0 b@console_h=6.9|0|50 r@right_w=10|0|0 b0
     layers.compose:
         ctype: compose
         fill_color: #f0a

@@ -78,8 +78,22 @@ trinity orbiter # implements compiler
     public active_target : string
     public active_console: string
     public show_console  : bool
+    # live elements, auto-bound by id — reference them directly, no tree walk.
+    public instances     : Instances
+    public console       : Console
     # bound layout var: editor-group bottom (= console top) seam, draggable
     public console_h     : f32 [ 6.9 ]
+    # companion the seam maintains: last open (non-snapped) console height. the
+    # toggle restores this when re-opening so a collapse doesn't lose the size.
+    public console_h_user: f32 [ 6.9 ]
+    # `_active` = the displayed (eased) position the layout renders; it filters
+    # toward the goal (console_h) once per frame so drag/toggle moves are smooth.
+    public console_h_active: f32 [ 6.9 ]
+    # bound layout var: right-panel left seam (= editor/console right edge),
+    # draggable. right_w_user is the seam's last open (non-snapped) width.
+    public right_w       : f32 [ 10.0 ]
+    public right_w_user  : f32 [ 10.0 ]
+    public right_w_active: f32 [ 10.0 ]
     # toggles the right-side file-list panel (the >| button in the editor group)
     public show_right    : bool [ true ]
     public filter_text   : string
@@ -365,6 +379,16 @@ trinity orbiter # implements compiler
     func on_index_change [ changed: Au ] -> none
         index_dirty = true
 
+    # reload safety: each watch thread holds a raw callback (on_index_change) into
+    # THIS module's code. before the .so unloads they must be stopped, else a file
+    # event after dlclose fires a dangling pointer (crash in watch_runner). pause[]
+    # joins each thread synchronously, independent of refcount/auto_free timing.
+    func destroy [ ]
+        if [ index_watches ]
+            for [ iw: watch ] in index_watches
+                iw.pause[ ]
+        super.destroy[ ]
+
     # filter the cached index by find_text. incremental: if find_text is a
     # superstring of the previous query, narrow the previous results rather than
     # rescanning the whole index (substring match is monotonic). full rescan
@@ -548,13 +572,19 @@ trinity orbiter # implements compiler
                     return
         # >| toggle hides/shows the right file-list panel
         if [ ev.target.id == 'toggle_side' ]
-            show_right = !show_right
+            # the seam (right_w) is the single source of truth; show_right is
+            # derived from it in on_render, so clicking and drag-snapping stay in
+            # sync. collapse to 0, or restore the last dragged width.
+            if [ right_w > 0.5 ]
+                right_w = 0.0
+            el
+                right_w = right_w_user
             # Instances is a Control, not an Option, so apply_args won't sync its
             # custom `wide` flag — set it directly so the console spans full width
             # (no gap) when the right toolbar is hidden.
             ux      : Window ev.target.ux
             inst_el : Instances ux.root.elements[ 'instances' ]
-            if [ inst_el ] inst_el.wide = !show_right
+            if [ inst_el ] inst_el.wide = right_w <= 0.5
             if [ ev.target ] ev.target.ux.restyle = true
             return
         puts 'on_press: {ev.target.id}'
@@ -635,6 +665,13 @@ trinity orbiter # implements compiler
             el [ id == 'shell' || id == 'lldb' ]
                 active_console = (active_console == id) ? '' : id
                 show_console   = active_console.count > 0
+                # console seam toggle: off collapses to the style minimum (layout
+                # floors a 0 request so the bar still paints); on restores the last
+                # open position the seam recorded in console_h_user.
+                if [ !show_console ]
+                    console_h = 0.0
+                el
+                    console_h = console_h_user
                 puts 'show_console: {show_console}'
                 ux      : Window ev.target.ux
                 inst_el : Instances ux.root.elements[ 'instances' ]
@@ -742,6 +779,47 @@ trinity orbiter # implements compiler
         avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
         w.set_title[ 'orbiter' ]
 
+        # derive show_right from the seam each frame so the toggle button reflects
+        # a drag-snap (right_w → 0) as well as a click. right_w is authoritative.
+        show_right = right_w > 0.5
+
+        # seam smoothing: filter the displayed (active) position toward the goal
+        # the user set (drag or toggle button) once per frame, so the controls
+        # glide on the filter_n curve instead of snapping to a jittery mouse. the
+        # layout renders the _active companions (bind_value returns them); right_w
+        # / console_h stay the instant goal for all logic. snap within tolerance.
+        # amount 0.2 → decay base 0.8 (matches the CSS `filter 0.8` convention,
+        # same pow[base, frame_factor] curve). lower = smoother/more lag.
+        ff : f32 [ w.frame_factor ]
+        right_w_active   = filter_n[ right_w_active,   right_w,   0.8, ff ]
+        console_h_active = filter_n[ console_h_active, console_h, 0.8, ff ]
+        rwd : f32 [ right_w   - right_w_active ]
+        chd : f32 [ console_h - console_h_active ]
+        if [ rwd < 0.02 && rwd > -0.02 ] right_w_active   = right_w
+        el                               w.will_animate   = true
+        if [ chd < 0.02 && chd > -0.02 ] console_h_active = console_h
+        el                               w.will_animate   = true
+
+        # console: drain the active pty here (off the render path) so the console
+        # element can stay cached/pristine when there's no output — was a full text
+        # re-render every frame. keep one cheap frame coming to poll the pty, but
+        # only force a redraw (pristine = false) when output actually arrived or the
+        # system feed grew.
+        if [ show_console && console ]
+            cs : console.session[]
+            if [ cs ]
+                if [ cs.pty_fd >= 0 ]
+                    w.will_animate = true
+                    cs.dirty = false
+                    cs.read_output[]
+                    if [ cs.dirty ] console.pristine = false
+                el [ console.feed ]
+                    fc : i32 [ console.feed.count ]
+                    if [ fc != cs.last_feed_count ]
+                        cs.last_feed_count = fc
+                        console.pristine   = false
+                        w.will_animate     = true
+
         left_path           : path (left_idx >= 0 && left_idx < open_files.count) ? open_files[left_idx] : null
         right_path          : path (right_idx >= 0 && right_idx < open_files.count) ? open_files[right_idx] : null
         active_name         : string (left_path) ? left_path.filename[] : string[]
@@ -790,7 +868,8 @@ trinity orbiter # implements compiler
         return Elements [
             "toggle_side":  Option [ selected: !show_right, topmost: true ]
             "right":        Toolbar [
-                transparency: (show_right) ? 0.0 : 1.0
+                # no transparency hide — the right_w seam collapses this to
+                # bounds.w 0 when toggled off, which the draw skip already hides.
                 elements: Elements [
                     "title": element [
                         elements: Elements [
@@ -817,9 +896,10 @@ trinity orbiter # implements compiler
                 ]
             ],
             "editor-group": Group [
-                # selected = right panel hidden → the editor group fills its place.
+                # right edge follows the right_w seam (→ r0/full when the panel is
+                # toggled off), so no selected-based fill override is needed; this
+                # also keeps the console_h seam live while the right panel is hidden.
                 # elements (editors + optional pin column) built above in egroup_els.
-                selected: !show_right
                 elements: egroup_els
             ],
 

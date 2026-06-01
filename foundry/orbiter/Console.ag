@@ -26,6 +26,11 @@ class ConsoleSession
     mutable screen     : array TermCell
     mutable scrollback : list string
     mutable scroll     : f32 [ 0.0 ]
+    # set when pty output actually changes the screen; lets the console stay
+    # cached (pristine) and skip its full text re-render on idle frames.
+    mutable dirty      : bool
+    # last feed line count (system console) — detects new lines without a redraw.
+    mutable last_feed_count : i32 [ -1 ]
 
     func init []
         scrollback = list string []
@@ -202,6 +207,7 @@ class ConsoleSession
         for [ i: i32 0, i < 4096, i += 1 ]
             nr : i32 [ read[ pty_fd, ref buf_c, 1 ] ]
             if [ nr <= 0 ] break
+            dirty = true
             process_byte[ i32 buf_c ]
 
     func write_input [ data: string ]
@@ -222,8 +228,6 @@ Layer TermLayer
 
         if [ s.pty_fd < 0 ]
             if [ !con.feed ] return
-            parent.needs_frame = true
-            parent.ux.will_animate = true
             n      : i32 [ con.feed.count ]
             max_s  : f32 [ maxf[ f32[n] * lh - bounds.h, 0.0 ] ]
             for [ li: i32 0, li < n, li += 1 ]
@@ -237,9 +241,8 @@ Layer TermLayer
             cv.paint[]
             return
 
-        parent.needs_frame = true
-        parent.ux.will_animate = true
-        s.read_output[]
+        # output is drained off the render path (orbiter.on_render) so this draw
+        # only runs when the screen actually changed; no per-frame forcing here.
         cw       : f32 [ cv.measure_text[ 'x' ].w ]
         sc_count : i32 [ s.scrollback.count ]
         total_h  : f32 [ f32[sc_count + s.rows] * lh ]

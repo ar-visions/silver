@@ -1175,6 +1175,10 @@ Render Canvas
     intern sdf_tex       : Texture
     intern image_override : Texture
     intern mask_override  : Texture
+    # source UV sub-region for the next image blit (x0,y0,x1,y1). z>0 means active;
+    # lets draw_canvas sample just the content corner of an over-allocated (64-
+    # rounded) cache texture instead of the whole thing. reset by the caller.
+    intern image_uv       : vec4f
     public format	   : Pixel[Pixel.rgba8]
     # current 2D affine — held directly on Canvas because writing back
     # into states[state_depth-1].transform via array-of-struct field assignment
@@ -1260,17 +1264,8 @@ Render Canvas
         # inside Canvas.init (implicit self), bypassing the chained-write
         # issue with `outside.compose.font = fnt` from trinity.render.
         ft_lib   = ft_init[]
-        # shared per-size font cache on vk — CanvasFont does a FreeType face load
-        # (file parse) per construction, so building one per cache-canvas was
-        # re-parsing the .ttf every resize frame. cache it once, borrow after.
-        if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
-        fkey : string 'SpaceMono-Regular@22'
-        cf   : CanvasFont vk.font_cache[ fkey ]
-        if [ !cf ]
-            cf = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/SpaceMono-Regular.ttf', size_px: 22 ]
-            vk.font_cache[ fkey ] = cf
-        font = cf
-        #font.hold[]
+        # font is lazy now — built by ensure_font[] on first text draw, so
+        # canvases that never render text never parse the .ttf.
         # 'mask' starts bound to sdf_tex as a placeholder; draw_canvas_masked
         # rebinds it to the real mask texture per composite.
         canvas_samplers : map Au[string] [ 'image': sdf_tex, 'atlas': glyph_atlas.texture, 'mask': sdf_tex ]
@@ -1384,9 +1379,33 @@ Render Canvas
         color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
         
 
+    # reuse this canvas at a new size instead of rebuilding it — keeps the
+    # pipelines/shaders/font/atlas (no VkPipeline creation, the resize fps cost)
+    # and only reallocates the size-dependent textures + framebuffers.
     func resize [ rw: i32, rh: i32 ] -> Canvas
+        if [ rw == width && rh == height ] return a
         width  = rw
         height = rh
+        update[]                                     # Render: color/depth + framebuffers
+        if [ sdf_tex ]
+            sdf_tex.resize[ max[ rw / 2, 1 ], max[ rh / 2, 1 ] ]
+        if [ text_render ]
+            text_render.width  = rw
+            text_render.height = rh
+            text_render.update[]                     # text framebuffer over the shared color
+        # textures got new GPU handles — force the pipelines to rebind their
+        # descriptors on the next dispatch (rebind sets resources = null).
+        if [ models ]
+            for [ m: Model ] in models
+                m.rebind_model[]
+        if [ text_render && text_render.models ]
+            for [ m: Model ] in text_render.models
+                m.rebind_model[]
+        # blur cascade is sized off width/height — drop it so it lazily rebuilds
+        # at the new size on next blur[] (cheap; most canvases never blur).
+        blur_stages = null
+        blur_v_arr  = null
+        blur_h_arr  = null
         return a
 
 
@@ -1522,10 +1541,21 @@ Render Canvas
     # sync the shared CanvasFont's freetype face to this canvas's current
     # font_size before any glyph/metrics call. avoids bleeding size changes
     # from one canvas into another when they share a font.
-    intern func ensure_font []
+    public func ensure_font []
         sz : i32 [ states[state_depth - 1].font_size ]
-        if [ font && sz > 0 && sz != font.size_px ]
-            font.set_size[ sz ]
+        if [ sz <= 0 ] sz = 22
+        # shared, immutable per-(name,size) font cached on vk: each is born at
+        # its size (init does FT_Set_Pixel_Sizes) so it's NEVER set_size'd —
+        # mutating a shared instance re-rasterizes + invalidates its glyph cache,
+        # which is what randomized glyphs. loaded once, never unloaded, borrowed.
+        if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
+        key : string 'SpaceMono-Regular@{sz}'
+        cf  : CanvasFont vk.font_cache[ key ]
+        if [ !cf ]
+            cf = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/SpaceMono-Regular.ttf', size_px: sz ]
+            vk.font_cache[ key ] = cf
+        font = cf
+
     # ---- state setters ----
 
     func fill_color [ color: rgba ]
@@ -2249,7 +2279,9 @@ Render Canvas
             # mode 5 (image) if draw_canvas set image_override.
             setup_shader [ st, bx0, by0, bw, bh ]
             ui_shader.fill_color = st.fill_color
-            ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+            # grad0 doubles as the image sample-UV remap; use the caller's content
+            # sub-region when set (over-allocated cache), else the full 0..1 rect.
+            ui_shader.grad0  = (image_uv.z > 0.0) ? image_uv : vec4f [ 0.0, 0.0, 1.0, 1.0 ]
             is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
             # mask_override present → masked composite (content * mask).
             # otherwise r8 → image_r, rgba → image, none → solid.

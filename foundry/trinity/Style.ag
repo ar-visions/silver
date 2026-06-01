@@ -422,6 +422,11 @@ class BindCoord
     public axis    : i32
     public varname : string
     public dflt    : f32
+    # px clamp relative to the touched sides: min (near side) / max (far side).
+    # seam drag clamps to [min,max]; reaching max snaps to the collapsed value.
+    public min       : f32
+    public max       : f32
+    public has_range : bool
 
 struct XCoord
     x_type   : XAlign
@@ -577,10 +582,15 @@ struct YCoord
 func coord_bind [ tok: string, axis: i32 ] -> BindCoord
     if [ !tok || tok.count < 3 ] return null
     if [ tok.chars[1] != '@' ] return null
-    inner : string tok.mid[ 2, tok.count - 2 ]
-    parts : inner.split[ '=' ]
-    dv    : f32 [ (parts.count > 1) ? parts[1].real_value[] : 0.0 ]
-    return BindCoord [ axis: axis, varname: parts[0], dflt: dv ]
+    # syntax: b@<var>=<default>|<min>|<max>  (min/max px, relative to the sides).
+    inner  : string tok.mid[ 2, tok.count - 2 ]
+    parts  : inner.split[ '|' ]        # <var>=<default> | <min> | <max>
+    vparts : parts[0].split[ '=' ]     # <var> , <default>
+    dv : f32 [ (vparts.count > 1) ? vparts[1].real_value[] : 0.0 ]
+    mn : f32 [ (parts.count > 1)  ? parts[1].real_value[]  : 0.0 ]
+    mx : f32 [ (parts.count > 2)  ? parts[2].real_value[]  : 0.0 ]
+    return BindCoord [ axis: axis, varname: vparts[0], dflt: dv,
+        min: mn, max: mx, has_range: parts.count > 2 ]
 
 class Region
     public l   : XCoord

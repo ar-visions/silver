@@ -114,15 +114,22 @@ abstract live_app media_app
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            buf : local char [ 128 ]
-            sprintf[ buf, "fps: %i  samplers: %i", frames, vk.sampler_count ]
-            puts buf
+            #buf : local char [ 128 ]
+            #sprintf[ buf, "fps: %i  samplers: %i", frames, vk.sampler_count ]
+            #puts buf
             frames = 0
         render*[]
         Au.auto_free[false]
         return !glfwWindowShouldClose[ w.glfw ]
 
     func destroy [ ]
+        # hot-reload: vk_context persists (held in libAu), but this module's code
+        # is about to be dlclose'd. drop the cached fonts NOW, while their vtables
+        # are still mapped — otherwise the next instance returns a stale CanvasFont
+        # and calling its methods jumps into freed code (SIGSEGV). ensure_font
+        # rebuilds the cache lazily on the new instance.
+        if [ vk ]
+            vk.font_cache = null
         if [ w ]
             w.drop[]
 
@@ -141,6 +148,10 @@ abstract live_app media_app
         existing_vk : handle Au.live_vk_get[]
         if [ existing_vk ]
             vk = (existing_vk to vk_context)
+            # startup never reuses the font cache: destroy[] already dropped it at
+            # the reload boundary (while the old code was still mapped), so it's
+            # null here — ensure_font rebuilds fresh against THIS module's code.
+            vk.font_cache = null
         el
             vk = vk_context[]
             Au.live_vk_set[ handle[vk] ]
@@ -163,11 +174,26 @@ class BindSeam
     public axis : i32
     public sign : f32
     public fc   : f32
+    # px clamp (from the coord) + the parent extent along the axis, so the drag
+    # can clamp the value: collapse floor = max/fc, full = (span - min)/fc.
+    public min       : f32
+    public max       : f32
+    public span      : f32
+    public has_range : bool
+    # optional companion field `<varname>_user`: the last NON-snapped (open)
+    # position. updated on open drags, left alone when the drag snaps to collapse,
+    # so the app can restore the user's real size after a collapse.
+    public user_mem  : Au_t
 
 
 Display Window
     mutable app_object          : trinity*
     mutable cursors             : array CursorPos
+    # GLFW resize cursors for seam hover/drag (created lazily, cached). cursor_kind
+    # tracks the active one (0=arrow,1=horizontal,2=vertical) to skip redundant sets.
+    mutable cursor_hresize      : handle
+    mutable cursor_vresize      : handle
+    mutable cursor_kind         : i32
 
     public compose              : Canvas
     public glyph                : Canvas
@@ -220,6 +246,8 @@ Display Window
     # seam_drag = the one being dragged; start_m/v = mouse axis + var at drag start
     mutable seam_hover          : BindSeam
     mutable seam_hl             : rect
+    # draw the hover/drag seam band — debug-only now (seams are grabbable without it)
+    public  seam_debug          : bool
     mutable seam_drag           : BindSeam
     mutable seam_start_m        : f32
     mutable seam_start_v        : f32
@@ -740,9 +768,34 @@ Display Window
         ap : Au c.ux.app_object
         m  : find_member[ typeid[ ap ], bc.varname.chars, AU_MEMBER_VAR, 0, true ]
         if [ !m ] return null
-        return BindSeam [ mem: m, app: ap, axis: axis, sign: sign, fc: c.fc ]
+        # optional `<varname>_user` companion that records the last open position.
+        un : bc.varname + '_user'
+        um : find_member[ typeid[ ap ], un.chars, AU_MEMBER_VAR, 0, true ]
+        # parent extent along the drag axis (px), for clamping the seam travel.
+        sp : f32 [ (c.parent && c.parent.bounds) ?
+            ( (axis == 1) ? c.parent.bounds.h : c.parent.bounds.w ) :
+            ( (axis == 1) ? height : width ) ]
+        return BindSeam [ mem: m, app: ap, axis: axis, sign: sign, fc: c.fc,
+            min: bc.min, max: bc.max, span: sp, has_range: bc.has_range, user_mem: um ]
 
-    # is the mouse (in this child's coordinate space) on a bound edge's 4px inset
+    # show the OS resize cursor over a seam: kind 0=arrow, 1=horizontal (x-axis
+    # seam), 2=vertical (y-axis seam). standard cursors are created on first use
+    # and cached; cursor_kind skips redundant glfwSetCursor calls.
+    func seam_cursor [ kind: i32 ]
+        if [ kind == cursor_kind ] return
+        g : handle [ Au.live_window_get[] ]
+        if [ !g ] return
+        cursor_kind = kind
+        if [ kind == 1 ]
+            if [ !cursor_hresize ] cursor_hresize = glfwCreateStandardCursor[ GLFW_HRESIZE_CURSOR ]
+            glfwSetCursor[ g, cursor_hresize ]
+        el [ kind == 2 ]
+            if [ !cursor_vresize ] cursor_vresize = glfwCreateStandardCursor[ GLFW_VRESIZE_CURSOR ]
+            glfwSetCursor[ g, cursor_vresize ]
+        el
+            glfwSetCursor[ g, null ]
+
+    # is the mouse (in this child's coordinate space) on a bound edge's 6px inset
     # slider band? bands run from the edge INTO the control (the embedded-on-edges
     # model — no centered origin). sets seam_hover when hit.
     func seam_check [ c: element, mx: f32, my: f32 ]
@@ -751,18 +804,18 @@ Display Window
         b : rect c.bounds
         # band is the slot's element edge; drag sign follows the coord's ANCHOR
         # (bottom/right-anchored offsets shrink as the mouse moves toward them).
-        if      [ c.area.bind_t && mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + 4.0 ]
+        if      [ c.area.bind_t && mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + 6.0 ]
             seam_hover = make_seam[ c.area.bind_t, c, 1, (c.area.t.y_type == YAlign.bottom) ? -1.0 : 1.0 ]
-            seam_hl    = rect [ x: b.x, y: b.y, w: b.w, h: 4.0 ]
-        el [ c.area.bind_b && mx >= b.x && mx <= b.x + b.w && my >= b.y + b.h - 4.0 && my <= b.y + b.h ]
+            seam_hl    = rect [ x: b.x, y: b.y, w: b.w, h: 6.0 ]
+        el [ c.area.bind_b && mx >= b.x && mx <= b.x + b.w && my >= b.y + b.h - 6.0 && my <= b.y + b.h ]
             seam_hover = make_seam[ c.area.bind_b, c, 1, (c.area.b.y_type == YAlign.bottom) ? -1.0 : 1.0 ]
-            seam_hl    = rect [ x: b.x, y: b.y + b.h - 4.0, w: b.w, h: 4.0 ]
-        el [ c.area.bind_l && my >= b.y && my <= b.y + b.h && mx >= b.x && mx <= b.x + 4.0 ]
+            seam_hl    = rect [ x: b.x, y: b.y + b.h - 6.0, w: b.w, h: 6.0 ]
+        el [ c.area.bind_l && my >= b.y && my <= b.y + b.h && mx >= b.x && mx <= b.x + 6.0 ]
             seam_hover = make_seam[ c.area.bind_l, c, 0, (c.area.l.x_type == XAlign.right) ? -1.0 : 1.0 ]
-            seam_hl    = rect [ x: b.x, y: b.y, w: 4.0, h: b.h ]
-        el [ c.area.bind_r && my >= b.y && my <= b.y + b.h && mx >= b.x + b.w - 4.0 && mx <= b.x + b.w ]
+            seam_hl    = rect [ x: b.x, y: b.y, w: 6.0, h: b.h ]
+        el [ c.area.bind_r && my >= b.y && my <= b.y + b.h && mx >= b.x + b.w - 6.0 && mx <= b.x + b.w ]
             seam_hover = make_seam[ c.area.bind_r, c, 0, (c.area.r.x_type == XAlign.right) ? -1.0 : 1.0 ]
-            seam_hl    = rect [ x: b.x + b.w - 4.0, y: b.y, w: 4.0, h: b.h ]
+            seam_hl    = rect [ x: b.x + b.w - 6.0, y: b.y, w: 6.0, h: b.h ]
 
     public func find_target [ e: element, ev: Event, must: element ] -> element
         # fully-transparent elements are hidden — ignore them (and their
@@ -843,16 +896,34 @@ Display Window
         # active seam drag: write the app var from the mouse delta (px / fc → units,
         # signed by the anchor). next layout reflows; skip normal hover/move.
         if [ seam_drag ]
+            seam_cursor[ (seam_drag.axis == 0) ? 1 : 2 ]
             cur : f32 [ (seam_drag.axis == 0) ? ev.mouse.pos.x : ev.mouse.pos.y ]
             sc  : f32 [ (seam_drag.fc > 0.0) ? seam_drag.fc : 1.0 ]
             dp  : ref f32 [ seam_drag.app.member_ref[ seam_drag.mem ] ]
-            dp[0] = seam_start_v + (cur - seam_start_m) / sc * seam_drag.sign
+            v   : f32 [ seam_start_v + (cur - seam_start_m) / sc * seam_drag.sign ]
+            # snap travel to the coord's px range: far-side floor (collapse) =
+            # max/fc, near-side limit (full) = (span - min)/fc. magnetic — drag
+            # within (or past) the snap radius of an end and it jumps to that
+            # detent, so the bottom collapses (editor appears higher) and the
+            # top fills, instead of overshooting.
+            if [ seam_drag.has_range ]
+                lo   : f32 [ seam_drag.max / sc ]
+                hi   : f32 [ (seam_drag.span - seam_drag.min) / sc ]
+                snap : f32 [ 1.5 ]
+                if [ v < lo + snap ] v = lo
+                if [ hi > lo && v > hi - snap ] v = hi
+            dp[0] = v
+            # NOTE: user_mem (the restore position) is recorded on release, NOT
+            # per-move — otherwise dragging toward a collapse leaves it at the last
+            # near-snap value instead of the user's real open size.
             restyle = true
             return
         seam_hover = null
         seam_hl    = rect[]
         orig_pos : vec2f [ ev.mouse.pos ]
         f : find_target[ root, ev, null ]
+        # resize cursor while hovering a seam band (find_target set seam_hover)
+        seam_cursor[ (seam_hover) ? ((seam_hover.axis == 0) ? 1 : 2) : 0 ]
         ev.mouse.pos = orig_pos
         m : element [ (capture) ? find_target[ root, ev, capture ] : f ]
         # hover / leave bubble — flip state bools and set restyle; the next
@@ -976,6 +1047,16 @@ Display Window
     public func release_event [ ev: Event ]
         # end an active seam drag; don't dispatch a release to elements
         if [ seam_drag ]
+            # record the settled OPEN position as the restore point — but skip a
+            # collapse snap (value at the floor), so a later restore returns to the
+            # real size, not the near-snap value the drag ended on.
+            if [ seam_drag.user_mem && seam_drag.fc > 0.0 ]
+                dp    : ref f32 [ seam_drag.app.member_ref[ seam_drag.mem ] ]
+                lo    : f32 [ seam_drag.max / seam_drag.fc ]
+                puts 'seam release: val={dp[0]} lo={lo} max={seam_drag.max} fc={seam_drag.fc} save={dp[0] > lo + 0.5}'
+                if [ dp[0] > lo + 0.5 ]
+                    up : ref f32 [ seam_drag.app.member_ref[ seam_drag.user_mem ] ]
+                    up[0] = dp[0]
             seam_drag = null
             return
         f : find_target[ root, ev, capture ]
@@ -1198,8 +1279,8 @@ Display Window
 
         draw_element[ root, CanvasType.screen, null ]
 
-        # highlight the hovered/dragged layout seam band so it's visibly grabbable
-        if [ seam_hl && seam_hl.w > 0.0 && seam_hl.h > 0.0 ]
+        # highlight the hovered/dragged layout seam band — debug-only overlay
+        if [ seam_debug && seam_hl && seam_hl.w > 0.0 && seam_hl.h > 0.0 ]
             screen.fill_color[ '#ffcc00cc' ]
             screen.rect_to[ seam_hl.x, seam_hl.y, seam_hl.w, seam_hl.h ]
             screen.paint[]
@@ -1223,12 +1304,34 @@ Display Window
     # resolve a bound coord against the app object: read the named f32 field via
     # member_ref (the app object is the only scope — never the element/parent).
     # a missing field falls back to the coord's inline default.
-    func bind_value [ b: BindCoord, app_obj: Au ] -> f32
+    func bind_value [ b: BindCoord, app_obj: Au, span: f32, fc: f32 ] -> f32
         if [ !b || !app_obj ] return 0.0
         m : find_member[ typeid[ app_obj ], b.varname.chars, AU_MEMBER_VAR, 0, true ]
         if [ !m ] return b.dflt
         p : ref f32 [ app_obj.member_ref[ m ] ]
-        return p[0]
+        v : f32 [ p[0] ]
+        # keep the bound var inside the style's range (`|min|max`, in px). a
+        # collapse request (e.g. toggling the console off → 0) floors to the style
+        # minimum so the element still paints its bar instead of vanishing; the
+        # clamped value is written back so the app var never holds an out-of-range
+        # value.
+        if [ b.has_range && fc > 0.0 ]
+            lo : f32 [ b.max / fc ]
+            hi : f32 [ (span - b.min) / fc ]
+            if [ v < lo ] v = lo
+            if [ hi > lo && v > hi ] v = hi
+            p[0] = v
+        # `v` is the GOAL (where drag/toggle put the seam). render the seam's eased
+        # ACTIVE position instead: the `{varname}_active` app companion, which the
+        # app filters toward the goal once per frame (once-per-frame keeps it
+        # frame-rate stable even though the same var is bound on several elements).
+        # fall back to the goal when there's no companion.
+        akey : b.varname + '_active'
+        an   : find_member[ typeid[ app_obj ], akey.chars, AU_MEMBER_VAR, 0, true ]
+        if [ an ]
+            ap : ref f32 [ app_obj.member_ref[ an ] ]
+            return ap[0]
+        return v
 
     public func draw_element [ e: element*, stage: CanvasType, last:element ]
         expect e inherits element, 'e is not an element'
@@ -1240,7 +1343,11 @@ Display Window
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
             rect [ x: 0, y: 0, w: width, h: height ] ]
 
-        # fc must be set before bounds so layout uses the correct scale
+        # fc = px-per-unit from THIS canvas's font line height — per-target, so
+        # console apps (normalized 1-cell fonts) stay compatible. the font is
+        # cached (loaded once), and ensure_font makes line_height available even
+        # for controls that never draw text (FileList etc.).
+        cv.ensure_font[]
         e.fc = 22.0
         if [ cv.font ]
             e.fc = cv.font.line_height
@@ -1255,10 +1362,10 @@ Display Window
         # the live variable drives layout — read each frame, so a drag reflows.
         if [ e.ux && e.ux.app_object && e.area ]
             app_obj : Au e.ux.app_object
-            if [ e.area.bind_l ] e.area.l.offset = bind_value[ e.area.bind_l, app_obj ]
-            if [ e.area.bind_t ] e.area.t.offset = bind_value[ e.area.bind_t, app_obj ]
-            if [ e.area.bind_r ] e.area.r.offset = bind_value[ e.area.bind_r, app_obj ]
-            if [ e.area.bind_b ] e.area.b.offset = bind_value[ e.area.bind_b, app_obj ]
+            if [ e.area.bind_l ] e.area.l.offset = bind_value[ e.area.bind_l, app_obj, rel.w, e.fc ]
+            if [ e.area.bind_t ] e.area.t.offset = bind_value[ e.area.bind_t, app_obj, rel.h, e.fc ]
+            if [ e.area.bind_r ] e.area.r.offset = bind_value[ e.area.bind_r, app_obj, rel.w, e.fc ]
+            if [ e.area.bind_b ] e.area.b.offset = bind_value[ e.area.bind_b, app_obj, rel.h, e.fc ]
 
         bounds : e.area.rectangle[ rel, null, (last) ? last.bounds : null, e.fc ]
 
@@ -1316,6 +1423,9 @@ Display Window
         e.bounds.y = bounds.y
         e.bounds.w = bounds.w
         e.bounds.h = bounds.h
+        # collapsed to nothing (e.g. the editor section when the console seam is
+        # snapped fully up) — skip this element and all its children.
+        if [ e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
         if [ e.transparency >= 1.0 ] return
         # pre-scan layers to measure any outset beyond element bounds
         margin_l : i32 [ 0 ]
@@ -1348,19 +1458,34 @@ Display Window
         if [ margin_b > 0 ] margin_b += 1
         ew : i32 [ i32[ceilf[e.bounds.w]] + 1 + margin_l + margin_r ]
         eh : i32 [ i32[ceilf[e.bounds.h]] + 1 + margin_t + margin_b ]
-        if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
-            #if [ frame_seq > 1 ]
-            #    fault 'cache-frame2 id={e.id} ew={ew} eh={eh} cw={e.cache_w} ch={e.cache_h} no_cc={!e.cache_canvas}'
-            # canvas owns its textures — reclaim the old one's GPU resources here,
-            # every churn, so samplers free even though the Au object may leak.
+        e.cache_ox = margin_l
+        e.cache_oy = margin_t
+        # count content-size changes; the canvas allocation is rounded up to the
+        # next 64 once a control has resized more than once (it's being actively
+        # dragged), so textures stop reallocating every pixel — only at 64
+        # boundaries. controls that resize <= once keep exact size (no waste). a
+        # masked element keeps exact size so its content/mask UVs stay 1:1.
+        if [ ( ew > 0 && eh > 0 ) && e.cache_canvas && ( e.cache_w != ew || e.cache_h != eh ) ]
+            e.cache_resizes += 1
+        e.cache_w = ew
+        e.cache_h = eh
+        masked_q : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
+        aw : i32 [ ew ]
+        ah : i32 [ eh ]
+        if [ e.cache_resizes > 1 && !masked_q ]
+            aw = ((ew + 63) / 64) * 64
+            ah = ((eh + 63) / 64) * 64
+        if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_aw != aw || e.cache_ah != ah ) ]
+            # reuse the existing canvas at the new size — resizes its textures +
+            # framebuffers, keeps the pipelines/shaders/atlas (no VkPipeline
+            # rebuild, which was the resize fps cost). only build fresh once.
             if [ e.cache_canvas ]
-                e.cache_canvas.teardown_gpu[]
-            e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
-            e.cache_canvas.update[]
-            e.cache_w = ew
-            e.cache_h = eh
-            e.cache_ox = margin_l
-            e.cache_oy = margin_t
+                e.cache_canvas.resize[ aw, ah ]
+            el
+                e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: aw, height: ah, load_existing: true ]
+                e.cache_canvas.update[]
+            e.cache_aw = aw
+            e.cache_ah = ah
             e.pristine = false
 
         #puts 'target_cv set'
@@ -1641,9 +1766,17 @@ Display Window
                     e.mask_canvas.rect_to[ mrx, mry, mrw, mrh ]
                     e.mask_canvas.paint[]
                     e.mask_canvas.restore[]
-                cv.draw_canvas_masked[ e.cache_canvas, e.mask_canvas, 0.0 - f32 e.cache_ox, 0.0 - f32 e.cache_oy, f32 ew, f32 eh ]
+                cv.draw_canvas_masked[ e.cache_canvas, e.mask_canvas,
+                    0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
             el
-                cv.draw_canvas[ e.cache_canvas, 0.0 - f32 e.cache_ox, 0.0 - f32 e.cache_oy, f32 ew, f32 eh ]
+                # sample only the content corner of the cache (it may be allocated
+                # up to 63px larger on each axis); uv = content/alloc, 1.0 when not
+                # rounded. reset after so other image blits sample full.
+                uvx : f32 [ (e.cache_aw > 0) ? f32 [ ew ] / e.cache_aw : 1.0 ]
+                uvy : f32 [ (e.cache_ah > 0) ? f32 [ eh ] / e.cache_ah : 1.0 ]
+                cv.image_uv = vec4f [ 0.0, 0.0, uvx, uvy ]
+                cv.draw_canvas[ e.cache_canvas, 0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
+                cv.image_uv = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
         last_2 : element
         # paint normal children first, then topmost children over them

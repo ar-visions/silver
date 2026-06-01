@@ -51,6 +51,9 @@ Layer FileLayer
             fl.expand_icon   = SVGModel [ path expand_svg ]
             fl.collapse_icon = SVGModel [ path collapse_svg ]
         cv.font_size[ i32[label_size] ]
+        # fonts are lazy — load it at this size now, else cv.font is null and
+        # draw_text bails (blank rows). also makes line_height below valid.
+        cv.ensure_font[]
         lh   : f32 [ ((cv.font) ? cv.font.line_height : 20.0) * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
         fl.row_height  = lh
         fl.content_y   = bounds.y

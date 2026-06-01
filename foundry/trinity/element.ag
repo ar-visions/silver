@@ -156,8 +156,15 @@ ielement element
     intern restyle       : bool
     mutable volatile     : bool
     intern cache_canvas  : Canvas
+    # cache_w/cache_h = last CONTENT size (drives the resize counter). cache_aw/
+    # cache_ah = the canvas ALLOCATION size: once a control has resized more than
+    # once it's rounded up to the next 64 so the textures stop reallocating every
+    # pixel (only at 64 boundaries). the blit samples the content sub-region.
     intern cache_w       : i32
     intern cache_h       : i32
+    intern cache_aw      : i32
+    intern cache_ah      : i32
+    intern cache_resizes : i32
     intern cache_ox      : i32
     intern cache_oy      : i32
     # edge fade mask: when any mask_glow component > 0, the cache blit is
@@ -469,6 +476,10 @@ class Layer
 
     func draw [ cv: Canvas ]
         if [ !editable || !cv ] return
+        # set the size first: measure_text/draw_text call ensure_font, which
+        # otherwise reloads the default font at the canvas's state size (22) and
+        # clobbers any set_font below.
+        cv.font_size[ i32[label_size] ]
         if [ label_font && label_font.count > 0 ]
             if [ !label_font_cache ]
                 label_font_cache = CanvasFont [ ft_lib: cv.ft_lib, uri: label_font, size_px: i32[label_size] ]

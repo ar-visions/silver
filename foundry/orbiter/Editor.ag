@@ -181,24 +181,32 @@ Layer EditorLayer
                         if [ scrolled ]
                             editor.filter_rect = null
                         if [ editor.filter_rect ]
-                            tx : f32 [ rr.x ]
-                            ty : f32 [ rr.y ]
-                            tw : f32 [ rr.w ]
-                            th : f32 [ rr.h ]
-                            rr.x = editor.filter_rect.x * 0.75 + rr.x * 0.25
-                            rr.y = editor.filter_rect.y * 0.75 + rr.y * 0.25
-                            rr.w = editor.filter_rect.w * 0.75 + rr.w * 0.25
-                            rr.h = editor.filter_rect.h * 0.75 + rr.h * 0.25
-                            dx : abs[ tx - rr.x ]
-                            dy : abs[ ty - rr.y ]
-                            dw : abs[ tw - rr.w ]
-                            dh : abs[ th - rr.h ]
-                            if [ dx > 0.5 || dy > 0.5 || dw > 0.5 || dh > 0.5 ]
+                            # ease the selection rect toward its goal with the
+                            # shared frame-rate-aware filter; snap to the goal once
+                            # within tolerance so it settles cleanly and stops
+                            # requesting frames.
+                            gx  : f32 [ rr.x ]
+                            gy  : f32 [ rr.y ]
+                            gw  : f32 [ rr.w ]
+                            gh  : f32 [ rr.h ]
+                            amt : f32 [ 0.25 ]
+                            rt  : f32 [ editor.ux.frame_factor ]
+                            rr.x = filter_n[ editor.filter_rect.x, gx, amt, rt ]
+                            rr.y = filter_n[ editor.filter_rect.y, gy, amt, rt ]
+                            rr.w = filter_n[ editor.filter_rect.w, gw, amt, rt ]
+                            rr.h = filter_n[ editor.filter_rect.h, gh, amt, rt ]
+                            tol : f32 [ 0.5 ]
+                            if [ abs[ gx - rr.x ] < tol && abs[ gy - rr.y ] < tol && abs[ gw - rr.w ] < tol && abs[ gh - rr.h ] < tol ]
+                                rr.x = gx
+                                rr.y = gy
+                                rr.w = gw
+                                rr.h = gh
+                            el
                                 editor.ux.will_animate = true
+                                editor.needs_frame     = true
 
                         editor.filter_rect = rr
                         editor.filter_next = true
-                        editor.needs_frame = true
 
                     cv.fill_color  [ sel_col_val ]
                     cv.stroke_color[ rgba['#fff1'] ]
