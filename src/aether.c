@@ -2086,10 +2086,11 @@ static void resolve_context_members(enode target, map user_provides) {
                      etype_inherits(target_t, req_t))) {
                     scope_var = target;
                 } else {
+                    // context members may be unresolved at construction time —
+                    // a context is a weak (non-holding) slot, so leaving it null
+                    // is valid. it gets wired up later (e.g. Model.r set in
+                    // finish[]). not finding it in scope is not an error.
                     scope_var = lookup_by_unique_type(a, required_type);
-                    verify(scope_var,
-                        "required context member '%s' of type '%s' not found in scope",
-                        mem->ident, required_type->ident);
                 }
             } else {
                 etype ctx = u(etype, required_type);
@@ -2101,7 +2102,8 @@ static void resolve_context_members(enode target, map user_provides) {
             enode prop = access(target, string(mem->ident));
             enode selected = found ? found : scope_var;
 
-            e_assign_if_null(a, prop, (Au)selected);
+            if (selected)
+                e_assign_if_null(a, prop, (Au)selected);
         }
         type = type->context;
 
