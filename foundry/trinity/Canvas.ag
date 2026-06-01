@@ -1203,6 +1203,15 @@ Render Canvas
     intern  blur_v_arr       : array Render
     intern  blur_h_arr       : array Render
 
+    #func dealloc []
+        # ownership assertion: at our dealloc the textures we own should be about
+        # to free. drop_members hasn't run yet, so our own models/pipelines still
+        # hold sdf_tex via their samplers maps — report the count so a real
+        # external pin (higher than our own internal holders) is obvious.
+        #if [ sdf_tex ]
+        #    info : Au.header[ sdf_tex ]
+        #    expect info.refs == 1, 'sdf_tex over-held at Canvas dealloc: refs={info.refs}'
+
     func init [ ]
         # default: transparent — canvas can be used as an overlay layer.
         # call reset[ vec4f ] to force a direct image clear (bypasses any

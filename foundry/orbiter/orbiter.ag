@@ -332,9 +332,12 @@ trinity orbiter # implements compiler
         t0 : i64 [ epoch_micros[] ]
         while [ index_queue.count > 0 ]
             n : i32 [ index_queue.count - 1 ]
-            d : path index_queue[n]
+            # hold across remove[]: remove drops the array's ref, and `d` is a
+            # borrow — without the hold the path frees before d.ls[] runs.
+            d : path hold[ index_queue[n] ]
             index_queue.remove[ n ]
             entries : array [ d.ls[ null, false ] ]
+            drop[ d ]
             if [ entries ]
                 for [ i: i32 0, i < entries.count, i += 1 ]
                     e : path entries[i]

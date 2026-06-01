@@ -2562,7 +2562,7 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
         if [ ia == surface_value ]
             expect tx || (img inherits Image), "expected Texture or Image"
             res = Gpu [ vk: p.vk, name: Au.estring[ surface_enum_type, surface_value ],
-                sampler: (tx) ? tx.hold[] : img.hold[] ]
+                sampler: (tx) ? Au[tx] : Au[img] ]
             result.push[ res ]
     
     pbr_default: pbr_defaults[]
