@@ -156,15 +156,8 @@ ielement element
     intern restyle       : bool
     mutable volatile     : bool
     intern cache_canvas  : Canvas
-    # cache_w/cache_h = last CONTENT size (drives the resize counter). cache_aw/
-    # cache_ah = the canvas ALLOCATION size: once a control has resized more than
-    # once it's rounded up to the next 64 so the textures stop reallocating every
-    # pixel (only at 64 boundaries). the blit samples the content sub-region.
     intern cache_w       : i32
     intern cache_h       : i32
-    intern cache_aw      : i32
-    intern cache_ah      : i32
-    intern cache_resizes : i32
     intern cache_ox      : i32
     intern cache_oy      : i32
     # edge fade mask: when any mask_glow component > 0, the cache blit is

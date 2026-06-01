@@ -1175,10 +1175,6 @@ Render Canvas
     intern sdf_tex       : Texture
     intern image_override : Texture
     intern mask_override  : Texture
-    # source UV sub-region for the next image blit (x0,y0,x1,y1). z>0 means active;
-    # lets draw_canvas sample just the content corner of an over-allocated (64-
-    # rounded) cache texture instead of the whole thing. reset by the caller.
-    intern image_uv       : vec4f
     public format	   : Pixel[Pixel.rgba8]
     # current 2D affine — held directly on Canvas because writing back
     # into states[state_depth-1].transform via array-of-struct field assignment
@@ -2279,9 +2275,7 @@ Render Canvas
             # mode 5 (image) if draw_canvas set image_override.
             setup_shader [ st, bx0, by0, bw, bh ]
             ui_shader.fill_color = st.fill_color
-            # grad0 doubles as the image sample-UV remap; use the caller's content
-            # sub-region when set (over-allocated cache), else the full 0..1 rect.
-            ui_shader.grad0  = (image_uv.z > 0.0) ? image_uv : vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+            ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
             is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
             # mask_override present → masked composite (content * mask).
             # otherwise r8 → image_r, rgba → image, none → solid.

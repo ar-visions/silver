@@ -1458,34 +1458,19 @@ Display Window
         if [ margin_b > 0 ] margin_b += 1
         ew : i32 [ i32[ceilf[e.bounds.w]] + 1 + margin_l + margin_r ]
         eh : i32 [ i32[ceilf[e.bounds.h]] + 1 + margin_t + margin_b ]
-        e.cache_ox = margin_l
-        e.cache_oy = margin_t
-        # count content-size changes; the canvas allocation is rounded up to the
-        # next 64 once a control has resized more than once (it's being actively
-        # dragged), so textures stop reallocating every pixel — only at 64
-        # boundaries. controls that resize <= once keep exact size (no waste). a
-        # masked element keeps exact size so its content/mask UVs stay 1:1.
-        if [ ( ew > 0 && eh > 0 ) && e.cache_canvas && ( e.cache_w != ew || e.cache_h != eh ) ]
-            e.cache_resizes += 1
-        e.cache_w = ew
-        e.cache_h = eh
-        masked_q : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
-        aw : i32 [ ew ]
-        ah : i32 [ eh ]
-        if [ e.cache_resizes > 1 && !masked_q ]
-            aw = ((ew + 63) / 64) * 64
-            ah = ((eh + 63) / 64) * 64
-        if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_aw != aw || e.cache_ah != ah ) ]
+        if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
             # reuse the existing canvas at the new size — resizes its textures +
             # framebuffers, keeps the pipelines/shaders/atlas (no VkPipeline
             # rebuild, which was the resize fps cost). only build fresh once.
             if [ e.cache_canvas ]
-                e.cache_canvas.resize[ aw, ah ]
+                e.cache_canvas.resize[ ew, eh ]
             el
-                e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: aw, height: ah, load_existing: true ]
+                e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
                 e.cache_canvas.update[]
-            e.cache_aw = aw
-            e.cache_ah = ah
+            e.cache_w = ew
+            e.cache_h = eh
+            e.cache_ox = margin_l
+            e.cache_oy = margin_t
             e.pristine = false
 
         #puts 'target_cv set'
@@ -1769,14 +1754,7 @@ Display Window
                 cv.draw_canvas_masked[ e.cache_canvas, e.mask_canvas,
                     0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
             el
-                # sample only the content corner of the cache (it may be allocated
-                # up to 63px larger on each axis); uv = content/alloc, 1.0 when not
-                # rounded. reset after so other image blits sample full.
-                uvx : f32 [ (e.cache_aw > 0) ? f32 [ ew ] / e.cache_aw : 1.0 ]
-                uvy : f32 [ (e.cache_ah > 0) ? f32 [ eh ] / e.cache_ah : 1.0 ]
-                cv.image_uv = vec4f [ 0.0, 0.0, uvx, uvy ]
                 cv.draw_canvas[ e.cache_canvas, 0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
-                cv.image_uv = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
         last_2 : element
         # paint normal children first, then topmost children over them
