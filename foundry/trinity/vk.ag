@@ -538,6 +538,11 @@ class vk_context
     intern reduce_s:    Au
     intern shaders:     array shader
     intern shader_cache: store
+    # shared font cache keyed by "uri@size" — CanvasFont does a FreeType
+    # FT_New_Face (file parse) per construction, so without this every cache
+    # canvas rebuild re-parsed the .ttf (a per-resize-frame load). stored as Au
+    # since CanvasFont lives in Canvas.ag; Canvas casts on the way out.
+    mutable font_cache: map Au [ string ]
 
     func init [ ]
         hold[]
@@ -976,7 +981,9 @@ class Pipeline
     public default_model    : mat4f
     public shader_reloads   : i32
     public material         : Material
-    mutable samplers        : map Au[string]
+    # weak (context): the pipeline borrows the model's samplers map, doesn't
+    # co-own it — avoids the model↔pipeline double-hold on the textures it maps.
+    context samplers        : map Au[string]
     # explicit dispatch group counts for compute pipelines. when any of
     # these are > 0 they override the default of memory.vertex_count, 1, 1.
     mutable dispatch_x      : i32
@@ -1007,6 +1014,15 @@ class Pipeline
     public   func rebind [ ]
         if [ resources ]
             resources = null
+
+    # manual teardown: drop the texture/buffer holds this pipeline keeps in its
+    # resource arrays + samplers, so they release even if the pipeline object
+    # itself doesn't reach refs 0 through the normal cascade.
+    public   func release [ ]
+        # only the pipeline's OWN resource arrays — NOT samplers, which is the
+        # model's shared map; clearing that double-frees its textures.
+        if [ resources ]        resources.clear[]
+        if [ storage_textures ] storage_textures.clear[]
 
     public   func rebind_image [ tx: Texture ]
         if [ image_slot < 0 ] return
@@ -2136,22 +2152,28 @@ class Texture
                 expect r == VK_SUCCESS, "Failed to create VkSampler"
                 vk.sampler_count += 1
 
-    func dealloc [ ]
-        puts 'dealloc Texture'
+    # idempotent GPU teardown — destroys sampler/view/image and nulls the
+    # handles, so it's safe to call directly (canvas-driven) AND again from
+    # dealloc. textures are owned by their canvas; this lets the canvas reclaim
+    # the GPU resources at teardown without depending on the Au refcount.
+    func release_gpu [ ]
         if [ vk_sampler ]
-            puts 'decrementing samplers'
+            vkDestroySampler[ vk.device, vk_sampler, null ]
             vk.sampler_count -= 1
-        vkDestroySampler[ vk.device, vk_sampler, null ]
-        vkDestroyImageView[ vk.device, vk_image_view, null ]
+            vk_sampler = null
+        if [ vk_image_view ]
+            vkDestroyImageView[ vk.device, vk_image_view, null ]
+            vk_image_view = null
         # swap textures wrap a VkImage owned by the swapchain — destroying the
         # swapchain already invalidated it; we must NOT call vmaDestroyImage.
-        if [ !swap ]
+        if [ !swap && vk_image ]
             vmaDestroyImage[ vk.allocator, vk_image, vma_alloc ]
-        vk_layout     = VK_IMAGE_LAYOUT_UNDEFINED
-        vma_alloc     = null
-        vk_image      = null
-        vk_image_view = null
-        vk_sampler    = null
+            vk_image  = null
+            vma_alloc = null
+        vk_layout = VK_IMAGE_LAYOUT_UNDEFINED
+
+    func dealloc [ ]
+        release_gpu[]
 
 
 # --- environment cubemap generation ---

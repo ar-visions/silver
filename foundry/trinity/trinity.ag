@@ -1351,11 +1351,11 @@ Display Window
         if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
             #if [ frame_seq > 1 ]
             #    fault 'cache-frame2 id={e.id} ew={ew} eh={eh} cw={e.cache_w} ch={e.cache_h} no_cc={!e.cache_canvas}'
+            # canvas owns its textures — reclaim the old one's GPU resources here,
+            # every churn, so samplers free even though the Au object may leak.
             if [ e.cache_canvas ]
-                cchdr : Au.header[ e.cache_canvas ]
-                puts 'cache_canvas replace id={e.id} refs={cchdr.refs}'
+                e.cache_canvas.teardown_gpu[]
             e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
-            printf["cache_canvas new instance=%p\n", e.cache_canvas]
             e.cache_canvas.update[]
             e.cache_w = ew
             e.cache_h = eh

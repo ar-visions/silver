@@ -1158,6 +1158,11 @@ func sk_color [ clr: rgba ] -> vec4f
     return res
 
 
+# ref-provenance debug hooks (Au.c): au_track[typeid] turns on holder tracking
+# for one type; au_prov_dump[obj] prints the live holders' source:lines.
+func au_track     [ t: Au_t ] -> none
+func au_prov_dump [ a: Au ]   -> none
+
 # ---- Canvas class (GPU draw-list builder) ----
 Render Canvas
     public path        : CanvasPath
@@ -1203,14 +1208,32 @@ Render Canvas
     intern  blur_v_arr       : array Render
     intern  blur_h_arr       : array Render
 
-    #func dealloc []
-        # ownership assertion: at our dealloc the textures we own should be about
-        # to free. drop_members hasn't run yet, so our own models/pipelines still
-        # hold sdf_tex via their samplers maps — report the count so a real
-        # external pin (higher than our own internal holders) is obvious.
-        #if [ sdf_tex ]
-        #    info : Au.header[ sdf_tex ]
-        #    expect info.refs == 1, 'sdf_tex over-held at Canvas dealloc: refs={info.refs}'
+    # release a Render's owned textures' GPU resources (idempotent — shared
+    # color textures across self/text_render only get destroyed once).
+    func release_render_gpu [ r: Render ]
+        if [ !r ] return
+        if [ r.color ]     r.color.release_gpu[]
+        if [ r.depth ]     r.depth.release_gpu[]
+        if [ r.reduction ] r.reduction.release_gpu[]
+
+    # the canvas owns its textures; reclaim their GPU resources directly instead
+    # of waiting on a refcount that never reaches 0. called at the cache_canvas
+    # replace point so it runs every churn regardless of whether the old canvas
+    # object ever frees. idempotent, so a later dealloc is harmless.
+    func teardown_gpu []
+        if [ sdf_tex ]     sdf_tex.release_gpu[]
+        if [ glyph_atlas ] glyph_atlas.release_gpu[]
+        release_render_gpu[ a ]
+        release_render_gpu[ text_render ]
+        if [ blur_stages ]
+            for [ r: Render ] in blur_stages
+                release_render_gpu[ r ]
+        if [ blur_v_arr ]
+            for [ r: Render ] in blur_v_arr
+                release_render_gpu[ r ]
+        if [ blur_h_arr ]
+            for [ r: Render ] in blur_h_arr
+                release_render_gpu[ r ]
 
     func init [ ]
         # default: transparent — canvas can be used as an overlay layer.
@@ -1237,7 +1260,16 @@ Render Canvas
         # inside Canvas.init (implicit self), bypassing the chained-write
         # issue with `outside.compose.font = fnt` from trinity.render.
         ft_lib   = ft_init[]
-        font = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/SpaceMono-Regular.ttf', size_px: 22 ]
+        # shared per-size font cache on vk — CanvasFont does a FreeType face load
+        # (file parse) per construction, so building one per cache-canvas was
+        # re-parsing the .ttf every resize frame. cache it once, borrow after.
+        if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
+        fkey : string 'SpaceMono-Regular@22'
+        cf   : CanvasFont vk.font_cache[ fkey ]
+        if [ !cf ]
+            cf = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/SpaceMono-Regular.ttf', size_px: 22 ]
+            vk.font_cache[ fkey ] = cf
+        font = cf
         #font.hold[]
         # 'mask' starts bound to sdf_tex as a placeholder; draw_canvas_masked
         # rebinds it to the real mask texture per composite.
@@ -2486,6 +2518,9 @@ class GlyphAtlas
     intern  shelf_y     : i32
     intern  shelf_h     : i32
     intern  staging     : ref u8    # scratch buffer for upload (atlas-sized)
+
+    func release_gpu []
+        if [ texture ] texture.release_gpu[]
 
     func init []
         if [ size == 0 ]

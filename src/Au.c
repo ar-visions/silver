@@ -898,17 +898,15 @@ bool au_app_verify(const char* path) {
 // track which source:line holds each live ref, for ONE type at a time. off
 // until au_track(name) is called. only the tracked type pays anything; every
 // other object and all call sites are untouched (no signature/header change).
-static cstr au_track_type = NULL;
+static Au_t au_track_type = NULL;
 typedef struct { Au obj; void* bt[6]; int n; } au_prov_t;
 static au_prov_t* au_prov = NULL;
 static int au_prov_count = 0, au_prov_alloc = 0;
 
-none au_track(symbol name) { au_track_type = (cstr)name; }
+none au_track(Au_t type) { au_track_type = type; }
 
 static bool au_prov_match(Au a) {
-    if (!au_track_type) return false;
-    Au f = header(a);
-    return f->au && f->au->ident && strcmp(f->au->ident, au_track_type) == 0;
+    return au_track_type && header(a)->au == (Au_f*)au_track_type;
 }
 static void au_prov_push(Au a) {
     if (au_prov_count == au_prov_alloc) {
@@ -925,6 +923,10 @@ static void au_prov_pop(Au a) {
 }
 // dump the live holders of `a` (their source:line via symbolized stacks).
 none au_prov_dump(Au a) {
+    static time_t last = 0;
+    time_t now = time(NULL);
+    if (now == last) return;   // at most one dump/sec — reports live while you drag, no wall
+    last = now;
     Au f = header(a);
     printf("=== %i live holders of %s %p ===\n",
         (i32)f->refs, (f->au && f->au->ident) ? f->au->ident : "?", (void*)a);

@@ -108,7 +108,7 @@ Group / Check {
 }
 
 Group.editor-group {
-    area:                       l0 t0 r10.06 b6.9
+    area:                       l0 t0 r10.06 b@console_h=6.9
 
     layers.compose:
         radius:                 0
