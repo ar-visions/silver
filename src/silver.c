@@ -1274,12 +1274,6 @@ void silver_init(silver a) {
 
     bool product_exists = file_exists("%o", a->product_link);
     u64  product_m      = product_exists ? modified_time(a->product_link) : 0;
-    
-    if (a->is_external)
-        printf("cache: %s product=%s exists=%d product_m=%llu module_m=%llu\n",
-            a->name ? a->name->chars : "?",
-            a->product_link ? a->product_link->chars : "?",
-            product_exists, (unsigned long long)product_m, (unsigned long long)module_file_m);
         
     if (product_exists && product_m > module_file_m) {
 
@@ -1323,7 +1317,7 @@ void silver_init(silver a) {
             path host_src = f(path, "%s/src/silver-host.c", SILVER);
             path host_dst = f(path, "%o/%o", a->build_dir, a->name);
             if (file_exists("%o", host_src) && file_exists("%o", host_dst)) {
-                print("silver-host: %o -> %o", host_src, host_dst);
+                printf("silver-host: %s -> %s\n", host_src->chars, host_dst->chars);
                 vexec(a->verbose, "silver-host", "%s/platform/native/bin/clang %s %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
                     SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, SILVER, SILVER, SILVER);
             }
@@ -5555,7 +5549,7 @@ none silver_build(silver a) {
         path host_src = f(path, "%s/src/silver-host.c", SILVER);
         path host_dst = f(path, "%o/%o", a->build_dir, a->name);
         verify(file_exists("%o", host_src), "silver-host.c not found at %o", host_src);
-        print("silver-host: %o -> %o", host_src, host_dst);
+        printf("silver-host: %s -> %s\n", host_src->chars, host_dst->chars);
         vexec(a->verbose, "silver-host", "%s/platform/native/bin/clang %s %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
             SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, SILVER, SILVER, SILVER);
         a->live_binary = hold(host_dst);
