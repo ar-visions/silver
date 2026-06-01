@@ -1,4 +1,5 @@
 #include <import>
+#include <execinfo.h>
 
 int seq;
 
@@ -896,7 +897,10 @@ Au Au_hold(Au a) {
     if (a) {
         Au f = header(a);
         if (f->managed == 0) return a; // refs of 0 is unmanaged memory (user managed)
-        f->refs++;
+        __atomic_fetch_add(&f->refs, 1, __ATOMIC_SEQ_CST);
+        if (f->refs <= 0 && strcmp(f->au->ident, "Canvas") == 0) {
+            printf("holding FREED Canvas (%p) with refs now set to %i\n", a, f->refs);
+        }
     }
     return a;
 }
@@ -3070,7 +3074,17 @@ none Au_free(Au);
 none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
-    if (info->managed && --info->refs <= 0) {
+    if (!info->managed) return;
+    i32 n = __atomic_sub_fetch(&info->refs, 1, __ATOMIC_SEQ_CST);
+    if (info->au && info->au->ident && strcmp(info->au->ident, "Canvas") == 0) {
+        void*  bt[10];
+        int    nb = backtrace(bt, 10);
+        char** s  = backtrace_symbols(bt, nb);
+        printf("DROPPING Canvas (%p) refs now %i\n", (void*)a, (i32)n);
+        for (int i = 2; i < nb && i < 7; i++) printf("    %s\n", s[i]);
+        free(s);
+    }
+    if (n <= 0) {
         af[info->managed] = null;
         Au_free(a);
     }
@@ -3525,13 +3539,17 @@ none Au_hold_members(Au a) {
             if (mem->is_unmanaged || mem->is_static || mem->type == typeid(ARef)) continue;
             bool hold = (!is_inlay(mem) && mem->type->is_class) || mem->type->is_shaped;
             if (!hold) continue;
-            if (mem->meta.a == typeid(weak)) continue;
+            if (mem->meta.a == typeid(weak) || mem->is_context) continue;
             Au *mdata = (Au*)((cstr)a + mem->offset);
             Au member_value = *mdata;
             if (!member_value) continue;
             Au hd = header(member_value);
-            if (hd->managed)
-                hd->refs++;
+            if (hd->managed) {
+                __atomic_fetch_add(&hd->refs, 1, __ATOMIC_SEQ_CST);
+                if (strcmp(hd->au->ident, "Canvas") == 0) {
+                    printf("(hold members) holding Canvas (%p) with refs now set to %i\n", *mdata, hd->refs);
+                }
+            }
         }
         type = type->context;
     }
@@ -5671,9 +5689,9 @@ none Au_free(Au a) {
     
     aa->refs = -8888;
     //printf("freeing %s:%i\n", aa->source, aa->line);
-    //free(aa);
+    free(aa);
 #else
-    //free(aa);
+    free(aa);
 #endif
 
 }
