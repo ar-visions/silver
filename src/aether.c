@@ -5026,8 +5026,29 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
     LLVMAddIncoming(phi_node, &true_value, &then_block, 1);
     LLVMAddIncoming(phi_node, &false_value, &else_block, 1);
 
-    // Return some enode or result if necessary (a.g., a enode indicating the overall structure)
-    return enode(mod, mod, loaded, true, autype, rmdl->autype, value, phi_node);
+    // For a by-value aggregate (vec4f/struct/array) the branch values are
+    // POINTERS to each branch's storage, so the phi is `phi ptr`. LOAD the value
+    // from it so a direct field assign stores the whole 16-byte value, not the
+    // 8-byte pointer (the truncation → garbage/black). Resolve the value lltype
+    // the way e_assign does (the var-wrapping etype may have no lltype), and skip
+    // classes/pointers (their value IS the pointer). is_struct() can't be used —
+    // vec4f isn't flagged is_struct.
+    LLVMValueRef result_val = phi_node;
+    if (LLVMGetTypeKind(result_type) == LLVMPointerTypeKind) {
+        Au_t  rau  = rmdl->autype;
+        Au_t  term = au_arg_type((Au)rau);
+        bool  is_cls = term && (term->is_class || term->is_pointer);
+        etype st = u(etype, (rau && rau->src) ? rau->src : (Au_t)rau);
+        if (!st || !st->lltype) st = u(etype, rau);
+        if (!st || !st->lltype) st = etype_prep(a, term);
+        LLVMTypeRef rt = st ? st->lltype : NULL;
+        if (rt && !is_cls) {
+            LLVMTypeKind k = LLVMGetTypeKind(rt);
+            if (k == LLVMStructTypeKind || k == LLVMArrayTypeKind || k == LLVMVectorTypeKind)
+                result_val = LLVMBuildLoad2(mod->builder, rt, phi_node, "ternary_struct");
+        }
+    }
+    return enode(mod, mod, loaded, true, autype, rmdl->autype, value, result_val);
 }
 
 enode aether_e_coalesce_deferred(aether a, enode cond_expr, array true_tokens, subprocedure expr_builder) {
@@ -5070,7 +5091,8 @@ enode aether_e_coalesce_deferred(aether a, enode cond_expr, array true_tokens, s
     LLVMAddIncoming(phi_node, &true_value,  &true_final,  1);
     LLVMAddIncoming(phi_node, &false_value, &false_final, 1);
 
-    return enode(mod, a, loaded, true, autype, true_node->autype, value, phi_node);
+    // struct result → phi is a pointer (unloaded); mark it so e_assign copies.
+    return enode(mod, a, loaded, !is_struct((Au)true_node->autype), autype, true_node->autype, value, phi_node);
 }
 
 enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, array false_tokens, subprocedure expr_builder) {
@@ -5120,10 +5142,28 @@ enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, ar
     LLVMAddIncoming(phi_node, &true_value,  &true_final,  1);
     LLVMAddIncoming(phi_node, &false_value, &false_final, 1);
 
+    // by-value aggregate result → phi is a pointer to storage; load the value so
+    // a field assign stores the whole struct, not the 8-byte pointer (truncation).
+    // resolve the value lltype like e_assign; skip classes/pointers.
+    LLVMValueRef result_val = phi_node;
+    if (LLVMGetTypeKind(result_type) == LLVMPointerTypeKind) {
+        Au_t  rau  = rmdl->autype;
+        Au_t  term = au_arg_type((Au)rau);
+        bool  is_cls = term && (term->is_class || term->is_pointer);
+        etype st = u(etype, (rau && rau->src) ? rau->src : (Au_t)rau);
+        if (!st || !st->lltype) st = u(etype, rau);
+        if (!st || !st->lltype) st = etype_prep(a, term);
+        LLVMTypeRef rt = st ? st->lltype : NULL;
+        if (rt && !is_cls) {
+            LLVMTypeKind k = LLVMGetTypeKind(rt);
+            if (k == LLVMStructTypeKind || k == LLVMArrayTypeKind || k == LLVMVectorTypeKind)
+                result_val = LLVMBuildLoad2(B, rt, phi_node, "ternary_struct");
+        }
+    }
     // build the enode, then force the value field directly in case the
     // prop-pair constructor silently loses LLVMValueRef in specific shapes
     enode result = enode(mod, a, loaded, true, autype, rmdl->autype);
-    result->value = phi_node;
+    result->value = result_val;
     return result;
 }
 
