@@ -23,6 +23,13 @@ class FileNode
             if [ !e.is_dir[] ]
                 children.push[ FileNode [ p: e, depth: depth + 1, is_dir: false ] ]
 
+# one cached row, keyed by what it currently shows. the icon+text are rasterized
+# into `canvas` once; while `key` matches we just re-blit it. pooled per on-screen
+# row (not per file), so memory is bounded by visible lines.
+class LineCache
+    mutable canvas : Canvas
+    mutable key    : string
+
 Layer FileLayer
     public  expand_svg    : string
     public  collapse_svg  : string
@@ -51,10 +58,7 @@ Layer FileLayer
             fl.expand_icon   = SVGModel [ path expand_svg ]
             fl.collapse_icon = SVGModel [ path collapse_svg ]
         cv.font_size[ i32[label_size] ]
-        # fonts are lazy — load it at this size now, else cv.font is null and
-        # draw_text bails (blank rows). also makes line_height below valid.
-        cv.ensure_font[]
-        lh   : f32 [ ((cv.font) ? cv.font.line_height : 20.0) * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
+        lh   : f32 [ cv.get_line_height[] * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
         fl.row_height  = lh
         fl.content_y   = bounds.y
         fl.content_h   = f32[ fl.visible.count ] * lh
@@ -69,12 +73,24 @@ Layer FileLayer
         wty : f32 [ cv.transform_ty[] ]
         cv.set_crop[ wtx + bounds.x, wty + clip_y0, wtx + bounds.x + bounds.w, wty + clip_y1 ]
 
+        # one cached canvas per ON-SCREEN row (slot pool, bounded by visible lines).
+        # a row's icon+text is rasterized into its slot ONCE and re-rendered only when
+        # the label/icon that slot shows changes (scroll brings a new line, filter,
+        # expand). every other repaint (resize, idle) just blits the cached row — no
+        # glyph work, no per-row text submit. the selection highlight stays on the
+        # main canvas so selecting/hovering a row never invalidates a slot.
+        if [ !fl.line_cache ] fl.line_cache = array LineCache [ alloc: 64 ]
+        lh_i : i32 [ ceil[ lh ] ]
+        slot : i32 [ 0 ]
+
         for [ i: i32 0, i < fl.visible.count, i += 1 ]
             n : FileNode fl.visible[i]
             y : f32 [ y0 + f32[i] * lh - fl.scroll.y ]
             if [ y + lh < clip_y0 ] continue
             if [ y > clip_y1 ] break
 
+            # selection highlight — drawn on the MAIN canvas (not the line cache), so
+            # selection state never dirties a cached row.
             if [ i == fl.sel && y >= clip_y0 ]
                 r : f32 [ (sel_radius > 0.0) ? sel_radius : 0.0 ]
                 cv.save[]
@@ -90,21 +106,45 @@ Layer FileLayer
                 cv.paint[]
                 cv.restore[]
 
-            xl : f32 [ x0 + 5.0 ]
-            ix : f32 [ xl + icon_col + icon_text_gap + f32[n.depth] * indent_width ]
-            if [ n.is_dir && y >= clip_y0 ]
-                icon : SVGModel [ (n.open) ? fl.collapse_icon : fl.expand_icon ]
-                ox   : f32 [ (n.open) ? collapse_offset.x : expand_offset.x ]
-                oy   : f32 [ (n.open) ? collapse_offset.y : expand_offset.y ]
-                pad  : f32 [ (lh - 11.0) * 0.5 ]
-                cv.draw_svg[ icon, round[ xl + f32[n.depth] * indent_width + ox ], round[ y + pad + oy ], 11.0, 11.0 ]
+            # row geometry, measured from the row's left edge (line-cache local x=0
+            # corresponds to x0). the cache is sized to the icon+text content, NOT the
+            # row width, so a horizontal resize never re-renders a row.
+            fname : n.p.filename[]
+            xl_l  : f32 [ 5.0 ]
+            ix_l  : f32 [ xl_l + icon_col + icon_text_gap + f32[n.depth] * indent_width ]
+            tm    : cv.measure_text[ fname ]
+            cw_i  : i32 [ ceil[ ix_l + tm.w + 2.0 ] ]
+            if [ cw_i < 1 ] cw_i = 1
+            key   : '{fname}|{n.is_dir}|{n.open}|{n.depth}|{cw_i}'
 
-            cv.fill_color[ (n.is_dir) ? dir_color : file_color ]
-            cv.draw_text[ n.p.filename[],
-                rect [ x: ix, y: y, w: bounds.w - (ix - x0), h: lh ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            if [ slot >= fl.line_cache.count ] fl.line_cache.push[ LineCache [] ]
+            slc : LineCache fl.line_cache[slot]
 
-        cv.paint[]
+            if [ !slc.canvas || slc.key != key ]
+                if [ !slc.canvas ]
+                    slc.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true ]
+                    slc.canvas.update[]
+                el [ slc.canvas.content_w != cw_i || slc.canvas.content_h != lh_i ]
+                    slc.canvas.resize[ cw_i, lh_i ]
+                slc.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+                slc.canvas.font_size[ i32[label_size] ]
+                if [ n.is_dir ]
+                    icon : SVGModel [ (n.open) ? fl.collapse_icon : fl.expand_icon ]
+                    iox  : f32 [ (n.open) ? collapse_offset.x : expand_offset.x ]
+                    ioy  : f32 [ (n.open) ? collapse_offset.y : expand_offset.y ]
+                    pad  : f32 [ (lh - 11.0) * 0.5 ]
+                    slc.canvas.draw_svg[ icon, round[ xl_l + f32[n.depth] * indent_width + iox ], round[ pad + ioy ], 11.0, 11.0 ]
+                slc.canvas.fill_color[ (n.is_dir) ? dir_color : file_color ]
+                slc.canvas.draw_text[ fname,
+                    rect [ x: ix_l, y: 0.0, w: tm.w + 2.0, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                slc.key = key
+
+            # blit at integer pixels — fractional positions sample the cached row at
+            # sub-pixel offsets and blur the (already crisp) text/icon.
+            cv.draw_canvas[ slc.canvas, round[ x0 ], round[ y ], f32[ cw_i ], f32[ lh_i ] ]
+            slot += 1
+
         cv.clear_crop[]
 
 Option FileList
@@ -114,6 +154,8 @@ Option FileList
     mutable last_filter    : string
     mutable root_node      : FileNode
     mutable visible        : array FileNode
+    # per-on-screen-row render cache (see LineCache). bounded by visible lines.
+    mutable line_cache     : array LineCache
     mutable sel            : i32      [ -1 ]
     mutable row_height     : f32      [ 20.0 ]
     mutable content_y      : f32      [ 0.0 ]

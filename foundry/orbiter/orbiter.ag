@@ -86,14 +86,10 @@ trinity orbiter # implements compiler
     # companion the seam maintains: last open (non-snapped) console height. the
     # toggle restores this when re-opening so a collapse doesn't lose the size.
     public console_h_user: f32 [ 6.9 ]
-    # `_active` = the displayed (eased) position the layout renders; it filters
-    # toward the goal (console_h) once per frame so drag/toggle moves are smooth.
-    public console_h_active: f32 [ 6.9 ]
     # bound layout var: right-panel left seam (= editor/console right edge),
     # draggable. right_w_user is the seam's last open (non-snapped) width.
     public right_w       : f32 [ 10.0 ]
     public right_w_user  : f32 [ 10.0 ]
-    public right_w_active: f32 [ 10.0 ]
     # toggles the right-side file-list panel (the >| button in the editor group)
     public show_right    : bool [ true ]
     public filter_text   : string
@@ -526,22 +522,16 @@ trinity orbiter # implements compiler
                 er.pristine = false
 
     func sync_active []
+        # the console's session_id/feed come from the Console[] template in
+        # on_render (applied to the instance) — not set here, and never pristine /
+        # set_focus from a sync/render path.
+        if [ instances ]
+            acts : element instances.elements[ 'actions' ]
+            if [ acts ]
+                play_el : element acts.elements[ 'play' ]
+                if [ play_el ] play_el.disable = (active_target == 'system')
         win : cast Window [ w ]
-        if [ !win ] return
-        inst_el : element win.root.elements[ 'instances' ]
-        if [ !inst_el ] return
-        con_el : element inst_el.elements[ 'console' ]
-        con    : Console con_el
-        if [ con ]
-            con.session_id = active_target
-            con.feed       = stdout_log
-            con.pristine   = false
-            con.set_focus[]
-        acts : element inst_el.elements[ 'actions' ]
-        if [ acts ]
-            play_el : element acts.elements[ 'play' ]
-            if [ play_el ] play_el.disable = (active_target == 'system')
-        win.restyle = true
+        if [ win ] win.restyle = true
 
     public func pad[ n:i32 ] -> string
         str : local char[256]
@@ -713,16 +703,16 @@ trinity orbiter # implements compiler
     
     func on_key [ ev: Event ]
         if [ !ev.target ] return
-
+ 
         if [ ev.target.id == 'filter' ]
             if [ !ev.key.state ] return
-            k : i32 [ i32 ev.key.unicode ]
+            k : i32 [ i32 ev.key.unicode ] 
             fl : FileList ev.target.parent.parent.elements["files"]
             if [ k == 259 ]
                 if [ filter_text && filter_text.count > 0 ]
                     filter_text = filter_text.mid[ 0, filter_text.count - 1 ]
                     if [ fl ] fl.pristine = false
-            el [ k == 256 ]
+            el [ k == 256 ] 
                 filter_text = ''
                 if [ fl ] fl.pristine = false
 
@@ -747,24 +737,13 @@ trinity orbiter # implements compiler
                 ev.target.pristine = false
                 run_search[]
 
-    # 3-arg helper for the listen demo — returns the sum.
-    func sum3 [ x: i32, y: i32, z: i32 ] -> i32
-        return x + y + z
-
-    # small render-path method used as a --listen target to exercise per-statement
-    # method logging — its trace shows up in the system console.
-    func render_tick []
-        fc : i32 [ 1 ]
-        fc += 1
-        r : i32 [ sum3[ fc, 2, 3 ] + 2 ]
-
     public func on_render [ w: Window ] -> Elements
         # runaway-leak guard: if our RSS passes 20% of physical RAM, quit before
         # the leak thrashes the machine into a solid lock. cheap (/proc read).
         if [ au_mem_fraction[] > 0.20 ]
             puts 'orbiter: memory exceeded 20% of system RAM — quitting '
             exit[ 1 ]
-        render_tick[]
+        
         # skip the first frame (styles/Regions parse during it) so its prints hit
         # the terminal; capture from the second frame on, once the console is live.
         if [ capture_stdout ]
@@ -775,36 +754,11 @@ trinity orbiter # implements compiler
                 stdout_orig = au_stdout_orig[]
             drain_stdout[]
         index_step[]
-        fps : f32 [ w.frame_factor * 60.0 ]
-        avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
+        #avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
         w.set_title[ 'orbiter' ]
 
-        # derive show_right from the seam each frame so the toggle button reflects
-        # a drag-snap (right_w → 0) as well as a click. right_w is authoritative.
         show_right = right_w > 0.5
 
-        # seam smoothing: filter the displayed (active) position toward the goal
-        # the user set (drag or toggle button) once per frame, so the controls
-        # glide on the filter_n curve instead of snapping to a jittery mouse. the
-        # layout renders the _active companions (bind_value returns them); right_w
-        # / console_h stay the instant goal for all logic. snap within tolerance.
-        # amount 0.2 → decay base 0.8 (matches the CSS `filter 0.8` convention,
-        # same pow[base, frame_factor] curve). lower = smoother/more lag.
-        ff : f32 [ w.frame_factor ]
-        right_w_active   = filter_n[ right_w_active,   right_w,   0.8, ff ]
-        console_h_active = filter_n[ console_h_active, console_h, 0.8, ff ]
-        rwd : f32 [ right_w   - right_w_active ]
-        chd : f32 [ console_h - console_h_active ]
-        if [ rwd < 0.02 && rwd > -0.02 ] right_w_active   = right_w
-        el                               w.will_animate   = true
-        if [ chd < 0.02 && chd > -0.02 ] console_h_active = console_h
-        el                               w.will_animate   = true
-
-        # console: drain the active pty here (off the render path) so the console
-        # element can stay cached/pristine when there's no output — was a full text
-        # re-render every frame. keep one cheap frame coming to poll the pty, but
-        # only force a redraw (pristine = false) when output actually arrived or the
-        # system feed grew.
         if [ show_console && console ]
             cs : console.session[]
             if [ cs ]

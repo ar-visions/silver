@@ -353,20 +353,20 @@ shader CanvasUI
         vec2  half_size    = ubo.rect.zw * 0.5;
         float dist         = sdf_rounded_rect(lpos, center, half_size, ubo.radii);
 
-        // text: sample glyph atlas — DEBUG: visualize UV+atlas separately.
-        //   red   = uv.x (atlas UV after grad0 mapping)
-        //   green = uv.y
-        //   blue  = atlas sample (raw, no fill_color)
-        // if you see a red/green gradient with no blue, the UVs are being
-        // computed but the atlas binding is the 1x1 dummy (sampling 1.0
-        // would make blue = 1.0 instead of 0.0). if it's solid (no gradient)
-        // the UV calc is degenerate. if blue varies with the glyph shape,
-        // the atlas IS bound and rasterized.
+        // text: glyph-atlas coverage (atlas.r) tinted by fill_color.
+        // NOTE: the normal text path renders through text_shader, NOT this branch,
+        // so mode 4 is never set deliberately here. it only fires when a draw binds
+        // a stale/uninitialized `mode` — e.g. the FIRST draw into a just-resized
+        // target before its params UBO is repopulated. render real glyph coverage
+        // (transparent where the atlas is empty) instead of the old UV-debug viz
+        // that flashed red/green around icons during a resize.
+        // (former debug: o_color = vec4(uv.x, uv.y, atlas.r, 1.0) — red=uv.x.)
         if (mode == 4.0) {{
             vec2  uv = (lpos - ubo.rect.xy) / ubo.rect.zw;
             uv       = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
             float a  = texture(atlas, uv).r;
-            o_color  = vec4(uv.x, uv.y, a, 1.0);
+            float aa = 1.0 - smoothstep(-0.5, 0.5, dist);
+            o_color  = vec4(ubo.fill_color.rgb, ubo.fill_color.a * a) * aa * opacity;
             return;
         }}
 
@@ -969,6 +969,7 @@ class CanvasPath
 
     func clear[]
         points  = array PathPt []
+        points.hold[]   # TEST: does holding the path points array stop the crash?
         info : header[points]
         start_x = 0.0
         start_y = 0.0
@@ -1175,6 +1176,18 @@ Render Canvas
     intern sdf_tex       : Texture
     intern image_override : Texture
     intern mask_override  : Texture
+    # logical content size — what the caller draws into (top-left of the texture).
+    # width/height are the QUANTIZED GPU capacity (rounded up to a 64px grid by
+    # resize), so a 1px drag reuses the same textures instead of reallocating every
+    # frame. content_w/content_h <= width/height; the unused margin is transparent
+    # and cropped out by the blit UV (image_uv = content/capacity).
+    public  content_w     : i32
+    public  content_h     : i32
+    mutable image_uv      : vec4f
+    # opt-in 64px capacity quantization (see resize). only per-element CACHE
+    # canvases set this — the main compose/screen/glyph canvases present to the
+    # swapchain and must stay exactly window-sized.
+    public  quantize      : bool
     public format	   : Pixel[Pixel.rgba8]
     # current 2D affine — held directly on Canvas because writing back
     # into states[state_depth-1].transform via array-of-struct field assignment
@@ -1222,7 +1235,8 @@ Render Canvas
     # object ever frees. idempotent, so a later dealloc is harmless.
     func teardown_gpu []
         if [ sdf_tex ]     sdf_tex.release_gpu[]
-        if [ glyph_atlas ] glyph_atlas.release_gpu[]
+        # NOTE: never release glyph_atlas here — the atlas is owned by the CanvasFont
+        # (per font+size, shared via font_cache), not this canvas's to free.
         release_render_gpu[ a ]
         release_render_gpu[ text_render ]
         if [ blur_stages ]
@@ -1242,6 +1256,11 @@ Render Canvas
         clear_color = vec4f [ 0.0, 0.0, 0.0, 1.0 ]
         cur_xform   = affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
         xform_stack = array affine [ ]
+        # created at an exact size — content fills the whole texture until the first
+        # resize quantizes the capacity. full-texture UV until then.
+        content_w   = width
+        content_h   = height
+        image_uv    = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
         VK : vk
         ui_shader = CanvasUI [ vk: vk ]
         # R32F + STORAGE_BIT so the compute shader can imageStore distances
@@ -1253,18 +1272,18 @@ Render Canvas
         sdf_h : i32 [ max[ height / 2, 1 ] ]
         sdf_tex = Texture [ vk: vk, w: w, width: sdf_w, height: sdf_h,
             pixel_format: Pixel.f32, surface: Surface.color, is_storage: true ]
-        # one r8 glyph atlas per canvas, bound as the `atlas` sampler the
-        # CanvasUI shader's mode-4 text path samples from.
-        glyph_atlas = GlyphAtlas [ vk: vk, w: w, size: 1024 ]
-        # default font load — assigning to `font` here works because we're
-        # inside Canvas.init (implicit self), bypassing the chained-write
-        # issue with `outside.compose.font = fnt` from trinity.render.
+        # the glyph atlas (font TEXTURE) is NOT owned by the canvas — it lives on the
+        # CanvasFont (per font+size, shared via vk.font_cache, persistent), created
+        # lazily on first text draw. so a dropped canvas never frees a font texture,
+        # we don't make one per canvas, and different fonts keep their own glyphs.
+        # the 'atlas' sampler starts on sdf_tex as a placeholder; draw_text_pass
+        # rebinds the text pipeline's atlas to the current font's atlas per draw.
         ft_lib   = ft_init[]
         # font is lazy now — built by ensure_font[] on first text draw, so
         # canvases that never render text never parse the .ttf.
         # 'mask' starts bound to sdf_tex as a placeholder; draw_canvas_masked
         # rebinds it to the real mask texture per composite.
-        canvas_samplers : map Au[string] [ 'image': sdf_tex, 'atlas': glyph_atlas.texture, 'mask': sdf_tex ]
+        canvas_samplers : map Au[string] [ 'image': sdf_tex, 'atlas': sdf_tex, 'mask': sdf_tex ]
         graphics_model : Model [ vk: vk, w: w, s: ui_shader, samplers: canvas_samplers ]
 
         # GPU SDF compute model
@@ -1313,12 +1332,14 @@ Render Canvas
         text_render = Render [ vk: vk, w: w,
             color: a.color,
             width: width, height: height, load_existing: true ]
+        # 'atlas' starts on sdf_tex as a placeholder so descriptor creation has a
+        # valid texture; draw_text_pass rebinds it to the current font's atlas.
         text_pipeline = Pipeline [ vk: vk, w: w, name: string 'text',
             r: text_render, s: text_shader, vbo: text_vbo,
-            samplers: map Au[string] [ 'atlas': glyph_atlas.texture ],
+            samplers: map Au[string] [ 'atlas': sdf_tex ],
             straight_alpha: true ]
         text_model = Model [ vk: vk, w: w, s: text_shader,
-            samplers: map Au[string] [ 'atlas': glyph_atlas.texture ] ]
+            samplers: map Au[string] [ 'atlas': sdf_tex ] ]
         text_model.pipelines = array Pipeline [ alloc: 1 ]
         text_model.pipelines.push[ text_pipeline ]
         text_model.r = text_render
@@ -1379,15 +1400,30 @@ Render Canvas
     # pipelines/shaders/font/atlas (no VkPipeline creation, the resize fps cost)
     # and only reallocates the size-dependent textures + framebuffers.
     func resize [ rw: i32, rh: i32 ] -> Canvas
-        if [ rw == width && rh == height ] return a
-        width  = rw
-        height = rh
+        # logical content size — drawn into the top-left of the (larger) texture.
+        content_w = rw
+        content_h = rh
+        # cache canvases quantize the GPU allocation UP to a 64px grid: a 1px drag
+        # almost never crosses a boundary, so we keep the same color/depth/framebuffers
+        # (the expensive realloc) and only the content size + blit UV change. up to
+        # 63px of headroom per axis is unused (transparent) and cropped by the blit.
+        # main canvases (quantize=false) stay exactly window-sized for the swapchain.
+        qw : i32 [ rw ]
+        qh : i32 [ rh ]
+        if [ quantize ]
+            qw = ((rw + 63) / 64) * 64
+            qh = ((rh + 63) / 64) * 64
+            if [ qw < 64 ] qw = 64
+            if [ qh < 64 ] qh = 64
+        if [ qw == width && qh == height ] return a  # capacity unchanged — no realloc
+        width  = qw
+        height = qh
         update[]                                     # Render: color/depth + framebuffers
         if [ sdf_tex ]
-            sdf_tex.resize[ max[ rw / 2, 1 ], max[ rh / 2, 1 ] ]
+            sdf_tex.resize[ max[ width / 2, 1 ], max[ height / 2, 1 ] ]
         if [ text_render ]
-            text_render.width  = rw
-            text_render.height = rh
+            text_render.width  = width
+            text_render.height = height
             text_render.update[]                     # text framebuffer over the shared color
         # textures got new GPU handles — force the pipelines to rebind their
         # descriptors on the next dispatch (rebind sets resources = null).
@@ -1533,6 +1569,14 @@ Render Canvas
 
     func line_height [ px: f32 ]
         states[state_depth - 1].line_height = px
+
+    # line height for the current font_size — ensures the font is loaded, then
+    # returns its line_height (or the state line_height when there's no font).
+    # callers use this instead of poking cv.font / calling ensure_font themselves.
+    public func get_line_height [] -> f32
+        ensure_font []
+        if [ font ] return font.line_height
+        return states[state_depth - 1].line_height
 
     # sync the shared CanvasFont's freetype face to this canvas's current
     # font_size before any glyph/metrics call. avoids bleeding size changes
@@ -1765,6 +1809,13 @@ Render Canvas
         ]
 
     func draw_text_pass [ display: string, tm: TextMetrics, pen_x_in: f32, pen_y_in: f32 ]
+        # the glyph atlas belongs to the FONT (per font+size, shared via font_cache),
+        # not the canvas. create it lazily on first use with this canvas's vk/w, then
+        # point glyph_atlas at it so the rest of this pass rasterizes/samples the
+        # right per-font atlas. different fonts thus keep separate glyphs.
+        if [ !font.atlas ]
+            font.atlas = GlyphAtlas [ vk: vk, w: w, size: 1024 ]
+        glyph_atlas = font.atlas
         atlas_size : f32 [ f32 glyph_atlas.size ]
         verts : ref f32 [ text_vbo.vertex_data ]
         vi    : i32 [ 0 ]
@@ -1823,13 +1874,22 @@ Render Canvas
         text_vbo.vertex_count = vi
         if [ text_vbo.vertex && vi > 0 ]
             text_vbo.vertex.update[ text_vbo.vertex_data ]
+            # point the text pipeline's 'atlas' sampler at THIS font's atlas before
+            # drawing (the sampler was created on a placeholder). ensure_bound first
+            # so atlas_slot is known, or the rebind no-ops on the first draw.
+            text_pipeline.ensure_bound[]
+            text_pipeline.rebind_atlas[ font.atlas.texture ]
             text_render.update[]
             text_render.draw[]
             text_render.sync_fence[]
 
     func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, overflow: Overflow, shadow: Shadow ] -> rect
-        if [ !text || !font ]
-            return bounds
+        if [ !text ] return bounds
+        # load the font lazily here (and in measure_text) — callers must never have
+        # to invoke ensure_font themselves. without this, a first text draw on a
+        # fresh/lazy canvas bails on the null font and the text never appears.
+        ensure_font[]
+        if [ !font ] return bounds
 
         display : string [ (overflow == Overflow.ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
         tm     : measure_text[ display ]
@@ -2065,9 +2125,15 @@ Render Canvas
         tex : Texture [ (src.reduction) ? src.reduction : src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
+        # crop to src's logical content — its texture is quantized larger, with up
+        # to 63px of transparent headroom we must not sample.
+        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] / f32[ src.width  ] : 1.0 ]
+        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] / f32[ src.height ] : 1.0 ]
+        image_uv = vec4f [ 0.0, 0.0, uvx, uvy ]
         path.clear[]
         path.add_rect[ x, y, rw, rh ]
         paint[]
+        image_uv = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
         image_override = null
         if [ models ]
             for [ mi: i32 0, mi < models.count, mi += 1 ]
@@ -2086,9 +2152,14 @@ Render Canvas
         mtex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
         mask_override  = mtex
+        # crop to content (src and mask share the uv; both should be sized alike).
+        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] / f32[ src.width  ] : 1.0 ]
+        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] / f32[ src.height ] : 1.0 ]
+        image_uv = vec4f [ 0.0, 0.0, uvx, uvy ]
         path.clear[]
         path.add_rect[ x, y, rw, rh ]
         paint[]
+        image_uv = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
         image_override = null
         mask_override  = null
         if [ models ]
@@ -2275,7 +2346,9 @@ Render Canvas
             # mode 5 (image) if draw_canvas set image_override.
             setup_shader [ st, bx0, by0, bw, bh ]
             ui_shader.fill_color = st.fill_color
-            ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+            # for an image blit (draw_canvas), grad0 is the texture UV rect — crop to
+            # the source's content region; image_uv is (0,0,1,1) for normal fills.
+            ui_shader.grad0  = image_uv
             is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
             # mask_override present → masked composite (content * mask).
             # otherwise r8 → image_r, rgba → image, none → solid.
@@ -2288,6 +2361,9 @@ Render Canvas
                     cmod : Model models[mi]
                     if [ cmod.pipelines && cmod.pipelines.count > 0 ]
                         p : Pipeline cmod.pipelines[0]
+                        # discover image_slot etc. before applying the override, so
+                        # the override binds on the FIRST draw (not silently dropped).
+                        p.ensure_bound[]
                         p.rebind_image[ image_override ]
                         if [ mask_override ]
                             p.rebind_mask[ mask_override ]
@@ -2414,6 +2490,11 @@ class CanvasFont
     public cap_height : f32
     public cache      : array GlyphEntry
     public cache_size : i32
+    # the GPU glyph atlas for THIS font+size. owned by the font (which is cached
+    # persistently in vk.font_cache), not by any canvas — so it's never freed when a
+    # canvas drops, it's shared by every canvas using this font, and different fonts
+    # keep separate glyphs. created lazily on first text draw (draw_text_pass).
+    public atlas      : GlyphAtlas
 
     func init []
         err  : i32 FT_New_Face [ ft_lib, uri.chars, 0, ref ft_face ]

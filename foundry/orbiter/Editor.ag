@@ -29,7 +29,7 @@ Layer EditorLayer
         code_fs : i32 [ (editor.code_font_size > 0) ? editor.code_font_size : 15 ]
         cv.font_size[ code_fs ]
         cw_tm   : cv.measure_text[ 'x' ]
-        lh      : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
+        lh      : f32 [ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ]
         # gutter width = digit count of the last line number * char width + pad.
         # the code content is pushed right by this width.
         ndigits : i32 [ 1 ]

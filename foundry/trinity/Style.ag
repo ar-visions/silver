@@ -427,6 +427,12 @@ class BindCoord
     public min       : f32
     public max       : f32
     public has_range : bool
+    # eased display position (filtered toward the goal var) + state. lives here,
+    # not on the app — bind_value filters it each frame; `moving` is true on any
+    # frame it changed (incl. the snap frame) so draw_element repaints + animates.
+    public active      : f32
+    public has_active  : bool
+    public moving      : bool
 
 struct XCoord
     x_type   : XAlign

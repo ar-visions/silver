@@ -560,7 +560,18 @@ Display Window
         now          : i64 [ epoch_millis[] ]
         if [ !start_ms ] start_ms = now
         time          = f64[ now - start_ms ] / 1000.0
-        frame_factor = (1.0 / 60.0) / (last_frame_ms > 0) ? f32[ now - last_frame_ms ] / 1000.0 : 0.016
+        # frame-rate-independent filter rate: dt as a multiple of a 60fps frame, so
+        # decay = (1-amount)^frame_factor converges at the same REAL-TIME rate no
+        # matter the fps. at 60fps frame_factor=1; at 30fps=2 (one frame covers two
+        # 60fps steps); at 155fps≈0.39. (was (1/60)/dt — inverse, and dt² overall.)
+        # `raw` is the gap since the last PAINT. the ux is event-driven, so after an
+        # idle stretch raw is huge and meaningless — using it would snap the filter
+        # on the first frame of a drag. so if we haven't painted in > 100ms, just
+        # treat this as one normal 60fps step (frame_factor = 1.0); otherwise use the
+        # real dt so a steady animation stays frame-rate independent.
+        raw : f32 [ (last_frame_ms > 0) ? f32[ now - last_frame_ms ] / 1000.0 : 0.016 ]
+        frame_factor = (raw > 0.1) ? 1.0 : raw * 60.0
+        #puts 'frame_factor: raw={raw}s frame_factor={frame_factor}'
         last_frame_ms = now
         frame_seq += 1
         root.animate_within [ ]
@@ -916,7 +927,11 @@ Display Window
             # NOTE: user_mem (the restore position) is recorded on release, NOT
             # per-move — otherwise dragging toward a collapse leaves it at the last
             # near-snap value instead of the user's real open size.
-            restyle = true
+            # will_animate (NOT restyle): bind_value eases the active position and
+            # draw_element repaints the moved controls (pristine=false) each frame.
+            # restyle here would re-run the whole stylesheet per mouse event (the
+            # 155→20fps cap + the void banding from incomplete per-event repaints).
+            will_animate = true
             return
         seam_hover = null
         seam_hl    = rect[]
@@ -1265,6 +1280,9 @@ Display Window
         compose.clear   [ '#00a' ]
         update_all      [ app_object.on_render*[ a ] ]
         animate         [ ]
+        # advance every seam's eased active ONCE here, before either tree walk reads
+        # it — so compose and screen render the moving edge at the same position.
+        tick_binds      [ root ]
         draw_element    [ root, CanvasType.compose, null ]
         compose.paint   [ ]
         compose.sync_fence[ ]
@@ -1304,34 +1322,71 @@ Display Window
     # resolve a bound coord against the app object: read the named f32 field via
     # member_ref (the app object is the only scope — never the element/parent).
     # a missing field falls back to the coord's inline default.
+    # READ-ONLY accessor used during layout — called in BOTH the compose and screen
+    # tree walks. it returns the eased ACTIVE position only; it must NOT advance the
+    # filter here. if it did, active would step once per walk (twice per frame) and
+    # the cache content (composed at one active) would be blitted into a rect sized
+    # from a further-stepped active — a per-frame scale distortion on the moving edge
+    # that grows with the filter rate. the ease is advanced exactly once per frame by
+    # tick_binds, before any walk, so both walks read the same settled value.
     func bind_value [ b: BindCoord, app_obj: Au, span: f32, fc: f32 ] -> f32
-        if [ !b || !app_obj ] return 0.0
+        if [ !b ] return 0.0
+        if [ !b.has_active ] return b.dflt
+        return b.active
+
+    # advance ONE bound coord's eased active toward its goal. called once per frame
+    # by tick_binds, before on_compose draws. `v` is the GOAL (where drag/toggle put
+    # the seam); active is filtered toward it. clamps the app var into the style's
+    # range (`|min|max`, px) and writes the clamped goal back so the var never holds
+    # an out-of-range value. `moving` is set on any frame active changed (incl. the
+    # snap frame) so draw_element repaints the edge and the loop keeps animating until
+    # it settles.
+    func bind_advance [ b: BindCoord, app_obj: Au, span: f32, fc: f32 ]
+        if [ !b || !app_obj ] return
         m : find_member[ typeid[ app_obj ], b.varname.chars, AU_MEMBER_VAR, 0, true ]
-        if [ !m ] return b.dflt
+        if [ !m ] return
         p : ref f32 [ app_obj.member_ref[ m ] ]
         v : f32 [ p[0] ]
-        # keep the bound var inside the style's range (`|min|max`, in px). a
-        # collapse request (e.g. toggling the console off → 0) floors to the style
-        # minimum so the element still paints its bar instead of vanishing; the
-        # clamped value is written back so the app var never holds an out-of-range
-        # value.
-        if [ b.has_range && fc > 0.0 ]
+        if [ b.has_range && fc > 0.0 && span > 0.0 ]
             lo : f32 [ b.max / fc ]
             hi : f32 [ (span - b.min) / fc ]
             if [ v < lo ] v = lo
             if [ hi > lo && v > hi ] v = hi
             p[0] = v
-        # `v` is the GOAL (where drag/toggle put the seam). render the seam's eased
-        # ACTIVE position instead: the `{varname}_active` app companion, which the
-        # app filters toward the goal once per frame (once-per-frame keeps it
-        # frame-rate stable even though the same var is bound on several elements).
-        # fall back to the goal when there's no companion.
-        akey : b.varname + '_active'
-        an   : find_member[ typeid[ app_obj ], akey.chars, AU_MEMBER_VAR, 0, true ]
-        if [ an ]
-            ap : ref f32 [ app_obj.member_ref[ an ] ]
-            return ap[0]
-        return v
+        if [ !b.has_active ]
+            b.active     = v
+            b.has_active = true
+            b.moving     = false
+        el
+            d : f32 [ v - b.active ]
+            if [ d != 0.0 ]
+                b.moving = true
+                if [ d < 0.02 && d > -0.02 ]
+                    b.active = v
+                el
+                    b.active = filter_n[ b.active, v, 0.28, frame_factor ]
+                    #b.active = b.active * 0.7 + v * 0.3
+            el
+                b.moving = false
+        if [ b.moving ] will_animate = true
+
+    # advance every bound coord in the element tree once per frame (see bind_advance),
+    # before on_compose draws. uses the parent's last-laid-out bounds for the clamp
+    # span — fine, that only keeps the goal in range. recurses the whole tree.
+    func tick_binds [ e: element* ]
+        if [ !e ] return
+        if [ e.ux && e.ux.app_object && e.area ]
+            app_obj : Au e.ux.app_object
+            rel_w : f32 [ (e.parent && e.parent.bounds) ? e.parent.bounds.w : width ]
+            rel_h : f32 [ (e.parent && e.parent.bounds) ? e.parent.bounds.h : height ]
+            fcv   : f32 [ (e.fc > 0.0) ? e.fc : 22.0 ]
+            if [ e.area.bind_l ] bind_advance[ e.area.bind_l, app_obj, rel_w, fcv ]
+            if [ e.area.bind_t ] bind_advance[ e.area.bind_t, app_obj, rel_h, fcv ]
+            if [ e.area.bind_r ] bind_advance[ e.area.bind_r, app_obj, rel_w, fcv ]
+            if [ e.area.bind_b ] bind_advance[ e.area.bind_b, app_obj, rel_h, fcv ]
+        if [ e.elements ]
+            for [ ce: element, ck: string ] in e.elements
+                tick_binds[ ce ]
 
     public func draw_element [ e: element*, stage: CanvasType, last:element ]
         expect e inherits element, 'e is not an element'
@@ -1366,6 +1421,11 @@ Display Window
             if [ e.area.bind_t ] e.area.t.offset = bind_value[ e.area.bind_t, app_obj, rel.h, e.fc ]
             if [ e.area.bind_r ] e.area.r.offset = bind_value[ e.area.bind_r, app_obj, rel.w, e.fc ]
             if [ e.area.bind_b ] e.area.b.offset = bind_value[ e.area.bind_b, app_obj, rel.h, e.fc ]
+            # a bound coord still easing → this control's box moved: repaint it and
+            # keep the loop animating until it settles (the goal/active diff hits 0).
+            if [ (e.area.bind_l && e.area.bind_l.moving) || (e.area.bind_t && e.area.bind_t.moving) || (e.area.bind_r && e.area.bind_r.moving) || (e.area.bind_b && e.area.bind_b.moving) ]
+                e.pristine   = false
+                will_animate = true
 
         bounds : e.area.rectangle[ rel, null, (last) ? last.bounds : null, e.fc ]
 
@@ -1461,11 +1521,15 @@ Display Window
         if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
             # reuse the existing canvas at the new size — resizes its textures +
             # framebuffers, keeps the pipelines/shaders/atlas (no VkPipeline
-            # rebuild, which was the resize fps cost). only build fresh once.
+            # rebuild, which was the resize fps cost). quantize=true rounds the GPU
+            # allocation up to a 64px grid, so most 1px drag steps reuse the same
+            # textures (no realloc) and only the content size + blit UV change; the
+            # cache_w/cache_h we track stays the exact logical size for the blit.
             if [ e.cache_canvas ]
                 e.cache_canvas.resize[ ew, eh ]
             el
-                e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
+                e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true, quantize: true ]
+                puts 'cache canvas NEW: content {ew}x{eh}'
                 e.cache_canvas.update[]
             e.cache_w = ew
             e.cache_h = eh

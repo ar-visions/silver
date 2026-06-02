@@ -222,7 +222,7 @@ Layer TermLayer
         s : ConsoleSession con.session[]
         if [ !s ] return
         if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
-        lh : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
+        lh : f32 [ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ]
         x0 : f32 [ bounds.x ]
         y0 : f32 [ bounds.y ]
 
@@ -335,7 +335,7 @@ Layer CompileLayer
         if [ !con ] return
         if [ !con.log ] return
         if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
-        lh   : f32 [ ((cv.font) ? cv.font.line_height : 22.0) * ((label_height > 0.0) ? label_height : 1.0) ]
+        lh   : f32 [ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ]
         x0   : f32 [ bounds.x ]
         y0   : f32 [ bounds.y ]
         n    : i32 [ con.log.count ]

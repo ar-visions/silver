@@ -2799,14 +2799,14 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
 
         if (!first_alpha) first_alpha = alpha;
 
-        validate(!first || alpha || new_name,
+        verify(!first || alpha || new_name,
             "[%i] expected member, found %o ", seq, peek(a) ? peek(a) : (token)string("[empty]"));
 
         if (!alpha) {
             if (mem) {
                 mem = mem;
             }
-            validate(mem == null, "expected alpha-ident after .");
+            verify(mem == null, "expected alpha-ident after .");
             break;
         }
 
@@ -2817,12 +2817,12 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                 if (!im->is_namespace || im->is_nameless) continue;
                 if (im->ident && eq(alpha, im->ident)) {
                     string module_name = alpha;
-                    validate(read_if(a, "."), "expected . after module-name: %o", alpha);
+                    verify(read_if(a, "."), "expected . after module-name: %o", alpha);
                     alpha = read_alpha(a);
-                    validate(alpha, "expected alpha-ident after module-name: %o", module_name);
+                    verify(alpha, "expected alpha-ident after module-name: %o", module_name);
                     mem = (enode)elookup(alpha->chars);
                     if (mem && mem->autype->is_namespace) {
-                        validate(mem, "%o not found in module-name: %o", alpha, module_name);
+                        verify(mem, "%o not found in module-name: %o", alpha, module_name);
                         ns_found = true;
                     } else {
                         // lexically overridden
