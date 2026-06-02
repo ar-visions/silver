@@ -5730,7 +5730,8 @@ none Au_free(Au a) {
         printf("global_count < 0 for type %s\n", type->ident);
     
     aa->refs = -8888;
-    //printf("freeing %s:%i\n", aa->source, aa->line);
+    printf("freeing %s %s:%i\n", type->ident, aa->source, aa->line);
+
     free(aa);
 #else
     free(aa);
