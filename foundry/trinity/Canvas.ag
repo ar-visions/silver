@@ -810,7 +810,10 @@ class CanvasPath
     # cached flatten/extract result from the previous draw of this path.
     # cached_points is the snapshot of `points` that produced cached_edges.
     intern cached_points : array PathPt
-    intern cached_edges  : array SDFEdge
+    # contiguous SDFEdge buffer (owned, from new) + its count. freed/replaced on a
+    # cache miss; not an array of boxed edges.
+    intern cached_edges      : ref SDFEdge
+    intern cached_edge_count : i32
     intern cached_bx0    : f32
     intern cached_by0    : f32
     intern cached_bw     : f32
@@ -2289,7 +2292,7 @@ Render Canvas
         by0 : f32
         bw  : f32
         bh  : f32
-        edges : array SDFEdge
+        edges : ref SDFEdge
         n     : i32
 
         if [ cache_hit ]
@@ -2298,7 +2301,7 @@ Render Canvas
             bw  = path.cached_bw
             bh  = path.cached_bh
             edges = path.cached_edges
-            n     = edges.count
+            n     = path.cached_edge_count
         el
             flat : path_flatten [ path, 0.25 ]
             n    = flat.count
@@ -2320,14 +2323,17 @@ Render Canvas
                     by1 = pt.y
             bw = bx1 - bx0
             bh = by1 - by0
-            edges = sdf_extract_edges [ flat ]
-            n     = edges.count
+            edges = sdf_extract_edges [ flat, ref n ]
             # snapshot the path op log + flatten/extract result for the next call
             path.cached_points = array PathPt [ ]
             for [ pi: i32 0, pi < pcount, pi += 1 ]
                 cp : PathPt path.points[pi]
                 path.cached_points.push[ cp ]
-            path.cached_edges = edges
+            # the cache owns one contiguous SDFEdge buffer — free the previous
+            # before replacing it.
+            if [ path.cached_edges ] free[ path.cached_edges ]
+            path.cached_edges      = edges
+            path.cached_edge_count = n
             path.cached_bx0   = bx0
             path.cached_by0   = by0
             path.cached_bw    = bw
@@ -2381,7 +2387,7 @@ Render Canvas
             pbw : f32 [ bw  + pad * 2.0 ]
             pbh : f32 [ bh  + pad * 2.0 ]
 
-            ne : i32 [ edges.count ]
+            ne : i32 [ n ]
             if [ ne > edge_buf_capacity ]
                 while [ ne > edge_buf_capacity ]
                     edge_buf_capacity *= 2
@@ -2915,9 +2921,13 @@ func conic_gradient[ cx: f32, cy: f32, start_angle: f32 ] -> Gradient
 # explicitly via line_to back to start (CanvasPath.close_path does this),
 # so no closing-edge synthesis here. degenerate (zero-length) segments
 # are skipped.
-func sdf_extract_edges [ flat: array PathPt ] -> array SDFEdge
-    edges : array SDFEdge []
+# extract line-segment edges from a flattened path into ONE contiguous SDFEdge
+# value buffer (via `new`), not an array of boxed Au objects. count_out receives
+# the edge count. caller owns the buffer (free[] it). returns null if 0 edges.
+func sdf_extract_edges [ flat: array PathPt, count_out: ref i32 ] -> ref SDFEdge
     n     : flat.count
+    # pass 1 — count the segments we keep, so we can size the buffer exactly.
+    cnt   : i32 [ 0 ]
     px    : f32 [ 0.0 ]
     py    : f32 [ 0.0 ]
     have_cursor : bool [ false ]
@@ -2932,8 +2942,35 @@ func sdf_extract_edges [ flat: array PathPt ] -> array SDFEdge
                 edx : f32 pt.x - px
                 edy : f32 pt.y - py
                 if [ edx * edx + edy * edy > 0.01 ]
-                    e : SDFEdge [ x0: px, y0: py, x1: pt.x, y1: pt.y ]
-                    edges.push[ e ]
+                    cnt += 1
+            px = pt.x
+            py = pt.y
+            have_cursor = true
+    count_out[0] = cnt
+    if [ cnt == 0 ]
+        return null
+    # pass 2 — fill the contiguous buffer in place (no per-edge object).
+    edges : new SDFEdge [ cnt ]
+    ei    : i32 [ 0 ]
+    px = 0.0
+    py = 0.0
+    have_cursor = false
+    for [ i: i32 0, i < n, i += 1 ]
+        pt : PathPt flat[i]
+        if [ pt.cmd == path_cmd.move ]
+            px = pt.x
+            py = pt.y
+            have_cursor = true
+        el [ pt.cmd == path_cmd.line ]
+            if [ have_cursor ]
+                edx : f32 pt.x - px
+                edy : f32 pt.y - py
+                if [ edx * edx + edy * edy > 0.01 ]
+                    edges[ei].x0 = px
+                    edges[ei].y0 = py
+                    edges[ei].x1 = pt.x
+                    edges[ei].y1 = pt.y
+                    ei += 1
             px = pt.x
             py = pt.y
             have_cursor = true
@@ -2985,8 +3022,8 @@ func sdf_winding [ edges: array SDFEdge, px: f32, py: f32 ] -> i32
 # pad = extra world-space padding around bounds
 # returns f32 array [tw*th], negative = inside, positive = outside
 func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: i32, th: i32, pad: f32 ] -> ref f32
-    edges : sdf_extract_edges [ flat ]
-    ne    : edges.count
+    ne    : i32 [ 0 ]
+    edges : sdf_extract_edges [ flat, ref ne ]
     if [ ne == 0 ]
         return null
 
