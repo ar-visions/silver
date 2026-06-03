@@ -122,9 +122,24 @@ etype etype_prep(aether a, Au_t au) { sequencer
     return mdl;
 }
 
+// best source location for diagnostics: scan back from the cursor for the nearest
+// token with a real line. at the point a member-lookup fails the cursor often sits
+// on a line-0 sentinel, which suppressed the .ag location in errors.
+token aether_loc(aether a) {
+    if (!a->tokens || !len(a->tokens)) return token("[none]");
+    i64 i = (i64)a->cursor;
+    if (i >= (i64)len(a->tokens)) i = (i64)len(a->tokens) - 1;
+    while (i >= 0) {
+        token t = (token)a->tokens->origin[i];
+        if (t && t->line) return t;
+        i--;
+    }
+    return (token)a->tokens->origin[0];
+}
+
 #undef fault
 #define fault(t, ...) ({ \
-    token pk = aether_peek_safe(a); \
+    token pk = aether_loc(a); \
     string s; \
     if (pk->line == 0) { \
         s = (string)formatter( \
@@ -139,11 +154,11 @@ etype etype_prep(aether a, Au_t au) { sequencer
             (Au_t)null, false, stderr, (Au) true, seq, \
             (symbol) "\n%o:%i:%i (%s:%i%o) " t, \
             (pk->source ? (Au)pk->source : (Au)a->module_file), \
-            aether_peek_safe(a)->line, \
-            aether_peek_safe(a)->column, \
+            pk->line, \
+            pk->column, \
             __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string("") __VA_OPT__(,) __VA_ARGS__); \
         if (level_err >= fault_level) { \
-            halt(s, aether_peek(a)); \
+            halt(s, pk); \
         } \
     } \
     false; \
@@ -6509,13 +6524,6 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     push_scope(a, (Au)main_fn, 10);
     e_fn_call(a, module_init_fn, null, false, false);
 
-    // phase 2: lock sandbox — no more dlopen/exec from this point
-    Au_t au_sandbox_lock = find_member(typeid(Au), "au_sandbox_lock", AU_MEMBER_FUNC, 0, false);
-    if (au_sandbox_lock) {
-        efunc f_lock = u(efunc, au_sandbox_lock);
-        if (f_lock) e_fn_call(a, f_lock, null, false, false);
-    }
-
     // call engage
     efunc Au_engage = u(efunc, find_member(typeid(Au), "engage", AU_MEMBER_FUNC, 0, false));
     e_fn_call(a, Au_engage, a(u(evar, argv)), false, false);
@@ -7912,13 +7920,6 @@ none aether_build_module_initializer(aether a, enode init) {
         return;
 
     a->direct = true;
-
-    // emit au_sandbox_init() as first call in module initializer
-    Au_t sandbox_init_fn = find_member(typeid(Au), "au_sandbox_init", AU_MEMBER_FUNC, 0, false);
-    if (sandbox_init_fn) {
-        efunc f_sandbox = u(efunc, sandbox_init_fn);
-        if (f_sandbox) e_fn_call(a, f_sandbox, null, false, false);
-    }
 
     aether_eputs(a, f(string, "%o: initializing", a));
 
