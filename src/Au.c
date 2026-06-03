@@ -2518,11 +2518,10 @@ Au method_call(Au_t m, array args) {
 
     memset(arg_values, 0, sizeof(arg_values));
     memset(arg_data,   0, sizeof(arg_data));
-    printf("method_call: method=%s atypes->count=%d\n", m->ident, (int)a->atypes->count);
+    
     // populate provided args, create default objects for any missing
     for (num i = 0; i < a->atypes->count; i++) {
         Au_t arg_type = au_arg_type((Au)a->atypes->origin[i]);
-        printf("  arg[%d] type=%s typesize=%d is_class=%d\n", (int)i, arg_type ? arg_type->ident : "null", arg_type ? (int)arg_type->typesize : -1, arg_type ? (int)arg_type->is_class : -1);
         assert(arg_type->typesize > 0 || (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM | AU_TRAIT_ABSTRACT | AU_TRAIT_CLASS)), "arg type %s has zero typesize", arg_type->ident);
         if (args && i < args->count) {
             arg_values[i] = (arg_type->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) ?
@@ -6573,7 +6572,6 @@ static array parse_array_objects(cstr* s, Au_t element_type, ctx context) {
         cstr before = scan;
         Au a = parse_object(scan, element_type, null, &scan, context);
         if (!scan) {
-            if (element_type) printf("parse_array_objects: parse_object returned null scan for element_type=%s, near: %.40s\n", element_type->ident, before);
             break;
         }
         push(res, a);
@@ -6582,11 +6580,7 @@ static array parse_array_objects(cstr* s, Au_t element_type, ctx context) {
             scan = ws(&scan[1]);
             continue;
         }
-        if (scan && scan[0] != ']') {
-            if (element_type) printf("parse_array_objects: unexpected char '%c' after element, near: %.40s\n", scan[0], scan);
-        }
     }
-    if (element_type) printf("parse_array_objects: element_type=%s count=%i\n", element_type->ident, (int)len(res));
     *s = scan;
     return res;
 }
@@ -6705,7 +6699,6 @@ static string extract_context(cstr src, cstr *endptr) {
 }
 
 Au parse(Au_t schema, cstr s, ctx context) {
-    printf("parse: schema=%s\n", schema ? schema->ident : "null");
     if (context) {
         if (!ctx_checksums) ctx_checksums = hold(map(hsize, 32));
         string key = f(string, "%p", context);
