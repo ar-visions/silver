@@ -7577,10 +7577,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
     token pk4 = peek(a);
     validate(within_expr || read_if(a, "["), "expected [");
     token pk5 = peek(a);
-    if (seq == 721)
-        seq = seq;
-    //print("seq %i\n", seq);
-    Au_t  mdl_au   = au_arg_type(mdl->autype);
+    Au_t  mdl_au   = au_arg_type((Au)mdl->autype);
     bool is_fields = peek_fields(a) || inherits(mdl_au, typeid(map));
     token pk6 = peek(a);
     bool is_mdl_map = inherits(mdl_au, typeid(map));

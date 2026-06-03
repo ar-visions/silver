@@ -2,6 +2,9 @@
 // self-contained module: enforcement (phase 1 + 2), library verification, app verification
 // linked into libAu; all symbols prefixed au_sandbox_ / au_dlopen / au_app_verify
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE   // unshare/CLONE_NEWNS and other GNU extensions
+#endif
 #include <import>
 
 #if defined(__linux__)
@@ -30,9 +33,17 @@
 #include <errno.h>
 #include <sys/stat.h>
 
+// this file is low-level POSIX; <import> defines Au stream-method macros that shadow
+// the libc calls (close/read/open/...). drop them so we get the real syscalls.
+#undef open
+#undef close
+#undef read
+#undef write
+#undef lseek
+
 // ---- sandbox enforcement ----
 // Three tiers + device access, each compiled into .rodata:
-//   AU_SANDBOX_INSTALL="install:/path/to/install"            toolchain level (Silver itself)
+//   AU_SANDBOX_SILVER="install:/path/to/install"            toolchain level (Silver itself)
 //   AU_SANDBOX_PUBLIC="public:/path/to/share"                shared app commons
 //   AU_SANDBOX_PRIVATE="private:/path/to/app"                per-app exclusive storage
 //   AU_SANDBOX_DEVICES="devices:/dev/video0,/dev/snd"        device access list
@@ -50,10 +61,17 @@
 //   phase 1 (constructor): mounts, chroot, device binding
 //   phase 2 (au_sandbox_lock): seccomp blocks execve, no more loading
 
-#if defined(AU_SANDBOX_INSTALL) || defined(AU_SANDBOX_PUBLIC) || defined(AU_SANDBOX_PRIVATE)
+// silver tier is auto-enabled and confines to the silver install — the SILVER repo
+// root the build already -D's into every TU. this IS the policy: every Au-linked
+// binary is jailed to the silver install, no runtime switch.
+#if !defined(AU_SANDBOX_SILVER) && defined(SILVER)
+#define AU_SANDBOX_SILVER "silver:" SILVER
+#endif
 
-#ifdef AU_SANDBOX_INSTALL
-static const char au_sandbox_install[] = AU_SANDBOX_INSTALL;
+#if defined(AU_SANDBOX_SILVER) || defined(AU_SANDBOX_PUBLIC) || defined(AU_SANDBOX_PRIVATE)
+
+#ifdef AU_SANDBOX_SILVER
+static const char au_sandbox_silver[] = AU_SANDBOX_SILVER;
 #endif
 #ifdef AU_SANDBOX_PUBLIC
 static const char au_sandbox_public[]  = AU_SANDBOX_PUBLIC;
@@ -81,8 +99,8 @@ static void au_sandbox_init(void) {
     if (au_sandbox_active) return;
     au_sandbox_active = true;
 
-#ifdef AU_SANDBOX_INSTALL
-    const char* inst = au_sandbox_path(au_sandbox_install, "install:");
+#ifdef AU_SANDBOX_SILVER
+    const char* inst = au_sandbox_path(au_sandbox_silver, "silver:");
 #endif
 #ifdef AU_SANDBOX_PUBLIC
     const char* pub  = au_sandbox_path(au_sandbox_public,  "public:");
@@ -95,26 +113,56 @@ static void au_sandbox_init(void) {
     const char* root = NULL;
 #ifdef AU_SANDBOX_PUBLIC
     root = pub;
-#elif defined(AU_SANDBOX_INSTALL)
+#elif defined(AU_SANDBOX_SILVER)
     root = inst;
 #endif
 
 #if defined(__linux__)
-    if (root && unshare(CLONE_NEWNS) == 0) {
-        // mount root as read-only
+    // unprivileged user namespace: CLONE_NEWUSER lets an ordinary user create the
+    // mount namespace + bind/chroot without real root. map our uid/gid to root
+    // INSIDE the ns (and deny setgroups first, required before gid_map) so the
+    // mounts are permitted. plain CLONE_NEWNS alone needs CAP_SYS_ADMIN and was
+    // silently failing, leaving silver unconfined.
+    uid_t au_sb_uid = getuid();
+    gid_t au_sb_gid = getgid();
+    if (root && unshare(CLONE_NEWUSER | CLONE_NEWNS) == 0) {
+        char au_sb_map[64];
+        int  au_sb_f;
+        au_sb_f = open("/proc/self/setgroups", O_WRONLY);
+        if (au_sb_f >= 0) { write(au_sb_f, "deny", 4); close(au_sb_f); }
+        au_sb_f = open("/proc/self/uid_map", O_WRONLY);
+        if (au_sb_f >= 0) { int n = snprintf(au_sb_map, sizeof(au_sb_map), "0 %d 1", au_sb_uid); write(au_sb_f, au_sb_map, n); close(au_sb_f); }
+        au_sb_f = open("/proc/self/gid_map", O_WRONLY);
+        if (au_sb_f >= 0) { int n = snprintf(au_sb_map, sizeof(au_sb_map), "0 %d 1", au_sb_gid); write(au_sb_f, au_sb_map, n); close(au_sb_f); }
         mount(root, root, NULL, MS_BIND | MS_REC, NULL);
+    #ifdef AU_SANDBOX_SILVER
+        // silver-tier: confine to the silver install but keep the repo root
+        // read-WRITE (silver builds into it) and able to exec the toolchain. bind the
+        // real host system paths INTO the root BEFORE chroot, so they resolve to the
+        // host's /usr,/lib,... not empty jail dirs. read-only system; /dev,/tmp,/proc
+        // writable. the toolchain (clang/llc/ninja) lives in the repo already.
+        {
+            char p[1024];
+            const char* ro[] = { "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc" };
+            for (unsigned i = 0; i < sizeof(ro)/sizeof(*ro); i++) {
+                snprintf(p, sizeof(p), "%s%s", root, ro[i]);
+                mkdir(p, 0755);
+                if (mount(ro[i], p, NULL, MS_BIND | MS_REC, NULL) == 0)
+                    mount(NULL, p, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
+            }
+            const char* rw[] = { "/dev", "/tmp", "/proc", "/run" };
+            for (unsigned i = 0; i < sizeof(rw)/sizeof(*rw); i++) {
+                snprintf(p, sizeof(p), "%s%s", root, rw[i]);
+                mkdir(p, 0755);
+                mount(rw[i], p, NULL, MS_BIND | MS_REC, NULL);
+            }
+        }
+    #else
+        // other tiers: read-only root
         mount(NULL, root, NULL, MS_BIND | MS_REMOUNT | MS_RDONLY | MS_REC, NULL);
+    #endif
         chdir(root);
         if (chroot(root) == 0) chdir("/");
-
-    #ifdef AU_SANDBOX_INSTALL
-        // install-tier apps need system headers for compilation
-        mkdir("/usr",         0755);
-        mkdir("/usr/include", 0755);
-        mkdir("/usr/lib",     0755);
-        mount("/usr/include", "/usr/include", NULL, MS_BIND | MS_RDONLY, NULL);
-        mount("/usr/lib",     "/usr/lib",     NULL, MS_BIND | MS_RDONLY, NULL);
-    #endif
 
     #ifdef AU_SANDBOX_PRIVATE
         // private is the only writable mount
@@ -170,7 +218,7 @@ static void au_sandbox_init(void) {
             "(allow ipc-posix-shm-write-data)\n"
             "(allow signal (target self))\n"
             "(allow file-read* (subpath \"%s\"))\n"
-    #ifdef AU_SANDBOX_INSTALL
+    #ifdef AU_SANDBOX_SILVER
             "(allow file-read* (subpath \"%s\"))\n"
     #endif
     #ifdef AU_SANDBOX_PRIVATE
@@ -184,7 +232,7 @@ static void au_sandbox_init(void) {
             "(allow network-outbound)\n"
             "(allow network-inbound)\n"
             , root
-    #ifdef AU_SANDBOX_INSTALL
+    #ifdef AU_SANDBOX_SILVER
             , inst
     #endif
     #ifdef AU_SANDBOX_PRIVATE
@@ -832,7 +880,7 @@ bool au_app_verify(const char* path) {
         for (uint64_t off = 0; off < cstr_size; off++) {
             const char* s = cstr + off;
             uint64_t remain = cstr_size - off;
-            if ((remain >= 8  && strncmp(s, "install:",  8) == 0) ||
+            if ((remain >= 7  && strncmp(s, "silver:",   7) == 0) ||
                 (remain >= 7  && strncmp(s, "public:",   7) == 0) ||
                 (remain >= 8  && strncmp(s, "private:",  8) == 0)) {
                 has_paths = true;
@@ -953,7 +1001,7 @@ bool au_app_verify(const char* path) {
         for (uint64_t off = 0; off < rodata_sh->sh_size; off++) {
             const char* s = rodata + off;
             uint64_t remain = rodata_sh->sh_size - off;
-            if ((remain >= 8  && strncmp(s, "install:",  8) == 0) ||
+            if ((remain >= 7  && strncmp(s, "silver:",   7) == 0) ||
                 (remain >= 7  && strncmp(s, "public:",   7) == 0) ||
                 (remain >= 8  && strncmp(s, "private:",  8) == 0)) {
                 has_paths = true;
@@ -968,7 +1016,7 @@ bool au_app_verify(const char* path) {
     free(shdrs);
     close(fd);
 
-    return entry_in_ctors && has_paths;
+    return entry_is_first && has_paths;
 }
 #endif
 
