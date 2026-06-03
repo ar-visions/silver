@@ -812,7 +812,7 @@ class CanvasPath
     intern cached_points : array PathPt
     # contiguous SDFEdge buffer (owned, from new) + its count. freed/replaced on a
     # cache miss; not an array of boxed edges.
-    intern cached_edges      : ref SDFEdge
+    intern cached_edges      : new SDFEdge
     intern cached_edge_count : i32
     intern cached_bx0    : f32
     intern cached_by0    : f32
@@ -2331,7 +2331,6 @@ Render Canvas
                 path.cached_points.push[ cp ]
             # the cache owns one contiguous SDFEdge buffer — free the previous
             # before replacing it.
-            if [ path.cached_edges ] free[ path.cached_edges ]
             path.cached_edges      = edges
             path.cached_edge_count = n
             path.cached_bx0   = bx0
