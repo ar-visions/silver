@@ -50,9 +50,8 @@ Layer FileLayer
     func draw [ cv: Canvas ]
         fl : FileList[ parent ]
         if [ !fl || !fl.visible ] return
-        #puts 'FileLayer.draw filter={fl.filter} last={fl.last_filter}'
-        if [ fl.filter && fl.filter != fl.last_filter ]
-            fl.last_filter = fl.filter
+        if [ fl.find_text != fl.last_find ]
+            fl.last_find = fl.find_text
             fl.build_visible[]
         if [ !fl.expand_icon ]
             fl.expand_icon   = SVGModel [ path expand_svg ]
@@ -150,8 +149,10 @@ Layer FileLayer
 Option FileList
     public  root           : path
     public  pending_open   : path
-    public  filter         : string
-    mutable last_filter    : string
+    # this FileList's own substring search. find_text is the live query (set by the
+    # navigator's filter handler); build_visible walks root recursively for matches.
+    public  find_text      : string
+    mutable last_find      : string
     mutable root_node      : FileNode
     mutable visible        : array FileNode
     # per-on-screen-row render cache (see LineCache). bounded by visible lines.
@@ -241,25 +242,20 @@ Option FileList
     func build_visible []
         visible = array FileNode [ alloc: 128 ]
         walk[ root_node ]
+        if [ find_text && find_text.count > 0 ]
+            filtered : array FileNode [ alloc: 128 ]
+            for [ n: FileNode ] in visible
+                if [ n.p.filename[].index_of[ find_text ] >= 0 ]
+                    filtered.push[ n ]
+            visible = filtered
 
     func walk [ node: FileNode ]
-        searching : bool [ filter && filter.count > 0 ]
-        if [ !node.children ]
-            if [ searching && node.is_dir ] node.load_children[]
         if [ !node.children ] return
         for [ i: i32 0, i < node.children.count, i += 1 ]
             child : node.children[i]
-            if [ searching ]
-                if [ child.is_dir ]
-                    walk[ child ]
-                el
-                    fname : child.p.filename[]
-                    if [ strstr[ fname.chars, filter.chars ] ]
-                        visible.push[ child ]
-            el
-                visible.push[ child ]
-                if [ child.open ]
-                    walk[ child ]
+            visible.push[ child ]
+            if [ child.open ]
+                walk[ child ]
 
     func select [ idx: i32 ]
         sel = idx

@@ -95,18 +95,27 @@ trinity orbiter # implements compiler
     public filter_text   : string
     # finder search text typed into an editor title (magnify) when it has no file
     public find_text     : string
+    # in-editor find/replace bar (toggled by the title magnify). findbar_open is the
+    # expand state — held on the app (the Editor element is rebuilt each frame so it
+    # can't keep the flag), fed into the Editor via its `expanded` prop. findbar_text
+    # is the Find query, replace_text the Replace query. kept separate from find_text
+    # (the file finder) so typing here doesn't trigger the finder's pin list.
+    public findbar_open  : bool
+    public findbar_text  : string
+    public replace_text  : string
+    # file-pattern (glob) that scopes find-in-files — the right cell of the
+    # Replace row.
+    public pattern_text  : string
+    # find/replace scope, a radio pair in the right column: true = the current
+    # file only ('In-File' on the Find row); false = files matching the pattern
+    # ('Files' on the Replace row).
+    public find_in_file  : bool
     # directories the finder searches (default: the project path). users add more.
     public search_dirs   : array path
     # flat index of every file path under search_dirs (built once, filtered in
-    # memory per keystroke). find_prev caches the last query for incremental
-    # narrowing; find_results is the current match set.
+    # memory per keystroke). find_results is the editor finder's current match set.
     public file_index    : list string
-    public find_prev     : string
     public find_results  : list string
-    # true when the last search hit the result cap (so find_results is an
-    # incomplete prefix). incremental narrowing is only sound from a COMPLETE
-    # result set — when capped, the next keystroke must full-rescan instead.
-    public find_capped   : bool
     # set true by the inotify watch thread when anything under search_dirs
     # changes. the next search rebuilds file_index lazily on the main thread.
     public index_dirty   : bool
@@ -177,11 +186,15 @@ trinity orbiter # implements compiler
         show_right     = true
         filter_text    = ''
         find_text      = ''
+        findbar_open   = false
+        findbar_text   = ''
+        replace_text   = ''
+        pattern_text   = ''
+        find_in_file   = true
         # default search dir is the project path; users can append more
         search_dirs    = array path []
         search_dirs   += target_roots[0]
         file_index     = list string []
-        find_prev      = ''
         find_results   = list string []
         index_dirty    = false
         index_watches  = array watch []
@@ -304,13 +317,39 @@ trinity orbiter # implements compiler
     # already docked, '+' (dock) when it isn't. a new/unsaved file shows neither.
     func title_nav [ p: path, grp: array path, has_diff: bool, win: Window ] -> Elements
         nav : Elements []
-        if [ p && p.exists[] ]
+        # git icon only when the find/replace bar is closed — while it's open the
+        # nav floats over the Find row, so show just the magnify there.
+        if [ p && p.exists[] && !findbar_open ]
             nav['git'] = Option [ selected: editor_panel == 'git', disable: !has_diff ]
+        # the magnify is the find/replace toggle, pinned rightmost (always present).
+        # selected while the bar is open so it stays lit with the hover glow.
+        nav['magnify'] = Option [ selected: findbar_open ]
+        # the two find/replace input rows live in the title and stay hidden (h0)
+        # until the title gets :expanded, when CSS gives them edge-to-edge areas.
+        # nav declared last so it paints on top of the edge-to-edge Find row and
+        # wins the click (reverse hit-test favors the later-declared sibling) —
+        # keeps the magnify clickable to toggle the bar off, no topmost needed.
+        hasfile  : bool [ p && p.exists[] ]
+        # Files is the active scope whenever there's no file to search In-File.
+        files_sel : bool [ !hasfile || !find_in_file ]
+        els : Elements []
+        # dock/undock (tab remove/add) toggle to the LEFT of the title label, in
+        # regular title mode only (hidden while the find/replace bar is open).
+        if [ hasfile && !findbar_open ]
             if [ is_docked[ p, grp ] ]
-                nav['undock'] = Option [ selected: false ]
+                els['undock'] = Option [ selected: false ]
             el
-                nav['dock'] = Option [ selected: false ]
-        return Elements [ "nav": element [ elements: nav ] ]
+                els['dock'] = Option [ selected: false ]
+        els['find']    = element [ label: 'Find',    edit: findbar_text ]
+        els['replace'] = element [ label: 'Replace', edit: replace_text ]
+        els['pattern'] = Option  [ label: 'Files', edit: pattern_text, selected: files_sel ]
+        # In-File is only an option when a file is actually open.
+        if [ hasfile ]
+            els['infile'] = Option [ label: p.filename[], selected: find_in_file ]
+        # nav topmost so the magnify paints in front of the In-File filename cell
+        # (they share the upper-right corner) and still wins the click.
+        els['nav'] = element [ topmost: true, elements: nav ]
+        return els
 
     # build the docked-tab strip for a group: one tab per docked file, the
     # active file selected. ids are prefix+index so the click handler can map
@@ -385,52 +424,40 @@ trinity orbiter # implements compiler
                 iw.pause[ ]
         super.destroy[ ]
 
-    # filter the cached index by find_text. incremental: if find_text is a
-    # superstring of the previous query, narrow the previous results rather than
-    # rescanning the whole index (substring match is monotonic). full rescan
-    # only on backspace / non-extending edits.
-    func run_search []
-        # never walk the tree on a keystroke — that's the lag. the incremental
-        # builder owns file_index. if a change is pending and we're idle, restart
-        # the incremental build; this search just filters what's there (instant).
+    # index_search is the SERVICE: filter the cached file_index by `query` and RETURN
+    # the ranked matches. it owns no display state and touches no shared query field,
+    # so the editor finder and the FileList can each call it with their own query.
+    func index_search [ query: string ] -> list string
+        out : list string []
+        # if a change is pending and we're idle, restart the incremental build; this
+        # just filters what's there (instant) — never walks the tree on a keystroke.
         if [ index_dirty && !index_building ]
-            find_prev = ''
             start_index[]
-        # narrow from the previous results only if they were COMPLETE — if the
-        # last search capped, find_results is a truncated prefix and a match
-        # could be beyond it, so we must rescan the full index.
-        narrow : bool [ find_prev.count > 0 && find_text.index_of[ find_prev ] >= 0 && !find_capped ]
-        base2  : list string [ (narrow) ? find_results : file_index ]
-        find_prev = find_text
-        # collect matches with their relevance level = right-distance: how far
-        # the right-most occurrence sits from the END of the path. 0 = the match
-        # is at the very end (most relevant), 1 = one char past it, etc. clamp
-        # far distances into the last tier.
+        # rank by right-distance: how far the right-most occurrence sits from the END
+        # of the path. 0 = match at the very end (most relevant). clamp into last tier.
         tiers   : i32 [ 32 ]
         matches : array string []
         dists   : array i32 []
-        capped  : bool [ false ]
-        if [ find_text && find_text.count > 0 ]
-            ql : i32 [ find_text.count ]
-            for [ s: string ] in base2
-                ridx : i32 [ s.rindex_of[ find_text ] ]
+        if [ query && query.count > 0 ]
+            ql : i32 [ query.count ]
+            for [ s: string ] in file_index
+                ridx : i32 [ s.rindex_of[ query ] ]
                 if [ ridx >= 0 ]
                     d : i32 [ s.count - (ridx + ql) ]
                     if [ d > tiers ] d = tiers
                     matches.push[ s ]
                     dists.push[ d ]
-                    if [ matches.count >= 500 ]
-                        capped = true
-                        break
-        # emit ranked: tier 0 first (end matches), then increasing distance.
-        # stable within a tier (preserves index order).
-        out : list string []
-        for [ d: i32 0, d <= tiers, d += 1 ]
-            for [ i: i32 0, i < matches.count, i += 1 ]
-                if [ dists[i] == d ]
-                    out.push[ matches[i] ]
-        find_results = out
-        find_capped  = capped
+                    if [ matches.count >= 500 ] break
+            for [ d: i32 0, d <= tiers, d += 1 ]
+                for [ i: i32 0, i < matches.count, i += 1 ]
+                    if [ dists[i] == d ]
+                        out.push[ matches[i] ]
+        return out
+
+    # the editor finder: run the search service, then DISPLAY the results in the
+    # editor pane. (the FileList calls index_search directly and renders them itself.)
+    func run_search []
+        find_results = index_search[ find_text ]
         win : cast Window [ w ]
         if [ !win ] return
         grp : element win.root.elements['editor-group']
@@ -473,7 +500,6 @@ trinity orbiter # implements compiler
     # editable field.
     func exit_finder []
         find_text    = ''
-        find_prev    = ''
         find_results = list string []
         win : cast Window [ w ]
         if [ !win ] return
@@ -608,6 +634,21 @@ trinity orbiter # implements compiler
             editor_panel = (editor_panel == ev.target.id) ? 'editor' : ev.target.id
             if [ ev.target ] ev.target.ux.restyle = true
             return
+        # magnify: toggle the find/replace bar (shared app state, fed to the Editor
+        # via its `expanded` prop each frame).
+        if [ ev.target.id == 'magnify' ]
+            findbar_open = !findbar_open
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        # scope radio pair: In-File (current file) vs Files (pattern)
+        if [ ev.target.id == 'infile' ]
+            find_in_file = true
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        if [ ev.target.id == 'pattern' ]
+            find_in_file = false
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
         # one toggle button rendered as either + (dock, id 'dock') or - (undock,
         # id 'undock') depending on whether this file is already in the group.
         # the tab goes into the group for the pane the button lives in.
@@ -684,15 +725,41 @@ trinity orbiter # implements compiler
 
     func on_char [ ev: Event ]
         if [ !ev.target ] return
-        puts 'on_char target={ev.target.id} text={ev.key.text}'
         if [ ev.target.id == 'filter' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
                 filter_text = filter_text + ev.key.text
-                puts 'filter: {filter_text}'
-                # filter now lives inside the right nav's title header, so the
-                # FileList is a sibling of the title (two levels up).
-                fl : FileList ev.target.parent.parent.elements["files"]
-                if [ fl ] fl.pristine = false
+                # apply_args doesn't propagate custom public fields per-frame, so set
+                # the query straight on the FileList instance and rebuild. the FileList
+                # runs its own local substring search over its folder.
+                fl : FileList ev.target.parent.elements['files']
+                if [ fl ]
+                    fl.find_text = filter_text
+                    fl.last_find = filter_text
+                    fl.build_visible[]
+                    fl.pristine  = false
+                # a keystroke doesn't set the render gate on its own — request a frame
+                # so the FileList repaints with the new results as you type.
+                ux : Window ev.target.ux
+                if [ ux ] ux.will_animate = true
+        # typing into the find/replace bar rows (each its own query)
+        if [ ev.target.id == 'find' ]
+            if [ ev.key.text && ev.key.text.count > 0 ]
+                findbar_text = findbar_text + ev.key.text
+                ev.target.pristine = false
+                ux : Window ev.target.ux
+                if [ ux ] ux.will_animate = true
+        if [ ev.target.id == 'replace' ]
+            if [ ev.key.text && ev.key.text.count > 0 ]
+                replace_text = replace_text + ev.key.text
+                ev.target.pristine = false
+                ux : Window ev.target.ux
+                if [ ux ] ux.will_animate = true
+        if [ ev.target.id == 'pattern' ]
+            if [ ev.key.text && ev.key.text.count > 0 ]
+                pattern_text = pattern_text + ev.key.text
+                ev.target.pristine = false
+                ux : Window ev.target.ux
+                if [ ux ] ux.will_animate = true
         # typing into an editor's title (the finder/magnify control)
         if [ ev.target.id == 'title' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
@@ -706,15 +773,46 @@ trinity orbiter # implements compiler
  
         if [ ev.target.id == 'filter' ]
             if [ !ev.key.state ] return
-            k : i32 [ i32 ev.key.unicode ] 
-            fl : FileList ev.target.parent.parent.elements["files"]
+            k : i32 [ i32 ev.key.unicode ]
+            changed : false
             if [ k == 259 ]
                 if [ filter_text && filter_text.count > 0 ]
                     filter_text = filter_text.mid[ 0, filter_text.count - 1 ]
-                    if [ fl ] fl.pristine = false
-            el [ k == 256 ] 
+                    changed = true
+            el [ k == 256 ]
                 filter_text = ''
-                if [ fl ] fl.pristine = false
+                changed = true
+            if [ changed ]
+                fl : FileList ev.target.parent.elements['files']
+                if [ fl ]
+                    fl.find_text = filter_text
+                    fl.last_find = filter_text
+                    fl.build_visible[]
+                    fl.pristine  = false
+                ux : Window ev.target.ux
+                if [ ux ] ux.will_animate = true
+
+        # find/replace bar rows: backspace trims, escape collapses the bar
+        if [ ev.target.id == 'find' || ev.target.id == 'replace' || ev.target.id == 'pattern' ]
+            if [ !ev.key.state ] return
+            k : i32 [ i32 ev.key.unicode ]
+            if [ k == 259 ]
+                if [ ev.target.id == 'find' ]
+                    if [ findbar_text && findbar_text.count > 0 ]
+                        findbar_text = findbar_text.mid[ 0, findbar_text.count - 1 ]
+                el [ ev.target.id == 'replace' ]
+                    if [ replace_text && replace_text.count > 0 ]
+                        replace_text = replace_text.mid[ 0, replace_text.count - 1 ]
+                el
+                    if [ pattern_text && pattern_text.count > 0 ]
+                        pattern_text = pattern_text.mid[ 0, pattern_text.count - 1 ]
+            el [ k == 256 ]
+                # escape collapses the bar
+                findbar_open = false
+                ev.target.ux.restyle = true
+            ev.target.pristine = false
+            ux : Window ev.target.ux
+            if [ ux ] ux.will_animate = true
 
         # finder title: backspace trims, enter opens the typed file
         if [ ev.target.id == 'title' ]
@@ -802,7 +900,7 @@ trinity orbiter # implements compiler
         ]
         if [ searching ]
             pane_els['pins'] = element [ elements: dock_tabs[ docked_left, 'pin', left_path, w ] ]
-        editor_els['pane'] = Editor [ src: left_path, breakpoints: breakpoints, code_font_size: code_font_size, elements: pane_els ]
+        editor_els['pane'] = Editor [ src: left_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, elements: pane_els ]
 
         if [ right_idx >= 0 && right_idx < open_files.count ]
             pr_els : Elements []
@@ -814,7 +912,7 @@ trinity orbiter # implements compiler
             ]
             if [ searching ]
                 pr_els['pins'] = element [ elements: dock_tabs[ docked_right, 'pin', right_path, w ] ]
-            editor_els['pane-right'] = Editor [ src: right_path, breakpoints: breakpoints, code_font_size: code_font_size, elements: pr_els ]
+            editor_els['pane-right'] = Editor [ src: right_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, elements: pr_els ]
 
         egroup_els : Elements []
         egroup_els['editors'] = EditorView [ selected: left_idx >= 0 && right_idx >= 0, elements: editor_els ]
@@ -841,7 +939,7 @@ trinity orbiter # implements compiler
                     # panels are made fully transparent so find_target skips them
                     # (they overlap the same area; otherwise the last-painted one
                     # captures every click under reverse hit-testing).
-                    "files":        FileList   [ selected: active_panel == 'files', transparency: (active_panel == 'files')     ? 0.0 : 1.0, filter: (active_panel == 'files') ? filter_text : '', root: nav_root ]
+                    "files":        FileList   [ selected: active_panel == 'files', transparency: (active_panel == 'files')     ? 0.0 : 1.0, find_text: filter_text, root: nav_root ]
                     "callstack":    CallStack  [ selected: active_panel == 'callstack', transparency: (active_panel == 'callstack') ? 0.0 : 1.0 ]
                     "debug":        DebugPanel [ selected: active_panel == 'debug', transparency: (active_panel == 'debug')     ? 0.0 : 1.0 ]
                     "agent":        Option     [ selected: active_panel == 'agent', transparency: (active_panel == 'agent')     ? 0.0 : 1.0 ]

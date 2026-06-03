@@ -30,6 +30,14 @@ Layer EditorLayer
         cv.font_size[ code_fs ]
         cw_tm   : cv.measure_text[ 'x' ]
         lh      : f32 [ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ]
+        # find/replace bar open: the title doubles (+44px). a CSS state override of
+        # a layer's area doesn't apply (only the base does), so shift the content
+        # layer's bounds here by that extra title height. both draw (y0) and
+        # hit_test read bounds.y, so they stay in sync.
+        if [ editor.expanded ]
+            extra : f32 [ 44.0 ]
+            bounds.y += extra
+            bounds.h -= extra
         # gutter width = digit count of the last line number * char width + pad.
         # the code content is pushed right by this width.
         ndigits : i32 [ 1 ]
@@ -85,8 +93,8 @@ Layer EditorLayer
         # flat cell + right-aligned number sit in the gutter column on the left.
         cv.stroke_width[ 0.0 ]
         bp_src : '{editor.src}'
-        # line-number labels render 30% smaller than the code font
-        num_fs  : i32 [ i32[ f32[ code_fs ] * 0.7 ] ]
+        # line-number labels render 30% smaller than the code font, then 1px smaller
+        num_fs  : i32 [ i32[ f32[ code_fs ] * 0.7 ] - 1 ]
         cv.font_size[ num_fs ]
         for [ li: i32 0, li < editor.lines.count, li += 1 ]
             yg : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
@@ -269,6 +277,10 @@ Layer EditorLayer
 
 Control Editor
     public  selected      : bool
+    # find/replace bar open: doubles the title height (CSS :expanded), reveals the
+    # stacked Find + Replace rows, and pushes the code content down so it doesn't
+    # paint over them. lives on the Editor so one state drives title + content.
+    public  expanded      : bool
     public  show_nav      : bool
     public  editor_mode   : string
     public  src           : path

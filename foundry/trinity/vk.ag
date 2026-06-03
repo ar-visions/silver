@@ -605,7 +605,6 @@ class vk_context
             ext : extensions[i].extensionName
             device_exts.push[ ext ]
             if [ strcmp[ ext, VK_KHR_SWAPCHAIN_EXTENSION_NAME ] == 0 ]
-                printf [ "supported swapchain: %s\n", ext ]
                 swapchain_supported = true
             if [ strcmp[ ext, VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME ] == 0 ]
                 ext_mem_supported = true
@@ -2515,9 +2514,6 @@ Texture Display
                 el [ present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR ]
                     present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR
 
-            puts (present_mode == VK_PRESENT_MODE_MAILBOX_KHR)   ? 'present: MAILBOX'   :
-                 (present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR) ? 'present: IMMEDIATE' : 'present: FIFO'
-
             # initial window size
             w_i: i32
             h_i: i32
@@ -2806,7 +2802,6 @@ func get_required_extensions [ vk: vk_context ]
     verbose: getenv[ "VERBOSE" ] != null
     for [ i: i32 0, i < count, i += 1 ]
         vk.instance_exts.push strdup[ result[i] ]
-        printf "instance extension: %s\n", vk.instance_exts[i]
 
 
 func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] -> Texture

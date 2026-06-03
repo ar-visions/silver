@@ -260,9 +260,6 @@ Display Window
     public st                   : Style
 
 
-    func init[]
-        puts 'window constructing'
-
     # at instance birth, fill the instance's public fields from a source object
     # (its render parent, then the app) when the source declares a public of the
     # SAME name and EXACT type. union {src,rtype,type} is the field's type.
@@ -1068,7 +1065,6 @@ Display Window
             if [ seam_drag.user_mem && seam_drag.fc > 0.0 ]
                 dp    : ref f32 [ seam_drag.app.member_ref[ seam_drag.mem ] ]
                 lo    : f32 [ seam_drag.max / seam_drag.fc ]
-                puts 'seam release: val={dp[0]} lo={lo} max={seam_drag.max} fc={seam_drag.fc} save={dp[0] > lo + 0.5}'
                 if [ dp[0] > lo + 0.5 ]
                     up : ref f32 [ seam_drag.app.member_ref[ seam_drag.user_mem ] ]
                     up[0] = dp[0]
@@ -1529,7 +1525,6 @@ Display Window
                 e.cache_canvas.resize[ ew, eh ]
             el
                 e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true, quantize: true ]
-                puts 'cache canvas NEW: content {ew}x{eh}'
                 e.cache_canvas.update[]
             e.cache_w = ew
             e.cache_h = eh
@@ -1602,7 +1597,6 @@ Display Window
                 bw : i32 [ i32[b.w + pad] + 1 ]
                 bh : i32 [ i32[b.h + pad] + 1 ]
                 if [ !layer.blur_canvas || layer.blur_bw != bw || layer.blur_bh != bh ]
-                    puts 'creating blur Canvas'
                     layer.blur_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: bw, height: bh ]
                     layer.blur_canvas.update[]
                     layer.blur_bw = bw
@@ -1879,7 +1873,6 @@ abstract media_app trinity
     func update_scene [] return
          
     func run[]
-        puts 'reload 2'
         type : typeid[a]
         background_type : Au.find_type[ (background) ? background.chars : null, null ]
         window : Window[ app_object: a, title:(title) ?? type.ident, st: Style [ a ],
