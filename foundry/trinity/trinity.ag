@@ -1909,14 +1909,19 @@ Layer ScrollLayer
     func draw [ cv: Canvas ]
         e : element [ parent ]
         if [ !e || e.content_h <= 0.0 || e.bounds.h >= e.content_h ] return
+        # align the track top with the content layer — it may be pushed down
+        # below our own area top (e.g. the editor's find/replace bar adds a row).
+        top     : f32 [ bounds.y ]
+        cl      : Layer (e.layers) ? e.layers['content'] : null
+        if [ cl && cl.bounds ] top = cl.bounds.y
         total_h : f32 [ e.content_h ]
-        vis_h   : f32 [ bounds.h ]
+        vis_h   : f32 [ bounds.y + bounds.h - top ]
         ratio   : f32 [ vis_h / total_h ]
         min_h   : f32 [ (thumb_min_h > 0.0) ? thumb_min_h : 32.0 ]
         thumb_h : f32 [ (ratio * vis_h < min_h) ? min_h : ratio * vis_h ]
         travel  : f32 [ vis_h - thumb_h ]
         max_sc  : f32 [ total_h - vis_h ]
-        thumb_y : f32 [ bounds.y + (max_sc > 0.0) ? (e.scroll.y / max_sc) * travel : 0.0 ]
+        thumb_y : f32 [ top + (max_sc > 0.0) ? (e.scroll.y / max_sc) * travel : 0.0 ]
         thumb_x : f32 [ bounds.x + bounds.w - thumb_w ]
         r       : f32 [ thumb_radius ]
         cv.fill_color[ thumb_color ]

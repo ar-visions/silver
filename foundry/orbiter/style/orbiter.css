@@ -647,7 +647,7 @@ Editor / element.title / element.undock:hovered {
 Editor / element.title / element.nav / Option.magnify {
     layers.svg:
         image_svg:              "images/magnify.svg"
-        image_scale:            2.0
+        image_scale:            1.8
 }
 
 Editor / element.title / element.nav / Option.magnify:selected {
@@ -656,6 +656,8 @@ Editor / element.title / element.nav / Option.magnify:selected {
         inner_glow:             #8afa 24
     layers.svg:
         opacity:                1.0
+        image_svg:              "images/close.svg"
+        image_scale:            1.8
 }
 
 Editor / element.title / element.find {
@@ -692,7 +694,7 @@ Editor / element.title / element.pattern {
     layers.base:
         fill_color:             #1126
     layers.divider:
-        area:                   l0 t0 w1px b0
+        area:                   r0 t0 w1px b0
         fill_color:             #fff2
     layers.text:
         area:                   l12px t0 r12px b0
@@ -708,7 +710,7 @@ Editor / element.title / element.infile {
     layers.base:
         fill_color:             #1126
     layers.divider:
-        area:                   l0 t0 w1px b0
+        area:                   r0 t0 w1px b0
         fill_color:             #fff2
     layers.face:
         area:                   l12px t0 r12px b0
@@ -730,22 +732,60 @@ Editor / element.title / element.pattern:selected {
         fill_color:             #fa35
 }
 
-Editor:expanded / element.title / element.find {
-    area:                       l0 t1px r6 h43px
+
+Editor / element.title / element.replace_all_action {
+    area:                       l0 t0 r0 h0
+    layers.base:
+        fill_color:             #1126
+    layers.divider:
+        area:                   l0 t0 w1px b0
+        fill_color:             #fff2
+    layers.divider2:
+        area:                   r0 t0 w1px b0
+        fill_color:             #fff2
+    layers.label:
+        label:                  'All'
+        label_color:            #fff
+        label_size:             15
+        label_align:            0.5 0.5
+        label_font:             'fonts/SpaceMono-Regular.ttf'
+        opacity:                0.6
+}
+
+Editor / element.title / element.replace_all_action:hovered {
+    layers.base:
+        fill_color:             #8af4
+    layers.label:
+        opacity:                1.0
 }
 
 Editor:expanded / element.title / element.infile {
-    area:                       r6 t1px r0 h43px
+    area:                       l0 t1px w6 h43px
 }
 
-Editor:expanded / element.title / element.replace {
-    area:                       l0 t45px r6 h43px
+Editor:expanded / element.title / element.find {
+    area:                       l6 t1px r2 h43px
+}
+
+Editor:expanded / element.title / element.find_action {
+    area:                       r2.88 t1px w1.44 h43px
 }
 
 Editor:expanded / element.title / element.pattern {
-    area:                       r6 t45px r0 h43px
+    area:                       l0 t45px w6 h43px
 }
 
+Editor:expanded / element.title / element.replace {
+    area:                       l6 t45px r2 h43px
+}
+
+Editor:expanded / element.title / element.replace_action {
+    area:                       r2.88 t45px w1.44 h43px
+}
+
+Editor:expanded / element.title / element.replace_all_action {
+    area:                       r44px t45px w44px h43px
+}
 
 /* ---- right navigator: Editor-style title header (slightly darker) with
    icon tabs laid out like the editor title buttons, the selected panel name,

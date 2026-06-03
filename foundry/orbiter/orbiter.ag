@@ -110,6 +110,11 @@ trinity orbiter # implements compiler
     # file only ('In-File' on the Find row); false = files matching the pattern
     # ('Files' on the Replace row).
     public find_in_file  : bool
+    # find-in-files results: find_showing makes the editor pane render find_hits
+    # (file-title headers + matched lines) instead of file content. fed to the
+    # Editor each frame via props.
+    public find_showing  : bool
+    public find_hits     : array FindHit
     # directories the finder searches (default: the project path). users add more.
     public search_dirs   : array path
     # flat index of every file path under search_dirs (built once, filtered in
@@ -191,6 +196,8 @@ trinity orbiter # implements compiler
         replace_text   = ''
         pattern_text   = ''
         find_in_file   = true
+        find_showing   = false
+        find_hits      = array FindHit []
         # default search dir is the project path; users can append more
         search_dirs    = array path []
         search_dirs   += target_roots[0]
@@ -317,24 +324,17 @@ trinity orbiter # implements compiler
     # already docked, '+' (dock) when it isn't. a new/unsaved file shows neither.
     func title_nav [ p: path, grp: array path, has_diff: bool, win: Window ] -> Elements
         nav : Elements []
-        # git icon only when the find/replace bar is closed — while it's open the
-        # nav floats over the Find row, so show just the magnify there.
-        if [ p && p.exists[] && !findbar_open ]
-            nav['git'] = Option [ selected: editor_panel == 'git', disable: !has_diff ]
-        # the magnify is the find/replace toggle, pinned rightmost (always present).
-        # selected while the bar is open so it stays lit with the hover glow.
+
+        #if [ p && p.exists[] && !findbar_open ]
+        #    nav['git'] = Option [ selected: editor_panel == 'git', disable: !has_diff ]
+        
         nav['magnify'] = Option [ selected: findbar_open ]
-        # the two find/replace input rows live in the title and stay hidden (h0)
-        # until the title gets :expanded, when CSS gives them edge-to-edge areas.
-        # nav declared last so it paints on top of the edge-to-edge Find row and
-        # wins the click (reverse hit-test favors the later-declared sibling) —
-        # keeps the magnify clickable to toggle the bar off, no topmost needed.
+
+
         hasfile  : bool [ p && p.exists[] ]
         # Files is the active scope whenever there's no file to search In-File.
         files_sel : bool [ !hasfile || !find_in_file ]
         els : Elements []
-        # dock/undock (tab remove/add) toggle to the LEFT of the title label, in
-        # regular title mode only (hidden while the find/replace bar is open).
         if [ hasfile && !findbar_open ]
             if [ is_docked[ p, grp ] ]
                 els['undock'] = Option [ selected: false ]
@@ -343,6 +343,8 @@ trinity orbiter # implements compiler
         els['find']    = element [ label: 'Find',    edit: findbar_text ]
         els['replace'] = element [ label: 'Replace', edit: replace_text ]
         els['pattern'] = Option  [ label: 'Files', edit: pattern_text, selected: files_sel ]
+        # mid action buttons: run-find on the Find row, run-replace on the Replace row.
+        els['replace_all_action'] = Option [ selected: false ]
         # In-File is only an option when a file is actually open.
         if [ hasfile ]
             els['infile'] = Option [ label: p.filename[], selected: find_in_file ]
@@ -453,6 +455,41 @@ trinity orbiter # implements compiler
                     if [ dists[i] == d ]
                         out.push[ matches[i] ]
         return out
+
+    # find-in-files: build find_hits from findbar_text, scoped by find_in_file
+    # (current file) vs Files (file_index filtered by pattern_text). each matching
+    # file gets a header row then one row per matched source line.
+    func run_find_in_files []
+        find_hits = array FindHit []
+        q : string findbar_text
+        if [ !q || q.count == 0 ]
+            find_showing = false
+            return
+        if [ find_in_file ]
+            p : path (left_idx >= 0 && left_idx < open_files.count) ? open_files[left_idx] : null
+            scan_file_hits[ p, q ]
+        el
+            for [ s: string ] in file_index
+                if [ !pattern_text || pattern_text.count == 0 || s.index_of[ pattern_text ] >= 0 ]
+                    scan_file_hits[ path s, q ]
+        find_showing = true
+        puts 'find-in-files: q={q} in_file={find_in_file} hits={find_hits.count}'
+
+    # scan one file for substring `q`, appending a header (once) + a row per
+    # matched line (with its 1-based source line number) to find_hits.
+    func scan_file_hits [ p: path, q: string ]
+        if [ !p || !p.exists[] ] return
+        content : string [ p.load[ typeid[string], null ] ]
+        if [ !content ] return
+        parts : array string [ content.split["\n"] ]
+        header_added : bool [ false ]
+        for [ i: i32 0, i < parts.count, i += 1 ]
+            ln : string parts[i]
+            if [ ln.index_of[ q ] >= 0 ]
+                if [ !header_added ]
+                    find_hits.push[ FindHit [ is_header: true, text: '{p}', file: p ] ]
+                    header_added = true
+                find_hits.push[ FindHit [ is_header: false, text: ln, file: p, line: i + 1 ] ]
 
     # the editor finder: run the search service, then DISPLAY the results in the
     # editor pane. (the FileList calls index_search directly and renders them itself.)
@@ -617,6 +654,7 @@ trinity orbiter # implements compiler
                         right_idx = i
                     el
                         right_idx = i
+                        
                     set_active[ i ]
                     sync_editor[]
                 el
@@ -638,16 +676,24 @@ trinity orbiter # implements compiler
         # via its `expanded` prop each frame).
         if [ ev.target.id == 'magnify' ]
             findbar_open = !findbar_open
+            # closing the bar hides the results
+            if [ !findbar_open ] find_showing = false
             if [ ev.target ] ev.target.ux.restyle = true
             return
-        # scope radio pair: In-File (current file) vs Files (pattern)
+        # scope radio pair: In-File (current file) vs Files (pattern) — re-run the
+        # search since the scope changed.
         if [ ev.target.id == 'infile' ]
             find_in_file = true
+            run_find_in_files[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
         if [ ev.target.id == 'pattern' ]
             find_in_file = false
+            run_find_in_files[]
             if [ ev.target ] ev.target.ux.restyle = true
+            return
+        # mid action buttons — run find / replace (logic TBD)
+        if [ ev.target.id == 'replace_all_action' ]
             return
         # one toggle button rendered as either + (dock, id 'dock') or - (undock,
         # id 'undock') depending on whether this file is already in the group.
@@ -806,9 +852,14 @@ trinity orbiter # implements compiler
                 el
                     if [ pattern_text && pattern_text.count > 0 ]
                         pattern_text = pattern_text.mid[ 0, pattern_text.count - 1 ]
+            el [ k == 257 ]
+                # enter runs the find-in-files search
+                run_find_in_files[]
+                if [ ev.target.ux ] ev.target.ux.restyle = true
             el [ k == 256 ]
-                # escape collapses the bar
+                # escape collapses the bar and hides the results
                 findbar_open = false
+                find_showing = false
                 ev.target.ux.restyle = true
             ev.target.pristine = false
             ux : Window ev.target.ux
@@ -900,7 +951,7 @@ trinity orbiter # implements compiler
         ]
         if [ searching ]
             pane_els['pins'] = element [ elements: dock_tabs[ docked_left, 'pin', left_path, w ] ]
-        editor_els['pane'] = Editor [ src: left_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, elements: pane_els ]
+        editor_els['pane'] = Editor [ src: left_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, show_hits: find_showing, hits: find_hits, elements: pane_els ]
 
         if [ right_idx >= 0 && right_idx < open_files.count ]
             pr_els : Elements []
@@ -912,7 +963,7 @@ trinity orbiter # implements compiler
             ]
             if [ searching ]
                 pr_els['pins'] = element [ elements: dock_tabs[ docked_right, 'pin', right_path, w ] ]
-            editor_els['pane-right'] = Editor [ src: right_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, elements: pr_els ]
+            editor_els['pane-right'] = Editor [ src: right_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, show_hits: find_showing, hits: find_hits, elements: pr_els ]
 
         egroup_els : Elements []
         egroup_els['editors'] = EditorView [ selected: left_idx >= 0 && right_idx >= 0, elements: editor_els ]

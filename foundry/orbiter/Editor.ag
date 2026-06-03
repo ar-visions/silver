@@ -4,6 +4,16 @@ class FileBuf
     public lines : list string
     public mtime : i64 [ 0 ]
 
+# one row in the find-in-files results view. a header row is a file title (drawn
+# 2 code-rows tall, larger, centered); a non-header row is a matched line of code
+# carrying its source line number. `file` is the source path (on every row so a
+# match row knows what to open).
+class FindHit
+    public is_header : bool
+    public text      : string
+    public file      : path
+    public line      : i32
+
 Layer EditorLayer
     mutable sel_color      : rgba
     mutable line_color     : rgba
@@ -71,7 +81,14 @@ Layer EditorLayer
         parent.mask_inset = vec4f [ title_bottom, 0.0, 0.0, 0.0 ]
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
-        editor.content_h = f32[ editor.lines.count ] * lh
+        if [ editor.show_hits ]
+            ht : f32 [ 0.0 ]
+            for [ hi: i32 0, hi < editor.hits.count, hi += 1 ]
+                hh : FindHit editor.hits[hi]
+                ht += (hh.is_header) ? lh * 2.0 : lh
+            editor.content_h = ht
+        el
+            editor.content_h = f32[ editor.lines.count ] * lh
         editor.scroll_speed = lh
 
         # clamp scroll to [0, content - viewport] every frame so it can't go
@@ -87,6 +104,41 @@ Layer EditorLayer
         wty : f32 [ cv.transform_ty[] ]
         cv.set_crop[ wtx + bounds.x, wty + bounds.y,
             wtx + bounds.x + bounds.w - rin, wty + bounds.y + bounds.h ]
+
+        # ---- find-in-files results: file-title headers (2 rows, larger, centered)
+        # with their matched code lines (source line number in the gutter) ----
+        if [ editor.show_hits ]
+            num_fs2 : i32 [ i32[ f32[ code_fs ] * 0.7 ] - 1 ]
+            big_fs  : i32 [ i32[ f32[ code_fs ] * 1.4 ] ]
+            hy : f32 [ y0 - editor.scroll.y ]
+            for [ hi: i32 0, hi < editor.hits.count, hi += 1 ]
+                h  : FindHit editor.hits[hi]
+                rh : f32 [ (h.is_header) ? lh * 2.0 : lh ]
+                if [ hy + rh < bounds.y ]
+                    hy += rh
+                    continue
+                if [ hy > bounds.y + bounds.h ] break
+                if [ h.is_header ]
+                    cv.font_size[ big_fs ]
+                    cv.fill_color[ rgba['#fff'] ]
+                    cv.draw_text[ h.text,
+                        rect [ x: bounds.x, y: hy, w: bounds.w - rin, h: rh ],
+                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                el
+                    cv.font_size[ num_fs2 ]
+                    cv.fill_color[ rgba['#ffffff80'] ]
+                    cv.draw_text[ '{h.line}',
+                        rect [ x: bounds.x, y: hy, w: gut_w - 6.0, h: lh ],
+                        vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    cv.font_size[ code_fs ]
+                    cv.fill_color[ rgba['#fff'] ]
+                    cv.draw_text[ h.text,
+                        rect [ x: x0, y: hy, w: bounds.w - gut_w - rin, h: lh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                hy += rh
+            cv.paint[ ]
+            cv.clear_crop[ ]
+            return
 
         # ---- gutter: per-line flat cells, line numbers, hover + breakpoint ----
         # breakpoint colors the entire line (full width) behind the code; the
@@ -281,6 +333,11 @@ Control Editor
     # stacked Find + Replace rows, and pushes the code content down so it doesn't
     # paint over them. lives on the Editor so one state drives title + content.
     public  expanded      : bool
+    # find-in-files results display: when show_hits is set the editor renders
+    # `hits` (file-title headers + matched code lines) instead of file content.
+    # both are fed from app state each frame (the Editor is rebuilt per frame).
+    public  show_hits     : bool
+    public  hits          : array FindHit
     public  show_nav      : bool
     public  editor_mode   : string
     public  src           : path
