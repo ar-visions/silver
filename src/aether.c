@@ -1602,6 +1602,7 @@ enode e_convert_or_cast(aether a, etype output, enode input);
 enode aether_e_interpolate(aether a, string str) { sequencer
     enode accum = null;
     array sp    = split_parts(str);
+    verify(sp, "unterminated interpolation in string: %o", str);
     etype mdl   = etypeid(string);
 
     a->is_const_op = false;
@@ -3873,40 +3874,7 @@ bool is_map(etype t) {
 // compute sequential bit position for a member across the inheritance chain
 // walks base-first, publics then interns per level — matches etype_implement ordering
 static int fbits_index(Au_t type_au, Au_t member) {
-    int bit = 0;
-    Au_t chain[64];
-    int chain_len = 0;
-    Au_t cur = type_au;
-    while (cur && cur != typeid(Au) && chain_len < 64) {
-        chain[chain_len++] = cur;
-        if (cur->context == cur) break;
-        cur = cur->context;
-    }
-    for (int ci = chain_len - 1; ci >= 0; ci--) {
-        Au_t level = chain[ci];
-        // pass 0: publics (non-intern)
-        for (int i = 0; i < level->members.count; i++) {
-            Au_t m = (Au_t)level->members.origin[i];
-            if (m->member_type != AU_MEMBER_VAR || m->is_static) continue;
-            if (m->access_type == interface_intern) continue;
-            if (m == member) return bit;
-            bit++;
-        }
-        // pass 1: interns — count visible ones, then add icount for invisible imported ones
-        int visible_interns = 0;
-        for (int i = 0; i < level->members.count; i++) {
-            Au_t m = (Au_t)level->members.origin[i];
-            if (m->member_type != AU_MEMBER_VAR || m->is_static) continue;
-            if (m->access_type != interface_intern) continue;
-            if (m == member) return bit;
-            bit++;
-            visible_interns++;
-        }
-        // account for interns we can't see (imported classes)
-        int hidden = level->icount - visible_interns;
-        if (hidden > 0) bit += hidden;
-    }
-    return -1;
+    return member->index;
 }
 
 enode is_set(enode n, evar prop) {
@@ -3966,6 +3934,35 @@ void mark_set(enode n, u64 mask0, u64 mask1) {
         LLVMValueRef fbits = LLVMBuildLoad2(B, i64_type->lltype, gep, "fbits_load");
         LLVMValueRef ored  = LLVMBuildOr(B, fbits, LLVMConstInt(i64_type->lltype, mask1, 0), "fbits_set");
         LLVMBuildStore(B, ored, gep);
+    }
+}
+
+// set the af-bit field to EXACTLY mask0/mask1 in one store per word (overwrite,
+// not OR). called after init to reset the bits to only the programmer-passed
+// args — discarding the override/default bits that mark_set flipped during
+// construction purely to suppress base-class defaults. apply_args then reconciles
+// only what the renderer actually wrote, never inherited override defaults.
+void set_fbits_exact(enode n, u64 mask0, u64 mask1) {
+    aether a = n->mod;
+    etype i64_type = etypeid(i64);
+    etype t  = canonical((etype)n);
+    Au_t  au = t->autype;
+
+    bool has_fbits = au->is_class && !au->is_system && !au->is_c && !au->is_au_native &&
+        au->module != typeid(Au)->module;
+    if (!has_fbits) return;
+
+    LLVMValueRef fbits_struct = LLVMBuildStructGEP2(B, t->lltype, n->value, 1, "fbits");
+    LLVMTypeRef  fbits_ty     = LLVMStructGetTypeAtIndex(t->lltype, 1);
+    unsigned     nwords       = LLVMCountStructElementTypes(fbits_ty);
+
+    if (nwords >= 1) {
+        LLVMValueRef gep = LLVMBuildStructGEP2(B, fbits_ty, fbits_struct, 0, "fbits_word0");
+        LLVMBuildStore(B, LLVMConstInt(i64_type->lltype, mask0, 0), gep);
+    }
+    if (nwords >= 2) {
+        LLVMValueRef gep = LLVMBuildStructGEP2(B, fbits_ty, fbits_struct, 1, "fbits_word1");
+        LLVMBuildStore(B, LLVMConstInt(i64_type->lltype, mask1, 0), gep);
     }
 }
 
@@ -4042,6 +4039,12 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     efunc f_initialize = (efunc)u(efunc,
         find_member(etypeid(Au)->autype, "initialize", AU_MEMBER_FUNC, 0, false));
 
+    // mask of the props the PROGRAMMER passed at this call site (Type [ x: … ]).
+    // marked before init (so user-set props suppress their own defaults), then
+    // re-stored exactly after init so the af-bits reflect ONLY these — not the
+    // override/default bits flipped during construction.
+    u64 mask0 = 0, mask1 = 0;
+
     // 1. call constructor if provided.
     // `post construct` (flagged via is_default on the ctr au) defers to after
     // the init chain — so skip here and call at the tail.
@@ -4051,7 +4054,6 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
 
     // 2. set ALL props BEFORE init and mark fbits
     if (props) {
-        u64 mask0 = 0, mask1 = 0;
         a->init_props_retain_skip = true;
         pairs(props, i) {
             Au k = i->key;
@@ -4148,6 +4150,12 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     // post construct runs AFTER init chain
     if (is_post_ctr && ctr_input)
         e_fn_call(a, ctr, a(alloc, ctr_input), false, false);
+
+    // reset af-bits to EXACTLY the programmer-passed args, in one store per word.
+    // overrides/defaults flipped bits during init only to suppress base defaults;
+    // they must not appear as "set by the renderer" or apply_args will reconcile
+    // (overwrite) the live instance from the template every frame.
+    set_fbits_exact(alloc, mask0, mask1);
 
     res->autype     = alloc->autype;
     res->meta_a = hold(alloc->meta_a);
@@ -8047,7 +8055,8 @@ none aether_build_module_initializer(aether a, enode init) {
                 _u32(mem->rtype->abi_size),
                 e_null(a, null),
                 mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
-                e_meta_b
+                e_meta_b,
+                _i32(fbits_index(mem->context, mem) + 1) // AF-bit slot (1-based; 0=unset)
             ), false, false);
         }
     }
@@ -8228,7 +8237,8 @@ none aether_build_module_initializer(aether a, enode init) {
                     _u32(mem->abi_size),
                     e_attrib_val,
                     mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
-                    e_meta_b
+                    e_meta_b,
+                    _i32(fbits_index(mem->context, mem) + 1) // AF-bit slot (1-based; 0=unset)
                 ), false, false);
             } else if (mem->member_type == AU_MEMBER_ENUMV) {
                 static int seq = 0;

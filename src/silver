@@ -9,12 +9,12 @@
     M(X, Y, i, prop,     public,  map,    env_vars)
 declare_class(exports)
 
-// Clint M. Strandhagen -- the motivation for orbiter, which we design in silver
+// Clint M. Strandhagen -- motivation for orbiter, which we design in silver
 #define silver_schema(X, Y, ...) \
     M(X, Y, i, prop,     public,  bool,   watch) \
     M(X, Y, i, prop,     public,  string, listen) \
     M(X, Y, i, prop,     public,  bool,   clean) \
-    M(X, Y, i, prop,     intern,  silver, is_external) \
+    M(X, Y, i, prop,     public,  silver, is_external) \
     M(X, Y, i, prop,     public,  bool,   is_project) \
     M(X, Y, i, prop,     intern,  bool,   clipping) \
     M(X, Y, i, prop,     intern,  bool,   left_hand) \
