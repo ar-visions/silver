@@ -25,8 +25,9 @@ Layer EditorLayer
         cw : f32 [ (editor.cw_cache > 0.0) ? editor.cw_cache : 8.0 ]
         rel_y : f32 [ ev.mouse.pos.y ]
         rel_x : f32 [ ev.mouse.pos.x ]
-        ln : i32 [ clamp[ rel_y / lh, 0, editor.lines.count - 1 ] ]
-        cl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0, editor.line_get[ ln ].count ] ]
+        raw : i32 [ clamp[ rel_y / lh, 0, editor.line_count[] - 1 ] ]
+        ln  : i32 [ editor.snap_row[ raw ] ]
+        cl  : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0, editor.line_get[ ln ].count ] ]
         editor.sel_line = ln
         editor.sel_col  = cl
         editor.pristine = false
@@ -34,6 +35,13 @@ Layer EditorLayer
     func draw [ cv: Canvas ]
         editor : Editor[ parent ]
         if [ !editor || !editor.lines ] return
+        # find-in-files results, propagated to this instance via apply_args
+        showing : bool [ editor.show_hits ]
+        # results open with NO selection — nothing is selected until a row is clicked
+        if [ showing && !editor.was_showing ]
+            editor.sel_line = -1
+        editor.was_showing = showing
+        hits    : array FindHit [ editor.hits ]
         # code font size from orbiter's setting (canvas default is large). set it
         # before measuring so line_height / char width track the chosen size.
         code_fs : i32 [ (editor.code_font_size > 0) ? editor.code_font_size : 15 ]
@@ -43,7 +51,7 @@ Layer EditorLayer
         # find/replace bar open: the title doubles (+44px). a CSS state override of
         # a layer's area doesn't apply (only the base does), so shift the content
         # layer's bounds here by that extra title height. both draw (y0) and
-        # hit_test read bounds.y, so they stay in sync.
+        # place_cursor reads bounds.y, so they stay in sync.
         if [ editor.expanded ]
             extra : f32 [ 44.0 ]
             bounds.y += extra
@@ -51,7 +59,7 @@ Layer EditorLayer
         # gutter width = digit count of the last line number * char width + pad.
         # the code content is pushed right by this width.
         ndigits : i32 [ 1 ]
-        ncount  : i32 [ editor.lines.count ]
+        ncount  : i32 [ editor.line_count[] ]
         while [ ncount >= 10 ]
             ncount  = ncount / 10
             ndigits += 1
@@ -81,14 +89,8 @@ Layer EditorLayer
         parent.mask_inset = vec4f [ title_bottom, 0.0, 0.0, 0.0 ]
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
-        if [ editor.show_hits ]
-            ht : f32 [ 0.0 ]
-            for [ hi: i32 0, hi < editor.hits.count, hi += 1 ]
-                hh : FindHit editor.hits[hi]
-                ht += (hh.is_header) ? lh * 2.0 : lh
-            editor.content_h = ht
-        el
-            editor.content_h = f32[ editor.lines.count ] * lh
+        # every row (incl. the 2 file-title slots) is one line-height tall.
+        editor.content_h = f32[ editor.line_count[] ] * lh
         editor.scroll_speed = lh
 
         # clamp scroll to [0, content - viewport] every frame so it can't go
@@ -105,71 +107,75 @@ Layer EditorLayer
         cv.set_crop[ wtx + bounds.x, wty + bounds.y,
             wtx + bounds.x + bounds.w - rin, wty + bounds.y + bounds.h ]
 
-        # ---- find-in-files results: file-title headers (2 rows, larger, centered)
-        # with their matched code lines (source line number in the gutter) ----
-        if [ editor.show_hits ]
-            num_fs2 : i32 [ i32[ f32[ code_fs ] * 0.7 ] - 1 ]
-            big_fs  : i32 [ i32[ f32[ code_fs ] * 1.4 ] ]
-            hy : f32 [ y0 - editor.scroll.y ]
-            for [ hi: i32 0, hi < editor.hits.count, hi += 1 ]
-                h  : FindHit editor.hits[hi]
-                rh : f32 [ (h.is_header) ? lh * 2.0 : lh ]
-                if [ hy + rh < bounds.y ]
-                    hy += rh
-                    continue
-                if [ hy > bounds.y + bounds.h ] break
-                if [ h.is_header ]
-                    cv.font_size[ big_fs ]
-                    cv.fill_color[ rgba['#fff'] ]
-                    cv.draw_text[ h.text,
-                        rect [ x: bounds.x, y: hy, w: bounds.w - rin, h: rh ],
-                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                el
-                    cv.font_size[ num_fs2 ]
-                    cv.fill_color[ rgba['#ffffff80'] ]
-                    cv.draw_text[ '{h.line}',
-                        rect [ x: bounds.x, y: hy, w: gut_w - 6.0, h: lh ],
-                        vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-                    cv.font_size[ code_fs ]
-                    cv.fill_color[ rgba['#fff'] ]
-                    cv.draw_text[ h.text,
-                        rect [ x: x0, y: hy, w: bounds.w - gut_w - rin, h: lh ],
-                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-                hy += rh
-            cv.paint[ ]
-            cv.clear_crop[ ]
-            return
-
         # ---- gutter: per-line flat cells, line numbers, hover + breakpoint ----
         # breakpoint colors the entire line (full width) behind the code; the
         # flat cell + right-aligned number sit in the gutter column on the left.
         cv.stroke_width[ 0.0 ]
-        bp_src : '{editor.src}'
         # line-number labels render 30% smaller than the code font, then 1px smaller
         num_fs  : i32 [ i32[ f32[ code_fs ] * 0.7 ] - 1 ]
         cv.font_size[ num_fs ]
-        for [ li: i32 0, li < editor.lines.count, li += 1 ]
+        for [ li: i32 0, li < editor.line_count[], li += 1 ]
+            # file-title slots get no gutter (number / cell / breakpoint); the title
+            # itself is drawn in the content loop below.
+            if [ editor.row_header[ li ] ] continue
             yg : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
             if [ yg + lh < bounds.y ] continue
             if [ yg > bounds.y + bounds.h ] break
-            bp : editor.breakpoints['{bp_src}:{li + 1}']
-            if [ bp != null ]
-                cv.fill_color[ editor.bp_color[ bp ] ]
-                cv.rect_to[ bounds.x, yg, bounds.w - rin, lh ]
-                cv.paint[ ]
+            # each row keys its breakpoint + line number off its own source: in
+            # results mode that's the match's origin file + line, else this editor's.
+            rnum : i32  [ (showing && hits) ? hits[li].line : li + 1 ]
+            # breakpoints are a file-editing concept — never washed in results view
+            if [ !showing ]
+                bp : editor.breakpoints['{editor.src}:{li + 1}']
+                if [ bp != null ]
+                    cv.fill_color[ editor.bp_color[ bp ] ]
+                    cv.rect_to[ bounds.x, yg, bounds.w - rin, lh ]
+                    cv.paint[ ]
             cell : rgba [ (editor.hover_line == li) ? rgba['#ffffff18'] : rgba['#ffffff08'] ]
             cv.fill_color[ cell ]
             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
             cv.paint[ ]
-            cv.fill_color[ rgba['#ffffff80'] ]
-            cv.draw_text[ '{li + 1}',
-                rect [ x: bounds.x, y: yg, w: gut_w - 6.0, h: lh ],
-                vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            # only when the gutter itself is hovered does the close icon take it
+            # over, so the line number is suppressed just then (icon drawn below).
+            if [ !(showing && editor.hover_gutter && editor.hover_line == li) ]
+                cv.fill_color[ rgba['#ffffff80'] ]
+                cv.draw_text[ '{rnum}',
+                    rect [ x: bounds.x, y: yg, w: gut_w - 6.0, h: lh ],
+                    vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
 
         # restore the code font before drawing line content
         cv.font_size[ code_fs ]
-        for [ li: i32 0, li < editor.lines.count, li += 1 ]
+        for [ li: i32 0, li < editor.line_count[], li += 1 ]
             y : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
+            if [ editor.row_header[ li ] ]
+                # the title draws once, on the first of its 2 slots, spanning both
+                if [ li > 0 && editor.row_header[ li - 1 ] ] continue
+                rh : f32 [ lh * 2.0 ]
+                if [ y + rh < bounds.y ] continue
+                if [ y > bounds.y + bounds.h ] break
+                # distinct background: inset 4px, 12px rounded, blended at 0.5 alpha
+                cv.save[ ]
+                cv.rounded[ 12.0, 12.0, 12.0, 12.0 ]
+                cv.fill_color[ rgba['#2b3a5580'] ]
+                cv.rect_to[ bounds.x + 4.0, y + 4.0, bounds.w - rin - 8.0, rh - 8.0 ]
+                cv.paint[ ]
+                cv.restore[ ]
+                cv.fill_color[ rgba['#fff'] ]
+                cv.draw_text[ editor.line_get[ li ],
+                    rect [ x: bounds.x, y: y, w: bounds.w - rin, h: rh ],
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                # close icon on the left of the header (centered over its 2 slots) —
+                # clicking it removes the whole file group. shown when the header is
+                # hovered (either of its two slots).
+                if [ editor.hover_gutter && (editor.hover_line == li || editor.hover_line == li + 1) ]
+                    if [ !editor.close_icon ]
+                        editor.close_icon = SVGModel [ path 'images/close.svg' ]
+                    hisz : f32 [ round[ lh * 0.5 ] ]
+                    hiox : f32 [ round[ bounds.x + (gut_w - hisz) * 0.5 ] ]
+                    hioy : f32 [ round[ y + (rh - hisz) * 0.5 ] ]
+                    cv.draw_svg[ editor.close_icon, hiox, hioy, hisz, hisz ]
+                    cv.paint[ ]
+                continue
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
             ln    : editor.line_get[ li ]
@@ -179,8 +185,47 @@ Layer EditorLayer
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint[ ]
 
+        # outline the matched query substring on each visible result line (outline
+        # only). measured against the actual glyph advances so tabs/indent line up.
+        if [ showing && editor.find_query && editor.find_query.count > 0 ]
+            for [ li: i32 0, li < editor.line_count[], li += 1 ]
+                if [ editor.row_header[ li ] ] continue
+                y : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
+                if [ y + lh < bounds.y ] continue
+                if [ y > bounds.y + bounds.h ] break
+                ln : editor.line_get[ li ]
+                mi : ln.index_of[ editor.find_query ]
+                if [ mi >= 0 ]
+                    pre : f32 [ cv.measure_text[ ln.mid[ 0, mi ] ].w ]
+                    mw  : f32 [ cv.measure_text[ ln.mid[ mi, editor.find_query.count ] ].w ]
+                    cv.fill_color  [ rgba['#0000'] ]
+                    cv.stroke_color[ rgba['#ffcc66cc'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.rect_to     [ x0 + pre - 1.0, y + 2.0, mw + 2.0, lh - 4.0 ]
+                    cv.paint       [ ]
+            cv.stroke_width[ 0.0 ]
+
+        # results: the hovered match row shows the close icon in the gutter (left),
+        # centered over the suppressed line number. clicking the gutter removes the
+        # row (see on_press). drawn on top, after the content paint.
+        if [ showing && hits && editor.hover_gutter && editor.hover_line >= 0 && !editor.row_header[ editor.hover_line ] ]
+            hy : f32 [ y0 + f32[ editor.hover_line ] * lh - editor.scroll.y ]
+            if [ hy + lh >= bounds.y && hy <= bounds.y + bounds.h ]
+                if [ !editor.close_icon ]
+                    editor.close_icon = SVGModel [ path 'images/close.svg' ]
+                isz : f32 [ round[ lh * 0.5 ] ]
+                iox : f32 [ round[ bounds.x + (gut_w - isz) * 0.5 ] ]
+                ioy : f32 [ round[ hy + (lh - isz) * 0.5 ] ]
+                cv.draw_svg[ editor.close_icon, iox, ioy, isz, isz ]
+                cv.paint[ ]
+
         # crop stays set to the editor bounds: the selection rects, their
         # text, and the cursor below all clip to it. cleared at draw end.
+        # guard against a stale cursor/anchor past the end (e.g. after removing all
+        # results) so the caret + selection loops never index out of bounds.
+        if [ editor.sel_line >= editor.line_count[] ] editor.sel_line = -1
+        if [ editor.sel_line >= 0 && editor.anchor_line >= editor.line_count[] ]
+            editor.anchor_line = editor.line_count[] - 1
         if [ editor.sel_line >= 0 ]
             cv.save[ ]
             cv.stroke_width[ 0.0 ]
@@ -313,6 +358,7 @@ Layer EditorLayer
                         cx = (before) ? editor.filter_rect.x + editor.filter_rect.w : editor.filter_rect.x
                         cy = editor.filter_rect.y
                     el
+                        puts 'editor.sel_col = {editor.sel_col}'
                         prefix : editor.line_get[ editor.sel_line ].mid[ 0, editor.sel_col ]
                         cx     = x0 + cv.measure_text[ prefix ].w
                         cy     = y_sel
@@ -338,17 +384,30 @@ Control Editor
     # both are fed from app state each frame (the Editor is rebuilt per frame).
     public  show_hits     : bool
     public  hits          : array FindHit
+    # the active search query — used to outline the matched substring per result row
+    public  find_query    : string
     public  show_nav      : bool
     public  editor_mode   : string
     public  src           : path
     mutable lines         : list string
     mutable file_cache    : map FileBuf[string]
+    # close icon for the per-row 'remove this match' button (lazy-loaded in draw)
+    mutable close_icon    : SVGModel
+    # tracks show_hits across frames so entering results can clear the selection
+    mutable was_showing   : bool
+    # true while the mouse is over the gutter column — the close icon only shows
+    # (and the line number only hides) when actually hovering that left area.
+    mutable hover_gutter  : bool
+    # true while dragging the scrollbar thumb
+    mutable scroll_dragging : bool
+    # TEST: sel_col overrides the base element's sel_col default. With the e_init
+    # fix (af-bits reset to only the programmer-passed args after init), this
+    # override should NOT cause apply_args to reconcile/zero the caret column.
     mutable sel_line      : i32 [ -1 ]
     mutable sel_col       : i32 [ 0 ]
     mutable lh_cache      : f32 [ 0.0 ]
     mutable cw_cache      : f32 [ 0.0 ]
     mutable anchor_line   : i32 [ 0 ]
-    mutable anchor_col    : i32 [ 0 ]
     mutable dragging      : bool
     mutable cursor_idx    : i32 [ -1 ]
     mutable last_sel_line : -1
@@ -372,12 +431,128 @@ Control Editor
         if [ cond && cond.count > 0 ] return rgba['#3b82f638']   # conditional
         return rgba['#e5394538']                                 # plain
 
+    # row count of the active buffer: the find-in-files results (`hits`) when
+    # showing them, otherwise the loaded file's `lines`. every cursor/scroll/
+    # iteration bound goes through this so both modes share the editing code.
+    func line_count [] -> i32
+        if [ show_hits && hits ] return hits.count
+        return lines.count
+
+    # is row i a non-editable file-title slot (results mode only)?
+    func row_header [ i: i32 ] -> bool
+        if [ show_hits && hits && i >= 0 && i < hits.count ] return hits[i].is_header
+        return false
+
+    # nearest editable (non-title) row at/after ln, else before it. the cursor
+    # never rests on a file-title slot.
+    func snap_row [ ln: i32 ] -> i32
+        n : i32 [ line_count[] ]
+        if [ n <= 0 ] return 0
+        r : i32 [ clamp[ ln, 0, n - 1 ] ]
+        if [ !row_header[ r ] ] return r
+        for [ i: i32 r, i < n, i += 1 ]
+            if [ !row_header[ i ] ] return i
+        for [ i: i32 r, i >= 0, i -= 1 ]
+            if [ !row_header[ i ] ] return i
+        return r
+
+    # walk up / down past title slots for arrow navigation. prev_editable may
+    # return -1 (nothing above); next_editable may return line_count (nothing below).
+    func prev_editable [ ln: i32 ] -> i32
+        r : i32 [ ln ]
+        while [ r >= 0 && row_header[ r ] ] r -= 1
+        return r
+
+    func next_editable [ ln: i32 ] -> i32
+        r : i32 [ ln ]
+        n : i32 [ line_count[] ]
+        while [ r < n && row_header[ r ] ] r += 1
+        return r
+
+    # bounds of the contiguous match-row block (one file's group) containing ln.
+    # used to keep a results selection from dragging across a file header.
+    func group_start [ ln: i32 ] -> i32
+        r : i32 [ ln ]
+        while [ r > 0 && !row_header[ r - 1 ] ] r -= 1
+        return r
+
+    func group_end [ ln: i32 ] -> i32
+        r : i32 [ ln ]
+        n : i32 [ line_count[] ]
+        while [ r < n - 1 && !row_header[ r + 1 ] ] r += 1
+        return r
+
+    # drop a match row from the results (the `hits` array is the same object as
+    # orbiter's find_hits, so the removal sticks). if it was the file's ONLY match,
+    # also drop the 2 header slots so an empty file title doesn't linger.
+    func remove_hit [ idx: i32 ]
+        if [ !hits || idx < 0 || idx >= hits.count ] return
+        if [ row_header[ idx ] ] return
+        gs   : i32  [ group_start[ idx ] ]
+        only : bool [ gs == group_end[ idx ] ]
+        hits.remove[ idx ]
+        # header = the 2 slots immediately before the group's first match row
+        if [ only && gs >= 2 ]
+            hits.remove[ gs - 1 ]
+            hits.remove[ gs - 2 ]
+
+    # remove an entire file group — its 2 header slots and all its match rows.
+    # idx is any of the group's header slots (the close icon lives on the header).
+    func remove_group [ idx: i32 ]
+        if [ !hits || idx < 0 || idx >= hits.count || !row_header[ idx ] ] return
+        hs : i32 [ idx ]
+        while [ hs > 0 && row_header[ hs - 1 ] ] hs -= 1   # first header slot
+        n  : i32 [ line_count[] ]
+        he : i32 [ hs ]
+        while [ he < n && row_header[ he ] ] he += 1       # past the header slots
+        while [ he < n && !row_header[ he ] ] he += 1      # past the match rows
+        # remove back-to-front so lower indices don't shift under us
+        for [ i: i32 he - 1, i >= hs, i -= 1 ]
+            hits.remove[ i ]
+
     func line_get [ i: i32 ] -> string
+        if [ show_hits && hits ] return hits[i].text
         return lines.value_by_index[ i ]
 
     func line_set [ i: i32, val: string ]
+        # results mode: edits live on the hit row's text in memory; they reach the
+        # source file only on save (Ctrl-S writes the file of the selected line).
+        if [ show_hits && hits ]
+            hits[i].text = val
+            return
         lines.remove[ i ]
         lines.insert_after[ val, i - 1 ]
+
+    # write the file associated with the current row. in results mode that's the
+    # source file of the selected match line: re-read it, patch every edited match
+    # row that belongs to it, and write it back. in normal mode, write `src`.
+    func save_current []
+        if [ show_hits && hits ]
+            if [ sel_line < 0 || sel_line >= hits.count ] return
+            target : path [ hits[sel_line].file ]
+            if [ !target ] return
+            tkey    : '{target}'
+            content : string [ target.load[ typeid[string], null ] ]
+            if [ !content ] return
+            parts : array string [ content.split["\n"] ]
+            for [ i: i32 0, i < hits.count, i += 1 ]
+                h : FindHit hits[i]
+                if [ h.is_header ] continue
+                if [ '{h.file}' != tkey ] continue
+                idx : i32 [ h.line - 1 ]
+                if [ idx >= 0 && idx < parts.count ] parts[idx] = h.text
+            out : string [ '' ]
+            for [ i: i32 0, i < parts.count, i += 1 ]
+                if [ i > 0 ] out = out + '\n'
+                out = out + parts[i]
+            target.save[ out, null ]
+            return
+        if [ !src ] return
+        out : string [ '' ]
+        for [ i: i32 0, i < lines.count, i += 1 ]
+            if [ i > 0 ] out = out + '\n'
+            out = out + line_get[ i ]
+        src.save[ out, null ]
 
     func load_file []
         if [ !src ] return
@@ -410,15 +585,26 @@ Control Editor
         lines.push[ '' ]
         load_file[]
 
-    func hit_test [ ev: Event ] -> none
+    # compute the caret line/col from a click/drag point and set sel_line/sel_col.
+    func place_cursor [ ev: Event ] -> none
         ele   : (layers) ? (layers['content'] to EditorLayer) : null
         if [ !ele ] return
+        # nothing to place the cursor on (e.g. all results removed)
+        if [ line_count[] <= 0 ]
+            sel_line = -1
+            return
         lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
         # +scroll.y inverts the draw's (-scroll.y); -gutter_w skips the gutter
         rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + scroll.y ]
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x - gutter_w ]
-        ln    : i32 [ clamp [ rel_y / lh, 0, lines.count - 1 ] ]
+        raw   : i32 [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
+        ln    : i32 [ snap_row[ raw ] ]
+        # any selection EXTEND (drag, or shift-click) stays inside the anchor's
+        # group — you can't reach across a file header into another file's matches.
+        # (a plain click sets a fresh anchor and is unconstrained.)
+        if [ show_hits && (dragging || ev.key.shift) ]
+            ln = clamp[ ln, group_start[ anchor_line ], group_end[ anchor_line ] ]
         cl    : i32 [ clamp [ i32[ round[ rel_x / cw ] ], 0, line_get[ ln ].count ] ]
         sel_line = ln
         sel_col  = cl
@@ -426,58 +612,98 @@ Control Editor
     func on_press [ ev: Event ]
         ele   : (layers) ? (layers['content'] to EditorLayer) : null
         rel_x : f32 [ (ele) ? ev.mouse.pos.x - ele.bounds.x : 0.0 ]
+        # scrollbar: a press in the rightmost grab zone grabs the thumb and scrolls.
+        # checked before the pin column so the bar (the very right edge) wins there.
+        sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
+        grab : f32 [ (sb && sb.thumb_w > 0.0) ? sb.thumb_w * 2.0 + 8.0 : 16.0 ]
+        if [ ele && sb && sb.scroll_max > 0.0 && rel_x > ele.bounds.w - grab ]
+            sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y ] ]
+            if [ sy >= 0.0 ]
+                scroll.y        = sy
+                scroll_dragging = true
+                pristine        = false
+            return
         # a click in the pin column (right 144, present while searching) is a pin
         # click handled by the app — don't move the cursor or start a selection.
         if [ ele && elements['pins'] && rel_x > ele.bounds.w - 144.0 ]
             return
-        # a click in the gutter toggles a breakpoint on that line rather than
-        # moving the text cursor.
+        # gutter click: in results it's the per-row remove control (close icon shown
+        # on hover); in normal file editing it toggles a breakpoint on the line.
         if [ ele && rel_x < gutter_w ]
             lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
             rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + scroll.y ]
-            ln    : i32 [ clamp [ rel_y / lh, 0, lines.count - 1 ] ]
+            ln    : i32 [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
+            # a header's gutter click removes the whole file group; a match row's
+            # removes just that line. (both only in results.)
+            if [ row_header[ ln ] ]
+                if [ show_hits && hits ]
+                    remove_group[ ln ]
+                    pristine = false
+                return
+            if [ show_hits && hits ]
+                remove_hit[ ln ]
+                pristine = false
+                return
+            # normal mode: toggle a plain breakpoint on the line
             key   : '{src}:{ln + 1}'
             cur   : breakpoints[key]
-            # present -> remove (null); absent -> add a plain breakpoint ('')
             breakpoints[key] = (cur) ? null : string[]
             pristine = false
             return
         if [ !ev.key.shift ]
-            hit_test[ ev ]
+            place_cursor[ ev ]
             anchor_line = sel_line
             anchor_col  = sel_col
-            puts 'anchor set to {sel_line}:{sel_col}'
         el
-            hit_test[ ev ]
+            place_cursor[ ev ]
         dragging = true
         pristine = false
 
     func on_move [ ev: Event ]
-        if [ dragging ]
-            hit_test[ ev ]
+        ele : (layers) ? (layers['content'] to EditorLayer) : null
+        if [ scroll_dragging && ele ]
+            sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
+            if [ sb ]
+                sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y ] ]
+                if [ sy >= 0.0 ] scroll.y = sy
             pristine = false
             return
-        # hover line for the gutter highlight (no press)
-        ele : (layers) ? (layers['content'] to EditorLayer) : null
+        if [ dragging ]
+            place_cursor[ ev ]
+            pristine = false
+            return
+        # hover line for the gutter highlight (no press); also track whether the
+        # mouse is over the gutter column so the close icon only shows there.
         if [ !ele ] return
         lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + scroll.y ]
-        hl    : i32 [ clamp [ rel_y / lh, 0, lines.count - 1 ] ]
-        if [ hl != hover_line ]
-            hover_line = hl
-            pristine = false
+        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
+        hl    : i32  [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
+        hg    : bool [ rel_x >= 0.0 && rel_x < gutter_w ]
+        if [ hl != hover_line || hg != hover_gutter ]
+            hover_line   = hl
+            hover_gutter = hg
+        # repaint on every move so the scrollbar's proximity widen/round tracks the
+        # cursor (moving sideways toward the bar doesn't change hover_line).
+        pristine = false
 
     func on_leave [ ev: Event ]
-        if [ hover_line != -1 ]
-            hover_line = -1
+        if [ hover_line != -1 || hover_gutter ]
+            hover_line   = -1
+            hover_gutter = false
             pristine = false
 
     func on_release [ ev: Event ]
-        dragging = false
+        dragging        = false
+        scroll_dragging = false
 
     func on_char [ ev: Event ]
+        if [ line_count[] <= 0 ] return
         if [ sel_line < 0 ] sel_line = 0
+        if [ sel_col  < 0 ] sel_col  = 0
         row  : i32 [ sel_line ]
+        # file-title slots are not editable
+        if [ row_header[ row ] ] return
         col  : i32 [ sel_col ]
         line : line_get[ row ]
         ch   : string [ ev.key.text ]
@@ -496,12 +722,45 @@ Control Editor
 
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
+
+        # save: Ctrl/Cmd-S writes the file of the selected line. in results mode
+        # that's the source file the match came from (its edited lines patched in).
+        if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83 ]
+            save_current[]
+            pristine = false
+            return
+
+        if [ line_count[] <= 0 ] return
         if [ sel_line < 0 ] sel_line = 0
+        if [ sel_col  < 0 ] sel_col  = 0
         row  : i32 [ sel_line ]
         col  : i32 [ sel_col ]
         key  : i32 [ ev.key.unicode ]
 
+        # page up / down: move the cursor and scroll by half a viewport
+        # (visible lines / 2). scroll.y is re-clamped in draw.
+        if [ key == 266 || key == 267 ]
+            ele  : (layers) ? (layers['content'] to EditorLayer) : null
+            vh   : f32 [ (ele && ele.bounds) ? ele.bounds.h : 400.0 ]
+            lh   : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+            half2 : i32 [ i32[ (vh / lh) * 0.5 ] ]
+            if [ half2 < 1 ] half2 = 1
+            if [ key == 266 ]
+                sel_line = snap_row[ clamp[ sel_line - half2, 0, line_count[] - 1 ] ]
+                scroll.y = scroll.y - f32[ half2 ] * lh
+            el
+                sel_line = snap_row[ clamp[ sel_line + half2, 0, line_count[] - 1 ] ]
+                scroll.y = scroll.y + f32[ half2 ] * lh
+            sel_col  = clamp[ sel_col, 0, line_get[ sel_line ].count ]
+            pristine = false
+            return
+
+        # title slots can't be split / merged / typed into
+        edits_locked : bool [ row_header[ row ] ]
+
         if [ key == 257 ]
+            # results rows can't be split: a new row would have no source line
+            if [ show_hits || edits_locked ] return
             line  : line_get[ row    ]
             left  : line.mid[ 0, col ]
             right : line.mid[col, line.count - col]
@@ -511,11 +770,13 @@ Control Editor
             sel_col   = 0
 
         el [ key == 259 ]
+            if [ edits_locked ] return
             if [ col > 0 ]
                 line : line_get[ row ]
                 line_set[ row, line.mid[0, col - 1] + line.mid[col, line.count - col] ]
                 sel_col -= 1
-            el [ row > 0 ]
+            # joining rows would drop a source line, so it's results-mode-disabled
+            el [ row > 0 && !show_hits ]
                 prev : line_get[ row - 1 ]
                 sel_col  = prev.count
                 line_set[ row - 1, prev + line_get[ row ] ]
@@ -523,28 +784,34 @@ Control Editor
                 sel_line -= 1
 
         el [ key == 265 ]
-            if [ sel_line > 0 ]
-                sel_line -= 1
+            np : i32 [ prev_editable[ sel_line - 1 ] ]
+            if [ np >= 0 ]
+                sel_line = np
                 sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
 
         el [ key == 264 ]
-            if [ sel_line < lines.count - 1 ]
-                sel_line += 1
+            np : i32 [ next_editable[ sel_line + 1 ] ]
+            if [ np < line_count[] ]
+                sel_line = np
                 sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
 
         el [ key == 263 ]
             if [ col > 0 ]
                 sel_col -= 1
             el [ row > 0 ]
-                sel_line -= 1
-                sel_col = line_get[ sel_line ].count
+                np : i32 [ prev_editable[ row - 1 ] ]
+                if [ np >= 0 ]
+                    sel_line = np
+                    sel_col = line_get[ np ].count
 
         el [ key == 262 ]
             if [ col < line_get[ row ].count ]
                 sel_col += 1
-            el [ row < lines.count - 1 ]
-                sel_line += 1
-                sel_col = 0
+            el [ row < line_count[] - 1 ]
+                np : i32 [ next_editable[ row + 1 ] ]
+                if [ np < line_count[] ]
+                    sel_line = np
+                    sel_col = 0
 
         pristine = false
 

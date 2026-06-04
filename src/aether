@@ -310,8 +310,8 @@ declare_class_2(enamespace, etype)
     M(X, Y, i, prop,     public,  enode,           phi) \
     M(X, Y, i, prop,     public,  etype,           rtype) \
     M(X, Y, i, prop,     public,  bool,            last_return) \
-    M(X, Y, i, prop,     intern,  LLVMBasicBlockRef, block, as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMBasicBlockRef, continue_block, as, ARef)
+    M(X, Y, i, prop,     opaque,  LLVMBasicBlockRef, block) \
+    M(X, Y, i, prop,     opaque,  LLVMBasicBlockRef, continue_block)
 declare_class_2(catcher, etype)
 
 #define code_schema(X, Y, ...) \
@@ -340,7 +340,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  bool,            from_call) \
     M(X, Y, i, prop,     public,  string,          debug_id) \
     M(X, Y, i, prop,     intern,  LLVMMetadataRef, last_dbg, as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMValueRef,    value, as, ARef) \
+    M(X, Y, i, prop,     opaque,  LLVMValueRef,    value) \
     M(X, Y, i, prop,     public,  enode,           context_node, as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMBasicBlockRef, entry, as, ARef) \
     M(X, Y, i, method,   public,  Au,              literal_value, Au_t) \

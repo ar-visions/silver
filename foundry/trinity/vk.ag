@@ -84,6 +84,10 @@ class Render
     # draw only every N frames (0 or 1 = every frame). for slow-moving
     # backgrounds that don't need per-frame updates.
     public  draw_interval                  : i32
+    # set once this render has drawn at least once — the throttle must never skip
+    # the FIRST draw (else a throttled background never appears on load until the
+    # global draw_seq happens to align with the interval).
+    intern  has_drawn                      : bool
     intern  reduce_model                   : Model
     intern  vk_command_buffer              : VkCommandBuffer
     intern  vk_swap_image                  : VkImage
@@ -2371,10 +2375,11 @@ Texture Display
 
         for [ r: Render ] in list
             interval : i32 [ r.draw_interval ]
-            if [ interval > 1 && draw_seq % interval != 0 ]
+            if [ interval > 1 && r.has_drawn && draw_seq % interval != 0 ]
                 continue
             r.draw*[]
             r.sync_fence*[]
+            r.has_drawn = true
         
         on_screen*[]
 

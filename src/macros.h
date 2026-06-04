@@ -414,7 +414,7 @@
 #define   i_prop_opaque_ISIZE_EXTERN(X, R, N)          
 #define   i_prop_opaque_INST_U(X, R, N)           R N;
 #define   i_prop_opaque_INST_L(X, R, N)
-#define   i_prop_opaque_INST_U_EXTERN(X, R, N)    i_prop_public_INST_U(X, R, N)
+#define   i_prop_opaque_INST_U_EXTERN(X, R, N)    ARef N;
 #define   i_prop_opaque_INST_L_EXTERN(X, R, N)
 #define   i_prop_opaque_DEF(X, R, N)
 #define   i_prop_opaque_DECL(X, R, N)           
@@ -492,7 +492,7 @@
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
     m->member_type = AU_MEMBER_VAR; \
-    m->index       = offsetof(struct X##_fields, N); \
+    m->index       = offsetof(struct X##_fields, N) + 1; \
 }
 
 #define   i_prop_public_PROTO(X, R, N)  
@@ -519,7 +519,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = offsetof(struct X##_fields, N); \
+    m->index       = offsetof(struct X##_fields, N) + 1; \
 };
 #define   i_prop_required_PROTO(X, R, N)  
 #define   i_prop_required_METHOD(X, R, N)
@@ -547,7 +547,7 @@
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
     m->member_type = AU_MEMBER_VAR; \
-    m->index       = offsetof(struct X##_fields, N); \
+    m->index       = offsetof(struct X##_fields, N) + 1; \
 };
 
 #define   i_prop_def_PROTO(X, R, N)  
@@ -557,8 +557,8 @@
 
 #define   i_prop_intern_AF(X, R, N)             
 #define   i_prop_intern_AF_EXTERN(X, R, N)      
-#define   i_prop_intern_F(X, R, N)              u8 N;
-#define   i_prop_intern_F_EXTERN(X, R, N)       u8 ___intern_##N;
+#define   i_prop_intern_F(X, R, N)              
+#define   i_prop_intern_F_EXTERN(X, R, N)       
 #define   i_prop_intern_ISIZE(X, R, N)          
 #define   i_prop_intern_ISIZE_EXTERN(X, R, N)   +sizeof(R)
 #define   i_prop_intern_INST_U(X, R, N)           
@@ -577,8 +577,8 @@
 
 #define   i_prop_iobject_AF(X, R, N)             
 #define   i_prop_iobject_AF_EXTERN(X, R, N)      
-#define   i_prop_iobject_F(X, R, N)              u8 N;
-#define   i_prop_iobject_F_EXTERN(X, R, N)       u8 ___intern_##N;
+#define   i_prop_iobject_F(X, R, N)              
+#define   i_prop_iobject_F_EXTERN(X, R, N)       
 #define   i_prop_iobject_ISIZE(X, R, N)          
 #define   i_prop_iobject_ISIZE_EXTERN(X, R, N)   +sizeof(R)
 #define   i_prop_iobject_INST_U(X, R, N)           
@@ -594,7 +594,6 @@
     m->access_type = interface_intern; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = offsetof(struct X##_fields, N);    \
 }
 #define   i_prop_iobject_PROTO(X, R, N)  
 #define   i_prop_iobject_METHOD(X, R, N)
@@ -603,8 +602,8 @@
 
 #define   i_prop_intern_AF_pad(X, R, N, M2)             
 #define   i_prop_intern_AF_EXTERN_pad(X, R, N, M2) 
-#define   i_prop_intern_F_pad(X, R, N, M2)                u8 N;
-#define   i_prop_intern_F_EXTERN_pad(X, R, N, M2)         u8 ___intern_##N;
+#define   i_prop_intern_F_pad(X, R, N, M2)                
+#define   i_prop_intern_F_EXTERN_pad(X, R, N, M2)         
 #define   i_prop_intern_ISIZE_pad(X, R, N, M2)            
 #define   i_prop_intern_ISIZE_EXTERN_pad(X, R, N, M2)     + M2
 #define   i_prop_intern_INST_U_pad(X, R, N, M2)           
@@ -638,7 +637,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->id          = offsetof(struct X##_fields, N);    \
+    m->id          = offsetof(struct X##_fields, N) + 1;    \
 }
 
 #define   i_prop_public_PROTO_field(X, R, N, M2)  
@@ -663,7 +662,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = offsetof(struct X##_fields, N); \
+    m->index       = offsetof(struct X##_fields, N) + 1; \
 }
 
 #define   i_prop_required_PROTO_field(X, R, N, M2)  
@@ -672,8 +671,8 @@
 
 #define   i_prop_intern_AF_field(X, R, N)             
 #define   i_prop_intern_AF_EXTERN_field(X, R, N)      
-#define   i_prop_intern_F_field(X, R, N, M2)                u8 N;
-#define   i_prop_intern_F_EXTERN_field(X, R, N, M2)         u8 ___intern_##N;
+#define   i_prop_intern_F_field(X, R, N, M2)               
+#define   i_prop_intern_F_EXTERN_field(X, R, N, M2)         
 #define   i_prop_intern_ISIZE_field(X, R, N, M2)            +sizeof(R)
 #define   i_prop_intern_INST_U_field(X, R, N, M2)
 #define   i_prop_intern_INST_L_field(X, R, N, M2)             R N;
@@ -706,7 +705,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = offsetof(struct X##_fields, N); \
+    m->index       = offsetof(struct X##_fields, N) + 1; \
     set_meta_array(m, 1, typeid(M2)); \
 }
 
@@ -732,7 +731,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = offsetof(struct X##_fields, N); \
+    m->index       = offsetof(struct X##_fields, N) + 1; \
     set_meta_array(m, 1, typeid(M2)); \
 }
 
@@ -777,7 +776,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(X); \
-    m->index       = offsetof(struct X##_fields, N); \
+    m->index       = offsetof(struct X##_fields, N) + 1; \
     set_meta_array(m, 1, typeid(X)); \
 }
 #define   i_prop_public_PROTO_as(X, R, N, M2)  
@@ -808,8 +807,8 @@
 
 #define   i_prop_intern_AF_as(X, R, N, M2)
 #define   i_prop_intern_AF_EXTERN_as(X, R, N, M2)
-#define   i_prop_intern_F_as(X, R, N, M2)               u8 N;
-#define   i_prop_intern_F_EXTERN_as(X, R, N, M2)        u8 ___intern_##N;
+#define   i_prop_intern_F_as(X, R, N, M2)               
+#define   i_prop_intern_F_EXTERN_as(X, R, N, M2)        
 #define   i_prop_intern_ISIZE_as(X, R, N, M2)          
 #define   i_prop_intern_ISIZE_EXTERN_as(X, R, N, M2)   +sizeof(M2)
 #define   i_prop_intern_INST_U_as(X, R, N, M2)           
@@ -954,8 +953,8 @@
 
 #define   i_origin_public_AF(X, R, N)              
 #define   i_origin_public_AF_EXTERN(X, R, N)       
-#define   i_origin_public_F(X, R, N) u8 N;
-#define   i_origin_public_F_EXTERN(X, R, N) u8 N;
+#define   i_origin_public_F(X, R, N)            u8 N;
+#define   i_origin_public_F_EXTERN(X, R, N)     u8 N;
 #define   i_origin_public_ISIZE(X, R, N)        
 #define   i_origin_public_ISIZE_EXTERN(X, R, N) 
 #define   i_origin_public_INST_U(X, R, N)         union { Au* N; i8* N##_i8; i16* N##_i16; i32* N##_i32; i64* N##_i64; f64* N##_f64; f32* N##_f32; };
@@ -982,8 +981,8 @@
 
 #define   i_ref_public_AF(X, R, N)              unsigned long N:1;
 #define   i_ref_public_AF_EXTERN(X, R, N)       unsigned long N:1;
-#define   i_ref_public_F(X, R, N) u8 N;
-#define   i_ref_public_F_EXTERN(X, R, N) u8 N;
+#define   i_ref_public_F(X, R, N)               u8 N;
+#define   i_ref_public_F_EXTERN(X, R, N)        u8 N;
 #define   i_ref_public_ISIZE(X, R, N)        
 #define   i_ref_public_ISIZE_EXTERN(X, R, N) 
 #define   i_ref_public_INST_U(X, R, N)         R* N;
@@ -1005,15 +1004,15 @@
 #define   i_ref_public_METHOD(X, R, N)
 #define   i_ref_public_NMODULE(X, R, N)
 
-#define   i_ref_required_AF(X, R, N)              unsigned long N:1;
-#define   i_ref_required_AF_EXTERN(X, R, N)       unsigned long N:1;
-#define   i_ref_required_F(X, R, N) u8 N;
-#define   i_ref_required_F_EXTERN(X, R, N) u8 N;
+#define   i_ref_required_AF(X, R, N)                unsigned long N:1;
+#define   i_ref_required_AF_EXTERN(X, R, N)         unsigned long N:1;
+#define   i_ref_required_F(X, R, N)                 u8 N;
+#define   i_ref_required_F_EXTERN(X, R, N)          u8 N;
 #define   i_ref_required_ISIZE(X, R, N)          
 #define   i_ref_required_ISIZE_EXTERN(X, R, N)          
-#define   i_ref_required_INST_U(X, R, N)         i_ref_public_INST_U(X, R, N)
+#define   i_ref_required_INST_U(X, R, N)            i_ref_public_INST_U(X, R, N)
 #define   i_ref_required_INST_L(X, R, N)
-#define   i_ref_required_INST_U_EXTERN(X, R, N)  i_ref_public_INST_U(X, R, N)
+#define   i_ref_required_INST_U_EXTERN(X, R, N)     i_ref_public_INST_U(X, R, N)
 #define   i_ref_required_INST_L_EXTERN(X, R, N)
 #define   i_ref_required_DEF(X, R, N)
 #define   i_ref_required_DECL(X, R, N)         
@@ -1024,16 +1023,16 @@
     m->access_type = interface_public; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&ARef_i.type; \
-    m->index       = offsetof(struct X##_fields, N); \
+    m->index       = offsetof(struct X##_fields, N) + 1; \
 }
 
 #define   i_ref_required_PROTO(X, R, N)  
 #define   i_ref_required_METHOD(X, R, N)
 #define   i_ref_required_NMODULE(X, R, N)
 
-#define   i_ref_intern_AF(X, R, N)              unsigned long N:1;
-#define   i_ref_intern_AF_EXTERN(X, R, N)       unsigned long N:1;
-#define   i_ref_intern_F(X, R, N) u8 N;
+#define   i_ref_intern_AF(X, R, N)
+#define   i_ref_intern_AF_EXTERN(X, R, N)
+#define   i_ref_intern_F(X, R, N)
 #define   i_ref_intern_F_EXTERN(X, R, N)
 #define   i_ref_intern_ISIZE(X, R, N)          
 #define   i_ref_intern_ISIZE_EXTERN(X, R, N)   +sizeof(R*)
@@ -1099,10 +1098,10 @@
 #define   i_array_interface_METHOD(X, R, S, N)
 #define   i_array_interface_NMODULE(X, R, S, N)
 
-#define   i_array_public_AF(X, R, S, N)        unsigned long N:1;
-#define   i_array_public_AF_EXTERN(X, R, S, N) unsigned long N:1;
-#define   i_array_public_F(X, R, S, N) u8 N;
-#define   i_array_public_F_EXTERN(X, R, S, N) u8 N;
+#define   i_array_public_AF(X, R, S, N)         unsigned long N:1;
+#define   i_array_public_AF_EXTERN(X, R, S, N)  unsigned long N:1;
+#define   i_array_public_F(X, R, S, N)          u8 N;
+#define   i_array_public_F_EXTERN(X, R, S, N)   u8 N;
 #define   i_array_public_ISIZE(X, R, S, N)
 #define   i_array_public_ISIZE_EXTERN(X, R, S, N)
 #define   i_array_public_INST_U(X, R, S, N)         R N[S];  
@@ -1118,7 +1117,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = offsetof(struct X##_fields, N); \
+    m->index       = offsetof(struct X##_fields, N) + 1; \
     m->elements    = S; \
 }
 #define   i_array_public_PROTO(X, R, S, N)  
@@ -1151,9 +1150,9 @@
 #define   i_array_Au_public_METHOD(X, R, S, N)
 #define   i_array_Au_public_NMODULE(X, R, S, N)
 
-#define   i_array_intern_AF(X, R, S, N)                 unsigned long N:1;
-#define   i_array_intern_AF_EXTERN(X, R, S, N)          unsigned long N:1;
-#define   i_array_intern_F(X, R, S, N) u8 N;
+#define   i_array_intern_AF(X, R, S, N)
+#define   i_array_intern_AF_EXTERN(X, R, S, N)
+#define   i_array_intern_F(X, R, S, N)
 #define   i_array_intern_F_EXTERN(X, R, S, N)
 #define   i_array_intern_ISIZE(X, R, S, N)              
 #define   i_array_intern_ISIZE_EXTERN(X, R, S, N)        +sizeof(R[S])
@@ -1483,8 +1482,8 @@
 
 #define   i_inlay_required_AF(X, R, N)              unsigned long N:1;
 #define   i_inlay_required_AF_EXTERN(X, R, N)       unsigned long N:1;
-#define   i_inlay_required_F(X, R, N) u8 N;
-#define   i_inlay_required_F_EXTERN(X, R, N) u8 N;
+#define   i_inlay_required_F(X, R, N)               u8 N;
+#define   i_inlay_required_F_EXTERN(X, R, N)        u8 N;
 #define   i_inlay_required_ISIZE(X, R, N)           
 #define   i_inlay_required_ISIZE_EXTERN(X, R, N)    
 #define   i_inlay_required_INST_U(X, R, N)         i_inlay_public_INST_U(X, R, N)
@@ -1500,16 +1499,16 @@
     m->access_type = interface_public; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = typeid(R); \
-    m->index    = offsetof(struct X##_fields, N); \
+    m->index    = offsetof(struct X##_fields, N) + 1; \
 }
 
 #define   i_inlay_required_PROTO(X, R, N)  
 #define   i_inlay_required_METHOD(X, R, N)
 #define   i_inlay_required_NMODULE(X, R, N)
 
-#define   i_inlay_intern_AF(X, R, N)              unsigned long N:1;
-#define   i_inlay_intern_AF_EXTERN(X, R, N)       unsigned long N:1;
-#define   i_inlay_intern_F(X, R, N)               u8 N;
+#define   i_inlay_intern_AF(X, R, N)
+#define   i_inlay_intern_AF_EXTERN(X, R, N)
+#define   i_inlay_intern_F(X, R, N)               
 #define   i_inlay_intern_F_EXTERN(X, R, N)        
 #define   i_inlay_intern_ISIZE(X, R, N)           
 #define   i_inlay_intern_ISIZE_EXTERN(X, R, N, ...) +sizeof(struct _##R)

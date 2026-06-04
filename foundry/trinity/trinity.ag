@@ -94,6 +94,11 @@ class Background
     public color:  rgba
     public render: Render
     public models: array Model
+
+    func init[]
+        test2: i32 22
+        test2 += 22
+        
     func update[]
         return
 
@@ -277,36 +282,47 @@ Display Window
     public func apply_args [ inst: element, e: element ] -> bool
         if [ typeid[ inst ] != typeid[ e ] ] return false
         changed : false
-        if [ inst.transparency != e.transparency ]
-            inst.transparency = e.transparency
-        if [ inst.disable != e.disable ]
-            inst.disable = e.disable
-            changed = true
-        if [ inst.label != e.label ]
-            inst.label = e.label
-            # the displayed source changed (e.g. a new file opened in this
-            # editor) — drop any in-progress edit AND release focus so the
-            # element leaves its label-edit state entirely (no stale query, not
-            # stuck dimmed/focused). this is how the element "knows" it was
-            # updated, independent of which path opened the file. release_focus
-            # is a no-op unless this element is the focused one.
+        # label is compared BY VALUE (a real change = a new file opened in an editor
+        # title) and carries a side effect: drop any in-progress edit + release focus.
+        # the generic object compare below is byte/identity and would see a constant
+        # label like 'Find' as "changed" every frame, releasing focus and breaking
+        # the find/replace inputs — so handle label here, value-wise, and skip it below.
+        # treat null and '' as the same: an element that sets no label (e.g. the
+        # code Editor) has empty on both sides every frame and must NOT be seen as
+        # "changed" — otherwise the input-reset below zeroes its cursor each frame.
+        il        : string [ inst.label ]
+        el_       : string [ e.label ]
+        il_empty  : bool   [ !il  || il.count  == 0 ]
+        el_empty  : bool   [ !el_ || el_.count == 0 ]
+        # a real change = emptiness flipped, or both non-empty with different text
+        label_changed : bool [ (il_empty != el_empty) || (!il_empty && !el_empty && il != el_) ]
+        if [ label_changed ]
+            inst.label      = e.label
+            # the label IS the bound value for a text input, so a new value drops the
+            # in-progress edit buffer + releases focus. do NOT reset sel_col/anchor_col
+            # here: that is the code Editor's caret, which it owns across frames and
+            # which apply_args must never clobber (was zeroing the caret every frame).
             inst.edit       = ''
-            inst.sel_col    = 0
-            inst.anchor_col = 0
             release_focus[ inst ]
             changed = true
-        inst_opt : (inst to Option)
-        e_opt    : (e    to Option)
-        if [ inst_opt && e_opt ]
-            if [ inst_opt.selected != e_opt.selected ]
-                inst_opt.selected = e_opt.selected
-                changed = true
-            if [ inst_opt.left_view != e_opt.left_view ]
-                inst_opt.left_view = e_opt.left_view
-                changed = true
-            if [ inst_opt.right_view != e_opt.right_view ]
-                inst_opt.right_view = e_opt.right_view
-                changed = true
+        # copy every other explicitly-set arg (af bit) from the rendered template `e`
+        # to the persistent instance, walking the whole type chain (poly) so ANY
+        # component arg propagates without a hardcoded list. skip `elements` (children
+        # are reconciled by update_element), `label` (handled above), and `edit` (the
+        # live editable buffer, managed by the framework + on_char).
+        for [ ty : typeid[ inst ], ty != typeid[ Au ], ty = ty.context ]
+            for [ mi: i32 0, mi < ty.members.count, mi += 1 ]
+                member : Au_t ty.members.origin[mi]
+                if [ member.member_type != AU_MEMBER_VAR ] continue
+                if [ strcmp[ member.ident, "elements" ] == 0 ] continue
+                if [ strcmp[ member.ident, "label" ] == 0 ] continue
+                if [ strcmp[ member.ident, "edit" ] == 0 ] continue
+                if [ !e.AF_get_member[ member ] ] continue
+                cur : inst.member_object[ member ]
+                nv  : e.member_object[ member ]
+                if [ !nv || cur.compare[ nv ] != 0 ]
+                    inst.member_set[ member, nv ]
+                    changed = true
         return changed
 
     
@@ -1119,7 +1135,7 @@ Display Window
                 args : map Au[string] [ "window": a ]
                 background = Au.construct_with[ background_type, args, null ]
                 if [ !background.color ]
-                    background.color = rgba[ r:0.022, g:0.088, b:0.188, a:1.0 ]
+                    background.color = rgba[ r:0.022, g:0.088, b:0.122, a:1.0 ]
                 background.render = Render [ vk: a.vk, w: a, wscale: 1.0,
                     #clear_color: vec4f [ 0.022, 0.088, 0.188, 1.0 ],
                     clear_color: vec4f [
@@ -1905,6 +1921,13 @@ Layer ScrollLayer
     public thumb_w      : f32
     public thumb_min_h  : f32
     public thumb_radius : f32
+    # geometry cached each draw so the owning element's press/drag can hit-test and
+    # map a mouse-y to a scroll offset (drag_to). all in element-local screen space.
+    mutable thumb_y_px  : f32
+    mutable thumb_h_px  : f32
+    mutable track_vis   : f32
+    mutable scroll_max  : f32
+    mutable grab_w      : f32
 
     func draw [ cv: Canvas ]
         e : element [ parent ]
@@ -1922,11 +1945,41 @@ Layer ScrollLayer
         travel  : f32 [ vis_h - thumb_h ]
         max_sc  : f32 [ total_h - vis_h ]
         thumb_y : f32 [ top + (max_sc > 0.0) ? (e.scroll.y / max_sc) * travel : 0.0 ]
-        thumb_x : f32 [ bounds.x + bounds.w - thumb_w ]
-        r       : f32 [ thumb_radius ]
+        base_w  : f32 [ thumb_w ]
+        # proximity: widen + un-round as the mouse nears the bar (within base_w*2 of
+        # the right edge). cursor is element-normalized and only valid while hovered,
+        # so the bar rests thin + rounded when the mouse is away.
+        # widen over a generous approach distance so the bar visibly responds as the
+        # mouse nears it (not just in the last few px). grab precision is handled
+        # separately by the element's hit zone.
+        near : f32 [ base_w * 10.0 ]
+        prox : f32 [ 0.0 ]
+        if [ e.hovered ]
+            from_right : f32 [ (1.0 - e.cursor.x) * e.bounds.w ]
+            prox = clamp[ 1.0 - from_right / near, 0.0, 1.0 ]
+        eff_w : f32 [ base_w * (1.0 + prox) ]
+        r     : f32 [ thumb_radius * (1.0 - prox) ]
+        thumb_x : f32 [ bounds.x + bounds.w - eff_w ]
+        # cache geometry for the element's drag handling. track_vis is the track
+        # height starting at the content top, which is also where mouse-y is measured
+        # from (ev.mouse.pos.y - content_layer.bounds.y), so drag_to needs no offset.
+        thumb_y_px = thumb_y
+        thumb_h_px = thumb_h
+        track_vis  = vis_h
+        scroll_max = max_sc
+        grab_w     = base_w * 2.0 + 6.0
         cv.fill_color[ thumb_color ]
-        cv.rounded_rect[ thumb_x, thumb_y, thumb_w, thumb_h, r, r, r, r ]
+        cv.rounded_rect[ thumb_x, thumb_y, eff_w, thumb_h, r, r, r, r ]
         cv.paint[]
+
+    # map a mouse-y (element-local screen space) to a scroll offset, centering the
+    # thumb under the cursor. returns -1 when there's nothing to scroll. the owning
+    # element applies the result to its own scroll while the bar is grabbed.
+    public func drag_to [ my: f32 ] -> f32
+        travel : f32 [ track_vis - thumb_h_px ]
+        if [ travel <= 0.0 ] return -1.0
+        rel : f32 [ my - thumb_h_px * 0.5 ]
+        return clamp[ (rel / travel) * scroll_max, 0.0, scroll_max ]
 
 
 element View

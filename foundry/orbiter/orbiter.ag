@@ -218,7 +218,12 @@ trinity orbiter # implements compiler
         # capture is deferred to the first on_render so load-time prints don't get
         # routed into a console that isn't initialized/updating yet.
         printf[ "orbiter: stdout capture active (rfd=%i orig=%i)\n", stdout_rfd, stdout_orig ]
-        check_stale[]
+        # staleness + recompile-before-load is owned by silver-host now (it checks
+        # every watched source against the product and rebuilds only what changed).
+        # the old in-app check_stale[] recompiled silver/hyperspace on every startup
+        # and broke on the 'silver' target (a C compiler, not a silver module — it
+        # resolved to /silver.ag). left here disabled rather than removed.
+        # check_stale[]
         ensure_user_config[]
         #au_set_compiler[a]
 
@@ -465,15 +470,27 @@ trinity orbiter # implements compiler
         if [ !q || q.count == 0 ]
             find_showing = false
             return
-        if [ find_in_file ]
-            p : path (left_idx >= 0 && left_idx < open_files.count) ? open_files[left_idx] : null
+        p : path (left_idx >= 0 && left_idx < open_files.count) ? open_files[left_idx] : null
+        scan_current : bool [ find_in_file && p ]
+        if [ scan_current ]
             scan_file_hits[ p, q ]
         el
-            for [ s: string ] in file_index
-                if [ !pattern_text || pattern_text.count == 0 || s.index_of[ pattern_text ] >= 0 ]
-                    scan_file_hits[ path s, q ]
+            # Files mode (or In-File with no open file): walk the foundry tree for
+            # now and scan each file's content (independent of the index).
+            root : path '/src/silver/foundry'
+            walk_find[ root, q ]
         find_showing = true
-        puts 'find-in-files: q={q} in_file={find_in_file} hits={find_hits.count}'
+
+    # recursively walk `dir`, scanning every file's content for `q`.
+    func walk_find [ dir: path, q: string ]
+        entries : array [ dir.ls[ null, false ] ]
+        if [ !entries ] return
+        for [ i: i32 0, i < entries.count, i += 1 ]
+            e : path entries[i]
+            if [ e.is_dir[] ]
+                walk_find[ e, q ]
+            el
+                scan_file_hits[ e, q ]
 
     # scan one file for substring `q`, appending a header (once) + a row per
     # matched line (with its 1-based source line number) to find_hits.
@@ -487,7 +504,12 @@ trinity orbiter # implements compiler
             ln : string parts[i]
             if [ ln.index_of[ q ] >= 0 ]
                 if [ !header_added ]
+                    # a file title occupies 2 uniform row-slots (so every row stays
+                    # one line-height tall and the editor's cursor math is untouched).
+                    # the first slot carries the filename + draws the title spanning
+                    # both; the second is an empty continuation slot.
                     find_hits.push[ FindHit [ is_header: true, text: '{p}', file: p ] ]
+                    find_hits.push[ FindHit [ is_header: true, text: '', file: p ] ]
                     header_added = true
                 find_hits.push[ FindHit [ is_header: false, text: ln, file: p, line: i + 1 ] ]
 
@@ -951,7 +973,7 @@ trinity orbiter # implements compiler
         ]
         if [ searching ]
             pane_els['pins'] = element [ elements: dock_tabs[ docked_left, 'pin', left_path, w ] ]
-        editor_els['pane'] = Editor [ src: left_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, show_hits: find_showing, hits: find_hits, elements: pane_els ]
+        editor_els['pane'] = Editor [ src: left_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, show_hits: find_showing, hits: find_hits, find_query: findbar_text, elements: pane_els ]
 
         if [ right_idx >= 0 && right_idx < open_files.count ]
             pr_els : Elements []
@@ -963,7 +985,7 @@ trinity orbiter # implements compiler
             ]
             if [ searching ]
                 pr_els['pins'] = element [ elements: dock_tabs[ docked_right, 'pin', right_path, w ] ]
-            editor_els['pane-right'] = Editor [ src: right_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, show_hits: find_showing, hits: find_hits, elements: pr_els ]
+            editor_els['pane-right'] = Editor [ src: right_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, show_hits: find_showing, hits: find_hits, find_query: findbar_text, elements: pr_els ]
 
         egroup_els : Elements []
         egroup_els['editors'] = EditorView [ selected: left_idx >= 0 && right_idx >= 0, elements: editor_els ]
