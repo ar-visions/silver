@@ -2385,16 +2385,23 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                     index += 2; // skip any escape sequence: \\, \', \", \n, etc.
                     continue;
                 }
-                if (quote_char != '\'' && c == '{') {
+                if (c == '{') {
                     if (index + 1 < length && idx(input_string, index + 1) == '{') {
-                        index += 2;
+                        index += 2; // {{ escape -> literal brace
+                        continue;
+                    }
+                    // a '{' sitting right before the closing quote (e.g. the char
+                    // literal '{') can't be an interpolation — leave it literal so
+                    // single-char brace literals still tokenize.
+                    if (index + 1 < length && idx(input_string, index + 1) == quote_char) {
+                        index += 1;
                         continue;
                     }
                     brace_depth++;
                     index += 1;
                     continue;
                 }
-                if (quote_char != '\'' && c == '}') {
+                if (c == '}') {
                     if (index + 1 < length && idx(input_string, index + 1) == '}') {
                         index += 2;
                         continue;
@@ -4126,6 +4133,13 @@ enode parse_statement(silver a)
                     bool exact_type = mem->autype->src == inherited->src &&
                         mem->autype->meta.a == inherited->meta.a;
                     if (exact_type) {
+                        // overriding an intern is invalid: interns have no af-bit
+                        // slot, so the override's default can't be marked to suppress
+                        // the base default. error rather than silently shadow.
+                        validate(inherited->access_type != interface_intern,
+                            "cannot override intern member '%s' of '%s' — interns have no af-bit slot; make it public or rename",
+                            (cstr)mem->autype->ident,
+                            inherited->context && inherited->context->ident ? inherited->context->ident : "?");
                         mem->autype->is_override = true;
                     }
                 }

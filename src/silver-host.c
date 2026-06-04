@@ -109,6 +109,30 @@ static int load_sources(const char* artifacts_path,
     return 0;
 }
 
+// true if the built product is missing or any watched source/artifact is newer
+// than it — i.e. the loaded module would be stale.
+static int sources_newer(const char* product, source_watch* srcs, int nsr) {
+    time_t prod = file_mtime(product);       // follows the symlink to the .so
+    if (!prod) return 1;                      // no product -> must build
+    for (int i = 0; i < nsr; i++) {
+        if (file_mtime(srcs[i].path) > prod) return 1;
+    }
+    return 0;
+}
+
+// recompile synchronously (no '&') so the fresh product is in place before load.
+// run from SILVER_ROOT so silver resolves the module via foundry/<name>/ rather
+// than relative to wherever the host was launched / cd_share'd to.
+static void rebuild_blocking(const char* name) {
+    char cmd[8192];
+    snprintf(cmd, sizeof(cmd),
+        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/platform/native/debug/silver\" %s",
+        name);
+    fprintf(stdout, "%s: product is stale — rebuilding before load\n", name);
+    fflush(stdout);
+    system(cmd);
+}
+
 int main(int argc, char** argv) {
     printf("silver-host main\n");
 
@@ -139,6 +163,19 @@ int main(int argc, char** argv) {
     char artifacts[4096];
     snprintf(artifacts, sizeof(artifacts), "%s/%s.source", bindir, name);
 
+    cd_share(bindir, name);
+
+    // up-front staleness check: only recompile when a source is actually newer
+    // than the built product. when nothing changed we skip the compile entirely
+    // and dlopen the existing .so — no rebuild on every launch.
+    source_watch srcs[MAX_SOURCES];
+    int nsr = 0;
+    load_sources(artifacts, srcs, &nsr);
+    if (sources_newer(product, srcs, nsr)) {
+        rebuild_blocking(name);
+        load_sources(artifacts, srcs, &nsr);   // artifact list may have changed
+    }
+
     char lib[4096];
     ssize_t n = readlink(product, lib, sizeof(lib) - 1);
     if (n < 0) {
@@ -146,8 +183,6 @@ int main(int argc, char** argv) {
         return 1;
     }
     lib[n] = '\0';
-
-    cd_share(bindir, name);
 
     void* handle = try_dlopen(lib);
     if (!handle) { fprintf(stderr, "%s: dlopen %s: %s\n", name, lib, dlerror()); return 1; }
@@ -159,10 +194,6 @@ int main(int argc, char** argv) {
     if (do_init) do_init();
 
     time_t last_mtime = file_mtime(product);
-
-    source_watch srcs[MAX_SOURCES];
-    int nsr = 0;
-    load_sources(artifacts, srcs, &nsr);
 
     while (do_frame && do_frame()) {
         // watch source files — trigger recompile when any .ag or .c changes

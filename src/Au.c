@@ -786,20 +786,21 @@ none array_setter(array a, Au key, Au value, i32 op) {
 }
 
 none array_remove(array a, num b) {
-    for (num i = b; i < a->count; i++) {
-        Au prev = a->origin[b];
-        a->origin[b] = a->origin[b + 1];
-        if (!a->unmanaged)
-            Au_drop(prev);
-    }
+    if (b < 0 || b >= a->count) return;
+    Au prev = a->origin[b];
+    // shift the tail down by one (use i, not b)
+    for (num i = b; i < a->count - 1; i++)
+        a->origin[i] = a->origin[i + 1];
     a->origin[--a->count] = null;
+    // drop the removed element exactly once
+    if (!a->unmanaged)
+        Au_drop(prev);
 }
 
 none array_remove_weak(array a, num b) {
-    for (num i = b; i < a->count; i++) {
-        Au prev = a->origin[b];
-        a->origin[b] = a->origin[b + 1];
-    }
+    if (b < 0 || b >= a->count) return;
+    for (num i = b; i < a->count - 1; i++)
+        a->origin[i] = a->origin[i + 1];
     a->origin[--a->count] = null;
 }
 
@@ -1160,7 +1161,7 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     return au;
 }
 
-Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b) {
+Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b, i32 index) {
     Au_t prop = def(context, ident, AU_MEMBER_VAR, traits);
     verify(type, "def_prop: src/type is null for %s.%s", context->ident, ident);
     prop->type      = type;
@@ -1169,6 +1170,7 @@ Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32
     prop->value     = (object)value;
     prop->meta.a    = meta_a;
     prop->meta.b    = meta_b && !instanceof(meta_b, Au_t) ? hold(meta_b) : meta_b;
+    prop->index     = index; // AF-bit slot position (computed by the codegen)
     return prop;
 }
 
@@ -1820,8 +1822,8 @@ none push_type(Au_t type, Au_t to_mod) {
     if ((type->traits & AU_TRAIT_ABSTRACT) == 0) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = (Au_t)type->members.origin[i];
-            if ((mem->traits & AU_TRAIT_REQUIRED) != 0 && (mem->member_type == AU_MEMBER_VAR))
-                AF_set(type->required_bits, mem->index);
+            if ((mem->traits & AU_TRAIT_REQUIRED) != 0 && (mem->member_type == AU_MEMBER_VAR) && mem->index)
+                AF_set(type->required_bits, mem->index - 1);
         }
     }
 
@@ -1967,24 +1969,25 @@ void Au_AF_set_id(Au a, int id) {
     AF_set(af_bits_ptr(a), id);
 }
 
+// member index is 1-based (0 == not an af-bit slot); the bit position is index-1.
 void Au_AF_set_name(Au a, cstr name) {
     Au_t t = isa(a);
     Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
-    AF_set(af_bits_ptr(a), m->index);
+    if (m && m->index) AF_set(af_bits_ptr(a), m->index - 1);
 }
 
 i32 Au_AF_query_name(Au a, cstr name) {
     Au_t t = isa(a);
     Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
-    return (i32)AF_get(af_bits_ptr(a), m->index);
+    return (m && m->index) ? (i32)AF_get(af_bits_ptr(a), m->index - 1) : 0;
 }
 
 bool Au_AF_get_member(Au a, Au_t mem) {
-    return AF_get(af_bits_ptr(a), mem->index);
+    return mem->index ? AF_get(af_bits_ptr(a), mem->index - 1) : false;
 }
 
 none Au_AF_set_member(Au a, Au_t mem) {
-    AF_set(af_bits_ptr(a), mem->index);
+    if (mem->index) AF_set(af_bits_ptr(a), mem->index - 1);
 }
 
 bool Au_validator(Au a) {
@@ -3499,6 +3502,11 @@ bool Au_member_set(Au a, Au_t m, Au value) {
     if (!(m->member_type == AU_MEMBER_VAR))
         return false;
 
+    if (m && strcmp(m->ident, "sel_col") == 0) {
+        int test2 = 2;
+        test2    += 2;
+    }
+
     Au_t type         = isa(a);
     ARef member_ptr   = (ARef)((cstr)a + m->offset);
     Au_t vtype        = isa(value);
@@ -3530,7 +3538,7 @@ bool Au_member_set(Au a, Au_t m, Au value) {
             Au_drop(old);
         }
     }
-    Au_AF_set_name(a, m->ident); // we know index from m, and may set it more efficiently
+    Au_AF_set_member(a, m);
     return true;
 }
 
@@ -4458,7 +4466,9 @@ array string_split_parts(string a) {
                 }
                 s++;
             }
-            verify(depth == 0, "unterminated interpolation");
+            // unterminated: bail with null so the caller (aether) can report it
+            // with the original .ag source location instead of halting here blind.
+            if (depth != 0) return null;
             cstr expr_end = s;
             while (expr_end > expr_start && isspace(*(expr_end - 1))) expr_end--;
             string expr = string(chars, expr_start, ref_length, (sz)(expr_end - expr_start));
