@@ -128,7 +128,7 @@ static void rebuild_blocking(const char* name) {
     snprintf(cmd, sizeof(cmd),
         "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/platform/native/debug/silver\" %s",
         name);
-    fprintf(stdout, "%s: product is stale — rebuilding before load\n", name);
+    fprintf(stdout, "%s: source changed — rebuilding\n", name);
     fflush(stdout);
     system(cmd);
 }
