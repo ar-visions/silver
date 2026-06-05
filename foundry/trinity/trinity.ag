@@ -843,8 +843,9 @@ Display Window
 
     public func find_target [ e: element, ev: Event, must: element ] -> element
         # fully-transparent elements are hidden — ignore them (and their
-        # children) in event hit-testing so they don't capture clicks.
-        if [ !e || e.disable || e.ghost || e.transparency >= 1.0 ]
+        # children) in event hit-testing so they don't capture clicks. an element
+        # with no bounds yet (not laid out this frame) can't be hit either.
+        if [ !e || !e.bounds || e.disable || e.ghost || e.transparency >= 1.0 ]
             return null
         b : rect  [ e.bounds ]
         x : f32   [ ev.mouse.pos.x ]
@@ -2067,7 +2068,11 @@ Button Option
     public left_view  : bool
     public right_view : bool
     public toggle     : bool
+    # when set, the option never toggles its own `selected` — the app owns that
+    # state and drives it (e.g. a play↔stop button bound to a running flag).
+    public manual_mode : bool
     func on_press[ ev:Event ]
+        if [ manual_mode ] return
         if [ ev.mouse.pos.y != (0 ..< 48) ]
             return
         if [ selected && !toggle ]

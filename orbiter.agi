@@ -3,20 +3,19 @@ show_right: false
 
 projects:
 	silver: Project
-		name: silver
-		root: '/src/silver'
-		module: '/src/silver/src'
-		src: '/src/silver/src'
-		kind: shared
+		name: 	silver
+		root: 	'/src/silver'
+		build:	make debug
+
 	hyperspace: Project
-		name: hyperspace
-		root: '/src/silver/foundry/hyperspace'
-		module: '/src/silver/foundry/hyperspace'
-		src: '/src/silver/foundry/hyperspace'
-		kind: app
+		name: 	hyperspace
+		root: 	'/src/silver/foundry/hyperspace'
+		build:	silver hyperspace
+	
 	test4: Project
-		name: test4
-		root: '/src/silver/foundry/test4'
-		module: '/src/silver/foundry/test4'
-		src: '/src/silver/foundry/test4'
-		kind: app
+		name: 	test4
+		deps: 	silver
+		root: 	'/src/silver/foundry/test4'
+		build:	silver test4
+		cwd:	'/src/silver'
+		run:	test4

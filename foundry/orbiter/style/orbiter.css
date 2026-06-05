@@ -262,6 +262,13 @@ Console {
         area:               8px
         label_height:       1.0
         label_size:         16
+    layers.scrollbar: ScrollLayer
+        overlay:            true
+        area:               8px
+        thumb_color:        #fff4
+        thumb_w:            6
+        thumb_min_h:        32
+        thumb_radius:       4
 }
 
 FileList {
@@ -334,7 +341,7 @@ Tabs / Button {
 
 
 Tabs.actions {
-    area: l0 t0 w2 h1
+    area: l0 t0 w4 h1
 }
 
 Tabs.targets {
@@ -410,6 +417,11 @@ Instances / Tabs.tools / Button.play {
 Instances / Tabs.tools / Button.play:disable {
     layers.svg:
         opacity:                0.3
+}
+
+Instances / Tabs.tools / Button.play:selected {
+    layers.svg:
+        image_svg:              "images/stop.svg"
 }
 
 Tabs.source_nav {

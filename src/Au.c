@@ -5853,9 +5853,12 @@ path path_cwd() {
     return a;
 }
 
-// the cwd the process launched in, captured by engage() before it cd's to the
-// app's share dir. falls back to the current cwd if engage didn't run.
+// the cwd the process launched in. silver-host records it in SILVER_STARTUP before
+// it cd's to the share dir (host is plain C, can't reach this global); a direct run
+// has it captured in engage() before its own cd. falls back to the live cwd.
 path path_startup() {
+    symbol e = getenv("SILVER_STARTUP");
+    if (e && *e) return path(e);
     return startup_cwd_ ? startup_cwd_ : path_cwd();
 }
 
@@ -6657,6 +6660,27 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
             } else if (structured || keyword) {
                 cstr vrem = v;
                 value = parse_object(v, mem_type, mem_meta, &vrem, null);
+            } else if (mem && mem->src == typeid(array)) {
+                // array member with a bare value: split on WHITESPACE ONLY into an
+                // array of the element type (the member's meta-b). commas are NOT
+                // separators — a build-arg token may contain them (-Wl,-rpath,...).
+                Au_t elem = (Au_t)mem->meta.b;
+                array arr  = array();
+                cstr  p    = v;
+                while (p < ve) {
+                    while (p < ve && (*p == ' ' || *p == '\t')) p++;
+                    cstr w = p;
+                    while (p < ve && *p != ' ' && *p != '\t') p++;
+                    int wl = (int)(p - w);
+                    if (wl <= 0) break;
+                    string ws = string(alloc, wl + 1);
+                    memcpy((cstr)ws->chars, w, wl);
+                    ((cstr)ws->chars)[wl] = 0;
+                    ws->count = wl;
+                    push(arr, (elem && elem != typeid(none) && elem != typeid(Au) && elem != typeid(string))
+                        ? (Au)construct_with(elem, (Au)ws, null) : (Au)ws);
+                }
+                value = (Au)arr;
             } else {
                 string sv = string(alloc, vlen + 1);
                 memcpy((cstr)sv->chars, v, vlen);

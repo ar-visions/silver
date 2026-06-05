@@ -1581,6 +1581,29 @@ Render Canvas
         if [ font ] return font.line_height
         return states[state_depth - 1].line_height
 
+    # shared line/col selection highlight: rounded rects per line for an
+    # anchor→cursor span over a monospace line model (col*cw). used by both the
+    # editor and the console so selection looks identical in each.
+    public func draw_selection [ x0: f32, y0: f32, lh: f32, cw: f32, scroll: f32, by: f32, bw: f32, bh: f32, a_line: i32, a_col: i32, s_line: i32, s_col: i32, color: rgba ]
+        if [ s_line < 0 ] return
+        before     : bool [ a_line < s_line || (a_line == s_line && a_col <= s_col) ]
+        start_line : i32  [ (before) ? a_line : s_line ]
+        start_col  : i32  [ (before) ? a_col  : s_col ]
+        end_line   : i32  [ (before) ? s_line : a_line ]
+        end_col    : i32  [ (before) ? s_col  : a_col ]
+        if [ start_line == end_line && start_col == end_col ] return
+        save[]
+        stroke_width[ 0.0 ]
+        fill_color[ color ]
+        for [ li: i32 start_line, li <= end_line, li += 1 ]
+            y : f32 [ y0 + f32[li] * lh - scroll ]
+            if [ y + lh < by || y > by + bh ] continue
+            cx0 : f32 [ (li == start_line) ? f32[start_col] * cw : 0.0 ]
+            cx1 : f32 [ (li == end_line)   ? f32[end_col]   * cw : bw ]
+            rounded_rect[ x0 + cx0, y + 1.0, cx1 - cx0, lh - 2.0, 4.0, 4.0, 4.0, 4.0 ]
+            paint[]
+        restore[]
+
     # sync the shared CanvasFont's freetype face to this canvas's current
     # font_size before any glyph/metrics call. avoids bleeding size changes
     # from one canvas into another when they share a font.

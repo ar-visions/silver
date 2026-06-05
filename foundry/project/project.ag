@@ -19,24 +19,21 @@ class Project
     # project root — the repository/workspace dir the project lives under
     public root     : path
 
-    # ABSOLUTE module path handed to the compiler (the dir containing the
-    # .g/.ag, or the .ag file itself). absolute on purpose: this is the fix for
-    # compile[] resolving a bare name against the wrong cwd.
-    public module   : path
-
-    # source dir/file watched for staleness (compared against `product` mtime).
-    # usually the same as `module`, but kept separate for multi-dir sources.
-    public src      : path
-
     # built artifact: the binary for an app, or lib<name>.so for a shared module
     public product  : path
 
-    # build kind, mirroring the .g `type:` field — 'app' | 'shared'
-    public kind     : string
+    # the command(s) to build this project — whatever the user runs (one per
+    # element; multiple commands allowed, e.g. a generator step then a build step).
+    public build    : array token
 
-    # dependency module names, mirroring the .g `modules:` field
-    public modules  : array string
+    # graph edges: names of prerequisite nodes (build deps / run-ordering), bare
+    # alphanumerical identifiers in .agi (no quotes), resolved against the node map.
+    public deps     : array token
 
-    # run configuration (used once we can launch from orbiter)
-    public run_args : array string
-    public run_cwd  : path
+    # what to launch under lldb: the program followed by its args, as one token
+    # list (e.g. `run: test4 --foo bar`) — program and args aren't separated.
+    public run      : array token
+
+    # working directory for the RUN only (the launched app under lldb); the build
+    # runs in `root`, not here.
+    public cwd      : path

@@ -1,0 +1,114 @@
+SILVER — FEATURE REPORT
+=======================
+Survey of the silver language, the Au object system, the trinity UI framework,
+and the foundry projects. Each feature is described in at most two sentences.
+(Compiled from trinity.ag, orbiter.ag, and every other .ag file plus the C core.)
+
+
+LANGUAGE
+--------
+- Typed variables: `x: i32 [ 42 ]` declares a variable with an initializer in brackets; the type can be inferred from the initializer (`y : items[0]`).
+- Primitives: i8/i16/i32/i64, u8..u64, f32/f64, bf16, bool, num, sz, plus string, symbol (cstr), and ref/pointer types.
+- Enums: `enum X` with optional backing type (`enum XAlign : f32`) and explicit member values; bare member names resolve when the type is inferred (switch cases).
+- Classes vs structs: `class` is heap-allocated and reference-counted, `struct` is an inlay/value type; members are public, intern (private), or context (read-only after init).
+- Inheritance: `op dense` or `Loss MseLoss`; 
+- Functions: `func name [ args ] -> ret` with indentation (tab) blocks; zero-arg calls need no brackets at statement level.
+- Commaless args: without commas, arguments match parameters by type (CSS-selector style) enabling order-free declarative composition; with commas they are positional.
+- Callable subs: `x: i32 sub` stores a body; `x[]` re-invokes it against the current scope and returns the value without reassigning.
+- Control flow: if/else (`el [ expr ]` for else-if), `for [ i: i32 0, i < n, i += 1 ]`, `for [ v: T ] in collection` (and `for [ v: T, k: string ] in map`), and switch with enum-inferred cases.
+- String interpolation: `'hello {name}, value {x}'` inlines expressions; single quotes are strings, double quotes are symbols (cstr).
+- Ternary and coalescing: ternaries always require parens `(cond) ? a : b`; `??` null-coalesces and `||`/`&&` short-circuit, preserving the operand value when types are compatible.
+- Collections: `array T`, `map V [ K ]` (bracketed type is the KEY), and `list T`; element-wise +,-,*,/,% on primitive arrays auto-emit loops (AVX2 vectorized at -O2).
+- new + shape: `new T [ expr ]` heap-allocates, parsing `expr` as a shape where `*` is shape multiplication; pre-compute products into an i32 before `new`.
+- local: stack-allocated arrays `local T [N]` with optional inline initializer list.
+- Inline assembly: `asm x86_64` (conditional compile per platform define), expression-level `r: i32 asm [...]`, and statement-level `asm [...]` in Intel syntax with auto variable gather.
+- Cast syntax: `(expr) to Type` converts after a parenthesized expression.
+- Numerics: decimal floats, scientific notation (1e20, 1.5e-7), C integer suffix stripping, and scalar unit types (`scalar ms : i64`) that reject mismatched literals.
+- Math builtins: sqrt/sin/cos/tan/exp/log/floor/etc. and two-arg atan2/pow lower to LLVM intrinsics or libm, with array versions emitting auto-vectorized loops.
+- aliases & scalars: `alias Elements : map element [ string ]`, `alias FRender : lambda Elements [ Display ]`, lambda function types, and named scalar units.
+- init/construct: `init[]` takes only the object's own type and reads property data set by the caller's declaration; multi-arg custom constructors are not allowed (expose public fields instead).
+
+
+MODULES, IMPORTS & RESOURCES
+----------------------------
+- A module IS a folder: `foundry/<name>/<name>.ag`; if not found locally the compiler searches `SILVER/foundry/<name>/<name>.ag`.
+- C header import: `import <stdio.h>` pulls in a C header and links the symbols.
+- Silver module import: `import trinity` / `import ai` imports another foundry module by bare name (no path, silver does not consult the .g for this).
+- Aliased import: `import rand1 as r1` binds the module under a local name.
+- External git dependency: `import owner:repo/gitref` (e.g. `import KhronosGroup:Vulkan-Tools/734638e`) fetches and builds a vendored dependency at a pinned ref.
+- Git dep + header: `import madler:zlib/51b7f2a <zlib.h>` combines a pinned external build with its C header.
+- Import flags: a trailing `+NAME` adds a cdef (-D), and `-NAME` passes a config/linker flag for that import.
+- .g build descriptors: each module may carry a `.g` with `type: app|shared`, `modules:` (dependencies), `link:`, `cflags:`, `import:`, and `install:`.
+- Embedded resources: resource sub-folders inside a module (style/, images/, fonts/, models/, textures/) are auto-bundled into `install/share/<app>/` — symlinked in debug for live edits, copied in release.
+- .agi config: tab-indented "JSON without braces" parsed by Au, supporting unquoted symbol keys, nested `key: Type` blocks, and `#` comments to end-of-line; it can set members directly onto a target object (orbiter reads orbiter.agi onto itself).
+- startup_path: an app records the cwd it launched in (Au captures it in engage() before chdir to the share via path.path_startup[]), so config like orbiter.agi resolves there.
+
+
+AU OBJECT SYSTEM
+----------------
+- Au is the C object/type system underlying everything: Au_t is a type descriptor, Au is an object reference (header before data), and typeid(T) fetches a type.
+- Reference counting via hold(x)/drop(x); collections (array, map, list), string, path, token, enode, etype, shape are all Au types.
+- Reflection: isa/instanceof/inherits/typeid, find_member, find_type, and member_set/member_object allow runtime type and member access.
+- af-bits: each instance tracks which members were explicitly set (a per-instance bitmask), which drives trinity's per-frame apply_args reconciliation and override defaults.
+- Static methods are called on the type: `Au.parse`, `Au.find_type`, `Au.parse_agi`, `path.path_cwd`, `path.path_startup`, `Au.epoch_millis`.
+- Parsers: Au has a JSON parser (Au.parse) and a dedicated .agi parser (Au.parse_agi) that can construct fresh objects or populate an existing target.
+
+
+TRINITY UI FRAMEWORK
+--------------------
+- Element kinds: `element`, `Option`, `Control`, `Tabs`, and app roots (`trinity <app>`); apps subclass the abstract media_app `trinity`.
+- Declarative trees: `on_render` returns an Elements map of nested components, composed commaless so children are matched by id/type.
+- CSS styling: `.css` files (Style.ag engine) cascade by source order (later wins), support `:state` selectors (hovered/selected/disable) and inline nested state shorthand.
+- Layout: area coordinates `l/t/r/b/w/h` (units and `+px`), alignment enums, overflow/clip, and app-variable-bound coordinates (draggable seams).
+- Layers: each element renders named layers (base/face/svg/...) with blend modes, fills, glows, radii, and per-layer areas.
+- Events: virtual hooks on_click/press/release/hover/leave/move/wheel/key/char with an Event carrying mouse/keyboard state; elements intercept first, then the app.
+- Animation: Ease/Duration enums and StyleTransition drive eased property transitions; a frame renders only when restyle || will_animate || is_animating, and an element repaints its cache+layers only when pristine=false.
+- apply_args: per frame, af-bit-set template members are reconciled onto live instances, so declaration-time props stay authoritative without clobbering internal state.
+- Live element binding: an app `public` member named like a returned element id auto-binds to that live element (no tree walk).
+- GLSL functions: `func vertex [] -> GLSL none { ... }` authors shader code inline in silver, compiled to SPIR-V for the GPU.
+
+CANVAS 2D DRAWING
+-----------------
+- Path building: move_to/line_to/quad_to/cubic_to/arc_to/add_arc/add_rect/add_rounded_rect/close_path on a retained path.
+- Paint: fill_color/stroke_color/stroke_width, linear/radial/mirrored gradients, stroke and fill shadows, caps and joins, opacity and blur.
+- Text: CanvasFont with a shared per-(name,size) glyph atlas, measure_text, and text_ellipsis; pre-multiplied-alpha glyph coverage compositing.
+- State: save/restore, transforms, crop/clip rectangles, and resize; rendering is GPU-backed through the vk pipeline (SDF rounded-rect + gradient shaders authored in-canvas).
+
+
+VK / GPU
+--------
+- Vulkan context (vk_context, Gpu, Display, Render) manages devices, swapchain/backbuffer, fences, and per-frame draw/sync.
+- Pipelines: Pipeline/Layout with shader stages, vertex/fragment/compute inputs and outputs, storage images/buffers, samplers (2D/3D/Cube), and UBO uniforms.
+- Shaders in silver: vertex/fragment/compute bodies written as `-> GLSL` functions, with typed I/O classes (VertexInput, FragmentOutput, etc.).
+- 3D content: glTF model loading (Model/gltf_node/gltf_part) and image-based lighting (IBL), bound and rebound per draw.
+
+
+TESTING, COVERAGE & TIMING
+--------------------------
+- expect tests: `expect func test [...] -> bool` declares a test the compiler runs and requires to return true — these must succeed for release builds.
+- coverage class: `coverage <name>` is an abstract test class with a `run[] -> Au` body, an alternative test-bearing construct alongside expect.
+- --coverage flag: sets `a->coverage` in the compiler (per-statement-block __seq instrumentation, register/report); it is FALSE by default and must NOT be coupled to debug.
+- --timing flag: sets `a->timing`; like coverage it is opt-in, FALSE by default, and independent of the debug build — both must be re-enabled explicitly to debug.
+
+
+BUILD SYSTEM & COMPILER
+-----------------------
+- The silver compiler is written in C on Au with an LLVM backend, compiling .ag to native binaries (debug emits .ll + LLDB info; release emits .o in-memory at -O2 with AVX2/FMA).
+- Phased compilation: register all type names, parse record bodies, build LLVM types, then emit function IR — so all names exist before any body and all types exist before any codegen.
+- Build caching skips modules whose source is older than their `.product`; `--clean` forces a full rebuild and propagates to external imports.
+- CLI flags: `--watch` (file-watcher), `--clean`, `--run`, `-v` (verbose), `--listen 'Class.method'` (per-method statement logging), `--coverage`, `--timing`.
+- silver-host: loads a built module and live-reloads it on source/artifact change (recompiling first if stale), enabling live code editing of a running app.
+
+
+FOUNDRY PROJECTS
+----------------
+- orbiter: a keyboard-first, minimal-chrome IDE built on trinity (editor, file list, console/lldb, project tabs, 3D Earth/Avatar views) that reads projects from orbiter.agi.
+- ai: a neural-network library with tensors, a broad op set, and a keras-style model API for building and running networks.
+- neural: training infrastructure — Loss (MSE, cross-entropy), Optimizer (Adam), and a NeuralTrainer loop.
+- gltf: a full glTF model loader (accessors, buffers, materials, animation, skins, PBR metallic-roughness).
+- asnes: an educational SNES emulator (CPU, SPC/DSP audio) built on Au schema.
+- spectra: a real-time audio FFT spectrum analyzer over ALSA capture.
+- random: a xoshiro256++ PRNG (256-bit state, sub-nanosecond, full statistical quality).
+- img: image and font handling (Image, Font) backed by OpenCV, OpenEXR, and libpng, with filter/cap/join/pixel enums.
+- vec / svg / Camera: vector math, an SVG parser + path builder + renderer, and a 3D camera.
+- hyperspace / spectra / test2 / test4 / project / ai-test: placeholder/sample/support modules (project defines the shared Project model orbiter loads).

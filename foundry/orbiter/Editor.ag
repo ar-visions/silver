@@ -358,7 +358,6 @@ Layer EditorLayer
                         cx = (before) ? editor.filter_rect.x + editor.filter_rect.w : editor.filter_rect.x
                         cy = editor.filter_rect.y
                     el
-                        puts 'editor.sel_col = {editor.sel_col}'
                         prefix : editor.line_get[ editor.sel_line ].mid[ 0, editor.sel_col ]
                         cx     = x0 + cv.measure_text[ prefix ].w
                         cy     = y_sel

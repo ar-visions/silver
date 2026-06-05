@@ -89,8 +89,9 @@ trinity orbiter # implements compiler
     public active_console: string
     public show_console  : bool
     # live elements, auto-bound by id — reference them directly, no tree walk.
+    # (the console is nested under instances and doesn't auto-bind, so it's reached
+    # via instances.elements['console'] where needed.)
     public instances     : Instances
-    public console       : Console
     # bound layout var: editor-group bottom (= console top) seam, draggable
     public console_h     : f32 [ 6.9 ]
     # companion the seam maintains: last open (non-snapped) console height. the
@@ -272,7 +273,10 @@ trinity orbiter # implements compiler
         if [ projects ]
             puts 'loaded {projects.count} projects:'
             for [ p: Project, name: string ] in projects
-                puts '  {name}: root={p.root} kind={p.kind}'
+                puts '  {name}: root={p.root}'
+                if [ p.deps ]
+                    for [ d: token ] in p.deps
+                        puts '    dep: {d.chars}'
         el
             puts 'loaded 0 projects (projects is null)'
 
@@ -287,7 +291,7 @@ trinity orbiter # implements compiler
         for [ p: Project, name: string ] in projects
             target_names += name
             target_roots += p.root
-            target_srcs  += p.src
+            target_srcs  += p.root
 
     func check_stale []
         for [ i: i32 0, i < target_names.count, i += 1 ]
@@ -331,6 +335,44 @@ trinity orbiter # implements compiler
         au_space_clear[]
         compile_log.push[ 'done: {mod}' ]
         #au_spawn[ ref compile_fn, a, mod ]
+
+    # the live Console element (nested under instances, so reached via lookup).
+    func ui_console [] -> Console
+        if [ !instances ] return null
+        ce : element instances.elements[ 'console' ]
+        c  : Console ce
+        return c
+
+    # build/run a project node by name: process its deps FIRST (a dep is just
+    # another node — same function, recursively), then run this node's build
+    # tokens. there is NO silver-vs-other distinction — every node is just its
+    # build command(s) (e.g. test4's build is `silver test4`), written into the
+    # node's own shell session so it runs in that project's terminal.
+    func run_node [ name: string ] -> none
+        if [ !projects ] return
+        p : Project projects[name]
+        if [ !p ] return
+        if [ p.deps ]
+            for [ d: token ] in p.deps
+                run_node[ d.chars ]
+        if [ !p.build || p.build.count == 0 ] return
+        con : ui_console[]
+        if [ !con ] return
+        cmd_str : string ''
+        for [ c: token ] in p.build
+            cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
+        cmd : string 'cd "{p.root}" && {cmd_str}'
+        # if the node has a run command, chain it under lldb in its run cwd, and
+        # mark the session running so the play button becomes a stop button.
+        has_run : bool [ p.run && p.run.count > 0 ]
+        if [ has_run ]
+            run_str : string ''
+            for [ rt: token ] in p.run
+                run_str = (run_str.count > 0) ? run_str + ' ' + rt.chars : rt.chars
+            rcwd : path (p.cwd) ? p.cwd : p.root
+            cmd = '{cmd} && cd "{rcwd}" && lldb -o run -- {run_str}'
+        con.dispatch[ name, cmd ]
+        if [ has_run ] con.set_running[ name, true ]
 
     # map a path to its slot in open_files, registering it if not yet present.
     # (renamed from file_index — that name is the search-index prop; silver is
@@ -696,6 +738,15 @@ trinity orbiter # implements compiler
                     hit_path : path find_results.value_by_index[ ed.sel_line ]
                     open_file[ hit_path ]
                     return
+        # play: build/run the active project node (processes its deps first)
+        if [ ev.target.id == 'play' ]
+            con : ui_console[]
+            if [ con && con.is_running[ active_target ] ]
+                con.stop[ active_target ]
+            el
+                run_node[ active_target ]
+            ev.no_default = true
+            return
         # >| toggle hides/shows the right file-list panel
         if [ ev.target.id == 'toggle_side' ]
             # the seam (right_w) is the single source of truth; show_right is
@@ -989,20 +1040,33 @@ trinity orbiter # implements compiler
 
         show_right = right_w > 0.5
 
-        if [ show_console && console ]
-            cs : console.session[]
-            if [ cs ]
-                if [ cs.pty_fd >= 0 ]
+        # the `console` member doesn't auto-bind (it's nested under `instances`,
+        # which does bind), so reach the live Console through instances. draining
+        # the pty here keeps it off the (cached) draw path.
+        ce : element (show_console && instances) ? instances.elements['console'] : null
+        cons : Console ce
+        if [ cons ]
+            # drain EVERY session each frame: deps build in their own shells (not
+            # shown), and a queued command only flushes once its shell is drained.
+            for [ s: ConsoleSession, k: string ] in cons.sessions
+                if [ s.pty_fd >= 0 ]
                     w.will_animate = true
+                    s.read_output[]
+            # the active session drives the on-screen repaint.
+            cs : cons.session[]
+            if [ cs ]
+                if [ cs.dirty ]
+                    cons.pristine = false
                     cs.dirty = false
-                    cs.read_output[]
-                    if [ cs.dirty ] console.pristine = false
-                el [ console.feed ]
-                    fc : i32 [ console.feed.count ]
+                el [ cs.pty_fd < 0 && cons.feed ]
+                    fc : i32 [ cons.feed.count ]
                     if [ fc != cs.last_feed_count ]
                         cs.last_feed_count = fc
-                        console.pristine   = false
+                        cons.pristine   = false
                         w.will_animate     = true
+
+        # is a run (lldb) live for the active target → play button shows stop.
+        play_running        : bool [ (cons) ? cons.is_running[ active_target ] : false ]
 
         left_path           : path (left_idx >= 0 && left_idx < open_files.count) ? open_files[left_idx] : null
         right_path          : path (right_idx >= 0 && right_idx < open_files.count) ? open_files[right_idx] : null
@@ -1090,7 +1154,7 @@ trinity orbiter # implements compiler
             "instances": Instances [ elements: Elements [
                 'source_nav': Tabs [ elements: source_nav ]
                 'tools':      Tabs [ elements: Elements [
-                    'play': Button [ disable: active_target == 'system' ]
+                    'play': Option [ disable: active_target == 'system', selected: play_running, manual_mode: true ]
                 ] ]
                 'consoles':   Tabs [ elements: Elements [
                     'shell': Option [ label: 'shell', selected: active_console == 'shell', toggle: true ]

@@ -2249,6 +2249,11 @@ Texture Display
     func last_render [] -> Render
         return list.last_element[]
 
+    # copy text to the system clipboard. keeps glfw contained in trinity — apps
+    # call this on their Window rather than touching glfw themselves.
+    public func set_clipboard [ text: string ]
+        if [ glfw && text ] glfwSetClipboardString[ glfw, text.chars ]
+
     func update[ ]
         return
 

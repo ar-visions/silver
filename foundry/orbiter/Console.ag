@@ -12,6 +12,11 @@ struct TermCell
 class ConsoleSession
     mutable pty_fd     : i32 [ -1 ]
     mutable pid        : i32 [ 0  ]
+    # the session key (project node name); used as the shell prompt label.
+    mutable name       : string
+    # a command queued to send once the shell is ready (first output arrives, i.e.
+    # bash is in raw mode) — avoids the cooked-mode double echo of an early write.
+    mutable pending    : string
     mutable esc_state  : i32 [ 0  ]
     mutable esc_n0     : i32 [ 0  ]
     mutable esc_n1     : i32 [ 0  ]
@@ -31,6 +36,22 @@ class ConsoleSession
     mutable dirty      : bool
     # last feed line count (system console) — detects new lines without a redraw.
     mutable last_feed_count : i32 [ -1 ]
+    mutable read_calls : i32 [ 0 ]
+    # line/col text selection over the line model (same as the Editor). sel_line
+    # -1 = no selection. lh/cw cached from draw for the mouse→cell mapping.
+    mutable sel_line    : i32 [ -1 ]
+    mutable sel_col     : i32 [ 0 ]
+    mutable anchor_line : i32 [ 0 ]
+    mutable anchor_col  : i32 [ 0 ]
+    mutable dragging        : bool
+    mutable scroll_dragging : bool
+    mutable lh_cache    : f32
+    mutable cw_cache    : f32
+    # true while a run (lldb) is live in this session — drives the play↔stop button.
+    mutable running     : bool
+    # armed after a run command is sent; the next return to our shell prompt means
+    # the run ended (quit/errored) → clear running.
+    mutable run_armed   : bool
 
     func init []
         scrollback = list string []
@@ -40,14 +61,38 @@ class ConsoleSession
 
     func start []
         if [ pty_fd >= 0 ] return
+        puts 'ConsoleSession.start[{name}]: launching /bin/bash via forkpty'
         pid = forkpty[ ref pty_fd, null, null, null ]
         if [ pid == 0 ]
             setenv[ 'TERM', 'xterm-256color', 1 ]
-            execl[ '/bin/bash', 'bash', null ]
+            # prompt = the project node's label; --norc so bash keeps our PS1
+            lbl : string (name && name.count > 0) ? name : 'sh'
+            setenv[ 'PS1', '{lbl}> ', 1 ]
+            norc : string '--norc'
+            execl[ '/bin/bash', 'bash', norc.chars, null ]
             _exit[ 1 ]
+        el [ pid < 0 ]
+            puts 'ConsoleSession.start[{name}]: forkpty FAILED (pid={pid})'
         el
-            puts 'ConsoleSession.start: pty_fd={pty_fd} pid={pid}'
+            puts 'ConsoleSession.start[{name}]: pty_fd={pty_fd} pid={pid}'
             fcntl[ pty_fd, F_SETFL, O_NONBLOCK ]
+
+    # fresh session: close the old shell (pty close → SIGHUP → bash exits), clear
+    # the buffer, then start a new bash. used when a run is (re)launched.
+    func restart []
+        if [ pty_fd >= 0 ]
+            close[ pty_fd ]
+        pty_fd     = -1
+        pid        = 0
+        cx         = 0
+        cy         = 0
+        scroll     = 0.0
+        esc_state  = 0
+        clear_screen[]
+        scrollback = list string []
+        dirty      = true
+        run_armed  = false
+        start[]
 
     func clear_screen []
         for [ i: i32 0, i < rows * cols, i += 1 ]
@@ -62,6 +107,46 @@ class ConsoleSession
             buf[c] = i8[ (ch >= 32 && ch < 127) ? ch : 32 ]
         buf[cols] = 0
         return string[ ref buf[0] ]
+
+    # line model — the displayed content as one list of lines (scrollback then the
+    # live screen rows). lets the console reuse the Editor's line/col selection.
+    func line_count [] -> i32
+        return scrollback.count + rows
+
+    func line_get [ i: i32 ] -> string
+        sc : i32 [ scrollback.count ]
+        if [ i < sc ] return scrollback.value_by_index[ i ]
+        return row_to_string[ i - sc ]
+
+    # true when the cursor sits on our own shell prompt ('<name>> ') — i.e. bash is
+    # idle, no foreground command running. used to detect a run ending/erroring.
+    func at_prompt [] -> bool
+        if [ cy < 0 || cy >= rows ] return false
+        lbl : string (name && name.count > 0) ? name : 'sh'
+        p   : string '{lbl}> '
+        row : string row_to_string[ cy ]
+        if [ row.index_of[ p ] != 0 ] return false
+        # idle only when the cursor sits right after the prompt (nothing typed/echoed
+        # after it — a command-echo line also starts with the prompt but has cx past it).
+        return cx <= p.count
+
+    # the currently-selected text over the line model (anchor→cursor), lines joined
+    # with newlines. empty when there is no selection.
+    func selection_text [] -> string
+        if [ sel_line < 0 ] return ''
+        before : bool [ anchor_line < sel_line || (anchor_line == sel_line && anchor_col <= sel_col) ]
+        sl : i32 [ (before) ? anchor_line : sel_line ]
+        sc : i32 [ (before) ? anchor_col  : sel_col ]
+        el : i32 [ (before) ? sel_line : anchor_line ]
+        ec : i32 [ (before) ? sel_col  : anchor_col ]
+        out : string ''
+        for [ li: i32 sl, li <= el, li += 1 ]
+            row : string line_get[ li ]
+            a : i32 [ clamp[ (li == sl) ? sc : 0,         0, row.count ] ]
+            b : i32 [ clamp[ (li == el) ? ec : row.count, 0, row.count ] ]
+            if [ b > a ] out = out + row.mid[ a, b - a ]
+            if [ li < el ] out = out + '\n'
+        return out
 
     func scroll_up []
         scrollback.push[ row_to_string[ 0 ] ]
@@ -203,12 +288,29 @@ class ConsoleSession
 
     func read_output []
         if [ pty_fd < 0 ] return
-        buf_c : i8 [ 0 ]
+        read_calls += 1
+        buf : local i8 [ 2 ]
+        buf[1] = 0
+        got : string ''
         for [ i: i32 0, i < 4096, i += 1 ]
-            nr : i32 [ read[ pty_fd, ref buf_c, 1 ] ]
+            nr : i32 [ read[ pty_fd, ref buf[0], 1 ] ]
             if [ nr <= 0 ] break
             dirty = true
-            process_byte[ i32 buf_c ]
+            got = got + string[ ref buf[0] ]
+            process_byte[ i32 buf[0] ]
+        # a run that's returned to our shell prompt has ended (lldb quit, or the
+        # build/run errored and bash bounced back) → clear running so the button
+        # reverts to play. checked BEFORE flushing a pending command, whose own
+        # initial prompt would otherwise read as a return.
+        if [ run_armed && at_prompt[] ]
+            running   = false
+            run_armed = false
+        # shell is ready once it has emitted (its prompt) — now in raw mode, so
+        # sending the queued command echoes exactly once via readline.
+        if [ got.count > 0 && pending && pending.count > 0 ]
+            write_input[ pending + '\r' ]
+            pending = ''
+            if [ running ] run_armed = true
 
     func write_input [ data: string ]
         if [ pty_fd < 0 ] return
@@ -258,6 +360,17 @@ Layer TermLayer
         if [ s.scroll > max_s ]
             s.scroll = max_s
 
+        # cache metrics for the mouse→cell mapping; feed content_h/scroll.y to the
+        # shared ScrollLayer (it reads them off the element).
+        s.lh_cache    = lh
+        s.cw_cache    = cw
+        con.content_h = total_h
+        con.scroll.y  = s.scroll
+
+        # selection highlight behind the text — shared render with the editor.
+        cv.draw_selection[ x0, y0, lh, cw, s.scroll, bounds.y, bounds.w, bounds.h,
+            s.anchor_line, s.anchor_col, s.sel_line, s.sel_col, rgba['#264f78'] ]
+
         for [ li: i32 0, li < sc_count, li += 1 ]
             y : f32 [ y0 + f32[li] * lh - s.scroll ]
             if [ y + lh < bounds.y ] continue
@@ -296,13 +409,42 @@ Control Console
         s   : ConsoleSession sessions[sid]
         if [ !s ]
             s = ConsoleSession []
+            s.name = sid
             if [ sid != 'system' ]
+                puts 'session[]: creating + starting shell for "{sid}"'
                 s.start[]
             sessions[sid] = s
         return s
 
     func init []
         sessions = map ConsoleSession[string] []
+
+    # run a command line in a named session's shell (create + start if needed) so
+    # it executes in that project's own terminal and streams output to the console.
+    func dispatch [ sid: string, ln: string ]
+        s : ConsoleSession sessions[sid]
+        if [ !s ]
+            s = ConsoleSession []
+            s.name = sid
+            sessions[sid] = s
+        s.restart[]
+        s.pending = ln
+
+    # per-instance run (lldb) state, used by the play↔stop button.
+    func is_running [ sid: string ] -> bool
+        s : ConsoleSession sessions[sid]
+        return (s) ? s.running : false
+
+    func set_running [ sid: string, r: bool ]
+        s : ConsoleSession sessions[sid]
+        if [ s ] s.running = r
+
+    # stop a running session: restart its shell (kills lldb/the process) and clear.
+    func stop [ sid: string ]
+        s : ConsoleSession sessions[sid]
+        if [ !s ] return
+        s.restart[]
+        s.running = false
 
     func on_char [ ev: Event ]
         s : ConsoleSession session[]
@@ -327,6 +469,83 @@ Control Console
         el [ ev.key.ctrl && k >= 64 && k <= 95 ]
             b : i8 [ i8[k - 64] ]
             write[ s.pty_fd, ref b, 1 ]
+
+    # map a mouse position to a (line, col) in the line model and set the cursor —
+    # mirrors EditorLayer.place_cursor over the console's line_count/line_get.
+    func place_cursor [ ev: Event ]
+        s : ConsoleSession session[]
+        if [ !s ] return
+        ele : Layer (layers) ? layers[ 'content' ] : null
+        if [ !ele || !ele.bounds ] return
+        if [ s.line_count[] <= 0 ]
+            s.sel_line = -1
+            return
+        lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
+        cw : f32 [ (s.cw_cache > 0.0) ? s.cw_cache : 8.0 ]
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + s.scroll ]
+        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
+        ln : i32 [ clamp[ rel_y / lh, 0, s.line_count[] - 1 ] ]
+        cl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0, s.line_get[ ln ].count ] ]
+        s.sel_line = ln
+        s.sel_col  = cl
+
+    func on_press [ ev: Event ]
+        s : ConsoleSession session[]
+        if [ !s ] return
+        # right-click copies the current selection to the clipboard (before any
+        # left-click would replace it). does not disturb the selection.
+        if [ ev.mouse.button == 1 ]
+            txt : string s.selection_text[]
+            if [ txt.count > 0 && ux ] ux.set_clipboard[ txt ]
+            return
+        ele : Layer (layers) ? layers[ 'content' ] : null
+        if [ !ele || !ele.bounds ] return
+        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
+        sb : ScrollLayer (layers) ? (layers[ 'scrollbar' ] to ScrollLayer) : null
+        grab : f32 [ (sb && sb.thumb_w > 0.0) ? sb.thumb_w * 2.0 + 8.0 : 16.0 ]
+        if [ sb && sb.scroll_max > 0.0 && rel_x > ele.bounds.w - grab ]
+            my : f32 [ ev.mouse.pos.y - ele.bounds.y - s.scroll ]
+            sb.grab_at[ my ]
+            sy : f32 [ sb.drag_to[ my ] ]
+            if [ sy >= 0.0 ]
+                s.scroll          = sy
+                s.scroll_dragging = true
+                sb.active         = true
+                pristine          = false
+                ux.will_animate   = true
+            return
+        place_cursor[ ev ]
+        if [ !ev.key.shift ]
+            s.anchor_line = s.sel_line
+            s.anchor_col  = s.sel_col
+        s.dragging = true
+        pristine = false
+
+    func on_move [ ev: Event ]
+        s : ConsoleSession session[]
+        if [ !s ] return
+        ele : Layer (layers) ? layers[ 'content' ] : null
+        if [ s.scroll_dragging && ele && ele.bounds ]
+            sb : ScrollLayer (layers) ? (layers[ 'scrollbar' ] to ScrollLayer) : null
+            if [ sb ]
+                sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y - s.scroll ] ]
+                if [ sy >= 0.0 ] s.scroll = sy
+            pristine = false
+            ux.will_animate = true
+            return
+        if [ s.dragging ]
+            place_cursor[ ev ]
+            pristine = false
+
+    func on_release [ ev: Event ]
+        s : ConsoleSession session[]
+        if [ !s ] return
+        s.dragging        = false
+        s.scroll_dragging = false
+        sb : ScrollLayer (layers) ? (layers[ 'scrollbar' ] to ScrollLayer) : null
+        if [ sb ]
+            sb.active = false
+            ux.will_animate = true
 
 
 Layer CompileLayer
