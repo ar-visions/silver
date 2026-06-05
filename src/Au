@@ -694,6 +694,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   def_enum,       Au_t, symbol, u64) \
     M(AA,BB, s, method, public, Au_t,   def_enum_value, Au_t, symbol, Au) \
     M(AA,BB, s, method, public, Au,     parse,          Au_t, cstr, ctx) \
+    M(AA,BB, s, method, public, Au,     parse_agi,      Au_t, cstr, Au) \
     M(AA,BB, s, method, public, Au_t,   find_member,    Au_t, symbol, i32, u64, bool) \
     M(AA,BB, s, method, public, Au_t,   find_context,   array, i32, i32) \
     M(AA,BB, s, method, public, Au_t,   lexical,        array, symbol) \
@@ -1872,6 +1873,11 @@ Au      _none();
 Au      _bool(bool);
 
 string json(Au a);
+
+// parse tab-indented .agi text. schema = type to construct when target is null;
+// target = optional object to SET members onto directly (returns it). lets orbiter
+// read settings.agi straight onto itself and instance member maps (e.g. projects).
+Au parse_agi(Au_t schema, cstr s, Au target);
 
 //#define array_string_schema(X,Y,...)
 //declare_class_2(array_string,     array, string)

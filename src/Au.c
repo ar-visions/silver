@@ -6024,6 +6024,26 @@ bool path_save(path a, Au content, ctx context) {
 
 Au parse(Au_t schema, cstr s, ctx context);
 
+// ---- .agi : tab-indented JSON (no braces) ----------------------------------
+// dedicated parser (parse_agi, defined below after parse_object). a `key: Type`
+// line whose next non-blank line is deeper opens that Type's indented body; a
+// dedent closes it. leaf `key: value` lines parse their value via parse_object.
+// tabs only for indent; a blank line does NOT close a block.
+// `target` is optional: when non-null its fields are SET (member_set), recursing
+// into existing sub-objects; when null a fresh object is constructed from schema.
+Au parse_agi(Au_t schema, cstr s, Au target);
+
+static int agi_peek_indent(cstr scan) {
+    while (*scan) {
+        cstr ls = scan; int ind = 0;
+        while (*ls == '\t') { ind++; ls++; }
+        if (*ls == '\n') { scan = ls + 1; continue; }   // blank line — skip
+        if (*ls == 0)     return -1;
+        return ind;
+    }
+    return -1;
+}
+
 Au path_load(path a, Au_t type, ctx context) {
     if (is_dir(a)) return null;
     if (type == typeid(array))
@@ -6042,7 +6062,9 @@ Au path_load(path a, Au_t type, ctx context) {
     if (type == typeid(string))
         return (Au)str;
     if (is_obj) {
-        Au obj = parse((Au_t)type, (cstr)str->chars, context);
+        Au obj = is_ext(a, "agi")
+            ? parse_agi((Au_t)type, (cstr)str->chars, null)      // tab-indented (fresh)
+            : parse    ((Au_t)type, (cstr)str->chars, context);  // braced json
         return obj;
     }
     assert(false, "not implemented");
@@ -6568,6 +6590,108 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
     }
     if (remainder) *remainder = ws(scan);
     return res;
+}
+
+// ---- .agi : tab-indented object parser -------------------------------------
+// parse the block of lines at exactly `indent` into an object of `schema` (or a
+// generic map). a member whose next line is deeper is a nested typed block (the
+// rest of its line names the Type, else the member's declared type / a map); a
+// leaf parses its value via parse_object. advances *rem past the block.
+static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* rem, Au target) {
+    // when `target` is set we SET members directly onto it (its type drives member
+    // lookup); otherwise we build a props map and construct a fresh object/map.
+    Au_t use_schema = target ? isa(target) : (schema ? schema : typeid(map));
+    bool is_map     = use_schema == typeid(map);
+    map  props      = target ? null : map(hsize, 16, assorted, true);
+
+    while (*scan) {
+        cstr ls = scan; int ind = 0;
+        while (*ls == '\t') { ind++; ls++; }
+        if (*ls == '\n') { scan = ls + 1; continue; }   // blank line
+        if (*ls == 0)     break;
+        if (ind < indent) break;                          // dedent ends the block
+
+        // key — unquoted symbol or quoted string
+        cstr   ks  = ls;
+        string key = (*ks == '"' || *ks == '\'')
+            ? parse_json_string(ks, &ks, null)
+            : parse_symbol(ks, &ks, null);
+        verify(key, "agi: expected key");
+        while (*ks == ' ' || *ks == '\t') ks++;
+        verify(*ks == ':', "agi: expected ':' after key %o", key);
+        ks++;                                             // past ':'
+        while (*ks == ' ' || *ks == '\t') ks++;          // ks = start of value
+
+        Au_t mem      = is_map ? null : find_member(use_schema, key->chars, AU_MEMBER_VAR, 0, true);
+        Au_t mem_type = mem ? mem->type   : (is_map ? meta : null);
+        Au_t mem_meta = mem ? mem->meta.a : null;
+
+        cstr re = ks; while (*re && *re != '\n') re++;    // end of this line
+        cstr after = (*re == '\n') ? re + 1 : re;         // start of next line
+        int  nx    = agi_peek_indent(after);
+
+        Au value = null;
+        if (nx > indent) {
+            // nested block — the rest of the line (if any) names the Type. always
+            // constructs fresh (target == null), then it's set onto the parent.
+            Au_t btype = mem_type;
+            cstr ts = ks;
+            if (ts < re && *ts != ' ' && *ts != '\t') {
+                string tn = parse_symbol(ts, &ts, null);
+                if (tn) { Au_t ft = find_type(tn->chars, null); if (ft) btype = ft; }
+            }
+            cstr brem = after;
+            value = parse_agi_block(after, nx, btype, mem_meta, &brem, null);
+            scan  = brem;
+        } else {
+            // leaf value. structured starters (quote / [ / { / number / -) and the
+            // keywords true|false|null go through parse_object; a bare word is taken
+            // as an unquoted string (json-in-value position can't, but .agi wants it).
+            cstr v  = ks;
+            cstr ve = re; while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t')) ve--;
+            int  vlen = (int)(ve - v);
+            char c0   = vlen ? *v : 0;
+            bool structured = c0 == '"' || c0 == '\'' || c0 == '[' || c0 == '{' ||
+                              c0 == '-' || (c0 >= '0' && c0 <= '9');
+            bool keyword = (vlen == 4 && strncmp(v, "true",  4) == 0) ||
+                           (vlen == 5 && strncmp(v, "false", 5) == 0) ||
+                           (vlen == 4 && strncmp(v, "null",  4) == 0);
+            if (vlen == 0) {
+                value = null;
+            } else if (structured || keyword) {
+                cstr vrem = v;
+                value = parse_object(v, mem_type, mem_meta, &vrem, null);
+            } else {
+                string sv = string(alloc, vlen + 1);
+                memcpy((cstr)sv->chars, v, vlen);
+                ((cstr)sv->chars)[vlen] = 0;
+                sv->count = vlen;
+                value = (mem_type && mem_type != typeid(Au) && mem_type != typeid(string))
+                    ? construct_with(mem_type, (Au)sv, null) : (Au)sv;
+            }
+            scan = after;
+        }
+
+        if (target) {
+            if (is_map)          set((map)target, (Au)key, value);  // map target
+            else if (mem)        member_set(target, mem, value);    // set member
+        } else
+            set(props, (Au)key, value);
+    }
+
+    if (rem) *rem = scan;
+    if (target) return target;
+    Au res = construct_with(use_schema, (Au)props, null);
+    if (use_schema == typeid(map)) hold(props);
+    return res;
+}
+
+// schema: type to construct when target is null. target: optional object to SET
+// members onto (its existing type wins). returns the target (if given) or a fresh
+// object/map. used so orbiter can read settings.agi straight onto itself.
+Au parse_agi(Au_t schema, cstr s, Au target) {
+    cstr rem = s;
+    return parse_agi_block(s, 0, schema, null, &rem, target);
 }
 
 static array parse_array_objects(cstr* s, Au_t element_type, ctx context) {
