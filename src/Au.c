@@ -1215,9 +1215,6 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
     func->index         = index;
     func->meta.a        = meta_a;
     func->meta.b        = meta_b;
-    if (alt && strcmp(alt, "keras_train") == 0) {
-        alt = alt;
-    }
     return func;
 }
 
@@ -4042,9 +4039,6 @@ item map_lookup(map m, Au k) {
                 return i;
     }
     item* hlist = m->hlist;
-    if (isa(k) == typeid(Au_t)) {
-        k = k;
-    }
     Au_t k_type = isa(k);
     u64 h = hash(k);
     i64 b = h % m->hsize;
