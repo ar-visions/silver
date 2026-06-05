@@ -1,4 +1,6 @@
+# comments allowed
 show_right: false
+
 projects:
 	silver: Project
 		name: silver

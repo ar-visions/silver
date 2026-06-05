@@ -68,7 +68,7 @@
             "preLaunchTask":    "build-silver-debug",
             "program":          "${workspaceFolder}/install/debug/orbiter",
             "args":             [ ],
-            "cwd":              "${workspaceFolder}/install/share/orbiter",
+            "cwd":              "/src/silver",
             "stopOnEntry":      false,
             "env": {
                 "LD_LIBRARY_PATH":  "${workspaceFolder}/install/lib",

@@ -1783,6 +1783,7 @@ declare_class_4(const_tokens, tokens, array, collective)
     M(AA,BB, s, method,  public, path,   path_self) \
     M(AA,BB, s, method,  public, path,   path_share_path) \
     M(AA,BB, s, method,  public, path,   path_cwd) \
+    M(AA,BB, s, method,  public, path,   path_startup) \
     M(AA,BB, s, method,  public, path,   path_tempfile, symbol) \
     M(AA,BB, i, ctr,     public, string) \
     M(AA,BB, i, ctr,     public, tokens) \

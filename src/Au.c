@@ -1224,11 +1224,6 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
 Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     static int seq; seq++;
 
-    if (ident && strcmp(ident, "remove") == 0) {
-        ident = ident;
-    }
-    //printf("def [ context: %s, ident: %s, member_type: %i, traits: %lli ]\n", type ? type->ident : null, ident, member_type, traits);
-
     struct _Au_combine* cur = calloc(1, sizeof(struct _Au_combine));
     cur->info.refs = 0;
     cur->info.managed = 0;
@@ -1330,15 +1325,6 @@ lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
 }
 
 Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize, i32 icount) {
-    if (strcmp(ident, "Toolbar") == 0) {
-        ident = ident;
-    }
-    if (strcmp(ident, "Group") == 0) {
-        ident = ident;
-    }
-    if (strcmp(ident, "element") == 0) {
-        ident = ident;
-    }
     type->member_type       = member_type;
     memset(&type->members, 0, sizeof(micro));
     memset(&type->args,    0, sizeof(micro));
@@ -1674,12 +1660,6 @@ ffi_method_t* method_with_address(handle address, Au_t rtype, micro* atypes, Au_
 
 none push_type(Au_t type, Au_t to_mod) {
     // ensure ident_hash is set for all types (static types from declare_class etc.)
-
-    if (type->ident && strcmp(type->ident, "gltf") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
-
     if (type->ident && !type->ident_hash)
         type->ident_hash = au_hash_ident(type->ident);
 
@@ -2590,9 +2570,6 @@ string numeric_cast_string(numeric a);
 none member_override(Au_t type, Au_t type_mem, AFlag f) {
     Au_t base = type->context;
 
-    if (strstr(type->ident, "silver")) {
-        type = type;
-    }
     while (base) {
         for (num i = 0; i < base->members.count; i++) {
             Au_t m = (Au_t)base->members.origin[i];
@@ -2650,6 +2627,8 @@ none member_override(Au_t type, Au_t type_mem, AFlag f) {
 }
 
 path path_share_path();
+path path_cwd();
+static path startup_cwd_ = null;   // the cwd we launched in, before cd to share
 none engage(cstrs argv) {
     Au_t f32_type = typeid(f32);
     if (started) return;
@@ -2689,6 +2668,8 @@ none engage(cstrs argv) {
     }
 
     if (argv) {
+        // capture the launch cwd before we change it to the app's share dir
+        if (!startup_cwd_) startup_cwd_ = hold(path_cwd());
         path sh = path_share_path();
         if (sh) cd(sh);
     }
@@ -3501,11 +3482,6 @@ none serialize(Au_t type, string res, Au a) {
 bool Au_member_set(Au a, Au_t m, Au value) {
     if (!(m->member_type == AU_MEMBER_VAR))
         return false;
-
-    if (m && strcmp(m->ident, "sel_col") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
 
     Au_t type         = isa(a);
     ARef member_ptr   = (ARef)((cstr)a + m->offset);
@@ -5883,6 +5859,12 @@ path path_cwd() {
     return a;
 }
 
+// the cwd the process launched in, captured by engage() before it cd's to the
+// app's share dir. falls back to the current cwd if engage didn't run.
+path path_startup() {
+    return startup_cwd_ ? startup_cwd_ : path_cwd();
+}
+
 Exists resource_exists(Au o) {
     Au_t type = isa(o);
     path  f = null;
@@ -6037,7 +6019,13 @@ static int agi_peek_indent(cstr scan) {
     while (*scan) {
         cstr ls = scan; int ind = 0;
         while (*ls == '\t') { ind++; ls++; }
+        while (*ls == ' ')  ls++;
         if (*ls == '\n') { scan = ls + 1; continue; }   // blank line — skip
+        if (*ls == '#') {                               // comment line — skip
+            while (*ls && *ls != '\n') ls++;
+            scan = (*ls == '\n') ? ls + 1 : ls;
+            continue;
+        }
         if (*ls == 0)     return -1;
         return ind;
     }
@@ -6607,8 +6595,14 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
     while (*scan) {
         cstr ls = scan; int ind = 0;
         while (*ls == '\t') { ind++; ls++; }
+        while (*ls == ' ')  ls++;                         // tolerate trailing spaces
         if (*ls == '\n') { scan = ls + 1; continue; }   // blank line
         if (*ls == 0)     break;
+        if (*ls == '#') {                                 // comment line — to line break
+            while (*ls && *ls != '\n') ls++;
+            scan = (*ls == '\n') ? ls + 1 : ls;
+            continue;
+        }
         if (ind < indent) break;                          // dedent ends the block
 
         // key — unquoted symbol or quoted string
@@ -6626,8 +6620,16 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
         Au_t mem_type = mem ? mem->type   : (is_map ? meta : null);
         Au_t mem_meta = mem ? mem->meta.a : null;
 
-        cstr re = ks; while (*re && *re != '\n') re++;    // end of this line
-        cstr after = (*re == '\n') ? re + 1 : re;         // start of next line
+        // content end: stop at newline or an unquoted '#' (comment runs to line break)
+        cstr re = ks; char q = 0;
+        while (*re && *re != '\n') {
+            if (q)      { if (*re == q) q = 0; }
+            else if (*re == '\'' || *re == '"') q = *re;
+            else if (*re == '#') break;
+            re++;
+        }
+        cstr eol = re; while (*eol && *eol != '\n') eol++; // past any comment text
+        cstr after = (*eol == '\n') ? eol + 1 : eol;       // start of next line
         int  nx    = agi_peek_indent(after);
 
         Au value = null;
@@ -7370,12 +7372,6 @@ void token_init(token a) {
     a->count    = length;
 
     memcpy(a->chars, prev, length);
-
-    if (strcmp(a->chars, "bold") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
-
     if (!a->literal) {
         if (a->chars[0] == '\"' || a->chars[0] == '\'') {
             string crop = string(chars, &a->chars[1], ref_length, length - 2);
