@@ -248,14 +248,11 @@ trinity orbiter # implements compiler
         #if [ !cfg.exists[] ]
         #    cfg.save[ '# orbiter user config\n' ]
  
-    # orbiter.agi lives in silver's root. startup_path is our share dir
-    # (root/install/share/orbiter), set in trinity.run[] — but init runs first so
-    # lazy-init it. silver root is three levels up from the share.
+    # orbiter.agi lives in the startup cwd. startup_path is captured in trinity.run[]
+    # before cwd changes to the share — but init runs first, so lazy-init it here.
     func agi_path [] -> path
-        if [ !startup_path ] startup_path = (path.path_share_path[]) ?? path.path_cwd[]
-        root : path '{startup_path}/../../..'
-        root = root.normalize[]
-        return path '{root}/orbiter.agi'
+        if [ !startup_path ] startup_path = path.path_startup[]
+        return path '{startup_path}/orbiter.agi'
 
     # read orbiter.agi and let parse_agi set members directly on this orbiter
     # instance (`a`) — chiefly the `projects` map. we clear projects first so a
@@ -263,13 +260,21 @@ trinity orbiter # implements compiler
     # flatten projects into the flat target arrays the UI already uses.
     func load_settings []
         sp  : agi_path[]
+        puts 'load_settings: startup_path={startup_path} -> agi={sp}'
         txt : string [ sp.load[ typeid[string], null ] ]
         if [ !txt || txt.count == 0 ]
+            puts 'load_settings: no/empty file at {sp}'
             return
         settings_mtime = sp.modified_time[]
         if [ projects ] projects.clear[]
         Au.parse_agi[ null, txt.chars, a ]
         sync_targets[]
+        if [ projects ]
+            puts 'loaded {projects.count} projects:'
+            for [ p: Project, name: string ] in projects
+                puts '  {name}: root={p.root} kind={p.kind}'
+        el
+            puts 'loaded 0 projects (projects is null)'
 
     # flatten the projects map (source of truth) into the flat target_names/
     # target_roots/target_srcs arrays the tabs, search and nav code consume.

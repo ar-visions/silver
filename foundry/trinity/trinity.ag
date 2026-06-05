@@ -1907,10 +1907,8 @@ abstract media_app trinity
     func update_scene [] return
          
     func run[]
-        # our own share dir: install/share/<app>, derived from the executable. for
-        # debug/launcher layouts where that exe-relative dir doesn't exist it returns
-        # null, so fall back to the actual cwd (the launcher sets it to the share).
-        startup_path = (path.path_share_path[]) ?? path.path_cwd[]
+        # the cwd we launched in (Au captured it in engage before cd'ing to share).
+        startup_path = path.path_startup[]
         type : typeid[a]
         background_type : Au.find_type[ (background) ? background.chars : null, null ]
         window : Window[ app_object: a, title:(title) ?? type.ident, st: Style [ a ],

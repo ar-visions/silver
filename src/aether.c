@@ -51,9 +51,6 @@ static bool has_scalable_vector(LLVMTypeRef ty) {
 void etype_register(aether a, Au key, Au value, bool overwrite) {
     if (!overwrite) {
         Au existing = get(a->registry, key);
-        if (existing) {
-            existing = existing;
-        }
         verify(!existing, "duplicate registration for %s", ((Au_t)key)->ident);
     }
     set(a->registry, key, value);
@@ -104,9 +101,6 @@ etype etype_create(aether a, Au_t m) { sequencer
 }
 
 etype etype_prep(aether a, Au_t au) { sequencer
-    if (au && au->ident && strcmp(au->ident, "VkOffset3D") == 0) {
-        au = au;
-    }
     if (!au) return null;
     if (au->is_alias && !au->src) { a->deferred_hit = true; return null; } // deferred alias — not resolved yet
     etype mdl = u(etype, au);
@@ -337,9 +331,6 @@ enode enode_value(enode mem, bool force_load) { sequencer
     if (!mem->loaded && (force_load || !is_struct(canonical(mem)) || mem->autype->is_explicit_ref) && 
         !mem->autype->is_imethod && !mem->autype->is_smethod && (force_load || mem->autype->member_type != AU_MEMBER_TYPE) &&
        (!is_func((Au)mem) || is_func_ptr((Au)mem))) {
-        if (mem->autype->ident && strstr(mem->autype->ident, "SND_PCM_STREAM") != NULL) {
-            mem = mem; // breakpoint: loading SND_PCM_STREAM enum
-        }
         aether a = mem->mod;
         a->is_const_op = false;
         if (a->no_build) return e_noop(a, (etype)mem);
@@ -1647,9 +1638,6 @@ static LLVMValueRef const_cstr(aether a, cstr value, i32 len) { sequencer
     char id[256];
     
     sprintf(id, "const_cstr_%i", seq);
-    if (seq == 532) {
-        seq = seq;
-    }
     LLVMValueRef gv = LLVMAddGlobal(a->module_ref, LLVMTypeOf(strConst), llvm_id(a, id));
     LLVMSetInitializer(gv, strConst);
     LLVMSetGlobalConstant(gv, 1);
@@ -2724,14 +2712,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
     if (!funcptr && !fn->used)
          fn->used = true;
 
-    if (fn->is_super) {
-        fn = fn;
-    }
 
-    if (seq == 188) {
-        Au info = header((Au)fn);
-        is_super = is_super;
-    }
 
     Au_t au = fn->autype;
 
@@ -2762,8 +2743,6 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
         Au info_target_instance = head(arg0);
         bool arg_is_ptr    = is_ptr((Au)first_arg) || !first_arg->loaded;
         bool target_is_ptr = is_ptr((Au)target_type) || !target_type->loaded || target_type->autype->is_target;
-        if (arg_is_ptr != target_is_ptr)
-            arg_is_ptr = arg_is_ptr;
         verify(arg_is_ptr == target_is_ptr, "target pointer mismatch on %o %i", fn, seq);
     }
 
@@ -2893,7 +2872,6 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
         etype cast_to = u(etype, au_type);
         enode r = e_create(a, cast_to, (Au)first_arg);
         arg_values[index++] = r->value;
-        r = r;
     }
 
     int fmt_idx = -1;
@@ -3567,8 +3545,6 @@ enode etype_access(etype target, string name) { sequencer
         bool  is_super_target = instanceof(target, enode) && ((enode)target)->is_super;
         enode n = enode_value((enode)target, false);
 
-        if (is_super_target)
-            is_super_target = is_super_target;
 
         // primitive method receiver must be addressable
         if (is_prim(n->autype->src) && !is_addressable(n)) {
@@ -3650,8 +3626,6 @@ enode etype_access(etype target, string name) { sequencer
         LLVMValueRef byte_ptr   = LLVMBuildGEP2(B, i8_ty, tnode->value, &offset_val, 1, id->chars);
         return enode(mod, a, autype, m, loaded, false, debug_id, id, value, byte_ptr);
     }
-    if (t->lltype)
-        t = t;
     etype_implement(t, false);
     // for C structs, m->index may be stale; recompute from member ordinal
     int gep_index = m->index;
@@ -3774,11 +3748,6 @@ static bool au_is_c(Au_t au) {
 enode aether_e_typeid(aether a, etype mdl) { sequencer
     etype original = mdl;
 
-    if (mdl && mdl->autype && mdl->autype->ident) {
-        if (strcmp(mdl->autype->ident, "Elements") == 0) {
-            mdl = mdl;
-        }
-    }
     // don't canonicalize funcptr/lambda types — canonical follows src to return type (none/void)
     if (!mdl || (!mdl->autype->is_funcptr && !mdl->autype->is_lambda))
         mdl = canonical(mdl);
@@ -4097,9 +4066,6 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
                             }
                         }
                     }
-                    if (!provided) {
-                        provided = provided;
-                    }
                     verify(provided, "required member '%s' not provided for %s",
                         mb->ident, alloc_type->ident);
                 }
@@ -4386,10 +4352,6 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
     
     enode input = (enode)instanceof(args, enode);
 
-        if (mdl && mdl->autype->ident && strcmp(mdl->autype->ident, "Elements") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
 
     etype base = base_model(mdl);
     etype og_mdl = mdl;
@@ -4535,9 +4497,6 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                 LLVMBuildBitCast(B, boxed->value, lltype(canonical(mdl)), "box_to_au"));
         }
 
-        if (seq == 113774) {
-            seq = seq;
-        }
 
         enode fmem  = convertible((etype)input, mdl);
         // runtime conversion fallback via __convert (e.g. string -> enum)
@@ -4708,9 +4667,6 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             int field_count = LLVMCountStructElementTypes(rmdl->lltype);
             LLVMValueRef *fields = calloc(field_count, sizeof(LLVMValueRef));
             bool all_const = a->no_const ? false : true;
-            if (rmdl->autype->ident && strcmp(rmdl->autype->ident, "mat4f") == 0) {
-                rmdl = rmdl;
-            }
             if (is_arr) {
                 array ar = (array)args;
                 int ln = len(ar);
@@ -5941,9 +5897,6 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     LLVMValueRef ptr_offset = LLVMBuildGEP2(B,
         elem_ty, base, &i->value, 1, N);
 
-    if (seq == 70) {
-        seq = seq;
-    }
 
     Au_t arg_type = au_arg_type((Au)n);
     if (arg_type->is_pointer)
@@ -5964,9 +5917,6 @@ enode aether_e_load(aether a, enode mem, enode target) { sequencer
     verify(is_ptr(mem) || !mem->loaded, "expected pointer to load from, given %o", mem);
     
     string id = f(string, "eload_%i", seq);
-    if (seq == 169) {
-        seq = seq;
-    }
     // if the variable holds a pointer (new, alloc, ref), load as ptr, not element type
     Au_t mem_au = au_arg_type((Au)mem);
     if (mem_au->is_pointer || mem->autype->is_explicit_ref) {
@@ -6114,8 +6064,6 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
             V = entry_alloca(a, lltype(F), "prim_addr");
             LLVMBuildStore(B, expr->value, V);
         }
-        if (!make_temp)
-            make_temp = make_temp;
         verify(make_temp, "unsupported cast");
     }
 
@@ -6174,12 +6122,6 @@ static etype etype_deref(aether a, Au_t au) {
 etype get_type_t_ptr(etype t);
 
 void aether_create_type_members(aether a, Au_t ctx) {
-    ctx = ctx;
-
-    if (typeis(ctx, vec3f)) {
-        ctx = ctx;
-    }
-
     // we must do this after building records / enums (in silver)
     members(ctx, mem) {
         if (mem->member_type == AU_MEMBER_VAR)
@@ -6703,9 +6645,6 @@ none etype_init(etype t) {
     }
 #endif
     
-    if (au && au->ident && strstr(au->ident, "index_num"))
-        au = au;
-
     if (t->lltype && !t->is_schema || (n && n->value && n->symbol_name))
         return;
 
@@ -6722,8 +6661,6 @@ none etype_init(etype t) {
     } else if (t->is_schema) {
         Au_t source_au = t->autype;
 
-        if (au->ident && strstr(au->ident, "VkQueueFamilyProperties"))
-            source_au = source_au;
             
         au = t->autype = def(typeid(Au),
             fmt("__%o_%s",
@@ -6845,9 +6782,6 @@ none etype_init(etype t) {
             bool struct_by_ref = is_struct(u(etype, t));
             etype mdl = null;
 
-            if (t->ident && strstr(t->ident, "format")) {
-                t = t;
-            }
             
             if (!convert_prim_target && !struct_by_ref && !arg->is_explicit_ref) {
                 mdl = etype_prep(a, t);
@@ -7133,9 +7067,6 @@ etype implement_type_id(etype t) {
 
     if (!au->ident) return null;
 
-    if (strcmp(au->ident, "Elements") == 0) {
-        au = au;
-    }
     string name = is_module(au) ?
         f(string, "%s_m", au->ident) :
         f(string, "%o_%s_i", symbol_name(
@@ -7160,9 +7091,6 @@ none etype_implement(etype t, bool w) { sequencer
     enode nn = (enode)instanceof(t, enode);
     Au_t      top       = top_scope(a);
     aether    module    = is_module(top) ? a : null;
-
-    if (au->ident && strcmp(au->ident, "VkClearValue") == 0)
-        au = au;
 
 #ifndef NDEBUG
     if (a->dbg_implement && au && au->ident && eq(a->dbg_implement, au->ident)) {
@@ -7197,9 +7125,6 @@ none etype_implement(etype t, bool w) { sequencer
 
     if (au->member_type == AU_MEMBER_VAR) {
         enode n = (enode)instanceof(t, enode);
-        if (!n) {
-            n = n;
-        }
         verify(n, "expected enode instance for AU_MEMBER_VAR");
         etype mdl = etype_prep(a, au->src);
         LLVMTypeRef type = lltype(mdl);
@@ -7259,10 +7184,6 @@ none etype_implement(etype t, bool w) { sequencer
             } else if (!au->is_static) {
                 char id[256];
                 snprintf(id, 256, "evar_%s", au->ident ? au->ident : "");
-                if (strcmp(id, "evar_local") == 0) {
-                    int test2 = 2;
-                    test2    += 2;
-                }
                 // emit alloca in entry block so LLDB can track the variable
                 LLVMBasicBlockRef current_block = LLVMGetInsertBlock(B);
                 LLVMBasicBlockRef entry_block   = LLVMGetEntryBasicBlock(
@@ -7642,9 +7563,6 @@ none etype_implement(etype t, bool w) { sequencer
             
             //LLVMSetLinkage(G, a->is_Au_import ? LLVMExternalLinkage : LLVMInternalLinkage);
             //LLVMSetGlobalConstant(G, 1);
-            if (strstr(m->ident, "SND_PCM_STREAM_CAPTURE") != NULL) {
-                seq = seq; // breakpoint: SND_PCM_STREAM lookup
-            }
             if (!a->is_Au_import) {
                 LLVMValueRef init;
                 if (et == typeid(i32))
@@ -7688,9 +7606,6 @@ none etype_implement(etype t, bool w) { sequencer
         // functions, on init, create the arg enodes from the model data
         // make sure the types are ready for use
         arg_list(au, arg) {
-            if (arg->ident && strcmp(arg->ident, "optimizer") == 0) {
-                arg = arg;
-            }
         }
 
         arg_types(au, arg_type) {
@@ -7712,18 +7627,10 @@ none etype_implement(etype t, bool w) { sequencer
             fn->context_node->value = value_ctx;
         }
 
-        if (au->ident && strcmp(au->ident, "mul") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
 
         Au_t au_target = (au->is_imethod || au->is_smethod) && au->args.count > 0 && au->args.origin ?
             (Au_t)au->args.origin[0] : null;
         
-        if (strcmp(fn->autype->ident, "apply_x") == 0) {
-            int test2 = 2;
-            test2    += 2;
-        }
 
         fn->target = au_target ?
             hold(enode(mod, a, autype, au_target, arg_index, 0, loaded, true)) : null;
@@ -8071,9 +7978,6 @@ none aether_build_module_initializer(aether a, enode init) {
             continue;
 
         Au_t mem = mdl->autype;
-        if (mem->ident && strcmp(mem->ident, "media_app") == 0) {
-            mem = mem;
-        }
 
         bool is_class_t  = is_class(mdl);
         bool is_struct_t = is_struct(mdl);
@@ -8086,9 +7990,6 @@ none aether_build_module_initializer(aether a, enode init) {
         // intern classes still need emplace for typesize
 
         Au_t tau = mdl->autype;
-        if (mdl->autype->ident && strcmp(mdl->autype->ident, "test4") == 0) {
-            mdl = mdl;
-        }
 
         // calculate internal size and count
         u64 isize = 0;
@@ -8243,10 +8144,6 @@ none aether_build_module_initializer(aether a, enode init) {
             } else if (mem->member_type == AU_MEMBER_ENUMV) {
                 static int seq = 0;
                 seq++;
-                if (seq == 2) {
-                    int test2 = 2;
-                    test2    += 2;
-                }
                 etype_implement(u(etype, mem->context), false);
                 enode val = (enode)u(enode, mem);
 
@@ -8287,9 +8184,6 @@ none aether_build_module_initializer(aether a, enode init) {
     push_scope(a, (Au)f, 13);
     members(module_base, au) {
         evar var = u(evar, au);
-        if (au->ident && strcmp(au->ident, "rng_state") == 0) {
-            au = au;
-        }
         if (au->member_type == AU_MEMBER_VAR && var && var->initializer) {
             build_user_initializer(a, u(etype, au));
         }
@@ -8530,12 +8424,6 @@ none aether_import_models(aether a, Au_t ctx, bool au_mode) {
             //if (m->module != ctx)
             //    continue;
 
-            if (typeis(m, vec3f)) {
-                m = m;
-            }
-            if (m->member_type == AU_MEMBER_CONSTRUCT && m->context && strcmp(m->context->ident, "mat4f") == 0) {
-                m = m; // [claude] break: mat4f constructor
-            }
 
             if (ff->member_type && ff->member_type != m->member_type) continue;
             if (m->member_type == AU_MEMBER_ENUMV) continue; // enum values handled via their enum type's etype_implement
@@ -8599,10 +8487,6 @@ void aether_import_Au(aether a, string ident, Au lib) {
     Au_t    au_module = null;
     handle  lib_instance = null;
 
-    if (eq(ident, "vulkan2")) {
-        int test2 = 2;
-        test2    += 2;
-    }
 
     if (instanceof(lib, path)) {
         au_module = find_module(ident->chars);
@@ -8989,9 +8873,6 @@ none enode_init(enode n) {
     if (is_func((Au)n->autype->context) && !n->symbol_name) {
         int offset = 0;
 
-        if (n->autype->context && strcmp(n->autype->context->ident, "handle_glfw_framebuffer_size") == 0) {
-            n = n;
-        }
         if (is_lambda((Au)n->autype->context))
             offset += 1;
 
