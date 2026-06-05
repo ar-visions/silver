@@ -163,6 +163,13 @@ int main(int argc, char** argv) {
     char artifacts[4096];
     snprintf(artifacts, sizeof(artifacts), "%s/%s.source", bindir, name);
 
+    // record the launch cwd before we cd to the share, so the app can resolve its
+    // config (e.g. orbiter.agi) against where it was started, not the share dir.
+    char launch_cwd[4096];
+    if (getcwd(launch_cwd, sizeof(launch_cwd))) {
+        setenv("SILVER_STARTUP", launch_cwd, 1);
+        printf("silver-host: launch cwd = %s (SILVER_STARTUP set)\n", launch_cwd);
+    }
     cd_share(bindir, name);
 
     // up-front staleness check: only recompile when a source is actually newer
