@@ -5,6 +5,7 @@ import img
 import gltf
 import trinity
 import silver
+import project
 
 import <stdio.h>
     -lm
@@ -59,6 +60,15 @@ trinity orbiter # implements compiler
     intern target_names  : array string
     intern target_roots  : array path
     intern target_srcs   : array path
+    # projects loaded from orbiter.agi (the source of truth). orbiter.agi sets
+    # this map directly on the orbiter instance via parse_agi; target_names/roots/
+    # srcs are derived from it (sync_targets) so the rest of the app keeps using
+    # the flat arrays. cleared + reloaded whenever orbiter.agi changes.
+    public projects      : map Project [string]
+    # orbiter.agi reload: polled once a second from on_render. settings_mtime is
+    # the file mtime we last loaded; settings_check_ms throttles the stat to ~1Hz.
+    intern settings_mtime    : i64
+    intern settings_check_ms : i64
     public open_files       : array path
     # files that have a docked tab, per pane group (the +/- in the editor title
     # nav). an opened file is a preview until docked; docking pins a tab in that
@@ -159,16 +169,12 @@ trinity orbiter # implements compiler
         breakpoints    = map string[string] []
         code_font_size = 19    # ~70% of the large canvas default
 
-        # targets defined once here
+        # targets come from orbiter.agi (parsed into the projects map, then
+        # flattened into target_names/roots/srcs). load_settings populates them.
         target_names   = array string []
         target_roots   = array path []
         target_srcs    = array path []
-        target_names  += 'silver'
-        target_roots  += path '/src/silver'
-        target_srcs   += path '/src/silver/src'
-        target_names  += 'hyperspace'
-        target_roots  += path '/src/silver/foundry/hyperspace'
-        target_srcs   += path '/src/silver/foundry/hyperspace'
+        load_settings[]
         # no files open at start — files open from the FileList (main on click,
         # right pane on shift+click)
         open_files     = array path []
@@ -188,7 +194,11 @@ trinity orbiter # implements compiler
         nav_root       = target_roots[0]
         active_console = 'shell'
         show_console   = true
-        show_right     = true
+        # show_right comes from orbiter.agi (parse_agi set it before this point);
+        # right_w is the seam source-of-truth that on_render derives show_right from,
+        # so collapse the panel here when the setting starts it hidden.
+        if [ !show_right ]
+            right_w = 0.0
         filter_text    = ''
         find_text      = ''
         findbar_open   = false
@@ -238,6 +248,42 @@ trinity orbiter # implements compiler
         #if [ !cfg.exists[] ]
         #    cfg.save[ '# orbiter user config\n' ]
  
+    # orbiter.agi lives in silver's root. startup_path is our share dir
+    # (root/install/share/orbiter), set in trinity.run[] — but init runs first so
+    # lazy-init it. silver root is three levels up from the share.
+    func agi_path [] -> path
+        if [ !startup_path ] startup_path = (path.path_share_path[]) ?? path.path_cwd[]
+        root : path '{startup_path}/../../..'
+        root = root.normalize[]
+        return path '{root}/orbiter.agi'
+
+    # read orbiter.agi and let parse_agi set members directly on this orbiter
+    # instance (`a`) — chiefly the `projects` map. we clear projects first so a
+    # reload is a clean rebuild (no stale entries lingering), then reparse and
+    # flatten projects into the flat target arrays the UI already uses.
+    func load_settings []
+        sp  : agi_path[]
+        txt : string [ sp.load[ typeid[string], null ] ]
+        if [ !txt || txt.count == 0 ]
+            return
+        settings_mtime = sp.modified_time[]
+        if [ projects ] projects.clear[]
+        Au.parse_agi[ null, txt.chars, a ]
+        sync_targets[]
+
+    # flatten the projects map (source of truth) into the flat target_names/
+    # target_roots/target_srcs arrays the tabs, search and nav code consume.
+    func sync_targets []
+        target_names = array string []
+        target_roots = array path []
+        target_srcs  = array path []
+        if [ !projects ]
+            return
+        for [ p: Project, name: string ] in projects
+            target_names += name
+            target_roots += p.root
+            target_srcs  += p.src
+
     func check_stale []
         for [ i: i32 0, i < target_names.count, i += 1 ]
             name    : string target_names[i]
@@ -375,7 +421,7 @@ trinity orbiter # implements compiler
         file_index   = list string []
         index_queue  = array path []
         for [ d: path ] in search_dirs
-            index_queue.push[ d ]
+            if [ d ] index_queue.push[ d ]
         index_building = true
         index_dirty    = false
 
@@ -925,6 +971,14 @@ trinity orbiter # implements compiler
                 stdout_orig = au_stdout_orig[]
             drain_stdout[]
         index_step[]
+        # poll orbiter.agi once a second; reload projects if its mtime changed.
+        now_ms : i64 [ Au.epoch_millis[] ]
+        if [ now_ms - settings_check_ms >= 1000 ]
+            settings_check_ms = now_ms
+            sp : agi_path[]
+            mt : i64 [ sp.modified_time[] ]
+            if [ mt != settings_mtime ]
+                load_settings[]
         #avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
         w.set_title[ 'orbiter' ]
 

@@ -617,11 +617,17 @@ Control Editor
         sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
         grab : f32 [ (sb && sb.thumb_w > 0.0) ? sb.thumb_w * 2.0 + 8.0 : 16.0 ]
         if [ ele && sb && sb.scroll_max > 0.0 && rel_x > ele.bounds.w - grab ]
-            sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y ] ]
+            # find_target folds e.scroll.y into mouse.pos.y; the thumb is screen-space
+            # so subtract it to get the on-screen (track-relative) click position.
+            my : f32 [ ev.mouse.pos.y - ele.bounds.y - scroll.y ]
+            sb.grab_at[ my ]
+            sy : f32 [ sb.drag_to[ my ] ]
             if [ sy >= 0.0 ]
                 scroll.y        = sy
                 scroll_dragging = true
+                sb.active       = true
                 pristine        = false
+                ux.will_animate = true
             return
         # a click in the pin column (right 144, present while searching) is a pin
         # click handled by the app — don't move the cursor or start a selection.
@@ -664,9 +670,11 @@ Control Editor
         if [ scroll_dragging && ele ]
             sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
             if [ sb ]
-                sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y ] ]
+                # subtract scroll.y (folded in by find_target) — thumb is screen-space
+                sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y - scroll.y ] ]
                 if [ sy >= 0.0 ] scroll.y = sy
             pristine = false
+            ux.will_animate = true
             return
         if [ dragging ]
             place_cursor[ ev ]
@@ -680,12 +688,14 @@ Control Editor
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
         hl    : i32  [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
         hg    : bool [ rel_x >= 0.0 && rel_x < gutter_w ]
+        # only repaint on an actual hover change (row / gutter). the scrollbar's
+        # proximity tracking is owned by ScrollLayer, which sustains frames while the
+        # cursor is in its zone — so the editor doesn't blanket-request frames here.
         if [ hl != hover_line || hg != hover_gutter ]
             hover_line   = hl
             hover_gutter = hg
-        # repaint on every move so the scrollbar's proximity widen/round tracks the
-        # cursor (moving sideways toward the bar doesn't change hover_line).
-        pristine = false
+            pristine = false
+            ux.will_animate = true
 
     func on_leave [ ev: Event ]
         if [ hover_line != -1 || hover_gutter ]
@@ -696,6 +706,10 @@ Control Editor
     func on_release [ ev: Event ]
         dragging        = false
         scroll_dragging = false
+        sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
+        if [ sb ]
+            sb.active = false
+            ux.will_animate = true
 
     func on_char [ ev: Event ]
         if [ line_count[] <= 0 ] return

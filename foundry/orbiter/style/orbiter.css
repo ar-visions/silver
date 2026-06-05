@@ -413,7 +413,7 @@ Instances / Tabs.tools / Button.play:disable {
 }
 
 Tabs.source_nav {
-    area:                       l1.7 t0 w8 h1.2
+    area:                       l1.7 t0 r0 h1.2
 }
 
 Tabs.source_nav / Option {

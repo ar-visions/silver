@@ -994,6 +994,21 @@ Display Window
             if [ !ev.no_propagation && app_object ]
                 ev.target = m
                 app_object.on_move*[ ev ]
+        # scrollbar proximity: while the cursor is within a scrollbar's widen zone,
+        # request a frame this move so the bar can track + widen (a layer can't
+        # repaint without a frame). gated to the zone so we don't relayout elsewhere;
+        # the zone's outer edge is already thin, so leaving it needs no extra frame.
+        if [ f && f.layers ]
+            sbl : ScrollLayer (f.layers['scrollbar'] to ScrollLayer)
+            if [ sbl && sbl.scroll_max > 0.0 ]
+                fr : f32 [ (1.0 - f.cursor.x) * f.bounds.w ]
+                # generous, bar-independent approach distance so the bar responds well
+                # before you're on it. set pristine=false too: will_animate alone gives
+                # a frame, but the element stays cached so its scrollbar layer isn't
+                # repainted — the dirty flag forces the layers (incl. the bar) to redraw.
+                if [ fr < 90.0 ]
+                    f.pristine = false
+                    will_animate = true
         if [ focus && focus.text_dragging ]
             for [ l: Layer, k: string ] in focus.layers
                 if [ l.editable ]
@@ -1853,6 +1868,9 @@ Display Window
 abstract media_app trinity
     public background   : string
     public title        : string
+    # the working directory the app started in (its install/share/<app> dir, set
+    # by the host before any app code runs). resources/config resolve against it.
+    public startup_path : path
     intern msaa_samples : i64
     intern istroke      : f32 0
     intern ifill        : f32 0
@@ -1889,6 +1907,10 @@ abstract media_app trinity
     func update_scene [] return
          
     func run[]
+        # our own share dir: install/share/<app>, derived from the executable. for
+        # debug/launcher layouts where that exe-relative dir doesn't exist it returns
+        # null, so fall back to the actual cwd (the launcher sets it to the share).
+        startup_path = (path.path_share_path[]) ?? path.path_cwd[]
         type : typeid[a]
         background_type : Au.find_type[ (background) ? background.chars : null, null ]
         window : Window[ app_object: a, title:(title) ?? type.ident, st: Style [ a ],
@@ -1928,6 +1950,12 @@ Layer ScrollLayer
     mutable track_vis   : f32
     mutable scroll_max  : f32
     mutable grab_w      : f32
+    # offset from the thumb top to where it was grabbed — kept constant during a
+    # drag so the thumb doesn't snap its center to the cursor (relative grab).
+    mutable grab_off    : f32
+    # set by the owning element while the thumb is grabbed — pins the bar to its
+    # full expanded state (max width, squared, border) for the whole drag.
+    public  active      : bool
 
     func draw [ cv: Canvas ]
         e : element [ parent ]
@@ -1952,22 +1980,37 @@ Layer ScrollLayer
         # widen over a generous approach distance so the bar visibly responds as the
         # mouse nears it (not just in the last few px). grab precision is handled
         # separately by the element's hit zone.
-        near : f32 [ base_w * 10.0 ]
+        # approach distance over which the bar widens — flat px (not bar-relative) so
+        # a thin bar still has a comfortable zone. matches move_event's frame zone.
+        near : f32 [ 90.0 ]
         prox : f32 [ 0.0 ]
         if [ e.hovered ]
             from_right : f32 [ (1.0 - e.cursor.x) * e.bounds.w ]
             prox = clamp[ 1.0 - from_right / near, 0.0, 1.0 ]
+        # while grabbed, stay fully expanded no matter where the cursor drifts
+        if [ active ] prox = 1.0
         eff_w : f32 [ base_w * (1.0 + prox) ]
         r     : f32 [ thumb_radius * (1.0 - prox) ]
         thumb_x : f32 [ bounds.x + bounds.w - eff_w ]
         # cache geometry for the element's drag handling. track_vis is the track
         # height starting at the content top, which is also where mouse-y is measured
         # from (ev.mouse.pos.y - content_layer.bounds.y), so drag_to needs no offset.
-        thumb_y_px = thumb_y
+        # thumb_y_px is TRACK-RELATIVE (0 = content/track top) so it matches the
+        # mouse-y the element passes to drag_to (also track-relative).
+        thumb_y_px = thumb_y - top
         thumb_h_px = thumb_h
         track_vis  = vis_h
         scroll_max = max_sc
         grab_w     = base_w * 2.0 + 6.0
+        # while widening, fade in a 1px border around the whole scroll area (the
+        # widened track column) to visually contain the scrollbar. #fff2 at full prox.
+        if [ prox > 0.0 ]
+            cv.fill_color  [ rgba['#0000'] ]
+            cv.stroke_color[ rgba[ r:1.0, g:1.0, b:1.0, a: 0.133 * prox ] ]
+            cv.stroke_width[ 1.0 ]
+            cv.rect_to     [ thumb_x, top, eff_w, vis_h ]
+            cv.paint       [ ]
+            cv.stroke_width[ 0.0 ]
         cv.fill_color[ thumb_color ]
         cv.rounded_rect[ thumb_x, thumb_y, eff_w, thumb_h, r, r, r, r ]
         cv.paint[]
@@ -1975,11 +2018,21 @@ Layer ScrollLayer
     # map a mouse-y (element-local screen space) to a scroll offset, centering the
     # thumb under the cursor. returns -1 when there's nothing to scroll. the owning
     # element applies the result to its own scroll while the bar is grabbed.
+    # map a (track-relative) mouse-y to a scroll offset, keeping the grab offset so
+    # the thumb tracks the cursor without snapping. returns -1 if nothing to scroll.
     public func drag_to [ my: f32 ] -> f32
         travel : f32 [ track_vis - thumb_h_px ]
         if [ travel <= 0.0 ] return -1.0
-        rel : f32 [ my - thumb_h_px * 0.5 ]
-        return clamp[ (rel / travel) * scroll_max, 0.0, scroll_max ]
+        thumb_top : f32 [ my - grab_off ]
+        return clamp[ (thumb_top / travel) * scroll_max, 0.0, scroll_max ]
+
+    # call on grab: record where in the thumb the cursor landed (relative grab when
+    # on the thumb; centered when clicking the empty track).
+    public func grab_at [ my: f32 ]
+        if [ my >= thumb_y_px && my <= thumb_y_px + thumb_h_px ]
+            grab_off = my - thumb_y_px
+        el
+            grab_off = thumb_h_px * 0.5
 
 
 element View

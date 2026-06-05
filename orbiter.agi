@@ -1,0 +1,20 @@
+show_right: false
+projects:
+	silver: Project
+		name: silver
+		root: '/src/silver'
+		module: '/src/silver/src'
+		src: '/src/silver/src'
+		kind: shared
+	hyperspace: Project
+		name: hyperspace
+		root: '/src/silver/foundry/hyperspace'
+		module: '/src/silver/foundry/hyperspace'
+		src: '/src/silver/foundry/hyperspace'
+		kind: app
+	test4: Project
+		name: test4
+		root: '/src/silver/foundry/test4'
+		module: '/src/silver/foundry/test4'
+		src: '/src/silver/foundry/test4'
+		kind: app

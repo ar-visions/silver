@@ -1,0 +1,10 @@
+export 0.8.8
+
+import <stdio.h>
+
+# the simplest foundry module orbiter can load and run: a class whose init
+# prints a line a few times. used to bring up the run/debug path from orbiter.
+class test4
+    func init[]
+        for [ i : 0, i < 4, i += 1 ]
+            puts 'hello'
