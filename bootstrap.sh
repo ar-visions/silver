@@ -212,6 +212,10 @@ if ! [ -L "$SILVER/install" ]; then
     ln -sf ./platform/native "$SILVER/install"
 fi
 
+# Au's ports.h must be reachable as <ports.h> by modules that build OUTSIDE the
+# src tree (e.g. foundry/dbg) — symlink it into the install include dir.
+ln -sf "$SILVER/src/ports.h" "$NATIVE/include/ports.h"
+
 # private app storage
 mkdir -p "$SILVER/private"
 mkdir -p "$SILVER/private/silver"
