@@ -107,8 +107,8 @@ Group / Check {
         fill_color:             #4afa, 222ms cubic
 }
 
-Group.editor-group {
-    area:                       l0 t0 r@right_w=10|0|0 b@console_h=6.9|0|50
+Group.editor_group {
+    area:                       l0 t0 r0 b@console_h=6.9|0|50
 
     layers.compose:
         radius:                 0
@@ -166,18 +166,22 @@ Editor / element.pins / Option:selected {
         label_color:            #ffff
 }
 
-/* a lone pane fills the whole view; only a real split (both panes, EditorView
-   selected) goes 50/50. */
-EditorView / Editor {
-    area:                       l0+ t0 r0 b0
+/* one Editor per split slot, tiled left-to-right between the split seams. adjacent
+   panes share the seam var on their touching edges (pane0.r == pane1.l == split1,
+   etc.) so the boundary is a single draggable seam. the app maintains split1/2/3 as
+   absolute x in units and pins the last visible pane's trailing seam to the area
+   width so it fills; pane3 (the 4-pane cap) uses r0. */
+EditorView / Editor.pane0 {
+    area:                       l0 t0 l@split1=50|0|0 b0
 }
-
-EditorView:selected / Editor {
-    area:                       l0+ t0 w50% b0
+EditorView / Editor.pane1 {
+    area:                       l@split1=50|0|0 t0 l@split2=100|0|0 b0
 }
-
-EditorView:selected / Editor.pane-right {
-    area:                       l0+ t0 r0 b0
+EditorView / Editor.pane2 {
+    area:                       l@split2=100|0|0 t0 l@split3=150|0|0 b0
+}
+EditorView / Editor.pane3 {
+    area:                       l@split3=150|0|0 t0 r0 b0
 }
 
 Editor / element.title {
@@ -213,7 +217,7 @@ Editor:expanded / element.title {
         fill_color:             #fff2
 }
 
-Group.editor-group / Option {
+Group.editor_group / Option {
     area:                       l0+ t7px w2 h1
     layers.base:
         fill_color:             #2481
@@ -239,7 +243,7 @@ Group.editor-group / Option {
 
 
 Instances {
-    area:                       l0 b@console_h=6.9|0|50 r@right_w=10|0|0 b0
+    area:                       l0 b@console_h=6.9|0|50 r0 b0
     layers.compose:
         ctype: compose
         fill_color: #f0a
@@ -269,6 +273,51 @@ Console {
         thumb_w:            6
         thumb_min_h:        32
         thumb_radius:       4
+}
+
+/* callstack + fields: a vertical stack on the editor's right, on the stack_w seam
+   (draggable) — the data we view within the code, per debug session. fields on top,
+   callstack list below. the navigate pins + search results draw in front. */
+Editor / element.dbg {
+    area:   r@stack_w=0|0|0 t45px r0 b0
+    layers.base:
+        fill_color:     #0e1626e0
+        stroke_width:   0.5
+        stroke_color:   #fff2
+}
+
+Editor / element.dbg / Callstack {
+    area:           l0.2 t0.2+ r0.2 b0.2
+    focusable:      true
+    layers.base:
+        fill_color:     #1c2840cc
+        inner_glow:     #8af2 14
+        radius:         10
+        stroke_width:   0.5
+        stroke_color:   #fff2
+    layers.content: NodeLayer
+        area:           l0.3 t0.5 r0.3 b0.3
+        label_size:     14
+        row_spacing:    1.3
+        sel_color:      #264f78
+        sel_radius:     6
+        text_color:     #cfe6ff
+}
+
+Editor / element.dbg / element.fields {
+    area:   l0.2 t0.2+ r0.2 b50%
+    layers.base:
+        fill_color:     #1c2840cc
+        inner_glow:     #8af2 14
+        radius:         10
+        stroke_width:   0.5
+        stroke_color:   #fff2
+    layers.face:
+        label_color:    #cfe6ff
+        label_size:     15
+        label_align:    0.0 0.0
+        label_offset:   12 10
+        label_font:     'fonts/SpaceMono-Regular.ttf'
 }
 
 FileList {
@@ -307,7 +356,6 @@ DebugPanel {
 
 Editor {
     focusable:              true
-    area:                   l0+ t0 w50% b0
     layers.content: EditorLayer
         area:               l0 t45px r0 b0
         label_height:       1.0
@@ -346,14 +394,6 @@ Tabs.actions {
 
 Tabs.targets {
     area: l2 t0 r0 h1
-}
-
-Tabs.consoles {
-    area: r216px t0 w8 h1.2
-}
-
-Tabs.consoles / Button {
-    area: l6+px t6px w3 h1
 }
 
 Tabs.targets / Button {
@@ -501,25 +541,6 @@ Tabs.actions / Button.play:disable {
 }
 
 /* >| toggle button, top-right of the editor group — icon only, no background */
-Option.toggle_side {
-    area:                       r36px t8px w28px h28px
-    layers.svg:
-        area:                   3px
-        image_svg:              "images/side_on.svg"
-        image_align:            0.5 0.5
-        image_scale:            1.5
-        opacity:                0.55
-
-:hovered
-    layers.svg:
-        opacity:                1.0
-
-:selected
-    layers.svg:
-        image_svg:              "images/side_off.svg"
-        opacity:                1.0
-}
-
 Avatar.avatar {
     shaders.orbiter: PBR
         groups:         ["outside","flower","separator"]
@@ -555,7 +576,7 @@ Avatar.avatar {
     blend_bands:        0.2
     blend_rings:        0.2
     blend_haze:         1.0
-    area: l0 t0 w8 h8
+    area: l0 t0 r0 b0
 }
 
 Avatar.avatar:hovered {
@@ -571,6 +592,24 @@ Avatar.avatar:pressed {
         pulse_height:   2.0, filter 0.8
 
     rotate:             [ 0 1 0 30deg, 1 0 0 0deg ], 88ms cubic outward
+}
+
+/* avatar shown in the right editor pane (a direct EditorView child, not inside an
+   Editor — that masks it). right half, square (height tracks width via 'hw'). */
+EditorView / Avatar.avatar {
+    area:               m0 m0 w8 h8
+}
+
+EditorView / Avatar.avatar / Option {
+    area:               r8px t8px w90px h28px
+    layers.base:
+        fill_color:     #2484
+        inner_glow:     #8af3 12
+        radius:         6
+    layers.face:
+        label_color:    #fff
+        label_size:     14
+        label_align:    0.5 0.5
 }
 
 Editor / element.title / element.nav {
@@ -612,50 +651,6 @@ Editor / element.title / element.nav / Option.git {
         image_svg:              "images/git.svg"
 }
 
-Editor / element.title / element.dock {
-    area:                       l8px t5px w34px h34px
-    layers.base:
-        fill_color:             #0000
-        inner_glow:             #0000 24
-        radius:                 8
-    layers.svg:
-        area:                   4px
-        image_align:            0.5 0.5
-        image_scale:            1.8
-        image_svg:              "images/expand2.svg"
-        opacity:                0.5
-}
-
-Editor / element.title / element.undock {
-    area:                       l8px t5px w34px h34px
-    layers.base:
-        fill_color:             #0000
-        inner_glow:             #0000 24
-        radius:                 8
-    layers.svg:
-        area:                   4px
-        image_align:            0.5 0.5
-        image_scale:            1.8
-        image_svg:              "images/collapse2.svg"
-        opacity:                0.5
-}
-
-Editor / element.title / element.dock:hovered {
-    layers.base:
-        fill_color:             #8af4
-        inner_glow:             #8afa 24
-    layers.svg:
-        opacity:                1.0
-}
-
-Editor / element.title / element.undock:hovered {
-    layers.base:
-        fill_color:             #8af4
-        inner_glow:             #8afa 24
-    layers.svg:
-        opacity:                1.0
-}
-
 Editor / element.title / element.nav / Option.magnify {
     layers.svg:
         image_svg:              "images/magnify.svg"
@@ -670,6 +665,60 @@ Editor / element.title / element.nav / Option.magnify:selected {
         opacity:                1.0
         image_svg:              "images/close.svg"
         image_scale:            1.8
+}
+
+/* menu icon next to magnify — the old right toggle (opens the second editor). */
+Editor / element.title / element.nav / Option.menu {
+    layers.svg:
+        image_svg:              "images/menu.svg"
+        image_scale:            1.4
+}
+
+/* the add (+) / remove (-) tab buttons, in the right-side nav with magnify/menu.
+   plain Buttons (actions, no toggle/select), so they're styled self-contained
+   rather than via the Option nav rule. */
+Editor / element.title / element.nav / Button.dock {
+    area:                       l0+ t0 w34px h34px
+    layers.base:
+        fill_color:             #0000
+        inner_glow:             #0000 24
+        radius:                 8
+    layers.svg:
+        area:                   4px
+        image_align:            0.5 0.5
+        image_scale:            1.4
+        image_svg:              "images/expand2.svg"
+        opacity:                0.5
+}
+
+Editor / element.title / element.nav / Button.undock {
+    area:                       l0+ t0 w34px h34px
+    layers.base:
+        fill_color:             #0000
+        inner_glow:             #0000 24
+        radius:                 8
+    layers.svg:
+        area:                   4px
+        image_align:            0.5 0.5
+        image_scale:            1.4
+        image_svg:              "images/collapse2.svg"
+        opacity:                0.5
+}
+
+Editor / element.title / element.nav / Button.dock:hovered {
+    layers.base:
+        fill_color:             #8af4
+        inner_glow:             #8afa 24
+    layers.svg:
+        opacity:                1.0
+}
+
+Editor / element.title / element.nav / Button.undock:hovered {
+    layers.base:
+        fill_color:             #8af4
+        inner_glow:             #8afa 24
+    layers.svg:
+        opacity:                1.0
 }
 
 Editor / element.title / element.find {

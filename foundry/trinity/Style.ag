@@ -609,6 +609,8 @@ class Region
     public bind_r : BindCoord
     public bind_b : BindCoord
     public set : bool
+    # 'hw' in the height slot: height tracks the computed width (a square).
+    public square : bool
 
     construct [ f: f32 ]
         l   = XCoord [ x_type: XAlign.left,   offset: f ]
@@ -630,11 +632,16 @@ class Region
             l = XCoord [ aa[0] ]
             t = YCoord [ aa[1] ]
             r = XCoord [ aa[2] ]
-            b = YCoord [ aa[3] ]
             bind_l = coord_bind[ aa[0], i32[ XAlign.left ] ]
             bind_t = coord_bind[ aa[1], i32[ YAlign.top ] ]
             bind_r = coord_bind[ aa[2], i32[ XAlign.right ] ]
-            bind_b = coord_bind[ aa[3], i32[ YAlign.bottom ] ]
+            # 'hw' in the height slot → height tracks the computed width (square)
+            if [ aa[3] == 'hw' ]
+                square = true
+                b = YCoord [ y_type: YAlign.height, offset: 0.0 ]
+            el
+                b = YCoord [ aa[3] ]
+                bind_b = coord_bind[ aa[3], i32[ YAlign.bottom ] ]
         el [ aa.count == 1 ]
             l = XCoord [ aa[0] ]
             t = YCoord [ aa[0] ]
@@ -652,10 +659,14 @@ class Region
         lv : l.plot[ win.x, win.x + win.w, null,  0.0, rel, last, fc ]
         rv : r.plot[ win.x, win.x + win.w, ref l, lv,  rel, last, fc ]
         tv : t.plot[ win.y, win.y + win.h, null,  0.0, rel, last, fc ]
-        bv : b.plot[ win.y, win.y + win.h, ref t, tv,  rel, last, fc ]
         rx : f32 [ round[ lv ] ]
         ry : f32 [ round[ tv ] ]
-        return rect [ x: rx, y: ry, w: round[ rv ] - rx, h: round[ bv ] - ry ]
+        ww : f32 [ round[ rv ] - rx ]
+        # square: height = computed width
+        if [ square ]
+            return rect [ x: rx, y: ry, w: ww, h: ww ]
+        bv : b.plot[ win.y, win.y + win.h, ref t, tv,  rel, last, fc ]
+        return rect [ x: rx, y: ry, w: ww, h: round[ bv ] - ry ]
 
     func mix [ other: Region, f: f64 ] -> Region
         reg : Region [ set: true ]
@@ -663,6 +674,7 @@ class Region
         reg.t = t.mix[ other.t, f ]
         reg.r = r.mix[ other.r, f ]
         reg.b = b.mix[ other.b, f ]
+        reg.square = square || other.square
         return reg
 
 class Scaling

@@ -146,7 +146,7 @@ Layer FileLayer
 
         cv.clear_crop[]
 
-Option FileList
+NodeList FileList
     public  root           : path
     public  pending_open   : path
     # this FileList's own substring search. find_text is the live query (set by the
@@ -157,38 +157,14 @@ Option FileList
     mutable visible        : array FileNode
     # per-on-screen-row render cache (see LineCache). bounded by visible lines.
     mutable line_cache     : array LineCache
-    mutable sel            : i32      [ -1 ]
-    mutable row_height     : f32      [ 20.0 ]
-    mutable content_y      : f32      [ 0.0 ]
-    mutable view_h         : f32      [ 0.0 ]
+    # sel / row_height / content_y / view_h are inherited from NodeList.
     mutable expand_icon    : SVGModel
     mutable collapse_icon  : SVGModel
 
-    func on_press [ ev: Event ]
-        rel_y : f32 [ ev.mouse.pos.y - content_y ]
-        if [ rel_y < 0.0 ] return
-        idx   : i32 [ i32[ rel_y / row_height ] ]
-        select[ idx ]
-
-    func on_wheel [ ev: Event ]
-        if [ content_h <= 0.0 ] return
-        vh     : f32 [ (view_h > 0.0) ? view_h : bounds.h ]
-        speed  : f32 [ (scroll_speed > 0.0) ? scroll_speed : 40.0 ]
-        scroll.y += f32[ ev.mouse.wheel_delta.y ] * speed * -1.0
-        if [ scroll.y < 0.0 ] scroll.y = 0.0
-        max_sc : f32 [ content_h - vh ]
-        if [ max_sc > 0.0 && scroll.y > max_sc ] scroll.y = max_sc
-        pristine = false
-        ux.will_animate = true
-
-    func scroll_to_sel []
-        if [ sel < 0 || !visible || visible.count == 0 ] return
-        item_y : f32 [ f32[sel] * row_height ]
-        vh     : f32 [ (view_h > 0.0) ? view_h : content_h ]
-        if [ item_y < scroll.y ]
-            scroll.y = item_y
-        el [ item_y + row_height > scroll.y + vh ]
-            scroll.y = item_y + row_height - vh
+    # row count for the NodeList base (scroll/select math) — the visible tree rows.
+    func row_count [] -> i32
+        if [ !visible ] return 0
+        return visible.count
 
     func on_key [ ev: Event ]
         if [ !ev.key.state || !visible || visible.count == 0 ] return

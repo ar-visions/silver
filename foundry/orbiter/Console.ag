@@ -52,6 +52,10 @@ class ConsoleSession
     # armed after a run command is sent; the next return to our shell prompt means
     # the run ended (quit/errored) → clear running.
     mutable run_armed   : bool
+    # the user scrolled away from the bottom (wheel/page/drag) → suspend cursor
+    # auto-follow until they return to the bottom. max_scroll cached from draw.
+    mutable user_scrolled : bool
+    mutable max_scroll  : f32
 
     func init []
         scrollback = list string []
@@ -137,15 +141,15 @@ class ConsoleSession
         before : bool [ anchor_line < sel_line || (anchor_line == sel_line && anchor_col <= sel_col) ]
         sl : i32 [ (before) ? anchor_line : sel_line ]
         sc : i32 [ (before) ? anchor_col  : sel_col ]
-        el : i32 [ (before) ? sel_line : anchor_line ]
+        el2 : i32 [ (before) ? sel_line : anchor_line ]
         ec : i32 [ (before) ? sel_col  : anchor_col ]
         out : string ''
-        for [ li: i32 sl, li <= el, li += 1 ]
+        for [ li: i32 sl, li <= el2, li += 1 ]
             row : string line_get[ li ]
             a : i32 [ clamp[ (li == sl) ? sc : 0,         0, row.count ] ]
-            b : i32 [ clamp[ (li == el) ? ec : row.count, 0, row.count ] ]
+            b : i32 [ clamp[ (li == el2) ? ec : row.count, 0, row.count ] ]
             if [ b > a ] out = out + row.mid[ a, b - a ]
-            if [ li < el ] out = out + '\n'
+            if [ li < el2 ] out = out + '\n'
         return out
 
     func scroll_up []
@@ -347,18 +351,27 @@ Layer TermLayer
         # only runs when the screen actually changed; no per-frame forcing here.
         cw       : f32 [ cv.measure_text[ 'x' ].w ]
         sc_count : i32 [ s.scrollback.count ]
-        total_h  : f32 [ f32[sc_count + s.rows] * lh ]
+        # content height stops at the cursor row (last used line), not the full
+        # 24-row grid — otherwise scroll overshoots into the blank rows below.
+        total_h  : f32 [ f32[sc_count + s.cy + 1] * lh ]
         max_s    : f32 [ maxf[ total_h - bounds.h, 0.0 ] ]
         cursor_y : f32 [ f32[sc_count + s.cy] * lh ]
 
-        if [ s.scroll > cursor_y ]
-            s.scroll = cursor_y
-        el [ s.scroll < cursor_y + lh - bounds.h ]
-            s.scroll = cursor_y + lh - bounds.h
+        s.max_scroll = max_s
+        # auto-follow the cursor (keep the prompt visible) — but NOT while dragging
+        # the thumb (it'd fight the drag) or while the user scrolled up to read history.
+        if [ !s.scroll_dragging && !s.user_scrolled ]
+            if [ s.scroll > cursor_y ]
+                s.scroll = cursor_y
+            el [ s.scroll < cursor_y + lh - bounds.h ]
+                s.scroll = cursor_y + lh - bounds.h
         if [ s.scroll < 0.0 ]
             s.scroll = 0.0
         if [ s.scroll > max_s ]
             s.scroll = max_s
+        # back at the bottom → resume auto-follow
+        if [ s.scroll >= max_s - 1.0 ]
+            s.user_scrolled = false
 
         # cache metrics for the mouse→cell mapping; feed content_h/scroll.y to the
         # shared ScrollLayer (it reads them off the element).
@@ -454,6 +467,14 @@ Control Console
         if [ !ev.key.state ] return
         s : ConsoleSession session[]
         k : i32 [ i32 ev.key.unicode ]
+        # page up / down scroll the view (not sent to the shell)
+        if [ k == 266 || k == 267 ]
+            lh  : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
+            ele : Layer (layers) ? layers[ 'content' ] : null
+            vh  : f32 [ (ele && ele.bounds) ? ele.bounds.h : f32[s.rows] * lh ]
+            page : f32 [ vh - lh ]
+            scroll_by[ s, (k == 266) ? -page : page ]
+            return
         if [ k == 257 ]
             s.write_input[ '\r' ]
         el [ k == 259 ]
@@ -482,7 +503,10 @@ Control Console
             return
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
         cw : f32 [ (s.cw_cache > 0.0) ? s.cw_cache : 8.0 ]
-        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + s.scroll ]
+        # find_target already folds the element's scroll.y into mouse.pos.y (we set
+        # con.scroll.y = s.scroll for the ScrollLayer), so it's already in content
+        # space — do NOT add s.scroll again or the line is off by the scroll amount.
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
         ln : i32 [ clamp[ rel_y / lh, 0, s.line_count[] - 1 ] ]
         cl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0, s.line_get[ ln ].count ] ]
@@ -497,6 +521,8 @@ Control Console
         if [ ev.mouse.button == 1 ]
             txt : string s.selection_text[]
             if [ txt.count > 0 && ux ] ux.set_clipboard[ txt ]
+            s.sel_line = -1        # void the selection once copied
+            pristine = false
             return
         ele : Layer (layers) ? layers[ 'content' ] : null
         if [ !ele || !ele.bounds ] return
@@ -504,11 +530,16 @@ Control Console
         sb : ScrollLayer (layers) ? (layers[ 'scrollbar' ] to ScrollLayer) : null
         grab : f32 [ (sb && sb.thumb_w > 0.0) ? sb.thumb_w * 2.0 + 8.0 : 16.0 ]
         if [ sb && sb.scroll_max > 0.0 && rel_x > ele.bounds.w - grab ]
-            my : f32 [ ev.mouse.pos.y - ele.bounds.y - s.scroll ]
+            # subtract scroll.y (the element scroll find_target folds in, constant
+            # within a frame) — NOT s.scroll, which we mutate per drag event.
+            my : f32 [ ev.mouse.pos.y - ele.bounds.y - scroll.y ]
             sb.grab_at[ my ]
             sy : f32 [ sb.drag_to[ my ] ]
             if [ sy >= 0.0 ]
                 s.scroll          = sy
+                # take the user-scrolled lock (like scroll_by) so auto-follow doesn't
+                # snap back to the bottom on release; cleared once dragged to the end.
+                s.user_scrolled   = s.scroll < s.max_scroll - 1.0
                 s.scroll_dragging = true
                 sb.active         = true
                 pristine          = false
@@ -528,8 +559,10 @@ Control Console
         if [ s.scroll_dragging && ele && ele.bounds ]
             sb : ScrollLayer (layers) ? (layers[ 'scrollbar' ] to ScrollLayer) : null
             if [ sb ]
-                sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y - s.scroll ] ]
+                sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y - scroll.y ] ]
                 if [ sy >= 0.0 ] s.scroll = sy
+            # keep the user-scrolled lock current as the thumb moves (cleared at the end)
+            s.user_scrolled = s.scroll < s.max_scroll - 1.0
             pristine = false
             ux.will_animate = true
             return
@@ -546,6 +579,21 @@ Control Console
         if [ sb ]
             sb.active = false
             ux.will_animate = true
+
+    # scroll the view by line, set the user-scrolled lock so output doesn't yank it.
+    func scroll_by [ s: ConsoleSession, dy: f32 ]
+        s.scroll = s.scroll + dy
+        if [ s.scroll < 0.0 ] s.scroll = 0.0
+        if [ s.scroll > s.max_scroll ] s.scroll = s.max_scroll
+        s.user_scrolled = s.scroll < s.max_scroll - 1.0
+        pristine = false
+        ux.will_animate = true
+
+    func on_wheel [ ev: Event ]
+        s : ConsoleSession session[]
+        if [ !s ] return
+        lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
+        scroll_by[ s, -ev.mouse.wheel_delta.y * lh * 3.0 ]
 
 
 Layer CompileLayer

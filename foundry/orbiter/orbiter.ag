@@ -6,6 +6,7 @@ import gltf
 import trinity
 import silver
 import project
+import dbg
 
 import <stdio.h>
     -lm
@@ -16,6 +17,7 @@ import Earth
 import Avatar
 import Editor
 import Console
+import NodeList
 import FileList
 
 element EditorView
@@ -75,19 +77,32 @@ trinity orbiter # implements compiler
     # group. left and right panes keep separate docked lists.
     public docked_left      : array path
     public docked_right     : array path
-    # cached git-diff state per pane, refreshed when a file opens (not per frame)
-    # so the git button's enabled state never forks git during render.
-    intern left_diff        : bool
-    intern right_diff       : bool
+    # the editor split: one entry per visible editor pane, each an index into
+    # open_files (-1 = empty 'Open' finder pane). up to 4. the + / - title buttons
+    # push/remove entries; the render builds one Editor per slot. active_pane is the
+    # focused pane index (where opens/finder land).
+    public editor_slots     : array i32
+    public active_pane      : i32
+    # the split seams between panes, as absolute x-positions in layout units from the
+    # editor area's left edge. pane i's right edge = split{i+1}; adjacent panes share
+    # the var on their touching edges so the seam is draggable (trinity seam model).
+    # the last pane's trailing split is pinned to the area width each frame so it
+    # fills; internal seams persist user drags. redistributed equally on add/remove.
+    public split1           : f32 [ 50.0 ]
+    public split2           : f32 [ 100.0 ]
+    public split3           : f32 [ 150.0 ]
+    # last pane count we redistributed for — when editor_slots.count changes we reset
+    # the seams to an equal division.
+    intern last_ecount      : i32
     public active_idx       : i32
-    public left_idx         : i32
-    public right_idx        : i32
     public config_side      : i32
     public active_panel  : string
     public editor_panel  : string
     public active_target : string
-    public active_console: string
     public show_console  : bool
+    # an empty editor pane (no file) shows the Avatar in its elemental state; this
+    # toggles the Avatar view via the pane's titlebar hide/show option.
+    public show_avatar   : bool [ true ]
     # live elements, auto-bound by id — reference them directly, no tree walk.
     # (the console is nested under instances and doesn't auto-bind, so it's reached
     # via instances.elements['console'] where needed.)
@@ -97,12 +112,13 @@ trinity orbiter # implements compiler
     # companion the seam maintains: last open (non-snapped) console height. the
     # toggle restores this when re-opening so a collapse doesn't lose the size.
     public console_h_user: f32 [ 6.9 ]
-    # bound layout var: right-panel left seam (= editor/console right edge),
-    # draggable. right_w_user is the seam's last open (non-snapped) width.
-    public right_w       : f32 [ 10.0 ]
-    public right_w_user  : f32 [ 10.0 ]
-    # toggles the right-side file-list panel (the >| button in the editor group)
-    public show_right    : bool [ true ]
+    # the stack sub-column (callstack + fields) inside each editor, on a draggable
+    # seam: stack_w is its width (0 = closed). the menu icon in the title flips it
+    # open/closed; dragging the seam resizes it. stack_w_user keeps the last open
+    # width. fields shows a member's fields/methods (autocomplete) at design time,
+    # live values when debug is stopped; callstack is the bottom list.
+    public stack_w       : f32 [ 0.0 ]
+    public stack_w_user  : f32 [ 15.0 ]
     public filter_text   : string
     # finder search text typed into an editor title (magnify) when it has no file
     public find_text     : string
@@ -112,6 +128,9 @@ trinity orbiter # implements compiler
     # is the Find query, replace_text the Replace query. kept separate from find_text
     # (the file finder) so typing here doesn't trigger the finder's pin list.
     public findbar_open  : bool
+    # which pane's magnify opened the findbar ('pane'/'pane_right') — so the bar
+    # stays on that editor and focus moving to the other title doesn't pull it over.
+    public findbar_pane  : string
     public findbar_text  : string
     public replace_text  : string
     # file-pattern (glob) that scopes find-in-files — the right cell of the
@@ -132,6 +151,12 @@ trinity orbiter # implements compiler
     # memory per keystroke). find_results is the editor finder's current match set.
     public file_index    : list string
     public find_results  : list string
+    # tracks whether the finder was active last frame, so we run_search on the
+    # transition (open → show the dock as lines; close → restore the file).
+    intern was_finder    : bool
+    # the pane id the finder last targeted ('pane'/'pane_right'), so focus moving
+    # between panes re-runs the search into the newly-focused one.
+    intern was_search_pane : string
     # set true by the inotify watch thread when anything under search_dirs
     # changes. the next search rebuilds file_index lazily on the main thread.
     public index_dirty   : bool
@@ -156,11 +181,15 @@ trinity orbiter # implements compiler
     intern booted        : bool
     intern stdout_rfd    : i32 [ -1 ]
     intern stdout_orig   : i32 [ -1 ]
-    # route stdout into the in-app system console. false = leave stdout alone so
-    # all prints go straight to the terminal (debugging). flip to true to re-enable.
-    intern capture_stdout : bool [ false ]
-    intern stdout_line   : string
- 
+    # route stdout into the in-app system console: the hot-reload `silver` subprocess
+    # inherits our redirected stdout/stderr, so its build log (success + errors) lands
+    # in the system console. drain_stdout still tees everything to the terminal.
+    intern capture_stdout : bool [ true ]
+    intern stdout_line    : string
+    public editor_group   : element
+    # live editor panes are reached via pane_at[i] (keyed 'pane0'..'pane3' under the
+    # auto-bound editor_group); nested ids don't auto-bind to app fields directly.
+
     func init []
         width          = 1888
         height         = 888
@@ -187,19 +216,15 @@ trinity orbiter # implements compiler
         docked_left   += path '/src/silver/README.md'
         docked_left   += path '/src/silver/CLAUDE.md'
         active_idx     = -1
-        left_idx       = -1
-        right_idx      = -1
+        # one editor pane to start, empty (the 'Open' finder)
+        editor_slots   = array i32 []
+        editor_slots  += -1
+        active_pane    = 0
         active_panel   = 'files'
         editor_panel   = 'editor'
         active_target  = 'silver'
         nav_root       = target_roots[0]
-        active_console = 'shell'
         show_console   = true
-        # show_right comes from orbiter.agi (parse_agi set it before this point);
-        # right_w is the seam source-of-truth that on_render derives show_right from,
-        # so collapse the panel here when the setting starts it hidden.
-        if [ !show_right ]
-            right_w = 0.0
         filter_text    = ''
         find_text      = ''
         findbar_open   = false
@@ -236,6 +261,8 @@ trinity orbiter # implements compiler
         # resolved to /silver.ag). left here disabled rather than removed.
         # check_stale[]
         ensure_user_config[]
+        # silver-host owns compiling (subprocess); we don't register as the compiler
+        # — we only want its build output routed into our log (system console).
         #au_set_compiler[a]
 
     func ensure_user_config []
@@ -334,7 +361,15 @@ trinity orbiter # implements compiler
         i: silver [ component: true, verbose:true, module: mod ]
         au_space_clear[]
         compile_log.push[ 'done: {mod}' ]
-        #au_spawn[ ref compile_fn, a, mod ]
+
+    # the current debug callstack (placeholder frames until lldb GetFrames() is
+    # wired through the running session).
+    func debug_frames [] -> array Frame
+        fr : array Frame [ alloc: 8 ]
+        fr.push[ Frame [ func_name: 'main',         file: path '/src/silver/src/silver.c', line: 8870 ] ]
+        fr.push[ Frame [ func_name: 'silver_build', file: path '/src/silver/src/silver.c', line: 5281 ] ]
+        fr.push[ Frame [ func_name: 'aether_emit',  file: path '/src/silver/src/aether.c', line: 8610 ] ]
+        return fr
 
     # the live Console element (nested under instances, so reached via lookup).
     func ui_console [] -> Console
@@ -417,9 +452,8 @@ trinity orbiter # implements compiler
         return out && out.count > 0
 
     # build the editor-title nav (git + dock toggle) for a pane. the git button
-    # only appears for a real on-disk source and is enabled only when git sees a
-    # diff. the dock button is a single toggle: '-' (undock) when the file is
-    # already docked, '+' (dock) when it isn't. a new/unsaved file shows neither.
+    # the tab controls are split: '-' (undock/remove) on the left of the title,
+    # always present with a file open; '+' (dock/add) on the right with magnify/menu.
     func title_nav [ p: path, grp: array path, has_diff: bool, win: Window ] -> Elements
         nav : Elements []
 
@@ -427,17 +461,25 @@ trinity orbiter # implements compiler
         #    nav['git'] = Option [ selected: editor_panel == 'git', disable: !has_diff ]
         
         nav['magnify'] = Option [ selected: findbar_open ]
+        # menu icon (next to magnify): toggles this editor's stack sub-column
+        # (callstack + fields), narrowing the code by that much.
+        nav['menu'] = Option [ selected: stack_w > 0.5 ]
+        # tab add (+) and remove (-) live on the right with magnify/menu, leaving the
+        # title's left side free for a file-type icon. shown all the time (including
+        # Finder state) — just not while the find/replace bar replaces the nav.
+        if [ !findbar_open ]
+            # only offer add (+) below the 4-pane cap
+            if [ editor_slots.count < 4 ]
+                nav['dock'] = Button []
+            # only offer remove (-) when there's more than one editor
+            if [ editor_slots.count > 1 ]
+                nav['undock'] = Button []
 
 
         hasfile  : bool [ p && p.exists[] ]
         # Files is the active scope whenever there's no file to search In-File.
         files_sel : bool [ !hasfile || !find_in_file ]
         els : Elements []
-        if [ hasfile && !findbar_open ]
-            if [ is_docked[ p, grp ] ]
-                els['undock'] = Option [ selected: false ]
-            el
-                els['dock'] = Option [ selected: false ]
         els['find']    = element [ label: 'Find',    edit: findbar_text ]
         els['replace'] = element [ label: 'Replace', edit: replace_text ]
         els['pattern'] = Option  [ label: 'Files', edit: pattern_text, selected: files_sel ]
@@ -450,6 +492,36 @@ trinity orbiter # implements compiler
         # (they share the upper-right corner) and still wins the click.
         els['nav'] = element [ topmost: true, elements: nav ]
         return els
+
+    # build one editor pane. with a file open the title is the filename; empty it
+    # shows the finder, labelled by empty_label ('Finder' for the left pane,
+    # 'Debug' for the right/assist pane).
+    func pane_for [ p: path, grp: array path, diff: bool, searchable: bool, findbar_on: bool, win: Window, empty_label: string ] -> element
+        ttl : Elements title_nav[ p, grp, diff, win ]
+        pe : Elements []
+        pe['title'] = EditorTitle [
+            selected: !p
+            edit: find_text
+            label: (p) ? p.filename[] : empty_label
+            elements: ttl
+        ]
+        # callstack + fields: a vertical stack on the editor's right — the data we
+        # view within this editor's code (its own debug session). shown only when
+        # toggled; the navigate list + search results draw in front of it.
+        if [ stack_w > 0.5 ]
+            dbg_els : Elements []
+            dbg_els['fields']    = element [ label: 'Fields' ]
+            dbg_els['callstack'] = Callstack [ frames: debug_frames[] ]
+            pe['dbg'] = element [ elements: dbg_els ]
+        # the dock + search results render as the editor's lines (run_search), not a
+        # tab strip — so no 'pins' overlay anymore.
+        return Editor [
+            src: p, breakpoints: breakpoints, code_font_size: code_font_size,
+            dbg_seam: stack_w,
+            # the findbar belongs to the pane whose magnify opened it (findbar_on);
+            # find-in-files hits render only in the focused search pane (searchable).
+            expanded: findbar_on, show_hits: (searchable) ? find_showing : false,
+            hits: find_hits, find_query: findbar_text, elements: pe ]
 
     # build the docked-tab strip for a group: one tab per docked file, the
     # active file selected. ids are prefix+index so the click handler can map
@@ -563,7 +635,8 @@ trinity orbiter # implements compiler
         if [ !q || q.count == 0 ]
             find_showing = false
             return
-        p : path (left_idx >= 0 && left_idx < open_files.count) ? open_files[left_idx] : null
+        a_slot : i32 [ (active_pane >= 0 && active_pane < editor_slots.count) ? editor_slots[active_pane] : -1 ]
+        p : path (a_slot >= 0 && a_slot < open_files.count) ? open_files[a_slot] : null
         scan_current : bool [ find_in_file && p ]
         if [ scan_current ]
             scan_file_hits[ p, q ]
@@ -606,44 +679,132 @@ trinity orbiter # implements compiler
                     header_added = true
                 find_hits.push[ FindHit [ is_header: false, text: ln, file: p, line: i + 1 ] ]
 
-    # the editor finder: run the search service, then DISPLAY the results in the
-    # editor pane. (the FileList calls index_search directly and renders them itself.)
-    func run_search []
-        find_results = index_search[ find_text ]
+    # which editor pane the finder targets: the one whose title is focused, else the
+    # first pane. (search results render only in this pane; the other keeps its file.)
+    func search_pane [] -> string
         win : cast Window [ w ]
-        if [ !win ] return
-        grp : element win.root.elements['editor-group']
-        if [ !grp ] return
-        eds : element grp.elements['editors']
-        ed  : Editor (eds) ? eds.elements['pane'] : null
-        if [ ed ]
-            if [ find_text && find_text.count > 0 ]
-                # actively searching — show the matches over whatever is open
-                # (no longer gated on the pane having no file)
-                ed.lines = find_results
-                ed.pristine = false
-            el [ ed.src ]
-                # query cleared but a file is open — restore the file content
-                ed.load_file[]
-                ed.pristine = false
+        if [ win && win.focus && win.focus.id == 'title' ]
+            for [ e: element* win.focus, e, e = e.parent ]
+                if [ e inherits Editor ]
+                    ed : Editor e
+                    return ed.id
+        return 'pane0'
+
+    # set one pane to the search list (if it's the active search pane) or restore its
+    # own file (the file at `slot`), so the search never leaves a stale copy in a
+    # non-search pane.
+    func apply_pane [ ed: Editor, is_search: bool, slot: i32 ]
+        if [ !ed ] return
+        if [ is_search ]
+            # the focused search pane shows the navigate list (dock + matches)
+            ed.lines = find_results
+        el [ slot >= 0 && slot < open_files.count ]
+            # any other pane with a file open: restore its content
+            ed.src = open_files[slot]
+            ed.load_file[]
+        el
+            # a non-search, file-less pane is blank — NOT a copy of the dock
+            ed.lines = list string []
+        ed.pristine = false
+
+    # maintain the split seams (split1/2/3 = absolute x-positions in units) for `n`
+    # panes. on a pane-count change, divide the editor area equally; every frame, pin
+    # the last visible pane's trailing seam to the area width so it fills (except at
+    # the 4-pane cap, where pane3 is r0 and split3 is a real internal seam), then keep
+    # the seams ordered with a minimum pane width so a drag can't invert them.
+    func layout_splits [ n: i32 ]
+        # editor area width in PANE units. the panes' bound coords resolve in each
+        # pane's own fc against the EditorView's width (tick_binds: rel_w =
+        # parent.bounds.w, fcv = e.fc), so ew must be computed from the SAME pair —
+        # a Group and an Editor don't share fc, so editor_group.fc would be wrong.
+        # fall back until the first pane is laid out (self-corrects next frame).
+        ew : f32 [ 100.0 ]
+        p0 : Editor pane_at[ 0 ]
+        if [ p0 && p0.fc > 0.0 && p0.parent && p0.parent.bounds && p0.parent.bounds.w > 0.0 ]
+            ew = p0.parent.bounds.w / p0.fc
+        # equal division whenever the pane count changes
+        if [ n != last_ecount ]
+            last_ecount = n
+            if [ n >= 2 ] split1 = ew * 1.0 / f32[ n ]
+            if [ n >= 3 ] split2 = ew * 2.0 / f32[ n ]
+            if [ n >= 4 ] split3 = ew * 3.0 / f32[ n ]
+        # pin the trailing seam so the last pane fills the area (cap of 4 uses r0)
+        if [ n == 1 ]
+            split1 = ew
+        el [ n == 2 ]
+            split2 = ew
+        el [ n == 3 ]
+            split3 = ew
+        # keep seams ordered with a minimum pane width so a drag can't invert them or
+        # push the last pane off the area. clamp internal seams below the trailing wall
+        # (right-to-left), then enforce the minimum gaps left-to-right.
+        minw : f32 [ 6.0 ]
+        if [ n == 4 ]
+            if [ split3 > ew - minw ] split3 = ew - minw
+            if [ split2 > split3 - minw ] split2 = split3 - minw
+            if [ split1 > split2 - minw ] split1 = split2 - minw
+        el [ n == 3 ]
+            if [ split2 > split3 - minw ] split2 = split3 - minw
+            if [ split1 > split2 - minw ] split1 = split2 - minw
+        el [ n == 2 ]
+            if [ split1 > split2 - minw ] split1 = split2 - minw
+        if [ split1 < minw ] split1 = minw
+        if [ split2 < split1 + minw ] split2 = split1 + minw
+        if [ split3 < split2 + minw ] split3 = split2 + minw
+        # DIAG: pane ids + computed bounds from the previous frame, to confirm the
+        # per-pane CSS area rules are matching (remove once the split layout is confirmed).
+        puts 'layout_splits n={n} ew={ew} s1={split1} s2={split2} s3={split3}'
+        for [ i: i32 0, i < n, i += 1 ]
+            pe : Editor pane_at[ i ]
+            if [ pe && pe.bounds ]
+                puts '  pane{i}: id={pe.id} x={pe.bounds.x} w={pe.bounds.w} fc={pe.fc}'
+            el [ pe ]
+                puts '  pane{i}: id={pe.id} <no bounds>'
             el
-                # finder pane, no file, no query — empty list
-                ed.lines = find_results
-                ed.pristine = false
+                puts '  pane{i}: <null>'
 
-    # open in the main (left) pane
+    # resolve the i-th live editor pane from the auto-bound editor_group. nested
+    # elements don't auto-bind to app fields (only top-level returns do), so this is
+    # the one place that reaches editor_group's children; everything else goes through
+    # pane_at[i]. panes are keyed 'pane0'..'pane3' (one per editor_slots entry).
+    func pane_at [ i: i32 ] -> Editor
+        if [ !editor_group ] return null
+        eds : element editor_group.elements['editors']
+        if [ !eds ] return null
+        return Editor eds.elements[ 'pane{i}' ]
+
+    # the editor finder: build the navigate list, then DISPLAY it in the focused
+    # pane only. (the FileList calls index_search directly and renders them itself.)
+    func run_search []
+        # the navigate list (rendered as the editor's lines — tabs are just rows):
+        # the docked files (the dock) first, then the filtered file-index results.
+        combined : list string []
+        for [ i: i32 0, i < docked_left.count, i += 1 ]
+            combined.push[ '{docked_left[i]}' ]
+        if [ find_text && find_text.count > 0 ]
+            matches : list string [ index_search[ find_text ] ]
+            for [ i: i32 0, i < matches.count, i += 1 ]
+                combined.push[ matches.value_by_index[ i ] ]
+        find_results = combined
+        win : cast Window [ w ]
+        sp     : string search_pane[]
+        active : bool [ (find_text && find_text.count > 0) || (win && win.focus && win.focus.id == 'title') ]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            pid : 'pane{i}'
+            ed  : Editor pane_at[ i ]
+            apply_pane[ ed, active && (sp == pid), editor_slots[i] ]
+
+    # open in the active pane
     func open_file [ p: path ]
-        idx : i32 [ file_slot[ p ] ]
-        left_idx   = idx
-        active_idx = idx
-        left_diff  = git_diff[ p ]
-        exit_finder[]
-        sync_editor[]
+        open_in_pane[ p, active_pane ]
 
-    # open in the right pane (split view)
-    func open_file_right [ p: path ]
-        right_idx  = file_slot[ p ]
-        right_diff = git_diff[ p ]
+    # open a file into a specific pane index (used by finder-row clicks)
+    func open_in_pane [ p: path, pi: i32 ]
+        idx : i32 [ file_slot[ p ] ]
+        if [ pi >= 0 && pi < editor_slots.count ]
+            editor_slots[pi] = idx
+            active_pane = pi
+        active_idx = idx
         exit_finder[]
         sync_editor[]
 
@@ -679,25 +840,20 @@ trinity orbiter # implements compiler
         win.restyle = true
 
     func sync_editor []
-        win : cast Window [ w ]
-        if [ !win ] return
-        grp : element win.root.elements['editor-group']
-        if [ !grp ] return
-        eds : element grp.elements['editors']
-        if [ left_idx >= 0 && left_idx < open_files.count ]
-            p  : path open_files[left_idx]
-            ed : Editor (eds) ? eds.elements['pane'] : null
-            if [ ed ]
-                ed.src = p
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            slot : i32 [ editor_slots[i] ]
+            ed   : Editor pane_at[ i ]
+            if [ !ed ] continue
+            if [ slot >= 0 && slot < open_files.count ]
+                ed.src = open_files[slot]
                 ed.load_file[]
-                ed.pristine = false
-        if [ right_idx >= 0 && right_idx < open_files.count ]
-            p  : path open_files[right_idx]
-            er : Editor (eds) ? eds.elements['pane-right'] : null
-            if [ er ]
-                er.src = p
-                er.load_file[]
-                er.pristine = false
+            el
+                # an empty (-1) slot must CLEAR the pane — otherwise a pane that used
+                # to show a file (e.g. after removing the pane to its left shifts an
+                # empty slot into this position) keeps the stale file on screen.
+                ed.src   = null
+                ed.lines = list string []
+            ed.pristine = false
 
     func sync_active []
         # the console's session_id/feed come from the Console[] template in
@@ -722,8 +878,9 @@ trinity orbiter # implements compiler
             if [ e inherits FileList ]
                 fl : FileList e
                 if [ fl.pending_open ]
-                    if [ ev.key.shift ]
-                        open_file_right[ fl.pending_open ]
+                    if [ ev.key.shift && editor_slots.count > 1 ]
+                        si : i32 [ (active_pane + 1 < editor_slots.count) ? active_pane + 1 : 0 ]
+                        open_in_pane[ fl.pending_open, si ]
                     el
                         open_file[ fl.pending_open ]
                     fl.pending_open = null
@@ -734,10 +891,22 @@ trinity orbiter # implements compiler
             # not by the pane being empty)
             if [ e inherits Editor ]
                 ed : Editor e
-                if [ find_text && find_text.count > 0 && ed.sel_line >= 0 && ed.sel_line < find_results.count ]
-                    hit_path : path find_results.value_by_index[ ed.sel_line ]
-                    open_file[ hit_path ]
+                # finder active (dock and/or results shown as lines): clicking a code
+                # ROW opens it — but a click on the title bar focuses the finder, so
+                # exclude it (otherwise focusing the finder immediately opens a row).
+                if [ ev.target.id != 'title' && was_finder && ed.sel_line >= 0 && ed.sel_line < find_results.count ]
+                    hit_s    : string find_results.value_by_index[ ed.sel_line ]
+                    hit_path : path [ hit_s.chars ]
+                    # open into the pane whose row was clicked (ids are 'pane{i}')
+                    pi : i32 [ ed.id.mid[ 4, ed.id.count - 4 ].real_value[] ]
+                    open_in_pane[ hit_path, pi ]
                     return
+        # avatar pane titlebar toggle: hide/show the 3D avatar view
+        if [ ev.target.id == 'avatar_hide' ]
+            show_avatar = !show_avatar
+            # rebuild the tree so the avatar pane re-renders with/without the view.
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
         # play: build/run the active project node (processes its deps first)
         if [ ev.target.id == 'play' ]
             con : ui_console[]
@@ -747,21 +916,14 @@ trinity orbiter # implements compiler
                 run_node[ active_target ]
             ev.no_default = true
             return
-        # >| toggle hides/shows the right file-list panel
-        if [ ev.target.id == 'toggle_side' ]
-            # the seam (right_w) is the single source of truth; show_right is
-            # derived from it in on_render, so clicking and drag-snapping stay in
-            # sync. collapse to 0, or restore the last dragged width.
-            if [ right_w > 0.5 ]
-                right_w = 0.0
+        # menu icon (in the editor title nav): toggles the stack sub-column inside
+        # the editor (callstack + fields). the seam (stack_w) is the source of truth
+        # — collapse to 0, or restore the last dragged-open width.
+        if [ ev.target.id == 'menu' ]
+            if [ stack_w > 0.5 ]
+                stack_w = 0.0
             el
-                right_w = right_w_user
-            # Instances is a Control, not an Option, so apply_args won't sync its
-            # custom `wide` flag — set it directly so the console spans full width
-            # (no gap) when the right toolbar is hidden.
-            ux      : Window ev.target.ux
-            inst_el : Instances ux.root.elements[ 'instances' ]
-            if [ inst_el ] inst_el.wide = right_w <= 0.5
+                stack_w = stack_w_user
             if [ ev.target ] ev.target.ux.restyle = true
             return
         puts 'on_press: {ev.target.id}'
@@ -770,36 +932,33 @@ trinity orbiter # implements compiler
             if [ ev.target.id == key ]
                 rel_x    : f32 [ ev.mouse.pos.x - ev.target.bounds.x ]
                 in_right : bool [ rel_x > ev.target.bounds.w - 14.0 ]
-                puts 'tab press: shift={ev.key.shift} in_right={in_right} rel_x={rel_x} w={ev.target.bounds.w}'
-                if [ ev.key.shift || in_right ]
-                    active_panel = 'editor'
-                    if [ left_idx == i ]
-                        left_idx  = right_idx
-                        right_idx = i
-                    el
-                        right_idx = i
-                        
-                    set_active[ i ]
-                    sync_editor[]
+                active_panel = 'editor'
+                # shift / right-edge click opens into a secondary pane; plain click
+                # replaces the active pane's file.
+                if [ (ev.key.shift || in_right) && editor_slots.count > 1 ]
+                    si : i32 [ (active_pane + 1 < editor_slots.count) ? active_pane + 1 : 0 ]
+                    editor_slots[si] = i
+                    active_pane = si
                 el
-                    active_panel = 'editor'
-                    if [ right_idx == i ]
-                        right_idx = left_idx
-                        left_idx  = i
-                    el
-                        left_idx = i
-                    set_active[ i ]
-                    sync_editor[]
+                    editor_slots[active_pane] = i
+                set_active[ i ]
+                sync_editor[]
                 sync_tabs[]
                 return
         if [ ev.target.id == 'git' ]
             editor_panel = (editor_panel == ev.target.id) ? 'editor' : ev.target.id
             if [ ev.target ] ev.target.ux.restyle = true
             return
-        # magnify: toggle the find/replace bar (shared app state, fed to the Editor
-        # via its `expanded` prop each frame).
+        # magnify: toggle the find/replace bar. it belongs to the pane whose magnify
+        # was clicked (findbar_pane), so moving focus to the other title doesn't drag
+        # the open bar onto it.
         if [ ev.target.id == 'magnify' ]
             findbar_open = !findbar_open
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits Editor ]
+                    ed : Editor e
+                    findbar_pane = ed.id
+                    break
             # closing the bar hides the results
             if [ !findbar_open ] find_showing = false
             if [ ev.target ] ev.target.ux.restyle = true
@@ -819,33 +978,32 @@ trinity orbiter # implements compiler
         # mid action buttons — run find / replace (logic TBD)
         if [ ev.target.id == 'replace_all_action' ]
             return
-        # one toggle button rendered as either + (dock, id 'dock') or - (undock,
-        # id 'undock') depending on whether this file is already in the group.
-        # the tab goes into the group for the pane the button lives in.
-        if [ ev.target.id == 'dock' || ev.target.id == 'undock' ]
+        # + / - manage which editors exist (the editors render from editor_slots):
+        # '+' (dock) appends a new empty pane up to the 4-pane cap; '-' (undock)
+        # removes the editor whose title the button is on.
+        if [ ev.target.id == 'dock' ]
+            if [ editor_slots.count < 4 ]
+                editor_slots += -1
+                active_pane = editor_slots.count - 1
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        if [ ev.target.id == 'undock' ]
             for [ e: element* ev.target, e, e = e.parent ]
                 if [ e inherits Editor ]
                     ed : Editor e
-                    if [ ed.src ]
-                        grp : array path (ed.id == 'pane-right') ? docked_right : docked_left
-                        if [ ev.target.id == 'dock' ] dock[ ed.src, grp ]
-                        el                            undock[ ed.src, grp ]
+                    pi : i32 [ ed.id.mid[ 4, ed.id.count - 4 ].real_value[] ]
+                    if [ editor_slots.count > 1 && pi >= 0 && pi < editor_slots.count ]
+                        editor_slots.remove[ pi ]
+                        if [ active_pane >= editor_slots.count ] active_pane = editor_slots.count - 1
                     break
+            sync_editor[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
-        # clicking a pin (pin{i}) inside an editor opens that docked file from
-        # the pane's own list (left vs right)
+        # clicking a pin (pin{i}) inside an editor opens that docked file
         tid : string ev.target.id
         if [ tid.count > 3 && tid.mid[ 0, 3 ] == 'pin' ]
             i : i32 [ tid.mid[ 3, tid.count - 3 ].real_value[] ]
-            for [ e: element* ev.target, e, e = e.parent ]
-                if [ e inherits Editor ]
-                    ed : Editor e
-                    if [ ed.id == 'pane-right' ]
-                        if [ i >= 0 && i < docked_right.count ] open_file_right[ docked_right[i] ]
-                    el
-                        if [ i >= 0 && i < docked_left.count ] open_file[ docked_left[i] ]
-                    break
+            if [ i >= 0 && i < docked_left.count ] open_file[ docked_left[i] ]
             if [ ev.target ] ev.target.ux.restyle = true
             return
         if [ ev.target.id == 'config' ]
@@ -863,21 +1021,6 @@ trinity orbiter # implements compiler
                 active_target = 'system'
                 sync_active[]
                 ev.no_default = true
-            el [ id == 'shell' || id == 'lldb' ]
-                active_console = (active_console == id) ? '' : id
-                show_console   = active_console.count > 0
-                # console seam toggle: off collapses to the style minimum (layout
-                # floors a 0 request so the bar still paints); on restores the last
-                # open position the seam recorded in console_h_user.
-                if [ !show_console ]
-                    console_h = 0.0
-                el
-                    console_h = console_h_user
-                puts 'show_console: {show_console}'
-                ux      : Window ev.target.ux
-                inst_el : Instances ux.root.elements[ 'instances' ]
-                if [ inst_el ]
-                    inst_el.selected = show_console
             el
                 matched : bool false
                 for [ i: i32 0, i < target_names.count, i += 1 ]
@@ -1001,7 +1144,8 @@ trinity orbiter # implements compiler
             el [ k == 257 ]
                 # enter opens the first matching result
                 if [ find_results && find_results.count > 0 ]
-                    first_path : path find_results.value_by_index[ 0 ]
+                    first_s    : string find_results.value_by_index[ 0 ]
+                    first_path : path [ first_s.chars ]
                     open_file[ first_path ]
             el [ k == 256 ]
                 # esc: drop the query and restore the pane — run_search with an
@@ -1027,6 +1171,15 @@ trinity orbiter # implements compiler
                 stdout_orig = au_stdout_orig[]
             drain_stdout[]
         index_step[]
+        # finder transitions: rebuild the navigate list when the title gains focus
+        # (show the dock as lines) or loses it (restore the file), AND when focus
+        # moves to a different pane's title (so the results follow to that pane).
+        fin_now : bool   [ (w.focus && w.focus.id == 'title') || (find_text && find_text.count > 0) ]
+        sp_now  : string search_pane[]
+        if [ fin_now != was_finder || sp_now != was_search_pane ]
+            run_search[]
+        was_finder      = fin_now
+        was_search_pane = sp_now
         # poll orbiter.agi once a second; reload projects if its mtime changed.
         now_ms : i64 [ Au.epoch_millis[] ]
         if [ now_ms - settings_check_ms >= 1000 ]
@@ -1037,8 +1190,6 @@ trinity orbiter # implements compiler
                 load_settings[]
         #avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
         w.set_title[ 'orbiter' ]
-
-        show_right = right_w > 0.5
 
         # the `console` member doesn't auto-bind (it's nested under `instances`,
         # which does bind), so reach the live Console through instances. draining
@@ -1068,8 +1219,8 @@ trinity orbiter # implements compiler
         # is a run (lldb) live for the active target → play button shows stop.
         play_running        : bool [ (cons) ? cons.is_running[ active_target ] : false ]
 
-        left_path           : path (left_idx >= 0 && left_idx < open_files.count) ? open_files[left_idx] : null
-        right_path          : path (right_idx >= 0 && right_idx < open_files.count) ? open_files[right_idx] : null
+        a_slot              : i32 [ (active_pane >= 0 && active_pane < editor_slots.count) ? editor_slots[active_pane] : -1 ]
+        left_path           : path (a_slot >= 0 && a_slot < open_files.count) ? open_files[a_slot] : null
         active_name         : string (left_path) ? left_path.filename[] : string[]
 
         source_nav : Elements []
@@ -1079,71 +1230,41 @@ trinity orbiter # implements compiler
             name : string target_names[i]
             source_nav[name] = ProjectTab [ label: name, selected: active_target == name ]
 
-        # the in-editor pin list + 144px content inset appear while editing the
-        # title (focused — even before a letter is typed) or a query is active.
-        searching  : bool [ (w.focus && w.focus.id == 'title') || (find_text && find_text.count > 0) ]
-
-        # the main pane is always present and fills the group. with no file it's
-        # a finder (file search results); with a file it's the editor. when
-        # searching, a vertical pin list renders inside the editor's right 144px.
+        # one Editor per split slot. the panes tile left-to-right between split seams
+        # (split1/2/3, absolute x in units). the focused pane is the search pane; the
+        # others keep their own files.
+        ecount : i32 [ editor_slots.count ]
+        if [ ecount < 1 ] ecount = 1
+        layout_splits[ ecount ]
+        sp : string search_pane[]
         editor_els : Elements []
-        pane_els : Elements []
-        pane_els['title'] = EditorTitle [
-            selected: !left_path
-            edit: find_text
-            label: (left_path) ? left_path.filename[] : 'Finder'
-            elements: title_nav[ left_path, docked_left, left_diff, w ]
-        ]
-        if [ searching ]
-            pane_els['pins'] = element [ elements: dock_tabs[ docked_left, 'pin', left_path, w ] ]
-        editor_els['pane'] = Editor [ src: left_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, show_hits: find_showing, hits: find_hits, find_query: findbar_text, elements: pane_els ]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            pid  : 'pane{i}'
+            slot : i32    [ editor_slots[i] ]
+            spath: path   (slot >= 0 && slot < open_files.count) ? open_files[slot] : null
+            editor_els[pid] = pane_for[ spath, docked_left, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open' ]
 
-        if [ right_idx >= 0 && right_idx < open_files.count ]
-            pr_els : Elements []
-            pr_els['title'] = EditorTitle [
-                selected: !right_path
-                edit: find_text
-                label: (right_path) ? right_path.filename[] : 'Finder'
-                elements: title_nav[ right_path, docked_right, right_diff, w ]
-            ]
-            if [ searching ]
-                pr_els['pins'] = element [ elements: dock_tabs[ docked_right, 'pin', right_path, w ] ]
-            editor_els['pane-right'] = Editor [ src: right_path, breakpoints: breakpoints, code_font_size: code_font_size, expanded: findbar_open, show_hits: find_showing, hits: find_hits, find_query: findbar_text, elements: pr_els ]
+        # VSCode-style watermark: the orbiter avatar logo overlaid on the editor area
+        # while the active pane is empty (no file) and there are no results to show.
+        # rendered here, NOT inside Editor — a topmost, click-through (ghost) sibling
+        # of the panes so the finder underneath still takes input.
+        if [ a_slot < 0 && find_results.count == 0 ]
+            editor_els['avatar'] = Avatar [ ghost: true, topmost: true ]
 
         egroup_els : Elements []
-        egroup_els['editors'] = EditorView [ selected: left_idx >= 0 && right_idx >= 0, elements: editor_els ]
+        egroup_els['editors'] = EditorView [ selected: (editor_slots.count > 1), elements: editor_els ]
+
+        # the console bar (Instances). the stack sub-column (callstack + fields) is
+        # toggled per-editor by the menu icon in each editor's title — not here.
+        inst_els : Elements []
+        inst_els['source_nav'] = Tabs [ elements: source_nav ]
+        inst_els['tools'] = Tabs [ elements: Elements [
+            'play': Option [ disable: active_target == 'system', selected: play_running, manual_mode: true ]
+        ] ]
+        inst_els['console'] = Console [ session_id: active_target, feed: (active_target == 'system') ? stdout_log : null ]
 
         return Elements [
-            "toggle_side":  Option [ selected: !show_right, topmost: true ]
-            "right":        Toolbar [
-                # no transparency hide — the right_w seam collapses this to
-                # bounds.w 0 when toggled off, which the draw skip already hides.
-                elements: Elements [
-                    "title": element [
-                        elements: Elements [
-                            "nav": element [
-                                elements: Elements [
-                                    "files":     Option [ selected: active_panel == 'files' ]
-                                    "callstack": Option [ selected: active_panel == 'callstack' ]
-                                    "debug":     Option [ selected: active_panel == 'debug' ]
-                                    "agent":     Option [ selected: active_panel == 'agent' ]
-                                ]
-                            ]
-                        ]
-                    ]
-                    # only the active panel is shown AND hit-tested. non-active
-                    # panels are made fully transparent so find_target skips them
-                    # (they overlap the same area; otherwise the last-painted one
-                    # captures every click under reverse hit-testing).
-                    "files":        FileList   [ selected: active_panel == 'files', transparency: (active_panel == 'files')     ? 0.0 : 1.0, find_text: filter_text, root: nav_root ]
-                    "callstack":    CallStack  [ selected: active_panel == 'callstack', transparency: (active_panel == 'callstack') ? 0.0 : 1.0 ]
-                    "debug":        DebugPanel [ selected: active_panel == 'debug', transparency: (active_panel == 'debug')     ? 0.0 : 1.0 ]
-                    "agent":        Option     [ selected: active_panel == 'agent', transparency: (active_panel == 'agent')     ? 0.0 : 1.0 ]
-                    # 1-unit filter input pinned to the bottom of the navigator
-                    "filter":       element    [ label: 'filter', edit: filter_text ]
-                ]
-            ],
-            "editor-group": Group [
+            "editor_group": Group [
                 # right edge follows the right_w seam (→ r0/full when the panel is
                 # toggled off), so no selected-based fill override is needed; this
                 # also keeps the console_h seam live while the right panel is hidden.
@@ -1151,20 +1272,8 @@ trinity orbiter # implements compiler
                 elements: egroup_els
             ],
 
-            "instances": Instances [ elements: Elements [
-                'source_nav': Tabs [ elements: source_nav ]
-                'tools':      Tabs [ elements: Elements [
-                    'play': Option [ disable: active_target == 'system', selected: play_running, manual_mode: true ]
-                ] ]
-                'consoles':   Tabs [ elements: Elements [
-                    'shell': Option [ label: 'shell', selected: active_console == 'shell', toggle: true ]
-                    'lldb': Option [ label: 'lldb',  selected: active_console == 'lldb',  disable:active_target == 'system', toggle: true ]
-                ] ]
-                'console':    Console [ session_id: active_target, feed: (active_target == 'system') ? stdout_log : null ]
-            ], selected: show_console, wide: !show_right ]
+            "instances": Instances [ elements: inst_els, selected: show_console, wide: true ]
         ]
- 
-        #"avatar":       Avatar     [ transparency: (active_panel == 'debug') ? 0.0 : 1.0 ]
 
     public func on_canvas [ cv: Canvas ]
         super.on_canvas[ cv ]

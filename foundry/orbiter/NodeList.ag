@@ -1,0 +1,145 @@
+extend orbiter
+
+# generic scrollable, selectable list. subclasses provide: row_count[] (how many
+# rows), row_label[i] (the text for the generic NodeLayer), and activate[idx] (what
+# selecting a row does). the scroll / selection / keyboard plumbing lives here once
+# so FileList and Callstack don't each re-implement it.
+Option NodeList
+    mutable sel        : i32 [ -1 ]
+    mutable row_height : f32 [ 20.0 ]
+    mutable content_y  : f32 [ 0.0 ]
+    mutable view_h     : f32 [ 0.0 ]
+
+    # ---- subclass hooks (overridden) ----
+    func row_count [] -> i32
+        return 0
+    func row_label [ i: i32 ] -> string
+        return ''
+    func activate [ idx: i32 ]
+        return
+
+    # ---- shared behavior ----
+    func scroll_to_sel []
+        if [ sel < 0 || row_count[] == 0 ] return
+        item_y : f32 [ f32[sel] * row_height ]
+        vh     : f32 [ (view_h > 0.0) ? view_h : content_h ]
+        if [ item_y < scroll.y ]
+            scroll.y = item_y
+        el [ item_y + row_height > scroll.y + vh ]
+            scroll.y = item_y + row_height - vh
+
+    func select [ idx: i32 ]
+        sel = idx
+        if [ idx < 0 || idx >= row_count[] ] return
+        scroll_to_sel[]
+        activate[ idx ]
+        pristine = false
+
+    func on_press [ ev: Event ]
+        rel_y : f32 [ ev.mouse.pos.y - content_y ]
+        if [ rel_y < 0.0 ] return
+        idx   : i32 [ i32[ rel_y / row_height ] ]
+        select[ idx ]
+
+    func on_wheel [ ev: Event ]
+        if [ content_h <= 0.0 ] return
+        vh     : f32 [ (view_h > 0.0) ? view_h : bounds.h ]
+        speed  : f32 [ (scroll_speed > 0.0) ? scroll_speed : 40.0 ]
+        scroll.y += f32[ ev.mouse.wheel_delta.y ] * speed * -1.0
+        if [ scroll.y < 0.0 ] scroll.y = 0.0
+        max_sc : f32 [ content_h - vh ]
+        if [ max_sc > 0.0 && scroll.y > max_sc ] scroll.y = max_sc
+        pristine = false
+        ux.will_animate = true
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state || row_count[] == 0 ] return
+        key : i32 [ ev.key.unicode ]
+        if [ key == 265 ]
+            if [ sel > 0 ]
+                sel -= 1
+                scroll_to_sel[]
+                pristine = false
+        el [ key == 264 ]
+            if [ sel < row_count[] - 1 ]
+                sel += 1
+                scroll_to_sel[]
+                pristine = false
+        el [ key == 257 || key == 32 ]
+            if [ sel >= 0 ]
+                select[ sel ]
+
+    func render [] -> Elements
+        return null
+
+# generic one-line-per-row renderer: selection highlight + the subclass's row_label.
+# (FileList keeps its own richer FileLayer with icons/indent; simple text lists like
+# the callstack use this.)
+Layer NodeLayer
+    public label_size  : f32
+    public row_spacing : f32
+    public sel_color   : string
+    public sel_radius  : f32
+    public text_color  : string
+
+    func draw [ cv: Canvas ]
+        nl : NodeList[ parent ]
+        if [ !nl ] return
+        cv.font_size[ i32[label_size] ]
+        lh : f32 [ cv.get_line_height[] * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
+        n  : i32 [ nl.row_count[] ]
+        nl.row_height   = lh
+        nl.content_y    = bounds.y
+        nl.content_h    = f32[n] * lh
+        nl.view_h       = bounds.h
+        nl.scroll_speed = lh
+        x0 : f32 [ bounds.x ]
+        y0 : f32 [ bounds.y ]
+        wtx : f32 [ cv.transform_tx[] ]
+        wty : f32 [ cv.transform_ty[] ]
+        cv.set_crop[ wtx + bounds.x, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
+        for [ i: i32 0, i < n, i += 1 ]
+            y : f32 [ y0 + f32[i] * lh - nl.scroll.y ]
+            if [ y + lh < bounds.y ] continue
+            if [ y > bounds.y + bounds.h ] break
+            if [ i == nl.sel ]
+                r : f32 [ (sel_radius > 0.0) ? sel_radius : 0.0 ]
+                cv.save[]
+                cv.rounded[ r, r, r, r ]
+                cv.fill_color[ (sel_color) ? sel_color : '#264f78' ]
+                cv.stroke_width[ 0.0 ]
+                cv.rect_to[ x0 + 1.5, y + 0.5, bounds.w - 4.0, lh - 1.0 ]
+                cv.paint[]
+                cv.restore[]
+            cv.fill_color[ (text_color) ? text_color : '#d4d4d4' ]
+            cv.draw_text[ nl.row_label[ i ],
+                rect [ x: x0 + 8.0, y: y, w: bounds.w - 16.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        cv.clear_crop[]
+
+# one stack frame (placeholder content until lldb's GetFrames() is wired).
+class Frame
+    public func_name : string
+    public file      : path
+    public line      : i32
+
+# the callstack panel: a NodeList of stack frames, rendered through NodeLayer.
+NodeList Callstack
+    public frames : array Frame
+
+    func row_count [] -> i32
+        if [ !frames ] return 0
+        return frames.count
+
+    func row_label [ i: i32 ] -> string
+        if [ !frames || i < 0 || i >= frames.count ] return ''
+        f : Frame frames[i]
+        fn : string [ (f.file) ? f.file.filename[] : '' ]
+        return '{f.func_name}   {fn}:{f.line}'
+
+    func activate [ idx: i32 ]
+        # jump to the frame's source line (wired to the editor later)
+        return
+
+    func render [] -> Elements
+        return null

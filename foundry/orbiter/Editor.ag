@@ -67,9 +67,16 @@ Layer EditorLayer
         editor.gutter_w = gut_w
         x0      : f32 [ bounds.x + gut_w ]
         y0      : f32 [ bounds.y ]
-        # when the in-editor pin list is present (searching), inset the content
-        # 144px on the right so code/results don't run under the pins.
-        rin     : f32 [ (editor.elements['pins']) ? 144.0 : 0.0 ]
+        # inset the content on the right so code/text never draws under the right-
+        # side overlays: the pin list (144px while searching) and the stack sub-
+        # column (its actual rendered width while open). take the wider — the pins
+        # draw in front of the sub-column when both are present.
+        dbg_el  : element editor.elements['dbg']
+        din     : f32 [ 0.0 ]
+        if [ dbg_el && dbg_el.bounds ]
+            din = dbg_el.bounds.w
+        pin_in  : f32 [ (editor.elements['pins']) ? 144.0 : 0.0 ]
+        rin     : f32 [ maxf[ pin_in, din ] ]
         # edge fade is produced by the element's grayscale mask (per-edge black
         # inner glow) applied at the cache blit — not a per-line CPU alpha.
         # asymmetric on purpose: a little on the left so the code's structure
@@ -129,7 +136,7 @@ Layer EditorLayer
                 bp : editor.breakpoints['{editor.src}:{li + 1}']
                 if [ bp != null ]
                     cv.fill_color[ editor.bp_color[ bp ] ]
-                    cv.rect_to[ bounds.x, yg, bounds.w - rin, lh ]
+                    cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
                     cv.paint[ ]
             cell : rgba [ (editor.hover_line == li) ? rgba['#ffffff18'] : rgba['#ffffff08'] ]
             cv.fill_color[ cell ]
@@ -255,7 +262,7 @@ Layer EditorLayer
 
             y_cur : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll.y ]
             cv.fill_color[ cur_line_col ]
-            cv.rect_to[ bounds.x, y_cur, bounds.w, lh ]
+            cv.rect_to[ bounds.x, y_cur, bounds.w - rin - 1.0, lh ]
             cv.paint[ ]
 
             if [ has_sel ]
@@ -264,7 +271,7 @@ Layer EditorLayer
                     y_row : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
                     if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
                     cv.fill_color[ cur_line_col ]
-                    cv.rect_to[ bounds.x, y_row, bounds.w, lh ]
+                    cv.rect_to[ bounds.x, y_row, bounds.w - rin - 1.0, lh ]
                     cv.paint[ ]
 
                 cv.save[ ]
@@ -276,7 +283,7 @@ Layer EditorLayer
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
                     col_x0 : f32 [ (is_sl) ? f32[start_col] * cw : 0.0 ]
-                    col_x1 : f32 [ (is_el) ? f32[end_col] * cw : bounds.w - gut_w ]
+                    col_x1 : f32 [ (is_el) ? f32[end_col] * cw : bounds.w - gut_w - rin ]
                     rx     : f32 [ x0 + col_x0 ]
                     rw     : f32 [ col_x1 - col_x0 ]
 
@@ -329,7 +336,7 @@ Layer EditorLayer
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
                     col_x0 : f32 [ (is_sl) ? f32[start_col] * cw : 0.0 ]
-                    col_x1 : f32 [ (is_el) ? f32[end_col]   * cw : bounds.w - gut_w ]
+                    col_x1 : f32 [ (is_el) ? f32[end_col]   * cw : bounds.w - gut_w - rin ]
                     rx     : f32 [ x0 + col_x0 ]
                     rw     : f32 [ col_x1 - col_x0 ]
                     use_filter : bool [ editor.last_sel_line == li && editor.filter_rect ]
@@ -424,6 +431,11 @@ Control Editor
     public  breakpoints   : map string[string]
     # code font size (px), injected by orbiter; gutter labels render smaller.
     public  code_font_size : i32 [ 15 ]
+    # the stack-split seam width (units), injected by orbiter each frame. not read
+    # in draw (din is measured from the live 'dbg' element bounds) — it's here so a
+    # seam drag changes this prop, marks the editor dirty, and the code re-clips LIVE
+    # as you drag instead of only snapping on release.
+    public  dbg_seam      : f32 [ 0.0 ]
 
     # whole-line wash color: conditional (non-empty condition) vs plain.
     func bp_color [ cond: string ] -> rgba
@@ -710,6 +722,12 @@ Control Editor
             sb.active = false
             ux.will_animate = true
 
+    func on_wheel [ ev: Event ]
+        lh : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        scroll.y = scroll.y - ev.mouse.wheel_delta.y * lh * 3.0
+        pristine = false
+        ux.will_animate = true
+
     func on_char [ ev: Event ]
         if [ line_count[] <= 0 ] return
         if [ sel_line < 0 ] sel_line = 0
@@ -765,6 +783,11 @@ Control Editor
                 sel_line = snap_row[ clamp[ sel_line + half2, 0, line_count[] - 1 ] ]
                 scroll.y = scroll.y + f32[ half2 ] * lh
             sel_col  = clamp[ sel_col, 0, line_get[ sel_line ].count ]
+            # plain page move collapses the selection to the cursor (no highlight);
+            # shift+page extends it, like a normal editor.
+            if [ !ev.key.shift ]
+                anchor_line = sel_line
+                anchor_col  = sel_col
             pristine = false
             return
 

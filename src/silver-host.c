@@ -8,6 +8,7 @@
 #include <libgen.h>
 #include <signal.h>
 #include <execinfo.h>
+#include <sys/wait.h>
 
 typedef int        (*frame_fn)(void);
 typedef void       (*destroy_fn)(void);
@@ -123,14 +124,30 @@ static int sources_newer(const char* product, source_watch* srcs, int nsr) {
 // recompile synchronously (no '&') so the fresh product is in place before load.
 // run from SILVER_ROOT so silver resolves the module via foundry/<name>/ rather
 // than relative to wherever the host was launched / cd_share'd to.
-static void rebuild_blocking(const char* name) {
+// returns 0 on a clean build, non-zero if silver failed or crashed. callers must
+// NOT run the (stale) product when this fails.
+static int rebuild_blocking(const char* name) {
     char cmd[8192];
     snprintf(cmd, sizeof(cmd),
         "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/platform/native/debug/silver\" %s",
         name);
     fprintf(stdout, "%s: source changed — rebuilding\n", name);
     fflush(stdout);
-    system(cmd);
+    int rc = system(cmd);
+    if (rc == -1) {
+        fprintf(stderr, "%s: BUILD ERROR — could not launch silver\n", name);
+        return -1;
+    }
+    if (WIFSIGNALED(rc)) {
+        fprintf(stderr, "%s: BUILD CRASHED — silver died with signal %d (%s)\n",
+            name, WTERMSIG(rc), strsignal(WTERMSIG(rc)));
+        return -1;
+    }
+    if (WIFEXITED(rc) && WEXITSTATUS(rc) != 0) {
+        fprintf(stderr, "%s: BUILD FAILED — silver exited %d\n", name, WEXITSTATUS(rc));
+        return -1;
+    }
+    return 0;
 }
 
 int main(int argc, char** argv) {
@@ -179,7 +196,11 @@ int main(int argc, char** argv) {
     int nsr = 0;
     load_sources(artifacts, srcs, &nsr);
     if (sources_newer(product, srcs, nsr)) {
-        rebuild_blocking(name);
+        if (rebuild_blocking(name) != 0) {
+            fprintf(stderr, "%s: aborting — refusing to run a stale build. "
+                "fix the build errors above and relaunch.\n", name);
+            return 1;
+        }
         load_sources(artifacts, srcs, &nsr);   // artifact list may have changed
     }
 
@@ -212,20 +233,27 @@ int main(int argc, char** argv) {
                 // use handle (not RTLD_DEFAULT) so we find symbols in transitive deps (libAu.so)
                 au_compile_ready_fn  ready_fn  = (au_compile_ready_fn)dlsym(handle,  "au_compile_ready");
                 au_compile_invoke_fn invoke_fn = (au_compile_invoke_fn)dlsym(handle, "au_compile_invoke");
-                fprintf(stdout, "%s: ready_fn=%p invoke_fn=%p ready=%d\n", name,
-                    (void*)ready_fn, (void*)invoke_fn, ready_fn ? ready_fn() : -1);
+                // recompile SYNCHRONOUSLY so we can see whether it succeeded — a
+                // backgrounded build hides errors and races the reload check.
+                int rc;
                 if (ready_fn && ready_fn() && invoke_fn) {
-                    invoke_fn(name);
-                    force = 1;
+                    invoke_fn(name);   // in-process compiler reports its own errors
+                    rc = 0;
                 } else {
-                    char cmd[8192];
-                    snprintf(cmd, sizeof(cmd),
-                        SILVER_ROOT "/platform/native/debug/silver %s &", name);
-                    system(cmd);
+                    rc = rebuild_blocking(name);
                 }
                 // refresh all source mtimes so we don't retrigger until next edit
                 for (int j = 0; j < nsr; j++)
                     srcs[j].mtime = file_mtime(srcs[j].path);
+                if (rc == 0) {
+                    force = 1;   // good build → reload below
+                } else {
+                    // we're already running: a failed recompile must NOT swap in a
+                    // broken or stale module, and must NOT take the app down. report
+                    // it and keep the live instance running on the last good build.
+                    fprintf(stderr, "%s: recompile FAILED — keeping the running build "
+                        "(fix the errors above; the app stays up)\n", name);
+                }
                 break;
             }
         }

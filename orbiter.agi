@@ -1,5 +1,5 @@
 # comments allowed
-show_right: false
+show_right: true
 
 projects:
 	silver: Project

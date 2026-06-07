@@ -572,7 +572,7 @@ Display Window
 
         now          : i64 [ epoch_millis[] ]
         if [ !start_ms ] start_ms = now
-        time          = f64[ now - start_ms ] / 1000.0
+        time          = f64[ now - start_ms ] / 1000.0 / 10.0
         # frame-rate-independent filter rate: dt as a multiple of a 60fps frame, so
         # decay = (1-amount)^frame_factor converges at the same REAL-TIME rate no
         # matter the fps. at 60fps frame_factor=1; at 30fps=2 (one frame covers two
@@ -1017,7 +1017,10 @@ Display Window
                     break
 
     public func wheel_event [ ev: Event ]
-        target_el : element [ (capture) ? capture : (focus) ? focus : find_target[ root, ev, null ] ]
+        # wheel follows the mouse like every OS: the element UNDER the cursor gets
+        # it (then bubbles to parents), regardless of focus. capture still wins
+        # during an active drag.
+        target_el : element [ (capture) ? capture : find_target[ root, ev, null ] ]
         consumed_w : bool [ false ]
         for [ e: element* target_el, e && !consumed_w, e = e.parent ]
             ev.target = e
@@ -1920,6 +1923,10 @@ abstract media_app trinity
         w.update *[]
         render   *[]
         w.resize[w.width, w.height]
+        # the startup resize ran update[] with resizing=true, so on_compose skipped the
+        # first paint; nothing else flags a repaint, so the loop would idle until the
+        # first mouse event. force the initial paint here (resizing is false again now).
+        window.restyle = true
         super.run[]
 
     # 22

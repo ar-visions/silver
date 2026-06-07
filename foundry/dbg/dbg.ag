@@ -1,0 +1,82 @@
+# dbg — the LLDB driver, as a proper silver module. this .ag is the SCHEMA;
+# dbg.cc implements the methods against the LLDB SB API. the lldb::SB* objects
+# are held as intern opaque inline buffers (sized to the C++ types) so the public
+# silver surface never exposes an lldb type — dbg.cc casts the buffers back to the
+# real SB classes. external importers (orbiter) only see the public interface.
+
+# a stopped/crashed source position handed to the on_break / on_crash callbacks.
+class cursor
+    intern  debug   : dbg
+    public  source  : path
+    public  line    : u32
+    public  column  : u32
+
+# one inspected value (local/arg/global/register), with its rendered children.
+class variable
+    intern  debug    : dbg
+    public  name     : string
+    public  type     : string
+    public  value    : string
+    public  children : array
+
+# delivered to on_exit when the inferior terminates.
+class exited
+    intern  debug : dbg
+    public  code  : i32
+
+# a chunk of inferior stdout/stderr handed to the on_stdout / on_stderr callbacks.
+class iobuffer
+    intern  debug : dbg
+    intern  bytes : cstr
+    intern  count : i32
+
+# a live breakpoint handle. lldb_bp is an opaque pointer to a C++-allocated
+# lldb::SBBreakpoint (dbg.cc owns it).
+class breakpoint
+    intern  debug   : dbg
+    intern  removed : bool
+    intern  lldb_bp : handle
+    func dealloc [ ]
+
+class dbg
+    public   location    : path
+    public   position    : cursor
+    public   target      : Au
+    public   on_stdout   : callback
+    public   on_stderr   : callback
+    public   on_break    : callback
+    public   on_exit     : callback
+    public   on_crash    : callback
+    public   auto_start  : bool
+    public   exceptions  : bool
+    public   running     : bool
+    public   poll        : async
+    public   io          : async
+    public   stdout_fifo : path
+    public   stderr_fifo : path
+    public   fifo_fd_out : i32
+    public   fifo_fd_err : i32
+    intern   active      : bool
+
+    # opaque pointer to the C++ struct dbg.cc allocates, which holds the live
+    # lldb::SBDebugger / SBTarget / SBProcess / SBListener. the lldb types never
+    # appear in the silver schema — dbg.cc casts this back to its own struct.
+    intern   impl        : handle
+
+    func step_into          [ ]
+    func step_over          [ ]
+    func step_out           [ ]
+    func pause              [ ]
+    func cont               [ ]
+    func start              [ ]
+    func stop               [ ]
+    func read_arguments     [ ] -> array
+    func read_locals        [ ] -> array
+    func read_statics       [ ] -> array
+    func read_globals       [ ] -> array
+    func read_registers     [ ] -> array
+    func set_breakpoint     [ source: path, ln: u32, column: u32 ] -> breakpoint
+    func remove_breakpoint  [ bp: breakpoint ]
+    func enable_breakpoint  [ bp: breakpoint, enable: bool ]
+    func init               [ ]
+    func dealloc            [ ]

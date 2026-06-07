@@ -988,9 +988,13 @@ class Pipeline
     public default_model    : mat4f
     public shader_reloads   : i32
     public material         : Material
-    # weak (context): the pipeline borrows the model's samplers map, doesn't
-    # co-own it — avoids the model↔pipeline double-hold on the textures it maps.
-    context samplers        : map Au[string]
+    # the pipeline co-owns the model's samplers map (held, not a weak context):
+    # on a resize the owning model can be freed/replaced while a stale pipeline is
+    # still drawn, and a weak borrow here would dangle (UAF in bind_resources /
+    # Surface_resources). co-owning the MAP can't cycle — its values are Textures
+    # that point at neither the model nor the pipeline — so it just frees once both
+    # the model and the pipeline have dropped it.
+    mutable samplers        : map Au[string]
     # explicit dispatch group counts for compute pipelines. when any of
     # these are > 0 they override the default of memory.vertex_count, 1, 1.
     mutable dispatch_x      : i32

@@ -6767,6 +6767,10 @@ void silver_write_header(silver a) {
                 "#undef %o_intern", n);
             line(intern_f,
                 "#define %o_intern(A,B,...) A##_schema(A,B, __VA_ARGS__)", n);
+            // Type_i(T) -> XCAT4(T_module_, _, T, _i); emit the per-type module so
+            // declare_class below and any .cc typeid resolve to <module>_<type>_i
+            // (e.g. dbg_dbg_i) — the same symbol aether defines.
+            fprintf(intern_f, "#define %s_module_ %s\n", n->chars, a->autype->ident);
         }
     }
     line(intern_f, "#include <%o/%o>", m, m);
@@ -7108,8 +7112,12 @@ void silver_write_header(silver a) {
         if (im->external_name && !im->is_au_rt)
             line(import_f, "#include <%o/methods>", im->external_name);
     }
-    //line(import_f, "#include <%o/init>", a->name); // disabled: clang 22 preprocessor bug with large macro parameter lists in included files
-    //line(import_f, "#endif");
+    // a module's own /init (the per-type X(...) prop-pair constructor macros) is
+    // NOT emitted into its import: C++ TUs construct via new0(T, ...) (generic
+    // _N_ARGS in macros.h), and C modules that want the X(...) form include
+    // <module/init> directly. emitting it here triggers a preprocessor
+    // "unterminated conditional" cascade (and the clang-22 large-macro bug).
+    //line(import_f, "#include <%o/init>", a->name);
     line(import_f, "#ifdef __cplusplus");
     line(import_f, "#undef M");
     line(import_f, "#undef str");

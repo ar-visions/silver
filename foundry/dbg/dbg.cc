@@ -9,10 +9,48 @@
 #include <fcntl.h>
 #include <ports.h>
 
+#define m(...) map_of(_N_ARGS_m(m, ## __VA_ARGS__), null)
+#define a(...) array_of(_N_ARGS_a(a, ## __VA_ARGS__), null)
+// the import #undef's these for C++ (to protect the stdlib headers above); we use
+// them in this TU's body, so re-establish them now that the C++ headers are in.
+#define typeid(aa)     ((Au_t)&(Type_i(aa).type))
+#define construct(...) new0(__VA_ARGS__)
+// Type_i(T) resolves to <T_module_>_T_i via a per-type <T>_module_ macro. silver
+// emits a module's OWN type instances (dbg_cursor_i, ...) hardcoded in the generated
+// .c, NOT the <T>_module_ macros into a header — so typeid(cursor) here would collapse
+// to the undefined "cursor_module__cursor_i". declare them for dbg's own types.
+// (Au's own types like Au/async/array are covered by Au's header.)
+/*
+#define dbg_module_        dbg
+#define cursor_module_     dbg
+#define variable_module_   dbg
+#define exited_module_     dbg
+#define iobuffer_module_   dbg
+#define breakpoint_module_ dbg
+*/
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wwrite-strings"
 
-A dbg_io(dbg debug) {
+// the live LLDB SB objects. the silver schema only carries an opaque `impl`
+// handle (intern), so no lldb type leaks into the public interface — this struct
+// is allocated in dbg_init and freed in dbg_dealloc, and reached via S(debug).
+struct dbg_state {
+    lldb::SBDebugger debugger;
+    lldb::SBTarget   target;
+    lldb::SBProcess  process;
+    lldb::SBListener listener;
+};
+#define S(d)  ((dbg_state*)(d)->impl)
+#define BP(b) ((lldb::SBBreakpoint*)(b)->lldb_bp)
+
+// the Au type registration (generated from dbg.ag) references these by their plain
+// C names (dbg_init, dbg_io, ...); without C linkage they'd be C++-mangled and the
+// loader fails with "undefined symbol: dbg_init". (struct dbg_state + macros above
+// stay C++.)
+extern "C" {
+
+Au dbg_io(dbg debug) {
     lldb::SBEvent event;
     int           fd_out = open(debug->stdout_fifo->chars, O_RDONLY | O_NONBLOCK);
     int           fd_err = open(debug->stderr_fifo->chars, O_RDONLY | O_NONBLOCK);
@@ -34,14 +72,14 @@ A dbg_io(dbg debug) {
                 ssize_t n = read(fd_out, buffer, sizeof(buffer));
                 if (n > 0)
                     debug->on_stdout(debug->target,
-                        (Au)iobuffer(debug, debug, bytes, buffer, count, n));
+                        (Au)construct(iobuffer, debug, debug, bytes, buffer, count, n));
             }
 
             if (FD_ISSET(fd_err, &readfds)) {
                 ssize_t n = read(fd_err, buffer, sizeof(buffer));
                 if (n > 0)
                     debug->on_stderr(debug->target,
-                        (Au)iobuffer(debug, debug, bytes, buffer, count, n));
+                        (Au)construct(iobuffer, debug, debug, bytes, buffer, count, n));
             }
         } else if (ready < 0)
             break;
@@ -49,26 +87,26 @@ A dbg_io(dbg debug) {
     return null;
 }
 
-A dbg_poll(dbg debug) {
+Au dbg_poll(dbg debug) {
     lldb::SBEvent event;
     while (debug->active) {
         if (!debug->running) {
             usleep(1000);
             continue;
         }
-        if (!debug->lldb_listener.WaitForEvent(1000, event))
+        if (!S(debug)->listener.WaitForEvent(1000, event))
             continue;
         if (!lldb::SBProcess::EventIsProcessEvent(event))
             continue;
-    
+
         lldb::StateType   state      = lldb::SBProcess::GetStateFromEvent(event);
-        lldb::SBThread    thread     = debug->lldb_process.GetSelectedThread();
+        lldb::SBThread    thread     = S(debug)->process.GetSelectedThread();
         lldb::StopReason  reason     = thread.GetStopReason();
         lldb::SBFrame     frame      = thread.GetSelectedFrame();
 
         if (!frame.IsValid())
             continue;
-        
+
         lldb::SBLineEntry line_entry = frame.GetLineEntry();
         lldb::SBFileSpec  file_spec  = line_entry.GetFileSpec();
         u32 line   = line_entry.GetLine();
@@ -79,16 +117,16 @@ A dbg_poll(dbg debug) {
 
         if (state == lldb::eStateStopped) {
             debug->running = false;
-            cursor cur = cursor(
+            cursor cur = construct(cursor,
                 debug,  debug,
                 source, source,
                 line,   line,
                 column, column);
             debug->on_break(debug->target, (Au)cur);
-            
+
         } else if (state == lldb::eStateCrashed) {
             debug->running = false;
-            cursor cur = cursor(
+            cursor cur = construct(cursor,
                 debug,  debug,
                 source, source,
                 line,   line,
@@ -97,8 +135,8 @@ A dbg_poll(dbg debug) {
 
         } else if (state == lldb::eStateExited) {
             debug->running = false;
-            i32    exit_code = debug->lldb_process.GetExitStatus();
-            exited e = exited(
+            i32    exit_code = S(debug)->process.GetExitStatus();
+            exited e = construct(exited,
                 debug,  debug,
                 code,   exit_code);
             debug->on_exit(debug->target, (Au)e);
@@ -113,26 +151,27 @@ none dbg_init(dbg debug) {
         dbg_init = true;
         lldb::SBDebugger::Initialize();
     }
-    debug->lldb_debugger = lldb::SBDebugger::Create();
+    debug->impl = (handle)new dbg_state();
+    S(debug)->debugger = lldb::SBDebugger::Create();
 
-    // callback,  bind,   A, bool, Au_t, Au_t, symbol, symbol) \
+    // Au_binding(a, target, required, rtype, arg_type, id, name) -> callback
 
-    if (!debug->on_stdout) debug->on_stdout = bind((Au)debug, (Au)debug->target, true, typeid(Au), typeid(iobuffer), null, "stdout");
-    if (!debug->on_stderr) debug->on_stderr = bind((Au)debug, (Au)debug->target, true, typeid(Au), typeid(iobuffer), null, "stderr");
-    if (!debug->on_break)  debug->on_break  = bind((Au)debug, (Au)debug->target, true, typeid(Au), typeid(cursor),   null, "break");
-    if (!debug->on_exit)   debug->on_exit   = bind((Au)debug, (Au)debug->target, true, typeid(Au), typeid(dbg),      null, "exit");
-    if (!debug->on_crash)  debug->on_crash  = bind((Au)debug, (Au)debug->target, true, typeid(Au), typeid(cursor),   null, "crash");
+    if (!debug->on_stdout) debug->on_stdout = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(iobuffer), null, "stdout");
+    if (!debug->on_stderr) debug->on_stderr = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(iobuffer), null, "stderr");
+    if (!debug->on_break)  debug->on_break  = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(cursor),   null, "break");
+    if (!debug->on_exit)   debug->on_exit   = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(dbg),      null, "exit");
+    if (!debug->on_crash)  debug->on_crash  = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(cursor),   null, "crash");
 
-    debug->lldb_debugger.SetAsync(true);
+    S(debug)->debugger.SetAsync(true);
     if (!debug->exceptions) {
-        lldb::SBCommandInterpreter  interp = debug->lldb_debugger.GetCommandInterpreter();
+        lldb::SBCommandInterpreter  interp = S(debug)->debugger.GetCommandInterpreter();
         lldb::SBCommandReturnObject result;
         interp.HandleCommand("settings set target.exception-breakpoints.* false", result);
     }
 
-    debug->lldb_listener = debug->lldb_debugger.GetListener();
-    debug->lldb_target   = debug->lldb_debugger.CreateTarget(debug->location->chars);
-    debug->running       = false;
+    S(debug)->listener = S(debug)->debugger.GetListener();
+    S(debug)->target   = S(debug)->debugger.CreateTarget(debug->location->chars);
+    debug->running     = false;
 
     // mkstemp returns fd but also replaces XXXXXX with unique string
     char   stdout_fifo_t[] = "/tmp/debug_stdout_fifo_XXXXXX";
@@ -149,17 +188,21 @@ none dbg_init(dbg debug) {
     debug->stdout_fifo     = f(path, "%s", stdout_fifo_t);
     debug->stderr_fifo     = f(path, "%s", stderr_fifo_t);
 
-    if (debug->lldb_target.IsValid()) {
+    if (S(debug)->target.IsValid()) {
         debug->active        = true;
-        debug->poll          = async(work, a((Au)debug), work_fn, (hook)dbg_poll);
-        debug->io            = async(work, a((Au)debug), work_fn, (hook)dbg_io);
+        debug->poll          = construct(async, work, a((Au)debug), work_fn, (hook)dbg_poll);
+        debug->io            = construct(async, work, a((Au)debug), work_fn, (hook)dbg_io);
         if (debug->auto_start)
-            start(debug);
+            dbg_start(debug);
     }
 }
 
 none dbg_dealloc(dbg debug) {
-    stop(debug);
+    dbg_stop(debug);
+    if (debug->impl) {
+        delete S(debug);
+        debug->impl = null;
+    }
 }
 
 none dbg_start(dbg debug) {
@@ -169,20 +212,20 @@ none dbg_start(dbg debug) {
     launch_info.AddOpenFileAction(1, debug->stdout_fifo->chars, true, false);
     launch_info.AddOpenFileAction(2, debug->stderr_fifo->chars, true, false);
 
-    debug->lldb_process = debug->lldb_target.Launch(launch_info, error);
+    S(debug)->process = S(debug)->target.Launch(launch_info, error);
 
     if (!error.Success()) {
-        print("failed: %s", error.GetCString());
+        printf("failed: %s\n", error.GetCString());
     } else {
-        print("launched: pid=%i", (i32)debug->lldb_process.GetProcessID());
+        printf("launched: pid=%i\n", (i32)S(debug)->process.GetProcessID());
         debug->running = true;
     }
 }
 
 none dbg_stop(dbg debug) {
     if (!debug->running) return;
-    if (debug->lldb_process.IsValid())
-        debug->lldb_process.Detach();
+    if (S(debug)->process.IsValid())
+        S(debug)->process.Detach();
     debug->running = false;
     debug->active  = false;
     close(debug->fifo_fd_out);
@@ -192,26 +235,26 @@ none dbg_stop(dbg debug) {
 }
 
 none dbg_step_into(dbg debug) {
-    lldb::SBThread thread = debug->lldb_process.GetSelectedThread();
+    lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepInto();
 }
 
 none dbg_step_over(dbg debug) {
-    lldb::SBThread thread = debug->lldb_process.GetSelectedThread();
+    lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepOver();
 }
 
 none dbg_step_out(dbg debug) {
-    lldb::SBThread thread = debug->lldb_process.GetSelectedThread();
+    lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepOut();
 }
 
 none dbg_pause(dbg debug) {
-    debug->lldb_process.Stop();
+    S(debug)->process.Stop();
 }
 
 none dbg_cont(dbg debug) {
-    debug->lldb_process.Continue();
+    S(debug)->process.Continue();
 }
 
 array read_children(dbg debug, lldb::SBValue value) {
@@ -223,18 +266,18 @@ array read_children(dbg debug, lldb::SBValue value) {
         string        type  = string((cstr)child.GetTypeName());
         string        val   = string((cstr)child.GetValue());
         char          name_buf[256];
-        if (!len(name)) {
+        if (!name->count) {
             snprintf(name_buf, sizeof(name_buf), "[%u]", i);
             name = string(name_buf);
         }
-        variable v = variable(
+        variable v = new0(variable,
             debug,      debug,
             name,       name,
             type,       type,
             value,      val,
             children,   read_children(debug, child));
 
-        push(result, (Au)v);
+        array_qpush(result, (Au)v);
     }
 
     return result;
@@ -246,50 +289,50 @@ array dbg_read_vars(dbg debug, array result, lldb::SBValueList vars) {
         string name = string(value.GetName());
         string type = string(value.GetTypeName());
         string val  = string(value.GetValue());
-        variable v  = variable(
+        variable v  = new0(variable,
             debug,      debug,
             name,       name,
             type,       type,
             value,      val,
             children,   read_children(debug, value)
         );
-        push(result, (Au)v);
+        array_qpush(result, (Au)v);
     }
     return result;
 }
 
 array dbg_read_arguments(dbg debug) {
     array             result = array(32);
-    lldb::SBFrame     frame  = debug->lldb_process.GetSelectedThread().GetSelectedFrame();
+    lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     lldb::SBValueList args   = frame.GetVariables(
-        true, false, false, false); 
+        true, false, false, false);
     return dbg_read_vars(debug, result, args);
 }
 
 array dbg_read_locals   (dbg debug) {
     array             result = array(32);
-    lldb::SBFrame     frame  = debug->lldb_process.GetSelectedThread().GetSelectedFrame();
+    lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     lldb::SBValueList args   = frame.GetVariables(
-        false, true, false, false); 
+        false, true, false, false);
     return dbg_read_vars(debug, result, args);
 }
 
 array dbg_read_statics  (dbg debug) {
     array             result = array(32);
-    lldb::SBFrame     frame  = debug->lldb_process.GetSelectedThread().GetSelectedFrame();
+    lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     lldb::SBValueList args   = frame.GetVariables(
-        false, false, true, false); 
+        false, false, true, false);
     return dbg_read_vars(debug, result, args);
 }
 
 array dbg_read_globals  (dbg debug) {
     array             result      = array(32);
-    lldb::SBFrame     frame       = debug->lldb_process.GetSelectedThread().GetSelectedFrame();
-    u32               num_modules = debug->lldb_target.GetNumModules();
+    lldb::SBFrame     frame       = S(debug)->process.GetSelectedThread().GetSelectedFrame();
+    u32               num_modules = S(debug)->target.GetNumModules();
 
     for (u32 i = 0; i < num_modules; ++i) {
-        lldb::SBModule    module  = debug->lldb_target.GetModuleAtIndex(i);
-        lldb::SBValueList globals = debug->lldb_target.FindGlobalVariables(
+        lldb::SBModule    module  = S(debug)->target.GetModuleAtIndex(i);
+        lldb::SBValueList globals = S(debug)->target.FindGlobalVariables(
             null, // you can use full file path or wildcard
             1000  // max number of globals to return
         );
@@ -300,7 +343,7 @@ array dbg_read_globals  (dbg debug) {
 
 array dbg_read_registers(dbg debug) {
     array             result = array(32);
-    lldb::SBThread    thread = debug->lldb_process.GetSelectedThread();
+    lldb::SBThread    thread = S(debug)->process.GetSelectedThread();
     lldb::SBFrame     frame  = thread.GetSelectedFrame();
     lldb::SBValueList regs   = frame.GetRegisters();
     dbg_read_vars(debug, result, regs);
@@ -308,42 +351,39 @@ array dbg_read_registers(dbg debug) {
 }
 
 breakpoint dbg_set_breakpoint(dbg debug, path source, u32 line, u32 column) {
-    A src_head = head(source);
-    lldb::SBTarget target = debug->lldb_target;
-    lldb::SBBreakpoint bp = target.BreakpointCreateByLocation(source->chars, line);
+    Au src_head = head(source);
+    lldb::SBBreakpoint bp = S(debug)->target.BreakpointCreateByLocation(source->chars, line);
 
     if (bp.IsValid())
-        print("breakpoint set: %s:%i id=%i", source->chars, line, (i32)bp.GetID());
+        printf("breakpoint set: %s:%i id=%i\n", source->chars, line, (i32)bp.GetID());
     else
-        print("failed to set breakpoint: %s:%i", source->chars, line);
-    
-    breakpoint br = breakpoint(debug, debug, lldb_bp, bp);
+        printf("failed to set breakpoint: %s:%i\n", source->chars, line);
+
+    lldb::SBBreakpoint* heap_bp = new lldb::SBBreakpoint(bp);
+    breakpoint br = construct(breakpoint, debug, debug, lldb_bp, (handle)heap_bp);
     return br;
 }
 
 none dbg_remove_breakpoint(dbg debug, breakpoint bp) {
     if (bp->removed) return;
-    lldb::SBTarget target = debug->lldb_target;
-    target.BreakpointDelete(bp->lldb_bp.GetID());
+    S(debug)->target.BreakpointDelete(BP(bp)->GetID());
     bp->removed = true;
-    print("breakpoint removed: id=%i", (i32)bp->lldb_bp.GetID());
+    printf("breakpoint removed: id=%i\n", (i32)BP(bp)->GetID());
 }
 
 none dbg_enable_breakpoint(dbg debug, breakpoint bp, bool enable) {
-    lldb::SBTarget target = debug->lldb_target;
-    bp->lldb_bp.SetEnabled(enable);
-    print("breakpoint %s: id=%i", enable ? "enabled" : "disabled", (i32)bp->lldb_bp.GetID());
+    BP(bp)->SetEnabled(enable);
+    printf("breakpoint %s: id=%i\n", enable ? "enabled" : "disabled", (i32)BP(bp)->GetID());
 }
 
 none breakpoint_dealloc(breakpoint bp) {
     dbg_remove_breakpoint(bp->debug, bp);
+    if (bp->lldb_bp) {
+        delete BP(bp);
+        bp->lldb_bp = null;
+    }
 }
 
-define_class(cursor,     Au)
-define_class(exited,     Au)
-define_class(variable,   Au)
-define_class(breakpoint, Au)
-define_class(iobuffer,   Au)
-define_class(dbg,        Au)
+} // extern "C"
 
 #pragma GCC diagnostic pop
