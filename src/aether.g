@@ -1,6 +1,6 @@
 type:       shared
 modules:    Au aclang allvm lldb coverage vec
-link:       -lclang-cpp -lclang -lLLVM -llldb
+link:       -lclang-cpp -lclang -lLLVM -llldb -lstdc++ -lz -ltinfo
 import:     LLVM:llvm-project/bd7db754895ed3b51388ec549cd656c770c17587 native
     -S $SILVER/checkout/llvm-project/llvm
     { f'-DCMAKE_SYSROOT=$IMPORT' if SDK != 'native' else '' }
