@@ -444,7 +444,7 @@ Tabs / Option {
 Instances / Tabs.tools {
     area:                       l0 t0 w1 h1.2
 }
-Instances / Tabs.tools / Button.play {
+Instances / Tabs.tools / Option.play {
     area:                       l6px t6px w1.5 h1
     layers.svg:
         area:                   4px
@@ -454,12 +454,12 @@ Instances / Tabs.tools / Button.play {
         opacity:                1.0
 }
 
-Instances / Tabs.tools / Button.play:disable {
+Instances / Tabs.tools / Option.play:disable {
     layers.svg:
         opacity:                0.3
 }
 
-Instances / Tabs.tools / Button.play:selected {
+Instances / Tabs.tools / Option.play:selected {
     layers.svg:
         image_svg:              "images/stop.svg"
 }
@@ -597,7 +597,7 @@ Avatar.avatar:pressed {
 /* avatar shown in the right editor pane (a direct EditorView child, not inside an
    Editor — that masks it). right half, square (height tracks width via 'hw'). */
 EditorView / Avatar.avatar {
-    area:               m0 m0 w8 h8
+    area:               l4 t4 r4 b4
 }
 
 EditorView / Avatar.avatar / Option {

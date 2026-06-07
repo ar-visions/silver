@@ -57,6 +57,15 @@ func au_mem_fraction[] -> f32
 func au_capture_stdout[] -> i32
 func au_stdout_orig[]    -> i32
 
+# per-workspace UI/session state, persisted to <os-cache>/orbiter/states.agi as a
+# map keyed by the workspace (startup) path. starts with the open tabs; more fields
+# (active pane, splits, scroll positions, etc.) get added here over time.
+class orbiter_state
+    public tabs        : array path
+    # breakpoints for this workspace — same "source:line" -> condition map orbiter
+    # keeps live (empty condition = plain breakpoint).
+    public breakpoints : map string [string]
+
 trinity orbiter # implements compiler
     intern avg_fps       : f32
     intern target_names  : array string
@@ -67,6 +76,26 @@ trinity orbiter # implements compiler
     # srcs are derived from it (sync_targets) so the rest of the app keeps using
     # the flat arrays. cleared + reloaded whenever orbiter.agi changes.
     public projects      : map Project [string]
+    # per-workspace session state (open tabs + future props), keyed by workspace
+    # path. loaded from / saved to <os-cache>/orbiter/states.agi via parse_agi.
+    public states        : map orbiter_state [string]
+    # live debug sessions, keyed by project name. each is a `dbg` (our LLDB SB-API
+    # driver) launched on the project's product; its on_* callbacks land on the
+    # handlers below (on_stdout/on_break/...).
+    intern debuggers     : map dbg [string]
+    # a stop location set by on_break (which runs on dbg's poll thread); on_render
+    # (main thread) consumes it to open the source in the first tab + select the line.
+    intern pending_break : cursor
+    # set by on_exit (poll thread) so on_render (main thread) clears every pane's
+    # stop-line marker — the inferior is gone, there's no execution point.
+    intern pending_clear_stop : bool
+    # last seen breakpoint-map size — a change (toggle in an Editor's gutter) means the
+    # session state is dirty, so on_render re-saves. count catches add/remove.
+    intern last_bp_count      : i32 [ -1 ]
+    # a project whose build was dispatched and whose dbg session should launch once
+    # the build's shell returns to prompt (so we launch the FRESH product, not the
+    # stale one — start_debug right after dispatch would race the async build).
+    intern pending_debug : string
     # orbiter.agi reload: polled once a second from on_render. settings_mtime is
     # the file mtime we last loaded; settings_check_ms throttles the stat to ~1Hz.
     intern settings_mtime    : i64
@@ -220,6 +249,9 @@ trinity orbiter # implements compiler
         editor_slots   = array i32 []
         editor_slots  += -1
         active_pane    = 0
+        # reopen the tabs this workspace had last session (no-op on first run). does
+        # this here, after open_files/editor_slots exist; the render builds the panes.
+        restore_session[]
         active_panel   = 'files'
         editor_panel   = 'editor'
         active_target  = 'silver'
@@ -246,10 +278,6 @@ trinity orbiter # implements compiler
         start_index[]
         compile_log    = list string []
         stdout_log     = list string []
-        # seed one at silver.c:4 to have something to look at (empty condition
-        # = a plain breakpoint; a non-empty string would be a conditional one)
-        bp_src : open_files[0]
-        breakpoints['{bp_src}:4'] = string[]
         stdout_line    = ''
         # capture is deferred to the first on_render so load-time prints don't get
         # routed into a console that isn't initialized/updating yet.
@@ -281,6 +309,102 @@ trinity orbiter # implements compiler
     func agi_path [] -> path
         if [ !startup_path ] startup_path = path.path_startup[]
         return path '{startup_path}/orbiter.agi'
+
+    # OS-specific per-user cache dir for orbiter (created on demand). app state that
+    # is convenience-only (recoverable, not user content) belongs here, NOT in the
+    # workspace. linux: $XDG_CACHE_HOME or ~/.cache ; mac: ~/Library/Caches ;
+    # windows: %LOCALAPPDATA%. (apple/linux/windows are compile-time platform consts.)
+    func cache_dir [] -> path
+        ifdef [ windows ]
+            la : string [ getenv[ 'LOCALAPPDATA' ] ]
+            if [ la && la.count > 0 ] return path '{la}/orbiter'
+        ifdef [ apple ]
+            home : string [ getenv[ 'HOME' ] ]
+            if [ home && home.count > 0 ] return path '{home}/Library/Caches/orbiter'
+        ifdef [ linux ]
+            xdg : string [ getenv[ 'XDG_CACHE_HOME' ] ]
+            if [ xdg && xdg.count > 0 ] return path '{xdg}/orbiter'
+            home : string [ getenv[ 'HOME' ] ]
+            if [ home && home.count > 0 ] return path '{home}/.cache/orbiter'
+        return null
+
+    # the single states file holding every workspace's orbiter_state.
+    func states_path [] -> path
+        d : cache_dir[]
+        if [ !d ] return null
+        d.make_dir[]
+        return path '{d}/states.agi'
+
+    # the current workspace key — the startup path (where orbiter.agi lives).
+    func workspace_key [] -> string
+        if [ !startup_path ] startup_path = path.path_startup[]
+        return string '{startup_path}'
+
+    # read states.agi → parse_agi sets the `states` map directly on this instance.
+    func load_states []
+        sp : states_path[]
+        if [ !sp || !sp.exists[] ] return
+        txt : string [ sp.load[ typeid[string], null ] ]
+        if [ !txt || txt.count == 0 ] return
+        Au.parse_agi[ null, txt.chars, a ]
+
+    # serialize the `states` map back to states.agi (agi: map of quoted workspace
+    # keys → orbiter_state blocks; tabs is a whitespace-delimited path array).
+    func save_states []
+        sp : states_path[]
+        if [ !sp || !states ] return
+        out : string 'states:\n'
+        for [ st: orbiter_state, ws: string ] in states
+            out = out + '\t\'{ws}\': orbiter_state\n'
+            line : string '\t\ttabs:'
+            if [ st.tabs ]
+                for [ t: path ] in st.tabs
+                    line = line + ' {t}'
+            out = out + line + '\n'
+            # breakpoints as a nested map: '<source:line>': '<condition>'
+            if [ st.breakpoints && st.breakpoints.count > 0 ]
+                out = out + '\t\tbreakpoints:\n'
+                for [ cond: string, key: string ] in st.breakpoints
+                    out = out + '\t\t\t\'{key}\': \'{cond}\'\n'
+        sp.save[ out, null ]
+
+    # capture the current open tabs into states[workspace] and persist.
+    func save_session []
+        ws : workspace_key[]
+        if [ !ws || ws.count == 0 ] return
+        if [ !states ] states = map orbiter_state [string] []
+        st : orbiter_state states[ws]
+        if [ !st ]
+            st = orbiter_state []
+            states[ws] = st
+        tabs : array path []
+        for [ i: i32 0, i < open_files.count, i += 1 ]
+            if [ open_files[i] ] tabs.push[ open_files[i] ]
+        st.tabs        = tabs
+        # the live breakpoint map is workspace-scoped — snapshot it into the state.
+        st.breakpoints = breakpoints
+        save_states[]
+
+    # on startup: load all states, then reopen the tabs saved for this workspace.
+    func restore_session []
+        load_states[]
+        ws : workspace_key[]
+        if [ !states || !ws ] return
+        st : orbiter_state states[ws]
+        if [ !st ] return
+        # reopen tabs
+        if [ st.tabs ]
+            for [ i: i32 0, i < st.tabs.count, i += 1 ]
+                p : path st.tabs[i]
+                if [ p ] file_slot[ p ]
+            if [ open_files.count > 0 && editor_slots.count > 0 ]
+                editor_slots[0] = 0
+                sync_editor[]
+        # restore breakpoints into the live (shared) map so editors pick them up
+        if [ st.breakpoints && breakpoints ]
+            for [ cond: string, key: string ] in st.breakpoints
+                breakpoints[key] = cond
+            last_bp_count = breakpoints.count
 
     # read orbiter.agi and let parse_agi set members directly on this orbiter
     # instance (`a`) — chiefly the `projects` map. we clear projects first so a
@@ -397,17 +521,117 @@ trinity orbiter # implements compiler
         for [ c: token ] in p.build
             cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
         cmd : string 'cd "{p.root}" && {cmd_str}'
-        # if the node has a run command, chain it under lldb in its run cwd, and
-        # mark the session running so the play button becomes a stop button.
+        # the build runs in the shell; a runnable node then launches under our dbg
+        # (LLDB SB API), NOT a shell process — its stdout/stderr stream back through
+        # dbg's on_stdout/on_stderr callbacks, and stops hit on_break.
+        con.dispatch[ name, cmd ]
         has_run : bool [ p.run && p.run.count > 0 ]
         if [ has_run ]
-            run_str : string ''
-            for [ rt: token ] in p.run
-                run_str = (run_str.count > 0) ? run_str + ' ' + rt.chars : rt.chars
-            rcwd : path (p.cwd) ? p.cwd : p.root
-            cmd = '{cmd} && cd "{rcwd}" && lldb -o run -- {run_str}'
-        con.dispatch[ name, cmd ]
-        if [ has_run ] con.set_running[ name, true ]
+            # do NOT start_debug here — the build above is async in the shell. launching
+            # now execs the STALE binary still on disk (a pre-build leftover) before
+            # --clean overwrites it. defer the launch to on_render, which fires once the
+            # build's shell returns to prompt (is_running flips false) → fresh product.
+            pending_debug = name
+            con.set_running[ name, true ]
+
+    # launch a dbg (LLDB SB-API) session on a project's product. auto_start runs the
+    # binary immediately; its callbacks land on the on_* handlers below. NOTE: the
+    # build above is async in the shell, so the product must already exist for this
+    # launch to be current.
+    func start_debug [ name: string ] -> none
+        if [ !projects ] return
+        p : Project projects[name]
+        if [ !p ] return
+        # the launchable binary: explicit product, else <startup>/install/debug/<run>
+        # (silver builds an app to install/debug/<name>; run carries the binary name).
+        loc : path p.product
+        if [ !loc && p.run && p.run.count > 0 ]
+            rb : string p.run[0].chars
+            ps : string '{startup_path}/install/debug/{rb}'
+            loc = path [ ps.chars ]
+        if [ !loc ] return
+        puts 'start_debug {name}: launching {loc}'
+        if [ !debuggers ] debuggers = map dbg [string] []
+        # auto_start:false so breakpoints install into the target BEFORE the inferior
+        # runs — otherwise the process would blow past them. then launch.
+        d : dbg [ location: loc, target: a, auto_start: false ]
+        debuggers[name] = d
+        sync_breakpoints[ d ]
+        d.start[]
+
+    # install every app-global breakpoint into a dbg session's target. keys are
+    # "absolute/source:line" — split on the LAST ':' (linux paths have no ':'), the
+    # value is the condition (empty = plain). the for yields value-then-key.
+    func sync_breakpoints [ d: dbg ]
+        if [ !breakpoints || !d ] return
+        for [ cond: string, key: string ] in breakpoints
+            idx : i32 [ key.rindex_of[ ':' ] ]
+            if [ idx <= 0 ] continue
+            bsrc : string key.mid[ 0, idx ]
+            blin : i32 [ key.mid[ idx + 1, key.count - idx - 1 ].real_value[] ]
+            if [ blin <= 0 ] continue
+            d.set_breakpoint[ path [ bsrc ], u32[ blin ], 0 ]
+
+    # dbg callbacks. Au_binding builds the target method name as <self_type>_<name>
+    # = dbg_on_stdout/... (self_type is `dbg`, no id), so the handlers carry that
+    # dbg_ prefix.
+    func dbg_on_stdout [ buf: iobuffer ] -> Au
+        if [ !buf || buf.count <= 0 ] return null
+        s : string [ chars: buf.bytes, ref_length: buf.count ]
+        puts s
+        return null
+    func dbg_on_stderr [ buf: iobuffer ] -> Au
+        if [ !buf || buf.count <= 0 ] return null
+        s : string [ chars: buf.bytes, ref_length: buf.count ]
+        puts s
+        return null
+    func dbg_on_break [ cur: cursor ] -> Au
+        if [ !cur ] return null
+        # poll thread: just stash it; on_render opens it in the first tab.
+        pending_break = cur
+        puts 'dbg break {cur.source}:{cur.line}'
+        return null
+
+    # main-thread: open a pending break's source in the first editor pane (pane0
+    # always exists from init) and select its line. called from on_render.
+    func apply_pending_break []
+        if [ !pending_break ] return
+        # src borrows pending_break.source (non-holding). open_in_pane → open_files.push
+        # takes a holding ref — so the cursor MUST stay alive (don't null pending_break)
+        # until after that push, or dropping the cursor frees source and src dangles
+        # (push would then store freed memory → garbage key → map_get crash).
+        src : path pending_break.source
+        ln  : i32  [ pending_break.line ]
+        if [ src ]
+            open_in_pane[ src, 0 ]
+            ed : Editor pane_at[ 0 ]
+            if [ ed ]
+                # stop_line drives the white ">" arrow; sel_line moves the caret there
+                # too so the view scrolls to the stop.
+                sl : i32 [ (ln > 0) ? ln - 1 : 0 ]
+                ed.stop_line = sl
+                ed.sel_line  = sl
+                ed.pristine  = false
+        pending_break = null
+
+    # clear the debugger's stop-line marker on every pane (called when the inferior
+    # continues, stops, exits or crashes — there's no live execution point anymore).
+    func clear_stop_lines []
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            ed : Editor pane_at[ i ]
+            if [ ed ]
+                ed.stop_line = -1
+                ed.pristine  = false
+    func dbg_on_exit [ e: exited ] -> Au
+        if [ e ] puts 'dbg exit {e.code}'
+        # poll thread: no live execution point anymore — tell on_render to clear it.
+        pending_clear_stop = true
+        return null
+    func dbg_on_crash [ cur: cursor ] -> Au
+        if [ cur ] puts 'dbg crash {cur.source}:{cur.line}'
+        # a crash IS an execution point — open + mark it the same as a break stop.
+        if [ cur ] pending_break = cur
+        return null
 
     # map a path to its slot in open_files, registering it if not yet present.
     # (renamed from file_index — that name is the search-index prop; silver is
@@ -563,6 +787,11 @@ trinity orbiter # implements compiler
                 for [ i: i32 0, i < entries.count, i += 1 ]
                     e : path entries[i]
                     if [ e.is_dir[] ]
+                        # skip vendored deps and git internals — checkout alone is
+                        # ~235k files and buries foundry/src under the index cap.
+                        dn : string e.filename[]
+                        if [ dn == 'checkout' || dn == '.git' ]
+                            continue
                         index_queue.push[ e ]
                     el
                         file_index.push[ e ]
@@ -753,6 +982,7 @@ trinity orbiter # implements compiler
         if [ split3 < split2 + minw ] split3 = split2 + minw
         # DIAG: pane ids + computed bounds from the previous frame, to confirm the
         # per-pane CSS area rules are matching (remove once the split layout is confirmed).
+        ##
         puts 'layout_splits n={n} ew={ew} s1={split1} s2={split2} s3={split3}'
         for [ i: i32 0, i < n, i += 1 ]
             pe : Editor pane_at[ i ]
@@ -762,6 +992,7 @@ trinity orbiter # implements compiler
                 puts '  pane{i}: id={pe.id} <no bounds>'
             el
                 puts '  pane{i}: <null>'
+        ##
 
     # resolve the i-th live editor pane from the auto-bound editor_group. nested
     # elements don't auto-bind to app fields (only top-level returns do), so this is
@@ -807,6 +1038,8 @@ trinity orbiter # implements compiler
         active_idx = idx
         exit_finder[]
         sync_editor[]
+        # the open-tab set changed → persist this workspace's session.
+        save_session[]
 
     # leave finder/edit mode: clear the typed query and drop focus from the
     # editor title so it returns to showing the (centered) filename, not an
@@ -910,8 +1143,13 @@ trinity orbiter # implements compiler
         # play: build/run the active project node (processes its deps first)
         if [ ev.target.id == 'play' ]
             con : ui_console[]
-            if [ con && con.is_running[ active_target ] ]
-                con.stop[ active_target ]
+            dl  : dbg (debuggers) ? debuggers[ active_target ] : null
+            if [ (con && con.is_running[ active_target ]) || (dl && dl.running) ]
+                # stop tears down BOTH the build shell and the live debug inferior —
+                # either may be the thing keeping the button in its stop state.
+                if [ con && con.is_running[ active_target ] ] con.stop[ active_target ]
+                if [ dl && dl.running ] dl.stop[]
+                clear_stop_lines[]
             el
                 run_node[ active_target ]
             ev.no_default = true
@@ -1148,11 +1386,13 @@ trinity orbiter # implements compiler
                     first_path : path [ first_s.chars ]
                     open_file[ first_path ]
             el [ k == 256 ]
-                # esc: drop the query and restore the pane — run_search with an
-                # empty query reloads the file (or empties the pane if none)
-                find_text = ''
+                # esc: leave the finder entirely — drop the query AND release focus
+                # so the title goes non-editable (as if clicked away); exit_finder
+                # clears the query + results and releases title focus, and the finder
+                # transition in on_render restores the pane's file.
+                exit_finder[]
                 ev.target.pristine = false
-                run_search[]
+                if [ ev.target.ux ] ev.target.ux.restyle = true
 
     public func on_render [ w: Window ] -> Elements
         # runaway-leak guard: if our RSS passes 20% of physical RAM, quit before
@@ -1171,6 +1411,27 @@ trinity orbiter # implements compiler
                 stdout_orig = au_stdout_orig[]
             drain_stdout[]
         index_step[]
+        # deferred dbg launch: run_node armed pending_debug + set the build running.
+        # once that shell returns to prompt (is_running flips false) the --clean build
+        # is done and install/debug/<name> is the FRESH product — launch it now so we
+        # never exec the stale pre-build binary.
+        if [ pending_debug && pending_debug.count > 0 ]
+            dcon : ui_console[]
+            if [ dcon && !dcon.is_running[ pending_debug ] ]
+                dn : string pending_debug
+                pending_debug = ''
+                start_debug[ dn ]
+        # a debugger stop (set on the poll thread) → open its source in the first tab
+        apply_pending_break[]
+        # the inferior ended (on_exit, poll thread) → drop the amber stop-line marker
+        if [ pending_clear_stop ]
+            pending_clear_stop = false
+            clear_stop_lines[]
+        # a breakpoint was toggled in an Editor gutter (count changed) → persist.
+        bpc : i32 [ (breakpoints) ? breakpoints.count : 0 ]
+        if [ last_bp_count >= 0 && bpc != last_bp_count ]
+            save_session[]
+        last_bp_count = bpc
         # finder transitions: rebuild the navigate list when the title gains focus
         # (show the dock as lines) or loses it (restore the file), AND when focus
         # moves to a different pane's title (so the results follow to that pane).
@@ -1216,8 +1477,12 @@ trinity orbiter # implements compiler
                         cons.pristine   = false
                         w.will_animate     = true
 
-        # is a run (lldb) live for the active target → play button shows stop.
-        play_running        : bool [ (cons) ? cons.is_running[ active_target ] : false ]
+        # is a run live for the active target → play button shows stop. true during
+        # the build (console shell running) AND during the actual debug session: once
+        # the build's shell returns to prompt the console clears is_running, but the
+        # dbg inferior is then live (dbg.running), so OR the two so stop persists.
+        dbg_live            : dbg     (debuggers) ? debuggers[ active_target ] : null
+        play_running        : bool [ ((cons) ? cons.is_running[ active_target ] : false) || ((dbg_live) ? dbg_live.running : false) ]
 
         a_slot              : i32 [ (active_pane >= 0 && active_pane < editor_slots.count) ? editor_slots[active_pane] : -1 ]
         left_path           : path (a_slot >= 0 && a_slot < open_files.count) ? open_files[a_slot] : null
@@ -1244,12 +1509,11 @@ trinity orbiter # implements compiler
             spath: path   (slot >= 0 && slot < open_files.count) ? open_files[slot] : null
             editor_els[pid] = pane_for[ spath, docked_left, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open' ]
 
-        # VSCode-style watermark: the orbiter avatar logo overlaid on the editor area
-        # while the active pane is empty (no file) and there are no results to show.
-        # rendered here, NOT inside Editor — a topmost, click-through (ghost) sibling
-        # of the panes so the finder underneath still takes input.
-        if [ a_slot < 0 && find_results.count == 0 ]
-            editor_els['avatar'] = Avatar [ ghost: true, topmost: true ]
+        # the orbiter avatar logo on an empty 'Open' pane (no file, no results).
+        # interactive here (not ghost) since it IS the page content, and not topmost
+        # so it sits in the page rather than over the editor chrome.
+        #if [ a_slot < 0 && find_results.count == 0 ]
+        #editor_els['avatar'] = Avatar []
 
         egroup_els : Elements []
         egroup_els['editors'] = EditorView [ selected: (editor_slots.count > 1), elements: editor_els ]

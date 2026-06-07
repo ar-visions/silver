@@ -16,6 +16,6 @@ projects:
 		name: 	test4
 		deps: 	silver
 		root: 	'/src/silver/foundry/test4'
-		build:	silver test4
+		build:	silver test4 --clean
 		cwd:	'/src/silver'
 		run:	test4

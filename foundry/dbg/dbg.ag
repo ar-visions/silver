@@ -27,8 +27,8 @@ class exited
 # a chunk of inferior stdout/stderr handed to the on_stdout / on_stderr callbacks.
 class iobuffer
     intern  debug : dbg
-    intern  bytes : cstr
-    intern  count : i32
+    public  bytes : cstr
+    public  count : i32
 
 # a live breakpoint handle. lldb_bp is an opaque pointer to a C++-allocated
 # lldb::SBBreakpoint (dbg.cc owns it).

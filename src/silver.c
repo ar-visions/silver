@@ -1304,8 +1304,10 @@ void silver_init(silver a) {
         a->product = hold(absolute(a->product_link));
         set(silver_compiled, (Au)a->name, (Au)_bool(true));
         module_erase(a->autype, null);
-        // silver-host.c is the live-app launcher — always recompile it, never cache
-        {
+        // silver-host.c is the LIVE-app launcher ONLY — a plain app has its own
+        // main, so never build the host for it (it would overwrite the real exe).
+        // recompiled (never cached) for live apps, matching the gated build below.
+        if (((aether)a)->is_live) {
             path host_src = f(path, "%s/src/silver-host.c", SILVER);
             path host_dst = f(path, "%o/%o", a->build_dir, a->name);
             if (file_exists("%o", host_src) && file_exists("%o", host_dst)) {

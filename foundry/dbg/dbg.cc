@@ -156,11 +156,11 @@ none dbg_init(dbg debug) {
 
     // Au_binding(a, target, required, rtype, arg_type, id, name) -> callback
 
-    if (!debug->on_stdout) debug->on_stdout = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(iobuffer), null, "stdout");
-    if (!debug->on_stderr) debug->on_stderr = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(iobuffer), null, "stderr");
-    if (!debug->on_break)  debug->on_break  = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(cursor),   null, "break");
-    if (!debug->on_exit)   debug->on_exit   = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(dbg),      null, "exit");
-    if (!debug->on_crash)  debug->on_crash  = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(cursor),   null, "crash");
+    if (!debug->on_stdout) debug->on_stdout = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(iobuffer), null, "on_stdout");
+    if (!debug->on_stderr) debug->on_stderr = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(iobuffer), null, "on_stderr");
+    if (!debug->on_break)  debug->on_break  = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(cursor),   null, "on_break");
+    if (!debug->on_exit)   debug->on_exit   = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(exited),  null, "on_exit");
+    if (!debug->on_crash)  debug->on_crash  = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(cursor),   null, "on_crash");
 
     S(debug)->debugger.SetAsync(true);
     if (!debug->exceptions) {
@@ -211,6 +211,19 @@ none dbg_start(dbg debug) {
 
     launch_info.AddOpenFileAction(1, debug->stdout_fifo->chars, true, false);
     launch_info.AddOpenFileAction(2, debug->stderr_fifo->chars, true, false);
+
+    // inherit OUR environment (orbiter's) into the inferior — crucially LD_LIBRARY_PATH,
+    // so the inferior's libAu can find its transitive deps (libLLVM, etc). by default
+    // lldb launches with a clean env and the inferior fails with "cannot open shared
+    // object file" even though it ran fine from a shell that exports the path.
+    extern char **environ;
+    launch_info.SetEnvironmentEntries((const char**)environ, false);
+
+    // what we are actually about to EXEC (lldb launch, not a dlopen). the resolved
+    // path comes straight from the lldb target's executable file spec.
+    lldb::SBFileSpec exe = S(debug)->target.GetExecutable();
+    printf("dbg: RUNNING (exec) %s/%s\n", exe.GetDirectory() ? exe.GetDirectory() : "?",
+                                          exe.GetFilename()  ? exe.GetFilename()  : "?");
 
     S(debug)->process = S(debug)->target.Launch(launch_info, error);
 

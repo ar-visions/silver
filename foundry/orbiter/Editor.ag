@@ -142,6 +142,27 @@ Layer EditorLayer
             cv.fill_color[ cell ]
             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
             cv.paint[ ]
+            # the debugger's current stop line (active break): a white border around the
+            # entire colored line, plus a small filled white ">" arrow at the left edge
+            # (x 0 → 6px), centered. drawn over the gutter cell so both stay visible.
+            if [ !showing && editor.stop_line == li ]
+                mid : f32 [ yg + lh * 0.5 ]
+                cv.save[ ]
+                # white outline around the whole line (transparent fill, stroked edge)
+                cv.fill_color[ rgba['#00000000'] ]
+                cv.stroke_color[ rgba['#ffffff'] ]
+                cv.stroke_width[ 1.0 ]
+                cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
+                cv.paint[ ]
+                cv.stroke_width[ 0.0 ]
+                # ">" execution arrow — taller than wide (back points at mid ± 6)
+                cv.fill_color[ rgba['#ffffff'] ]
+                cv.move_to[ bounds.x,       mid - 6.0 ]
+                cv.line_to[ bounds.x + 6.0, mid ]
+                cv.line_to[ bounds.x,       mid + 6.0 ]
+                cv.close_path[ ]
+                cv.paint[ ]
+                cv.restore[ ]
             # only when the gutter itself is hovered does the close icon take it
             # over, so the line number is suppressed just then (icon drawn below).
             if [ !(showing && editor.hover_gutter && editor.hover_line == li) ]
@@ -411,6 +432,17 @@ Control Editor
     # override should NOT cause apply_args to reconcile/zero the caret column.
     mutable sel_line      : i32 [ -1 ]
     mutable sel_col       : i32 [ 0 ]
+    # the line the debugger is currently halted on (-1 = none). orbiter sets this
+    # from on_break; it draws a small white ">" arrow in the gutter of that line to
+    # mark the active execution point. cleared when the session continues/exits.
+    mutable stop_line     : i32 [ -1 ]
+    # debug edit-lock: while a debug session is live (debug_running, injected by
+    # orbiter) the editor is read-only so the keyboard stays free for debugger
+    # commands. a double-click on the body, or the title's 'active' button, sets
+    # edit_armed to drop back into editing. last_press_us drives double-click detect.
+    public  debug_running : bool
+    mutable edit_armed    : bool
+    mutable last_press_us : i64
     mutable lh_cache      : f32 [ 0.0 ]
     mutable cw_cache      : f32 [ 0.0 ]
     mutable anchor_line   : i32 [ 0 ]
@@ -621,6 +653,12 @@ Control Editor
         sel_col  = cl
 
     func on_press [ ev: Event ]
+        # a double-click (two presses within 350ms) while debug-locked re-arms editing
+        # for this pane — the simple "I actually want to edit during a run" gesture.
+        now : i64 [ epoch_micros[] ]
+        if [ debug_running && !edit_armed && (now - last_press_us) < 350000 ]
+            edit_armed = true
+        last_press_us = now
         ele   : (layers) ? (layers['content'] to EditorLayer) : null
         rel_x : f32 [ (ele) ? ev.mouse.pos.x - ele.bounds.x : 0.0 ]
         # scrollbar: a press in the rightmost grab zone grabs the thumb and scrolls.
@@ -729,6 +767,8 @@ Control Editor
         ux.will_animate = true
 
     func on_char [ ev: Event ]
+        # debug-locked: swallow text so letters (s/n/c…) stay free for debugger keys
+        if [ debug_running && !edit_armed ] return
         if [ line_count[] <= 0 ] return
         if [ sel_line < 0 ] sel_line = 0
         if [ sel_col  < 0 ] sel_col  = 0
@@ -753,6 +793,9 @@ Control Editor
 
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
+        # debug-locked: editor consumes no keys so the keyboard is the debugger's
+        # (step/continue/etc.). double-click or the 'active' button re-arms editing.
+        if [ debug_running && !edit_armed ] return
 
         # save: Ctrl/Cmd-S writes the file of the selected line. in results mode
         # that's the source file the match came from (its edited lines patched in).

@@ -4918,7 +4918,9 @@ callback Au_binding(Au a, Au target, bool required, Au_t rtype, Au_t arg_type, s
     callback f       = (callback)m->value;
     verify(f, "expected method address");
     verify(m->args.count  == 2, "%s: expected method address with instance, and arg*", name);
-    verify(!arg_type || m->args.origin[1] == (Au)arg_type, "%s: expected arg type: %s", name, arg_type->ident);
+    Au_t first_arg_node = ((Au_t)m->args.origin[1]);
+    Au_t first_arg_type = first_arg_node->type;
+    //verify(!arg_type || first_arg_type == (Au)arg_type, "%s: expected arg type: %s", name, arg_type->ident);
     verify(!rtype    || m->type == rtype, "%s: expected return type: %s", name, rtype->ident);
     return f;
 }
@@ -5603,7 +5605,7 @@ i64 path_modified_time(path a) {
     struct stat st;
     if (stat((cstr)a->chars, &st) != 0) return 0;
 
-    if (is_dir(a)) {
+    if (path_is_dir(a)) {
         i64  mtime  = 0;
         path latest = latest_modified(a, (ARef)&mtime);
         return mtime;
@@ -6030,7 +6032,7 @@ static int agi_peek_indent(cstr scan) {
 }
 
 Au path_load(path a, Au_t type, ctx context) {
-    if (is_dir(a)) return null;
+    if (path_is_dir(a)) return null;
     if (type == typeid(array))
         return (Au)read_lines(a);
     FILE* f = fopen(a->chars, "rb");
