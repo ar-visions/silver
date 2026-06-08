@@ -169,17 +169,17 @@ NodeList FileList
     func on_key [ ev: Event ]
         if [ !ev.key.state || !visible || visible.count == 0 ] return
         key : i32 [ ev.key.unicode ]
-        if [ key == 265 ]
+        if [ key == 265 ]    # Key.Up
             if [ sel > 0 ]
                 sel -= 1
                 scroll_to_sel[]
                 pristine = false
-        el [ key == 264 ]
+        el [ key == 264 ]    # Key.Down
             if [ sel < visible.count - 1 ]
                 sel += 1
                 scroll_to_sel[]
                 pristine = false
-        el [ key == 262 ]
+        el [ key == 262 ]    # Key.Right
             if [ sel >= 0 && sel < visible.count ]
                 n : FileNode visible[sel]
                 if [ n.is_dir && !n.open ]
@@ -193,7 +193,7 @@ NodeList FileList
                             break
                     scroll_to_sel[]
                     pristine = false
-        el [ key == 263 ]
+        el [ key == 263 ]    # Key.Left
             if [ sel >= 0 && sel < visible.count ]
                 n : FileNode visible[sel]
                 if [ n.is_dir && n.open ]
@@ -205,7 +205,7 @@ NodeList FileList
                             break
                     scroll_to_sel[]
                     pristine = false
-        el [ key == 257 || key == 32 ]
+        el [ key == 257 || key == 32 ]    # Key.Enter / Key.Space
             if [ sel >= 0 ]
                 select[ sel ]
 

@@ -468,24 +468,24 @@ Control Console
         s : ConsoleSession session[]
         k : i32 [ i32 ev.key.unicode ]
         # page up / down scroll the view (not sent to the shell)
-        if [ k == 266 || k == 267 ]
+        if [ k == 266 || k == 267 ]    # Key.PageUp / Key.PageDown
             lh  : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
             ele : Layer (layers) ? layers[ 'content' ] : null
             vh  : f32 [ (ele && ele.bounds) ? ele.bounds.h : f32[s.rows] * lh ]
             page : f32 [ vh - lh ]
-            scroll_by[ s, (k == 266) ? -page : page ]
+            scroll_by[ s, (k == 266) ? -page : page ]    # Key.PageUp
             return
-        if [ k == 257 ]
+        if [ k == 257 ]    # Key.Enter
             s.write_input[ '\r' ]
-        el [ k == 259 ]
+        el [ k == 259 ]    # Key.Backspace
             s.write_input[ '\x7f' ]
-        el [ k == 265 ]
+        el [ k == 265 ]    # Key.Up
             s.write_input[ '\x1b[A' ]
-        el [ k == 264 ]
+        el [ k == 264 ]    # Key.Down
             s.write_input[ '\x1b[B' ]
-        el [ k == 263 ]
+        el [ k == 263 ]    # Key.Left
             s.write_input[ '\x1b[D' ]
-        el [ k == 262 ]
+        el [ k == 262 ]    # Key.Right
             s.write_input[ '\x1b[C' ]
         el [ ev.key.ctrl && k >= 64 && k <= 95 ]
             b : i8 [ i8[k - 64] ]

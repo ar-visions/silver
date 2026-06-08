@@ -135,6 +135,7 @@ Au dbg_poll(dbg debug) {
 
         } else if (state == lldb::eStateExited) {
             debug->running = false;
+            debug->active  = false;   // session is over — ends dbg_poll, unlocks UI
             i32    exit_code = S(debug)->process.GetExitStatus();
             exited e = construct(exited,
                 debug,  debug,
@@ -248,16 +249,19 @@ none dbg_stop(dbg debug) {
 }
 
 none dbg_step_into(dbg debug) {
+    debug->running = true;   // re-arm dbg_poll to catch the step's stop
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepInto();
 }
 
 none dbg_step_over(dbg debug) {
+    debug->running = true;   // re-arm dbg_poll to catch the step's stop
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepOver();
 }
 
 none dbg_step_out(dbg debug) {
+    debug->running = true;   // re-arm dbg_poll to catch the step's stop
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepOut();
 }
@@ -267,6 +271,7 @@ none dbg_pause(dbg debug) {
 }
 
 none dbg_cont(dbg debug) {
+    debug->running = true;   // re-arm dbg_poll to catch the next stop/exit
     S(debug)->process.Continue();
 }
 

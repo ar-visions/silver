@@ -155,13 +155,25 @@ Layer EditorLayer
                 cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
                 cv.paint[ ]
                 cv.stroke_width[ 0.0 ]
-                # ">" execution arrow — taller than wide (back points at mid ± 6)
+                # execution marker: a sideways "house" (flat back + pointed front) — a
+                # rectangular body that tapers to a point at the code. sits past the
+                # line-number column, tip at the gutter/code boundary.
                 cv.fill_color[ rgba['#ffffff'] ]
-                cv.move_to[ bounds.x,       mid - 6.0 ]
-                cv.line_to[ bounds.x + 6.0, mid ]
-                cv.line_to[ bounds.x,       mid + 6.0 ]
+                gtip : f32 [ bounds.x + gut_w + 12.0 ]
+                cv.move_to[ gtip - 11.0, mid - 6.0 ]
+                cv.line_to[ gtip - 6.0,  mid - 6.0 ]
+                cv.line_to[ gtip,        mid ]
+                cv.line_to[ gtip - 6.0,  mid + 6.0 ]
+                cv.line_to[ gtip - 11.0, mid + 6.0 ]
                 cv.close_path[ ]
                 cv.paint[ ]
+                # the exact stop column lldb reported — a thin gold caret in the code
+                # (separate from the edit selection), marking where execution paused.
+                if [ editor.stop_col >= 0 ]
+                    cx : f32 [ x0 + f32[editor.stop_col] * cw_tm.w ]
+                    cv.fill_color[ rgba['#ffcc33'] ]
+                    cv.rect_to[ cx, yg + 1.0, 2.0, lh - 2.0 ]
+                    cv.paint[ ]
                 cv.restore[ ]
             # only when the gutter itself is hovered does the close icon take it
             # over, so the line number is suppressed just then (icon drawn below).
@@ -436,11 +448,18 @@ Control Editor
     # from on_break; it draws a small white ">" arrow in the gutter of that line to
     # mark the active execution point. cleared when the session continues/exits.
     mutable stop_line     : i32 [ -1 ]
+    # the exact column lldb reported for the stop (separate from sel_col) — drawn as
+    # a marker on the stop line. -1 = none.
+    mutable stop_col      : i32 [ -1 ]
     # debug edit-lock: while a debug session is live (debug_running, injected by
     # orbiter) the editor is read-only so the keyboard stays free for debugger
     # commands. a double-click on the body, or the title's 'active' button, sets
     # edit_armed to drop back into editing. last_press_us drives double-click detect.
     public  debug_running : bool
+    # the live debug session for this editor's target (injected by orbiter); in the
+    # active (non-edit) state the keyboard drives it: c continue, s step over,
+    # i step into, o step out.
+    public  debugger      : dbg
     mutable edit_armed    : bool
     mutable last_press_us : i64
     mutable lh_cache      : f32 [ 0.0 ]
@@ -699,10 +718,15 @@ Control Editor
                 remove_hit[ ln ]
                 pristine = false
                 return
-            # normal mode: toggle a plain breakpoint on the line
+            # normal mode: toggle a plain breakpoint on the line. toggle-off REMOVES
+            # the key (not set-null) so the map count drops — that's what orbiter's
+            # save watcher keys off, and it keeps dead keys out of the saved state.
             key   : '{src}:{ln + 1}'
             cur   : breakpoints[key]
-            breakpoints[key] = (cur) ? null : string[]
+            if [ cur ]
+                breakpoints.rm[ key ]
+            el
+                breakpoints[key] = string[]
             pristine = false
             return
         if [ !ev.key.shift ]
@@ -793,13 +817,24 @@ Control Editor
 
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
-        # debug-locked: editor consumes no keys so the keyboard is the debugger's
-        # (step/continue/etc.). double-click or the 'active' button re-arms editing.
-        if [ debug_running && !edit_armed ] return
+        # active (non-edit) state: the keyboard drives the debugger, not editing —
+        #   c = continue, s = step over, i = step into, o = step out, esc = edit
+        # esc / double-click / the 'active' button all re-arm editing.
+        if [ debug_running && !edit_armed ]
+            k : i32 [ ev.key.unicode ]
+            if [ k == 256 ]    # Key.Escape — leave active mode, back to editing
+                edit_armed = true
+                return
+            if [ debugger ]
+                if [ k == 67 ] debugger.cont[]        # Key.C
+                if [ k == 83 ] debugger.step_over[]   # Key.S
+                if [ k == 73 ] debugger.step_into[]   # Key.I
+                if [ k == 79 ] debugger.step_out[]    # Key.O
+            return
 
         # save: Ctrl/Cmd-S writes the file of the selected line. in results mode
         # that's the source file the match came from (its edited lines patched in).
-        if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83 ]
+        if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83 ]    # Key.S
             save_current[]
             pristine = false
             return
@@ -813,13 +848,13 @@ Control Editor
 
         # page up / down: move the cursor and scroll by half a viewport
         # (visible lines / 2). scroll.y is re-clamped in draw.
-        if [ key == 266 || key == 267 ]
+        if [ key == 266 || key == 267 ]    # Key.PageUp / Key.PageDown
             ele  : (layers) ? (layers['content'] to EditorLayer) : null
             vh   : f32 [ (ele && ele.bounds) ? ele.bounds.h : 400.0 ]
             lh   : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
             half2 : i32 [ i32[ (vh / lh) * 0.5 ] ]
             if [ half2 < 1 ] half2 = 1
-            if [ key == 266 ]
+            if [ key == 266 ]    # Key.PageUp
                 sel_line = snap_row[ clamp[ sel_line - half2, 0, line_count[] - 1 ] ]
                 scroll.y = scroll.y - f32[ half2 ] * lh
             el
@@ -837,7 +872,7 @@ Control Editor
         # title slots can't be split / merged / typed into
         edits_locked : bool [ row_header[ row ] ]
 
-        if [ key == 257 ]
+        if [ key == 257 ]    # Key.Enter
             # results rows can't be split: a new row would have no source line
             if [ show_hits || edits_locked ] return
             line  : line_get[ row    ]
@@ -848,7 +883,7 @@ Control Editor
             sel_line += 1
             sel_col   = 0
 
-        el [ key == 259 ]
+        el [ key == 259 ]    # Key.Backspace
             if [ edits_locked ] return
             if [ col > 0 ]
                 line : line_get[ row ]
@@ -862,19 +897,19 @@ Control Editor
                 lines.remove[ row ]
                 sel_line -= 1
 
-        el [ key == 265 ]
+        el [ key == 265 ]    # Key.Up
             np : i32 [ prev_editable[ sel_line - 1 ] ]
             if [ np >= 0 ]
                 sel_line = np
                 sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
 
-        el [ key == 264 ]
+        el [ key == 264 ]    # Key.Down
             np : i32 [ next_editable[ sel_line + 1 ] ]
             if [ np < line_count[] ]
                 sel_line = np
                 sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
 
-        el [ key == 263 ]
+        el [ key == 263 ]    # Key.Left
             if [ col > 0 ]
                 sel_col -= 1
             el [ row > 0 ]
@@ -883,7 +918,7 @@ Control Editor
                     sel_line = np
                     sel_col = line_get[ np ].count
 
-        el [ key == 262 ]
+        el [ key == 262 ]    # Key.Right
             if [ col < line_get[ row ].count ]
                 sel_col += 1
             el [ row < line_count[] - 1 ]

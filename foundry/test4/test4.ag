@@ -6,5 +6,7 @@ import <stdio.h>
 # prints a line a few times. used to bring up the run/debug path from orbiter.
 app test4
     func init[]
+        ii : int 44
         for [ i : 0, i < 4, i += 1 ]
             puts 'hello'
+            ii += 4

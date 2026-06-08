@@ -56,7 +56,10 @@ class dbg
     public   stderr_fifo : path
     public   fifo_fd_out : i32
     public   fifo_fd_err : i32
-    intern   active      : bool
+    # true from start until the inferior exits or is stopped — i.e. a session is
+    # alive whether the program is running OR paused at a break. (running is false
+    # while paused, so it's the wrong signal for "are we debugging".)
+    public   active      : bool
 
     # opaque pointer to the C++ struct dbg.cc allocates, which holds the live
     # lldb::SBDebugger / SBTarget / SBProcess / SBListener. the lldb types never

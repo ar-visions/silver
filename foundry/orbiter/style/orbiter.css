@@ -304,7 +304,8 @@ Editor / element.dbg / Callstack {
         text_color:     #cfe6ff
 }
 
-Editor / element.dbg / element.fields {
+Editor / element.dbg / Fields {
+    focusable:      true
     area:   l0.2 t0.2+ r0.2 b50%
     layers.base:
         fill_color:     #1c2840cc
@@ -312,12 +313,13 @@ Editor / element.dbg / element.fields {
         radius:         10
         stroke_width:   0.5
         stroke_color:   #fff2
-    layers.face:
-        label_color:    #cfe6ff
-        label_size:     15
-        label_align:    0.0 0.0
-        label_offset:   12 10
-        label_font:     'fonts/SpaceMono-Regular.ttf'
+    layers.content: FieldsLayer
+        area:           l0.2 t0.4 r0.2 b0.2
+        label_size:     14
+        row_spacing:    1.35
+        key_color:      #9fb6d8
+        text_color:     #cfe6ff
+        line_color:     #ffffff14
 }
 
 FileList {
@@ -672,6 +674,27 @@ Editor / element.title / element.nav / Option.menu {
     layers.svg:
         image_svg:              "images/menu.svg"
         image_scale:            1.4
+}
+
+/* the 'active' state pill — shown while the pane is debug-locked. a rounded text
+   button (not an icon); click it to drop into edit mode. warm tint so it reads as
+   "the app is running / this view is live". */
+Editor / element.title / element.nav / Option.active {
+    area:                       l0+ t6px w64px h22px
+    layers.base:
+        fill_color:             #e5394588
+        inner_glow:             #f5556633 16
+        radius:                 10 10 10 10
+    layers.face:
+        area:                   l0 t0 r0 b0
+        label_color:            #fff
+        label_size:             13
+        label_align:            0.5 0.5
+}
+
+Editor / element.title / element.nav / Option.active:hovered {
+    layers.base:
+        fill_color:             #e53945cc
 }
 
 /* the add (+) / remove (-) tab buttons, in the right-side nav with magnify/menu.

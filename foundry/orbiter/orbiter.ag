@@ -65,6 +65,8 @@ class orbiter_state
     # breakpoints for this workspace — same "source:line" -> condition map orbiter
     # keeps live (empty condition = plain breakpoint).
     public breakpoints : map string [string]
+    # the selected project/target name, restored on next launch.
+    public target      : string
 
 trinity orbiter # implements compiler
     intern avg_fps       : f32
@@ -89,9 +91,14 @@ trinity orbiter # implements compiler
     # set by on_exit (poll thread) so on_render (main thread) clears every pane's
     # stop-line marker — the inferior is gone, there's no execution point.
     intern pending_clear_stop : bool
+    # the inspected variables for the Fields panel — locals read at the last break
+    # (read_locals only works while paused), cached here and cleared on continue/exit.
+    intern debug_vars         : array
     # last seen breakpoint-map size — a change (toggle in an Editor's gutter) means the
     # session state is dirty, so on_render re-saves. count catches add/remove.
     intern last_bp_count      : i32 [ -1 ]
+    # last seen selected project — a change (project tab click) re-saves the session.
+    intern last_target        : string
     # a project whose build was dispatched and whose dbg session should launch once
     # the build's shell returns to prompt (so we launch the FRESH product, not the
     # stale one — start_debug right after dispatch would race the async build).
@@ -249,12 +256,13 @@ trinity orbiter # implements compiler
         editor_slots   = array i32 []
         editor_slots  += -1
         active_pane    = 0
-        # reopen the tabs this workspace had last session (no-op on first run). does
-        # this here, after open_files/editor_slots exist; the render builds the panes.
-        restore_session[]
         active_panel   = 'files'
         editor_panel   = 'editor'
         active_target  = 'silver'
+        # reopen last session's tabs / breakpoints / selected-project (no-op on first
+        # run). MUST come after the defaults above — esp. active_target = 'silver' —
+        # so the restored selection isn't immediately clobbered.
+        restore_session[]
         nav_root       = target_roots[0]
         show_console   = true
         filter_text    = ''
@@ -361,6 +369,8 @@ trinity orbiter # implements compiler
                 for [ t: path ] in st.tabs
                     line = line + ' {t}'
             out = out + line + '\n'
+            if [ st.target && st.target.count > 0 ]
+                out = out + '\t\ttarget: \'{st.target}\'\n'
             # breakpoints as a nested map: '<source:line>': '<condition>'
             if [ st.breakpoints && st.breakpoints.count > 0 ]
                 out = out + '\t\tbreakpoints:\n'
@@ -383,6 +393,7 @@ trinity orbiter # implements compiler
         st.tabs        = tabs
         # the live breakpoint map is workspace-scoped — snapshot it into the state.
         st.breakpoints = breakpoints
+        st.target      = active_target
         save_states[]
 
     # on startup: load all states, then reopen the tabs saved for this workspace.
@@ -405,6 +416,9 @@ trinity orbiter # implements compiler
             for [ cond: string, key: string ] in st.breakpoints
                 breakpoints[key] = cond
             last_bp_count = breakpoints.count
+        # restore the selected project
+        if [ st.target && st.target.count > 0 ]
+            active_target = st.target
 
     # read orbiter.agi and let parse_agi set members directly on this orbiter
     # instance (`a`) — chiefly the `projects` map. we clear projects first so a
@@ -610,8 +624,26 @@ trinity orbiter # implements compiler
                 # too so the view scrolls to the stop.
                 sl : i32 [ (ln > 0) ? ln - 1 : 0 ]
                 ed.stop_line = sl
-                ed.sel_line  = sl
+                # the exact stop column → its own marker, separate from the edit
+                # selection. silver emits the DWARF column as a 0-based char index
+                # (verified: `puts` at index 12 reports col 12), so use it directly.
+                ed.stop_col  = i32[ pending_break.column ]
+                # place the caret on the stop line with NO selection — set the anchor
+                # to the caret, else sel_line alone spans a selection from the old
+                # anchor (0,0) down to the break line.
+                ed.sel_line    = sl
+                ed.sel_col     = 0
+                ed.anchor_line = sl
+                ed.anchor_col  = 0
+                # a fresh stop → back into active mode (keyboard drives the debugger),
+                # even if the user had armed editing on the previous stop.
+                ed.edit_armed = false
                 ed.pristine  = false
+        # NOTE: reading locals here crashes on hold of the returned array — the first
+        # exercise of a dbg module-method returning `array`. disabled until that
+        # binding path is sorted; Fields renders (empty) meanwhile.
+        # dv : dbg (debuggers) ? debuggers[ active_target ] : null
+        # if [ dv ] debug_vars = dv.read_locals[]
         pending_break = null
 
     # clear the debugger's stop-line marker on every pane (called when the inferior
@@ -620,8 +652,14 @@ trinity orbiter # implements compiler
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             ed : Editor pane_at[ i ]
             if [ ed ]
-                ed.stop_line = -1
-                ed.pristine  = false
+                ed.stop_line  = -1
+                ed.stop_col   = -1
+                # session ended → re-lock editing so the next run starts in the
+                # active (keyboard-drives-debugger) state, not left armed for edit.
+                ed.edit_armed = false
+                ed.pristine   = false
+        # no live frame anymore → drop the inspected variables.
+        debug_vars = null
     func dbg_on_exit [ e: exited ] -> Au
         if [ e ] puts 'dbg exit {e.code}'
         # poll thread: no live execution point anymore — tell on_render to clear it.
@@ -678,8 +716,21 @@ trinity orbiter # implements compiler
     # build the editor-title nav (git + dock toggle) for a pane. the git button
     # the tab controls are split: '-' (undock/remove) on the left of the title,
     # always present with a file open; '+' (dock/add) on the right with magnify/menu.
-    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window ] -> Elements
+    # the live debug session for the active target, or null if none is running.
+    func active_debugger [] -> dbg
+        if [ !debuggers ] return null
+        d : dbg debuggers[ active_target ]
+        # `active` = session alive (paused or running); `running` is false while
+        # paused, so it would wrongly unlock the editor exactly at a breakpoint.
+        return (d && d.active) ? d : null
+
+    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window, dbg_locked: bool ] -> Elements
         nav : Elements []
+        # the active (non-edit) state indicator: a small rounded 'active' button. shown
+        # while the pane is debug-locked; clicking it (or double-clicking the body)
+        # re-arms editing. the keyboard otherwise drives the debugger (c/s/i).
+        if [ dbg_locked ]
+            nav['active'] = Option [ label: 'active' ]
 
         #if [ p && p.exists[] && !findbar_open ]
         #    nav['git'] = Option [ selected: editor_panel == 'git', disable: !has_diff ]
@@ -720,8 +771,15 @@ trinity orbiter # implements compiler
     # build one editor pane. with a file open the title is the filename; empty it
     # shows the finder, labelled by empty_label ('Finder' for the left pane,
     # 'Debug' for the right/assist pane).
-    func pane_for [ p: path, grp: array path, diff: bool, searchable: bool, findbar_on: bool, win: Window, empty_label: string ] -> element
-        ttl : Elements title_nav[ p, grp, diff, win ]
+    func pane_for [ p: path, grp: array path, diff: bool, searchable: bool, findbar_on: bool, win: Window, empty_label: string, pi: i32 ] -> element
+        # active debug session locks editing → keyboard drives the debugger. the
+        # 'active' title button shows while this pane is locked (running && !armed).
+        dbgr    : dbg active_debugger[]
+        running : bool [ (dbgr) ? true : false ]
+        ed_live : Editor pane_at[ pi ]
+        armed   : bool [ (ed_live) ? ed_live.edit_armed : false ]
+        locked  : bool [ running && !armed ]
+        ttl : Elements title_nav[ p, grp, diff, win, locked ]
         pe : Elements []
         pe['title'] = EditorTitle [
             selected: !p
@@ -734,14 +792,14 @@ trinity orbiter # implements compiler
         # toggled; the navigate list + search results draw in front of it.
         if [ stack_w > 0.5 ]
             dbg_els : Elements []
-            dbg_els['fields']    = element [ label: 'Fields' ]
+            dbg_els['fields']    = Fields [ vars: debug_vars ]
             dbg_els['callstack'] = Callstack [ frames: debug_frames[] ]
             pe['dbg'] = element [ elements: dbg_els ]
         # the dock + search results render as the editor's lines (run_search), not a
         # tab strip — so no 'pins' overlay anymore.
         return Editor [
             src: p, breakpoints: breakpoints, code_font_size: code_font_size,
-            dbg_seam: stack_w,
+            dbg_seam: stack_w, debug_running: running, debugger: dbgr,
             # the findbar belongs to the pane whose magnify opened it (findbar_on);
             # find-in-files hits render only in the focused search pane (searchable).
             expanded: findbar_on, show_hits: (searchable) ? find_showing : false,
@@ -820,6 +878,15 @@ trinity orbiter # implements compiler
     # event after dlclose fires a dangling pointer (crash in watch_runner). pause[]
     # joins each thread synchronously, independent of refcount/auto_free timing.
     func destroy [ ]
+        # a live reload dlcloses this module — a debug session left running would
+        # orphan its lldb inferior AND leave stale vtables on the dbg objects. stop
+        # and drop them all here while vtables are still valid (start_debug recreates
+        # the map lazily after the reload).
+        if [ debuggers ]
+            for [ d: dbg, name: string ] in debuggers
+                if [ d && d.running ] d.stop[]
+            debuggers = null
+        pending_break = null
         if [ index_watches ]
             for [ iw: watch ] in index_watches
                 iw.pause[ ]
@@ -1237,6 +1304,15 @@ trinity orbiter # implements compiler
             sync_editor[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
+        # the 'active' state button: drop this editor out of debug-lock into edit mode.
+        if [ ev.target.id == 'active' ]
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits Editor ]
+                    ed : Editor e
+                    ed.edit_armed = true
+                    break
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
         # clicking a pin (pin{i}) inside an editor opens that docked file
         tid : string ev.target.id
         if [ tid.count > 3 && tid.mid[ 0, 3 ] == 'pin' ]
@@ -1326,11 +1402,11 @@ trinity orbiter # implements compiler
             if [ !ev.key.state ] return
             k : i32 [ i32 ev.key.unicode ]
             changed : false
-            if [ k == 259 ]
+            if [ k == 259 ]    # Key.Backspace
                 if [ filter_text && filter_text.count > 0 ]
                     filter_text = filter_text.mid[ 0, filter_text.count - 1 ]
                     changed = true
-            el [ k == 256 ]
+            el [ k == 256 ]    # Key.Escape
                 filter_text = ''
                 changed = true
             if [ changed ]
@@ -1347,7 +1423,7 @@ trinity orbiter # implements compiler
         if [ ev.target.id == 'find' || ev.target.id == 'replace' || ev.target.id == 'pattern' ]
             if [ !ev.key.state ] return
             k : i32 [ i32 ev.key.unicode ]
-            if [ k == 259 ]
+            if [ k == 259 ]    # Key.Backspace
                 if [ ev.target.id == 'find' ]
                     if [ findbar_text && findbar_text.count > 0 ]
                         findbar_text = findbar_text.mid[ 0, findbar_text.count - 1 ]
@@ -1357,11 +1433,11 @@ trinity orbiter # implements compiler
                 el
                     if [ pattern_text && pattern_text.count > 0 ]
                         pattern_text = pattern_text.mid[ 0, pattern_text.count - 1 ]
-            el [ k == 257 ]
+            el [ k == 257 ]    # Key.Enter
                 # enter runs the find-in-files search
                 run_find_in_files[]
                 if [ ev.target.ux ] ev.target.ux.restyle = true
-            el [ k == 256 ]
+            el [ k == 256 ]    # Key.Escape
                 # escape collapses the bar and hides the results
                 findbar_open = false
                 find_showing = false
@@ -1374,18 +1450,18 @@ trinity orbiter # implements compiler
         if [ ev.target.id == 'title' ]
             if [ !ev.key.state ] return
             k : i32 [ i32 ev.key.unicode ]
-            if [ k == 259 ]
+            if [ k == 259 ]    # Key.Backspace
                 if [ find_text && find_text.count > 0 ]
                     find_text = find_text.mid[ 0, find_text.count - 1 ]
                     ev.target.pristine = false
                     run_search[]
-            el [ k == 257 ]
+            el [ k == 257 ]    # Key.Enter
                 # enter opens the first matching result
                 if [ find_results && find_results.count > 0 ]
                     first_s    : string find_results.value_by_index[ 0 ]
                     first_path : path [ first_s.chars ]
                     open_file[ first_path ]
-            el [ k == 256 ]
+            el [ k == 256 ]    # Key.Escape
                 # esc: leave the finder entirely — drop the query AND release focus
                 # so the title goes non-editable (as if clicked away); exit_finder
                 # clears the query + results and releases title focus, and the finder
@@ -1432,6 +1508,10 @@ trinity orbiter # implements compiler
         if [ last_bp_count >= 0 && bpc != last_bp_count ]
             save_session[]
         last_bp_count = bpc
+        # the selected project changed (tab click) → persist.
+        if [ last_target && last_target.count > 0 && last_target != active_target ]
+            save_session[]
+        last_target = active_target
         # finder transitions: rebuild the navigate list when the title gains focus
         # (show the dock as lines) or loses it (restore the file), AND when focus
         # moves to a different pane's title (so the results follow to that pane).
@@ -1507,7 +1587,7 @@ trinity orbiter # implements compiler
             pid  : 'pane{i}'
             slot : i32    [ editor_slots[i] ]
             spath: path   (slot >= 0 && slot < open_files.count) ? open_files[slot] : null
-            editor_els[pid] = pane_for[ spath, docked_left, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open' ]
+            editor_els[pid] = pane_for[ spath, docked_left, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open', i ]
 
         # the orbiter avatar logo on an empty 'Open' pane (no file, no results).
         # interactive here (not ghost) since it IS the page content, and not topmost

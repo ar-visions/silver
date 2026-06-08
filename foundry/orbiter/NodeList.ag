@@ -55,17 +55,17 @@ Option NodeList
     func on_key [ ev: Event ]
         if [ !ev.key.state || row_count[] == 0 ] return
         key : i32 [ ev.key.unicode ]
-        if [ key == 265 ]
+        if [ key == 265 ]    # Key.Up
             if [ sel > 0 ]
                 sel -= 1
                 scroll_to_sel[]
                 pristine = false
-        el [ key == 264 ]
+        el [ key == 264 ]    # Key.Down
             if [ sel < row_count[] - 1 ]
                 sel += 1
                 scroll_to_sel[]
                 pristine = false
-        el [ key == 257 || key == 32 ]
+        el [ key == 257 || key == 32 ]    # Key.Enter / Key.Space
             if [ sel >= 0 ]
                 select[ sel ]
 
@@ -143,3 +143,81 @@ NodeList Callstack
 
     func render [] -> Elements
         return null
+
+# the Fields panel: variables as a key/value grid. holds debug locals now (cached
+# from the last break); later it doubles as the autocomplete list. element-list
+# rows are `variable` objects (name/type/value), cast at draw.
+NodeList Fields
+    public vars : array
+
+    func row_count [] -> i32
+        if [ !vars ] return 0
+        return vars.count
+
+    func row_label [ i: i32 ] -> string
+        if [ !vars || i < 0 || i >= vars.count ] return ''
+        v : variable vars[i]
+        return '{v.name}  {v.value}'
+
+    func activate [ idx: i32 ]
+        return
+
+    func render [] -> Elements
+        return null
+
+# the Fields grid renderer: key (name) left, value right, with a column divider and
+# per-row separator lines. mirrors NodeLayer but two-column.
+Layer FieldsLayer
+    public label_size  : f32
+    public row_spacing : f32
+    public key_color   : string
+    public text_color  : string
+    public line_color  : string
+
+    func draw [ cv: Canvas ]
+        fl : Fields[ parent ]
+        if [ !fl ] return
+        cv.font_size[ i32[label_size] ]
+        lh : f32 [ cv.get_line_height[] * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
+        n  : i32 [ fl.row_count[] ]
+        fl.row_height   = lh
+        fl.content_y    = bounds.y
+        fl.content_h    = f32[n] * lh
+        fl.view_h       = bounds.h
+        fl.scroll_speed = lh
+        x0   : f32 [ bounds.x ]
+        y0   : f32 [ bounds.y ]
+        colx : f32 [ bounds.x + bounds.w * 0.42 ]
+        lc   : rgba [ (line_color) ? line_color : rgba['#ffffff18'] ]
+        wtx  : f32 [ cv.transform_tx[] ]
+        wty  : f32 [ cv.transform_ty[] ]
+        cv.set_crop[ wtx + bounds.x, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
+        cv.stroke_width[ 0.0 ]
+        # vertical column divider (key | value)
+        cv.fill_color[ lc ]
+        cv.rect_to[ colx, bounds.y, 0.75, bounds.h ]
+        cv.paint[ ]
+        for [ i: i32 0, i < n, i += 1 ]
+            y : f32 [ y0 + f32[i] * lh - fl.scroll.y ]
+            if [ y + lh < bounds.y ] continue
+            if [ y > bounds.y + bounds.h ] break
+            v : variable fl.vars[i]
+            if [ i == fl.sel ]
+                cv.fill_color[ rgba['#264f7866'] ]
+                cv.rect_to[ x0, y, bounds.w, lh ]
+                cv.paint[ ]
+            # per-row separator line (bottom edge)
+            cv.fill_color[ lc ]
+            cv.rect_to[ x0, y + lh - 0.75, bounds.w, 0.75 ]
+            cv.paint[ ]
+            # key (name) in the left column
+            cv.fill_color[ (key_color) ? key_color : '#9fb6d8' ]
+            cv.draw_text[ (v) ? v.name : '',
+                rect [ x: x0 + 8.0, y: y, w: colx - x0 - 12.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            # value in the right column
+            cv.fill_color[ (text_color) ? text_color : '#cfe6ff' ]
+            cv.draw_text[ (v) ? v.value : '',
+                rect [ x: colx + 8.0, y: y, w: bounds.x + bounds.w - colx - 12.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        cv.clear_crop[]
