@@ -556,7 +556,7 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
             m->offset = offset_bits / 8;
             if (mapped->elements > 0)
                 m->elements = mapped->elements;
-            m->index = field_index++;
+            m->member_index = field_index++;
         }
     }
 }

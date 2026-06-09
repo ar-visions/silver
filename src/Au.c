@@ -1170,7 +1170,10 @@ Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32
     prop->value     = (object)value;
     prop->meta.a    = meta_a;
     prop->meta.b    = meta_b && !instanceof(meta_b, Au_t) ? hold(meta_b) : meta_b;
-    prop->index     = index; // AF-bit slot position (computed by the codegen)
+    prop->af_index     = index; // AF-bit slot position (computed by the codegen)
+    if (context && context->ident && ident &&
+        strcmp(context->ident, "Option") == 0 && strcmp(ident, "selected") == 0)
+        printf("[def_prop] Option.selected index=%d offset=%u\n", index, offset);
     return prop;
 }
 
@@ -1212,7 +1215,7 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
     func->access_type   = interface_public;
     func->value         = (object)value;
     func->alt           = alt ? cstr_copy((cstr)alt) : null;
-    func->index         = index;
+    func->member_index         = index;
     func->meta.a        = meta_a;
     func->meta.b        = meta_b;
     return func;
@@ -1690,7 +1693,7 @@ none push_type(Au_t type, Au_t to_mod) {
         au_field->offset      = 0;
         au_field->type        = typeid(Au_t);
         au_field->member_type = AU_MEMBER_VAR;
-        au_field->index       = 0;
+        au_field->member_index       = 0;
         au_field->is_elaborate = 1;
     }
     
@@ -1729,7 +1732,8 @@ none push_type(Au_t type, Au_t to_mod) {
         def_member(au_t, "abi_size",      typeid(u32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, abi_size);
         def_member(au_t, "align_bits",    typeid(u32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, align_bits);
         def_member(au_t, "record_alignment", typeid(u32), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, record_alignment);
-        def_member(au_t, "index",         typeid(i64),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, index);
+        def_member(au_t, "member_index",  typeid(i64),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, member_index);
+        def_member(au_t, "af_index",      typeid(i64),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, af_index);
         def_member(au_t, "value",         typeid(ARef), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, value);
         def_member(au_t, "member_type",   typeid(u8),   AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, member_type);
         def_member(au_t, "operator_type", typeid(u8),   AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, operator_type);
@@ -1799,8 +1803,8 @@ none push_type(Au_t type, Au_t to_mod) {
     if ((type->traits & AU_TRAIT_ABSTRACT) == 0) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = (Au_t)type->members.origin[i];
-            if ((mem->traits & AU_TRAIT_REQUIRED) != 0 && (mem->member_type == AU_MEMBER_VAR) && mem->index)
-                AF_set(type->required_bits, mem->index - 1);
+            if ((mem->traits & AU_TRAIT_REQUIRED) != 0 && (mem->member_type == AU_MEMBER_VAR) && mem->af_index)
+                AF_set(type->required_bits, mem->af_index - 1);
         }
     }
 
@@ -1950,21 +1954,21 @@ void Au_AF_set_id(Au a, int id) {
 void Au_AF_set_name(Au a, cstr name) {
     Au_t t = isa(a);
     Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
-    if (m && m->index) AF_set(af_bits_ptr(a), m->index - 1);
+    if (m && m->af_index) AF_set(af_bits_ptr(a), m->af_index - 1);
 }
 
 i32 Au_AF_query_name(Au a, cstr name) {
     Au_t t = isa(a);
     Au_t m = find_member(t, name, AU_MEMBER_VAR, 0, true);
-    return (m && m->index) ? (i32)AF_get(af_bits_ptr(a), m->index - 1) : 0;
+    return (m && m->af_index) ? (i32)AF_get(af_bits_ptr(a), m->af_index - 1) : 0;
 }
 
 bool Au_AF_get_member(Au a, Au_t mem) {
-    return mem->index ? AF_get(af_bits_ptr(a), mem->index - 1) : false;
+    return mem->af_index ? AF_get(af_bits_ptr(a), mem->af_index - 1) : false;
 }
 
 none Au_AF_set_member(Au a, Au_t mem) {
-    if (mem->index) AF_set(af_bits_ptr(a), mem->index - 1);
+    if (mem->af_index) AF_set(af_bits_ptr(a), mem->af_index - 1);
 }
 
 bool Au_validator(Au a) {
@@ -1975,7 +1979,7 @@ bool Au_validator(Au a) {
         ((type->required_bits[1] & f[1]) != type->required_bits[1])) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = (Au_t)type->members.origin[i];
-            if ((m->traits & AU_TRAIT_REQUIRED) != 0 && AF_get(f, m->index) == 0) {
+            if ((m->traits & AU_TRAIT_REQUIRED) != 0 && AF_get(f, m->af_index) == 0) {
                 u8* ptr = (u8*)a + m->offset;
                 Au* ref = (Au*)ptr;
                 fault("expected arg [%s] not set for class %s",
@@ -2581,14 +2585,14 @@ none member_override(Au_t type, Au_t type_mem, AFlag f) {
                 type_mem->src           = m->type;
                 type_mem->member_type   = m->member_type;// | AU_MEMBER_OVERRIDE;
                 type_mem->is_override   = 1;
-                type_mem->index         = m->index;
+                type_mem->member_index         = m->member_index;
 
-                verify(m->index, "method %s.%s cannot be overridden\n", base->ident, m->ident);
+                verify(m->member_index, "method %s.%s cannot be overridden\n", base->ident, m->ident);
 
                 verify(m->value, "method pointer not set on source yet (%s.%s); cannot override\n",
                     base->ident, m->ident);
                  
-                struct _string*(*base_method)(Au) = (void*)((ARef)&base->ft.__none__)[m->index];
+                struct _string*(*base_method)(Au) = (void*)((ARef)&base->ft.__none__)[m->member_index];
                 struct _string*(*ptr_method)(Au) = (void*)m->value;
                 verify((void*)base_method == (void*)m->value, "method not stored in base table correctly");
                 return;
@@ -2611,10 +2615,10 @@ none member_override(Au_t type, Au_t type_mem, AFlag f) {
                 type_mem->src    = m->type;
                 type_mem->member_type = m->member_type;// | AU_MEMBER_OVERRIDE;
                 ARef ptr_find = (ARef)m->value;
-                verify(m->index, "method %s.%s cannot be overridden\n", base->ident, m->ident);
+                verify(m->member_index, "method %s.%s cannot be overridden\n", base->ident, m->ident);
                 verify(m->value, "method pointer not set on source yet (%s.%s); cannot override\n",
                     base->ident, m->ident);
-                ((ARef)&type->ft)[m->index] = (Au)m->value;
+                ((ARef)&type->ft)[m->member_index] = (Au)m->value;
                 return;
             }
         }
@@ -3436,7 +3440,7 @@ Au __op(i32 optype, Au L, Au R) {
     char*  type_bytes = (char*)type;
     void** ft = (void**)(type_bytes + offsetof(struct _Au_f, ft));
     typedef Au (*op_fn)(Au, Au);
-    op_fn fn = (op_fn)ft[op_mem->index];
+    op_fn fn = (op_fn)ft[op_mem->member_index];
     return fn(L, R);
 }
 
@@ -5002,7 +5006,12 @@ item list_insert_after(list a, Au e, i32 after) {
             }
             index++;
         }
-    item n = hold(item(value, e));
+    // `item.value` is a WEAK prop — constructing with item(value, e) does NOT retain e,
+    // so the inserted element would be freed the moment the caller's local drops (e.g.
+    // the next keystroke then slices a dangling string buffer). hold it explicitly, the
+    // same way list_push does.
+    item n = (item)Au_hold((Au)item());
+    n->value = a->unmanaged ? e : Au_hold(e);
     if (!found) {
         n->next = a->first;
         if (a->first)
@@ -5011,11 +5020,16 @@ item list_insert_after(list a, Au e, i32 after) {
         if (!a->last)
              a->last = n;
     } else {
-        n->next = null;
+        // splice n in AFTER found: n takes found->next; only found and the old
+        // successor are relinked. (the previous code zeroed n->next — truncating
+        // everything past found — and rewrote found->prev->next, corrupting the
+        // node BEFORE found. that desynced the list and crashed the next read,
+        // e.g. typing on any line but the first.)
         n->prev = found;
+        n->next = found->next;
+        if (found->next)
+            found->next->prev = n;
         found->next = n;
-        if (found->prev)
-            found->prev->next = n;
         if (a->last == found)
             a->last = n;
     }

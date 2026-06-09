@@ -189,7 +189,8 @@ typedef struct _Au_t {
     u32             abi_size;
     u32             align_bits;
     u32             record_alignment;
-    i64             index; // index of type in module, or index of member in type
+    i64             member_index; // LLVM struct-field/GEP ordinal, fn vtable slot, or type-in-module index
+    i64             af_index;     // af-bit slot (logical, exported-member ordinal; skips interns; stable across modules)
     object          value; // user-data value associated to type
     u8              member_type;
     u8              operator_type;
