@@ -270,6 +270,11 @@ void alloc_origin_args(aether a, enode* out_src, Au* out_line, Au* out_seq);
 
 void emit_debug_loc(aether a, cstr src, u32 line, u32 column) {
     if (!a->debug || !a->compile_unit || a->no_build) return;
+    // synthetic functions (no parse origin_token) get no DISubprogram, so they must get
+    // no instruction line entries either — debug_scope would fall back to the compile
+    // unit, which is not a valid DILocation scope and would mislead the stepper anyway.
+    efunc cf = context_func(a);
+    if (cf && instanceof(cf, efunc) && !cf->origin_token) return;
     LLVMMetadataRef scope = debug_scope(a);
     if (!scope)
         return;
@@ -1326,13 +1331,13 @@ enode aether_e_cmp_op(aether a, OPType optype, enode L, enode R) {
 
             LLVMValueRef lv = L_ptr ?
                 LLVMBuildLoad2(B, lltype(mt),
-                    LLVMBuildStructGEP2(B, lltype(L_type), L->value, m->index, "l_gep"), "l_mem") :
-                LLVMBuildExtractValue(B, L->value, m->index, "");
+                    LLVMBuildStructGEP2(B, lltype(L_type), L->value, m->member_index, "l_gep"), "l_mem") :
+                LLVMBuildExtractValue(B, L->value, m->member_index, "");
             
             LLVMValueRef rv = R_ptr ?
                 LLVMBuildLoad2(B, lltype(mt),
-                    LLVMBuildStructGEP2(B, lltype(R_type), R->value, m->index, "r_gep"), "r_mem") :
-                LLVMBuildExtractValue(B, R->value, m->index, "");
+                    LLVMBuildStructGEP2(B, lltype(R_type), R->value, m->member_index, "r_gep"), "r_mem") :
+                LLVMBuildExtractValue(B, R->value, m->member_index, "");
 
             enode le = value(u(etype, m), lv);
             enode re = value(u(etype, m), rv);
@@ -1421,9 +1426,9 @@ enode aether_e_eq(aether a, enode L, enode R) {
                 continue;
 
             LLVMValueRef lv =
-                LLVMBuildExtractValue(B, L->value, m->index, "");
+                LLVMBuildExtractValue(B, L->value, m->member_index, "");
             LLVMValueRef rv =
-                LLVMBuildExtractValue(B, R->value, m->index, "");
+                LLVMBuildExtractValue(B, R->value, m->member_index, "");
 
             enode le = value(u(etype, m), lv);
             enode re = value(u(etype, m), rv);
@@ -1527,8 +1532,8 @@ enode aether_e_eq_prev(aether a, enode L, enode R) {
             if (mem->member_type != AU_MEMBER_VAR)
                 continue;
 
-            LLVMValueRef lv  = LLVMBuildExtractValue(B, L->value, mem->index, "lv");
-            LLVMValueRef rv  = LLVMBuildExtractValue(B, R->value, mem->index, "rv");
+            LLVMValueRef lv  = LLVMBuildExtractValue(B, L->value, mem->member_index, "lv");
+            LLVMValueRef rv  = LLVMBuildExtractValue(B, R->value, mem->member_index, "rv");
             enode        le  = value(u(etype, mem), lv);
             enode        re  = value(u(etype, mem), rv);
             enode        cmp = e_cmp_op(a, OPType__equal, le, re);
@@ -2827,7 +2832,7 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
 
         // 5. Index into the Function Table
         // Retrieve the specific method index assigned during schema creation
-        int method_index = fn->autype->index; 
+        int method_index = fn->autype->member_index; 
         Au f_info = head(fn);
         verify(method_index >= 0, "method %o has invalid vtable index", fn);
 
@@ -3610,7 +3615,7 @@ enode etype_access(etype target, string name) { sequencer
         return enode(
             mod,    a, autype,       m,
             loaded, false, debug_id, id,
-            value,  LLVMBuildStructGEP2(B, au->lltype, au_typed, m->index, id->chars));
+            value,  LLVMBuildStructGEP2(B, au->lltype, au_typed, m->member_index, id->chars));
     }
 
     if (is_typeid && m->offset >= 0) {
@@ -3627,8 +3632,8 @@ enode etype_access(etype target, string name) { sequencer
         return enode(mod, a, autype, m, loaded, false, debug_id, id, value, byte_ptr);
     }
     etype_implement(t, false);
-    // for C structs, m->index may be stale; recompute from member ordinal
-    int gep_index = m->index;
+    // for C structs, m->member_index may be stale; recompute from member ordinal
+    int gep_index = m->member_index;
     if (t->lltype && LLVMGetTypeKind(t->lltype) == LLVMStructTypeKind) {
         unsigned num_elements = LLVMCountStructElementTypes(t->lltype);
         if (gep_index >= (int)num_elements) {
@@ -3703,10 +3708,10 @@ enode aether_e_inherited_access(aether a, enode instance, Au_t override_member) 
     if (!base_et || !base_et->lltype) base_et = etype_prep(a, inherited->context);
     // direct GEP against the base class's lltype using the inherited member's
     // index. the derived instance's struct begins with the base class layout,
-    // so Canvas* + base_et->lltype + inherited->index targets the right slot.
+    // so Canvas* + base_et->lltype + inherited->member_index targets the right slot.
     string id = f(string, "override_access_%s", inherited->ident);
     LLVMValueRef gep = LLVMBuildStructGEP2(B, base_et->lltype,
-        instance->value, inherited->index, id->chars);
+        instance->value, inherited->member_index, id->chars);
     return enode(mod, a, autype, inherited, loaded, false, value, gep);
 }
 
@@ -3843,7 +3848,7 @@ bool is_map(etype t) {
 // compute sequential bit position for a member across the inheritance chain
 // walks base-first, publics then interns per level — matches etype_implement ordering
 static int fbits_index(Au_t type_au, Au_t member) {
-    return member->index;
+    return member->af_index - 1;   // af_index is 1-based (0=unset); the af-bit position is index-1
 }
 
 enode is_set(enode n, evar prop) {
@@ -4038,6 +4043,14 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
                 Au_t mem = find_member(alloc->autype, key_name, AU_MEMBER_VAR, 0, true);
                 if (mem) {
                     int idx = fbits_index(alloc->autype, mem);
+                    static bool ctor_fbits_printed = false;
+                    if (!ctor_fbits_printed && key_name && strcmp(key_name, "selected") == 0) {
+                        ctor_fbits_printed = true;
+                        printf("[CTOR fbits] %s.selected af_index=%d member_index=%d bit(idx)=%d word=%d bit=%d\n",
+                            alloc->autype && alloc->autype->ident ? alloc->autype->ident : "?",
+                            (int)mem->af_index, (int)mem->member_index, idx, idx / 64, idx % 64);
+                        fflush(stdout);
+                    }
                     if (idx >= 0 && idx < 64)  mask0 |= 1ULL << idx;
                     else if (idx >= 64)        mask1 |= 1ULL << (idx % 64);
                 }
@@ -4717,7 +4730,7 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                     string  k = (string)i->key;
                     Au_t   t = isa(i->value);
                     Au_t   m = find_member(rmdl->autype, k->chars, AU_MEMBER_VAR, 0, true);
-                    i32 index = m->index;
+                    i32 index = m->member_index;
 
                     enode value = (m->elements > 0) ?
                         (enode)instanceof(i->value, enode) :
@@ -6305,7 +6318,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
                 LLVMValueRef _ftb  = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), _tp,
                     (LLVMValueRef[]){LLVMConstInt(i64_ty, offsetof(struct _Au_f, ft), false)}, 1, "ftb");
                 LLVMValueRef _fpa  = LLVMBuildGEP2(B, ptr_ty, _ftb,
-                    (LLVMValueRef[]){LLVMConstInt(i32_ty, fn_frame->index, false)}, 1, "fpa");
+                    (LLVMValueRef[]){LLVMConstInt(i32_ty, fn_frame->member_index, false)}, 1, "fpa");
                 LLVMValueRef _fp   = LLVMBuildLoad2(B, ptr_ty, _fpa, "fp");
                 LLVMTypeRef  _fty  = LLVMFunctionType(i1_ty, (LLVMTypeRef[]){ptr_ty}, 1, false);
                 LLVMValueRef _r    = LLVMBuildCall2(B, _fty, _fp, (LLVMValueRef[]){_inst}, 1, "r");
@@ -6338,7 +6351,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
                 LLVMValueRef _ftb  = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), _tp,
                     (LLVMValueRef[]){LLVMConstInt(i64_ty, offsetof(struct _Au_f, ft), false)}, 1, "ftb");
                 LLVMValueRef _fpa  = LLVMBuildGEP2(B, ptr_ty, _ftb,
-                    (LLVMValueRef[]){LLVMConstInt(i32_ty, fn_destroy->index, false)}, 1, "fpa");
+                    (LLVMValueRef[]){LLVMConstInt(i32_ty, fn_destroy->member_index, false)}, 1, "fpa");
                 LLVMValueRef _fp   = LLVMBuildLoad2(B, ptr_ty, _fpa, "fp");
                 LLVMTypeRef  _fty  = LLVMFunctionType(void_ty, (LLVMTypeRef[]){ptr_ty}, 1, false);
                 LLVMBuildCall2(B, _fty, _fp, (LLVMValueRef[]){_inst}, 1, "");
@@ -6570,14 +6583,14 @@ etype struct_from_au(aether a, string name, Au_t au, bool is_system) {
     for (int i = 0; i < au->members.count; i++) {
         Au_t arg = (Au_t)au->members.origin[i];
         Au_t mem = def_member(struct_au, arg->ident, arg->src, AU_MEMBER_VAR, 0);
-        mem->index = index++;
+        mem->member_index = index++;
     }
 
     if (is_class((Au)au->context)) {
         Au_t mem = def_member(
             struct_au, "a", is_module(au->context) ? typeid(Au) : au->context,
             AU_MEMBER_VAR, AU_TRAIT_IS_TARGET);
-        mem->index = index++;
+        mem->member_index = index++;
     }
 
     etype result = etype(mod, a, autype, struct_au);
@@ -6912,7 +6925,7 @@ none etype_init(etype t) {
         for (int i = 0; i < au->members.count; i++) {
             Au_t m = (Au_t)au->members.origin[i];
             if (m->member_type == AU_MEMBER_VAR)
-                m->index = i;
+                m->member_index = i;
         }
     } else if (au == typeid(meta_t)) {
         LLVMTypeRef meta_t_type = LLVMStructCreateNamed(a->module_ctx, "meta_t");
@@ -7060,7 +7073,7 @@ etype implement_type_id(etype t) {
     Au_t type_info = def_type  (null, n->chars, AU_TRAIT_STRUCT | AU_TRAIT_SYSTEM);
     Au_t type_h    = def_member(type_info, "base", au_type, AU_MEMBER_VAR, AU_TRAIT_SYSTEM | AU_TRAIT_INLAY);
     Au_t type_f    = def_member(type_info, "type", t->schema->autype, AU_MEMBER_VAR, AU_TRAIT_SYSTEM | AU_TRAIT_INLAY);
-    type_f->index = 1;
+    type_f->member_index = 1;
     etype au_t = etype(mod, a, autype, type_info);
 
     etype_implement(au_t, false);
@@ -7255,6 +7268,8 @@ none etype_implement(etype t, bool w) { sequencer
         bool multi_Au = len(cl) > 1 && cl->origin[0] == etypeid(Au);
         int count = 0;
         int index = 0;
+        int af_idx = 1;   // 1-based af-bit slot; advances only for accessible (non-intern)
+                          // members → identical across modules (interns are stripped on import)
         each(cl, etype, tt) {
             if (!multi_Au || tt->autype != typeid(Au))
                 for (int i = 0; i < tt->autype->members.count; i++) {
@@ -7343,7 +7358,10 @@ none etype_implement(etype t, bool w) { sequencer
                         // both reuse the base class's slot index — the subclass
                         // member is metadata only.
                         Au_t base_m = find_member(tt->autype->context, m->ident, AU_MEMBER_VAR, 0, true);
-                        if (base_m) m->index = base_m->index;
+                        if (base_m) {
+                            m->member_index = base_m->member_index;
+                            m->af_index     = base_m->af_index;
+                        }
                         continue;
                     }
                     bool is_intern = m->access_type == interface_intern;
@@ -7413,7 +7431,7 @@ none etype_implement(etype t, bool w) { sequencer
                         int abi_member  = LLVMABISizeOfType(a->target_data, struct_members[index]);
                         if (!abi_member && a->import_c) {
                             // C-imported opaque/union members may have zero size; skip
-                            m->index = index++;
+                            m->member_index = index++;
                             continue;
                         }
                         verify(abi_member, "type has no size: %s.%s", au->ident, m->ident);
@@ -7430,8 +7448,19 @@ none etype_implement(etype t, bool w) { sequencer
                                 printf("v4l2_format union member %s size=%d align=%u\n",
                                     m->ident ? m->ident : "?", abi_member, mem_align);
                         }
-                        m->index = au->is_union ? 0 : index;
+                        // member_index = LLVM struct-field ordinal (storage/GEP); advances for
+                        // every laid-out member (union members alias slot 0).
+                        m->member_index = au->is_union ? 0 : index;
                         index++;
+                        // af_index = af-bit slot; only accessible (non-union, non-intern) members.
+                        if (!(au->is_union || is_intern))
+                            m->af_index = af_idx++;
+                        if (m->ident && strcmp(m->ident, "selected") == 0)
+                            printf("[layout] %s :: %s.selected -> index=%i (counter pre=%i)\n",
+                                au->ident ? au->ident : "?",
+                                tt->autype->ident ? tt->autype->ident : "?",
+                                (int)m->member_index, (int)m->member_index);
+                    
                     }
                 }
             }
@@ -7498,9 +7527,9 @@ none etype_implement(etype t, bool w) { sequencer
                     if (m->member_type != AU_MEMBER_VAR) continue;
                     if (m->is_static || m->is_elaborate) continue;
                     if (m->offset != 0) continue;
-                    if (m->index < 0 || m->index >= (int)LLVMCountStructElementTypes(t->lltype))
+                    if (m->member_index < 0 || m->member_index >= (int)LLVMCountStructElementTypes(t->lltype))
                         continue;
-                    m->offset = LLVMOffsetOfElement(a->target_data, t->lltype, m->index);
+                    m->offset = LLVMOffsetOfElement(a->target_data, t->lltype, m->member_index);
                 }
             }
         }
@@ -7918,7 +7947,7 @@ none aether_build_module_initializer(aether a, enode init) {
                 _u64(mem->traits),
                 value(etypeid(ARef), mf->value),
                 mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr)),
-                _i32(mem->index),
+                _i32(mem->member_index),
                 mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                 mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au))
             ), false, false);
@@ -8059,7 +8088,7 @@ none aether_build_module_initializer(aether a, enode init) {
                     _u64(mem->traits),
                     fptr,
                     mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr)),
-                    _i32(mem->index),
+                    _i32(mem->member_index),
                     mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                     mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au))
                 ), false, false);
@@ -8071,7 +8100,7 @@ none aether_build_module_initializer(aether a, enode init) {
                 int idx_adj = -1;
                 int au_t_sz = etypeid(Au_t)->autype->typesize;
                 i64 byte_offset = etypeid(Au_t)->autype->typesize +
-                        ((mem->index + idx_adj) * ptr);
+                        ((mem->member_index + idx_adj) * ptr);
                 LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), byte_offset, false);
                 LLVMValueRef slot = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), type_id->value, &offset, 1, "ft_slot");
                 enode fn_slot = enode(mod, a, autype, typeid(ARef), loaded, false, value, slot);
@@ -8350,8 +8379,11 @@ none aether_push_scope(aether a, Au arg, int label) {
             token ot = fn->origin_token;
             emit_debug_loc(a, null, ot ? ot->line : 0, ot ? ot->column : 0);
         }
-        // emit parameter debug variables (self, args) for LLDB locals view
-        emit_debug_params(a, fn);
+        // emit parameter debug variables (self, args) for LLDB locals view — skip for
+        // synthetic functions (no origin_token): they have no DISubprogram, so their
+        // param vars would scope to the compile unit (an invalid DILocation scope).
+        if (fn->origin_token)
+            emit_debug_params(a, fn);
         a->coverage_seq_local = null; // reset per-function __seq alloca
         if (a->timing_enabled && !fn->timing_start_value) {
             fn->timing_func_id = a->next_func_id++;
@@ -9197,8 +9229,8 @@ enode aether_e_cmp(aether a, enode L, enode R) {
         members(L->autype, mem) {
             if (is_func(mem)) continue;
 
-            LLVMValueRef lv  = LLVMBuildExtractValue(B, L->value, mem->index, "lv");
-            LLVMValueRef rv  = LLVMBuildExtractValue(B, R->value, mem->index, "rv");
+            LLVMValueRef lv  = LLVMBuildExtractValue(B, L->value, mem->member_index, "lv");
+            LLVMValueRef rv  = LLVMBuildExtractValue(B, R->value, mem->member_index, "rv");
             etype        mdl = u(etype, mem);
             enode        cmp = e_cmp(a, value(mdl, lv), value(mdl, rv));
 
@@ -9809,7 +9841,7 @@ efunc aether_function(aether a, etype place, string ident, etype rtype, array ar
     if (traits & AU_TRAIT_OVERRIDE) {
         Au_t parent = find_member(context->context, ident->chars, member_type, 0, true);
         if (parent)
-            au->index = parent->index;
+            au->member_index = parent->member_index;
     }
     if (context->member_type == AU_MEMBER_MODULE) {
         if (au->module && au->module != context) {
