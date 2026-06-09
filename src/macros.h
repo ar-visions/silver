@@ -93,7 +93,7 @@
     m->type    = typeid(R); \
     m->offset  = offsetof(E##_f, N); \
     m->value   = (object)& E##_##N; \
-    m->index   = offsetof(__typeof__(_typeid(E)->ft), N) / sizeof(void*);
+    m->member_index   = offsetof(__typeof__(_typeid(E)->ft), N) / sizeof(void*);
 
 #define   enum_method_METHOD(E, T, R, N, ...)    R (*N)(E value __VA_OPT__(,) __VA_ARGS__);
 #define   enum_method_NMODULE(E, T, R, N, ...)
@@ -382,7 +382,7 @@
     m->type        = typeid(X); \
     /*m->offset      = offsetof(X##_f.ft, with_##ARG);*/ \
     m->value       = (void*)& X##_with_##ARG; \
-    m->index   = offsetof(__typeof__(_typeid(X)->ft), with_##ARG) / sizeof(void*); \
+    m->member_index   = offsetof(__typeof__(_typeid(X)->ft), with_##ARG) / sizeof(void*); \
 }
 
 #define   i_ctr_public_PROTO(X, ARG)
@@ -465,7 +465,7 @@
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
     m->member_type = AU_MEMBER_VAR; \
-    m->index       = -1; \
+    m->member_index       = -1; \
 }
 #define   i_prop_Au_public_PROTO(X, R, N)  
 #define   i_prop_Au_public_METHOD(X, R, N)
@@ -492,7 +492,7 @@
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
     m->member_type = AU_MEMBER_VAR; \
-    m->index       = offsetof(struct X##_fields, N) + 1; \
+    m->af_index = m->member_index       = offsetof(struct X##_fields, N) + 1; \
 }
 
 #define   i_prop_public_PROTO(X, R, N)  
@@ -519,7 +519,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = offsetof(struct X##_fields, N) + 1; \
+    m->af_index = m->member_index       = offsetof(struct X##_fields, N) + 1; \
 };
 #define   i_prop_required_PROTO(X, R, N)  
 #define   i_prop_required_METHOD(X, R, N)
@@ -547,7 +547,7 @@
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
     m->member_type = AU_MEMBER_VAR; \
-    m->index       = offsetof(struct X##_fields, N) + 1; \
+    m->af_index = m->member_index       = offsetof(struct X##_fields, N) + 1; \
 };
 
 #define   i_prop_def_PROTO(X, R, N)  
@@ -662,7 +662,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = offsetof(struct X##_fields, N) + 1; \
+    m->af_index = m->member_index       = offsetof(struct X##_fields, N) + 1; \
 }
 
 #define   i_prop_required_PROTO_field(X, R, N, M2)  
@@ -705,7 +705,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = offsetof(struct X##_fields, N) + 1; \
+    m->af_index = m->member_index       = offsetof(struct X##_fields, N) + 1; \
     set_meta_array(m, 1, typeid(M2)); \
 }
 
@@ -731,7 +731,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = offsetof(struct X##_fields, N) + 1; \
+    m->af_index = m->member_index       = offsetof(struct X##_fields, N) + 1; \
     set_meta_array(m, 1, typeid(M2)); \
 }
 
@@ -776,7 +776,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(X); \
-    m->index       = offsetof(struct X##_fields, N) + 1; \
+    m->af_index = m->member_index       = offsetof(struct X##_fields, N) + 1; \
     set_meta_array(m, 1, typeid(X)); \
 }
 #define   i_prop_public_PROTO_as(X, R, N, M2)  
@@ -1023,7 +1023,7 @@
     m->access_type = interface_public; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = (Au_t)&ARef_i.type; \
-    m->index       = offsetof(struct X##_fields, N) + 1; \
+    m->af_index = m->member_index       = offsetof(struct X##_fields, N) + 1; \
 }
 
 #define   i_ref_required_PROTO(X, R, N)  
@@ -1069,7 +1069,7 @@
 #define i_attr_INIT(        X, ENUM, ID, VALUE, ...) { \
     Au_t m = def(typeid(X), #ID, AU_MEMBER_ATTR, 0); \
     m->access_type = interface_public; \
-    m->index       = ENUM##_##ID; \
+    m->member_index       = ENUM##_##ID; \
     m->value       = VALUE; \
     m->type        = typeid(ENUM); \
     set_meta_array(m, emit_types(__VA_ARGS__)); \
@@ -1117,7 +1117,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = offsetof(struct X##_fields, N) + 1; \
+    m->af_index = m->member_index       = offsetof(struct X##_fields, N) + 1; \
     m->elements    = S; \
 }
 #define   i_array_public_PROTO(X, R, S, N)  
@@ -1143,7 +1143,7 @@
     m->access_type = interface_public; \
     m->offset      = offsetof(struct _##X, N); \
     m->type        = typeid(R); \
-    m->index       = -1; \
+    m->member_index       = -1; \
     m->elements    = S; \
 }
 #define   i_array_Au_public_PROTO(X, R, S, N)  
@@ -1186,7 +1186,7 @@
     m->type        = typeid(ARG); \
     /* m->offset      = offsetof(X##_f, with_##ARG); */ \
     m->value       = (void*)& X##_with_##ARG; \
-    m->index       = offsetof(__typeof__(Type_i(X).type.ft), with_##ARG) / sizeof(void*); \
+    m->member_index       = offsetof(__typeof__(Type_i(X).type.ft), with_##ARG) / sizeof(void*); \
     set_args_array(m, emit_types(X, ARG)); \
     m->args.origin[0] = (Au)def_arg(null, null, typeid(X), AU_TRAIT_IS_TARGET); \
     ((Au_t)m->args.origin[0])->context = m; \
@@ -1499,7 +1499,7 @@
     m->access_type = interface_public; \
     m->offset   = offsetof(struct _##X, N); \
     m->type     = typeid(R); \
-    m->index    = offsetof(struct X##_fields, N) + 1; \
+    m->af_index = m->member_index    = offsetof(struct X##_fields, N) + 1; \
 }
 
 #define   i_inlay_required_PROTO(X, R, N)  
@@ -1634,7 +1634,7 @@
     ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type    = typeid(R); \
     /* m->offset  = offsetof(X##_f, N); */ \
-    m->index   = offsetof(__typeof__(Type_i(X).type.ft), N) / sizeof(void*); \
+    m->member_index   = offsetof(__typeof__(Type_i(X).type.ft), N) / sizeof(void*); \
     m->value   = (object)Type_i(X).type . ft.N; \
 }
 #define   i_method_abstract_PROTO(X, R, N, ...)
@@ -1665,7 +1665,7 @@
     ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type    = typeid(R); \
     /* m->offset  = offsetof(X##_f, N); */ \
-    m->index   = offsetof(__typeof__(Type_i(X).type.ft), N) / sizeof(void*); \
+    m->member_index   = offsetof(__typeof__(Type_i(X).type.ft), N) / sizeof(void*); \
     m->value   = (object)Type_i(X).type . ft.N; \
 }
 #define   i_method_public_PROTO(X, R, N, ...)
@@ -1754,7 +1754,7 @@
     ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type    = typeid(R); \
     /* m->offset  = offsetof(X##_f, N); */ \
-    m->index   = offsetof(__typeof__(Type_i(X).type.ft), N) / sizeof(void*); \
+    m->member_index   = offsetof(__typeof__(Type_i(X).type.ft), N) / sizeof(void*); \
     m->value   = (object)Type_i(X).type . ft.N; \
 }
 
@@ -1867,7 +1867,7 @@
     set_args_array(m, emit_types(X, Au, Au, OPType)); \
     ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type         = typeid(R); \
-    m->index        = offsetof(__typeof__(Type_i(X).type.ft), setter) / sizeof(void*); \
+    m->member_index        = offsetof(__typeof__(Type_i(X).type.ft), setter) / sizeof(void*); \
 }
 #define   i_setter_public_PROTO(X, R)
 #define   i_setter_public_METHOD(X, R)    R (*setter)(X, Au, Au, OPType);
@@ -1918,7 +1918,7 @@
     set_args_array(m, emit_types(X, ARG)); \
     ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type    = typeid(R); \
-    m->index  = offsetof(__typeof__(Type_i(X).type.ft), operator_##N) / sizeof(void*); \
+    m->member_index  = offsetof(__typeof__(Type_i(X).type.ft), operator_##N) / sizeof(void*); \
     m->member_type = AU_MEMBER_OPERATOR; \
     m->operator_type = OPType_ ## N; \
 }
@@ -1987,7 +1987,7 @@
     set_args_array(m, emit_types(CL)); \
     ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type    = typeid(R); \
-    m->index   = offsetof(__typeof(Type_i(CL).type.ft), cast_##R) / sizeof(void*); \
+    m->member_index   = offsetof(__typeof(Type_i(CL).type.ft), cast_##R) / sizeof(void*); \
 }
 
 #define   i_cast_public_PROTO(X, R)
@@ -2053,7 +2053,7 @@
     set_args_array(m, emit_types(X, __VA_ARGS__)); \
     ((Au_t)m->args.origin[0])->is_target = 1; \
     m->type        = typeid(R); \
-    m->index        = offsetof(__typeof(Type_i(X).type.ft), emit_getter_symbol(getter, __VA_ARGS__)) / sizeof(void*); \
+    m->member_index        = offsetof(__typeof(Type_i(X).type.ft), emit_getter_symbol(getter, __VA_ARGS__)) / sizeof(void*); \
 }
 
 #define i_getter_public_PROTO(X, R, ...)

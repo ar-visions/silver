@@ -91,6 +91,10 @@ trinity orbiter # implements compiler
     # set by on_exit (poll thread) so on_render (main thread) clears every pane's
     # stop-line marker — the inferior is gone, there's no execution point.
     intern pending_clear_stop : bool
+    # also set by on_exit: on_render prints "[process exited ...]" into the project's
+    # console session (the same tab the inferior streamed to) and reverts the button.
+    intern pending_exit       : bool
+    intern pending_exit_code  : i32 [ 0 ]
     # the inspected variables for the Fields panel — locals read at the last break
     # (read_locals only works while paused), cached here and cleared on continue/exit.
     intern debug_vars         : array
@@ -149,11 +153,10 @@ trinity orbiter # implements compiler
     # toggle restores this when re-opening so a collapse doesn't lose the size.
     public console_h_user: f32 [ 6.9 ]
     # the stack sub-column (callstack + fields) inside each editor, on a draggable
-    # seam: stack_w is its width (0 = closed). the menu icon in the title flips it
-    # open/closed; dragging the seam resizes it. stack_w_user keeps the last open
-    # width. fields shows a member's fields/methods (autocomplete) at design time,
-    # live values when debug is stopped; callstack is the bottom list.
-    public stack_w       : f32 [ 0.0 ]
+    # the SHARED width of the dbg sub-column seam (draggable via @stack_w in CSS).
+    # on/off is per-editor (Editor.dbg_open builds it); this is just how wide it is
+    # when shown — non-zero so a freshly-opened panel has width. drag adjusts it.
+    public stack_w       : f32 [ 15.0 ]
     public stack_w_user  : f32 [ 15.0 ]
     public filter_text   : string
     # finder search text typed into an editor title (magnify) when it has no file
@@ -589,15 +592,13 @@ trinity orbiter # implements compiler
     # dbg callbacks. Au_binding builds the target method name as <self_type>_<name>
     # = dbg_on_stdout/... (self_type is `dbg`, no id), so the handlers carry that
     # dbg_ prefix.
+    # inert: the inferior's stdout/stderr are now drained on the main/render thread
+    # in on_render (cons.feed_fd off the dbg PTY masters) into the project's own
+    # console session — NOT pushed through a dbg io-thread callback (that raced the
+    # renderer and printed to orbiter's own stdout). kept only so the binding resolves.
     func dbg_on_stdout [ buf: iobuffer ] -> Au
-        if [ !buf || buf.count <= 0 ] return null
-        s : string [ chars: buf.bytes, ref_length: buf.count ]
-        puts s
         return null
     func dbg_on_stderr [ buf: iobuffer ] -> Au
-        if [ !buf || buf.count <= 0 ] return null
-        s : string [ chars: buf.bytes, ref_length: buf.count ]
-        puts s
         return null
     func dbg_on_break [ cur: cursor ] -> Au
         if [ !cur ] return null
@@ -620,30 +621,29 @@ trinity orbiter # implements compiler
             open_in_pane[ src, 0 ]
             ed : Editor pane_at[ 0 ]
             if [ ed ]
-                # stop_line drives the white ">" arrow; sel_line moves the caret there
-                # too so the view scrolls to the stop.
+                # stop_line drives the white ">" arrow / current-line glow.
                 sl : i32 [ (ln > 0) ? ln - 1 : 0 ]
                 ed.stop_line = sl
                 # the exact stop column → its own marker, separate from the edit
                 # selection. silver emits the DWARF column as a 0-based char index
                 # (verified: `puts` at index 12 reports col 12), so use it directly.
                 ed.stop_col  = i32[ pending_break.column ]
-                # place the caret on the stop line with NO selection — set the anchor
-                # to the caret, else sel_line alone spans a selection from the old
-                # anchor (0,0) down to the break line.
-                ed.sel_line    = sl
-                ed.sel_col     = 0
-                ed.anchor_line = sl
-                ed.anchor_col  = 0
+                # do NOT move the edit caret/selection on a step — only the stop marker
+                # moves. scroll the view to follow the stop line instead, and only when
+                # it's outside the visible band (so a step in view doesn't jump).
+                lh  : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
+                vh  : f32 [ (ed.bounds) ? ed.bounds.h : 600.0 ]
+                top : f32 [ f32[sl] * lh ]
+                if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
+                    ed.scroll.y = top - vh * 0.4
+                    if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
                 # a fresh stop → back into active mode (keyboard drives the debugger),
                 # even if the user had armed editing on the previous stop.
                 ed.edit_armed = false
                 ed.pristine  = false
-        # NOTE: reading locals here crashes on hold of the returned array — the first
-        # exercise of a dbg module-method returning `array`. disabled until that
-        # binding path is sorted; Fields renders (empty) meanwhile.
-        # dv : dbg (debuggers) ? debuggers[ active_target ] : null
-        # if [ dv ] debug_vars = dv.read_locals[]
+        # we're paused here → read this frame's locals for the Fields panel.
+        dv : active_debugger[]
+        if [ dv ] debug_vars = dv.read_locals[]
         pending_break = null
 
     # clear the debugger's stop-line marker on every pane (called when the inferior
@@ -661,9 +661,11 @@ trinity orbiter # implements compiler
         # no live frame anymore → drop the inspected variables.
         debug_vars = null
     func dbg_on_exit [ e: exited ] -> Au
-        if [ e ] puts 'dbg exit {e.code}'
-        # poll thread: no live execution point anymore — tell on_render to clear it.
+        # poll thread: no live execution point anymore — tell on_render to clear the
+        # stop marker AND print the exit into the project's console (main thread).
         pending_clear_stop = true
+        pending_exit       = true
+        pending_exit_code  = (e) ? e.code : 0
         return null
     func dbg_on_crash [ cur: cursor ] -> Au
         if [ cur ] puts 'dbg crash {cur.source}:{cur.line}'
@@ -724,7 +726,7 @@ trinity orbiter # implements compiler
         # paused, so it would wrongly unlock the editor exactly at a breakpoint.
         return (d && d.active) ? d : null
 
-    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window, dbg_locked: bool ] -> Elements
+    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window, dbg_locked: bool, dbg_open: bool ] -> Elements
         nav : Elements []
         # the active (non-edit) state indicator: a small rounded 'active' button. shown
         # while the pane is debug-locked; clicking it (or double-clicking the body)
@@ -738,7 +740,7 @@ trinity orbiter # implements compiler
         nav['magnify'] = Option [ selected: findbar_open ]
         # menu icon (next to magnify): toggles this editor's stack sub-column
         # (callstack + fields), narrowing the code by that much.
-        nav['menu'] = Option [ selected: stack_w > 0.5 ]
+        nav['menu'] = Option [ selected: dbg_open ]
         # tab add (+) and remove (-) live on the right with magnify/menu, leaving the
         # title's left side free for a file-type icon. shown all the time (including
         # Finder state) — just not while the find/replace bar replaces the nav.
@@ -779,27 +781,46 @@ trinity orbiter # implements compiler
         ed_live : Editor pane_at[ pi ]
         armed   : bool [ (ed_live) ? ed_live.edit_armed : false ]
         locked  : bool [ running && !armed ]
-        ttl : Elements title_nav[ p, grp, diff, win, locked ]
+        # the dbg sub-column is toggled per editor (its own dbg_open), not globally.
+        dbg_open : bool [ (ed_live) ? ed_live.dbg_open : false ]
+        ttl : Elements title_nav[ p, grp, diff, win, locked, dbg_open ]
         pe : Elements []
         pe['title'] = EditorTitle [
             selected: !p
             edit: find_text
             label: (p) ? p.filename[] : empty_label
+            # fixed top band (not scrolled with the code) — so find_target hit-tests it
+            # and its controls (the '-'/nav) in unscrolled space; otherwise a scrolled
+            # editor folds scroll in and title clicks fall through to the code (line 0).
+            no_scroll: true
             elements: ttl
         ]
-        # callstack + fields: a vertical stack on the editor's right — the data we
-        # view within this editor's code (its own debug session). shown only when
-        # toggled; the navigate list + search results draw in front of it.
-        if [ stack_w > 0.5 ]
+        # callstack + fields: a vertical stack on the editor's right — shown only when
+        # THIS editor has it toggled on (per-editor dbg_open). content insets follow
+        # automatically (Editor measures the live dbg element's width).
+        if [ dbg_open ]
             dbg_els : Elements []
+            # debug-control buttons (words, not icons) — bound to the same actions the
+            # Editor's keyboard fires (cont / step over / into / out). handled in on_press.
+            ctl : Elements []
+            # continue toggles to pause while the inferior is running; selected (and the
+            # label) track the debugger's running state. manual_mode: app owns selected.
+            ctl['dbg_continue']  = Option [ label: (dbgr && dbgr.running) ? 'pause' : 'cont', selected: (dbgr) ? dbgr.running : false, manual_mode: true ]
+            ctl['dbg_step_over'] = Button [ label: 'step' ]
+            ctl['dbg_step_into'] = Button [ label: 'in' ]
+            ctl['dbg_step_out']  = Button [ label: 'out' ]
+            dbg_els['controls']  = element [ elements: ctl ]
             dbg_els['fields']    = Fields [ vars: debug_vars ]
             dbg_els['callstack'] = Callstack [ frames: debug_frames[] ]
-            pe['dbg'] = element [ elements: dbg_els ]
+            # fixed sub-column (not scrolled with the editor content) — so find_target
+            # hit-tests its buttons/panels in unscrolled space; otherwise a scrolled
+            # editor folds its scroll in and clicks fall through to the code rows.
+            pe['dbg'] = element [ no_scroll: true, elements: dbg_els ]
         # the dock + search results render as the editor's lines (run_search), not a
         # tab strip — so no 'pins' overlay anymore.
         return Editor [
             src: p, breakpoints: breakpoints, code_font_size: code_font_size,
-            dbg_seam: stack_w, debug_running: running, debugger: dbgr,
+            debug_running: running, debugger: dbgr, debug_vars: debug_vars,
             # the findbar belongs to the pane whose magnify opened it (findbar_on);
             # find-in-files hits render only in the focused search pane (searchable).
             expanded: findbar_on, show_hits: (searchable) ? find_showing : false,
@@ -884,7 +905,7 @@ trinity orbiter # implements compiler
         # the map lazily after the reload).
         if [ debuggers ]
             for [ d: dbg, name: string ] in debuggers
-                if [ d && d.running ] d.stop[]
+                if [ d && d.active ] d.stop[]
             debuggers = null
         pending_break = null
         if [ index_watches ]
@@ -991,6 +1012,7 @@ trinity orbiter # implements compiler
     # non-search pane.
     func apply_pane [ ed: Editor, is_search: bool, slot: i32 ]
         if [ !ed ] return
+        ed.finder_list = is_search
         if [ is_search ]
             # the focused search pane shows the navigate list (dock + matches)
             ed.lines = find_results
@@ -1211,11 +1233,12 @@ trinity orbiter # implements compiler
         if [ ev.target.id == 'play' ]
             con : ui_console[]
             dl  : dbg (debuggers) ? debuggers[ active_target ] : null
-            if [ (con && con.is_running[ active_target ]) || (dl && dl.running) ]
+            if [ (con && con.is_running[ active_target ]) || (dl && dl.active) ]
                 # stop tears down BOTH the build shell and the live debug inferior —
-                # either may be the thing keeping the button in its stop state.
+                # either may be the thing keeping the button in its stop state. use
+                # dl.active (paused sessions have running=false but must still stop).
                 if [ con && con.is_running[ active_target ] ] con.stop[ active_target ]
-                if [ dl && dl.running ] dl.stop[]
+                if [ dl && dl.active ] dl.stop[]
                 clear_stop_lines[]
             el
                 run_node[ active_target ]
@@ -1225,10 +1248,12 @@ trinity orbiter # implements compiler
         # the editor (callstack + fields). the seam (stack_w) is the source of truth
         # — collapse to 0, or restore the last dragged-open width.
         if [ ev.target.id == 'menu' ]
-            if [ stack_w > 0.5 ]
-                stack_w = 0.0
-            el
-                stack_w = stack_w_user
+            # toggle the dbg sub-column for THIS editor only.
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits Editor ]
+                    ed : Editor e
+                    ed.dbg_open = !ed.dbg_open
+                    break
             if [ ev.target ] ev.target.ux.restyle = true
             return
         puts 'on_press: {ev.target.id}'
@@ -1544,6 +1569,32 @@ trinity orbiter # implements compiler
                 if [ s.pty_fd >= 0 ]
                     w.will_animate = true
                     s.read_output[]
+            # debug inferiors don't run in a bash pty — their stdout/stderr come back
+            # on the dbg PTY masters. drain them here (main thread) into the matching
+            # project's session, so a stepped `puts` lands in that project's console
+            # tab right where its build ran. (the dbg's own threads never touch the UI.)
+            if [ debuggers ]
+                for [ d: dbg, dn: string ] in debuggers
+                    if [ !d || !d.active ] continue
+                    ds : ConsoleSession cons.sessions[ dn ]
+                    if [ !ds ] continue
+                    w.will_animate = true
+                    ds.feed_fd[ d.fifo_fd_out ]
+                    ds.feed_fd[ d.fifo_fd_err ]
+            # the inferior exited (on_exit, poll thread) → note it in its console tab.
+            # active just flipped false, so the drain loop above skipped it — pull the
+            # final flush (fds are still open until stop/dealloc) before the notice.
+            if [ pending_exit ]
+                pending_exit = false
+                es : ConsoleSession cons.sessions[ active_target ]
+                de : dbg (debuggers) ? debuggers[ active_target ] : null
+                if [ es ]
+                    if [ de ]
+                        es.feed_fd[ de.fifo_fd_out ]
+                        es.feed_fd[ de.fifo_fd_err ]
+                    es.feed_text[ '\r\n[process exited, code {pending_exit_code}]\r\n' ]
+                    cons.pristine = false
+                    w.will_animate = true
             # the active session drives the on-screen repaint.
             cs : cons.session[]
             if [ cs ]
@@ -1560,9 +1611,11 @@ trinity orbiter # implements compiler
         # is a run live for the active target → play button shows stop. true during
         # the build (console shell running) AND during the actual debug session: once
         # the build's shell returns to prompt the console clears is_running, but the
-        # dbg inferior is then live (dbg.running), so OR the two so stop persists.
+        # dbg session is then live, so OR the two so stop persists. use dbg.active
+        # (session alive = paused OR running), NOT dbg.running (false while paused at a
+        # breakpoint — which is why the button kept reverting to play while stepping).
         dbg_live            : dbg     (debuggers) ? debuggers[ active_target ] : null
-        play_running        : bool [ ((cons) ? cons.is_running[ active_target ] : false) || ((dbg_live) ? dbg_live.running : false) ]
+        play_running        : bool [ ((cons) ? cons.is_running[ active_target ] : false) || ((dbg_live) ? dbg_live.active : false) ]
 
         a_slot              : i32 [ (active_pane >= 0 && active_pane < editor_slots.count) ? editor_slots[active_pane] : -1 ]
         left_path           : path (a_slot >= 0 && a_slot < open_files.count) ? open_files[a_slot] : null

@@ -275,15 +275,57 @@ Console {
         thumb_radius:       4
 }
 
-/* callstack + fields: a vertical stack on the editor's right, on the stack_w seam
-   (draggable) — the data we view within the code, per debug session. fields on top,
-   callstack list below. the navigate pins + search results draw in front. */
+/* callstack + fields: a vertical stack on the editor's right. on/off is per-editor
+   (each tab's dbg_open builds it or not); the WIDTH is a draggable seam shared via
+   @stack_w (bound coords are app-scoped, so the seam width is shared when open). */
 Editor / element.dbg {
-    area:   r@stack_w=0|0|0 t45px r0 b0
+    area:   r@stack_w=15|0|50 t45px r0 b0
     layers.base:
         fill_color:     #0e1626e0
         stroke_width:   0.5
         stroke_color:   #fff2
+}
+
+Editor / element.dbg / element.controls {
+    area:   m0 t0.2 wc h38px
+}
+Editor / element.dbg / element.controls / Button {
+    area:           l1+px t0 w2 h1
+    focusable:      true
+    layers.base:
+        fill_color:             #243450
+        fill_gradient:          linear
+        fill_gradient_color:    #1b2740
+        fill_gradient_angle:    90
+        inner_glow:             #8af2 12
+        radius:                 6
+        stroke_width:           0.5
+        stroke_color:           #fff2
+    layers.face:
+        label_color:    #cfe6ff
+        label_size:     14
+        label_align:    0.5 0.5
+        label_font:     'fonts/SpaceMono-Regular.ttf'
+}
+Editor / element.dbg / element.controls / Button:hovered {
+    layers.base:
+        fill_color:             #3a5a90
+        fill_gradient:          linear
+        fill_gradient_color:    #2a4068
+        fill_gradient_angle:    90
+        inner_glow:             #8af4 18
+}
+Editor / element.dbg / element.controls / Button:first {
+    layers.base:
+        radius:                 6 0 0 6
+}
+Editor / element.dbg / element.controls / Button:middle {
+    layers.base:
+        radius:                 0 0 0 0
+}
+Editor / element.dbg / element.controls / Button:last {
+    layers.base:
+        radius:                 0 6 6 0
 }
 
 Editor / element.dbg / Callstack {
@@ -306,7 +348,7 @@ Editor / element.dbg / Callstack {
 
 Editor / element.dbg / Fields {
     focusable:      true
-    area:   l0.2 t0.2+ r0.2 b50%
+    area:   l0.2 t0.7+ r0.2 b50%
     layers.base:
         fill_color:     #1c2840cc
         inner_glow:     #8af2 14
@@ -363,6 +405,11 @@ Editor {
         label_height:       1.0
         line_color:         #fff1
         sel_color:          #264f78
+        # active-line glow (tab-explorer hover row + debugger stop line): warm red/orange
+        hl_fill:            #ff6a2e55
+        hl_grad:            #c0381844
+        hl_glow:            #ff8a3a99
+        hl_text:            #ffe6d2
     layers.scrollbar: ScrollLayer
         overlay:            true
         area:               l0 t44px r0 b0
@@ -444,10 +491,17 @@ Tabs / Option {
 
 /* console header: system menu icon + play button on the left */
 Instances / Tabs.tools {
-    area:                       l0 t0 w1 h1.2
+    area:                       l0 t0 w1.7 h1.2
 }
 Instances / Tabs.tools / Option.play {
     area:                       l6px t6px w1.5 h1
+    layers.base:
+        fill_color:             #243450
+        fill_gradient:          linear
+        fill_gradient_color:    #1b2740
+        fill_gradient_angle:    90
+        inner_glow:             #8af1 16
+        radius:                 6 6 6 6
     layers.svg:
         area:                   4px
         image_svg:              "images/play.svg"
@@ -471,14 +525,37 @@ Tabs.source_nav {
 }
 
 Tabs.source_nav / Option {
-    area:                       l6+px t6px w3 h1
+    area:                       l1+px t6px w3 h1
     layers.base:
-        fill_color:             #2481
+        fill_color:             #243450
+        fill_gradient:          linear
+        fill_gradient_color:    #1b2740
+        fill_gradient_angle:    90
         inner_glow:             #8af1 16
         radius:                 4 4 4 4
     layers.face:
         area:                   l0 t0 r0 b0
         label_align:            0.5 0.5
+}
+Tabs.source_nav / Option:hovered {
+    layers.base:
+        fill_color:             #3a5a90
+        fill_gradient:          linear
+        fill_gradient_color:    #2a4068
+        fill_gradient_angle:    90
+        inner_glow:             #8af4 18
+}
+Tabs.source_nav / Option:first {
+    layers.base:
+        radius:                 6 0 0 6
+}
+Tabs.source_nav / Option:middle {
+    layers.base:
+        radius:                 0 0 0 0
+}
+Tabs.source_nav / Option:last {
+    layers.base:
+        radius:                 0 6 6 0
 }
 
 Tabs.source_nav / Option.system {

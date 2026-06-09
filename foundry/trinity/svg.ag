@@ -69,10 +69,14 @@ class SVGModel
         if [ vb ]
             vp : array string vb.split[ ' ' ]
             if [ vp.count >= 4 ]
-                vb_x = f32 vp[0].real_value[]
-                vb_y = f32 vp[1].real_value[]
-                vb_w = f32 vp[2].real_value[]
-                vb_h = f32 vp[3].real_value[]
+                vp0 : vp[0]
+                vp1 : vp[1]
+                vp2 : vp[2]
+                vp3 : vp[3]
+                vb_x = f32 vp0.real_value[]
+                vb_y = f32 vp1.real_value[]
+                vb_w = f32 vp2.real_value[]
+                vb_h = f32 vp3.real_value[]
         pw : f32 svg_node.attr_f[ 'width',  0.0 ]
         ph : f32 svg_node.attr_f[ 'height', 0.0 ]
         if [ pw > 0.0 ] w = pw
@@ -87,7 +91,9 @@ class SVGModel
         if [ vb_h == 0.0 ] vb_h = h
         vb_sx : f32 (vb_w > 0.0) ? w / vb_w : 1.0
         vb_sy : f32 (vb_h > 0.0) ? h / vb_h : 1.0
-        xf0 : affine affine.identity[].translate[ -vb_x, -vb_y ].scale_xy[ vb_sx, vb_sy ]
+        id : affine.identity[]
+        tr : id.translate[ -vb_x, -vb_y ]
+        xf0 : affine tr.scale_xy[ vb_sx, vb_sy ]
         st0 : SVGState [
             fill:          vec4f [ 0.0, 0.0, 0.0, 1.0 ],
             stroke:        vec4f [ 0.0, 0.0, 0.0, 0.0 ],
@@ -363,6 +369,7 @@ class SVGPathBuilder
                 has_dot = true
             el
                 break
+
         return (pos > s) ? f32 d.mid[ s, pos - s ].real_value[] : 0.0
 
     func cmd_move [ xf: affine, x: f32, y: f32 ]

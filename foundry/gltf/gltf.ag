@@ -229,7 +229,8 @@ class GltfTransform
         m: (iparent != -1) ? jdata.states[iparent] : mat4f.identity[]
         jdata.states[istate] = local_mat.mul[ m ]
         for [i: i64] in ichildren
-            jdata.transforms[i].propagate
+            t:jdata.transforms[i]
+            t.propagate
 
     func multiply [m: mat4f] 
         local_mat = local_mat.mul[ m ]

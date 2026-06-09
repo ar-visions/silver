@@ -317,10 +317,18 @@ Display Window
                 if [ strcmp[ member.ident, "elements" ] == 0 ] continue
                 if [ strcmp[ member.ident, "label" ] == 0 ] continue
                 if [ strcmp[ member.ident, "edit" ] == 0 ] continue
+                if [ inst.id == 'play' && strcmp[ member.ident, 'selected' ] == 0 ]
+                    ibits : ref u64 [ inst.AF_bits[] ]
+                    ebits : ref u64 [ e.AF_bits[] ]
+                    #puts 'PLAY af: af_index={member.af_index} member_index={member.member_index} af_e={e.AF_get_member[member]} af_inst={inst.AF_get_member[member]} e_w0={ebits[0]} e_w1={ebits[1]} i_w0={ibits[0]} i_w1={ibits[1]}'
                 if [ !e.AF_get_member[ member ] ] continue
                 cur : inst.member_object[ member ]
                 nv  : e.member_object[ member ]
-                if [ !nv || cur.compare[ nv ] != 0 ]
+                # a change is: presence flipped, OR both present and unequal. a false/0
+                # value boxes as null, so a false→true flip is cur=null, nv=non-null —
+                # the old `cur.compare[nv]` then ran compare on a null cur and missed it
+                # (left manual_mode :selected styles, e.g. the play↔stop icon, stale).
+                if [ (!cur) != (!nv) || ((cur && nv) && cur.compare[ nv ] != 0) ]
                     inst.member_set[ member, nv ]
                     changed = true
         return changed
@@ -675,6 +683,12 @@ Display Window
                 a.t_apply_args += epoch_micros[] - ta0
                 changed = args_changed || instance.restyle || force
                 instance.restyle = false
+                if [ instance.id == 'play' ]
+                    op2  : Option instance
+                    et2  : Option e
+                    isel : bool [ (op2) ? op2.selected : false ]
+                    tsel : bool [ (et2) ? et2.selected : false ]
+                    #puts 'PLAY upd: args_changed={args_changed} force={force} changed={changed} inst.selected={isel} tmpl.selected={tsel}'
 
             new_first  : bool [ child_pos == 0 ]
             new_last   : bool [ child_pos == total_rendered - 1 ]
@@ -826,6 +840,10 @@ Display Window
         if [ !c.area ] return
         if [ !(c.area.bind_l || c.area.bind_t || c.area.bind_r || c.area.bind_b) ] return
         b : rect c.bounds
+        # a collapsed / sub-band-width child can't host the 6px grab band — skip it, else
+        # its phantom seam sits at the edge over the scrollbar, shows the <-> resize
+        # cursor, and steals the press across that strip (can't drag a 0-width panel).
+        if [ b.w < 6.0 || b.h < 6.0 ] return
         # band is the slot's element edge; drag sign follows the coord's ANCHOR
         # (bottom/right-anchored offsets shrink as the mouse moves toward them).
         if      [ c.area.bind_t && mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + 6.0 ]
@@ -862,8 +880,10 @@ Display Window
         bh : f32 [ (b.h > 0.0) ? b.h : 1.0 ]
         e.cursor = vec2f [ x: lx / bw, y: ly / bh ]
 
-        ev.mouse.pos.x = lx + e.scroll.x
-        ev.mouse.pos.y = ly + e.scroll.y
+        fx : f32 [ lx + e.scroll.x ]
+        fy : f32 [ ly + e.scroll.y ]
+        ev.mouse.pos.x = fx
+        ev.mouse.pos.y = fy
 
         # seam detection: a child's bound edge is a draggable slider. mouse and
         # child.bounds are both in THIS element's local space here, so the inset
@@ -876,17 +896,26 @@ Display Window
         # first. iterate reverse; topmost-flagged children still come before the
         # rest. this is why a later-declared sibling (e.g. the filter) wins its
         # own click without needing a per-element topmost.
+        # a no_scroll child is fixed (not in this element's scrolled content), so it's
+        # tested in UNSCROLLED local space (lx/ly) — otherwise a scrolled parent (e.g.
+        # the editor) folds its content scroll in and the child's hit area drifts.
         for [ child: element, id: string ] reverse in e.elements
             if [ !child.topmost ] continue
+            ev.mouse.pos.x = (child.no_scroll) ? lx : fx
+            ev.mouse.pos.y = (child.no_scroll) ? ly : fy
             hit : find_target[ child, ev, must ]
             if [ hit ]
                 return hit
         for [ child: element, id: string ] reverse in e.elements
             if [ child.topmost ] continue
+            ev.mouse.pos.x = (child.no_scroll) ? lx : fx
+            ev.mouse.pos.y = (child.no_scroll) ? ly : fy
             hit : find_target[ child, ev, must ]
             if [ hit ]
                 return hit
 
+        ev.mouse.pos.x = fx
+        ev.mouse.pos.y = fy
         r : element [ ( !must || must == e ) ? e : null ]
         if [ !r ]
             ev.mouse.pos.x = x
@@ -1504,10 +1533,13 @@ Display Window
                 cw = tm.w
                 ch = tm.ascent - tm.descent
             if [ e.area.r.content ]
-                if [ e.area.l.x_type == XAlign.right ] bounds.x = bounds.x - cw
+                if [ e.area.l.x_type == XAlign.right ]  bounds.x = bounds.x - cw
+                # middle anchor: center the content on m — shift left by half the width
+                if [ e.area.l.x_type == XAlign.middle ] bounds.x = bounds.x - cw / 2.0
                 bounds.w = cw
             if [ e.area.b.content ]
-                if [ e.area.t.y_type == YAlign.bottom ] bounds.y = bounds.y - ch
+                if [ e.area.t.y_type == YAlign.bottom ]  bounds.y = bounds.y - ch
+                if [ e.area.t.y_type == YAlign.middle ] bounds.y = bounds.y - ch / 2.0
                 bounds.h = ch
 
         e.bounds.x = bounds.x
@@ -2046,11 +2078,11 @@ element View
         return null
 
 element Group
-    public selected : bool
     func render[] -> Elements
         return null
 
 element Control
+    public selected   : bool
     focusable : true
     func render[] -> Elements
         return null
@@ -2060,10 +2092,6 @@ Control Button
         return null
 
 Button Check
-    mutable selected : bool
-    func init[]
-        selected = true
-    
     func on_click[ ev:Event ]
         selected = !selected
     
@@ -2071,7 +2099,6 @@ Button Check
         return null
 
 Button Option
-    public selected   : bool
     public left_view  : bool
     public right_view : bool
     public toggle     : bool

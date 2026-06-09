@@ -1,3 +1,3 @@
 type:       shared
 modules:    Au
-link:       -lm -llldb
+link:       -lm -llldb -lutil

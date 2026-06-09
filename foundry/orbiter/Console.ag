@@ -316,6 +316,29 @@ class ConsoleSession
             pending = ''
             if [ running ] run_armed = true
 
+    # drain bytes from an external fd (a debug inferior's PTY master, owned by dbg)
+    # straight into the terminal emulator. same byte pump as read_output but for a
+    # session whose output comes from lldb rather than our bash — so no prompt /
+    # run-armed bookkeeping. called on the main (render) thread, so the screen and
+    # scrollback stay single-threaded.
+    func feed_fd [ fd: i32 ]
+        if [ fd < 0 ] return
+        buf : local i8 [ 2 ]
+        buf[1] = 0
+        for [ i: i32 0, i < 4096, i += 1 ]
+            nr : i32 [ read[ fd, ref buf[0], 1 ] ]
+            if [ nr <= 0 ] break
+            dirty = true
+            process_byte[ i32 buf[0] ]
+
+    # push a host-generated message (e.g. "[process exited]") through the emulator,
+    # as if the inferior had printed it. ascii only; main-thread caller.
+    func feed_text [ s: string ]
+        if [ !s ] return
+        for [ i: i32 0, i < s.count, i += 1 ]
+            process_byte[ i32 s.chars[i] ]
+        dirty = true
+
     func write_input [ data: string ]
         if [ pty_fd < 0 ] return
         write[ pty_fd, data.chars, data.count ]

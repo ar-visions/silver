@@ -7,6 +7,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <pty.h>
+#include <termios.h>
 #include <ports.h>
 
 #define m(...) map_of(_N_ARGS_m(m, ## __VA_ARGS__), null)
@@ -45,47 +47,10 @@ struct dbg_state {
 #define BP(b) ((lldb::SBBreakpoint*)(b)->lldb_bp)
 
 // the Au type registration (generated from dbg.ag) references these by their plain
-// C names (dbg_init, dbg_io, ...); without C linkage they'd be C++-mangled and the
+// C names (dbg_init, dbg_start, ...); without C linkage they'd be C++-mangled and the
 // loader fails with "undefined symbol: dbg_init". (struct dbg_state + macros above
 // stay C++.)
 extern "C" {
-
-Au dbg_io(dbg debug) {
-    lldb::SBEvent event;
-    int           fd_out = open(debug->stdout_fifo->chars, O_RDONLY | O_NONBLOCK);
-    int           fd_err = open(debug->stderr_fifo->chars, O_RDONLY | O_NONBLOCK);
-    _fd_set_      readfds;
-    char          buffer[1024];
-    debug->fifo_fd_out = fd_out;
-    debug->fifo_fd_err = fd_err;
-
-    while (debug->active) {
-        FD_ZERO(&readfds);
-        FD_SET(fd_out, &readfds);
-        FD_SET(fd_err, &readfds);
-
-        int maxfd = (fd_out > fd_err) ? fd_out : fd_err;
-        int ready = select(maxfd + 1, &readfds, NULL, NULL, NULL); // wait for stdout / stderr
-
-        if (ready > 0) {
-            if (FD_ISSET(fd_out, &readfds)) {
-                ssize_t n = read(fd_out, buffer, sizeof(buffer));
-                if (n > 0)
-                    debug->on_stdout(debug->target,
-                        (Au)construct(iobuffer, debug, debug, bytes, buffer, count, n));
-            }
-
-            if (FD_ISSET(fd_err, &readfds)) {
-                ssize_t n = read(fd_err, buffer, sizeof(buffer));
-                if (n > 0)
-                    debug->on_stderr(debug->target,
-                        (Au)construct(iobuffer, debug, debug, bytes, buffer, count, n));
-            }
-        } else if (ready < 0)
-            break;
-    }
-    return null;
-}
 
 Au dbg_poll(dbg debug) {
     lldb::SBEvent event;
@@ -99,7 +64,24 @@ Au dbg_poll(dbg debug) {
         if (!lldb::SBProcess::EventIsProcessEvent(event))
             continue;
 
-        lldb::StateType   state      = lldb::SBProcess::GetStateFromEvent(event);
+        lldb::StateType state = lldb::SBProcess::GetStateFromEvent(event);
+
+        // process exit FIRST — a dead process has no thread/frame, so the frame-valid
+        // guard below would otherwise eat the exit event and the session would hang
+        // "running" forever (on_exit never fires, active never clears). this was the
+        // bug: exits were silently dropped here.
+        if (state == lldb::eStateExited) {
+            debug->running = false;
+            debug->active  = false;   // session is over — ends dbg_poll, unlocks UI
+            i32 exit_code  = S(debug)->process.GetExitStatus();
+            printf("dbg: process exited, code=%d\n", exit_code);
+            exited e = construct(exited,
+                debug,  debug,
+                code,   exit_code);
+            debug->on_exit(debug->target, (Au)e);
+            continue;   // loop ends (active == false)
+        }
+
         lldb::SBThread    thread     = S(debug)->process.GetSelectedThread();
         lldb::StopReason  reason     = thread.GetStopReason();
         lldb::SBFrame     frame      = thread.GetSelectedFrame();
@@ -116,6 +98,19 @@ Au dbg_poll(dbg debug) {
         path source = f(path, "%s", file_path);
 
         if (state == lldb::eStateStopped) {
+            // a STEP that completed outside user .ag source — the synthetic main (now
+            // de-debugged), libc's __libc_start_call_main, or any system frame — must
+            // not surface in the UI. keep running until we're back in .ag code, hit a
+            // breakpoint, or the process exits. breakpoint stops are ALWAYS honored
+            // (the user asked for them), even if somehow outside .ag.
+            bool is_step = (reason == lldb::eStopReasonPlanComplete);
+            int  fl = 0; while (file_path[fl]) fl++;
+            bool is_ag = line_entry.IsValid() && line > 0 && fl >= 3 &&
+                         file_path[fl-3] == '.' && file_path[fl-2] == 'a' && file_path[fl-1] == 'g';
+            if (is_step && !is_ag) {
+                S(debug)->process.Continue();   // running stays true; poll catches next stop
+                continue;
+            }
             debug->running = false;
             cursor cur = construct(cursor,
                 debug,  debug,
@@ -132,15 +127,6 @@ Au dbg_poll(dbg debug) {
                 line,   line,
                 column, column);
             debug->on_crash(debug->target, (Au)cur);
-
-        } else if (state == lldb::eStateExited) {
-            debug->running = false;
-            debug->active  = false;   // session is over — ends dbg_poll, unlocks UI
-            i32    exit_code = S(debug)->process.GetExitStatus();
-            exited e = construct(exited,
-                debug,  debug,
-                code,   exit_code);
-            debug->on_exit(debug->target, (Au)e);
         }
     }
     return null;
@@ -164,35 +150,58 @@ none dbg_init(dbg debug) {
     if (!debug->on_crash)  debug->on_crash  = Au_binding((Au)debug,(Au)debug->target, true, typeid(Au), typeid(cursor),   null, "on_crash");
 
     S(debug)->debugger.SetAsync(true);
-    if (!debug->exceptions) {
+    {
+        // keep stepping inside code that HAS source. without this, stepping off the
+        // end of a function returns into its caller — and at the top of an app that's
+        // libc's __libc_start_call_main / _start, which has no usable DWARF (lldb spews
+        // "extends beyond the bounds of" errors for glibc's padded structs). avoid-
+        // nodebug makes step-over/step-out run THROUGH no-debug frames until they reach
+        // the next frame with line info (or the process exits), so we never stop there.
         lldb::SBCommandInterpreter  interp = S(debug)->debugger.GetCommandInterpreter();
         lldb::SBCommandReturnObject result;
-        interp.HandleCommand("settings set target.exception-breakpoints.* false", result);
+        interp.HandleCommand("settings set target.process.thread.step-out-avoid-nodebug true", result);
+        interp.HandleCommand("settings set target.process.thread.step-in-avoid-nodebug true",  result);
+        if (!debug->exceptions)
+            interp.HandleCommand("settings set target.exception-breakpoints.* false", result);
     }
 
     S(debug)->listener = S(debug)->debugger.GetListener();
     S(debug)->target   = S(debug)->debugger.CreateTarget(debug->location->chars);
     debug->running     = false;
 
-    // mkstemp returns fd but also replaces XXXXXX with unique string
-    char   stdout_fifo_t[] = "/tmp/debug_stdout_fifo_XXXXXX";
-    char   stderr_fifo_t[] = "/tmp/debug_stderr_fifo_XXXXXX";
-    u64    access          = S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
-    int    fd_stdout       = mkstemp(stdout_fifo_t);
-    close (fd_stdout);
-    unlink(stdout_fifo_t);
-    mkfifo(stdout_fifo_t, access);
-    int    fd_stderr       = mkstemp(stderr_fifo_t);
-    close (fd_stderr);
-    unlink(stderr_fifo_t);
-    mkfifo(stderr_fifo_t, access);
-    debug->stdout_fifo     = f(path, "%s", stdout_fifo_t);
-    debug->stderr_fifo     = f(path, "%s", stderr_fifo_t);
+    // give the inferior a PTY for stdout/stderr (not a FIFO). a tty makes libc
+    // LINE-buffer the inferior's stdout, so each puts flushes on its newline and
+    // shows in the console as you step. a FIFO is a pipe → fully buffered → output
+    // only appears at exit (that's why a shell run printed but the debugger didn't).
+    // the host drains the masters; the inferior opens the slave by path (AddOpenFileAction).
+    // pass null termios → the default cooked tty (OPOST|ONLCR), so the inferior's "\n"
+    // is translated to "\r\n" — same as a bash session's pty. without it (raw mode) a
+    // bare line-feed only moves the cursor down, not to column 0, and lines staircase.
+    int  mo = -1, so = -1, me = -1, se = -1;
+    char so_name[256] = {0};
+    char se_name[256] = {0};
+    if (openpty(&mo, &so, null, null, null) == 0) {
+        ttyname_r(so, so_name, sizeof(so_name));
+        fcntl(mo, F_SETFL, O_NONBLOCK);
+        close(so);   // the inferior reopens the slave by path
+    }
+    if (openpty(&me, &se, null, null, null) == 0) {
+        ttyname_r(se, se_name, sizeof(se_name));
+        fcntl(me, F_SETFL, O_NONBLOCK);
+        close(se);
+    }
+    debug->fifo_fd_out = mo;   // masters — the host drains these on its render thread
+    debug->fifo_fd_err = me;
+    debug->stdout_fifo = f(path, "%s", so_name);   // slave paths — lldb opens for fd 1/2
+    debug->stderr_fifo = f(path, "%s", se_name);
 
     if (S(debug)->target.IsValid()) {
         debug->active        = true;
         debug->poll          = construct(async, work, a((Au)debug), work_fn, (hook)dbg_poll);
-        debug->io            = construct(async, work, a((Au)debug), work_fn, (hook)dbg_io);
+        // NOTE: the inferior's stdout/stderr are NOT read here on an io thread —
+        // they're the PTY masters (fifo_fd_out/err) and the host (orbiter) drains
+        // them on its main/render thread straight into the project's console. that
+        // keeps the terminal/scrollback mutation single-threaded (no render race).
         if (debug->auto_start)
             dbg_start(debug);
     }
@@ -237,106 +246,178 @@ none dbg_start(dbg debug) {
 }
 
 none dbg_stop(dbg debug) {
-    if (!debug->running) return;
-    if (S(debug)->process.IsValid())
-        S(debug)->process.Detach();
-    debug->running = false;
-    debug->active  = false;
-    close(debug->fifo_fd_out);
-    close(debug->fifo_fd_err);
-    unlink((char*)debug->stdout_fifo->chars);
-    unlink((char*)debug->stderr_fifo->chars);
+    if (debug->active) {                   // alive = paused OR running (not just running)
+        if (S(debug)->process.IsValid())
+            S(debug)->process.Kill();      // terminate the inferior — Detach would leave
+                                           // it running (orphaned past a stop / reload)
+        debug->running = false;
+        debug->active  = false;
+    }
+    // always reclaim the PTY masters (an already-exited session is !active but its
+    // fds are still open). the slave (pts) is auto-reclaimed; -1 so the host never
+    // drains a closed/reused fd.
+    if (debug->fifo_fd_out >= 0) { close(debug->fifo_fd_out); debug->fifo_fd_out = -1; }
+    if (debug->fifo_fd_err >= 0) { close(debug->fifo_fd_err); debug->fifo_fd_err = -1; }
+}
+
+// a step/continue is only valid when the inferior is alive AND halted at a stop.
+// resuming a process that has exited (or is mid-exit) blocks forever in the gdb-remote
+// resume handshake (Process::Resume → DoResume → Listener::GetEvent) — that's the
+// freeze hit when stepping again after the app returns off its end.
+static bool dbg_at_stop(dbg debug) {
+    if (!debug->active || !debug->impl) return false;
+    lldb::SBProcess process = S(debug)->process;
+    return process.IsValid() && process.GetState() == lldb::eStateStopped;
 }
 
 none dbg_step_into(dbg debug) {
+    if (!dbg_at_stop(debug)) return;
     debug->running = true;   // re-arm dbg_poll to catch the step's stop
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepInto();
 }
 
 none dbg_step_over(dbg debug) {
+    if (!dbg_at_stop(debug)) return;
     debug->running = true;   // re-arm dbg_poll to catch the step's stop
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepOver();
 }
 
 none dbg_step_out(dbg debug) {
+    if (!dbg_at_stop(debug)) return;
     debug->running = true;   // re-arm dbg_poll to catch the step's stop
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
     thread.StepOut();
 }
 
 none dbg_pause(dbg debug) {
-    S(debug)->process.Stop();
+    // pause only makes sense while the inferior is actually running.
+    if (!debug->active || !debug->impl) return;
+    lldb::SBProcess process = S(debug)->process;
+    if (!process.IsValid() || process.GetState() != lldb::eStateRunning) return;
+    process.Stop();
 }
 
 none dbg_cont(dbg debug) {
+    if (!dbg_at_stop(debug)) return;
     debug->running = true;   // re-arm dbg_poll to catch the next stop/exit
     S(debug)->process.Continue();
 }
 
-array read_children(dbg debug, lldb::SBValue value) {
-    array result = array(32);
+// best human-readable rendering of a value. lldb's GetValue() on a silver object (a
+// `string`, an array, any class) is just the bare object pointer — useless in the
+// preview. so: prefer GetSummary() (gives the quoted text for char*/cstr); and for a
+// silver `string` specifically, dig out its first member `chars` (a cstr) and use that
+// buffer's summary as the value. falls back to the raw scalar/pointer otherwise.
+static string render_value(lldb::SBValue v) {
+    const char* sm = v.GetSummary();
+    if (sm && sm[0]) return hold(f(string, "%s", sm));
+    // silver string object: chars is the const char* text buffer (string_schema's
+    // first prop). GetChildMemberWithName auto-derefs the object pointer.
+    lldb::SBValue chars = v.GetChildMemberWithName("chars");
+    if (chars.IsValid()) {
+        const char* cs = chars.GetSummary();
+        if (cs && cs[0]) return hold(f(string, "%s", cs));
+    }
+    const char* vl = v.GetValue();
+    return hold(f(string, "%s", vl ? vl : ""));
+}
+
+// the deepest tree we read eagerly. lldb's value tree is effectively infinite (a
+// pointer's child is its pointee; Au objects cycle through type/vtable pointers), so
+// the depth cap is what stops the recursion from looping. levels beyond this come back
+// empty (the user can't expand past them — acceptable for the inline preview).
+#define DBG_MAX_DEPTH 3
+
+// read a value's children to DBG_MAX_DEPTH levels so nested objects (and a string's
+// inner fields) can be expanded inline. __-prefixed header fields (the af-bit struct
+// __fbits, the vtable pointer, etc.) are skipped — not user data.
+array read_children_depth(dbg debug, lldb::SBValue value, int depth) {
+    array result = new0(array, alloc, 32);
 
     for (int i = 0, n = (int)value.GetNumChildren(); i < n; ++i) {
         lldb::SBValue child = value.GetChildAtIndex(i);
-        string        name  = string((cstr)child.GetName());
-        string        type  = string((cstr)child.GetTypeName());
-        string        val   = string((cstr)child.GetValue());
+        const char*   nm    = child.GetName();
+        if (nm && nm[0] == '_' && nm[1] == '_') continue;
+        const char*   tp    = child.GetTypeName();
+        // hold: setting a member outside init does not retain the value.
+        string        name  = hold(f(string, "%s", nm ? nm : ""));
+        string        type  = hold(f(string, "%s", tp ? tp : ""));
+        string        val   = render_value(child);
         char          name_buf[256];
         if (!name->count) {
             snprintf(name_buf, sizeof(name_buf), "[%u]", i);
-            name = string(name_buf);
+            name = hold(f(string, "%s", name_buf));
         }
+        // a node lldb already summarizes (char*/cstr → quoted text) is a formatted
+        // leaf: don't recurse into it (a char* has one child per byte — slow + noisy).
+        const char* csm  = child.GetSummary();
+        bool        leaf = (csm && csm[0]);
+        array ar = (depth > 0 && !leaf && child.GetNumChildren() > 0)
+            ? hold(read_children_depth(debug, child, depth - 1))
+            : hold(new0(array, alloc, 32));
         variable v = new0(variable,
             debug,      debug,
             name,       name,
             type,       type,
             value,      val,
-            children,   read_children(debug, child));
+            children,   ar);
 
-        array_qpush(result, (Au)v);
+        array_qpush(result, (Au)hold(v));
     }
 
     return result;
+}
+
+array read_children(dbg debug, lldb::SBValue value) {
+    return read_children_depth(debug, value, DBG_MAX_DEPTH);
 }
 
 array dbg_read_vars(dbg debug, array result, lldb::SBValueList vars) {
     for (uint32_t i = 0; i < vars.GetSize(); ++i) {
         lldb::SBValue value = vars.GetValueAtIndex(i);
-        string name = string(value.GetName());
-        string type = string(value.GetTypeName());
-        string val  = string(value.GetValue());
+        const char* nm = value.GetName();
+        const char* tp = value.GetTypeName();
+        // hold: setting a member outside init does not retain the value.
+        string name = hold(f(string, "%s", nm ? nm : ""));
+        string type = hold(f(string, "%s", tp ? tp : ""));
+        string val  = render_value(value);
         variable v  = new0(variable,
             debug,      debug,
             name,       name,
             type,       type,
             value,      val,
-            children,   read_children(debug, value)
+            children,   hold(read_children(debug, value))
         );
-        array_qpush(result, (Au)v);
+        array_qpush(result, (Au)hold(v));
     }
     return result;
 }
 
 array dbg_read_arguments(dbg debug) {
-    array             result = array(32);
+    array             result = new0(array, alloc, 32);
     lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
+    // in_scope_only = true: only variables whose lexical scope contains the current PC.
+    // (args span the whole function, so this is a no-op for them, but kept symmetric.)
     lldb::SBValueList args   = frame.GetVariables(
-        true, false, false, false);
+        true, false, false, true);
     return dbg_read_vars(debug, result, args);
 }
 
 array dbg_read_locals   (dbg debug) {
-    array             result = array(32);
+    array             result = new0(array, alloc, 32);
     lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
+    // in_scope_only = true: lldb drops locals not in scope at the PC — e.g. a for-loop
+    // iterator once execution is past the loop's lexical block. that's the "# i = " with
+    // a blank value the user was seeing; it now simply isn't reported.
     lldb::SBValueList args   = frame.GetVariables(
-        false, true, false, false);
+        false, true, false, true);
     return dbg_read_vars(debug, result, args);
 }
 
 array dbg_read_statics  (dbg debug) {
-    array             result = array(32);
+    array             result = new0(array, alloc, 32);
     lldb::SBFrame     frame  = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     lldb::SBValueList args   = frame.GetVariables(
         false, false, true, false);
@@ -344,7 +425,7 @@ array dbg_read_statics  (dbg debug) {
 }
 
 array dbg_read_globals  (dbg debug) {
-    array             result      = array(32);
+    array             result      = new0(array, alloc, 32);
     lldb::SBFrame     frame       = S(debug)->process.GetSelectedThread().GetSelectedFrame();
     u32               num_modules = S(debug)->target.GetNumModules();
 
@@ -360,7 +441,7 @@ array dbg_read_globals  (dbg debug) {
 }
 
 array dbg_read_registers(dbg debug) {
-    array             result = array(32);
+    array             result = new0(array, alloc, 32);
     lldb::SBThread    thread = S(debug)->process.GetSelectedThread();
     lldb::SBFrame     frame  = thread.GetSelectedFrame();
     lldb::SBValueList regs   = frame.GetRegisters();

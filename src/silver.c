@@ -2990,7 +2990,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
             }
             break;
         }
-        
+
         // More chaining - push context for next iteration
         validate(!is_func((Au)mem), "cannot resolve into function");
         if (mem->autype && !module) {
@@ -4265,9 +4265,9 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
         au->is_override = override != null;
 
         if (au->is_override) {
-            au->index = override->index;
+            au->member_index = override->member_index;
         } else {
-            au->index = next_function_index(rec_ctx->autype);
+            au->member_index = next_function_index(rec_ctx->autype);
         }
     }
 
@@ -7280,8 +7280,16 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
         if (is_lambda((Au)f))
             pop_scope(a);
 
-        if (!f->inline_return && !a->last_return)
+        if (!f->inline_return && !a->last_return) {
+            // tag the implicit fall-through return with the function's LAST body token,
+            // not the stale statement_origin (which can still point at the first body
+            // statement after a nested block like a for-loop restores it). otherwise
+            // the synthetic ret carries the top-of-function line and the debugger cursor
+            // jumps to the top every time a void function falls off its end.
+            if (len(f->body))
+                a->statement_origin = hold((token)f->body->origin[len(f->body) - 1]);
             e_fn_return(a, null);
+        }
 
         // int len2 = len(a->lexical);
         

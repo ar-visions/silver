@@ -626,7 +626,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
             a->dbg_builder, a->compile_unit,
             "__fbits", 7, a->file, 0,
             128, 64, 0,
-            LLVMDIFlagZero, fbits_di);
+            LLVMDIFlagArtificial, fbits_di);   // compiler-generated → lldb hides it
     }
 
     // ── walk the inheritance chain (base first) ──
@@ -724,10 +724,10 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
             }
             // compute offset from LLVM struct layout
             u64 offset_bits;
-            if (et && et->lltype && m->index >= 0 &&
+            if (et && et->lltype && m->member_index >= 0 &&
                 LLVMGetTypeKind(et->lltype) == LLVMStructTypeKind &&
                 !LLVMIsOpaqueStruct(et->lltype) &&
-                m->index < (int)LLVMCountStructElementTypes(et->lltype)) {
+                m->member_index < (int)LLVMCountStructElementTypes(et->lltype)) {
                 // check this specific struct for scalable vectors before querying offset
                 bool sv = false;
                 unsigned n = LLVMCountStructElementTypes(et->lltype);
@@ -737,7 +737,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
                         sv = true;
                 }
                 if (!sv)
-                    offset_bits = LLVMOffsetOfElement(a->target_data, et->lltype, m->index) * 8;
+                    offset_bits = LLVMOffsetOfElement(a->target_data, et->lltype, m->member_index) * 8;
                 else
                     offset_bits = (u64)m->offset * 8;
             } else {
@@ -1201,6 +1201,15 @@ void emit_debug_function(aether a, efunc fn, bool w) {
     if (!a->debug || !a->compile_unit) return;
     Au_t au = fn->autype;
     if (!au->ident) return;
+    // synthetic entry points (main, module_init, silver_live_*) are built imperatively
+    // without a parse origin_token. they must NOT get a user-source DISubprogram: their
+    // instructions would otherwise inherit a stale statement_origin line, so breakpoints
+    // on that line bind to the generated main, and stepping stops inside it and then
+    // descends into libc's __libc_start_call_main. no token → no debug info.
+    {
+        efunc efn0 = instanceof(fn, efunc);
+        if (efn0 && !efn0->origin_token) return;
+    }
 
     LLVMMetadataRef file_ref = a->file;
 
@@ -1268,6 +1277,12 @@ void emit_debug_function(aether a, efunc fn, bool w) {
 void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
     if (!a->debug || !a->compile_unit || a->no_build) return;
     if (!var->autype || !var->autype->ident || !var->value) return;
+    // synthetic functions (no parse origin_token) have no DISubprogram; a local scoped
+    // to the compile unit would be an invalid DILocation scope — skip them.
+    {
+        efunc cf = context_func(a);
+        if (cf && instanceof(cf, efunc) && !cf->origin_token) return;
+    }
     LLVMMetadataRef scope = debug_scope(a);
     if (!scope) return;
 

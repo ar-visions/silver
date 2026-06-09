@@ -154,7 +154,8 @@ typedef double                 *ref_f64;
     u32             abi_size; \
     u32             align_bits; \
     u32             record_alignment; \
-    i64             index; \
+    i64             member_index; \
+    i64             af_index; \
     object          value; \
     u8              member_type; \
     u8              operator_type; \

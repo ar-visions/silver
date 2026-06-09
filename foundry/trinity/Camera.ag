@@ -96,7 +96,8 @@ class Camera
             s_type_idx : u32 [ 0 ]
             for [ k: u32 0, k < vk.props.memoryTypeCount, k += 1 ]
                 if [ sreq.memoryTypeBits & (u32[1] << k) ]
-                    flags  : u32 [ vk.props.memoryTypes[k].propertyFlags ]
+                    mt     : vk.props.memoryTypes[k]
+                    flags  : u32 [ mt.propertyFlags ]
                     needed : u32 [ VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ]
                     if [ (flags & needed) == needed ]
                         s_type_idx = k

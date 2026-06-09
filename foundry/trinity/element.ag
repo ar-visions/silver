@@ -125,6 +125,9 @@ ielement element
     mutable even            : bool
     public  focusable       : bool
     public cursor           : vec2f
+    # a fixed child: not part of the parent's scrolled content, so find_target must
+    # hit-test it in UNSCROLLED local space (don't fold the parent's scroll into it).
+    public  no_scroll       : bool
     mutable maps_populated  : bool
     mutable sel_col         : i32 [ -1 ]
     mutable anchor_col      : i32 [ 0 ]
@@ -153,6 +156,7 @@ ielement element
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
     intern transitions  : map StyleTransition[string]
+
     intern restyle       : bool
     mutable volatile     : bool
     intern cache_canvas  : Canvas
@@ -239,7 +243,8 @@ ielement element
                             n   : i32 [ (fa.count < ta.count) ? fa.count : ta.count ]
                             res : array Rotation []
                             for [ i: i32 0, i < n, i += 1 ]
-                                res.push[ fa[i].mix[ ta[i], p ] ]
+                                r : fa[i]
+                                res.push[ r.mix[ ta[i], p ] ]
                             ct.container.member_set[ ct.member, res ]
                     el
                         mixed : ct.from.mix*[ ct.to, p ]
@@ -263,6 +268,8 @@ ielement element
         for [ ee: element, id: string ] in elements
             if [ ee.is_animating[] ] return true
         return false
+
+    #mutable selected     : bool
 
 
 alias StyleTransitions : map StyleTransition[string]
@@ -522,7 +529,8 @@ class Layer
 
         if [ parent.focused && parent.sel_col >= 0 ]
             prefix : string [ (has_edit) ? etext.mid[ 0, col ] : '' ]
-            cx : f32 [ x0 + cv.measure_text[ prefix ].w ]
+            m  : cv.measure_text[ prefix ]
+            cx : f32 [ x0 + m.w ]
             cv.fill_color[ '#fff' ]
             cv.stroke_width[ 0.0 ]
             cv.rect_to[ cx, y0 - tm.ascent + 2.0, 2.0, fh - 4.0 ]

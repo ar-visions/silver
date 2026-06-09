@@ -18,6 +18,8 @@ class variable
     public  type     : string
     public  value    : string
     public  children : array
+    # editor-side: this node is expanded into its child rows in the inline tree view.
+    public  expanded : bool
 
 # delivered to on_exit when the inferior terminates.
 class exited

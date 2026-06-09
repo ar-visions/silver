@@ -36,6 +36,9 @@ Option NodeList
         pristine = false
 
     func on_press [ ev: Event ]
+        # consume the press so it doesn't bubble to the editor underneath (the dbg
+        # sub-column overlays the code — a click here must not move the caret).
+        ev.stop_propagation[]
         rel_y : f32 [ ev.mouse.pos.y - content_y ]
         if [ rel_y < 0.0 ] return
         idx   : i32 [ i32[ rel_y / row_height ] ]
@@ -195,7 +198,7 @@ Layer FieldsLayer
         cv.stroke_width[ 0.0 ]
         # vertical column divider (key | value)
         cv.fill_color[ lc ]
-        cv.rect_to[ colx, bounds.y, 0.75, bounds.h ]
+        cv.rect_to[ colx, bounds.y, 1.0, bounds.h ]
         cv.paint[ ]
         for [ i: i32 0, i < n, i += 1 ]
             y : f32 [ y0 + f32[i] * lh - fl.scroll.y ]
@@ -208,7 +211,7 @@ Layer FieldsLayer
                 cv.paint[ ]
             # per-row separator line (bottom edge)
             cv.fill_color[ lc ]
-            cv.rect_to[ x0, y + lh - 0.75, bounds.w, 0.75 ]
+            cv.rect_to[ x0, y + lh - 1.0, bounds.w, 1.0 ]
             cv.paint[ ]
             # key (name) in the left column
             cv.fill_color[ (key_color) ? key_color : '#9fb6d8' ]

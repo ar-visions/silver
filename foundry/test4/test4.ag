@@ -2,11 +2,30 @@ export 0.8.8
 
 import <stdio.h>
 
+class obj
+    field1: string
+    field2: int
+    field3: short
+
 # the simplest foundry module orbiter can load and run: a class whose init
 # prints a line a few times. used to bring up the run/debug path from orbiter.
 app test4
-    func init[]
+    func testfunc[] -> int
         ii : int 44
         for [ i : 0, i < 4, i += 1 ]
             puts 'hello'
             ii += 4
+        return ii
+
+    func run[] -> i32
+        puts 'running'
+        return 0
+    
+    func init[]
+        o  : obj [ field1:'hi', field2:44, field3:88 ]
+        ii : int 44
+        for [ i : 0, i < 4, i += 1 ]
+            puts 'hello'
+            ii += 4
+        testfunc[]
+        puts 'return from init'

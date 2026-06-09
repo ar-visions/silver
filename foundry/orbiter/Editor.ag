@@ -3,6 +3,12 @@ extend orbiter
 class FileBuf
     public lines : list string
     public mtime : i64 [ 0 ]
+    # per-file undo history (keyed by URI via file_cache, same as `lines`). hist is the
+    # linked list of EditAction states; hist_i the cursor (everything after it is the redo
+    # future, everything before is undo); hist_dirty = an uncommitted in-progress group.
+    public hist       : list EditAction
+    public hist_i     : i32 [ 0 ]
+    public hist_dirty : bool
 
 # one row in the find-in-files results view. a header row is a file title (drawn
 # 2 code-rows tall, larger, centered); a non-header row is a matched line of code
@@ -14,9 +20,49 @@ class FindHit
     public file      : path
     public line      : i32
 
+# one row in the flattened editor view: either a base code line (src >= 0, var null)
+# or a virtual debug field row (src = -1, var = the field node, depth = indent level).
+# the flat list IS the line model when a debug tree is expanded, so selection / clicking
+# / copy all work over it for free.
+class VRow
+    public src   : i32 [ -1 ]
+    public var   : variable
+    public depth : i32 [ 0 ]
+
+# one undo step: the full line model + caret as they were BEFORE a logical edit group
+# ran. groups coalesce same-kind edits (a typing run, a run of Enters) into one node, so
+# undo is logical rather than per-character. lines are immutable strings (each edit makes
+# a new one), so the snapshot is just shared refs — cheap, and it retains the history.
+class EditAction
+    public lines : array string   # snapshot of the line strings before this group
+    public sl    : i32 [ 0 ]   # caret line before
+    public sc    : i32 [ 0 ]   # caret col before
+
 Layer EditorLayer
     mutable sel_color      : rgba
     mutable line_color     : rgba
+    # active-line glow (css-colored): used for the tab-explorer mouse-over row AND the
+    # debugger's current stop line. a warm gradient row + inner glow + text color.
+    mutable hl_fill        : rgba
+    mutable hl_grad        : rgba
+    mutable hl_glow        : rgba
+    mutable hl_text        : rgba
+
+    # draw one warm highlighted row: gradient fill (hl_fill→hl_grad, vertical) + inner
+    # glow (hl_glow), rounded. save/restore so the gradient/glow don't leak to later draws.
+    func glow_row [ cv: Canvas, rx: f32, ry: f32, rw: f32, rh: f32 ]
+        cv.save[ ]
+        cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ hl_fill ]
+        if [ hl_grad ]
+            cv.fill_grad[ hl_grad ]
+            cv.fill_color_pos[ rx, ry ]
+            cv.fill_grad_pos[ rx, ry + rh ]
+        if [ hl_glow ] cv.inner_glow[ hl_glow, 14.0 ]
+        cv.rect_to[ rx, ry, rw, rh ]
+        cv.paint[ ]
+        cv.restore[ ]
 
     func on_move [ ev: Event ]
         editor : Editor[ parent ]
@@ -27,7 +73,8 @@ Layer EditorLayer
         rel_x : f32 [ ev.mouse.pos.x ]
         raw : i32 [ clamp[ rel_y / lh, 0, editor.line_count[] - 1 ] ]
         ln  : i32 [ editor.snap_row[ raw ] ]
-        cl  : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0, editor.line_get[ ln ].count ] ]
+        vx  : f32 [ round[ (rel_x - editor.row_indent[ ln ]) / cw ] ]
+        cl  : i32 [ editor.model_col[ editor.line_get[ ln ], i32[ vx ] ] ]
         editor.sel_line = ln
         editor.sel_col  = cl
         editor.pristine = false
@@ -96,7 +143,11 @@ Layer EditorLayer
         parent.mask_inset = vec4f [ title_bottom, 0.0, 0.0, 0.0 ]
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
-        # every row (incl. the 2 file-title slots) is one line-height tall.
+        # rebuild the flat row model (base code lines + spliced-in expanded debug
+        # field rows) once per frame, before any layout/draw consults line_count.
+        editor.rebuild_flat[]
+        # every visual row (incl. the 2 file-title slots and any expanded field rows)
+        # is one line-height tall; line_count already folds the expanded rows in.
         editor.content_h = f32[ editor.line_count[] ] * lh
         editor.scroll_speed = lh
 
@@ -114,6 +165,21 @@ Layer EditorLayer
         cv.set_crop[ wtx + bounds.x, wty + bounds.y,
             wtx + bounds.x + bounds.w - rin, wty + bounds.y + bounds.h ]
 
+        # active-line glow: in the tab explorer it's the mouse-over row; otherwise it's
+        # the debugger's current stop line. drawn behind the gutter/code so numbers and
+        # text sit on top. its text is recolored to hl_text in the content loop.
+        # mouse-over highlight while navigating a list (tab explorer or find results);
+        # otherwise the debugger's current stop line.
+        in_list : bool [ editor.finder_list || showing ]
+        # stop_line is a base source line; map it to its visual flat row so the glow,
+        # text recolor, and gutter marker land on the right row when the tree is open.
+        stop_vrow : i32 [ editor.vis_row[ editor.stop_line ] ]
+        hl_line : i32 [ (in_list) ? editor.hover_line : stop_vrow ]
+        if [ hl_line >= 0 && hl_fill ]
+            hy : f32 [ y0 + f32[ hl_line ] * lh - editor.scroll.y ]
+            if [ hy + lh >= bounds.y && hy <= bounds.y + bounds.h ]
+                glow_row[ cv, bounds.x + 1.0, hy + 1.0, bounds.w - rin - 2.0, lh - 2.0 ]
+
         # ---- gutter: per-line flat cells, line numbers, hover + breakpoint ----
         # breakpoint colors the entire line (full width) behind the code; the
         # flat cell + right-aligned number sit in the gutter column on the left.
@@ -125,15 +191,19 @@ Layer EditorLayer
             # file-title slots get no gutter (number / cell / breakpoint); the title
             # itself is drawn in the content loop below.
             if [ editor.row_header[ li ] ] continue
+            # virtual debug field rows get no gutter cell / number / breakpoint.
+            if [ editor.row_var[ li ] ] continue
             yg : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
             if [ yg + lh < bounds.y ] continue
             if [ yg > bounds.y + bounds.h ] break
             # each row keys its breakpoint + line number off its own source: in
-            # results mode that's the match's origin file + line, else this editor's.
-            rnum : i32  [ (showing && hits) ? hits[li].line : li + 1 ]
+            # results mode that's the match's origin file + line, else this editor's
+            # base source line (which, with the tree open, differs from the visual row).
+            bsl  : i32  [ editor.row_src[ li ] ]
+            rnum : i32  [ (showing && hits) ? hits[li].line : bsl + 1 ]
             # breakpoints are a file-editing concept — never washed in results view
             if [ !showing ]
-                bp : editor.breakpoints['{editor.src}:{li + 1}']
+                bp : editor.breakpoints['{editor.src}:{bsl + 1}']
                 if [ bp != null ]
                     cv.fill_color[ editor.bp_color[ bp ] ]
                     cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
@@ -145,16 +215,19 @@ Layer EditorLayer
             # the debugger's current stop line (active break): a white border around the
             # entire colored line, plus a small filled white ">" arrow at the left edge
             # (x 0 → 6px), centered. drawn over the gutter cell so both stay visible.
-            if [ !showing && editor.stop_line == li ]
+            if [ !showing && stop_vrow == li ]
                 mid : f32 [ yg + lh * 0.5 ]
                 cv.save[ ]
-                # white outline around the whole line (transparent fill, stroked edge)
+                # white outline around the whole line — rounded to match the glow_row
+                # highlight (same 6px radius + 1px inset).
+                cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
                 cv.fill_color[ rgba['#00000000'] ]
-                cv.stroke_color[ rgba['#ffffff'] ]
+                cv.stroke_color[ rgba['#ff44'] ]
                 cv.stroke_width[ 1.0 ]
-                cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
+                cv.rect_to[ bounds.x + 1.0, yg + 1.0, bounds.w - rin - 2.0, lh - 2.0 ]
                 cv.paint[ ]
                 cv.stroke_width[ 0.0 ]
+                cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
                 # execution marker: a sideways "house" (flat back + pointed front) — a
                 # rectangular body that tapers to a point at the code. sits past the
                 # line-number column, tip at the gutter/code boundary.
@@ -219,11 +292,65 @@ Layer EditorLayer
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
             ln    : editor.line_get[ li ]
-            cv.fill_color[ rgba['#fff'] ]
-            cv.draw_text[ ln,
+            rvd   : variable editor.row_var[ li ]
+            if [ rvd ]
+                # virtual debug field row (# name = value) — indented by tree depth,
+                # rendered in ghost-comment green so it reads as inline annotation. a
+                # field that is itself an object/string gets a [+]/[-] so the nested
+                # tree is discoverable (clicking the row toggles it).
+                dpx : f32 [ x0 + editor.row_indent[ li ] ]
+                vtg : string [ (editor.var_expandable[ rvd ]) ? ((rvd.expanded) ? '  [-]' : '  [+]') : '' ]
+                cv.fill_color[ rgba['#6a9955cc'] ]
+                cv.draw_text[ '{ln}{vtg}',
+                    rect [ x: dpx, y: y, w: bounds.x + bounds.w - rin - dpx, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                continue
+            txtc  : rgba [ (li == hl_line && hl_text) ? hl_text : rgba['#fff'] ]
+            cv.fill_color[ txtc ]
+            cv.draw_text[ editor.display_of[ ln ],
                 rect [ x: x0, y: y, w: bounds.w - gut_w - rin, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint[ ]
+
+        # ---- debug-active: inline ghost value annotations (# name = value) ----
+        # the collapsed summary at each variable's decl line (the future + expansion
+        # title). own pass so it gets its own comment color/paint, after the code.
+        if [ !showing && editor.debug_vars ]
+            cv.font_size[ code_fs ]
+            cv.fill_color[ rgba['#6a9955cc'] ]
+            for [ li: i32 0, li < editor.line_count[], li += 1 ]
+                if [ editor.row_header[ li ] ] continue
+                if [ editor.row_var[ li ] ] continue   # virtual field rows drawn already
+                bsl : i32 [ editor.row_src[ li ] ]
+                if [ bsl < 0 ] continue
+                bk  : i32 [ editor.base_var_at[ bsl ] ]
+                if [ bk < 0 ] continue
+                bv   : variable editor.debug_vars[ bk ]
+                summ : editor.var_summary[ bv ]
+                if [ !summ || summ.count == 0 ] continue
+                ya : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
+                if [ ya + lh < bounds.y ] continue
+                if [ ya > bounds.y + bounds.h ] break
+                # expandable objects get a [+]/[-] toggle after the summary
+                tog : (editor.var_expandable[ bv ]) ? ((bv.expanded) ? '  [-]' : '  [+]') : ''
+                ln2 : editor.line_get[ li ]
+                aw  : f32 [ cv.measure_text[ ln2 ].w ]
+                ax  : f32 [ x0 + aw + 24.0 ]
+                # mouse-over an expandable annotation → a soft green glow behind it.
+                if [ editor.hover_ann == li ]
+                    cv.save[ ]
+                    cv.rounded[ 5.0, 5.0, 5.0, 5.0 ]
+                    cv.stroke_width[ 0.0 ]
+                    cv.fill_color[ rgba['#2f7a4a44'] ]
+                    cv.inner_glow[ rgba['#5fd08abb'], 10.0 ]
+                    cv.rect_to[ ax - 8.0, ya + 2.0, bounds.x + bounds.w - rin - ax + 4.0, lh - 4.0 ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    cv.fill_color[ rgba['#6a9955cc'] ]
+                cv.draw_text[ '# {summ}{tog}',
+                    rect [ x: ax, y: ya, w: bounds.x + bounds.w - rin - ax, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            cv.paint[ ]
 
         # outline the matched query substring on each visible result line (outline
         # only). measured against the actual glyph advances so tabs/indent line up.
@@ -283,6 +410,10 @@ Layer EditorLayer
 
             scrolled : bool [ editor.scroll.y != editor.last_scroll_y ]
             editor.last_scroll_y = editor.scroll.y
+            # a resize (window or dbg-seam) changes the editor's content width — the
+            # selection goal jumps, so snap it (no easing) instead of filtering.
+            resized  : bool [ (bounds.w - rin) != editor.last_view_w ]
+            editor.last_view_w = bounds.w - rin
             if [ editor.last_sel_line != sl || editor.last_sel_col != ac || editor.last_before != before ]
                 editor.last_sel_line = sl
                 editor.last_sel_col  = ac
@@ -315,15 +446,18 @@ Layer EditorLayer
                     if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
-                    col_x0 : f32 [ (is_sl) ? f32[start_col] * cw : 0.0 ]
-                    col_x1 : f32 [ (is_el) ? f32[end_col] * cw : bounds.w - gut_w - rin ]
-                    rx     : f32 [ x0 + col_x0 ]
+                    lnv    : editor.line_get[ li ]
+                    dnv    : editor.display_of[ lnv ]
+                    col_x0 : f32 [ (is_sl) ? cv.measure_text[ dnv.mid[ 0, editor.vis_col[ lnv, start_col ] ] ].w : 0.0 ]
+                    col_x1 : f32 [ (is_el) ? cv.measure_text[ dnv.mid[ 0, editor.vis_col[ lnv, end_col ] ] ].w : bounds.w - gut_w - rin ]
+                    bx     : f32 [ x0 + editor.row_indent[ li ] ]
+                    rx     : f32 [ bx + col_x0 ]
                     rw     : f32 [ col_x1 - col_x0 ]
 
                     rr : rect [ x:rx + pad, y:y_row + pad,
                         w:rw - pad * 2, h:lh - pad * 2 ]
                     if [ editor.last_sel_line == li ]
-                        if [ scrolled ]
+                        if [ scrolled || resized ]
                             editor.filter_rect = null
                         if [ editor.filter_rect ]
                             # ease the selection rect toward its goal with the
@@ -368,9 +502,12 @@ Layer EditorLayer
                     if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
-                    col_x0 : f32 [ (is_sl) ? f32[start_col] * cw : 0.0 ]
-                    col_x1 : f32 [ (is_el) ? f32[end_col]   * cw : bounds.w - gut_w - rin ]
-                    rx     : f32 [ x0 + col_x0 ]
+                    lnv    : editor.line_get[ li ]
+                    dnv    : editor.display_of[ lnv ]
+                    col_x0 : f32 [ (is_sl) ? cv.measure_text[ dnv.mid[ 0, editor.vis_col[ lnv, start_col ] ] ].w : 0.0 ]
+                    col_x1 : f32 [ (is_el) ? cv.measure_text[ dnv.mid[ 0, editor.vis_col[ lnv, end_col ] ] ].w : bounds.w - gut_w - rin ]
+                    bx     : f32 [ x0 + editor.row_indent[ li ] ]
+                    rx     : f32 [ bx + col_x0 ]
                     rw     : f32 [ col_x1 - col_x0 ]
                     use_filter : bool [ editor.last_sel_line == li && editor.filter_rect ]
                     crop_x : f32 [ (use_filter) ? editor.filter_rect.x : rx ]
@@ -380,8 +517,8 @@ Layer EditorLayer
                     cv.set_crop[ tx + crop_x, ty + bounds.y,
                         tx + crop_x + crop_w, ty + bounds.y + bounds.h ]
                     cv.fill_color[ '#fff' ]
-                    cv.draw_text[ editor.line_get[ li ],
-                        rect [ x: x0, y: y_row, w: bounds.w - gut_w, h: lh ],
+                    cv.draw_text[ editor.display_of[ lnv ],
+                        rect [ x: bx, y: y_row, w: bounds.w - gut_w, h: lh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
                 cv.paint[ ]
                 # back to full editor-bounds crop for the cursor below
@@ -398,9 +535,14 @@ Layer EditorLayer
                         cx = (before) ? editor.filter_rect.x + editor.filter_rect.w : editor.filter_rect.x
                         cy = editor.filter_rect.y
                     el
-                        prefix : editor.line_get[ editor.sel_line ].mid[ 0, editor.sel_col ]
-                        cx     = x0 + cv.measure_text[ prefix ].w
-                        cy     = y_sel
+                        # caret x = EXACT rendered width of the display prefix (tabs
+                        # expanded to spaces). measure_text, not vis_col*cw — the code
+                        # font's space is narrower than cw, so the grid drifts ahead by
+                        # ~1 space per tab. measuring the real glyphs keeps it tight.
+                        clnv : editor.line_get[ editor.sel_line ]
+                        pre  : editor.display_of[ clnv ].mid[ 0, editor.vis_col[ clnv, editor.sel_col ] ]
+                        cx   = x0 + editor.row_indent[ editor.sel_line ] + cv.measure_text[ pre ].w
+                        cy   = y_sel
                     cv.fill_color[ '#fff' ]
                     cv.stroke_width[ 0.0 ]
                     cv.rect_to[ cx, cy + 2.0, 2.0, lh - 4.0 ]
@@ -423,6 +565,9 @@ Control Editor
     # both are fed from app state each frame (the Editor is rebuilt per frame).
     public  show_hits     : bool
     public  hits          : array FindHit
+    # true while this pane shows the tab-explorer / navigate list (ed.lines = find_results,
+    # set in apply_pane). drives the warm mouse-over row highlight in EditorLayer.
+    public  finder_list   : bool
     # the active search query — used to outline the matched substring per result row
     public  find_query    : string
     public  show_nav      : bool
@@ -444,6 +589,24 @@ Control Editor
     # override should NOT cause apply_args to reconcile/zero the caret column.
     mutable sel_line      : i32 [ -1 ]
     mutable sel_col       : i32 [ 0 ]
+    # soft-tab width: spaces emitted per Tab (aligned to the next multiple). matches the
+    # 4-space indent these .ag files use (and silver's tab = 4 indent units).
+    mutable tab_w         : i32 [ 4 ]
+    # unlimited undo/redo. `hist` is the master linked list of EditAction states; hist_i
+    # is the cursor (index of the current state). hist_dirty = the live buffer has edits
+    # not yet committed as a state (an open coalescing group). edit_kind is that group's
+    # kind (0=type, 1=lineop, 2=delete; -1=none); edit_cl/edit_cc are the caret after the
+    # last tracked edit, to detect a caret jump (which breaks the coalescing run).
+    # the live working copies of the CURRENT file's history. `hist` aliases cur_buf.hist
+    # (shared by ref, like lines↔buf.lines); hist_i/hist_dirty are saved back into cur_buf
+    # when switching files. edit_kind/cl/cc are transient (reset on switch).
+    mutable cur_buf       : FileBuf
+    mutable hist          : list EditAction
+    mutable hist_i        : i32 [ 0 ]
+    mutable hist_dirty    : bool
+    mutable edit_kind     : i32 [ -1 ]
+    mutable edit_cl       : i32 [ -1 ]
+    mutable edit_cc       : i32 [ -1 ]
     # the line the debugger is currently halted on (-1 = none). orbiter sets this
     # from on_break; it draws a small white ">" arrow in the gutter of that line to
     # mark the active execution point. cleared when the session continues/exits.
@@ -460,6 +623,16 @@ Control Editor
     # active (non-edit) state the keyboard drives it: c continue, s step over,
     # i step into, o step out.
     public  debugger      : dbg
+    # the stopped frame's variables (injected by orbiter while paused). drawn as
+    # inline ghost annotations on each variable's decl line: `# name = value`.
+    public  debug_vars    : array
+    # ghost-annotation tree expansion: the flattened row list (base lines + each open
+    # object's expanded subtree, depth-first) becomes the line model while active.
+    # rebuilt at draw top each frame from debug_vars + each variable's `expanded` flag.
+    mutable flat_rows     : array VRow
+    mutable flat_active   : bool
+    # mouse-over annotation line (for the green hover glow), in VISUAL/flat row coords.
+    mutable hover_ann     : i32 [ -1 ]
     mutable edit_armed    : bool
     mutable last_press_us : i64
     mutable lh_cache      : f32 [ 0.0 ]
@@ -473,6 +646,8 @@ Control Editor
     mutable filter_rect   : rect
     mutable filter_next   : false
     mutable last_scroll_y : f32
+    # last content width (bounds.w - rin); a change = resize → snap the selection rect
+    mutable last_view_w   : f32
     # gutter: line under the mouse (hover highlight) and measured gutter width.
     # breakpoints are app-global, keyed by "source:line" -> condition string,
     # injected by orbiter (a shared map reference) — a present key colors the
@@ -486,18 +661,127 @@ Control Editor
     # in draw (din is measured from the live 'dbg' element bounds) — it's here so a
     # seam drag changes this prop, marks the editor dirty, and the code re-clips LIVE
     # as you drag instead of only snapping on release.
-    public  dbg_seam      : f32 [ 0.0 ]
+    # per-editor toggle for the dbg sub-column (Fields/Callstack). unique to this
+    # editor (its container) and persists across frames — the title menu icon flips
+    # it, so each tab shows/hides its own panel.
+    mutable dbg_open      : bool
 
     # whole-line wash color: conditional (non-empty condition) vs plain.
     func bp_color [ cond: string ] -> rgba
         if [ cond && cond.count > 0 ] return rgba['#3b82f638']   # conditional
         return rgba['#e5394538']                                 # plain
 
-    # row count of the active buffer: the find-in-files results (`hits`) when
-    # showing them, otherwise the loaded file's `lines`. every cursor/scroll/
-    # iteration bound goes through this so both modes share the editing code.
+    # the debug_vars index of the variable whose `name:` decl is on BASE line bli (a
+    # word-boundary name immediately followed by ':'), else -1. scans the raw `lines`
+    # (not line_get) so it's safe to call while rebuilding the flat model.
+    func base_var_at [ bli: i32 ] -> i32
+        if [ !debug_vars || bli < 0 || bli >= lines.count ] return -1
+        # a decl on a line strictly AFTER the stop hasn't been reached — never live.
+        if [ stop_line >= 0 && bli > stop_line ] return -1
+        line : string lines.value_by_index[ bli ]
+        if [ !line || line.count == 0 ] return -1
+        for [ k: i32 0, k < debug_vars.count, k += 1 ]
+            v : variable debug_vars[k]
+            if [ !v || !v.name || v.name.count == 0 ] continue
+            nm  : string v.name
+            pos : i32 [ line.index_of[ nm ] ]
+            if [ pos < 0 ] continue
+            if [ pos > 0 ]
+                pc : i32 [ line[ pos - 1 ] ]
+                if [ (pc >= 97 && pc <= 122) || (pc >= 65 && pc <= 90) || (pc >= 48 && pc <= 57) || pc == 95 ] continue
+            j : i32 [ pos + nm.count ]
+            while [ j < line.count && (line[j] == 32 || line[j] == 9) ]
+                j += 1
+            if [ j < line.count && line[j] == 58 ]
+                # only annotate variables the debugger has actually reached. lldb lists
+                # every local regardless of the PC, so a not-yet-run decl shows as
+                # "# i = ". on the stop line itself the row can't decide it (a loop var
+                # is declared and incremented on the same for-line), so compare columns:
+                # the decl is live only once the PC's column is past it.
+                if [ stop_line >= 0 && bli == stop_line && stop_col >= 0 && stop_col <= pos ] return -1
+                return k
+        return -1
+
+    # collapsed summary for a var: an object shows its first 2 fields, a scalar `= value`.
+    func var_summary [ v: variable ] -> string
+        if [ !v ] return ''
+        nm : string v.name
+        if [ v.children && v.children.count > 0 ]
+            sum : string [ '' ]
+            n   : i32 [ (v.children.count < 2) ? v.children.count : 2 ]
+            for [ ci: i32 0, ci < n, ci += 1 ]
+                c    : variable v.children[ci]
+                part : '{c.name}: {c.value}'
+                sum = (ci > 0) ? sum + ', ' + part : part
+            if [ v.children.count > 2 ] sum = sum + ', ...'
+            return nm + ' = (' + sum + ')'
+        return '{nm} = {v.value}'
+
+    # has fields → expandable.
+    func var_expandable [ v: variable ] -> bool
+        return v && v.children && v.children.count > 0
+
+    # depth-first append of v's expanded subtree into flat_rows at the given indent.
+    func splice_var [ v: variable, depth: i32 ]
+        if [ !v || !v.expanded || !v.children ] return
+        for [ ci: i32 0, ci < v.children.count, ci += 1 ]
+            c : variable v.children[ci]
+            flat_rows.push[ VRow [ src: -1, var: c, depth: depth ] ]
+            splice_var[ c, depth + 1 ]
+
+    # rebuild the flattened row list: every base code line, with each object var's
+    # expanded subtree spliced in right after its decl line. flat_active when anything
+    # was spliced (so the normal path is untouched when nothing is expanded).
+    func rebuild_flat []
+        flat_rows = array VRow []
+        flat_active = false
+        if [ !debug_vars ] return
+        base : i32 [ lines.count ]
+        for [ bli: i32 0, bli < base, bli += 1 ]
+            flat_rows.push[ VRow [ src: bli ] ]
+            k : i32 [ base_var_at[ bli ] ]
+            if [ k >= 0 ]
+                splice_var[ debug_vars[ k ], 1 ]
+        flat_active = flat_rows.count > base
+
+    # flat-row accessors (identity when no tree is open).
+    func row_src [ vr: i32 ] -> i32
+        if [ !flat_active || !flat_rows || vr < 0 || vr >= flat_rows.count ] return vr
+        r : VRow flat_rows[ vr ]
+        return r.src
+
+    func row_var [ vr: i32 ] -> variable
+        if [ !flat_active || !flat_rows || vr < 0 || vr >= flat_rows.count ] return null
+        r : VRow flat_rows[ vr ]
+        return r.var
+
+    func row_depth [ vr: i32 ] -> i32
+        if [ !flat_active || !flat_rows || vr < 0 || vr >= flat_rows.count ] return 0
+        r : VRow flat_rows[ vr ]
+        return r.depth
+
+    # leading x-offset (px past x0) for a row's text/selection: virtual debug field
+    # rows step in by their tree depth; base code rows sit flush at x0. single source
+    # for the content draw AND the selection-rect/selected-text passes (so a selected
+    # virtual row keeps its indent instead of snapping back to x0).
+    func row_indent [ vr: i32 ] -> f32
+        if [ row_var[ vr ] ] return 12.0 + f32[ row_depth[ vr ] ] * 16.0
+        return 0.0
+
+    # inverse of row_src: the visual flat row for base source line bli (identity when
+    # no tree is open). passes negatives (e.g. an unset stop line) straight through.
+    func vis_row [ bli: i32 ] -> i32
+        if [ bli < 0 ] return bli
+        if [ !flat_active || !flat_rows ] return bli
+        for [ vr: i32 0, vr < flat_rows.count, vr += 1 ]
+            r : VRow flat_rows[ vr ]
+            if [ r.src == bli ] return vr
+        return bli
+
+    # row count of the active buffer: results (hits), the open debug tree, or lines.
     func line_count [] -> i32
         if [ show_hits && hits ] return hits.count
+        if [ flat_active && flat_rows ] return flat_rows.count
         return lines.count
 
     # is row i a non-editable file-title slot (results mode only)?
@@ -572,9 +856,59 @@ Control Editor
         for [ i: i32 he - 1, i >= hs, i -= 1 ]
             hits.remove[ i ]
 
-    func line_get [ i: i32 ] -> string
-        if [ show_hits && hits ] return hits[i].text
-        return lines.value_by_index[ i ]
+    # ---- tab rendering: tabs are stored verbatim in the model but DISPLAYED as spaces
+    # to the next tab_w stop (the canvas font has no tab glyph → would draw a box). all
+    # caret/selection/click math runs in VISUAL columns via these so it lines up. ----
+
+    # visual column of model index c within s (each tab jumps to the next tab_w stop).
+    func vis_col [ s: string, c: i32 ] -> i32
+        v : i32 [ 0 ]
+        for [ i: i32 0, i < c && i < s.count, i += 1 ]
+            if [ s[i] == 9 ] v = (v / tab_w + 1) * tab_w
+            el               v += 1
+        return v
+
+    # inverse of vis_col: the model index nearest visual column vx (for click → caret).
+    func model_col [ s: string, vx: i32 ] -> i32
+        v : i32 [ 0 ]
+        for [ i: i32 0, i < s.count, i += 1 ]
+            adv : i32 [ (s[i] == 9) ? ((v / tab_w + 1) * tab_w - v) : 1 ]
+            if [ vx < v + (adv + 1) / 2 ] return i
+            v += adv
+        return s.count
+
+    # s with tabs expanded to spaces (display only — the model keeps the real tabs).
+    func display_of [ s: string ] -> string
+        ht : bool [ false ]
+        for [ i: i32 0, i < s.count, i += 1 ]
+            if [ s[i] == 9 ]
+                ht = true
+                break
+        if [ !ht ] return s
+        out : string [ '' ]
+        v   : i32 [ 0 ]
+        for [ i: i32 0, i < s.count, i += 1 ]
+            if [ s[i] == 9 ]
+                sp : i32 [ (v / tab_w + 1) * tab_w - v ]
+                for [ k: i32 0, k < sp, k += 1 ]
+                    out = out + ' '
+                v += sp
+            el
+                out = out + s.mid[ i, 1 ]
+                v += 1
+        return out
+
+    func line_get [ vr: i32 ] -> string
+        if [ show_hits && hits ]
+            if [ vr >= 0 && vr < hits.count ] return hits[vr].text
+            return ''
+        if [ flat_active && flat_rows && vr >= 0 && vr < flat_rows.count ]
+            r : VRow flat_rows[ vr ]
+            if [ r.src >= 0 ] return lines.value_by_index[ r.src ]
+            # virtual field row: indent is applied at draw via row_depth.
+            return '# {r.var.name} = {r.var.value}'
+        if [ vr >= 0 && vr < lines.count ] return lines.value_by_index[ vr ]
+        return ''
 
     func line_set [ i: i32, val: string ]
         # results mode: edits live on the hit row's text in memory; they reach the
@@ -584,6 +918,138 @@ Control Editor
             return
         lines.remove[ i ]
         lines.insert_after[ val, i - 1 ]
+
+    # ---- undo / redo (unlimited, kind-coalesced, cursor over a linked history) ------
+
+    # copy the current line model as a flat array of (shared) string refs. push holds
+    # each ref, so the snapshot retains the historical strings even after `lines` moves
+    # on (line_set replaces, never mutates — so the refs stay valid).
+    func snapshot_lines [] -> array string
+        a : array string []
+        for [ i: i32 0, i < lines.count, i += 1 ]
+            a.push[ lines.value_by_index[ i ] ]
+        return a
+
+    # rebuild the line model from a snapshot array (fresh list holding the same refs).
+    # this REPLACES the list object (vs in-place edits), so the per-file buffer must be
+    # repointed too — otherwise cur_buf.lines stays at the pre-undo content and the next
+    # cache-hit reload (e.g. closing a neighbor tab) snaps the editor back to it.
+    func restore_lines [ snap: array string ]
+        nl : list string []
+        for [ i: i32 0, i < snap.count, i += 1 ]
+            nl.push[ snap[ i ] ]
+        lines = nl
+        if [ cur_buf ] cur_buf.lines = nl
+
+    # append the current buffer+caret as a new EditAction at the end of `hist`.
+    func push_state []
+        act : EditAction []
+        act.lines = snapshot_lines[]
+        act.sl = sel_line
+        act.sc = sel_col
+        hist.push[ act ]
+
+    # restore history state i into the live buffer.
+    func apply_state [ i: i32 ]
+        if [ !hist || i < 0 || i >= hist.count ] return
+        act : EditAction hist.value_by_index[ i ]
+        restore_lines[ act.lines ]
+        sel_line    = act.sl
+        sel_col     = act.sc
+        anchor_line = act.sl
+        anchor_col  = act.sc
+
+    # point the live history at `buf`'s per-file history, saving the outgoing file's
+    # cursor first. seeds a fresh history (one state = the loaded buffer) when buf has
+    # none. `buf.hist` is created/held here exactly like buf.lines, and `hist` aliases it
+    # by reference, so edits flow into the per-file store with no copy-back.
+    func swap_history [ buf: FileBuf ]
+        # already the live buffer with valid history → keep the LIVE cursor. a re-layout
+        # (e.g. closing a neighbor editor) re-calls load_file on this same file; without
+        # this guard we'd reload buf.hist_i, which is only written on switch-OUT and is
+        # therefore stale — yanking the caret to an old undo position. only proceed when
+        # genuinely switching files, or when a fresh content load cleared buf.hist.
+        if [ cur_buf == buf && buf.hist ] return
+        if [ cur_buf && cur_buf != buf ]
+            cur_buf.hist_i     = hist_i
+            cur_buf.hist_dirty = hist_dirty
+        if [ !buf.hist ]
+            buf.hist = list EditAction []
+            hist = buf.hist
+            push_state[]
+            hist_i          = 0
+            hist_dirty      = false
+            buf.hist_i      = 0
+            buf.hist_dirty  = false
+        el
+            hist       = buf.hist
+            hist_i     = buf.hist_i
+            hist_dirty = buf.hist_dirty
+        edit_kind = -1
+        edit_cl   = -1
+        edit_cc   = -1
+        cur_buf   = buf
+
+    # keep the per-file stored cursor/dirty in sync with the live values, so a reload of
+    # this same buffer (re-layout, neighbor close, instance rebuild) never reads a stale
+    # cursor and yanks the caret back through history. the hist LIST is already shared by
+    # reference; only the cursor/dirty primitives can drift, so mirror them every change.
+    func touch_hist []
+        if [ cur_buf ]
+            cur_buf.hist_i     = hist_i
+            cur_buf.hist_dirty = hist_dirty
+
+    # commit the live buffer as a new committed state: drop any redo tail (states past
+    # the cursor are invalidated by a fresh edit), append the live snapshot, advance.
+    func commit_state []
+        if [ !hist ] return
+        while [ hist.count > hist_i + 1 ]
+            hist.pop[]
+        push_state[]
+        hist_i     = hist.count - 1
+        hist_dirty = false
+        touch_hist[]
+
+    # call BEFORE a mutating edit. a kind change or caret jump ends the current group:
+    # commit its result (so it's redoable), then start a new group. same-kind contiguous
+    # edits coalesce (no commit) into one logical undo step. kind: 0=type 1=lineop 2=del.
+    func begin_edit [ kind: i32 ]
+        if [ show_hits ] return
+        jumped : bool [ sel_line != edit_cl || sel_col != edit_cc ]
+        if [ edit_kind != kind || jumped ]
+            if [ hist_dirty ] commit_state[]
+            edit_kind = kind
+
+    # call AFTER a mutating edit: the buffer now differs from the last committed state.
+    func end_edit []
+        hist_dirty = true
+        edit_cl = sel_line
+        edit_cc = sel_col
+        touch_hist[]
+
+    func undo []
+        if [ show_hits || !hist ] return
+        # an open (uncommitted) group is committed first so it can be redone.
+        if [ hist_dirty ] commit_state[]
+        if [ hist_i <= 0 ] return
+        hist_i -= 1
+        apply_state[ hist_i ]
+        edit_kind = -1
+        edit_cl = sel_line
+        edit_cc = sel_col
+        touch_hist[]
+        pristine = false
+
+    func redo []
+        if [ show_hits || !hist || hist_dirty ] return
+        if [ hist_i >= hist.count - 1 ] return
+        hist_i += 1
+        apply_state[ hist_i ]
+        edit_kind = -1
+        edit_cl = sel_line
+        edit_cc = sel_col
+        touch_hist[]
+        pristine = false
 
     # write the file associated with the current row. in results mode that's the
     # source file of the selected match line: re-read it, patch every edited match
@@ -623,6 +1089,7 @@ Control Editor
         buf   : FileBuf file_cache[key]
         if [ buf && buf.mtime == mtime ]
             lines = buf.lines
+            swap_history[ buf ]   # restore this file's own undo/redo (or seed it)
             return
         content : string [ src.load[ typeid[string], null ] ]
         if [ !content ] return
@@ -636,6 +1103,9 @@ Control Editor
         buf.lines = new_lines
         buf.mtime = mtime
         lines = new_lines
+        # freshly (re)loaded content → start this file's history clean.
+        buf.hist = null
+        swap_history[ buf ]
     func init [ ]
         file_cache = map FileBuf[string] []
         # breakpoints is the shared map injected by orbiter. the editor element
@@ -646,6 +1116,12 @@ Control Editor
         lines = list string []
         lines.push[ '' ]
         load_file[]
+        # no file loaded (scratch buffer, or load failed) → give it a transient FileBuf
+        # so it still has its own per-buffer undo/redo.
+        if [ !cur_buf ]
+            sb : FileBuf []
+            sb.lines = lines
+            swap_history[ sb ]
 
     # compute the caret line/col from a click/drag point and set sel_line/sel_col.
     func place_cursor [ ev: Event ] -> none
@@ -657,9 +1133,16 @@ Control Editor
             return
         lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
-        # +scroll.y inverts the draw's (-scroll.y); -gutter_w skips the gutter
-        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + scroll.y ]
+        # find_target already folds scroll.y into mouse.pos.y (trinity.ag), so the row
+        # math must NOT re-add it — doing so put clicks off by the scroll amount once
+        # scrolled. -gutter_w skips the gutter; mouse.pos.y is content-space already.
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
+        # negative = the click landed above the first line (in the title band) — not a
+        # content click, so don't place the cursor (clicking the title's '-' was
+        # selecting line 0).
+        if [ rel_y < 0.0 ] return
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x - gutter_w ]
+        # rel_y/lh IS the row index — virtual tree rows are real lines in the flat model.
         raw   : i32 [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
         ln    : i32 [ snap_row[ raw ] ]
         # any selection EXTEND (drag, or shift-click) stays inside the anchor's
@@ -667,11 +1150,41 @@ Control Editor
         # (a plain click sets a fresh anchor and is unconstrained.)
         if [ show_hits && (dragging || ev.key.shift) ]
             ln = clamp[ ln, group_start[ anchor_line ], group_end[ anchor_line ] ]
-        cl    : i32 [ clamp [ i32[ round[ rel_x / cw ] ], 0, line_get[ ln ].count ] ]
+        # virtual rows render indented by depth, so the click-x is past x0 by that
+        # much — subtract it before mapping to a column. map the visual column the click
+        # landed on back to a model column (tabs occupy multiple visual columns).
+        vx    : f32 [ round[ (rel_x - row_indent[ ln ]) / cw ] ]
+        cl    : i32 [ model_col[ line_get[ ln ], i32[ vx ] ] ]
         sel_line = ln
         sel_col  = cl
 
     func on_press [ ev: Event ]
+        # debug-control buttons in this editor's dbg slide-out — same actions as the
+        # keyboard (c/s/i/o). consume here so the press doesn't fall through to the caret.
+        if [ debugger ]
+            if [ ev.target.id == 'dbg_continue' ]
+                if [ debugger.running ] debugger.pause[]
+                el                      debugger.cont[]
+                ev.no_default = true
+                return
+            if [ ev.target.id == 'dbg_step_over' ]
+                debugger.step_over[]
+                ev.no_default = true
+                return
+            if [ ev.target.id == 'dbg_step_into' ]
+                debugger.step_into[]
+                ev.no_default = true
+                return
+            if [ ev.target.id == 'dbg_step_out' ]
+                debugger.step_out[]
+                ev.no_default = true
+                return
+        # only the editor's own content responds to presses. a click that targets a
+        # child element (the dbg sub-column, its buttons/panels, the title) belongs to
+        # that element / the app — the editor must not steal it for caret/selection.
+        # when split, the dbg column is outside the editor's content region.
+        if [ ev.target != a ]
+            return
         # a double-click (two presses within 350ms) while debug-locked re-arms editing
         # for this pane — the simple "I actually want to edit during a run" gesture.
         now : i64 [ epoch_micros[] ]
@@ -680,6 +1193,42 @@ Control Editor
         last_press_us = now
         ele   : (layers) ? (layers['content'] to EditorLayer) : null
         rel_x : f32 [ (ele) ? ev.mouse.pos.x - ele.bounds.x : 0.0 ]
+        # the dbg sub-column overlays the editor's right edge while open — a press in
+        # that band belongs to the dbg panel (its buttons/panels), never the editor
+        # content. bail geometrically (like the pin column) so it works even if
+        # find_target mis-routed the press back to the editor (e.g. scroll fold).
+        dbg_el : element elements['dbg']
+        if [ ele && dbg_el && dbg_el.bounds && rel_x > ele.bounds.w - dbg_el.bounds.w ]
+            return
+        # click to expand/collapse a node in the inline debug tree: a virtual object
+        # field row toggles itself (anywhere); a base line's object annotation toggles
+        # when clicked past the code text (the [+]). flipping `expanded` rebuilds the
+        # flat model next frame. scalar rows fall through to normal caret/selection.
+        if [ debug_vars ]
+            lhp : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+            cwp : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
+            # mouse.pos.y is already scroll-folded by find_target — don't re-add scroll.
+            ry  : f32 [ ev.mouse.pos.y - ele.bounds.y ]
+            if [ ry >= 0.0 ]
+                cln : i32      [ clamp[ ry / lhp, 0, line_count[] - 1 ] ]
+                rv  : variable row_var[ cln ]
+                if [ rv ]
+                    if [ var_expandable[ rv ] ]
+                        rv.expanded = !rv.expanded
+                        pristine = false
+                        ux.will_animate = true
+                        return
+                el
+                    bk : i32 [ base_var_at[ row_src[ cln ] ] ]
+                    if [ bk >= 0 ]
+                        bv : variable debug_vars[ bk ]
+                        if [ var_expandable[ bv ] ]
+                            axp : f32 [ gutter_w + f32[ line_get[ cln ].count ] * cwp + 24.0 ]
+                            if [ rel_x > axp ]
+                                bv.expanded = !bv.expanded
+                                pristine = false
+                                ux.will_animate = true
+                                return
         # scrollbar: a press in the rightmost grab zone grabs the thumb and scrolls.
         # checked before the pin column so the bar (the very right edge) wins there.
         sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
@@ -705,19 +1254,23 @@ Control Editor
         # on hover); in normal file editing it toggles a breakpoint on the line.
         if [ ele && rel_x < gutter_w ]
             lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
-            rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + scroll.y ]
-            ln    : i32 [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
+            # mouse.pos.y is already scroll-folded by find_target — don't re-add scroll.
+            rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
+            vrl   : i32 [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
             # a header's gutter click removes the whole file group; a match row's
             # removes just that line. (both only in results.)
-            if [ row_header[ ln ] ]
+            if [ row_header[ vrl ] ]
                 if [ show_hits && hits ]
-                    remove_group[ ln ]
+                    remove_group[ vrl ]
                     pristine = false
                 return
             if [ show_hits && hits ]
-                remove_hit[ ln ]
+                remove_hit[ vrl ]
                 pristine = false
                 return
+            # a virtual debug field row has no gutter — no breakpoint toggle on it.
+            if [ row_var[ vrl ] ] return
+            ln    : i32 [ row_src[ vrl ] ]
             # normal mode: toggle a plain breakpoint on the line. toggle-off REMOVES
             # the key (not set-null) so the map count drops — that's what orbiter's
             # save watcher keys off, and it keeps dead keys out of the saved state.
@@ -757,10 +1310,27 @@ Control Editor
         # mouse is over the gutter column so the close icon only shows there.
         if [ !ele ] return
         lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
-        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + scroll.y ]
+        # mouse.pos.y is already scroll-folded by find_target — don't re-add scroll.
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
-        hl    : i32  [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
+        hl    : i32  [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]   # visual row = flat row
         hg    : bool [ rel_x >= 0.0 && rel_x < gutter_w ]
+        if [ rel_y < 0 ]
+            hl  = -1
+            hg = false
+        # annotation hover (for the warm glow): mouse past the code text on an
+        # expandable object's decl (base) line — virtual field rows don't glow.
+        ha : i32 [ -1 ]
+        if [ hl >= 0 && row_var[ hl ] == null ]
+            bkh : i32 [ base_var_at[ row_src[ hl ] ] ]
+            if [ bkh >= 0 && var_expandable[ debug_vars[ bkh ] ] ]
+                cwh : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
+                axh : f32 [ gutter_w + f32[ line_get[ hl ].count ] * cwh + 24.0 ]
+                if [ rel_x > axh ] ha = hl
+        if [ ha != hover_ann ]
+            hover_ann = ha
+            pristine = false
+            ux.will_animate = true
         # only repaint on an actual hover change (row / gutter). the scrollbar's
         # proximity tracking is owned by ScrollLayer, which sustains frames while the
         # cursor is in its zone — so the editor doesn't blanket-request frames here.
@@ -771,9 +1341,10 @@ Control Editor
             ux.will_animate = true
 
     func on_leave [ ev: Event ]
-        if [ hover_line != -1 || hover_gutter ]
+        if [ hover_line != -1 || hover_gutter || hover_ann != -1 ]
             hover_line   = -1
             hover_gutter = false
+            hover_ann    = -1
             pristine = false
 
     func on_release [ ev: Event ]
@@ -793,27 +1364,92 @@ Control Editor
     func on_char [ ev: Event ]
         # debug-locked: swallow text so letters (s/n/c…) stay free for debugger keys
         if [ debug_running && !edit_armed ] return
+        # tree open: visual rows ≠ base line indices, so edits would corrupt `lines`.
+        # editing resumes once the inline debug tree collapses (debug_vars cleared).
+        if [ flat_active ] return
         if [ line_count[] <= 0 ] return
         if [ sel_line < 0 ] sel_line = 0
         if [ sel_col  < 0 ] sel_col  = 0
+        ch   : string [ ev.key.text ]
+        # ignore control chars (tab/newline/etc.) — they're not insertable text and a
+        # literal tab would render as a .notdef box. (>=0 lets UTF-8 lead bytes through,
+        # which are negative as signed chars.) Tab is handled as a soft tab in on_key.
+        if [ ch.count == 0 || (ch[0] >= 0 && ch[0] < 32) ] return
+        # one undo group per typing run (coalesced) — snapshot taken before the run.
+        begin_edit[ 0 ]
+        # typing replaces an active selection (delete it first, then insert the char)
+        delete_selection[]
         row  : i32 [ sel_line ]
         # file-title slots are not editable
         if [ row_header[ row ] ] return
         col  : i32 [ sel_col ]
         line : line_get[ row ]
-        ch   : string [ ev.key.text ]
-        # space on an indent-only line inserts a tab instead
-        #if [ ch == ' ' ]
-        #    left : string [ line.mid[0, col] ]
-        #    all_tabs : bool [ true ]
-        #    for [ i: i32 0, i < left.count, i += 1 ]
-        #        if [ left[i] != 9 ]
-        #            all_tabs = false
-        #            break
-        #    if [ all_tabs ] ch = '\t'
         line_set[ row, line.mid[0, col] + ch + line.mid[col, line.count - col] ]
         sel_col += 1
+        # collapse the selection to the caret — typing isn't a selection gesture, so the
+        # anchor must follow the caret (else each char extends a highlight over the text).
+        anchor_line = sel_line
+        anchor_col  = sel_col
+        end_edit[]
         pristine = false
+
+    # the highlighted text (anchor→caret), as one string with '\n' between rows.
+    # empty when there's no selection. uses the live line model (file or results list).
+    func selected_text [] -> string
+        if [ sel_line < 0 ] return ''
+        al : i32 [ anchor_line ]
+        ac : i32 [ anchor_col ]
+        sl : i32 [ sel_line ]
+        sc : i32 [ sel_col ]
+        before : bool [ al < sl || (al == sl && ac <= sc) ]
+        s_line : i32 [ (before) ? al : sl ]
+        s_col  : i32 [ (before) ? ac : sc ]
+        e_line : i32 [ (before) ? sl : al ]
+        e_col  : i32 [ (before) ? sc : ac ]
+        out : string ''
+        for [ li: i32 s_line, li <= e_line, li += 1 ]
+            ln : string line_get[ li ]
+            c0 : i32 [ (li == s_line) ? s_col : 0 ]
+            c1 : i32 [ (li == e_line) ? e_col : ln.count ]
+            if [ c0 < 0 ] c0 = 0
+            if [ c1 > ln.count ] c1 = ln.count
+            if [ c1 > c0 ] out = out + ln.mid[ c0, c1 - c0 ]
+            if [ li < e_line ] out = out + '\n'
+        return out
+
+    # is there a non-empty selection (anchor differs from the caret)?
+    func has_selection [] -> bool
+        return sel_line >= 0 && (anchor_line != sel_line || anchor_col != sel_col)
+
+    # delete the selected span and collapse the caret to its start. returns true when
+    # something was removed (so callers can replace it with typed text / a newline, or
+    # skip the plain backspace). a no-op in results mode (structural edits disallowed).
+    func delete_selection [] -> bool
+        if [ !has_selection[] || show_hits ] return false
+        before : bool [ anchor_line < sel_line || (anchor_line == sel_line && anchor_col <= sel_col) ]
+        s_line : i32 [ (before) ? anchor_line : sel_line ]
+        s_col  : i32 [ (before) ? anchor_col  : sel_col ]
+        e_line : i32 [ (before) ? sel_line : anchor_line ]
+        e_col  : i32 [ (before) ? sel_col  : anchor_col ]
+        if [ s_line == e_line ]
+            ln : line_get[ s_line ]
+            line_set[ s_line, ln.mid[0, s_col] + ln.mid[e_col, ln.count - e_col] ]
+        el
+            # merge the start prefix with the end suffix, then drop the interior+end rows
+            # bottom-up so indices don't shift under us. compute the merge BEFORE any
+            # removal (line_get is a non-holding borrow).
+            sline  : line_get[ s_line ]
+            eline  : line_get[ e_line ]
+            merged : sline.mid[0, s_col] + eline.mid[e_col, eline.count - e_col]
+            for [ r: i32 e_line, r > s_line, r -= 1 ]
+                lines.remove[ r ]
+            line_set[ s_line, merged ]
+        sel_line    = s_line
+        sel_col     = s_col
+        anchor_line = s_line
+        anchor_col  = s_col
+        pristine = false
+        return true
 
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
@@ -837,6 +1473,25 @@ Control Editor
         if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83 ]    # Key.S
             save_current[]
             pristine = false
+            return
+
+        # copy: Ctrl/Cmd-C copies the highlighted text to the system clipboard.
+        if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 67 ]    # Key.C
+            txt : string selected_text[]
+            if [ txt.count > 0 && ux ] ux.set_clipboard[ txt ]
+            return
+
+        # undo / redo: Ctrl/Cmd-Z (Shift = redo); Ctrl/Cmd-Y also redoes.
+        if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 90 ]    # Key.Z
+            if [ ev.key.shift ]
+                redo[]
+            el
+                undo[]
+            ux.will_animate = true
+            return
+        if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 89 ]    # Key.Y
+            redo[]
+            ux.will_animate = true
             return
 
         if [ line_count[] <= 0 ] return
@@ -869,12 +1524,19 @@ Control Editor
             pristine = false
             return
 
-        # title slots can't be split / merged / typed into
-        edits_locked : bool [ row_header[ row ] ]
+        # title slots can't be split / merged / typed into; nor can anything while the
+        # inline debug tree is open (visual rows ≠ base line indices — would corrupt).
+        edits_locked : bool [ row_header[ row ] || flat_active ]
 
         if [ key == 257 ]    # Key.Enter
             # results rows can't be split: a new row would have no source line
             if [ show_hits || edits_locked ] return
+            # line-op group (kind 1): coalesces a run of Enters, breaks from a typing run.
+            begin_edit[ 1 ]
+            # a selection is replaced by the newline (delete it, then split at the caret)
+            if [ delete_selection[] ]
+                row = sel_line
+                col = sel_col
             line  : line_get[ row    ]
             left  : line.mid[ 0, col ]
             right : line.mid[col, line.count - col]
@@ -882,10 +1544,27 @@ Control Editor
             lines.insert_after[ right, row ]
             sel_line += 1
             sel_col   = 0
+            end_edit[]
+
+        el [ key == 258 ]    # Key.Tab — insert a real tab. tabs are the primary indent;
+            # they're rendered as tab_w spaces (display_of/vis_col) so no .notdef box.
+            if [ show_hits || edits_locked ] return
+            begin_edit[ 0 ]   # a tab is an inserted char — coalesces with the typing run
+            if [ delete_selection[] ]
+                row = sel_line
+                col = sel_col
+            line : line_get[ row ]
+            line_set[ row, line.mid[0, col] + '\t' + line.mid[col, line.count - col] ]
+            sel_col += 1
+            end_edit[]
 
         el [ key == 259 ]    # Key.Backspace
             if [ edits_locked ] return
-            if [ col > 0 ]
+            begin_edit[ 2 ]   # delete group (kind 2): coalesces a run of backspaces
+            # a non-empty selection is erased wholesale (not a single char in front of it)
+            if [ delete_selection[] ]
+                pristine = false
+            el [ col > 0 ]
                 line : line_get[ row ]
                 line_set[ row, line.mid[0, col - 1] + line.mid[col, line.count - col] ]
                 sel_col -= 1
@@ -896,6 +1575,7 @@ Control Editor
                 line_set[ row - 1, prev + line_get[ row ] ]
                 lines.remove[ row ]
                 sel_line -= 1
+            end_edit[]
 
         el [ key == 265 ]    # Key.Up
             np : i32 [ prev_editable[ sel_line - 1 ] ]
@@ -927,6 +1607,11 @@ Control Editor
                     sel_line = np
                     sel_col = 0
 
+        # plain edits (Enter/Backspace) and cursor moves collapse the selection to the
+        # caret; holding shift extends it instead (shift+arrow selects, like any editor).
+        if [ !ev.key.shift ]
+            anchor_line = sel_line
+            anchor_col  = sel_col
         pristine = false
 
     public func render [] -> Elements
