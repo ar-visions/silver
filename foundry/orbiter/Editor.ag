@@ -4,11 +4,10 @@ class FileBuf
     public lines : list string
     public mtime : i64 [ 0 ]
     # per-file undo history (keyed by URI via file_cache, same as `lines`). hist is the
-    # linked list of EditAction states; hist_i the cursor (everything after it is the redo
-    # future, everything before is undo); hist_dirty = an uncommitted in-progress group.
+    # linked list of EditAction delta groups; hist_i the cursor = number of groups applied
+    # (groups before it are undoable, groups from it on are the redo future).
     public hist       : list EditAction
     public hist_i     : i32 [ 0 ]
-    public hist_dirty : bool
 
 # one row in the find-in-files results view. a header row is a file title (drawn
 # 2 code-rows tall, larger, centered); a non-header row is a matched line of code
@@ -29,14 +28,25 @@ class VRow
     public var   : variable
     public depth : i32 [ 0 ]
 
-# one undo step: the full line model + caret as they were BEFORE a logical edit group
-# ran. groups coalesce same-kind edits (a typing run, a run of Enters) into one node, so
-# undo is logical rather than per-character. lines are immutable strings (each edit makes
-# a new one), so the snapshot is just shared refs — cheap, and it retains the history.
+# a single primitive line change within an edit group. kind: 0=replace line `at` (before
+# → after), 1=insert `after` as line `at`, 2=remove line `at` (was `before`). undo applies
+# the inverse; redo applies forward. stored as deltas so memory is O(edit), not O(file).
+class LineOp
+    public at     : i32 [ 0 ]
+    public kind   : i32 [ 0 ]
+    public before : string
+    public after  : string
+
+# one undo step (a coalesced logical edit: a typing run, a run of Enters, …). holds only
+# the line ops it changed plus the caret before/after — NOT a copy of the whole buffer.
+# consecutive replaces of the same line collapse into one op, so typing a 100-char line is
+# one op (orig→final), not 100 snapshots.
 class EditAction
-    public lines : array string   # snapshot of the line strings before this group
-    public sl    : i32 [ 0 ]   # caret line before
-    public sc    : i32 [ 0 ]   # caret col before
+    public ops : array LineOp
+    public sl0 : i32 [ 0 ]   # caret line/col before the group
+    public sc0 : i32 [ 0 ]
+    public sl1 : i32 [ 0 ]   # caret line/col after the group
+    public sc1 : i32 [ 0 ]
 
 Layer EditorLayer
     mutable sel_color      : rgba
@@ -592,18 +602,19 @@ Control Editor
     # soft-tab width: spaces emitted per Tab (aligned to the next multiple). matches the
     # 4-space indent these .ag files use (and silver's tab = 4 indent units).
     mutable tab_w         : i32 [ 4 ]
-    # unlimited undo/redo. `hist` is the master linked list of EditAction states; hist_i
-    # is the cursor (index of the current state). hist_dirty = the live buffer has edits
-    # not yet committed as a state (an open coalescing group). edit_kind is that group's
-    # kind (0=type, 1=lineop, 2=delete; -1=none); edit_cl/edit_cc are the caret after the
-    # last tracked edit, to detect a caret jump (which breaks the coalescing run).
-    # the live working copies of the CURRENT file's history. `hist` aliases cur_buf.hist
-    # (shared by ref, like lines↔buf.lines); hist_i/hist_dirty are saved back into cur_buf
-    # when switching files. edit_kind/cl/cc are transient (reset on switch).
+    # unlimited undo/redo, delta-based. `hist` aliases the current file's cur_buf.hist
+    # (linked list of EditAction delta groups, shared by reference like lines↔buf.lines);
+    # hist_i is the cursor = number of applied groups, mirrored into cur_buf by touch_hist.
+    # edit_kind (0=type 1=lineop 2=delete; -1=none) + edit_cl/edit_cc (caret after the last
+    # edit, for jump detection) drive coalescing; all transient (reset on file switch).
     mutable cur_buf       : FileBuf
     mutable hist          : list EditAction
     mutable hist_i        : i32 [ 0 ]
-    mutable hist_dirty    : bool
+    # the currently-open delta group (ops append here; null = none open) and the caret
+    # captured before that group's first op (its undo target).
+    mutable cur_group     : EditAction
+    mutable pend_sl0      : i32 [ 0 ]
+    mutable pend_sc0      : i32 [ 0 ]
     mutable edit_kind     : i32 [ -1 ]
     mutable edit_cl       : i32 [ -1 ]
     mutable edit_cc       : i32 [ -1 ]
@@ -919,133 +930,150 @@ Control Editor
         lines.remove[ i ]
         lines.insert_after[ val, i - 1 ]
 
-    # ---- undo / redo (unlimited, kind-coalesced, cursor over a linked history) ------
+    # ---- undo / redo (unlimited, kind-coalesced, DELTA-based) -----------------------
+    # `hist` is the per-file linked list of EditAction groups; hist_i = how many groups
+    # are currently applied (the cursor). groups [0,hist_i) are applied, [hist_i,count)
+    # are the redo future. each group stores only its line deltas, so memory is O(edits)
+    # not O(file). edits mutate `lines` IN PLACE (line_set/insert/remove), so the per-file
+    # `cur_buf.lines` alias never breaks — no list-object replacement on undo/redo.
 
-    # copy the current line model as a flat array of (shared) string refs. push holds
-    # each ref, so the snapshot retains the historical strings even after `lines` moves
-    # on (line_set replaces, never mutates — so the refs stay valid).
-    func snapshot_lines [] -> array string
-        a : array string []
-        for [ i: i32 0, i < lines.count, i += 1 ]
-            a.push[ lines.value_by_index[ i ] ]
-        return a
+    # raw line ops (no recording) — used by undo/redo replay.
+    func raw_set    [ i: i32, val: string ]    line_set[ i, val ]
+    func raw_insert [ i: i32, val: string ]    lines.insert_after[ val, i - 1 ]
+    func raw_remove [ i: i32 ]                 lines.remove[ i ]
 
-    # rebuild the line model from a snapshot array (fresh list holding the same refs).
-    # this REPLACES the list object (vs in-place edits), so the per-file buffer must be
-    # repointed too — otherwise cur_buf.lines stays at the pre-undo content and the next
-    # cache-hit reload (e.g. closing a neighbor tab) snaps the editor back to it.
-    func restore_lines [ snap: array string ]
-        nl : list string []
-        for [ i: i32 0, i < snap.count, i += 1 ]
-            nl.push[ snap[ i ] ]
-        lines = nl
-        if [ cur_buf ] cur_buf.lines = nl
+    # append an op to the open group, opening one lazily (capturing the before-caret and
+    # discarding the redo tail) on the first op. consecutive replaces of the SAME line
+    # collapse into one op so a typing run is a single delta.
+    func rec [ op: LineOp ]
+        if [ show_hits ] return
+        if [ !cur_group ]
+            # opening a fresh group invalidates the redo future — drop it.
+            while [ hist && hist.count > hist_i ]
+                hist.pop[]
+            cur_group = EditAction []
+            cur_group.ops = array LineOp []
+            cur_group.sl0 = pend_sl0
+            cur_group.sc0 = pend_sc0
+            hist.push[ cur_group ]
+            hist_i = hist.count
+        n : i32 [ cur_group.ops.count ]
+        if [ op.kind == 0 && n > 0 ]
+            last2 : LineOp cur_group.ops[ n - 1 ]
+            if [ last2.kind == 0 && last2.at == op.at ]
+                last2.after = op.after          # collapse same-line replaces
+                touch_hist[]
+                return
+        cur_group.ops.push[ op ]
+        touch_hist[]
 
-    # append the current buffer+caret as a new EditAction at the end of `hist`.
-    func push_state []
-        act : EditAction []
-        act.lines = snapshot_lines[]
-        act.sl = sel_line
-        act.sc = sel_col
-        hist.push[ act ]
+    # recording mutators — used by the edit handlers (capture the inverse, then mutate).
+    func ed_set [ i: i32, val: string ]
+        old : line_get[ i ]
+        line_set[ i, val ]
+        rec[ LineOp [ at: i, kind: 0, before: old, after: val ] ]
 
-    # restore history state i into the live buffer.
-    func apply_state [ i: i32 ]
-        if [ !hist || i < 0 || i >= hist.count ] return
-        act : EditAction hist.value_by_index[ i ]
-        restore_lines[ act.lines ]
-        sel_line    = act.sl
-        sel_col     = act.sc
-        anchor_line = act.sl
-        anchor_col  = act.sc
+    func ed_insert [ i: i32, val: string ]     # val becomes line i (shifts the rest down)
+        lines.insert_after[ val, i - 1 ]
+        rec[ LineOp [ at: i, kind: 1, after: val ] ]
 
-    # point the live history at `buf`'s per-file history, saving the outgoing file's
-    # cursor first. seeds a fresh history (one state = the loaded buffer) when buf has
-    # none. `buf.hist` is created/held here exactly like buf.lines, and `hist` aliases it
-    # by reference, so edits flow into the per-file store with no copy-back.
+    func ed_remove [ i: i32 ]
+        old : line_get[ i ]
+        lines.remove[ i ]
+        rec[ LineOp [ at: i, kind: 2, before: old ] ]
+
+    func apply_undo [ g: EditAction ]
+        for [ k: i32 g.ops.count - 1, k >= 0, k -= 1 ]
+            op : LineOp g.ops[ k ]
+            if [ op.kind == 0 ]
+                raw_set[ op.at, op.before ]
+            el [ op.kind == 1 ]
+                raw_remove[ op.at ]
+            el
+                raw_insert[ op.at, op.before ]
+        sel_line    = g.sl0
+        sel_col     = g.sc0
+        anchor_line = g.sl0
+        anchor_col  = g.sc0
+
+    func apply_redo [ g: EditAction ]
+        for [ k: i32 0, k < g.ops.count, k += 1 ]
+            op : LineOp g.ops[ k ]
+            if [ op.kind == 0 ]
+                raw_set[ op.at, op.after ]
+            el [ op.kind == 1 ]
+                raw_insert[ op.at, op.after ]
+            el
+                raw_remove[ op.at ]
+        sel_line    = g.sl1
+        sel_col     = g.sc1
+        anchor_line = g.sl1
+        anchor_col  = g.sc1
+
+    # point the live history at `buf`'s per-file delta history (created on first use), and
+    # restore its cursor. the hist LIST is shared by reference so deltas flow into the
+    # per-file store; only hist_i can drift, kept current by touch_hist.
     func swap_history [ buf: FileBuf ]
-        # already the live buffer with valid history → keep the LIVE cursor. a re-layout
-        # (e.g. closing a neighbor editor) re-calls load_file on this same file; without
-        # this guard we'd reload buf.hist_i, which is only written on switch-OUT and is
-        # therefore stale — yanking the caret to an old undo position. only proceed when
-        # genuinely switching files, or when a fresh content load cleared buf.hist.
-        if [ cur_buf == buf && buf.hist ] return
+        if [ cur_buf == buf && buf.hist ] return    # already live → keep the live cursor
         if [ cur_buf && cur_buf != buf ]
-            cur_buf.hist_i     = hist_i
-            cur_buf.hist_dirty = hist_dirty
+            cur_buf.hist_i = hist_i
         if [ !buf.hist ]
-            buf.hist = list EditAction []
-            hist = buf.hist
-            push_state[]
-            hist_i          = 0
-            hist_dirty      = false
-            buf.hist_i      = 0
-            buf.hist_dirty  = false
-        el
-            hist       = buf.hist
-            hist_i     = buf.hist_i
-            hist_dirty = buf.hist_dirty
+            buf.hist   = list EditAction []
+            buf.hist_i = 0
+        hist      = buf.hist
+        hist_i    = buf.hist_i
+        cur_group = null
         edit_kind = -1
         edit_cl   = -1
         edit_cc   = -1
         cur_buf   = buf
 
-    # keep the per-file stored cursor/dirty in sync with the live values, so a reload of
-    # this same buffer (re-layout, neighbor close, instance rebuild) never reads a stale
-    # cursor and yanks the caret back through history. the hist LIST is already shared by
-    # reference; only the cursor/dirty primitives can drift, so mirror them every change.
+    # mirror the live cursor into the per-file store so any reload reads it, not a stale
+    # value (the hist LIST is already shared by reference; only hist_i drifts).
     func touch_hist []
-        if [ cur_buf ]
-            cur_buf.hist_i     = hist_i
-            cur_buf.hist_dirty = hist_dirty
+        if [ cur_buf ] cur_buf.hist_i = hist_i
 
-    # commit the live buffer as a new committed state: drop any redo tail (states past
-    # the cursor are invalidated by a fresh edit), append the live snapshot, advance.
-    func commit_state []
-        if [ !hist ] return
-        while [ hist.count > hist_i + 1 ]
-            hist.pop[]
-        push_state[]
-        hist_i     = hist.count - 1
-        hist_dirty = false
-        touch_hist[]
-
-    # call BEFORE a mutating edit. a kind change or caret jump ends the current group:
-    # commit its result (so it's redoable), then start a new group. same-kind contiguous
-    # edits coalesce (no commit) into one logical undo step. kind: 0=type 1=lineop 2=del.
+    # call BEFORE a mutating edit. a kind change or caret jump ends the open group, so the
+    # next op starts a new one; same-kind contiguous edits keep appending (coalesce).
     func begin_edit [ kind: i32 ]
         if [ show_hits ] return
         jumped : bool [ sel_line != edit_cl || sel_col != edit_cc ]
         if [ edit_kind != kind || jumped ]
-            if [ hist_dirty ] commit_state[]
+            cur_group = null
             edit_kind = kind
+        if [ !cur_group ]
+            pend_sl0 = sel_line     # caret before the (upcoming) group's first op
+            pend_sc0 = sel_col
 
-    # call AFTER a mutating edit: the buffer now differs from the last committed state.
+    # call AFTER a mutating edit: record the caret for the next jump test, and store it as
+    # the open group's after-caret (here, not in rec — rec runs mid-edit, before the
+    # handler advances the caret, so capturing there lags the redo caret by one).
     func end_edit []
-        hist_dirty = true
         edit_cl = sel_line
         edit_cc = sel_col
-        touch_hist[]
+        if [ cur_group ]
+            cur_group.sl1 = sel_line
+            cur_group.sc1 = sel_col
 
     func undo []
         if [ show_hits || !hist ] return
-        # an open (uncommitted) group is committed first so it can be redone.
-        if [ hist_dirty ] commit_state[]
+        cur_group = null
+        edit_kind = -1
         if [ hist_i <= 0 ] return
         hist_i -= 1
-        apply_state[ hist_i ]
-        edit_kind = -1
+        apply_undo[ hist.value_by_index[ hist_i ] ]
         edit_cl = sel_line
         edit_cc = sel_col
         touch_hist[]
         pristine = false
 
     func redo []
-        if [ show_hits || !hist || hist_dirty ] return
-        if [ hist_i >= hist.count - 1 ] return
-        hist_i += 1
-        apply_state[ hist_i ]
+        if [ show_hits || !hist ] return
+        cur_group = null
         edit_kind = -1
+        if [ hist_i >= hist.count ] return
+        apply_redo[ hist.value_by_index[ hist_i ] ]
+        hist_i += 1
         edit_cl = sel_line
         edit_cc = sel_col
         touch_hist[]
@@ -1065,8 +1093,10 @@ Control Editor
             parts : array string [ content.split["\n"] ]
             for [ i: i32 0, i < hits.count, i += 1 ]
                 h : FindHit hits[i]
-                if [ h.is_header ] continue
-                if [ '{h.file}' != tkey ] continue
+                if [ h.is_header ]
+                    continue
+                if [ '{h.file}' != tkey ]
+                    continue
                 idx : i32 [ h.line - 1 ]
                 if [ idx >= 0 && idx < parts.count ] parts[idx] = h.text
             out : string [ '' ]
@@ -1384,7 +1414,7 @@ Control Editor
         if [ row_header[ row ] ] return
         col  : i32 [ sel_col ]
         line : line_get[ row ]
-        line_set[ row, line.mid[0, col] + ch + line.mid[col, line.count - col] ]
+        ed_set[ row, line.mid[0, col] + ch + line.mid[col, line.count - col] ]
         sel_col += 1
         # collapse the selection to the caret — typing isn't a selection gesture, so the
         # anchor must follow the caret (else each char extends a highlight over the text).
@@ -1433,7 +1463,7 @@ Control Editor
         e_col  : i32 [ (before) ? sel_col  : anchor_col ]
         if [ s_line == e_line ]
             ln : line_get[ s_line ]
-            line_set[ s_line, ln.mid[0, s_col] + ln.mid[e_col, ln.count - e_col] ]
+            ed_set[ s_line, ln.mid[0, s_col] + ln.mid[e_col, ln.count - e_col] ]
         el
             # merge the start prefix with the end suffix, then drop the interior+end rows
             # bottom-up so indices don't shift under us. compute the merge BEFORE any
@@ -1442,8 +1472,8 @@ Control Editor
             eline  : line_get[ e_line ]
             merged : sline.mid[0, s_col] + eline.mid[e_col, eline.count - e_col]
             for [ r: i32 e_line, r > s_line, r -= 1 ]
-                lines.remove[ r ]
-            line_set[ s_line, merged ]
+                ed_remove[ r ]
+            ed_set[ s_line, merged ]
         sel_line    = s_line
         sel_col     = s_col
         anchor_line = s_line
@@ -1540,8 +1570,8 @@ Control Editor
             line  : line_get[ row    ]
             left  : line.mid[ 0, col ]
             right : line.mid[col, line.count - col]
-            line_set[ row, left ]
-            lines.insert_after[ right, row ]
+            ed_set[ row, left ]
+            ed_insert[ row + 1, right ]
             sel_line += 1
             sel_col   = 0
             end_edit[]
@@ -1554,7 +1584,7 @@ Control Editor
                 row = sel_line
                 col = sel_col
             line : line_get[ row ]
-            line_set[ row, line.mid[0, col] + '\t' + line.mid[col, line.count - col] ]
+            ed_set[ row, line.mid[0, col] + '\t' + line.mid[col, line.count - col] ]
             sel_col += 1
             end_edit[]
 
@@ -1566,14 +1596,14 @@ Control Editor
                 pristine = false
             el [ col > 0 ]
                 line : line_get[ row ]
-                line_set[ row, line.mid[0, col - 1] + line.mid[col, line.count - col] ]
+                ed_set[ row, line.mid[0, col - 1] + line.mid[col, line.count - col] ]
                 sel_col -= 1
             # joining rows would drop a source line, so it's results-mode-disabled
             el [ row > 0 && !show_hits ]
                 prev : line_get[ row - 1 ]
                 sel_col  = prev.count
-                line_set[ row - 1, prev + line_get[ row ] ]
-                lines.remove[ row ]
+                ed_set[ row - 1, prev + line_get[ row ] ]
+                ed_remove[ row ]
                 sel_line -= 1
             end_edit[]
 
