@@ -36,6 +36,11 @@ class ConsoleSession
     mutable rows       : i32 [ 24 ]
     mutable screen     : array TermCell
     mutable scrollback : list string
+    # color/attr for each scrollback line, kept in parallel with `scrollback` so the
+    # history renders with its original colors (not a flat monochrome string). cells
+    # are stored contiguously; sb_off[i] is line i's start index into sb_cells.
+    mutable sb_cells   : array TermCell
+    mutable sb_off     : array i32
     mutable scroll     : f32 [ 0.0 ]
     # set when pty output actually changes the screen; lets the console stay
     # cached (pristine) and skip its full text re-render on idle frames.
@@ -78,6 +83,9 @@ class ConsoleSession
     mutable pen_attr    : i32 [ 0  ]
     mutable cursor_visible  : bool [ true ]
     mutable bracketed_paste : bool
+    # DECCKM: when set (ESC[?1h), arrows/Home/End are sent as SS3 (ESC O A) not CSI
+    # (ESC [ A). TUIs like claude code enable this; without it menu nav doesn't work.
+    mutable app_cursor      : bool
     mutable alt_save_x  : i32 [ 0 ]
     mutable alt_save_y  : i32 [ 0 ]
     # UTF-8 decode accumulator (ground state, multibyte lead → continuation).
@@ -92,6 +100,8 @@ class ConsoleSession
 
     func init []
         scrollback  = list string []
+        sb_cells    = array TermCell []
+        sb_off      = array i32 []
         main_screen = array TermCell []
         alt_screen  = array TermCell []
         for [ i: i32 0, i < rows * cols, i += 1 ]
@@ -111,6 +121,8 @@ class ConsoleSession
         pid = forkpty[ ref pty_fd, null, null, null ]
         if [ pid == 0 ]
             setenv[ 'TERM', 'xterm-256color', 1 ]
+            # we emulate 24-bit SGR (38;2;r;g;b) — advertise it so TUIs use true color
+            setenv[ 'COLORTERM', 'truecolor', 1 ]
             # prompt = the project node's label; --norc so bash keeps our PS1
             lbl : string (name && name.count > 0) ? name : 'sh'
             setenv[ 'PS1', '{lbl}> ', 1 ]
@@ -136,6 +148,8 @@ class ConsoleSession
         esc_state  = 0
         clear_screen[]
         scrollback = list string []
+        sb_cells   = array TermCell []
+        sb_off     = array i32 []
         dirty      = true
         run_armed  = false
         start[]
@@ -193,12 +207,13 @@ class ConsoleSession
         l : i32 [ (n - 232) * 10 + 8 ]
         return (l << 16) | (l << 8) | l
 
-    # encode the codepoints of cells [c0,c1) on row r into a UTF-8 string.
-    func cell_text [ r: i32, c0: i32, c1: i32 ] -> string
+    # encode the codepoints of cells[off+c0 .. off+c1) into a UTF-8 string. works on
+    # any TermCell buffer (the live screen or the scrollback color store).
+    func cells_text [ cells: array TermCell, off: i32, c0: i32, c1: i32 ] -> string
         buf : local i8 [ (c1 - c0) * 4 + 1 ]
         bi  : i32 [ 0 ]
         for [ c: i32 c0, c < c1, c += 1 ]
-            cp : i32 [ screen[r * cols + c].ch ]
+            cp : i32 [ cells[off + c].ch ]
             if [ cp < 32 ] cp = 32
             if [ cp < 128 ]
                 buf[bi] = i8[ cp ]
@@ -221,13 +236,33 @@ class ConsoleSession
         buf[bi] = 0
         return string[ ref buf[0] ]
 
-    func cell_ch   [ r: i32, c: i32 ] -> i32   return screen[r * cols + c].ch
+    # encode the codepoints of cells [c0,c1) on screen row r into a UTF-8 string.
+    func cell_text [ r: i32, c0: i32, c1: i32 ] -> string
+        return cells_text[ screen, r * cols, c0, c1 ]
+
     func cell_fg   [ r: i32, c: i32 ] -> i32   return screen[r * cols + c].fg
     func cell_bg   [ r: i32, c: i32 ] -> i32   return screen[r * cols + c].bg
     func cell_attr [ r: i32, c: i32 ] -> i32   return screen[r * cols + c].attr
 
+    # scrollback line geometry: start index + cell length for line `li`.
+    func sb_line_off [ li: i32 ] -> i32   return sb_off[ li ]
+    func sb_line_len [ li: i32 ] -> i32
+        nx : i32 [ (li + 1 < sb_off.count) ? sb_off[ li + 1 ] : sb_cells.count ]
+        return nx - sb_off[ li ]
+
     func row_to_string [ r: i32 ] -> string
         return cell_text[ r, 0, cols ]
+
+    # highest grid row that has any non-blank cell. used for content height so the
+    # scrollable region reaches the app's bottom rows (input box / footer hints below
+    # the cursor), instead of stopping at the cursor row.
+    func last_row [] -> i32
+        for [ r: i32 rows - 1, r >= 0, r -= 1 ]
+            for [ c: i32 0, c < cols, c += 1 ]
+                ch : i32 [ screen[r * cols + c].ch ]
+                if [ ch != 32 && ch != 0 ]
+                    return r
+        return 0
 
     # line model — the displayed content as one list of lines (scrollback then the
     # live screen rows). lets the console reuse the Editor's line/col selection.
@@ -274,6 +309,11 @@ class ConsoleSession
     func scroll_up []
         if [ !in_alt && scroll_top == 0 ]
             scrollback.push[ row_to_string[ scroll_top ] ]
+            # capture the line's color/attr cells in parallel (sb_off marks its start)
+            sb_off.push[ sb_cells.count ]
+            srow : i32 [ scroll_top * cols ]
+            for [ c: i32 0, c < cols, c += 1 ]
+                sb_cells.push[ TermCell [ ch: screen[srow + c].ch, fg: screen[srow + c].fg, bg: screen[srow + c].bg, attr: screen[srow + c].attr ] ]
         for [ r: i32 scroll_top, r < scroll_bot, r += 1 ]
             for [ c: i32 0, c < cols, c += 1 ]
                 cp_cell[ r * cols + c, (r + 1) * cols + c ]
@@ -448,7 +488,9 @@ class ConsoleSession
     func set_mode [ on: bool ]
         if [ esc_priv == 63 ]
             m : i32 [ (esc_pc > 0) ? esc_pv[0] : 0 ]
-            if [ m == 25 ]
+            if [ m == 1 ]
+                app_cursor = on
+            el [ m == 25 ]
                 cursor_visible = on
             el [ m == 1049 || m == 47 || m == 1047 ]
                 if [ on ]
@@ -466,7 +508,10 @@ class ConsoleSession
         pen_attr   = 0
         scroll_top = 0
         scroll_bot = rows - 1
+        app_cursor = false
         scrollback = list string []
+        sb_cells   = array TermCell []
+        sb_off     = array i32 []
         clear_screen[]
 
     # dispatch a completed CSI sequence by its final byte.
@@ -539,11 +584,11 @@ class ConsoleSession
             cy = cur_save_y
         el [ c == 110 ]
             if [ p0 == 6 ]
-                write_input[ '\x1b[{cy + 1};{cx + 1}R' ]
+                send_esc[ '[{cy + 1};{cx + 1}R' ]
             el [ p0 == 5 ]
-                write_input[ '\x1b[0n' ]
+                send_esc[ '[0n' ]
         el [ c == 99 ]
-            write_input[ '\x1b[?1;2c' ]
+            send_esc[ '[?1;2c' ]
 
     func process_byte [ c: i32 ]
         # UTF-8 continuation bytes assemble the pending codepoint.
@@ -751,6 +796,18 @@ class ConsoleSession
         if [ pty_fd < 0 ] return
         write[ pty_fd, data.chars, data.count ]
 
+    # write ESC followed by `tail` to the pty. built from an explicit 0x1b byte + the
+    # plain tail so we sidestep the lexer treating '\x1b[...' as a hex char literal
+    # (which collapses 'ESC [ Z' to the single byte 0x1b). tail carries no \x escapes.
+    func send_esc [ tail: string ]
+        if [ pty_fd < 0 ] return
+        n : i32 [ (tail) ? tail.count : 0 ]
+        buf : local i8 [ n + 2 ]
+        buf[0] = i8[ 27 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            buf[i + 1] = tail.chars[i]
+        write[ pty_fd, ref buf[0], n + 1 ]
+
 
 Layer TermLayer
     func draw [ cv: Canvas ]
@@ -829,20 +886,20 @@ Layer TermLayer
         # the alt screen is standalone (no scrollback above it). base = the rows of
         # scrollback shown above the live grid (0 on the alt buffer).
         base     : i32 [ (s.in_alt) ? 0 : sc_count ]
-        # content height stops at the cursor row (last used line), not the full
-        # grid — otherwise scroll overshoots into the blank rows below.
-        total_h  : f32 [ f32[base + s.cy + 1] * lh ]
+        # content height extends to the last non-blank row (not just the cursor row),
+        # so the app's bottom UI below the cursor — input box, footer hints — is inside
+        # the scrollable region instead of being cut off. fall back to the cursor row.
+        lr       : i32 [ s.last_row[] ]
+        last_used: i32 [ (lr > s.cy) ? lr : s.cy ]
+        total_h  : f32 [ f32[base + last_used + 1] * lh ]
         max_s    : f32 [ maxf[ total_h - bounds.h, 0.0 ] ]
-        cursor_y : f32 [ f32[base + s.cy] * lh ]
 
         s.max_scroll = max_s
-        # auto-follow the cursor (keep the prompt visible) — but NOT while dragging
-        # the thumb (it'd fight the drag) or while the user scrolled up to read history.
+        # auto-follow: stick to the bottom of the content (so the app's last rows —
+        # input box, footer — are visible), NOT just the cursor. suspended while
+        # dragging the thumb or after the user scrolled up to read history.
         if [ !s.scroll_dragging && !s.user_scrolled ]
-            if [ s.scroll > cursor_y ]
-                s.scroll = cursor_y
-            el [ s.scroll < cursor_y + lh - bounds.h ]
-                s.scroll = cursor_y + lh - bounds.h
+            s.scroll = max_s
         if [ s.scroll < 0.0 ]
             s.scroll = 0.0
         if [ s.scroll > max_s ]
@@ -867,10 +924,7 @@ Layer TermLayer
                 y : f32 [ y0 + f32[li] * lh - s.scroll ]
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
-                cv.fill_color[ '#ddd' ]
-                cv.draw_text[ s.scrollback.value_by_index[ li ],
-                    rect [ x: x0, y: y, w: bounds.w, h: lh ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                draw_cells[ cv, s, s.sb_cells, s.sb_line_off[ li ], s.sb_line_len[ li ], x0, y, lh, cw ]
 
         for [ r: i32 0, r < s.rows, r += 1 ]
             y : f32 [ y0 + f32[base + r] * lh - s.scroll ]
@@ -887,165 +941,38 @@ Layer TermLayer
             cv.rect_to     [ cur_px, cur_py, cw, lh ]
             cv.paint[]
 
-    # block elements (U+2580..259F) and box drawing (U+2500..257F) are rendered as
-    # geometry, not font glyphs — see draw_cell_glyph. so a run of normal text breaks
-    # at any of these and they're drawn per-cell, snapped to integer pixel bounds.
-    func is_special [ cp: i32 ] -> bool
-        return cp >= 0x2500 && cp <= 0x259F
-
-    # one screen row: normal cells grouped into colored text spans, block/box cells
-    # drawn individually as crisp geometry. all cell rects snap to integer pixels so
-    # neighbours share exact edges (no sub-pixel seams — block art tiles solid).
-    func draw_row [ cv: Canvas, s: ConsoleSession, r: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
-        ya : f32 [ round[ y ] ]
-        yb : f32 [ round[ y + lh ] ]
+    # one screen row rendered as colored runs: consecutive cells sharing fg/bg/attr
+    # draw as a single text span (and a bg rect when the bg isn't the default).
+    # render n cells from `cells` starting at `off` as colored runs (consecutive cells
+    # sharing fg/bg/attr draw as one text span, with a bg rect when bg isn't default).
+    # used by both the live grid (screen) and the scrollback color store.
+    func draw_cells [ cv: Canvas, s: ConsoleSession, cells: array TermCell, off: i32, n: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
         c : i32 [ 0 ]
-        while [ c < s.cols ]
-            fg : i32 [ s.cell_fg[ r, c ] ]
-            bg : i32 [ s.cell_bg[ r, c ] ]
-            at : i32 [ s.cell_attr[ r, c ] ]
+        while [ c < n ]
+            fg : i32 [ cells[off + c].fg ]
+            bg : i32 [ cells[off + c].bg ]
+            at : i32 [ cells[off + c].attr ]
+            c2 : i32 [ c + 1 ]
+            while [ c2 < n && cells[off + c2].fg == fg && cells[off + c2].bg == bg && cells[off + c2].attr == at ]
+                c2 += 1
             inv : bool [ (at & 4) != 0 ]
             rfg : i32 [ (inv) ? ((bg < 0) ? 0x000000 : bg) : ((fg < 0) ? 0xdddddd : fg) ]
             rbg : i32 [ (inv) ? ((fg < 0) ? 0xdddddd : fg) : bg ]
-            xa : f32 [ round[ x0 + f32[c] * cw ] ]
-            if [ is_special[ s.cell_ch[ r, c ] ] ]
-                xb : f32 [ round[ x0 + f32[c + 1] * cw ] ]
-                if [ rbg >= 0 ]
-                    cv.fill_color[ col_of[ rbg ] ]
-                    cv.stroke_width[ 0.0 ]
-                    cv.rect_to[ xa, ya, xb - xa, yb - ya ]
-                    cv.paint[]
-                draw_cell_glyph[ cv, s, r, c, s.cell_ch[ r, c ], rfg, xa, xb, ya, yb ]
-                c += 1
-            el
-                c2 : i32 [ c + 1 ]
-                while [ c2 < s.cols && !is_special[ s.cell_ch[ r, c2 ] ] && s.cell_fg[ r, c2 ] == fg && s.cell_bg[ r, c2 ] == bg && s.cell_attr[ r, c2 ] == at ]
-                    c2 += 1
-                xb : f32 [ round[ x0 + f32[c2] * cw ] ]
-                if [ rbg >= 0 ]
-                    cv.fill_color[ col_of[ rbg ] ]
-                    cv.stroke_width[ 0.0 ]
-                    cv.rect_to[ xa, ya, xb - xa, yb - ya ]
-                    cv.paint[]
-                txt : string s.cell_text[ r, c, c2 ]
-                cv.fill_color[ col_of[ rfg ] ]
-                cv.draw_text[ txt, rect [ x: xa, y: y, w: (xb - xa) + cw, h: lh ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-                c = c2
+            rx : f32 [ x0 + f32[c] * cw ]
+            rw : f32 [ f32[c2 - c] * cw ]
+            if [ rbg >= 0 ]
+                cv.fill_color[ col_of[ rbg ] ]
+                cv.stroke_width[ 0.0 ]
+                cv.rect_to[ rx, y, rw, lh ]
+                cv.paint[]
+            txt : string s.cells_text[ cells, off, c, c2 ]
+            cv.fill_color[ col_of[ rfg ] ]
+            cv.draw_text[ txt, rect [ x: rx, y: y, w: rw + cw, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            c = c2
 
-    # draw one block/box codepoint as geometry filling [xa,xb)x[ya,yb). block elements
-    # are rects (full / halves / eighths / shades / quadrants); box drawing is line
-    # segments from the cell centre to its edges so borders connect across cells.
-    func draw_cell_glyph [ cv: Canvas, s: ConsoleSession, r: i32, c: i32, cp: i32, fg: i32, xa: f32, xb: f32, ya: f32, yb: f32 ]
-        col : rgba col_of[ fg ]
-        cv.fill_color[ col ]
-        cv.stroke_width[ 0.0 ]
-        w  : f32 [ xb - xa ]
-        h  : f32 [ yb - ya ]
-        xm : f32 [ round[ (xa + xb) * 0.5 ] ]
-        ym : f32 [ round[ (ya + yb) * 0.5 ] ]
-        # ---- block elements ----
-        if [ cp == 0x2588 ]
-            cv.rect_to[ xa, ya, w, h ]
-            cv.paint[]
-            return
-        if [ cp == 0x2580 ]
-            cv.rect_to[ xa, ya, w, ym - ya ]
-            cv.paint[]
-            return
-        if [ cp >= 0x2581 && cp <= 0x2587 ]
-            bh : f32 [ round[ h * f32[ cp - 0x2580 ] / 8.0 ] ]
-            cv.rect_to[ xa, yb - bh, w, bh ]
-            cv.paint[]
-            return
-        if [ cp == 0x2590 ]
-            cv.rect_to[ xm, ya, xb - xm, h ]
-            cv.paint[]
-            return
-        if [ cp >= 0x2589 && cp <= 0x258F ]
-            bw : f32 [ round[ w * f32[ 0x2590 - cp ] / 8.0 ] ]
-            cv.rect_to[ xa, ya, bw, h ]
-            cv.paint[]
-            return
-        if [ cp == 0x2594 ]
-            cv.rect_to[ xa, ya, w, round[ h / 8.0 ] ]
-            cv.paint[]
-            return
-        if [ cp == 0x2595 ]
-            bw : f32 [ round[ w / 8.0 ] ]
-            cv.rect_to[ xb - bw, ya, bw, h ]
-            cv.paint[]
-            return
-        if [ cp >= 0x2591 && cp <= 0x2593 ]
-            a : f32 [ (cp == 0x2591) ? 0.25 : ((cp == 0x2592) ? 0.5 : 0.75) ]
-            cv.fill_color[ rgba [ r: col.r, g: col.g, b: col.b, a: a ] ]
-            cv.rect_to[ xa, ya, w, h ]
-            cv.paint[]
-            return
-        if [ cp >= 0x2596 && cp <= 0x259F ]
-            m : i32 [ quad_mask[ cp ] ]
-            if [ (m & 1) != 0 ] cv.rect_to[ xa, ya, xm - xa, ym - ya ]
-            if [ (m & 2) != 0 ] cv.rect_to[ xm, ya, xb - xm, ym - ya ]
-            if [ (m & 4) != 0 ] cv.rect_to[ xa, ym, xm - xa, yb - ym ]
-            if [ (m & 8) != 0 ] cv.rect_to[ xm, ym, xb - xm, yb - ym ]
-            cv.paint[]
-            return
-        # ---- box drawing: segments N/S/E/W from centre ----
-        segs : i32 [ box_segs[ cp ] ]
-        if [ segs >= 0 ]
-            t  : f32 [ maxf[ round[ w / 8.0 ], 1.0 ] ]
-            ht : f32 [ t * 0.5 ]
-            if [ (segs & 1) != 0 ] cv.rect_to[ xm - ht, ya, t, ym - ya + ht ]
-            if [ (segs & 2) != 0 ] cv.rect_to[ xm - ht, ym - ht, t, yb - ym + ht ]
-            if [ (segs & 4) != 0 ] cv.rect_to[ xm - ht, ym - ht, xb - xm + ht, t ]
-            if [ (segs & 8) != 0 ] cv.rect_to[ xa, ym - ht, xm - xa + ht, t ]
-            cv.paint[]
-            return
-        # ---- anything else in range: fall back to the font glyph ----
-        txt : string s.cell_text[ r, c, c + 1 ]
-        cv.fill_color[ col ]
-        cv.draw_text[ txt, rect [ x: xa, y: ya, w: w + (xb - xa), h: h ],
-            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-
-    # quadrant block bitmask: bit0 TL, bit1 TR, bit2 BL, bit3 BR.
-    func quad_mask [ cp: i32 ] -> i32
-        if [ cp == 0x2596 ] return 4
-        if [ cp == 0x2597 ] return 8
-        if [ cp == 0x2598 ] return 1
-        if [ cp == 0x2599 ] return 13
-        if [ cp == 0x259A ] return 9
-        if [ cp == 0x259B ] return 7
-        if [ cp == 0x259C ] return 11
-        if [ cp == 0x259D ] return 2
-        if [ cp == 0x259E ] return 6
-        if [ cp == 0x259F ] return 14
-        return 15
-
-    # box-drawing segment bitmask: bit0 N, bit1 S, bit2 E, bit3 W (heavy variants
-    # approximated as light; unhandled chars return -1 → font fallback).
-    func box_segs [ cp: i32 ] -> i32
-        if [ cp == 0x2500 || cp == 0x2501 ] return 12
-        if [ cp == 0x2502 || cp == 0x2503 ] return 3
-        if [ cp >= 0x250C && cp <= 0x250F ] return 6
-        if [ cp >= 0x2510 && cp <= 0x2513 ] return 10
-        if [ cp >= 0x2514 && cp <= 0x2517 ] return 5
-        if [ cp >= 0x2518 && cp <= 0x251B ] return 9
-        if [ cp >= 0x251C && cp <= 0x2523 ] return 7
-        if [ cp >= 0x2524 && cp <= 0x252B ] return 11
-        if [ cp >= 0x252C && cp <= 0x2533 ] return 14
-        if [ cp >= 0x2534 && cp <= 0x253B ] return 13
-        if [ cp >= 0x253C && cp <= 0x254B ] return 15
-        if [ cp == 0x2550 ] return 12
-        if [ cp == 0x2551 ] return 3
-        if [ cp == 0x2554 ] return 6
-        if [ cp == 0x2557 ] return 10
-        if [ cp == 0x255A ] return 5
-        if [ cp == 0x255D ] return 9
-        if [ cp == 0x256D ] return 6
-        if [ cp == 0x256E ] return 10
-        if [ cp == 0x256F ] return 9
-        if [ cp == 0x2570 ] return 5
-        return -1
+    func draw_row [ cv: Canvas, s: ConsoleSession, r: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
+        draw_cells[ cv, s, s.screen, r * s.cols, s.cols, x0, y, lh, cw ]
 
     # packed 0xRRGGBB → rgba (components 0..1).
     func col_of [ v: i32 ] -> rgba
@@ -1108,50 +1035,117 @@ Control Console
         s.restart[]
         s.running = false
 
+    # xterm modifier parameter: 1 + shift(1) + alt(2) + ctrl(4). 1 = no modifiers.
+    func keymod [ ev: Event ] -> i32
+        m : i32 [ 1 ]
+        if [ ev.key.shift ] m += 1
+        if [ ev.key.alt ]   m += 2
+        if [ ev.key.ctrl ]  m += 4
+        return m
+
+    # cursor / Home / End ('A'..'D','H','F'): modified → CSI 1;mod L; otherwise SS3
+    # (ESC O L) when the app set DECCKM, else plain CSI (ESC [ L). app-cursor mode is
+    # what makes arrow-key menu navigation work in TUIs like claude code.
+    func send_cursor [ s: ConsoleSession, ev: Event, letter: string ]
+        m : i32 [ keymod[ ev ] ]
+        if [ m > 1 ]
+            s.send_esc[ '[1;{m}{letter}' ]
+        el [ s.app_cursor ]
+            s.send_esc[ 'O{letter}' ]
+        el
+            s.send_esc[ '[{letter}' ]
+
+    # Insert/Delete/Page/etc: ESC [ n ~   (modified → ESC [ n ; mod ~)
+    func send_tilde [ s: ConsoleSession, ev: Event, n: i32 ]
+        m : i32 [ keymod[ ev ] ]
+        if [ m > 1 ]
+            s.send_esc[ '[{n};{m}~' ]
+        el
+            s.send_esc[ '[{n}~' ]
+
+    # function keys. F1-F4 = SS3 (ESC O P..S); F5-F12 = CSI n ~. modified forms add
+    # the ;mod parameter.
+    func send_fkey [ s: ConsoleSession, ev: Event, k: i32 ]
+        m : i32 [ keymod[ ev ] ]
+        if [ k <= 293 ]
+            letter : string [ (k == 290) ? 'P' : ((k == 291) ? 'Q' : ((k == 292) ? 'R' : 'S')) ]
+            if [ m > 1 ]
+                s.send_esc[ '[1;{m}{letter}' ]
+            el
+                s.send_esc[ 'O{letter}' ]
+        el
+            # F5=15 F6=17 F7=18 F8=19 F9=20 F10=21 F11=23 F12=24
+            n : i32 [ 15 ]
+            if [ k == 295 ]
+                n = 17
+            el [ k == 296 ]
+                n = 18
+            el [ k == 297 ]
+                n = 19
+            el [ k == 298 ]
+                n = 20
+            el [ k == 299 ]
+                n = 21
+            el [ k == 300 ]
+                n = 23
+            el [ k == 301 ]
+                n = 24
+            send_tilde[ s, ev, n ]
+
     func on_char [ ev: Event ]
         s : ConsoleSession session[]
-        s.write_input[ ev.key.text ]
+        # Alt+<char> is sent as ESC then the char (meta prefix), like a real terminal.
+        if [ ev.key.alt && ev.key.text && ev.key.text.count > 0 ]
+            s.send_esc[ ev.key.text ]
+        el
+            s.write_input[ ev.key.text ]
 
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
         s : ConsoleSession session[]
         k : i32 [ i32 ev.key.unicode ]
-        # page up / down: on the normal buffer they scroll OUR view (scrollback); on
-        # the alt screen a full-screen app owns scrolling, so forward them instead.
-        if [ k == 266 || k == 267 ]    # Key.PageUp / Key.PageDown
-            if [ s.in_alt ]
-                s.write_input[ (k == 266) ? '\x1b[5~' : '\x1b[6~' ]
-                return
+        # page up / down on the NORMAL buffer scroll OUR view (scrollback). on the alt
+        # screen (or modified) they fall through and are forwarded to the app.
+        if [ (k == 266 || k == 267) && !s.in_alt ]
             lh  : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
             ele : Layer (layers) ? layers[ 'content' ] : null
             vh  : f32 [ (ele && ele.bounds) ? ele.bounds.h : f32[s.rows] * lh ]
             page : f32 [ vh - lh ]
-            scroll_by[ s, (k == 266) ? -page : page ]    # Key.PageUp
+            scroll_by[ s, (k == 266) ? -page : page ]
             return
-        if [ k == 257 ]    # Key.Enter
+        if [ k == 257 ]                       # Enter
             s.write_input[ '\r' ]
-        el [ k == 258 ]    # Key.Tab
-            s.write_input[ '\t' ]
-        el [ k == 256 ]    # Key.Escape
-            s.write_input[ '\x1b' ]
-        el [ k == 259 ]    # Key.Backspace
-            s.write_input[ '\x7f' ]
-        el [ k == 261 ]    # Key.Delete
-            s.write_input[ '\x1b[3~' ]
-        el [ k == 260 ]    # Key.Insert
-            s.write_input[ '\x1b[2~' ]
-        el [ k == 268 ]    # Key.Home
-            s.write_input[ '\x1b[H' ]
-        el [ k == 269 ]    # Key.End
-            s.write_input[ '\x1b[F' ]
-        el [ k == 265 ]    # Key.Up
-            s.write_input[ '\x1b[A' ]
-        el [ k == 264 ]    # Key.Down
-            s.write_input[ '\x1b[B' ]
-        el [ k == 263 ]    # Key.Left
-            s.write_input[ '\x1b[D' ]
-        el [ k == 262 ]    # Key.Right
-            s.write_input[ '\x1b[C' ]
+        el [ k == 258 ]                       # Tab / Shift-Tab (back-tab = CSI Z)
+            if [ ev.key.shift ]
+                s.send_esc[ '[Z' ]
+            el
+                s.write_input[ '\t' ]
+        el [ k == 256 ]                       # Escape
+            s.send_esc[ '' ]
+        el [ k == 259 ]                       # Backspace (Ctrl → ^H, else DEL)
+            s.write_input[ (ev.key.ctrl) ? '\x08' : '\x7f' ]
+        el [ k == 265 ]                       # Up
+            send_cursor[ s, ev, 'A' ]
+        el [ k == 264 ]                       # Down
+            send_cursor[ s, ev, 'B' ]
+        el [ k == 262 ]                       # Right
+            send_cursor[ s, ev, 'C' ]
+        el [ k == 263 ]                       # Left
+            send_cursor[ s, ev, 'D' ]
+        el [ k == 268 ]                       # Home
+            send_cursor[ s, ev, 'H' ]
+        el [ k == 269 ]                       # End
+            send_cursor[ s, ev, 'F' ]
+        el [ k == 260 ]                       # Insert
+            send_tilde[ s, ev, 2 ]
+        el [ k == 261 ]                       # Delete
+            send_tilde[ s, ev, 3 ]
+        el [ k == 266 ]                       # PageUp  (alt screen / modified)
+            send_tilde[ s, ev, 5 ]
+        el [ k == 267 ]                       # PageDown
+            send_tilde[ s, ev, 6 ]
+        el [ k >= 290 && k <= 301 ]           # F1..F12
+            send_fkey[ s, ev, k ]
         el [ ev.key.ctrl && k >= 64 && k <= 95 ]
             b : i8 [ i8[k - 64] ]
             write[ s.pty_fd, ref b, 1 ]
@@ -1181,6 +1175,9 @@ Control Console
     func on_press [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
+        # take keyboard focus so key_event/text_event (both dispatch to `focus`) route
+        # here — without this, nothing reaches the terminal's on_key/on_char.
+        set_focus[]
         # right-click copies the current selection to the clipboard (before any
         # left-click would replace it). does not disturb the selection.
         if [ ev.mouse.button == 1 ]

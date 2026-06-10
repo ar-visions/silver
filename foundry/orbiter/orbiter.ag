@@ -1414,7 +1414,22 @@ trinity orbiter # implements compiler
             # a console/agent tab → toggle it; selecting it joins its console pane to the
             # editor set (the user drives one side, the shell is the extra side).
             if [ consoles && consoles[id] ]
+                selecting : bool [ active_console != id ]
                 active_console = (active_console == id) ? '' : id
+                # on first selection, if this console has a `run`, launch it in its
+                # session (create + start the shell, queue the command). re-selecting
+                # an already-running console doesn't relaunch.
+                if [ selecting ]
+                    ci : ConsoleInstance consoles[id]
+                    if [ ci && ci.run && ci.run.count > 0 ]
+                        con : ui_console[]
+                        if [ con ]
+                            ex : ConsoleSession con.sessions[id]
+                            if [ !ex ]
+                                cmd_str : string ''
+                                for [ c: token ] in ci.run
+                                    cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
+                                con.dispatch[ id, cmd_str ]
                 if [ ev.target ] ev.target.ux.restyle = true
                 ev.no_default = true
                 return

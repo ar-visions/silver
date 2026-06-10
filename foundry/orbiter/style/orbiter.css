@@ -108,10 +108,13 @@ Group / Check {
 }
 
 Group.topbar {
-    area:                       l0 t0 r0 h1.5
+    area:                       l0 t0 r0 h1.48
     layers.base:
         fill_color:             #24f1
         inner_glow:             #fff1 16
+    layers.border:
+        area:                   l0 b0px r0 h1px
+        fill_color:             #ffffff04
 }
 
 Group.editor_group {
@@ -162,7 +165,6 @@ Editor / element.pins / Option {
         label_size:             16
         label_align:            0.5 0.5
         label_offset:           0 0
-        label_font:             'fonts/SpaceMono-Regular.ttf'
 }
 
 Editor / element.pins / Option:selected {
@@ -205,7 +207,6 @@ Editor / element.title {
         label_size:             19
         label_align:            0.0 0.5
         label_offset:           44 0
-        label_font:             'fonts/SpaceMono-Regular.ttf'
     layers.divider:
         area:                   l0 t44px r0 h0px
         fill_color:             #fff2
@@ -273,7 +274,6 @@ Console {
         area:               8px
         label_height:       1.0
         label_size:         16
-        label_font:         'fonts/GoogleSansCode-VariableFont_MONO.ttf'
     layers.scrollbar: ScrollLayer
         overlay:            true
         area:               8px
@@ -283,9 +283,13 @@ Console {
         thumb_radius:       4
 }
 
-/* a console/agent joined as the extra (right) pane uses the same slot areas as the
-   editor panes. MUST come after the base Console rule above: trinity's cascade is
-   order-based (later wins), so these override the base area only for the pane. */
+/* a console/agent joined as a pane uses the same slot areas as the editor panes.
+   MUST come after the base Console rule above: trinity's cascade is order-based
+   (later wins), so these override the base area (incl. its t1.3 top offset) for the
+   pane. pane0 = the console is the sole pane (no editor open) → full area, t0. */
+EditorView / Console.pane0 {
+    area:                       l0 t0 r0 b0
+}
 EditorView / Console.pane1 {
     area:                       l@split1=50|0|0 t0 l@split2=100|0|0 b0
 }
@@ -322,7 +326,6 @@ EditorView / Console / element.console_filter {
         label_size:             19
         label_align:            0.0 0.5
         label_offset:           14 0
-        label_font:             'fonts/SpaceMono-Regular.ttf'
 :focused
     layers.face:
         editable:               true
@@ -359,7 +362,6 @@ Editor / element.dbg / element.controls / Button {
         label_color:    #cfe6ff
         label_size:     14
         label_align:    0.5 0.5
-        label_font:     'fonts/SpaceMono-Regular.ttf'
 }
 Editor / element.dbg / element.controls / Button:hovered {
     layers.base:
@@ -486,7 +488,6 @@ Tabs / Button {
     layers.face:
         label_color:            #fff
         label_size:             14
-        label_font:             'fonts/SpaceMono-Regular.ttf'
         label_align:            0.5 0.44
 }
 
@@ -925,7 +926,6 @@ Editor / element.title / element.find {
         label_color:            #fff
         label_align:            0.0 0.5
         label_size:             15
-        label_font:             'fonts/SpaceMono-Regular.ttf'
         editable:               true
 }
 
@@ -939,7 +939,6 @@ Editor / element.title / element.replace {
         label_color:            #fff
         label_align:            0.0 0.5
         label_size:             15
-        label_font:             'fonts/SpaceMono-Regular.ttf'
         editable:               true
 }
 
@@ -956,7 +955,6 @@ Editor / element.title / element.pattern {
         label_color:            #fff
         label_align:            0.0 0.5
         label_size:             15
-        label_font:             'fonts/SpaceMono-Regular.ttf'
         editable:               true
 }
 
@@ -972,7 +970,6 @@ Editor / element.title / element.infile {
         label_color:            #fff8
         label_align:            0.0 0.5
         label_size:             15
-        label_font:             'fonts/SpaceMono-Regular.ttf'
 }
 
 Editor / element.title / element.infile:selected {
@@ -1003,7 +1000,6 @@ Editor / element.title / element.replace_all_action {
         label_color:            #fff
         label_size:             15
         label_align:            0.5 0.5
-        label_font:             'fonts/SpaceMono-Regular.ttf'
         opacity:                0.6
 }
 
@@ -1053,7 +1049,6 @@ Toolbar.right / element.title {
         label_color:            #fff
         label_size:             15
         label_align:            0.5 0.3
-        label_font:             'fonts/SpaceMono-Regular.ttf'
     layers.border:
         area:           l0 t44px r0 h1px
         fill_color:     #2440
@@ -1132,7 +1127,6 @@ element.filter {
         label_align:    0.0 0.5
         label_offset:   8 0
         label_size:     14
-        label_font:     'fonts/SpaceMono-Regular.ttf'
         editable:       true
     layers.border:
         area:           l0 t0 r0 h1px

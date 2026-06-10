@@ -27,6 +27,8 @@ consoles:
 	claude: ConsoleInstance
 		name:	claude
 		kind:	claude
+		run:	claude
 	gemini: ConsoleInstance
 		name:	gemini
 		kind:	gemini
+		run:	gemini -y

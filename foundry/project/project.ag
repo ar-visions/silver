@@ -43,3 +43,7 @@ class Project
 class ConsoleInstance
     public name : string
     public kind : string
+
+    # optional command to launch when this console is first selected (whitespace-
+    # delimited tokens, like Project.build/run) — e.g. `run: claude --dangerously-skip-permissions`.
+    public run  : array token

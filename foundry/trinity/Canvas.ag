@@ -1632,10 +1632,10 @@ Render Canvas
         # mutating a shared instance re-rasterizes + invalidates its glyph cache,
         # which is what randomized glyphs. loaded once, never unloaded, borrowed.
         if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
-        key : string 'DejaVuSansMono@{sz}'
-        cf  : CanvasFont vk.font_cache[ key ] 
+        key : string 'SpaceMono-Combined@{sz}'
+        cf  : CanvasFont vk.font_cache[ key ]
         if [ !cf ]
-            cf = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/DejaVuSansMono.ttf', size_px: sz ]
+            cf = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/SpaceMono-Combined.ttf', size_px: sz ]
             vk.font_cache[ key ] = cf
         font = cf
 
