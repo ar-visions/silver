@@ -7806,6 +7806,7 @@ define_class(line, Au)
 define_enum(OPType)
 define_enum(Exists)
 define_enum(level)
+define_enum(Syntax)
 
 define_class(path, string)
 //define_class(file)

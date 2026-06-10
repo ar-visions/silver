@@ -10,7 +10,9 @@ projects:
 	hyperspace: Project
 		name: 	hyperspace
 		root: 	'/src/silver/foundry/hyperspace'
-		build:	silver hyperspace
+		build:	silver hyperspace --clean
+		cwd:	'/src/silver'
+		run:	hyperspace
 	
 	test4: Project
 		name: 	test4

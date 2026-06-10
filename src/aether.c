@@ -7455,12 +7455,6 @@ none etype_implement(etype t, bool w) { sequencer
                         // af_index = af-bit slot; only accessible (non-union, non-intern) members.
                         if (!(au->is_union || is_intern))
                             m->af_index = af_idx++;
-                        if (m->ident && strcmp(m->ident, "selected") == 0)
-                            printf("[layout] %s :: %s.selected -> index=%i (counter pre=%i)\n",
-                                au->ident ? au->ident : "?",
-                                tt->autype->ident ? tt->autype->ident : "?",
-                                (int)m->member_index, (int)m->member_index);
-                    
                     }
                 }
             }
@@ -8768,9 +8762,11 @@ void aether_reinit_startup(aether a) {
     
     a->autype = def_module(a->name->chars);
     etype_register(a, (Au)a->autype, (Au)hold(a), false);
-    
+    a->type_id = null;
+    a->schema  = null;
+
     if (a->module_file) // if this is not yet set, we do nothing (its set in silver; we must prime lldb with a manual call before the watch)
-        llvm_reinit(a); 
+        llvm_reinit(a);
 
     // push our module space to the scope
     Au_t g = global();
