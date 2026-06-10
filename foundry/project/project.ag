@@ -37,3 +37,9 @@ class Project
     # working directory for the RUN only (the launched app under lldb); the build
     # runs in `root`, not here.
     public cwd      : path
+
+# a console instance from orbiter.agi (parsed the same as Project): a named console that's
+# either a shell or an AI agent. kind: 'shell' | 'claude' | 'chatgpt' | 'gemini'.
+class ConsoleInstance
+    public name : string
+    public kind : string

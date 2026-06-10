@@ -1486,9 +1486,8 @@ Control Editor
         # mouse is over the gutter column so the close icon only shows there.
         if [ !ele ] return
         lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
-        # hover (move) events are NOT scroll-folded by find_target (only press/capture are),
-        # so add the content scroll to land on the right row.
-        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + scroll.y ]
+        # same coordinate math as place_cursor (find_target folds scroll into mouse.pos.y).
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
         hl    : i32  [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]   # visual row = flat row
         hg    : bool [ rel_x >= 0.0 && rel_x < gutter_w ]

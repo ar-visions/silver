@@ -1451,8 +1451,25 @@ Render Canvas
         st  : CanvasState states[state_depth - 1]
         n   : (text) ? text.count : 0
         tw  : f32 [ 0.0 ]
-        for [ i: i64 0, i < n, i += 1 ]
-            cp : text[i]
+        i   : i64 [ 0 ]
+        while [ i < n ]
+            b  : i32 [ text[i] & 255 ]
+            cp : u32 [ 0 ]
+            if [ b < 128 ]
+                cp = u32[ b ]
+                i += 1
+            el [ b >= 240 && i + 3 < n ]
+                cp = u32[ ((b & 7) << 18) | ((text[i + 1] & 63) << 12) | ((text[i + 2] & 63) << 6) | (text[i + 3] & 63) ]
+                i += 4
+            el [ b >= 224 && i + 2 < n ]
+                cp = u32[ ((b & 15) << 12) | ((text[i + 1] & 63) << 6) | (text[i + 2] & 63) ]
+                i += 3
+            el [ b >= 192 && i + 1 < n ]
+                cp = u32[ ((b & 31) << 6) | (text[i + 1] & 63) ]
+                i += 2
+            el
+                cp = u32[ b ]
+                i += 1
             g  : font.get_glyph [ cp ]
             if [ g.cached ]
                 tw += f32 g.advance
@@ -1615,10 +1632,10 @@ Render Canvas
         # mutating a shared instance re-rasterizes + invalidates its glyph cache,
         # which is what randomized glyphs. loaded once, never unloaded, borrowed.
         if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
-        key : string 'SpaceMono-Regular@{sz}'
-        cf  : CanvasFont vk.font_cache[ key ]
+        key : string 'DejaVuSansMono@{sz}'
+        cf  : CanvasFont vk.font_cache[ key ] 
         if [ !cf ]
-            cf = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/SpaceMono-Regular.ttf', size_px: sz ]
+            cf = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/DejaVuSansMono.ttf', size_px: sz ]
             vk.font_cache[ key ] = cf
         font = cf
 
@@ -1852,8 +1869,27 @@ Render Canvas
         crop_x0 : f32 [ st.crop.x ]
         crop_x1 : f32 [ st.crop.z ]
 
-        for [ i: i32 0, i < display.count, i += 1 ]
-            cp   : u32 [ display[i] ]
+        i : i32 [ 0 ]
+        while [ i < display.count ]
+            # decode one UTF-8 codepoint (NOT one byte) so multibyte glyphs — box
+            # drawing, arrows, bullets, emoji — look up the right glyph, not 3 bytes.
+            b  : i32 [ display[i] & 255 ]
+            cp : u32 [ 0 ]
+            if [ b < 128 ]
+                cp = u32[ b ]
+                i += 1
+            el [ b >= 240 && i + 3 < display.count ]
+                cp = u32[ ((b & 7) << 18) | ((display[i + 1] & 63) << 12) | ((display[i + 2] & 63) << 6) | (display[i + 3] & 63) ]
+                i += 4
+            el [ b >= 224 && i + 2 < display.count ]
+                cp = u32[ ((b & 15) << 12) | ((display[i + 1] & 63) << 6) | (display[i + 2] & 63) ]
+                i += 3
+            el [ b >= 192 && i + 1 < display.count ]
+                cp = u32[ ((b & 31) << 6) | (display[i + 1] & 63) ]
+                i += 2
+            el
+                cp = u32[ b ]
+                i += 1
             slot : glyph_atlas.get[ font, cp ]
             if [ slot.cached && slot.atlas_w > 0 && slot.atlas_h > 0 ]
                 if [ vi + 6 > text_max_verts ]

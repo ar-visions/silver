@@ -35,6 +35,9 @@ Option  CallStack
 # output, lldb). `state` drives the side status light color.
 Option  ProjectTab
     public state : string
+# bottom-bar console instance tab — a shell or an AI agent (claude/chatgpt/gemini).
+Option  ConsoleTab
+    public kind : string
 Control Tabs
 Control Instances
     public selected : bool
@@ -79,6 +82,10 @@ trinity orbiter # implements compiler
     # srcs are derived from it (sync_targets) so the rest of the app keeps using
     # the flat arrays. cleared + reloaded whenever orbiter.agi changes.
     public projects      : map Project [string]
+    # console instances from orbiter.agi (shells / AI agents), keyed by name. drives the
+    # bottom Instances bar's tab strip; active_console = the one shown in the console.
+    public consoles      : map ConsoleInstance [string]
+    intern active_console : string
     # per-workspace session state (open tabs + future props), keyed by workspace
     # path. loaded from / saved to <os-cache>/orbiter/states.agi via parse_agi.
     public states        : map orbiter_state [string]
@@ -1133,6 +1140,14 @@ trinity orbiter # implements compiler
         if [ !eds ] return null
         return Editor eds.elements[ 'pane{i}' ]
 
+    # the joined console pane (the selected shell/agent), sitting just past the last
+    # editor slot. null unless a shell is selected (active_console set).
+    func console_pane [] -> Console
+        if [ !editor_group ] return null
+        eds : element editor_group.elements['editors']
+        if [ !eds ] return null
+        return Console eds.elements[ 'pane{editor_slots.count}' ]
+
     # the editor finder: build the navigate list, then DISPLAY it in the focused
     # pane only. (the FileList calls index_search directly and renders them itself.)
     func run_search []
@@ -1396,6 +1411,13 @@ trinity orbiter # implements compiler
             return
         if [ ev.target inherits Option ]
             id : string ev.target.id
+            # a console/agent tab → toggle it; selecting it joins its console pane to the
+            # editor set (the user drives one side, the shell is the extra side).
+            if [ consoles && consoles[id] ]
+                active_console = (active_console == id) ? '' : id
+                if [ ev.target ] ev.target.ux.restyle = true
+                ev.no_default = true
+                return
             if [ id == 'system' ]
                 active_target = 'system'
                 sync_active[]
@@ -1614,6 +1636,24 @@ trinity orbiter # implements compiler
                         cons.pristine   = false
                         w.will_animate     = true
 
+            # the joined console pane shares this sessions map but renders a DIFFERENT
+            # session (active_console, not active_target), so clear ITS cache on dirty.
+            if [ active_console && active_console.count > 0 ]
+                pc : Console console_pane[]
+                ps : ConsoleSession (cons.sessions) ? cons.sessions[ active_console ] : null
+                if [ pc && ps && ps.dirty ]
+                    pc.pristine = false
+                    ps.dirty    = false
+                    w.will_animate = true
+                # while the title filter is focused, the user is typing — repaint the
+                # pane each frame so the filtered view tracks the edit (the title only
+                # marks ITSELF dirty; the cached terminal layer needs its own kick).
+                if [ pc && pc.elements ]
+                    pt : element pc.elements['console_filter']
+                    if [ pt && pt.focused ]
+                        pc.pristine    = false
+                        w.will_animate = true
+
         # is a run live for the active target → play button shows stop. true during
         # the build (console shell running) AND during the actual debug session: once
         # the build's shell returns to prompt the console clears is_running, but the
@@ -1637,7 +1677,10 @@ trinity orbiter # implements compiler
         # one Editor per split slot. the panes tile left-to-right between split seams
         # (split1/2/3, absolute x in units). the focused pane is the search pane; the
         # others keep their own files.
-        ecount : i32 [ editor_slots.count ]
+        # a selected shell joins an extra console pane on the right (the "effective" set:
+        # the user's editor on one side, the shell/agent on the other).
+        has_console : bool [ active_console && active_console.count > 0 ]
+        ecount : i32 [ editor_slots.count + ((has_console) ? 1 : 0) ]
         if [ ecount < 1 ] ecount = 1
         layout_splits[ ecount ]
         sp : string search_pane[]
@@ -1647,6 +1690,16 @@ trinity orbiter # implements compiler
             slot : i32    [ editor_slots[i] ]
             spath: path   (slot >= 0 && slot < open_files.count) ? open_files[slot] : null
             editor_els[pid] = pane_for[ spath, docked_left, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open', i ]
+        if [ has_console ]
+            bcon  : Console ui_console[]
+            csess : map ConsoleSession[string] (bcon) ? bcon.sessions : null
+            # editable title = the per-console line filter. label is the shell/agent
+            # name (shown as placeholder); the element retains its own typed `edit`.
+            # id is 'console_filter' (NOT 'title') so the app on_char's id=='title'
+            # branch — which drives the editor's find_text — doesn't catch it.
+            ctitle : Elements []
+            ctitle['console_filter'] = element [ label: active_console, focusable: true, no_scroll: true ]
+            editor_els['pane{editor_slots.count}'] = Console [ session_id: active_console, sessions: csess, feed: null, elements: ctitle ]
 
         # the orbiter avatar logo on an empty 'Open' pane (no file, no results).
         # interactive here (not ghost) since it IS the page content, and not topmost
@@ -1659,14 +1712,28 @@ trinity orbiter # implements compiler
 
         # the console bar (Instances). the stack sub-column (callstack + fields) is
         # toggled per-editor by the menu icon in each editor's title — not here.
+        # console-instance tabs (shells / AI agents) from orbiter.agi — they control the
+        # agent view; sit top-right next to the project tabs (same topbar parent).
+        console_nav : Elements []
+        if [ consoles ]
+            for [ ci: ConsoleInstance, cname: string ] in consoles
+                console_nav[cname] = ConsoleTab [ label: cname, kind: ci.kind, selected: active_console == cname ]
+
         inst_els : Elements []
-        inst_els['source_nav'] = Tabs [ elements: source_nav ]
-        inst_els['tools'] = Tabs [ elements: Elements [
-            'play': Option [ disable: active_target == 'system', selected: play_running, manual_mode: true ]
-        ] ]
         inst_els['console'] = Console [ session_id: active_target, feed: null ]
 
+        # top strip: play button + project session tabs (left) + console/agent tabs (right),
+        # in a Group so it gets the same fill/inner-glow shading as the console bar.
+        topbar_els : Elements []
+        topbar_els['tools'] = Tabs [ elements: Elements [
+            'play': Option [ disable: active_target == 'system', selected: play_running, manual_mode: true ]
+        ] ]
+        topbar_els['source_nav']  = Tabs [ elements: source_nav ]
+        topbar_els['console_nav'] = Tabs [ elements: console_nav ]
+
         return Elements [
+            "topbar": Group [ elements: topbar_els ],
+
             "editor_group": Group [
                 # right edge follows the right_w seam (→ r0/full when the panel is
                 # toggled off), so no selected-based fill override is needed; this

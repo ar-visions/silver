@@ -107,8 +107,15 @@ Group / Check {
         fill_color:             #4afa, 222ms cubic
 }
 
+Group.topbar {
+    area:                       l0 t0 r0 h1.5
+    layers.base:
+        fill_color:             #24f1
+        inner_glow:             #fff1 16
+}
+
 Group.editor_group {
-    area:                       l0 t0 r0 b@console_h=6.9|0|50
+    area:                       l0 t1.5 r0 b@console_h=6.9|0|50
 
     layers.compose:
         radius:                 0
@@ -266,6 +273,7 @@ Console {
         area:               8px
         label_height:       1.0
         label_size:         16
+        label_font:         'fonts/GoogleSansCode-VariableFont_MONO.ttf'
     layers.scrollbar: ScrollLayer
         overlay:            true
         area:               8px
@@ -273,6 +281,52 @@ Console {
         thumb_w:            6
         thumb_min_h:        32
         thumb_radius:       4
+}
+
+/* a console/agent joined as the extra (right) pane uses the same slot areas as the
+   editor panes. MUST come after the base Console rule above: trinity's cascade is
+   order-based (later wins), so these override the base area only for the pane. */
+EditorView / Console.pane1 {
+    area:                       l@split1=50|0|0 t0 l@split2=100|0|0 b0
+}
+EditorView / Console.pane2 {
+    area:                       l@split2=100|0|0 t0 l@split3=150|0|0 b0
+}
+EditorView / Console.pane3 {
+    area:                       l@split3=150|0|0 t0 r0 b0
+}
+
+/* a joined console pane pushes its terminal content below the title strip. shared
+   across all paneN ids; after the base Console rule so the override wins (order
+   cascade). the title itself is an editable child element (below) — its `edit` is
+   the per-console line filter. */
+EditorView / Console {
+    layers.content:
+        area:                   l8px t44px r8px b8px
+    layers.scrollbar:
+        area:                   l8px t44px r8px b8px
+}
+
+/* the console pane's title bar: shows the shell/agent name, and is editable on focus
+   to filter that console's lines (mirrors the editor title's find field). */
+EditorView / Console / element.console_filter {
+    area:                       l0 t0 r0 h44px
+    focusable:                  true
+    layers.base:
+        fill_color:             #2480
+        inner_glow:             #8af2 26
+        stroke_width:           0.5
+        stroke_color:           #fff2
+    layers.face:
+        label_color:            #fff
+        label_size:             19
+        label_align:            0.0 0.5
+        label_offset:           14 0
+        label_font:             'fonts/SpaceMono-Regular.ttf'
+:focused
+    layers.face:
+        editable:               true
+        label_color:            #ffff
 }
 
 /* callstack + fields: a vertical stack on the editor's right. on/off is per-editor
@@ -489,12 +543,12 @@ Tabs / Option {
         label_color:            #fff
 }
 
-/* console header: system menu icon + play button on the left */
-Instances / Tabs.tools {
-    area:                       l0 t0 w1.7 h1.2
+/* top strip: play button on the left, project session tabs to its right */
+Tabs.tools {
+    area:                       l0 t0 w1.7 h1.5
 }
-Instances / Tabs.tools / Option.play {
-    area:                       l6px t6px w1.5 h1
+Tabs.tools / Option.play {
+    area:                       l8px t8px w1.5 h1
     layers.base:
         fill_color:             #243450
         fill_gradient:          linear
@@ -510,22 +564,22 @@ Instances / Tabs.tools / Option.play {
         opacity:                1.0
 }
 
-Instances / Tabs.tools / Option.play:disable {
+Tabs.tools / Option.play:disable {
     layers.svg:
         opacity:                0.3
 }
 
-Instances / Tabs.tools / Option.play:selected {
+Tabs.tools / Option.play:selected {
     layers.svg:
         image_svg:              "images/stop.svg"
 }
 
 Tabs.source_nav {
-    area:                       l1.7 t0 r0 h1.2
+    area:                       l1.7 t0 r0 h1.5
 }
 
 Tabs.source_nav / Option {
-    area:                       l1+px t6px w3 h1
+    area:                       l1+px t8px w3 h1
     layers.base:
         fill_color:             #243450
         fill_gradient:          linear
@@ -547,7 +601,7 @@ Tabs.source_nav / Option:hovered {
 }
 Tabs.source_nav / Option:first {
     layers.base:
-        radius:                 6 0 0 6
+        radius:                 8 0 0 8
 }
 Tabs.source_nav / Option:middle {
     layers.base:
@@ -555,18 +609,58 @@ Tabs.source_nav / Option:middle {
 }
 Tabs.source_nav / Option:last {
     layers.base:
-        radius:                 0 6 6 0
+        radius:                 0 8 8 0
 }
 
 Tabs.source_nav / Option.system {
-    area:                       l6+px t6px w1 h1
+    area:                       l8+px t8px w1 h1
     layers.face:
         label_color:            #0000
     layers.svg:
         area:                   4px
         image_svg:              "images/gear.svg"
-        image_scale:            1.4
+        image_scale:            1.9
         image_align:            0.5 0.5
+}
+
+/* console/agent tabs — exactly the project-tab style, right-aligned */
+Tabs.console_nav {
+    area:                       rw t0 wc h1.5
+}
+Tabs.console_nav / Option {
+    area:                       l1+px t8px w3 h1
+    layers.base:
+        fill_color:             #243450
+        fill_gradient:          linear
+        fill_gradient_color:    #1b2740
+        fill_gradient_angle:    90
+        inner_glow:             #8af1 16
+        radius:                 8 8 8 8
+    layers.face:
+        area:                   l0 t0 r0 b0
+        label_align:            0.5 0.5
+}
+Tabs.console_nav / Option:hovered {
+    layers.base:
+        fill_color:             #3a5a90
+        fill_gradient:          linear
+        fill_gradient_color:    #2a4068
+        fill_gradient_angle:    90
+        inner_glow:             #8af4 18
+}
+Tabs.console_nav / Option:first {
+    layers.base:
+        radius:                 8 0 0 8
+}
+Tabs.console_nav / Option:middle {
+    layers.base:
+        radius:                 0 0 0 0
+}
+Tabs.console_nav / Option:last {
+    area:                       l1+px t8px w3.2 h1
+    layers.base:
+        area:                   l0 t0 r8px b0
+        radius:                 0 8 8 0
 }
 
 
