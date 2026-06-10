@@ -1720,6 +1720,31 @@ declare_class(mutex)
 declare_class(async)
 
 #define token_module_ Au
+// syntax classification of a token — the parser→tooling contract. any language built on
+// silver inherits this: the lexer stamps the lexical kinds (string/number/comment/…) and
+// the parser refines the semantic ones (keyword/type/ident/…) as it consumes tokens.
+// editors/formatters read tok.syntax; the values align with LSP semantic-token types.
+#define Syntax_module_ Au
+#define Syntax_schema(E,T,Y,...) \
+    enum_value(E,T,Y, _none,        0) \
+    enum_value(E,T,Y, _keyword,     1) \
+    enum_value(E,T,Y, _type,        2) \
+    enum_value(E,T,Y, _ident,       3) \
+    enum_value(E,T,Y, _function,    4) \
+    enum_value(E,T,Y, _param,       5) \
+    enum_value(E,T,Y, _property,    6) \
+    enum_value(E,T,Y, _number,      7) \
+    enum_value(E,T,Y, _str,         8) \
+    enum_value(E,T,Y, _character,   9) \
+    enum_value(E,T,Y, _boolean,     10) \
+    enum_value(E,T,Y, _comment,     11) \
+    enum_value(E,T,Y, _op,          12) \
+    enum_value(E,T,Y, _punctuation, 13) \
+    enum_value(E,T,Y, _namespace,   14) \
+    enum_value(E,T,Y, _constant,    15) \
+    enum_value(E,T,Y, _usertoken,   16)
+declare_enum(Syntax)
+
 #define token_schema(AA,BB,...) \
     M(AA,BB, i, prop,    public, path,   source, meta, weak) \
     M(AA,BB, i, prop,    public, num,    line) \
@@ -1727,6 +1752,7 @@ declare_class(async)
     M(AA,BB, i, prop,    public, num,    indent) \
     M(AA,BB, i, prop,    public, string, annotation) \
     M(AA,BB, i, prop,    public, Au,     literal) \
+    M(AA,BB, i, prop,    public, Syntax, syntax) \
     M(AA,BB, i, prop,    public, bool,   cmode) \
     M(AA,BB, i, prop,    public, bool,   neighbor) \
     M(AA,BB, i, method,  public, Au_t,   get_type) \
