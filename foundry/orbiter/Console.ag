@@ -915,6 +915,10 @@ Layer TermLayer
         con.content_h = total_h
         con.scroll.y  = s.scroll
 
+        # clip to the content bounds so a partially-scrolled top/bottom row doesn't
+        # bleed above into the title bar (or below the pane). the shaders honor crop.
+        cv.set_crop[ bounds.x, bounds.y, bounds.x + bounds.w, bounds.y + bounds.h ]
+
         # selection highlight behind the text — shared render with the editor.
         cv.draw_selection[ x0, y0, lh, cw, s.scroll, bounds.y, bounds.w, bounds.h,
             s.anchor_line, s.anchor_col, s.sel_line, s.sel_col, rgba['#264f78'] ]
@@ -940,6 +944,7 @@ Layer TermLayer
             cv.stroke_width[ 0.0 ]
             cv.rect_to     [ cur_px, cur_py, cw, lh ]
             cv.paint[]
+        cv.clear_crop[]
 
     # one screen row rendered as colored runs: consecutive cells sharing fg/bg/attr
     # draw as a single text span (and a bg rect when the bg isn't the default).
