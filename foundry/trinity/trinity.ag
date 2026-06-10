@@ -856,8 +856,13 @@ Display Window
             seam_hover = make_seam[ c.area.bind_l, c, 0, (c.area.l.x_type == XAlign.right) ? -1.0 : 1.0 ]
             seam_hl    = rect [ x: b.x, y: b.y, w: 6.0, h: b.h ]
         el [ c.area.bind_r && my >= b.y && my <= b.y + b.h && mx >= b.x + b.w - 6.0 && mx <= b.x + b.w ]
-            seam_hover = make_seam[ c.area.bind_r, c, 0, (c.area.r.x_type == XAlign.right) ? -1.0 : 1.0 ]
-            seam_hl    = rect [ x: b.x + b.w - 6.0, y: b.y, w: 6.0, h: b.h ]
+            # a visible vertical scrollbar lives on this right edge and its grab zone owns
+            # the strip — so the seam is off-limits on this side (drag it from the
+            # neighbor's edge instead). otherwise the <-> cursor steals the scrollbar.
+            has_vscroll : bool [ c.content_h > 0.0 && b.h < c.content_h && c.layers && c.layers['scrollbar'] != null ]
+            if [ !has_vscroll ]
+                seam_hover = make_seam[ c.area.bind_r, c, 0, (c.area.r.x_type == XAlign.right) ? -1.0 : 1.0 ]
+                seam_hl    = rect [ x: b.x + b.w - 6.0, y: b.y, w: 6.0, h: b.h ]
 
     public func find_target [ e: element, ev: Event, must: element ] -> element
         # fully-transparent elements are hidden — ignore them (and their
@@ -1631,11 +1636,18 @@ Display Window
 
         e.needs_frame = false
 
+        # the vertical scrollbar is painted LAST — after the masked cache blit and
+        # without the mask (see below) — so the edge fade never dims the bar. when this
+        # element caches to the screen, skip it in the cached layer loop and defer it.
+        defer_scroll : bool [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
+
         # compute layer bounds and draw each layer
         for [ layer_au: Au, lkey: string ] in e.layers
             if [ !redraw ] break
             layer : Layer [ layer_au to Layer ]
             if [ !layer || layer.ctype != stage || layer.hide ]
+                continue
+            if [ defer_scroll && lkey == 'scrollbar' ]
                 continue
 
             layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null, e.fc ] : e.bounds.copy[]
@@ -1897,6 +1909,17 @@ Display Window
                     0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
             el
                 cv.draw_canvas[ e.cache_canvas, 0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
+            # scrollbar over the freshly-blitted (edge-faded) content, in element-local
+            # space, with NO mask. runs every screen frame so the bar can widen/animate
+            # without the element having to redraw its whole cache.
+            sbl : ScrollLayer (e.layers) ? (e.layers['scrollbar'] to ScrollLayer) : null
+            if [ sbl && sbl.ctype == stage && !sbl.hide ]
+                sbl.bounds = (sbl.area) ? sbl.area.rectangle[ e.bounds, null, null, e.fc ] : e.bounds.copy[]
+                sbl.bounds.x -= e.bounds.x
+                sbl.bounds.y -= e.bounds.y
+                cv.save[ ]
+                sbl.draw[ cv ]
+                cv.restore[ ]
 
         last_2 : element
         # paint normal children first, then topmost children over them
