@@ -1883,8 +1883,11 @@ Display Window
                     e.mask_canvas.rect_to[ mrx, mry, mrw, mrh ]
                     e.mask_canvas.paint[]
                     # keep a left strip fully opaque (e.g. a fixed gutter) — the left
-                    # fade then originates just right of it. drawn after the glow.
+                    # fade then originates just right of it. clear the inner glow first
+                    # so this strip is PURE white (otherwise it inherits the fade's glow
+                    # on its own edges and the gutter dims).
                     if [ e.mask_keep_l > 0.0 ]
+                        e.mask_canvas.inner_glow_sides[ rgba['#fff'], 0.0, 0.0, 0.0, 0.0 ]
                         e.mask_canvas.fill_color[ rgba['#fff'] ]
                         e.mask_canvas.rect_to[ 0.0, mry, e.mask_keep_l, mrh ]
                         e.mask_canvas.paint[]

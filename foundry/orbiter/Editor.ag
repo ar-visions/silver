@@ -238,6 +238,18 @@ Layer EditorLayer
                     cv.fill_color[ editor.bp_color[ bp ] ]
                     cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
                     cv.paint[ ]
+            # current/selected-line background — painted here in the gutter stage (BEHIND
+            # the code) exactly like the breakpoint band, so the code sits on top and the
+            # color shows through, and it's masked at the edges the same way.
+            if [ editor.sel_line >= 0 && editor.sel_line < editor.line_count[] ]
+                a_ln : i32 [ clamp[ editor.anchor_line, 0, editor.line_count[] - 1 ] ]
+                s_ln : i32 [ editor.sel_line ]
+                lo   : i32 [ (a_ln < s_ln) ? a_ln : s_ln ]
+                hi   : i32 [ (a_ln < s_ln) ? s_ln : a_ln ]
+                if [ li >= lo && li <= hi ]
+                    cv.fill_color[ (line_color) ? line_color : rgba['#ffffff18'] ]
+                    cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
+                    cv.paint[ ]
             cv.fill_color[ rgba['#ffffff08'] ]
             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
             cv.paint[ ]
@@ -470,23 +482,12 @@ Layer EditorLayer
                 editor.filter_rect = null
                 editor.filter_next = false
 
-            cur_line_col : rgba [ (line_color) ? line_color : rgba['#ffffff18'] ]
+            # the base selected-line band(s) are painted earlier, in the gutter stage
+            # (behind the code) — see the current-line band there. here we only draw the
+            # rounded selection highlight in front of the text (masked).
             sel_col_val  : rgba [ (sel_color)  ? sel_color  : rgba['#264f78'] ]
 
-            y_cur : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll.y ]
-            cv.fill_color[ cur_line_col ]
-            cv.rect_to[ bounds.x, y_cur, bounds.w - rin - 1.0, lh ]
-            cv.paint[ ]
-
             if [ has_sel ]
-                for [ li: i32 start_line, li <= end_line, li += 1 ]
-                    if [ li == editor.sel_line ] continue
-                    y_row : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
-                    if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
-                    cv.fill_color[ cur_line_col ]
-                    cv.rect_to[ bounds.x, y_row, bounds.w - rin - 1.0, lh ]
-                    cv.paint[ ]
-
                 cv.save[ ]
                 cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
                 pad : 2
@@ -562,16 +563,19 @@ Layer EditorLayer
                     crop_x : f32 [ (use_filter) ? editor.filter_rect.x : rx ]
                     crop_w : f32 [ (use_filter) ? editor.filter_rect.w : rw ]
                     # X clips to the (animated) selection/filter rect; Y clips
-                    # to the editor bounds so partial rows can't spill on scroll.
-                    cv.set_crop[ tx + crop_x, ty + bounds.y,
+                    # to the editor bounds so partial rows can't spill on scroll. left is
+                    # clamped to the gutter edge so horizontally-scrolled selected text
+                    # never draws over the stationary line-number column.
+                    sel_lx : f32 [ (crop_x > bounds.x + gut_w) ? crop_x : bounds.x + gut_w ]
+                    cv.set_crop[ tx + sel_lx, ty + bounds.y,
                         tx + crop_x + crop_w, ty + bounds.y + bounds.h ]
                     cv.fill_color[ '#fff' ]
                     cv.draw_text[ editor.display_of[ lnv ],
                         rect [ x: bx, y: y_row, w: bounds.w - gut_w, h: lh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
                 cv.paint[ ]
-                # back to full editor-bounds crop for the cursor below
-                cv.set_crop[ tx + bounds.x, ty + bounds.y,
+                # back to the code-region crop (gutter edge) for the cursor below
+                cv.set_crop[ tx + bounds.x + gut_w, ty + bounds.y,
                     tx + bounds.x + bounds.w, ty + bounds.y + bounds.h ]
 
             if [ parent.focused ]
@@ -1659,6 +1663,11 @@ Control Editor
 
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
+        # ignore modifier keys (shift/ctrl/alt/super, GLFW 340-347): they must not touch
+        # the selection. a modifier's own keydown reports shift=0, so without this it
+        # would fall through to the trailing "!shift collapses selection" and clear it.
+        mk : i32 [ i32 ev.key.unicode ]
+        if [ mk >= 340 && mk <= 347 ] return
         # active (non-edit) state: the keyboard drives the debugger, not editing —
         #   c = continue, s = step over, i = step into, o = step out, esc = edit
         # esc / double-click / the 'active' button all re-arm editing.
