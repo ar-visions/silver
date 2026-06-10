@@ -1,6 +1,4 @@
 # comments allowed
-show_right: true
-
 projects:
 	silver: Project
 		name: 	silver
@@ -21,3 +19,14 @@ projects:
 		build:	silver test4 --clean
 		cwd:	'/src/silver'
 		run:	test4
+
+consoles:
+	shell: ConsoleInstance
+		name:	shell
+		kind:	shell
+	claude: ConsoleInstance
+		name:	claude
+		kind:	claude
+	gemini: ConsoleInstance
+		name:	gemini
+		kind:	gemini
