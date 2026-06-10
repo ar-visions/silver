@@ -7,7 +7,7 @@
             "request":          "launch",
             "preLaunchTask":    "build-silver-debug",
             "program":          "${workspaceFolder}/install/debug/silver",
-            "args":             [ "hyperspace", "-v", "--clean" ],
+            "args":             [ "hyperspace", "--verbose", "--clean" ],
             "cwd":              "${workspaceFolder}/install/share/hyperspace",
             "stopOnEntry":      false,
             "env": {
@@ -47,8 +47,28 @@
             "request":          "launch",
             "preLaunchTask":    "build-silver-debug",
             "program":          "${workspaceFolder}/install/debug/silver",
-            "args":             [ "orbiter", "--verbose", "--clean" ],
+            "args":             [ "orbiter", "--clean" ],
             "cwd":              "${workspaceFolder}/install",
+            "stopOnEntry":      false,
+            "env": {
+                "LD_LIBRARY_PATH":  "${workspaceFolder}/install/lib",
+                "IMPORT":           "${workspaceFolder}/install",
+                "ASAN_OPTIONS":     "detect_leaks=0 quarantine_size_mb=0:suppressions=/src/silver/asan.supp",
+                "VK_LAYER_PATH":    "${workspaceFolder}/install/share/vulkan/explicit_layer.d",
+                "AU_SKIP_DROP":     ""
+            },
+            "initCommands": [
+                "settings set target.process.stop-on-exec false"
+            ]
+        },
+        {
+            "name":             "orbiter (format)",
+            "type":             "lldb",
+            "request":          "launch",
+            "preLaunchTask":    "build-silver-debug",
+            "program":          "${workspaceFolder}/install/debug/silver",
+            "args":             [ "orbiter", "-w", "--format", "/src/silver/orbiter.f" ],
+            "cwd":              "/src/silver",
             "stopOnEntry":      false,
             "env": {
                 "LD_LIBRARY_PATH":  "${workspaceFolder}/install/lib",

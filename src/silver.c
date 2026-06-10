@@ -238,7 +238,7 @@ static bool _is_alpha(Au any) {
 string silver_read_alpha(silver a) {
     token n = element(a, 0);
     if (is_alpha(n)) {
-        next(a);
+        next(a, Syntax__none);
         return string(n->chars);
     }
     return null;
@@ -451,7 +451,7 @@ static enode parse_expression(silver a, etype expect, bool hint, bool load) { se
 
         push_current(a);
 
-        consume(a);
+        consume(a, Syntax__none);
         token pk = peek(a);
         bool is_default = eq(pk, "]");
         bool is_field = peek_fields(a);
@@ -482,7 +482,7 @@ static bool is_multi_expression(silver a, OPType match_op) {
         return false;
     
     push_current(a);
-    consume(a);
+    consume(a, Syntax__none);
     bool is_const = false;
     etype mdl = null;
     array expr = read_expression(a, &mdl, &is_const);
@@ -624,7 +624,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
         // ---------------------------------------------------------------
         bool is_multi = is_multi_expression(a, match_op);
         if (is_multi) {
-            consume(a);
+            consume(a, Syntax__none);
             OPType combine = (match_op == OPType__not_equal) ? OPType__and : OPType__or;
             
             // read first operand
@@ -1056,6 +1056,96 @@ static void prepare_record_cb(Au a_au, Au t_au) {
     build_record_parse(a, t);
 }
 
+// --format output: a binary token-syntax map written to a caller-provided FILE (a->format)
+// as a BYPRODUCT of the normal build — not a separate parse. a standalone --format pass
+// would compete with the watcher's build and throw the build work away; instead the same
+// parse that feeds codegen also stamps tokens (lexer + parser), and we dump that map to the
+// file. the watcher re-runs the build on change, so the file stays current; the caller
+// (orbiter) reads it and recolors. logging is irrelevant — the map is in the file, not
+// stdout. the same build's stderr carries compilation diagnostics (file:line) for free.
+//
+// file layout (little-endian — root truncates + writes header, every module in the graph
+// appends its sections during the build, root appends the end marker; magic words let the
+// reader frame + resync, and detect a truncated/incomplete write):
+//   header : u32 0x53464D54 ('SFMT')   u32 version(=1)
+//   section: u32 0xC0DEFACE             u32 path_len, path_len bytes (canonical abs path),
+//            u32 token_count, token_count * { u32 line, u32 col, u32 len, u32 syntax }
+//   end    : u32 0x00000000             (zero — can't collide with the section magic)
+// the section path is the symlink-resolved absolute identity of the source file, so the
+// caller matches a buffer regardless of how it opened it — we don't mess with identities.
+// reader: read a u32 — C0DEFACE = section follows, 0 = clean end, EOF-before-either = truncated.
+#define SILVER_FMT_VERSION  1u
+#define SILVER_FMT_MAGIC    0x53464D54u   // 'SFMT'
+#define SILVER_FMT_SECTION  0xC0DEFACEu
+#define SILVER_FMT_END      0x00000000u
+
+static void fmt_u32(FILE* f, u32 v) { fwrite(&v, 4, 1, f); }
+
+typedef struct fmt_sec { char* path; unsigned char* buf; unsigned len; } fmt_sec;
+static fmt_sec* fmt_secs = null;
+static int      fmt_nsec = 0;
+static int      fmt_cap  = 0;
+
+static void fmt_put(symbol path, unsigned char* buf, unsigned len) {
+    for (int i = 0; i < fmt_nsec; i++)
+        if (strcmp(fmt_secs[i].path, path) == 0) {
+            free(fmt_secs[i].buf);
+            fmt_secs[i].buf = buf;
+            fmt_secs[i].len = len;
+            return;
+        }
+    if (fmt_nsec == fmt_cap) {
+        fmt_cap  = fmt_cap ? fmt_cap * 2 : 32;
+        fmt_secs = realloc(fmt_secs, fmt_cap * sizeof(fmt_sec));
+    }
+    fmt_secs[fmt_nsec].path = strdup(path);
+    fmt_secs[fmt_nsec].buf  = buf;
+    fmt_secs[fmt_nsec].len  = len;
+    fmt_nsec++;
+}
+
+void silver_fmt_header(silver a) { }
+
+void silver_fmt_end(silver a) {
+    if (!a->format || !len(a->format)) return;
+    FILE* f = fopen(a->format->chars, "wb");
+    if (!f) return;
+    fmt_u32(f, SILVER_FMT_MAGIC);
+    fmt_u32(f, SILVER_FMT_VERSION);
+    for (int i = 0; i < fmt_nsec; i++)
+        fwrite(fmt_secs[i].buf, 1, fmt_secs[i].len, f);
+    fmt_u32(f, SILVER_FMT_END);
+    fclose(f);
+}
+
+void silver_write_fmt(silver a, array toks) {
+    if (!a->format || !a->format->count || !toks || !toks->count) return;
+    path src = null;
+    each(toks, token, t) if (t->source) { src = t->source; break; }
+    if (!src) src = a->module_file;
+    if (!src) return;
+    path canon = absolute(src);                 // realpath: absolute + symlinks resolved
+    cstr cp = (canon && len(canon)) ? canon->chars : src->chars;
+    u32  cl = (u32)strlen(cp);
+    u32  n  = (u32)len(toks);
+    u32  total = 4 + 4 + cl + 4 + n * 16;       // tag + pathlen + path + count + records
+    unsigned char* b = malloc(total);
+    u32 o = 0;
+    #define FMT_PUT(v) do { u32 _v = (u32)(v); memcpy(b + o, &_v, 4); o += 4; } while (0)
+    FMT_PUT(SILVER_FMT_SECTION);
+    FMT_PUT(cl);
+    memcpy(b + o, cp, cl); o += cl;
+    FMT_PUT(n);
+    each(toks, token, t) {
+        FMT_PUT(t->line);
+        FMT_PUT(t->column);
+        FMT_PUT(len(t));
+        FMT_PUT(t->syntax);
+    }
+    #undef FMT_PUT
+    fmt_put(cp, b, total);
+}
+
 void silver_init(silver a) {
     hold(a);
 
@@ -1070,6 +1160,7 @@ void silver_init(silver a) {
         printf("warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n");
         return;
     }
+
 
     // platform dispatch: build docker prefix for non-native targets
     // all architecture-specific exec calls get this prepended
@@ -1291,11 +1382,16 @@ void silver_init(silver a) {
 
     if (a->clean) update_product = true;
     if (a->run && !a->is_external) update_product = true;
+    // --format: a map file was requested. force the (normal) build to run for every module
+    // in the graph so each one re-parses and appends its section — even otherwise-cached
+    // deps — giving a map that covers the whole project. this is the SAME build pipeline
+    // (codegen/link still happen); the map is just an extra output, not a separate pass.
+    if (a->format && len(a->format)) update_product = true;
 
     a->mod = (aether)a;
     // prevent duplicate compilation in a session
     static map silver_compiled = null;
-    if (!silver_compiled) silver_compiled = map(hsize, 16);
+    if (!silver_compiled) silver_compiled = hold(hold(map(hsize, 16)));
     if (get(silver_compiled, (Au)a->name)) {
         a->product = hold(absolute(a->product_link));
         return;
@@ -1360,14 +1456,21 @@ void silver_init(silver a) {
     do {
         if (retry) {
             print("awaiting iteration: %o", a->module);
-            
             auto_free(false);
+            if (silver_compiled) {
+                silver_compiled->unmanaged = true;
+                clear(silver_compiled);
+                silver_compiled->unmanaged = false;
+            }
             mtime = silver_watch(a, a->module, mtime, 0); // it was easiest to fork path's implementation and add arks
             print("rebuilding...");
             drop(a->tokens);
+            a->tokens = null;
             drop(a->stack);
+            a->stack = null;
             // clear(a->artifacts); [ its best to accumulate with dupe-checking -- otherwise design stage fail can result in less hooks on your workflow]
             reinit_startup(a);
+            a->processed_imports = false;
             a->imports = array();
         }
 
@@ -1394,7 +1497,18 @@ void silver_init(silver a) {
                     push(a->implements, (Au)files[i]);
                 }
             
+            // --format root: truncate + header the map file BEFORE parse, so the deps
+            // built during parse append their sections into it.
+            if (a->format && len(a->format) && !a->is_external)
+                silver_fmt_header(a);
+
             parse(a);
+
+            // --format: tokens are now classified — append this module's own file section
+            // (deps + extend files appended their own during parse). this is additive; the
+            // normal build below still runs (same pipeline, map is just an extra output).
+            if (a->format && len(a->format))
+                silver_write_fmt(a, (array)a->tokens);
 
             // print all expected defs not used
             if (len(a->defs_expect))
@@ -1402,7 +1516,7 @@ void silver_init(silver a) {
                     bool   f = get(a->defs_used, i->key) != null;
                     verify(f, "expected def not provided: %o", i->key);
                 }
-            
+
             // print unused defs from an import
             if (len(a->defs) != len(a->defs_used)) {
                 string unused = string(alloc, 64);
@@ -1424,10 +1538,17 @@ void silver_init(silver a) {
         }
         on_error() {
             mtime = current_time();
-            retry = !is_once;
             a->error = true;
         }
         finally()
+        // --format: cap THIS build's map (header→sections→end) so the reader can frame each
+        // emit and detect a partial write. written per iteration — in --watch it runs after
+        // every rebuild, giving a fresh complete map each time the watched source changes.
+        if (a->format && len(a->format) && !a->is_external)
+            silver_fmt_end(a);
+        // --watch: loop after EVERY build (success or error), blocking in silver_watch at the
+        // top until the next change. one-shot (no --watch) leaves retry false and exits.
+        retry = !is_once;
     } while (!a->is_external && retry); // externals do not watch (your watcher must invoke everything)
                                         // they handle their own exceptions
 
@@ -1612,19 +1733,26 @@ bool dbg_addr_to_line(void *addr,
         const char **func);
 
 
-token silver_next(silver a) {
+// `syn` flags the syntax role of the token being consumed (Syntax__none = leave the
+// lexer's lexical classification intact). callers pass the role they're parsing —
+// function / member(property) / type / keyword / constant — which is the meaning the
+// lexer can't infer. critical distinction: a name consumed as a call target is function,
+// as a field access is property, as a declared/used type is type.
+token silver_next(silver a, Syntax syn) {
     if (a->cursor >= len(a->tokens))
         return null;
     token res = element(a, 0);
     if (!a->clipping && res && res->annotation && strcmp(res->annotation->chars, "#break") == 0) {
         breakpoint(res, "breaking at %o", res);
     }
+    if (syn != Syntax__none && res)
+        res->syntax = syn;
     a->cursor++;
     return res;
 }
 
-token silver_consume(silver a) {
-    return next(a);
+token silver_consume(silver a, Syntax syn) {
+    return next(a, syn);
 }
 
 static array read_within(silver a) {
@@ -1637,10 +1765,10 @@ static array read_within(silver a) {
         return null;
 
     bool bracket = eq(n, "[");
-    consume(a);
+    consume(a, Syntax__none);
     int depth = bracket == true; // inner expr signals depth 1, and a bracket does too.  we need both togaether sometimes, as in inner expression that has parens
     for (;;) {
-        token inner = next(a);
+        token inner = next(a, Syntax__none);
         if (!inner)
             break;
         if (eq(inner, "]"))
@@ -1660,21 +1788,23 @@ static array read_within(silver a) {
 static enode read_keywords(silver a) {
     if (!next_is(a, "{"))
         return null;
-    consume(a); // consume {
+    consume(a, Syntax__none); // consume {
     array toks = array(16);
     int depth = 1;
     for (;;) {
         token t = peek(a);
         if (!t) break;
-        if (eq(t, "}")) { depth--; consume(a); if (depth == 0) break; }
+        if (eq(t, "}")) { depth--; consume(a, Syntax__none); if (depth == 0) break; }
         if (eq(t, "{")) { depth++; }
-        // compact neighboring tokens on the same line (like commit-id parsing)
+        // compact neighboring tokens on the same line (like commit-id parsing). these are
+        // the user/meta tokens inside the { } block (GLSL symbol/token descriptors) →
+        // tag them `usertoken`. the { } brackets themselves stay punctuation (none above).
         string compacted = string(t->chars);
-        consume(a);
+        consume(a, Syntax__usertoken);
         while (next_is_neighbor(a) && !next_is(a, "}")) {
             token nb = peek(a);
             concat(compacted, (string)nb);
-            consume(a);
+            consume(a, Syntax__usertoken);
         }
         push(toks, (Au)compacted);
     }
@@ -1721,7 +1851,7 @@ static array read_body(silver a) {
         if (mult && k->indent == 0 && k->line > p->line)
             break;
         push(body, (Au)k);
-        consume(a);
+        consume(a, Syntax__none);
     }
     a->clipping = false;
     return body;
@@ -1763,7 +1893,7 @@ static array read_body_br(silver a, int bracket_depth) {
                 break;
         }
         push(body, (Au)k);
-        consume(a);
+        consume(a, Syntax__none);
     }
     a->clipping = false;
     return body;
@@ -1897,11 +2027,11 @@ static array read_initializer(silver a) { sequencer
     // when [ follows a token on the same line, it's always a bracket expr
     // (use prev, not statement_origin, to detect inline [ after type/func names)
     if (eq(n, "[") && ((prev && n->line == prev->line) || n->line == p->line || (n->line > p->line && n->indent == p->indent))) {
-        consume(a);
+        consume(a, Syntax__none);
         int depth = 1; // inner expr signals depth 1, and a bracket does too.  we need both together sometimes, as in inner expression that has parens
         push(body, (Au)token("["));
         for (;;) {
-            token inner = next(a);
+            token inner = next(a, Syntax__none);
             if (!inner)
                 break;
             if (eq(inner, "]"))
@@ -1991,7 +2121,7 @@ static bool is_keyword(Au any) {
 string silver_read_keyword(silver a) {
     token n = element(a, 0);
     if (n && is_keyword((Au)n)) {
-        next(a);
+        next(a, Syntax__none);
         return string(n->chars);
     }
     return null;
@@ -2344,11 +2474,16 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
             if (a->cmode && len(name) == 1 && strncmp(&input_string->chars[index], "##", 2) == 0) {
                 name = string("##");
             }
+            // lexical syntax: brackets/delimiters are punctuation, the rest are operators.
+            i32    nc0 = name->chars[0];
+            Syntax nsk = (nc0=='['||nc0==']'||nc0=='('||nc0==')'||nc0=='{'||nc0=='}'||
+                          nc0==','||nc0==':'||nc0==';'||nc0=='.') ? Syntax__punctuation : Syntax__op;
             token t = token(
                 chars, (cstr)name->chars,
                 indent, indent,
                 source, src,
                 line, line_num,
+                syntax, nsk,
                 neighbor, index > 0 && !isspace(idx(input_string, index - 1)),
                 column, index - line_start);
             push(tokens, (Au)t);
@@ -2430,6 +2565,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                     source, src,
                     line, line_num,
                     literal, primitive(typeid(unichar), &uc),
+                    syntax, Syntax__character,
                     neighbor, start > 0 && !isspace(idx(input_string, start - 1)),
                     column, start - line_start));
                 continue;
@@ -2465,6 +2601,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                                 source, src,
                                 line, line_num,
                                 literal, lit,
+                                syntax, Syntax__str,
                                 neighbor, start > 0 && !isspace(idx(input_string, start - 1)),
                                 column, start - line_start));
             }
@@ -2491,6 +2628,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                     source,  src,
                     line,    line_num,
                     literal, literal,
+                    syntax,  Syntax__number,
                     neighbor, start > 0 && !isspace(idx(input_string, start - 1)),
                     column,  start - line_start));
             continue;
@@ -2536,6 +2674,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                          indent, indent,
                          source, src,
                          line, line_num,
+                         syntax, Syntax__ident,
                          neighbor, start > 0 && !isspace(idx(input_string, start - 1)),
                          column, start - line_start));
     }
@@ -2545,7 +2684,12 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
 token silver_read_if(silver a, symbol cs) {
     token n = element(a, 0);
     if (n && strcmp(n->chars, cs) == 0) {
-        next(a);
+        // infer syntax from the matched literal: read_if matching a word is matching a
+        // keyword (func/class/if/return/…); a symbol stays as the lexer tagged it
+        // (op/punctuation). this classifies all 271 read_if sites with no call-site churn.
+        if (isalpha(cs[0]) || cs[0] == '_')
+            n->syntax = Syntax__keyword;
+        next(a, Syntax__none);
         return n;
     }
     return null;
@@ -2556,7 +2700,7 @@ Au silver_read_literal(silver a, Au_t of_type) {
     if (!n) return null;
     Au res = get_literal(n, of_type);
     if (res) {
-        next(a);
+        next(a, Syntax__none);
         return res;
     }
     return null;
@@ -2567,7 +2711,7 @@ string silver_read_string(silver a) {
     if (n && instanceof(n->literal, string)) {
         string token_s = string(n->chars);
         string result = mid(token_s, 1, token_s->count - 2);
-        next(a);
+        next(a, Syntax__none);
         return result;
     }
     return null;
@@ -2582,7 +2726,7 @@ Au silver_read_numeric(silver a) {
         if (sh && sh->count == 1) {
             res = _i64(sh->data[0]);
         }
-        next(a);
+        next(a, Syntax__none);
         return res;
     }
     return null;
@@ -2594,14 +2738,14 @@ static etype next_is_class(silver a, bool read_token) {
         return null;
     if (eq(t, "class")) {
         if (read_token)
-            consume(a);
+            consume(a, Syntax__none);
         return etypeid(Au);
     }
 
     etype f = elookup(t->chars);
     if (is_class(f)) {
         if (read_token)
-            consume(a);
+            consume(a, Syntax__none);
         return f;
     }
     return null;
@@ -2632,7 +2776,7 @@ Au silver_read_bool(silver a) {
     bool is_true = strcmp(n->chars, "true") == 0;
     bool is_bool = strcmp(n->chars, "false") == 0 || is_true;
     if (is_bool)
-        next(a);
+        next(a, Syntax__none);
     return is_bool ? _bool(is_true) : null;
 }
 
@@ -2642,7 +2786,7 @@ OPType silver_read_operator(silver a, ARef fname) {
         return OPType__undefined;
     string found = (string)get(operators, (Au)n);
     if (found) {
-        consume(a);
+        consume(a, Syntax__none);
         char uname[64];
         snprintf(uname, sizeof(uname), "_%s", found->chars);
         *(string*)fname = string(uname);
@@ -2654,7 +2798,7 @@ OPType silver_read_operator(silver a, ARef fname) {
 string silver_read_alpha_any(silver a) {
     token n = element(a, 0);
     if (n && isalpha(n->chars[0])) {
-        next(a);
+        next(a, Syntax__none);
         return string(n->chars);
     }
     return null;
@@ -2931,6 +3075,21 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
             Au_t mem_type = isa(mem);
             bool b0, b1, b2, b3, b4;
 
+            // syntax: classify this segment's name token from the member it resolved to,
+            // BEFORE any call-expr is applied (so is_func still detects a method/function).
+            //   function  — a method or free function (call target)
+            //   type      — a type name used here
+            //   property  — a field accessed off a parent (a.field); the FIRST segment that
+            //               is a plain var stays `ident` (it's a variable reference).
+            if (pkzip && mem && mem->autype) {
+                Au_t   mt = mem->autype;
+                Syntax sk = Syntax__none;
+                if      (is_func((Au)mem) || instanceof(mem, macro))   sk = Syntax__function;
+                else if (mt->member_type == AU_MEMBER_TYPE)            sk = Syntax__type;
+                else if (!first && mt->member_type == AU_MEMBER_VAR)   sk = Syntax__property;
+                if (sk != Syntax__none) pkzip->syntax = sk;
+            }
+
             // setter intercept
             if (next_is(a, "[") && in_decl != typeid(efunc) && in_decl != typeid(macro)) {
                 Au_t au_rec = is_rec((Au)mem);
@@ -3015,7 +3174,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
         if  (!k) return mem;
         num assign_index = index_of(assign, (Au)k);
         if (assign_index >= 0) {
-            next(a);
+            next(a, Syntax__none);
             *(OPType*)assign_type = eq(k, ":") ? OPType__bind : (OPType__bind + assign_index);
         }
     }
@@ -3127,7 +3286,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     // construct [ arg ] — constructor chaining, must be inside a constructor
     if (!cmode && next_is(a, "construct")) {
-        consume(a);
+        consume(a, Syntax__none);
         efunc fn = context_func(a);
         validate(fn && fn->autype->member_type == AU_MEMBER_CONSTRUCT,
             "construct can only be called inside a constructor");
@@ -3255,7 +3414,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                     validate(!lit_is_float || storage->is_realistic,
                         "scalar %o requires %s value, got float literal",
                         scalar_type, storage->ident);
-                    consume(a); // consume the suffix token
+                    consume(a, Syntax__none); // consume the suffix token
                     return e_create(a, scalar_type, (Au)res);
                 }
             }
@@ -3266,8 +3425,8 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     
     // shell script at design and runtime, for a silver 1.0
     if (!cmode && next_is(a, "$", "(")) {
-        consume(a);
-        consume(a);
+        consume(a, Syntax__none);
+        consume(a, Syntax__none);
         fault("shell syntax not implemented for 88");
     }
 
@@ -3481,7 +3640,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     // parenthesized expressions
     if (next_is(a, "(")) {
-        consume(a);
+        consume(a, Syntax__none);
         // support C-style cast here, only in cmode (macro definitions)
         if (cmode) {
             push_current(a);
@@ -3489,7 +3648,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             etype inner = read_etype(a, null);
             if (inner) {
                 if (next_is(a, ")")) {
-                    consume(a);
+                    consume(a, Syntax__none);
                     pop_tokens(a, true);
                     enode res = e_create(a, inner, (Au)parse_expression(a, inner, false, true));
                     return e_create(a, mdl_expect, (Au)res);
@@ -3645,7 +3804,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     //printf("seq = %i\n", seq);
 
     if (!cmode && (next_is(a, "__FILE__") || next_is(a, "__LINE__") || next_is(a, "__SEQUENCE__"))) {
-        token tk = consume(a);
+        token tk = consume(a, Syntax__none);
         enode n_src; Au n_line, n_seq;
         alloc_origin_args((aether)a, &n_src, &n_line, &n_seq);
         if (eq(tk, "__FILE__"))     return n_src;
@@ -3778,7 +3937,7 @@ enode parse_statement(silver a)
         if (next_is(a, "continue")) return parse_continue(a);
         if (next_is(a, "expect")) {
             push_current(a);
-            consume(a);
+            consume(a, Syntax__none);
             string pk = peek_alpha(a);
             token pk2 = pk ? element(a, 1) : null;
             bool is_bind = pk && pk2 && index_of(assign, (Au)pk2) >= 0;
@@ -3804,7 +3963,7 @@ enode parse_statement(silver a)
     if (next_is(a, "ifdef")) return parse_ifdef_else(a);
 
     if (next_is(a, "extend")) {
-        consume(a);
+        consume(a, Syntax__none);
         string ext_module = read_alpha(a);
         validate(ext_module && !strcmp(ext_module->chars, a->name->chars),
             "extend declares '%o' but current module is '%o'", ext_module, a->name);
@@ -4370,7 +4529,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     } else if (next_is(a, "{")) {
         // capture { ... } as raw tokens, excluding outer { }
         array raw = array(32);
-        consume(a); // skip opening {
+        consume(a, Syntax__none); // skip opening {
         int depth = 1;
         while (depth > 0 && peek(a)) {
             token t = peek(a);
@@ -4378,7 +4537,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             if (eq(t, "}")) depth--;
             if (depth > 0) // skip closing }
                 push(raw, (Au)t);
-            consume(a);
+            consume(a, Syntax__none);
         }
         const_tokens = raw;
     }
@@ -4484,6 +4643,7 @@ static etype read_named_model(silver a) {
         return etypeid(Au);
     }
 
+    token  name_tok = element(a, 0);   // the candidate type-name token
     string alpha = read_alpha(a);
     if (alpha && !next_is(a, ".")) {
         Au_t found_au = lexical(a->lexical, cstring(alpha));
@@ -4497,12 +4657,21 @@ static etype read_named_model(silver a) {
             return null;
         }
     }
+    // it resolved to a model (not a var) → this name is a TYPE; color it as such.
+    if (mdl && name_tok)
+        name_tok->syntax = Syntax__type;
     pop_tokens(a, mdl != null); /// save if we are returning a model
     return mdl;
 }
 
 static shape read_shape(silver a) {
     shape s = (shape)read_literal(a, typeid(shape));
+    if (s) {
+        // a dimensional shape (32x32x1) is a special type, not a plain number — re-stamp
+        // the literal the lexer tagged `number`.
+        token st = element(a, -1);
+        if (st) st->syntax = Syntax__type;
+    }
     if (!s) {
         i64* i = (i64*)read_literal(a, typeid(i64));
         if (i) {
@@ -4542,7 +4711,13 @@ etype read_etype(silver a, array* p_expr) { sequencer
         else if (explicit_sign)
             prim_mdl = etypeid(i32);
         
-        if   (prim_mdl)  prim_mdl = model_adj(a, prim_mdl);
+        if (prim_mdl) {
+            // read_if stamped the primitive name as `keyword`; it's actually a TYPE
+            // (int/char/float/void/…). re-stamp the just-consumed token.
+            token pt = element(a, -1);
+            if (pt) pt->syntax = Syntax__type;
+            prim_mdl = model_adj(a, prim_mdl);
+        }
         if (is_struct) {
             string alpha = read_alpha(a);
             if (alpha) {
@@ -5131,7 +5306,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
               docker, debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
         silver sf = silver(debug_type, a->debug_type, debugmember, a->debugmember, module, silver_f, breakpoint, a->breakpoint, release, a->release,
-            clean, a->clean, verbose, a->verbose, is_external, a->is_external ? a->is_external : a);
+            clean, a->clean, verbose, a->verbose, format, a->format, is_external, a->is_external ? a->is_external : a);
         validate(sf, "silver module compilation failed: %o", silver_f);
         drop(sf);
     } else {
@@ -5547,7 +5722,7 @@ bool silver_next_is_neighbor(silver a) {
 }
 
 string expect_alpha(silver a) {
-    token t = next(a);
+    token t = next(a, Syntax__none);
     verify(t && isalpha(*t->chars), "expected alpha identifier");
     return string(t->chars);
 }
@@ -6069,7 +6244,7 @@ silver silver_with_path(silver a, path module_path) {
 }
 
 token read_compacted(silver a) {
-    token  f = next(a);
+    token  f = next(a, Syntax__none);
     if (!f) return null;
     string r = string(f->chars);
     int len = r->count;
@@ -6080,7 +6255,7 @@ token read_compacted(silver a) {
         if (!n || n->column != (start_col + len) || n->line != f->line)
             break;
         concat(r, (string)n);
-        consume(a);
+        consume(a, Syntax__none);
         f = n;
         len += n->count;
     }
@@ -6151,7 +6326,7 @@ enode parse_import(silver a) {
     sequencer;
 
     validate(next_is(a, "import"), "expected import keyword");
-    consume(a);
+    consume(a, Syntax__none);
 
     int     from         = a->cursor;
     codegen cg           = null;
@@ -6239,7 +6414,7 @@ enode parse_import(silver a) {
 
             // we may read: something/is-a.cool\file.hh.h
             while (next_is_neighbor(a) && (!next_is(a, ",") && !next_is(a, ">")))
-                concat(f, (string)next(a));
+                concat(f, (string)next(a, Syntax__none));
 
             push(includes, (Au)f);
 
@@ -6423,6 +6598,7 @@ enode parse_import(silver a) {
                 push_tokens(a, (tokens)ext_toks, start);
                 while (a->cursor < len(a->tokens))
                     parse_statement(a);
+                if (a->format && len(a->format)) silver_write_fmt(a, ext_toks);
                 pop_tokens(a, false);
                 drop(a->module_file);
                 a->module_file = saved_module_file;
@@ -6435,6 +6611,7 @@ enode parse_import(silver a) {
                 Au_t f = find_module("vulkan2");
                 silver external = silver(module, module, breakpoint, a->breakpoint,
                     verbose, a->verbose, is_external, og, release, a->release, clean, a->clean,
+                    format, og->format,
                     defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
                 Au_t f2 = find_module("vulkan2");
                 // these should be the only two objects remaining.
@@ -6481,7 +6658,7 @@ enode parse_import(silver a) {
     }
 
     if (next_is(a, "as")) {
-        consume(a);
+        consume(a, Syntax__none);
         namespace = hold(read_alpha(a));
         validate(namespace, "expected alpha-numeric %s",
                  is_codegen ? "alias" : "namespace");
@@ -7381,7 +7558,7 @@ array silver_parse_const(silver a, array tt) {
     push_tokens(a, (tokens)tt, 0);
     a->clipping = true;
     while (peek(a)) {
-        token t = next(a);
+        token t = next(a, Syntax__none);
         if (eq(t, "const")) {
             validate(false, "implement const");
         } else {
@@ -7397,7 +7574,7 @@ enode parse_return(silver a) {
     etype rtype = return_type(a);
     bool  is_v  = is_void(rtype);
     efunc ctx   = context_func(a);
-    consume(a);
+    consume(a, Syntax__none);
     a->expr_level++;
     enode expr  = is_v ? null : parse_expression(a, rtype, false, true);
     a->expr_level--;
@@ -7422,7 +7599,7 @@ catcher context_catcher(silver);
 catcher context_catcher_depth(silver, int);
 
 enode parse_expect(silver a) {
-    consume(a); // consume 'expect'
+    consume(a, Syntax__none); // consume 'expect'
     a->expr_level++;
     enode cond = read_enode(a, null, false, true);
     a->expr_level--;
@@ -7430,7 +7607,7 @@ enode parse_expect(silver a) {
 }
 
 enode parse_break(silver a) {
-    consume(a);
+    consume(a, Syntax__none);
     int depth = 0;
     array within = next_is(a, "[") ? read_within(a) : null;
     if (within) {
@@ -7447,7 +7624,7 @@ enode parse_break(silver a) {
 }
 
 enode parse_continue(silver a) {
-    consume(a);
+    consume(a, Syntax__none);
     int depth = 0;
     array within = next_is(a, "[") ? read_within(a) : null;
     if (within) {
@@ -7793,7 +7970,7 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
     // callable sub: x[] or x[ field: value, ... ] re-invokes the sub body
     if (indexable && next_is(a, "[") && mem->body) {
         push_current(a);
-        consume(a); // consume [
+        consume(a, Syntax__none); // consume [
         if (read_if(a, "]")) {
             // x[] — invoke stored sub, no overrides
             pop_tokens(a, false);
@@ -7856,7 +8033,7 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
                  mem->autype->ident);
 
         /// we must read the arguments given to the indexer
-        consume(a);
+        consume(a, Syntax__none);
         array args = array(16);
         if (r && mem->target)
             push(args, (Au)mem->target);
@@ -7874,10 +8051,10 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
             push(args, (Au)expr);
             validate(next_is(a, "]") || next_is(a, ","), "expected ] or , in index arguments");
             if (next_is(a, ","))
-                consume(a);
+                consume(a, Syntax__none);
         }
         validate(next_is(a, "]"), "expected ] after index expression");
-        consume(a);
+        consume(a, Syntax__none);
 
         enode index_expr = null;
         Au_t idx      = null;
@@ -8648,7 +8825,7 @@ etype silver_read_def(silver a, interface access) {
     }
 
     if (is_alias) {
-        consume(a);
+        consume(a, Syntax__none);
         string  alias_name = read_alpha(a);
         validate(alias_name, "expected name after alias");
         validate(read_if(a, ":"), "expected ':' after alias name");
@@ -8683,7 +8860,7 @@ etype silver_read_def(silver a, interface access) {
         while (peek(a)) {
             token t = peek(a);
             if (t->line != line_start->line) break;
-            push(deferred_tokens, (Au)consume(a));
+            push(deferred_tokens, (Au)consume(a, Syntax__none));
         }
         if (!a->pending_aliases)
             a->pending_aliases = hold(array(alloc, 16));
@@ -8692,9 +8869,9 @@ etype silver_read_def(silver a, interface access) {
         return (etype)e_noop(a, null);
     }
 
-    consume(a);
+    consume(a, Syntax__none);
     string n = read_alpha(a);
-    validate(n, "expected alpha-numeric identity, found %o", next(a));
+    validate(n, "expected alpha-numeric identity, found %o", next(a, Syntax__none));
 
     Au_t top = top_scope(a);
     etype mtop = u(etype, top);
@@ -8801,7 +8978,7 @@ etype silver_read_def(silver a, interface access) {
         i64 value = 0;
         f64 fvalue = 0.0;
         while (true) {
-            token e = next(a);
+            token e = next(a, Syntax__none);
             if  (!e) break;
             Au    v = null;
 

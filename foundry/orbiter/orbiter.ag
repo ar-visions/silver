@@ -51,12 +51,6 @@ func au_space_clear[] -> none
 # used as a runaway-leak guard so the app bails out before it locks the machine.
 func au_mem_fraction[] -> f32
 
-# redirect our stdout/stderr into a pipe so we can show our own printf/puts in
-# the system console. returns the non-blocking read fd; au_stdout_orig is a dup
-# of the real stdout so drain_stdout can tee output back to the terminal.
-func au_capture_stdout[] -> i32
-func au_stdout_orig[]    -> i32
-
 # per-workspace UI/session state, persisted to <os-cache>/orbiter/states.agi as a
 # map keyed by the workspace (startup) path. starts with the open tabs; more fields
 # (active pane, splits, scroll positions, etc.) get added here over time.
@@ -67,6 +61,13 @@ class orbiter_state
     public breakpoints : map string [string]
     # the selected project/target name, restored on next launch.
     public target      : string
+
+class FmtWatch
+    public proj  : string
+    public pid   : i32 [ 0 ]
+    public fd    : i32 [ -1 ]
+    public map   : string
+    public mtime : i64 [ 0 ]
 
 trinity orbiter # implements compiler
     intern avg_fps       : f32
@@ -85,24 +86,12 @@ trinity orbiter # implements compiler
     # driver) launched on the project's product; its on_* callbacks land on the
     # handlers below (on_stdout/on_break/...).
     intern debuggers     : map dbg [string]
-    # a stop location set by on_break (which runs on dbg's poll thread); on_render
-    # (main thread) consumes it to open the source in the first tab + select the line.
-    intern pending_break : cursor
-    # set by on_exit (poll thread) so on_render (main thread) clears every pane's
-    # stop-line marker — the inferior is gone, there's no execution point.
-    intern pending_clear_stop : bool
-    # also set by on_exit: on_render prints "[process exited ...]" into the project's
-    # console session (the same tab the inferior streamed to) and reverts the button.
-    intern pending_exit       : bool
-    intern pending_exit_code  : i32 [ 0 ]
     # the inspected variables for the Fields panel — locals read at the last break
     # (read_locals only works while paused), cached here and cleared on continue/exit.
     intern debug_vars         : array
     # last seen breakpoint-map size — a change (toggle in an Editor's gutter) means the
     # session state is dirty, so on_render re-saves. count catches add/remove.
     intern last_bp_count      : i32 [ -1 ]
-    # last seen selected project — a change (project tab click) re-saves the session.
-    intern last_target        : string
     # a project whose build was dispatched and whose dbg session should launch once
     # the build's shell returns to prompt (so we launch the FRESH product, not the
     # stale one — start_debug right after dispatch would race the async build).
@@ -139,6 +128,10 @@ trinity orbiter # implements compiler
     public active_panel  : string
     public editor_panel  : string
     public active_target : string
+    # one `silver <proj> -w --format <map>` language-server instance per silver project,
+    # keyed by project name. kept in sync with the .agi project set (fmt_sync), never tied
+    # to the active tab or the render loop.
+    intern fmt_watch  : map FmtWatch [string]
     public show_console  : bool
     # an empty editor pane (no file) shows the Avatar in its elemental state; this
     # toggles the Avatar view via the pane's titlebar hide/show option.
@@ -208,7 +201,6 @@ trinity orbiter # implements compiler
     # file watcher) instead of a once-per-session walk.
     intern index_watches : array watch
     public compile_log   : list string
-    public stdout_log    : list string
     public nav_root      : path
     # breakpoints are app-global, keyed by "source:line" -> condition string
     # (empty = plain breakpoint, non-empty = conditional). the same map is
@@ -217,14 +209,6 @@ trinity orbiter # implements compiler
     # code font size (px) for editors. canvas default is large (~22); this is
     # the single place to tune it. line-number labels render smaller still.
     public code_font_size : i32
-    intern booted        : bool
-    intern stdout_rfd    : i32 [ -1 ]
-    intern stdout_orig   : i32 [ -1 ]
-    # route stdout into the in-app system console: the hot-reload `silver` subprocess
-    # inherits our redirected stdout/stderr, so its build log (success + errors) lands
-    # in the system console. drain_stdout still tees everything to the terminal.
-    intern capture_stdout : bool [ true ]
-    intern stdout_line    : string
     public editor_group   : element
     # live editor panes are reached via pane_at[i] (keyed 'pane0'..'pane3' under the
     # auto-bound editor_group); nested ids don't auto-bind to app fields directly.
@@ -288,11 +272,6 @@ trinity orbiter # implements compiler
         # kick off the incremental index build (runs a chunk per frame)
         start_index[]
         compile_log    = list string []
-        stdout_log     = list string []
-        stdout_line    = ''
-        # capture is deferred to the first on_render so load-time prints don't get
-        # routed into a console that isn't initialized/updating yet.
-        printf[ "orbiter: stdout capture active (rfd=%i orig=%i)\n", stdout_rfd, stdout_orig ]
         # staleness + recompile-before-load is owned by silver-host now (it checks
         # every watched source against the product and rebuilds only what changed).
         # the old in-app check_stale[] recompiled silver/hyperspace on every startup
@@ -438,6 +417,7 @@ trinity orbiter # implements compiler
         if [ projects ] projects.clear[]
         Au.parse_agi[ null, txt.chars, a ]
         sync_targets[]
+        fmt_sync[]
         if [ projects ]
             puts 'loaded {projects.count} projects:'
             for [ p: Project, name: string ] in projects
@@ -477,21 +457,6 @@ trinity orbiter # implements compiler
                 compile_log.push[ 'stale (source newer): {name}' ]
                 compile[ name ]
 
-    func drain_stdout []
-        if [ stdout_rfd < 0 ] return
-        buf : local i8 [2]
-        buf[1] = 0
-        for [ i: i32 0, i < 4096, i += 1 ]
-            nr : i32 [ read[ stdout_rfd, ref buf[0], 1 ] ]
-            if [ nr <= 0 ] break
-            # silent tee to the real terminal so output still shows there too
-            if [ stdout_orig >= 0 ] write[ stdout_orig, ref buf[0], 1 ]
-            if [ i32[buf[0]] == 10 ]
-                stdout_log.push[ stdout_line ]
-                stdout_line = ''
-            el
-                stdout_line = stdout_line + string[ ref buf[0] ]
-
     func compile_fn [ w: Au ]
         m: string w  
         i: silver [ component: true, module: m ]  
@@ -502,6 +467,78 @@ trinity orbiter # implements compiler
         i: silver [ component: true, verbose:true, module: mod ]
         au_space_clear[]
         compile_log.push[ 'done: {mod}' ]
+
+    # ---- per-project format watchers (language server), one per silver project ----------
+    func fmt_stop [ proj: string ]
+        if [ !fmt_watch ] return
+        fw : FmtWatch fmt_watch[ proj ]
+        if [ !fw ] return
+        if [ fw.fd >= 0 ] close[ fw.fd ]
+        fmt_watch.rm[ proj ]
+
+    func fmt_stop_all []
+        if [ !fmt_watch ] return
+        for [ fw: FmtWatch, name: string ] in fmt_watch
+            if [ fw.fd >= 0 ] close[ fw.fd ]
+        fmt_watch = map FmtWatch [string] []
+
+    # start a `silver <proj> -w --format <map>` watcher for one silver project. exec'd
+    # through bash so the arg string matches the terminal; exec makes silver the pty leader
+    # (clean SIGHUP on close).
+    func fmt_start [ proj: string ]
+        if [ !proj || proj.count == 0 || proj == 'system' ] return
+        if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
+        if [ fmt_watch[ proj ] ] return
+        fw : FmtWatch [ proj: proj, map: '/tmp/orbiter-fmt-{proj}.map' ]
+        cmd : 'cd /src/silver && exec ./platform/native/debug/silver {proj} -w --format "{fw.map}"'
+        fd  : i32 [ -1 ]
+        pid : i32 [ forkpty[ ref fd, null, null, null ] ]
+        if [ pid == 0 ]
+            execl[ '/bin/bash', 'bash', '-lc', cmd.chars, null ]
+            _exit[ 1 ]
+        el [ pid > 0 ]
+            fw.pid = pid
+            fw.fd  = fd
+            fcntl[ fd, F_SETFL, O_NONBLOCK ]
+            fmt_watch[ proj ] = fw
+            puts 'format: watching {proj} (pid {pid}) -> {fw.map}'
+
+    # keep the running watchers in sync with the silver projects in the .agi: start one for
+    # each silver project not yet watched, stop any whose project is gone or no longer silver.
+    func fmt_sync []
+        if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
+        if [ !projects ] return
+        for [ p: Project, name: string ] in projects
+            if [ p.build && p.build.count > 0 && p.build[0].chars == 'silver' ]
+                if [ !fmt_watch[ name ] ] fmt_start[ name ]
+        stale : array string []
+        for [ fw: FmtWatch, name: string ] in fmt_watch
+            pr : Project projects[ name ]
+            ok : bool [ pr && pr.build && pr.build.count > 0 && pr.build[0].chars == 'silver' ]
+            if [ !ok ] stale += name
+        for [ i: i32 0, i < stale.count, i += 1 ]
+            fmt_stop[ stale[i] ]
+
+    # drain each watcher's pty (so it can't block) and, when its map's mtime advances, reload
+    # it into the editor panes. NOT called from render.
+    func fmt_poll []
+        if [ !fmt_watch ] return
+        for [ fw: FmtWatch, name: string ] in fmt_watch
+            if [ fw.fd >= 0 ]
+                dbuf : local i8 [256]
+                for [ j: i32 0, j < 64, j += 1 ]
+                    nr : i32 [ read[ fw.fd, ref dbuf[0], 256 ] ]
+                    if [ nr <= 0 ] break
+            if [ fw.map && fw.map.count > 0 ]
+                mp : path fw.map
+                if [ mp.exists[] ]
+                    m : mp.modified_time[]
+                    if [ m > fw.mtime ]
+                        fw.mtime = m
+                        puts 'format: {name} map updated'
+                        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                            ed : Editor pane_at[ i ]
+                            if [ ed ] ed.load_format[ fw.map ]
 
     # the current debug callstack (placeholder frames until lldb GetFrames() is
     # wired through the running session).
@@ -602,21 +639,17 @@ trinity orbiter # implements compiler
         return null
     func dbg_on_break [ cur: cursor ] -> Au
         if [ !cur ] return null
-        # poll thread: just stash it; on_render opens it in the first tab.
-        pending_break = cur
         puts 'dbg break {cur.source}:{cur.line}'
+        apply_break[ cur ]
         return null
 
-    # main-thread: open a pending break's source in the first editor pane (pane0
-    # always exists from init) and select its line. called from on_render.
-    func apply_pending_break []
-        if [ !pending_break ] return
-        # src borrows pending_break.source (non-holding). open_in_pane → open_files.push
-        # takes a holding ref — so the cursor MUST stay alive (don't null pending_break)
-        # until after that push, or dropping the cursor frees source and src dangles
-        # (push would then store freed memory → garbage key → map_get crash).
-        src : path pending_break.source
-        ln  : i32  [ pending_break.line ]
+    # open the break's source in the first editor pane (pane0 always exists from init),
+    # select its line, follow it with the scroll, and read the paused frame's locals.
+    # called straight from the dbg break/crash callbacks.
+    func apply_break [ cur: cursor ]
+        if [ !cur ] return
+        src : path cur.source
+        ln  : i32  [ cur.line ]
         if [ src ]
             open_in_pane[ src, 0 ]
             ed : Editor pane_at[ 0 ]
@@ -625,26 +658,24 @@ trinity orbiter # implements compiler
                 sl : i32 [ (ln > 0) ? ln - 1 : 0 ]
                 ed.stop_line = sl
                 # the exact stop column → its own marker, separate from the edit
-                # selection. silver emits the DWARF column as a 0-based char index
-                # (verified: `puts` at index 12 reports col 12), so use it directly.
-                ed.stop_col  = i32[ pending_break.column ]
-                # do NOT move the edit caret/selection on a step — only the stop marker
-                # moves. scroll the view to follow the stop line instead, and only when
-                # it's outside the visible band (so a step in view doesn't jump).
+                # selection. silver emits the DWARF column as a 0-based char index.
+                ed.stop_col  = i32[ cur.column ]
+                # do NOT move the edit caret on a step — only the stop marker moves;
+                # scroll to follow the stop line only when it's outside the visible band.
                 lh  : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
                 vh  : f32 [ (ed.bounds) ? ed.bounds.h : 600.0 ]
                 top : f32 [ f32[sl] * lh ]
                 if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
                     ed.scroll.y = top - vh * 0.4
                     if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
-                # a fresh stop → back into active mode (keyboard drives the debugger),
-                # even if the user had armed editing on the previous stop.
+                # a fresh stop → back into active mode (keyboard drives the debugger).
                 ed.edit_armed = false
                 ed.pristine  = false
         # we're paused here → read this frame's locals for the Fields panel.
         dv : active_debugger[]
         if [ dv ] debug_vars = dv.read_locals[]
-        pending_break = null
+        win : Window[w]
+        win.will_animate = true
 
     # clear the debugger's stop-line marker on every pane (called when the inferior
     # continues, stops, exits or crashes — there's no live execution point anymore).
@@ -661,16 +692,26 @@ trinity orbiter # implements compiler
         # no live frame anymore → drop the inspected variables.
         debug_vars = null
     func dbg_on_exit [ e: exited ] -> Au
-        # poll thread: no live execution point anymore — tell on_render to clear the
-        # stop marker AND print the exit into the project's console (main thread).
-        pending_clear_stop = true
-        pending_exit       = true
-        pending_exit_code  = (e) ? e.code : 0
+        clear_stop_lines[]
+        cons : ui_console[]
+        if [ cons ]
+            es : ConsoleSession cons.sessions[ active_target ]
+            de : dbg (debuggers) ? debuggers[ active_target ] : null
+            if [ es ]
+                # pull the final flush (fds still open until stop/dealloc) before the notice
+                if [ de ]
+                    es.feed_fd[ de.fifo_fd_out ]
+                    es.feed_fd[ de.fifo_fd_err ]
+                code : (e) ? e.code : 0
+                es.feed_text[ '\r\n[process exited, code {code}]\r\n' ]
+                cons.pristine = false
+                win : Window[w]
+                win.will_animate = true
         return null
     func dbg_on_crash [ cur: cursor ] -> Au
         if [ cur ] puts 'dbg crash {cur.source}:{cur.line}'
         # a crash IS an execution point — open + mark it the same as a break stop.
-        if [ cur ] pending_break = cur
+        if [ cur ] apply_break[ cur ]
         return null
 
     # map a path to its slot in open_files, registering it if not yet present.
@@ -907,7 +948,6 @@ trinity orbiter # implements compiler
             for [ d: dbg, name: string ] in debuggers
                 if [ d && d.active ] d.stop[]
             debuggers = null
-        pending_break = null
         if [ index_watches ]
             for [ iw: watch ] in index_watches
                 iw.pause[ ]
@@ -1359,6 +1399,7 @@ trinity orbiter # implements compiler
             if [ id == 'system' ]
                 active_target = 'system'
                 sync_active[]
+                save_session[]
                 ev.no_default = true
             el
                 matched : bool false
@@ -1371,6 +1412,7 @@ trinity orbiter # implements compiler
                     active_panel = id
                 if [ matched ]
                     sync_active[]
+                    save_session[]
                     ev.no_default = true
             if [ ev.target ] ev.target.ux.restyle = true
             return
@@ -1501,16 +1543,7 @@ trinity orbiter # implements compiler
         if [ au_mem_fraction[] > 0.20 ]
             puts 'orbiter: memory exceeded 20% of system RAM — quitting '
             exit[ 1 ]
-        
-        # skip the first frame (styles/Regions parse during it) so its prints hit
-        # the terminal; capture from the second frame on, once the console is live.
-        if [ capture_stdout ]
-            if [ !booted ]
-                booted = true
-            el [ stdout_rfd < 0 ]
-                stdout_rfd  = au_capture_stdout[]
-                stdout_orig = au_stdout_orig[]
-            drain_stdout[]
+
         index_step[]
         # deferred dbg launch: run_node armed pending_debug + set the build running.
         # once that shell returns to prompt (is_running flips false) the --clean build
@@ -1522,21 +1555,11 @@ trinity orbiter # implements compiler
                 dn : string pending_debug
                 pending_debug = ''
                 start_debug[ dn ]
-        # a debugger stop (set on the poll thread) → open its source in the first tab
-        apply_pending_break[]
-        # the inferior ended (on_exit, poll thread) → drop the amber stop-line marker
-        if [ pending_clear_stop ]
-            pending_clear_stop = false
-            clear_stop_lines[]
         # a breakpoint was toggled in an Editor gutter (count changed) → persist.
         bpc : i32 [ (breakpoints) ? breakpoints.count : 0 ]
         if [ last_bp_count >= 0 && bpc != last_bp_count ]
             save_session[]
         last_bp_count = bpc
-        # the selected project changed (tab click) → persist.
-        if [ last_target && last_target.count > 0 && last_target != active_target ]
-            save_session[]
-        last_target = active_target
         # finder transitions: rebuild the navigate list when the title gains focus
         # (show the dock as lines) or loses it (restore the file), AND when focus
         # moves to a different pane's title (so the results follow to that pane).
@@ -1554,12 +1577,9 @@ trinity orbiter # implements compiler
             mt : i64 [ sp.modified_time[] ]
             if [ mt != settings_mtime ]
                 load_settings[]
-        #avg_fps = (avg_fps > 0.0) ? avg_fps * 0.95 + fps * 0.05 : fps
-        w.set_title[ 'orbiter' ]
+            # reload any watcher map whose mtime advanced (i.e. the watcher just iterated)
+            fmt_poll[]
 
-        # the `console` member doesn't auto-bind (it's nested under `instances`,
-        # which does bind), so reach the live Console through instances. draining
-        # the pty here keeps it off the (cached) draw path.
         ce : element (show_console && instances) ? instances.elements['console'] : null
         cons : Console ce
         if [ cons ]
@@ -1581,20 +1601,6 @@ trinity orbiter # implements compiler
                     w.will_animate = true
                     ds.feed_fd[ d.fifo_fd_out ]
                     ds.feed_fd[ d.fifo_fd_err ]
-            # the inferior exited (on_exit, poll thread) → note it in its console tab.
-            # active just flipped false, so the drain loop above skipped it — pull the
-            # final flush (fds are still open until stop/dealloc) before the notice.
-            if [ pending_exit ]
-                pending_exit = false
-                es : ConsoleSession cons.sessions[ active_target ]
-                de : dbg (debuggers) ? debuggers[ active_target ] : null
-                if [ es ]
-                    if [ de ]
-                        es.feed_fd[ de.fifo_fd_out ]
-                        es.feed_fd[ de.fifo_fd_err ]
-                    es.feed_text[ '\r\n[process exited, code {pending_exit_code}]\r\n' ]
-                    cons.pristine = false
-                    w.will_animate = true
             # the active session drives the on-screen repaint.
             cs : cons.session[]
             if [ cs ]
@@ -1658,7 +1664,7 @@ trinity orbiter # implements compiler
         inst_els['tools'] = Tabs [ elements: Elements [
             'play': Option [ disable: active_target == 'system', selected: play_running, manual_mode: true ]
         ] ]
-        inst_els['console'] = Console [ session_id: active_target, feed: (active_target == 'system') ? stdout_log : null ]
+        inst_els['console'] = Console [ session_id: active_target, feed: null ]
 
         return Elements [
             "editor_group": Group [

@@ -8,6 +8,14 @@ class FileBuf
     # (groups before it are undoable, groups from it on are the redo future).
     public hist       : list EditAction
     public hist_i     : i32 [ 0 ]
+    # the line model's theme-resolved coloring, built by load_format[] from silver's --format
+    # map. `regions` is a FLAT, line-sorted `array ColorRegion` (each carries its own line);
+    # `reg_off[L]` indexes the first region whose line >= L, so a line's spans are the slice
+    # [reg_off[L], reg_off[L+1]). flat + typed member so element access resolves to ColorRegion
+    # (a local array loses its element meta). stale-tolerant: a structural edit clears both
+    # (fmt_invalidate) and the next map reload rebuilds them.
+    public regions    : array ColorRegion
+    public reg_off     : array i32
 
 # one row in the find-in-files results view. a header row is a file title (drawn
 # 2 code-rows tall, larger, centered); a non-header row is a matched line of code
@@ -47,6 +55,16 @@ class EditAction
     public sc0 : i32 [ 0 ]
     public sl1 : i32 [ 0 ]   # caret line/col after the group
     public sc1 : i32 [ 0 ]
+
+# one themed color span on a line: model column `col`, `len` chars, drawn in `color`.
+# produced by reformat[] from a silver --format token (its Syntax kind run through the
+# theme). the token text itself never contains tabs, so it draws as a literal substring;
+# its x is measured from the tab-expanded display prefix up to `col`.
+class ColorRegion
+    public line  : i32 [ 0 ]
+    public col   : i32 [ 0 ]
+    public len   : i32 [ 0 ]
+    public color : rgba
 
 Layer EditorLayer
     mutable sel_color      : rgba
@@ -218,8 +236,7 @@ Layer EditorLayer
                     cv.fill_color[ editor.bp_color[ bp ] ]
                     cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
                     cv.paint[ ]
-            cell : rgba [ (editor.hover_line == li) ? rgba['#ffffff18'] : rgba['#ffffff08'] ]
-            cv.fill_color[ cell ]
+            cv.fill_color[ rgba['#ffffff08'] ]
             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
             cv.paint[ ]
             # the debugger's current stop line (active break): a white border around the
@@ -320,6 +337,20 @@ Layer EditorLayer
             cv.draw_text[ editor.display_of[ ln ],
                 rect [ x: x0, y: y, w: bounds.w - gut_w - rin, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            # syntax overdraw: paint each themed token over the base line. tokens carry no
+            # tabs, so each is a literal substring; its x is measured from the tab-expanded
+            # display prefix up to its model column. comments/whitespace stay the base color.
+            msl : i32 [ editor.row_src[ li ] ]
+            nrg : i32 [ editor.line_reg_count[ msl ] ]
+            for [ ri: i32 0, ri < nrg, ri += 1 ]
+                cr  : ColorRegion editor.line_reg[ msl, ri ]
+                pre : editor.display_of[ ln.mid[ 0, cr.col ] ]
+                px  : f32 [ cv.measure_text[ pre ].w ]
+                seg : ln.mid[ cr.col, cr.len ]
+                cv.fill_color[ cr.color ]
+                cv.draw_text[ seg,
+                    rect [ x: x0 + px, y: y, w: bounds.w - gut_w - rin, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint[ ]
 
         # ---- debug-active: inline ghost value annotations (# name = value) ----
@@ -909,6 +940,117 @@ Control Editor
                 v += 1
         return out
 
+    # ---- syntax coloring: silver --format → theme → per-line color regions ----
+
+    # map a Syntax enum kind (the values stamped on tokens in Au's `Syntax`) to a color.
+    # this IS the theme — the one place coloring is decided; reformat[] bakes the result
+    # into each ColorRegion so re-theming is a matter of re-running this map.
+    func fmt_theme [ kind: i32 ] -> rgba
+        switch [ kind ]
+            case 1                          # keyword
+                return rgba['#569cd6']
+            case 2, 14                      # type, namespace
+                return rgba['#4ec9b0']
+            case 4                          # function
+                return rgba['#dcdcaa']
+            case 5, 6                       # param, property
+                return rgba['#9cdcfe']
+            case 7                          # number
+                return rgba['#b5cea8']
+            case 8, 9                       # string, character
+                return rgba['#ce9178']
+            case 10                         # boolean
+                return rgba['#569cd6']
+            case 11                         # comment
+                return rgba['#6a9955']
+            case 13                         # punctuation
+                return rgba['#808080']
+            case 15                         # constant
+                return rgba['#4fc1ff']
+            case 16                         # usertoken
+                return rgba['#c586c0']
+            default                         # none / ident / op
+                return rgba['#d4d4d4']
+
+    # read a little-endian u32 from the subprocess pipe (silver writes native LE).
+    func fmt_u32 [ fp: handle ] -> u32
+        b : local u8 [4]
+        n : fread[ ref b[0], 1, 4, fp ]
+        if [ n < 4 ] return 0
+        return u32[ b[0] ] | (u32[ b[1] ] << 8) | (u32[ b[2] ] << 16) | (u32[ b[3] ] << 24)
+
+    # how many color regions the active buffer has on model line `ml` (0 if none / no map).
+    # both arrays are typed members, so their subscripts resolve correctly (a local would not).
+    func line_reg_count [ ml: i32 ] -> i32
+        if [ !cur_buf || !cur_buf.reg_off ] return 0
+        if [ ml < 0 || ml + 1 >= cur_buf.reg_off.count ] return 0
+        return cur_buf.reg_off[ ml + 1 ] - cur_buf.reg_off[ ml ]
+
+    # the k-th color region on model line `ml` (caller bounds k via line_reg_count).
+    func line_reg [ ml: i32, k: i32 ] -> ColorRegion
+        return cur_buf.regions[ cur_buf.reg_off[ ml ] + k ]
+
+    # structural edits shift line indices, so the cached regions no longer line up — drop
+    # them; the next map reload rebuilds. (same-line typing keeps them: only mildly stale.)
+    func fmt_invalidate []
+        if [ cur_buf ]
+            cur_buf.regions = null
+            cur_buf.reg_off = null
+
+    # read the binary syntax map file silver wrote during its build (--format <mapfile>),
+    # distributing per-line ColorRegion arrays into each file's buffer (keyed by the
+    # canonical path silver emits). the map is a byproduct of the normal build/watch
+    # pipeline — never its own pass — so this just reads the latest file the watcher produced.
+    public func load_format [ mapfile: string ]
+        fp  : handle [ fopen[ mapfile.chars, 'rb' ] ]
+        if [ !fp ] return
+        magic : fmt_u32[ fp ]
+        ver   : fmt_u32[ fp ]
+        if [ magic != u32 0x53464D54 ]
+            fclose[ fp ]
+            return
+        nsec : i32 [ 0 ]
+        for [ s: i32 0, s < 100000, s += 1 ]
+            tag : fmt_u32[ fp ]
+            if [ tag != u32 0xC0DEFACE ] break        # 0 = clean end, anything else = stop
+            nsec += 1
+            plen : i32 [ fmt_u32[ fp ] ]
+            pbuf : array u8 [ alloc: plen + 1 ]
+            for [ k: i32 0, k < plen, k += 1 ]
+                cb : local u8 [1]
+                fread[ ref cb[0], 1, 1, fp ]
+                pbuf.push[ cb[0] ]
+            pbuf.push[ u8 0 ]
+            pstr : ref u8 [ pbuf ]
+            ntok : i32 [ fmt_u32[ fp ] ]
+            buf  : FileBuf file_cache[ pstr ]
+            if [ !buf ]
+                buf = FileBuf []
+                file_cache[ pstr ] = buf
+            buf.regions = array ColorRegion []
+            mx : i32 [ 0 ]
+            for [ t: i32 0, t < ntok, t += 1 ]
+                tl   : i32 [ fmt_u32[ fp ] ]
+                tc   : i32 [ fmt_u32[ fp ] ]
+                tlen : i32 [ fmt_u32[ fp ] ]
+                tk   : i32 [ fmt_u32[ fp ] ]
+                buf.regions.push[ ColorRegion [ line: tl, col: tc, len: tlen, color: fmt_theme[ tk ] ] ]
+                if [ tl + 1 > mx ] mx = tl + 1
+            # tokens arrive in source order (line-sorted), so build the per-line offset index:
+            # reg_off[L] = first region index whose line >= L. lines with no tokens get an
+            # empty slice (reg_off[L] == reg_off[L+1]).
+            buf.reg_off = array i32 []
+            ci : i32 [ 0 ]
+            for [ L: i32 0, L <= mx, L += 1 ]
+                while [ ci < buf.regions.count ]
+                    cr : ColorRegion buf.regions[ ci ]
+                    if [ cr.line >= L ] break
+                    ci += 1
+                buf.reg_off.push[ ci ]
+        fclose[ fp ]
+        mine : i32 [ (cur_buf && cur_buf.regions) ? cur_buf.regions.count : 0 ]
+        puts 'format: loaded {nsec} files; this buffer has {mine} colored tokens'
+
     func line_get [ vr: i32 ] -> string
         if [ show_hits && hits ]
             if [ vr >= 0 && vr < hits.count ] return hits[vr].text
@@ -975,11 +1117,13 @@ Control Editor
 
     func ed_insert [ i: i32, val: string ]     # val becomes line i (shifts the rest down)
         lines.insert_after[ val, i - 1 ]
+        fmt_invalidate[]
         rec[ LineOp [ at: i, kind: 1, after: val ] ]
 
     func ed_remove [ i: i32 ]
         old : line_get[ i ]
         lines.remove[ i ]
+        fmt_invalidate[]
         rec[ LineOp [ at: i, kind: 2, before: old ] ]
 
     func apply_undo [ g: EditAction ]
@@ -1114,16 +1258,18 @@ Control Editor
 
     func load_file []
         if [ !src ] return
-        key   : src
+        # key by the canonical (realpath) absolute path — the SAME identity silver stamps on
+        # each map section — so the buffer the editor renders is the one load_format fills.
+        key   : '{src.absolute[]}'
         mtime : i64    [ src.modified_time[] ]
         buf   : FileBuf file_cache[key]
         if [ buf && buf.mtime == mtime ]
             lines = buf.lines
             swap_history[ buf ]   # restore this file's own undo/redo (or seed it)
             return
-        content : string [ src.load[ typeid[string], null ] ]
+        content : string src.load[ typeid[string], null ]
         if [ !content ] return
-        parts : array string [ content.split["\n"] ]
+        parts : content.split["\n"]
         new_lines : list string []
         for [ i: i32 0, i < parts.count, i += 1 ]
             new_lines.push[ parts[i] ]
@@ -1340,8 +1486,9 @@ Control Editor
         # mouse is over the gutter column so the close icon only shows there.
         if [ !ele ] return
         lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
-        # mouse.pos.y is already scroll-folded by find_target — don't re-add scroll.
-        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
+        # hover (move) events are NOT scroll-folded by find_target (only press/capture are),
+        # so add the content scroll to land on the right row.
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y + scroll.y ]
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
         hl    : i32  [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]   # visual row = flat row
         hg    : bool [ rel_x >= 0.0 && rel_x < gutter_w ]
@@ -1391,6 +1538,20 @@ Control Editor
         pristine = false
         ux.will_animate = true
 
+    # scroll so the caret line is inside the viewport — call after any edit/cursor move that
+    # can push the caret off-screen (Enter past the bottom, arrows, paste). render re-clamps.
+    func ensure_caret_visible []
+        if [ sel_line < 0 ] return
+        ele : (layers) ? (layers['content'] to EditorLayer) : null
+        vh  : f32 [ (ele && ele.bounds) ? ele.bounds.h : 400.0 ]
+        lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        top : f32 [ sel_line ] * lh
+        bot : top + lh
+        if [ bot > scroll.y + vh ] scroll.y = bot - vh
+        if [ top < scroll.y ]      scroll.y = top
+        pristine = false
+        ux.will_animate = true
+
     func on_char [ ev: Event ]
         # debug-locked: swallow text so letters (s/n/c…) stay free for debugger keys
         if [ debug_running && !edit_armed ] return
@@ -1421,6 +1582,7 @@ Control Editor
         anchor_line = sel_line
         anchor_col  = sel_col
         end_edit[]
+        ensure_caret_visible[]
         pristine = false
 
     # the highlighted text (anchor→caret), as one string with '\n' between rows.
@@ -1642,6 +1804,7 @@ Control Editor
         if [ !ev.key.shift ]
             anchor_line = sel_line
             anchor_col  = sel_col
+        ensure_caret_visible[]
         pristine = false
 
     public func render [] -> Elements

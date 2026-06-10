@@ -462,7 +462,7 @@ Tabs.targets / Option.system {
     area: l6px t6px w1 h1
     layers.svg:
         area: 4px
-        image_svg:      "images/menu.svg"
+        image_svg:      "images/gear.svg"
         image_scale:    1.4
         image_align:    0.5 0.5
 }
@@ -564,7 +564,7 @@ Tabs.source_nav / Option.system {
         label_color:            #0000
     layers.svg:
         area:                   4px
-        image_svg:              "images/menu.svg"
+        image_svg:              "images/gear.svg"
         image_scale:            1.4
         image_align:            0.5 0.5
 }
