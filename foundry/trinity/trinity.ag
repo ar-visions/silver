@@ -987,8 +987,16 @@ Display Window
         f : find_target[ root, ev, null ]
         # resize cursor while hovering a seam band (find_target set seam_hover)
         seam_cursor[ (seam_hover) ? ((seam_hover.axis == 0) ? 1 : 2) : 0 ]
+        # find_target folded the leaf-local mouse pos into ev.mouse.pos; keep it for the
+        # move bubble (which unwinds it per level like press_event). re-fold to the
+        # capture target when one is held.
+        m : element [ f ]
+        if [ capture ]
+            ev.mouse.pos = orig_pos
+            m = find_target[ root, ev, capture ]
+        move_pos : vec2f [ ev.mouse.pos ]
+        # hover / leave bubble runs in screen space, as before
         ev.mouse.pos = orig_pos
-        m : element [ (capture) ? find_target[ root, ev, capture ] : f ]
         # hover / leave bubble — flip state bools and set restyle; the next
         # update_element pass picks up restyle and re-applies CSS.
         if [ hovered != f ]
@@ -1020,15 +1028,22 @@ Display Window
                 if [ !hover_consumed && app_object ]
                     ev.target = f
                     app_object.on_hover*[ ev ]
-        # move bubble
+        # move bubble — element-local coords unwound per level (mirrors press_event),
+        # so each on_move sees its own folded coords instead of raw screen space (which
+        # left every on_move off by the element's offset once it moved away from 0,0).
+        ev.mouse.pos = move_pos
         if [ m ]
             move_consumed : bool [ false ]
             for [ e: element* m, e && !move_consumed, e = e.parent ]
                 ev.target = e
                 e.on_move*[ ev ]
+                ev.mouse.pos.x += e.bounds.x - e.scroll.x
+                ev.mouse.pos.y += e.bounds.y - e.scroll.y
             if [ !ev.no_propagation && app_object ]
                 ev.target = m
                 app_object.on_move*[ ev ]
+        # restore the leaf/capture-folded pos for the trailing handlers below
+        ev.mouse.pos = move_pos
         # scrollbar proximity: while the cursor is within a scrollbar's widen zone,
         # request a frame this move so the bar can track + widen (a layer can't
         # repaint without a frame). gated to the zone so we don't relayout elsewhere;

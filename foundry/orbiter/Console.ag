@@ -390,6 +390,13 @@ class ConsoleSession
                     bl_cell[ r * cols + j ]
             for [ i: i32 0, i <= cx, i += 1 ]
                 bl_cell[ cy * cols + i ]
+        el [ m == 3 ]
+            # ED(3) = erase saved lines (scrollback) only; the grid is untouched. apps
+            # send ESC[3J on a full repaint to drop history — without honoring it the old
+            # rows stay in scrollback and re-render (duplicated banners on resize).
+            scrollback = list string []
+            sb_cells   = array TermCell []
+            sb_off     = array i32 []
         el
             for [ i: i32 0, i < rows * cols, i += 1 ]
                 bl_cell[ i ]

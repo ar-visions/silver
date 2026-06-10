@@ -18,6 +18,28 @@ Option NodeList
     func activate [ idx: i32 ]
         return
 
+    # the per-list line filter: the editable title child's typed text (mirrors the
+    # console pane's console_filter). null/empty = no filter. rows whose label doesn't
+    # contain it are hidden — same index_of skip the Console uses.
+    func flt [] -> string
+        if [ !elements ] return null
+        t : element elements[ 'list_filter' ]
+        if [ !t ] return null
+        return t.edit
+
+    func row_match [ i: i32, f: string ] -> bool
+        if [ !f || f.count == 0 ] return true
+        return row_label[ i ].index_of[ f ] >= 0
+
+    # model index of the n-th currently-visible (matching) row, or -1.
+    func visible_index [ vrow: i32, f: string ] -> i32
+        seen : i32 [ 0 ]
+        for [ i: i32 0, i < row_count[], i += 1 ]
+            if [ row_match[ i, f ] ]
+                if [ seen == vrow ] return i
+                seen += 1
+        return -1
+
     # ---- shared behavior ----
     func scroll_to_sel []
         if [ sel < 0 || row_count[] == 0 ] return
@@ -41,7 +63,10 @@ Option NodeList
         ev.stop_propagation[]
         rel_y : f32 [ ev.mouse.pos.y - content_y ]
         if [ rel_y < 0.0 ] return
-        idx   : i32 [ i32[ rel_y / row_height ] ]
+        # rel_y maps to the n-th VISIBLE row; resolve it back to the model index so a
+        # filtered list selects the right frame.
+        idx   : i32 [ visible_index[ i32[ rel_y / row_height ], flt[] ] ]
+        if [ idx < 0 ] return
         select[ idx ]
 
     func on_wheel [ ev: Event ]
@@ -91,9 +116,15 @@ Layer NodeLayer
         cv.font_size[ i32[label_size] ]
         lh : f32 [ cv.get_line_height[] * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
         n  : i32 [ nl.row_count[] ]
+        f  : string nl.flt[]
+        # content height counts only the matching (visible) rows so the scrollbar +
+        # auto-follow track the filtered view.
+        mc : i32 [ 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ nl.row_match[ i, f ] ] mc += 1
         nl.row_height   = lh
         nl.content_y    = bounds.y
-        nl.content_h    = f32[n] * lh
+        nl.content_h    = f32[mc] * lh
         nl.view_h       = bounds.h
         nl.scroll_speed = lh
         x0 : f32 [ bounds.x ]
@@ -101,8 +132,11 @@ Layer NodeLayer
         wtx : f32 [ cv.transform_tx[] ]
         wty : f32 [ cv.transform_ty[] ]
         cv.set_crop[ wtx + bounds.x, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
+        dr : i32 [ 0 ]
         for [ i: i32 0, i < n, i += 1 ]
-            y : f32 [ y0 + f32[i] * lh - nl.scroll.y ]
+            if [ !nl.row_match[ i, f ] ] continue
+            y : f32 [ y0 + f32[dr] * lh - nl.scroll.y ]
+            dr += 1
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
             if [ i == nl.sel ]

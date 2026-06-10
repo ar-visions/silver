@@ -332,6 +332,74 @@ EditorView / Console / element.console_filter {
         label_color:            #ffff
 }
 
+/* the bottom Instances area is its own 2-pane split: the active console (left) and the
+   debug callstack (right), sharing one vertical seam (@inst_split1). reuses the editor
+   pane seam machinery. MUST come after the base Console rule above (order cascade) so
+   these override the console's full-bar area. */
+Instances / Console.console {
+    area:                       l0 t0 l@inst_split1=50|0|0 b0
+}
+/* both panes push their body below a 44px editable filter title (mirrors EditorView /
+   Console). the title's `edit` is the per-pane line filter. */
+Instances / Console {
+    layers.content:
+        area:                   l8px t44px r8px b8px
+    layers.scrollbar:
+        area:                   l8px t44px r8px b8px
+}
+Instances / Console / element.console_filter {
+    area:                       l0 t0 r0 h44px
+    focusable:                  true
+    layers.base:
+        fill_color:             #2480
+        inner_glow:             #8af2 26
+        stroke_width:           0.5
+        stroke_color:           #fff2
+    layers.face:
+        label_color:            #fff
+        label_size:             19
+        label_align:            0.0 0.5
+        label_offset:           14 0
+:focused
+    layers.face:
+        editable:               true
+        label_color:            #ffff
+}
+Instances / Callstack.callstack {
+    area:           l@inst_split1=50|0|0 t0 r0 b0
+    focusable:      true
+    layers.base:
+        fill_color:     #1c2840cc
+        inner_glow:     #8af2 14
+        stroke_width:   0.5
+        stroke_color:   #fff2
+    layers.content: NodeLayer
+        area:           l0.3 t44px r0.3 b0.3
+        label_size:     14
+        row_spacing:    1.3
+        sel_color:      #264f78
+        sel_radius:     6
+        text_color:     #cfe6ff
+}
+Instances / Callstack / element.list_filter {
+    area:                       l0 t0 r0 h44px
+    focusable:                  true
+    layers.base:
+        fill_color:             #2480
+        inner_glow:             #8af2 26
+        stroke_width:           0.5
+        stroke_color:           #fff2
+    layers.face:
+        label_color:            #fff
+        label_size:             19
+        label_align:            0.0 0.5
+        label_offset:           14 0
+:focused
+    layers.face:
+        editable:               true
+        label_color:            #ffff
+}
+
 /* callstack + fields: a vertical stack on the editor's right. on/off is per-editor
    (each tab's dbg_open builds it or not); the WIDTH is a draggable seam shared via
    @stack_w (bound coords are app-scoped, so the seam width is shared when open). */
@@ -770,20 +838,8 @@ Avatar.avatar:pressed {
 
 /* avatar shown in the right editor pane (a direct EditorView child, not inside an
    Editor — that masks it). right half, square (height tracks width via 'hw'). */
-EditorView / Avatar.avatar {
-    area:               l4 t4 r4 b4
-}
-
-EditorView / Avatar.avatar / Option {
-    area:               r8px t8px w90px h28px
-    layers.base:
-        fill_color:     #2484
-        inner_glow:     #8af3 12
-        radius:         6
-    layers.face:
-        label_color:    #fff
-        label_size:     14
-        label_align:    0.5 0.5
+Avatar.avatar {
+    area: r512px b712px w512px h512px
 }
 
 Editor / element.title / element.nav {
