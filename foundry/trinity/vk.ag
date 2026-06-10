@@ -2735,12 +2735,17 @@ intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, act
     w.key_event[ w.ev ]
 
 
-intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ] 
+intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ]
     w: (glfwGetWindowUserPointer[ win ] to Window)
     w.ev.clear[]
     w.ev.mouse.pos.x         = w.mouse.x
     w.ev.mouse.pos.y         = w.mouse.y
+    w.ev.mouse.wheel_delta.x = x
     w.ev.mouse.wheel_delta.y = y
+    # carry shift so handlers can map shift+wheel to horizontal scroll
+    lshift                   : i32 [ glfwGetKey[ win, 340 ] ]
+    rshift                   : i32 [ glfwGetKey[ win, 344 ] ]
+    w.ev.key.shift           = lshift == GLFW_PRESS || rshift == GLFW_PRESS
     w.wheel_event[ w.ev ]
 
 

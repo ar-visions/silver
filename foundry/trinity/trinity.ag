@@ -1854,9 +1854,16 @@ Display Window
         mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
         if [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
             if [ mask_on ]
-                if [ !e.mask_canvas || e.mask_w != ew || e.mask_h != eh ]
-                    e.mask_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true ]
+                glow_changed : bool [ e.mask_bg.x != e.mask_glow.x || e.mask_bg.y != e.mask_glow.y || e.mask_bg.z != e.mask_glow.z || e.mask_bg.w != e.mask_glow.w ]
+                if [ !e.mask_canvas || e.mask_w != ew || e.mask_h != eh || glow_changed ]
+                    # size the mask to the SRC cache's actual (quantized) texture and
+                    # give it the same logical content_w/h, so draw_canvas_masked's
+                    # shared uv (content/texture) maps both identically — otherwise the
+                    # fade samples the wrong place when the cache is quantized.
+                    e.mask_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: e.cache_canvas.width, height: e.cache_canvas.height, load_existing: true ]
                     e.mask_canvas.update[]
+                    e.mask_canvas.content_w = ew
+                    e.mask_canvas.content_h = eh
                     e.mask_w = ew
                     e.mask_h = eh
                     e.mask_canvas.reset[ vec4f[ 0.0, 0.0, 0.0, 1.0 ] ]
@@ -1875,7 +1882,14 @@ Display Window
                     mrh : f32 [ f32 eh - e.mask_inset.x - e.mask_inset.z ]
                     e.mask_canvas.rect_to[ mrx, mry, mrw, mrh ]
                     e.mask_canvas.paint[]
+                    # keep a left strip fully opaque (e.g. a fixed gutter) — the left
+                    # fade then originates just right of it. drawn after the glow.
+                    if [ e.mask_keep_l > 0.0 ]
+                        e.mask_canvas.fill_color[ rgba['#fff'] ]
+                        e.mask_canvas.rect_to[ 0.0, mry, e.mask_keep_l, mrh ]
+                        e.mask_canvas.paint[]
                     e.mask_canvas.restore[]
+                    e.mask_bg = e.mask_glow
                 cv.draw_canvas_masked[ e.cache_canvas, e.mask_canvas,
                     0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
             el

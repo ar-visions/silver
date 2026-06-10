@@ -172,6 +172,12 @@ ielement element
     intern mask_w        : i32
     intern mask_h        : i32
     public mask_glow     : vec4f
+    # the glow the mask was last built with — rebuild the mask when it changes (not
+    # just on resize), so a fade that turns on/off (e.g. on horizontal scroll) shows.
+    intern mask_bg       : vec4f
+    # px on the left kept fully opaque after the fade is built (e.g. a fixed gutter):
+    # the left fade originates just right of it. 0 = no kept strip.
+    public mask_keep_l   : f32
     # inset (top, right, bottom, left) px: shrinks the masked rect so the fade
     # starts inset from each edge. region outside the inset stays fully masked
     # (e.g. content scrolling under a titlebar). 0 = fade from the edge.

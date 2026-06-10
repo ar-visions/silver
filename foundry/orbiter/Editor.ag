@@ -101,7 +101,7 @@ Layer EditorLayer
         rel_x : f32 [ ev.mouse.pos.x ]
         raw : i32 [ clamp[ rel_y / lh, 0, editor.line_count[] - 1 ] ]
         ln  : i32 [ editor.snap_row[ raw ] ]
-        vx  : f32 [ round[ (rel_x - editor.row_indent[ ln ]) / cw ] ]
+        vx  : f32 [ round[ (rel_x - editor.row_indent[ ln ] + editor.scroll.x) / cw ] ]
         cl  : i32 [ editor.model_col[ editor.line_get[ ln ], i32[ vx ] ] ]
         editor.sel_line = ln
         editor.sel_col  = cl
@@ -140,7 +140,10 @@ Layer EditorLayer
             ndigits += 1
         gut_w   : f32 [ f32[ ndigits ] * cw_tm.w + 16.0 ]
         editor.gutter_w = gut_w
-        x0      : f32 [ bounds.x + gut_w ]
+        # x0 is the code-text origin; subtract scroll.x for horizontal scroll (the
+        # gutter uses bounds.x, so it stays fixed). clamp scroll.x >= 0.
+        if [ editor.scroll.x < 0.0 ] editor.scroll.x = 0.0
+        x0      : f32 [ bounds.x + gut_w - editor.scroll.x ]
         y0      : f32 [ bounds.y ]
         # inset the content on the right so code/text never draws under the right-
         # side overlays: the pin list (144px while searching) and the stack sub-
@@ -152,23 +155,22 @@ Layer EditorLayer
             din = dbg_el.bounds.w
         pin_in  : f32 [ (editor.elements['pins']) ? 144.0 : 0.0 ]
         rin     : f32 [ maxf[ pin_in, din ] ]
-        # edge fade is produced by the element's grayscale mask (per-edge black
-        # inner glow) applied at the cache blit — not a per-line CPU alpha.
-        # asymmetric on purpose: a little on the left so the code's structure
-        # (indent) stays sharp, a lot on the right so long lines dissolve into
-        # space instead of being cut (no horizontal scroll), medium top/bottom.
-        # vec4 = (top, right, bottom, left) px.
-        # TEMP: mask disabled to isolate the command-buffer double-free crash.
-        # if the crash stops with this, the mask path (draw_canvas_masked /
-        # mask_canvas) is the culprit. restore to [32,128,64,32] after.
-        parent.mask_glow = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        # edge text fades via the element's grayscale mask: the rightmost 1/8 always
+        # fades (long lines dissolve), and on horizontal scroll the left fade turns on,
+        # originating at the gutter's right edge (max there) so off-screen-left code
+        # dissolves to alpha — same look as the right. vec4 = (top, right, bottom, left).
+        left_fade : f32 [ (editor.scroll.x > 0.0) ? bounds.w / 8.0 : 0.0 ]
+        parent.mask_glow = vec4f [ 0.0, bounds.w / 8.0, 0.0, left_fade ]
+        # keep the line-number gutter fully opaque; the left fade starts just past it.
+        parent.mask_keep_l = gut_w
         # start the top fade at the bottom of the title bar so code scrolls
         # cleanly under it; fall back to 70px if the title isn't laid out yet.
-        title_bottom : f32 [ 70.0 ] 
+        title_bottom : f32 [ 70.0 ]
         te : element parent.elements['title']
-        if [ te && te.bounds ] 
+        if [ te && te.bounds ]
             title_bottom = te.bounds.y + te.bounds.h
-        parent.mask_inset = vec4f [ title_bottom, 0.0, 0.0, 0.0 ]
+        # left inset = gut_w so the left fade originates at the gutter edge, not x=0.
+        parent.mask_inset = vec4f [ title_bottom, 0.0, 0.0, gut_w ]
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
         # rebuild the flat row model (base code lines + spliced-in expanded debug
@@ -285,6 +287,12 @@ Layer EditorLayer
 
         # restore the code font before drawing line content
         cv.font_size[ code_fs ]
+        # when horizontally scrolled, tighten the crop so code shifted left doesn't
+        # draw over the (stationary) line-number gutter. the gutter loop above already
+        # drew under the wider editor-bounds crop.
+        if [ editor.scroll.x > 0.0 ]
+            cv.set_crop[ wtx + bounds.x + gut_w, wty + bounds.y,
+                wtx + bounds.x + bounds.w - rin, wty + bounds.y + bounds.h ]
         for [ li: i32 0, li < editor.line_count[], li += 1 ]
             y : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
             if [ editor.row_header[ li ] ]
@@ -1329,7 +1337,7 @@ Control Editor
         # virtual rows render indented by depth, so the click-x is past x0 by that
         # much — subtract it before mapping to a column. map the visual column the click
         # landed on back to a model column (tabs occupy multiple visual columns).
-        vx    : f32 [ round[ (rel_x - row_indent[ ln ]) / cw ] ]
+        vx    : f32 [ round[ (rel_x - row_indent[ ln ] + scroll.x) / cw ] ]
         cl    : i32 [ model_col[ line_get[ ln ], i32[ vx ] ] ]
         sel_line = ln
         sel_col  = cl
@@ -1533,7 +1541,14 @@ Control Editor
 
     func on_wheel [ ev: Event ]
         lh : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
-        scroll.y = scroll.y - ev.mouse.wheel_delta.y * lh * 3.0
+        # shift + wheel scrolls horizontally (no horizontal scrollbar — the left-edge
+        # fade is the only indicator). otherwise vertical.
+        if [ ev.key.shift ]
+            cw : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
+            scroll.x = scroll.x - ev.mouse.wheel_delta.y * cw * 3.0
+            if [ scroll.x < 0.0 ] scroll.x = 0.0
+        el
+            scroll.y = scroll.y - ev.mouse.wheel_delta.y * lh * 3.0
         pristine = false
         ux.will_animate = true
 
