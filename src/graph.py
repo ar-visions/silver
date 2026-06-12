@@ -105,7 +105,19 @@ def parse_g_file(path):
                 deps.extend(val.split())
 
             elif current_key == "link":
-                links.extend(val.split())
+                # map/drop Linux-only link flags on macOS, where the libs differ
+                darwin_link = {
+                    "-latomic":  [],                   # atomics live in the compiler runtime
+                    "-ltinfo":   ["-lncurses"],        # terminfo is part of ncurses
+                    "-lstdc++":  ["-lc++", "-lc++abi"],# macOS uses libc++; exception
+                                                       # destructors/typeinfo live in libc++abi
+                }
+                is_darwin = platform.system() == "Darwin"
+                for flag in val.split():
+                    if is_darwin and flag in darwin_link:
+                        links.extend(darwin_link[flag])
+                    else:
+                        links.append(flag)
         
             elif current_key == "cflags":
                 cflags.extend(expand_vars(val).split())

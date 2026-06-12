@@ -8810,6 +8810,13 @@ none aether_init(aether a) {
             a->install = f(path, "%s", import);
         } else {
             path   exe = path_self();
+            // resolve symlinks (e.g. ~/.local/bin/silver -> .../platform/native/
+            // debug/silver from `make install`) so install is derived from the
+            // real binary location, not the symlink dir.
+            string es = cast(string, exe);
+            char   real[4096];
+            if (es && es->chars && realpath(es->chars, real))
+                exe = f(path, "%s", real);
             path   bin = parent_dir(exe);
             path   install = absolute(f(path, "%o/..", bin));
             a->install = install;
