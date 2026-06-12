@@ -24,6 +24,22 @@ release:
 asan:
 	$(MAKE) BUILD_ROOT=$(SILVER)/install/debug ASAN=1 build
 
+# put `silver` on the user's PATH without any env-var/profile edits: symlink it
+# into the first writable directory already on PATH (no sudo). last `make
+# install` wins. the binary self-locates its libs/tree from its own path, so no
+# IMPORT is needed.
+install: build
+	@bin_dir=""; \
+	for d in $$(printf '%s' "$$PATH" | tr ':' ' '); do \
+		if [ -d "$$d" ] && [ -w "$$d" ]; then bin_dir="$$d"; break; fi; \
+	done; \
+	if [ -z "$$bin_dir" ]; then \
+		echo "no writable dir on PATH; run: sudo ln -sf $(BUILD_ROOT)/silver /usr/local/bin/silver"; \
+		exit 1; \
+	fi; \
+	ln -sf "$(BUILD_ROOT)/silver" "$$bin_dir/silver"; \
+	echo "linked $$bin_dir/silver -> $(BUILD_ROOT)/silver"
+
 bootstrap:
 ifeq ($(OS),Windows_NT)
 	@case "$(BUILD_ROOT)" in *debug) \

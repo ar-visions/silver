@@ -55,7 +55,8 @@ static void cd_share(const char* bindir, const char* name) {
 
 static void* try_dlopen(const char* lib) {
     void* h = NULL;
-#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer)) || !defined(RTLD_DEEPBIND)
+    // RTLD_DEEPBIND is a glibc extension — not available on macOS
     int flags = RTLD_NOW | RTLD_GLOBAL;
 #else
     int flags = RTLD_NOW | RTLD_GLOBAL | RTLD_DEEPBIND;
@@ -167,11 +168,19 @@ int main(int argc, char** argv) {
     signal(SIGILL,  crash_handler);
     signal(SIGFPE,  crash_handler);
 
-    char self[4096];
-    strncpy(self, argv[0], sizeof(self) - 1);
+    // resolve argv[0] to an absolute path (also follows a PATH symlink), so the
+    // product/source paths below survive the cd_share() that changes cwd —
+    // otherwise a relative bindir breaks file_mtime()/readlink() after the cd.
+    char abspath[4096];
+    if (!realpath(argv[0], abspath)) {
+        strncpy(abspath, argv[0], sizeof(abspath) - 1);
+        abspath[sizeof(abspath) - 1] = '\0';
+    }
+    char self[4096], self2[4096];
+    strncpy(self,  abspath, sizeof(self)  - 1); self[sizeof(self)   - 1] = '\0';
+    strncpy(self2, abspath, sizeof(self2) - 1); self2[sizeof(self2) - 1] = '\0';
     const char* name   = basename(self);
-    strncpy(self, argv[0], sizeof(self) - 1);
-    const char* bindir = dirname(self);
+    const char* bindir = dirname(self2);
     g_app_name = name;
 
     char product[4096];

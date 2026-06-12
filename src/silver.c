@@ -1408,8 +1408,13 @@ void silver_init(silver a) {
             path host_dst = f(path, "%o/%o", a->build_dir, a->name);
             if (file_exists("%o", host_src) && file_exists("%o", host_dst)) {
                 printf("silver-host: %s -> %s\n", host_src->chars, host_dst->chars);
-                vexec(a->verbose, "silver-host", "%s/platform/native/bin/clang %s %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
-                    SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, SILVER, SILVER, SILVER);
+#ifdef __APPLE__
+                cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lglfw3 -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
+#else
+                cstr host_libs = "-ldl -lglfw3 -lX11 -lm";
+#endif
+                vexec(a->verbose, "silver-host", "%s/platform/native/bin/clang %s %s -o %o %o %s -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
+                    SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
             }
         }
         return;
@@ -1556,13 +1561,26 @@ void silver_init(silver a) {
     module_erase(a->autype, null);
     au_space_end((void*)a);
 
-    if (a->run) {
-        int argc = len(a->run) + 2;
-        char** argv = calloc(argc, sizeof(char*));
+    // is_live/live_binary are only set during a fresh emit; on a cached build the
+    // host binary (build_dir/name) still exists from before, so recover them here
+    // — otherwise a cached live app would silently not run.
+    if (!((aether)a)->is_live && !a->is_external) {
+        path host = f(path, "%o/%o", a->build_dir, a->name);
+        if (file_exists("%o", host)) {
+            ((aether)a)->is_live = true;
+            if (!a->live_binary) a->live_binary = hold(host);
+        }
+    }
+
+    // a live app build+runs by default when invoked directly; --run passes extra
+    // args to it. libraries and imported sub-modules never auto-run.
+    if (a->run || (((aether)a)->is_live && !a->is_external)) {
+        int n = a->run ? len(a->run) : 0;
+        char** argv = calloc(n + 2, sizeof(char*));
         path run_binary = a->live_binary ? a->live_binary : a->product;
         argv[0] = run_binary->chars;
         int i = 1;
-        each(a->run, Au, arg) {
+        if (a->run) each(a->run, Au, arg) {
             argv[i++] = cast(string, arg)->chars;
         }
         argv[i] = NULL; // Brannigans law
@@ -4564,6 +4582,21 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
     if (rtype->meta_a) au->meta.a = (Au_t)rtype->meta_a;
     if (rtype->meta_b) au->meta.b = rtype->meta_b;
 
+    // cast/getter/setter get their canonical name (cast_bool, index_*, setter)
+    // only here, after the return type is read — so the override probe above ran
+    // against an empty ident and missed it. re-probe with the real name so an
+    // override of e.g. Au.cast_bool collapses onto the inherited vtable slot
+    // instead of emitting a duplicate method.
+    if (rec_ctx && !override &&
+        (member_type == AU_MEMBER_CAST || member_type == AU_MEMBER_GETTER ||
+         member_type == AU_MEMBER_SETTER)) {
+        override = find_member(rec_ctx->autype->context, name->chars, member_type, 0, true);
+        if (override) {
+            au->is_override  = true;
+            au->member_index = override->member_index;
+        }
+    }
+
     // validate override return type matches base (resolve aliases on both sides)
     if (override && override->rtype && rtype->autype != override->rtype) {
         Au_t r_resolved = rtype->autype;
@@ -5453,7 +5486,16 @@ static void deploy_resources(path src, path dst) {
 }
 
 // build with optional bc path; if no bc path we use the project file system
+static void read_g_link_libs(silver a, path mg);
+
 none silver_build(silver a) {
+    // a module with its own .g (e.g. dbg.g -> -llldb -lutil) must honor those
+    // link flags when building/linking itself; graph.py does this for the core
+    // build but silver's module build path otherwise ignores .g.
+    if (a->module_file)
+        read_g_link_libs(a, f(path, "%o/%o.g",
+            parent_dir(a->module_file), stem(a->module_file)));
+
     path ll = null, bc = null;
     bool emit_ok = emit(a, (ARef)&ll, (ARef)&bc);
     verify(emit_ok, "compilation failed");
@@ -5671,9 +5713,39 @@ none silver_build(silver a) {
         path host_dst = f(path, "%o/%o", a->build_dir, a->name);
         verify(file_exists("%o", host_src), "silver-host.c not found at %o", host_src);
         printf("silver-host: %s -> %s\n", host_src->chars, host_dst->chars);
-        vexec(a->verbose, "silver-host", "%s/platform/native/bin/clang %s %s -o %o %o -ldl -lglfw3 -lX11 -lm -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
-            SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, SILVER, SILVER, SILVER);
+#ifdef __APPLE__
+        cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lglfw3 -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
+#else
+        cstr host_libs = "-ldl -lglfw3 -lX11 -lm";
+#endif
+        vexec(a->verbose, "silver-host", "%s/platform/native/bin/clang %s %s -o %o %o %s -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
+            SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
         a->live_binary = hold(host_dst);
+    }
+
+    // --link: symlink this app's binary into the first writable PATH dir, so it
+    // runs by name with no env-var/profile edits (the binary self-locates its
+    // libs/tree from its own path).
+    if (a->link) {
+        path bin = a->live_binary ? a->live_binary : a->product;
+        cstr pathenv = bin ? getenv("PATH") : null;
+        char dir[1024]; dir[0] = 0;
+        if (pathenv) {
+            char buf[8192];
+            strncpy(buf, pathenv, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
+            for (char* d = strtok(buf, ":"); d; d = strtok(null, ":"))
+                if (d[0] && (access)(d, W_OK) == 0) { strncpy(dir, d, sizeof(dir) - 1); break; }
+        }
+        if (dir[0]) {
+            path lnk = f(path, "%s/%o", dir, a->name);
+            unlink(lnk->chars);
+            if (symlink(bin->chars, lnk->chars) == 0)
+                print("linked %o -> %o", lnk, bin);
+            else
+                print("--link: could not symlink into %s", dir);
+        } else {
+            print("--link: no writable directory on PATH");
+        }
     }
 
     // deploy resource files into share/{app-name}/
@@ -6322,6 +6394,93 @@ enode parse_export(silver a) {
     return e_noop(a, null);
 }
 
+// honor a module's .g `link:` directive (e.g. dbg.g -> -llldb -lutil -lm,
+// img.g -> -lpng -lz ...). graph.py reads .g for the core build, but silver's
+// foundry import path never sees it, so without this those libs would be missing
+// from the final app link. safe to call for cached and runtime-resolved modules.
+static bool add_lib_if_exists(silver a, cstr nm) {
+    static const char* sys[] = {"m","c","dl","pthread","util","ncurses",
+        "c++","c++abi","z","objc","System",0};
+    for (int si = 0; sys[si]; si++)
+        if (strcmp(nm, sys[si]) == 0) { set(a->libs, (Au)string(nm), (Au)_bool(true)); return true; }
+    if (file_exists("%o/lib/lib%s.dylib", a->install, nm) ||
+        file_exists("%o/lib/lib%s.a",     a->install, nm)) {
+        set(a->libs, (Au)string(nm), (Au)_bool(true));
+        return true;
+    }
+    return false;
+}
+
+static void read_g_link_libs(silver a, path mg) {
+    if (!mg || !file_exists("%o", mg))
+        return;
+    string gtext = (string)load(mg, typeid(string), null);
+    if (!gtext)
+        return;
+
+    // `modules:` deps (e.g. silver.g -> Au net aether) become lib<name>. a module
+    // built as a shared lib has its symbols in lib<name>; an importing app whose
+    // own code calls into it (e.g. orbiter -> aether_init) must link it directly.
+    cstr md = strstr(gtext->chars, "modules:");
+    if (md) {
+        md += 8;
+        cstr meol = strchr(md, '\n');
+        int mn = meol ? (int)(meol - md) : (int)strlen(md);
+        char mbuf[512];
+        if (mn > (int)sizeof(mbuf) - 1) mn = (int)sizeof(mbuf) - 1;
+        memcpy(mbuf, md, mn); mbuf[mn] = 0;
+        char* mt = strtok(mbuf, " \t\r");
+        while (mt) {
+            // a module named foo-lib is built as libfoo (e.g. silver-lib -> libsilver)
+            char base[128];
+            size_t L = strlen(mt);
+            cstr name = mt;
+            if (L > 4 && strcmp(mt + L - 4, "-lib") == 0) {
+                int bl = (int)(L - 4);
+                if (bl > (int)sizeof(base) - 1) bl = (int)sizeof(base) - 1;
+                memcpy(base, mt, bl); base[bl] = 0;
+                name = base;
+            }
+            add_lib_if_exists(a, name);
+            mt = strtok(null, " \t\r");
+        }
+    }
+
+    cstr lk = strstr(gtext->chars, "link:");
+    if (!lk)
+        return;
+    lk += 5;
+    cstr eol = strchr(lk, '\n');
+    int gn = eol ? (int)(eol - lk) : (int)strlen(lk);
+    char gbuf[512];
+    if (gn > (int)sizeof(gbuf) - 1) gn = (int)sizeof(gbuf) - 1;
+    memcpy(gbuf, lk, gn); gbuf[gn] = 0;
+    char* tok = strtok(gbuf, " \t\r");
+    while (tok) {
+        if (strcmp(tok, "-framework") == 0) {
+            tok = strtok(null, " \t\r");
+            if (tok) {
+                if (!a->frameworks) a->frameworks = hold(map(16));
+                set(a->frameworks, (Au)string(tok), (Au)_bool(true));
+            }
+        } else if (strncmp(tok, "-l", 2) == 0 && tok[2]) {
+            cstr nm = tok + 2;
+#ifdef __APPLE__
+            // libatomic/libtinfo don't exist on macOS (mirrors graph.py mapping)
+            if (strcmp(nm, "atomic") == 0) { tok = strtok(null, " \t\r"); continue; }
+            if (strcmp(nm, "tinfo")  == 0) nm = "ncurses";
+            if (strcmp(nm, "stdc++") == 0) nm = "c++";
+#endif
+            // only add libs that exist in our install tree or are standard system
+            // libs. .g files can list transitive static deps (e.g. -ldeflate for
+            // OpenEXR) that aren't separately built here — the app links the
+            // dylibs, which already resolve those internally.
+            add_lib_if_exists(a, nm);
+        }
+        tok = strtok(null, " \t\r");
+    }
+}
+
 enode parse_import(silver a) {
     sequencer;
 
@@ -6514,6 +6673,12 @@ enode parse_import(silver a) {
         if (mod && !module_source) {
             set(a->libs, string(mod->ident), (Au)_bool(true));
             external_name = hold(string(mod->ident));
+            // runtime-resolved module (e.g. dbg, or the silver compiler itself):
+            // still read its .g so its deps reach the app link. core modules live
+            // in src/, foundry modules in foundry/<name>/.
+            read_g_link_libs(a, f(path, "%s/foundry/%s/%s.g",
+                SILVER, mod->ident, mod->ident));
+            read_g_link_libs(a, f(path, "%s/src/%s.g", SILVER, mod->ident));
         } else if (!mod && !module_source && !lib_path) {
             prev(a);
             error("could not find module %o", mpath);
@@ -6563,6 +6728,8 @@ enode parse_import(silver a) {
         }
     } else if (module_source) {
         path module = parent_dir(module_source);
+        read_g_link_libs(a, f(path, "%o/%o.g", module, stem(module_source)));
+
         bool ag = eq(ext(module_source), "ag");
         bool c  = is_native_source_ext(a, ext(module_source));
         bool is_extension = ag && compare(parent_dir(module_source), absolute(a->module)) == 0;
@@ -6643,6 +6810,16 @@ enode parse_import(silver a) {
                     }
                 }
                 validate (!external->error, "error importing silver module %o", external);
+
+                // propagate the external module's own external lib deps (e.g.
+                // img -> -lpng -lz) into our link. its objects are merged into
+                // this app and reference those symbols, which resolve only at
+                // the final app link — copy before `external` is dropped.
+                if (external->libs) {
+                    pairs(external->libs, li) {
+                        set(a->libs, (Au)hold(li->key), (Au)_bool(true));
+                    }
+                }
 
                 drop(external);
                 //drop(external); // this is to compensate for the initial hold in silver_init [ quirk for build in init ]
@@ -6725,8 +6902,10 @@ enode parse_import(silver a) {
             path ipath = (Au_t)isa(inc) == typeid(string) ?
                 aether_lookup_include((aether)a, (string)inc) : (path)inc;
 
-            //path i = aether_lookup_include(a, (Au)ipath);
-            push(mdl->include_paths, (Au)ipath);
+            // null = header not found in tracked paths (e.g. platform-guarded
+            // system include); skip — the C compiler resolves it itself.
+            if (ipath)
+                push(mdl->include_paths, (Au)ipath);
         }
     }
 
@@ -6880,6 +7059,26 @@ static string uccase(string s) {
     return u;
 }
 
+// a silver identifier that is a C/C++/ObjC++ reserved word would be illegal as a
+// C struct field or function name (e.g. `volatile : bool` -> `unsigned long
+// volatile:1;`). emitted code is offset/index based at the aether level, so the
+// C name is free to be mangled — append '_' to dodge the collision.
+static bool is_c_reserved(symbol s) {
+    // only keywords that never appear as a silver *type* reference — i.e.
+    // declaration specifiers, statements and operators. primitive type names
+    // (bool, int, char, float, void, ...) and ObjC type words (id) are left
+    // alone because the schema emits them as real types.
+    static symbol kw[] = {
+        "auto","break","case","const","continue","default","do","else","extern",
+        "for","goto","if","inline","register","restrict","return","sizeof",
+        "static","switch","typedef","volatile","while","enum","struct","union",
+        "class","new","delete","this","operator","namespace","template","typename",
+        "virtual","friend","using","try","catch","throw","explicit","mutable",0 };
+    for (int i = 0; kw[i]; i++)
+        if (strcmp(s, kw[i]) == 0) return true;
+    return false;
+}
+
 static string cname(string s) {
     string u = string(chars, s->chars);
     do {
@@ -6888,6 +7087,8 @@ static string cname(string s) {
             break;
         ((cstr)u->chars)[i] = '_';
     } while (1);
+    if (is_c_reserved(u->chars))
+        u = f(string, "%o_", u);
     return u;
 }
 
@@ -6904,6 +7105,110 @@ static string type_name(Au a) {
         au = au->src;
     }
     return au ? string(au->alt ? au->alt : au->ident) : null;
+}
+
+// whether an import contributes its own generated header to our import header.
+// binary/C-wrapped modules (!is_au_rt) always do. silver .ag modules only do
+// when they are standalone (their own header exists) — modules that `extend`
+// us are inlined into our own header and built-ins like `vec` live in Au.
+static bool import_emits_header(silver a, import im) {
+    if (!im->external_name) return false;
+    if (!im->is_au_rt)      return true;
+    return file_exists("%o/include/%o/%o", a->install, im->external_name, im->external_name);
+}
+
+// emit `#define Name_schema(...)` + `declare_struct(Name)` for every struct.
+// called before the class schemas so a class can use a struct by value.
+static void write_struct_schemas(silver a, FILE* module_f) {
+    #define write(f,s,...) fputs(fmt(s     __VA_OPT__(,) __VA_ARGS__)->chars, f)
+    #define line(f,s,...)  fputs(fmt(s"\n" __VA_OPT__(,) __VA_ARGS__)->chars, f)
+    members(a->autype, m) {
+        if (m->is_struct && !m->is_system && !m->is_schema) {
+            string n = cname(type_name((Au)m));
+            string base = m->src ? cname(string(m->src->ident)) : null;
+
+            // schema macro: #define Name_schema(O, Y, T, ...) ...
+            if (base)
+                write(module_f, "#define %o_schema(O, Y, T, ...)", n);
+            else
+                write(module_f, "#define %o_schema(O, Y, ...)", n);
+
+            members(m, mi) {
+                line(module_f, "\\");
+                string mn = cname(string(mi->ident));
+
+                if (mi->member_type == AU_MEMBER_CONSTRUCT) {
+                    // only i_struct_ctr
+                    Au_t arg = mi->args.count > 1 ? (Au_t)mi->args.origin[1] : null;
+                    if (arg) {
+                        string arg_type = cname(type_name((Au)arg));
+                        write(module_f, "    i_struct_ctr(O, Y, %o)", arg_type);
+                    }
+                } else if (is_func((Au)mi)) {
+                    enode f = u(enode, mi);
+                    string args = string();
+                    bool first = true;
+                    int arg_count = 0;
+                    arg_types(mi, arg) {
+                        if (f->target && first) {
+                            first = false;
+                            continue;
+                        }
+                        first = false;
+                        etype aa = u(etype, arg);
+                        if (len(args))
+                            append(args, ",");
+                        string ss = cast(string, aa);
+                        concat(args, cname(ss));
+                        arg_count++;
+                    }
+                    string rtype = cname(cast(string, u(etype, f->autype->rtype)));
+                    // count consecutive leading struct args for suffix
+                    int struct_count = 0;
+                    bool first2 = true;
+                    arg_types(mi, arg2) {
+                        if (f->target && first2) { first2 = false; continue; }
+                        first2 = false;
+                        if (au_arg_type((Au)arg2)->is_struct)
+                            struct_count++;
+                        else
+                            break;
+                    }
+                    string suffix = struct_count == 0 ? string("") :
+                                    struct_count == 1 ? string("_1") :
+                                    struct_count == 2 ? string("_2") :
+                                                        string("_3");
+                    bool show_comma = len(args) > 0;
+                    if (mi->is_static) {
+                        write(module_f, "    i_struct_static%o(O, Y, %o, %o%s%o)", suffix, rtype, mn, show_comma ? ", " : "", args);
+                    } else {
+                        write(module_f, "    i_struct_method%o(O, Y, %o, %o%s%o)", suffix, rtype, mn, show_comma ? ", " : "", args);
+                    }
+                } else {
+                    // prop
+                    if (base)
+                        write(module_f, "    i_struct_prop(O, Y, T, %o)", mn);
+                    else {
+                        string prop_type = cname(type_name((Au)mi));
+                        // opaque/anonymous pointer handles lose their typedef
+                        // name (type_name empty); they are single pointer slots,
+                        // so emit the generic pointer ARef to match layout.
+                        if (!prop_type || !prop_type->count)
+                            prop_type = string("ARef");
+                        write(module_f, "    i_struct_prop(O, Y, %o, %o)", prop_type, mn);
+                    }
+                }
+            }
+            line(module_f, "\n");
+
+            if (base)
+                line(module_f, "declare_struct(%o, %o)\n", n, base);
+            else
+                line(module_f, "declare_struct(%o)\n", n);
+        }
+    }
+    #undef write
+    #undef line
 }
 
 void silver_write_header(silver a) {
@@ -7051,15 +7356,32 @@ void silver_write_header(silver a) {
         }
     }
 
-    // forward declare all classes
+    // forward declare all classes. aliases-to-class (e.g. `alias Elements : map`)
+    // still need the forward typedef so members typed by the alias name resolve
+    // to an (incomplete) pointer; only their declare_class body is skipped below.
     members(a->autype, m) {
         if (is_class(m))
             line(module_f, "forward(%o)", cname(type_name((Au)m)));
     }
 
+    // forward declare all structs (value types), then emit their full
+    // definitions BEFORE the class schemas below. a class may use a struct by
+    // value — as a method parameter or a field — and source order does not
+    // guarantee the struct was defined first (e.g. SVGPathBuilder.cmd_quad
+    // takes `affine`, but `struct affine` appears later in the same file).
+    // by-value fields need the complete struct, so structs must be fully
+    // declared ahead of classes.
+    members(a->autype, m) {
+        if (m->is_struct && !m->is_system && !m->is_schema) {
+            string sn = cname(type_name((Au)m));
+            line(module_f, "typedef struct _%o %o;", sn, sn);
+        }
+    }
+    write_struct_schemas(a, module_f);
+
     // write class schemas
     members(a->autype, m) {
-        if (is_class(m)) {
+        if (is_class(m) && !m->is_alias) {
             string n   = cname(type_name((Au)m));
             array  acl = etype_class_list(u(etype, m));
 
@@ -7079,10 +7401,27 @@ void silver_write_header(silver a) {
                 m->context != typeid(Au);
             write(module_f, "#define %o_schema(A,B,...)", n);
             members(m, mi) {
+                // a member that re-declares one from a FLATTENED user-class base
+                // (e.g. `ModelViewProject Basic` restating proj/model/view) reuses
+                // the inherited slot in aether's layout, so emitting it again is a
+                // duplicate C field. only user-class bases are flattened — Au's own
+                // members live behind the `au` pointer and never collide, so the
+                // walk stops before Au (otherwise Image.source would wrongly match
+                // Au's `source`).
+                bool inherited = false;
+                for (Au_t b = m->context; b && b != m && b != typeid(Au) && is_class(b); b = b->context)
+                    if (find_member(b, mi->ident, 0, 0, false)) { inherited = true; break; }
+                if (inherited)
+                    continue;
                 line(module_f, "\\", n);
                 string mn = cname(string(mi->ident));
                 u8 header_access = mi->access_type ? mi->access_type : interface_public;
-                if (header_access == interface_mutable || header_access == interface_manual)
+                // these access modifiers carry no i_prop_<access>_* macro family;
+                // their extra semantics (required/read-only) are tracked on the
+                // Au_t (is_required/is_context), so the C struct treats them as
+                // plain public fields.
+                if (header_access == interface_mutable || header_access == interface_manual ||
+                    header_access == interface_context || header_access == interface_expect)
                     header_access = interface_public;
                 string access_type = estring(typeid(interface), header_access);
 
@@ -7123,6 +7462,15 @@ void silver_write_header(silver a) {
                     }
                     bool   has_meta = mi->args.count > 0;
                     string prop_type   = cname(type_name((Au)mi));
+                    // members typed as an opaque C handle (e.g. VkBuffer ->
+                    // VkBuffer_T*, or `new VkRenderPass[2]`) carry an anonymous
+                    // pointer type whose typedef name was elided, so type_name
+                    // returns empty. they are single `ptr` slots in the LLVM
+                    // struct, so emit the generic pointer ARef to keep the C
+                    // struct layout in sync (8 bytes). these are always intern
+                    // and never referenced by C name from hand-written glue.
+                    if (!prop_type || !prop_type->count)
+                        prop_type = string("ARef");
                     // is_explicit_ref members ARE pointers (8 bytes). i_ref_*
                     // expands `R* N;` so declare_class_N sees a pointer slot
                     // matching LLVM's ptr emit. plain prop would emit `R N;`
@@ -7152,88 +7500,6 @@ void silver_write_header(silver a) {
             line(module_f, "declare_class%o(%o)\n", extra, classes);
         }
     }
-    // write struct schemas
-    members(a->autype, m) {
-        if (m->is_struct && !m->is_system && !m->is_schema) {
-            string n = cname(type_name((Au)m));
-            string base = m->src ? cname(string(m->src->ident)) : null;
-
-            // schema macro: #define Name_schema(O, Y, T, ...) ...
-            if (base)
-                write(module_f, "#define %o_schema(O, Y, T, ...)", n);
-            else
-                write(module_f, "#define %o_schema(O, Y, ...)", n);
-
-            members(m, mi) {
-                line(module_f, "\\");
-                string mn = cname(string(mi->ident));
-
-                if (mi->member_type == AU_MEMBER_CONSTRUCT) {
-                    // only i_struct_ctr
-                    Au_t arg = mi->args.count > 1 ? (Au_t)mi->args.origin[1] : null;
-                    if (arg) {
-                        string arg_type = cname(type_name((Au)arg));
-                        write(module_f, "    i_struct_ctr(O, Y, %o)", arg_type);
-                    }
-                } else if (is_func((Au)mi)) {
-                    enode f = u(enode, mi);
-                    string args = string();
-                    bool first = true;
-                    int arg_count = 0;
-                    arg_types(mi, arg) {
-                        if (f->target && first) {
-                            first = false;
-                            continue;
-                        }
-                        first = false;
-                        etype aa = u(etype, arg);
-                        if (len(args))
-                            append(args, ",");
-                        string ss = cast(string, aa);
-                        concat(args, cname(ss));
-                        arg_count++;
-                    }
-                    string rtype = cname(cast(string, u(etype, f->autype->rtype)));
-                    // count consecutive leading struct args for suffix
-                    int struct_count = 0;
-                    bool first2 = true;
-                    arg_types(mi, arg2) {
-                        if (f->target && first2) { first2 = false; continue; }
-                        first2 = false;
-                        if (au_arg_type((Au)arg2)->is_struct)
-                            struct_count++;
-                        else
-                            break;
-                    }
-                    string suffix = struct_count == 0 ? string("") :
-                                    struct_count == 1 ? string("_1") :
-                                    struct_count == 2 ? string("_2") :
-                                                        string("_3");
-                    bool show_comma = len(args) > 0;
-                    if (mi->is_static) {
-                        write(module_f, "    i_struct_static%o(O, Y, %o, %o%s%o)", suffix, rtype, mn, show_comma ? ", " : "", args);
-                    } else {
-                        write(module_f, "    i_struct_method%o(O, Y, %o, %o%s%o)", suffix, rtype, mn, show_comma ? ", " : "", args);
-                    }
-                } else {
-                    // prop
-                    if (base)
-                        write(module_f, "    i_struct_prop(O, Y, T, %o)", mn);
-                    else {
-                        string prop_type = cname(type_name((Au)mi));
-                        write(module_f, "    i_struct_prop(O, Y, %o, %o)", prop_type, mn);
-                    }
-                }
-            }
-            line(module_f, "\n");
-
-            if (base)
-                line(module_f, "declare_struct(%o, %o)\n", n, base);
-            else
-                line(module_f, "declare_struct(%o)\n", n);
-        }
-    }
-
     line(module_f, "#endif");
 
     // write methods (guarded for C++ — Au macros clash with stdlib)
@@ -7241,7 +7507,7 @@ void silver_write_header(silver a) {
     line(method_f, "#define _%o_METHODS_", NAME);
     line(method_f, "#ifndef __cplusplus");
     members(a->autype, m) {
-        if (is_class(m)) {
+        if (is_class(m) && !m->is_alias) {
             members(m, mi) {
                 efunc fn = u(efunc, mi);
                 if   (fn)  line(method_f, "%o", method_def((enode)fn));
@@ -7267,12 +7533,12 @@ void silver_write_header(silver a) {
 
     line(import_f, "#include <Au/public>");
     each(a->imports, import, im) {
-        if (im->external_name && !im->is_au_rt)
+        if (import_emits_header(a, im))
             line(import_f, "#include <%o/public>", im->external_name);
     }
     line(import_f, "#include <Au/Au>");
     each(a->imports, import, im) {
-        if (im->external_name && !im->is_au_rt)
+        if (import_emits_header(a, im))
             line(import_f, "#include <%o/%o>", im->external_name, im->external_name);
     }
     line(import_f, "#include <%o/intern>",  a->name);
@@ -7283,12 +7549,12 @@ void silver_write_header(silver a) {
     //line(import_f, "#ifndef __cplusplus");
     line(import_f, "#include <Au/init>");
     each(a->imports, import, im) {
-        if (im->external_name && !im->is_au_rt)
+        if (import_emits_header(a, im))
             line(import_f, "#include <%o/init>", im->external_name);
     }
     line(import_f, "#include <Au/methods>");
     each(a->imports, import, im) {
-        if (im->external_name && !im->is_au_rt)
+        if (import_emits_header(a, im))
             line(import_f, "#include <%o/methods>", im->external_name);
     }
     // a module's own /init (the per-type X(...) prop-pair constructor macros) is

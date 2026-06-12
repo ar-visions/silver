@@ -3044,6 +3044,26 @@ string prep_cereal(cereal cs) {
     return res;
 }
 
+// print `usage: <prog> <default-arg> [options]` (from argv[0] + the type's
+// default/positional member) and exit cleanly — used for missing required args
+// and unknown flags (e.g. --help) instead of trapping.
+static void au_arg_usage(Au a, cstrs argv) {
+    symbol defname = null;
+    for (Au_t rt = isa(a); rt && rt != typeid(Au); ) {
+        for (num i = 0; i < rt->members.count; i++) {
+            Au_t d = (Au_t)rt->members.origin[i];
+            if (d->is_default && d->ident) { defname = d->ident; break; }
+        }
+        if (defname || rt->context == rt) break;
+        rt = rt->context;
+    }
+    if (!defname) defname = "module";
+    cstr prog = (argv && argv[0]) ? argv[0] : "program";
+    cstr base = strrchr(prog, '/'); base = base ? base + 1 : prog;
+    fprintf(stderr, "usage: %s <%s> [options]\n", base, defname);
+    exit(0);
+}
+
 Au Au_with_cstrs(Au a, cstrs argv) {
     engage(argv);
     int argc = argv[0] ? 1 : 0; // skip executable
@@ -3067,7 +3087,7 @@ Au Au_with_cstrs(Au a, cstrs argv) {
                 if (mem) break; // most-derived match wins; don't let a base class clobber it
                 type = type->context;
             }
-            verify(mem, "member not found: %s", &arg[1 + !single]);
+            if (!mem) au_arg_usage(a, argv);   // unknown flag (e.g. --help)
             bool is_bool = mem->src == typeid(bool);
             cstr value = null;
             if (is_bool && argv[argc + 1] && (
@@ -3113,13 +3133,15 @@ Au Au_with_cstrs(Au a, cstrs argv) {
         argc++;
     }
 
-    // verify all required properties were given
+    // verify all required properties were given. if one is missing, Au already
+    // knows the required + default (positional) args — print a usage line and
+    // exit cleanly rather than trapping with a raw "expected <member>".
     while (rtype && rtype != typeid(Au)) {
         for (num i = 0; i < rtype->members.count; i++) {
             Au_t m = (Au_t)rtype->members.origin[i];
             if (m->member_type == AU_MEMBER_VAR && m->is_required && !m->is_context && m->offset) {
                 Au val = *(Au*)((cstr)a + m->offset);
-                verify(val, "expected %s", m->ident);
+                if (!val) au_arg_usage(a, argv);
             }
         }
         if (rtype->context == rtype) break;
