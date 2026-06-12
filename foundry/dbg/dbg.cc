@@ -7,7 +7,11 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#ifdef __APPLE__
+#include <util.h>   // forkpty/openpty live here on macOS (pty.h is Linux-only)
+#else
 #include <pty.h>
+#endif
 #include <termios.h>
 #include <ports.h>
 

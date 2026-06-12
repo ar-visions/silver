@@ -199,10 +199,12 @@ export CHECKOUT="$PROJECT_PATH/checkout"
 export NATIVE="$SILVER/platform/native"
 export IMPORT="$NATIVE"
 export BUILD="$NATIVE/$TYPE"
-export PATH="$NATIVE/bin:$PATH"
+export PATH="$BUILD:$NATIVE/bin:$PATH"
 export ARCH="$ARCH"
 
-export LD_LIBRARY_PATH="$NATIVE/lib:$LD_LIBRARY_PATH"
+# rpath (@executable_path/../lib) resolves our libs at runtime, so this should
+# be unnecessary — commented out to confirm nothing relies on it.
+# export LD_LIBRARY_PATH="$NATIVE/lib:$LD_LIBRARY_PATH"
 
 mkdir -p "$NATIVE" "$NATIVE/include" "$NATIVE/bin" "$NATIVE/lib" \
     "$CHECKOUT" "$BUILD" "$SILVER/checkout"

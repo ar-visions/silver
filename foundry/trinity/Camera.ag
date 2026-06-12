@@ -36,8 +36,20 @@ class Camera
 
     ifdef [ apple ]
         intern func backend_init []
+            ow : i32 0
+            oh : i32 0
+            op : u32 0
+            backend = trinity_camera_open[ device.chars, width, height, ref ow, ref oh, ref op ]
+            if [ backend ]
+                width     = ow
+                height    = oh
+                row_pitch = op
+
         intern func backend_copy [ dst: ref u8, dst_bytes: u32 ] -> bool
+            return trinity_camera_copy[ backend, dst, dst_bytes ] > 0
+
         intern func backend_dealloc []
+            trinity_camera_close[ backend ]
 
     intern func init_gpu []
         expect width  > 0, 'camera: invalid width {width}'
@@ -432,7 +444,19 @@ class Camera
         release_gpu[]
 
 ifdef [ apple ]
+    # primitive C bridge implemented in trinity.mm (pure Cocoa/AVFoundation)
+    func trinity_camera_count  []                                              -> i32
+    func trinity_camera_name   [ index: i32 ]                                  -> cstr
+    func trinity_camera_open   [ device: cstr, req_w: i32, req_h: i32, out_w: ref i32, out_h: ref i32, out_pitch: ref u32 ] -> handle
+    func trinity_camera_copy   [ backend: handle, dst: ref u8, dst_bytes: u32 ] -> i32
+    func trinity_camera_close  [ backend: handle ]
+
     func camera_devices [] -> array string
+        n      : i32 trinity_camera_count[]
+        result : array string [ ]
+        for [ i: i32 0, i < n, i += 1 ]
+            result.push[ string[ trinity_camera_name[ i ] ] ]
+        return result
 
 
 element CameraView

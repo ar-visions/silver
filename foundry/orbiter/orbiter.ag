@@ -148,7 +148,7 @@ trinity orbiter # implements compiler
     public show_console  : bool
     # an empty editor pane (no file) shows the Avatar in its elemental state; this
     # toggles the Avatar view via the pane's titlebar hide/show option.
-    public show_avatar   : bool [ true ]
+    public show_avatar   : bool [ true ] 
     # live elements, auto-bound by id — reference them directly, no tree walk.
     # (the console is nested under instances and doesn't auto-bind, so it's reached
     # via instances.elements['console'] where needed.)
@@ -1771,7 +1771,7 @@ trinity orbiter # implements compiler
 
         sfilter : Elements []
         sfilter['list_filter'] = element [ label: 'callstack', focusable: true, no_scroll: true ]
-        sfilter['avatar']      = Avatar []
+        #sfilter['avatar']      = Avatar []
         inst_els['callstack']  = Callstack [ frames: debug_frames[], elements: sfilter ]
 
         # top strip: play button + project session tabs (left) + console/agent tabs (right),

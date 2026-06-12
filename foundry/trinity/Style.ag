@@ -377,6 +377,13 @@ class Style
             ty = ty.context
         return avail
 
+    # non-consuming mtime poll: true when the css file changed on disk but
+    # check_reload hasn't applied it yet. lets the idle render loop open its
+    # frame gate so a live css edit repaints without waiting for a mouse event.
+    public func pending_reload [ ] -> bool
+        if [ !css_path ] return false
+        return mod_time != css_path.modified_time[ ]
+
     func check_reload [ ] -> bool
         expect css_path, 'style not loaded with path'
         m : css_path.modified_time[ ]

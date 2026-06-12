@@ -1,5 +1,9 @@
 export 0.1.0
 export VK_LAYER_PATH: '{install}/share/vulkan/explicit_layer.d'
+ifdef [ apple ]
+    export VK_ICD_FILENAMES: '{install}/etc/vulkan/icd.d/MoltenVK_icd.json'
+    # MoltenVK log level: 1 = errors only (silences the per-swapchain [mvk-info] spam)
+    export MVK_CONFIG_LOG_LEVEL: "1"
 
 import gltf
 import vec
@@ -17,12 +21,11 @@ ifdef [ linux ]
 	import <sys/ioctl.h>
 	import <sys/mman.h>
 	import <fcntl.h>
+	import <linux/videodev2.h>
 
 import <unistd.h>
     +_DEFAULT_SOURCE
     +_XOPEN_SOURCE=500
-
-import <linux/videodev2.h>
 
 import KhronosGroup:Vulkan-Headers/29184b9
 
@@ -52,6 +55,8 @@ import KhronosGroup:glslang/715c850
 import KhronosGroup:Vulkan-Tools/734638e
      -DVULKAN_HEADERS_INSTALL_DIR={install}
      -DMOLTENVK_REPO_ROOT={root_path}/checkout/MoltenVK
+     -DBUILD_CUBE=OFF
+     -DBUILD_ICD=OFF
 
 import glfw:glfw/fdd14e6 <GLFW/glfw3.h>
     +GLFW_INCLUDE_NONE
@@ -64,6 +69,7 @@ import glfw:glfw/fdd14e6 <GLFW/glfw3.h>
 import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
     -I{install}/include/freetype2
     -lfreetype
+    -lpng -lz
     -DFT_DISABLE_BROTLI=TRUE
     -DFT_DISABLE_BZIP2=TRUE
 
@@ -75,7 +81,8 @@ import shader
 import Style
 import Canvas
 
-func usleep[u64]
+ifdef [ linux ]
+	func usleep[u64]
 
 scalar sec : i64
     cast -> ns  [ a * 1000000000 ]
@@ -1485,7 +1492,11 @@ Display Window
         cv.ensure_font[]
         e.fc = 22.0
         if [ cv.font ]
-            e.fc = cv.font.line_height
+            # font.line_height is in DEVICE pixels (atlas rasterized at sz*scale);
+            # fc is px-per-unit in LOGICAL space, so divide by the canvas's device
+            # scale — otherwise every unit-based size (h2/w6/toolbars) doubles.
+            cs : f32 [ (cv.w && cv.w.scale > 0.0) ? cv.w.scale : 1.0 ]
+            e.fc = cv.font.line_height / cs
 
         # compute element bounds from its area
         if [ !e.area ]
@@ -1887,7 +1898,10 @@ Display Window
                     # give it the same logical content_w/h, so draw_canvas_masked's
                     # shared uv (content/texture) maps both identically — otherwise the
                     # fade samples the wrong place when the cache is quantized.
-                    e.mask_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: e.cache_canvas.width, height: e.cache_canvas.height, load_existing: true ]
+                    # cache.width is already device pixels; Canvas init multiplies the
+                    # constructor size by scale, so pre-divide to land exactly on it.
+                    mcs : f32 [ (a.scale > 0.0) ? a.scale : 1.0 ]
+                    e.mask_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: i32[ e.cache_canvas.width / mcs ], height: i32[ e.cache_canvas.height / mcs ], load_existing: true ]
                     e.mask_canvas.update[]
                     e.mask_canvas.content_w = ew
                     e.mask_canvas.content_h = eh
@@ -2021,7 +2035,7 @@ abstract media_app trinity
         window : Window[w]
         wa : bool [ window.will_animate ]
         window.will_animate = false
-        if [ window.restyle || wa || window.is_animating[] ]
+        if [ window.restyle || wa || window.is_animating[] || window.st.pending_reload[] || window.has_pending_resize[] ]
             update_scene*[]
             window.draw[]
             frames += 1

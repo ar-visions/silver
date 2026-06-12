@@ -498,6 +498,130 @@ void lazy_init(global_init_fn fn, Au_t);
     decl_type(AA)\
     _Pragma("pack(pop)")
 
+#define declare_class_5\
+(AA, BB, CC, DD, EE, ...) \
+    typedef struct _##AA* AA; \
+    _Pragma("pack(push, 1)") \
+    struct AA##_fields { \
+        EE##_intern (EE, F, __VA_ARGS__) \
+        DD##_intern (DD, F, __VA_ARGS__) \
+        CC##_intern (CC, F, __VA_ARGS__) \
+        BB##_intern (BB, F, __VA_ARGS__) \
+        AA##_intern (AA, F, __VA_ARGS__) \
+        void* __none__; \
+    }; \
+    struct AA##_af { \
+        union { \
+            struct { \
+                EE##_intern (EE, AF, __VA_ARGS__) \
+                DD##_intern (DD, AF, __VA_ARGS__) \
+                CC##_intern (CC, AF, __VA_ARGS__) \
+                BB##_intern (BB, AF, __VA_ARGS__) \
+                AA##_intern (AA, AF, __VA_ARGS__) \
+                unsigned long __af_last:1; \
+            };                                    \
+            u64 _afbits[4]; \
+        }; \
+    }; \
+    typedef struct _##AA { \
+        struct _##AA##_f* au; \
+        struct AA##_af af_bits; \
+        EE##_intern (EE, INST_U, __VA_ARGS__) \
+        EE##_intern (EE, INST_L, __VA_ARGS__) \
+        u8 EE##_interns [0 EE##_intern (EE, ISIZE, __VA_ARGS__)]; \
+        DD##_intern (DD, INST_U, __VA_ARGS__) \
+        DD##_intern (DD, INST_L, __VA_ARGS__) \
+        u8 DD##_interns [0 DD##_intern (DD, ISIZE, __VA_ARGS__)]; \
+        CC##_intern (CC, INST_U, __VA_ARGS__) \
+        CC##_intern (CC, INST_L, __VA_ARGS__) \
+        u8 CC##_interns [0 CC##_intern (CC, ISIZE, __VA_ARGS__)]; \
+        BB##_intern (BB, INST_U, __VA_ARGS__) \
+        BB##_intern (BB, INST_L, __VA_ARGS__) \
+        u8 BB##_interns [0 BB##_intern (BB, ISIZE, __VA_ARGS__)]; \
+        AA##_intern (AA, INST_U, __VA_ARGS__) \
+        AA##_intern (AA, INST_L, __VA_ARGS__) \
+        u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
+    } *AA; \
+    AA##_schema (AA, DECL, __VA_ARGS__) \
+    typedef struct _##AA##_f { \
+        Au_f_members(AA) \
+        struct { void(*_ff)(); \
+            Au_schema(AA, METHOD, __VA_ARGS__) \
+            EE##_schema (AA, METHOD, __VA_ARGS__) \
+            DD##_schema (AA, METHOD, __VA_ARGS__) \
+            CC##_schema (AA, METHOD, __VA_ARGS__) \
+            BB##_schema (AA, METHOD, __VA_ARGS__) \
+            AA##_schema (AA, METHOD, __VA_ARGS__) \
+        } ft; \
+    } AA##_f, *AA##_ft; \
+    decl_type(AA)\
+    _Pragma("pack(pop)")
+
+#define declare_class_6\
+(AA, BB, CC, DD, EE, FF, ...) \
+    typedef struct _##AA* AA; \
+    _Pragma("pack(push, 1)") \
+    struct AA##_fields { \
+        FF##_intern (FF, F, __VA_ARGS__) \
+        EE##_intern (EE, F, __VA_ARGS__) \
+        DD##_intern (DD, F, __VA_ARGS__) \
+        CC##_intern (CC, F, __VA_ARGS__) \
+        BB##_intern (BB, F, __VA_ARGS__) \
+        AA##_intern (AA, F, __VA_ARGS__) \
+        void* __none__; \
+    }; \
+    struct AA##_af { \
+        union { \
+            struct { \
+                FF##_intern (FF, AF, __VA_ARGS__) \
+                EE##_intern (EE, AF, __VA_ARGS__) \
+                DD##_intern (DD, AF, __VA_ARGS__) \
+                CC##_intern (CC, AF, __VA_ARGS__) \
+                BB##_intern (BB, AF, __VA_ARGS__) \
+                AA##_intern (AA, AF, __VA_ARGS__) \
+                unsigned long __af_last:1; \
+            };                                    \
+            u64 _afbits[4]; \
+        }; \
+    }; \
+    typedef struct _##AA { \
+        struct _##AA##_f* au; \
+        struct AA##_af af_bits; \
+        FF##_intern (FF, INST_U, __VA_ARGS__) \
+        FF##_intern (FF, INST_L, __VA_ARGS__) \
+        u8 FF##_interns [0 FF##_intern (FF, ISIZE, __VA_ARGS__)]; \
+        EE##_intern (EE, INST_U, __VA_ARGS__) \
+        EE##_intern (EE, INST_L, __VA_ARGS__) \
+        u8 EE##_interns [0 EE##_intern (EE, ISIZE, __VA_ARGS__)]; \
+        DD##_intern (DD, INST_U, __VA_ARGS__) \
+        DD##_intern (DD, INST_L, __VA_ARGS__) \
+        u8 DD##_interns [0 DD##_intern (DD, ISIZE, __VA_ARGS__)]; \
+        CC##_intern (CC, INST_U, __VA_ARGS__) \
+        CC##_intern (CC, INST_L, __VA_ARGS__) \
+        u8 CC##_interns [0 CC##_intern (CC, ISIZE, __VA_ARGS__)]; \
+        BB##_intern (BB, INST_U, __VA_ARGS__) \
+        BB##_intern (BB, INST_L, __VA_ARGS__) \
+        u8 BB##_interns [0 BB##_intern (BB, ISIZE, __VA_ARGS__)]; \
+        AA##_intern (AA, INST_U, __VA_ARGS__) \
+        AA##_intern (AA, INST_L, __VA_ARGS__) \
+        u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
+    } *AA; \
+    AA##_schema (AA, DECL, __VA_ARGS__) \
+    typedef struct _##AA##_f { \
+        Au_f_members(AA) \
+        struct { void(*_ff)(); \
+            Au_schema(AA, METHOD, __VA_ARGS__) \
+            FF##_schema (AA, METHOD, __VA_ARGS__) \
+            EE##_schema (AA, METHOD, __VA_ARGS__) \
+            DD##_schema (AA, METHOD, __VA_ARGS__) \
+            CC##_schema (AA, METHOD, __VA_ARGS__) \
+            BB##_schema (AA, METHOD, __VA_ARGS__) \
+            AA##_schema (AA, METHOD, __VA_ARGS__) \
+        } ft; \
+    } AA##_f, *AA##_ft; \
+    decl_type(AA)\
+    _Pragma("pack(pop)")
+
 #define arg_count_IMPL(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, N, ...) N
 #define arg_count(...) arg_count_IMPL(__VA_ARGS__, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
 

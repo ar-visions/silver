@@ -1138,7 +1138,10 @@ path aether_lookup_include(aether e, string include) {
             }
     }
 
-    verify(false, "could not resolve include path for %o", include);
+    // not found in silver's tracked paths. don't be fatal: a system header may
+    // be #ifdef-guarded out on this platform (e.g. <pty.h> on macOS, which uses
+    // <util.h>) yet still appear in the scanned source. the real clang compile
+    // resolves/guards it correctly, so just skip tracking it here.
     return null;
 }
 

@@ -1,8 +1,12 @@
 extend orbiter
 
 
-import <pty.h>
-    -lutil
+ifdef [ apple ]
+    import <util.h>     # forkpty/openpty live in util.h on macOS
+        -lutil
+ifdef [ linux ]
+    import <pty.h>
+        -lutil
 import <unistd.h>
 import <fcntl.h>
 import <sys/ioctl.h>
@@ -42,6 +46,14 @@ class ConsoleSession
     mutable sb_cells   : array TermCell
     mutable sb_off     : array i32
     mutable scroll     : f32 [ 0.0 ]
+    # wheel delta accumulates here in LINE units; we only move the view when a whole
+    # line is crossed, so a mac trackpad's stream of tiny fractional deltas doesn't
+    # fire a redraw per pixel (the laggy "hammering"). sub-line motion just buffers.
+    mutable wheel_accum : f32 [ 0.0 ]
+    # index of the top visible line at the last console repaint. scroll only forces a
+    # repaint when this changes — a drag that hasn't crossed a line boundary leaves the
+    # rendered content identical, so we skip it.
+    mutable first_line  : i32 [ -2147483647 ]
     # set when pty output actually changes the screen; lets the console stay
     # cached (pristine) and skip its full text re-render on idle frames.
     mutable dirty      : bool
@@ -58,6 +70,13 @@ class ConsoleSession
     mutable scroll_dragging : bool
     mutable lh_cache    : f32
     mutable cw_cache    : f32
+    # per-scrollback-line render cache. each VISIBLE line is rasterized into a pooled
+    # canvas once (keyed by line index) then blitted every frame; slots are recycled
+    # as lines scroll off, so the pool stays at the visible-line count — never the
+    # scrollback depth. cache_cw/cache_lh invalidate the whole pool on font/reflow.
+    mutable sb_lines    : array TermLineCache
+    mutable cache_cw    : f32 [ -1.0 ]
+    mutable cache_lh    : f32 [ -1.0 ]
     # true while a run (lldb) is live in this session — drives the play↔stop button.
     mutable running     : bool
     # armed after a run command is sent; the next return to our shell prompt means
@@ -816,6 +835,13 @@ class ConsoleSession
         write[ pty_fd, ref buf[0], n + 1 ]
 
 
+# one pooled render of a single scrollback line. `li` is the scrollback index it
+# currently holds (-1 = free for reuse). scrollback content is immutable per index,
+# so a cached line stays valid until it scrolls out of view and its slot is recycled.
+class TermLineCache
+    mutable canvas : Canvas
+    mutable li     : i32 [ -1 ]
+
 Layer TermLayer
     func draw [ cv: Canvas ]
         con : cast Console [ parent ]
@@ -823,7 +849,11 @@ Layer TermLayer
         s : ConsoleSession con.session[]
         if [ !s ] return
         if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
-        lh : f32 [ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ]
+        # integer line height: rows sit on a fixed pixel grid so scrolling steps by
+        # whole lines and lines never jiggle relative to each other (fractional lh
+        # would round consecutive rows to alternating 18/19px gaps). standard console.
+        lh : f32 [ round[ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ] ]
+        if [ lh < 1.0 ] lh = 1.0
         x0 : f32 [ bounds.x ]
         y0 : f32 [ bounds.y ]
 
@@ -915,6 +945,10 @@ Layer TermLayer
         if [ s.scroll >= max_s - 1.0 ]
             s.user_scrolled = false
 
+        # record the top visible line for this paint — set_scroll compares against it
+        # so a scroll that doesn't change the first line skips the repaint entirely.
+        s.first_line  = (lh > 0.0) ? i32[ round[ s.scroll / lh ] ] : 0
+
         # cache metrics for the mouse→cell mapping; feed content_h/scroll.y to the
         # shared ScrollLayer (it reads them off the element).
         s.lh_cache    = lh
@@ -931,11 +965,37 @@ Layer TermLayer
             s.anchor_line, s.anchor_col, s.sel_line, s.sel_col, rgba['#264f78'] ]
 
         if [ !s.in_alt ]
+            if [ !s.sb_lines ] s.sb_lines = array TermLineCache [ alloc: 64 ]
+            fs : i32 [ (label_size > 0.0) ? i32[label_size] : 0 ]
+            # font/reflow changed → invalidate every cached line (free all slots).
+            if [ cw != s.cache_cw || lh != s.cache_lh ]
+                for [ slc: TermLineCache ] in s.sb_lines
+                    slc.li = -1
+                s.cache_cw = cw
+                s.cache_lh = lh
+            # visible scrollback range [vlo, vhi]
+            vlo : i32 [ -1 ]
+            vhi : i32 [ -1 ]
+            for [ li: i32 0, li < sc_count, li += 1 ]
+                yy : f32 [ y0 + f32[li] * lh - s.scroll ]
+                if [ yy + lh < bounds.y ] continue
+                if [ yy > bounds.y + bounds.h ] break
+                if [ vlo < 0 ] vlo = li
+                vhi = li
+            # recycle slots whose line scrolled out of view
+            for [ slc: TermLineCache ] in s.sb_lines
+                if [ slc.li >= 0 && (slc.li < vlo || slc.li > vhi) ]
+                    slc.li = -1
+            # blit cached lines; render only the ones not already cached
             for [ li: i32 0, li < sc_count, li += 1 ]
                 y : f32 [ y0 + f32[li] * lh - s.scroll ]
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
-                draw_cells[ cv, s, s.sb_cells, s.sb_line_off[ li ], s.sb_line_len[ li ], x0, y, lh, cw ]
+                slc : sb_slot[ cv, s, li, fs, lh, cw ]
+                if [ slc && slc.canvas ]
+                    cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
+                el
+                    draw_cells[ cv, s, s.sb_cells, s.sb_line_off[ li ], s.sb_line_len[ li ], x0, y, lh, cw ]
 
         for [ r: i32 0, r < s.rows, r += 1 ]
             y : f32 [ y0 + f32[base + r] * lh - s.scroll ]
@@ -985,6 +1045,37 @@ Layer TermLayer
 
     func draw_row [ cv: Canvas, s: ConsoleSession, r: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
         draw_cells[ cv, s, s.screen, r * s.cols, s.cols, x0, y, lh, cw ]
+
+    # return the pooled render for scrollback line `li`: a cache hit returns the
+    # existing slot (caller just blits it); a miss claims a free/grown slot and
+    # rasterizes the line's cells into it at local origin. recycled slots (li=-1)
+    # are reused so the pool never exceeds the on-screen line count.
+    func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
+        for [ slc: TermLineCache ] in s.sb_lines
+            if [ slc.li == li ] return slc
+        use : TermLineCache [ null ]
+        for [ slc: TermLineCache ] in s.sb_lines
+            if [ slc.li < 0 ]
+                use = slc
+                break
+        if [ !use ]
+            use = TermLineCache [ ]
+            s.sb_lines.push[ use ]
+        len  : i32 [ s.sb_line_len[ li ] ]
+        cw_i : i32 [ i32[ ceil[ f32[len] * cw + cw ] ] ]
+        if [ cw_i < 1 ] cw_i = 1
+        lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
+        if [ !use.canvas ]
+            use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true ]
+            use.canvas.update[]
+        el [ use.canvas.content_w != cw_i || use.canvas.content_h != lh_i ]
+            use.canvas.resize[ cw_i, lh_i ]
+        use.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        if [ fs > 0 ] use.canvas.font_size[ fs ]
+        draw_cells[ use.canvas, s, s.sb_cells, s.sb_line_off[ li ], len, 0.0, 0.0, lh, cw ]
+        use.canvas.paint[]
+        use.li = li
+        return use
 
     # packed 0xRRGGBB → rgba (components 0..1).
     func col_of [ v: i32 ] -> rgba
@@ -1184,6 +1275,52 @@ Control Console
         s.sel_line = ln
         s.sel_col  = cl
 
+    # is char i of txt whitespace (word boundary for link detection)
+    func is_ws [ txt: string, i: i32 ] -> bool
+        c : string txt.mid[ i, 1 ]
+        return c == ' ' || c == '	'
+
+    # if the (line,col) sits on a `path:line(:col)` token in the output, open that
+    # file at that line in editor pane 0 (mirrors apply_break) and return true.
+    func open_link_at [ ln: i32, col: i32 ] -> bool
+        s : ConsoleSession session[]
+        if [ !s ] return false
+        txt : string s.line_get[ ln ]
+        n : i32 [ txt.count ]
+        if [ n <= 0 || col < 0 || col > n ] return false
+        # non-space run [a, b) around the clicked column
+        a : i32 [ (col < n) ? col : n - 1 ]
+        while [ a > 0 && !is_ws[ txt, a - 1 ] ]
+            a -= 1
+        b : i32 col
+        while [ b < n && !is_ws[ txt, b ] ]
+            b += 1
+        if [ b <= a ] return false
+        word  : string txt.mid[ a, b - a ]
+        parts : array string word.split[ ':' ]
+        if [ parts.count < 2 ] return false
+        fp : string parts[ 0 ]
+        # must look like a path (has / or .) with a numeric line after the colon
+        if [ fp.count == 0 || !parts[ 1 ].is_numeric[] ] return false
+        if [ fp.index_of[ '/' ] < 0 && fp.index_of[ '.' ] < 0 ] return false
+        lno : i32 [ i32[ parts[ 1 ].integer_value[] ] ]
+        orb : orbiter cast orbiter [ ux ]
+        if [ !orb ] return false
+        orb.open_in_pane[ path [ fp.chars ], 0 ]
+        ed : Editor orb.pane_at[ 0 ]
+        if [ ed ]
+            sl : i32 [ (lno > 0) ? lno - 1 : 0 ]
+            ed.sel_line = sl
+            ed.sel_col  = (parts.count > 2 && parts[ 2 ].is_numeric[]) ? i32[ parts[ 2 ].integer_value[] ] : 0
+            lh  : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
+            vh  : f32 [ (ed.bounds) ? ed.bounds.h : 600.0 ]
+            top : f32 [ f32[ sl ] * lh ]
+            if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
+                ed.scroll.y = top - vh * 0.4
+                if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
+            ed.pristine = false
+        return true
+
     func on_press [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
@@ -1210,16 +1347,18 @@ Control Console
             sb.grab_at[ my ]
             sy : f32 [ sb.drag_to[ my ] ]
             if [ sy >= 0.0 ]
-                s.scroll          = sy
-                # take the user-scrolled lock (like scroll_by) so auto-follow doesn't
-                # snap back to the bottom on release; cleared once dragged to the end.
-                s.user_scrolled   = s.scroll < s.max_scroll - 1.0
+                # snap to the line grid and repaint only on a line change (set_scroll);
+                # a sub-line drag updates the thumb but leaves the console untouched.
                 s.scroll_dragging = true
                 sb.active         = true
-                pristine          = false
-                ux.will_animate   = true
+                set_scroll[ s, sy ]
             return
         place_cursor[ ev ]
+        # clicking a file:line token opens it in the editor instead of selecting
+        if [ open_link_at[ s.sel_line, s.sel_col ] ]
+            s.sel_line = -1
+            pristine    = false
+            return
         if [ !ev.key.shift ]
             s.anchor_line = s.sel_line
             s.anchor_col  = s.sel_col
@@ -1255,19 +1394,38 @@ Control Console
             ux.will_animate = true
 
     # scroll the view by line, set the user-scrolled lock so output doesn't yank it.
+    # apply an absolute scroll target: snap to the whole-line grid, clamp, and force a
+    # console repaint ONLY when the top visible line index changes. a drag that stays
+    # within a line snaps to the same value and the rendered content is identical, so
+    # nothing repaints. the draw owns s.first_line (set to the actual top line drawn).
+    func set_scroll [ s: ConsoleSession, target: f32 ]
+        lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
+        ns : f32 [ target ]
+        if [ lh > 0.0 ] ns = round[ ns / lh ] * lh
+        if [ ns < 0.0 ] ns = 0.0
+        if [ ns > s.max_scroll ] ns = s.max_scroll
+        s.scroll = ns
+        s.user_scrolled = ns < s.max_scroll - 1.0
+        fl : i32 [ (lh > 0.0) ? i32[ round[ ns / lh ] ] : 0 ]
+        if [ fl != s.first_line ]
+            pristine = false
+            ux.will_animate = true
+
     func scroll_by [ s: ConsoleSession, dy: f32 ]
-        s.scroll = s.scroll + dy
-        if [ s.scroll < 0.0 ] s.scroll = 0.0
-        if [ s.scroll > s.max_scroll ] s.scroll = s.max_scroll
-        s.user_scrolled = s.scroll < s.max_scroll - 1.0
-        pristine = false
-        ux.will_animate = true
+        set_scroll[ s, s.scroll + dy ]
 
     func on_wheel [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
-        scroll_by[ s, -ev.mouse.wheel_delta.y * lh * 3.0 ]
+        # accumulate in lines (3 lines per wheel unit); only move on whole-line steps
+        # so a trackpad's fractional momentum deltas buffer instead of firing a redraw
+        # per event. the remainder carries to the next event.
+        s.wheel_accum = s.wheel_accum - ev.mouse.wheel_delta.y * 3.0
+        lines : i32 [ i32[ s.wheel_accum ] ]
+        if [ lines != 0 ]
+            s.wheel_accum = s.wheel_accum - f32[ lines ]
+            scroll_by[ s, f32[ lines ] * lh ]
 
 
 Layer CompileLayer
@@ -1276,7 +1434,7 @@ Layer CompileLayer
         if [ !con ] return
         if [ !con.log ] return
         if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
-        lh   : f32 [ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ]
+        lh   : f32 [ round[ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ] ]
         x0   : f32 [ bounds.x ]
         y0   : f32 [ bounds.y ]
         n    : i32 [ con.log.count ]

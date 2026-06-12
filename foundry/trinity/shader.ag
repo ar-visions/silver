@@ -420,6 +420,10 @@ class shader
         vk.shader_cache.set[ typeid[ a ], a ]
 
     func dealloc [ ]
+        # default-constructed shader instances (e.g. shader-codegen reflection args
+        # built via method_call's missing-arg path) never got a vk context, so they
+        # have no shader modules and nothing to free. guard the null vk deref.
+        if [ !vk ] return
         cached: shader [ vk.shader_cache.get[ typeid[ a ] ] ]
         if [ cached != a ]
             return

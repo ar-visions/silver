@@ -1260,9 +1260,14 @@ Render Canvas
         cur_xform   = affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
         xform_stack = array affine [ ]
         # created at an exact size — content fills the whole texture until the first
-        # resize quantizes the capacity. full-texture UV until then.
+        # resize quantizes the capacity. full-texture UV until then. the constructor
+        # width/height are LOGICAL; allocate the texture at content*scale (device
+        # pixels) so even canvases that never call resize[] are retina-sharp.
         content_w   = width
         content_h   = height
+        cs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
+        width       = i32[ width  * cs ]
+        height      = i32[ height * cs ]
         image_uv    = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
         VK : vk
         ui_shader = CanvasUI [ vk: vk ]
@@ -1403,19 +1408,25 @@ Render Canvas
     # pipelines/shaders/font/atlas (no VkPipeline creation, the resize fps cost)
     # and only reallocates the size-dependent textures + framebuffers.
     func resize [ rw: i32, rh: i32 ] -> Canvas
-        # logical content size — drawn into the top-left of the (larger) texture.
+        # logical content size (points) — what the caller draws into. layout/draw
+        # coords are all logical; the GPU texture is allocated at content*scale so
+        # the UI rasterizes at native device pixels (retina) while coords stay the
+        # same on every OS. the shader viewport uniform uses content_w/h (logical).
         content_w = rw
         content_h = rh
+        s  : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
+        pw : i32 [ i32[ rw * s ] ]
+        ph : i32 [ i32[ rh * s ] ]
         # cache canvases quantize the GPU allocation UP to a 64px grid: a 1px drag
         # almost never crosses a boundary, so we keep the same color/depth/framebuffers
         # (the expensive realloc) and only the content size + blit UV change. up to
         # 63px of headroom per axis is unused (transparent) and cropped by the blit.
         # main canvases (quantize=false) stay exactly window-sized for the swapchain.
-        qw : i32 [ rw ]
-        qh : i32 [ rh ]
+        qw : i32 [ pw ]
+        qh : i32 [ ph ]
         if [ quantize ]
-            qw = ((rw + 63) / 64) * 64
-            qh = ((rh + 63) / 64) * 64
+            qw = ((pw + 63) / 64) * 64
+            qh = ((ph + 63) / 64) * 64
             if [ qw < 64 ] qw = 64
             if [ qh < 64 ] qh = 64
         if [ qw == width && qh == height ] return a  # capacity unchanged — no realloc
@@ -1476,14 +1487,17 @@ Render Canvas
         # state.line_height is a multiplier (CSS-style): 1.0 = natural,
         # 1.5 = 150% of the font's intrinsic line height. 0 = unset → 1.0.
         scale : f32 [ (st.line_height > 0.0) ? st.line_height : 1.0 ]
-        lh    : f32 [ font.line_height * scale ]
+        # the atlas is rasterized at device pixels (font metrics are in dev px);
+        # divide by device scale so all measurements are LOGICAL like layout.
+        inv : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
+        lh    : f32 [ font.line_height * scale * inv ]
         return TextMetrics [
-            w:           tw,
+            w:           tw * inv,
             h:           lh,
-            ascent:      font.ascent,
-            descent:     font.descent,
+            ascent:      font.ascent  * inv,
+            descent:     font.descent * inv,
             line_height: lh,
-            cap_height:  font.cap_height
+            cap_height:  font.cap_height * inv
         ]
 
 
@@ -1498,13 +1512,14 @@ Render Canvas
         if [ dots.w >= max_w ]
             return '.'
         target : f32 [ max_w - dots.w ]
+        inv : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
         acc : f32 [ 0.0 ]
         cut : i32 [ 0 ]
         for [ i: i32 0, i < n, i += 1 ]
             cp : u32 [ text[i] ]
             g  : font.get_glyph [ cp ]
             if [ g.cached ]
-                acc += f32 g.advance
+                acc += f32 g.advance * inv
             if [ acc > target ]
                 cut = i
                 return text.mid [ 0, cut ] + '...'
@@ -1595,7 +1610,11 @@ Render Canvas
     # callers use this instead of poking cv.font / calling ensure_font themselves.
     public func get_line_height [] -> f32
         ensure_font []
-        if [ font ] return font.line_height
+        # font.line_height is DEVICE pixels (atlas rasterized at sz*scale); callers
+        # (editor/console cell sizing) work in LOGICAL space, so divide by scale.
+        if [ font ]
+            cs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
+            return font.line_height / cs
         return states[state_depth - 1].line_height
 
     # shared line/col selection highlight: rounded rects per line for an
@@ -1627,15 +1646,21 @@ Render Canvas
     public func ensure_font []
         sz : i32 [ states[state_depth - 1].font_size ]
         if [ sz <= 0 ] sz = 22
+        # rasterize the atlas at device pixels (sz * scale) so text is retina-sharp;
+        # font metrics are reported back in LOGICAL units (divided by scale) so
+        # layout/measure stay in the same coordinate space as every other op.
+        ds  : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
+        dsz : i32 [ i32[ sz * ds ] ]
+        if [ dsz <= 0 ] dsz = sz
         # shared, immutable per-(name,size) font cached on vk: each is born at
         # its size (init does FT_Set_Pixel_Sizes) so it's NEVER set_size'd —
         # mutating a shared instance re-rasterizes + invalidates its glyph cache,
         # which is what randomized glyphs. loaded once, never unloaded, borrowed.
         if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
-        key : string 'SpaceMono-Combined@{sz}'
+        key : string 'SpaceMono-Combined@{dsz}'
         cf  : CanvasFont vk.font_cache[ key ]
         if [ !cf ]
-            cf = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/SpaceMono-Combined.ttf', size_px: sz ]
+            cf = CanvasFont [ ft_lib: ft_lib, uri: 'fonts/SpaceMono-Combined.ttf', size_px: dsz ]
             vk.font_cache[ key ] = cf
         font = cf
 
@@ -1860,6 +1885,11 @@ Render Canvas
             font.atlas = GlyphAtlas [ vk: vk, w: w, size: 1024 ]
         glyph_atlas = font.atlas
         atlas_size : f32 [ f32 glyph_atlas.size ]
+        # glyph bitmaps/metrics are in device pixels (atlas rasterized at sz*scale);
+        # the quad is emitted in LOGICAL coords, so scale glyph extents/advance by
+        # inv. UVs stay in atlas texels (sample the full-res bitmap) — that's what
+        # makes the text crisp instead of an upscaled logical-size atlas.
+        inv : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
         verts : ref f32 [ text_vbo.vertex_data ]
         vi    : i32 [ 0 ]
         pen_x : f32 [ pen_x_in ]
@@ -1894,14 +1924,14 @@ Render Canvas
             if [ slot.cached && slot.atlas_w > 0 && slot.atlas_h > 0 ]
                 if [ vi + 6 > text_max_verts ]
                     break
-                x0 : f32 [ pen_x + f32 slot.bearing_x ]
-                x1 : f32 [ x0 + f32 slot.atlas_w ]
+                x0 : f32 [ pen_x + f32 slot.bearing_x * inv ]
+                x1 : f32 [ x0 + f32 slot.atlas_w * inv ]
                 if [ crop_active && x0 > crop_x1 ] break
                 if [ crop_active && x1 < crop_x0 ]
-                    pen_x += f32 slot.advance
+                    pen_x += f32 slot.advance * inv
                     continue
-                y0 : f32 [ pen_y - f32 slot.bearing_y ]
-                y1 : f32 [ y0 + f32 slot.atlas_h ]
+                y0 : f32 [ pen_y - f32 slot.bearing_y * inv ]
+                y1 : f32 [ y0 + f32 slot.atlas_h * inv ]
                 u0 : f32 [ f32 slot.atlas_x                   / atlas_size ]
                 v0 : f32 [ f32 slot.atlas_y                   / atlas_size ]
                 u1 : f32 [ f32 (slot.atlas_x + slot.atlas_w)  / atlas_size ]
@@ -1932,7 +1962,7 @@ Render Canvas
                 verts[ base + 22 ] = u0
                 verts[ base + 23 ] = v1
                 vi += 6
-            pen_x += f32 slot.advance
+            pen_x += f32 slot.advance * inv
         text_vbo.vertex_count = vi
         if [ text_vbo.vertex && vi > 0 ]
             text_vbo.vertex.update[ text_vbo.vertex_data ]
@@ -1962,7 +1992,12 @@ Render Canvas
         ty     : f32 [ bounds.y + tm.ascent + (bounds.h - font_h) * align.y + offset.y ]
 
         st : CanvasState states[state_depth - 1]
-        text_shader.viewport   = vec2f [ f32 width, f32 height ]
+        # viewport (for ndc) is the TEXTURE in logical units = width/scale, NOT
+        # content_w: the texture is quantized up to a 64px grid, so content only
+        # fills content*scale of it. using content_w would stretch content to the
+        # quantized width and the blit's content*scale/width crop would squish it.
+        tcs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
+        text_shader.viewport   = vec2f [ f32 width / tcs, f32 height / tcs ]
         text_shader.crop_rect  = st.crop
         pen_x : roundf[ tx + st.transform.tx ]
         pen_y : roundf[ ty + st.transform.ty ]
@@ -2000,7 +2035,10 @@ Render Canvas
         ]
 
     func setup_shader [ st: CanvasState, rx: f32, ry: f32, rw: f32, rh: f32 ]
-        ui_shader.viewport      = vec2f [ f32 width, f32 height ]
+        # texture in logical units (width/scale), not content_w — see draw_text:
+        # the quantized texture margin must be accounted for or the blit squishes.
+        ucs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
+        ui_shader.viewport      = vec2f [ f32 width / ucs, f32 height / ucs ]
         ui_shader.crop_rect     = st.crop
         ui_shader.rect          = vec4f [ rx, ry, rw, rh ]
         ui_shader.fill_color    = st.fill_color # color_to_vec4 [ st.fill_color ]
@@ -2187,10 +2225,12 @@ Render Canvas
         tex : Texture [ (src.reduction) ? src.reduction : src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
-        # crop to src's logical content — its texture is quantized larger, with up
-        # to 63px of transparent headroom we must not sample.
-        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] / f32[ src.width  ] : 1.0 ]
-        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] / f32[ src.height ] : 1.0 ]
+        # crop to src's content — content_w/h are LOGICAL, but the texture holds
+        # content*scale device pixels (plus up to 63px quantize headroom we must
+        # not sample), so the filled fraction is content*scale / capacity.
+        ss  : f32 [ (src.w.scale > 0) ? src.w.scale : 1.0 ]
+        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
+        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
         image_uv = vec4f [ 0.0, 0.0, uvx, uvy ]
         path.clear[]
         path.add_rect[ x, y, rw, rh ]
@@ -2215,8 +2255,9 @@ Render Canvas
         image_override = tex
         mask_override  = mtex
         # crop to content (src and mask share the uv; both should be sized alike).
-        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] / f32[ src.width  ] : 1.0 ]
-        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] / f32[ src.height ] : 1.0 ]
+        ss  : f32 [ (src.w.scale > 0) ? src.w.scale : 1.0 ]
+        uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
+        uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
         image_uv = vec4f [ 0.0, 0.0, uvx, uvy ]
         path.clear[]
         path.add_rect[ x, y, rw, rh ]
@@ -2736,10 +2777,11 @@ class GlyphAtlas
             slots.push[ slot ]
             return slot
 
-        # shelf packer with 1-pixel gutter between glyphs so bilinear
+        # shelf packer with a 2-pixel gutter between glyphs so bilinear
         # sampling at the edge of one slot never reads pixels from a
-        # neighboring slot (the seams between letters were exactly that).
-        gutter : i32 [ 1 ]
+        # neighboring slot (the seams between letters were exactly that) —
+        # 2px gives headroom now that glyphs are rasterized at sz*scale.
+        gutter : i32 [ 2 ]
         gw_pad : i32 [ gw + gutter ]
         gh_pad : i32 [ gh + gutter ]
         if [ shelf_x + gw_pad > size ]

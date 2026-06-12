@@ -105,8 +105,10 @@ class Render
 
     public func update [ ]
         backbuffer: !vk_swap_image
-        width  = (wscale > 0) ? w.width  * wscale : width
-        height = (wscale > 0) ? w.height * wscale : height
+        # w.width/height are LOGICAL; render targets allocate at device pixels.
+        s : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
+        width  = (wscale > 0) ? i32[ w.width  * wscale * s ] : width
+        height = (wscale > 0) ? i32[ w.height * wscale * s ] : height
 
         if [ !width || !height ]
             fault "width / height or wscale not set on render Render"
@@ -566,8 +568,16 @@ class vk_context
             apiVersion:         VK_API_VERSION_1_2
         ]
 
+        # MoltenVK is a portability driver: the loader only enumerates it when the
+        # instance enables VK_KHR_portability_enumeration (added in
+        # get_required_extensions) AND sets this flag.
+        inst_flags: u32 0
+        ifdef [ apple ]
+            inst_flags = VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR
+
         result: vkCreateInstance[ VkInstanceCreateInfo [
             sType:                   VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            flags:                   inst_flags,
             pApplicationInfo:        ref app_info,
             enabledExtensionCount:   instance_exts.count,
             ppEnabledExtensionNames: instance_exts.origin,
@@ -2222,6 +2232,11 @@ Texture Display
     intern surface_format       : VkSurfaceFormatKHR
     intern present_mode         : VkPresentModeKHR
     intern extent               : VkExtent2D
+    # device pixel ratio (2.0 on retina). width/height stay LOGICAL so app/CSS
+    # coords are identical on every OS; canvas textures + render targets are sized
+    # at width*scale and the canvas viewport uniform stays logical, so the whole
+    # UI rasterizes at native pixels without changing any layout coordinate.
+    public scale                : f32
     intern swap_image_count     : u32
     intern swap_image_current   : u32
     intern ev                   : Event
@@ -2246,6 +2261,12 @@ Texture Display
     intern pending_h            : i32
     intern last_resize_t        : f64
     intern resize_debounce_s    : f64 [ 0.188 ]
+    # set when acquire/present reports SUBOPTIMAL/OUT_OF_DATE. on SUBOPTIMAL the
+    # acquire still signals the image-available semaphore; skipping the frame leaves
+    # it signaled, and the next acquire on that same semaphore trips
+    # VUID-vkAcquireNextImageKHR-semaphore-01286. so before the next acquire we
+    # recreate the swapchain (fresh, unsignaled semaphores) when this is set.
+    intern swap_needs_recreate  : bool
     intern in_callback_draw     : bool
     public backbuffer           : bool
 
@@ -2270,11 +2291,40 @@ Texture Display
     func set_fullscreen [ on: bool ]
         return
 
+    # true while a framebuffer-size change is queued (debounced in draw[]). lets the
+    # idle render loop keep drawing until the resize is applied — otherwise the final
+    # resize lands after the last glfw callback and never repaints until a mouse event.
+    public func has_pending_resize [ ] -> bool
+        return (pending_w > 0 && pending_h > 0) || swap_needs_recreate
+
     public func resize [ w_new: i32, h_new: i32 ] -> Display
-        width  = w_new
-        height = h_new
-        extent.width  = w_new
-        extent.height = h_new
+        # Re-query into a stack local. The intern `surface_caps` ref field only
+        # holds a raw pointer to the new'd struct from init; on later resizes that
+        # allocation has been recycled and reading currentTransform/minImageCount
+        # yields garbage (e.g. 0x5555), failing the validator on preTransform.
+        caps: VkSurfaceCapabilitiesKHR
+        if [ !backbuffer ]
+            # width/height stay LOGICAL (points); extent is the device-pixel
+            # drawable. scale = pixels/points. determine both up front so the
+            # r.update[] loop sizes render targets (width*scale) correctly.
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, ref caps ]
+            ww_i: i32
+            wh_i: i32
+            glfwGetWindowSize[ glfw, ref ww_i, ref wh_i ]
+            width  = ww_i
+            height = wh_i
+            if [ caps.currentExtent.width != UINT32_MAX ]
+                extent.width  = caps.currentExtent.width
+                extent.height = caps.currentExtent.height
+            el
+                extent.width  = u32[ ww_i ]
+                extent.height = u32[ wh_i ]
+            scale = (ww_i > 0) ? f32[ extent.width ] / f32[ ww_i ] : 1.0
+        el
+            width  = w_new
+            height = h_new
+            extent.width  = w_new
+            extent.height = h_new
 
         for [ r: Render, id: string ] in element_targets
             r.update[ ]
@@ -2289,16 +2339,6 @@ Texture Display
 
         resized = true
         if [ !backbuffer ]
-            # Re-query into a stack local. The intern `surface_caps` ref field
-            # only holds a raw pointer to the new'd struct from init; on later
-            # resizes that allocation has been recycled and reading
-            # currentTransform/minImageCount yields garbage (e.g. 0x5555),
-            # which fails the validator on preTransform.
-            caps: VkSurfaceCapabilitiesKHR
-            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, ref caps ]
-            if [ caps.currentExtent.width != UINT32_MAX ]
-                width  = caps.currentExtent.width
-                height = caps.currentExtent.height
             old_swapchain : VkSwapchainKHR [ Au.live_swapchain_get[] ]
             result: vkCreateSwapchainKHR[ vk.device, VkSwapchainCreateInfoKHR [
                 sType:                 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -2307,7 +2347,7 @@ Texture Display
                 minImageCount:         caps.minImageCount,
                 imageFormat:           surface_format.format,
                 imageColorSpace:       surface_format.colorSpace,
-                imageExtent:           VkExtent2D [ width, height ],
+                imageExtent:           VkExtent2D [ extent.width, extent.height ],
                 imageArrayLayers:      1,
                 imageUsage:            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                 imageSharingMode:      VK_SHARING_MODE_EXCLUSIVE,
@@ -2348,8 +2388,8 @@ Texture Display
             for [ i: 0, i < swap_image_count, i += 1 ]
                 r : Render [
                     vk:vk,   w:a,
-                    width:         width,
-                    height:        height,
+                    width:         extent.width,
+                    height:        extent.height,
                     vk_swap_image: vk_swap_images[i],
                     models:        array Model [ swap_model ]
                 ]
@@ -2376,6 +2416,14 @@ Texture Display
                 last_resize_t = 0.0
                 draw_seq      = -1
 
+        # recreate a SUBOPTIMAL/stale swapchain here at the TOP of draw — BEFORE
+        # on_compose redraws — so the resized canvases are repainted before we
+        # present. doing it in the swap section (after on_compose) presents the
+        # freshly-cleared canvases for one frame: the black flash on resize.
+        if [ swap_needs_recreate && !backbuffer ]
+            swap_needs_recreate = false
+            resize*[ width, height ]
+
         for [ r: Render, id: string ] in element_targets
             r.draw*[]
             r.sync_fence*[]
@@ -2397,7 +2445,7 @@ Texture Display
             result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
                 semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
             if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
-                ii: 0
+                swap_needs_recreate = true
             el
                 expect result == VK_SUCCESS, "failed to acquire swapchain image"
                 swap_render_current = swap_renders[swap_image_current]
@@ -2420,7 +2468,9 @@ Texture Display
                 result = vkQueuePresentKHR[ vk.queue, presentInfo ]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 semaphore_frame = swap_renders[semaphore_frame == swap_renders.first_element[]]
-                if [ result != VK_ERROR_OUT_OF_DATE_KHR && result != VK_SUBOPTIMAL_KHR ]
+                if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
+                    swap_needs_recreate = true
+                el
                     expect result == VK_SUCCESS, "present"
                     swap_render_current.sync_fence[]
 
@@ -2512,6 +2562,18 @@ Texture Display
                 if [ formats[i].format == VK_FORMAT_B8G8R8A8_UNORM ]
                     surface_format = formats[i]
 
+            ifdef [ apple ]
+                # MoltenVK pairs B8G8R8A8_UNORM with a Display-P3 color space,
+                # which trips swapchain validation. pinning the core sRGB-nonlinear
+                # color space silences the warning but renders fills black — left
+                # here as a toggle to test color profiles on mac. default off:
+                # keep the working (P3) pairing chosen above.
+                test_srgb: bool true
+                if [ test_srgb ]
+                    for [ i: u32 0, i < format_count, i += 1 ]
+                        if [ formats[i].format == VK_FORMAT_B8G8R8A8_UNORM && formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ]
+                            surface_format = formats[i]
+
             # present mode
             present_mode_count: u32 [ 0 ]
             vkGetPhysicalDeviceSurfacePresentModesKHR[
@@ -2528,12 +2590,21 @@ Texture Display
                 el [ present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR ]
                     present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR
 
-            # initial window size
-            w_i: i32
-            h_i: i32
-            glfwGetWindowSize[ glfw, ref w_i, ref h_i ]
-            extent.width  = u32[ w_i ]
-            extent.height = u32[ h_i ]
+            # width/height are LOGICAL (window points) so layout/CSS coords match
+            # every OS. scale = device pixels / points (2.0 on retina): canvas
+            # textures + render targets allocate at width*scale and rasterize at
+            # native resolution, while the canvas viewport uniform stays logical.
+            ww_i: i32
+            wh_i: i32
+            pw_i: i32
+            ph_i: i32
+            glfwGetWindowSize[ glfw, ref ww_i, ref wh_i ]
+            glfwGetFramebufferSize[ glfw, ref pw_i, ref ph_i ]
+            scale         = (ww_i > 0) ? f32[ pw_i ] / f32[ ww_i ] : 1.0
+            width         = ww_i
+            height        = wh_i
+            extent.width  = u32[ pw_i ]
+            extent.height = u32[ ph_i ]
         el
             surface_format.format     = (format == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM
             surface_format.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR

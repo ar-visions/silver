@@ -1,0 +1,30 @@
+@import "trinity.css"
+
+element.root {
+    area: l0 t0 r0 b0
+    layers.bg:
+        fill_color: #1e1e2e
+}
+
+element.root / Button.hello {
+    area:       l2 t2 w123px h64px
+    focusable:  true
+    layers.base:
+        fill_color:     #24a
+        fill_gradient:  linear
+        fill_gradient_color: #2f6fb0
+        fill_gradient_angle: 90
+        inner_glow:     #8af 14
+        radius:         10
+        stroke_width:   0.5
+        stroke_color:   #fff3
+    layers.face:
+        label_color:    #ffffff
+        label_size:     20
+        label_align:    0.5 0.5
+
+element.root / Button.hello:hovered {
+    layers.base:
+        fill_color:     #5aa0e9
+        inner_glow:     #aef6 20
+}

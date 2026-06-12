@@ -502,7 +502,7 @@ class Layer
         disp     : string [ (has_edit) ? etext : ((parent.label) ? parent.label : '') ]
         tm    : cv.measure_text[ disp ]
         cw_tm : cv.measure_text[ 'x' ]
-        lh_cache = cv.font.line_height
+        lh_cache = cv.get_line_height[]
         cw_cache = cw_tm.w
 
         ax    : f32 [ label_align.x ]

@@ -1,0 +1,30 @@
+import vec
+import img
+import trinity
+import <stdio.h>
+
+trinity buttontest
+    intern clicks : i32 0
+
+    func init []
+        width      = 480
+        height     = 320
+        background = 'Background'
+        title      = 'buttontest'
+
+    public func on_click [ ev: Event ]
+        e : (ev.target to element)
+        if [ !e ] return
+        if [ e.id == 'hello' ]
+            clicks += 1
+            puts 'button clicked! count={clicks}'
+        ev.stop_propagation[]
+
+    public func on_render [ w: Window ] -> Elements
+        return Elements [
+            "root": element [
+                elements: Elements [
+                    "hello": Button [ label: 'click me' ]
+                ]
+            ]
+        ]
