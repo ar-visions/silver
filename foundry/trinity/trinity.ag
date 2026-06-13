@@ -122,12 +122,27 @@ abstract live_app media_app
         Au.auto_free[true]
 
     func frame [ ] -> bool
-        glfwWaitEventsTimeout[ 0.016 ]
+        # free-running loop: poll (don't block on events) so we render every iteration
+        # at full speed — measures raw throughput instead of event-gated repaints.
+        glfwPollEvents[]
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            puts 'PERF fps={frames} samplers={vk.sampler_count}'
+            puts 'PERF fps={frames} draw={vk.draw_us} bindus={vk.bindres_us} schema={vk.br_schema_us} bindres={vk.bindres_calls} paints={vk.paint_calls}'
             frames = 0
+            vk.submit_calls = 0
+            vk.sync_calls   = 0
+            vk.sync_us      = 0
+            vk.update_us    = 0
+            vk.draw_us      = 0
+            vk.paint_calls  = 0
+            vk.sdf_hit      = 0
+            vk.sdf_miss     = 0
+            vk.geom_us      = 0
+            vk.render_allocs = 0
+            vk.bindres_calls = 0
+            vk.bindres_us    = 0
+            vk.br_schema_us  = 0
         render*[]
         Au.auto_free[false]
         return !glfwWindowShouldClose[ w.glfw ]
@@ -2043,9 +2058,14 @@ abstract media_app trinity
         window : Window[w]
         wa : bool [ window.will_animate ]
         window.will_animate = false
-        if [ window.restyle || wa || window.is_animating[] || window.st.pending_reload[] || window.has_pending_resize[] ]
+        # full-speed test: render every frame regardless of the dirty/animation gate.
+        if [ true ]
+            u0 : i64 [ epoch_micros[] ]
             update_scene*[]
+            u1 : i64 [ epoch_micros[] ]
             window.draw[]
+            vk.update_us += u1 - u0
+            vk.draw_us   += epoch_micros[] - u1
             frames += 1
 
 

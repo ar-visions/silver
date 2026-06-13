@@ -98,9 +98,16 @@ class Render
     intern  vk_command_buffers             : new VkCommandBuffer [64]
     intern  vk_fences                      : new VkFence          [64]
     intern  ring_i                         : i32
-    intern  ring_n                         : i32 [ 64 ]
+    intern  ring_n                         : i32 [ 16 ]
     intern  ring_last                      : i32           # most recently submitted slot (sync_fence target)
     intern  ring_primed                    : new i32 [64]   # slot has a pending submit to wait on (0/1)
+    # batched recording: a canvas opens ONE command buffer (begin_record) and records
+    # every paint into it, advancing draw_slot (the per-paint descriptor/UBO ring index)
+    # per paint; the single submit happens at sync_fence (flush_submit). collapses N
+    # per-paint submits into 1 per canvas. draw_slot keys descriptors/uniforms; ring_i
+    # keys the command-buffer/fence (advanced per batch).
+    intern  recording                      : bool
+    intern  draw_slot                      : i32
     intern  vk_swap_image                  : VkImage
     intern  vk_fence                       : VkFence              # current slot (= [ring_i])
     intern  vk_semaphore                   : VkSemaphore
@@ -206,18 +213,120 @@ class Render
 
             expect result == VK_SUCCESS, "Failed to create framebuffer"
 
+    # open a command buffer for this canvas's batch (once; idempotent while recording).
+    func begin_record [ ]
+        if [ recording ]
+            return
+        s : i32 [ ring_i ]
+        if [ ring_primed[s] != 0 ]
+            vkWaitForFences[ vk.device, 1, ref vk_fences[s], VK_TRUE, UINT64_MAX ]
+        vk_command_buffer = vk_command_buffers[s]
+        vk_fence          = vk_fences[s]
+        vkResetFences[ vk.device, 1, ref vk_fence ]
+        vkResetCommandBuffer[ vk_command_buffer, 0 ]
+        vkBeginCommandBuffer[ vk_command_buffer, VkCommandBufferBeginInfo [
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+        ] ]
+        if [ bool[ color ] && color.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+            color.transition_in[ vk_command_buffer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+        recording = true
+
+    # close + submit the open batch (once). NO semaphores — batched canvases are never
+    # the swapchain blit (that path stays on draw_immediate).
+    func flush_submit [ ]
+        if [ !recording ]
+            return
+        s : i32 [ ring_i ]
+        vkEndCommandBuffer[ vk_command_buffer ]
+        submitInfo: VkSubmitInfo [
+            sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            commandBufferCount: 1,
+            pCommandBuffers:    ref vk_command_buffer
+        ]
+        vkQueueSubmit[ vk.queue, 1, ref submitInfo, vk_fence ]
+        vk.submit_calls += 1
+        ring_primed[s] = 1
+        ring_last      = s
+        ring_i         = (s + 1) % ring_n
+        recording      = false
+        draw_slot      = 0
+
     public func draw [ ]
         if [ !vk_framebuffer[0] ]
             return
-        # claim the next ring slot. its command buffer / fence / descriptors / uniforms
-        # are private to this draw, so we only stall if the GPU is still RING_N draws
-        # behind (a wrap) — instead of fencing every single draw like before.
+        vk.paint_calls += 1
+        # reduction renders (two-pass) + the swapchain blit (semaphores/present) can't
+        # batch — they record+submit in one shot, as before.
+        if [ reduce > 0 || bool[ vk_swap_image ] ]
+            draw_immediate[]
+            return
+        # batched paint: accumulate into the canvas's open command buffer. each paint
+        # uses the next descriptor/UBO slot; the submit waits until sync_fence.
+        begin_record[]
+        vk.cur_ring = draw_slot
+        frame: VkCommandBuffer [ vk_command_buffer ]
+        # compute dispatches must precede the render pass (image-layout barriers are
+        # illegal inside one); each paint opens its own render pass in the shared buffer.
+        for [ m: Model ] in models
+            for [ p: Pipeline ] in m.pipelines
+                p.dispatch[ frame ]
+        # inter-paint ordering: prior paint's color writes -> this paint's LOAD.
+        mem_bar: VkMemoryBarrier [
+            sType:         VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            srcAccessMask: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            dstAccessMask: VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT
+        ]
+        vkCmdPipelineBarrier[ frame,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 1, ref mem_bar, 0, null, 0, null ]
+        vkCmdSetViewport[ frame, 0, 1, VkViewport [
+            x: 0.0, y: 0.0, width: width, height: height,
+            minDepth: 0.0, maxDepth: 1.0
+        ] ]
+        vkCmdSetScissor[ frame, 0, 1, VkRect2D [
+            offset: VkOffset2D [ 0, 0 ],
+            extent: VkExtent2D [ width, height ]
+        ] ]
+        clear_values: local VkClearValue [2]
+        clear_values[0].color.float32[0] = clear_color.x
+        clear_values[0].color.float32[1] = clear_color.y
+        clear_values[0].color.float32[2] = clear_color.z
+        clear_values[0].color.float32[3] = clear_color.w
+        clear_values[1].depthStencil.depth   = 1.0
+        clear_values[1].depthStencil.stencil = 0
+        render_pass_info : VkRenderPassBeginInfo [
+            sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            renderPass:      vk_render_pass[0],
+            framebuffer:     vk_framebuffer[0],
+            renderArea:      VkRect2D [
+                offset: VkOffset2D [ 0, 0 ],
+                extent: VkExtent2D [ width, height ]
+            ],
+            clearValueCount: 2,
+            pClearValues:    clear_values
+        ]
+        vkCmdBeginRenderPass[ frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
+        for [ m: Model ] in models
+            for [ p: Pipeline ] in m.pipelines
+                p.draw[ frame ]
+        vkCmdEndRenderPass[ frame ]
+        draw_slot += 1
+        # wrap HERE (after the increment, before the next paint's rebind in paint[]):
+        # if this batch filled the ring, submit+wait so sync_fence resets draw_slot to 0.
+        # otherwise the next rebind would index descriptor_sets past the allocated 2*ring.
+        if [ draw_slot >= ring_n ]
+            sync_fence[]
+
+    func draw_immediate [ ]
         s : i32 [ ring_i ]
         if [ ring_primed[s] != 0 ]
             vkWaitForFences[ vk.device, 1, ref vk_fences[s], VK_TRUE, UINT64_MAX ]
         vk_command_buffer = vk_command_buffers[s]
         vk_fence          = vk_fences[s]
         vk.cur_ring       = s
+        draw_slot         = s
         index: u32 [ 0 ]
         for [ i: 0, i < 1 + reduce, i += 1 ]
             if [ i == 1 && bool[ reduction ] ]
@@ -323,9 +432,14 @@ class Render
         ring_i         = (s + 1) % ring_n
 
     public func sync_fence [ ]
-        # wait the most recently submitted slot — callers use this before READING the
-        # render's color (blit/sample), which must see all of this canvas's draws.
+        # submit the open batch (if any), then wait it. callers invoke this before
+        # READING the render's color (blit/sample) or presenting, which must see all of
+        # this canvas's accumulated draws.
+        flush_submit[]
+        t0: i64 [ epoch_micros[] ]
         result: vkWaitForFences[ vk.device, 1, ref vk_fences[ring_last], VK_TRUE, UINT64_MAX ]
+        vk.sync_us    += epoch_micros[] - t0
+        vk.sync_calls += 1
         expect result == VK_SUCCESS, "fence wait failed"
 
     func dealloc [ ]
@@ -341,6 +455,7 @@ class Render
 
 
     func init []
+        vk.render_allocs += 1
         backbuffer : !vk_swap_image
         hold vk_framebuffer
         hold vk_render_pass
@@ -540,7 +655,10 @@ class Layout
     # transition image from this layout to Render layout
     intern func transition [ vk: vk_context, img: VkImage, trans_to: Layout, r: ImageRange ]
         #printf[ "current layout %p\n", layout ]
-        cmd: Command [ vk: vk ]
+        # reuse the context's transfer command instead of allocating a new one per call.
+        if [ !vk.xfer_cmd ]
+            vk.xfer_cmd = Command [ vk: vk ]
+        cmd: Command [ vk.xfer_cmd ]
         cmd.begin
         barrier: VkImageMemoryBarrier [
             sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -570,6 +688,9 @@ class vk_context
     intern  device              : VkDevice
     intern  queue               : VkQueue
     intern  command_pool        : VkCommandPool
+    # one reused command buffer for immediate (out-of-band) layout transitions — was
+    # allocated fresh on every transition, which is costly on MoltenVK.
+    intern  xfer_cmd            : Command
     # current draw-ring slot for the Render being recorded. set by Render.draw (and
     # Canvas.paint before rebind) so a pipeline's descriptor/uniform ring picks the
     # same slot as the render's command buffer/fence — no per-call signature threading.
@@ -585,6 +706,21 @@ class vk_context
     intern  _vkGetMemoryFdPropertiesKHR     : PFN_vkGetMemoryFdPropertiesKHR
 
     public  sampler_count       : i32
+    # perf counters (reset each second in the PERF print): submits issued, sync_fence
+    # waits issued, and total microseconds spent blocked in those waits.
+    public  submit_calls        : i32
+    public  sync_calls          : i32
+    public  sync_us             : i64
+    public  update_us           : i64
+    public  draw_us             : i64
+    public  paint_calls         : i32
+    public  sdf_hit             : i32
+    public  sdf_miss            : i32
+    public  geom_us             : i64
+    public  render_allocs       : i32
+    public  bindres_calls       : i32
+    public  bindres_us          : i64
+    public  br_schema_us        : i64
 
     intern quad_m:    GltfModel
     # cached default shaders. constructing a fresh UVQuad / UVReduce per
@@ -1015,8 +1151,10 @@ class uniforms
         m : (u_memory to Au)
         m.hold[]
         # one uniform buffer per draw-ring slot (all share the CPU-side u_memory; each
-        # update[] snapshots it into the current slot's GPU buffer).
-        for [ ri: i32 0, ri < 64, ri += 1 ]
+        # update[] snapshots it into the current slot's GPU buffer). MUST match pipe_ring
+        # / ring_n — the descriptor write count (and thus resize re-bind cost) scales with
+        # this, so keep it as small as the largest single-canvas batch needs.
+        for [ ri: i32 0, ri < 16, ri += 1 ]
             uniform_buf: Buffer [ vk: vk, size: total_uniform,
                 u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
                 data: ref u_memory[0], user: leaf ]
@@ -1085,7 +1223,7 @@ class Pipeline
     # slot, laid out interleaved [s0_0,s1_0, s0_1,s1_1, ...]. draw binds the pair at
     # 2*vk.cur_ring so each draw has private descriptors (no in-flight clobber).
     intern descriptor_sets    : new VkDescriptorSet       [ 128 ] # 2 * ring_n(64)
-    intern pipe_ring          : i32 [ 64 ]
+    intern pipe_ring          : i32 [ 16 ]
     intern descriptor_pool    : VkDescriptorPool
     intern image_slot         : i32 [ -1 ]
     intern mask_slot          : i32 [ -1 ]
@@ -1122,13 +1260,11 @@ class Pipeline
     # binding → no-op.
     public   func rebind_texture [ slot: i32, tx: Texture ]
         if [ slot < 0 ] return
-        # the upcoming draw binds the Render's LIVE slot (r.ring_i, advanced in draw[]'s
-        # footer) — NOT the stale global cur_ring, which a prior draw on this canvas has
-        # already moved past. wait for THIS slot's prior submit to drain before mutating
-        # its descriptor (else VUID-...-03047: update of an in-flight set).
-        rs : i32 [ (r) ? r.ring_i : vk.cur_ring ]
-        if [ r && r.ring_primed[ rs ] != 0 ]
-            vkWaitForFences[ vk.device, 1, ref r.vk_fences[ rs ], VK_TRUE, UINT64_MAX ]
+        # bind into the upcoming paint's per-paint slot (r.draw_slot). within a batch
+        # draw_slot only advances, so this slot is fresh; across frames the canvas's
+        # sync_fence drained the prior batch before draw_slot reset — so no in-flight set
+        # is ever mutated (no VUID-...-03047), and no wait is needed here.
+        rs : i32 [ (r) ? r.draw_slot : vk.cur_ring ]
         tx.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         info : VkDescriptorImageInfo [
             sampler:     tx.vk_sampler,
@@ -1172,7 +1308,7 @@ class Pipeline
         # the original code only bound set 0 because the compute-on-vbo
         # pattern didn't have any storage bindings; the SDF compute does.
         vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_COMPUTE,
-            layout, 0, 2, ref descriptor_sets[ 2 * r.ring_i ], 0, null ]
+            layout, 0, 2, ref descriptor_sets[ 2 * r.draw_slot ], 0, null ]
         # explicit dispatch counts override the default vertex-buffer-driven
         # workgroup count from the C foundation's compute-on-vbo pattern.
         dx: i32 [ (dispatch_x > 0) ? dispatch_x : ((memory) ? memory.vertex_count : 1) ]
@@ -1203,7 +1339,7 @@ class Pipeline
         vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_render ]
         offsets: local VkDeviceSize[ 1 ] [ 0 ]
         vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            layout, 0, 2, ref descriptor_sets[ 2 * r.ring_i ], 0, null ]
+            layout, 0, 2, ref descriptor_sets[ 2 * r.draw_slot ], 0, null ]
 
         vkCmdBindVertexBuffers[ frame, 0, 1, ref vbo.vertex.vk_buffer, offsets ]
         if [ vbo.index ]
@@ -1214,6 +1350,8 @@ class Pipeline
             vkCmdDraw[ frame, vbo.vertex_count, 1, 0, 0 ]
 
     public   func bind_resources [ ]
+        vk.bindres_calls += 1
+        br0 : i64 [ epoch_micros[] ]
         sampler_count:         0 # for COMBINED_IMAGE_SAMPLER pool sizing
         set1_binds:            0 # binding count for set 1 (mixed types)
         uniform_count:         0
@@ -1221,10 +1359,12 @@ class Pipeline
         storage_buffer_count:  0
         sampler_bindings:  local VkDescriptorSetLayoutBinding [32]
         uniform_bindings:  local VkDescriptorSetLayoutBinding [32]
-        buffer_infos:      local VkDescriptorBufferInfo       [32]
         image_infos:       local VkDescriptorImageInfo        [32]
         storage_buf_infos: local VkDescriptorBufferInfo       [32]
-        descriptor_writes: local VkWriteDescriptorSet         [32]
+        # one update for ALL ring slots: per-slot uniform infos + all writes accumulate,
+        # then a SINGLE vkUpdateDescriptorSets (64 separate calls were ~21ms on MoltenVK).
+        buffer_infos:      local VkDescriptorBufferInfo       [256]
+        descriptor_writes: local VkWriteDescriptorSet         [512]
         resources        = array Gpu     [ alloc: 32 ]
         storage_textures = array Texture [ alloc: 8  ]
         # TEST: extra hold to see if the use-after-free is this array being freed
@@ -1266,6 +1406,7 @@ class Pipeline
         # the runtime subclass from the Au object header instead.
         sh_hdr:        Au.header[ s ]
         shader_schema: sh_hdr.au
+        sch0 : i64 [ epoch_micros[] ]
         while [ shader_schema && shader_schema != typeid[ shader ] ]
             for [ i: 0, i < shader_schema.members.count, i += 1 ]
                 mem: Au_t [ shader_schema.members.origin[i] ]
@@ -1319,7 +1460,10 @@ class Pipeline
                                 found_tx = tx
                                 break
                     expect found_tx, "no Texture provided in samplers map for storage image attrib"
-                    found_tx.transition[ VK_IMAGE_LAYOUT_GENERAL ]
+                    # NO out-of-band transition here: found_tx is pushed to
+                    # storage_textures and the compute dispatch transitions it IN-BAND
+                    # (transition_in) before use. the immediate transition did a full
+                    # vkQueueWaitIdle — draining the whole batched queue on every resize.
                     storage_textures.push[ found_tx ]
                     image_infos[set1_binds] = VkDescriptorImageInfo [
                         sampler:     null,
@@ -1362,73 +1506,85 @@ class Pipeline
                     storage_buffer_count  += 1
 
             shader_schema = shader_schema.context
+        vk.br_schema_us += epoch_micros[] - sch0
 
-        vkCreateDescriptorSetLayout[ vk.device, VkDescriptorSetLayoutCreateInfo [
-            sType:        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            bindingCount: uniform_count,
-            pBindings:    uniform_bindings
-        ], null, ref descriptor_layouts[0] ]
-        vkCreateDescriptorSetLayout[ vk.device, VkDescriptorSetLayoutCreateInfo [
-            sType:        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            bindingCount: set1_binds,
-            pBindings:    sampler_bindings
-        ], null, ref descriptor_layouts[1] ]
-        # pool/alloc are RINGED: 2 sets per slot, sized x pipe_ring.
-        sizes: local VkDescriptorPoolSize[4]
-        desc: VkDescriptorPoolCreateInfo [
-            sType:         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-            poolSizeCount: 0,
-            pPoolSizes:    sizes,
-            maxSets:       u32[ 2 * pipe_ring ]
-        ]
-        if [ uniform_count ]
-            sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
-            sizes[desc.poolSizeCount].descriptorCount = uniform_count * pipe_ring
-            desc.poolSizeCount += 1
-        if [ sampler_count > 0 ]
-            sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
-            sizes[desc.poolSizeCount].descriptorCount = sampler_count * pipe_ring
-            desc.poolSizeCount += 1
-        if [ storage_image_count ]
-            sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
-            sizes[desc.poolSizeCount].descriptorCount = storage_image_count * pipe_ring
-            desc.poolSizeCount += 1
-        if [ storage_buffer_count ]
-            sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
-            sizes[desc.poolSizeCount].descriptorCount = storage_buffer_count * pipe_ring
-            desc.poolSizeCount += 1
-        vkCreateDescriptorPool[ vk.device, desc, null, ref descriptor_pool ]
-        # interleaved layouts: [set0, set1] repeated per ring slot
-        set_layouts : local VkDescriptorSetLayout [128]
-        for [ rs: i32 0, rs < pipe_ring, rs += 1 ]
-            set_layouts[ 2 * rs ]     = descriptor_layouts[0]
-            set_layouts[ 2 * rs + 1 ] = descriptor_layouts[1]
-        vkAllocateDescriptorSets[ vk.device, VkDescriptorSetAllocateInfo [
-            sType:              VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            descriptorPool:     descriptor_pool,
-            descriptorSetCount: u32[ 2 * pipe_ring ],
-            pSetLayouts:        set_layouts
-        ], descriptor_sets ]
-        # write every slot: set0 (uniform -> the slot's ring buffer) + set1 (samplers).
+        # the pool / layouts / 128 descriptor sets are allocated ONCE per pipeline
+        # (~20ms on MoltenVK). a resize re-runs bind_resources only to re-WRITE the
+        # bindings (textures changed) — it must NOT re-allocate, or every drag frame
+        # pays the alloc again. the schema walk + write below run every time.
+        if [ !descriptor_pool ]
+            vkCreateDescriptorSetLayout[ vk.device, VkDescriptorSetLayoutCreateInfo [
+                sType:        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                bindingCount: uniform_count,
+                pBindings:    uniform_bindings
+            ], null, ref descriptor_layouts[0] ]
+            vkCreateDescriptorSetLayout[ vk.device, VkDescriptorSetLayoutCreateInfo [
+                sType:        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                bindingCount: set1_binds,
+                pBindings:    sampler_bindings
+            ], null, ref descriptor_layouts[1] ]
+            # pool/alloc are RINGED: 2 sets per slot, sized x pipe_ring.
+            sizes: local VkDescriptorPoolSize[4]
+            desc: VkDescriptorPoolCreateInfo [
+                sType:         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                poolSizeCount: 0,
+                pPoolSizes:    sizes,
+                maxSets:       u32[ 2 * pipe_ring ]
+            ]
+            if [ uniform_count ]
+                sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                sizes[desc.poolSizeCount].descriptorCount = uniform_count * pipe_ring
+                desc.poolSizeCount += 1
+            if [ sampler_count > 0 ]
+                sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                sizes[desc.poolSizeCount].descriptorCount = sampler_count * pipe_ring
+                desc.poolSizeCount += 1
+            if [ storage_image_count ]
+                sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
+                sizes[desc.poolSizeCount].descriptorCount = storage_image_count * pipe_ring
+                desc.poolSizeCount += 1
+            if [ storage_buffer_count ]
+                sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
+                sizes[desc.poolSizeCount].descriptorCount = storage_buffer_count * pipe_ring
+                desc.poolSizeCount += 1
+            vkCreateDescriptorPool[ vk.device, desc, null, ref descriptor_pool ]
+            # interleaved layouts: [set0, set1] repeated per ring slot
+            set_layouts : local VkDescriptorSetLayout [128]
+            for [ rs: i32 0, rs < pipe_ring, rs += 1 ]
+                set_layouts[ 2 * rs ]     = descriptor_layouts[0]
+                set_layouts[ 2 * rs + 1 ] = descriptor_layouts[1]
+            vkAllocateDescriptorSets[ vk.device, VkDescriptorSetAllocateInfo [
+                sType:              VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                descriptorPool:     descriptor_pool,
+                descriptorSetCount: u32[ 2 * pipe_ring ],
+                pSetLayouts:        set_layouts
+            ], descriptor_sets ]
+        # accumulate writes for EVERY ring slot — set0 (uniform -> the slot's ring
+        # buffer) + set1 (samplers; same placeholders for all slots) — then issue ONE
+        # vkUpdateDescriptorSets. image_infos/storage_buf_infos are identical per slot
+        # so they're shared; only buffer_infos is per-slot (its own u_buffer).
+        wcount : i32 [ 0 ]
         for [ rs: i32 0, rs < pipe_ring, rs += 1 ]
             for [ i: 0, i < uniform_count, i += 1 ]
-                buffer_infos[i] = VkDescriptorBufferInfo [
+                bi : i32 [ rs * uniform_count + i ]
+                buffer_infos[bi] = VkDescriptorBufferInfo [
                     buffer: shader_uniforms.u_buffers[rs].vk_buffer,
                     offset: 0,
                     range:  shader_uniforms.u_buffers[rs].size
                 ]
-                descriptor_writes[i] = VkWriteDescriptorSet [
+                descriptor_writes[wcount] = VkWriteDescriptorSet [
                     sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                     dstSet:          descriptor_sets[ 2 * rs ],
                     dstBinding:      i,
                     descriptorType:  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                     descriptorCount: 1,
-                    pBufferInfo:     ref buffer_infos[i]
+                    pBufferInfo:     ref buffer_infos[bi]
                 ]
+                wcount += 1
             for [ i: 0, i < set1_binds, i += 1 ]
                 dtype: VkDescriptorType [ sampler_bindings[i].descriptorType ]
                 if [ dtype == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER ]
-                    descriptor_writes[uniform_count + i] = VkWriteDescriptorSet [
+                    descriptor_writes[wcount] = VkWriteDescriptorSet [
                         sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                         pNext:           null,
                         dstSet:          descriptor_sets[ 2 * rs + 1 ],
@@ -1439,7 +1595,7 @@ class Pipeline
                         pBufferInfo:     ref storage_buf_infos[i]
                     ]
                 el
-                    descriptor_writes[uniform_count + i] = VkWriteDescriptorSet [
+                    descriptor_writes[wcount] = VkWriteDescriptorSet [
                         sType:           VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                         pNext:           null,
                         dstSet:          descriptor_sets[ 2 * rs + 1 ],
@@ -1449,8 +1605,9 @@ class Pipeline
                         descriptorCount: 1,
                         pImageInfo:      ref image_infos[i]
                     ]
-            vkUpdateDescriptorSets[ vk.device,
-                uniform_count + set1_binds, descriptor_writes, 0, null ]
+                wcount += 1
+        vkUpdateDescriptorSets[ vk.device, wcount, descriptor_writes, 0, null ]
+        vk.bindres_us += epoch_micros[] - br0
 
     public func reassemble [ ]
         # vbo is OPTIONAL: a compute-only pipeline (no graphics) has no vbo

@@ -878,6 +878,8 @@ class TermLineCache
 
 Layer TermLayer
     func draw [ cv: Canvas ]
+        # TEST: skip all console rendering to isolate its cost from the rest of the app
+        if [ true ] return
         con : cast Console [ parent ]
         if [ !con ] return
         s : ConsoleSession con.session[]

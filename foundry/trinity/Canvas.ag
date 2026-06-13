@@ -1973,6 +1973,9 @@ Render Canvas
             # so atlas_slot is known, or the rebind no-ops on the first draw.
             text_pipeline.ensure_bound[]
             text_pipeline.rebind_atlas[ font.atlas.texture ]
+            # text shares this canvas's color via LOAD_OP_LOAD. flush+finish any pending
+            # ui batch first so text loads completed pixels and lands ON TOP, in order.
+            sync_fence[]
             text_render.update[]
             text_render.draw[]
             text_render.sync_fence[]
@@ -2412,6 +2415,7 @@ Render Canvas
         n     : i32
 
         if [ cache_hit ]
+            vk.sdf_hit += 1
             bx0 = path.cached_bx0
             by0 = path.cached_by0
             bw  = path.cached_bw
@@ -2419,9 +2423,12 @@ Render Canvas
             edges = path.cached_edges
             n     = path.cached_edge_count
         el
+            vk.sdf_miss += 1
+            g0 : i64 [ epoch_micros[] ]
             flat : path_flatten [ path, 0.25 ]
             n    = flat.count
             if [ n == 0 ]
+                vk.geom_us += epoch_micros[] - g0
                 return
             bx0 = 999999.0
             by0 = 999999.0
@@ -2454,6 +2461,7 @@ Render Canvas
             path.cached_bw    = bw
             path.cached_bh    = bh
             path.cached_valid = true
+            vk.geom_us += epoch_micros[] - g0
 
         if [ bw < 0.5 || bh < 0.5 ]
             return
