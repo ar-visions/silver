@@ -1146,6 +1146,35 @@ void silver_write_fmt(silver a, array toks) {
     fmt_put(cp, b, total);
 }
 
+// run a live app by default (build+run when invoked directly). recovers is_live for
+// CACHED builds — the host binary (build_dir/name) persists from a prior build, so a
+// fully-cached `silver <app>` still runs instead of silently building and exiting.
+// execvp replaces this process; returns only when there's nothing to run (library /
+// external sub-module / no host binary).
+static void silver_live_run(silver a) {
+    if (!((aether)a)->is_live && !a->is_external) {
+        path host = f(path, "%o/%o", a->build_dir, a->name);
+        if (file_exists("%o", host)) {
+            ((aether)a)->is_live = true;
+            if (!a->live_binary) a->live_binary = hold(host);
+        }
+    }
+    if (a->run || (((aether)a)->is_live && !a->is_external)) {
+        int n = a->run ? len(a->run) : 0;
+        char** argv = calloc(n + 2, sizeof(char*));
+        path run_binary = a->live_binary ? a->live_binary : a->product;
+        argv[0] = run_binary->chars;
+        int i = 1;
+        if (a->run) each(a->run, Au, arg) {
+            argv[i++] = cast(string, arg)->chars;
+        }
+        argv[i] = NULL;
+        execvp(argv[0], argv);
+        fprintf(stderr, "execvp failed for %s: %s\n", argv[0], strerror(errno));
+        _exit(1);
+    }
+}
+
 void silver_init(silver a) {
     hold(a);
 
@@ -1417,6 +1446,8 @@ void silver_init(silver a) {
                     SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
             }
         }
+        // cached build still runs by default (recovers is_live from the host binary)
+        silver_live_run(a);
         return;
     }
 
@@ -1561,33 +1592,9 @@ void silver_init(silver a) {
     module_erase(a->autype, null);
     au_space_end((void*)a);
 
-    // is_live/live_binary are only set during a fresh emit; on a cached build the
-    // host binary (build_dir/name) still exists from before, so recover them here
-    // — otherwise a cached live app would silently not run.
-    if (!((aether)a)->is_live && !a->is_external) {
-        path host = f(path, "%o/%o", a->build_dir, a->name);
-        if (file_exists("%o", host)) {
-            ((aether)a)->is_live = true;
-            if (!a->live_binary) a->live_binary = hold(host);
-        }
-    }
-
     // a live app build+runs by default when invoked directly; --run passes extra
     // args to it. libraries and imported sub-modules never auto-run.
-    if (a->run || (((aether)a)->is_live && !a->is_external)) {
-        int n = a->run ? len(a->run) : 0;
-        char** argv = calloc(n + 2, sizeof(char*));
-        path run_binary = a->live_binary ? a->live_binary : a->product;
-        argv[0] = run_binary->chars;
-        int i = 1;
-        if (a->run) each(a->run, Au, arg) {
-            argv[i++] = cast(string, arg)->chars;
-        }
-        argv[i] = NULL; // Brannigans law
-        execvp(argv[0], argv);
-        fprintf(stderr, "execvp failed for %s: %s\n", argv[0], strerror(errno));
-        _exit(1);
-    }
+    silver_live_run(a);
 }
 
 
