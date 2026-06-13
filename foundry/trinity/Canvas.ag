@@ -1371,7 +1371,9 @@ Render Canvas
     func flush []
         #update[]
         draw[]
-        sync_fence[]
+        # NO per-paint sync_fence: draw[] now rings command buffer/fence/descriptors/
+        # uniforms, so it only stalls on a ring wrap. the canvas is fenced once at the
+        # end of its draw session (on_compose/on_screen call sync_fence) before sampling.
 
     # hard-clear the canvas's color texture to a chosen color via
     # vkCmdClearColorImage. this happens OUTSIDE any render pass and
@@ -2222,6 +2224,11 @@ Render Canvas
         draw_canvas[ mdl.cache, ox, oy, rw, rh ]
 
     func draw_canvas [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
+        # the draw ring leaves src's paints in flight (no per-paint fence). before we
+        # transition its color and SAMPLE it here, drain src's ring — else we read an
+        # attachment the GPU is still writing (Metal "Invalid Resource" → device lost).
+        if [ src ]
+            src.sync_fence[]
         tex : Texture [ (src.reduction) ? src.reduction : src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
@@ -2248,6 +2255,13 @@ Render Canvas
     # white = keep, black = fade). content and mask sampled with the same uv,
     # so both canvases should share the dst rect's coordinate space.
     func draw_canvas_masked [ src: Canvas, mask_src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
+        # drain both sources' rings before sampling them — their paints are still in
+        # flight under the draw ring (no per-paint fence), and reading an attachment the
+        # GPU is still writing is a Metal "Invalid Resource" → device lost.
+        if [ src ]
+            src.sync_fence[]
+        if [ mask_src ]
+            mask_src.sync_fence[]
         tex  : Texture [ (src.reduction) ? src.reduction : src.color ]
         mtex : Texture [ (mask_src.reduction) ? mask_src.reduction : mask_src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
@@ -2363,7 +2377,9 @@ Render Canvas
         bh.update*[] bh.draw*[] bh.sync_fence[]
 
     func paint []
-
+        # the ring slot for the upcoming draw is the Render's LIVE ring_i; rebind_texture
+        # and the descriptor bind both key off r.ring_i directly, and the slot-drain wait
+        # lives in rebind (before it mutates the set). nothing to claim here.
         st   : states[state_depth - 1]
         # ---- ordered-guess cache check ----
         # if path.points byte-matches the snapshot from the previous draw,
@@ -2491,6 +2507,13 @@ Render Canvas
                 while [ ne > edge_buf_capacity ]
                     edge_buf_capacity *= 2
                 new_bytes : i32 [ edge_buf_capacity * 16 ]
+                # the draw ring keeps command buffers in flight that still reference the
+                # OLD edge_buf through their descriptor sets. without the old per-paint
+                # fence, freeing it here would invalidate those in-flight submits (Metal
+                # "Invalid Resource" → device lost). drain the GPU before replacing it.
+                # growth is rare (capacity doubles, then stabilizes) so this never hits
+                # the steady-state path.
+                vkDeviceWaitIdle[ vk.device ]
                 edge_buf = Buffer [ vk: vk, size: new_bytes,
                     u_storage: true, m_host_visible: true, m_host_coherent: true ]
                 cmod_grow : Model models[0]

@@ -126,9 +126,7 @@ abstract live_app media_app
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            #buf : local char [ 128 ]
-            #sprintf[ buf, "fps: %i  samplers: %i", frames, vk.sampler_count ]
-            #puts buf
+            puts 'PERF fps={frames} samplers={vk.sampler_count}'
             frames = 0
         render*[]
         Au.auto_free[false]
@@ -1702,6 +1700,10 @@ Display Window
                 bw : i32 [ i32[b.w + pad] + 1 ]
                 bh : i32 [ i32[b.h + pad] + 1 ]
                 if [ !layer.blur_canvas || layer.blur_bw != bw || layer.blur_bh != bh ]
+                    # force-free the old canvas's GPU textures/samplers before replacing
+                    # it — a Model/Pipeline still references them, so refcount dealloc
+                    # never runs and the samplers leak on every resize step.
+                    if [ layer.blur_canvas ] layer.blur_canvas.teardown_gpu[]
                     layer.blur_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: bw, height: bh ]
                     layer.blur_canvas.update[]
                     layer.blur_bw = bw
@@ -1890,6 +1892,9 @@ Display Window
         # element wants an edge fade, build/refresh a grayscale mask (white
         # center, black inner glow) sized to the cache and composite through it.
         mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
+        # TEST: skip masked elements entirely to isolate the draw_canvas_masked hazard
+        if [ mask_on ]
+            return
         if [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
             if [ mask_on ]
                 glow_changed : bool [ e.mask_bg.x != e.mask_glow.x || e.mask_bg.y != e.mask_glow.y || e.mask_bg.z != e.mask_glow.z || e.mask_bg.w != e.mask_glow.w ]
@@ -1901,6 +1906,9 @@ Display Window
                     # cache.width is already device pixels; Canvas init multiplies the
                     # constructor size by scale, so pre-divide to land exactly on it.
                     mcs : f32 [ (a.scale > 0.0) ? a.scale : 1.0 ]
+                    # force-free the old mask canvas's GPU resources before replacing it
+                    # (refcount dealloc never runs while a pipeline holds the texture).
+                    if [ e.mask_canvas ] e.mask_canvas.teardown_gpu[]
                     e.mask_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: i32[ e.cache_canvas.width / mcs ], height: i32[ e.cache_canvas.height / mcs ], load_existing: true ]
                     e.mask_canvas.update[]
                     e.mask_canvas.content_w = ew

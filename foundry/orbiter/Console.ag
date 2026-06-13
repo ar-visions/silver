@@ -24,6 +24,10 @@ class ConsoleSession
     mutable pid        : i32 [ 0  ]
     # the session key (project node name); used as the shell prompt label.
     mutable name       : string
+    # agent launch command (claude/gemini): when set, start[] execs it directly
+    # instead of an interactive shell, so the console shows only the agent's output
+    # with no prompt/echo line. shells leave this empty and get an interactive bash.
+    mutable launch_cmd : string
     # a command queued to send once the shell is ready (first output arrives, i.e.
     # bash is in raw mode) — avoids the cooked-mode double echo of an early write.
     mutable pending    : string
@@ -75,8 +79,17 @@ class ConsoleSession
     # as lines scroll off, so the pool stays at the visible-line count — never the
     # scrollback depth. cache_cw/cache_lh invalidate the whole pool on font/reflow.
     mutable sb_lines    : array TermLineCache
+    # live-grid row cache, indexed by row. live rows mutate, so each slot also stores
+    # a content hash — an unchanged row blits, only a changed row re-rasterizes. this
+    # is what keeps an idle/streaming TUI (claude) from re-drawing every row per frame.
+    mutable live_lines  : array TermLineCache
     mutable cache_cw    : f32 [ -1.0 ]
     mutable cache_lh    : f32 [ -1.0 ]
+    # per-frame count of rows actually RE-RASTERIZED (cache misses) — diagnostic.
+    mutable dbg_renders : i32 [ 0 ]
+    # incrementing draw-frame id; live_slot marks the slots it touched this frame so
+    # the next miss can recycle a slot whose content is no longer on screen.
+    mutable frame_id    : i32 [ 0 ]
     # true while a run (lldb) is live in this session — drives the play↔stop button.
     mutable running     : bool
     # armed after a run command is sent; the next return to our shell prompt means
@@ -136,17 +149,26 @@ class ConsoleSession
 
     func start []
         if [ pty_fd >= 0 ] return
-        puts 'ConsoleSession.start[{name}]: launching /bin/bash via forkpty'
         pid = forkpty[ ref pty_fd, null, null, null ]
         if [ pid == 0 ]
             setenv[ 'TERM', 'xterm-256color', 1 ]
             # we emulate 24-bit SGR (38;2;r;g;b) — advertise it so TUIs use true color
             setenv[ 'COLORTERM', 'truecolor', 1 ]
-            # prompt = the project node's label; --norc so bash keeps our PS1
-            lbl : string (name && name.count > 0) ? name : 'sh'
-            setenv[ 'PS1', '{lbl}> ', 1 ]
-            norc : string '--norc'
-            execl[ '/bin/bash', 'bash', norc.chars, null ]
+            if [ launch_cmd && launch_cmd.count > 0 ]
+                # agent session (claude/gemini): exec the command directly via a
+                # non-interactive shell — no PS1 prompt and no command echo, so the
+                # console shows ONLY the agent's output (no "name> cmd" line eating a row).
+                # pass the flag + command as cstr (.chars) — bare literals reach execl as
+                # Au string objects, not char*, and bash reads garbage from them.
+                dashc : string '-c'
+                ec    : string 'exec {launch_cmd}'
+                execl[ '/bin/bash', 'bash', dashc.chars, ec.chars, null ]
+            el
+                # prompt = the project node's label; --norc so bash keeps our PS1
+                lbl : string (name && name.count > 0) ? name : 'sh'
+                setenv[ 'PS1', '{lbl}> ', 1 ]
+                norc : string '--norc'
+                execl[ '/bin/bash', 'bash', norc.chars, null ]
             _exit[ 1 ]
         el [ pid < 0 ]
             puts 'ConsoleSession.start[{name}]: forkpty FAILED (pid={pid})'
@@ -274,12 +296,16 @@ class ConsoleSession
 
     # highest grid row that has any non-blank cell. used for content height so the
     # scrollable region reaches the app's bottom rows (input box / footer hints below
-    # the cursor), instead of stopping at the cursor row.
+    # the cursor), instead of stopping at the cursor row. a cell counts as used if it
+    # has a glyph OR a non-default background — TUI status bars (claude-code's "bypass
+    # permissions" footer) are colored SPACES, which a char-only test would skip,
+    # leaving the bar one line below the scrollable bottom and hidden.
     func last_row [] -> i32
         for [ r: i32 rows - 1, r >= 0, r -= 1 ]
             for [ c: i32 0, c < cols, c += 1 ]
                 ch : i32 [ screen[r * cols + c].ch ]
-                if [ ch != 32 && ch != 0 ]
+                bg : i32 [ screen[r * cols + c].bg ]
+                if [ (ch != 32 && ch != 0) || bg >= 0 ]
                     return r
         return 0
 
@@ -841,6 +867,14 @@ class ConsoleSession
 class TermLineCache
     mutable canvas : Canvas
     mutable li     : i32 [ -1 ]
+    # content hash of the row this canvas holds. scrollback lines are immutable so li
+    # alone keys them. LIVE grid rows are content-addressed by hash: a row blits the
+    # canvas holding its content from ANYWHERE in the pool, so a scrolled grid reuses
+    # last frame's renders (only genuinely new content rasterizes). -1 = never rendered.
+    mutable hash   : i64 [ -1 ]
+    # last draw frame this slot was used (for live rows) — lets us reclaim slots whose
+    # content scrolled off (frame != current) without disturbing still-visible ones.
+    mutable frame  : i32 [ -1 ]
 
 Layer TermLayer
     func draw [ cv: Canvas ]
@@ -964,15 +998,23 @@ Layer TermLayer
         cv.draw_selection[ x0, y0, lh, cw, s.scroll, bounds.y, bounds.w, bounds.h,
             s.anchor_line, s.anchor_col, s.sel_line, s.sel_col, rgba['#264f78'] ]
 
+        # per-line caches (scrollback + live grid). a cw/lh change (font / reflow) isn't
+        # in a row's content hash, so invalidate every cached row once when it changes.
+        fs : i32 [ (label_size > 0.0) ? i32[label_size] : 0 ]
+        s.dbg_renders = 0
+        s.frame_id   += 1
+        if [ !s.sb_lines ]   s.sb_lines   = array TermLineCache [ alloc: 64 ]
+        if [ !s.live_lines ] s.live_lines = array TermLineCache [ alloc: 64 ]
+        if [ cw != s.cache_cw || lh != s.cache_lh ]
+            for [ slc: TermLineCache ] in s.sb_lines
+                slc.li = -1
+            for [ slc: TermLineCache ] in s.live_lines
+                slc.li   = -1
+                slc.hash = -1
+            s.cache_cw = cw
+            s.cache_lh = lh
+
         if [ !s.in_alt ]
-            if [ !s.sb_lines ] s.sb_lines = array TermLineCache [ alloc: 64 ]
-            fs : i32 [ (label_size > 0.0) ? i32[label_size] : 0 ]
-            # font/reflow changed → invalidate every cached line (free all slots).
-            if [ cw != s.cache_cw || lh != s.cache_lh ]
-                for [ slc: TermLineCache ] in s.sb_lines
-                    slc.li = -1
-                s.cache_cw = cw
-                s.cache_lh = lh
             # visible scrollback range [vlo, vhi]
             vlo : i32 [ -1 ]
             vhi : i32 [ -1 ]
@@ -1001,7 +1043,13 @@ Layer TermLayer
             y : f32 [ y0 + f32[base + r] * lh - s.scroll ]
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
-            draw_row[ cv, s, r, x0, y, lh, cw ]
+            # cached: an unchanged row blits its canvas; only a changed row re-renders.
+            lvc : live_slot[ cv, s, r, fs, lh, cw ]
+            if [ lvc && lvc.canvas ]
+                cv.draw_canvas[ lvc.canvas, x0, round[ y ], f32[ lvc.canvas.content_w ], lh ]
+            el
+                draw_row[ cv, s, r, x0, y, lh, cw ]
+        puts 'TERMDRAW rerendered={s.dbg_renders} rows (0 = all cached/blitted this frame)'
 
         cv.paint[]
         if [ s.cursor_visible ]
@@ -1075,6 +1123,56 @@ Layer TermLayer
         draw_cells[ use.canvas, s, s.sb_cells, s.sb_line_off[ li ], len, 0.0, 0.0, lh, cw ]
         use.canvas.paint[]
         use.li = li
+        s.dbg_renders += 1
+        return use
+
+    # content hash of live grid row `r` — ch/fg/bg/attr of every cell. compared per
+    # frame so an unchanged row blits its cached canvas instead of re-rasterizing.
+    func row_hash [ s: ConsoleSession, r: i32 ] -> i64
+        h    : i64 [ 0 ]
+        base : i32 [ r * s.cols ]
+        for [ c: i32 0, c < s.cols, c += 1 ]
+            idx : i32 [ base + c ]
+            h = h * 131 + i64[ s.screen[ idx ].ch ]
+            h = h * 131 + i64[ s.screen[ idx ].fg ]
+            h = h * 131 + i64[ s.screen[ idx ].bg ]
+            h = h * 131 + i64[ s.screen[ idx ].attr ]
+        return h
+
+    # content-addressed render of LIVE grid row `r`. a hit = any pooled canvas already
+    # holding this exact content (hash), no matter which row rendered it — so when the
+    # grid scrolls, last frame's line canvases are reused (blitted) and only genuinely
+    # new content rasterizes. a miss recycles a slot whose content scrolled off (frame
+    # != current) or grows the pool.
+    func live_slot [ cv: Canvas, s: ConsoleSession, r: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
+        h : i64 [ row_hash[ s, r ] ]
+        for [ slot: TermLineCache ] in s.live_lines
+            if [ slot.canvas && slot.hash == h ]
+                slot.frame = s.frame_id
+                return slot
+        use : TermLineCache [ null ]
+        for [ slot: TermLineCache ] in s.live_lines
+            if [ slot.frame != s.frame_id ]
+                use = slot
+                break
+        if [ !use ]
+            use = TermLineCache [ ]
+            s.live_lines.push[ use ]
+        cw_i : i32 [ i32[ ceil[ f32[s.cols] * cw ] ] ]
+        if [ cw_i < 1 ] cw_i = 1
+        lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
+        if [ !use.canvas ]
+            use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true ]
+            use.canvas.update[]
+        el [ use.canvas.content_w != cw_i || use.canvas.content_h != lh_i ]
+            use.canvas.resize[ cw_i, lh_i ]
+        use.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        if [ fs > 0 ] use.canvas.font_size[ fs ]
+        draw_cells[ use.canvas, s, s.screen, r * s.cols, s.cols, 0.0, 0.0, lh, cw ]
+        use.canvas.paint[]
+        use.hash  = h
+        use.frame = s.frame_id
+        s.dbg_renders += 1
         return use
 
     # packed 0xRRGGBB → rgba (components 0..1).
@@ -1111,6 +1209,21 @@ Control Console
     func init []
         if [ !sessions ] sessions = map ConsoleSession[string] []
 
+    # launch an AI agent (claude/gemini) in a named session: exec the command
+    # directly (no interactive shell, no prompt/echo line) so the console shows only
+    # the agent's output. fresh session → create + start; existing → restart with it.
+    func launch_agent [ sid: string, cmd: string ]
+        s : ConsoleSession sessions[sid]
+        if [ s ]
+            s.launch_cmd = cmd
+            s.restart[]
+        el
+            s = ConsoleSession []
+            s.name = sid
+            s.launch_cmd = cmd
+            sessions[sid] = s
+            s.start[]
+
     # run a command line in a named session's shell (create + start if needed) so
     # it executes in that project's own terminal and streams output to the console.
     func dispatch [ sid: string, ln: string ]
@@ -1119,6 +1232,9 @@ Control Console
             s = ConsoleSession []
             s.name = sid
             sessions[sid] = s
+        # build/run commands run in an interactive shell (prompt bounce-back drives the
+        # run-armed state) — clear any agent launch_cmd so restart doesn't re-exec it.
+        s.launch_cmd = ''
         s.restart[]
         s.pending = ln
 
@@ -1373,11 +1489,10 @@ Control Console
             sb : ScrollLayer (layers) ? (layers[ 'scrollbar' ] to ScrollLayer) : null
             if [ sb ]
                 sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y - scroll.y ] ]
-                if [ sy >= 0.0 ] s.scroll = sy
-            # keep the user-scrolled lock current as the thumb moves (cleared at the end)
-            s.user_scrolled = s.scroll < s.max_scroll - 1.0
-            pristine = false
-            ux.will_animate = true
+                # set_scroll snaps to the line grid and only repaints when the top
+                # line changes — so dragging the thumb within a line is free, and the
+                # physical scroll moves only on whole-line boundaries.
+                if [ sy >= 0.0 ] set_scroll[ s, sy ]
             return
         if [ s.dragging ]
             place_cursor[ ev ]

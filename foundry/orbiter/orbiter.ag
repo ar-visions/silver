@@ -1451,7 +1451,8 @@ trinity orbiter # implements compiler
                                 cmd_str : string ''
                                 for [ c: token ] in ci.run
                                     cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
-                                con.dispatch[ id, cmd_str ]
+                                # agents exec directly (no shell prompt/echo line)
+                                con.launch_agent[ id, cmd_str ]
                 if [ ev.target ] ev.target.ux.restyle = true
                 ev.no_default = true
                 return
