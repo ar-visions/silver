@@ -98,7 +98,7 @@ class Render
     intern  vk_command_buffers             : new VkCommandBuffer [64]
     intern  vk_fences                      : new VkFence          [64]
     intern  ring_i                         : i32
-    intern  ring_n                         : i32 [ 2 ]
+    intern  ring_n                         : i32 [ 64 ]
     intern  ring_last                      : i32           # most recently submitted slot (sync_fence target)
     intern  ring_primed                    : new i32 [64]   # slot has a pending submit to wait on (0/1)
     # batched recording: a canvas opens ONE command buffer (begin_record) and records
@@ -107,6 +107,10 @@ class Render
     # per-paint submits into 1 per canvas. draw_slot keys descriptors/uniforms; ring_i
     # keys the command-buffer/fence (advanced per batch).
     intern  recording                      : bool
+    # one render pass is kept OPEN across all batched paints in a recording (closed in
+    # flush_submit, or before a compute dispatch). on a tile GPU each render pass is a
+    # full framebuffer load+store, so collapsing N paints to one pass is the big win.
+    intern  pass_open                      : bool
     intern  draw_slot                      : i32
     intern  vk_swap_image                  : VkImage
     intern  vk_fence                       : VkFence              # current slot (= [ring_i])
@@ -238,6 +242,10 @@ class Render
         if [ !recording ]
             return
         s : i32 [ ring_i ]
+        # close the batched render pass that draw[] left open across all this recording's paints.
+        if [ pass_open ]
+            vkCmdEndRenderPass[ vk_command_buffer ]
+            pass_open = false
         vkEndCommandBuffer[ vk_command_buffer ]
         submitInfo: VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -266,52 +274,54 @@ class Render
         begin_record[]
         vk.cur_ring = draw_slot
         frame: VkCommandBuffer [ vk_command_buffer ]
-        # compute dispatches must precede the render pass (image-layout barriers are
-        # illegal inside one); each paint opens its own render pass in the shared buffer.
+        # compute dispatches (image-layout barriers) are illegal inside a render pass —
+        # if one is open from prior paints, close it before dispatching.
+        has_compute : bool [ false ]
+        for [ m: Model ] in models
+            for [ p: Pipeline ] in m.pipelines
+                if [ p.vk_compute ] has_compute = true
+        if [ has_compute && pass_open ]
+            vkCmdEndRenderPass[ frame ]
+            pass_open = false
         for [ m: Model ] in models
             for [ p: Pipeline ] in m.pipelines
                 p.dispatch[ frame ]
-        # inter-paint ordering: prior paint's color writes -> this paint's LOAD.
-        mem_bar: VkMemoryBarrier [
-            sType:         VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-            srcAccessMask: VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            dstAccessMask: VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT
-        ]
-        vkCmdPipelineBarrier[ frame,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-            0, 1, ref mem_bar, 0, null, 0, null ]
-        vkCmdSetViewport[ frame, 0, 1, VkViewport [
-            x: 0.0, y: 0.0, width: width, height: height,
-            minDepth: 0.0, maxDepth: 1.0
-        ] ]
-        vkCmdSetScissor[ frame, 0, 1, VkRect2D [
-            offset: VkOffset2D [ 0, 0 ],
-            extent: VkExtent2D [ width, height ]
-        ] ]
-        clear_values: local VkClearValue [2]
-        clear_values[0].color.float32[0] = clear_color.x
-        clear_values[0].color.float32[1] = clear_color.y
-        clear_values[0].color.float32[2] = clear_color.z
-        clear_values[0].color.float32[3] = clear_color.w
-        clear_values[1].depthStencil.depth   = 1.0
-        clear_values[1].depthStencil.stencil = 0
-        render_pass_info : VkRenderPassBeginInfo [
-            sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            renderPass:      vk_render_pass[0],
-            framebuffer:     vk_framebuffer[0],
-            renderArea:      VkRect2D [
+        # open ONE render pass for the whole recording and keep it OPEN across paints.
+        # within a pass, alpha-blended draws compose in rasterization order with no
+        # barrier; on a tile GPU this avoids a framebuffer load+store per paint.
+        if [ !pass_open ]
+            vkCmdSetViewport[ frame, 0, 1, VkViewport [
+                x: 0.0, y: 0.0, width: width, height: height,
+                minDepth: 0.0, maxDepth: 1.0
+            ] ]
+            vkCmdSetScissor[ frame, 0, 1, VkRect2D [
                 offset: VkOffset2D [ 0, 0 ],
                 extent: VkExtent2D [ width, height ]
-            ],
-            clearValueCount: 2,
-            pClearValues:    clear_values
-        ]
-        vkCmdBeginRenderPass[ frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
+            ] ]
+            clear_values: local VkClearValue [2]
+            clear_values[0].color.float32[0] = clear_color.x
+            clear_values[0].color.float32[1] = clear_color.y
+            clear_values[0].color.float32[2] = clear_color.z
+            clear_values[0].color.float32[3] = clear_color.w
+            clear_values[1].depthStencil.depth   = 1.0
+            clear_values[1].depthStencil.stencil = 0
+            render_pass_info : VkRenderPassBeginInfo [
+                sType:           VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                renderPass:      vk_render_pass[0],
+                framebuffer:     vk_framebuffer[0],
+                renderArea:      VkRect2D [
+                    offset: VkOffset2D [ 0, 0 ],
+                    extent: VkExtent2D [ width, height ]
+                ],
+                clearValueCount: 2,
+                pClearValues:    clear_values
+            ]
+            vkCmdBeginRenderPass[ frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
+            vk.pass_calls += 1
+            pass_open = true
         for [ m: Model ] in models
             for [ p: Pipeline ] in m.pipelines
                 p.draw[ frame ]
-        vkCmdEndRenderPass[ frame ]
         draw_slot += 1
         # wrap HERE (after the increment, before the next paint's rebind in paint[]):
         # if this batch filled the ring, submit+wait so sync_fence resets draw_slot to 0.
@@ -402,6 +412,7 @@ class Render
             ]
             vkCmdBeginRenderPass[
                 frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
+            vk.pass_calls += 1
 
             if [ i == 0 ]
                 for [ m: Model ] in models
@@ -716,6 +727,7 @@ class vk_context
     public  resize_us           : i64
     public  resize_calls        : i32
     public  paint_calls         : i32
+    public  pass_calls          : i32
     public  sdf_hit             : i32
     public  sdf_miss            : i32
     public  geom_us             : i64
@@ -1156,7 +1168,9 @@ class uniforms
         # update[] snapshots it into the current slot's GPU buffer). MUST match pipe_ring
         # / ring_n — the descriptor write count (and thus resize re-bind cost) scales with
         # this, so keep it as small as the largest single-canvas batch needs.
-        for [ ri: i32 0, ri < 2, ri += 1 ]
+        # one UBO per draw-ring slot. sized to the ring capacity (64 = the vk_command_buffers/
+        # vk_fences/ring_primed arrays), so u_buffers[vk.cur_ring] is always valid.
+        for [ ri: i32 0, ri < 64, ri += 1 ]
             uniform_buf: Buffer [ vk: vk, size: total_uniform,
                 u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
                 data: ref u_memory[0], user: leaf ]
@@ -1225,7 +1239,7 @@ class Pipeline
     # slot, laid out interleaved [s0_0,s1_0, s0_1,s1_1, ...]. draw binds the pair at
     # 2*vk.cur_ring so each draw has private descriptors (no in-flight clobber).
     intern descriptor_sets    : new VkDescriptorSet       [ 128 ] # 2 * ring_n(64)
-    intern pipe_ring          : i32 [ 2 ]
+    intern pipe_ring          : i32 [ 64 ]
     intern descriptor_pool    : VkDescriptorPool
     intern image_slot         : i32 [ -1 ]
     intern mask_slot          : i32 [ -1 ]

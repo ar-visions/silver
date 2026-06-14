@@ -1397,7 +1397,7 @@ Render Canvas
             baseArrayLayer: 0,
             layerCount:     1
         ]
-        
+
         cmd : Command [ vk: vk ]
         cmd.begin[]
         vkCmdClearColorImage[ cmd.cmd, color.vk_image,
@@ -1419,18 +1419,23 @@ Render Canvas
         s  : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
         pw : i32 [ i32[ rw * s ] ]
         ph : i32 [ i32[ rh * s ] ]
-        # cache canvases quantize the GPU allocation UP to an 8px grid: a 1px drag
+        # cache canvases quantize the GPU allocation UP to a 64px grid: a 1px drag
         # almost never crosses a boundary, so we keep the same color/depth/framebuffers
         # (the expensive realloc) and only the content size + blit UV change. up to
-        # 7px of headroom per axis is unused (transparent) and cropped by the blit.
+        # 63px of headroom per axis is unused (transparent) and cropped by the blit.
         # main canvases (quantize=false) stay exactly window-sized for the swapchain.
         qw : i32 [ pw ]
         qh : i32 [ ph ]
         if [ quantize ]
-            qw = ((pw + 7) / 8) * 8
-            qh = ((ph + 7) / 8) * 8
-            if [ qw < 8 ] qw = 8
-            if [ qh < 8 ] qh = 8
+            qw = ((pw + 63) / 64) * 64
+            qh = ((ph + 63) / 64) * 64
+            if [ qw < 64 ] qw = 64
+            if [ qh < 64 ] qh = 64
+            # high-water mark: never shrink the allocation. going smaller is then free —
+            # only content_w/h and the blit UV crop change, no realloc. only growth past
+            # the current capacity reallocs (and the 64px headroom absorbs most growth).
+            if [ qw < width  ] qw = width
+            if [ qh < height ] qh = height
         if [ qw == width && qh == height ] return a  # capacity unchanged — no realloc
         rz0 : i64 [ epoch_micros[] ]
         vk.resize_calls += 1
@@ -1976,11 +1981,17 @@ Render Canvas
             # so atlas_slot is known, or the rebind no-ops on the first draw.
             text_pipeline.ensure_bound[]
             text_pipeline.rebind_atlas[ font.atlas.texture ]
-            # text shares this canvas's color via LOAD_OP_LOAD. flush+finish any pending
-            # ui batch first so text loads completed pixels and lands ON TOP, in order.
-            sync_fence[]
+            # text shares this canvas's color via LOAD_OP_LOAD. SUBMIT the pending ui batch
+            # (don't cpu-wait) so text loads its pixels and lands ON TOP — Metal serializes
+            # the queue, so submission order is execution order. waiting here cost a GPU
+            # round-trip PER text line (the fps wall); the ring-wrap is the only real wait.
+            flush_submit[]
             text_render.update[]
             text_render.draw[]
+            # WAIT here: text_vbo is a single shared buffer, so the GPU must finish reading
+            # this line's glyph quads before the next draw_text overwrites them. (the UI
+            # flush above needs no wait — Metal serializes the queue.) ringing text_vbo
+            # would let this drop to a flush too.
             text_render.sync_fence[]
 
     func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, overflow: Overflow, shadow: Shadow ] -> rect

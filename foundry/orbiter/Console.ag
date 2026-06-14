@@ -795,9 +795,19 @@ class ConsoleSession
         # mark the resize time — scroll_up suppresses scrollback feeding for a moment
         # after, so the app's resize-redraw scrolls don't leak its frame into history.
         last_resize_us = epoch_micros[]
+        orows : i32 [ rows ]
+        ocols : i32 [ cols ]
         cols = nc
         rows = nr
-        init_cells[ screen, rows * cols ]
+        # preserve existing content across a resize. only a stride (cols) change makes the
+        # r*cols+c offsets invalid, so only then re-blank the whole grid. a height-only
+        # change keeps the rows where they are (the app may NOT repaint a taller window —
+        # it's just more space — so blanking everything would lose the text until the next
+        # repaint); only blank rows newly brought into view.
+        if [ ocols != nc ]
+            init_cells[ screen, rows * cols ]
+        el [ nr > orows ]
+            init_cells[ ref screen[ orows * cols ], (nr - orows) * cols ]
         # invalidate the per-line render cache: its canvases were rasterized for the old
         # geometry, so force a full pool flush on the next draw (font metrics didn't
         # change, so the draw's own cw/lh check wouldn't catch this).
@@ -1022,67 +1032,29 @@ Layer TermLayer
         cv.draw_selection[ x0, y0, lh, cw, s.scroll, bounds.y, bounds.w, bounds.h,
             s.anchor_line, s.anchor_col, s.sel_line, s.sel_col, rgba['#264f78'] ]
 
-        # per-line caches (scrollback + live grid). a cw/lh change (font / reflow) isn't
-        # in a row's content hash, so invalidate every cached row once when it changes.
-        fs : i32 [ (label_size > 0.0) ? i32[label_size] : 0 ]
-        s.dbg_renders = 0
-        s.frame_id   += 1
-        if [ !s.sb_lines ]   s.sb_lines   = array TermLineCache [ alloc: 64 ]
-        if [ !s.live_lines ] s.live_lines = array TermLineCache [ alloc: 64 ]
-        if [ cw != s.cache_cw || lh != s.cache_lh ]
-            for [ slc: TermLineCache ] in s.sb_lines
-                slc.li = -1
-            for [ slc: TermLineCache ] in s.live_lines
-                slc.li   = -1
-                slc.hash = -1
-            s.cache_cw = cw
-            s.cache_lh = lh
-
-        if [ !s.in_alt ]
-            # visible scrollback range [vlo, vhi]
-            vlo : i32 [ -1 ]
-            vhi : i32 [ -1 ]
-            for [ li: i32 0, li < sc_count, li += 1 ]
-                yy : f32 [ y0 + f32[li] * lh - s.scroll ]
-                if [ yy + lh < bounds.y ] continue
-                if [ yy > bounds.y + bounds.h ] break
-                if [ vlo < 0 ] vlo = li
-                vhi = li
-            # recycle slots whose line scrolled out of view
-            for [ slc: TermLineCache ] in s.sb_lines
-                if [ slc.li >= 0 && (slc.li < vlo || slc.li > vhi) ]
-                    slc.li = -1
-            # blit cached lines; render only the ones not already cached
-            for [ li: i32 0, li < sc_count, li += 1 ]
+        # render the visible lines DIRECTLY into the element canvas (cv): one command
+        # buffer, one submit, batched paints — instead of N per-line canvases that each
+        # need their own reset + flush_submit (the submit-per-line cost that capped fps).
+        # cv is only re-rendered when the console is dirty; otherwise the element's
+        # pristine cache reuses it, so nothing re-renders when nothing changed.
+        if [ !s.in_alt && sc_count > 0 ]
+            # visible scrollback range from the scroll offset — O(visible), not O(history).
+            last_li : i32 [ sc_count - 1 ]
+            vlo : i32 [ clamp[ i32[ (s.scroll - lh) / lh ], 0, last_li ] ]
+            vhi : i32 [ clamp[ i32[ (s.scroll + bounds.h) / lh ] + 1, 0, last_li ] ]
+            for [ li: i32 vlo, li <= vhi, li += 1 ]
                 y : f32 [ y0 + f32[li] * lh - s.scroll ]
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
-                sl0 : i64 [ epoch_micros[] ]
-                slc : sb_slot[ cv, s, li, fs, lh, cw ]
-                td_slot += epoch_micros[] - sl0
-                if [ slc && slc.canvas ]
-                    bl0 : i64 [ epoch_micros[] ]
-                    cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
-                    td_blit += epoch_micros[] - bl0
-                el
-                    draw_cells[ cv, s, s.sb_line_buf[ li ], 0, s.sb_line_len[ li ], x0, y, lh, cw ]
+                draw_cells[ cv, s, s.sb_line_buf[ li ], 0, s.sb_line_len[ li ], x0, y, lh, cw ]
 
         for [ r: i32 0, r < s.rows, r += 1 ]
             y : f32 [ y0 + f32[base + r] * lh - s.scroll ]
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
-            # cached: an unchanged row blits its canvas; only a changed row re-renders.
-            sl1 : i64 [ epoch_micros[] ]
-            lvc : live_slot[ cv, s, r, fs, lh, cw ]
-            td_slot += epoch_micros[] - sl1
-            if [ lvc && lvc.canvas ]
-                bl1 : i64 [ epoch_micros[] ]
-                cv.draw_canvas[ lvc.canvas, x0, round[ y ], f32[ lvc.canvas.content_w ], lh ]
-                td_blit += epoch_micros[] - bl1
-            el
-                draw_row[ cv, s, r, x0, y, lh, cw ]
+            draw_row[ cv, s, r, x0, y, lh, cw ]
         td_us : i64 [ epoch_micros[] - td0 ]
-        puts 'TERMDRAW us={td_us} blit={td_blit} slot={td_slot} rerendered={s.dbg_renders}'
+        puts 'TERMDRAW us={td_us} sb={sc_count} rows={s.rows}'
 
         cv.paint[]
         if [ s.cursor_visible ]
