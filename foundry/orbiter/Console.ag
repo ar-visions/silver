@@ -42,7 +42,7 @@ class ConsoleSession
     mutable cy         : i32 [ 0  ]
     mutable cols       : i32 [ 80 ]
     mutable rows       : i32 [ 24 ]
-    mutable screen     : array TermCell
+    mutable screen      : array TermCell
     mutable scrollback : list string
     # color/attr for each scrollback line, kept in parallel with `scrollback` so the
     # history renders with its original colors (not a flat monochrome string). cells
@@ -134,8 +134,9 @@ class ConsoleSession
         scrollback  = list string []
         sb_cells    = array TermCell []
         sb_off      = array i32 []
-        main_screen = array TermCell []
-        alt_screen  = array TermCell []
+        # pre-sized so push doesn't realloc-and-copy on every element (was O(n²)).
+        main_screen = array TermCell [ alloc: rows * cols ]
+        alt_screen  = array TermCell [ alloc: rows * cols ]
         for [ i: i32 0, i < rows * cols, i += 1 ]
             main_screen.push[ TermCell [] ]
             alt_screen.push[ TermCell [] ]
@@ -758,8 +759,9 @@ class ConsoleSession
         nr : i32 [ (nr_in < 1) ? 1 : nr_in ]
         nc : i32 [ (nc_in < 1) ? 1 : nc_in ]
         if [ nr == rows && nc == cols ] return
-        nm : array TermCell []
-        na : array TermCell []
+        # pre-sized so push doesn't realloc-and-copy on every element (was O(n²)).
+        nm : array TermCell [ alloc: nr * nc ]
+        na : array TermCell [ alloc: nr * nc ]
         for [ i: i32 0, i < nr * nc, i += 1 ]
             nm.push[ TermCell [] ]
             na.push[ TermCell [] ]
@@ -878,8 +880,9 @@ class TermLineCache
 
 Layer TermLayer
     func draw [ cv: Canvas ]
-        # TEST: skip all console rendering to isolate its cost from the rest of the app
-        if [ true ] return
+        td0 : i64 [ epoch_micros[] ]
+        td_blit : i64 [ 0 ]   # us in cv.draw_canvas (the line blits)
+        td_slot : i64 [ 0 ]   # us in sb_slot/live_slot (cache lookup + rasterize)
         con : cast Console [ parent ]
         if [ !con ] return
         s : ConsoleSession con.session[]
@@ -1035,9 +1038,14 @@ Layer TermLayer
                 y : f32 [ y0 + f32[li] * lh - s.scroll ]
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
+                sl0 : i64 [ epoch_micros[] ]
                 slc : sb_slot[ cv, s, li, fs, lh, cw ]
+                td_slot += epoch_micros[] - sl0
                 if [ slc && slc.canvas ]
-                    cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
+                    bl0 : i64 [ epoch_micros[] ]
+                    # TEST: blit disabled to confirm draw_canvas is the bottleneck
+                    # cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
+                    td_blit += epoch_micros[] - bl0
                 el
                     draw_cells[ cv, s, s.sb_cells, s.sb_line_off[ li ], s.sb_line_len[ li ], x0, y, lh, cw ]
 
@@ -1046,12 +1054,18 @@ Layer TermLayer
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
             # cached: an unchanged row blits its canvas; only a changed row re-renders.
+            sl1 : i64 [ epoch_micros[] ]
             lvc : live_slot[ cv, s, r, fs, lh, cw ]
+            td_slot += epoch_micros[] - sl1
             if [ lvc && lvc.canvas ]
-                cv.draw_canvas[ lvc.canvas, x0, round[ y ], f32[ lvc.canvas.content_w ], lh ]
+                bl1 : i64 [ epoch_micros[] ]
+                # TEST: blit disabled to confirm draw_canvas is the bottleneck
+                # cv.draw_canvas[ lvc.canvas, x0, round[ y ], f32[ lvc.canvas.content_w ], lh ]
+                td_blit += epoch_micros[] - bl1
             el
                 draw_row[ cv, s, r, x0, y, lh, cw ]
-        puts 'TERMDRAW rerendered={s.dbg_renders} rows (0 = all cached/blitted this frame)'
+        td_us : i64 [ epoch_micros[] - td0 ]
+        puts 'TERMDRAW us={td_us} blit={td_blit} slot={td_slot} rerendered={s.dbg_renders}'
 
         cv.paint[]
         if [ s.cursor_visible ]
@@ -1069,6 +1083,7 @@ Layer TermLayer
     # sharing fg/bg/attr draw as one text span, with a bg rect when bg isn't default).
     # used by both the live grid (screen) and the scrollback color store.
     func draw_cells [ cv: Canvas, s: ConsoleSession, cells: array TermCell, off: i32, n: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
+        if [ n <= 0 ] return
         c : i32 [ 0 ]
         while [ c < n ]
             fg : i32 [ cells[off + c].fg ]
@@ -1087,10 +1102,16 @@ Layer TermLayer
                 cv.stroke_width[ 0.0 ]
                 cv.rect_to[ rx, y, rw, lh ]
                 cv.paint[]
-            txt : string s.cells_text[ cells, off, c, c2 ]
-            cv.fill_color[ col_of[ rfg ] ]
-            cv.draw_text[ txt, rect [ x: rx, y: y, w: rw + cw, h: lh ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            # skip the text pass for an all-space run — it draws nothing but still
+            # builds the string + runs the whole glyph/draw_text pipeline.
+            blank : bool [ true ]
+            for [ ci: i32 c, ci < c2 && blank, ci += 1 ]
+                if [ cells[off + ci].ch != 32 ] blank = false
+            if [ !blank ]
+                txt : string s.cells_text[ cells, off, c, c2 ]
+                cv.fill_color[ col_of[ rfg ] ]
+                cv.draw_text[ txt, rect [ x: rx, y: y, w: rw + cw, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
             c = c2
 
     func draw_row [ cv: Canvas, s: ConsoleSession, r: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
@@ -1101,6 +1122,8 @@ Layer TermLayer
     # rasterizes the line's cells into it at local origin. recycled slots (li=-1)
     # are reused so the pool never exceeds the on-screen line count.
     func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
+        # empty line: no slot, no canvas, no raster — the caller draws nothing.
+        if [ s.sb_line_len[ li ] <= 0 ] return null
         for [ slc: TermLineCache ] in s.sb_lines
             if [ slc.li == li ] return slc
         use : TermLineCache [ null ]

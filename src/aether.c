@@ -2489,7 +2489,7 @@ bool aether_e_fn_return(aether a, Au o) {
         if (cat)
             cat->last_return = true;
         
-        if (a->timing_enabled && f->timing_start_value) {
+        if (a->timing && f->timing_start_value) {
             // use last statement's debug loc for epilogue, not stale peek
             debug_emit(a);
             emit_func_timing_end(a, f->timing_start_value, f->timing_func_id);
@@ -7868,9 +7868,9 @@ none aether_build_module_initializer(aether a, enode init) {
         e_fn_call(a, fn_check, a(str_tid), false, false);
     }
 
-    if (a->coverage)
+    if (a->coverage || a->timing)
         emit_coverage_register(a);
-    
+
     efunc f = (efunc)u(efunc, au);
     Au_t  module_base = a->autype;
 
@@ -8379,10 +8379,10 @@ none aether_push_scope(aether a, Au arg, int label) {
         if (fn->origin_token)
             emit_debug_params(a, fn);
         a->coverage_seq_local = null; // reset per-function __seq alloca
-        if (a->timing_enabled && !fn->timing_start_value) {
+        if (a->timing && !fn->timing_start_value) {
             fn->timing_func_id = a->next_func_id++;
             fn->timing_start_value = emit_func_timing_start(a, fn->timing_func_id);
-            if (a->coverage)
+            if (a->coverage || a->timing)
                 coverage_set_func_name(fn->timing_func_id, fn->autype->alt ? fn->autype->alt : fn->autype->ident);
         }
 
@@ -8865,7 +8865,6 @@ none aether_init(aether a) {
     //push(a->include_paths, (Au)src_path);
 
     a->coverage = false; //a->debug;
-    a->timing_enabled = false; //a->debug;
 }
 
 none aether_dealloc(aether a) {

@@ -98,7 +98,7 @@ class Render
     intern  vk_command_buffers             : new VkCommandBuffer [64]
     intern  vk_fences                      : new VkFence          [64]
     intern  ring_i                         : i32
-    intern  ring_n                         : i32 [ 16 ]
+    intern  ring_n                         : i32 [ 2 ]
     intern  ring_last                      : i32           # most recently submitted slot (sync_fence target)
     intern  ring_primed                    : new i32 [64]   # slot has a pending submit to wait on (0/1)
     # batched recording: a canvas opens ONE command buffer (begin_record) and records
@@ -234,7 +234,7 @@ class Render
 
     # close + submit the open batch (once). NO semaphores — batched canvases are never
     # the swapchain blit (that path stays on draw_immediate).
-    func flush_submit [ ]
+    public func flush_submit [ ]
         if [ !recording ]
             return
         s : i32 [ ring_i ]
@@ -713,6 +713,8 @@ class vk_context
     public  sync_us             : i64
     public  update_us           : i64
     public  draw_us             : i64
+    public  resize_us           : i64
+    public  resize_calls        : i32
     public  paint_calls         : i32
     public  sdf_hit             : i32
     public  sdf_miss            : i32
@@ -1154,7 +1156,7 @@ class uniforms
         # update[] snapshots it into the current slot's GPU buffer). MUST match pipe_ring
         # / ring_n — the descriptor write count (and thus resize re-bind cost) scales with
         # this, so keep it as small as the largest single-canvas batch needs.
-        for [ ri: i32 0, ri < 16, ri += 1 ]
+        for [ ri: i32 0, ri < 2, ri += 1 ]
             uniform_buf: Buffer [ vk: vk, size: total_uniform,
                 u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
                 data: ref u_memory[0], user: leaf ]
@@ -1223,7 +1225,7 @@ class Pipeline
     # slot, laid out interleaved [s0_0,s1_0, s0_1,s1_1, ...]. draw binds the pair at
     # 2*vk.cur_ring so each draw has private descriptors (no in-flight clobber).
     intern descriptor_sets    : new VkDescriptorSet       [ 128 ] # 2 * ring_n(64)
-    intern pipe_ring          : i32 [ 16 ]
+    intern pipe_ring          : i32 [ 2 ]
     intern descriptor_pool    : VkDescriptorPool
     intern image_slot         : i32 [ -1 ]
     intern mask_slot          : i32 [ -1 ]

@@ -539,7 +539,6 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
             QualType field_type = field->getType();
             Au_t mapped = map_clang_type(field_type, ctx, e, null);
             if (!mapped) {
-                printf("aclang: field %s on %s mapped to null\n", field_name.c_str(), rec->ident ? rec->ident : "?");
                 fflush(stdout);
                 continue;
             }

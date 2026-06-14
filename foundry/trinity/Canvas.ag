@@ -1432,6 +1432,8 @@ Render Canvas
             if [ qw < 64 ] qw = 64
             if [ qh < 64 ] qh = 64
         if [ qw == width && qh == height ] return a  # capacity unchanged — no realloc
+        rz0 : i64 [ epoch_micros[] ]
+        vk.resize_calls += 1
         width  = qw
         height = qh
         update[]                                     # Render: color/depth + framebuffers
@@ -1454,6 +1456,7 @@ Render Canvas
         blur_stages = null
         blur_v_arr  = null
         blur_h_arr  = null
+        vk.resize_us += epoch_micros[] - rz0
         return a
 
 
@@ -2227,11 +2230,11 @@ Render Canvas
         draw_canvas[ mdl.cache, ox, oy, rw, rh ]
 
     func draw_canvas [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
-        # the draw ring leaves src's paints in flight (no per-paint fence). before we
-        # transition its color and SAMPLE it here, drain src's ring — else we read an
-        # attachment the GPU is still writing (Metal "Invalid Resource" → device lost).
+        # 1-wait-per-frame: SUBMIT src's batch but DON'T cpu-wait it here. queue order
+        # guarantees src executes before this canvas's draws (submitted after), so the
+        # sample reads finished pixels without 70 per-composite vkWaitForFences/frame.
         if [ src ]
-            src.sync_fence[]
+            src.flush_submit[]
         tex : Texture [ (src.reduction) ? src.reduction : src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
@@ -2262,9 +2265,9 @@ Render Canvas
         # flight under the draw ring (no per-paint fence), and reading an attachment the
         # GPU is still writing is a Metal "Invalid Resource" → device lost.
         if [ src ]
-            src.sync_fence[]
+            src.flush_submit[]
         if [ mask_src ]
-            mask_src.sync_fence[]
+            mask_src.flush_submit[]
         tex  : Texture [ (src.reduction) ? src.reduction : src.color ]
         mtex : Texture [ (mask_src.reduction) ? mask_src.reduction : mask_src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]

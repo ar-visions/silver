@@ -7654,6 +7654,12 @@ typedef struct _cov_module {
 static cov_module* __cov_modules = NULL;
 
 
+void __coverage_report(void);
+static void __coverage_sigint(int sig) {
+    __coverage_report();
+    signal(SIGINT, SIG_DFL);
+    raise(SIGINT);
+}
 void __coverage_register(uint64_t* probes, uint32_t probe_count,
                          uint64_t* timings, uint32_t func_count,
                          char** func_names) {
@@ -7665,6 +7671,15 @@ void __coverage_register(uint64_t* probes, uint32_t probe_count,
     m->func_names  = func_names;
     m->next        = __cov_modules;
     __cov_modules  = m;
+    // print the timing/coverage report on normal exit AND on ctrl-C (the app is a
+    // GUI loop, so SIGINT is the usual way out). registered once, only when a module
+    // actually has timing/coverage data.
+    static int hooked = 0;
+    if (!hooked) {
+        hooked = 1;
+        atexit(__coverage_report);
+        signal(SIGINT, __coverage_sigint);
+    }
 }
 
 void __coverage_report(void) {
@@ -7689,7 +7704,7 @@ void __coverage_report(void) {
     if (has_timing) {
         fprintf(stderr, "──────────────────────────────────────\n");
         fprintf(stderr, "  TIMING (top functions):\n");
-        for (int shown = 0; shown < 5; shown++) {
+        for (int shown = 0; shown < 40; shown++) {
             uint64_t max_ns = 0;
             cov_module* max_mod = NULL;
             uint32_t max_id = 0;
