@@ -128,12 +128,11 @@ abstract live_app media_app
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            puts 'PERF fps={frames} draw={vk.draw_us} passes={vk.pass_calls} submits={vk.submit_calls} waits={vk.sync_calls} syncus={vk.sync_us} paints={vk.paint_calls}'
+            puts 'PERF fps={frames} draw={vk.draw_us} bindus={vk.bindres_us} resize={vk.resize_us} rcalls={vk.resize_calls} bindres={vk.bindres_calls} paints={vk.paint_calls}'
             vk.resize_us    = 0
             vk.resize_calls = 0
             frames = 0
             vk.submit_calls = 0
-            vk.pass_calls   = 0
             vk.sync_calls   = 0
             vk.sync_us      = 0
             vk.update_us    = 0

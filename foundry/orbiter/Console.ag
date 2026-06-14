@@ -89,8 +89,6 @@ class ConsoleSession
     mutable live_lines  : array TermLineCache
     mutable cache_cw    : f32 [ -1.0 ]
     mutable cache_lh    : f32 [ -1.0 ]
-    # per-frame count of rows actually RE-RASTERIZED (cache misses) — diagnostic.
-    mutable dbg_renders : i32 [ 0 ]
     # incrementing draw-frame id; live_slot marks the slots it touched this frame so
     # the next miss can recycle a slot whose content is no longer on screen.
     mutable frame_id    : i32 [ 0 ]
@@ -317,6 +315,18 @@ class ConsoleSession
     func row_to_string [ r: i32 ] -> string
         return cell_text[ r, 0, cols ]
 
+    # drawable width of live row `r`: 1 + the last column that ISN'T a fully-default cell
+    # (space, default fg/bg, no attr). trailing default padding is trimmed so a line caches
+    # at its content width — but a COLORED space (bg set, e.g. claude's footer bar) counts
+    # as drawable, so the bar isn't trimmed away.
+    func row_drawable [ r: i32 ] -> i32
+        base : i32 [ r * cols ]
+        for [ c: i32 cols - 1, c >= 0, c -= 1 ]
+            i : i32 [ base + c ]
+            if [ !(screen[i].ch == 32 && screen[i].fg == -1 && screen[i].bg == -1 && screen[i].attr == 0) ]
+                return c + 1
+        return 0
+
     # highest grid row that has any non-blank cell. used for content height so the
     # scrollable region reaches the app's bottom rows (input box / footer hints below
     # the cursor), instead of stopping at the cursor row. a cell counts as used if it
@@ -385,8 +395,11 @@ class ConsoleSession
             scrollback.push[ row_to_string[ scroll_top ] ]
             # capture the line's color/attr cells in parallel (sb_off marks its start)
             sb_off.push[ sb_cells.count ]
+            # store only the DRAWABLE cells — trailing default padding never accumulates in
+            # history (smaller sb_cells, narrower cached canvas). sb_line_len = this count.
+            dl   : i32 [ row_drawable[ scroll_top ] ]
             srow : i32 [ scroll_top * cols ]
-            for [ c: i32 0, c < cols, c += 1 ]
+            for [ c: i32 0, c < dl, c += 1 ]
                 sb_cells.push[ TermCell [ ch: screen[srow + c].ch, fg: screen[srow + c].fg, bg: screen[srow + c].bg, attr: screen[srow + c].attr ] ]
         for [ r: i32 scroll_top, r < scroll_bot, r += 1 ]
             for [ c: i32 0, c < cols, c += 1 ]
@@ -808,11 +821,10 @@ class ConsoleSession
             init_cells[ screen, rows * cols ]
         el [ nr > orows ]
             init_cells[ ref screen[ orows * cols ], (nr - orows) * cols ]
-        # invalidate the per-line render cache: its canvases were rasterized for the old
-        # geometry, so force a full pool flush on the next draw (font metrics didn't
-        # change, so the draw's own cw/lh check wouldn't catch this).
-        cache_cw   = -1.0
-        cache_lh   = -1.0
+        # NOTE: do NOT flush the per-line cache here. it's keyed by content-hash and sized
+        # by each line's own drawable width — neither depends on rows. a cols change reflows
+        # the cells (new hashes → natural miss); a height-only resize keeps the lines valid.
+        # flushing on every resize made an animating pane re-rasterize all lines per frame.
         scroll_top = 0
         scroll_bot = rows - 1
         if [ cx >= cols ] cx = cols - 1
@@ -909,9 +921,6 @@ class TermLineCache
 
 Layer TermLayer
     func draw [ cv: Canvas ]
-        td0 : i64 [ epoch_micros[] ]
-        td_blit : i64 [ 0 ]   # us in cv.draw_canvas (the line blits)
-        td_slot : i64 [ 0 ]   # us in sb_slot/live_slot (cache lookup + rasterize)
         con : cast Console [ parent ]
         if [ !con ] return
         s : ConsoleSession con.session[]
@@ -1032,29 +1041,48 @@ Layer TermLayer
         cv.draw_selection[ x0, y0, lh, cw, s.scroll, bounds.y, bounds.w, bounds.h,
             s.anchor_line, s.anchor_col, s.sel_line, s.sel_col, rgba['#264f78'] ]
 
-        # render the visible lines DIRECTLY into the element canvas (cv): one command
-        # buffer, one submit, batched paints — instead of N per-line canvases that each
-        # need their own reset + flush_submit (the submit-per-line cost that capped fps).
-        # cv is only re-rendered when the console is dirty; otherwise the element's
-        # pristine cache reuses it, so nothing re-renders when nothing changed.
+        # per-line cache: each visible line rasterizes ONCE into a content-width canvas
+        # keyed by its drawable cells, then composites every frame. an unchanged line just
+        # composites (these batch into the one open main render pass — no per-line submit);
+        # only a CHANGED line re-rasterizes, the lone path that pays the text_vbo cost. a
+        # cw/lh change (font/reflow) isn't in the hash, so flush the pool when it changes.
+        fs : i32 [ (label_size > 0.0) ? i32[label_size] : 0 ]
+        s.frame_id   += 1
+        if [ !s.sb_lines ]   s.sb_lines   = array TermLineCache [ alloc: 64 ]
+        if [ !s.live_lines ] s.live_lines = array TermLineCache [ alloc: 64 ]
+        if [ cw != s.cache_cw || lh != s.cache_lh ]
+            for [ slc: TermLineCache ] in s.sb_lines
+                slc.li = -1
+            for [ slc: TermLineCache ] in s.live_lines
+                slc.li   = -1
+                slc.hash = -1
+            s.cache_cw = cw
+            s.cache_lh = lh
+
         if [ !s.in_alt && sc_count > 0 ]
             # visible scrollback range from the scroll offset — O(visible), not O(history).
             last_li : i32 [ sc_count - 1 ]
             vlo : i32 [ clamp[ i32[ (s.scroll - lh) / lh ], 0, last_li ] ]
             vhi : i32 [ clamp[ i32[ (s.scroll + bounds.h) / lh ] + 1, 0, last_li ] ]
+            # recycle slots whose line scrolled out of view (pool stays at the visible count)
+            for [ slc: TermLineCache ] in s.sb_lines
+                if [ slc.li >= 0 && (slc.li < vlo || slc.li > vhi) ]
+                    slc.li = -1
             for [ li: i32 vlo, li <= vhi, li += 1 ]
                 y : f32 [ y0 + f32[li] * lh - s.scroll ]
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
-                draw_cells[ cv, s, s.sb_line_buf[ li ], 0, s.sb_line_len[ li ], x0, y, lh, cw ]
+                slc : sb_slot[ cv, s, li, fs, lh, cw ]
+                if [ slc && slc.canvas ]
+                    cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
 
         for [ r: i32 0, r < s.rows, r += 1 ]
             y : f32 [ y0 + f32[base + r] * lh - s.scroll ]
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
-            draw_row[ cv, s, r, x0, y, lh, cw ]
-        td_us : i64 [ epoch_micros[] - td0 ]
-        puts 'TERMDRAW us={td_us} sb={sc_count} rows={s.rows}'
+            lvc : live_slot[ cv, s, r, fs, lh, cw ]
+            if [ lvc && lvc.canvas ]
+                cv.draw_canvas[ lvc.canvas, x0, round[ y ], f32[ lvc.canvas.content_w ], lh ]
 
         cv.paint[]
         if [ s.cursor_visible ]
@@ -1137,15 +1165,14 @@ Layer TermLayer
         draw_cells[ use.canvas, s, s.sb_line_buf[ li ], 0, len, 0.0, 0.0, lh, cw ]
         use.canvas.paint[]
         use.li = li
-        s.dbg_renders += 1
         return use
 
     # content hash of live grid row `r` — ch/fg/bg/attr of every cell. compared per
     # frame so an unchanged row blits its cached canvas instead of re-rasterizing.
-    func row_hash [ s: ConsoleSession, r: i32 ] -> i64
-        h    : i64 [ 0 ]
+    func row_hash [ s: ConsoleSession, r: i32, n: i32 ] -> i64
+        h    : i64 [ i64[ n ] ]
         base : i32 [ r * s.cols ]
-        for [ c: i32 0, c < s.cols, c += 1 ]
+        for [ c: i32 0, c < n, c += 1 ]
             idx : i32 [ base + c ]
             h = h * 131 + i64[ s.screen[ idx ].ch ]
             h = h * 131 + i64[ s.screen[ idx ].fg ]
@@ -1159,7 +1186,11 @@ Layer TermLayer
     # new content rasterizes. a miss recycles a slot whose content scrolled off (frame
     # != current) or grows the pool.
     func live_slot [ cv: Canvas, s: ConsoleSession, r: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
-        h : i64 [ row_hash[ s, r ] ]
+        # trim trailing default cells: cache keyed on the DRAWABLE content only, so lines
+        # differing only in padding share a canvas, and the canvas is content-width.
+        dl : i32 [ s.row_drawable[ r ] ]
+        if [ dl <= 0 ] return null
+        h : i64 [ row_hash[ s, r, dl ] ]
         for [ slot: TermLineCache ] in s.live_lines
             if [ slot.canvas && slot.hash == h ]
                 slot.frame = s.frame_id
@@ -1172,7 +1203,7 @@ Layer TermLayer
         if [ !use ]
             use = TermLineCache [ ]
             s.live_lines.push[ use ]
-        cw_i : i32 [ i32[ ceil[ f32[s.cols] * cw ] ] ]
+        cw_i : i32 [ i32[ ceil[ f32[dl] * cw + cw ] ] ]
         if [ cw_i < 1 ] cw_i = 1
         lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
         if [ !use.canvas ]
@@ -1182,11 +1213,10 @@ Layer TermLayer
             use.canvas.resize[ cw_i, lh_i ]
         use.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
         if [ fs > 0 ] use.canvas.font_size[ fs ]
-        draw_cells[ use.canvas, s, s.screen, r * s.cols, s.cols, 0.0, 0.0, lh, cw ]
+        draw_cells[ use.canvas, s, s.screen, r * s.cols, dl, 0.0, 0.0, lh, cw ]
         use.canvas.paint[]
         use.hash  = h
         use.frame = s.frame_id
-        s.dbg_renders += 1
         return use
 
     # packed 0xRRGGBB → rgba (components 0..1).

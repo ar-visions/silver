@@ -317,7 +317,6 @@ class Render
                 pClearValues:    clear_values
             ]
             vkCmdBeginRenderPass[ frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
-            vk.pass_calls += 1
             pass_open = true
         for [ m: Model ] in models
             for [ p: Pipeline ] in m.pipelines
@@ -412,7 +411,6 @@ class Render
             ]
             vkCmdBeginRenderPass[
                 frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
-            vk.pass_calls += 1
 
             if [ i == 0 ]
                 for [ m: Model ] in models
@@ -727,7 +725,6 @@ class vk_context
     public  resize_us           : i64
     public  resize_calls        : i32
     public  paint_calls         : i32
-    public  pass_calls          : i32
     public  sdf_hit             : i32
     public  sdf_miss            : i32
     public  geom_us             : i64
