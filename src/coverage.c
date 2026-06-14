@@ -9,6 +9,7 @@
 #include <llvm-c/BitWriter.h>
 #include <ports.h>
 #include <stddef.h>
+#include <time.h>
 
 typedef LLVMMetadataRef LLVMScope;
 
@@ -59,7 +60,7 @@ void coverage_set_func_name(u32 func_id, char* name) {
 }
 
 void emit_coverage_register(aether a) {
-    if ((!a->coverage && !a->timing_enabled) || a->no_build) return;
+    if ((!a->coverage && !a->timing) || a->no_build) return;
 
     LLVMTypeRef ptr_type = LLVMPointerTypeInContext(a->module_ctx, 0);
     LLVMTypeRef i32_type = LLVMInt32TypeInContext(a->module_ctx);
@@ -77,7 +78,7 @@ void emit_coverage_register(aether a) {
 
     // build func names global array
     LLVMValueRef names = LLVMConstNull(ptr_type);
-    if (a->timing_enabled && a->next_func_id > 0) {
+    if (a->timing && a->next_func_id > 0) {
         u32 n = a->next_func_id;
         LLVMValueRef* name_values = calloc(n, sizeof(LLVMValueRef));
         for (u32 i = 0; i < n; i++) {
@@ -98,10 +99,13 @@ void emit_coverage_register(aether a) {
         free(name_values);
     }
 
+    LLVMValueRef probes = a->coverage_probes_global
+        ? a->coverage_probes_global
+        : LLVMConstNull(ptr_type);
     LLVMBuildCall2(B, LLVMGlobalGetValueType(coverage_register_fn),
         coverage_register_fn,
         (LLVMValueRef[]){
-            a->coverage_probes_global,
+            probes,
             LLVMConstInt(i32_type, a->next_probe_id, 0),
             timings,
             LLVMConstInt(i32_type, a->next_func_id, 0),
@@ -187,9 +191,12 @@ LLVMValueRef emit_clock_ns(aether a, cstr label) {
         LLVMPositionBuilderAtEnd(B, entry);
     LLVMValueRef ts = LLVMBuildAlloca(B, timespec_type, label);
     LLVMPositionBuilderAtEnd(B, current);
+    // CLOCK_MONOTONIC differs per OS (1 on Linux, 6 on macOS); clk_id=1 on macOS is
+    // invalid → clock_gettime fails and leaves the timespec uninitialized (garbage
+    // ~2^64 elapsed). emit the host's real value (host==target here).
     LLVMBuildCall2(B, a->clock_gettime_type, a->clock_gettime_fn,
         (LLVMValueRef[]){
-            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), 1, 0), ts
+            LLVMConstInt(LLVMInt32TypeInContext(a->module_ctx), CLOCK_MONOTONIC, 0), ts
         }, 2, "");
     LLVMValueRef sec  = LLVMBuildLoad2(B, i64t,
         LLVMBuildStructGEP2(B, timespec_type, ts, 0, ""), "sec");
@@ -201,13 +208,13 @@ LLVMValueRef emit_clock_ns(aether a, cstr label) {
 
 // emit timing start (returns nanosecond timestamp) - FUNCTION LEVEL ONLY
 LLVMValueRef emit_func_timing_start(aether a, u32 func_id) {
-    if (!a->timing_enabled || a->no_build) return null;
+    if (!a->timing || a->no_build) return null;
     return emit_clock_ns(a, "start_ns");
 }
 
 // emit timing end and accumulate elapsed time - FUNCTION LEVEL ONLY
 void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id) {
-    if (!a->timing_enabled || !start_ns || a->no_build) return;
+    if (!a->timing || !start_ns || a->no_build) return;
 
     LLVMValueRef end_ns  = emit_clock_ns(a, "end_ns");
     LLVMValueRef elapsed = LLVMBuildSub(B, end_ns, start_ns, "elapsed_ns");
@@ -245,7 +252,7 @@ void report_coverage(aether a) {
 
 // this works fine when re-initializing
 void init_coverage(aether a) {
-    if (!a->coverage && !a->timing_enabled) return;
+    if (!a->coverage && !a->timing) return;
 
     if (a->coverage) {
         LLVMTypeRef i64t = LLVMInt64TypeInContext(a->module_ctx);
@@ -277,7 +284,7 @@ void init_coverage(aether a) {
     a->next_probe_id = 0;
     
     // Function timing setup
-    if (a->timing_enabled) {
+    if (a->timing) {
 
         #define MAX_FUNCS 512
         LLVMTypeRef timing_array = LLVMArrayType(LLVMInt64TypeInContext(a->module_ctx), MAX_FUNCS);
