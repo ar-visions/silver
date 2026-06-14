@@ -104,7 +104,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  bool,                     debug) \
     M(X, Y, i, prop,     public,  bool,                     asan) \
     M(X, Y, i, prop,     public,  bool,                     coverage) \
-    M(X, Y, i, prop,     public,  bool,                     timing_enabled) \
+    M(X, Y, i, prop,     public,  bool,                     timing) \
     M(X, Y, i, prop,     public,  i32,                      next_func_id) \
     M(X, Y, i, prop,     public,  i32,                      next_probe_id) \
     M(X, Y, i, prop,     public,  path,                     current_import) \
