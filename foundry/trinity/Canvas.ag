@@ -1419,18 +1419,18 @@ Render Canvas
         s  : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
         pw : i32 [ i32[ rw * s ] ]
         ph : i32 [ i32[ rh * s ] ]
-        # cache canvases quantize the GPU allocation UP to a 64px grid: a 1px drag
+        # cache canvases quantize the GPU allocation UP to an 8px grid: a 1px drag
         # almost never crosses a boundary, so we keep the same color/depth/framebuffers
         # (the expensive realloc) and only the content size + blit UV change. up to
-        # 63px of headroom per axis is unused (transparent) and cropped by the blit.
+        # 7px of headroom per axis is unused (transparent) and cropped by the blit.
         # main canvases (quantize=false) stay exactly window-sized for the swapchain.
         qw : i32 [ pw ]
         qh : i32 [ ph ]
         if [ quantize ]
-            qw = ((pw + 63) / 64) * 64
-            qh = ((ph + 63) / 64) * 64
-            if [ qw < 64 ] qw = 64
-            if [ qh < 64 ] qh = 64
+            qw = ((pw + 7) / 8) * 8
+            qh = ((ph + 7) / 8) * 8
+            if [ qw < 8 ] qw = 8
+            if [ qh < 8 ] qh = 8
         if [ qw == width && qh == height ] return a  # capacity unchanged — no realloc
         rz0 : i64 [ epoch_micros[] ]
         vk.resize_calls += 1

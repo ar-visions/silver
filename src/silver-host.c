@@ -15,6 +15,14 @@ typedef void       (*destroy_fn)(void);
 typedef void       (*init_fn)(void);
 typedef int        (*au_compile_ready_fn)(void);
 typedef void       (*au_compile_invoke_fn)(const char*);
+typedef void       (*au_main_args_fn)(int, char**);
+
+// stash the process argv into libAu (loaded inside the app .so) so silver_live_init
+// can parse the app's command-line flags into its instance. safe no-op on old libs.
+static void stash_args(void* handle, int argc, char** argv) {
+    au_main_args_fn set_args = (au_main_args_fn)dlsym(handle, "au_main_args");
+    if (set_args) set_args(argc, argv);
+}
 #define FRAME_SYM   "silver_live_frame"
 #define DESTROY_SYM "silver_live_destroy"
 #define INIT_SYM    "silver_live_init"
@@ -228,6 +236,7 @@ int main(int argc, char** argv) {
     init_fn    do_init    = dlsym(handle, INIT_SYM);
     frame_fn   do_frame   = dlsym(handle, FRAME_SYM);
     destroy_fn do_destroy = dlsym(handle, DESTROY_SYM);
+    stash_args(handle, argc, argv);
     if (do_init) do_init();
 
     time_t last_mtime = file_mtime(product);
@@ -292,6 +301,7 @@ int main(int argc, char** argv) {
             do_init   = dlsym(handle, INIT_SYM);
             do_frame  = dlsym(handle, FRAME_SYM);
             do_destroy= dlsym(handle, DESTROY_SYM);
+            stash_args(handle, argc, argv);
             if (do_init) do_init();
             fprintf(stderr, "%s: reload complete\n", name);
 

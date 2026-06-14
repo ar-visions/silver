@@ -54,6 +54,11 @@ func au_space_clear[] -> none
 # used as a runaway-leak guard so the app bails out before it locks the machine.
 func au_mem_fraction[] -> f32
 
+# redirect stdout/stderr into a pipe (returns a non-blocking read fd); au_stdout_orig
+# is a dup of the real stdout so --log can tee captured output back to the terminal.
+func au_capture_stdout[] -> i32
+func au_stdout_orig[] -> i32
+
 # per-workspace UI/session state, persisted to <os-cache>/orbiter/states.agi as a
 # map keyed by the workspace (startup) path. starts with the open tabs; more fields
 # (active pane, splits, scroll positions, etc.) get added here over time.
@@ -73,6 +78,13 @@ class FmtWatch
     public mtime : i64 [ 0 ]
 
 trinity orbiter # implements compiler
+    # --log <path>: tee all stdout/puts to this file (truncated on start) WHILE still
+    # printing to the console, so a running session's diagnostics can be read back from
+    # disk. cap_fd = the pipe au_capture_stdout drains; log_fd = the open log file.
+    public log           : string
+    intern tee_started   : bool
+    intern cap_fd        : i32 [ -1 ]
+    intern log_fd        : i32 [ -1 ]
     intern avg_fps       : f32
     intern target_names  : array string
     intern target_roots  : array path
@@ -1597,7 +1609,28 @@ trinity orbiter # implements compiler
                 ev.target.pristine = false
                 if [ ev.target.ux ] ev.target.ux.restyle = true
 
+    # drain captured stdout (--log) to both the real terminal and the log file, so the
+    # pipe never fills (which would block any puts) and the file stays current.
+    func tee_drain []
+        if [ cap_fd < 0 ] return
+        buf  : local i8 [ 4096 ]
+        orig : i32 [ au_stdout_orig[] ]
+        for [ i: i32 0, i < 256, i += 1 ]
+            n : i32 [ read[ cap_fd, ref buf[0], 4096 ] ]
+            if [ n <= 0 ] break
+            if [ orig   >= 0 ] write[ orig,   ref buf[0], n ]
+            if [ log_fd >= 0 ] write[ log_fd, ref buf[0], n ]
+
     public func on_render [ w: Window ] -> Elements
+        # lazy --log setup: args are parsed (au_apply_args) after init[], so the log
+        # path isn't known until the first frame. start the tee once, here.
+        if [ !tee_started ]
+            tee_started = true
+            if [ log && log.count > 0 ]
+                log_fd = open[ log.chars, O_WRONLY | O_CREAT | O_TRUNC, 420 ]
+                if [ log_fd >= 0 ]
+                    cap_fd = au_capture_stdout[]
+        tee_drain[]
         # runaway-leak guard: if our RSS passes 20% of physical RAM, quit before
         # the leak thrashes the machine into a solid lock. cheap (/proc read).
         if [ au_mem_fraction[] > 0.20 ]
