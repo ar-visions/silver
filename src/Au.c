@@ -1605,6 +1605,13 @@ int au_capture_stdout(void) {
 
 int au_stdout_orig(void) { return g_stdout_orig; }
 
+// silver-host stashes the process argv here (dlsym'd from libAu before it calls
+// silver_live_init); au_apply_args then parses it into the freshly-created app
+// instance, so an app receives its own command-line flags through its schema.
+static cstrs g_main_argv = NULL;
+void au_main_args(int argc, cstrs argv) { (void)argc; g_main_argv = argv; }
+void au_apply_args(Au a) { if (a && g_main_argv) Au_with_cstrs((Au)a, g_main_argv); }
+
 Au_t global() {
     Au_t au_module_t = isa(au_module);
     return au_module;

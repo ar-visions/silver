@@ -2277,6 +2277,8 @@ void au_space_clear(void);
 float au_mem_fraction(void); // resident set size as a fraction of total physical RAM (0..1); 0 if unknown
 int   au_capture_stdout(void); // redirect stdout/stderr to a pipe; returns non-blocking read fd
 int   au_stdout_orig(void);    // dup of the real stdout saved by au_capture_stdout (-1 if not captured)
+void  au_main_args(int argc, cstrs argv); // silver-host stashes process argv for the app
+void  au_apply_args(Au a);                // parse the stashed argv into app instance `a`
 void module_erase_silver(void);
 none validate_meta(Au_t actual, Au_t expected);
 
