@@ -6295,6 +6295,16 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             inst->is_any = true;
             LLVMBuildStore(B, inst->value, inst_g);
 
+            // parse the process argv (stashed by silver-host via au_main_args) into the
+            // instance, so the app receives its own command-line flags via its schema.
+            {
+                LLVMTypeRef  aa_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx),
+                    (LLVMTypeRef[]){ ptr_ty }, 1, false);
+                LLVMValueRef aa_fn = LLVMGetNamedFunction(a->module_ref, "au_apply_args");
+                if (!aa_fn) aa_fn = LLVMAddFunction(a->module_ref, "au_apply_args", aa_ty);
+                LLVMBuildCall2(B, aa_ty, aa_fn, (LLVMValueRef[]){ inst->value }, 1, "");
+            }
+
             if (fn_run) e_fn_call(a, (efunc)u(efunc, fn_run), a(inst), false, false);
 
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))

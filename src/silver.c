@@ -1159,7 +1159,8 @@ static void silver_live_run(silver a) {
             if (!a->live_binary) a->live_binary = hold(host);
         }
     }
-    if (a->run || (((aether)a)->is_live && !a->is_external)) {
+    // --build compiles only: skip launching the app (a bare `silver <app>` runs it).
+    if (!a->build && (a->run || (((aether)a)->is_live && !a->is_external))) {
         int n = a->run ? len(a->run) : 0;
         char** argv = calloc(n + 2, sizeof(char*));
         path run_binary = a->live_binary ? a->live_binary : a->product;
@@ -1567,7 +1568,7 @@ void silver_init(silver a) {
                 fault("defs not found in %o: %o", a->name, unused);
             }
 
-            build(a);
+            build_product(a);
 
             exporter(a);
 
@@ -3502,7 +3503,16 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             {null, 0}
         };
         for (int i = 0; math_ops[i].name; i++) {
-            if (read_if(a, math_ops[i].name)) {
+            token nm = element(a, 0);
+            if (!nm || !nm->chars || strcmp(nm->chars, math_ops[i].name) != 0)
+                continue;
+            // only a call (name followed by '[') is the math builtin; a bare name is a
+            // plain identifier (e.g. a member named `log`), so leave it for lookup.
+            token after = element(a, 1);
+            if (!after || !after->chars || strcmp(after->chars, "[") != 0)
+                continue;
+            {
+                read_if(a, math_ops[i].name);
                 verify(read_if(a, "["), "expected [ after %s", math_ops[i].name);
                 enode val = parse_expression(a, null, false, false);
                 if (math_ops[i].op == 12 || math_ops[i].op == 13) { // atan2, pow are two-arg
@@ -5495,7 +5505,7 @@ static void deploy_resources(path src, path dst) {
 // build with optional bc path; if no bc path we use the project file system
 static void read_g_link_libs(silver a, path mg);
 
-none silver_build(silver a) {
+none silver_build_product(silver a) {
     // a module with its own .g (e.g. dbg.g -> -llldb -lutil) must honor those
     // link flags when building/linking itself; graph.py does this for the core
     // build but silver's module build path otherwise ignores .g.
