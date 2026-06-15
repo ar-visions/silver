@@ -1909,9 +1909,6 @@ Display Window
         # element wants an edge fade, build/refresh a grayscale mask (white
         # center, black inner glow) sized to the cache and composite through it.
         mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
-        # TEST: skip masked elements entirely to isolate the draw_canvas_masked hazard
-        if [ mask_on ]
-            return
         if [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
             if [ mask_on ]
                 glow_changed : bool [ e.mask_bg.x != e.mask_glow.x || e.mask_bg.y != e.mask_glow.y || e.mask_bg.z != e.mask_glow.z || e.mask_bg.w != e.mask_glow.w ]

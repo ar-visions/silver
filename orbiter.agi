@@ -2,22 +2,23 @@
 projects:
 	silver: Project
 		name: 	silver
-		root: 	'/src/silver'
+		root: 	'.'
 		build:	make debug
+		files:	src/silver.c src/aether.c foundry/trinity/Canvas.ag
 
 	hyperspace: Project
 		name: 	hyperspace
-		root: 	'/src/silver/foundry/hyperspace'
+		root: 	'foundry/hyperspace'
 		build:	silver hyperspace --clean
-		cwd:	'/src/silver'
+		cwd:	'.'
 		run:	hyperspace
-	
+
 	test4: Project
 		name: 	test4
 		deps: 	silver
-		root: 	'/src/silver/foundry/test4'
+		root: 	'foundry/test4'
 		build:	silver test4 --clean
-		cwd:	'/src/silver'
+		cwd:	'.'
 		run:	test4
 
 consoles:

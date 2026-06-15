@@ -210,7 +210,7 @@ NodeList FileList
                 select[ sel ]
 
     func init []
-        if [ !root ] root = path '/src/silver'
+        if [ !root ] root = path.path_startup[]
         root_node = FileNode [ p: root, depth: -1, is_dir: true ]
         root_node.load_children[]
         build_visible[]

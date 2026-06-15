@@ -145,6 +145,16 @@ trinity orbiter # implements compiler
     # user drags.
     public inst_split1      : f32 [ 50.0 ]
     intern inst_split_init  : bool
+    # the bottom-right debug panels. independent toggles (set from the hamburger /
+    # fields tabs in the console title): each reveals a panel to the RIGHT of the
+    # console, SIDE BY SIDE (console | callstack | fields). both off by default → the
+    # console fills the bottom bar. each panel sits in a positional slot (p0/p1) so its
+    # left seam is a draggable shared var: inst_split1 (console|p0), inst_split2 (p0|p1).
+    public show_callstack   : bool
+    public show_fields      : bool
+    public inst_split2      : f32 [ 75.0 ]
+    # panel count we last laid out for — on a change we redistribute the seams.
+    intern inst_last_panels : i32 [ -1 ]
     # last pane count we redistributed for — when editor_slots.count changes we reset
     # the seams to an equal division.
     intern last_ecount      : i32
@@ -259,10 +269,10 @@ trinity orbiter # implements compiler
         docked_left    = array path []
         docked_right   = array path []
         # a few default pins so the column has content to look at
-        docked_left   += path '/src/silver/LICENSE'
-        docked_left   += path '/src/silver/Makefile'
-        docked_left   += path '/src/silver/README.md'
-        docked_left   += path '/src/silver/CLAUDE.md'
+        docked_left   += path '{startup_path}/LICENSE'
+        docked_left   += path '{startup_path}/Makefile'
+        docked_left   += path '{startup_path}/README.md'
+        docked_left   += path '{startup_path}/CLAUDE.md'
         active_idx     = -1
         # one editor pane to start, empty (the 'Open' finder)
         editor_slots   = array i32 []
@@ -324,6 +334,20 @@ trinity orbiter # implements compiler
     func agi_path [] -> path
         if [ !startup_path ] startup_path = path.path_startup[]
         return path '{startup_path}/orbiter.agi'
+
+    # resolve a project path (root/cwd/file) from orbiter.agi against the actual
+    # launch directory Au captured at startup. an absolute path passes through; a
+    # relative path (or '.'/empty) is rebased onto startup_path so the SAME .agi
+    # works from any checkout location — no hardcoded '/src/silver'. this is how
+    # orbiter.agi references "our silver locally": the silver project root is '.',
+    # which resolves to the directory orbiter.agi was found in.
+    func resolve_local [ p: path ] -> path
+        if [ !startup_path ] startup_path = path.path_startup[]
+        if [ !p ] return path '{startup_path}'
+        s : string '{p}'
+        if [ s.count == 0 || s == '.' ] return path '{startup_path}'
+        if [ s[0] == '/' ] return p
+        return path '{startup_path}/{s}'
 
     # OS-specific per-user cache dir for orbiter (created on demand). app state that
     # is convenience-only (recoverable, not user content) belongs here, NOT in the
@@ -426,6 +450,10 @@ trinity orbiter # implements compiler
         # restore the selected project
         if [ st.target && st.target.count > 0 ]
             active_target = st.target
+        # load the active target's initial files (system → orbiter.agi; a project →
+        # its `files`), resolved against the local launch dir. this supersedes any
+        # stale session tab whose absolute path no longer exists on this machine.
+        load_target_files[ active_target ]
 
     # read orbiter.agi and let parse_agi set members directly on this orbiter
     # instance (`a`) — chiefly the `projects` map. we clear projects first so a
@@ -441,6 +469,12 @@ trinity orbiter # implements compiler
         settings_mtime = sp.modified_time[]
         if [ projects ] projects.clear[]
         Au.parse_agi[ null, txt.chars, a ]
+        # rebase project roots/cwds onto the launch dir so relative .agi paths
+        # (e.g. silver root '.') resolve to this local checkout, not a hardcoded path.
+        if [ projects ]
+            for [ p: Project, name: string ] in projects
+                p.root = resolve_local[ p.root ]
+                if [ p.cwd ] p.cwd = resolve_local[ p.cwd ]
         sync_targets[]
         fmt_sync[]
         if [ projects ]
@@ -470,7 +504,7 @@ trinity orbiter # implements compiler
         for [ i: i32 0, i < target_names.count, i += 1 ]
             name    : string target_names[i]
             src     : path   target_srcs[i]
-            product : path  '/src/silver/platform/native/debug/{name}'
+            product : path  '{startup_path}/platform/native/debug/{name}'
             if [ !product.exists[] ]
                 compile_log.push[ 'stale (no product): {name}' ]
                 compile[ name ]
@@ -515,7 +549,7 @@ trinity orbiter # implements compiler
         if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
         if [ fmt_watch[ proj ] ] return
         fw : FmtWatch [ proj: proj, map: '/tmp/orbiter-fmt-{proj}.map' ]
-        cmd : 'cd /src/silver && exec ./platform/native/debug/silver {proj} -w --format "{fw.map}"'
+        cmd : 'cd {startup_path} && exec ./platform/native/debug/silver {proj} -w --format "{fw.map}"'
         fd  : i32 [ -1 ]
         pid : i32 [ forkpty[ ref fd, null, null, null ] ]
         if [ pid == 0 ]
@@ -569,9 +603,9 @@ trinity orbiter # implements compiler
     # wired through the running session).
     func debug_frames [] -> array Frame
         fr : array Frame [ alloc: 8 ]
-        fr.push[ Frame [ func_name: 'main',         file: path '/src/silver/src/silver.c', line: 8870 ] ]
-        fr.push[ Frame [ func_name: 'silver_build', file: path '/src/silver/src/silver.c', line: 5281 ] ]
-        fr.push[ Frame [ func_name: 'aether_emit',  file: path '/src/silver/src/aether.c', line: 8610 ] ]
+        fr.push[ Frame [ func_name: 'main',         file: path '{startup_path}/src/silver.c', line: 8870 ] ]
+        fr.push[ Frame [ func_name: 'silver_build', file: path '{startup_path}/src/silver.c', line: 5281 ] ]
+        fr.push[ Frame [ func_name: 'aether_emit',  file: path '{startup_path}/src/aether.c', line: 8610 ] ]
         return fr
 
     # the live Console element (nested under instances, so reached via lookup).
@@ -804,10 +838,9 @@ trinity orbiter # implements compiler
         #    nav['git'] = Option [ selected: editor_panel == 'git', disable: !has_diff ]
         
         nav['magnify'] = Option [ selected: findbar_open ]
-        # menu icon (next to magnify): toggles this editor's stack sub-column
-        # (callstack + fields), narrowing the code by that much.
-        nav['menu'] = Option [ selected: dbg_open ]
-        # tab add (+) and remove (-) live on the right with magnify/menu, leaving the
+        # (the callstack + fields panels moved OUT of the editor — they're now toggled
+        # from the bottom console title; the editor no longer carries a stack sub-column.)
+        # tab add (+) and remove (-) live on the right with magnify, leaving the
         # title's left side free for a file-type icon. shown all the time (including
         # Finder state) — just not while the find/replace bar replaces the nav.
         if [ !findbar_open ]
@@ -861,27 +894,8 @@ trinity orbiter # implements compiler
             no_scroll: true
             elements: ttl
         ]
-        # callstack + fields: a vertical stack on the editor's right — shown only when
-        # THIS editor has it toggled on (per-editor dbg_open). content insets follow
-        # automatically (Editor measures the live dbg element's width).
-        if [ dbg_open ]
-            dbg_els : Elements []
-            # debug-control buttons (words, not icons) — bound to the same actions the
-            # Editor's keyboard fires (cont / step over / into / out). handled in on_press.
-            ctl : Elements []
-            # continue toggles to pause while the inferior is running; selected (and the
-            # label) track the debugger's running state. manual_mode: app owns selected.
-            ctl['dbg_continue']  = Option [ label: (dbgr && dbgr.running) ? 'pause' : 'cont', selected: (dbgr) ? dbgr.running : false, manual_mode: true ]
-            ctl['dbg_step_over'] = Button [ label: 'step' ]
-            ctl['dbg_step_into'] = Button [ label: 'in' ]
-            ctl['dbg_step_out']  = Button [ label: 'out' ]
-            dbg_els['controls']  = element [ elements: ctl ]
-            dbg_els['fields']    = Fields [ vars: debug_vars ]
-            
-            # fixed sub-column (not scrolled with the editor content) — so find_target
-            # hit-tests its buttons/panels in unscrolled space; otherwise a scrolled
-            # editor folds its scroll in and clicks fall through to the code rows.
-            pe['dbg'] = element [ no_scroll: true, elements: dbg_els ]
+        # (callstack + fields no longer live in the editor — they're toggled from the
+        # bottom console title and render in the Instances bar.)
         # the dock + search results render as the editor's lines (run_search), not a
         # tab strip — so no 'pins' overlay anymore.
         return Editor [
@@ -1025,7 +1039,7 @@ trinity orbiter # implements compiler
         el
             # Files mode (or In-File with no open file): walk the foundry tree for
             # now and scan each file's content (independent of the index).
-            root : path '/src/silver/foundry'
+            root : path '{startup_path}/foundry'
             walk_find[ root, q ]
         find_showing = true
 
@@ -1104,12 +1118,40 @@ trinity orbiter # implements compiler
         c0 : Console (instances) ? (instances.elements['console'] to Console) : null
         if [ c0 && c0.fc > 0.0 && c0.parent && c0.parent.bounds && c0.parent.bounds.w > 0.0 ]
             ew = c0.parent.bounds.w / c0.fc
-        if [ !inst_split_init && ew > 1.0 ]
-            inst_split1 = ew * 0.5
-            inst_split_init = true
-        minw : f32 [ 6.0 ]
-        if [ inst_split1 < minw ] inst_split1 = minw
-        if [ inst_split1 > ew - minw ] inst_split1 = ew - minw
+        # console | callstack | fields, side by side. panels = how many are open; each
+        # sits in slot p0 (left) / p1 (right) of the area past the console. inst_split1
+        # is the console|p0 seam, inst_split2 the p0|p1 seam (both draggable).
+        minw   : f32 [ 6.0 ]
+        panels : i32 [ ((show_callstack) ? 1 : 0) + ((show_fields) ? 1 : 0) ]
+        # on a panel-count change, (re)seat the seams: console keeps the bulk, the
+        # panel(s) share the right. preserves user drags while the count is stable.
+        if [ panels != inst_last_panels ]
+            inst_last_panels = panels
+            if [ panels == 0 ]
+                inst_split1 = ew
+                inst_split2 = ew
+            el [ panels == 1 ]
+                inst_split1 = ew * 0.66
+                inst_split2 = ew
+            el
+                inst_split1 = ew * 0.55
+                inst_split2 = ew * 0.78
+        # every frame: clamp the console|callstack seam, then pin the p0|p1 seam so the
+        # present panel(s) fill. callstack is the LEFT slot (s1..s2), fields the RIGHT
+        # (s2..r0) — so for a single callstack pin s2=ew (fills), for a single fields
+        # pin s2=s1 (fields starts at s1, the empty callstack slot collapses to zero).
+        if [ panels == 0 ]
+            inst_split1 = ew
+            inst_split2 = ew
+        el [ panels == 1 ]
+            if [ inst_split1 < minw ] inst_split1 = minw
+            if [ inst_split1 > ew - minw ] inst_split1 = ew - minw
+            inst_split2 = (show_callstack) ? ew : inst_split1
+        el
+            if [ inst_split2 > ew - minw ] inst_split2 = ew - minw
+            if [ inst_split1 > inst_split2 - minw ] inst_split1 = inst_split2 - minw
+            if [ inst_split1 < minw ] inst_split1 = minw
+            if [ inst_split2 < inst_split1 + minw ] inst_split2 = inst_split1 + minw
 
     func layout_splits [ n: i32 ]
         # editor area width in PANE units. the panes' bound coords resolve in each
@@ -1204,6 +1246,40 @@ trinity orbiter # implements compiler
             apply_pane[ ed, active && (sp == pid), editor_slots[i] ]
 
     # open in the active pane
+    # load a target's initial files into the editor as a row of panes. system → the
+    # orbiter.agi settings file; a project → its `files` (relative to root unless
+    # absolute), one editor slot each. the console is separate (per-target session).
+    func load_target_files [ target: string ]
+        files : array path []
+        # NOTE: `target == 'system'` (a string PARAMETER vs a literal) compared by
+        # IDENTITY and was always false — that's why clicking the settings tab did
+        # nothing. compare[] does value equality.
+        if [ target.compare[ 'system' ] == 0 ]
+            files += agi_path[]
+        el [ projects && projects[ target ] ]
+            p : Project projects[ target ]
+            if [ p.files ]
+                for [ i: i32 0, i < p.files.count, i += 1 ]
+                    fc : string [ p.files[i].chars ]
+                    files += (fc.count > 0 && fc[0] == '/') ? path '{fc}' : path '{p.root}/{fc}'
+        puts 'LT-FILES {target} count={files.count}'
+        if [ files.count == 0 ] return
+        # map the target's files onto the EXISTING editor panes: file i replaces the
+        # file in editor i (in place — keep the current pane layout). only as many panes
+        # as the target has file refs are replaced; extra editors keep their file, and if
+        # there are more files than panes we append. so the system (settings) target —
+        # which has just orbiter.agi — drops it into the FIRST editor and leaves the rest.
+        if [ editor_slots.count == 0 ] editor_slots += -1
+        for [ i: i32 0, i < files.count, i += 1 ]
+            slot : i32 [ file_slot[ files[i] ] ]
+            if [ i < editor_slots.count ]
+                editor_slots[i] = slot
+            el
+                editor_slots += slot
+        active_pane = 0
+        sync_editor[]
+        puts 'LOAD_TARGET {target}: files={files.count} panes={editor_slots.count} slot0={editor_slots[0]}'
+
     func open_file [ p: path ]
         open_in_pane[ p, active_pane ]
 
@@ -1333,16 +1409,15 @@ trinity orbiter # implements compiler
                 run_node[ active_target ]
             ev.no_default = true
             return
-        # menu icon (in the editor title nav): toggles the stack sub-column inside
-        # the editor (callstack + fields). the seam (stack_w) is the source of truth
-        # — collapse to 0, or restore the last dragged-open width.
-        if [ ev.target.id == 'menu' ]
-            # toggle the dbg sub-column for THIS editor only.
-            for [ e: element* ev.target, e, e = e.parent ]
-                if [ e inherits Editor ]
-                    ed : Editor e
-                    ed.dbg_open = !ed.dbg_open
-                    break
+        # the bottom-area debug panel toggles (in the console title nav): the hamburger
+        # reveals the callstack, the fields tab reveals the variables. independent — both
+        # can be on (side by side, right of the console). off → console fills the bar.
+        if [ ev.target.id == 'toggle_callstack' ]
+            show_callstack = !show_callstack
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        if [ ev.target.id == 'toggle_fields' ]
+            show_fields = !show_fields
             if [ ev.target ] ev.target.ux.restyle = true
             return
         puts 'on_press: {ev.target.id}'
@@ -1470,6 +1545,9 @@ trinity orbiter # implements compiler
                 return
             if [ id == 'system' ]
                 active_target = 'system'
+                # the system (gear) target has no project to run — it edits orbiter's
+                # own settings: its initial file set is orbiter.agi.
+                load_target_files[ 'system' ]
                 sync_active[]
                 save_session[]
                 ev.no_default = true
@@ -1483,6 +1561,7 @@ trinity orbiter # implements compiler
                 if [ !matched ]
                     active_panel = id
                 if [ matched ]
+                    load_target_files[ id ]
                     sync_active[]
                     save_session[]
                     ev.no_default = true
@@ -1761,6 +1840,7 @@ trinity orbiter # implements compiler
             pid  : 'pane{i}'
             slot : i32    [ editor_slots[i] ]
             spath: path   (slot >= 0 && slot < open_files.count) ? open_files[slot] : null
+            puts 'RENDER target={active_target} pane{i} slot={slot} file={spath}'
             editor_els[pid] = pane_for[ spath, docked_left, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open', i ]
         if [ has_console ]
             bcon  : Console ui_console[]
@@ -1803,10 +1883,27 @@ trinity orbiter # implements compiler
         cfilter['console_filter'] = element [ label: active_target, focusable: true, no_scroll: true ]
         inst_els['console'] = Console [ session_id: active_target, feed: null, elements: cfilter ]
 
-        sfilter : Elements []
-        sfilter['list_filter'] = element [ label: 'callstack', focusable: true, no_scroll: true ]
-        #sfilter['avatar']      = Avatar []
-        inst_els['callstack']  = Callstack [ frames: debug_frames[], elements: sfilter ]
+        # right-side debug panels, side by side, only present when toggled on. callstack
+        # takes the left slot (l@inst_split1..l@inst_split2), fields the right slot
+        # (l@inst_split2..r0). the app drives the seams so a single panel fills the right
+        # area (see layout_inst_split). @inst_split1 = console|callstack drag seam.
+        if [ show_callstack ]
+            sfilter : Elements []
+            sfilter['list_filter'] = element [ label: 'callstack', focusable: true, no_scroll: true ]
+            inst_els['callstack'] = Callstack [ frames: debug_frames[], elements: sfilter ]
+        if [ show_fields ]
+            ffilter : Elements []
+            ffilter['fields_filter'] = element [ label: 'variables', focusable: true, no_scroll: true ]
+            inst_els['fields'] = Fields [ vars: debug_vars, elements: ffilter ]
+
+        # the panel toggles: hamburger reveals the callstack, the fields icon the
+        # variables. pinned to the FAR-RIGHT of the whole Instances bar, in the title
+        # row (topmost so they sit over whichever panel's title is on the right edge and
+        # win the click). independent toggles; both can be on (panels side by side).
+        inav : Elements []
+        inav['toggle_callstack'] = Option [ selected: show_callstack ]
+        inav['toggle_fields']    = Option [ selected: show_fields ]
+        inst_els['inst_nav'] = element [ topmost: true, elements: inav ]
 
         # top strip: play button + project session tabs (left) + console/agent tabs (right),
         # in a Group so it gets the same fill/inner-glow shading as the console bar.

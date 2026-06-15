@@ -1262,11 +1262,14 @@ Control Editor
             target.save[ out, null ]
             return
         if [ !src ] return
+        puts 'SAVE1 src set, lines={(lines) ? lines.count : -1}'
         out : string [ '' ]
         for [ i: i32 0, i < lines.count, i += 1 ]
             if [ i > 0 ] out = out + '\n'
             out = out + line_get[ i ]
+        puts 'SAVE2 built out len={out.count}, about to save {src}'
         src.save[ out, null ]
+        puts 'SAVE3 saved ok'
 
     func load_file []
         if [ !src ] return
@@ -1552,7 +1555,9 @@ Control Editor
             scroll.x = scroll.x - ev.mouse.wheel_delta.y * cw * 3.0
             if [ scroll.x < 0.0 ] scroll.x = 0.0
         el
-            scroll.y = scroll.y - ev.mouse.wheel_delta.y * lh * 3.0
+            # ~1/8 the old speed (was lh * 3.0) — the wheel deltas here are large, so a
+            # full line-height * 3 per tick scrolled far too fast.
+            scroll.y = scroll.y - ev.mouse.wheel_delta.y * lh * 0.375
         pristine = false
         ux.will_animate = true
 

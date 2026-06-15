@@ -114,11 +114,19 @@ Group.topbar {
         inner_glow:             #fff1 16
     layers.border2:
         area:                   l0 b0px r0 h1px
-        fill_color:             #ffffff44
+        fill_color:             #ffffff04
 }
 
 Group.editor_group {
     area:                       l0 t1.5 r0 b@console_h=6.9|0|50
+
+    /* the editor area background lives HERE, behind the panes — NOT on the panes
+       themselves. the panes blit through an edge-fade mask (long lines dissolve),
+       and a mask multiplies the WHOLE pane cache, so any fill baked into the pane
+       would fade (darken) at the edges too. keeping the bg on the unmasked parent
+       lets the mask affect only the text alpha; the solid bg shows through behind. */
+    layers.base:
+        fill_color:             #1a2138
 
     layers.compose:
         radius:                 0
@@ -135,6 +143,11 @@ Group.editor_group {
 EditorView {
     area:                       l0 t0 r0 b0
 }
+
+/* the editor pane has NO base fill: its cache is blitted through the edge-fade
+   mask, and an opaque fill here would fade (darken) at the edges along with the
+   text. the background is on Group.editor_group instead (behind, unmasked), so
+   the mask only dissolves the text alpha. */
 
 /* vertical pin list INSIDE the editor's right 144px (right-anchored, flush to
    the title/right/bottom edges — matches the EditorLayer's 144px content inset).
@@ -365,8 +378,57 @@ Instances / Console / element.console_filter {
         editable:               true
         label_color:            #ffff
 }
+
+/* the callstack / fields toggles — a PEER of the console/panels (direct child of
+   Instances), pinned to the FAR-RIGHT of the whole bar, in the title row. hamburger
+   (menu.svg) reveals the callstack; the fields icon reveals the variables. topmost in
+   the build so it draws over whichever panel title sits on the right edge. */
+Instances / element.inst_nav {
+    area:                       r10px t6px wc h34px
+}
+Instances / element.inst_nav / Option {
+    area:                       l0+ t0 w34px h34px
+    toggle:                     true
+    layers.base:
+        fill_color:             #0000
+        inner_glow:             #0000 24
+        radius:                 8
+    layers.svg:
+        area:                   4px
+        image_align:            0.5 0.5
+        image_scale:            1.0
+        opacity:                0.5
+}
+Instances / element.inst_nav / Option:hovered {
+    layers.base:
+        fill_color:             #8af4
+        inner_glow:             #8afa 24
+    layers.svg:
+        opacity:                1.0
+}
+Instances / element.inst_nav / Option:selected {
+    layers.base:
+        fill_color:             #8af6
+        inner_glow:             #8afa 24
+    layers.svg:
+        opacity:                1.0
+}
+Instances / element.inst_nav / Option.toggle_callstack {
+    layers.svg:
+        image_svg:              "images/menu.svg"
+        image_scale:            1.4
+}
+Instances / element.inst_nav / Option.toggle_fields {
+    layers.svg:
+        image_svg:              "images/debug.svg"
+        image_scale:            1.2
+}
+/* the two debug panels sit SIDE BY SIDE to the right of the console: callstack = LEFT
+   slot (console|callstack seam @inst_split1, callstack|fields seam @inst_split2),
+   fields = RIGHT slot (@inst_split2 .. r0). adjacent elements share each seam var so
+   it's draggable; the app pins @inst_split2 so a single panel fills the right area. */
 Instances / Callstack.callstack {
-    area:           l@inst_split1=50|0|0 t0 r0 b0
+    area:           l@inst_split1=50|0|0 t0 l@inst_split2=75|0|0 b0
     focusable:      true
     layers.base:
         fill_color:     #1c2840cc
@@ -382,6 +444,41 @@ Instances / Callstack.callstack {
         text_color:     #cfe6ff
 }
 Instances / Callstack / element.list_filter {
+    area:                       l0 t0 r0 h44px
+    focusable:                  true
+    layers.base:
+        fill_color:             #2480
+        inner_glow:             #8af2 26
+        stroke_width:           0.5
+        stroke_color:           #fff2
+    layers.face:
+        label_color:            #fff
+        label_size:             19
+        label_align:            0.0 0.5
+        label_offset:           14 0
+:focused
+    layers.face:
+        editable:               true
+        label_color:            #ffff
+}
+
+Instances / Fields.fields {
+    area:           l@inst_split2=75|0|0 t0 r0 b0
+    focusable:      true
+    layers.base:
+        fill_color:     #1c2840cc
+        inner_glow:     #8af2 14
+        stroke_width:   0.5
+        stroke_color:   #fff2
+    layers.content: FieldsLayer
+        area:           l0.3 t44px r0.3 b0.3
+        label_size:     14
+        row_spacing:    1.3
+        key_color:      #9ecbff
+        text_color:     #cfe6ff
+        line_color:     #ffffff14
+}
+Instances / Fields / element.fields_filter {
     area:                       l0 t0 r0 h44px
     focusable:                  true
     layers.base:

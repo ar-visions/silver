@@ -38,6 +38,10 @@ class Project
     # runs in `root`, not here.
     public cwd      : path
 
+    # initial files to open as a row of editor panes when this target is selected.
+    # whitespace-delimited like build/run; each relative to `root` unless absolute.
+    public files    : array token
+
 # a console instance from orbiter.agi (parsed the same as Project): a named console that's
 # either a shell or an AI agent. kind: 'shell' | 'claude' | 'chatgpt' | 'gemini'.
 class ConsoleInstance

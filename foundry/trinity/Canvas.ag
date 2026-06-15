@@ -238,12 +238,19 @@ shader CanvasUI
             : ((q.y >= 0.0) ? r.w : r.x);
         cr = min(cr, min(half_size.x, half_size.y));
         vec2 d = abs(q) - half_size + vec2(cr);
-        // soft-max for inside smoothness; scales with corner radius AND
-        // the caller-provided `soften` (typically the glow pixel radius).
-        // wider glow → smoother iso-contours; zero crossing stays accurate.
-        float k = max(cr * 0.5, soften * 0.5);
-        k = max(k, 1.0);
-        return min(smax(d.x, d.y, k), 0.0) + length(max(d, 0.0)) - cr;
+        // a SQUARE corner (cr ~ 0) must stay sharp — use the hard max there. only a
+        // genuinely rounded corner gets the soft-max that smooths the 45° gradient
+        // kink. (a uniform soft-max rounded square corners too, bleeding rounded glow
+        // onto every flat-cornered element.) soft-max scales with radius + glow width.
+        float corner;
+        if (cr > 0.01) {{
+            float k = max(cr * 0.5, soften * 0.5);
+            k = max(k, 1.0);
+            corner = smax(d.x, d.y, k);
+        }} else {{
+            corner = max(d.x, d.y);
+        }}
+        return min(corner, 0.0) + length(max(d, 0.0)) - cr;
     }
 
     # ---- gradient evaluation ----
@@ -535,10 +542,30 @@ shader CanvasUI
             return;
         }}
 
-        // fill: solid or gradient
-        vec4 fill = (mode >= 1.0 && mode <= 3.0)
-            ? eval_gradient(lpos, mode)
-            : ubo.fill_color;
+        // fill: solid or two-color gradient — same model as mode 6 (world-space
+        // anchors in fill_grad_pts, second color grad_c1, mirror/radial via
+        // stroke_opts.z). gated on grad_c1.a so a solid fill skips it.
+        vec4 fill = ubo.fill_color;
+        if (ubo.grad_c1.a > 0.0) {{
+            vec2  gp0 = ubo.fill_grad_pts.xy;
+            vec2  gp1 = ubo.fill_grad_pts.zw;
+            float gt;
+            if (ubo.stroke_opts.z > 1.5) {{
+                vec2  radii = gp1 - gp0;
+                vec2  d     = v_pos - gp0;
+                gt = (min(abs(radii.x), abs(radii.y)) > 0.0001)
+                    ? clamp(length(vec2(d.x / radii.x, d.y / radii.y)), 0.0, 1.0)
+                    : 0.0;
+            }} else {{
+                vec2  gd  = gp1 - gp0;
+                float gl2 = dot(gd, gd);
+                gt = (gl2 > 0.0001)
+                    ? clamp(dot(v_pos - gp0, gd) / gl2, 0.0, 1.0)
+                    : 0.0;
+                if (ubo.stroke_opts.z > 0.5) {{ gt = abs(2.0 * gt - 1.0); }}
+            }}
+            fill = mix(ubo.grad_c0, ubo.grad_c1, gt);
+        }}
 
         // screen-space AA: fwidth(dist) is how much dist changes between
         // adjacent screen fragments, so the smoothstep range stays ~1
@@ -682,13 +709,7 @@ shader CanvasUI
             bevel_p     = vec4(tint.rgb * alpha, alpha);
         }} else if ((inner_px > 0.0 || shadow_px > 0.0) && fill_cov > 0.0) {{
             float smooth_px    = max(inner_px, shadow_px);
-            // soft-max glow SDF smooths the corner kink — but that rounds the glow
-            // even at radius 0. for a square corner use the hard-max rect SDF so the
-            // glow stays sharp; only round the glow when the rect is actually rounded.
-            float gmax_r       = max(max(ubo.radii.x, ubo.radii.y), max(ubo.radii.z, ubo.radii.w));
-            float dist_g       = (gmax_r > 0.0)
-                ? sdf_rounded_rect_glow(lpos, center, half_size, ubo.radii, smooth_px)
-                : sdf_rounded_rect(lpos, center, half_size, ubo.radii);
+            float dist_g       = sdf_rounded_rect_glow(lpos, center, half_size, ubo.radii, smooth_px);
             float effective_px = mix(shadow_px, inner_px, lit_side);
             if (effective_px > 0.0) {{
                 float t     = clamp(-dist_g / effective_px, 0.0, 1.0);
@@ -813,9 +834,9 @@ class CanvasPath
     public cursor_x  : f32
     public cursor_y  : f32
     public is_closed  : bool
-    # corner radii for a primitive rounded-rect path (set by add_rounded_rect).
-    # lives on the path — NOT canvas state — so it clears with the path and never
-    # leaks rounding onto a sibling/child sharp rect drawn later.
+    # per-corner radii for a primitive rounded-rect path (set by add_rounded_rect).
+    # lives on the path so it clears with the path — never leaks rounding onto a
+    # sibling/child sharp rect, and the fast path reads it instead of canvas state.
     public corner_radii : vec4f
     # cached flatten/extract result from the previous draw of this path.
     # cached_points is the snapshot of `points` that produced cached_edges.
@@ -937,13 +958,14 @@ class CanvasPath
         close_path
 
     func add_rounded_rect [ x: f32, y: f32, w: f32, h: f32, tl: f32, tr: f32, br: f32, bl: f32 ]
-        # a rounded rect is a primitive rect: emit move + 4 lines + close (= 5
-        # PathPt / 4 edges) so paint[] takes the fast in-shader rect SDF path,
-        # which rounds the corners from ubo.radii (carried on the path below).
-        # this avoids the arbitrary-path GPU compute SDF entirely — that path
-        # writes ONE shared sdf_tex that batched paints overwrite, so only the
-        # last paint's shape survived (layers/borders wiping each other out).
-        corner_radii = vec4f [ tl, tr, br, bl ]
+        # every rounded rect is emitted as a primitive 5-point rect (move + 4 lines +
+        # close) so paint[] takes the fast in-shader rect SDF path. the per-corner radii
+        # ride on the PATH (consumed by paint, cleared with the path) and the shader
+        # rounds the bbox from ubo.radii. this keeps rects OFF the arbitrary-path compute
+        # SDF — that path writes a single shared sdf_tex that batched paints clobber
+        # (wrong fill + rounded glow bleeding onto everything). only real curves use it.
+        half2 : f32 [ minf[ w, h ] * 0.5 ]
+        corner_radii = vec4f [ minf[ tl, half2 ], minf[ tr, half2 ], minf[ br, half2 ], minf[ bl, half2 ] ]
         move_to [ x,     y     ]
         line_to [ x + w, y     ]
         line_to [ x + w, y + h ]
@@ -2223,7 +2245,14 @@ Render Canvas
                     el [ cmd.op == SVGOp.close ]
                         mdl.cache.close_path[]
                 mdl.cache.paint[]
-                mdl.cache.restore[] 
+                mdl.cache.restore[]
+                # serialize each shape before the next. an arbitrary (curved) path paints
+                # through the shared compute-SDF `sdf_tex`; without draining here, the NEXT
+                # shape's compute write clobbers this shape's fragment read (a WAR hazard on
+                # sdf_tex), so a multi-shape icon (e.g. the 4-bar hamburger) renders garbage
+                # while a single-shape icon (magnify) is fine. one-time cost — the cache is
+                # built once per size and reused every frame.
+                mdl.cache.sync_fence[]
         draw_canvas[ mdl.cache, ox, oy, rw, rh ]
 
     func draw_canvas [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
@@ -2474,13 +2503,26 @@ Render Canvas
             # primitive rect — use the in-shader rect SDF (mode 0), or
             # mode 5 (image) if draw_canvas set image_override.
             setup_shader [ st, bx0, by0, bw, bh ]
-            # corner rounding comes from the PATH (a rounded_rect carries its radii),
-            # not canvas state — a plain rect path has zero radii and stays sharp.
+            # corner rounding rides on the PATH (cleared with it) — a plain rect has
+            # zero radii and stays sharp; a rounded rect carries its per-corner radii.
             ui_shader.radii = path.corner_radii
             ui_shader.fill_color = st.fill_color
             # for an image blit (draw_canvas), grad0 is the texture UV rect — crop to
             # the source's content region; image_uv is (0,0,1,1) for normal fills.
             ui_shader.grad0  = image_uv
+            # fill + stroke gradients: same model as the compute path — world-space
+            # anchors in *_grad_pts, second color in grad_c1/stroke_grad_c1 (alpha 0
+            # disables), mode (linear/mirror/radial) in stroke_opts.z/.w.
+            ui_shader.grad_c0         = st.fill_color
+            ui_shader.grad_c1         = st.fill_grad
+            ui_shader.fill_grad_pts   = vec4f [ st.fill_color_pos.x, st.fill_color_pos.y,
+                                                st.fill_grad_pos.x,  st.fill_grad_pos.y ]
+            ui_shader.stroke_grad_c1  = st.stroke_grad
+            ui_shader.stroke_grad_pts = vec4f [ st.stroke_color_pos.x, st.stroke_color_pos.y,
+                                                st.stroke_grad_pos.x,  st.stroke_grad_pos.y ]
+            fgrad_mode : f32 [ (st.fill_grad_radial)   ? 2.0 : (st.fill_grad_mirror)   ? 1.0 : 0.0 ]
+            sgrad_mode : f32 [ (st.stroke_grad_radial) ? 2.0 : (st.stroke_grad_mirror) ? 1.0 : 0.0 ]
+            ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, fgrad_mode, sgrad_mode ]
             is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
             # mask_override present → masked composite (content * mask).
             # otherwise r8 → image_r, rgba → image, none → solid.

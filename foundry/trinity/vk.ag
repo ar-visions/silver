@@ -2174,12 +2174,19 @@ class Texture
                 baseArrayLayer: 0,
                 layerCount:     layer_count
             ],
-            srcAccessMask:       0,
+            srcAccessMask:       VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             dstAccessMask:       dst.access
         ]
         cmd: VkCommandBuffer [ f ]
-        vkCmdPipelineBarrier[ cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, dst.stage, 0, 0, null, 0, null, 1, ref barrier ]
-        vk_layout = new_layout 
+        # the src scope must cover the PREVIOUS user of this image so a mid-frame
+        # layout flip waits for it. TOP_OF_PIPE waited for nothing — which let the
+        # SDF compute write of paint N+1 start before paint N's fragment shader had
+        # finished sampling the shared sdf_tex (a WAR hazard), so batched paints
+        # clobbered each other and only the last paint's shape survived. covering
+        # fragment+compute+color-output serializes compute-write vs prior-draw-read.
+        src_stage : i32 [ VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
+        vkCmdPipelineBarrier[ cmd, src_stage, dst.stage, 0, 0, null, 0, null, 1, ref barrier ]
+        vk_layout = new_layout
 
         
     func hex_dump [ name: symbol, data: ref u8, size: i32 ]
