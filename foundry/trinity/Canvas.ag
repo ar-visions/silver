@@ -682,7 +682,13 @@ shader CanvasUI
             bevel_p     = vec4(tint.rgb * alpha, alpha);
         }} else if ((inner_px > 0.0 || shadow_px > 0.0) && fill_cov > 0.0) {{
             float smooth_px    = max(inner_px, shadow_px);
-            float dist_g       = sdf_rounded_rect_glow(lpos, center, half_size, ubo.radii, smooth_px);
+            // soft-max glow SDF smooths the corner kink — but that rounds the glow
+            // even at radius 0. for a square corner use the hard-max rect SDF so the
+            // glow stays sharp; only round the glow when the rect is actually rounded.
+            float gmax_r       = max(max(ubo.radii.x, ubo.radii.y), max(ubo.radii.z, ubo.radii.w));
+            float dist_g       = (gmax_r > 0.0)
+                ? sdf_rounded_rect_glow(lpos, center, half_size, ubo.radii, smooth_px)
+                : sdf_rounded_rect(lpos, center, half_size, ubo.radii);
             float effective_px = mix(shadow_px, inner_px, lit_side);
             if (effective_px > 0.0) {{
                 float t     = clamp(-dist_g / effective_px, 0.0, 1.0);
@@ -807,6 +813,10 @@ class CanvasPath
     public cursor_x  : f32
     public cursor_y  : f32
     public is_closed  : bool
+    # corner radii for a primitive rounded-rect path (set by add_rounded_rect).
+    # lives on the path — NOT canvas state — so it clears with the path and never
+    # leaks rounding onto a sibling/child sharp rect drawn later.
+    public corner_radii : vec4f
     # cached flatten/extract result from the previous draw of this path.
     # cached_points is the snapshot of `points` that produced cached_edges.
     intern cached_points : array PathPt
@@ -831,6 +841,7 @@ class CanvasPath
         cursor_x = 0.0
         cursor_y = 0.0
         is_closed = false
+        corner_radii = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
 
     func move_to [ x: f32, y: f32 ]
@@ -926,43 +937,17 @@ class CanvasPath
         close_path
 
     func add_rounded_rect [ x: f32, y: f32, w: f32, h: f32, tl: f32, tr: f32, br: f32, bl: f32 ]
-        half2 : f32 [ minf[ w, h ] * 0.5 ]
-        r_tl : f32 [ minf[ tl, half2 ] ]
-        r_tr : f32 [ minf[ tr, half2 ] ]
-        r_br : f32 [ minf[ br, half2 ] ]
-        r_bl : f32 [ minf[ bl, half2 ] ]
-        PI   : f32 [ 3.14159265 ]
-        HP   : f32 [ 1.57079632 ]
-
-        # top edge (left to right)
-        move_to [ x + r_tl, y ]
-        line_to [ x + w - r_tr, y ]
-        # top-right corner
-        flatten_arc [ points, x + w - r_tr, y + r_tr, r_tr, -HP, 0.0 ]
-        cursor_x = x + w
-        cursor_y = y + r_tr
-
-        # right edge
-        line_to [ x + w, y + h - r_br ]
-        # bottom-right corner
-        flatten_arc [ points, x + w - r_br, y + h - r_br, r_br, 0.0, HP ]
-        cursor_x = x + w - r_br
-        cursor_y = y + h
-
-        # bottom edge (right to left)
-        line_to [ x + r_bl, y + h ]
-        # bottom-left corner
-        flatten_arc [ points, x + r_bl, y + h - r_bl, r_bl, HP, PI ]
-        cursor_x = x
-        cursor_y = y + h - r_bl
-
-        # left edge
-        line_to [ x, y + r_tl ]
-        # top-left corner
-        flatten_arc [ points, x + r_tl, y + r_tl, r_tl, PI, PI + HP ]
-        cursor_x = x + r_tl
-        cursor_y = y
-
+        # a rounded rect is a primitive rect: emit move + 4 lines + close (= 5
+        # PathPt / 4 edges) so paint[] takes the fast in-shader rect SDF path,
+        # which rounds the corners from ubo.radii (carried on the path below).
+        # this avoids the arbitrary-path GPU compute SDF entirely — that path
+        # writes ONE shared sdf_tex that batched paints overwrite, so only the
+        # last paint's shape survived (layers/borders wiping each other out).
+        corner_radii = vec4f [ tl, tr, br, bl ]
+        move_to [ x,     y     ]
+        line_to [ x + w, y     ]
+        line_to [ x + w, y + h ]
+        line_to [ x,     y + h ]
         close_path
 
     func close_path []
@@ -977,6 +962,7 @@ class CanvasPath
         start_x = 0.0
         start_y = 0.0
         is_closed = false
+        corner_radii = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
 # gradient stop: color at a position [0..1]
 struct GradientStop
@@ -2488,6 +2474,9 @@ Render Canvas
             # primitive rect — use the in-shader rect SDF (mode 0), or
             # mode 5 (image) if draw_canvas set image_override.
             setup_shader [ st, bx0, by0, bw, bh ]
+            # corner rounding comes from the PATH (a rounded_rect carries its radii),
+            # not canvas state — a plain rect path has zero radii and stays sharp.
+            ui_shader.radii = path.corner_radii
             ui_shader.fill_color = st.fill_color
             # for an image blit (draw_canvas), grad0 is the texture UV rect — crop to
             # the source's content region; image_uv is (0,0,1,1) for normal fills.

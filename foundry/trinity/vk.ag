@@ -456,7 +456,7 @@ class Render
         for [ i: 0, i < 2, i += 1 ]
             vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
             vkDestroyRenderPass[ vk.device, vk_render_pass[i], null ]
-        
+
         for [ ri: i32 0, ri < ring_n, ri += 1 ]
             if [ vk_fences[ri] ] vkDestroyFence[ vk.device, vk_fences[ri], null ]
         vkDestroySemaphore[ vk.device, vk_image_available_semaphore, null ]
@@ -1348,7 +1348,7 @@ class Pipeline
                 g.tx.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         frame: VkCommandBuffer [ f ]
         shader_uniforms.update[ ]
-        
+
         vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_render ]
         offsets: local VkDeviceSize[ 1 ] [ 0 ]
         vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS,
