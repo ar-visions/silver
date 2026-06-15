@@ -1262,7 +1262,6 @@ trinity orbiter # implements compiler
                 for [ i: i32 0, i < p.files.count, i += 1 ]
                     fc : string [ p.files[i].chars ]
                     files += (fc.count > 0 && fc[0] == '/') ? path '{fc}' : path '{p.root}/{fc}'
-        puts 'LT-FILES {target} count={files.count}'
         if [ files.count == 0 ] return
         # map the target's files onto the EXISTING editor panes: file i replaces the
         # file in editor i (in place — keep the current pane layout). only as many panes
@@ -1278,7 +1277,6 @@ trinity orbiter # implements compiler
                 editor_slots += slot
         active_pane = 0
         sync_editor[]
-        puts 'LOAD_TARGET {target}: files={files.count} panes={editor_slots.count} slot0={editor_slots[0]}'
 
     func open_file [ p: path ]
         open_in_pane[ p, active_pane ]
@@ -1840,7 +1838,6 @@ trinity orbiter # implements compiler
             pid  : 'pane{i}'
             slot : i32    [ editor_slots[i] ]
             spath: path   (slot >= 0 && slot < open_files.count) ? open_files[slot] : null
-            puts 'RENDER target={active_target} pane{i} slot={slot} file={spath}'
             editor_els[pid] = pane_for[ spath, docked_left, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open', i ]
         if [ has_console ]
             bcon  : Console ui_console[]

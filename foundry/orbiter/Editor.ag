@@ -1262,14 +1262,11 @@ Control Editor
             target.save[ out, null ]
             return
         if [ !src ] return
-        puts 'SAVE1 src set, lines={(lines) ? lines.count : -1}'
         out : string [ '' ]
         for [ i: i32 0, i < lines.count, i += 1 ]
             if [ i > 0 ] out = out + '\n'
             out = out + line_get[ i ]
-        puts 'SAVE2 built out len={out.count}, about to save {src}'
         src.save[ out, null ]
-        puts 'SAVE3 saved ok'
 
     func load_file []
         if [ !src ] return
