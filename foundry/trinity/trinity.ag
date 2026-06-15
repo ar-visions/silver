@@ -2180,6 +2180,10 @@ element Group
     func render[] -> Elements
         return null
 
+element Group2
+    func render[] -> Elements
+        return null
+
 element Control
     public selected   : bool
     focusable : true

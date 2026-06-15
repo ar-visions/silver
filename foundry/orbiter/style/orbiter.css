@@ -112,9 +112,9 @@ Group.topbar {
     layers.base:
         fill_color:             #24f1
         inner_glow:             #fff1 16
-    layers.border:
+    layers.border2:
         area:                   l0 b0px r0 h1px
-        fill_color:             #ffffff04
+        fill_color:             #ffffff44
 }
 
 Group.editor_group {
