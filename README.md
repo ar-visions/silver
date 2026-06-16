@@ -15,7 +15,7 @@ write .c or .cc compilation-units alongside your `.ag` source to out-source meth
 
 **most up-to-date real-world examples of silver code:** [trinity](foundry/trinity/trinity.ag) (Vulkan-based composition / SDF compute-canvas)
 
-**silver is debuggable.** Every build emits full LLDB debug information — source maps, code-coverage, variable inspection, stepping, breakpoints — on every platform. Debug is the default because that's where you spend your time, and production failures on platforms you can't inspect are the failures that end projects. silver targets Linux, macOS, Windows, and embedded ARM from a single source tree with a self-contained SDK.
+**silver is debuggable.** Every build emits full LLDB debug information — source maps, code-coverage, variable inspection, stepping, breakpoints — on every platform. silver targets Linux, macOS, Windows, and embedded ARM from a single source tree with a self-contained SDK.
 
 **silver gives you controlled polymorphism.** Method calls are direct-calls by default.  This means no vtable lookup, just a static call to the implementation you wrote. When you need polymorphism, you ask for it explicitly: `target.method*[args]` invokes through the vtable, resolving to the actual subtype's implementation.
 

@@ -5665,6 +5665,48 @@ i64 path_modified_time(path a) {
     }
 }
 
+// the SINGLE shared loader for a silver --format (.f) map. returns an array of fmt_file
+// (one per source file), each carrying its canonical path, source mtime, and Syntax
+// tokens. used by BOTH silver (incremental: skip files whose mtime is unchanged) and
+// orbiter (syntax coloring) — there is no second copy of this parser anywhere.
+// layout (LE): u32 magic('SFMT') u32 ver(=2);  section: u32 0xC0DEFACE u32 path_len,
+//   path bytes, i64 mtime, u32 token_count, token_count*{u32 line,col,len,syntax};
+//   end: u32 0.
+array path_read_format(path a) {
+    array out = array(alloc, 16);
+    FILE* f = fopen((cstr)a->chars, "rb");
+    if (!f) return out;
+    u32 magic = 0, ver = 0;
+    if (fread(&magic, 4, 1, f) != 1 || fread(&ver, 4, 1, f) != 1 ||
+        magic != 0x53464D54u || ver != 2u) { fclose(f); return out; }
+    for (;;) {
+        u32 tag = 0;
+        if (fread(&tag, 4, 1, f) != 1 || tag != 0xC0DEFACEu) break;  // 0 = clean end
+        u32 plen = 0;
+        if (fread(&plen, 4, 1, f) != 1) break;
+        char* p = malloc((size_t)plen + 1);
+        if (fread(p, 1, plen, f) != plen) { free(p); break; }
+        p[plen] = 0;
+        i64 mt = 0;  u32 ntok = 0;
+        if (fread(&mt, 8, 1, f) != 1 || fread(&ntok, 4, 1, f) != 1) { free(p); break; }
+        fmt_file ff = fmt_file(
+            source, string(p), mtime, mt, tokens, array(alloc, ntok ? ntok : 1));
+        free(p);
+        bool ok = true;
+        for (u32 t = 0; t < ntok; t++) {
+            u32 rec[4];
+            if (fread(rec, 4, 4, f) != 4) { ok = false; break; }
+            push(ff->tokens, (Au)fmt_token(
+                line,   (num)rec[0], column, (num)rec[1],
+                length, (num)rec[2], syntax, (Syntax)rec[3]));
+        }
+        push(out, (Au)ff);
+        if (!ok) break;
+    }
+    fclose(f);
+    return out;
+}
+
 bool path_is_dir(path a) {
     DIR   *dir = opendir(a->chars);
     if (dir == NULL)
@@ -7867,6 +7909,9 @@ define_class(token, string)
 define_class(tokens, array, token)
 
 define_class(const_tokens, tokens, token)
+
+define_class(fmt_token, Au)
+define_class(fmt_file, Au)
 
 define_class(item, Au)
 

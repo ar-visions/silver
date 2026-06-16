@@ -1866,7 +1866,10 @@ declare_class(async)
     enum_value(E,T,Y, _punctuation, 13) \
     enum_value(E,T,Y, _namespace,   14) \
     enum_value(E,T,Y, _constant,    15) \
-    enum_value(E,T,Y, _usertoken,   16)
+    enum_value(E,T,Y, _usertoken,   16) \
+    enum_value(E,T,Y, _parent,      17) \
+    enum_value(E,T,Y, _classname,   18) \
+    enum_value(E,T,Y, _meta,        19)
 declare_enum(Syntax)
 
 #define token_schema(AA,BB,...) \
@@ -1900,6 +1903,24 @@ declare_class_3(tokens, array, collective)
 #define const_tokens_schema(AA,BB,...)
 declare_class_4(const_tokens, tokens, array, collective)
 
+// one colored token in a silver --format (.f) map: position + Syntax kind.
+#define fmt_token_module_ Au
+#define fmt_token_schema(AA,BB,...) \
+    M(AA,BB, i, prop, public, num,    line) \
+    M(AA,BB, i, prop, public, num,    column) \
+    M(AA,BB, i, prop, public, num,    length) \
+    M(AA,BB, i, prop, public, Syntax, syntax)
+declare_class(fmt_token)
+
+// one file's section of the map: canonical source path, its mtime, and its tokens.
+// produced by path.read_format (the single shared .f loader for silver + orbiter).
+#define fmt_file_module_ Au
+#define fmt_file_schema(AA,BB,...) \
+    M(AA,BB, i, prop, public, string, source) \
+    M(AA,BB, i, prop, public, i64,    mtime) \
+    M(AA,BB, i, prop, public, array,  tokens)
+declare_class(fmt_file)
+
 #define path_module_ Au
 #define path_schema(AA,BB,...) \
     M(AA,BB, i, method,  public, bool,   exists) \
@@ -1930,6 +1951,7 @@ declare_class_4(const_tokens, tokens, array, collective)
     M(AA,BB, i, method,  public, bool,   move, path) \
     M(AA,BB, i, method,  public, path,   latest_modified, ARef) \
     M(AA,BB, i, method,  public, i64,    modified_time) \
+    M(AA,BB, i, method,  public, array,  read_format) \
     M(AA,BB, i, method,  public, i64,    wait_for_change, i64, i64) \
     M(AA,BB, s, method,  public, path,   path_self) \
     M(AA,BB, s, method,  public, path,   path_share_path) \

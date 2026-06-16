@@ -13,6 +13,7 @@ import <stdio.h>
 import <stdlib.h>
 import <unistd.h>
 import <fcntl.h>
+import <sys/wait.h>
 import Earth
 import Avatar
 import Editor
@@ -76,6 +77,8 @@ class FmtWatch
     public fd    : i32 [ -1 ]
     public map   : string
     public mtime : i64 [ 0 ]
+    # printed the "starting" line to the console yet (deferred until the console exists)
+    public announced : bool
 
 trinity orbiter # implements compiler
     # --log <path>: tee all stdout/puts to this file (truncated on start) WHILE still
@@ -227,6 +230,9 @@ trinity orbiter # implements compiler
     # set true by the inotify watch thread when anything under search_dirs
     # changes. the next search rebuilds file_index lazily on the main thread.
     public index_dirty   : bool
+    # same signal, for the syntax formatter: a source file changed, so the format
+    # map(s) are stale — fmt_poll re-invokes `silver <proj> --format` to refresh them.
+    public fmt_dirty     : bool
     # incremental index build: a work queue of directories still to walk (with
     # their depths), drained a chunk per frame so the build never blocks the UI
     # and results grow progressively. building stays true until the queue drains.
@@ -544,37 +550,61 @@ trinity orbiter # implements compiler
     # start a `silver <proj> -w --format <map>` watcher for one silver project. exec'd
     # through bash so the arg string matches the terminal; exec makes silver the pty leader
     # (clean SIGHUP on close).
-    func fmt_start [ proj: string ]
-        if [ !proj || proj.count == 0 || proj == 'system' ] return
-        if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
-        if [ fmt_watch[ proj ] ] return
-        fw : FmtWatch [ proj: proj, map: '/tmp/orbiter-fmt-{proj}.map' ]
-        cmd : 'cd {startup_path} && exec ./platform/native/debug/silver {proj} -w --format "{fw.map}"'
+    # (re)run the one-shot `silver <proj> --format <map>` for a watch entry. --format
+    # writes the syntax map and needs nothing else (no build; NO -w watch mode — that
+    # segfaults). called once at start and again whenever a source file changes.
+    func fmt_spawn [ fw: FmtWatch ]
+        if [ !fw ] return
+        # startup_path may not be captured yet when this first runs at load; without it the
+        # command becomes `cd  && exec ./platform/...` → cd to $HOME → binary not found (127).
+        if [ !startup_path ] startup_path = path.path_startup[]
+        # close a prior generation's pty fd before re-spawning (regen).
+        if [ fw.fd >= 0 ]
+            close[ fw.fd ]
+            fw.fd = -1
+        # --build (compile only): emit the syntax map as a byproduct and EXIT. without it,
+        # bare `silver <proj>` also RUNS the app — spawning a windowed orbiter that never
+        # returns and never cleanly hands us the map.
+        # unset IMPORT: a login shell sets IMPORT=.../sdk/native, pointing the build at the
+        # INSTALLED (stale) Au headers — which fail to compile and yield a partial map.
+        # clearing it uses the dev tree (platform/native), matching the running binary.
+        cmd : 'cd {startup_path} && unset IMPORT && exec ./platform/native/debug/silver {fw.proj} --build --format "{fw.map}"'
         fd  : i32 [ -1 ]
         pid : i32 [ forkpty[ ref fd, null, null, null ] ]
         if [ pid == 0 ]
-            execl[ '/bin/bash', 'bash', '-lc', cmd.chars, null ]
+            # the flag + command MUST be passed as cstr (.chars) — a bare '-c' literal reaches
+            # execl as an Au string object, not char*, so bash reads garbage and drops into an
+            # idle interactive shell (no command runs). same pattern as ConsoleSession.start.
+            dashc : string '-c'
+            execl[ '/bin/bash', 'bash', dashc.chars, cmd.chars, null ]
             _exit[ 1 ]
         el [ pid > 0 ]
             fw.pid = pid
             fw.fd  = fd
             fcntl[ fd, F_SETFL, O_NONBLOCK ]
-            fmt_watch[ proj ] = fw
-            puts 'format: watching {proj} (pid {pid}) -> {fw.map}'
+
+    func fmt_start [ proj: string ]
+        if [ !proj || proj.count == 0 || proj == 'system' ] return
+        if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
+        if [ fmt_watch[ proj ] ] return
+        fw : FmtWatch [ proj: proj, map: '/tmp/orbiter-fmt-{proj}.f' ]
+        fmt_watch[ proj ] = fw
+        puts 'format: generating {proj} -> {fw.map}'
+        fmt_spawn[ fw ]
 
     # keep the running watchers in sync with the silver projects in the .agi: start one for
     # each silver project not yet watched, stop any whose project is gone or no longer silver.
     func fmt_sync []
         if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
         if [ !projects ] return
+        # one format map per PROJECT in the .agi (silver, hyperspace, test4, ...) — each
+        # project's map covers all the files silver associates with it. start one for any
+        # project not yet tracked; drop any whose project is gone.
         for [ p: Project, name: string ] in projects
-            if [ p.build && p.build.count > 0 && p.build[0].chars == 'silver' ]
-                if [ !fmt_watch[ name ] ] fmt_start[ name ]
+            if [ !fmt_watch[ name ] ] fmt_start[ name ]
         stale : array string []
         for [ fw: FmtWatch, name: string ] in fmt_watch
-            pr : Project projects[ name ]
-            ok : bool [ pr && pr.build && pr.build.count > 0 && pr.build[0].chars == 'silver' ]
-            if [ !ok ] stale += name
+            if [ !projects[ name ] ] stale += name
         for [ i: i32 0, i < stale.count, i += 1 ]
             fmt_stop[ stale[i] ]
 
@@ -582,22 +612,50 @@ trinity orbiter # implements compiler
     # it into the editor panes. NOT called from render.
     func fmt_poll []
         if [ !fmt_watch ] return
+        # a source file changed (flagged by the watch thread) → regenerate every map.
+        # cheap: --format just tokenizes, no build. debounced to one regen per change.
+        if [ fmt_dirty ]
+            fmt_dirty = false
+            for [ fw: FmtWatch, name: string ] in fmt_watch
+                fmt_spawn[ fw ]
         for [ fw: FmtWatch, name: string ] in fmt_watch
+            # announce the language service starting, once, as soon as the console exists
+            # (fmt_start runs at load before any console is up, so it's deferred to here).
+            if [ !fw.announced ]
+                con : ui_console[]
+                cs  : ConsoleSession (con) ? con.session[] : null
+                if [ cs ]
+                    cs.print_text[ 'syntax: {name} language service starting...\r\n' ]
+                    fw.announced = true
             if [ fw.fd >= 0 ]
                 dbuf : local i8 [256]
                 for [ j: i32 0, j < 64, j += 1 ]
                     nr : i32 [ read[ fw.fd, ref dbuf[0], 256 ] ]
                     if [ nr <= 0 ] break
+            # reap the one-shot --format child without blocking; when it returns, report
+            # its exit code so we KNOW it finished (not just that it started).
+            if [ fw.pid > 0 ]
+                st : i32 [ 0 ]
+                r  : i32 [ waitpid[ fw.pid, ref st, WNOHANG ] ]
+                if [ r == fw.pid ]
+                    code : i32 [ (st >> 8) & 0xFF ]
+                    con : ui_console[]
+                    cs  : ConsoleSession (con) ? con.session[] : null
+                    if [ cs ] cs.print_text[ 'syntax: {name} language service finished (code {code})\r\n' ]
+                    fw.pid = 0
             if [ fw.map && fw.map.count > 0 ]
                 mp : path fw.map
                 if [ mp.exists[] ]
                     m : mp.modified_time[]
                     if [ m > fw.mtime ]
                         fw.mtime = m
-                        puts 'format: {name} map updated'
+                        con : ui_console[]
+                        cs  : ConsoleSession (con) ? con.session[] : null
+                        if [ cs ] cs.print_text[ 'syntax: {name} reading format map\r\n' ]
                         for [ i: i32 0, i < editor_slots.count, i += 1 ]
                             ed : Editor pane_at[ i ]
                             if [ ed ] ed.load_format[ fw.map ]
+                        if [ cs ] cs.print_text[ 'syntax: {name} applied to {editor_slots.count} editor(s)\r\n' ]
 
     # the current debug callstack (placeholder frames until lldb GetFrames() is
     # wired through the running session).
@@ -762,7 +820,7 @@ trinity orbiter # implements compiler
                     es.feed_fd[ de.fifo_fd_out ]
                     es.feed_fd[ de.fifo_fd_err ]
                 code : (e) ? e.code : 0
-                es.feed_text[ '\r\n[process exited, code {code}]\r\n' ]
+                es.print_text[ '\r\n[process exited, code {code}]\r\n' ]
                 cons.pristine = false
                 win : Window[w]
                 win.will_animate = true
@@ -973,6 +1031,7 @@ trinity orbiter # implements compiler
     # the rebuild happens on the main thread in the next run_search.
     func on_index_change [ changed: Au ] -> none
         index_dirty = true
+        fmt_dirty   = true
 
     # reload safety: each watch thread holds a raw callback (on_index_change) into
     # THIS module's code. before the .so unloads they must be stopped, else a file

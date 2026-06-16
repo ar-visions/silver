@@ -881,7 +881,7 @@ class ConsoleSession
 
     # push a host-generated message (e.g. "[process exited]") through the emulator,
     # as if the inferior had printed it. ascii only; main-thread caller.
-    func feed_text [ s: string ]
+    func print_text [ s: string ]
         if [ !s ] return
         for [ i: i32 0, i < s.count, i += 1 ]
             process_byte[ (i32 s.chars[i]) & 255 ]

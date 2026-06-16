@@ -1154,7 +1154,6 @@ class uniforms
             ty = ty.context
 
         type_list = type_list.reverse[]
-
         hdr2:   Au.header[ s ]
         leaf:   hdr2.au
         total_uniform: i32 [ uniform_size[ leaf ] ]

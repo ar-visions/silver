@@ -352,25 +352,65 @@ Layer EditorLayer
                     rect [ x: dpx, y: y, w: bounds.x + bounds.w - rin - dpx, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 continue
-            txtc  : rgba [ (li == hl_line && hl_text) ? hl_text : rgba['#fff'] ]
-            cv.fill_color[ txtc ]
-            cv.draw_text[ editor.display_of[ ln ],
-                rect [ x: x0, y: y, w: bounds.w - gut_w - rin, h: lh ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-            # syntax overdraw: paint each themed token over the base line. tokens carry no
-            # tabs, so each is a literal substring; its x is measured from the tab-expanded
-            # display prefix up to its model column. comments/whitespace stay the base color.
-            msl : i32 [ editor.row_src[ li ] ]
-            nrg : i32 [ editor.line_reg_count[ msl ] ]
-            for [ ri: i32 0, ri < nrg, ri += 1 ]
-                cr  : ColorRegion editor.line_reg[ msl, ri ]
-                pre : editor.display_of[ ln.mid[ 0, cr.col ] ]
-                px  : f32 [ cv.measure_text[ pre ].w ]
-                seg : ln.mid[ cr.col, cr.len ]
-                cv.fill_color[ cr.color ]
-                cv.draw_text[ seg,
-                    rect [ x: x0 + px, y: y, w: bounds.w - gut_w - rin, h: lh ],
+            # single-pass syntax render: the line is drawn as a sequence of runs — gaps
+            # (whitespace/comments) in the base color, tokens in their theme color — each
+            # glyph rendered EXACTLY once. monospace: measure_text(prefix) lands every run on
+            # its exact column; clamping keeps mid[] from reading past end-of-line.
+            base  : rgba [ (li == hl_line && hl_text) ? hl_text : rgba['#fff'] ]
+            # silver doesn't tokenize comments, so a '#' (35) in a GAP can only be a comment
+            # (strings are covered by tokens) → tint the run that contains it muted.
+            cmt_c : rgba['#7a8290']
+            msl   : i32 [ editor.row_src[ li ] ]
+            nrg   : i32 [ editor.line_reg_count[ msl ] ]
+            ll    : i32 [ ln.count ]
+            rw    : f32 [ bounds.w - gut_w - rin ]
+            if [ nrg == 0 || ll == 0 ]
+                lc : rgba [ base ]
+                for [ k: i32 0, k < ll, k += 1 ]
+                    if [ ln[k] == 35 ]
+                        lc = cmt_c
+                        break
+                cv.fill_color[ lc ]
+                cv.draw_text[ editor.display_of[ ln ],
+                    rect [ x: x0, y: y, w: rw, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            el
+                col : i32 [ 0 ]
+                for [ ri: i32 0, ri < nrg, ri += 1 ]
+                    cr : ColorRegion editor.line_reg[ msl, ri ]
+                    c0 : i32 [ cr.col ]
+                    if [ c0 < 0 ] c0 = 0
+                    if [ c0 > ll ] c0 = ll
+                    sl : i32 [ cr.len ]
+                    if [ c0 + sl > ll ] sl = ll - c0
+                    # gap before this token (base color)
+                    if [ c0 > col ]
+                        gx : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ 0, col ] ] ].w ]
+                        cv.fill_color[ base ]
+                        cv.draw_text[ editor.display_of[ ln.mid[ col, c0 - col ] ],
+                            rect [ x: x0 + gx, y: y, w: rw, h: lh ],
+                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                        col = c0
+                    # the token itself (theme color)
+                    if [ sl > 0 ]
+                        tx : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ 0, c0 ] ] ].w ]
+                        cv.fill_color[ cr.color ]
+                        cv.draw_text[ ln.mid[ c0, sl ],
+                            rect [ x: x0 + tx, y: y, w: rw, h: lh ],
+                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                        col = c0 + sl
+                # trailing gap after the last token (base, or muted if it holds a comment)
+                if [ col < ll ]
+                    gc : rgba [ base ]
+                    for [ k: i32 col, k < ll, k += 1 ]
+                        if [ ln[k] == 35 ]
+                            gc = cmt_c
+                            break
+                    ex : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ 0, col ] ] ].w ]
+                    cv.fill_color[ gc ]
+                    cv.draw_text[ editor.display_of[ ln.mid[ col, ll - col ] ],
+                        rect [ x: x0 + ex, y: y, w: rw, h: lh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint[ ]
 
         # ---- debug-active: inline ghost value annotations (# name = value) ----
@@ -981,6 +1021,12 @@ Control Editor
                 return rgba['#4fc1ff']
             case 16                         # usertoken
                 return rgba['#c586c0']
+            case 17                         # parent class (Parent Child) — yellow
+                return rgba['#d7ba7d']
+            case 18                         # class name being defined — bright gold-green
+                return rgba['#dcdc8a']
+            case 19                         # meta / generic type arg — orange-tan
+                return rgba['#d1a36a']
             default                         # none / ident / op
                 return rgba['#d4d4d4']
 
@@ -1014,43 +1060,36 @@ Control Editor
     # canonical path silver emits). the map is a byproduct of the normal build/watch
     # pipeline — never its own pass — so this just reads the latest file the watcher produced.
     public func load_format [ mapfile: string ]
-        fp  : handle [ fopen[ mapfile.chars, 'rb' ] ]
-        if [ !fp ] return
-        magic : fmt_u32[ fp ]
-        ver   : fmt_u32[ fp ]
-        if [ magic != u32 0x53464D54 ]
-            fclose[ fp ]
-            return
-        nsec : i32 [ 0 ]
-        for [ s: i32 0, s < 100000, s += 1 ]
-            tag : fmt_u32[ fp ]
-            if [ tag != u32 0xC0DEFACE ] break        # 0 = clean end, anything else = stop
-            nsec += 1
-            plen : i32 [ fmt_u32[ fp ] ]
-            pbuf : array u8 [ alloc: plen + 1 ]
-            for [ k: i32 0, k < plen, k += 1 ]
-                cb : local u8 [1]
-                fread[ ref cb[0], 1, 1, fp ]
-                pbuf.push[ cb[0] ]
-            pbuf.push[ u8 0 ]
-            pstr : ref u8 [ pbuf ]
-            ntok : i32 [ fmt_u32[ fp ] ]
-            buf  : FileBuf file_cache[ pstr ]
+        # the .f is parsed by Au's single shared loader (path.read_format) — same code
+        # silver uses. it returns an array of fmt_file (source path, mtime, Syntax tokens);
+        # we just turn each file's tokens into this editor's ColorRegion list.
+        mp    : path  '{mapfile}'
+        files : array [ mp.read_format[] ]
+        if [ !files ] return
+        puts 'format: ===== load_format {mapfile}: {files.count} file(s) ====='
+        for [ fi: i32 0, fi < files.count, fi += 1 ]
+            ff  : fmt_file files[fi]
+            if [ !ff || !ff.source ] continue
+            key : string '{ff.source}'
+            ntk : i32 [ (ff.tokens) ? ff.tokens.count : 0 ]
+            puts 'format:   [{fi}] {key} -> {ntk} tokens'
+            buf : FileBuf file_cache[ key ]
             if [ !buf ]
                 buf = FileBuf []
-                file_cache[ pstr ] = buf
+                file_cache[ key ] = buf
             buf.regions = array ColorRegion []
             mx : i32 [ 0 ]
-            for [ t: i32 0, t < ntok, t += 1 ]
-                tl   : i32 [ fmt_u32[ fp ] ]
-                tc   : i32 [ fmt_u32[ fp ] ]
-                tlen : i32 [ fmt_u32[ fp ] ]
-                tk   : i32 [ fmt_u32[ fp ] ]
-                buf.regions.push[ ColorRegion [ line: tl, col: tc, len: tlen, color: fmt_theme[ tk ] ] ]
+            nt : i32 [ (ff.tokens) ? ff.tokens.count : 0 ]
+            for [ ti: i32 0, ti < nt, ti += 1 ]
+                tk : fmt_token ff.tokens[ti]
+                # silver token lines are 1-based; editor model lines are 0-based → shift down
+                # by one so each line's tokens land on the line they came from.
+                tl : i32 [ (i32 tk.line) - 1 ]
+                if [ tl < 0 ] tl = 0
+                buf.regions.push[ ColorRegion [ line: tl, col: i32 tk.column, len: i32 tk.length, color: fmt_theme[ i32 tk.syntax ] ] ]
                 if [ tl + 1 > mx ] mx = tl + 1
-            # tokens arrive in source order (line-sorted), so build the per-line offset index:
-            # reg_off[L] = first region index whose line >= L. lines with no tokens get an
-            # empty slice (reg_off[L] == reg_off[L+1]).
+            # tokens arrive in source order (line-sorted): reg_off[L] = first region index
+            # whose line >= L, so each line's spans are the slice [reg_off[L], reg_off[L+1]).
             buf.reg_off = array i32 []
             ci : i32 [ 0 ]
             for [ L: i32 0, L <= mx, L += 1 ]
@@ -1059,9 +1098,16 @@ Control Editor
                     if [ cr.line >= L ] break
                     ci += 1
                 buf.reg_off.push[ ci ]
-        fclose[ fp ]
         mine : i32 [ (cur_buf && cur_buf.regions) ? cur_buf.regions.count : 0 ]
-        puts 'format: loaded {nsec} files; this buffer has {mine} colored tokens'
+        cp   : string [ (src) ? '{src.absolute[]}' : '(none)' ]
+        puts 'format: current file = {cp}'
+        puts 'format: cur_buf has {mine} colored token(s)'
+        # dump the first regions of the visible buffer so the data is verifiable on stdout
+        if [ cur_buf && cur_buf.regions ]
+            lim : i32 [ (mine < 12) ? mine : 12 ]
+            for [ ri: i32 0, ri < lim, ri += 1 ]
+                cr : ColorRegion cur_buf.regions[ ri ]
+                puts 'format:     region {ri}: line {cr.line} col {cr.col} len {cr.len}'
 
     func line_get [ vr: i32 ] -> string
         if [ show_hits && hits ]
