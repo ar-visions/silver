@@ -1067,44 +1067,96 @@ static void prepare_record_cb(Au a_au, Au t_au) {
 // file layout (little-endian — root truncates + writes header, every module in the graph
 // appends its sections during the build, root appends the end marker; magic words let the
 // reader frame + resync, and detect a truncated/incomplete write):
-//   header : u32 0x53464D54 ('SFMT')   u32 version(=1)
+//   header : u32 0x53464D54 ('SFMT')   u32 version(=2)
 //   section: u32 0xC0DEFACE             u32 path_len, path_len bytes (canonical abs path),
+//            i64 mtime (source modified time, ms — for incremental: skip re-tokenizing a
+//            file whose section mtime matches the file on disk),
 //            u32 token_count, token_count * { u32 line, u32 col, u32 len, u32 syntax }
 //   end    : u32 0x00000000             (zero — can't collide with the section magic)
 // the section path is the symlink-resolved absolute identity of the source file, so the
 // caller matches a buffer regardless of how it opened it — we don't mess with identities.
 // reader: read a u32 — C0DEFACE = section follows, 0 = clean end, EOF-before-either = truncated.
-#define SILVER_FMT_VERSION  1u
+#define SILVER_FMT_VERSION  2u            // v2: each section carries the source mtime
 #define SILVER_FMT_MAGIC    0x53464D54u   // 'SFMT'
 #define SILVER_FMT_SECTION  0xC0DEFACEu
 #define SILVER_FMT_END      0x00000000u
 
 static void fmt_u32(FILE* f, u32 v) { fwrite(&v, 4, 1, f); }
 
-typedef struct fmt_sec { char* path; unsigned char* buf; unsigned len; } fmt_sec;
+typedef struct fmt_sec { char* path; unsigned char* buf; unsigned len; i64 mtime; } fmt_sec;
 static fmt_sec* fmt_secs = null;
 static int      fmt_nsec = 0;
 static int      fmt_cap  = 0;
 
-static void fmt_put(symbol path, unsigned char* buf, unsigned len) {
+static void fmt_put(symbol path, unsigned char* buf, unsigned len, i64 mtime) {
     for (int i = 0; i < fmt_nsec; i++)
         if (strcmp(fmt_secs[i].path, path) == 0) {
             free(fmt_secs[i].buf);
             fmt_secs[i].buf = buf;
             fmt_secs[i].len = len;
+            fmt_secs[i].mtime = mtime;
             return;
         }
     if (fmt_nsec == fmt_cap) {
         fmt_cap  = fmt_cap ? fmt_cap * 2 : 32;
         fmt_secs = realloc(fmt_secs, fmt_cap * sizeof(fmt_sec));
     }
-    fmt_secs[fmt_nsec].path = strdup(path);
-    fmt_secs[fmt_nsec].buf  = buf;
-    fmt_secs[fmt_nsec].len  = len;
+    fmt_secs[fmt_nsec].path  = strdup(path);
+    fmt_secs[fmt_nsec].buf   = buf;
+    fmt_secs[fmt_nsec].len   = len;
+    fmt_secs[fmt_nsec].mtime = mtime;
     fmt_nsec++;
 }
 
-void silver_fmt_header(silver a) { }
+// true if the format map already holds this file's section AND its stored mtime equals
+// the file on disk — i.e. nothing changed, so re-tokenizing it would be a no-op.
+static bool fmt_current(symbol path, i64 mtime) {
+    if (mtime == 0) return false;
+    for (int i = 0; i < fmt_nsec; i++)
+        if (strcmp(fmt_secs[i].path, path) == 0)
+            return fmt_secs[i].mtime == mtime;
+    return false;
+}
+
+// serialize one parsed fmt_file (from Au's shared read_format) back into the exact .f
+// section bytes, so silver_fmt_end can re-emit an unchanged file's section verbatim.
+static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
+    cstr cp = (ff->source && len(ff->source)) ? ff->source->chars : "";
+    u32  cl = (u32)strlen(cp);
+    u32  n  = ff->tokens ? (u32)len(ff->tokens) : 0;
+    u32  total = 4 + 4 + cl + 8 + 4 + n * 16;
+    unsigned char* b = malloc(total);
+    u32 o = 0;
+    #define SP(v) do { u32 _v = (u32)(v); memcpy(b + o, &_v, 4); o += 4; } while (0)
+    SP(SILVER_FMT_SECTION);
+    SP(cl);
+    memcpy(b + o, cp, cl); o += cl;
+    i64 mt = ff->mtime; memcpy(b + o, &mt, 8); o += 8;
+    SP(n);
+    if (ff->tokens) each(ff->tokens, fmt_token, tk) {
+        SP(tk->line); SP(tk->column); SP(tk->length); SP(tk->syntax);
+    }
+    #undef SP
+    *out_total = total;
+    return b;
+}
+
+// load the caller-provided map into memory (via Au's single shared read_format) so an
+// unchanged module's section is reused and re-emitted as-is instead of rebuilt.
+static void fmt_load(silver a) {
+    for (int i = 0; i < fmt_nsec; i++) { free(fmt_secs[i].path); free(fmt_secs[i].buf); }
+    fmt_nsec = 0;
+    if (!a->format || !len(a->format)) return;
+    array files = read_format(a->format);
+    each(files, fmt_file, ff) {
+        if (!ff->source || !len(ff->source)) continue;
+        u32 total = 0;
+        unsigned char* b = fmt_serialize(ff, &total);
+        fmt_put(ff->source->chars, b, total, ff->mtime);
+    }
+}
+
+void silver_fmt_header(silver a) { fmt_load(a); }
 
 void silver_fmt_end(silver a) {
     if (!a->format || !len(a->format)) return;
@@ -1127,14 +1179,19 @@ void silver_write_fmt(silver a, array toks) {
     path canon = absolute(src);                 // realpath: absolute + symlinks resolved
     cstr cp = (canon && len(canon)) ? canon->chars : src->chars;
     u32  cl = (u32)strlen(cp);
+    i64  mt = modified_time((canon && len(canon)) ? canon : src);  // source mtime (ms)
+    // unchanged file: the cached section from fmt_load is current — keep it, don't
+    // overwrite with the (possibly under-classified) tokens of a skipped-body parse.
+    if (fmt_current(cp, mt)) return;
     u32  n  = (u32)len(toks);
-    u32  total = 4 + 4 + cl + 4 + n * 16;       // tag + pathlen + path + count + records
+    u32  total = 4 + 4 + cl + 8 + 4 + n * 16;   // tag + pathlen + path + mtime(8) + count + records
     unsigned char* b = malloc(total);
     u32 o = 0;
     #define FMT_PUT(v) do { u32 _v = (u32)(v); memcpy(b + o, &_v, 4); o += 4; } while (0)
     FMT_PUT(SILVER_FMT_SECTION);
     FMT_PUT(cl);
     memcpy(b + o, cp, cl); o += cl;
+    memcpy(b + o, &mt, 8); o += 8;              // i64 source mtime
     FMT_PUT(n);
     each(toks, token, t) {
         FMT_PUT(t->line);
@@ -1143,7 +1200,7 @@ void silver_write_fmt(silver a, array toks) {
         FMT_PUT(t->syntax);
     }
     #undef FMT_PUT
-    fmt_put(cp, b, total);
+    fmt_put(cp, b, total, mt);
 }
 
 // run a live app by default (build+run when invoked directly). recovers is_live for
@@ -1255,6 +1312,11 @@ void silver_init(silver a) {
     a->artifacts_path = f(path, "%o/%o.artifacts", a->build_dir, a->name);
     a->source_path    = f(path, "%o/%o.source",    a->build_dir, a->name);
     a->resources    = array(32);
+
+    // each module owns its OWN tree node (this map): it holds this module's source files
+    // and, as children, the tree map of every module it imports — so the nesting forms a
+    // real dependency tree, with the root instance (from main) as the tree's root node.
+    a->tree = hold(map(hsize, 16));
 
     verify(a->module && len(a->module), "required argument: module (path/to/module)");
 
@@ -1404,19 +1466,29 @@ void silver_init(silver a) {
                 }
                 fclose(f);
             }
-            if (!newest || newest < module_file_m)
+            // a dep .so is "stale relative to us" only if it's newer than OUR product —
+            // deps are always rebuilt after our sources, so comparing to module_file_m
+            // marked us dirty on every build. if no artifact post-dates the product, the
+            // product already incorporates them → cached.
+            if (!newest || newest < product_m)
                 update_product = false;
         } else
             update_product = false;
     }
 
     if (a->clean) update_product = true;
-    if (a->run && !a->is_external) update_product = true;
-    // --format: a map file was requested. force the (normal) build to run for every module
-    // in the graph so each one re-parses and appends its section — even otherwise-cached
-    // deps — giving a map that covers the whole project. this is the SAME build pipeline
-    // (codegen/link still happen); the map is just an extra output, not a separate pass.
-    if (a->format && len(a->format)) update_product = true;
+    // (removed) root no longer force-rebuilt on --run: the dependency tree's transitive
+    // .source now busts the root's cache precisely when any inner source changed, so the
+    // blanket force is redundant — a no-change --run relinks/relaunches from cache.
+    // --format: a map file was requested. force the (normal) build only when the map is
+    // missing or STALE (a source is newer than it) — then every module re-parses and appends
+    // its section, covering the whole project. when the map already post-dates every source
+    // it's current, so we DON'T force a rebuild: a no-change format request is a cache hit,
+    // not a 10s full re-parse. (module_file_m is the transitive newest source via .source.)
+    if (a->format && len(a->format)) {
+        u64 map_m = file_exists("%o", a->format) ? modified_time(a->format) : 0;
+        if (!map_m || map_m < module_file_m) update_product = true;
+    }
 
     a->mod = (aether)a;
     // prevent duplicate compilation in a session
@@ -3962,6 +4034,19 @@ enode parse_statement(silver a)
     if (!a->processed_imports && !next_is(a, "export") && !next_is(a, "import") && !next_is(a, "extend") && !next_is(a, "ifdef")) {
         a->processed_imports = true;
         aether_import_includes((aether)a);
+        // incremental --format: imports (and their transitive deps) are now processed,
+        // so a changed dependency still rebuilds. but if THIS module's OWN source is
+        // unchanged from the map, its body is already captured in the cached section —
+        // skip parsing the rest of it (silver_write_fmt keeps the cached section).
+        if (a->format && len(a->format) && !a->clean && a->module_file) {
+            path fc  = absolute(a->module_file);
+            cstr fcp = (fc && len(fc)) ? fc->chars : a->module_file->chars;
+            i64  fmt = modified_time((fc && len(fc)) ? fc : a->module_file);
+            if (fmt_current(fcp, fmt)) {
+                a->cursor = len(a->tokens);     // nothing left to parse for this module
+                return e_noop(a, null);
+            }
+        }
     }
 
     // standard statements first, only in context of functions
@@ -4707,9 +4792,11 @@ static etype read_named_model(silver a) {
             return null;
         }
     }
-    // it resolved to a model (not a var) → this name is a TYPE; color it as such.
+    // it resolved to a model (not a var) → this name is a TYPE; color it as such. when read
+    // at a nested etype_level (a meta/generic argument, e.g. the `string` in map element[string]),
+    // give it the unique _meta kind instead of a plain type ref.
     if (mdl && name_tok)
-        name_tok->syntax = Syntax__type;
+        name_tok->syntax = a->etype_level > 0 ? Syntax__meta : Syntax__type;
     pop_tokens(a, mdl != null); /// save if we are returning a model
     return mdl;
 }
@@ -5356,8 +5443,12 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
               docker, debug ? "debug" : "release", project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
         silver sf = silver(debug_type, a->debug_type, debugmember, a->debugmember, module, silver_f, breakpoint, a->breakpoint, release, a->release,
-            clean, a->clean, verbose, a->verbose, format, a->format, is_external, a->is_external ? a->is_external : a);
+            clean, a->clean, verbose, a->verbose, format, a->format, is_external, a->is_external ? a->is_external : a, is_child, a);
         validate(sf, "silver module compilation failed: %o", silver_f);
+        // nest the imported module's node under THIS (its direct parent), keyed by the
+        // child's source-file path → its node map; a->tree holds the reference so the
+        // subtree survives the child's drop and the tree stays intact.
+        if (sf->module_file && sf->tree) set(a->tree, (Au)sf->module_file, (Au)sf->tree);
         drop(sf);
     } else {
         /// build for automake
@@ -5504,6 +5595,23 @@ static void deploy_resources(path src, path dst) {
 
 // build with optional bc path; if no bc path we use the project file system
 static void read_g_link_libs(silver a, path mg);
+
+// walk a module's dependency tree (key = source path, value = that source's node map)
+// and collect every transitive source path into `out`, de-duped via `seen`. the tree is
+// the authoritative structure; flattening it here yields a COMPLETE source list (unlike
+// the old flat per-module shortcut, which missed transitive deps).
+static void silver_collect_tree(map tree, array out, map seen) {
+    if (!tree || !len(tree)) return;
+    pairs(tree, i) {
+        path p = (path)i->key;
+        if (p && !get(seen, (Au)p)) {
+            set(seen, (Au)p, (Au)_bool(true));
+            push(out, (Au)p);
+        }
+        if (i->value && instance_of((Au)i->value, typeid(map)))
+            silver_collect_tree((map)i->value, out, seen);
+    }
+}
 
 none silver_build_product(silver a) {
     // a module with its own .g (e.g. dbg.g -> -llldb -lutil) must honor those
@@ -5787,21 +5895,34 @@ none silver_build_product(silver a) {
         }
     }
 
-    // split artifacts: .sos → .artifacts (cache check), .ag/.c → .source (host watch)
+    // record this module's OWN source files into its tree node (key = full source path,
+    // value = an empty node map; imports already nested their own subtrees during parse).
+    // .so/.a artifacts are NOT sources — they go to the flat .artifacts cache list.
     FILE *ar = fopen(a->artifacts_path->chars, "w");
-    FILE *sr = fopen(a->source_path->chars,    "w");
-    if (sr && a->module_file)
-        fprintf(sr, "%s\n", a->module_file->chars);
+    if (a->tree && a->module_file && !get(a->tree, (Au)a->module_file))
+        set(a->tree, (Au)a->module_file, (Au)map(hsize, 8));
     each(a->artifacts, path, ark) {
         const char *dot = strrchr(ark->chars, '.');
         if (dot && (strcmp(dot, ".ag") == 0 || strcmp(dot, ".c") == 0 || strcmp(dot, ".cc") == 0)) {
-            if (sr) fprintf(sr, "%s\n", ark->chars);
+            if (a->tree && !get(a->tree, (Au)ark)) set(a->tree, (Au)ark, (Au)map(hsize, 8));
         } else {
             if (ar) fprintf(ar, "%s\n", ark->chars);
         }
     }
     if (ar) fclose(ar);
-    if (sr) fclose(sr);
+
+    // .source = the FULL transitive source set, gathered by flattening the dependency
+    // tree. the next build's cache check reads this: if ANY source in the tree is newer
+    // than the product, the module re-parses (which re-processes its imports, letting
+    // each changed inner module rebuild) — so an inner change no longer needs --clean.
+    FILE *sr = fopen(a->source_path->chars, "w");
+    if (sr) {
+        array all  = array(64);
+        map   seen = map(hsize, 64);
+        silver_collect_tree(a->tree, all, seen);
+        each(all, path, p) fprintf(sr, "%s\n", p->chars);
+        fclose(sr);
+    }
 }
 
 bool silver_next_is_neighbor(silver a) {
@@ -6502,7 +6623,7 @@ enode parse_import(silver a) {
     sequencer;
 
     validate(next_is(a, "import"), "expected import keyword");
-    consume(a, Syntax__none);
+    consume(a, Syntax__keyword);
 
     int     from         = a->cursor;
     codegen cg           = null;
@@ -6580,23 +6701,30 @@ enode parse_import(silver a) {
 
     // determine includes, uri, and config
     // includes for this import
-    if (!is_codegen && read_if(a, "<")) {
+    token lt = is_codegen ? null : read_if(a, "<");
+    if (lt) {
+        // the angle brackets are punctuation (same kind as '['); the header path inside is
+        // colored like a string so `import <sys/wait.h>` reads as keyword + punct + path.
+        lt->syntax = Syntax__punctuation;
         for (;;) {
             string f = read_alpha_any(a);
             validate(f, "expected include");
+            token ft = element(a, -1);
+            if (ft) ft->syntax = Syntax__str;
 
             if (!first_include)
                 first_include = f;
 
             // we may read: something/is-a.cool\file.hh.h
             while (next_is_neighbor(a) && (!next_is(a, ",") && !next_is(a, ">")))
-                concat(f, (string)next(a, Syntax__none));
+                concat(f, (string)next(a, Syntax__str));
 
             push(includes, (Au)f);
 
             if (!read_if(a, ",")) {
                 token n = read_if(a, ">");
                 validate(n, "expected '>' after include, list, of, headers");
+                n->syntax = Syntax__punctuation;
                 break;
             }
         }
@@ -6794,7 +6922,7 @@ enode parse_import(silver a) {
             {
                 Au_t f = find_module("vulkan2");
                 silver external = silver(module, module, breakpoint, a->breakpoint,
-                    verbose, a->verbose, is_external, og, release, a->release, clean, a->clean,
+                    verbose, a->verbose, is_external, og, is_child, a, release, a->release, clean, a->clean,
                     format, og->format,
                     defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
                 Au_t f2 = find_module("vulkan2");
@@ -9152,9 +9280,18 @@ etype silver_read_def(silver a, interface access) {
         return (etype)e_noop(a, null);
     }
 
-    consume(a, Syntax__none);
+    // `Parent Child` record form: the leading token is the parent class (color it _parent,
+    // unique). the bare `class`/`struct` keyword form has no parent → leave it as keyword.
+    token def_tok = peek(a);
+    bool  parent_named = is_class && def_tok && !eq(def_tok, "class");
+    consume(a, parent_named ? Syntax__parent : Syntax__none);
     string n = read_alpha(a);
     validate(n, "expected alpha-numeric identity, found %o", next(a, Syntax__none));
+    // the record's own name gets its own unique kind (_classname), distinct from a type ref.
+    if (is_class || is_struct) {
+        token name_tok = element(a, -1);
+        if (name_tok) name_tok->syntax = Syntax__classname;
+    }
 
     Au_t top = top_scope(a);
     etype mtop = u(etype, top);
