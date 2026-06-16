@@ -18,6 +18,8 @@ declare_class(exports)
     M(X, Y, i, prop,     public,  bool,   build) \
     M(X, Y, i, prop,     public,  path,   format) \
     M(X, Y, i, prop,     public,  silver, is_external) \
+    M(X, Y, i, prop,     public,  silver, is_child, meta, weak) \
+    M(X, Y, i, prop,     public,  map,    tree) \
     M(X, Y, i, prop,     public,  bool,   is_project) \
     M(X, Y, i, prop,     intern,  bool,   clipping) \
     M(X, Y, i, prop,     intern,  bool,   left_hand) \

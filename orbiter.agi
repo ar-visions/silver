@@ -1,25 +1,12 @@
 # comments allowed
 projects:
-	silver: Project
-		name: 	silver
-		root: 	'.'
-		build:	make debug
-		files:	src/silver.c src/aether.c foundry/trinity/Canvas.ag
-
-	hyperspace: Project
-		name: 	hyperspace
-		root: 	'foundry/hyperspace'
-		build:	silver hyperspace --clean
+	orbiter: Project
+		name: 	orbiter
+		root: 	'foundry/orbiter'
+		build:	silver orbiter
 		cwd:	'.'
-		run:	hyperspace
-
-	test4: Project
-		name: 	test4
-		deps: 	silver
-		root: 	'foundry/test4'
-		build:	silver test4 --clean
-		cwd:	'.'
-		run:	test4
+		run:	orbiter
+		files:	orbiter.ag Editor.ag
 
 consoles:
 	shell: ConsoleInstance
