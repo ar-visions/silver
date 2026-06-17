@@ -1160,7 +1160,11 @@ void silver_fmt_header(silver a) { fmt_load(a); }
 
 void silver_fmt_end(silver a) {
     if (!a->format || !len(a->format)) return;
-    FILE* f = fopen(a->format->chars, "wb");
+    // write to a sibling temp file, then atomically rename it into place. a reader
+    // (orbiter's fmt_poll) therefore only ever opens a COMPLETE map — never a half-written
+    // one mid-truncate, which showed up as random / missing syntax highlighting.
+    path tmp = form(path, "%o.tmp", a->format);
+    FILE* f = fopen(tmp->chars, "wb");
     if (!f) return;
     fmt_u32(f, SILVER_FMT_MAGIC);
     fmt_u32(f, SILVER_FMT_VERSION);
@@ -1168,6 +1172,7 @@ void silver_fmt_end(silver a) {
         fwrite(fmt_secs[i].buf, 1, fmt_secs[i].len, f);
     fmt_u32(f, SILVER_FMT_END);
     fclose(f);
+    rename(tmp->chars, a->format->chars);
 }
 
 void silver_write_fmt(silver a, array toks) {
@@ -1616,8 +1621,14 @@ void silver_init(silver a) {
             // --format: tokens are now classified — append this module's own file section
             // (deps + extend files appended their own during parse). this is additive; the
             // normal build below still runs (same pipeline, map is just an extra output).
-            if (a->format && len(a->format))
+            if (a->format && len(a->format)) {
                 silver_write_fmt(a, (array)a->tokens);
+                // extension files (Editor.ag, …) were parsed earlier but their bodies only
+                // got keyword/type-stamped during build_record_parse above — write them now.
+                if (a->fmt_ext)
+                    each(a->fmt_ext, array, et)
+                        silver_write_fmt(a, et);
+            }
 
             // print all expected defs not used
             if (len(a->defs_expect))
@@ -1640,7 +1651,12 @@ void silver_init(silver a) {
                 fault("defs not found in %o: %o", a->name, unused);
             }
 
-            build_product(a);
+            // a --format run only needs the PARSE (token classification) to write the map; it
+            // must NOT codegen/link the product. relinking the app's binary makes the running
+            // app's live-reload host reload it, which spawns ANOTHER format run → reload
+            // cascade on every launch. the real `silver <app>` build (no --format) still links.
+            if (!(a->format && len(a->format)))
+                build_product(a);
 
             exporter(a);
 
@@ -4042,7 +4058,26 @@ enode parse_statement(silver a)
             path fc  = absolute(a->module_file);
             cstr fcp = (fc && len(fc)) ? fc->chars : a->module_file->chars;
             i64  fmt = modified_time((fc && len(fc)) ? fc : a->module_file);
-            if (fmt_current(fcp, fmt)) {
+            bool can_skip = fmt_current(fcp, fmt);
+            // extension files (Editor.ag, Console.ag, …) are sibling .ag files parsed as part
+            // of THIS module's body — skipping the body re-emits their cached sections. the map
+            // ALREADY lists every file with its stored date, so walk its sections: any whose
+            // file lives in this module's dir and whose date no longer matches disk means an
+            // edit (e.g. Editor.ag) that must re-parse, or its stale/misaligned section sticks.
+            if (can_skip && a->module_path) {
+                path mp  = absolute(a->module_path);
+                cstr mpc = (mp && len(mp)) ? mp->chars : a->module_path->chars;
+                for (int i = 0; i < fmt_nsec; i++) {
+                    path sp  = absolute(path(fmt_secs[i].path));
+                    path spd = parent_dir(sp);
+                    cstr spc = (spd && len(spd)) ? spd->chars : "";
+                    if (strcmp(spc, mpc) == 0 && fmt_secs[i].mtime != modified_time(sp)) {
+                        can_skip = false;
+                        break;
+                    }
+                }
+            }
+            if (can_skip) {
                 a->cursor = len(a->tokens);     // nothing left to parse for this module
                 return e_noop(a, null);
             }
@@ -4083,8 +4118,10 @@ enode parse_statement(silver a)
     if (next_is(a, "ifdef")) return parse_ifdef_else(a);
 
     if (next_is(a, "extend")) {
-        consume(a, Syntax__none);
+        consume(a, Syntax__keyword);
         string ext_module = read_alpha(a);
+        token ext_tok = element(a, -1);
+        if (ext_tok) ext_tok->syntax = Syntax__type;
         validate(ext_module && !strcmp(ext_module->chars, a->name->chars),
             "extend declares '%o' but current module is '%o'", ext_module, a->name);
         return e_noop(a, null);
@@ -6902,6 +6939,10 @@ enode parse_import(silver a) {
                     validate(name_tok && !strcmp(name_tok->chars, a->name->chars),
                         "extend declares '%s' but imported into module '%s'",
                         name_tok ? name_tok->chars : "?", a->name->chars);
+                    // these header tokens are skipped by the parse below, so stamp them for
+                    // the format map directly: `extend` = keyword, module name = type.
+                    first->syntax = Syntax__keyword;
+                    if (name_tok) name_tok->syntax = Syntax__type;
                     start = 2;
                 }
                 a->processed_imports = false;
@@ -6910,7 +6951,14 @@ enode parse_import(silver a) {
                 push_tokens(a, (tokens)ext_toks, start);
                 while (a->cursor < len(a->tokens))
                     parse_statement(a);
-                if (a->format && len(a->format)) silver_write_fmt(a, ext_toks);
+                // defer the format write: class/method bodies here are STASHED and only
+                // parsed (keyword/type stamped) later in build_record_parse. writing now
+                // captures only lexer-level tokens (the missing-keywords bug on extension
+                // files like Editor.ag). stash ext_toks and write after all phases (~1625).
+                if (a->format && len(a->format)) {
+                    if (!a->fmt_ext) a->fmt_ext = hold(array(alloc, 8));
+                    push(a->fmt_ext, (Au)hold(ext_toks));
+                }
                 pop_tokens(a, false);
                 drop(a->module_file);
                 a->module_file = saved_module_file;
