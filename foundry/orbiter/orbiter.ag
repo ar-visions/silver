@@ -647,15 +647,29 @@ trinity orbiter # implements compiler
                 mp : path fw.map
                 if [ mp.exists[] ]
                     m : mp.modified_time[]
-                    if [ m > fw.mtime ]
-                        fw.mtime = m
-                        con : ui_console[]
-                        cs  : ConsoleSession (con) ? con.session[] : null
-                        if [ cs ] cs.print_text[ 'syntax: {name} reading format map\r\n' ]
-                        for [ i: i32 0, i < editor_slots.count, i += 1 ]
-                            ed : Editor pane_at[ i ]
-                            if [ ed ] ed.load_format[ fw.map ]
-                        if [ cs ] cs.print_text[ 'syntax: {name} applied to {editor_slots.count} editor(s)\r\n' ]
+                    # apply PER EDITOR, every frame, to any pane behind the current map mtime.
+                    # this is not a one-shot: a pane created after the map loaded (or a fresh
+                    # map) is picked up on the next poll — no race between the load and pane
+                    # creation. load_format only runs on a real mismatch, so it's cheap idle.
+                    applied : bool [ false ]
+                    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                        ed : Editor pane_at[ i ]
+                        if [ ed && ed.fmt_mtime < m ]
+                            ed.load_format[ fw.map ]
+                            ed.fmt_mtime = m
+                            # the new colors change the pane's content → invalidate its cached
+                            # canvas so it re-renders, and wake the render loop. without this the
+                            # coloring only appeared after a hover happened to dirty the pane.
+                            ed.pristine = false
+                            applied = true
+                    if [ applied ]
+                        win : Window[w]
+                        if [ win ] win.will_animate = true
+                        if [ m > fw.mtime ]
+                            fw.mtime = m
+                            con : ui_console[]
+                            cs  : ConsoleSession (con) ? con.session[] : null
+                            if [ cs ] cs.print_text[ 'syntax: {name} applied to {editor_slots.count} editor(s)\r\n' ]
 
     # the current debug callstack (placeholder frames until lldb GetFrames() is
     # wired through the running session).
@@ -785,6 +799,7 @@ trinity orbiter # implements compiler
                 if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
                     ed.scroll.y = top - vh * 0.4
                     if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
+                    ed.scroll_target = ed.scroll.y
                 # a fresh stop → back into active mode (keyboard drives the debugger).
                 ed.edit_armed = false
                 ed.pristine  = false

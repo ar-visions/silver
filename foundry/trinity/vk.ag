@@ -258,7 +258,10 @@ class Render
         ring_last      = s
         ring_i         = (s + 1) % ring_n
         recording      = false
-        draw_slot      = 0
+        # do NOT reset draw_slot here — flush_submit submits WITHOUT a wait, so the batch we
+        # just submitted is still in flight reading u_buffers[..draw_slot] / descriptor_sets.
+        # resetting to 0 makes the next paints reuse those in-flight slots = the christmas-light
+        # UBO clobber on the gutter overlays. draw_slot free-runs; only a real drain rewinds it.
 
     public func draw [ ]
         if [ !vk_framebuffer[0] ]
@@ -450,6 +453,9 @@ class Render
         vk.sync_us    += epoch_micros[] - t0
         vk.sync_calls += 1
         expect result == VK_SUCCESS, "fence wait failed"
+        # the wait drained every in-flight submit (command buffers run in submit order, so
+        # ring_last done ⟹ all prior done): every slot is free now, rewind the ring to 0.
+        draw_slot = 0
 
     func dealloc [ ]
         info : Au.header[ a ]
@@ -1227,7 +1233,9 @@ class Pipeline
     intern resources        : array Gpu
     intern storage_textures : array Texture
     intern shader_uniforms  : uniforms
-    intern vbo              : Gpu
+    # public so a caller can ring it (point the draw at a different vertex buffer of the
+    # SAME layout per draw) — used by Canvas text to avoid a GPU fence per draw_text.
+    public vbo              : Gpu
     intern memory           : Gpu
     intern dumped           : bool
     intern descriptor_layouts : new VkDescriptorSetLayout [ 2 ] # fixed-size descriptor arrays

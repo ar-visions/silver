@@ -66,6 +66,14 @@ class ColorRegion
     public len   : i32 [ 0 ]
     public color : rgba
 
+# one rasterized code line: its own QUANTIZED canvas (width rounded to a 64px grid, high-
+# water → reuse never reallocs), content-addressed by a hash of the line's text + colors.
+# strong ownership; created once, recycled. a scrolled/unchanged line is a hit → just blit.
+class EdLineCache
+    mutable canvas : Canvas
+    mutable hash   : i64 [ -1 ]
+    mutable frame  : i32 [ -1 ]
+
 Layer EditorLayer
     mutable sel_color      : rgba
     mutable line_color     : rgba
@@ -106,6 +114,105 @@ Layer EditorLayer
         editor.sel_line = ln
         editor.sel_col  = cl
         editor.pristine = false
+
+    # content hash of a code line: text bytes + each color region (col/len/rgb). identical
+    # content → identical hash → the cached canvas is reused (scroll fast path).
+    func code_hash [ editor: Editor, msl: i32, ln: string ] -> i64
+        h : i64 [ 1469598103934665603 ]
+        for [ i: i32 0, i < ln.count, i += 1 ]
+            h = (h ^ i64[ ln[i] ]) * 1099511628211
+        nrg : i32 [ editor.line_reg_count[ msl ] ]
+        for [ ri: i32 0, ri < nrg, ri += 1 ]
+            cr : ColorRegion editor.line_reg[ msl, ri ]
+            h = (h ^ i64[ cr.col ]) * 1099511628211
+            h = (h ^ i64[ cr.len ]) * 1099511628211
+            h = (h ^ i64[ i32[ cr.color.r * 255.0 ] + i32[ cr.color.g * 255.0 ] * 256 + i32[ cr.color.b * 255.0 ] * 65536 ]) * 1099511628211
+        return h
+
+    # cached canvas holding a code line's rasterized text. content-addressed: a pooled canvas
+    # with the same hash is reused with NO work (scroll/unchanged → blit). a miss recycles a
+    # slot not used this frame (reusing its QUANTIZED canvas — resize within capacity is free,
+    # no realloc) or grows the pool, then rasterizes once with monospace column-math x.
+    func code_slot [ cv: Canvas, editor: Editor, msl: i32, ln: string, cmt_c: rgba, lh: f32, cw: f32, code_fs: i32 ] -> EdLineCache
+        ll : i32 [ ln.count ]
+        if [ ll == 0 ] return null
+        if [ !editor.code_lines ] editor.code_lines = array EdLineCache [ alloc: 64 ]
+        h : i64 [ code_hash[ editor, msl, ln ] ]
+        for [ slot: EdLineCache ] in editor.code_lines
+            if [ slot.canvas && slot.hash == h ]
+                slot.frame = editor.cl_frame
+                return slot
+        use : EdLineCache [ null ]
+        for [ slot: EdLineCache ] in editor.code_lines
+            if [ slot.frame != editor.cl_frame ]
+                use = slot
+                break
+        if [ !use ]
+            use = EdLineCache [ ]
+            editor.code_lines.push[ use ]
+        disp : editor.display_of[ ln ]
+        cw_i : i32 [ i32[ ceil[ f32[ disp.count ] * cw + cw ] ] ]
+        if [ cw_i < 1 ] cw_i = 1
+        lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
+        if [ !use.canvas ]
+            use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true, quantize: true ]
+            use.canvas.update[]
+        el [ use.canvas.content_w != cw_i || use.canvas.content_h != lh_i ]
+            use.canvas.resize[ cw_i, lh_i ]
+        lc : use.canvas
+        lc.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        if [ code_fs > 0 ] lc.font_size[ code_fs ]
+        editor.text_lines_frame += 1
+        editor.text_lines_total += 1
+        rw  : f32 [ f32[ cw_i ] ]
+        nrg : i32 [ editor.line_reg_count[ msl ] ]
+        if [ nrg == 0 ]
+            tc : rgba['#fff']
+            for [ k: i32 0, k < ll, k += 1 ]
+                if [ ln[k] == 35 ]
+                    tc = cmt_c
+                    break
+            lc.fill_color[ tc ]
+            lc.draw_text[ disp, rect [ x: 0.0, y: 0.0, w: rw, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        el
+            col : i32 [ 0 ]
+            for [ ri: i32 0, ri < nrg, ri += 1 ]
+                cr : ColorRegion editor.line_reg[ msl, ri ]
+                c0 : i32 [ cr.col ]
+                if [ c0 < 0 ] c0 = 0
+                if [ c0 > ll ] c0 = ll
+                sl : i32 [ cr.len ]
+                if [ c0 + sl > ll ] sl = ll - c0
+                if [ c0 > col ]
+                    gx : f32 [ f32[ editor.display_of[ ln.mid[ 0, col ] ].count ] * cw ]
+                    lc.fill_color[ rgba['#fff'] ]
+                    lc.draw_text[ editor.display_of[ ln.mid[ col, c0 - col ] ],
+                        rect [ x: gx, y: 0.0, w: rw, h: lh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    col = c0
+                if [ sl > 0 ]
+                    tx : f32 [ f32[ editor.display_of[ ln.mid[ 0, c0 ] ].count ] * cw ]
+                    lc.fill_color[ cr.color ]
+                    lc.draw_text[ ln.mid[ c0, sl ],
+                        rect [ x: tx, y: 0.0, w: rw, h: lh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    col = c0 + sl
+            if [ col < ll ]
+                gc : rgba['#fff']
+                for [ k: i32 col, k < ll, k += 1 ]
+                    if [ ln[k] == 35 ]
+                        gc = cmt_c
+                        break
+                ex : f32 [ f32[ editor.display_of[ ln.mid[ 0, col ] ].count ] * cw ]
+                lc.fill_color[ gc ]
+                lc.draw_text[ editor.display_of[ ln.mid[ col, ll - col ] ],
+                    rect [ x: ex, y: 0.0, w: rw, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        lc.paint[ ]
+        use.hash  = h
+        use.frame = editor.cl_frame
+        return use
 
     func draw [ cv: Canvas ]
         editor : Editor[ parent ]
@@ -173,6 +280,15 @@ Layer EditorLayer
         parent.mask_inset = vec4f [ title_bottom, 0.0, 0.0, gut_w ]
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
+        editor.text_lines_frame = 0
+        # per-line cache: tick the frame; flush all slots when font metrics change (size/zoom).
+        editor.cl_frame += 1
+        if [ editor.cl_cw != cw_tm.w || editor.cl_lh != lh ]
+            if [ editor.code_lines ]
+                for [ slot: EdLineCache ] in editor.code_lines
+                    slot.hash = -1
+            editor.cl_cw = cw_tm.w
+            editor.cl_lh = lh
         # rebuild the flat row model (base code lines + spliced-in expanded debug
         # field rows) once per frame, before any layout/draw consults line_count.
         editor.rebuild_flat[]
@@ -185,6 +301,27 @@ Layer EditorLayer
         # negative (above the top) or past the end of the content.
         max_scroll : f32 [ editor.content_h - bounds.h ]
         if [ max_scroll < 0.0 ] max_scroll = 0.0
+        # fold this frame's accumulated raw wheel delta into the target (speed applied here,
+        # once, with the current line height) and clear it.
+        if [ editor.pending_wheel != 0.0 ]
+            editor.scroll_target = editor.scroll_target - editor.pending_wheel * lh * 0.375
+            editor.pending_wheel = 0.0
+        if [ editor.scroll_target < 0.0 ] editor.scroll_target = 0.0
+        if [ editor.scroll_target > max_scroll ] editor.scroll_target = max_scroll
+        # ease scroll.y toward the target each frame → smooth, frame-paced scrolling. when a
+        # direct setter (drag, cursor-follow) moved scroll.y, the target was synced to it, so
+        # this is a no-op then. keep requesting frames while there's distance left to cover.
+        sdy : f32 [ editor.scroll_target - editor.scroll.y ]
+        if [ (sdy > 0.5) || (sdy < 0.0 - 0.5) ]
+            editor.scroll.y = editor.scroll.y + sdy * 0.35
+            # the glide changes scroll.y, so the pane must redraw next frame. needs_frame is
+            # the flag that survives the post-draw `pristine = true` (trinity keeps the element
+            # dirty when it's set), so the ease keeps running on its own instead of stalling
+            # until a hover. also wake the render loop.
+            parent.needs_frame = true
+            if [ editor.ux ] editor.ux.will_animate = true
+        el
+            editor.scroll.y = editor.scroll_target
         if [ editor.scroll.y < 0.0 ] editor.scroll.y = 0.0
         if [ editor.scroll.y > max_scroll ] editor.scroll.y = max_scroll
 
@@ -305,6 +442,24 @@ Layer EditorLayer
         if [ editor.scroll.x > 0.0 ]
             cv.set_crop[ wtx + bounds.x + gut_w, wty + bounds.y,
                 wtx + bounds.x + bounds.w - rin, wty + bounds.y + bounds.h ]
+        # RESERVE pass: mark every visible CACHED line's slot as used THIS frame before any
+        # miss rasters. without this, a top-of-screen miss (scroll-up) recycles a slot still
+        # needed by a line below → that line misses → cascade (all lines re-raster). after
+        # this, recycling can only ever evict a genuinely off-screen slot.
+        if [ editor.code_lines ]
+            for [ rli: i32 0, rli < editor.line_count[], rli += 1 ]
+                ry : f32 [ y0 + f32[rli] * lh - editor.scroll.y ]
+                if [ ry + lh < bounds.y ] continue
+                if [ ry > bounds.y + bounds.h ] break
+                if [ editor.row_header[ rli ] ] continue
+                if [ editor.row_var[ rli ] ] continue
+                rln : editor.line_get[ rli ]
+                if [ rln.count == 0 ] continue
+                rhash : i64 [ code_hash[ editor, editor.row_src[ rli ], rln ] ]
+                for [ slot: EdLineCache ] in editor.code_lines
+                    if [ slot.canvas && slot.hash == rhash ]
+                        slot.frame = editor.cl_frame
+                        break
         for [ li: i32 0, li < editor.line_count[], li += 1 ]
             y : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
             if [ editor.row_header[ li ] ]
@@ -352,65 +507,15 @@ Layer EditorLayer
                     rect [ x: dpx, y: y, w: bounds.x + bounds.w - rin - dpx, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 continue
-            # single-pass syntax render: the line is drawn as a sequence of runs — gaps
-            # (whitespace/comments) in the base color, tokens in their theme color — each
-            # glyph rendered EXACTLY once. monospace: measure_text(prefix) lands every run on
-            # its exact column; clamping keeps mid[] from reading past end-of-line.
-            base  : rgba [ (li == hl_line && hl_text) ? hl_text : rgba['#fff'] ]
-            # silver doesn't tokenize comments, so a '#' (35) in a GAP can only be a comment
-            # (strings are covered by tokens) → tint the run that contains it muted.
+            # per-line cache: a scrolled/unchanged line is a hash HIT → just composite its
+            # cached canvas at the row's y (no raster). only a first-seen/changed line rasters.
             cmt_c : rgba['#7a8290']
             msl   : i32 [ editor.row_src[ li ] ]
-            nrg   : i32 [ editor.line_reg_count[ msl ] ]
-            ll    : i32 [ ln.count ]
-            rw    : f32 [ bounds.w - gut_w - rin ]
-            if [ nrg == 0 || ll == 0 ]
-                lc : rgba [ base ]
-                for [ k: i32 0, k < ll, k += 1 ]
-                    if [ ln[k] == 35 ]
-                        lc = cmt_c
-                        break
-                cv.fill_color[ lc ]
-                cv.draw_text[ editor.display_of[ ln ],
-                    rect [ x: x0, y: y, w: rw, h: lh ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-            el
-                col : i32 [ 0 ]
-                for [ ri: i32 0, ri < nrg, ri += 1 ]
-                    cr : ColorRegion editor.line_reg[ msl, ri ]
-                    c0 : i32 [ cr.col ]
-                    if [ c0 < 0 ] c0 = 0
-                    if [ c0 > ll ] c0 = ll
-                    sl : i32 [ cr.len ]
-                    if [ c0 + sl > ll ] sl = ll - c0
-                    # gap before this token (base color)
-                    if [ c0 > col ]
-                        gx : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ 0, col ] ] ].w ]
-                        cv.fill_color[ base ]
-                        cv.draw_text[ editor.display_of[ ln.mid[ col, c0 - col ] ],
-                            rect [ x: x0 + gx, y: y, w: rw, h: lh ],
-                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-                        col = c0
-                    # the token itself (theme color)
-                    if [ sl > 0 ]
-                        tx : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ 0, c0 ] ] ].w ]
-                        cv.fill_color[ cr.color ]
-                        cv.draw_text[ ln.mid[ c0, sl ],
-                            rect [ x: x0 + tx, y: y, w: rw, h: lh ],
-                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-                        col = c0 + sl
-                # trailing gap after the last token (base, or muted if it holds a comment)
-                if [ col < ll ]
-                    gc : rgba [ base ]
-                    for [ k: i32 col, k < ll, k += 1 ]
-                        if [ ln[k] == 35 ]
-                            gc = cmt_c
-                            break
-                    ex : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ 0, col ] ] ].w ]
-                    cv.fill_color[ gc ]
-                    cv.draw_text[ editor.display_of[ ln.mid[ col, ll - col ] ],
-                        rect [ x: x0 + ex, y: y, w: rw, h: lh ],
-                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            slc   : code_slot[ cv, editor, msl, ln, cmt_c, lh, cw_tm.w, code_fs ]
+            if [ slc && slc.canvas ]
+                cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
+        if [ editor.text_lines_frame > 0 ]
+            puts 'TEXT RASTER: {editor.text_lines_frame} lines this frame ({editor.text_lines_total} total)'
         cv.paint[ ]
 
         # ---- debug-active: inline ghost value annotations (# name = value) ----
@@ -685,6 +790,22 @@ Control Editor
     # soft-tab width: spaces emitted per Tab (aligned to the next multiple). matches the
     # 4-space indent these .ag files use (and silver's tab = 4 indent units).
     mutable tab_w         : i32 [ 4 ]
+    # map mtime this editor last loaded syntax from; fmt_poll applies the map to any editor
+    # whose value is behind, so a pane created AFTER the map loaded still gets highlighted.
+    mutable fmt_mtime     : i64 [ 0 ]
+    # smooth scroll: the wheel event only collects raw delta into pending_wheel; each render
+    # frame folds it into scroll_target (with speed) and eases scroll.y toward the target, so
+    # motion is paced by the frame rate and the per-event delta is never transformed.
+    mutable scroll_target : f32 [ 0.0 ]
+    mutable pending_wheel : f32 [ 0.0 ]
+    # DIAG: line RASTERIZATION counters (cache misses only) — per-frame + cumulative.
+    mutable text_lines_frame : i32 [ 0 ]
+    mutable text_lines_total : i64 [ 0 ]
+    # per-line rasterized-text cache (content-addressed, quantized canvases, recycled).
+    mutable code_lines    : array EdLineCache
+    mutable cl_frame      : i32 [ 0 ]
+    mutable cl_cw         : f32 [ 0.0 ]
+    mutable cl_lh         : f32 [ 0.0 ]
     # unlimited undo/redo, delta-based. `hist` aliases the current file's cur_buf.hist
     # (linked list of EditAction delta groups, shared by reference like lines↔buf.lines);
     # hist_i is the cursor = number of applied groups, mirrored into cur_buf by touch_hist.
@@ -1055,6 +1176,44 @@ Control Editor
             cur_buf.regions = null
             cur_buf.reg_off = null
 
+    # rebuild the per-line offset index from the (line-sorted) regions. reg_off[L] = first
+    # region index whose line >= L; a line's spans are [reg_off[L], reg_off[L+1]).
+    func rebuild_reg_off [ buf: FileBuf ]
+        if [ !buf || !buf.regions ] return
+        mx : i32 [ 0 ]
+        for [ ri: i32 0, ri < buf.regions.count, ri += 1 ]
+            cr : ColorRegion buf.regions[ ri ]
+            if [ cr.line + 1 > mx ] mx = cr.line + 1
+        ro : array i32 []
+        ci : i32 [ 0 ]
+        for [ L: i32 0, L <= mx, L += 1 ]
+            while [ ci < buf.regions.count ]
+                cr : ColorRegion buf.regions[ ci ]
+                if [ cr.line >= L ] break
+                ci += 1
+            ro.push[ ci ]
+        buf.reg_off = ro
+
+    # keep existing syntax regions aligned with a line insert/delete BEFORE the async
+    # re-tokenize lands: delta +1 (insert at `at`) pushes regions at/below `at` down; delta
+    # -1 (remove `at`) drops that line's regions and pulls the rest up. regions stay sorted.
+    func shift_regions [ at: i32, delta: i32 ]
+        if [ !cur_buf || !cur_buf.regions ] return
+        if [ delta > 0 ]
+            for [ ri: i32 0, ri < cur_buf.regions.count, ri += 1 ]
+                cr : ColorRegion cur_buf.regions[ ri ]
+                if [ cr.line >= at ] cr.line = cr.line + delta
+            rebuild_reg_off[ cur_buf ]
+        el [ delta < 0 ]
+            kept : array ColorRegion []
+            for [ ri: i32 0, ri < cur_buf.regions.count, ri += 1 ]
+                cr : ColorRegion cur_buf.regions[ ri ]
+                if [ cr.line == at ] continue
+                if [ cr.line > at ] cr.line = cr.line + delta
+                kept.push[ cr ]
+            cur_buf.regions = kept
+            rebuild_reg_off[ cur_buf ]
+
     # read the binary syntax map file silver wrote during its build (--format <mapfile>),
     # distributing per-line ColorRegion arrays into each file's buffer (keyed by the
     # canonical path silver emits). the map is a byproduct of the normal build/watch
@@ -1139,8 +1298,12 @@ Control Editor
 
     # raw line ops (no recording) — used by undo/redo replay.
     func raw_set    [ i: i32, val: string ]    line_set[ i, val ]
-    func raw_insert [ i: i32, val: string ]    lines.insert_after[ val, i - 1 ]
-    func raw_remove [ i: i32 ]                 lines.remove[ i ]
+    func raw_insert [ i: i32, val: string ]
+        lines.insert_after[ val, i - 1 ]
+        shift_regions[ i, 1 ]
+    func raw_remove [ i: i32 ]
+        shift_regions[ i, -1 ]
+        lines.remove[ i ]
 
     # append an op to the open group, opening one lazily (capturing the before-caret and
     # discarding the redo tail) on the first op. consecutive replaces of the SAME line
@@ -1174,14 +1337,12 @@ Control Editor
         rec[ LineOp [ at: i, kind: 0, before: old, after: val ] ]
 
     func ed_insert [ i: i32, val: string ]     # val becomes line i (shifts the rest down)
-        lines.insert_after[ val, i - 1 ]
-        fmt_invalidate[]
+        raw_insert[ i, val ]                    # inserts the line AND shifts regions down
         rec[ LineOp [ at: i, kind: 1, after: val ] ]
 
     func ed_remove [ i: i32 ]
         old : line_get[ i ]
-        lines.remove[ i ]
-        fmt_invalidate[]
+        raw_remove[ i ]                         # shifts regions up AND removes the line
         rec[ LineOp [ at: i, kind: 2, before: old ] ]
 
     func apply_undo [ g: EditAction ]
@@ -1475,6 +1636,7 @@ Control Editor
             sy : f32 [ sb.drag_to[ my ] ]
             if [ sy >= 0.0 ]
                 scroll.y        = sy
+                scroll_target   = sy
                 scroll_dragging = true
                 sb.active       = true
                 pristine        = false
@@ -1533,6 +1695,7 @@ Control Editor
                 # subtract scroll.y (folded in by find_target) — thumb is screen-space
                 sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y - scroll.y ] ]
                 if [ sy >= 0.0 ] scroll.y = sy
+            scroll_target = scroll.y
             pristine = false
             ux.will_animate = true
             return
@@ -1565,14 +1728,20 @@ Control Editor
             hover_ann = ha
             pristine = false
             ux.will_animate = true
-        # only repaint on an actual hover change (row / gutter). the scrollbar's
-        # proximity tracking is owned by ScrollLayer, which sustains frames while the
-        # cursor is in its zone — so the editor doesn't blanket-request frames here.
+        # only repaint on a hover change that ACTUALLY affects what's drawn. hover_line drives
+        # the glow/gutter highlight only in list mode (finder/results); otherwise hl_line is
+        # the debugger stop line, so a code-line hover changes nothing visible. the header
+        # close-icon is the other hover-dependent bit (shown over a header's gutter). outside
+        # those, update the value but DON'T force a full text re-render every mouse move.
         if [ hl != hover_line || hg != hover_gutter ]
+            in_list : bool [ finder_list || show_hits ]
+            oh : bool [ hover_line >= 0 && (row_header[ hover_line ] || (hover_line > 0 && row_header[ hover_line - 1 ])) ]
+            nh : bool [ hl >= 0 && (row_header[ hl ] || (hl > 0 && row_header[ hl - 1 ])) ]
             hover_line   = hl
             hover_gutter = hg
-            pristine = false
-            ux.will_animate = true
+            if [ in_list || oh || nh ]
+                pristine = false
+                ux.will_animate = true
 
     func on_leave [ ev: Event ]
         if [ hover_line != -1 || hover_gutter || hover_ann != -1 ]
@@ -1598,9 +1767,10 @@ Control Editor
             scroll.x = scroll.x - ev.mouse.wheel_delta.y * cw * 3.0
             if [ scroll.x < 0.0 ] scroll.x = 0.0
         el
-            # ~1/8 the old speed (was lh * 3.0) — the wheel deltas here are large, so a
-            # full line-height * 3 per tick scrolled far too fast.
-            scroll.y = scroll.y - ev.mouse.wheel_delta.y * lh * 0.375
+            # the event only COLLECTS the raw wheel delta — no scaling here. the render frame
+            # consumes pending_wheel once per frame, applies the speed, and eases. keeping the
+            # transform out of the event avoids per-event/lh inconsistencies in how it applies.
+            pending_wheel = pending_wheel + ev.mouse.wheel_delta.y
         pristine = false
         ux.will_animate = true
 
@@ -1615,6 +1785,7 @@ Control Editor
         bot : top + lh
         if [ bot > scroll.y + vh ] scroll.y = bot - vh
         if [ top < scroll.y ]      scroll.y = top
+        scroll_target = scroll.y
         pristine = false
         ux.will_animate = true
 
@@ -1778,6 +1949,7 @@ Control Editor
             el
                 sel_line = snap_row[ clamp[ sel_line + half2, 0, line_count[] - 1 ] ]
                 scroll.y = scroll.y + f32[ half2 ] * lh
+            scroll_target = scroll.y
             sel_col  = clamp[ sel_col, 0, line_get[ sel_line ].count ]
             # plain page move collapses the selection to the cursor (no highlight);
             # shift+page extends it, like a normal editor.

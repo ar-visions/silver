@@ -128,7 +128,7 @@ abstract live_app media_app
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            puts 'PERF fps={frames} draw={vk.draw_us} bindus={vk.bindres_us} resize={vk.resize_us} rcalls={vk.resize_calls} bindres={vk.bindres_calls} paints={vk.paint_calls}'
+            puts 'PERF fps={frames} draw={vk.draw_us} syncs={vk.sync_calls} syncus={vk.sync_us} bindus={vk.bindres_us} rallocs={vk.render_allocs} resize={vk.resize_us} rcalls={vk.resize_calls} paints={vk.paint_calls} samplers={vk.sampler_count}'
             vk.resize_us    = 0
             vk.resize_calls = 0
             frames = 0
@@ -1243,88 +1243,94 @@ Display Window
             background.update*[]
     
     func update [ ]
-        # DEBUG step 3: full canvases + full composition chain using UX shader.
-        compose  = (compose  || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
+        # determine the background up front so the frosted-compositor chain below is built
+        # only when there's a real (non-solid) background. solid-color app → background null.
+        if [ !background && background_type ]
+            update_background[ background_type ]
+
+        # glyph (text atlas) and screen are always needed; compose only feeds the frosted
+        # compositor, so it's allocated only when there's a background to frost.
         glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.u8,    :width, :height ]).resize[ width, height ]
         screen   = (screen   || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
-
-        compose .update[]
         glyph   .update[]
         screen  .update[]
-
-        compose .clear[ string[ "#888" ] ]
         glyph   .clear[ string[ "#000" ] ]
         screen  .clear[ string[ "#000" ] ]
+
+        if [ background ]
+            compose = (compose || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
+            compose.update[]
+            compose.clear[ string[ "#888" ] ]
 
         if [ !is_setup ]
             is_setup = true
             ctx: vk_context[ a.vk ]
 
-            if [ !background ]
-                update_background[ background_type ]
-
+            # frosted-background compositor: built ONLY when there's a real (non-solid)
+            # background to frost. a solid-color app has background == null and skips this
+            # whole chain — no compose, reduction pyramid, blur/frost, or m_view/r_view —
+            # so it costs nothing and elements draw straight to screen over the clear color.
             if [ background ]
                 background.render.update[]
 
-            # todo: we need ability to skip this sequence if background is a clear_color
-            m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': background.render.color ] ]
-            r_reduce  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
+                m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': background.render.color ] ]
+                r_reduce  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
 
-            m_reduce0 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce.color ] ]
-            r_reduce0 = Render [ vk: ctx, w: a, wscale: 0.5, models: array Model [ m_reduce0 ] ]
+                m_reduce0 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce.color ] ]
+                r_reduce0 = Render [ vk: ctx, w: a, wscale: 0.5, models: array Model [ m_reduce0 ] ]
 
-            m_reduce1 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
-            r_reduce1 = Render [ vk: ctx, w: a, wscale: 0.25, models: array Model [ m_reduce1 ] ]
+                m_reduce1 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
+                r_reduce1 = Render [ vk: ctx, w: a, wscale: 0.25, models: array Model [ m_reduce1 ] ]
 
-            fbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 4.0 ]
-            m_blur_v  = Model  [ w: a, s: fbv, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
-            r_blur_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_blur_v ] ]
+                fbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 4.0 ]
+                m_blur_v  = Model  [ w: a, s: fbv, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
+                r_blur_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_blur_v ] ]
 
-            fbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 4.0 ]
-            m_blur    = Model  [ w: a, s: fbl, samplers: map Texture[string] [ 'color': r_blur_v.color ] ]
-            r_blur    = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_blur ] ]
+                fbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 4.0 ]
+                m_blur    = Model  [ w: a, s: fbl, samplers: map Texture[string] [ 'color': r_blur_v.color ] ]
+                r_blur    = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_blur ] ]
 
-            m_reduce2 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
-            r_reduce2 = Render [ vk: ctx, w: a, wscale: 0.125, models: array Model [ m_reduce2 ] ]
+                m_reduce2 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
+                r_reduce2 = Render [ vk: ctx, w: a, wscale: 0.125, models: array Model [ m_reduce2 ] ]
 
-            m_reduce3 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce2.color ] ]
-            r_reduce3 = Render [ vk: ctx, w: a, wscale: 0.0625, models: array Model [ m_reduce3 ] ]
+                m_reduce3 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce2.color ] ]
+                r_reduce3 = Render [ vk: ctx, w: a, wscale: 0.0625, models: array Model [ m_reduce3 ] ]
 
-            bv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 16.0 ]
-            m_frost_v = Model  [ w: a,   s: bv, samplers: map Texture[string] [ 'color': r_reduce3.color ] ]
-            r_frost_v = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_frost_v ] ]
+                bv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 16.0 ]
+                m_frost_v = Model  [ w: a,   s: bv, samplers: map Texture[string] [ 'color': r_reduce3.color ] ]
+                r_frost_v = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_frost_v ] ]
 
-            bl : Blur [ vk: ctx, name: 'blur', reduction_scale: 16.0 ]
-            m_frost   = Model  [ w: a,   s: bl, samplers: map Texture[string] [ 'color': r_frost_v.color ] ]
-            r_frost   = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_frost ] ]
+                bl : Blur [ vk: ctx, name: 'blur', reduction_scale: 16.0 ]
+                m_frost   = Model  [ w: a,   s: bl, samplers: map Texture[string] [ 'color': r_frost_v.color ] ]
+                r_frost   = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_frost ] ]
 
-            m_view    = Model [ w: w, s: UXBackground [ vk: ctx, name: 'ux' ],
-                samplers: map Texture[string] [
-                    'background':     background.render.color,
-                    'frost':          r_frost.color,
-                    'blur':           r_blur.color,
-                    'compose':        compose.color
+                m_view    = Model [ w: w, s: UXBackground [ vk: ctx, name: 'ux' ],
+                    samplers: map Texture[string] [
+                        'background':     background.render.color,
+                        'frost':          r_frost.color,
+                        'blur':           r_blur.color,
+                        'compose':        compose.color
+                    ]
                 ]
-            ]
 
-            r_view    = Render [ vk: ctx, w: a,
-                color: screen.color,
-                wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
-                models: array Model [ m_view ] ]
+                r_view    = Render [ vk: ctx, w: a,
+                    color: screen.color,
+                    wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
+                    models: array Model [ m_view ] ]
 
-            ux_shader : UXBackground [ m_view.s ]
-            ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
-            ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
+                ux_shader : UXBackground [ m_view.s ]
+                ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
+                ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
 
-            list = array Render [
-                background.render, r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
-                r_reduce2, r_reduce3, r_frost_v, r_frost,
-                r_view ]
-            # throttle the entire background chain (all but r_view); r_view composites
-            # fresh UI over a cached background frost so it must draw every frame
-            for [ i: i32 0, i < list.count - 1, i += 1 ]
-                bg : Render list[i]
-                bg.draw_interval = 16
+                list = array Render [
+                    background.render, r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
+                    r_reduce2, r_reduce3, r_frost_v, r_frost,
+                    r_view ]
+                # throttle the entire background chain (all but r_view); r_view composites
+                # fresh UI over a cached background frost so it must draw every frame
+                for [ i: i32 0, i < list.count - 1, i += 1 ]
+                    bg : Render list[i]
+                    bg.draw_interval = 16
         el
             if [ list ]
                 for [ r: Render ] in list
@@ -1378,17 +1384,17 @@ Display Window
     func on_compose []
         if [ !compose ] return
         if [ resizing ] return
-        compose.save    [ ]
-        compose.clear   [ '#00a' ]
+        #compose.save    [ ]
+        #compose.clear   [ '#00a' ]
         update_all      [ app_object.on_render*[ a ] ]
         animate         [ ]
         # advance every seam's eased active ONCE here, before either tree walk reads
         # it — so compose and screen render the moving edge at the same position.
         tick_binds      [ root ]
-        draw_element    [ root, CanvasType.compose, null ]
-        compose.paint   [ ]
-        compose.sync_fence[ ]
-        compose.restore [ ]
+        #draw_element    [ root, CanvasType.compose, null ]
+        #compose.paint   [ ]
+        #compose.sync_fence[ ]
+        #compose.restore [ ]
 
     func on_screen []
         if [ !screen ] return
@@ -1418,6 +1424,7 @@ Display Window
             false ]
         ##
         screen.paint[]
+        screen.flush_text[]
         screen.sync_fence[]
         screen.restore[]
 
@@ -1635,15 +1642,24 @@ Display Window
             # textures (no realloc) and only the content size + blit UV change; the
             # cache_w/cache_h we track stays the exact logical size for the blit.
             if [ e.cache_canvas ]
+                # only an actual GPU realloc (capacity grew past the quantized high-water mark)
+                # clears the texture → needs a content re-render. a logical-size-only resize
+                # within capacity preserves the pixels, so the cached content stays valid; the
+                # mask + blit (applied at the final screen composite) handle the new size. don't
+                # force a re-raster of all layers (e.g. the editor's text) on a pure resize.
+                cap_w0 : i32 [ e.cache_canvas.width ]
+                cap_h0 : i32 [ e.cache_canvas.height ]
                 e.cache_canvas.resize[ ew, eh ]
+                if [ e.cache_canvas.width != cap_w0 || e.cache_canvas.height != cap_h0 ]
+                    e.pristine = false
             el
                 e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true, quantize: true ]
                 e.cache_canvas.update[]
+                e.pristine = false
             e.cache_w = ew
             e.cache_h = eh
             e.cache_ox = margin_l
             e.cache_oy = margin_t
-            e.pristine = false
 
         #puts 'target_cv set'
         target_cv : (e.cache_canvas && !e.volatile && stage == CanvasType.screen) ? e.cache_canvas : cv
@@ -1669,6 +1685,12 @@ Display Window
             cv.translate[ -pivot_x, -pivot_y ]
 
         redraw : bool [ e.volatile || !e.pristine || stage == CanvasType.compose ]
+        # DIAG: log every element that re-rasterizes its layers (text) this frame into its
+        # cache — during a resize the cache is invalidated (pristine=false) per frame, so
+        # this fires continuously and proves the text is being re-rendered on every drag step.
+        if [ redraw && e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
+            eid : string [ (e.id && e.id.count > 0) ? e.id : '(noid)' ]
+            #puts 'REDRAW {eid} {ew}x{eh} pristine={e.pristine}'
         if [ redraw && e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
             e.cache_canvas.reset[ vec4f[0.0, 0.0, 0.0, 0.0] ]
             if [ e.cache_ox > 0 || e.cache_oy > 0 ]
@@ -1891,14 +1913,14 @@ Display Window
             # (no hold) — without this, the reassign frees screen/compose when
             # nothing else pads their refcount. released after the restore.
             prev_screen  : hold[ a.screen ]
-            prev_compose : hold[ a.compose ]
+            #prev_compose : hold[ a.compose ]
             if [ stage == CanvasType.screen ]  a.screen  = target_cv
-            if [ stage == CanvasType.compose ] a.compose = target_cv
+            #if [ stage == CanvasType.compose ] a.compose = target_cv
             e.draw*[ a ]
             a.screen  = prev_screen
-            a.compose = prev_compose
+            #a.compose = prev_compose
             drop[ prev_screen ]
-            drop[ prev_compose ]
+            #drop[ prev_compose ]
             if [ !e.volatile && stage == CanvasType.screen ]
                 if [ e.cache_ox > 0 || e.cache_oy > 0 ]
                     target_cv.restore[]
@@ -1920,11 +1942,18 @@ Display Window
                     # cache.width is already device pixels; Canvas init multiplies the
                     # constructor size by scale, so pre-divide to land exactly on it.
                     mcs : f32 [ (a.scale > 0.0) ? a.scale : 1.0 ]
-                    # force-free the old mask canvas's GPU resources before replacing it
-                    # (refcount dealloc never runs while a pipeline holds the texture).
-                    if [ e.mask_canvas ] e.mask_canvas.teardown_gpu[]
-                    e.mask_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: i32[ e.cache_canvas.width / mcs ], height: i32[ e.cache_canvas.height / mcs ], load_existing: true ]
-                    e.mask_canvas.update[]
+                    if [ !e.mask_canvas ]
+                        # create the Render ONCE; afterwards we only resize (quantized, so a
+                        # logical-size change within capacity is a no-op realloc) and re-paint
+                        # the fade. recreating it per frame churned a framebuffer (~20ms each)
+                        # on every drag step — the resize 10fps. quantize=true mirrors the
+                        # cache's UV layout so the shared content/texture uv still aligns.
+                        e.mask_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: i32[ e.cache_canvas.width / mcs ], height: i32[ e.cache_canvas.height / mcs ], load_existing: true, quantize: true ]
+                        e.mask_canvas.update[]
+                    el
+                        # match the cache's capacity (same quantized logical size) — within a
+                        # 64px bucket this changes only content_w/h + uv, no GPU realloc.
+                        e.mask_canvas.resize[ i32[ e.cache_canvas.width / mcs ], i32[ e.cache_canvas.height / mcs ] ]
                     e.mask_canvas.content_w = ew
                     e.mask_canvas.content_h = eh
                     e.mask_w = ew

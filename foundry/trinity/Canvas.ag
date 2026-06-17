@@ -1187,6 +1187,11 @@ Render Canvas
     intern sdf_tex       : Texture
     intern image_override : Texture
     intern mask_override  : Texture
+    # per-ring-slot flag: draw_canvas left a TRANSIENT (line-cache) texture bound in binding #1
+    # of this descriptor slot. a later solid paint that reuses the slot (free-running draw_slot)
+    # must reset binding #1 to the always-alive sdf_tex placeholder first — the transient view
+    # may have been destroyed by the source canvas's resize, and binding a dead view is a crash.
+    intern image_dirty   : new bool [ 64 ]
     # logical content size — what the caller draws into (top-left of the texture).
     # width/height are the QUANTIZED GPU capacity (rounded up to a 64px grid by
     # resize), so a 1px drag reuses the same textures instead of reallocating every
@@ -1218,11 +1223,19 @@ Render Canvas
     # text_render shares the canvas's color/depth and uses LOAD_OP_LOAD so
     # the text quads composite on top of whatever the canvas just drew.
     intern  text_shader      : CanvasText
-    intern  text_vbo         : Gpu          # custom (vec2 pos, vec2 uv) layout
+    intern  text_vbo         : Gpu          # current ring slot (vec2 pos, vec2 uv) layout
     intern  text_pipeline    : Pipeline     # bound to text_shader + text_vbo
     intern  text_model       : Model        # holds text_pipeline; lives in text_render.models
     intern  text_render      : Render       # own Render targeting canvas color
     intern  text_max_verts   : i32 [ 4096 ]
+    # ring of vertex buffers: each draw_text_pass writes the NEXT slot and BATCHES its draw
+    # into text_render (no per-draw submit/wait). draw[] advances text_render.draw_slot so each
+    # batched draw gets its own descriptor/UBO slot too — vbo AND uniform ring stay in lockstep.
+    # we fence ONLY when the ring wraps (once per text_ring_n draws), which frees every slot and
+    # resets draw_slot together. flush_text[] submits the trailing partial batch before sampling.
+    intern  text_vbo_ring    : array Gpu
+    intern  text_vbo_idx     : i32 [ 0 ]
+    intern  text_ring_n      : i32 [ 8 ]
     # ---- blur cascade (built in init) ----
     # 8 reduction stages (1/2, 1/4, ..., 1/256); per-stage blur_v + blur_h.
     # Canvas.blur[radius] picks stage k = clamp(ceil(log2(radius/4)), 0, 7)
@@ -1334,11 +1347,15 @@ Render Canvas
         text_vsize  : i32 [ 16 ]
         text_vcount : i32 [ text_max_verts ]
         text_mcount : i32 [ 2 ]
-        text_vbo = Gpu [ vk: vk, name: 'text',
-            members: text_members, member_count: text_mcount,
-            vertex_size: text_vsize, vertex_count: text_vcount ]
-
-        text_vbo.sync[ w ]
+        # allocate the ring of text vbos (all same layout); text_vbo points at the current one
+        text_vbo_ring = array Gpu [ alloc: text_ring_n ]
+        for [ ri: i32 0, ri < text_ring_n, ri += 1 ]
+            g : Gpu [ vk: vk, name: 'text',
+                members: text_members, member_count: text_mcount,
+                vertex_size: text_vsize, vertex_count: text_vcount ]
+            g.sync[ w ]
+            text_vbo_ring.push[ g ]
+        text_vbo = text_vbo_ring[ 0 ]
         # text_render is constructed BEFORE its pipeline so we have a Render
         # for the pipeline's `r` field. We pass color pre-set so this Render
         # reuses the canvas's existing color attachment instead of allocating
@@ -1447,6 +1464,13 @@ Render Canvas
         if [ qw == width && qh == height ] return a  # capacity unchanged — no realloc
         rz0 : i64 [ epoch_micros[] ]
         vk.resize_calls += 1
+        # we're about to DESTROY this canvas's color/depth/framebuffers and recreate them at the
+        # new size. any in-flight command buffer (a prior frame's screen/compose batch still on
+        # the queue, or another canvas compositing THIS one) may still reference the old views —
+        # freeing them under an executing submit is a device-lost ("Invalid Resource") that
+        # surfaces later as a crash in sync_fence. drain the GPU before reallocating. this only
+        # runs on an actual capacity grow (quantize boundary crossing), so it's rare, not per-frame.
+        vkDeviceWaitIdle[ vk.device ]
         width  = qw
         height = qh
         update[]                                     # Render: color/depth + framebuffers
@@ -1908,6 +1932,14 @@ Render Canvas
         # inv. UVs stay in atlas texels (sample the full-res bitmap) — that's what
         # makes the text crisp instead of an upscaled logical-size atlas.
         inv : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
+        # pick the next ring slot up front so the glyphs we write below land in a buffer the GPU
+        # isn't reading. fence ONLY on wrap (idx % N == 0) — that drains the whole prior cycle so
+        # every slot AND text_render.draw_slot (the descriptor/UBO ring) are free together.
+        if [ text_vbo_idx % text_ring_n == 0 && text_vbo_idx > 0 ]
+            text_render.sync_fence[]
+        text_vbo = text_vbo_ring[ text_vbo_idx % text_ring_n ]
+        text_pipeline.vbo = text_vbo
+        text_vbo_idx += 1
         verts : ref f32 [ text_vbo.vertex_data ]
         vi    : i32 [ 0 ]
         pen_x : f32 [ pen_x_in ]
@@ -1995,12 +2027,11 @@ Render Canvas
             # round-trip PER text line (the fps wall); the ring-wrap is the only real wait.
             flush_submit[]
             text_render.update[]
+            # BATCH — no submit/wait here. draw[] records into text_render's open command buffer
+            # and advances draw_slot (this draw's own UBO/descriptor slot). consecutive draw_text
+            # calls thus pipeline with zero GPU round-trips; the only wait is the wrap-fence above.
+            # flush_text[] (called from draw_canvas before sampling) submits the trailing batch.
             text_render.draw[]
-            # WAIT here: text_vbo is a single shared buffer, so the GPU must finish reading
-            # this line's glyph quads before the next draw_text overwrites them. (the UI
-            # flush above needs no wait — Metal serializes the queue.) ringing text_vbo
-            # would let this drop to a flush too.
-            text_render.sync_fence[]
 
     func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, overflow: Overflow, shadow: Shadow ] -> rect
         if [ !text ] return bounds
@@ -2255,12 +2286,20 @@ Render Canvas
                 mdl.cache.sync_fence[]
         draw_canvas[ mdl.cache, ox, oy, rw, rh ]
 
+    # submit text_render's trailing (post-wrap) batch so its glyphs land on the queue BEFORE
+    # this canvas is sampled. no-op if no text was drawn (flush_submit returns when !recording).
+    # flush only (no cpu-wait) — queue order guarantees the text executes before any later sample.
+    public func flush_text []
+        if [ text_render ]
+            text_render.flush_submit[]
+
     func draw_canvas [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
         # 1-wait-per-frame: SUBMIT src's batch but DON'T cpu-wait it here. queue order
         # guarantees src executes before this canvas's draws (submitted after), so the
         # sample reads finished pixels without 70 per-composite vkWaitForFences/frame.
         if [ src ]
             src.flush_submit[]
+            src.flush_text[]
         tex : Texture [ (src.reduction) ? src.reduction : src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
@@ -2292,8 +2331,10 @@ Render Canvas
         # GPU is still writing is a Metal "Invalid Resource" → device lost.
         if [ src ]
             src.flush_submit[]
+            src.flush_text[]
         if [ mask_src ]
             mask_src.flush_submit[]
+            mask_src.flush_text[]
         tex  : Texture [ (src.reduction) ? src.reduction : src.color ]
         mtex : Texture [ (mask_src.reduction) ? mask_src.reduction : mask_src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
@@ -2541,6 +2582,10 @@ Render Canvas
                         p.rebind_image[ image_override ]
                         if [ mask_override ]
                             p.rebind_mask[ mask_override ]
+                # this slot now holds a transient texture in binding #1 — mark it so a later
+                # solid paint that lands on the same ring slot resets it before binding.
+                if [ draw_slot >= 0 && draw_slot < 64 ]
+                    image_dirty[ draw_slot ] = true
         el
             # arbitrary path — GPU compute SDF. on cache miss the edge list
             # was just extracted above; on cache hit we reuse the edges that
@@ -2622,6 +2667,21 @@ Render Canvas
                 st.stroke_color_pos.x, st.stroke_color_pos.y,
                 st.stroke_grad_pos.x,  st.stroke_grad_pos.y ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, DrawMode.sdf_path ]
+
+        # if THIS draw isn't an image composite but the ring slot it's about to use still has a
+        # transient (line-cache) texture bound from an earlier draw_canvas, that view may be dead
+        # (the source resized) — rebind binding #1 to the always-alive sdf_tex before drawing.
+        if [ !image_override && models && draw_slot >= 0 && draw_slot < 64 ]
+            slot_dirty : bool [ image_dirty[ draw_slot ] ]
+            if [ slot_dirty ]
+                for [ mi: i32 0, mi < models.count, mi += 1 ]
+                    cmod : Model models[mi]
+                    if [ cmod.pipelines && cmod.pipelines.count > 0 ]
+                        p : Pipeline cmod.pipelines[0]
+                        p.ensure_bound[]
+                        p.rebind_image[ sdf_tex ]
+                        p.rebind_mask[ sdf_tex ]
+                image_dirty[ draw_slot ] = false
 
         flush[]
         path.clear[]
