@@ -5448,7 +5448,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     if (file_exists("%o", token)) {
         string s = (string)load(token, typeid(string), null);
         if (s && eq(s, config->chars)) {
-            if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); close(lock_fd); }
+            if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
             return; // cached / built / error, etc
         }
     }
@@ -5560,7 +5560,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     }
 
     save(token, (Au)config, null);
-    if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); close(lock_fd); }
+    if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
 }
 
 string compile_implements(silver a, array files, string cflags) {
