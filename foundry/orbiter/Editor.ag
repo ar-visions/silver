@@ -1225,13 +1225,15 @@ Control Editor
         mp    : path  '{mapfile}'
         files : array [ mp.read_format[] ]
         if [ !files ] return
-        puts 'format: ===== load_format {mapfile}: {files.count} file(s) ====='
+        # debug trace silenced: in console render mode stdout IS the frame buffer, so
+        # any stray puts scrolls the terminal and corrupts/eats the drawn UI.
+        #puts 'format: ===== load_format {mapfile}: {files.count} file(s) ====='
         for [ fi: i32 0, fi < files.count, fi += 1 ]
             ff  : fmt_file files[fi]
             if [ !ff || !ff.source ] continue
             key : string '{ff.source}'
             ntk : i32 [ (ff.tokens) ? ff.tokens.count : 0 ]
-            puts 'format:   [{fi}] {key} -> {ntk} tokens'
+            #puts 'format:   [{fi}] {key} -> {ntk} tokens'
             buf : FileBuf file_cache[ key ]
             if [ !buf ]
                 buf = FileBuf []
@@ -1259,14 +1261,14 @@ Control Editor
                 buf.reg_off.push[ ci ]
         mine : i32 [ (cur_buf && cur_buf.regions) ? cur_buf.regions.count : 0 ]
         cp   : string [ (src) ? '{src.absolute[]}' : '(none)' ]
-        puts 'format: current file = {cp}'
-        puts 'format: cur_buf has {mine} colored token(s)'
+        #puts 'format: current file = {cp}'
+        #puts 'format: cur_buf has {mine} colored token(s)'
         # dump the first regions of the visible buffer so the data is verifiable on stdout
-        if [ cur_buf && cur_buf.regions ]
-            lim : i32 [ (mine < 12) ? mine : 12 ]
-            for [ ri: i32 0, ri < lim, ri += 1 ]
-                cr : ColorRegion cur_buf.regions[ ri ]
-                puts 'format:     region {ri}: line {cr.line} col {cr.col} len {cr.len}'
+        #if [ cur_buf && cur_buf.regions ]
+        #    lim : i32 [ (mine < 12) ? mine : 12 ]
+        #    for [ ri: i32 0, ri < lim, ri += 1 ]
+        #        cr : ColorRegion cur_buf.regions[ ri ]
+        #        puts 'format:     region {ri}: line {cr.line} col {cr.col} len {cr.len}'
 
     func line_get [ vr: i32 ] -> string
         if [ show_hits && hits ]
@@ -1279,6 +1281,13 @@ Control Editor
             return '# {r.var.name} = {r.var.value}'
         if [ vr >= 0 && vr < lines.count ] return lines.value_by_index[ vr ]
         return ''
+
+    # console render hook: expose the flat row model to the terminal paint path.
+    func console_line_count [] -> i32
+        return line_count[]
+
+    func console_line [ vr: i32 ] -> string
+        return line_get[ vr ]
 
     func line_set [ i: i32, val: string ]
         # results mode: edits live on the hit row's text in memory; they reach the

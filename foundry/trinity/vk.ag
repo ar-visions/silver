@@ -2910,7 +2910,9 @@ Texture Display
 
     func dealloc [ ]
         info : Au.header[ a ]
-        if [ !backbuffer ]
+        # console-mode Displays carry no vk context, so there's no device to drain
+        # (and `vk.device` would dereference null). only wait when a real device exists.
+        if [ vk && !backbuffer ]
             vkDeviceWaitIdle[ vk.device ]
             # window, surface, swapchain all owned by Au globals — do not destroy here
 

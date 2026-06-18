@@ -172,7 +172,9 @@ class ConsoleSession
         el [ pid < 0 ]
             puts 'ConsoleSession.start[{name}]: forkpty FAILED (pid={pid})'
         el
-            puts 'ConsoleSession.start[{name}]: pty_fd={pty_fd} pid={pid}'
+            # silenced: console render mode writes the UI to stdout, so a stray line
+            # here scrolls the frame.
+            #puts 'ConsoleSession.start[{name}]: pty_fd={pty_fd} pid={pid}'
             fcntl[ pty_fd, F_SETFL, O_NONBLOCK ]
 
     # fresh session: close the old shell (pty close → SIGHUP → bash exits), clear

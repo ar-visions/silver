@@ -589,7 +589,7 @@ trinity orbiter # implements compiler
         if [ fmt_watch[ proj ] ] return
         fw : FmtWatch [ proj: proj, map: '/tmp/orbiter-fmt-{proj}.f' ]
         fmt_watch[ proj ] = fw
-        puts 'format: generating {proj} -> {fw.map}'
+        #puts 'format: generating {proj} -> {fw.map}'
         fmt_spawn[ fw ]
 
     # keep the running watchers in sync with the silver projects in the .agi: start one for
@@ -1939,7 +1939,6 @@ trinity orbiter # implements compiler
         # agent view; sit top-right next to the project tabs (same topbar parent).
         console_nav : Elements []
         if [ consoles ]
-            console_nav['orbiter'] = ConsoleTab [ label: 'orbiter', kind: 'orbiter', selected: active_console == 'orbiter' ]
             for [ ci: ConsoleInstance, cname: string ] in consoles
                 console_nav[cname] = ConsoleTab [ label: cname, kind: ci.kind, selected: active_console == cname ]
 

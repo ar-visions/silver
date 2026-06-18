@@ -1476,6 +1476,10 @@ Display Window
         if [ cp == 0x2510 ] return 6
         if [ cp == 0x2514 ] return 9
         if [ cp == 0x2518 ] return 5
+        if [ cp == 0x256D ] return 10
+        if [ cp == 0x256E ] return 6
+        if [ cp == 0x2570 ] return 9
+        if [ cp == 0x256F ] return 5
         if [ cp == 0x251C ] return 11
         if [ cp == 0x2524 ] return 7
         if [ cp == 0x252C ] return 14
@@ -1486,10 +1490,10 @@ Display Window
     func bits_box [ b: i32 ] -> i32
         if [ b == 12 ] return 0x2500
         if [ b == 3  ] return 0x2502
-        if [ b == 10 ] return 0x250C
-        if [ b == 6  ] return 0x2510
-        if [ b == 9  ] return 0x2514
-        if [ b == 5  ] return 0x2518
+        if [ b == 10 ] return 0x256D
+        if [ b == 6  ] return 0x256E
+        if [ b == 9  ] return 0x2570
+        if [ b == 5  ] return 0x256F
         if [ b == 11 ] return 0x251C
         if [ b == 7  ] return 0x2524
         if [ b == 14 ] return 0x252C
@@ -1517,12 +1521,33 @@ Display Window
     # span [cx0,cx1]. used to merge a box up onto an adjoining one even when they live
     # in different containers (e.g. the console's top onto the editors' bottom). uses
     # last-frame bounds, so it's order-independent.
+    # bounds are stored PARENT-LOCAL (so find_target can subtract each level), so the
+    # absolute screen position of a node is the running sum of bounds.x/.y up the parent
+    # chain. the adjoin search needs absolute edges to compare boxes across containers.
+    func abs_x [ n: element* ] -> f32
+        v : f32 [ 0.0 ]
+        p : element [ n ]
+        while [ p && p.bounds ]
+            v += p.bounds.x
+            p = p.parent
+        return v
+
+    func abs_y [ n: element* ] -> f32
+        v : f32 [ 0.0 ]
+        p : element [ n ]
+        while [ p && p.bounds ]
+            v += p.bounds.y
+            p = p.parent
+        return v
+
     func adjoin_bottom_at [ node: element*, skip: element, cx0: i32, cx1: i32, ty: i32 ] -> bool
         if [ !node ] return false
         if [ node != skip && node.bordering && node.bounds ]
-            nb  : i32 [ i32 (node.bounds.y + node.bounds.h) - 1 ]
-            nx0 : i32 [ i32 node.bounds.x ]
-            nx1 : i32 [ i32 (node.bounds.x + node.bounds.w) - 1 ]
+            ax : f32 [ abs_x[ node ] ]
+            ay : f32 [ abs_y[ node ] ]
+            nb  : i32 [ i32 (ay + node.bounds.h) - 1 ]
+            nx0 : i32 [ i32 ax ]
+            nx1 : i32 [ i32 (ax + node.bounds.w) - 1 ]
             if [ nb == ty && nx0 <= cx1 && nx1 >= cx0 ] return true
         if [ node.elements ]
             for [ ce: element, ck: string ] in node.elements
@@ -1534,9 +1559,11 @@ Display Window
     func adjoin_right_at [ node: element*, skip: element, ry0: i32, ry1: i32, tx: i32 ] -> bool
         if [ !node ] return false
         if [ node != skip && node.bordering && node.bounds ]
-            nr  : i32 [ i32 (node.bounds.x + node.bounds.w) - 1 ]
-            ny0 : i32 [ i32 node.bounds.y ]
-            ny1 : i32 [ i32 (node.bounds.y + node.bounds.h) - 1 ]
+            ax : f32 [ abs_x[ node ] ]
+            ay : f32 [ abs_y[ node ] ]
+            nr  : i32 [ i32 (ax + node.bounds.w) - 1 ]
+            ny0 : i32 [ i32 ay ]
+            ny1 : i32 [ i32 (ay + node.bounds.h) - 1 ]
             if [ nr == tx && ny0 <= ry1 && ny1 >= ry0 ] return true
         if [ node.elements ]
             for [ ce: element, ck: string ] in node.elements
@@ -1555,10 +1582,11 @@ Display Window
         if [ x1 > cols - 1 ] x1 = cols - 1
         if [ y1 > rows - 1 ] y1 = rows - 1
         if [ x1 < x0 || y1 < y0 ] return
-        cell_set[ grid, colg, cols, rows, x0, y0, 0x250C, color ]
-        cell_set[ grid, colg, cols, rows, x1, y0, 0x2510, color ]
-        cell_set[ grid, colg, cols, rows, x0, y1, 0x2514, color ]
-        cell_set[ grid, colg, cols, rows, x1, y1, 0x2518, color ]
+        # rounded (arc) corners: ╭ ╮ ╰ ╯
+        cell_set[ grid, colg, cols, rows, x0, y0, 0x256D, color ]
+        cell_set[ grid, colg, cols, rows, x1, y0, 0x256E, color ]
+        cell_set[ grid, colg, cols, rows, x0, y1, 0x2570, color ]
+        cell_set[ grid, colg, cols, rows, x1, y1, 0x256F, color ]
         for [ i: i32 x0 + 1, i < x1, i += 1 ]
             cell_set[ grid, colg, cols, rows, i, y0, 0x2500, color ]
             cell_set[ grid, colg, cols, rows, i, y1, 0x2500, color ]
@@ -1566,12 +1594,57 @@ Display Window
             cell_set[ grid, colg, cols, rows, x0, j, 0x2502, color ]
             cell_set[ grid, colg, cols, rows, x1, j, 0x2502, color ]
 
-    # stamp ASCII text on one row, clipped to maxw cells.
+    # stamp text on one row, clipped to maxw cells. UTF-8 aware: a multibyte sequence
+    # decodes to ONE codepoint in ONE cell (the grid stores codepoints and the flush
+    # re-encodes them, so a glyph like ▶ must arrive as 0x25B6, not its raw bytes).
+    # tabs expand to spaces against the field-local column (tab width 4); NO raw \t can
+    # reach the grid — the flush emits cells verbatim and a literal tab would expand to
+    # the terminal's ABSOLUTE stops, cascading any text not starting at column 0.
     func stamp_text [ grid: ref i32, colg: ref i32, cols: i32, rows: i32, x: i32, y: i32, s: string, maxw: i32, color: i32 ]
         if [ !s || maxw <= 0 ] return
-        n : i32 [ (s.count < maxw) ? s.count : maxw ]
-        for [ i: i32 0, i < n, i += 1 ]
-            cell_set[ grid, colg, cols, rows, x + i, y, i32 s.chars[i], color ]
+        i   : i32 [ 0 ]
+        col : i32 [ 0 ]
+        while [ i < s.count && col < maxw ]
+            b0 : i32 [ (i32 s.chars[i]) & 0xFF ]
+            if [ b0 == 9 ]
+                nsp : i32 [ 4 - (col % 4) ]
+                k : i32 [ 0 ]
+                while [ k < nsp && col < maxw ]
+                    cell_set[ grid, colg, cols, rows, x + col, y, 32, color ]
+                    col += 1
+                    k += 1
+                i += 1
+            el [ b0 < 0x20 ]
+                i += 1
+            el [ b0 < 0x80 ]
+                cell_set[ grid, colg, cols, rows, x + col, y, b0, color ]
+                col += 1
+                i += 1
+            el [ b0 < 0xC0 ]
+                i += 1
+            el [ b0 < 0xE0 ]
+                cp : i32 [ b0 & 0x1F ]
+                if [ i + 1 < s.count ] cp = (cp << 6) | ((i32 s.chars[i+1]) & 0x3F)
+                cell_set[ grid, colg, cols, rows, x + col, y, cp, color ]
+                col += 1
+                i += 2
+            el [ b0 < 0xF0 ]
+                cp : i32 [ b0 & 0x0F ]
+                if [ i + 2 < s.count ]
+                    cp = (cp << 6) | ((i32 s.chars[i+1]) & 0x3F)
+                    cp = (cp << 6) | ((i32 s.chars[i+2]) & 0x3F)
+                cell_set[ grid, colg, cols, rows, x + col, y, cp, color ]
+                col += 1
+                i += 3
+            el
+                cp : i32 [ b0 & 0x07 ]
+                if [ i + 3 < s.count ]
+                    cp = (cp << 6) | ((i32 s.chars[i+1]) & 0x3F)
+                    cp = (cp << 6) | ((i32 s.chars[i+2]) & 0x3F)
+                    cp = (cp << 6) | ((i32 s.chars[i+3]) & 0x3F)
+                cell_set[ grid, colg, cols, rows, x + col, y, cp, color ]
+                col += 1
+                i += 4
 
     # true if the focused element is this element or one of its descendants —
     # i.e. an editable layer within this subtree currently has focus.
@@ -1743,9 +1816,164 @@ Display Window
         cy : i32 [ by0 + it + lbl_row ]
         cw : i32 [ bbw - il - ir ]
         ch : i32 [ bbh - it - ib - lbl_row ]
+
+        # the topbar (play + project/console tabs) renders as a bordered strip: a top
+        # border, a row of ` label ` buttons separated by │ that connect up to ┬ and
+        # down to ┴, and a bottom border that lands on the editor frame's top row so
+        # cell_set merges the two into one continuous frame (├ ┼ ┤ junctions). no
+        # brackets — the dividers are the chrome. each button's bounds stays
+        # parent-local to its Tabs group so clicks still route topbar → Tabs → Option.
+        if [ e.id && e.id == 'topbar' ]
+            tby : i32 [ y0 ]
+            mby : i32 [ y0 + 1 ]
+            bby : i32 [ y0 + 2 ]
+            e.bounds.h = 3.0
+            rcol : i32 [ x0 + bw - 1 ]
+            # measure the right-anchored groups (the AI/console tabs) so they can be
+            # placed flush to the right border: each button is ` label ` plus a leading
+            # divider = label + 3 cells.
+            rwidth : i32 [ 0 ]
+            for [ tb: element, tk: string ] in e.elements
+                if [ !(tb.area && tb.area.l.x_type == XAlign.right) ] continue
+                if [ tb.elements ]
+                    for [ ob: element, ok: string ] in tb.elements
+                        ropt : Option ob
+                        if [ !ropt ] continue
+                        rtxt : string [ '?' ]
+                        if [ ob.label && ob.label.count > 0 ]
+                            rtxt = '{ob.label}'
+                        el [ ob.id && ob.id == 'play' ]
+                            rtxt = '>'
+                        el [ ob.id && ob.id.count > 0 ]
+                            rtxt = '{ob.id}'
+                        rwidth += rtxt.count + 3
+            rstart : i32 [ rcol - rwidth ]
+            # single pass: left-anchored groups flow from the left edge, right-anchored
+            # ones from rstart. each button = leading divider (┬/┴ tying into the top &
+            # bottom borders) + ` label `; bounds stay parent-local to the Tabs group so
+            # clicks route topbar → Tabs → Option.
+            lcol : i32 [ x0 ]
+            rcur : i32 [ rstart ]
+            left_end : i32 [ x0 ]
+            for [ tb: element, tk: string ] in e.elements
+                right : bool [ tb.area && tb.area.l.x_type == XAlign.right ]
+                col : i32 [ (right) ? rcur : lcol ]
+                gstart : i32 [ col ]
+                if [ tb.elements ]
+                    for [ ob: element, ok: string ] in tb.elements
+                        opt : Option ob
+                        if [ !opt ] continue
+                        txt : string [ '?' ]
+                        if [ ob.label && ob.label.count > 0 ]
+                            txt = '{ob.label}'
+                        el [ ob.id && ob.id == 'play' ]
+                            txt = '▶'
+                        el [ ob.id && ob.id.count > 0 ]
+                            txt = '{ob.id}'
+                        bs : i32 [ col ]
+                        cell_set[ grid, colg, cols, rows, col, tby, 0x252C, 4 ]
+                        cell_set[ grid, colg, cols, rows, col, mby, 0x2502, 4 ]
+                        cell_set[ grid, colg, cols, rows, col, bby, 0x2534, 4 ]
+                        lbl : ' {txt} '
+                        # cell width counts codepoints, not bytes (▶ is 3 bytes / 1 cell),
+                        # so the border fill + layout advance stay aligned to the glyph.
+                        cw2 : i32 [ 0 ]
+                        ci : i32 [ 0 ]
+                        while [ ci < lbl.count ]
+                            if [ ((i32 lbl.chars[ci]) & 0xC0) != 0x80 ] cw2 += 1
+                            ci += 1
+                        k : i32 [ 0 ]
+                        while [ k < cw2 ]
+                            cell_set[ grid, colg, cols, rows, col + 1 + k, tby, 0x2500, 4 ]
+                            cell_set[ grid, colg, cols, rows, col + 1 + k, bby, 0x2500, 4 ]
+                            k += 1
+                        bcol : i32 [ (opt.selected) ? 1 : 0 ]
+                        stamp_text[ grid, colg, cols, rows, col + 1, mby, lbl, cw2, bcol ]
+                        if [ !ob.bounds ] ob.bounds = rect[]
+                        ob.bounds.x = f32 (bs - gstart)
+                        ob.bounds.y = 0.0
+                        ob.bounds.w = f32 (cw2 + 1)
+                        ob.bounds.h = 1.0
+                        col = col + 1 + cw2
+                if [ !tb.bounds ] tb.bounds = rect[]
+                tb.bounds.x = f32 (gstart - x0)
+                tb.bounds.y = f32 (mby - y0)
+                tb.bounds.w = f32 (col - gstart)
+                tb.bounds.h = 1.0
+                if [ right ] rcur = col
+                el
+                    lcol = col
+                    left_end = col
+            # bordered fill in the gap between the left and right groups
+            j : i32 [ left_end ]
+            while [ j < rstart ]
+                cell_set[ grid, colg, cols, rows, j, tby, 0x2500, 4 ]
+                cell_set[ grid, colg, cols, rows, j, mby, 32, 0 ]
+                cell_set[ grid, colg, cols, rows, j, bby, 0x2500, 4 ]
+                j += 1
+            # force the frame edge cells directly: cell_set MERGES box glyphs, so it
+            # would turn the first button's leading ┬/┴ into a junction instead of a
+            # clean corner. the bottom corners (╰ ╯) are left for the editor frame below
+            # to merge onto (╰+╭ → ├), keeping the two boxes joined into one frame.
+            if [ x0 >= 0 && rcol < cols && bby < rows ]
+                grid[ tby * cols + x0 ]   = 0x256D
+                colg[ tby * cols + x0 ]   = 4
+                grid[ mby * cols + x0 ]   = 0x2502
+                colg[ mby * cols + x0 ]   = 4
+                grid[ bby * cols + x0 ]   = 0x2570
+                colg[ bby * cols + x0 ]   = 4
+                grid[ tby * cols + rcol ] = 0x256E
+                colg[ tby * cols + rcol ] = 4
+                grid[ mby * cols + rcol ] = 0x2502
+                colg[ mby * cols + rcol ] = 4
+                grid[ bby * cols + rcol ] = 0x256F
+                colg[ bby * cols + rcol ] = 4
+            return
+
         if [ cw > 0 && ch > 0 && e.elements ]
             for [ ce: element, ck: string ] in e.elements
                 draw_element_console[ ce, grid, colg, cols, rows, cx, cy, cw, ch, cpx0, cpx1, cpb, x0, y0 ]
+
+        # text content: an element that paints rows (the editor's source, a console
+        # log) stamps them into the body. a bordered element reserves its top row(s)
+        # for a title header + its divider, so the code begins below that; a plain
+        # one fills from the content origin. rows are clipped to the box interior so
+        # the bottom border is never overwritten.
+        lc : i32 [ e.console_line_count*[] ]
+        if [ lc > 0 ]
+            tx : i32 [ cx ]
+            tw : i32 [ cw ]
+            ty : i32 [ (bordered) ? cy + 2 : cy ]
+            bot : i32 [ by0 + bbh - 1 ]
+            body : i32 [ bot - ty ]
+            if [ body < 1 ] body = 1
+            # wheel scroll: reuse scroll.y as the first-visible line (1 cell = 1 line).
+            # content_h is set in those same line units so the element's on_wheel can
+            # clamp and step (gentle per-notch speed); the wheel dispatches to on_wheel
+            # for whichever editor the cursor is over (see wheel_event).
+            e.content_h    = f32 (lc + (bbh - body))
+            e.scroll_speed = 3.0
+            maxs : i32 [ (lc > body) ? lc - body : 0 ]
+            first : i32 [ i32 e.scroll.y ]
+            if [ first < 0 ] first = 0
+            if [ first > maxs ] first = maxs
+            vr : i32 [ 0 ]
+            while [ vr < body && first + vr < lc ]
+                ln : e.console_line*[ first + vr ]
+                if [ ln && ln.count > 0 ] stamp_text[ grid, colg, cols, rows, tx, ty + vr, ln, tw, 0 ]
+                vr += 1
+            # scrollbar: thicken the segment of the RIGHT border that maps to the
+            # visible window — a heavy │ (┃) over [first, first+body) of lc total. only
+            # when the content actually overflows the box.
+            if [ bordered && lc > body ]
+                rbx : i32 [ bx0 + bbw - 1 ]
+                th0 : i32 [ ty + (first * body) / lc ]
+                th1 : i32 [ ty + ((first + body) * body) / lc ]
+                if [ th1 <= th0 ] th1 = th0 + 1
+                rr : i32 [ th0 ]
+                while [ rr < th1 && rr < bot ]
+                    cell_set[ grid, colg, cols, rows, rbx, rr, 0x2503, 1 ]
+                    rr += 1
 
     # ---- console input (terminal mouse + keyboard) -------------------------
     # raw, non-echoing, non-blocking stdin (via stty) + xterm SGR mouse reporting
@@ -1754,6 +1982,18 @@ Display Window
     func tty_write [ s: string ]
         if [ tty_in >= 0 && s ] write[ tty_in, s.chars, s.count ]
 
+    # append a string's bytes into the frame buffer starting at p; returns the new p.
+    # lets the flush use plain escape-string literals now that the octal \033 escape
+    # is fixed (returns the position rather than taking a ref i32, which mis-GEPs).
+    func emit_bytes [ dst: ref u8, p: i32, s: string ] -> i32
+        q : i32 [ p ]
+        i : i32 [ 0 ]
+        while [ i < s.count ]
+            dst[ q ] = u8 s.chars[i]
+            q += 1
+            i += 1
+        return q
+
     func console_input_open []
         system[ "stty -icanon -echo min 0 time 0" ]
         # open the real terminal; grab its fd via fileno and do raw write/read on it.
@@ -1761,6 +2001,10 @@ Display Window
         tty : handle [ fopen[ "/dev/tty", "r+" ] ]
         if [ tty ]
             tty_in = fileno[ tty ]
+            # alt screen buffer: a dedicated full-screen page that never scrolls the
+            # user's shell history and lets us paint the true last row (the box's
+            # bottom border) — leaving it restores their terminal cleanly on exit.
+            tty_write[ "\033[?1049h" ]
             tty_write[ "\033[?1000h" ]
             tty_write[ "\033[?1002h" ]
             tty_write[ "\033[?1006h" ]
@@ -1773,6 +2017,8 @@ Display Window
         tty_write[ "\033[?1006l" ]
         tty_write[ "\033[?7h" ]
         tty_write[ "\033[?25h" ]
+        # leave the alt screen → restore the user's shell and scrollback.
+        tty_write[ "\033[?1049l" ]
         system[ "stty sane" ]
 
     # read whatever stdin bytes are queued and turn them into the same events the
@@ -1913,9 +2159,9 @@ Display Window
         if [ ok ]
             cols = i32 ws.ws_col
             rows = i32 ws.ws_row
-        # reserve the last terminal line: writing the bottom row scrolls the terminal
-        # (eating the bottom border) regardless of autowrap, so lay out one row short.
-        if [ rows > 1 ] rows = rows - 1
+        # the alt screen + no-autowrap (?7l) lets us paint every row including the
+        # last without scrolling, so the box bottom border lands on the true final
+        # line — no reserved row.
         width  = cols
         height = rows
 
@@ -1939,21 +2185,16 @@ Display Window
         #   ESC [ H  (home)   ESC [ J  (clear to end of screen)
         # color runs are emitted as SGR escapes whenever the cell color changes:
         #   ESC [ 0 m default   ESC [ 9 7 m white   ESC [ 9 0 m gray
-        cap : i32 [ n * 14 + rows + 32 ]
+        cap : i32 [ n * 24 + rows + 64 ]
         out : new u8 [ cap ]
         p : i32 [ 0 ]
-        out[p] = 0x1b
-        p += 1
-        out[p] = 0x5B
-        p += 1
-        out[p] = 0x48
-        p += 1
-        out[p] = 0x1b
-        p += 1
-        out[p] = 0x5B
-        p += 1
-        out[p] = 0x4A
-        p += 1
+        # re-assert no-autowrap (?7l) + home + clear-to-end. ?7l every frame is the key
+        # to the bottom border: with autowrap ON, writing the bottom-right cell arms a
+        # "pending wrap" and the next byte (the next frame, or silver-host's rebuild
+        # newline) scrolls the screen — eating the bottom edge and leaving a blank line.
+        # autowrap OFF means the last cell never arms that scroll. (it can get re-enabled
+        # by other output, so we set it per frame rather than once at startup.)
+        p = emit_bytes[ out, p, "\033[?7l\033[H\033[J" ]
         cur_col : i32 [ -1 ]
         for [ y: i32 0, y < rows, y += 1 ]
             for [ x: i32 0, x < cols, x += 1 ]
@@ -1961,48 +2202,18 @@ Display Window
                 c   : i32 [ colg[ idx ] ]
                 if [ c != cur_col ]
                     cur_col = c
-                    # reset-prefixed SGR (ESC[0;Nm) so reverse-video never leaks past
-                    # the cursor cell. 0=default, 1=white(97), 2=gray(90), 3=reverse(7).
-                    out[p] = 0x1b
-                    p += 1
-                    out[p] = 0x5B
-                    p += 1
-                    out[p] = 0x30
-                    p += 1
-                    if [ c != 0 ]
-                        out[p] = 0x3B
-                        p += 1
-                        if [ c == 1 ]
-                            out[p] = 0x39
-                            p += 1
-                            out[p] = 0x37
-                            p += 1
-                        el [ c == 2 ]
-                            out[p] = 0x39
-                            p += 1
-                            out[p] = 0x30
-                            p += 1
-                        el [ c == 3 ]
-                            out[p] = 0x37
-                            p += 1
-                        el
-                            # c == 4: dark-blue border via 256-color index 17 (38;5;17)
-                            out[p] = 0x33
-                            p += 1
-                            out[p] = 0x38
-                            p += 1
-                            out[p] = 0x3B
-                            p += 1
-                            out[p] = 0x35
-                            p += 1
-                            out[p] = 0x3B
-                            p += 1
-                            out[p] = 0x31
-                            p += 1
-                            out[p] = 0x37
-                            p += 1
-                    out[p] = 0x6D
-                    p += 1
+                    # reset-prefixed (ESC[0;..) so reverse never leaks. default text,
+                    # 2 = dim, 3 = reverse cursor, 4 = mid/dark-gray border (256-color 240).
+                    if [ c == 4 ]
+                        p = emit_bytes[ out, p, "\033[0;38;5;240m" ]
+                    el [ c == 2 ]
+                        p = emit_bytes[ out, p, "\033[0;90m" ]
+                    el [ c == 3 ]
+                        p = emit_bytes[ out, p, "\033[0;7m" ]
+                    el [ c == 1 ]
+                        p = emit_bytes[ out, p, "\033[0;97m" ]
+                    el
+                        p = emit_bytes[ out, p, "\033[0m" ]
                 cp : i32 [ grid[ idx ] ]
                 if [ cp < 0x80 ]
                     out[p] = u8 cp
@@ -2023,14 +2234,7 @@ Display Window
                 out[p] = 0x0A
                 p += 1
         # reset color at the end of the frame
-        out[p] = 0x1b
-        p += 1
-        out[p] = 0x5B
-        p += 1
-        out[p] = 0x30
-        p += 1
-        out[p] = 0x6D
-        p += 1
+        p = emit_bytes[ out, p, "\033[0m" ]
         out[p] = 0
         printf[ "%s", out ]
 

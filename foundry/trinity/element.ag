@@ -209,6 +209,17 @@ ielement element
     public func render [ ] -> Elements
         return null
 
+    # console (terminal) render hook: an element that paints text content (an
+    # editor, a console log) overrides these so the box-drawing render path can
+    # stamp its rows. console_line_count[] is the number of text rows available;
+    # console_line[vr] returns the text for visual row vr (null/'' = blank). the
+    # default is a non-text element (count 0), so structural elements draw nothing.
+    public func console_line_count [] -> i32
+        return 0
+
+    public func console_line [ vr: i32 ] -> string
+        return null
+
     func invalidate_transitions [ ]
         for [ ct:StyleTransition, k:string ] in transitions
             ct.invalidate = true
