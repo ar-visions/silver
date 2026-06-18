@@ -120,8 +120,9 @@ abstract live_app media_app
     # render to a terminal character grid (box-drawing borders) instead of the
     # GLFW/Vulkan window. when set, init/frame/run never touch glfw or vk_context;
     # the element tree, layout and styles run unchanged — only the paint differs.
-    # default on: apps render to the console unless they clear this.
-    public  console     : bool [ true ]
+    # default OFF: apps render to the GLFW/Vulkan window; set this true to opt into
+    # the terminal renderer.
+    public  console     : bool [ false ]
     intern  next_second : i64
     intern  frames      : i32
 
@@ -2281,6 +2282,16 @@ Display Window
             if [ v < lo ] v = lo
             if [ hi > lo && v > hi ] v = hi
             p[0] = v
+        # while THIS seam is being actively dragged, track the cursor 1:1 — no ease.
+        # filter_n smooths programmatic transitions (toggles/snaps), but during a drag
+        # it makes the pane trail the slider (visibly the wrong size at speed). the
+        # dragged seam must paint at the live goal; other binds keep easing.
+        if [ seam_drag && seam_drag.app == app_obj && seam_drag.mem == m ]
+            b.active     = v
+            b.has_active = true
+            b.moving     = true
+            will_animate = true
+            return
         if [ !b.has_active ]
             b.active     = v
             b.has_active = true

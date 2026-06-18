@@ -2,6 +2,8 @@
 #include <limits.h>
 #include <execinfo.h>
 #include <ports.h>
+#include <sys/file.h>   // flock — serialize external-checkout builds across processes
+#include <fcntl.h>
 
 #ifdef BUILD_LIBRARY
 
@@ -5383,6 +5385,19 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
     validate(command_exists("git"), "git required for import feature");
 
+    // serialize this dependency across concurrent silver builds. two processes both
+    // entering checkout() for the same dep race on remove_dir(build_f)+cmake — one
+    // wipes the build folder the other is mid-build in (missing .o.d, the spurious
+    // "vulkan rebuild" failures) — and an interrupted build never writes silver-token,
+    // so the next run rebuilds. an exclusive flock over the whole clone→build→install→
+    // token means only one process touches a given checkout at a time; the rest block,
+    // then read the fresh token and return cached. lock lives beside (not inside) the
+    // build dir so remove_dir(build_f) can't delete it.
+    make_dir(install);
+    path lock_path = f(path, "%o/%o.checkout-lock", install, name);
+    int  lock_fd   = open(lock_path->chars, O_CREAT | O_RDWR, 0644);
+    if (lock_fd >= 0) flock(lock_fd, LOCK_EX);
+
     // checkout or symlink to src
     if (!dir_exists("%o", project_f)) {
         path src_path = f(path, "%o/%o", a->src_loc, name);
@@ -5432,8 +5447,10 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
     if (file_exists("%o", token)) {
         string s = (string)load(token, typeid(string), null);
-        if (s && eq(s, config->chars))
-            return; // we may want to return cached / built / error, etc
+        if (s && eq(s, config->chars)) {
+            if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); close(lock_fd); }
+            return; // cached / built / error, etc
+        }
     }
 
     // the only reliable way of rebuilding on reconfig is to have a new build-folder
@@ -5543,6 +5560,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     }
 
     save(token, (Au)config, null);
+    if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); close(lock_fd); }
 }
 
 string compile_implements(silver a, array files, string cflags) {
