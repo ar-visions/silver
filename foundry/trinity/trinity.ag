@@ -1412,17 +1412,21 @@ Display Window
     func on_compose []
         if [ !compose ] return
         if [ resizing ] return
-        #compose.save    [ ]
-        #compose.clear   [ '#00a' ]
+        # per-frame state update — runs every frame regardless of the compose pass.
         update_all      [ app_object.on_render*[ a ] ]
         animate         [ ]
-        # advance every seam's eased active ONCE here, before either tree walk reads
-        # it — so compose and screen render the moving edge at the same position.
+        # advance every seam's eased active ONCE here, before the layout pass reads it.
         tick_binds      [ root ]
-        #draw_element    [ root, CanvasType.compose, null ]
-        #compose.paint   [ ]
-        #compose.sync_fence[ ]
-        #compose.restore [ ]
+        # UI bounds + paint now live entirely in on_screen (layout_element then
+        # draw_element); the compose canvas is no longer part of that path. kept below
+        # for future 3D scene compositing — disabled for now via the early return.
+        if [ true ] return
+        compose.save    [ ]
+        compose.clear   [ '#00a' ]
+        draw_element    [ root, CanvasType.compose, null ]
+        compose.paint   [ ]
+        compose.sync_fence[ ]
+        compose.restore [ ]
 
     func on_screen []
         if [ !screen ] return
@@ -1434,6 +1438,11 @@ Display Window
         screen.save[]
 
         app_object.on_canvas*[ screen ]
+
+        # compute the whole tree's bounds first, then paint — so every element
+        # (and its cv.translate / cache size) reads THIS frame's bounds, not last
+        # frame's. fc comes from the screen canvas (the paint target).
+        layout_element[ root, null, screen ]
 
         draw_element[ root, CanvasType.screen, null ]
 
@@ -2282,16 +2291,6 @@ Display Window
             if [ v < lo ] v = lo
             if [ hi > lo && v > hi ] v = hi
             p[0] = v
-        # while THIS seam is being actively dragged, track the cursor 1:1 — no ease.
-        # filter_n smooths programmatic transitions (toggles/snaps), but during a drag
-        # it makes the pane trail the slider (visibly the wrong size at speed). the
-        # dragged seam must paint at the live goal; other binds keep easing.
-        if [ seam_drag && seam_drag.app == app_obj && seam_drag.mem == m ]
-            b.active     = v
-            b.has_active = true
-            b.moving     = true
-            will_animate = true
-            return
         if [ !b.has_active ]
             b.active     = v
             b.has_active = true
@@ -2327,12 +2326,14 @@ Display Window
             for [ ce: element, ck: string ] in e.elements
                 tick_binds[ ce ]
 
-    public func draw_element [ e: element*, stage: CanvasType, last:element ]
+    # LAYOUT pass — compute e.bounds for the whole tree BEFORE any painting. the
+    # paint walk (draw_element) reads e.bounds (its own, its parent's via rel, its
+    # flow sibling's via last); if layout and paint share one walk, a child's
+    # cv.translate / cache size reads bounds that this frame hasn't finalized yet,
+    # so a seam drag paints one frame behind. separating the two fixes that with no
+    # compose pre-pass. cv supplies the per-target font metric (fc) only — no drawing.
+    func layout_element [ e: element*, last: element, cv: Canvas ]
         expect e inherits element, 'e is not an element'
-        # select target canvas directly. (was: new Canvas[2] [screen,compose]
-        # then index — that per-call vector dropped its elements on teardown
-        # without holding them on init, underflowing screen/compose to 0.)
-        cv : (stage == CanvasType.screen) ? screen : compose
         rel : rect [ (e.parent) ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
             rect [ x: 0, y: 0, w: width, h: height ] ]
@@ -2432,6 +2433,30 @@ Display Window
         # collapsed to nothing (e.g. the editor section when the console seam is
         # snapped fully up) — skip this element and all its children.
         if [ e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
+        if [ e.transparency >= 1.0 ] return
+        # bounds final for this element — lay out children in the SAME order
+        # draw_element paints them (normal first, then topmost), threading the
+        # previous sibling for flow layout. no painting here.
+        last_2 : element
+        for [ ee: element, id: string ] in e.elements
+            if [ ee.topmost ] continue
+            layout_element[ ee, last_2, cv ]
+            last_2 = ee
+        for [ ee: element, id: string ] in e.elements
+            if [ !ee.topmost ] continue
+            layout_element[ ee, last_2, cv ]
+            last_2 = ee
+
+    public func draw_element [ e: element*, stage: CanvasType, last:element ]
+        expect e inherits element, 'e is not an element'
+        # select target canvas directly. (was: new Canvas[2] [screen,compose]
+        # then index — that per-call vector dropped its elements on teardown
+        # without holding them on init, underflowing screen/compose to 0.)
+        cv : (stage == CanvasType.screen) ? screen : compose
+        # bounds were finalized by layout_element before this paint pass. collapsed
+        # or fully-transparent elements (and their children) were skipped there, so
+        # mirror those skips here to keep the two walks in lockstep.
+        if [ !e.bounds || e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
         if [ e.transparency >= 1.0 ] return
         # pre-scan layers to measure any outset beyond element bounds
         margin_l : i32 [ 0 ]
