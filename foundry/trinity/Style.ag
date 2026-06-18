@@ -490,9 +490,15 @@ struct XCoord
                 offset = sx_offset.real_value[]
                 if [ percent ] offset /= 100.0
 
-    func plot [ from: f32, vto: f32, left: ref XCoord, left_val: f32, rel: rect, last: rect, fc: f32 ] -> f32
+    func plot [ from: f32, vto: f32, left: ref XCoord, left_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
-        val  : f32 [ mix[ offset * fc_m, offset * (vto - from), f32[percent] ] ]
+        off  : f32 [ offset ]
+        # console grid: px has no sub-line resolution — a px coord > 16 (≈ one line)
+        # collapses to 1 unit (1 cell), anything smaller rounds away to 0.
+        if [ console && pixel ]
+            off  = (offset > 16.0) ? 1.0 : 0.0
+            fc_m = fc
+        val  : f32 [ mix[ off * fc_m, offset * (vto - from), f32[percent] ] ]
         if [ x_type > XAlign.right ]
             expect (left.x_type <= XAlign.right), 'invalid left-operand (xcoord)'
             return left_val + val
@@ -563,9 +569,15 @@ struct YCoord
                 offset = sy_offset.real_value[]
                 if [ percent ] offset /= 100.0
 
-    func plot [ from: f32, vto: f32, top: ref YCoord, top_val: f32, rel: rect, last: rect, fc: f32 ] -> f32
+    func plot [ from: f32, vto: f32, top: ref YCoord, top_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
-        val  : f32 [ mix[ offset * fc_m, offset * (vto - from), percent ] ]
+        off  : f32 [ offset ]
+        # console grid: px has no sub-line resolution — a px coord > 16 (≈ one line)
+        # collapses to 1 unit (1 cell), anything smaller rounds away to 0.
+        if [ console && pixel ]
+            off  = (offset > 16.0) ? 1.0 : 0.0
+            fc_m = fc
+        val  : f32 [ mix[ off * fc_m, offset * (vto - from), percent ] ]
         if [ y_type > YAlign.bottom ]
             expect top.y_type <= YAlign.bottom, 'invalid top-operand (ycoord)'
             return top_val + val
@@ -662,17 +674,17 @@ class Region
         s : string[cs]
         construct [ s ]
 
-    func rectangle [ win: rect, rel: rect, last: rect, fc: f32 ] -> rect
-        lv : l.plot[ win.x, win.x + win.w, null,  0.0, rel, last, fc ]
-        rv : r.plot[ win.x, win.x + win.w, ref l, lv,  rel, last, fc ]
-        tv : t.plot[ win.y, win.y + win.h, null,  0.0, rel, last, fc ]
+    func rectangle [ win: rect, rel: rect, last: rect, fc: f32, console: bool ] -> rect
+        lv : l.plot[ win.x, win.x + win.w, null,  0.0, rel, last, fc, console ]
+        rv : r.plot[ win.x, win.x + win.w, ref l, lv,  rel, last, fc, console ]
+        tv : t.plot[ win.y, win.y + win.h, null,  0.0, rel, last, fc, console ]
         rx : f32 [ round[ lv ] ]
         ry : f32 [ round[ tv ] ]
         ww : f32 [ round[ rv ] - rx ]
         # square: height = computed width
         if [ square ]
             return rect [ x: rx, y: ry, w: ww, h: ww ]
-        bv : b.plot[ win.y, win.y + win.h, ref t, tv,  rel, last, fc ]
+        bv : b.plot[ win.y, win.y + win.h, ref t, tv,  rel, last, fc, console ]
         return rect [ x: rx, y: ry, w: ww, h: round[ bv ] - ry ]
 
     func mix [ other: Region, f: f64 ] -> Region

@@ -710,6 +710,12 @@ class vk_context
     # Canvas.paint before rebind) so a pipeline's descriptor/uniform ring picks the
     # same slot as the render's command buffer/fence — no per-call signature threading.
     public  cur_ring            : i32
+    # force every paint to sync_fence (drain) instead of batching through the ring. set
+    # during an interactive layout change (seam/split drag) where the batched ring's per-slot
+    # UBO/UV (each composite's cache-area crop) can desync across the many composites a single
+    # frame issues. a drag is rare + brief, so the synchronous path's cost is invisible there
+    # while the ring keeps scroll/idle fast. cleared as soon as the drag ends.
+    public  sync_paints         : bool
     public  queue_family_index  : i32 -1
     public  rt_support          : bool
     public  instance_exts       : array cstr [ alloc:128, unmanaged:true ]
@@ -2303,8 +2309,14 @@ class Texture
         transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
     func init [ ]
-        expect vk, "vk_context not specified"
+        # nothing to build (no image, sampler, or backing window) → no vk needed.
+        # this is the normal path for a Display/Window, whose real setup happens in
+        # Display.init; it also lets a console-mode Window construct without a context.
         if [ !vk_image && !sampler && !w ]
+            return
+        # vk_context may be specified as null (console mode / context-less construction):
+        # there is no GPU context, so there is nothing to allocate here.
+        if [ !vk ]
             return
 
         img :  sampler inherits Image
@@ -2540,6 +2552,10 @@ Texture Display
     intern swap_needs_recreate  : bool
     intern in_callback_draw     : bool
     public backbuffer           : bool
+    # console mode: terminal character-grid output. no glfw window, no vk surface
+    # or swapchain, no vk_context — the Display only hosts the element tree + layout
+    # while Window.draw_console paints to a terminal (see trinity.ag).
+    public console              : bool
 
 
     func last_render [] -> Render
@@ -2775,6 +2791,12 @@ Texture Display
         if [ !width ]
             width  = 1200
             height = 1200
+
+        # console mode: never touch glfw or vk. the element tree + layout live on
+        # this Display, but all paint goes to the terminal (Window.draw_console).
+        if [ console ]
+            if [ scale <= 0.0 ] scale = 1.0
+            return
 
         surf : handle
         if [ !backbuffer ]

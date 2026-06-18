@@ -110,6 +110,10 @@ ielement element
     public  ghost           : bool
     mutable captured        : bool
     public  disable         : bool
+    # console rendering: draw a box-drawing border around this element and inset
+    # its children by 1 cell on every side. off by default, so structural/layout
+    # wrappers stay borderless — only opted-in elements get a frame.
+    public  bordering       : bool
     # topmost children paint LAST (drawn over their siblings) and are hit-tested
     # FIRST (they get the event before siblings underneath them). use for
     # floating controls that overlap a full-area sibling, e.g. a toggle button

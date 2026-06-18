@@ -4368,7 +4368,20 @@ string string_unescape(string input) {
                 case 'n':  buf[pos++] = '\n'; i++; break;
                 case 'r':  buf[pos++] = '\r'; i++; break;
                 case 't':  buf[pos++] = '\t'; i++; break;
-                case '0':  buf[pos++] = '\0'; i++; break;
+                // octal escape: \ followed by 1-3 octal digits (e.g. \033 = ESC, \0 = nul)
+                case '0': case '1': case '2': case '3':
+                case '4': case '5': case '6': case '7': {
+                    int oct = 0, d = 0;
+                    while (d < 3 && i + 1 + d < input_len &&
+                           input->chars[i + 1 + d] >= '0' &&
+                           input->chars[i + 1 + d] <= '7') {
+                        oct = oct * 8 + (input->chars[i + 1 + d] - '0');
+                        d++;
+                    }
+                    buf[pos++] = (char)oct;
+                    i += d;
+                    break;
+                }
                 case '\\': buf[pos++] = '\\'; i++; break;
                 case '\'': buf[pos++] = '\''; i++; break;
                 case '"':  buf[pos++] = '"';  i++; break;

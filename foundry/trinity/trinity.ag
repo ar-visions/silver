@@ -16,9 +16,11 @@ import <stdlib.h>
 import <math.h>
 import <vk_mem_alloc.h>
 import <sys/stat.h>
+# ioctl + struct winsize + TIOCGWINSZ — needed on every platform for console
+# mode's terminal-size query (mac provides them via sys/ioctl.h -> sys/ttycom.h).
+import <sys/ioctl.h>
 
 ifdef [ linux ]
-	import <sys/ioctl.h>
 	import <sys/mman.h>
 	import <fcntl.h>
 	import <linux/videodev2.h>
@@ -115,6 +117,11 @@ abstract live_app media_app
     intern  arg         : object
     public  width       : i32
     public  height      : i32
+    # render to a terminal character grid (box-drawing borders) instead of the
+    # GLFW/Vulkan window. when set, init/frame/run never touch glfw or vk_context;
+    # the element tree, layout and styles run unchanged — only the paint differs.
+    # default on: apps render to the console unless they clear this.
+    public  console     : bool [ true ]
     intern  next_second : i64
     intern  frames      : i32
 
@@ -122,6 +129,13 @@ abstract live_app media_app
         Au.auto_free[true]
 
     func frame [ ] -> bool
+        # console mode: no glfw event pump, no swapchain, no vk perf counters.
+        # render the terminal grid each tick and keep running (Ctrl-C to exit).
+        if [ console ]
+            render*[]
+            Au.auto_free[false]
+            usleep[ 16000 ]
+            return true
         # free-running loop: poll (don't block on events) so we render every iteration
         # at full speed — measures raw throughput instead of event-gated repaints.
         glfwPollEvents[]
@@ -155,6 +169,10 @@ abstract live_app media_app
         # are still mapped — otherwise the next instance returns a stale CanvasFont
         # and calling its methods jumps into freed code (SIGSEGV). ensure_font
         # rebuilds the cache lazily on the new instance.
+        # console mode: restore the terminal (cooked mode, mouse off, cursor on).
+        if [ console && w ]
+            cwin : Window [ w ]
+            cwin.console_input_close[]
         if [ vk ]
             vk.font_cache = null
         if [ w ]
@@ -165,6 +183,9 @@ abstract live_app media_app
 
     func init [ ]
         next_second = epoch_millis[] / 1000
+        # console mode draws to the terminal — no window, no vulkan context.
+        if [ console ]
+            return
         if [ !Au.live_window_get[] ]
             init_res : glfwInit[]
             expect init_res, "glfw init"
@@ -253,6 +274,10 @@ Display Window
 
     mutable is_setup             : bool
     mutable user_compose         : bool
+    # console mode: fd of /dev/tty opened for direct terminal I/O. silver forwards
+    # keystrokes to our stdin but not the mouse escape sequences, so we read the real
+    # terminal directly to get clicks. -1 until console_input_open succeeds.
+    intern  tty_in               : i32 [ -1 ]
 
 
     intern root_styles          : map Style[string]
@@ -734,7 +759,9 @@ Display Window
                 # init finally called after context and style is applied
                 # our holds are too many for properties applied in style, though.
                 if [ call_init ]
-                    expect instance.vk, "no vk context set for new instance"
+                    # console mode has no vk context; elements still init + lay out.
+                    if [ !console ]
+                        expect instance.vk, "no vk context set for new instance"
                     instance.initialize[]
                     instance.hold_members[]
                     instance.restyle = true
@@ -1399,6 +1426,10 @@ Display Window
     func on_screen []
         if [ !screen ] return
         if [ resizing ] return
+        # while a seam/split is being dragged, every canvas drains each paint (no batched
+        # ring) so the per-frame composites can't desync their per-slot UBO/UV. set from the
+        # live drag state each frame so it always clears the moment the drag ends.
+        vk.sync_paints = bool[ seam_drag ]
         screen.save[]
 
         app_object.on_canvas*[ screen ]
@@ -1428,6 +1459,581 @@ Display Window
         screen.sync_fence[]
         screen.restore[]
 
+    # ---- console (terminal) rendering --------------------------------------
+    # parallel paint path: no Canvas / vk. the element tree, styles and layout
+    # run exactly as for the vulkan path, but each element is stamped as a
+    # box-drawing rectangle into a character grid (1 unit = 1 cell) and the grid
+    # is flushed to the terminal in one write. the border consumes 1 cell on
+    # every side, so children lay out inside the parent's inner (bounds-2) area.
+
+    # light box-drawing chars as edge bitmasks (U=1 D=2 L=4 R=8) and back, so two
+    # overlapping borders merge into the right junction (│+│=│, ┐+┌=┬, ┘+└=┴, etc.)
+    # rather than one clobbering the other.
+    func box_bits [ cp: i32 ] -> i32
+        if [ cp == 0x2500 ] return 12
+        if [ cp == 0x2502 ] return 3
+        if [ cp == 0x250C ] return 10
+        if [ cp == 0x2510 ] return 6
+        if [ cp == 0x2514 ] return 9
+        if [ cp == 0x2518 ] return 5
+        if [ cp == 0x251C ] return 11
+        if [ cp == 0x2524 ] return 7
+        if [ cp == 0x252C ] return 14
+        if [ cp == 0x2534 ] return 13
+        if [ cp == 0x253C ] return 15
+        return 0
+
+    func bits_box [ b: i32 ] -> i32
+        if [ b == 12 ] return 0x2500
+        if [ b == 3  ] return 0x2502
+        if [ b == 10 ] return 0x250C
+        if [ b == 6  ] return 0x2510
+        if [ b == 9  ] return 0x2514
+        if [ b == 5  ] return 0x2518
+        if [ b == 11 ] return 0x251C
+        if [ b == 7  ] return 0x2524
+        if [ b == 14 ] return 0x252C
+        if [ b == 13 ] return 0x2534
+        if [ b == 15 ] return 0x253C
+        return 0
+
+    # write one codepoint (+ color slot) into the grid (bounds-checked). when both the
+    # existing and incoming chars are box-drawing, write their merged junction so
+    # adjacent/overlapping frames share a single line instead of doubling.
+    func cell_set [ grid: ref i32, colg: ref i32, cols: i32, rows: i32, x: i32, y: i32, cp: i32, color: i32 ]
+        if [ x < 0 || y < 0 || x >= cols || y >= rows ] return
+        idx : i32 [ y * cols + x ]
+        out : i32 [ cp ]
+        ob  : i32 [ box_bits[ grid[ idx ] ] ]
+        nb  : i32 [ box_bits[ cp ] ]
+        if [ ob != 0 && nb != 0 ]
+            merged : i32 [ bits_box[ ob | nb ] ]
+            if [ merged ] out = merged
+        grid[ idx ] = out
+        colg[ idx ] = color
+
+    # search the whole element tree (from any node down) for a bordered box — other
+    # than `skip` — whose BOTTOM border is on row `ty` and which overlaps the column
+    # span [cx0,cx1]. used to merge a box up onto an adjoining one even when they live
+    # in different containers (e.g. the console's top onto the editors' bottom). uses
+    # last-frame bounds, so it's order-independent.
+    func adjoin_bottom_at [ node: element*, skip: element, cx0: i32, cx1: i32, ty: i32 ] -> bool
+        if [ !node ] return false
+        if [ node != skip && node.bordering && node.bounds ]
+            nb  : i32 [ i32 (node.bounds.y + node.bounds.h) - 1 ]
+            nx0 : i32 [ i32 node.bounds.x ]
+            nx1 : i32 [ i32 (node.bounds.x + node.bounds.w) - 1 ]
+            if [ nb == ty && nx0 <= cx1 && nx1 >= cx0 ] return true
+        if [ node.elements ]
+            for [ ce: element, ck: string ] in node.elements
+                if [ adjoin_bottom_at[ ce, skip, cx0, cx1, ty ] ] return true
+        return false
+
+    # as above, for a bordered box whose RIGHT border is on column `tx` overlapping
+    # the row span [ry0,ry1] (the left-seam / vertical-share case).
+    func adjoin_right_at [ node: element*, skip: element, ry0: i32, ry1: i32, tx: i32 ] -> bool
+        if [ !node ] return false
+        if [ node != skip && node.bordering && node.bounds ]
+            nr  : i32 [ i32 (node.bounds.x + node.bounds.w) - 1 ]
+            ny0 : i32 [ i32 node.bounds.y ]
+            ny1 : i32 [ i32 (node.bounds.y + node.bounds.h) - 1 ]
+            if [ nr == tx && ny0 <= ry1 && ny1 >= ry0 ] return true
+        if [ node.elements ]
+            for [ ce: element, ck: string ] in node.elements
+                if [ adjoin_right_at[ ce, skip, ry0, ry1, tx ] ] return true
+        return false
+
+    # stamp a single-line box border (unicode light box-drawing) in `color`.
+    func draw_box [ grid: ref i32, colg: ref i32, cols: i32, rows: i32, x: i32, y: i32, w: i32, h: i32, color: i32 ]
+        # clamp the box to the visible grid so a frame wider/taller than the terminal
+        # still closes on screen — its right/bottom border lands on the last cell
+        # instead of being dropped by cell_set's bounds check (which read as "no side").
+        x0 : i32 [ (x < 0) ? 0 : x ]
+        y0 : i32 [ (y < 0) ? 0 : y ]
+        x1 : i32 [ x + w - 1 ]
+        y1 : i32 [ y + h - 1 ]
+        if [ x1 > cols - 1 ] x1 = cols - 1
+        if [ y1 > rows - 1 ] y1 = rows - 1
+        if [ x1 < x0 || y1 < y0 ] return
+        cell_set[ grid, colg, cols, rows, x0, y0, 0x250C, color ]
+        cell_set[ grid, colg, cols, rows, x1, y0, 0x2510, color ]
+        cell_set[ grid, colg, cols, rows, x0, y1, 0x2514, color ]
+        cell_set[ grid, colg, cols, rows, x1, y1, 0x2518, color ]
+        for [ i: i32 x0 + 1, i < x1, i += 1 ]
+            cell_set[ grid, colg, cols, rows, i, y0, 0x2500, color ]
+            cell_set[ grid, colg, cols, rows, i, y1, 0x2500, color ]
+        for [ j: i32 y0 + 1, j < y1, j += 1 ]
+            cell_set[ grid, colg, cols, rows, x0, j, 0x2502, color ]
+            cell_set[ grid, colg, cols, rows, x1, j, 0x2502, color ]
+
+    # stamp ASCII text on one row, clipped to maxw cells.
+    func stamp_text [ grid: ref i32, colg: ref i32, cols: i32, rows: i32, x: i32, y: i32, s: string, maxw: i32, color: i32 ]
+        if [ !s || maxw <= 0 ] return
+        n : i32 [ (s.count < maxw) ? s.count : maxw ]
+        for [ i: i32 0, i < n, i += 1 ]
+            cell_set[ grid, colg, cols, rows, x + i, y, i32 s.chars[i], color ]
+
+    # true if the focused element is this element or one of its descendants —
+    # i.e. an editable layer within this subtree currently has focus.
+    func has_focus_within [ e: element* ] -> bool
+        f : element [ focus ]
+        while [ f ]
+            if [ f == e ] return true
+            f = f.parent
+        return false
+
+    # recursively lay out + stamp an element and its children.
+    # (ox,oy) is the element's available cell origin; (aw,ah) the available size.
+    # (pbx0,pbx1) are the enclosing frame's left/right border columns and pbordered
+    # says whether that frame exists — a bordered element inside a bordered parent
+    # is drawn as a "header": it shares the parent's top + side borders and adds only
+    # a unique bottom rule under its text (├──┤), so nested frames don't endlessly embed.
+    func draw_element_console [ e: element*, grid: ref i32, colg: ref i32, cols: i32, rows: i32, ox: i32, oy: i32, aw: i32, ah: i32, pbx0: i32, pbx1: i32, pbordered: bool, pax: i32, pay: i32 ]
+        if [ !e ] return
+        if [ !e.area ] e.area = Region [ 0.0 ]
+        if [ !e.bounds ] e.bounds = rect[]
+        # console layout: 1 unit (line-height) = 1 cell, and px coords collapse to
+        # 1 unit each (px is meaningless in a character grid). fc = 1; the px→1-unit
+        # rule is applied by rectangle when console_units is set below.
+        e.fc = 1.0
+        rel : rect [ x: 0, y: 0, w: f32 aw, h: f32 ah ]
+        # resolve bound coords (`<axis>@var=default`, e.g. the editor split seams)
+        # against the live app object, same as the vk path — without this the panes
+        # ignore split1/split2 and never fill the console window.
+        if [ e.ux && e.ux.app_object && e.area ]
+            app_obj : Au e.ux.app_object
+            if [ e.area.bind_l ] e.area.l.offset = bind_value[ e.area.bind_l, app_obj, f32 aw, 1.0 ]
+            if [ e.area.bind_t ] e.area.t.offset = bind_value[ e.area.bind_t, app_obj, f32 ah, 1.0 ]
+            if [ e.area.bind_r ] e.area.r.offset = bind_value[ e.area.bind_r, app_obj, f32 aw, 1.0 ]
+            if [ e.area.bind_b ] e.area.b.offset = bind_value[ e.area.bind_b, app_obj, f32 ah, 1.0 ]
+        b : e.area.rectangle[ rel, null, null, 1.0, true ]
+        bw : i32 [ i32 b.w ]
+        bh : i32 [ i32 b.h ]
+        # the root fills the screen if it carries no explicit size; children must
+        # size themselves via their area. a collapsed / unselected control computes
+        # 0 here and is skipped below — exactly as the vk path bails on bounds <= 0,
+        # so things hidden in the window (e.g. an unselected In-File option) stay
+        # hidden in the console instead of being force-filled into view.
+        if [ !e.parent ]
+            if [ bw < 1 ] bw = aw
+            if [ bh < 1 ] bh = ah
+        x0 : i32 [ ox + i32 b.x ]
+        y0 : i32 [ oy + i32 b.y ]
+        # bounds are stored PARENT-LOCAL (absolute minus the parent's absolute origin),
+        # because find_target/event hit-testing subtracts each level's bounds as a
+        # local offset. x0/y0 stay absolute for grid stamping.
+        e.bounds.x = f32 (x0 - pax)
+        e.bounds.y = f32 (y0 - pay)
+        e.bounds.w = f32 bw
+        e.bounds.h = f32 bh
+        if [ bw < 1 || bh < 1 ] return
+        if [ e.transparency >= 1.0 ] return
+
+        # compute layer bounds (as the vk path does) so app handlers that read
+        # layer.bounds (e.g. Editor.on_press caret math) don't deref a null rect.
+        if [ e.layers ]
+            for [ lau: Au, lk: string ] in e.layers
+                lyr : Layer [ lau to Layer ]
+                if [ lyr ]
+                    lyr.bounds = (lyr.area) ? lyr.area.rectangle[ e.bounds, null, null, 1.0, true ] : e.bounds.copy[]
+
+        # a frame is drawn only when the element opts in via `bordering`. borderless
+        # elements (the common case) just position their children, so structural
+        # wrappers don't each draw a box.
+        bordered : bool [ e.bordering ]
+        # header: a bordered element inside a bordered parent. it reuses the parent's
+        # top + side borders and contributes only a bottom rule — the shortcut that
+        # keeps nested bordered elements from drawing endlessly-embedded frames.
+        header   : bool [ bordered && pbordered ]
+        # uniform dark-blue border (color 4). focus is shown on the text/cursor, not
+        # the chrome — shared seams/junctions belong to two panes, so per-pane border
+        # tinting would color the neighbor's ┬/┼/┴ and read wrong.
+        bcolor : i32 [ 4 ]
+
+        # share a seam with an adjoining bordered box (searched across the whole tree,
+        # so it works between different containers — editors vs console). if one's
+        # right border is one cell left of ours, extend our box left; if one's bottom
+        # border is one row above ours, extend our box up. the overlapped │/─ borders
+        # then merge in cell_set into the right junctions (┬ ┴ ├ ┤ ┼) — one shared line.
+        lshift : i32 [ 0 ]
+        tshift : i32 [ 0 ]
+        if [ bordered && !header && e.ux && e.ux.root ]
+            rootn : element [ e.ux.root ]
+            if [ adjoin_right_at [ rootn, e, y0, y0 + bh - 1, x0 - 1 ] ] lshift = 1
+            if [ adjoin_bottom_at[ rootn, e, x0, x0 + bw - 1, y0 - 1 ] ] tshift = 1
+
+        if [ header ]
+            # the divider is the implicit bottom of the border, drawn just BELOW the
+            # element's content rows (it doesn't count toward the element's unit
+            # height) and extended to the parent's side borders with ├ / ┤ junctions.
+            # top + sides are the parent's frame. clamp the junction columns to the
+            # visible grid so they land on the SAME clamped column draw_box used for
+            # the parent's side border (an overflowing pane otherwise loses its ┤).
+            ry  : i32 [ y0 + bh ]
+            jx0 : i32 [ (pbx0 < 0) ? 0 : pbx0 ]
+            jx1 : i32 [ (pbx1 > cols - 1) ? cols - 1 : pbx1 ]
+            cell_set[ grid, colg, cols, rows, jx0, ry, 0x251C, bcolor ]
+            cell_set[ grid, colg, cols, rows, jx1, ry, 0x2524, bcolor ]
+            for [ rx: i32 jx0 + 1, rx < jx1, rx += 1 ]
+                cell_set[ grid, colg, cols, rows, rx, ry, 0x2500, bcolor ]
+        el [ bordered && bw >= 2 && bh >= 2 ]
+            draw_box[ grid, colg, cols, rows, x0 - lshift, y0 - tshift, bw + lshift, bh + tshift, bcolor ]
+
+        # per-side content insets. a full box insets all four sides; a header insets
+        # nothing — its border is implicit around the content (the divider is drawn
+        # below, decoration, not stealing a content row).
+        il : i32 [ (bordered && !header) ? 1 : 0 ]
+        it : i32 [ (bordered && !header) ? 1 : 0 ]
+        ir : i32 [ (bordered && !header) ? 1 : 0 ]
+        ib : i32 [ (bordered && !header) ? 1 : 0 ]
+        # the box may have been extended left/up by lshift/tshift to share a seam;
+        # measure content + labels against that EXTENDED box so they sit just inside
+        # the shared border instead of leaving an empty cell/row where the original
+        # edge used to be.
+        bx0 : i32 [ x0 - lshift ]
+        by0 : i32 [ y0 - tshift ]
+        bbw : i32 [ bw + lshift ]
+        bbh : i32 [ bh + tshift ]
+        # an element is an editable field when one of its layers is editable (the
+        # css marks the title's face editable on focus) — render it as a search box.
+        editing : bool [ false ]
+        if [ e.layers ]
+            for [ ela: Au, elk: string ] in e.layers
+                elay : Layer [ ela to Layer ]
+                if [ elay && elay.editable ]
+                    editing = true
+                    break
+
+        # a borderless element with a label reserves its top row for that label.
+        has_lbl  : bool [ e.label && e.label.count > 0 ]
+        lbl_row  : i32 [ (!bordered && has_lbl) ? 1 : 0 ]
+        if [ editing ]
+            # editable title: the label is a dim gray placeholder; the typed `edit`
+            # text overlaps it from the left in white, with a block (reverse-video)
+            # cursor at the insertion point — so you type the search over the name.
+            bxl : i32 [ bx0 + il ]
+            bxw : i32 [ bbw - il - ir ]
+            if [ bxw > 0 ]
+                ph : string [ (e.label) ? e.label : '' ]
+                ed : string [ (e.edit)  ? e.edit  : '' ]
+                # gray placeholder shows only until the user has typed more than one
+                # char; past that the whole name is erased, leaving just the query.
+                if [ ph.count > 0 && ed.count <= 1 ] stamp_text[ grid, colg, cols, rows, bxl, by0 + it, ph, bxw, 2 ]
+                if [ ed.count > 0 ] stamp_text[ grid, colg, cols, rows, bxl, by0 + it, ed, bxw, 1 ]
+                cpos : i32 [ ed.count ]
+                if [ cpos > bxw - 1 ] cpos = bxw - 1
+                ccx : i32 [ bxl + cpos ]
+                ccy : i32 [ by0 + it ]
+                if [ ccx >= 0 && ccx < cols && ccy >= 0 && ccy < rows ]
+                    colg[ ccy * cols + ccx ] = 3
+        el [ has_lbl ]
+            lx : i32 [ bx0 + il ]
+            lw : i32 [ bbw - il - ir ]
+            if [ lw > 0 ] stamp_text[ grid, colg, cols, rows, lx, by0 + it, e.label, lw, 0 ]
+
+        # children overlap this element's frame only when it drew a full box (then
+        # its own border columns are the frame they share); a header passes the
+        # grandparent frame through unchanged.
+        child_bordered : bool [ bordered && !header ]
+        cpx0 : i32 [ (child_bordered) ? x0 - lshift : pbx0 ]
+        cpx1 : i32 [ (child_bordered) ? x0 + bw - 1 : pbx1 ]
+        cpb  : bool [ child_bordered || (header && pbordered) ]
+
+        cx : i32 [ bx0 + il ]
+        cy : i32 [ by0 + it + lbl_row ]
+        cw : i32 [ bbw - il - ir ]
+        ch : i32 [ bbh - it - ib - lbl_row ]
+        if [ cw > 0 && ch > 0 && e.elements ]
+            for [ ce: element, ck: string ] in e.elements
+                draw_element_console[ ce, grid, colg, cols, rows, cx, cy, cw, ch, cpx0, cpx1, cpb, x0, y0 ]
+
+    # ---- console input (terminal mouse + keyboard) -------------------------
+    # raw, non-echoing, non-blocking stdin (via stty) + xterm SGR mouse reporting
+    # with button-motion tracking (?1002) so drags report too; hide the cursor.
+    # write a control string straight to the tty fd (raw syscall, no stdio buffering).
+    func tty_write [ s: string ]
+        if [ tty_in >= 0 && s ] write[ tty_in, s.chars, s.count ]
+
+    func console_input_open []
+        system[ "stty -icanon -echo min 0 time 0" ]
+        # open the real terminal; grab its fd via fileno and do raw write/read on it.
+        # ESC[?1000h click, ?1002h drag, ?1006h SGR coords, ?7l no-autowrap, ?25l hide.
+        tty : handle [ fopen[ "/dev/tty", "r+" ] ]
+        if [ tty ]
+            tty_in = fileno[ tty ]
+            tty_write[ "\033[?1000h" ]
+            tty_write[ "\033[?1002h" ]
+            tty_write[ "\033[?1006h" ]
+            tty_write[ "\033[?7l" ]
+            tty_write[ "\033[?25l" ]
+
+    func console_input_close []
+        tty_write[ "\033[?1000l" ]
+        tty_write[ "\033[?1002l" ]
+        tty_write[ "\033[?1006l" ]
+        tty_write[ "\033[?7h" ]
+        tty_write[ "\033[?25h" ]
+        system[ "stty sane" ]
+
+    # read whatever stdin bytes are queued and turn them into the same events the
+    # GLFW callbacks raise (mouse pos is in cells — our layout space — so the
+    # existing find_target hit-test works unchanged).
+    func console_input_poll []
+        buf : local u8 [ 128 ]
+        # read the real terminal (mouse + keyboard) directly when /dev/tty is open;
+        # else fall back to stdin. stty set the controlling terminal raw (min 0 time 0)
+        # so this read is non-blocking either way.
+        src : i32 [ (tty_in >= 0) ? tty_in : 0 ]
+        nb : i32 [ read[ src, ref buf[0], 127 ] ]
+        if [ nb <= 0 ] return
+        rb0 : i32 [ i32 buf[0] ]
+        rb1 : i32 [ 0 ]
+        rb2 : i32 [ 0 ]
+        if [ nb > 1 ] rb1 = i32 buf[1]
+        if [ nb > 2 ] rb2 = i32 buf[2]
+        rdbg : handle [ fopen[ "/tmp/orbclick.txt", "a" ] ]
+        if [ rdbg ]
+            fputs[ 'READ nb={nb} b0={rb0} b1={rb1} b2={rb2}\n', rdbg ]
+            fclose[ rdbg ]
+        i : i32 [ 0 ]
+        while [ i < nb ]
+            c : i32 [ i32 buf[i] ]
+            # SGR mouse: ESC [ < btn ; col ; row (M=press / m=release)
+            if [ c == 0x1b && i + 2 < nb && buf[i+1] == 0x5B && buf[i+2] == 0x3C ]
+                j   : i32 [ i + 3 ]
+                btn : i32 [ 0 ]
+                mx  : i32 [ 0 ]
+                my  : i32 [ 0 ]
+                while [ j < nb && buf[j] >= 0x30 && buf[j] <= 0x39 ]
+                    btn = btn * 10 + (i32 buf[j] - 0x30)
+                    j += 1
+                if [ j < nb && buf[j] == 0x3B ] j += 1
+                while [ j < nb && buf[j] >= 0x30 && buf[j] <= 0x39 ]
+                    mx = mx * 10 + (i32 buf[j] - 0x30)
+                    j += 1
+                if [ j < nb && buf[j] == 0x3B ] j += 1
+                while [ j < nb && buf[j] >= 0x30 && buf[j] <= 0x39 ]
+                    my = my * 10 + (i32 buf[j] - 0x30)
+                    j += 1
+                press : bool [ j < nb && buf[j] == 0x4D ]
+                # report columns/rows are 1-based; cells are 0-based
+                mouse.x = f32 (mx - 1)
+                mouse.y = f32 (my - 1)
+                ev.clear[]
+                ev.mouse.pos.x = mouse.x
+                ev.mouse.pos.y = mouse.y
+                if [ btn & 64 ]
+                    ev.mouse.wheel_delta.y = (btn == 64) ? 1.0 : -1.0
+                    wheel_event[ ev ]
+                el [ btn & 32 ]
+                    move_event[ ev ]
+                el
+                    ev.mouse.button = btn & 3
+                    ev.mouse.state  = press
+                    if [ press ]
+                        press_event[ ev ]
+                    el
+                        release_event[ ev ]
+                i = j + 1
+                continue
+            # arrow / nav keys: ESC [ A/B/C/D
+            if [ c == 0x1b && i + 2 < nb && buf[i+1] == 0x5B ]
+                k    : i32 [ i32 buf[i+2] ]
+                code : i32 [ 0 ]
+                if [ k == 0x41 ]
+                    code = 265
+                el [ k == 0x42 ]
+                    code = 264
+                el [ k == 0x43 ]
+                    code = 262
+                el [ k == 0x44 ]
+                    code = 263
+                if [ code ]
+                    ev.clear[]
+                    ev.key.unicode = code
+                    ev.key.state   = 1
+                    key_event[ ev ]
+                    i += 3
+                    continue
+            # bare escape
+            if [ c == 0x1b ]
+                ev.clear[]
+                ev.key.unicode = 256
+                ev.key.state   = 1
+                key_event[ ev ]
+                i += 1
+                continue
+            # enter
+            if [ c == 0x0d || c == 0x0a ]
+                ev.clear[]
+                ev.key.unicode = 257
+                ev.key.state   = 1
+                key_event[ ev ]
+                i += 1
+                continue
+            # backspace
+            if [ c == 0x7f || c == 0x08 ]
+                ev.clear[]
+                ev.key.unicode = 259
+                ev.key.state   = 1
+                key_event[ ev ]
+                i += 1
+                continue
+            # printable ASCII → character insertion
+            if [ c >= 0x20 && c < 0x7f ]
+                tb : local i8 [ 2 ]
+                tb[0] = i8 c
+                tb[1] = 0
+                ev.clear[]
+                ev.key.text = string[ ref tb[0] ]
+                text_event[ ev ]
+                i += 1
+                continue
+            i += 1
+
+    func draw_console []
+        console_input_poll[]
+        # terminal size in cells (re-queried each frame for live resize). TIOCGWINSZ
+        # is a sizeof-based _IOR macro the compiler can't fold, so pass the literal
+        # request value per platform (mac differs from linux) — otherwise ioctl fails
+        # on the real tty and we'd be stuck at the fallback size with no resize.
+        ws : winsize
+        cols : i32 [ 80 ]
+        rows : i32 [ 24 ]
+        # TIOCGWINSZ differs by platform (mac 0x40087468, linux 0x5413) and the
+        # sizeof-based macro doesn't fold, so use the literal value. try the request
+        # across stdin/stdout/stderr: --log dup2's stdout+stderr onto a pipe, so only
+        # stdin (the input tty) may still answer. mac value first, then linux.
+        ok : bool [ ioctl[ 0, 0x40087468, ref ws ] == 0 && ws.ws_col > 0 ]
+        if [ !ok ] ok = ioctl[ 1, 0x40087468, ref ws ] == 0 && ws.ws_col > 0
+        if [ !ok ] ok = ioctl[ 2, 0x40087468, ref ws ] == 0 && ws.ws_col > 0
+        if [ !ok ] ok = ioctl[ 0, 0x5413, ref ws ] == 0 && ws.ws_col > 0
+        if [ !ok ] ok = ioctl[ 1, 0x5413, ref ws ] == 0 && ws.ws_col > 0
+        if [ !ok ] ok = ioctl[ 2, 0x5413, ref ws ] == 0 && ws.ws_col > 0
+        if [ ok ]
+            cols = i32 ws.ws_col
+            rows = i32 ws.ws_row
+        # reserve the last terminal line: writing the bottom row scrolls the terminal
+        # (eating the bottom border) regardless of autowrap, so lay out one row short.
+        if [ rows > 1 ] rows = rows - 1
+        width  = cols
+        height = rows
+
+        # build / reconcile the element tree + advance animation (no Canvas)
+        update_all[ app_object.on_render*[ a ] ]
+        animate[]
+        if [ root ] tick_binds[ root ]
+
+        # fill the grid with spaces (default color), then stamp the tree
+        n : i32 [ cols * rows ]
+        grid : new i32 [ n ]
+        colg : new i32 [ n ]
+        for [ i: i32 0, i < n, i += 1 ]
+            grid[ i ] = 32
+            colg[ i ] = 0
+        if [ root ]
+            draw_element_console[ root, grid, colg, cols, rows, 0, 0, cols, rows, 0, 0, false, 0, 0 ]
+
+        # serialize to UTF-8 with a leading cursor-home + clear-to-end, one write.
+        # control prefix written numerically so we never depend on string escapes:
+        #   ESC [ H  (home)   ESC [ J  (clear to end of screen)
+        # color runs are emitted as SGR escapes whenever the cell color changes:
+        #   ESC [ 0 m default   ESC [ 9 7 m white   ESC [ 9 0 m gray
+        cap : i32 [ n * 14 + rows + 32 ]
+        out : new u8 [ cap ]
+        p : i32 [ 0 ]
+        out[p] = 0x1b
+        p += 1
+        out[p] = 0x5B
+        p += 1
+        out[p] = 0x48
+        p += 1
+        out[p] = 0x1b
+        p += 1
+        out[p] = 0x5B
+        p += 1
+        out[p] = 0x4A
+        p += 1
+        cur_col : i32 [ -1 ]
+        for [ y: i32 0, y < rows, y += 1 ]
+            for [ x: i32 0, x < cols, x += 1 ]
+                idx : i32 [ y * cols + x ]
+                c   : i32 [ colg[ idx ] ]
+                if [ c != cur_col ]
+                    cur_col = c
+                    # reset-prefixed SGR (ESC[0;Nm) so reverse-video never leaks past
+                    # the cursor cell. 0=default, 1=white(97), 2=gray(90), 3=reverse(7).
+                    out[p] = 0x1b
+                    p += 1
+                    out[p] = 0x5B
+                    p += 1
+                    out[p] = 0x30
+                    p += 1
+                    if [ c != 0 ]
+                        out[p] = 0x3B
+                        p += 1
+                        if [ c == 1 ]
+                            out[p] = 0x39
+                            p += 1
+                            out[p] = 0x37
+                            p += 1
+                        el [ c == 2 ]
+                            out[p] = 0x39
+                            p += 1
+                            out[p] = 0x30
+                            p += 1
+                        el [ c == 3 ]
+                            out[p] = 0x37
+                            p += 1
+                        el
+                            # c == 4: dark-blue border via 256-color index 17 (38;5;17)
+                            out[p] = 0x33
+                            p += 1
+                            out[p] = 0x38
+                            p += 1
+                            out[p] = 0x3B
+                            p += 1
+                            out[p] = 0x35
+                            p += 1
+                            out[p] = 0x3B
+                            p += 1
+                            out[p] = 0x31
+                            p += 1
+                            out[p] = 0x37
+                            p += 1
+                    out[p] = 0x6D
+                    p += 1
+                cp : i32 [ grid[ idx ] ]
+                if [ cp < 0x80 ]
+                    out[p] = u8 cp
+                    p += 1
+                el [ cp < 0x800 ]
+                    out[p] = u8 (0xC0 | (cp >> 6))
+                    p += 1
+                    out[p] = u8 (0x80 | (cp & 0x3F))
+                    p += 1
+                el
+                    out[p] = u8 (0xE0 | (cp >> 12))
+                    p += 1
+                    out[p] = u8 (0x80 | ((cp >> 6) & 0x3F))
+                    p += 1
+                    out[p] = u8 (0x80 | (cp & 0x3F))
+                    p += 1
+            if [ y < rows - 1 ]
+                out[p] = 0x0A
+                p += 1
+        # reset color at the end of the frame
+        out[p] = 0x1b
+        p += 1
+        out[p] = 0x5B
+        p += 1
+        out[p] = 0x30
+        p += 1
+        out[p] = 0x6D
+        p += 1
+        out[p] = 0
+        printf[ "%s", out ]
+
     # resolve a bound coord against the app object: read the named f32 field via
     # member_ref (the app object is the only scope — never the element/parent).
     # a missing field falls back to the coord's inline default.
@@ -1456,6 +2062,15 @@ Display Window
         if [ !m ] return
         p : ref f32 [ app_obj.member_ref[ m ] ]
         v : f32 [ p[0] ]
+        # console: the range min/max are px values that don't divide down at fc=1, so
+        # the px-range clamp would corrupt the value (e.g. force console_h up to 50).
+        # take the app var directly, no clamp and no easing — a grid has no sub-frame
+        # animation to settle anyway.
+        if [ console ]
+            b.active     = v
+            b.has_active = true
+            b.moving     = false
+            return
         if [ b.has_range && fc > 0.0 && span > 0.0 ]
             lo : f32 [ b.max / fc ]
             hi : f32 [ (span - b.min) / fc ]
@@ -1540,7 +2155,7 @@ Display Window
                 e.pristine   = false
                 will_animate = true
 
-        bounds : e.area.rectangle[ rel, null, (last) ? last.bounds : null, e.fc ]
+        bounds : e.area.rectangle[ rel, null, (last) ? last.bounds : null, e.fc, false ]
 
         # percent sizing: override h/w with fraction of remaining sibling space
         if [ e.area && e.parent && e.parent.elements && (e.area.b.percent || e.area.r.percent) ]
@@ -1552,11 +2167,11 @@ Display Window
                 if [ sib == e || !sib.area ] continue
                 if [ e.area.b.percent && sib.area.b.y_type == YAlign.height && !sib.area.b.percent ]
                     sfc : f32 [ (sib.fc > 0.0) ? sib.fc : pfc ]
-                    tb  : sib.area.rectangle[ prel, null, null, sfc ]
+                    tb  : sib.area.rectangle[ prel, null, null, sfc, false ]
                     fixed_h += tb.h
                 if [ e.area.r.percent && sib.area.r.x_type == XAlign.width && !sib.area.r.percent ]
                     sfc : f32 [ (sib.fc > 0.0) ? sib.fc : pfc ]
-                    tb  : sib.area.rectangle[ prel, null, null, sfc ]
+                    tb  : sib.area.rectangle[ prel, null, null, sfc, false ]
                     fixed_w += tb.w
             if [ e.area.b.percent ] bounds.h = e.area.b.offset * (rel.h - fixed_h)
             if [ e.area.r.percent ] bounds.w = e.area.r.offset * (rel.w - fixed_w)
@@ -1575,7 +2190,7 @@ Display Window
                 maxb  : f32 [ 0.0 ]
                 for [ ce: element, ck: string ] in e.elements
                     if [ !ce.area ] continue
-                    cb : ce.area.rectangle[ prov, null, lastc, e.fc ]
+                    cb : ce.area.rectangle[ prov, null, lastc, e.fc, false ]
                     if [ cb.x + cb.w > maxr ] maxr = cb.x + cb.w
                     if [ cb.y + cb.h > maxb ] maxb = cb.y + cb.h
                     lastc = cb
@@ -1611,7 +2226,7 @@ Display Window
         for [ psc_au: Au, psc_k: string ] in e.layers
             psc_lay : Layer [ psc_au to Layer ]
             if [ !psc_lay || !psc_lay.area ] continue
-            psc_b  : psc_lay.area.rectangle[ e.bounds, null, null, e.fc ]
+            psc_b  : psc_lay.area.rectangle[ e.bounds, null, null, e.fc, false ]
             psc_lx : f32  [ psc_b.x - e.bounds.x ]
             psc_ly : f32  [ psc_b.y - e.bounds.y ]
             psc_rx : f32  [ psc_b.x + psc_b.w - e.bounds.x - e.bounds.w ]
@@ -1642,16 +2257,15 @@ Display Window
             # textures (no realloc) and only the content size + blit UV change; the
             # cache_w/cache_h we track stays the exact logical size for the blit.
             if [ e.cache_canvas ]
-                # only an actual GPU realloc (capacity grew past the quantized high-water mark)
-                # clears the texture → needs a content re-render. a logical-size-only resize
-                # within capacity preserves the pixels, so the cached content stays valid; the
-                # mask + blit (applied at the final screen composite) handle the new size. don't
-                # force a re-raster of all layers (e.g. the editor's text) on a pure resize.
-                cap_w0 : i32 [ e.cache_canvas.width ]
-                cap_h0 : i32 [ e.cache_canvas.height ]
                 e.cache_canvas.resize[ ew, eh ]
-                if [ e.cache_canvas.width != cap_w0 || e.cache_canvas.height != cap_h0 ]
-                    e.pristine = false
+                # ANY logical size change re-renders this cache, so every element reflows at
+                # its new size IN THE SAME frame — chrome and scroll content alike. the old
+                # "resize within capacity → keep the pixels, just blit" shortcut desynced the
+                # tree during a seam drag: a re-rastered title narrowed a frame before the
+                # blit-only editor caught up (title too narrow, editor scrollbar overhanging).
+                # the per-line text cache makes the editor's re-render cheap (re-composite
+                # cached line blits, not re-raster glyphs), so resize-in-sync wins.
+                e.pristine = false
             el
                 e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true, quantize: true ]
                 e.cache_canvas.update[]
@@ -1713,7 +2327,7 @@ Display Window
             if [ defer_scroll && lkey == 'scrollbar' ]
                 continue
 
-            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null, e.fc ] : e.bounds.copy[]
+            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null, e.fc, false ] : e.bounds.copy[]
             layer.bounds.x -= e.bounds.x
             layer.bounds.y -= e.bounds.y
             b  : rect   [ layer.bounds ]
@@ -1934,7 +2548,11 @@ Display Window
         if [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
             if [ mask_on ]
                 glow_changed : bool [ e.mask_bg.x != e.mask_glow.x || e.mask_bg.y != e.mask_glow.y || e.mask_bg.z != e.mask_glow.z || e.mask_bg.w != e.mask_glow.w ]
-                if [ !e.mask_canvas || e.mask_w != ew || e.mask_h != eh || glow_changed ]
+                # during a seam drag the cache re-rasters every frame (sub-pixel bounds shifts)
+                # while ew (integer) can hold for a frame — refresh the fade mask in lockstep so
+                # its edge extent never lags the cache, else the masked glow reads a stale extent
+                # and squishes. cheap: only while dragging, and the mask is a small canvas.
+                if [ !e.mask_canvas || e.mask_w != ew || e.mask_h != eh || glow_changed || vk.sync_paints ]
                     # size the mask to the SRC cache's actual (quantized) texture and
                     # give it the same logical content_w/h, so draw_canvas_masked's
                     # shared uv (content/texture) maps both identically — otherwise the
@@ -1994,7 +2612,7 @@ Display Window
             # without the element having to redraw its whole cache.
             sbl : ScrollLayer (e.layers) ? (e.layers['scrollbar'] to ScrollLayer) : null
             if [ sbl && sbl.ctype == stage && !sbl.hide ]
-                sbl.bounds = (sbl.area) ? sbl.area.rectangle[ e.bounds, null, null, e.fc ] : e.bounds.copy[]
+                sbl.bounds = (sbl.area) ? sbl.area.rectangle[ e.bounds, null, null, e.fc, false ] : e.bounds.copy[]
                 sbl.bounds.x -= e.bounds.x
                 sbl.bounds.y -= e.bounds.y
                 cv.save[ ]
@@ -2062,11 +2680,36 @@ abstract media_app trinity
     func load_scene   [] return
     func update_scene [] return
          
+    # read the terminal size (cells) into width/height for console mode. literal
+    # TIOCGWINSZ request per platform (the macro is a sizeof-based _IOR the compiler
+    # can't fold; the wrong value makes ioctl fail on the tty).
+    func console_size []
+        ws : winsize
+        ok : bool [ ioctl[ 1, 0x40087468, ref ws ] == 0 && ws.ws_col > 0 ]
+        if [ !ok ] ok = ioctl[ 1, 0x5413, ref ws ] == 0 && ws.ws_col > 0
+        if [ ok ]
+            width  = i32 ws.ws_col
+            height = i32 ws.ws_row
+        if [ width  <= 0 ] width  = 80
+        if [ height <= 0 ] height = 24
+
     func run[]
         # the cwd we launched in (Au captured it in engage before cd'ing to share).
         startup_path = path.path_startup[]
         type : typeid[a]
         background_type : Au.find_type[ (background) ? background.chars : null, null ]
+        # console mode: no vk context, no GLFW window — host the tree + layout only.
+        if [ console ]
+            console_size[]
+            cwin : Window[ app_object: a, title:(title) ?? type.ident, st: Style [ a ],
+                width:width, height:height, background_type:background_type, console: true ]
+            cwin.hold[]
+            w = cwin
+            cwin.console_input_open[]
+            render *[]
+            cwin.restyle = true
+            super.run[]
+            return
         window : Window[ app_object: a, title:(title) ?? type.ident, st: Style [ a ],
             width:(width) ?? 1888, height:(height) ?? 888, background_type:background_type ]
         expect window.vk, "context didnt work"
@@ -2083,6 +2726,12 @@ abstract media_app trinity
 
     # 22
     func render[]
+        if [ console ]
+            update_scene*[]
+            cwin : Window[w]
+            cwin.draw_console[]
+            frames += 1
+            return
         window : Window[w]
         wa : bool [ window.will_animate ]
         window.will_animate = false

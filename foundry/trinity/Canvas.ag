@@ -1399,6 +1399,9 @@ Render Canvas
         # NO per-paint sync_fence: draw[] now rings command buffer/fence/descriptors/
         # uniforms, so it only stalls on a ring wrap. the canvas is fenced once at the
         # end of its draw session (on_compose/on_screen call sync_fence) before sampling.
+        # EXCEPT during an interactive split/seam drag (vk.sync_paints): drain each paint so
+        # the batched ring's per-slot UBO/UV can't desync across a frame's many composites.
+        if [ vk.sync_paints ] sync_fence[]
 
     # hard-clear the canvas's color texture to a chosen color via
     # vkCmdClearColorImage. this happens OUTSIDE any render pass and

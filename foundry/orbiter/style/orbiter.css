@@ -209,6 +209,7 @@ EditorView / Editor.pane3 {
 Editor / element.title {
     area:                       l0 t0 r0 h44px
     focusable:                  true
+    bordering:                  true
     layers.base:
         fill_color:             #2480
         inner_glow:             #8af2 26
@@ -282,6 +283,7 @@ Instances {
 
 Console {
     focusable:  true
+    bordering:  true
     area:   l0 t1.3 r0 b0
     layers.content: TermLayer
         area:               8px
@@ -329,6 +331,7 @@ EditorView / Console {
 EditorView / Console / element.console_filter {
     area:                       l0 t0 r0 h44px
     focusable:                  true
+    bordering:                  true
     layers.base:
         fill_color:             #2480
         inner_glow:             #8af2 26
@@ -363,6 +366,7 @@ Instances / Console {
 Instances / Console / element.console_filter {
     area:                       l0 t0 r0 h44px
     focusable:                  true
+    bordering:                  true
     layers.base:
         fill_color:             #2480
         inner_glow:             #8af2 26
@@ -621,6 +625,7 @@ DebugPanel {
 
 Editor {
     focusable:              true
+    bordering:              true
     layers.content: EditorLayer
         area:               l0 t45px r0 b0
         label_height:       1.0
