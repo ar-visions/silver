@@ -17,5 +17,6 @@ build
 *.o
 *.i
 *.ll
+/shot*png
 /*.ag
 sessions
