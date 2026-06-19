@@ -1216,6 +1216,11 @@ void silver_write_fmt(silver a, array toks) {
 // execvp replaces this process; returns only when there's nothing to run (library /
 // external sub-module / no host binary).
 static void silver_live_run(silver a) {
+    // a failed build must NOT launch (or relaunch) the app. execvp'ing the host on an
+    // error makes the host re-trigger `silver <app>`, which fails and re-execs — the
+    // infinite rebuild loop. on the first build (app never ran) we simply quit; main
+    // returns non-zero so the live-host's rebuild sees the failure and aborts.
+    if (a->error) return;
     if (!((aether)a)->is_live && !a->is_external) {
         path host = f(path, "%o/%o", a->build_dir, a->name);
         if (file_exists("%o", host)) {
@@ -9549,7 +9554,10 @@ etype silver_read_def(silver a, interface access) {
 int main(int argc, cstrs argv) {
     engage(argv);
     silver a = silver(argv);
-    return 0;
+    // a successful live build execvp's the host and never returns here; if we DID
+    // return, a->error tells us the build failed → exit non-zero so a caller (the
+    // live-host's rebuild_blocking, or a shell) sees the failure instead of looping.
+    return (a && a->error) ? 1 : 0;
 }
 
 #endif
