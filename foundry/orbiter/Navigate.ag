@@ -1,0 +1,198 @@
+extend orbiter
+
+# ---------------------------------------------------------------------------
+# Navigate — browser-style forward/back navigation history for the editor.
+#
+# This is NOT the undo system. Undo is a linear log of document MUTATIONS (see
+# EditAction/LineOp in Editor.ag). Navigation history is a separate list of VIEW
+# LOCATIONS with a current index: back/forward move the index; a new jump
+# truncates the forward tail and appends (the browser fork). The only place the
+# two touch is shift[]: when text is inserted/removed, the recorded line anchors
+# must move with it so a later back[] lands on the logically-correct line, not a
+# stale number. That shared dependency on edit deltas is why it FEELS like undo,
+# but the structures are independent.
+#
+# A NavPoint remembers which EDITOR PANE it came from (editor index) as well as
+# the file, so back/forward restore into the same editor side — not whichever
+# pane happens to be focused. The file is keyed by the same string path used by
+# file_cache, so restoring is the editor's normal open-by-path.
+#
+# Integration (orbiter owns one Navigate; each Editor pane reports to it):
+#   on an EXPLICIT semantic jump (definition / file open / search result):
+#       nav.record[ editor_idx, path, line, col, scroll_y ]   # always lands
+#   on a caret landing (click / page move / big arrow run) — significance-gated:
+#       nav.note_caret[ editor_idx, path, line, col, scroll_y ] # drops small/same-line moves
+#   on a structural edit in a file (same deltas undo emits):
+#       nav.shift[ path, at_line, line_delta ]                # +n inserted, -n removed
+#   before the FIRST back of a run (so forward can return to the live spot):
+#       nav.save_top[ editor_idx, path, line, col, scroll_y ]
+#   the gestures:
+#       p : nav.back[]      # or nav.forward[] — null if there's nowhere to go
+#       if [ p ] route_to[ p.editor, p.path, p.line, p.col, p.scroll_y ]
+#   routing the editor index (router-side, NOT this model): p.editor is a best-effort
+#   target, never a promise that the pane exists. resolve it as
+#       pane_at[ min(p.editor, highest_live_pane) ]
+#   — if that pane is gone, fall back to the HIGHEST existing pane; NEVER spawn a new
+#   one. the index is a hint clamped to reality, so there's no implied editor stack.
+#   lifecycle:
+#       nav.drop_file[ path ]      # a file/group closed
+#       nav.drop_editor[ idx ]     # a pane closed
+# ---------------------------------------------------------------------------
+
+# one remembered view location. line is edit-tracked (shift[] moves it), so it
+# survives insertions/removals above it; col + scroll_y restore the whole view,
+# not just the caret. `editor` is the pane index this location belongs to.
+class NavPoint
+    public editor   : i32 [ 0 ]
+    public path     : string
+    public line     : i32 [ 0 ]
+    public col      : i32 [ 0 ]
+    public scroll_y : f32 [ 0.0 ]
+
+class Navigate
+    intern stack : array NavPoint
+    intern idx   : i32 [ -1 ]    # current position in stack; -1 = empty
+    # a new jump in the SAME pane+file within this many lines of the current entry
+    # REPLACES it instead of growing the history — so re-landing where you already
+    # are (or a tiny hop) never piles up dead steps. raise it to coalesce harder.
+    public coalesce_lines : i32 [ 1 ]
+    # SIGNIFICANCE gate for caret-driven records (note_caret[]). a caret landing in the
+    # same pane+file fewer than this many lines from the current entry is NOT a nav stop —
+    # it's just moving around. this is the whole difference from VS Code, which records
+    # every cursor move (even same-line) and makes back/forward step through noise. a
+    # different pane or file is always significant regardless of this. ~a third of a
+    # screenful is a good default — tune to taste.
+    public significance_lines : i32 [ 10 ]
+
+    func init []
+        stack = array NavPoint [ alloc: 64 ]
+
+    func count [] -> i32
+        return (stack) ? stack.count : 0
+
+    func can_back [] -> bool
+        return idx > 0
+
+    func can_forward [] -> bool
+        return stack && idx >= 0 && idx < stack.count - 1
+
+    # the entry the user is currently sitting on (null if empty).
+    func current [] -> NavPoint
+        if [ !stack || idx < 0 || idx >= stack.count ] return null
+        return stack[ idx ]
+
+    # record a jump. call ONLY on discontinuous navigation, NEVER on a keystroke or
+    # an incremental caret move — that distinction is what keeps the history clean.
+    # truncates any forward tail (browser fork), coalesces with the current entry
+    # when it's the same place, then appends and points at the new tip.
+    public func record [ editor: i32, p: string, ln: i32, col: i32, scroll_y: f32 ]
+        if [ !stack ] stack = array NavPoint [ alloc: 64 ]
+        cur : current[]
+        if [ cur && cur.editor == editor && cur.path == p ]
+            d : i32 [ cur.line - ln ]
+            if [ d < 0 ] d = 0 - d
+            if [ d <= coalesce_lines ]
+                cur.line     = ln
+                cur.col      = col
+                cur.scroll_y = scroll_y
+                truncate_after[ idx ]   # re-landing here is the new tip; drop forward
+                return
+        truncate_after[ idx ]
+        np : NavPoint [ editor: editor, path: p, line: ln, col: col, scroll_y: scroll_y ]
+        stack.push[ np ]
+        idx = stack.count - 1
+
+    # a caret landed somewhere via a non-semantic gesture (click, page up/down, a long
+    # arrow run). record it as a nav stop ONLY if it's relatively significant: a different
+    # pane, a different file, or at least significance_lines from the current entry.
+    # same-line and small vertical nudges are dropped entirely — they never become history.
+    # this is the fix for VS Code's behavior, where every cursor move is a stop and back
+    # just inches the caret around. explicit jumps call record[] instead and always land.
+    public func note_caret [ editor: i32, p: string, ln: i32, col: i32, scroll_y: f32 ]
+        cur : current[]
+        if [ cur && cur.editor == editor && cur.path == p ]
+            d : i32 [ cur.line - ln ]
+            if [ d < 0 ] d = 0 - d
+            if [ d < significance_lines ] return   # not a meaningful move — ignore
+        record[ editor, p, ln, col, scroll_y ]
+
+    # drop every entry after `at` (the forward tail); leaves [0..at] intact.
+    intern func truncate_after [ at: i32 ]
+        if [ !stack ] return
+        while [ stack.count > at + 1 ]
+            stack.pop[]
+
+    # step back one; returns the entry to restore (null at the start). the index only
+    # moves — the list is untouched — so the forward tail survives until the next jump.
+    public func back [] -> NavPoint
+        if [ idx <= 0 ] return null
+        idx -= 1
+        return stack[ idx ]
+
+    public func forward [] -> NavPoint
+        if [ !stack || idx >= stack.count - 1 ] return null
+        idx += 1
+        return stack[ idx ]
+
+    # update the current tip in place WITHOUT pushing — call before the first back[]
+    # of a run so the live caret/scroll is saved into the entry you're leaving, and a
+    # later forward[] returns you exactly there (not to the stale jump target).
+    public func save_top [ editor: i32, p: string, ln: i32, col: i32, scroll_y: f32 ]
+        cur : current[]
+        if [ !cur ]
+            record[ editor, p, ln, col, scroll_y ]
+            return
+        cur.editor   = editor
+        cur.path     = p
+        cur.line     = ln
+        cur.col      = col
+        cur.scroll_y = scroll_y
+
+    # keep line anchors valid across a structural edit in file p: line_delta lines were
+    # inserted (>0) or removed (<0) starting at line `at`. mirrors the editor's LineOp
+    # model exactly. points in other files (other panes showing other paths) are left
+    # alone; a removal that swallows an anchor clamps it to the cut line.
+    public func shift [ p: string, at: i32, line_delta: i32 ]
+        if [ !stack || line_delta == 0 ] return
+        for [ np: NavPoint ] in stack
+            if [ np.path == p ]
+                if [ np.line >= at ]
+                    nl : i32 [ np.line + line_delta ]
+                    if [ nl < at ] nl = at
+                    np.line = nl
+
+    # a file/group closed — drop its entries so back/forward never targets a dead path.
+    # compacts the list and pulls idx back so it still points at a live neighbor.
+    func drop_file [ p: string ]
+        if [ !stack ] return
+        w : i32 [ 0 ]
+        for [ r: i32 0, r < stack.count, r += 1 ]
+            np : NavPoint stack[ r ]
+            if [ np.path == p ]
+                if [ r <= idx && idx > 0 ] idx -= 1
+                continue
+            stack[ w ] = np
+            w += 1
+        while [ stack.count > w ]
+            stack.pop[]
+        if [ idx >= stack.count ] idx = stack.count - 1
+
+    # a pane closed — drop every location that lived in that editor side.
+    func drop_editor [ editor: i32 ]
+        if [ !stack ] return
+        w : i32 [ 0 ]
+        for [ r: i32 0, r < stack.count, r += 1 ]
+            np : NavPoint stack[ r ]
+            if [ np.editor == editor ]
+                if [ r <= idx && idx > 0 ] idx -= 1
+                continue
+            stack[ w ] = np
+            w += 1
+        while [ stack.count > w ]
+            stack.pop[]
+        if [ idx >= stack.count ] idx = stack.count - 1
+
+    func clear []
+        if [ stack ]
+            while [ stack.count > 0 ] stack.pop[]
+        idx = -1

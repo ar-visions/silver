@@ -715,8 +715,12 @@ Layer EditorLayer
                     cv.set_crop[ tx + sel_lx, ty + bounds.y,
                         tx + crop_x + crop_w, ty + bounds.y + bounds.h ]
                     cv.fill_color[ '#fff' ]
+                    # match the underlying cached line, which blits at round[y]
+                    # (line ~516); drawing this overlay at the un-rounded y_row left the
+                    # selected text a sub-pixel off the glyphs beneath it on a fractional
+                    # (mid-ease) scroll.y.
                     cv.draw_text[ editor.display_of[ lnv ],
-                        rect [ x: bx, y: y_row, w: bounds.w - gut_w, h: lh ],
+                        rect [ x: bx, y: round[ y_row ], w: bounds.w - gut_w, h: lh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
                 cv.paint[ ]
                 # back to the code-region crop (gutter edge) for the cursor below
@@ -771,6 +775,10 @@ Control Editor
     public  show_nav      : bool
     public  editor_mode   : string
     public  src           : path
+    # injected each frame by orbiter (the Editor is rebuilt per frame): this pane's own
+    # navigation history (back/forward), and its pane index (pane0..3, stamped on each stop).
+    mutable nav           : Navigate
+    mutable pane_index    : i32 [ 0 ]
     mutable lines         : list string
     mutable file_cache    : map FileBuf[string]
     # close icon for the per-row 'remove this match' button (lazy-loaded in draw)
@@ -1436,6 +1444,9 @@ Control Editor
         apply_undo[ hist.value_by_index[ hist_i ] ]
         edit_cl = sel_line
         edit_cc = sel_col
+        # bring the caret (and the view) to the spot that was just undone, so the
+        # reverted change is visible even if it happened off-screen.
+        ensure_caret_visible[]
         touch_hist[]
         pristine = false
 
@@ -1448,6 +1459,8 @@ Control Editor
         hist_i += 1
         edit_cl = sel_line
         edit_cc = sel_col
+        # bring the caret (and the view) to the spot that was just redone.
+        ensure_caret_visible[]
         touch_hist[]
         pristine = false
 
@@ -1559,6 +1572,14 @@ Control Editor
         # landed on back to a model column (tabs occupy multiple visual columns).
         vx    : f32 [ round[ (rel_x - row_indent[ ln ] + scroll.x) / cw ] ]
         cl    : i32 [ model_col[ line_get[ ln ], i32[ vx ] ] ]
+        # a significant click-jump (far from the current caret) is a navigation stop: push
+        # the FROM location so Cmd+Left returns here. small/near clicks fall under the
+        # threshold and are dropped; drags never record.
+        if [ nav && src && !dragging ]
+            jd : i32 [ sel_line - ln ]
+            if [ jd < 0 ] jd = 0 - jd
+            if [ jd >= nav.significance_lines ]
+                nav.record[ pane_index, '{src.absolute[]}', sel_line, sel_col, scroll.y ]
         sel_line = ln
         sel_col  = cl
 
@@ -1889,6 +1910,31 @@ Control Editor
         pristine = false
         return true
 
+    # back (dir<0) / forward (dir>0) through THIS pane's nav history. snapshot the live caret
+    # into the tip first (so forward returns to where you are), then restore the entry —
+    # opening its file in this pane if it differs. no cross-pane routing: same editor side.
+    func nav_walk [ dir: i32 ]
+        if [ !nav || !src ] return
+        nav.save_top[ pane_index, '{src.absolute[]}', sel_line, sel_col, scroll.y ]
+        np : NavPoint
+        if [ dir < 0 ]
+            np = nav.back[]
+        el
+            np = nav.forward[]
+        if [ !np ] return
+        same : bool [ '{src.absolute[]}' == np.path ]
+        if [ !same ]
+            src = path '{np.path}'
+            load_file[]
+        sel_line      = np.line
+        sel_col       = np.col
+        anchor_line   = np.line
+        anchor_col    = np.col
+        scroll.y      = np.scroll_y
+        scroll_target = np.scroll_y
+        ensure_caret_visible[]
+        pristine      = false
+
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
         # ignore modifier keys (shift/ctrl/alt/super, GLFW 340-347): they must not touch
@@ -1935,6 +1981,12 @@ Control Editor
         if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 89 ]    # Key.Y
             redo[]
             ux.will_animate = true
+            return
+
+        # navigation history: Ctrl/Cmd + Left/Right walk back/forward through significant
+        # locations in THIS pane (NOT line start/end).
+        if [ (ev.key.ctrl || ev.key.meta) && (ev.key.unicode == 263 || ev.key.unicode == 262) ]
+            nav_walk[ (ev.key.unicode == 263) ? -1 : 1 ]
             return
 
         if [ line_count[] <= 0 ] return

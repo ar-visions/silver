@@ -16,6 +16,7 @@ import <fcntl.h>
 import <sys/wait.h>
 import Earth
 import Avatar
+import Navigate
 import Editor
 import Console
 import NodeList
@@ -134,6 +135,11 @@ trinity orbiter # implements compiler
     # focused pane index (where opens/finder land).
     public editor_slots     : array i32
     public active_pane      : i32
+    # per-pane navigation history (Cmd/Ctrl+Left/Right). runtime-only — never serialized
+    # (save_states writes only tabs/target/breakpoints), so it starts empty each session.
+    # one Navigate per pane (pane0..3) so back/forward stay on the same editor side; owned
+    # here (not on the per-frame-throwaway Editor) and injected into each pane every frame.
+    intern nav_panes        : array Navigate
     # the split seams between panes, as absolute x-positions in layout units from the
     # editor area's left edge. pane i's right edge = split{i+1}; adjacent panes share
     # the var on their touching edges so the seam is draggable (trinity seam model).
@@ -284,6 +290,9 @@ trinity orbiter # implements compiler
         editor_slots   = array i32 []
         editor_slots  += -1
         active_pane    = 0
+        nav_panes      = array Navigate []
+        for [ i: i32 0, i < 8, i += 1 ]
+            nav_panes += Navigate []
         active_panel   = 'files'
         editor_panel   = 'editor'
         active_target  = 'silver'
@@ -973,6 +982,7 @@ trinity orbiter # implements compiler
         # tab strip — so no 'pins' overlay anymore.
         return Editor [
             src: p, breakpoints: breakpoints, code_font_size: code_font_size,
+            nav: nav_panes[ pi ], pane_index: pi,
             debug_running: running, debugger: dbgr, debug_vars: debug_vars,
             # the findbar belongs to the pane whose magnify opened it (findbar_on);
             # find-in-files hits render only in the focused search pane (searchable).
