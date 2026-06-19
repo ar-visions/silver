@@ -1284,10 +1284,16 @@ Control Editor
             return ''
         if [ flat_active && flat_rows && vr >= 0 && vr < flat_rows.count ]
             r : VRow flat_rows[ vr ]
-            if [ r.src >= 0 ] return lines.value_by_index[ r.src ]
+            if [ r.src >= 0 ]
+                fs : string lines.value_by_index[ r.src ]
+                return (fs) ? fs : ''
             # virtual field row: indent is applied at draw via row_depth.
             return '# {r.var.name} = {r.var.value}'
-        if [ vr >= 0 && vr < lines.count ] return lines.value_by_index[ vr ]
+        if [ vr >= 0 && vr < lines.count ]
+            # null-safe: a null entry (e.g. a list desync after an insert) must not propagate
+            # into save's string build — that put a null into path_save and SIGSEGV'd on Ctrl+S.
+            s : string lines.value_by_index[ vr ]
+            return (s) ? s : ''
         return ''
 
     # console render hook: expose the flat row model to the terminal paint path.
@@ -1488,14 +1494,20 @@ Control Editor
             for [ i: i32 0, i < parts.count, i += 1 ]
                 if [ i > 0 ] out = out + '\n'
                 out = out + parts[i]
-            target.save[ out, null ]
+            # same string-mis-typed-as-path guard as below — rebuild a real path before save.
+            tp : path '{target}'
+            tp.save[ out, null ]
             return
         if [ !src ] return
         out : string [ '' ]
         for [ i: i32 0, i < lines.count, i += 1 ]
             if [ i > 0 ] out = out + '\n'
             out = out + line_get[ i ]
-        src.save[ out, null ]
+        # src can be a string mis-typed into the path slot (Au string→path doesn't truly
+        # convert, so the object keeps the string vtable and src.save dispatches to a garbage
+        # function pointer → SIGSEGV). reconstruct a genuine path from its chars first.
+        sp : path '{src}'
+        sp.save[ out, null ]
 
     func load_file []
         if [ !src ] return

@@ -1092,7 +1092,7 @@ class Gpu
     public compute       : bool
 
     intern func index_type [ ] -> VkIndexType
-        return (index_size == 1) ? VK_INDEX_TYPE_UINT8_KHR :
+        return (index_size == 1) ? VK_INDEX_TYPE_UINT8 :
                (index_size == 2) ? VK_INDEX_TYPE_UINT16    : VK_INDEX_TYPE_UINT32
         
     func sync [ w: Display ] 

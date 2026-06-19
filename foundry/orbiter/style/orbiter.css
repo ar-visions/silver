@@ -142,6 +142,8 @@ Group.editor_group {
 
 EditorView {
     area:                       l0 t0 r0 b0
+    layers.base:
+        fill_color:             #0a1a3a
 }
 
 /* the editor pane has NO base fill: its cache is blitted through the edge-fade

@@ -104,10 +104,6 @@ class Background
     public render: Render
     public models: array Model
 
-    func init[]
-        test2: i32 22
-        test2 += 22
-        
     func update[]
         return
 

@@ -8,6 +8,8 @@ import silver
 import project
 import dbg
 
+
+
 import <stdio.h>
     -lm
 import <stdlib.h>
@@ -80,6 +82,12 @@ class FmtWatch
     public mtime : i64 [ 0 ]
     # printed the "starting" line to the console yet (deferred until the console exists)
     public announced : bool
+    # kicked the initial build yet — deferred until AFTER the existing cache is loaded (prime),
+    # so colors appear instantly from the last build and we never read a half-written file.
+    public kicked    : bool
+    # epoch micros when this watch was registered; the initial build waits ~1s past this so the
+    # cache loads and colors render first, uncontended by the compile.
+    public start_us  : i64 [ 0 ]
 
 trinity orbiter # implements compiler
     # --log <path>: tee all stdout/puts to this file (truncated on start) WHILE still
@@ -577,7 +585,10 @@ trinity orbiter # implements compiler
         # unset IMPORT: a login shell sets IMPORT=.../sdk/native, pointing the build at the
         # INSTALLED (stale) Au headers — which fail to compile and yield a partial map.
         # clearing it uses the dev tree (platform/native), matching the running binary.
-        cmd : 'cd {startup_path} && unset IMPORT && exec ./platform/native/debug/silver {fw.proj} --build --format "{fw.map}"'
+        # a plain --build now writes the syntax cache as a byproduct to its standard path
+        # (<install>/syntax/<proj>.f) — no --format flag. redirect stdout+stderr to a log so a
+        # compile error / crash is captured (a partial cache is itself the not-compiled signal).
+        cmd : 'cd {startup_path} && unset IMPORT && exec ./platform/native/debug/silver {fw.proj} --build > /tmp/orbiter-fmt-{fw.proj}.log 2>&1'
         fd  : i32 [ -1 ]
         pid : i32 [ forkpty[ ref fd, null, null, null ] ]
         if [ pid == 0 ]
@@ -594,12 +605,15 @@ trinity orbiter # implements compiler
 
     func fmt_start [ proj: string ]
         if [ !proj || proj.count == 0 || proj == 'system' ] return
+        if [ !startup_path ] startup_path = path.path_startup[]
         if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
         if [ fmt_watch[ proj ] ] return
-        fw : FmtWatch [ proj: proj, map: '/tmp/orbiter-fmt-{proj}.f' ]
+        # the build writes each project's syntax cache to <install>/syntax/<proj>.f — translate
+        # the project name to that path and read it (install symlinks to platform/native). the
+        # build is NOT kicked here: fmt_poll loads the existing cache first (instant colors),
+        # then kicks it once. priming leads, the compile trails.
+        fw : FmtWatch [ proj: proj, map: '{startup_path}/install/syntax/{proj}.f', start_us: epoch_micros[] ]
         fmt_watch[ proj ] = fw
-        #puts 'format: generating {proj} -> {fw.map}'
-        fmt_spawn[ fw ]
 
     # keep the running watchers in sync with the silver projects in the .agi: start one for
     # each silver project not yet watched, stop any whose project is gone or no longer silver.
@@ -648,9 +662,16 @@ trinity orbiter # implements compiler
                 r  : i32 [ waitpid[ fw.pid, ref st, WNOHANG ] ]
                 if [ r == fw.pid ]
                     code : i32 [ (st >> 8) & 0xFF ]
+                    sig  : i32 [ st & 0x7F ]
                     con : ui_console[]
                     cs  : ConsoleSession (con) ? con.session[] : null
-                    if [ cs ] cs.print_text[ 'syntax: {name} language service finished (code {code})\r\n' ]
+                    if [ cs ]
+                        if [ sig != 0 ]
+                            cs.print_text[ 'syntax: {name} CRASHED (signal {sig}) — see /tmp/orbiter-fmt-{name}.log\r\n' ]
+                        el [ code != 0 ]
+                            cs.print_text[ 'syntax: {name} build FAILED (code {code}) — see /tmp/orbiter-fmt-{name}.log\r\n' ]
+                        el
+                            cs.print_text[ 'syntax: {name} language service finished\r\n' ]
                     fw.pid = 0
             if [ fw.map && fw.map.count > 0 ]
                 mp : path fw.map
@@ -679,6 +700,12 @@ trinity orbiter # implements compiler
                             con : ui_console[]
                             cs  : ConsoleSession (con) ? con.session[] : null
                             if [ cs ] cs.print_text[ 'syntax: {name} applied to {editor_slots.count} editor(s)\r\n' ]
+            # priming: the existing cache (if any) was loaded above — instant colors from the
+            # last build. kick the refresh build once, ~1s later, so the colors paint first and
+            # the compile doesn't contend with that initial render. edits re-spawn via fmt_dirty.
+            if [ !fw.kicked && epoch_micros[] - fw.start_us >= 1000000 ]
+                fmt_spawn[ fw ]
+                fw.kicked = true
 
     # the current debug callstack (placeholder frames until lldb GetFrames() is
     # wired through the running session).
@@ -1127,7 +1154,47 @@ trinity orbiter # implements compiler
             walk_find[ root, q ]
         find_showing = true
 
-    # recursively walk `dir`, scanning every file's content for `q`.
+    # glob matcher for the find-in-files pattern, matched against a file's full path:
+    #   *   any run of chars except '/'
+    #   **  any run including '/' (any directory depth)
+    #   ?   any single char except '/'
+    # a leading ** absorbs the absolute prefix, so `**/*/a.*` matches
+    # <anything>/<one-dir>/a.<ext>. recursive with backtracking on * / **.
+    func glob_at [ pat: string, pi0: i32, str: string, si0: i32 ] -> bool
+        pi : i32 [ pi0 ]
+        si : i32 [ si0 ]
+        pn : i32 [ pat.count ]
+        sn : i32 [ str.count ]
+        while [ pi < pn ]
+            pc : i32 [ pat[ pi ] ]
+            if [ pc == 42 ]                              # '*'
+                if [ pi + 1 < pn && pat[ pi + 1 ] == 42 ]   # '**' — cross '/'
+                    np : i32 [ pi + 2 ]
+                    if [ np < pn && pat[ np ] == 47 ] np = np + 1
+                    for [ k: i32 si, k <= sn, k += 1 ]
+                        if [ glob_at[ pat, np, str, k ] ] return true
+                    return false
+                el                                          # single '*' — stop at '/'
+                    np : i32 [ pi + 1 ]
+                    for [ k: i32 si, k <= sn, k += 1 ]
+                        if [ glob_at[ pat, np, str, k ] ] return true
+                        if [ k < sn && str[ k ] == 47 ] return false
+                    return false
+            el [ pc == 63 ]                             # '?'
+                if [ si >= sn || str[ si ] == 47 ] return false
+                pi = pi + 1
+                si = si + 1
+            el
+                if [ si >= sn || str[ si ] != pc ] return false
+                pi = pi + 1
+                si = si + 1
+        return si >= sn
+
+    func glob_match [ pat: string, str: string ] -> bool
+        return glob_at[ pat, 0, str, 0 ]
+
+    # recursively walk `dir`, scanning each file's content for `q`. when a find pattern
+    # is set, only files whose path matches the glob are scanned (dirs are still walked).
     func walk_find [ dir: path, q: string ]
         entries : array [ dir.ls[ null, false ] ]
         if [ !entries ] return
@@ -1135,7 +1202,7 @@ trinity orbiter # implements compiler
             e : path entries[i]
             if [ e.is_dir[] ]
                 walk_find[ e, q ]
-            el
+            el [ !pattern_text || pattern_text.count == 0 || glob_match[ pattern_text, '{e}' ] ]
                 scan_file_hits[ e, q ]
 
     # scan one file for substring `q`, appending a header (once) + a row per
@@ -2011,4 +2078,3 @@ trinity orbiter # implements compiler
     public func on_canvas [ cv: Canvas ]
         super.on_canvas[ cv ]
         cv.sync_fence[ ]
-

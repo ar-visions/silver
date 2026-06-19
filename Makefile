@@ -38,7 +38,9 @@ install: build
 		exit 1; \
 	fi; \
 	ln -sf "$(BUILD_ROOT)/silver" "$$bin_dir/silver"; \
-	echo "linked $$bin_dir/silver -> $(BUILD_ROOT)/silver"
+	echo "linked $$bin_dir/silver -> $(BUILD_ROOT)/silver"; \
+	ln -sf "$(SILVER)/dbg" "$$bin_dir/dbg"; \
+	echo "linked $$bin_dir/dbg -> $(SILVER)/dbg"
 
 bootstrap:
 ifeq ($(OS),Windows_NT)
