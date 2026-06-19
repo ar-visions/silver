@@ -214,8 +214,7 @@ int main(int argc, char** argv) {
     load_sources(artifacts, srcs, &nsr);
     if (sources_newer(product, srcs, nsr)) {
         if (rebuild_blocking(name) != 0) {
-            fprintf(stderr, "%s: aborting — refusing to run a stale build. "
-                "fix the build errors above and relaunch.\n", name);
+            fprintf(stderr, "%s: fix the build errors above and relaunch.\n", name);
             return 1;
         }
         load_sources(artifacts, srcs, &nsr);   // artifact list may have changed
