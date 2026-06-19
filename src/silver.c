@@ -1316,6 +1316,12 @@ void silver_init(silver a) {
     a->build_dir    = f(path, "%o/%s", a->install, a->debug ? "debug" : "release");
     string n = string("test44");
     a->product_link = f(path, "%o/%o.product", a->build_dir, a->name);
+    // the syntax map (language service) is ALWAYS written, coupled to the build — it's just a
+    // token cache. standard location: <install>/syntax/<name>.f (build-type independent; the
+    // bootstrap creates install/syntax). every build crawls all files and emits it; a partial
+    // map is itself the signal that compilation didn't finish. an explicit --format overrides.
+    if (!a->format || !len(a->format))
+        a->format = f(path, "%o/syntax/%o.f", a->install, a->name);
     a->defs_expect  = map(hsize, 4);
     a->defs_used    = map(hsize, 4);
     a->defs_hash    = defs_hash;
@@ -1492,15 +1498,10 @@ void silver_init(silver a) {
     // (removed) root no longer force-rebuilt on --run: the dependency tree's transitive
     // .source now busts the root's cache precisely when any inner source changed, so the
     // blanket force is redundant — a no-change --run relinks/relaunches from cache.
-    // --format: a map file was requested. force the (normal) build only when the map is
-    // missing or STALE (a source is newer than it) — then every module re-parses and appends
-    // its section, covering the whole project. when the map already post-dates every source
-    // it's current, so we DON'T force a rebuild: a no-change format request is a cache hit,
-    // not a 10s full re-parse. (module_file_m is the transitive newest source via .source.)
-    if (a->format && len(a->format)) {
-        u64 map_m = file_exists("%o", a->format) ? modified_time(a->format) : 0;
-        if (!map_m || map_m < module_file_m) update_product = true;
-    }
+    // --format is just the language service: the syntax map is written as a normal byproduct
+    // of the build, with no special cache logic. a changed source rebuilds (and rewrites its
+    // section); --clean forces a full rebuild (full map); an unchanged module is a cache hit
+    // and keeps its existing section. nothing special here.
 
     a->mod = (aether)a;
     // prevent duplicate compilation in a session
@@ -1658,12 +1659,11 @@ void silver_init(silver a) {
                 fault("defs not found in %o: %o", a->name, unused);
             }
 
-            // a --format run only needs the PARSE (token classification) to write the map; it
-            // must NOT codegen/link the product. relinking the app's binary makes the running
-            // app's live-reload host reload it, which spawns ANOTHER format run → reload
-            // cascade on every launch. the real `silver <app>` build (no --format) still links.
-            if (!(a->format && len(a->format)))
-                build_product(a);
+            // a real build, always — products + types + the syntax-map byproduct. no --format
+            // special-casing: an unchanged module already cache-hit above (no relink), so the
+            // running app isn't needlessly relinked and the watcher isn't disturbed; only an
+            // actually-changed module rebuilds (which the host would rebuild anyway).
+            build_product(a);
 
             exporter(a);
 
@@ -7040,7 +7040,11 @@ enode parse_import(silver a) {
                 drop(external);
                 //drop(external); // this is to compensate for the initial hold in silver_init [ quirk for build in init ]
             }
-                set(a->libs, (Au)string(external_product->chars), (Au)_bool(true));
+                // a --format build skips build_product (no codegen/link), so an external
+                // has no product → external_product is null. only link it when it exists;
+                // --format doesn't link anyway, so skipping is correct (not a workaround).
+                if (external_product)
+                    set(a->libs, (Au)string(external_product->chars), (Au)_bool(true));
             } // end else (not frag)
         }
 

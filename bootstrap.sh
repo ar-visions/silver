@@ -206,7 +206,7 @@ export ARCH="$ARCH"
 # be unnecessary — commented out to confirm nothing relies on it.
 # export LD_LIBRARY_PATH="$NATIVE/lib:$LD_LIBRARY_PATH"
 
-mkdir -p "$NATIVE" "$NATIVE/include" "$NATIVE/bin" "$NATIVE/lib" \
+mkdir -p "$NATIVE" "$NATIVE/include" "$NATIVE/bin" "$NATIVE/lib" "$NATIVE/syntax" \
     "$CHECKOUT" "$BUILD" "$SILVER/checkout"
 
 # install symlink → platform/native
