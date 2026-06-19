@@ -16,7 +16,7 @@ declare_class(exports)
     M(X, Y, i, prop,     public,  bool,   clean) \
     M(X, Y, i, prop,     public,  bool,   link) \
     M(X, Y, i, prop,     public,  bool,   build) \
-    M(X, Y, i, prop,     public,  path,   format) \
+    M(X, Y, i, prop,     opaque,  path,   format) \
     M(X, Y, i, prop,     public,  silver, is_external) \
     M(X, Y, i, prop,     public,  silver, is_child, meta, weak) \
     M(X, Y, i, prop,     public,  map,    tree) \

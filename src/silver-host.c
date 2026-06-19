@@ -137,8 +137,11 @@ static int sources_newer(const char* product, source_watch* srcs, int nsr) {
 // NOT run the (stale) product when this fails.
 static int rebuild_blocking(const char* name) {
     char cmd[8192];
+    // --build: compile ONLY. bare `silver <app>` would LAUNCH the app (silver_live_run execs
+    // the live host), spawning a whole second process+window on every reload while this one
+    // keeps running. we just want the fresh .so produced so the host below hot-swaps it.
     snprintf(cmd, sizeof(cmd),
-        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/platform/native/debug/silver\" %s",
+        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/platform/native/debug/silver\" %s --build",
         name);
     fprintf(stdout, "%s: source changed — rebuilding\n", name);
     fflush(stdout);
