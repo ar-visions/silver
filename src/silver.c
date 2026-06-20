@@ -3,7 +3,6 @@
 #include <execinfo.h>
 #include <ports.h>
 #include <sys/file.h>   // flock — serialize external-checkout builds across processes
-#include <sys/wait.h>   // waitpid — parent reaps --forks codegen workers
 #include <fcntl.h>
 
 #ifdef BUILD_LIBRARY
@@ -43,8 +42,6 @@ enode enode_value(enode mem, bool force);
 
 aether au_active(aether);
 extern __thread aether au_codegen_active;
-bool aether_emit_fork_slice(aether a, path obj);
-bool aether_emit_parent_object(aether a, path obj);
 static void build_record(silver a, etype mrec);
 static void build_record_parse(silver a, etype mrec);
 static void build_record_implement(silver a, etype mrec);
@@ -886,10 +883,9 @@ void silver_parse(silver a) {
     }
 
     /// phase 3: build all functions (all LLVM types now complete)
-    /// Flatten every function to a work-list, then distribute the work across
-    /// N worker instances (clones). Each instance implements its share of the
-    /// functions on its OWN builder/lexical/stack, emitting into the shared
-    /// module_ref. (Serial round-robin for now; the worker threads come next.)
+    /// Flatten every function to a work-list, then build each body. The work-list
+    /// is the unit of distribution for the per-context (lltype[core]) threaded
+    /// codegen that builds on this; for now it runs serially in this instance.
     array work  = array(256);  // efuncs to implement, in deterministic order
     array wrec  = array(256);  // owning record per work item (etype, null for free fns)
     map   inits = map(hsize, 32);  // efunc -> needs build_init_preamble
@@ -917,57 +913,14 @@ void silver_parse(silver a) {
         }
     }
 
-    int   NFORKS = a->forks ? a->forks : 1;  // --forks N (default 1 = serial)
-    if (NFORKS < 1)   NFORKS = 1;
-    if (NFORKS > 128) NFORKS = 128;
-    int   nwork  = len(work);
-
-    if (NFORKS > 1 && nwork > 0) {
-        // PARALLEL (--forks N): each child COW-inherits the fully-built module
-        // (all types + decls), builds ONLY its slice of function bodies, emits
-        // its slice object, and exits. The parent builds NO bodies — its
-        // functions stay declarations — but owns every single-writer output
-        // (globals, type-id, module-init, the .f map, header) emitted later in
-        // build_product. The slice objects are linked into name.o via `ld -r`.
-        pid_t pids[128];
-        array fobjs = array(NFORKS);
-        for (int fk = 0; fk < NFORKS; fk++) {
-            path obj = f(path, "%o/%o.fork%i.o", a->build_dir, a->name, fk);
-            push(fobjs, (Au)obj);
-            pid_t pid = fork();
-            if (pid == 0) {  // child: build slice, emit slice object, exit
-                for (int i = fk; i < nwork; i += NFORKS) {
-                    efunc    f2  = (efunc)work->origin[i];
-                    etype    rec = (etype)wrec->origin[i];
-                    callback pre = get(inits, (Au)f2) ? build_init_preamble : null;
-                    if (rec) push_scope(a, (Au)rec, 27);
-                    build_fn(a, f2, pre, null);
-                    if (rec) pop_scope(a);
-                }
-                verify(aether_emit_fork_slice((aether)a, obj),
-                    "fork %i: slice .o emission failed", fk);
-                _exit(0);
-            }
-            verify(pid > 0, "fork failed for worker %i", fk);
-            pids[fk] = pid;
-        }
-        for (int fk = 0; fk < NFORKS; fk++) {
-            int st = 0;
-            waitpid(pids[fk], &st, 0);
-            verify(WIFEXITED(st) && WEXITSTATUS(st) == 0,
-                "fork worker %i failed (status %i)", fk, st);
-        }
-        a->fork_objects = fobjs;  // parent links these into name.o at emit time
-    } else {
-        // SERIAL (--forks 1, default): build every body in this process.
-        for (int i = 0; i < nwork; i++) {
-            efunc    f2  = (efunc)work->origin[i];
-            etype    rec = (etype)wrec->origin[i];
-            callback pre = get(inits, (Au)f2) ? build_init_preamble : null;
-            if (rec) push_scope(a, (Au)rec, 27);
-            build_fn(a, f2, pre, null);
-            if (rec) pop_scope(a);
-        }
+    int nwork = len(work);
+    for (int i = 0; i < nwork; i++) {
+        efunc    f2  = (efunc)work->origin[i];
+        etype    rec = (etype)wrec->origin[i];
+        callback pre = get(inits, (Au)f2) ? build_init_preamble : null;
+        if (rec) push_scope(a, (Au)rec, 27);
+        build_fn(a, f2, pre, null);
+        if (rec) pop_scope(a);
     }
 
 
@@ -5843,23 +5796,7 @@ none silver_build_product(silver a) {
 
     {
         path obj_path = f(path, "%o/%o.o", a->build_dir, a->name);
-        if (a->fork_objects && len(a->fork_objects)) {
-            // --forks: children already emitted their function-body slices. The
-            // parent emits its object (declarations + globals + type-id +
-            // module-init), then a relocatable (-r) link merges everything into
-            // name.o so the downstream link sees a single object.
-            path parent_obj = f(path, "%o/%o.parent.o", a->build_dir, a->name);
-            verify(aether_emit_parent_object(a, parent_obj), "parent .o emission failed");
-            string mobjs = f(string, "%o", parent_obj);
-            each(a->fork_objects, path, fo) {
-                append(mobjs, " ");
-                concat(mobjs, f(string, "%o", fo));
-            }
-            verify(exec(a->verbose, "ld -r -o %o %o", obj_path, mobjs) == 0,
-                "fork ld -r merge failed");
-        } else {
-            verify(emit_object(a, obj_path), ".o emission failed");
-        }
+        verify(emit_object(a, obj_path), ".o emission failed");
     }
 
     string cflags = a->asan ? string("-fsanitize=address") : string("");

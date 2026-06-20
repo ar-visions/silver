@@ -8667,19 +8667,12 @@ void aether_llflag(aether a, symbol flag, i32 ival) {
 }
 
 
-static void strip_unbuilt_functions(LLVMModuleRef m);
-
 bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     path* ll = (path*)ref_ll;
     path* bc = (path*)ref_bc;
     cstr err = NULL;
 
     path c = path_cwd();
-
-    // --forks parent: its slice functions are declarations built by the children;
-    // strip the leftover stub blocks so the module verifies. no-op for a serial
-    // build (every function fully built → every block terminated).
-    strip_unbuilt_functions(a->module_ref);
 
     // finalize DWARF debug info before emitting
     if (a->debug && a->dbg_builder)
@@ -8727,88 +8720,6 @@ bool aether_emit_object(aether a, path obj_path) {
         return false;
     }
     return true;
-}
-
-// fork child: hand single-ownership of externally-visible global *definitions*
-// to the parent process so they're not defined N times. external declarations,
-// private/internal constants, and appending globals are left alone — decls
-// resolve to the parent, local symbols don't collide under `ld -r`, and
-// appending linkage merges. only external definitions would clash, so strip
-// them to declarations (RAUW a fresh extern decl, the C API has no remove-init).
-static void externalize_owned_globals(LLVMModuleRef m) {
-    LLVMValueRef g = LLVMGetFirstGlobal(m);
-    while (g) {
-        LLVMValueRef next = LLVMGetNextGlobal(g);
-        if (LLVMGetInitializer(g) && LLVMGetLinkage(g) == LLVMExternalLinkage) {
-            LLVMTypeRef  ty = LLVMGlobalGetValueType(g);
-            size_t nlen; const char* nm0 = LLVMGetValueName2(g, &nlen);
-            char* nm = strndup(nm0, nlen);
-            LLVMSetValueName2(g, "", 0);
-            LLVMValueRef decl = LLVMAddGlobal(m, ty, nm);   // no initializer = declaration
-            LLVMSetLinkage(decl, LLVMExternalLinkage);
-            LLVMReplaceAllUsesWith(g, decl);
-            LLVMDeleteGlobal(g);
-            free(nm);
-        }
-        g = next;
-    }
-}
-
-// phase-2 implement() gives every function an entry block; build_fn fills the
-// body + terminator. A fork worker only runs build_fn for its slice, so every
-// other function is left as an empty, unterminated entry block — invalid IR.
-// Strip those stubs back to clean declarations (no blocks). Fully-built
-// functions (terminated last block) and existing declarations are left alone.
-static void strip_unbuilt_functions(LLVMModuleRef m) {
-    for (LLVMValueRef fn = LLVMGetFirstFunction(m); fn; fn = LLVMGetNextFunction(fn)) {
-        if (!LLVMGetFirstBasicBlock(fn)) continue;       // already a declaration
-        // a valid definition has EVERY block terminated; if ANY block lacks a
-        // terminator the function was only partially built here (a referenced
-        // stub, or another worker's slice) — strip it to a clean declaration.
-        bool incomplete = false;
-        for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb))
-            if (!LLVMGetBasicBlockTerminator(bb)) { incomplete = true; break; }
-        if (!incomplete) continue;                       // fully built — keep
-        LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn);
-        while (bb) {
-            LLVMBasicBlockRef nb = LLVMGetNextBasicBlock(bb);
-            LLVMDeleteBasicBlock(bb);
-            bb = nb;
-        }
-        // a declaration can't keep internal/private linkage (that means "defined
-        // here") — it now resolves to the owning fork's definition at link.
-        LLVMLinkage lk = LLVMGetLinkage(fn);
-        if (lk == LLVMInternalLinkage || lk == LLVMPrivateLinkage)
-            LLVMSetLinkage(fn, LLVMExternalLinkage);
-    }
-}
-
-// fork worker: promote its built (defined) functions from internal/private to
-// external linkage so other workers and the parent can reference them across
-// object boundaries — file-local symbols wouldn't resolve under `ld -r`.
-static void promote_defined_functions(LLVMModuleRef m) {
-    for (LLVMValueRef fn = LLVMGetFirstFunction(m); fn; fn = LLVMGetNextFunction(fn)) {
-        if (!LLVMGetFirstBasicBlock(fn)) continue;       // declaration — leave
-        LLVMLinkage lk = LLVMGetLinkage(fn);
-        if (lk == LLVMInternalLinkage || lk == LLVMPrivateLinkage)
-            LLVMSetLinkage(fn, LLVMExternalLinkage);
-    }
-}
-
-// parent emit: owns globals/type-id/module-init; its slice functions are
-// declarations (built by the children), so strip those stubs before emitting.
-bool aether_emit_parent_object(aether a, path obj) {
-    strip_unbuilt_functions(a->module_ref);
-    return aether_emit_object(a, obj);
-}
-
-// emit one fork worker's slice object: strip the functions it didn't build to
-// declarations, hand global ownership to the parent, then emit.
-bool aether_emit_fork_slice(aether a, path obj) {
-    strip_unbuilt_functions(a->module_ref);
-    promote_defined_functions(a->module_ref);
-    externalize_owned_globals(a->module_ref);
-    return aether_emit_object(a, obj);
 }
 
 void llvm_reinit(aether a) {
