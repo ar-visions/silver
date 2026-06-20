@@ -1612,6 +1612,14 @@ static cstrs g_main_argv = NULL;
 void au_main_args(int argc, cstrs argv) { (void)argc; g_main_argv = argv; }
 void au_apply_args(Au a) { if (a && g_main_argv) Au_with_cstrs((Au)a, g_main_argv); }
 
+// live-reload rebuild flag, lives in libAu so the host and the dlopen'd app both
+// see it. silver-host sets it true around a blocking recompile (pumping one app
+// frame so the loading overlay paints, then it stays frozen during the compile);
+// trinity reads it each on_render to append the full-screen Avatar overlay.
+static bool g_rebuilding = false;
+void au_set_rebuilding(bool b) { g_rebuilding = b; }
+bool au_rebuilding(void) { return g_rebuilding; }
+
 Au_t global() {
     Au_t au_module_t = isa(au_module);
     return au_module;

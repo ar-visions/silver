@@ -3,6 +3,7 @@
 #include <execinfo.h>
 #include <ports.h>
 #include <sys/file.h>   // flock — serialize external-checkout builds across processes
+#include <sys/wait.h>   // waitpid — parent reaps --forks codegen workers
 #include <fcntl.h>
 
 #ifdef BUILD_LIBRARY
@@ -40,6 +41,10 @@ efunc parse_func(silver, Au_t, enum AU_MEMBER, u64, OPType, string);
 etype etype_resolve(etype t);
 enode enode_value(enode mem, bool force);
 
+aether au_active(aether);
+extern __thread aether au_codegen_active;
+bool aether_emit_fork_slice(aether a, path obj);
+bool aether_emit_parent_object(aether a, path obj);
 static void build_record(silver a, etype mrec);
 static void build_record_parse(silver a, etype mrec);
 static void build_record_implement(silver a, etype mrec);
@@ -699,7 +704,7 @@ static array parse_tokens(silver a, Au input, array output);
 
 
 Au build_init_preamble(enode f, Au arg) {
-    silver a = (silver)f->mod;
+    silver a = (silver)au_active(f->mod);
     etype  rec = f->target ? resolve((etype)f->target) : (etype)a;
 
     // emit default + override initializers as part of this class's own init[].
@@ -881,15 +886,88 @@ void silver_parse(silver a) {
     }
 
     /// phase 3: build all functions (all LLVM types now complete)
+    /// Flatten every function to a work-list, then distribute the work across
+    /// N worker instances (clones). Each instance implements its share of the
+    /// functions on its OWN builder/lexical/stack, emitting into the shared
+    /// module_ref. (Serial round-robin for now; the worker threads come next.)
+    array work  = array(256);  // efuncs to implement, in deterministic order
+    array wrec  = array(256);  // owning record per work item (etype, null for free fns)
+    map   inits = map(hsize, 32);  // efunc -> needs build_init_preamble
+
     members(a->autype, mem) {
         etype rec = (mem->is_class || mem->is_struct) ? u(etype, mem) : null;
-        if (rec && !mem->is_system && !mem->is_schema && rec->user_built)
-            build_record_functions(a, rec);
+        if (!rec || mem->is_system || mem->is_schema || !rec->user_built) continue;
+        if (!(rec->autype->is_class || rec->autype->is_struct)) continue;
+
+        Au_t m_init = find_member(rec->autype, "init", AU_MEMBER_FUNC, 0, false);
+        efunc init  = m_init ? u(efunc, m_init) : null;
+        if (init) {
+            push(work, (Au)init); push(wrec, (Au)rec);
+            set(inits, (Au)init, (Au)_bool(true));
+        }
+        members(rec->autype, m) {
+            efunc n = u(efunc, m);
+            if (n && n != init) { push(work, (Au)n); push(wrec, (Au)rec); }
+        }
     }
     members(a->autype, mem) {
         etype e = u(etype, mem);
-        if (is_func((Au)mem) && !mem->is_system && e && e != a->fn_init && !e->user_built)
-            build_fn(a, (efunc)e, null, null);
+        if (is_func((Au)mem) && !mem->is_system && e && e != a->fn_init && !e->user_built) {
+            push(work, (Au)e); push(wrec, null);
+        }
+    }
+
+    int   NFORKS = a->forks ? a->forks : 1;  // --forks N (default 1 = serial)
+    if (NFORKS < 1)   NFORKS = 1;
+    if (NFORKS > 128) NFORKS = 128;
+    int   nwork  = len(work);
+
+    if (NFORKS > 1 && nwork > 0) {
+        // PARALLEL (--forks N): each child COW-inherits the fully-built module
+        // (all types + decls), builds ONLY its slice of function bodies, emits
+        // its slice object, and exits. The parent builds NO bodies — its
+        // functions stay declarations — but owns every single-writer output
+        // (globals, type-id, module-init, the .f map, header) emitted later in
+        // build_product. The slice objects are linked into name.o via `ld -r`.
+        pid_t pids[128];
+        array fobjs = array(NFORKS);
+        for (int fk = 0; fk < NFORKS; fk++) {
+            path obj = f(path, "%o/%o.fork%i.o", a->build_dir, a->name, fk);
+            push(fobjs, (Au)obj);
+            pid_t pid = fork();
+            if (pid == 0) {  // child: build slice, emit slice object, exit
+                for (int i = fk; i < nwork; i += NFORKS) {
+                    efunc    f2  = (efunc)work->origin[i];
+                    etype    rec = (etype)wrec->origin[i];
+                    callback pre = get(inits, (Au)f2) ? build_init_preamble : null;
+                    if (rec) push_scope(a, (Au)rec, 27);
+                    build_fn(a, f2, pre, null);
+                    if (rec) pop_scope(a);
+                }
+                verify(aether_emit_fork_slice((aether)a, obj),
+                    "fork %i: slice .o emission failed", fk);
+                _exit(0);
+            }
+            verify(pid > 0, "fork failed for worker %i", fk);
+            pids[fk] = pid;
+        }
+        for (int fk = 0; fk < NFORKS; fk++) {
+            int st = 0;
+            waitpid(pids[fk], &st, 0);
+            verify(WIFEXITED(st) && WEXITSTATUS(st) == 0,
+                "fork worker %i failed (status %i)", fk, st);
+        }
+        a->fork_objects = fobjs;  // parent links these into name.o at emit time
+    } else {
+        // SERIAL (--forks 1, default): build every body in this process.
+        for (int i = 0; i < nwork; i++) {
+            efunc    f2  = (efunc)work->origin[i];
+            etype    rec = (etype)wrec->origin[i];
+            callback pre = get(inits, (Au)f2) ? build_init_preamble : null;
+            if (rec) push_scope(a, (Au)rec, 27);
+            build_fn(a, f2, pre, null);
+            if (rec) pop_scope(a);
+        }
     }
 
 
@@ -1014,6 +1092,7 @@ static void exporter(silver a) {
 
 
 void llvm_reinit(silver);
+aether aether_clone(aether, int);
 void aether_reinit_startup(aether);
 void emit_debug_loc(aether, cstr, u32, u32);
 void update_current_file(aether, path);
@@ -4057,38 +4136,10 @@ enode parse_statement(silver a)
     if (!a->processed_imports && !next_is(a, "export") && !next_is(a, "import") && !next_is(a, "extend") && !next_is(a, "ifdef")) {
         a->processed_imports = true;
         aether_import_includes((aether)a);
-        // incremental --format: imports (and their transitive deps) are now processed,
-        // so a changed dependency still rebuilds. but if THIS module's OWN source is
-        // unchanged from the map, its body is already captured in the cached section —
-        // skip parsing the rest of it (silver_write_fmt keeps the cached section).
-        if (a->format && len(a->format) && !a->clean && a->module_file) {
-            path fc  = absolute(a->module_file);
-            cstr fcp = (fc && len(fc)) ? fc->chars : a->module_file->chars;
-            i64  fmt = modified_time((fc && len(fc)) ? fc : a->module_file);
-            bool can_skip = fmt_current(fcp, fmt);
-            // extension files (Editor.ag, Console.ag, …) are sibling .ag files parsed as part
-            // of THIS module's body — skipping the body re-emits their cached sections. the map
-            // ALREADY lists every file with its stored date, so walk its sections: any whose
-            // file lives in this module's dir and whose date no longer matches disk means an
-            // edit (e.g. Editor.ag) that must re-parse, or its stale/misaligned section sticks.
-            if (can_skip && a->module_path) {
-                path mp  = absolute(a->module_path);
-                cstr mpc = (mp && len(mp)) ? mp->chars : a->module_path->chars;
-                for (int i = 0; i < fmt_nsec; i++) {
-                    path sp  = absolute(path(fmt_secs[i].path));
-                    path spd = parent_dir(sp);
-                    cstr spc = (spd && len(spd)) ? spd->chars : "";
-                    if (strcmp(spc, mpc) == 0 && fmt_secs[i].mtime != modified_time(sp)) {
-                        can_skip = false;
-                        break;
-                    }
-                }
-            }
-            if (can_skip) {
-                a->cursor = len(a->tokens);     // nothing left to parse for this module
-                return e_noop(a, null);
-            }
-        }
+        // NOTE: no format-cache body-skip here. sub-modules / sibling extension
+        // files are parsed inline as part of THIS compilation (not dlopen'd), so
+        // skipping any body un-registers its classes (e.g. Navigate) and breaks
+        // the build. always parse fully; the .f map is still written as a byproduct.
     }
 
     // standard statements first, only in context of functions
@@ -5792,7 +5843,23 @@ none silver_build_product(silver a) {
 
     {
         path obj_path = f(path, "%o/%o.o", a->build_dir, a->name);
-        verify(emit_object(a, obj_path), ".o emission failed");
+        if (a->fork_objects && len(a->fork_objects)) {
+            // --forks: children already emitted their function-body slices. The
+            // parent emits its object (declarations + globals + type-id +
+            // module-init), then a relocatable (-r) link merges everything into
+            // name.o so the downstream link sees a single object.
+            path parent_obj = f(path, "%o/%o.parent.o", a->build_dir, a->name);
+            verify(aether_emit_parent_object(a, parent_obj), "parent .o emission failed");
+            string mobjs = f(string, "%o", parent_obj);
+            each(a->fork_objects, path, fo) {
+                append(mobjs, " ");
+                concat(mobjs, f(string, "%o", fo));
+            }
+            verify(exec(a->verbose, "ld -r -o %o %o", obj_path, mobjs) == 0,
+                "fork ld -r merge failed");
+        } else {
+            verify(emit_object(a, obj_path), ".o emission failed");
+        }
     }
 
     string cflags = a->asan ? string("-fsanitize=address") : string("");
@@ -6102,7 +6169,7 @@ enode parse_object(silver a, etype mdl_schema, bool in_expr);
 etype evar_type(evar a);
 
 int user_arg_count(efunc f) {
-    aether a = f->mod;
+    aether a = au_active(f->mod);
     bool is_lambda_call = inherits(f->autype, typeid(lambda));
 
     if (is_lambda_call) {
@@ -8017,6 +8084,7 @@ static void build_record_implement(silver a, etype mrec) {
     pop_scope(a);
 }
 
+
 /// phase 3: build init and member functions (all LLVM types now complete)
 static void build_record_functions(silver a, etype mrec) {
     if (mrec->autype->is_class || mrec->autype->is_struct) {
@@ -8170,7 +8238,7 @@ static enode parse_func_call(silver, efunc, bool);
 bool is_map(etype);
 
 etype prop_value_at(etype aa, i64 index) {
-    aether a = aa->mod;
+    aether a = au_active(aa->mod);
     i64 prop = 0;
     members(aa->autype, m) {
         if (m->member_type == AU_MEMBER_VAR && !m->is_static) {
@@ -8427,7 +8495,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
 
 
 static bool class_inherits(etype cl, etype of_cl) {
-    silver a = (silver)cl->mod;
+    silver a = (silver)au_active(cl->mod);
     etype aa = canonical(of_cl);
     while (cl && cl != aa) {
         if (!cl->autype->context || cl->autype->context == cl->autype)
@@ -8732,7 +8800,7 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
 }
 
 etype etype_of(enode mem) {
-    aether a = mem->mod;
+    aether a = au_active(mem->mod);
     return (mem->autype->member_type == AU_MEMBER_VAR) ?
                 (etype)u(etype, mem->autype->src) :
            (mem->autype->member_type == AU_MEMBER_DECL) ?

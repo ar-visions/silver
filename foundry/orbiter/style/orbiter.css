@@ -237,7 +237,7 @@ Editor:expanded / element.title {
     layers.face:
         label_color:            #0000
     layers.divider:
-        area:                   l0 t44px r0 h1px
+        area:                   l0 t43px r0 h1px
         fill_color:             #fff2
 }
 
@@ -886,66 +886,6 @@ Tabs.actions / Button.play:disable {
         opacity:    0.2
 }
 
-/* >| toggle button, top-right of the editor group — icon only, no background */
-Avatar.avatar {
-    shaders.orbiter: PBR
-        groups:         ["outside","flower","separator"]
-        model_id:       "orbiter32"
-        env_id:         "night"
-        pulse_width:    1.0, filter 0.8
-
-    shaders.core:    Core
-        groups:         ["core"]
-        model_id:       "orbiter32"
-        texture:        "textures/core.png"
-        mip_levels:     8
-        pulse_width:    1.0, filter 0.8
-
-    shaders.plasma: Plasma
-        groups:         ["top_ring","flower"]
-        model_id:       "orbiter32"
-        pulse_width:    1.0, filter 0.8
-
-    shaders.aura:    Aura
-        model_id:       "uv-quad2"
-        pulse_width:    4.4, filter 0.8
-        pulse_height:   1.0, filter 0.8
-        flame:          0.0, filter 0.8
-
-    render_scale:       4.0
-    clear_color:        0 0 0 0
-    rotate:             [ 0 1 0 30deg, 1 0 0 20deg ], 222ms cubic outward
-    eye_pos:            0.0 3.5 -2.0
-    target_pos:         0.0 0.0 0.0
-    up_vec:             0.0 -1.0 0.0
-    fov:                30.0
-    blend_bands:        0.2
-    blend_rings:        0.2
-    blend_haze:         1.0
-    area: l0 t0 r0 b0
-}
-
-Avatar.avatar:hovered {
-    shaders.aura:
-        pulse_width:    2.0, filter 0.8
-        flame:          1.0, filter 0.8
-
-    rotate:             [ 0 1 0 30deg, 1 0 0 10deg ], 222ms cubic outward
-}
-
-Avatar.avatar:pressed {
-    shaders.aura:
-        pulse_height:   2.0, filter 0.8
-
-    rotate:             [ 0 1 0 30deg, 1 0 0 0deg ], 88ms cubic outward
-}
-
-/* avatar shown in the right editor pane (a direct EditorView child, not inside an
-   Editor — that masks it). right half, square (height tracks width via 'hw'). */
-Avatar.avatar {
-    area: r512px b712px w512px h512px
-}
-
 Editor / element.title / element.nav {
     area:                       r5px t5px wc h34px
 }
@@ -1080,12 +1020,14 @@ Editor / element.title / element.find {
     area:                       l0 t0 r0 h0
     focusable:                  true
     layers.base:
-        fill_color:             #1126
+        fill_color:             #0000
     layers.text:
         area:                   l12px t0 r12px b0
         label_color:            #fff
         label_align:            0.0 0.5
         label_size:             15
+:focused
+    layers.text:
         editable:               true
 }
 
@@ -1093,12 +1035,14 @@ Editor / element.title / element.replace {
     area:                       l0 t0 r0 h0
     focusable:                  true
     layers.base:
-        fill_color:             #1126
+        fill_color:             #0000
     layers.text:
         area:                   l12px t0 r12px b0
         label_color:            #fff
         label_align:            0.0 0.5
         label_size:             15
+:focused
+    layers.text:
         editable:               true
 }
 
@@ -1115,6 +1059,8 @@ Editor / element.title / element.pattern {
         label_color:            #fff
         label_align:            0.0 0.5
         label_size:             15
+:focused
+    layers.text:
         editable:               true
 }
 
@@ -1175,7 +1121,7 @@ Editor:expanded / element.title / element.infile {
 }
 
 Editor:expanded / element.title / element.find {
-    area:                       l6 t1px r2 h43px
+    area:                       l6 t1px r1.7 h43px
 }
 
 Editor:expanded / element.title / element.find_action {
@@ -1187,7 +1133,7 @@ Editor:expanded / element.title / element.pattern {
 }
 
 Editor:expanded / element.title / element.replace {
-    area:                       l6 t45px r2 h43px
+    area:                       l6 t45px r1.7 h43px
 }
 
 Editor:expanded / element.title / element.replace_action {
@@ -1198,79 +1144,8 @@ Editor:expanded / element.title / element.replace_all_action {
     area:                       r44px t45px w44px h43px
 }
 
-/* ---- right navigator: Editor-style title header (slightly darker) with
-   icon tabs laid out like the editor title buttons, the selected panel name,
-   and a filter box in the top-right. ---- */
-Toolbar.right / element.title {
-    area:                       l0 t0 r0 h44px
-    layers.base:
-        fill_color:             #0280
-    layers.face:
-        label_color:            #fff
-        label_size:             15
-        label_align:            0.5 0.3
-    layers.border:
-        area:           l0 t44px r0 h1px
-        fill_color:     #2440
-    layers.border2:
-        area:           l0 t45px r0 h1px
-        fill_color:     #0000
-}
 
-Toolbar.right / element.title / element.nav {
-    area:                       l6px t5px w148px h34px
-}
 
-Toolbar.right / element.title / element.nav / Option {
-    area:                       l0+ t0 w34px h34px
-    toggle:                     true
-    layers.base:
-        fill_color:             #0000
-        inner_glow:             #0000 24
-        radius:                 8
-    layers.svg:
-        area:                   4px
-        image_align:            0.5 0.5
-        image_scale:            1.0
-        opacity:                0.5
-}
-
-Toolbar.right / element.title / element.nav / Option:hovered {
-    layers.base:
-        fill_color:             #8af4
-        inner_glow:             #8afa 24
-    layers.svg:
-        opacity:                1.0
-}
-
-Toolbar.right / element.title / element.nav / Option:selected {
-    layers.base:
-        fill_color:             #fa84
-        inner_glow:             #fa85 24
-    layers.svg:
-        opacity:                1.0
-}
-
-Toolbar.right / element.title / element.nav / Option.files {
-    layers.svg:
-        image_svg:              "images/files.svg"
-        image_scale:            1.3
-}
-Toolbar.right / element.title / element.nav / Option.callstack {
-    layers.svg:
-        image_svg:              "images/menu.svg"
-        image_scale:            1.3
-}
-Toolbar.right / element.title / element.nav / Option.debug {
-    layers.svg:
-        image_svg:              "images/debug.svg"
-        image_scale:            1.8
-}
-Toolbar.right / element.title / element.nav / Option.agent {
-    layers.svg:
-        image_svg:              "images/agent.svg"
-        image_scale:            0.8
-}
 
 element.filter {
     area:               l0 b1.5 r0 h1.5
@@ -1301,3 +1176,76 @@ element.filter {
         stroke_width:   1
 }
 
+
+/* >| toggle button, top-right of the editor group — icon only, no background */
+Avatar.avatar {
+    shaders.orbiter: PBR
+        groups:         ["outside","flower","separator"]
+        model_id:       "orbiter32"
+        env_id:         "night"
+        pulse_width:    1.0, filter 0.8
+
+    shaders.core:    Core
+        groups:         ["core"]
+        model_id:       "orbiter32"
+        texture:        "textures/core.png"
+        mip_levels:     8
+        pulse_width:    1.0, filter 0.8
+
+    shaders.plasma: Plasma
+        groups:         ["top_ring","flower"]
+        model_id:       "orbiter32"
+        pulse_width:    1.0, filter 0.8
+
+    shaders.aura:    Aura
+        model_id:       "uv-quad2"
+        pulse_width:    4.4, filter 0.8
+        pulse_height:   1.0, filter 0.8
+        flame:          0.0, filter 0.8
+
+    render_scale:       4.0
+    clear_color:        0 0 0 0
+    rotate:             [ 0 1 0 30deg, 1 0 0 20deg ], 222ms cubic outward
+    eye_pos:            0.0 3.5 -2.0
+    target_pos:         0.0 0.0 0.0
+    up_vec:             0.0 -1.0 0.0
+    fov:                30.0
+    blend_bands:        0.2
+    blend_rings:        0.2
+    blend_haze:         1.0
+    area: l0 t0 r0 b0
+}
+
+Avatar.avatar:hovered {
+    shaders.aura:
+        pulse_width:    2.0, filter 0.8
+        flame:          1.0, filter 0.8
+
+    rotate:             [ 0 1 0 30deg, 1 0 0 10deg ], 222ms cubic outward
+}
+
+Avatar.avatar:pressed {
+    shaders.aura:
+        pulse_height:   2.0, filter 0.8
+
+    rotate:             [ 0 1 0 30deg, 1 0 0 0deg ], 88ms cubic outward
+}
+
+/* avatar shown in the right editor pane (a direct EditorView child, not inside an
+   Editor — that masks it). right half, square (height tracks width via 'hw'). */
+Avatar.avatar {
+    area: r512px b712px w512px h512px
+}
+
+/* live-reload loading overlay: a full-screen element with a dim background,
+   appended last by trinity (on_render) only while au_rebuilding(). it hosts the
+   Avatar in a centered square region (w0.4 + 'hw' → height tracks width). */
+element.loading {
+    area: l0 t0 r0 b0
+    layers.base:
+        fill_color: #000c
+}
+
+element.loading / Avatar.avatar {
+    area: l0.3 t0 w0.4 hw
+}

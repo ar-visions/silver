@@ -8,8 +8,6 @@ import silver
 import project
 import dbg
 
-
-
 import <stdio.h>
     -lm
 import <stdlib.h>
@@ -17,7 +15,6 @@ import <unistd.h>
 import <fcntl.h>
 import <sys/wait.h>
 import Earth
-import Avatar
 import Navigate
 import Editor
 import Console
