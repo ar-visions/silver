@@ -39,7 +39,7 @@ forward(enode)
 
 #define etype_schema(X, Y, ...) \
     M(X, Y, i, prop,     public,  Au_t,            autype) \
-    M(X, Y, i, prop,     intern,  LLVMTypeRef,     lltype,  as, ARef) \
+    M(X, Y, i, prop,     intern,  array,           types) \
     M(X, Y, i, prop,     intern,  LLVMMetadataRef, llscope, as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMMetadataRef, lldebug, as, ARef) \
     M(X, Y, i, prop,     intern,  bool,            is_implemented) \
@@ -178,6 +178,7 @@ forward(evar)
     M(X, Y, i, prop,     intern,  cstr,                     target_triple) \
     M(X, Y, i, prop,     public,  token,                    statement_origin) \
     M(X, Y, i, prop,     public,  store,                    registry) \
+    M(X, Y, i, prop,     public,  i32,                      core) \
     M(X, Y, i, prop,     public,  tokens,                   tokens) \
     M(X, Y, i, prop,     public,  num,                      cursor) \
     M(X, Y, i, prop,     public,  array,                    stack) \

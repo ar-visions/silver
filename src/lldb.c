@@ -67,11 +67,14 @@ static bool has_scalable_vector(LLVMTypeRef ty) {
 }
 
 // compute bit-width from an Au_t, using the etype lltype if available
+LLVMTypeRef _lltype_slot(etype);
+
 static u32 bits_for_type(aether a, Au_t src) {
     if (!src) return 64;
     etype et = u(etype, src);
-    if (et && et->lltype && LLVMTypeIsSized(et->lltype)) {
-        u32 bits = LLVMABISizeOfType(a->target_data, et->lltype) * 8;
+    LLVMTypeRef et_ll = et ? _lltype_slot(et) : null;
+    if (et && et_ll && LLVMTypeIsSized(et_ll)) {
+        u32 bits = LLVMABISizeOfType(a->target_data, et_ll) * 8;
         if (bits) return bits;
     }
     if (src->abi_size) return src->abi_size;
@@ -83,8 +86,8 @@ static u32 bits_for_type(aether a, Au_t src) {
 static u32 align_for_type(aether a, Au_t src) {
     if (!src) return 64;
     etype et = u(etype, src);
-    if (et && et->lltype && LLVMTypeIsSized(et->lltype)) {
-        u32 align = LLVMABIAlignmentOfType(a->target_data, et->lltype) * 8;
+    if (et && _lltype_slot(et) && LLVMTypeIsSized(_lltype_slot(et))) {
+        u32 align = LLVMABIAlignmentOfType(a->target_data, _lltype_slot(et)) * 8;
         if (align) return align;
     }
     if (src->align_bits) return src->align_bits;
@@ -506,10 +509,10 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
     u32 align      = type_au->align_bits ? type_au->align_bits : 64;
 
     // if etype has an lltype, use it for accurate size
-    if (!w && et && et->lltype && !has_scalable_vector(et->lltype)) {
-        u32 ll_bits = LLVMABISizeOfType(a->target_data, et->lltype) * 8;
+    if (!w && et && _lltype_slot(et) && !has_scalable_vector(_lltype_slot(et))) {
+        u32 ll_bits = LLVMABISizeOfType(a->target_data, _lltype_slot(et)) * 8;
         if (ll_bits) total_bits = ll_bits;
-        u32 ll_align = LLVMABIAlignmentOfType(a->target_data, et->lltype) * 8;
+        u32 ll_align = LLVMABIAlignmentOfType(a->target_data, _lltype_slot(et)) * 8;
         if (ll_align) align = ll_align;
     }
 
@@ -557,7 +560,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
     int midx = 0;
 
     // ── emit __fbits as first member for Silver classes ──
-    if (has_fbits && et && et->lltype) {
+    if (has_fbits && et && _lltype_slot(et)) {
         // create the fbits struct debug type with per-field bitfield members
         LLVMMetadataRef fbits_di;
         {
@@ -724,20 +727,20 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
             }
             // compute offset from LLVM struct layout
             u64 offset_bits;
-            if (et && et->lltype && m->member_index >= 0 &&
-                LLVMGetTypeKind(et->lltype) == LLVMStructTypeKind &&
-                !LLVMIsOpaqueStruct(et->lltype) &&
-                m->member_index < (int)LLVMCountStructElementTypes(et->lltype)) {
+            if (et && _lltype_slot(et) && m->member_index >= 0 &&
+                LLVMGetTypeKind(_lltype_slot(et)) == LLVMStructTypeKind &&
+                !LLVMIsOpaqueStruct(_lltype_slot(et)) &&
+                m->member_index < (int)LLVMCountStructElementTypes(_lltype_slot(et))) {
                 // check this specific struct for scalable vectors before querying offset
                 bool sv = false;
-                unsigned n = LLVMCountStructElementTypes(et->lltype);
+                unsigned n = LLVMCountStructElementTypes(_lltype_slot(et));
                 for (unsigned si = 0; si < n && !sv; si++) {
-                    LLVMTypeRef elt = LLVMStructGetTypeAtIndex(et->lltype, si);
+                    LLVMTypeRef elt = LLVMStructGetTypeAtIndex(_lltype_slot(et), si);
                     if (elt && LLVMGetTypeKind(elt) == LLVMScalableVectorTypeKind)
                         sv = true;
                 }
                 if (!sv)
-                    offset_bits = LLVMOffsetOfElement(a->target_data, et->lltype, m->member_index) * 8;
+                    offset_bits = LLVMOffsetOfElement(a->target_data, _lltype_slot(et), m->member_index) * 8;
                 else
                     offset_bits = (u64)m->offset * 8;
             } else {
@@ -1141,8 +1144,8 @@ static LLVMMetadataRef debug_combined_type(aether a, Au_t schema) {
     // estimate instance size
     u32 inst_bits = 0;
     etype et = u(etype, schema);
-    if (et && et->lltype)
-        inst_bits = LLVMABISizeOfType(a->target_data, et->lltype) * 8;
+    if (et && _lltype_slot(et))
+        inst_bits = LLVMABISizeOfType(a->target_data, _lltype_slot(et)) * 8;
     else if (schema->abi_size)
         inst_bits = schema->abi_size;
 
