@@ -20,6 +20,7 @@ import Editor
 import Console
 import NodeList
 import FileList
+import Avatar
 
 element EditorView
     public selected : bool

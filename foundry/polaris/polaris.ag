@@ -1,9 +1,12 @@
 # ============================================================================
-# agi — the runtime/edge half of the semantic-search system. it does NOT
-# summarize. it loads frozen, pre-annotated Regions (each carrying its source
-# identity / G and an embedding the small model produced upstream) and answers
-# an intent vector with the location to jump to. this is what the editor calls
-# for 'goto the area where we construct vulkan devices' — query in, location out.
+# polaris — the runtime/edge half of the dictation-driven code locator. it does
+# NOT summarize. it loads frozen, pre-annotated Regions (each carrying its source
+# identity / G and an embedding the small model produced upstream) and answers a
+# spoken intent vector with the location to jump to. orbiter calls this when you
+# dictate 'go to where we construct vulkan devices' — voice in, location out.
+#
+# named for the fixed star: you orient by a known reference (the source identity)
+# to know exactly where you are.
 #
 # identity is the index: every Region knows its source (G) and whether it's our
 # own code or a vendored/remote checkout, so the same index serves both the
@@ -39,7 +42,7 @@ class Hit
 # vector with the best location. embedding of the QUERY happens upstream (the
 # small trained model); this service is pure index + similarity, so it stays
 # tiny and deterministic — it 'holds still'.
-class Agi
+class Polaris
     intern regions : array Region
 
     func init []
