@@ -1,4 +1,8 @@
 # comments allowed
+browse_single: 	true
+max_search: 	4000000
+code_font_size: 16
+
 projects:
 	orbiter: Project
 		name: 	orbiter
@@ -16,6 +20,10 @@ consoles:
 		name:	claude
 		kind:	claude
 		run:	claude
+	nemotron: ConsoleInstance
+		name:	nemotron
+		kind:	openclaw
+		run:	openclaw nemotron
 	gemini: ConsoleInstance
 		name:	gemini
 		kind:	gemini

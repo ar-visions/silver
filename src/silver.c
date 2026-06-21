@@ -42,6 +42,10 @@ enode enode_value(enode mem, bool force);
 
 aether au_active(aether);
 extern __thread aether au_codegen_active;
+// transient hand-off for `import M with ext…`: parse_import sets this to the ext path
+// list right before constructing the external silver(), and silver_init reads it at the
+// top into a->extensions (the prop-pair ctor is already at its 22-arg max).
+static array g_import_with = null;
 static void build_record(silver a, etype mrec);
 static void build_record_parse(silver a, etype mrec);
 static void build_record_implement(silver a, etype mrec);
@@ -1279,6 +1283,13 @@ static void silver_live_run(silver a) {
 
 void silver_init(silver a) {
     hold(a);
+
+    // `import M with ext…`: the importer stashed the ext path list here right before
+    // constructing this instance — claim it (and clear) before the build runs below.
+    if (g_import_with) {
+        a->extensions = hold(g_import_with);
+        g_import_with = null;
+    }
 
     if (!keywords) silver_module();
 
@@ -4027,6 +4038,45 @@ static tokens map_initializer(silver a, string field, tokens def_tokens, interfa
     return value;
 }
 
+// parse an extension .ag file inline into THIS module: track its source (host watch),
+// strip an optional `extend <module>` header (validating it names this module), then
+// replay its statements so its classes/methods register against this module. used both
+// for sibling extensions (import within the module dir) and for `import M with ext`,
+// where ext.ag is compiled into M's own build.
+static void parse_extension(silver a, path module_source, bool reset_imports) {
+    if (index_of(a->artifacts, (Au)module_source) < 0)
+        push(a->artifacts, (Au)module_source);
+    array ext_toks = array(alloc, 64);
+    parse_tokens(a, (Au)module_source, ext_toks);
+    int   start = 0;
+    token first = len(ext_toks) ? (token)ext_toks->origin[0] : null;
+    if (first && !strcmp(first->chars, "extend")) {
+        token name_tok = len(ext_toks) > 1 ? (token)ext_toks->origin[1] : null;
+        validate(name_tok && !strcmp(name_tok->chars, a->name->chars),
+            "extend declares '%s' but compiled into module '%o'",
+            name_tok ? name_tok->chars : "?", a->name);
+        first->syntax = Syntax__keyword;
+        if (name_tok) name_tok->syntax = Syntax__type;
+        start = 2;
+    }
+    // siblings reset so each one's own includes re-run the import finalization; the
+    // `with` drain does NOT (it keeps processed_imports true so it can't re-drain).
+    if (reset_imports) a->processed_imports = false;
+    path saved_module_file = hold(a->module_file);
+    a->module_file = hold(module_source);
+    push_tokens(a, (tokens)ext_toks, start);
+    while (a->cursor < len(a->tokens))
+        parse_statement(a);
+    // defer the format write: bodies are stashed and parsed later in build_record_parse
+    if (a->format && len(a->format)) {
+        if (!a->fmt_ext) a->fmt_ext = hold(array(alloc, 8));
+        push(a->fmt_ext, (Au)hold(ext_toks));
+    }
+    pop_tokens(a, false);
+    drop(a->module_file);
+    a->module_file = saved_module_file;
+}
+
 enode parse_statement(silver a)
 {
     sequencer
@@ -4088,6 +4138,16 @@ enode parse_statement(silver a)
 
     if (!a->processed_imports && !next_is(a, "export") && !next_is(a, "import") && !next_is(a, "extend") && !next_is(a, "ifdef")) {
         a->processed_imports = true;
+        // `import M with ext…`: the ext files were handed to THIS module's build via
+        // the `extensions` list. now that our own imports are resolved, fold each one in
+        // (its own imports + `extend M` + members) BEFORE include finalization so their
+        // headers are covered too. parse_extension keeps processed_imports true here, so
+        // the recursive parse can't re-enter this block — processed_imports IS the guard
+        // (no separate drained flag), and the list survives for the product id below.
+        if (a->extensions && len(a->extensions)) {
+            each (a->extensions, path, ep)
+                parse_extension(a, ep, false);
+        }
         aether_import_includes((aether)a);
         // NOTE: no format-cache body-skip here. sub-modules / sibling extension
         // files are parsed inline as part of THIS compilation (not dlopen'd), so
@@ -5698,8 +5758,18 @@ none silver_build_product(silver a) {
     string libs       = string("");
     array  lib_paths  = array();
 
-    path product    = f(path, "%o/%s%o%s%o%s",
+    // `import M with ext…` folds the extension names into M's product id so an
+    // extended build is both cache-distinct and legible (libtrinity-ext1.ext2-<hash>).
+    string ext_tag = string("");
+    if (a->extensions && len(a->extensions)) {
+        each (a->extensions, path, ep) {
+            if (len(ext_tag)) append(ext_tag, ".");
+            concat(ext_tag, stem(ep));
+        }
+    }
+    path product    = f(path, "%o/%s%o%s%o%s%o%s",
         a->build_dir, a->is_library ? lib_pre : "", a->name,
+        len(ext_tag) ? "-" : "", ext_tag,
         len(a->defs_hash) ? "-" : "",
         a->defs_hash,
         a->is_library ? lib_ext : "");
@@ -6710,6 +6780,7 @@ enode parse_import(silver a) {
     string  user         = null;
     string  project      = null;
     string  name         = null;
+    array   with_exts    = null;   // `import M with ext…` — ext.ag paths in THIS dir
 
     if (t && isalpha(t->chars[0])) {
         bool   cont     = false;
@@ -6758,6 +6829,28 @@ enode parse_import(silver a) {
         // read commit if given
         if (read_if(a, "/"))
             commit = read_compacted(a);
+    }
+
+    // `import <silver-module> with ext1 ext2 …` — each `ext` is an ext.ag file in
+    // THIS module's dir, headed `extend <module>`, compiled into the imported
+    // module's build. validated below as silver-module-only (errors for C headers,
+    // git deps, codegen, and sub-module/extension imports).
+    if (read_if(a, "with")) {
+        token wt = element(a, -1);
+        if (wt) wt->syntax = Syntax__keyword;
+        path mdir = a->module_file ? parent_dir(a->module_file) : a->module;
+        for (;;) {
+            string en = read_alpha(a);
+            validate(en, "import with: expected extension name");
+            token et = element(a, -1);
+            if (et) et->syntax = Syntax__type;
+            path ep = f(path, "%o/%o.ag", mdir, en);
+            validate(file_exists("%o", ep),
+                "import with: extension '%o.ag' not found in %o", en, mdir);
+            if (!with_exts) with_exts = array(8);
+            push(with_exts, (Au)hold(ep));
+            if (!read_if(a, ",")) break;
+        }
     }
 
     array includes = array(32);
@@ -6910,6 +7003,9 @@ enode parse_import(silver a) {
                 cast(bool, path_str) ? "/" : "", path_str);
     }
 
+    validate(!with_exts || (module_source && !is_codegen),
+        "import with: only valid for a silver module (not a C header, git dep, or codegen)");
+
     if (uri) {
         checkout(a, path(uri->chars), (string)commit,
                  import_build_commands(all_config, ">"),
@@ -6943,6 +7039,8 @@ enode parse_import(silver a) {
         bool c  = is_native_source_ext(a, ext(module_source));
         bool is_extension = ag && compare(parent_dir(module_source), absolute(a->module)) == 0;
         verify(!ag || is_extension || compare(stem(module_source), stem(module)) == 0, "silver expects identical module stem");
+        validate(!with_exts || (ag && !c && !is_extension),
+            "import with: only valid for a silver module, not a native source or sub-module");
 
         
         // we should turn on object tracking here, as to trace which objects are still in memory after we drop
@@ -6952,54 +7050,25 @@ enode parse_import(silver a) {
             // handled after 'as' is read
         } else {
             if (is_extension) {
-                // track the extension's source so the host watch list (.source)
-                // includes it — editing e.g. Editor.ag triggers a rebuild.
-                if (index_of(a->artifacts, (Au)module_source) < 0)
-                    push(a->artifacts, (Au)module_source);
-                array ext_toks = array(alloc, 64);
-                parse_tokens(a, (Au)module_source, ext_toks);
-                // strip optional 'extend <name>' header if present, validate name
-                int start = 0;
-                token first = len(ext_toks) ? (token)ext_toks->origin[0] : null;
-                if (first && !strcmp(first->chars, "extend")) {
-                    token name_tok = len(ext_toks) > 1 ? (token)ext_toks->origin[1] : null;
-                    validate(name_tok && !strcmp(name_tok->chars, a->name->chars),
-                        "extend declares '%s' but imported into module '%s'",
-                        name_tok ? name_tok->chars : "?", a->name->chars);
-                    // these header tokens are skipped by the parse below, so stamp them for
-                    // the format map directly: `extend` = keyword, module name = type.
-                    first->syntax = Syntax__keyword;
-                    if (name_tok) name_tok->syntax = Syntax__type;
-                    start = 2;
-                }
-                a->processed_imports = false;
-                path saved_module_file = hold(a->module_file);
-                a->module_file = hold(module_source);
-                push_tokens(a, (tokens)ext_toks, start);
-                while (a->cursor < len(a->tokens))
-                    parse_statement(a);
-                // defer the format write: class/method bodies here are STASHED and only
-                // parsed (keyword/type stamped) later in build_record_parse. writing now
-                // captures only lexer-level tokens (the missing-keywords bug on extension
-                // files like Editor.ag). stash ext_toks and write after all phases (~1625).
-                if (a->format && len(a->format)) {
-                    if (!a->fmt_ext) a->fmt_ext = hold(array(alloc, 8));
-                    push(a->fmt_ext, (Au)hold(ext_toks));
-                }
-                pop_tokens(a, false);
-                drop(a->module_file);
-                a->module_file = saved_module_file;
-                //drop(ext_toks);
+                // sibling extension (Editor.ag etc.) imported within the module dir —
+                // parse it inline via the shared helper (tracks source, strips the
+                // `extend <name>` header, replays its statements into this module).
+                parse_extension(a, module_source, true);
             } else {
                 silver og = a;
                 while (og->is_external) og = og->is_external;
 
             {
                 Au_t f = find_module("vulkan2");
+                // hand the `with` extensions to the about-to-be-built external via a
+                // transient static (silver_init reads it at the top) — the prop-pair
+                // ctor is already at its 22-arg max, and the external builds in init.
+                g_import_with = with_exts;
                 silver external = silver(module, module, breakpoint, a->breakpoint,
                     verbose, a->verbose, is_external, og, is_child, a, release, a->release, clean, a->clean,
                     format, og->format,
                     defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
+                g_import_with = null;
                 Au_t f2 = find_module("vulkan2");
                 // these should be the only two objects remaining.
                 external_name    = hold(external->name);
@@ -8065,7 +8134,7 @@ enode parse_return(silver a) {
     etype rtype = return_type(a);
     bool  is_v  = is_void(rtype);
     efunc ctx   = context_func(a);
-    consume(a, Syntax__none);
+    consume(a, Syntax__keyword);
     a->expr_level++;
     enode expr  = is_v ? null : parse_expression(a, rtype, false, true);
     a->expr_level--;
@@ -9316,7 +9385,7 @@ etype silver_read_def(silver a, interface access) {
     }
 
     if (is_alias) {
-        consume(a, Syntax__none);
+        consume(a, Syntax__keyword);
         string  alias_name = read_alpha(a);
         validate(alias_name, "expected name after alias");
         validate(read_if(a, ":"), "expected ':' after alias name");
@@ -9364,7 +9433,7 @@ etype silver_read_def(silver a, interface access) {
     // unique). the bare `class`/`struct` keyword form has no parent → leave it as keyword.
     token def_tok = peek(a);
     bool  parent_named = is_class && def_tok && !eq(def_tok, "class");
-    consume(a, parent_named ? Syntax__parent : Syntax__none);
+    consume(a, parent_named ? Syntax__parent : Syntax__keyword);
     string n = read_alpha(a);
     validate(n, "expected alpha-numeric identity, found %o", next(a, Syntax__none));
     // the record's own name gets its own unique kind (_classname), distinct from a type ref.
