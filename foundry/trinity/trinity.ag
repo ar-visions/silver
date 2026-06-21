@@ -744,6 +744,12 @@ Display Window
                 changed = true
             instance.odd  = (child_pos % 2 == 0)
             instance.even = (child_pos % 2 == 1)
+            # styleable :has_value — true while the editable buffer holds text. a
+            # transition must mark the element changed so the style re-evaluates on type.
+            new_has_value : bool [ instance.edit && instance.edit.count > 0 ]
+            if [ instance.has_value != new_has_value ]
+                instance.has_value = new_has_value
+                changed = true
             child_pos += 1
 
             if [ changed ]
@@ -859,7 +865,11 @@ Display Window
         sp : f32 [ (c.parent && c.parent.bounds) ?
             ( (axis == 1) ? c.parent.bounds.h : c.parent.bounds.w ) :
             ( (axis == 1) ? height : width ) ]
-        return BindSeam [ mem: m, app: ap, axis: axis, sign: sign, fc: c.fc,
+        # use the parent's px-per-unit (the seam's coordinate space), matching the
+        # clamp in tick_binds — so a drag-snap collapses to the same floor the layout
+        # renders at, regardless of this element's own font.
+        sfc : f32 [ (c.parent && c.parent.fc > 0.0) ? c.parent.fc : c.fc ]
+        return BindSeam [ mem: m, app: ap, axis: axis, sign: sign, fc: sfc,
             min: bc.min, max: bc.max, span: sp, has_range: bc.has_range, user_mem: um ]
 
     # show the OS resize cursor over a seam: kind 0=arrow, 1=horizontal (x-axis
@@ -2286,11 +2296,29 @@ Display Window
             hi : f32 [ (span - b.min) / fc ]
             if [ v < lo ] v = lo
             if [ hi > lo && v > hi ] v = hi
-            p[0] = v
+            # magnetic detents — same radius as the seam drag (move_event): a value
+            # within `snp` of an end resolves TO that end. this makes a stored seam
+            # position that was near a detent (e.g. a collapsed console) reproduce the
+            # collapse on load without needing a fresh drag to re-snap it.
+            snp : f32 [ 1.5 ]
+            if [ v < lo + snp ] v = lo
+            if [ hi > lo && v > hi - snp ] v = hi
+            # clamp/snap the DISPLAY (active eases toward this), but do NOT write back
+            # into the app var: early frames use a default fc (font not loaded yet) whose
+            # floor (max/fc) is wrong, and writing it back permanently corrupts the
+            # stored/saved seam position. the seam drag already keeps the var in range.
         if [ !b.has_active ]
             b.active     = v
             b.has_active = true
             b.moving     = false
+        el [ !b.warmed ]
+            # load warm-up: snap the display straight to the goal (no ease) while the
+            # font/fc is still settling, so the seam shows already-positioned. mark
+            # warmed once it stops moving — from then on, eases normally (drag/toggle).
+            d : f32 [ v - b.active ]
+            b.active = v
+            b.moving = d != 0.0
+            if [ !b.moving ] b.warmed = true
         el
             d : f32 [ v - b.active ]
             if [ d != 0.0 ]
@@ -2313,7 +2341,14 @@ Display Window
             app_obj : Au e.ux.app_object
             rel_w : f32 [ (e.parent && e.parent.bounds) ? e.parent.bounds.w : width ]
             rel_h : f32 [ (e.parent && e.parent.bounds) ? e.parent.bounds.h : height ]
-            fcv   : f32 [ (e.fc > 0.0) ? e.fc : 22.0 ]
+            # bound coords are LAYOUT seams shared by siblings — clamp them in the
+            # PARENT's px-per-unit, not the element's own font-derived fc. two binders
+            # of one seam (e.g. console_h: the editor group + the console pane) have
+            # different fonts; using each one's own fc gives them conflicting collapse
+            # floors (max/fc), and the early-frame default (fc=22, before the font
+            # loads) bakes a wrong floor into the saved value. the parent fc is stable
+            # (laid out first) and identical for both, so the floor agrees with render.
+            fcv   : f32 [ (e.parent && e.parent.fc > 0.0) ? e.parent.fc : ((e.fc > 0.0) ? e.fc : 22.0) ]
             if [ e.area.bind_l ] bind_advance[ e.area.bind_l, app_obj, rel_w, fcv ]
             if [ e.area.bind_t ] bind_advance[ e.area.bind_t, app_obj, rel_h, fcv ]
             if [ e.area.bind_r ] bind_advance[ e.area.bind_r, app_obj, rel_w, fcv ]

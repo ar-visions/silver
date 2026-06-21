@@ -90,6 +90,9 @@ ielement element
     # `edit`, never over `label`. label renders as a dim placeholder while
     # `edit` is empty.
     mutable edit            : string
+    # styleable state: true while the editable buffer holds text (vs the placeholder
+    # label). CSS targets it with `:has_value` — e.g. ghost the label until entered.
+    public  has_value       : bool
     public  label2          : string
     mutable layers          : map Layer[string]
     mutable shaders         : map shader  [string]
@@ -513,7 +516,6 @@ class Layer
         # caret/selection only ever ride the edit buffer, never the label.
         etext    : string [ (parent.edit) ? parent.edit : '' ]
         has_edit : bool   [ etext.count > 0 ]
-        dim      : bool   [ !has_edit && parent.focused ]
         disp     : string [ (has_edit) ? etext : ((parent.label) ? parent.label : '') ]
         tm    : cv.measure_text[ disp ]
         cw_tm : cv.measure_text[ 'x' ]
@@ -540,11 +542,9 @@ class Layer
             cv.rect_to[ x0 + f32[sc] * cw, y0 - tm.ascent + 2.0, f32[ec - sc] * cw, fh - 4.0 ]
             cv.paint[]
 
-        # half-alpha only for the focused-empty placeholder; otherwise full
-        if [ dim ]
-            cv.fill_color[ rgba [ r: label_color.r, g: label_color.g, b: label_color.b, a: label_color.a * 0.5 ] ]
-        el
-            cv.fill_color[ label_color ]
+        # single tone: the label_color from CSS. gray for the placeholder, white once
+        # the field has a value (driven by the :has_value state, not a built-in alpha).
+        cv.fill_color[ label_color ]
         cv.draw_text[ disp, bounds, vec2f [ ax, ay ], vec2f [ ox, oy ], Overflow.visible, null ]
         cv.paint[]
 

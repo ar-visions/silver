@@ -802,3 +802,4 @@ element Avatar
         if [ vol_target ]
             w.screen.draw_image[ vol_target.color, b ]
         needs_frame = true
+

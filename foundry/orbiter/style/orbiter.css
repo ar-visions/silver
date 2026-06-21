@@ -632,6 +632,7 @@ Editor {
         area:               l0 t45px r0 b0
         label_height:       1.0
         line_color:         #fff1
+        item_color:         #2b3a5500
         sel_color:          #264f78
         # active-line glow (tab-explorer hover row + debugger stop line): warm red/orange
         hl_fill:            #ff6a2e55
@@ -941,6 +942,34 @@ Editor / element.title / element.nav / Option.magnify:selected {
         image_scale:            1.8
 }
 
+/* pins show/hide toggle — an outlined token chip (transparent fill, 1px rounded
+   outline), like the occurrence-highlight outline. selected = the pinned list shows. */
+Editor / element.title / element.nav / Option.pins {
+    layers.base:
+        area:                   4px
+        fill_color:             #0000
+        inner_glow:             #0000 0
+        stroke_width:           0
+        radius:                 6
+    layers.svg:
+        image_svg:              "images/side_off.svg"
+        image_scale:            1.4
+        opacity:                1.0
+}
+
+Editor / element.title / element.nav / Option.pins:hovered {
+    layers.base:
+        stroke_width:           1
+        stroke_color:           #6cb6ff66
+}
+
+Editor / element.title / element.nav / Option.pins:selected {
+    layers.base:
+        fill_color:             #0000
+        stroke_width:           1
+        stroke_color:           #6cb6ffcc
+}
+
 /* menu icon next to magnify — the old right toggle (opens the second editor). */
 Editor / element.title / element.nav / Option.menu {
     layers.svg:
@@ -972,6 +1001,25 @@ Editor / element.title / element.nav / Option.active:hovered {
 /* the add (+) / remove (-) tab buttons, in the right-side nav with magnify/menu.
    plain Buttons (actions, no toggle/select), so they're styled self-contained
    rather than via the Option nav rule. */
+Editor / element.title / Button.back {
+    area:                       l16px t14px w16px h16px
+    layers.base:
+        fill_color:             #0000
+        inner_glow:             #0000 24
+        radius:                 8
+    layers.svg:
+        area:                   0px
+        image_align:            0.5 0.5
+        image_scale:            2.0
+        image_svg:              "images/back.svg"
+        opacity:                0.5
+}
+
+Editor / element.title / Button.back:hovered {
+    layers.svg:
+        opacity:                1.0
+}
+
 Editor / element.title / element.nav / Button.dock {
     area:                       l0+ t0 w34px h34px
     layers.base:
@@ -1023,12 +1071,15 @@ Editor / element.title / element.find {
         fill_color:             #0000
     layers.text:
         area:                   l12px t0 r12px b0
-        label_color:            #fff
+        label_color:            #fff6
         label_align:            0.0 0.5
         label_size:             15
 :focused
     layers.text:
         editable:               true
+:has_value
+    layers.text:
+        label_color:            #ffff
 }
 
 Editor / element.title / element.replace {
@@ -1038,12 +1089,15 @@ Editor / element.title / element.replace {
         fill_color:             #0000
     layers.text:
         area:                   l12px t0 r12px b0
-        label_color:            #fff
+        label_color:            #fff6
         label_align:            0.0 0.5
         label_size:             15
 :focused
     layers.text:
         editable:               true
+:has_value
+    layers.text:
+        label_color:            #ffff
 }
 
 Editor / element.title / element.pattern {
@@ -1057,7 +1111,7 @@ Editor / element.title / element.pattern {
     layers.text:
         area:                   l12px t0 r12px b0
         label_color:            #fff
-        label_align:            0.0 0.5
+        label_align:            1.0 0.5
         label_size:             15
 :focused
     layers.text:
@@ -1074,7 +1128,7 @@ Editor / element.title / element.infile {
     layers.face:
         area:                   l12px t0 r12px b0
         label_color:            #fff8
-        label_align:            0.0 0.5
+        label_align:            1.0 0.5
         label_size:             15
 }
 

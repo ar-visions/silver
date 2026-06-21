@@ -8667,12 +8667,40 @@ void aether_llflag(aether a, symbol flag, i32 ival) {
 }
 
 
+// phase-2 implement() gives every function an entry block; build_fn fills the
+// body + terminator. A function that's implemented but never built (no body)
+// is left as an empty, unterminated entry block — invalid IR that fails verify.
+// Strip those stubs back to clean declarations (no blocks). Fully-built functions
+// (terminated last block) and existing declarations are left alone.
+static void strip_unbuilt_functions(LLVMModuleRef m) {
+    for (LLVMValueRef fn = LLVMGetFirstFunction(m); fn; fn = LLVMGetNextFunction(fn)) {
+        if (!LLVMGetFirstBasicBlock(fn)) continue;       // already a declaration
+        bool incomplete = false;
+        for (LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn); bb; bb = LLVMGetNextBasicBlock(bb))
+            if (!LLVMGetBasicBlockTerminator(bb)) { incomplete = true; break; }
+        if (!incomplete) continue;                       // fully built — keep
+        LLVMBasicBlockRef bb = LLVMGetFirstBasicBlock(fn);
+        while (bb) {
+            LLVMBasicBlockRef nb = LLVMGetNextBasicBlock(bb);
+            LLVMDeleteBasicBlock(bb);
+            bb = nb;
+        }
+        LLVMLinkage lk = LLVMGetLinkage(fn);
+        if (lk == LLVMInternalLinkage || lk == LLVMPrivateLinkage)
+            LLVMSetLinkage(fn, LLVMExternalLinkage);
+    }
+}
+
 bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     path* ll = (path*)ref_ll;
     path* bc = (path*)ref_bc;
     cstr err = NULL;
 
     path c = path_cwd();
+
+    // strip any function left as an unterminated stub (implemented but never built)
+    // so the module verifies — without this a clean rebuild emits invalid IR.
+    strip_unbuilt_functions(a->module_ref);
 
     // finalize DWARF debug info before emitting
     if (a->debug && a->dbg_builder)

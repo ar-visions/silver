@@ -162,13 +162,26 @@ none Image_init(Image a) {
 
         a->width            = png_get_image_width  (png, png_info);
         a->height           = png_get_image_height (png, png_info);
-        a->channels         = png_get_channels     (png, png_info);
         a->format           = Pixel_rgba8;
         png_byte bit_depth  = png_get_bit_depth    (png, png_info);
         png_byte color_type = png_get_color_type   (png, png_info);
 
+        // normalize EVERY png to 8-bit RGBA so the packed bytes match the declared
+        // format (Pixel_rgba8 = 4 bytes/px). without this an RGB (3ch) or palette png
+        // stays <4 bytes/px and a texture upload reads it with a 4-byte stride → the
+        // image shears and repeats. expand palette/gray/tRNS, strip 16-bit, add alpha.
+        if (color_type == PNG_COLOR_TYPE_PALETTE)               png_set_palette_to_rgb(png);
+        if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8) png_set_expand_gray_1_2_4_to_8(png);
+        if (png_get_valid(png, png_info, PNG_INFO_tRNS))        png_set_tRNS_to_alpha(png);
+        if (bit_depth == 16)                                    png_set_strip_16(png);
+        if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA)
+            png_set_gray_to_rgb(png);
+        png_set_add_alpha(png, 0xFF, PNG_FILLER_AFTER);
+
         /// store the exact format read
         png_read_update_info (png, png_info);
+        a->channels = png_get_channels (png, png_info);   // now 4 (RGBA)
+        bit_depth   = png_get_bit_depth (png, png_info);   // now 8
         png_bytep* rows = (png_bytep*)malloc (sizeof(png_bytep) * a->height);
         u8*        data = (u8*)alloc(
             (Au_t)_typeid(u8), a->width * a->height * a->channels * (bit_depth / 8), null, null, null, __FILE__, __LINE__, 0);

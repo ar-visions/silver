@@ -1858,6 +1858,39 @@ ARef types(ref_i64 length) {
     return module->members.origin;
 }
 
+// all DIRECT subclasses of `base` across EVERY module (base->src match). returns a
+// flat Au_t[] (reused static buffer) + count via `length`. used for class-driven
+// registries (e.g. orbiter's ResourceView views) without a per-module walk in silver.
+static Au_t* subclass_buf = NULL;
+static int   subclass_cap = 0;
+ARef subclasses(Au_t base, ref_i64 length) {
+    micro* mods = au_current_space ? &au_current_space->modules : &modules;
+    pthread_rwlock_t* lk = au_current_space ? &au_current_space->lock : &modules_lock;
+    pthread_rwlock_rdlock(lk);
+    int count = 0, total_members = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        int k = 0;
+        for (int i = 0; i < mods->count; i++) {
+            Au_t mod = (Au_t)mods->origin[i];
+            if (!mod) continue;
+            for (int j = 0; j < mod->members.count; j++) {
+                Au_t t = (Au_t)mod->members.origin[j];
+                if (pass == 0) total_members++;
+                if (!t || t == base || !inherits(t, base)) continue;
+                if (pass == 0) count++;
+                else subclass_buf[k++] = t;
+            }
+        }
+        if (pass == 0 && count > subclass_cap) {
+            subclass_cap = count;
+            subclass_buf = (Au_t*)realloc(subclass_buf, sizeof(Au_t) * (subclass_cap ? subclass_cap : 1));
+        }
+    }
+    pthread_rwlock_unlock(lk);
+    *length = count;
+    return (ARef)subclass_buf;
+}
+
 Au_t find_module(symbol name) {
     if (au_current_space) {
         // search space first — modules created during this compile take priority

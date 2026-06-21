@@ -1,5 +1,6 @@
 export 0.8.8
 
+# import silver modules
 import vec
 import img
 import gltf
@@ -8,12 +9,15 @@ import silver
 import project
 import dbg
 
+# import c headers
 import <stdio.h>
     -lm
 import <stdlib.h>
 import <unistd.h>
 import <fcntl.h>
 import <sys/wait.h>
+
+# import our own sub-modules
 import Earth
 import Navigate
 import Editor
@@ -66,11 +70,18 @@ func au_stdout_orig[] -> i32
 # (active pane, splits, scroll positions, etc.) get added here over time.
 class orbiter_state
     public tabs        : array path
+    # the file shown in each editor pane, in pane order ('-' = an empty pane). restores
+    # the actual editor layout, not just the flat set of open files.
+    public panes       : array path
+    # pinned dock files (shown at the top of the file list), restored on next launch.
+    public docked      : array path
     # breakpoints for this workspace — same "source:line" -> condition map orbiter
     # keeps live (empty condition = plain breakpoint).
     public breakpoints : map string [string]
     # the selected project/target name, restored on next launch.
     public target      : string
+    # the bottom-console seam position (console_h), so the split ratio is restored.
+    public console_h   : f32 [ 0.0 ]
 
 class FmtWatch
     public proj  : string
@@ -130,11 +141,12 @@ trinity orbiter # implements compiler
     intern settings_mtime    : i64
     intern settings_check_ms : i64
     public open_files       : array path
-    # files that have a docked tab, per pane group (the +/- in the editor title
-    # nav). an opened file is a preview until docked; docking pins a tab in that
-    # group. left and right panes keep separate docked lists.
-    public docked_left      : array path
-    public docked_right     : array path
+    # the dock: files pinned to the TOP of the file list (shown above the browse tree).
+    # one unified dock for all panes (not per-side). persisted in the session.
+    public docked           : array path
+    # number of find_hits rows occupied by the pinned dock — the editor draws a
+    # separator line after them, dividing the dock from the browse results.
+    intern nav_dock_rows    : i32
     # the editor split: one entry per visible editor pane, each an index into
     # open_files (-1 = empty 'Open' finder pane). up to 4. the + / - title buttons
     # push/remove entries; the render builds one Editor per slot. active_pane is the
@@ -195,6 +207,12 @@ trinity orbiter # implements compiler
     # companion the seam maintains: last open (non-snapped) console height. the
     # toggle restores this when re-opening so a collapse doesn't lose the size.
     public console_h_user: f32 [ 6.9 ]
+    # last console_h written to the session — on_release persists the ratio when a
+    # seam drag changed it (the seam mutates console_h directly via the layout bind).
+    intern console_h_persisted : f32 [ 0.0 ]
+    # previous frame's console_h — used to detect when the seam has SETTLED (stopped
+    # easing) after a drag/snap, so we persist the final value, not a mid-ease one.
+    intern console_h_last      : f32 [ 0.0 ]
     # the stack sub-column (callstack + fields) inside each editor, on a draggable
     # the SHARED width of the dbg sub-column seam (draggable via @stack_w in CSS).
     # on/off is per-editor (Editor.dbg_open builds it); this is just how wide it is
@@ -214,6 +232,9 @@ trinity orbiter # implements compiler
     # stays on that editor and focus moving to the other title doesn't pull it over.
     public findbar_pane  : string
     public findbar_text  : string
+    # the query that produced the current find_hits — so a second Enter on the same
+    # phrase advances to the next match instead of re-running the search.
+    intern find_last_query : string
     public replace_text  : string
     # file-pattern (glob) that scopes find-in-files — the right cell of the
     # Replace row.
@@ -226,22 +247,39 @@ trinity orbiter # implements compiler
     # (file-title headers + matched lines) instead of file content. fed to the
     # Editor each frame via props.
     public find_showing  : bool
+    # the tab/navigate file list reuses the SAME find_hits header rendering (each file
+    # a 2-slot title: filename bright + dir dimmed). nav_showing turns that on for the
+    # search pane independently of find_showing, so the two never clobber each other.
+    public nav_showing   : bool
     public find_hits     : array FindHit
     # directories the finder searches (default: the project path). users add more.
     public search_dirs   : array path
     # flat index of every file path under search_dirs (built once, filtered in
     # memory per keystroke). find_results is the editor finder's current match set.
     public file_index    : list string
+    # cap on indexed files — the walk stops here so a huge tree can't run away.
+    # settable from orbiter.agi (`max_search: …`).
+    public max_search    : i32 [ 400000 ]
+    # index nested git repositories (external/vendored deps) at all? true = index them
+    # last, false = skip entirely. settable from orbiter.agi (`search_external: false`).
+    public search_external : bool [ true ]
     public find_results  : list string
     # tracks whether the finder was active last frame, so we run_search on the
     # transition (open → show the dock as lines; close → restore the file).
     intern was_finder    : bool
+    # double-click detection on find-result rows: timestamp + row of the last press,
+    # so a second press on the same match row within the window opens it at its line.
+    intern last_hit_press_us : i64
+    intern last_hit_row      : i32 [ -1 ]
     # the pane id the finder last targeted ('pane'/'pane_right'), so focus moving
     # between panes re-runs the search into the newly-focused one.
     intern was_search_pane : string
     # set true by the inotify watch thread when anything under search_dirs
     # changes. the next search rebuilds file_index lazily on the main thread.
     public index_dirty   : bool
+    # set when a project switch re-rooted the index with a live query — once the new
+    # index finishes building, re-run the search so results reflect the new project.
+    intern index_research : bool
     # same signal, for the syntax formatter: a source file changed, so the format
     # map(s) are stale — fmt_poll re-invokes `silver <proj> --format` to refresh them.
     public fmt_dirty     : bool
@@ -249,19 +287,35 @@ trinity orbiter # implements compiler
     # their depths), drained a chunk per frame so the build never blocks the UI
     # and results grow progressively. building stays true until the queue drains.
     intern index_queue   : array path
+    # nested git repositories (vendored deps) found during the walk — drained AFTER the
+    # main queue so the user's own source indexes first and isn't buried under the cap.
+    intern index_queue_repos : array path
     intern index_building : bool
     # one inotify watch per search dir; keeps file_index fresh (like vscode's
     # file watcher) instead of a once-per-session walk.
     intern index_watches : array watch
     public compile_log   : list string
     public nav_root      : path
+    # browse list density: false = the 2-slot double header (name over dir), true = a
+    # compact single-line row at the primary code font. Tab toggles it.
+    public browse_single : bool
+    # show/hide the pinned dock at the top of the browse list — toggled from the editor
+    # nav so the results can be maximized. (eventual home of a thumbnail grid.)
+    public show_pins     : bool [ true ]
+    # the (larger) font size used for the NAME line of the two-line double-header rows.
+    # single-line uses the primary code font; double-line's name is bigger.
+    public browse_header_size : i32 [ 18 ]
+    # the dir (second) line font of a double header — smaller than the name, sized
+    # between the single-line primary font and the name line.
+    public browse_dir_size : i32 [ 16 ]
     # breakpoints are app-global, keyed by "source:line" -> condition string
     # (empty = plain breakpoint, non-empty = conditional). the same map is
     # handed to every Editor so they all share one set.
     public breakpoints   : map string[string]
     # code font size (px) for editors. canvas default is large (~22); this is
     # the single place to tune it. line-number labels render smaller still.
-    public code_font_size : i32
+    # settable from orbiter.agi (`code_font_size: …`).
+    public code_font_size : i32 [ 19 ]
     public editor_group   : element
     # live editor panes are reached via pane_at[i] (keyed 'pane0'..'pane3' under the
     # auto-bound editor_group); nested ids don't auto-bind to app fields directly.
@@ -273,7 +327,6 @@ trinity orbiter # implements compiler
         # create the shared breakpoint set first so it always exists before any
         # Editor is built and handed a reference to it.
         breakpoints    = map string[string] []
-        code_font_size = 19    # ~70% of the large canvas default
 
         # targets come from orbiter.agi (parsed into the projects map, then
         # flattened into target_names/roots/srcs). load_settings populates them.
@@ -284,13 +337,8 @@ trinity orbiter # implements compiler
         # no files open at start — files open from the FileList (main on click,
         # right pane on shift+click)
         open_files     = array path []
-        docked_left    = array path []
-        docked_right   = array path []
+        docked         = array path []
         # a few default pins so the column has content to look at
-        docked_left   += path '{startup_path}/LICENSE'
-        docked_left   += path '{startup_path}/Makefile'
-        docked_left   += path '{startup_path}/README.md'
-        docked_left   += path '{startup_path}/CLAUDE.md'
         active_idx     = -1
         # one editor pane to start, empty (the 'Open' finder)
         editor_slots   = array i32 []
@@ -306,7 +354,9 @@ trinity orbiter # implements compiler
         # run). MUST come after the defaults above — esp. active_target = 'silver' —
         # so the restored selection isn't immediately clobbered.
         restore_session[]
-        nav_root       = target_roots[0]
+        # browse + search are rooted at the (restored) active project, not always the
+        # first one — project_root[] resolves it (silver's root for the system target).
+        nav_root       = project_root[]
         show_console   = true
         filter_text    = ''
         find_text      = ''
@@ -317,9 +367,9 @@ trinity orbiter # implements compiler
         find_in_file   = true
         find_showing   = false
         find_hits      = array FindHit []
-        # default search dir is the project path; users can append more
+        # index/search is rooted at the active project (matches nav_root above)
         search_dirs    = array path []
-        search_dirs   += target_roots[0]
+        search_dirs   += project_root[]
         file_index     = list string []
         find_results   = list string []
         index_dirty    = false
@@ -421,8 +471,20 @@ trinity orbiter # implements compiler
                 for [ t: path ] in st.tabs
                     line = line + ' {t}'
             out = out + line + '\n'
+            pline : string '\t\tpanes:'
+            if [ st.panes ]
+                for [ t: path ] in st.panes
+                    pline = pline + ' {t}'
+            out = out + pline + '\n'
+            dline : string '\t\tdocked:'
+            if [ st.docked ]
+                for [ t: path ] in st.docked
+                    dline = dline + ' {t}'
+            out = out + dline + '\n'
             if [ st.target && st.target.count > 0 ]
                 out = out + '\t\ttarget: \'{st.target}\'\n'
+            if [ st.console_h > 0.0 ]
+                out = out + '\t\tconsole_h: {st.console_h}\n'
             # breakpoints as a nested map: '<source:line>': '<condition>'
             if [ st.breakpoints && st.breakpoints.count > 0 ]
                 out = out + '\t\tbreakpoints:\n'
@@ -434,7 +496,8 @@ trinity orbiter # implements compiler
     func save_session []
         ws : workspace_key[]
         if [ !ws || ws.count == 0 ] return
-        if [ !states ] states = map orbiter_state [string] []
+        if [ !states ]
+			states = map orbiter_state [string] []
         st : orbiter_state states[ws]
         if [ !st ]
             st = orbiter_state []
@@ -443,9 +506,20 @@ trinity orbiter # implements compiler
         for [ i: i32 0, i < open_files.count, i += 1 ]
             if [ open_files[i] ] tabs.push[ open_files[i] ]
         st.tabs        = tabs
+        # the per-pane layout: the file each pane shows, in pane order. empty panes are
+        # simply skipped — there's nothing to restore for them.
+        panes : array path []
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            slot : i32 [ editor_slots[i] ]
+            if [ slot >= 0 && slot < open_files.count && open_files[slot] ]
+                panes.push[ open_files[slot] ]
+        st.panes       = panes
+        st.docked      = docked
         # the live breakpoint map is workspace-scoped — snapshot it into the state.
         st.breakpoints = breakpoints
         st.target      = active_target
+        st.console_h   = console_h
+        console_h_persisted = console_h
         save_states[]
 
     # on startup: load all states, then reopen the tabs saved for this workspace.
@@ -455,14 +529,29 @@ trinity orbiter # implements compiler
         if [ !states || !ws ] return
         st : orbiter_state states[ws]
         if [ !st ] return
-        # reopen tabs
+        # reopen tabs (populates the open_files pool)
         if [ st.tabs ]
             for [ i: i32 0, i < st.tabs.count, i += 1 ]
                 p : path st.tabs[i]
                 if [ p ] file_slot[ p ]
-            if [ open_files.count > 0 && editor_slots.count > 0 ]
-                editor_slots[0] = 0
-                sync_editor[]
+        # restore the pinned dock
+        if [ st.docked && st.docked.count > 0 ]
+            docked = array path []
+            for [ i: i32 0, i < st.docked.count, i += 1 ]
+                p : path st.docked[i]
+                if [ p ] docked += p
+        # restore the per-pane layout: each saved pane's file into its own slot
+        if [ st.panes && st.panes.count > 0 ]
+            editor_slots = array i32 []
+            for [ i: i32 0, i < st.panes.count, i += 1 ]
+                p : path st.panes[i]
+                if [ p ] editor_slots += file_slot[ p ]
+            if [ editor_slots.count == 0 ] editor_slots += -1
+            active_pane = 0
+            sync_editor[]
+        el [ st.tabs && open_files.count > 0 && editor_slots.count > 0 ]
+            editor_slots[0] = 0
+            sync_editor[]
         # restore breakpoints into the live (shared) map so editors pick them up
         if [ st.breakpoints && breakpoints ]
             for [ cond: string, key: string ] in st.breakpoints
@@ -471,10 +560,13 @@ trinity orbiter # implements compiler
         # restore the selected project
         if [ st.target && st.target.count > 0 ]
             active_target = st.target
-        # load the active target's initial files (system → orbiter.agi; a project →
-        # its `files`), resolved against the local launch dir. this supersedes any
-        # stale session tab whose absolute path no longer exists on this machine.
-        load_target_files[ active_target ]
+        # restore the bottom-console split ratio
+        if [ st.console_h > 0.0 ]
+            console_h           = st.console_h
+            console_h_user      = st.console_h
+            console_h_persisted = st.console_h
+        # the open tabs ARE the restored session (above) — they're workspace state, not
+        # project state, so we do NOT override them with a project's default file set.
 
     # read orbiter.agi and let parse_agi set members directly on this orbiter
     # instance (`a`) — chiefly the `projects` map. we clear projects first so a
@@ -889,25 +981,27 @@ trinity orbiter # implements compiler
         open_files.push[ p ]
         return open_files.count - 1
 
-    # is this file docked in the given group?
-    func is_docked [ p: path, grp: array path ] -> bool
-        if [ !p || !grp ] return false
-        for [ i: i32 0, i < grp.count, i += 1 ]
-            if [ grp[i] == p ] return true
+    # is this file pinned in the (unified) dock?
+    func is_docked [ p: path ] -> bool
+        if [ !p || !docked ] return false
+        for [ i: i32 0, i < docked.count, i += 1 ]
+            if [ docked[i] == p ] return true
         return false
 
-    # dock a file into a group: add its tab (duplicate-checked)
-    func dock [ p: path, grp: array path ]
-        if [ !p || !grp || is_docked[ p, grp ] ] return
-        grp.push[ p ]
-
-    # undock a file from a group: remove its tab
-    func undock [ p: path, grp: array path ]
-        if [ !p || !grp ] return
-        for [ i: i32 0, i < grp.count, i += 1 ]
-            if [ grp[i] == p ]
-                grp.remove[ i ]
-                return
+    # toggle a file's pin in the dock (persist + refresh the list so it moves to/from
+    # the pinned section at the top).
+    func toggle_dock [ p: path ]
+        if [ !p ] return
+        if [ !docked ] docked = array path []
+        found : bool false
+        for [ i: i32 0, i < docked.count, i += 1 ]
+            if [ docked[i] == p ]
+                docked.remove[ i ]
+                found = true
+                break
+        if [ !found ] docked.push[ p ]
+        save_session[]
+        run_search[]
 
     # shell out to git for a file and report whether it has a diff. only called
     # when a file is opened — never during render, so the per-frame path stays
@@ -933,7 +1027,7 @@ trinity orbiter # implements compiler
         # paused, so it would wrongly unlock the editor exactly at a breakpoint.
         return (d && d.active) ? d : null
 
-    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window, dbg_locked: bool, dbg_open: bool ] -> Elements
+    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window, dbg_locked: bool, dbg_open: bool, menu_open: bool, is_resource: bool ] -> Elements
         nav : Elements []
         # the active (non-edit) state indicator: a small rounded 'active' button. shown
         # while the pane is debug-locked; clicking it (or double-clicking the body)
@@ -944,7 +1038,10 @@ trinity orbiter # implements compiler
         #if [ p && p.exists[] && !findbar_open ]
         #    nav['git'] = Option [ selected: editor_panel == 'git', disable: !has_diff ]
         
-        nav['magnify'] = Option [ selected: findbar_open ]
+        # find-in-files is a text-editor feature — a resource view (image/audio/…) has no
+        # such thing, so omit the magnify for it.
+        if [ !is_resource ]
+            nav['magnify'] = Option [ selected: findbar_open ]
         # (the callstack + fields panels moved OUT of the editor — they're now toggled
         # from the bottom console title; the editor no longer carries a stack sub-column.)
         # tab add (+) and remove (-) live on the right with magnify, leaving the
@@ -957,12 +1054,21 @@ trinity orbiter # implements compiler
             # only offer remove (-) when there's more than one editor
             if [ editor_slots.count > 1 ]
                 nav['undock'] = Button []
+            # pins show/hide toggle — only while THIS pane's file index/browse is open
+            # (and there's a pinned dock to toggle).
+            if [ menu_open && nav_showing && docked && docked.count > 0 ]
+                nav['pins'] = Option [ selected: show_pins ]
 
 
         hasfile  : bool [ p && p.exists[] ]
         # Files is the active scope whenever there's no file to search In-File.
         files_sel : bool [ !hasfile || !find_in_file ]
         els : Elements []
+        # while the BROWSE index is open, a borderless back icon sits left of the title
+        # text — clicking it closes the popup (exit_finder). not for the findbar, where it
+        # would land in the Find row.
+        if [ menu_open && nav_showing ]
+            els['back'] = Button []
         els['find']    = element [ label: 'Find',    edit: findbar_text ]
         els['replace'] = element [ label: 'Replace', edit: replace_text ]
         els['pattern'] = Option  [ label: 'Files', edit: pattern_text, selected: files_sel ]
@@ -989,7 +1095,9 @@ trinity orbiter # implements compiler
         locked  : bool [ running && !armed ]
         # the dbg sub-column is toggled per editor (its own dbg_open), not globally.
         dbg_open : bool [ (ed_live) ? ed_live.dbg_open : false ]
-        ttl : Elements title_nav[ p, grp, diff, win, locked, dbg_open ]
+        menu_open : bool [ searchable && (find_showing || nav_showing) ]
+        is_res    : bool [ (ed_live && ed_live.rview) ? true : false ]
+        ttl : Elements title_nav[ p, grp, diff, win, locked, dbg_open, menu_open, is_res ]
         pe : Elements []
         pe['title'] = EditorTitle [
             selected: !p
@@ -1011,7 +1119,9 @@ trinity orbiter # implements compiler
             debug_running: running, debugger: dbgr, debug_vars: debug_vars,
             # the findbar belongs to the pane whose magnify opened it (findbar_on);
             # find-in-files hits render only in the focused search pane (searchable).
-            expanded: findbar_on, show_hits: (searchable) ? find_showing : false,
+            expanded: findbar_on, show_hits: (searchable) ? (find_showing || nav_showing) : false,
+            single_line: (nav_showing && browse_single), header_size: browse_header_size, dir_size: browse_dir_size,
+            nav_list: (searchable) ? nav_showing : false, dock_rows: nav_dock_rows,
             hits: find_hits, find_query: findbar_text, elements: pe ]
 
     # build the docked-tab strip for a group: one tab per docked file, the
@@ -1030,6 +1140,7 @@ trinity orbiter # implements compiler
     func start_index []
         file_index   = list string []
         index_queue  = array path []
+        index_queue_repos = array path []
         for [ d: path ] in search_dirs
             if [ d ] index_queue.push[ d ]
         index_building = true
@@ -1059,15 +1170,29 @@ trinity orbiter # implements compiler
                         dn : string e.filename[]
                         if [ dn == 'checkout' || dn == '.git' ]
                             continue
-                        index_queue.push[ e ]
+                        # a nested git repo (has .git): index it deferred to the end when
+                        # search_external is on, otherwise skip it entirely.
+                        gp : path '{e}/.git'
+                        if [ gp.exists[] ]
+                            if [ search_external ]
+                                index_queue_repos.push[ e ]
+                        el
+                            index_queue.push[ e ]
                     el
                         file_index.push[ e ]
-            if [ file_index.count >= 100000 ]
+            cap : i32 [ (max_search > 0) ? max_search : 400000 ]
+            if [ file_index.count >= cap ]
                 index_building = false
                 return
             if [ epoch_micros[] - t0 > 4000 ] break
         if [ index_queue.count == 0 ]
-            index_building = false
+            # main tree exhausted → now fold in the deferred repositories (indexed last)
+            if [ index_queue_repos && index_queue_repos.count > 0 ]
+                for [ rp: path ] in index_queue_repos
+                    index_queue.push[ rp ]
+                index_queue_repos = array path []
+            el
+                index_building = false
 
     # spawn one inotify watch per search dir. the watch runs on its own pthread
     # (Au.watch) and fires on_index_change when anything under the dir changes.
@@ -1076,6 +1201,29 @@ trinity orbiter # implements compiler
             iw : watch [ res: d, callback: ref on_index_change, argument: a ]
             iw.start[]
             index_watches += iw
+
+    # re-root the file index + its inotify watch onto the SELECTED project's root, so
+    # the search service stays in sync with the active project. called on tab change.
+    func reroot_index []
+        r : path project_root[]
+        if [ !r ] return
+        # already rooted there → nothing to do
+        if [ search_dirs && search_dirs.count == 1 ]
+            s0 : string '{search_dirs[0]}'
+            rs : string '{r}'
+            if [ s0.compare[ rs ] == 0 ] return
+        # stop the old root's watch, then re-point everything at the new root
+        if [ index_watches ]
+            for [ iw: watch ] in index_watches
+                iw.pause[]
+        index_watches = array watch []
+        search_dirs   = array path []
+        search_dirs  += r
+        start_index[]
+        start_watching[]
+        # if a query is live, the just-cleared index is empty — re-run the search once
+        # the new project's index has rebuilt (handled per-frame after index_step).
+        if [ find_text && find_text.count > 0 ] index_research = true
 
     # called FROM the watch thread — keep it trivial. just flag the index stale;
     # the rebuild happens on the main thread in the next run_search.
@@ -1137,6 +1285,7 @@ trinity orbiter # implements compiler
     func run_find_in_files []
         find_hits = array FindHit []
         q : string findbar_text
+        find_last_query = q
         if [ !q || q.count == 0 ]
             find_showing = false
             return
@@ -1151,6 +1300,95 @@ trinity orbiter # implements compiler
             root : path '{startup_path}/foundry'
             walk_find[ root, q ]
         find_showing = true
+        # a fresh result set → clear the results-pane selection so the next Enter
+        # ("next match") starts at the first occurrence, not wherever it last sat.
+        sp : string search_pane[]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            e : Editor pane_at[ i ]
+            if [ e && e.id.compare[ sp ] == 0 ]
+                e.sel_line    = -1
+                e.anchor_line = -1
+
+    # advance the selection to the next match row in the results pane (wrapping past
+    # the file-title headers), and scroll it into view. used when Enter is pressed and
+    # the results are already up for the current phrase — step through occurrences.
+    func next_match []
+        sp : string search_pane[]
+        ed : Editor null
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            e : Editor pane_at[ i ]
+            if [ e && e.id.compare[ sp ] == 0 ] ed = e
+        if [ !ed ] ed = pane_at[ 0 ]
+        if [ !ed || !find_hits || find_hits.count == 0 ] return
+        q  : string findbar_text
+        qn : i32 [ (q) ? q.count : 0 ]
+        if [ qn == 0 ] return
+        n  : i32 [ find_hits.count ]
+        cl : i32 [ ed.sel_line ]
+        cc : i32 [ ed.sel_col ]
+        # 1) another occurrence on the CURRENT row, after the active one
+        if [ cl >= 0 && cl < n && !find_hits[ cl ].is_header ]
+            ln : string find_hits[ cl ].text
+            st : i32 [ cc + 1 ]
+            if [ st < 0 ] st = 0
+            if [ st <= ln.count - qn ]
+                rem : string ln.mid[ st, ln.count - st ]
+                rel : i32 [ rem.index_of[ q ] ]
+                if [ rel >= 0 ]
+                    reveal_match[ ed, cl, st + rel ]
+                    return
+        # 2) otherwise the first occurrence of the next match row (wrapping)
+        r : i32 [ cl ]
+        for [ step: i32 0, step < n, step += 1 ]
+            r = r + 1
+            if [ r >= n ] r = 0
+            h : FindHit find_hits[ r ]
+            if [ h && !h.is_header ]
+                ln  : string h.text
+                rel : i32 [ ln.index_of[ q ] ]
+                if [ rel >= 0 ]
+                    reveal_match[ ed, r, rel ]
+                    return
+
+    # place the caret on a specific match (row + column) and scroll the row into view.
+    func reveal_match [ ed: Editor, row: i32, col: i32 ]
+        ed.sel_line    = row
+        ed.sel_col     = col
+        ed.anchor_line = row
+        ed.anchor_col  = col
+        lh : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
+        # ed.bounds.h is the WHOLE pane including the title bar (44px, doubled to 88px
+        # while the findbar is open) — the scrollable content viewport is that minus the
+        # title. using the full pane height made matches below the viewport read as still
+        # visible, so the selection landed on an off-screen line before it scrolled.
+        title_h : f32 [ (ed.expanded) ? 88.0 : 44.0 ]
+        vh : f32 [ ((ed.bounds) ? ed.bounds.h : 600.0) - title_h ]
+        top : f32 [ f32[ row ] * lh ]
+        # only scroll when the line is actually cut off (above the top, or its bottom
+        # past the viewport) — no margin, so a fully-visible line near the bottom edge
+        # doesn't trigger a scroll just because a sliver of the next line shows below it.
+        if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
+            ed.scroll.y = top - vh * 0.4
+            if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
+            ed.scroll_target = ed.scroll.y
+        # horizontal: default to the line start (base); when the match wouldn't fit
+        # from there, scroll right only as far as needed so the match END plus a 4-char
+        # pad sits at the right edge — minimal travel, never further than required.
+        if [ row >= 0 && row < find_hits.count ]
+            ln  : string find_hits[ row ].text
+            cw  : f32 [ (ed.cw_cache > 0.0) ? ed.cw_cache : 8.0 ]
+            qn  : i32 [ (findbar_text) ? findbar_text.count : 0 ]
+            mex : f32 [ f32[ ed.vis_col[ ln, col + qn ] ] * cw ]
+            vw  : f32 [ ((ed.bounds) ? ed.bounds.w : 800.0) - ed.gutter_w ]
+            pad : f32 [ cw * 4.0 ]
+            if [ mex + pad > vw ]
+                ed.scroll.x = mex + pad - vw
+            el
+                ed.scroll.x = 0.0
+            if [ ed.scroll.x < 0.0 ] ed.scroll.x = 0.0
+        ed.pristine = false
+        win : cast Window [ w ]
+        if [ win ] win.will_animate = true
 
     # glob matcher for the find-in-files pattern, matched against a file's full path:
     #   *   any run of chars except '/'
@@ -1217,9 +1455,16 @@ trinity orbiter # implements compiler
                 if [ !header_added ]
                     # a file title occupies 2 uniform row-slots (so every row stays
                     # one line-height tall and the editor's cursor math is untouched).
-                    # the first slot carries the filename + draws the title spanning
-                    # both; the second is an empty continuation slot.
-                    find_hits.push[ FindHit [ is_header: true, text: '{p}', file: p ] ]
+                    # the first slot carries the filename (bright) + its directory
+                    # (dimmed), drawn spanning both; the second is an empty continuation.
+                    fn  : string p.filename[]
+                    drs : string '{p.directory[]}'
+                    sp  : string '{startup_path}'
+                    # show the directory relative to the launch dir when it's under it
+                    if [ sp.count > 0 && drs.index_of[ sp ] == 0 ]
+                        drs = drs.mid[ sp.count, drs.count - sp.count ]
+                        if [ drs.count > 0 && drs[0] == '/' ] drs = drs.mid[ 1, drs.count - 1 ]
+                    find_hits.push[ FindHit [ is_header: true, text: fn, dir: drs, file: p ] ]
                     find_hits.push[ FindHit [ is_header: true, text: '', file: p ] ]
                     header_added = true
                 find_hits.push[ FindHit [ is_header: false, text: ln, file: p, line: i + 1 ] ]
@@ -1240,6 +1485,13 @@ trinity orbiter # implements compiler
     # non-search pane.
     func apply_pane [ ed: Editor, is_search: bool, slot: i32 ]
         if [ !ed ] return
+        was_search : bool [ ed.finder_list ]
+        # entering finder: stash the file's scroll (the browse list reuses scroll.y) and
+        # start the list at the top.
+        if [ is_search && !was_search ]
+            ed.saved_scroll  = ed.scroll.y
+            ed.scroll.y      = 0.0
+            ed.scroll_target = 0.0
         ed.finder_list = is_search
         if [ is_search ]
             # the focused search pane shows the navigate list (dock + matches)
@@ -1248,6 +1500,10 @@ trinity orbiter # implements compiler
             # any other pane with a file open: restore its content
             ed.src = open_files[slot]
             ed.load_file[]
+            # leaving finder → put the file back where it was scrolled.
+            if [ was_search ]
+                ed.scroll.y      = ed.saved_scroll
+                ed.scroll_target = ed.saved_scroll
         el
             # a non-search, file-less pane is blank — NOT a copy of the dock
             ed.lines = list string []
@@ -1309,11 +1565,16 @@ trinity orbiter # implements compiler
         # a Group and an Editor don't share fc, so editor_group.fc would be wrong.
         # fall back until the first pane is laid out (self-corrects next frame).
         ew : f32 [ 100.0 ]
+        have_ew : bool [ false ]
         p0 : Editor pane_at[ 0 ]
         if [ p0 && p0.fc > 0.0 && p0.parent && p0.parent.bounds && p0.parent.bounds.w > 0.0 ]
             ew = p0.parent.bounds.w / p0.fc
-        # equal division whenever the pane count changes
-        if [ n != last_ecount ]
+            have_ew = true
+        # equal division whenever the pane count changes — but only once the editor
+        # area width is real. on the count-change frame the new pane isn't laid out
+        # yet (ew is the 100.0 fallback), so seating the seams then squashes the last
+        # pane (~80/20); defer until have_ew so the division lands on the true width.
+        if [ n != last_ecount && have_ew ]
             last_ecount = n
             if [ n >= 2 ] split1 = ew * 1.0 / f32[ n ]
             if [ n >= 3 ] split2 = ew * 2.0 / f32[ n ]
@@ -1374,64 +1635,128 @@ trinity orbiter # implements compiler
         return Console eds.elements[ 'pane{editor_slots.count}' ]
 
     # the editor finder: build the navigate list, then DISPLAY it in the focused
-    # pane only. (the FileList calls index_search directly and renders them itself.)
+    # push a file as a 2-slot title (filename bright + directory dimmed). show_dir
+    # adds the dir on the right (relative to the launch dir) — on for the flat filtered
+    # search, off in browse mode where every entry shares nav_root.
+    func push_file_hit [ p: path, show_dir: bool ]
+        fn  : string p.filename[]
+        drs : string ''
+        # the dock/results combine items across projects, so show the full absolute
+        # directory (project root + path) — a launch-relative path would be ambiguous.
+        if [ show_dir ]
+            drs = '{p.directory[]}'
+        find_hits.push[ FindHit [ is_header: true, text: fn, dir: drs, file: p ] ]
+        # single-line mode is one slot per entry; the double header adds a continuation.
+        if [ !browse_single ]
+            find_hits.push[ FindHit [ is_header: true, text: '', file: p ] ]
+
+    # the selected project's root path (browse navigation is bounded to it). the
+    # settings/system target is rooted at silver's launch dir.
+    func project_root [] -> path
+        if [ active_target.compare[ 'system' ] == 0 ] return path '{startup_path}'
+        for [ i: i32 0, i < target_names.count, i += 1 ]
+            if [ target_names[i].compare[ active_target ] == 0 ] return target_roots[i]
+        if [ target_roots.count > 0 ] return target_roots[0]
+        return nav_root
+
+    # push a directory as a 2-slot title link. `label` lets the up entry read '..'.
+    func push_dir_hit [ p: path, label: string ]
+        find_hits.push[ FindHit [ is_header: true, is_dir: true, text: label, dir: '', file: p ] ]
+        if [ !browse_single ]
+            find_hits.push[ FindHit [ is_header: true, is_dir: true, text: '', file: p ] ]
+
+    # the navigate list: with a query it's the ranked file-index search; with no query
+    # it BROWSES nav_root (the project root by default) — folders first as links that
+    # navigate in, then files. rendered through the find_hits header path; find_results
+    # keeps a flat one-path-per-row list for Enter-opens-first.
     func run_search []
-        # the navigate list (rendered as the editor's lines — tabs are just rows):
-        # the docked files (the dock) first, then the filtered file-index results.
-        combined : list string []
-        for [ i: i32 0, i < docked_left.count, i += 1 ]
-            combined.push[ '{docked_left[i]}' ]
-        if [ find_text && find_text.count > 0 ]
-            matches : list string [ index_search[ find_text ] ]
-            for [ i: i32 0, i < matches.count, i += 1 ]
-                combined.push[ matches.value_by_index[ i ] ]
-        find_results = combined
         win : cast Window [ w ]
         sp     : string search_pane[]
         active : bool [ (find_text && find_text.count > 0) || (win && win.focus && win.focus.id == 'title') ]
+        # only (re)build the navigate hits while the list is actually shown — otherwise
+        # leave find_hits alone so a live find-in-files result set isn't clobbered.
+        if [ active ]
+            combined : list string []
+            find_hits = array FindHit []
+            nav_dock_rows = 0
+            if [ find_text && find_text.count > 0 ]
+                # FILTERED: ranked index search across the whole project (files only)
+                matches : list string [ index_search[ find_text ] ]
+                for [ i: i32 0, i < matches.count, i += 1 ]
+                    p : path '{matches.value_by_index[ i ]}'
+                    push_file_hit[ p, true ]
+                    combined.push[ '{p}' ]
+            el
+                # pinned dock entries first — at the top of the browse list, unless the
+                # pins toggle hid them (to maximize the results view).
+                if [ docked && show_pins ]
+                    for [ i: i32 0, i < docked.count, i += 1 ]
+                        dp : path docked[i]
+                        if [ dp ]
+                            push_file_hit[ dp, true ]
+                            combined.push[ '{dp}' ]
+                    nav_dock_rows = find_hits.count
+                    # single-line mode reserves a blank row between the dock and the
+                    # results so the divider sits on its own line (drawn at its y middle).
+                    if [ browse_single && nav_dock_rows > 0 ]
+                        find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
+                # BROWSE: list nav_root — a parent '..' link, then folders, then files
+                if [ !nav_root ] nav_root = target_roots[0]
+                if [ nav_root ]
+                    # '..' only while we're BELOW the selected project root — never above it
+                    pr  : path   project_root[]
+                    nrs : string '{nav_root}'
+                    prs : string '{pr}'
+                    if [ pr && nrs.compare[ prs ] != 0 ]
+                        up : path nav_root.directory[]
+                        if [ up ]
+                            push_dir_hit[ up, '..' ]
+                            combined.push[ '{up}' ]
+                    entries : array [ nav_root.ls[ null, false ] ]
+                    if [ entries ]
+                        for [ i: i32 0, i < entries.count, i += 1 ]
+                            e : path entries[i]
+                            if [ e.is_dir[] ]
+                                dn : string e.filename[]
+                                if [ dn == '.git' || dn == 'checkout' ] continue
+                                push_dir_hit[ e, e.filename[] ]
+                                combined.push[ '{e}' ]
+                        for [ i: i32 0, i < entries.count, i += 1 ]
+                            e : path entries[i]
+                            if [ !e.is_dir[] ]
+                                push_file_hit[ e, false ]
+                                combined.push[ '{e}' ]
+            find_results = combined
+        nav_showing = active && find_hits && find_hits.count > 0
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             pid : 'pane{i}'
             ed  : Editor pane_at[ i ]
             apply_pane[ ed, active && (sp == pid), editor_slots[i] ]
 
-    # open in the active pane
-    # load a target's initial files into the editor as a row of panes. system → the
-    # orbiter.agi settings file; a project → its `files` (relative to root unless
-    # absolute), one editor slot each. the console is separate (per-target session).
-    func load_target_files [ target: string ]
-        files : array path []
-        # NOTE: `target == 'system'` (a string PARAMETER vs a literal) compared by
-        # IDENTITY and was always false — that's why clicking the settings tab did
-        # nothing. compare[] does value equality.
-        if [ target.compare[ 'system' ] == 0 ]
-            files += agi_path[]
-        el [ projects && projects[ target ] ]
-            p : Project projects[ target ]
-            if [ p.files ]
-                for [ i: i32 0, i < p.files.count, i += 1 ]
-                    fc : string [ p.files[i].chars ]
-                    files += (fc.count > 0 && fc[0] == '/') ? path '{fc}' : path '{p.root}/{fc}'
-        if [ files.count == 0 ] return
-        # map the target's files onto the EXISTING editor panes: file i replaces the
-        # file in editor i (in place — keep the current pane layout). only as many panes
-        # as the target has file refs are replaced; extra editors keep their file, and if
-        # there are more files than panes we append. so the system (settings) target —
-        # which has just orbiter.agi — drops it into the FIRST editor and leaves the rest.
-        if [ editor_slots.count == 0 ] editor_slots += -1
-        for [ i: i32 0, i < files.count, i += 1 ]
-            slot : i32 [ file_slot[ files[i] ] ]
-            if [ i < editor_slots.count ]
-                editor_slots[i] = slot
-            el
-                editor_slots += slot
-        active_pane = 0
-        sync_editor[]
+    # if a pane is currently presenting the file listing, keep it presented and
+    # re-rooted after a project switch: re-focus that pane's title (so the finder
+    # stays active) and rebuild against the new nav_root. called on tab change.
+    func rekeep_listing []
+        if [ !nav_showing ] return
+        sp : string search_pane[]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            ed : Editor pane_at[ i ]
+            if [ ed && ed.id.compare[ sp ] == 0 ]
+                te : element ed.elements['title']
+                if [ te ] te.set_focus[]
+        run_search[]
 
     func open_file [ p: path ]
         open_in_pane[ p, active_pane ]
 
     # open a file into a specific pane index (used by finder-row clicks)
     func open_in_pane [ p: path, pi: i32 ]
+        # leave a nav bookmark at the spot we're jumping FROM, so cmd+left returns here
+        # after a finder/result open. (the destination is preserved by nav_walk's save_top.)
+        if [ pi >= 0 && pi < editor_slots.count && pi < nav_panes.count ]
+            cur : Editor pane_at[ pi ]
+            if [ cur && cur.src ]
+                nav_panes[ pi ].record[ pi, '{cur.src.absolute[]}', cur.sel_line, cur.sel_col, cur.scroll.y ]
         idx : i32 [ file_slot[ p ] ]
         if [ pi >= 0 && pi < editor_slots.count ]
             editor_slots[pi] = idx
@@ -1442,6 +1767,76 @@ trinity orbiter # implements compiler
         # the open-tab set changed → persist this workspace's session.
         save_session[]
 
+    # open a file into a pane AND jump to a specific 1-based line — used by a find
+    # result double-click. closes the find bar/results, then selects + reveals the line
+    # (same reveal math as the ':<n>' goto and the debugger break).
+    func open_at_line [ p: path, pi: i32, to_line: i32 ]
+        findbar_open = false
+        find_showing = false
+        open_in_pane[ p, pi ]
+        ed : Editor pane_at[ pi ]
+        if [ !ed ] return
+        sl : i32 [ (to_line > 0) ? to_line - 1 : 0 ]
+        ed.sel_line    = sl
+        ed.sel_col     = 0
+        ed.anchor_line = sl
+        ed.anchor_col  = 0
+        lh : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
+        th : f32 [ (ed.expanded) ? 88.0 : 44.0 ]
+        vh : f32 [ ((ed.bounds) ? ed.bounds.h : 600.0) - th ]
+        tp : f32 [ f32[ sl ] * lh ]
+        if [ tp < ed.scroll.y || tp + lh > ed.scroll.y + vh ]
+            ed.scroll.y      = tp - vh * 0.4
+            if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
+            ed.scroll_target = ed.scroll.y
+        # this IS the intended position — keep the finder-restore from undoing it.
+        ed.saved_scroll = ed.scroll.y
+        ed.pristine = false
+
+    # opening the bar / moving focus changes a CSS state (:expanded, :focused) and the
+    # finder transition — none of which paint until the next input event. force a restyle
+    # + an animate frame so the change shows immediately instead of stalling.
+    func force_update []
+        win : cast Window [ w ]
+        if [ win ]
+            win.restyle      = true
+            win.will_animate = true
+
+    # fully leave any find/finder state back to plain editing: close the find bar, hide
+    # results, drop the typed query, and release focus from WHATEVER finder field holds it
+    # (findbar rows or the title) — exit_finder alone only releases the title, which is how
+    # we kept trapping ourselves. esc routes here from anywhere.
+    func exit_find_mode []
+        findbar_open = false
+        find_showing = false
+        find_text    = ''
+        find_results = list string []
+        win : cast Window [ w ]
+        if [ win && win.focus ]
+            win.focus.edit = ''
+            win.release_focus[ win.focus ]
+        force_update[]
+
+    # ctrl/cmd+F: open the find-in-files bar on the active pane and focus its Find input.
+    func open_find []
+        findbar_open = true
+        ed : Editor pane_at[ active_pane ]
+        if [ !ed ] return
+        findbar_pane = ed.id
+        te : element ed.elements['title']
+        if [ !te ] return
+        fe : element te.elements['find']
+        if [ fe ] fe.set_focus[]
+        force_update[]
+
+    # ctrl/cmd+G: focus the active pane's title — the editor file-index / browse search.
+    func focus_finder []
+        ed : Editor pane_at[ active_pane ]
+        if [ !ed ] return
+        te : element ed.elements['title']
+        if [ te ] te.set_focus[]
+        force_update[]
+
     # leave finder/edit mode: clear the typed query and drop focus from the
     # editor title so it returns to showing the (centered) filename, not an
     # editable field.
@@ -1451,6 +1846,9 @@ trinity orbiter # implements compiler
         win : cast Window [ w ]
         if [ !win ] return
         if [ win.focus && win.focus.id == 'title' ]
+            # clear the live edit buffer too — release_focus only drops focus, so without
+            # this the typed text (e.g. ':5') lingers in the title after we navigate.
+            win.focus.edit = ''
             win.release_focus[ win.focus ]
 
     func set_active [ idx: i32 ]
@@ -1528,12 +1926,48 @@ trinity orbiter # implements compiler
                 # finder active (dock and/or results shown as lines): clicking a code
                 # ROW opens it — but a click on the title bar focuses the finder, so
                 # exclude it (otherwise focusing the finder immediately opens a row).
-                if [ ev.target.id != 'title' && was_finder && ed.sel_line >= 0 && ed.sel_line < find_results.count ]
-                    hit_s    : string find_results.value_by_index[ ed.sel_line ]
-                    hit_path : path [ hit_s.chars ]
-                    # open into the pane whose row was clicked (ids are 'pane{i}')
-                    pi : i32 [ ed.id.mid[ 4, ed.id.count - 4 ].real_value[] ]
-                    open_in_pane[ hit_path, pi ]
+                if [ ev.target.id != 'title' && (was_finder || find_showing) && ed.sel_line >= 0 && ed.sel_line < find_hits.count ]
+                    h : FindHit find_hits[ ed.sel_line ]
+                    # the dock divider's blank spacer row is not actionable — consume the
+                    # click so the popup stays open instead of closing on the default.
+                    if [ h && h.is_spacer ]
+                        ev.no_default = true
+                        return
+                    if [ h && h.is_dir && h.file ]
+                        # a folder link → navigate INTO it: rebuild the browse list rooted
+                        # there, with the selection cleared so it starts at the top. KEEP
+                        # the finder open by re-focusing the title (the list shows only
+                        # while the title is focused) and suppress the default focus
+                        # transfer that would otherwise close it.
+                        nav_root  = h.file
+                        # reset selection + scroll so the new folder starts clean at top.
+                        # also clear hover — without a mouse move the stale row index can
+                        # point past the new (shorter) list and highlight an empty row.
+                        ed.sel_line      = -1
+                        ed.anchor_line   = -1
+                        ed.hover_line    = -1
+                        ed.scroll.y      = 0.0
+                        ed.scroll_target = 0.0
+                        run_search[]
+                        te : element ed.elements['title']
+                        if [ te ] te.set_focus[]
+                        ev.no_default = true
+                        if [ ev.target ] ev.target.ux.restyle = true
+                    el [ h && !h.is_header && h.line > 0 && h.file ]
+                        # a find-in-files MATCH row: double-click jumps INTO the file at
+                        # that line and closes find; a single click just selects/previews
+                        # (so you can scan matches without losing the results).
+                        pi  : i32 [ ed.id.mid[ 4, ed.id.count - 4 ].real_value[] ]
+                        now : i64 [ epoch_micros[] ]
+                        dbl : bool [ (now - last_hit_press_us) < 350000 && last_hit_row == ed.sel_line ]
+                        last_hit_press_us = now
+                        last_hit_row      = ed.sel_line
+                        if [ dbl ] open_at_line[ h.file, pi, h.line ]
+                        ev.no_default = true
+                    el [ h && h.file ]
+                        # browse file link / result filename header → open the file
+                        pi : i32 [ ed.id.mid[ 4, ed.id.count - 4 ].real_value[] ]
+                        open_in_pane[ h.file, pi ]
                     return
         # avatar pane titlebar toggle: hide/show the 3D avatar view
         if [ ev.target.id == 'avatar_hide' ]
@@ -1590,6 +2024,21 @@ trinity orbiter # implements compiler
             editor_panel = (editor_panel == ev.target.id) ? 'editor' : ev.target.id
             if [ ev.target ] ev.target.ux.restyle = true
             return
+        # back: the borderless arrow left of the title text — closes the finder popup.
+        if [ ev.target.id == 'back' ]
+            exit_finder[]
+            ev.no_default = true
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        # pins: show/hide the pinned dock in the browse list (maximize the results).
+        # rekeep_listing re-focuses the search title + re-runs the search, so the index
+        # stays open; no_default stops the click from closing the popup.
+        if [ ev.target.id == 'pins' ]
+            show_pins = !show_pins
+            rekeep_listing[]
+            ev.no_default = true
+            force_update[]
+            return
         # magnify: toggle the find/replace bar. it belongs to the pane whose magnify
         # was clicked (findbar_pane), so moving focus to the other title doesn't drag
         # the open bar onto it.
@@ -1626,6 +2075,7 @@ trinity orbiter # implements compiler
             if [ editor_slots.count < 4 ]
                 editor_slots += -1
                 active_pane = editor_slots.count - 1
+            save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
         if [ ev.target.id == 'undock' ]
@@ -1638,6 +2088,7 @@ trinity orbiter # implements compiler
                         if [ active_pane >= editor_slots.count ] active_pane = editor_slots.count - 1
                     break
             sync_editor[]
+            save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
         # the 'active' state button: drop this editor out of debug-lock into edit mode.
@@ -1651,11 +2102,6 @@ trinity orbiter # implements compiler
             return
         # clicking a pin (pin{i}) inside an editor opens that docked file
         tid : string ev.target.id
-        if [ tid.count > 3 && tid.mid[ 0, 3 ] == 'pin' ]
-            i : i32 [ tid.mid[ 3, tid.count - 3 ].real_value[] ]
-            if [ i >= 0 && i < docked_left.count ] open_file[ docked_left[i] ]
-            if [ ev.target ] ev.target.ux.restyle = true
-            return
         if [ ev.target.id == 'config' ]
             rel_x    : f32 [ ev.mouse.pos.x - ev.target.bounds.x ]
             in_right : bool [ rel_x > ev.target.bounds.w - 14.0 ]
@@ -1690,11 +2136,16 @@ trinity orbiter # implements compiler
                 if [ ev.target ] ev.target.ux.restyle = true
                 ev.no_default = true
                 return
+            # switching the project changes the build/run/console target and the browse
+            # root — but NOT the open editors. tabs are workspace state, so cycling
+            # projects never blends or overrides what's open.
             if [ id == 'system' ]
                 active_target = 'system'
-                # the system (gear) target has no project to run — it edits orbiter's
-                # own settings: its initial file set is orbiter.agi.
-                load_target_files[ 'system' ]
+                # settings target browses silver's root (the launch dir, where
+                # orbiter.agi lives) — so the file index shows that tree.
+                nav_root = path '{startup_path}'
+                reroot_index[]
+                rekeep_listing[]
                 sync_active[]
                 save_session[]
                 ev.no_default = true
@@ -1708,7 +2159,8 @@ trinity orbiter # implements compiler
                 if [ !matched ]
                     active_panel = id
                 if [ matched ]
-                    load_target_files[ id ]
+                    reroot_index[]
+                    rekeep_listing[]
                     sync_active[]
                     save_session[]
                     ev.no_default = true
@@ -1762,7 +2214,25 @@ trinity orbiter # implements compiler
     
     func on_key [ ev: Event ]
         if [ !ev.target ] return
- 
+        # global shortcuts (work from any focus): ctrl/cmd+F opens find-in-files and
+        # focuses the Find input; ctrl/cmd+G focuses the editor index / file search.
+        if [ ev.key.state && (ev.key.ctrl || ev.key.meta) ]
+            kc : i32 [ i32[ ev.key.unicode ] ]
+            if [ kc == 70 ]    # 'F'
+                open_find[]
+                ev.no_default = true
+                return
+            if [ kc == 71 ]    # 'G'
+                focus_finder[]
+                ev.no_default = true
+                return
+        # global Escape: from anywhere, if any find/finder state is up, drop back to
+        # editing (so we never get trapped in the bar / finder regardless of focus).
+        if [ ev.key.state && i32[ ev.key.unicode ] == 256 && (findbar_open || find_showing || nav_showing) ]
+            exit_find_mode[]
+            ev.no_default = true
+            return
+
         if [ ev.target.id == 'filter' ]
             if [ !ev.key.state ] return
             k : i32 [ i32 ev.key.unicode ]
@@ -1799,8 +2269,13 @@ trinity orbiter # implements compiler
                     if [ pattern_text && pattern_text.count > 0 ]
                         pattern_text = pattern_text.mid[ 0, pattern_text.count - 1 ]
             el [ k == 257 ]    # Key.Enter
-                # enter runs the find-in-files search
-                run_find_in_files[]
+                # first Enter runs the search; a repeat Enter on the SAME phrase (results
+                # already up) steps to the next occurrence instead of re-searching.
+                same : bool [ find_showing && find_hits && find_hits.count > 0 && find_last_query && findbar_text && find_last_query.compare[ findbar_text ] == 0 ]
+                if [ same ]
+                    next_match[]
+                el
+                    run_find_in_files[]
                 if [ ev.target.ux ] ev.target.ux.restyle = true
             el [ k == 256 ]    # Key.Escape
                 # escape collapses the bar and hides the results
@@ -1821,11 +2296,48 @@ trinity orbiter # implements compiler
                     ev.target.pristine = false
                     run_search[]
             el [ k == 257 ]    # Key.Enter
-                # enter opens the first matching result
-                if [ find_results && find_results.count > 0 ]
+                # ':<n>' jumps the current editor to line n; otherwise enter opens the
+                # first matching result.
+                handled : bool false
+                if [ find_text && find_text.count > 1 && find_text[0] == ':' ]
+                    num : string find_text.mid[ 1, find_text.count - 1 ]
+                    if [ num.is_numeric[] ]
+                        ed : Editor pane_at[ active_pane ]
+                        if [ ed ]
+                            # bookmark where we were before the goto so cmd+left returns.
+                            if [ ed.nav && ed.src ]
+                                ed.nav.record[ active_pane, '{ed.src.absolute[]}', ed.sel_line, ed.sel_col, ed.scroll.y ]
+                            sl : i32 [ i32[ num.integer_value[] ] ]
+                            sl = (sl > 0) ? sl - 1 : 0
+                            ed.sel_line    = sl
+                            ed.sel_col     = 0
+                            ed.anchor_line = sl
+                            ed.anchor_col  = 0
+                            # reveal the line (centered-ish), pinning scroll_target
+                            lh : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
+                            th : f32 [ (ed.expanded) ? 88.0 : 44.0 ]
+                            vh : f32 [ ((ed.bounds) ? ed.bounds.h : 600.0) - th ]
+                            tp : f32 [ f32[ sl ] * lh ]
+                            if [ tp < ed.scroll.y || tp + lh > ed.scroll.y + vh ]
+                                ed.scroll.y      = tp - vh * 0.4
+                                if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
+                                ed.scroll_target = ed.scroll.y
+                            # the goto IS the intended position — don't let the finder-exit
+                            # scroll-restore override it.
+                            ed.saved_scroll = ed.scroll.y
+                            ed.pristine = false
+                        exit_finder[]
+                        if [ ev.target.ux ] ev.target.ux.restyle = true
+                        handled = true
+                if [ !handled && find_results && find_results.count > 0 ]
                     first_s    : string find_results.value_by_index[ 0 ]
                     first_path : path [ first_s.chars ]
                     open_file[ first_path ]
+            el [ k == 258 ]    # Key.Tab — toggle single-line / double-header density
+                browse_single = !browse_single
+                ev.target.pristine = false
+                run_search[]
+                if [ ev.target.ux ] ev.target.ux.restyle = true
             el [ k == 256 ]    # Key.Escape
                 # esc: leave the finder entirely — drop the query AND release focus
                 # so the title goes non-editable (as if clicked away); exit_finder
@@ -1864,6 +2376,12 @@ trinity orbiter # implements compiler
             exit[ 1 ]
 
         index_step[]
+        # a project switch re-rooted the index with a live query — once the rebuild has
+        # finished, re-run the search so the results reflect the newly selected project
+        # (as if the query box was re-entered against the new index).
+        if [ index_research && !index_building ]
+            index_research = false
+            run_search[]
         # deferred dbg launch: run_node armed pending_debug + set the build running.
         # once that shell returns to prompt (is_running flips false) the --clean build
         # is done and install/debug/<name> is the FRESH product — launch it now so we
@@ -1879,6 +2397,15 @@ trinity orbiter # implements compiler
         if [ last_bp_count >= 0 && bpc != last_bp_count ]
             save_session[]
         last_bp_count = bpc
+        # persist the console split ratio once the seam drag has ENDED (no active
+        # seam_drag) AND console_h has SETTLED — it eases to the snapped value over a
+        # few frames, so saving on the first idle frame catches a pre-snap value.
+        chd  : f32 [ console_h - console_h_persisted ]
+        chld : f32 [ console_h - console_h_last ]
+        settled : bool [ chld < 0.001 && chld > 0.0 - 0.001 ]
+        if [ w && !w.seam_drag && settled && (chd > 0.001 || chd < 0.0 - 0.001) ]
+            save_session[]
+        console_h_last = console_h
         # finder transitions: rebuild the navigate list when the title gains focus
         # (show the dock as lines) or loses it (restore the file), AND when focus
         # moves to a different pane's title (so the results follow to that pane).
@@ -1987,7 +2514,7 @@ trinity orbiter # implements compiler
             pid  : 'pane{i}'
             slot : i32    [ editor_slots[i] ]
             spath: path   (slot >= 0 && slot < open_files.count) ? open_files[slot] : null
-            editor_els[pid] = pane_for[ spath, docked_left, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open', i ]
+            editor_els[pid] = pane_for[ spath, null, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open', i ]
         if [ has_console ]
             bcon  : Console ui_console[]
             csess : map ConsoleSession[string] (bcon) ? bcon.sessions : null

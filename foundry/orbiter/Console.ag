@@ -78,6 +78,12 @@ class ConsoleSession
     mutable scroll_dragging : bool
     mutable lh_cache    : f32
     mutable cw_cache    : f32
+    # hovered file:line link span: content-space line + [link_c0, link_c1) columns.
+    # hover_link_line -1 = nothing hovered. set in on_move when the mouse sits on a
+    # path:number token; the draw underlines that span so it reads as a link.
+    mutable hover_link_line : i32 [ -1 ]
+    mutable link_c0     : i32 [ 0 ]
+    mutable link_c1     : i32 [ 0 ]
     # per-scrollback-line render cache. each VISIBLE line is rasterized into a pooled
     # canvas once (keyed by line index) then blitted every frame; slots are recycled
     # as lines scroll off, so the pool stays at the visible-line count — never the
@@ -1086,6 +1092,18 @@ Layer TermLayer
             if [ lvc && lvc.canvas ]
                 cv.draw_canvas[ lvc.canvas, x0, round[ y ], f32[ lvc.canvas.content_w ], lh ]
 
+        # underline the hovered path:line token (set in on_move) so it reads as a link.
+        # drawn after the line blits so it sits on top, in the same content-space y as
+        # the rows (line index → y0 + line*lh - scroll, valid for scrollback + live).
+        if [ s.hover_link_line >= 0 ]
+            uy : f32 [ y0 + f32[ s.hover_link_line ] * lh - s.scroll ]
+            if [ uy + lh > bounds.y && uy < bounds.y + bounds.h ]
+                ux0 : f32 [ x0 + f32[ s.link_c0 ] * cw ]
+                uw  : f32 [ f32[ s.link_c1 - s.link_c0 ] * cw ]
+                cv.fill_color[ '#6cb6ff' ]
+                cv.stroke_width[ 0.0 ]
+                cv.rect_to[ ux0, round[ uy + lh - 2.0 ], uw, 1.0 ]
+
         cv.paint[]
         if [ s.cursor_visible ]
             cur_px : f32 [ x0 + f32[s.cx] * cw ]
@@ -1442,15 +1460,17 @@ Control Console
         c : string txt.mid[ i, 1 ]
         return c == ' ' || c == '	'
 
-    # if the (line,col) sits on a `path:line(:col)` token in the output, open that
-    # file at that line in editor pane 0 (mirrors apply_break) and return true.
-    func open_link_at [ ln: i32, col: i32 ] -> bool
+    # if (line,col) sits on a `path:line(:col)` token, set s.link_c0/c1 to the token's
+    # [a, b) column span and return true. the path must look like a file (has / or .)
+    # and carry a numeric line after the colon. shared by the click (open) and the
+    # hover (underline) paths so both agree on exactly what counts as a link.
+    func detect_link [ ln: i32, col: i32 ] -> bool
         s : ConsoleSession session[]
         if [ !s ] return false
         txt : string s.line_get[ ln ]
         n : i32 [ txt.count ]
         if [ n <= 0 || col < 0 || col > n ] return false
-        # non-space run [a, b) around the clicked column
+        # non-space run [a, b) around the column
         a : i32 [ (col < n) ? col : n - 1 ]
         while [ a > 0 && !is_ws[ txt, a - 1 ] ]
             a -= 1
@@ -1465,21 +1485,46 @@ Control Console
         # must look like a path (has / or .) with a numeric line after the colon
         if [ fp.count == 0 || !parts[ 1 ].is_numeric[] ] return false
         if [ fp.index_of[ '/' ] < 0 && fp.index_of[ '.' ] < 0 ] return false
+        s.link_c0 = a
+        s.link_c1 = b
+        return true
+
+    # if the (line,col) sits on a `path:line(:col)` token in the output, open that
+    # file at that line in editor pane 0 (mirrors apply_break) and return true.
+    func open_link_at [ ln: i32, col: i32 ] -> bool
+        s : ConsoleSession session[]
+        if [ !s ] return false
+        if [ !detect_link[ ln, col ] ] return false
+        txt   : string s.line_get[ ln ]
+        word  : string txt.mid[ s.link_c0, s.link_c1 - s.link_c0 ]
+        parts : array string word.split[ ':' ]
+        fp : string parts[ 0 ]
         lno : i32 [ i32[ parts[ 1 ].integer_value[] ] ]
-        orb : orbiter cast orbiter [ ux ]
+        # ux is the Window; the app (orbiter) is ux.app_object. casting ux itself to
+        # orbiter reinterprets a Window as an orbiter → garbage self → SIGBUS.
+        if [ !ux || !ux.app_object ] return false
+        orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return false
-        orb.open_in_pane[ path [ fp.chars ], 0 ]
+        orb.open_in_pane[ path '{fp}', 0 ]
         ed : Editor orb.pane_at[ 0 ]
         if [ ed ]
             sl : i32 [ (lno > 0) ? lno - 1 : 0 ]
+            sc : i32 [ (parts.count > 2 && parts[ 2 ].is_numeric[]) ? i32[ parts[ 2 ].integer_value[] ] : 0 ]
             ed.sel_line = sl
-            ed.sel_col  = (parts.count > 2 && parts[ 2 ].is_numeric[]) ? i32[ parts[ 2 ].integer_value[] ] : 0
+            ed.sel_col  = sc
+            # collapse the selection onto the caret — without resetting the anchor the
+            # editor draws a range from the previous anchor to this new caret.
+            ed.anchor_line = sl
+            ed.anchor_col  = sc
             lh  : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
             vh  : f32 [ (ed.bounds) ? ed.bounds.h : 600.0 ]
             top : f32 [ f32[ sl ] * lh ]
             if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
                 ed.scroll.y = top - vh * 0.4
                 if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
+                # pin the animation target too — otherwise the scroll animator lerps
+                # scroll.y back to the stale scroll_target (the old caret location).
+                ed.scroll_target = ed.scroll.y
             ed.pristine = false
         return true
 
@@ -1516,10 +1561,14 @@ Control Console
                 set_scroll[ s, sy ]
             return
         place_cursor[ ev ]
-        # clicking a file:line token opens it in the editor instead of selecting
+        # clicking a file:line token opens it in the editor instead of selecting.
+        # mark the event consumed so it doesn't reach app_object.on_press, which
+        # would re-route the click to the editor and scroll/select there.
         if [ open_link_at[ s.sel_line, s.sel_col ] ]
             s.sel_line = -1
             pristine    = false
+            ev.no_propagation = true
+            ev.no_default     = true
             return
         if [ !ev.key.shift ]
             s.anchor_line = s.sel_line
@@ -1543,6 +1592,24 @@ Control Console
         if [ s.dragging ]
             place_cursor[ ev ]
             pristine = false
+            return
+        # not dragging: underline a path:line token sitting under the cursor so it
+        # reads as a clickable link. mirrors place_cursor's mouse→(line,col) mapping
+        # but never touches the selection.
+        if [ !ele || !ele.bounds || s.line_count[] <= 0 ] return
+        lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
+        cw : f32 [ (s.cw_cache > 0.0) ? s.cw_cache : 8.0 ]
+        rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
+        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
+        hln : i32 [ clamp[ rel_y / lh, 0, s.line_count[] - 1 ] ]
+        hcl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0, s.line_get[ hln ].count ] ]
+        prev_line : i32 [ s.hover_link_line ]
+        prev_c0   : i32 [ s.link_c0 ]
+        hit : bool [ detect_link[ hln, hcl ] ]
+        new_line : i32 [ (hit) ? hln : -1 ]
+        if [ new_line != prev_line || (hit && s.link_c0 != prev_c0) ]
+            s.hover_link_line = new_line
+            pristine = false
 
     func on_release [ ev: Event ]
         s : ConsoleSession session[]
@@ -1553,6 +1620,14 @@ Control Console
         if [ sb ]
             sb.active = false
             ux.will_animate = true
+
+    # cursor left the console (hover moved to another element) — drop any link
+    # underline so it doesn't linger. bubbled from the content layer up to here.
+    func on_leave [ ev: Event ]
+        s : ConsoleSession session[]
+        if [ s && s.hover_link_line >= 0 ]
+            s.hover_link_line = -1
+            pristine = false
 
     # scroll the view by line, set the user-scrolled lock so output doesn't yank it.
     # apply an absolute scroll target: snap to the whole-line grid, clamp, and force a
@@ -1605,7 +1680,7 @@ Layer CompileLayer
             if [ y > bounds.y + bounds.h ] break
             cv.fill_color[ '#ccc' ]
             cv.draw_text[ con.log.value_by_index[i],
-                rect [ x: x0, y: y, w: bounds.w, h: lh ],
+                rect [ x:x0, y:y, w:bounds.w, h:lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint[]
 

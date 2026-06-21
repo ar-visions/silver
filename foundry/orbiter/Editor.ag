@@ -3,6 +3,7 @@ extend orbiter
 class FileBuf
     public lines : list string
     public mtime : i64 [ 0 ]
+	
     # per-file undo history (keyed by URI via file_cache, same as `lines`). hist is the
     # linked list of EditAction delta groups; hist_i the cursor = number of groups applied
     # (groups before it are undoable, groups from it on are the redo future).
@@ -24,6 +25,13 @@ class FileBuf
 class FindHit
     public is_header : bool
     public text      : string
+    # header rows only: the file's directory (shown dimmed after the filename).
+    public dir       : string
+    # header rows in the browse list: this entry is a directory — rendered as a link,
+    # and clicking it navigates INTO the folder rather than opening a file.
+    public is_dir    : bool
+    # a blank reserved row (single-line dock divider) — renders nothing, no hover/glow.
+    public is_spacer : bool
     public file      : path
     public line      : i32
 
@@ -74,9 +82,67 @@ class EdLineCache
     mutable hash   : i64 [ -1 ]
     mutable frame  : i32 [ -1 ]
 
+# ---- resource views ----------------------------------------------------------------
+# a class-based presentation for a NON-text resource opened in an editor pane. orbiter
+# picks a subclass by file format and the editor delegates its content draw to it. this
+# is the extension point for hosting any foundry product in a pane (images, audio, gltf
+# …) — so orbiter doubles as a live test-bench for the whole foundry. to add a format:
+# define a ResourceView subclass and one line in resource_view_for[].
+# base presentation view. each foundry-backed format is a SUBCLASS that declares the
+# file extensions it claims via the `extensions` static; at load orbiter enumerates the
+# subclasses and binds ext → view. the editor owns one and delegates its content draw.
+class ResourceView
+    mutable src    : path
+    mutable loaded : bool
+    # the file extensions this view claims (e.g. [ '.png', '.exr' ]). base claims none.
+    func extensions [] -> array string
+        return array string [ ]
+    # draw into the pane's content bounds each frame. lazy-loads on first call — load_file
+    # runs with no Canvas, but GPU/host resources need vk + window from cv. (no-op base.)
+    func render [ cv: Canvas, bounds: rect ]
+        return
+    # drop held resources when the pane switches away or closes. (no-op base.)
+    func release []
+        return
+
+# image viewer: decodes via the img product, blits the texture fit-to-pane (centered).
+ResourceView ImageView
+    mutable tex : Texture
+    mutable iw  : f32
+    mutable ih  : f32
+    func extensions [] -> array string
+        return array string [ '.png', '.exr' ]
+    func render [ cv: Canvas, bounds: rect ]
+        if [ !loaded ]
+            loaded = true
+            if [ src ]
+                im : Image [ '{src}' ]
+                iw = f32[ im.width ]
+                ih = f32[ im.height ]
+                if [ im.width > 0 && im.height > 0 ]
+                    # linear:true → VK_FORMAT_R8G8B8A8_UNORM: pass the sRGB png bytes
+                    # through RAW to the (raw, no-re-encode) UNORM swapchain, so the sRGB
+                    # display shows them unchanged — same path the UI's sRGB hex colors
+                    # take. sampling as sRGB here degammas to linear and renders dark.
+                    tex = Texture [ vk: cv.vk, w: cv.w, sampler: im, width: im.width, height: im.height, linear: true ]
+        if [ !tex || iw <= 0.0 || ih <= 0.0 ] return
+        sc : f32 [ minf[ bounds.w / iw, bounds.h / ih ] ]
+        if [ sc > 1.0 ] sc = 1.0
+        dw : f32 [ iw * sc ]
+        dh : f32 [ ih * sc ]
+        dx : f32 [ bounds.x + (bounds.w - dw) * 0.5 ]
+        dy : f32 [ bounds.y + (bounds.h - dh) * 0.5 ]
+        cv.draw_image[ tex, rect [ x: dx, y: dy, w: dw, h: dh ] ]
+    func release []
+        tex = null
+        loaded = false
+
 Layer EditorLayer
     mutable sel_color      : rgba
     mutable line_color     : rgba
+    # browse/results header row background (the rounded pill behind each item) — CSS
+    # property `item_color`. falls back to a default when unset.
+    mutable item_color     : rgba
     # active-line glow (css-colored): used for the tab-explorer mouse-over row AND the
     # debugger's current stop line. a warm gradient row + inner glow + text color.
     mutable hl_fill        : rgba
@@ -165,7 +231,11 @@ Layer EditorLayer
         editor.text_lines_frame += 1
         editor.text_lines_total += 1
         rw  : f32 [ f32[ cw_i ] ]
-        nrg : i32 [ editor.line_reg_count[ msl ] ]
+        # in list / results mode (tab explorer, navigate list, or find-in-files) the
+        # rows aren't this editor's loaded source — find-in-files matches come from
+        # OTHER files, so the loaded color-map regions don't apply. skip them and render
+        # the row plain rather than miscoloring with the current file's map.
+        nrg : i32 [ (editor.finder_list || editor.show_nav || editor.show_hits) ? 0 : editor.line_reg_count[ msl ] ]
         if [ nrg == 0 ]
             tc : rgba['#fff']
             for [ k: i32 0, k < ll, k += 1 ]
@@ -216,7 +286,15 @@ Layer EditorLayer
 
     func draw [ cv: Canvas ]
         editor : Editor[ parent ]
-        if [ !editor || !editor.lines ] return
+        if [ !editor ] return
+        # a non-text resource (image/…) renders through its ResourceView, not as code —
+        # but NOT while this pane is showing the finder/browse list (show_hits), so the
+        # title still brings up the file index over an image pane. render* = poly dispatch
+        # to the subclass (plain render[] would call the no-op base).
+        if [ editor.rview && !editor.show_hits ]
+            editor.rview.render*[ cv, bounds ]
+            return
+        if [ !editor.lines ] return
         # find-in-files results, propagated to this instance via apply_args
         showing : bool [ editor.show_hits ]
         # results open with NO selection — nothing is selected until a row is clicked
@@ -229,7 +307,12 @@ Layer EditorLayer
         code_fs : i32 [ (editor.code_font_size > 0) ? editor.code_font_size : 15 ]
         cv.font_size[ code_fs ]
         cw_tm   : cv.measure_text[ 'x' ]
-        lh      : f32 [ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ]
+        # integer row height: the font line height is fractional (e.g. 32.5), so with a
+        # fractional lh, round(y0 + li*lh - scroll.y) rounds adjacent rows differently as
+        # scroll eases — gaps flip 32/33px and rows wiggle. snapping lh to a whole pixel
+        # makes the row grid uniform (round distributes: round(a + li*lh) = round(a) +
+        # li*lh), so every row shares one base offset. lh_cache (hit-testing) inherits it.
+        lh      : f32 [ round[ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ] ]
         # find/replace bar open: the title doubles (+44px). a CSS state override of
         # a layer's area doesn't apply (only the base does), so shift the content
         # layer's bounds here by that extra title height. both draw (y0) and
@@ -342,10 +425,19 @@ Layer EditorLayer
         # text recolor, and gutter marker land on the right row when the tree is open.
         stop_vrow : i32 [ editor.vis_row[ editor.stop_line ] ]
         hl_line : i32 [ (in_list) ? editor.hover_line : stop_vrow ]
-        if [ hl_line >= 0 && hl_fill ]
-            hy : f32 [ y0 + f32[ hl_line ] * lh - editor.scroll.y ]
-            if [ hy + lh >= bounds.y && hy <= bounds.y + bounds.h ]
-                glow_row[ cv, bounds.x + 1.0, hy + 1.0, bounds.w - rin - 2.0, lh - 2.0 ]
+        if [ hl_line >= 0 && hl_line < editor.line_count[] && hl_fill && !editor.row_spacer[ hl_line ] ]
+            # a file-title header spans 2 row slots — snap to its first slot and make
+            # the glow cover both, so the whole title highlights as one band instead of
+            # only the half the cursor happens to be over.
+            gl : i32 [ hl_line ]
+            gh : f32 [ lh - 2.0 ]
+            if [ editor.row_header[ gl ] ]
+                if [ editor.row_cont[ gl ] ] gl = gl - 1
+                # single-line headers are one slot; double headers span two.
+                gh = (editor.single_line) ? lh - 2.0 : lh * 2.0 - 2.0
+            hy : f32 [ y0 + f32[ gl ] * lh - editor.scroll.y ]
+            if [ hy + gh >= bounds.y && hy <= bounds.y + bounds.h ]
+                glow_row[ cv, bounds.x + 1.0, hy + 1.0, bounds.w - rin - 2.0, gh ]
 
         # ---- gutter: per-line flat cells, line numbers, hover + breakpoint ----
         # breakpoint colors the entire line (full width) behind the code; the
@@ -360,7 +452,10 @@ Layer EditorLayer
             if [ editor.row_header[ li ] ] continue
             # virtual debug field rows get no gutter cell / number / breakpoint.
             if [ editor.row_var[ li ] ] continue
-            yg : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
+            # snap the row-top to the integer pixel grid — the cached text blits at
+            # round[y], so the gutter/breakpoint/selection decorations must round too,
+            # else they slide sub-pixel against the snapped text as scroll.y eases.
+            yg : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
             if [ yg + lh < bounds.y ] continue
             if [ yg > bounds.y + bounds.h ] break
             # each row keys its breakpoint + line number off its own source: in
@@ -385,7 +480,12 @@ Layer EditorLayer
                 hi   : i32 [ (a_ln < s_ln) ? s_ln : a_ln ]
                 if [ li >= lo && li <= hi ]
                     cv.fill_color[ (line_color) ? line_color : rgba['#ffffff18'] ]
-                    cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
+                    # in results the selected row is a single match — draw it as a rounded
+                    # 6px pill. normal editing keeps the full-width square current-line band.
+                    if [ showing ]
+                        cv.rounded_rect[ bounds.x + 1.0, yg + 1.0, bounds.w - rin - 3.0, lh - 2.0, 3.0, 3.0, 3.0, 3.0 ]
+                    el
+                        cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
                     cv.paint[ ]
             cv.fill_color[ rgba['#ffffff08'] ]
             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
@@ -461,35 +561,103 @@ Layer EditorLayer
                         slot.frame = editor.cl_frame
                         break
         for [ li: i32 0, li < editor.line_count[], li += 1 ]
-            y : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
+            # integral row-top: text (cached blit) and its in-row decorations share one
+            # snapped y, so nothing slides sub-pixel against anything else while scrolling.
+            y : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
             if [ editor.row_header[ li ] ]
-                # the title draws once, on the first of its 2 slots, spanning both
-                if [ li > 0 && editor.row_header[ li - 1 ] ] continue
-                rh : f32 [ lh * 2.0 ]
+                # single-line: one slot, primary font. double: two slots = two small
+                # lines (name over dir). draws once on the first slot, spanning its rows.
+                if [ editor.row_cont[ li ] ] continue
+                # the dock divider's reserved blank row renders nothing (line drawn elsewhere).
+                if [ editor.row_spacer[ li ] ] continue
+                single : bool [ editor.single_line ]
+                rh : f32 [ (single) ? lh : lh * 2.0 ]
                 if [ y + rh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
                 # distinct background: inset 4px, 12px rounded, blended at 0.5 alpha
                 cv.save[ ]
                 cv.rounded[ 12.0, 12.0, 12.0, 12.0 ]
-                cv.fill_color[ rgba['#2b3a5580'] ]
-                cv.rect_to[ bounds.x + 4.0, y + 4.0, bounds.w - rin - 8.0, rh - 8.0 ]
+                cv.fill_color[ (item_color) ? item_color : rgba['#2b3a5580'] ]
+                cv.rect_to[ bounds.x + 2.0, y + 2.0, bounds.w - rin - 4.0, rh - 4.0 ]
                 cv.paint[ ]
                 cv.restore[ ]
-                cv.fill_color[ rgba['#fff'] ]
-                cv.draw_text[ editor.line_get[ li ],
-                    rect [ x: bounds.x, y: y, w: bounds.w - rin, h: rh ],
-                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                # close icon on the left of the header (centered over its 2 slots) —
-                # clicking it removes the whole file group. shown when the header is
-                # hovered (either of its two slots).
-                if [ editor.hover_gutter && (editor.hover_line == li || editor.hover_line == li + 1) ]
-                    if [ !editor.close_icon ]
-                        editor.close_icon = SVGModel [ path 'images/close.svg' ]
-                    hisz : f32 [ round[ lh * 0.5 ] ]
-                    hiox : f32 [ round[ bounds.x + (gut_w - hisz) * 0.5 ] ]
-                    hioy : f32 [ round[ y + (rh - hisz) * 0.5 ] ]
-                    cv.draw_svg[ editor.close_icon, hiox, hioy, hisz, hisz ]
-                    cv.paint[ ]
+                fhh : FindHit (editor.hits && li < editor.hits.count) ? editor.hits[ li ] : null
+                fnm : string (fhh) ? fhh.text : editor.line_get[ li ]
+                fdr : string (fhh) ? fhh.dir : ''
+                fis_dir : bool [ (fhh) ? fhh.is_dir : false ]
+                # a directory row is a blue link with a trailing slash; files stay white.
+                if [ fis_dir && fnm.count > 0 ] fnm = '{fnm}/'
+                # icon to the left, vertically centered over the row. only load the SVG if
+                # it exists — constructing SVGModel on a missing path crashes. text shifts
+                # right only when an icon actually drew.
+                if [ !editor.folder_icon ]
+                    ffp : path 'images/folder.svg'
+                    if [ ffp.exists[] ] editor.folder_icon = SVGModel [ ffp ]
+                if [ !editor.file_icon ]
+                    ffp2 : path 'images/file.svg'
+                    if [ ffp2.exists[] ] editor.file_icon = SVGModel [ ffp2 ]
+                imdl : SVGModel [ (fis_dir) ? editor.folder_icon : editor.file_icon ]
+                tx0  : f32 [ x0 ]
+                if [ imdl ]
+                    isz : f32 [ round[ lh * ((single) ? 0.7 : 1.0) ] ]
+                    iy  : f32 [ round[ y + (rh - isz) * 0.5 ] ]
+                    cv.draw_svg[ imdl, x0, iy, isz, isz ]
+                    tx0 = x0 + isz + 8.0
+                if [ single ]
+                    # one line at the primary code font; dir trails dimmed on the right
+                    cv.font_size[ code_fs ]
+                    cv.fill_color[ (fis_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
+                    cv.draw_text[ fnm, rect [ x: tx0, y: y, w: bounds.w - rin - tx0, h: rh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    if [ fdr.count > 0 ]
+                        # anchor the dir at a fixed ~50% column so rows line up instead of
+                        # staggering after the filename; push past it only when a name is
+                        # long enough to reach the column.
+                        fnw : f32 [ cv.measure_text[ fnm ].w ]
+                        col : f32 [ bounds.x + bounds.w * 0.5 ]
+                        end : f32 [ tx0 + fnw + cw_tm.w * 2.0 ]
+                        dx  : f32 [ (end > col) ? end : col ]
+                        cv.fill_color[ rgba['#ffffff66'] ]
+                        cv.draw_text[ fdr, rect [ x: dx, y: y, w: bounds.x + bounds.w - rin - dx, h: rh ],
+                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                el
+                    # two small-font lines: name on the top slot, dir on the bottom slot.
+                    # with no dir (browse list) the name centers across BOTH slots so it
+                    # isn't stuck at the top with empty space below.
+                    hfs : i32 [ (editor.header_size > 0) ? editor.header_size : code_fs ]
+                    cv.font_size[ hfs ]
+                    nmh : f32 [ (fdr.count > 0) ? lh : rh ]
+                    cv.fill_color[ (fis_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
+                    cv.draw_text[ fnm, rect [ x: tx0, y: y, w: bounds.w - rin - tx0, h: nmh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    if [ fdr.count > 0 ]
+                        dfs : i32 [ (editor.dir_size > 0) ? editor.dir_size : hfs ]
+                        cv.font_size[ dfs ]
+                        cv.fill_color[ rgba['#ffffff66'] ]
+                        cv.draw_text[ fdr, rect [ x: tx0, y: y + lh, w: bounds.w - rin - tx0, h: lh ],
+                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                cv.font_size[ code_fs ]
+                # gutter icon, shown on hover. browse/navigate list → a PIN toggle
+                # (expand.svg); find-in-files results → the remove-match close icon.
+                # the +1 slot only counts in the 2-slot (double) layout, so single-line
+                # rows don't light the icon on the row above.
+                hov : bool [ editor.hover_gutter && (editor.hover_line == li || (!editor.single_line && editor.hover_line == li + 1)) ]
+                if [ hov ]
+                    ico : SVGModel [ null ]
+                    if [ editor.nav_list ]
+                        if [ !editor.pin_icon ]
+                            editor.pin_icon = SVGModel [ path 'images/expand.svg' ]
+                        ico = editor.pin_icon
+                    el
+                        if [ !editor.close_icon ]
+                            editor.close_icon = SVGModel [ path 'images/close.svg' ]
+                        ico = editor.close_icon
+                    if [ ico ]
+                        hisz : f32 [ round[ lh * 0.5 ] ]
+                        hiox : f32 [ round[ bounds.x + (gut_w - hisz) * 0.5 ] ]
+                        hioy : f32 [ round[ y + (rh - hisz) * 0.5 ] ]
+                        cv.draw_svg[ ico, hiox, hioy, hisz, hisz ]
+                        cv.paint[ ]
                 continue
             if [ y + lh < bounds.y ] continue
             if [ y > bounds.y + bounds.h ] break
@@ -517,6 +685,18 @@ Layer EditorLayer
         if [ editor.text_lines_frame > 0 ]
             puts 'TEXT RASTER: {editor.text_lines_frame} lines this frame ({editor.text_lines_total} total)'
         cv.paint[ ]
+
+        # separator line dividing the pinned dock (top rows) from the browse results
+        if [ editor.nav_list && editor.dock_rows > 0 && editor.dock_rows < editor.line_count[] ]
+            sy : f32 [ y0 + f32[ editor.dock_rows ] * lh - editor.scroll.y ]
+            # single-line mode reserves its own row for the divider — center it on that
+            # row's y. double mode draws it on the boundary between the two row blocks.
+            if [ editor.single_line ] sy = sy + lh * 0.5
+            if [ sy >= bounds.y && sy <= bounds.y + bounds.h ]
+                cv.fill_color[ rgba['#ffffff30'] ]
+                cv.stroke_width[ 0.0 ]
+                cv.rect_to[ bounds.x + 6.0, round[ sy ], bounds.w - rin - 12.0, 1.0 ]
+                cv.paint[ ]
 
         # ---- debug-active: inline ghost value annotations (# name = value) ----
         # the collapsed summary at each variable's decl line (the future + expansion
@@ -567,15 +747,75 @@ Layer EditorLayer
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
                 ln : editor.line_get[ li ]
-                mi : ln.index_of[ editor.find_query ]
-                if [ mi >= 0 ]
-                    pre : f32 [ cv.measure_text[ ln.mid[ 0, mi ] ].w ]
-                    mw  : f32 [ cv.measure_text[ ln.mid[ mi, editor.find_query.count ] ].w ]
-                    cv.fill_color  [ rgba['#0000'] ]
-                    cv.stroke_color[ rgba['#ffcc66cc'] ]
-                    cv.stroke_width[ 1.0 ]
-                    cv.rect_to     [ x0 + pre - 1.0, y + 2.0, mw + 2.0, lh - 4.0 ]
-                    cv.paint       [ ]
+                qn : i32 [ editor.find_query.count ]
+                # outline EVERY occurrence on the row, not just the first: slice past each
+                # match and keep searching the remainder (tracking an absolute index so
+                # the measured prefix is from the start of the line).
+                base : i32 [ 0 ]
+                while [ base <= ln.count - qn ]
+                    rem : string ln.mid[ base, ln.count - base ]
+                    rel : i32 [ rem.index_of[ editor.find_query ] ]
+                    if [ rel < 0 ] break
+                    mpos : i32 [ base + rel ]
+                    # measure the DISPLAY text (tabs expanded) — the row is drawn via
+                    # display_of, so measuring the raw line puts the box a few px short
+                    # per tab that precedes the match.
+                    pre : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ 0, mpos ] ] ].w ]
+                    mw  : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ mpos, qn ] ] ].w ]
+                    mx  : f32 [ x0 + pre - 1.0 ]
+                    # the ACTIVE occurrence (the one Enter stepped to: sel_line + sel_col)
+                    # gets a solid white fill with dark text; the rest are outlined.
+                    if [ li == editor.sel_line && mpos == editor.sel_col ]
+                        cv.fill_color   [ rgba['#ffcc66'] ]
+                        cv.stroke_width [ 0.0 ]
+                        cv.rounded_rect [ mx, y + 2.0, mw + 2.0, lh - 4.0, 3.0, 3.0, 3.0, 3.0 ]
+                        cv.paint        [ ]
+                        cv.fill_color   [ rgba['#101418'] ]
+                        cv.draw_text    [ editor.display_of[ ln.mid[ mpos, qn ] ],
+                            rect [ x: x0 + pre, y: y, w: mw + 2.0, h: lh ],
+                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                        cv.paint        [ ]
+                    el
+                        cv.fill_color   [ rgba['#0000'] ]
+                        cv.stroke_color [ rgba['#ffcc66cc'] ]
+                        cv.stroke_width [ 1.0 ]
+                        cv.rounded_rect [ mx, y + 2.0, mw + 2.0, lh - 4.0, 3.0, 3.0, 3.0, 3.0 ]
+                        cv.paint        [ ]
+                    base = mpos + qn
+            cv.stroke_width[ 0.0 ]
+
+        # editing mode: outline every whole-word occurrence of the identifier under the
+        # cursor — same outline treatment as the find query, distinct color. results mode
+        # is skipped (it already outlines the find query).
+        if [ !showing ]
+            tok : editor.cursor_token[]
+            if [ tok && tok.count > 0 ]
+                tn : i32 [ tok.count ]
+                for [ li: i32 0, li < editor.line_count[], li += 1 ]
+                    if [ editor.row_header[ li ] ] continue
+                    y : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
+                    if [ y + lh < bounds.y ] continue
+                    if [ y > bounds.y + bounds.h ] break
+                    ln : editor.line_get[ li ]
+                    base : i32 [ 0 ]
+                    while [ base <= ln.count - tn ]
+                        rem : string ln.mid[ base, ln.count - base ]
+                        rel : i32 [ rem.index_of[ tok ] ]
+                        if [ rel < 0 ] break
+                        mpos : i32 [ base + rel ]
+                        # whole-word only: neighbors must not be identifier chars
+                        bok : bool [ mpos == 0 || !editor.word_char[ i32[ ln[mpos - 1] ] ] ]
+                        aok : bool [ mpos + tn >= ln.count || !editor.word_char[ i32[ ln[mpos + tn] ] ] ]
+                        if [ bok && aok ]
+                            pre : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ 0, mpos ] ] ].w ]
+                            mw  : f32 [ cv.measure_text[ editor.display_of[ ln.mid[ mpos, tn ] ] ].w ]
+                            mx  : f32 [ x0 + pre - 1.0 ]
+                            cv.fill_color   [ rgba['#0000'] ]
+                            cv.stroke_color [ rgba['#6cb6ffaa'] ]
+                            cv.stroke_width [ 1.0 ]
+                            cv.rounded_rect [ mx, y + 2.0, mw + 2.0, lh - 4.0, 3.0, 3.0, 3.0, 3.0 ]
+                            cv.paint        [ ]
+                        base = mpos + tn
             cv.stroke_width[ 0.0 ]
 
         # results: the hovered match row shows the close icon in the gutter (left),
@@ -742,7 +982,10 @@ Layer EditorLayer
                         # font's space is narrower than cw, so the grid drifts ahead by
                         # ~1 space per tab. measuring the real glyphs keeps it tight.
                         clnv : editor.line_get[ editor.sel_line ]
-                        pre  : editor.display_of[ clnv ].mid[ 0, editor.vis_col[ clnv, editor.sel_col ] ]
+                        # caret x from the DISPLAY of the prefix up to the model col — this
+                        # is exactly where the char at sel_col renders (the text is drawn via
+                        # display_of). vis_col disagreed with display_of by 1 on tab lines.
+                        pre  : editor.display_of[ clnv.mid[ 0, editor.sel_col ] ]
                         cx   = x0 + editor.row_indent[ editor.sel_line ] + cv.measure_text[ pre ].w
                         cy   = y_sel
                     cv.fill_color[ '#fff' ]
@@ -770,6 +1013,19 @@ Control Editor
     # true while this pane shows the tab-explorer / navigate list (ed.lines = find_results,
     # set in apply_pane). drives the warm mouse-over row highlight in EditorLayer.
     public  finder_list   : bool
+    # browse list density: when set, header rows are a single line tall (one FindHit
+    # per entry) instead of the 2-slot double header. injected by orbiter per frame.
+    public  single_line   : bool
+    # this is the browse/navigate list (not find-in-files): rows get a PIN toggle on
+    # hover (vs the find-in-files remove-match close icon).
+    public  nav_list      : bool
+    # number of leading rows that are pinned dock entries; a separator line is drawn
+    # after them to divide the dock from the browse results.
+    public  dock_rows     : i32
+    # double-header fonts: the (larger) name line, and the (smaller) dir line. 0 = use
+    # the editor's default code font.
+    public  header_size   : i32
+    public  dir_size      : i32
     # the active search query — used to outline the matched substring per result row
     public  find_query    : string
     public  show_nav      : bool
@@ -779,10 +1035,24 @@ Control Editor
     # navigation history (back/forward), and its pane index (pane0..3, stamped on each stop).
     mutable nav           : Navigate
     mutable pane_index    : i32 [ 0 ]
+    # non-text presentation view (image/audio/…) for the current src, else null (code).
+    mutable rview         : ResourceView
+    # the file's scroll position, stashed when the pane enters finder/browse mode so it
+    # can be restored when the finder closes (the browse list reuses scroll.y).
+    mutable saved_scroll  : f32
+    # ext → ResourceView subclass Au_t. built ONCE (scan of direct subclasses), shared
+    # across panes; file-open is then a map lookup, not a re-scan of every class.
+    intern static view_registry : map Au_t[string]
     mutable lines         : list string
     mutable file_cache    : map FileBuf[string]
     # close icon for the per-row 'remove this match' button (lazy-loaded in draw)
     mutable close_icon    : SVGModel
+    # pin icon for the browse list's pin/unpin toggle (lazy-loaded in draw)
+    mutable pin_icon      : SVGModel
+    # browse-list row icons (lazy-loaded): a folder glyph for directory links, a file
+    # glyph for file rows.
+    mutable folder_icon   : SVGModel
+    mutable file_icon     : SVGModel
     # tracks show_hits across frames so entering results can clear the selection
     mutable was_showing   : bool
     # true while the mouse is over the gutter column — the close icon only shows
@@ -1011,6 +1281,42 @@ Control Editor
     func row_header [ i: i32 ] -> bool
         if [ show_hits && hits && i >= 0 && i < hits.count ] return hits[i].is_header
         return false
+
+    # is row i the SECOND (continuation) slot of a 2-slot file title? a title's first
+    # slot carries the filename; its continuation slot is an empty-text header. detect
+    # it explicitly — the old "previous row is a header" test fails for an all-titles
+    # list (the navigate/tab list), where every slot but the first looks like one.
+    func row_cont [ i: i32 ] -> bool
+        if [ show_hits && hits && i >= 0 && i < hits.count ]
+            return hits[i].is_header && hits[i].text.count == 0 && !hits[i].is_spacer
+        return false
+
+    func row_spacer [ i: i32 ] -> bool
+        if [ show_hits && hits && i >= 0 && i < hits.count ] return hits[i].is_spacer
+        return false
+
+    # is `c` an identifier character (a-z A-Z 0-9 _) — used to find the token under
+    # the cursor and to keep occurrence matches whole-word.
+    func word_char [ c: i32 ] -> bool
+        return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
+
+    # the identifier under (or just left of) the cursor, '' if none. drives the
+    # highlight-all-occurrences pass.
+    func cursor_token [] -> string
+        if [ sel_line < 0 || sel_line >= line_count[] ] return ''
+        if [ row_header[ sel_line ] ] return ''
+        ln : line_get[ sel_line ]
+        n  : i32 [ ln.count ]
+        if [ n == 0 ] return ''
+        s  : i32 [ clamp[ sel_col, 0, n ] ]
+        # cursor at end of line / on a non-word char → try the char to its left
+        if [ s >= n || !word_char[ i32[ ln[s] ] ] ] s = s - 1
+        if [ s < 0 || !word_char[ i32[ ln[s] ] ] ] return ''
+        a : i32 [ s ]
+        while [ a > 0 && word_char[ i32[ ln[a - 1] ] ] ] a -= 1
+        b : i32 [ s ]
+        while [ b < n - 1 && word_char[ i32[ ln[b + 1] ] ] ] b += 1
+        return ln.mid[ a, b - a + 1 ]
 
     # nearest editable (non-title) row at/after ln, else before it. the cursor
     # never rests on a file-title slot.
@@ -1509,8 +1815,59 @@ Control Editor
         sp : path '{src}'
         sp.save[ out, null ]
 
+    # the file's lowercase extension including the dot ('.png'), '' if none.
+    func file_ext [ p: path ] -> string
+        fn  : string p.filename[]
+        n   : i32 [ fn.count ]
+        dot : i32 [ -1 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ fn[i] == 46 ] dot = i        # '.'
+        if [ dot < 0 ] return ''
+        return fn.mid[ dot, n - dot ]
+
+    # build the ext → view-type map ONCE: scan all types for DIRECT subclasses of
+    # ResourceView and record each extension each one claims. drop a `ResourceView XView`
+    # with an extensions[] into any module and it self-binds — no hardcoded format table.
+    func ensure_view_registry []
+        if [ view_registry ] return
+        view_registry = map Au_t[string] []
+        n    : i64 [ 0 ]
+        subs : ref Au_t [ Au.subclasses[ typeid[ ResourceView ], ref n ] ]
+        for [ i: i64 0, i < n, i += 1 ]
+            t : subs[ i ]
+            if [ t ]
+                probe : ResourceView [ Au.new_object[ t, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ] ]
+                if [ probe ]
+                    exts : probe.extensions*[]
+                    for [ e: string ] in exts
+                        view_registry[ e ] = t
+
+    # pick a presentation view for a file format, or null for plain text/code — a map
+    # lookup against the once-built registry, then instantiate the bound subclass.
+    func resource_view_for [ p: path ] -> ResourceView
+        ext : file_ext[ p ]
+        if [ ext.count == 0 ] return null
+        ensure_view_registry[]
+        t : view_registry[ ext ]
+        if [ !t ] return null
+        return ResourceView [ Au.new_object[ t, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ] ]
+
     func load_file []
         if [ !src ] return
+        # a resource view already loaded for THIS file → keep it. recreating it every
+        # reload churns the GPU texture and the drop of the old view crashes; reuse it.
+        if [ rview && rview.src ]
+            rs : '{rview.src}'
+            ss : '{src}'
+            if [ rs.compare[ ss ] == 0 ] return
+        # non-text formats render through a ResourceView instead of as code lines.
+        rv : ResourceView resource_view_for[ src ]
+        if [ rv ]
+            rview = rv
+            rview.src = src
+            lines = list string []
+            return
+        rview = null
         # key by the canonical (realpath) absolute path — the SAME identity silver stamps on
         # each map section — so the buffer the editor renders is the one load_format fills.
         key   : '{src.absolute[]}'
@@ -1694,10 +2051,22 @@ Control Editor
             lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
             # mouse.pos.y is already scroll-folded by find_target — don't re-add scroll.
             rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
+            # a click above the content origin (the title band) must NOT clamp to row 0 —
+            # otherwise clicking the title silently toggles the first pinned dock item.
+            if [ rel_y < 0.0 ] return
             vrl   : i32 [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
-            # a header's gutter click removes the whole file group; a match row's
-            # removes just that line. (both only in results.)
+            # browse/navigate list: the gutter pin toggles the file in the dock.
+            # find-in-files results: a header's gutter click removes the whole file
+            # group; a match row's removes just that line.
             if [ row_header[ vrl ] ]
+                if [ nav_list && hits && vrl < hits.count ]
+                    h : FindHit hits[ vrl ]
+                    if [ h && h.file && !h.is_dir ]
+                        orb : cast orbiter [ ux.app_object ]
+                        if [ orb ] orb.toggle_dock[ h.file ]
+                        pristine = false
+                        ev.no_default = true
+                    return
                 if [ show_hits && hits ]
                     remove_group[ vrl ]
                     pristine = false
@@ -2052,6 +2421,9 @@ Control Editor
             ed_insert[ row + 1, right ]
             sel_line += 1
             sel_col   = 0
+            # collapse to the caret at the start of the new line (no stale selection)
+            anchor_line = sel_line
+            anchor_col  = sel_col
             end_edit[]
 
         el [ key == 258 ]    # Key.Tab — insert a real tab. tabs are the primary indent;
@@ -2064,6 +2436,11 @@ Control Editor
             line : line_get[ row ]
             ed_set[ row, line.mid[0, col] + '\t' + line.mid[col, line.count - col] ]
             sel_col += 1
+            # collapse the selection to the caret — a tab is an insert, not a selection
+            # gesture; without this the anchor stays put and leaves a stale 1-cell highlight
+            # (which also misreads later clicks).
+            anchor_line = sel_line
+            anchor_col  = sel_col
             end_edit[]
 
         el [ key == 259 ]    # Key.Backspace

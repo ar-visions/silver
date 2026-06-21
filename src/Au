@@ -887,6 +887,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t, find_type, symbol, Au_t) \
     M(AA,BB, s, method, public, map, arguments, i32, cstrs, map, Au) \
     M(AA,BB, s, method, public, ARef, types, ref_i64) \
+    M(AA,BB, s, method, public, ARef, subclasses, Au_t, ref_i64) \
     M(AA,BB, s, method, public, none, tap, symbol, hook) \
     M(AA,BB, s, method, public, none, untap, symbol) \
     M(AA,BB, s, method, public, none, engage, cstrs) \

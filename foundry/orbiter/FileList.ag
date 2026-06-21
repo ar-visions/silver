@@ -1,5 +1,4 @@
 extend orbiter
-
 import <string.h>
 
 class FileNode
@@ -276,3 +275,4 @@ NodeList FileList
 
     func render [] -> Elements
         return null
+

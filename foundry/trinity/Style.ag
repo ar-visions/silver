@@ -440,6 +440,11 @@ class BindCoord
     public active      : f32
     public has_active  : bool
     public moving      : bool
+    # true once the eased value has settled at least once. until then (the load
+    # warm-up, while the font/fc is still stabilizing) the display is set DIRECTLY
+    # rather than eased, so the seam appears already at its snapped position instead
+    # of visibly easing into it after the first paint.
+    public warmed      : bool
 
 struct XCoord
     x_type   : XAlign
@@ -1184,6 +1189,13 @@ func split_css [ code: string ] -> array CSSLine
         if [ code.chars[i] == '\n' ]
             i  += 1
             ln += 1
+            continue
+        # '#' at the START of a line (after the leading whitespace consumed above) is a
+        # comment — skip the line. a '#' mid-line is a hex color (e.g. label_color: #fff)
+        # and is untouched, since we only test the line's first non-space char here.
+        if [ code.chars[i] == '#' ]
+            while [ i < n && code.chars[i] != '\n' ]
+                i += 1
             continue
         if [ i + 1 < n && code.chars[i] == '/' && code.chars[i + 1] == '/' ]
             while [ i < n && code.chars[i] != '\n' ]
