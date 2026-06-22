@@ -1453,6 +1453,20 @@ void au_compile_invoke(const char* name) {
     ((compile_fn)m->value)(au_compiler, (Au)string(name));
 }
 
+// live-reload DEFER mode: instead of auto-recompiling on a source change, the host stages
+// the change, SIGNALS the app a reload is pending, and waits for the app to request it —
+// so the app (orbiter) can surface a "reload ready" affordance and apply on the user's
+// terms. host calls *_set_pending / *_take_apply; app calls *_get_pending / *_request_apply.
+static int au_live_defer_flag   = 0;   // app -> host: stage changes, don't auto-reload
+static int au_live_pending_flag = 0;   // host -> app: a rebuilt module is staged & ready
+static int au_live_apply_flag   = 0;   // app -> host: please recompile + hot-swap now
+void au_live_set_defer(int v)   { au_live_defer_flag = v ? 1 : 0; }   // the APP turns defer on
+int  au_live_get_defer()        { return au_live_defer_flag; }        // the host polls it
+void au_live_set_pending(int v) { au_live_pending_flag = v ? 1 : 0; }
+int  au_live_get_pending()      { return au_live_pending_flag; }
+void au_live_request_apply()    { au_live_apply_flag = 1; }
+int  au_live_take_apply()       { int v = au_live_apply_flag; au_live_apply_flag = 0; return v; }
+
 handle live_window_get() { return au_live_window; }
 void   live_window_set(handle w) { au_live_window = w; }
 
