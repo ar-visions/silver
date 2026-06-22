@@ -9086,6 +9086,9 @@ enode parse_ifdef_else(silver a) {
 // and only proceed
 enode parse_if_else(silver a) {
     validate(read_if(a, "if") != null, "expected if");
+    // anchor read_body's inline/multi-line decision to the `if` keyword's line, so a
+    // same-line body (if [cond] stmt) is read as inline rather than mistaken for a block.
+    a->statement_origin = hold(element(a, -1));
 
     array tokens_cond  = array(32);
     array tokens_block = array(32);
@@ -9103,6 +9106,10 @@ enode parse_if_else(silver a) {
 
     // chain of el [cond] / el
     while (read_if(a, "el")) {
+        // re-anchor to the `el` keyword's line — without this, an inline el body
+        // (el stmt on the el's own line) is read against the `if` line above, wrongly
+        // treated as a block, and clipped to empty by the indent check.
+        a->statement_origin = hold(element(a, -1));
         bool is_const = false;
         etype mdl_read = null;
         array cond  = next_is(a, "[") ? read_within(a) : null; // null when no [...] → final else

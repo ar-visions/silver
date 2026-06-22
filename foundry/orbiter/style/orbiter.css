@@ -63,7 +63,7 @@ Group / Control {
         stroke_width:   0
         stroke_color:   #fff4
         label_color:    #fff
-        label_size:     17
+        label_size:     14
         radius:         0
 }
 
@@ -180,9 +180,7 @@ Editor / element.pins / Option {
         label_size:             16
         label_align:            0.5 0.5
         label_offset:           0 0
-}
-
-Editor / element.pins / Option:selected {
+:selected
     layers.base:
         fill_color:             #fa84
         inner_glow:             #fa85 20
@@ -233,7 +231,7 @@ Editor / element.title {
 }
 
 Editor:expanded / element.title {
-    area:                       l0 t0 r0 h88px
+    area:                       l0 t0 r0 h44px
     layers.face:
         label_color:            #0000
     layers.divider:
@@ -693,9 +691,7 @@ Tabs.targets / Option.system {
         image_svg:      "images/gear.svg"
         image_scale:    1.4
         image_align:    0.5 0.5
-}
-
-Tabs.targets / Option.system:selected {
+:selected
     layers.base:
         fill_color:     #fd06
         inner_glow:     #fd08 16
@@ -706,8 +702,6 @@ Tabs / Button:hovered {
         fill_color:             #8af2
         inner_glow:             #8af4 16
 }
-
-
 
 Tabs / Option {
     layers.base:
@@ -736,14 +730,10 @@ Tabs.tools / Option.play {
         image_scale:            1.7
         image_align:            0.5 0.5
         opacity:                1.0
-}
-
-Tabs.tools / Option.play:disable {
+:disable
     layers.svg:
         opacity:                0.3
-}
-
-Tabs.tools / Option.play:selected {
+:selected
     layers.svg:
         image_svg:              "images/stop.svg"
 }
@@ -837,6 +827,17 @@ Tabs.console_nav / Option:last {
         radius:                 0 8 8 0
 }
 
+Option.reload_ready {
+    area:                       l50%-1.5 8px w3 h1
+    layers.base:
+        fill_color:             #c8641e
+        inner_glow:             #ffae5e 18
+        radius:                 8 8 8 8
+:hovered
+    layers.base:
+        fill_color:             #e07a2e
+        inner_glow:             #ffc888 22
+}
 
 Tabs / Option.config:hovered {
     layers.base:
@@ -903,17 +904,13 @@ Editor / element.title / element.nav / Option {
         image_align:            0.5 0.5
         image_scale:            1.0
         opacity:                0.5
-}
-
-Editor / element.title / element.nav / Option:hovered {
+:hovered
     layers.base:
         fill_color:             #8af4
         inner_glow:             #8afa 24
     layers.svg:
         opacity:                1.0
-}
-
-Editor / element.title / element.nav / Option:selected {
+:selected
     layers.base:
         fill_color:             #fa84
         inner_glow:             #fa85 24
@@ -921,18 +918,16 @@ Editor / element.title / element.nav / Option:selected {
         opacity:                1.0
 }
 
-Editor / element.title / element.nav / Option.git {
+Option.git {
     layers.svg:
         image_svg:              "images/git.svg"
 }
 
-Editor / element.title / element.nav / Option.magnify {
+Option.magnify {
     layers.svg:
         image_svg:              "images/magnify.svg"
         image_scale:            1.8
-}
-
-Editor / element.title / element.nav / Option.magnify:selected {
+:selected
     layers.base:
         fill_color:             #8af4
         inner_glow:             #8afa 24
@@ -944,7 +939,7 @@ Editor / element.title / element.nav / Option.magnify:selected {
 
 /* pins show/hide toggle — an outlined token chip (transparent fill, 1px rounded
    outline), like the occurrence-highlight outline. selected = the pinned list shows. */
-Editor / element.title / element.nav / Option.pins {
+Option.pins {
     layers.base:
         area:                   4px
         fill_color:             #0000
@@ -955,15 +950,34 @@ Editor / element.title / element.nav / Option.pins {
         image_svg:              "images/side_off.svg"
         image_scale:            1.4
         opacity:                1.0
-}
-
-Editor / element.title / element.nav / Option.pins:hovered {
+:hovered
     layers.base:
         stroke_width:           1
         stroke_color:           #6cb6ff66
+:selected
+    layers.base:
+        fill_color:             #0000
+        stroke_width:           1
+        stroke_color:           #6cb6ffcc
 }
 
-Editor / element.title / element.nav / Option.pins:selected {
+/* grid view toggle — same outlined-chip style as pins. selected = thumbnail grid. */
+Option.grid {
+    layers.base:
+        area:                   4px
+        fill_color:             #0000
+        inner_glow:             #0000 0
+        stroke_width:           0
+        radius:                 6
+    layers.svg:
+        image_svg:              "images/files.svg"
+        image_scale:            1.4
+        opacity:                1.0
+:hovered
+    layers.base:
+        stroke_width:           1
+        stroke_color:           #6cb6ff66
+:selected
     layers.base:
         fill_color:             #0000
         stroke_width:           1
@@ -971,7 +985,7 @@ Editor / element.title / element.nav / Option.pins:selected {
 }
 
 /* menu icon next to magnify — the old right toggle (opens the second editor). */
-Editor / element.title / element.nav / Option.menu {
+Option.menu {
     layers.svg:
         image_svg:              "images/menu.svg"
         image_scale:            1.4
@@ -980,7 +994,7 @@ Editor / element.title / element.nav / Option.menu {
 /* the 'active' state pill — shown while the pane is debug-locked. a rounded text
    button (not an icon); click it to drop into edit mode. warm tint so it reads as
    "the app is running / this view is live". */
-Editor / element.title / element.nav / Option.active {
+Option.active {
     area:                       l0+ t6px w64px h22px
     layers.base:
         fill_color:             #e5394588
@@ -991,9 +1005,7 @@ Editor / element.title / element.nav / Option.active {
         label_color:            #fff
         label_size:             13
         label_align:            0.5 0.5
-}
-
-Editor / element.title / element.nav / Option.active:hovered {
+:hovered
     layers.base:
         fill_color:             #e53945cc
 }
@@ -1001,7 +1013,7 @@ Editor / element.title / element.nav / Option.active:hovered {
 /* the add (+) / remove (-) tab buttons, in the right-side nav with magnify/menu.
    plain Buttons (actions, no toggle/select), so they're styled self-contained
    rather than via the Option nav rule. */
-Editor / element.title / Button.back {
+Button.back {
     area:                       l16px t14px w16px h16px
     layers.base:
         fill_color:             #0000
@@ -1013,14 +1025,12 @@ Editor / element.title / Button.back {
         image_scale:            2.0
         image_svg:              "images/back.svg"
         opacity:                0.5
-}
-
-Editor / element.title / Button.back:hovered {
+:hovered
     layers.svg:
         opacity:                1.0
 }
 
-Editor / element.title / element.nav / Button.dock {
+Button.dock {
     area:                       l0+ t0 w34px h34px
     layers.base:
         fill_color:             #0000
@@ -1032,9 +1042,15 @@ Editor / element.title / element.nav / Button.dock {
         image_scale:            1.4
         image_svg:              "images/expand2.svg"
         opacity:                0.5
+:hovered
+    layers.base:
+        fill_color:             #8af4
+        inner_glow:             #8afa 24
+    layers.svg:
+        opacity:                1.0
 }
 
-Editor / element.title / element.nav / Button.undock {
+Button.undock {
     area:                       l0+ t0 w34px h34px
     layers.base:
         fill_color:             #0000
@@ -1048,7 +1064,7 @@ Editor / element.title / element.nav / Button.undock {
         opacity:                0.5
 }
 
-Editor / element.title / element.nav / Button.dock:hovered {
+Button.undock:hovered {
     layers.base:
         fill_color:             #8af4
         inner_glow:             #8afa 24
@@ -1056,21 +1072,15 @@ Editor / element.title / element.nav / Button.dock:hovered {
         opacity:                1.0
 }
 
-Editor / element.title / element.nav / Button.undock:hovered {
-    layers.base:
-        fill_color:             #8af4
-        inner_glow:             #8afa 24
-    layers.svg:
-        opacity:                1.0
-}
 
-Editor / element.title / element.find {
+
+element.find {
     area:                       l0 t0 r0 h0
     focusable:                  true
     layers.base:
         fill_color:             #0000
     layers.text:
-        area:                   l12px t0 r12px b0
+        area:                   l10px t0 r10px b0
         label_color:            #fff6
         label_align:            0.0 0.5
         label_size:             15
@@ -1082,13 +1092,15 @@ Editor / element.title / element.find {
         label_color:            #ffff
 }
 
-Editor / element.title / element.replace {
-    area:                       l0 t0 r0 h0
+/* replace flows in the nav series after the close — same l0+ coords as the buttons, just a
+   bigger width. hidden (w0 h0) until :expanded, always present so its slot is stable. */
+element.replace {
+    area:                       l0+ t0 w0 h0
     focusable:                  true
     layers.base:
         fill_color:             #0000
     layers.text:
-        area:                   l12px t0 r12px b0
+        area:                   l10px t0 r10px b0
         label_color:            #fff6
         label_align:            0.0 0.5
         label_size:             15
@@ -1100,25 +1112,27 @@ Editor / element.title / element.replace {
         label_color:            #ffff
 }
 
-Editor / element.title / element.pattern {
+/* the scope field: green, shows the current filename (in-file search) until you type a
+   glob into it to search across files. left-aligned like a label. */
+element.pattern {
     area:                       l0 t0 r0 h0
     focusable:                  true
     layers.base:
-        fill_color:             #1126
+        fill_color:             #2f6b3acc
     layers.divider:
         area:                   r0 t0 w1px b0
         fill_color:             #fff2
     layers.text:
-        area:                   l12px t0 r12px b0
-        label_color:            #fff
-        label_align:            1.0 0.5
-        label_size:             15
+        area:                   l1 t0 r12px b0
+        label_color:            #dfffe0
+        label_align:            0.0 0.5
+        label_size:             19
 :focused
     layers.text:
         editable:               true
 }
 
-Editor / element.title / element.infile {
+element.infile {
     area:                       l0 t0 r0 h0
     layers.base:
         fill_color:             #1126
@@ -1132,72 +1146,68 @@ Editor / element.title / element.infile {
         label_size:             15
 }
 
-Editor / element.title / element.infile:selected {
+element.infile:selected {
     layers.base:
         fill_color:             #1f35
     layers.face:
         label_color:            #fff
 }
 
-Editor / element.title / element.pattern:selected {
+element.pattern:selected {
     layers.base:
         fill_color:             #fa35
 }
 
 
-Editor / element.title / element.replace_all_action {
-    area:                       l0 t0 r0 h0
+/* replace-all 'All' — a nav button (text, wider than the icons), matching the nav glow.
+   hidden (w0 h0) until :expanded, but ALWAYS present so its flow slot (after the close)
+   never moves. */
+Option.replace_all_action {
+    area:                       l0+ t0 w0 h0
     layers.base:
-        fill_color:             #1126
-    layers.divider:
-        area:                   l0 t0 w1px b0
-        fill_color:             #fff2
-    layers.divider2:
-        area:                   r0 t0 w1px b0
-        fill_color:             #fff2
+        fill_color:             #0000
+        inner_glow:             #0000 24
+        radius:                 8
     layers.label:
         label:                  'All'
         label_color:            #fff
         label_size:             15
         label_align:            0.5 0.5
         opacity:                0.6
-}
-
-Editor / element.title / element.replace_all_action:hovered {
+:hovered
     layers.base:
         fill_color:             #8af4
+        inner_glow:             #8afa 24
     layers.label:
         opacity:                1.0
 }
 
-Editor:expanded / element.title / element.infile {
-    area:                       l0 t1px w6 h43px
+/* findbar (title :expanded): scope (green, left) then the nav series flowing right-to-left
+   by set order — close · undock · dock · find · All · replace. nav spans from after the
+   scope to the right edge; un-hide find/replace/All with widths (flow places them). */
+Editor:expanded / element.title / element.pattern {
+    area: l0 t1px w8 h43px
+}
+
+/* right-anchored (base r5px wc) so the whole series hugs the right edge of the title. */
+Editor:expanded / element.title / element.nav {
+    area: r5px t5px wc h34px
 }
 
 Editor:expanded / element.title / element.find {
-    area:                       l6 t1px r1.7 h43px
+    area: l8 t1px r280px h43px
 }
 
-Editor:expanded / element.title / element.find_action {
-    area:                       r2.88 t1px w1.44 h43px
+Editor:expanded / element.title / element.nav / element.replace {
+    area: l0+ t0 w120px h34px
+    layers.border2:
+        area:           l-1px t0 w1px b0
+        fill_color:     #fff2
 }
 
-Editor:expanded / element.title / element.pattern {
-    area:                       l0 t45px w6 h43px
+Editor:expanded / element.title / element.nav / Option.replace_all_action {
+    area: l0+ t0 w50px h34px
 }
-
-Editor:expanded / element.title / element.replace {
-    area:                       l6 t45px r1.7 h43px
-}
-
-Editor:expanded / element.title / element.replace_action {
-    area:                       r2.88 t45px w1.44 h43px
-}
-
-Editor:expanded / element.title / element.replace_all_action {
-    area:                       r44px t45px w44px h43px
-}
-
 
 
 

@@ -60,6 +60,13 @@ func au_space_clear[] -> none
 # used as a runaway-leak guard so the app bails out before it locks the machine.
 func au_mem_fraction[] -> f32
 
+# deferred live-reload: au_live_set_defer turns it ON (host stages source changes instead
+# of auto-reloading, sets pending=1, and waits). au_live_get_pending → a change is staged;
+# au_live_request_apply → tell the host to recompile + hot-swap now.
+func au_live_set_defer[ on: i32 ] -> none
+func au_live_get_pending[]   -> i32
+func au_live_request_apply[] -> none
+
 # redirect stdout/stderr into a pipe (returns a non-blocking read fd); au_stdout_orig
 # is a dup of the real stdout so --log can tee captured output back to the terminal.
 func au_capture_stdout[] -> i32
@@ -233,8 +240,11 @@ trinity orbiter # implements compiler
     public findbar_pane  : string
     public findbar_text  : string
     # the query that produced the current find_hits — so a second Enter on the same
-    # phrase advances to the next match instead of re-running the search.
+    # phrase advances to the next match instead of re-running the search. find_last_scope
+    # mirrors the scope field (pattern_text) at run time: if EITHER changes, Enter is a
+    # NEW search, not a next-match step.
     intern find_last_query : string
+    intern find_last_scope : string
     public replace_text  : string
     # file-pattern (glob) that scopes find-in-files — the right cell of the
     # Replace row.
@@ -302,6 +312,8 @@ trinity orbiter # implements compiler
     # show/hide the pinned dock at the top of the browse list — toggled from the editor
     # nav so the results can be maximized. (eventual home of a thumbnail grid.)
     public show_pins     : bool [ true ]
+    # render the index as a thumbnail grid instead of the row list (same find_hits data).
+    public grid_mode     : bool
     # the (larger) font size used for the NAME line of the two-line double-header rows.
     # single-line uses the primary code font; double-line's name is bigger.
     public browse_header_size : i32 [ 18 ]
@@ -324,6 +336,10 @@ trinity orbiter # implements compiler
         width          = 1888
         height         = 888
         background     = 'Background'
+        # turn ON deferred live-reload: silver-host stages source changes and signals us
+        # instead of auto-reloading, so the 'reload' chip appears and WE apply on click.
+        # the user passes nothing — orbiter drives this via the au_live_* host channel.
+        au_live_set_defer[ 1 ]
         # create the shared breakpoint set first so it always exists before any
         # Editor is built and handed a reference to it.
         breakpoints    = map string[string] []
@@ -1035,50 +1051,37 @@ trinity orbiter # implements compiler
         if [ dbg_locked ]
             nav['active'] = Option [ label: 'active' ]
 
-        #if [ p && p.exists[] && !findbar_open ]
-        #    nav['git'] = Option [ selected: editor_panel == 'git', disable: !has_diff ]
-        
-        # find-in-files is a text-editor feature — a resource view (image/audio/…) has no
-        # such thing, so omit the magnify for it.
+        # ONE stable nav population (flow follows population order; the Au map is FIFO, so
+        # the only way to keep the order constant is to add the SAME children in the SAME
+        # order every time). magnify | All | + | - — 'All' is always present so its slot
+        # never moves; it's just hidden (h0) until the title is :expanded (findbar open).
+        # nav series (right-anchored), set in flow order: replace, All, close, undock, dock.
+        # all always present (hidden h0 until :expanded) so their slots never move. 'find'
+        # is NOT here — it's a standalone left-aligned field (els['find'] below).
+        nav['replace'] = element [ label: 'Replace', edit: replace_text ]
+        nav['replace_all_action'] = Option [ selected: false ]
         if [ !is_resource ]
             nav['magnify'] = Option [ selected: findbar_open ]
-        # (the callstack + fields panels moved OUT of the editor — they're now toggled
-        # from the bottom console title; the editor no longer carries a stack sub-column.)
-        # tab add (+) and remove (-) live on the right with magnify, leaving the
-        # title's left side free for a file-type icon. shown all the time (including
-        # Finder state) — just not while the find/replace bar replaces the nav.
-        if [ !findbar_open ]
-            # only offer add (+) below the 4-pane cap
-            if [ editor_slots.count < 4 ]
-                nav['dock'] = Button []
-            # only offer remove (-) when there's more than one editor
-            if [ editor_slots.count > 1 ]
-                nav['undock'] = Button []
-            # pins show/hide toggle — only while THIS pane's file index/browse is open
-            # (and there's a pinned dock to toggle).
-            if [ menu_open && nav_showing && docked && docked.count > 0 ]
-                nav['pins'] = Option [ selected: show_pins ]
-
+        if [ editor_slots.count > 1 ]
+            nav['undock'] = Button []
+        if [ editor_slots.count < 4 ]
+            nav['dock'] = Button []
+        # pins/grid toggles only belong to the browse index (appended after, browse only).
+        if [ menu_open && nav_showing && docked && docked.count > 0 ]
+            nav['pins'] = Option [ selected: show_pins ]
+        if [ menu_open && nav_showing ]
+            nav['grid'] = Option [ selected: grid_mode ]
 
         hasfile  : bool [ p && p.exists[] ]
-        # Files is the active scope whenever there's no file to search In-File.
-        files_sel : bool [ !hasfile || !find_in_file ]
         els : Elements []
-        # while the BROWSE index is open, a borderless back icon sits left of the title
-        # text — clicking it closes the popup (exit_finder). not for the findbar, where it
-        # would land in the Find row.
+        # while the BROWSE index is open, a borderless back icon sits left of the title.
         if [ menu_open && nav_showing ]
             els['back'] = Button []
+        # the green scope field: shows the current filename by default (in-file search);
+        # type a glob into it to search across files instead — no separate Files toggle.
+        # find/replace are always present (h0 until :expanded) so their order is stable too.
+        els['pattern'] = element [ label: (hasfile) ? p.filename[] : 'Files', edit: pattern_text ]
         els['find']    = element [ label: 'Find',    edit: findbar_text ]
-        els['replace'] = element [ label: 'Replace', edit: replace_text ]
-        els['pattern'] = Option  [ label: 'Files', edit: pattern_text, selected: files_sel ]
-        # mid action buttons: run-find on the Find row, run-replace on the Replace row.
-        els['replace_all_action'] = Option [ selected: false ]
-        # In-File is only an option when a file is actually open.
-        if [ hasfile ]
-            els['infile'] = Option [ label: p.filename[], selected: find_in_file ]
-        # nav topmost so the magnify paints in front of the In-File filename cell
-        # (they share the upper-right corner) and still wins the click.
         els['nav'] = element [ topmost: true, elements: nav ]
         return els
 
@@ -1122,7 +1125,8 @@ trinity orbiter # implements compiler
             expanded: findbar_on, show_hits: (searchable) ? (find_showing || nav_showing) : false,
             single_line: (nav_showing && browse_single), header_size: browse_header_size, dir_size: browse_dir_size,
             nav_list: (searchable) ? nav_showing : false, dock_rows: nav_dock_rows,
-            hits: find_hits, find_query: findbar_text, elements: pe ]
+            grid_mode: (searchable) ? (nav_showing && grid_mode) : false,
+            hits: find_hits, find_query: (searchable && findbar_on) ? findbar_text : '', elements: pe ]
 
     # build the docked-tab strip for a group: one tab per docked file, the
     # active file selected. ids are prefix+index so the click handler can map
@@ -1286,19 +1290,27 @@ trinity orbiter # implements compiler
         find_hits = array FindHit []
         q : string findbar_text
         find_last_query = q
+        # snapshot the scope this run used, so a scope change (e.g. clearing **.ag back to
+        # this file) makes the next Enter a fresh search rather than stepping stale results.
+        find_last_scope = (pattern_text) ? pattern_text : ''
         if [ !q || q.count == 0 ]
             find_showing = false
             return
         a_slot : i32 [ (active_pane >= 0 && active_pane < editor_slots.count) ? editor_slots[active_pane] : -1 ]
         p : path (a_slot >= 0 && a_slot < open_files.count) ? open_files[a_slot] : null
-        scan_current : bool [ find_in_file && p ]
+        # scope field (pattern_text) drives it: empty → search THIS file; a typed glob →
+        # search across files. no separate In-File/Files toggle anymore.
+        scan_current : bool [ (!pattern_text || pattern_text.count == 0) && p ]
         if [ scan_current ]
-            scan_file_hits[ p, q ]
-        el
-            # Files mode (or In-File with no open file): walk the foundry tree for
-            # now and scan each file's content (independent of the index).
-            root : path '{startup_path}/foundry'
-            walk_find[ root, q ]
+            # in-file = Notepad-style: the editor stays AS-IS (no filtered list) and the
+            # matches highlight in place via find_query (live, per keystroke). so there's no
+            # hits view to show — leave find_showing off and let the highlight do the work.
+            find_showing = false
+            return
+        # Files mode (or In-File with no open file): walk the foundry tree and render the
+        # filtered occurrence list.
+        root : path '{startup_path}/foundry'
+        walk_find[ root, q ]
         find_showing = true
         # a fresh result set → clear the results-pane selection so the next Enter
         # ("next match") starts at the first occurrence, not wherever it last sat.
@@ -1350,6 +1362,37 @@ trinity orbiter # implements compiler
                     reveal_match[ ed, r, rel ]
                     return
 
+    # IN-FILE find (Notepad-style): step the selection to the next occurrence of the find
+    # text in the active pane's own file (the editor stays as-is; the active match gets the
+    # yellow fill via sel_line/sel_col, the rest stay outlined). searches from just after the
+    # current selection, wrapping once.
+    func find_file_next []
+        sp : string search_pane[]
+        ed : Editor null
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            e : Editor pane_at[ i ]
+            if [ e && e.id.compare[ sp ] == 0 ] ed = e
+        if [ !ed ] ed = pane_at[ active_pane ]
+        if [ !ed ] return
+        q : string findbar_text
+        qn : i32 [ (q) ? q.count : 0 ]
+        if [ qn == 0 ] return
+        n : i32 [ ed.line_count[] ]
+        if [ n <= 0 ] return
+        sr : i32 [ (ed.sel_line >= 0) ? ed.sel_line : 0 ]
+        sc : i32 [ (ed.sel_col  >= 0) ? ed.sel_col  : -1 ]
+        for [ step: i32 0, step <= n, step += 1 ]
+            row   : i32 [ (sr + step) % n ]
+            ln    : string ed.line_get[ row ]
+            start : i32 [ (step == 0) ? (sc + 1) : 0 ]
+            if [ start < 0 ] start = 0
+            if [ start <= ln.count - qn ]
+                rem : string ln.mid[ start, ln.count - start ]
+                rel : i32 [ rem.index_of[ q ] ]
+                if [ rel >= 0 ]
+                    reveal_match[ ed, row, start + rel ]
+                    return
+
     # place the caret on a specific match (row + column) and scroll the row into view.
     func reveal_match [ ed: Editor, row: i32, col: i32 ]
         ed.sel_line    = row
@@ -1361,7 +1404,7 @@ trinity orbiter # implements compiler
         # while the findbar is open) — the scrollable content viewport is that minus the
         # title. using the full pane height made matches below the viewport read as still
         # visible, so the selection landed on an off-screen line before it scrolled.
-        title_h : f32 [ (ed.expanded) ? 88.0 : 44.0 ]
+        title_h : f32 [ 44.0 ]
         vh : f32 [ ((ed.bounds) ? ed.bounds.h : 600.0) - title_h ]
         top : f32 [ f32[ row ] * lh ]
         # only scroll when the line is actually cut off (above the top, or its bottom
@@ -1374,8 +1417,8 @@ trinity orbiter # implements compiler
         # horizontal: default to the line start (base); when the match wouldn't fit
         # from there, scroll right only as far as needed so the match END plus a 4-char
         # pad sits at the right edge — minimal travel, never further than required.
-        if [ row >= 0 && row < find_hits.count ]
-            ln  : string find_hits[ row ].text
+        if [ row >= 0 && row < ed.line_count[] ]
+            ln  : string ed.line_get[ row ]
             cw  : f32 [ (ed.cw_cache > 0.0) ? ed.cw_cache : 8.0 ]
             qn  : i32 [ (findbar_text) ? findbar_text.count : 0 ]
             mex : f32 [ f32[ ed.vis_col[ ln, col + qn ] ] * cw ]
@@ -1724,7 +1767,7 @@ trinity orbiter # implements compiler
                         for [ i: i32 0, i < entries.count, i += 1 ]
                             e : path entries[i]
                             if [ !e.is_dir[] ]
-                                push_file_hit[ e, false ]
+                                push_file_hit[ e, grid_mode ]
                                 combined.push[ '{e}' ]
             find_results = combined
         nav_showing = active && find_hits && find_hits.count > 0
@@ -1823,10 +1866,22 @@ trinity orbiter # implements compiler
         ed : Editor pane_at[ active_pane ]
         if [ !ed ] return
         findbar_pane = ed.id
+        # pre-fill Find with the editor's current selection (first line), Notepad-style — so
+        # selecting a word/phrase then Ctrl+F searches it immediately.
+        sel : ed.selected_text[]
+        if [ sel && sel.count > 0 ]
+            nl : i32 [ sel.index_of[ '\n' ] ]
+            findbar_text = (nl >= 0) ? sel.mid[ 0, nl ] : sel
         te : element ed.elements['title']
         if [ !te ] return
         fe : element te.elements['find']
-        if [ fe ] fe.set_focus[]
+        if [ fe ]
+            # a focused field shows its OWN edit buffer (the binding doesn't re-sync into a
+            # focused field), so mirror the query in directly + drop the caret at the end.
+            fe.edit       = findbar_text
+            fe.sel_col    = (findbar_text) ? findbar_text.count : 0
+            fe.anchor_col = fe.sel_col
+            fe.set_focus[]
         force_update[]
 
     # ctrl/cmd+G: focus the active pane's title — the editor file-index / browse search.
@@ -1904,6 +1959,14 @@ trinity orbiter # implements compiler
         sprintf[str, "%04i", n]
         return str
 
+    # live inspector: trinity hands us {file,line} hits for a cmd-clicked element — the
+    # matching CSS blocks (cmd+click) or the element's declaration site (cmd+shift+click,
+    # element_mode). either way, open the source so orbiter inspects its own UI.
+    public func on_inspect [ hits: array StyleHit ]
+        if [ !hits || hits.count == 0 ] return
+        h : StyleHit hits[ 0 ]
+        if [ h.file ] open_at_line[ h.file, active_pane, h.line ]
+
     func on_press [ ev: Event ]
         if [ !ev.target ] return
         for [ e: element* ev.target, e, e = e.parent ]
@@ -1976,6 +2039,11 @@ trinity orbiter # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             return
         # play: build/run the active project node (processes its deps first)
+        # deferred live-reload 'reload' chip: tell the host to recompile + hot-swap now.
+        if [ ev.target.id == 'reload_ready' ]
+            au_live_request_apply[]
+            ev.no_default = true
+            return
         if [ ev.target.id == 'play' ]
             con : ui_console[]
             dl  : dbg (debuggers) ? debuggers[ active_target ] : null
@@ -2039,6 +2107,13 @@ trinity orbiter # implements compiler
             ev.no_default = true
             force_update[]
             return
+        # grid: list ↔ thumbnail grid for the index (same data, different layout).
+        if [ ev.target.id == 'grid' ]
+            grid_mode = !grid_mode
+            rekeep_listing[]
+            ev.no_default = true
+            force_update[]
+            return
         # magnify: toggle the find/replace bar. it belongs to the pane whose magnify
         # was clicked (findbar_pane), so moving focus to the other title doesn't drag
         # the open bar onto it.
@@ -2053,18 +2128,8 @@ trinity orbiter # implements compiler
             if [ !findbar_open ] find_showing = false
             if [ ev.target ] ev.target.ux.restyle = true
             return
-        # scope radio pair: In-File (current file) vs Files (pattern) — re-run the
-        # search since the scope changed.
-        if [ ev.target.id == 'infile' ]
-            find_in_file = true
-            run_find_in_files[]
-            if [ ev.target ] ev.target.ux.restyle = true
-            return
-        if [ ev.target.id == 'pattern' ]
-            find_in_file = false
-            run_find_in_files[]
-            if [ ev.target ] ev.target.ux.restyle = true
-            return
+        # the scope field (id 'pattern') is now a plain editable — a click just focuses it
+        # for typing a glob; no toggle. typing + Enter re-runs the search (on_key).
         # mid action buttons — run find / replace (logic TBD)
         if [ ev.target.id == 'replace_all_action' ]
             return
@@ -2269,13 +2334,24 @@ trinity orbiter # implements compiler
                     if [ pattern_text && pattern_text.count > 0 ]
                         pattern_text = pattern_text.mid[ 0, pattern_text.count - 1 ]
             el [ k == 257 ]    # Key.Enter
-                # first Enter runs the search; a repeat Enter on the SAME phrase (results
-                # already up) steps to the next occurrence instead of re-searching.
-                same : bool [ find_showing && find_hits && find_hits.count > 0 && find_last_query && findbar_text && find_last_query.compare[ findbar_text ] == 0 ]
-                if [ same ]
-                    next_match[]
+                in_file : bool [ !pattern_text || pattern_text.count == 0 ]
+                if [ in_file ]
+                    # Notepad-style: Enter steps to the next occurrence in THIS file (the
+                    # yellow active-match follows the selection); no filtered list.
+                    find_last_query = findbar_text
+                    find_last_scope = ''
+                    find_file_next[]
                 el
-                    run_find_in_files[]
+                    # files mode: first Enter runs the search; a repeat on the SAME phrase +
+                    # scope steps to the next result row. a changed scope is a fresh search.
+                    cur_scope  : string [ (pattern_text)    ? pattern_text    : '' ]
+                    last_scope : string [ (find_last_scope) ? find_last_scope : '' ]
+                    scope_same : bool [ cur_scope.compare[ last_scope ] == 0 ]
+                    same : bool [ scope_same && find_showing && find_hits && find_hits.count > 0 && find_last_query && findbar_text && find_last_query.compare[ findbar_text ] == 0 ]
+                    if [ same ]
+                        next_match[]
+                    el
+                        run_find_in_files[]
                 if [ ev.target.ux ] ev.target.ux.restyle = true
             el [ k == 256 ]    # Key.Escape
                 # escape collapses the bar and hides the results
@@ -2585,6 +2661,10 @@ trinity orbiter # implements compiler
         ] ]
         topbar_els['source_nav']  = Tabs [ elements: source_nav ]
         topbar_els['console_nav'] = Tabs [ elements: console_nav ]
+        # deferred live-reload: when the host has staged a source change it sets pending;
+        # show a 'reload' affordance top-right after the console tabs — clicking it applies.
+        if [ au_live_get_pending[] != 0 ]
+            topbar_els['reload_ready'] = Option [ label: 'reload', selected: true ]
 
         return Elements [
             "topbar": Group [ elements: topbar_els ],

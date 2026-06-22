@@ -1475,7 +1475,7 @@ Render Canvas
         # runs on an actual capacity grow (quantize boundary crossing), so it's rare, not per-frame.
         vkDeviceWaitIdle[ vk.device ]
         width  = qw
-        height = qh
+        height = qh 
         update[]                                     # Render: color/depth + framebuffers
         if [ sdf_tex ]
             sdf_tex.resize[ max[ width / 2, 1 ], max[ height / 2, 1 ] ]

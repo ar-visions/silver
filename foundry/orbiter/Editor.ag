@@ -104,6 +104,11 @@ class ResourceView
     # drop held resources when the pane switches away or closes. (no-op base.)
     func release []
         return
+    # produce a small GPU texture preview of `src` for the grid/thumbnail (aspect kept,
+    # max side ~256). the FORMAT module owns this — orbiter just blits what it returns.
+    # (no-op base → files with no preview fall back to a file icon.)
+    func thumbnail [ cv: Canvas ] -> Texture
+        return null
 
 # image viewer: decodes via the img product, blits the texture fit-to-pane (centered).
 ResourceView ImageView
@@ -112,6 +117,22 @@ ResourceView ImageView
     mutable ih  : f32
     func extensions [] -> array string
         return array string [ '.png', '.exr' ]
+    # decode src, downscale so the longest side is <= 256 (aspect preserved), and hand back
+    # a UNORM (linear:true) texture — same raw-passthrough path the full-pane view uses.
+    func thumbnail [ cv: Canvas ] -> Texture
+        if [ !src ] return null
+        im : Image [ '{src}' ]
+        if [ im.width <= 0 || im.height <= 0 ] return null
+        mx : i32 [ (im.width > im.height) ? im.width : im.height ]
+        if [ mx > 256 ]
+            sc : f32 [ 256.0 / f32[ mx ] ]
+            tw : i32 [ i32[ f32[ im.width ] * sc ] ]
+            th : i32 [ i32[ f32[ im.height ] * sc ] ]
+            if [ tw < 1 ] tw = 1
+            if [ th < 1 ] th = 1
+            im = im.resize[ tw, th ]
+        return Texture [ vk: cv.vk, w: cv.w, sampler: im, width: im.width, height: im.height, linear: true ]
+
     func render [ cv: Canvas, bounds: rect ]
         if [ !loaded ]
             loaded = true
@@ -133,6 +154,7 @@ ResourceView ImageView
         dx : f32 [ bounds.x + (bounds.w - dw) * 0.5 ]
         dy : f32 [ bounds.y + (bounds.h - dh) * 0.5 ]
         cv.draw_image[ tex, rect [ x: dx, y: dy, w: dw, h: dh ] ]
+
     func release []
         tex = null
         loaded = false
@@ -169,14 +191,14 @@ Layer EditorLayer
     func on_move [ ev: Event ]
         editor : Editor[ parent ]
         if [ !editor || !editor.dragging ] return
-        lh : f32 [ (editor.lh_cache > 0.0) ? editor.lh_cache : 22.0 ]
-        cw : f32 [ (editor.cw_cache > 0.0) ? editor.cw_cache : 8.0 ]
+        lh    : f32 [ (editor.lh_cache > 0.0) ? editor.lh_cache : 22.0 ]
+        cw    : f32 [ (editor.cw_cache > 0.0) ? editor.cw_cache : 8.0 ]
         rel_y : f32 [ ev.mouse.pos.y ]
         rel_x : f32 [ ev.mouse.pos.x ]
-        raw : i32 [ clamp[ rel_y / lh, 0, editor.line_count[] - 1 ] ]
-        ln  : i32 [ editor.snap_row[ raw ] ]
-        vx  : f32 [ round[ (rel_x - editor.row_indent[ ln ] + editor.scroll.x) / cw ] ]
-        cl  : i32 [ editor.model_col[ editor.line_get[ ln ], i32[ vx ] ] ]
+        raw   : i32 [ clamp[ rel_y / lh, 0, editor.line_count[] - 1 ] ]
+        ln    : i32 [ editor.snap_row[ raw ] ]
+        vx    : f32 [ round[ (rel_x - editor.row_indent[ ln ] + editor.scroll.x) / cw ] ]
+        cl    : i32 [ editor.model_col[ editor.line_get[ ln ], i32[ vx ] ] ]
         editor.sel_line = ln
         editor.sel_col  = cl
         editor.pristine = false
@@ -284,6 +306,130 @@ Layer EditorLayer
         use.frame = editor.cl_frame
         return use
 
+    # combined content hash of a vertical band of `bands` flat rows starting at `bs`. seeded
+    # by the band's absolute start (so two bands never alias to one slot) and the font size
+    # (so zoom invalidates). header/var/empty rows fold a sentinel — they aren't rastered
+    # into the band (drawn live), but a change in row layout must still bust the band.
+    func band_hash [ editor: Editor, bs: i32, bands: i32, code_fs: i32 ] -> i64
+        h : i64 [ i64[ bs ] * 1099511628211 + i64[ code_fs ] ]
+        for [ k: i32 0, k < bands, k += 1 ]
+            li : i32 [ bs + k ]
+            if [ li >= editor.line_count[] ] break
+            if [ editor.row_header[ li ] || editor.row_var[ li ] ]
+                h = (h ^ 1) * 1099511628211
+                continue
+            ln : editor.line_get[ li ]
+            if [ ln.count == 0 ]
+                h = (h ^ 2) * 1099511628211
+                continue
+            h = (h ^ code_hash[ editor, editor.row_src[ li ], ln ]) * 1099511628211
+        return h
+
+    # raster a vertical BAND of `bands` flat rows (plain code lines only — headers/var/empty
+    # rows are skipped, left transparent, and drawn live by the content loop) into ONE
+    # canvas, content-addressed by band_hash. this collapses N tiny per-line render targets
+    # into a few large ones, which a tiled GPU (Metal via MoltenVK) handles far more cheaply.
+    func code_band [ cv: Canvas, editor: Editor, bs: i32, bands: i32, cmt_c: rgba, lh: f32, cw: f32, code_fs: i32 ] -> EdLineCache
+        if [ !editor.code_lines ] editor.code_lines = array EdLineCache [ alloc: 16 ]
+        h    : i64 [ band_hash[ editor, bs, bands, code_fs ] ]
+        # width = widest code row in the band; height spans all `bands` rows.
+        maxw     : i32 [ 1 ]
+        has_code : bool [ false ]
+        for [ k: i32 0, k < bands, k += 1 ]
+            li : i32 [ bs + k ]
+            if [ li >= editor.line_count[] ] break
+            if [ editor.row_header[ li ] || editor.row_var[ li ] ] continue
+            ln : editor.line_get[ li ]
+            if [ ln.count == 0 ] continue
+            has_code = true
+            cwi : i32 [ i32[ ceil[ f32[ editor.display_of[ ln ].count ] * cw + cw ] ] ]
+            if [ cwi > maxw ] maxw = cwi
+        if [ !has_code ] return null
+        lc_h : i32 [ i32[ ceil[ f32[ bands ] * lh ] ] + 1 ]
+        # cache hit → reuse, just tick the frame
+        for [ slot: EdLineCache ] in editor.code_lines
+            if [ slot.canvas && slot.hash == h ]
+                slot.frame = editor.cl_frame
+                return slot
+        # recycle a slot not used this frame (genuinely off-screen band), else grow
+        use : EdLineCache [ null ]
+        for [ slot: EdLineCache ] in editor.code_lines
+            if [ slot.frame != editor.cl_frame ]
+                use = slot
+                break
+        if [ !use ]
+            use = EdLineCache [ ]
+            editor.code_lines.push[ use ]
+        if [ !use.canvas ]
+            use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: maxw, height: lc_h, load_existing: true, quantize: true ]
+            use.canvas.update[]
+        el [ use.canvas.content_w != maxw || use.canvas.content_h != lc_h ]
+            use.canvas.resize[ maxw, lc_h ]
+        lc : use.canvas
+        lc.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        if [ code_fs > 0 ] lc.font_size[ code_fs ]
+        rw : f32 [ f32[ maxw ] ]
+        for [ k: i32 0, k < bands, k += 1 ]
+            li : i32 [ bs + k ]
+            if [ li >= editor.line_count[] ] break
+            if [ editor.row_header[ li ] || editor.row_var[ li ] ] continue
+            ln : editor.line_get[ li ]
+            ll : i32 [ ln.count ]
+            if [ ll == 0 ] continue
+            editor.text_lines_frame += 1
+            editor.text_lines_total += 1
+            yk   : f32 [ f32[ k ] * lh ]
+            msl  : i32 [ editor.row_src[ li ] ]
+            disp : editor.display_of[ ln ]
+            nrg  : i32 [ (editor.finder_list || editor.show_nav || editor.show_hits) ? 0 : editor.line_reg_count[ msl ] ]
+            if [ nrg == 0 ]
+                tc : rgba['#fff']
+                for [ kk: i32 0, kk < ll, kk += 1 ]
+                    if [ ln[kk] == 35 ]
+                        tc = cmt_c
+                        break
+                lc.fill_color[ tc ]
+                lc.draw_text[ disp, rect [ x: 0.0, y: yk, w: rw, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            el
+                col : i32 [ 0 ]
+                for [ ri: i32 0, ri < nrg, ri += 1 ]
+                    cr : ColorRegion editor.line_reg[ msl, ri ]
+                    c0 : i32 [ cr.col ]
+                    if [ c0 < 0 ] c0 = 0
+                    if [ c0 > ll ] c0 = ll
+                    sl : i32 [ cr.len ]
+                    if [ c0 + sl > ll ] sl = ll - c0
+                    if [ c0 > col ]
+                        gx : f32 [ f32[ editor.display_of[ ln.mid[ 0, col ] ].count ] * cw ]
+                        lc.fill_color[ rgba['#fff'] ]
+                        lc.draw_text[ editor.display_of[ ln.mid[ col, c0 - col ] ],
+                            rect [ x: gx, y: yk, w: rw, h: lh ],
+                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                        col = c0
+                    if [ sl > 0 ]
+                        tx : f32 [ f32[ editor.display_of[ ln.mid[ 0, c0 ] ].count ] * cw ]
+                        lc.fill_color[ cr.color ]
+                        lc.draw_text[ ln.mid[ c0, sl ],
+                            rect [ x: tx, y: yk, w: rw, h: lh ],
+                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                        col = c0 + sl
+                if [ col < ll ]
+                    gc : rgba['#fff']
+                    for [ kk: i32 col, kk < ll, kk += 1 ]
+                        if [ ln[kk] == 35 ]
+                            gc = cmt_c
+                            break
+                    ex : f32 [ f32[ editor.display_of[ ln.mid[ 0, col ] ].count ] * cw ]
+                    lc.fill_color[ gc ]
+                    lc.draw_text[ editor.display_of[ ln.mid[ col, ll - col ] ],
+                        rect [ x: ex, y: yk, w: rw, h: lh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        lc.paint[ ]
+        use.hash  = h
+        use.frame = editor.cl_frame
+        return use
+
     func draw [ cv: Canvas ]
         editor : Editor[ parent ]
         if [ !editor ] return
@@ -313,14 +459,9 @@ Layer EditorLayer
         # makes the row grid uniform (round distributes: round(a + li*lh) = round(a) +
         # li*lh), so every row shares one base offset. lh_cache (hit-testing) inherits it.
         lh      : f32 [ round[ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ] ]
-        # find/replace bar open: the title doubles (+44px). a CSS state override of
-        # a layer's area doesn't apply (only the base does), so shift the content
-        # layer's bounds here by that extra title height. both draw (y0) and
-        # place_cursor reads bounds.y, so they stay in sync.
-        if [ editor.expanded ]
-            extra : f32 [ 44.0 ]
-            bounds.y += extra
-            bounds.h -= extra
+        # find/replace bar open: the findbar now REPLACES the single title row in place
+        # (same 44px height as the normal title), so the content no longer needs to shift
+        # down — the old +44px offset left a blank line above the code.
         # gutter width = digit count of the last line number * char width + pad.
         # the code content is pushed right by this width.
         ndigits : i32 [ 1 ]
@@ -349,18 +490,25 @@ Layer EditorLayer
         # fades (long lines dissolve), and on horizontal scroll the left fade turns on,
         # originating at the gutter's right edge (max there) so off-screen-left code
         # dissolves to alpha — same look as the right. vec4 = (top, right, bottom, left).
-        left_fade : f32 [ (editor.scroll.x > 0.0) ? bounds.w / 8.0 : 0.0 ]
-        parent.mask_glow = vec4f [ 0.0, bounds.w / 8.0, 0.0, left_fade ]
-        # keep the line-number gutter fully opaque; the left fade starts just past it.
-        parent.mask_keep_l = gut_w
-        # start the top fade at the bottom of the title bar so code scrolls
-        # cleanly under it; fall back to 70px if the title isn't laid out yet.
-        title_bottom : f32 [ 70.0 ]
-        te : element parent.elements['title']
-        if [ te && te.bounds ]
-            title_bottom = te.bounds.y + te.bounds.h
-        # left inset = gut_w so the left fade originates at the gutter edge, not x=0.
-        parent.mask_inset = vec4f [ title_bottom, 0.0, 0.0, gut_w ]
+        # grid (thumbnail) view shows whole cells edge-to-edge — the code edge-fade mask
+        # would dim the outer thumbnails, so turn it off entirely in grid mode.
+        if [ editor.grid_mode ]
+            parent.mask_glow   = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+            parent.mask_keep_l = 0.0
+            parent.mask_inset  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        el
+            left_fade : f32 [ (editor.scroll.x > 0.0) ? bounds.w / 8.0 : 0.0 ]
+            parent.mask_glow = vec4f [ 0.0, bounds.w / 8.0, 0.0, left_fade ]
+            # keep the line-number gutter fully opaque; the left fade starts just past it.
+            parent.mask_keep_l = gut_w
+            # start the top fade at the bottom of the title bar so code scrolls
+            # cleanly under it; fall back to 70px if the title isn't laid out yet.
+            title_bottom : f32 [ 70.0 ]
+            te : element parent.elements['title']
+            if [ te && te.bounds ]
+                title_bottom = te.bounds.y + te.bounds.h
+            # left inset = gut_w so the left fade originates at the gutter edge, not x=0.
+            parent.mask_inset = vec4f [ title_bottom, 0.0, 0.0, gut_w ]
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
         editor.text_lines_frame = 0
@@ -377,8 +525,36 @@ Layer EditorLayer
         editor.rebuild_flat[]
         # every visual row (incl. the 2 file-title slots and any expanded field rows)
         # is one line-height tall; line_count already folds the expanded rows in.
-        editor.content_h = f32[ editor.line_count[] ] * lh
-        editor.scroll_speed = lh
+        # grid view lays the index entries out as square cells; its content height is
+        # rows-of-cells. compute the layout here so the scroll clamp below uses it.
+        grid_cw    : f32 [ 140.0 ]            # cell slot width
+        grid_ch    : f32 [ 178.0 ]            # cell slot height (square thumb + 2-line label)
+        grid_cols  : i32 [ 1 ]
+        grid_pins  : i32 [ 0 ]                # pinned-dock cell count
+        grid_res   : i32 [ 0 ]               # result cell count
+        if [ editor.grid_mode && editor.hits ]
+            gavail : f32 [ bounds.w - rin - 8.0 ]
+            grid_cols = i32[ gavail / grid_cw ]
+            if [ grid_cols < 1 ] grid_cols = 1
+            for [ li: i32 0, li < editor.hits.count, li += 1 ]
+                h : FindHit editor.hits[ li ]
+                if [ !h || !h.is_header || !h.file || h.is_spacer ] continue
+                if [ editor.row_cont[ li ] ] continue
+                if [ li < editor.dock_rows ] grid_pins += 1
+                el                            grid_res += 1
+        # pins fill the top rows; then a one-line-height break (separator), then results.
+        grid_resoff : f32 [ 0.0 ]
+        if [ editor.grid_mode ]
+            pin_rows : i32 [ (grid_pins + grid_cols - 1) / grid_cols ]
+            res_rows : i32 [ (grid_res  + grid_cols - 1) / grid_cols ]
+            if [ grid_pins > 0 ] grid_resoff = f32[ pin_rows ] * grid_ch + lh
+            editor.content_h = grid_resoff + f32[ res_rows ] * grid_ch
+            editor.g_cols    = grid_cols
+            editor.g_pins    = grid_pins
+            editor.g_resoff  = grid_resoff
+        el
+            editor.content_h = f32[ editor.line_count[] ] * lh
+        editor.scroll_speed = (editor.grid_mode) ? grid_ch : lh
 
         # clamp scroll to [0, content - viewport] every frame so it can't go
         # negative (above the top) or past the end of the content.
@@ -414,6 +590,78 @@ Layer EditorLayer
         wty : f32 [ cv.transform_ty[] ]
         cv.set_crop[ wtx + bounds.x, wty + bounds.y,
             wtx + bounds.x + bounds.w - rin, wty + bounds.y + bounds.h ]
+
+        # ---- grid view: the index entries tiled as cells — thumbnail on top, two labels
+        # (name over dir) under it; cells separated by a margin; rounded selection box ----
+        if [ editor.grid_mode && editor.hits ]
+            gm    : f32 [ 8.0 ]                 # margin inside each cell slot
+            gth   : f32 [ grid_cw - gm * 2.0 ]  # square thumbnail size
+            pin_i : i32 [ 0 ]
+            res_i : i32 [ 0 ]
+            # separator line in the break gap between the pinned cells and the results.
+            if [ grid_pins > 0 ]
+                pr : i32 [ (grid_pins + grid_cols - 1) / grid_cols ]
+                sy : f32 [ y0 + f32[ pr ] * grid_ch + lh * 0.5 - editor.scroll.y ]
+                if [ sy >= bounds.y && sy <= bounds.y + bounds.h ]
+                    cv.fill_color  [ rgba['#ffffff30'] ]
+                    cv.stroke_width[ 0.0 ]
+                    cv.rect_to     [ bounds.x + 8.0, round[ sy ], bounds.w - rin - 16.0, 1.0 ]
+                    cv.paint       [ ]
+            for [ li: i32 0, li < editor.hits.count, li += 1 ]
+                h : FindHit editor.hits[ li ]
+                if [ !h || !h.is_header || !h.file || h.is_spacer ] continue
+                if [ editor.row_cont[ li ] ] continue
+                is_pin : bool [ li < editor.dock_rows ]
+                gidx : i32 [ (is_pin) ? pin_i : res_i ]
+                col  : i32 [ gidx % grid_cols ]
+                grow : i32 [ gidx / grid_cols ]
+                if [ is_pin ] pin_i += 1
+                el            res_i += 1
+                cx : f32 [ bounds.x + 4.0 + f32[ col ] * grid_cw ]
+                cy : f32 [ ((is_pin) ? (y0 + f32[ grow ] * grid_ch) : (y0 + grid_resoff + f32[ grow ] * grid_ch)) - editor.scroll.y ]
+                if [ cy + grid_ch < bounds.y || cy > bounds.y + bounds.h ] continue
+                # selection / hover box — inset by half the margin so cells stay separated
+                if [ li == editor.sel_line || li == editor.hover_line ]
+                    cv.fill_color  [ rgba['#6cb6ff22'] ]
+                    cv.stroke_color[ rgba['#6cb6ffcc'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.rounded_rect[ cx + gm * 0.5, cy + gm * 0.5, grid_cw - gm, grid_ch - gm, 8.0, 8.0, 8.0, 8.0 ]
+                    cv.paint       [ ]
+                    cv.stroke_width[ 0.0 ]
+                # thumbnail (image) or folder/file icon at the top of the cell
+                ix : f32 [ cx + gm ]
+                iy : f32 [ cy + gm ]
+                tex : editor.thumb_for[ h.file, cv ]
+                if [ tex ]
+                    # aspect-fit the square: scale so the LONGER side meets the square (no
+                    # stretch, no crop), and center the result within the cell.
+                    tw  : f32 [ f32[ tex.width ] ]
+                    th  : f32 [ f32[ tex.height ] ]
+                    csc : f32 [ (tw > 0.0 && th > 0.0) ? minf[ gth / tw, gth / th ] : 1.0 ]
+                    dw  : f32 [ tw * csc ]
+                    dh  : f32 [ th * csc ]
+                    dx  : f32 [ ix + (gth - dw) * 0.5 ]
+                    dy  : f32 [ iy + (gth - dh) * 0.5 ]
+                    cv.draw_image[ tex, rect [ x: dx, y: dy, w: dw, h: dh ] ]
+                el
+                    if [ !editor.folder_icon ]
+                        ffp : path 'images/folder.svg'
+                        if [ ffp.exists[] ] editor.folder_icon = SVGModel [ ffp ]
+                    if [ !editor.file_icon ]
+                        ffp2 : path 'images/file.svg'
+                        if [ ffp2.exists[] ] editor.file_icon = SVGModel [ ffp2 ]
+                    ico : SVGModel [ (h.is_dir) ? editor.folder_icon : editor.file_icon ]
+                    if [ ico ]
+                        hsz : f32 [ gth * 0.5 ]
+                        cv.draw_svg[ ico, ix + gth * 0.25, iy + gth * 0.25, hsz, hsz ]
+                # one label under the thumbnail: the name (like a folder cell)
+                ty : f32 [ cy + gm + gth + 2.0 ]
+                cv.font_size[ code_fs ]
+                cv.fill_color[ (h.is_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
+                cv.draw_text[ h.text, rect [ x: cx + gm, y: ty, w: grid_cw - gm * 2.0, h: 16.0 ],
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            cv.clear_crop[ ]
+            return
 
         # active-line glow: in the tab explorer it's the mouse-over row; otherwise it's
         # the debugger's current stop line. drawn behind the gutter/code so numbers and
@@ -542,11 +790,39 @@ Layer EditorLayer
         if [ editor.scroll.x > 0.0 ]
             cv.set_crop[ wtx + bounds.x + gut_w, wty + bounds.y,
                 wtx + bounds.x + bounds.w - rin, wty + bounds.y + bounds.h ]
-        # RESERVE pass: mark every visible CACHED line's slot as used THIS frame before any
-        # miss rasters. without this, a top-of-screen miss (scroll-up) recycles a slot still
-        # needed by a line below → that line misses → cascade (all lines re-raster). after
-        # this, recycling can only ever evict a genuinely off-screen slot.
-        if [ editor.code_lines ]
+        # band mode: composite code rows into vertical tiles and blit a handful of large
+        # render targets instead of one tiny RT per line. reserve the visible bands' slots
+        # first (so a top-band miss can't recycle a slot a lower visible band still needs),
+        # then ensure/blit each. the content loop below skips its per-line code blit.
+        if [ editor.band_rows != 1 ]
+            br : i32 [ (editor.band_rows >= 2) ? editor.band_rows : 8 ]
+            fr : i32 [ i32[ editor.scroll.y / lh ] ]
+            lr : i32 [ i32[ (editor.scroll.y + bounds.h) / lh ] ]
+            if [ fr < 0 ] fr = 0
+            fb : i32 [ fr / br ]
+            lb : i32 [ lr / br ]
+            cmt_b : rgba['#7a8290']
+            if [ editor.code_lines ]
+                for [ b: i32 fb, b <= lb, b += 1 ]
+                    bs : i32 [ b * br ]
+                    if [ bs >= editor.line_count[] ] break
+                    bh : i64 [ band_hash[ editor, bs, br, code_fs ] ]
+                    for [ slot: EdLineCache ] in editor.code_lines
+                        if [ slot.canvas && slot.hash == bh ]
+                            slot.frame = editor.cl_frame
+                            break
+            for [ b: i32 fb, b <= lb, b += 1 ]
+                bs : i32 [ b * br ]
+                if [ bs >= editor.line_count[] ] break
+                bnd : EdLineCache code_band[ cv, editor, bs, br, cmt_b, lh, cw_tm.w, code_fs ]
+                if [ bnd && bnd.canvas ]
+                    by : f32 [ y0 + f32[ bs ] * lh - editor.scroll.y ]
+                    cv.draw_canvas[ bnd.canvas, x0, round[ by ], f32[ bnd.canvas.content_w ], f32[ br ] * lh ]
+            cv.paint[ ]
+        # RESERVE pass (per-line path): mark every visible CACHED line's slot as used THIS
+        # frame before any miss rasters. without this, a top-of-screen miss (scroll-up)
+        # recycles a slot still needed by a line below → cascade (all lines re-raster).
+        el [ editor.code_lines ]
             for [ rli: i32 0, rli < editor.line_count[], rli += 1 ]
                 ry : f32 [ y0 + f32[rli] * lh - editor.scroll.y ]
                 if [ ry + lh < bounds.y ] continue
@@ -675,13 +951,15 @@ Layer EditorLayer
                     rect [ x: dpx, y: y, w: bounds.x + bounds.w - rin - dpx, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 continue
-            # per-line cache: a scrolled/unchanged line is a hash HIT → just composite its
-            # cached canvas at the row's y (no raster). only a first-seen/changed line rasters.
-            cmt_c : rgba['#7a8290']
-            msl   : i32 [ editor.row_src[ li ] ]
-            slc   : code_slot[ cv, editor, msl, ln, cmt_c, lh, cw_tm.w, code_fs ]
-            if [ slc && slc.canvas ]
-                cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
+            # band mode already blitted this code row as part of its tile (above); only the
+            # per-line path composites here. per-line cache: a scrolled/unchanged line is a
+            # hash HIT → just composite its cached canvas (no raster); a changed line rasters.
+            if [ editor.band_rows == 1 ]
+                cmt_c : rgba['#7a8290']
+                msl   : i32 [ editor.row_src[ li ] ]
+                slc   : code_slot[ cv, editor, msl, ln, cmt_c, lh, cw_tm.w, code_fs ]
+                if [ slc && slc.canvas ]
+                    cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
         if [ editor.text_lines_frame > 0 ]
             puts 'TEXT RASTER: {editor.text_lines_frame} lines this frame ({editor.text_lines_total} total)'
         cv.paint[ ]
@@ -738,9 +1016,11 @@ Layer EditorLayer
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             cv.paint[ ]
 
-        # outline the matched query substring on each visible result line (outline
-        # only). measured against the actual glyph advances so tabs/indent line up.
-        if [ showing && editor.find_query && editor.find_query.count > 0 ]
+        # outline the matched query substring on each visible line. works in BOTH modes:
+        # the find-in-files results list AND the normal editor (in-file find = the file shown
+        # as-is with every occurrence highlighted in place). measured against the actual glyph
+        # advances so tabs/indent line up.
+        if [ editor.find_query && editor.find_query.count > 0 ]
             for [ li: i32 0, li < editor.line_count[], li += 1 ]
                 if [ editor.row_header[ li ] ] continue
                 y : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
@@ -776,8 +1056,10 @@ Layer EditorLayer
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
                         cv.paint        [ ]
                     el
+                        # non-active occurrences: outlined in the same blue as the editor's
+                        # token-click occurrence highlight (the active one keeps the yellow).
                         cv.fill_color   [ rgba['#0000'] ]
-                        cv.stroke_color [ rgba['#ffcc66cc'] ]
+                        cv.stroke_color [ rgba['#6cb6ffaa'] ]
                         cv.stroke_width [ 1.0 ]
                         cv.rounded_rect [ mx, y + 2.0, mw + 2.0, lh - 4.0, 3.0, 3.0, 3.0, 3.0 ]
                         cv.paint        [ ]
@@ -1001,9 +1283,10 @@ Layer EditorLayer
 
 Control Editor
     public  selected      : bool
-    # find/replace bar open: doubles the title height (CSS :expanded), reveals the
-    # stacked Find + Replace rows, and pushes the code content down so it doesn't
-    # paint over them. lives on the Editor so one state drives title + content.
+    # find/replace bar open: drives the title's CSS :expanded state, which swaps the
+    # single title row in place for the one-line findbar (scope | find | replace | all).
+    # same height as the normal title, so the code content does NOT shift. lives on the
+    # Editor so one state drives title + content.
     public  expanded      : bool
     # find-in-files results display: when show_hits is set the editor renders
     # `hits` (file-title headers + matched code lines) instead of file content.
@@ -1019,6 +1302,15 @@ Control Editor
     # this is the browse/navigate list (not find-in-files): rows get a PIN toggle on
     # hover (vs the find-in-files remove-match close icon).
     public  nav_list      : bool
+    # render the index as a thumbnail grid instead of the row list (same hits).
+    public  grid_mode     : bool
+    # per-file thumbnail textures for the grid view, lazy-loaded + cached by abs path.
+    mutable thumb_cache   : map Texture[string]
+    # grid layout, computed each draw + read by hit-testing: column count, pinned-cell
+    # count, and the y-pixel offset where results begin (after the pins + separator gap).
+    mutable g_cols        : i32
+    mutable g_pins        : i32
+    mutable g_resoff      : f32
     # number of leading rows that are pinned dock entries; a separator line is drawn
     # after them to divide the dock from the browse results.
     public  dock_rows     : i32
@@ -1079,7 +1371,9 @@ Control Editor
     # DIAG: line RASTERIZATION counters (cache misses only) — per-frame + cumulative.
     mutable text_lines_frame : i32 [ 0 ]
     mutable text_lines_total : i64 [ 0 ]
-    # per-line rasterized-text cache (content-addressed, quantized canvases, recycled).
+    # rasterized-text cache (content-addressed, quantized canvases, recycled). holds both
+    # per-line slots and band-tile slots — the two text paths are mutually exclusive, so
+    # they share one pool (see band_rows / code_band).
     mutable code_lines    : array EdLineCache
     mutable cl_frame      : i32 [ 0 ]
     mutable cl_cw         : f32 [ 0.0 ]
@@ -1149,7 +1443,7 @@ Control Editor
     mutable gutter_w      : f32 [ 0.0 ]
     public  breakpoints   : map string[string]
     # code font size (px), injected by orbiter; gutter labels render smaller.
-    public  code_font_size : i32 [ 15 ]
+    public  code_font_size : i32
     # the stack-split seam width (units), injected by orbiter each frame. not read
     # in draw (din is measured from the live 'dbg' element bounds) — it's here so a
     # seam drag changes this prop, marks the editor dirty, and the code re-clips LIVE
@@ -1158,6 +1452,11 @@ Control Editor
     # editor (its container) and persists across frames — the title menu icon flips
     # it, so each tab shows/hides its own panel.
     mutable dbg_open      : bool
+    # band height in rows for the band-tile text path. 0 (unset) → default 8 (band on);
+    # 1 → per-line path; >=2 → that height. band slots share the `code_lines` pool (the
+    # two modes are mutually exclusive). no field default — an i32 default here would trip
+    # the aether fbits codegen bug for fields past bit 64.
+    public  band_rows     : i32
 
     # whole-line wash color: conditional (non-empty condition) vs plain.
     func bp_color [ cond: string ] -> rgba
@@ -1317,6 +1616,24 @@ Control Editor
         b : i32 [ s ]
         while [ b < n - 1 && word_char[ i32[ ln[b + 1] ] ] ] b += 1
         return ln.mid[ a, b - a + 1 ]
+
+    # double-click: extend the selection to span the whole word under the caret.
+    func select_word []
+        if [ sel_line < 0 || sel_line >= line_count[] ] return
+        if [ row_header[ sel_line ] ] return
+        ln : line_get[ sel_line ]
+        n  : i32 [ ln.count ]
+        if [ n == 0 ] return
+        s  : i32 [ clamp[ sel_col, 0, n ] ]
+        if [ s >= n || !word_char[ i32[ ln[s] ] ] ] s = s - 1
+        if [ s < 0 || !word_char[ i32[ ln[s] ] ] ] return
+        a : i32 [ s ]
+        while [ a > 0 && word_char[ i32[ ln[a - 1] ] ] ] a -= 1
+        b : i32 [ s ]
+        while [ b < n - 1 && word_char[ i32[ ln[b + 1] ] ] ] b += 1
+        anchor_line = sel_line
+        anchor_col  = a
+        sel_col     = b + 1
 
     # nearest editable (non-title) row at/after ln, else before it. the cursor
     # never rests on a file-title slot.
@@ -1852,6 +2169,25 @@ Control Editor
         if [ !t ] return null
         return ResourceView [ Au.new_object[ t, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ] ]
 
+    # cached thumbnail texture for the grid (image files only; null otherwise). downscaled
+    # so a folder of large pngs doesn't exhaust GPU memory; uses the gamma-correct (UNORM)
+    # path like the full image viewer.
+    # grid/thumbnail preview for a file. the format's ResourceView owns the actual decode +
+    # texture (thumbnail[]); orbiter only resolves the right view by extension and caches.
+    func thumb_for [ p: path, cv: Canvas ] -> Texture
+        if [ !p ] return null
+        if [ !thumb_cache ] thumb_cache = map Texture[string] []
+        key : '{p.absolute[]}'
+        ex : thumb_cache[ key ]
+        if [ ex ] return ex
+        rv : ResourceView resource_view_for[ p ]
+        if [ !rv ] return null
+        rv.src = p
+        tex : Texture rv.thumbnail*[ cv ]
+        if [ !tex ] return null
+        thumb_cache[ key ] = tex
+        return tex
+
     func load_file []
         if [ !src ] return
         # a resource view already loaded for THIS file → keep it. recreating it every
@@ -1866,6 +2202,13 @@ Control Editor
             rview = rv
             rview.src = src
             lines = list string []
+            # a resource view (image/…) doesn't scroll like code — reset the scroll
+            # position AND content size so it doesn't inherit the previous file's state.
+            scroll.x      = 0.0
+            scroll.y      = 0.0
+            scroll_target = 0.0
+            content_h     = 0.0
+            saved_scroll  = 0.0
             return
         rview = null
         # key by the canonical (realpath) absolute path — the SAME identity silver stamps on
@@ -1910,6 +2253,40 @@ Control Editor
             swap_history[ sb ]
 
     # compute the caret line/col from a click/drag point and set sel_line/sel_col.
+    # grid view: the hits index of the cell at content-rel (mx,my), or -1. shared by the
+    # click (place_cursor) and hover (on_move) so the highlight tracks the actual cell.
+    func grid_hit_index [ mx: f32, my: f32, bw: f32 ] -> i32
+        if [ !hits ] return -1
+        gcw  : f32 [ 140.0 ]
+        gch  : f32 [ 178.0 ]
+        cols : i32 [ (g_cols > 0) ? g_cols : 1 ]
+        ccol : i32 [ (mx - 4.0) / gcw ]
+        if [ my < 0.0 || ccol < 0 || ccol >= cols ] return -1
+        # which region: pinned rows, the break gap, or results (offset by g_resoff)?
+        pin_rows : i32 [ (g_pins + cols - 1) / cols ]
+        pin_end  : f32 [ f32[ pin_rows ] * gch ]
+        want_pin : bool [ false ]
+        grow     : i32  [ 0 ]
+        if [ g_pins > 0 && my < pin_end ]
+            want_pin = true
+            grow = i32[ my / gch ]
+        el [ my >= g_resoff ]
+            want_pin = false
+            grow = i32[ (my - g_resoff) / gch ]
+        el
+            return -1
+        target : i32 [ grow * cols + ccol ]
+        gi : i32 [ 0 ]
+        for [ li: i32 0, li < hits.count, li += 1 ]
+            h : FindHit hits[ li ]
+            if [ !h || !h.is_header || !h.file || h.is_spacer ] continue
+            if [ row_cont[ li ] ] continue
+            is_pin : bool [ li < dock_rows ]
+            if [ is_pin != want_pin ] continue
+            if [ gi == target ] return li
+            gi += 1
+        return -1
+
     func place_cursor [ ev: Event ] -> none
         ele   : (layers) ? (layers['content'] to EditorLayer) : null
         if [ !ele ] return
@@ -1927,6 +2304,14 @@ Control Editor
         # content click, so don't place the cursor (clicking the title's '-' was
         # selecting line 0).
         if [ rel_y < 0.0 ] return
+        # grid view: map the cell under the cursor → sel_line, so the existing
+        # open/navigate path fires. (find_target already folded scroll into mouse.pos.y.)
+        if [ grid_mode && show_hits && hits ]
+            gli : i32 [ grid_hit_index[ ev.mouse.pos.x - ele.bounds.x, rel_y, ele.bounds.w ] ]
+            if [ gli >= 0 ]
+                sel_line    = gli
+                anchor_line = gli
+            return
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x - gutter_w ]
         # rel_y/lh IS the row index — virtual tree rows are real lines in the flat model.
         raw   : i32 [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
@@ -1982,7 +2367,8 @@ Control Editor
         # a double-click (two presses within 350ms) while debug-locked re-arms editing
         # for this pane — the simple "I actually want to edit during a run" gesture.
         now : i64 [ epoch_micros[] ]
-        if [ debug_running && !edit_armed && (now - last_press_us) < 350000 ]
+        is_dbl : bool [ (last_press_us > 0) && (now - last_press_us) < 350000 ]
+        if [ debug_running && !edit_armed && is_dbl ]
             edit_armed = true
         last_press_us = now
         ele   : (layers) ? (layers['content'] to EditorLayer) : null
@@ -2093,6 +2479,8 @@ Control Editor
             place_cursor[ ev ]
             anchor_line = sel_line
             anchor_col  = sel_col
+            # double-click selects the whole word under the caret
+            if [ is_dbl ] select_word[]
         el
             place_cursor[ ev ]
         dragging = true
@@ -2121,7 +2509,12 @@ Control Editor
         # same coordinate math as place_cursor (find_target folds scroll into mouse.pos.y).
         rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
-        hl    : i32  [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]   # visual row = flat row
+        # grid view hovers a cell, not a row — map the cell so the highlight tracks x too.
+        hl    : i32  [ 0 ]
+        if [ grid_mode && show_hits && hits ]
+            hl = grid_hit_index[ rel_x, rel_y, ele.bounds.w ]
+        el
+            hl = clamp [ rel_y / lh, 0, line_count[] - 1 ]
         hg    : bool [ rel_x >= 0.0 && rel_x < gutter_w ]
         if [ rel_y < 0 ]
             hl  = -1

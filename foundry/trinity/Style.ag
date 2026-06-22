@@ -6,6 +6,12 @@ class CSSLine
     public content : string
     public line    : i32
 
+# one matched CSS block for the live inspector: the .css file + selector line. orbiter
+# uses these to open the style source for whatever UI element was clicked.
+class StyleHit
+    public file : path
+    public line : i32
+
 class LineInfo
     intern data            :  string
     intern len             :  num
@@ -55,6 +61,10 @@ class StyleBlock
     mutable key       : string
     mutable property  : string
     mutable type_name : string
+    # source location of this block's selector (for the live CSS inspector) — the .css
+    # file it was parsed from and the 1-based line of its selector. stamped in process[].
+    public  src_file  : path
+    public  src_line  : i32
 
     post construct [ p_sc: ref cstr ]
         sc : cstr p_sc
@@ -209,6 +219,11 @@ class StyleBlock
 
 class Style
     public  css_path  : path
+    # live inspector cycle state: repeated cmd+clicks on the SAME element step through its
+    # array of matched blocks (a different element resets). lives here (not on Window — adding
+    # Window instance members breaks orbiter's import of trinity at vk.ag:1095).
+    mutable inspect_el  : element
+    mutable inspect_idx : i32
     public  members   : map StyleEntries[string]
     public  reloader  : watch
     public  base      : array StyleBlock
@@ -274,7 +289,35 @@ class Style
 
         return ret
 
-    func process [ code: string ]
+    # LIVE CSS INSPECTOR: the rules whose FULL selector matches this element (so a shell
+    # button never picks up Editor's Option rules — context must match, not just the leaf
+    # type). most-specific first, so cmd+click lands on the button's own rule and cycling
+    # walks its remaining rules (base + :hover/:selected variants). each as {file, line}.
+    func element_style_blocks [ n: element ] -> array StyleHit
+        matched : array StyleBlock [ ]
+        for [ block: StyleBlock ] in base
+            if [ block.score[ n, false ] > 0 ]
+                matched.push[ block ]
+        # most-specific directly-matching rule first (highest selector score)
+        i : i32 [ 0 ]
+        while [ i < matched.count ]
+            bestj : i32 [ i ]
+            j : i32 [ i + 1 ]
+            while [ j < matched.count ]
+                if [ matched[j].score[ n, false ] > matched[bestj].score[ n, false ] ]
+                    bestj = j
+                j += 1
+            if [ bestj != i ]
+                tmp : matched[i]
+                matched[i]     = matched[bestj]
+                matched[bestj] = tmp
+            i += 1
+        hits : array StyleHit [ ]
+        for [ b: StyleBlock ] in matched
+            hits.push[ StyleHit [ file: b.src_file, line: b.src_line ] ]
+        return hits
+
+    func process [ code: string, src: path ]
         if [ !base    ] base    = array StyleBlock [ ]
         if [ !visited ] visited = array string     [ ]
         if [ !errors  ] errors  = array string     [ ]
@@ -299,7 +342,7 @@ class Style
                 if [ visited.index_of[ key ] < 0 ]
                     visited.push[ key ]
                     sub : p.load[ typeid[ string ], null ]
-                    process[ sub ]
+                    process[ sub, p ]
                 i += 1
                 continue
             if [ content.last[] == '{' ]
@@ -311,6 +354,8 @@ class Style
             sc : cstr [ content.chars ]
             bl.quals = parse_qualifiers[ bl, ref sc ]
             parse_block_body[ bl, lines, i + 1, end_idx - 1, 0 ]
+            bl.src_file = src
+            bl.src_line = lines[i].line
             validate_block[ bl, errors ]
             base.push[ bl ]
             # nested pseudo-state sections: an indent-0 line beginning with ':'
@@ -332,6 +377,8 @@ class Style
                 ssc : cstr [ state_sel.chars ]
                 sbl.quals = parse_qualifiers[ sbl, ref ssc ]
                 parse_block_body[ sbl, lines, body_start, body_end - 1, 0 ]
+                sbl.src_file = src
+                sbl.src_line = lines[end_idx].line
                 validate_block[ sbl, errors ]
                 base.push[ sbl ]
                 end_idx = body_end
@@ -393,7 +440,7 @@ class Style
             visited = array string     [ ]
             errors  = array string     [ ]
             members = map StyleEntries[string] []
-            process[ css_path.load[ typeid[ string ], null ] ]
+            process[ css_path.load[ typeid[ string ], null ], css_path ]
             cache_members[]
             loaded   = true
             reloaded = true
@@ -407,7 +454,7 @@ class Style
         css_path  = p
         mod_time  = p.modified_time[ ]
         members   = map StyleEntries[string] []
-        process[ style_str ]
+        process[ style_str, p ]
         report_errors[]
         cache_members[]
         loaded   = true
@@ -456,6 +503,10 @@ struct XCoord
     # element is offset left by its computed width; with a left anchor it grows
     # rightward. resolved in the layout pass.
     content  : bool
+    # a percent coord may carry a trailing +/- offset: `50%-2` (2 units) or `50%-2px`
+    # (2 px) — position at the percent, then nudge. pct_off is added on top of the percent.
+    pct_off       : f32
+    pct_off_pixel : bool
 
     construct [ sx: string ]
         uni : unichar[ sx.first[] ]
@@ -485,15 +536,23 @@ struct XCoord
                     if [ sx_offset.chars[ sx_offset.count - 2 ] == 'p' ]
                         sx_offset = sx_offset.mid[ 0, sx_offset.count - 2 ]
                         pixel     = true
-                if [ sx_offset.last[] == '%' ]
-                    sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
-                    percent   = true
-                if [ sx_offset ]
-                    if [ sx_offset.last[] == '+' ]
+                # percent, optionally with a trailing +/- offset: `50%`, `50%-2` (units),
+                # `50%-2px` (px — the px suffix above set `pixel`, which the offset adopts).
+                pct_at : i32 [ sx_offset.index_of[ '%' ] ]
+                if [ pct_at >= 0 ]
+                    percent = true
+                    offset  = sx_offset.mid[ 0, pct_at ].real_value[] / 100.0
+                    off_str : sx_offset.mid[ pct_at + 1, sx_offset.count - pct_at - 1 ]
+                    if [ off_str.count > 0 && off_str.chars[0] == '+' ]
+                        off_str = off_str.mid[ 1, off_str.count - 1 ]
+                    if [ off_str.count > 0 ]
+                        pct_off       = off_str.real_value[]
+                        pct_off_pixel = pixel
+                el
+                    if [ sx_offset && sx_offset.last[] == '+' ]
                         sx_offset = sx_offset.mid[ 0, sx_offset.count - 1 ]
                         relative  = true
-                offset = sx_offset.real_value[]
-                if [ percent ] offset /= 100.0
+                    offset = sx_offset.real_value[]
 
     func plot [ from: f32, vto: f32, left: ref XCoord, left_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
@@ -504,6 +563,9 @@ struct XCoord
             off  = (offset > 16.0) ? 1.0 : 0.0
             fc_m = fc
         val  : f32 [ mix[ off * fc_m, offset * (vto - from), f32[percent] ] ]
+        # a percent coord may carry a +/- nudge (`50%-2` = 50% minus 2 units; `-2px` = px)
+        if [ percent && pct_off != 0.0 ]
+            val += pct_off * ((pct_off_pixel) ? 1.0 : ((fc > 0.0) ? fc : 1.0))
         if [ x_type > XAlign.right ]
             expect (left.x_type <= XAlign.right), 'invalid left-operand (xcoord)'
             return left_val + val
@@ -524,7 +586,9 @@ struct XCoord
             percent: bool[  mix[ f32[percent],  f32[other.percent],  f ]],
             relative:bool[mix[ f32[relative], f32[other.relative], f ]],
             pixel:   other.pixel,
-            content: other.content
+            content: other.content,
+            pct_off:        mix[ pct_off, other.pct_off, f ],
+            pct_off_pixel: other.pct_off_pixel
         ]
 
 
@@ -536,6 +600,9 @@ struct YCoord
     pixel    : bool
     # `hc` = height from content (offset up by computed height when bottom-anchored)
     content  : bool
+    # `50%-2` (units) / `50%-2px` (px): percent position plus a trailing +/- nudge.
+    pct_off       : f32
+    pct_off_pixel : bool
 
     construct [ sy: string ]
         f : string [ sy.first[] ]
@@ -564,15 +631,22 @@ struct YCoord
                     if [ sy_offset.chars[ sy_offset.count - 2 ] == 'p' ]
                         sy_offset = sy_offset.mid[ 0, sy_offset.count - 2 ]
                         pixel     = true
-                if [ sy_offset.last[] == '%' ]
-                    sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
-                    percent   = true
-                if [ sy_offset ]
-                    if [ sy_offset.last[] == '+' ]
+                # percent + optional trailing +/- offset: `50%`, `50%-2` (units), `50%-2px`.
+                pct_at : i32 [ sy_offset.index_of[ '%' ] ]
+                if [ pct_at >= 0 ]
+                    percent = true
+                    offset  = sy_offset.mid[ 0, pct_at ].real_value[] / 100.0
+                    off_str : sy_offset.mid[ pct_at + 1, sy_offset.count - pct_at - 1 ]
+                    if [ off_str.count > 0 && off_str.chars[0] == '+' ]
+                        off_str = off_str.mid[ 1, off_str.count - 1 ]
+                    if [ off_str.count > 0 ]
+                        pct_off       = off_str.real_value[]
+                        pct_off_pixel = pixel
+                el
+                    if [ sy_offset && sy_offset.last[] == '+' ]
                         sy_offset = sy_offset.mid[ 0, sy_offset.count - 1 ]
                         relative  = true
-                offset = sy_offset.real_value[]
-                if [ percent ] offset /= 100.0
+                    offset = sy_offset.real_value[]
 
     func plot [ from: f32, vto: f32, top: ref YCoord, top_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
@@ -583,6 +657,8 @@ struct YCoord
             off  = (offset > 16.0) ? 1.0 : 0.0
             fc_m = fc
         val  : f32 [ mix[ off * fc_m, offset * (vto - from), percent ] ]
+        if [ percent && pct_off != 0.0 ]
+            val += pct_off * ((pct_off_pixel) ? 1.0 : ((fc > 0.0) ? fc : 1.0))
         if [ y_type > YAlign.bottom ]
             expect top.y_type <= YAlign.bottom, 'invalid top-operand (ycoord)'
             return top_val + val
@@ -603,7 +679,9 @@ struct YCoord
             percent:  bool[   mix[ f32[percent],   f32[other.percent],  f ] ],
             relative: bool[   mix[ f32[relative],  f32[other.relative], f ] ],
             pixel:    other.pixel,
-            content:  other.content
+            content:  other.content,
+            pct_off:          mix[ pct_off,        other.pct_off,       f ],
+            pct_off_pixel: other.pct_off_pixel
         ]
 
 

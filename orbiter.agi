@@ -16,15 +16,9 @@ consoles:
 	shell: ConsoleInstance
 		name:	shell
 		kind:	shell
+
 	claude: ConsoleInstance
 		name:	claude
 		kind:	claude
-		run:	claude
-	nemotron: ConsoleInstance
-		name:	nemotron
-		kind:	openclaw
-		run:	openclaw nemotron
-	gemini: ConsoleInstance
-		name:	gemini
-		kind:	gemini
-		run:	gemini -y
+		run:	claude --dangerously-skip-permissions --resume
+
