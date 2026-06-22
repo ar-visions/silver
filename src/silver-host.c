@@ -9,6 +9,9 @@
 #include <signal.h>
 #include <execinfo.h>
 #include <sys/wait.h>
+#include <spawn.h>
+
+extern char** environ;
 
 typedef int        (*frame_fn)(void);
 typedef void       (*destroy_fn)(void);
@@ -16,6 +19,9 @@ typedef void       (*init_fn)(void);
 typedef int        (*au_compile_ready_fn)(void);
 typedef void       (*au_compile_invoke_fn)(const char*);
 typedef void       (*au_main_args_fn)(int, char**);
+typedef void       (*au_live_set_pending_fn)(int);
+typedef int        (*au_live_take_apply_fn)(void);
+typedef int        (*au_live_get_defer_fn)(void);
 
 // stash the process argv into libAu (loaded inside the app .so) so silver_live_init
 // can parse the app's command-line flags into its instance. safe no-op on old libs.
@@ -145,9 +151,21 @@ static int rebuild_blocking(const char* name) {
         name);
     fprintf(stdout, "%s: source changed — rebuilding\n", name);
     fflush(stdout);
-    int rc = system(cmd);
-    if (rc == -1) {
-        fprintf(stderr, "%s: BUILD ERROR — could not launch silver\n", name);
+    // posix_spawn, NOT system(): system() fork()s, and this host is a multithreaded
+    // GUI process (MoltenVK / libdispatch / GLFW). fork() from a multithreaded process
+    // copies only the calling thread but inherits locks held by the others — the child
+    // can deadlock on a malloc lock before it reaches exec, freezing the whole app.
+    // posix_spawn execs without running user code in the child, so it can't deadlock.
+    char* sh_argv[] = { "/bin/sh", "-c", cmd, NULL };
+    pid_t pid = 0;
+    int sp = posix_spawn(&pid, "/bin/sh", NULL, NULL, sh_argv, environ);
+    if (sp != 0) {
+        fprintf(stderr, "%s: BUILD ERROR — posix_spawn failed: %s\n", name, strerror(sp));
+        return -1;
+    }
+    int rc = 0;
+    if (waitpid(pid, &rc, 0) < 0) {
+        fprintf(stderr, "%s: BUILD ERROR — waitpid failed\n", name);
         return -1;
     }
     if (WIFSIGNALED(rc)) {
@@ -160,6 +178,17 @@ static int rebuild_blocking(const char* name) {
         return -1;
     }
     return 0;
+}
+
+// recompile via the in-process compiler if the app published one, else shell out to silver.
+static int do_recompile(void* handle, const char* name) {
+    au_compile_ready_fn  ready_fn  = (au_compile_ready_fn) dlsym(handle,  "au_compile_ready");
+    au_compile_invoke_fn invoke_fn = (au_compile_invoke_fn)dlsym(handle, "au_compile_invoke");
+    if (ready_fn && ready_fn() && invoke_fn) {
+        invoke_fn(name);   // in-process compiler reports its own errors
+        return 0;
+    }
+    return rebuild_blocking(name);
 }
 
 int main(int argc, char** argv) {
@@ -193,6 +222,14 @@ int main(int argc, char** argv) {
     const char* name   = basename(self);
     const char* bindir = dirname(self2);
     g_app_name = name;
+
+    // --defer-reload (or SILVER_DEFER_RELOAD): don't auto-recompile on a source change —
+    // stage it, signal the app it's pending, and only recompile + hot-swap when the app
+    // requests it (au_live_request_apply). lets orbiter show a "reload ready" affordance.
+    // deferred live-reload is normally turned ON BY THE APP at runtime (it calls
+    // au_live_set_defer; the watch loop below polls au_live_get_defer each iteration). the
+    // user passes nothing. SILVER_DEFER_RELOAD is just a dev override that forces it on.
+    int host_defer = (getenv("SILVER_DEFER_RELOAD") != NULL);
 
     char product[4096];
     snprintf(product, sizeof(product), "%s/%s.product", bindir, name);
@@ -242,39 +279,58 @@ int main(int argc, char** argv) {
     if (do_init) do_init();
 
     time_t last_mtime = file_mtime(product);
+    int host_pending = 0;   // defer mode: a source change is staged, awaiting the app's go
 
     while (do_frame && do_frame()) {
-        // watch source files — trigger recompile when any .ag or .c changes
+        // app<->host signals (resolved each iter — handle changes across reloads)
+        au_live_set_pending_fn set_pending = (au_live_set_pending_fn)dlsym(handle, "au_live_set_pending");
+        au_live_take_apply_fn  take_apply  = (au_live_take_apply_fn) dlsym(handle, "au_live_take_apply");
+        au_live_get_defer_fn   get_defer   = (au_live_get_defer_fn)  dlsym(handle, "au_live_get_defer");
+        // defer is dynamic: the app turns it on (au_live_set_defer); env forces it for devs.
+        int defer = host_defer || (get_defer && get_defer());
+
+        // watch source files — when any .ag/.c changes
         int force = 0;
+        int changed = 0;
         for (int i = 0; i < nsr; i++) {
-            time_t cur = file_mtime(srcs[i].path);
-            if (cur != srcs[i].mtime) {
+            if (file_mtime(srcs[i].path) != srcs[i].mtime) {
                 fprintf(stdout, "%s: source changed: %s\n", name, srcs[i].path);
-                // use handle (not RTLD_DEFAULT) so we find symbols in transitive deps (libAu.so)
-                au_compile_ready_fn  ready_fn  = (au_compile_ready_fn)dlsym(handle,  "au_compile_ready");
-                au_compile_invoke_fn invoke_fn = (au_compile_invoke_fn)dlsym(handle, "au_compile_invoke");
-                // recompile SYNCHRONOUSLY so we can see whether it succeeded — a
-                // backgrounded build hides errors and races the reload check.
-                int rc;
-                if (ready_fn && ready_fn() && invoke_fn) {
-                    invoke_fn(name);   // in-process compiler reports its own errors
-                    rc = 0;
-                } else {
-                    rc = rebuild_blocking(name);
-                }
-                // refresh all source mtimes so we don't retrigger until next edit
-                for (int j = 0; j < nsr; j++)
-                    srcs[j].mtime = file_mtime(srcs[j].path);
+                changed = 1;
+            }
+        }
+        if (changed) {
+            // refresh all source mtimes so we don't retrigger until the next edit
+            for (int j = 0; j < nsr; j++)
+                srcs[j].mtime = file_mtime(srcs[j].path);
+            if (defer) {
+                // stage it: signal the app a reload is pending; recompile only on its request
+                host_pending = 1;
+                if (set_pending) set_pending(1);
+            } else {
+                // recompile SYNCHRONOUSLY so we can see whether it succeeded
+                int rc = do_recompile(handle, name);
                 if (rc == 0) {
                     force = 1;   // good build → reload below
                 } else {
-                    // we're already running: a failed recompile must NOT swap in a
-                    // broken or stale module, and must NOT take the app down. report
-                    // it and keep the live instance running on the last good build.
+                    // a failed recompile must NOT swap in a broken module or take the app
+                    // down — keep the live instance running on the last good build.
                     fprintf(stderr, "%s: recompile FAILED — keeping the running build "
                         "(fix the errors above; the app stays up)\n", name);
                 }
-                break;
+            }
+        }
+
+        // defer mode: the app asked us to apply the staged change → recompile + reload now
+        if (defer && host_pending && take_apply && take_apply()) {
+            host_pending = 0;
+            if (set_pending) set_pending(0);
+            int rc = do_recompile(handle, name);
+            for (int j = 0; j < nsr; j++)
+                srcs[j].mtime = file_mtime(srcs[j].path);
+            if (rc == 0) {
+                force = 1;
+            } else {
+                fprintf(stderr, "%s: recompile FAILED — keeping the running build\n", name);
             }
         }
 
