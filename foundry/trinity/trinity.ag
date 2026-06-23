@@ -846,9 +846,10 @@ Display Window
                 # seed the caret to the end of the edit buffer so an editable shows its
                 # cursor on the FIRST focus. without this, sel_col stays -1 until a click
                 # lands on the editable layer (which only exists once focused) — so the
-                # caret only appeared on the SECOND click.
-                if [ focus.edit && focus.sel_col < 0 ]
-                    focus.sel_col    = focus.edit.count
+                # caret only appeared on the SECOND click. seed 0 for an EMPTY buffer too,
+                # else an empty editable (e.g. a blank replace field) never shows a cursor.
+                if [ focus.sel_col < 0 ]
+                    focus.sel_col    = (focus.edit) ? focus.edit.count : 0
                     focus.anchor_col = focus.sel_col
                 focus.restyle = true
                 focus.pristine = false

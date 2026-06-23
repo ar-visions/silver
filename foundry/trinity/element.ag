@@ -508,6 +508,12 @@ class Layer
             if [ !label_font_cache ]
                 label_font_cache = CanvasFont [ ft_lib: cv.ft_lib, uri: label_font, size_px: i32[label_size] ]
             cv.set_font[ label_font_cache ]
+        el
+            # load the default font NOW. font_size only sets the size; the font is loaded
+            # lazily by measure_text/draw_text — which are below the guard. on a fresh canvas
+            # (an editable element with no other text, e.g. an empty find/replace field) cv.font
+            # would still be null here and the draw would bail before ever loading it.
+            cv.ensure_font[]
         if [ !cv.font ] return
         # the editable buffer is separate storage; the label is shown as a dim
         # placeholder ONLY while actively focused with nothing typed yet. with

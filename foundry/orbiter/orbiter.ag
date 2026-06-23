@@ -253,6 +253,9 @@ trinity orbiter # implements compiler
     # file only ('In-File' on the Find row); false = files matching the pattern
     # ('Files' on the Replace row).
     public find_in_file  : bool
+    # the 'Replace' nav button is a toggle: off = just the Find row; on = exposes the
+    # replace input + the 'All' (replace-all) button. drives the Editor's :replacing state.
+    public replace_open  : bool
     # find-in-files results: find_showing makes the editor pane render find_hits
     # (file-title headers + matched lines) instead of file content. fed to the
     # Editor each frame via props.
@@ -1058,10 +1061,14 @@ trinity orbiter # implements compiler
         # nav series (right-anchored), set in flow order: replace, All, close, undock, dock.
         # all always present (hidden h0 until :expanded) so their slots never move. 'find'
         # is NOT here — it's a standalone left-aligned field (els['find'] below).
-        nav['replace'] = element [ label: 'Replace', edit: replace_text ]
+        # 'Replace' is now a toggle BUTTON that exposes the replace input + the 'All'
+        # button. the input/All stay in the flow (stable slots) but are w0 h0 until the
+        # Editor is :replacing (replace_open). the button lights with a 1px blue outline.
+        nav['replace_btn'] = Option [ label: 'Replace', selected: replace_open ]
+        nav['replace'] = element [ label: 'replace', edit: replace_text ]
         nav['replace_all_action'] = Option [ selected: false ]
         if [ !is_resource ]
-            nav['magnify'] = Option [ selected: findbar_open ]
+            nav['magnify'] = Button []
         if [ editor_slots.count > 1 ]
             nav['undock'] = Button []
         if [ editor_slots.count < 4 ]
@@ -1080,7 +1087,19 @@ trinity orbiter # implements compiler
         # the green scope field: shows the current filename by default (in-file search);
         # type a glob into it to search across files instead — no separate Files toggle.
         # find/replace are always present (h0 until :expanded) so their order is stable too.
-        els['pattern'] = element [ label: (hasfile) ? p.filename[] : 'Files', edit: pattern_text ]
+        # in-file (find_in_file true, default): the scope is a STATIC filename label —
+        # not focusable, no edit buffer, so it just shows the file name. toggling
+        # find_in_files (→ find_in_file false) makes it focusable + binds the editable
+        # pattern_text, so the user can type a glob. the toggle lights in files mode.
+        els['pattern'] = element [
+            label: (hasfile) ? p.filename[] : 'Files',
+            edit: (find_in_file) ? '' : pattern_text,
+            focusable: !find_in_file,
+            elements: [
+                'close_find': Button [],
+                'find_in_files': Option [ selected: !find_in_file ]
+            ]
+        ]
         els['find']    = element [ label: 'Find',    edit: findbar_text ]
         els['nav'] = element [ topmost: true, elements: nav ]
         return els
@@ -1122,7 +1141,7 @@ trinity orbiter # implements compiler
             debug_running: running, debugger: dbgr, debug_vars: debug_vars,
             # the findbar belongs to the pane whose magnify opened it (findbar_on);
             # find-in-files hits render only in the focused search pane (searchable).
-            expanded: findbar_on, show_hits: (searchable) ? (find_showing || nav_showing) : false,
+            expanded: findbar_on, replacing: (findbar_on && replace_open), show_hits: (searchable) ? (find_showing || nav_showing) : false,
             single_line: (nav_showing && browse_single), header_size: browse_header_size, dir_size: browse_dir_size,
             nav_list: (searchable) ? nav_showing : false, dock_rows: nav_dock_rows,
             grid_mode: (searchable) ? (nav_showing && grid_mode) : false,
@@ -1298,9 +1317,9 @@ trinity orbiter # implements compiler
             return
         a_slot : i32 [ (active_pane >= 0 && active_pane < editor_slots.count) ? editor_slots[active_pane] : -1 ]
         p : path (a_slot >= 0 && a_slot < open_files.count) ? open_files[a_slot] : null
-        # scope field (pattern_text) drives it: empty → search THIS file; a typed glob →
-        # search across files. no separate In-File/Files toggle anymore.
-        scan_current : bool [ (!pattern_text || pattern_text.count == 0) && p ]
+        # the find_in_files toggle drives it: lit (find_in_file) → search THIS file; off →
+        # walk the foundry tree (the glob in pattern_text still filters which files).
+        scan_current : bool [ find_in_file && p ]
         if [ scan_current ]
             # in-file = Notepad-style: the editor stays AS-IS (no filtered list) and the
             # matches highlight in place via find_query (live, per keystroke). so there's no
@@ -2128,6 +2147,68 @@ trinity orbiter # implements compiler
             if [ !findbar_open ] find_showing = false
             if [ ev.target ] ev.target.ux.restyle = true
             return
+        # replace_btn: toggle the replace input + 'All' button into the bar. opening it
+        # focuses the input (like open_find does for Find) so it's immediately editable —
+        # seed the caret to the end of the live buffer so the cursor shows on first focus.
+        if [ ev.target.id == 'replace_btn' ]
+            replace_open = !replace_open
+            if [ replace_open && ev.target.parent ]
+                re : element ev.target.parent.elements['replace']
+                puts 'replace_btn: re={(re) ? 1 : 0}'
+                if [ re ]
+                    re.sel_col    = (re.edit) ? re.edit.count : 0
+                    re.anchor_col = re.sel_col
+                    re.set_focus[]
+                    puts 'replace focus: focusable={(re.focusable) ? 1 : 0} focused={(re.focused) ? 1 : 0} edit_ct={(re.edit) ? re.edit.count : -1}'
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            force_update[]
+            return
+        # close_find: the X inside the scope field — closes the find/replace bar.
+        if [ ev.target.id == 'close_find' ]
+            findbar_open = false
+            find_showing = false
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            force_update[]
+            return
+        # replace input: a plain editable element isn't reliably focused by the default
+        # focusable path here, so focus it explicitly on click (seed the caret to the end).
+        if [ ev.target.id == 'replace' ]
+            puts 'replace press: focusable={(ev.target.focusable) ? 1 : 0}'
+            ev.target.sel_col    = (ev.target.edit) ? ev.target.edit.count : 0
+            ev.target.anchor_col = ev.target.sel_col
+            ev.target.set_focus[]
+            force_update[]
+            return
+        # find_in_files: toggle the search scope. lit (the toggle, selected: !find_in_file)
+        # = files mode → the scope becomes an editable glob; off = Notepad-style in-file find
+        # where the scope is just the static filename. entering files mode focuses the scope
+        # so the user can type the pattern right away.
+        if [ ev.target.id == 'find_in_files' ]
+            find_in_file = !find_in_file
+            # the scope keeps TWO separate stores: the live edit buffer (pe.edit, what the
+            # field shows) and pattern_text (the persistent glob). apply_args never copies
+            # `edit`, so the buffer is set explicitly here when the mode flips.
+            pe : element ev.target.parent
+            if [ pe ]
+                if [ find_in_file ]
+                    # back to in-file: clear the buffer so the field shows the static
+                    # filename label again; pattern_text is preserved for next time.
+                    pe.edit       = ''
+                    pe.sel_col    = 0
+                    pe.anchor_col = 0
+                    pe.release_focus[]
+                el
+                    # files: load the saved glob into the buffer and focus for editing.
+                    pe.edit       = pattern_text
+                    pe.sel_col    = (pattern_text) ? pattern_text.count : 0
+                    pe.anchor_col = pe.sel_col
+                    pe.set_focus[]
+            run_find_in_files[]
+            ev.no_default = true
+            force_update[]
+            return
         # the scope field (id 'pattern') is now a plain editable — a click just focuses it
         # for typing a glob; no toggle. typing + Enter re-runs the search (on_key).
         # mid action buttons — run find / replace (logic TBD)
@@ -2334,7 +2415,7 @@ trinity orbiter # implements compiler
                     if [ pattern_text && pattern_text.count > 0 ]
                         pattern_text = pattern_text.mid[ 0, pattern_text.count - 1 ]
             el [ k == 257 ]    # Key.Enter
-                in_file : bool [ !pattern_text || pattern_text.count == 0 ]
+                in_file : bool [ find_in_file ]
                 if [ in_file ]
                     # Notepad-style: Enter steps to the next occurrence in THIS file (the
                     # yellow active-match follows the selection); no filtered list.

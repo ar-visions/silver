@@ -2,7 +2,7 @@ extend orbiter
 
 class FileBuf
     public lines : list string
-    public mtime : i64 [ 0 ]
+    public mtime : i64 [ 0 ] # test
 	
     # per-file undo history (keyed by URI via file_cache, same as `lines`). hist is the
     # linked list of EditAction delta groups; hist_i the cursor = number of groups applied
@@ -1457,6 +1457,10 @@ Control Editor
     # two modes are mutually exclusive). no field default — an i32 default here would trip
     # the aether fbits codegen bug for fields past bit 64.
     public  band_rows     : i32
+    # 'Replace' toggle open: drives the title's :replacing CSS state (un-hides the replace
+    # input + 'All'). declared LAST with no default — a default here would trip the aether
+    # fbits codegen bug for fields past the word boundary (same reason as band_rows).
+    public  replacing     : bool
 
     # whole-line wash color: conditional (non-empty condition) vs plain.
     func bp_color [ cond: string ] -> rgba
@@ -2741,7 +2745,19 @@ Control Editor
         # copy: Ctrl/Cmd-C copies the highlighted text to the system clipboard.
         if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 67 ]    # Key.C
             txt : string selected_text[]
+            puts 'copy: len={txt.count} ux={(ux) ? 1 : 0}'
             if [ txt.count > 0 && ux ] ux.set_clipboard[ txt ]
+            return
+
+        # cut: Ctrl/Cmd-X copies the highlighted text, then deletes it (delete_selection
+        # collapses the caret to the span start and clears pristine on its own).
+        if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 88 ]    # Key.X
+            txt : string selected_text[]
+            puts 'cut: len={txt.count} ux={(ux) ? 1 : 0}'
+            if [ txt.count > 0 && ux ]
+                ux.set_clipboard[ txt ]
+                delete_selection[]
+                ux.will_animate = true
             return
 
         # undo / redo: Ctrl/Cmd-Z (Shift = redo); Ctrl/Cmd-Y also redoes.

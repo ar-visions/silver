@@ -923,18 +923,50 @@ Option.git {
         image_svg:              "images/git.svg"
 }
 
-Option.magnify {
+Button.magnify {
+    area:                       l0+ t0 w34px h34px
+    layers.base:
+        fill_color:             #0000
+        inner_glow:             #0000 24
+        radius:                 8
     layers.svg:
+        area:                   4px
+        image_align:            0.5 0.5
         image_svg:              "images/magnify.svg"
         image_scale:            1.8
-:selected
+        opacity:                0.5
+:hovered
     layers.base:
         fill_color:             #8af4
         inner_glow:             #8afa 24
     layers.svg:
         opacity:                1.0
-        image_svg:              "images/close.svg"
-        image_scale:            1.8
+}
+
+/* in find mode the bar carries its own close (X) inside the scope field, so the
+   nav magnify (the opener) collapses to nothing — keeps its slot, zero size. */
+Editor:expanded / element.title / element.nav / Button.magnify {
+    area:                       l0+ t0 w0 h0
+}
+
+/* close (X) inside the scope field, left side — closes the find bar. mirrors the
+   find_in_files toggle which sits on the right (r1.2 … r0.2). */
+Button.close_find {
+    area:                       l0.2 t0.2 l1.2 b0.2
+    layers.base:
+        fill_color:             #0000
+        radius:                 8
+    layers.svg:
+        area:                   1px
+        image_align:            0.5 0.5
+        image_svg:              "images/back.svg"
+        image_scale:            2.0
+        opacity:                0.5
+:hovered
+    layers.base:
+        fill_color:             #8af0
+    layers.svg:
+        opacity:                1.0
 }
 
 /* pins show/hide toggle — an outlined token chip (transparent fill, 1px rounded
@@ -1095,17 +1127,13 @@ element.find {
 /* replace flows in the nav series after the close — same l0+ coords as the buttons, just a
    bigger width. hidden (w0 h0) until :expanded, always present so its slot is stable. */
 element.replace {
+    focusable: true
     area:                       l0+ t0 w0 h0
-    focusable:                  true
-    layers.base:
-        fill_color:             #0000
     layers.text:
-        area:                   l10px t0 r10px b0
-        label_color:            #fff6
+        area:                   l0.5 t0 r0 b0
+        label_color:            #fff4
         label_align:            0.0 0.5
-        label_size:             15
-:focused
-    layers.text:
+        label_size:             14
         editable:               true
 :has_value
     layers.text:
@@ -1116,20 +1144,39 @@ element.replace {
    glob into it to search across files. left-aligned like a label. */
 element.pattern {
     area:                       l0 t0 r0 h0
-    focusable:                  true
     layers.base:
         fill_color:             #2f6b3acc
     layers.divider:
         area:                   r0 t0 w1px b0
         fill_color:             #fff2
     layers.text:
-        area:                   l1 t0 r12px b0
+        area:                   l44px t0 r44px b0
         label_color:            #dfffe0
         label_align:            0.0 0.5
         label_size:             19
 :focused
     layers.text:
         editable:               true
+}
+
+Option.find_in_files {
+    area: r1.2 t0.2 r0.2 b0.2
+    layers.base:
+        stroke_width:           1
+        stroke_color:           #6cb6ff00
+        radius:                 8
+    layers.svg:
+        area:                   1px
+        image_align:            0.5 0.5
+        image_scale:            1.2
+        image_svg:              "images/find_in_files.svg"
+        opacity:                0.3
+:selected
+    layers.base:
+        stroke_width:           1
+        stroke_color:           #6cb6ffcc
+    layers.svg:
+        opacity:                1.0
 }
 
 element.infile {
@@ -1182,11 +1229,44 @@ Option.replace_all_action {
         opacity:                1.0
 }
 
+/* the 'Replace' toggle button — exposes the replace input + All. base w0 h0 (stable
+   slot, sized when :expanded). 6px radius; a 1px blue outline lights when selected. */
+Option.replace_btn {
+    area:                       l0+ t0 w0 h0
+    layers.base:
+        fill_color:             #0000
+        radius:                 6
+        stroke_width:           1
+        stroke_color:           #6cb6ff00
+        inner_glow:             #fff0 0
+    layers.label:
+        label:                  'Replace'
+        label_color:            #fff
+        label_size:             14
+        label_align:            0.5 0.5
+        opacity:                0.6
+:hovered
+    layers.base:
+        fill_color:             #8af4
+    layers.label:
+        opacity:                1.0
+:selected
+    layers.base:
+        stroke_width:           1
+        stroke_color:           #6cb6ff00
+    layers.label:
+        opacity:                1.0
+}
+
+Editor:expanded / element.title / element.nav / Option.replace_btn {
+    area: l0+ t0 w80px h34px
+}
+
 /* findbar (title :expanded): scope (green, left) then the nav series flowing right-to-left
    by set order — close · undock · dock · find · All · replace. nav spans from after the
    scope to the right edge; un-hide find/replace/All with widths (flow places them). */
 Editor:expanded / element.title / element.pattern {
-    area: l0 t1px w8 h43px
+    area: l0 t1px w7 h43px
 }
 
 /* right-anchored (base r5px wc) so the whole series hugs the right edge of the title. */
@@ -1195,17 +1275,22 @@ Editor:expanded / element.title / element.nav {
 }
 
 Editor:expanded / element.title / element.find {
-    area: l8 t1px r280px h43px
+    area: l7 t1px r280px h43px
 }
 
-Editor:expanded / element.title / element.nav / element.replace {
-    area: l0+ t0 w120px h34px
+/* the input + All un-hide only when the Replace toggle is on (:replacing), not on
+   every :expanded. they keep their flow slots (w0 h0 in base) so order is stable. */
+Editor:replacing / element.title / element.nav / element.replace {
+    area: l0+ t0 w240px h34px
     layers.border2:
-        area:           l-1px t0 w1px b0
+        area:           l4px t0 w1px b0
+        fill_color:     #fff2
+    layers.border3:
+        area:           r4px t0 w1px b0
         fill_color:     #fff2
 }
 
-Editor:expanded / element.title / element.nav / Option.replace_all_action {
+Editor:replacing / element.title / element.nav / Option.replace_all_action {
     area: l0+ t0 w50px h34px
 }
 
