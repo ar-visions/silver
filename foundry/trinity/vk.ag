@@ -2566,6 +2566,13 @@ Texture Display
     public func set_clipboard [ text: string ]
         if [ glfw && text ] glfwSetClipboardString[ glfw, text.chars ]
 
+    # read the system clipboard (the paste source). returns '' when empty/unset.
+    public func get_clipboard [] -> string
+        if [ !glfw ] return ''
+        cs : symbol [ glfwGetClipboardString[ glfw ] ]
+        if [ !cs ] return ''
+        return string[ cs ]
+
     func update[ ]
         return
 

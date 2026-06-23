@@ -55,7 +55,7 @@ Group / Control {
     area:               l1 t0+ r1 h2
     layers.compose:
         ctype:          compose
-        fill_color:     #a0a
+        fill_color:     #fff
         radius:         0
     layers.base:
         area:           l0 t0 r0 b-1px
@@ -118,7 +118,7 @@ Group.topbar {
 }
 
 Group.editor_group {
-    area:                       l0 t1.5 r0 b@console_h=6.9|0|50
+    area:                       l0 t1.5 r0 b@console_h=6.9|0|4
 
     /* the editor area background lives HERE, behind the panes — NOT on the panes
        themselves. the panes blit through an edge-fade mask (long lines dissolve),
@@ -265,7 +265,7 @@ Group.editor_group / Option {
 
 
 Instances {
-    area:                       l0 b@console_h=6.9|0|50 r0 b0
+    area:                       l0 b@console_h=6.9|0|4 r0 b0
     layers.compose:
         ctype: compose
         fill_color: #f0a
@@ -273,12 +273,6 @@ Instances {
     layers.base:
         fill_color:             #24f1
         inner_glow:             #fff1 16
-    layers.border:
-        area:                   l0 t43px r0 h1px
-        fill_color:             #0008
-    layers.border2:
-        area:                   l0 t44px r0 h1px
-        fill_color:             #aaf2
 }
 
 Console {
@@ -359,24 +353,24 @@ Instances / Console.console {
    Console). the title's `edit` is the per-pane line filter. */
 Instances / Console {
     layers.content:
-        area:                   l8px t44px r8px b8px
+        area:                   l8px t8px r8px b8px
     layers.scrollbar:
-        area:                   l8px t44px r8px b8px
+        area:                   l8px t8px r8px b8px
 }
+/* the header floats UP (negative t) so it overlays the editor's faded bottom instead of
+   taking a solid inner-glow bar. clear base (no fill/glow) — the editor shows through; the
+   divider sits at the header's base, which is the editor/console split line. */
+/* a thin 4px overlay band: empty header space removed, just the baseline divider sits at
+   the editor/console split. the menu/fields buttons float over the editor (inst_nav). */
 Instances / Console / element.console_filter {
-    area:                       l0 t0 r0 h44px
+    area:                       l0 t-4px r0 h4px
     focusable:                  true
     bordering:                  true
     layers.base:
-        fill_color:             #2480
-        inner_glow:             #8af2 26
-        stroke_width:           0.5
-        stroke_color:           #fff2
-    layers.face:
-        label_color:            #fff
-        label_size:             19
-        label_align:            0.0 0.5
-        label_offset:           14 0
+        fill_color:             #0000
+    layers.divider:
+        area:                   l0 b0 r0 h1px
+        fill_color:             #aaf2
 :focused
     layers.face:
         editable:               true
@@ -387,8 +381,10 @@ Instances / Console / element.console_filter {
    Instances), pinned to the FAR-RIGHT of the whole bar, in the title row. hamburger
    (menu.svg) reveals the callstack; the fields icon reveals the variables. topmost in
    the build so it draws over whichever panel title sits on the right edge. */
+/* menu (callstack) + fields toggles live in the SAME floating overlay band as the
+   header — negative t so they sit over the editor with the title, not in the body. */
 Instances / element.inst_nav {
-    area:                       r10px t6px wc h34px
+    area:                       r10px t-38px wc h34px
 }
 Instances / element.inst_nav / Option {
     area:                       l0+ t0 w34px h34px
@@ -718,11 +714,13 @@ Tabs.tools {
 Tabs.tools / Option.play {
     area:                       l8px t8px w1.5 h1
     layers.base:
-        fill_color:             #243450
+
+        fill_color:             #4284
         fill_gradient:          linear
-        fill_gradient_color:    #1b2740
+        fill_gradient_color:    #2244
         fill_gradient_angle:    90
-        inner_glow:             #8af1 16
+        inner_glow:             #ccf2 16
+
         radius:                 6 6 6 6
     layers.svg:
         area:                   4px
@@ -745,11 +743,11 @@ Tabs.source_nav {
 Tabs.source_nav / Option {
     area:                       l1+px t8px w3 h1
     layers.base:
-        fill_color:             #243450
+        fill_color:             #114
         fill_gradient:          linear
-        fill_gradient_color:    #1b2740
+        fill_gradient_color:    #225f
         fill_gradient_angle:    90
-        inner_glow:             #8af1 16
+        inner_glow:             #8af4 18
         radius:                 4 4 4 4
     layers.face:
         area:                   l0 t0 r0 b0
@@ -757,9 +755,9 @@ Tabs.source_nav / Option {
 }
 Tabs.source_nav / Option:hovered {
     layers.base:
-        fill_color:             #3a5a90
+        fill_color:             #114
         fill_gradient:          linear
-        fill_gradient_color:    #2a4068
+        fill_gradient_color:    #225f
         fill_gradient_angle:    90
         inner_glow:             #8af4 18
 }
@@ -794,11 +792,11 @@ Tabs.console_nav {
 Tabs.console_nav / Option {
     area:                       l1+px t8px w3 h1
     layers.base:
-        fill_color:             #243450
+        fill_color:             #3342
         fill_gradient:          linear
-        fill_gradient_color:    #1b2740
+        fill_gradient_color:    #224f
         fill_gradient_angle:    90
-        inner_glow:             #8af1 16
+        inner_glow:             #ccf2 16
         radius:                 8 8 8 8
     layers.face:
         area:                   l0 t0 r0 b0
@@ -841,8 +839,20 @@ Option.reload_ready {
 
 Tabs / Option.config:hovered {
     layers.base:
-        fill_color:     #8af3
-        inner_glow:     #8af5 16
+        fill_color:             #428
+        fill_gradient:          linear
+        fill_gradient_color:    #224f
+        fill_gradient_angle:    90
+        inner_glow:             #ccf2 16
+}
+
+Tabs / Option:hovered {
+    layers.base:
+        fill_color:             #4284
+        fill_gradient:          linear
+        fill_gradient_color:    #2244
+        fill_gradient_angle:    90
+        inner_glow:             #ccf2 16
 }
 
 Tabs / Option.config:selected {
@@ -853,8 +863,12 @@ Tabs / Option.config:selected {
 
 Tabs / Option:selected {
     layers.base:
-        fill_color:             #48f3
-        inner_glow:             #48f5 24
+        fill_color:             #428
+        fill_gradient:          linear
+        fill_gradient_color:    #224f
+        fill_gradient_angle:    90
+        inner_glow:             #ccf2 16
+    
     layers.face:
         label_color:            #fff
         label_shadow:           #0008
@@ -868,12 +882,6 @@ Tabs / Option:disable {
         inner_glow:             #0000 0
     layers.face:
         label_color:            #fff3
-}
-
-Tabs / Option:hovered {
-    layers.base:
-        fill_color:             #8af2
-        inner_glow:             #8af4 16
 }
 
 Tabs.actions / Button.play {
@@ -1380,10 +1388,31 @@ Avatar.avatar:pressed {
     rotate:             [ 0 1 0 30deg, 1 0 0 0deg ], 88ms cubic outward
 }
 
-/* avatar shown in the right editor pane (a direct EditorView child, not inside an
-   Editor — that masks it). right half, square (height tracks width via 'hw'). */
+/* avatar (a direct EditorView child, not inside an Editor — that masks it). default it
+   PEEKS in the bottom-right corner as a ~1.5-unit square with a 0.5 margin; clicking it
+   sets the :expanded state which grows it to a full-size interactive area. */
 Avatar.avatar {
-    area: r512px b712px w512px h512px
+    area: r0.5 b0.5 w1.5 h1.5
+}
+
+Avatar.avatar:expanded {
+    area: l0.5 t0.5 r0.5 b0.5
+}
+
+/* placeholder shown in the avatar's spot while the real 3D Avatar is disabled (its GPU
+   pipeline crashes). a subtle circular disc (planet hint), NOT a button — 1.5-unit square
+   in the lower-right with a 0.5 margin (pulled in a bit since the pane edge overhangs). */
+element.avatar {
+    area: r1 b0.5 w1.5 h1.5
+    layers.base:
+        fill_color:   #0a1628cc
+        radius:       64
+        stroke_width: 1
+        stroke_color: #6cb6ff55
+}
+
+element.avatar:expanded {
+    area: l0.5 t0.5 r0.5 b0.5
 }
 
 /* live-reload loading overlay: a full-screen element with a dim background,

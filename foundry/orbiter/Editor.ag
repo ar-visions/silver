@@ -16,7 +16,7 @@ class FileBuf
     # (a local array loses its element meta). stale-tolerant: a structural edit clears both
     # (fmt_invalidate) and the next map reload rebuilds them.
     public regions    : array ColorRegion
-    public reg_off     : array i32
+    public reg_off    : array i32
 
 # one row in the find-in-files results view. a header row is a file title (drawn
 # 2 code-rows tall, larger, centered); a non-header row is a matched line of code
@@ -498,7 +498,10 @@ Layer EditorLayer
             parent.mask_inset  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         el
             left_fade : f32 [ (editor.scroll.x > 0.0) ? bounds.w / 8.0 : 0.0 ]
-            parent.mask_glow = vec4f [ 0.0, bounds.w / 8.0, 0.0, left_fade ]
+            # bottom fade (2 line-heights) — same grayscale-mask gradient as the right/left
+            # edges, so the console can sit clear OVER the editor and the code dissolves into
+            # it instead of butting against a hard edge. vec4 = (top, right, bottom, left).
+            parent.mask_glow = vec4f [ 0.0, bounds.w / 8.0, lh * 3.0, left_fade ]
             # keep the line-number gutter fully opaque; the left fade starts just past it.
             parent.mask_keep_l = gut_w
             # start the top fade at the bottom of the title bar so code scrolls
@@ -2630,6 +2633,41 @@ Control Editor
         ensure_caret_visible[]
         pristine = false
 
+    # insert `s` at the caret (replacing any selection). multi-line: '\n' splits into new
+    # rows. the clip's first line joins the caret's prefix, the last joins the suffix.
+    func insert_text [ s: string ]
+        if [ !s || s.count == 0 ] return
+        if [ line_count[] <= 0 ] return
+        begin_edit[ 0 ]
+        delete_selection[]
+        if [ sel_line < 0 ] sel_line = 0
+        if [ sel_col  < 0 ] sel_col  = 0
+        row : i32 [ sel_line ]
+        if [ row_header[ row ] ]
+            end_edit[]
+            return
+        col    : i32 [ sel_col ]
+        line   : string line_get[ row ]
+        prefix : string line.mid[ 0, col ]
+        suffix : string line.mid[ col, line.count - col ]
+        parts  : array string s.split[ '\n' ]
+        if [ parts.count <= 1 ]
+            ed_set[ row, prefix + s + suffix ]
+            sel_col = col + s.count
+        el
+            ed_set[ row, prefix + parts[0] ]
+            for [ i: i32 1, i < parts.count, i += 1 ]
+                val : string [ (i == parts.count - 1) ? (parts[i] + suffix) : parts[i] ]
+                ed_insert[ row + i, val ]
+            last_line : string parts[ parts.count - 1 ]
+            sel_line = row + parts.count - 1
+            sel_col  = last_line.count
+        anchor_line = sel_line
+        anchor_col  = sel_col
+        end_edit[]
+        ensure_caret_visible[]
+        pristine = false
+
     # the highlighted text (anchor→caret), as one string with '\n' between rows.
     # empty when there's no selection. uses the live line model (file or results list).
     func selected_text [] -> string
@@ -2758,6 +2796,16 @@ Control Editor
                 ux.set_clipboard[ txt ]
                 delete_selection[]
                 ux.will_animate = true
+            return
+
+        # paste: Ctrl/Cmd-V inserts the clipboard text at the caret (replacing any selection).
+        if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 86 ]    # Key.V
+            if [ ux ]
+                clip : string ux.get_clipboard[]
+                puts 'paste: len={clip.count}'
+                if [ clip && clip.count > 0 ]
+                    insert_text[ clip ]
+                    ux.will_animate = true
             return
 
         # undo / redo: Ctrl/Cmd-Z (Shift = redo); Ctrl/Cmd-Y also redoes.

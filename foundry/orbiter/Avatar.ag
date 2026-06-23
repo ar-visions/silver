@@ -650,6 +650,8 @@ element Avatar
     public blend_rings       : f32
     public blend_haze        : f32
     public blend_bands       : f32
+    # peek (false) vs full-size (true) — drives the CSS :expanded state. toggled by a click.
+    public expanded          : bool
 
     func init [ ]
         volatile = true
@@ -661,12 +663,19 @@ element Avatar
         if [ !shaders ]
             shaders = map shader[string] []
         if [ !shaders.count ]
-            aura : Aura [ vk: vk ]
+            # the aura fragment shader samples `environment` (a Surface.environment sampler);
+            # without an env_id create_target never binds that descriptor, leaving it garbage
+            # → SIGSEGV in vkUpdateDescriptorSets. point it at a real .exr (images/forest.exr).
+            aura : Aura [ vk: vk, env_id: 'forest' ]
             shaders[ 'aura' ] = aura
 
     func create_target[]
         w_ref : Window [ ux ]
         if [ target || vol_target ]
+            return
+        # wait until laid out: a draw before layout has 0-size bounds, which would build a
+        # 0x0 render target + bad pipeline descriptors (SIGSEGV in vkUpdateDescriptorSets).
+        if [ bounds.w <= 0.0 || bounds.h <= 0.0 ]
             return
 
         geo_models : array Model [ alloc: 4 ]

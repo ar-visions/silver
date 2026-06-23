@@ -204,7 +204,13 @@ trinity orbiter # implements compiler
     public show_console  : bool
     # an empty editor pane (no file) shows the Avatar in its elemental state; this
     # toggles the Avatar view via the pane's titlebar hide/show option.
-    public show_avatar   : bool [ true ] 
+    public show_avatar   : bool [ true ]
+    # the avatar peeks in the bottom-right corner; clicking it expands to a full-size
+    # interactive area, clicking again collapses back to the peek.
+    public avatar_expanded : bool
+    # the avatar's GPU pipeline currently SIGSEGVs (env-texture view not ready at bind);
+    # OFF until that's fixed so orbiter still launches. flip true to render the avatar.
+    public avatar_enabled  : bool
     # live elements, auto-bound by id — reference them directly, no tree walk.
     # (the console is nested under instances and doesn't auto-bind, so it's reached
     # via instances.elements['console'] where needed.)
@@ -2057,6 +2063,13 @@ trinity orbiter # implements compiler
             # rebuild the tree so the avatar pane re-renders with/without the view.
             if [ ev.target ] ev.target.ux.restyle = true
             return
+        # avatar peek: click toggles between the corner peek and the full-size area.
+        if [ ev.target.id == 'avatar' ]
+            avatar_expanded = !avatar_expanded
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            force_update[]
+            return
         # play: build/run the active project node (processes its deps first)
         # deferred live-reload 'reload' chip: tell the host to recompile + hot-swap now.
         if [ ev.target.id == 'reload_ready' ]
@@ -2154,12 +2167,10 @@ trinity orbiter # implements compiler
             replace_open = !replace_open
             if [ replace_open && ev.target.parent ]
                 re : element ev.target.parent.elements['replace']
-                puts 'replace_btn: re={(re) ? 1 : 0}'
                 if [ re ]
                     re.sel_col    = (re.edit) ? re.edit.count : 0
                     re.anchor_col = re.sel_col
                     re.set_focus[]
-                    puts 'replace focus: focusable={(re.focusable) ? 1 : 0} focused={(re.focused) ? 1 : 0} edit_ct={(re.edit) ? re.edit.count : -1}'
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             force_update[]
@@ -2683,11 +2694,15 @@ trinity orbiter # implements compiler
             ctitle['console_filter'] = element [ label: active_console, focusable: true, no_scroll: true ]
             editor_els['pane{editor_slots.count}'] = Console [ session_id: active_console, sessions: csess, feed: null, elements: ctitle ]
 
-        # the orbiter avatar logo on an empty 'Open' pane (no file, no results).
-        # interactive here (not ghost) since it IS the page content, and not topmost
-        # so it sits in the page rather than over the editor chrome.
-        #if [ a_slot < 0 && find_results.count == 0 ]
-        #editor_els['avatar'] = Avatar []
+        # the orbiter avatar peeks in the bottom-right corner. the real 3D Avatar still
+        # SIGSEGVs (env-texture vk_image_view not ready at bind), so for now this is a plain
+        # topmost placeholder element so the spot/size is visible. clicking toggles
+        # avatar_expanded → the CSS :expanded state grows it to a full-size area. swap back to
+        # `Avatar [ expanded: avatar_expanded ]` once the env-texture sync is fixed.
+        if [ avatar_enabled ]
+            editor_els['avatar'] = Avatar [ expanded: avatar_expanded ]
+        el
+            editor_els['avatar'] = element [ topmost: true ]
 
         egroup_els : Elements []
         egroup_els['editors'] = EditorView [ selected: (editor_slots.count > 1), elements: editor_els ]
@@ -2731,7 +2746,7 @@ trinity orbiter # implements compiler
         # win the click). independent toggles; both can be on (panels side by side).
         inav : Elements []
         inav['toggle_callstack'] = Option [ selected: show_callstack ]
-        inav['toggle_fields']    = Option [ selected: show_fields ]
+        #inav['toggle_fields']    = Option [ selected: show_fields ]
         inst_els['inst_nav'] = element [ topmost: true, elements: inav ]
 
         # top strip: play button + project session tabs (left) + console/agent tabs (right),
