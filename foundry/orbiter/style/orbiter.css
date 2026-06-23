@@ -1070,7 +1070,9 @@ Button.back {
         opacity:                1.0
 }
 
-Button.dock {
+/* shared nav icon-button: 34px square, transparent base + glow, centered svg. params:
+   the svg path + scale. demonstrates CSS mixins (cuts the dock/undock boilerplate). */
+mixin nav_icon [ svg, scale ]
     area:                       l0+ t0 w34px h34px
     layers.base:
         fill_color:             #0000
@@ -1079,9 +1081,12 @@ Button.dock {
     layers.svg:
         area:                   4px
         image_align:            0.5 0.5
-        image_scale:            1.4
-        image_svg:              "images/expand2.svg"
+        image_scale:            $scale
+        image_svg:              $svg
         opacity:                0.5
+
+Button.dock {
+    nav_icon [ "images/expand2.svg", 1.4 ]
 :hovered
     layers.base:
         fill_color:             #8af4
@@ -1091,17 +1096,7 @@ Button.dock {
 }
 
 Button.undock {
-    area:                       l0+ t0 w34px h34px
-    layers.base:
-        fill_color:             #0000
-        inner_glow:             #0000 24
-        radius:                 8
-    layers.svg:
-        area:                   4px
-        image_align:            0.5 0.5
-        image_scale:            1.4
-        image_svg:              "images/collapse2.svg"
-        opacity:                0.5
+    nav_icon [ "images/collapse2.svg", 1.4 ]
 }
 
 Button.undock:hovered {

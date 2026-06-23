@@ -6,6 +6,11 @@ class CSSLine
     public content : string
     public line    : i32
 
+# a `@def NAME(params…)` CSS mixin: the captured body + its parameter names.
+class MixinDef
+    public params : array string
+    public body   : array CSSLine
+
 # one matched CSS block for the live inspector: the .css file + selector line. orbiter
 # uses these to open the style source for whatever UI element was clicked.
 class StyleHit
@@ -317,11 +322,88 @@ class Style
             hits.push[ StyleHit [ file: b.src_file, line: b.src_line ] ]
         return hits
 
+    # substring replace (no word-boundary needed: the markers are `$name`, unambiguous).
+    func css_replace [ s: string, from: string, to: string ] -> string
+        if [ !s || !from || from.count == 0 ] return s
+        out : string [ '' ]
+        i : i32 [ 0 ]
+        n : i32 [ s.count ]
+        fn : i32 [ from.count ]
+        while [ i < n ]
+            if [ i + fn <= n && s.mid[ i, fn ] == from ]
+                out = out + to
+                i += fn
+            el
+                out = out + s.mid[ i, 1 ]
+                i += 1
+        return out
+
+    # parse `name [ a, b, c ]` → [name, a, b, c] (trimmed). no brackets → [name].
+    func call_parse [ s: string ] -> array string
+        out : array string [ ]
+        pa  : num [ s.index_of[ '[' ] ]
+        if [ pa < 0 ]
+            out.push[ s.trim[] ]
+            return out
+        out.push[ s.mid[ 0, pa ].trim[] ]
+        pb : num [ s.index_of[ ']' ] ]
+        if [ pb < 0 ] pb = s.count
+        inner : s.mid[ pa + 1, pb - pa - 1 ].trim[]
+        if [ inner.count > 0 ]
+            for [ r: string ] in inner.split[ ',' ]
+                out.push[ r.trim[] ]
+        return out
+
+    # CSS mixins: `mixin NAME [ p1, p2 ]` (indent 0) captures the indented block under it (any
+    # normal block content — fields, layers, nested), with `$p1`/`$p2` placeholders. a later
+    # `NAME [ v1, v2 ]` line then splices that body in (re-indented to the use site) with the
+    # args substituted. a pure pre-parse pass: the block parser never sees `mixin`/the use.
+    func expand_mixins [ lines: array CSSLine ] -> array CSSLine
+        defs : map MixinDef [ string ] [ ]
+        stripped : array CSSLine [ ]
+        i : i32 [ 0 ]
+        while [ i < lines.count ]
+            lc : string [ lines[i].content ]
+            is_def : bool [ lc.count >= 6 && lc.mid[ 0, 6 ] == 'mixin ' ]
+            if [ is_def ]
+                hdr  : array string [ call_parse[ lc.mid[ 6, lc.count - 6 ].trim[] ] ]
+                nm   : hdr[0]
+                d    : MixinDef [ params: array string [ ], body: array CSSLine [ ] ]
+                for [ k: i32 1, k < hdr.count, k += 1 ]
+                    d.params.push[ hdr[k] ]
+                di   : i32 [ lines[i].indent ]
+                base_in : i32 [ -1 ]
+                j : i32 [ i + 1 ]
+                while [ j < lines.count && lines[j].indent > di ]
+                    if [ base_in < 0 ] base_in = lines[j].indent
+                    d.body.push[ CSSLine [ indent: lines[j].indent - base_in, content: lines[j].content, line: lines[j].line ] ]
+                    j += 1
+                defs[ nm ] = d
+                i = j
+                continue
+            stripped.push[ lines[i] ]
+            i += 1
+        out : array CSSLine [ ]
+        for [ cl: CSSLine ] in stripped
+            c    : string [ cl.content ]
+            call : array string [ call_parse[ c ] ]
+            d    : defs[ call[0] ]
+            if [ d ]
+                for [ bl: CSSLine ] in d.body
+                    txt : string [ bl.content ]
+                    for [ pi: i32 0, pi < d.params.count, pi += 1 ]
+                        v : string [ (pi + 1 < call.count) ? call[pi + 1] : '' ]
+                        txt = css_replace[ txt, '$' + d.params[pi], v ]
+                    out.push[ CSSLine [ indent: cl.indent + bl.indent, content: txt, line: bl.line ] ]
+                continue
+            out.push[ cl ]
+        return out
+
     func process [ code: string, src: path ]
         if [ !base    ] base    = array StyleBlock [ ]
         if [ !visited ] visited = array string     [ ]
         if [ !errors  ] errors  = array string     [ ]
-        lines : array CSSLine [ split_css[ code ] ]
+        lines : array CSSLine [ expand_mixins[ split_css[ code ] ] ]
         i : i32 [ 0 ]
         while [ i < lines.count ]
             content : string [ lines[i].content ]
