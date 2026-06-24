@@ -5406,6 +5406,30 @@ none path_cd(path a) {
     chdir(a->chars);
 }
 
+// backslash-escape shell metacharacters so the path survives as a single argument
+// (matches what a terminal inserts when you drag a file onto it)
+string path_shell_escape(path a) {
+    cstr s   = (cstr)a->chars;
+    num  len = a->count;
+    if (!s) return string("");
+    cstr out = calloc(len * 2 + 1, 1);
+    num  pos = 0;
+    for (num i = 0; i < len; i++) {
+        char c = s[i];
+        if (c == ' '  || c == '\t' || c == '\\' || c == '\'' || c == '"' ||
+            c == '('  || c == ')'  || c == '&'  || c == ';'  || c == '|'  ||
+            c == '<'  || c == '>'  || c == '$'  || c == '`'  || c == '*'  ||
+            c == '?'  || c == '['  || c == ']'  || c == '#'  || c == '~'  ||
+            c == '!'  || c == '{'  || c == '}'  || c == '^')
+            out[pos++] = '\\';
+        out[pos++] = c;
+    }
+    out[pos] = '\0';
+    string res = string((symbol)out);
+    free(out);
+    return res;
+}
+
 string path_base64(path a) {
     FILE*    f = fopen(a->chars, "rb");
     if (!f) return null;
