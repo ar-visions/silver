@@ -748,7 +748,10 @@ element Avatar
                 width:       gw,
                 height:      gh,
                 use_depth:   true,
-                reduce:      (render_scale == 4.0) ? true : false,
+                # NO reduce on the base/geometry: reduce builds a width/4 texture, which on a
+                # 2x retina display blits up soft. the base must stay crisp (the 4x target
+                # supersamples down to device res). the volume keeps its soft low-res look.
+                reduce:      false,
                 clear_color: clear_color,
                 models:      geo_models ]
             w_ref.element_targets[ id ] = target

@@ -110,8 +110,11 @@ Group / Check {
 Group.topbar {
     area:                       l0 t0 r0 h1.48
     layers.base:
-        fill_color:             #24f1
-        inner_glow:             #fff1 16
+        fill_color:             #113
+        fill_gradient:          linear
+        fill_gradient_color:    #111
+        fill_gradient_angle:    90
+        inner_glow:             #a2f2 16
     layers.border2:
         area:                   l0 b0px r0 h1px
         fill_color:             #ffffff04
@@ -143,7 +146,7 @@ Group.editor_group {
 EditorView {
     area:                       l0 t0 r0 b0
     layers.base:
-        fill_color:             #0a1a3a
+        fill_color:             #140d2a
 }
 
 /* the editor pane has NO base fill: its cache is blitted through the edge-fade
@@ -279,6 +282,8 @@ Console {
     focusable:  true
     bordering:  true
     area:   l0 t1.3 r0 b0
+    layers.base:
+        fill_color:         #0a000f
     layers.content: TermLayer
         area:               8px
         label_height:       1.0
@@ -314,10 +319,15 @@ EditorView / Console.pane3 {
    cascade). the title itself is an editable child element (below) — its `edit` is
    the per-console line filter. */
 EditorView / Console {
+    layers.base:
+        fill_color:             #202
     layers.content:
         area:                   l8px t44px r8px b8px
     layers.scrollbar:
         area:                   l8px t44px r8px b8px
+    layers.border2:
+        area: l0 t0 w1px b0
+        fill_color: #0f0f0f
 }
 
 /* the console pane's title bar: shows the shell/agent name, and is editable on focus
@@ -696,7 +706,7 @@ Tabs.targets / Option.system {
 Tabs / Button:hovered {
     layers.base:
         fill_color:             #8af2
-        inner_glow:             #8af4 16
+        inner_glow:             #8af4 18
 }
 
 Tabs / Option {
@@ -743,11 +753,11 @@ Tabs.source_nav {
 Tabs.source_nav / Option {
     area:                       l1+px t8px w3 h1
     layers.base:
-        fill_color:             #114
+        fill_color:             #4284
         fill_gradient:          linear
-        fill_gradient_color:    #225f
+        fill_gradient_color:    #2244
         fill_gradient_angle:    90
-        inner_glow:             #8af4 18
+        inner_glow:             #8af2 18
         radius:                 4 4 4 4
     layers.face:
         area:                   l0 t0 r0 b0
@@ -759,7 +769,7 @@ Tabs.source_nav / Option:hovered {
         fill_gradient:          linear
         fill_gradient_color:    #225f
         fill_gradient_angle:    90
-        inner_glow:             #8af4 18
+        inner_glow:             #8af8 18
 }
 Tabs.source_nav / Option:first {
     layers.base:
@@ -792,11 +802,11 @@ Tabs.console_nav {
 Tabs.console_nav / Option {
     area:                       l1+px t8px w3 h1
     layers.base:
-        fill_color:             #3342
+        fill_color:             #2134
         fill_gradient:          linear
-        fill_gradient_color:    #224f
+        fill_gradient_color:    #3244
         fill_gradient_angle:    90
-        inner_glow:             #ccf2 16
+        inner_glow:             #acf2 18
         radius:                 8 8 8 8
     layers.face:
         area:                   l0 t0 r0 b0
@@ -863,9 +873,9 @@ Tabs / Option.config:selected {
 
 Tabs / Option:selected {
     layers.base:
-        fill_color:             #428
+        fill_color:             #114
         fill_gradient:          linear
-        fill_gradient_color:    #224f
+        fill_gradient_color:    #225f
         fill_gradient_angle:    90
         inner_glow:             #ccf2 16
     
@@ -904,18 +914,13 @@ Editor / element.title / element.nav / Option {
     area:                       l0+ t0 w34px h34px
     toggle:                     true
     layers.base:
-        fill_color:             #0000
-        inner_glow:             #0000 24
-        radius:                 8
+        btn_base [ ]
     layers.svg:
-        area:                   4px
-        image_align:            0.5 0.5
+        svg_frame [ ]
         image_scale:            1.0
-        opacity:                0.5
 :hovered
     layers.base:
-        fill_color:             #8af4
-        inner_glow:             #8afa 24
+        btn_hi [ ]
     layers.svg:
         opacity:                1.0
 :selected
@@ -932,23 +937,9 @@ Option.git {
 }
 
 Button.magnify {
-    area:                       l0+ t0 w34px h34px
-    layers.base:
-        fill_color:             #0000
-        inner_glow:             #0000 24
-        radius:                 8
     layers.svg:
-        area:                   4px
-        image_align:            0.5 0.5
         image_svg:              "images/magnify.svg"
         image_scale:            1.8
-        opacity:                0.5
-:hovered
-    layers.base:
-        fill_color:             #8af4
-        inner_glow:             #8afa 24
-    layers.svg:
-        opacity:                1.0
 }
 
 /* in find mode the bar carries its own close (X) inside the scope field, so the
@@ -1050,15 +1041,32 @@ Option.active {
         fill_color:             #e53945cc
 }
 
+/* shared nav icon-button: 34px square, transparent base + glow, centered svg. params:
+   the svg path + scale. demonstrates CSS mixins (cuts the dock/undock boilerplate). */
+/* ── shared style mixins (cut the repeated layer boilerplate) ───────────────── */
+mixin btn_base [ ]
+    fill_color:             #0000
+    inner_glow:             #0000 24
+    radius:                 8
+mixin btn_hi [ ]
+    fill_color:             #8af4
+    inner_glow:             #8afa 24
+mixin stroke2 [ ]
+    stroke_width:           0.5
+    stroke_color:           #fff2
+/* the centered-svg frame; each button sets only its image_svg + image_scale. */
+mixin svg_frame [ ]
+    area:                   4px
+    image_align:            0.5 0.5
+    opacity:                0.5
+
 /* the add (+) / remove (-) tab buttons, in the right-side nav with magnify/menu.
    plain Buttons (actions, no toggle/select), so they're styled self-contained
    rather than via the Option nav rule. */
 Button.back {
     area:                       l16px t14px w16px h16px
     layers.base:
-        fill_color:             #0000
-        inner_glow:             #0000 24
-        radius:                 8
+        btn_base[]
     layers.svg:
         area:                   0px
         image_align:            0.5 0.5
@@ -1070,41 +1078,31 @@ Button.back {
         opacity:                1.0
 }
 
-/* shared nav icon-button: 34px square, transparent base + glow, centered svg. params:
-   the svg path + scale. demonstrates CSS mixins (cuts the dock/undock boilerplate). */
-mixin nav_icon [ svg, scale ]
+/* GENERIC nav icon button — every Button in the title nav gets this body; the per-id
+   rules below carry nothing but the svg + scale. */
+Editor / element.title / element.nav / Button {
     area:                       l0+ t0 w34px h34px
     layers.base:
-        fill_color:             #0000
-        inner_glow:             #0000 24
-        radius:                 8
+        btn_base [ ]
     layers.svg:
-        area:                   4px
-        image_align:            0.5 0.5
-        image_scale:            $scale
-        image_svg:              $svg
-        opacity:                0.5
-
-Button.dock {
-    nav_icon [ "images/expand2.svg", 1.4 ]
+        svg_frame [ ]
 :hovered
     layers.base:
-        fill_color:             #8af4
-        inner_glow:             #8afa 24
+        btn_hi [ ]
     layers.svg:
         opacity:                1.0
+}
+
+Button.dock {
+    layers.svg:
+        image_svg:              "images/expand2.svg"
+        image_scale:            1.4
 }
 
 Button.undock {
-    nav_icon [ "images/collapse2.svg", 1.4 ]
-}
-
-Button.undock:hovered {
-    layers.base:
-        fill_color:             #8af4
-        inner_glow:             #8afa 24
     layers.svg:
-        opacity:                1.0
+        image_svg:              "images/collapse2.svg"
+        image_scale:            1.4
 }
 
 
@@ -1331,18 +1329,19 @@ element.filter {
 
 /* >| toggle button, top-right of the editor group — icon only, no background */
 Avatar.avatar {
+	transparency:0
     shaders.orbiter: PBR
         groups:         ["outside","flower","separator"]
         model_id:       "orbiter32"
         env_id:         "night"
-        pulse_width:    1.0, filter 0.8
+        pulse_width:    4.0, filter 0.8
 
     shaders.core:    Core
         groups:         ["core"]
         model_id:       "orbiter32"
         texture:        "textures/core.png"
         mip_levels:     8
-        pulse_width:    1.0, filter 0.8
+        pulse_width:    4.0, filter 0.8
 
     shaders.plasma: Plasma
         groups:         ["top_ring","flower"]
@@ -1351,17 +1350,17 @@ Avatar.avatar {
 
     shaders.aura:    Aura
         model_id:       "uv-quad2"
-        pulse_width:    4.4, filter 0.8
-        pulse_height:   1.0, filter 0.8
+        pulse_width:    0.4, filter 0.8
+        pulse_height:   2.0, filter 0.8
         flame:          0.0, filter 0.8
 
     render_scale:       4.0
     clear_color:        0 0 0 0
-    rotate:             [ 0 1 0 30deg, 1 0 0 20deg ], 222ms cubic outward
+    rotate:             [ 0 1 0 30deg, 1 0 0 8deg ], 222ms cubic outward
     eye_pos:            0.0 3.5 -2.0
     target_pos:         0.0 0.0 0.0
     up_vec:             0.0 -1.0 0.0
-    fov:                30.0
+    fov:                24.0
     blend_bands:        0.2
     blend_rings:        0.2
     blend_haze:         1.0
@@ -1371,43 +1370,19 @@ Avatar.avatar {
 Avatar.avatar:hovered {
     shaders.aura:
         pulse_width:    2.0, filter 0.8
-        flame:          1.0, filter 0.8
-
-    rotate:             [ 0 1 0 30deg, 1 0 0 10deg ], 222ms cubic outward
+        flame:          0.0, filter 0.9
 }
 
 Avatar.avatar:pressed {
     shaders.aura:
         pulse_height:   2.0, filter 0.8
-
-    rotate:             [ 0 1 0 30deg, 1 0 0 0deg ], 88ms cubic outward
 }
 
 /* avatar (a direct EditorView child, not inside an Editor — that masks it). default it
    PEEKS in the bottom-right corner as a ~1.5-unit square with a 0.5 margin; clicking it
    sets the :expanded state which grows it to a full-size interactive area. */
 Avatar.avatar {
-    area: r0.5 b0.5 w1.5 h1.5
-}
-
-Avatar.avatar:expanded {
-    area: l0.5 t0.5 r0.5 b0.5
-}
-
-/* placeholder shown in the avatar's spot while the real 3D Avatar is disabled (its GPU
-   pipeline crashes). a subtle circular disc (planet hint), NOT a button — 1.5-unit square
-   in the lower-right with a 0.5 margin (pulled in a bit since the pane edge overhangs). */
-element.avatar {
-    area: r1 b0.5 w1.5 h1.5
-    layers.base:
-        fill_color:   #0a1628cc
-        radius:       64
-        stroke_width: 1
-        stroke_color: #6cb6ff55
-}
-
-element.avatar:expanded {
-    area: l0.5 t0.5 r0.5 b0.5
+    area: r8 b8 w8 h8
 }
 
 /* live-reload loading overlay: a full-screen element with a dim background,

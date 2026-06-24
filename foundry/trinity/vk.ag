@@ -1389,8 +1389,11 @@ class Pipeline
         storage_buf_infos: local VkDescriptorBufferInfo       [32]
         # one update for ALL ring slots: per-slot uniform infos + all writes accumulate,
         # then a SINGLE vkUpdateDescriptorSets (64 separate calls were ~21ms on MoltenVK).
-        buffer_infos:      local VkDescriptorBufferInfo       [256]
-        descriptor_writes: local VkWriteDescriptorSet         [512]
+        # sized for pipe_ring(64) slots: buffer_infos = ring*uniform, descriptor_writes =
+        # ring*(uniform+samplers). a shader with many samplers (the PBR avatar has 9) makes
+        # wcount = 64*10 = 640 — the old [512] overran here once the ring grew to 64.
+        buffer_infos:      local VkDescriptorBufferInfo       [512]
+        descriptor_writes: local VkWriteDescriptorSet         [1024]
         resources        = array Gpu     [ alloc: 32 ]
         storage_textures = array Texture [ alloc: 8  ]
         # TEST: extra hold to see if the use-after-free is this array being freed
@@ -2824,6 +2827,7 @@ Texture Display
             glfwSetCursorPosCallback    [ glfw, ref handle_glfw_cursor ]
             glfwSetCharCallback         [ glfw, ref handle_glfw_char ]
             glfwSetScrollCallback       [ glfw, ref handle_glfw_scroll ]
+            glfwSetDropCallback         [ glfw, ref handle_glfw_drop ]
 
             glfwSetFramebufferSizeCallback [ glfw, ref handle_glfw_framebuffer_size ]
 
@@ -3169,7 +3173,20 @@ intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ]
     w.text_event[ w.ev ]
 
 
-intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ] 
+intern func handle_glfw_drop [ win: ref GLFWwindow, count: i32, paths: ref symbol ]
+    w: (glfwGetWindowUserPointer[ win ] to Window)
+    if [ count <= 0 ] return
+    w.ev.clear[]
+    s : string ['']
+    for [ i: i32 0, i < count, i += 1 ]
+        if [ i > 0 ] s = s + ' '
+        p : path [ paths[i] ]
+        s = s + p.shell_escape[]
+    w.ev.key.text = s
+    w.drop_event[ w.ev ]
+
+
+intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ]
     w: (glfwGetWindowUserPointer[ win ] to Window)
     w.ev.clear[]
     w.mouse.x = x

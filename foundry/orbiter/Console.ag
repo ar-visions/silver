@@ -1383,6 +1383,19 @@ Control Console
         el
             s.write_input[ ev.key.text ]
 
+    # a dropped file path. wrap it in bracketed-paste markers (ESC[200~ … ESC[201~)
+    # when the app has paste mode on, so claude/gemini recognize it as a paste (and
+    # ingest an image path as [Image #N]) rather than treating it as typed text.
+    func on_drop [ ev: Event ]
+        s : ConsoleSession session[]
+        if [ !ev.key.text || ev.key.text.count == 0 ] return
+        if [ s.bracketed_paste ]
+            s.send_esc[ '[200~' ]
+            s.write_input[ ev.key.text ]
+            s.send_esc[ '[201~' ]
+        el
+            s.write_input[ ev.key.text ]
+
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
         s : ConsoleSession session[]

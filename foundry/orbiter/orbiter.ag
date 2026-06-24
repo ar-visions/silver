@@ -2699,10 +2699,7 @@ trinity orbiter # implements compiler
         # topmost placeholder element so the spot/size is visible. clicking toggles
         # avatar_expanded → the CSS :expanded state grows it to a full-size area. swap back to
         # `Avatar [ expanded: avatar_expanded ]` once the env-texture sync is fixed.
-        if [ avatar_enabled ]
-            editor_els['avatar'] = Avatar [ expanded: avatar_expanded ]
-        el
-            editor_els['avatar'] = element [ topmost: true ]
+        editor_els['avatar'] = Avatar [ expanded: avatar_expanded, topmost: true ]
 
         egroup_els : Elements []
         egroup_els['editors'] = EditorView [ selected: (editor_slots.count > 1), elements: editor_els ]

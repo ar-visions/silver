@@ -469,6 +469,9 @@ Layer EditorLayer
         while [ ncount >= 10 ]
             ncount  = ncount / 10
             ndigits += 1
+        # always reserve room for 10000 lines (5 digits) so the gutter width — and the code
+        # origin / mask keep-strip that key off it — stay stable instead of auto-sizing.
+        if [ ndigits < 5 ] ndigits = 5
         gut_w   : f32 [ f32[ ndigits ] * cw_tm.w + 16.0 ]
         editor.gutter_w = gut_w
         # x0 is the code-text origin; subtract scroll.x for horizontal scroll (the
@@ -498,10 +501,13 @@ Layer EditorLayer
             parent.mask_inset  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         el
             left_fade : f32 [ (editor.scroll.x > 0.0) ? bounds.w / 8.0 : 0.0 ]
-            # bottom fade (2 line-heights) — same grayscale-mask gradient as the right/left
+            # top fade: one line, ONLY when scrolled down (there's hidden code above) — at the
+            # very top of the file there's nothing to dissolve into, so no top fade.
+            top_fade  : f32 [ (editor.scroll.y > 0.0) ? lh : 0.0 ]
+            # bottom fade (3 line-heights) — same grayscale-mask gradient as the right/left
             # edges, so the console can sit clear OVER the editor and the code dissolves into
             # it instead of butting against a hard edge. vec4 = (top, right, bottom, left).
-            parent.mask_glow = vec4f [ 0.0, bounds.w / 8.0, lh * 3.0, left_fade ]
+            parent.mask_glow = vec4f [ top_fade, bounds.w / 8.0, lh * 3.0, left_fade ]
             # keep the line-number gutter fully opaque; the left fade starts just past it.
             parent.mask_keep_l = gut_w
             # start the top fade at the bottom of the title bar so code scrolls
@@ -734,7 +740,10 @@ Layer EditorLayer
                     # in results the selected row is a single match — draw it as a rounded
                     # 6px pill. normal editing keeps the full-width square current-line band.
                     if [ showing ]
-                        cv.rounded_rect[ bounds.x + 1.0, yg + 1.0, bounds.w - rin - 3.0, lh - 2.0, 3.0, 3.0, 3.0, 3.0 ]
+                        cv.rounded_rect[
+							bounds.x + 1.0, yg + 1.0, 
+							bounds.w - rin - 3.0, 
+							lh - 2.0, 3.0, 3.0, 3.0, 3.0 ]
                     el
                         cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
                     cv.paint[ ]

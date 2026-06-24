@@ -1011,6 +1011,19 @@ Display Window
                     l.on_key[ ev ]
                     break
 
+    # a file drag-drop. ev.key.text carries the dropped path(s). an element that
+    # overrides on_drop (e.g. Console → bracketed paste to its pty) consumes it;
+    # otherwise the path text is inserted into the focused editable like a paste.
+    public func drop_event [ ev: Event ]
+        ev.target = focus
+        if [ focus && focus.on_drop*[ ev ] ] return
+        if [ app_object && app_object.on_drop*[ ev ] ] return
+        if [ focus && ev.key.text && ev.key.text.count > 0 ]
+            for [ l: Layer, k: string ] in focus.layers
+                if [ l.editable ]
+                    l.on_char[ ev ]
+                    break
+
     # recursive bubble: from deepest element up through parents, each gets
     # a chance to consume. stops on first `true` return. after the element
     # chain, the app sees it; finally window's default handler runs (focus
@@ -2901,7 +2914,11 @@ Display Window
                     # so this strip is PURE white (otherwise it inherits the fade's glow
                     # on its own edges and the gutter dims).
                     if [ e.mask_keep_l > 0.0 ]
-                        e.mask_canvas.inner_glow_sides[ rgba['#fff'], 0.0, 0.0, 0.0, 0.0 ]
+                        # keep the gutter opaque on left/right, but carry the SAME top and bottom
+                        # fades as the code (black top+bottom glow) so the line numbers dissolve
+                        # into the top fade (when scrolled) and the console overlay (bottom) too —
+                        # not a hard opaque edge at either end.
+                        e.mask_canvas.inner_glow_sides[ rgba['#000'], e.mask_glow.x, 0.0, e.mask_glow.z, 0.0 ]
                         e.mask_canvas.fill_color[ rgba['#fff'] ]
                         e.mask_canvas.rect_to[ 0.0, mry, e.mask_keep_l, mrh ]
                         e.mask_canvas.paint[]
@@ -2969,6 +2986,7 @@ abstract media_app trinity
     public func on_wheel   [ ev: Event ] return
     public func on_key     [ ev: Event ] return
     public func on_char    [ ev: Event ] return
+    public func on_drop    [ ev: Event ] return
     # live inspector: cmd+click hands the app the matched style blocks ({file,line}) for the
     # clicked element; cmd+shift+click hands its DECLARATION site (the render source line the
     # element was created at). either way it's {file,line} hits to open. no-op base.

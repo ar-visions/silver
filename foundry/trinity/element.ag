@@ -160,6 +160,7 @@ ielement element
         ux.will_animate = true
     public func on_key     [ ev: Event ] return
     public func on_char    [ ev: Event ] return
+    public func on_drop    [ ev: Event ] return
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
     intern transitions  : map StyleTransition[string]
@@ -460,7 +461,7 @@ class Layer
         text = (parent.edit) ? parent.edit : ''
         col  : i32 [ parent.sel_col ]
         parent.edit = text.mid[ 0, col ] + ev.key.text + text.mid[ col, text.count - col ]
-        parent.sel_col += 1
+        parent.sel_col += ev.key.text.count
         parent.anchor_col = parent.sel_col
         parent.pristine = false
 

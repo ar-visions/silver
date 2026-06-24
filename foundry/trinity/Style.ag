@@ -383,21 +383,33 @@ class Style
                 continue
             stripped.push[ lines[i] ]
             i += 1
-        out : array CSSLine [ ]
-        for [ cl: CSSLine ] in stripped
-            c    : string [ cl.content ]
-            call : array string [ call_parse[ c ] ]
-            d    : defs[ call[0] ]
-            if [ d ]
-                for [ bl: CSSLine ] in d.body
-                    txt : string [ bl.content ]
-                    for [ pi: i32 0, pi < d.params.count, pi += 1 ]
-                        v : string [ (pi + 1 < call.count) ? call[pi + 1] : '' ]
-                        txt = css_replace[ txt, '$' + d.params[pi], v ]
-                    out.push[ CSSLine [ indent: cl.indent + bl.indent, content: txt, line: bl.line ] ]
-                continue
-            out.push[ cl ]
-        return out
+        # expand uses, iterating so mixins can call mixins (a body line that is itself a use
+        # gets resolved on the next pass). capped at 16 levels to bound any accidental cycle.
+        work : stripped
+        pass : i32 [ 0 ]
+        while [ pass < 16 ]
+            out : array CSSLine [ ]
+            did : bool [ false ]
+            for [ cl: CSSLine ] in work
+                # a use ALWAYS carries brackets (`name [ … ]`, even no-arg `name [ ]`) — so a
+                # bracket-less line can never be mistaken for one (a bare property name etc.).
+                has_brk : bool [ cl.content.index_of[ '[' ] >= 0 ]
+                call : array string [ call_parse[ cl.content ] ]
+                d : (has_brk) ? defs[ call[0] ] : null
+                if [ d ]
+                    did = true
+                    for [ bl: CSSLine ] in d.body
+                        txt : string [ bl.content ]
+                        for [ pi: i32 0, pi < d.params.count, pi += 1 ]
+                            v : string [ (pi + 1 < call.count) ? call[pi + 1] : '' ]
+                            txt = css_replace[ txt, '$' + d.params[pi], v ]
+                        out.push[ CSSLine [ indent: cl.indent + bl.indent, content: txt, line: bl.line ] ]
+                el
+                    out.push[ cl ]
+            work = out
+            if [ !did ] break
+            pass += 1
+        return work
 
     func process [ code: string, src: path ]
         if [ !base    ] base    = array StyleBlock [ ]
