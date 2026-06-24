@@ -245,7 +245,7 @@ Orbiter PBR
         vec3  hot_on     = vec3(1.4, 1.0, 0.4);
         vec3  hot        = mix(hot_off, hot_on, pulse);
 
-        hot = mix(hot, vec3(2.0, 2.0, 2.0), eng_f2);
+        hot = mix(hot, vec3(2.6, 1.0, 0.25), eng_f2);
         vec3  blue_light = metallic * eng_att * lateral * hot;
 
         // bottom core face: downward-facing surface glows as a warm plasma pool
@@ -503,6 +503,37 @@ Orbiter Aura
 						col   += rng_col * d * (1.0 - alpha);
 						alpha += d * (1.0 - alpha);
 					}
+				}
+			}
+		}
+
+		// ── hazy core: a soft orange volume pooled in the engine throat ──
+		// a gaussian glow sphere at the throat, raymarched with fog noise so it reads
+		// as an internal volume (not a flat disc). hot orange at center → deep orange
+		// at the rim; the PBR walls pick up the matching tone via the throat light.
+		vec3  cor_o  = (ubo.model * vec4(0.0, -0.40, 0.0, 1.0)).xyz;
+		float cor_R  = 0.44;
+		vec3  cor_oc = ro - cor_o;
+		float cor_qb = dot(rd, cor_oc);
+		float cor_qc = dot(cor_oc, cor_oc) - cor_R * cor_R;
+		float cor_qd = cor_qb * cor_qb - cor_qc;
+		if (cor_qd > 0.0) {
+			float cor_sq = sqrt(cor_qd);
+			float cor_te = max(-cor_qb - cor_sq, 0.0);
+			float cor_tx = -cor_qb + cor_sq;
+			if (cor_tx > cor_te) {
+				float cor_dt = (cor_tx - cor_te) / 20.0;
+				float cor_pl = 0.82 + 0.18 * sin(ubo.time * 2.3);
+				for (int k = 0; k < 20; k++) {
+					if (alpha > 0.97) break;
+					vec3  cp   = ro + rd * (cor_te + (float(k) + 0.5) * cor_dt);
+					float crn  = length(cp - cor_o) / cor_R;
+					float haze = pfog(cp * 6.0 + vec3(0.0, ta * 0.3, 0.0));
+					float dens = exp(-crn * crn * 3.2) * (0.55 + 0.45 * haze);
+					vec3  cc   = mix(vec3(3.4, 1.15, 0.20), vec3(1.5, 0.40, 0.05), smoothstep(0.0, 1.0, crn));
+					float ce   = dens * cor_dt * 6.5 * ubo.flame * cor_pl;
+					col   += cc * ce * (1.0 - alpha);
+					alpha += ce * (1.0 - alpha);
 				}
 			}
 		}

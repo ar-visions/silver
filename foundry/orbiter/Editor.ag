@@ -562,7 +562,10 @@ Layer EditorLayer
             editor.g_pins    = grid_pins
             editor.g_resoff  = grid_resoff
         el
-            editor.content_h = f32[ editor.line_count[] ] * lh
+            # 2 line-heights of bottom padding: lets the scroll go just past the last
+            # line so it isn't flush at the bottom edge. no rows live there, so the
+            # gutter shows no numbers for the padding.
+            editor.content_h = f32[ editor.line_count[] ] * lh + lh * 2.0
         editor.scroll_speed = (editor.grid_mode) ? grid_ch : lh
 
         # clamp scroll to [0, content - viewport] every frame so it can't go
