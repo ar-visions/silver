@@ -1942,6 +1942,7 @@ declare_class(fmt_file)
     M(AA,BB, i, method,  public, string, ext) \
     M(AA,BB, i, method,  public, string, mime) \
     M(AA,BB, i, method,  public, string, base64) \
+    M(AA,BB, i, method,  public, string, shell_escape) \
     M(AA,BB, i, method,  public, string, filename) \
     M(AA,BB, i, method,  public, path,   absolute) \
     M(AA,BB, i, method,  public, path,   parent_dir) \
