@@ -387,7 +387,8 @@ Orbiter Aura
 		float bm_b    = 2.0 * dot(bm_rdp, bm_ocp);
 		float bm_cc   = dot(bm_ocp, bm_ocp) - aura_r * aura_r;
 		float bm_dsc  = bm_b*bm_b - 4.0*bm_a*bm_cc;
-		if (bm_dsc >= 0.0 && bm_a > 1e-6) {
+		// center beam hidden for now (remove `false &&` to restore the shaft)
+		if (false && bm_dsc >= 0.0 && bm_a > 1e-6) {
 			float bm_sq = sqrt(bm_dsc);
 			float bm_t0 = (-bm_b - bm_sq) / (2.0 * bm_a);
 			float bm_t1 = (-bm_b + bm_sq) / (2.0 * bm_a);
@@ -443,6 +444,57 @@ Orbiter Aura
 						float emit = dens * bm_dt * 8.0 * ubo.flame * cap;
 						col   += sc * emit * (1.0 - alpha);
 						alpha += emit * (1.0 - alpha);
+					}
+				}
+			}
+		}
+
+		// ── core beam: a SOLID cylinder straight up the axis, same volume style AND
+		//    colors as the outer ring (fog + center weighting + angular pulse + up-fade) ──
+		float cyl_R   = 0.22;
+		float cyl_h   = 1.0 * ubo.pulse_height;
+		vec3  cyl_o   = (ubo.model * vec4(0.0, -0.40, 0.0, 1.0)).xyz;
+		vec3  cyl_d   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
+		vec3  cyl_oc  = ro - cyl_o;
+		vec3  cyl_rdp = rd - dot(rd, cyl_d) * cyl_d;
+		vec3  cyl_ocp = cyl_oc - dot(cyl_oc, cyl_d) * cyl_d;
+		float cyl_a   = dot(cyl_rdp, cyl_rdp);
+		float cyl_b   = 2.0 * dot(cyl_rdp, cyl_ocp);
+		float cyl_cc  = dot(cyl_ocp, cyl_ocp) - cyl_R * cyl_R;
+		float cyl_dsc = cyl_b*cyl_b - 4.0*cyl_a*cyl_cc;
+		if (cyl_dsc >= 0.0 && cyl_a > 1e-6) {
+			float cyl_sq = sqrt(cyl_dsc);
+			float cyl_t0 = (-cyl_b - cyl_sq) / (2.0 * cyl_a);
+			float cyl_t1 = (-cyl_b + cyl_sq) / (2.0 * cyl_a);
+			if (cyl_t1 > 0.0) {
+				float cyl_te  = max(cyl_t0, 0.0);
+				float cyl_tx  = cyl_t1;
+				float cyl_s0  = dot(cyl_oc, cyl_d);
+				float cyl_drd = dot(rd, cyl_d);
+				if (abs(cyl_drd) > 1e-6) {
+					float tc0 = -cyl_s0 / cyl_drd;
+					float tc1 = (cyl_h - cyl_s0) / cyl_drd;
+					cyl_te = max(cyl_te, min(tc0, tc1));
+					cyl_tx = min(cyl_tx, max(tc0, tc1));
+				}
+				if (cyl_tx > cyl_te) {
+					float cyl_dt = (cyl_tx - cyl_te) / 32.0;
+					for (int m = 0; m < 32; m++) {
+						if (alpha > 0.97) break;
+						vec3  cyl_p   = ro + rd * (cyl_te + (float(m) + 0.5) * cyl_dt);
+						float cyl_at  = clamp(dot(cyl_p - cyl_o, cyl_d), 0.0, cyl_h);
+						vec3  cyl_ax  = cyl_o + cyl_d * cyl_at;
+						float cyl_r   = length(cyl_p - cyl_ax);
+						float cyl_t   = cyl_r / cyl_R;
+						// gaussian radial falloff: dense bright core at the axis, thinning
+						// hard toward the rim (not a uniform solid column)
+						float cyl_ctr = exp(-cyl_t * cyl_t * 4.5);
+						float cyl_fg  = pfog(cyl_p * 5.0 + vec3(0.0, ta * 0.25, 0.0));
+						vec3  cyl_col = mix(vec3(2.6, 1.3, 0.5), vec3(1.4, 0.6, 0.15), cyl_at / cyl_h);
+						float cyl_fad = 1.0 - cyl_at / cyl_h;
+						float cyl_den = 8.0 * ubo.flame * (0.3 + cyl_fg) * cyl_ctr * cyl_fad * cyl_dt;
+						col   += cyl_col * cyl_den * (1.0 - alpha);
+						alpha += cyl_den * (1.0 - alpha);
 					}
 				}
 			}
@@ -845,4 +897,3 @@ element Avatar
         if [ vol_target ]
             w.screen.draw_image[ vol_target.color, b ]
         needs_frame = true
-

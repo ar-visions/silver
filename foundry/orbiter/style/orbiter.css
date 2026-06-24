@@ -1356,7 +1356,7 @@ Avatar.avatar {
 
     render_scale:       4.0
     clear_color:        0 0 0 0
-    rotate:             [ 0 1 0 30deg, 1 0 0 8deg ], 222ms cubic outward
+    rotate:             [ 0 1 0 30deg, 1 0 0 22deg ], 1444ms cubic outward
     eye_pos:            0.0 3.5 -2.0
     target_pos:         0.0 0.0 0.0
     up_vec:             0.0 -1.0 0.0
@@ -1368,9 +1368,10 @@ Avatar.avatar {
 }
 
 Avatar.avatar:hovered {
+	rotate:         [ 0 1 0 30deg, 1 0 0 12deg ]
     shaders.aura:
         pulse_width:    2.0, filter 0.8
-        flame:          1.0, filter 0.9
+        flame:          0.7, filter 0.9
 }
 
 Avatar.avatar:pressed {
