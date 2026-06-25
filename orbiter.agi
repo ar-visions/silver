@@ -1,7 +1,7 @@
 # comments allowed
 browse_single: 	true
 max_search: 	4000000
-code_font_size: 16
+code_font_size: 18
 
 projects:
 	orbiter: Project
@@ -21,4 +21,3 @@ consoles:
 		name:	claude
 		kind:	claude
 		run:	claude --dangerously-skip-permissions --resume
-
