@@ -1368,7 +1368,7 @@ Avatar.avatar {
 }
 
 Avatar.avatar:hovered {
-	rotate:         [ 0 1 0 30deg, 1 0 0 12deg ]
+	rotate:         [ 0 1 0 30deg, 1 0 0 2deg ]
     shaders.aura:
         pulse_width:    2.0, filter 0.8
         flame:          0.7, filter 0.9
@@ -1383,7 +1383,7 @@ Avatar.avatar:pressed {
    PEEKS in the bottom-right corner as a ~1.5-unit square with a 0.5 margin; clicking it
    sets the :expanded state which grows it to a full-size interactive area. */
 Avatar.avatar {
-    area: r8 b8 w8 h8
+    area: r8 b11 w8 h14
 }
 
 /* live-reload loading overlay: a full-screen element with a dim background,

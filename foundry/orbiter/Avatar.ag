@@ -486,13 +486,13 @@ Orbiter Aura
 						vec3  cyl_ax  = cyl_o + cyl_d * cyl_at;
 						float cyl_r   = length(cyl_p - cyl_ax);
 						float cyl_t   = cyl_r / cyl_R;
-						// gaussian radial falloff: dense bright core at the axis, thinning
-						// hard toward the rim (not a uniform solid column)
-						float cyl_ctr = exp(-cyl_t * cyl_t * 4.5);
+						// steep gaussian radial falloff: a thin dense core at the axis,
+						// sides drop to ~1/10 by mid-radius (not a fat column)
+						float cyl_ctr = exp(-cyl_t * cyl_t * 11.0);
 						float cyl_fg  = pfog(cyl_p * 5.0 + vec3(0.0, ta * 0.25, 0.0));
 						vec3  cyl_col = mix(vec3(2.6, 1.3, 0.5), vec3(1.4, 0.6, 0.15), cyl_at / cyl_h);
 						float cyl_fad = 1.0 - cyl_at / cyl_h;
-						float cyl_den = 8.0 * ubo.flame * (0.3 + cyl_fg) * cyl_ctr * cyl_fad * cyl_dt;
+						float cyl_den = 11.0 * ubo.flame * (0.3 + cyl_fg) * cyl_ctr * cyl_fad * cyl_dt;
 						col   += cyl_col * cyl_den * (1.0 - alpha);
 						alpha += cyl_den * (1.0 - alpha);
 					}
@@ -870,7 +870,12 @@ element Avatar
         t_pos : vec3f [ (target_pos.x != 0.0 || target_pos.y != 0.0 || target_pos.z != 0.0) ? target_pos : vec3f [ 0.0f, 0.0f, 0.0f ] ]
         u_vec : vec3f [ (up_vec.x != 0.0 || up_vec.y != 0.0 || up_vec.z != 0.0) ? up_vec : vec3f [ 0.0f, -1.0f, 0.0f ] ]
         f     : f32   [ (fov > 0.0) ? fov : 40.0f ]
-        _proj : mat4f [ mat4f.perspective[ radians[ f ], 1.0f, 0.1f, 100.0f ] ]
+        # real aspect (target is sized to bounds); derive vertical fov from height so
+        # `fov` stays the HORIZONTAL fov — a taller area then shows more vertical world
+        # (more flame headroom) instead of stretching the geometry.
+        asp   : f32   [ bounds.w / bounds.h ]
+        fy    : f32   [ 2.0f * atan[ tan[ radians[ f ] * 0.5f ] / asp ] ]
+        _proj : mat4f [ mat4f.perspective[ fy, asp, 0.1f, 100.0f ] ]
         _view : mat4f [ mat4f.look_at[ e_pos, t_pos, u_vec ] ]
         _pos  : vec4f [ e_pos.x, e_pos.y, e_pos.z, 1.0f ]
 
