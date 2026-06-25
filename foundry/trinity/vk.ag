@@ -91,16 +91,23 @@ class Render
     intern  reduce_model                   : Model
     # ring of command buffers + fences so consecutive draws[] don't have to fence
     # before re-recording (the old single-buffer path forced a CPU stall per paint).
-    # the SAME ring_i indexes the pipeline's descriptor/uniform ring, so every draw's
-    # command buffer, fence, descriptors and uniforms are a private slot — no draw can
-    # clobber another in flight. fence only when a slot is reused (RING draws later).
+    # TWO independent rings, decoupled:
+    #   - draw_slot / paint_n: the per-PAINT descriptor+uniform ring (Pipeline owns the
+    #     storage, sized 2*paint_n / paint_n). a canvas batches up to paint_n paints (e.g.
+    #     64 text lines) into ONE command buffer before a forced drain — this is the batch
+    #     ceiling and must stay deep.
+    #   - ring_i / ring_n: the command-buffer+fence ring, advanced once PER BATCH
+    #     (flush_submit), not per paint. it only needs frames-in-flight depth, so it stays
+    #     small. it is PER render target, so a deep ring here multiplied 64x across every
+    #     canvas and exhausted host memory (vkCreateFence -> OUT_OF_HOST_MEMORY).
     intern  vk_command_buffer              : VkCommandBuffer       # current slot (= [ring_i])
-    intern  vk_command_buffers             : new VkCommandBuffer [64]
-    intern  vk_fences                      : new VkFence          [64]
+    intern  vk_command_buffers             : new VkCommandBuffer [8]
+    intern  vk_fences                      : new VkFence          [8]
     intern  ring_i                         : i32
-    intern  ring_n                         : i32 [ 64 ]
+    intern  ring_n                         : i32 [ 3 ]    # frames-in-flight (command-buffer/fence ring)
+    intern  paint_n                        : i32 [ 64 ]   # batch ceiling: paints per command buffer before drain
     intern  ring_last                      : i32           # most recently submitted slot (sync_fence target)
-    intern  ring_primed                    : new i32 [64]   # slot has a pending submit to wait on (0/1)
+    intern  ring_primed                    : new i32 [8]   # slot has a pending submit to wait on (0/1)
     # batched recording: a canvas opens ONE command buffer (begin_record) and records
     # every paint into it, advancing draw_slot (the per-paint descriptor/UBO ring index)
     # per paint; the single submit happens at sync_fence (flush_submit). collapses N
@@ -326,9 +333,9 @@ class Render
                 p.draw[ frame ]
         draw_slot += 1
         # wrap HERE (after the increment, before the next paint's rebind in paint[]):
-        # if this batch filled the ring, submit+wait so sync_fence resets draw_slot to 0.
-        # otherwise the next rebind would index descriptor_sets past the allocated 2*ring.
-        if [ draw_slot >= ring_n ]
+        # if this batch filled the paint ring, submit+wait so sync_fence resets draw_slot
+        # to 0. otherwise the next rebind would index descriptor_sets past 2*paint_n.
+        if [ draw_slot >= paint_n ]
             sync_fence[]
 
     func draw_immediate [ ]
@@ -591,7 +598,7 @@ class Render
             sType: VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
             flags: VK_FENCE_CREATE_SIGNALED_BIT
         ]
-        # one fence per ring slot
+        # one fence per ring slot (ring_n = frames-in-flight, NOT the paint batch ceiling)
         for [ ri: i32 0, ri < ring_n, ri += 1 ]
             result = vkCreateFence[ vk.device, ref fenceInfo, null, ref vk_fences[ri] ]
             expect result == VK_SUCCESS, "failed to create fence"
@@ -1248,7 +1255,7 @@ class Pipeline
     # descriptor sets are RINGED: 2 sets (set0=uniform, set1=sampler) per draw-ring
     # slot, laid out interleaved [s0_0,s1_0, s0_1,s1_1, ...]. draw binds the pair at
     # 2*vk.cur_ring so each draw has private descriptors (no in-flight clobber).
-    intern descriptor_sets    : new VkDescriptorSet       [ 128 ] # 2 * ring_n(64)
+    intern descriptor_sets    : new VkDescriptorSet       [ 128 ] # 2 * pipe_ring(64); pipe_ring must be >= Render.paint_n
     intern pipe_ring          : i32 [ 64 ]
     intern descriptor_pool    : VkDescriptorPool
     intern image_slot         : i32 [ -1 ]
@@ -3117,8 +3124,14 @@ intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ]
     w.ev.clear[]
     w.ev.mouse.pos.x         = w.mouse.x
     w.ev.mouse.pos.y         = w.mouse.y
-    w.ev.mouse.wheel_delta.x = x
-    w.ev.mouse.wheel_delta.y = y
+    # macOS reports high-resolution (often inertial) wheel deltas; other platforms emit
+    # coarse per-notch steps, so scrolling feels ~4x slower. boost the raw delta off Apple
+    # so every consumer (editor / console / lists) scrolls at the same speed as on the Mac.
+    wheel_mul : f64 [ 4.0 ]
+    ifdef [ apple ]
+        wheel_mul = 1.0 # touch-pad in particular might need this
+    w.ev.mouse.wheel_delta.x = x * wheel_mul
+    w.ev.mouse.wheel_delta.y = y * wheel_mul
     # carry shift so handlers can map shift+wheel to horizontal scroll
     lshift                   : i32 [ glfwGetKey[ win, 340 ] ]
     rshift                   : i32 [ glfwGetKey[ win, 344 ] ]

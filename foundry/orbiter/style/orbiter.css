@@ -1371,7 +1371,7 @@ Avatar.avatar:hovered {
 	rotate:         [ 0 1 0 30deg, 1 0 0 2deg ]
     shaders.aura:
         pulse_width:    2.0, filter 0.8
-        flame:          0.7, filter 0.9
+        flame:          0.5, filter 0.9
 }
 
 Avatar.avatar:pressed {

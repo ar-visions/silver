@@ -291,6 +291,10 @@ Display Window
     mutable restyle             : bool
     mutable will_animate        : bool
     mutable mouse               : vec2f
+    # last left-button press time + position, for the basic double-click event: a press
+    # within the time window AND near the previous one sets ev.mouse.double_click.
+    mutable last_click_us       : i64
+    mutable last_click_pos      : vec2f
     # layout-seam drag: seam_hover = bound edge under the cursor this hit-test;
     # seam_drag = the one being dragged; start_m/v = mouse axis + var at drag start
     mutable seam_hover          : BindSeam
@@ -1159,6 +1163,16 @@ Display Window
     public func press_event [ ev: Event ]
         release_capture[ capture ]
         world_m : vec2f [ ev.mouse.pos ]   # world coords before find_target mangles it
+        # basic double-click event: a left press within 350ms AND within ~6px of the prior
+        # left press. moving the mouse between clicks (the distance gate) cancels it. set
+        # here once so every control just reads ev.mouse.double_click — never re-derives it.
+        if [ ev.mouse.button == 0 ]
+            now : i64 [ epoch_micros[] ]
+            dx  : f32 [ world_m.x - last_click_pos.x ]
+            dy  : f32 [ world_m.y - last_click_pos.y ]
+            ev.mouse.double_click = (last_click_us > 0) && (now - last_click_us) < 350000 && (dx * dx + dy * dy) <= 36.0
+            last_click_us  = now
+            last_click_pos = world_m
         seam_hover = null
         seam_hl    = rect[]
         f : find_target[ root, ev, null ]

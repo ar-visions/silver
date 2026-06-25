@@ -288,7 +288,6 @@ trinity orbiter # implements compiler
     intern was_finder    : bool
     # double-click detection on find-result rows: timestamp + row of the last press,
     # so a second press on the same match row within the window opens it at its line.
-    intern last_hit_press_us : i64
     intern last_hit_row      : i32 [ -1 ]
     # the pane id the finder last targeted ('pane'/'pane_right'), so focus moving
     # between panes re-runs the search into the newly-focused one.
@@ -1748,7 +1747,7 @@ trinity orbiter # implements compiler
             find_hits = array FindHit []
             nav_dock_rows = 0
             if [ find_text && find_text.count > 0 ]
-                # FILTERED: ranked index search across the whole project (files only)
+                # FILTERED: ranked index search across the whole project (files only)====.
                 matches : list string [ index_search[ find_text ] ]
                 for [ i: i32 0, i < matches.count, i += 1 ]
                     p : path '{matches.value_by_index[ i ]}'
@@ -2046,10 +2045,10 @@ trinity orbiter # implements compiler
                         # that line and closes find; a single click just selects/previews
                         # (so you can scan matches without losing the results).
                         pi  : i32 [ ed.id.mid[ 4, ed.id.count - 4 ].real_value[] ]
-                        now : i64 [ epoch_micros[] ]
-                        dbl : bool [ (now - last_hit_press_us) < 350000 && last_hit_row == ed.sel_line ]
-                        last_hit_press_us = now
-                        last_hit_row      = ed.sel_line
+                        # basic double-click event (time+distance gate in the window layer);
+                        # plus app logic: it must be the SAME result row.
+                        dbl : bool [ ev.mouse.double_click && last_hit_row == ed.sel_line ]
+                        last_hit_row = ed.sel_line
                         if [ dbl ] open_at_line[ h.file, pi, h.line ]
                         ev.no_default = true
                     el [ h && h.file ]

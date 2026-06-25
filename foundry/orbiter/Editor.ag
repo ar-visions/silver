@@ -1419,7 +1419,7 @@ Control Editor
     # debug edit-lock: while a debug session is live (debug_running, injected by
     # orbiter) the editor is read-only so the keyboard stays free for debugger
     # commands. a double-click on the body, or the title's 'active' button, sets
-    # edit_armed to drop back into editing. last_press_us drives double-click detect.
+    # edit_armed to drop back into editing. double-click is the basic ev.mouse.double_click event.
     public  debug_running : bool
     # the live debug session for this editor's target (injected by orbiter); in the
     # active (non-edit) state the keyboard drives it: c continue, s step over,
@@ -1436,7 +1436,6 @@ Control Editor
     # mouse-over annotation line (for the green hover glow), in VISUAL/flat row coords.
     mutable hover_ann     : i32 [ -1 ]
     mutable edit_armed    : bool
-    mutable last_press_us : i64
     mutable lh_cache      : f32 [ 0.0 ]
     mutable cw_cache      : f32 [ 0.0 ]
     mutable anchor_line   : i32 [ 0 ]
@@ -2385,11 +2384,11 @@ Control Editor
             return
         # a double-click (two presses within 350ms) while debug-locked re-arms editing
         # for this pane — the simple "I actually want to edit during a run" gesture.
-        now : i64 [ epoch_micros[] ]
-        is_dbl : bool [ (last_press_us > 0) && (now - last_press_us) < 350000 ]
+        # double-click is a basic windowing event (ev.mouse.double_click) — the time + distance
+        # gate lives in the event layer, never in a control.
+        is_dbl : bool [ ev.mouse.double_click ]
         if [ debug_running && !edit_armed && is_dbl ]
             edit_armed = true
-        last_press_us = now
         ele   : (layers) ? (layers['content'] to EditorLayer) : null
         rel_x : f32 [ (ele) ? ev.mouse.pos.x - ele.bounds.x : 0.0 ]
         # the dbg sub-column overlays the editor's right edge while open — a press in

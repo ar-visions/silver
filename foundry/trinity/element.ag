@@ -305,6 +305,7 @@ struct MouseState
     pos         : vec2f
     button      : i32
     state       : i32
+    double_click : bool
 
 struct KeyboardState
     unicode   : u32
@@ -594,6 +595,7 @@ class Event
         no_propagation = false
         mouse.state    = -1
         mouse.button   = -1
+        mouse.double_click = false
 
 
 alias EventCallback : lambda none [ Event ]

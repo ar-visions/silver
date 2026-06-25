@@ -820,7 +820,10 @@ element Avatar
 
         rs : f32 [ (render_scale > 0.0) ? render_scale : 1.0 ]
         vs : f32 [ (vol_scale    > 0.0) ? vol_scale    : 0.25 ]
-        puts 'create_target: bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} render_scale={render_scale} rs={rs}'
+        # display scale: 2 on retina, 1 on a standard panel. drives whether the base
+        # needs the reduce supersample (below).
+        dscale : f32 [ (w_ref && w_ref.scale > 0.0) ? w_ref.scale : 1.0 ]
+        puts 'create_target: bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} render_scale={render_scale} rs={rs} dscale={dscale}'
 
         if [ geo_models.count ]
             gw : i32 [ bounds.w * rs ]
@@ -831,10 +834,11 @@ element Avatar
                 width:       gw,
                 height:      gh,
                 use_depth:   true,
-                # NO reduce on the base/geometry: reduce builds a width/4 texture, which on a
-                # 2x retina display blits up soft. the base must stay crisp (the 4x target
-                # supersamples down to device res). the volume keeps its soft low-res look.
-                reduce:      false,
+                # reduce adapts to the display: a 2x retina panel gets crispness for free, so
+                # the base skips reduce (a width/4 texture would blit up soft). a standard 1x
+                # panel has no such headroom, so reduce supersamples the base down to device
+                # res instead of rendering flat at 1x.
+                reduce:      dscale < 2.0,
                 clear_color: clear_color,
                 models:      geo_models ]
             w_ref.element_targets[ id ] = target
