@@ -343,7 +343,7 @@ trinity orbiter # implements compiler
     func init []
         width          = 1888
         height         = 888
-        background     = 'Background'
+        background     = 'Earth'
         # turn ON deferred live-reload: silver-host stages source changes and signals us
         # instead of auto-reloading, so the 'reload' chip appears and WE apply on click.
         # the user passes nothing — orbiter drives this via the au_live_* host channel.
