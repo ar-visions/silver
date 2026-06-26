@@ -1,6 +1,44 @@
 /* trinity!  ..help. */
 @import "trinity.css"
 
+/* shared nav icon-button: 34px square, transparent base + glow, centered svg. params:
+   the svg path + scale. demonstrates CSS mixins (cuts the dock/undock boilerplate). */
+/* ── shared style mixins (cut the repeated layer boilerplate) ───────────────── */
+mixin btn_base [ ]
+    fill_color:             #0000
+    inner_glow:             #0000 24
+    radius:                 8
+mixin btn_hi [ ]
+    fill_color:             #8af4
+    inner_glow:             #8afa 24
+mixin stroke2 [ ]
+    stroke_width:           0.5
+    stroke_color:           #fff2
+/* the centered-svg frame; each button sets only its image_svg + image_scale. */
+mixin svg_frame [ ]
+    area:                   4px
+    image_align:            0.5 0.5
+    opacity:                0.5
+mixin wmp_button [ ]
+    fill_color:             #114
+    fill_gradient:          linear
+    fill_gradient_color:    #315f
+    fill_gradient_angle:    90
+    inner_glow:             #ccf2 16
+mixin wmp_button_hover [ ]
+    fill_color:             #216
+    fill_gradient:          linear
+    fill_gradient_color:    #327f
+    fill_gradient_angle:    90
+    inner_glow:             #ccf4 16
+mixin wmp_button_on [ ]
+    fill_gradient:          linear
+    fill_color:             #c8641e
+    fill_gradient_color:    #425f
+    fill_gradient_angle:    90
+    inner_glow:             #ffae5ea2 18
+
+
 element.main {
     area: l0 t0 r2 b4
     layers.root_bg:
@@ -130,6 +168,7 @@ Group.editor_group {
        lets the mask affect only the text alpha; the solid bg shows through behind. */
     layers.base:
         fill_color:             #1a2138
+
 
     layers.compose:
         radius:                 0
@@ -262,8 +301,7 @@ Group.editor_group / Option {
 
 :selected
     layers.base:
-        fill_color:             #fa82
-        inner_glow:             #fa85 24
+        wmp_button_on[]
 }
 
 
@@ -418,8 +456,7 @@ Instances / element.inst_nav / Option:hovered {
 }
 Instances / element.inst_nav / Option:selected {
     layers.base:
-        fill_color:             #8af6
-        inner_glow:             #8afa 24
+        wmp_button_on[]
     layers.svg:
         opacity:                1.0
 }
@@ -656,8 +693,7 @@ Tabs / Button {
     area:                       l6px t6+px r6px h1
 
     layers.base:
-        fill_color:             #2481
-        inner_glow:             #8af1 16
+        wmp_button[]
         radius:                 4
         stroke_width:           0.5
         stroke_color:           #fff2
@@ -699,8 +735,7 @@ Tabs.targets / Option.system {
         image_align:    0.5 0.5
 :selected
     layers.base:
-        fill_color:     #fd06
-        inner_glow:     #fd08 16
+        wmp_button_on[]
 }
 
 Tabs / Button:hovered {
@@ -724,14 +759,8 @@ Tabs.tools {
 Tabs.tools / Option.play {
     area:                       l8px t8px w1.5 h1
     layers.base:
-
-        fill_color:             #4284
-        fill_gradient:          linear
-        fill_gradient_color:    #2244
-        fill_gradient_angle:    90
-        inner_glow:             #ccf2 16
-
-        radius:                 6 6 6 6
+        wmp_button[]
+        radius:                 8
     layers.svg:
         area:                   4px
         image_svg:              "images/play.svg"
@@ -753,23 +782,15 @@ Tabs.source_nav {
 Tabs.source_nav / Option {
     area:                       l1+px t8px w3 h1
     layers.base:
-        fill_color:             #4284
-        fill_gradient:          linear
-        fill_gradient_color:    #2244
-        fill_gradient_angle:    90
-        inner_glow:             #8af2 18
-        radius:                 4 4 4 4
+        wmp_button[]
+        radius:                 8
     layers.face:
         area:                   l0 t0 r0 b0
         label_align:            0.5 0.5
 }
 Tabs.source_nav / Option:hovered {
     layers.base:
-        fill_color:             #114
-        fill_gradient:          linear
-        fill_gradient_color:    #225f
-        fill_gradient_angle:    90
-        inner_glow:             #8af8 18
+        wmp_button_hover[]
 }
 Tabs.source_nav / Option:first {
     layers.base:
@@ -802,11 +823,7 @@ Tabs.console_nav {
 Tabs.console_nav / Option {
     area:                       l1+px t8px w3 h1
     layers.base:
-        fill_color:             #2134
-        fill_gradient:          linear
-        fill_gradient_color:    #3244
-        fill_gradient_angle:    90
-        inner_glow:             #acf2 18
+        wmp_button[]
         radius:                 8 8 8 8
     layers.face:
         area:                   l0 t0 r0 b0
@@ -814,11 +831,7 @@ Tabs.console_nav / Option {
 }
 Tabs.console_nav / Option:hovered {
     layers.base:
-        fill_color:             #3a5a90
-        fill_gradient:          linear
-        fill_gradient_color:    #2a4068
-        fill_gradient_angle:    90
-        inner_glow:             #8af4 18
+        wmp_button_hover[]
 }
 Tabs.console_nav / Option:first {
     layers.base:
@@ -847,37 +860,19 @@ Option.reload_ready {
         inner_glow:             #ffc888 22
 }
 
-Tabs / Option.config:hovered {
-    layers.base:
-        fill_color:             #428
-        fill_gradient:          linear
-        fill_gradient_color:    #224f
-        fill_gradient_angle:    90
-        inner_glow:             #ccf2 16
-}
-
 Tabs / Option:hovered {
     layers.base:
-        fill_color:             #4284
-        fill_gradient:          linear
-        fill_gradient_color:    #2244
-        fill_gradient_angle:    90
-        inner_glow:             #ccf2 16
+        wmp_button_hover[]
 }
 
 Tabs / Option.config:selected {
     layers.base:
-        fill_color:     #fa84
-        inner_glow:     #fa86 24
+        wmp_button_on[]
 }
 
 Tabs / Option:selected {
     layers.base:
-        fill_color:             #114
-        fill_gradient:          linear
-        fill_gradient_color:    #225f
-        fill_gradient_angle:    90
-        inner_glow:             #ccf2 16
+        wmp_button_on[]
     
     layers.face:
         label_color:            #fff
@@ -925,8 +920,7 @@ Editor / element.title / element.nav / Option {
         opacity:                1.0
 :selected
     layers.base:
-        fill_color:             #fa84
-        inner_glow:             #fa85 24
+        wmp_button_on[]
     layers.svg:
         opacity:                1.0
 }
@@ -1041,24 +1035,6 @@ Option.active {
         fill_color:             #e53945cc
 }
 
-/* shared nav icon-button: 34px square, transparent base + glow, centered svg. params:
-   the svg path + scale. demonstrates CSS mixins (cuts the dock/undock boilerplate). */
-/* ── shared style mixins (cut the repeated layer boilerplate) ───────────────── */
-mixin btn_base [ ]
-    fill_color:             #0000
-    inner_glow:             #0000 24
-    radius:                 8
-mixin btn_hi [ ]
-    fill_color:             #8af4
-    inner_glow:             #8afa 24
-mixin stroke2 [ ]
-    stroke_width:           0.5
-    stroke_color:           #fff2
-/* the centered-svg frame; each button sets only its image_svg + image_scale. */
-mixin svg_frame [ ]
-    area:                   4px
-    image_align:            0.5 0.5
-    opacity:                0.5
 
 /* the add (+) / remove (-) tab buttons, in the right-side nav with magnify/menu.
    plain Buttons (actions, no toggle/select), so they're styled self-contained
@@ -1327,6 +1303,10 @@ element.filter {
 }
 
 
+element.avatar_toggle {
+    area: l10 t0 w2 h22px
+}
+
 /* >| toggle button, top-right of the editor group — icon only, no background */
 Avatar.avatar {
 	transparency:0
@@ -1379,6 +1359,10 @@ Avatar.avatar:pressed {
         pulse_height:   2.0, filter 0.8
 }
 
+Avatar.avatar:hidden {
+    transparency:    1
+}
+
 /* avatar (a direct EditorView child, not inside an Editor — that masks it). default it
    PEEKS in the bottom-right corner as a ~1.5-unit square with a 0.5 margin; clicking it
    sets the :expanded state which grows it to a full-size interactive area. */
@@ -1397,4 +1381,29 @@ element.loading {
 
 element.loading / Avatar.avatar {
     area: l0.3 t0 w0.4 hw
+}
+
+/* avatar show/hide toggle — floats in the lower-right corner of the editor area.
+   direct class selector (like Avatar.avatar) so the area anchors correctly; the
+   parent-path form didn't match and it fell back to the top-left title-bar slot. */
+Option.avatar_toggle {
+    area:                       r1 b1 w1 h1
+    layers.base:
+        fill_color:             #0000
+    layers.svg:
+        area:                   6px
+        image_svg:              "images/orbiter4.svg"
+        image_scale:            1.2
+        image_align:            0.5 0.5
+        opacity:                0.6
+:hovered
+    layers.svg:
+        opacity:                0.85
+:selected
+    layers.base:
+        stroke_width:           1
+        stroke_color:           #6cb6ffcc
+        radius:                 8
+    layers.svg:
+        opacity:                1.0
 }

@@ -1,6 +1,7 @@
 extend orbiter
 
 
+
 ModelViewProject Orbiter 
     mutable pulse_width  : f32
     mutable pulse_height : f32
@@ -735,6 +736,9 @@ element Avatar
     public blend_bands       : f32
     # peek (false) vs full-size (true) — drives the CSS :expanded state. toggled by a click.
     public expanded          : bool
+    # hide without unmounting — drives the CSS :hidden state (transparency:1). keeps the
+    # GPU Render targets alive so toggling visibility doesn't rebuild them.
+    public hidden            : bool
 
     func init [ ]
         volatile = true
@@ -843,6 +847,7 @@ element Avatar
                 models:      geo_models ]
             w_ref.element_targets[ id ] = target
             target.wscale = 0.0
+            target.owner  = a
 
         if [ vol_models.count ]
             vw : i32 [ bounds.w * rs * vs ]
@@ -857,6 +862,7 @@ element Avatar
                 models:      vol_models ]
             w_ref.element_targets[ '{id}-vol' ] = vol_target
             vol_target.wscale = 0.0
+            vol_target.owner  = a
 
     func draw [ w: Window ]
         create_target[]

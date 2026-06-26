@@ -84,6 +84,11 @@ class Render
     # draw only every N frames (0 or 1 = every frame). for slow-moving
     # backgrounds that don't need per-frame updates.
     public  draw_interval                  : i32
+    # the element that owns this target (set once at create). the element_targets draw
+    # loop honors the owner's transparency so a hidden element's target isn't submitted
+    # every frame with no live draw[] feeding it (device-lost). non-holding ref — the
+    # owner always outlives the target it holds.
+    mutable owner                          : element
     # set once this render has drawn at least once — the throttle must never skip
     # the FIRST draw (else a throttled background never appears on load until the
     # global draw_seq happens to align with the interval).
@@ -459,6 +464,8 @@ class Render
         result: vkWaitForFences[ vk.device, 1, ref vk_fences[ring_last], VK_TRUE, UINT64_MAX ]
         vk.sync_us    += epoch_micros[] - t0
         vk.sync_calls += 1
+        if [ result != VK_SUCCESS ]
+            puts 'sync_fence FAIL result={i32 result} w={width}x{height} reduce={reduce} swap={bool[vk_swap_image]} ring_last={ring_last} models={(models) ? models.count : 0}'
         expect result == VK_SUCCESS, "fence wait failed"
         # the wait drained every in-flight submit (command buffers run in submit order, so
         # ring_last done ⟹ all prior done): every slot is free now, rewind the ring to 0.
@@ -2729,6 +2736,11 @@ Texture Display
             resize*[ width, height ]
 
         for [ r: Render, id: string ] in element_targets
+            # a hidden owner (transparency:1) skips its element draw[], so nothing drives
+            # this target — don't submit it blind every frame (device-lost). resources stay
+            # allocated; it resumes drawing the moment the owner is shown again.
+            if [ r.owner && r.owner.transparency >= 1.0 ]
+                continue
             r.draw*[]
             r.sync_fence*[]
 
@@ -3151,6 +3163,7 @@ intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods:
     w.ev.key.shift    = lshift == GLFW_PRESS || rshift == GLFW_PRESS
     w.ev.key.meta     = (mods & 8) != 0
     w.ev.key.alt      = (mods & 4) != 0
+    w.ev.key.ctrl     = (mods & 2) != 0
     if [ w.ev.mouse.state ]
         w.press_event[ w.ev ]
     el
