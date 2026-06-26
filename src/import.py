@@ -296,9 +296,13 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
         # build & install
         cpu_count = os.cpu_count() or 4
         if is_ninja:
+            # use the vendored ninja by absolute path (no PATH dependence); fall back to
+            # PATH only in the brief pre-bootstrap window before it's installed.
+            ninja_bin = str(NATIVE / "bin" / "ninja")
+            if not os.path.exists(ninja_bin): ninja_bin = "ninja"
             print(f'running ninja for {name}')
-            run(f"ninja -j{max(1, cpu_count//2)}", cwd=build_dir)
-            run("ninja install", cwd=build_dir)
+            run(f"{ninja_bin} -j{max(1, cpu_count//2)}", cwd=build_dir)
+            run(f"{ninja_bin} install", cwd=build_dir)
         else:
             run('cmake --build . --config Release --target INSTALL', cwd=build_dir)
     else:
