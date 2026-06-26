@@ -588,9 +588,6 @@ Background Earth
     intern ocean  : OceanShader
     intern cloud  : CloudShader
     func init[]
-        # Earth orbits + clouds drift every frame, so the frost-compositor chain must
-        # redraw every frame (not the static-background throttle).
-        animated  = true
         vk        : window.vk
         gltf_path : path 'models/earth.gltf'
         gltf      : gltf_path.load[ typeid[ GltfModel ], null ]

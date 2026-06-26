@@ -826,33 +826,7 @@ class ConsoleSession
         # it's just more space — so blanking everything would lose the text until the next
         # repaint); only blank rows newly brought into view.
         if [ ocols != nc ]
-            # a stride (cols) change shifts every r*cols+c offset, so the grid can't be
-            # reinterpreted in place. snapshot the old visible region, blank the new grid,
-            # then write the snapshot back at the new stride — PRESERVING on-screen history.
-            # (blanking and waiting for the child to repaint lost everything above the
-            # prompt: readline only redraws its own line on SIGWINCH, not the lines above.)
-            cc : i32 [ (ocols < nc) ? ocols : nc ]
-            cr : i32 [ (orows < nr) ? orows : nr ]
-            tmp : array TermCell [ ]
-            for [ i: i32 0, i < cr * cc, i += 1 ]
-                tmp.push[ TermCell [ ] ]
-            for [ r: i32 0, r < cr, r += 1 ]
-                for [ c: i32 0, c < cc, c += 1 ]
-                    s : i32 [ r * ocols + c ]
-                    d : i32 [ r * cc + c ]
-                    tmp[d].ch   = screen[s].ch
-                    tmp[d].fg   = screen[s].fg
-                    tmp[d].bg   = screen[s].bg
-                    tmp[d].attr = screen[s].attr
             init_cells[ screen, rows * cols ]
-            for [ r: i32 0, r < cr, r += 1 ]
-                for [ c: i32 0, c < cc, c += 1 ]
-                    s : i32 [ r * cc + c ]
-                    d : i32 [ r * nc + c ]
-                    screen[d].ch   = tmp[s].ch
-                    screen[d].fg   = tmp[s].fg
-                    screen[d].bg   = tmp[s].bg
-                    screen[d].attr = tmp[s].attr
         el [ nr > orows ]
             init_cells[ ref screen[ orows * cols ], (nr - orows) * cols ]
         # NOTE: do NOT flush the per-line cache here. it's keyed by content-hash and sized

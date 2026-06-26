@@ -275,18 +275,14 @@ ielement element
                         mixed : ct.from.mix*[ ct.to, p ]
                         ct.container.member_set[ ct.member, mixed ]
 
-        # a fully transparent element is skipped in layout/draw, so a volatile one must
-        # not keep flagging restyle — that churns it (and its ancestors' composite) every
-        # frame for something nobody sees. a hidden avatar otherwise pins the UI at a low
-        # fps even though its render is gated out.
-        if [ volatile && transparency < 1.0 ]
+        if [ volatile ]
             restyle = true
 
         for [ ee: element, id: string ] in elements
             ee.animate_within[ ]
 
     public func is_animating [] -> bool
-        if [ volatile && transparency < 1.0 ] return true
+        if [ volatile ] return true
         if [ transitions ]
             cur_millis : i64 [ epoch_millis[] ]
             for [ ct: StyleTransition, k: string ] in transitions

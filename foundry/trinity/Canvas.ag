@@ -1412,16 +1412,7 @@ Render Canvas
     func reset [ c: vec4f ]
         if [ !color || !color.vk_image ]
             return
-        # fold the clear into this canvas's ring command buffer instead of a standalone
-        # submit + vkQueueWaitIdle. individual controls must never drain the queue — the ring
-        # orders this clear before the batch's draws, and the single end-of-session sync_fence
-        # (on_compose/on_screen, before the parent samples the cache) covers it.
-        begin_record[]
-        frame : VkCommandBuffer [ vk_command_buffer ]
-        # begin_record left color in COLOR_ATTACHMENT; flip to TRANSFER_DST for the clear.
-        color.transition_keep[ frame, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT ]
+        color.transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
         cv : VkClearColorValue
         cv.float32[0] = c.x
         cv.float32[1] = c.y
@@ -1434,13 +1425,13 @@ Render Canvas
             baseArrayLayer: 0,
             layerCount:     1
         ]
-        vkCmdClearColorImage[ frame, color.vk_image,
+
+        cmd : Command [ vk: vk ]
+        cmd.begin[]
+        vkCmdClearColorImage[ cmd.cmd, color.vk_image,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ref cv, 1, ref rng ]
-        # back to COLOR_ATTACHMENT, PRESERVING the cleared pixels (oldLayout = TRANSFER_DST),
-        # so the batch's render pass loads them.
-        color.transition_keep[ frame, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT ]
+        cmd.submit[]
+        color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
         
 
     # reuse this canvas at a new size instead of rebuilding it — keeps the

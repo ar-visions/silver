@@ -84,11 +84,6 @@ class Render
     # draw only every N frames (0 or 1 = every frame). for slow-moving
     # backgrounds that don't need per-frame updates.
     public  draw_interval                  : i32
-    # the element that owns this target (set once at create). the element_targets draw
-    # loop honors the owner's transparency so a hidden element's target isn't submitted
-    # every frame with no live draw[] feeding it (device-lost). non-holding ref — the
-    # owner always outlives the target it holds.
-    mutable owner                          : element
     # set once this render has drawn at least once — the throttle must never skip
     # the FIRST draw (else a throttled background never appears on load until the
     # global draw_seq happens to align with the interval).
@@ -235,16 +230,9 @@ class Render
             return
         s : i32 [ ring_i ]
         if [ ring_primed[s] != 0 ]
-            bt0: i64 [ epoch_micros[] ]
             vkWaitForFences[ vk.device, 1, ref vk_fences[s], VK_TRUE, UINT64_MAX ]
-            vk.brwait_us    += epoch_micros[] - bt0
-            vk.brwait_calls += 1
         vk_command_buffer = vk_command_buffers[s]
         vk_fence          = vk_fences[s]
-        # fresh session: rewind the per-paint descriptor/UBO ring. the frame's end-of-draw
-        # drain_inflight guarantees last frame's GPU work (which used these slots) is done,
-        # so reuse from 0 is safe — this replaces the draw_slot reset that sync_fence did.
-        draw_slot         = 0
         vkResetFences[ vk.device, 1, ref vk_fence ]
         vkResetCommandBuffer[ vk_command_buffer, 0 ]
         vkBeginCommandBuffer[ vk_command_buffer, VkCommandBufferBeginInfo [
@@ -273,9 +261,6 @@ class Render
         ]
         vkQueueSubmit[ vk.queue, 1, ref submitInfo, vk_fence ]
         vk.submit_calls += 1
-        # register the fence as in-flight; the frame drains all of them once after drawing.
-        # NO cpu-wait here — independent canvases execute on the GPU in parallel.
-        vk.note_fence[ vk_fence ]
         ring_primed[s] = 1
         ring_last      = s
         ring_i         = (s + 1) % ring_n
@@ -474,8 +459,6 @@ class Render
         result: vkWaitForFences[ vk.device, 1, ref vk_fences[ring_last], VK_TRUE, UINT64_MAX ]
         vk.sync_us    += epoch_micros[] - t0
         vk.sync_calls += 1
-        if [ result != VK_SUCCESS ]
-            puts 'sync_fence FAIL result={i32 result} w={width}x{height} reduce={reduce} swap={bool[vk_swap_image]} ring_last={ring_last} models={(models) ? models.count : 0}'
         expect result == VK_SUCCESS, "fence wait failed"
         # the wait drained every in-flight submit (command buffers run in submit order, so
         # ring_last done ⟹ all prior done): every slot is free now, rewind the ring to 0.
@@ -768,18 +751,6 @@ class vk_context
     public  bindres_calls       : i32
     public  bindres_us          : i64
     public  br_schema_us        : i64
-    # sync instrumentation: qwaits = out-of-band Command.submit vkQueueWaitIdle drains;
-    # brwaits = begin_record ring-wrap fence waits; both reset each PERF second.
-    public  qwait_calls         : i32
-    public  qwait_us            : i64
-    public  brwait_calls        : i32
-    public  brwait_us           : i64
-
-    # in-flight fences submitted this frame. each canvas flush_submit registers its fence
-    # here WITHOUT waiting (independent canvases run on the GPU in parallel); the frame does
-    # ONE vkWaitForFences across all of them after every drawing op (drain_inflight).
-    intern  inflight_fences     : new VkFence [ 1024 ]
-    intern  inflight_n          : i32
 
     intern quad_m:    GltfModel
     # cached default shaders. constructing a fresh UVQuad / UVReduce per
@@ -1104,22 +1075,6 @@ class vk_context
         expect src && dst, "layout not found"
         r: ImageRange [ base_mip: baseMipLevel, levels: level_count, base_layer: base_array_layer, layers: layer_count, is_depth: is_depth ]
         src.transition[ a, img, dst, r ]
-
-    # register a just-submitted fence as in-flight (no wait). called by Render.flush_submit.
-    func note_fence [ f: VkFence ]
-        if [ inflight_n < 1024 ]
-            inflight_fences[ inflight_n ] = f
-            inflight_n += 1
-
-    # ONE wait across every fence submitted since the last drain, then clear. this is the
-    # single post-draw barrier — independent canvases ran in parallel; we sync them all here.
-    func drain_inflight []
-        if [ inflight_n > 0 ]
-            t0: i64 [ epoch_micros[] ]
-            vkWaitForFences[ device, inflight_n, inflight_fences, VK_TRUE, UINT64_MAX ]
-            sync_us    += epoch_micros[] - t0
-            sync_calls += 1
-            inflight_n  = 0
 
 
 class Gpu
@@ -2012,10 +1967,7 @@ class Command
             pCommandBuffers:    ref cmd
         ]
         vkQueueSubmit[ vk.queue, 1, si, null ]
-        qt0: i64 [ epoch_micros[] ]
         vkQueueWaitIdle[ vk.queue ]
-        vk.qwait_us    += epoch_micros[] - qt0
-        vk.qwait_calls += 1
 
     func init [ ]
         alloc_info: VkCommandBufferAllocateInfo [
@@ -2259,33 +2211,7 @@ class Texture
         vkCmdPipelineBarrier[ cmd, src_stage, dst.stage, 0, 0, null, 0, null, 1, ref barrier ]
         vk_layout = new_layout
 
-    # in-band layout transition that PRESERVES contents — uses the tracked vk_layout as the
-    # real oldLayout (transition_in discards via UNDEFINED). records a barrier into f with no
-    # submit/wait, so callers can flip a texture's layout mid-batch without draining the queue.
-    func transition_keep [ f: handle, new_layout: i32, src_stage: i32, dst_stage: i32, src_access: i32, dst_access: i32 ]
-        is_depth: bool [ vk_format == VK_FORMAT_D32_SFLOAT ]
-        barrier: VkImageMemoryBarrier [
-            sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            oldLayout:           vk_layout,
-            newLayout:           new_layout,
-            srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
-            dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
-            image:               vk_image,
-            subresourceRange:    VkImageSubresourceRange [
-                aspectMask:     (is_depth) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT,
-                baseMipLevel:   0,
-                levelCount:     mip_levels,
-                baseArrayLayer: 0,
-                layerCount:     layer_count
-            ],
-            srcAccessMask:       src_access,
-            dstAccessMask:       dst_access
-        ]
-        cmd: VkCommandBuffer [ f ]
-        vkCmdPipelineBarrier[ cmd, src_stage, dst_stage, 0, 0, null, 0, null, 1, ref barrier ]
-        vk_layout = new_layout
-
-
+        
     func hex_dump [ name: symbol, data: ref u8, size: i32 ]
         printf[ "%s (%d bytes):\n", name, size ]
         for [ i: i32 0, i < size, i += 1 ]
@@ -2803,11 +2729,6 @@ Texture Display
             resize*[ width, height ]
 
         for [ r: Render, id: string ] in element_targets
-            # a hidden owner (transparency:1) skips its element draw[], so nothing drives
-            # this target — don't submit it blind every frame (device-lost). resources stay
-            # allocated; it resumes drawing the moment the owner is shown again.
-            if [ r.owner && r.owner.transparency >= 1.0 ]
-                continue
             r.draw*[]
             r.sync_fence*[]
 
@@ -2822,10 +2743,6 @@ Texture Display
             r.has_drawn = true
 
         on_screen*[]
-
-        # all drawing ops for this frame are submitted (screen + every cache canvas, in
-        # parallel, no per-canvas wait). NOW wait across all in-flight fences once.
-        vk.drain_inflight[]
 
         if [ swap_renders ]
             a.hold[] #test
@@ -3234,7 +3151,6 @@ intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods:
     w.ev.key.shift    = lshift == GLFW_PRESS || rshift == GLFW_PRESS
     w.ev.key.meta     = (mods & 8) != 0
     w.ev.key.alt      = (mods & 4) != 0
-    w.ev.key.ctrl     = (mods & 2) != 0
     if [ w.ev.mouse.state ]
         w.press_event[ w.ev ]
     el

@@ -31,7 +31,7 @@ def get_env_vars():
     parser.add_argument('--cache-file',     required=False, help='Cache identifier (if exists, the job has previously run)')
     parser.add_argument('--build-path',     required=True, help='Build output path')
     parser.add_argument('--project-name',   required=True, help='Project name')
-    parser.add_argument('--import',         required=False, default=None, help='Import path (default: <silver>/install — self-derived, never required from the user env)')
+    parser.add_argument('--import',         required=True, help='Import path')
     parser.add_argument('--debug',          action='store_true', default=False, help='debug')
     parser.add_argument('--release',        action='store_true', default=False, help='release')
     parser.add_argument('--asan',           action='store_true', default=False, help='enable address sanitizer')
@@ -40,13 +40,8 @@ def get_env_vars():
 
     args = parser.parse_args()
 
-    # SILVER is the repo root, derived from THIS file's location — never an env var.
-    silver_root = Path(__file__).resolve().parent.parent
-    # IMPORT defaults to <silver>/install: we set it ourselves, the user never has to.
-    import_path = getattr(args, 'import') or str(silver_root / 'install')  # 'import' is a Python keyword
-
     return {
-        'SILVER':       silver_root,
+        'SILVER':       Path(__file__).resolve().parent.parent,
         'PROJECT_PATH': args.project_path,
         'PROJECT_NAME': args.project_name,
         'CACHE_FILE':   args.cache_file,
@@ -55,7 +50,7 @@ def get_env_vars():
         'SDK':          args.sdk,
         'DEBUG':        args.debug,
         'ASAN':         args.asan,
-        'IMPORT':       import_path.replace('\\', '/')
+        'IMPORT':       getattr(args, 'import').replace('\\', '/') # 'import' is a Python keyword
     }
 
 

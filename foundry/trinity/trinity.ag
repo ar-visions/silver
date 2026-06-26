@@ -103,11 +103,6 @@ class Background
     public color:  rgba
     public render: Render
     public models: array Model
-    # a static background (still image / solid) lets the frost-compositor chain throttle
-    # to a coarse interval. an animated background (e.g. Earth: orbital camera + drifting
-    # clouds every frame) sets this so the chain redraws every frame and the frost behind
-    # panels tracks the motion.
-    public animated: bool
 
     func update[]
         return
@@ -144,7 +139,7 @@ abstract live_app media_app
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            puts 'PERF fps={frames} draw={vk.draw_us} syncs={vk.sync_calls} syncus={vk.sync_us} qwaits={vk.qwait_calls} qwaitus={vk.qwait_us} brwaits={vk.brwait_calls} brwaitus={vk.brwait_us} paints={vk.paint_calls} samplers={vk.sampler_count}'
+            puts 'PERF fps={frames} draw={vk.draw_us} syncs={vk.sync_calls} syncus={vk.sync_us} bindus={vk.bindres_us} rallocs={vk.render_allocs} resize={vk.resize_us} rcalls={vk.resize_calls} paints={vk.paint_calls} samplers={vk.sampler_count}'
             vk.resize_us    = 0
             vk.resize_calls = 0
             frames = 0
@@ -161,10 +156,6 @@ abstract live_app media_app
             vk.bindres_calls = 0
             vk.bindres_us    = 0
             vk.br_schema_us  = 0
-            vk.qwait_calls   = 0
-            vk.qwait_us      = 0
-            vk.brwait_calls  = 0
-            vk.brwait_us     = 0
         render*[]
         Au.auto_free[false]
         return !glfwWindowShouldClose[ w.glfw ]
@@ -1185,12 +1176,9 @@ Display Window
         seam_hover = null
         seam_hl    = rect[]
         f : find_target[ root, ev, null ]
-        # live inspector: <inspect>+click → matching CSS blocks; +shift → the element's
-        # DECLARATION site (Au header source:line). consumes the press. the inspect
-        # modifier is Cmd on mac (meta); on linux/windows Super is grabbed by the WM, so
-        # it's Ctrl there instead — the standard convention.
-        inspect : bool [ ev.key.meta || ev.key.ctrl ]
-        if [ f && inspect ]
+        # live inspector (cmd held): cmd+click → matching CSS blocks; cmd+shift+click → the
+        # element's DECLARATION site (Au header source:line). consumes the press.
+        if [ f && ev.key.meta ]
             if [ ev.key.shift ]
                 eh  : array StyleHit [ ]
                 hdr : Au.header[ f ]
@@ -1433,13 +1421,10 @@ Display Window
                     r_reduce2, r_reduce3, r_frost_v, r_frost,
                     r_view ]
                 # throttle the entire background chain (all but r_view); r_view composites
-                # fresh UI over a cached background frost so it must draw every frame. an
-                # ANIMATED background (Earth) runs the chain every frame so the frost tracks
-                # the motion; a static one throttles to a coarse interval.
-                bg_interval : i32 [ (background.animated) ? 1 : 16 ]
+                # fresh UI over a cached background frost so it must draw every frame
                 for [ i: i32 0, i < list.count - 1, i += 1 ]
                     bg : Render list[i]
-                    bg.draw_interval = bg_interval
+                    bg.draw_interval = 16
         el
             if [ list ]
                 for [ r: Render ] in list
@@ -1547,9 +1532,7 @@ Display Window
         ##
         screen.paint[]
         screen.flush_text[]
-        # submit only — the frame's single drain_inflight (after all drawing ops, in
-        # Display.draw) waits screen together with every cache canvas in one shot.
-        screen.flush_submit[]
+        screen.sync_fence[]
         screen.restore[]
 
     # ---- console (terminal) rendering --------------------------------------

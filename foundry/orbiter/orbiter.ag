@@ -343,7 +343,7 @@ trinity orbiter # implements compiler
     func init []
         width          = 1888
         height         = 888
-        background     = 'Earth'
+        background     = 'Background'
         # turn ON deferred live-reload: silver-host stages source changes and signals us
         # instead of auto-reloading, so the 'reload' chip appears and WE apply on click.
         # the user passes nothing — orbiter drives this via the au_live_* host channel.
@@ -1074,18 +1074,15 @@ trinity orbiter # implements compiler
         nav['replace_all_action'] = Option [ selected: false ]
         if [ !is_resource ]
             nav['magnify'] = Button []
-        # pins/grid toggles only belong to the browse index (browse only).
-        if [ menu_open && nav_showing && docked && docked.count > 0 ]
-            nav['pins'] = Option [ selected: show_pins ]
-        if [ menu_open && nav_showing ]
-            nav['grid'] = Option [ selected: grid_mode ]
-        # dock/undock LAST: the nav flows first-populated = leftmost (origin), so the
-        # last-added sits on the RIGHT edge. expand (+) is added last → rightmost, with
-        # undock (-) just to its left.
         if [ editor_slots.count > 1 ]
             nav['undock'] = Button []
         if [ editor_slots.count < 4 ]
             nav['dock'] = Button []
+        # pins/grid toggles only belong to the browse index (appended after, browse only).
+        if [ menu_open && nav_showing && docked && docked.count > 0 ]
+            nav['pins'] = Option [ selected: show_pins ]
+        if [ menu_open && nav_showing ]
+            nav['grid'] = Option [ selected: grid_mode ]
 
         hasfile  : bool [ p && p.exists[] ]
         els : Elements []
@@ -2103,10 +2100,6 @@ trinity orbiter # implements compiler
             show_fields = !show_fields
             if [ ev.target ] ev.target.ux.restyle = true
             return
-        if [ ev.target.id == 'avatar_toggle' ]
-            show_avatar = !show_avatar
-            if [ ev.target ] ev.target.ux.restyle = true
-            return
         puts 'on_press: {ev.target.id}'
         for [ i: i32 0, i < open_files.count, i += 1 ]
             key : string 'tab_{i}'
@@ -2705,12 +2698,7 @@ trinity orbiter # implements compiler
         # topmost placeholder element so the spot/size is visible. clicking toggles
         # avatar_expanded → the CSS :expanded state grows it to a full-size area. swap back to
         # `Avatar [ expanded: avatar_expanded ]` once the env-texture sync is fixed.
-        # keep the Avatar mounted always — hiding it via :hidden (transparency:1) instead
-        # of dropping it from the tree, so its GPU Render targets aren't torn down and
-        # rebuilt every toggle.
-        #editor_els['avatar'] = Avatar [ expanded: avatar_expanded, hidden: !show_avatar, topmost: true ]
-        # avatar show/hide toggle — floats in the lower-right of the EditorView (orbiter.svg).
-        editor_els['avatar_toggle'] = Option [ topmost: true, selected: show_avatar ]
+        editor_els['avatar'] = Avatar [ expanded: avatar_expanded, topmost: true ]
 
         egroup_els : Elements []
         egroup_els['editors'] = EditorView [ selected: (editor_slots.count > 1), elements: editor_els ]
@@ -2752,10 +2740,10 @@ trinity orbiter # implements compiler
         # variables. pinned to the FAR-RIGHT of the whole Instances bar, in the title
         # row (topmost so they sit over whichever panel's title is on the right edge and
         # win the click). independent toggles; both can be on (panels side by side).
-        #inav : Elements []
-        #inav['toggle_callstack'] = Option [ selected: show_callstack ]
+        inav : Elements []
+        inav['toggle_callstack'] = Option [ selected: show_callstack ]
         #inav['toggle_fields']    = Option [ selected: show_fields ]
-        #inst_els['inst_nav'] = element [ topmost: true, elements: inav ]
+        inst_els['inst_nav'] = element [ topmost: true, elements: inav ]
 
         # top strip: play button + project session tabs (left) + console/agent tabs (right),
         # in a Group so it gets the same fill/inner-glow shading as the console bar.
