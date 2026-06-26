@@ -280,11 +280,6 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     lpath = ''
     if system == "Darwin":
         lpath = '-Wl,-rpath,@executable_path/../lib'
-    elif system == "Linux":
-        # $ORIGIN-relative so the binary finds its libs with NO LD_LIBRARY_PATH:
-        # $ORIGIN = its own dir (e.g. debug/ siblings), $ORIGIN/../lib = the core libs
-        # (LLVM/clang/lldb). single-quoted so the shell ninja invokes doesn't expand it.
-        lpath = "-Wl,-rpath,'$$ORIGIN' -Wl,-rpath,'$$ORIGIN/../lib'"
     n.append(f"  command = $clang @$builddir/link.rsp $in -o $out $ldflags $libs {lpath}")
 
     n.append("  description = linking executable $out")
@@ -301,9 +296,7 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     if system == "Darwin":
         cmd += ' -Wl,-rpath,@executable_path/../lib -install_name $install_name'
     elif system == "Linux":
-        # same $ORIGIN rpath as apps so a lib finds its sibling/core deps transitively
-        # (libtrinity -> libaether -> libLLVM) without LD_LIBRARY_PATH.
-        cmd += " -Wl,-soname,$out -Wl,-rpath,'$$ORIGIN' -Wl,-rpath,'$$ORIGIN/../lib'"
+        cmd += " -Wl,-soname,$out"
     n.append(f"  command = {cmd}")
     n.append("  description = linking shared library $out")
     n.append("")
