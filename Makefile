@@ -8,10 +8,6 @@ PROJECT_NAME := $(notdir $(PROJECT_PATH))
 
 BUILD_ROOT ?= $(SILVER)/install/debug
 
-# the vendored ninja — invoked by absolute path so the build never depends on ninja
-# being on PATH (no env-var/PATH requirement to build silver).
-NINJA := $(SILVER)/install/bin/ninja
-
 export PROJECT_PATH
 export PROJECT_NAME
 
@@ -33,13 +29,18 @@ asan:
 # install` wins. the binary self-locates its libs/tree from its own path, so no
 # IMPORT is needed.
 install: build
-	@bin_dir="$$HOME/.local/bin"; \
-	mkdir -p "$$bin_dir"; \
+	@bin_dir=""; \
+	for d in $$(printf '%s' "$$PATH" | tr ':' ' '); do \
+		if [ -d "$$d" ] && [ -w "$$d" ]; then bin_dir="$$d"; break; fi; \
+	done; \
+	if [ -z "$$bin_dir" ]; then \
+		echo "no writable dir on PATH; run: sudo ln -sf $(BUILD_ROOT)/silver /usr/local/bin/silver"; \
+		exit 1; \
+	fi; \
 	ln -sf "$(BUILD_ROOT)/silver" "$$bin_dir/silver"; \
 	echo "linked $$bin_dir/silver -> $(BUILD_ROOT)/silver"; \
 	ln -sf "$(SILVER)/dbg" "$$bin_dir/dbg"; \
-	echo "linked $$bin_dir/dbg -> $(SILVER)/dbg"; \
-	case ":$$PATH:" in *":$$bin_dir:"*) ;; *) echo "note: add $$bin_dir to your PATH";; esac
+	echo "linked $$bin_dir/dbg -> $(SILVER)/dbg"
 
 bootstrap:
 ifeq ($(OS),Windows_NT)
@@ -57,8 +58,8 @@ else
 endif
 
 build: bootstrap
-	echo "$(NINJA) -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja"
-	$(NINJA) -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja
+	echo "ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja"
+	ninja -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja
 
 # ---- clean ----
 clean:
