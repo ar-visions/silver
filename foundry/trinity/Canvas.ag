@@ -88,23 +88,20 @@ shader CanvasSDFCompute
         float py = ubo.wy + (float(gid.y) + 0.5) * sy;
         vec2  pt = vec2(px, py);
 
-        // min distance to any edge
-        float md = 999999.0;
+        // SINGLE pass over the edges: accumulate min SQUARED distance AND the winding
+        // number together (was two separate full loops). squared distance keeps the sqrt
+        // out of the hot loop — one sqrt at the very end instead of one length() per edge.
+        float md2 = 999999.0 * 999999.0;
+        int   wn  = 0;
         for (int i = 0; i < ubo.ne; i++) {{
             vec2 a = edges[i].xy;
             vec2 b = edges[i].zw;
             vec2 ab = b - a;
             vec2 ap = pt - a;
             float t = clamp(dot(ap, ab) / max(dot(ab, ab), 1e-12), 0.0, 1.0);
-            vec2 closest = a + t * ab;
-            md = min(md, length(pt - closest));
-        }}
-
-        // winding number for inside/outside
-        int wn = 0;
-        for (int i = 0; i < ubo.ne; i++) {{
-            vec2 a = edges[i].xy;
-            vec2 b = edges[i].zw;
+            vec2 d = pt - (a + t * ab);
+            md2 = min(md2, dot(d, d));               // squared — no sqrt here
+            // winding (same edge, same iteration)
             if (a.y <= py) {{
                 if (b.y > py) {{
                     float c = (b.x - a.x) * (py - a.y) - (px - a.x) * (b.y - a.y);
@@ -118,7 +115,8 @@ shader CanvasSDFCompute
             }}
         }}
 
-        md = min(md, ubo.spread);
+        // clamp in squared space, then the single sqrt for the whole pixel.
+        float md  = sqrt(min(md2, ubo.spread * ubo.spread));
         float sdf = (wn != 0) ? -md : md;
 
         imageStore(sdf_out, gid, vec4(sdf, 0.0, 0.0, 0.0));

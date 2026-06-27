@@ -8,6 +8,7 @@ export 0.8.8
 
 import trinity
 import <alsa/asoundlib.h>
+	-lasound
 import <math.h>
 import <stdio.h>
 import <stdlib.h>
@@ -15,34 +16,43 @@ import <string.h>
 
 
 struct dsp_channel
-	public pos       		: u16
-	public frac      		: u16
-	public samples   		: local i16 [ 4 ]
-	public envelope  		: i16
-	public env_state 		: u8
-	public output_l  		: f32
-	public output_r  		: f32
+	pos       		: u16
+	frac      		: u16
+	samples   		: local i16 [ 4 ]
+	envelope  		: i16            # current envelope, 0..0x7FF
+	env_state 		: u8             # 0=attack 1=decay 2=sustain 3=release
+	env_count 		: i32            # per-voice rate counter
+	active    		: u8             # voice is producing output
+	output_l  		: f32
+	output_r  		: f32
 
 
 class spc_state
-	public pc             	: u16
-	public a              	: u8
-	public x              	: u8
-	public y              	: u8
-	public sp             	: u8
-	public psw            	: u8
-	public direct_page    	: u8
-	public ports          	: new u8 [ 4 ]
-	public echo_pos       	: u16
-	public echo_history_l 	: f32
-	public echo_history_r 	: f32
-	public channels       	: new dsp_channel [ 8 ]
-	public pcm_handle     	: ref snd_pcm_t
-	public audio_buffer   	: ref u8
-	public buffer_size    	: sz
-	public sample_rate    	: i32
-	public cycle_accum    	: i32
-	public ram            	: ref u8 calloc[1, 0x10000]
+	pc             	: u16
+	a              	: u8
+	x              	: u8
+	y              	: u8
+	sp             	: u8
+	psw            	: u8
+	direct_page    	: u8
+	ports          	: new u8 [ 4 ]
+	oports         	: new u8 [ 4 ]
+	echo_pos       	: u16
+	echo_history_l 	: f32
+	echo_history_r 	: f32
+	channels       	: new dsp_channel [ 8 ]
+	dsp            	: new u8 [ 128 ]
+	pcm_handle     	: ref snd_pcm_t
+	audio_buffer   	: ref i16
+	buffer_size    	: sz
+	sample_rate    	: i32
+	cycle_accum    	: i32
+	timer_on       	: u8                # $F1 bits 0-2: timer enables
+	timer_target   	: new u8 [ 3 ]      # $FA-$FC dividers (0 => 256)
+	timer_count    	: new u8 [ 3 ]      # $FD-$FF 4-bit output counters
+	timer_stage    	: new i32 [ 3 ]     # internal pre-divider accumulators
+	tcyc           	: i32               # SPC cycle accumulator for timers
+	ram            	: new u8 [ 0x10000 ]
 
 
 class cpu_state
@@ -66,13 +76,22 @@ class cpu_state
 trinity asnes
 	public  spc_rom        	: path
 	public  rom            	: path
+	public  beep           	: bool
+	public  spcfile        	: path
+	public  spctest        	: bool
 	mutable cpu            	: cpu_state
 	mutable spc            	: spc_state
 	mutable spc_rom_loaded 	: bool
 	mutable spc_boot_rom   	: ref u8
+	mutable nmitimen       	: u8
+	mutable nmi_occurred   	: bool
+	mutable dbg_frames     	: u32
+	mutable dbg_spc        	: i32
+	mutable dbg_cpu        	: i32
+	mutable dbg_h          	: i32
 	intern  echo_out_l     	: f32
 	intern  echo_out_r     	: f32
-	intern  gauss          	: new i16 [
+	intern  gauss          	: new i16 [512] [
 		-3, -3, -3, -2, -2, -2, -2, -1, -1, -1, -1, 0, 0, 0, 1, 1,
 		1, 2, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 8, 8, 9,
 		10, 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 24, 25, 27,
@@ -97,35 +116,96 @@ trinity asnes
 		375, 370, 365, 360, 355, 350, 345, 340, 334, 329, 324, 319, 314, 309, 304, 299,
 		293, 288, 283, 278, 273, 268, 263, 258, 253, 248, 243, 238, 233, 228, 223, 219,
 		214, 209, 205, 200, 196, 191, 187, 182, 178, 174, 169, 165, 161, 157, 153, 149,
-		145, 141, 137, 133, 129, 126, 122, 118, 115, 111, 108, 104, 101, 98, 94, 91,
-		88, 85, 82, 79, 76, 73, 70, 67, 65, 62, 59, 57, 54, 52, 50, 47,
+		145, 141, 137, 133, 129, 126, 122, 118, 115, 111, 108, 104, 101, 98,  94,  91,
+		88,  85,  82,  79,  76,  73,  70,  67,  65,  62,  59,  57,  54,  52,  50,  47,
 		45, 43, 41, 39, 37, 35, 33, 32, 30, 28, 27, 25, 24, 22, 21, 20,
 		18, 17, 16, 15, 14, 13, 12, 11, 10, 10, 9, 8, 8, 7, 6, 6,
 		5, 5, 4, 4, 3, 3, 2, 2, 2, 1, 1, 1, 0, 0, 0, -1,
 		-1, -1, -1, -2, -2, -2, -2, -3, -3, -3, 0, 0, 0, 0, 0, 0
 	]
 
+	# S-DSP envelope rate table: samples between envelope steps per rate index
+	# (index 0 = never update).
+	intern  env_rate : new i32 [32] [
+		0, 2048, 1536, 1280, 1024, 768, 640, 512, 384, 320, 256, 192,
+		160, 128, 96, 80, 64, 48, 40, 32, 24, 20, 16, 12, 10, 8, 6, 5, 4, 3, 2, 1
+	]
+
+	# --- SPC700 DSP voice key-on / key-off ---
+
+	func spc_keyon [ ch: i32 ]
+		spc.channels[ch].pos       = 0
+		spc.channels[ch].frac      = 0
+		spc.channels[ch].envelope  = 0
+		spc.channels[ch].env_state = 0          # attack
+		spc.channels[ch].env_count = 0
+		spc.channels[ch].active    = 1
+		spc.channels[ch].samples[0] = 0
+		spc.channels[ch].samples[1] = 0
+		spc.channels[ch].samples[2] = 0
+		spc.channels[ch].samples[3] = 0
+		spc.dsp[0x7C] = spc.dsp[0x7C] & ~(1 << ch)   # clear ENDX for this voice
+
+	func spc_keyoff [ ch: i32 ]
+		spc.channels[ch].env_state = 3          # release
+
 	# --- SPC memory access ---
 
 	func spc_r [ addr: u16 ] -> u8
 		if [ addr >= 0xF4 && addr <= 0xF7 ]
 			return spc.ports[addr - 0xF4]
+		if [ addr >= 0xFD && addr <= 0xFF ]      # timer output counters (read clears)
+			t : i32 [ addr - 0xFD ]
+			v : u8  [ spc.timer_count[t] & 0x0F ]
+			spc.timer_count[t] = 0
+			return v
 		return spc.ram[addr]
 
 	func spc_w [ addr: u16, val: u8 ]
 		if [ addr >= 0xF4 && addr <= 0xF7 ]
-			spc.ports[addr - 0xF4] = val
-			printf[ "SPC700 wrote 0x%02X to port $F%X\n", val, addr & 0xF ]
+			spc.oports[addr - 0xF4] = val
+		el [ addr == 0xF3 ]
+			reg : u8 [ spc.ram[0xF2] & 0x7F ]
+			spc.dsp[ reg ] = val
+			if [ reg == 0x4C ]                    # KON: key-on the set voices
+				for [ ch: i32 0, ch < 8, ch += 1 ]
+					if [ val & (1 << ch) ] spc_keyon[ ch ]
+			el [ reg == 0x5C ]                    # KOFF: release the set voices
+				for [ ch: i32 0, ch < 8, ch += 1 ]
+					if [ val & (1 << ch) ] spc_keyoff[ ch ]
+			el [ reg == 0x7C ]                    # writing ENDX clears the flags
+				spc.dsp[0x7C] = 0
+			spc.ram[0xF3] = val
+		el [ addr == 0xF1 ]                       # timer control + port-clear
+			for [ t: i32 0, t < 3, t += 1 ]
+				# enabling a timer (0 -> 1) resets its stage and counter
+				if [ (val & (1 << t)) && !(spc.timer_on & (1 << t)) ]
+					spc.timer_stage[t] = 0
+					spc.timer_count[t] = 0
+			spc.timer_on = val & 0x07
+			if [ val & 0x10 ]                     # clear ports 0,1 (CPU->APU)
+				spc.ports[0] = 0
+				spc.ports[1] = 0
+			if [ val & 0x20 ]                     # clear ports 2,3
+				spc.ports[2] = 0
+				spc.ports[3] = 0
+			spc.ram[0xF1] = val
+		el [ addr >= 0xFA && addr <= 0xFC ]       # timer dividers
+			spc.timer_target[addr - 0xFA] = val
+			spc.ram[addr] = val
 		el
 			spc.ram[addr] = val
+
+	func dsp_r [ reg: u8 ] -> u8
+		return spc.dsp[ reg & 0x7F ]
 
 	func spc_rb [] -> u8
 		v : u8 [ spc_r[ spc.pc ] ]
 		spc.pc += 1
 		return v
 
-	func spc_r16 [ a: u16 ] -> u16
-		return spc_r[a] | (spc_r[a + 1] << 8)
+	func spc_r16 [ aa: u16 ] -> u16
+		return spc_r[ aa ] | (spc_r[aa + 1] << 8)
 
 	func spc_rw [] -> u16
 		lo : u8 [ spc_r[ spc.pc ] ]
@@ -135,53 +215,56 @@ trinity asnes
 		return lo | (hi << 8)
 
 	func spc_nz [ v: u8 ]
-		spc.psw = (spc.psw & ~0x82) | (v == 0 ? 0x02 : 0) | (v & 0x80)
+		spc.psw = (spc.psw & ~0x82) | ((v == 0) ? 0x02 : 0) | (v & 0x80)
 
 	func spc_nzc [ v: u8, c: u8 ]
-		spc.psw = (spc.psw & ~0x83) | c | (v == 0 ? 0x02 : 0) | (v & 0x80)
+		spc.psw = (spc.psw & ~0x83) | c | ((v == 0) ? 0x02 : 0) | (v & 0x80)
 
 	func spc_cmp [ res: u16 ]
-		c : u8 [ res < 0x100 ? 0x01 : 0 ]
-		z : u8 [ (res & 0xFF) == 0 ? 0x02 : 0 ]
+		c : u8 [ (res < 0x100) ? 0x01 : 0 ]
+		z : u8 [ ((res & 0xFF) == 0) ? 0x02 : 0 ]
 		n : u8 [ res & 0x80 ]
 		spc.psw = (spc.psw & ~0x83) | c | z | n
 
-	func spc_adc [ a: u8, val: u8, res: u16 ]
-		c  : u8 [ res > 0xFF ? 0x01 : 0 ]
-		z  : u8 [ (res & 0xFF) == 0 ? 0x02 : 0 ]
+	func spc_adc [ aa: u8, val: u8, res: u16 ]
+		c  : u8 [ (res > 0xFF) ? 0x01 : 0 ]
+		z  : u8 [ ((res & 0xFF) == 0) ? 0x02 : 0 ]
 		n  : u8 [ res & 0x80 ]
-		ov : u8 [ ((a ^ res) & (val ^ res) & 0x80) ? 0x40 : 0 ]
-		spc.psw = (spc.psw & ~0x8F) | c | z | n | ov
+		h  : u8 [ ((aa ^ val ^ res) & 0x10) ? 0x08 : 0 ]
+		ov : u8 [ ((aa ^ res) & (val ^ res) & 0x80) ? 0x40 : 0 ]
+		spc.psw = (spc.psw & ~0xCB) | c | z | n | h | ov
 
-	func spc_sbc [ a: u8, val: u8, res: u16 ]
-		c  : u8 [ res < 0x100 ? 0x01 : 0 ]
-		z  : u8 [ (res & 0xFF) == 0 ? 0x02 : 0 ]
+	func spc_sbc [ aa: u8, val: u8, res: u16 ]
+		c  : u8 [ (res < 0x100) ? 0x01 : 0 ]
+		z  : u8 [ ((res & 0xFF) == 0) ? 0x02 : 0 ]
 		n  : u8 [ res & 0x80 ]
-		ov : u8 [ ((a ^ val) & (a ^ res) & 0x80) ? 0x40 : 0 ]
-		spc.psw = (spc.psw & ~0x8F) | c | z | n | ov
+		h  : u8 [ ((aa ^ val ^ res) & 0x10) ? 0x08 : 0 ]
+		ov : u8 [ ((aa ^ val) & (aa ^ res) & 0x80) ? 0x40 : 0 ]
+		spc.psw = (spc.psw & ~0xCB) | c | z | n | h | ov
 
 	# --- CPU memory access ---
 
 	func cpu_r [ addr: u16 ] -> u8
 		if [ addr >= 0x2140 && addr <= 0x2143 ]
-			val : u8 [ spc.ports[addr - 0x2140] ]
-			printf[ "CPU read 0x%02X from SPC port $%04X\n", val, addr ]
+			val : u8 [ spc.oports[addr - 0x2140] ]
 			return val
 		el [ addr >= 0x2100 && addr <= 0x213F ]
-			printf[ "PPU read from $%04X\n", addr ]
 			if [ addr == 0x2137 ] return 0x80
 			if [ addr == 0x2138 ] return 0x00
 			if [ addr == 0x2139 ] return 0x00
 			if [ addr == 0x213A ] return 0x00
 			return 0x00
 		el [ addr >= 0x4000 && addr <= 0x43FF ]
-			printf[ "Hardware read from $%04X\n", addr ]
+			if [ addr == 0x4210 ]            # RDNMI: bit7 = NMI flag (cleared on read)
+				v : u8 [ ((nmi_occurred) ? 0x80 : 0x00) | 0x02 ]
+				nmi_occurred = false
+				return v
 			if [ addr == 0x4212 ] return 0x80
 			if [ addr == 0x4016 ] return 0x00
 			if [ addr == 0x4017 ] return 0x00
 			return 0x00
 		el [ addr >= 0x0000 && addr <= 0x1FFF ]
-			return cpu.memory[addr & 0x1FFF]
+			return cpu.memory[0x7E0000 + (addr & 0x1FFF)]
 		el [ addr >= 0x6000 && addr <= 0x7FFF ]
 			return cpu.memory[addr]
 		return cpu.memory[addr]
@@ -189,13 +272,12 @@ trinity asnes
 	func cpu_w [ addr: u16, val: u8 ]
 		if [ addr >= 0x2140 && addr <= 0x2143 ]
 			spc.ports[addr - 0x2140] = val
-			printf[ "CPU write 0x%02X to SPC port $%04X\n", val, addr ]
-		el [ addr >= 0x2100 && addr <= 0x213F ]
-			printf[ "PPU write: $%04X = 0x%02X\n", addr, val ]
+			if [ false ]
+				printf[ "x" ]
 		el [ addr >= 0x4000 && addr <= 0x43FF ]
-			printf[ "Hardware write: $%04X = 0x%02X\n", addr, val ]
+			if [ addr == 0x4200 ] nmitimen = val   # NMITIMEN: bit7 enables vblank NMI
 		el [ addr >= 0x0000 && addr <= 0x1FFF ]
-			cpu.memory[addr & 0x1FFF] = val
+			cpu.memory[0x7E0000 + (addr & 0x1FFF)] = val
 		el [ addr >= 0x6000 && addr <= 0x7FFF ]
 			cpu.memory[addr] = val
 		el
@@ -235,6 +317,39 @@ trinity asnes
 		if [ !(cpu.p & 0x10) ]
 			cpu.xh = v >> 8
 
+	func cpu_get_Y [] -> u16
+		if [ cpu.p & 0x10 ]
+			return cpu.y
+		return cpu.y | (cpu.yh << 8)
+
+	func cpu_set_Y [ v: u16 ]
+		cpu.y = v & 0xFF
+		if [ !(cpu.p & 0x10) ]
+			cpu.yh = v >> 8
+
+	# width-aware immediate fetch: #imm is 1 byte in 8-bit mode, 2 in 16-bit.
+	# getting this wrong desyncs the PC, so all A/X/Y immediate ops use these.
+	func cpu_imm_a [] -> u16
+		if [ cpu.p & 0x20 ] return cpu_rb[]
+		return cpu_rw[]
+
+	func cpu_imm_x [] -> u16
+		if [ cpu.p & 0x10 ] return cpu_rb[]
+		return cpu_rw[]
+
+	# width-aware N/Z flag set for A-width / X-width results
+	func cpu_nz_a [ v: u16 ]
+		if [ cpu.p & 0x20 ]
+			cpu.p = (cpu.p & ~0x82) | (((v & 0xFF) == 0) ? 0x02 : 0) | (v & 0x80)
+		el
+			cpu.p = (cpu.p & ~0x82) | ((v == 0) ? 0x02 : 0) | (((v & 0x8000) != 0) ? 0x80 : 0)
+
+	func cpu_nz_x [ v: u16 ]
+		if [ cpu.p & 0x10 ]
+			cpu.p = (cpu.p & ~0x82) | (((v & 0xFF) == 0) ? 0x02 : 0) | (v & 0x80)
+		el
+			cpu.p = (cpu.p & ~0x82) | ((v == 0) ? 0x02 : 0) | (((v & 0x8000) != 0) ? 0x80 : 0)
+
 	func cpu_read_mem [ addr: u32 ] -> u16
 		if [ cpu.p & 0x20 ]
 			return cpu_r[ u16[addr] ]
@@ -249,19 +364,40 @@ trinity asnes
 			cpu_w[ u16[addr],     u8[v & 0xFF] ]
 			cpu_w[ u16[addr + 1], u8[v >> 8]   ]
 
+	# vblank NMI: push PCH,PCL,P (matches RTI pull order), jump to NMI vector.
+	func cpu_nmi []
+		cpu_w[ 0x0100 + cpu.sp, u8[cpu.pc >> 8] ]
+		cpu.sp -= 1
+		cpu_w[ 0x0100 + cpu.sp, u8[cpu.pc & 0xFF] ]
+		cpu.sp -= 1
+		cpu_w[ 0x0100 + cpu.sp, cpu.p ]
+		cpu.sp -= 1
+		cpu.p  |= 0x04
+		cpu.p  &= ~0x08
+		vec    : u16 [ (cpu.e) ? 0xFFFA : 0xFFEA ]
+		lo     : u8  [ cpu_r[ vec ] ]
+		hi     : u8  [ cpu_r[ vec + 1 ] ]
+		cpu.pc  = lo | (hi << 8)
+		cpu.pbr = 0
+		nmi_occurred = true
+		if [ dbg_cpu < 6 ]
+			printf[ "NMI fired: e=%d vec=%04X -> handler %04X (nmitimen=%02X)\n",
+				cpu.e, vec, cpu.pc, nmitimen ]
+			dbg_cpu += 1
+
 	# --- Gaussian interpolation for BRR samples ---
 
 	func gaussian_interpolate [ frac: i32, ch: u16 ] -> i16
-		frac &= 0xFF
+		fr : frac & 0xFF
 		s0 : i16 [ spc.channels[ch].samples[0] ]
 		s1 : i16 [ spc.channels[ch].samples[1] ]
 		s2 : i16 [ spc.channels[ch].samples[2] ]
 		s3 : i16 [ spc.channels[ch].samples[3] ]
 		result : i32 [
-			gauss[  0 + frac] * i32[s3] +
-			gauss[128 + frac] * i32[s2] +
-			gauss[256 - frac] * i32[s1] +
-			gauss[384 - frac] * i32[s0]
+			gauss[  0 + fr] * i32[s3] +
+			gauss[128 + fr] * i32[s2] +
+			gauss[256 - fr] * i32[s1] +
+			gauss[384 - fr] * i32[s0]
 		]
 		result >>= 11
 		if [ result >  32767 ] result = 32767
@@ -271,15 +407,15 @@ trinity asnes
 	# --- Echo processing ---
 
 	func echo_add [ left: f32, right: f32 ]
-		echo_delay  : u8  [ spc_r[ 0xF0 + 0x7D ] ]
+		echo_delay  : u8  [ dsp_r[0x7D ] ]
 		echo_length : u16 [ echo_delay * 0x800 ]
 		if [ echo_length == 0 ] return
 
-		echo_enable   : u8 [ spc_r[ 0xF0 + 0x4D ] ]
-		echo_volume_l : u8 [ spc_r[ 0xF0 + 0x2C ] ]
-		echo_volume_r : u8 [ spc_r[ 0xF0 + 0x3C ] ]
-		echo_feedback : u8 [ spc_r[ 0xF0 + 0x0D ] ]
-		echo_start    : u16 [ spc_r[ 0xF0 + 0x6D ] << 8 ]
+		echo_enable   : u8 [ dsp_r[0x4D ] ]
+		echo_volume_l : u8 [ dsp_r[0x2C ] ]
+		echo_volume_r : u8 [ dsp_r[0x3C ] ]
+		echo_feedback : u8 [ dsp_r[0x0D ] ]
+		echo_start    : u16 [ dsp_r[0x6D ] << 8 ]
 
 		echo_input_l : f32 [ 0.0 ]
 		echo_input_r : f32 [ 0.0 ]
@@ -297,9 +433,9 @@ trinity asnes
 		filtered_l : f32 [ 0.0 ]
 		filtered_r : f32 [ 0.0 ]
 		for [ tap: i32 0, tap < 8, tap += 1 ]
-			coeff   : i8  [ spc_r[ 0xF0 + 0x0F + (tap * 0x10) ] ]
+			coeff   : i8  [ dsp_r[0x0F + (tap * 0x10) ] ]
 			epos    : i32 [ spc.echo_pos + tap * (echo_length / 8) ]
-			tap_pos : u16 [ u16[epos % (echo_length / 4)] ]
+			tap_pos : u16 [ epos % (echo_length / 4) ]
 			tap_al  : u16 [ echo_start + (tap_pos * 4)     ]
 			tap_ar  : u16 [ echo_start + (tap_pos * 4) + 2 ]
 			tap_sl  : i16 [ spc_r16[tap_al] ]
@@ -313,8 +449,8 @@ trinity asnes
 		echo_l  = clamp[ echo_l, -1.0, 1.0 ]
 		echo_r  = clamp[ echo_r, -1.0, 1.0 ]
 
-		nel : i16 [ i16[(echo_input_l + echo_l) * 32767] ]
-		ner : i16 [ i16[(echo_input_r + echo_r) * 32767] ]
+		nel : i16[(echo_input_l + echo_l) * 32767]
+		ner : i16[(echo_input_r + echo_r) * 32767]
 		spc_w[ echo_addr_l,     u8[nel & 0xFF] ]
 		spc_w[ echo_addr_l + 1, u8[nel >> 8]   ]
 		spc_w[ echo_addr_r,     u8[ner & 0xFF] ]
@@ -327,43 +463,113 @@ trinity asnes
 		echo_out_l = echo_l * (i8[echo_volume_l] / 128.0)
 		echo_out_r = echo_r * (i8[echo_volume_r] / 128.0)
 
+	# --- Direct DSP audio test (no CPU, no upload) ---
+	# Loads a tiny looping BRR square wave into SPC RAM, points voice 0 at it,
+	# and keys it on by writing the DSP registers directly. Proves the
+	# SPC-DSP -> generate_audio -> ALSA path in isolation from the cartridge.
+	func audio_test []
+		reset_spc[]
+		# two BRR blocks of a square wave. block0 ($0200) is plain data; block1
+		# ($0209) carries end+loop so the decoder loops back to $0200 -> a
+		# continuous ~1kHz square. shift=12, filter=0.
+		spc.ram[0x0200] = 0xC0              # block0 header: shift=C, no flags
+		spc.ram[0x0209] = 0xC3              # block1 header: shift=C, end+loop
+		for [ n: i32 0, n < 4, n += 1 ]
+			spc.ram[0x0201 + n] = 0x77      # block0: two +7 nibbles
+			spc.ram[0x0205 + n] = 0x88      # block0: two -8 nibbles
+			spc.ram[0x020A + n] = 0x77      # block1: two +7 nibbles
+			spc.ram[0x020E + n] = 0x88      # block1: two -8 nibbles
+		# sample directory at $0100, entry 0: start=$0200, loop=$0200
+		spc.ram[0x0100] = 0x00
+		spc.ram[0x0101] = 0x02
+		spc.ram[0x0102] = 0x00
+		spc.ram[0x0103] = 0x02
+		# DSP voice 0 + master volume, gain mode (no ADSR ramp), key on
+		spc.dsp[0x5D] = 0x01                # sample directory page = $0100
+		spc.dsp[0x00] = 0x7F                # voice 0 vol L
+		spc.dsp[0x01] = 0x7F                # voice 0 vol R
+		spc.dsp[0x02] = 0x00                # pitch lo
+		spc.dsp[0x03] = 0x10                # pitch hi -> 0x1000 = 1.0x (32kHz)
+		spc.dsp[0x04] = 0x00                # source number 0
+		spc.dsp[0x05] = 0x00                # ADSR1 bit7=0 -> use GAIN
+		spc.dsp[0x07] = 0x7F                # GAIN direct, near-max envelope
+		spc.dsp[0x0C] = 0x7F                # master vol L
+		spc.dsp[0x1C] = 0x7F                # master vol R
+		spc.dsp[0x4C] = 0x01                # KON voice 0
+		spc_keyon[ 0 ]
+		puts[ 'audio_test: voice 0 keyed on (~2kHz square)' ]
+
+	# --- .spc playback (isolates SPC700 + DSP + timers; no CPU/ROM/upload) ---
+	# Loads an APU snapshot: 64KB RAM, 128 DSP regs, and the SPC700 registers,
+	# then we just run spc_step + generate_audio. Proves the SPC core end-to-end.
+	func load_spc []
+		reset_spc[]
+		f : ref FILE [ fopen[ spcfile, 'rb' ] ]
+		expect f, 'could not open spc file: {spcfile}'
+		buf : ref u8 [ calloc[ 1, 0x10200 ] ]
+		fread[ buf, 1, 0x10200, f ]
+		fclose[ f ]
+		spc.pc  = u16[buf[0x25]] | (u16[buf[0x26]] << 8)
+		spc.a   = buf[0x27]
+		spc.x   = buf[0x28]
+		spc.y   = buf[0x29]
+		spc.psw = buf[0x2A]
+		spc.sp  = buf[0x2B]
+		memcpy[ spc.ram, buf + 0x100, 0x10000 ]
+		memcpy[ spc.dsp, buf + 0x10100, 128 ]
+		free[ buf ]
+		# seed timer state from the snapshot's APU registers
+		spc.timer_on        = spc.ram[0xF1] & 0x07
+		spc.timer_target[0] = spc.ram[0xFA]
+		spc.timer_target[1] = spc.ram[0xFB]
+		spc.timer_target[2] = spc.ram[0xFC]
+		# key on any voices the snapshot left active
+		for [ ch: i32 0, ch < 8, ch += 1 ]
+			if [ spc.dsp[0x4C] & (1 << ch) ] spc_keyon[ ch ]
+		printf[ "loaded spc: pc=%04X a=%02X sp=%02X F1=%02X dividers=%02X %02X %02X\n",
+			spc.pc, spc.a, spc.sp, spc.ram[0xF1], spc.ram[0xFA], spc.ram[0xFB], spc.ram[0xFC] ]
+
 	# --- Audio generation ---
 
 	func generate_audio []
-		buffer : ref i16 [ spc.audio_buffer to ref i16 ]
 		avail  : i64 [ snd_pcm_avail[ spc.pcm_handle ] ]
 		if [ avail < 0 ]
 			if [ avail == -EPIPE ]
-				print[ 'audio underrun, recovering...' ]
+				puts[ 'audio underrun, recovering...' ]
 				snd_pcm_recover[ spc.pcm_handle, avail, 0 ]
 				snd_pcm_prepare[ spc.pcm_handle ]
 				return
 			el
-				print[ 'ALSA error: {snd_strerror[avail]}' ]
+				puts[ 'ALSA error: {snd_strerror[avail]}' ]
 				return
 
-		for [ i: i32 0, i < spc.buffer_size, i += 1 ]
+		# only synthesize as many frames as the ALSA ring buffer has room for,
+		# so we feed at the 32kHz consumption rate instead of the video fps.
+		to_write : sz [ avail ]
+		if [ to_write > spc.buffer_size ] to_write = spc.buffer_size
+		if [ to_write <= 0 ] return
+
+		for [ i: i32 0, i < to_write, i += 1 ]
 			left  : f32 [ 0.0 ]
 			right : f32 [ 0.0 ]
 
 			for [ ch: u16 0, ch < 8, ch += 1 ]
-				key_on : u8 [ spc_r[ 0xF0 + 0x4C ] ]
-				if [ !(key_on & (1 << ch)) ] continue
+				if [ !spc.channels[ch].active ] continue
 
 				ch_base : u8 [ ch * 0x10 ]
-				vol_l   : u8 [ spc_r[ 0xF0 + ch_base + 0x00 ] ]
-				vol_r   : u8 [ spc_r[ 0xF0 + ch_base + 0x01 ] ]
-				pitch_l : u8 [ spc_r[ 0xF0 + ch_base + 0x02 ] ]
-				pitch_h : u8 [ spc_r[ 0xF0 + ch_base + 0x03 ] ]
-				src_n   : u8 [ spc_r[ 0xF0 + ch_base + 0x04 ] ]
-				adsr1   : u8 [ spc_r[ 0xF0 + ch_base + 0x05 ] ]
-				adsr2   : u8 [ spc_r[ 0xF0 + ch_base + 0x06 ] ]
-				gain    : u8 [ spc_r[ 0xF0 + ch_base + 0x07 ] ]
+				vol_l   : u8 [ dsp_r[ch_base + 0x00 ] ]
+				vol_r   : u8 [ dsp_r[ch_base + 0x01 ] ]
+				pitch_l : u8 [ dsp_r[ch_base + 0x02 ] ]
+				pitch_h : u8 [ dsp_r[ch_base + 0x03 ] ]
+				src_n   : u8 [ dsp_r[ch_base + 0x04 ] ]
+				adsr1   : u8 [ dsp_r[ch_base + 0x05 ] ]
+				adsr2   : u8 [ dsp_r[ch_base + 0x06 ] ]
+				gain    : u8 [ dsp_r[ch_base + 0x07 ] ]
 
 				pitch : u16 [ pitch_l | ((pitch_h & 0x3F) << 8) ]
 				if [ pitch == 0 ] continue
 
-				dir_page     : u8  [ spc_r[ 0xF0 + 0x5D ] ]
+				dir_page     : u8  [ dsp_r[0x5D ] ]
 				src_dir      : u16 [ (dir_page << 8) + (src_n * 4) ]
 				sample_start : u16 [ spc_r16[src_dir] ]
 				sample_loop  : u16 [ spc_r16[src_dir + 2] ]
@@ -377,19 +583,10 @@ trinity asnes
 					block_header : u8  [ spc_r[ block_pos ] ]
 					sample_idx   : u8  [ spc.channels[ch].pos % 16 ]
 
-					if [ sample_idx < 2 ]
-						loop_flag : u8 [ (block_header >> 0) & 0x1 ]
-						end_flag  : u8 [ (block_header >> 1) & 0x1 ]
-						if [ end_flag ]
-							if [ loop_flag ]
-								spc.channels[ch].pos = (sample_loop - sample_start) * 16
-							el
-								continue
-
 					sample_byte : u8  [ spc_r[ block_pos + 1 + (sample_idx / 2) ] ]
 					hi_nib      : i8 [ (sample_byte >> 4) & 0xF ]
 					lo_nib      : i8 [ sample_byte & 0xF ]
-					sample_4bit : i8 [ (sample_idx & 1) ? hi_nib : lo_nib ]
+					sample_4bit : i8 [ (sample_idx & 1) ? lo_nib : hi_nib ]
 					if [ sample_4bit > 7 ] sample_4bit -= 16
 
 					dec_sample : i32 [ sample_4bit << (block_header >> 4) ]
@@ -416,43 +613,85 @@ trinity asnes
 					spc.channels[ch].samples[1] = spc.channels[ch].samples[0]
 					spc.channels[ch].samples[0] = i16[dec_sample]
 
+					# end-of-block: after decoding sample 15, honor the END/LOOP flags
+					if [ sample_idx == 15 && (block_header & 0x02) ]
+						spc.dsp[0x7C] = spc.dsp[0x7C] | (1 << ch)   # set ENDX
+						if [ block_header & 0x01 ]                  # loop
+							spc.channels[ch].pos = ((sample_loop - sample_start) * 16) - 1
+						el
+							spc.channels[ch].active   = 0           # one-shot finished
+							spc.channels[ch].envelope = 0
+
 				frac_v : u8  [ spc.channels[ch].frac >> 4 ]
 				interp : i16 [ gaussian_interpolate[ frac_v, ch ] ]
 
-				if [ adsr1 & 0x80 ]
-					attack_rate   : u8 [  (adsr1 >> 1) & 0xF ]
-					decay_rate    : u8 [ ((adsr1 & 0x7) << 1) | ((adsr2 >> 7) & 1) ]
-					sustain_level : u8 [  (adsr2 >> 5) & 0x7 ]
-					release_rate  : u8 [  (adsr2 >> 0) & 0x1 ]
-					switch [ spc.channels[ch].env_state ]
-						case 0
-							spc.channels[ch].envelope += attack_rate * 32
-							if [ spc.channels[ch].envelope >= 32767 ]
-								spc.channels[ch].envelope  = 32767
-								spc.channels[ch].env_state = 1
-						case 1
-							spc.channels[ch].envelope -= decay_rate * 8
-							if [ spc.channels[ch].envelope <= (sustain_level * 4096) ]
-								spc.channels[ch].env_state = 2
-						case 2
-							# sustain
-						case 3
-							spc.channels[ch].envelope -= release_rate * 8
-							if [ spc.channels[ch].envelope < 0 ]
-								spc.channels[ch].envelope = 0
+				# --- envelope update (range 0..0x7FF) ---
+				env : i32 [ spc.channels[ch].envelope ]
+				if [ spc.channels[ch].env_state == 3 ]
+					env -= 8                                   # release: linear fade
+					if [ env <= 0 ]
+						env = 0
+						spc.channels[ch].active = 0
+				el [ adsr1 & 0x80 ]
+					arate : i32 [ adsr2 & 0x1F ]               # sustain rate default
+					if [ spc.channels[ch].env_state == 0 ]
+						arate = ((adsr1 & 0x0F) << 1) + 1         # attack
+					el [ spc.channels[ch].env_state == 1 ]
+						arate = (((adsr1 >> 4) & 0x07) << 1) + 16 # decay
+					aper : i32 [ env_rate[ arate ] ]
+					if [ aper > 0 ]
+						spc.channels[ch].env_count += 1
+						if [ spc.channels[ch].env_count >= aper ]
+							spc.channels[ch].env_count = 0
+							if [ spc.channels[ch].env_state == 0 ]
+								env += ((arate == 31) ? 1024 : 32)
+								if [ env >= 0x7FF ]
+									env = 0x7FF
+									spc.channels[ch].env_state = 1
+							el
+								env -= (((env - 1) >> 8) + 1)
+								sl : i32 [ (((adsr2 >> 5) & 0x07) + 1) << 8 ]
+								if [ spc.channels[ch].env_state == 1 && env <= sl ]
+									spc.channels[ch].env_state = 2
 				el
-					spc.channels[ch].envelope = gain << 7
+					if [ gain & 0x80 ]
+						gmode : u8  [ (gain >> 5) & 0x03 ]
+						grate : i32 [ gain & 0x1F ]
+						gper  : i32 [ env_rate[ grate ] ]
+						if [ gper > 0 ]
+							spc.channels[ch].env_count += 1
+							if [ spc.channels[ch].env_count >= gper ]
+								spc.channels[ch].env_count = 0
+								switch [ gmode ]
+									case 0
+										env -= 32
+									case 1
+										env -= (((env - 1) >> 8) + 1)
+									case 2
+										env += 32
+									default
+										env += ((env < 0x600) ? 32 : 8)
+					el
+						env = (gain & 0x7F) << 4                  # direct gain
+				if [ env > 0x7FF ] env = 0x7FF
+				if [ env < 0 ] env = 0
+				spc.channels[ch].envelope = i16[ env ]
+				spc.dsp[ ch_base + 0x08 ] = u8[ (env >> 4) & 0x7F ]   # ENVX
 
-				final_sample : i32 [ (interp * spc.channels[ch].envelope) >> 15 ]
-				l : f32 [ (final_sample * i8[vol_l]) / 32768.0 ]
-				r : f32 [ (final_sample * i8[vol_r]) / 32768.0 ]
+				final_sample : i32 [ (i32[interp] * env) >> 11 ]
+				if [ false ]
+					printf[ "x" ]
+				if [ final_sample >  32767 ] final_sample =  32767
+				if [ final_sample < -32768 ] final_sample = -32768
+				l : f32 [ (final_sample / 32768.0) * (i8[vol_l] / 128.0) ]
+				r : f32 [ (final_sample / 32768.0) * (i8[vol_r] / 128.0) ]
 				spc.channels[ch].output_l = l
 				spc.channels[ch].output_r = r
 				left  += l
 				right += r
 
-			mvol_l : u8 [ spc_r[ 0xF0 + 0x0C ] ]
-			mvol_r : u8 [ spc_r[ 0xF0 + 0x1C ] ]
+			mvol_l : u8 [ dsp_r[0x0C ] ]
+			mvol_r : u8 [ dsp_r[0x1C ] ]
 			left  *= i8 [ mvol_l ] / 128.0
 			right *= i8 [ mvol_r ] / 128.0
 
@@ -460,10 +699,22 @@ trinity asnes
 			left  = clamp[ left  + echo_out_l, -1.0, 1.0 ]
 			right = clamp[ right + echo_out_r, -1.0, 1.0 ]
 
-			buffer[i * 2]     = i16[left  * 16384]
-			buffer[i * 2 + 1] = i16[right * 16384]
+			spc.audio_buffer[i * 2]     = i16[ left  * 16384 ]
+			spc.audio_buffer[i * 2 + 1] = i16[ right * 16384 ]
 
-		snd_pcm_writei[ spc.pcm_handle, buffer, spc.buffer_size ]
+		dbg_cpu += 1
+		if [ (dbg_cpu % 60) == 0 && dbg_h < 60 ]
+			peak : i32 [ 0 ]
+			for [ j: i32 0, j < i32[to_write] * 2, j += 1 ]
+				s : i32 [ spc.audio_buffer[j] ]
+				if [ s < 0 ] s = -s
+				if [ s > peak ] peak = s
+			printf[ "frame %d peak=%d\n", dbg_cpu, peak ]
+			dbg_h += 1
+		wr : i64 [ snd_pcm_writei[ spc.pcm_handle, spc.audio_buffer, to_write ] ]
+		if [ wr == -EPIPE ]
+			snd_pcm_recover[ spc.pcm_handle, wr, 0 ]
+			snd_pcm_prepare[ spc.pcm_handle ]
 
 	# --- Load ROM ---
 
@@ -471,7 +722,9 @@ trinity asnes
 		if [ !spc_rom_loaded ]
 			if [ !spc_boot_rom ]
 				spc_boot_rom = calloc[ 1, 64 ]
-			f    : ref FILE [ fopen[ cstring[spc_rom], 'rb' ] ]
+			# default the SPC700 IPL to bios.rom in the launch cwd unless --spc_rom given
+			if [ !spc_rom ] spc_rom = path '{path.path_startup[]}/bios.rom'
+			f    : ref FILE [ fopen[ spc_rom, 'rb' ] ]
 			size : sz [ 0 ]
 			expect f, 'could not open spc-rom file: {spc_rom}'
 			fseek [ f, 0, SEEK_END ]
@@ -493,18 +746,26 @@ trinity asnes
 		spc.audio_buffer = calloc[ 1, spc.buffer_size * 2 * 2 ]
 
 		pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
-		err : i32 [ snd_pcm_open[&spc.pcm_handle, 'pulse', pb, 0] ]
+		err : i32 [ snd_pcm_open[ref spc.pcm_handle, 'pulse', pb, 0] ]
+
 		if [ err < 0 ] return false
 
-		params : ref snd_pcm_hw_params_t [ null ]
-		snd_pcm_hw_params_alloca      [ &params ]
+		psz    : snd_pcm_hw_params_sizeof[ ]
+		params : ref snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
 		snd_pcm_hw_params_any         [ spc.pcm_handle, params ]
 		rw  : i32 [ SND_PCM_ACCESS_RW_INTERLEAVED ]
 		fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
+
 		snd_pcm_hw_params_set_access  [spc.pcm_handle, params, rw]
 		snd_pcm_hw_params_set_format  [spc.pcm_handle, params, fmt]
 		snd_pcm_hw_params_set_channels[spc.pcm_handle, params, 2]
 		snd_pcm_hw_params_set_rate[spc.pcm_handle, params, spc.sample_rate, 0]
+		# keep the ring buffer small so snd_pcm_avail paces the SPC to real-time
+		# (otherwise PulseAudio reports a ~32s buffer and the engine races ahead).
+		bufsz : sz [ 4096 ]
+		persz : sz [ 1024 ]
+		snd_pcm_hw_params_set_buffer_size_near[ spc.pcm_handle, params, ref bufsz ]
+		snd_pcm_hw_params_set_period_size_near[ spc.pcm_handle, params, ref persz, null ]
 
 		spc.ports[0] = 0xAA
 		spc.ports[1] = 0xBB
@@ -513,25 +774,44 @@ trinity asnes
 		if [ success ]
 			perr : i32 [ snd_pcm_prepare[ spc.pcm_handle ] ]
 			if [ perr < 0 ]
-				print[ 'ALSA prepare failed: {snd_strerror[perr]}' ]
+				puts[ 'ALSA prepare failed: {snd_strerror[perr]}' ]
 				success = false
+		
 		return success
 
 	func load [] -> bool
-		f : ref FILE [ fopen[ cstring[rom], 'rb' ] ]
+		f : ref FILE [ fopen[ rom, 'rb' ] ]
 		expect f, 'could not open ROM file'
 		fseek[ f, 0, SEEK_END ]
 		size : sz [ ftell[ f ] ]
 		rewind[ f ]
+		# .smc copier header: 512 bytes present when size mod 0x8000 == 512.
+		# skip it so the reset vector / banks aren't shifted by 512.
+		header : sz [ ((size % 0x8000) == 512) ? 512 : 0 ]
+		if [ header ]
+			fseek[ f, header, SEEK_SET ]
+			size -= header
 		expect size < 0x1000000, 'ROM too large'
 
 		cpu = cpu_state []
 		cpu.memory = calloc[ 1, 0x1000000 ]
-		fread[ cpu.memory + 0x8000, 1, size, f ]
-		memcpy[ cpu.memory, cpu.memory + 0x8000, 0x8000 ]
+		nbanks : i32 [ size / 0x8000 ]
+		if [ nbanks < 1 ] nbanks = 1
+		rombuf : ref u8 [ calloc[ 1, (nbanks + 1) * 0x8000 ] ]
+		fread[ rombuf, 1, size, f ]
 		fclose[ f ]
+		# build a flat 24-bit LoROM map: each bank's $8000-$FFFF window
+		# mirrors a 32KB ROM slice. banks $7E/$7F stay WRAM (left zeroed).
+		for [ b: i32 0, b < 0x100, b += 1 ]
+			if [ b == 0x7E ] continue
+			if [ b == 0x7F ] continue
+			chunk : i32 [ (b & 0x7F) % nbanks ]
+			dst   : i64 [ (b * 0x10000) + 0x8000 ]
+			src   : i64 [ chunk * 0x8000 ]
+			memcpy[ cpu.memory + dst, rombuf + src, 0x8000 ]
+		free[ rombuf ]
 
-		print[ 'loaded rom: {rom} ({size} bytes)' ]
+		puts[ 'loaded rom: {rom} ({size} bytes)' ]
 		reset_vector : u16 [ cpu.memory[0xFFFC] | (cpu.memory[0xFFFD] << 8) ]
 		printf[ "reset vector: 0x%04X\n", reset_vector ]
 		printf[ "first op: 0x%02X\n", cpu.memory[reset_vector] ]
@@ -548,20 +828,172 @@ trinity asnes
 
 	# --- Trinity ---
 
+	# --- SPC700 opcode self-test (deterministic, no ROM/.spc needed) ---
+	func t_chk [ name: symbol, got: i32, want: i32 ]
+		if [ got != want ]
+			printf[ "FAIL %-12s got=%02X want=%02X\n", name, got, want ]
+			dbg_h += 1
+		el
+			printf[ "ok   %s\n", name ]
+
+	# run one instruction placed at $0300 with the given operand bytes
+	func t_run [ op: u8, o1: u8, o2: u8 ]
+		spc.ram[0x0300] = op
+		spc.ram[0x0301] = o1
+		spc.ram[0x0302] = o2
+		spc.pc = 0x0300
+		spc_step[]
+
+	func spc_test []
+		spc = spc_state []
+		dbg_h = 0
+
+		# ADC A,#imm : 0x50 + 0x50 = 0xA0, N|V set, C|Z|H clear
+		spc.a = 0x50  spc.psw = 0x00
+		t_run[ 0x88, 0x50, 0x00 ]
+		t_chk[ 'ADC.res', spc.a, 0xA0 ]
+		t_chk[ 'ADC.NVZC', spc.psw & 0xC3, 0xC0 ]
+		# ADC carry-out + half-carry: 0xFF + 0x01 = 0x00, C|Z|H set
+		spc.a = 0xFF  spc.psw = 0x00
+		t_run[ 0x88, 0x01, 0x00 ]
+		t_chk[ 'ADC2.res', spc.a, 0x00 ]
+		t_chk[ 'ADC2.HZC', spc.psw & 0x0B, 0x0B ]
+
+		# SBC A,#imm : 0x50 - 0x30 (C=1) = 0x20, C set, N|V|Z clear
+		spc.a = 0x50  spc.psw = 0x01
+		t_run[ 0xA8, 0x30, 0x00 ]
+		t_chk[ 'SBC.res', spc.a, 0x20 ]
+		t_chk[ 'SBC.C', spc.psw & 0x01, 0x01 ]
+
+		# CMP A,#imm equal : Z|C set, N clear
+		spc.a = 0x42  spc.psw = 0x00
+		t_run[ 0x68, 0x42, 0x00 ]
+		t_chk[ 'CMP.ZC', spc.psw & 0x83, 0x03 ]
+		# CMP A < imm : C clear, N set
+		spc.a = 0x10  spc.psw = 0x00
+		t_run[ 0x68, 0x20, 0x00 ]
+		t_chk[ 'CMP2.NC', spc.psw & 0x83, 0x80 ]
+
+		# AND/OR/EOR A,#imm  (N,Z)
+		spc.a = 0xF0  spc.psw = 0x00
+		t_run[ 0x28, 0x0F, 0x00 ]
+		t_chk[ 'AND.res', spc.a, 0x00 ]
+		t_chk[ 'AND.Z', spc.psw & 0x82, 0x02 ]
+		spc.a = 0x0F  spc.psw = 0x00
+		t_run[ 0x08, 0x80, 0x00 ]
+		t_chk[ 'OR.res', spc.a, 0x8F ]
+		t_chk[ 'OR.N', spc.psw & 0x82, 0x80 ]
+
+		# shifts/rotates on A
+		spc.a = 0x81  spc.psw = 0x00
+		t_run[ 0x1C, 0x00, 0x00 ]          # ASL A
+		t_chk[ 'ASL.res', spc.a, 0x02 ]
+		t_chk[ 'ASL.C', spc.psw & 0x01, 0x01 ]
+		spc.a = 0x01  spc.psw = 0x00
+		t_run[ 0x5C, 0x00, 0x00 ]          # LSR A
+		t_chk[ 'LSR.res', spc.a, 0x00 ]
+		t_chk[ 'LSR.ZC', spc.psw & 0x03, 0x03 ]
+		spc.a = 0x80  spc.psw = 0x01
+		t_run[ 0x3C, 0x00, 0x00 ]          # ROL A (carry in)
+		t_chk[ 'ROL.res', spc.a, 0x01 ]
+		t_chk[ 'ROL.C', spc.psw & 0x01, 0x01 ]
+		spc.a = 0x01  spc.psw = 0x01
+		t_run[ 0x7C, 0x00, 0x00 ]          # ROR A (carry in)
+		t_chk[ 'ROR.res', spc.a, 0x80 ]
+		t_chk[ 'ROR.NC', spc.psw & 0x81, 0x81 ]
+
+		# INC/DEC A
+		spc.a = 0xFF  spc.psw = 0x00
+		t_run[ 0xBC, 0x00, 0x00 ]
+		t_chk[ 'INC.ZA', spc.a, 0x00 ]
+		t_chk[ 'INC.Z', spc.psw & 0x82, 0x02 ]
+		spc.a = 0x00  spc.psw = 0x00
+		t_run[ 0x9C, 0x00, 0x00 ]
+		t_chk[ 'DEC.A', spc.a, 0xFF ]
+		t_chk[ 'DEC.N', spc.psw & 0x82, 0x80 ]
+
+		# word ops: INCW / ADDW / SUBW on dp $20
+		spc.ram[0x20] = 0xFF  spc.ram[0x21] = 0x00
+		t_run[ 0x3A, 0x20, 0x00 ]          # INCW $20 -> 0x0100
+		t_chk[ 'INCW.lo', spc.ram[0x20], 0x00 ]
+		t_chk[ 'INCW.hi', spc.ram[0x21], 0x01 ]
+		spc.a = 0x34  spc.y = 0x12  spc.ram[0x20] = 0xCD  spc.ram[0x21] = 0xAB
+		t_run[ 0x7A, 0x20, 0x00 ]          # ADDW YA,$20 : 0x1234+0xABCD=0xBE01
+		t_chk[ 'ADDW.lo', spc.a, 0x01 ]
+		t_chk[ 'ADDW.hi', spc.y, 0xBE ]
+
+		# branches: BNE taken when Z clear, not taken when Z set
+		spc.psw = 0x00
+		t_run[ 0xD0, 0x10, 0x00 ]          # BNE +0x10 from $0302 -> $0312
+		t_chk[ 'BNE.taken', spc.pc, 0x0312 ]
+		spc.psw = 0x02
+		t_run[ 0xD0, 0x10, 0x00 ]          # Z set -> fall through to $0302
+		t_chk[ 'BNE.fall', spc.pc, 0x0302 ]
+		# BCS taken when C set
+		spc.psw = 0x01
+		t_run[ 0xB0, 0x20, 0x00 ]          # BCS +0x20 -> $0322
+		t_chk[ 'BCS.taken', spc.pc, 0x0322 ]
+
+		if [ dbg_h == 0 ]
+			puts[ 'SPC700 self-test: ALL PASS' ]
+		el
+			printf[ "SPC700 self-test: %d FAILURES\n", dbg_h ]
+
 	func init []
-		width  = 512
-		height = 448
-		if [ rom ] load[]
+		width      = 512
+		height     = 448
+		background = 'Background'
 
 	func on_render [ w: Window ] -> Elements
+		if [ spctest ]
+			if [ !spc ] spc_test[]
+			return null
+		# --beep: bypass the CPU/upload entirely, key on one DSP voice directly.
+		if [ beep ]
+			if [ !spc ] audio_test[]
+			generate_audio[]
+			return null
+		# --spcfile: play a real APU snapshot. Pace the SPC to the audio
+		# consumption rate (32 SPC cycles/sample) so timers/tempo run real-time.
+		if [ spcfile ]
+			if [ !spc ] load_spc[]
+			av : i64 [ snd_pcm_avail[ spc.pcm_handle ] ]
+			if [ av < 0 ] av = 0
+			n : i64 [ av ]
+			if [ n > spc.buffer_size ] n = spc.buffer_size
+			steps : i32 [ i32[n] * 16 ]
+			for [ i: i32 0, i < steps, i += 1 ]
+				spc_step[]
+			generate_audio[]
+			return null
+		# --rom <path> maps onto the public `rom` member, but args are applied
+		# after init[], so load lazily on the first frame once rom is set.
+		if [ rom && !cpu ] load[]
 		if [ !cpu ] return null
-		for [ i: i32 0, i < 1000, i += 1 ]
+		# one vblank NMI per frame — drives the game's per-frame logic + audio
+		if [ nmitimen & 0x80 ] cpu_nmi[]
+		for [ i: i32 0, i < 30000, i += 1 ]
 			cpu_cycles : i32 [ cpu_step[] ]
 			spc.cycle_accum += cpu_cycles * 1024
 			while [ spc.cycle_accum >= 2610 ]
 				spc_step[]
 				spc.cycle_accum -= 2610
 		generate_audio[]
+		dbg_frames += 1
+		if [ spc.pc < 0x8000 && dbg_h < 1 ]
+			printf[ "ENGINE@%04X wait0873: %02X %02X %02X %02X %02X %02X  dspENvol7D=%02X ECEN4D=%02X\n",
+				spc.pc, spc.ram[0x0873], spc.ram[0x0874], spc.ram[0x0875],
+				spc.ram[0x0876], spc.ram[0x0877], spc.ram[0x0878], spc.dsp[0x7D], spc.dsp[0x4D] ]
+			dbg_h += 1
+		if [ (dbg_frames % 30) == 0 ]
+			nzdsp : i32 [ 0 ]
+			for [ r: i32 0, r < 128, r += 1 ]
+				if [ spc.dsp[r] != 0 ] nzdsp += 1
+			printf[ "frame %u cpu=%02X:%04X spc.pc=%04X c2a=%02X %02X %02X %02X a2c=%02X %02X %02X %02X KON=%02X mvol=%02X/%02X dsp_nz=%d\n",
+				dbg_frames, cpu.pbr, cpu.pc, spc.pc,
+				spc.ports[0], spc.ports[1], spc.ports[2], spc.ports[3],
+				spc.oports[0], spc.oports[1], spc.oports[2], spc.oports[3],
+				spc.dsp[0x4C], spc.dsp[0x0C], spc.dsp[0x1C], nzdsp ]
 		return null
 
 	func dealloc []
@@ -575,12 +1007,41 @@ trinity asnes
 
 	# --- SPC700 step ---
 
+	# advance the three SPC700 timers by `cyc` SPC cycles. timer0/1 prescale at
+	# 128 cycles (8kHz), timer2 at 16 cycles (64kHz); each output is a 4-bit
+	# counter the engine polls at $FD-$FF to sequence music.
+	func spc_tick_timers [ cyc: i32 ]
+		spc.tcyc += cyc
+		while [ spc.tcyc >= 128 ]
+			spc.tcyc -= 128
+			if [ spc.timer_on & 0x01 ]
+				spc.timer_stage[0] += 1
+				t0 : i32 [ (spc.timer_target[0] == 0) ? 256 : spc.timer_target[0] ]
+				if [ spc.timer_stage[0] >= t0 ]
+					spc.timer_stage[0] = 0
+					spc.timer_count[0] = (spc.timer_count[0] + 1) & 0x0F
+			if [ spc.timer_on & 0x02 ]
+				spc.timer_stage[1] += 1
+				t1 : i32 [ (spc.timer_target[1] == 0) ? 256 : spc.timer_target[1] ]
+				if [ spc.timer_stage[1] >= t1 ]
+					spc.timer_stage[1] = 0
+					spc.timer_count[1] = (spc.timer_count[1] + 1) & 0x0F
+			if [ spc.timer_on & 0x04 ]
+				spc.timer_stage[2] += 8
+				t2 : i32 [ (spc.timer_target[2] == 0) ? 256 : spc.timer_target[2] ]
+				while [ spc.timer_stage[2] >= t2 ]
+					spc.timer_stage[2] -= t2
+					spc.timer_count[2] = (spc.timer_count[2] + 1) & 0x0F
+
 	func spc_step []
 		opcode : u8 [ spc_rb[] ]
+		spc_tick_timers[ 2 ]
+		if [ false ]
+			printf[ "x" ]
 		switch [ opcode ]
-			case 0x8F  # MOV dp, #imm
-				dp  : u8 [ spc_rb[] ]
+			case 0x8F  # MOV dp, #imm  (encoding: 8F imm dp — immediate byte first)
 				imm : u8 [ spc_rb[] ]
+				dp  : u8 [ spc_rb[] ]
 				spc_w[ dp, imm ]
 
 			case 0xCD  # MOV X, #imm
@@ -749,6 +1210,10 @@ trinity asnes
 				dp : u8 [ spc_rb[] ]
 				spc_w[ dp, spc.y ]
 
+			case 0xD8  # MOV dp, X
+				dp : u8 [ spc_rb[] ]
+				spc_w[ dp, spc.x ]
+
 			case 0xCC  # MOV abs, Y
 				addr : u16 [ spc_rw[] ]
 				spc_w[ addr, spc.y ]
@@ -761,41 +1226,41 @@ trinity asnes
 			case 0x84  # ADC A, dp
 				dp     : u8  [ spc_rb[] ]
 				value  : u8  [ spc_r[dp] ]
-				result : u16 [ spc.a + value + (spc.psw & 0x01) ]
+				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0x94  # ADC A, dp+X
 				dp     : u8  [ spc_rb[] ]
 				value  : u8  [ spc_r[ (dp + spc.x) & 0xFF ] ]
-				result : u16 [ spc.a + value + (spc.psw & 0x01) ]
+				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0x85  # ADC A, abs
 				addr   : u16 [ spc_rw[] ]
 				value  : u8  [ spc_r[addr] ]
-				result : u16 [ spc.a + value + (spc.psw & 0x01) ]
+				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0x95  # ADC A, abs+X
 				addr   : u16 [ spc_rw[] ]
 				value  : u8  [ spc_r[ (addr + spc.x) & 0xFFFF ] ]
-				result : u16 [ spc.a + value + (spc.psw & 0x01) ]
+				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0x96  # ADC A, abs+Y
 				addr   : u16 [ spc_rw[] ]
 				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ spc.a + value + (spc.psw & 0x01) ]
+				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0x86  # ADC A, (X)
 				value  : u8  [ spc_r[spc.x] ]
-				result : u16 [ spc.a + value + (spc.psw & 0x01) ]
+				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
@@ -804,7 +1269,7 @@ trinity asnes
 				ptr    : u16 [ (dp + spc.x) & 0xFF ]
 				addr   : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
 				value  : u8  [ spc_r[addr] ]
-				result : u16 [ spc.a + value + (spc.psw & 0x01) ]
+				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
@@ -812,20 +1277,20 @@ trinity asnes
 				dp     : u8  [ spc_rb[] ]
 				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
 				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ spc.a + value + (spc.psw & 0x01) ]
+				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0x88  # ADC A, #imm
 				value  : u8  [ spc_rb[] ]
-				result : u16 [ spc.a + value + (spc.psw & 0x01) ]
+				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0x99  # ADC (X), (Y)
 				x_val  : u8  [ spc_r[spc.x] ]
 				y_val  : u8  [ spc_r[spc.y] ]
-				result : u16 [ x_val + y_val + (spc.psw & 0x01) ]
+				result : u16 [ u16[x_val] + u16[y_val] + (spc.psw & 0x01) ]
 				spc_adc[ x_val, y_val, result ]
 				spc_w[ spc.x, result & 0xFF ]
 
@@ -834,56 +1299,56 @@ trinity asnes
 				dst     : u8  [ spc_rb[] ]
 				src_val : u8  [ spc_r[src] ]
 				dst_val : u8  [ spc_r[dst] ]
-				result  : u16 [ dst_val + src_val + (spc.psw & 0x01) ]
+				result  : u16 [ u16[dst_val] + u16[src_val] + (spc.psw & 0x01) ]
 				spc_adc[ dst_val, src_val, result ]
 				spc_w[ dst, result & 0xFF ]
 
-			case 0x98  # ADC dp, #imm
-				dp      : u8  [ spc_rb[] ]
+			case 0x98  # ADC dp, #imm  (imm first)
 				imm     : u8  [ spc_rb[] ]
+				dp      : u8  [ spc_rb[] ]
 				dp_val  : u8  [ spc_r[dp] ]
-				result  : u16 [ dp_val + imm + (spc.psw & 0x01) ]
+				result  : u16 [ u16[dp_val] + u16[imm] + (spc.psw & 0x01) ]
 				spc_adc[ dp_val, imm, result ]
 				spc_w[ dp, result & 0xFF ]
 
 			case 0xA4  # SBC A, dp
 				dp     : u8  [ spc_rb[] ]
 				value  : u8  [ spc_r[dp] ]
-				result : u16 [ spc.a - value - (1 - (spc.psw & 0x01)) ]
+				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0xB4  # SBC A, dp+X
 				dp     : u8  [ spc_rb[] ]
 				value  : u8  [ spc_r[ (dp + spc.x) & 0xFF ] ]
-				result : u16 [ spc.a - value - (1 - (spc.psw & 0x01)) ]
+				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0xA5  # SBC A, abs
 				addr   : u16 [ spc_rw[] ]
 				value  : u8  [ spc_r[addr] ]
-				result : u16 [ spc.a - value - (1 - (spc.psw & 0x01)) ]
+				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0xB5  # SBC A, abs+X
 				addr   : u16 [ spc_rw[] ]
 				value  : u8  [ spc_r[ (addr + spc.x) & 0xFFFF ] ]
-				result : u16 [ spc.a - value - (1 - (spc.psw & 0x01)) ]
+				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0xB6  # SBC A, abs+Y
 				addr   : u16 [ spc_rw[] ]
 				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ spc.a - value - (1 - (spc.psw & 0x01)) ]
+				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0xA6  # SBC A, (X)
 				value  : u8  [ spc_r[spc.x] ]
-				result : u16 [ spc.a - value - (1 - (spc.psw & 0x01)) ]
+				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
@@ -892,7 +1357,7 @@ trinity asnes
 				ptr    : u16 [ (dp + spc.x) & 0xFF ]
 				addr   : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
 				value  : u8  [ spc_r[addr] ]
-				result : u16 [ spc.a - value - (1 - (spc.psw & 0x01)) ]
+				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
@@ -900,20 +1365,20 @@ trinity asnes
 				dp     : u8  [ spc_rb[] ]
 				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
 				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ spc.a - value - (1 - (spc.psw & 0x01)) ]
+				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0xA8  # SBC A, #imm
 				value  : u8  [ spc_rb[] ]
-				result : u16 [ spc.a - value - (1 - (spc.psw & 0x01)) ]
+				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
 			case 0xB9  # SBC (X), (Y)
 				x_val  : u8  [ spc_r[spc.x] ]
 				y_val  : u8  [ spc_r[spc.y] ]
-				result : u16 [ x_val - y_val - (1 - (spc.psw & 0x01)) ]
+				result : u16 [ u16[x_val] - u16[y_val] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ x_val, y_val, result ]
 				spc_w[ spc.x, result & 0xFF ]
 
@@ -922,51 +1387,51 @@ trinity asnes
 				dst     : u8  [ spc_rb[] ]
 				src_val : u8  [ spc_r[src] ]
 				dst_val : u8  [ spc_r[dst] ]
-				result  : u16 [ dst_val - src_val - (1 - (spc.psw & 0x01)) ]
+				result  : u16 [ u16[dst_val] - u16[src_val] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ dst_val, src_val, result ]
 				spc_w[ dst, result & 0xFF ]
 
-			case 0xB8  # SBC dp, #imm
-				dp      : u8  [ spc_rb[] ]
+			case 0xB8  # SBC dp, #imm  (imm first)
 				imm     : u8  [ spc_rb[] ]
+				dp      : u8  [ spc_rb[] ]
 				dp_val  : u8  [ spc_r[dp] ]
-				result  : u16 [ dp_val - imm - (1 - (spc.psw & 0x01)) ]
+				result  : u16 [ u16[dp_val] - u16[imm] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ dp_val, imm, result ]
 				spc_w[ dp, result & 0xFF ]
 
 			case 0x64  # CMP A, dp
 				dp     : u8  [ spc_rb[] ]
 				value  : u8  [ spc_r[dp] ]
-				result : u16 [ spc.a - value ]
+				result : u16 [ u16[spc.a] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x74  # CMP A, dp+X
 				dp     : u8  [ spc_rb[] ]
 				value  : u8  [ spc_r[ (dp + spc.x) & 0xFF ] ]
-				result : u16 [ spc.a - value ]
+				result : u16 [ u16[spc.a] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x65  # CMP A, abs
 				addr   : u16 [ spc_rw[] ]
 				value  : u8  [ spc_r[addr] ]
-				result : u16 [ spc.a - value ]
+				result : u16 [ u16[spc.a] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x75  # CMP A, abs+X
 				addr   : u16 [ spc_rw[] ]
 				value  : u8  [ spc_r[ (addr + spc.x) & 0xFFFF ] ]
-				result : u16 [ spc.a - value ]
+				result : u16 [ u16[spc.a] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x76  # CMP A, abs+Y
 				addr   : u16 [ spc_rw[] ]
 				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ spc.a - value ]
+				result : u16 [ u16[spc.a] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x66  # CMP A, (X)
 				value  : u8  [ spc_r[spc.x] ]
-				result : u16 [ spc.a - value ]
+				result : u16 [ u16[spc.a] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x77  # CMP A, [dp+X]
@@ -974,25 +1439,25 @@ trinity asnes
 				ptr    : u16 [ (dp + spc.x) & 0xFF ]
 				addr   : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
 				value  : u8  [ spc_r[addr] ]
-				result : u16 [ spc.a - value ]
+				result : u16 [ u16[spc.a] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x67  # CMP A, [dp]+Y
 				dp     : u8  [ spc_rb[] ]
 				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
 				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ spc.a - value ]
+				result : u16 [ u16[spc.a] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x68  # CMP A, #imm
 				value  : u8  [ spc_rb[] ]
-				result : u16 [ spc.a - value ]
+				result : u16 [ u16[spc.a] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x79  # CMP (X), (Y)
 				x_val  : u8  [ spc_r[spc.x] ]
 				y_val  : u8  [ spc_r[spc.y] ]
-				result : u16 [ x_val - y_val ]
+				result : u16 [ u16[x_val] - u16[y_val] ]
 				spc_cmp[ result ]
 
 			case 0x69  # CMP dp, dp
@@ -1000,48 +1465,48 @@ trinity asnes
 				dst     : u8  [ spc_rb[] ]
 				src_val : u8  [ spc_r[src] ]
 				dst_val : u8  [ spc_r[dst] ]
-				result  : u16 [ dst_val - src_val ]
+				result  : u16 [ u16[dst_val] - u16[src_val] ]
 				spc_cmp[ result ]
 
-			case 0x78  # CMP dp, #imm
-				dp      : u8  [ spc_rb[] ]
+			case 0x78  # CMP dp, #imm  (imm first)
 				imm     : u8  [ spc_rb[] ]
+				dp      : u8  [ spc_rb[] ]
 				dp_val  : u8  [ spc_r[dp] ]
-				result  : u16 [ dp_val - imm ]
+				result  : u16 [ u16[dp_val] - u16[imm] ]
 				spc_cmp[ result ]
 
 			case 0xC8  # CMP X, #imm
 				value  : u8  [ spc_rb[] ]
-				result : u16 [ spc.x - value ]
+				result : u16 [ u16[spc.x] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x3E  # CMP X, dp
 				dp     : u8  [ spc_rb[] ]
 				value  : u8  [ spc_r[dp] ]
-				result : u16 [ spc.x - value ]
+				result : u16 [ u16[spc.x] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x1E  # CMP X, abs
 				addr   : u16 [ spc_rw[] ]
 				value  : u8  [ spc_r[addr] ]
-				result : u16 [ spc.x - value ]
+				result : u16 [ u16[spc.x] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0xAD  # CMP Y, #imm
 				value  : u8  [ spc_rb[] ]
-				result : u16 [ spc.y - value ]
+				result : u16 [ u16[spc.y] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x7E  # CMP Y, dp
 				dp     : u8  [ spc_rb[] ]
 				value  : u8  [ spc_r[dp] ]
-				result : u16 [ spc.y - value ]
+				result : u16 [ u16[spc.y] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x5E  # CMP Y, abs
 				addr   : u16 [ spc_rw[] ]
 				value  : u8  [ spc_r[addr] ]
-				result : u16 [ spc.y - value ]
+				result : u16 [ u16[spc.y] - u16[value] ]
 				spc_cmp[ result ]
 
 			case 0x24  # AND A, dp
@@ -1102,9 +1567,9 @@ trinity asnes
 				spc_w[ dst, result ]
 				spc_nz[ result ]
 
-			case 0x38  # AND dp, #imm
-				dp     : u8 [ spc_rb[] ]
+			case 0x38  # AND dp, #imm  (imm first)
 				imm    : u8 [ spc_rb[] ]
+				dp     : u8 [ spc_rb[] ]
 				result : u8 [ spc_r[dp] & imm ]
 				spc_w[ dp, result ]
 				spc_nz[ result ]
@@ -1167,9 +1632,9 @@ trinity asnes
 				spc_w[ dst, result ]
 				spc_nz[ result ]
 
-			case 0x18  # OR dp, #imm
-				dp     : u8 [ spc_rb[] ]
+			case 0x18  # OR dp, #imm  (imm first)
 				imm    : u8 [ spc_rb[] ]
+				dp     : u8 [ spc_rb[] ]
 				result : u8 [ spc_r[dp] | imm ]
 				spc_w[ dp, result ]
 				spc_nz[ result ]
@@ -1232,9 +1697,9 @@ trinity asnes
 				spc_w[ dst, result ]
 				spc_nz[ result ]
 
-			case 0x58  # EOR dp, #imm
-				dp     : u8 [ spc_rb[] ]
+			case 0x58  # EOR dp, #imm  (imm first)
 				imm    : u8 [ spc_rb[] ]
+				dp     : u8 [ spc_rb[] ]
 				result : u8 [ spc_r[dp] ^ imm ]
 				spc_w[ dp, result ]
 				spc_nz[ result ]
@@ -1334,7 +1799,7 @@ trinity asnes
 			case 0x5C  # LSR A
 				carry  : u8 [ spc.a & 0x01 ]
 				spc.a >>= 1
-				spc.psw = (spc.psw & ~0x83) | carry | (spc.a == 0 ? 0x02 : 0)
+				spc.psw = (spc.psw & ~0x83) | carry | ((spc.a == 0) ? 0x02 : 0)
 
 			case 0x4B  # LSR dp
 				dp     : u8 [ spc_rb[] ]
@@ -1342,7 +1807,7 @@ trinity asnes
 				carry  : u8 [ value & 0x01 ]
 				value >>= 1
 				spc_w[ dp, value ]
-				spc.psw = (spc.psw & ~0x83) | carry | (value == 0 ? 0x02 : 0)
+				spc.psw = (spc.psw & ~0x83) | carry | ((value == 0) ? 0x02 : 0)
 
 			case 0x5B  # LSR dp+X
 				dp     : u8 [ spc_rb[] ]
@@ -1351,7 +1816,7 @@ trinity asnes
 				carry  : u8 [ value & 0x01 ]
 				value >>= 1
 				spc_w[ xaddr, value ]
-				spc.psw = (spc.psw & ~0x83) | carry | (value == 0 ? 0x02 : 0)
+				spc.psw = (spc.psw & ~0x83) | carry | ((value == 0) ? 0x02 : 0)
 
 			case 0x4C  # LSR abs
 				addr   : u16 [ spc_rw[] ]
@@ -1359,7 +1824,7 @@ trinity asnes
 				carry  : u8  [ value & 0x01 ]
 				value >>= 1
 				spc_w[ addr, value ]
-				spc.psw = (spc.psw & ~0x83) | carry | (value == 0 ? 0x02 : 0)
+				spc.psw = (spc.psw & ~0x83) | carry | ((value == 0) ? 0x02 : 0)
 
 			case 0x3C  # ROL A
 				old_c  : u8 [ spc.psw & 0x01 ]
@@ -1460,6 +1925,44 @@ trinity asnes
 			case 0xF0  # BEQ rel
 				off : i8 [ spc_rb[] ]
 				if [ spc.psw & 0x02 ] spc.pc = u16[i32[spc.pc] + i32[off]]
+
+			case 0xFE  # DBNZ Y, rel
+				off : i8 [ spc_rb[] ]
+				spc.y -= 1
+				if [ spc.y != 0 ] spc.pc = u16[i32[spc.pc] + i32[off]]
+
+			case 0x6E  # DBNZ dp, rel
+				dp  : u8 [ spc_rb[] ]
+				off : i8 [ spc_rb[] ]
+				v   : u8 [ spc_r[dp] - 1 ]
+				spc_w[ dp, v ]
+				if [ v != 0 ] spc.pc = u16[i32[spc.pc] + i32[off]]
+
+			case 0xDE  # CBNE dp+X, rel
+				dp  : u8 [ spc_rb[] ]
+				off : i8 [ spc_rb[] ]
+				v   : u8 [ spc_r[ (dp + spc.x) & 0xFF ] ]
+				if [ spc.a != v ] spc.pc = u16[i32[spc.pc] + i32[off]]
+
+			case 0x2E  # CBNE dp, rel
+				dp  : u8 [ spc_rb[] ]
+				off : i8 [ spc_rb[] ]
+				v   : u8 [ spc_r[dp] ]
+				if [ spc.a != v ] spc.pc = u16[i32[spc.pc] + i32[off]]
+
+			case 0x0E  # TSET1 abs
+				addr : u16 [ spc_rw[] ]
+				data : u8  [ spc_r[addr] ]
+				diff : u8  [ (u16[spc.a] - u16[data]) & 0xFF ]
+				spc.psw = (spc.psw & ~0x82) | ((diff == 0) ? 0x02 : 0) | (diff & 0x80)
+				spc_w[ addr, data | spc.a ]
+
+			case 0x4E  # TCLR1 abs
+				addr : u16 [ spc_rw[] ]
+				data : u8  [ spc_r[addr] ]
+				diff : u8  [ (u16[spc.a] - u16[data]) & 0xFF ]
+				spc.psw = (spc.psw & ~0x82) | ((diff == 0) ? 0x02 : 0) | (diff & 0x80)
+				spc_w[ addr, data & ~spc.a ]
 
 			case 0x2F  # BRA rel
 				off    : i8 [ spc_rb[] ]
@@ -1928,20 +2431,61 @@ trinity asnes
 				spc.y   = (result >> 8) & 0xFF
 				spc_nz[ spc.y ]
 
-			case 0xDA  # MOVW YA, dp
+			case 0xBA  # MOVW YA, dp
 				dp      : u8  [ spc_rb[] ]
 				spc.a    = spc_r[dp]
 				spc.y    = spc_r[dp + 1]
 				ya       : u16 [ spc.a | (spc.y << 8) ]
-				spc.psw  = (spc.psw & ~0x82) | (ya == 0 ? 0x02 : 0) | (spc.y & 0x80)
+				spc.psw  = (spc.psw & ~0x82) | ((ya == 0) ? 0x02 : 0) | (spc.y & 0x80)
 
-			case 0xBA  # MOVW dp, YA
+			case 0xDA  # MOVW dp, YA
 				dp : u8 [ spc_rb[] ]
 				spc_w[ dp,     spc.a ]
 				spc_w[ dp + 1, spc.y ]
 
+			case 0x3A  # INCW dp
+				dp : u8  [ spc_rb[] ]
+				wd : u16 [ (spc_r[dp] | (spc_r[dp + 1] << 8)) + 1 ]
+				spc_w[ dp,     u8[wd & 0xFF] ]
+				spc_w[ dp + 1, u8[wd >> 8] ]
+				spc.psw = (spc.psw & ~0x82) | ((wd == 0) ? 0x02 : 0) | ((wd & 0x8000) ? 0x80 : 0)
+
+			case 0x1A  # DECW dp
+				dp : u8  [ spc_rb[] ]
+				wd : u16 [ (spc_r[dp] | (spc_r[dp + 1] << 8)) - 1 ]
+				spc_w[ dp,     u8[wd & 0xFF] ]
+				spc_w[ dp + 1, u8[wd >> 8] ]
+				spc.psw = (spc.psw & ~0x82) | ((wd == 0) ? 0x02 : 0) | ((wd & 0x8000) ? 0x80 : 0)
+
+			case 0x7A  # ADDW YA, dp
+				dp  : u8  [ spc_rb[] ]
+				ya  : u16 [ spc.a | (spc.y << 8) ]
+				wd  : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
+				res : u32 [ u32[ya] + u32[wd] ]
+				c : u8 [ (res > 0xFFFF) ? 0x01 : 0 ]
+				z : u8 [ ((res & 0xFFFF) == 0) ? 0x02 : 0 ]
+				n : u8 [ ((res & 0x8000) != 0) ? 0x80 : 0 ]
+				v : u8 [ (((ya ^ res) & (wd ^ res) & 0x8000) != 0) ? 0x40 : 0 ]
+				h : u8 [ (((ya & 0x0FFF) + (wd & 0x0FFF)) > 0x0FFF) ? 0x08 : 0 ]
+				spc.psw = (spc.psw & ~0xCB) | c | z | n | v | h
+				spc.a = res & 0xFF
+				spc.y = (res >> 8) & 0xFF
+
+			case 0x9A  # SUBW YA, dp
+				dp  : u8  [ spc_rb[] ]
+				ya  : u16 [ spc.a | (spc.y << 8) ]
+				wd  : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
+				res : i32 [ i32[ya] - i32[wd] ]
+				c : u8 [ (res >= 0) ? 0x01 : 0 ]
+				z : u8 [ ((res & 0xFFFF) == 0) ? 0x02 : 0 ]
+				n : u8 [ ((res & 0x8000) != 0) ? 0x80 : 0 ]
+				v : u8 [ (((ya ^ wd) & (ya ^ res) & 0x8000) != 0) ? 0x40 : 0 ]
+				h : u8 [ (((ya & 0x0FFF) - (wd & 0x0FFF)) < 0) ? 0x08 : 0 ]
+				spc.psw = (spc.psw & ~0xCB) | c | z | n | v | h
+				spc.a = res & 0xFF
+				spc.y = (res >> 8) & 0xFF
+
 			case 0xFF  # STOP
-				printf[ "SPC700 STOP at %04X\n", spc.pc - 1 ]
 				return
 
 			case 0xEF  # SLEEP
@@ -1951,39 +2495,211 @@ trinity asnes
 				# no-op
 
 			default
-				printf[ "unhandled spc opcode %02X at %04X\n", opcode, spc.pc - 1 ]
+				fprintf[ stderr, "unhandled spc opcode %02X at %04X\n", opcode, spc.pc - 1 ]
+				fault 'unhandled spc opcode — implement it then re-run (one at a time)'
 
 	# --- 65816 CPU flag helpers ---
 
 	func cpu_nz [ v: u8 ]
-		cpu.p = (cpu.p & ~0x82) | (v == 0 ? 0x02 : 0) | (v & 0x80)
+		cpu.p = (cpu.p & ~0x82) | ((v == 0) ? 0x02 : 0) | (v & 0x80)
 
 	func cpu_nzc [ v: u8, c: u8 ]
-		cpu.p = (cpu.p & ~0x83) | c | (v == 0 ? 0x02 : 0) | (v & 0x80)
+		cpu.p = (cpu.p & ~0x83) | c | ((v == 0) ? 0x02 : 0) | (v & 0x80)
 
 	func cpu_cmp [ res: u16 ]
-		c : u8 [ res < 0x100 ? 0x01 : 0 ]
-		z : u8 [ (res & 0xFF) == 0 ? 0x02 : 0 ]
+		c : u8 [ (res < 0x100) ? 0x01 : 0 ]
+		z : u8 [ ((res & 0xFF) == 0) ? 0x02 : 0 ]
 		n : u8 [ res & 0x80 ]
 		cpu.p = (cpu.p & ~0x83) | c | z | n
 
-	func cpu_adc [ a: u8, val: u8, res: u16 ]
-		c  : u8 [ res > 0xFF ? 0x01 : 0 ]
-		z  : u8 [ (res & 0xFF) == 0 ? 0x02 : 0 ]
+	func cpu_adc [ aa: u8, val: u8, res: u16 ]
+		c  : u8 [ (res > 0xFF) ? 0x01 : 0 ]
+		z  : u8 [ ((res & 0xFF) == 0) ? 0x02 : 0 ]
 		n  : u8 [ res & 0x80 ]
-		ov : u8 [ ((a ^ val) & ~(a ^ res) & 0x80) ? 0x40 : 0 ]
+		ov : u8 [ ((u16[aa] ^ res) & (u16[val] ^ res) & 0x80) ? 0x40 : 0 ]
 		cpu.p = (cpu.p & ~0xC3) | c | z | n | ov
 
-	func cpu_sbc [ a: u8, val: u8, res: u16 ]
-		c  : u8 [ res < 0x100 ? 0x01 : 0 ]
-		z  : u8 [ (res & 0xFF) == 0 ? 0x02 : 0 ]
+	func cpu_sbc [ aa: u8, val: u8, res: u16 ]
+		c  : u8 [ (res < 0x100) ? 0x01 : 0 ]
+		z  : u8 [ ((res & 0xFF) == 0) ? 0x02 : 0 ]
 		n  : u8 [ res & 0x80 ]
-		ov : u8 [ ((a ^ val) & (a ^ res) & 0x80) ? 0x40 : 0 ]
+		ov : u8 [ ((aa ^ val) & (aa ^ res) & 0x80) ? 0x40 : 0 ]
 		cpu.p = (cpu.p & ~0xC3) | c | z | n | ov
 
 	func cpu_bit [ val: u8 ]
-		z : u8 [ (cpu.a & val) == 0 ? 0x02 : 0 ]
+		z : u8 [ ((cpu.a & val) == 0) ? 0x02 : 0 ]
 		cpu.p = (cpu.p & ~0xC2) | (val & 0xC0) | z
+
+	# --- width-aware ALU helpers (A follows the M flag) — every ALU
+	# addressing-mode handler reads its operand then calls one of these ---
+
+	func cpu_ora_a [ value: u16 ]
+		cpu_set_A[ cpu_get_A[] | value ]
+		cpu_nz_a[ cpu_get_A[] ]
+
+	func cpu_and_a [ value: u16 ]
+		cpu_set_A[ cpu_get_A[] & value ]
+		cpu_nz_a[ cpu_get_A[] ]
+
+	func cpu_eor_a [ value: u16 ]
+		cpu_set_A[ cpu_get_A[] ^ value ]
+		cpu_nz_a[ cpu_get_A[] ]
+
+	func cpu_cmp_a [ value: u16 ]
+		a16  : u16 [ cpu_get_A[] ]
+		diff : u16 [ a16 - value ]
+		nm   : u16 [ (cpu.p & 0x20) ? 0x80 : 0x8000 ]
+		c : u8 [ (a16 >= value) ? 0x01 : 0 ]
+		z : u8 [ (diff == 0) ? 0x02 : 0 ]
+		n : u8 [ ((diff & nm) != 0) ? 0x80 : 0 ]
+		cpu.p = (cpu.p & ~0x83) | c | z | n
+
+	func cpu_adc_a [ value: u16 ]
+		a16 : u16 [ cpu_get_A[] ]
+		if [ cpu.p & 0x20 ]
+			result : u16 [ a16 + value + (cpu.p & 0x01) ]
+			cpu_adc[ a16, value, result ]
+			cpu_set_A[ result & 0xFF ]
+		el
+			r32 : u32 [ u32[a16] + u32[value] + (cpu.p & 0x01) ]
+			c  : u8 [ (r32 > 0xFFFF) ? 0x01 : 0 ]
+			z  : u8 [ ((r32 & 0xFFFF) == 0) ? 0x02 : 0 ]
+			n  : u8 [ ((r32 & 0x8000) != 0) ? 0x80 : 0 ]
+			ov : u8 [ (((a16 ^ r32) & (value ^ r32) & 0x8000) != 0) ? 0x40 : 0 ]
+			cpu.p = (cpu.p & ~0xC3) | c | z | n | ov
+			cpu_set_A[ r32 & 0xFFFF ]
+
+	func cpu_sbc_a [ value: u16 ]
+		a16 : u16 [ cpu_get_A[] ]
+		if [ cpu.p & 0x20 ]
+			result : u16 [ a16 - value - (1 - (cpu.p & 0x01)) ]
+			cpu_sbc[ a16, value, result ]
+			cpu_set_A[ result & 0xFF ]
+		el
+			borrow : u32 [ 1 - (cpu.p & 0x01) ]
+			r32    : u32 [ u32[a16] - u32[value] - borrow ]
+			c  : u8 [ (r32 < 0x10000) ? 0x01 : 0 ]
+			z  : u8 [ ((r32 & 0xFFFF) == 0) ? 0x02 : 0 ]
+			n  : u8 [ ((r32 & 0x8000) != 0) ? 0x80 : 0 ]
+			ov : u8 [ (((a16 ^ value) & (a16 ^ r32) & 0x8000) != 0) ? 0x40 : 0 ]
+			cpu.p = (cpu.p & ~0xC3) | c | z | n | ov
+			cpu_set_A[ r32 & 0xFFFF ]
+
+	# --- width-aware RMW value transforms (return new value, set N/Z/C) ---
+
+	func cpu_asl_v [ v: u16 ] -> u16
+		msb : u16 [ (cpu.p & 0x20) ? 0x80 : 0x8000 ]
+		msk : u16 [ (cpu.p & 0x20) ? 0xFF : 0xFFFF ]
+		res : u16 [ (v << 1) & msk ]
+		cpu.p = (cpu.p & ~0x01) | (((v & msb) != 0) ? 0x01 : 0)
+		cpu_nz_a[ res ]
+		return res
+
+	func cpu_lsr_v [ v: u16 ] -> u16
+		res : u16 [ v >> 1 ]
+		cpu.p = (cpu.p & ~0x01) | (((v & 0x01) != 0) ? 0x01 : 0)
+		cpu_nz_a[ res ]
+		return res
+
+	func cpu_rol_v [ v: u16 ] -> u16
+		msb : u16 [ (cpu.p & 0x20) ? 0x80 : 0x8000 ]
+		msk : u16 [ (cpu.p & 0x20) ? 0xFF : 0xFFFF ]
+		oc  : u16 [ cpu.p & 0x01 ]
+		res : u16 [ ((v << 1) | oc) & msk ]
+		cpu.p = (cpu.p & ~0x01) | (((v & msb) != 0) ? 0x01 : 0)
+		cpu_nz_a[ res ]
+		return res
+
+	func cpu_ror_v [ v: u16 ] -> u16
+		msb : u16 [ (cpu.p & 0x20) ? 0x80 : 0x8000 ]
+		oc  : u16 [ (cpu.p & 0x01) ? msb : 0 ]
+		res : u16 [ (v >> 1) | oc ]
+		cpu.p = (cpu.p & ~0x01) | (((v & 0x01) != 0) ? 0x01 : 0)
+		cpu_nz_a[ res ]
+		return res
+
+	func cpu_inc_v [ v: u16 ] -> u16
+		msk : u16 [ (cpu.p & 0x20) ? 0xFF : 0xFFFF ]
+		res : u16 [ (v + 1) & msk ]
+		cpu_nz_a[ res ]
+		return res
+
+	func cpu_dec_v [ v: u16 ] -> u16
+		msk : u16 [ (cpu.p & 0x20) ? 0xFF : 0xFFFF ]
+		res : u16 [ (v - 1) & msk ]
+		cpu_nz_a[ res ]
+		return res
+
+	# width-aware read through a 24-bit [dp] long pointer (and the [dp],Y form)
+	func cpu_read_long_dp [ dp: u8 ] -> u16
+		lo   : u32 [ cpu_r[dp] ]
+		mid  : u32 [ cpu_r[dp + 1] ]
+		bank : u32 [ cpu_r[dp + 2] ]
+		la   : u32 [ lo | (mid << 8) | (bank << 16) ]
+		if [ cpu.p & 0x20 ] return cpu.memory[la]
+		return cpu.memory[la] | (cpu.memory[la + 1] << 8)
+
+	func cpu_read_long_dp_y [ dp: u8 ] -> u16
+		lo   : u32 [ cpu_r[dp] ]
+		mid  : u32 [ cpu_r[dp + 1] ]
+		bank : u32 [ cpu_r[dp + 2] ]
+		la   : u32 [ (lo | (mid << 8) | (bank << 16)) + cpu_get_Y[] ]
+		if [ cpu.p & 0x20 ] return cpu.memory[la]
+		return cpu.memory[la] | (cpu.memory[la + 1] << 8)
+
+	# read the 3-byte long operand and return the width-aware value (absolute long)
+	func cpu_read_long [] -> u16
+		lo:u32[cpu_rb[]]  mid:u32[cpu_rb[]]  bank:u32[cpu_rb[]]
+		la:u32[ lo | (mid << 8) | (bank << 16) ]
+		if [ cpu.p & 0x20 ] return cpu.memory[la]
+		return cpu.memory[la] | (cpu.memory[la + 1] << 8)
+
+	func cpu_read_long_x [] -> u16
+		lo:u32[cpu_rb[]]  mid:u32[cpu_rb[]]  bank:u32[cpu_rb[]]
+		la:u32[ (lo | (mid << 8) | (bank << 16)) + cpu_get_X[] ]
+		if [ cpu.p & 0x20 ] return cpu.memory[la]
+		return cpu.memory[la] | (cpu.memory[la + 1] << 8)
+
+	# stack-relative (d,s) read and its (d,s),Y indirect form
+	func cpu_read_sr [] -> u16
+		sr:u8[cpu_rb[]]  sa:u16[ 0x0100 + ((cpu.sp + sr) & 0xFF) ]
+		if [ cpu.p & 0x20 ] return cpu_r[sa]
+		return cpu_r[sa] | (cpu_r[sa + 1] << 8)
+
+	func cpu_read_sr_y [] -> u16
+		sr:u8[cpu_rb[]]  sa:u16[ 0x0100 + ((cpu.sp + sr) & 0xFF) ]
+		base:u16[ cpu_r[sa] | (cpu_r[sa + 1] << 8) ]
+		addr:u16[ base + cpu_get_Y[] ]
+		if [ cpu.p & 0x20 ] return cpu_r[addr]
+		return cpu_r[addr] | (cpu_r[addr + 1] << 8)
+
+	# X-width memory read (for index loads/compares — width follows the X flag)
+	func cpu_read_mem_x [ addr: u16 ] -> u16
+		if [ cpu.p & 0x10 ] return cpu_r[addr]
+		return cpu_r[addr] | (cpu_r[addr + 1] << 8)
+
+	func cpu_cmp_x [ x16: u16, value: u16 ]
+		diff : u16 [ x16 - value ]
+		nm   : u16 [ (cpu.p & 0x10) ? 0x80 : 0x8000 ]
+		c : u8 [ (x16 >= value) ? 0x01 : 0 ]
+		z : u8 [ (diff == 0) ? 0x02 : 0 ]
+		n : u8 [ ((diff & nm) != 0) ? 0x80 : 0 ]
+		cpu.p = (cpu.p & ~0x83) | c | z | n
+
+	func cpu_bit_a [ value: u16 ]
+		nb : u16 [ (cpu.p & 0x20) ? 0x80 : 0x8000 ]
+		vb : u16 [ (cpu.p & 0x20) ? 0x40 : 0x4000 ]
+		z  : u8 [ ((cpu_get_A[] & value) == 0) ? 0x02 : 0 ]
+		n  : u8 [ ((value & nb) != 0) ? 0x80 : 0 ]
+		v  : u8 [ ((value & vb) != 0) ? 0x40 : 0 ]
+		cpu.p = (cpu.p & ~0xC2) | n | v | z
+
+	# push a 16-bit value (high then low, matching the stack convention)
+	func cpu_push16 [ v: u16 ]
+		cpu_w[ 0x0100 + cpu.sp, u8[v >> 8] ]
+		cpu.sp -= 1
+		cpu_w[ 0x0100 + cpu.sp, u8[v & 0xFF] ]
+		cpu.sp -= 1
 
 	# --- 65816 CPU step ---
 
@@ -1994,146 +2710,240 @@ trinity asnes
 		ualign   : bool [ (cpu.dp & 0xFF) != 0 ]
 		is_16bit : bool [ !(cpu.p & 0x20) ]
 
-		print[ 'asnes_step op: 0x{opcode:02X}' ]
+		#puts[ 'asnes_step op: 0x{opcode:02X}' ]
+
+		if [ false ]
+			printf[ "x" ]
 
 		switch [ opcode ]
 			case 0x1A  # INC A
 				cpu.a  += 1
-				cpu.p   = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu.p   = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
 				cycles  = 2
 
 			case 0x3A  # DEC A
 				cpu.a  -= 1
-				cpu.p   = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu.p   = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
 				cycles  = 2
 
-			case 0x9B  # TXY
-				cpu.y  = cpu.x
-				cpu.p  = (cpu.p & ~0x82) | (cpu.y == 0 ? 0x02 : 0) | (cpu.y & 0x80)
+			case 0x9B  # TXY (width-aware)
+				cpu_set_Y[ cpu_get_X[] ]
+				cpu_nz_x[ cpu_get_Y[] ]
 				cycles = 2
 
-			case 0xBB  # TYX
-				cpu.x  = cpu.y
-				cpu.p  = (cpu.p & ~0x82) | (cpu.x == 0 ? 0x02 : 0) | (cpu.x & 0x80)
+			case 0xBB  # TYX (width-aware)
+				cpu_set_X[ cpu_get_Y[] ]
+				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 2
 
-			case 0xA5  # LDA dp
+			case 0xA5  # LDA dp (width-aware)
 				addr   : u8 [ cpu_rb[] ]
-				cpu.a  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
-				cycles = 3 + (ualign ? 1 : 0)
+				cpu_set_A[ cpu_read_mem[addr] ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 3 + ((ualign) ? 1 : 0)
 
-			case 0xAD  # LDA abs
+			case 0xAD  # LDA abs (width-aware)
 				addr   : u16 [ cpu_rw[] ]
-				cpu.a  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_set_A[ cpu_read_mem[addr] ]
+				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 4
 
-			case 0xBD  # LDA abs,X
+			case 0xAC  # LDY abs (width-aware on X flag)
+				addr   : u16 [ cpu_rw[] ]
+				if [ cpu.p & 0x10 ]
+					cpu_set_Y[ cpu_r[addr] ]
+				el
+					cpu_set_Y[ cpu_r[addr] | (cpu_r[addr + 1] << 8) ]
+				cpu_nz_x[ cpu_get_Y[] ]
+				cycles = 4
+
+			case 0xAF  # LDA long (24-bit absolute, width-aware)
+				lo     : u32 [ cpu_rb[] ]
+				hi     : u32 [ cpu_rb[] ]
+				bank   : u32 [ cpu_rb[] ]
+				laddr  : u32 [ lo | (hi << 8) | (bank << 16) ]
+				if [ cpu.p & 0x20 ]
+					cpu_set_A[ cpu.memory[laddr] ]
+				el
+					v : u16 [ cpu.memory[laddr] | (cpu.memory[laddr + 1] << 8) ]
+					cpu_set_A[ v ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 5
+
+			case 0xB7  # LDA [dp],Y (long indirect indexed, width-aware)
+				dp     : u8  [ cpu_rb[] ]
+				lo     : u32 [ cpu_r[dp] ]
+				mid    : u32 [ cpu_r[dp + 1] ]
+				bank   : u32 [ cpu_r[dp + 2] ]
+				base   : u32 [ lo | (mid << 8) | (bank << 16) ]
+				addr   : u32 [ base + cpu_get_Y[] ]
+				if [ cpu.p & 0x20 ]
+					cpu_set_A[ cpu.memory[addr] ]
+				el
+					v : u16 [ cpu.memory[addr] | (cpu.memory[addr + 1] << 8) ]
+					cpu_set_A[ v ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 6
+
+			case 0xBD  # LDA abs,X (width-aware)
 				base   : u16 [ cpu_rw[] ]
-				addr   : u16 [ base + cpu.x ]
+				addr   : u16 [ base + cpu_get_X[] ]
 				cross  : bool [ (base & 0xFF00) != (addr & 0xFF00) ]
-				cpu.a  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
-				cycles = 4 + (cross ? 1 : 0)
+				cpu_set_A[ cpu_read_mem[addr] ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 4 + ((cross) ? 1 : 0)
 
-			case 0xB9  # LDA abs,Y
+			case 0xB9  # LDA abs,Y (width-aware)
 				base   : u16 [ cpu_rw[] ]
-				addr   : u16 [ base + cpu.y ]
-				cpu.a  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+				addr   : u16 [ base + cpu_get_Y[] ]
+				cpu_set_A[ cpu_read_mem[addr] ]
+				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 4
 
-			case 0xA1  # LDA (dp,X)
+			case 0xA1  # LDA (dp,X) (width-aware)
 				dp     : u8  [ cpu_rb[] ]
 				ptr    : u16 [ (dp + cpu.x) & 0xFF ]
 				addr   : u16 [ cpu_r[ptr] | (cpu_r[ptr + 1] << 8) ]
-				cpu.a  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
-				cycles = 6 + (ualign ? 1 : 0)
+				cpu_set_A[ cpu_read_mem[addr] ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 6 + ((ualign) ? 1 : 0)
 
-			case 0xB1  # LDA (dp),Y
+			case 0xB1  # LDA (dp),Y (width-aware)
 				dp     : u8  [ cpu_rb[] ]
 				base   : u16 [ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
-				addr   : u16 [ base + cpu.y ]
+				addr   : u16 [ base + cpu_get_Y[] ]
 				cross  : bool [ (base & 0xFF00) != (addr & 0xFF00) ]
-				cpu.a  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
-				cycles = 5 + (cross ? 1 : 0) + (ualign ? 1 : 0)
+				cpu_set_A[ cpu_read_mem[addr] ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 5 + ((cross) ? 1 : 0) + ((ualign) ? 1 : 0)
 
-			case 0x85  # STA dp
+			case 0x85  # STA dp (width-aware)
 				addr   : u8 [ cpu_rb[] ]
-				cpu_w[ addr, cpu.a ]
-				cycles = 3 + (ualign ? 1 : 0)
+				cpu_write_mem[ addr, cpu_get_A[] ]
+				cycles = 3 + ((ualign) ? 1 : 0)
+
+			case 0x8D  # STA abs (width-aware)
+				addr   : u16 [ cpu_rw[] ]
+				cpu_write_mem[ addr, cpu_get_A[] ]
+				cycles = 4
+
+			case 0x8F  # STA long (24-bit absolute, width-aware)
+				lo     : u32 [ cpu_rb[] ]
+				hi     : u32 [ cpu_rb[] ]
+				bank   : u32 [ cpu_rb[] ]
+				laddr  : u32 [ lo | (hi << 8) | (bank << 16) ]
+				a16    : u16 [ cpu_get_A[] ]
+				cpu.memory[laddr] = u8[ a16 & 0xFF ]
+				if [ !(cpu.p & 0x20) ] cpu.memory[laddr + 1] = u8[ a16 >> 8 ]
+				cycles = 5
+
+			case 0x86  # STX dp
+				addr   : u8 [ cpu_rb[] ]
+				cpu_w[ addr, cpu.x ]
+				if [ !(cpu.p & 0x10) ] cpu_w[ addr + 1, cpu.xh ]
+				cycles = 3
+
+			case 0x8E  # STX abs
+				addr   : u16 [ cpu_rw[] ]
+				cpu_w[ addr, cpu.x ]
+				if [ !(cpu.p & 0x10) ] cpu_w[ addr + 1, cpu.xh ]
+				cycles = 4
+
+			case 0x84  # STY dp
+				addr   : u8 [ cpu_rb[] ]
+				cpu_w[ addr, cpu.y ]
+				if [ !(cpu.p & 0x10) ] cpu_w[ addr + 1, cpu.yh ]
+				cycles = 3
+
+			case 0x8C  # STY abs
+				addr   : u16 [ cpu_rw[] ]
+				cpu_w[ addr, cpu.y ]
+				if [ !(cpu.p & 0x10) ] cpu_w[ addr + 1, cpu.yh ]
+				cycles = 4
 
 			case 0x95  # STA dp,X
 				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
 				cpu_w[ addr, cpu.a ]
-				cycles = 4 + (ualign ? 1 : 0)
+				cycles = 4 + ((ualign) ? 1 : 0)
 
-			case 0x9D  # STA abs,X
-				addr   : u16 [ cpu_rw[] + cpu.x ]
-				cpu_w[ addr, cpu.a ]
-				cycles = 5 + (ualign ? 1 : 0)
+			case 0x9D  # STA abs,X (width-aware)
+				addr   : u16 [ cpu_rw[] + cpu_get_X[] ]
+				cpu_write_mem[ addr, cpu_get_A[] ]
+				cycles = 5 + ((ualign) ? 1 : 0)
 
-			case 0x99  # STA abs,Y
-				addr   : u16 [ cpu_rw[] + cpu.y ]
-				cpu_w[ addr, cpu.a ]
+			case 0x99  # STA abs,Y (width-aware)
+				addr   : u16 [ cpu_rw[] + cpu_get_Y[] ]
+				cpu_write_mem[ addr, cpu_get_A[] ]
 				cycles = 5
 
-			case 0x81  # STA (dp,X)
+			case 0x81  # STA (dp,X) (width-aware)
 				dp     : u8  [ cpu_rb[] ]
 				ptr    : u16 [ (dp + cpu.x) & 0xFF ]
 				addr   : u16 [ cpu_r[ptr] | (cpu_r[ptr + 1] << 8) ]
-				cpu_w[ addr, cpu.a ]
-				cycles = 6 + (ualign ? 1 : 0)
+				cpu_write_mem[ addr, cpu_get_A[] ]
+				cycles = 6 + ((ualign) ? 1 : 0)
 
-			case 0x91  # STA (dp),Y
+			case 0x91  # STA (dp),Y (width-aware)
 				dp     : u8  [ cpu_rb[] ]
 				base   : u16 [ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
-				addr   : u16 [ base + cpu.y ]
-				cpu_w[ addr, cpu.a ]
-				cycles = 6 + (ualign ? 1 : 0)
+				addr   : u16 [ base + cpu_get_Y[] ]
+				cpu_write_mem[ addr, cpu_get_A[] ]
+				cycles = 6 + ((ualign) ? 1 : 0)
 
-			case 0xA6  # LDX dp
+			case 0xA4  # LDY dp (width-aware on X flag)
 				addr   : u8 [ cpu_rb[] ]
-				cpu.x  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.x == 0 ? 0x02 : 0) | (cpu.x & 0x80)
-				cycles = 3 + (ualign ? 1 : 0)
+				if [ cpu.p & 0x10 ]
+					cpu_set_Y[ cpu_r[addr] ]
+				el
+					cpu_set_Y[ cpu_r[addr] | (cpu_r[addr + 1] << 8) ]
+				cpu_nz_x[ cpu_get_Y[] ]
+				cycles = 3 + ((ualign) ? 1 : 0)
 
-			case 0xAE  # LDX abs
+			case 0xA6  # LDX dp (width-aware on X flag)
+				addr   : u8 [ cpu_rb[] ]
+				if [ cpu.p & 0x10 ]
+					cpu_set_X[ cpu_r[addr] ]
+				el
+					cpu_set_X[ cpu_r[addr] | (cpu_r[addr + 1] << 8) ]
+				cpu_nz_x[ cpu_get_X[] ]
+				cycles = 3 + ((ualign) ? 1 : 0)
+
+			case 0xAE  # LDX abs (width-aware on X flag)
 				addr   : u16 [ cpu_rw[] ]
-				cpu.x  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.x == 0 ? 0x02 : 0) | (cpu.x & 0x80)
+				if [ cpu.p & 0x10 ]
+					cpu_set_X[ cpu_r[addr] ]
+				el
+					cpu_set_X[ cpu_r[addr] | (cpu_r[addr + 1] << 8) ]
+				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 4
 
 			case 0xB6  # LDX dp,Y
 				addr   : u8 [ (cpu_rb[] + cpu.y) & 0xFF ]
 				cpu.x  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.x == 0 ? 0x02 : 0) | (cpu.x & 0x80)
-				cycles = 4 + (ualign ? 1 : 0)
+				cpu.p  = (cpu.p & ~0x82) | ((cpu.x == 0) ? 0x02 : 0) | (cpu.x & 0x80)
+				cycles = 4 + ((ualign) ? 1 : 0)
 
 			case 0xBE  # LDX abs,Y
 				base   : u16 [ cpu_rw[] ]
 				addr   : u16 [ base + cpu.y ]
 				cross  : bool [ (base & 0xFF00) != (addr & 0xFF00) ]
 				cpu.x  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.x == 0 ? 0x02 : 0) | (cpu.x & 0x80)
-				cycles = 4 + (cross ? 1 : 0)
+				cpu.p  = (cpu.p & ~0x82) | ((cpu.x == 0) ? 0x02 : 0) | (cpu.x & 0x80)
+				cycles = 4 + ((cross) ? 1 : 0)
 
-			case 0xA0  # LDY #imm8
-				cpu.y  = cpu_rb[]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.y == 0 ? 0x02 : 0) | (cpu.y & 0x80)
+			case 0xA0  # LDY #imm (width-aware)
+				cpu_set_Y[ cpu_imm_x[] ]
+				cpu_nz_x[ cpu_get_Y[] ]
 				cycles = 2
 
-			case 0xA2  # LDX #imm8
-				cpu.x  = cpu_rb[]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.x == 0 ? 0x02 : 0) | (cpu.x & 0x80)
+			case 0xA2  # LDX #imm (width-aware)
+				cpu_set_X[ cpu_imm_x[] ]
+				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 2
 
-			case 0xA9  # LDA #imm8
-				cpu.a  = cpu_rb[]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+			case 0xA9  # LDA #imm (width-aware)
+				cpu_set_A[ cpu_imm_a[] ]
+				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 2
 
 			case 0xEA  # NOP
@@ -2167,29 +2977,29 @@ trinity asnes
 				cpu.p &= ~0x40
 				cycles = 2
 
-			case 0xAA  # TAX
-				cpu.x  = cpu.a
-				cpu.p  = (cpu.p & ~0x82) | (cpu.x == 0 ? 0x02 : 0) | (cpu.x & 0x80)
+			case 0xAA  # TAX (width-aware)
+				cpu_set_X[ cpu.a | (cpu.b << 8) ]
+				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 2
 
-			case 0xA8  # TAY
-				cpu.y  = cpu.a
-				cpu.p  = (cpu.p & ~0x82) | (cpu.y == 0 ? 0x02 : 0) | (cpu.y & 0x80)
+			case 0xA8  # TAY (width-aware)
+				cpu_set_Y[ cpu.a | (cpu.b << 8) ]
+				cpu_nz_x[ cpu_get_Y[] ]
 				cycles = 2
 
-			case 0x8A  # TXA
-				cpu.a  = cpu.x
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+			case 0x8A  # TXA (width-aware)
+				cpu_set_A[ cpu_get_X[] ]
+				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 2
 
-			case 0x98  # TYA
-				cpu.a  = cpu.y
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+			case 0x98  # TYA (width-aware)
+				cpu_set_A[ cpu_get_Y[] ]
+				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 2
 
-			case 0xBA  # TSX
-				cpu.x  = cpu.sp
-				cpu.p  = (cpu.p & ~0x82) | (cpu.x == 0 ? 0x02 : 0) | (cpu.x & 0x80)
+			case 0xBA  # TSX (width-aware)
+				cpu_set_X[ 0x0100 | cpu.sp ]
+				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 2
 
 			case 0x9A  # TXS
@@ -2227,7 +3037,7 @@ trinity asnes
 				if [ !(cpu.p & 0x01) ]
 					cross_pc : bool [ (old_pc & 0xFF00) != (cpu.pc & 0xFF00) ]
 					cpu.pc   = u16[i32[cpu.pc] + off]
-					cycles   = 3 + (cross_pc ? 1 : 0)
+					cycles   = 3 + ((cross_pc) ? 1 : 0)
 				el
 					cycles = 2
 
@@ -2236,7 +3046,7 @@ trinity asnes
 				if [ cpu.p & 0x01 ]
 					cross_pc : bool [ (old_pc & 0xFF00) != (cpu.pc & 0xFF00) ]
 					cpu.pc   = u16[i32[cpu.pc] + off]
-					cycles   = 3 + (cross_pc ? 1 : 0)
+					cycles   = 3 + ((cross_pc) ? 1 : 0)
 				el
 					cycles = 2
 
@@ -2245,7 +3055,7 @@ trinity asnes
 				if [ cpu.p & 0x02 ]
 					cross_pc : bool [ (old_pc & 0xFF00) != (cpu.pc & 0xFF00) ]
 					cpu.pc   = u16[i32[cpu.pc] + off]
-					cycles   = 3 + (cross_pc ? 1 : 0)
+					cycles   = 3 + ((cross_pc) ? 1 : 0)
 				el
 					cycles = 2
 
@@ -2254,7 +3064,7 @@ trinity asnes
 				if [ !(cpu.p & 0x02) ]
 					cross_pc : bool [ (old_pc & 0xFF00) != (cpu.pc & 0xFF00) ]
 					cpu.pc   = u16[i32[cpu.pc] + off]
-					cycles   = 3 + (cross_pc ? 1 : 0)
+					cycles   = 3 + ((cross_pc) ? 1 : 0)
 				el
 					cycles = 2
 
@@ -2263,7 +3073,7 @@ trinity asnes
 				if [ !(cpu.p & 0x80) ]
 					cross_pc : bool [ (old_pc & 0xFF00) != (cpu.pc & 0xFF00) ]
 					cpu.pc   = u16[i32[cpu.pc] + off]
-					cycles   = 3 + (cross_pc ? 1 : 0)
+					cycles   = 3 + ((cross_pc) ? 1 : 0)
 				el
 					cycles = 2
 
@@ -2272,7 +3082,7 @@ trinity asnes
 				if [ cpu.p & 0x80 ]
 					cross_pc : bool [ (old_pc & 0xFF00) != (cpu.pc & 0xFF00) ]
 					cpu.pc   = u16[i32[cpu.pc] + off]
-					cycles   = 3 + (cross_pc ? 1 : 0)
+					cycles   = 3 + ((cross_pc) ? 1 : 0)
 				el
 					cycles = 2
 
@@ -2281,7 +3091,7 @@ trinity asnes
 				if [ !(cpu.p & 0x40) ]
 					cross_pc : bool [ (old_pc & 0xFF00) != (cpu.pc & 0xFF00) ]
 					cpu.pc   = u16[i32[cpu.pc] + off]
-					cycles   = 3 + (cross_pc ? 1 : 0)
+					cycles   = 3 + ((cross_pc) ? 1 : 0)
 				el
 					cycles = 2
 
@@ -2290,7 +3100,7 @@ trinity asnes
 				if [ cpu.p & 0x40 ]
 					cross_pc : bool [ (old_pc & 0xFF00) != (cpu.pc & 0xFF00) ]
 					cpu.pc   = u16[i32[cpu.pc] + off]
-					cycles   = 3 + (cross_pc ? 1 : 0)
+					cycles   = 3 + ((cross_pc) ? 1 : 0)
 				el
 					cycles = 2
 
@@ -2299,11 +3109,21 @@ trinity asnes
 				cpu.pc  = u16[i32[cpu.pc] + off]
 				cycles  = 3
 
-			case 0x69  # ADC #imm
-				value  : u8  [ cpu_rb[] ]
-				result : u16 [ cpu.a + value + (cpu.p & 0x01) ]
-				cpu_adc[ cpu.a, value, result ]
-				cpu.a   = result & 0xFF
+			case 0x69  # ADC #imm (width-aware)
+				value  : u16 [ cpu_imm_a[] ]
+				a16    : u16 [ cpu_get_A[] ]
+				if [ cpu.p & 0x20 ]
+					result : u16 [ a16 + value + (cpu.p & 0x01) ]
+					cpu_adc[ a16, value, result ]
+					cpu_set_A[ result & 0xFF ]
+				el
+					r32 : u32 [ u32[a16] + u32[value] + (cpu.p & 0x01) ]
+					c  : u8 [ (r32 > 0xFFFF) ? 0x01 : 0 ]
+					z  : u8 [ ((r32 & 0xFFFF) == 0) ? 0x02 : 0 ]
+					n  : u8 [ ((r32 & 0x8000) != 0) ? 0x80 : 0 ]
+					ov : u8 [ (((a16 ^ r32) & (value ^ r32) & 0x8000) != 0) ? 0x40 : 0 ]
+					cpu.p = (cpu.p & ~0xC3) | c | z | n | ov
+					cpu_set_A[ r32 & 0xFFFF ]
 				cycles  = 2
 
 			case 0x65  # ADC dp
@@ -2312,7 +3132,7 @@ trinity asnes
 				result : u16 [ cpu.a + value + (cpu.p & 0x01) ]
 				cpu_adc[ cpu.a, value, result ]
 				cpu.a   = result & 0xFF
-				cycles  = 3 + (ualign ? 1 : 0)
+				cycles  = 3 + ((ualign) ? 1 : 0)
 
 			case 0x6D  # ADC abs
 				addr   : u16 [ cpu_rw[] ]
@@ -2322,11 +3142,22 @@ trinity asnes
 				cpu.a   = result & 0xFF
 				cycles  = 4
 
-			case 0xE9  # SBC #imm
-				value  : u8  [ cpu_rb[] ]
-				result : u16 [ cpu.a - value - (1 - (cpu.p & 0x01)) ]
-				cpu_sbc[ cpu.a, value, result ]
-				cpu.a   = result & 0xFF
+			case 0xE9  # SBC #imm (width-aware)
+				value  : u16 [ cpu_imm_a[] ]
+				a16    : u16 [ cpu_get_A[] ]
+				if [ cpu.p & 0x20 ]
+					result : u16 [ a16 - value - (1 - (cpu.p & 0x01)) ]
+					cpu_sbc[ a16, value, result ]
+					cpu_set_A[ result & 0xFF ]
+				el
+					borrow : u32 [ 1 - (cpu.p & 0x01) ]
+					r32    : u32 [ u32[a16] - u32[value] - borrow ]
+					c  : u8 [ (r32 < 0x10000) ? 0x01 : 0 ]
+					z  : u8 [ ((r32 & 0xFFFF) == 0) ? 0x02 : 0 ]
+					n  : u8 [ ((r32 & 0x8000) != 0) ? 0x80 : 0 ]
+					ov : u8 [ (((a16 ^ value) & (a16 ^ r32) & 0x8000) != 0) ? 0x40 : 0 ]
+					cpu.p = (cpu.p & ~0xC3) | c | z | n | ov
+					cpu_set_A[ r32 & 0xFFFF ]
 				cycles  = 2
 
 			case 0xE5  # SBC dp
@@ -2335,7 +3166,7 @@ trinity asnes
 				result : u16 [ cpu.a - value - (1 - (cpu.p & 0x01)) ]
 				cpu_sbc[ cpu.a, value, result ]
 				cpu.a   = result & 0xFF
-				cycles  = 3 + (ualign ? 1 : 0)
+				cycles  = 3 + ((ualign) ? 1 : 0)
 
 			case 0xED  # SBC abs
 				addr   : u16 [ cpu_rw[] ]
@@ -2345,10 +3176,15 @@ trinity asnes
 				cpu.a   = result & 0xFF
 				cycles  = 4
 
-			case 0xC9  # CMP #imm
-				value  : u8  [ cpu_rb[] ]
-				result : u16 [ cpu.a - value ]
-				cpu_cmp[ result ]
+			case 0xC9  # CMP #imm (width-aware)
+				value : u16 [ cpu_imm_a[] ]
+				a16   : u16 [ cpu_get_A[] ]
+				diff  : u16 [ a16 - value ]
+				nmask : u16 [ (cpu.p & 0x20) ? 0x80 : 0x8000 ]
+				c : u8 [ (a16 >= value) ? 0x01 : 0 ]
+				z : u8 [ (diff == 0) ? 0x02 : 0 ]
+				n : u8 [ ((diff & nmask) != 0) ? 0x80 : 0 ]
+				cpu.p = (cpu.p & ~0x83) | c | z | n
 				cycles = 2
 
 			case 0xC5  # CMP dp
@@ -2356,130 +3192,161 @@ trinity asnes
 				value  : u8  [ cpu_r[addr] ]
 				result : u16 [ cpu.a - value ]
 				cpu_cmp[ result ]
-				cycles = 3 + (ualign ? 1 : 0)
+				cycles = 3 + ((ualign) ? 1 : 0)
 
-			case 0xCD  # CMP abs
+			case 0xCD  # CMP abs (width-aware on M flag)
 				addr   : u16 [ cpu_rw[] ]
-				value  : u8  [ cpu_r[addr] ]
-				result : u16 [ cpu.a - value ]
-				cpu_cmp[ result ]
+				if [ cpu.p & 0x20 ]
+					value  : u8  [ cpu_r[addr] ]
+					result : u16 [ cpu.a - value ]
+					cpu_cmp[ result ]
+				el
+					a16    : u16 [ cpu_get_A[] ]
+					value  : u16 [ cpu_read_mem[addr] ]
+					diff   : u16 [ a16 - value ]
+					c : u8 [ (a16 >= value) ? 0x01 : 0 ]
+					z : u8 [ (diff == 0) ? 0x02 : 0 ]
+					n : u8 [ ((diff & 0x8000) != 0) ? 0x80 : 0 ]
+					cpu.p = (cpu.p & ~0x83) | c | z | n
 				cycles = 4
 
-			case 0xE0  # CPX #imm
-				value  : u8  [ cpu_rb[] ]
-				result : u16 [ cpu.x - value ]
-				cpu_cmp[ result ]
+			case 0xE0  # CPX #imm (width-aware)
+				value : u16 [ cpu_imm_x[] ]
+				x16   : u16 [ cpu_get_X[] ]
+				diff  : u16 [ x16 - value ]
+				nmask : u16 [ (cpu.p & 0x10) ? 0x80 : 0x8000 ]
+				c : u8 [ (x16 >= value) ? 0x01 : 0 ]
+				z : u8 [ (diff == 0) ? 0x02 : 0 ]
+				n : u8 [ ((diff & nmask) != 0) ? 0x80 : 0 ]
+				cpu.p = (cpu.p & ~0x83) | c | z | n
 				cycles = 2
 
-			case 0xC0  # CPY #imm
-				value  : u8  [ cpu_rb[] ]
-				result : u16 [ cpu.y - value ]
-				cpu_cmp[ result ]
+			case 0xC0  # CPY #imm (width-aware)
+				value : u16 [ cpu_imm_x[] ]
+				y16   : u16 [ cpu_get_Y[] ]
+				diff  : u16 [ y16 - value ]
+				nmask : u16 [ (cpu.p & 0x10) ? 0x80 : 0x8000 ]
+				c : u8 [ (y16 >= value) ? 0x01 : 0 ]
+				z : u8 [ (diff == 0) ? 0x02 : 0 ]
+				n : u8 [ ((diff & nmask) != 0) ? 0x80 : 0 ]
+				cpu.p = (cpu.p & ~0x83) | c | z | n
 				cycles = 2
 
 			case 0xE6  # INC dp
 				addr  : u8 [ cpu_rb[] ]
 				val   : u8 [ cpu_r[addr] + 1 ]
 				cpu_w[ addr, val ]
-				cpu.p  = (cpu.p & ~0x82) | (val == 0 ? 0x02 : 0) | (val & 0x80)
-				cycles = 5 + (ualign ? 1 : 0)
+				cpu.p  = (cpu.p & ~0x82) | ((val == 0) ? 0x02 : 0) | (val & 0x80)
+				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0xEE  # INC abs
 				addr  : u16 [ cpu_rw[] ]
 				val   : u8  [ cpu_r[addr] + 1 ]
 				cpu_w[ addr, val ]
-				cpu.p  = (cpu.p & ~0x82) | (val == 0 ? 0x02 : 0) | (val & 0x80)
+				cpu.p  = (cpu.p & ~0x82) | ((val == 0) ? 0x02 : 0) | (val & 0x80)
 				cycles = 6
 
-			case 0xE8  # INX
-				cpu.x += 1
-				cpu.p  = (cpu.p & ~0x82) | (cpu.x == 0 ? 0x02 : 0) | (cpu.x & 0x80)
+			case 0xE8  # INX (width-aware)
+				cpu_set_X[ cpu_get_X[] + 1 ]
+				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 2
 
-			case 0xC8  # INY
-				cpu.y += 1
-				cpu.p  = (cpu.p & ~0x82) | (cpu.y == 0 ? 0x02 : 0) | (cpu.y & 0x80)
+			case 0xC8  # INY (width-aware)
+				cpu_set_Y[ cpu_get_Y[] + 1 ]
+				cpu_nz_x[ cpu_get_Y[] ]
 				cycles = 2
 
 			case 0xC6  # DEC dp
 				addr  : u8 [ cpu_rb[] ]
 				val   : u8 [ cpu_r[addr] - 1 ]
 				cpu_w[ addr, val ]
-				cpu.p  = (cpu.p & ~0x82) | (val == 0 ? 0x02 : 0) | (val & 0x80)
-				cycles = 5 + (ualign ? 1 : 0)
+				cpu.p  = (cpu.p & ~0x82) | ((val == 0) ? 0x02 : 0) | (val & 0x80)
+				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0xCE  # DEC abs
 				addr  : u16 [ cpu_rw[] ]
 				val   : u8  [ cpu_r[addr] - 1 ]
 				cpu_w[ addr, val ]
-				cpu.p  = (cpu.p & ~0x82) | (val == 0 ? 0x02 : 0) | (val & 0x80)
+				cpu.p  = (cpu.p & ~0x82) | ((val == 0) ? 0x02 : 0) | (val & 0x80)
 				cycles = 6
 
-			case 0xCA  # DEX
-				cpu.x -= 1
-				cpu.p  = (cpu.p & ~0x82) | (cpu.x == 0 ? 0x02 : 0) | (cpu.x & 0x80)
+			case 0xCA  # DEX (width-aware)
+				cpu_set_X[ cpu_get_X[] - 1 ]
+				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 2
 
-			case 0x88  # DEY
-				cpu.y -= 1
-				cpu.p  = (cpu.p & ~0x82) | (cpu.y == 0 ? 0x02 : 0) | (cpu.y & 0x80)
+			case 0x88  # DEY (width-aware)
+				cpu_set_Y[ cpu_get_Y[] - 1 ]
+				cpu_nz_x[ cpu_get_Y[] ]
 				cycles = 2
 
-			case 0x29  # AND #imm
-				cpu.a &= cpu_rb[]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+			case 0x29  # AND #imm (width-aware)
+				cpu_set_A[ cpu_get_A[] & cpu_imm_a[] ]
+				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 2
 
 			case 0x25  # AND dp
 				addr  : u8 [ cpu_rb[] ]
 				cpu.a &= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
-				cycles = 3 + (ualign ? 1 : 0)
+				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x2D  # AND abs
 				addr  : u16 [ cpu_rw[] ]
 				cpu.a &= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
 				cycles = 4
 
-			case 0x09  # ORA #imm
-				cpu.a |= cpu_rb[]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+			case 0x01  # ORA (dp,X) — width-aware (A follows M flag)
+				dp     : u8  [ cpu_rb[] ]
+				ptr    : u16 [ (dp + cpu.x) & 0xFF ]
+				addr   : u16 [ cpu_r[ptr] | (cpu_r[ptr + 1] << 8) ]
+				res    : u16 [ cpu_get_A[] | cpu_read_mem[addr] ]
+				cpu_set_A[ res ]
+				if [ cpu.p & 0x20 ]
+					cpu.p = (cpu.p & ~0x82) | ((res == 0) ? 0x02 : 0) | (res & 0x80)
+				el
+					cpu.p = (cpu.p & ~0x82) | ((res == 0) ? 0x02 : 0) | ((res & 0x8000) ? 0x80 : 0)
+				cycles = 6
+
+			case 0x09  # ORA #imm (width-aware)
+				cpu_set_A[ cpu_get_A[] | cpu_imm_a[] ]
+				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 2
 
 			case 0x05  # ORA dp
 				addr  : u8 [ cpu_rb[] ]
 				cpu.a |= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
-				cycles = 3 + (ualign ? 1 : 0)
+				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x0D  # ORA abs
 				addr  : u16 [ cpu_rw[] ]
 				cpu.a |= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
 				cycles = 4
 
-			case 0x49  # EOR #imm
-				cpu.a ^= cpu_rb[]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+			case 0x49  # EOR #imm (width-aware)
+				cpu_set_A[ cpu_get_A[] ^ cpu_imm_a[] ]
+				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 2
 
 			case 0x45  # EOR dp
 				addr  : u8 [ cpu_rb[] ]
 				cpu.a ^= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
-				cycles = 3 + (ualign ? 1 : 0)
+				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x4D  # EOR abs
 				addr  : u16 [ cpu_rw[] ]
 				cpu.a ^= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
 				cycles = 4
 
 			case 0x0A  # ASL A
 				cpu.p  = (cpu.p & ~0x83) | ((cpu.a & 0x80) ? 0x01 : 0)
 				cpu.a <<= 1
-				cpu.p |= (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu.p |= ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
 				cycles = 2
 
 			case 0x06  # ASL dp
@@ -2487,14 +3354,14 @@ trinity asnes
 				val   : u8 [ cpu_r[addr] ]
 				cpu.p  = (cpu.p & ~0x83) | ((val & 0x80) ? 0x01 : 0)
 				val  <<= 1
-				cpu.p |= (val == 0 ? 0x02 : 0) | (val & 0x80)
+				cpu.p |= ((val == 0) ? 0x02 : 0) | (val & 0x80)
 				cpu_w[ addr, val ]
-				cycles = 5 + (ualign ? 1 : 0)
+				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0x4A  # LSR A
 				cpu.p  = (cpu.p & ~0x83) | (cpu.a & 0x01)
 				cpu.a >>= 1
-				cpu.p |= (cpu.a == 0 ? 0x02 : 0)
+				cpu.p |= ((cpu.a == 0) ? 0x02 : 0)
 				cycles = 2
 
 			case 0x46  # LSR dp
@@ -2502,15 +3369,15 @@ trinity asnes
 				val   : u8 [ cpu_r[addr] ]
 				cpu.p  = (cpu.p & ~0x83) | (val & 0x01)
 				val  >>= 1
-				cpu.p |= (val == 0 ? 0x02 : 0)
+				cpu.p |= ((val == 0) ? 0x02 : 0)
 				cpu_w[ addr, val ]
-				cycles = 5 + (ualign ? 1 : 0)
+				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0x2A  # ROL A
 				old_c  : u8 [ cpu.p & 0x01 ]
 				cpu.p   = (cpu.p & ~0x83) | ((cpu.a & 0x80) ? 0x01 : 0)
 				cpu.a   = (cpu.a << 1) | old_c
-				cpu.p  |= (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu.p  |= ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
 				cycles  = 2
 
 			case 0x26  # ROL dp
@@ -2519,15 +3386,15 @@ trinity asnes
 				old_c  : u8 [ cpu.p & 0x01 ]
 				cpu.p   = (cpu.p & ~0x83) | ((val & 0x80) ? 0x01 : 0)
 				val     = (val << 1) | old_c
-				cpu.p  |= (val == 0 ? 0x02 : 0) | (val & 0x80)
+				cpu.p  |= ((val == 0) ? 0x02 : 0) | (val & 0x80)
 				cpu_w[ addr, val ]
-				cycles  = 5 + (ualign ? 1 : 0)
+				cycles  = 5 + ((ualign) ? 1 : 0)
 
 			case 0x6A  # ROR A
 				old_c  : u8 [ cpu.p & 0x01 ]
 				cpu.p   = (cpu.p & ~0x83) | (cpu.a & 0x01)
 				cpu.a   = (cpu.a >> 1) | (old_c << 7)
-				cpu.p  |= (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu.p  |= ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
 				cycles  = 2
 
 			case 0x66  # ROR dp
@@ -2536,15 +3403,15 @@ trinity asnes
 				old_c  : u8 [ cpu.p & 0x01 ]
 				cpu.p   = (cpu.p & ~0x83) | (val & 0x01)
 				val     = (val >> 1) | (old_c << 7)
-				cpu.p  |= (val == 0 ? 0x02 : 0) | (val & 0x80)
+				cpu.p  |= ((val == 0) ? 0x02 : 0) | (val & 0x80)
 				cpu_w[ addr, val ]
-				cycles  = 5 + (ualign ? 1 : 0)
+				cycles  = 5 + ((ualign) ? 1 : 0)
 
 			case 0x24  # BIT dp
 				addr  : u8 [ cpu_rb[] ]
 				val   : u8 [ cpu_r[addr] ]
 				cpu_bit[ val ]
-				cycles = 3 + (ualign ? 1 : 0)
+				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x2C  # BIT abs
 				addr  : u16 [ cpu_rw[] ]
@@ -2560,7 +3427,7 @@ trinity asnes
 			case 0x68  # PLA
 				cpu.sp += 1
 				cpu.a   = cpu_r[ 0x0100 + cpu.sp ]
-				cpu.p   = (cpu.p & ~0x82) | (cpu.a == 0 ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu.p   = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
 				cycles  = 4
 
 			case 0x08  # PHP
@@ -2572,6 +3439,122 @@ trinity asnes
 				cpu.sp += 1
 				cpu.p   = cpu_r[ 0x0100 + cpu.sp ]
 				cycles  = 4
+
+			case 0xDA  # PHX
+				if [ cpu.p & 0x10 ]
+					cpu_w[ 0x0100 + cpu.sp, cpu.x ]
+					cpu.sp -= 1
+				el
+					cpu_w[ 0x0100 + cpu.sp, cpu.xh ]
+					cpu.sp -= 1
+					cpu_w[ 0x0100 + cpu.sp, cpu.x ]
+					cpu.sp -= 1
+				cycles = 3
+
+			case 0x5A  # PHY
+				if [ cpu.p & 0x10 ]
+					cpu_w[ 0x0100 + cpu.sp, cpu.y ]
+					cpu.sp -= 1
+				el
+					cpu_w[ 0x0100 + cpu.sp, cpu.yh ]
+					cpu.sp -= 1
+					cpu_w[ 0x0100 + cpu.sp, cpu.y ]
+					cpu.sp -= 1
+				cycles = 3
+
+			case 0xFA  # PLX
+				if [ cpu.p & 0x10 ]
+					cpu.sp += 1
+					cpu.x   = cpu_r[ 0x0100 + cpu.sp ]
+					cpu.p   = (cpu.p & ~0x82) | ((cpu.x == 0) ? 0x02 : 0) | (cpu.x & 0x80)
+				el
+					cpu.sp += 1
+					xl     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					cpu.sp += 1
+					xh     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					cpu.x   = xl
+					cpu.xh  = xh
+					xv     : u16 [ xl | (xh << 8) ]
+					cpu.p   = (cpu.p & ~0x82) | ((xv == 0) ? 0x02 : 0) | ((xv & 0x8000) ? 0x80 : 0)
+				cycles = 4
+
+			case 0x7A  # PLY
+				if [ cpu.p & 0x10 ]
+					cpu.sp += 1
+					cpu.y   = cpu_r[ 0x0100 + cpu.sp ]
+					cpu.p   = (cpu.p & ~0x82) | ((cpu.y == 0) ? 0x02 : 0) | (cpu.y & 0x80)
+				el
+					cpu.sp += 1
+					yl     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					cpu.sp += 1
+					yh     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					cpu.y   = yl
+					cpu.yh  = yh
+					yv     : u16 [ yl | (yh << 8) ]
+					cpu.p   = (cpu.p & ~0x82) | ((yv == 0) ? 0x02 : 0) | ((yv & 0x8000) ? 0x80 : 0)
+				cycles = 4
+
+			case 0x8B  # PHB
+				cpu_w[ 0x0100 + cpu.sp, cpu.dbr ]
+				cpu.sp -= 1
+				cycles  = 3
+
+			case 0xAB  # PLB
+				cpu.sp += 1
+				cpu.dbr = cpu_r[ 0x0100 + cpu.sp ]
+				cpu.p   = (cpu.p & ~0x82) | ((cpu.dbr == 0) ? 0x02 : 0) | (cpu.dbr & 0x80)
+				cycles  = 4
+
+			case 0x4B  # PHK
+				cpu_w[ 0x0100 + cpu.sp, cpu.pbr ]
+				cpu.sp -= 1
+				cycles  = 3
+
+			case 0x0B  # PHD
+				cpu_w[ 0x0100 + cpu.sp, u8[cpu.dp >> 8] ]
+				cpu.sp -= 1
+				cpu_w[ 0x0100 + cpu.sp, u8[cpu.dp & 0xFF] ]
+				cpu.sp -= 1
+				cycles  = 4
+
+			case 0x2B  # PLD
+				cpu.sp += 1
+				dl     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+				cpu.sp += 1
+				dh     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+				cpu.dp  = dl | (dh << 8)
+				cpu.p   = (cpu.p & ~0x82) | ((cpu.dp == 0) ? 0x02 : 0) | ((cpu.dp & 0x8000) ? 0x80 : 0)
+				cycles  = 5
+
+			case 0xEB  # XBA
+				tmp    : u8 [ cpu.a ]
+				cpu.a   = cpu.b
+				cpu.b   = tmp
+				cpu.p   = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cycles  = 3
+
+			case 0x1B  # TCS (C -> S), no flags
+				cpu.sp  = cpu.a
+				cycles  = 2
+
+			case 0x3B  # TSC (S -> C), 16-bit N/Z
+				sv     : u16 [ 0x0100 | cpu.sp ]
+				cpu.a   = sv & 0xFF
+				cpu.b   = sv >> 8
+				cpu.p   = (cpu.p & ~0x82) | ((sv == 0) ? 0x02 : 0) | ((sv & 0x8000) ? 0x80 : 0)
+				cycles  = 2
+
+			case 0x5B  # TCD (C -> D), 16-bit N/Z
+				cv     : u16 [ cpu.a | (cpu.b << 8) ]
+				cpu.dp  = cv
+				cpu.p   = (cpu.p & ~0x82) | ((cv == 0) ? 0x02 : 0) | ((cv & 0x8000) ? 0x80 : 0)
+				cycles  = 2
+
+			case 0x7B  # TDC (D -> C), 16-bit N/Z
+				cpu.a   = cpu.dp & 0xFF
+				cpu.b   = cpu.dp >> 8
+				cpu.p   = (cpu.p & ~0x82) | ((cpu.dp == 0) ? 0x02 : 0) | ((cpu.dp & 0x8000) ? 0x80 : 0)
+				cycles  = 2
 
 			case 0x40  # RTI
 				cpu.sp += 1
@@ -2622,15 +3605,15 @@ trinity asnes
 				value  : u8 [ cpu_r[dp] ]
 				result : u8 [ cpu.a & value ]
 				cpu_w[ dp, value & ~cpu.a ]
-				cpu.p  = (cpu.p & ~0x02) | (result == 0 ? 0x02 : 0)
-				cycles = 5 + (ualign ? 1 : 0)
+				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
+				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0x1C  # TRB abs
 				addr   : u16 [ cpu_rw[] ]
 				value  : u8  [ cpu_r[addr] ]
 				result : u8  [ cpu.a & value ]
 				cpu_w[ addr, value & ~cpu.a ]
-				cpu.p  = (cpu.p & ~0x02) | (result == 0 ? 0x02 : 0)
+				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 6
 
 			case 0x04  # TSB dp
@@ -2638,26 +3621,26 @@ trinity asnes
 				value  : u8 [ cpu_r[dp] ]
 				result : u8 [ cpu.a & value ]
 				cpu_w[ dp, value | cpu.a ]
-				cpu.p  = (cpu.p & ~0x02) | (result == 0 ? 0x02 : 0)
-				cycles = 5 + (ualign ? 1 : 0)
+				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
+				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0x0C  # TSB abs
 				addr   : u16 [ cpu_rw[] ]
 				value  : u8  [ cpu_r[addr] ]
 				result : u8  [ cpu.a & value ]
 				cpu_w[ addr, value | cpu.a ]
-				cpu.p  = (cpu.p & ~0x02) | (result == 0 ? 0x02 : 0)
+				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 6
 
 			case 0x64  # STZ dp
 				dp : u8 [ cpu_rb[] ]
 				cpu_w[ dp, 0 ]
-				cycles = 3 + (ualign ? 1 : 0)
+				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x74  # STZ dp,X
 				dp : u8 [ cpu_rb[] ]
 				cpu_w[ (dp + cpu.x) & 0xFF, 0 ]
-				cycles = 4 + (ualign ? 1 : 0)
+				cycles = 4 + ((ualign) ? 1 : 0)
 
 			case 0x9C  # STZ abs
 				addr : u16 [ cpu_rw[] ]
@@ -2679,11 +3662,653 @@ trinity asnes
 				cpu_sbc[ cpu.a, value, result ]
 				cpu.a   = result & 0xFF
 
+			case 0x22  # JSL (jump subroutine long)
+				lo     : u32 [ cpu_rb[] ]
+				hi     : u32 [ cpu_rb[] ]
+				nbank  : u8  [ cpu_rb[] ]
+				ret    : u16 [ cpu.pc - 1 ]
+				cpu_w[ 0x0100 + cpu.sp, cpu.pbr ]
+				cpu.sp -= 1
+				cpu_w[ 0x0100 + cpu.sp, u8[ret >> 8] ]
+				cpu.sp -= 1
+				cpu_w[ 0x0100 + cpu.sp, u8[ret & 0xFF] ]
+				cpu.sp -= 1
+				cpu.pbr = nbank
+				cpu.pc  = lo | (hi << 8)
+				cycles  = 8
+
+			case 0x6B  # RTL (return subroutine long)
+				cpu.sp += 1
+				rlo    : u16 [ cpu_r[0x0100 + cpu.sp] ]
+				cpu.sp += 1
+				rhi    : u16 [ cpu_r[0x0100 + cpu.sp] ]
+				cpu.sp += 1
+				cpu.pbr = cpu_r[0x0100 + cpu.sp]
+				cpu.pc  = (rlo | (rhi << 8)) + 1
+				cycles  = 6
+
+			case 0xDC  # JML [abs] (jump long, absolute indirect)
+				jptr   : u16 [ cpu_rw[] ]
+				jlo    : u16 [ cpu_r[jptr] ]
+				jhi    : u16 [ cpu_r[jptr + 1] ]
+				jbank  : u8  [ cpu_r[jptr + 2] ]
+				cpu.pc  = jlo | (jhi << 8)
+				cpu.pbr = jbank
+				cycles  = 6
+
+			case 0x5C  # JML long (jump long, absolute)
+				clo    : u32 [ cpu_rb[] ]
+				chi    : u32 [ cpu_rb[] ]
+				cbank  : u8  [ cpu_rb[] ]
+				cpu.pc  = clo | (chi << 8)
+				cpu.pbr = cbank
+				cycles  = 4
+
+			case 0xB2  # LDA (dp) (width-aware)
+				dp     : u8  [ cpu_rb[] ]
+				addr   : u16 [ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
+				cpu_set_A[ cpu_read_mem[addr] ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 5
+
+			case 0x92  # STA (dp) (width-aware)
+				dp     : u8  [ cpu_rb[] ]
+				addr   : u16 [ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
+				cpu_write_mem[ addr, cpu_get_A[] ]
+				cycles = 5
+
+			case 0x75  # ADC dp,X (width-aware)
+				addr   : u8  [ (cpu_rb[] + cpu.x) & 0xFF ]
+				cpu_adc_a[ cpu_read_mem[addr] ]
+				cycles = 4
+
+			case 0x73  # ADC (d,S),Y (stack-relative indirect indexed, width-aware)
+				sr2    : u8  [ cpu_rb[] ]
+				sa2    : u16 [ 0x0100 + ((cpu.sp + sr2) & 0xFF) ]
+				p2     : u16 [ cpu_r[sa2] | (cpu_r[sa2 + 1] << 8) ]
+				a2     : u16 [ p2 + cpu_get_Y[] ]
+				cpu_adc_a[ cpu_read_mem[a2] ]
+				cycles = 7
+
+			case 0x72  # ADC (dp) (width-aware)
+				dp     : u8  [ cpu_rb[] ]
+				addr   : u16 [ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
+				cpu_adc_a[ cpu_read_mem[addr] ]
+				cycles = 5
+
+			case 0x76  # ROR dp,X (width-aware RMW)
+				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
+				cpu_write_mem[ addr, cpu_ror_v[ cpu_read_mem[addr] ] ]
+				cycles = 6
+
+			case 0x16  # ASL dp,X
+				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
+				cpu_write_mem[ addr, cpu_asl_v[ cpu_read_mem[addr] ] ]
+				cycles = 6
+
+			case 0x1E  # ASL abs,X
+				addr   : u16 [ cpu_rw[] + cpu_get_X[] ]
+				cpu_write_mem[ addr, cpu_asl_v[ cpu_read_mem[addr] ] ]
+				cycles = 7
+
+			case 0x56  # LSR dp,X
+				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
+				cpu_write_mem[ addr, cpu_lsr_v[ cpu_read_mem[addr] ] ]
+				cycles = 6
+
+			case 0x5E  # LSR abs,X
+				addr   : u16 [ cpu_rw[] + cpu_get_X[] ]
+				cpu_write_mem[ addr, cpu_lsr_v[ cpu_read_mem[addr] ] ]
+				cycles = 7
+
+			case 0x36  # ROL dp,X
+				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
+				cpu_write_mem[ addr, cpu_rol_v[ cpu_read_mem[addr] ] ]
+				cycles = 6
+
+			case 0x3E  # ROL abs,X
+				addr   : u16 [ cpu_rw[] + cpu_get_X[] ]
+				cpu_write_mem[ addr, cpu_rol_v[ cpu_read_mem[addr] ] ]
+				cycles = 7
+
+			case 0x7E  # ROR abs,X
+				addr   : u16 [ cpu_rw[] + cpu_get_X[] ]
+				cpu_write_mem[ addr, cpu_ror_v[ cpu_read_mem[addr] ] ]
+				cycles = 7
+
+			case 0x0E  # ASL abs
+				addr   : u16 [ cpu_rw[] ]
+				cpu_write_mem[ addr, cpu_asl_v[ cpu_read_mem[addr] ] ]
+				cycles = 6
+
+			case 0x2E  # ROL abs
+				addr   : u16 [ cpu_rw[] ]
+				cpu_write_mem[ addr, cpu_rol_v[ cpu_read_mem[addr] ] ]
+				cycles = 6
+
+			case 0x4E  # LSR abs
+				addr   : u16 [ cpu_rw[] ]
+				cpu_write_mem[ addr, cpu_lsr_v[ cpu_read_mem[addr] ] ]
+				cycles = 6
+
+			case 0x6E  # ROR abs
+				addr   : u16 [ cpu_rw[] ]
+				cpu_write_mem[ addr, cpu_ror_v[ cpu_read_mem[addr] ] ]
+				cycles = 6
+
+			case 0x07  # ORA [dp]
+				dp : u8 [ cpu_rb[] ]
+				cpu_ora_a[ cpu_read_long_dp[dp] ]
+				cycles = 7
+			case 0x27  # AND [dp]
+				dp : u8 [ cpu_rb[] ]
+				cpu_and_a[ cpu_read_long_dp[dp] ]
+				cycles = 7
+			case 0x47  # EOR [dp]
+				dp : u8 [ cpu_rb[] ]
+				cpu_eor_a[ cpu_read_long_dp[dp] ]
+				cycles = 7
+			case 0xC7  # CMP [dp]
+				dp : u8 [ cpu_rb[] ]
+				cpu_cmp_a[ cpu_read_long_dp[dp] ]
+				cycles = 7
+			case 0xE7  # SBC [dp]
+				dp : u8 [ cpu_rb[] ]
+				cpu_sbc_a[ cpu_read_long_dp[dp] ]
+				cycles = 7
+			case 0x17  # ORA [dp],Y
+				dp : u8 [ cpu_rb[] ]
+				cpu_ora_a[ cpu_read_long_dp_y[dp] ]
+				cycles = 7
+			case 0x37  # AND [dp],Y
+				dp : u8 [ cpu_rb[] ]
+				cpu_and_a[ cpu_read_long_dp_y[dp] ]
+				cycles = 7
+			case 0x57  # EOR [dp],Y
+				dp : u8 [ cpu_rb[] ]
+				cpu_eor_a[ cpu_read_long_dp_y[dp] ]
+				cycles = 7
+			case 0xD7  # CMP [dp],Y
+				dp : u8 [ cpu_rb[] ]
+				cpu_cmp_a[ cpu_read_long_dp_y[dp] ]
+				cycles = 7
+			case 0xF7  # SBC [dp],Y
+				dp : u8 [ cpu_rb[] ]
+				cpu_sbc_a[ cpu_read_long_dp_y[dp] ]
+				cycles = 7
+
+			case 0xD6  # DEC dp,X
+				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
+				cpu_write_mem[ addr, cpu_dec_v[ cpu_read_mem[addr] ] ]
+				cycles = 6
+			case 0xDE  # DEC abs,X
+				addr   : u16 [ cpu_rw[] + cpu_get_X[] ]
+				cpu_write_mem[ addr, cpu_dec_v[ cpu_read_mem[addr] ] ]
+				cycles = 7
+			case 0xF6  # INC dp,X
+				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
+				cpu_write_mem[ addr, cpu_inc_v[ cpu_read_mem[addr] ] ]
+				cycles = 6
+			case 0xFE  # INC abs,X
+				addr   : u16 [ cpu_rw[] + cpu_get_X[] ]
+				cpu_write_mem[ addr, cpu_inc_v[ cpu_read_mem[addr] ] ]
+				cycles = 7
+
+			# --- ALU (dp,X): ptr at (dp+X) in direct page ---
+			case 0x21  # AND (dp,X)
+				dpx : u8  [ cpu_rb[] ]
+				px  : u16 [ (dpx + cpu.x) & 0xFF ]
+				ax  : u16 [ cpu_r[px] | (cpu_r[px + 1] << 8) ]
+				cpu_and_a[ cpu_read_mem[ax] ]
+				cycles = 6
+			case 0x41  # EOR (dp,X)
+				dpx : u8  [ cpu_rb[] ]
+				px  : u16 [ (dpx + cpu.x) & 0xFF ]
+				ax  : u16 [ cpu_r[px] | (cpu_r[px + 1] << 8) ]
+				cpu_eor_a[ cpu_read_mem[ax] ]
+				cycles = 6
+			case 0x61  # ADC (dp,X)
+				dpx : u8  [ cpu_rb[] ]
+				px  : u16 [ (dpx + cpu.x) & 0xFF ]
+				ax  : u16 [ cpu_r[px] | (cpu_r[px + 1] << 8) ]
+				cpu_adc_a[ cpu_read_mem[ax] ]
+				cycles = 6
+			case 0xC1  # CMP (dp,X)
+				dpx : u8  [ cpu_rb[] ]
+				px  : u16 [ (dpx + cpu.x) & 0xFF ]
+				ax  : u16 [ cpu_r[px] | (cpu_r[px + 1] << 8) ]
+				cpu_cmp_a[ cpu_read_mem[ax] ]
+				cycles = 6
+			case 0xE1  # SBC (dp,X)
+				dpx : u8  [ cpu_rb[] ]
+				px  : u16 [ (dpx + cpu.x) & 0xFF ]
+				ax  : u16 [ cpu_r[px] | (cpu_r[px + 1] << 8) ]
+				cpu_sbc_a[ cpu_read_mem[ax] ]
+				cycles = 6
+
+			# --- ALU (dp),Y: ptr at dp, + Y ---
+			case 0x11  # ORA (dp),Y
+				dpy : u8  [ cpu_rb[] ]
+				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
+				cpu_ora_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
+				cycles = 5
+			case 0x31  # AND (dp),Y
+				dpy : u8  [ cpu_rb[] ]
+				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
+				cpu_and_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
+				cycles = 5
+			case 0x51  # EOR (dp),Y
+				dpy : u8  [ cpu_rb[] ]
+				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
+				cpu_eor_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
+				cycles = 5
+			case 0x71  # ADC (dp),Y
+				dpy : u8  [ cpu_rb[] ]
+				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
+				cpu_adc_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
+				cycles = 5
+			case 0xD1  # CMP (dp),Y
+				dpy : u8  [ cpu_rb[] ]
+				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
+				cpu_cmp_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
+				cycles = 5
+			case 0xF1  # SBC (dp),Y
+				dpy : u8  [ cpu_rb[] ]
+				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
+				cpu_sbc_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
+				cycles = 5
+
+			# --- ALU (dp): ptr at dp ---
+			case 0x12  # ORA (dp)
+				dpz : u8  [ cpu_rb[] ]
+				az  : u16 [ cpu_r[dpz] | (cpu_r[dpz + 1] << 8) ]
+				cpu_ora_a[ cpu_read_mem[az] ]
+				cycles = 5
+			case 0x32  # AND (dp)
+				dpz : u8  [ cpu_rb[] ]
+				az  : u16 [ cpu_r[dpz] | (cpu_r[dpz + 1] << 8) ]
+				cpu_and_a[ cpu_read_mem[az] ]
+				cycles = 5
+			case 0x52  # EOR (dp)
+				dpz : u8  [ cpu_rb[] ]
+				az  : u16 [ cpu_r[dpz] | (cpu_r[dpz + 1] << 8) ]
+				cpu_eor_a[ cpu_read_mem[az] ]
+				cycles = 5
+			case 0xD2  # CMP (dp)
+				dpz : u8  [ cpu_rb[] ]
+				az  : u16 [ cpu_r[dpz] | (cpu_r[dpz + 1] << 8) ]
+				cpu_cmp_a[ cpu_read_mem[az] ]
+				cycles = 5
+			case 0xF2  # SBC (dp)
+				dpz : u8  [ cpu_rb[] ]
+				az  : u16 [ cpu_r[dpz] | (cpu_r[dpz + 1] << 8) ]
+				cpu_sbc_a[ cpu_read_mem[az] ]
+				cycles = 5
+
+			# --- ALU abs,X ---
+			case 0x1D  # ORA abs,X
+				cpu_ora_a[ cpu_read_mem[ cpu_rw[] + cpu_get_X[] ] ]
+				cycles = 4
+			case 0x3D  # AND abs,X
+				cpu_and_a[ cpu_read_mem[ cpu_rw[] + cpu_get_X[] ] ]
+				cycles = 4
+			case 0x5D  # EOR abs,X
+				cpu_eor_a[ cpu_read_mem[ cpu_rw[] + cpu_get_X[] ] ]
+				cycles = 4
+			case 0x7D  # ADC abs,X
+				cpu_adc_a[ cpu_read_mem[ cpu_rw[] + cpu_get_X[] ] ]
+				cycles = 4
+			case 0xDD  # CMP abs,X
+				cpu_cmp_a[ cpu_read_mem[ cpu_rw[] + cpu_get_X[] ] ]
+				cycles = 4
+			case 0xFD  # SBC abs,X
+				cpu_sbc_a[ cpu_read_mem[ cpu_rw[] + cpu_get_X[] ] ]
+				cycles = 4
+
+			# --- ALU abs,Y ---
+			case 0x19  # ORA abs,Y
+				cpu_ora_a[ cpu_read_mem[ cpu_rw[] + cpu_get_Y[] ] ]
+				cycles = 4
+			case 0x39  # AND abs,Y
+				cpu_and_a[ cpu_read_mem[ cpu_rw[] + cpu_get_Y[] ] ]
+				cycles = 4
+			case 0x59  # EOR abs,Y
+				cpu_eor_a[ cpu_read_mem[ cpu_rw[] + cpu_get_Y[] ] ]
+				cycles = 4
+			case 0x79  # ADC abs,Y
+				cpu_adc_a[ cpu_read_mem[ cpu_rw[] + cpu_get_Y[] ] ]
+				cycles = 4
+			case 0xD9  # CMP abs,Y
+				cpu_cmp_a[ cpu_read_mem[ cpu_rw[] + cpu_get_Y[] ] ]
+				cycles = 4
+			case 0xF9  # SBC abs,Y
+				cpu_sbc_a[ cpu_read_mem[ cpu_rw[] + cpu_get_Y[] ] ]
+				cycles = 4
+
+			# --- ALU dp,X ---
+			case 0x15  # ORA dp,X
+				cpu_ora_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cycles = 4
+			case 0x35  # AND dp,X
+				cpu_and_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cycles = 4
+			case 0x55  # EOR dp,X
+				cpu_eor_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cycles = 4
+			case 0xD5  # CMP dp,X
+				cpu_cmp_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cycles = 4
+			case 0xF5  # SBC dp,X
+				cpu_sbc_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cycles = 4
+
+			# --- ALU absolute long ---
+			case 0x0F  # ORA long
+				cpu_ora_a[ cpu_read_long[] ]
+				cycles = 5
+			case 0x2F  # AND long
+				cpu_and_a[ cpu_read_long[] ]
+				cycles = 5
+			case 0x4F  # EOR long
+				cpu_eor_a[ cpu_read_long[] ]
+				cycles = 5
+			case 0x6F  # ADC long
+				cpu_adc_a[ cpu_read_long[] ]
+				cycles = 5
+			case 0xCF  # CMP long
+				cpu_cmp_a[ cpu_read_long[] ]
+				cycles = 5
+			case 0xEF  # SBC long
+				cpu_sbc_a[ cpu_read_long[] ]
+				cycles = 5
+
+			# --- ALU absolute long,X ---
+			case 0x3F  # AND long,X
+				cpu_and_a[ cpu_read_long_x[] ]
+				cycles = 5
+			case 0x5F  # EOR long,X
+				cpu_eor_a[ cpu_read_long_x[] ]
+				cycles = 5
+			case 0x7F  # ADC long,X
+				cpu_adc_a[ cpu_read_long_x[] ]
+				cycles = 5
+			case 0xDF  # CMP long,X
+				cpu_cmp_a[ cpu_read_long_x[] ]
+				cycles = 5
+
+			# --- ALU stack-relative (d,s) ---
+			case 0x03  # ORA d,s
+				cpu_ora_a[ cpu_read_sr[] ]
+				cycles = 4
+			case 0x23  # AND d,s
+				cpu_and_a[ cpu_read_sr[] ]
+				cycles = 4
+			case 0x43  # EOR d,s
+				cpu_eor_a[ cpu_read_sr[] ]
+				cycles = 4
+			case 0x63  # ADC d,s
+				cpu_adc_a[ cpu_read_sr[] ]
+				cycles = 4
+			case 0xC3  # CMP d,s
+				cpu_cmp_a[ cpu_read_sr[] ]
+				cycles = 4
+			case 0xE3  # SBC d,s
+				cpu_sbc_a[ cpu_read_sr[] ]
+				cycles = 4
+
+			# --- ALU (d,s),Y ---
+			case 0x13  # ORA (d,s),Y
+				cpu_ora_a[ cpu_read_sr_y[] ]
+				cycles = 7
+			case 0x33  # AND (d,s),Y
+				cpu_and_a[ cpu_read_sr_y[] ]
+				cycles = 7
+			case 0x53  # EOR (d,s),Y
+				cpu_eor_a[ cpu_read_sr_y[] ]
+				cycles = 7
+			case 0xD3  # CMP (d,s),Y
+				cpu_cmp_a[ cpu_read_sr_y[] ]
+				cycles = 7
+			case 0xF3  # SBC (d,s),Y
+				cpu_sbc_a[ cpu_read_sr_y[] ]
+				cycles = 7
+
+			# --- loads ---
+			case 0xA3  # LDA d,s
+				cpu_set_A[ cpu_read_sr[] ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 4
+			case 0xA7  # LDA [dp]
+				dp : u8 [ cpu_rb[] ]
+				cpu_set_A[ cpu_read_long_dp[dp] ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 6
+			case 0xB5  # LDA dp,X
+				cpu_set_A[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 4
+			case 0xBF  # LDA long,X
+				cpu_set_A[ cpu_read_long_x[] ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 5
+			case 0xB4  # LDY dp,X
+				cpu_set_Y[ cpu_read_mem_x[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cpu_nz_x[ cpu_get_Y[] ]
+				cycles = 4
+			case 0xBC  # LDY abs,X
+				cpu_set_Y[ cpu_read_mem_x[ cpu_rw[] + cpu_get_X[] ] ]
+				cpu_nz_x[ cpu_get_Y[] ]
+				cycles = 4
+
+			# --- stores ---
+			case 0x83  # STA d,s
+				sr : u8 [ cpu_rb[] ]
+				sa : u16 [ 0x0100 + ((cpu.sp + sr) & 0xFF) ]
+				cpu_write_mem[ sa, cpu_get_A[] ]
+				cycles = 4
+			case 0x87  # STA [dp]
+				dp : u8 [ cpu_rb[] ]
+				lo : u32 [ cpu_r[dp] ]
+				mid : u32 [ cpu_r[dp + 1] ]
+				bank : u32 [ cpu_r[dp + 2] ]
+				la : u32 [ lo | (mid << 8) | (bank << 16) ]
+				av : u16 [ cpu_get_A[] ]
+				cpu.memory[la] = u8[ av & 0xFF ]
+				if [ !(cpu.p & 0x20) ] cpu.memory[la + 1] = u8[ av >> 8 ]
+				cycles = 6
+			case 0x97  # STA [dp],Y
+				dp : u8 [ cpu_rb[] ]
+				lo : u32 [ cpu_r[dp] ]
+				mid : u32 [ cpu_r[dp + 1] ]
+				bank : u32 [ cpu_r[dp + 2] ]
+				la : u32 [ (lo | (mid << 8) | (bank << 16)) + cpu_get_Y[] ]
+				av : u16 [ cpu_get_A[] ]
+				cpu.memory[la] = u8[ av & 0xFF ]
+				if [ !(cpu.p & 0x20) ] cpu.memory[la + 1] = u8[ av >> 8 ]
+				cycles = 7
+			case 0x9F  # STA long,X
+				lo : u32 [ cpu_rb[] ]
+				mid : u32 [ cpu_rb[] ]
+				bank : u32 [ cpu_rb[] ]
+				la : u32 [ (lo | (mid << 8) | (bank << 16)) + cpu_get_X[] ]
+				av : u16 [ cpu_get_A[] ]
+				cpu.memory[la] = u8[ av & 0xFF ]
+				if [ !(cpu.p & 0x20) ] cpu.memory[la + 1] = u8[ av >> 8 ]
+				cycles = 5
+			case 0x93  # STA (d,s),Y
+				sr : u8 [ cpu_rb[] ]
+				sa : u16 [ 0x0100 + ((cpu.sp + sr) & 0xFF) ]
+				base : u16 [ cpu_r[sa] | (cpu_r[sa + 1] << 8) ]
+				cpu_write_mem[ base + cpu_get_Y[], cpu_get_A[] ]
+				cycles = 7
+			case 0x94  # STY dp,X
+				addr : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
+				cpu_w[ addr, cpu.y ]
+				if [ !(cpu.p & 0x10) ] cpu_w[ addr + 1, cpu.yh ]
+				cycles = 4
+			case 0x96  # STX dp,Y
+				addr : u8 [ (cpu_rb[] + cpu.y) & 0xFF ]
+				cpu_w[ addr, cpu.x ]
+				if [ !(cpu.p & 0x10) ] cpu_w[ addr + 1, cpu.xh ]
+				cycles = 4
+
+			# --- compares (X-width) ---
+			case 0xC4  # CPY dp
+				cpu_cmp_x[ cpu_get_Y[], cpu_read_mem_x[ cpu_rb[] ] ]
+				cycles = 3
+			case 0xCC  # CPY abs
+				cpu_cmp_x[ cpu_get_Y[], cpu_read_mem_x[ cpu_rw[] ] ]
+				cycles = 4
+			case 0xE4  # CPX dp
+				cpu_cmp_x[ cpu_get_X[], cpu_read_mem_x[ cpu_rb[] ] ]
+				cycles = 3
+			case 0xEC  # CPX abs
+				cpu_cmp_x[ cpu_get_X[], cpu_read_mem_x[ cpu_rw[] ] ]
+				cycles = 4
+
+			# --- BIT ---
+			case 0x89  # BIT #imm (only affects Z)
+				value : u16 [ cpu_imm_a[] ]
+				z : u8 [ ((cpu_get_A[] & value) == 0) ? 0x02 : 0 ]
+				cpu.p = (cpu.p & ~0x02) | z
+				cycles = 2
+			case 0x34  # BIT dp,X
+				cpu_bit_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cycles = 4
+			case 0x3C  # BIT abs,X
+				cpu_bit_a[ cpu_read_mem[ cpu_rw[] + cpu_get_X[] ] ]
+				cycles = 4
+
+			# --- control flow ---
+			case 0x7C  # JMP (abs,X)
+				ptr : u16 [ cpu_rw[] + cpu_get_X[] ]
+				cpu.pc = cpu_r[ptr] | (cpu_r[ptr + 1] << 8)
+				cycles = 6
+			case 0xFC  # JSR (abs,X)
+				ptr : u16 [ cpu_rw[] ]
+				ret : u16 [ cpu.pc - 1 ]
+				cpu_push16[ ret ]
+				addr : u16 [ (ptr + cpu_get_X[]) & 0xFFFF ]
+				cpu.pc = cpu_r[addr] | (cpu_r[addr + 1] << 8)
+				cycles = 8
+			case 0x82  # BRL (branch long)
+				rel : u16 [ cpu_rw[] ]
+				cpu.pc = cpu.pc + rel
+				cycles = 4
+			case 0x62  # PER
+				rel : u16 [ cpu_rw[] ]
+				cpu_push16[ cpu.pc + rel ]
+				cycles = 6
+			case 0xD4  # PEI
+				dp : u8 [ cpu_rb[] ]
+				cpu_push16[ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
+				cycles = 6
+			case 0xF4  # PEA
+				cpu_push16[ cpu_rw[] ]
+				cycles = 5
+
+			# --- misc / system ---
+			case 0x42  # WDM (2-byte no-op)
+				cpu_rb[]
+				cycles = 2
+			case 0x02  # COP (consume signature, treat as no-op)
+				cpu_rb[]
+				cycles = 7
+			case 0xCB  # WAI (no-op; NMI fires at frame boundary)
+				cycles = 3
+			case 0xDB  # STP (no-op)
+				cycles = 3
+			case 0x54  # MVN (block move, ascending)
+				dstb : u32 [ cpu_rb[] ]
+				srcb : u32 [ cpu_rb[] ]
+				cpu.dbr = dstb
+				cont : bool [ true ]
+				while [ cont ]
+					s : u32 [ (srcb << 16) | (cpu.x | (cpu.xh << 8)) ]
+					d : u32 [ (dstb << 16) | (cpu.y | (cpu.yh << 8)) ]
+					cpu.memory[d] = cpu.memory[s]
+					nx : u16 [ ((cpu.x | (cpu.xh << 8)) + 1) & 0xFFFF ]
+					ny : u16 [ ((cpu.y | (cpu.yh << 8)) + 1) & 0xFFFF ]
+					cpu.x = nx & 0xFF
+					cpu.xh = nx >> 8
+					cpu.y = ny & 0xFF
+					cpu.yh = ny >> 8
+					cnt : u16 [ cpu.a | (cpu.b << 8) ]
+					nc : u16 [ (cnt - 1) & 0xFFFF ]
+					cpu.a = nc & 0xFF
+					cpu.b = nc >> 8
+					if [ cnt == 0 ] cont = false
+				cycles = 7
+			case 0x44  # MVP (block move, descending)
+				dstb : u32 [ cpu_rb[] ]
+				srcb : u32 [ cpu_rb[] ]
+				cpu.dbr = dstb
+				cont : bool [ true ]
+				while [ cont ]
+					s : u32 [ (srcb << 16) | (cpu.x | (cpu.xh << 8)) ]
+					d : u32 [ (dstb << 16) | (cpu.y | (cpu.yh << 8)) ]
+					cpu.memory[d] = cpu.memory[s]
+					nx : u16 [ ((cpu.x | (cpu.xh << 8)) - 1) & 0xFFFF ]
+					ny : u16 [ ((cpu.y | (cpu.yh << 8)) - 1) & 0xFFFF ]
+					cpu.x = nx & 0xFF
+					cpu.xh = nx >> 8
+					cpu.y = ny & 0xFF
+					cpu.yh = ny >> 8
+					cnt : u16 [ cpu.a | (cpu.b << 8) ]
+					nc : u16 [ (cnt - 1) & 0xFFFF ]
+					cpu.a = nc & 0xFF
+					cpu.b = nc >> 8
+					if [ cnt == 0 ] cont = false
+				cycles = 7
+
+			case 0x67  # ADC [dp] (long indirect, width-aware)
+				dp     : u8  [ cpu_rb[] ]
+				blo    : u32 [ cpu_r[dp] ]
+				bmid   : u32 [ cpu_r[dp + 1] ]
+				bbank  : u32 [ cpu_r[dp + 2] ]
+				la     : u32 [ blo | (bmid << 8) | (bbank << 16) ]
+				if [ cpu.p & 0x20 ]
+					cpu_adc_a[ cpu.memory[la] ]
+				el
+					cpu_adc_a[ cpu.memory[la] | (cpu.memory[la + 1] << 8) ]
+				cycles = 7
+
+			case 0x77  # ADC [dp],Y (long indirect indexed, width-aware)
+				dp     : u8  [ cpu_rb[] ]
+				ylo    : u32 [ cpu_r[dp] ]
+				ymid   : u32 [ cpu_r[dp + 1] ]
+				ybank  : u32 [ cpu_r[dp + 2] ]
+				yla    : u32 [ (ylo | (ymid << 8) | (ybank << 16)) + cpu_get_Y[] ]
+				if [ cpu.p & 0x20 ]
+					cpu_adc_a[ cpu.memory[yla] ]
+				el
+					cpu_adc_a[ cpu.memory[yla] | (cpu.memory[yla + 1] << 8) ]
+				cycles = 7
+
+			case 0xB3  # LDA (d,S),Y (stack-relative indirect indexed, width-aware)
+				sr     : u8  [ cpu_rb[] ]
+				sa     : u16 [ 0x0100 + ((cpu.sp + sr) & 0xFF) ]
+				ptr    : u16 [ cpu_r[sa] | (cpu_r[sa + 1] << 8) ]
+				addr   : u16 [ ptr + cpu_get_Y[] ]
+				cpu_set_A[ cpu_read_mem[addr] ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 7
+
+			case 0x1F  # ORA long,X (width-aware)
+				lo     : u32 [ cpu_rb[] ]
+				hi     : u32 [ cpu_rb[] ]
+				bank   : u32 [ cpu_rb[] ]
+				laddr  : u32 [ (lo | (hi << 8) | (bank << 16)) + cpu_get_X[] ]
+				if [ cpu.p & 0x20 ]
+					cpu_set_A[ cpu_get_A[] | cpu.memory[laddr] ]
+				el
+					m : u16 [ cpu.memory[laddr] | (cpu.memory[laddr + 1] << 8) ]
+					cpu_set_A[ cpu_get_A[] | m ]
+				cpu_nz_a[ cpu_get_A[] ]
+				cycles = 6
+
 			default
 				printf[ "unhandled cpu opcode %02X at %04X\n", opcode, cpu.pc - 1 ]
+				fault 'unhandled cpu opcode — implement it then re-run (one at a time)'
 
-		if [ !(cpu.p & 0x20) ]
-			printf[ "WARN: 16-bit A/M at PC=%04X op=%02X\n", cpu.pc, opcode ]
-		if [ !(cpu.p & 0x10) ]
-			printf[ "WARN: 16-bit X/Y at PC=%04X op=%02X\n", cpu.pc, opcode ]
 		return cycles

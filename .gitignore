@@ -13,10 +13,14 @@ build
 .chatgpt
 .claude
 .gemini
+*.rom
 *.pyc
 *.o
 *.i
 *.ll
+*.spc
+*.bps
+*.smc
 /shot*png
 /*.ag
 sessions

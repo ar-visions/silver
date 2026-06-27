@@ -350,7 +350,11 @@ class shader
                 make_spv : !spv_exists || source_stat.st_mtimespec.tv_sec > spv_stat.st_mtimespec.tv_sec
 
             if [ make_spv ]
-                cmd: 'glslangValidator -V100 --target-env vulkan1.2 {shader_file} -o {spv_file}'
+                # use the vendored glslangValidator by absolute path (no PATH dependence);
+                # fall back to PATH only if the vendored binary isn't present.
+                glsl: path '{path.path_startup[]}/platform/native/bin/glslangValidator'
+                glsl_bin: (glsl.exists[]) ? '{glsl}' : 'glslangValidator'
+                cmd: '{glsl_bin} -V100 --target-env vulkan1.2 {shader_file} -o {spv_file}'
                 puts 'compiling shader: {cmd}'
                 result: system[ cmd ]
                 if [ result != 0 ]

@@ -8,23 +8,23 @@ ModelViewProject Orbiter
 
 
 Orbiter PBR
-    mutable pos      : vec4f
-    mutable dir      : vec4f
-    mutable env_yaw    : f32
-    mutable env_pitch  : f32
+    mutable pos          : vec4f
+    mutable dir          : vec4f
+    mutable env_yaw      : f32
+    mutable env_pitch    : f32
     mutable blend_rings  : f32
     mutable blend_haze   : f32
     mutable blend_bands  : f32
 
-    attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
-    attrib normal       : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
-    attrib emission     : LayoutBinding [ type:typeid[ Surface ], id:Surface.emission,     count:1, format: typeid[ rgbaf ] ]
-    attrib rough        : LayoutBinding [ type:typeid[ Surface ], id:Surface.rough,        count:1, format: typeid[ u8 ] ]
-    attrib metal        : LayoutBinding [ type:typeid[ Surface ], id:Surface.metal,        count:1, format: typeid[ u8 ] ]
-    attrib height       : LayoutBinding [ type:typeid[ Surface ], id:Surface.height,       count:1, format: typeid[ f32 ] ]
-    attrib ao           : LayoutBinding [ type:typeid[ Surface ], id:Surface.ao,           count:1, format: typeid[ u8 ] ]
-    attrib ior          : LayoutBinding [ type:typeid[ Surface ], id:Surface.ior,          count:1, format: typeid[ f32 ] ]
-    attrib environment  : LayoutBinding [ type:typeid[ Surface ], id:Surface.environment,  count:1, format: typeid[ rgbaf ] ]
+    attrib color         : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
+    attrib normal        : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
+    attrib emission      : LayoutBinding [ type:typeid[ Surface ], id:Surface.emission,     count:1, format: typeid[ rgbaf ] ]
+    attrib rough         : LayoutBinding [ type:typeid[ Surface ], id:Surface.rough,        count:1, format: typeid[ u8 ] ]
+    attrib metal         : LayoutBinding [ type:typeid[ Surface ], id:Surface.metal,        count:1, format: typeid[ u8 ] ]
+    attrib height        : LayoutBinding [ type:typeid[ Surface ], id:Surface.height,       count:1, format: typeid[ f32 ] ]
+    attrib ao            : LayoutBinding [ type:typeid[ Surface ], id:Surface.ao,           count:1, format: typeid[ u8 ] ]
+    attrib ior           : LayoutBinding [ type:typeid[ Surface ], id:Surface.ior,          count:1, format: typeid[ f32 ] ]
+    attrib environment   : LayoutBinding [ type:typeid[ Surface ], id:Surface.environment,  count:1, format: typeid[ rgbaf ] ]
 
     attrib a_color_0      : VertexInput    [ type:typeid[ vec4f ] ]
     attrib a_pos          : VertexInput    [ type:typeid[ vec3f ] ]

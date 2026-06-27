@@ -4449,6 +4449,14 @@ enode parse_statement(silver a)
             mem->autype->src         = canonical(rtype)->autype;
             mem->autype->is_static   = is_static;
 
+            // inline fixed-size array member (e.g. `local i16 [4]`): canonical()
+            // resolves the shaped stack-array type down to its element type, so
+            // carry the element count onto the member itself. aether's struct
+            // layout (etype_implement) then emits [N x T] inline rather than a
+            // dangling pointer, and the member becomes indexable.
+            if (rtype->autype->elements > 0 && !mem->autype->elements)
+                mem->autype->elements = rtype->autype->elements;
+
             if (mem->autype->src->is_pointer && rtype->is_explicit_ref) { // this is easier to register and maintain (membership will dictate the start of this ref model)
                 mem->autype->is_explicit_ref = true;
                 mem->autype->src = mem->autype->src->src;
@@ -4931,7 +4939,7 @@ static shape read_shape(silver a) {
 etype read_etype(silver a, array* p_expr) { sequencer
     etype mdl   = null;
     array expr  = null;
-    
+
     token f = peek(a);
     if (!f || f->literal) return null;
 

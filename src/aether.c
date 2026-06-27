@@ -730,7 +730,13 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         /* ------------------------------------------------------------
         * Phase 5: type reconciliation
         * ------------------------------------------------------------ */
-        if (!is_explicit_ref(L)) {
+        // explicit-ref assignment is a pointer store (rebind), NOT a value
+        // reconcile: e_operand routes through canonical(L), which resolves
+        // THROUGH the ref to the pointee (ref u8 -> u8) and fails with
+        // "ref none -> u8". the enode's is_explicit_ref flag isn't always
+        // propagated from the member, so check the type directly — matching
+        // the compound-assign branch above (L->autype->is_explicit_ref).
+        if (!is_explicit_ref(L) && !L->autype->is_explicit_ref) {
             if ((ref_level((Au)res) != ref_level((Au)mem_type)) ||
                 resolve(res) != resolve(mem_type))
                 res = e_operand(a, (Au)res, (etype)L);
@@ -5009,6 +5015,27 @@ etype prefer_mdl(etype m0, etype m1) {
     return m0;
 }
 
+// coerce any scalar condition value to an i1 for use as a branch predicate:
+//   integer (width != 1) -> (v != 0)
+//   pointer              -> (v != null)
+//   float/double/half    -> (v != 0.0)
+//   i1                   -> passthrough
+// centralizes the boolean cast so branch sites (ternary, ??, if, loops) don't
+// each have to pre-cast — a raw i64/ptr condition was reaching CondBr and
+// failing LLVM verify ("Branch condition is not 'i1' type").
+static LLVMValueRef cond_to_i1(aether a, LLVMValueRef v) {
+    LLVMTypeRef  t = LLVMTypeOf(v);
+    LLVMTypeKind k = LLVMGetTypeKind(t);
+    if (k == LLVMIntegerTypeKind)
+        return LLVMGetIntTypeWidth(t) == 1 ? v
+            : LLVMBuildICmp(B, LLVMIntNE, v, LLVMConstInt(t, 0, false), "to_i1");
+    if (k == LLVMPointerTypeKind)
+        return LLVMBuildICmp(B, LLVMIntNE, v, LLVMConstNull(t), "to_i1");
+    if (k == LLVMFloatTypeKind || k == LLVMDoubleTypeKind || k == LLVMHalfTypeKind)
+        return LLVMBuildFCmp(B, LLVMRealONE, v, LLVMConstReal(t, 0.0), "to_i1");
+    return v;
+}
+
 enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_expr) {
     aether mod = a;
     etype rmdl  = false_expr ? (etype)prefer_mdl((etype)true_expr, (etype)false_expr) :  (etype)cond_expr;
@@ -5023,17 +5050,11 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
     LLVMBasicBlockRef else_block    = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "ternary_else");
     LLVMBasicBlockRef merge_block   = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "ternary_merge");
 
-    // Step 2: Build the conditional branch based on the condition
-    LLVMValueRef condition_value = cond_expr->value;
-    if (!false_expr) {
-        // ?? operator: branch on whether cond is non-null
-        condition_value = LLVMBuildICmp(mod->builder, LLVMIntNE,
-            condition_value, LLVMConstNull(LLVMTypeOf(condition_value)), "coalesce.nonnull");
-    } else if (LLVMGetTypeKind(LLVMTypeOf(condition_value)) == LLVMPointerTypeKind) {
-        // pointer condition: convert to bool via null check
-        condition_value = LLVMBuildICmp(mod->builder, LLVMIntNE,
-            condition_value, LLVMConstNull(LLVMTypeOf(condition_value)), "ternary.nonnull");
-    }
+    // Step 2: Build the conditional branch based on the condition.
+    // cond_to_i1 handles every scalar shape (int != 0, ptr != null, float != 0),
+    // covering both the ?? coalesce (yield cond, branch on truthiness) and the
+    // plain ternary (branch on the condition).
+    LLVMValueRef condition_value = cond_to_i1(a, cond_expr->value);
     LLVMBuildCondBr(mod->builder, condition_value, then_block, else_block);
 
     // Step 3: Handle the "then" (true) branch
@@ -5095,10 +5116,8 @@ enode aether_e_coalesce_deferred(aether a, enode cond_expr, array true_tokens, s
     LLVMBasicBlockRef else_block  = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "coalesce_else");
     LLVMBasicBlockRef merge_block = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "coalesce_merge");
 
-    // branch on cond != null (works for pointers and primitives)
-    LLVMValueRef condition_value = cond_expr->value;
-    condition_value = LLVMBuildICmp(B, LLVMIntNE,
-        condition_value, LLVMConstNull(LLVMTypeOf(condition_value)), "coalesce.nonnull");
+    // branch on cond truthiness (int != 0, ptr != null, float != 0.0)
+    LLVMValueRef condition_value = cond_to_i1(a, cond_expr->value);
     LLVMBuildCondBr(B, condition_value, then_block, else_block);
 
     // then block: parse + codegen true expression inside the guarded branch
@@ -5138,12 +5157,8 @@ enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, ar
     LLVMBasicBlockRef else_block  = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "ternary_else");
     LLVMBasicBlockRef merge_block = LLVMAppendBasicBlockInContext(a->module_ctx, pb, "ternary_merge");
 
-    // branch on condition
-    LLVMValueRef condition_value = cond_expr->value;
-    if (LLVMGetTypeKind(LLVMTypeOf(condition_value)) == LLVMPointerTypeKind) {
-        condition_value = LLVMBuildICmp(B, LLVMIntNE,
-            condition_value, LLVMConstNull(LLVMTypeOf(condition_value)), "ternary.nonnull");
-    }
+    // branch on condition — coerce any scalar (int/ptr/float) to i1
+    LLVMValueRef condition_value = cond_to_i1(a, cond_expr->value);
     LLVMBuildCondBr(B, condition_value, then_block, else_block);
 
     // then block: parse + codegen true expression
@@ -5942,10 +5957,24 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     verify(elem_au, "e_offset: no element type on %s", au->ident ? au->ident : "?");
     LLVMTypeRef elem_ty = lltype(u(etype, elem_au));
     
+    // widen the index to i64 before the GEP. a narrow integer index (e.g. a
+    // u16 address like 0xFFFC) is otherwise used as an i16/i32 GEP index, which
+    // LLVM SIGN-extends — so 0x8000 becomes -32768 and the access faults. zero-
+    // extend unsigned index types, sign-extend signed ones.
+    LLVMValueRef idx    = i->value;
+    LLVMTypeRef  idx_ty = LLVMTypeOf(idx);
+    if (LLVMGetTypeKind(idx_ty) == LLVMIntegerTypeKind &&
+        LLVMGetIntTypeWidth(idx_ty) < 64) {
+        LLVMTypeRef i64t = LLVMInt64TypeInContext(a->module_ctx);
+        idx = is_unsign(canonical(i))
+            ? LLVMBuildZExt(B, idx, i64t, "idx.zext")
+            : LLVMBuildSExt(B, idx, i64t, "idx.sext");
+    }
+
     char N[32];
     sprintf(N, "%i_offset", seq);
     LLVMValueRef ptr_offset = LLVMBuildGEP2(B,
-        elem_ty, base, &i->value, 1, N);
+        elem_ty, base, &idx, 1, N);
 
 
     Au_t arg_type = au_arg_type((Au)n);
@@ -9807,17 +9836,21 @@ enode aether_e_math2(aether a, i32 op, enode L, enode R) {
 
 enode aether_e_stack_array(aether a, etype elem_type, i32 count) {
     a->is_const_op = false;
-    if (a->no_build) return e_noop(a, elem_type);
+    Au_t arr_au = def(a->autype, null, AU_MEMBER_TYPE, AU_TRAIT_SHAPED);
+    arr_au->src = elem_type->autype;
+    arr_au->elements = count;
+    arr_au->is_pointer = true;
+    // no_build (type inference, e.g. record-member parse): produce the shaped
+    // array type WITHOUT emitting an alloca. returning e_noop(elem_type) here
+    // dropped the shape, so a `local T[N]` member inferred as scalar T and lost
+    // its [N x T] inline layout (and indexing).
+    if (a->no_build) return enode(mod, a, autype, arr_au, loaded, false);
     etype elem = u(etype, elem_type->autype);
     if (!elem) elem = elem_type;
     etype_implement(elem_type, false);
     LLVMTypeRef lt = lltype(elem_type);
     LLVMTypeRef arr_type = LLVMArrayType(lt, count);
     LLVMValueRef alloc = entry_alloca(a, arr_type, "stack_arr");
-    Au_t arr_au = def(a->autype, null, AU_MEMBER_TYPE, AU_TRAIT_SHAPED);
-    arr_au->src = elem_type->autype;
-    arr_au->elements = count;
-    arr_au->is_pointer = true;
     return enode(mod, a, value, alloc, loaded, false, autype, arr_au);
 }
 
@@ -9885,7 +9918,12 @@ enode aether_e_not(aether a, enode L) {
     etype Lm = canonical(L);
     verify(convertible(Lm, etypeid(bool)),
         "cannot apply '!' to %o (not convertible to bool)", Lm);
-    if (is_ptr(Lm) || is_class(Lm) || is_func_ptr((Au)Lm)) {
+    // canonical() resolves through a ref to its pointee (ref u8 -> u8), so the
+    // is_ptr(Lm) checks below miss a real pointer value and fall into the
+    // integer branch (icmp ule <ptr>, i8 0 — mismatched operands). trust the
+    // actual LLVM value type for the pointer case.
+    bool val_is_ptr = LLVMGetTypeKind(LLVMTypeOf(L->value)) == LLVMPointerTypeKind;
+    if (val_is_ptr || is_ptr(Lm) || is_class(Lm) || is_func_ptr((Au)Lm)) {
         // for pointers, compare with null
         result = LLVMBuildICmp(B, LLVMIntEQ, L->value,
             LLVMConstNull(LLVMTypeOf(L->value)), "ptr-not");

@@ -277,14 +277,14 @@ Layer EditorLayer
                 sl : i32 [ cr.len ]
                 if [ c0 + sl > ll ] sl = ll - c0
                 if [ c0 > col ]
-                    gx : f32 [ f32[ editor.display_of[ ln.mid[ 0, col ] ].count ] * cw ]
+                    gx : f32[ editor.display_of[ ln.mid[ 0, col ] ].count ] * cw
                     lc.fill_color[ rgba['#fff'] ]
                     lc.draw_text[ editor.display_of[ ln.mid[ col, c0 - col ] ],
                         rect [ x: gx, y: 0.0, w: rw, h: lh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
                     col = c0
                 if [ sl > 0 ]
-                    tx : f32 [ f32[ editor.display_of[ ln.mid[ 0, c0 ] ].count ] * cw ]
+                    tx : f32[ editor.display_of[ ln.mid[ 0, c0 ] ].count ] * cw
                     lc.fill_color[ cr.color ]
                     lc.draw_text[ ln.mid[ c0, sl ],
                         rect [ x: tx, y: 0.0, w: rw, h: lh ],
