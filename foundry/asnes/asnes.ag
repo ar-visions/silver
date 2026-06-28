@@ -48,8 +48,6 @@ class spc_state
 	channels       	: new dsp_channel [ 8 ]
 	dsp            	: new u8 [ 128 ]
 	pcm_handle     	: ref snd_pcm_t
-	pcm_dump       	: ref FILE
-	dbg_logf       	: ref FILE
 	audio_buffer   	: ref i16
 	buffer_size    	: sz
 	sample_rate    	: i32
@@ -94,23 +92,15 @@ trinity asnes
 	mutable spc_boot_rom   	: ref u8
 	mutable nmitimen       	: u8
 	mutable nmi_occurred   	: bool
+	mutable dbg_hs         	: i32
 	mutable dbg_frames     	: u32
 	mutable dbg_spc        	: i32
 	mutable dbg_cpu        	: i32
 	mutable dbg_h          	: i32
 	mutable dbg_kon        	: i32
 	mutable dbg_k2         	: i32
-	mutable dbg_f3r        	: u32
-	mutable dbg_dump_on    	: bool
-	mutable dbg_atime      	: i64
-	mutable dbg_trace      	: i32
-	mutable dbg_spcdumped  	: bool
-	mutable dbg_lastx      	: u8
+	mutable dbg_pcn        	: i32
 	mutable dbg_lastpc     	: u16
-	mutable dbg_lastop     	: u8
-	mutable dbg_pcmin      	: u16
-	mutable dbg_pcmax      	: u16
-	mutable dbg_steps      	: u32
 	intern  echo_out_l     	: f32
 	intern  echo_out_r     	: f32
 	intern  gauss          	: new i16 [512] [
@@ -179,7 +169,6 @@ trinity asnes
 		if [ addr >= 0xF4 && addr <= 0xF7 ]
 			return spc.ports[addr - 0xF4]
 		if [ addr == 0xF3 ]                      # DSP data read: live register, not last write
-			dbg_f3r += 1
 			return spc.dsp[ spc.ram[0xF2] & 0x7F ]
 		if [ addr == 0xF2 ]
 			return spc.ram[0xF2]
@@ -192,31 +181,21 @@ trinity asnes
 
 	func spc_w [ addr: u16, val: u8 ]
 		if [ addr >= 0xF4 && addr <= 0xF7 ]
+			if [ dbg_hs < 120 ]
+				printf[ "HS spcW  $%02X=%02X (spc=%04X)\n", addr, val, spc.pc ]
+				dbg_hs += 1
 			spc.oports[addr - 0xF4] = val
 		el [ addr == 0xF3 ]
 			reg : u8 [ spc.ram[0xF2] & 0x7F ]
 			spc.dsp[ reg ] = val
-			indip : bool [ dbg_dump_on && ((dbg_atime >= 44800 && dbg_atime <= 60800) || (dbg_atime >= 100800 && dbg_atime <= 116800)) ]
 			if [ reg == 0x4C ]                    # KON: latch, applied per DSP sample
-				if [ val != 0 ]
-					dbg_kon += 1
-					if [ indip ]
-						fprintf[ spc.dbg_logf, "KON  %02X t=%.3f\n", val, f64[dbg_atime]/32000.0 ]
-						fflush[ spc.dbg_logf ]
 				spc.kon_latch = spc.kon_latch | val
 			el [ reg == 0x5C ]                    # KOFF: latch
-				if [ indip && val != 0 ]
-					fprintf[ spc.dbg_logf, "KOFF %02X t=%.3f\n", val, f64[dbg_atime]/32000.0 ]
-					fflush[ spc.dbg_logf ]
 				spc.koff_latch = spc.koff_latch | val
 			el [ reg == 0x7C ]                    # writing ENDX clears the flags
 				spc.dsp[0x7C] = 0
 			spc.ram[0xF3] = val
 		el [ addr == 0xF1 ]                       # timer control + port-clear
-			if [ dbg_dump_on && dbg_trace < 80 ]
-				fprintf[ spc.dbg_logf, "F1W=%02X (was %02X) t=%.3f\n", val, spc.ram[0xF1], f64[dbg_atime]/32000.0 ]
-				fflush[ spc.dbg_logf ]
-				dbg_trace += 1
 			for [ t: i32 0, t < 3, t += 1 ]
 				# enabling a timer (0 -> 1) resets its stage and counter
 				if [ (val & (1 << t)) && !(spc.timer_on & (1 << t)) ]
@@ -234,11 +213,6 @@ trinity asnes
 			spc.timer_target[addr - 0xFA] = val
 			spc.ram[addr] = val
 		el
-			# trace writes to track-2 ($34) vs track-0 ($30) sequence pointers
-			if [ dbg_dump_on && dbg_trace < 60 && (addr == 0x30 || addr == 0x34 || addr == 0x35 || addr == 0x31) ]
-				fprintf[ spc.dbg_logf, "W $%02X=%02X pc=%04X t=%.2f X=%02X Y=%02X\n", addr, val, spc.pc, f64[dbg_atime]/32000.0, spc.x, spc.y ]
-				fflush[ spc.dbg_logf ]
-				dbg_trace += 1
 			spc.ram[addr] = val
 
 	func dsp_r [ reg: u8 ] -> u8
@@ -297,6 +271,9 @@ trinity asnes
 	func cpu_r [ addr: u16 ] -> u8
 		if [ addr >= 0x2140 && addr <= 0x2143 ]
 			val : u8 [ spc.oports[addr - 0x2140] ]
+			if [ dbg_hs < 30 ]
+				printf[ "HS cpuR  $%04X=%02X (cpu=%04X spc=%04X X=%02X A=%02X)\n", addr, val, cpu.pc, spc.pc, spc.x, spc.a ]
+				dbg_hs += 1
 			return val
 		el [ addr >= 0x2100 && addr <= 0x213F ]
 			if [ addr == 0x2137 ] return 0x80
@@ -321,9 +298,10 @@ trinity asnes
 
 	func cpu_w [ addr: u16, val: u8 ]
 		if [ addr >= 0x2140 && addr <= 0x2143 ]
+			if [ dbg_hs < 120 ]
+				printf[ "HS cpuW  $%04X=%02X (cpu=%04X spc=%04X)\n", addr, val, cpu.pc, spc.pc ]
+				dbg_hs += 1
 			spc.ports[addr - 0x2140] = val
-			if [ false ]
-				printf[ "x" ]
 		el [ addr >= 0x4000 && addr <= 0x43FF ]
 			if [ addr == 0x4200 ] nmitimen = val   # NMITIMEN: bit7 enables vblank NMI
 		el [ addr >= 0x0000 && addr <= 0x1FFF ]
@@ -569,9 +547,6 @@ trinity asnes
 		memcpy[ spc.ram, buf + 0x100, 0x10000 ]
 		memcpy[ spc.dsp, buf + 0x10100, 128 ]
 		free[ buf ]
-		spc.pcm_dump = fopen[ '/tmp/asnes_dump.raw', 'wb' ]
-		spc.dbg_logf = fopen[ '/tmp/asnes_kon.log', 'w' ]
-		dbg_dump_on = true
 		# seed the APU input ports (CPU->APU latch) from the snapshot. a .spc rip
 		# has no main CPU, so these stay frozen at capture — the driver keeps
 		# seeing the same "play track" handshake and never fades/stops.
@@ -590,34 +565,6 @@ trinity asnes
 		printf[ "loaded spc: pc=%04X a=%02X sp=%02X F1=%02X dividers=%02X %02X %02X\n",
 			spc.pc, spc.a, spc.sp, spc.ram[0xF1], spc.ram[0xFA], spc.ram[0xFB], spc.ram[0xFC] ]
 
-	# dump current APU state as a standard .spc — isolates the section at the
-	# current playback point; played back it repeats that phrase. for debugging.
-	func dump_spc [ uri: symbol ]
-		f : ref FILE [ fopen[ uri, 'wb' ] ]
-		expect f, 'cannot open dump'
-		buf : ref u8 [ calloc[ 1, 0x10200 ] ]
-		memcpy[ buf, "SNES-SPC700 Sound File Data v0.30", 33 ]
-		buf[0x21] = 0x1A
-		buf[0x22] = 0x1A
-		buf[0x24] = 30
-		buf[0x25] = u8[ spc.pc & 0xFF ]
-		buf[0x26] = u8[ (spc.pc >> 8) & 0xFF ]
-		buf[0x27] = spc.a
-		buf[0x28] = spc.x
-		buf[0x29] = spc.y
-		buf[0x2A] = spc.psw
-		buf[0x2B] = spc.sp
-		# reflect the live input ports into the RAM image so a player seeds them
-		spc.ram[0xF4] = spc.ports[0]
-		spc.ram[0xF5] = spc.ports[1]
-		spc.ram[0xF6] = spc.ports[2]
-		spc.ram[0xF7] = spc.ports[3]
-		memcpy[ buf + 0x100,   spc.ram, 0x10000 ]
-		memcpy[ buf + 0x10100, spc.dsp, 128 ]
-		fwrite[ buf, 1, 0x10200, f ]
-		fclose[ f ]
-		free[ buf ]
-		printf[ "dumped .spc snapshot to %s (pc=%04X)\n", uri, spc.pc ]
 
 	# --- Audio generation ---
 
@@ -639,15 +586,6 @@ trinity asnes
 		if [ to_write > spc.buffer_size ] to_write = spc.buffer_size
 		if [ to_write <= 0 ] return
 
-		dbg_pcmin = 0xFFFF
-		dbg_pcmax = 0
-		dbg_steps = 0
-		dbg_f3r   = 0
-		dbg_kon   = 0
-		vmax   : i32 [ 0 ]
-		vcount : i32 [ 0 ]
-		menv   : i32 [ 0 ]
-		mint   : i32 [ 0 ]
 		for [ i: i32 0, i < to_write, i += 1 ]
 			# interleave SPC execution with sample generation so the engine's
 			# key-on/off and the DSP envelope advance in lockstep (one DSP
@@ -695,8 +633,6 @@ trinity asnes
 				src_dir      : u16 [ (dir_page << 8) + (src_n * 4) ]
 				sample_start : u16 [ spc_r16[src_dir] ]
 				sample_loop  : u16 [ spc_r16[src_dir + 2] ]
-				if [ false ]
-					printf[ "x" ]
 
 				spc.channels[ch].frac += pitch
 				while [ spc.channels[ch].frac >= 0x1000 ]
@@ -810,14 +746,6 @@ trinity asnes
 				spc.dsp[ ch_base + 0x08 ] = u8[ (env >> 4) & 0x7F ]   # ENVX
 
 				final_sample : i32 [ (i32[interp] * env) >> 11 ]
-				vcount += 1
-				if [ final_sample > vmax ] vmax = final_sample
-				if [ (0 - final_sample) > vmax ] vmax = 0 - final_sample
-				if [ env > menv ] menv = env
-				if [ i32[interp] > mint ] mint = interp
-				if [ (0 - i32[interp]) > mint ] mint = 0 - interp
-				if [ false ]
-					printf[ "x" ]
 				if [ final_sample >  32767 ] final_sample =  32767
 				if [ final_sample < -32768 ] final_sample = -32768
 				l : f32 [ (final_sample / 32768.0) * (i8[vol_l] / 128.0) ]
@@ -836,29 +764,9 @@ trinity asnes
 			left  = clamp[ left  + echo_out_l, -1.0, 1.0 ]
 			right = clamp[ right + echo_out_r, -1.0, 1.0 ]
 
-			spc.audio_buffer[i * 2]     = i16[ left  * 16384 ]
-			spc.audio_buffer[i * 2 + 1] = i16[ right * 16384 ]
+			spc.audio_buffer[i * 2]     = i16[ left  * 32000 ]
+			spc.audio_buffer[i * 2 + 1] = i16[ right * 32000 ]
 
-		dbg_cpu += 1
-		dbg_atime += i64[to_write]
-		# per-voice trace during the blue.spc artifact window (9.0-10.5s)
-		if [ dbg_dump_on && dbg_atime >= 256000 && dbg_atime <= 320000 ]
-			for [ c: i32 0, c < 8, c += 1 ]
-				if [ spc.channels[c].active ]
-					cb : i32 [ c * 0x10 ]
-					pit : u16 [ spc.dsp[cb+0x02] | ((spc.dsp[cb+0x03] & 0x3F) << 8) ]
-					fprintf[ spc.dbg_logf, "t=%.3f v%d pit=%04X env=%04X st=%d pos=%04X src=%02X gain=%02X adsr=%02X%02X vol=%d/%d\n",
-						f64[dbg_atime]/32000.0, c, pit, spc.channels[c].envelope, spc.channels[c].env_state,
-						spc.channels[c].pos, spc.dsp[cb+0x04], spc.dsp[cb+0x07], spc.dsp[cb+0x05], spc.dsp[cb+0x06],
-						i8[spc.dsp[cb+0x00]], i8[spc.dsp[cb+0x01]] ]
-			fflush[ spc.dbg_logf ]
-		# one-shot: dump a snapshot just before the blue.spc artifact (~7.5s)
-		if [ dbg_dump_on && !dbg_spcdumped && dbg_atime >= 240000 ]
-			dump_spc[ '/tmp/blue_artifact.spc' ]
-			dbg_spcdumped = true
-		if [ dbg_dump_on ]
-			fwrite[ spc.audio_buffer, 4, to_write, spc.pcm_dump ]
-			fflush[ spc.pcm_dump ]
 		wr : i64 [ snd_pcm_writei[ spc.pcm_handle, spc.audio_buffer, to_write ] ]
 		if [ wr == -EPIPE ]
 			snd_pcm_recover[ spc.pcm_handle, wr, 0 ]
@@ -1175,13 +1083,8 @@ trinity asnes
 					spc.timer_count[2] = (spc.timer_count[2] + 1) & 0x0F
 
 	func spc_step []
-		if [ spc.pc < dbg_pcmin ] dbg_pcmin = spc.pc
-		if [ spc.pc > dbg_pcmax ] dbg_pcmax = spc.pc
-		dbg_steps += 1
 		opcode : u8 [ spc_rb[] ]
 		spc_tick_timers[ 2 ]
-		if [ false ]
-			printf[ "x" ]
 		switch [ opcode ]
 			case 0x8F  # MOV dp, #imm  (encoding: 8F imm dp — immediate byte first)
 				imm : u8 [ spc_rb[] ]
@@ -1408,19 +1311,19 @@ trinity asnes
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
-			case 0x97  # ADC A, [dp+X]
+			case 0x97  # ADC A, [dp]+Y   (indirect, post-indexed by Y)
 				dp : u16 [ spc_dp[] ]
-				ptr    : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
-				addr   : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
-				value  : u8  [ spc_r[addr] ]
+				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
+				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
 				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
-			case 0x87  # ADC A, [dp]+Y
+			case 0x87  # ADC A, [dp+X]
 				dp : u16 [ spc_dp[] ]
-				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
-				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
+				ptr    : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
+				addr   : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
+				value  : u8  [ spc_r[addr] ]
 				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
 				spc_adc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
@@ -1496,19 +1399,19 @@ trinity asnes
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
-			case 0xB7  # SBC A, [dp+X]
+			case 0xB7  # SBC A, [dp]+Y
 				dp : u16 [ spc_dp[] ]
-				ptr    : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
-				addr   : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
-				value  : u8  [ spc_r[addr] ]
+				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
+				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
 				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
 
-			case 0xA7  # SBC A, [dp]+Y
+			case 0xA7  # SBC A, [dp+X]
 				dp : u16 [ spc_dp[] ]
-				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
-				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
+				ptr    : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
+				addr   : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
+				value  : u8  [ spc_r[addr] ]
 				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
 				spc_sbc[ spc.a, value, result ]
 				spc.a   = result & 0xFF
@@ -1578,18 +1481,18 @@ trinity asnes
 				result : u16 [ u16[spc.a] - u16[value] ]
 				spc_cmp[ result ]
 
-			case 0x77  # CMP A, [dp+X]
+			case 0x77  # CMP A, [dp]+Y
+				dp : u16 [ spc_dp[] ]
+				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
+				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
+				result : u16 [ u16[spc.a] - u16[value] ]
+				spc_cmp[ result ]
+
+			case 0x67  # CMP A, [dp+X]
 				dp : u16 [ spc_dp[] ]
 				ptr    : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
 				addr   : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
 				value  : u8  [ spc_r[addr] ]
-				result : u16 [ u16[spc.a] - u16[value] ]
-				spc_cmp[ result ]
-
-			case 0x67  # CMP A, [dp]+Y
-				dp : u16 [ spc_dp[] ]
-				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
-				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
 				result : u16 [ u16[spc.a] - u16[value] ]
 				spc_cmp[ result ]
 
@@ -1682,17 +1585,17 @@ trinity asnes
 				spc.a &= spc_r[spc.x]
 				spc_nz[ spc.a ]
 
-			case 0x37  # AND A, [dp+X]
+			case 0x37  # AND A, [dp]+Y
+				dp : u16 [ spc_dp[] ]
+				addr  : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
+				spc.a &= spc_r[ (addr + spc.y) & 0xFFFF ]
+				spc_nz[ spc.a ]
+
+			case 0x27  # AND A, [dp+X]
 				dp : u16 [ spc_dp[] ]
 				ptr   : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
 				addr  : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
 				spc.a &= spc_r[addr]
-				spc_nz[ spc.a ]
-
-			case 0x27  # AND A, [dp]+Y
-				dp : u16 [ spc_dp[] ]
-				addr  : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
-				spc.a &= spc_r[ (addr + spc.y) & 0xFFFF ]
 				spc_nz[ spc.a ]
 
 			case 0x28  # AND A, #imm
@@ -1747,17 +1650,17 @@ trinity asnes
 				spc.a |= spc_r[spc.x]
 				spc_nz[ spc.a ]
 
-			case 0x17  # OR A, [dp+X]
+			case 0x17  # OR A, [dp]+Y
+				dp : u16 [ spc_dp[] ]
+				addr  : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
+				spc.a |= spc_r[ (addr + spc.y) & 0xFFFF ]
+				spc_nz[ spc.a ]
+
+			case 0x07  # OR A, [dp+X]
 				dp : u16 [ spc_dp[] ]
 				ptr   : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
 				addr  : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
 				spc.a |= spc_r[addr]
-				spc_nz[ spc.a ]
-
-			case 0x07  # OR A, [dp]+Y
-				dp : u16 [ spc_dp[] ]
-				addr  : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
-				spc.a |= spc_r[ (addr + spc.y) & 0xFFFF ]
 				spc_nz[ spc.a ]
 
 			case 0x08  # OR A, #imm
@@ -1812,17 +1715,17 @@ trinity asnes
 				spc.a ^= spc_r[spc.x]
 				spc_nz[ spc.a ]
 
-			case 0x57  # EOR A, [dp+X]
+			case 0x57  # EOR A, [dp]+Y
+				dp : u16 [ spc_dp[] ]
+				addr  : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
+				spc.a ^= spc_r[ (addr + spc.y) & 0xFFFF ]
+				spc_nz[ spc.a ]
+
+			case 0x47  # EOR A, [dp+X]
 				dp : u16 [ spc_dp[] ]
 				ptr   : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
 				addr  : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
 				spc.a ^= spc_r[addr]
-				spc_nz[ spc.a ]
-
-			case 0x47  # EOR A, [dp]+Y
-				dp : u16 [ spc_dp[] ]
-				addr  : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
-				spc.a ^= spc_r[ (addr + spc.y) & 0xFFFF ]
 				spc_nz[ spc.a ]
 
 			case 0x48  # EOR A, #imm
@@ -2629,6 +2532,16 @@ trinity asnes
 				spc.a = res & 0xFF
 				spc.y = (res >> 8) & 0xFF
 
+			case 0x5A  # CMPW YA, dp   (16-bit compare; sets N,Z,C only)
+				dp : u16 [ spc_dp[] ]
+				ya  : u16 [ spc.a | (spc.y << 8) ]
+				wd  : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
+				res : i32 [ i32[ya] - i32[wd] ]
+				c : u8 [ (res >= 0) ? 0x01 : 0 ]
+				z : u8 [ ((res & 0xFFFF) == 0) ? 0x02 : 0 ]
+				n : u8 [ ((res & 0x8000) != 0) ? 0x80 : 0 ]
+				spc.psw = (spc.psw & ~0x83) | c | z | n
+
 			case 0xFF  # STOP
 				return
 
@@ -2851,13 +2764,15 @@ trinity asnes
 		opcode   : u8   [ cpu_rb[] ]
 		cycles   : i32  [ 0 ]
 		old_pc   : u16  [ cpu.pc ]
+		if [ (cpu.pc == 0x888A || cpu.pc == 0x888F) && dbg_pcn < 40 ]
+			printf[ "@%04X op=%02X A=%04X P=%02X (M=%d) frame=%u\n", cpu.pc, opcode, cpu.a, cpu.p, (cpu.p & 0x20) ? 1 : 0, dbg_frames ]
+			dbg_pcn += 1
+		dbg_lastpc = cpu.pc
 		ualign   : bool [ (cpu.dp & 0xFF) != 0 ]
 		is_16bit : bool [ !(cpu.p & 0x20) ]
 
 		#puts[ 'asnes_step op: 0x{opcode:02X}' ]
 
-		if [ false ]
-			printf[ "x" ]
 
 		switch [ opcode ]
 			case 0x1A  # INC A
