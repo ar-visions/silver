@@ -18,6 +18,9 @@ build
 *.o
 *.i
 *.ll
+*.sfc
+*.srm
+*.wav
 *.spc
 *.bps
 *.smc
