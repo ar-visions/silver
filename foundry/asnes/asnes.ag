@@ -35,7 +35,8 @@ class spc_state
 	sp             	: u8
 	psw            	: u8
 	direct_page    	: u8
-	ports          	: new u8 [ 4 ]
+	ports          	: new u8 [ 4 ]              # SPC-visible APU input (committed)
+	in_stage       	: new u8 [ 4 ]              # CPU writes here; committed to ports on CPU read (atomic)
 	oports         	: new u8 [ 4 ]
 	echo_pos       	: u16
 	echo_history_l 	: f32
@@ -92,15 +93,33 @@ trinity asnes
 	mutable spc_boot_rom   	: ref u8
 	mutable nmitimen       	: u8
 	mutable nmi_occurred   	: bool
-	mutable dbg_hs         	: i32
+	mutable frame_cycle    	: i32               # CPU cycles elapsed in the current frame
+	mutable in_vblank      	: bool              # PPU vblank flag ($4212 bit7), real rising/falling edge
+	mutable cpu_wai        	: bool              # CPU halted on WAI until next interrupt
 	mutable dbg_frames     	: u32
-	mutable dbg_spc        	: i32
 	mutable dbg_cpu        	: i32
 	mutable dbg_h          	: i32
 	mutable dbg_kon        	: i32
-	mutable dbg_k2         	: i32
-	mutable dbg_pcn        	: i32
-	mutable dbg_lastpc     	: u16
+	mutable dbg_slast      	: u16
+	mutable dbg_bad        	: i32
+	mutable port_read      	: bool              # set when the CPU reads an APU port; gates SPC catch-up
+	mutable dbg_spc        	: i32               # NMI fire counter (debug)
+	mutable dbg_ev         	: i32               # capped rendezvous event log counter
+	mutable dbg_ev2        	: i32               # capped: CPU port writes
+	mutable dbg_ev3        	: i32               # capped: IPL handshake region
+	mutable tr_addr        	: new u32 [32]      # instruction ring buffer (pbr<<16|pc)
+	mutable tr_b0          	: new u8 [32]
+	mutable tr_b1          	: new u8 [32]
+	mutable tr_b2          	: new u8 [32]
+	mutable tr_b3          	: new u8 [32]
+	mutable tr_p           	: new u16 [32]
+	mutable tr_a           	: new u16 [32]
+	mutable tr_x           	: new u16 [32]
+	mutable tr_y           	: new u16 [32]
+	mutable tr_i           	: i32
+	mutable tr_done        	: bool
+	mutable last_rd        	: u32               # last data-read effective 24-bit address
+	mutable dbg_w          	: i32               # capped: WRAM $1F0x watch
 	intern  echo_out_l     	: f32
 	intern  echo_out_r     	: f32
 	intern  gauss          	: new i16 [512] [
@@ -181,17 +200,25 @@ trinity asnes
 
 	func spc_w [ addr: u16, val: u8 ]
 		if [ addr >= 0xF4 && addr <= 0xF7 ]
-			if [ dbg_hs < 120 ]
-				printf[ "HS spcW  $%02X=%02X (spc=%04X)\n", addr, val, spc.pc ]
-				dbg_hs += 1
+			if [ false ]
+				printf[ "" ]
 			spc.oports[addr - 0xF4] = val
 		el [ addr == 0xF3 ]
 			reg : u8 [ spc.ram[0xF2] & 0x7F ]
 			spc.dsp[ reg ] = val
+			if [ dbg_frames >= 145 && dbg_ev3 < 140 ]
+				if [ reg == 0x5D ]                # DIR: sample directory page
+					printf[ "f%u DSP DIR=%02X (dir base $%04X)\n", dbg_frames, val, u16[val] << 8 ]
+					dbg_ev3 += 1
+				el [ (reg & 0x0F) == 0x04 && reg < 0x80 ]   # VxSRCN: voice sample index
+					printf[ "f%u DSP V%d SRCN=%02X\n", dbg_frames, reg >> 4, val ]
+					dbg_ev3 += 1
 			if [ reg == 0x4C ]                    # KON: latch, applied per DSP sample
 				spc.kon_latch = spc.kon_latch | val
+				if [ val != 0 ] dbg_kon += 1
 			el [ reg == 0x5C ]                    # KOFF: latch
 				spc.koff_latch = spc.koff_latch | val
+				if [ val != 0 ] dbg_cpu += 1
 			el [ reg == 0x7C ]                    # writing ENDX clears the flags
 				spc.dsp[0x7C] = 0
 			spc.ram[0xF3] = val
@@ -202,6 +229,9 @@ trinity asnes
 					spc.timer_stage[t] = 0
 					spc.timer_count[t] = 0
 			spc.timer_on = val & 0x07
+			if [ (val & 0x30) && dbg_frames >= 50 && dbg_ev < 80 ]
+				printf[ "SPC F1=%02X clear(c2a now %02X %02X %02X %02X) spcpc=%04X\n", val, spc.ports[0], spc.ports[1], spc.ports[2], spc.ports[3], spc.pc ]
+				dbg_ev += 1
 			if [ val & 0x10 ]                     # clear ports 0,1 (CPU->APU)
 				spc.ports[0] = 0
 				spc.ports[1] = 0
@@ -219,6 +249,9 @@ trinity asnes
 		return spc.dsp[ reg & 0x7F ]
 
 	func spc_rb [] -> u8
+		if [ dbg_frames >= 50 && spc.pc == 0xFFC0 && dbg_ev < 60 ]
+			printf[ "f%u SPC re-enter IPL@FFC0 (block start) cports=%02X %02X %02X %02X\n", dbg_frames, spc.ports[0], spc.ports[1], spc.ports[2], spc.ports[3] ]
+			dbg_ev += 1
 		v : u8 [ spc_r[ spc.pc ] ]
 		spc.pc += 1
 		return v
@@ -270,11 +303,11 @@ trinity asnes
 
 	func cpu_r [ addr: u16 ] -> u8
 		if [ addr >= 0x2140 && addr <= 0x2143 ]
-			val : u8 [ spc.oports[addr - 0x2140] ]
-			if [ dbg_hs < 30 ]
-				printf[ "HS cpuR  $%04X=%02X (cpu=%04X spc=%04X X=%02X A=%02X)\n", addr, val, cpu.pc, spc.pc, spc.x, spc.a ]
-				dbg_hs += 1
-			return val
+			port_read = true
+			if [ dbg_frames >= 59 && cpu.pc != 0xF817 && cpu.pc != 0xF814 && dbg_ev2 < 120 ]
+				printf[ "f%u CPUrd port%d=%02X cpupc=%04X\n", dbg_frames, addr - 0x2140, spc.oports[addr - 0x2140], cpu.pc ]
+				dbg_ev2 += 1
+			return spc.oports[addr - 0x2140]
 		el [ addr >= 0x2100 && addr <= 0x213F ]
 			if [ addr == 0x2137 ] return 0x80
 			if [ addr == 0x2138 ] return 0x00
@@ -286,7 +319,11 @@ trinity asnes
 				v : u8 [ ((nmi_occurred) ? 0x80 : 0x00) | 0x02 ]
 				nmi_occurred = false
 				return v
-			if [ addr == 0x4212 ] return 0x80
+			if [ addr == 0x4212 ]            # HVBJOY: bit7=vblank, bit6=hblank, bit0=auto-joypad busy
+				vb : u8 [ (in_vblank) ? 0x80 : 0 ]
+				line_pos : i32 [ frame_cycle % 228 ]
+				hb : u8 [ (line_pos >= 180) ? 0x40 : 0 ]
+				return vb | hb
 			if [ addr == 0x4016 ] return 0x00
 			if [ addr == 0x4017 ] return 0x00
 			return 0x00
@@ -298,10 +335,10 @@ trinity asnes
 
 	func cpu_w [ addr: u16, val: u8 ]
 		if [ addr >= 0x2140 && addr <= 0x2143 ]
-			if [ dbg_hs < 120 ]
-				printf[ "HS cpuW  $%04X=%02X (cpu=%04X spc=%04X)\n", addr, val, cpu.pc, spc.pc ]
-				dbg_hs += 1
 			spc.ports[addr - 0x2140] = val
+			if [ dbg_frames >= 125 && val != 0x00 && dbg_ev2 < 160 ]
+				printf[ "f%u CPUw port%d=%02X src=%06X dbr=%02X cpupc=%04X\n", dbg_frames, addr - 0x2140, val, last_rd, cpu.dbr, cpu.pc ]
+				dbg_ev2 += 1
 		el [ addr >= 0x4000 && addr <= 0x43FF ]
 			if [ addr == 0x4200 ] nmitimen = val   # NMITIMEN: bit7 enables vblank NMI
 		el [ addr >= 0x0000 && addr <= 0x1FFF ]
@@ -311,15 +348,25 @@ trinity asnes
 		el
 			cpu.memory[addr] = val
 
+	# bank-aware instruction/operand fetch: uses the program bank (pbr).
+	# low addresses ($0000-$1FFF) mirror WRAM; everything else is the flat map.
+	func cpu_fetch_at [ fa: u16 ] -> u8
+		bank : u32 [ cpu.pbr ]
+		if [ fa < 0x2000 && bank != 0x7E && bank != 0x7F ]
+			waddr : u32 [ 0x7E0000 + u32[fa] ]
+			return cpu.memory[waddr]
+		faddr : u32 [ (bank << 16) | u32[fa] ]
+		return cpu.memory[faddr]
+
 	func cpu_rb [] -> u8
-		v : u8 [ cpu_r[ cpu.pc ] ]
+		v : u8 [ cpu_fetch_at[ cpu.pc ] ]
 		cpu.pc += 1
 		return v
 
 	func cpu_rw [] -> u16
-		lo : u8 [ cpu_r[ cpu.pc ] ]
+		lo : u8 [ cpu_fetch_at[ cpu.pc ] ]
 		cpu.pc += 1
-		hi : u8 [ cpu_r[ cpu.pc ] ]
+		hi : u8 [ cpu_fetch_at[ cpu.pc ] ]
 		cpu.pc += 1
 		return lo | (hi << 8)
 
@@ -378,22 +425,70 @@ trinity asnes
 		el
 			cpu.p = (cpu.p & ~0x82) | ((v == 0) ? 0x02 : 0) | (((v & 0x8000) != 0) ? 0x80 : 0)
 
+	# data-bank-relative byte read: low system area (WRAM/registers) is bank-agnostic;
+	# the ROM/data region uses the data bank register (DBR). dp modes pass low
+	# addresses so DBR never affects them; absolute modes pass the real address.
+	# bank-explicit byte read/write applying the LoROM map: low system area
+	# (WRAM mirror / hardware registers) is bank-agnostic for system banks,
+	# the rest reads the flat 24-bit map. Used by DBR-relative reads and MVN/MVP.
+	func cpu_bank_r [ bank: u32, addr: u16 ] -> u8
+		a32  : u32 [ u32[addr] ]
+		if [ bank != 0x7E && bank != 0x7F ]
+			if [ addr < 0x2000 ]
+				wa : u32 [ 0x7E0000 + a32 ]                   # WRAM mirror
+				return cpu.memory[ wa ]
+			if [ addr >= 0x2000 && addr <= 0x43FF ]
+				return cpu_r[ addr ]                          # hardware registers
+		fa : u32 [ (bank << 16) | a32 ]
+		return cpu.memory[ fa ]
+
+	func cpu_bank_w [ bank: u32, addr: u16, val: u8 ]
+		a32  : u32 [ u32[addr] ]
+		if [ bank != 0x7E && bank != 0x7F ]
+			if [ addr < 0x2000 ]
+				wa : u32 [ 0x7E0000 + a32 ]                   # WRAM mirror
+				cpu.memory[ wa ] = val
+				return
+			if [ addr >= 0x2000 && addr <= 0x43FF ]
+				cpu_w[ addr, val ]                            # hardware registers
+				return
+		fa : u32 [ (bank << 16) | a32 ]
+		cpu.memory[ fa ] = val
+
+	func cpu_db_r [ addr: u16 ] -> u8
+		last_rd = (u32[cpu.dbr] << 16) | u32[addr]
+		return cpu_bank_r[ cpu.dbr, addr ]
+
+	func cpu_db_w [ addr: u16, val: u8 ]
+		cpu_bank_w[ cpu.dbr, addr, val ]
+
 	func cpu_read_mem [ addr: u32 ] -> u16
 		if [ cpu.p & 0x20 ]
-			return cpu_r[ u16[addr] ]
-		lo : u16 [ cpu_r[ u16[addr] ] ]
-		hi : u16 [ cpu_r[ u16[addr + 1] ] ]
+			return cpu_db_r[ u16[addr] ]
+		lo : u16 [ cpu_db_r[ u16[addr] ] ]
+		hi : u16 [ cpu_db_r[ u16[addr + 1] ] ]
 		return lo | (hi << 8)
 
 	func cpu_write_mem [ addr: u32, v: u16 ]
 		if [ cpu.p & 0x20 ]
-			cpu_w[ u16[addr], u8[v & 0xFF] ]
+			cpu_db_w[ u16[addr], u8[v & 0xFF] ]
 		el
-			cpu_w[ u16[addr],     u8[v & 0xFF] ]
-			cpu_w[ u16[addr + 1], u8[v >> 8]   ]
+			cpu_db_w[ u16[addr],     u8[v & 0xFF] ]
+			cpu_db_w[ u16[addr + 1], u8[v >> 8]   ]
 
 	# vblank NMI: push PCH,PCL,P (matches RTI pull order), jump to NMI vector.
 	func cpu_nmi []
+		if [ dbg_frames >= 60 ]
+			printf[ "NMIENTRY f%u savedpc=%02X:%04X sp=%04X p=%03X\n", dbg_frames, cpu.pbr, cpu.pc, cpu.sp, cpu.p ]
+			if [ dbg_frames >= 72 && dbg_bad < 1 ]
+				printf[ "  ---- 32 instrs before this NMI (savedpc=%04X) ----\n", cpu.pc ]
+				for [ k: i32 0, k < 32, k += 1 ]
+					s : i32 [ (tr_i + k) % 32 ]
+					printf[ "  %02X:%04X  %02X %02X %02X %02X   P=%03X A=%04X X=%04X Y=%04X\n", tr_addr[s] >> 16, tr_addr[s] & 0xFFFF, tr_b0[s], tr_b1[s], tr_b2[s], tr_b3[s], tr_p[s], tr_a[s], tr_x[s], tr_y[s] ]
+				dbg_bad += 1
+		if [ !cpu.e ]                              # native mode: interrupt pushes PBR
+			cpu_w[ 0x0100 + cpu.sp, cpu.pbr ]
+			cpu.sp -= 1
 		cpu_w[ 0x0100 + cpu.sp, u8[cpu.pc >> 8] ]
 		cpu.sp -= 1
 		cpu_w[ 0x0100 + cpu.sp, u8[cpu.pc & 0xFF] ]
@@ -568,39 +663,30 @@ trinity asnes
 
 	# --- Audio generation ---
 
-	func generate_audio [ sps: i32 ]
-		avail  : i64 [ snd_pcm_avail[ spc.pcm_handle ] ]
-		if [ avail < 0 ]
-			if [ avail == -EPIPE ]
-				puts[ 'audio underrun, recovering...' ]
-				snd_pcm_recover[ spc.pcm_handle, avail, 0 ]
-				snd_pcm_prepare[ spc.pcm_handle ]
-				return
-			el
-				puts[ 'ALSA error: {snd_strerror[avail]}' ]
-				return
+	# apply key-off then key-on latched since the last DSP sample (KON wins,
+	# matching the S-DSP: a voice keyed this sample sounds)
+	func apply_latches []
+		if [ spc.koff_latch || spc.kon_latch ]
+			for [ kc: i32 0, kc < 8, kc += 1 ]
+				if [ spc.koff_latch & (1 << kc) ] spc_keyoff[ kc ]
+				if [ spc.kon_latch & (1 << kc) ] spc_keyon[ kc ]
+			spc.kon_latch  = 0
+			spc.koff_latch = 0
 
-		# only synthesize as many frames as the ALSA ring buffer has room for,
-		# so we feed at the 32kHz consumption rate instead of the video fps.
-		to_write : sz [ avail ]
+	func audio_slice_size [] -> sz
+		to_write : sz [ spc.sample_rate / 60 ]
 		if [ to_write > spc.buffer_size ] to_write = spc.buffer_size
-		if [ to_write <= 0 ] return
+		return to_write
 
-		for [ i: i32 0, i < to_write, i += 1 ]
-			# interleave SPC execution with sample generation so the engine's
-			# key-on/off and the DSP envelope advance in lockstep (one DSP
-			# sample per ~32 SPC cycles).
-			for [ k: i32 0, k < sps, k += 1 ]
-				spc_step[]
+	func flush_audio [ to_write: sz ]
+		wr : i64 [ snd_pcm_writei[ spc.pcm_handle, spc.audio_buffer, to_write ] ]
+		if [ wr == -EPIPE ]
+			snd_pcm_recover[ spc.pcm_handle, wr, 0 ]
+			snd_pcm_prepare[ spc.pcm_handle ]
 
-			# apply key-off then key-on latched during this sample's SPC steps
-			# (KON wins, matching the S-DSP: a voice keyed this sample sounds)
-			if [ spc.koff_latch || spc.kon_latch ]
-				for [ kc: i32 0, kc < 8, kc += 1 ]
-					if [ spc.koff_latch & (1 << kc) ] spc_keyoff[ kc ]
-					if [ spc.kon_latch & (1 << kc) ] spc_keyon[ kc ]
-				spc.kon_latch  = 0
-				spc.koff_latch = 0
+	# mix one DSP output sample (8 voices + echo) into audio_buffer[i]
+	func mix_one_sample [ i: i32 ]
+			apply_latches[]
 
 			left  : f32 [ 0.0 ]
 			right : f32 [ 0.0 ]
@@ -767,10 +853,147 @@ trinity asnes
 			spc.audio_buffer[i * 2]     = i16[ left  * 32000 ]
 			spc.audio_buffer[i * 2 + 1] = i16[ right * 32000 ]
 
-		wr : i64 [ snd_pcm_writei[ spc.pcm_handle, spc.audio_buffer, to_write ] ]
-		if [ wr == -EPIPE ]
-			snd_pcm_recover[ spc.pcm_handle, wr, 0 ]
-			snd_pcm_prepare[ spc.pcm_handle ]
+	# .spc / beep path: SPC + DSP only, no CPU. one real-time slice per call.
+	func generate_audio [ sps: i32 ]
+		avail : i64 [ snd_pcm_avail[ spc.pcm_handle ] ]
+		if [ avail < 0 ]
+			if [ avail == -EPIPE ]
+				snd_pcm_recover[ spc.pcm_handle, avail, 0 ]
+				snd_pcm_prepare[ spc.pcm_handle ]
+			return
+		to_write : sz [ audio_slice_size[] ]
+		if [ to_write <= 0 ] return
+		for [ i: i32 0, i < to_write, i += 1 ]
+			for [ k: i32 0, k < sps, k += 1 ]
+				spc_step[]
+			mix_one_sample[ i ]
+		flush_audio[ to_write ]
+
+	# ROM path: co-schedule the 65816 + SPC700/DSP for one real-time frame.
+	# the SPC advances ONLY at safe points — when the CPU reads an APU port
+	# (handshake catch-up) and in a bulk pass after the CPU frame — so the
+	# game's multi-port command bursts land atomically and the driver never
+	# reads a half-written command. blocking audio paces it to 60fps.
+	# legacy pre-refactor scheduling (continuous SPC stepping in the CPU loop,
+	# mix the whole slice at the end). diagnostic: this version flowed the
+	# 2nd-upload command (music played) but had the steady-state port race.
+	# Boot phase (silent): step the SPC continuously so the sound driver reaches
+	# its loader and the song uploads (the boot handshake needs continuous SPC).
+	# no audio is playing yet, so the port race can't corrupt anything audible.
+	func run_rom_frame_boot []
+		avail : i64 [ snd_pcm_avail[ spc.pcm_handle ] ]
+		if [ avail < 0 ]
+			if [ avail == -EPIPE ]
+				snd_pcm_recover[ spc.pcm_handle, avail, 0 ]
+				snd_pcm_prepare[ spc.pcm_handle ]
+			return
+		to_write : sz [ audio_slice_size[] ]
+		if [ to_write <= 0 ] return
+		samples   : i32  [ i32[to_write] ]
+		done      : i32  [ 0 ]
+		sub       : i32  [ 0 ]
+		nmi_cyc   : i32  [ 59667 * 225 / 262 ]
+		nmi_fired : bool [ false ]
+		fcpu      : i32  [ 0 ]
+		in_vblank = false
+		while [ fcpu < 59667 ]
+			if [ cpu_wai && !nmi_fired ]
+				fcpu = nmi_cyc
+			if [ !nmi_fired && fcpu >= nmi_cyc ]
+				in_vblank    = true
+				nmi_occurred = true
+				cpu_wai      = false
+				if [ nmitimen & 0x80 ] cpu_nmi[]
+				nmi_fired = true
+			if [ cpu_wai ]
+				break
+			c : i32 [ cpu_step[] ]
+			if [ c < 2 ] c = 2
+			fcpu += c
+			frame_cycle = fcpu
+			spc.cycle_accum += c * 1024
+			while [ spc.cycle_accum >= 7169 && done < samples ]
+				spc_step[]
+				spc.cycle_accum -= 7169
+				sub += 1
+				if [ sub >= 16 ]
+					sub -= 16
+					mix_one_sample[ done ]
+					done += 1
+		if [ !nmi_fired ]
+			in_vblank    = true
+			nmi_occurred = true
+			if [ nmitimen & 0x80 ] cpu_nmi[]
+		while [ done < samples ]
+			spc_step[]
+			sub += 1
+			if [ sub >= 16 ]
+				sub -= 16
+				mix_one_sample[ done ]
+				done += 1
+		spc.cycle_accum = 0
+		in_vblank = false
+		flush_audio[ to_write ]
+
+	# Co-scheduler (clean ding): SPC advances only at safe points — when the CPU
+	# reads an APU port (handshake catch-up) and in a bulk pass after the CPU
+	# frame — so command write-bursts are atomic to the SPC. blocking audio paces 60fps.
+	func run_rom_frame []
+		avail : i64 [ snd_pcm_avail[ spc.pcm_handle ] ]
+		if [ avail < 0 ]
+			if [ avail == -EPIPE ]
+				snd_pcm_recover[ spc.pcm_handle, avail, 0 ]
+				snd_pcm_prepare[ spc.pcm_handle ]
+			return
+		to_write : sz [ audio_slice_size[] ]
+		if [ to_write <= 0 ] return
+		samples   : i32  [ i32[to_write] ]
+		done      : i32  [ 0 ]
+		sub       : i32  [ 0 ]
+		nmi_cyc   : i32  [ 59667 * 225 / 262 ]
+		nmi_fired : bool [ false ]
+		fcpu      : i32  [ 0 ]
+		in_vblank = false
+		while [ fcpu < 59667 ]
+			if [ cpu_wai && !nmi_fired ]
+				fcpu = nmi_cyc
+			if [ !nmi_fired && fcpu >= nmi_cyc ]
+				in_vblank    = true
+				nmi_occurred = true
+				cpu_wai      = false
+				if [ nmitimen & 0x80 ] cpu_nmi[]
+				nmi_fired = true
+			if [ cpu_wai ]
+				break
+			port_read = false
+			c : i32 [ cpu_step[] ]
+			if [ c < 1 ] c = 1
+			fcpu += c
+			frame_cycle = fcpu
+			spc.cycle_accum += c * 1024
+			if [ port_read ]
+				while [ spc.cycle_accum >= 7169 && done < samples ]
+					spc_step[]
+					spc.cycle_accum -= 7169
+					sub += 1
+					if [ sub >= 16 ]
+						sub -= 16
+						mix_one_sample[ done ]
+						done += 1
+		if [ !nmi_fired ]
+			in_vblank    = true
+			nmi_occurred = true
+			if [ nmitimen & 0x80 ] cpu_nmi[]
+		while [ done < samples ]
+			spc_step[]
+			sub += 1
+			if [ sub >= 16 ]
+				sub -= 16
+				mix_one_sample[ done ]
+				done += 1
+		spc.cycle_accum = 0
+		in_vblank = false
+		flush_audio[ to_write ]
 
 	# --- Load ROM ---
 
@@ -1019,15 +1242,12 @@ trinity asnes
 		# after init[], so load lazily on the first frame once rom is set.
 		if [ rom && !cpu ] load[]
 		if [ !cpu ] return null
-		# one vblank NMI per frame — drives the game's per-frame logic + audio
-		if [ nmitimen & 0x80 ] cpu_nmi[]
-		for [ i: i32 0, i < 30000, i += 1 ]
-			cpu_cycles : i32 [ cpu_step[] ]
-			spc.cycle_accum += cpu_cycles * 1024
-			while [ spc.cycle_accum >= 2610 ]
-				spc_step[]
-				spc.cycle_accum -= 2610
-		generate_audio[ 0 ]
+		# silent boot uses continuous SPC (load the song); playback uses the atomic
+		# co-scheduler (clean ding + music, no port race). switch after the upload.
+		if [ dbg_frames < 28 ]
+			run_rom_frame_boot[]
+		el
+			run_rom_frame[]
 		dbg_frames += 1
 		if [ spc.pc < 0x8000 && dbg_h < 1 ]
 			printf[ "ENGINE@%04X wait0873: %02X %02X %02X %02X %02X %02X  dspENvol7D=%02X ECEN4D=%02X\n",
@@ -1038,11 +1258,10 @@ trinity asnes
 			nzdsp : i32 [ 0 ]
 			for [ r: i32 0, r < 128, r += 1 ]
 				if [ spc.dsp[r] != 0 ] nzdsp += 1
-			printf[ "frame %u cpu=%02X:%04X spc.pc=%04X c2a=%02X %02X %02X %02X a2c=%02X %02X %02X %02X KON=%02X mvol=%02X/%02X dsp_nz=%d\n",
-				dbg_frames, cpu.pbr, cpu.pc, spc.pc,
+			printf[ "frame %u cpu=%02X:%04X dbr=%02X spc=%04X nmien=%02X nmifires=%d kon=%d koff=%d c2a=%02X %02X %02X %02X a2c=%02X %02X %02X %02X\n",
+				dbg_frames, cpu.pbr, cpu.pc, cpu.dbr, spc.pc, nmitimen, dbg_spc, dbg_kon, dbg_cpu,
 				spc.ports[0], spc.ports[1], spc.ports[2], spc.ports[3],
-				spc.oports[0], spc.oports[1], spc.oports[2], spc.oports[3],
-				spc.dsp[0x4C], spc.dsp[0x0C], spc.dsp[0x1C], nzdsp ]
+				spc.oports[0], spc.oports[1], spc.oports[2], spc.oports[3] ]
 		return null
 
 	func dealloc []
@@ -2693,6 +2912,7 @@ trinity asnes
 		mid  : u32 [ cpu_r[dp + 1] ]
 		bank : u32 [ cpu_r[dp + 2] ]
 		la   : u32 [ lo | (mid << 8) | (bank << 16) ]
+		last_rd = la
 		if [ cpu.p & 0x20 ] return cpu.memory[la]
 		return cpu.memory[la] | (cpu.memory[la + 1] << 8)
 
@@ -2701,6 +2921,7 @@ trinity asnes
 		mid  : u32 [ cpu_r[dp + 1] ]
 		bank : u32 [ cpu_r[dp + 2] ]
 		la   : u32 [ (lo | (mid << 8) | (bank << 16)) + cpu_get_Y[] ]
+		last_rd = la
 		if [ cpu.p & 0x20 ] return cpu.memory[la]
 		return cpu.memory[la] | (cpu.memory[la + 1] << 8)
 
@@ -2708,12 +2929,14 @@ trinity asnes
 	func cpu_read_long [] -> u16
 		lo:u32[cpu_rb[]]  mid:u32[cpu_rb[]]  bank:u32[cpu_rb[]]
 		la:u32[ lo | (mid << 8) | (bank << 16) ]
+		last_rd = la
 		if [ cpu.p & 0x20 ] return cpu.memory[la]
 		return cpu.memory[la] | (cpu.memory[la + 1] << 8)
 
 	func cpu_read_long_x [] -> u16
 		lo:u32[cpu_rb[]]  mid:u32[cpu_rb[]]  bank:u32[cpu_rb[]]
 		la:u32[ (lo | (mid << 8) | (bank << 16)) + cpu_get_X[] ]
+		last_rd = la
 		if [ cpu.p & 0x20 ] return cpu.memory[la]
 		return cpu.memory[la] | (cpu.memory[la + 1] << 8)
 
@@ -2732,8 +2955,8 @@ trinity asnes
 
 	# X-width memory read (for index loads/compares — width follows the X flag)
 	func cpu_read_mem_x [ addr: u16 ] -> u16
-		if [ cpu.p & 0x10 ] return cpu_r[addr]
-		return cpu_r[addr] | (cpu_r[addr + 1] << 8)
+		if [ cpu.p & 0x10 ] return cpu_db_r[addr]
+		return cpu_db_r[addr] | (cpu_db_r[addr + 1] << 8)
 
 	func cpu_cmp_x [ x16: u16, value: u16 ]
 		diff : u16 [ x16 - value ]
@@ -2761,13 +2984,26 @@ trinity asnes
 	# --- 65816 CPU step ---
 
 	func cpu_step [] -> i32
+		slot : i32 [ tr_i % 32 ]
+		tr_addr[slot] = (u32[cpu.pbr] << 16) | u32[cpu.pc]
+		tr_b0[slot] = cpu_fetch_at[ cpu.pc ]
+		tr_b1[slot] = cpu_fetch_at[ cpu.pc + 1 ]
+		tr_b2[slot] = cpu_fetch_at[ cpu.pc + 2 ]
+		tr_b3[slot] = cpu_fetch_at[ cpu.pc + 3 ]
+		tr_p[slot]  = cpu.p
+		tr_a[slot]  = cpu.a
+		tr_x[slot]  = cpu.x
+		tr_y[slot]  = cpu.y
+		tr_i += 1
+		if [ dbg_frames >= 200 && cpu.pbr == 0xFC && !tr_done ]
+			printf[ "  ---- 32 instrs up to first bank-FC exec (f%u) ----\n", dbg_frames ]
+			for [ k: i32 0, k < 32, k += 1 ]
+				s2 : i32 [ (tr_i + k) % 32 ]
+				printf[ "  %02X:%04X  %02X %02X %02X %02X   P=%03X A=%04X X=%04X Y=%04X\n", tr_addr[s2] >> 16, tr_addr[s2] & 0xFFFF, tr_b0[s2], tr_b1[s2], tr_b2[s2], tr_b3[s2], tr_p[s2], tr_a[s2], tr_x[s2], tr_y[s2] ]
+			tr_done = true
 		opcode   : u8   [ cpu_rb[] ]
 		cycles   : i32  [ 0 ]
 		old_pc   : u16  [ cpu.pc ]
-		if [ (cpu.pc == 0x888A || cpu.pc == 0x888F) && dbg_pcn < 40 ]
-			printf[ "@%04X op=%02X A=%04X P=%02X (M=%d) frame=%u\n", cpu.pc, opcode, cpu.a, cpu.p, (cpu.p & 0x20) ? 1 : 0, dbg_frames ]
-			dbg_pcn += 1
-		dbg_lastpc = cpu.pc
 		ualign   : bool [ (cpu.dp & 0xFF) != 0 ]
 		is_16bit : bool [ !(cpu.p & 0x20) ]
 
@@ -2776,13 +3012,11 @@ trinity asnes
 
 		switch [ opcode ]
 			case 0x1A  # INC A
-				cpu.a  += 1
-				cpu.p   = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_set_A[ cpu_inc_v[ cpu_get_A[] ] ]
 				cycles  = 2
 
 			case 0x3A  # DEC A
-				cpu.a  -= 1
-				cpu.p   = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_set_A[ cpu_dec_v[ cpu_get_A[] ] ]
 				cycles  = 2
 
 			case 0x9B  # TXY (width-aware)
@@ -2922,7 +3156,7 @@ trinity asnes
 
 			case 0x95  # STA dp,X
 				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
-				cpu_w[ addr, cpu.a ]
+				cpu_write_mem[ addr, cpu_get_A[] ]
 				cycles = 4 + ((ualign) ? 1 : 0)
 
 			case 0x9D  # STA abs,X (width-aware)
@@ -2978,16 +3212,16 @@ trinity asnes
 
 			case 0xB6  # LDX dp,Y
 				addr   : u8 [ (cpu_rb[] + cpu.y) & 0xFF ]
-				cpu.x  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | ((cpu.x == 0) ? 0x02 : 0) | (cpu.x & 0x80)
+				cpu_set_X[ cpu_read_mem_x[addr] ]
+				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 4 + ((ualign) ? 1 : 0)
 
 			case 0xBE  # LDX abs,Y
 				base   : u16 [ cpu_rw[] ]
-				addr   : u16 [ base + cpu.y ]
+				addr   : u16 [ base + cpu_get_Y[] ]
 				cross  : bool [ (base & 0xFF00) != (addr & 0xFF00) ]
-				cpu.x  = cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | ((cpu.x == 0) ? 0x02 : 0) | (cpu.x & 0x80)
+				cpu_set_X[ cpu_read_mem_x[addr] ]
+				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 4 + ((cross) ? 1 : 0)
 
 			case 0xA0  # LDY #imm (width-aware)
@@ -3187,18 +3421,12 @@ trinity asnes
 
 			case 0x65  # ADC dp
 				addr   : u8  [ cpu_rb[] ]
-				value  : u8  [ cpu_r[addr] ]
-				result : u16 [ cpu.a + value + (cpu.p & 0x01) ]
-				cpu_adc[ cpu.a, value, result ]
-				cpu.a   = result & 0xFF
+				cpu_adc_a[ cpu_read_mem[addr] ]
 				cycles  = 3 + ((ualign) ? 1 : 0)
 
 			case 0x6D  # ADC abs
 				addr   : u16 [ cpu_rw[] ]
-				value  : u8  [ cpu_r[addr] ]
-				result : u16 [ cpu.a + value + (cpu.p & 0x01) ]
-				cpu_adc[ cpu.a, value, result ]
-				cpu.a   = result & 0xFF
+				cpu_adc_a[ cpu_read_mem[addr] ]
 				cycles  = 4
 
 			case 0xE9  # SBC #imm (width-aware)
@@ -3221,18 +3449,12 @@ trinity asnes
 
 			case 0xE5  # SBC dp
 				addr   : u8  [ cpu_rb[] ]
-				value  : u8  [ cpu_r[addr] ]
-				result : u16 [ cpu.a - value - (1 - (cpu.p & 0x01)) ]
-				cpu_sbc[ cpu.a, value, result ]
-				cpu.a   = result & 0xFF
+				cpu_sbc_a[ cpu_read_mem[addr] ]
 				cycles  = 3 + ((ualign) ? 1 : 0)
 
 			case 0xED  # SBC abs
 				addr   : u16 [ cpu_rw[] ]
-				value  : u8  [ cpu_r[addr] ]
-				result : u16 [ cpu.a - value - (1 - (cpu.p & 0x01)) ]
-				cpu_sbc[ cpu.a, value, result ]
-				cpu.a   = result & 0xFF
+				cpu_sbc_a[ cpu_read_mem[addr] ]
 				cycles  = 4
 
 			case 0xC9  # CMP #imm (width-aware)
@@ -3248,9 +3470,7 @@ trinity asnes
 
 			case 0xC5  # CMP dp
 				addr   : u8  [ cpu_rb[] ]
-				value  : u8  [ cpu_r[addr] ]
-				result : u16 [ cpu.a - value ]
-				cpu_cmp[ result ]
+				cpu_cmp_a[ cpu_read_mem[addr] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0xCD  # CMP abs (width-aware on M flag)
@@ -3293,16 +3513,12 @@ trinity asnes
 
 			case 0xE6  # INC dp
 				addr  : u8 [ cpu_rb[] ]
-				val   : u8 [ cpu_r[addr] + 1 ]
-				cpu_w[ addr, val ]
-				cpu.p  = (cpu.p & ~0x82) | ((val == 0) ? 0x02 : 0) | (val & 0x80)
+				cpu_write_mem[ addr, cpu_inc_v[ cpu_read_mem[addr] ] ]
 				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0xEE  # INC abs
 				addr  : u16 [ cpu_rw[] ]
-				val   : u8  [ cpu_r[addr] + 1 ]
-				cpu_w[ addr, val ]
-				cpu.p  = (cpu.p & ~0x82) | ((val == 0) ? 0x02 : 0) | (val & 0x80)
+				cpu_write_mem[ addr, cpu_inc_v[ cpu_read_mem[addr] ] ]
 				cycles = 6
 
 			case 0xE8  # INX (width-aware)
@@ -3317,16 +3533,12 @@ trinity asnes
 
 			case 0xC6  # DEC dp
 				addr  : u8 [ cpu_rb[] ]
-				val   : u8 [ cpu_r[addr] - 1 ]
-				cpu_w[ addr, val ]
-				cpu.p  = (cpu.p & ~0x82) | ((val == 0) ? 0x02 : 0) | (val & 0x80)
+				cpu_write_mem[ addr, cpu_dec_v[ cpu_read_mem[addr] ] ]
 				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0xCE  # DEC abs
 				addr  : u16 [ cpu_rw[] ]
-				val   : u8  [ cpu_r[addr] - 1 ]
-				cpu_w[ addr, val ]
-				cpu.p  = (cpu.p & ~0x82) | ((val == 0) ? 0x02 : 0) | (val & 0x80)
+				cpu_write_mem[ addr, cpu_dec_v[ cpu_read_mem[addr] ] ]
 				cycles = 6
 
 			case 0xCA  # DEX (width-aware)
@@ -3346,14 +3558,12 @@ trinity asnes
 
 			case 0x25  # AND dp
 				addr  : u8 [ cpu_rb[] ]
-				cpu.a &= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_and_a[ cpu_read_mem[addr] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x2D  # AND abs
 				addr  : u16 [ cpu_rw[] ]
-				cpu.a &= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_and_a[ cpu_read_mem[addr] ]
 				cycles = 4
 
 			case 0x01  # ORA (dp,X) — width-aware (A follows M flag)
@@ -3375,14 +3585,12 @@ trinity asnes
 
 			case 0x05  # ORA dp
 				addr  : u8 [ cpu_rb[] ]
-				cpu.a |= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_ora_a[ cpu_read_mem[addr] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x0D  # ORA abs
 				addr  : u16 [ cpu_rw[] ]
-				cpu.a |= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_ora_a[ cpu_read_mem[addr] ]
 				cycles = 4
 
 			case 0x49  # EOR #imm (width-aware)
@@ -3392,101 +3600,85 @@ trinity asnes
 
 			case 0x45  # EOR dp
 				addr  : u8 [ cpu_rb[] ]
-				cpu.a ^= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_eor_a[ cpu_read_mem[addr] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x4D  # EOR abs
 				addr  : u16 [ cpu_rw[] ]
-				cpu.a ^= cpu_r[addr]
-				cpu.p  = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_eor_a[ cpu_read_mem[addr] ]
 				cycles = 4
 
 			case 0x0A  # ASL A
-				cpu.p  = (cpu.p & ~0x83) | ((cpu.a & 0x80) ? 0x01 : 0)
-				cpu.a <<= 1
-				cpu.p |= ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_set_A[ cpu_asl_v[ cpu_get_A[] ] ]
 				cycles = 2
 
 			case 0x06  # ASL dp
 				addr  : u8 [ cpu_rb[] ]
-				val   : u8 [ cpu_r[addr] ]
-				cpu.p  = (cpu.p & ~0x83) | ((val & 0x80) ? 0x01 : 0)
-				val  <<= 1
-				cpu.p |= ((val == 0) ? 0x02 : 0) | (val & 0x80)
-				cpu_w[ addr, val ]
+				cpu_write_mem[ addr, cpu_asl_v[ cpu_read_mem[addr] ] ]
 				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0x4A  # LSR A
-				cpu.p  = (cpu.p & ~0x83) | (cpu.a & 0x01)
-				cpu.a >>= 1
-				cpu.p |= ((cpu.a == 0) ? 0x02 : 0)
+				cpu_set_A[ cpu_lsr_v[ cpu_get_A[] ] ]
 				cycles = 2
 
 			case 0x46  # LSR dp
 				addr  : u8 [ cpu_rb[] ]
-				val   : u8 [ cpu_r[addr] ]
-				cpu.p  = (cpu.p & ~0x83) | (val & 0x01)
-				val  >>= 1
-				cpu.p |= ((val == 0) ? 0x02 : 0)
-				cpu_w[ addr, val ]
+				cpu_write_mem[ addr, cpu_lsr_v[ cpu_read_mem[addr] ] ]
 				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0x2A  # ROL A
-				old_c  : u8 [ cpu.p & 0x01 ]
-				cpu.p   = (cpu.p & ~0x83) | ((cpu.a & 0x80) ? 0x01 : 0)
-				cpu.a   = (cpu.a << 1) | old_c
-				cpu.p  |= ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_set_A[ cpu_rol_v[ cpu_get_A[] ] ]
 				cycles  = 2
 
 			case 0x26  # ROL dp
 				addr   : u8 [ cpu_rb[] ]
-				val    : u8 [ cpu_r[addr] ]
-				old_c  : u8 [ cpu.p & 0x01 ]
-				cpu.p   = (cpu.p & ~0x83) | ((val & 0x80) ? 0x01 : 0)
-				val     = (val << 1) | old_c
-				cpu.p  |= ((val == 0) ? 0x02 : 0) | (val & 0x80)
-				cpu_w[ addr, val ]
+				cpu_write_mem[ addr, cpu_rol_v[ cpu_read_mem[addr] ] ]
 				cycles  = 5 + ((ualign) ? 1 : 0)
 
 			case 0x6A  # ROR A
-				old_c  : u8 [ cpu.p & 0x01 ]
-				cpu.p   = (cpu.p & ~0x83) | (cpu.a & 0x01)
-				cpu.a   = (cpu.a >> 1) | (old_c << 7)
-				cpu.p  |= ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				cpu_set_A[ cpu_ror_v[ cpu_get_A[] ] ]
 				cycles  = 2
 
 			case 0x66  # ROR dp
 				addr   : u8 [ cpu_rb[] ]
-				val    : u8 [ cpu_r[addr] ]
-				old_c  : u8 [ cpu.p & 0x01 ]
-				cpu.p   = (cpu.p & ~0x83) | (val & 0x01)
-				val     = (val >> 1) | (old_c << 7)
-				cpu.p  |= ((val == 0) ? 0x02 : 0) | (val & 0x80)
-				cpu_w[ addr, val ]
+				cpu_write_mem[ addr, cpu_ror_v[ cpu_read_mem[addr] ] ]
 				cycles  = 5 + ((ualign) ? 1 : 0)
 
 			case 0x24  # BIT dp
 				addr  : u8 [ cpu_rb[] ]
-				val   : u8 [ cpu_r[addr] ]
-				cpu_bit[ val ]
+				cpu_bit_a[ cpu_read_mem[addr] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x2C  # BIT abs
 				addr  : u16 [ cpu_rw[] ]
-				val   : u8  [ cpu_r[addr] ]
-				cpu_bit[ val ]
+				cpu_bit_a[ cpu_read_mem[addr] ]
 				cycles = 4
 
 			case 0x48  # PHA
-				cpu_w[ 0x0100 + cpu.sp, cpu.a ]
-				cpu.sp -= 1
+				if [ cpu.p & 0x20 ]
+					cpu_w[ 0x0100 + cpu.sp, cpu.a ]
+					cpu.sp -= 1
+				el
+					cpu_w[ 0x0100 + cpu.sp, cpu.b ]
+					cpu.sp -= 1
+					cpu_w[ 0x0100 + cpu.sp, cpu.a ]
+					cpu.sp -= 1
 				cycles  = 3
 
 			case 0x68  # PLA
-				cpu.sp += 1
-				cpu.a   = cpu_r[ 0x0100 + cpu.sp ]
-				cpu.p   = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				if [ cpu.p & 0x20 ]
+					cpu.sp += 1
+					cpu.a   = cpu_r[ 0x0100 + cpu.sp ]
+					cpu.p   = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
+				el
+					cpu.sp += 1
+					al     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					cpu.sp += 1
+					ah     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					cpu.a   = al
+					cpu.b   = ah
+					av     : u16 [ al | (ah << 8) ]
+					cpu.p   = (cpu.p & ~0x82) | ((av == 0) ? 0x02 : 0) | ((av & 0x8000) ? 0x80 : 0)
 				cycles  = 4
 
 			case 0x08  # PHP
@@ -3593,6 +3785,9 @@ trinity asnes
 				cycles  = 3
 
 			case 0x1B  # TCS (C -> S), no flags
+				if [ dbg_frames >= 200 && dbg_ev3 < 40 ]
+					printf[ "f%u TCS C=%04X (cur sp=%02X) pc=%02X:%04X\n", dbg_frames, cpu.a | (cpu.b << 8), cpu.sp, cpu.pbr, cpu.pc ]
+					dbg_ev3 += 1
 				cpu.sp  = cpu.a
 				cycles  = 2
 
@@ -3623,6 +3818,9 @@ trinity asnes
 				cpu.sp += 1
 				hi     : u16 [ cpu_r[0x0100 + cpu.sp] ]
 				cpu.pc  = lo | (hi << 8)
+				if [ !cpu.e ]                          # native mode: RTI restores PBR
+					cpu.sp += 1
+					cpu.pbr = cpu_r[0x0100 + cpu.sp]
 				cycles  = 6
 
 			case 0x00  # BRK
@@ -3660,66 +3858,64 @@ trinity asnes
 				cycles = 3
 
 			case 0x14  # TRB dp
-				dp     : u8 [ cpu_rb[] ]
-				value  : u8 [ cpu_r[dp] ]
-				result : u8 [ cpu.a & value ]
-				cpu_w[ dp, value & ~cpu.a ]
+				dp     : u8  [ cpu_rb[] ]
+				value  : u16 [ cpu_read_mem[dp] ]
+				a16    : u16 [ cpu_get_A[] ]
+				result : u16 [ a16 & value ]
+				cpu_write_mem[ dp, value & ~a16 ]
 				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0x1C  # TRB abs
 				addr   : u16 [ cpu_rw[] ]
-				value  : u8  [ cpu_r[addr] ]
-				result : u8  [ cpu.a & value ]
-				cpu_w[ addr, value & ~cpu.a ]
+				value  : u16 [ cpu_read_mem[addr] ]
+				a16    : u16 [ cpu_get_A[] ]
+				result : u16 [ a16 & value ]
+				cpu_write_mem[ addr, value & ~a16 ]
 				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 6
 
 			case 0x04  # TSB dp
-				dp     : u8 [ cpu_rb[] ]
-				value  : u8 [ cpu_r[dp] ]
-				result : u8 [ cpu.a & value ]
-				cpu_w[ dp, value | cpu.a ]
+				dp     : u8  [ cpu_rb[] ]
+				value  : u16 [ cpu_read_mem[dp] ]
+				a16    : u16 [ cpu_get_A[] ]
+				result : u16 [ a16 & value ]
+				cpu_write_mem[ dp, value | a16 ]
 				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0x0C  # TSB abs
 				addr   : u16 [ cpu_rw[] ]
-				value  : u8  [ cpu_r[addr] ]
-				result : u8  [ cpu.a & value ]
-				cpu_w[ addr, value | cpu.a ]
+				value  : u16 [ cpu_read_mem[addr] ]
+				a16    : u16 [ cpu_get_A[] ]
+				result : u16 [ a16 & value ]
+				cpu_write_mem[ addr, value | a16 ]
 				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 6
 
 			case 0x64  # STZ dp
 				dp : u8 [ cpu_rb[] ]
-				cpu_w[ dp, 0 ]
+				cpu_write_mem[ dp, 0 ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x74  # STZ dp,X
 				dp : u8 [ cpu_rb[] ]
-				cpu_w[ (dp + cpu.x) & 0xFF, 0 ]
+				cpu_write_mem[ (dp + cpu.x) & 0xFF, 0 ]
 				cycles = 4 + ((ualign) ? 1 : 0)
 
 			case 0x9C  # STZ abs
 				addr : u16 [ cpu_rw[] ]
-				cpu_w[ addr, 0 ]
+				cpu_write_mem[ addr, 0 ]
 				cycles = 4
 
 			case 0x9E  # STZ abs,X
-				addr : u16 [ cpu_rw[] + cpu.x ]
-				cpu_w[ addr, 0 ]
+				addr : u16 [ cpu_rw[] + cpu_get_X[] ]
+				cpu_write_mem[ addr, 0 ]
 				cycles = 5
 
 			case 0xFF  # SBC long,X
-				lo     : u8  [ cpu_rb[] ]
-				hi     : u8  [ cpu_rb[] ]
-				bank   : u8  [ cpu_rb[] ]
-				addr   : u32 [ lo | u32[hi << 8] | u32[bank << 16] ]
-				value  : u8  [ cpu_r[ u16[(addr + cpu.x) & 0xFFFFFF] ] ]
-				result : u16 [ cpu.a - value - (1 - (cpu.p & 0x01)) ]
-				cpu_sbc[ cpu.a, value, result ]
-				cpu.a   = result & 0xFF
+				cpu_sbc_a[ cpu_read_long_x[] ]
+				cycles  = 5
 
 			case 0x22  # JSL (jump subroutine long)
 				lo     : u32 [ cpu_rb[] ]
@@ -4241,14 +4437,14 @@ trinity asnes
 			# --- control flow ---
 			case 0x7C  # JMP (abs,X)
 				ptr : u16 [ cpu_rw[] + cpu_get_X[] ]
-				cpu.pc = cpu_r[ptr] | (cpu_r[ptr + 1] << 8)
+				cpu.pc = cpu_fetch_at[ptr] | (cpu_fetch_at[ptr + 1] << 8)
 				cycles = 6
 			case 0xFC  # JSR (abs,X)
 				ptr : u16 [ cpu_rw[] ]
 				ret : u16 [ cpu.pc - 1 ]
 				cpu_push16[ ret ]
 				addr : u16 [ (ptr + cpu_get_X[]) & 0xFFFF ]
-				cpu.pc = cpu_r[addr] | (cpu_r[addr + 1] << 8)
+				cpu.pc = cpu_fetch_at[addr] | (cpu_fetch_at[addr + 1] << 8)
 				cycles = 8
 			case 0x82  # BRL (branch long)
 				rel : u16 [ cpu_rw[] ]
@@ -4273,21 +4469,31 @@ trinity asnes
 			case 0x02  # COP (consume signature, treat as no-op)
 				cpu_rb[]
 				cycles = 7
-			case 0xCB  # WAI (no-op; NMI fires at frame boundary)
-				cycles = 3
+			case 0xCB  # WAI: halt CPU until the next interrupt; frame loop fast-forwards to NMI
+				cpu_wai = true
+				cycles  = 3
 			case 0xDB  # STP (no-op)
 				cycles = 3
 			case 0x54  # MVN (block move, ascending)
 				dstb : u32 [ cpu_rb[] ]
 				srcb : u32 [ cpu_rb[] ]
 				cpu.dbr = dstb
+				if [ dbg_ev3 < 60 ]
+					printf[ "f%u MVN src=%02X:%04X -> dst=%02X:%04X n=%04X\n", dbg_frames, srcb, cpu.x | (cpu.xh << 8), dstb, cpu.y | (cpu.yh << 8), cpu.a | (cpu.b << 8) ]
+					dbg_ev3 += 1
+				if [ dbg_frames >= 200 && dbg_bad < 2 ]
+					printf[ "  ---- 32 instrs before this MVN (f%u) ----\n", dbg_frames ]
+					for [ k: i32 0, k < 32, k += 1 ]
+						s2 : i32 [ (tr_i + k) % 32 ]
+						printf[ "  %02X:%04X  %02X %02X %02X %02X   P=%03X A=%04X X=%04X Y=%04X\n", tr_addr[s2] >> 16, tr_addr[s2] & 0xFFFF, tr_b0[s2], tr_b1[s2], tr_b2[s2], tr_b3[s2], tr_p[s2], tr_a[s2], tr_x[s2], tr_y[s2] ]
+					dbg_bad += 1
 				cont : bool [ true ]
 				while [ cont ]
-					s : u32 [ (srcb << 16) | (cpu.x | (cpu.xh << 8)) ]
-					d : u32 [ (dstb << 16) | (cpu.y | (cpu.yh << 8)) ]
-					cpu.memory[d] = cpu.memory[s]
-					nx : u16 [ ((cpu.x | (cpu.xh << 8)) + 1) & 0xFFFF ]
-					ny : u16 [ ((cpu.y | (cpu.yh << 8)) + 1) & 0xFFFF ]
+					sx : u16 [ cpu.x | (cpu.xh << 8) ]
+					dy : u16 [ cpu.y | (cpu.yh << 8) ]
+					cpu_bank_w[ dstb, dy, cpu_bank_r[ srcb, sx ] ]
+					nx : u16 [ (sx + 1) & 0xFFFF ]
+					ny : u16 [ (dy + 1) & 0xFFFF ]
 					cpu.x = nx & 0xFF
 					cpu.xh = nx >> 8
 					cpu.y = ny & 0xFF
@@ -4304,11 +4510,11 @@ trinity asnes
 				cpu.dbr = dstb
 				cont : bool [ true ]
 				while [ cont ]
-					s : u32 [ (srcb << 16) | (cpu.x | (cpu.xh << 8)) ]
-					d : u32 [ (dstb << 16) | (cpu.y | (cpu.yh << 8)) ]
-					cpu.memory[d] = cpu.memory[s]
-					nx : u16 [ ((cpu.x | (cpu.xh << 8)) - 1) & 0xFFFF ]
-					ny : u16 [ ((cpu.y | (cpu.yh << 8)) - 1) & 0xFFFF ]
+					sx : u16 [ cpu.x | (cpu.xh << 8) ]
+					dy : u16 [ cpu.y | (cpu.yh << 8) ]
+					cpu_bank_w[ dstb, dy, cpu_bank_r[ srcb, sx ] ]
+					nx : u16 [ (sx - 1) & 0xFFFF ]
+					ny : u16 [ (dy - 1) & 0xFFFF ]
 					cpu.x = nx & 0xFF
 					cpu.xh = nx >> 8
 					cpu.y = ny & 0xFF
