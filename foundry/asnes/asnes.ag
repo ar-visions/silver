@@ -7,6 +7,7 @@
 export 0.8.8
 
 import trinity
+import vec
 import <alsa/asoundlib.h>
 	-lasound
 import <math.h>
@@ -62,13 +63,69 @@ class spc_state
 	koff_latch     	: u8                # KOFF bits written since last DSP sample
 	ram            	: new u8 [ 0x10000 ]
 
+# --- SNES PPU (5C77 "PPU1" tile/BG/sprite fetch + 5C78 "PPU2" color math/output) ---
+class ppu_state
+	vram        	: new u8 [ 0x10000 ]    # 32K words, byte-addressed as word*2 + sel
+	cgram       	: new u8 [ 0x200 ]      # 256 colors x 2 bytes (BGR555)
+	oam         	: new u8 [ 0x220 ]      # 512 main + 32 high
+	framebuf    	: new u32 [ 256 * 224 ] # RGBA8 output
+	obj_color   	: new u32 [ 256 * 224 ] # sprite layer: resolved color (0 = transparent)
+	obj_prio    	: new u8  [ 256 * 224 ] # sprite layer: per-pixel OBJ priority (0-3)
+	inidisp     	: u8                    # $2100 brightness(0-3) + forced-blank(bit7)
+	obsel       	: u8                    # $2101 sprite size + name base
+	bgmode      	: u8                    # $2105 BG mode (bits0-2) + per-BG tile size
+	mosaic      	: u8                    # $2106
+	bg_sc       	: new u8 [ 4 ]          # $2107-A tilemap base/size per BG
+	bg_nba      	: new u8 [ 2 ]          # $210B/C char-data base nibbles (BG1/2, BG3/4)
+	bg_hofs     	: new u16 [ 4 ]         # $210D.. H scroll per BG (10/13-bit)
+	bg_vofs     	: new u16 [ 4 ]         # V scroll per BG
+	ofs_latch   	: u8                    # shared write-twice prev byte for scroll
+	ofs_hl      	: new u8 [ 8 ]          # per-scroll-reg low/high toggle
+	vmain       	: u8                    # $2115 VRAM address increment control
+	vram_addr   	: u16                   # $2116/7 word address
+	vram_pre    	: u16                   # read prefetch latch
+	cgadd       	: u8                    # $2121 CGRAM word address
+	cg_latch    	: u8                    # CGRAM first-byte hold
+	cg_toggle   	: bool
+	oamadd      	: u16                   # $2102/3 OAM word address (internal byte ptr = *2)
+	oamadd_reload	: u16
+	oam_latch   	: u8
+	oam_toggle  	: bool
+	tm          	: u8                    # $212C main-screen layer enable
+	ts          	: u8                    # $212D sub-screen layer enable
+	w12sel      	: u8                    # $2123 BG1/2 window mask sel
+	w34sel      	: u8                    # $2124 BG3/4 window mask sel
+	wobjsel     	: u8                    # $2125 OBJ/color window sel
+	wh0         	: u8                    # $2126 window1 left
+	wh1         	: u8                    # $2127 window1 right
+	wh2         	: u8                    # $2128 window2 left
+	wh3         	: u8                    # $2129 window2 right
+	wbglog      	: u8                    # $212A BG window mask logic
+	wobjlog     	: u8                    # $212B OBJ window mask logic
+	tmw         	: u8                    # $212E window mask main-screen disable
+	tsw         	: u8                    # $212F window mask sub-screen disable
+	cgwsel      	: u8                    # $2130
+	cgadsub     	: u8                    # $2131
+	coldata     	: u16                   # $2132 fixed color (BGR555, built per channel)
+	setini      	: u8                    # $2133
+	m7a         	: i16                   # $211B Mode 7 matrix A (1.7.8 fixed)
+	m7b         	: i16                   # $211C matrix B
+	m7c         	: i16                   # $211D matrix C
+	m7d         	: i16                   # $211E matrix D
+	m7x         	: i16                   # $211F center X (13-bit)
+	m7y         	: i16                   # $2120 center Y
+	m7hofs      	: i16                   # $210D Mode 7 H scroll (13-bit)
+	m7vofs      	: i16                   # $210E Mode 7 V scroll
+	m7sel       	: u8                    # $211A flip(0,1) + repeat(6,7)
+	m7_latch    	: u8                    # shared write-twice latch for M7 regs
+
 
 class cpu_state
 	public pc     			: u16
 	public a      			: u8
 	public x      			: u8
 	public y      			: u8
-	public sp     			: u8
+	public sp     			: u16
 	public p      			: u8
 	public dp     			: u16
 	public dbr    			: u8
@@ -87,12 +144,44 @@ trinity asnes
 	public  beep           	: bool
 	public  spcfile        	: path
 	public  spctest        	: bool
+	public  putest         	: bool             # display-pipeline test: CPU buffer -> Texture -> screen
+	mutable screen_tex     	: Texture
+	mutable test_buf       	: new u32 [ 256 * 224 ]
+	mutable test_t         	: i32
+	mutable hdma_addr      	: new u16 [ 8 ]         # A2A table running pointer per channel
+	mutable hdma_line      	: new u8  [ 8 ]         # line counter per channel
+	mutable hdma_ind       	: new u16 [ 8 ]         # indirect data address per channel
+	mutable hdma_do        	: new u8  [ 8 ]         # do-transfer flag per channel
+	mutable hdma_done      	: new u8  [ 8 ]         # channel completed for this frame
+	mutable line_mode      	: new u8  [ 224 ]       # per-scanline BGMODE snapshot
+	mutable line_tm        	: new u8  [ 224 ]       # per-scanline TM snapshot
+	mutable line_h         	: new u16 [ 4 * 224 ]   # per-scanline H scroll, [bg*224+y]
+	mutable line_v         	: new u16 [ 4 * 224 ]   # per-scanline V scroll
+	mutable line_m7a       	: new i16 [ 224 ]       # per-scanline Mode 7 matrix (HDMA'd)
+	mutable line_m7b       	: new i16 [ 224 ]
+	mutable line_m7c       	: new i16 [ 224 ]
+	mutable line_m7d       	: new i16 [ 224 ]
+	mutable line_coldata   	: new u16 [ 224 ]       # per-scanline COLDATA (HDMA'd fog color)
+	mutable line_cgadsub   	: new u8  [ 224 ]       # per-scanline CGADSUB (color-math enable/mode)
 	mutable cpu            	: cpu_state
 	mutable spc            	: spc_state
+	mutable ppu            	: ppu_state
 	mutable spc_rom_loaded 	: bool
 	mutable spc_boot_rom   	: ref u8
 	mutable nmitimen       	: u8
 	mutable nmi_occurred   	: bool
+	mutable wram_addr      	: u32               # $2181-3 WMADD 17-bit WRAM pointer for $2180
+	mutable mpya           	: u8                # $4202 WRMPYA
+	mutable mpyb           	: u8                # $4203 WRMPYB (write triggers multiply)
+	mutable wrdiv          	: u16               # $4204/5 WRDIV dividend
+	mutable rddiv          	: u16               # $4214/5 RDDIV quotient
+	mutable rdmpy          	: u16               # $4216/7 RDMPY product / remainder
+	mutable pad1           	: u16               # controller 1 button bitfield (B Y Sel St U D L R A X L R)
+	mutable joy_strobe     	: u8                # $4016 strobe latch
+	mutable joy_index      	: i32               # $4016 serial read bit index
+	mutable htime          	: u16               # $4207/8 H-IRQ trigger position (0-339)
+	mutable vtime          	: u16               # $4209/A V-IRQ trigger scanline (0-261)
+	mutable irq_occurred   	: bool              # $4211 TIMEUP bit7 (set on IRQ fire, cleared on read)
 	mutable frame_cycle    	: i32               # CPU cycles elapsed in the current frame
 	mutable in_vblank      	: bool              # PPU vblank flag ($4212 bit7), real rising/falling edge
 	mutable cpu_wai        	: bool              # CPU halted on WAI until next interrupt
@@ -120,6 +209,8 @@ trinity asnes
 	mutable tr_done        	: bool
 	mutable last_rd        	: u32               # last data-read effective 24-bit address
 	mutable dbg_w          	: i32               # capped: WRAM $1F0x watch
+	mutable dbg_w2         	: i32               # capped: Mode7 map staging watch
+	mutable dbg_t          	: i32               # capped: submodule-3 handler trace
 	intern  echo_out_l     	: f32
 	intern  echo_out_r     	: f32
 	intern  gauss          	: new i16 [512] [
@@ -301,6 +392,585 @@ trinity asnes
 
 	# --- CPU memory access ---
 
+	# --- DMA: block transfer CPU memory <-> PPU/APU registers ($420B trigger) ---
+	# B-bus register offset for transfer byte 'step', per DMAP transfer mode.
+	func dma_boff [ mode: u8, step: i32 ] -> u8
+		if [ mode == 1 || mode == 5 ] return u8[ step & 1 ]
+		if [ mode == 4 ]              return u8[ step & 3 ]
+		if [ mode == 3 || mode == 7 ] return u8[ (step >> 1) & 1 ]
+		return 0
+
+	func do_dma [ mask: u8 ]
+		for [ ch: i32 0, ch < 8, ch += 1 ]
+			if [ (mask & (1 << ch)) == 0 ] continue
+			base   : u16 [ 0x4300 + (ch << 4) ]
+			params : u8  [ cpu.memory[base] ]
+			bbad   : u8  [ cpu.memory[base + 1] ]
+			a_lo   : u16 [ u16[cpu.memory[base + 2]] | (u16[cpu.memory[base + 3]] << 8) ]
+			a_bank : u8  [ cpu.memory[base + 4] ]
+			count  : u32 [ u32[cpu.memory[base + 5]] | (u32[cpu.memory[base + 6]] << 8) ]
+			if [ count == 0 ] count = 0x10000
+			mode   : u8  [ params & 0x07 ]
+			stepb  : u8  [ (params >> 3) & 0x03 ]
+			a_to_b : bool [ (params & 0x80) == 0 ]
+			if [ getenv['ASNES_CG_LOG'] ]
+				printf[ "f%u DMA ch%d bbad=$21%02X count=%u src=%02X:%04X step=%d vmadd=%04X\n",
+					dbg_frames, ch, bbad, count, a_bank, a_lo, (params >> 3) & 3, ppu.vram_addr ]
+			ab     : u8  [ a_bank ]
+			ao     : u16 [ a_lo ]
+			i      : u32 [ 0 ]
+			while [ i < count ]
+				boff : u8  [ dma_boff[ mode, i32[i] ] ]
+				breg : u16 [ 0x2100 + u16[bbad] + u16[boff] ]
+				if [ a_to_b ]
+					v : u8 [ cpu_bank_r[ ab, ao ] ]
+					if [ breg >= 0x2140 ] cpu_w[ breg, v ]   # APU($2140)/WMDATA($2180) not in ppu_w
+					el ppu_w[ breg, v ]
+				el
+					v : u8 [ ppu_r[ breg ] ]
+					cpu_bank_w[ ab, ao, v ]
+				if [ stepb == 0 ] ao = (ao + 1) & 0xFFFF
+				el [ stepb == 2 ] ao = (ao - 1) & 0xFFFF
+				i += 1
+			cpu.memory[base + 5] = 0          # DAS counts down to 0 after transfer
+			cpu.memory[base + 6] = 0
+
+	# --- HDMA ($420C): per-scanline DMA, ported from bsnes dma.cpp ---
+	# bytes transferred per HDMA line, indexed by transfer mode
+	func hdma_len [ mode: u8 ] -> i32
+		if [ mode == 0 ] return 1
+		if [ mode == 2 ] return 2
+		if [ mode == 6 ] return 2
+		if [ mode == 1 ] return 2
+		return 4
+
+	# read the next table entry header for a channel; loads line count (+ indirect addr)
+	func hdma_reload [ ch: i32 ]
+		base     : u16  [ 0x4300 + (ch << 4) ]
+		params   : u8   [ cpu.memory[base] ]
+		indirect : bool [ (params & 0x40) != 0 ]
+		a_bank   : u8   [ cpu.memory[base + 4] ]
+		if [ (hdma_line[ch] & 0x7F) == 0 ]
+			data : u8 [ cpu_bank_r[ a_bank, hdma_addr[ch] ] ]
+			hdma_line[ch] = data
+			hdma_addr[ch] = (hdma_addr[ch] + 1) & 0xFFFF
+			if [ data == 0 ]
+				hdma_done[ch] = 1
+				hdma_do[ch]   = 0
+			el
+				hdma_done[ch] = 0
+				hdma_do[ch]   = 1
+			if [ indirect ]
+				lo : u8 [ cpu_bank_r[ a_bank, hdma_addr[ch] ] ]
+				hdma_addr[ch] = (hdma_addr[ch] + 1) & 0xFFFF
+				hi : u8 [ cpu_bank_r[ a_bank, hdma_addr[ch] ] ]
+				hdma_addr[ch] = (hdma_addr[ch] + 1) & 0xFFFF
+				hdma_ind[ch] = u16[lo] | (u16[hi] << 8)
+
+	# transfer this line's bytes to the B-bus ($2100+). A->B only (direction 0).
+	func hdma_transfer [ ch: i32 ]
+		if [ hdma_done[ch] ] return
+		if [ !hdma_do[ch] ] return
+		base     : u16  [ 0x4300 + (ch << 4) ]
+		params   : u8   [ cpu.memory[base] ]
+		bbad     : u8   [ cpu.memory[base + 1] ]
+		mode     : u8   [ params & 0x07 ]
+		indirect : bool [ (params & 0x40) != 0 ]
+		a_bank   : u8   [ cpu.memory[base + 4] ]
+		i_bank   : u8   [ cpu.memory[base + 7] ]
+		n        : i32  [ hdma_len[ mode ] ]
+		for [ idx: i32 0, idx < n, idx += 1 ]
+			boff : u8  [ dma_boff[ mode, idx ] ]
+			breg : u16 [ 0x2100 + u16[bbad] + u16[boff] ]
+			if [ indirect ]
+				v : u8 [ cpu_bank_r[ i_bank, hdma_ind[ch] ] ]
+				ppu_w[ breg, v ]
+				hdma_ind[ch] = (hdma_ind[ch] + 1) & 0xFFFF
+			el
+				v : u8 [ cpu_bank_r[ a_bank, hdma_addr[ch] ] ]
+				ppu_w[ breg, v ]
+				hdma_addr[ch] = (hdma_addr[ch] + 1) & 0xFFFF
+
+	func hdma_advance [ ch: i32 ]
+		if [ hdma_done[ch] ] return
+		hdma_line[ch] = (hdma_line[ch] - 1) & 0xFF
+		if [ hdma_line[ch] & 0x80 ] hdma_do[ch] = 1
+		el hdma_do[ch] = 0
+		hdma_reload[ ch ]
+
+	# frame start: point each enabled channel at its table and prime the first entry
+	func hdma_setup []
+		en : u8 [ cpu.memory[0x420C] ]
+		if [ getenv['ASNES_HDMA_LOG'] && dbg_frames == 150 ]
+			printf[ "HDMA f%u en=%02X\n", dbg_frames, en ]
+			for [ ch: i32 0, ch < 8, ch += 1 ]
+				if [ (en & (1 << ch)) == 0 ] continue
+				b : u16 [ 0x4300 + (ch << 4) ]
+				printf[ "  ch%d DMAP=%02X BBAD=$21%02X (reg $21%02X) A1=%02X:%02X%02X mode=%d ind=%d\n",
+					ch, cpu.memory[b], cpu.memory[b+1], cpu.memory[b+1],
+					cpu.memory[b+4], cpu.memory[b+3], cpu.memory[b+2],
+					cpu.memory[b] & 7, (cpu.memory[b] >> 6) & 1 ]
+		for [ ch: i32 0, ch < 8, ch += 1 ]
+			hdma_do[ch]   = 1
+			hdma_done[ch] = 0
+			if [ (en & (1 << ch)) == 0 ] continue
+			base : u16 [ 0x4300 + (ch << 4) ]
+			hdma_addr[ch] = u16[cpu.memory[base + 2]] | (u16[cpu.memory[base + 3]] << 8)
+			hdma_line[ch] = 0
+			hdma_reload[ ch ]
+
+	# one scanline: all channels transfer, then all advance (bsnes order)
+	func hdma_run_line []
+		en : u8 [ cpu.memory[0x420C] ]
+		if [ en == 0 ] return
+		for [ ch: i32 0, ch < 8, ch += 1 ]
+			if [ en & (1 << ch) ] hdma_transfer[ ch ]
+		for [ ch: i32 0, ch < 8, ch += 1 ]
+			if [ en & (1 << ch) ] hdma_advance[ ch ]
+
+	# capture the registers HDMA mutates for scanline y so the renderer is per-line
+	func ppu_snapshot_line [ y: i32 ]
+		line_mode[y] = ppu.bgmode
+		line_tm[y]   = ppu.tm
+		for [ bg: i32 0, bg < 4, bg += 1 ]
+			line_h[ bg * 224 + y ] = ppu.bg_hofs[bg]
+			line_v[ bg * 224 + y ] = ppu.bg_vofs[bg]
+		line_m7a[y] = ppu.m7a
+		line_m7b[y] = ppu.m7b
+		line_m7c[y] = ppu.m7c
+		line_m7d[y] = ppu.m7d
+		line_coldata[y] = ppu.coldata
+		line_cgadsub[y] = ppu.cgadsub
+
+	# --- PPU register access ($2100-$213F) ---
+	func ppu_vram_inc []
+		sel : u8  [ ppu.vmain & 0x03 ]
+		amt : u16 [ 1 ]
+		if [ sel == 1 ] amt = 32
+		el [ sel >= 2 ] amt = 128
+		ppu.vram_addr = (ppu.vram_addr + amt) & 0xFFFF
+
+	func ppu_w [ addr: u16, val: u8 ]
+		r : u8 [ addr & 0xFF ]
+		if [ r == 0x00 ]                                  # INIDISP
+			ppu.inidisp = val
+		el [ r == 0x01 ]                                  # OBSEL
+			ppu.obsel = val
+		el [ r == 0x02 ]                                  # OAMADDL (word addr -> byte cursor)
+			ppu.oamadd_reload = (ppu.oamadd_reload & 0x200) | (u16[val] << 1)
+			ppu.oamadd = ppu.oamadd_reload
+			ppu.oam_toggle = false
+		el [ r == 0x03 ]                                  # OAMADDH
+			ppu.oamadd_reload = ((u16[val] & 1) << 9) | (ppu.oamadd_reload & 0x1FF)
+			ppu.oamadd = ppu.oamadd_reload
+			ppu.oam_toggle = false
+		el [ r == 0x04 ]                                  # OAMDATA write
+			a : u16 [ ppu.oamadd & 0x3FF ]
+			if [ a < 0x200 ]
+				if [ (a & 1) == 0 ]
+					ppu.oam_latch = val
+				el
+					ppu.oam[ a - 1 ] = ppu.oam_latch
+					ppu.oam[ a ]     = val
+			el [ a < 0x220 ]
+				ppu.oam[ a ] = val
+			ppu.oamadd = (ppu.oamadd + 1) & 0x3FF
+		el [ r == 0x05 ]                                  # BGMODE
+			ppu.bgmode = val
+		el [ r == 0x06 ]                                  # MOSAIC
+			ppu.mosaic = val
+		el [ r >= 0x07 && r <= 0x0A ]                     # BGnSC
+			ppu.bg_sc[ r - 0x07 ] = val
+		el [ r == 0x0B ]                                  # BG12NBA
+			ppu.bg_nba[0] = val
+		el [ r == 0x0C ]                                  # BG34NBA
+			ppu.bg_nba[1] = val
+		el [ r >= 0x0D && r <= 0x14 ]                     # BGn H/V scroll (write-twice)
+			bg : i32 [ (r - 0x0D) / 2 ]
+			if [ ((r - 0x0D) & 1) == 0 ]
+				ppu.bg_hofs[bg] = (u16[val] << 8) | (u16[ppu.ofs_latch] & 0xFFF8) | (u16[ppu.ofs_hl[bg]] & 7)
+				ppu.ofs_latch  = val
+				ppu.ofs_hl[bg] = val
+			el
+				ppu.bg_vofs[bg] = (u16[val] << 8) | u16[ppu.ofs_latch]
+				ppu.ofs_latch = val
+			if [ r == 0x0D ]                              # $210D also = Mode 7 H scroll
+				ppu.m7hofs = i16[(u16[val] << 8) | u16[ppu.m7_latch]]
+				ppu.m7_latch = val
+			el [ r == 0x0E ]                              # $210E also = Mode 7 V scroll
+				ppu.m7vofs = i16[(u16[val] << 8) | u16[ppu.m7_latch]]
+				ppu.m7_latch = val
+		el [ r == 0x15 ]                                  # VMAIN
+			ppu.vmain = val
+		el [ r == 0x16 ]                                  # VMADDL
+			ppu.vram_addr = (ppu.vram_addr & 0xFF00) | u16[val]
+		el [ r == 0x17 ]                                  # VMADDH
+			ppu.vram_addr = (ppu.vram_addr & 0x00FF) | (u16[val] << 8)
+		el [ r == 0x18 ]                                  # VMDATAL
+			wa : u32 [ u32[ppu.vram_addr & 0x7FFF] * 2 ]
+			ppu.vram[ wa ] = val
+			if [ (ppu.vmain & 0x80) == 0 ] ppu_vram_inc[]
+		el [ r == 0x19 ]                                  # VMDATAH
+			wa : u32 [ u32[ppu.vram_addr & 0x7FFF] * 2 ]
+			ppu.vram[ wa + 1 ] = val
+			if [ ppu.vmain & 0x80 ] ppu_vram_inc[]
+		el [ r == 0x1A ]                                  # M7SEL
+			ppu.m7sel = val
+		el [ r == 0x1B ]                                  # M7A (write-twice, shared latch)
+			ppu.m7a = i16[(u16[val] << 8) | u16[ppu.m7_latch]]
+			ppu.m7_latch = val
+		el [ r == 0x1C ]                                  # M7B
+			ppu.m7b = i16[(u16[val] << 8) | u16[ppu.m7_latch]]
+			ppu.m7_latch = val
+		el [ r == 0x1D ]                                  # M7C
+			ppu.m7c = i16[(u16[val] << 8) | u16[ppu.m7_latch]]
+			ppu.m7_latch = val
+		el [ r == 0x1E ]                                  # M7D
+			ppu.m7d = i16[(u16[val] << 8) | u16[ppu.m7_latch]]
+			ppu.m7_latch = val
+		el [ r == 0x1F ]                                  # M7X (center)
+			ppu.m7x = i16[(u16[val] << 8) | u16[ppu.m7_latch]]
+			ppu.m7_latch = val
+		el [ r == 0x20 ]                                  # M7Y (center)
+			ppu.m7y = i16[(u16[val] << 8) | u16[ppu.m7_latch]]
+			ppu.m7_latch = val
+		el [ r == 0x21 ]                                  # CGADD
+			ppu.cgadd = val
+			ppu.cg_toggle = false
+		el [ r == 0x22 ]                                  # CGDATA write (2-byte)
+			if [ !ppu.cg_toggle ]
+				ppu.cg_latch = val
+			el
+				ci : u16 [ u16[ppu.cgadd] << 1 ]
+				ppu.cgram[ ci ]     = ppu.cg_latch
+				ppu.cgram[ ci + 1 ] = val
+				ppu.cgadd = (ppu.cgadd + 1) & 0xFF
+			ppu.cg_toggle = !ppu.cg_toggle
+		el [ r == 0x23 ] ppu.w12sel = val                 # W12SEL
+		el [ r == 0x24 ] ppu.w34sel = val                 # W34SEL
+		el [ r == 0x25 ] ppu.wobjsel = val                # WOBJSEL
+		el [ r == 0x26 ] ppu.wh0 = val                    # WH0 window1 left
+		el [ r == 0x27 ] ppu.wh1 = val                    # WH1 window1 right
+		el [ r == 0x28 ] ppu.wh2 = val                    # WH2 window2 left
+		el [ r == 0x29 ] ppu.wh3 = val                    # WH3 window2 right
+		el [ r == 0x2A ] ppu.wbglog = val                 # WBGLOG
+		el [ r == 0x2B ] ppu.wobjlog = val                # WOBJLOG
+		el [ r == 0x2C ]                                  # TM (main screen)
+			ppu.tm = val
+		el [ r == 0x2D ]                                  # TS (sub screen)
+			ppu.ts = val
+		el [ r == 0x2E ] ppu.tmw = val                    # TMW (window main-screen disable)
+		el [ r == 0x2F ] ppu.tsw = val                    # TSW (window sub-screen disable)
+		el [ r == 0x30 ]                                  # CGWSEL
+			ppu.cgwsel = val
+		el [ r == 0x31 ]                                  # CGADSUB
+			ppu.cgadsub = val
+		el [ r == 0x32 ]                                  # COLDATA (fixed color)
+			inten : u16 [ u16[val] & 0x1F ]
+			if [ val & 0x20 ] ppu.coldata = (ppu.coldata & 0x7FE0) | inten
+			if [ val & 0x40 ] ppu.coldata = (ppu.coldata & 0x7C1F) | (inten << 5)
+			if [ val & 0x80 ] ppu.coldata = (ppu.coldata & 0x03FF) | (inten << 10)
+		el [ r == 0x33 ]                                  # SETINI
+			ppu.setini = val
+
+	func ppu_r [ addr: u16 ] -> u8
+		r : u8 [ addr & 0xFF ]
+		if [ r == 0x38 ]                                  # OAMDATAREAD
+			a : u16 [ ppu.oamadd & 0x3FF ]
+			v : u8  [ 0 ]
+			if [ a < 0x220 ] v = ppu.oam[a]
+			ppu.oamadd = (ppu.oamadd + 1) & 0x3FF
+			return v
+		el [ r == 0x39 ]                                  # VMDATALREAD
+			v : u8 [ u8[ppu.vram_pre & 0xFF] ]
+			if [ (ppu.vmain & 0x80) == 0 ]
+				wa : u32 [ u32[ppu.vram_addr & 0x7FFF] * 2 ]
+				ppu.vram_pre = u16[ppu.vram[wa]] | (u16[ppu.vram[wa + 1]] << 8)
+				ppu_vram_inc[]
+			return v
+		el [ r == 0x3A ]                                  # VMDATAHREAD
+			v : u8 [ u8[ppu.vram_pre >> 8] ]
+			if [ ppu.vmain & 0x80 ]
+				wa : u32 [ u32[ppu.vram_addr & 0x7FFF] * 2 ]
+				ppu.vram_pre = u16[ppu.vram[wa]] | (u16[ppu.vram[wa + 1]] << 8)
+				ppu_vram_inc[]
+			return v
+		el [ r == 0x3B ]                                  # CGDATAREAD
+			cb  : u16 [ 0 ]
+			if [ ppu.cg_toggle ] cb = 1
+			idx : u16 [ (u16[ppu.cgadd] << 1) | cb ]
+			v   : u8  [ ppu.cgram[idx] ]
+			if [ ppu.cg_toggle ] ppu.cgadd = (ppu.cgadd + 1) & 0xFF
+			ppu.cg_toggle = !ppu.cg_toggle
+			return v
+		el [ r == 0x3E ]                                  # STAT77 (PPU1 5C77, version 1)
+			return 0x01
+		el [ r == 0x3F ]                                  # STAT78 (PPU2 5C78, NTSC, version 3)
+			return 0x03
+		return 0x00
+
+	# CGRAM color index -> 15-bit BGR555 word
+	func ppu_cgram_color [ idx: u32 ] -> u16
+		ci : u32 [ idx * 2 ]
+		lo : u16 [ u16[ppu.cgram[ci]] ]
+		hi : u16 [ u16[ppu.cgram[ci + 1]] ]
+		return lo | (hi << 8)
+
+	# BGR555 word + brightness(0-15) -> RGBA8 (R low byte, matches R8G8B8A8 UNORM)
+	func ppu_color [ w: u16, bright: u32 ] -> u32
+		r5 : u32 [ u32[w] & 0x1F ]
+		g5 : u32 [ (u32[w] >> 5) & 0x1F ]
+		b5 : u32 [ (u32[w] >> 10) & 0x1F ]
+		r8 : u32 [ (r5 << 3) | (r5 >> 2) ]
+		g8 : u32 [ (g5 << 3) | (g5 >> 2) ]
+		b8 : u32 [ (b5 << 3) | (b5 >> 2) ]
+		r8 = (r8 * bright) / 15
+		g8 = (g8 * bright) / 15
+		b8 = (b8 * bright) / 15
+		return 0xFF000000 | (b8 << 16) | (g8 << 8) | r8
+
+	# read one VRAM word (15-bit word address)
+	func ppu_vw [ waddr: u32 ] -> u32
+		b : u32 [ (waddr & 0x7FFF) * 2 ]
+		return u32[ppu.vram[b]] | (u32[ppu.vram[b + 1]] << 8)
+
+	# Render ONE scanline of one background layer (bg 0..3, bpp 2 or 4). 8x8 tiles,
+	# per-line H/V scroll (from the HDMA snapshot), tile flip, 32/64 tilemaps.
+	# Color idx 0 = transparent. Priority/windows/16x16/color-math not handled yet.
+	func ppu_bg_line [ bg: i32, bpp: i32, y: i32, bright: u32, want_prio: u32 ]
+		sc    : u8  [ ppu.bg_sc[ bg ] ]
+		tbase : u32 [ (u32[sc >> 2] & 0x3F) * 0x400 ]    # tilemap base (word)
+		nb    : u8  [ ppu.bg_nba[ bg >> 1 ] ]
+		nibble: u32 [ u32[nb] & 0x0F ]
+		if [ bg & 1 ] nibble = (u32[nb] >> 4) & 0x0F
+		cbase : u32 [ nibble * 0x1000 ]                  # char data base (word)
+		w64   : bool [ (sc & 1) != 0 ]
+		h64   : bool [ (sc & 2) != 0 ]
+		hofs  : u32 [ u32[line_h[ bg * 224 + y ]] & 0x3FF ]
+		vofs  : u32 [ u32[line_v[ bg * 224 + y ]] & 0x3FF ]
+		hmask : u32 [ 0xFF ]
+		vmask : u32 [ 0xFF ]
+		if [ w64 ] hmask = 0x1FF
+		if [ h64 ] vmask = 0x1FF
+		tilesz: u32 [ 16 ]                               # 4bpp tile = 16 words
+		if [ bpp == 2 ] tilesz = 8                       # 2bpp tile = 8 words
+		sy : u32 [ (u32[y] + vofs) & vmask ]
+		for [ x: i32 0, x < 256, x += 1 ]
+			sx : u32 [ (u32[x] + hofs) & hmask ]
+			tx : u32 [ sx >> 3 ]
+			ty : u32 [ sy >> 3 ]
+			blk: u32 [ 0 ]
+			if [ tx & 32 ] blk += 1
+			if [ ty & 32 ]
+				if [ w64 ] blk += 2
+				el blk += 1
+			ent : u32 [ tbase + blk * 0x400 + (ty & 31) * 32 + (tx & 31) ]
+			e   : u32 [ ppu_vw[ ent ] ]
+			if [ ((e >> 13) & 1) != want_prio ] continue   # only this priority level
+			tile: u32 [ e & 0x3FF ]
+			pal : u32 [ (e >> 10) & 7 ]
+			px  : u32 [ sx & 7 ]
+			py  : u32 [ sy & 7 ]
+			if [ e & 0x4000 ] px = 7 - px
+			if [ e & 0x8000 ] py = 7 - py
+			bit : u32 [ 7 - px ]
+			base: u32 [ cbase + tile * tilesz + py ]
+			w01 : u32 [ ppu_vw[ base ] ]
+			idx : u32 [ ((w01 >> bit) & 1) | (((w01 >> (bit + 8)) & 1) << 1) ]
+			if [ bpp == 4 ]
+				w23 : u32 [ ppu_vw[ base + 8 ] ]
+				idx = idx | (((w23 >> bit) & 1) << 2) | (((w23 >> (bit + 8)) & 1) << 3)
+			if [ idx ]
+				cgidx : u32 [ pal * 16 + idx ]
+				if [ bpp == 2 ] cgidx = pal * 4 + idx
+				ppu.framebuf[ y * 256 + x ] = ppu_color[ ppu_cgram_color[ cgidx ], bright ]
+
+	# Phase 3: render the framebuffer from real PPU state, PER SCANLINE using the
+	# HDMA snapshots (line_mode / line_h / line_v / line_tm). Backdrop first, then
+	# Mode 1 BG layers (BG3 back -> BG1 front) for whatever mode that line is in.
+	# Sprite (OBJ) layer. 4bpp, palettes 8-15 (CGRAM 128+pal*16). OBSEL size pairs,
+	# 9-bit X (high OAM), 9-bit tile (name select), H/V flip, 16x16 tile-grid wrap.
+	# Builds the obj_color / obj_prio buffers (drawn 127->0 so sprite 0 wins per pixel);
+	# the composite step interleaves these by priority with the BG layers.
+	# No 32/34 per-line limit yet.
+	func ppu_sprites [ bright: u32 ]
+		for [ i: i32 0, i < 256 * 224, i += 1 ]
+			ppu.obj_color[i] = 0
+		ws : local u8 [ 16 ] [ 8, 8, 8, 16, 16, 32, 16, 16, 16, 32, 64, 32, 64, 64, 32, 32 ]
+		hs : local u8 [ 16 ] [ 8, 8, 8, 16, 16, 32, 32, 32, 16, 32, 64, 32, 64, 64, 64, 32 ]
+		obsel : u8  [ ppu.obsel ]
+		tbase : u32 [ (u32[obsel] << 13) & 0x6000 ]
+		nsel  : u32 [ (u32[obsel] >> 3) & 3 ]
+		bsize : u32 [ (u32[obsel] >> 5) & 7 ]
+		n : i32 [ 127 ]
+		while [ n >= 0 ]
+			o     : i32 [ n * 4 ]
+			b0    : u8  [ ppu.oam[o] ]
+			b1    : u8  [ ppu.oam[o + 1] ]
+			b2    : u8  [ ppu.oam[o + 2] ]
+			b3    : u8  [ ppu.oam[o + 3] ]
+			hbyte : u8  [ ppu.oam[512 + (n >> 2)] ]
+			hbits : u32 [ (u32[hbyte] >> ((n & 3) * 2)) & 3 ]
+			big   : u32 [ (hbits >> 1) & 1 ]
+			sw    : i32 [ i32[ws[ big * 8 + bsize ]] ]
+			sh    : i32 [ i32[hs[ big * 8 + bsize ]] ]
+			fx    : i32 [ i32[b0] | (i32[hbits & 1] << 8) ]
+			if [ fx >= 256 ] fx -= 512
+			pal   : u32 [ (u32[b3] >> 1) & 7 ]
+			oprio : u32 [ (u32[b3] >> 4) & 3 ]
+			hflip : u32 [ (u32[b3] >> 6) & 1 ]
+			vflip : u32 [ (u32[b3] >> 7) & 1 ]
+			nlo   : u32 [ u32[b2] ]
+			taddr : u32 [ tbase ]
+			if [ b3 & 1 ] taddr = tbase + ((1 + nsel) << 12)
+			cgb   : u32 [ 128 + pal * 16 ]
+			oy : i32 [ 0 ]
+			while [ oy < sh ]
+				scy : i32 [ (i32[b1] + oy) & 0xFF ]
+				if [ scy < 224 && (line_tm[scy] & 0x10) ]
+					syp : i32 [ oy ]
+					if [ vflip ] syp = sh - 1 - oy
+					cy  : u32 [ ((nlo >> 4) + u32[syp >> 3]) & 0x0F ]
+					ox : i32 [ 0 ]
+					while [ ox < sw ]
+						scx : i32 [ fx + ox ]
+						if [ scx >= 0 && scx < 256 ]
+							sxp  : i32 [ ox ]
+							if [ hflip ] sxp = sw - 1 - ox
+							cx   : u32 [ ((nlo & 0x0F) + u32[sxp >> 3]) & 0x0F ]
+							addr : u32 [ taddr + (cy * 16 + cx) * 16 + u32[syp & 7] ]
+							w01  : u32 [ ppu_vw[ addr ] ]
+							w23  : u32 [ ppu_vw[ addr + 8 ] ]
+							bit  : u32 [ u32[7 - (sxp & 7)] ]
+							col  : u32 [ ((w01 >> bit) & 1) | (((w01 >> (bit + 8)) & 1) << 1) | (((w23 >> bit) & 1) << 2) | (((w23 >> (bit + 8)) & 1) << 3) ]
+							if [ col ]
+								di : i32 [ scy * 256 + scx ]
+								ppu.obj_color[di] = ppu_color[ ppu_cgram_color[ cgb + col ], bright ]
+								ppu.obj_prio[di]  = u8[oprio]
+						ox += 1
+				oy += 1
+			n -= 1
+
+	# composite the sprite buffer for one scanline at a given OBJ priority level
+	func ppu_obj_line [ y: i32, want_prio: u32 ]
+		base : i32 [ y * 256 ]
+		for [ x: i32 0, x < 256, x += 1 ]
+			i : i32 [ base + x ]
+			if [ ppu.obj_color[i] != 0 && u32[ppu.obj_prio[i]] == want_prio ]
+				ppu.framebuf[i] = ppu.obj_color[i]
+
+	# subtractive color math in BGR555 space (clamped, optional half). Used for the
+	# Mode 7 distance fog: each scanline subtracts the HDMA'd COLDATA from the plane.
+	func ppu_cmath_sub [ main: u16, sub: u16, hf: bool ] -> u16
+		rr : i32 [ i32[main & 0x1F] - i32[sub & 0x1F] ]
+		gg : i32 [ i32[(main >> 5) & 0x1F] - i32[(sub >> 5) & 0x1F] ]
+		bb : i32 [ i32[(main >> 10) & 0x1F] - i32[(sub >> 10) & 0x1F] ]
+		if [ rr < 0 ] rr = 0
+		if [ gg < 0 ] gg = 0
+		if [ bb < 0 ] bb = 0
+		if [ hf ]
+			rr >>= 1
+			gg >>= 1
+			bb >>= 1
+		return u16[ rr | (gg << 5) | (bb << 10) ]
+
+	# 13-bit signed wrap for the (offset - center) terms
+	func m7_clip [ n: i32 ] -> i32
+		if [ n & 0x2000 ] return n | (~1023)
+		return n & 1023
+
+	# sign-extend a 13-bit value held in a 16-bit register
+	func sx13 [ v: i32 ] -> i32
+		s : i32 [ v & 0x1FFF ]
+		if [ s & 0x1000 ] return s | (~0x1FFF)
+		return s
+
+	# Mode 7 affine layer (BG1), one scanline. Uses the per-scanline matrix
+	# (line_m7a-d, HDMA'd) + frame center/scroll. VRAM is interleaved: even byte =
+	# tilemap entry (128x128), odd byte = 8bpp char pixel. Ported from bsnes ppu-fast.
+	func ppu_m7_line [ y: i32, bright: u32 ]
+		a  : i32 [ i32[line_m7a[y]] ]
+		b  : i32 [ i32[line_m7b[y]] ]
+		c  : i32 [ i32[line_m7c[y]] ]
+		d  : i32 [ i32[line_m7d[y]] ]
+		hc : i32 [ sx13[ i32[ppu.m7x] ] ]
+		vc : i32 [ sx13[ i32[ppu.m7y] ] ]
+		ho : i32 [ sx13[ i32[ppu.m7hofs] ] ]
+		vo : i32 [ sx13[ i32[ppu.m7vofs] ] ]
+		hflip  : bool [ (ppu.m7sel & 1) != 0 ]
+		vflip  : bool [ (ppu.m7sel & 2) != 0 ]
+		repeat : u32  [ (u32[ppu.m7sel] >> 6) & 3 ]
+		yy : i32 [ y ]
+		if [ vflip ] yy = 255 - y
+		ch : i32 [ m7_clip[ ho - hc ] ]
+		cv : i32 [ m7_clip[ vo - vc ] ]
+		originX : i32 [ ((a * ch) & (~63)) + ((b * cv) & (~63)) + ((b * yy) & (~63)) + (hc << 8) ]
+		originY : i32 [ ((c * ch) & (~63)) + ((d * cv) & (~63)) + ((d * yy) & (~63)) + (vc << 8) ]
+		for [ X: i32 0, X < 256, X += 1 ]
+			xx : i32 [ X ]
+			if [ hflip ] xx = 255 - X
+			pixelX : i32 [ (originX + a * xx) >> 8 ]
+			pixelY : i32 [ (originY + c * xx) >> 8 ]
+			tileX : i32 [ (pixelX >> 3) & 127 ]
+			tileY : i32 [ (pixelY >> 3) & 127 ]
+			oob : i32 [ (pixelX | pixelY) & (~1023) ]
+			tile : u32 [ 0 ]
+			if [ repeat == 3 && oob != 0 ]
+				tile = 0
+			el
+				tile = u32[ppu.vram[ (tileY * 128 + tileX) * 2 ]]
+			pix : u32 [ 0 ]
+			if [ repeat == 2 && oob != 0 ]
+				pix = 0
+			el
+				palAddr : i32 [ ((pixelY & 7) << 3) + (pixelX & 7) ]
+				ci      : u32 [ (tile << 6) | u32[palAddr] ]
+				pix = u32[ppu.vram[ ci * 2 + 1 ]]
+			if [ pix != 0 ]
+				cw : u16 [ ppu_cgram_color[ pix ] ]
+				cg : u8 [ line_cgadsub[y] ]
+				# distance fog: BG1 subtractive color math, but ONLY when CGWSEL's
+				# color-math region is "always" (0). F-Zero's race sets region=1
+				# (inside an empty window) => no math => bright road.
+				if [ (cg & 0x01) && (cg & 0x80) && ((u32[ppu.cgwsel] >> 4) & 3) == 0 ]
+					cw = ppu_cmath_sub[ cw, line_coldata[y], (cg & 0x40) != 0 ]
+				ppu.framebuf[ y * 256 + X ] = ppu_color[ cw, bright ]
+
+	func ppu_render []
+		bright : u32 [ u32[ppu.inidisp] & 0x0F ]
+		if [ ppu.inidisp & 0x80 ] bright = 0          # forced blank -> black
+		bg : u16 [ ppu_cgram_color[ 0 ] ]
+		px : u32 [ ppu_color[ bg, bright ] ]
+		for [ i: i32 0, i < 256 * 224, i += 1 ]
+			ppu.framebuf[ i ] = px
+		if [ bright == 0 ] return
+		ppu_sprites[ bright ]                                 # build obj_color / obj_prio
+		# Mode 1 priority order, painted BACK -> FRONT (later overwrites). BG3 high-prio
+		# goes to the very front when BGMODE bit3 is set, else just above OBJ.0.
+		for [ y: i32 0, y < 224, y += 1 ]
+			mode : u8 [ line_mode[y] & 7 ]
+			tm   : u8 [ line_tm[y] ]
+			b3hi : bool [ (line_mode[y] & 0x08) != 0 ]
+			if [ mode == 1 ]
+				if [ tm & 0x04 ] ppu_bg_line[ 2, 2, y, bright, 0 ]   # BG3.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 0 ]                # OBJ.0
+				if [ tm & 0x04 && !b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]  # BG3.1 (low pos)
+				if [ tm & 0x10 ] ppu_obj_line[ y, 1 ]                # OBJ.1
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 0 ]   # BG2.0
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 0 ]   # BG1.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 2 ]                # OBJ.2
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 1 ]   # BG2.1
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 1 ]   # BG1.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 3 ]                # OBJ.3
+				if [ tm & 0x04 && b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]   # BG3.1 (front)
+			el [ mode == 7 ]
+				if [ tm & 0x01 ] ppu_m7_line[ y, bright ]            # Mode 7 plane (BG1)
+				if [ tm & 0x10 ]                                     # sprites on top
+					ppu_obj_line[ y, 0 ]
+					ppu_obj_line[ y, 1 ]
+					ppu_obj_line[ y, 2 ]
+					ppu_obj_line[ y, 3 ]
+
 	func cpu_r [ addr: u16 ] -> u8
 		if [ addr >= 0x2140 && addr <= 0x2143 ]
 			port_read = true
@@ -309,23 +979,39 @@ trinity asnes
 				dbg_ev2 += 1
 			return spc.oports[addr - 0x2140]
 		el [ addr >= 0x2100 && addr <= 0x213F ]
-			if [ addr == 0x2137 ] return 0x80
-			if [ addr == 0x2138 ] return 0x00
-			if [ addr == 0x2139 ] return 0x00
-			if [ addr == 0x213A ] return 0x00
-			return 0x00
+			return ppu_r[ addr ]
+		el [ addr == 0x2180 ]                          # WMDATA: read WRAM via WMADD, auto-inc
+			v : u8 [ cpu.memory[ 0x7E0000 + (wram_addr & 0x1FFFF) ] ]
+			wram_addr = (wram_addr + 1) & 0x1FFFF
+			return v
 		el [ addr >= 0x4000 && addr <= 0x43FF ]
 			if [ addr == 0x4210 ]            # RDNMI: bit7 = NMI flag (cleared on read)
 				v : u8 [ ((nmi_occurred) ? 0x80 : 0x00) | 0x02 ]
 				nmi_occurred = false
+				return v
+			if [ addr == 0x4211 ]            # TIMEUP: bit7 = IRQ flag (cleared on read)
+				v : u8 [ (irq_occurred) ? 0x80 : 0x00 ]
+				irq_occurred = false
 				return v
 			if [ addr == 0x4212 ]            # HVBJOY: bit7=vblank, bit6=hblank, bit0=auto-joypad busy
 				vb : u8 [ (in_vblank) ? 0x80 : 0 ]
 				line_pos : i32 [ frame_cycle % 228 ]
 				hb : u8 [ (line_pos >= 180) ? 0x40 : 0 ]
 				return vb | hb
-			if [ addr == 0x4016 ] return 0x00
+			if [ addr == 0x4214 ] return u8[rddiv & 0xFF]         # RDDIVL
+			if [ addr == 0x4215 ] return u8[(rddiv >> 8) & 0xFF]  # RDDIVH
+			if [ addr == 0x4216 ] return u8[rdmpy & 0xFF]         # RDMPYL
+			if [ addr == 0x4217 ] return u8[(rdmpy >> 8) & 0xFF]  # RDMPYH
+			if [ addr == 0x4016 ]            # JOYSER0: serial controller-1 read
+				if [ joy_strobe & 1 ] return u8[(pad1 >> 15) & 1]
+				if [ joy_index >= 16 ] return 0x01
+				rb : u8 [ u8[(pad1 >> (15 - joy_index)) & 1] ]
+				joy_index += 1
+				return rb
 			if [ addr == 0x4017 ] return 0x00
+			if [ addr == 0x4218 ] return u8[pad1 & 0xFF]        # JOY1L (auto-joypad)
+			if [ addr == 0x4219 ] return u8[(pad1 >> 8) & 0xFF]  # JOY1H
+			if [ addr >= 0x421A && addr <= 0x421F ] return 0x00  # controllers 2-4
 			return 0x00
 		el [ addr >= 0x0000 && addr <= 0x1FFF ]
 			return cpu.memory[0x7E0000 + (addr & 0x1FFF)]
@@ -339,10 +1025,49 @@ trinity asnes
 			if [ dbg_frames >= 125 && val != 0x00 && dbg_ev2 < 160 ]
 				printf[ "f%u CPUw port%d=%02X src=%06X dbr=%02X cpupc=%04X\n", dbg_frames, addr - 0x2140, val, last_rd, cpu.dbr, cpu.pc ]
 				dbg_ev2 += 1
+		el [ addr >= 0x2100 && addr <= 0x213F ]
+			ppu_w[ addr, val ]
+		el [ addr == 0x2180 ]                          # WMDATA: write WRAM via WMADD, auto-inc
+			cpu.memory[ 0x7E0000 + (wram_addr & 0x1FFFF) ] = val
+			wram_addr = (wram_addr + 1) & 0x1FFFF
+		el [ addr == 0x2181 ] wram_addr = (wram_addr & 0x1FF00) | u32[val]            # WMADDL
+		el [ addr == 0x2182 ] wram_addr = (wram_addr & 0x100FF) | (u32[val] << 8)     # WMADDM
+		el [ addr == 0x2183 ] wram_addr = (wram_addr & 0x0FFFF) | ((u32[val] & 1) << 16) # WMADDH
 		el [ addr >= 0x4000 && addr <= 0x43FF ]
-			if [ addr == 0x4200 ] nmitimen = val   # NMITIMEN: bit7 enables vblank NMI
+			if [ addr == 0x4016 ]                  # JOYSER0 strobe: latch/reset serial
+				joy_strobe = val
+				if [ val & 1 ] joy_index = 0
+			el [ addr == 0x4202 ] mpya = val       # WRMPYA
+			el [ addr == 0x4203 ]                  # WRMPYB (write triggers 8x8 multiply)
+				mpyb = val
+				rdmpy = u16[ (u32[mpya] * u32[mpyb]) & 0xFFFF ]
+			el [ addr == 0x4204 ] wrdiv = (wrdiv & 0xFF00) | u16[val]          # WRDIVL
+			el [ addr == 0x4205 ] wrdiv = (wrdiv & 0x00FF) | (u16[val] << 8)   # WRDIVH
+			el [ addr == 0x4206 ]                  # WRDIVB (write triggers 16/8 divide)
+				if [ val == 0 ]
+					rddiv = 0xFFFF
+					rdmpy = wrdiv
+				el
+					rddiv = wrdiv / u16[val]
+					rdmpy = wrdiv % u16[val]
+			el [ addr == 0x4200 ] nmitimen = val   # NMITIMEN: bit7=NMI, bit5=V-IRQ, bit4=H-IRQ
+			el [ addr == 0x4207 ] htime = (htime & 0x100) | u16[val]              # HTIMEL
+			el [ addr == 0x4208 ] htime = (htime & 0x0FF) | ((u16[val] & 1) << 8) # HTIMEH
+			el [ addr == 0x4209 ] vtime = (vtime & 0x100) | u16[val]              # VTIMEL
+			el [ addr == 0x420A ] vtime = (vtime & 0x0FF) | ((u16[val] & 1) << 8) # VTIMEH
+			el [ addr == 0x420B ] do_dma[ val ]    # MDMAEN: trigger general DMA
+			el [ addr == 0x420C ] cpu.memory[addr] = val   # HDMAEN: per-scanline DMA enable mask
+			el [ addr >= 0x4300 && addr <= 0x437F ] cpu.memory[addr] = val   # DMA channel regs
 		el [ addr >= 0x0000 && addr <= 0x1FFF ]
-			cpu.memory[0x7E0000 + (addr & 0x1FFF)] = val
+			wo : u16 [ addr & 0x1FFF ]
+			ww : u32 [ 0x7E0000 + wo ]
+			if [ getenv['ASNES_PAL_LOG'] && wo >= 0x0520 && wo <= 0x0530 && dbg_w < 80 ]
+				printf[ "PALw[%04X]=%02X pc=%02X:%04X dbr=%02X f%u (cpuw)\n", wo, val, cpu.pbr, cpu.pc, cpu.dbr, dbg_frames ]
+				dbg_w += 1
+			if [ wo >= 0x012C && wo <= 0x012F && val != 0 && dbg_frames >= 820 && dbg_w < 160 ]
+				printf[ "SNDQ[%04X]=%02X sub=%02X pc=%02X:%04X f%u\n", wo, val, cpu.memory[0x7E0011], cpu.pbr, cpu.pc, dbg_frames ]
+				dbg_w += 1
+			cpu.memory[ww] = val
 		el [ addr >= 0x6000 && addr <= 0x7FFF ]
 			cpu.memory[addr] = val
 		el
@@ -389,7 +1114,9 @@ trinity asnes
 
 	func cpu_set_X [ v: u16 ]
 		cpu.x = v & 0xFF
-		if [ !(cpu.p & 0x10) ]
+		if [ cpu.p & 0x10 ]
+			cpu.xh = 0                  # 8-bit index: high byte forced to 0
+		el
 			cpu.xh = v >> 8
 
 	func cpu_get_Y [] -> u16
@@ -399,7 +1126,9 @@ trinity asnes
 
 	func cpu_set_Y [ v: u16 ]
 		cpu.y = v & 0xFF
-		if [ !(cpu.p & 0x10) ]
+		if [ cpu.p & 0x10 ]
+			cpu.yh = 0                  # 8-bit index: high byte forced to 0
+		el
 			cpu.yh = v >> 8
 
 	# width-aware immediate fetch: #imm is 1 byte in 8-bit mode, 2 in 16-bit.
@@ -436,6 +1165,9 @@ trinity asnes
 		if [ bank != 0x7E && bank != 0x7F ]
 			if [ addr < 0x2000 ]
 				wa : u32 [ 0x7E0000 + a32 ]                   # WRAM mirror
+				if [ dbg_frames >= 140 && dbg_frames <= 175 && addr == 0x0011 && dbg_ev < 80 ]
+					printf[ "R[0011]=%02X pc=%02X:%04X f%u\n", cpu.memory[wa], cpu.pbr, cpu.pc, dbg_frames ]
+					dbg_ev += 1
 				return cpu.memory[ wa ]
 			if [ addr >= 0x2000 && addr <= 0x43FF ]
 				return cpu_r[ addr ]                          # hardware registers
@@ -447,12 +1179,27 @@ trinity asnes
 		if [ bank != 0x7E && bank != 0x7F ]
 			if [ addr < 0x2000 ]
 				wa : u32 [ 0x7E0000 + a32 ]                   # WRAM mirror
+				if [ getenv['ASNES_PAL_LOG'] && addr >= 0x0520 && addr <= 0x0530 && dbg_w < 80 ]
+					printf[ "PALw[%04X]=%02X pc=%02X:%04X dbr=%02X f%u (mirror b=%02X)\n", addr, val, cpu.pbr, cpu.pc, cpu.dbr, dbg_frames, bank ]
+					dbg_w += 1
+				if [ addr >= 0x012C && addr <= 0x012F && val != 0 && dbg_w < 200 ]
+					printf[ "SNDQ[%04X]=%02X sub=%02X pc=%02X:%04X f%u\n", addr, val, cpu.memory[0x7E0011], cpu.pbr, cpu.pc, dbg_frames ]
+					dbg_w += 1
 				cpu.memory[ wa ] = val
 				return
 			if [ addr >= 0x2000 && addr <= 0x43FF ]
 				cpu_w[ addr, val ]                            # hardware registers
 				return
 		fa : u32 [ (bank << 16) | a32 ]
+		if [ getenv['ASNES_PAL_LOG'] && fa >= 0x7E0520 && fa <= 0x7E0530 && dbg_w < 80 ]
+			printf[ "PALw[%04X]=%02X pc=%02X:%04X dbr=%02X f%u (direct b=%02X)\n", a32, val, cpu.pbr, cpu.pc, cpu.dbr, dbg_frames, bank ]
+			dbg_w += 1
+		if [ getenv['ASNES_MAP_LOG'] && fa >= 0x7F4A00 && fa <= 0x7F4A07 && dbg_w2 < 120 ]
+			printf[ "MAPw[%06X]=%02X pc=%02X:%04X f%u\n", fa, val, cpu.pbr, cpu.pc, dbg_frames ]
+			dbg_w2 += 1
+		if [ dbg_frames >= 205 && fa >= 0x7E1F00 && fa <= 0x7E1F0B && dbg_w < 60 ]
+			printf[ "WRAM[%04X]=%02X bank_w-DIRECT bank=%02X pc=%02X:%04X f%u\n", a32, val, bank, cpu.pbr, cpu.pc, dbg_frames ]
+			dbg_w += 1
 		cpu.memory[ fa ] = val
 
 	func cpu_db_r [ addr: u16 ] -> u8
@@ -467,6 +1214,11 @@ trinity asnes
 			return cpu_db_r[ u16[addr] ]
 		lo : u16 [ cpu_db_r[ u16[addr] ] ]
 		hi : u16 [ cpu_db_r[ u16[addr + 1] ] ]
+		if [ u16[addr] == 0x1F0A && dbg_frames >= 219 && dbg_w < 70 ]
+			m0 : u32 [ 0x7E1F0A ]
+			m1 : u32 [ 0x7E1F0B ]
+			printf[ "RD1F0A lo=%02X hi=%02X dbr=%02X mem=%02X %02X pc=%02X:%04X f%u\n", lo, hi, cpu.dbr, cpu.memory[m0], cpu.memory[m1], cpu.pbr, cpu.pc, dbg_frames ]
+			dbg_w += 1
 		return lo | (hi << 8)
 
 	func cpu_write_mem [ addr: u32, v: u16 ]
@@ -475,6 +1227,26 @@ trinity asnes
 		el
 			cpu_db_w[ u16[addr],     u8[v & 0xFF] ]
 			cpu_db_w[ u16[addr + 1], u8[v >> 8]   ]
+
+	# Direct-page accesses are ALWAYS bank 0 (never DBR). Use cpu_r/cpu_w (bank-0
+	# semantics) so dp reads/writes agree with the (dp) pointer fetches, which also
+	# use bank 0. (Bug: routing dp through DBR broke when DBR=$7F, e.g. fzero's
+	# Mode 7 track decompressor doing STA $0C / LDA ($0C),Y.)
+	func cpu_read_dp [ addr: u16 ] -> u16
+		if [ cpu.p & 0x20 ]
+			return cpu_r[ addr ]
+		return cpu_r[ addr ] | (cpu_r[ (addr + 1) & 0xFFFF ] << 8)
+
+	func cpu_write_dp [ addr: u16, v: u16 ]
+		cpu_w[ addr, u8[v & 0xFF] ]
+		if [ !(cpu.p & 0x20) ]
+			cpu_w[ (addr + 1) & 0xFFFF, u8[v >> 8] ]
+
+	# index-width-aware bank-0 dp read (for LDX/LDY/CPX/CPY dp)
+	func cpu_read_dp_x [ addr: u16 ] -> u16
+		if [ cpu.p & 0x10 ]
+			return cpu_r[ addr ]
+		return cpu_r[ addr ] | (cpu_r[ (addr + 1) & 0xFFFF ] << 8)
 
 	# vblank NMI: push PCH,PCL,P (matches RTI pull order), jump to NMI vector.
 	func cpu_nmi []
@@ -487,13 +1259,13 @@ trinity asnes
 					printf[ "  %02X:%04X  %02X %02X %02X %02X   P=%03X A=%04X X=%04X Y=%04X\n", tr_addr[s] >> 16, tr_addr[s] & 0xFFFF, tr_b0[s], tr_b1[s], tr_b2[s], tr_b3[s], tr_p[s], tr_a[s], tr_x[s], tr_y[s] ]
 				dbg_bad += 1
 		if [ !cpu.e ]                              # native mode: interrupt pushes PBR
-			cpu_w[ 0x0100 + cpu.sp, cpu.pbr ]
+			cpu_w[ cpu.sp, cpu.pbr ]
 			cpu.sp -= 1
-		cpu_w[ 0x0100 + cpu.sp, u8[cpu.pc >> 8] ]
+		cpu_w[ cpu.sp, u8[cpu.pc >> 8] ]
 		cpu.sp -= 1
-		cpu_w[ 0x0100 + cpu.sp, u8[cpu.pc & 0xFF] ]
+		cpu_w[ cpu.sp, u8[cpu.pc & 0xFF] ]
 		cpu.sp -= 1
-		cpu_w[ 0x0100 + cpu.sp, cpu.p ]
+		cpu_w[ cpu.sp, cpu.p ]
 		cpu.sp -= 1
 		cpu.p  |= 0x04
 		cpu.p  &= ~0x08
@@ -507,6 +1279,27 @@ trinity asnes
 			printf[ "NMI fired: e=%d vec=%04X -> handler %04X (nmitimen=%02X)\n",
 				cpu.e, vec, cpu.pc, nmitimen ]
 			dbg_cpu += 1
+
+	# Maskable H/V scanline IRQ. Mirrors cpu_nmi's push sequence; vector $FFFE
+	# (emu) / $FFEE (native). Caller checks the I-flag before invoking.
+	func cpu_irq []
+		if [ !cpu.e ]                              # native mode: push PBR
+			cpu_w[ cpu.sp, cpu.pbr ]
+			cpu.sp -= 1
+		cpu_w[ cpu.sp, u8[cpu.pc >> 8] ]
+		cpu.sp -= 1
+		cpu_w[ cpu.sp, u8[cpu.pc & 0xFF] ]
+		cpu.sp -= 1
+		cpu_w[ cpu.sp, cpu.p ]
+		cpu.sp -= 1
+		cpu.p  |= 0x04
+		cpu.p  &= ~0x08
+		vec    : u16 [ (cpu.e) ? 0xFFFE : 0xFFEE ]
+		lo     : u8  [ cpu_r[ vec ] ]
+		hi     : u8  [ cpu_r[ vec + 1 ] ]
+		cpu.pc  = lo | (hi << 8)
+		cpu.pbr = 0
+		irq_occurred = true
 
 	# --- Gaussian interpolation for BRR samples ---
 
@@ -895,22 +1688,52 @@ trinity asnes
 		nmi_cyc   : i32  [ 59667 * 225 / 262 ]
 		nmi_fired : bool [ false ]
 		fcpu      : i32  [ 0 ]
+		cur_line  : i32  [ 0 ]
+		irq_line_fired : i32 [ -1 ]
 		in_vblank = false
+		hdma_setup[]
 		while [ fcpu < 59667 ]
 			if [ cpu_wai && !nmi_fired ]
-				fcpu = nmi_cyc
+				wtar : i32 [ nmi_cyc ]
+				wim  : u8  [ nmitimen & 0x30 ]
+				if [ wim != 0 && (cpu.p & 0x04) == 0 ]
+					witl : i32 [ -1 ]
+					if [ wim == 0x10 ] witl = (fcpu / 228) + 1
+					el [ irq_line_fired != i32[vtime] ] witl = i32[vtime]
+					if [ witl >= 0 ]
+						wic : i32 [ witl * 228 ]
+						if [ wic > fcpu && wic < wtar ] wtar = wic
+				fcpu = wtar
 			if [ !nmi_fired && fcpu >= nmi_cyc ]
 				in_vblank    = true
 				nmi_occurred = true
 				cpu_wai      = false
 				if [ nmitimen & 0x80 ] cpu_nmi[]
 				nmi_fired = true
+			cnl : i32 [ fcpu / 228 ]
+			im  : u8  [ nmitimen & 0x30 ]
+			if [ im != 0 && (cpu.p & 0x04) == 0 && cnl < 224 ]
+				do_irq : bool [ false ]
+				if [ im == 0x10 ]
+					if [ cnl != irq_line_fired ] do_irq = true
+				el [ cnl >= i32[vtime] && irq_line_fired != i32[vtime] ]
+					do_irq = true
+				if [ do_irq ]
+					cpu_wai = false
+					cpu_irq[]
+					if [ im == 0x10 ] irq_line_fired = cnl
+					el irq_line_fired = i32[vtime]
 			if [ cpu_wai ]
 				break
 			c : i32 [ cpu_step[] ]
 			if [ c < 2 ] c = 2
 			fcpu += c
 			frame_cycle = fcpu
+			nl : i32 [ fcpu / 228 ]
+			while [ cur_line < nl && cur_line < 224 ]
+				hdma_run_line[]
+				ppu_snapshot_line[ cur_line ]
+				cur_line += 1
 			spc.cycle_accum += c * 1024
 			while [ spc.cycle_accum >= 7169 && done < samples ]
 				spc_step[]
@@ -920,6 +1743,10 @@ trinity asnes
 					sub -= 16
 					mix_one_sample[ done ]
 					done += 1
+		while [ cur_line < 224 ]
+			hdma_run_line[]
+			ppu_snapshot_line[ cur_line ]
+			cur_line += 1
 		if [ !nmi_fired ]
 			in_vblank    = true
 			nmi_occurred = true
@@ -953,16 +1780,41 @@ trinity asnes
 		nmi_cyc   : i32  [ 59667 * 225 / 262 ]
 		nmi_fired : bool [ false ]
 		fcpu      : i32  [ 0 ]
+		cur_line  : i32  [ 0 ]
+		irq_line_fired : i32 [ -1 ]
 		in_vblank = false
+		hdma_setup[]
 		while [ fcpu < 59667 ]
 			if [ cpu_wai && !nmi_fired ]
-				fcpu = nmi_cyc
+				wtar : i32 [ nmi_cyc ]
+				wim  : u8  [ nmitimen & 0x30 ]
+				if [ wim != 0 && (cpu.p & 0x04) == 0 ]
+					witl : i32 [ -1 ]
+					if [ wim == 0x10 ] witl = (fcpu / 228) + 1
+					el [ irq_line_fired != i32[vtime] ] witl = i32[vtime]
+					if [ witl >= 0 ]
+						wic : i32 [ witl * 228 ]
+						if [ wic > fcpu && wic < wtar ] wtar = wic
+				fcpu = wtar
 			if [ !nmi_fired && fcpu >= nmi_cyc ]
 				in_vblank    = true
 				nmi_occurred = true
 				cpu_wai      = false
 				if [ nmitimen & 0x80 ] cpu_nmi[]
 				nmi_fired = true
+			cnl : i32 [ fcpu / 228 ]
+			im  : u8  [ nmitimen & 0x30 ]
+			if [ im != 0 && (cpu.p & 0x04) == 0 && cnl < 224 ]
+				do_irq : bool [ false ]
+				if [ im == 0x10 ]
+					if [ cnl != irq_line_fired ] do_irq = true
+				el [ cnl >= i32[vtime] && irq_line_fired != i32[vtime] ]
+					do_irq = true
+				if [ do_irq ]
+					cpu_wai = false
+					cpu_irq[]
+					if [ im == 0x10 ] irq_line_fired = cnl
+					el irq_line_fired = i32[vtime]
 			if [ cpu_wai ]
 				break
 			port_read = false
@@ -970,6 +1822,11 @@ trinity asnes
 			if [ c < 1 ] c = 1
 			fcpu += c
 			frame_cycle = fcpu
+			nl : i32 [ fcpu / 228 ]
+			while [ cur_line < nl && cur_line < 224 ]
+				hdma_run_line[]
+				ppu_snapshot_line[ cur_line ]
+				cur_line += 1
 			spc.cycle_accum += c * 1024
 			if [ port_read ]
 				while [ spc.cycle_accum >= 7169 && done < samples ]
@@ -980,6 +1837,10 @@ trinity asnes
 						sub -= 16
 						mix_one_sample[ done ]
 						done += 1
+		while [ cur_line < 224 ]
+			hdma_run_line[]
+			ppu_snapshot_line[ cur_line ]
+			cur_line += 1
 		if [ !nmi_fired ]
 			in_vblank    = true
 			nmi_occurred = true
@@ -1073,6 +1934,7 @@ trinity asnes
 		expect size < 0x1000000, 'ROM too large'
 
 		cpu = cpu_state []
+		ppu = ppu_state []
 		cpu.memory = calloc[ 1, 0x1000000 ]
 		nbanks : i32 [ size / 0x8000 ]
 		if [ nbanks < 1 ] nbanks = 1
@@ -1099,7 +1961,7 @@ trinity asnes
 		printf[ "IRQ vector: 0x%02X%02X\n", irq_hi, irq_lo ]
 
 		cpu.pc = reset_vector
-		cpu.sp = 0x01FF & 0xFF
+		cpu.sp = 0x01FF
 		cpu.p  = 0x34
 
 		reset_spc[]
@@ -1223,7 +2085,59 @@ trinity asnes
 		height     = 448
 		background = 'Background'
 
+	# display-pipeline test: fill a 256x224 CPU array with an animated pattern,
+	# upload it to a Texture, and blit it to the screen scaled to the window.
+	# keyboard -> SNES controller 1. WASD = D-pad, ;'./ = X Y A B, Enter/Shift =
+	# Start/Select, Q/E = L/R. Pad bit layout: B Y Sel St Up Dn L R A X L R (bit15..4).
+	public func on_key [ ev: Event ]
+		code : i32  [ ev.key.unicode ]
+		down : bool [ ev.key.state ]
+		bit  : i32  [ -1 ]
+		if   [ code == 87 ]  bit = 11                   # W  Up
+		el [ code == 83 ]  bit = 10                   # S  Down
+		el [ code == 65 ]  bit = 9                    # A  Left
+		el [ code == 68 ]  bit = 8                    # D  Right
+		el [ code == 47 ]  bit = 15                   # /  B
+		el [ code == 39 ]  bit = 14                   # '  Y
+		el [ code == 46 ]  bit = 7                    # .  A
+		el [ code == 59 ]  bit = 6                    # ;  X
+		el [ code == 257 ] bit = 12                   # Enter  Start
+		el [ code == 340 || code == 344 ] bit = 13    # Shift  Select
+		el [ code == 81 ]  bit = 5                    # Q  L
+		el [ code == 69 ]  bit = 4                    # E  R
+		if [ bit >= 0 ]
+			m : u16 [ u16[1 << bit] ]
+			if [ down ] pad1 = pad1 | m
+			el pad1 = pad1 & (~m)
+
+	public func on_canvas [ cv: Canvas ]
+		if [ putest ]
+			if [ !screen_tex ]
+				screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
+			for [ y: i32 0, y < 224, y += 1 ]
+				for [ x: i32 0, x < 256, x += 1 ]
+					rr : u32 [ u32[x] & 0xFF ]
+					gg : u32 [ u32[y] & 0xFF ]
+					bb : u32 [ u32[(x + y + test_t) & 0xFF] ]
+					test_buf[ y * 256 + x ] = 0xFF000000 | (bb << 16) | (gg << 8) | rr
+			test_t += 1
+			screen_tex.upload[ test_buf, 256 * 224 * 4 ]
+			dst : rect [ x: 0.0, y: 0.0, w: 512.0, h: 448.0 ]
+			cv.draw_image[ screen_tex, dst ]
+			return
+		if [ !cpu ]
+			super.on_canvas[ cv ]
+			return
+		ppu_render[]
+		if [ !screen_tex ]
+			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
+		screen_tex.upload[ ppu.framebuf, 256 * 224 * 4 ]
+		out : rect [ x: 0.0, y: 0.0, w: 512.0, h: 448.0 ]
+		cv.draw_image[ screen_tex, out ]
+
 	func on_render [ w: Window ] -> Elements
+		if [ putest ]
+			return null
 		if [ spctest ]
 			if [ !spc ] spc_test[]
 			return null
@@ -1242,6 +2156,64 @@ trinity asnes
 		# after init[], so load lazily on the first frame once rom is set.
 		if [ rom && !cpu ] load[]
 		if [ !cpu ] return null
+		df : symbol [ getenv[ 'ASNES_DUMP_FRAME' ] ]
+		if [ df && dbg_frames == atoi[ df ] ]
+			fn : symbol [ getenv[ 'ASNES_DUMP_FILE' ] ]
+			if [ fn ]
+				wf : ref FILE [ fopen[ fn, 'wb' ] ]
+				if [ wf ]
+					fwrite[ cpu.memory + 0x7E0000, 1, 0x20000, wf ]
+					fwrite[ ppu.vram,  1, 0x10000, wf ]
+					fwrite[ ppu.cgram, 1, 0x200,   wf ]
+					fwrite[ ppu.oam,   1, 0x220,   wf ]
+					rg : new u8 [ 64 ]
+					rg[0]  = ppu.inidisp
+					rg[1]  = ppu.bgmode
+					rg[2]  = ppu.mosaic
+					rg[3]  = ppu.obsel
+					rg[4]  = ppu.tm
+					rg[5]  = ppu.ts
+					rg[6]  = ppu.vmain
+					rg[7]  = ppu.bg_sc[0]
+					rg[8]  = ppu.bg_sc[1]
+					rg[9]  = ppu.bg_sc[2]
+					rg[10] = ppu.bg_sc[3]
+					rg[11] = ppu.bg_nba[0]
+					rg[12] = ppu.bg_nba[1]
+					for [ k: i32 0, k < 4, k += 1 ]
+						rg[13 + k * 2] = u8[ ppu.bg_hofs[k] & 0xFF ]
+						rg[14 + k * 2] = u8[ ppu.bg_hofs[k] >> 8 ]
+						rg[21 + k * 2] = u8[ ppu.bg_vofs[k] & 0xFF ]
+						rg[22 + k * 2] = u8[ ppu.bg_vofs[k] >> 8 ]
+					rg[29] = cpu.memory[0x420C]              # HDMAEN
+					for [ ch: i32 0, ch < 8, ch += 1 ]
+						rg[30 + ch] = cpu.memory[0x4300 + (ch << 4)]   # DMAP per channel
+						rg[38 + ch] = cpu.memory[0x4301 + (ch << 4)]   # BBAD ($21xx target)
+					rg[46] = ppu.m7sel
+					rg[47] = u8[ u16[ppu.m7x] & 0xFF ]
+					rg[48] = u8[ (u16[ppu.m7x] >> 8) & 0xFF ]
+					rg[49] = u8[ u16[ppu.m7y] & 0xFF ]
+					rg[50] = u8[ (u16[ppu.m7y] >> 8) & 0xFF ]
+					rg[51] = u8[ u16[ppu.m7hofs] & 0xFF ]
+					rg[52] = u8[ (u16[ppu.m7hofs] >> 8) & 0xFF ]
+					rg[53] = u8[ u16[ppu.m7vofs] & 0xFF ]
+					rg[54] = u8[ (u16[ppu.m7vofs] >> 8) & 0xFF ]
+					rg[55] = ppu.cgwsel
+					rg[56] = ppu.tmw
+					rg[57] = ppu.tsw
+					rg[58] = ppu.w12sel
+					rg[59] = ppu.wh0
+					rg[60] = ppu.wh1
+					fwrite[ rg, 1, 64, wf ]
+					fwrite[ line_mode, 1, 224, wf ]
+					fwrite[ line_m7a, 2, 224, wf ]
+					fwrite[ line_m7b, 2, 224, wf ]
+					fwrite[ line_m7c, 2, 224, wf ]
+					fwrite[ line_m7d, 2, 224, wf ]
+					fwrite[ line_coldata, 2, 224, wf ]
+					fwrite[ line_cgadsub, 1, 224, wf ]
+					fclose[ wf ]
+			exit[ 0 ]
 		# silent boot uses continuous SPC (load the song); playback uses the atomic
 		# co-scheduler (clean ding + music, no port race). switch after the upload.
 		if [ dbg_frames < 28 ]
@@ -2907,7 +3879,7 @@ trinity asnes
 		return res
 
 	# width-aware read through a 24-bit [dp] long pointer (and the [dp],Y form)
-	func cpu_read_long_dp [ dp: u8 ] -> u16
+	func cpu_read_long_dp [ dp: u16 ] -> u16
 		lo   : u32 [ cpu_r[dp] ]
 		mid  : u32 [ cpu_r[dp + 1] ]
 		bank : u32 [ cpu_r[dp + 2] ]
@@ -2916,7 +3888,7 @@ trinity asnes
 		if [ cpu.p & 0x20 ] return cpu.memory[la]
 		return cpu.memory[la] | (cpu.memory[la + 1] << 8)
 
-	func cpu_read_long_dp_y [ dp: u8 ] -> u16
+	func cpu_read_long_dp_y [ dp: u16 ] -> u16
 		lo   : u32 [ cpu_r[dp] ]
 		mid  : u32 [ cpu_r[dp + 1] ]
 		bank : u32 [ cpu_r[dp + 2] ]
@@ -2942,12 +3914,12 @@ trinity asnes
 
 	# stack-relative (d,s) read and its (d,s),Y indirect form
 	func cpu_read_sr [] -> u16
-		sr:u8[cpu_rb[]]  sa:u16[ 0x0100 + ((cpu.sp + sr) & 0xFF) ]
+		sr:u8[cpu_rb[]]  sa:u16[ (cpu.sp + sr) & 0xFFFF ]
 		if [ cpu.p & 0x20 ] return cpu_r[sa]
 		return cpu_r[sa] | (cpu_r[sa + 1] << 8)
 
 	func cpu_read_sr_y [] -> u16
-		sr:u8[cpu_rb[]]  sa:u16[ 0x0100 + ((cpu.sp + sr) & 0xFF) ]
+		sr:u8[cpu_rb[]]  sa:u16[ (cpu.sp + sr) & 0xFFFF ]
 		base:u16[ cpu_r[sa] | (cpu_r[sa + 1] << 8) ]
 		addr:u16[ base + cpu_get_Y[] ]
 		if [ cpu.p & 0x20 ] return cpu_r[addr]
@@ -2976,9 +3948,9 @@ trinity asnes
 
 	# push a 16-bit value (high then low, matching the stack convention)
 	func cpu_push16 [ v: u16 ]
-		cpu_w[ 0x0100 + cpu.sp, u8[v >> 8] ]
+		cpu_w[ cpu.sp, u8[v >> 8] ]
 		cpu.sp -= 1
-		cpu_w[ 0x0100 + cpu.sp, u8[v & 0xFF] ]
+		cpu_w[ cpu.sp, u8[v & 0xFF] ]
 		cpu.sp -= 1
 
 	# --- 65816 CPU step ---
@@ -2995,12 +3967,12 @@ trinity asnes
 		tr_x[slot]  = cpu.x
 		tr_y[slot]  = cpu.y
 		tr_i += 1
-		if [ dbg_frames >= 200 && cpu.pbr == 0xFC && !tr_done ]
-			printf[ "  ---- 32 instrs up to first bank-FC exec (f%u) ----\n", dbg_frames ]
-			for [ k: i32 0, k < 32, k += 1 ]
-				s2 : i32 [ (tr_i + k) % 32 ]
-				printf[ "  %02X:%04X  %02X %02X %02X %02X   P=%03X A=%04X X=%04X Y=%04X\n", tr_addr[s2] >> 16, tr_addr[s2] & 0xFFFF, tr_b0[s2], tr_b1[s2], tr_b2[s2], tr_b3[s2], tr_p[s2], tr_a[s2], tr_x[s2], tr_y[s2] ]
-			tr_done = true
+		if [ cpu.pbr == 0x09 && cpu.pc >= 0xFA60 && cpu.pc <= 0xFA72 && dbg_frames >= 905 && dbg_frames <= 912 && dbg_t < 60 ]
+			printf[ "SE 09:%04X D=%04X X=%04X Y=%04X P=%03X f%u\n", cpu.pc, cpu.dp, cpu.x, cpu.y, cpu.p, dbg_frames ]
+			dbg_t += 1
+		if [ dbg_frames == 300 && dbg_w < 80 ]
+			printf[ "  %02X:%04X  %02X %02X %02X %02X   P=%03X A=%04X X=%04X Y=%04X dp00=%02X%02X dp03=%02X\n", cpu.pbr, cpu.pc, cpu_fetch_at[cpu.pc], cpu_fetch_at[cpu.pc+1], cpu_fetch_at[cpu.pc+2], cpu_fetch_at[cpu.pc+3], cpu.p, cpu.a, cpu.x, cpu.y, cpu_db_r[1], cpu_db_r[0], cpu_db_r[3] ]
+			dbg_w += 1
 		opcode   : u8   [ cpu_rb[] ]
 		cycles   : i32  [ 0 ]
 		old_pc   : u16  [ cpu.pc ]
@@ -3030,8 +4002,8 @@ trinity asnes
 				cycles = 2
 
 			case 0xA5  # LDA dp (width-aware)
-				addr   : u8 [ cpu_rb[] ]
-				cpu_set_A[ cpu_read_mem[addr] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_set_A[ cpu_read_dp[addr] ]
 				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
@@ -3064,7 +4036,7 @@ trinity asnes
 				cycles = 5
 
 			case 0xB7  # LDA [dp],Y (long indirect indexed, width-aware)
-				dp     : u8  [ cpu_rb[] ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				lo     : u32 [ cpu_r[dp] ]
 				mid    : u32 [ cpu_r[dp + 1] ]
 				bank   : u32 [ cpu_r[dp + 2] ]
@@ -3094,25 +4066,29 @@ trinity asnes
 				cycles = 4
 
 			case 0xA1  # LDA (dp,X) (width-aware)
-				dp     : u8  [ cpu_rb[] ]
-				ptr    : u16 [ (dp + cpu.x) & 0xFF ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				ptr    : u16 [ (dp + cpu.x) & 0xFFFF ]
 				addr   : u16 [ cpu_r[ptr] | (cpu_r[ptr + 1] << 8) ]
 				cpu_set_A[ cpu_read_mem[addr] ]
 				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 6 + ((ualign) ? 1 : 0)
 
 			case 0xB1  # LDA (dp),Y (width-aware)
-				dp     : u8  [ cpu_rb[] ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				base   : u16 [ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
 				addr   : u16 [ base + cpu_get_Y[] ]
 				cross  : bool [ (base & 0xFF00) != (addr & 0xFF00) ]
+				if [ getenv['ASNES_MAP_LOG'] && cpu.pbr == 0x03 && (dp == 0x0009 || dp == 0x000C) && dbg_w2 < 40 ]
+					printf[ "DPY dp=%04X base=%04X Y=%02X addr=%04X DBR=%02X D=%04X val=%02X pc=%04X f%u\n",
+						dp, base, cpu_get_Y[], addr, cpu.dbr, cpu.dp, cpu_db_r[addr], cpu.pc, dbg_frames ]
+					dbg_w2 += 1
 				cpu_set_A[ cpu_read_mem[addr] ]
 				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 5 + ((cross) ? 1 : 0) + ((ualign) ? 1 : 0)
 
 			case 0x85  # STA dp (width-aware)
-				addr   : u8 [ cpu_rb[] ]
-				cpu_write_mem[ addr, cpu_get_A[] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_get_A[] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x8D  # STA abs (width-aware)
@@ -3131,7 +4107,7 @@ trinity asnes
 				cycles = 5
 
 			case 0x86  # STX dp
-				addr   : u8 [ cpu_rb[] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_w[ addr, cpu.x ]
 				if [ !(cpu.p & 0x10) ] cpu_w[ addr + 1, cpu.xh ]
 				cycles = 3
@@ -3143,7 +4119,7 @@ trinity asnes
 				cycles = 4
 
 			case 0x84  # STY dp
-				addr   : u8 [ cpu_rb[] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_w[ addr, cpu.y ]
 				if [ !(cpu.p & 0x10) ] cpu_w[ addr + 1, cpu.yh ]
 				cycles = 3
@@ -3155,8 +4131,8 @@ trinity asnes
 				cycles = 4
 
 			case 0x95  # STA dp,X
-				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
-				cpu_write_mem[ addr, cpu_get_A[] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_get_A[] ]
 				cycles = 4 + ((ualign) ? 1 : 0)
 
 			case 0x9D  # STA abs,X (width-aware)
@@ -3170,21 +4146,21 @@ trinity asnes
 				cycles = 5
 
 			case 0x81  # STA (dp,X) (width-aware)
-				dp     : u8  [ cpu_rb[] ]
-				ptr    : u16 [ (dp + cpu.x) & 0xFF ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				ptr    : u16 [ (dp + cpu.x) & 0xFFFF ]
 				addr   : u16 [ cpu_r[ptr] | (cpu_r[ptr + 1] << 8) ]
 				cpu_write_mem[ addr, cpu_get_A[] ]
 				cycles = 6 + ((ualign) ? 1 : 0)
 
 			case 0x91  # STA (dp),Y (width-aware)
-				dp     : u8  [ cpu_rb[] ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				base   : u16 [ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
 				addr   : u16 [ base + cpu_get_Y[] ]
 				cpu_write_mem[ addr, cpu_get_A[] ]
 				cycles = 6 + ((ualign) ? 1 : 0)
 
 			case 0xA4  # LDY dp (width-aware on X flag)
-				addr   : u8 [ cpu_rb[] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				if [ cpu.p & 0x10 ]
 					cpu_set_Y[ cpu_r[addr] ]
 				el
@@ -3193,7 +4169,7 @@ trinity asnes
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0xA6  # LDX dp (width-aware on X flag)
-				addr   : u8 [ cpu_rb[] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				if [ cpu.p & 0x10 ]
 					cpu_set_X[ cpu_r[addr] ]
 				el
@@ -3211,8 +4187,8 @@ trinity asnes
 				cycles = 4
 
 			case 0xB6  # LDX dp,Y
-				addr   : u8 [ (cpu_rb[] + cpu.y) & 0xFF ]
-				cpu_set_X[ cpu_read_mem_x[addr] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[] + cpu_get_Y[]) & 0xFFFF ]
+				cpu_set_X[ cpu_read_dp_x[addr] ]
 				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 4 + ((ualign) ? 1 : 0)
 
@@ -3220,6 +4196,9 @@ trinity asnes
 				base   : u16 [ cpu_rw[] ]
 				addr   : u16 [ base + cpu_get_Y[] ]
 				cross  : bool [ (base & 0xFF00) != (addr & 0xFF00) ]
+				if [ getenv['ASNES_PAL_LOG'] && base == 0xA463 ]
+					printf[ "LDX $A463,Y: Y=%04X addr=%04X DBR=%02X read=%04X f%u\n",
+						cpu_get_Y[], addr, cpu.dbr, cpu_read_mem_x[addr], dbg_frames ]
 				cpu_set_X[ cpu_read_mem_x[addr] ]
 				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 4 + ((cross) ? 1 : 0)
@@ -3291,12 +4270,15 @@ trinity asnes
 				cycles = 2
 
 			case 0xBA  # TSX (width-aware)
-				cpu_set_X[ 0x0100 | cpu.sp ]
+				cpu_set_X[ cpu.sp ]
 				cpu_nz_x[ cpu_get_X[] ]
 				cycles = 2
 
 			case 0x9A  # TXS
-				cpu.sp = cpu.x
+				if [ cpu.e ]
+					cpu.sp = 0x0100 | cpu.x
+				el
+					cpu.sp = cpu.x | (cpu.xh << 8)
 				cycles = 2
 
 			case 0x4C  # JMP abs
@@ -3311,16 +4293,16 @@ trinity asnes
 			case 0x20  # JSR abs
 				target : u16 [ cpu_rw[] ]
 				ret    : u16 [ cpu.pc - 1 ]
-				cpu_w[ 0x0100 + cpu.sp, u8[ret >> 8] ]
+				cpu_w[ cpu.sp, u8[ret >> 8] ]
 				cpu.sp -= 1
-				cpu_w[ 0x0100 + cpu.sp, u8[ret & 0xFF] ]
+				cpu_w[ cpu.sp, u8[ret & 0xFF] ]
 				cpu.sp -= 1
 				cpu.pc  = target
 				cycles  = 6
 
 			case 0x60  # RTS
-				lo     : u16 [ cpu_r[0x0100 + u16[cpu.sp + 1]] ]
-				hi     : u16 [ cpu_r[0x0100 + u16[cpu.sp + 2]] ]
+				lo     : u16 [ cpu_r[u16[cpu.sp + 1]] ]
+				hi     : u16 [ cpu_r[u16[cpu.sp + 2]] ]
 				cpu.sp += 2
 				cpu.pc  = (lo | (hi << 8)) + 1
 				cycles  = 6
@@ -3420,8 +4402,8 @@ trinity asnes
 				cycles  = 2
 
 			case 0x65  # ADC dp
-				addr   : u8  [ cpu_rb[] ]
-				cpu_adc_a[ cpu_read_mem[addr] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_adc_a[ cpu_read_dp[addr] ]
 				cycles  = 3 + ((ualign) ? 1 : 0)
 
 			case 0x6D  # ADC abs
@@ -3448,8 +4430,8 @@ trinity asnes
 				cycles  = 2
 
 			case 0xE5  # SBC dp
-				addr   : u8  [ cpu_rb[] ]
-				cpu_sbc_a[ cpu_read_mem[addr] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_sbc_a[ cpu_read_dp[addr] ]
 				cycles  = 3 + ((ualign) ? 1 : 0)
 
 			case 0xED  # SBC abs
@@ -3469,8 +4451,8 @@ trinity asnes
 				cycles = 2
 
 			case 0xC5  # CMP dp
-				addr   : u8  [ cpu_rb[] ]
-				cpu_cmp_a[ cpu_read_mem[addr] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_cmp_a[ cpu_read_dp[addr] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0xCD  # CMP abs (width-aware on M flag)
@@ -3512,8 +4494,8 @@ trinity asnes
 				cycles = 2
 
 			case 0xE6  # INC dp
-				addr  : u8 [ cpu_rb[] ]
-				cpu_write_mem[ addr, cpu_inc_v[ cpu_read_mem[addr] ] ]
+				addr  : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_inc_v[ cpu_read_dp[addr] ] ]
 				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0xEE  # INC abs
@@ -3532,8 +4514,8 @@ trinity asnes
 				cycles = 2
 
 			case 0xC6  # DEC dp
-				addr  : u8 [ cpu_rb[] ]
-				cpu_write_mem[ addr, cpu_dec_v[ cpu_read_mem[addr] ] ]
+				addr  : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_dec_v[ cpu_read_dp[addr] ] ]
 				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0xCE  # DEC abs
@@ -3557,8 +4539,8 @@ trinity asnes
 				cycles = 2
 
 			case 0x25  # AND dp
-				addr  : u8 [ cpu_rb[] ]
-				cpu_and_a[ cpu_read_mem[addr] ]
+				addr  : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_and_a[ cpu_read_dp[addr] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x2D  # AND abs
@@ -3567,8 +4549,8 @@ trinity asnes
 				cycles = 4
 
 			case 0x01  # ORA (dp,X) — width-aware (A follows M flag)
-				dp     : u8  [ cpu_rb[] ]
-				ptr    : u16 [ (dp + cpu.x) & 0xFF ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				ptr    : u16 [ (dp + cpu.x) & 0xFFFF ]
 				addr   : u16 [ cpu_r[ptr] | (cpu_r[ptr + 1] << 8) ]
 				res    : u16 [ cpu_get_A[] | cpu_read_mem[addr] ]
 				cpu_set_A[ res ]
@@ -3584,8 +4566,8 @@ trinity asnes
 				cycles = 2
 
 			case 0x05  # ORA dp
-				addr  : u8 [ cpu_rb[] ]
-				cpu_ora_a[ cpu_read_mem[addr] ]
+				addr  : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_ora_a[ cpu_read_dp[addr] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x0D  # ORA abs
@@ -3599,8 +4581,8 @@ trinity asnes
 				cycles = 2
 
 			case 0x45  # EOR dp
-				addr  : u8 [ cpu_rb[] ]
-				cpu_eor_a[ cpu_read_mem[addr] ]
+				addr  : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_eor_a[ cpu_read_dp[addr] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x4D  # EOR abs
@@ -3613,8 +4595,8 @@ trinity asnes
 				cycles = 2
 
 			case 0x06  # ASL dp
-				addr  : u8 [ cpu_rb[] ]
-				cpu_write_mem[ addr, cpu_asl_v[ cpu_read_mem[addr] ] ]
+				addr  : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_asl_v[ cpu_read_dp[addr] ] ]
 				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0x4A  # LSR A
@@ -3622,8 +4604,8 @@ trinity asnes
 				cycles = 2
 
 			case 0x46  # LSR dp
-				addr  : u8 [ cpu_rb[] ]
-				cpu_write_mem[ addr, cpu_lsr_v[ cpu_read_mem[addr] ] ]
+				addr  : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_lsr_v[ cpu_read_dp[addr] ] ]
 				cycles = 5 + ((ualign) ? 1 : 0)
 
 			case 0x2A  # ROL A
@@ -3631,8 +4613,8 @@ trinity asnes
 				cycles  = 2
 
 			case 0x26  # ROL dp
-				addr   : u8 [ cpu_rb[] ]
-				cpu_write_mem[ addr, cpu_rol_v[ cpu_read_mem[addr] ] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_rol_v[ cpu_read_dp[addr] ] ]
 				cycles  = 5 + ((ualign) ? 1 : 0)
 
 			case 0x6A  # ROR A
@@ -3640,13 +4622,13 @@ trinity asnes
 				cycles  = 2
 
 			case 0x66  # ROR dp
-				addr   : u8 [ cpu_rb[] ]
-				cpu_write_mem[ addr, cpu_ror_v[ cpu_read_mem[addr] ] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_ror_v[ cpu_read_dp[addr] ] ]
 				cycles  = 5 + ((ualign) ? 1 : 0)
 
 			case 0x24  # BIT dp
-				addr  : u8 [ cpu_rb[] ]
-				cpu_bit_a[ cpu_read_mem[addr] ]
+				addr  : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_bit_a[ cpu_read_dp[addr] ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x2C  # BIT abs
@@ -3656,25 +4638,25 @@ trinity asnes
 
 			case 0x48  # PHA
 				if [ cpu.p & 0x20 ]
-					cpu_w[ 0x0100 + cpu.sp, cpu.a ]
+					cpu_w[ cpu.sp, cpu.a ]
 					cpu.sp -= 1
 				el
-					cpu_w[ 0x0100 + cpu.sp, cpu.b ]
+					cpu_w[ cpu.sp, cpu.b ]
 					cpu.sp -= 1
-					cpu_w[ 0x0100 + cpu.sp, cpu.a ]
+					cpu_w[ cpu.sp, cpu.a ]
 					cpu.sp -= 1
 				cycles  = 3
 
 			case 0x68  # PLA
 				if [ cpu.p & 0x20 ]
 					cpu.sp += 1
-					cpu.a   = cpu_r[ 0x0100 + cpu.sp ]
+					cpu.a   = cpu_r[ cpu.sp ]
 					cpu.p   = (cpu.p & ~0x82) | ((cpu.a == 0) ? 0x02 : 0) | (cpu.a & 0x80)
 				el
 					cpu.sp += 1
-					al     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					al     : u16 [ cpu_r[ cpu.sp ] ]
 					cpu.sp += 1
-					ah     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					ah     : u16 [ cpu_r[ cpu.sp ] ]
 					cpu.a   = al
 					cpu.b   = ah
 					av     : u16 [ al | (ah << 8) ]
@@ -3682,47 +4664,47 @@ trinity asnes
 				cycles  = 4
 
 			case 0x08  # PHP
-				cpu_w[ 0x0100 + cpu.sp, cpu.p ]
+				cpu_w[ cpu.sp, cpu.p ]
 				cpu.sp -= 1
 				cycles  = 3
 
 			case 0x28  # PLP
 				cpu.sp += 1
-				cpu.p   = cpu_r[ 0x0100 + cpu.sp ]
+				cpu.p   = cpu_r[ cpu.sp ]
 				cycles  = 4
 
 			case 0xDA  # PHX
 				if [ cpu.p & 0x10 ]
-					cpu_w[ 0x0100 + cpu.sp, cpu.x ]
+					cpu_w[ cpu.sp, cpu.x ]
 					cpu.sp -= 1
 				el
-					cpu_w[ 0x0100 + cpu.sp, cpu.xh ]
+					cpu_w[ cpu.sp, cpu.xh ]
 					cpu.sp -= 1
-					cpu_w[ 0x0100 + cpu.sp, cpu.x ]
+					cpu_w[ cpu.sp, cpu.x ]
 					cpu.sp -= 1
 				cycles = 3
 
 			case 0x5A  # PHY
 				if [ cpu.p & 0x10 ]
-					cpu_w[ 0x0100 + cpu.sp, cpu.y ]
+					cpu_w[ cpu.sp, cpu.y ]
 					cpu.sp -= 1
 				el
-					cpu_w[ 0x0100 + cpu.sp, cpu.yh ]
+					cpu_w[ cpu.sp, cpu.yh ]
 					cpu.sp -= 1
-					cpu_w[ 0x0100 + cpu.sp, cpu.y ]
+					cpu_w[ cpu.sp, cpu.y ]
 					cpu.sp -= 1
 				cycles = 3
 
 			case 0xFA  # PLX
 				if [ cpu.p & 0x10 ]
 					cpu.sp += 1
-					cpu.x   = cpu_r[ 0x0100 + cpu.sp ]
+					cpu.x   = cpu_r[ cpu.sp ]
 					cpu.p   = (cpu.p & ~0x82) | ((cpu.x == 0) ? 0x02 : 0) | (cpu.x & 0x80)
 				el
 					cpu.sp += 1
-					xl     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					xl     : u16 [ cpu_r[ cpu.sp ] ]
 					cpu.sp += 1
-					xh     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					xh     : u16 [ cpu_r[ cpu.sp ] ]
 					cpu.x   = xl
 					cpu.xh  = xh
 					xv     : u16 [ xl | (xh << 8) ]
@@ -3732,13 +4714,13 @@ trinity asnes
 			case 0x7A  # PLY
 				if [ cpu.p & 0x10 ]
 					cpu.sp += 1
-					cpu.y   = cpu_r[ 0x0100 + cpu.sp ]
+					cpu.y   = cpu_r[ cpu.sp ]
 					cpu.p   = (cpu.p & ~0x82) | ((cpu.y == 0) ? 0x02 : 0) | (cpu.y & 0x80)
 				el
 					cpu.sp += 1
-					yl     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					yl     : u16 [ cpu_r[ cpu.sp ] ]
 					cpu.sp += 1
-					yh     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+					yh     : u16 [ cpu_r[ cpu.sp ] ]
 					cpu.y   = yl
 					cpu.yh  = yh
 					yv     : u16 [ yl | (yh << 8) ]
@@ -3746,33 +4728,33 @@ trinity asnes
 				cycles = 4
 
 			case 0x8B  # PHB
-				cpu_w[ 0x0100 + cpu.sp, cpu.dbr ]
+				cpu_w[ cpu.sp, cpu.dbr ]
 				cpu.sp -= 1
 				cycles  = 3
 
 			case 0xAB  # PLB
 				cpu.sp += 1
-				cpu.dbr = cpu_r[ 0x0100 + cpu.sp ]
+				cpu.dbr = cpu_r[ cpu.sp ]
 				cpu.p   = (cpu.p & ~0x82) | ((cpu.dbr == 0) ? 0x02 : 0) | (cpu.dbr & 0x80)
 				cycles  = 4
 
 			case 0x4B  # PHK
-				cpu_w[ 0x0100 + cpu.sp, cpu.pbr ]
+				cpu_w[ cpu.sp, cpu.pbr ]
 				cpu.sp -= 1
 				cycles  = 3
 
 			case 0x0B  # PHD
-				cpu_w[ 0x0100 + cpu.sp, u8[cpu.dp >> 8] ]
+				cpu_w[ cpu.sp, u8[cpu.dp >> 8] ]
 				cpu.sp -= 1
-				cpu_w[ 0x0100 + cpu.sp, u8[cpu.dp & 0xFF] ]
+				cpu_w[ cpu.sp, u8[cpu.dp & 0xFF] ]
 				cpu.sp -= 1
 				cycles  = 4
 
 			case 0x2B  # PLD
 				cpu.sp += 1
-				dl     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+				dl     : u16 [ cpu_r[ cpu.sp ] ]
 				cpu.sp += 1
-				dh     : u16 [ cpu_r[ 0x0100 + cpu.sp ] ]
+				dh     : u16 [ cpu_r[ cpu.sp ] ]
 				cpu.dp  = dl | (dh << 8)
 				cpu.p   = (cpu.p & ~0x82) | ((cpu.dp == 0) ? 0x02 : 0) | ((cpu.dp & 0x8000) ? 0x80 : 0)
 				cycles  = 5
@@ -3785,14 +4767,14 @@ trinity asnes
 				cycles  = 3
 
 			case 0x1B  # TCS (C -> S), no flags
-				if [ dbg_frames >= 200 && dbg_ev3 < 40 ]
-					printf[ "f%u TCS C=%04X (cur sp=%02X) pc=%02X:%04X\n", dbg_frames, cpu.a | (cpu.b << 8), cpu.sp, cpu.pbr, cpu.pc ]
-					dbg_ev3 += 1
-				cpu.sp  = cpu.a
+				if [ cpu.e ]
+					cpu.sp = 0x0100 | cpu.a
+				el
+					cpu.sp = cpu.a | (cpu.b << 8)
 				cycles  = 2
 
 			case 0x3B  # TSC (S -> C), 16-bit N/Z
-				sv     : u16 [ 0x0100 | cpu.sp ]
+				sv     : u16 [ cpu.sp ]
 				cpu.a   = sv & 0xFF
 				cpu.b   = sv >> 8
 				cpu.p   = (cpu.p & ~0x82) | ((sv == 0) ? 0x02 : 0) | ((sv & 0x8000) ? 0x80 : 0)
@@ -3812,24 +4794,24 @@ trinity asnes
 
 			case 0x40  # RTI
 				cpu.sp += 1
-				cpu.p   = cpu_r[0x0100 + cpu.sp]
+				cpu.p   = cpu_r[cpu.sp]
 				cpu.sp += 1
-				lo     : u16 [ cpu_r[0x0100 + cpu.sp] ]
+				lo     : u16 [ cpu_r[cpu.sp] ]
 				cpu.sp += 1
-				hi     : u16 [ cpu_r[0x0100 + cpu.sp] ]
+				hi     : u16 [ cpu_r[cpu.sp] ]
 				cpu.pc  = lo | (hi << 8)
 				if [ !cpu.e ]                          # native mode: RTI restores PBR
 					cpu.sp += 1
-					cpu.pbr = cpu_r[0x0100 + cpu.sp]
+					cpu.pbr = cpu_r[cpu.sp]
 				cycles  = 6
 
 			case 0x00  # BRK
 				cpu.pc += 1
-				cpu_w[ 0x0100 + cpu.sp, u8[cpu.pc >> 8] ]
+				cpu_w[ cpu.sp, u8[cpu.pc >> 8] ]
 				cpu.sp -= 1
-				cpu_w[ 0x0100 + cpu.sp, u8[cpu.pc & 0xFF] ]
+				cpu_w[ cpu.sp, u8[cpu.pc & 0xFF] ]
 				cpu.sp -= 1
-				cpu_w[ 0x0100 + cpu.sp, cpu.p | 0x10 ]
+				cpu_w[ cpu.sp, cpu.p | 0x10 ]
 				cpu.sp -= 1
 				cpu.p  |= 0x04
 				lo     : u16 [ cpu_r[0xFFFE] ]
@@ -3855,14 +4837,17 @@ trinity asnes
 			case 0xE2  # SEP #imm
 				mask   : u8 [ cpu_rb[] ]
 				cpu.p |= mask
+				if [ mask & 0x10 ]              # entering 8-bit index: force XH/YH to 0
+					cpu.xh = 0
+					cpu.yh = 0
 				cycles = 3
 
 			case 0x14  # TRB dp
-				dp     : u8  [ cpu_rb[] ]
-				value  : u16 [ cpu_read_mem[dp] ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				value  : u16 [ cpu_read_dp[dp] ]
 				a16    : u16 [ cpu_get_A[] ]
 				result : u16 [ a16 & value ]
-				cpu_write_mem[ dp, value & ~a16 ]
+				cpu_write_dp[ dp, value & ~a16 ]
 				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 5 + ((ualign) ? 1 : 0)
 
@@ -3876,11 +4861,11 @@ trinity asnes
 				cycles = 6
 
 			case 0x04  # TSB dp
-				dp     : u8  [ cpu_rb[] ]
-				value  : u16 [ cpu_read_mem[dp] ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				value  : u16 [ cpu_read_dp[dp] ]
 				a16    : u16 [ cpu_get_A[] ]
 				result : u16 [ a16 & value ]
-				cpu_write_mem[ dp, value | a16 ]
+				cpu_write_dp[ dp, value | a16 ]
 				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 5 + ((ualign) ? 1 : 0)
 
@@ -3894,13 +4879,13 @@ trinity asnes
 				cycles = 6
 
 			case 0x64  # STZ dp
-				dp : u8 [ cpu_rb[] ]
-				cpu_write_mem[ dp, 0 ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_write_dp[ dp, 0 ]
 				cycles = 3 + ((ualign) ? 1 : 0)
 
 			case 0x74  # STZ dp,X
-				dp : u8 [ cpu_rb[] ]
-				cpu_write_mem[ (dp + cpu.x) & 0xFF, 0 ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				cpu_write_dp[ (dp + cpu.x) & 0xFFFF, 0 ]
 				cycles = 4 + ((ualign) ? 1 : 0)
 
 			case 0x9C  # STZ abs
@@ -3922,11 +4907,11 @@ trinity asnes
 				hi     : u32 [ cpu_rb[] ]
 				nbank  : u8  [ cpu_rb[] ]
 				ret    : u16 [ cpu.pc - 1 ]
-				cpu_w[ 0x0100 + cpu.sp, cpu.pbr ]
+				cpu_w[ cpu.sp, cpu.pbr ]
 				cpu.sp -= 1
-				cpu_w[ 0x0100 + cpu.sp, u8[ret >> 8] ]
+				cpu_w[ cpu.sp, u8[ret >> 8] ]
 				cpu.sp -= 1
-				cpu_w[ 0x0100 + cpu.sp, u8[ret & 0xFF] ]
+				cpu_w[ cpu.sp, u8[ret & 0xFF] ]
 				cpu.sp -= 1
 				cpu.pbr = nbank
 				cpu.pc  = lo | (hi << 8)
@@ -3934,11 +4919,11 @@ trinity asnes
 
 			case 0x6B  # RTL (return subroutine long)
 				cpu.sp += 1
-				rlo    : u16 [ cpu_r[0x0100 + cpu.sp] ]
+				rlo    : u16 [ cpu_r[cpu.sp] ]
 				cpu.sp += 1
-				rhi    : u16 [ cpu_r[0x0100 + cpu.sp] ]
+				rhi    : u16 [ cpu_r[cpu.sp] ]
 				cpu.sp += 1
-				cpu.pbr = cpu_r[0x0100 + cpu.sp]
+				cpu.pbr = cpu_r[cpu.sp]
 				cpu.pc  = (rlo | (rhi << 8)) + 1
 				cycles  = 6
 
@@ -3960,45 +4945,45 @@ trinity asnes
 				cycles  = 4
 
 			case 0xB2  # LDA (dp) (width-aware)
-				dp     : u8  [ cpu_rb[] ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				addr   : u16 [ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
 				cpu_set_A[ cpu_read_mem[addr] ]
 				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 5
 
 			case 0x92  # STA (dp) (width-aware)
-				dp     : u8  [ cpu_rb[] ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				addr   : u16 [ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
 				cpu_write_mem[ addr, cpu_get_A[] ]
 				cycles = 5
 
 			case 0x75  # ADC dp,X (width-aware)
-				addr   : u8  [ (cpu_rb[] + cpu.x) & 0xFF ]
-				cpu_adc_a[ cpu_read_mem[addr] ]
+				addr   : u16  [ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ]
+				cpu_adc_a[ cpu_read_dp[addr] ]
 				cycles = 4
 
 			case 0x73  # ADC (d,S),Y (stack-relative indirect indexed, width-aware)
 				sr2    : u8  [ cpu_rb[] ]
-				sa2    : u16 [ 0x0100 + ((cpu.sp + sr2) & 0xFF) ]
+				sa2    : u16 [ (cpu.sp + sr2) & 0xFFFF ]
 				p2     : u16 [ cpu_r[sa2] | (cpu_r[sa2 + 1] << 8) ]
 				a2     : u16 [ p2 + cpu_get_Y[] ]
 				cpu_adc_a[ cpu_read_mem[a2] ]
 				cycles = 7
 
 			case 0x72  # ADC (dp) (width-aware)
-				dp     : u8  [ cpu_rb[] ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				addr   : u16 [ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
 				cpu_adc_a[ cpu_read_mem[addr] ]
 				cycles = 5
 
 			case 0x76  # ROR dp,X (width-aware RMW)
-				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
-				cpu_write_mem[ addr, cpu_ror_v[ cpu_read_mem[addr] ] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_ror_v[ cpu_read_dp[addr] ] ]
 				cycles = 6
 
 			case 0x16  # ASL dp,X
-				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
-				cpu_write_mem[ addr, cpu_asl_v[ cpu_read_mem[addr] ] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_asl_v[ cpu_read_dp[addr] ] ]
 				cycles = 6
 
 			case 0x1E  # ASL abs,X
@@ -4007,8 +4992,8 @@ trinity asnes
 				cycles = 7
 
 			case 0x56  # LSR dp,X
-				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
-				cpu_write_mem[ addr, cpu_lsr_v[ cpu_read_mem[addr] ] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_lsr_v[ cpu_read_dp[addr] ] ]
 				cycles = 6
 
 			case 0x5E  # LSR abs,X
@@ -4017,8 +5002,8 @@ trinity asnes
 				cycles = 7
 
 			case 0x36  # ROL dp,X
-				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
-				cpu_write_mem[ addr, cpu_rol_v[ cpu_read_mem[addr] ] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_rol_v[ cpu_read_dp[addr] ] ]
 				cycles = 6
 
 			case 0x3E  # ROL abs,X
@@ -4052,57 +5037,57 @@ trinity asnes
 				cycles = 6
 
 			case 0x07  # ORA [dp]
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_ora_a[ cpu_read_long_dp[dp] ]
 				cycles = 7
 			case 0x27  # AND [dp]
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_and_a[ cpu_read_long_dp[dp] ]
 				cycles = 7
 			case 0x47  # EOR [dp]
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_eor_a[ cpu_read_long_dp[dp] ]
 				cycles = 7
 			case 0xC7  # CMP [dp]
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_cmp_a[ cpu_read_long_dp[dp] ]
 				cycles = 7
 			case 0xE7  # SBC [dp]
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_sbc_a[ cpu_read_long_dp[dp] ]
 				cycles = 7
 			case 0x17  # ORA [dp],Y
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_ora_a[ cpu_read_long_dp_y[dp] ]
 				cycles = 7
 			case 0x37  # AND [dp],Y
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_and_a[ cpu_read_long_dp_y[dp] ]
 				cycles = 7
 			case 0x57  # EOR [dp],Y
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_eor_a[ cpu_read_long_dp_y[dp] ]
 				cycles = 7
 			case 0xD7  # CMP [dp],Y
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_cmp_a[ cpu_read_long_dp_y[dp] ]
 				cycles = 7
 			case 0xF7  # SBC [dp],Y
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_sbc_a[ cpu_read_long_dp_y[dp] ]
 				cycles = 7
 
 			case 0xD6  # DEC dp,X
-				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
-				cpu_write_mem[ addr, cpu_dec_v[ cpu_read_mem[addr] ] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_dec_v[ cpu_read_dp[addr] ] ]
 				cycles = 6
 			case 0xDE  # DEC abs,X
 				addr   : u16 [ cpu_rw[] + cpu_get_X[] ]
 				cpu_write_mem[ addr, cpu_dec_v[ cpu_read_mem[addr] ] ]
 				cycles = 7
 			case 0xF6  # INC dp,X
-				addr   : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
-				cpu_write_mem[ addr, cpu_inc_v[ cpu_read_mem[addr] ] ]
+				addr   : u16 [ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ]
+				cpu_write_dp[ addr, cpu_inc_v[ cpu_read_dp[addr] ] ]
 				cycles = 6
 			case 0xFE  # INC abs,X
 				addr   : u16 [ cpu_rw[] + cpu_get_X[] ]
@@ -4111,91 +5096,91 @@ trinity asnes
 
 			# --- ALU (dp,X): ptr at (dp+X) in direct page ---
 			case 0x21  # AND (dp,X)
-				dpx : u8  [ cpu_rb[] ]
-				px  : u16 [ (dpx + cpu.x) & 0xFF ]
+				dpx : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				px  : u16 [ (dpx + cpu.x) & 0xFFFF ]
 				ax  : u16 [ cpu_r[px] | (cpu_r[px + 1] << 8) ]
 				cpu_and_a[ cpu_read_mem[ax] ]
 				cycles = 6
 			case 0x41  # EOR (dp,X)
-				dpx : u8  [ cpu_rb[] ]
-				px  : u16 [ (dpx + cpu.x) & 0xFF ]
+				dpx : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				px  : u16 [ (dpx + cpu.x) & 0xFFFF ]
 				ax  : u16 [ cpu_r[px] | (cpu_r[px + 1] << 8) ]
 				cpu_eor_a[ cpu_read_mem[ax] ]
 				cycles = 6
 			case 0x61  # ADC (dp,X)
-				dpx : u8  [ cpu_rb[] ]
-				px  : u16 [ (dpx + cpu.x) & 0xFF ]
+				dpx : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				px  : u16 [ (dpx + cpu.x) & 0xFFFF ]
 				ax  : u16 [ cpu_r[px] | (cpu_r[px + 1] << 8) ]
 				cpu_adc_a[ cpu_read_mem[ax] ]
 				cycles = 6
 			case 0xC1  # CMP (dp,X)
-				dpx : u8  [ cpu_rb[] ]
-				px  : u16 [ (dpx + cpu.x) & 0xFF ]
+				dpx : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				px  : u16 [ (dpx + cpu.x) & 0xFFFF ]
 				ax  : u16 [ cpu_r[px] | (cpu_r[px + 1] << 8) ]
 				cpu_cmp_a[ cpu_read_mem[ax] ]
 				cycles = 6
 			case 0xE1  # SBC (dp,X)
-				dpx : u8  [ cpu_rb[] ]
-				px  : u16 [ (dpx + cpu.x) & 0xFF ]
+				dpx : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
+				px  : u16 [ (dpx + cpu.x) & 0xFFFF ]
 				ax  : u16 [ cpu_r[px] | (cpu_r[px + 1] << 8) ]
 				cpu_sbc_a[ cpu_read_mem[ax] ]
 				cycles = 6
 
 			# --- ALU (dp),Y: ptr at dp, + Y ---
 			case 0x11  # ORA (dp),Y
-				dpy : u8  [ cpu_rb[] ]
+				dpy : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
 				cpu_ora_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
 				cycles = 5
 			case 0x31  # AND (dp),Y
-				dpy : u8  [ cpu_rb[] ]
+				dpy : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
 				cpu_and_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
 				cycles = 5
 			case 0x51  # EOR (dp),Y
-				dpy : u8  [ cpu_rb[] ]
+				dpy : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
 				cpu_eor_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
 				cycles = 5
 			case 0x71  # ADC (dp),Y
-				dpy : u8  [ cpu_rb[] ]
+				dpy : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
 				cpu_adc_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
 				cycles = 5
 			case 0xD1  # CMP (dp),Y
-				dpy : u8  [ cpu_rb[] ]
+				dpy : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
 				cpu_cmp_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
 				cycles = 5
 			case 0xF1  # SBC (dp),Y
-				dpy : u8  [ cpu_rb[] ]
+				dpy : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				by  : u16 [ cpu_r[dpy] | (cpu_r[dpy + 1] << 8) ]
 				cpu_sbc_a[ cpu_read_mem[ by + cpu_get_Y[] ] ]
 				cycles = 5
 
 			# --- ALU (dp): ptr at dp ---
 			case 0x12  # ORA (dp)
-				dpz : u8  [ cpu_rb[] ]
+				dpz : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				az  : u16 [ cpu_r[dpz] | (cpu_r[dpz + 1] << 8) ]
 				cpu_ora_a[ cpu_read_mem[az] ]
 				cycles = 5
 			case 0x32  # AND (dp)
-				dpz : u8  [ cpu_rb[] ]
+				dpz : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				az  : u16 [ cpu_r[dpz] | (cpu_r[dpz + 1] << 8) ]
 				cpu_and_a[ cpu_read_mem[az] ]
 				cycles = 5
 			case 0x52  # EOR (dp)
-				dpz : u8  [ cpu_rb[] ]
+				dpz : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				az  : u16 [ cpu_r[dpz] | (cpu_r[dpz + 1] << 8) ]
 				cpu_eor_a[ cpu_read_mem[az] ]
 				cycles = 5
 			case 0xD2  # CMP (dp)
-				dpz : u8  [ cpu_rb[] ]
+				dpz : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				az  : u16 [ cpu_r[dpz] | (cpu_r[dpz + 1] << 8) ]
 				cpu_cmp_a[ cpu_read_mem[az] ]
 				cycles = 5
 			case 0xF2  # SBC (dp)
-				dpz : u8  [ cpu_rb[] ]
+				dpz : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				az  : u16 [ cpu_r[dpz] | (cpu_r[dpz + 1] << 8) ]
 				cpu_sbc_a[ cpu_read_mem[az] ]
 				cycles = 5
@@ -4242,19 +5227,19 @@ trinity asnes
 
 			# --- ALU dp,X ---
 			case 0x15  # ORA dp,X
-				cpu_ora_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cpu_ora_a[ cpu_read_dp[ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ] ]
 				cycles = 4
 			case 0x35  # AND dp,X
-				cpu_and_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cpu_and_a[ cpu_read_dp[ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ] ]
 				cycles = 4
 			case 0x55  # EOR dp,X
-				cpu_eor_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cpu_eor_a[ cpu_read_dp[ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ] ]
 				cycles = 4
 			case 0xD5  # CMP dp,X
-				cpu_cmp_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cpu_cmp_a[ cpu_read_dp[ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ] ]
 				cycles = 4
 			case 0xF5  # SBC dp,X
-				cpu_sbc_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cpu_sbc_a[ cpu_read_dp[ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ] ]
 				cycles = 4
 
 			# --- ALU absolute long ---
@@ -4334,12 +5319,12 @@ trinity asnes
 				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 4
 			case 0xA7  # LDA [dp]
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_set_A[ cpu_read_long_dp[dp] ]
 				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 6
 			case 0xB5  # LDA dp,X
-				cpu_set_A[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cpu_set_A[ cpu_read_dp[ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ] ]
 				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 4
 			case 0xBF  # LDA long,X
@@ -4347,7 +5332,7 @@ trinity asnes
 				cpu_nz_a[ cpu_get_A[] ]
 				cycles = 5
 			case 0xB4  # LDY dp,X
-				cpu_set_Y[ cpu_read_mem_x[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cpu_set_Y[ cpu_read_dp_x[ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ] ]
 				cpu_nz_x[ cpu_get_Y[] ]
 				cycles = 4
 			case 0xBC  # LDY abs,X
@@ -4358,11 +5343,11 @@ trinity asnes
 			# --- stores ---
 			case 0x83  # STA d,s
 				sr : u8 [ cpu_rb[] ]
-				sa : u16 [ 0x0100 + ((cpu.sp + sr) & 0xFF) ]
+				sa : u16 [ (cpu.sp + sr) & 0xFFFF ]
 				cpu_write_mem[ sa, cpu_get_A[] ]
 				cycles = 4
 			case 0x87  # STA [dp]
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				lo : u32 [ cpu_r[dp] ]
 				mid : u32 [ cpu_r[dp + 1] ]
 				bank : u32 [ cpu_r[dp + 2] ]
@@ -4372,7 +5357,7 @@ trinity asnes
 				if [ !(cpu.p & 0x20) ] cpu.memory[la + 1] = u8[ av >> 8 ]
 				cycles = 6
 			case 0x97  # STA [dp],Y
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				lo : u32 [ cpu_r[dp] ]
 				mid : u32 [ cpu_r[dp + 1] ]
 				bank : u32 [ cpu_r[dp + 2] ]
@@ -4392,30 +5377,30 @@ trinity asnes
 				cycles = 5
 			case 0x93  # STA (d,s),Y
 				sr : u8 [ cpu_rb[] ]
-				sa : u16 [ 0x0100 + ((cpu.sp + sr) & 0xFF) ]
+				sa : u16 [ (cpu.sp + sr) & 0xFFFF ]
 				base : u16 [ cpu_r[sa] | (cpu_r[sa + 1] << 8) ]
 				cpu_write_mem[ base + cpu_get_Y[], cpu_get_A[] ]
 				cycles = 7
 			case 0x94  # STY dp,X
-				addr : u8 [ (cpu_rb[] + cpu.x) & 0xFF ]
+				addr : u16 [ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ]
 				cpu_w[ addr, cpu.y ]
 				if [ !(cpu.p & 0x10) ] cpu_w[ addr + 1, cpu.yh ]
 				cycles = 4
 			case 0x96  # STX dp,Y
-				addr : u8 [ (cpu_rb[] + cpu.y) & 0xFF ]
+				addr : u16 [ (cpu.dp + cpu_rb[] + cpu_get_Y[]) & 0xFFFF ]
 				cpu_w[ addr, cpu.x ]
 				if [ !(cpu.p & 0x10) ] cpu_w[ addr + 1, cpu.xh ]
 				cycles = 4
 
 			# --- compares (X-width) ---
 			case 0xC4  # CPY dp
-				cpu_cmp_x[ cpu_get_Y[], cpu_read_mem_x[ cpu_rb[] ] ]
+				cpu_cmp_x[ cpu_get_Y[], cpu_read_dp_x[ cpu_rb[] ] ]
 				cycles = 3
 			case 0xCC  # CPY abs
 				cpu_cmp_x[ cpu_get_Y[], cpu_read_mem_x[ cpu_rw[] ] ]
 				cycles = 4
 			case 0xE4  # CPX dp
-				cpu_cmp_x[ cpu_get_X[], cpu_read_mem_x[ cpu_rb[] ] ]
+				cpu_cmp_x[ cpu_get_X[], cpu_read_dp_x[ cpu_rb[] ] ]
 				cycles = 3
 			case 0xEC  # CPX abs
 				cpu_cmp_x[ cpu_get_X[], cpu_read_mem_x[ cpu_rw[] ] ]
@@ -4428,7 +5413,7 @@ trinity asnes
 				cpu.p = (cpu.p & ~0x02) | z
 				cycles = 2
 			case 0x34  # BIT dp,X
-				cpu_bit_a[ cpu_read_mem[ (cpu_rb[] + cpu.x) & 0xFF ] ]
+				cpu_bit_a[ cpu_read_dp[ (cpu.dp + cpu_rb[] + cpu_get_X[]) & 0xFFFF ] ]
 				cycles = 4
 			case 0x3C  # BIT abs,X
 				cpu_bit_a[ cpu_read_mem[ cpu_rw[] + cpu_get_X[] ] ]
@@ -4455,7 +5440,7 @@ trinity asnes
 				cpu_push16[ cpu.pc + rel ]
 				cycles = 6
 			case 0xD4  # PEI
-				dp : u8 [ cpu_rb[] ]
+				dp : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				cpu_push16[ cpu_r[dp] | (cpu_r[dp + 1] << 8) ]
 				cycles = 6
 			case 0xF4  # PEA
@@ -4478,6 +5463,18 @@ trinity asnes
 				dstb : u32 [ cpu_rb[] ]
 				srcb : u32 [ cpu_rb[] ]
 				cpu.dbr = dstb
+				if [ getenv['ASNES_PAL_LOG'] ]
+					dyy : u16 [ cpu.y | (cpu.yh << 8) ]
+					if [ dyy >= 0x0500 && dyy <= 0x0540 ]
+						sxx : u16 [ cpu.x | (cpu.xh << 8) ]
+						printf[ "MVN->%04X src=%02X:%04X n=%04X firstbyte=%02X f%u pc=%04X\n",
+							dyy, srcb, sxx, cpu.a | (cpu.b << 8), cpu_bank_r[ srcb, sxx ], dbg_frames, cpu.pc ]
+						if [ dyy == 0x0520 && dbg_bad < 1 ]
+							printf[ "  ---- 32 instrs before MVN->0520 ----\n" ]
+							for [ k: i32 0, k < 32, k += 1 ]
+								s2 : i32 [ (tr_i + k) % 32 ]
+								printf[ "  %02X:%04X  %02X %02X %02X %02X   P=%03X A=%04X X=%04X Y=%04X\n", tr_addr[s2] >> 16, tr_addr[s2] & 0xFFFF, tr_b0[s2], tr_b1[s2], tr_b2[s2], tr_b3[s2], tr_p[s2], tr_a[s2], tr_x[s2], tr_y[s2] ]
+							dbg_bad += 1
 				if [ dbg_ev3 < 60 ]
 					printf[ "f%u MVN src=%02X:%04X -> dst=%02X:%04X n=%04X\n", dbg_frames, srcb, cpu.x | (cpu.xh << 8), dstb, cpu.y | (cpu.yh << 8), cpu.a | (cpu.b << 8) ]
 					dbg_ev3 += 1
@@ -4527,7 +5524,7 @@ trinity asnes
 				cycles = 7
 
 			case 0x67  # ADC [dp] (long indirect, width-aware)
-				dp     : u8  [ cpu_rb[] ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				blo    : u32 [ cpu_r[dp] ]
 				bmid   : u32 [ cpu_r[dp + 1] ]
 				bbank  : u32 [ cpu_r[dp + 2] ]
@@ -4539,7 +5536,7 @@ trinity asnes
 				cycles = 7
 
 			case 0x77  # ADC [dp],Y (long indirect indexed, width-aware)
-				dp     : u8  [ cpu_rb[] ]
+				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				ylo    : u32 [ cpu_r[dp] ]
 				ymid   : u32 [ cpu_r[dp + 1] ]
 				ybank  : u32 [ cpu_r[dp + 2] ]
@@ -4552,7 +5549,7 @@ trinity asnes
 
 			case 0xB3  # LDA (d,S),Y (stack-relative indirect indexed, width-aware)
 				sr     : u8  [ cpu_rb[] ]
-				sa     : u16 [ 0x0100 + ((cpu.sp + sr) & 0xFF) ]
+				sa     : u16 [ (cpu.sp + sr) & 0xFFFF ]
 				ptr    : u16 [ cpu_r[sa] | (cpu_r[sa + 1] << 8) ]
 				addr   : u16 [ ptr + cpu_get_Y[] ]
 				cpu_set_A[ cpu_read_mem[addr] ]
