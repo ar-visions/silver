@@ -71,6 +71,9 @@ class ppu_state
 	framebuf    	: new u32 [ 256 * 224 ] # RGBA8 output
 	obj_color   	: new u32 [ 256 * 224 ] # sprite layer: resolved color (0 = transparent)
 	obj_prio    	: new u8  [ 256 * 224 ] # sprite layer: per-pixel OBJ priority (0-3)
+	obj_bgr     	: new u16 [ 256 * 224 ] # sprite layer: BGR555 color (for color math)
+	px_bgr      	: new u16 [ 256 * 224 ] # top main-screen pixel BGR555 (pre-brightness, for color math)
+	px_src      	: new u8  [ 256 * 224 ] # source layer per pixel: 0-3=BG1-4, 5=OBJ, 8=backdrop
 	inidisp     	: u8                    # $2100 brightness(0-3) + forced-blank(bit7)
 	obsel       	: u8                    # $2101 sprite size + name base
 	bgmode      	: u8                    # $2105 BG mode (bits0-2) + per-BG tile size
@@ -145,6 +148,7 @@ trinity asnes
 	public  spcfile        	: path
 	public  spctest        	: bool
 	public  putest         	: bool             # display-pipeline test: CPU buffer -> Texture -> screen
+	public  volume         	: f32              # playback volume 0..1 (adjustable; default 0.22)
 	mutable screen_tex     	: Texture
 	mutable test_buf       	: new u32 [ 256 * 224 ]
 	mutable test_t         	: i32
@@ -163,6 +167,13 @@ trinity asnes
 	mutable line_m7d       	: new i16 [ 224 ]
 	mutable line_coldata   	: new u16 [ 224 ]       # per-scanline COLDATA (HDMA'd fog color)
 	mutable line_cgadsub   	: new u8  [ 224 ]       # per-scanline CGADSUB (color-math enable/mode)
+	mutable line_cgwsel    	: new u8  [ 224 ]       # per-scanline CGWSEL (color-math region select)
+	mutable line_wobjsel   	: new u8  [ 224 ]       # per-scanline WOBJSEL (color window enable/invert)
+	mutable line_wobjlog   	: new u8  [ 224 ]       # per-scanline WOBJLOG (color window combine logic)
+	mutable line_wh0       	: new u8  [ 224 ]       # per-scanline window1 left  (HDMA'd)
+	mutable line_wh1       	: new u8  [ 224 ]       # per-scanline window1 right
+	mutable line_wh2       	: new u8  [ 224 ]       # per-scanline window2 left
+	mutable line_wh3       	: new u8  [ 224 ]       # per-scanline window2 right
 	mutable cpu            	: cpu_state
 	mutable spc            	: spc_state
 	mutable ppu            	: ppu_state
@@ -541,6 +552,13 @@ trinity asnes
 		line_m7d[y] = ppu.m7d
 		line_coldata[y] = ppu.coldata
 		line_cgadsub[y] = ppu.cgadsub
+		line_cgwsel[y]  = ppu.cgwsel
+		line_wobjsel[y] = ppu.wobjsel
+		line_wobjlog[y] = ppu.wobjlog
+		line_wh0[y]     = ppu.wh0
+		line_wh1[y]     = ppu.wh1
+		line_wh2[y]     = ppu.wh2
+		line_wh3[y]     = ppu.wh3
 
 	# --- PPU register access ($2100-$213F) ---
 	func ppu_vram_inc []
@@ -783,7 +801,11 @@ trinity asnes
 			if [ idx ]
 				cgidx : u32 [ pal * 16 + idx ]
 				if [ bpp == 2 ] cgidx = pal * 4 + idx
-				ppu.framebuf[ y * 256 + x ] = ppu_color[ ppu_cgram_color[ cgidx ], bright ]
+				bgrv : u16 [ ppu_cgram_color[ cgidx ] ]
+				di   : i32 [ y * 256 + x ]
+				ppu.framebuf[ di ] = ppu_color[ bgrv, bright ]
+				ppu.px_bgr[ di ]   = bgrv
+				ppu.px_src[ di ]   = u8[bg]
 
 	# Phase 3: render the framebuffer from real PPU state, PER SCANLINE using the
 	# HDMA snapshots (line_mode / line_h / line_v / line_tm). Backdrop first, then
@@ -845,7 +867,9 @@ trinity asnes
 							col  : u32 [ ((w01 >> bit) & 1) | (((w01 >> (bit + 8)) & 1) << 1) | (((w23 >> bit) & 1) << 2) | (((w23 >> (bit + 8)) & 1) << 3) ]
 							if [ col ]
 								di : i32 [ scy * 256 + scx ]
-								ppu.obj_color[di] = ppu_color[ ppu_cgram_color[ cgb + col ], bright ]
+								ocol : u16 [ ppu_cgram_color[ cgb + col ] ]
+								ppu.obj_color[di] = ppu_color[ ocol, bright ]
+								ppu.obj_bgr[di]   = ocol
 								ppu.obj_prio[di]  = u8[oprio]
 						ox += 1
 				oy += 1
@@ -858,6 +882,8 @@ trinity asnes
 			i : i32 [ base + x ]
 			if [ ppu.obj_color[i] != 0 && u32[ppu.obj_prio[i]] == want_prio ]
 				ppu.framebuf[i] = ppu.obj_color[i]
+				ppu.px_bgr[i]   = ppu.obj_bgr[i]
+				ppu.px_src[i]   = 5                     # OBJ (CGADSUB bit4)
 
 	# subtractive color math in BGR555 space (clamped, optional half). Used for the
 	# Mode 7 distance fog: each scanline subtracts the HDMA'd COLDATA from the plane.
@@ -873,6 +899,72 @@ trinity asnes
 			gg >>= 1
 			bb >>= 1
 		return u16[ rr | (gg << 5) | (bb << 10) ]
+
+	# additive color math in BGR555 space (clamped, optional half). Used for HUD
+	# fills like F-Zero's POWER bar: COLDATA red added to BG/backdrop inside a window.
+	func ppu_cmath_add [ main: u16, add: u16, hf: bool ] -> u16
+		rr : i32 [ i32[main & 0x1F] + i32[add & 0x1F] ]
+		gg : i32 [ i32[(main >> 5) & 0x1F] + i32[(add >> 5) & 0x1F] ]
+		bb : i32 [ i32[(main >> 10) & 0x1F] + i32[(add >> 10) & 0x1F] ]
+		if [ hf ]
+			rr >>= 1
+			gg >>= 1
+			bb >>= 1
+		if [ rr > 31 ] rr = 31
+		if [ gg > 31 ] gg = 31
+		if [ bb > 31 ] bb = 31
+		return u16[ rr | (gg << 5) | (bb << 10) ]
+
+	# Apply CGADSUB color math to one composited (mode-1) scanline using the per-pixel
+	# source layer (px_src) + window (fog_enabled). bit7=subtract else add; bit6=half.
+	# Layer bits: 0-3=BG1-4, 4=OBJ, 5=backdrop. Mode 7 does its math inline in ppu_m7_line.
+	func ppu_cmath_line [ y: i32, bright: u32 ]
+		cg : u8 [ line_cgadsub[y] ]
+		if [ (cg & 0x3F) == 0 ] return
+		base : i32 [ y * 256 ]
+		for [ x: i32 0, x < 256, x += 1 ]
+			i : i32 [ base + x ]
+			s : u8 [ ppu.px_src[i] ]
+			mbit : u8 [ 0x20 ]
+			if [ s < 4 ] mbit = u8[1 << s]
+			el [ s == 5 ] mbit = 0x10
+			if [ (cg & mbit) == 0 ] continue
+			if [ !fog_enabled[ x, y ] ] continue
+			cwv : u16 [ ppu.px_bgr[i] ]
+			if [ cg & 0x80 ] cwv = ppu_cmath_sub[ cwv, line_coldata[y], (cg & 0x40) != 0 ]
+			el cwv = ppu_cmath_add[ cwv, line_coldata[y], (cg & 0x40) != 0 ]
+			ppu.framebuf[i] = ppu_color[ cwv, bright ]
+
+	# Color-math enable test for one pixel, matching SNES CGWSEL "belowMask" + the
+	# color window (WOBJSEL/WOBJLOG + WH0-3). belowMask = CGWSEL bits 4-5:
+	# 0=always, 1=inside color window, 2=outside, 3=never. The color window is
+	# HDMA'd per scanline (F-Zero animates WH0/WH1 to confine the race haze band).
+	func fog_enabled [ X: i32, y: i32 ] -> bool
+		bmask : u32 [ (u32[line_cgwsel[y]] >> 4) & 3 ]
+		if [ bmask == 0 ] return true
+		if [ bmask == 3 ] return false
+		setv : bool [ bmask == 1 ]                     # value when inside the window
+		ws   : u8   [ line_wobjsel[y] ]
+		w1en : bool [ (ws & 0x20) != 0 ]
+		w1inv: bool [ (ws & 0x10) != 0 ]
+		w2en : bool [ (ws & 0x80) != 0 ]
+		w2inv: bool [ (ws & 0x40) != 0 ]
+		if [ !w1en && !w2en ] return !setv
+		om : bool [ false ]
+		tm : bool [ false ]
+		if [ w1en ] om = (X >= i32[line_wh0[y]] && X <= i32[line_wh1[y]]) != w1inv
+		if [ w2en ] tm = (X >= i32[line_wh2[y]] && X <= i32[line_wh3[y]]) != w2inv
+		comb : bool [ false ]
+		if [ w1en && w2en ]
+			lg : u32 [ (u32[line_wobjlog[y]] >> 2) & 3 ]
+			if [ lg == 0 ] comb = om || tm
+			el [ lg == 1 ] comb = om && tm
+			el [ lg == 2 ] comb = om != tm
+			el comb = om == tm
+		el [ w1en ] comb = om
+		el comb = tm
+		if [ comb ] return setv
+		return !setv
 
 	# 13-bit signed wrap for the (offset - center) terms
 	func m7_clip [ n: i32 ] -> i32
@@ -932,7 +1024,7 @@ trinity asnes
 				# distance fog: BG1 subtractive color math, but ONLY when CGWSEL's
 				# color-math region is "always" (0). F-Zero's race sets region=1
 				# (inside an empty window) => no math => bright road.
-				if [ (cg & 0x01) && (cg & 0x80) && ((u32[ppu.cgwsel] >> 4) & 3) == 0 ]
+				if [ (cg & 0x01) && (cg & 0x80) && fog_enabled[ X, y ] ]
 					cw = ppu_cmath_sub[ cw, line_coldata[y], (cg & 0x40) != 0 ]
 				ppu.framebuf[ y * 256 + X ] = ppu_color[ cw, bright ]
 
@@ -943,6 +1035,8 @@ trinity asnes
 		px : u32 [ ppu_color[ bg, bright ] ]
 		for [ i: i32 0, i < 256 * 224, i += 1 ]
 			ppu.framebuf[ i ] = px
+			ppu.px_bgr[ i ]   = bg
+			ppu.px_src[ i ]   = 8                       # backdrop (CGADSUB bit5)
 		if [ bright == 0 ] return
 		ppu_sprites[ bright ]                                 # build obj_color / obj_prio
 		# Mode 1 priority order, painted BACK -> FRONT (later overwrites). BG3 high-prio
@@ -963,6 +1057,7 @@ trinity asnes
 				if [ tm & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 1 ]   # BG1.1
 				if [ tm & 0x10 ] ppu_obj_line[ y, 3 ]                # OBJ.3
 				if [ tm & 0x04 && b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]   # BG3.1 (front)
+				ppu_cmath_line[ y, bright ]                          # CGADSUB add/sub (POWER bar fill, HUD fog)
 			el [ mode == 7 ]
 				if [ tm & 0x01 ] ppu_m7_line[ y, bright ]            # Mode 7 plane (BG1)
 				if [ tm & 0x10 ]                                     # sprites on top
@@ -1050,7 +1145,10 @@ trinity asnes
 				el
 					rddiv = wrdiv / u16[val]
 					rdmpy = wrdiv % u16[val]
-			el [ addr == 0x4200 ] nmitimen = val   # NMITIMEN: bit7=NMI, bit5=V-IRQ, bit4=H-IRQ
+			el [ addr == 0x4200 ]                  # NMITIMEN: bit7=NMI, bit5=V-IRQ, bit4=H-IRQ
+				if [ getenv['ASNES_IRQ_LOG'] && dbg_frames < 200 && val != nmitimen ]
+					printf[ "NMITIMEN<-%02X f%u pc=%02X:%04X vtime=%d htime=%d\n", val, dbg_frames, cpu.pbr, cpu.pc, i32[vtime], i32[htime] ]
+				nmitimen = val
 			el [ addr == 0x4207 ] htime = (htime & 0x100) | u16[val]              # HTIMEL
 			el [ addr == 0x4208 ] htime = (htime & 0x0FF) | ((u16[val] & 1) << 8) # HTIMEH
 			el [ addr == 0x4209 ] vtime = (vtime & 0x100) | u16[val]              # VTIMEL
@@ -1061,6 +1159,14 @@ trinity asnes
 		el [ addr >= 0x0000 && addr <= 0x1FFF ]
 			wo : u16 [ addr & 0x1FFF ]
 			ww : u32 [ 0x7E0000 + wo ]
+			if [ getenv['ASNES_LOG_ZP'] && (wo == 0x0041 || wo == 0x0046 || wo == 0x0051 || wo == 0x005D || wo == 0x0060 || wo == 0x0062 || wo == 0x00F0) ]
+				printf[ "W[%04X]=%02X pc=%02X:%04X\n", wo, val, cpu.pbr, cpu.pc ]
+			if [ getenv['ASNES_TRACE'] && wo == 0x0060 && val == 1 && dbg_t < 1 ]
+				printf[ "==== 32 instrs before $0060<-01 (demo-entry) f%u ====\n", dbg_frames ]
+				for [ kk: i32 0, kk < 32, kk += 1 ]
+					st : i32 [ (tr_i + kk) % 32 ]
+					printf[ "  %02X:%04X  %02X %02X %02X %02X   P=%03X A=%04X X=%04X Y=%04X\n", tr_addr[st] >> 16, tr_addr[st] & 0xFFFF, tr_b0[st], tr_b1[st], tr_b2[st], tr_b3[st], tr_p[st], tr_a[st], tr_x[st], tr_y[st] ]
+				dbg_t += 1
 			if [ getenv['ASNES_PAL_LOG'] && wo >= 0x0520 && wo <= 0x0530 && dbg_w < 80 ]
 				printf[ "PALw[%04X]=%02X pc=%02X:%04X dbr=%02X f%u (cpuw)\n", wo, val, cpu.pbr, cpu.pc, cpu.dbr, dbg_frames ]
 				dbg_w += 1
@@ -1179,6 +1285,8 @@ trinity asnes
 		if [ bank != 0x7E && bank != 0x7F ]
 			if [ addr < 0x2000 ]
 				wa : u32 [ 0x7E0000 + a32 ]                   # WRAM mirror
+				if [ getenv['ASNES_LOG_ZP'] && (addr == 0x0041 || addr == 0x0046 || addr == 0x0051 || addr == 0x005D || addr == 0x0060 || addr == 0x0062 || addr == 0x00F0) ]
+					printf[ "W[%04X]=%02X pc=%02X:%04X (m)\n", addr, val, cpu.pbr, cpu.pc ]
 				if [ getenv['ASNES_PAL_LOG'] && addr >= 0x0520 && addr <= 0x0530 && dbg_w < 80 ]
 					printf[ "PALw[%04X]=%02X pc=%02X:%04X dbr=%02X f%u (mirror b=%02X)\n", addr, val, cpu.pbr, cpu.pc, cpu.dbr, dbg_frames, bank ]
 					dbg_w += 1
@@ -1300,6 +1408,8 @@ trinity asnes
 		cpu.pc  = lo | (hi << 8)
 		cpu.pbr = 0
 		irq_occurred = true
+		if [ getenv['ASNES_IRQ_LOG'] && dbg_frames < 200 ]
+			printf[ "IRQ f%u line=%d vtime=%d htime=%d nmitimen=%02X $0041=%02X%02X\n", dbg_frames, frame_cycle / 228, i32[vtime], i32[htime], nmitimen, cpu.memory[0x7E0042], cpu.memory[0x7E0041] ]
 
 	# --- Gaussian interpolation for BRR samples ---
 
@@ -1643,8 +1753,8 @@ trinity asnes
 			left  = clamp[ left  + echo_out_l, -1.0, 1.0 ]
 			right = clamp[ right + echo_out_r, -1.0, 1.0 ]
 
-			spc.audio_buffer[i * 2]     = i16[ left  * 32000 ]
-			spc.audio_buffer[i * 2 + 1] = i16[ right * 32000 ]
+			spc.audio_buffer[i * 2]     = i16[ left  * 32000 * volume ]
+			spc.audio_buffer[i * 2 + 1] = i16[ right * 32000 * volume ]
 
 	# .spc / beep path: SPC + DSP only, no CPU. one real-time slice per call.
 	func generate_audio [ sps: i32 ]
@@ -2084,6 +2194,7 @@ trinity asnes
 		width      = 512
 		height     = 448
 		background = 'Background'
+		if [ volume == 0.0 ] volume = 0.22         # default playback volume (keep prop-pair override)
 
 	# display-pipeline test: fill a 256x224 CPU array with an animated pattern,
 	# upload it to a Texture, and blit it to the screen scaled to the window.
@@ -2109,6 +2220,11 @@ trinity asnes
 			m : u16 [ u16[1 << bit] ]
 			if [ down ] pad1 = pad1 | m
 			el pad1 = pad1 & (~m)
+		# volume: '-' quieter, '=' / '+' louder (0.02 steps, clamped 0..1)
+		if [ down ]
+			if   [ code == 45 ] volume = clamp[ volume - 0.02, 0.0, 1.0 ]
+			el [ code == 61 || code == 43 ] volume = clamp[ volume + 0.02, 0.0, 1.0 ]
+			if [ code == 45 || code == 61 || code == 43 ] puts 'asnes volume {volume}'
 
 	public func on_canvas [ cv: Canvas ]
 		if [ putest ]
@@ -2212,6 +2328,13 @@ trinity asnes
 					fwrite[ line_m7d, 2, 224, wf ]
 					fwrite[ line_coldata, 2, 224, wf ]
 					fwrite[ line_cgadsub, 1, 224, wf ]
+					fwrite[ line_cgwsel, 1, 224, wf ]
+					fwrite[ line_wobjsel, 1, 224, wf ]
+					fwrite[ line_wobjlog, 1, 224, wf ]
+					fwrite[ line_wh0, 1, 224, wf ]
+					fwrite[ line_wh1, 1, 224, wf ]
+					fwrite[ line_wh2, 1, 224, wf ]
+					fwrite[ line_wh3, 1, 224, wf ]
 					fclose[ wf ]
 			exit[ 0 ]
 		# silent boot uses continuous SPC (load the song); playback uses the atomic
@@ -3967,6 +4090,12 @@ trinity asnes
 		tr_x[slot]  = cpu.x
 		tr_y[slot]  = cpu.y
 		tr_i += 1
+		if [ getenv['ASNES_TRACE'] && cpu.pbr == 0x00 && cpu.pc == 0x8B11 && dbg_t < 1 ]
+			printf[ "==== 32 instrs before demo-entry $00:8B11 (f%u) ====\n", dbg_frames ]
+			for [ kk: i32 0, kk < 32, kk += 1 ]
+				st : i32 [ (tr_i + kk) % 32 ]
+				printf[ "  %02X:%04X  %02X %02X %02X %02X   P=%03X A=%04X X=%04X Y=%04X\n", tr_addr[st] >> 16, tr_addr[st] & 0xFFFF, tr_b0[st], tr_b1[st], tr_b2[st], tr_b3[st], tr_p[st], tr_a[st], tr_x[st], tr_y[st] ]
+			dbg_t += 1
 		if [ cpu.pbr == 0x09 && cpu.pc >= 0xFA60 && cpu.pc <= 0xFA72 && dbg_frames >= 905 && dbg_frames <= 912 && dbg_t < 60 ]
 			printf[ "SE 09:%04X D=%04X X=%04X Y=%04X P=%03X f%u\n", cpu.pc, cpu.dp, cpu.x, cpu.y, cpu.p, dbg_frames ]
 			dbg_t += 1
