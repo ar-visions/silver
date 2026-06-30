@@ -258,7 +258,6 @@ trinity asnes
 	mutable env_map        	: bool              # cached ASNES_MAP_LOG
 	mutable env_vrw        	: bool              # cached ASNES_VRW_LOG
 	mutable env_dma        	: bool              # cached ASNES_DMA_LOG
-	mutable env_cgad       	: bool              # cached ASNES_CGAD_LOG
 	mutable dbg_t          	: i32               # capped: submodule-3 handler trace
 	intern  echo_out_l     	: f32
 	intern  echo_out_r     	: f32
@@ -775,7 +774,6 @@ trinity asnes
 		el [ r == 0x30 ]                                  # CGWSEL
 			ppu.cgwsel = val
 		el [ r == 0x31 ]                                  # CGADSUB
-			if [ env_cgad ] printf[ "CGAD f=%d val=%02X pc=%02X:%04X\n", dbg_frames, u32[val], u32[cpu.pbr], u32[cpu.pc] ]
 			ppu.cgadsub = val
 		el [ r == 0x32 ]                                  # COLDATA (fixed color)
 			inten : u16 [ u16[val] & 0x1F ]
@@ -1175,19 +1173,15 @@ trinity asnes
 		b3hi : bool [ (line_mode[y] & 0x08) != 0 ]
 		rendering_sub = true
 		if [ ts & 0x04 ] ppu_bg_line[ 2, 2, y, bright, 0 ]   # BG3.0
-		if [ ts & 0x04 && !b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]  # BG3.1 (low pos)
+		if [ ts & 0x04 ] if [ !b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]  # BG3.1 (low pos)
 		if [ ts & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 0 ]   # BG2.0
 		if [ ts & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 0 ]   # BG1.0
 		if [ ts & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 1 ]   # BG2.1
 		if [ ts & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 1 ]   # BG1.1
-		if [ ts & 0x04 && b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]   # BG3.1 (front)
+		if [ ts & 0x04 ] if [ b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]   # BG3.1 (front)
 		rendering_sub = false
 
 	func ppu_render []
-		if [ getenv['ASNES_GREEN'] ]
-			for [ i: i32 0, i < 256 * 224, i += 1 ]
-				ppu.framebuf[i] = 0xFF00FF00
-			return
 		bright : u32 [ u32[ppu.inidisp] & 0x0F ]
 		if [ ppu.inidisp & 0x80 ] bright = 0          # forced blank -> black
 		bg : u16 [ ppu_cgram_color[ 0 ] ]
@@ -1197,42 +1191,32 @@ trinity asnes
 			ppu.px_bgr[ i ]   = bg
 			ppu.px_src[ i ]   = 8                       # backdrop (CGADSUB bit5)
 		if [ bright == 0 ] return
-		if [ getenv['ASNES_NOLOOP'] ] return
-		nb1 : bool [ (getenv['ASNES_NOBG1']) ? true : false ]
-		nb2 : bool [ (getenv['ASNES_NOBG2']) ? true : false ]
-		nob : bool [ (getenv['ASNES_NOBJ']) ? true : false ]
-		if [ nob ]
-			for [ i: i32 0, i < 256 * 224, i += 1 ]
-				ppu.obj_color[i] = 0
-		el ppu_sprites[ bright ]                              # build obj_color / obj_prio
+		ppu_sprites[ bright ]                              # build obj_color / obj_prio
 		# Mode 1 priority order, painted BACK -> FRONT (later overwrites). BG3 high-prio
 		# goes to the very front when BGMODE bit3 is set, else just above OBJ.0.
-		nm1 : bool [ (getenv['ASNES_NOM1']) ? true : false ]
-		nm7 : bool [ (getenv['ASNES_NOM7']) ? true : false ]
+		# NOTE: silver binds && tighter than &, so a layer-enable test MUST be a nested
+		# if [ tm & bit ] then if [ cond ] -- never `tm & bit && cond` (that parses as
+		# tm & (bit && cond) and fires whenever bit0 of tm is set, drawing disabled layers).
 		for [ y: i32 0, y < 224, y += 1 ]
 			mode : u8 [ line_mode[y] & 7 ]
 			tm   : u8 [ line_tm[y] ]
 			b3hi : bool [ (line_mode[y] & 0x08) != 0 ]
-			if [ mode == 1 && nm1 ] continue
-			if [ mode == 7 && nm7 ] continue
 			if [ mode == 1 ]
-				if [ tm & 0x04 ] if [ !nb1 ] ppu_bg_line[ 2, 2, y, bright, 0 ]   # BG3.0
-				if [ tm & 0x10 ] if [ !nob ] ppu_obj_line[ y, 0 ]                # OBJ.0
-				if [ tm & 0x04 ] if [ !nb1 ] if [ !b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]  # BG3.1 (low pos)
-				if [ tm & 0x10 ] if [ !nob ] ppu_obj_line[ y, 1 ]                # OBJ.1
-				if [ tm & 0x02 ] if [ !nb2 ] ppu_bg_line[ 1, 4, y, bright, 0 ]   # BG2.0
-				if [ tm & 0x01 ] if [ !nb1 ] ppu_bg_line[ 0, 4, y, bright, 0 ]   # BG1.0
-				if [ tm & 0x10 ] if [ !nob ] ppu_obj_line[ y, 2 ]                # OBJ.2
-				if [ tm & 0x02 ] if [ !nb2 ] ppu_bg_line[ 1, 4, y, bright, 1 ]   # BG2.1
-				if [ tm & 0x01 ] if [ !nb1 ] ppu_bg_line[ 0, 4, y, bright, 1 ]   # BG1.1
-				if [ tm & 0x10 ] if [ !nob ] ppu_obj_line[ y, 3 ]                # OBJ.3
-				if [ tm & 0x04 ] if [ !nb1 ] if [ b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]   # BG3.1 (front)
-				if [ line_ts[y] & 0x07 && !nob ] ppu_sub_line[ y, bright ]   # build sub-screen for color-math blend
-				if [ getenv['ASNES_NOCM'] ]
-					nop : i32 [ 0 ]
-				el ppu_cmath_line[ y, bright ]                          # CGADSUB add/sub (POWER bar fill, HUD fog)
+				if [ tm & 0x04 ] ppu_bg_line[ 2, 2, y, bright, 0 ]   # BG3.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 0 ]                # OBJ.0
+				if [ tm & 0x04 ] if [ !b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]  # BG3.1 (low pos)
+				if [ tm & 0x10 ] ppu_obj_line[ y, 1 ]                # OBJ.1
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 0 ]   # BG2.0
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 0 ]   # BG1.0
+				if [ tm & 0x10 ] ppu_obj_line[ y, 2 ]                # OBJ.2
+				if [ tm & 0x02 ] ppu_bg_line[ 1, 4, y, bright, 1 ]   # BG2.1
+				if [ tm & 0x01 ] ppu_bg_line[ 0, 4, y, bright, 1 ]   # BG1.1
+				if [ tm & 0x10 ] ppu_obj_line[ y, 3 ]                # OBJ.3
+				if [ tm & 0x04 ] if [ b3hi ] ppu_bg_line[ 2, 2, y, bright, 1 ]   # BG3.1 (front)
+				if [ line_ts[y] & 0x07 ] ppu_sub_line[ y, bright ]   # build sub-screen for color-math blend
+				ppu_cmath_line[ y, bright ]                          # CGADSUB add/sub (POWER bar fill, HUD fog)
 			el [ mode == 7 ]
-				if [ tm & 0x01 && !nb1 ] ppu_m7_line[ y, bright ]            # Mode 7 plane (BG1)
+				if [ tm & 0x01 ] ppu_m7_line[ y, bright ]            # Mode 7 plane (BG1)
 				if [ tm & 0x10 ]                                     # sprites on top
 					ppu_obj_line[ y, 0 ]
 					ppu_obj_line[ y, 1 ]
@@ -2532,8 +2516,6 @@ trinity asnes
 		fprintf[ f, "M7Y %04X\n", u32[u16[ppu.m7y]] ]
 		for [ k: i32 0, k < 0x220, k += 1 ]
 			fprintf[ f, "OAM%03X %02X\n", k, u32[ppu.oam[k]] ]
-		for [ y: i32 0, y < 224, y += 8 ]
-			fprintf[ f, "LINE%03d mode=%02X tm=%02X ts=%02X h0=%04X v0=%04X h1=%04X v1=%04X cgw=%02X cgad=%02X wobjsel=%02X wobjlog=%02X wh=%02X,%02X,%02X,%02X col=%04X\n", y, u32[line_mode[y]], u32[line_tm[y]], u32[line_ts[y]], u32[line_h[0*224+y]], u32[line_v[0*224+y]], u32[line_h[1*224+y]], u32[line_v[1*224+y]], u32[line_cgwsel[y]], u32[line_cgadsub[y]], u32[line_wobjsel[y]], u32[line_wobjlog[y]], u32[line_wh0[y]], u32[line_wh1[y]], u32[line_wh2[y]], u32[line_wh3[y]], u32[line_coldata[y]] ]
 		fclose[ f ]
 
 	func write_snapshot [ fn: symbol ]
@@ -3106,13 +3088,6 @@ trinity asnes
 		# after init[], so load lazily on the first frame once rom is set.
 		if [ rom && !cpu ] load[]
 		if [ !cpu ] return null
-		pk : symbol [ getenv[ 'ASNES_PEEK' ] ]
-		if [ pk && dbg_frames == atoi[ pk ] ]
-			ppu_screenshot[ '/tmp/peek.png' ]
-			ppu_shot_bg[ '/tmp/peek_bg1.png', 0, 4 ]
-			ppu_shot_bg[ '/tmp/peek_bg2.png', 1, 4 ]
-			ppu_shot_bg[ '/tmp/peek_bg3.png', 2, 2 ]
-			dump_pstate[ '/tmp/peek_pstate.txt' ]
 		df : symbol [ getenv[ 'ASNES_DUMP_FRAME' ] ]
 		if [ df && dbg_frames == atoi[ df ] ]
 			fn : symbol [ getenv[ 'ASNES_DUMP_FILE' ] ]
@@ -3176,8 +3151,6 @@ trinity asnes
 				if [ fna ]
 					ppu_screenshot[ fna ]
 					write_snapshot[ '/tmp/asnes_blob.bin' ]
-				ppu_shot_bg[ '/tmp/asnes_bg1only.png', 0, 4 ]
-				ppu_shot_bg[ '/tmp/asnes_bg2only.png', 1, 4 ]
 				dump_pstate[ '/tmp/asnes_pstate.txt' ]
 				exit[ 0 ]
 		# 'P' = save savestate, 'L' = load savestate (also writes a diagnostic snapshot)
@@ -4970,7 +4943,6 @@ trinity asnes
 			env_map      = (getenv['ASNES_MAP_LOG']) ? true : false
 			env_vrw      = (getenv['ASNES_VRW_LOG']) ? true : false
 			env_dma      = (getenv['ASNES_DMA_LOG']) ? true : false
-			env_cgad     = (getenv['ASNES_CGAD_LOG']) ? true : false
 		if [ env_cputrace ]
 			if [ cpu.pbr == 0x03 && cpu.pc == 0x8B68 ] ct_on = true
 			if [ ct_on && ct_n < 30000 ]
