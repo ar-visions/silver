@@ -1631,6 +1631,7 @@ trinity asnes
 		op_master   = 0                            # count the interrupt sequence's access cycles
 		op_accesses = 0
 		count_cpu   = true
+		##
 		if [ dbg_frames >= 60 ]
 			printf[ "NMIENTRY f%u savedpc=%02X:%04X sp=%04X p=%03X\n", dbg_frames, cpu.pbr, cpu.pc, cpu.sp, cpu.p ]
 			if [ dbg_frames >= 72 && dbg_bad < 1 ]
@@ -1639,6 +1640,7 @@ trinity asnes
 					s : i32 [ (tr_i + k) % 32 ]
 					printf[ "  %02X:%04X  %02X %02X %02X %02X   P=%03X A=%04X X=%04X Y=%04X\n", tr_addr[s] >> 16, tr_addr[s] & 0xFFFF, tr_b0[s], tr_b1[s], tr_b2[s], tr_b3[s], tr_p[s], tr_a[s], tr_x[s], tr_y[s] ]
 				dbg_bad += 1
+		##
 		if [ !cpu.e ]                              # native mode: interrupt pushes PBR
 			cpu_w[ cpu.sp, cpu.pbr ]
 			cpu.sp -= 1
@@ -2522,7 +2524,7 @@ trinity asnes
 	# shader, a Model binding them by name, and a Render that draws the quad into
 	# m7_render.color (full window res = supersampled). Mirrors trinity's chain.
 	func m7_setup [ cv: Canvas ]
-		m7_src = Texture [ vk: cv.vk, w: cv.w, width: 1024, height: 1024, linear: true ]
+		m7_src = Texture [ vk: cv.vk, w: cv.w, width: 1024, height: 1024, linear: true, mip_levels: 11, anisotropy: 8 ]
 		m7_mat = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 1, linear: false, pixel_format: Pixel.rgbaf32 ]
 		m7_shader = Mode7 [ vk: cv.vk, name: 'mode7' ]
 		m7_model  = Model [ w: cv.w, s: m7_shader, samplers: map Texture[string] [ 'src': m7_src, 'mat': m7_mat ] ]

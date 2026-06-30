@@ -554,9 +554,12 @@ ModelViewProject Mode7
         float py = (m.y + m.w * sx) / 256.0;             // plane pixelY
         int   rep = int(ubo.params.z + 0.5);
         bool  oob = (px < 0.0 || px >= 1024.0 || py < 0.0 || py >= 1024.0);
-        if (rep == 2 && oob) { fragColor = vec4(0.0); return; }   // transparent outside
-        vec2 uv2 = vec2(mod(px, 1024.0), mod(py, 1024.0)) / 1024.0;
-        fragColor = texture(src, uv2);
+        if (rep == 2 && oob) { fragColor = vec4(0.0); return; }
+        vec2 raw = vec2(px, py) / 1024.0;
+        vec2 ddx = dFdx(raw);
+        vec2 ddy = dFdy(raw);
+        vec2 uv2 = fract(raw);
+        fragColor = textureGrad(src, uv2, ddx, ddy);
     }
 
 

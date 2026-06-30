@@ -2126,6 +2126,7 @@ class Texture
     public height           : i32
     public swap             : bool
     public mip_levels       : i32
+    public anisotropy       : i32              # >0 forces anisotropic sampling at this level (needs mip_levels>1)
     public layer_count      : i32
     public surface          : Surface
     public linear           : bool
@@ -2294,7 +2295,11 @@ class Texture
         cmd.submit[ ]
         vkDeviceWaitIdle[ vk.device ]
         staging.destroy_now[ ]
-        transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        if [ mip_levels > 1 ]
+            vk.create_mipmaps[ vk_image, width, height, mip_levels, layer_count ]
+            vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        el
+            transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
     # upload a sub-rectangle of bytes into the existing vk_image. used by
     # the glyph atlas to drop a freshly-rasterized glyph bitmap into its
@@ -2355,7 +2360,7 @@ class Texture
             if [ width > 0 || img ]
                 pixel_format = (img) ? img.format : pixel_format
                 sampler_size = (img) ? img.byte_count[] : 0
-                ansio        = (img) ? 4 : 0
+                ansio        = (anisotropy > 0) ? anisotropy : ((img) ? 4 : 0)
                 if [ img ]
                     width  = img.width
                     height = img.height
