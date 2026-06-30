@@ -418,7 +418,7 @@
             "request":    "launch",
             "stopOnEntry": false,
             "program":    "${workspaceFolder}/platform/native/debug/silver",
-            "args":     [ "orbiter", "--run", "--rom", "/src/silver/zelda.smc" ],
+            "args":     [ "asnes", "--run", "--rom", "/src/silver/zelda.smc" ],
             "cwd":        "/src/silver"
         },
         {
