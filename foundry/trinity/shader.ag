@@ -504,6 +504,167 @@ ModelViewProject UVReduce
     }
 
 
+# SNES Mode 7 affine layer, rendered on the GPU as a textured fullscreen quad.
+# 'src' = the unpacked 1024x1024 (128x128 tiles * 8px) Mode-7 plane, palette
+# already applied (alpha 0 = transparent pixel). 'mat' = a 256x1 rgba32f texture
+# whose texel y holds that scanline's precomputed affine { originX, originY, a, c }
+# (exactly what ppu_m7_line computes on the CPU). The fragment shader does the
+# per-pixel affine + samples the plane; bracketing-scanline coefficient lerp gives
+# a smooth horizon the discrete CPU/hardware path can't. See project_asnes_mode7_vulkan.
+enum Mode7Surface
+    src : 0
+    mat : 1
+
+ModelViewProject Mode7
+    mutable params : vec4f          # x=hflip, y=vflip, z=repeat-mode(0/1 wrap,2 transp,3 char0), w=0
+
+    attrib src : LayoutBinding [ type:typeid[ Mode7Surface ], id:Mode7Surface.src, count:1, format: typeid[ rgba8 ] ]
+    attrib mat : LayoutBinding [ type:typeid[ Mode7Surface ], id:Mode7Surface.mat, count:1, format: typeid[ rgbaf ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        eye:    vec3f [ 0.0, 0.0, 2.0 ]
+        center: vec3f [ 0.0, 0.0, 0.0 ]
+        up:     vec3f [ 0.0, 1.0, 0.0 ]
+        view  = mat4f.look_at[ eye, center, up ]
+        proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func fragment [] -> GLSL none {
+        float sy = v_uv.y * 224.0;                       // SNES scanline (continuous)
+        float sx = v_uv.x * 256.0;                       // pixel within the line
+        if (ubo.params.x > 0.5) sx = 255.0 - sx;         // hflip
+        // per-scanline affine coeffs, lerped between bracketing scanlines
+        float y0 = floor(sy);
+        float fy = sy - y0;
+        int   iy = int(y0);
+        vec4  m0 = texelFetch(mat, ivec2(iy,                  0), 0);   // {originX, originY, a, c}
+        vec4  m1 = texelFetch(mat, ivec2(min(iy + 1, 223),   0), 0);
+        vec4  m  = mix(m0, m1, fy);
+        float px = (m.x + m.z * sx) / 256.0;             // plane pixelX
+        float py = (m.y + m.w * sx) / 256.0;             // plane pixelY
+        int   rep = int(ubo.params.z + 0.5);
+        bool  oob = (px < 0.0 || px >= 1024.0 || py < 0.0 || py >= 1024.0);
+        if (rep == 2 && oob) { fragColor = vec4(0.0); return; }   // transparent outside
+        vec2 uv2 = vec2(mod(px, 1024.0), mod(py, 1024.0)) / 1024.0;
+        fragColor = texture(src, uv2);
+    }
+
+
+# Super Eagle 2x pixel-art upscaler as a post-effect pass.
+#
+#   SuperEagle algorithm: Copyright (C) 2002-2007 The DOSBox Team — License: GNU GPL
+#   GET_RESULT logic:     Copyright (c) 1999-2001 Derek Liauw Kie Fa — License: GNU GPL
+#   GLSL adaptation by guest(r) (2007); ported from libretro/glsl-shaders
+#   (eagle/shaders/supereagle.glsl). Re-expressed in trinity's shader form here.
+#   This file therefore includes GPL-licensed work — keep this notice.
+#
+# Alpha is taken from the center texel so a transparent input (e.g. the Mode-7 plane
+# region) stays transparent for compositing. Bind the 256x224 framebuffer as 'color'.
+ModelViewProject SuperEagle
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        eye:    vec3f [ 0.0, 0.0, 2.0 ]
+        center: vec3f [ 0.0, 0.0, 0.0 ]
+        up:     vec3f [ 0.0, 1.0, 0.0 ]
+        view  = mat4f.look_at[ eye, center, up ]
+        proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func se_reduce [ c: vec3f ] -> GLSL float {
+        return dot(c, vec3(65536.0, 255.0, 1.0));
+    }
+
+    func se_result [ a: f32, b: f32, c: f32, d: f32 ] -> GLSL float {
+        float x = 0.0; float y = 0.0; float r = 0.0;
+        if (a == c) x += 1.0; else if (b == c) y += 1.0;
+        if (a == d) x += 1.0; else if (b == d) y += 1.0;
+        if (x <= 1.0) r += 1.0;
+        if (y <= 1.0) r -= 1.0;
+        return r;
+    }
+
+    func fragment [] -> GLSL none {
+        vec2  ts = vec2(textureSize(color, 0));
+        float dx = 1.0 / ts.x;
+        float dy = 1.0 / ts.y;
+        vec2  uv = v_uv;
+        vec2  fp = fract(uv * ts);
+
+        vec4 Cc = texture(color, uv);
+        vec3 C4 = Cc.rgb;
+        vec3 C5 = texture(color, uv + vec2( dx, 0.0)).rgb;
+        vec3 C7 = texture(color, uv + vec2(0.0,  dy)).rgb;
+        vec3 C8 = texture(color, uv + vec2( dx,  dy)).rgb;
+
+        float c1 = se_reduce(texture(color, uv + vec2(-dx, 0.0)).rgb);
+        float c2 = se_reduce(texture(color, uv + vec2( dx, -dy)).rgb);
+        float c3 = c1;
+        float c4 = se_reduce(C4);
+        float c5 = se_reduce(C5);
+        float c6 = se_reduce(texture(color, uv + vec2(-dx,  dy)).rgb);
+        float c7 = se_reduce(C7);
+        float c8 = se_reduce(C8);
+        float d1 = se_reduce(texture(color, uv + vec2(0.0, 2.0*dy)).rgb);
+        float d2 = se_reduce(texture(color, uv + vec2( dx, 2.0*dy)).rgb);
+        float d4 = se_reduce(texture(color, uv + vec2(2.0*dx, 0.0)).rgb);
+        float d5 = se_reduce(texture(color, uv + vec2(2.0*dx,  dy)).rgb);
+
+        vec3 p00; vec3 p10; vec3 p01; vec3 p11;
+
+        if (c4 != c8) {
+            if (c7 == c5) {
+                p01 = p10 = C7;
+                if ((c6 == c7) || (c5 == c2)) p00 = 0.25*(3.0*C7+C4); else p00 = 0.5*(C4+C5);
+                if ((c5 == d4) || (c7 == d1)) p11 = 0.25*(3.0*C7+C8); else p11 = 0.5*(C7+C8);
+            } else {
+                p11 = 0.125*(6.0*C8+C7+C5);
+                p00 = 0.125*(6.0*C4+C7+C5);
+                p10 = 0.125*(6.0*C7+C4+C8);
+                p01 = 0.125*(6.0*C5+C4+C8);
+            }
+        } else {
+            if (c7 != c5) {
+                p11 = p00 = C4;
+                if ((c1 == c4) || (c8 == d5)) p01 = 0.25*(3.0*C4+C5); else p01 = 0.5*(C4+C5);
+                if ((c8 == d2) || (c3 == c4)) p10 = 0.25*(3.0*C4+C7); else p10 = 0.5*(C7+C8);
+            } else {
+                float r = 0.0;
+                r += se_result(c5,c4,c6,d1);
+                r += se_result(c5,c4,c3,c1);
+                r += se_result(c5,c4,d2,d5);
+                r += se_result(c5,c4,c2,d4);
+                if (r > 0.0)      { p01 = p10 = C7; p00 = p11 = 0.5*(C4+C5); }
+                else if (r < 0.0) { p11 = p00 = C4; p01 = p10 = 0.5*(C4+C5); }
+                else              { p11 = p00 = C4; p01 = p10 = C7; }
+            }
+        }
+
+        vec3 outc = (fp.x < 0.5) ? (fp.y < 0.5 ? p00 : p10) : (fp.y < 0.5 ? p01 : p11);
+        fragColor = vec4(outc, Cc.a);
+    }
+
+
 shader Env
     mutable view : mat4f.identity[]
     mutable proj : mat4f.identity[]

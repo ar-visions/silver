@@ -152,6 +152,22 @@ trinity asnes
 	public  putest         	: bool             # display-pipeline test: CPU buffer -> Texture -> screen
 	public  volume         	: f32              # playback volume 0..1 (adjustable; default 0.22)
 	mutable screen_tex     	: Texture
+	# --- Mode 7 GPU path (Vulkan affine quad; see project_asnes_mode7_vulkan) ---
+	mutable m7_src         	: Texture          # 1024x1024 RGBA: unpacked Mode-7 plane (palette applied)
+	mutable m7_mat         	: Texture          # 256x1 rgba32f: per-scanline { originX, originY, a, c }
+	mutable m7_buf         	: new u32 [ 1024 * 1024 ]   # CPU staging for m7_src
+	mutable m7_matbuf      	: new f32 [ 256 * 4 ]       # CPU staging for m7_mat
+	mutable m7_shader      	: Mode7
+	mutable m7_model       	: Model
+	mutable m7_render      	: Render
+	public  m7_gpu         	: bool [ true ]    # render the Mode-7 plane on the GPU (CPU path leaves it transparent)
+	mutable m7_vhash       	: i64              # last unpacked Mode-7 VRAM hash (skip re-unpack when unchanged)
+	mutable m7_bri_cache   	: i32 [ -1 ]       # brightness baked into the cached m7_src
+	# --- 2D post-effect pass (Super Eagle pixel-art upscale of the sprite/HUD layer) ---
+	mutable se_shader      	: SuperEagle
+	mutable se_model       	: Model
+	mutable se_render      	: Render
+	public  se_2d          	: bool [ true ]    # run Super Eagle on the 2D/mode-1 layer
 	mutable save_req       	: bool             # 'P' key -> save savestate next frame
 	mutable load_req       	: bool             # 'L' key -> load savestate next frame
 	mutable state_loaded   	: bool             # --state boot-load done
@@ -1158,6 +1174,57 @@ trinity asnes
 					cw = ppu_cmath_sub[ cw, line_coldata[y], (cg & 0x40) != 0 ]
 				ppu.framebuf[ y * 256 + X ] = ppu_color[ cw, bright ]
 
+	# GPU Mode 7: expand the interleaved Mode-7 VRAM (even byte = 128x128 tilemap,
+	# odd byte = 8bpp linear char) into a 1024x1024 RGBA plane with the palette
+	# already applied (pix 0 -> transparent). Uploaded to m7_src for the shader.
+	func m7_unpack [ bright: u32 ]
+		for [ tY: i32 0, tY < 128, tY += 1 ]
+			for [ tX: i32 0, tX < 128, tX += 1 ]
+				tile : u32 [ u32[ppu.vram[ (tY * 128 + tX) * 2 ]] ]
+				for [ py: i32 0, py < 8, py += 1 ]
+					for [ px: i32 0, px < 8, px += 1 ]
+						ci  : u32 [ (tile << 6) | u32[(py << 3) | px] ]
+						pix : u32 [ u32[ppu.vram[ ci * 2 + 1 ]] ]
+						col : u32 [ 0 ]
+						if [ pix != 0 ] col = ppu_color[ ppu_cgram_color[ pix ], bright ]
+						m7_buf[ (tY * 8 + py) * 1024 + (tX * 8 + px) ] = col
+		m7_src.upload[ m7_buf, 1024 * 1024 * 4 ]
+
+	# Cheap weighted-sample hash of the Mode-7 VRAM, to detect when the plane
+	# (tilemap + char) actually changed so we only re-unpack/upload on track/palette
+	# loads, not every frame (the camera moves via the per-scanline matrix instead).
+	func m7_vram_hash [] -> i64
+		h : i64 [ 0 ]
+		for [ i: i32 0, i < 0x10000, i += 4 ]
+			h += i64[ ppu.vram[i] ] * i64[ i + 1 ]
+		return h
+
+	# GPU Mode 7: precompute each scanline's affine setup exactly as ppu_m7_line
+	# (origin folds in the b/d*yy term + center; per-pixel uses originX + a*x).
+	# Packed into m7_mat as { originX, originY, a, c } floats per texel row.
+	func m7_matrices []
+		hc : i32 [ sx13[ i32[ppu.m7x] ] ]
+		vc : i32 [ sx13[ i32[ppu.m7y] ] ]
+		ho : i32 [ sx13[ i32[ppu.m7hofs] ] ]
+		vo : i32 [ sx13[ i32[ppu.m7vofs] ] ]
+		vflip : bool [ (ppu.m7sel & 2) != 0 ]
+		ch : i32 [ m7_clip[ ho - hc ] ]
+		cv : i32 [ m7_clip[ vo - vc ] ]
+		for [ y: i32 0, y < 224, y += 1 ]
+			a : i32 [ i32[line_m7a[y]] ]
+			b : i32 [ i32[line_m7b[y]] ]
+			c : i32 [ i32[line_m7c[y]] ]
+			d : i32 [ i32[line_m7d[y]] ]
+			yy : i32 [ y ]
+			if [ vflip ] yy = 255 - y
+			ox : i32 [ ((a * ch) & (~63)) + ((b * cv) & (~63)) + ((b * yy) & (~63)) + (hc << 8) ]
+			oy : i32 [ ((c * ch) & (~63)) + ((d * cv) & (~63)) + ((d * yy) & (~63)) + (vc << 8) ]
+			m7_matbuf[ y * 4 + 0 ] = f32[ ox ]
+			m7_matbuf[ y * 4 + 1 ] = f32[ oy ]
+			m7_matbuf[ y * 4 + 2 ] = f32[ a ]
+			m7_matbuf[ y * 4 + 3 ] = f32[ c ]
+		m7_mat.upload[ m7_matbuf, 256 * 4 * 4 ]
+
 	# Render the SUB-screen for one scanline into sub_bgr/sub_src. The sub-screen
 	# backdrop is the fixed COLDATA color (so unpainted pixels blend as fixed color),
 	# then TS-enabled layers paint over it by Mode-1 priority. Used as the "below"
@@ -1216,7 +1283,10 @@ trinity asnes
 				if [ line_ts[y] & 0x07 ] ppu_sub_line[ y, bright ]   # build sub-screen for color-math blend
 				ppu_cmath_line[ y, bright ]                          # CGADSUB add/sub (POWER bar fill, HUD fog)
 			el [ mode == 7 ]
-				if [ tm & 0x01 ] ppu_m7_line[ y, bright ]            # Mode 7 plane (BG1)
+				if [ m7_gpu ]                                        # GPU owns the plane: leave it transparent
+					for [ X: i32 0, X < 256, X += 1 ]
+						ppu.framebuf[ y * 256 + X ] = 0
+				el [ tm & 0x01 ] ppu_m7_line[ y, bright ]            # CPU Mode 7 plane (BG1)
 				if [ tm & 0x10 ]                                     # sprites on top
 					ppu_obj_line[ y, 0 ]
 					ppu_obj_line[ y, 1 ]
@@ -2448,6 +2518,23 @@ trinity asnes
 			if [ code == 80 ] save_req = true              # 'P' -> save savestate
 			if [ code == 76 ] load_req = true              # 'L' -> load savestate
 
+	# Build the GPU Mode-7 render path once: source + matrix textures, the Mode7
+	# shader, a Model binding them by name, and a Render that draws the quad into
+	# m7_render.color (full window res = supersampled). Mirrors trinity's chain.
+	func m7_setup [ cv: Canvas ]
+		m7_src = Texture [ vk: cv.vk, w: cv.w, width: 1024, height: 1024, linear: true ]
+		m7_mat = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 1, linear: false, pixel_format: Pixel.rgbaf32 ]
+		m7_shader = Mode7 [ vk: cv.vk, name: 'mode7' ]
+		m7_model  = Model [ w: cv.w, s: m7_shader, samplers: map Texture[string] [ 'src': m7_src, 'mat': m7_mat ] ]
+		m7_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ m7_model ] ]
+
+	# Build the Super Eagle 2D pass: edge-aware upscale of the framebuffer (sprites /
+	# mode-1 / HUD). screen_tex must already exist (bound as 'color').
+	func se_setup [ cv: Canvas ]
+		se_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+		se_model  = Model [ w: cv.w, s: se_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
+		se_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ se_model ] ]
+
 	public func on_canvas [ cv: Canvas ]
 		if [ putest ]
 			if [ !screen_tex ]
@@ -2471,7 +2558,37 @@ trinity asnes
 			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
 		screen_tex.upload[ ppu.framebuf, 256 * 224 * 4 ]
 		out : rect [ x: 0.0, y: 0.0, w: 512.0, h: 448.0 ]
-		cv.draw_image[ screen_tex, out ]
+		# GPU Mode 7: render the affine plane on the GPU as the BASE layer, then draw the
+		# CPU framebuffer (sprites / mode-1 HUD / logo; transparent over the plane) on top.
+		if [ m7_gpu && (line_mode[100] & 7) == 7 ]
+			if [ !m7_render ] m7_setup[ cv ]
+			bri : u32 [ u32[ppu.inidisp] & 0x0F ]
+			# the Mode-7 plane is static during play; only re-unpack the 1024x1024 source
+			# when the VRAM (or brightness) actually changes. the camera moves via m7_matrices.
+			vh : i64 [ m7_vram_hash[] ]
+			if [ vh != m7_vhash || i32[bri] != m7_bri_cache ]
+				m7_unpack[ bri ]
+				m7_vhash = vh
+				m7_bri_cache = i32[bri]
+			m7_matrices[]
+			hf : f32 [ 0.0 ]
+			vf : f32 [ 0.0 ]
+			if [ ppu.m7sel & 1 ] hf = 1.0
+			if [ ppu.m7sel & 2 ] vf = 1.0
+			m7_shader.params = vec4f [ hf, vf, f32[ (u32[ppu.m7sel] >> 6) & 3 ], 0.0 ]
+			m7_render.update[]
+			m7_render.draw[]
+			m7_render.sync_fence[]
+			cv.draw_image[ m7_render.color, out ]
+		# 2D layer on top: Super Eagle the framebuffer (sprites/mode-1/HUD), else raw.
+		if [ se_2d ]
+			if [ !se_render ] se_setup[ cv ]
+			se_render.update[]
+			se_render.draw[]
+			se_render.sync_fence[]
+			cv.draw_image[ se_render.color, out ]
+		el
+			cv.draw_image[ screen_tex, out ]
 
 	# write a full PPU/CPU snapshot (WRAM+VRAM+CGRAM+OAM+regs+per-line arrays) to a file.
 	# shared by the ASNES_DUMP_FILE env path and the 'P' snapshot key (snap_req).

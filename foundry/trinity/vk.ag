@@ -2107,6 +2107,15 @@ class Buffer
         return
         #vmaDestroyBuffer[ vk.allocator, vk_buffer, vma_alloc ]
 
+    # explicit GPU free — call only once the GPU is known idle for this buffer
+    # (e.g. after vkDeviceWaitIdle following the copy submit). dealloc[] stays a
+    # no-op so auto-drop never double-frees a still-in-use buffer.
+    func destroy_now [ ]
+        if [ vk_buffer ]
+            vmaDestroyBuffer[ vk.allocator, vk_buffer, vma_alloc ]
+            vk_buffer = null
+            vma_alloc = null
+
 
 class Texture
     context vk              : vk_context
@@ -2284,6 +2293,7 @@ class Texture
             ]]
         cmd.submit[ ]
         vkDeviceWaitIdle[ vk.device ]
+        staging.destroy_now[ ]
         transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
     # upload a sub-rectangle of bytes into the existing vk_image. used by
@@ -2315,6 +2325,7 @@ class Texture
         staging.hold[]
         cmd.submit[ ]
         vkDeviceWaitIdle[ vk.device ]
+        staging.destroy_now[ ]
         staging.drop[]
         transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
