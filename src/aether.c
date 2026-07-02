@@ -5096,6 +5096,13 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
             LLVMTypeKind k = LLVMGetTypeKind(rt);
             if (k == LLVMStructTypeKind || k == LLVMArrayTypeKind || k == LLVMVectorTypeKind)
                 result_val = LLVMBuildLoad2(mod->builder, rt, phi_node, "ternary_struct");
+            else if (k == LLVMIntegerTypeKind || k == LLVMFloatTypeKind ||
+                     k == LLVMDoubleTypeKind  || k == LLVMHalfTypeKind)
+                // primitive result but the branch values are pointers (unloaded GEPs from
+                // array subscripts / member access): load the element out of the phi'd
+                // pointer, else the raw pointer is stored into the primitive's alloca
+                // (an 8-byte store into e.g. a 1-byte slot clobbers adjacent locals)
+                result_val = LLVMBuildLoad2(mod->builder, rt, phi_node, "ternary_prim");
         }
     }
     return enode(mod, mod, loaded, true, autype, rmdl->autype, value, result_val);
@@ -5202,6 +5209,13 @@ enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, ar
             LLVMTypeKind k = LLVMGetTypeKind(rt);
             if (k == LLVMStructTypeKind || k == LLVMArrayTypeKind || k == LLVMVectorTypeKind)
                 result_val = LLVMBuildLoad2(B, rt, phi_node, "ternary_struct");
+            else if (k == LLVMIntegerTypeKind || k == LLVMFloatTypeKind ||
+                     k == LLVMDoubleTypeKind  || k == LLVMHalfTypeKind)
+                // primitive result but the branch values are pointers (unloaded GEPs from
+                // array subscripts / member access): load the element out of the phi'd
+                // pointer, else the raw pointer is stored into the primitive's alloca
+                // (an 8-byte store into e.g. a 1-byte slot clobbers adjacent locals)
+                result_val = LLVMBuildLoad2(B, rt, phi_node, "ternary_prim");
         }
     }
     // build the enode, then force the value field directly in case the

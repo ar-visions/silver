@@ -17,7 +17,7 @@ consoles:
 		name:	shell
 		kind:	shell
 
-	claude: ConsoleInstance
+	jean: ConsoleInstance
 		name:	claude
 		kind:	claude
-		run:	claude --dangerously-skip-permissions --resume
+		run:	claude --dangerously-skip-permissions
