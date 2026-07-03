@@ -1,0 +1,1681 @@
+# =====================================================================
+# rgen — Sega Genesis / Mega Drive emulator
+#
+# Clean-room, documentation-sourced. No emulator source is consulted or
+# copied. Timing comes from published chip manuals and primary open
+# reverse-engineering (Nemesis / SpritesMind); the VDP model is specified
+# in reference/VDP_TIMING.md and cited inline as [VDP_TIMING §N].
+#
+# Architecture mirrors asnes: single-threaded, cycle-synced, one trinity
+# window driven by on_canvas, ALSA audio paced by snd_pcm_avail. No threads.
+# Built in phases — this is phase 1: system clock model, chip state, the
+# synced frame loop, window + framebuffer display, and modular audio.
+# =====================================================================
+
+export 0.8.8
+
+import trinity
+import vec
+import <alsa/asoundlib.h>
+	-lasound
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+
+# ---------------------------------------------------------------------
+# System clock model (NTSC) — documented facts.
+# Master crystal 53.693175 MHz. Every chip runs on an integer divider:
+#   68000  = MCLK / 7   = 7.670 MHz
+#   Z80    = MCLK / 15  = 3.580 MHz
+#   PSG    = MCLK / 15  = 3.580 MHz   (SN76489, shares the Z80 clock)
+#   YM2612 = the 68000 clock; audio sample rate = that / 144 = 53267 Hz
+#   VDP access slot = 16 MCLK (H40) / 20 MCLK (H32)   [VDP_TIMING §1]
+# One NTSC frame = 262 scanlines, 224 active. Per-line MCLK count is
+# marked [?] until sourced from a primary post — do not guess it here.
+# ---------------------------------------------------------------------
+enum SysClock
+	master_ntsc  : 53693175        # Hz, NTSC master crystal
+	master_pal   : 53203424        # Hz, PAL master crystal
+	m68k_div     : 7               # MCLK per 68000 cycle
+	z80_div      : 15              # MCLK per Z80 cycle
+	psg_div      : 15              # MCLK per PSG cycle
+	ym_sample_div: 144             # 68000 clocks per YM2612 output sample
+	slot_h40     : 16              # MCLK per VDP access slot, H40   [VDP_TIMING §1]
+	slot_h32     : 20              # MCLK per VDP access slot, H32   [VDP_TIMING §1]
+	lines_ntsc   : 262             # scanlines per NTSC frame
+	active_lines : 224             # active display lines (NTSC, V28)
+
+# ---------------------------------------------------------------------
+# Motorola 68000 — main CPU. State only in phase 1; the instruction core
+# and Motorola EA/execution cycle tables land in a later phase, sourced
+# from the M68000 User's Manual.
+# ---------------------------------------------------------------------
+class m68k_state
+	d              : new u32 [ 8 ]     # data registers D0-D7
+	a              : new u32 [ 8 ]     # address registers A0-A7 (A7 = active SP)
+	usp            : u32               # user stack pointer  (inactive when supervisor)
+	ssp            : u32               # supervisor stack pointer
+	pc             : u32               # program counter
+	sr             : u16               # status register (T-S--III ---XNZVC)
+	prefetch       : new u16 [ 2 ]     # 2-word prefetch queue (68000 pipelines 2 words)
+	cycles         : i64               # total 68000 cycles from reset
+	stopped        : bool              # halted by STOP until an interrupt
+	halted         : bool              # bus/address error double-fault
+
+# ---------------------------------------------------------------------
+# Zilog Z80 — sound CPU. Full opcode T-state tables (incl. CB/DD/ED/FD +
+# undocumented) come from the Z80 User Manual in a later phase.
+# ---------------------------------------------------------------------
+class z80_state
+	af             : u16               # A + flags
+	bc             : u16
+	de             : u16
+	hl             : u16
+	af_            : u16               # shadow registers
+	bc_            : u16
+	de_            : u16
+	hl_            : u16
+	ix             : u16
+	iy             : u16
+	sp             : u16
+	pc             : u16
+	i              : u8                # interrupt vector base
+	r              : u8                # memory refresh counter
+	iff1           : u8               # interrupt enable flip-flops
+	iff2           : u8
+	im             : u8                # interrupt mode 0/1/2
+	halted         : bool
+	cycles         : i64               # total Z80 T-states from reset
+	ram            : new u8 [ 0x2000 ] # 8 KB sound RAM
+	reset          : u8                # $A11200 reset line (held = held in reset)
+	busreq         : u8                # $A11100 68000 bus request (0 = 68000 owns bus)
+
+# ---------------------------------------------------------------------
+# Sega VDP 315-5313. Memory + register state now; the slot-accurate
+# renderer + DMA/FIFO engine are built against reference/VDP_TIMING.md.
+# ---------------------------------------------------------------------
+class vdp_state
+	vram           : new u8  [ 0x10000 ]  # 64 KB tile/name/sprite data
+	cram           : new u16 [ 64 ]       # 64 colour entries (9-bit BGR, stored 16)
+	vsram          : new u16 [ 40 ]       # 40 vertical-scroll entries
+	regs           : new u8  [ 24 ]       # 24 VDP registers
+	# command/address latch — control port is written as two 16-bit halves
+	code           : u8                   # command code (read/write target + DMA)
+	address        : u32                  # current VRAM/CRAM/VSRAM address
+	pending        : bool                 # first control-word half latched, awaiting second
+	# FIFO — 4-entry write queue  [VDP_TIMING §5]
+	fifo_addr      : new u32 [ 4 ]
+	fifo_data      : new u16 [ 4 ]
+	fifo_code      : new u8  [ 4 ]
+	fifo_head      : i32
+	fifo_tail      : i32
+	# raster position
+	hcounter       : u16
+	vcounter       : u16
+	hint_counter   : u8                   # reg 10 reload countdown for HINT   [VDP_TIMING §8, open]
+	# status flags
+	vint_pending   : bool
+	hint_pending   : bool
+	in_vblank      : bool
+	in_hblank      : bool
+	dma_busy       : bool
+	dma_fill       : bool                  # DMA fill armed; next data write runs it
+	h40            : bool                  # true = 320px (RS1), false = 256px
+	framebuf       : new u32 [ 320 * 240 ] # ARGB output, max H40/V30 extent
+
+# ---------------------------------------------------------------------
+# YM2612 (OPN2) — 6-channel FM. Register file + per-operator state; the
+# operator/envelope engine follows the YM2608 application manual (the FM
+# core the YM2612 inherits) plus SpritesMind timing notes.
+# ---------------------------------------------------------------------
+class ym2612_state
+	regs0          : new u8 [ 256 ]    # bank 0 registers (channels 1-3)
+	regs1          : new u8 [ 256 ]    # bank 1 registers (channels 4-6)
+	latch_addr     : u8                # last address written (per bank)
+	latch_bank     : u8
+	dac_enable     : bool              # $2B bit7: channel 6 -> 8-bit DAC
+	dac_data       : u8                # $2A DAC sample
+	timer_a        : u16               # 10-bit timer A
+	timer_b        : u8                # 8-bit timer B
+	timer_a_ct     : u16
+	timer_b_ct     : u16
+	status         : u8                # timer overflow flags (read via any port)
+
+# ---------------------------------------------------------------------
+# SN76489 PSG — 3 square tones + 1 noise. Well-documented; small.
+# ---------------------------------------------------------------------
+class psg_state
+	tone           : new u16 [ 3 ]     # 10-bit period per tone channel
+	volume         : new u8  [ 4 ]     # 4-bit attenuation, 3 tones + noise
+	counter        : new u16 [ 4 ]     # period countdown per channel
+	output         : new u8  [ 4 ]     # current output level per channel
+	noise_ctrl     : u8                # noise mode + rate
+	noise_lfsr     : u16               # 16-bit shift register
+	latch          : u8                # last-latched register (channel + type)
+
+# ---------------------------------------------------------------------
+# Modular audio sink. Owns the ALSA PCM device; the FM + PSG mixers feed
+# it. Kept separate from chip state so the audio backend can be swapped
+# without touching emulation. Mirrors asnes's ALSA setup.
+# ---------------------------------------------------------------------
+class audio_out
+	pcm_handle     : ref snd_pcm_t
+	buffer         : ref i16
+	buffer_size    : sz
+	sample_rate    : i32
+	channels       : i32
+
+	func open [] -> bool
+		sample_rate = 53267            # YM2612 native: 68k clock / 144
+		channels    = 2
+		buffer_size = 1024
+		buffer      = calloc[ 1, buffer_size * channels * 2 ]
+
+		pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
+		err : i32 [ snd_pcm_open[ ref pcm_handle, 'pulse', pb, 0 ] ]
+		if [ err < 0 ] return false
+
+		psz    : snd_pcm_hw_params_sizeof[]
+		params : ref snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
+		snd_pcm_hw_params_any[ pcm_handle, params ]
+		rw  : i32 [ SND_PCM_ACCESS_RW_INTERLEAVED ]
+		fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
+		snd_pcm_hw_params_set_access  [ pcm_handle, params, rw ]
+		snd_pcm_hw_params_set_format  [ pcm_handle, params, fmt ]
+		snd_pcm_hw_params_set_channels[ pcm_handle, params, channels ]
+		snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
+		# small ring so snd_pcm_avail paces the emulator to real time
+		bufsz : sz [ 4096 ]
+		persz : sz [ 1024 ]
+		snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, ref bufsz ]
+		snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, ref persz, null ]
+
+		ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
+		if [ ok ]
+			perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
+			if [ perr < 0 ]
+				puts 'rgen audio: prepare failed {snd_strerror[ perr ]}'
+				ok = false
+		return ok
+
+	# push `frames` stereo S16 samples; recovers from underrun like asnes.
+	func write [ frames: i32 ] -> none
+		if [ ! pcm_handle ] return
+		wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
+		if [ wr < 0 ]
+			snd_pcm_recover[ pcm_handle, wr, 0 ]
+			snd_pcm_prepare[ pcm_handle ]
+
+# ---------------------------------------------------------------------
+# The application — a trinity window hosting the emulator. on_canvas is
+# the frame driver: step one Genesis frame, then blit the VDP framebuffer.
+# ---------------------------------------------------------------------
+trinity rgen
+	public  rom          : path              # cartridge image
+	public  frames_exit  : i32               # auto-quit after N frames (0 = run forever)
+	public  region_pal   : bool              # PAL timing (default NTSC)
+	mutable cart         : ref u8            # loaded ROM bytes
+	mutable cart_size    : sz
+	mutable m68k         : m68k_state
+	mutable z80          : z80_state
+	mutable vdp          : vdp_state
+	mutable ym           : ym2612_state
+	mutable psg          : psg_state
+	mutable audio        : audio_out
+	mutable ram68k       : new u8 [ 0x10000 ]   # 64 KB 68000 work RAM ($FF0000-$FFFFFF)
+	mutable ea_last      : u32                    # last-resolved effective address (RMW / dest write)
+	mutable mclk_carry   : i64                    # master-clock overshoot carried across frames
+	mutable irq_level    : i32                    # pending interrupt level (6=VINT, 4=HINT)
+	mutable trace        : bool                   # diagnostic: log unhandled opcodes
+	mutable icount       : i64                    # instructions executed (trace window)
+	mutable screen_tex   : Texture
+	mutable booted       : bool
+	mutable frames       : u32
+
+	func init []
+		width      = 640                     # 320 (H40) x2
+		height     = 448                     # 224 x2
+		background = 'Background'
+
+	# Keyboard -> Genesis 3-button controller 1. Phase-1 mapping; the
+	# controller-port I/O (315-5433) shift protocol lands with the CPU bus.
+	public func on_key [ ev: Event ]
+		# WASD = D-pad, J/K/L = A/B/C, Enter = Start. Wire to pad state in
+		# the input phase; recorded here so the mapping is defined up front.
+		return
+
+	# One-time boot: construct chip state, reset, open audio.
+	func boot [] -> none
+		m68k  = m68k_state []
+		z80   = z80_state []
+		vdp   = vdp_state []
+		ym    = ym2612_state []
+		psg   = psg_state []
+		audio = audio_out []
+		if [ ! audio.open[] ]
+			puts 'rgen: audio device unavailable — continuing muted'
+		# raw cartridge dump (.bin/.gen/.md). .smd interleaved not handled yet.
+		if [ rom ]
+			f : ref FILE [ fopen[ rom, 'rb' ] ]
+			if [ ! f ]
+				puts 'rgen: could not open ROM {rom}'
+			el
+				fseek[ f, 0, SEEK_END ]
+				cart_size = ftell[ f ]
+				rewind[ f ]
+				cart = calloc[ 1, cart_size ]
+				fread[ cart, 1, cart_size, f ]
+				fclose[ f ]
+				puts 'rgen: cart loaded, {cart_size} bytes'
+				m68k_reset[]
+				puts 'rgen: reset pc={m68k.pc} ssp={m68k.ssp}'
+		booted = true
+
+	# Frame driver. With a cart loaded, run one frame of synced execution
+	# then blit the VDP framebuffer; without one, an animated test pattern
+	# proves the upload+blit pipeline.
+	public func on_canvas [ cv: Canvas ]
+		if [ ! booted ] boot[]
+
+		if [ ! screen_tex ]
+			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 320, height: 224, linear: true ]
+
+		if [ cart ]
+			run_frame[]
+			vdp_render[]
+		el
+			for [ y: i32 0, y < 224, y += 1 ]
+				for [ x: i32 0, x < 320, x += 1 ]
+					rr : u32 [ u32[x] & 0xFF ]
+					gg : u32 [ u32[y] & 0xFF ]
+					bb : u32 [ u32[ (x + y + i32[frames]) & 0xFF ] ]
+					vdp.framebuf[ y * 320 + x ] = 0xFF000000 | (bb << 16) | (gg << 8) | rr
+		frames += 1
+		if [ frames_exit > 0 && frames >= u32[ frames_exit ] ]
+			nzv : i32 [ 0 ]
+			for [ vi: i32 0, vi < 0x10000, vi += 1 ]
+				if [ vdp.vram[ vi ] != 0 ] nzv += 1
+			nzc : i32 [ 0 ]
+			for [ ci: i32 0, ci < 64, ci += 1 ]
+				if [ vdp.cram[ ci ] != 0 ] nzc += 1
+			puts 'rgen: frames_exit {frames_exit} reached vram_nz={nzv} cram_nz={nzc} mode2={vdp.regs[1]} pc={m68k.pc}'
+			exit[ 0 ]
+
+		screen_tex.upload[ vdp.framebuf, 320 * 224 * 4 ]
+		out : rect [ x: 0.0, y: 0.0, w: 640.0, h: 448.0 ]
+		cv.draw_image[ screen_tex, out ]
+
+	# =================================================================
+	# 68000 core — foundation. Timing model, bus, reset. The decoder and
+	# per-instruction execution build on top of this next.
+	# All cycle counts come from reference/M68K_TIMING.md, cited [§N].
+	# =================================================================
+
+	# Effective-address calculation time [M68K_TIMING §1]. mode/reg are the
+	# raw 68k EA field (mode 0-7; when mode==7 the reg selects the sub-mode).
+	# Returns 68000 clock cycles to add to a base instruction time.
+	func ea_time [ mode: i32, reg: i32, is_long: bool ] -> i32
+		slot : i32 [ mode ]
+		if [ mode == 7 ] slot = 7 + reg   # 7:xxx.W 8:xxx.L 9:d(PC) 10:d(PC,ix) 11:#imm
+		bw : i32 [ 0 ]
+		lo : i32 [ 0 ]
+		switch [ slot ]
+			case 0, 1                     # Dn, An
+				bw = 0
+				lo = 0
+			case 2, 3                     # (An), (An)+
+				bw = 4
+				lo = 8
+			case 4                        # -(An)
+				bw = 6
+				lo = 10
+			case 5                        # d(An)
+				bw = 8
+				lo = 12
+			case 6                        # d(An,ix)
+				bw = 10
+				lo = 14
+			case 7                        # xxx.W
+				bw = 8
+				lo = 12
+			case 8                        # xxx.L
+				bw = 12
+				lo = 16
+			case 9                        # d(PC)
+				bw = 8
+				lo = 12
+			case 10                       # d(PC,ix)
+				bw = 10
+				lo = 14
+			case 11                       # #imm
+				bw = 4
+				lo = 8
+			default
+				bw = 0
+				lo = 0
+		return (is_long) ? lo : bw
+
+	# --- 68000 bus (big-endian). Address decode per the Genesis memory map:
+	#   $000000-$3FFFFF cartridge ROM      $A00000-$A0FFFF Z80 bus
+	#   $A10000-$A1001F I/O (pads/version) $A11100 Z80 busreq $A11200 Z80 reset
+	#   $C00000-$C0001F VDP ports          $FF0000-$FFFFFF 64K work RAM
+	# VDP/Z80/IO reads and writes are routed to their handlers as those phases
+	# land; for now ROM + work RAM are live so reset and code fetch work.
+	func bus_r8 [ addr: u32 ] -> u8
+		a : u32 [ addr & 0xFFFFFF ]
+		if [ a < 0x400000 ]
+			if [ cart && sz[a] < cart_size ] return cart[ a ]
+			return 0
+		if [ a >= 0xFF0000 ] return ram68k[ a & 0xFFFF ]
+		if [ a >= 0xC00000 && a <= 0xC0001F ]          # VDP byte read = half of word
+			wv : u16 [ bus_r16[ a & 0xFFFFFE ] ]
+			if [ (a & 1) != 0 ] return u8[ wv & 0xFF ]
+			return u8[ (wv >> 8) & 0xFF ]
+		if [ a == 0xA10001 ] return 0xA0               # version: overseas NTSC, no TMSS
+		if [ a >= 0xA10002 && a <= 0xA1001F ] return 0xFF   # pads idle (active-low)
+		if [ a == 0xA11100 || a == 0xA11101 ] return 0 # Z80 busreq: always granted
+		return 0                                       # unmapped / TODO Z80 area
+
+	func bus_w8 [ addr: u32, v: u8 ] -> none
+		a : u32 [ addr & 0xFFFFFF ]
+		if [ a >= 0xFF0000 ]
+			ram68k[ a & 0xFFFF ] = v
+			return
+		if [ a >= 0xC00000 && a <= 0xC0001F ]
+			sl : u32 [ a & 0x1F ]
+			if [ sl == 0x11 || sl == 0x13 || sl == 0x15 || sl == 0x17 ]
+				return                                 # PSG — routed in the audio phase
+			wv : u16 [ (u16[ v ] << 8) | u16[ v ] ]    # byte port write duplicates
+			if [ sl < 4 ] vdp_data_w[ wv ]
+			el [ sl < 8 ] vdp_ctrl_w[ wv ]
+			return
+		# ROM is read-only; Z80/IO writes routed in later phases
+
+	func bus_r16 [ addr: u32 ] -> u16
+		a2 : u32 [ addr & 0xFFFFFF ]
+		if [ a2 >= 0xC00000 && a2 <= 0xC0001F ]
+			sl : u32 [ a2 & 0xF ]
+			if [ sl < 4 ] return vdp_data_r[]
+			if [ sl < 8 ] return vdp_status_r[]
+			return (vdp.vcounter & 0xFF) << 8         # HV counter (H stub 0)
+		hi : u16 [ u16[ bus_r8[ addr ] ] ]
+		lo : u16 [ u16[ bus_r8[ addr + 1 ] ] ]
+		return (hi << 8) | lo
+
+	func bus_w16 [ addr: u32, v: u16 ] -> none
+		a2 : u32 [ addr & 0xFFFFFF ]
+		if [ a2 >= 0xC00000 && a2 <= 0xC0001F ]
+			sl : u32 [ a2 & 0xF ]
+			if [ sl < 4 ]
+				vdp_data_w[ v ]
+				return
+			if [ sl < 8 ]
+				vdp_ctrl_w[ v ]
+				return
+			return                                     # HV/debug port writes ignored
+		bus_w8[ addr,     u8[ (v >> 8) & 0xFF ] ]
+		bus_w8[ addr + 1, u8[ v & 0xFF ] ]
+
+	func bus_r32 [ addr: u32 ] -> u32
+		hi : u32 [ u32[ bus_r16[ addr ] ] ]
+		lo : u32 [ u32[ bus_r16[ addr + 2 ] ] ]
+		return (hi << 16) | lo
+
+	func bus_w32 [ addr: u32, v: u32 ] -> none
+		bus_w16[ addr,     u16[ (v >> 16) & 0xFFFF ] ]
+		bus_w16[ addr + 2, u16[ v & 0xFFFF ] ]
+
+	# =================================================================
+	# VDP ports [VDP_TIMING]. Control = two-word command / register write;
+	# data = VRAM/CRAM/VSRAM through the code latch. DMA transfer + fill are
+	# instant for now — slot-accurate costs come with the VDP_TIMING work.
+	# =================================================================
+
+	func vdp_ctrl_w [ v: u16 ] -> none
+		if [ vdp.pending ]
+			vdp.pending = false
+			vdp.code    = u8[ (vdp.code & 3) | ((v >> 2) & 0x3C) ]
+			vdp.address = (vdp.address & 0x3FFF) | (u32[ v & 3 ] << 14)
+			if [ (vdp.code & 0x20) != 0 && (vdp.regs[ 1 ] & 0x10) != 0 ]
+				vdp_dma_run[]
+			return
+		if [ (v & 0xC000) == 0x8000 ]                  # register write
+			rn : i32 [ i32[ (v >> 8) & 0x1F ] ]
+			if [ rn < 24 ] vdp.regs[ rn ] = u8[ v & 0xFF ]
+			return
+		vdp.pending = true
+		vdp.code    = u8[ (vdp.code & 0x3C) | u8[ v >> 14 ] ]
+		vdp.address = (vdp.address & 0xC000) | u32[ v & 0x3FFF ]
+
+	func vdp_data_w [ v: u16 ] -> none
+		vdp.pending = false
+		if [ vdp.dma_fill ]                            # armed fill: hi byte, len times
+			vdp.dma_fill = false
+			ln : i32 [ i32[ vdp.regs[ 19 ] ] | (i32[ vdp.regs[ 20 ] ] << 8) ]
+			if [ ln == 0 ] ln = 0x10000
+			fb : u8 [ u8[ (v >> 8) & 0xFF ] ]
+			for [ i: i32 0, i < ln, i += 1 ]
+				vdp.vram[ vdp.address & 0xFFFF ] = fb
+				vdp.address += u32[ vdp.regs[ 15 ] ]
+			return
+		k : i32 [ i32[ vdp.code & 0xF ] ]
+		if [ k == 1 ]                                  # VRAM (odd addr swaps bytes)
+			a : u32 [ vdp.address & 0xFFFE ]
+			if [ (vdp.address & 1) != 0 ]
+				vdp.vram[ a ]     = u8[ v & 0xFF ]
+				vdp.vram[ a + 1 ] = u8[ (v >> 8) & 0xFF ]
+			el
+				vdp.vram[ a ]     = u8[ (v >> 8) & 0xFF ]
+				vdp.vram[ a + 1 ] = u8[ v & 0xFF ]
+		el [ k == 3 ]                                  # CRAM
+			vdp.cram[ (vdp.address >> 1) & 63 ] = v
+		el [ k == 5 ]                                  # VSRAM
+			vi : u32 [ (vdp.address >> 1) & 63 ]
+			if [ vi < 40 ] vdp.vsram[ vi ] = v
+		vdp.address += u32[ vdp.regs[ 15 ] ]
+
+	func vdp_data_r [] -> u16
+		vdp.pending = false
+		k : i32 [ i32[ vdp.code & 0xF ] ]
+		r : u16 [ 0 ]
+		if [ k == 0 ]
+			a : u32 [ vdp.address & 0xFFFE ]
+			r = (u16[ vdp.vram[ a ] ] << 8) | u16[ vdp.vram[ a + 1 ] ]
+		el [ k == 8 ]
+			r = vdp.cram[ (vdp.address >> 1) & 63 ]
+		el [ k == 4 ]
+			vi : u32 [ (vdp.address >> 1) & 63 ]
+			if [ vi < 40 ] r = vdp.vsram[ vi ]
+		vdp.address += u32[ vdp.regs[ 15 ] ]
+		return r
+
+	# status: bit9 FIFO empty (always, until the FIFO model lands), bit7 VINT
+	# latch (cleared by read), bit3 vblank, bit1 DMA busy. read clears pending.
+	func vdp_status_r [] -> u16
+		vdp.pending = false
+		st : u16 [ 0x0200 ]
+		if [ vdp.in_vblank ] st = st | 0x0008
+		if [ vdp.vint_pending ] st = st | 0x0080
+		if [ vdp.dma_busy ] st = st | 0x0002
+		vdp.vint_pending = false
+		return st
+
+	func vdp_dma_run [] -> none
+		md : i32 [ i32[ (vdp.regs[ 23 ] >> 6) & 3 ] ]
+		if [ md == 2 ]                                 # fill: arm, runs on data write
+			vdp.dma_fill = true
+			return
+		if [ md == 3 ] return                          # VRAM copy — deferred
+		ln : i32 [ i32[ vdp.regs[ 19 ] ] | (i32[ vdp.regs[ 20 ] ] << 8) ]
+		if [ ln == 0 ] ln = 0x10000
+		src : u32 [ (u32[ vdp.regs[ 21 ] ] | (u32[ vdp.regs[ 22 ] ] << 8) | ((u32[ vdp.regs[ 23 ] ] & 0x7F) << 16)) << 1 ]
+		for [ i: i32 0, i < ln, i += 1 ]               # 68k->VDP word transfer
+			vdp_data_w[ bus_r16[ src ] ]
+			src += 2
+
+	# ---- renderer: planes A/B, 4bpp tiles, full-screen scroll ----
+	# CRAM entry (0000 BBB0 GGG0 RRR0) -> ARGB
+	func cram_argb [ ci: u32 ] -> u32
+		v : u16 [ vdp.cram[ ci & 63 ] ]
+		r : u32 [ (u32[ v >> 1 ] & 7) * 36 ]
+		g : u32 [ (u32[ v >> 5 ] & 7) * 36 ]
+		b : u32 [ (u32[ v >> 9 ] & 7) * 36 ]
+		return 0xFF000000 | (r << 16) | (g << 8) | b
+
+	# plane pixel: -1 transparent, else (pri ? 0x100 : 0) | palette-color index
+	func plane_pixel [ is_b: bool, x: i32, y: i32 ] -> i32
+		base : u32 [ 0 ]
+		if [ is_b ] base = (u32[ vdp.regs[ 4 ] ] & 7) << 13
+		el base = (u32[ vdp.regs[ 2 ] ] & 0x38) << 10
+		# plane size (reg 16): 0=32 1=64 3=128 cells
+		sw : i32 [ 32 ]
+		swb : i32 [ i32[ vdp.regs[ 16 ] ] & 3 ]
+		if [ swb == 1 ] sw = 64
+		if [ swb == 3 ] sw = 128
+		sh : i32 [ 32 ]
+		shb : i32 [ (i32[ vdp.regs[ 16 ] ] >> 4) & 3 ]
+		if [ shb == 1 ] sh = 64
+		if [ shb == 3 ] sh = 128
+		# full-screen hscroll from table (reg 13), vscroll from VSRAM 0/1
+		hbase : u32 [ (u32[ vdp.regs[ 13 ] ] & 0x3F) << 10 ]
+		hoff : u32 [ hbase ]
+		if [ is_b ] hoff = hbase + 2
+		hs : i32 [ i32[ i16[ (u16[ vdp.vram[ hoff ] ] << 8) | u16[ vdp.vram[ hoff + 1 ] ] ] ] ]
+		vs : i32 [ i32[ i16[ vdp.vsram[ (is_b) ? 1 : 0 ] ] ] ]
+		mx : i32 [ (x - hs) & (sw * 8 - 1) ]
+		my : i32 [ (y + vs) & (sh * 8 - 1) ]
+		ent : u32 [ base + u32[ ((my >> 3) * sw + (mx >> 3)) * 2 ] ]
+		nw : u16 [ (u16[ vdp.vram[ ent & 0xFFFF ] ] << 8) | u16[ vdp.vram[ (ent + 1) & 0xFFFF ] ] ]
+		tile : u32 [ u32[ nw ] & 0x7FF ]
+		col : i32 [ mx & 7 ]
+		row : i32 [ my & 7 ]
+		if [ (nw & 0x0800) != 0 ] col = 7 - col        # hflip
+		if [ (nw & 0x1000) != 0 ] row = 7 - row        # vflip
+		ta : u32 [ (tile * 32 + u32[ row * 4 ] + u32[ col >> 1 ]) & 0xFFFF ]
+		px : u32 [ u32[ vdp.vram[ ta ] ] ]
+		if [ (col & 1) == 0 ] px = px >> 4
+		px = px & 0xF
+		if [ px == 0 ] return -1
+		pal : u32 [ (u32[ nw ] >> 13) & 3 ]
+		res : i32 [ i32[ pal * 16 + px ] ]
+		if [ (nw & 0x8000) != 0 ] res = res | 0x100    # priority
+		return res
+
+	# compose planes into the framebuffer. order: high-pri A > high-pri B >
+	# low-pri A > low-pri B > backdrop (window + sprites in later phases)
+	func vdp_render [] -> none
+		wpx : i32 [ ((vdp.regs[ 12 ] & 1) != 0) ? 320 : 256 ]
+		bg : u32 [ cram_argb[ u32[ vdp.regs[ 7 ] ] & 0x3F ] ]
+		disp : bool [ (vdp.regs[ 1 ] & 0x40) != 0 ]
+		for [ y: i32 0, y < 224, y += 1 ]
+			for [ x: i32 0, x < 320, x += 1 ]
+				o : u32 [ bg ]
+				if [ disp && x < wpx ]
+					pa : i32 [ plane_pixel[ false, x, y ] ]
+					pb : i32 [ plane_pixel[ true, x, y ] ]
+					if [ pa >= 0x100 ] o = cram_argb[ u32[ pa ] ]
+					el [ pb >= 0x100 ] o = cram_argb[ u32[ pb ] ]
+					el [ pa >= 0 ] o = cram_argb[ u32[ pa ] ]
+					el [ pb >= 0 ] o = cram_argb[ u32[ pb ] ]
+				el [ ! disp ] o = 0xFF000000
+				vdp.framebuf[ y * 320 + x ] = o
+
+	# autovectored interrupt entry [M68K_TIMING §14: 44(5/3)]. Pushes PC then
+	# SR, enters supervisor (swapping in SSP from user mode), masks to the
+	# taken level, fetches the level-N autovector at $60 + 4N.
+	func m68k_interrupt [] -> i32
+		lvl : i32 [ irq_level ]
+		irq_level = 0
+		m68k.stopped = false
+		osr : u16 [ m68k.sr ]
+		if [ (m68k.sr & 0x2000) == 0 ]
+			m68k.usp    = m68k.a[ 7 ]
+			m68k.a[ 7 ] = m68k.ssp
+		m68k.sr = ((m68k.sr | 0x2000) & 0x78FF) | u16[ lvl << 8 ]
+		push32[ m68k.pc ]
+		m68k.a[ 7 ] = m68k.a[ 7 ] - 2
+		bus_w16[ m68k.a[ 7 ], osr ]
+		m68k.pc = bus_r32[ u32[ 0x60 + lvl * 4 ] ]
+		return 44
+
+	# Power-on reset: SSP <- long at $000000, PC <- long at $000004, enter
+	# supervisor with interrupts masked (SR = $2700). [M68K_TIMING §14: 40 clks]
+	func m68k_reset [] -> none
+		m68k.ssp    = bus_r32[ 0x000000 ]
+		m68k.a[ 7 ] = m68k.ssp
+		m68k.pc     = bus_r32[ 0x000004 ]
+		m68k.sr     = 0x2700
+		m68k.stopped = false
+		m68k.halted  = false
+		m68k.cycles  = 40
+
+	# ---- register access by size (0=byte 1=word 2=long) ----
+	func dreg_read [ n: i32, size: i32 ] -> u32
+		v : u32 [ m68k.d[ n ] ]
+		if [ size == 0 ] return v & 0xFF
+		if [ size == 1 ] return v & 0xFFFF
+		return v
+
+	func dreg_write [ n: i32, size: i32, val: u32 ] -> none
+		if [ size == 0 ]
+			m68k.d[ n ] = (m68k.d[ n ] & 0xFFFFFF00) | (val & 0xFF)
+		el [ size == 1 ]
+			m68k.d[ n ] = (m68k.d[ n ] & 0xFFFF0000) | (val & 0xFFFF)
+		el
+			m68k.d[ n ] = val
+
+	# An reads sign-extend word to 32 bits (address registers have no byte form)
+	func areg_read [ n: i32, size: i32 ] -> u32
+		v : u32 [ m68k.a[ n ] ]
+		if [ size == 1 ] return u32[ i32[ i16[ u16[ v & 0xFFFF ] ] ] ]
+		return v
+
+	# ---- instruction-stream fetch (advances PC) ----
+	func fetch16 [] -> u16
+		v : u16 [ bus_r16[ m68k.pc ] ]
+		m68k.pc = m68k.pc + 2
+		return v
+
+	func fetch32 [] -> u32
+		v : u32 [ bus_r32[ m68k.pc ] ]
+		m68k.pc = m68k.pc + 4
+		return v
+
+	# ---- stack (A7) ----
+	func push32 [ v: u32 ] -> none
+		m68k.a[ 7 ] = m68k.a[ 7 ] - 4
+		bus_w32[ m68k.a[ 7 ], v ]
+
+	func pull32 [] -> u32
+		v : u32 [ bus_r32[ m68k.a[ 7 ] ] ]
+		m68k.a[ 7 ] = m68k.a[ 7 ] + 4
+		return v
+
+	# ---- CCR flags. bit0 C, bit1 V, bit2 Z, bit3 N, bit4 X ----
+	func setflag [ mask: u16, on: bool ] -> none
+		if [ on ]
+			m68k.sr = m68k.sr | mask
+		el
+			m68k.sr = m68k.sr & (~mask)
+
+	func set_nz [ v: u32, size: i32 ] -> none
+		msb  : u32 [ 0x80 ]
+		mask : u32 [ 0xFF ]
+		if [ size == 1 ]
+			msb  = 0x8000
+			mask = 0xFFFF
+		if [ size == 2 ]
+			msb  = 0x80000000
+			mask = 0xFFFFFFFF
+		setflag[ 0x08, (v & msb) != 0 ]     # N
+		setflag[ 0x04, (v & mask) == 0 ]    # Z
+
+	# 68k condition-code test (cc field 0..15) [M68K_TIMING §10 conditions]
+	func test_cc [ cc: i32 ] -> bool
+		c : bool [ (m68k.sr & 0x01) != 0 ]
+		v : bool [ (m68k.sr & 0x02) != 0 ]
+		z : bool [ (m68k.sr & 0x04) != 0 ]
+		n : bool [ (m68k.sr & 0x08) != 0 ]
+		switch [ cc ]
+			case 0
+				return true                  # T
+			case 1
+				return false                 # F
+			case 2
+				return (!c) && (!z)          # HI
+			case 3
+				return c || z                # LS
+			case 4
+				return !c                    # CC (HS)
+			case 5
+				return c                     # CS (LO)
+			case 6
+				return !z                    # NE
+			case 7
+				return z                     # EQ
+			case 8
+				return !v                    # VC
+			case 9
+				return v                     # VS
+			case 10
+				return !n                    # PL
+			case 11
+				return n                     # MI
+			case 12
+				return n == v                # GE
+			case 13
+				return n != v                # LT
+			case 14
+				return (n == v) && (!z)      # GT
+			case 15
+				return (n != v) || z         # LE
+			default
+				return false
+
+	# ---- effective-address resolution ----
+	# brief-extension-word indexed mode: base + index-reg + signed-byte displ
+	func ea_index [ base: u32 ] -> u32
+		ext : u16 [ fetch16[] ]
+		ri  : i32 [ i32[ (ext >> 12) & 0x7 ] ]
+		ix  : u32 [ 0 ]
+		if [ (ext & 0x8000) != 0 ] ix = m68k.a[ ri ]
+		el ix = m68k.d[ ri ]
+		if [ (ext & 0x0800) == 0 ] ix = u32[ i32[ i16[ u16[ ix & 0xFFFF ] ] ] ]  # .w index
+		disp : u32 [ u32[ i32[ i8[ u8[ ext & 0xFF ] ] ] ] ]
+		return base + ix + disp
+
+	# compute EA for memory modes, applying (An)+/-(An) side effects, consuming
+	# extension words; stores result in ea_last. size: 0=b 1=w 2=l
+	func ea_calc [ mode: i32, reg: i32, size: i32 ] -> u32
+		incr : i32 [ 1 ]
+		if [ size == 1 ] incr = 2
+		if [ size == 2 ] incr = 4
+		addr : u32 [ 0 ]
+		switch [ mode ]
+			case 2                          # (An)
+				addr = m68k.a[ reg ]
+			case 3                          # (An)+
+				if [ reg == 7 && size == 0 ] incr = 2   # keep SP word-aligned
+				addr = m68k.a[ reg ]
+				m68k.a[ reg ] = m68k.a[ reg ] + u32[ incr ]
+			case 4                          # -(An)
+				if [ reg == 7 && size == 0 ] incr = 2
+				m68k.a[ reg ] = m68k.a[ reg ] - u32[ incr ]
+				addr = m68k.a[ reg ]
+			case 5                          # d(An)
+				d : u32 [ u32[ i32[ i16[ fetch16[] ] ] ] ]
+				addr = m68k.a[ reg ] + d
+			case 6                          # d(An,ix)
+				addr = ea_index[ m68k.a[ reg ] ]
+			case 7
+				switch [ reg ]
+					case 0                  # xxx.W
+						addr = u32[ i32[ i16[ fetch16[] ] ] ]
+					case 1                  # xxx.L
+						addr = fetch32[]
+					case 2                  # d(PC) — relative to the ext-word addr
+						pcbase : u32 [ m68k.pc ]
+						pd : u32 [ u32[ i32[ i16[ fetch16[] ] ] ] ]
+						addr = pcbase + pd
+					case 3                  # d(PC,ix)
+						pcb2 : u32 [ m68k.pc ]
+						addr = ea_index[ pcb2 ]
+					default
+						addr = 0
+			default
+				addr = 0
+		ea_last = addr
+		return addr
+
+	# read an operand through any addressing mode
+	func ea_read [ mode: i32, reg: i32, size: i32 ] -> u32
+		switch [ mode ]
+			case 0
+				return dreg_read[ reg, size ]
+			case 1
+				return areg_read[ reg, size ]
+			case 7
+				if [ reg == 4 ]            # #imm
+					if [ size == 2 ] return fetch32[]
+					iv : u16 [ fetch16[] ]
+					if [ size == 0 ] return u32[ iv & 0xFF ]
+					return u32[ iv ]
+		a : u32 [ ea_calc[ mode, reg, size ] ]
+		if [ size == 0 ] return u32[ bus_r8[ a ] ]
+		if [ size == 1 ] return u32[ bus_r16[ a ] ]
+		return bus_r32[ a ]
+
+	# ---- size + memory helpers ----
+	func size_mask [ size: i32 ] -> u32
+		if [ size == 0 ] return 0xFF
+		if [ size == 1 ] return 0xFFFF
+		return 0xFFFFFFFF
+
+	func size_msb [ size: i32 ] -> u32
+		if [ size == 0 ] return 0x80
+		if [ size == 1 ] return 0x8000
+		return 0x80000000
+
+	func mem_read [ addr: u32, size: i32 ] -> u32
+		if [ size == 0 ] return u32[ bus_r8[ addr ] ]
+		if [ size == 1 ] return u32[ bus_r16[ addr ] ]
+		return bus_r32[ addr ]
+
+	func mem_write [ addr: u32, size: i32, v: u32 ] -> none
+		if [ size == 0 ]
+			bus_w8[ addr, u8[ v & 0xFF ] ]
+		el [ size == 1 ]
+			bus_w16[ addr, u16[ v & 0xFFFF ] ]
+		el
+			bus_w32[ addr, v ]
+
+	# ---- flag computation (M68000 PRM formulas) ----
+	# ADD (r = d + s): V = Sm&Dm&~Rm | ~Sm&~Dm&Rm ; C = Sm&Dm | ~Rm&Dm | Sm&~Rm
+	func flags_add [ s: u32, d: u32, r: u32, size: i32, with_x: bool ] -> none
+		msb : u32 [ size_msb[ size ] ]
+		set_nz[ r, size ]
+		ovf : u32 [ ((s & d & (~r)) | ((~s) & (~d) & r)) & msb ]
+		cry : u32 [ ((s & d) | ((~r) & d) | (s & (~r))) & msb ]
+		setflag[ 0x02, ovf != 0 ]
+		setflag[ 0x01, cry != 0 ]
+		if [ with_x ] setflag[ 0x10, cry != 0 ]
+
+	# SUB/CMP (r = d - s): V = ~Sm&Dm&~Rm | Sm&~Dm&Rm ; C = Sm&~Dm | Rm&~Dm | Sm&Rm
+	func flags_sub [ s: u32, d: u32, r: u32, size: i32, with_x: bool ] -> none
+		msb : u32 [ size_msb[ size ] ]
+		set_nz[ r, size ]
+		ovf : u32 [ (((~s) & d & (~r)) | (s & (~d) & r)) & msb ]
+		cry : u32 [ ((s & (~d)) | (r & (~d)) | (s & r)) & msb ]
+		setflag[ 0x02, ovf != 0 ]
+		setflag[ 0x01, cry != 0 ]
+		if [ with_x ] setflag[ 0x10, cry != 0 ]
+
+	func flags_logic [ r: u32, size: i32 ] -> none
+		set_nz[ r, size ]
+		setflag[ 0x02, false ]
+		setflag[ 0x01, false ]
+
+	# CLR/NEG/NEGX/NOT result + flags [§6]. knd: 0=NEGX 1=CLR 2=NEG 3=NOT
+	func single_op [ knd: i32, d: u32, size: i32 ] -> u32
+		if [ knd == 1 ]
+			flags_logic[ 0, size ]
+			return 0
+		if [ knd == 3 ]
+			rn : u32 [ (~d) & size_mask[ size ] ]
+			flags_logic[ rn, size ]
+			return rn
+		x : u32 [ 0 ]
+		if [ knd == 0 && (m68k.sr & 0x10) != 0 ] x = 1
+		rv : u32 [ (0 - d - x) & size_mask[ size ] ]
+		if [ knd == 2 ]
+			flags_sub[ d, 0, rv, size, true ]
+		el
+			zold : bool [ (m68k.sr & 0x04) != 0 ]
+			flags_sub[ d, 0, rv, size, true ]
+			if [ (rv & size_mask[ size ]) == 0 ] setflag[ 0x04, zold ]
+		return rv
+
+	# immediate-group op + flags [§5]. kind: 0=OR 1=AND 2=SUB 3=ADD 5=EOR 6=CMP
+	func imm_apply [ kind: i32, s: u32, d: u32, size: i32 ] -> u32
+		if [ kind == 2 || kind == 6 ]
+			rs : u32 [ d - s ]
+			flags_sub[ s, d, rs, size, kind == 2 ]
+			return rs
+		if [ kind == 3 ]
+			ra : u32 [ d + s ]
+			flags_add[ s, d, ra, size, true ]
+			return ra
+		rl : u32 [ 0 ]
+		if [ kind == 0 ] rl = d | s
+		el [ kind == 1 ] rl = d & s
+		el rl = d ^ s
+		flags_logic[ rl, size ]
+		return rl
+
+	# shift/rotate engine [§7]. typ: 0=AS 1=LS 2=ROX 3=RO. Sets NZVC (+X for
+	# non-RO types); ASL sets V if the sign changed during any step.
+	func shift_exec [ typ: i32, left: bool, v: u32, cnt: i32, size: i32 ] -> u32
+		msk : u32 [ size_mask[ size ] ]
+		msb : u32 [ size_msb[ size ] ]
+		r : u32 [ v & msk ]
+		vflag : bool [ false ]
+		lastc : bool [ false ]
+		x : bool [ (m68k.sr & 0x10) != 0 ]
+		if [ cnt == 0 ]
+			set_nz[ r, size ]
+			setflag[ 0x02, false ]
+			if [ typ == 2 ] setflag[ 0x01, x ]
+			el setflag[ 0x01, false ]
+			return r
+		for [ i: i32 0, i < cnt, i += 1 ]
+			if [ left ]
+				lastc = (r & msb) != 0
+				inb : u32 [ 0 ]
+				if [ typ == 2 && x ] inb = 1
+				el [ typ == 3 && lastc ] inb = 1
+				nr : u32 [ ((r << 1) | inb) & msk ]
+				if [ typ == 0 && ((nr ^ r) & msb) != 0 ] vflag = true
+				if [ typ != 3 ] x = lastc
+				r = nr
+			el
+				lastc = (r & 1) != 0
+				inb2 : u32 [ 0 ]
+				if [ typ == 0 ] inb2 = r & msb
+				el [ typ == 2 && x ] inb2 = msb
+				el [ typ == 3 && lastc ] inb2 = msb
+				r = ((r >> 1) | inb2) & msk
+				if [ typ != 3 ] x = lastc
+		set_nz[ r, size ]
+		vres : bool [ false ]
+		if [ typ == 0 && left ] vres = vflag
+		setflag[ 0x02, vres ]
+		setflag[ 0x01, lastc ]
+		if [ typ != 3 ] setflag[ 0x10, x ]
+		return r
+
+	# control-flow EA base times [§11]. which: 0=JMP 1=JSR 2=LEA 3=PEA
+	# 4=MOVEM mem->regs 5=MOVEM regs->mem
+	func ctrl_time [ which: i32, mode: i32, rm: i32 ] -> i32
+		slot : i32 [ mode ]
+		if [ mode == 7 ] slot = 7 + rm
+		v : i32 [ 0 ]
+		if [ which == 0 ]
+			if [ slot == 2 ] v = 8
+			el [ slot == 5 || slot == 7 || slot == 9 ] v = 10
+			el [ slot == 6 || slot == 10 ] v = 14
+			el [ slot == 8 ] v = 12
+		el [ which == 1 ]
+			if [ slot == 2 ] v = 16
+			el [ slot == 5 || slot == 7 || slot == 9 ] v = 18
+			el [ slot == 6 || slot == 10 ] v = 22
+			el [ slot == 8 ] v = 20
+		el [ which == 2 ]
+			if [ slot == 2 ] v = 4
+			el [ slot == 5 || slot == 7 || slot == 9 ] v = 8
+			el [ slot == 6 || slot == 10 ] v = 12
+			el [ slot == 8 ] v = 12
+		el [ which == 3 ]
+			if [ slot == 2 ] v = 12
+			el [ slot == 5 || slot == 7 || slot == 9 ] v = 16
+			el [ slot == 6 || slot == 10 ] v = 20
+			el [ slot == 8 ] v = 20
+		el [ which == 4 ]
+			if [ slot == 2 || slot == 3 ] v = 12
+			el [ slot == 5 || slot == 7 || slot == 9 ] v = 16
+			el [ slot == 6 || slot == 10 ] v = 18
+			el [ slot == 8 ] v = 20
+		el
+			if [ slot == 2 || slot == 4 ] v = 8
+			el [ slot == 5 || slot == 7 ] v = 12
+			el [ slot == 6 ] v = 14
+			el [ slot == 8 ] v = 16
+		return v
+
+	# =================================================================
+	# instruction handlers — each returns the 68000 cycle cost, cited to
+	# reference/M68K_TIMING.md. More groups (ALU, shift, bit, BCD, MOVEM,
+	# exceptions) build on this same EA + flag machinery next.
+	# =================================================================
+
+	# MOVE / MOVEA. Cycle cost reduces exactly to 4 + EA(src) + EA(dst)
+	# [M68K_TIMING §2/§3, verified against the full table].
+	func move_dispatch [ op: u16, size: i32 ] -> i32
+		sr : i32 [ i32[ op & 0x7 ] ]
+		sm : i32 [ i32[ (op >> 3) & 0x7 ] ]
+		dm : i32 [ i32[ (op >> 6) & 0x7 ] ]
+		dr : i32 [ i32[ (op >> 9) & 0x7 ] ]
+		isL : bool [ size == 2 ]
+		cyc : i32 [ 4 + ea_time[ sm, sr, isL ] + ea_time[ dm, dr, isL ] ]
+		sval : u32 [ ea_read[ sm, sr, size ] ]
+		if [ dm == 1 ]                    # MOVEA: sign-extend word, no flags
+			wv : u32 [ sval ]
+			if [ size == 1 ] wv = u32[ i32[ i16[ u16[ sval & 0xFFFF ] ] ] ]
+			m68k.a[ dr ] = wv
+			return cyc
+		set_nz[ sval, size ]
+		setflag[ 0x02, false ]            # V
+		setflag[ 0x01, false ]            # C
+		if [ dm == 0 ]
+			dreg_write[ dr, size, sval ]
+			return cyc
+		ea_calc[ dm, dr, size ]
+		a : u32 [ ea_last ]
+		if [ size == 0 ] bus_w8[ a, u8[ sval & 0xFF ] ]
+		el [ size == 1 ] bus_w16[ a, u16[ sval & 0xFFFF ] ]
+		el bus_w32[ a, sval ]
+		return cyc
+
+	# MOVEQ #imm8,Dn — 4 cycles [§5]
+	func op_moveq [ op: u16 ] -> i32
+		reg : i32 [ i32[ (op >> 9) & 0x7 ] ]
+		val : u32 [ u32[ i32[ i8[ u8[ op & 0xFF ] ] ] ] ]
+		m68k.d[ reg ] = val
+		set_nz[ val, 2 ]
+		setflag[ 0x02, false ]
+		setflag[ 0x01, false ]
+		return 4
+
+	# BRA / BSR / Bcc [§10]. Displacement base = address of the ext word.
+	func op_branch [ op: u16 ] -> i32
+		cc    : i32 [ i32[ (op >> 8) & 0xF ] ]
+		disp8 : i32 [ i32[ i8[ u8[ op & 0xFF ] ] ] ]
+		base  : u32 [ m68k.pc ]
+		off   : i32 [ disp8 ]
+		isword : bool [ disp8 == 0 ]
+		if [ isword ] off = i32[ i16[ fetch16[] ] ]
+		target : u32 [ base + u32[ off ] ]
+		if [ cc == 0 ]                    # BRA
+			m68k.pc = target
+			return 10
+		if [ cc == 1 ]                    # BSR
+			push32[ m68k.pc ]
+			m68k.pc = target
+			return 18
+		if [ test_cc[ cc ] ]             # Bcc taken
+			m68k.pc = target
+			return 10
+		return (isword) ? 12 : 8         # Bcc not taken: word 12, byte 8
+
+	# misc $4xxx [§6, §11, §12]
+	func op_misc [ op: u16 ] -> i32
+		if [ op == 0x4E71 ] return 4                       # NOP
+		if [ op == 0x4E75 ]                                # RTS: 16(4/0)
+			m68k.pc = pull32[]
+			return 16
+		if [ op == 0x4E73 ]                                # RTE: 20(5/0)
+			nsr : u16 [ bus_r16[ m68k.a[ 7 ] ] ]
+			m68k.a[ 7 ] = m68k.a[ 7 ] + 2
+			m68k.pc = pull32[]
+			m68k.sr = nsr
+			return 20
+		if [ op == 0x4E77 ]                                # RTR: 20(5/0)
+			ccr : u16 [ bus_r16[ m68k.a[ 7 ] ] ]
+			m68k.a[ 7 ] = m68k.a[ 7 ] + 2
+			m68k.pc = pull32[]
+			m68k.sr = (m68k.sr & 0xFF00) | (ccr & 0x001F)
+			return 20
+		mode : i32 [ i32[ (op >> 3) & 7 ] ]
+		rm   : i32 [ i32[ op & 7 ] ]
+		if [ (op & 0xF1C0) == 0x41C0 ]                     # LEA <ea>,An
+			an : i32 [ i32[ (op >> 9) & 7 ] ]
+			m68k.a[ an ] = ea_calc[ mode, rm, 2 ]
+			return ctrl_time[ 2, mode, rm ]
+		if [ (op & 0xFFC0) == 0x4E80 ]                     # JSR <ea>
+			tgt : u32 [ ea_calc[ mode, rm, 2 ] ]
+			push32[ m68k.pc ]
+			m68k.pc = tgt
+			return ctrl_time[ 1, mode, rm ]
+		if [ (op & 0xFFC0) == 0x4EC0 ]                     # JMP <ea>
+			m68k.pc = ea_calc[ mode, rm, 2 ]
+			return ctrl_time[ 0, mode, rm ]
+		if [ (op & 0xFFF8) == 0x4840 ]                     # SWAP Dn: 4
+			sv : u32 [ m68k.d[ rm ] ]
+			sw : u32 [ (sv >> 16) | (sv << 16) ]
+			m68k.d[ rm ] = sw
+			flags_logic[ sw, 2 ]
+			return 4
+		if [ (op & 0xFFC0) == 0x4840 ]                     # PEA <ea>
+			push32[ ea_calc[ mode, rm, 2 ] ]
+			return ctrl_time[ 3, mode, rm ]
+		if [ (op & 0xFFF8) == 0x4880 ]                     # EXT.w: 4
+			eb : u32 [ u32[ i32[ i8[ u8[ m68k.d[ rm ] & 0xFF ] ] ] ] & 0xFFFF ]
+			m68k.d[ rm ] = (m68k.d[ rm ] & 0xFFFF0000) | eb
+			flags_logic[ eb, 1 ]
+			return 4
+		if [ (op & 0xFFF8) == 0x48C0 ]                     # EXT.l: 4
+			ew : u32 [ u32[ i32[ i16[ u16[ m68k.d[ rm ] & 0xFFFF ] ] ] ] ]
+			m68k.d[ rm ] = ew
+			flags_logic[ ew, 2 ]
+			return 4
+		if [ (op & 0xFF80) == 0x4880 ]                     # MOVEM regs->mem
+			return op_movem[ op, false ]
+		if [ (op & 0xFF80) == 0x4C80 ]                     # MOVEM mem->regs
+			return op_movem[ op, true ]
+		if [ (op & 0xFFC0) == 0x40C0 ]                     # MOVE from SR
+			if [ mode == 0 ]
+				dreg_write[ rm, 1, u32[ m68k.sr ] ]
+				return 6
+			wa : u32 [ ea_calc[ mode, rm, 1 ] ]
+			bus_w16[ wa, m68k.sr ]
+			return 8 + ea_time[ mode, rm, false ]
+		if [ (op & 0xFFC0) == 0x44C0 ]                     # MOVE to CCR: 12
+			cv : u32 [ ea_read[ mode, rm, 1 ] ]
+			m68k.sr = (m68k.sr & 0xFF00) | u16[ cv & 0x1F ]
+			return 12 + ea_time[ mode, rm, false ]
+		if [ (op & 0xFFC0) == 0x46C0 ]                     # MOVE to SR: 12
+			sv2 : u32 [ ea_read[ mode, rm, 1 ] ]
+			m68k.sr = u16[ sv2 & 0xFFFF ]
+			return 12 + ea_time[ mode, rm, false ]
+		if [ (op & 0xFFF8) == 0x4E50 ]                     # LINK An,#d: 16(2/2)
+			push32[ m68k.a[ rm ] ]
+			m68k.a[ rm ] = m68k.a[ 7 ]
+			ld : u32 [ u32[ i32[ i16[ fetch16[] ] ] ] ]
+			m68k.a[ 7 ] = m68k.a[ 7 ] + ld
+			return 16
+		if [ (op & 0xFFF8) == 0x4E58 ]                     # UNLK An: 12(3/0)
+			m68k.a[ 7 ] = m68k.a[ rm ]
+			m68k.a[ rm ] = pull32[]
+			return 12
+		if [ (op & 0xFFF8) == 0x4E60 ]                     # MOVE An,USP: 4
+			m68k.usp = m68k.a[ rm ]
+			return 4
+		if [ (op & 0xFFF8) == 0x4E68 ]                     # MOVE USP,An: 4
+			m68k.a[ rm ] = m68k.usp
+			return 4
+		sz2 : i32 [ i32[ (op >> 6) & 3 ] ]
+		if [ (op & 0xF900) == 0x4000 && sz2 != 3 ]         # NEGX/CLR/NEG/NOT
+			knd : i32 [ i32[ (op >> 9) & 3 ] ]
+			isL2 : bool [ sz2 == 2 ]
+			if [ mode == 0 ]
+				dv : u32 [ dreg_read[ rm, sz2 ] ]
+				rv : u32 [ single_op[ knd, dv, sz2 ] ]
+				dreg_write[ rm, sz2, rv ]
+				return (isL2) ? 6 : 4
+			ad : u32 [ ea_calc[ mode, rm, sz2 ] ]
+			dv2 : u32 [ mem_read[ ad, sz2 ] ]
+			rv2 : u32 [ single_op[ knd, dv2, sz2 ] ]
+			mem_write[ ad, sz2, rv2 ]
+			return ((isL2) ? 12 : 8) + ea_time[ mode, rm, isL2 ]
+		if [ (op & 0xFF00) == 0x4A00 && sz2 != 3 ]         # TST: 4 + EA
+			tv : u32 [ ea_read[ mode, rm, sz2 ] ]
+			flags_logic[ tv, sz2 ]
+			return 4 + ea_time[ mode, rm, sz2 == 2 ]
+		return op_illegal[ op ]
+
+	# MOVEM [§11]. mask bit0=D0..bit15=A7; REVERSED for -(An) (bit0=A7).
+	# word loads sign-extend into the full register (data AND address regs).
+	func op_movem [ op: u16, to_regs: bool ] -> i32
+		isL : bool [ (op & 0x40) != 0 ]
+		size : i32 [ (isL) ? 2 : 1 ]
+		nb : u32 [ (isL) ? 4 : 2 ]
+		mode : i32 [ i32[ (op >> 3) & 7 ] ]
+		rm : i32 [ i32[ op & 7 ] ]
+		maskw : u32 [ u32[ fetch16[] ] ]
+		addr : u32 [ 0 ]
+		if [ mode == 2 || mode == 3 || mode == 4 ] addr = m68k.a[ rm ]
+		el addr = ea_calc[ mode, rm, size ]
+		n : i32 [ 0 ]
+		per : i32 [ (isL) ? 8 : 4 ]
+		if [ to_regs ]
+			for [ i: i32 0, i < 16, i += 1 ]
+				if [ (maskw & (u32[1] << i)) != 0 ]
+					v : u32 [ mem_read[ addr, size ] ]
+					if [ ! isL ] v = u32[ i32[ i16[ u16[ v & 0xFFFF ] ] ] ]
+					if [ i < 8 ] m68k.d[ i ] = v
+					el m68k.a[ i - 8 ] = v
+					addr += nb
+					n += 1
+			if [ mode == 3 ] m68k.a[ rm ] = addr
+			return ctrl_time[ 4, mode, rm ] + per * n
+		if [ mode == 4 ]
+			for [ i2: i32 0, i2 < 16, i2 += 1 ]
+				if [ (maskw & (u32[1] << i2)) != 0 ]
+					rn : i32 [ 15 - i2 ]
+					v2 : u32 [ 0 ]
+					if [ rn < 8 ] v2 = m68k.d[ rn ]
+					el v2 = m68k.a[ rn - 8 ]
+					addr -= nb
+					mem_write[ addr, size, v2 ]
+					n += 1
+			m68k.a[ rm ] = addr
+			return ctrl_time[ 5, mode, rm ] + per * n
+		for [ i3: i32 0, i3 < 16, i3 += 1 ]
+			if [ (maskw & (u32[1] << i3)) != 0 ]
+				v3 : u32 [ 0 ]
+				if [ i3 < 8 ] v3 = m68k.d[ i3 ]
+				el v3 = m68k.a[ i3 - 8 ]
+				mem_write[ addr, size, v3 ]
+				addr += nb
+				n += 1
+		return ctrl_time[ 5, mode, rm ] + per * n
+
+	# $0xxx: ALU immediates + bit ops [§5, §8, §12]
+	func op_imm [ op: u16 ] -> i32
+		if [ (op & 0x0100) != 0 || ((op >> 9) & 7) == 4 ]
+			return op_bitop[ op ]
+		kind : i32 [ i32[ (op >> 9) & 7 ] ]
+		size : i32 [ i32[ (op >> 6) & 3 ] ]
+		mode : i32 [ i32[ (op >> 3) & 7 ] ]
+		rm : i32 [ i32[ op & 7 ] ]
+		if [ mode == 7 && rm == 4 ]                        # to CCR / SR: 20(3/0)
+			iw : u32 [ u32[ fetch16[] ] ]
+			if [ size == 0 ]
+				cb : u32 [ u32[ m68k.sr ] & 0x1F ]
+				if [ kind == 0 ] cb = cb | (iw & 0xFF)
+				el [ kind == 1 ] cb = cb & (iw & 0xFF)
+				el cb = cb ^ (iw & 0xFF)
+				m68k.sr = (m68k.sr & 0xFF00) | u16[ cb & 0x1F ]
+			el
+				cw : u32 [ u32[ m68k.sr ] ]
+				if [ kind == 0 ] cw = cw | iw
+				el [ kind == 1 ] cw = cw & iw
+				el cw = cw ^ iw
+				m68k.sr = u16[ cw ]
+			return 20
+		isL : bool [ size == 2 ]
+		imm : u32 [ 0 ]
+		if [ isL ] imm = fetch32[]
+		el imm = u32[ fetch16[] ] & size_mask[ size ]
+		if [ mode == 0 ]
+			d : u32 [ dreg_read[ rm, size ] ]
+			r : u32 [ imm_apply[ kind, imm, d, size ] ]
+			if [ kind != 6 ] dreg_write[ rm, size, r ]
+			if [ kind == 6 ] return (isL) ? 14 : 8         # CMPI
+			return (isL) ? 16 : 8
+		ad : u32 [ ea_calc[ mode, rm, size ] ]
+		d2 : u32 [ mem_read[ ad, size ] ]
+		r2 : u32 [ imm_apply[ kind, imm, d2, size ] ]
+		if [ kind != 6 ] mem_write[ ad, size, r2 ]
+		et : i32 [ ea_time[ mode, rm, isL ] ]
+		if [ kind == 6 ] return ((isL) ? 12 : 8) + et      # CMPI
+		return ((isL) ? 20 : 12) + et
+
+	# BTST/BCHG/BCLR/BSET [§8]. dynamic = bit# in Dn; static = immediate.
+	func op_bitop [ op: u16 ] -> i32
+		dyn : bool [ (op & 0x0100) != 0 ]
+		if [ dyn && ((op >> 3) & 7) == 1 ]                 # MOVEP — deferred
+			return op_illegal[ op ]
+		btyp : i32 [ i32[ (op >> 6) & 3 ] ]
+		mode : i32 [ i32[ (op >> 3) & 7 ] ]
+		rm : i32 [ i32[ op & 7 ] ]
+		bn : u32 [ 0 ]
+		extra : i32 [ 0 ]
+		if [ dyn ] bn = m68k.d[ i32[ (op >> 9) & 7 ] ]
+		el
+			bn = u32[ fetch16[] ]
+			extra = 4
+		if [ mode == 0 ]                                   # register: long
+			bit : i32 [ i32[ bn & 31 ] ]
+			d : u32 [ m68k.d[ rm ] ]
+			setflag[ 0x04, (d & (u32[1] << bit)) == 0 ]
+			r : u32 [ d ]
+			if [ btyp == 1 ] r = d ^ (u32[1] << bit)
+			el [ btyp == 2 ] r = d & (~(u32[1] << bit))
+			el [ btyp == 3 ] r = d | (u32[1] << bit)
+			if [ btyp != 0 ] m68k.d[ rm ] = r
+			base : i32 [ 6 ]
+			if [ btyp == 1 || btyp == 3 ] base = 8
+			el [ btyp == 2 ] base = 10
+			return base + extra
+		bit2 : i32 [ i32[ bn & 7 ] ]                       # memory: byte
+		addr : u32 [ ea_calc[ mode, rm, 0 ] ]
+		d2 : u32 [ u32[ bus_r8[ addr ] ] ]
+		setflag[ 0x04, (d2 & (u32[1] << bit2)) == 0 ]
+		r2 : u32 [ d2 ]
+		if [ btyp == 1 ] r2 = d2 ^ (u32[1] << bit2)
+		el [ btyp == 2 ] r2 = d2 & (~(u32[1] << bit2))
+		el [ btyp == 3 ] r2 = d2 | (u32[1] << bit2)
+		if [ btyp != 0 ] bus_w8[ addr, u8[ r2 & 0xFF ] ]
+		mb : i32 [ (btyp == 0) ? 4 : 8 ]
+		return mb + extra + ea_time[ mode, rm, false ]
+
+	# $5xxx: ADDQ / SUBQ / Scc / DBcc [§5, §6, §10]
+	func op_quick [ op: u16 ] -> i32
+		sz2 : i32 [ i32[ (op >> 6) & 3 ] ]
+		mode : i32 [ i32[ (op >> 3) & 7 ] ]
+		rm : i32 [ i32[ op & 7 ] ]
+		if [ sz2 == 3 ]
+			cc : i32 [ i32[ (op >> 8) & 0xF ] ]
+			if [ mode == 1 ]                               # DBcc: 12 / 10 / 14
+				base : u32 [ m68k.pc ]
+				disp : i32 [ i32[ i16[ fetch16[] ] ] ]
+				if [ test_cc[ cc ] ] return 12
+				cnt : u32 [ (m68k.d[ rm ] - 1) & 0xFFFF ]
+				m68k.d[ rm ] = (m68k.d[ rm ] & 0xFFFF0000) | cnt
+				if [ cnt != 0xFFFF ]
+					m68k.pc = base + u32[ disp ]
+					return 10
+				return 14
+			sv : u32 [ 0 ]                                 # Scc
+			if [ test_cc[ cc ] ] sv = 0xFF
+			if [ mode == 0 ]
+				dreg_write[ rm, 0, sv ]
+				return (sv != 0) ? 6 : 4
+			sa : u32 [ ea_calc[ mode, rm, 0 ] ]
+			bus_w8[ sa, u8[ sv ] ]
+			return 8 + ea_time[ mode, rm, false ]
+		data : u32 [ u32[ (op >> 9) & 7 ] ]
+		if [ data == 0 ] data = 8
+		issub : bool [ (op & 0x0100) != 0 ]
+		if [ mode == 1 ]                                   # to An: 8, no flags
+			if [ issub ] m68k.a[ rm ] = m68k.a[ rm ] - data
+			el m68k.a[ rm ] = m68k.a[ rm ] + data
+			return 8
+		isL : bool [ sz2 == 2 ]
+		if [ mode == 0 ]
+			d : u32 [ dreg_read[ rm, sz2 ] ]
+			r : u32 [ (issub) ? (d - data) : (d + data) ]
+			dreg_write[ rm, sz2, r ]
+			if [ issub ] flags_sub[ data, d, r, sz2, true ]
+			el flags_add[ data, d, r, sz2, true ]
+			return (isL) ? 8 : 4
+		ad : u32 [ ea_calc[ mode, rm, sz2 ] ]
+		d2 : u32 [ mem_read[ ad, sz2 ] ]
+		r2 : u32 [ (issub) ? (d2 - data) : (d2 + data) ]
+		mem_write[ ad, sz2, r2 ]
+		if [ issub ] flags_sub[ data, d2, r2, sz2, true ]
+		el flags_add[ data, d2, r2, sz2, true ]
+		return ((isL) ? 12 : 8) + ea_time[ mode, rm, isL ]
+
+	# $9xxx / $Dxxx: SUB / ADD / SUBA / ADDA / SUBX / ADDX [§4, §9]
+	func op_addsub [ op: u16, is_sub: bool ] -> i32
+		reg : i32 [ i32[ (op >> 9) & 7 ] ]
+		opm : i32 [ i32[ (op >> 6) & 7 ] ]
+		mode : i32 [ i32[ (op >> 3) & 7 ] ]
+		rm : i32 [ i32[ op & 7 ] ]
+		if [ opm == 3 || opm == 7 ]                        # ADDA/SUBA
+			isL : bool [ opm == 7 ]
+			cyc : i32 [ 0 ]
+			if [ isL ]
+				cyc = 6 + ea_time[ mode, rm, true ]
+				if [ mode == 0 || mode == 1 || (mode == 7 && rm == 4) ]
+					cyc = 8 + ea_time[ mode, rm, true ]
+			el
+				cyc = 8 + ea_time[ mode, rm, false ]
+			s : u32 [ ea_read[ mode, rm, (isL) ? 2 : 1 ] ]
+			if [ ! isL ] s = u32[ i32[ i16[ u16[ s & 0xFFFF ] ] ] ]
+			if [ is_sub ] m68k.a[ reg ] = m68k.a[ reg ] - s
+			el m68k.a[ reg ] = m68k.a[ reg ] + s
+			return cyc
+		size : i32 [ opm & 3 ]
+		isL2 : bool [ size == 2 ]
+		if [ opm < 3 ]                                     # op <ea>,Dn
+			cyc2 : i32 [ 4 ]
+			if [ isL2 ]
+				cyc2 = 6
+				if [ mode == 0 || mode == 1 || (mode == 7 && rm == 4) ] cyc2 = 8
+			s2 : u32 [ ea_read[ mode, rm, size ] ]
+			d2 : u32 [ dreg_read[ reg, size ] ]
+			r2 : u32 [ (is_sub) ? (d2 - s2) : (d2 + s2) ]
+			dreg_write[ reg, size, r2 ]
+			if [ is_sub ] flags_sub[ s2, d2, r2, size, true ]
+			el flags_add[ s2, d2, r2, size, true ]
+			return cyc2 + ea_time[ mode, rm, isL2 ]
+		if [ mode == 0 ]                                   # ADDX/SUBX Dy,Dx
+			xs : u32 [ dreg_read[ rm, size ] ]
+			xd : u32 [ dreg_read[ reg, size ] ]
+			xx : u32 [ 0 ]
+			if [ (m68k.sr & 0x10) != 0 ] xx = 1
+			xr : u32 [ (is_sub) ? (xd - xs - xx) : (xd + xs + xx) ]
+			dreg_write[ reg, size, xr ]
+			zo : bool [ (m68k.sr & 0x04) != 0 ]
+			if [ is_sub ] flags_sub[ xs, xd, xr, size, true ]
+			el flags_add[ xs, xd, xr, size, true ]
+			if [ (xr & size_mask[ size ]) == 0 ] setflag[ 0x04, zo ]
+			return (isL2) ? 8 : 4
+		if [ mode == 1 ]                                   # ADDX/SUBX -(Ay),-(Ax)
+			nb : u32 [ 1 ]
+			if [ size == 1 ] nb = 2
+			if [ size == 2 ] nb = 4
+			if [ size == 0 && rm == 7 ] nb = 2
+			m68k.a[ rm ] = m68k.a[ rm ] - nb
+			ms : u32 [ mem_read[ m68k.a[ rm ], size ] ]
+			nb2 : u32 [ nb ]
+			if [ size == 0 && reg == 7 ] nb2 = 2
+			m68k.a[ reg ] = m68k.a[ reg ] - nb2
+			md : u32 [ mem_read[ m68k.a[ reg ], size ] ]
+			mx : u32 [ 0 ]
+			if [ (m68k.sr & 0x10) != 0 ] mx = 1
+			mr : u32 [ (is_sub) ? (md - ms - mx) : (md + ms + mx) ]
+			mem_write[ m68k.a[ reg ], size, mr ]
+			zo2 : bool [ (m68k.sr & 0x04) != 0 ]
+			if [ is_sub ] flags_sub[ ms, md, mr, size, true ]
+			el flags_add[ ms, md, mr, size, true ]
+			if [ (mr & size_mask[ size ]) == 0 ] setflag[ 0x04, zo2 ]
+			return (isL2) ? 30 : 18
+		# op Dn,<ea> memory RMW
+		ad2 : u32 [ ea_calc[ mode, rm, size ] ]
+		md2 : u32 [ mem_read[ ad2, size ] ]
+		ss : u32 [ dreg_read[ reg, size ] ]
+		rr : u32 [ (is_sub) ? (md2 - ss) : (md2 + ss) ]
+		mem_write[ ad2, size, rr ]
+		if [ is_sub ] flags_sub[ ss, md2, rr, size, true ]
+		el flags_add[ ss, md2, rr, size, true ]
+		return ((isL2) ? 12 : 8) + ea_time[ mode, rm, isL2 ]
+
+	# $Bxxx: CMP / CMPA / CMPM / EOR [§4, §9]
+	func op_cmp_eor [ op: u16 ] -> i32
+		reg : i32 [ i32[ (op >> 9) & 7 ] ]
+		opm : i32 [ i32[ (op >> 6) & 7 ] ]
+		mode : i32 [ i32[ (op >> 3) & 7 ] ]
+		rm : i32 [ i32[ op & 7 ] ]
+		if [ opm == 3 || opm == 7 ]                        # CMPA: 6 + EA
+			isL : bool [ opm == 7 ]
+			s : u32 [ ea_read[ mode, rm, (isL) ? 2 : 1 ] ]
+			if [ ! isL ] s = u32[ i32[ i16[ u16[ s & 0xFFFF ] ] ] ]
+			d : u32 [ m68k.a[ reg ] ]
+			r : u32 [ d - s ]
+			flags_sub[ s, d, r, 2, false ]
+			return 6 + ea_time[ mode, rm, isL ]
+		size : i32 [ opm & 3 ]
+		isL2 : bool [ size == 2 ]
+		if [ opm < 3 ]                                     # CMP <ea>,Dn
+			s2 : u32 [ ea_read[ mode, rm, size ] ]
+			d2 : u32 [ dreg_read[ reg, size ] ]
+			r2 : u32 [ d2 - s2 ]
+			flags_sub[ s2, d2, r2, size, false ]
+			return ((isL2) ? 6 : 4) + ea_time[ mode, rm, isL2 ]
+		if [ mode == 1 ]                                   # CMPM (Ay)+,(Ax)+
+			nb : u32 [ 1 ]
+			if [ size == 1 ] nb = 2
+			if [ size == 2 ] nb = 4
+			nbs : u32 [ nb ]
+			if [ size == 0 && rm == 7 ] nbs = 2
+			s3 : u32 [ mem_read[ m68k.a[ rm ], size ] ]
+			m68k.a[ rm ] = m68k.a[ rm ] + nbs
+			nbd : u32 [ nb ]
+			if [ size == 0 && reg == 7 ] nbd = 2
+			d3 : u32 [ mem_read[ m68k.a[ reg ], size ] ]
+			m68k.a[ reg ] = m68k.a[ reg ] + nbd
+			r3 : u32 [ d3 - s3 ]
+			flags_sub[ s3, d3, r3, size, false ]
+			return (isL2) ? 20 : 12
+		s4 : u32 [ dreg_read[ reg, size ] ]                # EOR Dn,<ea>
+		if [ mode == 0 ]
+			r4 : u32 [ dreg_read[ rm, size ] ^ s4 ]
+			dreg_write[ rm, size, r4 ]
+			flags_logic[ r4, size ]
+			return (isL2) ? 8 : 4
+		ad : u32 [ ea_calc[ mode, rm, size ] ]
+		d5 : u32 [ mem_read[ ad, size ] ]
+		r5 : u32 [ d5 ^ s4 ]
+		mem_write[ ad, size, r5 ]
+		flags_logic[ r5, size ]
+		return ((isL2) ? 12 : 8) + ea_time[ mode, rm, isL2 ]
+
+	# $Cxxx: AND / MULU / MULS / EXG [§4, §12]. ABCD deferred.
+	func op_and_mul [ op: u16 ] -> i32
+		reg : i32 [ i32[ (op >> 9) & 7 ] ]
+		opm : i32 [ i32[ (op >> 6) & 7 ] ]
+		mode : i32 [ i32[ (op >> 3) & 7 ] ]
+		rm : i32 [ i32[ op & 7 ] ]
+		if [ opm == 3 || opm == 7 ]                        # MULU/MULS: 38+2n [§4]
+			s : u32 [ ea_read[ mode, rm, 1 ] & 0xFFFF ]
+			et : i32 [ ea_time[ mode, rm, false ] ]
+			r : u32 [ 0 ]
+			n : i32 [ 0 ]
+			if [ opm == 3 ]
+				r = s * (m68k.d[ reg ] & 0xFFFF)
+				for [ i: i32 0, i < 16, i += 1 ]
+					if [ (s & (u32[1] << i)) != 0 ] n += 1
+			el
+				sd : i32 [ i32[ i16[ u16[ s ] ] ] ]
+				dd : i32 [ i32[ i16[ u16[ m68k.d[ reg ] & 0xFFFF ] ] ] ]
+				r = u32[ sd * dd ]
+				t : u32 [ (s << 1) ^ s ]
+				for [ i2: i32 0, i2 < 17, i2 += 1 ]
+					if [ (t & (u32[1] << i2)) != 0 ] n += 1
+			m68k.d[ reg ] = r
+			flags_logic[ r, 2 ]
+			return 38 + 2 * n + et
+		if [ opm == 5 && (mode == 0 || mode == 1) ]        # EXG: 6
+			if [ mode == 0 ]
+				t1 : u32 [ m68k.d[ reg ] ]
+				m68k.d[ reg ] = m68k.d[ rm ]
+				m68k.d[ rm ] = t1
+			el
+				t2 : u32 [ m68k.a[ reg ] ]
+				m68k.a[ reg ] = m68k.a[ rm ]
+				m68k.a[ rm ] = t2
+			return 6
+		if [ opm == 6 && mode == 1 ]                       # EXG Dn,An: 6
+			t3 : u32 [ m68k.d[ reg ] ]
+			m68k.d[ reg ] = m68k.a[ rm ]
+			m68k.a[ rm ] = t3
+			return 6
+		if [ opm >= 4 && (mode == 0 || mode == 1) ]        # ABCD — deferred
+			return op_illegal[ op ]
+		size : i32 [ opm & 3 ]
+		isL : bool [ size == 2 ]
+		if [ opm < 3 ]                                     # AND <ea>,Dn
+			cyc : i32 [ 4 ]
+			if [ isL ]
+				cyc = 6
+				if [ mode == 0 || (mode == 7 && rm == 4) ] cyc = 8
+			s2 : u32 [ ea_read[ mode, rm, size ] ]
+			d2 : u32 [ dreg_read[ reg, size ] ]
+			r2 : u32 [ d2 & s2 ]
+			dreg_write[ reg, size, r2 ]
+			flags_logic[ r2, size ]
+			return cyc + ea_time[ mode, rm, isL ]
+		ad : u32 [ ea_calc[ mode, rm, size ] ]             # AND Dn,<ea>
+		d3 : u32 [ mem_read[ ad, size ] ]
+		r3 : u32 [ d3 & dreg_read[ reg, size ] ]
+		mem_write[ ad, size, r3 ]
+		flags_logic[ r3, size ]
+		return ((isL) ? 12 : 8) + ea_time[ mode, rm, isL ]
+
+	# $8xxx: OR / DIVU / DIVS [§4 + Ijor exact division timing]. SBCD deferred.
+	func op_or_div [ op: u16 ] -> i32
+		reg : i32 [ i32[ (op >> 9) & 7 ] ]
+		opm : i32 [ i32[ (op >> 6) & 7 ] ]
+		mode : i32 [ i32[ (op >> 3) & 7 ] ]
+		rm : i32 [ i32[ op & 7 ] ]
+		if [ opm == 3 ]                                    # DIVU
+			dv : u32 [ ea_read[ mode, rm, 1 ] & 0xFFFF ]
+			et : i32 [ ea_time[ mode, rm, false ] ]
+			if [ dv == 0 ]
+				puts 'rgen 68k: DIVU by zero (exception pending impl)'
+				return 42 + et                             # §14 divide-by-zero
+			dd : u32 [ m68k.d[ reg ] ]
+			if [ (dd >> 16) >= dv ]                        # overflow early-out
+				setflag[ 0x02, true ]
+				setflag[ 0x01, false ]
+				return 10 + et
+			q : u32 [ dd / dv ]
+			rmd : u32 [ dd % dv ]
+			m68k.d[ reg ] = (rmd << 16) | (q & 0xFFFF)
+			setflag[ 0x08, (q & 0x8000) != 0 ]
+			setflag[ 0x04, (q & 0xFFFF) == 0 ]
+			setflag[ 0x02, false ]
+			setflag[ 0x01, false ]
+			c : i32 [ 38 ]                                 # Ijor model [§4]
+			wd : u32 [ dd ]
+			hd : u32 [ dv << 16 ]
+			for [ i: i32 0, i < 15, i += 1 ]
+				carry : bool [ (wd & 0x80000000) != 0 ]
+				wd = wd << 1
+				if [ carry ]
+					wd = wd - hd
+				el
+					c += 2
+					if [ wd >= hd ]
+						wd = wd - hd
+						c -= 1
+			return c * 2 + et
+		if [ opm == 7 ]                                    # DIVS
+			dvw : u32 [ ea_read[ mode, rm, 1 ] & 0xFFFF ]
+			et2 : i32 [ ea_time[ mode, rm, false ] ]
+			dvs : i32 [ i32[ i16[ u16[ dvw ] ] ] ]
+			if [ dvs == 0 ]
+				puts 'rgen 68k: DIVS by zero (exception pending impl)'
+				return 42 + et2
+			dds : i32 [ i32[ m68k.d[ reg ] ] ]
+			c2 : i32 [ 6 ]                                 # Ijor model [§4]
+			if [ dds < 0 ] c2 += 1
+			adv : u32 [ (dvs < 0) ? u32[ 0 - dvs ] : u32[ dvs ] ]
+			add2 : u32 [ (dds < 0) ? u32[ 0 - dds ] : u32[ dds ] ]
+			if [ (add2 >> 16) >= adv ]                     # absolute overflow
+				setflag[ 0x02, true ]
+				setflag[ 0x01, false ]
+				return (c2 + 2) * 2 + et2
+			qs : i32 [ dds / dvs ]
+			rs : i32 [ dds % dvs ]
+			c2 += 55
+			if [ dvs >= 0 ]
+				if [ dds >= 0 ] c2 -= 1
+				el c2 += 1
+			qa : u32 [ (qs < 0) ? u32[ 0 - qs ] : u32[ qs ] ]
+			qb : u32 [ qa & 0xFFFF ]
+			for [ i2: i32 0, i2 < 15, i2 += 1 ]
+				if [ (qb & 0x8000) == 0 ] c2 += 1
+				qb = (qb << 1) & 0xFFFF
+			cyc2 : i32 [ c2 * 2 + et2 ]
+			if [ qs > 32767 || qs < -32768 ]               # late overflow: V, no store
+				setflag[ 0x02, true ]
+				setflag[ 0x01, false ]
+				return cyc2
+			m68k.d[ reg ] = (u32[ rs & 0xFFFF ] << 16) | u32[ qs & 0xFFFF ]
+			setflag[ 0x08, (u32[ qs ] & 0x8000) != 0 ]
+			setflag[ 0x04, (qs & 0xFFFF) == 0 ]
+			setflag[ 0x02, false ]
+			setflag[ 0x01, false ]
+			return cyc2
+		if [ opm >= 4 && (mode == 0 || mode == 1) ]        # SBCD — deferred
+			return op_illegal[ op ]
+		size : i32 [ opm & 3 ]
+		isL : bool [ size == 2 ]
+		if [ opm < 3 ]                                     # OR <ea>,Dn
+			cyc : i32 [ 4 ]
+			if [ isL ]
+				cyc = 6
+				if [ mode == 0 || (mode == 7 && rm == 4) ] cyc = 8
+			s2 : u32 [ ea_read[ mode, rm, size ] ]
+			d2 : u32 [ dreg_read[ reg, size ] ]
+			r2 : u32 [ d2 | s2 ]
+			dreg_write[ reg, size, r2 ]
+			flags_logic[ r2, size ]
+			return cyc + ea_time[ mode, rm, isL ]
+		ad : u32 [ ea_calc[ mode, rm, size ] ]             # OR Dn,<ea>
+		d3 : u32 [ mem_read[ ad, size ] ]
+		r3 : u32 [ d3 | dreg_read[ reg, size ] ]
+		mem_write[ ad, size, r3 ]
+		flags_logic[ r3, size ]
+		return ((isL) ? 12 : 8) + ea_time[ mode, rm, isL ]
+
+	# $Exxx: shifts/rotates [§7]
+	func op_shift [ op: u16 ] -> i32
+		sz2 : i32 [ i32[ (op >> 6) & 3 ] ]
+		left : bool [ (op & 0x0100) != 0 ]
+		if [ sz2 == 3 ]                                    # memory: by 1, word
+			typ : i32 [ i32[ (op >> 9) & 3 ] ]
+			mode : i32 [ i32[ (op >> 3) & 7 ] ]
+			rm : i32 [ i32[ op & 7 ] ]
+			addr : u32 [ ea_calc[ mode, rm, 1 ] ]
+			d : u32 [ mem_read[ addr, 1 ] ]
+			r : u32 [ shift_exec[ typ, left, d, 1, 1 ] ]
+			mem_write[ addr, 1, r ]
+			return 8 + ea_time[ mode, rm, false ]
+		typ2 : i32 [ i32[ (op >> 3) & 3 ] ]
+		rm2 : i32 [ i32[ op & 7 ] ]
+		cnt : i32 [ i32[ (op >> 9) & 7 ] ]
+		if [ (op & 0x20) != 0 ]
+			cnt = i32[ m68k.d[ cnt ] & 63 ]
+		el
+			if [ cnt == 0 ] cnt = 8
+		d2 : u32 [ dreg_read[ rm2, sz2 ] ]
+		r2 : u32 [ shift_exec[ typ2, left, d2, cnt, sz2 ] ]
+		dreg_write[ rm2, sz2, r2 ]
+		return ((sz2 == 2) ? 8 : 6) + 2 * cnt
+
+	# unimplemented / illegal — will raise the §14 illegal-instruction
+	# exception (34 cyc) once exception processing lands; halt-safe for now.
+	func op_illegal [ op: u16 ] -> i32
+		if [ trace ] puts 'rgen 68k: unhandled opcode {op} at {m68k.pc - 2}'
+		return 4
+
+	# decode dispatch on the top opcode nibble; returns cycles consumed.
+	func m68k_step [] -> i32
+		if [ irq_level > i32[ (m68k.sr >> 8) & 7 ] ]
+			return m68k_interrupt[]
+		if [ m68k.stopped ] return 4
+		op  : u16 [ fetch16[] ]
+		if [ trace && icount < 260 ]
+			puts 'i{icount} pc={m68k.pc - 2} op={op}'
+			icount += 1
+		top : i32 [ i32[ (op >> 12) & 0xF ] ]
+		switch [ top ]
+			case 0                        # immediates + bit ops
+				return op_imm[ op ]
+			case 1                        # MOVE.b
+				return move_dispatch[ op, 0 ]
+			case 2                        # MOVE.l
+				return move_dispatch[ op, 2 ]
+			case 3                        # MOVE.w
+				return move_dispatch[ op, 1 ]
+			case 4                        # misc
+				return op_misc[ op ]
+			case 5                        # ADDQ/SUBQ/Scc/DBcc
+				return op_quick[ op ]
+			case 6                        # BRA / BSR / Bcc
+				return op_branch[ op ]
+			case 7                        # MOVEQ
+				return op_moveq[ op ]
+			case 8                        # OR / DIVU / DIVS
+				return op_or_div[ op ]
+			case 9                        # SUB / SUBA / SUBX
+				return op_addsub[ op, true ]
+			case 11                       # CMP / CMPA / CMPM / EOR
+				return op_cmp_eor[ op ]
+			case 12                       # AND / MULU / MULS / EXG
+				return op_and_mul[ op ]
+			case 13                       # ADD / ADDA / ADDX
+				return op_addsub[ op, false ]
+			case 14                       # shifts / rotates
+				return op_shift[ op ]
+			default
+				return op_illegal[ op ]
+		return 4
+
+	# One NTSC frame of 68000 execution. 262 lines x 3420 MCLK/line =
+	# 896040 MCLK/frame; each 68000 cycle is 7 MCLK. Instruction overshoot
+	# past the frame boundary carries into the next frame (mclk_carry) so
+	# long-run timing stays exact — the asnes frame_carry lesson. The Z80 /
+	# VDP-slot / YM-sample interleave hangs off this same loop as those
+	# phases land.
+	# now per-scanline: 262 lines x 3420 MCLK. vblank rises at line 224 and
+	# raises VINT (level 6) when IE0 (reg 1 bit 5) is set.
+	func run_frame [] -> none
+		for [ line: i32 0, line < 262, line += 1 ]
+			vdp.vcounter = u16[ line ]
+			if [ line == 0 ]   vdp.in_vblank = false
+			if [ line == 224 ]
+				vdp.in_vblank    = true
+				vdp.vint_pending = true
+				if [ (vdp.regs[ 1 ] & 0x20) != 0 ] irq_level = 6
+			budget : i64 [ 3420 + mclk_carry ]
+			spent  : i64 [ 0 ]
+			while [ spent < budget ]
+				cyc : i32 [ m68k_step[] ]
+				spent += i64[ cyc * 7 ]
+			mclk_carry = budget - spent

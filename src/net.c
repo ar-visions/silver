@@ -483,8 +483,11 @@ bool message_read_content(message m, sock sc) {
             m->content = hold((Au)parse((Au_t)typeid(map), (cstr)js->chars, (ctx)null));
         } else if (ctype && starts_with(ctype, "text/")) {
             m->content = hold((Au)new(string, chars, (cstr)vdata(v_data), ref_length, len(v_data)));
+        } else if (len(v_data) > 0) {
+            // binary payload (image/*, application/octet-stream, ...) — keep the raw bytes
+            // in a string carrying an explicit count so path.save writes them verbatim.
+            m->content = hold((Au)new(string, chars, (cstr)vdata(v_data), ref_length, len(v_data)));
         } else {
-            verify(len(v_data) == 0, "unsupported content type");
             m->content = null;
         }
     }

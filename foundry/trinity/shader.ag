@@ -571,8 +571,10 @@ ModelViewProject Mode7
 #   (eagle/shaders/supereagle.glsl). Re-expressed in trinity's shader form here.
 #   This file therefore includes GPL-licensed work — keep this notice.
 #
-# Alpha is taken from the center texel so a transparent input (e.g. the Mode-7 plane
-# region) stays transparent for compositing. Bind the 256x224 framebuffer as 'color'.
+# Alpha runs through the same pattern selection as color, so sprite-edge coverage is
+# diagonal-smoothed and composites over whatever sits beneath (e.g. the Mode-7 plane);
+# transparent texels borrow the nearest opaque neighbor's rgb so no black fringes are
+# blended in. Bind the 256x224 framebuffer as 'color'.
 ModelViewProject SuperEagle
     attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
@@ -594,8 +596,8 @@ ModelViewProject SuperEagle
         gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
     }
 
-    func se_reduce [ c: vec3f ] -> GLSL float {
-        return dot(c, vec3(65536.0, 255.0, 1.0));
+    func se_reduce [ c: vec4f ] -> GLSL float {
+        return dot(c, vec4(65536.0, 255.0, 1.0, 16777216.0));
     }
 
     func se_result [ a: f32, b: f32, c: f32, d: f32 ] -> GLSL float {
@@ -613,26 +615,34 @@ ModelViewProject SuperEagle
         vec2  fp = fract(v_uv * vec2(ts));
 
         vec4 Cc = texelFetch(color, clamp(P, ivec2(0), ts - 1), 0);
-        vec3 C4 = Cc.rgb;
+        vec4 t5 = texelFetch(color, clamp(P + ivec2( 1, 0), ivec2(0), ts - 1), 0);
+        vec4 t7 = texelFetch(color, clamp(P + ivec2( 0, 1), ivec2(0), ts - 1), 0);
+        vec4 t8 = texelFetch(color, clamp(P + ivec2( 1, 1), ivec2(0), ts - 1), 0);
+        // a transparent texel carries no color: borrow rgb from the nearest opaque
+        // neighbor so the pattern blends never pull black fringes over the Mode-7
+        // plane beneath; the alpha channel keeps the true coverage and is shaped
+        // by the same pattern selection as the color (diagonal-smoothed edge mask)
+        vec3 rgb4 = Cc.rgb;
+        if (Cc.a < 0.5) rgb4 = t5.a >= 0.5 ? t5.rgb : (t7.a >= 0.5 ? t7.rgb : (t8.a >= 0.5 ? t8.rgb : Cc.rgb));
+        vec4 C4 = vec4(rgb4, Cc.a);
+        vec4 C5 = vec4(t5.a < 0.5 ? rgb4 : t5.rgb, t5.a);
+        vec4 C7 = vec4(t7.a < 0.5 ? rgb4 : t7.rgb, t7.a);
+        vec4 C8 = vec4(t8.a < 0.5 ? rgb4 : t8.rgb, t8.a);
         vec4 t;
-        t = texelFetch(color, clamp(P + ivec2( 1, 0), ivec2(0), ts - 1), 0); vec3 C5 = t.a < 0.5 ? C4 : t.rgb;
-        t = texelFetch(color, clamp(P + ivec2( 0, 1), ivec2(0), ts - 1), 0); vec3 C7 = t.a < 0.5 ? C4 : t.rgb;
-        t = texelFetch(color, clamp(P + ivec2( 1, 1), ivec2(0), ts - 1), 0); vec3 C8 = t.a < 0.5 ? C4 : t.rgb;
-
-        t = texelFetch(color, clamp(P + ivec2(-1, 0), ivec2(0), ts - 1), 0); float c1 = se_reduce(t.a < 0.5 ? C4 : t.rgb);
-        t = texelFetch(color, clamp(P + ivec2( 1,-1), ivec2(0), ts - 1), 0); float c2 = se_reduce(t.a < 0.5 ? C4 : t.rgb);
+        t = texelFetch(color, clamp(P + ivec2(-1, 0), ivec2(0), ts - 1), 0); float c1 = se_reduce(vec4(t.a < 0.5 ? rgb4 : t.rgb, t.a));
+        t = texelFetch(color, clamp(P + ivec2( 1,-1), ivec2(0), ts - 1), 0); float c2 = se_reduce(vec4(t.a < 0.5 ? rgb4 : t.rgb, t.a));
         float c3 = c1;
         float c4 = se_reduce(C4);
         float c5 = se_reduce(C5);
-        t = texelFetch(color, clamp(P + ivec2(-1, 1), ivec2(0), ts - 1), 0); float c6 = se_reduce(t.a < 0.5 ? C4 : t.rgb);
+        t = texelFetch(color, clamp(P + ivec2(-1, 1), ivec2(0), ts - 1), 0); float c6 = se_reduce(vec4(t.a < 0.5 ? rgb4 : t.rgb, t.a));
         float c7 = se_reduce(C7);
         float c8 = se_reduce(C8);
-        t = texelFetch(color, clamp(P + ivec2( 0, 2), ivec2(0), ts - 1), 0); float d1 = se_reduce(t.a < 0.5 ? C4 : t.rgb);
-        t = texelFetch(color, clamp(P + ivec2( 1, 2), ivec2(0), ts - 1), 0); float d2 = se_reduce(t.a < 0.5 ? C4 : t.rgb);
-        t = texelFetch(color, clamp(P + ivec2( 2, 0), ivec2(0), ts - 1), 0); float d4 = se_reduce(t.a < 0.5 ? C4 : t.rgb);
-        t = texelFetch(color, clamp(P + ivec2( 2, 1), ivec2(0), ts - 1), 0); float d5 = se_reduce(t.a < 0.5 ? C4 : t.rgb);
+        t = texelFetch(color, clamp(P + ivec2( 0, 2), ivec2(0), ts - 1), 0); float d1 = se_reduce(vec4(t.a < 0.5 ? rgb4 : t.rgb, t.a));
+        t = texelFetch(color, clamp(P + ivec2( 1, 2), ivec2(0), ts - 1), 0); float d2 = se_reduce(vec4(t.a < 0.5 ? rgb4 : t.rgb, t.a));
+        t = texelFetch(color, clamp(P + ivec2( 2, 0), ivec2(0), ts - 1), 0); float d4 = se_reduce(vec4(t.a < 0.5 ? rgb4 : t.rgb, t.a));
+        t = texelFetch(color, clamp(P + ivec2( 2, 1), ivec2(0), ts - 1), 0); float d5 = se_reduce(vec4(t.a < 0.5 ? rgb4 : t.rgb, t.a));
 
-        vec3 p00; vec3 p10; vec3 p01; vec3 p11;
+        vec4 p00; vec4 p10; vec4 p01; vec4 p11;
 
         if (c4 != c8) {
             if (c7 == c5) {
@@ -662,8 +672,8 @@ ModelViewProject SuperEagle
             }
         }
 
-        vec3 outc = (fp.x < 0.5) ? (fp.y < 0.5 ? p00 : p10) : (fp.y < 0.5 ? p01 : p11);
-        fragColor = vec4(outc, texture(color, v_uv).a);
+        vec4 outc = (fp.x < 0.5) ? (fp.y < 0.5 ? p00 : p10) : (fp.y < 0.5 ? p01 : p11);
+        fragColor = vec4(outc.rgb * outc.a, outc.a);   // pass composites premultiplied (ONE / ONE_MINUS_SRC_ALPHA): partial-coverage edges must not add unweighted color
     }
 
 
