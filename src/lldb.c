@@ -599,6 +599,11 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
                 int hidden = level->icount - visible_interns;
                 if (hidden > 0) bit_count += hidden; // skip hidden intern bit positions
             }
+            // hidden-skip advancement can push bit_count past var_list's 128
+            // entries (big classes like trinity Window) — clamp so the name
+            // loop below never reads past the array. debug info for fields
+            // beyond 128 bits is truncated, not wrong.
+            if (bit_count > 128) bit_count = 128;
             LLVMMetadataRef bit_type = LLVMDIBuilderCreateBasicType(
                 a->dbg_builder, "u64", 3, 64, DW_ATE_unsigned, LLVMDIFlagZero);
             LLVMMetadataRef* fbits_members = calloc(bit_count, sizeof(LLVMMetadataRef));
