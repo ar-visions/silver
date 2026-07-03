@@ -25,6 +25,7 @@ build
 *.bps
 *.smc
 *.bsz
+*.md
 /shot*png
 /*.ag
 sessions
