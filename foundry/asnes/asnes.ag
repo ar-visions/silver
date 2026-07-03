@@ -8,6 +8,7 @@ import img
 import vec
 import <alsa/asoundlib.h>
 import <time.h>
+import <pthread.h>
 	-lasound
 import <math.h>
 import <stdio.h>
@@ -172,7 +173,7 @@ trinity asnes
 	mutable m7_src         	: Texture          # 1024x1024 RGBA: unpacked Mode-7 plane (palette applied)
 	mutable m7_mat         	: Texture          # 256x1 rgba32f: per-scanline { originX, originY, a, c }
 	mutable m7_buf         	: new u32 [ 1024 * 1024 ]   # CPU staging for m7_src
-	mutable m7_matbuf      	: new f32 [ 256 * 4 ]       # CPU staging for m7_mat
+	mutable m7_matbuf      	: new f32 [ 768 * 4 ]       # CPU staging for m7_mat: row 0 = affine, row 1 = window bounds, row 2 = math flags + coldata
 	mutable m7_shader      	: Mode7
 	mutable m7_model       	: Model
 	mutable m7_render      	: Render
@@ -307,6 +308,34 @@ trinity asnes
 	mutable hsetup_arm     	: bool              # setup two-edge pipeline state (reference hardware arms dmaActive one edge before running)
 	mutable hsetup_pend    	: bool              # HDMA setup deferred to its true dot (reference hardware hdmaSetupPosition = 12 + dmaCounter at frame start), fired from the cycle-start edge
 	mutable emu_ms30       	: i64               # wall ms spent in run_rom_frame per 30-frame window (ASNES_CYCLOG)
+	mutable emu_started    	: bool              # emulation thread spawned (decoupled from the render loop)
+	mutable emu_stop       	: bool              # ask the emulation thread to exit (dealloc)
+	mutable emu_running    	: bool              # emulation thread liveness (dealloc waits on it)
+	mutable pub_lock       	: mutex             # guards the published presentation snapshot below
+	mutable pub_valid      	: bool              # at least one frame published
+	mutable pub_inidisp    	: u8                # published INIDISP for the m7 pass brightness
+	mutable pub_m7sel      	: u8
+	mutable pub_m7hofs     	: u16
+	mutable pub_m7vofs     	: u16
+	mutable pub_m7x        	: i16
+	mutable pub_m7y        	: i16
+	mutable pub_framebuf   	: new u32 [ 57344 ]  # published CPU-composited frame (render thread uploads this, never ppu.framebuf)
+	mutable pub_vram       	: new u8  [ 65536 ]  # published VRAM for the m7 GPU bake
+	mutable pub_cgram      	: new u8  [ 512 ]
+	mutable pub_m7a        	: new i16 [ 224 ]    # published per-line m7 matrices for the GPU pass
+	mutable pub_m7b        	: new i16 [ 224 ]
+	mutable pub_m7c        	: new i16 [ 224 ]
+	mutable pub_m7d        	: new i16 [ 224 ]
+	mutable pub_mode       	: new u8  [ 224 ]
+	mutable pub_wh0        	: new u8  [ 224 ]    # published per-line color-window + math state for the m7 GPU pass
+	mutable pub_wh1        	: new u8  [ 224 ]
+	mutable pub_wh2        	: new u8  [ 224 ]
+	mutable pub_wh3        	: new u8  [ 224 ]
+	mutable pub_wobjsel    	: new u8  [ 224 ]
+	mutable pub_wobjlog    	: new u8  [ 224 ]
+	mutable pub_cgwsel     	: new u8  [ 224 ]
+	mutable pub_cgadsub    	: new u8  [ 224 ]
+	mutable pub_coldata    	: new u16 [ 224 ]
 	mutable itv_ms30       	: i64               # wall ms between on_render entries per 30-frame window
 	mutable last_entry     	: i64
 	mutable sline          	: i32               # per-line register snapshot cursor: row y latches at the START of hardware line y+1 (dot 0+), BEFORE that line's IRQ handler writes — mid-line sampling caught the fzero horizon handler half-done (new scroll, old mode = one noise line)
@@ -1411,13 +1440,15 @@ trinity asnes
 	func m7_unpack [ bright: u32 ]
 		for [ tY: i32 0, tY < 128, tY += 1 ]
 			for [ tX: i32 0, tX < 128, tX += 1 ]
-				tile : u32 [ u32[ppu.vram[ (tY * 128 + tX) * 2 ]] ]
+				tile : u32 [ u32[pub_vram[ (tY * 128 + tX) * 2 ]] ]
 				for [ py: i32 0, py < 8, py += 1 ]
 					for [ px: i32 0, px < 8, px += 1 ]
 						ci  : u32 [ (tile << 6) | u32[(py << 3) | px] ]
-						pix : u32 [ u32[ppu.vram[ ci * 2 + 1 ]] ]
+						pix : u32 [ u32[pub_vram[ ci * 2 + 1 ]] ]
 						col : u32 [ 0 ]
-						if [ pix != 0 ] col = ppu_color[ ppu_cgram_color[ pix ], bright ]
+						if [ pix != 0 ]
+							cw : u16 [ u16[pub_cgram[pix * 2]] | (u16[pub_cgram[pix * 2 + 1]] << 8) ]
+							col = ppu_color[ cw, bright ]
 						m7_buf[ (tY * 8 + py) * 1024 + (tX * 8 + px) ] = col
 		m7_src.upload[ m7_buf, 1024 * 1024 * 4 ]
 
@@ -1429,27 +1460,27 @@ trinity asnes
 	func m7_vram_hash [] -> i64
 		h : i64 [ 0 ]
 		for [ i: i32 0, i < 0x10000, i += 4 ]
-			h += i64[ ppu.vram[i] ] * i64[ i + 1 ]
+			h += i64[ pub_vram[i] ] * i64[ i + 1 ]
 		for [ i: i32 0, i < 0x200, i += 1 ]
-			h += i64[ ppu.cgram[i] ] * i64[ 0x10000 + i ]
+			h += i64[ pub_cgram[i] ] * i64[ 0x10000 + i ]
 		return h
 
 	# GPU Mode 7: precompute each scanline's affine setup exactly as ppu_m7_line
 	# (origin folds in the b/d*yy term + center; per-pixel uses originX + a*x).
 	# Packed into m7_mat as { originX, originY, a, c } floats per texel row.
 	func m7_matrices []
-		hc : i32 [ sx13[ i32[frame_m7x] ] ]
-		vc : i32 [ sx13[ i32[frame_m7y] ] ]
-		ho : i32 [ sx13[ i32[ppu.m7hofs] ] ]
-		vo : i32 [ sx13[ i32[ppu.m7vofs] ] ]
-		vflip : bool [ (ppu.m7sel & 2) != 0 ]
+		hc : i32 [ sx13[ i32[pub_m7x] ] ]
+		vc : i32 [ sx13[ i32[pub_m7y] ] ]
+		ho : i32 [ sx13[ i32[pub_m7hofs] ] ]
+		vo : i32 [ sx13[ i32[pub_m7vofs] ] ]
+		vflip : bool [ (pub_m7sel & 2) != 0 ]
 		ch : i32 [ m7_clip[ ho - hc ] ]
 		cv : i32 [ m7_clip[ vo - vc ] ]
 		for [ y: i32 0, y < 224, y += 1 ]
-			a : i32 [ i32[line_m7a[y]] ]
-			b : i32 [ i32[line_m7b[y]] ]
-			c : i32 [ i32[line_m7c[y]] ]
-			d : i32 [ i32[line_m7d[y]] ]
+			a : i32 [ i32[pub_m7a[y]] ]
+			b : i32 [ i32[pub_m7b[y]] ]
+			c : i32 [ i32[pub_m7c[y]] ]
+			d : i32 [ i32[pub_m7d[y]] ]
 			yy : i32 [ y ]
 			if [ vflip ] yy = 255 - y
 			ox : i32 [ ((a * ch) & (~63)) + ((b * cv) & (~63)) + ((b * yy) & (~63)) + (hc << 8) ]
@@ -1458,7 +1489,32 @@ trinity asnes
 			m7_matbuf[ y * 4 + 1 ] = f32[ oy ]
 			m7_matbuf[ y * 4 + 2 ] = f32[ a ]
 			m7_matbuf[ y * 4 + 3 ] = f32[ c ]
-		m7_mat.upload[ m7_matbuf, 256 * 4 * 4 ]
+			# rows 1-2: per-line color window + CGADSUB math for the plane (fog / craft shadow)
+			ws : u8 [ pub_wobjsel[y] ]
+			cgs : u8 [ pub_cgwsel[y] ]
+			cga : u8 [ pub_cgadsub[y] ]
+			flags : u32 [ 0 ]
+			if [ ws & 0x20 ] flags = flags | 1
+			if [ ws & 0x10 ] flags = flags | 2
+			if [ ws & 0x80 ] flags = flags | 4
+			if [ ws & 0x40 ] flags = flags | 8
+			flags = flags | (((u32[pub_wobjlog[y]] >> 2) & 3) << 4)
+			reg : u32 [ (u32[cgs] >> 4) & 3 ]
+			if [ (cga & 0x01) == 0 ] reg = 3               # math not enabled for BG1: never applies to the plane
+			if [ (cga & 0x3F) == 0 ] reg = 3
+			flags = flags | (reg << 6)
+			if [ cga & 0x80 ] flags = flags | 256
+			if [ cga & 0x40 ] flags = flags | 512
+			cold : u16 [ pub_coldata[y] ]
+			m7_matbuf[ (256 + y) * 4 + 0 ] = f32[ u32[pub_wh0[y]] ]
+			m7_matbuf[ (256 + y) * 4 + 1 ] = f32[ u32[pub_wh1[y]] ]
+			m7_matbuf[ (256 + y) * 4 + 2 ] = f32[ u32[pub_wh2[y]] ]
+			m7_matbuf[ (256 + y) * 4 + 3 ] = f32[ u32[pub_wh3[y]] ]
+			m7_matbuf[ (512 + y) * 4 + 0 ] = f32[ flags ]
+			m7_matbuf[ (512 + y) * 4 + 1 ] = f32[ u32[cold] & 31 ]
+			m7_matbuf[ (512 + y) * 4 + 2 ] = f32[ (u32[cold] >> 5) & 31 ]
+			m7_matbuf[ (512 + y) * 4 + 3 ] = f32[ (u32[cold] >> 10) & 31 ]
+		m7_mat.upload[ m7_matbuf, 768 * 4 * 4 ]
 
 	# Render the SUB-screen for one scanline into sub_bgr/sub_src. The sub-screen
 	# backdrop is the fixed COLDATA color (so unpainted pixels blend as fixed color),
@@ -3203,7 +3259,7 @@ trinity asnes
 	# m7_render.color (full window res = supersampled). Mirrors trinity's chain.
 	func m7_setup [ cv: Canvas ]
 		m7_src = Texture [ vk: cv.vk, w: cv.w, width: 1024, height: 1024, linear: true, mip_levels: 11, anisotropy: 8 ]
-		m7_mat = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 1, linear: false, pixel_format: Pixel.rgbaf32 ]
+		m7_mat = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 3, linear: false, pixel_format: Pixel.rgbaf32 ]
 		m7_shader = Mode7 [ vk: cv.vk, name: 'mode7' ]
 		m7_model  = Model [ w: cv.w, s: m7_shader, samplers: map Texture[string] [ 'src': m7_src, 'mat': m7_mat ] ]
 		m7_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ m7_model ] ]
@@ -3230,22 +3286,22 @@ trinity asnes
 			dst : rect [ x: 0.0, y: 0.0, w: 512.0, h: 448.0 ]
 			cv.draw_image[ screen_tex, dst ]
 			return
-		if [ !cpu ]
+		if [ !cpu || !pub_valid ]
 			super.on_canvas[ cv ]
 			return
-		ppu_render[]
+		pub_lock.lock[]
 		if [ !screen_tex ]
 			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
-		screen_tex.upload[ ppu.framebuf, 256 * 224 * 4 ]
+		screen_tex.upload[ pub_framebuf, 256 * 224 * 4 ]
 		out : rect [ x: 0.0, y: 0.0, w: 512.0, h: 448.0 ]
 		# GPU Mode-7 plane is the base layer; the CPU framebuffer (sprites / mode-1 HUD,
 		# transparent over the plane) composites on top. Both GPU passes are recorded and
 		# SUBMITTED first so they overlap on the GPU, then waited once each -- serial
 		# submit/wait would stall the CPU and starve the real-time audio ring.
-		m7_active : bool [ m7_gpu && (line_mode[100] & 7) == 7 ]
+		m7_active : bool [ m7_gpu && (pub_mode[100] & 7) == 7 ]
 		if [ m7_active ]
 			if [ !m7_render ] m7_setup[ cv ]
-			bri : u32 [ u32[ppu.inidisp] & 0x0F ]
+			bri : u32 [ u32[pub_inidisp] & 0x0F ]
 			vh : i64 [ m7_vram_hash[] ]
 			if [ vh != m7_vhash || i32[bri] != m7_bri_cache ]
 				m7_unpack[ bri ]
@@ -3254,12 +3310,13 @@ trinity asnes
 			m7_matrices[]
 			hf : f32 [ 0.0 ]
 			vf : f32 [ 0.0 ]
-			if [ ppu.m7sel & 1 ] hf = 1.0
-			if [ ppu.m7sel & 2 ] vf = 1.0
-			m7_shader.params = vec4f [ hf, vf, f32[ (u32[ppu.m7sel] >> 6) & 3 ], 0.0 ]
+			if [ pub_m7sel & 1 ] hf = 1.0
+			if [ pub_m7sel & 2 ] vf = 1.0
+			m7_shader.params = vec4f [ hf, vf, f32[ (u32[pub_m7sel] >> 6) & 3 ], 0.0 ]
 			m7_render.update[]
 			m7_render.draw[]
 			m7_render.flush_submit[]
+		pub_lock.unlock[]
 		if [ se_2d ]
 			if [ !se_render ] se_setup[ cv ]
 			se_render.update[]
@@ -4061,30 +4118,11 @@ trinity asnes
 	func st_r32 [ b: ref u8, o: i32 ] -> u32
 		return u32[b[o]] | (u32[b[o + 1]] << 8) | (u32[b[o + 2]] << 16) | (u32[b[o + 3]] << 24)
 
-	func on_render [ w: Window ] -> Elements
+	# per-iteration emulation-thread work: rigs + one DAC-paced rom frame + publish
+	func emu_tick []
 		now_e : i64 [ wall_ms[] ]
 		if [ last_entry != 0 ] itv_ms30 += now_e - last_entry
 		last_entry = now_e
-		if [ putest ]
-			return null
-		if [ spctest ]
-			if [ !spc ] spc_test[]
-			return null
-		# --beep: bypass the CPU/upload entirely, key on one DSP voice directly.
-		if [ beep ]
-			if [ !spc ] audio_test[]
-			generate_audio[ 0 ]
-			return null
-		# --spcfile: play a real APU snapshot. generate_audio runs 16 SPC steps
-		# per output sample (~32 cycles), interleaving the engine with the DSP.
-		if [ spcfile ]
-			if [ !spc ] load_spc[]
-			generate_audio[ 16 ]
-			return null
-		# --rom <path> maps onto the public `rom` member, but args are applied
-		# after init[], so load lazily on the first frame once rom is set.
-		if [ rom && !cpu ] load[]
-		if [ !cpu ] return null
 		df : symbol [ getenv[ 'ASNES_DUMP_FRAME' ] ]
 		if [ df && dbg_frames == atoi[ df ] ]
 			fn : symbol [ getenv[ 'ASNES_DUMP_FILE' ] ]
@@ -4115,7 +4153,6 @@ trinity asnes
 			write_snapshot[ '/tmp/asnes_snap.bin' ]      # also drop a diagnostic snapshot for analysis
 		# loaded a state via --state: run one frame to populate the renderer, then capture + exit
 		if [ state_loaded && state ]
-			if [ snd_pcm_avail[ spc.pcm_handle ] < i64[ audio_slice_size[] ] ] return null   # DAC-paced: no rom frame this app iteration, keep rig counters on rom time
 			post_load += 1
 			# ASNES_SEQ=N: ONE run dumps every post-load frame to /tmp/asnes_seq_<n>.png,
 			# then exits at frame N. For watching a time-based effect (palette flash)
@@ -4194,23 +4231,16 @@ trinity asnes
 			load_state[ '/tmp/asnes.state' ]
 		# silent boot uses continuous SPC (load the song); playback uses the atomic
 		# co-scheduler (clean ding + music, no port race). switch after the upload.
-		# The DAC is the pacer, not the display: emulate ROM frames while the audio ring
-		# has room for a slice (steady state = exactly one per app frame, clocked by the
-		# 60.098Hz DAC drain). A display slip or a 60.000Hz vsync can then never starve
-		# the ring — the next iteration emulates a catch-up frame instead of dropping audio.
-		efc : i32 [ 0 ]
-		while [ efc < 3 ]
-			avf : i64 [ snd_pcm_avail[ spc.pcm_handle ] ]
-			if [ avf < i64[ audio_slice_size[] ] ] break   # no room for a slice: the write would block and serialize with vsync — skip; the DAC drain opens room by next app frame
-			t_emu : i64 [ wall_ms[] ]
-			if [ dbg_frames < 28 ]
-				run_rom_frame_boot[]
-			el
-				run_rom_frame[]
-			emu_ms30 += wall_ms[] - t_emu
-			dbg_frames += 1
-			efc += 1
-		if [ getenv[ 'ASNES_CYCLOG' ] && (dbg_frames % 30) == 0 && efc > 0 ]
+		# Emulation thread: the blocking audio write inside the frame paces this loop to
+		# the DAC clock. The display never gates emulation and vice versa.
+		t_emu : i64 [ wall_ms[] ]
+		if [ dbg_frames < 28 ]
+			run_rom_frame_boot[]
+		el
+			run_rom_frame[]
+		emu_ms30 += wall_ms[] - t_emu
+		dbg_frames += 1
+		if [ getenv[ 'ASNES_CYCLOG' ] && (dbg_frames % 30) == 0 ]
 			av2 : i64 [ snd_pcm_avail[ spc.pcm_handle ] ]
 			printf[ "CYCF frame %u cyc_total=%ld carry=%d adone=%d avail=%ld emu_ms=%ld itv_ms=%ld\n", dbg_frames, cpu_cycles, frame_carry, spc.audio_done, av2, emu_ms30, itv_ms30 ]
 			emu_ms30 = 0
@@ -4236,9 +4266,73 @@ trinity asnes
 				spc.ports[0], spc.ports[1], spc.ports[2], spc.ports[3],
 				spc.oports[0], spc.oports[1], spc.oports[2], spc.oports[3],
 				cpu.sp, cpu.dp, cpu.memory[0x7E000E], cpu.memory[0x7E000F], cpu.memory[0x7E0010], cpu.memory[0x7E0011], ppu.inidisp, ppu.inidisp_shot, (shot_valid) ? 1 : 0 ]
+		ppu_render[]
+		pub_lock.lock[]
+		memcpy[ pub_framebuf, ppu.framebuf, 229376 ]
+		memcpy[ pub_vram,  ppu.vram,  65536 ]
+		memcpy[ pub_cgram, ppu.cgram, 512 ]
+		memcpy[ pub_m7a, line_m7a, 448 ]
+		memcpy[ pub_m7b, line_m7b, 448 ]
+		memcpy[ pub_m7c, line_m7c, 448 ]
+		memcpy[ pub_m7d, line_m7d, 448 ]
+		memcpy[ pub_mode, line_mode, 224 ]
+		memcpy[ pub_wh0, line_wh0, 224 ]
+		memcpy[ pub_wh1, line_wh1, 224 ]
+		memcpy[ pub_wh2, line_wh2, 224 ]
+		memcpy[ pub_wh3, line_wh3, 224 ]
+		memcpy[ pub_wobjsel, line_wobjsel, 224 ]
+		memcpy[ pub_wobjlog, line_wobjlog, 224 ]
+		memcpy[ pub_cgwsel, line_cgwsel, 224 ]
+		memcpy[ pub_cgadsub, line_cgadsub, 224 ]
+		memcpy[ pub_coldata, line_coldata, 448 ]
+		pub_inidisp = ppu.inidisp
+		pub_m7sel   = ppu.m7sel
+		pub_m7hofs  = ppu.m7hofs
+		pub_m7vofs  = ppu.m7vofs
+		pub_m7x     = frame_m7x
+		pub_m7y     = frame_m7y
+		pub_valid   = true
+		pub_lock.unlock[]
+
+	func emu_entry [] -> none
+		emu_running = true
+		while [ !emu_stop ]
+			emu_tick[]
+		emu_running = false
+
+	func on_render [ w: Window ] -> Elements
+		if [ putest ]
+			return null
+		if [ spctest ]
+			if [ !spc ] spc_test[]
+			return null
+		# --beep: bypass the CPU/upload entirely, key on one DSP voice directly.
+		if [ beep ]
+			if [ !spc ] audio_test[]
+			generate_audio[ 0 ]
+			return null
+		# --spcfile: play a real APU snapshot. generate_audio runs 16 SPC steps
+		# per output sample (~32 cycles), interleaving the engine with the DSP.
+		if [ spcfile ]
+			if [ !spc ] load_spc[]
+			generate_audio[ 16 ]
+			return null
+		# --rom <path> maps onto the public `rom` member, but args are applied
+		# after init[], so load lazily on the first frame once rom is set.
+		if [ rom && !cpu ] load[]
+		if [ !cpu ] return null
+		if [ !emu_started ]
+			emu_started = true
+			pub_lock = mutex [ cond: false ]
+			tid : local u64 [ 1 ]
+			pthread_create[ tid, null, ref emu_entry, a ]
 		return null
 
 	func dealloc []
+		if [ emu_started ]
+			emu_stop = true
+			while [ emu_running ]
+				usleep[ 2000 ]
 		# cpu/spc are Au class objects (cpu_state[] / spc_state[]) — released by the
 		# framework's drop_members, NOT free() (free() on an Au object = invalid pointer).
 		# Only the raw calloc'd buffers below are freed manually.

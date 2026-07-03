@@ -21,6 +21,9 @@ import <alsa/asoundlib.h>
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
+import <unistd.h>
+import <pthread.h>
+import <math.h>
 
 # ---------------------------------------------------------------------
 # System clock model (NTSC) — documented facts.
@@ -84,6 +87,7 @@ class z80_state
 	iff1           : u8               # interrupt enable flip-flops
 	iff2           : u8
 	im             : u8                # interrupt mode 0/1/2
+	bank           : u32               # $6000 banked 68k-window base (9 bits)
 	halted         : bool
 	cycles         : i64               # total Z80 T-states from reset
 	ram            : new u8 [ 0x2000 ] # 8 KB sound RAM
@@ -213,6 +217,24 @@ class audio_out
 trinity rgen
 	public  rom          : path              # cartridge image
 	public  frames_exit  : i32               # auto-quit after N frames (0 = run forever)
+	public  resume       : bool              # boot into /tmp/rgen_state.bin
+	public  save_at      : i32               # auto-save state at frame N (0 = off)
+	mutable pad1_st      : u32               # pad 1 held: 0 U 1 D 2 L 3 R 4 A 5 B 6 C 7 Start
+	mutable th1          : u8                # port 1 TH line (game-written via $A10003)
+	# --- emulation thread (asnes pattern): blocking audio write paces the
+	# emu loop to the DAC clock; render thread uploads the published frame ---
+	mutable emu_started  : bool
+	mutable emu_stop     : bool
+	mutable emu_running  : bool
+	mutable pub_lock     : mutex
+	mutable pub_framebuf : new u32 [ 320 * 224 ]
+	mutable sample_frac  : i64               # 53267/59.9227 fractional sample carry
+	mutable psg_volt     : new i32 [ 16 ]    # PSG 2dB attenuation steps -> amplitude
+	mutable psg_acc      : i64               # PSG clock/16 accumulator vs sample rate
+	public  volume       : f32               # master volume 0..1 (default 0.25)
+	mutable save_req     : bool              # 'P' -> save state next frame
+	mutable load_req     : bool              # 'L' -> load state next frame
+	mutable st_hdr       : new u32 [ 16 ]    # save/load scalar staging
 	public  region_pal   : bool              # PAL timing (default NTSC)
 	mutable cart         : ref u8            # loaded ROM bytes
 	mutable cart_size    : sz
@@ -226,6 +248,8 @@ trinity rgen
 	mutable ea_last      : u32                    # last-resolved effective address (RMW / dest write)
 	mutable mclk_carry   : i64                    # master-clock overshoot carried across frames
 	mutable irq_level    : i32                    # pending interrupt level (6=VINT, 4=HINT)
+	mutable vints        : i32                    # interrupts taken (diagnostic)
+	mutable spr_buf      : new i32 [ 320 ]        # sprite line buffer: -1 or (pri<<8)|color
 	mutable trace        : bool                   # diagnostic: log unhandled opcodes
 	mutable icount       : i64                    # instructions executed (trace window)
 	mutable screen_tex   : Texture
@@ -236,13 +260,99 @@ trinity rgen
 		width      = 640                     # 320 (H40) x2
 		height     = 448                     # 224 x2
 		background = 'Background'
+		if [ volume == 0.0 ] volume = 0.25
 
-	# Keyboard -> Genesis 3-button controller 1. Phase-1 mapping; the
-	# controller-port I/O (315-5433) shift protocol lands with the CPU bus.
+	# no element tree — the game canvas IS the window (else the default root
+	# element paints its css background over every on_canvas draw)
+	func on_render [ w: Window ] -> Elements
+		return null
+
+	# Keyboard -> Genesis pad 1. WASD = D-pad, J/K/L = A/B/C, Enter = Start.
+	# P = save state, O = load state (applied at the next frame boundary).
 	public func on_key [ ev: Event ]
-		# WASD = D-pad, J/K/L = A/B/C, Enter = Start. Wire to pad state in
-		# the input phase; recorded here so the mapping is defined up front.
+		code : i32  [ ev.key.unicode ]
+		down : bool [ ev.key.state ]
+		bit : i32 [ -1 ]
+		if   [ code == 87 ]  bit = 0     # W  Up
+		el [ code == 83 ]  bit = 1     # S  Down
+		el [ code == 65 ]  bit = 2     # A  Left
+		el [ code == 68 ]  bit = 3     # D  Right
+		el [ code == 74 ]  bit = 4     # J  A
+		el [ code == 75 ]  bit = 5     # K  B
+		el [ code == 76 ]  bit = 6     # L  C
+		el [ code == 257 ] bit = 7     # Enter  Start
+		if [ bit >= 0 ]
+			m : u32 [ u32[ 1 ] << bit ]
+			if [ down ] pad1_st = pad1_st | m
+			el pad1_st = pad1_st & (~m)
+		if [ down ]
+			if [ code == 80 ] save_req = true   # P
+			if [ code == 79 ] load_req = true   # O
 		return
+
+	# full machine snapshot (68k + RAM + VDP). one fixed slot for now.
+	func save_state [] -> none
+		f : ref FILE [ fopen[ '/tmp/rgen_state.bin', 'wb' ] ]
+		if [ ! f ]
+			puts 'rgen: cannot write state'
+			return
+		fwrite[ m68k.d, 4, 8, f ]
+		fwrite[ m68k.a, 4, 8, f ]
+		st_hdr[ 0 ]  = m68k.usp
+		st_hdr[ 1 ]  = m68k.ssp
+		st_hdr[ 2 ]  = m68k.pc
+		st_hdr[ 3 ]  = u32[ m68k.sr ]
+		st_hdr[ 4 ]  = (m68k.stopped) ? 1 : 0
+		st_hdr[ 5 ]  = u32[ irq_level ]
+		st_hdr[ 6 ]  = vdp.address
+		st_hdr[ 7 ]  = u32[ vdp.code ]
+		st_hdr[ 8 ]  = (vdp.pending) ? 1 : 0
+		st_hdr[ 9 ]  = (vdp.dma_fill) ? 1 : 0
+		st_hdr[ 10 ] = u32[ vdp.vcounter ]
+		st_hdr[ 11 ] = (vdp.in_vblank) ? 1 : 0
+		st_hdr[ 12 ] = (vdp.vint_pending) ? 1 : 0
+		st_hdr[ 13 ] = u32[ i32[ mclk_carry ] ]
+		st_hdr[ 14 ] = frames
+		st_hdr[ 15 ] = 0x5247454E              # 'RGEN'
+		fwrite[ st_hdr, 4, 16, f ]
+		fwrite[ ram68k,    1, 0x10000, f ]
+		fwrite[ vdp.vram,  1, 0x10000, f ]
+		fwrite[ vdp.cram,  2, 64, f ]
+		fwrite[ vdp.vsram, 2, 40, f ]
+		fwrite[ vdp.regs,  1, 24, f ]
+		fclose[ f ]
+		puts 'rgen: state saved at frame {frames}'
+
+	func load_state [] -> none
+		f : ref FILE [ fopen[ '/tmp/rgen_state.bin', 'rb' ] ]
+		if [ ! f ]
+			puts 'rgen: no state file'
+			return
+		fread[ m68k.d, 4, 8, f ]
+		fread[ m68k.a, 4, 8, f ]
+		fread[ st_hdr, 4, 16, f ]
+		m68k.usp         = st_hdr[ 0 ]
+		m68k.ssp         = st_hdr[ 1 ]
+		m68k.pc          = st_hdr[ 2 ]
+		m68k.sr          = u16[ st_hdr[ 3 ] ]
+		m68k.stopped     = st_hdr[ 4 ] != 0
+		irq_level        = i32[ st_hdr[ 5 ] ]
+		vdp.address      = st_hdr[ 6 ]
+		vdp.code         = u8[ st_hdr[ 7 ] ]
+		vdp.pending      = st_hdr[ 8 ] != 0
+		vdp.dma_fill     = st_hdr[ 9 ] != 0
+		vdp.vcounter     = u16[ st_hdr[ 10 ] ]
+		vdp.in_vblank    = st_hdr[ 11 ] != 0
+		vdp.vint_pending = st_hdr[ 12 ] != 0
+		mclk_carry       = i64[ i32[ st_hdr[ 13 ] ] ]
+		frames           = st_hdr[ 14 ]
+		fread[ ram68k,    1, 0x10000, f ]
+		fread[ vdp.vram,  1, 0x10000, f ]
+		fread[ vdp.cram,  2, 64, f ]
+		fread[ vdp.vsram, 2, 40, f ]
+		fread[ vdp.regs,  1, 24, f ]
+		fclose[ f ]
+		puts 'rgen: state loaded, frame {frames} pc={m68k.pc}'
 
 	# One-time boot: construct chip state, reset, open audio.
 	func boot [] -> none
@@ -254,6 +364,14 @@ trinity rgen
 		audio = audio_out []
 		if [ ! audio.open[] ]
 			puts 'rgen: audio device unavailable — continuing muted'
+		# PSG amplitude table: 2 dB per attenuation step, entry 15 = mute
+		for [ av: i32 0, av < 15, av += 1 ]
+			ea : f64 [ pow[ 10.0, -0.1 * f64[ av ] ] ]
+			psg_volt[ av ] = i32[ 8000.0 * ea ]
+		psg_volt[ 15 ] = 0
+		psg.noise_lfsr = 0x8000
+		for [ pv: i32 0, pv < 4, pv += 1 ]
+			psg.volume[ pv ] = 0xF               # all channels muted at power-on
 		# raw cartridge dump (.bin/.gen/.md). .smd interleaved not handled yet.
 		if [ rom ]
 			f : ref FILE [ fopen[ rom, 'rb' ] ]
@@ -269,28 +387,32 @@ trinity rgen
 				puts 'rgen: cart loaded, {cart_size} bytes'
 				m68k_reset[]
 				puts 'rgen: reset pc={m68k.pc} ssp={m68k.ssp}'
+				if [ resume ] load_state[]
 		booted = true
 
 	# Frame driver. With a cart loaded, run one frame of synced execution
 	# then blit the VDP framebuffer; without one, an animated test pattern
 	# proves the upload+blit pipeline.
-	public func on_canvas [ cv: Canvas ]
-		if [ ! booted ] boot[]
-
-		if [ ! screen_tex ]
-			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 320, height: 224, linear: true ]
-
-		if [ cart ]
-			run_frame[]
-			vdp_render[]
-		el
-			for [ y: i32 0, y < 224, y += 1 ]
-				for [ x: i32 0, x < 320, x += 1 ]
-					rr : u32 [ u32[x] & 0xFF ]
-					gg : u32 [ u32[y] & 0xFF ]
-					bb : u32 [ u32[ (x + y + i32[frames]) & 0xFF ] ]
-					vdp.framebuf[ y * 320 + x ] = 0xFF000000 | (bb << 16) | (gg << 8) | rr
+	# one emulated frame, run on the EMULATION THREAD. the blocking audio
+	# write inside generate_audio paces this loop to the DAC clock (asnes
+	# pattern) — the display never gates emulation and vice versa.
+	func emu_tick [] -> none
+		if [ save_at > 0 && frames == u32[ save_at ] ] save_req = true
+		if [ save_req ]
+			save_state[]
+			save_req = false
+		if [ load_req ]
+			load_state[]
+			load_req = false
+		run_frame[]
+		vdp_render[]
+		pub_lock.lock[]
+		memcpy[ pub_framebuf, vdp.framebuf, 320 * 224 * 4 ]
+		pub_lock.unlock[]
+		generate_audio[]
 		frames += 1
+		if [ (frames % 60) == 0 ]
+			puts 'f{frames} pc={m68k.pc} gm={ram68k[0xF600]} vints={vints}'
 		if [ frames_exit > 0 && frames >= u32[ frames_exit ] ]
 			nzv : i32 [ 0 ]
 			for [ vi: i32 0, vi < 0x10000, vi += 1 ]
@@ -303,11 +425,87 @@ trinity rgen
 			for [ pi: i32 0, pi < 320 * 224, pi += 1 ]
 				if [ vdp.framebuf[ pi ] != fb0 ] nfb += 1
 			puts 'rgen: frames_exit {frames_exit} vram_nz={nzv} cram_nz={nzc} fb_diff={nfb} r2={vdp.regs[2]} r4={vdp.regs[4]} r12={vdp.regs[12]} pc={m68k.pc}'
-			exit[ 0 ]
+			df : ref FILE [ fopen[ '/tmp/rgen_vdp.bin', 'wb' ] ]
+			if [ df ]
+				fwrite[ vdp.vram,  1, 0x10000, df ]
+				fwrite[ vdp.cram,  1, 128, df ]
+				fwrite[ vdp.vsram, 1, 80, df ]
+				fwrite[ vdp.regs,  1, 24, df ]
+				fclose[ df ]
+			pf : ref FILE [ fopen[ '/tmp/rgen_fb.ppm', 'wb' ] ]
+			if [ pf ]
+				fprintf[ pf, "P6\n320 224\n255\n" ]
+				for [ qi: i32 0, qi < 320 * 224, qi += 1 ]
+					qp : u32 [ vdp.framebuf[ qi ] ]
+					fputc[ i32[ qp & 0xFF ], pf ]
+					fputc[ i32[ (qp >> 8) & 0xFF ], pf ]
+					fputc[ i32[ (qp >> 16) & 0xFF ], pf ]
+				fclose[ pf ]
+				puts 'rgen: state + framebuf dumped'
+			_exit[ 0 ]                       # thread-side exit: skip teardown races
 
-		screen_tex.upload[ vdp.framebuf, 320 * 224 * 4 ]
+	func emu_entry [] -> none
+		emu_running = true
+		while [ ! emu_stop ]
+			emu_tick[]
+		emu_running = false
+
+	# frame audio: exact samples-per-frame at 53267 Hz against the NTSC
+	# frame length (53267 * 896040 / 53693175 ≈ 888.93/frame, fractional
+	# carry kept). SILENCE until the Z80/YM2612/PSG land — the blocking
+	# snd_pcm_writei is what paces the emulation thread to real time.
+	func generate_audio [] -> none
+		if [ ! audio || ! audio.pcm_handle ]
+			usleep[ 15000 ]                  # muted fallback pacing
+			return
+		sample_frac += 47731382680           # 53267 * 896040 per frame
+		n : i32 [ i32[ sample_frac / 53693175 ] ]
+		sample_frac -= i64[ n ] * 53693175
+		while [ n > 0 ]
+			c : i32 [ (n > 1024) ? 1024 : n ]
+			for [ i: i32 0, i < c, i += 1 ]
+				s : i32 [ psg_sample[] ]     # + FM core lands here next
+				sv : i32 [ i32[ f32[ s ] * volume ] ]
+				if [ sv > 32767 ] sv = 32767
+				if [ sv < -32768 ] sv = -32768
+				audio.buffer[ i * 2 ]     = i16[ sv ]
+				audio.buffer[ i * 2 + 1 ] = i16[ sv ]
+			audio.write[ c ]
+			n -= c
+
+	public func on_canvas [ cv: Canvas ]
+		if [ ! booted ] boot[]
+
+		if [ ! screen_tex ]
+			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 320, height: 224, linear: true ]
+
+		if [ cart ]
+			if [ ! emu_started ]
+				emu_started = true
+				pub_lock = mutex [ cond: false ]
+				tid : local u64 [ 1 ]
+				pthread_create[ tid, null, ref emu_entry, a ]
+			pub_lock.lock[]
+			screen_tex.upload[ pub_framebuf, 320 * 224 * 4 ]
+			pub_lock.unlock[]
+		el
+			for [ y: i32 0, y < 224, y += 1 ]
+				for [ x: i32 0, x < 320, x += 1 ]
+					rr : u32 [ u32[x] & 0xFF ]
+					gg : u32 [ u32[y] & 0xFF ]
+					bb : u32 [ u32[ (x + y + i32[frames]) & 0xFF ] ]
+					vdp.framebuf[ y * 320 + x ] = 0xFF000000 | (bb << 16) | (gg << 8) | rr
+			frames += 1
+			screen_tex.upload[ vdp.framebuf, 320 * 224 * 4 ]
+
 		out : rect [ x: 0.0, y: 0.0, w: 640.0, h: 448.0 ]
 		cv.draw_image[ screen_tex, out ]
+
+	func dealloc []
+		if [ emu_started ]
+			emu_stop = true
+			while [ emu_running ]
+				usleep[ 2000 ]
 
 	# =================================================================
 	# 68000 core — foundation. Timing model, bus, reset. The decoder and
@@ -375,10 +573,31 @@ trinity rgen
 			wv : u16 [ bus_r16[ a & 0xFFFFFE ] ]
 			if [ (a & 1) != 0 ] return u8[ wv & 0xFF ]
 			return u8[ (wv >> 8) & 0xFF ]
+		if [ a >= 0xA00000 && a <= 0xA0FFFF ]          # Z80 space window
+			return z80_rd8[ a & 0x7FFF ]
 		if [ a == 0xA10001 ] return 0xA0               # version: overseas NTSC, no TMSS
-		if [ a >= 0xA10002 && a <= 0xA1001F ] return 0xFF   # pads idle (active-low)
-		if [ a == 0xA11100 || a == 0xA11101 ] return 0 # Z80 busreq: always granted
-		return 0                                       # unmapped / TODO Z80 area
+		if [ a == 0xA10003 ]                           # pad 1, TH-multiplexed, active-low
+			pv : u32 [ 0 ]
+			if [ (th1 & 0x40) != 0 ]
+				pv = 0x7F                              # TH=1: 1 TH C B R L D U
+				if [ (pad1_st & 0x40) != 0 ] pv = pv & (~u32[ 0x20 ])   # C
+				if [ (pad1_st & 0x20) != 0 ] pv = pv & (~u32[ 0x10 ])   # B
+				if [ (pad1_st & 0x08) != 0 ] pv = pv & (~u32[ 0x08 ])   # Right
+				if [ (pad1_st & 0x04) != 0 ] pv = pv & (~u32[ 0x04 ])   # Left
+				if [ (pad1_st & 0x02) != 0 ] pv = pv & (~u32[ 0x02 ])   # Down
+				if [ (pad1_st & 0x01) != 0 ] pv = pv & (~u32[ 0x01 ])   # Up
+			el
+				pv = 0x33                              # TH=0: 0 0 S A 0 0 D U
+				if [ (pad1_st & 0x80) != 0 ] pv = pv & (~u32[ 0x20 ])   # Start
+				if [ (pad1_st & 0x10) != 0 ] pv = pv & (~u32[ 0x10 ])   # A
+				if [ (pad1_st & 0x02) != 0 ] pv = pv & (~u32[ 0x02 ])   # Down
+				if [ (pad1_st & 0x01) != 0 ] pv = pv & (~u32[ 0x01 ])   # Up
+			return u8[ pv ]
+		if [ a >= 0xA10002 && a <= 0xA1001F ] return 0xFF   # pad 2 / exp idle
+		if [ a == 0xA11100 ]                           # busreq ack: 0 = granted
+			return ((z80.busreq != 0) ? u8[ 0 ] : u8[ 1 ])
+		if [ a == 0xA11101 ] return 0
+		return 0                                       # unmapped
 
 	func bus_w8 [ addr: u32, v: u8 ] -> none
 		a : u32 [ addr & 0xFFFFFF ]
@@ -388,12 +607,27 @@ trinity rgen
 		if [ a >= 0xC00000 && a <= 0xC0001F ]
 			sl : u32 [ a & 0x1F ]
 			if [ sl == 0x11 || sl == 0x13 || sl == 0x15 || sl == 0x17 ]
-				return                                 # PSG — routed in the audio phase
+				psg_write[ v ]
+				return
 			wv : u16 [ (u16[ v ] << 8) | u16[ v ] ]    # byte port write duplicates
 			if [ sl < 4 ] vdp_data_w[ wv ]
 			el [ sl < 8 ] vdp_ctrl_w[ wv ]
 			return
-		# ROM is read-only; Z80/IO writes routed in later phases
+		if [ a == 0xA10003 ]                           # pad 1 TH latch
+			th1 = v & 0x40
+			return
+		if [ a >= 0xA00000 && a <= 0xA0FFFF ]          # Z80 space window
+			z80_wr8[ a & 0x7FFF, v ]
+			return
+		if [ a == 0xA11100 ]                           # Z80 busreq (high byte only;
+			z80.busreq = (v != 0) ? 1 : 0              # word $0100 lands as 01,00)
+			return
+		if [ a == 0xA11101 ] return
+		if [ a == 0xA11200 ]                           # Z80 reset (0 = held)
+			z80.reset = (v != 0) ? 0 : 1
+			return
+		if [ a == 0xA11201 ] return
+		# ROM is read-only; IO ctrl writes routed as needed
 
 	func bus_r16 [ addr: u32 ] -> u16
 		a2 : u32 [ addr & 0xFFFFFF ]
@@ -428,6 +662,113 @@ trinity rgen
 	func bus_w32 [ addr: u32, v: u32 ] -> none
 		bus_w16[ addr,     u16[ (v >> 16) & 0xFFFF ] ]
 		bus_w16[ addr + 2, u16[ v & 0xFFFF ] ]
+
+	# =================================================================
+	# sound chips: YM2612 register file + SN76489 PSG
+	# =================================================================
+
+	# YM2612 ports: 0=addr bank0, 1=data, 2=addr bank1, 3=data. The FM core
+	# reads the register file at synthesis time; DAC + key-on latched here.
+	func ym_write [ port: u32, v: u8 ] -> none
+		if [ port == 0 ]
+			ym.latch_addr = v
+			ym.latch_bank = 0
+		el [ port == 2 ]
+			ym.latch_addr = v
+			ym.latch_bank = 1
+		el
+			if [ ym.latch_bank == 0 ]
+				ym.regs0[ ym.latch_addr ] = v
+				if [ ym.latch_addr == 0x2A ] ym.dac_data = v
+				if [ ym.latch_addr == 0x2B ] ym.dac_enable = (v & 0x80) != 0
+			el
+				ym.regs1[ ym.latch_addr ] = v
+
+	func ym_status [] -> u8
+		return ym.status                       # busy always clear; timers TODO
+
+	# SN76489 write: latch byte (bit7) selects channel+type, data byte
+	# extends the latched tone period to 10 bits
+	func psg_write [ v: u8 ] -> none
+		if [ (v & 0x80) != 0 ]
+			psg.latch = (v >> 4) & 7
+			ch : i32 [ i32[ (psg.latch >> 1) & 3 ] ]
+			if [ (psg.latch & 1) != 0 ]
+				psg.volume[ ch ] = v & 0xF
+			el
+				if [ ch == 3 ]
+					psg.noise_ctrl = v & 7
+					psg.noise_lfsr = 0x8000
+				el
+					psg.tone[ ch ] = (psg.tone[ ch ] & 0x3F0) | u16[ v & 0xF ]
+		el
+			ch2 : i32 [ i32[ (psg.latch >> 1) & 3 ] ]
+			if [ (psg.latch & 1) != 0 ]
+				psg.volume[ ch2 ] = v & 0xF
+			el
+				if [ ch2 == 3 ]
+					psg.noise_ctrl = v & 7
+					psg.noise_lfsr = 0x8000
+				el
+					psg.tone[ ch2 ] = (u16[ v & 0x3F ] << 4) | (psg.tone[ ch2 ] & 0xF)
+
+	# one PSG output sample at 53267 Hz. internal tick = clk/16 (223721 Hz),
+	# fractional accumulator carries the ratio. square tones +/- amplitude,
+	# 16-bit LFSR noise (white taps 0^3, periodic bit0)
+	func psg_sample [] -> i32
+		psg_acc += 223721
+		k : i32 [ i32[ psg_acc / 53267 ] ]
+		psg_acc -= i64[ k ] * 53267
+		for [ t: i32 0, t < k, t += 1 ]
+			for [ ch: i32 0, ch < 3, ch += 1 ]
+				if [ psg.counter[ ch ] > 0 ] psg.counter[ ch ] = psg.counter[ ch ] - 1
+				if [ psg.counter[ ch ] == 0 ]
+					per : u16 [ psg.tone[ ch ] ]
+					if [ per == 0 ] per = 1
+					psg.counter[ ch ] = per
+					psg.output[ ch ] = psg.output[ ch ] ^ 1
+			if [ psg.counter[ 3 ] > 0 ] psg.counter[ 3 ] = psg.counter[ 3 ] - 1
+			if [ psg.counter[ 3 ] == 0 ]
+				nr : i32 [ i32[ psg.noise_ctrl ] & 3 ]
+				np : u16 [ 16 ]
+				if [ nr == 1 ] np = 32
+				el [ nr == 2 ] np = 64
+				el [ nr == 3 ] np = psg.tone[ 2 ]
+				if [ np == 0 ] np = 1
+				psg.counter[ 3 ] = np
+				fb : u32 [ u32[ psg.noise_lfsr ] & 1 ]
+				if [ (psg.noise_ctrl & 4) != 0 ]
+					fb = (u32[ psg.noise_lfsr ] ^ (u32[ psg.noise_lfsr ] >> 3)) & 1
+				psg.noise_lfsr = u16[ (u32[ psg.noise_lfsr ] >> 1) | (fb << 15) ]
+				psg.output[ 3 ] = u8[ u32[ psg.noise_lfsr ] & 1 ]
+		s : i32 [ 0 ]
+		for [ c2: i32 0, c2 < 3, c2 += 1 ]
+			amp : i32 [ psg_volt[ i32[ psg.volume[ c2 ] ] & 15 ] ]
+			if [ psg.output[ c2 ] != 0 ] s += amp
+			el s -= amp
+		na : i32 [ psg_volt[ i32[ psg.volume[ 3 ] ] & 15 ] ]
+		if [ psg.output[ 3 ] != 0 ] s += na
+		el s -= na
+		return s
+
+	# Z80 address space (also the 68k's $A00000 window). RAM 8K mirrored,
+	# YM at $4000, bank reg $6000, PSG $7F11.
+	func z80_rd8 [ za: u32 ] -> u8
+		if [ za < 0x4000 ] return z80.ram[ za & 0x1FFF ]
+		if [ za < 0x6000 ] return ym_status[]
+		return 0xFF
+
+	func z80_wr8 [ za: u32, v: u8 ] -> none
+		if [ za < 0x4000 ]
+			z80.ram[ za & 0x1FFF ] = v
+			return
+		if [ za < 0x6000 ]
+			ym_write[ za & 3, v ]
+			return
+		if [ za < 0x6100 ]                     # bank register: 9-bit shift
+			z80.bank = ((z80.bank >> 1) | (u32[ v & 1 ] << 8)) & 0x1FF
+			return
+		if [ za == 0x7F11 ] psg_write[ v ]
 
 	# =================================================================
 	# VDP ports [VDP_TIMING]. Control = two-word command / register write;
@@ -524,7 +865,7 @@ trinity rgen
 		r : u32 [ (u32[ v >> 1 ] & 7) * 36 ]
 		g : u32 [ (u32[ v >> 5 ] & 7) * 36 ]
 		b : u32 [ (u32[ v >> 9 ] & 7) * 36 ]
-		return 0xFF000000 | (r << 16) | (g << 8) | b
+		return 0xFF000000 | (b << 16) | (g << 8) | r
 
 	# plane pixel: -1 transparent, else (pri ? 0x100 : 0) | palette-color index
 	func plane_pixel [ is_b: bool, x: i32, y: i32 ] -> i32
@@ -565,20 +906,88 @@ trinity rgen
 		if [ (nw & 0x8000) != 0 ] res = res | 0x100    # priority
 		return res
 
-	# compose planes into the framebuffer. order: high-pri A > high-pri B >
-	# low-pri A > low-pri B > backdrop (window + sprites in later phases)
+	# sprites for one scanline into spr_buf. SAT base reg 5; 8-byte entries
+	# (Y, size|link, name, X), coords offset 128, tiles column-major within
+	# the sprite, link list from sprite 0, link 0 terminates. Lower list
+	# position wins overlaps. H40 limit: 20 sprites/line [VDP_TIMING §7].
+	func sprite_line [ y: i32 ] -> none
+		for [ x: i32 0, x < 320, x += 1 ]
+			spr_buf[ x ] = -1
+		sat : u32 [ (u32[ vdp.regs[ 5 ] ] & 0x7F) << 9 ]
+		h40 : bool [ (vdp.regs[ 12 ] & 1) != 0 ]
+		maxs : i32 [ (h40) ? 80 : 64 ]
+		maxline : i32 [ (h40) ? 20 : 16 ]
+		idx : i32 [ 0 ]
+		count : i32 [ 0 ]
+		online : i32 [ 0 ]
+		pxleft : i32 [ (h40) ? 320 : 256 ]     # per-line sprite pixel budget [§7]
+		while [ count < maxs ]
+			ea : u32 [ (sat + u32[ idx * 8 ]) & 0xFFFF ]
+			ys : i32 [ i32[ ((u16[ vdp.vram[ ea ] ] << 8) | u16[ vdp.vram[ ea + 1 ] ]) & 0x3FF ] - 128 ]
+			szb : i32 [ i32[ vdp.vram[ ea + 2 ] ] ]
+			link : i32 [ i32[ vdp.vram[ ea + 3 ] ] & 0x7F ]
+			hs : i32 [ (szb >> 2) & 3 ]
+			vs : i32 [ szb & 3 ]
+			ph : i32 [ (vs + 1) * 8 ]
+			if [ y >= ys && y < ys + ph ]
+				online += 1
+				if [ online > maxline ] break
+				nw : u16 [ (u16[ vdp.vram[ ea + 4 ] ] << 8) | u16[ vdp.vram[ ea + 5 ] ] ]
+				xs : i32 [ i32[ ((u16[ vdp.vram[ ea + 6 ] ] << 8) | u16[ vdp.vram[ ea + 7 ] ]) & 0x1FF ] - 128 ]
+				row : i32 [ y - ys ]
+				if [ (nw & 0x1000) != 0 ] row = ph - 1 - row
+				tile0 : u32 [ u32[ nw ] & 0x7FF ]
+				pal : u32 [ (u32[ nw ] >> 13) & 3 ]
+				pri : bool [ (nw & 0x8000) != 0 ]
+				wcells : i32 [ hs + 1 ]
+				# offscreen sprites still consume fetch budget — the Sonic 1
+				# title masks Sonic behind the banner with x=-48 budget eaters
+				draw_w : i32 [ wcells * 8 ]
+				if [ draw_w > pxleft ] draw_w = pxleft
+				pxleft -= wcells * 8
+				for [ cx: i32 0, cx < wcells, cx += 1 ]
+					ccell : i32 [ cx ]
+					if [ (nw & 0x0800) != 0 ] ccell = wcells - 1 - cx
+					tile : u32 [ tile0 + u32[ ccell * (vs + 1) + (row >> 3) ] ]
+					for [ px2: i32 0, px2 < 8, px2 += 1 ]
+						if [ cx * 8 + px2 >= draw_w ] continue
+						sx : i32 [ xs + cx * 8 + px2 ]
+						if [ sx < 0 || sx >= 320 ] continue
+						if [ spr_buf[ sx ] >= 0 ] continue
+						colp : i32 [ px2 ]
+						if [ (nw & 0x0800) != 0 ] colp = 7 - colp
+						ta : u32 [ (tile * 32 + u32[ (row & 7) * 4 ] + u32[ colp >> 1 ]) & 0xFFFF ]
+						pv : u32 [ u32[ vdp.vram[ ta ] ] ]
+						if [ (colp & 1) == 0 ] pv = pv >> 4
+						pv = pv & 0xF
+						if [ pv == 0 ] continue
+						rr : i32 [ i32[ pal * 16 + pv ] ]
+						if [ pri ] rr = rr | 0x100
+						spr_buf[ sx ] = rr
+				if [ pxleft <= 0 ] break
+			count += 1
+			if [ link == 0 ] break
+			idx = link
+
+	# compose sprites + planes. per priority band: sprites > plane A >
+	# plane B; high band over low band; backdrop last. (window plane,
+	# shadow/highlight, sprite masking + pixel budget in later phases)
 	func vdp_render [] -> none
 		wpx : i32 [ ((vdp.regs[ 12 ] & 1) != 0) ? 320 : 256 ]
 		bg : u32 [ cram_argb[ u32[ vdp.regs[ 7 ] ] & 0x3F ] ]
 		disp : bool [ (vdp.regs[ 1 ] & 0x40) != 0 ]
 		for [ y: i32 0, y < 224, y += 1 ]
+			if [ disp ] sprite_line[ y ]
 			for [ x: i32 0, x < 320, x += 1 ]
 				o : u32 [ bg ]
 				if [ disp && x < wpx ]
+					sp : i32 [ spr_buf[ x ] ]
 					pa : i32 [ plane_pixel[ false, x, y ] ]
 					pb : i32 [ plane_pixel[ true, x, y ] ]
-					if [ pa >= 0x100 ] o = cram_argb[ u32[ pa ] ]
+					if [ sp >= 0x100 ] o = cram_argb[ u32[ sp ] ]
+					el [ pa >= 0x100 ] o = cram_argb[ u32[ pa ] ]
 					el [ pb >= 0x100 ] o = cram_argb[ u32[ pb ] ]
+					el [ sp >= 0 ] o = cram_argb[ u32[ sp ] ]
 					el [ pa >= 0 ] o = cram_argb[ u32[ pa ] ]
 					el [ pb >= 0 ] o = cram_argb[ u32[ pb ] ]
 				el [ ! disp ] o = 0xFF000000
@@ -590,6 +999,7 @@ trinity rgen
 	func m68k_interrupt [] -> i32
 		lvl : i32 [ irq_level ]
 		irq_level = 0
+		vints += 1
 		m68k.stopped = false
 		osr : u16 [ m68k.sr ]
 		if [ (m68k.sr & 0x2000) == 0 ]

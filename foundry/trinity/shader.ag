@@ -560,6 +560,35 @@ ModelViewProject Mode7
         vec2 ddy = dFdy(raw);
         vec2 uv2 = fract(raw);
         fragColor = textureGrad(src, uv2, ddx, ddy);
+        // per-scanline color math on the plane (reference hardware CGADSUB on BG1
+        // gated by the HDMA'd color window): row 1 = {wh0,wh1,wh2,wh3}, row 2 =
+        // {flags, coldata r,g,b}. This is how the distance fog AND the craft
+        // shadow (an ellipse traced per line in WH0/WH1) darken the plane.
+        vec4 f1 = mix(texelFetch(mat, ivec2(iy, 1), 0), texelFetch(mat, ivec2(min(iy + 1, 223), 1), 0), 0.0);
+        vec4 f2 = texelFetch(mat, ivec2(iy, 2), 0);
+        int flags = int(f2.x + 0.5);
+        int region = (flags >> 6) & 3;
+        if (region != 3) {
+            float wx = v_uv.x * 256.0;             // window applies to SCREEN x (pre-hflip)
+            bool in1 = (wx >= f1.x && wx <= f1.y + 1.0);
+            bool in2 = (wx >= f1.z && wx <= f1.w + 1.0);
+            if ((flags & 2) != 0) in1 = !in1;
+            if ((flags & 8) != 0) in2 = !in2;
+            bool w1en = (flags & 1) != 0;
+            bool w2en = (flags & 4) != 0;
+            int lgc = (flags >> 4) & 3;
+            bool w = false;
+            if (w1en && !w2en) w = in1;
+            else if (!w1en && w2en) w = in2;
+            else if (w1en && w2en) w = (lgc == 0) ? (in1 || in2) : (lgc == 1) ? (in1 && in2) : (lgc == 2) ? (in1 != in2) : (in1 == in2);
+            bool apply = (region == 0) || (region == 1 && w) || (region == 2 && !w);
+            if (apply) {
+                vec3 cold = f2.yzw / 31.0;
+                vec3 c = ((flags & 256) != 0) ? fragColor.rgb - cold : fragColor.rgb + cold;
+                if ((flags & 512) != 0) c *= 0.5;
+                fragColor.rgb = clamp(c, 0.0, 1.0);
+            }
+        }
     }
 
 
