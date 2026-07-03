@@ -3907,8 +3907,11 @@ enode is_set(enode n, evar prop) {
     bool has_fbits = au->is_class && !au->is_system && !au->is_c && !au->is_au_native &&
         au->module != typeid(Au)->module;
 
-    if (!has_fbits) {
-        // no fbits — always return false (default always applies)
+    if (!has_fbits || word >= 2) {
+        // no fbits, or member beyond the 128 tracked flag bits — always return
+        // i1 false (default always applies). returning the raw i64 zero here made
+        // LLVMBuildCondBr receive a non-i1 condition ("br i64 0") and verify failed
+        // as soon as a class crossed 128 constructible members.
         return enode(mod, a, autype, etypeid(bool)->autype, value,
             LLVMConstInt(LLVMInt1TypeInContext(a->module_ctx), 0, 0));
     }
@@ -3921,7 +3924,7 @@ enode is_set(enode n, evar prop) {
     LLVMValueRef zero  = LLVMConstInt(_lltype_slot(i64_type), 0, 0);
     LLVMValueRef chk   = LLVMBuildAnd(B, fbits, mask, "ftest");
     return enode(mod, a, autype, etypeid(bool)->autype, value,
-        word < 2 ? LLVMBuildICmp(B, LLVMIntNE, chk, zero, "fset") : zero);
+        LLVMBuildICmp(B, LLVMIntNE, chk, zero, "fset"));
 }
 
 
@@ -5322,7 +5325,11 @@ enode aether_e_native_switch(
         array body_tokens = (array)value_by_index(cases, idx++);
         invoke(body_builder, (Au)body_tokens);
 
-        if (!a->last_return && !LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B))) {
+        // terminator check only: a->last_return is sticky from a return
+        // nested inside an if within the body — the current block (the if's
+        // merge) is then unterminated and MUST branch to switch.end, or the
+        // function-end pass fills it with a default return
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B))) {
             LLVMBuildBr(B, switch_cat->block);
             has_merge = true;
         }
@@ -5332,7 +5339,7 @@ enode aether_e_native_switch(
     if (def_block) {
         LLVMPositionBuilderAtEnd(B, default_block);
         invoke(body_builder, (Au)def_block);
-        if (!a->last_return && !LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B))) {
+        if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B))) {
             LLVMBuildBr(B, switch_cat->block);
             has_merge = true;
         }
@@ -9070,7 +9077,11 @@ none enode_init(enode n) {
     aether a = au_active(n->mod);
     bool is_const = n->literal != null;
 
-    if (is_func((Au)n->autype->context) && !n->symbol_name) {
+    // derive the LLVM param for function-arg members ONLY when no value was
+    // provided by the constructor — result nodes built via value(m, vr) reuse
+    // the operand's arg autype, and clobbering here replaced their computed
+    // instruction with LLVMGetParam(fn, 0) (the self pointer)
+    if (is_func((Au)n->autype->context) && !n->symbol_name && !n->value) {
         int offset = 0;
 
         if (is_lambda((Au)n->autype->context))
@@ -9503,6 +9514,8 @@ enode aether_e_continue(aether a, catcher cat) {
 enode aether_e_bitwise_not(aether a, enode L) {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
+    if (!L->loaded && !is_ptr(L) && !is_class(L) && !is_func_ptr((Au)L))
+        L = enode_value(L, true);
     return value(L, LLVMBuildNot(B, L->value, "bitwise-not"));
 }
 
@@ -9510,6 +9523,8 @@ enode aether_e_neg(aether a, enode L) {
     a->is_const_op = false;
     etype Lm = canonical(L);
     if (a->no_build) return e_noop(a, Lm);
+    if (!L->loaded && !is_ptr(L) && !is_class(L) && !is_func_ptr((Au)L))
+        L = enode_value(L, true);
     if (Lm->autype->is_realistic)
         return value(L, LLVMBuildFNeg(B, L->value, "neg"));
     return value(L, LLVMBuildNeg(B, L->value, "neg"));
