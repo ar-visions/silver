@@ -177,6 +177,9 @@ trinity asnes
 	mutable m7_shader      	: Mode7
 	mutable m7_model       	: Model
 	mutable m7_render      	: Render
+	mutable m7se_shader    	: SuperEagle       # bake-time Super Eagle 2x of the unpacked plane (runs only when the plane rebakes)
+	mutable m7se_model     	: Model
+	mutable m7se_render    	: Render
 	public  m7_gpu         	: bool [ true ]    # render the Mode-7 plane on the GPU (CPU path leaves it transparent)
 	mutable m7_vhash       	: i64              # last unpacked Mode-7 VRAM hash (skip re-unpack when unchanged)
 	mutable m7_bri_cache   	: i32 [ -1 ]       # brightness baked into the cached m7_src
@@ -3260,8 +3263,11 @@ trinity asnes
 	func m7_setup [ cv: Canvas ]
 		m7_src = Texture [ vk: cv.vk, w: cv.w, width: 1024, height: 1024, linear: true, mip_levels: 11, anisotropy: 8 ]
 		m7_mat = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 3, linear: false, pixel_format: Pixel.rgbaf32 ]
+		m7se_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+		m7se_model  = Model [ w: cv.w, s: m7se_shader, samplers: map Texture[string] [ 'color': m7_src ] ]
+		m7se_render = Render [ vk: cv.vk, w: cv.w, width: 2048, height: 2048, models: array Model [ m7se_model ] ]
 		m7_shader = Mode7 [ vk: cv.vk, name: 'mode7' ]
-		m7_model  = Model [ w: cv.w, s: m7_shader, samplers: map Texture[string] [ 'src': m7_src, 'mat': m7_mat ] ]
+		m7_model  = Model [ w: cv.w, s: m7_shader, samplers: map Texture[string] [ 'src': m7_src, 'src2x': m7se_render.color, 'mat': m7_mat ] ]
 		m7_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ m7_model ] ]
 
 	# Build the Super Eagle 2D pass: edge-aware upscale of the framebuffer (sprites /
@@ -3307,6 +3313,10 @@ trinity asnes
 				m7_unpack[ bri ]
 				m7_vhash = vh
 				m7_bri_cache = i32[bri]
+				m7se_render.update[]
+				m7se_render.draw[]
+				m7se_render.flush_submit[]
+				m7se_render.sync_fence[]           # the 2x plane must be complete before the m7 pass samples it
 			m7_matrices[]
 			hf : f32 [ 0.0 ]
 			vf : f32 [ 0.0 ]

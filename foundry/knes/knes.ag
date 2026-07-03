@@ -1,0 +1,1265 @@
+# =====================================================================
+# knes — Nintendo Entertainment System emulator
+#
+# Built on the rgen (Genesis) template: single emulation thread paced by
+# the blocking ALSA write (asnes pattern), trinity window, published
+# framebuffer, savestates, Super Eagle upscale.
+#
+# Clock model (NTSC): master 21.477272 MHz
+#   CPU (2A03 / 6502 core) = master / 12 = 1.789773 MHz
+#   PPU (2C02)             = master / 4  (3 dots per CPU cycle)
+#   frame = 262 lines x 341 dots; vblank + NMI at line 241
+# 6502 cycle counts per the MOS datasheet incl. page-cross penalties.
+# APU: 2 pulse + triangle + noise (DMC deferred), NESdev-documented.
+# =====================================================================
+
+export 0.8.8
+
+import trinity
+import vec
+import <alsa/asoundlib.h>
+	-lasound
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <unistd.h>
+import <pthread.h>
+import <math.h>
+
+# ALSA sink (rgen template): blocking writei paces the emulation thread
+class audio_out
+	pcm_handle     : ref snd_pcm_t
+	buffer         : ref i16
+	buffer_size    : sz
+	sample_rate    : i32
+	channels       : i32
+
+	func open [] -> bool
+		sample_rate = 53267
+		channels    = 2
+		buffer_size = 1024
+		buffer      = calloc[ 1, buffer_size * channels * 2 ]
+		pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
+		err : i32 [ snd_pcm_open[ ref pcm_handle, 'pulse', pb, 0 ] ]
+		if [ err < 0 ] return false
+		psz    : snd_pcm_hw_params_sizeof[]
+		params : ref snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
+		snd_pcm_hw_params_any[ pcm_handle, params ]
+		rw  : i32 [ SND_PCM_ACCESS_RW_INTERLEAVED ]
+		fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
+		snd_pcm_hw_params_set_access  [ pcm_handle, params, rw ]
+		snd_pcm_hw_params_set_format  [ pcm_handle, params, fmt ]
+		snd_pcm_hw_params_set_channels[ pcm_handle, params, channels ]
+		snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
+		bufsz : sz [ 4096 ]
+		persz : sz [ 1024 ]
+		snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, ref bufsz ]
+		snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, ref persz, null ]
+		ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
+		if [ ok ]
+			perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
+			if [ perr < 0 ]
+				puts 'knes audio: prepare failed {snd_strerror[ perr ]}'
+				ok = false
+		return ok
+
+	func write [ frames: i32 ] -> none
+		if [ ! pcm_handle ] return
+		wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
+		if [ wr < 0 ]
+			snd_pcm_recover[ pcm_handle, wr, 0 ]
+			snd_pcm_prepare[ pcm_handle ]
+
+class cpu6502_state
+	a              : u8
+	x              : u8
+	y              : u8
+	sp             : u8
+	p              : u8                # NV-BDIZC
+	pc             : u16
+	cycles         : i64
+	nmi_pending    : bool
+	ram            : new u8 [ 0x800 ]  # 2 KB, mirrored to $1FFF
+
+class nes_ppu
+	vram           : new u8 [ 0x800 ]  # 2 KB nametable RAM (mirrored via cart)
+	palette        : new u8 [ 32 ]
+	oam            : new u8 [ 256 ]
+	chr_ram        : new u8 [ 0x2000 ] # used when the cart has no CHR ROM
+	ctrl           : u8                # $2000
+	mask           : u8                # $2001
+	status         : u8                # $2002
+	oam_addr       : u8                # $2003
+	scroll_x       : u8
+	scroll_y       : u8
+	addr           : u16               # loopy v: current VRAM address
+	t_reg          : u16               # loopy t: staged address/scroll
+	fine_x         : u8                # fine X scroll (3 bits)
+	latch          : bool              # $2005/$2006 shared write toggle
+	rbuf           : u8                # $2007 buffered read
+	in_vblank      : bool
+	s0_line        : i32               # sprite-0 hit line this frame (-1 none)
+	framebuf       : new u32 [ 256 * 240 ]
+
+class nes_apu
+	# pulse 1/2: [duty, envelope/vol, sweep, timer lo, len/timer hi]
+	p_duty         : new u8  [ 2 ]
+	p_vol          : new u8  [ 2 ]     # $4000/$4004: DDLC VVVV
+	p_sweep        : new u8  [ 2 ]
+	p_timer        : new u16 [ 2 ]
+	p_len          : new i32 [ 2 ]
+	p_seq          : new i32 [ 2 ]
+	p_ctr          : new i32 [ 2 ]
+	p_env          : new i32 [ 2 ]     # envelope decay level
+	p_envctr       : new i32 [ 2 ]
+	p_start        : new u8  [ 2 ]
+	p_sweepctr     : new i32 [ 2 ]
+	t_timer        : u16               # triangle
+	t_len          : i32
+	t_lin          : i32               # linear counter
+	t_linload      : u8
+	t_start        : u8
+	t_step         : i32
+	t_ctr          : i32
+	n_vol          : u8                # noise
+	n_mode         : u8
+	n_per          : u8
+	n_len          : i32
+	n_lfsr         : u16
+	n_ctr          : i32
+	n_env          : i32
+	n_envctr       : i32
+	n_start        : u8
+	enable         : u8                # $4015
+	fc_mode        : u8                # $4017 bit7: 5-step
+	fc_acc         : i64
+	fc_step        : i32
+
+trinity knes
+	public  rom          : path
+	public  frames_exit  : i32
+	public  resume       : bool
+	public  save_at      : i32
+	public  volume       : f32
+	public  se_2d        : bool [ true ]
+	mutable cpu          : cpu6502_state
+	mutable ppu          : nes_ppu
+	mutable apu          : nes_apu
+	mutable audio        : audio_out
+	mutable prg          : ref u8            # PRG ROM
+	mutable prg_size     : sz
+	mutable chr          : ref u8            # CHR ROM (or ppu.chr_ram)
+	mutable chr_size     : sz
+	mutable mapper       : i32
+	mutable mirror_v     : bool              # true = vertical mirroring
+	mutable pad_st       : u32               # A B Sel St U D L R (bits 0-7)
+	mutable pad_shift    : u32
+	mutable pad_strobe   : u8
+	mutable screen_tex   : Texture
+	mutable booted       : bool
+	mutable frames       : u32
+	mutable trace        : bool
+	mutable icount       : i64
+	mutable mclk_carry   : i64
+	mutable sample_frac  : i64
+	mutable xtra         : i32               # page-cross penalty from addr helpers
+	mutable save_req     : bool
+	mutable load_req     : bool
+	mutable st_hdr       : new u32 [ 16 ]
+	mutable nes_pal      : new u32 [ 64 ]    # master palette -> ABGR
+	mutable emu_started  : bool
+	mutable emu_stop     : bool
+	mutable emu_running  : bool
+	mutable pub_lock     : mutex
+	mutable pub_framebuf : new u32 [ 256 * 240 ]
+	mutable len_tab      : new i32 [ 32 ]    # APU length counter table
+	mutable noise_tab    : new i32 [ 16 ]    # noise periods (CPU cycles)
+	mutable se_shader    : SuperEagle
+	mutable se_model     : Model
+	mutable se_render    : Render
+	mutable line_sx      : new u8 [ 240 ]    # per-line scroll snapshots (SMB
+	mutable line_sy      : new u8 [ 240 ]    # status-bar split: scroll only
+	mutable line_nt      : new u8 [ 240 ]    # exists between s0 hit and vblank)
+	# --- ground-truth scroll interpolation: the display runs ~165Hz vs the
+	# emulated 60Hz; we KNOW the camera delta from the scroll registers, so
+	# the render thread slides the scene sub-pixel between emulated frames ---
+	public  smooth       : bool [ true ]
+	mutable cam_prev     : i32               # previous camera x (nt<<8 | sx, 9-bit)
+	mutable pub_dx       : i32               # published camera delta
+	mutable pub_time     : i64               # wall us at publish
+
+	func init []
+		width      = 512                     # 256 x2
+		height     = 448                     # 224 x2 (top/bottom 8 cropped)
+		background = 'Background'
+		if [ volume == 0.0 ] volume = 0.5
+
+	func on_render [ w: Window ] -> Elements
+		return null
+
+	# NES pad: WASD = D-pad, J = A, K = B, Shift = Select, Enter = Start.
+	# P = save state, O = load state.
+	public func on_key [ ev: Event ]
+		code : i32  [ ev.key.unicode ]
+		down : bool [ ev.key.state ]
+		bit : i32 [ -1 ]
+		if   [ code == 44 ]  bit = 0     # ,  A
+		el [ code == 46 ]  bit = 1     # .  B
+		el [ code == 340 || code == 344 ] bit = 2   # Shift  Select
+		el [ code == 257 ] bit = 3     # Enter  Start
+		el [ code == 87 ]  bit = 4     # W  Up
+		el [ code == 83 ]  bit = 5     # S  Down
+		el [ code == 65 ]  bit = 6     # A  Left
+		el [ code == 68 ]  bit = 7     # D  Right
+		if [ bit >= 0 ]
+			m : u32 [ u32[ 1 ] << bit ]
+			if [ down ] pad_st = pad_st | m
+			el pad_st = pad_st & (~m)
+		if [ down ]
+			if [ code == 80 ] save_req = true
+			if [ code == 79 ] load_req = true
+		return
+
+	# ---- cartridge: iNES format, mapper 0 (NROM) ----
+	func load_cart [] -> none
+		f : ref FILE [ fopen[ rom, 'rb' ] ]
+		if [ ! f ]
+			puts 'knes: could not open ROM {rom}'
+			return
+		hdr : new u8 [ 16 ]
+		fread[ hdr, 1, 16, f ]
+		if [ hdr[0] != 0x4E || hdr[1] != 0x45 || hdr[2] != 0x53 || hdr[3] != 0x1A ]
+			puts 'knes: not an iNES file'
+			fclose[ f ]
+			return
+		prg_size = sz[ hdr[4] ] * 0x4000
+		chr_size = sz[ hdr[5] ] * 0x2000
+		mirror_v = (hdr[6] & 1) != 0
+		mapper   = i32[ (hdr[6] >> 4) | (hdr[7] & 0xF0) ]
+		if [ (hdr[6] & 4) != 0 ] fseek[ f, 512, SEEK_CUR ]   # trainer skip
+		prg = calloc[ 1, prg_size ]
+		fread[ prg, 1, prg_size, f ]
+		if [ chr_size > 0 ]
+			chr = calloc[ 1, chr_size ]
+			fread[ chr, 1, chr_size, f ]
+		el
+			chr = ppu.chr_ram
+			chr_size = 0x2000
+		fclose[ f ]
+		if [ mapper != 0 ] puts 'knes: mapper {mapper} not yet supported (NROM only)'
+		puts 'knes: prg={prg_size} chr={chr_size} mapper={mapper} vmirror={(mirror_v) ? 1 : 0}'
+
+	# ---- PPU memory ($0000 pattern, $2000 nametables, $3F00 palette) ----
+	func nt_index [ a2: u32 ] -> u32
+		t : u32 [ (a2 >> 10) & 3 ]
+		if [ mirror_v ] t = t & 1
+		el t = t >> 1
+		return (t << 10) | (a2 & 0x3FF)
+
+	func ppu_rd [ a2: u32 ] -> u8
+		pa : u32 [ a2 & 0x3FFF ]
+		if [ pa < 0x2000 ]
+			if [ sz[ pa ] < chr_size ] return chr[ pa ]
+			return 0
+		if [ pa < 0x3F00 ] return ppu.vram[ nt_index[ pa ] & 0x7FF ]
+		pi : u32 [ pa & 0x1F ]
+		if [ pi >= 16 && (pi & 3) == 0 ] pi -= 16
+		return ppu.palette[ pi ]
+
+	func ppu_wr [ a2: u32, v: u8 ] -> none
+		pa : u32 [ a2 & 0x3FFF ]
+		if [ pa < 0x2000 ]
+			if [ chr_size == 0x2000 && chr == ppu.chr_ram ] ppu.chr_ram[ pa ] = v
+			return
+		if [ pa < 0x3F00 ]
+			ppu.vram[ nt_index[ pa ] & 0x7FF ] = v
+			return
+		pi : u32 [ pa & 0x1F ]
+		if [ pi >= 16 && (pi & 3) == 0 ] pi -= 16
+		ppu.palette[ pi ] = v
+
+	# ---- CPU bus ----
+	func bus_rd [ addr: u32 ] -> u8
+		a2 : u32 [ addr & 0xFFFF ]
+		if [ a2 < 0x2000 ] return cpu.ram[ a2 & 0x7FF ]
+		if [ a2 < 0x4000 ]
+			r : u32 [ a2 & 7 ]
+			if [ r == 2 ]                          # $2002 status
+				v : u8 [ ppu.status ]
+				ppu.status = ppu.status & 0x7F     # clear vblank
+				ppu.latch = false
+				return v
+			if [ r == 4 ] return ppu.oam[ ppu.oam_addr ]
+			if [ r == 7 ]                          # $2007 buffered data
+				pv : u8 [ ppu.rbuf ]
+				ppu.rbuf = ppu_rd[ u32[ ppu.addr ] ]
+				if [ (u32[ ppu.addr ] & 0x3F00) == 0x3F00 ] pv = ppu.rbuf
+				vinc : u16 [ 1 ]
+				if [ (ppu.ctrl & 4) != 0 ] vinc = 32
+				ppu.addr = ppu.addr + vinc
+				return pv
+			return 0
+		if [ a2 == 0x4016 ]                        # controller 1
+			b : u32 [ (pad_shift & 1) ]
+			pad_shift = (pad_shift >> 1) | 0x80000000
+			return u8[ 0x40 | b ]
+		if [ a2 == 0x4015 ]                        # APU status: length > 0 bits
+			s : u32 [ 0 ]
+			if [ apu.p_len[ 0 ] > 0 ] s |= 1
+			if [ apu.p_len[ 1 ] > 0 ] s |= 2
+			if [ apu.t_len > 0 ] s |= 4
+			if [ apu.n_len > 0 ] s |= 8
+			return u8[ s ]
+		if [ a2 >= 0x8000 ]
+			o : u32 [ a2 - 0x8000 ]
+			if [ prg_size == 0x4000 ] o = o & 0x3FFF   # 16K NROM mirrors
+			if [ prg && sz[ o ] < prg_size ] return prg[ o ]
+			return 0
+		return 0
+
+	func bus_wr [ addr: u32, v: u8 ] -> none
+		a2 : u32 [ addr & 0xFFFF ]
+		if [ a2 < 0x2000 ]
+			cpu.ram[ a2 & 0x7FF ] = v
+			return
+		if [ a2 < 0x4000 ]
+			r : u32 [ a2 & 7 ]
+			if [ r == 0 ]                          # nt select lives in loopy t
+				ppu.ctrl = v
+				ppu.t_reg = (ppu.t_reg & 0xF3FF) | (u16[ v & 3 ] << 10)
+			el [ r == 1 ] ppu.mask = v
+			el [ r == 3 ] ppu.oam_addr = v
+			el [ r == 4 ]
+				ppu.oam[ ppu.oam_addr ] = v
+				ppu.oam_addr = ppu.oam_addr + 1
+			el [ r == 5 ]                          # loopy scroll writes
+				if [ ! ppu.latch ]
+					ppu.fine_x = v & 7
+					ppu.t_reg = (ppu.t_reg & 0xFFE0) | u16[ v >> 3 ]
+				el
+					ppu.t_reg = (ppu.t_reg & 0x8C1F) | (u16[ v & 0xF8 ] << 2) | (u16[ v & 7 ] << 12)
+				ppu.latch = ! ppu.latch
+			el [ r == 6 ]                          # address writes share t; second sets v
+				if [ ! ppu.latch ]
+					ppu.t_reg = (ppu.t_reg & 0x00FF) | (u16[ v & 0x3F ] << 8)
+				el
+					ppu.t_reg = (ppu.t_reg & 0xFF00) | u16[ v ]
+					ppu.addr = ppu.t_reg
+				ppu.latch = ! ppu.latch
+			el [ r == 7 ]
+				ppu_wr[ u32[ ppu.addr ], v ]
+				vinc2 : u16 [ 1 ]
+				if [ (ppu.ctrl & 4) != 0 ] vinc2 = 32
+				ppu.addr = ppu.addr + vinc2
+			return
+		if [ a2 == 0x4014 ]                        # OAM DMA: 256 bytes, 513 cyc
+			base : u32 [ u32[ v ] << 8 ]
+			for [ i: i32 0, i < 256, i += 1 ]
+				oa : u32 [ (u32[ ppu.oam_addr ] + u32[ i ]) & 0xFF ]
+				ppu.oam[ oa ] = bus_rd[ base + u32[ i ] ]
+			cpu.cycles += 513
+			mclk_carry -= 513 * 12
+			return
+		if [ a2 == 0x4016 ]
+			if [ (v & 1) != 0 ] pad_strobe = 1
+			el
+				if [ pad_strobe != 0 ] pad_shift = pad_st | 0xFFFFFF00
+				pad_strobe = 0
+			return
+		if [ a2 >= 0x4000 && a2 <= 0x4017 ]
+			apu_wr[ a2, v ]
+
+	func rd16 [ a2: u32 ] -> u32
+		return u32[ bus_rd[ a2 ] ] | (u32[ bus_rd[ a2 + 1 ] ] << 8)
+
+	# =================================================================
+	# 6502 core — MOS datasheet cycles, page-cross penalties via xtra
+	# =================================================================
+	func push8 [ v: u8 ] -> none
+		bus_wr[ 0x100 + u32[ cpu.sp ], v ]
+		cpu.sp = cpu.sp - 1
+
+	func pull8 [] -> u8
+		cpu.sp = cpu.sp + 1
+		return bus_rd[ 0x100 + u32[ cpu.sp ] ]
+
+	func set_zn [ v: u32 ] -> none
+		p : u8 [ cpu.p & 0x7D ]
+		if [ (v & 0xFF) == 0 ] p = p | 0x02
+		if [ (v & 0x80) != 0 ] p = p | 0x80
+		cpu.p = p
+
+	func fetch8 [] -> u32
+		v : u32 [ u32[ bus_rd[ u32[ cpu.pc ] ] ] ]
+		cpu.pc = cpu.pc + 1
+		return v
+
+	func fetch16 [] -> u32
+		lo : u32 [ fetch8[] ]
+		return lo | (fetch8[] << 8)
+
+	# addressing helpers; set xtra=1 on page cross for +1 modes
+	func a_zp  [] -> u32
+		return fetch8[]
+	func a_zpx [] -> u32
+		return (fetch8[] + u32[ cpu.x ]) & 0xFF
+	func a_zpy [] -> u32
+		return (fetch8[] + u32[ cpu.y ]) & 0xFF
+	func a_abs [] -> u32
+		return fetch16[]
+	func a_abx [] -> u32
+		b : u32 [ fetch16[] ]
+		r : u32 [ (b + u32[ cpu.x ]) & 0xFFFF ]
+		if [ (b & 0xFF00) != (r & 0xFF00) ] xtra = 1
+		return r
+	func a_aby [] -> u32
+		b : u32 [ fetch16[] ]
+		r : u32 [ (b + u32[ cpu.y ]) & 0xFFFF ]
+		if [ (b & 0xFF00) != (r & 0xFF00) ] xtra = 1
+		return r
+	func a_izx [] -> u32
+		z : u32 [ (fetch8[] + u32[ cpu.x ]) & 0xFF ]
+		return u32[ bus_rd[ z ] ] | (u32[ bus_rd[ (z + 1) & 0xFF ] ] << 8)
+	func a_izy [] -> u32
+		z : u32 [ fetch8[] ]
+		b : u32 [ u32[ bus_rd[ z ] ] | (u32[ bus_rd[ (z + 1) & 0xFF ] ] << 8) ]
+		r : u32 [ (b + u32[ cpu.y ]) & 0xFFFF ]
+		if [ (b & 0xFF00) != (r & 0xFF00) ] xtra = 1
+		return r
+
+	func op_adc [ v: u32 ] -> none
+		aa : u32 [ u32[ cpu.a ] ]
+		c : u32 [ u32[ cpu.p ] & 1 ]
+		r : u32 [ aa + v + c ]
+		p : u8 [ cpu.p & 0x3C ]
+		if [ (r & 0x100) != 0 ] p = p | 0x01
+		if [ (((aa ^ r) & (v ^ r)) & 0x80) != 0 ] p = p | 0x40
+		if [ (r & 0xFF) == 0 ] p = p | 0x02
+		if [ (r & 0x80) != 0 ] p = p | 0x80
+		cpu.p = p
+		cpu.a = u8[ r & 0xFF ]
+
+	func op_cmp [ reg: u32, v: u32 ] -> none
+		r : u32 [ (reg - v) & 0x1FF ]
+		p : u8 [ cpu.p & 0x7C ]
+		if [ reg >= v ] p = p | 0x01
+		if [ (r & 0xFF) == 0 ] p = p | 0x02
+		if [ (r & 0x80) != 0 ] p = p | 0x80
+		cpu.p = p
+
+	func op_branch [ cond: bool ] -> i32
+		d : i32 [ i32[ i8[ u8[ fetch8[] ] ] ] ]
+		if [ ! cond ] return 2
+		np : u32 [ (u32[ cpu.pc ] + u32[ d ]) & 0xFFFF ]
+		c : i32 [ ((np & 0xFF00) != (u32[ cpu.pc ] & 0xFF00)) ? 4 : 3 ]
+		cpu.pc = u16[ np ]
+		return c
+
+	func nmi_take [] -> i32
+		push8[ u8[ (cpu.pc >> 8) & 0xFF ] ]
+		push8[ u8[ cpu.pc & 0xFF ] ]
+		push8[ (cpu.p & 0xEF) | 0x20 ]
+		cpu.p = cpu.p | 0x04
+		cpu.pc = u16[ rd16[ 0xFFFA ] ]
+		return 7
+
+	func cpu_reset [] -> none
+		cpu.sp = 0xFD
+		cpu.p  = 0x24
+		cpu.pc = u16[ rd16[ 0xFFFC ] ]
+		puts 'knes: reset pc={cpu.pc}'
+
+	# one instruction; returns CPU cycles
+	func cpu_step [] -> i32
+		if [ cpu.nmi_pending ]
+			cpu.nmi_pending = false
+			return nmi_take[]
+		op : u32 [ fetch8[] ]
+		xtra = 0
+		# ---- singles ----
+		if [ op == 0xEA ] return 2                 # NOP
+		if [ op == 0x4C ]                          # JMP abs
+			cpu.pc = u16[ fetch16[] ]
+			return 3
+		if [ op == 0x6C ]                          # JMP (ind) — 6502 page bug
+			pa : u32 [ fetch16[] ]
+			lo : u32 [ u32[ bus_rd[ pa ] ] ]
+			hi : u32 [ u32[ bus_rd[ (pa & 0xFF00) | ((pa + 1) & 0xFF) ] ] ]
+			cpu.pc = u16[ lo | (hi << 8) ]
+			return 5
+		if [ op == 0x20 ]                          # JSR
+			t : u32 [ fetch16[] ]
+			ra : u32 [ (u32[ cpu.pc ] - 1) & 0xFFFF ]
+			push8[ u8[ (ra >> 8) & 0xFF ] ]
+			push8[ u8[ ra & 0xFF ] ]
+			cpu.pc = u16[ t ]
+			return 6
+		if [ op == 0x60 ]                          # RTS
+			lo2 : u32 [ u32[ pull8[] ] ]
+			hi2 : u32 [ u32[ pull8[] ] ]
+			cpu.pc = u16[ ((lo2 | (hi2 << 8)) + 1) & 0xFFFF ]
+			return 6
+		if [ op == 0x40 ]                          # RTI
+			cpu.p = (pull8[] & 0xEF) | 0x20
+			lo3 : u32 [ u32[ pull8[] ] ]
+			hi3 : u32 [ u32[ pull8[] ] ]
+			cpu.pc = u16[ lo3 | (hi3 << 8) ]
+			return 6
+		if [ op == 0x00 ]                          # BRK
+			cpu.pc = cpu.pc + 1
+			push8[ u8[ (cpu.pc >> 8) & 0xFF ] ]
+			push8[ u8[ cpu.pc & 0xFF ] ]
+			push8[ cpu.p | 0x30 ]
+			cpu.p = cpu.p | 0x04
+			cpu.pc = u16[ rd16[ 0xFFFE ] ]
+			return 7
+		if [ op == 0x08 ]                          # PHP
+			push8[ cpu.p | 0x30 ]
+			return 3
+		if [ op == 0x28 ]                          # PLP
+			cpu.p = (pull8[] & 0xEF) | 0x20
+			return 4
+		if [ op == 0x48 ]                          # PHA
+			push8[ cpu.a ]
+			return 3
+		if [ op == 0x68 ]                          # PLA
+			cpu.a = pull8[]
+			set_zn[ u32[ cpu.a ] ]
+			return 4
+		if [ op == 0x18 ]
+			cpu.p = cpu.p & 0xFE
+			return 2                               # CLC
+		if [ op == 0x38 ]
+			cpu.p = cpu.p | 0x01
+			return 2                               # SEC
+		if [ op == 0x58 ]
+			cpu.p = cpu.p & 0xFB
+			return 2                               # CLI
+		if [ op == 0x78 ]
+			cpu.p = cpu.p | 0x04
+			return 2                               # SEI
+		if [ op == 0xB8 ]
+			cpu.p = cpu.p & 0xBF
+			return 2                               # CLV
+		if [ op == 0xD8 ]
+			cpu.p = cpu.p & 0xF7
+			return 2                               # CLD
+		if [ op == 0xF8 ]
+			cpu.p = cpu.p | 0x08
+			return 2                               # SED
+		if [ op == 0xAA ]
+			cpu.x = cpu.a
+			set_zn[ u32[ cpu.x ] ]
+			return 2                               # TAX
+		if [ op == 0x8A ]
+			cpu.a = cpu.x
+			set_zn[ u32[ cpu.a ] ]
+			return 2                               # TXA
+		if [ op == 0xA8 ]
+			cpu.y = cpu.a
+			set_zn[ u32[ cpu.y ] ]
+			return 2                               # TAY
+		if [ op == 0x98 ]
+			cpu.a = cpu.y
+			set_zn[ u32[ cpu.a ] ]
+			return 2                               # TYA
+		if [ op == 0xBA ]
+			cpu.x = cpu.sp
+			set_zn[ u32[ cpu.x ] ]
+			return 2                               # TSX
+		if [ op == 0x9A ]
+			cpu.sp = cpu.x
+			return 2                               # TXS
+		if [ op == 0xE8 ]
+			cpu.x = cpu.x + 1
+			set_zn[ u32[ cpu.x ] ]
+			return 2                               # INX
+		if [ op == 0xC8 ]
+			cpu.y = cpu.y + 1
+			set_zn[ u32[ cpu.y ] ]
+			return 2                               # INY
+		if [ op == 0xCA ]
+			cpu.x = cpu.x - 1
+			set_zn[ u32[ cpu.x ] ]
+			return 2                               # DEX
+		if [ op == 0x88 ]
+			cpu.y = cpu.y - 1
+			set_zn[ u32[ cpu.y ] ]
+			return 2                               # DEY
+		if [ op == 0x10 ] return op_branch[ (cpu.p & 0x80) == 0 ]   # BPL
+		if [ op == 0x30 ] return op_branch[ (cpu.p & 0x80) != 0 ]   # BMI
+		if [ op == 0x50 ] return op_branch[ (cpu.p & 0x40) == 0 ]   # BVC
+		if [ op == 0x70 ] return op_branch[ (cpu.p & 0x40) != 0 ]   # BVS
+		if [ op == 0x90 ] return op_branch[ (cpu.p & 0x01) == 0 ]   # BCC
+		if [ op == 0xB0 ] return op_branch[ (cpu.p & 0x01) != 0 ]   # BCS
+		if [ op == 0xD0 ] return op_branch[ (cpu.p & 0x02) == 0 ]   # BNE
+		if [ op == 0xF0 ] return op_branch[ (cpu.p & 0x02) != 0 ]   # BEQ
+		if [ op == 0x24 || op == 0x2C ]            # BIT zp/abs
+			ba : u32 [ (op == 0x24) ? a_zp[] : a_abs[] ]
+			bv : u32 [ u32[ bus_rd[ ba ] ] ]
+			p2 : u8 [ cpu.p & 0x3D ]
+			if [ (bv & u32[ cpu.a ]) == 0 ] p2 = p2 | 0x02
+			p2 = p2 | u8[ bv & 0xC0 ]
+			cpu.p = p2
+			return (op == 0x24) ? 3 : 4
+		# LDY/STY/CPY/CPX
+		if [ op == 0xA0 ]
+			cpu.y = u8[ fetch8[] ]
+			set_zn[ u32[ cpu.y ] ]
+			return 2
+		if [ op == 0xA4 || op == 0xB4 || op == 0xAC || op == 0xBC ]
+			la : u32 [ 0 ]
+			lc : i32 [ 0 ]
+			if [ op == 0xA4 ]
+				la = a_zp[]
+				lc = 3
+			el [ op == 0xB4 ]
+				la = a_zpx[]
+				lc = 4
+			el [ op == 0xAC ]
+				la = a_abs[]
+				lc = 4
+			el
+				la = a_abx[]
+				lc = 4 + xtra
+			cpu.y = bus_rd[ la ]
+			set_zn[ u32[ cpu.y ] ]
+			return lc
+		if [ op == 0x84 || op == 0x94 || op == 0x8C ]
+			sa : u32 [ 0 ]
+			if [ op == 0x84 ] sa = a_zp[]
+			el [ op == 0x94 ] sa = a_zpx[]
+			el sa = a_abs[]
+			bus_wr[ sa, cpu.y ]
+			return (op == 0x84) ? 3 : 4
+		if [ op == 0xC0 || op == 0xC4 || op == 0xCC ]
+			cv : u32 [ 0 ]
+			cc2 : i32 [ 2 ]
+			if [ op == 0xC0 ] cv = fetch8[]
+			el [ op == 0xC4 ]
+				cv = u32[ bus_rd[ a_zp[] ] ]
+				cc2 = 3
+			el
+				cv = u32[ bus_rd[ a_abs[] ] ]
+				cc2 = 4
+			op_cmp[ u32[ cpu.y ], cv ]
+			return cc2
+		if [ op == 0xE0 || op == 0xE4 || op == 0xEC ]
+			xv : u32 [ 0 ]
+			xc : i32 [ 2 ]
+			if [ op == 0xE0 ] xv = fetch8[]
+			el [ op == 0xE4 ]
+				xv = u32[ bus_rd[ a_zp[] ] ]
+				xc = 3
+			el
+				xv = u32[ bus_rd[ a_abs[] ] ]
+				xc = 4
+			op_cmp[ u32[ cpu.x ], xv ]
+			return xc
+		# ---- cc=01 ALU block ----
+		cc : u32 [ op & 3 ]
+		aaa : u32 [ (op >> 5) & 7 ]
+		bbb : u32 [ (op >> 2) & 7 ]
+		if [ cc == 1 ]
+			ea : u32 [ 0 ]
+			cyc : i32 [ 0 ]
+			imm : bool [ false ]
+			iv : u32 [ 0 ]
+			if [ bbb == 0 ]
+				ea = a_izx[]
+				cyc = 6
+			el [ bbb == 1 ]
+				ea = a_zp[]
+				cyc = 3
+			el [ bbb == 2 ]
+				imm = true
+				iv = fetch8[]
+				cyc = 2
+			el [ bbb == 3 ]
+				ea = a_abs[]
+				cyc = 4
+			el [ bbb == 4 ]
+				ea = a_izy[]
+				cyc = 5 + xtra
+			el [ bbb == 5 ]
+				ea = a_zpx[]
+				cyc = 4
+			el [ bbb == 6 ]
+				ea = a_aby[]
+				cyc = 4 + xtra
+			el
+				ea = a_abx[]
+				cyc = 4 + xtra
+			if [ aaa == 4 ]                        # STA (no page-cross bonus)
+				if [ bbb == 4 ] cyc = 6
+				if [ bbb == 6 || bbb == 7 ] cyc = 5
+				bus_wr[ ea, cpu.a ]
+				return cyc
+			v : u32 [ (imm) ? iv : u32[ bus_rd[ ea ] ] ]
+			if [ aaa == 0 ]
+				cpu.a = cpu.a | u8[ v ]
+				set_zn[ u32[ cpu.a ] ]
+			el [ aaa == 1 ]
+				cpu.a = cpu.a & u8[ v ]
+				set_zn[ u32[ cpu.a ] ]
+			el [ aaa == 2 ]
+				cpu.a = cpu.a ^ u8[ v ]
+				set_zn[ u32[ cpu.a ] ]
+			el [ aaa == 3 ] op_adc[ v ]
+			el [ aaa == 5 ]
+				cpu.a = u8[ v ]
+				set_zn[ v ]
+			el [ aaa == 6 ] op_cmp[ u32[ cpu.a ], v ]
+			el op_adc[ v ^ 0xFF ]                  # SBC = ADC ~v
+			return cyc
+		# ---- cc=10: shifts / LDX / STX / INC / DEC ----
+		if [ cc == 2 ]
+			if [ aaa == 5 ]                        # LDX
+				la2 : u32 [ 0 ]
+				lc2 : i32 [ 0 ]
+				if [ bbb == 0 ]
+					cpu.x = u8[ fetch8[] ]
+					set_zn[ u32[ cpu.x ] ]
+					return 2
+				if [ bbb == 1 ]
+					la2 = a_zp[]
+					lc2 = 3
+				el [ bbb == 3 ]
+					la2 = a_abs[]
+					lc2 = 4
+				el [ bbb == 5 ]
+					la2 = a_zpy[]
+					lc2 = 4
+				el
+					la2 = a_aby[]
+					lc2 = 4 + xtra
+				cpu.x = bus_rd[ la2 ]
+				set_zn[ u32[ cpu.x ] ]
+				return lc2
+			if [ aaa == 4 ]                        # STX
+				sa2 : u32 [ 0 ]
+				if [ bbb == 1 ] sa2 = a_zp[]
+				el [ bbb == 5 ] sa2 = a_zpy[]
+				el sa2 = a_abs[]
+				bus_wr[ sa2, cpu.x ]
+				return (bbb == 1) ? 3 : 4
+			# RMW: ASL ROL LSR ROR DEC INC (+ accumulator forms)
+			acc : bool [ bbb == 2 ]
+			ea2 : u32 [ 0 ]
+			rc : i32 [ 2 ]
+			if [ ! acc ]
+				if [ bbb == 1 ]
+					ea2 = a_zp[]
+					rc = 5
+				el [ bbb == 3 ]
+					ea2 = a_abs[]
+					rc = 6
+				el [ bbb == 5 ]
+					ea2 = a_zpx[]
+					rc = 6
+				el
+					ea2 = a_abx[]
+					rc = 7
+			v2 : u32 [ (acc) ? u32[ cpu.a ] : u32[ bus_rd[ ea2 ] ] ]
+			c : u32 [ u32[ cpu.p ] & 1 ]
+			nc : u32 [ 0 ]
+			if [ aaa == 0 ]                        # ASL
+				nc = (v2 >> 7) & 1
+				v2 = (v2 << 1) & 0xFF
+			el [ aaa == 1 ]                        # ROL
+				nc = (v2 >> 7) & 1
+				v2 = ((v2 << 1) | c) & 0xFF
+			el [ aaa == 2 ]                        # LSR
+				nc = v2 & 1
+				v2 = v2 >> 1
+			el [ aaa == 3 ]                        # ROR
+				nc = v2 & 1
+				v2 = (v2 >> 1) | (c << 7)
+			el [ aaa == 6 ]                        # DEC
+				v2 = (v2 - 1) & 0xFF
+				nc = c
+			el [ aaa == 7 ]                        # INC
+				v2 = (v2 + 1) & 0xFF
+				nc = c
+			el return 2                            # unhandled slot
+			cpu.p = (cpu.p & 0xFE) | u8[ nc ]
+			set_zn[ v2 ]
+			if [ acc ] cpu.a = u8[ v2 ]
+			el bus_wr[ ea2, u8[ v2 ] ]
+			return rc
+		if [ trace ] puts 'knes 6502: unhandled opcode {op}'
+		return 2
+
+	# =================================================================
+	# APU — pulse x2, triangle, noise; frame counter at 240 Hz
+	# =================================================================
+	func apu_wr [ a2: u32, v: u8 ] -> none
+		r : u32 [ a2 & 0x1F ]
+		if [ r <= 7 ]                              # pulse 1/2
+			ch : i32 [ i32[ r >> 2 ] ]
+			s : u32 [ r & 3 ]
+			if [ s == 0 ]
+				apu.p_vol[ ch ] = v
+				apu.p_duty[ ch ] = (v >> 6) & 3
+			el [ s == 1 ] apu.p_sweep[ ch ] = v
+			el [ s == 2 ] apu.p_timer[ ch ] = (apu.p_timer[ ch ] & 0x700) | u16[ v ]
+			el
+				apu.p_timer[ ch ] = (apu.p_timer[ ch ] & 0xFF) | (u16[ v & 7 ] << 8)
+				if [ (apu.enable & (1 << u32[ ch ])) != 0 ]
+					apu.p_len[ ch ] = len_tab[ i32[ (v >> 3) & 0x1F ] ]
+				apu.p_seq[ ch ] = 0
+				apu.p_start[ ch ] = 1
+			return
+		if [ r == 8 ]
+			apu.t_linload = v & 0x7F
+			return
+		if [ r == 0xA ]
+			apu.t_timer = (apu.t_timer & 0x700) | u16[ v ]
+			return
+		if [ r == 0xB ]
+			apu.t_timer = (apu.t_timer & 0xFF) | (u16[ v & 7 ] << 8)
+			if [ (apu.enable & 4) != 0 ] apu.t_len = len_tab[ i32[ (v >> 3) & 0x1F ] ]
+			apu.t_start = 1
+			return
+		if [ r == 0xC ]
+			apu.n_vol = v
+			return
+		if [ r == 0xE ]
+			apu.n_per = v & 0xF
+			apu.n_mode = (v >> 7) & 1
+			return
+		if [ r == 0xF ]
+			if [ (apu.enable & 8) != 0 ] apu.n_len = len_tab[ i32[ (v >> 3) & 0x1F ] ]
+			apu.n_start = 1
+			return
+		if [ r == 0x15 ]
+			apu.enable = v
+			if [ (v & 1) == 0 ] apu.p_len[ 0 ] = 0
+			if [ (v & 2) == 0 ] apu.p_len[ 1 ] = 0
+			if [ (v & 4) == 0 ] apu.t_len = 0
+			if [ (v & 8) == 0 ] apu.n_len = 0
+			return
+		if [ r == 0x17 ] apu.fc_mode = (v >> 7) & 1
+
+	# quarter/half frame clocks (envelopes, linear, length, sweep)
+	func apu_frame_tick [] -> none
+		apu.fc_step = (apu.fc_step + 1) % ((apu.fc_mode != 0) ? 5 : 4)
+		# quarter: envelopes + triangle linear counter
+		for [ ch: i32 0, ch < 2, ch += 1 ]
+			if [ apu.p_start[ ch ] != 0 ]
+				apu.p_start[ ch ] = 0
+				apu.p_env[ ch ] = 15
+				apu.p_envctr[ ch ] = i32[ apu.p_vol[ ch ] & 0xF ]
+			el
+				apu.p_envctr[ ch ] -= 1
+				if [ apu.p_envctr[ ch ] < 0 ]
+					apu.p_envctr[ ch ] = i32[ apu.p_vol[ ch ] & 0xF ]
+					if [ apu.p_env[ ch ] > 0 ] apu.p_env[ ch ] -= 1
+					el [ (apu.p_vol[ ch ] & 0x20) != 0 ] apu.p_env[ ch ] = 15
+		if [ apu.n_start != 0 ]
+			apu.n_start = 0
+			apu.n_env = 15
+			apu.n_envctr = i32[ apu.n_vol & 0xF ]
+		el
+			apu.n_envctr -= 1
+			if [ apu.n_envctr < 0 ]
+				apu.n_envctr = i32[ apu.n_vol & 0xF ]
+				if [ apu.n_env > 0 ] apu.n_env -= 1
+				el [ (apu.n_vol & 0x20) != 0 ] apu.n_env = 15
+		if [ apu.t_start != 0 ] apu.t_lin = i32[ apu.t_linload & 0x7F ]
+		el [ apu.t_lin > 0 ] apu.t_lin -= 1
+		if [ (apu.t_linload & 0x80) == 0 ] apu.t_start = 0
+		# half: length counters + sweep (steps 1 and 3)
+		if [ (apu.fc_step & 1) != 0 ] return
+		for [ ch2: i32 0, ch2 < 2, ch2 += 1 ]
+			if [ apu.p_len[ ch2 ] > 0 && (apu.p_vol[ ch2 ] & 0x20) == 0 ] apu.p_len[ ch2 ] -= 1
+			sw : u8 [ apu.p_sweep[ ch2 ] ]
+			if [ (sw & 0x80) != 0 ]
+				apu.p_sweepctr[ ch2 ] -= 1
+				if [ apu.p_sweepctr[ ch2 ] < 0 ]
+					apu.p_sweepctr[ ch2 ] = i32[ (sw >> 4) & 7 ]
+					sh : i32 [ i32[ sw & 7 ] ]
+					if [ sh > 0 && apu.p_timer[ ch2 ] >= 8 ]
+						d : i32 [ i32[ apu.p_timer[ ch2 ] ] >> sh ]
+						if [ (sw & 8) != 0 ] d = 0 - d - ((ch2 == 0) ? 1 : 0)
+						nt : i32 [ i32[ apu.p_timer[ ch2 ] ] + d ]
+						if [ nt >= 0 && nt < 0x800 ] apu.p_timer[ ch2 ] = u16[ nt ]
+		if [ apu.t_len > 0 && (apu.t_linload & 0x80) == 0 ] apu.t_len -= 1
+		if [ apu.n_len > 0 && (apu.n_vol & 0x20) == 0 ] apu.n_len -= 1
+
+	# one output sample at 53267 Hz
+	func apu_sample [] -> i32
+		# frame counter ~240 Hz
+		apu.fc_acc += 240
+		while [ apu.fc_acc >= 53267 ]
+			apu.fc_acc -= 53267
+			apu_frame_tick[]
+		# advance channel timers by elapsed CPU cycles (1789773 / 53267)
+		n : i32 [ 33 ]
+		s : i32 [ 0 ]
+		for [ ch: i32 0, ch < 2, ch += 1 ]
+			t : i32 [ i32[ apu.p_timer[ ch ] ] ]
+			if [ apu.p_len[ ch ] > 0 && t >= 8 ]
+				apu.p_ctr[ ch ] -= n
+				while [ apu.p_ctr[ ch ] <= 0 ]
+					apu.p_ctr[ ch ] += (t + 1) * 2
+					apu.p_seq[ ch ] = (apu.p_seq[ ch ] + 1) & 7
+				dm : u32 [ 0x02 ]                  # 12.5%
+				dt : u32 [ u32[ apu.p_duty[ ch ] ] ]
+				if [ dt == 1 ] dm = 0x06
+				el [ dt == 2 ] dm = 0x1E
+				el [ dt == 3 ] dm = 0xF9
+				vol : i32 [ apu.p_env[ ch ] ]
+				if [ (apu.p_vol[ ch ] & 0x10) != 0 ] vol = i32[ apu.p_vol[ ch ] & 0xF ]
+				if [ (dm & (u32[ 1 ] << apu.p_seq[ ch ])) != 0 ] s += vol * 492
+		if [ apu.t_len > 0 && apu.t_lin > 0 && apu.t_timer >= 2 ]
+			apu.t_ctr -= n
+			while [ apu.t_ctr <= 0 ]
+				apu.t_ctr += i32[ apu.t_timer ] + 1
+				apu.t_step = (apu.t_step + 1) & 31
+			tv : i32 [ (apu.t_step < 16) ? (15 - apu.t_step) : (apu.t_step - 16) ]
+			s += tv * 557
+		if [ apu.n_len > 0 ]
+			apu.n_ctr -= n
+			while [ apu.n_ctr <= 0 ]
+				apu.n_ctr += noise_tab[ i32[ apu.n_per ] ]
+				fb : u32 [ (u32[ apu.n_lfsr ] ^ (u32[ apu.n_lfsr ] >> ((apu.n_mode != 0) ? 6 : 1))) & 1 ]
+				apu.n_lfsr = u16[ (u32[ apu.n_lfsr ] >> 1) | (fb << 14) ]
+			if [ (apu.n_lfsr & 1) == 0 ]
+				nv : i32 [ apu.n_env ]
+				if [ (apu.n_vol & 0x10) != 0 ] nv = i32[ apu.n_vol & 0xF ]
+				s += nv * 323
+		return s
+
+	# =================================================================
+	# PPU render — frame-based like rgen's vdp_render
+	# =================================================================
+	func ppu_render [] -> none
+		ppu.s0_line = -1
+		bg_pat : u32 [ ((ppu.ctrl & 0x10) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
+		sp_pat : u32 [ ((ppu.ctrl & 0x08) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
+		big : bool [ (ppu.ctrl & 0x20) != 0 ]
+		bg_on : bool [ (ppu.mask & 0x08) != 0 ]
+		sp_on : bool [ (ppu.mask & 0x10) != 0 ]
+		ub : u32 [ nes_pal[ i32[ ppu.palette[ 0 ] ] & 63 ] ]
+		for [ y: i32 0, y < 240, y += 1 ]
+			base_nt : u32 [ u32[ line_nt[ y ] ] ]
+			for [ x: i32 0, x < 256, x += 1 ]
+				o : u32 [ ub ]
+				bpx : u32 [ 0 ]
+				if [ bg_on ]
+					wx : u32 [ u32[ x ] + u32[ line_sx[ y ] ] + ((base_nt & 1) << 8) ]
+					wy : u32 [ u32[ y ] + u32[ line_sy[ y ] ] + ((base_nt >> 1) * 240 ) ]
+					wx = wx % 512
+					wy = wy % 480
+					nt : u32 [ 0x2000 ]
+					if [ wx >= 256 ] nt += 0x400
+					if [ wy >= 240 ] nt += 0x800
+					cx : u32 [ (wx % 256) >> 3 ]
+					cy : u32 [ (wy % 240) >> 3 ]
+					tile : u32 [ u32[ ppu_rd[ nt + cy * 32 + cx ] ] ]
+					fy : u32 [ (wy % 240) & 7 ]
+					pl : u32 [ bg_pat + tile * 16 + fy ]
+					b0 : u32 [ u32[ ppu_rd[ pl ] ] ]
+					b1 : u32 [ u32[ ppu_rd[ pl + 8 ] ] ]
+					fx : u32 [ 7 - ((wx % 256) & 7) ]
+					bpx = ((b0 >> fx) & 1) | (((b1 >> fx) & 1) << 1)
+					if [ bpx != 0 ]
+						at : u32 [ u32[ ppu_rd[ nt + 0x3C0 + (cy >> 2) * 8 + (cx >> 2) ] ] ]
+						qs : u32 [ ((cy & 2) << 1) | (cx & 2) ]
+						pal : u32 [ (at >> qs) & 3 ]
+						o = nes_pal[ i32[ ppu.palette[ pal * 4 + bpx ] ] & 63 ]
+				if [ sp_on ]
+					sh : i32 [ (big) ? 16 : 8 ]
+					for [ si: i32 0, si < 64, si += 1 ]
+						sy : i32 [ i32[ ppu.oam[ si * 4 ] ] + 1 ]
+						if [ y < sy || y >= sy + sh ] continue
+						sx : i32 [ i32[ ppu.oam[ si * 4 + 3 ] ] ]
+						if [ x < sx || x >= sx + 8 ] continue
+						tl : u32 [ u32[ ppu.oam[ si * 4 + 1 ] ] ]
+						at2 : u32 [ u32[ ppu.oam[ si * 4 + 2 ] ] ]
+						ry : i32 [ y - sy ]
+						if [ (at2 & 0x80) != 0 ] ry = sh - 1 - ry
+						rx : i32 [ x - sx ]
+						if [ (at2 & 0x40) != 0 ] rx = 7 - rx
+						pb : u32 [ sp_pat ]
+						if [ big ]
+							pb = (tl & 1) << 12
+							tl = (tl & 0xFE) + u32[ ry >> 3 ]
+							ry = ry & 7
+						pl2 : u32 [ pb + tl * 16 + u32[ ry ] ]
+						s0 : u32 [ u32[ ppu_rd[ pl2 ] ] ]
+						s1 : u32 [ u32[ ppu_rd[ pl2 + 8 ] ] ]
+						fx2 : u32 [ u32[ 7 - rx ] ]
+						spx : u32 [ ((s0 >> fx2) & 1) | (((s1 >> fx2) & 1) << 1) ]
+						if [ spx == 0 ] continue
+						if [ si == 0 && bpx != 0 && ppu.s0_line < 0 ] ppu.s0_line = y
+						if [ (at2 & 0x20) != 0 && bpx != 0 ] break   # behind bg
+						o = nes_pal[ i32[ ppu.palette[ 16 + i32[ (at2 & 3) ] * 4 + i32[ spx ] ] ] & 63 ]
+						break
+				ppu.framebuf[ y * 256 + x ] = o
+
+	# =================================================================
+	# frame + thread + audio (rgen template)
+	# =================================================================
+	# one NTSC frame: 262 lines x 341 dots x 4 master; CPU cycle = 12 master
+	func run_frame [] -> none
+		for [ line: i32 0, line < 262, line += 1 ]
+			if [ line < 240 ]                     # snapshot loopy t per line
+				line_sx[ line ] = u8[ ((ppu.t_reg & 0x1F) << 3) | u16[ ppu.fine_x ] ]
+				line_sy[ line ] = u8[ ((ppu.t_reg >> 2) & 0xF8) | ((ppu.t_reg >> 12) & 7) ]
+				line_nt[ line ] = u8[ (ppu.t_reg >> 10) & 3 ]
+			if [ line == 241 ]
+				ppu.status = ppu.status | 0x80
+				ppu.in_vblank = true
+				if [ (ppu.ctrl & 0x80) != 0 ] cpu.nmi_pending = true
+			if [ line == 261 ]
+				ppu.status = ppu.status & 0x3F     # clear vblank + sprite0
+				ppu.in_vblank = false
+			if [ ppu.s0_line >= 0 && line == ppu.s0_line ]
+				ppu.status = ppu.status | 0x40     # sprite-0 hit
+			budget : i64 [ 1364 + mclk_carry ]     # 341 dots * 4 master
+			spent  : i64 [ 0 ]
+			while [ spent < budget ]
+				cyc : i32 [ cpu_step[] ]
+				spent += i64[ cyc * 12 ]
+			mclk_carry = budget - spent
+		ppu_render[]                              # render from this frame's snapshots
+
+	func generate_audio [] -> none
+		if [ ! audio || ! audio.pcm_handle ]
+			usleep[ 15000 ]
+			return
+		# 53267 Hz vs NTSC frame (60.0988): 53267 * 357368 / 21477272
+		sample_frac += i64[ 53267 ] * 357368
+		n : i32 [ i32[ sample_frac / 21477272 ] ]
+		sample_frac -= i64[ n ] * 21477272
+		while [ n > 0 ]
+			c : i32 [ (n > 1024) ? 1024 : n ]
+			for [ i: i32 0, i < c, i += 1 ]
+				s : i32 [ apu_sample[] ]
+				sv : i32 [ i32[ f32[ s ] * volume ] ]
+				if [ sv > 32767 ] sv = 32767
+				if [ sv < -32768 ] sv = -32768
+				audio.buffer[ i * 2 ]     = i16[ sv ]
+				audio.buffer[ i * 2 + 1 ] = i16[ sv ]
+			audio.write[ c ]
+			n -= c
+
+	func save_state [] -> none
+		f : ref FILE [ fopen[ '/tmp/knes_state.bin', 'wb' ] ]
+		if [ ! f ] return
+		st_hdr[ 0 ] = u32[ cpu.a ]
+		st_hdr[ 1 ] = u32[ cpu.x ]
+		st_hdr[ 2 ] = u32[ cpu.y ]
+		st_hdr[ 3 ] = u32[ cpu.sp ]
+		st_hdr[ 4 ] = u32[ cpu.p ]
+		st_hdr[ 5 ] = u32[ cpu.pc ]
+		st_hdr[ 6 ] = u32[ ppu.ctrl ]
+		st_hdr[ 7 ] = u32[ ppu.mask ]
+		st_hdr[ 8 ] = u32[ ppu.status ]
+		st_hdr[ 9 ] = u32[ ppu.scroll_x ]
+		st_hdr[ 10 ] = u32[ ppu.scroll_y ]
+		st_hdr[ 11 ] = u32[ ppu.addr ]
+		st_hdr[ 12 ] = frames
+		fwrite[ st_hdr, 4, 16, f ]
+		fwrite[ cpu.ram, 1, 0x800, f ]
+		fwrite[ ppu.vram, 1, 0x800, f ]
+		fwrite[ ppu.palette, 1, 32, f ]
+		fwrite[ ppu.oam, 1, 256, f ]
+		fwrite[ ppu.chr_ram, 1, 0x2000, f ]
+		fclose[ f ]
+		puts 'knes: state saved at frame {frames}'
+
+	func load_state [] -> none
+		f : ref FILE [ fopen[ '/tmp/knes_state.bin', 'rb' ] ]
+		if [ ! f ]
+			puts 'knes: no state file'
+			return
+		fread[ st_hdr, 4, 16, f ]
+		cpu.a = u8[ st_hdr[ 0 ] ]
+		cpu.x = u8[ st_hdr[ 1 ] ]
+		cpu.y = u8[ st_hdr[ 2 ] ]
+		cpu.sp = u8[ st_hdr[ 3 ] ]
+		cpu.p = u8[ st_hdr[ 4 ] ]
+		cpu.pc = u16[ st_hdr[ 5 ] ]
+		ppu.ctrl = u8[ st_hdr[ 6 ] ]
+		ppu.mask = u8[ st_hdr[ 7 ] ]
+		ppu.status = u8[ st_hdr[ 8 ] ]
+		ppu.scroll_x = u8[ st_hdr[ 9 ] ]
+		ppu.scroll_y = u8[ st_hdr[ 10 ] ]
+		ppu.addr = u16[ st_hdr[ 11 ] ]
+		frames = st_hdr[ 12 ]
+		fread[ cpu.ram, 1, 0x800, f ]
+		fread[ ppu.vram, 1, 0x800, f ]
+		fread[ ppu.palette, 1, 32, f ]
+		fread[ ppu.oam, 1, 256, f ]
+		fread[ ppu.chr_ram, 1, 0x2000, f ]
+		fclose[ f ]
+		puts 'knes: state loaded, frame {frames} pc={cpu.pc}'
+
+	func wall_us [] -> i64
+		tsp : local i64 [ 2 ]
+		clock_gettime[ 1, tsp ]
+		return tsp[0] * 1000000 + tsp[1] / 1000
+
+	func emu_tick [] -> none
+		if [ save_at > 0 && frames == u32[ save_at ] ] save_req = true
+		if [ save_req ]
+			save_state[]
+			save_req = false
+		if [ load_req ]
+			load_state[]
+			load_req = false
+		run_frame[]
+		# camera x from the game-area snapshot (line 200 — below any HUD split),
+		# 9-bit with the nametable bit; wrap-aware delta, teleports zeroed
+		cam : i32 [ (i32[ line_nt[ 200 ] & 1 ] << 8) | i32[ line_sx[ 200 ] ] ]
+		dx : i32 [ (cam - cam_prev) & 511 ]
+		if [ dx >= 256 ] dx -= 512
+		if [ dx > 32 || dx < -32 ] dx = 0
+		cam_prev = cam
+		pub_lock.lock[]
+		memcpy[ pub_framebuf, ppu.framebuf, 256 * 240 * 4 ]
+		pub_dx = dx
+		pub_time = wall_us[]
+		pub_lock.unlock[]
+		generate_audio[]
+		frames += 1
+		if [ (frames % 60) == 0 ]
+			puts 'f{frames} pc={cpu.pc} ctrl={ppu.ctrl} mask={ppu.mask} sx={ppu.scroll_x} nt={ppu.ctrl & 3}'
+		if [ frames_exit > 0 && frames >= u32[ frames_exit ] ]
+			pf : ref FILE [ fopen[ '/tmp/knes_fb.ppm', 'wb' ] ]
+			if [ pf ]
+				fprintf[ pf, "P6\n256 240\n255\n" ]
+				for [ qi: i32 0, qi < 256 * 240, qi += 1 ]
+					qp : u32 [ ppu.framebuf[ qi ] ]
+					fputc[ i32[ qp & 0xFF ], pf ]
+					fputc[ i32[ (qp >> 8) & 0xFF ], pf ]
+					fputc[ i32[ (qp >> 16) & 0xFF ], pf ]
+				fclose[ pf ]
+				puts 'knes: framebuf dumped'
+			_exit[ 0 ]
+
+	func emu_entry [] -> none
+		emu_running = true
+		while [ ! emu_stop ]
+			emu_tick[]
+		emu_running = false
+
+	func boot [] -> none
+		cpu = cpu6502_state []
+		ppu = nes_ppu []
+		apu = nes_apu []
+		audio = audio_out []
+		if [ ! audio.open[] ]
+			puts 'knes: audio device unavailable — continuing muted'
+		apu.n_lfsr = 1
+		# APU length counter + noise period tables (NESdev facts)
+		lt : i32 [ 0 ]
+		len_tab[ 0 ] = 10
+		len_tab[ 1 ] = 254
+		len_tab[ 2 ] = 20
+		len_tab[ 3 ] = 2
+		len_tab[ 4 ] = 40
+		len_tab[ 5 ] = 4
+		len_tab[ 6 ] = 80
+		len_tab[ 7 ] = 6
+		len_tab[ 8 ] = 160
+		len_tab[ 9 ] = 8
+		len_tab[ 10 ] = 60
+		len_tab[ 11 ] = 10
+		len_tab[ 12 ] = 14
+		len_tab[ 13 ] = 12
+		len_tab[ 14 ] = 26
+		len_tab[ 15 ] = 14
+		len_tab[ 16 ] = 12
+		len_tab[ 17 ] = 16
+		len_tab[ 18 ] = 24
+		len_tab[ 19 ] = 18
+		len_tab[ 20 ] = 48
+		len_tab[ 21 ] = 20
+		len_tab[ 22 ] = 96
+		len_tab[ 23 ] = 22
+		len_tab[ 24 ] = 192
+		len_tab[ 25 ] = 24
+		len_tab[ 26 ] = 72
+		len_tab[ 27 ] = 26
+		len_tab[ 28 ] = 16
+		len_tab[ 29 ] = 28
+		len_tab[ 30 ] = 32
+		len_tab[ 31 ] = 30
+		noise_tab[ 0 ] = 4
+		noise_tab[ 1 ] = 8
+		noise_tab[ 2 ] = 16
+		noise_tab[ 3 ] = 32
+		noise_tab[ 4 ] = 64
+		noise_tab[ 5 ] = 96
+		noise_tab[ 6 ] = 128
+		noise_tab[ 7 ] = 160
+		noise_tab[ 8 ] = 202
+		noise_tab[ 9 ] = 254
+		noise_tab[ 10 ] = 380
+		noise_tab[ 11 ] = 508
+		noise_tab[ 12 ] = 762
+		noise_tab[ 13 ] = 1016
+		noise_tab[ 14 ] = 2034
+		noise_tab[ 15 ] = 4068
+		# 2C02 master palette (standard NTSC set), packed ABGR for the texture
+		pr : new u32 [ 64 ] [
+			0x666666, 0x002A88, 0x1412A7, 0x3B00A4, 0x5C007E, 0x6E0040, 0x6C0600, 0x561D00,
+			0x333500, 0x0B4800, 0x005200, 0x004F08, 0x00404D, 0x000000, 0x000000, 0x000000,
+			0xADADAD, 0x155FD9, 0x4240FF, 0x7527FE, 0xA01ACC, 0xB71E7B, 0xB53120, 0x994E00,
+			0x6B6D00, 0x388700, 0x0C9300, 0x008F32, 0x007C8D, 0x000000, 0x000000, 0x000000,
+			0xFFFEFF, 0x64B0FF, 0x9290FF, 0xC676FF, 0xF36AFF, 0xFE6ECC, 0xFE8170, 0xEA9E22,
+			0xBCBE00, 0x88D800, 0x5CE430, 0x45E082, 0x48CDDE, 0x4F4F4F, 0x000000, 0x000000,
+			0xFFFEFF, 0xC0DFFF, 0xD3D2FF, 0xE8C8FF, 0xFBC2FF, 0xFEC4EA, 0xFECCC5, 0xF7D8A5,
+			0xE4E594, 0xCFEF96, 0xBDF4AB, 0xB3F3CC, 0xB5EBF2, 0xB8B8B8, 0x000000, 0x000000 ]
+		for [ ci: i32 0, ci < 64, ci += 1 ]
+			rgb : u32 [ pr[ ci ] ]
+			nes_pal[ ci ] = 0xFF000000 | ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF)
+		if [ rom ]
+			load_cart[]
+			if [ prg ]
+				cpu_reset[]
+				if [ resume ] load_state[]
+		booted = true
+
+	public func on_canvas [ cv: Canvas ]
+		if [ ! booted ] boot[]
+		if [ ! screen_tex ]
+			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 240, linear: true ]
+		if [ prg ]
+			if [ ! emu_started ]
+				emu_started = true
+				pub_lock = mutex [ cond: false ]
+				tid : local u64 [ 1 ]
+				pthread_create[ tid, null, ref emu_entry, a ]
+			pub_lock.lock[]
+			screen_tex.upload[ pub_framebuf, 256 * 240 * 4 ]
+			pub_lock.unlock[]
+		el
+			for [ y: i32 0, y < 240, y += 1 ]
+				for [ x: i32 0, x < 256, x += 1 ]
+					ppu.framebuf[ y * 256 + x ] = 0xFF000000 | (u32[ (x + y + i32[ frames ]) & 0xFF ] << 8)
+			frames += 1
+			screen_tex.upload[ ppu.framebuf, 256 * 240 * 4 ]
+		out : rect [ x: 0.0, y: 0.0, w: 512.0, h: 448.0 ]
+		if [ se_2d ]
+			if [ ! se_render ]
+				se_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+				se_model  = Model [ w: cv.w, s: se_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
+				se_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ se_model ] ]
+			se_render.update[]
+			se_render.draw[]
+			se_render.flush_submit[]
+			se_render.sync_fence[]
+			cv.draw_image[ se_render.color, out ]
+		el
+			cv.draw_image[ screen_tex, out ]
+
+	func dealloc []
+		if [ emu_started ]
+			emu_stop = true
+			while [ emu_running ]
+				usleep[ 2000 ]
