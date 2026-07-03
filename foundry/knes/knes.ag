@@ -141,7 +141,9 @@ trinity knes
 	public  resume       : bool
 	public  save_at      : i32
 	public  volume       : f32
-	public  se_2d        : bool [ true ]
+	public  vec          : bool [ true ]     # VectorScale: continuous edges, any zoom
+	public  se_2d        : bool              # Super Eagle 2x basis + sharp lift
+	public  blocky       : bool              # sharp-bilinear hard squares
 	mutable cpu          : cpu6502_state
 	mutable ppu          : nes_ppu
 	mutable apu          : nes_apu
@@ -177,6 +179,24 @@ trinity knes
 	mutable se_shader    : SuperEagle
 	mutable se_model     : Model
 	mutable se_render    : Render
+	mutable seh_shader   : SuperEagle
+	mutable seh_model    : Model
+	mutable seh_render   : Render
+	mutable ses_shader   : SuperEagle
+	mutable ses_model    : Model
+	mutable ses_render   : Render
+	mutable ps_shader    : PixelSharp
+	mutable ps_model     : Model
+	mutable ps_render    : Render
+	mutable psh_shader   : PixelSharp
+	mutable psh_model    : Model
+	mutable psh_render   : Render
+	mutable pss_shader   : PixelSharp
+	mutable pss_model    : Model
+	mutable pss_render   : Render
+	mutable vs_shader    : VectorScale
+	mutable vsh_shader   : VectorScale
+	mutable vss_shader   : VectorScale
 	mutable line_sx      : new u8 [ 240 ]    # per-line scroll snapshots (SMB
 	mutable line_sy      : new u8 [ 240 ]    # status-bar split: scroll only
 	mutable line_nt      : new u8 [ 240 ]    # exists between s0 hit and vblank)
@@ -187,10 +207,16 @@ trinity knes
 	mutable cam_prev     : i32               # previous camera x (nt<<8 | sx, 9-bit)
 	mutable pub_dx       : i32               # published camera delta
 	mutable pub_time     : i64               # wall us at publish
+	# split layers: bg glides with the camera, sprites stay screen-anchored
+	mutable fb_spr       : new u32 [ 256 * 240 ]   # sprite layer, alpha 0 = empty
+	mutable pub_spr      : new u32 [ 256 * 240 ]
+	mutable spr_tex      : Texture
+	mutable pub_hud      : new u32 [ 256 * 240 ]   # HUD rows (scroll != camera), anchored
+	mutable hud_tex      : Texture
 
 	func init []
-		width      = 512                     # 256 x2
-		height     = 448                     # 224 x2 (top/bottom 8 cropped)
+		width      = 1024                    # 256 x4
+		height     = 896                     # 224 x4 (top/bottom 8 cropped)
 		background = 'Background'
 		if [ volume == 0.0 ] volume = 0.5
 
@@ -203,8 +229,8 @@ trinity knes
 		code : i32  [ ev.key.unicode ]
 		down : bool [ ev.key.state ]
 		bit : i32 [ -1 ]
-		if   [ code == 44 ]  bit = 0     # ,  A
-		el [ code == 46 ]  bit = 1     # .  B
+		if   [ code == 47 ]  bit = 0     # /  A (right, like the pad)
+		el [ code == 46 ]  bit = 1     # .  B (left)
 		el [ code == 340 || code == 344 ] bit = 2   # Shift  Select
 		el [ code == 257 ] bit = 3     # Enter  Start
 		el [ code == 87 ]  bit = 4     # W  Up
@@ -936,6 +962,7 @@ trinity knes
 	# =================================================================
 	func ppu_render [] -> none
 		ppu.s0_line = -1
+		memset[ fb_spr, 0, 256 * 240 * 4 ]        # sprite layer starts empty
 		bg_pat : u32 [ ((ppu.ctrl & 0x10) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
 		sp_pat : u32 [ ((ppu.ctrl & 0x08) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
 		big : bool [ (ppu.ctrl & 0x20) != 0 ]
@@ -995,7 +1022,7 @@ trinity knes
 						if [ spx == 0 ] continue
 						if [ si == 0 && bpx != 0 && ppu.s0_line < 0 ] ppu.s0_line = y
 						if [ (at2 & 0x20) != 0 && bpx != 0 ] break   # behind bg
-						o = nes_pal[ i32[ ppu.palette[ 16 + i32[ (at2 & 3) ] * 4 + i32[ spx ] ] ] & 63 ]
+						fb_spr[ y * 256 + x ] = nes_pal[ i32[ ppu.palette[ 16 + i32[ (at2 & 3) ] * 4 + i32[ spx ] ] ] & 63 ]
 						break
 				ppu.framebuf[ y * 256 + x ] = o
 
@@ -1119,8 +1146,28 @@ trinity knes
 		if [ dx >= 256 ] dx -= 512
 		if [ dx > 32 || dx < -32 ] dx = 0
 		cam_prev = cam
+		# anchored rows = EDGE bands whose scroll disagrees with the camera
+		# ("it never moves relative", and HUDs are always edge-relative):
+		# top prefix + bottom suffix go to the pinned HUD layer
+		split : i32 [ 0 ]
+		while [ split < 240 ]
+			f9 : i32 [ (i32[ line_nt[ split ] & 1 ] << 8) | i32[ line_sx[ split ] ] ]
+			if [ f9 == cam ] break
+			split += 1
+		if [ split >= 240 ] split = 0
+		bsplit : i32 [ 240 ]
+		while [ bsplit > split ]
+			f9b : i32 [ (i32[ line_nt[ bsplit - 1 ] & 1 ] << 8) | i32[ line_sx[ bsplit - 1 ] ] ]
+			if [ f9b == cam ] break
+			bsplit -= 1
 		pub_lock.lock[]
 		memcpy[ pub_framebuf, ppu.framebuf, 256 * 240 * 4 ]
+		memcpy[ pub_spr, fb_spr, 256 * 240 * 4 ]
+		memset[ pub_hud, 0, 256 * 240 * 4 ]
+		if [ split > 0 ] memcpy[ pub_hud, ppu.framebuf, split * 256 * 4 ]
+		if [ bsplit < 240 ]
+			bo : i32 [ bsplit * 256 * 4 ]
+			memcpy[ pub_hud + bo, ppu.framebuf + bo, (240 - bsplit) * 256 * 4 ]
 		pub_dx = dx
 		pub_time = wall_us[]
 		pub_lock.unlock[]
@@ -1229,34 +1276,117 @@ trinity knes
 		if [ ! booted ] boot[]
 		if [ ! screen_tex ]
 			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 240, linear: true ]
+		ox : f32 [ 0.0 ]
 		if [ prg ]
 			if [ ! emu_started ]
 				emu_started = true
 				pub_lock = mutex [ cond: false ]
 				tid : local u64 [ 1 ]
 				pthread_create[ tid, null, ref emu_entry, a ]
+			if [ ! spr_tex ]
+				spr_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 240, linear: true ]
+			if [ ! hud_tex ]
+				hud_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 240, linear: true ]
 			pub_lock.lock[]
 			screen_tex.upload[ pub_framebuf, 256 * 240 * 4 ]
+			spr_tex.upload[ pub_spr, 256 * 240 * 4 ]
+			hud_tex.upload[ pub_hud, 256 * 240 * 4 ]
+			sdx : i32 [ pub_dx ]
+			spt : i64 [ pub_time ]
 			pub_lock.unlock[]
+			if [ smooth && sdx != 0 ]
+				# alpha: fraction of the 60.0988Hz frame elapsed since publish;
+				# replay the just-completed camera motion, converging on truth
+				el_us : i64 [ wall_us[] - spt ]
+				alpha : f32 [ f32[ el_us ] / 16639.0 ]
+				if [ alpha > 1.0 ] alpha = 1.0
+				if [ alpha < 0.0 ] alpha = 0.0
+				ox = f32[ sdx ] * (1.0 - alpha) * (f32[ width ] / 256.0)
 		el
 			for [ y: i32 0, y < 240, y += 1 ]
 				for [ x: i32 0, x < 256, x += 1 ]
 					ppu.framebuf[ y * 256 + x ] = 0xFF000000 | (u32[ (x + y + i32[ frames ]) & 0xFF ] << 8)
 			frames += 1
 			screen_tex.upload[ ppu.framebuf, 256 * 240 * 4 ]
-		out : rect [ x: 0.0, y: 0.0, w: 512.0, h: 448.0 ]
-		if [ se_2d ]
-			if [ ! se_render ]
-				se_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
-				se_model  = Model [ w: cv.w, s: se_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
-				se_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ se_model ] ]
-			se_render.update[]
-			se_render.draw[]
-			se_render.flush_submit[]
-			se_render.sync_fence[]
-			cv.draw_image[ se_render.color, out ]
+		# bg glides with the camera; HUD + sprites draw unshifted on top.
+		# 4 source px of overscan bleed hides the slide at the edges.
+		sc : f32 [ f32[ width ] / 256.0 ]
+		bl : f32 [ 4.0 * sc ]
+		ow : f32 [ f32[ width ] + bl * 2.0 ]
+		oh : f32 [ f32[ height ] + bl * 2.0 ]
+		out : rect [ x: (0.0 - bl) + ox, y: 0.0 - bl, w: ow, h: oh ]
+		out_spr : rect [ x: 0.0 - bl, y: 0.0 - bl, w: ow, h: oh ]
+		if [ vec || se_2d || blocky ]
+			if [ prg && ! ps_render ]
+				if [ se_2d && ! vec ]
+					# Super Eagle computes on its native 2x lattice (half window)
+					se_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+					se_model  = Model [ w: cv.w, s: se_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
+					se_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ se_model ] ]
+					seh_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+					seh_model  = Model [ w: cv.w, s: seh_shader, samplers: map Texture[string] [ 'color': hud_tex ] ]
+					seh_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ seh_model ] ]
+					ses_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+					ses_model  = Model [ w: cv.w, s: ses_shader, samplers: map Texture[string] [ 'color': spr_tex ] ]
+					ses_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ ses_model ] ]
+				if [ vec ]
+					# continuous edge reconstruction straight to window res
+					vs_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+					ps_model  = Model [ w: cv.w, s: vs_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
+					ps_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ps_model ] ]
+					vsh_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+					psh_model  = Model [ w: cv.w, s: vsh_shader, samplers: map Texture[string] [ 'color': hud_tex ] ]
+					psh_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ psh_model ] ]
+					vss_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+					pss_model  = Model [ w: cv.w, s: vss_shader, samplers: map Texture[string] [ 'color': spr_tex ] ]
+					pss_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ pss_model ] ]
+				el
+					# sharp-bilinear lifts (SE 2x result, or the raw layers) to window res
+					ps_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+					ps_model  = Model [ w: cv.w, s: ps_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se_render.color : screen_tex ] ]
+					ps_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ps_model ] ]
+					psh_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+					psh_model  = Model [ w: cv.w, s: psh_shader, samplers: map Texture[string] [ 'color': (se_2d) ? seh_render.color : hud_tex ] ]
+					psh_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ psh_model ] ]
+					pss_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+					pss_model  = Model [ w: cv.w, s: pss_shader, samplers: map Texture[string] [ 'color': (se_2d) ? ses_render.color : spr_tex ] ]
+					pss_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ pss_model ] ]
+			if [ prg ]
+				if [ se_2d && ! vec ]
+					se_render.update[]
+					se_render.draw[]
+					se_render.flush_submit[]
+					seh_render.update[]
+					seh_render.draw[]
+					seh_render.flush_submit[]
+					ses_render.update[]
+					ses_render.draw[]
+					ses_render.flush_submit[]
+					se_render.sync_fence[]
+					seh_render.sync_fence[]
+					ses_render.sync_fence[]
+				ps_render.update[]
+				ps_render.draw[]
+				ps_render.flush_submit[]
+				psh_render.update[]
+				psh_render.draw[]
+				psh_render.flush_submit[]
+				pss_render.update[]
+				pss_render.draw[]
+				pss_render.flush_submit[]
+				ps_render.sync_fence[]
+				cv.draw_image[ ps_render.color, out ]
+				psh_render.sync_fence[]
+				cv.draw_image[ psh_render.color, out_spr ]
+				pss_render.sync_fence[]
+				cv.draw_image[ pss_render.color, out_spr ]
+			el
+				cv.draw_image[ screen_tex, out ]
 		el
 			cv.draw_image[ screen_tex, out ]
+			if [ prg ]
+				cv.draw_image[ hud_tex, out_spr ]
+				cv.draw_image[ spr_tex, out_spr ]
 
 	func dealloc []
 		if [ emu_started ]

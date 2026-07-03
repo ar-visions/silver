@@ -712,6 +712,113 @@ ModelViewProject SuperEagle
     }
 
 
+# Sharp-bilinear pixel scaler. Nearest-neighbor squares with a transition
+# exactly one DESTINATION pixel wide at each texel boundary: hard pixel-art
+# edges that stay stable under sub-pixel motion (no crawl or shimmer), at any
+# scale factor including non-integer, evaluated at the output resolution.
+# Source must be sampled LINEAR — the transition rides the hw bilinear.
+ModelViewProject PixelSharp
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        eye:    vec3f [ 0.0, 0.0, 2.0 ]
+        center: vec3f [ 0.0, 0.0, 0.0 ]
+        up:     vec3f [ 0.0, 1.0, 0.0 ]
+        view  = mat4f.look_at[ eye, center, up ]
+        proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func fragment [] -> GLSL none {
+        vec2 ts = vec2(textureSize(color, 0));
+        vec2 p  = v_uv * ts - 0.5;
+        vec2 ip = floor(p);
+        vec2 fp = p - ip;
+        vec2 w  = max(fwidth(p), vec2(1e-5));
+        vec2 f  = clamp((fp - 0.5) / w + 0.5, 0.0, 1.0);
+        vec2 suv = (ip + 0.5 + f) / ts;
+        vec4 c = texture(color, suv);
+        fragColor = vec4(c.rgb * c.a, c.a);   // premultiplied like the SE pass
+    }
+
+
+# Continuous pixel-art edge reconstruction ("vector look"). EPX/Scale2x
+# corner rules (public-domain algorithm) evaluated per DESTINATION pixel:
+# where a corner rule fires, the texel is cut by the ideal 45-degree line and
+# the output pixel takes the side it falls on, with a one-dest-pixel AA band.
+# Diagonals render as exact straight edges at ANY scale — no 2x lattice.
+ModelViewProject VectorScale
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        eye:    vec3f [ 0.0, 0.0, 2.0 ]
+        center: vec3f [ 0.0, 0.0, 0.0 ]
+        up:     vec3f [ 0.0, 1.0, 0.0 ]
+        view  = mat4f.look_at[ eye, center, up ]
+        proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func vs_eq [ a: vec4f, b: vec4f ] -> GLSL float {
+        return (distance(a, b) < 0.02) ? 1.0 : 0.0;
+    }
+
+    func fragment [] -> GLSL none {
+        ivec2 ts = textureSize(color, 0);
+        vec2 pt = v_uv * vec2(ts);
+        ivec2 ip = ivec2(floor(pt));
+        vec2 fp = fract(pt);
+        ivec2 mx = ts - 1;
+        vec4 E = texelFetch(color, clamp(ip,                ivec2(0), mx), 0);
+        vec4 U = texelFetch(color, clamp(ip + ivec2( 0,-1), ivec2(0), mx), 0);
+        vec4 D = texelFetch(color, clamp(ip + ivec2( 0, 1), ivec2(0), mx), 0);
+        vec4 L = texelFetch(color, clamp(ip + ivec2(-1, 0), ivec2(0), mx), 0);
+        vec4 R = texelFetch(color, clamp(ip + ivec2( 1, 0), ivec2(0), mx), 0);
+        float ud = vs_eq(U, D);
+        float lr = vs_eq(L, R);
+        vec4 c = E;
+        // one-destination-pixel AA width in texel units
+        float w = max(fwidth(pt.x + pt.y), 1e-5);
+        // each corner: neighbors agree, opposing sides differ, and the
+        // corner color differs from the center -> cut at the 45-degree line
+        if (vs_eq(L, U) > 0.5 && lr < 0.5 && ud < 0.5 && vs_eq(L, E) < 0.5) {
+            float d = fp.x + fp.y;                     // line x+y = 0.5
+            c = mix(L, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
+        }
+        if (vs_eq(R, U) > 0.5 && lr < 0.5 && ud < 0.5 && vs_eq(R, E) < 0.5) {
+            float d = (1.0 - fp.x) + fp.y;
+            c = mix(R, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
+        }
+        if (vs_eq(L, D) > 0.5 && lr < 0.5 && ud < 0.5 && vs_eq(L, E) < 0.5) {
+            float d = fp.x + (1.0 - fp.y);
+            c = mix(L, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
+        }
+        if (vs_eq(R, D) > 0.5 && lr < 0.5 && ud < 0.5 && vs_eq(R, E) < 0.5) {
+            float d = (1.0 - fp.x) + (1.0 - fp.y);
+            c = mix(R, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
+        }
+        fragColor = vec4(c.rgb * c.a, c.a);   // premultiplied compositing
+    }
+
+
 shader Env
     mutable view : mat4f.identity[]
     mutable proj : mat4f.identity[]
