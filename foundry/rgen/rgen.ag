@@ -298,7 +298,11 @@ trinity rgen
 			nzc : i32 [ 0 ]
 			for [ ci: i32 0, ci < 64, ci += 1 ]
 				if [ vdp.cram[ ci ] != 0 ] nzc += 1
-			puts 'rgen: frames_exit {frames_exit} reached vram_nz={nzv} cram_nz={nzc} mode2={vdp.regs[1]} pc={m68k.pc}'
+			nfb : i32 [ 0 ]
+			fb0 : u32 [ vdp.framebuf[ 0 ] ]
+			for [ pi: i32 0, pi < 320 * 224, pi += 1 ]
+				if [ vdp.framebuf[ pi ] != fb0 ] nfb += 1
+			puts 'rgen: frames_exit {frames_exit} vram_nz={nzv} cram_nz={nzc} fb_diff={nfb} r2={vdp.regs[2]} r4={vdp.regs[4]} r12={vdp.regs[12]} pc={m68k.pc}'
 			exit[ 0 ]
 
 		screen_tex.upload[ vdp.framebuf, 320 * 224 * 4 ]
