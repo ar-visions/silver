@@ -235,7 +235,57 @@ trinity rgen
 	mutable emu_stop     : bool
 	mutable emu_running  : bool
 	mutable pub_lock     : mutex
-	mutable pub_framebuf : new u32 [ 320 * 224 ]
+	mutable pub_framebuf : new u32 [ 320 * 224 ]   # plane B + backdrop (opaque base)
+	# --- smooth-scroll port (knes design): four motion layers, per-plane
+	# 2D deltas with cadence-measured replay, world/screen sprite split ---
+	public  vec          : bool [ true ]     # VectorScale layered pipeline
+	public  smooth       : bool [ true ]
+	mutable fb_a         : new u32 [ 320 * 224 ]   # plane A (alpha)
+	mutable fb_sw        : new u32 [ 320 * 224 ]   # world-locked sprites (ride A)
+	mutable fb_ss        : new u32 [ 320 * 224 ]   # screen-locked sprites
+	mutable pub_a        : new u32 [ 320 * 224 ]
+	mutable pub_sw       : new u32 [ 320 * 224 ]
+	mutable pub_ss       : new u32 [ 320 * 224 ]
+	mutable a_tex        : Texture
+	mutable sw_tex       : Texture
+	mutable ss_tex       : Texture
+	mutable spr_slotb    : new i32 [ 320 ]         # SAT slot per sprite pixel
+	mutable prev_satx    : new i32 [ 80 ]
+	mutable prev_saty    : new i32 [ 80 ]
+	mutable spr_world    : new u8 [ 80 ]
+	mutable hsa_prev     : i32
+	mutable vsa_prev     : i32
+	mutable hsb_prev     : i32
+	mutable vsb_prev     : i32
+	mutable pub_model    : i64
+	mutable pub_dxa      : i32
+	mutable pub_dya      : i32
+	mutable pub_dxb      : i32
+	mutable pub_dyb      : i32
+	mutable pub_txa      : i64
+	mutable pub_tya      : i64
+	mutable pub_txb      : i64
+	mutable pub_tyb      : i64
+	mutable pub_pxa      : i64
+	mutable pub_pya      : i64
+	mutable pub_pxb      : i64
+	mutable pub_pyb      : i64
+	mutable gap_xa       : i32
+	mutable gap_ya       : i32
+	mutable gap_xb       : i32
+	mutable gap_yb       : i32
+	mutable vb_shader    : VectorScale
+	mutable vb_model     : Model
+	mutable vb_render    : Render
+	mutable va_shader    : VectorScale
+	mutable va_model     : Model
+	mutable va_render    : Render
+	mutable vw_shader    : VectorScale
+	mutable vw_model     : Model
+	mutable vw_render    : Render
+	mutable vs_shader    : VectorScale
+	mutable vs_model     : Model
+	mutable vs_render    : Render
 	mutable sample_frac  : i64               # 53267/59.9227 fractional sample carry
 	mutable psg_volt     : new i32 [ 16 ]    # PSG 2dB attenuation steps -> amplitude
 	mutable psg_acc      : i64               # PSG clock/16 accumulator vs sample rate
@@ -289,7 +339,7 @@ trinity rgen
 	func on_render [ w: Window ] -> Elements
 		return null
 
-	# Keyboard -> Genesis pad 1. WASD = D-pad, J/K/L = A/B/C, Enter = Start.
+	# Keyboard -> Genesis pad 1. WASD = D-pad, ,/./ = A/B/C, Enter = Start.
 	# P = save state, O = load state (applied at the next frame boundary).
 	public func on_key [ ev: Event ]
 		code : i32  [ ev.key.unicode ]
@@ -299,9 +349,9 @@ trinity rgen
 		el [ code == 83 ]  bit = 1     # S  Down
 		el [ code == 65 ]  bit = 2     # A  Left
 		el [ code == 68 ]  bit = 3     # D  Right
-		el [ code == 74 ]  bit = 4     # J  A
-		el [ code == 75 ]  bit = 5     # K  B
-		el [ code == 76 ]  bit = 6     # L  C
+		el [ code == 44 ]  bit = 4     # ,  A
+		el [ code == 46 ]  bit = 5     # .  B
+		el [ code == 47 ]  bit = 6     # /  C
 		el [ code == 257 ] bit = 7     # Enter  Start
 		if [ bit >= 0 ]
 			m : u32 [ u32[ 1 ] << bit ]
@@ -433,6 +483,11 @@ trinity rgen
 	# one emulated frame, run on the EMULATION THREAD. the blocking audio
 	# write inside generate_audio paces this loop to the DAC clock (asnes
 	# pattern) — the display never gates emulation and vice versa.
+	func wall_us [] -> i64
+		tsp : local i64 [ 2 ]
+		clock_gettime[ 1, tsp ]
+		return tsp[0] * 1000000 + tsp[1] / 1000
+
 	func emu_tick [] -> none
 		if [ save_at > 0 && frames == u32[ save_at ] ] save_req = true
 		if [ save_req ]
@@ -442,9 +497,92 @@ trinity rgen
 			load_state[]
 			load_req = false
 		run_frame[]
+		# per-plane 2D view deltas from the DEDICATED scroll registers
+		# (hscroll table + VSRAM — no address aliasing on this hardware)
+		hbase : u32 [ (u32[ vdp.regs[ 13 ] ] & 0x3F) << 10 ]
+		hsa : i32 [ i32[ (u16[ vdp.vram[ hbase ] ] << 8) | u16[ vdp.vram[ hbase + 1 ] ] ] & 0x3FF ]
+		hsb : i32 [ i32[ (u16[ vdp.vram[ hbase + 2 ] ] << 8) | u16[ vdp.vram[ hbase + 3 ] ] ] & 0x3FF ]
+		vsa : i32 [ i32[ vdp.vsram[ 0 ] ] & 0x3FF ]
+		vsb : i32 [ i32[ vdp.vsram[ 1 ] ] & 0x3FF ]
+		dxa : i32 [ (hsa_prev - hsa) & 0x3FF ]
+		if [ dxa >= 512 ] dxa -= 1024
+		dya : i32 [ (vsa - vsa_prev) & 0x3FF ]
+		if [ dya >= 512 ] dya -= 1024
+		dxb : i32 [ (hsb_prev - hsb) & 0x3FF ]
+		if [ dxb >= 512 ] dxb -= 1024
+		dyb : i32 [ (vsb - vsb_prev) & 0x3FF ]
+		if [ dyb >= 512 ] dyb -= 1024
+		if [ dxa > 32 || dxa < -32 ] dxa = 0
+		if [ dya > 32 || dya < -32 ] dya = 0
+		if [ dxb > 32 || dxb < -32 ] dxb = 0
+		if [ dyb > 32 || dyb < -32 ] dyb = 0
+		hsa_prev = hsa
+		vsa_prev = vsa
+		hsb_prev = hsb
+		vsb_prev = vsb
+		# world-locked sprites: SAT delta == -plane-A view delta per moving axis
+		sat : u32 [ (u32[ vdp.regs[ 5 ] ] & 0x7F) << 9 ]
+		if [ dxa != 0 || dya != 0 ]
+			for [ si: i32 0, si < 80, si += 1 ]
+				sea : u32 [ (sat + u32[ si * 8 ]) & 0xFFFF ]
+				syv : i32 [ i32[ ((u16[ vdp.vram[ sea ] ] << 8) | u16[ vdp.vram[ sea + 1 ] ]) & 0x3FF ] ]
+				sxv : i32 [ i32[ ((u16[ vdp.vram[ sea + 6 ] ] << 8) | u16[ vdp.vram[ sea + 7 ] ]) & 0x1FF ] ]
+				wok : bool [ true ]
+				if [ dxa != 0 && (sxv - prev_satx[ si ]) != (0 - dxa) ] wok = false
+				if [ dya != 0 && (syv - prev_saty[ si ]) != (0 - dya) ] wok = false
+				spr_world[ si ] = (wok) ? 1 : 0
+				prev_satx[ si ] = sxv
+				prev_saty[ si ] = syv
+		el
+			for [ si2: i32 0, si2 < 80, si2 += 1 ]
+				sea2 : u32 [ (sat + u32[ si2 * 8 ]) & 0xFFFF ]
+				prev_saty[ si2 ] = i32[ ((u16[ vdp.vram[ sea2 ] ] << 8) | u16[ vdp.vram[ sea2 + 1 ] ]) & 0x3FF ]
+				prev_satx[ si2 ] = i32[ ((u16[ vdp.vram[ sea2 + 6 ] ] << 8) | u16[ vdp.vram[ sea2 + 7 ] ]) & 0x1FF ]
+		if [ gap_xa > 4 && gap_ya > 4 ]
+			for [ si3: i32 0, si3 < 80, si3 += 1 ]
+				spr_world[ si3 ] = 0
 		vdp_render[]
+		# phase-locked publish clock (knes lesson: trust the rate)
+		noww : i64 [ wall_us[] ]
+		if [ pub_model == 0 ] pub_model = noww
+		el
+			pub_model += 16639
+			errt : i64 [ noww - pub_model ]
+			if [ errt > 8000 || errt < -8000 ] pub_model = noww
+			el pub_model += errt / 16
 		pub_lock.lock[]
 		memcpy[ pub_framebuf, vdp.framebuf, 320 * 224 * 4 ]
+		memcpy[ pub_a,  fb_a,  320 * 224 * 4 ]
+		memcpy[ pub_sw, fb_sw, 320 * 224 * 4 ]
+		memcpy[ pub_ss, fb_ss, 320 * 224 * 4 ]
+		gap_xa += 1
+		gap_ya += 1
+		gap_xb += 1
+		gap_yb += 1
+		if [ dxa != 0 ]
+			pub_dxa = dxa
+			pub_txa = pub_model
+			pub_pxa = i64[ (gap_xa > 3) ? 3 : gap_xa ] * 16639
+			gap_xa = 0
+		el [ gap_xa > 4 ] pub_dxa = 0
+		if [ dya != 0 ]
+			pub_dya = dya
+			pub_tya = pub_model
+			pub_pya = i64[ (gap_ya > 3) ? 3 : gap_ya ] * 16639
+			gap_ya = 0
+		el [ gap_ya > 4 ] pub_dya = 0
+		if [ dxb != 0 ]
+			pub_dxb = dxb
+			pub_txb = pub_model
+			pub_pxb = i64[ (gap_xb > 3) ? 3 : gap_xb ] * 16639
+			gap_xb = 0
+		el [ gap_xb > 4 ] pub_dxb = 0
+		if [ dyb != 0 ]
+			pub_dyb = dyb
+			pub_tyb = pub_model
+			pub_pyb = i64[ (gap_yb > 3) ? 3 : gap_yb ] * 16639
+			gap_yb = 0
+		el [ gap_yb > 4 ] pub_dyb = 0
 		pub_lock.unlock[]
 		generate_audio[]
 		frames += 1
@@ -520,14 +658,45 @@ trinity rgen
 		if [ ! screen_tex ]
 			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 320, height: 224, linear: true ]
 
+		sdxa : i32 [ 0 ]
+		sdya : i32 [ 0 ]
+		sdxb : i32 [ 0 ]
+		sdyb : i32 [ 0 ]
+		stxa : i64 [ 0 ]
+		stya : i64 [ 0 ]
+		stxb : i64 [ 0 ]
+		styb : i64 [ 0 ]
+		spxa : i64 [ 0 ]
+		spya : i64 [ 0 ]
+		spxb : i64 [ 0 ]
+		spyb : i64 [ 0 ]
 		if [ cart ]
 			if [ ! emu_started ]
 				emu_started = true
 				pub_lock = mutex [ cond: false ]
 				tid : local u64 [ 1 ]
 				pthread_create[ tid, null, ref emu_entry, a ]
+			if [ ! a_tex ]
+				a_tex  = Texture [ vk: cv.vk, w: cv.w, width: 320, height: 224, linear: true ]
+				sw_tex = Texture [ vk: cv.vk, w: cv.w, width: 320, height: 224, linear: true ]
+				ss_tex = Texture [ vk: cv.vk, w: cv.w, width: 320, height: 224, linear: true ]
 			pub_lock.lock[]
 			screen_tex.upload[ pub_framebuf, 320 * 224 * 4 ]
+			a_tex.upload[ pub_a, 320 * 224 * 4 ]
+			sw_tex.upload[ pub_sw, 320 * 224 * 4 ]
+			ss_tex.upload[ pub_ss, 320 * 224 * 4 ]
+			sdxa = pub_dxa
+			sdya = pub_dya
+			sdxb = pub_dxb
+			sdyb = pub_dyb
+			stxa = pub_txa
+			stya = pub_tya
+			stxb = pub_txb
+			styb = pub_tyb
+			spxa = pub_pxa
+			spya = pub_pya
+			spxb = pub_pxb
+			spyb = pub_pyb
 			pub_lock.unlock[]
 		el
 			for [ y: i32 0, y < 224, y += 1 ]
@@ -539,19 +708,83 @@ trinity rgen
 			frames += 1
 			screen_tex.upload[ vdp.framebuf, 320 * 224 * 4 ]
 
-		out : rect [ x: 0.0, y: 0.0, w: 640.0, h: 448.0 ]
-		if [ se_2d ]
-			if [ ! se_render ]
-				se_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
-				se_model  = Model [ w: cv.w, s: se_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
-				se_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ se_model ] ]
-			se_render.update[]
-			se_render.draw[]
-			se_render.flush_submit[]
-			se_render.sync_fence[]
-			cv.draw_image[ se_render.color, out ]
+		# per-plane 2D glide offsets (cadence-windowed replay, knes design)
+		sc : f32 [ f32[ width ] / 320.0 ]
+		bl : f32 [ 8.0 * sc ]
+		ow : f32 [ f32[ width ] + bl * 2.0 ]
+		oh : f32 [ f32[ height ] + bl * 2.0 ]
+		oxa : f32 [ 0.0 ]
+		oya : f32 [ 0.0 ]
+		oxb : f32 [ 0.0 ]
+		oyb : f32 [ 0.0 ]
+		if [ cart && smooth ]
+			noww : i64 [ wall_us[] ]
+			if [ sdxa != 0 && spxa > 0 ]
+				axa : f32 [ f32[ noww - stxa ] / f32[ spxa ] ]
+				if [ axa > 1.0 ] axa = 1.0
+				if [ axa < 0.0 ] axa = 0.0
+				oxa = f32[ sdxa ] * (1.0 - axa) * (ow / 320.0)
+			if [ sdya != 0 && spya > 0 ]
+				aya : f32 [ f32[ noww - stya ] / f32[ spya ] ]
+				if [ aya > 1.0 ] aya = 1.0
+				if [ aya < 0.0 ] aya = 0.0
+				oya = f32[ sdya ] * (1.0 - aya) * (oh / 224.0)
+			if [ sdxb != 0 && spxb > 0 ]
+				axb : f32 [ f32[ noww - stxb ] / f32[ spxb ] ]
+				if [ axb > 1.0 ] axb = 1.0
+				if [ axb < 0.0 ] axb = 0.0
+				oxb = f32[ sdxb ] * (1.0 - axb) * (ow / 320.0)
+			if [ sdyb != 0 && spyb > 0 ]
+				ayb : f32 [ f32[ noww - styb ] / f32[ spyb ] ]
+				if [ ayb > 1.0 ] ayb = 1.0
+				if [ ayb < 0.0 ] ayb = 0.0
+				oyb = f32[ sdyb ] * (1.0 - ayb) * (oh / 224.0)
+		out_b : rect [ x: (0.0 - bl) + oxb, y: (0.0 - bl) + oyb, w: ow, h: oh ]
+		out_a : rect [ x: (0.0 - bl) + oxa, y: (0.0 - bl) + oya, w: ow, h: oh ]
+		out_s : rect [ x: 0.0 - bl, y: 0.0 - bl, w: ow, h: oh ]
+		if [ vec ]
+			if [ ! vb_render ]
+				vb_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+				vb_model  = Model [ w: cv.w, s: vb_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
+				vb_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ vb_model ] ]
+				if [ cart ]
+					va_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+					va_model  = Model [ w: cv.w, s: va_shader, samplers: map Texture[string] [ 'color': a_tex ] ]
+					va_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ va_model ] ]
+					vw_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+					vw_model  = Model [ w: cv.w, s: vw_shader, samplers: map Texture[string] [ 'color': sw_tex ] ]
+					vw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ vw_model ] ]
+					vs_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+					vs_model  = Model [ w: cv.w, s: vs_shader, samplers: map Texture[string] [ 'color': ss_tex ] ]
+					vs_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ vs_model ] ]
+			vb_render.update[]
+			vb_render.draw[]
+			vb_render.flush_submit[]
+			if [ cart ]
+				va_render.update[]
+				va_render.draw[]
+				va_render.flush_submit[]
+				vw_render.update[]
+				vw_render.draw[]
+				vw_render.flush_submit[]
+				vs_render.update[]
+				vs_render.draw[]
+				vs_render.flush_submit[]
+			vb_render.sync_fence[]
+			cv.draw_image[ vb_render.color, out_b ]
+			if [ cart ]
+				va_render.sync_fence[]
+				cv.draw_image[ va_render.color, out_a ]
+				vw_render.sync_fence[]
+				cv.draw_image[ vw_render.color, out_a ]   # world sprites ride plane A
+				vs_render.sync_fence[]
+				cv.draw_image[ vs_render.color, out_s ]
 		el
-			cv.draw_image[ screen_tex, out ]
+			cv.draw_image[ screen_tex, out_b ]
+			if [ cart ]
+				cv.draw_image[ a_tex, out_a ]
+				cv.draw_image[ sw_tex, out_a ]
+				cv.draw_image[ ss_tex, out_s ]
 
 	func dealloc []
 		if [ emu_started ]
@@ -1835,6 +2068,7 @@ trinity rgen
 						rr : i32 [ i32[ pal * 16 + pv ] ]
 						if [ pri ] rr = rr | 0x100
 						spr_buf[ sx ] = rr
+						spr_slotb[ sx ] = idx
 				if [ pxleft <= 0 ] break
 			count += 1
 			if [ link == 0 ] break
@@ -1843,10 +2077,16 @@ trinity rgen
 	# compose sprites + planes. per priority band: sprites > plane A >
 	# plane B; high band over low band; backdrop last. (window plane,
 	# shadow/highlight, sprite masking + pixel budget in later phases)
+	# four motion layers: framebuf = backdrop + plane B; fb_a = plane A;
+	# sprites split world/screen by OAM-delta classification. NOTE: strict
+	# six-band priority (S_lo under A_hi etc) approximates in layer order.
 	func vdp_render [] -> none
 		wpx : i32 [ ((vdp.regs[ 12 ] & 1) != 0) ? 320 : 256 ]
 		bg : u32 [ cram_argb[ u32[ vdp.regs[ 7 ] ] & 0x3F ] ]
 		disp : bool [ (vdp.regs[ 1 ] & 0x40) != 0 ]
+		memset[ fb_a,  0, 320 * 224 * 4 ]
+		memset[ fb_sw, 0, 320 * 224 * 4 ]
+		memset[ fb_ss, 0, 320 * 224 * 4 ]
 		for [ y: i32 0, y < 224, y += 1 ]
 			if [ disp ] sprite_line[ y ]
 			for [ x: i32 0, x < 320, x += 1 ]
@@ -1855,12 +2095,13 @@ trinity rgen
 					sp : i32 [ spr_buf[ x ] ]
 					pa : i32 [ plane_pixel[ false, x, y ] ]
 					pb : i32 [ plane_pixel[ true, x, y ] ]
-					if [ sp >= 0x100 ] o = cram_argb[ u32[ sp ] ]
-					el [ pa >= 0x100 ] o = cram_argb[ u32[ pa ] ]
-					el [ pb >= 0x100 ] o = cram_argb[ u32[ pb ] ]
-					el [ sp >= 0 ] o = cram_argb[ u32[ sp ] ]
-					el [ pa >= 0 ] o = cram_argb[ u32[ pa ] ]
-					el [ pb >= 0 ] o = cram_argb[ u32[ pb ] ]
+					if [ pb >= 0 ] o = cram_argb[ u32[ pb ] ]
+					if [ pa >= 0 ] fb_a[ y * 320 + x ] = cram_argb[ u32[ pa ] ]
+					if [ sp >= 0 ]
+						scol : u32 [ cram_argb[ u32[ sp ] ] ]
+						slt : i32 [ spr_slotb[ x ] ]
+						if [ spr_world[ slt ] != 0 ] fb_sw[ y * 320 + x ] = scol
+						el fb_ss[ y * 320 + x ] = scol
 				el [ ! disp ] o = 0xFF000000
 				vdp.framebuf[ y * 320 + x ] = o
 
