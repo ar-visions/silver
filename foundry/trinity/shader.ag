@@ -512,15 +512,13 @@ ModelViewProject UVReduce
 # per-pixel affine + samples the plane; bracketing-scanline coefficient lerp gives
 # a smooth horizon the discrete CPU/hardware path can't. See project_asnes_mode7_vulkan.
 enum Mode7Surface
-    src   : 0
-    src2x : 1
-    mat   : 2
+    src : 0
+    mat : 1
 
 ModelViewProject Mode7
     mutable params : vec4f          # x=hflip, y=vflip, z=repeat-mode(0/1 wrap,2 transp,3 char0), w=0
 
     attrib src : LayoutBinding [ type:typeid[ Mode7Surface ], id:Mode7Surface.src, count:1, format: typeid[ rgba8 ] ]
-    attrib src2x : LayoutBinding [ type:typeid[ Mode7Surface ], id:Mode7Surface.src2x, count:1, format: typeid[ rgba8 ] ]
     attrib mat : LayoutBinding [ type:typeid[ Mode7Surface ], id:Mode7Surface.mat, count:1, format: typeid[ rgbaf ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
@@ -561,11 +559,7 @@ ModelViewProject Mode7
         vec2 ddx = dFdx(raw);
         vec2 ddy = dFdy(raw);
         vec2 uv2 = fract(raw);
-        // near field (magnified plane texels): sample the bake-time Super Eagle 2x
-        // plane for pixel-art edges; far field (minified): the mipped original.
-        float lod = 1024.0 * max(length(ddx), length(ddy));
-        if (lod < 1.0) fragColor = textureLod(src2x, uv2, 0.0);   // explicit LOD: implicit sampling is undefined in non-uniform control flow
-        else           fragColor = textureGrad(src, uv2, ddx, ddy);
+        fragColor = textureGrad(src, uv2, ddx, ddy);
         // per-scanline color math on the plane (reference hardware CGADSUB on BG1
         // gated by the HDMA'd color window): row 1 = {wh0,wh1,wh2,wh3}, row 2 =
         // {flags, coldata r,g,b}. This is how the distance fog AND the craft

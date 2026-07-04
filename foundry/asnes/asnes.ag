@@ -83,6 +83,7 @@ class ppu_state
 	obj_color   	: new u32 [ 256 * 224 ] # sprite layer: resolved color (0 = transparent)
 	obj_prio    	: new u8  [ 256 * 224 ] # sprite layer: per-pixel OBJ priority (0-3)
 	obj_bgr     	: new u16 [ 256 * 224 ] # sprite layer: BGR555 color (for color math)
+	obj_idx     	: new u8  [ 256 * 224 ] # sprite layer: OAM index of the winning sprite (world/screen split)
 	px_bgr      	: new u16 [ 256 * 224 ] # top main-screen pixel BGR555 (pre-brightness, for color math)
 	px_src      	: new u8  [ 256 * 224 ] # source layer per pixel: 0-3=BG1-4, 5=OBJ, 8=backdrop
 	sub_bgr     	: new u16 [ 256 * 224 ] # top SUB-screen pixel BGR555 (for color-math subscreen blend)
@@ -177,9 +178,6 @@ trinity asnes
 	mutable m7_shader      	: Mode7
 	mutable m7_model       	: Model
 	mutable m7_render      	: Render
-	mutable m7se_shader    	: SuperEagle       # bake-time Super Eagle 2x of the unpacked plane (runs only when the plane rebakes)
-	mutable m7se_model     	: Model
-	mutable m7se_render    	: Render
 	public  m7_gpu         	: bool [ true ]    # render the Mode-7 plane on the GPU (CPU path leaves it transparent)
 	mutable m7_vhash       	: i64              # last unpacked Mode-7 VRAM hash (skip re-unpack when unchanged)
 	mutable m7_bri_cache   	: i32 [ -1 ]       # brightness baked into the cached m7_src
@@ -190,7 +188,9 @@ trinity asnes
 	mutable se_shader      	: SuperEagle
 	mutable se_model       	: Model
 	mutable se_render      	: Render
-	public  se_2d          	: bool [ true ]    # run Super Eagle on the 2D/mode-1 layer
+	public  vec            	: bool [ true ]    # VectorScale: continuous edges, any zoom
+	public  se_2d          	: bool             # Super Eagle 2x basis + sharp lift (pass --vec false)
+	public  blocky         	: bool             # sharp-bilinear hard squares
 	mutable save_req       	: bool             # 'P' key -> save savestate next frame
 	mutable load_req       	: bool             # 'L' key -> load savestate next frame
 	mutable state_loaded   	: bool             # --state boot-load done
@@ -315,6 +315,101 @@ trinity asnes
 	mutable emu_stop       	: bool              # ask the emulation thread to exit (dealloc)
 	mutable emu_running    	: bool              # emulation thread liveness (dealloc waits on it)
 	mutable pub_lock       	: mutex             # guards the published presentation snapshot below
+	public  smooth         	: bool [ true ]    # ground-truth scroll glide (mode-1 layers + mode-7 plane)
+	mutable m7g_prevx      	: f64               # prev rep-line origin (snes px)
+	mutable m7g_prevy      	: f64
+	mutable m7g_preva      	: f64               # prev matrix terms (rotation guard)
+	mutable m7g_prevc      	: f64
+	mutable m7g_dx         	: f32               # published screen-space delta (snes px)
+	mutable m7g_dy         	: f32
+	mutable m7g_t          	: i64
+	mutable m7g_p          	: i64
+	mutable m7g_gap        	: i32
+	mutable m7g_model      	: i64
+	# mode-0/1 smooth scroll: per-BG glide channels + provenance layers.
+	# SNES gives HUD detection for free — a pinned BG (BG3 HUD) simply
+	# measures delta 0 and never glides. Sprites split world/screen by
+	# slot-independent position-set matching (rgen pattern).
+	mutable dbg_bgr        	: i32               # BGRAW diag print budget
+	mutable dbg_spr        	: i32               # SPRC class-flip diag budget
+	mutable bgg_prevh      	: new i32 [ 4 ]     # prev hofs per BG (rep line)
+	mutable bgg_prevv      	: new i32 [ 4 ]
+	mutable bgg_dx         	: new f32 [ 4 ]     # published scroll delta per BG
+	mutable bgg_dy         	: new f32 [ 4 ]
+	mutable bgg_t          	: new i64 [ 4 ]     # publish timestamp (PLL clock)
+	mutable bgg_p          	: new i64 [ 4 ]     # replay window us (cadence)
+	mutable bgg_gap        	: new i32 [ 4 ]     # frames since last movement
+	mutable spr_prevx      	: new i32 [ 128 ]   # prev OAM positions (world matching)
+	mutable spr_prevy      	: new i32 [ 128 ]
+	mutable spr_world      	: new u8  [ 128 ]   # 1 = rides the BG1 camera
+	mutable spr_hit        	: new u8  [ 128 ]   # consecutive world-match frames (hysteresis)
+	mutable spr_miss       	: new u8  [ 128 ]   # consecutive mismatch frames
+	mutable spr_m1x        	: i32               # BG1 delta last frame (phase-lag match)
+	mutable spr_m1y        	: i32
+	mutable spr_m2x        	: i32               # BG2 delta last frame
+	mutable spr_m2y        	: i32
+	mutable spr_anchor     	: i32               # plane the sprite population follows: 0=BG1 1=BG2
+	mutable lay_out        	: ref u32           # ppu_bg_line layer target (valid when lay_en)
+	mutable lay_en         	: bool              # ppu_bg_line writes to lay_out, not the composed planes
+	mutable lay_bg1        	: new u32 [ 73728 ] # provenance layers, 288x256: 16px overscan bleed
+	mutable lay_bg2        	: new u32 [ 73728 ]
+	mutable lay_bg3        	: new u32 [ 73728 ]
+	mutable lay_sw         	: new u32 [ 57344 ] # world sprites (ride BG1)
+	mutable lay_ss         	: new u32 [ 57344 ] # screen sprites (pinned)
+	mutable pub_lay1       	: new u32 [ 73728 ]
+	mutable pub_lay2       	: new u32 [ 73728 ]
+	mutable pub_lay3       	: new u32 [ 73728 ]
+	mutable pub_layw       	: new u32 [ 57344 ]
+	mutable pub_lays       	: new u32 [ 57344 ]
+	mutable pub_layered    	: bool              # this frame published provenance layers
+	mutable pub_b3hi       	: bool              # BGMODE bit3 at rep line: BG3 rides above sprites
+	mutable lay1_tex       	: Texture
+	mutable lay2_tex       	: Texture
+	mutable lay3_tex       	: Texture
+	mutable layw_tex       	: Texture
+	mutable lays_tex       	: Texture
+	# scaler chains (knes pattern): out stage = VectorScale (vec) or PixelSharp
+	# (se_2d lift / blocky), fed by the composed screen or a provenance layer;
+	# se_2d adds a Super Eagle 2x pre-stage per input
+	mutable vsc_shader     	: VectorScale
+	mutable vs1_shader     	: VectorScale
+	mutable vs2_shader     	: VectorScale
+	mutable vs3_shader     	: VectorScale
+	mutable vsw_shader     	: VectorScale
+	mutable vss_shader     	: VectorScale
+	mutable psc_shader     	: PixelSharp
+	mutable ps1_shader     	: PixelSharp
+	mutable ps2_shader     	: PixelSharp
+	mutable ps3_shader     	: PixelSharp
+	mutable psw_shader     	: PixelSharp
+	mutable pss_shader     	: PixelSharp
+	mutable se1_shader     	: SuperEagle
+	mutable se2_shader     	: SuperEagle
+	mutable se3_shader     	: SuperEagle
+	mutable sew_shader     	: SuperEagle
+	mutable ses_shader     	: SuperEagle
+	mutable se1_model      	: Model
+	mutable se2_model      	: Model
+	mutable se3_model      	: Model
+	mutable sew_model      	: Model
+	mutable ses_model      	: Model
+	mutable se1_render     	: Render
+	mutable se2_render     	: Render
+	mutable se3_render     	: Render
+	mutable sew_render     	: Render
+	mutable ses_render     	: Render
+	mutable occ_model      	: Model
+	mutable oc1_model      	: Model
+	mutable oc2_model      	: Model
+	mutable oc3_model      	: Model
+	mutable ocw_model      	: Model
+	mutable ocs_model      	: Model
+	mutable occ_render     	: Render
+	mutable oc1_render     	: Render
+	mutable oc2_render     	: Render
+	mutable oc3_render     	: Render
+	mutable ocw_render     	: Render
+	mutable ocs_render     	: Render
 	mutable pub_valid      	: bool              # at least one frame published
 	mutable pub_inidisp    	: u8                # published INIDISP for the m7 pass brightness
 	mutable pub_m7sel      	: u8
@@ -1137,19 +1232,24 @@ trinity asnes
 
 	# Color idx 0 = transparent. Priority/16x16 not fully handled; BG window masking applied.
 	func ppu_bg_line [ bg: i32, bpp: i32, y: i32, bright: u32, want_prio: u32 ]
-		sc    : u8  [ line_bgsc[ bg * 224 + y ] ]
+		# y may lie in the ±16 overscan band in layer mode — register/window
+		# lookups clamp to the visible line; scroll math keeps the real y
+		yr    : i32 [ y ]
+		if [ yr < 0 ] yr = 0
+		if [ yr > 223 ] yr = 223
+		sc    : u8  [ line_bgsc[ bg * 224 + yr ] ]
 		tbase : u32 [ (u32[sc >> 2] & 0x3F) * 0x400 ]    # tilemap base (word)
-		nb    : u8  [ line_nba[ (bg >> 1) * 224 + y ] ]
+		nb    : u8  [ line_nba[ (bg >> 1) * 224 + yr ] ]
 		nibble: u32 [ u32[nb] & 0x0F ]
 		if [ bg & 1 ] nibble = (u32[nb] >> 4) & 0x0F
 		cbase : u32 [ nibble * 0x1000 ]                  # char data base (word)
 		w64   : bool [ (sc & 1) != 0 ]
 		h64   : bool [ (sc & 2) != 0 ]
-		big   : bool [ ((u32[line_mode[y]] >> (4 + bg)) & 1) != 0 ]   # BGMODE bits 4-7: 16x16 tiles per BG (ff3 battle animation layer)
+		big   : bool [ ((u32[line_mode[yr]] >> (4 + bg)) & 1) != 0 ]   # BGMODE bits 4-7: 16x16 tiles per BG (ff3 battle animation layer)
 		tshift: u32 [ 3 ]
 		if [ big ] tshift = 4
-		hofs  : u32 [ u32[line_h[ bg * 224 + y ]] & 0x3FF ]
-		vofs  : u32 [ u32[line_v[ bg * 224 + y ]] & 0x3FF ]
+		hofs  : u32 [ u32[line_h[ bg * 224 + yr ]] & 0x3FF ]
+		vofs  : u32 [ u32[line_v[ bg * 224 + yr ]] & 0x3FF ]
 		hmask : u32 [ 0xFF ]
 		vmask : u32 [ 0xFF ]
 		if [ w64 ] hmask = 0x1FF
@@ -1162,8 +1262,14 @@ trinity asnes
 		sy : u32 [ (u32[y + 1] + vofs) & vmask ]         # framebuf row y = hardware scanline y+1 (line 0 is never displayed; reference hardware shows V=1..224)
 		scr : i32 [ 0 ]
 		if [ rendering_sub ] scr = 1
-		for [ x: i32 0, x < 256, x += 1 ]
-			if [ bg_win_masked[ bg, x, y, scr ] ] continue
+		x0 : i32 [ 0 ]
+		x1 : i32 [ 256 ]
+		if [ lay_en ]
+			x0 = -16                                     # overscan bleed columns (glide reveal)
+			x1 = 272
+		for [ x: i32 x0, x < x1, x += 1 ]
+			if [ x >= 0 && x < 256 && y >= 0 && y < 224 ]
+				if [ bg_win_masked[ bg, x, yr, scr ] ] continue
 			sx : u32 [ (u32[x] + hofs) & hmask ]
 			tx : u32 [ sx >> tshift ]
 			ty : u32 [ sy >> tshift ]
@@ -1203,6 +1309,18 @@ trinity asnes
 				if [ rendering_sub ]
 					ppu.sub_bgr[ di ] = bgrv
 					ppu.sub_src[ di ] = u8[bg]
+				el [ lay_en ]
+					# composed top pixel already carries color math + windows +
+					# brightness — copy it so glide frames match still frames
+					# exactly; only occluded pixels lack math (edge slivers)
+					dl : i32 [ (y + 16) * 288 + (x + 16) ]
+					cp : bool [ false ]
+					if [ x >= 0 && x < 256 && y >= 0 && y < 224 ]
+						if [ ppu.px_src[ di ] == u8[bg] ] cp = true
+					if [ cp ]
+						lay_out[ dl ] = ppu.framebuf[ di ]
+					el
+						lay_out[ dl ] = ppu_color[ bgrv, bright ]
 				el
 					ppu.framebuf[ di ] = ppu_color[ bgrv, bright ]
 					ppu.px_bgr[ di ]   = bgrv
@@ -1272,6 +1390,7 @@ trinity asnes
 								ppu.obj_color[di] = ppu_color[ ocol, bright ]
 								ppu.obj_bgr[di]   = ocol
 								ppu.obj_prio[di]  = u8[oprio]
+								ppu.obj_idx[di]   = u8[n]
 						ox += 1
 				oy += 1
 			n -= 1
@@ -1285,6 +1404,198 @@ trinity asnes
 				ppu.framebuf[i] = ppu_color[ ppu.obj_bgr[i], bright ]   # per-line brightness from the pre-brightness BGR555 plane
 				ppu.px_bgr[i]   = ppu.obj_bgr[i]
 				ppu.px_src[i]   = 5                     # OBJ (CGADSUB bit4)
+
+	# sprite scanline into the provenance layers: world sprites (ride the BG1
+	# camera) vs screen sprites (pinned), split by the classified OAM index
+	func ppu_obj_layer [ y: i32, bright: u32 ]
+		base : i32 [ y * 256 ]
+		for [ x: i32 0, x < 256, x += 1 ]
+			i : i32 [ base + x ]
+			if [ ppu.obj_color[i] != 0 ]
+				# only pixels where the sprite WON the composed per-pixel
+				# priority battle — where a high-prio BG covers the sprite
+				# (doorway walls over Link) the layer keeps a transparent
+				# hole, and the covering BG shows through. sprite and wall
+				# share a glide offset, so the hole stays aligned in motion.
+				if [ ppu.px_src[i] == 5 ]
+					oi : i32 [ i32[ ppu.obj_idx[i] ] ]
+					if [ spr_world[ oi ] != 0 ] lay_sw[i] = ppu.framebuf[i]
+					el lay_ss[i] = ppu.framebuf[i]
+
+	# slot-independent position-set matching (rgen pattern): a sprite is WORLD
+	# if some sprite sat exactly one camera-delta away last frame AND isn't
+	# also parked at its own old position. Handles SAT shuffling.
+	func classify_sprites [ d1x: i32, d1y: i32, d2x: i32, d2y: i32 ]
+		use_shot = shot_valid
+		curx : local i32 [ 128 ]
+		cury : local i32 [ 128 ]
+		wm1  : local u8 [ 128 ]
+		wm2  : local u8 [ 128 ]
+		wsf  : local u8 [ 128 ]
+		for [ n: i32 0, n < 128, n += 1 ]
+			o     : i32 [ n * 4 ]
+			b0    : u8  [ ppu_ob[o] ]
+			b1    : u8  [ ppu_ob[o + 1] ]
+			hbyte : u8  [ ppu_ob[512 + (n >> 2)] ]
+			hbits : u32 [ (u32[hbyte] >> ((n & 3) * 2)) & 3 ]
+			fx    : i32 [ i32[b0] | (i32[hbits & 1] << 8) ]
+			if [ fx >= 256 ] fx -= 512
+			curx[n] = fx
+			cury[n] = i32[b1]
+			wm1[n] = 0
+			wm2[n] = 0
+			wsf[n] = 0
+		moving : bool [ d1x != 0 || d1y != 0 || spr_m1x != 0 || spr_m1y != 0 ]
+		if [ d2x != 0 || d2y != 0 || spr_m2x != 0 || spr_m2y != 0 ] moving = true
+		if [ moving ]
+			# games write sprites a frame out of phase with the scroll regs, so
+			# each plane matches on THIS frame's delta or LAST frame's. an
+			# unmoved sprite (self-match) is neutral — misses only count when
+			# the sprite moved off-pattern.
+			tol1 : i32 [ 1 ]
+			a1 : i32 [ d1x ]
+			if [ a1 < 0 ] a1 = 0 - a1
+			a2 : i32 [ d1y ]
+			if [ a2 < 0 ] a2 = 0 - a2
+			if [ a1 <= 1 && a2 <= 1 ] tol1 = 0
+			tol2 : i32 [ 1 ]
+			a3 : i32 [ d2x ]
+			if [ a3 < 0 ] a3 = 0 - a3
+			a4 : i32 [ d2y ]
+			if [ a4 < 0 ] a4 = 0 - a4
+			if [ a3 <= 1 && a4 <= 1 ] tol2 = 0
+			c1 : i32 [ 0 ]
+			c2 : i32 [ 0 ]
+			for [ n: i32 0, n < 128, n += 1 ]
+				if [ cury[n] >= 224 ] continue         # offscreen park: keep prior class
+				w1x : i32 [ curx[n] + d1x ]
+				w1y : i32 [ cury[n] + d1y ]
+				l1x : i32 [ curx[n] + spr_m1x ]
+				l1y : i32 [ cury[n] + spr_m1y ]
+				w2x : i32 [ curx[n] + d2x ]
+				w2y : i32 [ cury[n] + d2y ]
+				l2x : i32 [ curx[n] + spr_m2x ]
+				l2y : i32 [ cury[n] + spr_m2y ]
+				for [ j: i32 0, j < 128, j += 1 ]
+					if [ d1x != 0 || d1y != 0 ]
+						jx : i32 [ spr_prevx[j] - w1x ]
+						jy : i32 [ spr_prevy[j] - w1y ]
+						if [ jx >= (0 - tol1) && jx <= tol1 ] if [ jy >= (0 - tol1) && jy <= tol1 ] wm1[n] = 1
+					if [ spr_m1x != 0 || spr_m1y != 0 ]
+						kx : i32 [ spr_prevx[j] - l1x ]
+						ky : i32 [ spr_prevy[j] - l1y ]
+						if [ kx >= (0 - tol1) && kx <= tol1 ] if [ ky >= (0 - tol1) && ky <= tol1 ] wm1[n] = 1
+					if [ d2x != 0 || d2y != 0 ]
+						mx : i32 [ spr_prevx[j] - w2x ]
+						my : i32 [ spr_prevy[j] - w2y ]
+						if [ mx >= (0 - tol2) && mx <= tol2 ] if [ my >= (0 - tol2) && my <= tol2 ] wm2[n] = 1
+					if [ spr_m2x != 0 || spr_m2y != 0 ]
+						nx : i32 [ spr_prevx[j] - l2x ]
+						ny : i32 [ spr_prevy[j] - l2y ]
+						if [ nx >= (0 - tol2) && nx <= tol2 ] if [ ny >= (0 - tol2) && ny <= tol2 ] wm2[n] = 1
+					if [ spr_prevx[j] == curx[n] ] if [ spr_prevy[j] == cury[n] ] wsf[n] = 1
+				if [ wsf[n] == 0 ]
+					if [ wm1[n] != 0 ] c1 += 1
+					if [ wm2[n] != 0 ] c2 += 1
+			# anchor the world layer to the plane the sprites actually follow;
+			# clear margin so the anchor never flaps between planes
+			if [ c2 > c1 + 2 ] spr_anchor = 1
+			if [ c1 > c2 + 2 ] spr_anchor = 0
+			adx : i32 [ d1x ]
+			ady : i32 [ d1y ]
+			if [ spr_anchor == 1 ]
+				adx = d2x
+				ady = d2y
+			anchor_moving : bool [ adx != 0 || ady != 0 ]
+			for [ n: i32 0, n < 128, n += 1 ]
+				if [ cury[n] >= 224 ] continue
+				fm : bool [ wm1[n] != 0 ]
+				if [ spr_anchor == 1 ] fm = wm2[n] != 0
+				# evidence: +1 = moved exactly with the world; -1 = moved
+				# off-pattern OR sat still while the world moved (a world
+				# sprite MUST move when the world does); 0 = neutral
+				ev : i32 [ 0 ]
+				if [ fm && wsf[n] == 0 ] ev = 1
+				el [ wsf[n] == 0 ] ev = 0 - 1
+				el [ anchor_moving && !fm ] ev = 0 - 1
+				if [ ev > 0 ]
+					spr_miss[n] = 0
+					if [ spr_hit[n] < 15 ] spr_hit[n] += 1
+					if [ spr_hit[n] >= 2 ] spr_world[n] = 1
+				el [ ev < 0 ]
+					spr_hit[n] = 0
+					if [ spr_miss[n] < 15 ] spr_miss[n] += 1
+					if [ spr_world[n] != 0 && getenv[ 'ASNES_GLIDE' ] && dbg_spr < 200 ]
+						printf[ "SPRC f%u n=%d cur=%d,%d anchor=%d d1=%d,%d d2=%d,%d miss=%d self=%d\n",
+							dbg_frames, n, curx[n], cury[n], spr_anchor, d1x, d1y, d2x, d2y, i32[spr_miss[n]], i32[wsf[n]] ]
+						dbg_spr += 1
+					if [ spr_miss[n] >= 3 ] spr_world[n] = 0
+		spr_m1x = d1x
+		spr_m1y = d1y
+		spr_m2x = d2x
+		spr_m2y = d2y
+		for [ n: i32 0, n < 128, n += 1 ]
+			spr_prevx[n] = curx[n]
+			spr_prevy[n] = cury[n]
+		use_shot = false
+
+	# provenance-layer render (glide frames only): same per-line tile fetch as
+	# the composed path, but each BG lands in its own transparent buffer so the
+	# render thread can glide them independently. Priority is flattened per BG
+	# (BG3 back or front by BGMODE bit3) — the composed path still runs for
+	# every non-glide frame, so flattening only ever exists in motion.
+	func ppu_render_layers [ frame_b3: bool ]
+		use_shot = shot_valid
+		for [ i: i32 0, i < 73728, i += 1 ]
+			lay_bg1[i] = 0
+			lay_bg2[i] = 0
+			lay_bg3[i] = 0
+		for [ i: i32 0, i < 57344, i += 1 ]
+			lay_sw[i]  = 0
+			lay_ss[i]  = 0
+		bg : u16 [ ppu_cgram_color[ 0 ] ]
+		blay : ref u32 [ lay_bg3 ]                     # backdrop rides the first-drawn layer
+		if [ frame_b3 ] blay = lay_bg2
+		for [ y: i32 -16, y < 240, y += 1 ]
+			yr : i32 [ y ]
+			if [ yr < 0 ] yr = 0
+			if [ yr > 223 ] yr = 223
+			li     : u8  [ line_inidisp[yr] ]
+			bright : u32 [ u32[li] & 0x0F ]
+			if [ li & 0x80 ] bright = 0
+			px : u32 [ ppu_color[ bg, bright ] ]
+			for [ X2: i32 0, X2 < 288, X2 += 1 ]
+				dl2 : i32 [ (y + 16) * 288 + X2 ]
+				dc2 : i32 [ y * 256 + (X2 - 16) ]
+				cp2 : bool [ false ]
+				if [ y >= 0 && y < 224 && X2 >= 16 && X2 < 272 ]
+					if [ ppu.px_src[ dc2 ] == 8 ] cp2 = true
+				if [ cp2 ] blay[ dl2 ] = ppu.framebuf[ dc2 ]
+				el blay[ dl2 ] = px
+			if [ bright == 0 ] continue
+			mode : u8 [ line_mode[yr] & 7 ]
+			if [ mode > 1 ] continue                   # 8bpp / offset-per-tile modes stay composed
+			tm    : u8  [ line_tm[yr] ]
+			b1bpp : i32 [ 4 ]
+			if [ mode == 0 ] b1bpp = 2
+			if [ tm & 0x04 ]
+				lay_en  = true
+				lay_out = lay_bg3
+				ppu_bg_line[ 2, 2, y, bright, 0 ]
+				ppu_bg_line[ 2, 2, y, bright, 1 ]
+			if [ tm & 0x02 ]
+				lay_en  = true
+				lay_out = lay_bg2
+				ppu_bg_line[ 1, b1bpp, y, bright, 0 ]
+				ppu_bg_line[ 1, b1bpp, y, bright, 1 ]
+			if [ tm & 0x01 ]
+				lay_en  = true
+				lay_out = lay_bg1
+				ppu_bg_line[ 0, b1bpp, y, bright, 0 ]
+				ppu_bg_line[ 0, b1bpp, y, bright, 1 ]
+			lay_en = false
+			if [ y >= 0 && y < 224 ] if [ tm & 0x10 ] ppu_obj_layer[ y, bright ]
+		use_shot = false
 
 	# subtractive color math in BGR555 space (clamped, optional half). Used for the
 	# Mode 7 distance fog: each scanline subtracts the HDMA'd COLDATA from the plane.
@@ -1346,17 +1657,15 @@ trinity asnes
 	# color window (WOBJSEL/WOBJLOG + WH0-3). belowMask = CGWSEL bits 4-5:
 	# 0=always, 1=inside color window, 2=outside, 3=never. The color window is
 	# HDMA'd per scanline (F-Zero animates WH0/WH1 to confine the race haze band).
-	func fog_enabled [ X: i32, y: i32 ] -> bool
-		bmask : u32 [ (u32[line_cgwsel[y]] >> 4) & 3 ]
-		if [ bmask == 0 ] return true
-		if [ bmask == 3 ] return false
-		setv : bool [ bmask == 1 ]                     # value when inside the window
+	# raw color-window test: is pixel X inside the color window on line y?
+	# (WOBJSEL bits 4-7 select/invert window 1/2, WOBJLOG bits 2-3 combine)
+	func color_win_inside [ X: i32, y: i32 ] -> bool
 		ws   : u8   [ line_wobjsel[y] ]
 		w1en : bool [ (ws & 0x20) != 0 ]
 		w1inv: bool [ (ws & 0x10) != 0 ]
 		w2en : bool [ (ws & 0x80) != 0 ]
 		w2inv: bool [ (ws & 0x40) != 0 ]
-		if [ !w1en && !w2en ] return !setv
+		if [ !w1en && !w2en ] return false
 		om : bool [ false ]
 		tm : bool [ false ]
 		if [ w1en ] om = (X >= i32[line_wh0[y]] && X <= i32[line_wh1[y]]) != w1inv
@@ -1370,8 +1679,41 @@ trinity asnes
 			el comb = om == tm
 		el [ w1en ] comb = om
 		el comb = tm
-		if [ comb ] return setv
+		return comb
+
+	# color-math enable for one pixel: CGWSEL belowMask (bits 4-5) against the
+	# color window. 0=always, 1=inside, 2=outside, 3=never.
+	func fog_enabled [ X: i32, y: i32 ] -> bool
+		bmask : u32 [ (u32[line_cgwsel[y]] >> 4) & 3 ]
+		if [ bmask == 0 ] return true
+		if [ bmask == 3 ] return false
+		ws   : u8   [ line_wobjsel[y] ]
+		w1en : bool [ (ws & 0x20) != 0 ]
+		w2en : bool [ (ws & 0x80) != 0 ]
+		setv : bool [ bmask == 1 ]                     # value when inside the window
+		if [ !w1en && !w2en ] return !setv
+		if [ color_win_inside[ X, y ] ] return setv
 		return !setv
+
+	# CGWSEL bits 6-7: force MAIN screen black by the color window
+	# (0=never, 1=outside window, 2=inside window, 3=always). This is how
+	# LTTP's iris wipe blacks everything outside the growing circle — without
+	# it the masked region shows the raw backdrop (green field color).
+	# Clipped pixels keep px_src (math may still add over black, per hardware)
+	# but their math operand px_bgr becomes black.
+	func ppu_mainclip_line [ y: i32 ]
+		mm : u32 [ (u32[line_cgwsel[y]] >> 6) & 3 ]
+		if [ mm == 0 ] return
+		base : i32 [ y * 256 ]
+		for [ x: i32 0, x < 256, x += 1 ]
+			i : i32 [ base + x ]
+			if [ (ppu.framebuf[i] >> 24) == 0 ] continue   # GPU-owned Mode-7 hole
+			blk : bool [ true ]
+			if [ mm == 1 ] blk = !color_win_inside[ x, y ]
+			el [ mm == 2 ] blk = color_win_inside[ x, y ]
+			if [ blk ]
+				ppu.framebuf[i] = 0xFF000000
+				ppu.px_bgr[i]   = 0
 
 	# 13-bit signed wrap for the (offset - center) terms
 	func m7_clip [ n: i32 ] -> i32
@@ -1594,6 +1936,7 @@ trinity asnes
 				# even with TS=0: the sub backdrop is COLDATA, which is exactly how
 				# zelda's sword-strike flash works (add fixed color over a bare backdrop)
 				if [ (line_cgwsel[y] & 0x02) || (line_ts[y] & 0x07) ] ppu_sub_line[ y, bright ]
+				ppu_mainclip_line[ y ]                               # CGWSEL force-main-black (LTTP iris wipe)
 				ppu_cmath_line[ y, bright ]                          # CGADSUB add/sub (POWER bar fill, HUD fog)
 			el [ mode == 7 ]
 				if [ m7_gpu ]                                        # GPU owns the plane: leave it transparent
@@ -1605,6 +1948,7 @@ trinity asnes
 					ppu_obj_line[ y, 1, bright ]
 					ppu_obj_line[ y, 2, bright ]
 					ppu_obj_line[ y, 3, bright ]
+				ppu_mainclip_line[ y ]                               # CGWSEL force-main-black applies in Mode 7 too
 				ppu_cmath_line[ y, bright ]                          # CGADSUB add/sub applies in Mode 7 too (fog = sub, sword-strike flash = COLDATA add)
 		use_shot = false
 
@@ -2115,7 +2459,7 @@ trinity asnes
 
 	# software interrupt body (BRK/COP): native pushes PBR and vectors into bank 0;
 	# I set, D cleared (reference hardware instructionInterrupt)
-	func cpu_swi [ vec: u16 ]
+	func cpu_swi [ vaddr: u16 ]
 		if [ !cpu.e ]
 			cpu_w[ cpu.sp, cpu.pbr ]
 			cpu_sp_dec[]
@@ -2126,8 +2470,8 @@ trinity asnes
 		cpu_w[ cpu.sp, cpu.p ]
 		cpu_sp_dec[]
 		cpu.p = (cpu.p | 0x04) & ~0x08
-		swlo : u16 [ cpu_r[vec] ]
-		swhi : u16 [ cpu_r[vec + 1] ]
+		swlo : u16 [ cpu_r[vaddr] ]
+		swhi : u16 [ cpu_r[vaddr + 1] ]
 		cpu.pc  = swlo | (swhi << 8)
 		cpu.pbr = 0
 
@@ -2188,9 +2532,9 @@ trinity asnes
 		cpu_sp_dec[]
 		cpu.p  |= 0x04
 		cpu.p  &= ~0x08
-		vec    : u16 [ (cpu.e) ? 0xFFFA : 0xFFEA ]
-		lo     : u8  [ cpu_r[ vec ] ]
-		hi     : u8  [ cpu_r[ vec + 1 ] ]
+		vaddr : u16 [ (cpu.e) ? 0xFFFA : 0xFFEA ]
+		lo     : u8  [ cpu_r[ vaddr ] ]
+		hi     : u8  [ cpu_r[ vaddr + 1 ] ]
 		cpu.pc  = lo | (hi << 8)
 		cpu.pbr = 0
 		nmi_occurred = true
@@ -2199,7 +2543,7 @@ trinity asnes
 		op_master = 0
 		if [ dbg_cpu < 6 ]
 			printf[ "NMI fired: e=%d vec=%04X -> handler %04X (nmitimen=%02X)\n",
-				cpu.e, vec, cpu.pc, nmitimen ]
+				cpu.e, vaddr, cpu.pc, nmitimen ]
 			dbg_cpu += 1
 
 	# Maskable H/V scanline IRQ. Mirrors cpu_nmi's push sequence; vector $FFFE
@@ -2227,9 +2571,9 @@ trinity asnes
 		cpu_sp_dec[]
 		cpu.p  |= 0x04
 		cpu.p  &= ~0x08
-		vec    : u16 [ (cpu.e) ? 0xFFFE : 0xFFEE ]
-		lo     : u8  [ cpu_r[ vec ] ]
-		hi     : u8  [ cpu_r[ vec + 1 ] ]
+		vaddr : u16 [ (cpu.e) ? 0xFFFE : 0xFFEE ]
+		lo     : u8  [ cpu_r[ vaddr ] ]
+		hi     : u8  [ cpu_r[ vaddr + 1 ] ]
 		cpu.pc  = lo | (hi << 8)
 		cpu.pbr = 0
 		irq_occurred = true
@@ -3220,8 +3564,8 @@ trinity asnes
 			printf[ "SPC700 self-test: %d FAILURES\n", dbg_h ]
 
 	func init []
-		width      = 512
-		height     = 448
+		width      = 1024
+		height     = 896
 		background = 'Background'
 		if [ volume == 0.0 ] volume = 0.22         # default playback volume (keep prop-pair override)
 
@@ -3263,19 +3607,88 @@ trinity asnes
 	func m7_setup [ cv: Canvas ]
 		m7_src = Texture [ vk: cv.vk, w: cv.w, width: 1024, height: 1024, linear: true, mip_levels: 11, anisotropy: 8 ]
 		m7_mat = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 3, linear: false, pixel_format: Pixel.rgbaf32 ]
-		m7se_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
-		m7se_model  = Model [ w: cv.w, s: m7se_shader, samplers: map Texture[string] [ 'color': m7_src ] ]
-		m7se_render = Render [ vk: cv.vk, w: cv.w, width: 2048, height: 2048, models: array Model [ m7se_model ] ]
 		m7_shader = Mode7 [ vk: cv.vk, name: 'mode7' ]
-		m7_model  = Model [ w: cv.w, s: m7_shader, samplers: map Texture[string] [ 'src': m7_src, 'src2x': m7se_render.color, 'mat': m7_mat ] ]
-		m7_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ m7_model ] ]
+		m7_model  = Model [ w: cv.w, s: m7_shader, samplers: map Texture[string] [ 'src': m7_src, 'mat': m7_mat ] ]
+		m7_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ m7_model ] ]
 
-	# Build the Super Eagle 2D pass: edge-aware upscale of the framebuffer (sprites /
-	# mode-1 / HUD). screen_tex must already exist (bound as 'color').
-	func se_setup [ cv: Canvas ]
-		se_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
-		se_model  = Model [ w: cv.w, s: se_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
-		se_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ se_model ] ]
+	# Build the scaler chains for the composed screen + the five provenance
+	# layers (knes pattern). vec = VectorScale straight to window res; se_2d =
+	# Super Eagle on its native 2x lattice + PixelSharp lift; blocky =
+	# PixelSharp on the raw layers. Textures must already exist.
+	func scaler_setup [ cv: Canvas ]
+		# bled BG layers (288x256) get matching render targets so the window
+		# region stays exactly 1:1 with the unbled chains
+		lw2 : i32 [ (width * 288) / 256 ]
+		lh2 : i32 [ (height * 256) / 224 ]
+		if [ se_2d && ! vec ]
+			se_shader  = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+			se_model   = Model [ w: cv.w, s: se_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
+			se_render  = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ se_model ] ]
+			se1_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+			se1_model  = Model [ w: cv.w, s: se1_shader, samplers: map Texture[string] [ 'color': lay1_tex ] ]
+			se1_render = Render [ vk: cv.vk, w: cv.w, width: 576, height: 512, models: array Model [ se1_model ] ]
+			se2_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+			se2_model  = Model [ w: cv.w, s: se2_shader, samplers: map Texture[string] [ 'color': lay2_tex ] ]
+			se2_render = Render [ vk: cv.vk, w: cv.w, width: 576, height: 512, models: array Model [ se2_model ] ]
+			se3_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+			se3_model  = Model [ w: cv.w, s: se3_shader, samplers: map Texture[string] [ 'color': lay3_tex ] ]
+			se3_render = Render [ vk: cv.vk, w: cv.w, width: 576, height: 512, models: array Model [ se3_model ] ]
+			sew_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+			sew_model  = Model [ w: cv.w, s: sew_shader, samplers: map Texture[string] [ 'color': layw_tex ] ]
+			sew_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ sew_model ] ]
+			ses_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
+			ses_model  = Model [ w: cv.w, s: ses_shader, samplers: map Texture[string] [ 'color': lays_tex ] ]
+			ses_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ ses_model ] ]
+		if [ vec ]
+			vsc_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+			occ_model  = Model [ w: cv.w, s: vsc_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
+			occ_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ occ_model ] ]
+			vs1_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+			oc1_model  = Model [ w: cv.w, s: vs1_shader, samplers: map Texture[string] [ 'color': lay1_tex ] ]
+			oc1_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc1_model ] ]
+			vs2_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+			oc2_model  = Model [ w: cv.w, s: vs2_shader, samplers: map Texture[string] [ 'color': lay2_tex ] ]
+			oc2_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc2_model ] ]
+			vs3_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+			oc3_model  = Model [ w: cv.w, s: vs3_shader, samplers: map Texture[string] [ 'color': lay3_tex ] ]
+			oc3_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc3_model ] ]
+			vsw_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+			ocw_model  = Model [ w: cv.w, s: vsw_shader, samplers: map Texture[string] [ 'color': layw_tex ] ]
+			ocw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocw_model ] ]
+			vss_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+			ocs_model  = Model [ w: cv.w, s: vss_shader, samplers: map Texture[string] [ 'color': lays_tex ] ]
+			ocs_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocs_model ] ]
+		el
+			psc_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+			occ_model  = Model [ w: cv.w, s: psc_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se_render.color : screen_tex ] ]
+			occ_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ occ_model ] ]
+			ps1_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+			oc1_model  = Model [ w: cv.w, s: ps1_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se1_render.color : lay1_tex ] ]
+			oc1_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc1_model ] ]
+			ps2_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+			oc2_model  = Model [ w: cv.w, s: ps2_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se2_render.color : lay2_tex ] ]
+			oc2_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc2_model ] ]
+			ps3_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+			oc3_model  = Model [ w: cv.w, s: ps3_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se3_render.color : lay3_tex ] ]
+			oc3_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc3_model ] ]
+			psw_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+			ocw_model  = Model [ w: cv.w, s: psw_shader, samplers: map Texture[string] [ 'color': (se_2d) ? sew_render.color : layw_tex ] ]
+			ocw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocw_model ] ]
+			pss_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+			ocs_model  = Model [ w: cv.w, s: pss_shader, samplers: map Texture[string] [ 'color': (se_2d) ? ses_render.color : lays_tex ] ]
+			ocs_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocs_model ] ]
+
+	# decaying replay offset for one glide channel: delta * (1-alpha) * scale
+	func lay_off [ v: f32, t: i64, p: i64, now: i64, sc: f32 ] -> f32
+		if [ v == 0.0 || p <= 0 ] return 0.0
+		a : f32 [ f32[ now - t ] / f32[ p ] ]
+		if [ a > 1.0 ] a = 1.0
+		if [ a < 0.0 ] a = 0.0
+		r : f32 [ v * (1.0 - a) * sc ]
+		lim : f32 [ 16.0 * sc ]                        # overscan bleed budget
+		if [ r > lim ] r = lim
+		if [ r < (0.0 - lim) ] r = 0.0 - lim
+		return r
 
 	public func on_canvas [ cv: Canvas ]
 		if [ putest ]
@@ -3289,7 +3702,7 @@ trinity asnes
 					test_buf[ y * 256 + x ] = 0xFF000000 | (bb << 16) | (gg << 8) | rr
 			test_t += 1
 			screen_tex.upload[ test_buf, 256 * 224 * 4 ]
-			dst : rect [ x: 0.0, y: 0.0, w: 512.0, h: 448.0 ]
+			dst : rect [ x: 0.0, y: 0.0, w: 1024.0, h: 896.0 ]
 			cv.draw_image[ screen_tex, dst ]
 			return
 		if [ !cpu || !pub_valid ]
@@ -3299,7 +3712,45 @@ trinity asnes
 		if [ !screen_tex ]
 			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
 		screen_tex.upload[ pub_framebuf, 256 * 224 * 4 ]
-		out : rect [ x: 0.0, y: 0.0, w: 512.0, h: 448.0 ]
+		lay_on : bool [ smooth && pub_layered ]
+		b3 : bool [ pub_b3hi ]
+		scaled : bool [ vec || se_2d || blocky ]
+		if [ lay_on || scaled ]
+			if [ !lay1_tex ]
+				lay1_tex = Texture [ vk: cv.vk, w: cv.w, width: 288, height: 256, linear: true ]
+				lay2_tex = Texture [ vk: cv.vk, w: cv.w, width: 288, height: 256, linear: true ]
+				lay3_tex = Texture [ vk: cv.vk, w: cv.w, width: 288, height: 256, linear: true ]
+				layw_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
+				lays_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
+				lay_on = true                          # settle fresh textures with one upload
+			if [ lay_on ]
+				lay1_tex.upload[ pub_lay1, 288 * 256 * 4 ]
+				lay2_tex.upload[ pub_lay2, 288 * 256 * 4 ]
+				lay3_tex.upload[ pub_lay3, 288 * 256 * 4 ]
+				layw_tex.upload[ pub_layw, 256 * 224 * 4 ]
+				lays_tex.upload[ pub_lays, 256 * 224 * 4 ]
+			lay_on = smooth && pub_layered
+		# glide channels are written by the emu thread under this same lock —
+		# snapshot them here so the draw tail (post-unlock) can't read a torn
+		# mid-update delta/timestamp pair (rare 1-frame offset pops)
+		g1dx : f32 [ bgg_dx[0] ]
+		g1dy : f32 [ bgg_dy[0] ]
+		g1t  : i64 [ bgg_t[0] ]
+		g1p  : i64 [ bgg_p[0] ]
+		g2dx : f32 [ bgg_dx[1] ]
+		g2dy : f32 [ bgg_dy[1] ]
+		g2t  : i64 [ bgg_t[1] ]
+		g2p  : i64 [ bgg_p[1] ]
+		g3dx : f32 [ bgg_dx[2] ]
+		g3dy : f32 [ bgg_dy[2] ]
+		g3t  : i64 [ bgg_t[2] ]
+		g3p  : i64 [ bgg_p[2] ]
+		ganch : i32 [ spr_anchor ]
+		gmdx : f32 [ m7g_dx ]
+		gmdy : f32 [ m7g_dy ]
+		gmt  : i64 [ m7g_t ]
+		gmp  : i64 [ m7g_p ]
+		out : rect [ x: 0.0, y: 0.0, w: 1024.0, h: 896.0 ]
 		# GPU Mode-7 plane is the base layer; the CPU framebuffer (sprites / mode-1 HUD,
 		# transparent over the plane) composites on top. Both GPU passes are recorded and
 		# SUBMITTED first so they overlap on the GPU, then waited once each -- serial
@@ -3313,10 +3764,6 @@ trinity asnes
 				m7_unpack[ bri ]
 				m7_vhash = vh
 				m7_bri_cache = i32[bri]
-				m7se_render.update[]
-				m7se_render.draw[]
-				m7se_render.flush_submit[]
-				m7se_render.sync_fence[]           # the 2x plane must be complete before the m7 pass samples it
 			m7_matrices[]
 			hf : f32 [ 0.0 ]
 			vf : f32 [ 0.0 ]
@@ -3327,17 +3774,117 @@ trinity asnes
 			m7_render.draw[]
 			m7_render.flush_submit[]
 		pub_lock.unlock[]
-		if [ se_2d ]
-			if [ !se_render ] se_setup[ cv ]
-			se_render.update[]
-			se_render.draw[]
-			se_render.flush_submit[]
+		if [ scaled ]
+			if [ !occ_render ] scaler_setup[ cv ]
+			if [ se_2d && ! vec ]
+				if [ lay_on && !m7_active ]
+					se1_render.update[]
+					se1_render.draw[]
+					se1_render.flush_submit[]
+					se2_render.update[]
+					se2_render.draw[]
+					se2_render.flush_submit[]
+					se3_render.update[]
+					se3_render.draw[]
+					se3_render.flush_submit[]
+					sew_render.update[]
+					sew_render.draw[]
+					sew_render.flush_submit[]
+					ses_render.update[]
+					ses_render.draw[]
+					ses_render.flush_submit[]
+					se1_render.sync_fence[]
+					se2_render.sync_fence[]
+					se3_render.sync_fence[]
+					sew_render.sync_fence[]
+					ses_render.sync_fence[]
+				el
+					se_render.update[]
+					se_render.draw[]
+					se_render.flush_submit[]
+					se_render.sync_fence[]
+			if [ lay_on && !m7_active ]
+				oc1_render.update[]
+				oc1_render.draw[]
+				oc1_render.flush_submit[]
+				oc2_render.update[]
+				oc2_render.draw[]
+				oc2_render.flush_submit[]
+				oc3_render.update[]
+				oc3_render.draw[]
+				oc3_render.flush_submit[]
+				ocw_render.update[]
+				ocw_render.draw[]
+				ocw_render.flush_submit[]
+				ocs_render.update[]
+				ocs_render.draw[]
+				ocs_render.flush_submit[]
+			el
+				occ_render.update[]
+				occ_render.draw[]
+				occ_render.flush_submit[]
 		if [ m7_active ]
 			m7_render.sync_fence[]
-			cv.draw_image[ m7_render.color, out ]
-		if [ se_2d ]
-			se_render.sync_fence[]
-			cv.draw_image[ se_render.color, out ]
+			m7ox : f32 [ 0.0 ]
+			m7oy : f32 [ 0.0 ]
+			if [ smooth && (gmdx != 0.0 || gmdy != 0.0) && gmp > 0 ]
+				g_n : i64 [ wall_ms[] * 1000 ]
+				g_al : f32 [ f32[ g_n - gmt ] / f32[ gmp ] ]
+				if [ g_al > 1.0 ] g_al = 1.0
+				if [ g_al < 0.0 ] g_al = 0.0
+				m7ox = gmdx * (1.0 - g_al) * (f32[ width ] / 256.0)
+				m7oy = gmdy * (1.0 - g_al) * (f32[ height ] / 224.0)
+			if [ smooth ]
+				out_m7 : rect [ x: m7ox, y: m7oy, w: f32[ width ], h: f32[ height ] ]
+				cv.draw_image[ m7_render.color, out_m7 ]
+			el
+				cv.draw_image[ m7_render.color, out ]
+		if [ lay_on && !m7_active ]
+			# provenance layers, back -> front, each on its own glide channel;
+			# world sprites ride BG1, screen sprites + retired BGs sit pinned
+			g_now : i64 [ wall_ms[] * 1000 ]
+			g_scx : f32 [ f32[ width ] / 256.0 ]
+			g_scy : f32 [ f32[ height ] / 224.0 ]
+			o1x : f32 [ lay_off[ g1dx, g1t, g1p, g_now, g_scx ] ]
+			o1y : f32 [ lay_off[ g1dy, g1t, g1p, g_now, g_scy ] ]
+			o2x : f32 [ lay_off[ g2dx, g2t, g2p, g_now, g_scx ] ]
+			o2y : f32 [ lay_off[ g2dy, g2t, g2p, g_now, g_scy ] ]
+			o3x : f32 [ lay_off[ g3dx, g3t, g3p, g_now, g_scx ] ]
+			o3y : f32 [ lay_off[ g3dy, g3t, g3p, g_now, g_scy ] ]
+			r1 : rect [ x: (0.0 - 16.0 * g_scx) + o1x, y: (0.0 - 16.0 * g_scy) + o1y, w: 288.0 * g_scx, h: 256.0 * g_scy ]
+			r2 : rect [ x: (0.0 - 16.0 * g_scx) + o2x, y: (0.0 - 16.0 * g_scy) + o2y, w: 288.0 * g_scx, h: 256.0 * g_scy ]
+			r3 : rect [ x: (0.0 - 16.0 * g_scx) + o3x, y: (0.0 - 16.0 * g_scy) + o3y, w: 288.0 * g_scx, h: 256.0 * g_scy ]
+			owx : f32 [ o1x ]
+			owy : f32 [ o1y ]
+			if [ ganch == 1 ]
+				owx = o2x
+				owy = o2y
+			rw : rect [ x: owx, y: owy, w: f32[ width ], h: f32[ height ] ]
+			if [ scaled ]
+				if [ !b3 ]
+					oc3_render.sync_fence[]
+					cv.draw_image[ oc3_render.color, r3 ]
+				oc2_render.sync_fence[]
+				cv.draw_image[ oc2_render.color, r2 ]
+				oc1_render.sync_fence[]
+				cv.draw_image[ oc1_render.color, r1 ]
+				ocw_render.sync_fence[]
+				cv.draw_image[ ocw_render.color, rw ]
+				if [ b3 ]
+					oc3_render.sync_fence[]
+					cv.draw_image[ oc3_render.color, r3 ]
+				ocs_render.sync_fence[]
+				cv.draw_image[ ocs_render.color, out ]
+			el
+				if [ !b3 ] cv.draw_image[ lay3_tex, r3 ]
+				cv.draw_image[ lay2_tex, r2 ]
+				cv.draw_image[ lay1_tex, r1 ]
+				cv.draw_image[ layw_tex, rw ]
+				if [ b3 ] cv.draw_image[ lay3_tex, r3 ]
+				cv.draw_image[ lays_tex, out ]
+		el [ scaled ]
+			occ_render.sync_fence[]
+			cv.draw_image[ occ_render.color, out ]
 		el
 			cv.draw_image[ screen_tex, out ]
 
@@ -4277,7 +4824,52 @@ trinity asnes
 				spc.oports[0], spc.oports[1], spc.oports[2], spc.oports[3],
 				cpu.sp, cpu.dp, cpu.memory[0x7E000E], cpu.memory[0x7E000F], cpu.memory[0x7E0010], cpu.memory[0x7E0011], ppu.inidisp, ppu.inidisp_shot, (shot_valid) ? 1 : 0 ]
 		ppu_render[]
+		# mode-0/1 glide: per-BG scroll delta at rep line 180, wrap-aware,
+		# teleport-guarded. Layers render pre-lock so the render thread never
+		# stalls behind the layer pass.
+		rdh : local i32 [ 4 ]
+		rdv : local i32 [ 4 ]
+		for [ gb: i32 0, gb < 4, gb += 1 ]
+			g_ch2 : i32 [ i32[line_h[ gb * 224 + 180 ]] & 0x3FF ]
+			g_cv2 : i32 [ i32[line_v[ gb * 224 + 180 ]] & 0x3FF ]
+			g_dh : i32 [ g_ch2 - bgg_prevh[gb] ]
+			g_dv : i32 [ g_cv2 - bgg_prevv[gb] ]
+			bgg_prevh[gb] = g_ch2
+			bgg_prevv[gb] = g_cv2
+			if [ g_dh > 512 ]  g_dh -= 1024
+			if [ g_dh < -512 ] g_dh += 1024
+			if [ g_dv > 512 ]  g_dv -= 1024
+			if [ g_dv < -512 ] g_dv += 1024
+			if [ g_dh > 48 || g_dh < -48 ] g_dh = 0
+			if [ g_dv > 48 || g_dv < -48 ] g_dv = 0
+			rdh[gb] = g_dh
+			rdv[gb] = g_dv
+		lay_frame : bool [ false ]
+		if [ smooth && (line_mode[180] & 7) <= 1 ]
+			for [ gb: i32 0, gb < 3, gb += 1 ]
+				if [ rdh[gb] != 0 || rdv[gb] != 0 ] lay_frame = true
+				if [ bgg_dx[gb] != 0.0 || bgg_dy[gb] != 0.0 ] lay_frame = true
+		frame_b3 : bool [ (line_mode[180] & 0x08) != 0 ]
+		if [ getenv[ 'ASNES_GLIDE' ] && dbg_bgr < 40 ]
+			for [ gb: i32 0, gb < 4, gb += 1 ]
+				if [ rdh[gb] != 0 || rdv[gb] != 0 ]
+					printf[ "BGRAW f%u bg%d d=%d,%d mode180=%d lay=%d\n", dbg_frames, gb + 1,
+						rdh[gb], rdv[gb], i32[line_mode[180]] & 7, (lay_frame) ? 1 : 0 ]
+					dbg_bgr += 1
+		if [ getenv[ 'ASNES_GLIDE' ] && lay_frame && (dbg_frames % 15) == 0 ]
+			printf[ "BGLIDE f%u d1=%d,%d d2=%d,%d d3=%d,%d b3hi=%d\n",
+				dbg_frames, rdh[0], rdv[0], rdh[1], rdv[1], rdh[2], rdv[2], (frame_b3) ? 1 : 0 ]
+		classify_sprites[ rdh[0], rdv[0], rdh[1], rdv[1] ]
+		if [ lay_frame ] ppu_render_layers[ frame_b3 ]
 		pub_lock.lock[]
+		if [ lay_frame ]
+			memcpy[ pub_lay1, lay_bg1, 294912 ]
+			memcpy[ pub_lay2, lay_bg2, 294912 ]
+			memcpy[ pub_lay3, lay_bg3, 294912 ]
+			memcpy[ pub_layw, lay_sw,  229376 ]
+			memcpy[ pub_lays, lay_ss,  229376 ]
+		pub_layered = lay_frame
+		pub_b3hi    = frame_b3
 		memcpy[ pub_framebuf, ppu.framebuf, 229376 ]
 		memcpy[ pub_vram,  ppu.vram,  65536 ]
 		memcpy[ pub_cgram, ppu.cgram, 512 ]
@@ -4302,6 +4894,77 @@ trinity asnes
 		pub_m7x     = frame_m7x
 		pub_m7y     = frame_m7y
 		pub_valid   = true
+		# --- mode-7 glide measurement (hardware-specific): rep-line origin
+		# delta mapped to SCREEN space through the inverse matrix; rotation
+		# frames guard to zero (a rect glide can't represent rotation) ---
+		g_hc : i32 [ sx13[ i32[ pub_m7x ] ] ]
+		g_vc : i32 [ sx13[ i32[ pub_m7y ] ] ]
+		g_ho : i32 [ sx13[ i32[ pub_m7hofs ] ] ]
+		g_vo : i32 [ sx13[ i32[ pub_m7vofs ] ] ]
+		g_ch : i32 [ m7_clip[ g_ho - g_hc ] ]
+		g_cv : i32 [ m7_clip[ g_vo - g_vc ] ]
+		g_a : i32 [ i32[ pub_m7a[ 180 ] ] ]
+		g_b : i32 [ i32[ pub_m7b[ 180 ] ] ]
+		g_c : i32 [ i32[ pub_m7c[ 180 ] ] ]
+		g_d : i32 [ i32[ pub_m7d[ 180 ] ] ]
+		g_ox : f64 [ f64[ ((g_a * g_ch) & (~63)) + ((g_b * g_cv) & (~63)) + ((g_b * 180) & (~63)) + (g_hc << 8) ] / 256.0 ]
+		g_oy : f64 [ f64[ ((g_c * g_ch) & (~63)) + ((g_d * g_cv) & (~63)) + ((g_d * 180) & (~63)) + (g_vc << 8) ] / 256.0 ]
+		g_af : f64 [ f64[ g_a ] / 256.0 ]
+		g_bf : f64 [ f64[ g_b ] / 256.0 ]
+		g_cf : f64 [ f64[ g_c ] / 256.0 ]
+		g_df : f64 [ f64[ g_d ] / 256.0 ]
+		g_dox : f64 [ g_ox - m7g_prevx ]
+		g_doy : f64 [ g_oy - m7g_prevy ]
+		g_rot : f64 [ (g_af - m7g_preva) * (g_af - m7g_preva) + (g_cf - m7g_prevc) * (g_cf - m7g_prevc) ]
+		m7g_prevx = g_ox
+		m7g_prevy = g_oy
+		m7g_preva = g_af
+		m7g_prevc = g_cf
+		g_det : f64 [ g_af * g_df - g_bf * g_cf ]
+		g_sx : f64 [ 0.0 ]
+		g_sy : f64 [ 0.0 ]
+		if [ g_rot < 0.0004 && (g_det > 0.01 || g_det < -0.01) ]
+			g_sx = (0.0 - (g_df * g_dox - g_bf * g_doy)) / g_det
+			g_sy = (0.0 - (g_af * g_doy - g_cf * g_dox)) / g_det
+		if [ g_sx > 64.0 || g_sx < -64.0 ] g_sx = 0.0
+		if [ g_sy > 64.0 || g_sy < -64.0 ] g_sy = 0.0
+		if [ getenv[ 'ASNES_GLIDE' ] && (dbg_frames % 15) == 0 ]
+			printf[ "GLIDE f%u sx=%.2f sy=%.2f rot=%.6f det=%.3f dox=%.1f doy=%.1f\n",
+				dbg_frames, g_sx, g_sy, g_rot, g_det, g_dox, g_doy ]
+		# phase-locked clock + cadence window (knes/rgen pattern, local copy)
+		g_now : i64 [ wall_ms[] * 1000 ]
+		if [ m7g_model == 0 ] m7g_model = g_now
+		el
+			m7g_model += 16639
+			g_err : i64 [ g_now - m7g_model ]
+			if [ g_err > 8000 || g_err < -8000 ] m7g_model = g_now
+			el m7g_model += g_err / 16
+		m7g_gap += 1
+		if [ g_sx > 0.25 || g_sx < -0.25 || g_sy > 0.25 || g_sy < -0.25 ]
+			m7g_dx = f32[ g_sx ]
+			m7g_dy = f32[ g_sy ]
+			m7g_t = m7g_model
+			g_gp : i32 [ (m7g_gap > 3) ? 3 : m7g_gap ]
+			m7g_p = i64[ g_gp ] * 16639
+			m7g_gap = 0
+		el [ m7g_gap > 4 ]
+			m7g_dx = 0.0
+			m7g_dy = 0.0
+		# per-BG cadence publish (same clock): a nonzero delta opens a replay
+		# window sized by its own cadence; still frames retire the channel
+		for [ gb: i32 0, gb < 3, gb += 1 ]
+			bgg_gap[gb] += 1
+			if [ rdh[gb] != 0 || rdv[gb] != 0 ]
+				bgg_dx[gb] = f32[ rdh[gb] ]
+				bgg_dy[gb] = f32[ rdv[gb] ]
+				bgg_t[gb]  = m7g_model
+				g_gp2 : i32 [ bgg_gap[gb] ]
+				if [ g_gp2 > 4 ] g_gp2 = 4
+				bgg_p[gb]  = i64[ g_gp2 ] * 16639
+				bgg_gap[gb] = 0
+			el [ bgg_gap[gb] > 4 ]
+				bgg_dx[gb] = 0.0
+				bgg_dy[gb] = 0.0
 		pub_lock.unlock[]
 
 	func emu_entry [] -> none

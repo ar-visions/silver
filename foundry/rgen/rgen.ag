@@ -329,8 +329,8 @@ trinity rgen
 	mutable frames       : u32
 
 	func init []
-		width      = 640                     # 320 (H40) x2
-		height     = 448                     # 224 x2
+		width      = 1280                    # 320 (H40) x4
+		height     = 896                     # 224 x4
 		background = 'Background'
 		if [ volume == 0.0 ] volume = 0.25
 
@@ -523,16 +523,25 @@ trinity rgen
 		# world-locked sprites: SAT delta == -plane-A view delta per moving axis
 		sat : u32 [ (u32[ vdp.regs[ 5 ] ] & 0x7F) << 9 ]
 		if [ dxa != 0 || dya != 0 ]
+			# slot-independent (the engine reshuffles the SAT every frame):
+			# a sprite is WORLD if some sprite sat exactly one world-delta
+			# away last frame — and isn't also sitting perfectly still
 			for [ si: i32 0, si < 80, si += 1 ]
 				sea : u32 [ (sat + u32[ si * 8 ]) & 0xFFFF ]
 				syv : i32 [ i32[ ((u16[ vdp.vram[ sea ] ] << 8) | u16[ vdp.vram[ sea + 1 ] ]) & 0x3FF ] ]
 				sxv : i32 [ i32[ ((u16[ vdp.vram[ sea + 6 ] ] << 8) | u16[ vdp.vram[ sea + 7 ] ]) & 0x1FF ] ]
-				wok : bool [ true ]
-				if [ dxa != 0 && (sxv - prev_satx[ si ]) != (0 - dxa) ] wok = false
-				if [ dya != 0 && (syv - prev_saty[ si ]) != (0 - dya) ] wok = false
-				spr_world[ si ] = (wok) ? 1 : 0
-				prev_satx[ si ] = sxv
-				prev_saty[ si ] = syv
+				wx : i32 [ (sxv + dxa) & 0x1FF ]
+				wy : i32 [ (syv + dya) & 0x3FF ]
+				wm : bool [ false ]
+				sm : bool [ false ]
+				for [ sj: i32 0, sj < 80, sj += 1 ]
+					if [ prev_satx[ sj ] == wx && prev_saty[ sj ] == wy ] wm = true
+					if [ prev_satx[ sj ] == sxv && prev_saty[ sj ] == syv ] sm = true
+				spr_world[ si ] = (wm && ! sm) ? 1 : 0
+			for [ sk: i32 0, sk < 80, sk += 1 ]
+				sea3 : u32 [ (sat + u32[ sk * 8 ]) & 0xFFFF ]
+				prev_saty[ sk ] = i32[ ((u16[ vdp.vram[ sea3 ] ] << 8) | u16[ vdp.vram[ sea3 + 1 ] ]) & 0x3FF ]
+				prev_satx[ sk ] = i32[ ((u16[ vdp.vram[ sea3 + 6 ] ] << 8) | u16[ vdp.vram[ sea3 + 7 ] ]) & 0x1FF ]
 		el
 			for [ si2: i32 0, si2 < 80, si2 += 1 ]
 				sea2 : u32 [ (sat + u32[ si2 * 8 ]) & 0xFFFF ]

@@ -1496,6 +1496,7 @@ Display Window
 
     func on_screen []
         if [ !screen ] return
+        vk.defer_tick[]
         if [ resizing ] return
         # while a seam/split is being dragged, every canvas drains each paint (no batched
         # ring) so the per-frame composites can't desync their per-slot UBO/UV. set from the

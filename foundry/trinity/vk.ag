@@ -748,9 +748,34 @@ class vk_context
     public  sdf_miss            : i32
     public  geom_us             : i64
     public  render_allocs       : i32
+    # deferred GPU-buffer destruction: a buffer queued here is destroyed only
+    # after DEFER_FRAMES more frames have rendered — no submit that could
+    # still reference it remains in flight (premature-recycle device loss)
+    intern  defer_list          : array Buffer
+    intern  frame_no            : i64
     public  bindres_calls       : i32
     public  bindres_us          : i64
     public  br_schema_us        : i64
+
+    # queue a buffer for destruction once provably out of flight
+    func defer_buffer [ b: Buffer ] -> none
+        if [ ! defer_list ] defer_list = array Buffer []
+        b.defer_frame = frame_no
+        b.hold[]
+        defer_list.push[ b ]
+
+    # once per rendered frame: destroy entries 8+ frames old (>> ring depth)
+    func defer_tick [] -> none
+        frame_no += 1
+        if [ ! defer_list || defer_list.count == 0 ] return
+        keep : array Buffer [ ]
+        for [ b: Buffer ] in defer_list
+            if [ frame_no - b.defer_frame >= 8 ]
+                b.destroy_now[]
+                b.drop[]
+            el
+                keep.push[ b ]
+        defer_list = keep
 
     intern quad_m:    GltfModel
     # cached default shaders. constructing a fresh UVQuad / UVReduce per
@@ -776,7 +801,7 @@ class vk_context
         # validation layer adds 10-100x overhead PER vulkan call (every draw, descriptor
         # bind, image transition) — it was pinning the UI to ~10fps. keep it OFF for
         # normal runs; flip to true only when debugging a Vulkan correctness issue.
-        enable_validation: bool false
+        enable_validation: bool [ getenv[ 'TRINITY_VALIDATE' ] != null ]
         validation_layer: symbol [ (enable_validation) ? "VK_LAYER_KHRONOS_validation" : null ]
         app_info: VkApplicationInfo [
             sType:              VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -953,6 +978,10 @@ class vk_context
         q.proj   = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
         reduce_s = q
         return q
+
+    # settle the whole device — one-time creation/teardown windows only
+    func wait_idle [ ]
+        vkDeviceWaitIdle[ device ]
 
     func dealloc [ ]
         vmaDestroyAllocator [ allocator ]
@@ -1986,6 +2015,7 @@ class Command
 class Buffer
     context vk              : vk_context
     expect size             : i64
+    public defer_frame      : i64
     manual data             : ARef
     public u_src            : bool
     public u_dst            : bool
@@ -2130,10 +2160,12 @@ class Texture
     public layer_count      : i32
     public surface          : Surface
     public linear           : bool
-    public nearest          : bool   # sampler filters NEAREST (hard pixel edges) instead of linear
     public is_storage       : bool   # adds VK_IMAGE_USAGE_STORAGE_BIT for compute write
     public silly_test4      : bool
     public title            : string 'default title'
+    public nearest          : bool   # sampler filters NEAREST (hard pixel edges) instead of linear
+    # NOTE: appended LAST — inserting mid-schema shifts af-bit indices of the
+    # members after it (misread set-detection broke m7_src's mip/aniso config)
     
     intern vk_layout        : VkImageLayout
     intern vk_format        : VkFormat
@@ -3097,7 +3129,9 @@ intern func image_release_buffer [ a: Image ] -> object
     b:  Buffer [ handle[ a.res2 ] ]
     vk: vk_context [ b.vk ]
     vmaUnmapMemory[ vk.allocator, b.vma_alloc ]
-    vmaDestroyBuffer[ vk.allocator, b.vk_buffer, b.vma_alloc ]
+    # DEFERRED: an in-flight submit may still read this buffer — freed 8
+    # frames later via vk.defer_buffer (premature-recycle guard)
+    vk.defer_buffer[ b ]
     return null
 
 func degrees[f32] -> f32
