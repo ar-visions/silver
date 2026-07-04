@@ -160,7 +160,7 @@ class cpu_state
 	public memory 			: ref u8
 
 
-trinity asnes
+element asnes
 	public  spc_rom        	: path
 	public  rom            	: path
 	public  state          	: path             # --state <file>: boot then load this savestate
@@ -1838,18 +1838,18 @@ trinity asnes
 			ws : u8 [ pub_wobjsel[y] ]
 			cgs : u8 [ pub_cgwsel[y] ]
 			cga : u8 [ pub_cgadsub[y] ]
-			flags : u32 [ 0 ]
-			if [ ws & 0x20 ] flags = flags | 1
-			if [ ws & 0x10 ] flags = flags | 2
-			if [ ws & 0x80 ] flags = flags | 4
-			if [ ws & 0x40 ] flags = flags | 8
-			flags = flags | (((u32[pub_wobjlog[y]] >> 2) & 3) << 4)
+			mwf : u32 [ 0 ]
+			if [ ws & 0x20 ] mwf = mwf | 1
+			if [ ws & 0x10 ] mwf = mwf | 2
+			if [ ws & 0x80 ] mwf = mwf | 4
+			if [ ws & 0x40 ] mwf = mwf | 8
+			mwf = mwf | (((u32[pub_wobjlog[y]] >> 2) & 3) << 4)
 			reg : u32 [ (u32[cgs] >> 4) & 3 ]
 			if [ (cga & 0x01) == 0 ] reg = 3               # math not enabled for BG1: never applies to the plane
 			if [ (cga & 0x3F) == 0 ] reg = 3
-			flags = flags | (reg << 6)
-			if [ cga & 0x80 ] flags = flags | 256
-			if [ cga & 0x40 ] flags = flags | 512
+			mwf = mwf | (reg << 6)
+			if [ cga & 0x80 ] mwf = mwf | 256
+			if [ cga & 0x40 ] mwf = mwf | 512
 			cold : u16 [ pub_coldata[y] ]
 			m7_matbuf[ (256 + y) * 4 + 0 ] = f32[ u32[pub_wh0[y]] ]
 			m7_matbuf[ (256 + y) * 4 + 1 ] = f32[ u32[pub_wh1[y]] ]
@@ -3564,9 +3564,8 @@ trinity asnes
 			printf[ "SPC700 self-test: %d FAILURES\n", dbg_h ]
 
 	func init []
-		width      = 1024
-		height     = 896
-		background = 'Background'
+		volatile   = true                          # emulator: repaint every frame, never cache-skip
+		focusable  = true
 		if [ volume == 0.0 ] volume = 0.22         # default playback volume (keep prop-pair override)
 
 	# display-pipeline test: fill a 256x224 CPU array with an animated pattern,
@@ -3618,8 +3617,8 @@ trinity asnes
 	func scaler_setup [ cv: Canvas ]
 		# bled BG layers (288x256) get matching render targets so the window
 		# region stays exactly 1:1 with the unbled chains
-		lw2 : i32 [ (width * 288) / 256 ]
-		lh2 : i32 [ (height * 256) / 224 ]
+		lw2 : i32 [ (i32[ bounds.w ] * 288) / 256 ]
+		lh2 : i32 [ (i32[ bounds.h ] * 256) / 224 ]
 		if [ se_2d && ! vec ]
 			se_shader  = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
 			se_model   = Model [ w: cv.w, s: se_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
@@ -3690,7 +3689,34 @@ trinity asnes
 		if [ r < (0.0 - lim) ] r = 0.0 - lim
 		return r
 
-	public func on_canvas [ cv: Canvas ]
+	# element paint hook: the window redirects w.screen to this element's
+	# canvas (transform already at our origin), so all rects are LOCAL and
+	# scale by bounds. volatile + will_animate keep frames coming.
+	public func draw [ w: Window ]
+		ux.will_animate = true
+		if [ spctest ]
+			if [ !spc ] spc_test[]
+			return
+		# --beep: bypass the CPU/upload entirely, key on one DSP voice directly.
+		if [ beep ]
+			if [ !spc ] audio_test[]
+			generate_audio[ 0 ]
+			return
+		# --spcfile: play a real APU snapshot. generate_audio runs 16 SPC steps
+		# per output sample (~32 cycles), interleaving the engine with the DSP.
+		if [ spcfile ]
+			if [ !spc ] load_spc[]
+			generate_audio[ 16 ]
+			return
+		# --rom maps onto the public `rom` member; args land after init, so
+		# load lazily on the first frame once rom is set
+		if [ rom && !cpu && !putest ] load[]
+		if [ cpu && !emu_started ]
+			emu_started = true
+			pub_lock = mutex [ cond: false ]
+			tid : local u64 [ 1 ]
+			pthread_create[ tid, null, ref emu_entry, a ]
+		cv : Canvas [ w.screen ]
 		if [ putest ]
 			if [ !screen_tex ]
 				screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
@@ -3702,11 +3728,10 @@ trinity asnes
 					test_buf[ y * 256 + x ] = 0xFF000000 | (bb << 16) | (gg << 8) | rr
 			test_t += 1
 			screen_tex.upload[ test_buf, 256 * 224 * 4 ]
-			dst : rect [ x: 0.0, y: 0.0, w: 1024.0, h: 896.0 ]
+			dst : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
 			cv.draw_image[ screen_tex, dst ]
 			return
 		if [ !cpu || !pub_valid ]
-			super.on_canvas[ cv ]
 			return
 		pub_lock.lock[]
 		if [ !screen_tex ]
@@ -3750,7 +3775,7 @@ trinity asnes
 		gmdy : f32 [ m7g_dy ]
 		gmt  : i64 [ m7g_t ]
 		gmp  : i64 [ m7g_p ]
-		out : rect [ x: 0.0, y: 0.0, w: 1024.0, h: 896.0 ]
+		out : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
 		# GPU Mode-7 plane is the base layer; the CPU framebuffer (sprites / mode-1 HUD,
 		# transparent over the plane) composites on top. Both GPU passes are recorded and
 		# SUBMITTED first so they overlap on the GPU, then waited once each -- serial
@@ -3832,10 +3857,10 @@ trinity asnes
 				g_al : f32 [ f32[ g_n - gmt ] / f32[ gmp ] ]
 				if [ g_al > 1.0 ] g_al = 1.0
 				if [ g_al < 0.0 ] g_al = 0.0
-				m7ox = gmdx * (1.0 - g_al) * (f32[ width ] / 256.0)
-				m7oy = gmdy * (1.0 - g_al) * (f32[ height ] / 224.0)
+				m7ox = gmdx * (1.0 - g_al) * (bounds.w / 256.0)
+				m7oy = gmdy * (1.0 - g_al) * (bounds.h / 224.0)
 			if [ smooth ]
-				out_m7 : rect [ x: m7ox, y: m7oy, w: f32[ width ], h: f32[ height ] ]
+				out_m7 : rect [ x: m7ox, y: m7oy, w: bounds.w, h: bounds.h ]
 				cv.draw_image[ m7_render.color, out_m7 ]
 			el
 				cv.draw_image[ m7_render.color, out ]
@@ -3843,8 +3868,8 @@ trinity asnes
 			# provenance layers, back -> front, each on its own glide channel;
 			# world sprites ride BG1, screen sprites + retired BGs sit pinned
 			g_now : i64 [ wall_ms[] * 1000 ]
-			g_scx : f32 [ f32[ width ] / 256.0 ]
-			g_scy : f32 [ f32[ height ] / 224.0 ]
+			g_scx : f32 [ bounds.w / 256.0 ]
+			g_scy : f32 [ bounds.h / 224.0 ]
 			o1x : f32 [ lay_off[ g1dx, g1t, g1p, g_now, g_scx ] ]
 			o1y : f32 [ lay_off[ g1dy, g1t, g1p, g_now, g_scy ] ]
 			o2x : f32 [ lay_off[ g2dx, g2t, g2p, g_now, g_scx ] ]
@@ -3859,7 +3884,7 @@ trinity asnes
 			if [ ganch == 1 ]
 				owx = o2x
 				owy = o2y
-			rw : rect [ x: owx, y: owy, w: f32[ width ], h: f32[ height ] ]
+			rw : rect [ x: owx, y: owy, w: bounds.w, h: bounds.h ]
 			if [ scaled ]
 				if [ !b3 ]
 					oc3_render.sync_fence[]
@@ -4973,34 +4998,6 @@ trinity asnes
 			emu_tick[]
 		emu_running = false
 
-	func on_render [ w: Window ] -> Elements
-		if [ putest ]
-			return null
-		if [ spctest ]
-			if [ !spc ] spc_test[]
-			return null
-		# --beep: bypass the CPU/upload entirely, key on one DSP voice directly.
-		if [ beep ]
-			if [ !spc ] audio_test[]
-			generate_audio[ 0 ]
-			return null
-		# --spcfile: play a real APU snapshot. generate_audio runs 16 SPC steps
-		# per output sample (~32 cycles), interleaving the engine with the DSP.
-		if [ spcfile ]
-			if [ !spc ] load_spc[]
-			generate_audio[ 16 ]
-			return null
-		# --rom <path> maps onto the public `rom` member, but args are applied
-		# after init[], so load lazily on the first frame once rom is set.
-		if [ rom && !cpu ] load[]
-		if [ !cpu ] return null
-		if [ !emu_started ]
-			emu_started = true
-			pub_lock = mutex [ cond: false ]
-			tid : local u64 [ 1 ]
-			pthread_create[ tid, null, ref emu_entry, a ]
-		return null
-
 	func dealloc []
 		if [ emu_started ]
 			emu_stop = true
@@ -5243,66 +5240,66 @@ trinity asnes
 
 			case 0x84  # ADC A, dp
 				dp : u16 [ spc_dp[] ]
-				value  : u8  [ spc_r[dp] ]
-				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
-				spc_adc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[dp] ]
+				result : u16 [ u16[spc.a] + u16[val8] + (spc.psw & 0x01) ]
+				spc_adc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0x94  # ADC A, dp+X
 				dp : u16 [ spc_dp[] ]
-				value  : u8  [ spc_r[ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ] ]
-				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
-				spc_adc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ] ]
+				result : u16 [ u16[spc.a] + u16[val8] + (spc.psw & 0x01) ]
+				spc_adc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0x85  # ADC A, abs
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[addr] ]
-				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
-				spc_adc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[addr] ]
+				result : u16 [ u16[spc.a] + u16[val8] + (spc.psw & 0x01) ]
+				spc_adc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0x95  # ADC A, abs+X
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[ (addr + spc.x) & 0xFFFF ] ]
-				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
-				spc_adc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[ (addr + spc.x) & 0xFFFF ] ]
+				result : u16 [ u16[spc.a] + u16[val8] + (spc.psw & 0x01) ]
+				spc_adc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0x96  # ADC A, abs+Y
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
-				spc_adc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
+				result : u16 [ u16[spc.a] + u16[val8] + (spc.psw & 0x01) ]
+				spc_adc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0x86  # ADC A, (X)
-				value  : u8  [ spc_r[spc.x] ]
-				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
-				spc_adc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[spc.x] ]
+				result : u16 [ u16[spc.a] + u16[val8] + (spc.psw & 0x01) ]
+				spc_adc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0x97  # ADC A, [dp]+Y   (indirect, post-indexed by Y)
 				dp : u16 [ spc_dp[] ]
 				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
-				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
-				spc_adc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
+				result : u16 [ u16[spc.a] + u16[val8] + (spc.psw & 0x01) ]
+				spc_adc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0x87  # ADC A, [dp+X]
 				dp : u16 [ spc_dp[] ]
 				ptr    : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
 				addr   : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
-				value  : u8  [ spc_r[addr] ]
-				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
-				spc_adc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[addr] ]
+				result : u16 [ u16[spc.a] + u16[val8] + (spc.psw & 0x01) ]
+				spc_adc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0x88  # ADC A, #imm
-				value  : u8  [ spc_rb[] ]
-				result : u16 [ u16[spc.a] + u16[value] + (spc.psw & 0x01) ]
-				spc_adc[ spc.a, value, result ]
+				val8  : u8  [ spc_rb[] ]
+				result : u16 [ u16[spc.a] + u16[val8] + (spc.psw & 0x01) ]
+				spc_adc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0x99  # ADC (X), (Y)
@@ -5331,66 +5328,66 @@ trinity asnes
 
 			case 0xA4  # SBC A, dp
 				dp : u16 [ spc_dp[] ]
-				value  : u8  [ spc_r[dp] ]
-				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
-				spc_sbc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[dp] ]
+				result : u16 [ u16[spc.a] - u16[val8] - (1 - (spc.psw & 0x01)) ]
+				spc_sbc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0xB4  # SBC A, dp+X
 				dp : u16 [ spc_dp[] ]
-				value  : u8  [ spc_r[ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ] ]
-				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
-				spc_sbc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ] ]
+				result : u16 [ u16[spc.a] - u16[val8] - (1 - (spc.psw & 0x01)) ]
+				spc_sbc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0xA5  # SBC A, abs
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[addr] ]
-				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
-				spc_sbc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[addr] ]
+				result : u16 [ u16[spc.a] - u16[val8] - (1 - (spc.psw & 0x01)) ]
+				spc_sbc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0xB5  # SBC A, abs+X
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[ (addr + spc.x) & 0xFFFF ] ]
-				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
-				spc_sbc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[ (addr + spc.x) & 0xFFFF ] ]
+				result : u16 [ u16[spc.a] - u16[val8] - (1 - (spc.psw & 0x01)) ]
+				spc_sbc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0xB6  # SBC A, abs+Y
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
-				spc_sbc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
+				result : u16 [ u16[spc.a] - u16[val8] - (1 - (spc.psw & 0x01)) ]
+				spc_sbc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0xA6  # SBC A, (X)
-				value  : u8  [ spc_r[spc.x] ]
-				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
-				spc_sbc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[spc.x] ]
+				result : u16 [ u16[spc.a] - u16[val8] - (1 - (spc.psw & 0x01)) ]
+				spc_sbc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0xB7  # SBC A, [dp]+Y
 				dp : u16 [ spc_dp[] ]
 				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
-				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
-				spc_sbc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
+				result : u16 [ u16[spc.a] - u16[val8] - (1 - (spc.psw & 0x01)) ]
+				spc_sbc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0xA7  # SBC A, [dp+X]
 				dp : u16 [ spc_dp[] ]
 				ptr    : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
 				addr   : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
-				value  : u8  [ spc_r[addr] ]
-				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
-				spc_sbc[ spc.a, value, result ]
+				val8  : u8  [ spc_r[addr] ]
+				result : u16 [ u16[spc.a] - u16[val8] - (1 - (spc.psw & 0x01)) ]
+				spc_sbc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0xA8  # SBC A, #imm
-				value  : u8  [ spc_rb[] ]
-				result : u16 [ u16[spc.a] - u16[value] - (1 - (spc.psw & 0x01)) ]
-				spc_sbc[ spc.a, value, result ]
+				val8  : u8  [ spc_rb[] ]
+				result : u16 [ u16[spc.a] - u16[val8] - (1 - (spc.psw & 0x01)) ]
+				spc_sbc[ spc.a, val8, result ]
 				spc.a   = result & 0xFF
 
 			case 0xB9  # SBC (X), (Y)
@@ -5419,57 +5416,57 @@ trinity asnes
 
 			case 0x64  # CMP A, dp
 				dp : u16 [ spc_dp[] ]
-				value  : u8  [ spc_r[dp] ]
-				result : u16 [ u16[spc.a] - u16[value] ]
+				val8  : u8  [ spc_r[dp] ]
+				result : u16 [ u16[spc.a] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x74  # CMP A, dp+X
 				dp : u16 [ spc_dp[] ]
-				value  : u8  [ spc_r[ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ] ]
-				result : u16 [ u16[spc.a] - u16[value] ]
+				val8  : u8  [ spc_r[ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ] ]
+				result : u16 [ u16[spc.a] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x65  # CMP A, abs
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[addr] ]
-				result : u16 [ u16[spc.a] - u16[value] ]
+				val8  : u8  [ spc_r[addr] ]
+				result : u16 [ u16[spc.a] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x75  # CMP A, abs+X
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[ (addr + spc.x) & 0xFFFF ] ]
-				result : u16 [ u16[spc.a] - u16[value] ]
+				val8  : u8  [ spc_r[ (addr + spc.x) & 0xFFFF ] ]
+				result : u16 [ u16[spc.a] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x76  # CMP A, abs+Y
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ u16[spc.a] - u16[value] ]
+				val8  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
+				result : u16 [ u16[spc.a] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x66  # CMP A, (X)
-				value  : u8  [ spc_r[spc.x] ]
-				result : u16 [ u16[spc.a] - u16[value] ]
+				val8  : u8  [ spc_r[spc.x] ]
+				result : u16 [ u16[spc.a] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x77  # CMP A, [dp]+Y
 				dp : u16 [ spc_dp[] ]
 				addr   : u16 [ spc_r[dp] | (spc_r[dp + 1] << 8) ]
-				value  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
-				result : u16 [ u16[spc.a] - u16[value] ]
+				val8  : u8  [ spc_r[ (addr + spc.y) & 0xFFFF ] ]
+				result : u16 [ u16[spc.a] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x67  # CMP A, [dp+X]
 				dp : u16 [ spc_dp[] ]
 				ptr    : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
 				addr   : u16 [ spc_r[ptr] | (spc_r[ptr + 1] << 8) ]
-				value  : u8  [ spc_r[addr] ]
-				result : u16 [ u16[spc.a] - u16[value] ]
+				val8  : u8  [ spc_r[addr] ]
+				result : u16 [ u16[spc.a] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x68  # CMP A, #imm
-				value  : u8  [ spc_rb[] ]
-				result : u16 [ u16[spc.a] - u16[value] ]
+				val8  : u8  [ spc_rb[] ]
+				result : u16 [ u16[spc.a] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x79  # CMP (X), (Y)
@@ -5494,37 +5491,37 @@ trinity asnes
 				spc_cmp[ result ]
 
 			case 0xC8  # CMP X, #imm
-				value  : u8  [ spc_rb[] ]
-				result : u16 [ u16[spc.x] - u16[value] ]
+				val8  : u8  [ spc_rb[] ]
+				result : u16 [ u16[spc.x] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x3E  # CMP X, dp
 				dp : u16 [ spc_dp[] ]
-				value  : u8  [ spc_r[dp] ]
-				result : u16 [ u16[spc.x] - u16[value] ]
+				val8  : u8  [ spc_r[dp] ]
+				result : u16 [ u16[spc.x] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x1E  # CMP X, abs
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[addr] ]
-				result : u16 [ u16[spc.x] - u16[value] ]
+				val8  : u8  [ spc_r[addr] ]
+				result : u16 [ u16[spc.x] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0xAD  # CMP Y, #imm
-				value  : u8  [ spc_rb[] ]
-				result : u16 [ u16[spc.y] - u16[value] ]
+				val8  : u8  [ spc_rb[] ]
+				result : u16 [ u16[spc.y] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x7E  # CMP Y, dp
 				dp : u16 [ spc_dp[] ]
-				value  : u8  [ spc_r[dp] ]
-				result : u16 [ u16[spc.y] - u16[value] ]
+				val8  : u8  [ spc_r[dp] ]
+				result : u16 [ u16[spc.y] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x5E  # CMP Y, abs
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[addr] ]
-				result : u16 [ u16[spc.y] - u16[value] ]
+				val8  : u8  [ spc_r[addr] ]
+				result : u16 [ u16[spc.y] - u16[val8] ]
 				spc_cmp[ result ]
 
 			case 0x24  # AND A, dp
@@ -5791,28 +5788,28 @@ trinity asnes
 
 			case 0x0B  # ASL dp
 				dp : u16 [ spc_dp[] ]
-				value  : u8 [ spc_r[dp] ]
-				carry  : u8 [ (value & 0x80) ? 0x01 : 0 ]
-				value <<= 1
-				spc_w[ dp, value ]
-				spc_nzc[ value, carry ]
+				val8  : u8 [ spc_r[dp] ]
+				carry  : u8 [ (val8 & 0x80) ? 0x01 : 0 ]
+				val8 <<= 1
+				spc_w[ dp, val8 ]
+				spc_nzc[ val8, carry ]
 
 			case 0x1B  # ASL dp+X
 				dp : u16 [ spc_dp[] ]
 				xaddr  : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
-				value  : u8 [ spc_r[xaddr] ]
-				carry  : u8 [ (value & 0x80) ? 0x01 : 0 ]
-				value <<= 1
-				spc_w[ xaddr, value ]
-				spc_nzc[ value, carry ]
+				val8  : u8 [ spc_r[xaddr] ]
+				carry  : u8 [ (val8 & 0x80) ? 0x01 : 0 ]
+				val8 <<= 1
+				spc_w[ xaddr, val8 ]
+				spc_nzc[ val8, carry ]
 
 			case 0x0C  # ASL abs
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[addr] ]
-				carry  : u8  [ (value & 0x80) ? 0x01 : 0 ]
-				value <<= 1
-				spc_w[ addr, value ]
-				spc_nzc[ value, carry ]
+				val8  : u8  [ spc_r[addr] ]
+				carry  : u8  [ (val8 & 0x80) ? 0x01 : 0 ]
+				val8 <<= 1
+				spc_w[ addr, val8 ]
+				spc_nzc[ val8, carry ]
 
 			case 0x5C  # LSR A
 				carry  : u8 [ spc.a & 0x01 ]
@@ -5821,28 +5818,28 @@ trinity asnes
 
 			case 0x4B  # LSR dp
 				dp : u16 [ spc_dp[] ]
-				value  : u8 [ spc_r[dp] ]
-				carry  : u8 [ value & 0x01 ]
-				value >>= 1
-				spc_w[ dp, value ]
-				spc.psw = (spc.psw & ~0x83) | carry | ((value == 0) ? 0x02 : 0)
+				val8  : u8 [ spc_r[dp] ]
+				carry  : u8 [ val8 & 0x01 ]
+				val8 >>= 1
+				spc_w[ dp, val8 ]
+				spc.psw = (spc.psw & ~0x83) | carry | ((val8 == 0) ? 0x02 : 0)
 
 			case 0x5B  # LSR dp+X
 				dp : u16 [ spc_dp[] ]
 				xaddr  : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
-				value  : u8 [ spc_r[xaddr] ]
-				carry  : u8 [ value & 0x01 ]
-				value >>= 1
-				spc_w[ xaddr, value ]
-				spc.psw = (spc.psw & ~0x83) | carry | ((value == 0) ? 0x02 : 0)
+				val8  : u8 [ spc_r[xaddr] ]
+				carry  : u8 [ val8 & 0x01 ]
+				val8 >>= 1
+				spc_w[ xaddr, val8 ]
+				spc.psw = (spc.psw & ~0x83) | carry | ((val8 == 0) ? 0x02 : 0)
 
 			case 0x4C  # LSR abs
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[addr] ]
-				carry  : u8  [ value & 0x01 ]
-				value >>= 1
-				spc_w[ addr, value ]
-				spc.psw = (spc.psw & ~0x83) | carry | ((value == 0) ? 0x02 : 0)
+				val8  : u8  [ spc_r[addr] ]
+				carry  : u8  [ val8 & 0x01 ]
+				val8 >>= 1
+				spc_w[ addr, val8 ]
+				spc.psw = (spc.psw & ~0x83) | carry | ((val8 == 0) ? 0x02 : 0)
 
 			case 0x3C  # ROL A
 				old_c  : u8 [ spc.psw & 0x01 ]
@@ -5852,31 +5849,31 @@ trinity asnes
 
 			case 0x2B  # ROL dp
 				dp : u16 [ spc_dp[] ]
-				value  : u8 [ spc_r[dp] ]
+				val8  : u8 [ spc_r[dp] ]
 				old_c  : u8 [ spc.psw & 0x01 ]
-				new_c  : u8 [ (value & 0x80) ? 0x01 : 0 ]
-				value   = (value << 1) | old_c
-				spc_w[ dp, value ]
-				spc_nzc[ value, new_c ]
+				new_c  : u8 [ (val8 & 0x80) ? 0x01 : 0 ]
+				val8   = (val8 << 1) | old_c
+				spc_w[ dp, val8 ]
+				spc_nzc[ val8, new_c ]
 
 			case 0x3B  # ROL dp+X
 				dp : u16 [ spc_dp[] ]
 				xaddr  : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
-				value  : u8 [ spc_r[xaddr] ]
+				val8  : u8 [ spc_r[xaddr] ]
 				old_c  : u8 [ spc.psw & 0x01 ]
-				new_c  : u8 [ (value & 0x80) ? 0x01 : 0 ]
-				value   = (value << 1) | old_c
-				spc_w[ xaddr, value ]
-				spc_nzc[ value, new_c ]
+				new_c  : u8 [ (val8 & 0x80) ? 0x01 : 0 ]
+				val8   = (val8 << 1) | old_c
+				spc_w[ xaddr, val8 ]
+				spc_nzc[ val8, new_c ]
 
 			case 0x2C  # ROL abs
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[addr] ]
+				val8  : u8  [ spc_r[addr] ]
 				old_c  : u8  [ spc.psw & 0x01 ]
-				new_c  : u8  [ (value & 0x80) ? 0x01 : 0 ]
-				value   = (value << 1) | old_c
-				spc_w[ addr, value ]
-				spc_nzc[ value, new_c ]
+				new_c  : u8  [ (val8 & 0x80) ? 0x01 : 0 ]
+				val8   = (val8 << 1) | old_c
+				spc_w[ addr, val8 ]
+				spc_nzc[ val8, new_c ]
 
 			case 0x7C  # ROR A
 				old_c  : u8 [ spc.psw & 0x01 ]
@@ -5886,31 +5883,31 @@ trinity asnes
 
 			case 0x6B  # ROR dp
 				dp : u16 [ spc_dp[] ]
-				value  : u8 [ spc_r[dp] ]
+				val8  : u8 [ spc_r[dp] ]
 				old_c  : u8 [ spc.psw & 0x01 ]
-				new_c  : u8 [ value & 0x01 ]
-				value   = (value >> 1) | (old_c << 7)
-				spc_w[ dp, value ]
-				spc_nzc[ value, new_c ]
+				new_c  : u8 [ val8 & 0x01 ]
+				val8   = (val8 >> 1) | (old_c << 7)
+				spc_w[ dp, val8 ]
+				spc_nzc[ val8, new_c ]
 
 			case 0x7B  # ROR dp+X
 				dp : u16 [ spc_dp[] ]
 				xaddr  : u16 [ ((dp & 0xFF00) | ((dp + spc.x) & 0xFF)) ]
-				value  : u8 [ spc_r[xaddr] ]
+				val8  : u8 [ spc_r[xaddr] ]
 				old_c  : u8 [ spc.psw & 0x01 ]
-				new_c  : u8 [ value & 0x01 ]
-				value   = (value >> 1) | (old_c << 7)
-				spc_w[ xaddr, value ]
-				spc_nzc[ value, new_c ]
+				new_c  : u8 [ val8 & 0x01 ]
+				val8   = (val8 >> 1) | (old_c << 7)
+				spc_w[ xaddr, val8 ]
+				spc_nzc[ val8, new_c ]
 
 			case 0x6C  # ROR abs
 				addr   : u16 [ spc_rw[] ]
-				value  : u8  [ spc_r[addr] ]
+				val8  : u8  [ spc_r[addr] ]
 				old_c  : u8  [ spc.psw & 0x01 ]
-				new_c  : u8  [ value & 0x01 ]
-				value   = (value >> 1) | (old_c << 7)
-				spc_w[ addr, value ]
-				spc_nzc[ value, new_c ]
+				new_c  : u8  [ val8 & 0x01 ]
+				val8   = (val8 >> 1) | (old_c << 7)
+				spc_w[ addr, val8 ]
+				spc_nzc[ val8, new_c ]
 
 			case 0x10  # BPL rel
 				off : i8 [ spc_rb[] ]
@@ -6564,34 +6561,34 @@ trinity asnes
 	# --- width-aware ALU helpers (A follows the M flag) — every ALU
 	# addressing-mode handler reads its operand then calls one of these ---
 
-	func cpu_ora_a [ value: u16 ]
-		cpu_set_A[ cpu_get_A[] | value ]
+	func cpu_ora_a [ val8: u16 ]
+		cpu_set_A[ cpu_get_A[] | val8 ]
 		cpu_nz_a[ cpu_get_A[] ]
 
-	func cpu_and_a [ value: u16 ]
-		cpu_set_A[ cpu_get_A[] & value ]
+	func cpu_and_a [ val8: u16 ]
+		cpu_set_A[ cpu_get_A[] & val8 ]
 		cpu_nz_a[ cpu_get_A[] ]
 
-	func cpu_eor_a [ value: u16 ]
-		cpu_set_A[ cpu_get_A[] ^ value ]
+	func cpu_eor_a [ val8: u16 ]
+		cpu_set_A[ cpu_get_A[] ^ val8 ]
 		cpu_nz_a[ cpu_get_A[] ]
 
-	func cpu_cmp_a [ value: u16 ]
+	func cpu_cmp_a [ val8: u16 ]
 		a16  : u16 [ cpu_get_A[] ]
-		diff : u16 [ a16 - value ]
+		diff : u16 [ a16 - val8 ]
 		nm   : u16 [ (cpu.p & 0x20) ? 0x80 : 0x8000 ]
-		c : u8 [ (a16 >= value) ? 0x01 : 0 ]
+		c : u8 [ (a16 >= val8) ? 0x01 : 0 ]
 		z : u8 [ (diff == 0) ? 0x02 : 0 ]
 		n : u8 [ ((diff & nm) != 0) ? 0x80 : 0 ]
 		cpu.p = (cpu.p & ~0x83) | c | z | n
 
-	func cpu_adc_a [ value: u16 ]
+	func cpu_adc_a [ val8: u16 ]
 		a16 : u16 [ cpu_get_A[] ]
 		dfl : bool [ (cpu.p & 0x08) != 0 ]
 		cin : i32 [ i32[cpu.p & 0x01] ]
 		if [ cpu.p & 0x20 ]
 			av8 : i32 [ i32[a16 & 0xFF] ]
-			dv8 : i32 [ i32[value & 0xFF] ]
+			dv8 : i32 [ i32[val8 & 0xFF] ]
 			r8  : i32 [ 0 ]
 			if [ !dfl ]
 				r8 = av8 + dv8 + cin
@@ -6609,7 +6606,7 @@ trinity asnes
 			cpu_set_A[ u16[r8 & 0xFF] ]
 		el
 			avw : i32 [ i32[a16] ]
-			dvw : i32 [ i32[value] ]
+			dvw : i32 [ i32[val8] ]
 			rw  : i32 [ 0 ]
 			if [ !dfl ]
 				rw = avw + dvw + cin
@@ -6632,13 +6629,13 @@ trinity asnes
 			cpu.p = (cpu.p & ~0xC3) | cw | zw | nw | ovw
 			cpu_set_A[ u16[rw & 0xFFFF] ]
 
-	func cpu_sbc_a [ value: u16 ]
+	func cpu_sbc_a [ val8: u16 ]
 		a16 : u16 [ cpu_get_A[] ]
 		dfl : bool [ (cpu.p & 0x08) != 0 ]
 		cin : i32 [ i32[cpu.p & 0x01] ]
 		if [ cpu.p & 0x20 ]
 			av8 : i32 [ i32[a16 & 0xFF] ]
-			dv8 : i32 [ (~i32[value]) & 0xFF ]
+			dv8 : i32 [ (~i32[val8]) & 0xFF ]
 			r8  : i32 [ 0 ]
 			if [ !dfl ]
 				r8 = av8 + dv8 + cin
@@ -6656,7 +6653,7 @@ trinity asnes
 			cpu_set_A[ u16[r8 & 0xFF] ]
 		el
 			avw : i32 [ i32[a16] ]
-			dvw : i32 [ (~i32[value]) & 0xFFFF ]
+			dvw : i32 [ (~i32[val8]) & 0xFFFF ]
 			rw  : i32 [ 0 ]
 			if [ !dfl ]
 				rw = avw + dvw + cin
@@ -6794,20 +6791,20 @@ trinity asnes
 		bk1 : u32 [ (u32[cpu.dbr] + (a1 >> 16)) & 0xFF ]
 		return lo | (cpu_bank_r[ bk1, u16[a1 & 0xFFFF] ] << 8)
 
-	func cpu_cmp_x [ x16: u16, value: u16 ]
-		diff : u16 [ x16 - value ]
+	func cpu_cmp_x [ x16: u16, val8: u16 ]
+		diff : u16 [ x16 - val8 ]
 		nm   : u16 [ (cpu.p & 0x10) ? 0x80 : 0x8000 ]
-		c : u8 [ (x16 >= value) ? 0x01 : 0 ]
+		c : u8 [ (x16 >= val8) ? 0x01 : 0 ]
 		z : u8 [ (diff == 0) ? 0x02 : 0 ]
 		n : u8 [ ((diff & nm) != 0) ? 0x80 : 0 ]
 		cpu.p = (cpu.p & ~0x83) | c | z | n
 
-	func cpu_bit_a [ value: u16 ]
+	func cpu_bit_a [ val8: u16 ]
 		nb : u16 [ (cpu.p & 0x20) ? 0x80 : 0x8000 ]
 		vb : u16 [ (cpu.p & 0x20) ? 0x40 : 0x4000 ]
-		z  : u8 [ ((cpu_get_A[] & value) == 0) ? 0x02 : 0 ]
-		n  : u8 [ ((value & nb) != 0) ? 0x80 : 0 ]
-		v  : u8 [ ((value & vb) != 0) ? 0x40 : 0 ]
+		z  : u8 [ ((cpu_get_A[] & val8) == 0) ? 0x02 : 0 ]
+		n  : u8 [ ((val8 & nb) != 0) ? 0x80 : 0 ]
+		v  : u8 [ ((val8 & vb) != 0) ? 0x40 : 0 ]
 		cpu.p = (cpu.p & ~0xC2) | n | v | z
 
 	# push a 16-bit value (high then low, matching the stack convention)
@@ -7361,11 +7358,11 @@ trinity asnes
 				cycles = 4 + m1
 
 			case 0xC9  # CMP #imm (width-aware)
-				value : u16 [ cpu_imm_a[] ]
+				val8 : u16 [ cpu_imm_a[] ]
 				a16   : u16 [ cpu_get_A[] ]
-				diff  : u16 [ a16 - value ]
+				diff  : u16 [ a16 - val8 ]
 				nmask : u16 [ (cpu.p & 0x20) ? 0x80 : 0x8000 ]
-				c : u8 [ (a16 >= value) ? 0x01 : 0 ]
+				c : u8 [ (a16 >= val8) ? 0x01 : 0 ]
 				z : u8 [ (diff == 0) ? 0x02 : 0 ]
 				n : u8 [ ((diff & nmask) != 0) ? 0x80 : 0 ]
 				cpu.p = (cpu.p & ~0x83) | c | z | n
@@ -7382,22 +7379,22 @@ trinity asnes
 				cycles = 4 + m1
 
 			case 0xE0  # CPX #imm (width-aware)
-				value : u16 [ cpu_imm_x[] ]
+				val8 : u16 [ cpu_imm_x[] ]
 				x16   : u16 [ cpu_get_X[] ]
-				diff  : u16 [ x16 - value ]
+				diff  : u16 [ x16 - val8 ]
 				nmask : u16 [ (cpu.p & 0x10) ? 0x80 : 0x8000 ]
-				c : u8 [ (x16 >= value) ? 0x01 : 0 ]
+				c : u8 [ (x16 >= val8) ? 0x01 : 0 ]
 				z : u8 [ (diff == 0) ? 0x02 : 0 ]
 				n : u8 [ ((diff & nmask) != 0) ? 0x80 : 0 ]
 				cpu.p = (cpu.p & ~0x83) | c | z | n
 				cycles = 2 + xpen
 
 			case 0xC0  # CPY #imm (width-aware)
-				value : u16 [ cpu_imm_x[] ]
+				val8 : u16 [ cpu_imm_x[] ]
 				y16   : u16 [ cpu_get_Y[] ]
-				diff  : u16 [ y16 - value ]
+				diff  : u16 [ y16 - val8 ]
 				nmask : u16 [ (cpu.p & 0x10) ? 0x80 : 0x8000 ]
-				c : u8 [ (y16 >= value) ? 0x01 : 0 ]
+				c : u8 [ (y16 >= val8) ? 0x01 : 0 ]
 				z : u8 [ (diff == 0) ? 0x02 : 0 ]
 				n : u8 [ ((diff & nmask) != 0) ? 0x80 : 0 ]
 				cpu.p = (cpu.p & ~0x83) | c | z | n
@@ -7825,42 +7822,42 @@ trinity asnes
 			case 0x14  # TRB dp
 				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				if [ cpu.dp & 0xFF ] cpu_idle[]
-				value  : u16 [ cpu_read_dp[dp] ]
+				val8  : u16 [ cpu_read_dp[dp] ]
 				a16    : u16 [ cpu_get_A[] ]
-				result : u16 [ a16 & value ]
+				result : u16 [ a16 & val8 ]
 				cpu_idle[]
-				cpu_write_dp[ dp, value & ~a16 ]
+				cpu_write_dp[ dp, val8 & ~a16 ]
 				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 5 + dpen + ((is_16bit) ? 2 : 0)
 
 			case 0x1C  # TRB abs
 				addr   : u16 [ cpu_rw[] ]
-				value  : u16 [ cpu_read_mem[addr] ]
+				val8  : u16 [ cpu_read_mem[addr] ]
 				a16    : u16 [ cpu_get_A[] ]
-				result : u16 [ a16 & value ]
+				result : u16 [ a16 & val8 ]
 				cpu_idle[]
-				cpu_write_mem[ addr, value & ~a16 ]
+				cpu_write_mem[ addr, val8 & ~a16 ]
 				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 6 + ((is_16bit) ? 2 : 0)
 
 			case 0x04  # TSB dp
 				dp     : u16 [ (cpu.dp + cpu_rb[]) & 0xFFFF ]
 				if [ cpu.dp & 0xFF ] cpu_idle[]
-				value  : u16 [ cpu_read_dp[dp] ]
+				val8  : u16 [ cpu_read_dp[dp] ]
 				a16    : u16 [ cpu_get_A[] ]
-				result : u16 [ a16 & value ]
+				result : u16 [ a16 & val8 ]
 				cpu_idle[]
-				cpu_write_dp[ dp, value | a16 ]
+				cpu_write_dp[ dp, val8 | a16 ]
 				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 5 + dpen + ((is_16bit) ? 2 : 0)
 
 			case 0x0C  # TSB abs
 				addr   : u16 [ cpu_rw[] ]
-				value  : u16 [ cpu_read_mem[addr] ]
+				val8  : u16 [ cpu_read_mem[addr] ]
 				a16    : u16 [ cpu_get_A[] ]
-				result : u16 [ a16 & value ]
+				result : u16 [ a16 & val8 ]
 				cpu_idle[]
-				cpu_write_mem[ addr, value | a16 ]
+				cpu_write_mem[ addr, val8 | a16 ]
 				cpu.p  = (cpu.p & ~0x02) | ((result == 0) ? 0x02 : 0)
 				cycles = 6 + ((is_16bit) ? 2 : 0)
 
@@ -8565,8 +8562,8 @@ trinity asnes
 
 			# --- BIT ---
 			case 0x89  # BIT #imm (only affects Z)
-				value : u16 [ cpu_imm_a[] ]
-				z : u8 [ ((cpu_get_A[] & value) == 0) ? 0x02 : 0 ]
+				val8 : u16 [ cpu_imm_a[] ]
+				z : u8 [ ((cpu_get_A[] & val8) == 0) ? 0x02 : 0 ]
 				cpu.p = (cpu.p & ~0x02) | z
 				cycles = 2 + m1
 			case 0x34  # BIT dp,X
@@ -8795,3 +8792,38 @@ trinity asnes
 		rc : i32 [ tm / 6 ]
 		cpu_master_rem = tm - rc * 6        # carry sub-cpu-cycle remainder so accounting stays exact
 		return rc
+
+# standalone host: a thin trinity app that mounts the asnes element
+# full-window. every emulator property lives ON the element — the app only
+# carries the CLI surface and forwards it each frame.
+trinity asnes_app
+	public  emu     : asnes            # auto-binds to the live 'emu' element
+	public  rom     : path
+	public  spc_rom : path
+	public  state   : path
+	# forwarded props are re-applied to the element every frame (af-bit
+	# reconcile), so the app must carry the REAL default — forwarding 0.0
+	# would permanently override the element's own volume guard (silence)
+	public  volume  : f32 [ 0.22 ]
+	public  smooth  : bool [ true ]
+	public  vec     : bool [ true ]
+	public  se_2d   : bool
+	public  blocky  : bool
+	public  putest  : bool
+	public  spctest : bool
+	public  beep    : bool
+	public  spcfile : path
+
+	func init []
+		width      = 1024
+		height     = 896
+		background = 'Background'
+
+	# keys land on the app when no element holds focus — hand them to the emu
+	public func on_key [ ev: Event ]
+		if [ emu ] emu.on_key[ ev ]
+
+	func on_render [ w: Window ] -> Elements
+		e : Elements [ ]
+		e['emu'] = asnes [ rom: rom, spc_rom: spc_rom, state: state, volume: volume, smooth: smooth, vec: vec, se_2d: se_2d, blocky: blocky, putest: putest, spctest: spctest, beep: beep, spcfile: spcfile ]
+		return e
