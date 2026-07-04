@@ -51,8 +51,8 @@ class audio_out
 		snd_pcm_hw_params_set_format  [ pcm_handle, params, fmt ]
 		snd_pcm_hw_params_set_channels[ pcm_handle, params, channels ]
 		snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
-		bufsz : sz [ 4096 ]
-		persz : sz [ 1024 ]
+		bufsz : sz [ 2048 ]
+		persz : sz [ 256 ]
 		snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, ref bufsz ]
 		snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, ref persz, null ]
 		ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
@@ -97,6 +97,10 @@ class nes_ppu
 	fine_x         : u8                # fine X scroll (3 bits)
 	latch          : bool              # $2005/$2006 shared write toggle
 	rbuf           : u8                # $2007 buffered read
+	t_dirty        : bool              # t/v holds a VRAM address, not scroll intent
+	eff_sy         : u8                # EFFECTIVE vertical scroll: loads from t only
+	eff_nty        : u8                # at frame start or on $2006 completion —
+	                                   # mid-frame $2005 Y-writes defer (hardware)
 	in_vblank      : bool
 	s0_line        : i32               # sprite-0 hit line this frame (-1 none)
 	framebuf       : new u32 [ 256 * 240 ]
@@ -140,6 +144,9 @@ trinity knes
 	public  frames_exit  : i32
 	public  resume       : bool
 	public  save_at      : i32
+	public  autowalk     : i32               # hold Up for N frames from frame 5 (repro rig)
+	public  seq_from     : i32               # dump composited frames [from,to) as PPMs
+	public  seq_to       : i32
 	public  volume       : f32
 	public  vec          : bool [ true ]     # VectorScale: continuous edges, any zoom
 	public  se_2d        : bool              # Super Eagle 2x basis + sharp lift
@@ -151,9 +158,22 @@ trinity knes
 	mutable prg          : ref u8            # PRG ROM
 	mutable prg_size     : sz
 	mutable chr          : ref u8            # CHR ROM (or ppu.chr_ram)
+	mutable chr_is_ram   : bool
 	mutable chr_size     : sz
 	mutable mapper       : i32
 	mutable mirror_v     : bool              # true = vertical mirroring
+	mutable mir_mode     : i32               # 0/1 one-screen A/B, 2 vertical, 3 horizontal
+	mutable prg_ram      : new u8 [ 0x2000 ] # $6000-7FFF (MMC1 battery RAM)
+	mutable m1_shift     : u32               # MMC1 serial shift register
+	mutable m1_count     : i32
+	mutable m1_ctrl      : u32               # control: mirroring + PRG/CHR modes
+	mutable m1_chr0      : u32
+	mutable m1_chr1      : u32
+	mutable line_chr0    : new u32 [ 240 ]   # per-line CHR bank snapshots (Zelda II
+	mutable line_chr1    : new u32 [ 240 ]   # switches tile banks mid-frame)
+	mutable cur_chr0     : u32               # banks for the scanline being rendered
+	mutable cur_chr1     : u32
+	mutable m1_prg       : u32
 	mutable pad_st       : u32               # A B Sel St U D L R (bits 0-7)
 	mutable pad_shift    : u32
 	mutable pad_strobe   : u8
@@ -205,14 +225,41 @@ trinity knes
 	# the render thread slides the scene sub-pixel between emulated frames ---
 	public  smooth       : bool [ true ]
 	mutable cam_prev     : i32               # previous camera x (nt<<8 | sx, 9-bit)
-	mutable pub_dx       : i32               # published camera delta
+	mutable cam_prev_y   : i32               # previous camera y (0..479)
+	mutable pub_dx       : i32               # published camera delta + per-axis
+	mutable pub_dy       : i32               # replay windows (cadence-measured)
+	mutable pub_tx       : i64
+	mutable pub_ty       : i64
+	mutable pub_px       : i64               # replay period us per axis
+	mutable pub_py       : i64
+	mutable gapx         : i32               # frames since last nonzero delta
+	mutable gapy         : i32
+	mutable p3x          : i32               # previous frame's camera tuple (rows
+	mutable p3y          : i32               # matching it are transitional, not HUD)
+	mutable p3n          : i32
+	mutable dbg_split    : i32               # change-probe state
+	mutable dbg_bsplit   : i32
+	mutable dbg_mask     : u32
+	mutable ticks        : i64               # session ticks (savestate-independent)
 	mutable pub_time     : i64               # wall us at publish
+	mutable pub_model    : i64               # phase-locked publish clock (jitter-free)
 	# split layers: bg glides with the camera, sprites stay screen-anchored
 	mutable fb_spr       : new u32 [ 256 * 240 ]   # sprite layer, alpha 0 = empty
 	mutable pub_spr      : new u32 [ 256 * 240 ]
 	mutable spr_tex      : Texture
 	mutable pub_hud      : new u32 [ 256 * 240 ]   # HUD rows (scroll != camera), anchored
 	mutable hud_tex      : Texture
+	# world-locked sprites (OAM delta == -camera delta) glide with the bg
+	mutable fb_sprw      : new u32 [ 256 * 240 ]
+	mutable pub_sprw     : new u32 [ 256 * 240 ]
+	mutable sprw_tex     : Texture
+	mutable prev_oam     : new u8 [ 256 ]
+	mutable spr_world    : new u8 [ 64 ]     # per-slot world-locked flag (sticky)
+	mutable cur_dx       : i32
+	mutable cur_dy       : i32
+	mutable vsw_shader   : VectorScale
+	mutable psw_model    : Model
+	mutable psw_render   : Render
 
 	func init []
 		width      = 1024                    # 256 x4
@@ -242,8 +289,8 @@ trinity knes
 			if [ down ] pad_st = pad_st | m
 			el pad_st = pad_st & (~m)
 		if [ down ]
-			if [ code == 80 ] save_req = true
-			if [ code == 79 ] load_req = true
+			if [ code == 80 ] save_req = true   # P save
+			if [ code == 76 ] load_req = true   # L load
 		return
 
 	# ---- cartridge: iNES format, mapper 0 (NROM) ----
@@ -271,21 +318,33 @@ trinity knes
 		el
 			chr = ppu.chr_ram
 			chr_size = 0x2000
+			chr_is_ram = true
 		fclose[ f ]
-		if [ mapper != 0 ] puts 'knes: mapper {mapper} not yet supported (NROM only)'
+		mir_mode = (mirror_v) ? 2 : 3
+		if [ mapper == 1 ] m1_ctrl = 0x0C            # PRG mode 3 at power-on
+		el [ mapper != 0 ] puts 'knes: mapper {mapper} not yet supported (NROM/MMC1)'
 		puts 'knes: prg={prg_size} chr={chr_size} mapper={mapper} vmirror={(mirror_v) ? 1 : 0}'
 
 	# ---- PPU memory ($0000 pattern, $2000 nametables, $3F00 palette) ----
 	func nt_index [ a2: u32 ] -> u32
 		t : u32 [ (a2 >> 10) & 3 ]
-		if [ mirror_v ] t = t & 1
-		el t = t >> 1
+		if [ mir_mode == 2 ] t = t & 1               # vertical
+		el [ mir_mode == 3 ] t = t >> 1              # horizontal
+		el t = u32[ mir_mode ] & 1                   # one-screen A/B
 		return (t << 10) | (a2 & 0x3FF)
+
+	func chr_off [ pa: u32 ] -> u32
+		if [ mapper != 1 ] return pa
+		if [ (m1_ctrl & 0x10) != 0 ]                 # two 4K banks
+			bk : u32 [ (pa < 0x1000) ? cur_chr0 : cur_chr1 ]
+			return (bk * 0x1000 + (pa & 0xFFF)) % u32[ chr_size ]
+		return ((cur_chr0 & 0x1E) * 0x1000 + pa) % u32[ chr_size ]
 
 	func ppu_rd [ a2: u32 ] -> u8
 		pa : u32 [ a2 & 0x3FFF ]
 		if [ pa < 0x2000 ]
-			if [ sz[ pa ] < chr_size ] return chr[ pa ]
+			co : u32 [ chr_off[ pa ] ]
+			if [ sz[ co ] < chr_size ] return chr[ co ]
 			return 0
 		if [ pa < 0x3F00 ] return ppu.vram[ nt_index[ pa ] & 0x7FF ]
 		pi : u32 [ pa & 0x1F ]
@@ -295,7 +354,7 @@ trinity knes
 	func ppu_wr [ a2: u32, v: u8 ] -> none
 		pa : u32 [ a2 & 0x3FFF ]
 		if [ pa < 0x2000 ]
-			if [ chr_size == 0x2000 && chr == ppu.chr_ram ] ppu.chr_ram[ pa ] = v
+			if [ chr_is_ram ] ppu.chr_ram[ chr_off[ pa ] & 0x1FFF ] = v
 			return
 		if [ pa < 0x3F00 ]
 			ppu.vram[ nt_index[ pa ] & 0x7FF ] = v
@@ -317,6 +376,7 @@ trinity knes
 				return v
 			if [ r == 4 ] return ppu.oam[ ppu.oam_addr ]
 			if [ r == 7 ]                          # $2007 buffered data
+				ppu.t_dirty = true
 				pv : u8 [ ppu.rbuf ]
 				ppu.rbuf = ppu_rd[ u32[ ppu.addr ] ]
 				if [ (u32[ ppu.addr ] & 0x3F00) == 0x3F00 ] pv = ppu.rbuf
@@ -336,9 +396,24 @@ trinity knes
 			if [ apu.t_len > 0 ] s |= 4
 			if [ apu.n_len > 0 ] s |= 8
 			return u8[ s ]
+		if [ a2 >= 0x6000 && a2 <= 0x7FFF ] return prg_ram[ a2 & 0x1FFF ]
 		if [ a2 >= 0x8000 ]
 			o : u32 [ a2 - 0x8000 ]
-			if [ prg_size == 0x4000 ] o = o & 0x3FFF   # 16K NROM mirrors
+			if [ mapper == 1 ]
+				nb : u32 [ u32[ prg_size ] / 0x4000 ]
+				md : u32 [ (m1_ctrl >> 2) & 3 ]
+				bk : u32 [ 0 ]
+				if [ a2 < 0xC000 ]
+					if [ md == 3 ] bk = m1_prg & 0xF
+					el [ md == 2 ] bk = 0
+					el bk = m1_prg & 0xE
+				el
+					if [ md == 3 ] bk = nb - 1
+					el [ md == 2 ] bk = m1_prg & 0xF
+					el bk = (m1_prg & 0xE) | 1
+				o = (bk % nb) * 0x4000 + (a2 & 0x3FFF)
+			el
+				if [ prg_size == 0x4000 ] o = o & 0x3FFF   # 16K NROM mirrors
 			if [ prg && sz[ o ] < prg_size ] return prg[ o ]
 			return 0
 		return 0
@@ -353,6 +428,7 @@ trinity knes
 			if [ r == 0 ]                          # nt select lives in loopy t
 				ppu.ctrl = v
 				ppu.t_reg = (ppu.t_reg & 0xF3FF) | (u16[ v & 3 ] << 10)
+				ppu.t_dirty = false
 			el [ r == 1 ] ppu.mask = v
 			el [ r == 3 ] ppu.oam_addr = v
 			el [ r == 4 ]
@@ -364,6 +440,7 @@ trinity knes
 					ppu.t_reg = (ppu.t_reg & 0xFFE0) | u16[ v >> 3 ]
 				el
 					ppu.t_reg = (ppu.t_reg & 0x8C1F) | (u16[ v & 0xF8 ] << 2) | (u16[ v & 7 ] << 12)
+				ppu.t_dirty = false
 				ppu.latch = ! ppu.latch
 			el [ r == 6 ]                          # address writes share t; second sets v
 				if [ ! ppu.latch ]
@@ -371,6 +448,10 @@ trinity knes
 				el
 					ppu.t_reg = (ppu.t_reg & 0xFF00) | u16[ v ]
 					ppu.addr = ppu.t_reg
+					ppu.t_dirty = true         # address until proven scroll ($2005/$2000 clean it)
+					# v load: vertical scroll takes effect NOW (the $2006 technique)
+					ppu.eff_sy  = u8[ ((ppu.t_reg >> 2) & 0xF8) | ((ppu.t_reg >> 12) & 7) ]
+					ppu.eff_nty = u8[ (ppu.t_reg >> 11) & 1 ]
 				ppu.latch = ! ppu.latch
 			el [ r == 7 ]
 				ppu_wr[ u32[ ppu.addr ], v ]
@@ -394,6 +475,32 @@ trinity knes
 			return
 		if [ a2 >= 0x4000 && a2 <= 0x4017 ]
 			apu_wr[ a2, v ]
+			return
+		if [ a2 >= 0x6000 && a2 <= 0x7FFF ]
+			prg_ram[ a2 & 0x1FFF ] = v
+			return
+		if [ mapper == 1 && a2 >= 0x8000 ]           # MMC1 serial port
+			if [ (v & 0x80) != 0 ]
+				m1_shift = 0
+				m1_count = 0
+				m1_ctrl = m1_ctrl | 0x0C
+				return
+			m1_shift = m1_shift | (u32[ v & 1 ] << m1_count)
+			m1_count += 1
+			if [ m1_count < 5 ] return
+			reg : u32 [ (a2 >> 13) & 3 ]
+			if [ reg == 0 ]
+				m1_ctrl = m1_shift
+				mir_mode = i32[ m1_shift & 3 ]
+			el [ reg == 1 ]
+				m1_chr0 = m1_shift
+				cur_chr0 = m1_shift
+			el [ reg == 2 ]
+				m1_chr1 = m1_shift
+				cur_chr1 = m1_shift
+			el m1_prg = m1_shift
+			m1_shift = 0
+			m1_count = 0
 
 	func rd16 [ a2: u32 ] -> u32
 		return u32[ bus_rd[ a2 ] ] | (u32[ bus_rd[ a2 + 1 ] ] << 8)
@@ -962,21 +1069,30 @@ trinity knes
 	# =================================================================
 	func ppu_render [] -> none
 		ppu.s0_line = -1
-		memset[ fb_spr, 0, 256 * 240 * 4 ]        # sprite layer starts empty
+		memset[ fb_spr, 0, 256 * 240 * 4 ]        # sprite layers start empty
+		memset[ fb_sprw, 0, 256 * 240 * 4 ]
 		bg_pat : u32 [ ((ppu.ctrl & 0x10) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
 		sp_pat : u32 [ ((ppu.ctrl & 0x08) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
 		big : bool [ (ppu.ctrl & 0x20) != 0 ]
 		bg_on : bool [ (ppu.mask & 0x08) != 0 ]
 		sp_on : bool [ (ppu.mask & 0x10) != 0 ]
 		ub : u32 [ nes_pal[ i32[ ppu.palette[ 0 ] ] & 63 ] ]
+		vanch : i32 [ 0 ]
 		for [ y: i32 0, y < 240, y += 1 ]
 			base_nt : u32 [ u32[ line_nt[ y ] ] ]
+			cur_chr0 = line_chr0[ y ]
+			cur_chr1 = line_chr1[ y ]
+			# vertical scroll set MID-FRAME ($2006 technique) renders from
+			# that source row AT that line: anchor each vertical region where
+			# its sy changed and count rows from the anchor (hardware-true)
+			if [ y > 0 ]
+				if [ line_sy[ y ] != line_sy[ y - 1 ] || ((line_nt[ y ] ^ line_nt[ y - 1 ]) & 2) != 0 ] vanch = y
 			for [ x: i32 0, x < 256, x += 1 ]
 				o : u32 [ ub ]
 				bpx : u32 [ 0 ]
 				if [ bg_on ]
 					wx : u32 [ u32[ x ] + u32[ line_sx[ y ] ] + ((base_nt & 1) << 8) ]
-					wy : u32 [ u32[ y ] + u32[ line_sy[ y ] ] + ((base_nt >> 1) * 240 ) ]
+					wy : u32 [ u32[ y - vanch ] + u32[ line_sy[ y ] ] + ((base_nt >> 1) * 240 ) ]
 					wx = wx % 512
 					wy = wy % 480
 					nt : u32 [ 0x2000 ]
@@ -1022,9 +1138,13 @@ trinity knes
 						if [ spx == 0 ] continue
 						if [ si == 0 && bpx != 0 && ppu.s0_line < 0 ] ppu.s0_line = y
 						if [ (at2 & 0x20) != 0 && bpx != 0 ] break   # behind bg
-						fb_spr[ y * 256 + x ] = nes_pal[ i32[ ppu.palette[ 16 + i32[ (at2 & 3) ] * 4 + i32[ spx ] ] ] & 63 ]
+						spc2 : u32 [ nes_pal[ i32[ ppu.palette[ 16 + i32[ (at2 & 3) ] * 4 + i32[ spx ] ] ] & 63 ] ]
+						if [ spr_world[ si ] != 0 ] fb_sprw[ y * 256 + x ] = spc2
+						el fb_spr[ y * 256 + x ] = spc2
 						break
 				ppu.framebuf[ y * 256 + x ] = o
+		cur_chr0 = m1_chr0
+		cur_chr1 = m1_chr1
 
 	# =================================================================
 	# frame + thread + audio (rgen template)
@@ -1032,10 +1152,24 @@ trinity knes
 	# one NTSC frame: 262 lines x 341 dots x 4 master; CPU cycle = 12 master
 	func run_frame [] -> none
 		for [ line: i32 0, line < 262, line += 1 ]
-			if [ line < 240 ]                     # snapshot loopy t per line
-				line_sx[ line ] = u8[ ((ppu.t_reg & 0x1F) << 3) | u16[ ppu.fine_x ] ]
-				line_sy[ line ] = u8[ ((ppu.t_reg >> 2) & 0xF8) | ((ppu.t_reg >> 12) & 7) ]
-				line_nt[ line ] = u8[ (ppu.t_reg >> 10) & 3 ]
+			if [ line == 0 ]                      # pre-render v reload: vertical from t
+				ppu.eff_sy  = u8[ ((ppu.t_reg >> 2) & 0xF8) | ((ppu.t_reg >> 12) & 7) ]
+				ppu.eff_nty = u8[ (ppu.t_reg >> 11) & 1 ]
+			if [ line < 240 ]                     # snapshot loopy t + CHR banks per line
+				# while t holds a VRAM address ($2007 burst in flight), hold
+				# the last scroll-intent tuple — an address is not a scroll
+				# X follows t per line (hardware hblank reload); Y follows the
+				# EFFECTIVE v (frame start / $2006 loads only). during $2007
+				# bursts t is an address — hold last scroll-intent X
+				if [ ! ppu.t_dirty ]
+					line_sx[ line ] = u8[ ((ppu.t_reg & 0x1F) << 3) | u16[ ppu.fine_x ] ]
+					line_nt[ line ] = u8[ ((ppu.t_reg >> 10) & 1) | (u16[ ppu.eff_nty ] << 1) ]
+				el [ line > 0 ]
+					line_sx[ line ] = line_sx[ line - 1 ]
+					line_nt[ line ] = u8[ (line_nt[ line - 1 ] & 1) | (ppu.eff_nty << 1) ]
+				line_sy[ line ] = ppu.eff_sy
+				line_chr0[ line ] = m1_chr0
+				line_chr1[ line ] = m1_chr1
 			if [ line == 241 ]
 				ppu.status = ppu.status | 0x80
 				ppu.in_vblank = true
@@ -1074,7 +1208,8 @@ trinity knes
 			n -= c
 
 	func save_state [] -> none
-		f : ref FILE [ fopen[ '/tmp/knes_state.bin', 'wb' ] ]
+		spx : rom.change_ext[ 'state' ]
+		f : ref FILE [ fopen[ spx, 'wb' ] ]
 		if [ ! f ] return
 		st_hdr[ 0 ] = u32[ cpu.a ]
 		st_hdr[ 1 ] = u32[ cpu.x ]
@@ -1089,17 +1224,21 @@ trinity knes
 		st_hdr[ 10 ] = u32[ ppu.scroll_y ]
 		st_hdr[ 11 ] = u32[ ppu.addr ]
 		st_hdr[ 12 ] = frames
+		st_hdr[ 13 ] = m1_ctrl | (m1_chr0 << 8) | (m1_chr1 << 16) | (m1_prg << 24)
+		st_hdr[ 14 ] = u32[ mir_mode ]
 		fwrite[ st_hdr, 4, 16, f ]
 		fwrite[ cpu.ram, 1, 0x800, f ]
 		fwrite[ ppu.vram, 1, 0x800, f ]
 		fwrite[ ppu.palette, 1, 32, f ]
 		fwrite[ ppu.oam, 1, 256, f ]
 		fwrite[ ppu.chr_ram, 1, 0x2000, f ]
+		fwrite[ prg_ram, 1, 0x2000, f ]
 		fclose[ f ]
 		puts 'knes: state saved at frame {frames}'
 
 	func load_state [] -> none
-		f : ref FILE [ fopen[ '/tmp/knes_state.bin', 'rb' ] ]
+		spx : rom.change_ext[ 'state' ]
+		f : ref FILE [ fopen[ spx, 'rb' ] ]
 		if [ ! f ]
 			puts 'knes: no state file'
 			return
@@ -1117,11 +1256,19 @@ trinity knes
 		ppu.scroll_y = u8[ st_hdr[ 10 ] ]
 		ppu.addr = u16[ st_hdr[ 11 ] ]
 		frames = st_hdr[ 12 ]
+		m1_ctrl = st_hdr[ 13 ] & 0xFF
+		m1_chr0 = (st_hdr[ 13 ] >> 8) & 0xFF
+		m1_chr1 = (st_hdr[ 13 ] >> 16) & 0xFF
+		m1_prg  = (st_hdr[ 13 ] >> 24) & 0xFF
+		cur_chr0 = m1_chr0
+		cur_chr1 = m1_chr1
+		mir_mode = i32[ st_hdr[ 14 ] ]
 		fread[ cpu.ram, 1, 0x800, f ]
 		fread[ ppu.vram, 1, 0x800, f ]
 		fread[ ppu.palette, 1, 32, f ]
 		fread[ ppu.oam, 1, 256, f ]
 		fread[ ppu.chr_ram, 1, 0x2000, f ]
+		fread[ prg_ram, 1, 0x2000, f ]
 		fclose[ f ]
 		puts 'knes: state loaded, frame {frames} pc={cpu.pc}'
 
@@ -1129,6 +1276,11 @@ trinity knes
 		tsp : local i64 [ 2 ]
 		clock_gettime[ 1, tsp ]
 		return tsp[0] * 1000000 + tsp[1] / 1000
+
+	func vdp_pick [ i: i32 ] -> u32
+		sv : u32 [ fb_spr[ i ] ]
+		if [ (sv >> 24) != 0 ] return sv
+		return ppu.framebuf[ i ]
 
 	func emu_tick [] -> none
 		if [ save_at > 0 && frames == u32[ save_at ] ] save_req = true
@@ -1138,7 +1290,27 @@ trinity knes
 		if [ load_req ]
 			load_state[]
 			load_req = false
+		ticks += 1
+		if [ autowalk > 0 ]
+			if [ ticks >= 5 && ticks < i64[ 5 + autowalk ] ] pad_st = pad_st | 0x10
+			el pad_st = pad_st & 0xFFFFFFEF
 		run_frame[]
+		if [ seq_to > 0 && ticks >= i64[ seq_from ] && ticks < i64[ seq_to ] ]
+			sf : ref FILE [ fopen[ '/tmp/knes_seq_{ticks}.ppm', 'wb' ] ]
+			if [ sf ]
+				fprintf[ sf, "P6\n256 240\n255\n" ]
+				for [ qi2: i32 0, qi2 < 256 * 240, qi2 += 1 ]
+					qp2 : u32 [ vdp_pick[ qi2 ] ]
+					fputc[ i32[ qp2 & 0xFF ], sf ]
+					fputc[ i32[ (qp2 >> 8) & 0xFF ], sf ]
+					fputc[ i32[ (qp2 >> 16) & 0xFF ], sf ]
+				fclose[ sf ]
+			lf : ref FILE [ fopen[ '/tmp/knes_lines_{ticks}.bin', 'wb' ] ]
+			if [ lf ]
+				fwrite[ line_sx, 1, 240, lf ]
+				fwrite[ line_sy, 1, 240, lf ]
+				fwrite[ line_nt, 1, 240, lf ]
+				fclose[ lf ]
 		# camera x from the game-area snapshot (line 200 — below any HUD split),
 		# 9-bit with the nametable bit; wrap-aware delta, teleports zeroed
 		cam : i32 [ (i32[ line_nt[ 200 ] & 1 ] << 8) | i32[ line_sx[ 200 ] ] ]
@@ -1146,36 +1318,130 @@ trinity knes
 		if [ dx >= 256 ] dx -= 512
 		if [ dx > 32 || dx < -32 ] dx = 0
 		cam_prev = cam
-		# anchored rows = EDGE bands whose scroll disagrees with the camera
-		# ("it never moves relative", and HUDs are always edge-relative):
-		# top prefix + bottom suffix go to the pinned HUD layer
+		# vertical camera: nt bit1 selects the second 240-row nametable
+		camy : i32 [ i32[ (line_nt[ 200 ] >> 1) & 1 ] * 240 + i32[ line_sy[ 200 ] ] ]
+		dy : i32 [ camy - cam_prev_y ]
+		if [ dy >= 240 ] dy -= 480
+		if [ dy <= -240 ] dy += 480
+		if [ dy > 32 || dy < -32 ] dy = 0
+		if [ trace && dy != 0 ] puts 'dy={dy} camy={camy}'
+		cam_prev_y = camy
+		cur_dx = dx
+		cur_dy = dy
+		# world-locked sprite classification: OAM delta == -camera delta on
+		# every moving axis -> the sprite rides the world (sticky per slot)
+		if [ dx != 0 || dy != 0 ]
+			for [ si: i32 0, si < 64, si += 1 ]
+				syv : i32 [ i32[ ppu.oam[ si * 4 ] ] ]
+				sxv : i32 [ i32[ ppu.oam[ si * 4 + 3 ] ] ]
+				sdyv : i32 [ syv - i32[ prev_oam[ si * 4 ] ] ]
+				sdxv : i32 [ sxv - i32[ prev_oam[ si * 4 + 3 ] ] ]
+				wok : bool [ syv < 0xEF ]
+				if [ dy != 0 && sdyv != (0 - dy) ] wok = false
+				if [ dx != 0 && sdxv != (0 - dx) ] wok = false
+				spr_world[ si ] = (wok) ? 1 : 0
+		if [ gapx > 4 && gapy > 4 ]
+			for [ si2: i32 0, si2 < 64, si2 += 1 ]
+				spr_world[ si2 ] = 0
+		memcpy[ prev_oam, ppu.oam, 256 ]
+		# anchored rows = EDGE bands whose scroll tuple disagrees with the
+		# camera ("it never moves relative"): vertical transitions differ in
+		# sy, horizontal in sx/nt — compare all three
+		c3x : i32 [ i32[ line_sx[ 200 ] ] ]
+		c3y : i32 [ i32[ line_sy[ 200 ] ] ]
+		c3n : i32 [ i32[ line_nt[ 200 ] ] ]
 		split : i32 [ 0 ]
 		while [ split < 240 ]
-			f9 : i32 [ (i32[ line_nt[ split ] & 1 ] << 8) | i32[ line_sx[ split ] ] ]
-			if [ f9 == cam ] break
+			rx : i32 [ i32[ line_sx[ split ] ] ]
+			ry : i32 [ i32[ line_sy[ split ] ] ]
+			rn : i32 [ i32[ line_nt[ split ] ] ]
+			if [ rx == c3x && ry == c3y && rn == c3n ] break
+			if [ rx == p3x && ry == p3y && rn == p3n ] break   # transitional, not HUD
 			split += 1
 		if [ split >= 240 ] split = 0
 		bsplit : i32 [ 240 ]
 		while [ bsplit > split ]
-			f9b : i32 [ (i32[ line_nt[ bsplit - 1 ] & 1 ] << 8) | i32[ line_sx[ bsplit - 1 ] ] ]
-			if [ f9b == cam ] break
+			bx : i32 [ i32[ line_sx[ bsplit - 1 ] ] ]
+			by : i32 [ i32[ line_sy[ bsplit - 1 ] ] ]
+			bn : i32 [ i32[ line_nt[ bsplit - 1 ] ] ]
+			if [ bx == c3x && by == c3y && bn == c3n ] break
+			if [ bx == p3x && by == p3y && bn == p3n ] break
 			bsplit -= 1
 		pub_lock.lock[]
 		memcpy[ pub_framebuf, ppu.framebuf, 256 * 240 * 4 ]
 		memcpy[ pub_spr, fb_spr, 256 * 240 * 4 ]
+		memcpy[ pub_sprw, fb_sprw, 256 * 240 * 4 ]
 		memset[ pub_hud, 0, 256 * 240 * 4 ]
-		if [ split > 0 ] memcpy[ pub_hud, ppu.framebuf, split * 256 * 4 ]
+		if [ split > 0 ]
+			memcpy[ pub_hud, ppu.framebuf, split * 256 * 4 ]
+			# bg copy: fill the pinned band with the seam row so vertical
+			# glide slides a clean room edge under the HUD, not a ghost HUD
+			for [ er: i32 0, er < split, er += 1 ]
+				memcpy[ pub_framebuf + er * 1024, ppu.framebuf + split * 1024, 1024 ]
 		if [ bsplit < 240 ]
 			bo : i32 [ bsplit * 256 * 4 ]
 			memcpy[ pub_hud + bo, ppu.framebuf + bo, (240 - bsplit) * 256 * 4 ]
-		pub_dx = dx
-		pub_time = wall_us[]
+			for [ er2: i32 bsplit, er2 < 240, er2 += 1 ]
+				memcpy[ pub_framebuf + er2 * 1024, ppu.framebuf + (bsplit - 1) * 1024, 1024 ]
+		if [ trace ]
+			if [ split != dbg_split || bsplit != dbg_bsplit || u32[ ppu.mask ] != dbg_mask ]
+				puts 'CH f{frames} split={split} bsplit={bsplit} mask={ppu.mask} ctrl={ppu.ctrl} dy={dy} dx={dx}'
+				dbg_split = split
+				dbg_bsplit = bsplit
+				dbg_mask = u32[ ppu.mask ]
+		p3x = c3x
+		p3y = c3y
+		p3n = c3n
+		# phase-locked publish clock: the ALSA ring quantizes the thread's
+		# wake times (+-ms jitter), but the long-run rate is exactly the DAC
+		# clock. advance by one frame period and correct drift softly.
+		noww : i64 [ wall_us[] ]
+		if [ pub_model == 0 ] pub_model = noww
+		el
+			pub_model += 16639
+			errt : i64 [ noww - pub_model ]
+			if [ errt > 8000 || errt < -8000 ] pub_model = noww
+			el pub_model += errt / 16
+		pub_time = pub_model
+		# publish each axis only when it MOVED; the replay window is the
+		# measured cadence (Zelda steps y every 2nd frame -> 33ms window,
+		# SMB every frame -> 17ms). deltas replay continuously, never park.
+		gapx += 1
+		gapy += 1
+		if [ dx != 0 ]
+			pub_dx = dx
+			pub_tx = pub_model
+			gx : i32 [ (gapx > 3) ? 3 : gapx ]
+			pub_px = i64[ gx ] * 16639
+			gapx = 0
+		el [ gapx > 4 ] pub_dx = 0
+		if [ dy != 0 ]
+			pub_dy = dy
+			pub_ty = pub_model
+			gy : i32 [ (gapy > 3) ? 3 : gapy ]
+			pub_py = i64[ gy ] * 16639
+			gapy = 0
+		el [ gapy > 4 ] pub_dy = 0
 		pub_lock.unlock[]
 		generate_audio[]
 		frames += 1
 		if [ (frames % 60) == 0 ]
 			puts 'f{frames} pc={cpu.pc} ctrl={ppu.ctrl} mask={ppu.mask} sx={ppu.scroll_x} nt={ppu.ctrl & 3}'
-		if [ frames_exit > 0 && frames >= u32[ frames_exit ] ]
+		if [ frames_exit > 0 && ticks >= i64[ frames_exit ] ]
+			nzc : i32 [ 0 ]
+			for [ ci: i32 0, ci < 0x2000, ci += 1 ]
+				if [ ppu.chr_ram[ ci ] != 0 ] nzc += 1
+			nzn : i32 [ 0 ]
+			for [ ni: i32 0, ni < 0x800, ni += 1 ]
+				if [ ppu.vram[ ni ] != 0 ] nzn += 1
+			vf : ref FILE [ fopen[ '/tmp/knes_vram.bin', 'wb' ] ]
+			if [ vf ]
+				fwrite[ ppu.vram, 1, 0x800, vf ]
+				fwrite[ ppu.palette, 1, 32, vf ]
+				fwrite[ ppu.chr_ram, 1, 0x2000, vf ]
+				fclose[ vf ]
+			puts 'L70 sy={line_sy[70]} nt={line_nt[70]} sx={line_sx[70]} | L150 sy={line_sy[150]} nt={line_nt[150]} | L30 sy={line_sy[30]} nt={line_nt[30]} t={ppu.t_reg}'
+			puts 'chr_nz={nzc} nt_nz={nzn} pal0={ppu.palette[0]} pal1={ppu.palette[1]} m1ctrl={m1_ctrl} chr0={m1_chr0} chr1={m1_chr1} prgb={m1_prg} mir={mir_mode}'
 			pf : ref FILE [ fopen[ '/tmp/knes_fb.ppm', 'wb' ] ]
 			if [ pf ]
 				fprintf[ pf, "P6\n256 240\n255\n" ]
@@ -1276,7 +1542,12 @@ trinity knes
 		if [ ! booted ] boot[]
 		if [ ! screen_tex ]
 			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 240, linear: true ]
+		sc : f32 [ f32[ width ] / 256.0 ]
+		bl : f32 [ 8.0 * sc ]
+		ow : f32 [ f32[ width ] + bl * 2.0 ]
+		oh : f32 [ f32[ height ] + bl * 2.0 ]
 		ox : f32 [ 0.0 ]
+		oy : f32 [ 0.0 ]
 		if [ prg ]
 			if [ ! emu_started ]
 				emu_started = true
@@ -1287,21 +1558,32 @@ trinity knes
 				spr_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 240, linear: true ]
 			if [ ! hud_tex ]
 				hud_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 240, linear: true ]
+			if [ ! sprw_tex ]
+				sprw_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 240, linear: true ]
 			pub_lock.lock[]
 			screen_tex.upload[ pub_framebuf, 256 * 240 * 4 ]
 			spr_tex.upload[ pub_spr, 256 * 240 * 4 ]
 			hud_tex.upload[ pub_hud, 256 * 240 * 4 ]
+			sprw_tex.upload[ pub_sprw, 256 * 240 * 4 ]
 			sdx : i32 [ pub_dx ]
-			spt : i64 [ pub_time ]
+			sdy : i32 [ pub_dy ]
+			stx : i64 [ pub_tx ]
+			sty : i64 [ pub_ty ]
+			spx2 : i64 [ pub_px ]
+			spy2 : i64 [ pub_py ]
 			pub_lock.unlock[]
-			if [ smooth && sdx != 0 ]
-				# alpha: fraction of the 60.0988Hz frame elapsed since publish;
-				# replay the just-completed camera motion, converging on truth
-				el_us : i64 [ wall_us[] - spt ]
-				alpha : f32 [ f32[ el_us ] / 16639.0 ]
-				if [ alpha > 1.0 ] alpha = 1.0
-				if [ alpha < 0.0 ] alpha = 0.0
-				ox = f32[ sdx ] * (1.0 - alpha) * (f32[ width ] / 256.0)
+			if [ smooth && (sdx != 0 || sdy != 0) ]
+				noww : i64 [ wall_us[] ]
+				if [ sdx != 0 && spx2 > 0 ]
+					ax : f32 [ f32[ noww - stx ] / f32[ spx2 ] ]
+					if [ ax > 1.0 ] ax = 1.0
+					if [ ax < 0.0 ] ax = 0.0
+					ox = f32[ sdx ] * (1.0 - ax) * (ow / 256.0)
+				if [ sdy != 0 && spy2 > 0 ]
+					ay : f32 [ f32[ noww - sty ] / f32[ spy2 ] ]
+					if [ ay > 1.0 ] ay = 1.0
+					if [ ay < 0.0 ] ay = 0.0
+					oy = f32[ sdy ] * (1.0 - ay) * (oh / 240.0)
 		el
 			for [ y: i32 0, y < 240, y += 1 ]
 				for [ x: i32 0, x < 256, x += 1 ]
@@ -1309,12 +1591,8 @@ trinity knes
 			frames += 1
 			screen_tex.upload[ ppu.framebuf, 256 * 240 * 4 ]
 		# bg glides with the camera; HUD + sprites draw unshifted on top.
-		# 4 source px of overscan bleed hides the slide at the edges.
-		sc : f32 [ f32[ width ] / 256.0 ]
-		bl : f32 [ 4.0 * sc ]
-		ow : f32 [ f32[ width ] + bl * 2.0 ]
-		oh : f32 [ f32[ height ] + bl * 2.0 ]
-		out : rect [ x: (0.0 - bl) + ox, y: 0.0 - bl, w: ow, h: oh ]
+		# 8 source px of overscan bleed hides the slide at the edges.
+		out : rect [ x: (0.0 - bl) + ox, y: (0.0 - bl) + oy, w: ow, h: oh ]
 		out_spr : rect [ x: 0.0 - bl, y: 0.0 - bl, w: ow, h: oh ]
 		if [ vec || se_2d || blocky ]
 			if [ prg && ! ps_render ]
@@ -1340,6 +1618,9 @@ trinity knes
 					vss_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
 					pss_model  = Model [ w: cv.w, s: vss_shader, samplers: map Texture[string] [ 'color': spr_tex ] ]
 					pss_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ pss_model ] ]
+					vsw_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
+					psw_model  = Model [ w: cv.w, s: vsw_shader, samplers: map Texture[string] [ 'color': sprw_tex ] ]
+					psw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ psw_model ] ]
 				el
 					# sharp-bilinear lifts (SE 2x result, or the raw layers) to window res
 					ps_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
@@ -1374,8 +1655,15 @@ trinity knes
 				pss_render.update[]
 				pss_render.draw[]
 				pss_render.flush_submit[]
+				if [ psw_render ]
+					psw_render.update[]
+					psw_render.draw[]
+					psw_render.flush_submit[]
 				ps_render.sync_fence[]
 				cv.draw_image[ ps_render.color, out ]
+				if [ psw_render ]
+					psw_render.sync_fence[]
+					cv.draw_image[ psw_render.color, out ]   # world sprites glide with bg
 				psh_render.sync_fence[]
 				cv.draw_image[ psh_render.color, out_spr ]
 				pss_render.sync_fence[]

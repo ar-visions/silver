@@ -27,6 +27,7 @@ build
 *.bsz
 *.md
 *.nes
+*.state
 /shot*png
 /*.ag
 sessions
