@@ -1,0 +1,158 @@
+extend orbiter
+
+# emulator panes: a ROM file opens as a LIVE emulator inside the editor.
+# each view is a thin host — the emulator itself is a plain trinity element
+# (foundry/asnes|knes|rgen) that knows nothing about ResourceView; the view
+# owns one instance, hands it the pane rect each frame via paint[cv, vp],
+# and forwards the pane's plain keys. releasing the pane drops the element,
+# whose dealloc stops the emulation thread.
+
+ResourceView AsnesView
+    mutable emu : asnes
+    mutable fed_seq : i32
+    func extensions [] -> array string
+        return array string [ '.smc', '.sfc' ]
+    func continuous [] -> bool
+        return true
+    # the console's context button asks for a machine-state dump; the emu
+    # thread publishes it and context_feed hands it over exactly once
+    # (context_seq marks each publish)
+    func context_request [] -> bool
+        if [ !emu ] return false
+        emu.context_req = true
+        return true
+    func context_feed [] -> string
+        if [ !emu || emu.context_seq == fed_seq ] return null
+        fed_seq = emu.context_seq
+        return emu.context_out
+    func render [ cv: Canvas, bounds: rect ]
+        if [ !emu ]
+            emu = asnes [ Au.new_object[ typeid[ asnes ], null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
+            emu.rom = src
+        # aspect-fit (8.0:7.0) letterboxed inside the pane; crop clamps the
+        # glide overscan bleed so it can't paint over the editor title bar
+        ar : f32 [ 8.0 / 7.0 ]
+        fw : f32 [ bounds.w ]
+        fh : f32 [ fw / ar ]
+        if [ fh > bounds.h ]
+            fh = bounds.h
+            fw = fh * ar
+        vp : rect [ x: bounds.x + (bounds.w - fw) * 0.5, y: bounds.y + (bounds.h - fh) * 0.5, w: fw, h: fh ]
+        tx : f32 [ cv.transform_tx[] ]
+        ty : f32 [ cv.transform_ty[] ]
+        cv.set_crop[ tx + vp.x, ty + vp.y, tx + vp.x + vp.w, ty + vp.y + vp.h ]
+        emu.paint[ cv, vp ]
+        cv.clear_crop[]
+    func on_key [ ev: Event ]
+        if [ emu ] emu.on_key[ ev ]
+    func release []
+        emu = null
+
+ResourceView KnesView
+    mutable emu : knes
+    mutable fed_seq : i32
+    func extensions [] -> array string
+        return array string [ '.nes' ]
+    func continuous [] -> bool
+        return true
+    func context_request [] -> bool
+        if [ !emu ] return false
+        emu.context_req = true
+        return true
+    func context_feed [] -> string
+        if [ !emu || emu.context_seq == fed_seq ] return null
+        fed_seq = emu.context_seq
+        return emu.context_out
+    func views [] -> array string
+        return array string [ 'game', 'assembly', 'tiles' ]
+    func view_unload [ which: i32 ]
+        if [ emu ] emu.view_release[]
+    func view_text [ which: i32 ] -> bool
+        return which == 1
+    func view_lines [ which: i32 ] -> list string
+        if [ !emu ] return null
+        return emu.disasm_all[]
+    func commit_line [ text: string ] -> bool
+        if [ !emu ] return false
+        return emu.asm_patch[ text ]
+    # tiles view: clicks paint pixels; the edits live on this view's undo
+    # stack (routed here from the editor's Ctrl-Z/Y before text history)
+    func view_press [ ev: Event ] -> bool
+        if [ !emu || view_sel != 2 ] return false
+        if [ emu.tile_rw <= 0.0 ] return false
+        sx : i32 [ i32[ (ev.mouse.pos.x - emu.tile_rx) / emu.tile_rw * 256.0 ] ]
+        sy : i32 [ i32[ (ev.mouse.pos.y - emu.tile_ry) / emu.tile_rh * 128.0 ] ]
+        return emu.tile_click[ sx, sy ]
+    func view_undo [] -> bool
+        if [ !emu || view_sel != 2 ] return false
+        return emu.tile_undo[]
+    func view_redo [] -> bool
+        if [ !emu || view_sel != 2 ] return false
+        return emu.tile_redo[]
+    func render [ cv: Canvas, bounds: rect ]
+        if [ !emu ]
+            # element subclasses are is_user_init: bare construction skips the
+            # init chain (the element TREE mount normally runs it). we host the
+            # element outside the tree, so drive the full runtime init here —
+            # defaults, `new` member allocations, the class init[] bodies.
+            emu = knes [ Au.new_object[ typeid[ knes ], null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
+            emu.rom = src
+        if [ view_sel == 2 ]
+            emu.paint_tiles[ cv, bounds ]
+            return
+        # aspect-fit (8.0:7.0) letterboxed inside the pane; crop clamps the
+        # glide overscan bleed so it can't paint over the editor title bar
+        ar : f32 [ 8.0 / 7.0 ]
+        fw : f32 [ bounds.w ]
+        fh : f32 [ fw / ar ]
+        if [ fh > bounds.h ]
+            fh = bounds.h
+            fw = fh * ar
+        vp : rect [ x: bounds.x + (bounds.w - fw) * 0.5, y: bounds.y + (bounds.h - fh) * 0.5, w: fw, h: fh ]
+        tx : f32 [ cv.transform_tx[] ]
+        ty : f32 [ cv.transform_ty[] ]
+        cv.set_crop[ tx + bounds.x, ty + bounds.y, tx + bounds.x + bounds.w, ty + bounds.y + bounds.h ]
+        emu.paint[ cv, vp ]
+        cv.clear_crop[]
+    func on_key [ ev: Event ]
+        if [ emu ] emu.on_key[ ev ]
+    func release []
+        emu = null
+
+ResourceView RGenView
+    mutable emu : rgen
+    mutable fed_seq : i32
+    func extensions [] -> array string
+        return array string [ '.gen', '.68k' ]   # .md/.bin need header sniffing; .smd is interleaved (unsupported)
+    func continuous [] -> bool
+        return true
+    func context_request [] -> bool
+        if [ !emu ] return false
+        emu.context_req = true
+        return true
+    func context_feed [] -> string
+        if [ !emu || emu.context_seq == fed_seq ] return null
+        fed_seq = emu.context_seq
+        return emu.context_out
+    func render [ cv: Canvas, bounds: rect ]
+        if [ !emu ]
+            emu = rgen [ Au.new_object[ typeid[ rgen ], null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
+            emu.rom = src
+        # aspect-fit (10.0:7.0) letterboxed inside the pane; crop clamps the
+        # glide overscan bleed so it can't paint over the editor title bar
+        ar : f32 [ 10.0 / 7.0 ]
+        fw : f32 [ bounds.w ]
+        fh : f32 [ fw / ar ]
+        if [ fh > bounds.h ]
+            fh = bounds.h
+            fw = fh * ar
+        vp : rect [ x: bounds.x + (bounds.w - fw) * 0.5, y: bounds.y + (bounds.h - fh) * 0.5, w: fw, h: fh ]
+        tx : f32 [ cv.transform_tx[] ]
+        ty : f32 [ cv.transform_ty[] ]
+        cv.set_crop[ tx + bounds.x, ty + bounds.y, tx + bounds.x + bounds.w, ty + bounds.y + bounds.h ]
+        emu.paint[ cv, vp ]
+        cv.clear_crop[]
+    func on_key [ ev: Event ]
+        if [ emu ] emu.on_key[ ev ]
+    func release []
+        emu = null

@@ -664,7 +664,11 @@ struct XCoord
             expect (left.x_type <= XAlign.right), 'invalid left-operand (xcoord)'
             return left_val + val
         r : f32 [ (rel && relative) ? rel.w * relative : 0.0 ]
-        if [ relative && last ]
+        # left-flow only: `l<gap>+` advances past the previous sibling's right
+        # edge. a right-anchored relative coord (`r<gap>+`, right-flow) must NOT
+        # take this — its stacking is resolved post-sizing in layout_element,
+        # and adding last's extent here lands the element past the parent edge.
+        if [ relative && last && x_type == XAlign.left ]
             r += last.x + last.w
         hsz : f32 [ (vto - from) / 2.0 ]
         if [ x_type < XAlign.middle ]
@@ -757,7 +761,9 @@ struct YCoord
             expect top.y_type <= YAlign.bottom, 'invalid top-operand (ycoord)'
             return top_val + val
         r : f32 [ (rel && relative) ? rel.h * relative : 0.0 ]
-        if [ relative && last ]
+        # top-flow only — mirror of the x-axis rule: bottom-anchored relative
+        # coords resolve their stacking post-sizing in layout_element.
+        if [ relative && last && y_type == YAlign.top ]
             r += last.y + last.h
         hsz : f32 [ (vto - from) / 2.0 ]
         if [ y_type < YAlign.middle ]

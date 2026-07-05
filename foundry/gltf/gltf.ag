@@ -99,6 +99,9 @@ class Sparse
 class Accessor
     public normalized:      bool
     public bufferView:      u64
+    # start of this accessor's data WITHIN its bufferView (shared/interleaved
+    # views place several accessors in one view at different offsets)
+    public byteOffset:      u64
     public componentType:   ComponentType
     public type:   CompoundType
     public count:           u64
@@ -205,9 +208,12 @@ class Accessor
         total_bytes = stride * vcount_val[]
 
 class BufferView
+    public name:            string
     public buffer:          u64
     public byteLength:      u64
     public byteOffset:      u64
+    # element stride for INTERLEAVED vertex views; 0/absent = tightly packed
+    public byteStride:      u64
     public target:          TargetType
 
 class Skin
@@ -257,6 +263,12 @@ class Node
     public translation:     vec3f
     public rotation:        quatf
     public scale:           vec3f
+    # full column-major node transform (a gltf node carries EITHER matrix OR
+    # TRS) — sketchfab-style exports use matrix + children hierarchies
+    public matrix:          mat4f
+    # composed scene-graph WORLD transform (GltfModel.compute_worlds walks the
+    # scene hierarchy). m[15] == 0 until computed.
+    mutable world:          mat4f
     public weights:         array f32
     public children:        array i64
     mutable joint_index:     i32
@@ -304,19 +316,39 @@ class GltfBuffer
     public byteLength:      u64
     public uri:             path
     public data:            ref u8
-    
-    
+    # directory of the .gltf being loaded: relative buffer uris resolve here
+    # FIRST, so a model loads from any path — not only {cwd}/models/. callers
+    # set it (via set_base) before path.load; null keeps the legacy cwd lookup.
+    intern static base :    path
+
+    static func set_base [ p: path ]
+        base = p
+
+    static func get_base [] -> path
+        return base
+
     func init []
         if [ !uri ]
             return
         str : string[ uri ]
-        fp: fopen[ (str.starts_with['models/']) ? uri : 'models/{uri}', "rb" ]
+        fp : ref FILE [ null ]
+        if [ base ]
+            fp = fopen[ '{base}/{str}', 'rb' ]
+            if [ !fp ]
+                fp = fopen[ '{base}/{uri.filename[]}', 'rb' ]
+        if [ !fp ]
+            fp = fopen[ (str.starts_with['models/']) ? uri : 'models/{uri}', "rb" ]
         if [ !fp ]
             puts 'GltfBuffer: failed to open {uri.chars}'
             return
         fseek[ fp, 0, SEEK_END ]
         length: i64 [ ftell[ fp ] ]
         rewind[ fp ]
+        # a .bin much smaller than the .gltf declares is not real vertex data —
+        # the classic case is an UNFETCHED git-lfs pointer (132 bytes of text)
+        # which otherwise renders as garbage geometry with no error anywhere
+        if [ byteLength > 0 && u64[ length ] < byteLength ]
+            puts 'GltfBuffer: {uri.chars} is {length} bytes but the gltf declares {byteLength} — unfetched git-lfs pointer? (git lfs pull)'
         buf: new u8 [ length ]
         fread[ buf, 1, length, fp ]
         fclose[ fp ]
@@ -368,6 +400,23 @@ class PbrMetallicRoughness
     public iridescenceThicknessMinimum:  f32
     public iridescenceThicknessMaximum:  f32
 
+class GltfSampler
+    public name:            string
+    public magFilter:       i64
+    public minFilter:       i64
+    public wrapS:           i64
+    public wrapT:           i64
+
+class GltfTexture
+    public name:            string
+    public sampler:         i64
+    public source:          i64
+
+class GltfImage
+    public name:            string
+    public uri:             path
+    public mimeType:        string
+
 class Material
     public name:             string
     public pbrMetallicRoughness: PbrMetallicRoughness
@@ -389,13 +438,66 @@ class GltfModel
     public animations:       array Animation
     public scenes:           array Scene
     public materials:        array Material
+    public images:           array GltfImage
+    public textures:         array GltfTexture
+    public samplers:         array GltfSampler
     public scene:            u64
     public asset:            AssetDesc
+
+    # resolve a material TextureInfo to its image FILE path (relative uris
+    # resolve against GltfBuffer.base, same as the .bin buffers). null when
+    # the material has no such texture.
+    func texture_uri [ ti: TextureInfo ] -> path
+        if [ !ti || !textures ] return null
+        if [ ti.index < 0 || ti.index >= textures.count ] return null
+        tx : textures[ ti.index ]
+        if [ !tx || !images ] return null
+        if [ tx.source < 0 || tx.source >= images.count ] return null
+        im : images[ tx.source ]
+        if [ !im || !im.uri ] return null
+        base : GltfBuffer.get_base[]
+        if [ base ] return path '{base}/{im.uri}'
+        return im.uri
     func find [n: cstr] -> Node
         for [node: Node] in nodes
             if [strcmp [node.name, n] == 0]
                 return node
         return null
+
+    # a node's LOCAL transform: its matrix when present, else T·R·S per the
+    # gltf spec (guards: absent rotation parses to the ZERO quat — skip it)
+    func node_local [ n: Node ] -> mat4f
+        if [ n.matrix.m[15] != 0.0 ] return n.matrix
+        m : mat4f.identity[]
+        m = m.translate[ n.translation ]
+        if [ n.rotation.x != 0 || n.rotation.y != 0 || n.rotation.z != 0 || n.rotation.w != 0 ]
+            m = m.rotate[ n.rotation ]
+        if [ n.scale.x != 0 || n.scale.y != 0 || n.scale.z != 0 ]
+            m = m.scale[ n.scale ]
+        return m
+
+    func compose_world [ ni: i64, parent: mat4f ]
+        n : nodes[ ni ]
+        if [ !n ] return
+        w : mat4f [ parent.mul[ node_local[ n ] ] ]
+        n.world = w
+        if [ n.children ]
+            for [ ci: i32 0, ci < n.children.count, ci += 1 ]
+                compose_world[ n.children[ ci ], w ]
+
+    # compose every node's world matrix from the scene roots — axis-fix and
+    # scale live in sketchfab-style parent chains, so flat node transforms
+    # render models sideways/unscaled. nodes not reached from a scene keep
+    # their local as world (legacy flat files with no scenes).
+    func compute_worlds []
+        if [ scenes && scenes.count > 0 ]
+            sc : scenes[ scene ]
+            if [ sc && sc.nodes ]
+                for [ ri: i32 0, ri < sc.nodes.count, ri += 1 ]
+                    compose_world[ sc.nodes[ ri ], mat4f.identity[] ]
+        for [ n: Node ] in nodes
+            if [ n.world.m[15] == 0.0 ]
+                n.world = node_local[ n ]
 
     func index_of [n: cstr] -> i32
         i: i32 [0]

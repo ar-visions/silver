@@ -111,6 +111,8 @@ ielement element
     mutable rotation        : f32
     mutable transform_origin : vec2f
     public  ghost           : bool
+    # fully hidden: not painted and not hit-tested (layout still computes).
+    public  hide            : bool
     mutable captured        : bool
     public  disable         : bool
     # console rendering: draw a box-drawing border around this element and inset
@@ -167,6 +169,11 @@ ielement element
 
     intern restyle       : bool
     mutable volatile     : bool
+    # ALWAYS redraw, never cache: for elements whose content changes every
+    # frame regardless of style state (emulators, video, live views).
+    # `volatile` looks similar but is OWNED BY THE STYLE ENGINE (active
+    # transitions/EMA) and is cleared when styles settle — do not hijack it.
+    public  animated     : bool
     intern cache_canvas  : Canvas
     intern cache_w       : i32
     intern cache_h       : i32

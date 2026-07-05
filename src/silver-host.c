@@ -202,11 +202,24 @@ int main(int argc, char** argv) {
         1);
 #endif
 
-    signal(SIGSEGV, crash_handler);
-    signal(SIGABRT, crash_handler);
-    signal(SIGBUS,  crash_handler);
-    signal(SIGILL,  crash_handler);
-    signal(SIGFPE,  crash_handler);
+    // the handler must run on an ALTERNATE stack: a stack overflow leaves no
+    // room to deliver the signal on the faulting stack, so without SA_ONSTACK
+    // the process dies silently (bash prints "Segmentation fault", the handler
+    // never enters, no backtrace).
+    {
+        static char       altstack[64 * 1024];
+        stack_t           ss = { .ss_sp = altstack, .ss_size = sizeof(altstack), .ss_flags = 0 };
+        struct sigaction  sa;
+        sigaltstack(&ss, NULL);
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = crash_handler;
+        sa.sa_flags   = SA_ONSTACK;
+        sigaction(SIGSEGV, &sa, NULL);
+        sigaction(SIGABRT, &sa, NULL);
+        sigaction(SIGBUS,  &sa, NULL);
+        sigaction(SIGILL,  &sa, NULL);
+        sigaction(SIGFPE,  &sa, NULL);
+    }
 
     // resolve argv[0] to an absolute path (also follows a PATH symlink), so the
     // product/source paths below survive the cd_share() that changes cwd —

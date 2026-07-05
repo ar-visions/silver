@@ -750,6 +750,162 @@ ModelViewProject PixelSharp
 # where a corner rule fires, the texel is cut by the ideal 45-degree line and
 # the output pixel takes the side it falls on, with a one-dest-pixel AA band.
 # Diagonals render as exact straight edges at ANY scale — no 2x lattice.
+# generic character/prop PBR (gltf metallic-roughness), tuned for HUMANS:
+# standard GGX for clothes/props plus a light SUBSURFACE term (wrap diffuse +
+# warm back-transmission) that reads as skin and fades out with metalness.
+# samples the material textures model_init_pipeline binds (color / mr /
+# normal), each on its material-declared UV set (uv_map: x=color y=mr
+# z=normal — value 0/1/2 selects TEXCOORD_0/1/2).
+ModelViewProject HumanPBR
+    mutable eye    : vec4f
+    mutable uv_map : vec4f
+    mutable sss    : f32
+
+    attrib color  : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,  count:1, format: typeid[ rgba8 ] ]
+    attrib normal : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal, count:1, format: typeid[ rgba8 ] ]
+    attrib rough  : LayoutBinding [ type:typeid[ Surface ], id:Surface.rough,  count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos     : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal  : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv      : VertexInput [ type:typeid[ vec2f ] ]
+    attrib a_tangent : VertexInput [ type:typeid[ vec4f ] ]
+    attrib a_uv1     : VertexInput [ type:typeid[ vec2f ] ]
+    attrib a_uv2     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_normal    : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_uv        : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_uv1       : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_uv2       : VertexOutput [ type:typeid[ vec2f ] ]
+
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+        sss   = 0.5
+
+    func pow2 [ x: float ] -> GLSL float {
+        return x * x;
+    }
+
+    func pow5 [ x: float ] -> GLSL float {
+        float x2 = x * x;
+        return x2 * x2 * x;
+    }
+
+    func sRGBToLinear [ c: vec3f ] -> GLSL vec3f {
+        return pow(c, vec3(2.2));
+    }
+
+    func linearToSRGB [ c: vec3f ] -> GLSL vec3f {
+        return pow(c, vec3(1.0/2.2));
+    }
+
+    func F_Schlick [ f0: vec3f, cos_theta: float ] -> GLSL vec3f {
+        return f0 + (1.0 - f0) * pow5(1.0 - cos_theta);
+    }
+
+    func D_GGX [ roughness: float, NdotH: float ] -> GLSL float {
+        float alpha    = pow2(roughness);
+        float alpha_sq = pow2(alpha);
+        float denom    = pow2(NdotH) * (alpha_sq - 1.0) + 1.0;
+        return alpha_sq / (3.14159265359 * pow2(denom));
+    }
+
+    func G_Smith [ roughness: float, NdotV: float, NdotL: float ] -> GLSL float {
+        float k    = pow2(roughness + 1.0) / 8.0;
+        float G1_V = NdotV / max((NdotV * (1.0 - k) + k), 0.0001);
+        float G1_L = NdotL / max((NdotL * (1.0 - k) + k), 0.0001);
+        return G1_V * G1_L;
+    }
+
+    func BRDF [ L: vec3f, V: vec3f, N: vec3f, albedo: vec3f, metallic: float, roughness: float ] -> GLSL vec3f {
+        roughness = max(roughness, 0.05);
+        vec3  H     = normalize(L + V);
+        float NdotL = max(dot(N, L), 0.0);
+        float NdotV = max(dot(N, V), 0.0);
+        float NdotH = max(dot(N, H), 0.0);
+        float HdotV = max(dot(H, V), 0.0);
+        vec3  F0       = mix(vec3(0.04), albedo, metallic);
+        vec3  F        = F_Schlick(F0, HdotV);
+        float D        = D_GGX(roughness, NdotH);
+        float G        = G_Smith(roughness, NdotV, NdotL);
+        vec3  specular = (D * F * G) / max(4.0 * NdotV * NdotL, 0.0001);
+        vec3  kD       = (vec3(1.0) - F) * (1.0 - metallic);
+        vec3  diffuse  = kD * albedo / 3.14159265359;
+        return (diffuse + specular) * NdotL;
+    }
+
+    func perturbNormal [ N: vec3f, texcoord: vec2f ] -> FragGLSL vec3f {
+        vec3  map = texture(normal, texcoord).rgb * 2.0 - 1.0;
+        if (dot(map.xy, map.xy) < 0.001) return N;
+        vec3  q1  = dFdx(v_world_pos);
+        vec3  q2  = dFdy(v_world_pos);
+        vec2  st1 = dFdx(texcoord);
+        vec2  st2 = dFdy(texcoord);
+        float det = st1.x * st2.y - st2.x * st1.y;
+        if (abs(det) < 1e-5) return N;
+        float inv = 1.0 / det;
+        vec3  T   = normalize((q1 * st2.y - q2 * st1.y) * inv);
+        T         = normalize(T - dot(T, N) * N);
+        vec3  B   = normalize(cross(N, T));
+        mat3  TBN = mat3(T, B, N);
+        return normalize(TBN * map);
+    }
+
+    func ACESFilm [ x: vec3f ] -> GLSL vec3f {
+        float a = 2.51; float b = 0.03; float c = 2.43; float d = 0.59; float e = 0.14;
+        return clamp((x*(a*x+b))/(x*(c*x+d)+e), 0.0, 1.0);
+    }
+
+    func uv_pick [ sel: float ] -> FragGLSL vec2f {
+        if (sel > 1.5) return v_uv2;
+        if (sel > 0.5) return v_uv1;
+        return v_uv;
+    }
+
+    func vertex [] -> GLSL none {
+        vec4 wp     = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wp.xyz;
+        v_normal    = mat3(ubo.model) * a_normal;
+        v_uv        = a_uv;
+        v_uv1       = a_uv1;
+        v_uv2       = a_uv2;
+        gl_Position = ubo.proj * ubo.view * wp;
+    }
+
+    func fragment [] -> GLSL none {
+        vec2  uv_c   = uv_pick(ubo.uv_map.x);
+        vec2  uv_m   = uv_pick(ubo.uv_map.y);
+        vec2  uv_n   = uv_pick(ubo.uv_map.z);
+        vec4  base   = texture(color, uv_c);
+        vec3  albedo = sRGBToLinear(base.rgb);
+        vec3  mrs    = texture(rough, uv_m).rgb;
+        float rgh    = clamp(mrs.g, 0.045, 1.0);
+        float metal  = clamp(mrs.b, 0.0, 1.0);
+        vec3  V      = normalize(ubo.eye.xyz - v_world_pos);
+        vec3  N      = perturbNormal(normalize(v_normal), uv_n);
+        vec3  L1     = normalize(vec3( 0.45, 0.85,  0.55));
+        vec3  L2     = normalize(vec3(-0.55, 0.15, -0.65));
+        vec3  col    = BRDF(L1, V, N, albedo, metal, rgh) * vec3(1.00, 0.98, 0.95) * 2.4
+                     + BRDF(L2, V, N, albedo, metal, rgh) * vec3(0.55, 0.65, 0.85) * 0.7;
+        // subsurface: wrap the key light past the terminator and add a warm
+        // back-transmission — reads as skin, fades with metalness so cloth
+        // and props stay plain PBR
+        float ndl  = dot(N, L1);
+        float wrap = clamp((ndl + 0.55) / 1.55, 0.0, 1.0) * clamp(1.0 - ndl, 0.0, 1.0);
+        float back = pow(clamp(1.0 - ndl, 0.0, 1.0), 2.2)
+                   * pow(clamp(dot(V, -L1) * 0.5 + 0.5, 0.0, 1.0), 1.5);
+        vec3  sssc = albedo * vec3(1.00, 0.36, 0.24);
+        col += ubo.sss * (1.0 - metal) * (wrap * 0.30 + back * 0.55) * sssc;
+        col += albedo * 0.14;
+        col  = ACESFilm(col);
+        fragColor = vec4(linearToSRGB(col), base.a);
+    }
+
+
 ModelViewProject VectorScale
     attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
@@ -1101,6 +1257,22 @@ ModelViewProject CanvasBlurH
     }
 
 
+# load a gltf material texture (once per model — m.tex_cache keyed by file
+# path) and bind it under `name` in the pipeline's sampler map
+func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string, out: map Au[string] ]
+    if [ !ti ] return
+    p : mdl.texture_uri[ ti ]
+    if [ !p ] return
+    key : '{p}'
+    tx : Texture m.tex_cache[ key ]
+    if [ !tx ]
+        if [ !p.exists[] ]
+            puts 'gltf: material texture missing: {p}'
+            return
+        tx = Texture [ w: m.w, vk: m.vk, sampler: Image [ uri: p ] ]
+        m.tex_cache[ key ] = tx
+    out[ name ] = tx
+
 func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render_id: i32, transparent: bool ]
     mdl:      m.id
     vk:       m.vk
@@ -1127,22 +1299,33 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
         vertex_count: 0
         member_count: 0
         index_size:   itype.typesize
-        index_count:  i32[ iview.byteLength / itype.typesize ]
+        # the ACCESSOR's count is this primitive's index count — the view can
+        # be shared by several primitives (byteLength spans them all)
+        index_count:  i32[ ai.count ]
 
-        for [ value:ref i64, a_name:string ] in prim.attributes
-            ac_index: value[0]
-            ac:       mdl.accessors[ ac_index ]
-            bv:       mdl.bufferViews[ ac.bufferView ]
-            b:        mdl.buffers[ bv.buffer ]
-            members[member_count].src    = ac.member_type[ ]
-            members[member_count].ac     = ac
-            members[member_count].size   = members[member_count].src.typesize
-            members[member_count].offset = vertex_size
-            vertex_size += members[member_count].src.typesize 
-            expect ac.count, "count not set on accessor"
-            expect !vertex_count || ac.count == vertex_count, "invalid vbo data"
-            vertex_count = ac.count
-            member_count += 1
+        # the vertex interleave is built in CANONICAL semantic order — NOT the
+        # prim.attributes map's iteration order (a hash map: bucket order, not
+        # file order). shader locations bind positionally, so shaders declare
+        # their VertexInputs in this same order (a_pos, a_normal, a_uv, ...)
+        # and always receive the right stream regardless of key hashing.
+        sems : array string [ 'POSITION', 'NORMAL', 'TEXCOORD_0', 'TANGENT', 'TEXCOORD_1', 'TEXCOORD_2', 'TEXCOORD_3', 'COLOR_0', 'JOINTS_0', 'WEIGHTS_0' ]
+        for [ w: i32 0, w < 10, w += 1 ]
+            want : sems[w]
+            for [ value:ref i64, a_name:string ] in prim.attributes
+                if [ a_name != want ] continue
+                ac_index: value[0]
+                ac:       mdl.accessors[ ac_index ]
+                bv:       mdl.bufferViews[ ac.bufferView ]
+                b:        mdl.buffers[ bv.buffer ]
+                members[member_count].src    = ac.member_type[ ]
+                members[member_count].ac     = ac
+                members[member_count].size   = members[member_count].src.typesize
+                members[member_count].offset = vertex_size
+                vertex_size += members[member_count].src.typesize
+                expect ac.count, "count not set on accessor"
+                expect !vertex_count || ac.count == vertex_count, "invalid vbo data"
+                vertex_count = ac.count
+                member_count += 1
         
         vbo = Gpu [ vk: vk, name: name,
             members: members, member_count: member_count,
@@ -1157,9 +1340,13 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
             mem:        ref members[k]
             bv:         mdl.bufferViews[ mem.ac.bufferView ]
             b:          mdl.buffers[ bv.buffer ]
+            expect b.data, 'gltf buffer has no data (uri failed to load): {b.uri}'
             src_base:   ref i8[b.data]
-            src:        ref src_base[bv.byteOffset]
-            stride:     mem.ac.stride
+            # accessor byteOffset positions this stream WITHIN the view (shared
+            # interleaved views); the view's byteStride is the element step for
+            # interleaved data — tight packing (accessor stride) otherwise
+            src:        ref src_base[bv.byteOffset + mem.ac.byteOffset]
+            stride:     (bv.byteStride > 0) ? bv.byteStride : mem.ac.stride
 
             for [ j: 0, j < vertex_count, j += 1 ]
                 data_dst: ref vdata[j * vertex_size + mem.offset]
@@ -1169,24 +1356,47 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
                 memcpy[ dst, src0, mem.size ] # highlight these in the variables list
 
         view:  ref i8[ibuffer.data]
-        i_src: ref view [ iview.byteOffset  ]
+        i_src: ref view [ iview.byteOffset + ai.byteOffset ]
 
-        memcpy[ idata, i_src, iview.byteLength ]
+        memcpy[ idata, i_src, u64[ index_count ] * itype.typesize ]
 
-        if [ n.scale.x != 0 || n.scale.y != 0 || n.scale.z != 0 ]
-            mdl_mat = mdl_mat.scale[ n.scale ]
-        
-        mdl_mat = mdl_mat.rotate[ n.rotation ]
-        mdl_mat = mdl_mat.translate[ n.translation ]
+        if [ getenv[ 'TRIN_VBOLOG' ] ]
+            vf : ref f32 [ vdata ]
+            ip : ref u16 [ idata ]
+            st : i32 [ i32[ vertex_size ] / 4 ]
+            printf[ "VBOLOG prim=%s verts=%d vsize=%d idxn=%d mc=%d v0=(%.2f %.2f %.2f) v1=(%.2f %.2f %.2f) i=[%d %d %d %d %d %d]\n",
+                name.chars, vertex_count, vertex_size, index_count, member_count,
+                vf[0], vf[1], vf[2], vf[st], vf[st+1], vf[st+2],
+                i32[ip[0]], i32[ip[1]], i32[ip[2]], i32[ip[3]], i32[ip[4]], i32[ip[5]] ]
+
+        # the node's composed scene-graph WORLD transform (GltfModel.compute_worlds
+        # — Model.finish runs it before the node loop). axis-fix/scale live in
+        # parent chains on sketchfab-style exports; a flat local here rendered
+        # them sideways and unscaled.
+        if [ n.world.m[15] != 0.0 ]
+            mdl_mat = n.world
+        el
+            mdl_mat = mdl.node_local[ n ]
     
     s_type : typeid[ s ]
     info : Au.header [ vbo ]
     sa: bool [ transparent || m.straight_alpha ]
     if [ s.texture && s.texture.count && !m.samplers['color'] ]
         m.samplers[ 'color' ] = Texture [ w:m.w, vk: vk, mip_levels: s.mip_levels, sampler: Image [ s.texture ] ]
+    # bind this primitive's MATERIAL textures (gltf: baseColor / normal /
+    # metallicRoughness) under the conventional sampler names — per-PIPELINE,
+    # since materials differ per primitive. loaded once per file (m.tex_cache).
+    use_samplers : map Au[string] [ ]
+    for [ sv: Au, sk: string ] in m.samplers
+        use_samplers[ sk ] = sv
+    if [ material && mdl ]
+        pmr : material.pbrMetallicRoughness
+        mat_tex[ m, mdl, (pmr) ? pmr.baseColorTexture : null,         'color',  use_samplers ]
+        mat_tex[ m, mdl, (pmr) ? pmr.metallicRoughnessTexture : null, 'rough',  use_samplers ]
+        mat_tex[ m, mdl, material.normalTexture,                      'normal', use_samplers ]
     pipe: Pipeline [ vk: vk, w: m.w, name: (n) ? n.name : null,
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat, render_id: render_id,
-        material: material, samplers: m.samplers,
+        material: material, samplers: use_samplers,
         straight_alpha: sa, depth_no_write: transparent ]
     s.hold[]
     pipe.hold[]

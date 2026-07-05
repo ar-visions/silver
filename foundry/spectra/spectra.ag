@@ -71,6 +71,60 @@ class spectra
         snd_pcm_close [ pcm ]
 
 
+
+# generic ALSA PCM output — shared by the emulators (knes/rgen/asnes/n64).
+# construct with prop pairs (sample_rate/channels/buffer_size/device), then
+# open[]; fill `buffer` (interleaved S16) and write[ frames ] — the blocking
+# writei paces an emulation thread to real time.
+class AudioOut
+    public sample_rate : i32 [ 48000 ]
+    public channels    : i32 [ 2 ]
+    public buffer_size : sz  [ 1024 ]
+    public device      : string
+    public pcm_handle  : ref snd_pcm_t
+    public buffer      : ref i16
+
+    func open [] -> bool
+        buffer = calloc[ 1, buffer_size * channels * 2 ]
+        pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
+        dev : symbol [ (device && device.count) ? device.chars : 'pulse' ]
+        err : i32 [ snd_pcm_open[ ref pcm_handle, dev, pb, 0 ] ]
+        if [ err < 0 ] return false
+        psz    : snd_pcm_hw_params_sizeof[]
+        params : ref snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
+        snd_pcm_hw_params_any[ pcm_handle, params ]
+        rw  : i32 [ SND_PCM_ACCESS_RW_INTERLEAVED ]
+        fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
+        snd_pcm_hw_params_set_access  [ pcm_handle, params, rw ]
+        snd_pcm_hw_params_set_format  [ pcm_handle, params, fmt ]
+        snd_pcm_hw_params_set_channels[ pcm_handle, params, channels ]
+        snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
+        bufsz : sz [ buffer_size * 2 ]
+        persz : sz [ buffer_size / 4 ]
+        snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, ref bufsz ]
+        snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, ref persz, null ]
+        ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
+        free[ params ]
+        if [ ok ]
+            perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
+            if [ perr < 0 ]
+                puts 'AudioOut: prepare failed {snd_strerror[ perr ]}'
+                ok = false
+        return ok
+
+    func write [ frames: i32 ] -> none
+        if [ ! pcm_handle ] return
+        wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
+        if [ wr < 0 ]
+            snd_pcm_recover[ pcm_handle, wr, 0 ]
+            snd_pcm_writei[ pcm_handle, buffer, frames ]
+
+    func close []
+        if [ pcm_handle ]
+            snd_pcm_drain[ pcm_handle ]
+            snd_pcm_close[ pcm_handle ]
+        pcm_handle = null
+
 func fft [ re: ref f32, im: ref f32, n: i32 ] 
     if [ n <= 1 ]
         return
@@ -110,28 +164,30 @@ func fft [ re: ref f32, im: ref f32, n: i32 ]
 coverage test
      i:i32
      func run[] -> Au
-        i:2
+        i = 2
         puts 'ive done it all'
         return true
 
 
-app main
-    func run[] -> int
-        s: spectra [ size: 1024, sample_rate: 48000, device: 'hw:1,0' ]
-        if [ !s.open ]
-            return 1
-        half2: s.size / 2
-        for [ true ]
-            if [ s.capture ]
-                for [ i: i32 0, i < half2, i += 1 ]
-                    if [ i % 16 == 0 ]
-                        printf "%5d Hz |", i * s.sample_rate / s.size
-                        bar: i32 [ s.bins[i] * 50.0 ]
-                        if [ bar > 50 ]
-                            bar = 50
-                        for [ j: i32 0, j < bar, j += 1 ]
-                            printf "#"
-                        printf "\n"
-                printf "\033[%dA", half2 / 16
-        s.close
-        return 0
+# CLI demo moved out of the module: an app class makes the module a plain
+# PIE executable, which importers cannot dlopen (spectra is a LIBRARY now)
+#app main
+#    func run[] -> int
+#        s: spectra [ size: 1024, sample_rate: 48000, device: 'hw:1,0' ]
+#        if [ !s.open[] ]
+#            return 1
+#        half2: s.size / 2
+#        for [ true ]
+#            if [ s.capture[] ]
+#                for [ i: i32 0, i < half2, i += 1 ]
+#                    if [ i % 16 == 0 ]
+#                        printf "%5d Hz |", i * s.sample_rate / s.size
+#                        bar: i32 [ s.bins[i] * 50.0 ]
+#                        if [ bar > 50 ]
+#                            bar = 50
+#                        for [ j: i32 0, j < bar, j += 1 ]
+#                            printf "#"
+#                        printf "\n"
+#                printf "\033[%dA", half2 / 16
+#        s.close
+#        return 0

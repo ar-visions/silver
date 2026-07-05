@@ -27,49 +27,6 @@ import <pthread.h>
 import <math.h>
 
 # ALSA sink (rgen template): blocking writei paces the emulation thread
-class audio_out
-	pcm_handle     : ref snd_pcm_t
-	buffer         : ref i16
-	buffer_size    : sz
-	sample_rate    : i32
-	channels       : i32
-
-	func open [] -> bool
-		sample_rate = 53267
-		channels    = 2
-		buffer_size = 1024
-		buffer      = calloc[ 1, buffer_size * channels * 2 ]
-		pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
-		err : i32 [ snd_pcm_open[ ref pcm_handle, 'pulse', pb, 0 ] ]
-		if [ err < 0 ] return false
-		psz    : snd_pcm_hw_params_sizeof[]
-		params : ref snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
-		snd_pcm_hw_params_any[ pcm_handle, params ]
-		rw  : i32 [ SND_PCM_ACCESS_RW_INTERLEAVED ]
-		fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
-		snd_pcm_hw_params_set_access  [ pcm_handle, params, rw ]
-		snd_pcm_hw_params_set_format  [ pcm_handle, params, fmt ]
-		snd_pcm_hw_params_set_channels[ pcm_handle, params, channels ]
-		snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
-		bufsz : sz [ 2048 ]
-		persz : sz [ 256 ]
-		snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, ref bufsz ]
-		snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, ref persz, null ]
-		ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
-		if [ ok ]
-			perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
-			if [ perr < 0 ]
-				puts 'knes audio: prepare failed {snd_strerror[ perr ]}'
-				ok = false
-		return ok
-
-	func write [ frames: i32 ] -> none
-		if [ ! pcm_handle ] return
-		wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
-		if [ wr < 0 ]
-			snd_pcm_recover[ pcm_handle, wr, 0 ]
-			snd_pcm_prepare[ pcm_handle ]
-
 class cpu6502_state
 	a              : u8
 	x              : u8
@@ -139,7 +96,50 @@ class nes_apu
 	fc_acc         : i64
 	fc_step        : i32
 
-trinity knes
+class knes_audio_out
+	pcm_handle     : ref snd_pcm_t
+	buffer         : ref i16
+	buffer_size    : sz
+	sample_rate    : i32
+	channels       : i32
+
+	func open [] -> bool
+		sample_rate = 53267
+		channels    = 2
+		buffer_size = 1024
+		buffer      = calloc[ 1, buffer_size * channels * 2 ]
+		pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
+		err : i32 [ snd_pcm_open[ ref pcm_handle, 'pulse', pb, 0 ] ]
+		if [ err < 0 ] return false
+		psz    : snd_pcm_hw_params_sizeof[]
+		params : ref snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
+		snd_pcm_hw_params_any[ pcm_handle, params ]
+		rw  : i32 [ SND_PCM_ACCESS_RW_INTERLEAVED ]
+		fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
+		snd_pcm_hw_params_set_access  [ pcm_handle, params, rw ]
+		snd_pcm_hw_params_set_format  [ pcm_handle, params, fmt ]
+		snd_pcm_hw_params_set_channels[ pcm_handle, params, channels ]
+		snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
+		bufsz : sz [ 2048 ]
+		persz : sz [ 256 ]
+		snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, ref bufsz ]
+		snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, ref persz, null ]
+		ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
+		if [ ok ]
+			perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
+			if [ perr < 0 ]
+				puts 'knes audio: prepare failed {snd_strerror[ perr ]}'
+				ok = false
+		return ok
+
+	func write [ frames: i32 ] -> none
+		if [ ! pcm_handle ] return
+		wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
+		if [ wr < 0 ]
+			snd_pcm_recover[ pcm_handle, wr, 0 ]
+			snd_pcm_writei[ pcm_handle, buffer, frames ]
+
+element knes
 	public  rom          : path
 	public  frames_exit  : i32
 	public  resume       : bool
@@ -154,7 +154,7 @@ trinity knes
 	mutable cpu          : cpu6502_state
 	mutable ppu          : nes_ppu
 	mutable apu          : nes_apu
-	mutable audio        : audio_out
+	mutable audio        : knes_audio_out
 	mutable prg          : ref u8            # PRG ROM
 	mutable prg_size     : sz
 	mutable chr          : ref u8            # CHR ROM (or ppu.chr_ram)
@@ -169,6 +169,25 @@ trinity knes
 	mutable m1_ctrl      : u32               # control: mirroring + PRG/CHR modes
 	mutable m1_chr0      : u32
 	mutable m1_chr1      : u32
+	mutable line_mask    : new u8 [ 240 ]    # per-line PPUMASK snapshot (cave loads blank rendering mid-frame)
+	mutable pal_shot     : new u8 [ 32 ]     # palette latched at end of active display: vblank rewrites
+	                                         # (cave enter/exit) must not recolor the frame already drawn
+	mutable dis_ready    : bool              # assembly view: 6502 tables decoded from the literals below
+	mutable dis_mn       : string            # 256 x 3-char mnemonics
+	mutable dis_md       : new u8 [ 256 ]    # 256 addressing modes (0..11)
+	mutable dis_len      : new u8 [ 12 ]     # instruction length per mode
+	mutable dis_last_len : i32               # length of the last dis_text decode
+	mutable chr_tex      : Texture           # tiles view: pattern-table sheet (unloaded on tab switch)
+	mutable chr_buf      : new u32 [ 32768 ] # 256x128 ABGR staging for chr_tex
+	mutable tile_rx      : f32               # tiles view: sheet draw rect (click -> pixel mapping)
+	mutable tile_ry      : f32
+	mutable tile_rw      : f32
+	mutable tile_rh      : f32
+	mutable tu_addr      : new u32 [ 256 ]   # tile-edit undo ring: CHR plane address
+	mutable tu_old       : new u32 [ 256 ]   # (b0 | b1<<8) before
+	mutable tu_new       : new u32 [ 256 ]   # (b0 | b1<<8) after
+	mutable tu_n         : i32               # entries in the ring
+	mutable tu_pos       : i32               # undo cursor (== tu_n when fully applied)
 	mutable line_chr0    : new u32 [ 240 ]   # per-line CHR bank snapshots (Zelda II
 	mutable line_chr1    : new u32 [ 240 ]   # switches tile banks mid-frame)
 	mutable cur_chr0     : u32               # banks for the scanline being rendered
@@ -192,6 +211,10 @@ trinity knes
 	mutable emu_started  : bool
 	mutable emu_stop     : bool
 	mutable emu_running  : bool
+	mutable paused       : bool              # space toggles; emu thread idles while set
+	mutable context_req  : bool              # host asks for a machine-state dump
+	mutable context_out  : string            # dump published by the emu thread
+	mutable context_seq  : i32               # bumped per publish (host drains one-shot)
 	mutable pub_lock     : mutex
 	mutable pub_framebuf : new u32 [ 256 * 240 ]
 	mutable len_tab      : new i32 [ 32 ]    # APU length counter table
@@ -262,13 +285,9 @@ trinity knes
 	mutable psw_render   : Render
 
 	func init []
-		width      = 1024                    # 256 x4
-		height     = 896                     # 224 x4 (top/bottom 8 cropped)
-		background = 'Background'
-		if [ volume == 0.0 ] volume = 0.5
-
-	func on_render [ w: Window ] -> Elements
-		return null
+		animated   = true                    # emulator: repaint every frame, never cache-skip (NOT style-owned `volatile`)
+		focusable  = true
+		if [ volume == 0.0 ] volume = 0.04
 
 	# NES pad: WASD = D-pad, J = A, K = B, Shift = Select, Enter = Start.
 	# P = save state, O = load state.
@@ -284,6 +303,10 @@ trinity knes
 		el [ code == 83 ]  bit = 5     # S  Down
 		el [ code == 65 ]  bit = 6     # A  Left
 		el [ code == 68 ]  bit = 7     # D  Right
+		el [ code == 265 ] bit = 4     # Up arrow    (alt d-pad: arrows sit on
+		el [ code == 264 ] bit = 5     # Down arrow   separate matrix lines and
+		el [ code == 263 ] bit = 6     # Left arrow   dodge WASD+button keyboard
+		el [ code == 262 ] bit = 7     # Right arrow  ghosting)
 		if [ bit >= 0 ]
 			m : u32 [ u32[ 1 ] << bit ]
 			if [ down ] pad_st = pad_st | m
@@ -291,7 +314,305 @@ trinity knes
 		if [ down ]
 			if [ code == 80 ] save_req = true   # P save
 			if [ code == 76 ] load_req = true   # L load
+			if [ code == 32 ] paused = !paused  # Space pause/resume
+		if [ getenv[ 'KNES_KEYLOG' ] ]
+			printf[ "KNESKEY code=%d st=%d pad=%02x\n", code, (down) ? 1 : 0, pad_st ]
 		return
+
+	# hex helpers for the assembly view
+	func hex2 [ v: u32 ] -> string
+		hx : string [ '0123456789ABCDEF' ]
+		return '{hx.mid[ i32[ (v >> 4) & 15 ], 1 ]}{hx.mid[ i32[ v & 15 ], 1 ]}'
+
+	func hex4 [ v: u32 ] -> string
+		return '{hex2[ (v >> 8) & 255 ]}{hex2[ v & 255 ]}'
+
+	# live 6502 disassembly from the current PC (assembly view)
+	func dis_prepare []
+		if [ dis_ready ] return
+		dis_ready = true
+		dis_mn = 'BRKORA?????????ORAASL???PHPORAASL??????ORAASL???BPLORA?????????ORAASL???CLCORA?????????ORAASL???JSRAND??????BITANDROL???PLPANDROL???BITANDROL???BMIAND?????????ANDROL???SECAND?????????ANDROL???RTIEOR?????????EORLSR???PHAEORLSR???JMPEORLSR???BVCEOR?????????EORLSR???CLIEOR?????????EORLSR???RTSADC?????????ADCROR???PLAADCROR???JMPADCROR???BVSADC?????????ADCROR???SEIADC?????????ADCROR??????STA??????STYSTASTX???DEY???TXA???STYSTASTX???BCCSTA??????STYSTASTX???TYASTATXS??????STA??????LDYLDALDX???LDYLDALDX???TAYLDATAX???LDYLDALDX???BCSLDA??????LDYLDALDX???CLVLDATSX???LDYLDALDX???CPYCMP??????CPYCMPDEC???INYCMPDEX???CPYCMPDEC???BNECMP?????????CMPDEC???CLDCMP?????????CMPDEC???CPXSBC??????CPXSBCINC???INXSBCNOP???CPXSBCINC???BEQSBC?????????SBCINC???SEDSBC?????????SBCINC???'
+		mds : string [ '0900022001000550;:000330070006605900222001005550;:000330070006600900022001005550;:000330070006600900022001008550;:000330070006600900222000005550;:003340070006001910222001005550;:003340070066701900222001005550;:000330070006601900222001005550;:00033007000660' ]
+		mp : ref u8 [ (mds.chars to ref u8) ]
+		for [ i: i32 0, i < 256, i += 1 ]
+			dis_md[ i ] = mp[ i ] - 48
+		lns : string [ '122223333222' ]
+		ln : ref u8 [ (lns.chars to ref u8) ]
+		for [ i: i32 0, i < 12, i += 1 ]
+			dis_len[ i ] = ln[ i ] - 48
+
+	func paint_asm [ cv: Canvas, vp: rect ]
+		if [ !cpu ] return
+		dis_prepare[]
+		cv.font_size[ 15 ]
+		lh : f32 [ cv.get_line_height[] ]
+		y : f32 [ vp.y + 6.0 ]
+		cv.fill_color[ '#8fd0ff' ]
+		regs : 'PC={hex4[ u32[ cpu.pc ] ]}  A={hex2[ u32[ cpu.a ] ]} X={hex2[ u32[ cpu.x ] ]} Y={hex2[ u32[ cpu.y ] ]} SP={hex2[ u32[ cpu.sp ] ]} P={hex2[ u32[ cpu.p ] ]}'
+		cv.draw_text[ regs, rect [ x: vp.x + 10.0, y: y, w: vp.w - 20.0, h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+		y = y + lh * 1.4
+		addr : u32 [ u32[ cpu.pc ] ]
+		n : i32 [ i32[ (vp.y + vp.h - y) / lh ] ]
+		for [ li: i32 0, li < n, li += 1 ]
+			if [ addr < 0x8000 || addr > 0xFFFF ] return
+			op : u32 [ u32[ bus_rd[ addr ] ] ]
+			md2 : i32 [ i32[ dis_md[ i32[ op ] ] ] ]
+			il : i32 [ i32[ dis_len[ md2 ] ] ]
+			o1 : u32 [ 0 ]
+			o2 : u32 [ 0 ]
+			if [ il > 1 ] o1 = u32[ bus_rd[ addr + 1 ] ]
+			if [ il > 2 ] o2 = u32[ bus_rd[ addr + 2 ] ]
+			w16 : u32 [ (o2 << 8) | o1 ]
+			opnd : string [ '' ]
+			if [ md2 == 1 ] opnd = ' #${hex2[ o1 ]}'
+			el [ md2 == 2 ] opnd = ' ${hex2[ o1 ]}'
+			el [ md2 == 3 ] opnd = ' ${hex2[ o1 ]},X'
+			el [ md2 == 4 ] opnd = ' ${hex2[ o1 ]},Y'
+			el [ md2 == 5 ] opnd = ' ${hex4[ w16 ]}'
+			el [ md2 == 6 ] opnd = ' ${hex4[ w16 ]},X'
+			el [ md2 == 7 ] opnd = ' ${hex4[ w16 ]},Y'
+			el [ md2 == 8 ] opnd = ' (${hex4[ w16 ]})'
+			el [ md2 == 9 ] opnd = ' (${hex2[ o1 ]},X)'
+			el [ md2 == 10 ] opnd = ' (${hex2[ o1 ]}),Y'
+			el [ md2 == 11 ]
+				rt : u32 [ (addr + 2 + o1) & 0xFFFF ]
+				if [ o1 >= 128 ] rt = (addr + 2 + o1 - 256) & 0xFFFF
+				opnd = ' ${hex4[ rt ]}'
+			if [ addr == u32[ cpu.pc ] ]
+				cv.rect_to[ vp.x + 4.0, y - lh * 0.5, vp.w - 8.0, lh ]
+				cv.fill_color[ '#33254a' ]
+				cv.paint[]
+			cv.fill_color[ (addr == u32[ cpu.pc ]) ? '#ffffff' : '#b9aecb' ]
+			line2 : '{hex4[ addr ]}:  {dis_mn.mid[ i32[ op ] * 3, 3 ]}{opnd}'
+			cv.draw_text[ line2, rect [ x: vp.x + 10.0, y: y - lh * 0.5, w: vp.w - 20.0, h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+			addr = addr + u32[ il ]
+			y = y + lh
+			if [ y > vp.y + vp.h - lh ] return
+
+	# CHR pattern tables as a 256x128 tile sheet (tiles view)
+	func paint_tiles [ cv: Canvas, vp: rect ]
+		if [ !cpu ] return
+		# CHR is colorless 2-bit indices — paint each table with the game's
+		# LIVE palette (left: background pal 0, right: sprite pal 0) so the
+		# sheet reads the way the game currently colors it
+		gr : local u32 [ 8 ] [ 0, 0, 0, 0, 0, 0, 0, 0 ]
+		for [ ci: i32 0, ci < 4, ci += 1 ]
+			gr[ ci ]     = nes_pal[ i32[ pal_shot[ ci ] ] & 63 ]
+			gr[ 4 + ci ] = nes_pal[ i32[ pal_shot[ 16 + ci ] ] & 63 ]
+		for [ t: i32 0, t < 512, t += 1 ]
+			tb : i32 [ t >> 8 ]
+			ti : i32 [ t & 255 ]
+			ox : i32 [ (ti & 15) * 8 + tb * 128 ]
+			oy : i32 [ (ti >> 4) * 8 ]
+			for [ ry: i32 0, ry < 8, ry += 1 ]
+				b0 : u32 [ u32[ ppu_rd[ u32[ tb * 0x1000 + ti * 16 + ry ] ] ] ]
+				b1 : u32 [ u32[ ppu_rd[ u32[ tb * 0x1000 + ti * 16 + ry + 8 ] ] ] ]
+				for [ rx: i32 0, rx < 8, rx += 1 ]
+					fx : u32 [ u32[ 7 - rx ] ]
+					px : u32 [ ((b0 >> fx) & 1) | (((b1 >> fx) & 1) << 1) ]
+					chr_buf[ (oy + ry) * 256 + ox + rx ] = gr[ tb * 4 + i32[ px ] ]
+		if [ !chr_tex ]
+			chr_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 128, linear: true, nearest: true ]
+		chr_tex.upload[ chr_buf, 131072 ]
+		ar : f32 [ 2.0 ]
+		vw : f32 [ vp.w ]
+		vh : f32 [ vw / ar ]
+		if [ vh > vp.h ]
+			vh = vp.h
+			vw = vh * ar
+		tile_rx = vp.x + (vp.w - vw) * 0.5
+		tile_ry = vp.y + (vp.h - vh) * 0.5
+		tile_rw = vw
+		tile_rh = vh
+		cv.draw_image[ chr_tex, rect [ x: tile_rx, y: tile_ry, w: tile_rw, h: tile_rh ] ]
+
+	# parse hex digits (uppercase) from a string slice
+	func unhex [ hs: string ] -> i32
+		v : i32 [ 0 ]
+		hp : ref u8 [ (hs.chars to ref u8) ]
+		for [ i: i32 0, i < i32[ hs.count ], i += 1 ]
+			c : i32 [ i32[ hp[ i ] ] ]
+			d : i32 [ -1 ]
+			if [ c >= 48 && c <= 57 ] d = c - 48
+			el [ c >= 65 && c <= 70 ] d = c - 55
+			el [ c >= 97 && c <= 102 ] d = c - 87
+			el return v
+			v = (v << 4) | d
+		return v
+
+	# one disassembled line at addr (same format the assembler parses back)
+	func dis_text [ addr: u32 ] -> string
+		op : u32 [ u32[ bus_rd[ addr ] ] ]
+		md2 : i32 [ i32[ dis_md[ i32[ op ] ] ] ]
+		il : i32 [ i32[ dis_len[ md2 ] ] ]
+		o1 : u32 [ 0 ]
+		o2 : u32 [ 0 ]
+		if [ il > 1 ] o1 = u32[ bus_rd[ addr + 1 ] ]
+		if [ il > 2 ] o2 = u32[ bus_rd[ addr + 2 ] ]
+		w16 : u32 [ (o2 << 8) | o1 ]
+		opnd : string [ '' ]
+		if [ md2 == 1 ] opnd = ' #${hex2[ o1 ]}'
+		el [ md2 == 2 ] opnd = ' ${hex2[ o1 ]}'
+		el [ md2 == 3 ] opnd = ' ${hex2[ o1 ]},X'
+		el [ md2 == 4 ] opnd = ' ${hex2[ o1 ]},Y'
+		el [ md2 == 5 ] opnd = ' ${hex4[ w16 ]}'
+		el [ md2 == 6 ] opnd = ' ${hex4[ w16 ]},X'
+		el [ md2 == 7 ] opnd = ' ${hex4[ w16 ]},Y'
+		el [ md2 == 8 ] opnd = ' (${hex4[ w16 ]})'
+		el [ md2 == 9 ] opnd = ' (${hex2[ o1 ]},X)'
+		el [ md2 == 10 ] opnd = ' (${hex2[ o1 ]}),Y'
+		el [ md2 == 11 ]
+			rt : u32 [ (addr + 2 + o1) & 0xFFFF ]
+			if [ o1 >= 128 ] rt = (addr + 2 + o1 - 256) & 0xFFFF
+			opnd = ' ${hex4[ rt ]}'
+		dis_last_len = il
+		return '{hex4[ addr ]}:  {dis_mn.mid[ i32[ op ] * 3, 3 ]}{opnd}'
+
+	# full visible-PRG disassembly ($8000-$FFFF) as editor lines
+	func disasm_all [] -> list string
+		dis_prepare[]
+		out : list string [ ]
+		if [ !cpu ] return out
+		addr : u32 [ 0x8000 ]
+		while [ addr <= 0xFFFF ]
+			out.push[ dis_text[ addr ] ]
+			addr = addr + u32[ dis_last_len ]
+		return out
+
+	# assemble one edited line back into PRG. same-length in-place patches
+	# only — a longer/shorter encoding would shift every following byte.
+	func asm_patch [ text: string ] -> bool
+		dis_prepare[]
+		if [ !cpu ] return false
+		if [ text.count < 10 ] return false
+		tp : ref u8 [ (text.chars to ref u8) ]
+		if [ tp[ 4 ] != 58 ] return false          # 'HHHH:' shape required
+		addr : u32 [ u32[ unhex[ text.mid[ 0, 4 ] ] ] ]
+		if [ addr < 0x8000 ] return false
+		mne : text.mid[ 7, 3 ]
+		rest : string [ '' ]
+		if [ text.count > 10 ] rest = text.mid[ 11, i32[ text.count ] - 11 ]
+		md2 : i32 [ 0 ]
+		v : i32 [ 0 ]
+		rp : ref u8 [ (rest.chars to ref u8) ]
+		rc : i32 [ i32[ rest.count ] ]
+		if [ rc == 0 ] md2 = 0
+		el [ rp[ 0 ] == 35 ]                        # #$xx
+			md2 = 1
+			v = unhex[ rest.mid[ 2, rc - 2 ] ]
+		el [ rp[ 0 ] == 40 ]                        # ( ...
+			if [ rc >= 9 && rp[ rc - 1 ] == 41 ]    # ($xxxx)
+				md2 = 8
+				v = unhex[ rest.mid[ 2, 4 ] ]
+			el [ rc >= 8 && rp[ rc - 1 ] == 41 ]    # ($xx,X)
+				md2 = 9
+				v = unhex[ rest.mid[ 2, 2 ] ]
+			el                                       # ($xx),Y
+				md2 = 10
+				v = unhex[ rest.mid[ 2, 2 ] ]
+		el [ rp[ 0 ] == 36 ]                        # $...
+			hx : i32 [ 0 ]
+			hp2 : i32 [ 1 ]
+			while [ hp2 < rc && ((rp[hp2] >= 48 && rp[hp2] <= 57) || (rp[hp2] >= 65 && rp[hp2] <= 70)) ]
+				hp2 += 1
+			hx = hp2 - 1                             # hex digit count
+			v = unhex[ rest.mid[ 1, hx ] ]
+			tail : string [ '' ]
+			if [ hp2 < rc ] tail = rest.mid[ hp2, rc - hp2 ]
+			mb : ref u8 [ (mne.chars to ref u8) ]
+			if [ mb[ 0 ] == 66 && mne.compare[ 'BIT' ] != 0 && mne.compare[ 'BRK' ] != 0 ]
+				md2 = 11                             # B__ branch: operand is the target
+				v = (v - (i32[ addr ] + 2)) & 0xFF
+			el [ hx <= 2 ]
+				if [ tail.compare[ ',X' ] == 0 ] md2 = 3
+				el [ tail.compare[ ',Y' ] == 0 ] md2 = 4
+				el md2 = 2
+			el
+				if [ tail.compare[ ',X' ] == 0 ] md2 = 6
+				el [ tail.compare[ ',Y' ] == 0 ] md2 = 7
+				el md2 = 5
+		el return false
+		opc : i32 [ -1 ]
+		for [ i: i32 0, i < 256, i += 1 ]
+			if [ i32[ dis_md[ i ] ] == md2 ]
+				if [ dis_mn.mid[ i * 3, 3 ].compare[ mne ] == 0 ]
+					opc = i
+					break
+		if [ opc < 0 ] return false
+		il : i32 [ i32[ dis_len[ md2 ] ] ]
+		cl : i32 [ i32[ dis_len[ i32[ dis_md[ i32[ bus_rd[ addr ] ] ] ] ] ] ]
+		if [ il != cl ] return false                # in-place only: keep lengths equal
+		po : u32 [ prg_index[ addr ] ]
+		if [ sz[ po ] + u32[ il ] > prg_size ] return false
+		prg[ po ] = u8[ opc ]
+		if [ il > 1 ] prg[ po + 1 ] = u8[ v & 0xFF ]
+		if [ il > 2 ] prg[ po + 2 ] = u8[ (v >> 8) & 0xFF ]
+		return true
+
+	# CHR byte write through the mapper (ROM buffer in memory, or CHR-RAM)
+	func chr_poke [ pa: u32, v: u8 ]
+		if [ chr_is_ram ]
+			ppu.chr_ram[ chr_off[ pa ] & 0x1FFF ] = v
+			return
+		co : u32 [ chr_off[ pa ] ]
+		if [ sz[ co ] < chr_size ] chr[ co ] = v
+
+	# read/modify one tile row pair (both bitplanes packed as b0 | b1<<8)
+	func chr_row [ pa: u32 ] -> u32
+		return u32[ ppu_rd[ pa ] ] | (u32[ ppu_rd[ pa + 8 ] ] << 8)
+
+	# click a sheet pixel: cycle its 2-bit color and record an undo entry.
+	# sx 0..255 (two tables side by side), sy 0..127.
+	func tile_click [ sx: i32, sy: i32 ] -> bool
+		if [ sx < 0 || sx > 255 || sy < 0 || sy > 127 ] return false
+		tb : i32 [ (sx >= 128) ? 1 : 0 ]
+		lx : i32 [ sx - tb * 128 ]
+		ti : i32 [ (sy >> 3) * 16 + (lx >> 3) ]
+		pa : u32 [ u32[ tb * 0x1000 + ti * 16 + (sy & 7) ] ]
+		fx : u32 [ u32[ 7 - (lx & 7) ] ]
+		old2 : u32 [ chr_row[ pa ] ]
+		b0 : u32 [ old2 & 0xFF ]
+		b1 : u32 [ (old2 >> 8) & 0xFF ]
+		px : u32 [ ((b0 >> fx) & 1) | (((b1 >> fx) & 1) << 1) ]
+		np : u32 [ (px + 1) & 3 ]
+		b0 = (b0 & (~(u32[1] << fx))) | ((np & 1) << fx)
+		b1 = (b1 & (~(u32[1] << fx))) | (((np >> 1) & 1) << fx)
+		chr_poke[ pa, u8[ b0 ] ]
+		chr_poke[ pa + 8, u8[ b1 ] ]
+		# undo ring: truncate any redo tail, append (drop oldest when full)
+		if [ tu_pos < tu_n ] tu_n = tu_pos
+		if [ tu_n >= 256 ]
+			for [ i: i32 1, i < 256, i += 1 ]
+				tu_addr[ i - 1 ] = tu_addr[ i ]
+				tu_old[ i - 1 ] = tu_old[ i ]
+				tu_new[ i - 1 ] = tu_new[ i ]
+			tu_n = 255
+		tu_addr[ tu_n ] = pa
+		tu_old[ tu_n ] = old2
+		tu_new[ tu_n ] = b0 | (b1 << 8)
+		tu_n += 1
+		tu_pos = tu_n
+		return true
+
+	func tile_undo [] -> bool
+		if [ tu_pos <= 0 ] return false
+		tu_pos -= 1
+		v : u32 [ tu_old[ tu_pos ] ]
+		chr_poke[ tu_addr[ tu_pos ], u8[ v & 0xFF ] ]
+		chr_poke[ tu_addr[ tu_pos ] + 8, u8[ (v >> 8) & 0xFF ] ]
+		return true
+
+	func tile_redo [] -> bool
+		if [ tu_pos >= tu_n ] return false
+		v : u32 [ tu_new[ tu_pos ] ]
+		chr_poke[ tu_addr[ tu_pos ], u8[ v & 0xFF ] ]
+		chr_poke[ tu_addr[ tu_pos ] + 8, u8[ (v >> 8) & 0xFF ] ]
+		tu_pos += 1
+		return true
+
+	# drop per-view scratch when the pane tabs away (views rebuild on entry)
+	func view_release []
+		chr_tex = null
 
 	# ---- cartridge: iNES format, mapper 0 (NROM) ----
 	func load_cart [] -> none
@@ -364,6 +685,26 @@ trinity knes
 		ppu.palette[ pi ] = v
 
 	# ---- CPU bus ----
+	# CPU address ($8000+) -> PRG byte offset through the active mapper banks
+	func prg_index [ a2: u32 ] -> u32
+		o : u32 [ a2 - 0x8000 ]
+		if [ mapper == 1 ]
+			nb : u32 [ u32[ prg_size ] / 0x4000 ]
+			md : u32 [ (m1_ctrl >> 2) & 3 ]
+			bk : u32 [ 0 ]
+			if [ a2 < 0xC000 ]
+				if [ md == 3 ] bk = m1_prg & 0xF
+				el [ md == 2 ] bk = 0
+				el bk = m1_prg & 0xE
+			el
+				if [ md == 3 ] bk = nb - 1
+				el [ md == 2 ] bk = m1_prg & 0xF
+				el bk = (m1_prg & 0xE) | 1
+			o = (bk % nb) * 0x4000 + (a2 & 0x3FFF)
+		el
+			if [ prg_size == 0x4000 ] o = o & 0x3FFF   # 16K NROM mirrors
+		return o
+
 	func bus_rd [ addr: u32 ] -> u8
 		a2 : u32 [ addr & 0xFFFF ]
 		if [ a2 < 0x2000 ] return cpu.ram[ a2 & 0x7FF ]
@@ -398,22 +739,7 @@ trinity knes
 			return u8[ s ]
 		if [ a2 >= 0x6000 && a2 <= 0x7FFF ] return prg_ram[ a2 & 0x1FFF ]
 		if [ a2 >= 0x8000 ]
-			o : u32 [ a2 - 0x8000 ]
-			if [ mapper == 1 ]
-				nb : u32 [ u32[ prg_size ] / 0x4000 ]
-				md : u32 [ (m1_ctrl >> 2) & 3 ]
-				bk : u32 [ 0 ]
-				if [ a2 < 0xC000 ]
-					if [ md == 3 ] bk = m1_prg & 0xF
-					el [ md == 2 ] bk = 0
-					el bk = m1_prg & 0xE
-				el
-					if [ md == 3 ] bk = nb - 1
-					el [ md == 2 ] bk = m1_prg & 0xF
-					el bk = (m1_prg & 0xE) | 1
-				o = (bk % nb) * 0x4000 + (a2 & 0x3FFF)
-			el
-				if [ prg_size == 0x4000 ] o = o & 0x3FFF   # 16K NROM mirrors
+			o : u32 [ prg_index[ a2 ] ]
 			if [ prg && sz[ o ] < prg_size ] return prg[ o ]
 			return 0
 		return 0
@@ -935,9 +1261,14 @@ trinity knes
 				apu.p_vol[ ch ] = v
 				apu.p_duty[ ch ] = (v >> 6) & 3
 			el [ s == 1 ] apu.p_sweep[ ch ] = v
-			el [ s == 2 ] apu.p_timer[ ch ] = (apu.p_timer[ ch ] & 0x700) | u16[ v ]
+			el [ s == 2 ]
+				apu.p_timer[ ch ] = (apu.p_timer[ ch ] & 0x700) | u16[ v ]
+				if [ getenv[ 'KNES_APULOG' ] ]
+					printf[ "APU p%d lo t=%03x pad=%02x f=%u\n", ch, u32[ apu.p_timer[ ch ] ], pad_st, frames ]
 			el
 				apu.p_timer[ ch ] = (apu.p_timer[ ch ] & 0xFF) | (u16[ v & 7 ] << 8)
+				if [ getenv[ 'KNES_APULOG' ] ]
+					printf[ "APU p%d hi t=%03x pad=%02x f=%u\n", ch, u32[ apu.p_timer[ ch ] ], pad_st, frames ]
 				if [ (apu.enable & (1 << u32[ ch ])) != 0 ]
 					apu.p_len[ ch ] = len_tab[ i32[ (v >> 3) & 0x1F ] ]
 				apu.p_seq[ ch ] = 0
@@ -1074,9 +1405,12 @@ trinity knes
 		bg_pat : u32 [ ((ppu.ctrl & 0x10) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
 		sp_pat : u32 [ ((ppu.ctrl & 0x08) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
 		big : bool [ (ppu.ctrl & 0x20) != 0 ]
-		bg_on : bool [ (ppu.mask & 0x08) != 0 ]
-		sp_on : bool [ (ppu.mask & 0x10) != 0 ]
-		ub : u32 [ nes_pal[ i32[ ppu.palette[ 0 ] ] & 63 ] ]
+		# per-LINE enable (cave/room loads disable rendering mid-frame while
+		# VRAM is rewritten — hardware shows backdrop there, never the
+		# half-rewritten nametable with the new palette)
+		bg_on : bool [ true ]
+		sp_on : bool [ true ]
+		ub : u32 [ nes_pal[ i32[ pal_shot[ 0 ] ] & 63 ] ]
 		vanch : i32 [ 0 ]
 		for [ y: i32 0, y < 240, y += 1 ]
 			base_nt : u32 [ u32[ line_nt[ y ] ] ]
@@ -1087,6 +1421,8 @@ trinity knes
 			# its sy changed and count rows from the anchor (hardware-true)
 			if [ y > 0 ]
 				if [ line_sy[ y ] != line_sy[ y - 1 ] || ((line_nt[ y ] ^ line_nt[ y - 1 ]) & 2) != 0 ] vanch = y
+			bg_on = (line_mask[ y ] & 0x08) != 0
+			sp_on = (line_mask[ y ] & 0x10) != 0
 			for [ x: i32 0, x < 256, x += 1 ]
 				o : u32 [ ub ]
 				bpx : u32 [ 0 ]
@@ -1111,7 +1447,7 @@ trinity knes
 						at : u32 [ u32[ ppu_rd[ nt + 0x3C0 + (cy >> 2) * 8 + (cx >> 2) ] ] ]
 						qs : u32 [ ((cy & 2) << 1) | (cx & 2) ]
 						pal : u32 [ (at >> qs) & 3 ]
-						o = nes_pal[ i32[ ppu.palette[ pal * 4 + bpx ] ] & 63 ]
+						o = nes_pal[ i32[ pal_shot[ pal * 4 + bpx ] ] & 63 ]
 				if [ sp_on ]
 					sh : i32 [ (big) ? 16 : 8 ]
 					for [ si: i32 0, si < 64, si += 1 ]
@@ -1138,7 +1474,7 @@ trinity knes
 						if [ spx == 0 ] continue
 						if [ si == 0 && bpx != 0 && ppu.s0_line < 0 ] ppu.s0_line = y
 						if [ (at2 & 0x20) != 0 && bpx != 0 ] break   # behind bg
-						spc2 : u32 [ nes_pal[ i32[ ppu.palette[ 16 + i32[ (at2 & 3) ] * 4 + i32[ spx ] ] ] & 63 ] ]
+						spc2 : u32 [ nes_pal[ i32[ pal_shot[ 16 + i32[ (at2 & 3) ] * 4 + i32[ spx ] ] ] & 63 ] ]
 						if [ spr_world[ si ] != 0 ] fb_sprw[ y * 256 + x ] = spc2
 						el fb_spr[ y * 256 + x ] = spc2
 						break
@@ -1170,7 +1506,9 @@ trinity knes
 				line_sy[ line ] = ppu.eff_sy
 				line_chr0[ line ] = m1_chr0
 				line_chr1[ line ] = m1_chr1
+				line_mask[ line ] = ppu.mask
 			if [ line == 241 ]
+				memcpy[ pal_shot, ppu.palette, 32 ]
 				ppu.status = ppu.status | 0x80
 				ppu.in_vblank = true
 				if [ (ppu.ctrl & 0x80) != 0 ] cpu.nmi_pending = true
@@ -1457,14 +1795,40 @@ trinity knes
 	func emu_entry [] -> none
 		emu_running = true
 		while [ ! emu_stop ]
-			emu_tick[]
+			if [ context_req ]
+				context_req = false
+				ctx : string context_text[]
+				ctx.hold[]
+				context_out = ctx
+				context_seq += 1
+			if [ paused ]
+				usleep[ 15000 ]
+			el
+				emu_tick[]
 		emu_running = false
+
+	# machine-state dump published when the emulation pauses — the host feeds
+	# this to the AI console so it can reason about the live machine
+	func context_text [] -> string
+		if [ !cpu ] return 'knes paused: no machine state (rom not loaded)'
+		dis_prepare[]
+		s : string 'NES emulator paused ({rom}) — machine context\n'
+		s = s + 'frame {frames}, cpu cycles {cpu.cycles}\n'
+		s = s + '6502: PC=${hex4[ u32[ cpu.pc ] ]} A=${hex2[ u32[ cpu.a ] ]} X=${hex2[ u32[ cpu.x ] ]} Y=${hex2[ u32[ cpu.y ] ]} SP=${hex2[ u32[ cpu.sp ] ]} P=${hex2[ u32[ cpu.p ] ]} (NV-BDIZC)\n'
+		s = s + 'PPU: ctrl=${hex2[ u32[ ppu.ctrl ] ]} mask=${hex2[ u32[ ppu.mask ] ]} status=${hex2[ u32[ ppu.status ] ]}  pad=${hex2[ pad_st ]}\n'
+		s = s + 'disassembly from PC:\n'
+		daddr : u32 [ u32[ cpu.pc ] ]
+		for [ li: i32 0, li < 24, li += 1 ]
+			if [ daddr >= 0x8000 && daddr <= 0xFFFF ]
+				s = s + '  ' + dis_text[ daddr ] + '\n'
+				daddr = daddr + u32[ dis_last_len ]
+		return s
 
 	func boot [] -> none
 		cpu = cpu6502_state []
 		ppu = nes_ppu []
 		apu = nes_apu []
-		audio = audio_out []
+		audio = knes_audio_out []
 		if [ ! audio.open[] ]
 			puts 'knes: audio device unavailable — continuing muted'
 		apu.n_lfsr = 1
@@ -1538,14 +1902,23 @@ trinity knes
 				if [ resume ] load_state[]
 		booted = true
 
-	public func on_canvas [ cv: Canvas ]
+	# element paint hook (screen walk only — the compose walk would double-run
+	# GPU submits and sample the glide clock twice)
+	public func draw [ w: Window ]
+		if [ w.draw_stage != CanvasType.screen ] return
+		ux.will_animate = true
+		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+
+	# draw the emulator into `vp` on any canvas (element path or orbiter pane)
+	public func paint [ cv: Canvas, vp: rect ]
+		bounds = vp
 		if [ ! booted ] boot[]
 		if [ ! screen_tex ]
 			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 240, linear: true ]
-		sc : f32 [ f32[ width ] / 256.0 ]
+		sc : f32 [ bounds.w / 256.0 ]
 		bl : f32 [ 8.0 * sc ]
-		ow : f32 [ f32[ width ] + bl * 2.0 ]
-		oh : f32 [ f32[ height ] + bl * 2.0 ]
+		ow : f32 [ bounds.w + bl * 2.0 ]
+		oh : f32 [ bounds.h + bl * 2.0 ]
 		ox : f32 [ 0.0 ]
 		oy : f32 [ 0.0 ]
 		if [ prg ]
@@ -1592,8 +1965,8 @@ trinity knes
 			screen_tex.upload[ ppu.framebuf, 256 * 240 * 4 ]
 		# bg glides with the camera; HUD + sprites draw unshifted on top.
 		# 8 source px of overscan bleed hides the slide at the edges.
-		out : rect [ x: (0.0 - bl) + ox, y: (0.0 - bl) + oy, w: ow, h: oh ]
-		out_spr : rect [ x: 0.0 - bl, y: 0.0 - bl, w: ow, h: oh ]
+		out : rect [ x: vp.x - bl + ox, y: vp.y - bl + oy, w: ow, h: oh ]
+		out_spr : rect [ x: vp.x - bl, y: vp.y - bl, w: ow, h: oh ]
 		if [ vec || se_2d || blocky ]
 			if [ prg && ! ps_render ]
 				if [ se_2d && ! vec ]
@@ -1681,3 +2054,33 @@ trinity knes
 			emu_stop = true
 			while [ emu_running ]
 				usleep[ 2000 ]
+
+# standalone host: mounts the knes element full-window; carries the CLI
+# surface (real defaults — forwarded props override element init guards)
+trinity knes_app
+	public  emu         : knes
+	public  rom         : path
+	public  frames_exit : i32
+	public  resume      : bool
+	public  save_at     : i32
+	public  autowalk    : i32
+	public  seq_from    : i32
+	public  seq_to      : i32
+	public  volume      : f32 [ 0.04 ]
+	public  vec         : bool [ true ]
+	public  se_2d       : bool
+	public  blocky      : bool
+	public  smooth      : bool [ true ]
+
+	func init []
+		width      = 1024                    # 256 x4
+		height     = 896                     # 224 x4 (top/bottom 8 cropped)
+		background = 'Background'
+
+	public func on_key [ ev: Event ]
+		if [ emu ] emu.on_key[ ev ]
+
+	func on_render [ w: Window ] -> Elements
+		e : Elements [ ]
+		e['emu'] = knes [ rom: rom, frames_exit: frames_exit, resume: resume, save_at: save_at, autowalk: autowalk, seq_from: seq_from, seq_to: seq_to, volume: volume, vec: vec, se_2d: se_2d, blocky: blocky, smooth: smooth ]
+		return e

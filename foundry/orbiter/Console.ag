@@ -1275,6 +1275,10 @@ Control Console
     public  session_id : string
     public  feed       : list string
     public  sessions   : map ConsoleSession[string]
+    # command to exec when THIS console's session is lazily created (an agent
+    # like claude). empty = interactive shell. without it, an agent tab whose
+    # session materializes here (first frame, reload) degrades to a bare shell.
+    public  launch     : string
 
     func session [] -> ConsoleSession
         sid : string (session_id && session_id.count > 0) ? session_id : 'default'
@@ -1282,8 +1286,9 @@ Control Console
         if [ !s ]
             s = ConsoleSession []
             s.name = sid
+            if [ launch && launch.count > 0 ] s.launch_cmd = launch
             if [ sid != 'system' ]
-                puts 'session[]: creating + starting shell for "{sid}"'
+                puts 'session[]: creating + starting "{sid}" (launch="{launch}")'
                 s.start[]
             sessions[sid] = s
         return s

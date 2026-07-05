@@ -1,0 +1,1019 @@
+export 0.8.8
+
+# N64 emulator — foundation pass: VR4300 CPU (integer + COP0 + FPU), memory
+# map, HLE CIC-6102 boot, PI/SI DMA, MI/VI interrupts, 60Hz frame loop.
+# Target: Super Mario 64. RSP (Fast3D HLE) + RDP shader pipeline follow.
+# References: foundry/n64/reference/ (n64brew wiki, SGI docs, ares core).
+
+import vec
+import img
+import trinity
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <math.h>
+import <pthread.h>
+import <unistd.h>
+
+class cpu_vr4300
+	r         : new i64 [ 32 ]      # GPRs (64-bit)
+	fpr       : new u64 [ 32 ]      # FPU raw bits
+	hi        : i64
+	lo        : i64
+	pc        : u32
+	npc       : u32
+	fcr31     : u32
+	# COP0
+	c_index   : u32
+	c_count   : u32
+	c_compare : u32
+	c_status  : u32
+	c_cause   : u32
+	c_epc     : u32
+	c_config  : u32
+	c_wired   : u32
+	ll_bit    : bool
+
+element n64
+	public  rom          : path
+	public  volume       : f32 [ 0.5 ]
+	mutable cpu          : cpu_vr4300
+	mutable rdram        : new u8 [ 0x800000 ]
+	mutable dmem         : new u8 [ 0x1000 ]
+	mutable imem         : new u8 [ 0x1000 ]
+	mutable pif_ram      : new u8 [ 64 ]
+	mutable rom_data     : ref u8
+	mutable rom_size     : i64
+	# MI
+	mutable mi_intr      : u32              # pending: SP DP? bit0=SP 1=SI 2=AI 3=VI 4=PI 5=DP
+	mutable mi_mask      : u32
+	mutable mi_mode      : u32
+	# VI
+	mutable vi_ctrl      : u32
+	mutable vi_origin    : u32
+	mutable vi_width     : u32
+	mutable vi_intr_line : u32 [ 0x3FF ]
+	mutable vi_current   : u32
+	mutable vi_hstart    : u32
+	mutable vi_vstart    : u32
+	mutable vi_xscale    : u32
+	mutable vi_yscale    : u32
+	# AI (stub: instant DMA completion)
+	mutable ai_dram      : u32
+	mutable ai_len       : u32
+	mutable ai_ctrl      : u32
+	mutable ai_dacrate   : u32
+	# PI
+	mutable pi_dram      : u32
+	mutable pi_cart      : u32
+	mutable pi_status    : u32
+	# SI
+	mutable si_dram      : u32
+	mutable si_status    : u32
+	# SP (RSP stubs until the RSP pass)
+	mutable sp_status    : u32 [ 1 ]        # halted
+	mutable sp_dram      : u32
+	mutable sp_mem       : u32
+	mutable sp_pc        : u32
+	mutable sp_semaphore : u32
+	# DPC
+	mutable dpc_status   : u32
+	# input
+	mutable pad_st       : u32              # A B Z Start DU DD DL DR ... C buttons L R
+	mutable stick_x      : i32
+	mutable stick_y      : i32
+	# frame/thread
+	mutable frames       : u32
+	mutable trace        : bool
+	mutable booted       : bool
+	mutable emu_started  : bool
+	mutable emu_stop     : bool
+	mutable emu_running  : bool
+	mutable paused       : bool
+	mutable context_req  : bool
+	mutable context_out  : string
+	mutable context_seq  : i32
+	mutable pub_lock     : mutex
+	mutable pub_framebuf : new u32 [ 640 * 480 ]
+	mutable pub_w        : i32 [ 320 ]
+	mutable pub_h        : i32 [ 240 ]
+	mutable pub_valid    : bool
+	mutable screen_tex   : Texture
+	mutable tex_w        : i32
+
+	func init []
+		animated  = true
+		focusable = true
+		if [ volume == 0.0 ] volume = 0.5
+
+	# ---------------- ROM + HLE boot ----------------
+	func load_rom [] -> bool
+		f : ref FILE [ fopen[ rom.chars, 'rb' ] ]
+		if [ !f ]
+			puts 'n64: cannot open rom {rom}'
+			return false
+		fseek[ f, 0, SEEK_END ]
+		rom_size = ftell[ f ]
+		rewind[ f ]
+		buf : new u8 [ rom_size ]
+		fread[ buf, 1, rom_size, f ]
+		fclose[ f ]
+		rom_data = buf
+		hold[ (buf to Au) ]
+		# byte order from magic: z64 80371240 (native BE) / v64 37804012
+		# (16-bit swapped) / n64 40123780 (LE words)
+		m0 : u32 [ u32[ buf[0] ] ]
+		if [ m0 == 0x37 ]
+			for [ i: i64 0, i < rom_size, i += 2 ]
+				t : u8 [ buf[i] ]
+				buf[i] = buf[i + 1]
+				buf[i + 1] = t
+		el [ m0 == 0x40 ]
+			for [ i: i64 0, i < rom_size, i += 4 ]
+				t0 : u8 [ buf[i] ]
+				t1 : u8 [ buf[i + 1] ]
+				buf[i]     = buf[i + 3]
+				buf[i + 1] = buf[i + 2]
+				buf[i + 2] = t1
+				buf[i + 3] = t0
+		return true
+
+	func rom32 [ off: i64 ] -> u32
+		if [ off + 3 >= rom_size ] return 0
+		return (u32[rom_data[off]] << 24) | (u32[rom_data[off+1]] << 16) | (u32[rom_data[off+2]] << 8) | u32[rom_data[off+3]]
+
+	# HLE the PIF + IPL3 (CIC-6102): game code to RDRAM, registers to the
+	# documented post-IPL state, PC = header entry point
+	func boot []
+		cpu = cpu_vr4300 []
+		entry : u32 [ rom32[ 8 ] ]
+		# IPL3 copies 1MB of game code from ROM 0x1000 to the entry address
+		sz : i64 [ 0x100000 ]
+		if [ rom_size - 0x1000 < sz ] sz = rom_size - 0x1000
+		dst : i64 [ i64[ entry & 0x1FFFFFFF ] ]
+		for [ i: i64 0, i < sz, i += 1 ]
+			rdram[ dst + i ] = rom_data[ 0x1000 + i ]
+		# osMemSize for 6102: 0x80000318
+		wr_phys32[ 0x318, 0x800000 ]
+		cpu.r[ 11 ] = i64[ i32[ 0xFFFFFFFF ] ] & 0 | i64[ entry ]        # t3
+		cpu.r[ 20 ] = 1                                                  # s4: tv type NTSC
+		cpu.r[ 22 ] = 0x3F                                               # s6: CIC 6102 seed
+		cpu.r[ 29 ] = i64[ i32[ 0xA4001FF0 ] ]                           # sp
+		cpu.c_status = 0x34000000
+		cpu.c_config = 0x0006E463
+		cpu.pc  = entry
+		cpu.npc = entry + 4
+		booted  = true
+		puts 'n64: booted entry={entry} rom {rom_size} bytes'
+
+	# ---------------- physical memory ----------------
+	func rd_phys8 [ pa: u32 ] -> u32
+		if [ pa < 0x800000 ] return u32[ rdram[ pa ] ]
+		if [ pa >= 0x04000000 && pa < 0x04001000 ] return u32[ dmem[ pa & 0xFFF ] ]
+		if [ pa >= 0x04001000 && pa < 0x04002000 ] return u32[ imem[ pa & 0xFFF ] ]
+		if [ pa >= 0x10000000 && pa < 0x10000000 + u32[ rom_size ] ] return u32[ rom_data[ pa - 0x10000000 ] ]
+		if [ pa >= 0x1FC007C0 && pa < 0x1FC00800 ] return u32[ pif_ram[ pa - 0x1FC007C0 ] ]
+		if [ pa >= 0x04300000 && pa < 0x04900000 ] return (io_read[ pa & 0xFFFFFFFC ] >> ((3 - (pa & 3)) * 8)) & 0xFF
+		return 0
+
+	func wr_phys8 [ pa: u32, v: u32 ]
+		if [ pa < 0x800000 ]
+			rdram[ pa ] = u8[ v ]
+			return
+		if [ pa >= 0x04000000 && pa < 0x04001000 ]
+			dmem[ pa & 0xFFF ] = u8[ v ]
+			return
+		if [ pa >= 0x04001000 && pa < 0x04002000 ]
+			imem[ pa & 0xFFF ] = u8[ v ]
+			return
+		if [ pa >= 0x1FC007C0 && pa < 0x1FC00800 ]
+			pif_ram[ pa - 0x1FC007C0 ] = u8[ v ]
+
+	func rd_phys32 [ pa: u32 ] -> u32
+		if [ pa < 0x800000 ]
+			return (u32[rdram[pa]] << 24) | (u32[rdram[pa+1]] << 16) | (u32[rdram[pa+2]] << 8) | u32[rdram[pa+3]]
+		if [ pa >= 0x04000000 && pa < 0x04002000 ]
+			b : u32 [ pa & 0x1FFF ]
+			m : ref u8 [ (b < 0x1000) ? dmem : imem ]
+			o : u32 [ b & 0xFFF ]
+			return (u32[m[o]] << 24) | (u32[m[o+1]] << 16) | (u32[m[o+2]] << 8) | u32[m[o+3]]
+		if [ pa >= 0x10000000 && pa < 0x10000000 + u32[ rom_size ] ]
+			return rom32[ i64[ pa - 0x10000000 ] ]
+		if [ pa >= 0x1FC007C0 && pa < 0x1FC00800 ]
+			o2 : u32 [ pa - 0x1FC007C0 ]
+			return (u32[pif_ram[o2]] << 24) | (u32[pif_ram[o2+1]] << 16) | (u32[pif_ram[o2+2]] << 8) | u32[pif_ram[o2+3]]
+		return io_read[ pa ]
+
+	func wr_phys32 [ pa: u32, v: u32 ]
+		if [ pa < 0x800000 ]
+			rdram[pa]   = u8[ v >> 24 ]
+			rdram[pa+1] = u8[ v >> 16 ]
+			rdram[pa+2] = u8[ v >> 8 ]
+			rdram[pa+3] = u8[ v ]
+			return
+		if [ pa >= 0x04000000 && pa < 0x04002000 ]
+			b : u32 [ pa & 0x1FFF ]
+			m : ref u8 [ (b < 0x1000) ? dmem : imem ]
+			o : u32 [ b & 0xFFF ]
+			m[o]   = u8[ v >> 24 ]
+			m[o+1] = u8[ v >> 16 ]
+			m[o+2] = u8[ v >> 8 ]
+			m[o+3] = u8[ v ]
+			return
+		if [ pa >= 0x1FC007C0 && pa < 0x1FC00800 ]
+			o2 : u32 [ pa - 0x1FC007C0 ]
+			pif_ram[o2]   = u8[ v >> 24 ]
+			pif_ram[o2+1] = u8[ v >> 16 ]
+			pif_ram[o2+2] = u8[ v >> 8 ]
+			pif_ram[o2+3] = u8[ v ]
+			pif_joybus[]
+			return
+		io_write[ pa, v ]
+
+	# ---------------- I/O registers ----------------
+	func io_read [ pa: u32 ] -> u32
+		if [ pa == 0x04040010 ] return sp_status
+		if [ pa == 0x04040018 ] return 0                    # SP DMA busy
+		if [ pa == 0x0404001C ]
+			s : u32 [ sp_semaphore ]
+			sp_semaphore = 1
+			return s
+		if [ pa == 0x04080000 ] return sp_pc
+		if [ pa == 0x0410000C ] return dpc_status
+		if [ pa == 0x04300008 ] return mi_intr
+		if [ pa == 0x0430000C ] return mi_mask
+		if [ pa == 0x04300004 ] return 0x02020102           # MI version
+		if [ pa == 0x04400010 ] return vi_current
+		if [ pa == 0x04600010 ] return pi_status
+		if [ pa == 0x04800018 ] return si_status
+		if [ pa == 0x04500004 ] return ai_len
+		if [ pa == 0x0450000C ] return 1                    # AI status: dma? keep simple
+		if [ pa >= 0x04700000 && pa < 0x04800000 ] return 0x1  # RI: initialized
+		if [ pa >= 0x03F00000 && pa < 0x04000000 ] return 0
+		return 0
+
+	func io_write [ pa: u32, v: u32 ]
+		if [ pa == 0x04040010 ]                              # SP status: HLE — clear halt only
+			if [ v & 0x1 ] sp_status = sp_status & (~u32[1])
+			if [ v & 0x2 ] sp_status = sp_status | 1
+			if [ v & 0x8 ] mi_intr = mi_intr & (~u32[1])
+			mi_check[]
+			return
+		if [ pa == 0x0404001C ]
+			sp_semaphore = 0
+			return
+		if [ pa == 0x04300000 ]
+			mi_mode = v
+			if [ v & 0x800 ] mi_intr = mi_intr & (~u32[0x20])
+			mi_check[]
+			return
+		if [ pa == 0x0430000C ]                              # MI mask set/clear pairs
+			for [ b: i32 0, b < 6, b += 1 ]
+				if [ (v >> (b * 2)) & 1 ] mi_mask = mi_mask & (~(u32[1] << b))
+				if [ (v >> (b * 2)) & 2 ] mi_mask = mi_mask | (u32[1] << b)
+			mi_check[]
+			return
+		if [ pa == 0x04400000 ]
+			vi_ctrl = v
+			return
+		if [ pa == 0x04400004 ]
+			vi_origin = v & 0xFFFFFF
+			return
+		if [ pa == 0x04400008 ]
+			vi_width = v & 0xFFF
+			return
+		if [ pa == 0x0440000C ]
+			vi_intr_line = v & 0x3FF
+			return
+		if [ pa == 0x04400010 ]                              # VI current write = clear VI int
+			mi_intr = mi_intr & (~u32[0x8])
+			mi_check[]
+			return
+		if [ pa == 0x04400030 ]
+			vi_xscale = v
+			return
+		if [ pa == 0x04400034 ]
+			vi_yscale = v
+			return
+		if [ pa == 0x04500000 ]
+			ai_dram = v
+			return
+		if [ pa == 0x04500004 ]                              # AI length: complete instantly, raise AI int
+			ai_len = 0
+			mi_intr = mi_intr | 0x4
+			mi_check[]
+			return
+		if [ pa == 0x04500008 ]
+			ai_ctrl = v
+			return
+		if [ pa == 0x0450000C ]                              # AI status write = clear AI int
+			mi_intr = mi_intr & (~u32[0x4])
+			mi_check[]
+			return
+		if [ pa == 0x04500010 ]
+			ai_dacrate = v
+			return
+		if [ pa == 0x04600000 ]
+			pi_dram = v & 0xFFFFFF
+			return
+		if [ pa == 0x04600004 ]
+			pi_cart = v
+			return
+		if [ pa == 0x0460000C ]                              # PI write length: cart -> RDRAM
+			ln : u32 [ (v & 0xFFFFFF) + 1 ]
+			src : i64 [ i64[ pi_cart & 0x1FFFFFFF ] - 0x10000000 ]
+			for [ i: u32 0, i < ln, i += 1 ]
+				bv : u32 [ (src + i64[i] < rom_size && src + i64[i] >= 0) ? u32[ rom_data[ src + i64[i] ] ] : 0 ]
+				if [ pi_dram + i < 0x800000 ] rdram[ pi_dram + i ] = u8[ bv ]
+			mi_intr = mi_intr | 0x10
+			mi_check[]
+			return
+		if [ pa == 0x04600010 ]                              # PI status write = clear PI int
+			mi_intr = mi_intr & (~u32[0x10])
+			mi_check[]
+			return
+		if [ pa == 0x04800000 ]
+			si_dram = v & 0xFFFFFF
+			return
+		if [ pa == 0x04800004 ]                              # SI read64: PIF -> RDRAM
+			pif_joybus[]
+			for [ i: u32 0, i < 64, i += 1 ]
+				rdram[ si_dram + i ] = pif_ram[ i ]
+			mi_intr = mi_intr | 0x2
+			mi_check[]
+			return
+		if [ pa == 0x04800010 ]                              # SI write64: RDRAM -> PIF
+			for [ i: u32 0, i < 64, i += 1 ]
+				pif_ram[ i ] = rdram[ si_dram + i ]
+			pif_joybus[]
+			mi_intr = mi_intr | 0x2
+			mi_check[]
+			return
+		if [ pa == 0x04800018 ]
+			mi_intr = mi_intr & (~u32[0x2])
+			mi_check[]
+			return
+
+	# controller reads: interpret joybus commands in PIF RAM
+	func pif_joybus []
+		i : i32 [ 0 ]
+		ch : i32 [ 0 ]
+		while [ i < 63 ]
+			t : i32 [ i32[ pif_ram[ i ] ] ]
+			if [ t == 0 ]
+				ch += 1
+				i += 1
+				continue
+			if [ t == 0xFE ] return
+			if [ t == 0xFF ]
+				i += 1
+				continue
+			rx : i32 [ i32[ pif_ram[ i + 1 ] ] & 0x3F ]
+			cmd : i32 [ i32[ pif_ram[ i + 2 ] ] ]
+			if [ ch == 0 && (cmd == 0 || cmd == 0xFF) && i + 4 < 64 ]      # info
+				pif_ram[ i + 3 ] = 0x05
+				pif_ram[ i + 4 ] = 0x00
+				pif_ram[ i + 5 ] = 0x02                                    # no pak
+			el [ ch == 0 && cmd == 1 && i + 6 < 64 ]                       # read state
+				pif_ram[ i + 3 ] = u8[ pad_st >> 8 ]
+				pif_ram[ i + 4 ] = u8[ pad_st ]
+				pif_ram[ i + 5 ] = u8[ stick_x ]
+				pif_ram[ i + 6 ] = u8[ stick_y ]
+			el [ ch > 0 && i + 1 < 64 ]                                    # absent channels
+				pif_ram[ i + 1 ] = u8[ u32[ rx ] | 0x80 ]
+			i += 3 + (t & 0x3F) + rx
+			ch += 1
+
+	# ---------------- interrupts ----------------
+	func mi_check []
+		if [ mi_intr & mi_mask ] cpu.c_cause = cpu.c_cause | 0x400
+		el cpu.c_cause = cpu.c_cause & (~u32[0x400])
+
+	func take_int []
+		cpu.c_cause = cpu.c_cause & (~u32[0x7C])            # ExcCode 0
+		cpu.c_epc = cpu.pc
+		cpu.c_status = cpu.c_status | 0x2                    # EXL
+		cpu.pc  = 0x80000180
+		cpu.npc = 0x80000184
+
+	# ---------------- virtual memory (KSEG0/1 direct) ----------------
+	func vmap [ va: u32 ] -> u32
+		return va & 0x1FFFFFFF
+
+	func rd8  [ va: u32 ] -> u32 return rd_phys8[ vmap[ va ] ]
+	func rd16 [ va: u32 ] -> u32
+		p : u32 [ vmap[ va ] ]
+		return (rd_phys8[ p ] << 8) | rd_phys8[ p + 1 ]
+	func rd32v [ va: u32 ] -> u32 return rd_phys32[ vmap[ va ] ]
+	func rd64 [ va: u32 ] -> i64
+		h : u32 [ rd_phys32[ vmap[ va ] ] ]
+		l : u32 [ rd_phys32[ vmap[ va ] + 4 ] ]
+		return (i64[ h ] << 32) | i64[ l ]
+	func wr8v  [ va: u32, v: u32 ] wr_phys8[ vmap[ va ], v ]
+	func wr16v [ va: u32, v: u32 ]
+		p : u32 [ vmap[ va ] ]
+		wr_phys8[ p, (v >> 8) & 0xFF ]
+		wr_phys8[ p + 1, v & 0xFF ]
+	func wr32v [ va: u32, v: u32 ] wr_phys32[ vmap[ va ], v ]
+	func wr64 [ va: u32, v: i64 ]
+		wr_phys32[ vmap[ va ], u32[ v >> 32 ] ]
+		wr_phys32[ vmap[ va ] + 4, u32[ v ] ]
+
+	# ---------------- FPU register file (FR=0 pairing) ----------------
+	func fget32 [ n: i32 ] -> u32
+		if [ cpu.c_status & 0x04000000 ] return u32[ cpu.fpr[ n ] ]
+		e : i32 [ n - (n & 1) ]
+		fv : u64 [ cpu.fpr[ e ] ]
+		if [ n & 1 ] return u32[ fv >> 32 ]
+		return u32[ fv ]
+	func fset32 [ n: i32, v: u32 ]
+		if [ cpu.c_status & 0x04000000 ]
+			fz : u64 [ cpu.fpr[ n ] ]
+			cpu.fpr[ n ] = (fz & 0xFFFFFFFF00000000) | u64[ v ]
+			return
+		e : i32 [ n - (n & 1) ]
+		fw : u64 [ cpu.fpr[ e ] ]
+		if [ n & 1 ] cpu.fpr[ e ] = (fw & 0x00000000FFFFFFFF) | (u64[ v ] << 32)
+		el cpu.fpr[ e ] = (fw & 0xFFFFFFFF00000000) | u64[ v ]
+	func fget64 [ n: i32 ] -> u64
+		if [ cpu.c_status & 0x04000000 ] return cpu.fpr[ n ]
+		return cpu.fpr[ n - (n & 1) ]
+	func fset64 [ n: i32, v: u64 ]
+		if [ cpu.c_status & 0x04000000 ]
+			cpu.fpr[ n ] = v
+			return
+		cpu.fpr[ n - (n & 1) ] = v
+	func fgs [ n: i32 ] -> f32
+		bb : local u32 [ 1 ] [ fget32[ n ] ]
+		fp : ref f32 [ ((ref bb[0]) to ref f32) ]
+		return fp[ 0 ]
+	func fss [ n: i32, v: f32 ]
+		bb : local f32 [ 1 ] [ v ]
+		up : ref u32 [ ((ref bb[0]) to ref u32) ]
+		fset32[ n, up[ 0 ] ]
+	func fgd [ n: i32 ] -> f64
+		bb : local u64 [ 1 ] [ fget64[ n ] ]
+		fp : ref f64 [ ((ref bb[0]) to ref f64) ]
+		return fp[ 0 ]
+	func fsd [ n: i32, v: f64 ]
+		bb : local f64 [ 1 ] [ v ]
+		up : ref u64 [ ((ref bb[0]) to ref u64) ]
+		fset64[ n, up[ 0 ] ]
+
+	# ---------------- interpreter ----------------
+	func sx32 [ v: u32 ] -> i64
+		return i64[ i32[ v ] ]
+
+	func step []
+		# pending interrupt (IE, not EXL/ERL, enabled + pending lines)
+		st : u32 [ cpu.c_status ]
+		if [ (st & 1) && !(st & 6) ]
+			if [ cpu.c_cause & st & 0xFF00 ] take_int[]
+		op  : u32 [ rd32v[ cpu.pc ] ]
+		cur : u32 [ cpu.pc ]
+		cpu.pc  = cpu.npc
+		cpu.npc = cpu.pc + 4
+		exec[ op, cur ]
+		cpu.r[ 0 ] = 0
+		cpu.c_count += 1
+		if [ cpu.c_count == cpu.c_compare ]
+			cpu.c_cause = cpu.c_cause | 0x8000
+
+	func branch [ cond: bool, cur: u32, op: u32, likely: bool ]
+		if [ cond ]
+			cpu.npc = cur + 4 + (u32[ sx32[ (op & 0xFFFF) ] ] << 2)
+		el [ likely ]
+			cpu.pc  = cpu.npc
+			cpu.npc = cpu.pc + 4
+
+	func exec [ op: u32, cur: u32 ]
+		o  : u32 [ op >> 26 ]
+		rs : i32 [ i32[ (op >> 21) & 31 ] ]
+		rt : i32 [ i32[ (op >> 16) & 31 ] ]
+		rd : i32 [ i32[ (op >> 11) & 31 ] ]
+		sa : i32 [ i32[ (op >> 6) & 31 ] ]
+		im : i64 [ sx32[ op & 0xFFFF ] ]
+		zi : u32 [ op & 0xFFFF ]
+		switch [ o ]
+		case 0x00
+			exec_special[ op, rs, rt, rd, sa ]
+		case 0x01
+			rti : i32 [ rt ]
+			c : bool [ false ]
+			if [ rti == 0 ] c = cpu.r[ rs ] < 0                # BLTZ
+			el [ rti == 1 ] c = cpu.r[ rs ] >= 0               # BGEZ
+			el [ rti == 2 ]                                    # BLTZL
+				branch[ cpu.r[ rs ] < 0, cur, op, true ]
+				return
+			el [ rti == 3 ]                                    # BGEZL
+				branch[ cpu.r[ rs ] >= 0, cur, op, true ]
+				return
+			el [ rti == 16 || rti == 17 ]                      # BLTZAL/BGEZAL
+				c = (rti == 16) ? (cpu.r[ rs ] < 0) : (cpu.r[ rs ] >= 0)
+				cpu.r[ 31 ] = sx32[ cur + 8 ]
+			branch[ c, cur, op, false ]
+		case 0x02                                              # J
+			cpu.npc = ((cur + 4) & 0xF0000000) | ((op & 0x3FFFFFF) << 2)
+		case 0x03                                              # JAL
+			cpu.r[ 31 ] = sx32[ cur + 8 ]
+			cpu.npc = ((cur + 4) & 0xF0000000) | ((op & 0x3FFFFFF) << 2)
+		case 0x04
+			branch[ cpu.r[ rs ] == cpu.r[ rt ], cur, op, false ]
+		case 0x05
+			branch[ cpu.r[ rs ] != cpu.r[ rt ], cur, op, false ]
+		case 0x06
+			branch[ cpu.r[ rs ] <= 0, cur, op, false ]
+		case 0x07
+			branch[ cpu.r[ rs ] > 0, cur, op, false ]
+		case 0x08, 0x09                                        # ADDI/ADDIU
+			cpu.r[ rt ] = sx32[ u32[ cpu.r[ rs ] ] + u32[ im ] ]
+		case 0x0A
+			cpu.r[ rt ] = (cpu.r[ rs ] < im) ? 1 : 0
+		case 0x0B
+			cpu.r[ rt ] = (u64[ cpu.r[ rs ] ] < u64[ im ]) ? 1 : 0
+		case 0x0C
+			cpu.r[ rt ] = cpu.r[ rs ] & i64[ zi ]
+		case 0x0D
+			cpu.r[ rt ] = cpu.r[ rs ] | i64[ zi ]
+		case 0x0E
+			cpu.r[ rt ] = cpu.r[ rs ] ^ i64[ zi ]
+		case 0x0F
+			cpu.r[ rt ] = sx32[ zi << 16 ]
+		case 0x10
+			exec_cop0[ op, rs, rt, rd ]
+		case 0x11
+			exec_cop1[ op, cur ]
+		case 0x14
+			branch[ cpu.r[ rs ] == cpu.r[ rt ], cur, op, true ]
+		case 0x15
+			branch[ cpu.r[ rs ] != cpu.r[ rt ], cur, op, true ]
+		case 0x16
+			branch[ cpu.r[ rs ] <= 0, cur, op, true ]
+		case 0x17
+			branch[ cpu.r[ rs ] > 0, cur, op, true ]
+		case 0x18, 0x19                                        # DADDI/U
+			cpu.r[ rt ] = cpu.r[ rs ] + im
+		case 0x1A                                              # LDL
+			cpu.r[ rt ] = rd64[ u32[ cpu.r[ rs ] + im ] & (~u32[7]) ]
+		case 0x1B
+			cpu.r[ rt ] = rd64[ u32[ cpu.r[ rs ] + im ] & (~u32[7]) ]
+		case 0x20
+			cpu.r[ rt ] = i64[ i32[ i8[ rd8[ u32[ cpu.r[ rs ] + im ] ] ] ] ]
+		case 0x21
+			cpu.r[ rt ] = i64[ i32[ i16[ rd16[ u32[ cpu.r[ rs ] + im ] ] ] ] ]
+		case 0x22                                              # LWL
+			a2 : u32 [ u32[ cpu.r[ rs ] + im ] ]
+			sh : u32 [ (a2 & 3) * 8 ]
+			w  : u32 [ rd32v[ a2 & (~u32[3]) ] ]
+			ov1 : u32 [ u32[ cpu.r[ rt ] ] ]
+			mkv : u32 [ (sh == 0) ? w : ((ov1 & ((u32[1] << sh) - 1)) | (w << sh)) ]
+			cpu.r[ rt ] = sx32[ mkv ]
+		case 0x23
+			cpu.r[ rt ] = sx32[ rd32v[ u32[ cpu.r[ rs ] + im ] ] ]
+		case 0x24
+			cpu.r[ rt ] = i64[ rd8[ u32[ cpu.r[ rs ] + im ] ] ]
+		case 0x25
+			cpu.r[ rt ] = i64[ rd16[ u32[ cpu.r[ rs ] + im ] ] ]
+		case 0x26                                              # LWR
+			a3 : u32 [ u32[ cpu.r[ rs ] + im ] ]
+			sh2 : u32 [ (3 - (a3 & 3)) * 8 ]
+			w2 : u32 [ rd32v[ a3 & (~u32[3]) ] ]
+			ov2 : u32 [ u32[ cpu.r[ rt ] ] ]
+			mk2 : u32 [ (sh2 == 0) ? w2 : ((ov2 & (~(u32[0xFFFFFFFF] >> sh2))) | (w2 >> sh2)) ]
+			cpu.r[ rt ] = sx32[ mk2 ]
+		case 0x27
+			cpu.r[ rt ] = i64[ rd32v[ u32[ cpu.r[ rs ] + im ] ] ]
+		case 0x28
+			wr8v[ u32[ cpu.r[ rs ] + im ], u32[ cpu.r[ rt ] ] ]
+		case 0x29
+			wr16v[ u32[ cpu.r[ rs ] + im ], u32[ cpu.r[ rt ] ] ]
+		case 0x2A                                              # SWL
+			a4 : u32 [ u32[ cpu.r[ rs ] + im ] ]
+			sh3 : u32 [ (a4 & 3) * 8 ]
+			w3 : u32 [ rd32v[ a4 & (~u32[3]) ] ]
+			ov3 : u32 [ u32[ cpu.r[ rt ] ] ]
+			nv : u32 [ (sh3 == 0) ? ov3 : ((w3 & (~(u32[0xFFFFFFFF] >> sh3))) | (ov3 >> sh3)) ]
+			wr32v[ a4 & (~u32[3]), nv ]
+		case 0x2B
+			wr32v[ u32[ cpu.r[ rs ] + im ], u32[ cpu.r[ rt ] ] ]
+		case 0x2E                                              # SWR
+			a5 : u32 [ u32[ cpu.r[ rs ] + im ] ]
+			sh4 : u32 [ (3 - (a5 & 3)) * 8 ]
+			w4 : u32 [ rd32v[ a5 & (~u32[3]) ] ]
+			ov4 : u32 [ u32[ cpu.r[ rt ] ] ]
+			nv2 : u32 [ (sh4 == 0) ? ov4 : ((w4 & (~(u32[0xFFFFFFFF] << sh4))) | (ov4 << sh4)) ]
+			wr32v[ a5 & (~u32[3]), nv2 ]
+		case 0x2F                                              # CACHE
+			return
+		case 0x30                                              # LL
+			cpu.r[ rt ] = sx32[ rd32v[ u32[ cpu.r[ rs ] + im ] ] ]
+			cpu.ll_bit = true
+		case 0x31
+			fset32[ rt, rd32v[ u32[ cpu.r[ rs ] + im ] ] ]
+		case 0x35
+			fset64[ rt, u64[ rd64[ u32[ cpu.r[ rs ] + im ] ] ] ]
+		case 0x37
+			cpu.r[ rt ] = rd64[ u32[ cpu.r[ rs ] + im ] ]
+		case 0x38                                              # SC
+			if [ cpu.ll_bit ] wr32v[ u32[ cpu.r[ rs ] + im ], u32[ cpu.r[ rt ] ] ]
+			cpu.r[ rt ] = (cpu.ll_bit) ? 1 : 0
+			cpu.ll_bit = false
+		case 0x39
+			wr32v[ u32[ cpu.r[ rs ] + im ], fget32[ rt ] ]
+		case 0x3D
+			wr64[ u32[ cpu.r[ rs ] + im ], i64[ fget64[ rt ] ] ]
+		case 0x3F
+			wr64[ u32[ cpu.r[ rs ] + im ], cpu.r[ rt ] ]
+		default
+			return
+
+	func exec_special [ op: u32, rs: i32, rt: i32, rd: i32, sa: i32 ]
+		f : u32 [ op & 0x3F ]
+		switch [ f ]
+		case 0x00
+			cpu.r[ rd ] = sx32[ u32[ cpu.r[ rt ] ] << u32[ sa ] ]
+		case 0x02
+			cpu.r[ rd ] = sx32[ u32[ cpu.r[ rt ] ] >> u32[ sa ] ]
+		case 0x03
+			cpu.r[ rd ] = sx32[ u32[ i32[ cpu.r[ rt ] ] >> sa ] ]
+		case 0x04
+			cpu.r[ rd ] = sx32[ u32[ cpu.r[ rt ] ] << (u32[ cpu.r[ rs ] ] & 31) ]
+		case 0x06
+			cpu.r[ rd ] = sx32[ u32[ cpu.r[ rt ] ] >> (u32[ cpu.r[ rs ] ] & 31) ]
+		case 0x07
+			cpu.r[ rd ] = sx32[ u32[ i32[ cpu.r[ rt ] ] >> i32[ cpu.r[ rs ] & 31 ] ] ]
+		case 0x08                                              # JR
+			cpu.npc = u32[ cpu.r[ rs ] ]
+		case 0x09
+			cpu.r[ rd ] = sx32[ cpu.pc + 4 ]
+			cpu.npc = u32[ cpu.r[ rs ] ]
+		case 0x0F                                              # SYNC
+			return
+		case 0x10
+			cpu.r[ rd ] = cpu.hi
+		case 0x11
+			cpu.hi = cpu.r[ rs ]
+		case 0x12
+			cpu.r[ rd ] = cpu.lo
+		case 0x13
+			cpu.lo = cpu.r[ rs ]
+		case 0x14
+			dv1 : i64 [ cpu.r[ rt ] ]
+			cpu.r[ rd ] = dv1 << (u32[ cpu.r[ rs ] ] & 63)
+		case 0x16
+			dv2 : u64 [ u64[ cpu.r[ rt ] ] ]
+			cpu.r[ rd ] = i64[ dv2 >> (u32[ cpu.r[ rs ] ] & 63) ]
+		case 0x17
+			dv3 : i64 [ cpu.r[ rt ] ]
+			cpu.r[ rd ] = dv3 >> (u32[ cpu.r[ rs ] ] & 63)
+		case 0x18                                              # MULT
+			p1 : i64 [ i64[ i32[ cpu.r[ rs ] ] ] * i64[ i32[ cpu.r[ rt ] ] ] ]
+			cpu.lo = sx32[ u32[ p1 ] ]
+			cpu.hi = sx32[ u32[ p1 >> 32 ] ]
+		case 0x19                                              # MULTU
+			p2 : u64 [ u64[ u32[ cpu.r[ rs ] ] ] * u64[ u32[ cpu.r[ rt ] ] ] ]
+			cpu.lo = sx32[ u32[ p2 ] ]
+			cpu.hi = sx32[ u32[ p2 >> 32 ] ]
+		case 0x1A                                              # DIV
+			d1 : i32 [ i32[ cpu.r[ rt ] ] ]
+			if [ d1 != 0 ]
+				cpu.lo = sx32[ u32[ i32[ cpu.r[ rs ] ] / d1 ] ]
+				cpu.hi = sx32[ u32[ i32[ cpu.r[ rs ] ] % d1 ] ]
+		case 0x1B                                              # DIVU
+			d2 : u32 [ u32[ cpu.r[ rt ] ] ]
+			if [ d2 != 0 ]
+				cpu.lo = sx32[ u32[ cpu.r[ rs ] ] / d2 ]
+				cpu.hi = sx32[ u32[ cpu.r[ rs ] ] % d2 ]
+		case 0x1C                                              # DMULT (low-precision fallback)
+			dq1 : i64 [ cpu.r[ rs ] ]
+			dq2 : i64 [ cpu.r[ rt ] ]
+			cpu.lo = dq1 * dq2
+			cpu.hi = (cpu.lo < 0) ? -1 : 0
+		case 0x1D
+			dm1 : u64 [ u64[ cpu.r[ rs ] ] ]
+			dm2 : u64 [ u64[ cpu.r[ rt ] ] ]
+			cpu.lo = i64[ dm1 * dm2 ]
+			cpu.hi = 0
+		case 0x1E
+			ds1 : i64 [ cpu.r[ rs ] ]
+			dt1 : i64 [ cpu.r[ rt ] ]
+			if [ dt1 != 0 ]
+				cpu.lo = ds1 / dt1
+				cpu.hi = ds1 % dt1
+		case 0x1F
+			ds2 : u64 [ u64[ cpu.r[ rs ] ] ]
+			dt2 : u64 [ u64[ cpu.r[ rt ] ] ]
+			if [ dt2 != 0 ]
+				cpu.lo = i64[ ds2 / dt2 ]
+				cpu.hi = i64[ ds2 % dt2 ]
+		case 0x20, 0x21
+			cpu.r[ rd ] = sx32[ u32[ cpu.r[ rs ] ] + u32[ cpu.r[ rt ] ] ]
+		case 0x22, 0x23
+			cpu.r[ rd ] = sx32[ u32[ cpu.r[ rs ] ] - u32[ cpu.r[ rt ] ] ]
+		case 0x24
+			cpu.r[ rd ] = cpu.r[ rs ] & cpu.r[ rt ]
+		case 0x25
+			cpu.r[ rd ] = cpu.r[ rs ] | cpu.r[ rt ]
+		case 0x26
+			cpu.r[ rd ] = cpu.r[ rs ] ^ cpu.r[ rt ]
+		case 0x27
+			cpu.r[ rd ] = ~(cpu.r[ rs ] | cpu.r[ rt ])
+		case 0x2A
+			cpu.r[ rd ] = (cpu.r[ rs ] < cpu.r[ rt ]) ? 1 : 0
+		case 0x2B
+			cpu.r[ rd ] = (u64[ cpu.r[ rs ] ] < u64[ cpu.r[ rt ] ]) ? 1 : 0
+		case 0x2C, 0x2D
+			cpu.r[ rd ] = cpu.r[ rs ] + cpu.r[ rt ]
+		case 0x2E, 0x2F
+			cpu.r[ rd ] = cpu.r[ rs ] - cpu.r[ rt ]
+		case 0x38
+			dv4 : i64 [ cpu.r[ rt ] ]
+			cpu.r[ rd ] = dv4 << u32[ sa ]
+		case 0x3A
+			dv5 : u64 [ u64[ cpu.r[ rt ] ] ]
+			cpu.r[ rd ] = i64[ dv5 >> u32[ sa ] ]
+		case 0x3B
+			dv6 : i64 [ cpu.r[ rt ] ]
+			cpu.r[ rd ] = dv6 >> u32[ sa ]
+		case 0x3C
+			dv7 : i64 [ cpu.r[ rt ] ]
+			cpu.r[ rd ] = dv7 << u32[ sa + 32 ]
+		case 0x3E
+			dv8 : u64 [ u64[ cpu.r[ rt ] ] ]
+			cpu.r[ rd ] = i64[ dv8 >> u32[ sa + 32 ] ]
+		case 0x3F
+			dv9 : i64 [ cpu.r[ rt ] ]
+			cpu.r[ rd ] = dv9 >> u32[ sa + 32 ]
+		default
+			return
+
+	func exec_cop0 [ op: u32, rs: i32, rt: i32, rd: i32 ]
+		if [ rs == 0 ]                                         # MFC0
+			v : u32 [ 0 ]
+			if [ rd == 9 ]  v = cpu.c_count
+			el [ rd == 11 ] v = cpu.c_compare
+			el [ rd == 12 ] v = cpu.c_status
+			el [ rd == 13 ] v = cpu.c_cause
+			el [ rd == 14 ] v = cpu.c_epc
+			el [ rd == 16 ] v = cpu.c_config
+			cpu.r[ rt ] = sx32[ v ]
+			return
+		if [ rs == 4 ]                                         # MTC0
+			v2 : u32 [ u32[ cpu.r[ rt ] ] ]
+			if [ rd == 9 ]  cpu.c_count = v2
+			el [ rd == 11 ]
+				cpu.c_compare = v2
+				cpu.c_cause = cpu.c_cause & (~u32[0x8000])
+			el [ rd == 12 ] cpu.c_status = v2
+			el [ rd == 13 ] cpu.c_cause = (cpu.c_cause & (~u32[0x300])) | (v2 & 0x300)
+			el [ rd == 14 ] cpu.c_epc = v2
+			return
+		if [ (op & 0x3F) == 0x18 ]                             # ERET
+			cpu.pc  = cpu.c_epc
+			cpu.npc = cpu.pc + 4
+			cpu.c_status = cpu.c_status & (~u32[0x2])
+			cpu.ll_bit = false
+
+	func exec_cop1 [ op: u32, cur: u32 ]
+		rs : i32 [ i32[ (op >> 21) & 31 ] ]
+		rt : i32 [ i32[ (op >> 16) & 31 ] ]
+		fs : i32 [ i32[ (op >> 11) & 31 ] ]
+		fd : i32 [ i32[ (op >> 6) & 31 ] ]
+		fn : u32 [ op & 0x3F ]
+		if [ rs == 0 ]
+			cpu.r[ rt ] = sx32[ fget32[ fs ] ]
+			return
+		if [ rs == 1 ]
+			cpu.r[ rt ] = i64[ fget64[ fs ] ]
+			return
+		if [ rs == 2 ]
+			cpu.r[ rt ] = sx32[ (fs == 31) ? cpu.fcr31 : 0xA00 ]
+			return
+		if [ rs == 4 ]
+			fset32[ fs, u32[ cpu.r[ rt ] ] ]
+			return
+		if [ rs == 5 ]
+			fset64[ fs, u64[ cpu.r[ rt ] ] ]
+			return
+		if [ rs == 6 ]
+			if [ fs == 31 ] cpu.fcr31 = u32[ cpu.r[ rt ] ]
+			return
+		if [ rs == 8 ]                                         # BC1
+			cnd : bool [ (cpu.fcr31 & 0x800000) != 0 ]
+			tf  : bool [ (rt & 1) != 0 ]
+			branch[ cnd == tf, cur, op, (rt & 2) != 0 ]
+			return
+		if [ rs == 16 ]                                        # fmt S
+			v1 : f32 [ fgs[ fs ] ]
+			v2 : f32 [ fgs[ i32[ (op >> 16) & 31 ] ] ]
+			if [ fn == 0 ] fss[ fd, v1 + v2 ]
+			el [ fn == 1 ] fss[ fd, v1 - v2 ]
+			el [ fn == 2 ] fss[ fd, v1 * v2 ]
+			el [ fn == 3 ] fss[ fd, v1 / v2 ]
+			el [ fn == 4 ] fss[ fd, sqrt[ v1 ] ]
+			el [ fn == 5 ] fss[ fd, (v1 < 0.0) ? (0.0 - v1) : v1 ]
+			el [ fn == 6 ] fss[ fd, v1 ]
+			el [ fn == 7 ] fss[ fd, 0.0 - v1 ]
+			el [ fn == 13 || fn == 9 ] fset32[ fd, u32[ i32[ v1 ] ] ]              # trunc.w
+			el [ fn == 12 || fn == 8 ] fset32[ fd, u32[ i32[ floor[ v1 + 0.5 ] ] ] ]
+			el [ fn == 14 ] fset32[ fd, u32[ i32[ ceil[ v1 ] ] ] ]
+			el [ fn == 15 ] fset32[ fd, u32[ i32[ floor[ v1 ] ] ] ]
+			el [ fn == 33 ] fsd[ fd, f64[ v1 ] ]                                   # cvt.d.s
+			el [ fn == 36 ] fset32[ fd, u32[ i32[ v1 ] ] ]                         # cvt.w.s
+			el [ fn >= 48 ] fcmp[ f64[ v1 ], f64[ v2 ], fn ]
+			return
+		if [ rs == 17 ]                                        # fmt D
+			ad : f64 [ fgd[ fs ] ]
+			bd : f64 [ fgd[ i32[ (op >> 16) & 31 ] ] ]
+			if [ fn == 0 ] fsd[ fd, ad + bd ]
+			el [ fn == 1 ] fsd[ fd, ad - bd ]
+			el [ fn == 2 ] fsd[ fd, ad * bd ]
+			el [ fn == 3 ] fsd[ fd, ad / bd ]
+			el [ fn == 4 ] fsd[ fd, sqrt[ ad ] ]
+			el [ fn == 5 ] fsd[ fd, (ad < 0.0) ? (0.0 - ad) : ad ]
+			el [ fn == 6 ] fsd[ fd, ad ]
+			el [ fn == 7 ] fsd[ fd, 0.0 - ad ]
+			el [ fn == 13 || fn == 9 ] fset32[ fd, u32[ i32[ ad ] ] ]
+			el [ fn == 32 ] fss[ fd, f32[ ad ] ]                                  # cvt.s.d
+			el [ fn == 36 ] fset32[ fd, u32[ i32[ ad ] ] ]
+			el [ fn >= 48 ] fcmp[ ad, bd, fn ]
+			return
+		if [ rs == 20 ]                                        # fmt W
+			iw : i32 [ i32[ fget32[ fs ] ] ]
+			if [ fn == 32 ] fss[ fd, f32[ iw ] ]
+			el [ fn == 33 ] fsd[ fd, f64[ iw ] ]
+			return
+		if [ rs == 21 ]                                        # fmt L
+			il : i64 [ i64[ fget64[ fs ] ] ]
+			if [ fn == 32 ] fss[ fd, f32[ il ] ]
+			el [ fn == 33 ] fsd[ fd, f64[ il ] ]
+
+	func fcmp [ fa: f64, fb: f64, fn: u32 ]
+		lt : bool [ fa < fb ]
+		eq : bool [ fa == fb ]
+		c : bool [ false ]
+		if [ fn & 2 ] c = c || eq
+		if [ fn & 4 ] c = c || lt
+		if [ c ] cpu.fcr31 = cpu.fcr31 | 0x800000
+		el cpu.fcr31 = cpu.fcr31 & (~u32[0x800000])
+
+	# ---------------- frame loop ----------------
+	func run_frame []
+		# ~93.75MHz / 60 ≈ 1562500 cycles; Count at half rate handled in step
+		budget : i32 [ 1562500 ]
+		line_step : i32 [ budget / 262 ]
+		spent : i32 [ 0 ]
+		vline : u32 [ 0 ]
+		while [ spent < budget ]
+			for [ k: i32 0, k < line_step, k += 1 ]
+				step[]
+			spent += line_step
+			vline += 2
+			vi_current = vline & 0x3FF
+			if [ (vi_current & (~u32[1])) == (vi_intr_line & (~u32[1])) ]
+				mi_intr = mi_intr | 0x8
+				mi_check[]
+		frames += 1
+		if [ trace && (frames % 60) == 0 ]
+			printf[ "n64 f%u pc=%08X sp_stat=%X mi=%X/%X vi_org=%06X\n", frames, cpu.pc, sp_status, mi_intr, mi_mask, vi_origin ]
+
+	# publish the VI framebuffer (16bpp 5551 or 32bpp) for the render thread
+	func publish []
+		pub_lock.lock[]
+		w2 : i32 [ (vi_width > 0 && vi_width <= 640) ? i32[ vi_width ] : 320 ]
+		h2 : i32 [ (w2 > 400) ? 480 : 240 ]
+		pub_w = w2
+		pub_h = h2
+		fmt : u32 [ vi_ctrl & 3 ]
+		org : u32 [ vi_origin & 0x7FFFFF ]
+		if [ fmt == 3 ]
+			for [ i: i32 0, i < w2 * h2, i += 1 ]
+				p : u32 [ (u32[rdram[org + u32[i*4]]] << 24) | (u32[rdram[org + u32[i*4] + 1]] << 16) | (u32[rdram[org + u32[i*4] + 2]] << 8) | u32[rdram[org + u32[i*4] + 3]] ]
+				pub_framebuf[ i ] = 0xFF000000 | ((p >> 8) & 0xFF0000) | ((p >> 8) & 0xFF00) | ((p >> 8) & 0xFF) | 0
+				pub_framebuf[ i ] = 0xFF000000 | (((p >> 8) & 0xFF) << 16) | (((p >> 16) & 0xFF) << 8) | ((p >> 24) & 0xFF)
+		el [ fmt == 2 ]
+			for [ i: i32 0, i < w2 * h2, i += 1 ]
+				px : u32 [ (u32[rdram[org + u32[i*2]]] << 8) | u32[rdram[org + u32[i*2] + 1]] ]
+				r5 : u32 [ (px >> 11) & 31 ]
+				g5 : u32 [ (px >> 6) & 31 ]
+				b5 : u32 [ (px >> 1) & 31 ]
+				pub_framebuf[ i ] = 0xFF000000 | ((b5 << 3 | b5 >> 2) << 16) | ((g5 << 3 | g5 >> 2) << 8) | (r5 << 3 | r5 >> 2)
+		pub_valid = true
+		pub_lock.unlock[]
+
+	func emu_tick []
+		run_frame[]
+		publish[]
+
+	func emu_entry [] -> none
+		emu_running = true
+		if [ !booted ]
+			if [ !load_rom[] ]
+				emu_running = false
+				return
+			boot[]
+		while [ !emu_stop ]
+			if [ context_req ]
+				context_req = false
+				ctx : string context_text[]
+				ctx.hold[]
+				context_out = ctx
+				context_seq += 1
+			if [ paused ] usleep[ 15000 ]
+			el
+				emu_tick[]
+				usleep[ 1000 ]
+		emu_running = false
+
+	func hx8 [ v: u32 ] -> string
+		hx : string [ '0123456789ABCDEF' ]
+		s : string [ '' ]
+		for [ i: i32 7, i >= 0, i -= 1 ]
+			s = s + hx.mid[ i32[ (v >> u32[ i * 4 ]) & 15 ], 1 ]
+		return s
+
+	func context_text [] -> string
+		if [ !booted ] return 'n64 paused: not booted'
+		s : string 'N64 emulator paused ({rom}) — machine context\n'
+		s = s + 'frame {frames}\n'
+		s = s + 'VR4300: PC=${hx8[ cpu.pc ]} COUNT=${hx8[ cpu.c_count ]} STATUS=${hx8[ cpu.c_status ]} CAUSE=${hx8[ cpu.c_cause ]}\n'
+		s = s + 'MI intr=${hx8[ mi_intr ]} mask=${hx8[ mi_mask ]}  VI origin=${hx8[ vi_origin ]} ctrl=${hx8[ vi_ctrl ]}\n'
+		return s
+
+	# ---------------- input (mirrors the other emulators) ----------------
+	public func on_key [ ev: Event ]
+		code : i32  [ ev.key.unicode ]
+		down : bool [ ev.key.state ]
+		bit : i32 [ -1 ]
+		if   [ code == 47 ]  bit = 15    # /  A
+		el [ code == 46 ]  bit = 14    # .  B
+		el [ code == 90 ]  bit = 13    # Z
+		el [ code == 257 ] bit = 12    # Enter  Start
+		el [ code == 265 ] bit = 11    # d-pad up
+		el [ code == 264 ] bit = 10
+		el [ code == 263 ] bit = 9
+		el [ code == 262 ] bit = 8
+		el [ code == 81 ]  bit = 5     # Q  L
+		el [ code == 69 ]  bit = 4     # E  R
+		el [ code == 73 ]  bit = 3     # IJKL = C buttons
+		el [ code == 75 ]  bit = 2
+		el [ code == 74 ]  bit = 1
+		el [ code == 76 ]  bit = 0
+		if [ bit >= 0 ]
+			m : u32 [ u32[ 1 ] << bit ]
+			if [ down ] pad_st = pad_st | m
+			el pad_st = pad_st & (~m)
+		# WASD = analog stick
+		if [ code == 87 ] stick_y = (down) ? 80 : 0
+		if [ code == 83 ] stick_y = (down) ? -80 : 0
+		if [ code == 65 ] stick_x = (down) ? -80 : 0
+		if [ code == 68 ] stick_x = (down) ? 80 : 0
+		if [ down && code == 32 ] paused = !paused
+
+	# ---------------- paint ----------------
+	public func draw [ w: Window ]
+		if [ w.draw_stage != CanvasType.screen ] return
+		ux.will_animate = true
+		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+
+	public func paint [ cv: Canvas, vp: rect ]
+		bounds = vp
+		if [ !emu_started ]
+			emu_started = true
+			trace = getenv[ 'N64_TRACE' ] != null
+			pub_lock = mutex [ cond: false ]
+			tid : local u64 [ 1 ]
+			pthread_create[ tid, null, ref emu_entry, a ]
+		if [ !pub_valid ] return
+		pub_lock.lock[]
+		if [ !screen_tex || tex_w != pub_w ]
+			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: pub_w, height: pub_h, linear: true ]
+			tex_w = pub_w
+		screen_tex.upload[ pub_framebuf, pub_w * pub_h * 4 ]
+		pub_lock.unlock[]
+		cv.draw_image[ screen_tex, rect [ x: vp.x, y: vp.y, w: vp.w, h: vp.h ] ]
+
+	func dealloc []
+		if [ emu_started ]
+			emu_stop = true
+			while [ emu_running ]
+				usleep[ 2000 ]
+
+trinity n64_app
+	public emu    : n64
+	public rom    : path
+	public volume : f32 [ 0.5 ]
+
+	func init []
+		width      = 960
+		height     = 720
+		title      = 'n64'
+		background = 'Background'
+
+	public func on_key [ ev: Event ]
+		if [ emu ] emu.on_key[ ev ]
+
+	func on_render [ w: Window ] -> Elements
+		e : Elements [ ]
+		e['emu'] = n64 [ rom: rom, volume: volume ]
+		return e

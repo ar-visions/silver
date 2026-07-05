@@ -1181,12 +1181,28 @@ class uniforms
     expect s         : shader
     public u_memory  : ref u8
     public u_buffers : array Buffer [ ]
+    # this pipeline's gltf NODE transform (Pipeline.default_model). composed
+    # under the shader's model each update so file placement survives — it was
+    # previously stored and never consumed (every node rendered untransformed).
+    # zero matrix (m[15]==0) = not set = skip.
+    public node_model : mat4f
 
     # write the CURRENT ring slot's uniform buffer only — each draw gets a private
     # copy of the shader state so a later draw can't overwrite an in-flight one.
     public func update [ ]
         b : u_buffers[ vk.cur_ring ]
         s.uniform_transfer[ b.data, b.user ]
+        if [ node_model.m[15] != 0.0 ]
+            mvp : (s inherits ModelViewProject)
+            if [ mvp ]
+                # `model` is the FIRST ubo member for every ModelViewProject
+                # (base-class members serialize first) -> offset 0, 64 bytes
+                mm : mat4f [ mvp.model.mul[ node_model ] ]
+                memcpy[ b.data, ref mm, 64 ]
+        if [ getenv[ 'TRIN_UBOLOG' ] ]
+            fp : ref f32 [ b.data ]
+            printf[ "UBOLOG %s ring=%d m0=%.3f m12=%.3f v14=%.3f p0=%.3f p5=%.3f\n",
+                s.name.chars, vk.cur_ring, fp[0], fp[12], fp[30], fp[32], fp[37] ]
         b.update[ null ]
 
     func init [ ]
@@ -1445,7 +1461,7 @@ class Pipeline
         stage_flags: VK_SHADER_STAGE_VERTEX_BIT   | 
                      VK_SHADER_STAGE_FRAGMENT_BIT |
                      VK_SHADER_STAGE_COMPUTE_BIT
-        shader_uniforms = uniforms [ vk: vk, s: s ]
+        shader_uniforms = uniforms [ vk: vk, s: s, node_model: default_model ]
         shader_uniforms.hold[]
         s_hdr: Au.header[ s ]
 
@@ -1910,6 +1926,9 @@ class Model
     public nodes            : array gltf_node
     public s                : shader
     mutable samplers        : map Au[string] [ ]
+    # gltf material textures loaded once per model (keyed by file path) —
+    # primitives sharing a material reuse the same Texture
+    mutable tex_cache       : map Au[string] [ ]
     public pipelines        : array Pipeline
     # straight-alpha output (rgb, a) when true; default false = premul (rgb*a, a).
     # forwarded to every Pipeline this Model builds; toggle for shaders that
@@ -1941,6 +1960,7 @@ class Model
                 for [ p: gltf_part ] in n.parts
                     model_init_pipeline[ a, n.id, p.id, (p.s) ? p.s : s, render_id, false ]
         el [ id ]
+            id.compute_worlds[]
             for [ n: Node ] in id.nodes
                 if [ s && s.groups && s.groups.count > 0 ]
                     matched: false
@@ -1951,6 +1971,8 @@ class Model
                     if [ !matched ]
                         continue
                 has_mesh: n.AF_query_name[ "mesh" ]
+                if [ getenv[ 'TRIN_VBOLOG' ] ]
+                    printf[ "NODELOG name=%s has_mesh=%d mesh=%d\n", (n.name) ? n.name.chars : "?", (has_mesh) ? 1 : 0, n.mesh ]
                 if [ has_mesh ]
                     mesh: id.meshes [ n.mesh ]
                     for [ prim: Primitive ] in mesh.primitives
@@ -3056,11 +3078,16 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
         f_normal: rgbaf [ 0.5, 0.5, 1.0, 1.0 ]
         f_zero:   rgbaf [ 0.0, 0.0, 0.0, 0.0 ]
         f_one:    rgbaf [ 1.0, 1.0, 1.0, 1.0 ]
+        # gltf spec: absent baseColorFactor = [1,1,1,1]. an all-zero factor is
+        # the PARSE DEFAULT of a texture-driven material — materializing it
+        # as the 1x1 fallback renders the whole mesh transparent black.
         f_color:  rgbaf [
             pbr.baseColorFactor.x,
             pbr.baseColorFactor.y,
             pbr.baseColorFactor.z,
             pbr.baseColorFactor.w ]
+        if [ f_color.r == 0.0 && f_color.g == 0.0 && f_color.b == 0.0 && f_color.a == 0.0 ]
+            f_color = f_one
         one:      i64 1
         single:   shape.shape_from[ 1, ref one ]
         if [ !is_surface_enum ]
@@ -3257,6 +3284,11 @@ intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ]
     w.mouse.y = y
     w.ev.mouse.pos.x = w.mouse.x
     w.ev.mouse.pos.y = w.mouse.y
+    # carry shift on MOVE events too (same poll the wheel/button callbacks do)
+    # — shift-drag interactions (pan) never saw the modifier otherwise
+    lshift : i32 [ glfwGetKey[ win, 340 ] ]
+    rshift : i32 [ glfwGetKey[ win, 344 ] ]
+    w.ev.key.shift = lshift == GLFW_PRESS || rshift == GLFW_PRESS
     w.move_event[ w.ev ]
 
 func get_required_extensions [ vk: vk_context ]

@@ -2041,7 +2041,7 @@ bool Au_validator(Au a) {
         ((type->required_bits[1] & f[1]) != type->required_bits[1])) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = (Au_t)type->members.origin[i];
-            if ((m->traits & AU_TRAIT_REQUIRED) != 0 && AF_get(f, m->af_index) == 0) {
+            if ((m->traits & AU_TRAIT_REQUIRED) != 0 && m->af_index && AF_get(f, m->af_index - 1) == 0) {
                 u8* ptr = (u8*)a + m->offset;
                 Au* ref = (Au*)ptr;
                 fault("expected arg [%s] not set for class %s",
@@ -3574,10 +3574,12 @@ bool Au_member_set(Au a, Au_t m, Au value) {
     Au   vinfo        = head(value);
 
     if (m->type->is_struct) {
-        verify(m->type->typesize == vtype->typesize * vinfo->count,
-            "vector size mismatch for %s", m->ident);
-    
-        memcpy(member_ptr, value, m->type->typesize);
+        // partial vectors are valid (e.g. gltf accessor min/max carries 1..4
+        // elements depending on the accessor type, into a vec3f field) —
+        // copy what fits and leave the remainder at its default.
+        i64 vbytes = (i64)vtype->typesize * vinfo->count;
+        i64 sz     = vbytes < (i64)m->type->typesize ? vbytes : (i64)m->type->typesize;
+        memcpy(member_ptr, value, sz);
     } else if (m->type->is_enum || m->type->is_inlay || m->type->is_primitive) {
         Au_t ref = m->type->meta.a;
         verify(!m->type->is_struct || vtype == m->type ||
@@ -6698,8 +6700,20 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             }
 
             if (!json_type && !mem && !is_map && !context) {
-                printf("parse_object: unknown field '%s' in type %s, near: %.40s\n",
-                    name ? name->chars : "?", use_schema ? use_schema->ident : "?", scan);
+                // forward-compat: an unknown field is a warning, not a parse
+                // abort (returning null here also left *remainder null from
+                // entry -> the caller dereferenced it: SIGSEGV mid-file).
+                // parse the value generically and discard it.
+                printf("parse_object: skipping unknown field '%s' in type %s\n",
+                    name ? name->chars : "?", use_schema ? use_schema->ident : "?");
+                if (*scan == ':') {
+                    scan = ws(&scan[1]);
+                    parse_object(scan, null, null, &scan, context);
+                    if (!scan) return null;
+                    if (*scan == ',') { scan++; continue; }
+                    else if (*scan != '}') return null;
+                    continue;
+                }
                 return null;
             }
             
@@ -6716,9 +6730,10 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
             Au value = parse_object(scan,
                 (Au_t)(mem ? mem->type : (is_map ? meta_type : null)),
                 mem ? mem->meta.a : null, &scan, context);
-            
-            //if (!value)
-            //    return null;
+            // a failed inner parse leaves scan null (set at its entry, never
+            // reset on early-return paths) — bail instead of dereferencing
+            if (!scan)
+                return null;
 
             if (set_ctx && value)
                 set((map)context, (Au)name, (Au)value);
@@ -6924,7 +6939,10 @@ static Au parse_array(cstr s, Au_t schema, Au_t meta_type, cstr* remainder, ctx 
     scan = ws(&scan[1]);
     Au res = null;
     if (!schema || (schema == typeid(array) || schema->src == typeid(array))) {
-        Au_t element_type = meta_type ? meta_type : (schema ? schema->meta.a : typeid(map));
+        // schema-less arrays (unknown/discarded fields, generic JSON) must not
+        // force map elements — a ["string", ...] array would fault in
+        // construct_with("expected map"). null lets parse_object infer.
+        Au_t element_type = meta_type ? meta_type : (schema ? schema->meta.a : null);
         res = (Au)parse_array_objects(&scan, element_type, context);
     } else if (schema->meta.a == typeid(i64)) { // should support all vector types of i64 (needs type bounds check with vmember_count)
         array arb = parse_array_objects(&scan, typeid(i64), context);

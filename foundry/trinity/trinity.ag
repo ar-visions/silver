@@ -290,6 +290,10 @@ Display Window
     mutable context_pressed     : element
     mutable restyle             : bool
     mutable will_animate        : bool
+    # which tree-walk is running (compose or screen): custom element draw
+    # hooks that render to w.screen gate on this — the tree walks TWICE per
+    # frame, and doing GPU work in both walks double-submits and judders
+    mutable draw_stage          : CanvasType
     mutable mouse               : vec2f
     # last left-button press time + position, for the basic double-click event: a press
     # within the time window AND near the previous one sets ev.mouse.double_click.
@@ -936,7 +940,7 @@ Display Window
         # fully-transparent elements are hidden — ignore them (and their
         # children) in event hit-testing so they don't capture clicks. an element
         # with no bounds yet (not laid out this frame) can't be hit either.
-        if [ !e || !e.bounds || e.disable || e.ghost || e.transparency >= 1.0 ]
+        if [ !e || !e.bounds || e.disable || e.ghost || e.hide || e.transparency >= 1.0 ]
             return null
         b : rect  [ e.bounds ]
         x : f32   [ ev.mouse.pos.x ]
@@ -1476,13 +1480,16 @@ Display Window
 
 
     func on_compose []
-        if [ !compose ] return
         if [ resizing ] return
         # per-frame state update — runs every frame regardless of the compose pass.
+        # MUST run even without a compose canvas (no-background app): update_all
+        # builds the ROOT — gating it on compose left background-less apps with a
+        # null root (trap in layout_element).
         update_all      [ app_object.on_render*[ a ] ]
         animate         [ ]
         # advance every seam's eased active ONCE here, before the layout pass reads it.
         tick_binds      [ root ]
+        if [ !compose ] return
         # UI bounds + paint now live entirely in on_screen (layout_element then
         # draw_element); the compose canvas is no longer part of that path. kept below
         # for future 3D scene compositing — disabled for now via the early return.
@@ -2490,38 +2497,65 @@ Display Window
         if [ e.area.r.content || e.area.b.content ]
             cw : f32 [ bounds.w ]
             ch : f32 [ bounds.h ]
+            measured : bool [ false ]
             if [ e.elements && e.elements.count > 0 ]
-                # content = extent of laid-out children (flow-aware via `last`)
+                # content = extent of laid-out children (flow-aware via `last`).
+                # children anchored to the parent's right/middle/bottom (or percent-
+                # sized) DEPEND on the parent's size — counting them is circular and
+                # blows the extent up to the provisional rect. shrink-to-fit counts
+                # only top/left-anchored, self-sized children (as CSS does).
                 prov  : rect [ x: 0.0, y: 0.0, w: 100000.0, h: 100000.0 ]
                 lastc : rect [ null ]
                 maxr  : f32 [ 0.0 ]
                 maxb  : f32 [ 0.0 ]
                 for [ ce: element, ck: string ] in e.elements
                     if [ !ce.area ] continue
+                    if [ ce.area.l.x_type == XAlign.middle || ce.area.l.x_type == XAlign.right ] continue
+                    if [ ce.area.t.y_type == YAlign.middle || ce.area.t.y_type == YAlign.bottom ] continue
+                    if [ ce.area.r.x_type == XAlign.middle || ce.area.r.x_type == XAlign.right || ce.area.r.percent ] continue
+                    if [ ce.area.b.y_type == YAlign.middle || ce.area.b.y_type == YAlign.bottom || ce.area.b.percent ] continue
                     cb : ce.area.rectangle[ prov, null, lastc, e.fc, false ]
                     if [ cb.x + cb.w > maxr ] maxr = cb.x + cb.w
                     if [ cb.y + cb.h > maxb ] maxb = cb.y + cb.h
-                    lastc = cb
-                cw = maxr
-                ch = maxb
-            el [ cv.font && e.label && e.label.count > 0 ]
+                    lastc    = cb
+                    measured = true
+                if [ measured ]
+                    cw = maxr
+                    ch = maxb
+            if [ !measured && cv.font && e.label && e.label.count > 0 ]
                 tm : cv.measure_text[ e.label ]
                 cw = tm.w
                 ch = tm.ascent - tm.descent
+            # the coord's own offset is PADDING around the content (`wc20px` =
+            # label width + 20 logical px)
             if [ e.area.r.content ]
+                cw += e.area.r.offset * ((e.area.r.pixel) ? 1.0 : e.fc)
                 if [ e.area.l.x_type == XAlign.right ]  bounds.x = bounds.x - cw
                 # middle anchor: center the content on m — shift left by half the width
                 if [ e.area.l.x_type == XAlign.middle ] bounds.x = bounds.x - cw / 2.0
                 bounds.w = cw
             if [ e.area.b.content ]
+                ch += e.area.b.offset * ((e.area.b.pixel) ? 1.0 : e.fc)
                 if [ e.area.t.y_type == YAlign.bottom ]  bounds.y = bounds.y - ch
                 if [ e.area.t.y_type == YAlign.middle ] bounds.y = bounds.y - ch / 2.0
                 bounds.h = ch
+
+        # right-flow: `r<gap>+` as the FIRST coord stacks this element to the
+        # LEFT of the previous sibling (mirror of `l<gap>+`), gap between them.
+        # runs after content sizing so the final width is known. only chains off
+        # a sibling that is itself right-anchored — a full-width or left-flowed
+        # neighbor (e.g. the console title's filter) starts the run instead, so
+        # the first right-flow element anchors at the container's right edge.
+        if [ e.area.l.x_type == XAlign.right && e.area.l.relative && last && last.bounds && last.area && last.area.l.x_type == XAlign.right ]
+            bounds.x = last.bounds.x - e.area.l.offset * ((e.area.l.pixel) ? 1.0 : e.fc) - bounds.w
 
         e.bounds.x = bounds.x
         e.bounds.y = bounds.y
         e.bounds.w = bounds.w
         e.bounds.h = bounds.h
+        if [ getenv[ 'TRIN_BTNLOG' ] ]
+            if [ e inherits Button ]
+                puts 'BTNLOG {e.id} "{e.label}" x={e.bounds.x} y={e.bounds.y} w={e.bounds.w} h={e.bounds.h} parent={(e.parent) ? e.parent.id : null} pw={(e.parent) ? e.parent.bounds.w : 0.0} px={(e.parent) ? e.parent.bounds.x : 0.0}'
         # collapsed to nothing (e.g. the editor section when the console seam is
         # snapped fully up) — skip this element and all its children.
         if [ e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
@@ -2540,7 +2574,9 @@ Display Window
             last_2 = ee
 
     public func draw_element [ e: element*, stage: CanvasType, last:element ]
+        draw_stage = stage
         expect e inherits element, 'e is not an element'
+        if [ e.hide ] return
         # select target canvas directly. (was: new Canvas[2] [screen,compose]
         # then index — that per-call vector dropped its elements on teardown
         # without holding them on init, underflowing screen/compose to 0.)
@@ -2608,7 +2644,7 @@ Display Window
             e.cache_oy = margin_t
 
         #puts 'target_cv set'
-        target_cv : (e.cache_canvas && !e.volatile && stage == CanvasType.screen) ? e.cache_canvas : cv
+        target_cv : (e.cache_canvas && !e.volatile && !e.animated && stage == CanvasType.screen) ? e.cache_canvas : cv
         element_text : (e.label && e.label.count) ? e.label : null
 
         sx       : f32  [ (e.scaling.x != 0.0) ? e.scaling.x : 1.0 ]
@@ -2630,14 +2666,14 @@ Display Window
                 cv.scale_xy[ sx, sy ]
             cv.translate[ -pivot_x, -pivot_y ]
 
-        redraw : bool [ e.volatile || !e.pristine || stage == CanvasType.compose ]
+        redraw : bool [ e.volatile || e.animated || !e.pristine || stage == CanvasType.compose ]
         # DIAG: log every element that re-rasterizes its layers (text) this frame into its
         # cache — during a resize the cache is invalidated (pristine=false) per frame, so
         # this fires continuously and proves the text is being re-rendered on every drag step.
-        if [ redraw && e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
+        if [ redraw && e.cache_canvas && !e.volatile && !e.animated && stage == CanvasType.screen ]
             eid : string [ (e.id && e.id.count > 0) ? e.id : '(noid)' ]
             #puts 'REDRAW {eid} {ew}x{eh} pristine={e.pristine}'
-        if [ redraw && e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
+        if [ redraw && e.cache_canvas && !e.volatile && !e.animated && stage == CanvasType.screen ]
             e.cache_canvas.reset[ vec4f[0.0, 0.0, 0.0, 0.0] ]
             if [ e.cache_ox > 0 || e.cache_oy > 0 ]
                 target_cv.save[]
@@ -2648,7 +2684,7 @@ Display Window
         # the vertical scrollbar is painted LAST — after the masked cache blit and
         # without the mask (see below) — so the edge fade never dims the bar. when this
         # element caches to the screen, skip it in the cached layer loop and defer it.
-        defer_scroll : bool [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
+        defer_scroll : bool [ e.cache_canvas && !e.volatile && !e.animated && stage == CanvasType.screen ]
 
         # compute layer bounds and draw each layer
         for [ layer_au: Au, lkey: string ] in e.layers
@@ -2867,7 +2903,7 @@ Display Window
             #a.compose = prev_compose
             drop[ prev_screen ]
             #drop[ prev_compose ]
-            if [ !e.volatile && stage == CanvasType.screen ]
+            if [ !e.volatile && !e.animated && stage == CanvasType.screen ]
                 if [ e.cache_ox > 0 || e.cache_oy > 0 ]
                     target_cv.restore[]
                 if [ !e.needs_frame ]
@@ -2877,7 +2913,7 @@ Display Window
         # element wants an edge fade, build/refresh a grayscale mask (white
         # center, black inner glow) sized to the cache and composite through it.
         mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
-        if [ e.cache_canvas && !e.volatile && stage == CanvasType.screen ]
+        if [ e.cache_canvas && !e.volatile && !e.animated && stage == CanvasType.screen ]
             if [ mask_on ]
                 glow_changed : bool [ e.mask_bg.x != e.mask_glow.x || e.mask_bg.y != e.mask_glow.y || e.mask_bg.z != e.mask_glow.z || e.mask_bg.w != e.mask_glow.w ]
                 # during a seam drag the cache re-rasters every frame (sub-pixel bounds shifts)

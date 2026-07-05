@@ -866,8 +866,10 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
             if (parent_etype && _lltype_slot(parent_etype)) {
                 int idx = fbits_index(parent_type, L->autype);
                 if (idx >= 0) {
-                    u64 mask0 = (idx <  64) ? (1ULL << idx)        : 0;
-                    u64 mask1 = (idx >= 64) ? (1ULL << (idx % 64)) : 0;
+                    u64 mask0 = (idx <  64) ? (1ULL << idx) : 0;
+                    // idx >= 128 has no tracked fbit — wrapping (idx % 64) into word 1
+                    // marked an UNRELATED member as set and suppressed its default
+                    u64 mask1 = (idx >= 64 && idx < 128) ? (1ULL << (idx - 64)) : 0;
                     LLVMValueRef base_ptr = LLVMGetOperand(L->value, 0);
                     enode parent_node = enode(mod, a, value, base_ptr, autype, parent_type, loaded, false);
                     mark_set(parent_node, mask0, mask1);
@@ -3999,6 +4001,14 @@ void set_fbits_exact(enode n, u64 mask0, u64 mask1) {
 void aether_apply_overrides(aether a, enode alloc) {
     Au_t alloc_type = alloc->autype;
     if (!alloc_type || !alloc_type->is_class) return;
+    // IMPORTED classes: our af_index view of another module's members may not
+    // match the member indexing its own inits were compiled with — marking
+    // override bits here can suppress an UNRELATED member's default in the
+    // foreign init (unallocated `new` members → null-deref). the marks are
+    // redundant anyway: each class's init preamble stores its override values
+    // itself (build_init_preamble), and set_fbits_exact resets the bits to
+    // only programmer args after init.
+    if (alloc_type->module && (Au_t)alloc_type->module != a->autype) return;
     u64 ov_mask0 = 0, ov_mask1 = 0;
     Au_t cur = alloc_type;
     while (cur && cur != typeid(Au)) {
@@ -4010,8 +4020,9 @@ void aether_apply_overrides(aether a, enode alloc) {
                     (cstr)mb->ident, AU_MEMBER_VAR, 0, true);
                 if (!inherited) continue;
                 int idx = fbits_index(alloc_type, inherited);
-                if      (idx >= 0 && idx < 64) ov_mask0 |= 1ULL << idx;
-                else if (idx >= 64)            ov_mask1 |= 1ULL << (idx % 64);
+                if      (idx >= 0 && idx < 64)   ov_mask0 |= 1ULL << idx;
+                else if (idx >= 64 && idx < 128) ov_mask1 |= 1ULL << (idx - 64);
+                // idx >= 128: no tracked fbit — never wrap into word 1
             }
         }
         if (cur->context == cur) break;
@@ -4097,8 +4108,9 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
                             (int)mem->af_index, (int)mem->member_index, idx, idx / 64, idx % 64);
                         fflush(stdout);
                     }
-                    if (idx >= 0 && idx < 64)  mask0 |= 1ULL << idx;
-                    else if (idx >= 64)        mask1 |= 1ULL << (idx % 64);
+                    if (idx >= 0 && idx < 64)        mask0 |= 1ULL << idx;
+                    else if (idx >= 64 && idx < 128) mask1 |= 1ULL << (idx - 64);
+                    // idx >= 128: no tracked fbit — never wrap into word 1
                 }
             }
         }
@@ -7989,6 +8001,39 @@ none aether_build_module_initializer(aether a, enode init) {
 
     push_scope(a, (Au)f, 12);
 
+    // re-entry guard: the initializer is both a global constructor (dlopen of
+    // an imported module) and called explicitly (main / dependent module
+    // inits) — the second entry must be a no-op or types register twice.
+    {
+        LLVMTypeRef  i1g = LLVMInt1TypeInContext(a->module_ctx);
+        LLVMValueRef gv  = LLVMAddGlobal(a->module_ref, i1g, "module_inited");
+        LLVMSetInitializer(gv, LLVMConstInt(i1g, 0, 0));
+        LLVMSetLinkage(gv, LLVMInternalLinkage);
+        LLVMValueRef fnv     = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
+        LLVMBasicBlockRef bb_done = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "init_done");
+        LLVMBasicBlockRef bb_go   = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "init_go");
+        LLVMValueRef was = LLVMBuildLoad2(B, i1g, gv, "inited");
+        LLVMBuildCondBr(B, was, bb_done, bb_go);
+        LLVMPositionBuilderAtEnd(B, bb_done);
+        LLVMBuildRetVoid(B);
+        LLVMPositionBuilderAtEnd(B, bb_go);
+        LLVMBuildStore(B, LLVMConstInt(i1g, 1, 0), gv);
+    }
+
+    // run every imported module's initializer first (their re-entry guards
+    // make repeats no-ops; shared modules already ran via their dlopen ctor).
+    // this is what registers app/live modules' types in THIS process.
+    if (a->import_inits) {
+        LLVMTypeRef vfn = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), NULL, 0, false);
+        each(a->import_inits, string, nm) {
+            char sym[256];
+            snprintf(sym, sizeof(sym), "%s_initializer", nm->chars);
+            LLVMValueRef fdep = LLVMGetNamedFunction(a->module_ref, sym);
+            if (!fdep) fdep = LLVMAddFunction(a->module_ref, sym, vfn);
+            LLVMBuildCall2(B, vfn, fdep, NULL, 0, "");
+        }
+    }
+
     // module's own published type id (etype container)
     enode module_type_id = e_typeid(a, (etype)a);
 
@@ -8622,6 +8667,28 @@ void aether_import_Au(aether a, string ident, Au lib) {
             verify(lib_instance, "shared-lib failed to load: %o\n  %s", lib, dlerror());
             set(a->libs, path_str, (Au)lib_instance);
             au_module = find_module(ident->chars);
+            if (!au_module) {
+                // app/live modules have no registration constructor (the host
+                // drives their init) — drive it here so an app module can be
+                // imported for its classes (orbiter imports the emulators)
+                char init_sym[256];
+                snprintf(init_sym, sizeof(init_sym), "%s_initializer", ident->chars);
+                void (*mod_init)(void) = (void(*)(void))dlsym(lib_instance, init_sym);
+                verify(mod_init, "module %o did not register and exports no %s",
+                    ident, init_sym);
+                mod_init();
+                au_module = find_module(ident->chars);
+            }
+            verify(au_module, "module %o failed to register after load", ident);
+        }
+        // record for the emitted initializer: our module_init must call each
+        // imported module's initializer at RUNTIME too — app/live modules have
+        // no registration constructor, so without this their type globals stay
+        // BLANK in the importing process (typesize 0 → header-sized allocs →
+        // construction writes the full object over a 92-byte block: heap smash)
+        if (au_module) {
+            if (!a->import_inits) a->import_inits = array(16);
+            push(a->import_inits, (Au)hold(ident));
         }
 
     } else if (!lib) {
@@ -10106,6 +10173,12 @@ efunc aether_module_initializer(aether a) {
     init->has_code = true;
 
     etype_implement((etype)init, false);
+    // exported: importing a module whose .so has no registration constructor
+    // (app/live modules — the host drives their init) needs to dlsym+call
+    // <ident>_initializer explicitly after dlopen (see aether_import_Au).
+    // the initializer's re-entry guard makes repeat calls no-ops.
+    if (init->value)
+        LLVMSetLinkage(init->value, LLVMExternalLinkage);
     a->fn_init = hold(init);
     return init;
 }

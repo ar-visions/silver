@@ -1302,6 +1302,7 @@ declare_abstract(imported)
 /// meta gives us access to one token we can override with (F)
 
 static inline bool AF_get(u64* f, u32 bit_index) {
+    if (bit_index >= 128) return false;   // beyond the tracked bits: always unset
     if (bit_index < 64) {
         return (f[0] & (((u64)1) << bit_index)) != 0;
     } else {
@@ -1309,8 +1310,12 @@ static inline bool AF_get(u64* f, u32 bit_index) {
     }
 }
 
+// bounded to the 128 tracked flag bits (2 words): af_index beyond 128 has no
+// tracked bit (compile side treats it as always-unset) — an unbounded write
+// here lands OUTSIDE the target (required_bits is u64[2]; object af words are
+// finite) and corrupts adjacent memory. classes crossed 128 members in 2026-07.
 #define AF_set(f, bit_index) \
-    ((u64*)(f))[(bit_index) / 64] |= ((u64)1) << ((bit_index) % 64)
+    do { if ((u32)(bit_index) < 128) ((u64*)(f))[(bit_index) / 64] |= ((u64)1) << ((bit_index) % 64); } while (0)
 
 /*
 static inline void AF_set(u64* f, u32 bit_index) {

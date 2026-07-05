@@ -222,7 +222,7 @@ class audio_out
 # The application — a trinity window hosting the emulator. on_canvas is
 # the frame driver: step one Genesis frame, then blit the VDP framebuffer.
 # ---------------------------------------------------------------------
-trinity rgen
+element rgen
 	public  rom          : path              # cartridge image
 	public  frames_exit  : i32               # auto-quit after N frames (0 = run forever)
 	public  resume       : bool              # boot into /tmp/rgen_state.bin
@@ -234,6 +234,10 @@ trinity rgen
 	mutable emu_started  : bool
 	mutable emu_stop     : bool
 	mutable emu_running  : bool
+	mutable paused       : bool              # space toggles; emu thread idles while set
+	mutable context_req  : bool              # host asks for a machine-state dump
+	mutable context_out  : string            # dump published by the emu thread
+	mutable context_seq  : i32               # bumped per publish (host drains one-shot)
 	mutable pub_lock     : mutex
 	mutable pub_framebuf : new u32 [ 320 * 224 ]   # plane B + backdrop (opaque base)
 	# --- smooth-scroll port (knes design): four motion layers, per-plane
@@ -308,6 +312,7 @@ trinity rgen
 	mutable load_req     : bool              # 'L' -> load state next frame
 	mutable st_hdr       : new u32 [ 16 ]    # save/load scalar staging
 	public  region_pal   : bool              # PAL timing (default NTSC)
+	mutable dbg_fbp      : i32               # FBPTR diag budget
 	mutable cart         : ref u8            # loaded ROM bytes
 	mutable cart_size    : sz
 	mutable m68k         : m68k_state
@@ -329,15 +334,9 @@ trinity rgen
 	mutable frames       : u32
 
 	func init []
-		width      = 1280                    # 320 (H40) x4
-		height     = 896                     # 224 x4
-		background = 'Background'
+		animated   = true                    # emulator: repaint every frame, never cache-skip (NOT style-owned `volatile`)
+		focusable  = true
 		if [ volume == 0.0 ] volume = 0.25
-
-	# no element tree — the game canvas IS the window (else the default root
-	# element paints its css background over every on_canvas draw)
-	func on_render [ w: Window ] -> Elements
-		return null
 
 	# Keyboard -> Genesis pad 1. WASD = D-pad, ,/./ = A/B/C, Enter = Start.
 	# P = save state, O = load state (applied at the next frame boundary).
@@ -360,6 +359,7 @@ trinity rgen
 		if [ down ]
 			if [ code == 80 ] save_req = true   # P
 			if [ code == 79 ] load_req = true   # O
+			if [ code == 32 ] paused = !paused  # Space pause/resume
 		return
 
 	# full machine snapshot (68k + RAM + VDP). one fixed slot for now.
@@ -631,8 +631,46 @@ trinity rgen
 	func emu_entry [] -> none
 		emu_running = true
 		while [ ! emu_stop ]
-			emu_tick[]
+			if [ context_req ]
+				context_req = false
+				ctx : string context_text[]
+				ctx.hold[]
+				context_out = ctx
+				context_seq += 1
+			if [ paused ]
+				usleep[ 15000 ]
+			el
+				emu_tick[]
 		emu_running = false
+
+	func ctx_hex2 [ v: u32 ] -> string
+		hx : string [ '0123456789ABCDEF' ]
+		return '{hx.mid[ i32[ (v >> 4) & 15 ], 1 ]}{hx.mid[ i32[ v & 15 ], 1 ]}'
+
+	func ctx_hex4 [ v: u32 ] -> string
+		return '{ctx_hex2[ (v >> 8) & 255 ]}{ctx_hex2[ v & 255 ]}'
+
+	func ctx_hex8 [ v: u32 ] -> string
+		return '{ctx_hex4[ (v >> 16) & 0xFFFF ]}{ctx_hex4[ v & 0xFFFF ]}'
+
+	# machine-state dump published when the emulation pauses — the host feeds
+	# this to the AI console so it can reason about the live machine
+	func context_text [] -> string
+		if [ !m68k ] return 'rgen paused: no machine state (rom not loaded)'
+		s : string 'Genesis emulator paused ({rom}) — machine context\n'
+		s = s + 'frame {frames}, 68k cycles {m68k.cycles}\n'
+		s = s + '68000: PC=${ctx_hex8[ m68k.pc ]} SR=${ctx_hex4[ u32[ m68k.sr ] ]} USP=${ctx_hex8[ m68k.usp ]} SSP=${ctx_hex8[ m68k.ssp ]} stopped={(m68k.stopped) ? 1 : 0}\n'
+		s = s + 'D: '
+		for [ ri: i32 0, ri < 8, ri += 1 ]
+			s = s + ctx_hex8[ m68k.d[ ri ] ] + ' '
+		s = s + '\nA: '
+		for [ ri2: i32 0, ri2 < 8, ri2 += 1 ]
+			s = s + ctx_hex8[ m68k.a[ ri2 ] ] + ' '
+		s = s + '\ncode words at PC: '
+		for [ wi: u32 0, wi < 8, wi += 1 ]
+			s = s + ctx_hex4[ mem_read[ m68k.pc + wi * 2, 2 ] ] + ' '
+		s = s + '\n'
+		return s
 
 	# frame audio: exact samples-per-frame at 53267 Hz against the NTSC
 	# frame length (53267 * 896040 / 53693175 ≈ 888.93/frame, fractional
@@ -661,7 +699,16 @@ trinity rgen
 			audio.write[ c ]
 			n -= c
 
-	public func on_canvas [ cv: Canvas ]
+	# element paint hook (screen walk only — the compose walk would double-run
+	# GPU submits and sample the glide clock twice)
+	public func draw [ w: Window ]
+		if [ w.draw_stage != CanvasType.screen ] return
+		ux.will_animate = true
+		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+
+	# draw the emulator into `vp` on any canvas (element path or orbiter pane)
+	public func paint [ cv: Canvas, vp: rect ]
+		bounds = vp
 		if [ ! booted ] boot[]
 
 		if [ ! screen_tex ]
@@ -718,10 +765,10 @@ trinity rgen
 			screen_tex.upload[ vdp.framebuf, 320 * 224 * 4 ]
 
 		# per-plane 2D glide offsets (cadence-windowed replay, knes design)
-		sc : f32 [ f32[ width ] / 320.0 ]
+		sc : f32 [ bounds.w / 320.0 ]
 		bl : f32 [ 8.0 * sc ]
-		ow : f32 [ f32[ width ] + bl * 2.0 ]
-		oh : f32 [ f32[ height ] + bl * 2.0 ]
+		ow : f32 [ bounds.w + bl * 2.0 ]
+		oh : f32 [ bounds.h + bl * 2.0 ]
 		oxa : f32 [ 0.0 ]
 		oya : f32 [ 0.0 ]
 		oxb : f32 [ 0.0 ]
@@ -748,9 +795,9 @@ trinity rgen
 				if [ ayb > 1.0 ] ayb = 1.0
 				if [ ayb < 0.0 ] ayb = 0.0
 				oyb = f32[ sdyb ] * (1.0 - ayb) * (oh / 224.0)
-		out_b : rect [ x: (0.0 - bl) + oxb, y: (0.0 - bl) + oyb, w: ow, h: oh ]
-		out_a : rect [ x: (0.0 - bl) + oxa, y: (0.0 - bl) + oya, w: ow, h: oh ]
-		out_s : rect [ x: 0.0 - bl, y: 0.0 - bl, w: ow, h: oh ]
+		out_b : rect [ x: vp.x - bl + oxb, y: vp.y - bl + oyb, w: ow, h: oh ]
+		out_a : rect [ x: vp.x - bl + oxa, y: vp.y - bl + oya, w: ow, h: oh ]
+		out_s : rect [ x: vp.x - bl, y: vp.y - bl, w: ow, h: oh ]
 		if [ vec ]
 			if [ ! vb_render ]
 				vb_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
@@ -3225,3 +3272,30 @@ trinity rgen
 				z80_carry = zb - zs
 			el
 				z80_carry = 0
+
+# standalone host: mounts the rgen element full-window; carries the CLI
+# surface (real defaults — forwarded props override element init guards)
+trinity rgen_app
+	public  emu         : rgen
+	public  rom         : path
+	public  frames_exit : i32
+	public  resume      : bool
+	public  save_at     : i32
+	public  volume      : f32 [ 0.25 ]
+	public  vec         : bool [ true ]
+	public  smooth      : bool [ true ]
+	public  se_2d       : bool [ true ]
+	public  region_pal  : bool
+
+	func init []
+		width      = 1280                    # 320 (H40) x4
+		height     = 896                     # 224 x4
+		background = 'Background'
+
+	public func on_key [ ev: Event ]
+		if [ emu ] emu.on_key[ ev ]
+
+	func on_render [ w: Window ] -> Elements
+		e : Elements [ ]
+		e['emu'] = rgen [ rom: rom, frames_exit: frames_exit, resume: resume, save_at: save_at, volume: volume, vec: vec, smooth: smooth, se_2d: se_2d, region_pal: region_pal ]
+		return e

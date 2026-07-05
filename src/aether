@@ -110,6 +110,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  path,                     current_import) \
     M(X, Y, i, prop,     public,  i32,                      expr_level) \
     M(X, Y, i, prop,     public,  Au_t,                     import_module) \
+    M(X, Y, i, prop,     intern,  array,                    import_inits) \
     M(X, Y, i, prop,     public,  Au_t,                     au_module) \
     M(X, Y, i, prop,     public,  map,                      libs) \
     M(X, Y, i, prop,     public,  map,                      frameworks) \

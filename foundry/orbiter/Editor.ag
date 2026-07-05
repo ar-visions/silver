@@ -104,6 +104,52 @@ class ResourceView
     # drop held resources when the pane switches away or closes. (no-op base.)
     func release []
         return
+    # a continuous view (emulator, video) needs its pane redrawn every frame
+    # and receives the plain keys while the pane is focused. (base: static.)
+    func continuous [] -> bool
+        return false
+    # named sub-VIEWS of this resource, shown as grouped toggles on the title
+    # row (e.g. an emulator's game / assembly / tiles). base: null = one view.
+    mutable view_sel : i32
+    func views [] -> array string
+        return null
+    # drop the outgoing view's scratch (textures/caches): views rebuild on
+    # entry, nothing persists across toggles
+    func view_unload [ which: i32 ]
+        return
+    # a TEXT view renders/edits through the editor's normal line machinery
+    # (editable disassembly); view_lines fills the buffer, commit_line
+    # assembles one edited line back into the live resource.
+    func view_text [ which: i32 ] -> bool
+        return false
+    func view_lines [ which: i32 ] -> list string
+        return null
+    func commit_line [ text: string ] -> bool
+        return false
+    # non-text view interactions: presses forwarded with the CONTENT rect the
+    # view rendered into (stashed each draw); the view owns its own undo stack
+    # (e.g. tile pixel edits) and answers true when it consumed the action.
+    mutable vx : f32
+    mutable vy : f32
+    mutable vw : f32
+    mutable vh : f32
+    func view_press [ ev: Event ] -> bool
+        return false
+    func view_undo [] -> bool
+        return false
+    func view_redo [] -> bool
+        return false
+    # one-shot machine-context feed for the AI console: context_request asks the
+    # resource to publish a state dump (async — an emulator services it on its
+    # own thread, true = accepted); context_feed then returns the dump exactly
+    # once when it lands. orbiter drains the feed each frame and types it into
+    # the agent console.
+    func context_request [] -> bool
+        return false
+    func context_feed [] -> string
+        return null
+    func on_key [ ev: Event ]
+        return
     # produce a small GPU texture preview of `src` for the grid/thumbnail (aspect kept,
     # max side ~256). the FORMAT module owns this — orbiter just blits what it returns.
     # (no-op base → files with no preview fall back to a file icon.)
@@ -345,6 +391,9 @@ Layer EditorLayer
             cwi : i32 [ i32[ ceil[ f32[ editor.display_of[ ln ].count ] * cw + cw ] ] ]
             if [ cwi > maxw ] maxw = cwi
         if [ !has_code ] return null
+        # binary files opened as text can have multi-thousand-char "lines" —
+        # cap the band canvas at the Render dimension limit; long rows clip
+        if [ maxw > 16000 ] maxw = 16000
         lc_h : i32 [ i32[ ceil[ f32[ bands ] * lh ] ] + 1 ]
         # cache hit → reuse, just tick the frame
         for [ slot: EdLineCache ] in editor.code_lines
@@ -438,8 +487,15 @@ Layer EditorLayer
         # title still brings up the file index over an image pane. render* = poly dispatch
         # to the subclass (plain render[] would call the no-op base).
         if [ editor.rview && !editor.show_hits ]
-            editor.rview.render*[ cv, bounds ]
-            return
+            if [ !editor.rview.view_text*[ editor.rview.view_sel ] ]
+                editor.rview.vx = bounds.x
+                editor.rview.vy = bounds.y
+                editor.rview.vw = bounds.w
+                editor.rview.vh = bounds.h
+                editor.rview.render*[ cv, bounds ]
+                return
+            # editable TEXT view (assembly): fall through to the normal
+            # code-line painting/editing path — lines swap in at view toggle
         if [ !editor.lines ] return
         # find-in-files results, propagated to this instance via apply_args
         showing : bool [ editor.show_hits ]
@@ -2083,6 +2139,7 @@ Control Editor
             cur_group.sc1 = sel_col
 
     func undo []
+        if [ rview && rview.view_undo*[] ] return
         if [ show_hits || !hist ] return
         cur_group = null
         edit_kind = -1
@@ -2098,6 +2155,7 @@ Control Editor
         pristine = false
 
     func redo []
+        if [ rview && rview.view_redo*[] ] return
         if [ show_hits || !hist ] return
         cur_group = null
         edit_kind = -1
@@ -2115,6 +2173,19 @@ Control Editor
     # source file of the selected match line: re-read it, patch every edited match
     # row that belongs to it, and write it back. in normal mode, write `src`.
     func save_current []
+        # editable resource text view (disassembly): every line assembles back
+        # into the LIVE resource (same-length patches); nothing goes to disk
+        if [ rview && rview.view_text*[ rview.view_sel ] ]
+            ok : i32 [ 0 ]
+            bad : i32 [ 0 ]
+            n : i32 [ line_count[] ]
+            for [ li: i32 0, li < n, li += 1 ]
+                ln : line_get[ li ]
+                if [ !ln || ln.count == 0 ] continue
+                if [ rview.commit_line*[ ln ] ] ok += 1
+                el bad += 1
+            puts 'assembly: {ok} lines applied, {bad} rejected'
+            return
         if [ show_hits && hits ]
             if [ sel_line < 0 || sel_line >= hits.count ] return
             target : path [ hits[sel_line].file ]
@@ -2171,7 +2242,7 @@ Control Editor
         for [ i: i64 0, i < n, i += 1 ]
             t : subs[ i ]
             if [ t ]
-                probe : ResourceView [ Au.new_object[ t, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ] ]
+                probe : ResourceView [ Au.new_object[ t, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
                 if [ probe ]
                     exts : probe.extensions*[]
                     for [ e: string ] in exts
@@ -2185,7 +2256,7 @@ Control Editor
         ensure_view_registry[]
         t : view_registry[ ext ]
         if [ !t ] return null
-        return ResourceView [ Au.new_object[ t, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ] ]
+        return ResourceView [ Au.new_object[ t, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
 
     # cached thumbnail texture for the grid (image files only; null otherwise). downscaled
     # so a folder of large pngs doesn't exhaust GPU memory; uses the gamma-correct (UNORM)
@@ -2219,6 +2290,7 @@ Control Editor
         if [ rv ]
             rview = rv
             rview.src = src
+            animated = rview.continuous*[]         # emulator panes redraw every frame
             lines = list string []
             # a resource view (image/…) doesn't scroll like code — reset the scroll
             # position AND content size so it doesn't inherit the previous file's state.
@@ -2229,6 +2301,7 @@ Control Editor
             saved_scroll  = 0.0
             return
         rview = null
+        animated = false
         # key by the canonical (realpath) absolute path — the SAME identity silver stamps on
         # each map section — so the buffer the editor renders is the one load_format fills.
         key   : '{src.absolute[]}'
@@ -2356,6 +2429,11 @@ Control Editor
         sel_col  = cl
 
     func on_press [ ev: Event ]
+        # non-text resource view (tiles): the view handles its own presses
+        if [ rview && !rview.view_text*[ rview.view_sel ] ]
+            if [ rview.view_press*[ ev ] ]
+                ev.no_default = true
+                return
         # debug-control buttons in this editor's dbg slide-out — same actions as the
         # keyboard (c/s/i/o). consume here so the press doesn't fall through to the caret.
         if [ debugger ]
@@ -2763,6 +2841,13 @@ Control Editor
         pristine      = false
 
     func on_key [ ev: Event ]
+        # a continuous ResourceView (emulator pane) owns plain keys while this
+        # pane is focused — including key-UP (button release) and shift
+        # (Select). ctrl/meta chords stay with the editor (save, pane ops).
+        if [ rview && !ev.key.ctrl && !ev.key.meta ]
+            if [ rview.continuous*[] ]
+                rview.on_key*[ ev ]
+                return
         if [ !ev.key.state ] return
         # ignore modifier keys (shift/ctrl/alt/super, GLFW 340-347): they must not touch
         # the selection. a modifier's own keydown reports shift=0, so without this it

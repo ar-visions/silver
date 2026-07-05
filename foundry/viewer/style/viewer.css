@@ -1,0 +1,10 @@
+@import "trinity.css"
+
+element.root {
+    layers.root_bg:
+        fill_color: #181420
+}
+
+ModelView {
+    area: l0 t0 r0 b0
+}

@@ -8,11 +8,15 @@ import trinity
 import silver
 import project
 import dbg
+import asnes
+import knes
+import rgen
 
 # import c headers
 import <stdio.h>
     -lm
 import <stdlib.h>
+import <string.h>
 import <unistd.h>
 import <fcntl.h>
 import <sys/wait.h>
@@ -21,6 +25,7 @@ import <sys/wait.h>
 import Earth
 import Navigate
 import Editor
+import EmuView
 import Console
 import NodeList
 import FileList
@@ -126,6 +131,9 @@ trinity orbiter # implements compiler
     # bottom Instances bar's tab strip; active_console = the one shown in the console.
     public consoles      : map ConsoleInstance [string]
     intern active_console : string
+    # screenshot counter — unique /tmp names within a session so the agent
+    # never sees a stale image under a reused path
+    intern shot_n        : i32
     # per-workspace session state (open tabs + future props), keyed by workspace
     # path. loaded from / saved to <os-cache>/orbiter/states.agi via parse_agi.
     public states        : map orbiter_state [string]
@@ -378,6 +386,10 @@ trinity orbiter # implements compiler
         # run). MUST come after the defaults above — esp. active_target = 'silver' —
         # so the restored selection isn't immediately clobbered.
         restore_session[]
+        # repro rig: ORB_CONSOLE=<tab> pre-selects a console tab at boot so the
+        # joined pane exists in an unattended diagnostic run
+        dbg_con : cstr getenv[ 'ORB_CONSOLE' ]
+        if [ dbg_con ] active_console = string[ dbg_con ]
         # browse + search are rooted at the (restored) active project, not always the
         # first one — project_root[] resolves it (silver's root for the system target).
         nav_root       = project_root[]
@@ -428,7 +440,21 @@ trinity orbiter # implements compiler
     # before cwd changes to the share — but init runs first, so lazy-init it here.
     func agi_path [] -> path
         if [ !startup_path ] startup_path = path.path_startup[]
-        return path '{startup_path}/orbiter.agi'
+        p : path '{startup_path}/orbiter.agi'
+        if [ p.exists[] ] return p
+        # launched from a dir with no orbiter.agi (e.g. the app's own share dir,
+        # …/platform/native/share/orbiter): walk up to the nearest ancestor that
+        # holds one — the checkout root — and rebase startup_path there so the
+        # .agi's relative project roots resolve against that checkout.
+        d : path startup_path
+        for [ i: i32 0, i < 6, i += 1 ]
+            d = d.parent_dir[]
+            if [ !d ] return p
+            p2 : path '{d}/orbiter.agi'
+            if [ p2.exists[] ]
+                startup_path = d
+                return p2
+        return p
 
     # resolve a project path (root/cwd/file) from orbiter.agi against the actual
     # launch directory Au captured at startup. an absolute path passes through; a
@@ -837,6 +863,82 @@ trinity orbiter # implements compiler
         c  : Console ce
         return c
 
+    # create-or-get the session for a console tab. a console whose instance has
+    # a `run` (an agent like claude) ALWAYS launches with it — no path may
+    # materialize it as a bare shell (Console.session[]'s lazy fallback is how
+    # an agent tab silently degrades to a plain console after a reload).
+    # the launch command for a console tab: its instance's `run` tokens joined
+    # ('' for shells) — what the session must exec whenever it is created.
+    func agent_cmd [ sid: string ] -> string
+        ci : ConsoleInstance (consoles && sid) ? consoles[sid] : null
+        cmd_str : string ''
+        if [ ci && ci.run ]
+            for [ c: token ] in ci.run
+                cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
+        return cmd_str
+
+    func ensure_console [ sid: string ] -> ConsoleSession
+        con : ui_console[]
+        if [ !con || !sid || sid.count == 0 ] return null
+        s : ConsoleSession con.sessions[sid]
+        if [ s ] return s
+        con.launch_agent[ sid, agent_cmd[ sid ] ]
+        return con.sessions[sid]
+
+    # type `text` into the AI agent console (the active tab if it's an agent,
+    # else the first non-shell instance), launching its session on first use.
+    # wrapped in bracketed paste so multi-line context lands as ONE prompt
+    # block the user can append their question to — nothing auto-submits.
+    func feed_agent [ text: string ] -> none
+        if [ !consoles ] return
+        sid : string ''
+        ac  : ConsoleInstance (active_console && consoles[active_console]) ? consoles[active_console] : null
+        if [ ac && ac.kind != 'shell' ]
+            sid = active_console
+        el
+            for [ ci: ConsoleInstance, cname: string ] in consoles
+                if [ sid.count == 0 && ci.kind != 'shell' ]
+                    sid = cname
+        if [ sid.count == 0 ] return
+        s : ConsoleSession ensure_console[ sid ]
+        if [ !s ] return
+        s.send_esc[ '[200~' ]
+        s.write_input[ text ]
+        s.send_esc[ '[201~' ]
+        active_console = sid
+
+    # the console title's context button: ask the live emulator pane for a
+    # machine-state dump (focused pane first, else the first resource pane);
+    # the emu thread publishes it and the pane_for drain types it into the agent.
+    func request_context [] -> none
+        done : bool [ false ]
+        ed : Editor pane_at[ active_pane ]
+        if [ ed && ed.rview ] done = ed.rview.context_request*[]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            if [ ! done ]
+                ed2 : Editor pane_at[ i ]
+                if [ ed2 && ed2.rview ] done = ed2.rview.context_request*[]
+
+    # the console title's screen button: read back the window's composed frame
+    # (screen canvas — everything orbiter just presented), write it as a PNG,
+    # and return the path. feeding that path to the agent is the same motion
+    # as dragging an image into its terminal.
+    func snap_window [ w: Window ] -> string
+        if [ !w || !w.screen ] return null
+        tex : Texture w.screen.color
+        if [ !tex ] return null
+        sz : i32 [ tex.width * tex.height * 4 ]
+        b : Buffer [ vk: tex.vk, size: sz,
+            u_dst: true, m_host_visible: true, m_host_coherent: true ]
+        b.transfer[ tex ]
+        shot : Image [ width: tex.width, height: tex.height, format: Pixel.rgba8 ]
+        memcpy[ shot.vdata[], b.mmap[], sz ]
+        b.unmap[]
+        shot_n += 1
+        fn : string '/tmp/orbiter_shot_{getpid[]}_{shot_n}.png'
+        shot.png[ path fn ]
+        return fn
+
     # build/run a project node by name: process its deps FIRST (a dep is just
     # another node — same function, recursively), then run this node's build
     # tokens. there is NO silver-vs-other distinction — every node is just its
@@ -1051,7 +1153,7 @@ trinity orbiter # implements compiler
         # paused, so it would wrongly unlock the editor exactly at a breakpoint.
         return (d && d.active) ? d : null
 
-    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window, dbg_locked: bool, dbg_open: bool, menu_open: bool, is_resource: bool ] -> Elements
+    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window, dbg_locked: bool, dbg_open: bool, menu_open: bool, is_resource: bool, rv: ResourceView ] -> Elements
         nav : Elements []
         # the active (non-edit) state indicator: a small rounded 'active' button. shown
         # while the pane is debug-locked; clicking it (or double-clicking the body)
@@ -1078,6 +1180,14 @@ trinity orbiter # implements compiler
             nav['undock'] = Button []
         if [ editor_slots.count < 4 ]
             nav['dock'] = Button []
+        # resource sub-views (game / assembly / tiles): grouped TEXT toggles in
+        # the nav flow, after the expand button
+        if [ rv ]
+            vns : rv.views*[]
+            if [ vns && vns.count > 1 ]
+                for [ vi: i32 0, vi < i32[ vns.count ], vi += 1 ]
+                    vn : string vns[ vi ]
+                    nav['view_{vn}'] = Option [ label: vn, selected: rv.view_sel == vi ]
         # pins/grid toggles only belong to the browse index (appended after, browse only).
         if [ menu_open && nav_showing && docked && docked.count > 0 ]
             nav['pins'] = Option [ selected: show_pins ]
@@ -1124,7 +1234,12 @@ trinity orbiter # implements compiler
         dbg_open : bool [ (ed_live) ? ed_live.dbg_open : false ]
         menu_open : bool [ searchable && (find_showing || nav_showing) ]
         is_res    : bool [ (ed_live && ed_live.rview) ? true : false ]
-        ttl : Elements title_nav[ p, grp, diff, win, locked, dbg_open, menu_open, is_res ]
+        # a paused emulator publishes a machine-context dump once — type it
+        # into the AI agent console so the user can ask about the live state
+        if [ is_res ]
+            cfeed : ed_live.rview.context_feed*[]
+            if [ cfeed ] feed_agent[ cfeed ]
+        ttl : Elements title_nav[ p, grp, diff, win, locked, dbg_open, menu_open, is_res, (ed_live) ? ed_live.rview : null ]
         pe : Elements []
         pe['title'] = EditorTitle [
             selected: !p
@@ -2138,6 +2253,32 @@ trinity orbiter # implements compiler
             ev.no_default = true
             force_update[]
             return
+        # resource view toggles (view_game / view_assembly / view_tiles): switch
+        # the pane's sub-view; a TEXT view swaps the editor lines in (editable
+        # disassembly), a canvas view clears them. outgoing scratch unloads.
+        if [ ev.target && ev.target.id && ev.target.id.count > 5 ]
+            if [ ev.target.id.mid[ 0, 5 ].compare[ 'view_' ] == 0 ]
+                for [ e: element* ev.target, e, e = e.parent ]
+                    if [ e inherits Editor ]
+                        ed : Editor e
+                        if [ ed.rview ]
+                            vns : ed.rview.views*[]
+                            for [ vi: i32 0, vi < i32[ vns.count ], vi += 1 ]
+                                vn : string vns[ vi ]
+                                if [ ev.target.id.compare[ 'view_{vn}' ] == 0 ]
+                                    if [ ed.rview.view_sel != vi ]
+                                        ed.rview.view_unload*[ ed.rview.view_sel ]
+                                        ed.rview.view_sel = vi
+                                        if [ ed.rview.view_text*[ vi ] ]
+                                            ed.lines = ed.rview.view_lines*[ vi ]
+                                        el
+                                            ed.lines = list string []
+                                        ed.scroll.y = 0.0
+                                    break
+                        break
+                if [ ev.target ] ev.target.ux.restyle = true
+                ev.no_default = true
+                return
         # grid: list ↔ thumbnail grid for the index (same data, different layout).
         if [ ev.target.id == 'grid' ]
             grid_mode = !grid_mode
@@ -2247,6 +2388,19 @@ trinity orbiter # implements compiler
             save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
+        # console-title buttons: 'context' asks the live emulator pane for a
+        # machine dump (typed into the agent when it lands); 'screen' captures
+        # the whole orbiter window and hands the agent the PNG path — the same
+        # thing dragging an image into its terminal does.
+        if [ ev.target.id == 'ctx_copy' ]
+            request_context[]
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        if [ ev.target.id == 'ctx_shot' ]
+            fn : string snap_window[ ev.target.ux ]
+            if [ fn ] feed_agent[ fn + ' ' ]
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
         # the 'active' state button: drop this editor out of debug-lock into edit mode.
         if [ ev.target.id == 'active' ]
             for [ e: element* ev.target, e, e = e.parent ]
@@ -2278,17 +2432,8 @@ trinity orbiter # implements compiler
                 # session (create + start the shell, queue the command). re-selecting
                 # an already-running console doesn't relaunch.
                 if [ selecting ]
-                    ci : ConsoleInstance consoles[id]
-                    if [ ci && ci.run && ci.run.count > 0 ]
-                        con : ui_console[]
-                        if [ con ]
-                            ex : ConsoleSession con.sessions[id]
-                            if [ !ex ]
-                                cmd_str : string ''
-                                for [ c: token ] in ci.run
-                                    cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
-                                # agents exec directly (no shell prompt/echo line)
-                                con.launch_agent[ id, cmd_str ]
+                    # agents exec directly (no shell prompt/echo line)
+                    ensure_console[ id ]
                 if [ ev.target ] ev.target.ux.restyle = true
                 ev.no_default = true
                 return
@@ -2683,6 +2828,10 @@ trinity orbiter # implements compiler
             spath: path   (slot >= 0 && slot < open_files.count) ? open_files[slot] : null
             editor_els[pid] = pane_for[ spath, null, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open', i ]
         if [ has_console ]
+            # materialize the session BEFORE the pane's Console draws — its lazy
+            # session[] fallback starts a bare shell, which would hijack an agent
+            # tab (claude) into a plain console after a reload.
+            ensure_console[ active_console ]
             bcon  : Console ui_console[]
             csess : map ConsoleSession[string] (bcon) ? bcon.sessions : null
             # editable title = the per-console line filter. label is the shell/agent
@@ -2691,14 +2840,19 @@ trinity orbiter # implements compiler
             # branch — which drives the editor's find_text — doesn't catch it.
             ctitle : Elements []
             ctitle['console_filter'] = element [ label: active_console, focusable: true, no_scroll: true ]
-            editor_els['pane{editor_slots.count}'] = Console [ session_id: active_console, sessions: csess, feed: null, elements: ctitle ]
+            # every console gets feed buttons on the title row: 'context' copies
+            # the live emulator's machine dump into the prompt, 'screen' attaches
+            # a screenshot of all of orbiter (drag-and-drop, minus the drag)
+            ctitle['ctx_copy'] = Button [ label: 'context', no_scroll: true ]
+            ctitle['ctx_shot'] = Button [ label: 'screen', no_scroll: true ]
+            editor_els['pane{editor_slots.count}'] = Console [ session_id: active_console, sessions: csess, feed: null, launch: agent_cmd[ active_console ], elements: ctitle ]
 
         # the orbiter avatar peeks in the bottom-right corner. the real 3D Avatar still
         # SIGSEGVs (env-texture vk_image_view not ready at bind), so for now this is a plain
         # topmost placeholder element so the spot/size is visible. clicking toggles
         # avatar_expanded → the CSS :expanded state grows it to a full-size area. swap back to
         # `Avatar [ expanded: avatar_expanded ]` once the env-texture sync is fixed.
-        editor_els['avatar'] = Avatar [ expanded: avatar_expanded, topmost: true ]
+        editor_els['avatar'] = Avatar [ expanded: avatar_expanded, topmost: true, hide: true ]
 
         egroup_els : Elements []
         egroup_els['editors'] = EditorView [ selected: (editor_slots.count > 1), elements: editor_els ]

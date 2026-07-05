@@ -1407,3 +1407,66 @@ Option.avatar_toggle {
     layers.svg:
         opacity:                1.0
 }
+/* resource view toggles (game / assembly / tiles): grouped TEXT pills in the
+   title nav, sitting left of the expand button. text width, not icon width. */
+Editor / element.title / element.nav / Option.view_game {
+    area:                       l2+px t2px w58px h30px
+    layers.face:
+        area:                   l10px t0 r10px b0
+        label_color:            #b9aecb
+        label_size:             15
+        label_align:            0.5 0.5
+    layers.svg:
+        image_scale:            0.0
+:selected
+    layers.face:
+        label_color:            #ffffff
+}
+Editor / element.title / element.nav / Option.view_assembly {
+    area:                       l2+px t2px w92px h30px
+    layers.face:
+        area:                   l10px t0 r10px b0
+        label_color:            #b9aecb
+        label_size:             15
+        label_align:            0.5 0.5
+    layers.svg:
+        image_scale:            0.0
+:selected
+    layers.face:
+        label_color:            #ffffff
+}
+Editor / element.title / element.nav / Option.view_tiles {
+    area:                       l2+px t2px w58px h30px
+    layers.face:
+        area:                   l10px t0 r10px b0
+        label_color:            #b9aecb
+        label_size:             15
+        label_align:            0.5 0.5
+    layers.svg:
+        image_scale:            0.0
+:selected
+    layers.face:
+        label_color:            #ffffff
+}
+
+/* EVERY text button on a console title row: right-flow from the previous
+   control (first one anchors at the right edge), width from the label + 24px
+   padding. adding a button is one line of .ag — no per-button rule, ever. */
+EditorView / Console / Button {
+    area:                       r8+px t7px wc24px h30px
+    layers.base:
+        wmp_button[]
+        stroke2[]
+        radius:                 8
+    layers.face:
+        label_color:            #b9aecb
+        label_size:             15
+        label_align:            0.5 0.5
+    layers.svg:
+        image_scale:            0.0
+:hovered
+    layers.base:
+        wmp_button_hover[]
+    layers.face:
+        label_color:            #ffffff
+}
