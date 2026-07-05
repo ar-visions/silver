@@ -170,8 +170,18 @@ abstract live_app media_app
         if [ console && w ]
             cwin : Window [ w ]
             cwin.console_input_close[]
+        # give every live element its teardown hook (threads, external state)
+        # while this module's code is still mapped
+        if [ w ]
+            rwin : Window [ w ]
+            if [ rwin.root ]
+                rwin.root.unload_tree[]
         if [ vk ]
             vk.font_cache = null
+            # shader_cache is keyed by typeid (Au_t of the module that built it)
+            # and holds shader instances whose vtables live in this module —
+            # both go stale at dlclose. drop it now; shaders rebuild lazily.
+            vk.shader_cache = null
         if [ w ]
             w.drop[]
 

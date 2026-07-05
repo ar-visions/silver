@@ -217,6 +217,19 @@ ielement element
     public func draw [ w: Window ]
         return
 
+    # teardown hook: called for the whole live tree at app destroy (hot-reload
+    # boundary or exit) BEFORE the window drops — while this module's code is
+    # still mapped. elements that own threads or external state (emulators,
+    # audio) stop them here; dealloc order is not deterministic enough for
+    # thread teardown.
+    public func on_unload [ ]
+        return
+
+    func unload_tree [ ]
+        on_unload*[]
+        for [ ee: element, k: string ] in elements
+            ee.unload_tree[]
+
     public func render [ ] -> Elements
         return null
 

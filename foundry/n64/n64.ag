@@ -8,6 +8,8 @@ export 0.8.8
 import vec
 import img
 import trinity
+import <alsa/asoundlib.h>
+	-lasound
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
@@ -32,7 +34,180 @@ class cpu_vr4300
 	c_epc     : u32
 	c_config  : u32
 	c_wired   : u32
+	c_entrylo0 : u32
+	c_entrylo1 : u32
+	c_entryhi  : u32
+	c_pagemask : u32
+	tlb_hi    : new u32 [ 32 ]      # raw EntryHi per TLB entry
+	tlb_pm    : new u32 [ 32 ]
+	tlb_lo0   : new u32 [ 32 ]
+	tlb_lo1   : new u32 [ 32 ]
+	tlb_used  : bool                # any tlbwi yet (fast-path gate)
 	ll_bit    : bool
+
+class n64_audio_out
+	pcm_handle     : ref snd_pcm_t
+	buffer         : ref i16
+	buffer_size    : sz
+	sample_rate    : i32
+	channels       : i32
+
+	func open [ rate: i32 ] -> bool
+		sample_rate = rate
+		channels    = 2
+		buffer_size = 2048
+		buffer      = calloc[ 1, buffer_size * channels * 2 ]
+		pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
+		err : i32 [ snd_pcm_open[ ref pcm_handle, 'pulse', pb, 0 ] ]
+		if [ err < 0 ] return false
+		psz    : snd_pcm_hw_params_sizeof[]
+		params : ref snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
+		snd_pcm_hw_params_any[ pcm_handle, params ]
+		rw  : i32 [ SND_PCM_ACCESS_RW_INTERLEAVED ]
+		fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
+		snd_pcm_hw_params_set_access  [ pcm_handle, params, rw ]
+		snd_pcm_hw_params_set_format  [ pcm_handle, params, fmt ]
+		snd_pcm_hw_params_set_channels[ pcm_handle, params, channels ]
+		snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
+		bufsz : sz [ 3072 ]
+		persz : sz [ 512 ]
+		snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, ref bufsz ]
+		snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, ref persz, null ]
+		ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
+		if [ ok ]
+			perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
+			if [ perr < 0 ]
+				puts 'n64 audio: prepare failed {snd_strerror[ perr ]}'
+				ok = false
+		return ok
+
+	func write [ frames: i32 ] -> none
+		if [ ! pcm_handle ] return
+		wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
+		if [ wr < 0 ]
+			snd_pcm_recover[ pcm_handle, wr, 0 ]
+			snd_pcm_writei[ pcm_handle, buffer, frames ]
+
+	func close []
+		if [ pcm_handle ]
+			snd_pcm_close[ pcm_handle ]
+			pcm_handle = null
+
+
+enum N64Surface
+	atlas : 0
+	state : 1
+
+# N64 ubershader: raw Fast3D vertices in, transform + vertex lighting in the
+# vertex stage (matrix/light/material palettes live in the `state` rgbaf
+# texture, row 0 = matrices, row 1 = light sets, row 2 = materials), combiner
+# + wrapped atlas sampling in the fragment stage.
+ModelViewProject N64GX
+	attrib atlas : LayoutBinding [ type:typeid[ N64Surface ], id:N64Surface.atlas, count:1, format: typeid[ rgba8 ] ]
+	attrib state : LayoutBinding [ type:typeid[ N64Surface ], id:N64Surface.state, count:1, format: typeid[ rgbaf ] ]
+
+	attrib a_pos : VertexInput [ type:typeid[ vec3f ] ]
+	attrib a_col : VertexInput [ type:typeid[ vec4f ] ]
+	attrib a_uv  : VertexInput [ type:typeid[ vec2f ] ]
+	attrib a_aux : VertexInput [ type:typeid[ vec4f ] ]
+
+	attrib v_col  : VertexOutput [ type:typeid[ vec4f ] ]
+	attrib v_uv   : VertexOutput [ type:typeid[ vec2f ] ]
+	attrib v_aux  : VertexOutput [ type:typeid[ vec4f ] ]
+	attrib v_prim : VertexOutput [ type:typeid[ vec4f ] ]
+	attrib v_env  : VertexOutput [ type:typeid[ vec4f ] ]
+	attrib v_rect : VertexOutput [ type:typeid[ vec4f ] ]
+	attrib v_wrap : VertexOutput [ type:typeid[ vec4f ] ]
+
+	attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+	func init [ ]
+		model = mat4f.identity[]
+		view  = mat4f.identity[]
+		proj  = mat4f.identity[]
+
+	func vertex [] -> GLSL none {
+		int mi = int(a_aux.x + 0.5) * 4;
+		vec4 r0 = texelFetch(state, ivec2(mi + 0, 0), 0);
+		vec4 r1 = texelFetch(state, ivec2(mi + 1, 0), 0);
+		vec4 r2 = texelFetch(state, ivec2(mi + 2, 0), 0);
+		vec4 r3 = texelFetch(state, ivec2(mi + 3, 0), 0);
+		mat4 M  = mat4(r0, r1, r2, r3);          // rows as columns => M = rowmajor^T, so M*v == v*rows
+		vec4 clip = M * vec4(a_pos, 1.0);
+		int flags = int(a_aux.y + 0.5);
+		int ms = int(a_aux.w + 0.5) * 4;
+		v_rect = texelFetch(state, ivec2(ms + 0, 2), 0);
+		v_wrap = texelFetch(state, ivec2(ms + 1, 2), 0);
+		v_prim = texelFetch(state, ivec2(ms + 2, 2), 0);
+		v_env  = texelFetch(state, ivec2(ms + 3, 2), 0);
+		vec4 col = a_col;
+		vec2 uv  = a_uv;
+		if ((flags & 1) != 0) {                  // lit: a_col.xyz = normal
+			vec3 n  = a_col.xyz;
+			int  ls = int(a_aux.z + 0.5) * 8;
+			vec4 amb = texelFetch(state, ivec2(ls, 1), 0);
+			vec3 c   = amb.rgb;
+			int  nl  = int(amb.a + 0.5);
+			for (int i = 0; i < 3; i++) {
+				if (i >= nl) break;
+				vec3 lc = texelFetch(state, ivec2(ls + 1 + i * 2, 1), 0).rgb;
+				vec3 ld = texelFetch(state, ivec2(ls + 2 + i * 2, 1), 0).rgb;
+				float d = max(dot(n, ld), 0.0);
+				c += lc * d;
+			}
+			col = vec4(min(c, vec3(1.0)), a_col.w);
+			if ((flags & 2) != 0)                // texgen: uv from normal
+				uv = vec2(n.x * 0.5 + 0.5, 0.5 - n.y * 0.5) * v_rect.zw;
+		}
+		v_col = col;
+		v_uv  = uv;
+		v_aux = a_aux;
+		gl_Position = vec4(clip.x, clip.y, (clip.z + clip.w) * 0.5, clip.w);
+	}
+
+	func wrapc [ t: float, msk: float, cm: float, lim: float ] -> GLSL float {
+		int icm = int(cm + 0.5);
+		float clim = float(icm >> 2);          // clamp at TILESIZE (packed), not mask
+		if (clim < 0.5) clim = lim;
+		if ((icm & 2) != 0 || msk < 0.5) t = clamp(t, 0.0, clim - 1.0);
+		if (msk > 0.5) {
+			if ((icm & 1) != 0) {
+				float m2 = msk * 2.0;
+				t = mod(t, m2);
+				if (t >= msk) t = m2 - 1.0 - t;
+			} else {
+				t = mod(t, msk);
+			}
+		}
+		return t;
+	}
+
+	func fragment [] -> GLSL none {
+		int flags = int(v_aux.y + 0.5);
+		if ((flags & 1024) != 0 && gl_FrontFacing) discard;
+		if ((flags & 2048) != 0 && !gl_FrontFacing) discard;
+		vec4 col = v_col;
+		if ((flags & 4) != 0) {
+			float tsx = wrapc(v_uv.x, v_wrap.x, v_wrap.z, v_rect.z);
+			float tsy = wrapc(v_uv.y, v_wrap.y, v_wrap.w, v_rect.w);
+			vec4 tex = texelFetch(atlas, ivec2(v_rect.xy + vec2(tsx, tsy)), 0);
+			int cc = (flags >> 4) & 7;
+			if (cc == 1)      col.rgb = mix(col.rgb, v_prim.rgb, tex.rgb);
+			else if (cc == 2) col.rgb = min(col.rgb + tex.rgb, vec3(1.0));
+			else if (cc == 3) col = tex;
+			else { col.rgb *= tex.rgb; col.a *= tex.a; }
+			if ((flags & 8) != 0) col.rgb *= v_prim.rgb;
+			if ((flags & 128) != 0 && col.a < 0.5) discard;
+		} else {
+			if ((flags & 128) != 0 && col.a < 0.02) discard;
+		}
+		if ((flags & 512) != 0) col.a = max(col.r, max(col.g, col.b));
+		else if ((flags & 256) == 0) col.a = 1.0;
+		if ((flags & 4096) != 0) gl_FragDepth = 0.9999;   // z-disabled: draw in order, never occlude
+		else gl_FragDepth = gl_FragCoord.z;
+		fragColor = col;
+	}
+
 
 element n64
 	public  rom          : path
@@ -58,11 +233,58 @@ element n64
 	mutable vi_vstart    : u32
 	mutable vi_xscale    : u32
 	mutable vi_yscale    : u32
-	# AI (stub: instant DMA completion)
+	# AI: 2-deep DMA fifo, drained one buffer per video frame into ALSA
 	mutable ai_dram      : u32
 	mutable ai_len       : u32
 	mutable ai_ctrl      : u32
 	mutable ai_dacrate   : u32
+	mutable ai_fifo_dram : new u32 [ 2 ]
+	mutable ai_fifo_len  : new u32 [ 2 ]
+	mutable ai_fifo_n    : i32
+	mutable audio        : n64_audio_out
+	mutable audio_fail   : bool
+	# audio HLE: ABI1 alist state (ref: mupen64plus-rsp-hle alist_audio.c).
+	# abuf mirrors the ucode sample workspace (big-endian words); command
+	# dmem offsets are relative to DMEM_BASE 0x5C0.
+	mutable abuf         : new u8  [ 0x1000 ]
+	mutable aseg         : new u32 [ 16 ]
+	mutable a_in         : u32
+	mutable a_out        : u32
+	mutable a_count      : u32
+	mutable a_dryr       : u32
+	mutable a_wetl       : u32
+	mutable a_wetr       : u32
+	mutable a_dry        : i32
+	mutable a_wet        : i32
+	mutable a_vol0       : i32
+	mutable a_vol1       : i32
+	mutable a_tgt0       : i32
+	mutable a_tgt1       : i32
+	mutable a_rate0      : i64
+	mutable a_rate1      : i64
+	mutable a_loop       : u32
+	mutable a_table      : new i32 [ 128 ]
+	mutable ad_last      : new i32 [ 16 ]
+	mutable ad_frame     : new i32 [ 16 ]
+	# RSP resampler 4-tap kernel, 64 phases (mupen64plus-rsp-hle audio.c)
+	intern  res_lut      : new i16 [256] [
+		3129, 26285, 3398, -33, 2873, 26262, 3679, -40, 2628, 26217, 3971, -48, 2394, 26150, 4276, -56
+		2173, 26061, 4592, -65, 1963, 25950, 4920, -74, 1764, 25817, 5260, -84, 1576, 25663, 5611, -95
+		1399, 25487, 5974, -106, 1233, 25291, 6347, -118, 1077, 25075, 6732, -130, 932, 24838, 7127, -143
+		796, 24583, 7532, -156, 671, 24309, 7947, -170, 554, 24016, 8371, -184, 446, 23706, 8804, -198
+		347, 23379, 9246, -212, 257, 23036, 9696, -226, 174, 22678, 10153, -240, 99, 22304, 10618, -254
+		31, 21917, 11088, -268, -30, 21517, 11564, -280, -84, 21104, 12045, -293, -132, 20679, 12531, -304
+		-173, 20244, 13020, -314, -210, 19799, 13512, -323, -241, 19345, 14006, -330, -267, 18882, 14501, -336
+		-289, 18413, 14997, -340, -306, 17937, 15493, -341, -320, 17456, 15988, -340, -330, 16970, 16480, -337
+		-337, 16480, 16970, -330, -340, 15988, 17456, -320, -341, 15493, 17937, -306, -340, 14997, 18413, -289
+		-336, 14501, 18882, -267, -330, 14006, 19345, -241, -323, 13512, 19799, -210, -314, 13020, 20244, -173
+		-304, 12531, 20679, -132, -293, 12045, 21104, -84, -280, 11564, 21517, -30, -268, 11088, 21917, 31
+		-254, 10618, 22304, 99, -240, 10153, 22678, 174, -226, 9696, 23036, 257, -212, 9246, 23379, 347
+		-198, 8804, 23706, 446, -184, 8371, 24016, 554, -170, 7947, 24309, 671, -156, 7532, 24583, 796
+		-143, 7127, 24838, 932, -130, 6732, 25075, 1077, -118, 6347, 25291, 1233, -106, 5974, 25487, 1399
+		-95, 5611, 25663, 1576, -84, 5260, 25817, 1764, -74, 4920, 25950, 1963, -65, 4592, 26061, 2173
+		-56, 4276, 26150, 2394, -48, 3971, 26217, 2628, -40, 3679, 26262, 2873, -33, 3398, 26285, 3129
+	]
 	# PI
 	mutable pi_dram      : u32
 	mutable pi_cart      : u32
@@ -94,17 +316,144 @@ element n64
 	mutable context_out  : string
 	mutable context_seq  : i32
 	mutable pub_lock     : mutex
-	mutable pub_framebuf : new u32 [ 640 * 480 ]
+	mutable pub_framebuf : new u32 [ 1280 * 960 ]
 	mutable pub_w        : i32 [ 320 ]
 	mutable pub_h        : i32 [ 240 ]
 	mutable pub_valid    : bool
 	mutable screen_tex   : Texture
 	mutable tex_w        : i32
+	# ---- gfx HLE: Fast3D state ----
+	mutable gx_seg       : new u32 [ 16 ]
+	mutable gx_mats      : new f32 [ 256 ]   # 16 mtx slots: 0=proj 1..11=mv stack 12=tmpA 13=tmpB 14=mvp
+	mutable gx_mvi       : i32
+	mutable gx_mvp_ok    : bool
+	mutable gx_vt        : new f32 [ 160 ]   # 16 slots x 10: cx cy cz cw u v r g b a
+	mutable gx_clip      : new f32 [ 80 ]    # near-clip scratch (up to 8 verts)
+	mutable gx_scr       : new f32 [ 80 ]    # screen-space: sx sy sz invw u_ow v_ow r g b a
+	mutable gx_geom      : u32
+	mutable gx_texon     : bool
+	mutable gx_texs      : f32
+	mutable gx_text      : f32
+	mutable gx_tile      : i32
+	mutable gx_prim      : u32
+	mutable gx_env       : u32
+	mutable gx_fill      : u32
+	mutable gx_cimg      : u32
+	mutable gx_zimg      : u32
+	mutable gx_ciw       : i32 [ 320 ]
+	mutable rtt_addr     : new u32 [ 16 ]         # recent offscreen color-image targets
+	mutable rtt_w        : new i32 [ 16 ]
+	mutable rtt_h        : new i32 [ 16 ]
+	mutable rtt_n        : i32
+	mutable gx_timg      : u32
+	mutable gx_tfmt      : u32
+	mutable gx_tsiz      : u32
+	mutable gx_tw        : i32
+	mutable tmem         : new u8 [ 4096 ]
+	mutable gx_tlut      : new u32 [ 256 ]
+	mutable tl_fmt       : new u32 [ 8 ]
+	mutable tl_siz       : new u32 [ 8 ]
+	mutable tl_line      : new u32 [ 8 ]
+	mutable tl_tmem      : new u32 [ 8 ]
+	mutable tl_pal       : new u32 [ 8 ]
+	mutable tl_cms       : new u32 [ 8 ]
+	mutable tl_cmt       : new u32 [ 8 ]
+	mutable tl_masks     : new u32 [ 8 ]
+	mutable tl_maskt     : new u32 [ 8 ]
+	mutable tl_uls       : new u32 [ 8 ]
+	mutable tl_ult       : new u32 [ 8 ]
+	mutable tl_lrs       : new u32 [ 8 ]
+	mutable tl_lrt       : new u32 [ 8 ]
+	mutable zbuf         : new f32 [ 1280 * 960 ]
+	mutable ss_buf       : new u32 [ 1280 * 960 ]
+	mutable gx_ss        : i32 [ 1 ]             # supersample factor (N64_SS=1/2/4; CPU raster, 4x = 16x cost)
+	mutable ss_used      : bool
+	mutable gx_lights    : new f32 [ 48 ]    # 8 x: r g b dx dy dz
+	mutable gx_nl        : i32
+	mutable gx_oth_h     : u32
+	mutable gx_oth_l     : u32
+	mutable gx_sx0       : i32
+	mutable gx_sy0       : i32
+	mutable gx_sx1       : i32 [ 320 ]
+	mutable gx_sy1       : i32 [ 240 ]
+	mutable gx_half1     : u32
+	mutable gx_vp        : new f32 [ 6 ]     # scale x y z, trans x y z
+	mutable gx_dls       : new u32 [ 20 ]
+	mutable gx_dsp       : i32
+	mutable gx_unk       : new u32 [ 256 ]
+	# ---- GPU renderer (Vulkan; N64_GPU=0 falls back to CPU raster) ----
+	mutable gpu_on       : bool [ true ]
+	mutable gx_vraw      : new f32 [ 192 ]       # per-slot raw: x y z u v r g b a lit mtx ls (VTX-time state)
+	mutable gxv          : new f32 [ 425984 ]    # 32768 verts x 13 floats
+	mutable gxv_n        : i32
+	mutable st_tex       : new f32 [ 24576 ]     # 2048x3 rgba32f staging
+	mutable st_mtx_n     : i32
+	mutable st_ls_n      : i32
+	mutable st_mat_n     : i32
+	mutable gx_mslot     : i32 [ -1 ]            # cached slots (-1 = dirty)
+	mutable gx_lsslot    : i32 [ -1 ]
+	mutable gx_matslot   : i32 [ -1 ]
+	mutable at_stage     : new u32 [ 1048576 ]   # 1024x1024 atlas staging
+	mutable at_dirty     : bool
+	mutable at_x         : i32
+	mutable at_y         : i32
+	mutable at_rowh      : i32
+	mutable atk_key      : new i64 [ 256 ]
+	mutable atk_rect     : new i32 [ 1024 ]
+	mutable atk_n        : i32
+	mutable pub_gxv      : new f32 [ 425984 ]
+	mutable pub_gxv_n    : i32
+	mutable pub_st       : new f32 [ 24576 ]
+	mutable pub_at_dirty : bool
+	mutable r_shader     : N64GX
+	mutable r_atlas      : Texture
+	mutable r_state      : Texture
+	mutable r_render     : Render
+	mutable r_pipeline   : Pipeline
+	mutable r_model      : Model
+	mutable r_vbo        : Gpu
+	mutable gx_dbgc      : i32
+	mutable gx_vsrc      : new u32 [ 16 ]
+	mutable gx_ti0       : i32
+	mutable gx_ti1       : i32
+	mutable gx_ti2       : i32
+	mutable gx_dbgl      : i32
+	mutable gx_cc_tex    : bool [ true ]
+	mutable gx_cc_shade  : bool [ true ]
+	mutable gx_cc_add    : bool
+	mutable gx_cc_prim   : bool
+	mutable gx_cc_lerp   : bool
+	mutable gx_bl_add    : bool
+	mutable gx_bl_xlu    : bool
+	mutable gx_ccw1      : u32
+	mutable gx_ccw2      : u32
+	# runaway-PC diagnostic: ring of the last 32 (pc, op) pairs; one-shot
+	# dump the first time the PC maps outside RDRAM/DMEM/IMEM/ROM
+	mutable dbg_ring     : new u32 [ 64 ]
+	mutable dbg_ri       : i32
+	mutable dbg_esc      : i32
+	mutable dbg_jring    : new u32 [ 64 ]
+	mutable dbg_ji       : i32
+	mutable dbg_z        : i32
+	mutable dbg_ic       : i32
+	mutable dbg_wv       : i32
+	mutable dbg_on       : bool             # N64_DBG: per-step runaway diagnostics
 
 	func init []
 		animated  = true
 		focusable = true
 		if [ volume == 0.0 ] volume = 0.5
+		if [ getenv[ 'N64_DBG' ] ] dbg_on = true
+		gpe : symbol [ getenv[ 'N64_GPU' ] ]
+		if [ gpe ]
+			if [ atoi[ gpe ] == 0 ] gpu_on = false
+		sse : symbol [ getenv[ 'N64_SS' ] ]
+		if [ sse ]
+			sv9 : i32 [ atoi[ sse ] ]
+			if [ sv9 >= 3 ] gx_ss = 4
+			el [ sv9 == 2 ] gx_ss = 2
+			el gx_ss = 1
+		el gx_ss = 1
 
 	# ---------------- ROM + HLE boot ----------------
 	func load_rom [] -> bool
@@ -153,8 +502,11 @@ element n64
 		dst : i64 [ i64[ entry & 0x1FFFFFFF ] ]
 		for [ i: i64 0, i < sz, i += 1 ]
 			rdram[ dst + i ] = rom_data[ 0x1000 + i ]
-		# osMemSize for 6102: 0x80000318
-		wr_phys32[ 0x318, 0x800000 ]
+		# IPL boot globals: osTvType/osRomBase/osMemSize (osRomBase feeds
+		# osPiStartDma's cart address — without it PI DMA sources from 0)
+		wr_phys32[ 0x300, 1 ]                # osTvType: NTSC
+		wr_phys32[ 0x308, 0xB0000000 ]       # osRomBase: cart domain 1
+		wr_phys32[ 0x318, 0x800000 ]         # osMemSize for 6102
 		cpu.r[ 11 ] = i64[ i32[ 0xFFFFFFFF ] ] & 0 | i64[ entry ]        # t3
 		cpu.r[ 20 ] = 1                                                  # s4: tv type NTSC
 		cpu.r[ 22 ] = 0x3F                                               # s6: CIC 6102 seed
@@ -178,6 +530,9 @@ element n64
 
 	func wr_phys8 [ pa: u32, v: u32 ]
 		if [ pa < 0x800000 ]
+			if [ dbg_on && pa >= 0x888F0 && pa < 0x88910 && dbg_wv < 40 && frames >= 300 ]
+				dbg_wv += 1
+				printf[ "n64 VWRITE pa=%06X v=%02X pc=%08X ra=%08X f%u\n", pa, v & 0xFF, cpu.pc, u32[ cpu.r[31] ], frames ]
 			rdram[ pa ] = u8[ v ]
 			return
 		if [ pa >= 0x04000000 && pa < 0x04001000 ]
@@ -206,6 +561,16 @@ element n64
 
 	func wr_phys32 [ pa: u32, v: u32 ]
 		if [ pa < 0x800000 ]
+
+			if [ dbg_on && pa == 0x1BA05C && frames > 260 && frames < 280 && dbg_ic < 3000 ]
+				printf[ "n64 INVW v=%08X pc=%08X ra=%08X f%u\n", v, cpu.pc, u32[ cpu.r[31] ], frames ]
+			if [ dbg_on && pa == 0xC9478 ]
+				printf[ "n64 RESTW v=%08X ra=%08X f%u invmtx:\n", v, u32[ cpu.r[31] ], frames ]
+				for [ jr: i32 0, jr < 4, jr += 1 ]
+					jb9 : u32 [ 0x1BA038 + u32[ jr * 16 ] ]
+					printf[ "  %08X %08X %08X %08X\n", dr_r32[ jb9 ], dr_r32[ jb9 + 4 ], dr_r32[ jb9 + 8 ], dr_r32[ jb9 + 12 ] ]
+				vt9 : u32 [ dr_r32[ 0x1BA030 ] ]
+				printf[ "  weightnode=%08X\n", vt9 ]
 			rdram[pa]   = u8[ v >> 24 ]
 			rdram[pa+1] = u8[ v >> 16 ]
 			rdram[pa+2] = u8[ v >> 8 ]
@@ -232,6 +597,8 @@ element n64
 
 	# ---------------- I/O registers ----------------
 	func io_read [ pa: u32 ] -> u32
+		if [ dbg_on && frames >= 224 && frames < 232 ]
+			printf[ "n64 IOR %08X (pc=%08X)\n", pa, cpu.pc ]
 		if [ pa == 0x04040010 ] return sp_status
 		if [ pa == 0x04040018 ] return 0                    # SP DMA busy
 		if [ pa == 0x0404001C ]
@@ -247,20 +614,71 @@ element n64
 		if [ pa == 0x04600010 ] return pi_status
 		if [ pa == 0x04800018 ] return si_status
 		if [ pa == 0x04500004 ] return ai_len
-		if [ pa == 0x0450000C ] return 1                    # AI status: dma? keep simple
+		if [ pa == 0x0450000C ]                              # AI status: full/busy from fifo depth
+			if [ ai_fifo_n >= 2 ] return 0xC0000001
+			if [ ai_fifo_n == 1 ] return 0x40000000
+			return 0
 		if [ pa >= 0x04700000 && pa < 0x04800000 ] return 0x1  # RI: initialized
 		if [ pa >= 0x03F00000 && pa < 0x04000000 ] return 0
 		return 0
 
+	# SP DMA: length reg = { skip[31:20], count[19:12], length[11:0] };
+	# sp_mem bit 12 selects IMEM, rows advance dram by length+skip
+	func sp_dma [ v: u32, to_sp: bool ]
+		ln : u32 [ ((v & 0xFFF) | 7) + 1 ]
+		cnt : u32 [ ((v >> 12) & 0xFF) + 1 ]
+		skip : u32 [ (v >> 20) & 0xFFF ]
+		ma : u32 [ sp_mem & 0x1FF8 ]
+		da : u32 [ sp_dram & 0xFFFFF8 ]
+		for [ c: u32 0, c < cnt, c += 1 ]
+			for [ i: u32 0, i < ln, i += 1 ]
+				mo : u32 [ (ma + i) & 0x1FFF ]
+				dd : u32 [ da + i ]
+				if [ dd < 0x800000 ]
+					if [ to_sp ]
+						if [ mo < 0x1000 ] dmem[ mo ] = rdram[ dd ]
+						el imem[ mo & 0xFFF ] = rdram[ dd ]
+					el
+						if [ mo < 0x1000 ] rdram[ dd ] = dmem[ mo ]
+						el rdram[ dd ] = imem[ mo & 0xFFF ]
+			ma += ln
+			da += ln + skip
+
 	func io_write [ pa: u32, v: u32 ]
-		if [ pa == 0x04040010 ]                              # SP status: HLE — clear halt only
-			if [ v & 0x1 ] sp_status = sp_status & (~u32[1])
-			if [ v & 0x2 ] sp_status = sp_status | 1
+		if [ dbg_on && frames >= 224 && frames < 232 ]
+			printf[ "n64 IOW %08X = %08X (pc=%08X)\n", pa, v, cpu.pc ]
+		if [ pa == 0x04040010 ]                              # SP status
 			if [ v & 0x8 ] mi_intr = mi_intr & (~u32[1])
+			if [ v & 0x2 ] sp_status = sp_status | 1
+			if [ v & 0x1 ]                                    # START: HLE-run the task
+				# OSTask header sits at DMEM 0xFC0; type: 1=gfx 2=audio.
+				# audio runs the ABI1 alist interpreter; gfx still fake-
+				# completes (halt + SIG2, SP int, + DP int) so the scheduler
+				# flows until the Fast3D pass.
+				tt : u32 [ (u32[dmem[0xFC0]] << 24) | (u32[dmem[0xFC1]] << 16) | (u32[dmem[0xFC2]] << 8) | u32[dmem[0xFC3]] ]
+				if [ tt == 2 ] audio_task[]
+				if [ tt == 1 ] gfx_task[]
+				sp_status = 0x1 | 0x200
+				mi_intr = mi_intr | 0x1
+				if [ tt == 1 ] mi_intr = mi_intr | 0x20
+				if [ trace && tt != 2 ] printf[ "n64 SP task type=%u f%u (fake-complete)\n", tt, frames ]
+				if [ dbg_on && dbg_ic < 3000 ] printf[ "n64 task t=%u f%u\n", tt, frames ]
 			mi_check[]
 			return
 		if [ pa == 0x0404001C ]
 			sp_semaphore = 0
+			return
+		if [ pa == 0x04040000 ]
+			sp_mem = v
+			return
+		if [ pa == 0x04040004 ]
+			sp_dram = v
+			return
+		if [ pa == 0x04040008 ]                              # SP read length: RDRAM -> SP mem
+			sp_dma[ v, true ]
+			return
+		if [ pa == 0x0404000C ]                              # SP write length: SP mem -> RDRAM
+			sp_dma[ v, false ]
 			return
 		if [ pa == 0x04300000 ]
 			mi_mode = v
@@ -298,10 +716,15 @@ element n64
 		if [ pa == 0x04500000 ]
 			ai_dram = v
 			return
-		if [ pa == 0x04500004 ]                              # AI length: complete instantly, raise AI int
-			ai_len = 0
-			mi_intr = mi_intr | 0x4
-			mi_check[]
+		if [ pa == 0x04500004 ]                              # AI length: queue the DMA (2-deep fifo)
+			ln : u32 [ v & 0x3FFF8 ]
+			ai_len = ln
+			if [ ln > 0 ]
+				if [ ai_fifo_n >= 2 ] ai_drain[]             # full: play out, never drop
+				slot : i32 [ ai_fifo_n ]
+				ai_fifo_dram[ slot ] = ai_dram & 0x7FFFF8
+				ai_fifo_len[ slot ]  = ln
+				ai_fifo_n = slot + 1
 			return
 		if [ pa == 0x04500008 ]
 			ai_ctrl = v
@@ -322,6 +745,8 @@ element n64
 		if [ pa == 0x0460000C ]                              # PI write length: cart -> RDRAM
 			ln : u32 [ (v & 0xFFFFFF) + 1 ]
 			src : i64 [ i64[ pi_cart & 0x1FFFFFFF ] - 0x10000000 ]
+			if [ trace ]
+				printf[ "n64 PIDMA cart=%08X dram=%06X len=%u f%u\n", pi_cart, pi_dram, ln, frames ]
 			for [ i: u32 0, i < ln, i += 1 ]
 				bv : u32 [ (src + i64[i] < rom_size && src + i64[i] >= 0) ? u32[ rom_data[ src + i64[i] ] ] : 0 ]
 				if [ pi_dram + i < 0x800000 ] rdram[ pi_dram + i ] = u8[ bv ]
@@ -355,6 +780,1512 @@ element n64
 			return
 
 	# controller reads: interpret joybus commands in PIF RAM
+	# ---------------- audio HLE: ABI1 alist interpreter ----------------
+	# Faithful port of mupen64plus-rsp-hle alist_audio.c/alist.c (vendored in
+	# reference/). abuf holds big-endian 16-bit samples; all dmem offsets are
+	# pre-biased by DMEM_BASE 0x5C0 at command decode.
+
+	func ab_r8 [ off: u32 ] -> u32
+		return u32[ abuf[ off & 0xFFF ] ]
+
+	func ab_w8 [ off: u32, v: u32 ]
+		abuf[ off & 0xFFF ] = u8[ v & 0xFF ]
+
+	func ab_r16 [ off: u32 ] -> i32
+		oo : u32 [ off & 0xFFF ]
+		o2 : u32 [ (off + 1) & 0xFFF ]
+		vv : i32 [ (i32[ abuf[oo] ] << 8) | i32[ abuf[o2] ] ]
+		if [ vv >= 0x8000 ] vv -= 0x10000
+		return vv
+
+	func ab_w16 [ off: u32, v: i32 ]
+		oo : u32 [ off & 0xFFF ]
+		o2 : u32 [ (off + 1) & 0xFFF ]
+		abuf[ oo ] = u8[ (v >> 8) & 0xFF ]
+		abuf[ o2 ] = u8[ v & 0xFF ]
+
+	func dr_r16 [ ad: u32 ] -> i32
+		oo : u32 [ ad & 0x7FFFFE ]
+		vv : i32 [ (i32[ rdram[oo] ] << 8) | i32[ rdram[oo + 1] ] ]
+		if [ vv >= 0x8000 ] vv -= 0x10000
+		return vv
+
+	func dr_ru16 [ ad: u32 ] -> u32
+		oo : u32 [ ad & 0x7FFFFE ]
+		return (u32[ rdram[oo] ] << 8) | u32[ rdram[oo + 1] ]
+
+	func dr_w16 [ ad: u32, v: i32 ]
+		oo : u32 [ ad & 0x7FFFFE ]
+		rdram[ oo ]     = u8[ (v >> 8) & 0xFF ]
+		rdram[ oo + 1 ] = u8[ v & 0xFF ]
+
+	func dr_r32 [ ad: u32 ] -> u32
+		oo : u32 [ ad & 0x7FFFFC ]
+		return (u32[rdram[oo]] << 24) | (u32[rdram[oo + 1]] << 16) | (u32[rdram[oo + 2]] << 8) | u32[rdram[oo + 3]]
+
+	func dr_w32 [ ad: u32, v: u32 ]
+		oo : u32 [ ad & 0x7FFFFC ]
+		rdram[ oo ]     = u8[ (v >> 24) & 0xFF ]
+		rdram[ oo + 1 ] = u8[ (v >> 16) & 0xFF ]
+		rdram[ oo + 2 ] = u8[ (v >> 8) & 0xFF ]
+		rdram[ oo + 3 ] = u8[ v & 0xFF ]
+
+	func dr_s32 [ ad: u32 ] -> i64
+		return wrs32[ i64[ dr_r32[ ad ] ] ]
+
+	func cs16 [ v: i32 ] -> i32
+		if [ v > 32767 ] return 32767
+		if [ v < -32768 ] return -32768
+		return v
+
+	func sx16u [ v: u32 ] -> i32
+		rv : i32 [ i32[ v & 0xFFFF ] ]
+		if [ rv >= 0x8000 ] rv -= 0x10000
+		return rv
+
+	func wrs32 [ v: i64 ] -> i64
+		ww : i64 [ v & 0xFFFFFFFF ]
+		if [ ww >= 0x80000000 ] ww -= 0x100000000
+		return ww
+
+	func a_addr [ so: u32 ] -> u32
+		sg : u32 [ (so >> 24) & 0x3F ]
+		of : u32 [ so & 0xFFFFFF ]
+		if [ sg >= 16 ] return of
+		sb : u32 [ aseg[ sg ] ]
+		return sb + of
+
+	func a_clear [ dm: u32, count: u32 ]
+		for [ i: u32 0, i < count, i += 1 ]
+			ab_w8[ dm + i, 0 ]
+
+	func a_loadbuf [ ad: u32, dm: u32, count: u32 ]
+		dd : u32 [ dm & (~u32[3]) ]
+		ss : u32 [ ad & (~u32[7]) ]
+		cc : u32 [ (count + 7) & (~u32[7]) ]
+		for [ i: u32 0, i < cc, i += 1 ]
+			ab_w8[ dd + i, u32[ rdram[ (ss + i) & 0x7FFFFF ] ] ]
+
+	func a_savebuf [ ad: u32, dm: u32, count: u32 ]
+		dd : u32 [ dm & (~u32[3]) ]
+		ss : u32 [ ad & (~u32[7]) ]
+		cc : u32 [ (count + 7) & (~u32[7]) ]
+		for [ i: u32 0, i < cc, i += 1 ]
+			rdram[ (ss + i) & 0x7FFFFF ] = u8[ ab_r8[ dd + i ] ]
+
+	func a_move [ dmo: u32, dmi: u32, count: u32 ]
+		for [ i: u32 0, i < count, i += 1 ]
+			ab_w8[ dmo + i, ab_r8[ dmi + i ] ]
+
+	# adpcm_compute_residuals: dst/src are ad_last/ad_frame at base, cb indexes
+	# a_table (book1 = cb, book2 = cb+8), l1/l2 = ad_last[lofs], ad_last[lofs+1]
+	func a_resid [ base: i32, cb: i32, lofs: i32 ]
+		l1 : i32 [ ad_last[ lofs ] ]
+		l2 : i32 [ ad_last[ lofs + 1 ] ]
+		for [ i: i32 0, i < 8, i += 1 ]
+			acc : i32 [ ad_frame[ base + i ] << 11 ]
+			acc += a_table[ cb + i ] * l1
+			acc += a_table[ cb + 8 + i ] * l2
+			for [ k: i32 0, k < i, k += 1 ]
+				acc += a_table[ cb + 8 + k ] * ad_frame[ base + i - 1 - k ]
+			ad_last[ base + i ] = cs16[ acc >> 11 ]
+
+	func a_adpcm [ init: bool, lp: bool, addr: u32 ]
+		dmo : u32 [ a_out ]
+		dmi : u32 [ a_in ]
+		count : u32 [ (a_count + 31) & (~u32[31]) ]
+		if [ init ]
+			for [ i: i32 0, i < 16, i += 1 ]
+				ad_last[ i ] = 0
+		el
+			sa : u32 [ (lp) ? a_loop : addr ]
+			for [ i: i32 0, i < 16, i += 1 ]
+				ad_last[ i ] = dr_r16[ sa + u32[ i * 2 ] ]
+		for [ i: i32 0, i < 16, i += 1 ]
+			ab_w16[ dmo, ad_last[ i ] ]
+			dmo += 2
+		while [ count > 0 ]
+			code : u32 [ ab_r8[ dmi ] ]
+			dmi += 1
+			scale : i32 [ i32[ (code >> 4) & 0xF ] ]
+			cb : i32 [ i32[ code & 0xF ] << 4 ]
+			rsh : i32 [ (scale < 12) ? (12 - scale) : 0 ]
+			for [ i: i32 0, i < 8, i += 1 ]
+				bt : u32 [ ab_r8[ dmi ] ]
+				dmi += 1
+				hn : i32 [ i32[ (bt >> 4) & 0xF ] << 12 ]
+				ln : i32 [ i32[ bt & 0xF ] << 12 ]
+				if [ hn >= 0x8000 ] hn -= 0x10000
+				if [ ln >= 0x8000 ] ln -= 0x10000
+				ad_frame[ i * 2 ]     = hn >> rsh
+				ad_frame[ i * 2 + 1 ] = ln >> rsh
+			a_resid[ 0, cb, 14 ]
+			a_resid[ 8, cb, 6 ]
+			for [ i: i32 0, i < 16, i += 1 ]
+				ab_w16[ dmo, ad_last[ i ] ]
+				dmo += 2
+			count -= 32
+		for [ i: i32 0, i < 16, i += 1 ]
+			dr_w16[ addr + u32[ i * 2 ], ad_last[ i ] ]
+
+	# alist_envmix_exp: exponential envelope ramps, state saved in DRAM at addr
+	# (layout internal to the HLE: 10 big-endian i32 fields, 40 bytes)
+	func a_envmix [ init: bool, aux: bool, addr: u32 ]
+		dry : i32 [ a_dry ]
+		wet : i32 [ a_wet ]
+		v0 : i64 [ 0 ]
+		v1 : i64 [ 0 ]
+		t0 : i64 [ 0 ]
+		t1 : i64 [ 0 ]
+		er0 : i64 [ 0 ]
+		er1 : i64 [ 0 ]
+		es0 : i64 [ 0 ]
+		es1 : i64 [ 0 ]
+		if [ init ]
+			v0 = i64[ a_vol0 ] << 16
+			v1 = i64[ a_vol1 ] << 16
+			t0 = i64[ a_tgt0 ] << 16
+			t1 = i64[ a_tgt1 ] << 16
+			er0 = a_rate0
+			er1 = a_rate1
+			es0 = wrs32[ i64[ a_vol0 ] * a_rate0 ]
+			es1 = wrs32[ i64[ a_vol1 ] * a_rate1 ]
+		el
+			wet = i32[ dr_s32[ addr ] ]
+			dry = i32[ dr_s32[ addr + 4 ] ]
+			t0  = dr_s32[ addr + 8 ]
+			t1  = dr_s32[ addr + 12 ]
+			er0 = dr_s32[ addr + 16 ]
+			er1 = dr_s32[ addr + 20 ]
+			es0 = dr_s32[ addr + 24 ]
+			es1 = dr_s32[ addr + 28 ]
+			v0  = dr_s32[ addr + 32 ]
+			v1  = dr_s32[ addr + 36 ]
+		step0 : i64 [ t0 - v0 ]
+		step1 : i64 [ t1 - v1 ]
+		bi : u32 [ a_in ]
+		bo : u32 [ a_out ]
+		bdr : u32 [ a_dryr ]
+		bwl : u32 [ a_wetl ]
+		bwr : u32 [ a_wetr ]
+		cnt : i32 [ i32[ a_count ] ]
+		ptr : u32 [ 0 ]
+		for [ y: i32 0, y < cnt, y += 16 ]
+			if [ step0 != 0 ]
+				es0 = wrs32[ (es0 * er0) >> 16 ]
+				step0 = (es0 - v0) >> 3
+			if [ step1 != 0 ]
+				es1 = wrs32[ (es1 * er1) >> 16 ]
+				step1 = (es1 - v1) >> 3
+			for [ x: i32 0, x < 8, x += 1 ]
+				v0 += step0
+				hit0 : bool [ (step0 <= 0) ? (v0 <= t0) : (v0 >= t0) ]
+				if [ hit0 ]
+					v0 = t0
+					step0 = 0
+				v1 += step1
+				hit1 : bool [ (step1 <= 0) ? (v1 <= t1) : (v1 >= t1) ]
+				if [ hit1 ]
+					v1 = t1
+					step1 = 0
+				lv : i32 [ i32[ v0 >> 16 ] ]
+				rv : i32 [ i32[ v1 >> 16 ] ]
+				g0 : i32 [ cs16[ (lv * dry + 0x4000) >> 15 ] ]
+				g1 : i32 [ cs16[ (rv * dry + 0x4000) >> 15 ] ]
+				g2 : i32 [ cs16[ (lv * wet + 0x4000) >> 15 ] ]
+				g3 : i32 [ cs16[ (rv * wet + 0x4000) >> 15 ] ]
+				smp : i32 [ ab_r16[ bi + ptr * 2 ] ]
+				oo : u32 [ ptr * 2 ]
+				d0 : i32 [ ab_r16[ bo + oo ] ]
+				ab_w16[ bo + oo, cs16[ d0 + ((smp * g0) >> 15) ] ]
+				d1 : i32 [ ab_r16[ bdr + oo ] ]
+				ab_w16[ bdr + oo, cs16[ d1 + ((smp * g1) >> 15) ] ]
+				if [ aux ]
+					d2 : i32 [ ab_r16[ bwl + oo ] ]
+					ab_w16[ bwl + oo, cs16[ d2 + ((smp * g2) >> 15) ] ]
+					d3 : i32 [ ab_r16[ bwr + oo ] ]
+					ab_w16[ bwr + oo, cs16[ d3 + ((smp * g3) >> 15) ] ]
+				ptr += 1
+		dr_w32[ addr,      u32[ wet ] ]
+		dr_w32[ addr + 4,  u32[ dry ] ]
+		dr_w32[ addr + 8,  u32[ t0 & 0xFFFFFFFF ] ]
+		dr_w32[ addr + 12, u32[ t1 & 0xFFFFFFFF ] ]
+		dr_w32[ addr + 16, u32[ er0 & 0xFFFFFFFF ] ]
+		dr_w32[ addr + 20, u32[ er1 & 0xFFFFFFFF ] ]
+		dr_w32[ addr + 24, u32[ es0 & 0xFFFFFFFF ] ]
+		dr_w32[ addr + 28, u32[ es1 & 0xFFFFFFFF ] ]
+		dr_w32[ addr + 32, u32[ v0 & 0xFFFFFFFF ] ]
+		dr_w32[ addr + 36, u32[ v1 & 0xFFFFFFFF ] ]
+
+	func a_resample [ init: bool, pitch: u32, addr: u32 ]
+		ip : u32 [ (a_in >> 1) - 4 ]
+		op : u32 [ a_out >> 1 ]
+		cnt : u32 [ ((a_count + 15) & (~u32[15])) >> 1 ]
+		accu : u32 [ 0 ]
+		if [ init ]
+			for [ k: u32 0, k < 4, k += 1 ]
+				ab_w16[ (ip + k) * 2, 0 ]
+		el
+			for [ k: u32 0, k < 4, k += 1 ]
+				ab_w16[ (ip + k) * 2, dr_r16[ addr + k * 2 ] ]
+			accu = dr_ru16[ addr + 8 ]
+		while [ cnt > 0 ]
+			li : i32 [ i32[ (accu >> 10) & 0x3F ] * 4 ]
+			s0 : i32 [ ab_r16[ ip * 2 ] ]
+			s1 : i32 [ ab_r16[ (ip + 1) * 2 ] ]
+			s2 : i32 [ ab_r16[ (ip + 2) * 2 ] ]
+			s3 : i32 [ ab_r16[ (ip + 3) * 2 ] ]
+			sum : i32 [ s0 * i32[ res_lut[ li ] ] + s1 * i32[ res_lut[ li + 1 ] ] + s2 * i32[ res_lut[ li + 2 ] ] + s3 * i32[ res_lut[ li + 3 ] ] ]
+			ab_w16[ op * 2, cs16[ sum >> 15 ] ]
+			op += 1
+			accu += pitch
+			ip += accu >> 16
+			accu = accu & 0xFFFF
+			cnt -= 1
+		for [ k: u32 0, k < 4, k += 1 ]
+			dr_w16[ addr + k * 2, ab_r16[ (ip + k) * 2 ] ]
+		dr_w16[ addr + 8, i32[ accu ] ]
+
+	func a_mix [ dmo: u32, dmi: u32, count: u32, gain: i32 ]
+		cc : u32 [ count >> 1 ]
+		for [ i: u32 0, i < cc, i += 1 ]
+			ss : i32 [ ab_r16[ dmi + i * 2 ] ]
+			dd : i32 [ ab_r16[ dmo + i * 2 ] ]
+			ab_w16[ dmo + i * 2, cs16[ dd + ((ss * gain) >> 15) ] ]
+
+	func a_interleave [ lft: u32, rgt: u32 ]
+		cnt : u32 [ ((a_count + 15) & (~u32[15])) >> 2 ]
+		oo : u32 [ a_out ]
+		ll : u32 [ lft ]
+		rr : u32 [ rgt ]
+		while [ cnt > 0 ]
+			l1 : i32 [ ab_r16[ ll ] ]
+			l2 : i32 [ ab_r16[ ll + 2 ] ]
+			r1 : i32 [ ab_r16[ rr ] ]
+			r2 : i32 [ ab_r16[ rr + 2 ] ]
+			ab_w16[ oo,     l1 ]
+			ab_w16[ oo + 2, r1 ]
+			ab_w16[ oo + 4, l2 ]
+			ab_w16[ oo + 6, r2 ]
+			ll += 4
+			rr += 4
+			oo += 8
+			cnt -= 1
+
+	func audio_task []
+		dp : u32 [ (u32[dmem[0xFF0]] << 24) | (u32[dmem[0xFF1]] << 16) | (u32[dmem[0xFF2]] << 8) | u32[dmem[0xFF3]] ]
+		ds : u32 [ (u32[dmem[0xFF4]] << 24) | (u32[dmem[0xFF5]] << 16) | (u32[dmem[0xFF6]] << 8) | u32[dmem[0xFF7]] ]
+		for [ i: i32 0, i < 16, i += 1 ]
+			aseg[ i ] = 0
+		ap : u32 [ dp & 0x7FFFFF ]
+		ae : u32 [ ap + (ds & (~u32[7])) ]
+		gcnt : i32 [ 0 ]
+		while [ ap + 8 <= ae && gcnt < 4096 ]
+			gcnt += 1
+			w1 : u32 [ dr_r32[ ap ] ]
+			w2 : u32 [ dr_r32[ ap + 4 ] ]
+			ap += 8
+			cmd : u32 [ (w1 >> 24) & 0x7F ]
+			cflg : u32 [ (w1 >> 16) & 0xFF ]
+			if [ cmd == 1 ]                                   # ADPCM
+				a_adpcm[ (cflg & 1) != 0, (cflg & 2) != 0, a_addr[ w2 ] ]
+			el [ cmd == 2 ]                                   # CLEARBUFF
+				cnt : u32 [ w2 & 0xFFF ]
+				if [ cnt > 0 ] a_clear[ (w1 & 0xFFFF) + 0x5C0, (cnt + 15) & (~u32[15]) ]
+			el [ cmd == 3 ]                                   # ENVMIXER
+				a_envmix[ (cflg & 1) != 0, (cflg & 8) != 0, a_addr[ w2 ] ]
+			el [ cmd == 4 ]                                   # LOADBUFF
+				if [ a_count > 0 ] a_loadbuf[ a_addr[ w2 ], a_in, a_count ]
+			el [ cmd == 5 ]                                   # RESAMPLE
+				a_resample[ (cflg & 1) != 0, (w1 & 0xFFFF) << 1, a_addr[ w2 ] ]
+			el [ cmd == 6 ]                                   # SAVEBUFF
+				if [ a_count > 0 ] a_savebuf[ a_addr[ w2 ], a_out, a_count ]
+			el [ cmd == 7 ]                                   # SEGMENT
+				sg : u32 [ (w2 >> 24) & 0x3F ]
+				if [ sg < 16 ] aseg[ sg ] = w2 & 0xFFFFFF
+			el [ cmd == 8 ]                                   # SETBUFF
+				if [ cflg & 8 ]
+					a_dryr = (w1 & 0xFFFF) + 0x5C0
+					a_wetl = ((w2 >> 16) & 0xFFFF) + 0x5C0
+					a_wetr = (w2 & 0xFFFF) + 0x5C0
+				el
+					a_in    = (w1 & 0xFFFF) + 0x5C0
+					a_out   = ((w2 >> 16) & 0xFFFF) + 0x5C0
+					a_count = w2 & 0xFFFF
+			el [ cmd == 9 ]                                   # SETVOL
+				vv : i32 [ sx16u[ w1 & 0xFFFF ] ]
+				if [ cflg & 8 ]
+					a_dry = vv
+					a_wet = sx16u[ w2 & 0xFFFF ]
+				el
+					if [ cflg & 4 ]
+						if [ cflg & 2 ] a_vol0 = vv
+						el a_vol1 = vv
+					el
+						if [ cflg & 2 ]
+							a_tgt0 = vv
+							a_rate0 = wrs32[ i64[ w2 ] ]
+						el
+							a_tgt1 = vv
+							a_rate1 = wrs32[ i64[ w2 ] ]
+			el [ cmd == 10 ]                                  # DMEMMOVE
+				cnt : u32 [ w2 & 0xFFFF ]
+				if [ cnt > 0 ] a_move[ ((w2 >> 16) & 0xFFFF) + 0x5C0, (w1 & 0xFFFF) + 0x5C0, (cnt + 15) & (~u32[15]) ]
+			el [ cmd == 11 ]                                  # LOADADPCM
+				cnt : u32 [ ((w1 & 0xFFFF) + 7) & (~u32[7]) ]
+				ad : u32 [ a_addr[ w2 ] ]
+				nw : u32 [ cnt >> 1 ]
+				if [ nw > 128 ] nw = 128
+				for [ i: u32 0, i < nw, i += 1 ]
+					a_table[ i ] = dr_r16[ ad + i * 2 ]
+			el [ cmd == 12 ]                                  # MIXER
+				if [ a_count > 0 ] a_mix[ (w2 & 0xFFFF) + 0x5C0, ((w2 >> 16) & 0xFFFF) + 0x5C0, (a_count + 31) & (~u32[31]), sx16u[ w1 & 0xFFFF ] ]
+			el [ cmd == 13 ]                                  # INTERLEAVE
+				if [ a_count > 0 ] a_interleave[ ((w2 >> 16) & 0xFFFF) + 0x5C0, (w2 & 0xFFFF) + 0x5C0 ]
+			el [ cmd == 15 ]                                  # SETLOOP
+				a_loop = a_addr[ w2 ]
+
+	# retire ALL queued AI buffers each video frame: convert the big-endian
+	# stereo s16 blocks from RDRAM, blocking-write to ALSA (this paces the
+	# emu thread to real time), raising an AI interrupt per retired buffer
+	func ai_drain []
+		if [ ai_fifo_n == 0 ] return
+		if [ !audio && !audio_fail ]
+			freq : i32 [ 32000 ]
+			if [ ai_dacrate > 0 ] freq = i32[ 48681812 / (ai_dacrate + 1) ]
+			ao : n64_audio_out [ ]
+			if [ ao.open[ freq ] ]
+				ao.hold[]
+				audio = ao
+				if [ trace ] printf[ "n64 audio: %d Hz\n", freq ]
+			el
+				puts 'n64: audio device unavailable — continuing muted'
+				audio_fail = true
+		while [ ai_fifo_n > 0 ]
+			dram0 : u32 [ ai_fifo_dram[ 0 ] ]
+			len0 : u32 [ ai_fifo_len[ 0 ] ]
+			ai_fifo_dram[ 0 ] = ai_fifo_dram[ 1 ]
+			ai_fifo_len[ 0 ]  = ai_fifo_len[ 1 ]
+			ai_fifo_n -= 1
+			mi_intr = mi_intr | 0x4
+			mi_check[]
+			if [ audio ]
+				nf : i32 [ i32[ len0 >> 2 ] ]
+				vol : i32 [ i32[ volume * 256.0 ] ]
+				done : i32 [ 0 ]
+				while [ done < nf ]
+					chunk : i32 [ nf - done ]
+					cap : i32 [ i32[ audio.buffer_size ] ]
+					if [ chunk > cap ] chunk = cap
+					for [ i: i32 0, i < chunk, i += 1 ]
+						off : u32 [ dram0 + u32[ (done + i) * 4 ] ]
+						lv : i32 [ dr_r16[ off ] ]
+						rv : i32 [ dr_r16[ off + 2 ] ]
+						audio.buffer[ i * 2 ]     = i16[ (lv * vol) >> 8 ]
+						audio.buffer[ i * 2 + 1 ] = i16[ (rv * vol) >> 8 ]
+					audio.write[ chunk ]
+					done += chunk
+
+	# ---------------- gfx HLE: Fast3D -> software raster ----------------
+	# Interprets SM64's F3D display lists on SP gfx tasks and rasterizes
+	# straight into the RDRAM color image (16bpp 5551) that the game's RDP
+	# commands target; the VI scanout publishes it unchanged. Perspective-
+	# correct nearest-texel sampling, vertex lighting, 1-bit alpha cutout.
+
+	func dr_r8 [ ad: u32 ] -> u32
+		return u32[ rdram[ ad & 0x7FFFFF ] ]
+
+	func dr_s8 [ ad: u32 ] -> i32
+		vv : i32 [ i32[ u32[ rdram[ ad & 0x7FFFFF ] ] ] ]
+		if [ vv >= 0x80 ] vv -= 0x100
+		return vv
+
+	func gx_addr [ so: u32 ] -> u32
+		sg : u32 [ (so >> 24) & 0x0F ]
+		sb : u32 [ gx_seg[ sg ] ]
+		return (sb + (so & 0xFFFFFF)) & 0x7FFFFF
+
+	# read a 16.16 fixed N64 matrix at ad into mats slot 12 (tmpA)
+	func gx_mtx_read [ ad: u32 ]
+		for [ i: i32 0, i < 16, i += 1 ]
+			ih : i32 [ dr_r16[ ad + u32[ i * 2 ] ] ]
+			fl : u32 [ dr_ru16[ ad + 32 + u32[ i * 2 ] ] ]
+			gx_mats[ 192 + i ] = f32[ ih ] + f32[ fl ] / 65536.0
+
+	# mats[ob] = mats[ab] * mats[bb] (row-vector convention), via tmpB
+	func gx_mmul [ ab: i32, bb: i32, ob: i32 ]
+		for [ rr: i32 0, rr < 4, rr += 1 ]
+			for [ cc: i32 0, cc < 4, cc += 1 ]
+				acc : f32 [ 0.0 ]
+				for [ kk: i32 0, kk < 4, kk += 1 ]
+					acc += gx_mats[ ab + rr * 4 + kk ] * gx_mats[ bb + kk * 4 + cc ]
+				gx_mats[ 208 + rr * 4 + cc ] = acc
+		for [ i: i32 0, i < 16, i += 1 ]
+			gx_mats[ ob + i ] = gx_mats[ 208 + i ]
+
+	func gx_mcopy [ ab: i32, ob: i32 ]
+		for [ i: i32 0, i < 16, i += 1 ]
+			gx_mats[ ob + i ] = gx_mats[ ab + i ]
+
+	func gx_mtx_cmd [ par: u32, ad: u32 ]
+		gx_mtx_read[ ad ]
+		if [ par & 1 ]                                       # projection
+			if [ par & 2 ] gx_mcopy[ 192, 0 ]
+			el gx_mmul[ 192, 0, 0 ]
+		el
+			if [ (par & 4) && gx_mvi < 10 ]                  # push
+				ob : i32 [ (1 + gx_mvi) * 16 ]
+				gx_mcopy[ ob, ob + 16 ]
+				gx_mvi += 1
+			mb : i32 [ (1 + gx_mvi) * 16 ]
+			if [ par & 2 ] gx_mcopy[ 192, mb ]
+			el gx_mmul[ 192, mb, mb ]
+		gx_mvp_ok = false
+		gx_mslot = -1
+
+	func gx_vtx_cmd [ w1: u32, w2: u32 ]
+		nn : i32 [ i32[ (w1 >> 20) & 0xF ] + 1 ]
+		v0 : i32 [ i32[ (w1 >> 16) & 0xF ] ]
+		ad : u32 [ gx_addr[ w2 ] ]
+		if [ !gx_mvp_ok ]
+			gx_mmul[ (1 + gx_mvi) * 16, 0, 224 ]
+			gx_mvp_ok = true
+		m00 : f32 [ gx_mats[224] ]
+		m01 : f32 [ gx_mats[225] ]
+		m02 : f32 [ gx_mats[226] ]
+		m03 : f32 [ gx_mats[227] ]
+		m10 : f32 [ gx_mats[228] ]
+		m11 : f32 [ gx_mats[229] ]
+		m12 : f32 [ gx_mats[230] ]
+		m13 : f32 [ gx_mats[231] ]
+		m20 : f32 [ gx_mats[232] ]
+		m21 : f32 [ gx_mats[233] ]
+		m22 : f32 [ gx_mats[234] ]
+		m23 : f32 [ gx_mats[235] ]
+		m30 : f32 [ gx_mats[236] ]
+		m31 : f32 [ gx_mats[237] ]
+		m32 : f32 [ gx_mats[238] ]
+		m33 : f32 [ gx_mats[239] ]
+		lit : bool [ (gx_geom & 0x20000) != 0 ]
+		na : i32 [ gx_nl * 6 ]
+		if [ gpu_on ]
+			vms : i32 [ st_mtx_ensure[] ]
+			vls : i32 [ 0 ]
+			if [ lit ] vls = st_ls_ensure[]
+			for [ i: i32 0, i < nn, i += 1 ]
+				sl : i32 [ v0 + i ]
+				if [ sl > 15 ] sl = 15
+				va : u32 [ ad + u32[ i * 16 ] ]
+				gx_vsrc[ sl ] = va
+				rb : i32 [ sl * 12 ]
+				gx_vraw[ rb ]     = f32[ dr_r16[ va ] ]
+				gx_vraw[ rb + 1 ] = f32[ dr_r16[ va + 2 ] ]
+				gx_vraw[ rb + 2 ] = f32[ dr_r16[ va + 4 ] ]
+				gx_vraw[ rb + 3 ] = f32[ dr_r16[ va + 8 ] ] * gx_texs / 32.0
+				gx_vraw[ rb + 4 ] = f32[ dr_r16[ va + 10 ] ] * gx_text / 32.0
+				if [ lit ]
+					gx_vraw[ rb + 5 ] = f32[ dr_s8[ va + 12 ] ] / 128.0
+					gx_vraw[ rb + 6 ] = f32[ dr_s8[ va + 13 ] ] / 128.0
+					gx_vraw[ rb + 7 ] = f32[ dr_s8[ va + 14 ] ] / 128.0
+					gx_vraw[ rb + 9 ] = 1.0
+				el
+					gx_vraw[ rb + 5 ] = f32[ dr_r8[ va + 12 ] ] / 255.0
+					gx_vraw[ rb + 6 ] = f32[ dr_r8[ va + 13 ] ] / 255.0
+					gx_vraw[ rb + 7 ] = f32[ dr_r8[ va + 14 ] ] / 255.0
+					gx_vraw[ rb + 9 ] = 0.0
+				gx_vraw[ rb + 8 ]  = f32[ dr_r8[ va + 15 ] ] / 255.0
+				gx_vraw[ rb + 10 ] = f32[ vms ]
+				gx_vraw[ rb + 11 ] = f32[ vls ]
+			return
+		for [ i: i32 0, i < nn, i += 1 ]
+			sl : i32 [ v0 + i ]
+			if [ sl > 15 ] sl = 15
+			va : u32 [ ad + u32[ i * 16 ] ]
+			gx_vsrc[ sl ] = va
+			vx : f32 [ f32[ dr_r16[ va ] ] ]
+			vy : f32 [ f32[ dr_r16[ va + 2 ] ] ]
+			vz : f32 [ f32[ dr_r16[ va + 4 ] ] ]
+			ob : i32 [ sl * 10 ]
+			gx_vt[ ob ]     = vx * m00 + vy * m10 + vz * m20 + m30
+			gx_vt[ ob + 1 ] = vx * m01 + vy * m11 + vz * m21 + m31
+			gx_vt[ ob + 2 ] = vx * m02 + vy * m12 + vz * m22 + m32
+			gx_vt[ ob + 3 ] = vx * m03 + vy * m13 + vz * m23 + m33
+			gx_vt[ ob + 4 ] = f32[ dr_r16[ va + 8 ] ] * gx_texs / 32.0
+			gx_vt[ ob + 5 ] = f32[ dr_r16[ va + 10 ] ] * gx_text / 32.0
+			aa : f32 [ f32[ dr_r8[ va + 15 ] ] / 255.0 ]
+			if [ lit ]
+				nx : f32 [ f32[ dr_s8[ va + 12 ] ] / 128.0 ]
+				ny : f32 [ f32[ dr_s8[ va + 13 ] ] / 128.0 ]
+				nz : f32 [ f32[ dr_s8[ va + 14 ] ] / 128.0 ]
+				cr : f32 [ gx_lights[ na ] ]
+				cg : f32 [ gx_lights[ na + 1 ] ]
+				cb : f32 [ gx_lights[ na + 2 ] ]
+				for [ li: i32 0, li < gx_nl, li += 1 ]
+					lb : i32 [ li * 6 ]
+					dp : f32 [ nx * gx_lights[ lb + 3 ] + ny * gx_lights[ lb + 4 ] + nz * gx_lights[ lb + 5 ] ]
+					if [ dp > 0.0 ]
+						cr += dp * gx_lights[ lb ]
+						cg += dp * gx_lights[ lb + 1 ]
+						cb += dp * gx_lights[ lb + 2 ]
+				if [ dbg_on && gx_dbgl > 0 && i == 0 ]
+					printf[ "n64 litvtx n=(%f,%f,%f) amb=(%f,%f,%f) out=(%f,%f,%f) nl=%d\n", f64[nx], f64[ny], f64[nz], f64[ gx_lights[na] ], f64[ gx_lights[na+1] ], f64[ gx_lights[na+2] ], f64[cr], f64[cg], f64[cb], gx_nl ]
+				if [ cr > 1.0 ] cr = 1.0
+				if [ cg > 1.0 ] cg = 1.0
+				if [ cb > 1.0 ] cb = 1.0
+				gx_vt[ ob + 6 ] = cr
+				gx_vt[ ob + 7 ] = cg
+				gx_vt[ ob + 8 ] = cb
+				if [ gx_geom & 0x40000 ]                     # texture gen: uv from normal
+					tn8 : i32 [ gx_tile ]
+					tws : f32 [ f32[ i32[ (tl_lrs[ tn8 ] - tl_uls[ tn8 ]) >> 2 ] ] ]
+					tht : f32 [ f32[ i32[ (tl_lrt[ tn8 ] - tl_ult[ tn8 ]) >> 2 ] ] ]
+					gx_vt[ ob + 4 ] = (nx * 0.5 + 0.5) * tws
+					gx_vt[ ob + 5 ] = (0.5 - ny * 0.5) * tht
+			el
+				if [ dbg_on && gx_dbgl > 0 && i == 0 ]
+					gx_dbgl -= 1
+					printf[ "n64 vtxcol ad=%08X xyz=(%d,%d,%d) f=%04X col=%02X%02X%02X%02X f%u\n", va, dr_r16[va], dr_r16[va+2], dr_r16[va+4], dr_ru16[va+6], dr_r8[va+12], dr_r8[va+13], dr_r8[va+14], dr_r8[va+15], frames ]
+				gx_vt[ ob + 6 ] = f32[ dr_r8[ va + 12 ] ] / 255.0
+				gx_vt[ ob + 7 ] = f32[ dr_r8[ va + 13 ] ] / 255.0
+				gx_vt[ ob + 8 ] = f32[ dr_r8[ va + 14 ] ] / 255.0
+			gx_vt[ ob + 9 ] = aa
+
+	# nearest-texel sample from the render tile; returns r<<24|g<<16|b<<8|a
+	func gx_texel [ su: i32, tv: i32 ] -> u32
+		tn : i32 [ gx_tile ]
+		ss : i32 [ su - i32[ tl_uls[ tn ] >> 2 ] ]
+		tt : i32 [ tv - i32[ tl_ult[ tn ] >> 2 ] ]
+		msk : u32 [ tl_masks[ tn ] ]
+		if [ msk > 0 ]
+			mm : i32 [ (1 << i32[ msk ]) - 1 ]
+			if [ (tl_cms[ tn ] & 1) && ((ss >> i32[msk]) & 1) ] ss = mm - (ss & mm)
+			el ss = ss & mm
+		el
+			lim : i32 [ i32[ (tl_lrs[ tn ] - tl_uls[ tn ]) >> 2 ] ]
+			if [ ss < 0 ] ss = 0
+			if [ ss > lim ] ss = lim
+		if [ tl_cms[ tn ] & 2 ]
+			lim2 : i32 [ i32[ (tl_lrs[ tn ] - tl_uls[ tn ]) >> 2 ] ]
+			if [ ss > lim2 ] ss = lim2
+			if [ ss < 0 ] ss = 0
+		mkt : u32 [ tl_maskt[ tn ] ]
+		if [ mkt > 0 ]
+			mm2 : i32 [ (1 << i32[ mkt ]) - 1 ]
+			if [ (tl_cmt[ tn ] & 1) && ((tt >> i32[mkt]) & 1) ] tt = mm2 - (tt & mm2)
+			el tt = tt & mm2
+		el
+			limt : i32 [ i32[ (tl_lrt[ tn ] - tl_ult[ tn ]) >> 2 ] ]
+			if [ tt < 0 ] tt = 0
+			if [ tt > limt ] tt = limt
+		if [ tl_cmt[ tn ] & 2 ]
+			limt2 : i32 [ i32[ (tl_lrt[ tn ] - tl_ult[ tn ]) >> 2 ] ]
+			if [ tt > limt2 ] tt = limt2
+			if [ tt < 0 ] tt = 0
+		lin : i32 [ i32[ tl_line[ tn ] ] * 8 ]
+		tb : i32 [ i32[ tl_tmem[ tn ] ] * 8 + tt * lin ]
+		fmt : u32 [ tl_fmt[ tn ] ]
+		siz : u32 [ tl_siz[ tn ] ]
+		if [ fmt == 0 && siz == 2 ]                          # RGBA16
+			toff : i32 [ (tb + ss * 2) & 0xFFF ]
+			px : u32 [ (u32[ tmem[ toff ] ] << 8) | u32[ tmem[ (toff + 1) & 0xFFF ] ] ]
+			r5 : u32 [ (px >> 11) & 31 ]
+			g5 : u32 [ (px >> 6) & 31 ]
+			b5 : u32 [ (px >> 1) & 31 ]
+			return ((r5 << 3 | r5 >> 2) << 24) | ((g5 << 3 | g5 >> 2) << 16) | ((b5 << 3 | b5 >> 2) << 8) | ((px & 1) * 255)
+		if [ fmt == 3 && siz == 2 ]                          # IA16
+			toff2 : i32 [ (tb + ss * 2) & 0xFFF ]
+			iv : u32 [ u32[ tmem[ toff2 ] ] ]
+			av : u32 [ u32[ tmem[ (toff2 + 1) & 0xFFF ] ] ]
+			return (iv << 24) | (iv << 16) | (iv << 8) | av
+		if [ fmt == 3 && siz == 1 ]                          # IA8: 4/4
+			bv : u32 [ u32[ tmem[ (tb + ss) & 0xFFF ] ] ]
+			i4 : u32 [ (bv >> 4) & 0xF ]
+			a4 : u32 [ bv & 0xF ]
+			iv2 : u32 [ (i4 << 4) | i4 ]
+			av2 : u32 [ (a4 << 4) | a4 ]
+			return (iv2 << 24) | (iv2 << 16) | (iv2 << 8) | av2
+		if [ fmt == 3 && siz == 0 ]                          # IA4: 3/1
+			bv2 : u32 [ u32[ tmem[ (tb + (ss >> 1)) & 0xFFF ] ] ]
+			nib : u32 [ ((ss & 1) == 0) ? ((bv2 >> 4) & 0xF) : (bv2 & 0xF) ]
+			i3 : u32 [ (nib >> 1) & 7 ]
+			iv3 : u32 [ (i3 << 5) | (i3 << 2) | (i3 >> 1) ]
+			return (iv3 << 24) | (iv3 << 16) | (iv3 << 8) | ((nib & 1) * 255)
+		if [ fmt == 4 && siz == 1 ]                          # I8
+			iv4 : u32 [ u32[ tmem[ (tb + ss) & 0xFFF ] ] ]
+			return (iv4 << 24) | (iv4 << 16) | (iv4 << 8) | iv4
+		if [ fmt == 4 && siz == 0 ]                          # I4
+			bv3 : u32 [ u32[ tmem[ (tb + (ss >> 1)) & 0xFFF ] ] ]
+			n2 : u32 [ ((ss & 1) == 0) ? ((bv3 >> 4) & 0xF) : (bv3 & 0xF) ]
+			iv5 : u32 [ (n2 << 4) | n2 ]
+			return (iv5 << 24) | (iv5 << 16) | (iv5 << 8) | iv5
+		if [ fmt == 2 && siz == 1 ]                          # CI8
+			ci : u32 [ u32[ tmem[ (tb + ss) & 0xFFF ] ] ]
+			return gx_tlut[ ci ]
+		if [ fmt == 2 && siz == 0 ]                          # CI4
+			bv4 : u32 [ u32[ tmem[ (tb + (ss >> 1)) & 0xFFF ] ] ]
+			n3 : u32 [ ((ss & 1) == 0) ? ((bv4 >> 4) & 0xF) : (bv4 & 0xF) ]
+			return gx_tlut[ (tl_pal[ gx_tile ] << 4) | n3 ]
+		return 0xFFFFFFFF
+
+	# px/py in SUPERSAMPLED coords (native * gx_ss). Writes the RGBA ss_buf
+	# (publish path) and, on the top-left subsample, the game-visible RDRAM
+	# 5551 color image.
+	func gx_putpix [ px: i32, py: i32, rr: u32, gg: u32, bb: u32, aa8: u32 ]
+		if [ px < 0 || py < 0 || px >= 1280 || py >= 960 ] return
+		idx : i32 [ py * 1280 + px ]
+		rr2 : u32 [ rr ]
+		gg2 : u32 [ gg ]
+		bb2 : u32 [ bb ]
+		if [ gx_bl_add || gx_bl_xlu ]
+			dv : u32 [ ss_buf[ idx ] ]
+			dr : u32 [ dv & 0xFF ]
+			dg : u32 [ (dv >> 8) & 0xFF ]
+			db : u32 [ (dv >> 16) & 0xFF ]
+			if [ gx_bl_add ]                                 # blender ADD: dst + src
+				rr2 = rr + dr
+				gg2 = gg + dg
+				bb2 = bb + db
+				if [ rr2 > 255 ] rr2 = 255
+				if [ gg2 > 255 ] gg2 = 255
+				if [ bb2 > 255 ] bb2 = 255
+			el                                               # XLU: src*a + dst*(1-a)
+				rr2 = (rr * aa8 + dr * (255 - aa8)) / 255
+				gg2 = (gg * aa8 + dg * (255 - aa8)) / 255
+				bb2 = (bb * aa8 + db * (255 - aa8)) / 255
+		ss_buf[ idx ] = 0xFF000000 | (bb2 << 16) | (gg2 << 8) | rr2
+		ss_used = true
+		msk9 : i32 [ gx_ss - 1 ]
+		if [ ((px | py) & msk9) == 0 ]
+			lpx : i32 [ px / gx_ss ]
+			lpy : i32 [ py / gx_ss ]
+			off : u32 [ (gx_cimg + u32[ (lpy * gx_ciw + lpx) * 2 ]) & 0x7FFFFE ]
+			v16 : u32 [ ((rr2 >> 3) << 11) | ((gg2 >> 3) << 6) | ((bb2 >> 3) << 1) | 1 ]
+			rdram[ off ]     = u8[ (v16 >> 8) & 0xFF ]
+			rdram[ off + 1 ] = u8[ v16 & 0xFF ]
+
+	# rasterize one screen-space triangle from gx_scr at slot offsets
+	func gx_raster [ o0: i32, o1: i32, o2: i32 ]
+		x0 : f32 [ gx_scr[ o0 ] ]
+		y0 : f32 [ gx_scr[ o0 + 1 ] ]
+		x1 : f32 [ gx_scr[ o1 ] ]
+		y1 : f32 [ gx_scr[ o1 + 1 ] ]
+		x2 : f32 [ gx_scr[ o2 ] ]
+		y2 : f32 [ gx_scr[ o2 + 1 ] ]
+		if [ dbg_on && gx_dbgc > 0 && gx_scr[ o0 + 3 ] < 0.01 && gx_cc_shade && gx_cc_tex ]
+			gx_dbgc -= 1
+			smp0 : u32 [ gx_texel[ i32[ gx_scr[o0+4] / gx_scr[o0+3] ], i32[ gx_scr[o0+5] / gx_scr[o0+3] ] ] ]
+			printf[ "n64 htri cc=%06X.%08X othl=%08X shade=(%.2f,%.2f,%.2f) tex=%08X f%u\n", gx_ccw1 & 0xFFFFFF, gx_ccw2, gx_oth_l, f64[ gx_scr[o0+6] ], f64[ gx_scr[o0+7] ], f64[ gx_scr[o0+8] ], smp0, frames ]
+		tarea : f32 [ (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0) ]
+		if [ (gx_geom & 0x2000) && tarea >= 0.0 ] return     # cull back
+		if [ (gx_geom & 0x1000) && tarea <= 0.0 ] return     # cull front
+		if [ tarea == 0.0 ] return
+		inv : f32 [ 1.0 / tarea ]
+		bx0 : i32 [ i32[ (x0 < x1) ? ((x0 < x2) ? x0 : x2) : ((x1 < x2) ? x1 : x2) ] ]
+		bx1 : i32 [ i32[ (x0 > x1) ? ((x0 > x2) ? x0 : x2) : ((x1 > x2) ? x1 : x2) ] + 1 ]
+		by0 : i32 [ i32[ (y0 < y1) ? ((y0 < y2) ? y0 : y2) : ((y1 < y2) ? y1 : y2) ] ]
+		by1 : i32 [ i32[ (y0 > y1) ? ((y0 > y2) ? y0 : y2) : ((y1 > y2) ? y1 : y2) ] + 1 ]
+		if [ bx0 < gx_sx0 * gx_ss ] bx0 = gx_sx0 * gx_ss
+		if [ by0 < gx_sy0 * gx_ss ] by0 = gx_sy0 * gx_ss
+		if [ bx1 > gx_sx1 * gx_ss ] bx1 = gx_sx1 * gx_ss
+		if [ by1 > gx_sy1 * gx_ss ] by1 = gx_sy1 * gx_ss
+		if [ bx1 > gx_ciw * gx_ss ] bx1 = gx_ciw * gx_ss
+		if [ by1 > 240 * gx_ss ] by1 = 240 * gx_ss
+		if [ bx0 >= bx1 || by0 >= by1 ] return
+		if [ dbg_on && dbg_esc < 24 && by0 < 6 && by1 > 60 ]
+			dbg_esc += 1
+			va0 : u32 [ gx_vsrc[ gx_ti0 ] ]
+			va1 : u32 [ gx_vsrc[ gx_ti1 ] ]
+			va2 : u32 [ gx_vsrc[ gx_ti2 ] ]
+			tnA : i32 [ gx_tile ]
+			printf[ "n64 TALLTRI slots(%d,%d,%d) geom=%08X uv0=(%.1f,%.1f) uv1=(%.1f,%.1f) tile fmt=%d siz=%d tsz=(%d,%d) texel=%08X f%u\n", gx_ti0, gx_ti1, gx_ti2, gx_geom, f64[ gx_scr[o0+4] / gx_scr[o0+3] ], f64[ gx_scr[o0+5] / gx_scr[o0+3] ], f64[ gx_scr[o1+4] / gx_scr[o1+3] ], f64[ gx_scr[o1+5] / gx_scr[o1+3] ], tl_fmt[tnA], tl_siz[tnA], i32[ (tl_lrs[tnA] - tl_uls[tnA]) >> 2 ], i32[ (tl_lrt[tnA] - tl_ult[tnA]) >> 2 ], gx_texel[ i32[ gx_scr[o1+4] / gx_scr[o1+3] ], i32[ gx_scr[o1+5] / gx_scr[o1+3] ] ], frames ]
+			printf[ "  v0 @%08X raw=(%d,%d,%d) scr=(%.1f,%.1f)\n", va0, dr_r16[va0], dr_r16[va0+2], dr_r16[va0+4], f64[x0], f64[y0] ]
+			printf[ "  v1 @%08X raw=(%d,%d,%d) scr=(%.1f,%.1f)\n", va1, dr_r16[va1], dr_r16[va1+2], dr_r16[va1+4], f64[x1], f64[y1] ]
+			printf[ "  v2 @%08X raw=(%d,%d,%d) scr=(%.1f,%.1f)\n", va2, dr_r16[va2], dr_r16[va2+2], dr_r16[va2+4], f64[x2], f64[y2] ]
+		z0 : f32 [ gx_scr[ o0 + 2 ] ]
+		z1 : f32 [ gx_scr[ o1 + 2 ] ]
+		z2 : f32 [ gx_scr[ o2 + 2 ] ]
+		w0v : f32 [ gx_scr[ o0 + 3 ] ]
+		w1v : f32 [ gx_scr[ o1 + 3 ] ]
+		w2v : f32 [ gx_scr[ o2 + 3 ] ]
+		u0 : f32 [ gx_scr[ o0 + 4 ] ]
+		u1 : f32 [ gx_scr[ o1 + 4 ] ]
+		u2 : f32 [ gx_scr[ o2 + 4 ] ]
+		t0 : f32 [ gx_scr[ o0 + 5 ] ]
+		t1 : f32 [ gx_scr[ o1 + 5 ] ]
+		t2 : f32 [ gx_scr[ o2 + 5 ] ]
+		r0 : f32 [ gx_scr[ o0 + 6 ] ]
+		r1 : f32 [ gx_scr[ o1 + 6 ] ]
+		r2 : f32 [ gx_scr[ o2 + 6 ] ]
+		g0 : f32 [ gx_scr[ o0 + 7 ] ]
+		g1 : f32 [ gx_scr[ o1 + 7 ] ]
+		g2 : f32 [ gx_scr[ o2 + 7 ] ]
+		b0 : f32 [ gx_scr[ o0 + 8 ] ]
+		b1 : f32 [ gx_scr[ o1 + 8 ] ]
+		b2 : f32 [ gx_scr[ o2 + 8 ] ]
+		a0 : f32 [ gx_scr[ o0 + 9 ] ]
+		a1 : f32 [ gx_scr[ o1 + 9 ] ]
+		a2 : f32 [ gx_scr[ o2 + 9 ] ]
+		zon : bool [ (gx_geom & 1) != 0 ]
+		zdec : bool [ ((gx_oth_l >> 10) & 3) == 3 ]          # decal: z must match surface
+		ton : bool [ gx_texon && gx_cc_tex ]
+		son : bool [ gx_cc_shade ]
+		gx_bl_add = (((gx_oth_l >> 22) & 3) == 1) && (((gx_oth_l >> 18) & 3) == 2)
+		gx_bl_xlu = (((gx_oth_l >> 22) & 3) == 1) && (((gx_oth_l >> 18) & 3) == 0)
+		for [ py: i32 by0, py < by1, py += 1 ]
+			fy : f32 [ f32[ py ] + 0.5 ]
+			for [ px: i32 bx0, px < bx1, px += 1 ]
+				fx : f32 [ f32[ px ] + 0.5 ]
+				e0 : f32 [ (x1 - x0) * (fy - y0) - (y1 - y0) * (fx - x0) ]
+				e1 : f32 [ (x2 - x1) * (fy - y1) - (y2 - y1) * (fx - x1) ]
+				e2 : f32 [ (x0 - x2) * (fy - y2) - (y0 - y2) * (fx - x2) ]
+				inside : bool [ (tarea > 0.0) ? (e0 >= 0.0 && e1 >= 0.0 && e2 >= 0.0) : (e0 <= 0.0 && e1 <= 0.0 && e2 <= 0.0) ]
+				if [ inside ]
+					l0 : f32 [ e1 * inv ]
+					l1 : f32 [ e2 * inv ]
+					l2 : f32 [ e0 * inv ]
+					zv : f32 [ l0 * z0 + l1 * z1 + l2 * z2 ]
+					zi : i32 [ py * 1280 + px ]
+					zok : bool [ true ]
+					if [ zon ]
+						if [ zdec ]
+							dz9 : f32 [ zv - zbuf[ zi ] ]
+							if [ dz9 > 0.0015 || dz9 < -0.0015 ] zok = false
+						el
+							if [ zv > zbuf[ zi ] ] zok = false
+					if [ zok ]
+						cr : f32 [ 1.0 ]
+						cg : f32 [ 1.0 ]
+						cb : f32 [ 1.0 ]
+						ca : f32 [ 1.0 ]
+						if [ son ]
+							cr = l0 * r0 + l1 * r1 + l2 * r2
+							cg = l0 * g0 + l1 * g1 + l2 * g2
+							cb = l0 * b0 + l1 * b1 + l2 * b2
+							ca = l0 * a0 + l1 * a1 + l2 * a2
+						skip : bool [ false ]
+						pxa : u32 [ 255 ]
+						if [ ton ]
+							iw : f32 [ l0 * w0v + l1 * w1v + l2 * w2v ]
+							uu : f32 [ (l0 * u0 + l1 * u1 + l2 * u2) / iw ]
+							vv : f32 [ (l0 * t0 + l1 * t1 + l2 * t2) / iw ]
+							tx : u32 [ gx_texel[ i32[ uu ], i32[ vv ] ] ]
+							ta : u32 [ tx & 0xFF ]
+							if [ gx_cc_lerp ]                # (PRIM-SHADE)*T0+SHADE
+								pr9 : f32 [ f32[ (gx_prim >> 24) & 0xFF ] / 255.0 ]
+								pg9 : f32 [ f32[ (gx_prim >> 16) & 0xFF ] / 255.0 ]
+								pb9 : f32 [ f32[ (gx_prim >> 8) & 0xFF ] / 255.0 ]
+								txr : f32 [ f32[ (tx >> 24) & 0xFF ] / 255.0 ]
+								txg : f32 [ f32[ (tx >> 16) & 0xFF ] / 255.0 ]
+								txb : f32 [ f32[ (tx >> 8) & 0xFF ] / 255.0 ]
+								cr = cr + (pr9 - cr) * txr
+								cg = cg + (pg9 - cg) * txg
+								cb = cb + (pb9 - cb) * txb
+							el [ gx_cc_add ]                 # highlight: shade + texel
+								cr += f32[ (tx >> 24) & 0xFF ] / 255.0
+								cg += f32[ (tx >> 16) & 0xFF ] / 255.0
+								cb += f32[ (tx >> 8) & 0xFF ] / 255.0
+								if [ cr > 1.0 ] cr = 1.0
+								if [ cg > 1.0 ] cg = 1.0
+								if [ cb > 1.0 ] cb = 1.0
+							el
+								if [ gx_bl_xlu ]
+									if [ ta == 0 ] skip = true
+									pxa = u32[ f32[ ta ] * ca ]
+								el
+									if [ ta < 128 && (ca < 0.99 || ta == 0) ] skip = true
+								cr = cr * f32[ (tx >> 24) & 0xFF ] / 255.0
+								cg = cg * f32[ (tx >> 16) & 0xFF ] / 255.0
+								cb = cb * f32[ (tx >> 8) & 0xFF ] / 255.0
+						el
+							if [ ca < 0.02 ] skip = true
+							pxa = u32[ ca * 255.0 ]
+						if [ gx_cc_prim && !gx_cc_lerp && !skip ]
+							cr = cr * f32[ (gx_prim >> 24) & 0xFF ] / 255.0
+							cg = cg * f32[ (gx_prim >> 16) & 0xFF ] / 255.0
+							cb = cb * f32[ (gx_prim >> 8) & 0xFF ] / 255.0
+						if [ !skip ]
+							if [ zon && !zdec ] zbuf[ zi ] = zv
+							gx_putpix[ px, py, u32[ cr * 255.0 ], u32[ cg * 255.0 ], u32[ cb * 255.0 ], pxa ]
+
+	func gx_raster_done []
+		gx_bl_add = false
+		gx_bl_xlu = false
+
+	# near-clip the triangle in gx_clip (n verts), project, fan-rasterize
+	func gx_tri_out [ nin: i32 ]
+		# clip against cw > eps
+		no : i32 [ 0 ]
+		for [ i: i32 0, i < nin, i += 1 ]
+			j : i32 [ (i + 1 < nin) ? (i + 1) : 0 ]
+			ib : i32 [ i * 10 ]
+			jb : i32 [ j * 10 ]
+			wi : f32 [ gx_clip[ ib + 3 ] ]
+			wj : f32 [ gx_clip[ jb + 3 ] ]
+			ini : bool [ wi > 0.05 ]
+			inj : bool [ wj > 0.05 ]
+			if [ ini && no < 8 ]
+				oo : i32 [ no * 10 ]
+				for [ k: i32 0, k < 10, k += 1 ]
+					gx_scr[ oo + k ] = gx_clip[ ib + k ]
+				no += 1
+			if [ ((ini && !inj) || (!ini && inj)) && no < 8 ]
+				tt : f32 [ (0.05 - wi) / (wj - wi) ]
+				oo2 : i32 [ no * 10 ]
+				for [ k: i32 0, k < 10, k += 1 ]
+					gx_scr[ oo2 + k ] = gx_clip[ ib + k ] + (gx_clip[ jb + k ] - gx_clip[ ib + k ]) * tt
+				no += 1
+		if [ no < 3 ] return
+		# project all verts in place: sx sy sz invw u/w v/w r g b a
+		vsx : f32 [ gx_vp[ 0 ] ]
+		vsy : f32 [ gx_vp[ 1 ] ]
+		vtx0 : f32 [ gx_vp[ 3 ] ]
+		vty0 : f32 [ gx_vp[ 4 ] ]
+		ssf : f32 [ f32[ gx_ss ] ]
+		for [ i: i32 0, i < no, i += 1 ]
+			ob : i32 [ i * 10 ]
+			cw : f32 [ gx_scr[ ob + 3 ] ]
+			iw : f32 [ 1.0 / cw ]
+			ndx : f32 [ gx_scr[ ob ] * iw ]
+			ndy : f32 [ gx_scr[ ob + 1 ] * iw ]
+			ndz : f32 [ gx_scr[ ob + 2 ] * iw ]
+			gx_scr[ ob ]     = (vtx0 + ndx * vsx) * ssf
+			gx_scr[ ob + 1 ] = (vty0 + ndy * vsy) * ssf
+			gx_scr[ ob + 2 ] = (ndz + 1.0) * 0.5
+			gx_scr[ ob + 3 ] = iw
+			gx_scr[ ob + 4 ] = gx_scr[ ob + 4 ] * iw
+			gx_scr[ ob + 5 ] = gx_scr[ ob + 5 ] * iw
+		for [ i: i32 2, i < no, i += 1 ]
+			gx_raster[ 0, (i - 1) * 10, i * 10 ]
+		gx_raster_done[]
+
+	# ---------------- GPU batching: palettes + atlas + vertex emit ----------------
+	func st_put [ x: i32, y: i32, c0: f32, c1: f32, c2: f32, c3: f32 ]
+		bi : i32 [ (y * 2048 + x) * 4 ]
+		st_tex[ bi ]     = c0
+		st_tex[ bi + 1 ] = c1
+		st_tex[ bi + 2 ] = c2
+		st_tex[ bi + 3 ] = c3
+
+	# ensure the current MVP (with the game's viewport folded in, matching the
+	# CPU raster: screen = vtrans + ndc*vscale, then mapped to NDC) is in the
+	# matrix palette (row 0, 4 texels/slot)
+	func st_mtx_ensure [] -> i32
+		if [ gx_mslot >= 0 ] return gx_mslot
+		if [ st_mtx_n >= 511 ]
+			if [ dbg_on ] printf[ "n64 OVERFLOW mtx palette f%u\n", frames ]
+			return 510
+		gx_mmul[ (1 + gx_mvi) * 16, 0, 224 ]
+		for [ i: i32 0, i < 16, i += 1 ]
+			gx_mats[ 192 + i ] = 0.0
+		gx_mats[ 192 ]      = gx_vp[ 0 ] / 160.0
+		gx_mats[ 192 + 5 ]  = gx_vp[ 1 ] / 120.0
+		gx_mats[ 192 + 10 ] = 1.0
+		gx_mats[ 192 + 12 ] = gx_vp[ 3 ] / 160.0 - 1.0
+		gx_mats[ 192 + 13 ] = gx_vp[ 4 ] / 120.0 - 1.0
+		gx_mats[ 192 + 15 ] = 1.0
+		gx_mmul[ 224, 192, 224 ]
+		sl : i32 [ st_mtx_n ]
+		st_mtx_n += 1
+		for [ rr: i32 0, rr < 4, rr += 1 ]
+			st_put[ sl * 4 + rr, 0, gx_mats[ 224 + rr * 4 ], gx_mats[ 224 + rr * 4 + 1 ], gx_mats[ 224 + rr * 4 + 2 ], gx_mats[ 224 + rr * 4 + 3 ] ]
+		gx_mslot = sl
+		return sl
+
+	# ensure current light state is in the light palette (row 1, 8 texels/set)
+	func st_ls_ensure [] -> i32
+		if [ gx_lsslot >= 0 ] return gx_lsslot
+		if [ st_ls_n >= 255 ]
+			if [ dbg_on ] printf[ "n64 OVERFLOW light palette f%u\n", frames ]
+			return 254
+		sl : i32 [ st_ls_n ]
+		st_ls_n += 1
+		na2 : i32 [ gx_nl * 6 ]
+		nl2 : i32 [ (gx_nl > 3) ? 3 : gx_nl ]
+		st_put[ sl * 8, 1, gx_lights[ na2 ], gx_lights[ na2 + 1 ], gx_lights[ na2 + 2 ], f32[ nl2 ] ]
+		for [ li: i32 0, li < nl2, li += 1 ]
+			lb4 : i32 [ li * 6 ]
+			st_put[ sl * 8 + 1 + li * 2, 1, gx_lights[ lb4 ], gx_lights[ lb4 + 1 ], gx_lights[ lb4 + 2 ], 0.0 ]
+			st_put[ sl * 8 + 2 + li * 2, 1, gx_lights[ lb4 + 3 ], gx_lights[ lb4 + 4 ], gx_lights[ lb4 + 5 ], 0.0 ]
+		gx_lsslot = sl
+		return sl
+
+	# decode the render tile into the atlas (cached by content hash); returns
+	# the packed rect via atk_rect index
+	func at_ensure [] -> i32
+		tn : i32 [ gx_tile ]
+		tw : i32 [ i32[ (tl_lrs[ tn ] - tl_uls[ tn ]) >> 2 ] + 1 ]
+		th : i32 [ i32[ (tl_lrt[ tn ] - tl_ult[ tn ]) >> 2 ] + 1 ]
+		# degenerate tilesize (fonts/sprites relying on wrap): mask defines extent
+		if [ tw <= 1 && tl_masks[ tn ] > 0 ] tw = 1 << i32[ tl_masks[ tn ] ]
+		if [ th <= 1 && tl_maskt[ tn ] > 0 ] th = 1 << i32[ tl_maskt[ tn ] ]
+		if [ tw < 1 ] tw = 1
+		if [ th < 1 ] th = 1
+		if [ tw > 256 ] tw = 256
+		if [ th > 256 ] th = 256
+		# content hash: tile bytes + descriptor
+		lnb : i32 [ i32[ tl_line[ tn ] ] * 8 ]
+		tb : i32 [ i32[ tl_tmem[ tn ] ] * 8 ]
+		nb : i32 [ lnb * th ]
+		if [ nb > 4096 ] nb = 4096
+		hh : i64 [ 1469598103934665603 ]
+		for [ i: i32 0, i < nb, i += 1 ]
+			hh = (hh ^ i64[ u32[ tmem[ (tb + i) & 0xFFF ] ] ]) * 1099511628211
+		hh = (hh ^ i64[ tl_fmt[ tn ] ]) * 1099511628211
+		hh = (hh ^ i64[ tl_siz[ tn ] ]) * 1099511628211
+		hh = (hh ^ i64[ u32[ tw ] ]) * 1099511628211
+		hh = (hh ^ i64[ u32[ th ] ]) * 1099511628211
+		hh = (hh ^ i64[ tl_pal[ tn ] ]) * 1099511628211
+		if [ tl_fmt[ tn ] == 2 ]                             # CI: palette contents matter
+			for [ i: i32 0, i < 256, i += 1 ]
+				hh = (hh ^ i64[ gx_tlut[ i ] ]) * 1099511628211
+		for [ i: i32 0, i < atk_n, i += 1 ]
+			if [ atk_key[ i ] == hh ] return i
+		# pack: shelf allocator
+		if [ atk_n >= 255 || at_y + th > 1024 ]
+			atk_n = 0
+			at_x = 0
+			at_y = 0
+			at_rowh = 0
+		if [ at_x + tw > 1024 ]
+			at_x = 0
+			at_y += at_rowh
+			at_rowh = 0
+			if [ at_y + th > 1024 ]
+				atk_n = 0
+				at_y = 0
+		if [ th > at_rowh ] at_rowh = th
+		rx : i32 [ at_x ]
+		ry : i32 [ at_y ]
+		at_x += tw
+		us4 : i32 [ i32[ tl_uls[ tn ] >> 2 ] ]
+		ut4 : i32 [ i32[ tl_ult[ tn ] >> 2 ] ]
+		for [ ty: i32 0, ty < th, ty += 1 ]
+			for [ txx: i32 0, txx < tw, txx += 1 ]
+				pxv : u32 [ gx_texel[ txx + us4, ty + ut4 ] ]
+				at_stage[ (ry + ty) * 1024 + rx + txx ] = 0xFF000000 & ((pxv & 0xFF) * 0x1000000) | (((pxv >> 8) & 0xFF) << 16) | (((pxv >> 16) & 0xFF) << 8) | ((pxv >> 24) & 0xFF)
+		at_dirty = true
+		if [ dbg_on ]
+			printf[ "n64 ATLAS fmt=%u siz=%u line=%u tmem=%u ts=%ux%u uls=%u ult=%u mask=%u,%u cm=%u,%u -> %dx%d f%u\n", tl_fmt[tn], tl_siz[tn], tl_line[tn], tl_tmem[tn], (tl_lrs[tn] - tl_uls[tn]) / 4 + 1, (tl_lrt[tn] - tl_ult[tn]) / 4 + 1, tl_uls[tn] >> 2, tl_ult[tn] >> 2, tl_masks[tn], tl_maskt[tn], tl_cms[tn], tl_cmt[tn], tw, th, frames ]
+		sl : i32 [ atk_n ]
+		atk_key[ sl ] = hh
+		atk_rect[ sl * 4 ]     = rx
+		atk_rect[ sl * 4 + 1 ] = ry
+		atk_rect[ sl * 4 + 2 ] = tw
+		atk_rect[ sl * 4 + 3 ] = th
+		atk_n += 1
+		return sl
+
+	# ensure current material (atlas rect + wrap + prim/env) in row 2
+	func st_mat_ensure [] -> i32
+		if [ gx_matslot >= 0 ] return gx_matslot
+		if [ st_mat_n >= 511 ]
+			if [ dbg_on ] printf[ "n64 OVERFLOW material palette f%u\n", frames ]
+			return 510
+		sl : i32 [ st_mat_n ]
+		st_mat_n += 1
+		tn : i32 [ gx_tile ]
+		asl : i32 [ 0 ]
+		if [ gx_texon && gx_cc_tex ] asl = at_ensure[]
+		rb : i32 [ asl * 4 ]
+		st_put[ sl * 4, 2, f32[ atk_rect[ rb ] ], f32[ atk_rect[ rb + 1 ] ], f32[ atk_rect[ rb + 2 ] ], f32[ atk_rect[ rb + 3 ] ] ]
+		wms : f32 [ 0.0 ]
+		wmt : f32 [ 0.0 ]
+		if [ tl_masks[ tn ] > 0 ] wms = f32[ 1 << i32[ tl_masks[ tn ] ] ]
+		if [ tl_maskt[ tn ] > 0 ] wmt = f32[ 1 << i32[ tl_maskt[ tn ] ] ]
+		clS : i32 [ i32[ (tl_lrs[ tn ] - tl_uls[ tn ]) >> 2 ] + 1 ]
+		clT : i32 [ i32[ (tl_lrt[ tn ] - tl_ult[ tn ]) >> 2 ] + 1 ]
+		if [ clS < 1 ] clS = 1
+		if [ clT < 1 ] clT = 1
+		st_put[ sl * 4 + 1, 2, wms, wmt, f32[ tl_cms[ tn ] + u32[ clS ] * 4 ], f32[ tl_cmt[ tn ] + u32[ clT ] * 4 ] ]
+		st_put[ sl * 4 + 2, 2, f32[ (gx_prim >> 24) & 0xFF ] / 255.0, f32[ (gx_prim >> 16) & 0xFF ] / 255.0, f32[ (gx_prim >> 8) & 0xFF ] / 255.0, f32[ gx_prim & 0xFF ] / 255.0 ]
+		st_put[ sl * 4 + 3, 2, f32[ (gx_env >> 24) & 0xFF ] / 255.0, f32[ (gx_env >> 16) & 0xFF ] / 255.0, f32[ (gx_env >> 8) & 0xFF ] / 255.0, f32[ gx_env & 0xFF ] / 255.0 ]
+		gx_matslot = sl
+		return sl
+
+	# combiner/blend flags word for the current state (+lit/texgen per-vertex)
+	func gx_flags [ lit: bool ] -> u32
+		fl : u32 [ 0 ]
+		if [ lit ] fl = fl | 1
+		ton : bool [ gx_texon && gx_cc_tex ]
+		if [ ton ] fl = fl | 4
+		if [ gx_cc_prim && !gx_cc_lerp ] fl = fl | 8
+		cc : u32 [ 0 ]
+		if [ gx_cc_lerp ] cc = 1
+		el [ gx_cc_add ] cc = 2
+		el [ ton && !gx_cc_shade ] cc = 3
+		fl = fl | (cc << 4)
+		if [ gx_geom & 0x2000 ] fl = fl | 1024
+		if [ gx_geom & 0x1000 ] fl = fl | 2048
+		if [ (gx_geom & 1) == 0 ] fl = fl | 4096
+		xl : bool [ (((gx_oth_l >> 22) & 3) == 1) && (((gx_oth_l >> 18) & 3) == 0) ]
+		ad : bool [ (((gx_oth_l >> 22) & 3) == 1) && (((gx_oth_l >> 18) & 3) == 2) ]
+		if [ ad ] fl = fl | 512
+		el [ xl ] fl = fl | 256
+		el fl = fl | 128
+		return fl
+
+	# emit one vertex (13 floats) from a raw slot; matrix/light state was
+	# captured per slot at VTX time (RSP transforms at load, not at TRI)
+	func gxe_vert [ sl: i32, fl: u32, mat: i32 ]
+		if [ gxv_n >= 32760 ]
+			if [ dbg_on && (gxv_n & 1023) == 0 ] printf[ "n64 OVERFLOW vertex buffer f%u\n", frames ]
+			return
+		rb : i32 [ sl * 12 ]
+		flv : u32 [ fl ]
+		if [ gx_vraw[ rb + 9 ] > 0.5 ]
+			flv = flv | 1
+			if [ gx_geom & 0x40000 ] flv = flv | 2
+		ob : i32 [ gxv_n * 13 ]
+		gxv[ ob ]      = gx_vraw[ rb ]
+		gxv[ ob + 1 ]  = gx_vraw[ rb + 1 ]
+		gxv[ ob + 2 ]  = gx_vraw[ rb + 2 ]
+		gxv[ ob + 3 ]  = gx_vraw[ rb + 5 ]
+		gxv[ ob + 4 ]  = gx_vraw[ rb + 6 ]
+		gxv[ ob + 5 ]  = gx_vraw[ rb + 7 ]
+		gxv[ ob + 6 ]  = gx_vraw[ rb + 8 ]
+		gxv[ ob + 7 ]  = gx_vraw[ rb + 3 ]
+		gxv[ ob + 8 ]  = gx_vraw[ rb + 4 ]
+		gxv[ ob + 9 ]  = gx_vraw[ rb + 10 ]
+		gxv[ ob + 10 ] = f32[ flv ]
+		gxv[ ob + 11 ] = gx_vraw[ rb + 11 ]
+		gxv[ ob + 12 ] = f32[ mat ]
+		gxv_n += 1
+
+	# emit a screen-space quad (ortho matrix slot 0): pixel coords + z + uv + color
+	func gxe_quad [ qx0: f32, qy0: f32, qx1: f32, qy1: f32, zz: f32, u0: f32, v0: f32, u1: f32, v1: f32, cr: f32, cg: f32, cb: f32, fl: u32, mat: i32 ]
+		if [ gxv_n >= 32754 ] return
+		for [ k: i32 0, k < 6, k += 1 ]
+			cx : f32 [ ((k == 1 || k == 2 || k == 4)) ? qx1 : qx0 ]
+			cy : f32 [ ((k == 2 || k == 4 || k == 5)) ? qy1 : qy0 ]
+			cu : f32 [ ((k == 1 || k == 2 || k == 4)) ? u1 : u0 ]
+			cv : f32 [ ((k == 2 || k == 4 || k == 5)) ? v1 : v0 ]
+			ob : i32 [ gxv_n * 13 ]
+			gxv[ ob ]      = cx
+			gxv[ ob + 1 ]  = cy
+			gxv[ ob + 2 ]  = zz
+			gxv[ ob + 3 ]  = cr
+			gxv[ ob + 4 ]  = cg
+			gxv[ ob + 5 ]  = cb
+			gxv[ ob + 6 ]  = 1.0
+			gxv[ ob + 7 ]  = cu
+			gxv[ ob + 8 ]  = cv
+			gxv[ ob + 9 ]  = 0.0
+			gxv[ ob + 10 ] = f32[ fl ]
+			gxv[ ob + 11 ] = 0.0
+			gxv[ ob + 12 ] = f32[ mat ]
+			gxv_n += 1
+
+	func gx_tri_cmd [ i0: i32, i1: i32, i2: i32 ]
+		gx_ti0 = i0
+		gx_ti1 = i1
+		gx_ti2 = i2
+		if [ gpu_on ]
+			mat : i32 [ st_mat_ensure[] ]
+			fl : u32 [ gx_flags[ false ] ]
+			gxe_vert[ i0, fl, mat ]
+			gxe_vert[ i1, fl, mat ]
+			gxe_vert[ i2, fl, mat ]
+			return
+		s0 : i32 [ i0 * 10 ]
+		s1 : i32 [ i1 * 10 ]
+		s2 : i32 [ i2 * 10 ]
+		if [ dbg_on && dbg_esc < 24 && gx_vt[ s0 + 3 ] > 0.05 && gx_vt[ s1 + 3 ] > 0.05 && gx_vt[ s2 + 3 ] > 0.05 ]
+			ny0 : f32 [ gx_vt[ s0 + 1 ] / gx_vt[ s0 + 3 ] ]
+			ny1 : f32 [ gx_vt[ s1 + 1 ] / gx_vt[ s1 + 3 ] ]
+			ny2 : f32 [ gx_vt[ s2 + 1 ] / gx_vt[ s2 + 3 ] ]
+			nmax : f32 [ (ny0 > ny1) ? ((ny0 > ny2) ? ny0 : ny2) : ((ny1 > ny2) ? ny1 : ny2) ]
+			nmin : f32 [ (ny0 < ny1) ? ((ny0 < ny2) ? ny0 : ny2) : ((ny1 < ny2) ? ny1 : ny2) ]
+			if [ nmax > 1.05 && nmin > -0.9 && nmin < 0.9 ]
+				dbg_esc += 1
+				printf[ "n64 STRAND tri(%d,%d,%d) ndcY=(%.2f,%.2f,%.2f) w=(%.4f,%.4f,%.4f) f%u\n", i0, i1, i2, f64[ny0], f64[ny1], f64[ny2], f64[ gx_vt[s0+3] ], f64[ gx_vt[s1+3] ], f64[ gx_vt[s2+3] ], frames ]
+		for [ k: i32 0, k < 10, k += 1 ]
+			gx_clip[ k ]      = gx_vt[ s0 + k ]
+			gx_clip[ 10 + k ] = gx_vt[ s1 + k ]
+			gx_clip[ 20 + k ] = gx_vt[ s2 + k ]
+		gx_tri_out[ 3 ]
+
+	func gx_texrect [ w1: u32, w2: u32, wst: u32, wdxy: u32 ]
+		xl : i32 [ i32[ (w1 >> 12) & 0xFFF ] >> 2 ]
+		yl : i32 [ i32[ w1 & 0xFFF ] >> 2 ]
+		tn : i32 [ i32[ (w2 >> 24) & 7 ] ]
+		xh : i32 [ i32[ (w2 >> 12) & 0xFFF ] >> 2 ]
+		yh : i32 [ i32[ w2 & 0xFFF ] >> 2 ]
+		s0 : i32 [ i32[ (wst >> 16) & 0xFFFF ] ]
+		t0 : i32 [ i32[ wst & 0xFFFF ] ]
+		if [ s0 >= 0x8000 ] s0 -= 0x10000
+		if [ t0 >= 0x8000 ] t0 -= 0x10000
+		dsdx : i32 [ i32[ (wdxy >> 16) & 0xFFFF ] ]
+		dtdy : i32 [ i32[ wdxy & 0xFFFF ] ]
+		if [ dsdx >= 0x8000 ] dsdx -= 0x10000
+		if [ dtdy >= 0x8000 ] dtdy -= 0x10000
+		cyc : u32 [ (gx_oth_h >> 20) & 3 ]
+		fdx : f32 [ f32[ dsdx ] / 1024.0 ]
+		if [ cyc == 2 ] fdx = fdx / 4.0                       # copy mode packs 4x
+		fdy : f32 [ f32[ dtdy ] / 1024.0 ]
+		fs0 : f32 [ f32[ s0 ] / 32.0 ]
+		ft0 : f32 [ f32[ t0 ] / 32.0 ]
+		ot : i32 [ gx_tile ]
+		gx_tile = tn
+		if [ gpu_on ]
+			gx_matslot = -1
+			mat : i32 [ st_mat_ensure[] ]
+			gx_matslot = -1
+			du : f32 [ f32[ xl - xh ] * fdx ]
+			dv : f32 [ f32[ yl - yh ] * fdy ]
+			gxe_quad[ f32[ xh ], f32[ yh ], f32[ xl ], f32[ yl ], 0.02, fs0, ft0, fs0 + du, ft0 + dv, 1.0, 1.0, 1.0, 4 | (3 << 4) | 128, mat ]
+			gx_tile = ot
+			return
+		x0c : i32 [ ((xh < gx_sx0) ? gx_sx0 : xh) * gx_ss ]
+		y0c : i32 [ ((yh < gx_sy0) ? gx_sy0 : yh) * gx_ss ]
+		x1c : i32 [ ((xl > gx_sx1) ? gx_sx1 : xl) * gx_ss ]
+		y1c : i32 [ ((yl > gx_sy1) ? gx_sy1 : yl) * gx_ss ]
+		if [ x1c > gx_ciw * gx_ss ] x1c = gx_ciw * gx_ss
+		if [ y1c > 240 * gx_ss ] y1c = 240 * gx_ss
+		ssf2 : f32 [ f32[ gx_ss ] ]
+		for [ py: i32 y0c, py < y1c, py += 1 ]
+			tv : i32 [ i32[ ft0 + (f32[ py ] / ssf2 - f32[ yh ]) * fdy ] ]
+			for [ px: i32 x0c, px < x1c, px += 1 ]
+				su : i32 [ i32[ fs0 + (f32[ px ] / ssf2 - f32[ xh ]) * fdx ] ]
+				tx : u32 [ gx_texel[ su, tv ] ]
+				if [ (tx & 0xFF) >= 128 ]
+					gx_putpix[ px, py, (tx >> 24) & 0xFF, (tx >> 16) & 0xFF, (tx >> 8) & 0xFF, 255 ]
+		gx_tile = ot
+
+	func gx_fillrect [ w1: u32, w2: u32 ]
+		xl : i32 [ i32[ (w1 >> 12) & 0xFFF ] >> 2 ]
+		yl : i32 [ i32[ w1 & 0xFFF ] >> 2 ]
+		xh : i32 [ i32[ (w2 >> 12) & 0xFFF ] >> 2 ]
+		yh : i32 [ i32[ w2 & 0xFFF ] >> 2 ]
+		if [ gx_cimg == gx_zimg && gx_zimg != 0 ]
+			if [ !gpu_on ]
+				for [ i: i32 0, i < 1280 * 960, i += 1 ]
+					zbuf[ i ] = 1000000.0
+			return
+		if [ gpu_on ]
+			pf16 : u32 [ (gx_fill >> 16) & 0xFFFF ]
+			fr9 : u32 [ (pf16 >> 11) & 31 ]
+			fg9 : u32 [ (pf16 >> 6) & 31 ]
+			fb9 : u32 [ (pf16 >> 1) & 31 ]
+			gxe_quad[ f32[ xh ], f32[ yh ], f32[ xl + 1 ], f32[ yl + 1 ], 0.998, 0.0, 0.0, 0.0, 0.0, f32[ (fr9 << 3) | (fr9 >> 2) ] / 255.0, f32[ (fg9 << 3) | (fg9 >> 2) ] / 255.0, f32[ (fb9 << 3) | (fb9 >> 2) ] / 255.0, 128, 0 ]
+			return
+		px16 : u32 [ (gx_fill >> 16) & 0xFFFF ]
+		fr5 : u32 [ (px16 >> 11) & 31 ]
+		fg5 : u32 [ (px16 >> 6) & 31 ]
+		fb5 : u32 [ (px16 >> 1) & 31 ]
+		fargb : u32 [ 0xFF000000 | (((fb5 << 3) | (fb5 >> 2)) << 16) | (((fg5 << 3) | (fg5 >> 2)) << 8) | ((fr5 << 3) | (fr5 >> 2)) ]
+		for [ py: i32 yh, py <= yl, py += 1 ]
+			if [ py >= 0 && py < 240 ]
+				for [ px: i32 xh, px <= xl, px += 1 ]
+					if [ px >= 0 && px < gx_ciw ]
+						off : u32 [ (gx_cimg + u32[ (py * gx_ciw + px) * 2 ]) & 0x7FFFFE ]
+						rdram[ off ]     = u8[ (px16 >> 8) & 0xFF ]
+						rdram[ off + 1 ] = u8[ px16 & 0xFF ]
+		sy9 : i32 [ yh * gx_ss ]
+		ey9 : i32 [ (yl + 1) * gx_ss ]
+		sx9 : i32 [ xh * gx_ss ]
+		ex9 : i32 [ (xl + 1) * gx_ss ]
+		if [ sy9 < 0 ] sy9 = 0
+		if [ sx9 < 0 ] sx9 = 0
+		if [ ey9 > 960 ] ey9 = 960
+		if [ ex9 > 1280 ] ex9 = 1280
+		for [ py: i32 sy9, py < ey9, py += 1 ]
+			rb9 : i32 [ py * 1280 ]
+			for [ px: i32 sx9, px < ex9, px += 1 ]
+				ss_buf[ rb9 + px ] = fargb
+		ss_used = true
+
+	func gfx_task []
+		dp : u32 [ (u32[dmem[0xFF0]] << 24) | (u32[dmem[0xFF1]] << 16) | (u32[dmem[0xFF2]] << 8) | u32[dmem[0xFF3]] ]
+		for [ i: i32 0, i < 16, i += 1 ]
+			gx_seg[ i ] = 0
+		gx_mvi = 0
+		gx_dsp = 0
+		gx_mvp_ok = false
+		if [ gx_vp[ 0 ] == 0.0 ]
+			gx_vp[ 0 ] = 160.0
+			gx_vp[ 1 ] = -120.0
+			gx_vp[ 3 ] = 160.0
+			gx_vp[ 4 ] = 120.0
+		gx_sx0 = 0
+		gx_sy0 = 0
+		gx_sx1 = 320
+		gx_sy1 = 240
+		if [ dbg_on && (frames & 63) == 0 ]
+			gx_dbgc = 8
+			gx_dbgl = 30
+		if [ gpu_on ]
+			gxv_n = 0
+			st_mtx_n = 1
+			st_ls_n = 0
+			st_mat_n = 0
+			gx_mslot = -1
+			gx_lsslot = -1
+			gx_matslot = -1
+			# matrix slot 0 = screen-space ortho (pixel coords -> vulkan NDC)
+			st_put[ 0, 0, 2.0 / 320.0, 0.0, 0.0, 0.0 ]
+			st_put[ 1, 0, 0.0, 2.0 / 240.0, 0.0, 0.0 ]
+			st_put[ 2, 0, 0.0, 0.0, 2.0, 0.0 ]
+			st_put[ 3, 0, -1.0, -1.0, -1.0, 1.0 ]
+		pc : u32 [ dp & 0x7FFFFF ]
+		if [ dbg_on && frames == 300 ]
+			printf[ "n64 gfx DL dp=%08X:\n", dp ]
+			for [ i: i32 0, i < 16, i += 1 ]
+				printf[ "  %08X %08X\n", dr_r32[ pc + u32[ i * 8 ] ], dr_r32[ pc + u32[ i * 8 + 4 ] ] ]
+		gcmd : i32 [ 0 ]
+		n_tri : i32 [ 0 ]
+		n_vtx : i32 [ 0 ]
+		n_txr : i32 [ 0 ]
+		n_fil : i32 [ 0 ]
+		n_mtx : i32 [ 0 ]
+		running : bool [ true ]
+		while [ running && gcmd < 300000 ]
+			gcmd += 1
+			w1 : u32 [ dr_r32[ pc ] ]
+			w2 : u32 [ dr_r32[ pc + 4 ] ]
+			pc += 8
+			cmd : u32 [ w1 >> 24 ]
+			if [ cmd == 0x01 ]                               # G_MTX
+				n_mtx += 1
+				gx_mtx_cmd[ (w1 >> 16) & 0xFF, gx_addr[ w2 ] ]
+			el [ cmd == 0x03 ]                               # G_MOVEMEM
+				mi2 : u32 [ (w1 >> 16) & 0xFF ]
+				ma : u32 [ gx_addr[ w2 ] ]
+				if [ dbg_on && gx_dbgl > 0 && mi2 != 0x80 ]
+					printf[ "n64 movemem idx=%02X ad=%08X f%u\n", mi2, ma, frames ]
+				if [ mi2 == 0x80 ]                           # viewport
+					gx_mslot = -1
+					gx_vp[ 0 ] = f32[ dr_r16[ ma ] ] / 4.0
+					gx_vp[ 1 ] = 0.0 - f32[ dr_r16[ ma + 2 ] ] / 4.0
+					gx_vp[ 2 ] = f32[ dr_r16[ ma + 4 ] ] / 4.0
+					gx_vp[ 3 ] = f32[ dr_r16[ ma + 8 ] ] / 4.0
+					gx_vp[ 4 ] = f32[ dr_r16[ ma + 10 ] ] / 4.0
+					gx_vp[ 5 ] = f32[ dr_r16[ ma + 12 ] ] / 4.0
+				el [ mi2 >= 0x86 ]                           # lights: L0.. then ambient
+					ln2 : i32 [ i32[ (mi2 - 0x86) >> 1 ] ]
+					if [ dbg_on && gx_dbgl > 0 ]
+						printf[ "n64 light%d col=%02X%02X%02X dir=%d,%d,%d nl=%d\n", ln2, dr_r8[ma], dr_r8[ma+1], dr_r8[ma+2], dr_s8[ma+8], dr_s8[ma+9], dr_s8[ma+10], gx_nl ]
+					gx_lsslot = -1
+					if [ ln2 < 8 ]
+						lb2 : i32 [ ln2 * 6 ]
+						gx_lights[ lb2 ]     = f32[ dr_r8[ ma ] ] / 255.0
+						gx_lights[ lb2 + 1 ] = f32[ dr_r8[ ma + 1 ] ] / 255.0
+						gx_lights[ lb2 + 2 ] = f32[ dr_r8[ ma + 2 ] ] / 255.0
+						gx_lights[ lb2 + 3 ] = f32[ dr_s8[ ma + 8 ] ] / 128.0
+						gx_lights[ lb2 + 4 ] = f32[ dr_s8[ ma + 9 ] ] / 128.0
+						gx_lights[ lb2 + 5 ] = f32[ dr_s8[ ma + 10 ] ] / 128.0
+			el [ cmd == 0x04 ]                               # G_VTX
+				n_vtx += 1
+				gx_vtx_cmd[ w1, w2 ]
+			el [ cmd == 0x06 ]                               # G_DL
+				if [ ((w1 >> 16) & 0xFF) == 0 && gx_dsp < 18 ]
+					gx_dls[ gx_dsp ] = pc
+					gx_dsp += 1
+				pc = gx_addr[ w2 ]
+			el [ cmd == 0xB8 ]                               # G_ENDDL
+				if [ gx_dsp > 0 ]
+					gx_dsp -= 1
+					pc = gx_dls[ gx_dsp ]
+				el running = false
+			el [ cmd == 0xB7 ]                               # G_SETGEOMETRYMODE
+				gx_geom = gx_geom | w2
+			el [ cmd == 0xB6 ]                               # G_CLEARGEOMETRYMODE
+				gx_geom = gx_geom & (~w2)
+			el [ cmd == 0xBB ]                               # G_TEXTURE
+				gx_matslot = -1
+				gx_texon = (w1 & 0xFF) != 0
+				gx_tile = i32[ (w1 >> 8) & 7 ]
+				gx_texs = f32[ (w2 >> 16) & 0xFFFF ] / 65536.0
+				gx_text = f32[ w2 & 0xFFFF ] / 65536.0
+			el [ cmd == 0xBD ]                               # G_POPMTX
+				if [ gx_mvi > 0 ] gx_mvi -= 1
+				gx_mvp_ok = false
+				gx_mslot = -1
+			el [ cmd == 0xBF ]                               # G_TRI1
+				n_tri += 1
+				gx_tri_cmd[ i32[ ((w2 >> 16) & 0xFF) / 10 ], i32[ ((w2 >> 8) & 0xFF) / 10 ], i32[ (w2 & 0xFF) / 10 ] ]
+			el [ cmd == 0xBC ]                               # G_MOVEWORD: index in low byte
+				mwi : u32 [ w1 & 0xFF ]
+				if [ dbg_on && gx_dbgl > 0 ]
+					printf[ "n64 mw idx=%02X off=%04X w2=%08X f%u\n", mwi, (w1 >> 8) & 0xFFFF, w2, frames ]
+				if [ mwi == 6 ]                              # segment
+					sg2 : u32 [ ((w1 >> 8) & 0xFFFF) >> 2 ]
+					if [ sg2 < 16 ] gx_seg[ sg2 ] = w2 & 0xFFFFFF
+				el [ mwi == 0x0A ]                           # light color (goddard per-frame)
+					gx_lsslot = -1
+					lof : u32 [ (w1 >> 8) & 0xFFFF ]
+					li2 : i32 [ i32[ lof >> 5 ] ]
+					if [ ((lof & 0x1F) == 0) && li2 < 8 ]
+						lb3 : i32 [ li2 * 6 ]
+						gx_lights[ lb3 ]     = f32[ (w2 >> 24) & 0xFF ] / 255.0
+						gx_lights[ lb3 + 1 ] = f32[ (w2 >> 16) & 0xFF ] / 255.0
+						gx_lights[ lb3 + 2 ] = f32[ (w2 >> 8) & 0xFF ] / 255.0
+				el [ mwi == 2 ]                              # numlights
+					gx_lsslot = -1
+					if [ dbg_on && gx_dbgc > 0 ] printf[ "n64 numlight w2=%08X\n", w2 ]
+					gx_nl = i32[ ((w2 - 0x80000000) / 32) - 1 ]
+					if [ gx_nl < 0 ] gx_nl = 0
+					if [ gx_nl > 7 ] gx_nl = 7
+			el [ cmd == 0xB4 ]                               # G_RDPHALF_1
+				gx_half1 = w2
+			el [ cmd == 0xBA ]                               # G_SETOTHERMODE_H
+				sft : u32 [ (w1 >> 8) & 0xFF ]
+				num : u32 [ w1 & 0xFF ]
+				msk3 : u32 [ ((u32[1] << num) - 1) << sft ]
+				gx_oth_h = (gx_oth_h & (~msk3)) | (w2 & msk3)
+			el [ cmd == 0xB9 ]                               # G_SETOTHERMODE_L
+				gx_matslot = -1
+				sft2 : u32 [ (w1 >> 8) & 0xFF ]
+				num2 : u32 [ w1 & 0xFF ]
+				msk4 : u32 [ ((u32[1] << num2) - 1) << sft2 ]
+				gx_oth_l = (gx_oth_l & (~msk4)) | (w2 & msk4)
+			el [ cmd == 0xEF ]                               # G_RDPSETOTHERMODE
+				gx_oth_h = w1 & 0xFFFFFF
+				gx_oth_l = w2
+			el [ cmd == 0xE4 ]                               # G_TEXRECT (2 extra words)
+				ws : u32 [ dr_r32[ pc + 4 ] ]
+				wd : u32 [ dr_r32[ pc + 12 ] ]
+				pc += 16
+				n_txr += 1
+				gx_texrect[ w1, w2, ws, wd ]
+			el [ cmd == 0xED ]                               # G_SETSCISSOR
+				gx_sx0 = i32[ (w1 >> 12) & 0xFFF ] >> 2
+				gx_sy0 = i32[ w1 & 0xFFF ] >> 2
+				gx_sx1 = i32[ (w2 >> 12) & 0xFFF ] >> 2
+				gx_sy1 = i32[ w2 & 0xFFF ] >> 2
+			el [ cmd == 0xF0 ]                               # G_LOADTLUT
+				gx_matslot = -1
+				cnt2 : i32 [ i32[ ((w2 >> 14) & 0x3FF) ] + 1 ]
+				if [ cnt2 > 256 ] cnt2 = 256
+				for [ i: i32 0, i < cnt2, i += 1 ]
+					pv2 : u32 [ dr_ru16[ gx_timg + u32[ i * 2 ] ] ]
+					r5 : u32 [ (pv2 >> 11) & 31 ]
+					g5 : u32 [ (pv2 >> 6) & 31 ]
+					b5 : u32 [ (pv2 >> 1) & 31 ]
+					gx_tlut[ i ] = ((r5 << 3 | r5 >> 2) << 24) | ((g5 << 3 | g5 >> 2) << 16) | ((b5 << 3 | b5 >> 2) << 8) | ((pv2 & 1) * 255)
+			el [ cmd == 0xF2 ]                               # G_SETTILESIZE
+				gx_matslot = -1
+				tn2 : i32 [ i32[ (w2 >> 24) & 7 ] ]
+				tl_uls[ tn2 ] = (w1 >> 12) & 0xFFF
+				tl_ult[ tn2 ] = w1 & 0xFFF
+				tl_lrs[ tn2 ] = (w2 >> 12) & 0xFFF
+				tl_lrt[ tn2 ] = w2 & 0xFFF
+			el [ cmd == 0xF3 ]                               # G_LOADBLOCK
+				gx_matslot = -1
+				tn3 : i32 [ i32[ (w2 >> 24) & 7 ] ]
+				txl : u32 [ (w2 >> 12) & 0xFFF ]
+				nby : u32 [ ((txl + 1) << gx_tsiz) >> 1 ]
+				if [ nby > 4096 ] nby = 4096
+				tb2 : u32 [ tl_tmem[ tn3 ] * 8 ]
+				for [ i: u32 0, i < nby, i += 1 ]
+					tmem[ (tb2 + i) & 0xFFF ] = u8[ dr_r8[ gx_timg + i ] ]
+			el [ cmd == 0xF4 ]                               # G_LOADTILE
+				gx_matslot = -1
+				tn4 : i32 [ i32[ (w2 >> 24) & 7 ] ]
+				ul4s : u32 [ ((w1 >> 12) & 0xFFF) >> 2 ]
+				ul4t : u32 [ (w1 & 0xFFF) >> 2 ]
+				lr4s : u32 [ ((w2 >> 12) & 0xFFF) >> 2 ]
+				lr4t : u32 [ (w2 & 0xFFF) >> 2 ]
+				wds : u32 [ lr4s - ul4s + 1 ]
+				bpr : u32 [ (wds << gx_tsiz) >> 1 ]
+				spr : u32 [ (u32[ gx_tw ] << gx_tsiz) >> 1 ]
+				tb3 : u32 [ tl_tmem[ tn4 ] * 8 ]
+				lnb : u32 [ tl_line[ tn4 ] * 8 ]
+				for [ tr: u32 ul4t, tr <= lr4t, tr += 1 ]
+					sa2 : u32 [ gx_timg + tr * spr + ((ul4s << gx_tsiz) >> 1) ]
+					da2 : u32 [ tb3 + (tr - ul4t) * lnb ]
+					for [ i: u32 0, i < bpr, i += 1 ]
+						tmem[ (da2 + i) & 0xFFF ] = u8[ dr_r8[ sa2 + i ] ]
+			el [ cmd == 0xF5 ]                               # G_SETTILE
+				gx_matslot = -1
+				tn5 : i32 [ i32[ (w2 >> 24) & 7 ] ]
+				tl_fmt[ tn5 ]   = (w1 >> 21) & 7
+				tl_siz[ tn5 ]   = (w1 >> 19) & 3
+				tl_line[ tn5 ]  = (w1 >> 9) & 0x1FF
+				tl_tmem[ tn5 ]  = w1 & 0x1FF
+				tl_pal[ tn5 ]   = (w2 >> 20) & 0xF
+				tl_cmt[ tn5 ]   = (w2 >> 18) & 3
+				tl_maskt[ tn5 ] = (w2 >> 14) & 0xF
+				tl_cms[ tn5 ]   = (w2 >> 8) & 3
+				tl_masks[ tn5 ] = (w2 >> 4) & 0xF
+			el [ cmd == 0xF6 ]                               # G_FILLRECT
+				n_fil += 1
+				gx_fillrect[ w1, w2 ]
+			el [ cmd == 0xF7 ]                               # G_SETFILLCOLOR
+				gx_fill = w2
+			el [ cmd == 0xFC ]                               # G_SETCOMBINE
+				gx_matslot = -1
+				gx_ccw1 = w1
+				gx_ccw2 = w2
+				ca0 : u32 [ (w1 >> 20) & 0xF ]
+				cc0 : u32 [ (w1 >> 15) & 0x1F ]
+				ca1 : u32 [ (w1 >> 5) & 0xF ]
+				cc1 : u32 [ w1 & 0x1F ]
+				cb0 : u32 [ (w2 >> 28) & 0xF ]
+				cb1 : u32 [ (w2 >> 24) & 0xF ]
+				cd0 : u32 [ (w2 >> 15) & 7 ]
+				cd1 : u32 [ (w2 >> 6) & 7 ]
+				gx_cc_tex = (ca0 == 1 || ca0 == 2 || cb0 == 1 || cb0 == 2 || cc0 == 1 || cc0 == 2 || cd0 == 1 || cd0 == 2 || ca1 == 1 || ca1 == 2 || cb1 == 1 || cb1 == 2 || cc1 == 1 || cc1 == 2 || cd1 == 1 || cd1 == 2)
+				gx_cc_shade = (ca0 == 4 || cb0 == 4 || cc0 == 4 || cd0 == 4 || ca1 == 4 || cb1 == 4 || cc1 == 4 || cd1 == 4)
+				gx_cc_add = (cd0 == 4) && (ca0 == 1 || ca0 == 2)
+				gx_cc_prim = (cc0 == 3)
+				gx_cc_lerp = (ca0 == 3) && (cb0 == 4) && (cc0 == 1) && (cd0 == 4)
+			el [ cmd == 0xFA ]                               # G_SETPRIMCOLOR
+				gx_matslot = -1
+				gx_prim = w2
+			el [ cmd == 0xFB ]                               # G_SETENVCOLOR
+				gx_matslot = -1
+				gx_env = w2
+			el [ cmd == 0xFD ]                               # G_SETTIMG
+				gx_tfmt = (w1 >> 21) & 7
+				gx_tsiz = (w1 >> 19) & 3
+				gx_tw   = i32[ (w1 & 0xFFF) ] + 1
+				gx_timg = gx_addr[ w2 ]
+				if [ dbg_on && frames >= 440 && frames < 460 ]
+					nchk : i32 [ (rtt_n < 16) ? rtt_n : 16 ]
+					for [ ri: i32 0, ri < nchk, ri += 1 ]
+						reg : u32 [ rtt_addr[ ri ] ]
+						rsz : u32 [ u32[ rtt_w[ ri ] * rtt_h[ ri ] * 2 ] ]
+						if [ gx_timg >= reg && gx_timg < reg + rsz ]
+							printf[ "n64 RTT-SAMPLE timg=%06X hits cimg=%06X (w=%d) fmt=%u siz=%u f%u\n", gx_timg, reg, rtt_w[ ri ], gx_tfmt, gx_tsiz, frames ]
+			el [ cmd == 0xFE ]                               # G_SETZIMG
+				gx_zimg = gx_addr[ w2 ]
+			el [ cmd == 0xFF ]                               # G_SETCIMG
+				gx_cimg = gx_addr[ w2 ]
+				gx_ciw  = i32[ (w1 & 0xFFF) ] + 1
+				if [ gx_ciw < 320 && gx_cimg != vi_origin ]
+					slot : i32 [ rtt_n & 15 ]
+					rtt_addr[ slot ] = gx_cimg
+					rtt_w[ slot ]    = gx_ciw
+					rtt_h[ slot ]    = gx_ciw
+					rtt_n += 1
+					if [ dbg_on && frames >= 440 && frames < 460 ]
+						printf[ "n64 RTT-CIMG addr=%06X w=%d f%u\n", gx_cimg, gx_ciw, frames ]
+			el [ cmd == 0x00 || cmd == 0xB5 || cmd == 0xB2 || cmd == 0xE6 || cmd == 0xE7 || cmd == 0xE8 || cmd == 0xE9 || cmd == 0xB3 ]
+				cmd = cmd                                    # known no-ops / handled elsewhere
+			el
+				gx_unk[ cmd ] = gx_unk[ cmd ] + 1
+		if [ gpu_on && gxv_n > 0 ]
+			pub_lock.lock[]
+			nf9 : i32 [ gxv_n * 13 ]
+			for [ i: i32 0, i < nf9, i += 1 ]
+				pub_gxv[ i ] = gxv[ i ]
+			pub_gxv_n = gxv_n
+			for [ i: i32 0, i < 24576, i += 1 ]
+				pub_st[ i ] = st_tex[ i ]
+			if [ at_dirty ]
+				pub_at_dirty = true
+				at_dirty = false
+			pub_lock.unlock[]
+		if [ dbg_on && (frames & 255) == 0 ]
+			for [ k: i32 0, k < 256, k += 1 ]
+				ucnt : u32 [ gx_unk[ k ] ]
+				if [ ucnt > 0 ]
+					printf[ "n64 gfx UNKCMD %02X x%u f%u\n", k, ucnt, frames ]
+					gx_unk[ k ] = 0
+		if [ dbg_on && frames >= 300 && frames < 304 ]
+			printf[ "n64 gfx f%u cmds=%d mtx=%d vtx=%d tri=%d txr=%d fil=%d cimg=%06X vp=%d\n", frames, gcmd, n_mtx, n_vtx, n_tri, n_txr, n_fil, gx_cimg, i32[ gx_vp[0] ] ]
+
+
 	func pif_joybus []
 		i : i32 [ 0 ]
 		ch : i32 [ 0 ]
@@ -390,14 +2321,47 @@ element n64
 		el cpu.c_cause = cpu.c_cause & (~u32[0x400])
 
 	func take_int []
+		dbg_ic += 1
 		cpu.c_cause = cpu.c_cause & (~u32[0x7C])            # ExcCode 0
-		cpu.c_epc = cpu.pc
+		if [ cpu.npc != cpu.pc + 4 ]                         # in a branch delay slot:
+			cpu.c_epc = cpu.pc - 4                           # EPC = the branch, BD set,
+			cpu.c_cause = cpu.c_cause | 0x80000000           # so ERET re-runs branch+slot
+		el
+			cpu.c_epc = cpu.pc
+			cpu.c_cause = cpu.c_cause & (~u32[0x80000000])
+		if [ dbg_esc < 40 && (cpu.pc < 0x80000000 || cpu.pc >= 0x80400000) ]
+			dbg_esc += 1
+			printf[ "n64 INT from bogus pc=%08X ra=%08X f%u\n", cpu.pc, u32[ cpu.r[31] ], frames ]
 		cpu.c_status = cpu.c_status | 0x2                    # EXL
 		cpu.pc  = 0x80000180
 		cpu.npc = 0x80000184
 
-	# ---------------- virtual memory (KSEG0/1 direct) ----------------
+	# raise a synchronous exception from inside exec (EPC = the faulting
+	# instruction, which re-executes if the OS returns)
+	func take_exc [ code: u32, cur: u32 ]
+		if [ dbg_esc < 40 ]
+			dbg_esc += 1
+			printf[ "n64 FAULT exc=%u pc=%08X op=%08X f%u\n", code, cur, rd32v[ cur ], frames ]
+		cpu.c_cause = (cpu.c_cause & (~u32[0x7C])) | ((code & 0x1F) << 2)
+		cpu.c_epc = cur
+		cpu.c_status = cpu.c_status | 0x2                    # EXL
+		cpu.pc  = 0x80000180
+		cpu.npc = 0x80000184
+
+	# ---------------- virtual memory (KSEG0/1 direct + TLB) ----------------
+	# KUSEG/KSSEG go through the TLB (goddard maps its dynlist segment at
+	# 0x04000000 via osMapTLB); anything unmapped falls back to the physical
+	# mask so the pre-TLB boot path keeps working.
 	func vmap [ va: u32 ] -> u32
+		if [ va >= 0x80000000 && va < 0xC0000000 ] return va & 0x1FFFFFFF
+		if [ cpu.tlb_used ]
+			for [ i: i32 0, i < 32, i += 1 ]
+				pm : u32 [ cpu.tlb_pm[ i ] ]
+				vmask : u32 [ ~(pm | 0x1FFF) ]
+				if [ (va & vmask) == (cpu.tlb_hi[ i ] & vmask) ]
+					hpg : u32 [ (pm + 0x2000) >> 1 ]
+					lo : u32 [ (va & hpg) ? cpu.tlb_lo1[ i ] : cpu.tlb_lo0[ i ] ]
+					if [ lo & 2 ] return (((lo >> 6) & 0xFFFFFF) << 12) | (va & (hpg - 1))
 		return va & 0x1FFFFFFF
 
 	func rd8  [ va: u32 ] -> u32 return rd_phys8[ vmap[ va ] ]
@@ -464,6 +2428,11 @@ element n64
 	func sx32 [ v: u32 ] -> i64
 		return i64[ i32[ v ] ]
 
+	func sx16 [ v: u32 ] -> i64
+		ww : u32 [ v & 0xFFFF ]
+		if [ ww >= 0x8000 ] ww = ww | 0xFFFF0000
+		return i64[ i32[ ww ] ]
+
 	func step []
 		# pending interrupt (IE, not EXL/ERL, enabled + pending lines)
 		st : u32 [ cpu.c_status ]
@@ -471,6 +2440,52 @@ element n64
 			if [ cpu.c_cause & st & 0xFF00 ] take_int[]
 		op  : u32 [ rd32v[ cpu.pc ] ]
 		cur : u32 [ cpu.pc ]
+		if [ dbg_on ]
+			slot : i32 [ dbg_ri & 31 ]
+			dbg_ring[ slot * 2 ]     = cur
+			dbg_ring[ slot * 2 + 1 ] = op
+			dbg_ri += 1
+			pv : u32 [ dbg_ring[ ((dbg_ri + 30) & 31) * 2 ] ]
+			if [ cur != pv + 4 ]
+				js : i32 [ dbg_ji & 31 ]
+				dbg_jring[ js * 2 ]     = pv
+				dbg_jring[ js * 2 + 1 ] = cur
+				dbg_ji += 1
+			if [ op == 0 ]
+				dbg_z += 1
+				if [ dbg_z == 64 && dbg_esc == 0 ]
+					dbg_esc = 1
+					printf[ "n64 NOPSLED start=%08X ra=%08X sp=%08X f%u — last jumps:\n", cur - 252, u32[ cpu.r[31] ], u32[ cpu.r[29] ], frames ]
+					for [ k: i32 0, k < 32, k += 1 ]
+						qq : i32 [ (dbg_ji + k) & 31 ]
+						printf[ "  J %08X -> %08X\n", dbg_jring[ qq * 2 ], dbg_jring[ qq * 2 + 1 ] ]
+			el
+				dbg_z = 0
+		if [ dbg_on && cur == 0x80193508 && (u32[ cpu.r[6] ] & 0x7FFFFF) == 0x88900 && dbg_wv < 0 ]
+			dbg_wv += 1
+			nd9 : u32 [ u32[ cpu.r[10] ] ]
+			printf[ "n64 GDV node=%08X fx=%08X fy=%08X fz=%08X f%u\n", nd9, dr_r32[ nd9 + 0x20 ], dr_r32[ nd9 + 0x24 ], dr_r32[ nd9 + 0x28 ], frames ]
+		if [ dbg_on && cur == 0x80181AA8 && u32[ cpu.r[18] ] == 0x800B4540 && dbg_wv < 4 && frames >= 300 ]
+			dbg_wv += 1
+			spv : u32 [ u32[ cpu.r[29] ] ]
+			jt9 : u32 [ dr_r32[ spv + 88 ] ]
+			printf[ "n64 JMTX joint=%08X f%u\n", jt9, frames ]
+			for [ jr: i32 0, jr < 4, jr += 1 ]
+				jb9 : u32 [ jt9 + 0xE8 + u32[ jr * 16 ] ]
+				printf[ "  %08X %08X %08X %08X\n", dr_r32[ jb9 ], dr_r32[ jb9 + 4 ], dr_r32[ jb9 + 8 ], dr_r32[ jb9 + 12 ] ]
+		if [ dbg_on && cur == 0x80183B20 ]
+			dlp : u32 [ u32[ cpu.r[4] ] ]
+			dlo : u32 [ dlp & 0x7FFFFF ]
+			printf[ "n64 proc_dynlist a0=%08X ra=%08X w0=%08X w1=%08X w2=%08X f%u\n", dlp, u32[ cpu.r[31] ], dr_r32[ dlo ], dr_r32[ dlo + 4 ], dr_r32[ dlo + 8 ], frames ]
+		if [ dbg_on && cur == 0x8018D298 ]
+			fp : u32 [ u32[ cpu.r[4] ] & 0x7FFFFF ]
+			fs : local u8 [ 64 ]
+			for [ k: i32 0, k < 60, k += 1 ]
+				fchr : u32 [ u32[ rdram[ fp + u32[k] ] ] ]
+				if [ fchr >= 32 && fchr < 127 ] fs[ k ] = u8[ fchr ]
+				el fs[ k ] = 46
+			fs[ 60 ] = 0
+			printf[ "n64 gd_printf ra=%08X a1=%08X a2=%08X f%u: %s\n", u32[ cpu.r[31] ], u32[ cpu.r[5] ], u32[ cpu.r[6] ], frames, fs ]
 		cpu.pc  = cpu.npc
 		cpu.npc = cpu.pc + 4
 		exec[ op, cur ]
@@ -481,7 +2496,7 @@ element n64
 
 	func branch [ cond: bool, cur: u32, op: u32, likely: bool ]
 		if [ cond ]
-			cpu.npc = cur + 4 + (u32[ sx32[ (op & 0xFFFF) ] ] << 2)
+			cpu.npc = cur + 4 + (u32[ sx16[ op ] ] << 2)
 		el [ likely ]
 			cpu.pc  = cpu.npc
 			cpu.npc = cpu.pc + 4
@@ -492,11 +2507,11 @@ element n64
 		rt : i32 [ i32[ (op >> 16) & 31 ] ]
 		rd : i32 [ i32[ (op >> 11) & 31 ] ]
 		sa : i32 [ i32[ (op >> 6) & 31 ] ]
-		im : i64 [ sx32[ op & 0xFFFF ] ]
+		im : i64 [ sx16[ op ] ]
 		zi : u32 [ op & 0xFFFF ]
 		switch [ o ]
 		case 0x00
-			exec_special[ op, rs, rt, rd, sa ]
+			exec_special[ op, rs, rt, rd, sa, cur ]
 		case 0x01
 			rti : i32 [ rt ]
 			c : bool [ false ]
@@ -625,9 +2640,10 @@ element n64
 		case 0x3F
 			wr64[ u32[ cpu.r[ rs ] + im ], cpu.r[ rt ] ]
 		default
+			take_exc[ 10, cur ]                                # Reserved Instruction
 			return
 
-	func exec_special [ op: u32, rs: i32, rt: i32, rd: i32, sa: i32 ]
+	func exec_special [ op: u32, rs: i32, rt: i32, rd: i32, sa: i32, cur: u32 ]
 		f : u32 [ op & 0x3F ]
 		switch [ f ]
 		case 0x00
@@ -745,12 +2761,18 @@ element n64
 			dv9 : i64 [ cpu.r[ rt ] ]
 			cpu.r[ rd ] = dv9 >> u32[ sa + 32 ]
 		default
+			take_exc[ 10, cur ]                                # Reserved Instruction
 			return
 
 	func exec_cop0 [ op: u32, rs: i32, rt: i32, rd: i32 ]
 		if [ rs == 0 ]                                         # MFC0
 			v : u32 [ 0 ]
-			if [ rd == 9 ]  v = cpu.c_count
+			if [ rd == 0 ]  v = cpu.c_index
+			el [ rd == 2 ]  v = cpu.c_entrylo0
+			el [ rd == 3 ]  v = cpu.c_entrylo1
+			el [ rd == 5 ]  v = cpu.c_pagemask
+			el [ rd == 9 ]  v = cpu.c_count
+			el [ rd == 10 ] v = cpu.c_entryhi
 			el [ rd == 11 ] v = cpu.c_compare
 			el [ rd == 12 ] v = cpu.c_status
 			el [ rd == 13 ] v = cpu.c_cause
@@ -760,7 +2782,12 @@ element n64
 			return
 		if [ rs == 4 ]                                         # MTC0
 			v2 : u32 [ u32[ cpu.r[ rt ] ] ]
-			if [ rd == 9 ]  cpu.c_count = v2
+			if [ rd == 0 ]  cpu.c_index = v2
+			el [ rd == 2 ]  cpu.c_entrylo0 = v2
+			el [ rd == 3 ]  cpu.c_entrylo1 = v2
+			el [ rd == 5 ]  cpu.c_pagemask = v2
+			el [ rd == 9 ]  cpu.c_count = v2
+			el [ rd == 10 ] cpu.c_entryhi = v2
 			el [ rd == 11 ]
 				cpu.c_compare = v2
 				cpu.c_cause = cpu.c_cause & (~u32[0x8000])
@@ -768,7 +2795,33 @@ element n64
 			el [ rd == 13 ] cpu.c_cause = (cpu.c_cause & (~u32[0x300])) | (v2 & 0x300)
 			el [ rd == 14 ] cpu.c_epc = v2
 			return
+		if [ (op & 0x3F) == 0x02 ]                             # TLBWI
+			ti : i32 [ i32[ cpu.c_index & 31 ] ]
+			cpu.tlb_hi[ ti ]  = cpu.c_entryhi
+			cpu.tlb_pm[ ti ]  = cpu.c_pagemask
+			cpu.tlb_lo0[ ti ] = cpu.c_entrylo0
+			cpu.tlb_lo1[ ti ] = cpu.c_entrylo1
+			cpu.tlb_used = true
+			return
+		if [ (op & 0x3F) == 0x08 ]                             # TLBP
+			cpu.c_index = 0x80000000
+			pvpn : u32 [ cpu.c_entryhi >> 13 ]
+			for [ i: i32 0, i < 32, i += 1 ]
+				if [ (cpu.tlb_hi[ i ] >> 13) == pvpn ] cpu.c_index = u32[ i ]
+			return
+		if [ (op & 0x3F) == 0x01 ]                             # TLBR
+			ri : i32 [ i32[ cpu.c_index & 31 ] ]
+			cpu.c_entryhi  = cpu.tlb_hi[ ri ]
+			cpu.c_pagemask = cpu.tlb_pm[ ri ]
+			cpu.c_entrylo0 = cpu.tlb_lo0[ ri ]
+			cpu.c_entrylo1 = cpu.tlb_lo1[ ri ]
+			return
 		if [ (op & 0x3F) == 0x18 ]                             # ERET
+			if [ dbg_esc < 40 && (cpu.c_epc < 0x80000000 || cpu.c_epc >= 0x80400000) ]
+				dbg_esc += 1
+				printf[ "n64 ERET to bogus epc=%08X f%u\n", cpu.c_epc, frames ]
+			if [ dbg_on && frames >= 200 && frames < 280 ]
+				printf[ "n64 ERET %08X ra=%08X f%u\n", cpu.c_epc, u32[ cpu.r[31] ], frames ]
 			cpu.pc  = cpu.c_epc
 			cpu.npc = cpu.pc + 4
 			cpu.c_status = cpu.c_status & (~u32[0x2])
@@ -819,7 +2872,13 @@ element n64
 			el [ fn == 14 ] fset32[ fd, u32[ i32[ ceil[ v1 ] ] ] ]
 			el [ fn == 15 ] fset32[ fd, u32[ i32[ floor[ v1 ] ] ] ]
 			el [ fn == 33 ] fsd[ fd, f64[ v1 ] ]                                   # cvt.d.s
-			el [ fn == 36 ] fset32[ fd, u32[ i32[ v1 ] ] ]                         # cvt.w.s
+			el [ fn == 36 ]                                                        # cvt.w.s: honor FCR31 RM
+				rm : u32 [ cpu.fcr31 & 3 ]
+				cvv : f32 [ v1 ]
+				if [ rm == 0 ] cvv = floor[ v1 + 0.5 ]
+				el [ rm == 2 ] cvv = ceil[ v1 ]
+				el [ rm == 3 ] cvv = floor[ v1 ]
+				fset32[ fd, u32[ i32[ cvv ] ] ]
 			el [ fn >= 48 ] fcmp[ f64[ v1 ], f64[ v2 ], fn ]
 			return
 		if [ rs == 17 ]                                        # fmt D
@@ -835,7 +2894,13 @@ element n64
 			el [ fn == 7 ] fsd[ fd, 0.0 - ad ]
 			el [ fn == 13 || fn == 9 ] fset32[ fd, u32[ i32[ ad ] ] ]
 			el [ fn == 32 ] fss[ fd, f32[ ad ] ]                                  # cvt.s.d
-			el [ fn == 36 ] fset32[ fd, u32[ i32[ ad ] ] ]
+			el [ fn == 36 ]
+				rm2 : u32 [ cpu.fcr31 & 3 ]
+				cvd : f64 [ ad ]
+				if [ rm2 == 0 ] cvd = floor[ ad + 0.5 ]
+				el [ rm2 == 2 ] cvd = ceil[ ad ]
+				el [ rm2 == 3 ] cvd = floor[ ad ]
+				fset32[ fd, u32[ i32[ cvd ] ] ]
 			el [ fn >= 48 ] fcmp[ ad, bd, fn ]
 			return
 		if [ rs == 20 ]                                        # fmt W
@@ -859,8 +2924,9 @@ element n64
 
 	# ---------------- frame loop ----------------
 	func run_frame []
-		# ~93.75MHz / 60 ≈ 1562500 cycles; Count at half rate handled in step
-		budget : i32 [ 1562500 ]
+		# 93.75MHz / 60 / 2 PClocks-per-instruction ≈ 781250 steps; Count
+		# increments 1 per step, matching the hardware Count rate exactly
+		budget : i32 [ 781250 ]
 		line_step : i32 [ budget / 262 ]
 		spent : i32 [ 0 ]
 		vline : u32 [ 0 ]
@@ -873,6 +2939,33 @@ element n64
 			if [ (vi_current & (~u32[1])) == (vi_intr_line & (~u32[1])) ]
 				mi_intr = mi_intr | 0x8
 				mi_check[]
+		if [ dbg_on && getenv[ 'N64_AUTO' ] ]
+			if [ frames == 400 ] pad_st = pad_st | 0x1000
+			if [ frames == 410 ] pad_st = pad_st & (~u32[0x1000])
+			if [ frames == 470 && getenv[ 'N64_AUTO2' ] ] pad_st = pad_st | 0x8000
+			if [ frames == 480 ] pad_st = pad_st & (~u32[0x8000])
+		ai_drain[]
+		if [ dbg_on && frames == 600 ]
+			printf[ "n64 f600 pc=%08X ra=%08X sp=%08X a0=%08X op=%08X\n", cpu.pc, u32[ cpu.r[31] ], u32[ cpu.r[29] ], u32[ cpu.r[4] ], rd32v[ cpu.pc ] ]
+			printf[ "n64 regs a1=%08X a2=%08X a3=%08X v0=%08X v1=%08X s0=%08X s1=%08X s2=%08X s3=%08X t0=%08X\n", u32[ cpu.r[5] ], u32[ cpu.r[6] ], u32[ cpu.r[7] ], u32[ cpu.r[2] ], u32[ cpu.r[3] ], u32[ cpu.r[16] ], u32[ cpu.r[17] ], u32[ cpu.r[18] ], u32[ cpu.r[19] ], u32[ cpu.r[8] ] ]
+			a0p : u32 [ u32[ cpu.r[4] ] & 0x7FFFFF ]
+			sb : local u8 [ 100 ]
+			for [ k: i32 0, k < 96, k += 1 ]
+				ch : u32 [ u32[ rdram[ a0p + u32[k] ] ] ]
+				if [ ch >= 32 && ch < 127 ] sb[ k ] = u8[ ch ]
+				el sb[ k ] = 46
+			sb[ 96 ] = 0
+			printf[ "n64 a0 str: %s\n", sb ]
+			gdf : ref FILE [ fopen[ '/tmp/n64_gd.bin', 'wb' ] ]
+			if [ gdf ]
+				fwrite[ rdram, 1, 0x800000, gdf ]
+				fclose[ gdf ]
+				puts 'n64 dumped rdram to /tmp/n64_gd.bin'
+			# stack back-scan: plausible return addresses on thread5's stack
+			spb : u32 [ u32[ cpu.r[29] ] & 0x7FFFFF ]
+			for [ k: i32 0, k < 64, k += 1 ]
+				sv : u32 [ dr_r32[ spb + u32[ k * 4 ] ] ]
+				if [ sv >= 0x80100000 && sv < 0x80400000 ] printf[ "n64 stackra +%d = %08X\n", k * 4, sv ]
 		frames += 1
 		if [ trace && (frames % 60) == 0 ]
 			printf[ "n64 f%u pc=%08X sp_stat=%X mi=%X/%X vi_org=%06X\n", frames, cpu.pc, sp_status, mi_intr, mi_mask, vi_origin ]
@@ -880,6 +2973,19 @@ element n64
 	# publish the VI framebuffer (16bpp 5551 or 32bpp) for the render thread
 	func publish []
 		pub_lock.lock[]
+		if [ ss_used ]
+			wss : i32 [ 320 * gx_ss ]
+			hss : i32 [ 240 * gx_ss ]
+			pub_w = wss
+			pub_h = hss
+			for [ y9: i32 0, y9 < hss, y9 += 1 ]
+				sb9 : i32 [ y9 * 1280 ]
+				db9 : i32 [ y9 * wss ]
+				for [ x9: i32 0, x9 < wss, x9 += 1 ]
+					pub_framebuf[ db9 + x9 ] = ss_buf[ sb9 + x9 ]
+			pub_valid = true
+			pub_lock.unlock[]
+			return
 		w2 : i32 [ (vi_width > 0 && vi_width <= 640) ? i32[ vi_width ] : 320 ]
 		h2 : i32 [ (w2 > 400) ? 480 : 240 ]
 		pub_w = w2
@@ -976,6 +3082,45 @@ element n64
 		ux.will_animate = true
 		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
+	# ---------------- GPU renderer: pipeline setup + per-frame draw ----------------
+	func gxr_setup [ cv: Canvas ]
+		if [ r_render ] return
+		if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
+		r_shader = N64GX [ vk: cv.vk, name: 'n64gx' ]
+		r_atlas = Texture [ vk: cv.vk, w: cv.w, width: 1024, height: 1024, linear: false ]
+		r_state = Texture [ vk: cv.vk, w: cv.w, width: 2048, height: 3, linear: false, pixel_format: Pixel.rgbaf32 ]
+		vm : new vertex_member_t [ 4 ]
+		vm[0].src    = typeid[ vec3f ]
+		vm[0].size   = 12
+		vm[0].offset = 0
+		vm[1].src    = typeid[ vec4f ]
+		vm[1].size   = 16
+		vm[1].offset = 12
+		vm[2].src    = typeid[ vec2f ]
+		vm[2].size   = 8
+		vm[2].offset = 28
+		vm[3].src    = typeid[ vec4f ]
+		vm[3].size   = 16
+		vm[3].offset = 36
+		vsz : i32 [ 52 ]
+		vct : i32 [ 32768 ]
+		vmc : i32 [ 4 ]
+		r_vbo = Gpu [ vk: cv.vk, name: 'n64v', members: vm, member_count: vmc, vertex_size: vsz, vertex_count: vct ]
+		r_vbo.sync[ cv.w ]
+		gw : i32 [ i32[ bounds.w ] * 4 ]
+		gh : i32 [ i32[ bounds.h ] * 4 ]
+		if [ gw > 4096 ] gw = 4096
+		if [ gh > 4096 ] gh = 4096
+		r_render = Render [ vk: cv.vk, w: cv.w, width: gw, height: gh, use_depth: true, reduce: true, clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
+		r_pipeline = Pipeline [ vk: cv.vk, w: cv.w, name: string 'n64gx', r: r_render, s: r_shader, vbo: r_vbo, samplers: map Au[string] [ 'atlas': r_atlas, 'state': r_state ], straight_alpha: true, cull_none: true ]
+		r_model = Model [ vk: cv.vk, w: cv.w, s: r_shader, samplers: map Au[string] [ 'atlas': r_atlas, 'state': r_state ] ]
+		r_model.pipelines = array Pipeline [ alloc: 1 ]
+		r_model.pipelines.push[ r_pipeline ]
+		r_model.r = r_render
+		r_render.models = array Model [ r_model ]
+		r_vbo.vertex_count = 0
+		puts 'n64 gpu: render target {gw}x{gh} (4x reduce)'
+
 	public func paint [ cv: Canvas, vp: rect ]
 		bounds = vp
 		if [ !emu_started ]
@@ -984,6 +3129,27 @@ element n64
 			pub_lock = mutex [ cond: false ]
 			tid : local u64 [ 1 ]
 			pthread_create[ tid, null, ref emu_entry, a ]
+		if [ gpu_on && pub_gxv_n > 0 ]
+			gxr_setup[ cv ]
+			if [ !r_render ] return
+			pub_lock.lock[]
+			if [ pub_at_dirty ]
+				r_atlas.upload[ at_stage, 1024 * 1024 * 4 ]
+				pub_at_dirty = false
+			r_state.upload[ pub_st, 2048 * 3 * 16 ]
+			vd9 : ref f32 [ r_vbo.vertex_data ]
+			nf9 : i32 [ pub_gxv_n * 13 ]
+			for [ i: i32 0, i < nf9, i += 1 ]
+				vd9[ i ] = pub_gxv[ i ]
+			r_vbo.vertex_count = pub_gxv_n
+			pub_lock.unlock[]
+			r_vbo.upload_verts[]
+			r_render.update[]
+			r_render.draw[]
+			r_render.sync_fence[]
+			rt9 : Texture [ (r_render.reduce && r_render.reduction) ? r_render.reduction : r_render.color ]
+			cv.draw_image[ rt9, rect [ x: vp.x, y: vp.y, w: vp.w, h: vp.h ] ]
+			return
 		if [ !pub_valid ] return
 		pub_lock.lock[]
 		if [ !screen_tex || tex_w != pub_w ]
@@ -993,11 +3159,23 @@ element n64
 		pub_lock.unlock[]
 		cv.draw_image[ screen_tex, rect [ x: vp.x, y: vp.y, w: vp.w, h: vp.h ] ]
 
+	# reload/exit teardown: stop the emulation thread DETERMINISTICALLY (before
+	# the module's code unloads — dealloc order can't be relied on for threads).
+	public func on_unload []
+		if [ emu_started ]
+			emu_stop = true
+			while [ emu_running ]
+				usleep[ 2000 ]
+		if [ audio ]
+			audio.close[]
+
 	func dealloc []
 		if [ emu_started ]
 			emu_stop = true
 			while [ emu_running ]
 				usleep[ 2000 ]
+		if [ audio ]
+			audio.close[]
 
 trinity n64_app
 	public emu    : n64

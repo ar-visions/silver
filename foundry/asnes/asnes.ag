@@ -160,6 +160,95 @@ class cpu_state
 	public memory 			: ref u8
 
 
+# SNES Mode 7 affine layer, rendered on the GPU as a textured fullscreen quad.
+# 'src' = the unpacked 1024x1024 (128x128 tiles * 8px) Mode-7 plane, palette
+# already applied (alpha 0 = transparent pixel). 'mat' = a 256x1 rgba32f texture
+# whose texel y holds that scanline's precomputed affine { originX, originY, a, c }
+# (exactly what ppu_m7_line computes on the CPU). The fragment shader does the
+# per-pixel affine + samples the plane; bracketing-scanline coefficient lerp gives
+# a smooth horizon the discrete CPU/hardware path can't. See project_asnes_mode7_vulkan.
+enum Mode7Surface
+	src : 0
+	mat : 1
+
+ModelViewProject Mode7
+	mutable params : vec4f          # x=hflip, y=vflip, z=repeat-mode(0/1 wrap,2 transp,3 char0), w=0
+
+	attrib src : LayoutBinding [ type:typeid[ Mode7Surface ], id:Mode7Surface.src, count:1, format: typeid[ rgba8 ] ]
+	attrib mat : LayoutBinding [ type:typeid[ Mode7Surface ], id:Mode7Surface.mat, count:1, format: typeid[ rgbaf ] ]
+
+	attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+	attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+	attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+	attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+	func init [ ]
+		model = mat4f.identity[]
+		eye:    vec3f [ 0.0, 0.0, 2.0 ]
+		center: vec3f [ 0.0, 0.0, 0.0 ]
+		up:     vec3f [ 0.0, 1.0, 0.0 ]
+		view  = mat4f.look_at[ eye, center, up ]
+		proj  = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
+
+	func vertex [] -> GLSL none {
+		v_uv        = uv;
+		gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+	}
+
+	func fragment [] -> GLSL none {
+		float sy = v_uv.y * 224.0;                       // SNES scanline (continuous)
+		float sx = v_uv.x * 256.0;                       // pixel within the line
+		if (ubo.params.x > 0.5) sx = 255.0 - sx;         // hflip
+		// per-scanline affine coeffs, lerped between bracketing scanlines
+		float y0 = floor(sy);
+		float fy = sy - y0;
+		int   iy = int(y0);
+		vec4  m0 = texelFetch(mat, ivec2(iy,                  0), 0);   // {originX, originY, a, c}
+		vec4  m1 = texelFetch(mat, ivec2(min(iy + 1, 223),   0), 0);
+		vec4  m  = mix(m0, m1, fy);
+		float px = (m.x + m.z * sx) / 256.0;             // plane pixelX
+		float py = (m.y + m.w * sx) / 256.0;             // plane pixelY
+		int   rep = int(ubo.params.z + 0.5);
+		bool  oob = (px < 0.0 || px >= 1024.0 || py < 0.0 || py >= 1024.0);
+		if (rep == 2 && oob) { fragColor = vec4(0.0); return; }
+		vec2 raw = vec2(px, py) / 1024.0;
+		vec2 ddx = dFdx(raw);
+		vec2 ddy = dFdy(raw);
+		vec2 uv2 = fract(raw);
+		fragColor = textureGrad(src, uv2, ddx, ddy);
+		// per-scanline color math on the plane (reference hardware CGADSUB on BG1
+		// gated by the HDMA'd color window): row 1 = {wh0,wh1,wh2,wh3}, row 2 =
+		// {flags, coldata r,g,b}. This is how the distance fog AND the craft
+		// shadow (an ellipse traced per line in WH0/WH1) darken the plane.
+		vec4 f1 = mix(texelFetch(mat, ivec2(iy, 1), 0), texelFetch(mat, ivec2(min(iy + 1, 223), 1), 0), 0.0);
+		vec4 f2 = texelFetch(mat, ivec2(iy, 2), 0);
+		int flags = int(f2.x + 0.5);
+		int region = (flags >> 6) & 3;
+		if (region != 3) {
+			float wx = v_uv.x * 256.0;             // window applies to SCREEN x (pre-hflip)
+			bool in1 = (wx >= f1.x && wx <= f1.y + 1.0);
+			bool in2 = (wx >= f1.z && wx <= f1.w + 1.0);
+			if ((flags & 2) != 0) in1 = !in1;
+			if ((flags & 8) != 0) in2 = !in2;
+			bool w1en = (flags & 1) != 0;
+			bool w2en = (flags & 4) != 0;
+			int lgc = (flags >> 4) & 3;
+			bool w = false;
+			if (w1en && !w2en) w = in1;
+			else if (!w1en && w2en) w = in2;
+			else if (w1en && w2en) w = (lgc == 0) ? (in1 || in2) : (lgc == 1) ? (in1 && in2) : (lgc == 2) ? (in1 != in2) : (in1 == in2);
+			bool apply = (region == 0) || (region == 1 && w) || (region == 2 && !w);
+			if (apply) {
+				vec3 cold = f2.yzw / 31.0;
+				vec3 c = ((flags & 256) != 0) ? fragColor.rgb - cold : fragColor.rgb + cold;
+				if ((flags & 512) != 0) c *= 0.5;
+				fragColor.rgb = clamp(c, 0.0, 1.0);
+			}
+			//fragColor.rgb = fragColor.bgr;
+		}
+	}
+
+
 element asnes
 	public  spc_rom        	: path
 	public  rom            	: path
@@ -338,8 +427,7 @@ element asnes
 	# slot-independent position-set matching (rgen pattern).
 	mutable dbg_bgr        	: i32               # BGRAW diag print budget
 	mutable dbg_spr        	: i32               # SPRC class-flip diag budget
-	mutable dbg_m7l        	: i32               # M7LERP diag print budget
-	mutable dbg_m7c        	: i32               # M7CHG diag print budget
+	mutable dbg_m7l        	: i32               # M7EASE diag print budget
 	mutable bgg_prevh      	: new i32 [ 4 ]     # prev hofs per BG (rep line)
 	mutable bgg_prevv      	: new i32 [ 4 ]
 	mutable bgg_dx         	: new f32 [ 4 ]     # published scroll delta per BG
@@ -432,24 +520,16 @@ element asnes
 	mutable pub_m7b        	: new i16 [ 224 ]
 	mutable pub_m7c        	: new i16 [ 224 ]
 	mutable pub_m7d        	: new i16 [ 224 ]
-	# m7 lerp segment: the last two DISTINCT affine states, each stamped with
-	# its change time on the PLL clock. history only rotates when a publish
-	# actually changes the matrices/scroll/center. the render thread samples
-	# 2 frames in the past and lerps inside the [t0, t] bracket, so displayed
-	# motion is a continuous piecewise-linear function of time through the
-	# real snapshots — cadence-independent (per-frame steppers, every-other,
-	# 30fps cinematics, and the irregular quantized steps of a decelerating
-	# camera all glide the same way).
-	mutable pub_m7a3       	: new i16 [ 224 ]   # previous distinct frame (lerp origin)
-	mutable pub_m7b3       	: new i16 [ 224 ]
-	mutable pub_m7c3       	: new i16 [ 224 ]
-	mutable pub_m7d3       	: new i16 [ 224 ]
-	mutable pub_m7hofs3    	: u16
-	mutable pub_m7vofs3    	: u16
-	mutable pub_m7x3       	: i16
-	mutable pub_m7y3       	: i16
-	mutable pub_m7t        	: i64               # PLL time of the newest distinct state
-	mutable pub_m7t0       	: i64               # PLL time of the lerp origin
+	# m7 display-state filter: the render thread keeps its own per-line copy
+	# of the rotation coefficients and eases them toward the newest published
+	# frame by 22% per 60Hz-normalized frame (frame-rate-independent EMA).
+	# only the ANGLE glides — position/center/scroll pass through 1:1; each
+	# line's origin is rebuilt from the eased coefficients + exact position.
+	mutable m7f_a          	: new f32 [ 224 ]   # displayed per-line matrix coefficients
+	mutable m7f_b          	: new f32 [ 224 ]
+	mutable m7f_c          	: new f32 [ 224 ]
+	mutable m7f_d          	: new f32 [ 224 ]
+	mutable m7f_last       	: i64               # last ease step (us, wall clock)
 	mutable pub_mode       	: new u8  [ 224 ]
 	mutable pub_wh0        	: new u8  [ 224 ]    # published per-line color-window + math state for the m7 GPU pass
 	mutable pub_wh1        	: new u8  [ 224 ]
@@ -1910,11 +1990,13 @@ element asnes
 	# GPU Mode 7: precompute each scanline's affine setup exactly as ppu_m7_line
 	# (origin folds in the b/d*yy term + center; per-pixel uses originX + a*x).
 	# Packed into m7_mat as { originX, originY, a, c } floats per texel row.
-	# al < 1 lerps each line's affine params between the previous distinct and
-	# current emulated frames (smooth mode: the plane redraws every display
-	# refresh, so translation/rotation/zoom glide across the game's actual
-	# camera cadence). al=1 = exact current frame (non-smooth path).
-	func m7_matrices [ al: f32 ]
+	# k < 1 eases each line's displayed ROTATION coefficients toward the
+	# current emulated frame by k per call (render-side EMA, frame-rate
+	# independent: the plane redraws every display refresh); the line origin
+	# is rebuilt from the eased coefficients + exact position, so translation
+	# follows 1:1 while the angle glides. k=1 = exact current frame
+	# (non-smooth path).
+	func m7_matrices [ k: f32 ]
 		hc : i32 [ sx13[ i32[pub_m7x] ] ]
 		vc : i32 [ sx13[ i32[pub_m7y] ] ]
 		ho : i32 [ sx13[ i32[pub_m7hofs] ] ]
@@ -1922,17 +2004,9 @@ element asnes
 		vflip : bool [ (pub_m7sel & 2) != 0 ]
 		ch : i32 [ m7_clip[ ho - hc ] ]
 		cv : i32 [ m7_clip[ vo - vc ] ]
-		hc2 : i32 [ sx13[ i32[pub_m7x3] ] ]
-		vc2 : i32 [ sx13[ i32[pub_m7y3] ] ]
-		ho2 : i32 [ sx13[ i32[pub_m7hofs3] ] ]
-		vo2 : i32 [ sx13[ i32[pub_m7vofs3] ] ]
-		ch2 : i32 [ m7_clip[ ho2 - hc2 ] ]
-		cv2 : i32 [ m7_clip[ vo2 - vc2 ] ]
-		lerp : bool [ al < 1.0 ]
-		g_lerped  : i32 [ 0 ]
+		ease : bool [ k < 1.0 ]
+		g_eased   : i32 [ 0 ]
 		g_snapped : i32 [ 0 ]
-		g_mjx     : i32 [ 0 ]
-		g_mjy     : i32 [ 0 ]
 		for [ y: i32 0, y < 224, y += 1 ]
 			a : i32 [ i32[pub_m7a[y]] ]
 			b : i32 [ i32[pub_m7b[y]] ]
@@ -1940,36 +2014,47 @@ element asnes
 			d : i32 [ i32[pub_m7d[y]] ]
 			yy : i32 [ y ]
 			if [ vflip ] yy = 255 - y
-			ox : i32 [ ((a * ch) & (~63)) + ((b * cv) & (~63)) + ((b * yy) & (~63)) + (hc << 8) ]
-			oy : i32 [ ((c * ch) & (~63)) + ((d * cv) & (~63)) + ((d * yy) & (~63)) + (vc << 8) ]
-			oxf : f32 [ f32[ ox ] ]
-			oyf : f32 [ f32[ oy ] ]
-			af  : f32 [ f32[ a ] ]
-			cf  : f32 [ f32[ c ] ]
-			if [ lerp ]
-				a0 : i32 [ i32[pub_m7a3[y]] ]
-				b0 : i32 [ i32[pub_m7b3[y]] ]
-				c0 : i32 [ i32[pub_m7c3[y]] ]
-				d0 : i32 [ i32[pub_m7d3[y]] ]
-				ox0 : i32 [ ((a0 * ch2) & (~63)) + ((b0 * cv2) & (~63)) + ((b0 * yy) & (~63)) + (hc2 << 8) ]
-				oy0 : i32 [ ((c0 * ch2) & (~63)) + ((d0 * cv2) & (~63)) + ((d0 * yy) & (~63)) + (vc2 << 8) ]
-				# teleport guard: unrelated snapshots (scene change, lap-gate
-				# scramble) must snap, not blend. endpoints are 1-3 frames
-				# apart -> 128px (<<8) limit.
-				jx : i32 [ ox - ox0 ]
-				jy : i32 [ oy - oy0 ]
-				ajx : i32 [ (jx < 0) ? (0 - jx) : jx ]
-				ajy : i32 [ (jy < 0) ? (0 - jy) : jy ]
-				if [ ajx > g_mjx ] g_mjx = ajx
-				if [ ajy > g_mjy ] g_mjy = ajy
-				if [ jx > -32768 && jx < 32768 && jy > -32768 && jy < 32768 ]
-					oxf = f32[ ox0 ] + (f32[ ox ] - f32[ ox0 ]) * al
-					oyf = f32[ oy0 ] + (f32[ oy ] - f32[ oy0 ]) * al
-					af  = f32[ a0 ] + (f32[ a ] - f32[ a0 ]) * al
-					cf  = f32[ c0 ] + (f32[ c ] - f32[ c0 ]) * al
-					g_lerped += 1
+			af : f32 [ f32[ a ] ]
+			bf : f32 [ f32[ b ] ]
+			cf : f32 [ f32[ c ] ]
+			df : f32 [ f32[ d ] ]
+			eased : bool [ false ]
+			if [ ease ]
+				pa : f32 [ m7f_a[y] ]
+				pb : f32 [ m7f_b[y] ]
+				pc : f32 [ m7f_c[y] ]
+				pd : f32 [ m7f_d[y] ]
+				ja : f32 [ af - pa ]
+				jb : f32 [ bf - pb ]
+				jc : f32 [ cf - pc ]
+				jd : f32 [ df - pd ]
+				# teleport guard: unrelated states (scene change, mode-7
+				# entry) must snap, not ease. 2.0 (8.8) coefficient limit.
+				if [ ja > -512.0 && ja < 512.0 && jb > -512.0 && jb < 512.0 && jc > -512.0 && jc < 512.0 && jd > -512.0 && jd < 512.0 ]
+					af = pa + ja * k
+					bf = pb + jb * k
+					cf = pc + jc * k
+					df = pd + jd * k
+					eased = true
+					g_eased += 1
 				el
 					g_snapped += 1
+			m7f_a[y] = af
+			m7f_b[y] = bf
+			m7f_c[y] = cf
+			m7f_d[y] = df
+			oxf : f32 [ 0.0 ]
+			oyf : f32 [ 0.0 ]
+			if [ eased ]
+				# origin from EASED rotation + EXACT position/center: the
+				# angle glides, translation follows 1:1
+				oxf = af * f32[ ch ] + bf * f32[ cv ] + bf * f32[ yy ] + f32[ hc << 8 ]
+				oyf = cf * f32[ ch ] + df * f32[ cv ] + df * f32[ yy ] + f32[ vc << 8 ]
+			el
+				ox : i32 [ ((a * ch) & (~63)) + ((b * cv) & (~63)) + ((b * yy) & (~63)) + (hc << 8) ]
+				oy : i32 [ ((c * ch) & (~63)) + ((d * cv) & (~63)) + ((d * yy) & (~63)) + (vc << 8) ]
+				oxf = f32[ ox ]
+				oyf = f32[ oy ]
 			m7_matbuf[ y * 4 + 0 ] = oxf
 			m7_matbuf[ y * 4 + 1 ] = oyf
 			m7_matbuf[ y * 4 + 2 ] = af
@@ -1999,9 +2084,8 @@ element asnes
 			m7_matbuf[ (512 + y) * 4 + 1 ] = f32[ u32[cold] & 31 ]
 			m7_matbuf[ (512 + y) * 4 + 2 ] = f32[ (u32[cold] >> 5) & 31 ]
 			m7_matbuf[ (512 + y) * 4 + 3 ] = f32[ (u32[cold] >> 10) & 31 ]
-		if [ getenv[ 'ASNES_GLIDE' ] && dbg_m7l < 600 ]
-			printf[ "M7LERP al=%.3f lerped=%d snapped=%d mjx=%d mjy=%d span=%lld\n",
-				f64[ al ], g_lerped, g_snapped, g_mjx, g_mjy, pub_m7t - pub_m7t0 ]
+		if [ getenv[ 'ASNES_GLIDE' ] && ease && dbg_m7l < 600 ]
+			printf[ "M7EASE k=%.3f eased=%d snapped=%d\n", f64[ k ], g_eased, g_snapped ]
 			dbg_m7l += 1
 		m7_mat.upload[ m7_matbuf, 768 * 4 * 4 ]
 
@@ -3945,19 +4029,20 @@ element asnes
 				m7_unpack[ bri ]
 				m7_vhash = vh
 				m7_bri_cache = i32[bri]
-			# smooth: render 2 frames in the past and lerp inside the
-			# [t0, t] bracket of the last two distinct states. the render
-			# time is monotonic and each segment starts exactly where the
-			# previous one ended, so the seam is continuous, never runs
-			# backward, and irregular change cadence (decelerating camera,
-			# quantized fixed-point steps) still sweeps smoothly.
-			m7al : f32 [ 1.0 ]
-			if [ smooth && pub_m7t0 > 0 && pub_m7t > pub_m7t0 ]
-				rt : i64 [ wall_ms[] * 1000 - 33278 ]
-				m7al = f32[ rt - pub_m7t0 ] / f32[ pub_m7t - pub_m7t0 ]
-				if [ m7al > 1.0 ] m7al = 1.0
-				if [ m7al < 0.0 ] m7al = 0.0
-			m7_matrices[ m7al ]
+			# smooth: ease the displayed affine params 22% toward the newest
+			# published frame per 60Hz-normalized frame. dt-scaled so any
+			# display refresh rate converges identically; the remainder
+			# eases out asymptotically when the camera stops.
+			m7k : f32 [ 1.0 ]
+			if [ smooth ]
+				g_pn : i64 [ wall_ms[] * 1000 ]
+				g_dt : i64 [ g_pn - m7f_last ]
+				m7f_last = g_pn
+				if [ g_dt < 0 ] g_dt = 0
+				if [ g_dt > 100000 ] g_dt = 100000
+				g_ff : f64 [ f64[ g_dt ] / 16639.0 ]
+				m7k = f32[ 1.0 - pow[ 0.78, g_ff ] ]
+			m7_matrices[ m7k ]
 			hf : f32 [ 0.0 ]
 			vf : f32 [ 0.0 ]
 			if [ pub_m7sel & 1 ] hf = 1.0
@@ -4443,6 +4528,17 @@ element asnes
 		if [ !cpu || !spc ] return
 		wf : ref FILE [ fopen[ fn, 'wb' ] ]
 		if [ !wf ] return
+		# header: 8-byte magic + 1024-byte zero-padded rom path, so states are
+		# self-describing and a restore can verify it matches the loaded rom
+		mg : symbol [ 'ASNESSV1' ]
+		fwrite[ mg, 1, 8, wf ]
+		pb : new u8 [ 1024 ]
+		memset[ pb, 0, 1024 ]
+		rp : symbol [ rom.chars ]
+		rl : i32 [ i32[ strlen[ rp ] ] ]
+		if [ rl > 1023 ] rl = 1023
+		memcpy[ pb, rp, rl ]
+		fwrite[ pb, 1, 1024, wf ]
 		fwrite[ cpu.memory, 1, 0x1000000, wf ]
 		fwrite[ ppu.vram,  1, 0x10000, wf ]
 		fwrite[ ppu.cgram, 1, 0x200,   wf ]
@@ -4585,6 +4681,21 @@ element asnes
 		if [ !cpu || !spc ] return
 		rf : ref FILE [ fopen[ fn, 'rb' ] ]
 		if [ !rf ] return
+		# header check: new states carry magic + rom path — refuse a state
+		# saved from a different rom. headerless legacy states load as-is.
+		hb : new u8 [ 8 ]
+		fread[ hb, 1, 8, rf ]
+		mg : symbol [ 'ASNESSV1' ]
+		if [ memcmp[ hb, mg, 8 ] == 0 ]
+			pb : new u8 [ 1024 ]
+			fread[ pb, 1, 1024, rf ]
+			rp : symbol [ rom.chars ]
+			if [ strcmp[ pb, rp ] != 0 ]
+				puts 'asnes state is for a different rom — not loading'
+				fclose[ rf ]
+				return
+		el
+			fseek[ rf, 0, 0 ]
 		fread[ cpu.memory, 1, 0x1000000, rf ]
 		fread[ ppu.vram,  1, 0x10000, rf ]
 		fread[ ppu.cgram, 1, 0x200,   rf ]
@@ -4873,6 +4984,7 @@ element asnes
 				ppu_shot_bg[ '/tmp/asnes_bg3.png', 2, 2 ]
 				ppu_atlas[ '/tmp/asnes_atlas0.png', 0x0000 ]
 				write_snapshot[ '/tmp/asnes_blob.bin' ]
+				dump_pstate[ '/tmp/asnes_pstate.txt' ]
 			exit[ 0 ]
 		# cycle-index trigger (shared baseline): capture at first frame boundary where
 		# total CPU cycles reach the target. ASNES_DUMP_CYCLE=N ASNES_DUMP_FILE=x.png
@@ -4892,6 +5004,15 @@ element asnes
 			state_loaded = true
 			load_state[ state.chars ]
 			write_snapshot[ '/tmp/asnes_snap.bin' ]      # also drop a diagnostic snapshot for analysis
+		# hot-reload flash restore: the host leaves SILVER_RELOAD_LOAD set after
+		# a live reload — pick up exactly where the previous instance left off
+		el [ !state && !state_loaded && getenv[ 'SILVER_RELOAD_LOAD' ] ]
+			state_loaded = true
+			ff : ref FILE [ fopen[ '/tmp/asnes_flash.state', 'rb' ] ]
+			if [ ff ]
+				fclose[ ff ]
+				load_state[ '/tmp/asnes_flash.state' ]
+				puts 'asnes flash: state restored after reload'
 		# loaded a state via --state: run one frame to populate the renderer, then capture + exit
 		if [ state_loaded && state ]
 			post_load += 1
@@ -5057,31 +5178,6 @@ element asnes
 		memcpy[ pub_framebuf, ppu.framebuf, 229376 ]
 		memcpy[ pub_vram,  ppu.vram,  65536 ]
 		memcpy[ pub_cgram, ppu.cgram, 512 ]
-		# did the affine state actually change this frame? only then does the
-		# lerp segment rotate — unchanged publishes (every-other-frame camera
-		# steppers, 30fps cinematics) leave the segment sweeping.
-		m7chg : bool [ false ]
-		if [ memcmp[ pub_m7a, line_m7a, 448 ] != 0 ] m7chg = true
-		if [ memcmp[ pub_m7b, line_m7b, 448 ] != 0 ] m7chg = true
-		if [ memcmp[ pub_m7c, line_m7c, 448 ] != 0 ] m7chg = true
-		if [ memcmp[ pub_m7d, line_m7d, 448 ] != 0 ] m7chg = true
-		if [ pub_m7hofs != ppu.m7hofs ] m7chg = true
-		if [ pub_m7vofs != ppu.m7vofs ] m7chg = true
-		if [ pub_m7x != frame_m7x ] m7chg = true
-		if [ pub_m7y != frame_m7y ] m7chg = true
-		g_d180a : i32 [ i32[line_m7a[180]] - i32[pub_m7a[180]] ]
-		g_d180b : i32 [ i32[line_m7b[180]] - i32[pub_m7b[180]] ]
-		g_dho   : i32 [ i32[ppu.m7hofs] - i32[pub_m7hofs] ]
-		g_dxc   : i32 [ i32[frame_m7x] - i32[pub_m7x] ]
-		if [ m7chg ]
-			memcpy[ pub_m7a3, pub_m7a, 448 ]
-			memcpy[ pub_m7b3, pub_m7b, 448 ]
-			memcpy[ pub_m7c3, pub_m7c, 448 ]
-			memcpy[ pub_m7d3, pub_m7d, 448 ]
-			pub_m7hofs3 = pub_m7hofs
-			pub_m7vofs3 = pub_m7vofs
-			pub_m7x3    = pub_m7x
-			pub_m7y3    = pub_m7y
 		memcpy[ pub_m7a, line_m7a, 448 ]
 		memcpy[ pub_m7b, line_m7b, 448 ]
 		memcpy[ pub_m7c, line_m7c, 448 ]
@@ -5148,13 +5244,6 @@ element asnes
 			g_err : i64 [ g_now - m7g_model ]
 			if [ g_err > 8000 || g_err < -8000 ] m7g_model = g_now
 			el m7g_model += g_err / 16
-		if [ m7chg ]
-			if [ getenv[ 'ASNES_GLIDE' ] && dbg_m7c < 300 ]
-				printf[ "M7CHG f%u gap=%lld d180a=%d d180b=%d dho=%d dxc=%d\n",
-					dbg_frames, (m7g_model - pub_m7t) / 16639, g_d180a, g_d180b, g_dho, g_dxc ]
-				dbg_m7c += 1
-			pub_m7t0 = pub_m7t
-			pub_m7t = m7g_model
 		m7g_gap += 1
 		if [ g_sx > 0.25 || g_sx < -0.25 || g_sy > 0.25 || g_sy < -0.25 ]
 			m7g_dx = f32[ g_sx ]
@@ -5220,6 +5309,20 @@ element asnes
 			s = s + ctx_hex2[ u32[ bv & 0xFF ] ] + ' '
 		s = s + '\n'
 		return s
+
+	# reload/exit teardown: stop the emulation thread DETERMINISTICALLY (before
+	# the module's code unloads — dealloc order can't be relied on for threads).
+	# hot-reload flash save: the host sets SILVER_RELOAD_SAVE around the
+	# reload-path destroy only — the fresh instance restores this state so a
+	# recompile drops you back exactly where you were.
+	public func on_unload []
+		if [ emu_started ]
+			emu_stop = true
+			while [ emu_running ]
+				usleep[ 2000 ]
+			if [ getenv[ 'SILVER_RELOAD_SAVE' ] && cpu ]
+				save_state[ '/tmp/asnes_flash.state' ]
+				puts 'asnes flash: state saved for reload'
 
 	func dealloc []
 		if [ emu_started ]

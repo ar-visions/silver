@@ -1166,6 +1166,12 @@ class Gpu
                 if [ img ]
                     img.user = tx
 
+    # re-upload vertex_data into the existing vertex Buffer — for dynamic
+    # per-frame vertex streams (owned by callers outside trinity)
+    public func upload_verts [ ]
+        if [ vertex ]
+            vertex.update[ vertex_data ]
+
     func init [ ]
         if [ vertex_size ]
             vertex_data = new i8 [ vertex_size * vertex_count ]
@@ -1287,6 +1293,7 @@ class Pipeline
     # color blend factors from ONE → SRC_ALPHA so the result composes
     # correctly: rgb*a + dst*(1 - a). default false (premul).
     public straight_alpha   : bool
+    public cull_none        : bool
     public depth_no_write   : bool
     intern resources        : array Gpu
     intern storage_textures : array Texture
@@ -1793,7 +1800,7 @@ class Pipeline
                 rasterizerDiscardEnable: VK_FALSE,
                 polygonMode:             VK_POLYGON_MODE_FILL,
                 lineWidth:               1.0,
-                cullMode:                VK_CULL_MODE_BACK_BIT,
+                cullMode:                (cull_none) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT,
                 frontFace:               VK_FRONT_FACE_CLOCKWISE,
                 depthBiasEnable:         VK_FALSE
             ]
@@ -1848,7 +1855,7 @@ class Pipeline
                 sType:                 VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
                 depthTestEnable:       VK_TRUE,
                 depthWriteEnable:      dw,
-                depthCompareOp:        VK_COMPARE_OP_LESS,
+                depthCompareOp:        VK_COMPARE_OP_LESS_OR_EQUAL,
                 depthBoundsTestEnable: VK_FALSE,
                 stencilTestEnable:     VK_FALSE
             ]
@@ -1934,6 +1941,7 @@ class Model
     # forwarded to every Pipeline this Model builds; toggle for shaders that
     # emit unpremultiplied alpha (e.g. cloud, text overlay).
     public straight_alpha   : bool
+    public cull_none        : bool
     public transparent_s    : shader
 
     public func rebind_model [ ]
