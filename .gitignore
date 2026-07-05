@@ -28,6 +28,10 @@ build
 *.md
 *.nes
 *.state
+*.z64
+*.gen
+athlete
+*/n64/reference
 /shot*png
 /*.ag
 sessions

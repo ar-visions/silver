@@ -362,11 +362,14 @@ mat4f mat4f_mul(mat4f* a, mat4f* b) {
 
 vec4f mat4f_mul_v4(mat4f* a, vec4f* b) {
     vec4f res  = {};
-    
-    for (i64 i = 0; i < 4; ++i)
-        for (i64 j = 0; j < 4; ++j)
-            (&res.x)[i] += a->m[i * 4 + j] * (&b->x)[j];
-    
+    // column-major storage (m[col*4 + row], as mul/look_at/translate use):
+    // res_row = sum over col of m[col][row] * b[col]. the previous loop
+    // indexed m[row*4 + col] — a transposed multiply nothing else in the
+    // library agreed with.
+    for (i64 row = 0; row < 4; ++row)
+        for (i64 col = 0; col < 4; ++col)
+            (&res.x)[row] += a->m[col * 4 + row] * (&b->x)[col];
+
     return res;
 }
 
