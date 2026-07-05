@@ -141,7 +141,9 @@ static int sources_newer(const char* product, source_watch* srcs, int nsr) {
 // than relative to wherever the host was launched / cd_share'd to.
 // returns 0 on a clean build, non-zero if silver failed or crashed. callers must
 // NOT run the (stale) product when this fails.
-static int rebuild_blocking(const char* name) {
+// spawn the recompile WITHOUT waiting — the frame loop keeps the app live while
+// silver builds; the caller reaps with waitpid(WNOHANG) and reloads on success.
+static pid_t rebuild_spawn(const char* name) {
     char cmd[8192];
     // --build: compile ONLY. bare `silver <app>` would LAUNCH the app (silver_live_run execs
     // the live host), spawning a whole second process+window on every reload while this one
@@ -149,7 +151,7 @@ static int rebuild_blocking(const char* name) {
     snprintf(cmd, sizeof(cmd),
         "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/platform/native/debug/silver\" %s --build",
         name);
-    fprintf(stdout, "%s: source changed — rebuilding\n", name);
+    fprintf(stdout, "%s: source changed — rebuilding (app keeps running)\n", name);
     fflush(stdout);
     // posix_spawn, NOT system(): system() fork()s, and this host is a multithreaded
     // GUI process (MoltenVK / libdispatch / GLFW). fork() from a multithreaded process
@@ -163,11 +165,11 @@ static int rebuild_blocking(const char* name) {
         fprintf(stderr, "%s: BUILD ERROR — posix_spawn failed: %s\n", name, strerror(sp));
         return -1;
     }
-    int rc = 0;
-    if (waitpid(pid, &rc, 0) < 0) {
-        fprintf(stderr, "%s: BUILD ERROR — waitpid failed\n", name);
-        return -1;
-    }
+    return pid;
+}
+
+// interpret a reaped compile child's status: 0 = good build
+static int rebuild_status(int rc, const char* name) {
     if (WIFSIGNALED(rc)) {
         fprintf(stderr, "%s: BUILD CRASHED — silver died with signal %d (%s)\n",
             name, WTERMSIG(rc), strsignal(WTERMSIG(rc)));
@@ -178,6 +180,17 @@ static int rebuild_blocking(const char* name) {
         return -1;
     }
     return 0;
+}
+
+static int rebuild_blocking(const char* name) {
+    pid_t pid = rebuild_spawn(name);
+    if (pid < 0) return -1;
+    int rc = 0;
+    if (waitpid(pid, &rc, 0) < 0) {
+        fprintf(stderr, "%s: BUILD ERROR — waitpid failed\n", name);
+        return -1;
+    }
+    return rebuild_status(rc, name);
 }
 
 // recompile via the in-process compiler if the app published one, else shell out to silver.
@@ -293,6 +306,7 @@ int main(int argc, char** argv) {
 
     time_t last_mtime = file_mtime(product);
     int host_pending = 0;   // defer mode: a source change is staged, awaiting the app's go
+    pid_t compile_pid = 0;  // async recompile in flight — the app keeps running while it builds
 
     while (do_frame && do_frame()) {
         // app<->host signals (resolved each iter — handle changes across reloads)
@@ -312,24 +326,42 @@ int main(int argc, char** argv) {
             }
         }
         if (changed) {
-            // refresh all source mtimes so we don't retrigger until the next edit
-            for (int j = 0; j < nsr; j++)
-                srcs[j].mtime = file_mtime(srcs[j].path);
             if (defer) {
+                // refresh all source mtimes so we don't retrigger until the next edit
+                for (int j = 0; j < nsr; j++)
+                    srcs[j].mtime = file_mtime(srcs[j].path);
                 // stage it: signal the app a reload is pending; recompile only on its request
                 host_pending = 1;
                 if (set_pending) set_pending(1);
-            } else {
-                // recompile SYNCHRONOUSLY so we can see whether it succeeded
-                int rc = do_recompile(handle, name);
-                if (rc == 0) {
-                    force = 1;   // good build → reload below
+            } else if (!compile_pid) {
+                // recompile in the BACKGROUND — the app keeps running while silver
+                // builds; the reap below reloads the instant the build lands (the
+                // only pause left is the flash save + dlopen swap).
+                for (int j = 0; j < nsr; j++)
+                    srcs[j].mtime = file_mtime(srcs[j].path);
+                compile_pid = rebuild_spawn(name);
+                if (compile_pid < 0) compile_pid = 0;
+            }
+            // else: a compile is already in flight — leave the mtimes stale so this
+            // change retriggers a fresh build as soon as the current one is reaped
+        }
+
+        // reap an in-flight recompile without blocking the frame loop
+        if (compile_pid) {
+            int st = 0;
+            pid_t r = waitpid(compile_pid, &st, WNOHANG);
+            if (r == compile_pid) {
+                compile_pid = 0;
+                if (rebuild_status(st, name) == 0) {
+                    force = 1;   // good build → save + reload below
                 } else {
                     // a failed recompile must NOT swap in a broken module or take the app
                     // down — keep the live instance running on the last good build.
                     fprintf(stderr, "%s: recompile FAILED — keeping the running build "
                         "(fix the errors above; the app stays up)\n", name);
                 }
+            } else if (r < 0) {
+                compile_pid = 0;
             }
         }
 
@@ -347,9 +379,11 @@ int main(int argc, char** argv) {
             }
         }
 
-        // watch product symlink — reload when .so is relinked
+        // watch product symlink — reload when .so is relinked (external builds).
+        // while our own compile is in flight the product relinks BEFORE silver
+        // finishes — the reap above owns that reload, so stand down until then.
         time_t cur = file_mtime(product);
-        if (force || cur != last_mtime) {
+        if (force || (!compile_pid && cur != last_mtime)) {
             last_mtime = cur;
             fprintf(stderr, "%s: reloading\n", name);
 
@@ -363,8 +397,15 @@ int main(int argc, char** argv) {
                 return 1;
             }
 
-            // Destroy old instance (uses old code/inst_g) then release old handle
+            // Destroy old instance (uses old code/inst_g) then release old handle.
+            // SILVER_RELOAD_SAVE is set ONLY for the reload-path destroy (the final
+            // exit destroy never sees it) — apps use it to flash-save live state.
+            // SILVER_RELOAD_LOAD stays set afterward: every subsequent init in this
+            // process IS a reload, so the fresh instance may restore the flash state.
+            setenv("SILVER_RELOAD_SAVE", "1", 1);
             if (do_destroy) do_destroy();
+            unsetenv("SILVER_RELOAD_SAVE");
+            setenv("SILVER_RELOAD_LOAD", "1", 1);
             dlclose(handle);
 
             // Initialize new instance now that old is gone
