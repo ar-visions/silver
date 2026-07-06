@@ -222,7 +222,10 @@ class audio_out
 # The application — a trinity window hosting the emulator. on_canvas is
 # the frame driver: step one Genesis frame, then blit the VDP framebuffer.
 # ---------------------------------------------------------------------
-element rgen
+element rgen : trinity
+	public  width        : i32    [ 1280 ]   # 320 (H40) x4
+	public  height       : i32    [ 896 ]    # 224 x4
+	public  background   : string [ 'Background' ]
 	public  rom          : path              # cartridge image
 	public  frames_exit  : i32               # auto-quit after N frames (0 = run forever)
 	public  resume       : bool              # boot into /tmp/rgen_state.bin
@@ -3272,30 +3275,3 @@ element rgen
 				z80_carry = zb - zs
 			el
 				z80_carry = 0
-
-# standalone host: mounts the rgen element full-window; carries the CLI
-# surface (real defaults — forwarded props override element init guards)
-trinity rgen_app
-	public  emu         : rgen
-	public  rom         : path
-	public  frames_exit : i32
-	public  resume      : bool
-	public  save_at     : i32
-	public  volume      : f32 [ 0.25 ]
-	public  vec         : bool [ true ]
-	public  smooth      : bool [ true ]
-	public  se_2d       : bool [ true ]
-	public  region_pal  : bool
-
-	func init []
-		width      = 1280                    # 320 (H40) x4
-		height     = 896                     # 224 x4
-		background = 'Background'
-
-	public func on_key [ ev: Event ]
-		if [ emu ] emu.on_key[ ev ]
-
-	func on_render [ w: Window ] -> Elements
-		e : Elements [ ]
-		e['emu'] = rgen [ rom: rom, frames_exit: frames_exit, resume: resume, save_at: save_at, volume: volume, vec: vec, smooth: smooth, se_2d: se_2d, region_pal: region_pal ]
-		return e

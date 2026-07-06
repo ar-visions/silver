@@ -1,4 +1,10 @@
+Layer root_bg [ ]
+    fill_color: #202
+
 element.root {
-    layers.root_bg:
-        fill_color: #202
+    root_bg
+}
+
+knes {
+    area: l0 t0 r0 b0
 }

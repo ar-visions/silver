@@ -84,6 +84,7 @@ ielement element
     mutable value           : object
     mutable id              : string
     mutable flags           : i64
+    intern  initialized     : bool
     mutable label           : string
     # editable text buffer — SEPARATE storage from `label`. `label` is the
     # app-set display string; when a layer is editable, the user types into
@@ -133,7 +134,7 @@ ielement element
     mutable odd             : bool
     mutable even            : bool
     public  focusable       : bool
-    public cursor           : vec2f
+    public cursor_pos       : vec2f
     # a fixed child: not part of the parent's scrolled content, so find_target must
     # hit-test it in UNSCROLLED local space (don't fold the parent's scroll into it).
     public  no_scroll       : bool
@@ -163,6 +164,12 @@ ielement element
     public func on_key     [ ev: Event ] return
     public func on_char    [ ev: Event ] return
     public func on_drop    [ ev: Event ] return
+    # live inspector: cmd+click hands the app element the matched style blocks
+    # ({file,line}) for the clicked element; cmd+shift+click hands its
+    # DECLARATION site. no-op base.
+    public func on_inspect [ hits: array StyleHit ] return
+    # screen canvas hook: called on the app element before the tree paints
+    public func on_canvas  [ cv: Canvas ] return
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
     intern transitions  : map StyleTransition[string]

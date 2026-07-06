@@ -249,7 +249,10 @@ ModelViewProject Mode7
 	}
 
 
-element asnes
+element asnes : trinity
+	public  width          	: i32    [ 1024 ]
+	public  height         	: i32    [ 896 ]
+	public  background     	: string [ 'Background' ]
 	public  spc_rom        	: path
 	public  rom            	: path
 	public  state          	: path             # --state <file>: boot then load this savestate
@@ -9118,39 +9121,3 @@ element asnes
 		rc : i32 [ tm / 6 ]
 		cpu_master_rem = tm - rc * 6        # carry sub-cpu-cycle remainder so accounting stays exact
 		return rc
-
-# standalone host: a thin trinity app that mounts the asnes element
-# full-window. every emulator property lives ON the element — the app only
-# carries the CLI surface and forwards it each frame.
-trinity asnes_app
-	public  emu     : asnes            # auto-binds to the live 'emu' element
-	public  rom     : path
-	public  spc_rom : path
-	public  state   : path
-	# forwarded props are re-applied to the element every frame (af-bit
-	# reconcile), so the app must carry the REAL default — forwarding 0.0
-	# would permanently override the element's own volume guard (silence)
-	public  volume  : f32 [ 0.22 ]
-	public  smooth  : bool [ true ]
-	public  vec     : bool [ true ]
-	public  se_2d   : bool
-	public  blocky  : bool
-	public  vec_m7  : bool
-	public  putest  : bool
-	public  spctest : bool
-	public  beep    : bool
-	public  spcfile : path
-
-	func init []
-		width      = 1024
-		height     = 896
-		background = 'Background'
-
-	# keys land on the app when no element holds focus — hand them to the emu
-	public func on_key [ ev: Event ]
-		if [ emu ] emu.on_key[ ev ]
-
-	func on_render [ w: Window ] -> Elements
-		e : Elements [ ]
-		e['emu'] = asnes [ rom: rom, spc_rom: spc_rom, state: state, volume: volume, smooth: smooth, vec: vec, se_2d: se_2d, blocky: blocky, vec_m7: vec_m7, putest: putest, spctest: spctest, beep: beep, spcfile: spcfile ]
-		return e

@@ -3,16 +3,16 @@ import img
 import trinity
 import <stdio.h>
 
-trinity hyperspace
+element hyperspace : trinity
+    public width      : i32    [ 1280 ]
+    public height     : i32    [ 800 ]
+    public background : string [ 'Background' ]
+    public title      : string [ 'hyperspace' ]
     intern active     : string
     intern fullscreen : bool
 
     func init []
-        width      = 1280
-        height     = 800
-        background = 'Background'
-        title      = 'hyperspace'
-        active     = 'record-looks'
+        active = 'record-looks'
 
     public func on_canvas [ cv: Canvas ]
         if [ !fullscreen ]
@@ -22,7 +22,7 @@ trinity hyperspace
     public func on_key [ ev: Event ]
         if [ ev.key.state && ev.key.unicode == 256 && fullscreen ]
             fullscreen = false
-            w.set_fullscreen*[ false ]
+            ux.set_fullscreen[ false ]
             ev.stop_propagation[]
 
     public func on_click [ ev: Event ]
@@ -30,7 +30,7 @@ trinity hyperspace
         if [ !e ] return
         if [ e.id == 'record-looks' ]
             fullscreen = true
-            w.set_fullscreen*[ true ]
+            ux.set_fullscreen[ true ]
         el [ e.id == 'annotate-targets' ]
             puts 'annotate targets'
         el [ e.id == 'train' ]
@@ -39,9 +39,9 @@ trinity hyperspace
             puts 'testbed'
         ev.stop_propagation[]
 
-    public func on_render [ w: Window ] -> Elements
+    public func render [] -> Elements
         if [ fullscreen ]
-            return null
+            return Elements [ ]
         return Elements [
             "toolbar": Toolbar [
                 elements: Elements [

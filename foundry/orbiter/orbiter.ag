@@ -110,7 +110,11 @@ class FmtWatch
     # cache loads and colors render first, uncontended by the compile.
     public start_us  : i64 [ 0 ]
 
-trinity orbiter # implements compiler
+element orbiter : trinity # implements compiler
+    public width         : i32    [ 1888 ]
+    public height        : i32    [ 888 ]
+    public background    : string [ 'Background' ]
+    public startup_path  : path
     # --log <path>: tee all stdout/puts to this file (truncated on start) WHILE still
     # printing to the console, so a running session's diagnostics can be read back from
     # disk. cap_fd = the pipe au_capture_stdout drains; log_fd = the open log file.
@@ -349,9 +353,6 @@ trinity orbiter # implements compiler
     # auto-bound editor_group); nested ids don't auto-bind to app fields directly.
 
     func init []
-        width          = 1888
-        height         = 888
-        background     = 'Background'
         # turn ON deferred live-reload: silver-host stages source changes and signals us
         # instead of auto-reloading, so the 'reload' chip appears and WE apply on click.
         # the user passes nothing — orbiter drives this via the au_live_* host channel.
@@ -833,7 +834,7 @@ trinity orbiter # implements compiler
                             ed.pristine = false
                             applied = true
                     if [ applied ]
-                        win : Window[w]
+                        win : ux
                         if [ win ] win.will_animate = true
                         if [ m > fw.mtime ]
                             fw.mtime = m
@@ -1058,7 +1059,7 @@ trinity orbiter # implements compiler
         # we're paused here → read this frame's locals for the Fields panel.
         dv : active_debugger[]
         if [ dv ] debug_vars = dv.read_locals[]
-        win : Window[w]
+        win : ux
         win.will_animate = true
 
     # clear the debugger's stop-line marker on every pane (called when the inferior
@@ -1089,7 +1090,7 @@ trinity orbiter # implements compiler
                 code : (e) ? e.code : 0
                 es.print_text[ '\r\n[process exited, code {code}]\r\n' ]
                 cons.pristine = false
-                win : Window[w]
+                win : ux
                 win.will_animate = true
         return null
     func dbg_on_crash [ cur: cursor ] -> Au
@@ -1273,9 +1274,9 @@ trinity orbiter # implements compiler
     func dock_tabs [ grp: array path, prefix: string, active: path, win: Window ] -> Elements
         els : Elements []
         for [ i: i32 0, i < grp.count, i += 1 ]
-            p  : path   grp[i]
-            id : string '{prefix}{i}'
-            els[id] = Option [ label: p.filename[], selected: active && p == active ]
+            p   : path   grp[i]
+            tid : string '{prefix}{i}'
+            els[tid] = Option [ label: p.filename[], selected: active && p == active ]
         return els
 
     # (re)start the incremental index build: clear the index and seed the work
@@ -1378,7 +1379,7 @@ trinity orbiter # implements compiler
     # THIS module's code. before the .so unloads they must be stopped, else a file
     # event after dlclose fires a dangling pointer (crash in watch_runner). pause[]
     # joins each thread synchronously, independent of refcount/auto_free timing.
-    func destroy [ ]
+    public func on_unload [ ]
         # a live reload dlcloses this module — a debug session left running would
         # orphan its lldb inferior AND leave stale vtables on the dbg objects. stop
         # and drop them all here while vtables are still valid (start_debug recreates
@@ -1390,7 +1391,7 @@ trinity orbiter # implements compiler
         if [ index_watches ]
             for [ iw: watch ] in index_watches
                 iw.pause[ ]
-        super.destroy[ ]
+        super.on_unload[ ]
 
     # index_search is the SERVICE: filter the cached file_index by `query` and RETURN
     # the ranked matches. it owns no display state and touches no shared query field,
@@ -1569,7 +1570,7 @@ trinity orbiter # implements compiler
                 ed.scroll.x = 0.0
             if [ ed.scroll.x < 0.0 ] ed.scroll.x = 0.0
         ed.pristine = false
-        win : cast Window [ w ]
+        win : ux
         if [ win ] win.will_animate = true
 
     # glob matcher for the find-in-files pattern, matched against a file's full path:
@@ -1654,7 +1655,7 @@ trinity orbiter # implements compiler
     # which editor pane the finder targets: the one whose title is focused, else the
     # first pane. (search results render only in this pane; the other keeps its file.)
     func search_pane [] -> string
-        win : cast Window [ w ]
+        win : ux
         if [ win && win.focus && win.focus.id == 'title' ]
             for [ e: element* win.focus, e, e = e.parent ]
                 if [ e inherits Editor ]
@@ -1852,7 +1853,7 @@ trinity orbiter # implements compiler
     # navigate in, then files. rendered through the find_hits header path; find_results
     # keeps a flat one-path-per-row list for Enter-opens-first.
     func run_search []
-        win : cast Window [ w ]
+        win : ux
         sp     : string search_pane[]
         active : bool [ (find_text && find_text.count > 0) || (win && win.focus && win.focus.id == 'title') ]
         # only (re)build the navigate hits while the list is actually shown — otherwise
@@ -1979,7 +1980,7 @@ trinity orbiter # implements compiler
     # finder transition — none of which paint until the next input event. force a restyle
     # + an animate frame so the change shows immediately instead of stalling.
     func force_update []
-        win : cast Window [ w ]
+        win : ux
         if [ win ]
             win.restyle      = true
             win.will_animate = true
@@ -1993,7 +1994,7 @@ trinity orbiter # implements compiler
         find_showing = false
         find_text    = ''
         find_results = list string []
-        win : cast Window [ w ]
+        win : ux
         if [ win && win.focus ]
             win.focus.edit = ''
             win.release_focus[ win.focus ]
@@ -2037,7 +2038,7 @@ trinity orbiter # implements compiler
     func exit_finder []
         find_text    = ''
         find_results = list string []
-        win : cast Window [ w ]
+        win : ux
         if [ !win ] return
         if [ win.focus && win.focus.id == 'title' ]
             # clear the live edit buffer too — release_focus only drops focus, so without
@@ -2049,7 +2050,7 @@ trinity orbiter # implements compiler
         active_idx = idx
 
     func sync_tabs []
-        win : cast Window [ w ]
+        win : ux
         tb  : element win.root.elements['toolbar']
         if [ !tb ] return
         nav : element tb.elements['source_nav']
@@ -2090,7 +2091,7 @@ trinity orbiter # implements compiler
             if [ acts ]
                 play_el : element acts.elements[ 'play' ]
                 if [ play_el ] play_el.disable = (active_target == 'system')
-        win : cast Window [ w ]
+        win : ux
         if [ win ] win.restyle = true
 
     public func pad[ n:i32 ] -> string
@@ -2422,25 +2423,25 @@ trinity orbiter # implements compiler
             sync_tabs[]
             return
         if [ ev.target inherits Option ]
-            id : string ev.target.id
+            oid : string ev.target.id
             # a console/agent tab → toggle it; selecting it joins its console pane to the
             # editor set (the user drives one side, the shell is the extra side).
-            if [ consoles && consoles[id] ]
-                selecting : bool [ active_console != id ]
-                active_console = (active_console == id) ? '' : id
+            if [ consoles && consoles[oid] ]
+                selecting : bool [ active_console != oid ]
+                active_console = (active_console == oid) ? '' : oid
                 # on first selection, if this console has a `run`, launch it in its
                 # session (create + start the shell, queue the command). re-selecting
                 # an already-running console doesn't relaunch.
                 if [ selecting ]
                     # agents exec directly (no shell prompt/echo line)
-                    ensure_console[ id ]
+                    ensure_console[ oid ]
                 if [ ev.target ] ev.target.ux.restyle = true
                 ev.no_default = true
                 return
             # switching the project changes the build/run/console target and the browse
             # root — but NOT the open editors. tabs are workspace state, so cycling
             # projects never blends or overrides what's open.
-            if [ id == 'system' ]
+            if [ oid == 'system' ]
                 active_target = 'system'
                 # settings target browses silver's root (the launch dir, where
                 # orbiter.agi lives) — so the file index shows that tree.
@@ -2453,12 +2454,12 @@ trinity orbiter # implements compiler
             el
                 matched : bool false
                 for [ i: i32 0, i < target_names.count, i += 1 ]
-                    if [ target_names[i] == id ]
-                        active_target = id
+                    if [ target_names[i] == oid ]
+                        active_target = oid
                         nav_root      = target_roots[i]
                         matched       = true
                 if [ !matched ]
-                    active_panel = id
+                    active_panel = oid
                 if [ matched ]
                     reroot_index[]
                     rekeep_listing[]
@@ -2484,27 +2485,27 @@ trinity orbiter # implements compiler
                     fl.pristine  = false
                 # a keystroke doesn't set the render gate on its own — request a frame
                 # so the FileList repaints with the new results as you type.
-                ux : Window ev.target.ux
-                if [ ux ] ux.will_animate = true
+                uxw : Window ev.target.ux
+                if [ uxw ] uxw.will_animate = true
         # typing into the find/replace bar rows (each its own query)
         if [ ev.target.id == 'find' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
                 findbar_text = findbar_text + ev.key.text
                 ev.target.pristine = false
-                ux : Window ev.target.ux
-                if [ ux ] ux.will_animate = true
+                uxw : Window ev.target.ux
+                if [ uxw ] uxw.will_animate = true
         if [ ev.target.id == 'replace' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
                 replace_text = replace_text + ev.key.text
                 ev.target.pristine = false
-                ux : Window ev.target.ux
-                if [ ux ] ux.will_animate = true
+                uxw : Window ev.target.ux
+                if [ uxw ] uxw.will_animate = true
         if [ ev.target.id == 'pattern' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
                 pattern_text = pattern_text + ev.key.text
                 ev.target.pristine = false
-                ux : Window ev.target.ux
-                if [ ux ] ux.will_animate = true
+                uxw : Window ev.target.ux
+                if [ uxw ] uxw.will_animate = true
         # typing into an editor's title (the finder/magnify control)
         if [ ev.target.id == 'title' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
@@ -2552,8 +2553,8 @@ trinity orbiter # implements compiler
                     fl.last_find = filter_text
                     fl.build_visible[]
                     fl.pristine  = false
-                ux : Window ev.target.ux
-                if [ ux ] ux.will_animate = true
+                uxw : Window ev.target.ux
+                if [ uxw ] uxw.will_animate = true
 
         # find/replace bar rows: backspace trims, escape collapses the bar
         if [ ev.target.id == 'find' || ev.target.id == 'replace' || ev.target.id == 'pattern' ]
@@ -2595,8 +2596,8 @@ trinity orbiter # implements compiler
                 find_showing = false
                 ev.target.ux.restyle = true
             ev.target.pristine = false
-            ux : Window ev.target.ux
-            if [ ux ] ux.will_animate = true
+            uxw : Window ev.target.ux
+            if [ uxw ] uxw.will_animate = true
 
         # finder title: backspace trims, enter opens the typed file
         if [ ev.target.id == 'title' ]
@@ -2671,7 +2672,8 @@ trinity orbiter # implements compiler
             if [ orig   >= 0 ] write[ orig,   ref buf[0], n ]
             if [ log_fd >= 0 ] write[ log_fd, ref buf[0], n ]
 
-    public func on_render [ w: Window ] -> Elements
+    public func render [] -> Elements
+        w : ux
         # lazy --log setup: args are parsed (au_apply_args) after init[], so the log
         # path isn't known until the first frame. start the tee once, here.
         if [ !tee_started ]
@@ -2766,9 +2768,9 @@ trinity orbiter # implements compiler
                     cons.pristine = false
                     cs.dirty = false
                 el [ cs.pty_fd < 0 && cons.feed ]
-                    fc : i32 [ cons.feed.count ]
-                    if [ fc != cs.last_feed_count ]
-                        cs.last_feed_count = fc
+                    fcnt : i32 [ cons.feed.count ]
+                    if [ fcnt != cs.last_feed_count ]
+                        cs.last_feed_count = fcnt
                         cons.pristine   = false
                         w.will_animate     = true
 

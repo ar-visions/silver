@@ -1,6 +1,8 @@
+Layer root_bg [ ]
+    fill_color: #704
+
 element.root {
-    layers.root_bg:
-        fill_color: #704
+    root_bg
 }
 
 asnes {

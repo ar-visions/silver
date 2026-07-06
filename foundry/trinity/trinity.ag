@@ -242,7 +242,7 @@ class BindSeam
 
 
 Display Window
-    mutable app_object          : trinity*
+    mutable app_object          : element*
     mutable cursors             : array CursorPos
     # GLFW resize cursors for seam hover/drag (created lazily, cached). cursor_kind
     # tracks the active one (0=arrow,1=horizontal,2=vertical) to skip redundant sets.
@@ -779,21 +779,24 @@ Display Window
 
                 # init finally called after context and style is applied
                 # our holds are too many for properties applied in style, though.
-                if [ call_init ]
+                if [ call_init && !instance.initialized ]
                     # console mode has no vk context; elements still init + lay out.
                     if [ !console ]
                         expect instance.vk, "no vk context set for new instance"
                     instance.initialize[]
+                    instance.initialized = true
                     instance.hold_members[]
                     instance.restyle = true
 
             inst    : typeid[ instance ]
             tr0 : i64 [ epoch_micros[] ]
-            irender : instance.render[]
+            irender : instance.render*[]
             a.t_render += epoch_micros[] - tr0
-            if [ !irender ] irender = e.elements
-            if [ !irender ] irender = instance.elements
-            if [ irender ] update_element[ instance, irender, force ]
+            # a returned map is authoritative even when empty (clears children);
+            # null means no opinion — fall back to declared/live children
+            if [ irender == null ] irender = e.elements
+            if [ irender == null ] irender = instance.elements
+            if [ irender != null ] update_element[ instance, irender, force ]
 
         # perform umount on elements not updated in render
         retry : true
@@ -812,6 +815,11 @@ Display Window
         if [ !root ] return true
         if [ capture ] return true
         return root.is_animating[]
+
+    func app_render [] -> Elements
+        e : Elements [ ]
+        e[ 'app' ] = (app_object to element)
+        return e
 
     public func update_all [ render: Elements ]
         if [ !root ]
@@ -965,7 +973,7 @@ Display Window
         # always live on all controls, normalized to element-local [0..1].
         bw : f32 [ (b.w > 0.0) ? b.w : 1.0 ]
         bh : f32 [ (b.h > 0.0) ? b.h : 1.0 ]
-        e.cursor = vec2f [ x: lx / bw, y: ly / bh ]
+        e.cursor_pos = vec2f [ x: lx / bw, y: ly / bh ]
 
         fx : f32 [ lx + e.scroll.x ]
         fy : f32 [ ly + e.scroll.y ]
@@ -1146,7 +1154,7 @@ Display Window
         if [ f && f.layers ]
             sbl : ScrollLayer (f.layers['scrollbar'] to ScrollLayer)
             if [ sbl && sbl.scroll_max > 0.0 ]
-                fr : f32 [ (1.0 - f.cursor.x) * f.bounds.w ]
+                fr : f32 [ (1.0 - f.cursor_pos.x) * f.bounds.w ]
                 # generous, bar-independent approach distance so the bar responds well
                 # before you're on it. set pristine=false too: will_animate alone gives
                 # a frame, but the element stays cached so its scrollbar layer isn't
@@ -1495,7 +1503,7 @@ Display Window
         # MUST run even without a compose canvas (no-background app): update_all
         # builds the ROOT — gating it on compose left background-less apps with a
         # null root (trap in layout_element).
-        update_all      [ app_object.on_render*[ a ] ]
+        update_all      [ app_render[] ]
         animate         [ ]
         # advance every seam's eased active ONCE here, before the layout pass reads it.
         tick_binds      [ root ]
@@ -2260,7 +2268,7 @@ Display Window
         height = rows
 
         # build / reconcile the element tree + advance animation (no Canvas)
-        update_all[ app_object.on_render*[ a ] ]
+        update_all[ app_render[] ]
         animate[]
         if [ root ] tick_binds[ root ]
 
@@ -3022,6 +3030,7 @@ Display Window
 
 
 abstract media_app trinity
+    public root         : element
     public background   : string
     public title        : string
     # the working directory the app started in (its install/share/<app> dir, set
@@ -3031,42 +3040,13 @@ abstract media_app trinity
     intern istroke      : f32 0
     intern ifill        : f32 0
 
-    public func on_canvas [ cv: Canvas ]
-        return
-
-    # input event hooks. return true to swallow; otherwise just observe.
-    # ev.target is the element the event was dispatched to (null if none).
-    # elements get these virtuals first (they can intercept); if the element
-    # returns false or there's no target, the app sees it here.
-    public func on_click   [ ev: Event ] return
-    public func on_press   [ ev: Event ] return
-    public func on_release [ ev: Event ] return
-    public func on_hover   [ ev: Event ] return
-    public func on_leave   [ ev: Event ] return
-    public func on_move    [ ev: Event ] return
-    public func on_wheel   [ ev: Event ] return
-    public func on_key     [ ev: Event ] return
-    public func on_char    [ ev: Event ] return
-    public func on_drop    [ ev: Event ] return
-    # live inspector: cmd+click hands the app the matched style blocks ({file,line}) for the
-    # clicked element; cmd+shift+click hands its DECLARATION site (the render source line the
-    # element was created at). either way it's {file,line} hits to open. no-op base.
-    public func on_inspect [ hits: array StyleHit ] return
-
-    public func on_render  [ w: Window ] -> Elements
-        return Elements [
-            "root": element [
-                elements: [
-                    "one": Button[],
-                    "two": Button[]
-                ]
-            ]
-        ]
-
-    func init         [] return
     func load_scene   [] return
     func update_scene [] return
-         
+
+    func adopt [ name: string ]
+        v : root.get_property[ name.chars ]
+        if [ v ] a.set_property[ name.chars, v ]
+
     # read the terminal size (cells) into width/height for console mode. literal
     # TIOCGWINSZ request per platform (the macro is a sizeof-based _IOR the compiler
     # can't fold; the wrong value makes ioctl fail on the tty).
@@ -3080,28 +3060,39 @@ abstract media_app trinity
         if [ width  <= 0 ] width  = 80
         if [ height <= 0 ] height = 24
 
-    func run[]
+    func init []
+        expect root, 'trinity requires a root element'
         # the cwd we launched in (Au captured it in engage before cd'ing to share).
         startup_path = path.path_startup[]
-        type : typeid[a]
+        # the app element initializes at construction (defaults + user init),
+        # before any window exists; mount skips re-init via the latch
+        root.initialize[]
+        root.initialized = true
+        adopt[ 'title' ]
+        adopt[ 'width' ]
+        adopt[ 'height' ]
+        adopt[ 'background' ]
+        adopt[ 'console' ]
+        rt : typeid[ root ]
         background_type : Au.find_type[ (background) ? background.chars : null, null ]
         # console mode: no vk context, no GLFW window — host the tree + layout only.
         if [ console ]
             console_size[]
-            cwin : Window[ app_object: a, title:(title) ?? type.ident, st: Style [ a ],
+            cwin : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
                 width:width, height:height, background_type:background_type, console: true ]
             cwin.hold[]
             w = cwin
             cwin.console_input_open[]
             render *[]
             cwin.restyle = true
-            super.run[]
+            Au.auto_free[ true ]
             return
-        window : Window[ app_object: a, title:(title) ?? type.ident, st: Style [ a ],
+        window : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
             width:(width) ?? 1888, height:(height) ?? 888, background_type:background_type ]
         expect window.vk, "context didnt work"
         window.hold[]
         w = window
+        root.vk = window.vk
         w.update *[]
         render   *[]
         w.resize[w.width, w.height]
@@ -3109,7 +3100,7 @@ abstract media_app trinity
         # first paint; nothing else flags a repaint, so the loop would idle until the
         # first mouse event. force the initial paint here (resizing is false again now).
         window.restyle = true
-        super.run[]
+        Au.auto_free[ true ]
 
     # 22
     func render[]
@@ -3184,7 +3175,7 @@ Layer ScrollLayer
         near : f32 [ 90.0 ]
         prox : f32 [ 0.0 ]
         if [ e.hovered ]
-            from_right : f32 [ (1.0 - e.cursor.x) * e.bounds.w ]
+            from_right : f32 [ (1.0 - e.cursor_pos.x) * e.bounds.w ]
             prox = clamp[ 1.0 - from_right / near, 0.0, 1.0 ]
         # while grabbed, stay fully expanded no matter where the cursor drifts
         if [ active ] prox = 1.0

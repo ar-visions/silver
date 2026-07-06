@@ -3,14 +3,12 @@ import img
 import trinity
 import <stdio.h>
 
-trinity buttontest
-    intern clicks : i32 0
-
-    func init []
-        width      = 480
-        height     = 320
-        background = 'Background'
-        title      = 'buttontest'
+element buttontest : trinity
+    intern clicks     : i32    0
+    public width      : i32    [ 480 ]
+    public height     : i32    [ 320 ]
+    public background : string [ 'Background' ]
+    public title      : string [ 'buttontest' ]
 
     public func on_click [ ev: Event ]
         e : (ev.target to element)
@@ -20,11 +18,7 @@ trinity buttontest
             puts 'button clicked! count={clicks}'
         ev.stop_propagation[]
 
-    public func on_render [ w: Window ] -> Elements
+    public func render [] -> Elements
         return Elements [
-            "root": element [
-                elements: Elements [
-                    "hello": Button [ label: 'click me' ]
-                ]
-            ]
+            "hello": Button [ label: 'click me' ]
         ]

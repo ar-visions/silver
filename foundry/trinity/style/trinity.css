@@ -3,22 +3,24 @@
    usable anywhere with no authored rule: it flows right of the previous
    control, sizes to its label + padding, and draws a quiet pill with centered
    text. authored CSS overrides any of it, per property. */
+Layer base [ ]
+    fill_color:             #fff1
+    inner_glow:             #fff1 16
+    stroke_width:           0.5
+    stroke_color:           #fff2
+    radius:                 8
+    :hovered
+        fill_color:         #fff3
+
+Layer face [ ]
+    label_color:            #fffc
+    label_size:             15
+    label_align:            0.5 0.5
+    :hovered
+        label_color:        #ffff
+
 Button {
     area:                       l8+px t4px wc24px h30px
-    layers.base:
-        fill_color:             #fff1
-        inner_glow:             #fff1 16
-        stroke_width:           0.5
-        stroke_color:           #fff2
-        radius:                 8
-    layers.face:
-        label_color:            #fffc
-        label_size:             15
-        label_align:            0.5 0.5
-}
-Button:hovered {
-    layers.base:
-        fill_color:             #fff3
-    layers.face:
-        label_color:            #ffff
+    base
+    face
 }

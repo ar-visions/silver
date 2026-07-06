@@ -6,8 +6,9 @@ class CSSLine
     public content : string
     public line    : i32
 
-# a `@def NAME(params…)` CSS mixin: the captured body + its parameter names.
-class MixinDef
+# a `Layer NAME [ params… ]` CSS definition: the captured body + its parameter names.
+# the def name doubles as the layers-map id wherever it is instantiated.
+class LayerDef
     public params : array string
     public body   : array CSSLine
 
@@ -354,21 +355,68 @@ class Style
                 out.push[ r.trim[] ]
         return out
 
-    # CSS mixins: `mixin NAME [ p1, p2 ]` (indent 0) captures the indented block under it (any
-    # normal block content — fields, layers, nested), with `$p1`/`$p2` placeholders. a later
-    # `NAME [ v1, v2 ]` line then splices that body in (re-indented to the use site) with the
-    # args substituted. a pure pre-parse pass: the block parser never sees `mixin`/the use.
-    func expand_mixins [ lines: array CSSLine ] -> array CSSLine
-        defs : map MixinDef [ string ] [ ]
+    # is `lc` an instantiation of a defined Layer? a use is a bare `name` or `name [ args ]`
+    # line — a property/pseudo line always carries ':' before any '[', a use never does.
+    func layer_use [ defs: map LayerDef[string], lc: string ] -> array string
+        if [ lc.count == 0 ] return null
+        c0 : i8 [ lc.chars[0] ]
+        alpha : bool [ (c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z') || c0 == '_' ]
+        if [ !alpha ] return null
+        ci : num [ lc.index_of[ ':' ] ]
+        bi : num [ lc.index_of[ '[' ] ]
+        if [ ci >= 0 && (bi < 0 || ci < bi) ] return null
+        call : array string [ call_parse[ lc ] ]
+        if [ !defs[ call[0] ] ] return null
+        return call
+
+    func layer_subst [ d: LayerDef, call: array string, txt: string ] -> string
+        res : string [ txt ]
+        for [ pi: i32 0, pi < d.params.count, pi += 1 ]
+            v : string [ (pi + 1 < call.count) ? call[pi + 1] : '' ]
+            res = css_replace[ res, '$' + d.params[pi], v ]
+        return res
+
+    # instantiate a Layer def at a use site: base props emitted at `at`; the def's `:state`
+    # sections (body indent 0) hoist into `states` as nested pseudo-state sections that
+    # re-open `layers.<name>:` — same layer id across states, so prop transitions animate.
+    # states == null (use inside a state section) drops the def's own state sections.
+    func layer_splice [ d: LayerDef, call: array string, at: i32, out: array CSSLine, states: array CSSLine ]
+        nm    : string [ call[0] ]
+        in_st : bool [ false ]
+        for [ bl: CSSLine ] in d.body
+            txt : string [ layer_subst[ d, call, bl.content ] ]
+            is_hdr : bool [ bl.indent == 0 && txt.count > 0 && txt.chars[0] == ':' ]
+            if [ is_hdr ]
+                in_st = true
+                if [ states != null ]
+                    states.push[ CSSLine [ indent: 0, content: txt, line: bl.line ] ]
+                    states.push[ CSSLine [ indent: 1, content: 'layers.' + nm + ':', line: bl.line ] ]
+                continue
+            if [ in_st ]
+                if [ states != null ]
+                    states.push[ CSSLine [ indent: bl.indent + 1, content: txt, line: bl.line ] ]
+                continue
+            out.push[ CSSLine [ indent: at + bl.indent, content: txt, line: bl.line ] ]
+
+    # CSS Layers: `Layer NAME [ p1, p2 ]` (indent 0) captures the indented block under it —
+    # layer props plus optional `:state` sections at body top level — with `$p1`/`$p2`
+    # placeholders. inside an element block, a NAME line (bare, or `NAME [ v1, v2 ]`)
+    # INSTANTIATES that Layer: the name binds the layers-map id AND the definition, expanding
+    # to `layers.NAME:` + the body with args substituted; `:state` sections hoist to nested
+    # pseudo-state sections after the block. a use inside another def's body splices its
+    # props flat (composition). a pure pre-parse pass: the block parser never sees `Layer`
+    # or the use. the old explicit `layers.<name>:` source form is an error.
+    func expand_layers [ lines: array CSSLine, src: path ] -> array CSSLine
+        defs : map LayerDef [ string ] [ ]
         stripped : array CSSLine [ ]
         i : i32 [ 0 ]
         while [ i < lines.count ]
             lc : string [ lines[i].content ]
-            is_def : bool [ lc.count >= 6 && lc.mid[ 0, 6 ] == 'mixin ' ]
+            is_def : bool [ lc.count >= 6 && lc.mid[ 0, 6 ] == 'Layer ' && lc.index_of[ '[' ] > 0 ]
             if [ is_def ]
                 hdr  : array string [ call_parse[ lc.mid[ 6, lc.count - 6 ].trim[] ] ]
                 nm   : hdr[0]
-                d    : MixinDef [ params: array string [ ], body: array CSSLine [ ] ]
+                d    : LayerDef [ params: array string [ ], body: array CSSLine [ ] ]
                 for [ k: i32 1, k < hdr.count, k += 1 ]
                     d.params.push[ hdr[k] ]
                 di   : i32 [ lines[i].indent ]
@@ -376,46 +424,66 @@ class Style
                 j : i32 [ i + 1 ]
                 while [ j < lines.count && lines[j].indent > di ]
                     if [ base_in < 0 ] base_in = lines[j].indent
-                    d.body.push[ CSSLine [ indent: lines[j].indent - base_in, content: lines[j].content, line: lines[j].line ] ]
+                    rel : i32    [ lines[j].indent - base_in ]
+                    blc : string [ lines[j].content ]
+                    if [ blc.count >= 7 && blc.mid[ 0, 7 ] == 'layers.' ]
+                        errors.push[ '{src}:{lines[j].line}: layers inside a Layer are not allowed' ]
+                    cuse : array string [ layer_use[ defs, blc ] ]
+                    if [ cuse ]
+                        du : LayerDef [ defs[ cuse[0] ] ]
+                        for [ cl2: CSSLine ] in du.body
+                            d.body.push[ CSSLine [ indent: rel + cl2.indent,
+                                content: layer_subst[ du, cuse, cl2.content ], line: cl2.line ] ]
+                    el
+                        d.body.push[ CSSLine [ indent: rel, content: blc, line: lines[j].line ] ]
                     j += 1
                 defs[ nm ] = d
                 i = j
                 continue
             stripped.push[ lines[i] ]
             i += 1
-        # expand uses, iterating so mixins can call mixins (a body line that is itself a use
-        # gets resolved on the next pass). capped at 16 levels to bound any accidental cycle.
-        work : stripped
-        pass : i32 [ 0 ]
-        while [ pass < 16 ]
-            out : array CSSLine [ ]
-            did : bool [ false ]
-            for [ cl: CSSLine ] in work
-                # a use ALWAYS carries brackets (`name [ … ]`, even no-arg `name [ ]`) — so a
-                # bracket-less line can never be mistaken for one (a bare property name etc.).
-                has_brk : bool [ cl.content.index_of[ '[' ] >= 0 ]
-                call : array string [ call_parse[ cl.content ] ]
-                d : (has_brk) ? defs[ call[0] ] : null
-                if [ d ]
-                    did = true
-                    for [ bl: CSSLine ] in d.body
-                        txt : string [ bl.content ]
-                        for [ pi: i32 0, pi < d.params.count, pi += 1 ]
-                            v : string [ (pi + 1 < call.count) ? call[pi + 1] : '' ]
-                            txt = css_replace[ txt, '$' + d.params[pi], v ]
-                        out.push[ CSSLine [ indent: cl.indent + bl.indent, content: txt, line: bl.line ] ]
-                el
-                    out.push[ cl ]
-            work = out
-            if [ !did ] break
-            pass += 1
-        return work
+        # instantiate uses inside element blocks; generated `:state` sections for a block
+        # flush before the next selector so they chain onto its existing state sections.
+        out      : array CSSLine [ ]
+        pending  : array CSSLine [ ]
+        in_state : bool [ false ]
+        k2 : i32 [ 0 ]
+        while [ k2 < stripped.count ]
+            cl  : CSSLine [ stripped[k2] ]
+            lc2 : string  [ cl.content ]
+            if [ cl.indent == 0 ]
+                is_st : bool [ lc2.count > 0 && lc2.chars[0] == ':' ]
+                if [ !is_st && pending.count > 0 ]
+                    for [ pl: CSSLine ] in pending
+                        out.push[ pl ]
+                    pending = array CSSLine [ ]
+                in_state = is_st
+                out.push[ cl ]
+                k2 += 1
+                continue
+            if [ lc2.count >= 7 && lc2.mid[ 0, 7 ] == 'layers.' ]
+                errors.push[ '{src}:{cl.line}: layers.<name> blocks are retired — declare `Layer <name> [ ]` at top level and list `<name>` in the element block' ]
+                out.push[ cl ]
+                k2 += 1
+                continue
+            call2 : array string [ layer_use[ defs, lc2 ] ]
+            if [ call2 ]
+                d2 : LayerDef [ defs[ call2[0] ] ]
+                out.push[ CSSLine [ indent: cl.indent, content: 'layers.' + call2[0] + ':', line: cl.line ] ]
+                sdst : array CSSLine [ (in_state) ? null : pending ]
+                layer_splice[ d2, call2, cl.indent + 1, out, sdst ]
+            el
+                out.push[ cl ]
+            k2 += 1
+        for [ pl: CSSLine ] in pending
+            out.push[ pl ]
+        return out
 
     func process [ code: string, src: path ]
         if [ !base    ] base    = array StyleBlock [ ]
         if [ !visited ] visited = array string     [ ]
         if [ !errors  ] errors  = array string     [ ]
-        lines : array CSSLine [ expand_mixins[ split_css[ code ] ] ]
+        lines : array CSSLine [ expand_layers[ split_css[ code ], src ] ]
         i : i32 [ 0 ]
         while [ i < lines.count ]
             content : string [ lines[i].content ]
@@ -554,7 +622,7 @@ class Style
         loaded   = true
         reloaded = true
 
-    construct [ app_instance: trinity ]
+    construct [ app_instance: element ]
         app_type  : typeid app_instance
         root_type : string app_type.ident
         p         : path   'style/{root_type}.css'

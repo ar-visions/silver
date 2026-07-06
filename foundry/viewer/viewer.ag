@@ -221,19 +221,17 @@ element ModelView
             puts 'viewer: dumped {tex.width}x{tex.height} target'
         cv.draw_image[ vrender.color, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
-trinity viewer
-    public model : path
+element viewer : trinity
+    public model      : path
+    public width      : i32    [ 1280 ]
+    public height     : i32    [ 960 ]
+    public title      : string [ 'viewer' ]
+    # solid-color background: the swapchain blit presents the LAST render's
+    # color — the background chain's r_view (targeting the screen canvas) is
+    # that render, so an app without one has nothing to present
+    public background : string [ 'Background' ]
 
-    func init []
-        width      = 1280
-        height     = 960
-        title      = 'viewer'
-        # solid-color background: the swapchain blit presents the LAST render's
-        # color — the background chain's r_view (targeting the screen canvas) is
-        # that render, so an app without one has nothing to present
-        background = 'Background'
-
-    public func on_render [ w: Window ] -> Elements
+    public func render [] -> Elements
         e : Elements [ ]
         e['view'] = ModelView [ model_path: model ]
         return e

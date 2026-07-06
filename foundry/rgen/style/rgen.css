@@ -2,3 +2,7 @@ element.root {
     layers.root_bg:
         fill_color: #024
 }
+
+rgen {
+    area: l0 t0 r0 b0
+}
