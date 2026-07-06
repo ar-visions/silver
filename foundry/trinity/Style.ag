@@ -355,8 +355,9 @@ class Style
                 out.push[ r.trim[] ]
         return out
 
-    # is `lc` an instantiation of a defined Layer? a use is a bare `name` or `name [ args ]`
-    # line — a property/pseudo line always carries ':' before any '[', a use never does.
+    # is `lc` a composition use of a plain Layer def? a use is a bare `name` or
+    # `name [ args ]` line — a property/pseudo line always carries ':' before any
+    # '[', a use never does.
     func layer_use [ defs: map LayerDef[string], lc: string ] -> array string
         if [ lc.count == 0 ] return null
         c0 : i8 [ lc.chars[0] ]
@@ -366,31 +367,30 @@ class Style
         bi : num [ lc.index_of[ '[' ] ]
         if [ ci >= 0 && (bi < 0 || ci < bi) ] return null
         call : array string [ call_parse[ lc ] ]
-        if [ !defs[ call[0] ] ] return null
+        if [ !defs[ 'Layer.' + call[0] ] ] return null
         return call
 
     func layer_subst [ d: LayerDef, call: array string, txt: string ] -> string
-        res : string [ txt ]
+        res : txt
         for [ pi: i32 0, pi < d.params.count, pi += 1 ]
             v : string [ (pi + 1 < call.count) ? call[pi + 1] : '' ]
             res = css_replace[ res, '$' + d.params[pi], v ]
         return res
 
-    # instantiate a Layer def at a use site: base props emitted at `at`; the def's `:state`
+    # instantiate a def at a use site: base props emitted at `at`; the def's `:state`
     # sections (body indent 0) hoist into `states` as nested pseudo-state sections that
-    # re-open `layers.<name>:` — same layer id across states, so prop transitions animate.
+    # re-open the same `hdr` — same layer id across states, so prop transitions animate.
     # states == null (use inside a state section) drops the def's own state sections.
-    func layer_splice [ d: LayerDef, call: array string, at: i32, out: array CSSLine, states: array CSSLine ]
-        nm    : string [ call[0] ]
+    func layer_splice [ hdr: string, d: LayerDef, call: array string, at: i32, out: array CSSLine, states: array CSSLine ]
         in_st : bool [ false ]
         for [ bl: CSSLine ] in d.body
-            txt : string [ layer_subst[ d, call, bl.content ] ]
+            txt : layer_subst[ d, call, bl.content ]
             is_hdr : bool [ bl.indent == 0 && txt.count > 0 && txt.chars[0] == ':' ]
             if [ is_hdr ]
                 in_st = true
                 if [ states != null ]
                     states.push[ CSSLine [ indent: 0, content: txt, line: bl.line ] ]
-                    states.push[ CSSLine [ indent: 1, content: 'layers.' + nm + ':', line: bl.line ] ]
+                    states.push[ CSSLine [ indent: 1, content: hdr, line: bl.line ] ]
                 continue
             if [ in_st ]
                 if [ states != null ]
@@ -398,23 +398,40 @@ class Style
                 continue
             out.push[ CSSLine [ indent: at + bl.indent, content: txt, line: bl.line ] ]
 
-    # CSS Layers: `Layer NAME [ p1, p2 ]` (indent 0) captures the indented block under it —
-    # layer props plus optional `:state` sections at body top level — with `$p1`/`$p2`
-    # placeholders. inside an element block, a NAME line (bare, or `NAME [ v1, v2 ]`)
-    # INSTANTIATES that Layer: the name binds the layers-map id AND the definition, expanding
-    # to `layers.NAME:` + the body with args substituted; `:state` sections hoist to nested
-    # pseudo-state sections after the block. a use inside another def's body splices its
-    # props flat (composition). a pure pre-parse pass: the block parser never sees `Layer`
-    # or the use. the old explicit `layers.<name>:` source form is an error.
+    # CSS Layers: `<Class> NAME [ p1, p2 ]` (indent 0) captures the indented block under
+    # it — layer props plus optional `:state` sections at body top level — with `$p1`/`$p2`
+    # placeholders. <Class> is Layer or any Layer subclass (TermLayer, ScrollLayer…); defs
+    # are keyed by (class, name). inside an element block:
+    #   layers.NAME [ v1, v2 ]           instantiates the plain Layer def NAME
+    #   layers.NAME: Class [ v1, v2 ]    instantiates the Class-scoped def NAME
+    # the name binds the layers-map id AND the definition, expanding to the internal
+    # `layers.NAME:` block with args substituted; `:state` sections hoist to nested
+    # pseudo-state sections after the block. a bare `NAME [ args ]` inside another def's
+    # body splices its props flat (composition). a pure pre-parse pass: the block parser
+    # never sees defs or uses. the old `layers.<name>:` prop-block form is an error.
     func expand_layers [ lines: array CSSLine, src: path ] -> array CSSLine
         defs : map LayerDef [ string ] [ ]
         stripped : array CSSLine [ ]
         i : i32 [ 0 ]
         while [ i < lines.count ]
             lc : string [ lines[i].content ]
-            is_def : bool [ lc.count >= 6 && lc.mid[ 0, 6 ] == 'Layer ' && lc.index_of[ '[' ] > 0 ]
-            if [ is_def ]
-                hdr  : array string [ call_parse[ lc.mid[ 6, lc.count - 6 ].trim[] ] ]
+            cls : string
+            hdr : array string
+            if [ lines[i].indent == 0 && lc.index_of[ '[' ] > 0 && lc.count > 0 && lc.last[] != '{' ]
+                sp0 : num [ lc.index_of[ ' ' ] ]
+                if [ sp0 > 0 ]
+                    t0 : lc.mid[ 0, sp0 ]
+                    c00 : i8 [ t0.chars[0] ]
+                    ok0 : bool [ c00 >= 'A' && c00 <= 'Z' && t0.index_of[ '.' ] < 0 &&
+                                 t0.index_of[ ':' ] < 0 && t0.index_of[ '/' ] < 0 ]
+                    if [ ok0 ]
+                        rest0 : lc.mid[ sp0 + 1, lc.count - sp0 - 1 ].trim[]
+                        c01 : i8 [ (rest0.count > 0) ? rest0.chars[0] : i8[ 0 ] ]
+                        alpha1 : bool [ (c01 >= 'a' && c01 <= 'z') || (c01 >= 'A' && c01 <= 'Z') || c01 == '_' ]
+                        if [ alpha1 && rest0.index_of[ ':' ] < 0 ]
+                            cls = t0
+                            hdr = call_parse[ rest0 ]
+            if [ cls ]
                 nm   : hdr[0]
                 d    : LayerDef [ params: array string [ ], body: array CSSLine [ ] ]
                 for [ k: i32 1, k < hdr.count, k += 1 ]
@@ -428,16 +445,16 @@ class Style
                     blc : string [ lines[j].content ]
                     if [ blc.count >= 7 && blc.mid[ 0, 7 ] == 'layers.' ]
                         errors.push[ '{src}:{lines[j].line}: layers inside a Layer are not allowed' ]
-                    cuse : array string [ layer_use[ defs, blc ] ]
+                    cuse : layer_use[ defs, blc ]
                     if [ cuse ]
-                        du : LayerDef [ defs[ cuse[0] ] ]
+                        du : defs[ 'Layer.' + cuse[0] ]
                         for [ cl2: CSSLine ] in du.body
                             d.body.push[ CSSLine [ indent: rel + cl2.indent,
                                 content: layer_subst[ du, cuse, cl2.content ], line: cl2.line ] ]
                     el
                         d.body.push[ CSSLine [ indent: rel, content: blc, line: lines[j].line ] ]
                     j += 1
-                defs[ nm ] = d
+                defs[ cls + '.' + nm ] = d
                 i = j
                 continue
             stripped.push[ lines[i] ]
@@ -449,8 +466,8 @@ class Style
         in_state : bool [ false ]
         k2 : i32 [ 0 ]
         while [ k2 < stripped.count ]
-            cl  : CSSLine [ stripped[k2] ]
-            lc2 : string  [ cl.content ]
+            cl  : stripped[k2]
+            lc2 : cl.content
             if [ cl.indent == 0 ]
                 is_st : bool [ lc2.count > 0 && lc2.chars[0] == ':' ]
                 if [ !is_st && pending.count > 0 ]
@@ -462,16 +479,50 @@ class Style
                 k2 += 1
                 continue
             if [ lc2.count >= 7 && lc2.mid[ 0, 7 ] == 'layers.' ]
-                errors.push[ '{src}:{cl.line}: layers.<name> blocks are retired — declare `Layer <name> [ ]` at top level and list `<name>` in the element block' ]
-                out.push[ cl ]
-                k2 += 1
-                continue
-            call2 : array string [ layer_use[ defs, lc2 ] ]
-            if [ call2 ]
-                d2 : LayerDef [ defs[ call2[0] ] ]
-                out.push[ CSSLine [ indent: cl.indent, content: 'layers.' + call2[0] + ':', line: cl.line ] ]
-                sdst : array CSSLine [ (in_state) ? null : pending ]
-                layer_splice[ d2, call2, cl.indent + 1, out, sdst ]
+                rest : lc2.mid[ 7, lc2.count - 7 ].trim[]
+                ci2 : num [ rest.index_of[ ':' ] ]
+                bi2 : num [ rest.index_of[ '[' ] ]
+                if [ bi2 > 0 && (ci2 < 0 || bi2 < ci2) ]
+                    # layers.name [ args ] — plain Layer def
+                    call2 : array string [ call_parse[ rest ] ]
+                    d2 : defs[ 'Layer.' + call2[0] ]
+                    if [ !d2 ]
+                        errors.push[ '{src}:{cl.line}: unknown Layer `{call2[0]}`' ]
+                        out.push[ cl ]
+                        k2 += 1
+                        continue
+                    hdr2 : 'layers.' + call2[0] + ':'
+                    out.push[ CSSLine [ indent: cl.indent, content: hdr2, line: cl.line ] ]
+                    sdst : array CSSLine [ (in_state) ? null : pending ]
+                    layer_splice[ hdr2, d2, call2, cl.indent + 1, out, sdst ]
+                    k2 += 1
+                    continue
+                typed : bool [ false ]
+                if [ ci2 > 0 ]
+                    nm2 : rest.mid[ 0, ci2 ].trim[]
+                    rc  : rest.mid[ ci2 + 1, rest.count - ci2 - 1 ].trim[]
+                    cA  : i8 [ (rc.count > 0) ? rc.chars[0] : i8[ 0 ] ]
+                    if [ cA >= 'A' && cA <= 'Z' && rc.index_of[ '[' ] > 0 ]
+                        # layers.name: Class [ args ] — class-scoped def
+                        callc : array string [ call_parse[ rc ] ]
+                        d3 : defs[ callc[0] + '.' + nm2 ]
+                        if [ !d3 ]
+                            errors.push[ '{src}:{cl.line}: unknown Layer `{callc[0]} {nm2}`' ]
+                            out.push[ cl ]
+                            k2 += 1
+                            continue
+                        call3 : array string [ ]
+                        call3.push[ nm2 ]
+                        for [ ka: i32 1, ka < callc.count, ka += 1 ]
+                            call3.push[ callc[ka] ]
+                        hdr3 : 'layers.' + nm2 + ': ' + callc[0]
+                        out.push[ CSSLine [ indent: cl.indent, content: hdr3, line: cl.line ] ]
+                        sdst3 : array CSSLine [ (in_state) ? null : pending ]
+                        layer_splice[ hdr3, d3, call3, cl.indent + 1, out, sdst3 ]
+                        typed = true
+                if [ !typed ]
+                    errors.push[ '{src}:{cl.line}: layers.<name>: prop blocks are retired — declare `Layer <name> [ ]` at top level and instantiate with `layers.<name> [ ]`' ]
+                    out.push[ cl ]
             el
                 out.push[ cl ]
             k2 += 1

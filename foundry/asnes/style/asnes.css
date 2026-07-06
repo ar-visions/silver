@@ -2,7 +2,7 @@ Layer root_bg [ ]
     fill_color: #704
 
 element.root {
-    root_bg
+    layers.root_bg [ ]
 }
 
 asnes {

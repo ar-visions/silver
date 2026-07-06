@@ -1,6 +1,8 @@
+Layer root_bg [ ]
+    fill_color: #024
+
 element.root {
-    layers.root_bg:
-        fill_color: #024
+    layers.root_bg [ ]
 }
 
 rgen {

@@ -23,12 +23,12 @@ Layer face [ ]
 
 element.root {
     area: l0 t0 r0 b0
-    bg
+    layers.bg [ ]
 }
 
-element.root / Button.hello {
+Button.hello {
     area:       l2 t2 w123px h64px
     focusable:  true
-    base
-    face
+    layers.base [ ]
+    layers.face [ ]
 }

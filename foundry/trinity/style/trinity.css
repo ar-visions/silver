@@ -21,6 +21,6 @@ Layer face [ ]
 
 Button {
     area:                       l8+px t4px wc24px h30px
-    base
-    face
+    layers.base [ ]
+    layers.face [ ]
 }

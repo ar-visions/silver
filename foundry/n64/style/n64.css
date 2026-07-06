@@ -1,8 +1,10 @@
 @import "trinity.css"
 
+Layer root_bg [ ]
+    fill_color: #101
+
 element.root {
-    layers.root_bg:
-        fill_color: #101
+    layers.root_bg [ ]
 }
 
 n64 {
