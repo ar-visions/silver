@@ -9497,6 +9497,9 @@ etype silver_read_def(silver a, interface access) {
         if (inherits(mdl->autype, typeid(ielement)))
             mdl->autype->is_user_init = true;
 
+        if (mdl->autype->meta.a && inherits(mdl->autype->meta.a, typeid(live_app)))
+            mdl->autype->is_app = true;
+
         mdl->body = (tokens)read_body(a);
 
     } else if (is_scalar) {
