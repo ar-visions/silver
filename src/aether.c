@@ -6342,15 +6342,24 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     // check for live_app subclass — builds as .so with exported frame/destroy
     etype live_spec = etypeid(live_app);
     if (live_spec && is_class(live_spec)) {
-        etype live_class = null;
+        etype live_class  = null;
+        etype app_element = null;
         members(module_base, mem) {
             if (is_class(mem)) {
                 etype cls = u(etype, mem);
                 if (inherits(cls->autype, live_spec->autype) && !mem->is_abstract) {
                     verify(!live_class, "found multiple live_app classes");
                     live_class = cls;
+                } else if (mem->is_app && !mem->is_abstract) {
+                    verify(!app_element, "found multiple app element classes");
+                    app_element = cls;
                 }
             }
+        }
+        if (app_element) {
+            verify(!live_class, "module defines both a live_app class and an app element");
+            live_class = etype_prep(a, app_element->autype->meta.a);
+            verify(live_class && is_class(live_class), "app element meta is not a class");
         }
         if (live_class) {
             a->is_library = true;
@@ -6389,22 +6398,46 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
 
             bool saved = a->skip_context_resolve;
             a->skip_context_resolve = true;
-            enode inst = e_create(a, live_class, null);
+            enode inst;
+            if (app_element) {
+                // app element: create it, apply argv to its schema (the element IS
+                // the CLI surface), then construct the meta delegate with the element
+                // given as root. props apply before init, so the delegate's init
+                // performs the mount — no run call.
+                enode root = e_create(a, app_element, null);
+                root->is_any = true;
+                {
+                    LLVMTypeRef  aa_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx),
+                        (LLVMTypeRef[]){ ptr_ty }, 1, false);
+                    LLVMValueRef aa_fn = LLVMGetNamedFunction(a->module_ref, "au_apply_args");
+                    if (!aa_fn) aa_fn = LLVMAddFunction(a->module_ref, "au_apply_args", aa_ty);
+                    LLVMBuildCall2(B, aa_ty, aa_fn, (LLVMValueRef[]){ root->value }, 1, "");
+                }
+                Au_t m_root = find_member(live_class->autype, "root", AU_MEMBER_VAR, 0, true);
+                verify(m_root, "%s (app meta) has no 'root' member to receive the element",
+                    live_class->autype->ident);
+                map props = map(hsize, 8);
+                set(props, (Au)string("root"), (Au)root);
+                inst = e_create(a, live_class, (Au)props);
+            } else
+                inst = e_create(a, live_class, null);
             a->skip_context_resolve = saved;
             inst->is_any = true;
             LLVMBuildStore(B, inst->value, inst_g);
 
-            // parse the process argv (stashed by silver-host via au_main_args) into the
-            // instance, so the app receives its own command-line flags via its schema.
-            {
-                LLVMTypeRef  aa_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx),
-                    (LLVMTypeRef[]){ ptr_ty }, 1, false);
-                LLVMValueRef aa_fn = LLVMGetNamedFunction(a->module_ref, "au_apply_args");
-                if (!aa_fn) aa_fn = LLVMAddFunction(a->module_ref, "au_apply_args", aa_ty);
-                LLVMBuildCall2(B, aa_ty, aa_fn, (LLVMValueRef[]){ inst->value }, 1, "");
-            }
+            if (!app_element) {
+                // parse the process argv (stashed by silver-host via au_main_args) into the
+                // instance, so the app receives its own command-line flags via its schema.
+                {
+                    LLVMTypeRef  aa_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx),
+                        (LLVMTypeRef[]){ ptr_ty }, 1, false);
+                    LLVMValueRef aa_fn = LLVMGetNamedFunction(a->module_ref, "au_apply_args");
+                    if (!aa_fn) aa_fn = LLVMAddFunction(a->module_ref, "au_apply_args", aa_ty);
+                    LLVMBuildCall2(B, aa_ty, aa_fn, (LLVMValueRef[]){ inst->value }, 1, "");
+                }
 
-            if (fn_run) e_fn_call(a, (efunc)u(efunc, fn_run), a(inst), false, false);
+                if (fn_run) e_fn_call(a, (efunc)u(efunc, fn_run), a(inst), false, false);
+            }
 
             if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(B)))
                 LLVMBuildRetVoid(B);
