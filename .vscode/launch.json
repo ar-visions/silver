@@ -413,6 +413,15 @@
             }
         },
         {
+            "name":       "silver / hyperspace",
+            "type":       "lldb",
+            "request":    "launch",
+            "stopOnEntry": false,
+            "program":    "${workspaceFolder}/platform/native/debug/hyperspace",
+            "args":     [ "hyperspace" ],
+            "cwd":        "/src/silver"
+        },
+        {
             "name":       "silver / asnes",
             "type":       "lldb",
             "request":    "launch",

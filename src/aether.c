@@ -385,11 +385,13 @@ enode enode_value(enode mem, bool force_load) { sequencer
         // When value is an alloca (e.g. debug shadow), load through it.
         if (mem->autype->is_explicit_ref) {
             if (mem->value && LLVMGetValueKind(mem->value) == LLVMArgumentValueKind) {
-                return enode(mod, a, value, mem->value, loaded, true, autype, au);
+                return enode(mod, a, value, mem->value, loaded, true, autype, au,
+                    is_explicit_ref, true);
             }
             LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
             LLVMValueRef loaded_v = LLVMBuildLoad2(B, ptr_ty, mem->value, id->chars);
-            return enode(mod, a, value, loaded_v, loaded, true, autype, au);
+            return enode(mod, a, value, loaded_v, loaded, true, autype, au,
+                is_explicit_ref, true);
         }
         etype type2 = u(etype, au);
         LLVMValueRef loaded = LLVMBuildLoad2(
@@ -1961,6 +1963,11 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
         }
 
     } else if (optype >= OPType__add && optype <= OPType__left) {
+        // load unloaded values (vector-member subscripts arrive as GEPs)
+        if (!LL->loaded && (is_prim(LL->autype) || is_ptr(LL)))
+            LL = e_load(a, LL, null);
+        if (!RL->loaded && (is_prim(RL->autype) || is_ptr(RL)))
+            RL = e_load(a, RL, null);
         LL = e_create(a, rtype, (Au)LL); // generate compare != 0 if not already i1
         RL = e_create(a, rtype, (Au)RL);
 
@@ -2669,6 +2676,39 @@ enode aether_e_short_circuit(aether a, OPType optype, enode L) {
     // load unloaded primitive/enum values before short-circuit
     if (!L->loaded && !is_ptr(L) && !is_class(L))
         L = enode_value(L, true);
+
+    // explicit-ref member || fallback (`floats = floats || new f32[shape]`):
+    // evar_type resolves to the ELEMENT type (f32 — numeric, which degrades
+    // the result to bool). the value here is the POINTER — phi it raw
+    bool L_ref = (L->autype->member_type == AU_MEMBER_VAR && L->autype->is_explicit_ref) ||
+                 L->is_explicit_ref;
+    if (L_ref) {
+        if (!L->loaded) L = enode_value(L, false);
+        enode L_bool = e_create(a, etypeid(bool), (Au)L);
+        LLVMBasicBlockRef eval_r_block = LLVMAppendBasicBlockInContext(a->module_ctx, func, "eval_r");
+        LLVMBasicBlockRef merge_block  = LLVMAppendBasicBlockInContext(a->module_ctx, func, "merge");
+        LLVMBasicBlockRef L_final      = LLVMGetInsertBlock(B);
+        if (optype == OPType__or)
+            LLVMBuildCondBr(B, L_bool->value, merge_block, eval_r_block);
+        else
+            LLVMBuildCondBr(B, L_bool->value, eval_r_block, merge_block);
+        LLVMPositionBuilderAtEnd(B, eval_r_block);
+        enode R = (enode)a->parse_expr((Au)a, null);
+        if (!R->loaded) R = enode_value(R, false);
+        verify(LLVMGetTypeKind(LLVMTypeOf(L->value)) == LLVMPointerTypeKind &&
+               LLVMGetTypeKind(LLVMTypeOf(R->value)) == LLVMPointerTypeKind,
+            "short-circuit on ref member requires pointer operands");
+        LLVMBasicBlockRef R_block = LLVMGetInsertBlock(B);
+        LLVMBuildBr(B, merge_block);
+        LLVMPositionBuilderAtEnd(B, merge_block);
+        LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
+        LLVMValueRef phi = LLVMBuildPhi(B, ptr_ty, "sc_ref_result");
+        LLVMValueRef      vals[] = { L->value, R->value };
+        LLVMBasicBlockRef bbs[]  = { L_final,  R_block };
+        LLVMAddIncoming(phi, vals, bbs, 2);
+        return enode(mod, a, autype, au_arg_type((Au)L), loaded, true, value, phi,
+            is_explicit_ref, true);
+    }
 
     // convert L to both its own type and bool before branching
     etype rtype = (etype)evar_type((evar)L);
@@ -3828,6 +3868,15 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
     if (!mdl)
         return e_null(a, etypeid(Au_t));
 
+    // canonical() above replaces an enode input with its STATIC etype, which
+    // folded `x is T` to a constant typeid compare — check the original node.
+    // classes only: primitives have no Au header to read a runtime type from
+    if (instanceof(original, enode) && ((enode)original)->value &&
+        mdl && mdl->autype && mdl->autype->is_class) {
+        enode inst = (enode)original;
+        if (!inst->loaded) inst = enode_value(inst, false);
+        return e_runtime_type(inst);
+    }
     if (instanceof(mdl, enode) && ((enode)mdl)->value) { // so we can take in member variables
         return e_runtime_type((enode)mdl);
     }
@@ -5074,11 +5123,24 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
 
     // Step 3: Handle the "then" (true) branch
     LLVMPositionBuilderAtEnd(mod->builder, then_block);
+    // load unloaded prim GEPs in-branch — a ptr/prim phi is invalid IR
+    if (false_expr && !true_expr->loaded &&
+        LLVMGetTypeKind(LLVMTypeOf(true_expr->value)) == LLVMPointerTypeKind) {
+        Au_t tau = au_arg_type((Au)true_expr);
+        if (tau && tau->is_primitive && !tau->is_pointer)
+            true_expr = e_load(a, true_expr, null);
+    }
     LLVMValueRef true_value = !false_expr ? cond_expr->value : true_expr->value;
     LLVMBuildBr(mod->builder, merge_block);  // Jump to merge block after the "then" block
 
     // Step 4: Handle the "else" (false) branch
     LLVMPositionBuilderAtEnd(mod->builder, else_block);
+    if (false_expr && !false_expr->loaded &&
+        LLVMGetTypeKind(LLVMTypeOf(false_expr->value)) == LLVMPointerTypeKind) {
+        Au_t fau = au_arg_type((Au)false_expr);
+        if (fau && fau->is_primitive && !fau->is_pointer)
+            false_expr = e_load(a, false_expr, null);
+    }
     enode default_expr = !false_expr ? e_create(a, (etype)rmdl, (Au)true_expr) : null;
     if (false_expr) false_expr = e_create(a, (etype)rmdl, (Au)false_expr);
     LLVMValueRef false_value = !false_expr ? default_expr->value : false_expr->value;
@@ -5186,6 +5248,14 @@ enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, ar
     // then block: parse + codegen true expression
     LLVMPositionBuilderAtEnd(B, then_block);
     enode true_node = (enode)invoke(expr_builder, (Au)true_tokens);
+    // an unloaded prim GEP (array subscript) must load IN-BRANCH: the other
+    // branch may be a prim constant, and a ptr/prim phi is invalid IR
+    if (!true_node->loaded &&
+        LLVMGetTypeKind(LLVMTypeOf(true_node->value)) == LLVMPointerTypeKind) {
+        Au_t tau = au_arg_type((Au)true_node);
+        if (tau && tau->is_primitive && !tau->is_pointer)
+            true_node = e_load(a, true_node, null);
+    }
     LLVMValueRef true_value = true_node->value;
     LLVMBasicBlockRef true_final = LLVMGetInsertBlock(B);
     LLVMBuildBr(B, merge_block);
@@ -5193,6 +5263,12 @@ enode aether_e_ternary_deferred(aether a, enode cond_expr, array true_tokens, ar
     // else block: parse + codegen false expression
     LLVMPositionBuilderAtEnd(B, else_block);
     enode false_node = (enode)invoke(expr_builder, (Au)false_tokens);
+    if (!false_node->loaded &&
+        LLVMGetTypeKind(LLVMTypeOf(false_node->value)) == LLVMPointerTypeKind) {
+        Au_t fau = au_arg_type((Au)false_node);
+        if (fau && fau->is_primitive && !fau->is_pointer)
+            false_node = e_load(a, false_node, null);
+    }
 
     // determine result type
     etype rmdl = (etype)prefer_mdl((etype)true_node, (etype)false_node);
@@ -5961,8 +6037,14 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     if (a->no_build) return e_noop(a, (etype)evar_type((evar)n));
 
     enode  i = e_operand(a, offset, null);
-    verify(is_ptr(n) || n->autype->elements > 0 || n->autype->is_explicit_ref,
-        "offset requires pointer (is_explicit_ref=%d)", n->autype->is_explicit_ref);
+    {
+        Au_t deep = n->autype;
+        while (deep && deep->member_type == AU_MEMBER_VAR)
+            deep = deep->src;
+        verify(is_ptr(n) || n->autype->elements > 0 || n->autype->is_explicit_ref ||
+            (deep && (deep->is_pointer || deep->is_explicit_ref || deep->elements > 0)),
+            "offset requires pointer (is_explicit_ref=%d)", n->autype->is_explicit_ref);
+    }
 
     LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
     LLVMValueRef base = n->value;
@@ -5981,7 +6063,7 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     // `ref cstr[0]` would collapse from cstr down to i8.
     bool var_is_ref = au->member_type == AU_MEMBER_VAR && au->is_explicit_ref;
     Au_t elem_au = au;
-    if (elem_au->member_type == AU_MEMBER_VAR)
+    while (elem_au && elem_au->member_type == AU_MEMBER_VAR)
         elem_au = elem_au->src;
     if (!var_is_ref && (elem_au->is_pointer || elem_au->is_explicit_ref))
         elem_au = elem_au->src;
@@ -6023,7 +6105,14 @@ enode aether_e_load(aether a, enode mem, enode target) { sequencer
     a->is_const_op = false;
     etype  resolve   = (mem->autype->src && (mem->autype->src->is_schema || mem->autype->src == typeid(Au_t)))
         ? (etype)mem : resolve(mem);
-    if (a->no_build) return e_noop(a, resolve);
+    if (a->no_build) {
+        enode n = e_noop(a, resolve);
+        // a no_build load of a ref member must keep ref-ness so DECL
+        // inference (`dst: t.floats`) borrows a ref, not a scalar
+        if (mem->autype->is_explicit_ref || mem->is_explicit_ref)
+            n->is_explicit_ref = true;
+        return n;
+    }
 
     LLVMValueRef ptr = mem->value;
     verify(is_ptr(mem) || !mem->loaded, "expected pointer to load from, given %o", mem);
@@ -6034,7 +6123,8 @@ enode aether_e_load(aether a, enode mem, enode target) { sequencer
     if (mem_au->is_pointer || mem->autype->is_explicit_ref) {
         LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
         LLVMValueRef loaded = LLVMBuildLoad2(B, ptr_ty, mem->value, id->chars);
-        enode r = enode(mod, a, loaded, true, value, loaded, autype, mem_au, is_any, mem->is_any);
+        enode r = enode(mod, a, loaded, true, value, loaded, autype, mem_au, is_any, mem->is_any,
+            is_explicit_ref, mem->autype->is_explicit_ref || mem->is_explicit_ref);
         return r;
     }
 
@@ -6055,7 +6145,15 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
     if (a->no_build) return e_noop(a, rtype);
 
     //expr = e_load(a, expr, null); // i think we want to place this somewhere else for better structural use
-    
+
+    // unloaded prim GEP (array subscript `f32[ d[i] ]`) — load the element
+    if (!expr->loaded && expr->value &&
+        LLVMGetTypeKind(LLVMTypeOf(expr->value)) == LLVMPointerTypeKind) {
+        Au_t eau = au_arg_type((Au)expr);
+        if (eau && eau->is_primitive && !eau->is_pointer)
+            expr = e_load(a, expr, null);
+    }
+
     etype F = canonical(expr);
     etype T = canonical(rtype);
 
@@ -7198,8 +7296,11 @@ etype implement_type_id(etype t) {
     etype mt = etype_ptr(a, t->schema->autype, null);
     mt->autype->is_typeid = true;
     mt->autype->is_imported = a->is_Au_import;
-    // resolve typesize for aliases/pointers to opaque types (e.g. VkImage)
-    if (!au->typesize) {
+    // resolve typesize for aliases/pointers to opaque types (e.g. VkImage).
+    // classes are excluded: walking src would inherit the BASE size (Au = 8)
+    // before implement computes the real struct size — alloc under-sizes and
+    // member defaults corrupt the heap
+    if (!au->typesize && !au->is_class) {
         Au_t walk = au;
         while (walk && !walk->typesize)
             walk = walk->src;
@@ -7357,7 +7458,9 @@ none etype_implement(etype t, bool w) { sequencer
                 // and keep their array-type alloca.
                 bool is_local_arr = au->src && au->src->is_pointer &&
                     LLVMGetTypeKind(type) == LLVMArrayTypeKind;
-                LLVMTypeRef alloca_type = is_local_arr ?
+                // ref locals (`inp: input.floats` borrows) hold a POINTER to the
+                // element type — an element-sized alloca truncates the pointer
+                LLVMTypeRef alloca_type = (is_local_arr || au->is_explicit_ref) ?
                     LLVMPointerTypeInContext(a->module_ctx, 0) : type;
                 n->value = entry_alloca(a, alloca_type, id);
                 LLVMPositionBuilderAtEnd(B, current_block);
@@ -7658,7 +7761,23 @@ none etype_implement(etype t, bool w) { sequencer
         // can do raw pointer arithmetic via mem->offset
         // only set offsets that haven't been explicitly assigned (current value 0);
         // C-defined types set their offsets via offsetof() at registration time
-        if (!au->is_union) {
+        // scalable-vector structs have no static layout — offsets stay unset.
+        // offsets are accumulated manually: LLVM 22's LLVMOffsetOfElement asserts
+        // (scalable TypeSize conversion) even on fixed-size structs
+        if (!au->is_union && !has_scalable_vector(_lltype_slot(t))) {
+            unsigned ecount = LLVMCountStructElementTypes(_lltype_slot(t));
+            u64*     eoffs  = calloc(ecount, sizeof(u64));
+            bool     packed = LLVMIsPackedStruct(_lltype_slot(t));
+            u64      eoff   = 0;
+            for (unsigned i = 0; i < ecount; i++) {
+                LLVMTypeRef et = LLVMStructGetTypeAtIndex(_lltype_slot(t), i);
+                if (!packed) {
+                    unsigned al = LLVMABIAlignmentOfType(a->target_data, et);
+                    if (al) eoff = (eoff + al - 1) / al * al;
+                }
+                eoffs[i] = eoff;
+                eoff += LLVMABISizeOfType(a->target_data, et);
+            }
             each(cl, etype, tt) {
                 if (multi_Au && tt->autype == typeid(Au)) continue;
                 for (int i = 0; i < tt->autype->members.count; i++) {
@@ -7666,11 +7785,12 @@ none etype_implement(etype t, bool w) { sequencer
                     if (m->member_type != AU_MEMBER_VAR) continue;
                     if (m->is_static || m->is_elaborate) continue;
                     if (m->offset != 0) continue;
-                    if (m->member_index < 0 || m->member_index >= (int)LLVMCountStructElementTypes(_lltype_slot(t)))
+                    if (m->member_index < 0 || m->member_index >= (int)ecount)
                         continue;
-                    m->offset = LLVMOffsetOfElement(a->target_data, _lltype_slot(t), m->member_index);
+                    m->offset = eoffs[m->member_index];
                 }
             }
+            free(eoffs);
         }
 
     } else if (is_enum(t)) {
@@ -7844,19 +7964,28 @@ none etype_implement(etype t, bool w) { sequencer
             _lltype_set(src, LLVMPointerTypeInContext(a->module_ctx, 0));
     }
 
-    if (!was_implemented)
+    // classes can arrive re-implemented with typesize still unset (ptr view first);
+    // let them size themselves once the struct body exists
+    if (!was_implemented || (!au->typesize && au->is_class))
     if (!au->is_void && !is_opaque(au) && !is_func((Au)au) && _lltype_slot(t)) {
         // wrap as fixed-size array only when this Au is not itself a pointer.
         // is_pointer + elements = "pointer to N elements" (decayed array), lltype stays ptr.
         if (au->elements && !au->is_pointer && LLVMGetTypeKind(_lltype_slot(t)) != LLVMArrayTypeKind)
             _lltype_set(t, LLVMArrayType(_lltype_slot(t), au->elements));
         /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// /// ///
-            if (!au->abi_size)
-                au->abi_size   = LLVMABISizeOfType(a->target_data, _lltype_slot(t)) * 8;
-            if (!au->typesize || !au->is_au || au->is_c)
-                au->typesize = LLVMABISizeOfType(a->target_data, _lltype_slot(t));
-            if (!au->align_bits)
-                au->align_bits = LLVMABIAlignmentOfType(a->target_data, _lltype_slot(t)) * 8;
+            // a class measured through its pointer slot must not define sizes —
+            // the ptr etype can implement before the struct etype and would stamp
+            // typesize = 8, under-allocating every instance
+            bool ptr_view_of_class = au->is_class && !au->is_pointer &&
+                LLVMGetTypeKind(_lltype_slot(t)) == LLVMPointerTypeKind;
+            if (!ptr_view_of_class) {
+                if (!au->abi_size)
+                    au->abi_size   = LLVMABISizeOfType(a->target_data, _lltype_slot(t)) * 8;
+                if (!au->typesize || !au->is_au || au->is_c)
+                    au->typesize = LLVMABISizeOfType(a->target_data, _lltype_slot(t));
+                if (!au->align_bits)
+                    au->align_bits = LLVMABIAlignmentOfType(a->target_data, _lltype_slot(t)) * 8;
+            }
         }
 }
 
@@ -8192,6 +8321,27 @@ none aether_build_module_initializer(aether a, enode init) {
 
         Au_t tau = mdl->autype;
 
+        // classes may still be unsized here (ptr view implemented first, and
+        // etype_implement early-returns on re-entry): size from the struct body.
+        // a FRESH DataLayout is required — the module's cached a StructLayout
+        // from before the body was set (setBody never invalidates the cache)
+        if (!tau->typesize && tau->is_class) {
+            etype ce = u(etype, tau);
+            if (ce && _lltype_slot(ce) &&
+                LLVMGetTypeKind(_lltype_slot(ce)) == LLVMStructTypeKind &&
+                !has_scalable_vector(_lltype_slot(ce))) {
+                char* dl_rep = LLVMCopyStringRepOfTargetData(a->target_data);
+                LLVMTargetDataRef fresh_td = LLVMCreateTargetData(dl_rep);
+                tau->typesize = LLVMABISizeOfType(fresh_td, _lltype_slot(ce));
+                if (!tau->abi_size)
+                    tau->abi_size = tau->typesize * 8;
+                if (!tau->align_bits)
+                    tau->align_bits = LLVMABIAlignmentOfType(fresh_td, _lltype_slot(ce)) * 8;
+                LLVMDisposeTargetData(fresh_td);
+                LLVMDisposeMessage(dl_rep);
+            }
+        }
+
         // calculate internal size and count
         u64 isize = 0;
         i32 icount = 0;
@@ -8330,11 +8480,18 @@ none aether_build_module_initializer(aether a, enode init) {
                 etype prop_type = mem->is_explicit_ref ?
                     pointer(a, (Au)mem->src) :
                     canonical(u(etype, mem->src));
+                // ref members register as plain pointer types — the ref trait
+                // would double-count the indirection on the importer side
+                // (local convention is flag + BARE src; imported is ptr src)
+                // structs lack ref_<T> typeids — keep the flag for them
+                u64 prop_traits = mem->traits;
+                if (mem->is_explicit_ref && mem->src->is_primitive)
+                    prop_traits &= ~AU_TRAIT_EXPLICIT_REF;
                 e_fn_call(a, fn_def_prop, a(
                     type_id,
                     const_string(chars, mem->ident),
                     e_typeid(a, prop_type),
-                    _u64(mem->traits),
+                    _u64(prop_traits),
                     _u32(mem->offset),
                     _u32(mem->abi_size),
                     e_attrib_val,

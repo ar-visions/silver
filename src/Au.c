@@ -3542,7 +3542,7 @@ none serialize(Au_t type, string res, Au a) {
         else if (type == typeid(u32)) len = sprintf(buf, "%u",   *(u32*)a);
         else if (type == typeid(u16)) len = sprintf(buf, "%hu",  *(u16*)a);
         else if (type == typeid(u8))  len = sprintf(buf, "%hhu", *(u8*) a);
-        else if (type == typeid(f64)) len = sprintf(buf, "%fwith ",   *(f64*)a);
+        else if (type == typeid(f64)) len = sprintf(buf, "%f",   *(f64*)a);
         else if (type == typeid(f32)) len = sprintf(buf, "%f",   *(f32*)a);
         else if (type == typeid(cstr)) len = sprintf(buf, "%s",  *(cstr*)a);
         else if (type == typeid(unichar)) len = sprintf(buf, "%c",  *(unichar*)a);
@@ -6776,6 +6776,14 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
 // generic map). a member whose next line is deeper is a nested typed block (the
 // rest of its line names the Type, else the member's declared type / a map); a
 // leaf parses its value via parse_object. advances *rem past the block.
+static bool agi_type_is_array(Au_t t) {
+    for (Au_t w = t; w; w = w->src) {
+        if (w == typeid(array)) return true;
+        if (w == w->src) break;
+    }
+    return false;
+}
+
 static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* rem, Au target) {
     // when `target` is set we SET members directly onto it (its type drives member
     // lookup); otherwise we build a props map and construct a fresh object/map.
@@ -6825,17 +6833,41 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
 
         Au value = null;
         if (nx > indent) {
-            // nested block — the rest of the line (if any) names the Type. always
-            // constructs fresh (target == null), then it's set onto the parent.
-            Au_t btype = mem_type;
-            cstr ts = ks;
-            if (ts < re && *ts != ' ' && *ts != '\t') {
-                string tn = parse_symbol(ts, &ts, null);
-                if (tn) { Au_t ft = find_type(tn->chars, null); if (ft) btype = ft; }
+            bool arr_member = mem &&
+                (agi_type_is_array(mem->type) || agi_type_is_array(mem->src));
+            if (arr_member) {
+                // keyed blocks -> array elements (string_agi emits items keyed
+                // by their name/ident); insertion order is the array order
+                Au_t elem = (Au_t)(mem->meta.b ? mem->meta.b : mem->meta.a);
+                cstr brem = after;
+                map  mm   = (map)parse_agi_block(after, nx, typeid(map), elem, &brem, null);
+                array arr = array(32);
+                pairs(mm, ii) {
+                    Au e = ii->value;
+                    if (e && instanceof(ii->key, string)) {
+                        // restore the key into name/ident when the block left it unset
+                        Au_t nm = find_member(isa(e), "name", AU_MEMBER_VAR, 0, true);
+                        if (!nm) nm = find_member(isa(e), "ident", AU_MEMBER_VAR, 0, true);
+                        if (nm && nm->type == typeid(string) && !Au_get_property(e, nm->ident))
+                            member_set(e, nm, ii->key);
+                    }
+                    push(arr, e);
+                }
+                value = (Au)arr;
+                scan  = brem;
+            } else {
+                // nested block — the rest of the line (if any) names the Type. always
+                // constructs fresh (target == null), then it's set onto the parent.
+                Au_t btype = mem_type;
+                cstr ts = ks;
+                if (ts < re && *ts != ' ' && *ts != '\t') {
+                    string tn = parse_symbol(ts, &ts, null);
+                    if (tn) { Au_t ft = find_type(tn->chars, null); if (ft) btype = ft; }
+                }
+                cstr brem = after;
+                value = parse_agi_block(after, nx, btype, mem_meta, &brem, null);
+                scan  = brem;
             }
-            cstr brem = after;
-            value = parse_agi_block(after, nx, btype, mem_meta, &brem, null);
-            scan  = brem;
         } else {
             // leaf value. structured starters (quote / [ / { / number / -) and the
             // keywords true|false|null go through parse_object; a bare word is taken
@@ -6849,8 +6881,44 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
             bool keyword = (vlen == 4 && strncmp(v, "true",  4) == 0) ||
                            (vlen == 5 && strncmp(v, "false", 5) == 0) ||
                            (vlen == 4 && strncmp(v, "null",  4) == 0);
+            // digit-leading text for an object-typed member (shape 32x32x1)
+            // is a constructor string, not a number
+            if ((c0 == '-' || (c0 >= '0' && c0 <= '9')) && mem_type &&
+                mem_type != typeid(Au) && mem_type != typeid(string) &&
+                !(mem_type->traits & AU_TRAIT_PRIMITIVE) &&
+                !(mem_type->traits & AU_TRAIT_ENUM))
+                structured = false;
             if (vlen == 0) {
                 value = null;
+            } else if (c0 == '[') {
+                // agi arrays allow bare symbols: [ inL, inR ]
+                Au_t elem = mem ? (Au_t)(mem->meta.b ? mem->meta.b : mem->meta.a) : meta;
+                array arr = array(32);
+                cstr  p   = v + 1;
+                while (p < ve && *p != ']') {
+                    while (p < ve && (*p == ' ' || *p == '\t' || *p == ',')) p++;
+                    if (p >= ve || *p == ']') break;
+                    Au item = null;
+                    if (*p == '\'' || *p == '"')
+                        item = (Au)parse_json_string(p, &p, null);
+                    else {
+                        cstr w = p;
+                        while (p < ve && *p != ',' && *p != ']') p++;
+                        cstr we = p; while (we > w && (we[-1] == ' ' || we[-1] == '\t')) we--;
+                        int wl = (int)(we - w);
+                        if (wl > 0) {
+                            string ws2 = string(alloc, wl + 1);
+                            memcpy((cstr)ws2->chars, w, wl);
+                            ((cstr)ws2->chars)[wl] = 0;
+                            ws2->count = wl;
+                            item = (Au)ws2;
+                        }
+                    }
+                    if (item)
+                        push(arr, (elem && elem != typeid(none) && elem != typeid(Au) && elem != typeid(string))
+                            ? (Au)construct_with(elem, item, null) : item);
+                }
+                value = (Au)arr;
             } else if (structured || keyword) {
                 cstr vrem = v;
                 value = parse_object(v, mem_type, mem_meta, &vrem, null);
@@ -6906,6 +6974,206 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
 Au parse_agi(Au_t schema, cstr s, Au target) {
     cstr rem = s;
     return parse_agi_block(s, 0, schema, null, &rem, target);
+}
+
+// ---- .agi : generic writer (inverse of parse_agi) ---------------------------
+static bool agi_symbol_safe(cstr s) {
+    if (!s || !isalpha((u8)*s)) return false;
+    for (cstr p = s; *p; p++)
+        if (!isalnum((u8)*p) && *p != '_' && *p != '-') return false;
+    return true;
+}
+
+static none agi_indent(string res, int n) {
+    for (int i = 0; i < n; i++)
+        push(res, '\t');
+}
+
+// typed leaves (shape 32x32x1, path models/look.bin) may start with a digit
+static bool agi_bare_safe(cstr s) {
+    if (!s || !*s) return false;
+    for (cstr p = s; *p; p++)
+        if (!isalnum((u8)*p) && *p != '_' && *p != '-' && *p != '.' && *p != '/')
+            return false;
+    return true;
+}
+
+static cstr agi_enum_ident(Au_t et, i64 v) {
+    for (num i = 0; i < et->members.count; i++) {
+        Au_t m = (Au_t)et->members.origin[i];
+        if (m->member_type != AU_MEMBER_ENUMV || !m->value) continue;
+        i64 mv = (et->src && et->src->typesize == 8) ? *(i64*)m->value : (i64)*(i32*)m->value;
+        if (mv == v) return m->ident;
+    }
+    return null;
+}
+
+static none agi_write_block(string res, Au a, int indent, int depth);
+
+// leaf text for a value; false when the value needs a nested block
+static bool agi_leaf(string res, Au v, int depth) {
+    Au_t t = isa(v);
+    if (instanceof(v, string)) {
+        string s = (string)v;
+        if (agi_symbol_safe(s->chars))
+            concat(res, s);
+        else {
+            push(res, '\'');
+            concat(res, escape(s));
+            push(res, '\'');
+        }
+        return true;
+    }
+    if (t->traits & AU_TRAIT_PRIMITIVE) {
+        // %g keeps small floats (epsilon 1e-8) from flattening to 0.000000
+        if      (t == typeid(f32)) concat(res, f(string, "%g", (f64)*(f32*)v));
+        else if (t == typeid(f64)) concat(res, f(string, "%g", *(f64*)v));
+        else serialize(t, res, v);
+        return true;
+    }
+    if (t->is_enum) {
+        i64  ev = (t->src && t->src->typesize == 8) ? *(i64*)v : (i64)*(i32*)v;
+        cstr id = agi_enum_ident(t, ev);
+        if (id) append(res, (cstr)id);
+        else    concat(res, f(string, "%lli", ev));
+        return true;
+    }
+    if (instanceof(v, array)) {
+        // arrays of class objects need keyed blocks — not a leaf
+        each((collective)v, Au, e)
+            if (e && isa(e)->is_class && !instanceof(e, string) && !instanceof(e, path))
+                return false;
+        push(res, '[');
+        bool first = true;
+        each((collective)v, Au, e) {
+            append(res, first ? " " : ", ");
+            if (!e)                        append(res, "null");
+            else if (!agi_leaf(res, e, depth + 1))
+                concat(res, json(e));
+            first = false;
+        }
+        append(res, " ]");
+        return true;
+    }
+    if (instanceof(v, map))
+        return false;
+    // string-castable leaves (path, shape); structs inline as json
+    if (instanceof(v, path) || instanceof(v, shape) || t->is_struct) {
+        string s = t->is_struct ? json(v) : cast(string, v);
+        if (!s) return false;
+        if (agi_bare_safe(s->chars) || t->is_struct)
+            concat(res, s);
+        else {
+            push(res, '\'');
+            concat(res, escape(s));
+            push(res, '\'');
+        }
+        return true;
+    }
+    return false;
+}
+
+static none agi_write_key(string res, string k) {
+    if (k && agi_symbol_safe(k->chars))
+        concat(res, k);
+    else {
+        push(res, '\'');
+        if (k) concat(res, escape(k));
+        push(res, '\'');
+    }
+}
+
+// key already written (no colon); writes ": value\n" or a typed nested block
+static none agi_write_entry(string res, Au v, int indent, int depth) {
+    if (depth > 12) {
+        append(res, ": ");
+        concat(res, json(v));
+        push(res, '\n');
+        return;
+    }
+    // arrays of class objects: keyed blocks (element's name/ident, else index)
+    if (instanceof(v, array)) {
+        bool objs = false;
+        each((collective)v, Au, e)
+            if (e && isa(e)->is_class && !instanceof(e, string) && !instanceof(e, path))
+                objs = true;
+        if (objs) {
+            append(res, ":\n");
+            int idx = 0;
+            each((collective)v, Au, e) {
+                if (!e) { idx++; continue; }
+                agi_indent(res, indent + 1);
+                string nm = (string)instanceof(Au_get_property(e, "name"),  string);
+                if (!nm)  nm = (string)instanceof(Au_get_property(e, "ident"), string);
+                agi_write_key(res, nm ? nm : f(string, "e%i", idx));
+                append(res, ": ");
+                append(res, (cstr)isa(e)->ident);
+                push(res, '\n');
+                agi_write_block(res, e, indent + 2, depth + 1);
+                idx++;
+            }
+            return;
+        }
+    }
+    if (instanceof(v, map)) {
+        append(res, ":\n");
+        agi_write_block(res, v, indent + 1, depth + 1);
+        return;
+    }
+    string leaf = string(alloc, 64);
+    if (agi_leaf(leaf, v, depth)) {
+        append(res, ": ");
+        concat(res, leaf);
+        push(res, '\n');
+        return;
+    }
+    // class object: type name in value position, members as a nested block
+    append(res, ": ");
+    append(res, (cstr)isa(v)->ident);
+    push(res, '\n');
+    agi_write_block(res, v, indent + 1, depth + 1);
+}
+
+static none agi_write_members(string res, Au a, Au_t type, int indent, int depth) {
+    // base-first so inherited members (name, inputs) lead each block
+    if (type->context && type->context->is_class && type->context != type &&
+        type->context != typeid(Au))
+        agi_write_members(res, a, type->context, indent, depth);
+    for (num i = 0; i < type->members.count; i++) {
+        Au_t m = (Au_t)type->members.origin[i];
+        if (m->member_type != AU_MEMBER_VAR)          continue;
+        if (m->is_static)                             continue;
+        if (m->access_type == interface_intern)       continue;
+        if (!m->type)                                 continue;
+        // raw pointers (ref f32 buffers etc) have no text form
+        if (m->type->is_pointer || (m->traits & AU_TRAIT_EXPLICIT_REF)) continue;
+        Au v = Au_get_property(a, m->ident);
+        if (!v) continue;
+        agi_indent(res, indent);
+        append(res, (cstr)m->ident);
+        agi_write_entry(res, v, indent, depth);
+    }
+}
+
+static none agi_write_block(string res, Au a, int indent, int depth) {
+    if (instanceof(a, map)) {
+        map ma = (map)a;
+        pairs(ma, i) {
+            agi_indent(res, indent);
+            string k = instanceof(i->key, string) ? (string)i->key : cast(string, i->key);
+            agi_write_key(res, k);
+            agi_write_entry(res, i->value, indent, depth);
+        }
+        return;
+    }
+    agi_write_members(res, a, isa(a), indent, depth);
+}
+
+// generic object -> tab-indented .agi text via reflection (publics only)
+string string_agi(Au a) {
+    string res = string(alloc, 1024);
+    if (a) agi_write_block(res, a, 0, 0);
+    return res;
 }
 
 static array parse_array_objects(cstr* s, Au_t element_type, ctx context) {
@@ -7358,6 +7626,21 @@ shape shape_with_i64(shape a, i64 i) {
     a->data[0]      = i;
     a->count        = 1;
     a->is_global    = true;
+    return a;
+}
+
+// inverse of shape_cast_string ("32x32x1", also plain "5")
+shape shape_with_string(shape a, string s) {
+    a->data  = (i64*)calloc(sizeof(i64), 17);
+    a->count = 0;
+    cstr p = (cstr)s->chars;
+    while (p && *p && a->count < 16) {
+        char* e = null;
+        i64   d = strtoll(p, &e, 10);
+        if (e == p) break;
+        a->data[a->count++] = d;
+        p = (*e == 'x') ? e + 1 : null;
+    }
     return a;
 }
 
