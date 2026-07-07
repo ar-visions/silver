@@ -8594,6 +8594,14 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
     if (indexable && next_is(a, "[")) {
         // C arrays with elements > 0 are indexable like pointers
         bool is_indexable_ptr = is_ptr((Au)mem) || mem->autype->elements > 0 || mem->autype->is_explicit_ref;
+        // a borrow of a ref member (`dst: obj.floats`) chains VAR->VAR; resolve deep
+        if (!is_indexable_ptr) {
+            Au_t deep = mem->autype;
+            while (deep && deep->member_type == AU_MEMBER_VAR)
+                deep = deep->src;
+            if (deep && (deep->is_pointer || deep->is_explicit_ref || deep->elements > 0))
+                is_indexable_ptr = true;
+        }
         Au_t au_rec = is_rec((Au)mem);
         etype r = au_rec ? u(etype, au_rec) : null;
 
@@ -8908,6 +8916,15 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
         mem->autype->context = ctx;
         mem->autype->member_type = AU_MEMBER_VAR;
         Au_t rhs_type = au_arg_type((Au)R);
+        // a borrow of a ref member (`dst: t.floats` where floats: ref f32) must
+        // stay a ref — au_arg_type resolves to the bare element type and drops
+        // the member's is_explicit_ref
+        // loaded gate: an unloaded GEP (`grad: d_out_f[i]`) binds the ELEMENT,
+        // not a ref — only a loaded ref value keeps ref-ness. an explicit bind
+        // type (`sc : cstr p_sc` from a ref param) states a deref, not a ref
+        bool rhs_ref = !bind_type &&
+            ((R->is_explicit_ref && R->loaded) ||
+             (R->autype && R->autype->member_type == AU_MEMBER_VAR && R->autype->is_explicit_ref));
         // decay fixed-size char arrays (char[N]) to cstr for variable inference
         // — only when the RHS is a string literal. An explicit `local u8[N]`
         // stack-array allocation should keep its array type.
@@ -8925,11 +8942,12 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
                         (t && t->meta_b ? t->meta_b : R->meta_b);
         if (meta_a_src) mem->autype->meta.a = (Au_t)meta_a_src;
         if (meta_b_src) mem->autype->meta.b = meta_b_src;
+        if (rhs_ref) mem->autype->is_explicit_ref = true;
         rm(a->registry, (Au)mem->autype);
 
         mem = (enode)evar(mod, (aether)a, autype, mem->autype,
             loaded, false, meta_a, R->meta_a, meta_b, R->meta_b,
-            is_explicit_ref, is_bind_ref);
+            is_explicit_ref, is_bind_ref || rhs_ref);
 
         ((evar)mem)->is_local = context_func((aether)a) != null;
 
