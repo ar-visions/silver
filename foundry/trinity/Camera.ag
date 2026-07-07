@@ -105,15 +105,8 @@ class Camera
 
             sreq : VkMemoryRequirements [ ]
             vkGetBufferMemoryRequirements[ vk.device, staging_buf, ref sreq ]
-            s_type_idx : u32 [ 0 ]
-            for [ k: u32 0, k < vk.props.memoryTypeCount, k += 1 ]
-                if [ sreq.memoryTypeBits & (u32[1] << k) ]
-                    mt     : vk.props.memoryTypes[k]
-                    flags  : u32 [ mt.propertyFlags ]
-                    needed : u32 [ VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ]
-                    if [ (flags & needed) == needed ]
-                        s_type_idx = k
-                        break
+            needed : u32 [ VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ]
+            s_type_idx : u32 [ vk.find_memory_type[ sreq.memoryTypeBits, needed ] ]
             smai : VkMemoryAllocateInfo [
                 sType:           VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                 allocationSize:  sreq.size,
@@ -461,8 +454,23 @@ ifdef [ apple ]
 
 element CameraView
     public camera   : Camera
+    public device   : string
+    public cam_size : i32 [ 340 ]
     public src_rect : rect
     mutable once : bool
+
+    func init []
+        if [ !camera && device ]
+            camera = Camera [ vk: vk, w: ux, device: device, width: cam_size, height: cam_size ]
+
+    # write the latest CPU frame (staging) as a grayscale png
+    public func save_frame [ p: path ] -> bool
+        if [ !camera || !camera.staging_ptr ] return false
+        img : Image [ width: camera.width, height: camera.height, format: Pixel.u8 ]
+        sz : i32 [ camera.width * camera.height ]
+        memcpy[ img.vdata[], camera.staging_ptr, sz ]
+        img.png[ p ]
+        return true
 
     func draw [ w: Window ]
         if [ !camera ] return

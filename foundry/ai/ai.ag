@@ -1,6 +1,7 @@
 export 0.8.8
 
 import <stdio.h>
+import <stdlib.h>
 import <string.h>
 import <math.h>
 
@@ -52,7 +53,7 @@ class tensor
         # it should error when we do not give const to printf
 
         has_f32: bool [ floats ]
-        count   = tensor_shape.total
+        count   = tensor_shape.total[]
         floats  = floats || new f32[tensor_shape]
         quants  = quants || new i8 [tensor_shape]
         grad    = grad   || new f32[tensor_shape]
@@ -60,7 +61,7 @@ class tensor
         switch [ initializer ]
         case random
             for [ i: i32 0, i < count, i += 1 ]
-                floats[i] = randf
+                floats[i] = randf[]
         
         case zeros
             for [ i: i32 0, i < count, i += 1 ]
@@ -69,7 +70,7 @@ class tensor
         case glorot_uniform
             std: sqrtf[ 6.0f / count ]
             for [ i: i32 0, i < count, i += 1 ]
-                floats[i] = (randf * 2.0f - 1.0f) * std
+                floats[i] = (randf[] * 2.0f - 1.0f) * std
 
         if [ initializer || has_f32 ]
             quantize
@@ -97,11 +98,9 @@ class tensor
                 q = -128
             quants[i] = i8[q]
 
-    func realize [] 
-        src: quants
-        dst: floats
+    func realize []
         for [ i: i32 0, i < count, i += 1 ]
-            dst[i] = f32[src[i]] * scale
+            floats[i] = f32[quants[i]] * scale
         offset = 0
 
     func hash [] -> u64
@@ -118,11 +117,12 @@ class op
     public threshold:  i8
     public quantized:  bool
     intern op_inputs:  array op
-    intern result:     tensor
+    mutable result:    tensor
     public weights:    tensor
     public bias:       tensor
 
     intern d_result:   tensor
+    mutable grad_debug: bool
     intern w_m:        tensor
     intern w_v:        tensor
     intern b_m:        tensor
@@ -155,7 +155,7 @@ class op
                     v: f32 [ f32[input.quants[i]] * input.scale ]
                     y: tanhf[v]
                     result.floats[i] = y
-                result.quantize
+                result.quantize[]
         el
             if [ activation == Activation.relu ]
                 t: input.count
@@ -317,7 +317,18 @@ op dense
     public weight_initializer: Au
 
     func finalize []
-        no-op
+        if [ weights ]
+            if [ weights.count != in_dim * out_dim ]
+                puts '{name}: weights {weights.count} != in_dim {in_dim} * out_dim {out_dim}'
+                exit[ 1 ]
+        if [ bias ]
+            if [ bias.count != out_dim ]
+                puts '{name}: bias {bias.count} != out_dim {out_dim}'
+                exit[ 1 ]
+        if [ result ]
+            if [ result.tensor_shape[1] != out_dim ]
+                puts '{name}: result width {result.tensor_shape[1]} != out_dim {out_dim}'
+                exit[ 1 ]
 
     func forward [] 
         if [ quantized ]
@@ -348,7 +359,7 @@ op dense
                     dest_f[i * n + j] = tanhf[v]
                 el
                     dest_f[i * n + j] = v
-        result.quantize
+        result.quantize[]
 
     # AVX2/FMA3 vectorized forward — processes 8 output columns at a time
     func forward_avx2 [] 
@@ -417,15 +428,16 @@ op dense
             el [ activation == Activation.tanh ]
                 d_out_f[i] *= 1.0 - out[i] * out[i]
 
+        # weights are in-major (in_dim x out_dim), matching forward's w[ki*n + j]
         for [ i: i32 0, i < odim, i += 1 ]
             d_b[i] = d_out_f[i]
             for [ j: i32 0, j < idim, j += 1 ]
-                d_w[i * idim + j] += d_out_f[i] * inp[j]
+                d_w[j * odim + i] += d_out_f[i] * inp[j]
 
         for [ j: i32 0, j < idim, j += 1 ]
             d_in_f[j] = 0.0
             for [ i: i32 0, i < odim, i += 1 ]
-                d_in_f[j] += w[i * idim + j] * d_out_f[i]
+                d_in_f[j] += w[j * odim + i] * d_out_f[i]
 
         return d_input
 
@@ -441,7 +453,6 @@ op dense
         d_b:     bias.grad
         inp:     input.floats
         out:     result.floats
-        idim8:   i32 [ (idim / 8) * 8 ]
 
         # --- activation derivative (scalar, odim is typically small) ---
         for [ i: i32 0, i < odim, i += 1 ]
@@ -450,45 +461,47 @@ op dense
             el [ activation == Activation.tanh ]
                 d_out_f[i] *= 1.0 - out[i] * out[i]
 
-        # --- bias gradient + weight gradient: d_w[i*idim+j] += d_out_f[i] * inp[j] ---
+        # --- bias gradient (scalar, odim is small) ---
         for [ i: i32 0, i < odim, i += 1 ]
             d_b[i] = d_out_f[i]
-            do_off: i64 [ i * 4 ]
-            for [ j: i32 0, j < idim8, j += 8 ]
-                dw_off: i64 [ (i * idim + j) * 4 ]
-                in_off: i64 [ j * 4 ]
+
+        # weights are in-major (in_dim x out_dim), same as forward:
+        # d_w[j*odim+i] += inp[j] * d_out_f[i], 8 outputs at a time
+        odim8: i32 [ (odim / 8) * 8 ]
+        for [ j: i32 0, j < idim, j += 1 ]
+            in_off: i64 [ j * 4 ]
+            for [ i: i32 0, i < odim8, i += 8 ]
+                dw_off: i64 [ (j * odim + i) * 4 ]
+                do_off: i64 [ i * 4 ]
                 asm x86_64
-                    vbroadcastss ymm1, dword ptr [d_out_f + do_off]
-                    vmovups ymm2, ymmword ptr [inp + in_off]
+                    vbroadcastss ymm1, dword ptr [inp + in_off]
+                    vmovups ymm2, ymmword ptr [d_out_f + do_off]
                     vmovups ymm0, ymmword ptr [d_w + dw_off]
                     vfmadd231ps ymm0, ymm1, ymm2
                     vmovups ymmword ptr [d_w + dw_off], ymm0
-            for [ j: i32 idim8, j < idim, j += 1 ]
-                d_w[i * idim + j] += d_out_f[i] * inp[j]
+            for [ i: i32 odim8, i < odim, i += 1 ]
+                d_w[j * odim + i] += d_out_f[i] * inp[j]
 
-        # --- input gradient: d_in_f[j] += w[i*idim+j] * d_out_f[i] ---
-        # zero d_in_f
-        for [ j: i32 0, j < idim8, j += 8 ]
-            di_off: i64 [ j * 4 ]
-            asm x86_64
-                vxorps ymm0, ymm0, ymm0
-                vmovups ymmword ptr [d_in_f + di_off], ymm0
-        for [ j: i32 idim8, j < idim, j += 1 ]
-            d_in_f[j] = 0.0
-
-        for [ i: i32 0, i < odim, i += 1 ]
-            do_off: i64 [ i * 4 ]
-            for [ j: i32 0, j < idim8, j += 8 ]
-                w_off:  i64 [ (i * idim + j) * 4 ]
-                di_off: i64 [ j * 4 ]
+        # --- input gradient: d_in_f[j] = dot(w[j*odim..], d_out_f) ---
+        acc: local f32 [8]
+        for [ j: i32 0, j < idim, j += 1 ]
+            for [ z: i32 0, z < 8, z += 1 ]
+                acc[z] = 0.0
+            for [ i: i32 0, i < odim8, i += 8 ]
+                w_off:  i64 [ (j * odim + i) * 4 ]
+                do_off: i64 [ i * 4 ]
                 asm x86_64
-                    vbroadcastss ymm1, dword ptr [d_out_f + do_off]
-                    vmovups ymm2, ymmword ptr [w + w_off]
-                    vmovups ymm0, ymmword ptr [d_in_f + di_off]
+                    vmovups ymm1, ymmword ptr [w + w_off]
+                    vmovups ymm2, ymmword ptr [d_out_f + do_off]
+                    vmovups ymm0, ymmword ptr [acc]
                     vfmadd231ps ymm0, ymm1, ymm2
-                    vmovups ymmword ptr [d_in_f + di_off], ymm0
-            for [ j: i32 idim8, j < idim, j += 1 ]
-                d_in_f[j] += w[i * idim + j] * d_out_f[i]
+                    vmovups ymmword ptr [acc], ymm0
+            dsum: f32 [ 0.0 ]
+            for [ z: i32 0, z < 8, z += 1 ]
+                dsum += acc[z]
+            for [ i: i32 odim8, i < odim, i += 1 ]
+                dsum += w[j * odim + i] * d_out_f[i]
+            d_in_f[j] = dsum
 
         return d_input
 
@@ -502,6 +515,7 @@ op conv
     public out_channels:   i32
     public weights_matrix: tensor
     public im2col_matrix:  tensor
+    intern shapes_ok:      bool
 
     func test2 []
         filter_h: kernel_size[0]
@@ -523,8 +537,33 @@ op conv
         out_w:    (in_w - filter_w + 2 * pad_w) / stride_w + 1
         out_c:    out_channels
 
+        if [ weights ]
+            if [ weights.count != filter_h * filter_w * in_c * out_c ]
+                puts '{name}: weights {weights.count} != {filter_h}x{filter_w} * in_c {in_c} * out_c {out_c}'
+                exit[ 1 ]
+        if [ bias ]
+            if [ bias.count != out_c ]
+                puts '{name}: bias {bias.count} != out_c {out_c}'
+                exit[ 1 ]
+
+
+    func validate_shapes []
+        in_h:  input.tensor_shape[0]
+        in_w:  input.tensor_shape[1]
+        fh:    kernel_size[0]
+        fw:    kernel_size[1]
+        sv:    stride_shape[0]
+        pad2:  (padding == Padding.same) ? (fh - 1) / 2 : 0
+        out_hv: (in_h - fh + 2 * pad2) / sv + 1
+        out_wv: (in_w - fw + 2 * pad2) / sv + 1
+        if [ result ]
+            if [ result.count != out_hv * out_wv * out_channels ]
+                puts '{name}: result {result.count} != {out_hv}x{out_wv}x{out_channels}'
+                exit[ 1 ]
+        shapes_ok = true
 
     func forward [] 
+        if [ !shapes_ok ] validate_shapes[]
         ifdef [ x86_64 ]
             if [ quantized ]
                 forward_q8
@@ -590,7 +629,7 @@ op conv
                     out[i * out_c + oc] = tanhf[v]
                 el
                     out[i * out_c + oc] = v
-        result.quantize
+        result.quantize[]
 
     # AVX2 int8 im2col + gemm forward
     # im2col fill is scalar (runs once), gemm uses vpmovsxbw + vpmaddwd + vpaddd
@@ -706,7 +745,7 @@ op conv
                     out[i * out_c + oc] = tanhf[v]
                 el
                     out[i * out_c + oc] = v
-        result.quantize
+        result.quantize[]
 
     func forward_ref [] 
         in_h:     input.tensor_shape[0]
@@ -886,6 +925,25 @@ op conv
                 res[i] = tanhf[ res[i] ]
 
     func back [d_out: tensor] -> tensor
+        if [ grad_debug ]
+            r1 : back_avx2[ d_out ]
+            n : i32 [ weights.count ]
+            saved : new f32 [ n ]
+            memcpy[ saved, weights.grad, n * 4 ]
+            r2 : back_ref[ d_out ]
+            maxw : f32 [ 0.0 ]
+            for [ i: i32 0, i < n, i += 1 ]
+                dw : f32 [ saved[i] - weights.grad[i] ]
+                aw : f32 [ (dw > 0.0) ? dw : -dw ]
+                if [ aw > maxw ] maxw = aw
+            ni : i32 [ input.count ]
+            maxi : f32 [ 0.0 ]
+            for [ i: i32 0, i < ni, i += 1 ]
+                di : f32 [ r1.floats[i] - r2.floats[i] ]
+                ai : f32 [ (di > 0.0) ? di : -di ]
+                if [ ai > maxi ] maxi = ai
+            puts '{name}: avx-vs-ref  d_w max {maxw}  d_in max {maxi}'
+            return r2
         return back_avx2[d_out]
 
     func back_ref [d_out: tensor] -> tensor
@@ -1325,10 +1383,15 @@ op pool
 
         return d_input
 
+# one multi-input training example: tensors parallel to the model's input_ops
+class sample
+    public inputs : array tensor
+    public target : tensor
+
 class keras
     expect ident:    string
     public quality:  num
-    public order:    array op
+    intern order:    array op
     public ops:      array op
     public k_output: tensor
     public k_input:  tensor
@@ -1337,6 +1400,14 @@ class keras
     public epsilon:  f32 1.0e-8
     intern op_map:   map op[string]
     intern step:     i32
+    mutable trace:   bool
+    mutable verbose: bool
+    mutable out_labels: array string
+    mutable checkpoint: path
+    mutable weights_bin: path
+    mutable best_err:    f64
+    mutable best_epoch:  i32
+    mutable eval_errors: array f64
 
     func init [] 
         op_map = map op[string]
@@ -1347,7 +1418,7 @@ class keras
         for [ o: op ] in ops
             o.op_inputs = array op []
             for [ n: string ] in o.inputs
-                res: op [ op_map[n] ]
+                res: op_map[n]
                 o.op_inputs.push res
         
         order = array op []
@@ -1357,24 +1428,28 @@ class keras
             if [ ! visited[o.name] ]
                 topo_visit o, visited, in_progress
 
-        first: op [ order[0] ]
+        first: order[0]
         k_input = first.input
         
         # find which ops feed into multi-input ops (need own result)
-        needs_own_result: map bool[string] []
+        needs_own_result: map op[string] []
         for [ o: op ] in ops
             if [ o.op_inputs.count > 1 ]
                 for [ dep: op ] in o.op_inputs
-                    needs_own_result[dep.name] = true
+                    needs_own_result[dep.name] = dep
 
         for [ o: op ] in ops
-            o.result = find_result[ o ]
+            # input ops pass data through: result IS the input tensor.
+            # find_result would alias the CONSUMER's input — circular for
+            # concat deps (cat_size reads the consumer's own shape)
+            if [ o is input_op ] o.result = o.input
+            if [ !o.result ] o.result = find_result[ o ]
             for [ dep: op ] in o.op_inputs
                 if [ dep is input_op ]
                     if [ o.input.tensor_shape == dep.input.tensor_shape ]
                         o.input = dep.input
 
-            o.finalize
+            o.finalize*[]
 
         # allocate own result for ops feeding multi-input ops
         for [ o: op ] in ops
@@ -1394,7 +1469,7 @@ class keras
                     o.result = tensor [ tensor_shape: c.input.tensor_shape * c.out_channels ]
 
         
-        out_op: op [ op_map['output'] ]
+        out_op: op_map['output']
         k_output = out_op.input
 
     func topo_visit [current: op, visited: map, in_progress: map] 
@@ -1417,7 +1492,7 @@ class keras
         return null
 
     func forward [src: tensor] -> tensor
-        k_output.tensor_shape.total
+        k_output.tensor_shape.total[]
         for [ current: op* ] in order
             if [ current is input_op ]
                 inp: input_op [ current ]
@@ -1425,15 +1500,151 @@ class keras
                     memcpy[inp.input.floats, inp.source.floats, inp.input.count * 4]
                 el
                     memcpy[inp.input.floats, src.floats, src.count * 4]
+                if [ trace ]
+                    has_src: bool [ inp.source ]
+                    sc2:  src.count
+                    sf0:  src.floats[0]
+                    if0:  inp.input.floats[0]
+                    puts '  [input {current.name}] src? {has_src} count {sc2} src0 {sf0} in0 {if0}'
                 if [ current.quantized ]
-                    inp.input.quantize
+                    inp.input.quantize[]
             current.forward
-            k_output.tensor_shape.total
+            if [ trace ]
+                ot: (current.result) ?? current.input
+                i0: current.input.floats[0]
+                i1: current.input.floats[1]
+                o0: ot.floats[0]
+                o1: ot.floats[1]
+                w0: f32 [ 0.0 ]
+                g0: f32 [ 0.0 ]
+                if [ current.weights ]
+                    w0 = current.weights.floats[0]
+                    g0 = current.weights.grad[0]
+                has_res: bool [ current.result ]
+                isi: bool [ current is input_op ]
+                puts '  {current.name}: in {i0} {i1} out {o0} {o1} res {has_res} is_in {isi} w0 {w0} g0 {g0}'
+            k_output.tensor_shape.total[]
 
-        k_output.tensor_shape.total
+        k_output.tensor_shape.total[]
         res: tensor [ tensor_shape: k_output.tensor_shape ]
         memcpy[res.floats, k_output.floats, k_output.count * 4]
         return res
+
+    # set per-input sources from a sample, then forward
+    func predict_s [smp: sample] -> tensor
+        input_ops : array op [ ]
+        for [ o: op ] in ops
+            if [ o is input_op ] input_ops.push[ o ]
+        for [ ii: i32 0, ii < input_ops.count, ii += 1 ]
+            io : input_op [ input_ops[ii] ]
+            io.source = smp.inputs[ii]
+        return forward[ smp.inputs[0] ]
+
+    # avg loss over a sample set; fills errs with per-output avg |err|
+    func eval_metrics [samples: map tensor[tensor], errs: tensor] -> f64
+        k : i32 [ errs.count ]
+        for [ i: i32 0, i < k, i += 1 ]
+            errs.floats[i] = 0.0
+        if [ samples.count == 0 ] return 0.0
+        total : f64 0
+        for [ lbl: tensor, src: tensor ] in samples
+            p : forward[ src ]
+            loss : f32 [ 0.0 ]
+            for [ i: i32 0, i < k, i += 1 ]
+                diff : f32 [ p.floats[i] - lbl.floats[i] ]
+                loss += diff * diff
+                errs.floats[i] += (diff > 0.0) ? diff : -diff
+            loss  /= k
+            total += loss
+        n : f64 [ f64[ samples.count ] ]
+        for [ i: i32 0, i < k, i += 1 ]
+            errs.floats[i] /= f32[ n ]
+        return total / n
+
+    func eval_metrics_s [samples: array sample, errs: tensor] -> f64
+        k : i32 [ errs.count ]
+        for [ i: i32 0, i < k, i += 1 ]
+            errs.floats[i] = 0.0
+        if [ samples.count == 0 ] return 0.0
+        total : f64 0
+        for [ smp: sample ] in samples
+            p : predict_s[ smp ]
+            loss : f32 [ 0.0 ]
+            for [ i: i32 0, i < k, i += 1 ]
+                diff : f32 [ p.floats[i] - smp.target.floats[i] ]
+                loss += diff * diff
+                errs.floats[i] += (diff > 0.0) ? diff : -diff
+            loss  /= k
+            total += loss
+        n : f64 [ f64[ samples.count ] ]
+        for [ i: i32 0, i < k, i += 1 ]
+            errs.floats[i] /= f32[ n ]
+        return total / n
+
+    func pad [ txt: string, w: i32 ] -> string
+        s : string '{txt}'
+        if [ s.count > w - 1 ]
+            s = s.mid[ 0, w - 1 ]
+        while [ s.count < w ]
+            s = string '{s} '
+        return s
+
+    func metrics_header []
+        k  : i32 [ k_output.count ]
+        e1 : pad[ 'epoch', 10 ]
+        t1 : pad[ 'train', 13 ]
+        v1 : pad[ 'eval', 13 ]
+        h  : string '{e1}{t1}{v1}'
+        for [ i: i32 0, i < k, i += 1 ]
+            lb : string 'out{i}'
+            if [ i < out_labels.count ] lb = out_labels[i]
+            lp : pad[ lb, 13 ]
+            h = string '{h}{lp}'
+        puts h
+
+    func metrics_line [ epoch: i32, total: i32, lavg: f64, ev: f64, errs: tensor ]
+        ep : pad[ string '{epoch}/{total}', 10 ]
+        tr : pad[ string '{lavg}', 13 ]
+        vv : pad[ string '{ev}', 13 ]
+        ln : string '{ep}{tr}{vv}'
+        k  : i32 [ errs.count ]
+        for [ i: i32 0, i < k, i += 1 ]
+            v  : f32 [ errs.floats[i] ]
+            vp : pad[ string '{v}', 13 ]
+            ln = string '{ln}{vp}'
+        puts ln
+
+    # weights .bin path derived from the checkpoint .agi path
+    func weights_path [] -> path
+        s  : string '{checkpoint}'
+        ix : num [ s.index_of[ '.agi' ] ]
+        if [ ix >= 0 ] s = s.mid[ 0, i32[ ix ] ]
+        return path '{s}.bin'
+
+    # introspective dump of the model; weights stay in the .bin
+    func export_agi []
+        s : Au.string_agi[ a ]
+        checkpoint.save[ s, null ]
+
+    # save weights + .agi when mean |err| across outputs hits a new low
+    func maybe_checkpoint [ epoch: i32, errs: tensor ]
+        if [ !checkpoint ] return
+        k : i32 [ errs.count ]
+        if [ k == 0 ] return
+        m : f64 [ 0.0 ]
+        for [ i: i32 0, i < k, i += 1 ]
+            m += f64[ errs.floats[i] ]
+        m /= f64[ k ]
+        if [ best_epoch > 0 ]
+            if [ m >= best_err ] return
+        best_err   = m
+        best_epoch = epoch
+        eval_errors = array f64 [ ]
+        for [ i: i32 0, i < k, i += 1 ]
+            eval_errors.push[ f64[ errs.floats[i] ] ]
+        weights_bin = weights_path[]
+        save_weights[ weights_bin ]
+        export_agi[]
 
     func back [d_out: tensor] -> tensor
         n: i32 [ order.count ]
@@ -1457,10 +1668,10 @@ class keras
         if [ ! is_multi ]
             res: tensor [ d_out ]
             for [ i: i32 n - 1, i >= 0, i -= 1 ]
-                o: op [ order[i] ]
+                o: order[i]
                 if [ o.weights ] memset o.weights.grad, 0, o.weights.count * 4
                 if [ o.bias    ] memset o.bias.grad,    0, o.bias.count    * 4
-                res = o.back[res]
+                res = o.back*[res]
             return res
 
         # DAG: accumulate gradients
@@ -1469,7 +1680,7 @@ class keras
                 o.d_result = tensor [ tensor_shape: o.result.tensor_shape, initializer: zeros ]
 
         for [ i: i32 n - 1, i >= 0, i -= 1 ]
-            o: op [ order[i] ]
+            o: order[i]
             if [ o.weights ] memset o.weights.grad, 0, o.weights.count * 4
             if [ o.bias    ] memset o.bias.grad,    0, o.bias.count    * 4
 
@@ -1479,7 +1690,7 @@ class keras
             el
                 grad_in = d_out
 
-            d_input: o.back[grad_in]
+            d_input: o.back*[grad_in]
 
             if [ d_input ]
                 for [ dep: op ] in o.op_inputs
@@ -1488,21 +1699,24 @@ class keras
                         for [ j: i32 0, j < dt, j += 1 ]
                             dep.d_result.floats[j] += d_input.floats[j]
 
-        first: op [ order[0] ]
+        first: order[0]
         if [ first.d_result ]
             return first .d_result
         return d_out
     
 
-    func train [epochs: i32, samples: map tensor[tensor], learning_rate: f32, optimizer: Optimizer] 
+    func train [epochs: i32, samples: map tensor[tensor], eval_samples: map tensor[tensor], learning_rate: f32, optimizer: Optimizer] 
         for [ layer: op ] in ops
             layer.set_optimizer optimizer
         
+        errs : tensor [ tensor_shape: k_output.tensor_shape ]
+        if [ eval_samples.count > 0 ] metrics_header[]
         for [ epoch: i32 0, epoch < epochs, epoch += 1 ]
-            puts 'epoch {epoch + 1}/{epochs}'
             ltotal: f64 0
+            trace = verbose && epoch < 3
             for [ target: tensor, src: tensor ] in samples
                 prediction: forward[src]
+                trace = false
                 loss:       f32 [ 0.0 ]
                 d_out:      tensor [ tensor_shape: target.tensor_shape ]
                 t:          target.count
@@ -1553,23 +1767,130 @@ class keras
                                 layer.bias.floats[i] -= r * mh / (sqrtf[vh] + epsilon)
 
             lavg: ltotal / samples.count
-            puts 'loss-avg: {lavg}'
+            if [ eval_samples.count > 0 ]
+                ev : eval_metrics[ eval_samples, errs ]
+                metrics_line[ epoch + 1, epochs, lavg, ev, errs ]
+            el
+                puts 'epoch {epoch + 1}/{epochs} train {lavg}'
 
         puts 'training complete'
 
-    func quantize_model [] 
+    # multi-input training: each sample carries one tensor per input_op, in ops order
+    func train_s [epochs: i32, samples: array sample, eval_samples: array sample, learning_rate: f32, optimizer: Optimizer]
+        for [ layer: op ] in ops
+            layer.set_optimizer optimizer
+        inputs2 : array op [ ]
+        for [ o: op ] in ops
+            if [ o is input_op ] inputs2.push[ o ]
+        errs : tensor [ tensor_shape: k_output.tensor_shape ]
+        if [ eval_samples.count > 0 ] metrics_header[]
+        for [ epoch: i32 0, epoch < epochs, epoch += 1 ]
+            ltotal: f64 0
+            trace = verbose && epoch < 3
+            for [ smp: sample ] in samples
+                for [ ii: i32 0, ii < inputs2.count, ii += 1 ]
+                    io : input_op [ inputs2[ii] ]
+                    io.source = smp.inputs[ii]
+                prediction: forward[smp.inputs[0]]
+                trace = false
+                loss:  f32 [ 0.0 ]
+                d_out: tensor [ tensor_shape: smp.target.tensor_shape ]
+                t:     smp.target.count
+                for [ i: i32 0, i < t, i += 1 ]
+                    diff: prediction.floats[i] - smp.target.floats[i]
+                    loss += diff * diff
+                    d_out.floats[i] = 2.0 * diff
+                loss   /= t
+                ltotal += loss
+                d_in   : back[d_out]
+                step   += 1
+                apply_update[ learning_rate, optimizer ]
+            lavg: ltotal / samples.count
+            if [ eval_samples.count > 0 ]
+                ev : eval_metrics_s[ eval_samples, errs ]
+                metrics_line[ epoch + 1, epochs, lavg, ev, errs ]
+                maybe_checkpoint[ epoch + 1, errs ]
+            el
+                puts 'epoch {epoch + 1}/{epochs} train {lavg}'
+        if [ checkpoint ]
+            if [ best_epoch > 0 ]
+                load_weights[ weights_bin ]
+                puts 'best epoch {best_epoch} (avg err {best_err}) -> {checkpoint}'
+            el
+                weights_bin = weights_path[]
+                save_weights[ weights_bin ]
+                export_agi[]
+                puts 'saved final weights -> {checkpoint} (no eval set)'
+        puts 'training complete'
+
+    func apply_update [ learning_rate: f32, optimizer: Optimizer ]
+        for [ layer: op ] in ops
+            r : learning_rate * layer.lr_scale
+            if [ layer.weights ]
+                wt: layer.weights.count
+                switch [ optimizer ]
+                case sgd
+                    for [ i: i32 0, i < wt, i += 1 ]
+                        layer.weights.floats[i] -= r * layer.weights.grad[i]
+                case adam
+                    bc1: f32 [ 1.0 - powf[beta1, step] ]
+                    bc2: f32 [ 1.0 - powf[beta2, step] ]
+                    for [ i: i32 0, i < wt, i += 1 ]
+                        g: layer.weights.grad[i]
+                        layer.w_m.floats[i] = beta1 * layer.w_m.floats[i] + (1.0 - beta1) * g
+                        layer.w_v.floats[i] = beta2 * layer.w_v.floats[i] + (1.0 - beta2) * g * g
+                        mh: layer.w_m.floats[i] / bc1
+                        vh: layer.w_v.floats[i] / bc2
+                        layer.weights.floats[i] -= r * mh / (sqrtf[vh] + epsilon)
+            if [ layer.bias ]
+                bt: layer.bias.count
+                switch [ optimizer ]
+                case sgd
+                    for [ i: i32 0, i < bt, i += 1 ]
+                        layer.bias.floats[i] -= r * layer.bias.grad[i]
+                case adam
+                    bc1: f32 [ 1.0 - powf[beta1, step] ]
+                    bc2: f32 [ 1.0 - powf[beta2, step] ]
+                    for [ i: i32 0, i < bt, i += 1 ]
+                        g: layer.bias.grad[i]
+                        layer.b_m.floats[i] = beta1 * layer.b_m.floats[i] + (1.0 - beta1) * g
+                        layer.b_v.floats[i] = beta2 * layer.b_v.floats[i] + (1.0 - beta2) * g * g
+                        mh: layer.b_m.floats[i] / bc1
+                        vh: layer.b_v.floats[i] / bc2
+                        layer.bias.floats[i] -= r * mh / (sqrtf[vh] + epsilon)
+
+    # weight persistence: flat f32 dump of every op's weights+bias, in ops order
+    func save_weights [ p: path ] -> bool
+        f : fopen [ p, 'wb' ]
+        if [ !f ] return false
+        for [ layer: op ] in ops
+            if [ layer.weights ] fwrite[ layer.weights.floats, 4, layer.weights.count, f ]
+            if [ layer.bias    ] fwrite[ layer.bias.floats,    4, layer.bias.count,    f ]
+        fclose[ f ]
+        return true
+
+    func load_weights [ p: path ] -> bool
+        f : fopen [ p, 'rb' ]
+        if [ !f ] return false
+        for [ layer: op ] in ops
+            if [ layer.weights ] fread[ layer.weights.floats, 4, layer.weights.count, f ]
+            if [ layer.bias    ] fread[ layer.bias.floats,    4, layer.bias.count,    f ]
+        fclose[ f ]
+        return true
+
+    func quantize_model []
         for [ layer: op ] in ops
             if [ layer.weights ]
-                layer.weights.quantize
+                layer.weights.quantize[]
             if [ layer.bias ]
-                layer.bias.quantize
+                layer.bias.quantize[]
             layer.quantized = true
         puts 'model quantized to int8'
 
     func eval_q8 [samples: map tensor[tensor]] 
         ltotal: f64 0
         for [ target: tensor, src: tensor ] in samples
-            src.quantize
+            src.quantize[]
             prediction: forward[src]
             loss: f32 [ 0.0 ]
             t:    target.count

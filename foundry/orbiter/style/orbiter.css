@@ -1,161 +1,545 @@
 /* trinity!  ..help. */
 @import "trinity.css"
 
-/* shared nav icon-button: 34px square, transparent base + glow, centered svg. params:
-   the svg path + scale. demonstrates CSS mixins (cuts the dock/undock boilerplate). */
-/* ── shared style mixins (cut the repeated layer boilerplate) ───────────────── */
-mixin btn_base [ ]
-    fill_color:             #0000
-    inner_glow:             #0000 24
-    radius:                 8
-mixin btn_hi [ ]
-    fill_color:             #8af4
-    inner_glow:             #8afa 24
-mixin stroke2 [ ]
+/* ── Layer defs: the style vocabulary. a def is instantiated into an element's
+   layers map by `layers.<id> [ args ]` (def named by the id) or bound to an id
+   with `layers.<id>: <def> [ args ]`. `:state` sections ride along with the
+   instantiation, so hover/selected variants live HERE, not in per-selector
+   blocks. bare `def [ args ]` inside a def body composes it flat. ───────────── */
+
+/* primitives */
+Layer flat [ fill ]
+    fill_color:             $fill
+Layer band [ fill, coords ]
+    fill_color:             $fill
+    area:                   $coords
+Layer region [ coords ]
+    area:                   $coords
+Layer soft [ fill, glow ]
+    fill_color:             $fill
+    inner_glow:             $glow
+Layer label_c [ color ]
+    label_color:            $color
+Layer label_t [ text ]
+    label:                  $text
+Layer op [ o ]
+    opacity:                $o
+Layer sq [ ]
+    radius:                 0
+Layer editable [ ]
+    editable:               true
+Layer editable_on [ color ]
+    editable:               true
+    label_color:            $color
+Layer stroke2 [ ]
     stroke_width:           0.5
     stroke_color:           #fff2
-/* the centered-svg frame; each button sets only its image_svg + image_scale. */
-mixin svg_frame [ ]
-    area:                   4px
-    image_align:            0.5 0.5
-    opacity:                0.5
-mixin wmp_button [ ]
+Layer compose [ ]
+    ctype:                  compose
+    fill_color:             #f0a
+Layer compose_sq [ ]
+    compose [ ]
+    radius:                 0
+
+/* the wmp gradient-pill family */
+Layer wmp [ ]
     fill_color:             #114
     fill_gradient:          linear
     fill_gradient_color:    #315f
     fill_gradient_angle:    90
     inner_glow:             #ccf2 16
-mixin wmp_button_hover [ ]
+Layer wmp_hover [ ]
     fill_color:             #216
     fill_gradient:          linear
     fill_gradient_color:    #327f
     fill_gradient_angle:    90
     inner_glow:             #ccf4 16
-mixin wmp_button_on [ ]
+Layer wmp_on [ ]
     fill_gradient:          linear
     fill_color:             #c8641e
     fill_gradient_color:    #425f
     fill_gradient_angle:    90
     inner_glow:             #ffae5ea2 18
+Layer wmp_r [ radius ]
+    wmp [ ]
+    radius:                 $radius
+/* project/session tab pill: wmp with segment radii for :first/:middle/:last runs */
+Layer wmp_seg [ ]
+    wmp [ ]
+    radius:                 8
+    :hovered
+        wmp_hover [ ]
+    :first
+        radius:                 8 0 0 8
+    :middle
+        radius:                 0 0 0 0
+    :last
+        radius:                 0 8 8 0
+/* Tabs / Option base: quiet pill that lights on hover, wmp_on when selected */
+Layer tab_opt [ ]
+    fill_color:             #2481
+    inner_glow:             #8af1 16
+    :hovered
+        wmp_hover [ ]
+    :selected
+        wmp_on [ ]
+    :disable
+        fill_color:             #2480
+        inner_glow:             #0000 0
+Layer tab_opt_face [ ]
+    label_color:            #fff
+    :selected
+        label_color:            #fff
+        label_shadow:           #0008
+        label_shadow_offset:    1 1
+        label_shadow_blur:      3
+    :disable
+        label_color:            #fff3
+Layer tab_btn [ ]
+    wmp [ ]
+    stroke2 [ ]
+    radius:                 4
+    :hovered
+        fill_color:             #8af2
+        inner_glow:             #8af4 18
+Layer tab_btn_face [ ]
+    label_color:            #fff
+    label_size:             14
+    label_align:            0.5 0.44
+Layer con_btn [ ]
+    wmp [ ]
+    stroke2 [ ]
+    radius:                 8
+    :hovered
+        wmp_hover [ ]
 
+/* nav icon-button chips: transparent + glow, blue on hover, wmp_on if a toggle */
+Layer icon_btn [ ]
+    fill_color:             #0000
+    inner_glow:             #0000 24
+    radius:                 8
+    :hovered
+        fill_color:             #8af4
+        inner_glow:             #8afa 24
+Layer icon_toggle [ ]
+    icon_btn [ ]
+    :selected
+        wmp_on [ ]
+/* outlined token chip (pins / grid toggles) */
+Layer chip_outline [ ]
+    area:                   4px
+    fill_color:             #0000
+    inner_glow:             #0000 0
+    stroke_width:           0
+    radius:                 6
+    :hovered
+        stroke_width:           1
+        stroke_color:           #6cb6ff66
+    :selected
+        fill_color:             #0000
+        stroke_width:           1
+        stroke_color:           #6cb6ffcc
+
+/* svg icon fills: frame = centered dim icon (per-id svg_pick supplies the art);
+   svg_icon = one-shot centered icon */
+Layer svg_frame [ scale ]
+    area:                   4px
+    image_align:            0.5 0.5
+    image_scale:            $scale
+    opacity:                0.5
+    :hovered
+        opacity:                1.0
+    :selected
+        opacity:                1.0
+Layer svg_pick [ svg, scale ]
+    image_svg:              $svg
+    image_scale:            $scale
+Layer svg_icon [ svg, scale ]
+    area:                   4px
+    image_align:            0.5 0.5
+    image_svg:              $svg
+    image_scale:            $scale
+Layer svg_none [ ]
+    image_scale:            0.0
+
+/* label faces */
+Layer face_c [ color, size ]
+    label_color:            $color
+    label_size:             $size
+    label_align:            0.5 0.5
+Layer fill_face [ ]
+    area:                   l0 t0 r0 b0
+    label_align:            0.5 0.5
+Layer fill_face_c [ color, size ]
+    area:                   l0 t0 r0 b0
+    label_color:            $color
+    label_size:             $size
+    label_align:            0.5 0.5
+Layer text_left [ coords, color, size ]
+    area:                   $coords
+    label_color:            $color
+    label_align:            0.0 0.5
+    label_size:             $size
+
+/* title strips (editor/console/callstack/fields): quiet glow bar + editable label */
+Layer title_bar [ ]
+    fill_color:             #2480
+    inner_glow:             #8af2 26
+    stroke2 [ ]
+Layer title_face [ offset ]
+    label_color:            #fff
+    label_size:             19
+    label_align:            0.0 0.5
+    label_offset:           $offset
+    :focused
+        editable:               true
+        label_color:            #ffff
+
+/* debug side panels */
+Layer panel [ radius ]
+    fill_color:             #1c2840cc
+    inner_glow:             #8af2 14
+    radius:                 $radius
+    stroke2 [ ]
+Layer dbg_bg [ ]
+    fill_color:             #0e1626e0
+    stroke2 [ ]
+Layer dbg_btn [ ]
+    fill_color:             #243450
+    fill_gradient:          linear
+    fill_gradient_color:    #1b2740
+    fill_gradient_angle:    90
+    inner_glow:             #8af2 12
+    radius:                 6
+    stroke2 [ ]
+    :hovered
+        fill_color:             #3a5a90
+        fill_gradient:          linear
+        fill_gradient_color:    #2a4068
+        fill_gradient_angle:    90
+        inner_glow:             #8af4 18
+    :first
+        radius:                 6 0 0 6
+    :middle
+        radius:                 0 0 0 0
+    :last
+        radius:                 0 6 6 0
+
+/* one-off bodies that still read better named */
+Layer topbar_base [ ]
+    fill_color:             #113
+    fill_gradient:          linear
+    fill_gradient_color:    #111
+    fill_gradient_angle:    90
+    inner_glow:             #a2f2 16
+Layer control_base [ ]
+    area:                   l0 t0 r0 b-1px
+    fill_color:             #0000
+    stroke_width:           0
+    stroke_color:           #fff4
+    label_color:            #fff
+    label_size:             14
+    radius:                 0
+Layer check_ring [ ]
+    area:                   l0.5 t0.5 w1.0 h1.0
+    fill_color:             #0004
+    stroke_width:           1
+    stroke_color:           #fff4
+    radius:                 9
+    :selected
+        fill_color:             #000a
+Layer check_dot [ ]
+    area:                   l0.75 t0.75 w0.5 h0.5
+    fill_color:             #4af0, 222ms cubic
+    inner_glow:             #fff0 8, 222ms cubic
+    stroke_width:           1
+    stroke_color:           #fff0
+    radius:                 9
+    :pressed
+        area:                   l15px t15px w12px h12px
+        radius:                 7
+        fill_color:             #4af4, 222ms cubic
+    :selected
+        fill_color:             #4af, 222ms cubic
+        inner_glow:             #fffa 8, 222ms cubic
+        stroke_color:           #fff8
+    :pressed & selected
+        area:                   l17px t17px w8px h8px
+        radius:                 7
+        fill_color:             #4afa, 222ms cubic
+Layer check_base [ ]
+    fill_color:             #0000, 222ms cubic
+    :pressed
+        fill_color:             #0000, 222ms cubic
+    :selected
+        fill_color:             #4af8, 222ms cubic
+    :pressed & selected
+        fill_color:             #4af4, 222ms cubic
+Layer pins_bar [ ]
+    fill_color:             #4af2
+    inner_glow:             #8af4 16
+    fill_gradient:          linear
+    fill_gradient_color:    #2488
+    fill_gradient_angle:    90
+    radius:                 0
+    stroke2 [ ]
+Layer pin_opt [ ]
+    fill_color:             #2481
+    inner_glow:             #8af4 16
+    radius:                 6
+    stroke2 [ ]
+    :selected
+        fill_color:             #fa84
+        inner_glow:             #fa85 20
+Layer pin_face [ ]
+    label_color:            #fffc
+    label_size:             16
+    label_align:            0.5 0.5
+    :selected
+        label_color:            #ffff
+Layer opt_pill [ ]
+    fill_color:             #2481
+    inner_glow:             #8af1 16
+    radius:                 8
+    stroke2 [ ]
+    :selected
+        wmp_on [ ]
+Layer blank_face [ ]
+    fill_color:             #0000
+    stroke_width:           0
+    label_color:            #0000
+Layer play_svg [ ]
+    area:                   4px
+    image_svg:              "images/play.svg"
+    image_scale:            1.7
+    image_align:            0.5 0.5
+    opacity:                1.0
+    :disable
+        opacity:                0.3
+    :selected
+        image_svg:              "images/stop.svg"
+Layer reload_pill [ ]
+    fill_color:             #c8641e
+    inner_glow:             #ffae5e 18
+    radius:                 8 8 8 8
+    :hovered
+        fill_color:             #e07a2e
+        inner_glow:             #ffc888 22
+Layer active_pill [ ]
+    fill_color:             #e5394588
+    inner_glow:             #f5556633 16
+    radius:                 10 10 10 10
+    :hovered
+        fill_color:             #e53945cc
+Layer close_btn [ ]
+    fill_color:             #0000
+    radius:                 8
+    :hovered
+        fill_color:             #8af0
+Layer back_svg [ ]
+    area:                   1px
+    image_align:            0.5 0.5
+    image_svg:              "images/back.svg"
+    image_scale:            2.0
+    opacity:                0.5
+    :hovered
+        opacity:                1.0
+Layer chip_ff [ ]
+    stroke_width:           1
+    stroke_color:           #6cb6ff00
+    radius:                 8
+    :selected
+        stroke_width:           1
+        stroke_color:           #6cb6ffcc
+Layer ff_svg [ ]
+    area:                   1px
+    image_align:            0.5 0.5
+    image_scale:            1.2
+    image_svg:              "images/find_in_files.svg"
+    opacity:                0.3
+    :selected
+        opacity:                1.0
+Layer nav_label [ text, size ]
+    label:                  $text
+    label_color:            #fff
+    label_size:             $size
+    label_align:            0.5 0.5
+    opacity:                0.6
+    :hovered
+        opacity:                1.0
+    :selected
+        opacity:                1.0
+Layer replace_btn_base [ ]
+    fill_color:             #0000
+    radius:                 6
+    stroke_width:           1
+    stroke_color:           #6cb6ff00
+    inner_glow:             #fff0 0
+    :hovered
+        fill_color:             #8af4
+    :selected
+        stroke_width:           1
+        stroke_color:           #6cb6ff00
+Layer pattern_base [ ]
+    fill_color:             #2f6b3acc
+    :selected
+        fill_color:             #fa35
+Layer infile_base [ ]
+    fill_color:             #1126
+    :selected
+        fill_color:             #1f35
+Layer infile_face [ ]
+    area:                   l12px t0 r12px b0
+    label_color:            #fff8
+    label_align:            1.0 0.5
+    label_size:             15
+    :selected
+        label_color:            #fff
+Layer filter_base [ ]
+    area:                   8px
+    fill_color:             #112f
+    stroke_color:           #248
+    stroke_width:           1
+    radius:                 8
+    :focused
+        stroke_color:           #8aff
+        stroke_width:           1
+Layer filter_text [ ]
+    area:                   8px
+    label_color:            #fff
+    label_align:            0.0 0.5
+    label_offset:           8 0
+    label_size:             14
+    editable:               true
+Layer view_face [ ]
+    area:                   l10px t0 r10px b0
+    label_color:            #b9aecb
+    label_size:             15
+    label_align:            0.5 0.5
+    :selected
+        label_color:            #ffffff
+Layer avatar_chip [ ]
+    fill_color:             #0000
+    :selected
+        stroke_width:           1
+        stroke_color:           #6cb6ffcc
+        radius:                 8
+Layer avatar_svg [ ]
+    area:                   6px
+    image_svg:              "images/orbiter4.svg"
+    image_scale:            1.2
+    image_align:            0.5 0.5
+    opacity:                0.6
+    :hovered
+        opacity:                0.85
+    :selected
+        opacity:                1.0
+
+/* typed content layers */
+TermLayer term [ coords ]
+    area:                   $coords
+    label_height:           1.0
+    label_size:             16
+ScrollLayer scroll_over [ coords ]
+    overlay:                true
+    area:                   $coords
+    thumb_color:            #fff4
+    thumb_w:                6
+    thumb_min_h:            32
+    thumb_radius:           4
+ScrollLayer scroll_slim [ ]
+    area:                   l0.1 t1.3 r0.1 b0.1
+    thumb_color:            #fff4
+    thumb_w:                4
+    thumb_min_h:            32
+    thumb_radius:           2
+NodeLayer nodes [ coords ]
+    area:                   $coords
+    label_size:             14
+    row_spacing:            1.3
+    sel_color:              #264f78
+    sel_radius:             6
+    text_color:             #cfe6ff
+FieldsLayer fields [ coords, spacing, key ]
+    area:                   $coords
+    label_size:             14
+    row_spacing:            $spacing
+    key_color:              $key
+    text_color:             #cfe6ff
+    line_color:             #ffffff14
+FileLayer files_tree [ ]
+    area:                   l0.1 t1.3 r0.1 b0.1
+    label_size:             16
+    row_spacing:            1.2
+    indent_width:           12
+    icon_col:               11
+    icon_text_gap:          4
+    expand_svg:             "images/collapse3.svg"
+    collapse_svg:           "images/expand3.svg"
+    sel_color:              #0004
+    sel_border_color:       #fff
+    sel_radius:             8
+    sel_pad_r:              10
+    sel_oy:                 2
+    dir_color:              #7ec8e3
+    file_color:             #d4d4d4
+    expand_offset:          0 2
+    collapse_offset:        0 2
+EditorLayer code [ ]
+    area:                   l0 t45px r0 b0
+    label_height:           1.0
+    line_color:             #fff1
+    item_color:             #2b3a5500
+    sel_color:              #264f78
+    /* active-line glow (tab-explorer hover row + debugger stop line): warm red/orange */
+    hl_fill:                #ff6a2e55
+    hl_grad:                #c0381844
+    hl_glow:                #ff8a3a99
+    hl_text:                #ffe6d2
+
+/* ── the tree ───────────────────────────────────────────────────────────────── */
 
 element.main {
     area: l0 t0 r2 b4
-    layers.root_bg:
-        fill_color: #00f
+    layers.root_bg: flat [ #00f ]
 }
 
 Toolbar {
     area: l0 t0 w5.33 b0
-    layers.compose:
-        ctype: compose
-        fill_color: #f0a
-
-    layers.border:
-        fill_color: #fff4
-        area: l5.33 t0px w1px b0px
-
-    layers.border2:
-        fill_color: #0004
-        area: l5.33 t0px w2px b0px
-
-    layers.base:
-        fill_color:         #fff1
-        inner_glow:         #fff1 16
-
-    layers.divider:
-        area:               l0 t1.3 r0 h1px
-        fill_color:         #fff1
+    layers.compose [ ]
+    layers.border: band [ #fff4, l5.33 t0px w1px b0px ]
+    layers.border2: band [ #0004, l5.33 t0px w2px b0px ]
+    layers.base: soft [ #fff1, #fff1 16 ]
+    layers.divider: band [ #fff1, l0 t1.3 r0 h1px ]
 }
 
 Toolbar.right {
     area: r@right_w=10|0|0 t0 r0 b0
-
-    layers.border:
-        fill_color: #fff0
-        area: l1px t0px w1px b0px
-
-    layers.border2:
-        fill_color: #fff1
-        area: l0px t0px w1px b0px
+    layers.border: band [ #fff0, l1px t0px w1px b0px ]
+    layers.border2: band [ #fff1, l0px t0px w1px b0px ]
 }
 
 Group {
-    layers.compose:
-        ctype:              compose
-        fill_color:         #f0a
-
-    layers.base:
-        fill_color:         #fff0
+    layers.compose [ ]
+    layers.base: flat [ #fff0 ]
 }
 
 Group / Control {
     area:               l1 t0+ r1 h2
-    layers.compose:
-        ctype:          compose
-        fill_color:     #fff
-        radius:         0
-    layers.base:
-        area:           l0 t0 r0 b-1px
-        fill_color:     #0000
-        stroke_width:   0
-        stroke_color:   #fff4
-        label_color:    #fff
-        label_size:     14
-        radius:         0
+    layers.compose: compose_sq [ ]
+    layers.base: control_base [ ]
 }
 
 Group / Check {
-    layers.check:
-        area:           l0.5 t0.5 w1.0 h1.0
-        fill_color:     #0004
-        stroke_width:   1
-        stroke_color:   #fff4
-        radius:         9
-    layers.inner:
-        area:           l0.75 t0.75 w0.5 h0.5
-        fill_color:     #4af0, 222ms cubic
-        inner_glow:     #fff0 8, 222ms cubic
-        stroke_width:   1
-        stroke_color:   #fff0
-        radius:         9
-:pressed
-    layers.base:
-        fill_color:     #0000, 222ms cubic
-    layers.inner:
-        area:           l15px t15px w12px h12px
-        radius:         7
-        fill_color:     #4af4, 222ms cubic
-
-:selected
-    layers.base:
-        fill_color:     #4af8, 222ms cubic
-    layers.check:
-        fill_color:     #000a
-    layers.inner:
-        fill_color:     #4af, 222ms cubic
-        inner_glow:     #fffa 8, 222ms cubic
-        stroke_color:   #fff8
-:pressed & selected
-    layers.base:
-        fill_color:             #4af4, 222ms cubic
-    layers.inner:
-        area:                   l17px t17px w8px h8px
-        radius:                 7
-        fill_color:             #4afa, 222ms cubic
+    layers.check: check_ring [ ]
+    layers.inner: check_dot [ ]
+    layers.base: check_base [ ]
 }
 
 Group.topbar {
     area:                       l0 t0 r0 h1.48
-    layers.base:
-        fill_color:             #113
-        fill_gradient:          linear
-        fill_gradient_color:    #111
-        fill_gradient_angle:    90
-        inner_glow:             #a2f2 16
-    layers.border2:
-        area:                   l0 b0px r0 h1px
-        fill_color:             #ffffff04
+    layers.base: topbar_base [ ]
+    layers.border2: band [ #ffffff04, l0 b0px r0 h1px ]
 }
 
 Group.editor_group {
@@ -166,17 +550,9 @@ Group.editor_group {
        and a mask multiplies the WHOLE pane cache, so any fill baked into the pane
        would fade (darken) at the edges too. keeping the bg on the unmasked parent
        lets the mask affect only the text alpha; the solid bg shows through behind. */
-    layers.base:
-        fill_color:             #1a2138
-
-
-    layers.compose:
-        radius:                 0
-
-    layers.bordering:
-        area:                   l0 t34px r0 b0
-        radius:                 0
-
+    layers.base: flat [ #1a2138 ]
+    layers.compose: sq [ ]
+    layers.bordering: region [ l0 t34px r0 b0 ]
 :selected
     area: l0 t0 r0 b6.9
 }
@@ -184,8 +560,7 @@ Group.editor_group {
 
 EditorView {
     area:                       l0 t0 r0 b0
-    layers.base:
-        fill_color:             #140d2a
+    layers.base: flat [ #140d2a ]
 }
 
 /* the editor pane has NO base fill: its cache is blitted through the edge-fade
@@ -198,36 +573,13 @@ EditorView {
    only while searching (the pins child is only added then). */
 Editor / element.pins {
     area:                       r144px t44px r0 b0
-    layers.base:
-        fill_color:             #4af2
-        inner_glow:             #8af4 16
-        fill_gradient:          linear
-        fill_gradient_color:    #2488
-        fill_gradient_angle:    90
-        radius:                 0
-        stroke_width:           0.5
-        stroke_color:           #fff2
+    layers.base: pins_bar [ ]
 }
 
 Editor / element.pins / Option {
     area:                       l0.1 t0.1+ r0.1 h1.1
-    layers.base:
-        fill_color:             #2481
-        inner_glow:             #8af4 16
-        radius:                 6
-        stroke_width:           0.5
-        stroke_color:           #fff2
-    layers.face:
-        label_color:            #fffc
-        label_size:             16
-        label_align:            0.5 0.5
-        label_offset:           0 0
-:selected
-    layers.base:
-        fill_color:             #fa84
-        inner_glow:             #fa85 20
-    layers.face:
-        label_color:            #ffff
+    layers.base: pin_opt [ ]
+    layers.face: pin_face [ ]
 }
 
 /* one Editor per split slot, tiled left-to-right between the split seams. adjacent
@@ -252,87 +604,38 @@ Editor / element.title {
     area:                       l0 t0 r0 h44px
     focusable:                  true
     bordering:                  true
-    layers.base:
-        fill_color:             #2480
-        inner_glow:             #8af2 26
-        radius:                 0
-        stroke_width:           0.5
-        stroke_color:           #fff2
-    layers.face:
-        label_color:            #fff
-        label_size:             19
-        label_align:            0.0 0.5
-        label_offset:           44 0
-    layers.divider:
-        area:                   l0 t44px r0 h0px
-        fill_color:             #fff2
-:focused
-    layers.face:
-        editable:               true
-        label_color:            #ffff
+    layers.base: title_bar [ ]
+    layers.face: title_face [ 44 0 ]
+    layers.divider: band [ #fff2, l0 t44px r0 h0px ]
 }
 
 Editor:expanded / element.title {
     area:                       l0 t0 r0 h44px
-    layers.face:
-        label_color:            #0000
-    layers.divider:
-        area:                   l0 t43px r0 h1px
-        fill_color:             #fff2
+    layers.face: label_c [ #0000 ]
+    layers.divider: band [ #fff2, l0 t43px r0 h1px ]
 }
 
 Group.editor_group / Option {
     area:                       l0+ t7px w2 h1
-    layers.base:
-        fill_color:             #2481
-        inner_glow:             #8af1 16
-        radius:                 8
-        stroke_width:           0.5
-        stroke_color:           #fff2
-    layers.face:
-        fill_color:             #0000
-        stroke_width:           0
-        label_color:            #0000
-    layers.svg:
-        area:                   4px
-        image_align:            0.5 0.5
-        image_scale:            0.7
-        image_svg:              "images/git.svg"
-
-:selected
-    layers.base:
-        wmp_button_on[]
+    layers.base: opt_pill [ ]
+    layers.face: blank_face [ ]
+    layers.svg: svg_icon [ "images/git.svg", 0.7 ]
 }
 
 
 Instances {
     area:                       l0 b@console_h=6.9|0|4 r0 b0
-    layers.compose:
-        ctype: compose
-        fill_color: #f0a
-
-    layers.base:
-        fill_color:             #24f1
-        inner_glow:             #fff1 16
+    layers.compose [ ]
+    layers.base: soft [ #24f1, #fff1 16 ]
 }
 
 Console {
     focusable:  true
     bordering:  true
     area:   l0 t1.3 r0 b0
-    layers.base:
-        fill_color:         #0a000f
-    layers.content: TermLayer
-        area:               8px
-        label_height:       1.0
-        label_size:         16
-    layers.scrollbar: ScrollLayer
-        overlay:            true
-        area:               8px
-        thumb_color:        #fff4
-        thumb_w:            6
-        thumb_min_h:        32
-        thumb_radius:       4
+    layers.base: flat [ #0a000f ]
+    layers.content: term [ 8px ]
+    layers.scrollbar: scroll_over [ 8px ]
 }
 
 /* a console/agent joined as a pane uses the same slot areas as the editor panes.
@@ -357,15 +660,10 @@ EditorView / Console.pane3 {
    cascade). the title itself is an editable child element (below) — its `edit` is
    the per-console line filter. */
 EditorView / Console {
-    layers.base:
-        fill_color:             #202
-    layers.content:
-        area:                   l8px t44px r8px b8px
-    layers.scrollbar:
-        area:                   l8px t44px r8px b8px
-    layers.border2:
-        area: l0 t0 w1px b0
-        fill_color: #0f0f0f
+    layers.base: flat [ #202 ]
+    layers.content: region [ l8px t44px r8px b8px ]
+    layers.scrollbar: region [ l8px t44px r8px b8px ]
+    layers.border2: band [ #0f0f0f, l0 t0 w1px b0 ]
 }
 
 /* the console pane's title bar: shows the shell/agent name, and is editable on focus
@@ -374,20 +672,8 @@ EditorView / Console / element.console_filter {
     area:                       l0 t0 r0 h44px
     focusable:                  true
     bordering:                  true
-    layers.base:
-        fill_color:             #2480
-        inner_glow:             #8af2 26
-        stroke_width:           0.5
-        stroke_color:           #fff2
-    layers.face:
-        label_color:            #fff
-        label_size:             19
-        label_align:            0.0 0.5
-        label_offset:           14 0
-:focused
-    layers.face:
-        editable:               true
-        label_color:            #ffff
+    layers.base: title_bar [ ]
+    layers.face: title_face [ 14 0 ]
 }
 
 /* the bottom Instances area is its own 2-pane split: the active console (left) and the
@@ -400,35 +686,21 @@ Instances / Console.console {
 /* both panes push their body below a 44px editable filter title (mirrors EditorView /
    Console). the title's `edit` is the per-pane line filter. */
 Instances / Console {
-    layers.content:
-        area:                   l8px t8px r8px b8px
-    layers.scrollbar:
-        area:                   l8px t8px r8px b8px
+    layers.content: region [ l8px t8px r8px b8px ]
+    layers.scrollbar: region [ l8px t8px r8px b8px ]
 }
-/* the header floats UP (negative t) so it overlays the editor's faded bottom instead of
-   taking a solid inner-glow bar. clear base (no fill/glow) — the editor shows through; the
-   divider sits at the header's base, which is the editor/console split line. */
 /* a thin 4px overlay band: empty header space removed, just the baseline divider sits at
    the editor/console split. the menu/fields buttons float over the editor (inst_nav). */
 Instances / Console / element.console_filter {
     area:                       l0 t-4px r0 h4px
     focusable:                  true
     bordering:                  true
-    layers.base:
-        fill_color:             #0000
-    layers.divider:
-        area:                   l0 b0 r0 h1px
-        fill_color:             #aaf2
+    layers.base: flat [ #0000 ]
+    layers.divider: band [ #aaf2, l0 b0 r0 h1px ]
 :focused
-    layers.face:
-        editable:               true
-        label_color:            #ffff
+    layers.face: editable_on [ #ffff ]
 }
 
-/* the callstack / fields toggles — a PEER of the console/panels (direct child of
-   Instances), pinned to the FAR-RIGHT of the whole bar, in the title row. hamburger
-   (menu.svg) reveals the callstack; the fields icon reveals the variables. topmost in
-   the build so it draws over whichever panel title sits on the right edge. */
 /* menu (callstack) + fields toggles live in the SAME floating overlay band as the
    header — negative t so they sit over the editor with the title, not in the body. */
 Instances / element.inst_nav {
@@ -437,38 +709,14 @@ Instances / element.inst_nav {
 Instances / element.inst_nav / Option {
     area:                       l0+ t0 w34px h34px
     toggle:                     true
-    layers.base:
-        fill_color:             #0000
-        inner_glow:             #0000 24
-        radius:                 8
-    layers.svg:
-        area:                   4px
-        image_align:            0.5 0.5
-        image_scale:            1.0
-        opacity:                0.5
-}
-Instances / element.inst_nav / Option:hovered {
-    layers.base:
-        fill_color:             #8af4
-        inner_glow:             #8afa 24
-    layers.svg:
-        opacity:                1.0
-}
-Instances / element.inst_nav / Option:selected {
-    layers.base:
-        wmp_button_on[]
-    layers.svg:
-        opacity:                1.0
+    layers.base: icon_toggle [ ]
+    layers.svg: svg_frame [ 1.0 ]
 }
 Instances / element.inst_nav / Option.toggle_callstack {
-    layers.svg:
-        image_svg:              "images/menu.svg"
-        image_scale:            1.4
+    layers.svg: svg_pick [ "images/menu.svg", 1.4 ]
 }
 Instances / element.inst_nav / Option.toggle_fields {
-    layers.svg:
-        image_svg:              "images/debug.svg"
-        image_scale:            1.2
+    layers.svg: svg_pick [ "images/debug.svg", 1.2 ]
 }
 /* the two debug panels sit SIDE BY SIDE to the right of the console: callstack = LEFT
    slot (console|callstack seam @inst_split1, callstack|fields seam @inst_split2),
@@ -477,71 +725,27 @@ Instances / element.inst_nav / Option.toggle_fields {
 Instances / Callstack.callstack {
     area:           l@inst_split1=50|0|0 t0 l@inst_split2=75|0|0 b0
     focusable:      true
-    layers.base:
-        fill_color:     #1c2840cc
-        inner_glow:     #8af2 14
-        stroke_width:   0.5
-        stroke_color:   #fff2
-    layers.content: NodeLayer
-        area:           l0.3 t44px r0.3 b0.3
-        label_size:     14
-        row_spacing:    1.3
-        sel_color:      #264f78
-        sel_radius:     6
-        text_color:     #cfe6ff
+    layers.base: panel [ 0 ]
+    layers.content: nodes [ l0.3 t44px r0.3 b0.3 ]
 }
 Instances / Callstack / element.list_filter {
     area:                       l0 t0 r0 h44px
     focusable:                  true
-    layers.base:
-        fill_color:             #2480
-        inner_glow:             #8af2 26
-        stroke_width:           0.5
-        stroke_color:           #fff2
-    layers.face:
-        label_color:            #fff
-        label_size:             19
-        label_align:            0.0 0.5
-        label_offset:           14 0
-:focused
-    layers.face:
-        editable:               true
-        label_color:            #ffff
+    layers.base: title_bar [ ]
+    layers.face: title_face [ 14 0 ]
 }
 
 Instances / Fields.fields {
     area:           l@inst_split2=75|0|0 t0 r0 b0
     focusable:      true
-    layers.base:
-        fill_color:     #1c2840cc
-        inner_glow:     #8af2 14
-        stroke_width:   0.5
-        stroke_color:   #fff2
-    layers.content: FieldsLayer
-        area:           l0.3 t44px r0.3 b0.3
-        label_size:     14
-        row_spacing:    1.3
-        key_color:      #9ecbff
-        text_color:     #cfe6ff
-        line_color:     #ffffff14
+    layers.base: panel [ 0 ]
+    layers.content: fields [ l0.3 t44px r0.3 b0.3, 1.3, #9ecbff ]
 }
 Instances / Fields / element.fields_filter {
     area:                       l0 t0 r0 h44px
     focusable:                  true
-    layers.base:
-        fill_color:             #2480
-        inner_glow:             #8af2 26
-        stroke_width:           0.5
-        stroke_color:           #fff2
-    layers.face:
-        label_color:            #fff
-        label_size:             19
-        label_align:            0.0 0.5
-        label_offset:           14 0
-:focused
-    layers.face:
-        editable:               true
-        label_color:            #ffff
+    layers.base: title_bar [ ]
+    layers.face: title_face [ 14 0 ]
 }
 
 /* callstack + fields: a vertical stack on the editor's right. on/off is per-editor
@@ -549,10 +753,7 @@ Instances / Fields / element.fields_filter {
    @stack_w (bound coords are app-scoped, so the seam width is shared when open). */
 Editor / element.dbg {
     area:   r@stack_w=15|0|50 t45px r0 b0
-    layers.base:
-        fill_color:     #0e1626e0
-        stroke_width:   0.5
-        stroke_color:   #fff2
+    layers.base: dbg_bg [ ]
 }
 
 Editor / element.dbg / element.controls {
@@ -561,147 +762,46 @@ Editor / element.dbg / element.controls {
 Editor / element.dbg / element.controls / Button {
     area:           l1+px t0 w2 h1
     focusable:      true
-    layers.base:
-        fill_color:             #243450
-        fill_gradient:          linear
-        fill_gradient_color:    #1b2740
-        fill_gradient_angle:    90
-        inner_glow:             #8af2 12
-        radius:                 6
-        stroke_width:           0.5
-        stroke_color:           #fff2
-    layers.face:
-        label_color:    #cfe6ff
-        label_size:     14
-        label_align:    0.5 0.5
-}
-Editor / element.dbg / element.controls / Button:hovered {
-    layers.base:
-        fill_color:             #3a5a90
-        fill_gradient:          linear
-        fill_gradient_color:    #2a4068
-        fill_gradient_angle:    90
-        inner_glow:             #8af4 18
-}
-Editor / element.dbg / element.controls / Button:first {
-    layers.base:
-        radius:                 6 0 0 6
-}
-Editor / element.dbg / element.controls / Button:middle {
-    layers.base:
-        radius:                 0 0 0 0
-}
-Editor / element.dbg / element.controls / Button:last {
-    layers.base:
-        radius:                 0 6 6 0
+    layers.base: dbg_btn [ ]
+    layers.face: face_c [ #cfe6ff, 14 ]
 }
 
 Editor / element.dbg / Callstack {
     area:           l0.2 t0.2+ r0.2 b0.2
     focusable:      true
-    layers.base:
-        fill_color:     #1c2840cc
-        inner_glow:     #8af2 14
-        radius:         10
-        stroke_width:   0.5
-        stroke_color:   #fff2
-    layers.content: NodeLayer
-        area:           l0.3 t0.5 r0.3 b0.3
-        label_size:     14
-        row_spacing:    1.3
-        sel_color:      #264f78
-        sel_radius:     6
-        text_color:     #cfe6ff
+    layers.base: panel [ 10 ]
+    layers.content: nodes [ l0.3 t0.5 r0.3 b0.3 ]
 }
 
 Editor / element.dbg / Fields {
     focusable:      true
     area:   l0.2 t0.7+ r0.2 b50%
-    layers.base:
-        fill_color:     #1c2840cc
-        inner_glow:     #8af2 14
-        radius:         10
-        stroke_width:   0.5
-        stroke_color:   #fff2
-    layers.content: FieldsLayer
-        area:           l0.2 t0.4 r0.2 b0.2
-        label_size:     14
-        row_spacing:    1.35
-        key_color:      #9fb6d8
-        text_color:     #cfe6ff
-        line_color:     #ffffff14
+    layers.base: panel [ 10 ]
+    layers.content: fields [ l0.2 t0.4 r0.2 b0.2, 1.35, #9fb6d8 ]
 }
 
 FileList {
     focusable:      true
     area:           l0 t0 r0 b1.5
-    layers.content: FileLayer
-        area:           l0.1 t1.3 r0.1 b0.1
-        label_size:     16
-        row_spacing:    1.2
-        indent_width:   12
-        icon_col:       11
-        icon_text_gap:  4
-        expand_svg:     "images/collapse3.svg"
-        collapse_svg:   "images/expand3.svg"
-        sel_color:      #0004
-        sel_border_color: #fff
-        sel_radius:     8
-        sel_pad_r:      10
-        sel_oy:         2
-        dir_color:      #7ec8e3
-        file_color:     #d4d4d4
-        expand_offset:   0 2
-        collapse_offset: 0 2
-    layers.scrollbar: ScrollLayer
-        area:           l0.1 t1.3 r0.1 b0.1
-        thumb_color:    #fff4
-        thumb_w:        4
-        thumb_min_h:    32
-        thumb_radius:   2
+    layers.content: files_tree [ ]
+    layers.scrollbar: scroll_slim [ ]
 }
 
 DebugPanel {
-    layers.header:
-        label:                  'LLDB'
+    layers.header: label_t [ 'LLDB' ]
 }
 
 Editor {
     focusable:              true
     bordering:              true
-    layers.content: EditorLayer
-        area:               l0 t45px r0 b0
-        label_height:       1.0
-        line_color:         #fff1
-        item_color:         #2b3a5500
-        sel_color:          #264f78
-        # active-line glow (tab-explorer hover row + debugger stop line): warm red/orange
-        hl_fill:            #ff6a2e55
-        hl_grad:            #c0381844
-        hl_glow:            #ff8a3a99
-        hl_text:            #ffe6d2
-    layers.scrollbar: ScrollLayer
-        overlay:            true
-        area:               l0 t44px r0 b0
-        thumb_color:        #fff4
-        thumb_w:            6
-        thumb_min_h:        32
-        thumb_radius:       4
+    layers.content: code [ ]
+    layers.scrollbar: scroll_over [ l0 t44px r0 b0 ]
 }
 
 Tabs / Button {
     area:                       l6px t6+px r6px h1
-
-    layers.base:
-        wmp_button[]
-        radius:                 4
-        stroke_width:           0.5
-        stroke_color:           #fff2
-    
-    layers.face:
-        label_color:            #fff
-        label_size:             14
-        label_align:            0.5 0.44
+    layers.base: tab_btn [ ]
+    layers.face: tab_btn_face [ ]
 }
 
 
@@ -719,37 +819,17 @@ Tabs.targets / Button {
 
 Tabs.actions / Button.play {
     area: l6px t6px r6px h1
-    layers.svg:
-        area: 4px
-        image_svg:      "images/play.svg"
-        image_scale:    1.7
-        image_align:    0.5 0.5
+    layers.svg: svg_icon [ "images/play.svg", 1.7 ]
 }
 
 Tabs.targets / Option.system {
     area: l6px t6px w1 h1
-    layers.svg:
-        area: 4px
-        image_svg:      "images/gear.svg"
-        image_scale:    1.4
-        image_align:    0.5 0.5
-:selected
-    layers.base:
-        wmp_button_on[]
-}
-
-Tabs / Button:hovered {
-    layers.base:
-        fill_color:             #8af2
-        inner_glow:             #8af4 18
+    layers.svg: svg_icon [ "images/gear.svg", 1.4 ]
 }
 
 Tabs / Option {
-    layers.base:
-        fill_color:             #2481
-        inner_glow:             #8af1 16
-    layers.face:
-        label_color:            #fff
+    layers.base: tab_opt [ ]
+    layers.face: tab_opt_face [ ]
 }
 
 /* top strip: play button on the left, project session tabs to its right */
@@ -758,21 +838,8 @@ Tabs.tools {
 }
 Tabs.tools / Option.play {
     area:                       l8px t8px w1.5 h1
-    layers.base:
-        wmp_button[]
-        radius:                 8
-    layers.svg:
-        area:                   4px
-        image_svg:              "images/play.svg"
-        image_scale:            1.7
-        image_align:            0.5 0.5
-        opacity:                1.0
-:disable
-    layers.svg:
-        opacity:                0.3
-:selected
-    layers.svg:
-        image_svg:              "images/stop.svg"
+    layers.base: wmp_r [ 8 ]
+    layers.svg: play_svg [ ]
 }
 
 Tabs.source_nav {
@@ -781,39 +848,14 @@ Tabs.source_nav {
 
 Tabs.source_nav / Option {
     area:                       l1+px t8px w3 h1
-    layers.base:
-        wmp_button[]
-        radius:                 8
-    layers.face:
-        area:                   l0 t0 r0 b0
-        label_align:            0.5 0.5
-}
-Tabs.source_nav / Option:hovered {
-    layers.base:
-        wmp_button_hover[]
-}
-Tabs.source_nav / Option:first {
-    layers.base:
-        radius:                 8 0 0 8
-}
-Tabs.source_nav / Option:middle {
-    layers.base:
-        radius:                 0 0 0 0
-}
-Tabs.source_nav / Option:last {
-    layers.base:
-        radius:                 0 8 8 0
+    layers.base: wmp_seg [ ]
+    layers.face: fill_face [ ]
 }
 
 Tabs.source_nav / Option.system {
     area:                       l8+px t8px w1 h1
-    layers.face:
-        label_color:            #0000
-    layers.svg:
-        area:                   4px
-        image_svg:              "images/gear.svg"
-        image_scale:            1.9
-        image_align:            0.5 0.5
+    layers.face: label_c [ #0000 ]
+    layers.svg: svg_icon [ "images/gear.svg", 1.9 ]
 }
 
 /* console/agent tabs — exactly the project-tab style, right-aligned */
@@ -822,83 +864,17 @@ Tabs.console_nav {
 }
 Tabs.console_nav / Option {
     area:                       l1+px t8px w3 h1
-    layers.base:
-        wmp_button[]
-        radius:                 8 8 8 8
-    layers.face:
-        area:                   l0 t0 r0 b0
-        label_align:            0.5 0.5
-}
-Tabs.console_nav / Option:hovered {
-    layers.base:
-        wmp_button_hover[]
-}
-Tabs.console_nav / Option:first {
-    layers.base:
-        radius:                 8 0 0 8
-}
-Tabs.console_nav / Option:middle {
-    layers.base:
-        radius:                 0 0 0 0
+    layers.base: wmp_seg [ ]
+    layers.face: fill_face [ ]
 }
 Tabs.console_nav / Option:last {
     area:                       l1+px t8px w3.2 h1
-    layers.base:
-        area:                   l0 t0 r8px b0
-        radius:                 0 8 8 0
+    layers.base: region [ l0 t0 r8px b0 ]
 }
 
 Option.reload_ready {
     area:                       l50%-1.5 8px w3 h1
-    layers.base:
-        fill_color:             #c8641e
-        inner_glow:             #ffae5e 18
-        radius:                 8 8 8 8
-:hovered
-    layers.base:
-        fill_color:             #e07a2e
-        inner_glow:             #ffc888 22
-}
-
-Tabs / Option:hovered {
-    layers.base:
-        wmp_button_hover[]
-}
-
-Tabs / Option.config:selected {
-    layers.base:
-        wmp_button_on[]
-}
-
-Tabs / Option:selected {
-    layers.base:
-        wmp_button_on[]
-    
-    layers.face:
-        label_color:            #fff
-        label_shadow:           #0008
-        label_shadow_offset:    1 1
-        label_shadow_blur:      3
-}
-
-Tabs / Option:disable {
-    layers.base:
-        fill_color:             #2480
-        inner_glow:             #0000 0
-    layers.face:
-        label_color:            #fff3
-}
-
-Tabs.actions / Button.play {
-    layers.svg:
-        opacity:    1.0
-}
-
-Tabs.actions / Button.play:disable {
-    layers.base:
-        inner_glow:             #0000 0
-    layers.svg:
-        opacity:    0.2
+    layers.base: reload_pill [ ]
 }
 
 Editor / element.title / element.nav {
@@ -908,32 +884,16 @@ Editor / element.title / element.nav {
 Editor / element.title / element.nav / Option {
     area:                       l0+ t0 w34px h34px
     toggle:                     true
-    layers.base:
-        btn_base [ ]
-    layers.svg:
-        svg_frame [ ]
-        image_scale:            1.0
-:hovered
-    layers.base:
-        btn_hi [ ]
-    layers.svg:
-        opacity:                1.0
-:selected
-    layers.base:
-        wmp_button_on[]
-    layers.svg:
-        opacity:                1.0
+    layers.base: icon_toggle [ ]
+    layers.svg: svg_frame [ 1.0 ]
 }
 
 Option.git {
-    layers.svg:
-        image_svg:              "images/git.svg"
+    layers.svg: svg_pick [ "images/git.svg", 1.0 ]
 }
 
 Button.magnify {
-    layers.svg:
-        image_svg:              "images/magnify.svg"
-        image_scale:            1.8
+    layers.svg: svg_pick [ "images/magnify.svg", 1.8 ]
 }
 
 /* in find mode the bar carries its own close (X) inside the scope field, so the
@@ -946,74 +906,26 @@ Editor:expanded / element.title / element.nav / Button.magnify {
    find_in_files toggle which sits on the right (r1.2 … r0.2). */
 Button.close_find {
     area:                       l0.2 t0.2 l1.2 b0.2
-    layers.base:
-        fill_color:             #0000
-        radius:                 8
-    layers.svg:
-        area:                   1px
-        image_align:            0.5 0.5
-        image_svg:              "images/back.svg"
-        image_scale:            2.0
-        opacity:                0.5
-:hovered
-    layers.base:
-        fill_color:             #8af0
-    layers.svg:
-        opacity:                1.0
+    layers.base: close_btn [ ]
+    layers.svg: back_svg [ ]
 }
 
 /* pins show/hide toggle — an outlined token chip (transparent fill, 1px rounded
    outline), like the occurrence-highlight outline. selected = the pinned list shows. */
 Option.pins {
-    layers.base:
-        area:                   4px
-        fill_color:             #0000
-        inner_glow:             #0000 0
-        stroke_width:           0
-        radius:                 6
-    layers.svg:
-        image_svg:              "images/side_off.svg"
-        image_scale:            1.4
-        opacity:                1.0
-:hovered
-    layers.base:
-        stroke_width:           1
-        stroke_color:           #6cb6ff66
-:selected
-    layers.base:
-        fill_color:             #0000
-        stroke_width:           1
-        stroke_color:           #6cb6ffcc
+    layers.base: chip_outline [ ]
+    layers.svg: svg_pick [ "images/side_off.svg", 1.4 ]
 }
 
 /* grid view toggle — same outlined-chip style as pins. selected = thumbnail grid. */
 Option.grid {
-    layers.base:
-        area:                   4px
-        fill_color:             #0000
-        inner_glow:             #0000 0
-        stroke_width:           0
-        radius:                 6
-    layers.svg:
-        image_svg:              "images/files.svg"
-        image_scale:            1.4
-        opacity:                1.0
-:hovered
-    layers.base:
-        stroke_width:           1
-        stroke_color:           #6cb6ff66
-:selected
-    layers.base:
-        fill_color:             #0000
-        stroke_width:           1
-        stroke_color:           #6cb6ffcc
+    layers.base: chip_outline [ ]
+    layers.svg: svg_pick [ "images/files.svg", 1.4 ]
 }
 
 /* menu icon next to magnify — the old right toggle (opens the second editor). */
 Option.menu {
-    layers.svg:
-        image_svg:              "images/menu.svg"
-        image_scale:            1.4
+    layers.svg: svg_pick [ "images/menu.svg", 1.4 ]
 }
 
 /* the 'active' state pill — shown while the pane is debug-locked. a rounded text
@@ -1021,18 +933,8 @@ Option.menu {
    "the app is running / this view is live". */
 Option.active {
     area:                       l0+ t6px w64px h22px
-    layers.base:
-        fill_color:             #e5394588
-        inner_glow:             #f5556633 16
-        radius:                 10 10 10 10
-    layers.face:
-        area:                   l0 t0 r0 b0
-        label_color:            #fff
-        label_size:             13
-        label_align:            0.5 0.5
-:hovered
-    layers.base:
-        fill_color:             #e53945cc
+    layers.base: active_pill [ ]
+    layers.face: fill_face_c [ #fff, 13 ]
 }
 
 
@@ -1041,44 +943,24 @@ Option.active {
    rather than via the Option nav rule. */
 Button.back {
     area:                       l16px t14px w16px h16px
-    layers.base:
-        btn_base[]
-    layers.svg:
-        area:                   0px
-        image_align:            0.5 0.5
-        image_scale:            2.0
-        image_svg:              "images/back.svg"
-        opacity:                0.5
-:hovered
-    layers.svg:
-        opacity:                1.0
+    layers.base: icon_btn [ ]
+    layers.svg: back_svg [ ]
 }
 
 /* GENERIC nav icon button — every Button in the title nav gets this body; the per-id
    rules below carry nothing but the svg + scale. */
 Editor / element.title / element.nav / Button {
     area:                       l0+ t0 w34px h34px
-    layers.base:
-        btn_base [ ]
-    layers.svg:
-        svg_frame [ ]
-:hovered
-    layers.base:
-        btn_hi [ ]
-    layers.svg:
-        opacity:                1.0
+    layers.base: icon_btn [ ]
+    layers.svg: svg_frame [ 1.0 ]
 }
 
 Button.dock {
-    layers.svg:
-        image_svg:              "images/expand2.svg"
-        image_scale:            1.4
+    layers.svg: svg_pick [ "images/expand2.svg", 1.4 ]
 }
 
 Button.undock {
-    layers.svg:
-        image_svg:              "images/collapse2.svg"
-        image_scale:            1.4
+    layers.svg: svg_pick [ "images/collapse2.svg", 1.4 ]
 }
 
 
@@ -1086,19 +968,12 @@ Button.undock {
 element.find {
     area:                       l0 t0 r0 h0
     focusable:                  true
-    layers.base:
-        fill_color:             #0000
-    layers.text:
-        area:                   l10px t0 r10px b0
-        label_color:            #fff6
-        label_align:            0.0 0.5
-        label_size:             15
+    layers.base: flat [ #0000 ]
+    layers.text: text_left [ l10px t0 r10px b0, #fff6, 15 ]
 :focused
-    layers.text:
-        editable:               true
+    layers.text: editable [ ]
 :has_value
-    layers.text:
-        label_color:            #ffff
+    layers.text: label_c [ #ffff ]
 }
 
 /* replace flows in the nav series after the close — same l0+ coords as the buttons, just a
@@ -1106,80 +981,35 @@ element.find {
 element.replace {
     focusable: true
     area:                       l0+ t0 w0 h0
-    layers.text:
-        area:                   l0.5 t0 r0 b0
-        label_color:            #fff4
-        label_align:            0.0 0.5
-        label_size:             14
-        editable:               true
+    layers.text: text_left [ l0.5 t0 r0 b0, #fff4, 14 ]
+:focused
+    layers.text: editable [ ]
 :has_value
-    layers.text:
-        label_color:            #ffff
+    layers.text: label_c [ #ffff ]
 }
 
 /* the scope field: green, shows the current filename (in-file search) until you type a
    glob into it to search across files. left-aligned like a label. */
 element.pattern {
     area:                       l0 t0 r0 h0
-    layers.base:
-        fill_color:             #2f6b3acc
-    layers.divider:
-        area:                   r0 t0 w1px b0
-        fill_color:             #fff2
-    layers.text:
-        area:                   l44px t0 r44px b0
-        label_color:            #dfffe0
-        label_align:            0.0 0.5
-        label_size:             19
+    layers.base: pattern_base [ ]
+    layers.divider: band [ #fff2, r0 t0 w1px b0 ]
+    layers.text: text_left [ l44px t0 r44px b0, #dfffe0, 19 ]
 :focused
-    layers.text:
-        editable:               true
+    layers.text: editable [ ]
 }
 
 Option.find_in_files {
     area: r1.2 t0.2 r0.2 b0.2
-    layers.base:
-        stroke_width:           1
-        stroke_color:           #6cb6ff00
-        radius:                 8
-    layers.svg:
-        area:                   1px
-        image_align:            0.5 0.5
-        image_scale:            1.2
-        image_svg:              "images/find_in_files.svg"
-        opacity:                0.3
-:selected
-    layers.base:
-        stroke_width:           1
-        stroke_color:           #6cb6ffcc
-    layers.svg:
-        opacity:                1.0
+    layers.base: chip_ff [ ]
+    layers.svg: ff_svg [ ]
 }
 
 element.infile {
     area:                       l0 t0 r0 h0
-    layers.base:
-        fill_color:             #1126
-    layers.divider:
-        area:                   r0 t0 w1px b0
-        fill_color:             #fff2
-    layers.face:
-        area:                   l12px t0 r12px b0
-        label_color:            #fff8
-        label_align:            1.0 0.5
-        label_size:             15
-}
-
-element.infile:selected {
-    layers.base:
-        fill_color:             #1f35
-    layers.face:
-        label_color:            #fff
-}
-
-element.pattern:selected {
-    layers.base:
-        fill_color:             #fa35
+    layers.base: infile_base [ ]
+    layers.divider: band [ #fff2, r0 t0 w1px b0 ]
+    layers.face: infile_face [ ]
 }
 
 
@@ -1188,51 +1018,16 @@ element.pattern:selected {
    never moves. */
 Option.replace_all_action {
     area:                       l0+ t0 w0 h0
-    layers.base:
-        fill_color:             #0000
-        inner_glow:             #0000 24
-        radius:                 8
-    layers.label:
-        label:                  'All'
-        label_color:            #fff
-        label_size:             15
-        label_align:            0.5 0.5
-        opacity:                0.6
-:hovered
-    layers.base:
-        fill_color:             #8af4
-        inner_glow:             #8afa 24
-    layers.label:
-        opacity:                1.0
+    layers.base: icon_btn [ ]
+    layers.label: nav_label [ 'All', 15 ]
 }
 
 /* the 'Replace' toggle button — exposes the replace input + All. base w0 h0 (stable
    slot, sized when :expanded). 6px radius; a 1px blue outline lights when selected. */
 Option.replace_btn {
     area:                       l0+ t0 w0 h0
-    layers.base:
-        fill_color:             #0000
-        radius:                 6
-        stroke_width:           1
-        stroke_color:           #6cb6ff00
-        inner_glow:             #fff0 0
-    layers.label:
-        label:                  'Replace'
-        label_color:            #fff
-        label_size:             14
-        label_align:            0.5 0.5
-        opacity:                0.6
-:hovered
-    layers.base:
-        fill_color:             #8af4
-    layers.label:
-        opacity:                1.0
-:selected
-    layers.base:
-        stroke_width:           1
-        stroke_color:           #6cb6ff00
-    layers.label:
-        opacity:                1.0
+    layers.base: replace_btn_base [ ]
+    layers.label: nav_label [ 'Replace', 14 ]
 }
 
 Editor:expanded / element.title / element.nav / Option.replace_btn {
@@ -1259,12 +1054,8 @@ Editor:expanded / element.title / element.find {
    every :expanded. they keep their flow slots (w0 h0 in base) so order is stable. */
 Editor:replacing / element.title / element.nav / element.replace {
     area: l0+ t0 w240px h34px
-    layers.border2:
-        area:           l4px t0 w1px b0
-        fill_color:     #fff2
-    layers.border3:
-        area:           r4px t0 w1px b0
-        fill_color:     #fff2
+    layers.border2: band [ #fff2, l4px t0 w1px b0 ]
+    layers.border3: band [ #fff2, r4px t0 w1px b0 ]
 }
 
 Editor:replacing / element.title / element.nav / Option.replace_all_action {
@@ -1276,30 +1067,10 @@ Editor:replacing / element.title / element.nav / Option.replace_all_action {
 element.filter {
     area:               l0 b1.5 r0 h1.5
     focusable:          true
-    layers.base:
-        area:           8px
-        fill_color:     #112f
-        stroke_color:   #248
-        stroke_width:   1
-        radius:         8
-    layers.text:
-        area:           8px
-        label_color:    #fff
-        label_align:    0.0 0.5
-        label_offset:   8 0
-        label_size:     14
-        editable:       true
-    layers.border:
-        area:           l0 t0 r0 h1px
-        fill_color:     #244f
-    layers.border2:
-        area:           l0 t-1px r0 h1px
-        fill_color:     #0004
-
-:focused
-    layers.base:
-        stroke_color:   #8aff
-        stroke_width:   1
+    layers.base: filter_base [ ]
+    layers.text: filter_text [ ]
+    layers.border: band [ #244f, l0 t0 r0 h1px ]
+    layers.border2: band [ #0004, l0 t-1px r0 h1px ]
 }
 
 
@@ -1375,8 +1146,7 @@ Avatar.avatar {
    Avatar in a centered square region (w0.4 + 'hw' → height tracks width). */
 element.loading {
     area: l0 t0 r0 b0
-    layers.base:
-        fill_color: #000c
+    layers.base: flat [ #000c ]
 }
 
 element.loading / Avatar.avatar {
@@ -1388,65 +1158,25 @@ element.loading / Avatar.avatar {
    parent-path form didn't match and it fell back to the top-left title-bar slot. */
 Option.avatar_toggle {
     area:                       r1 b1 w1 h1
-    layers.base:
-        fill_color:             #0000
-    layers.svg:
-        area:                   6px
-        image_svg:              "images/orbiter4.svg"
-        image_scale:            1.2
-        image_align:            0.5 0.5
-        opacity:                0.6
-:hovered
-    layers.svg:
-        opacity:                0.85
-:selected
-    layers.base:
-        stroke_width:           1
-        stroke_color:           #6cb6ffcc
-        radius:                 8
-    layers.svg:
-        opacity:                1.0
+    layers.base: avatar_chip [ ]
+    layers.svg: avatar_svg [ ]
 }
 /* resource view toggles (game / assembly / tiles): grouped TEXT pills in the
    title nav, sitting left of the expand button. text width, not icon width. */
 Editor / element.title / element.nav / Option.view_game {
     area:                       l2+px t2px w58px h30px
-    layers.face:
-        area:                   l10px t0 r10px b0
-        label_color:            #b9aecb
-        label_size:             15
-        label_align:            0.5 0.5
-    layers.svg:
-        image_scale:            0.0
-:selected
-    layers.face:
-        label_color:            #ffffff
+    layers.face: view_face [ ]
+    layers.svg: svg_none [ ]
 }
 Editor / element.title / element.nav / Option.view_assembly {
     area:                       l2+px t2px w92px h30px
-    layers.face:
-        area:                   l10px t0 r10px b0
-        label_color:            #b9aecb
-        label_size:             15
-        label_align:            0.5 0.5
-    layers.svg:
-        image_scale:            0.0
-:selected
-    layers.face:
-        label_color:            #ffffff
+    layers.face: view_face [ ]
+    layers.svg: svg_none [ ]
 }
 Editor / element.title / element.nav / Option.view_tiles {
     area:                       l2+px t2px w58px h30px
-    layers.face:
-        area:                   l10px t0 r10px b0
-        label_color:            #b9aecb
-        label_size:             15
-        label_align:            0.5 0.5
-    layers.svg:
-        image_scale:            0.0
-:selected
-    layers.face:
-        label_color:            #ffffff
+    layers.face: view_face [ ]
+    layers.svg: svg_none [ ]
 }
 
 /* EVERY text button on a console title row: right-flow from the previous
@@ -1454,19 +1184,9 @@ Editor / element.title / element.nav / Option.view_tiles {
    padding. adding a button is one line of .ag — no per-button rule, ever. */
 EditorView / Console / Button {
     area:                       r8+px t7px wc24px h30px
-    layers.base:
-        wmp_button[]
-        stroke2[]
-        radius:                 8
-    layers.face:
-        label_color:            #b9aecb
-        label_size:             15
-        label_align:            0.5 0.5
-    layers.svg:
-        image_scale:            0.0
+    layers.base: con_btn [ ]
+    layers.face: face_c [ #b9aecb, 15 ]
+    layers.svg: svg_none [ ]
 :hovered
-    layers.base:
-        wmp_button_hover[]
-    layers.face:
-        label_color:            #ffffff
+    layers.face: label_c [ #ffffff ]
 }

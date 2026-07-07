@@ -204,9 +204,12 @@ class Image
 
                 #png_t_seIHDR
 
+                ctype2 : i32 [ PNG_COLOR_TYPE_RGBA ]
+                if [ channels == 1 ] ctype2 = PNG_COLOR_TYPE_GRAY
+                if [ channels == 3 ] ctype2 = PNG_COLOR_TYPE_RGB
                 png_set_IHDR
                     png2, info, width, height,
-                    8, PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
+                    8, ctype2, PNG_INTERLACE_NONE,
                     PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT
 
                 png_write_info png2, info

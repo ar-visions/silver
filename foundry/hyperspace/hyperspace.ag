@@ -1,54 +1,678 @@
 import vec
 import img
 import trinity
+import ai
 import <stdio.h>
+import <stdlib.h>
 
 element hyperspace : trinity
     public width      : i32    [ 1280 ]
     public height     : i32    [ 800 ]
     public background : string [ 'Background' ]
     public title      : string [ 'hyperspace' ]
+    public session    : string [ 'basic' ]
+    public train      : bool
+    public epochs     : i32    [ 4 ]
+    public optimizer  : Optimizer [ Optimizer.adam ]
+    public lr         : f32    [ 0.001f ]
+    public verbose    : bool
+    public diag       : bool
+    public gradcheck  : bool
+    public top        : CameraView
+    public bot        : CameraView
     intern active     : string
     intern fullscreen : bool
+    intern mode       : string
+    intern seq_i      : i32
+    intern frame_i    : i32
+    intern head_x     : f32 [ 0.5 ]
+    intern head_y     : f32 [ 0.5 ]
+    intern off_x      : f32
+    intern off_y      : f32
+    intern lcg        : u32
+    intern ann_files  : array string
+    intern ann_i      : i32
+    intern ann_cam    : string
+    intern ann_tex    : Texture
+    intern ann_rect   : rect
+    intern ann_median : vec2f
 
     func init []
         active = 'record-looks'
+        if [ train ]
+            train_models[]
+            exit[ 0 ]
+
+    func session_dir [] -> path
+        return path '/src/hyperspace-sessions/{session}'
+
+    func frand [] -> f32
+        lcg = lcg * 1664525 + 1013904223
+        return f32[ lcg >> 8 ] / 16777216.0
+
+    # keep the dot on screen relative to the fixed head circle
+    func clamp_offset []
+        tx : f32 [ head_x + off_x ]
+        ty : f32 [ head_y + off_y ]
+        if [ tx < 0.02 ] off_x = 0.02 - head_x
+        if [ tx > 0.98 ] off_x = 0.98 - head_x
+        if [ ty < 0.02 ] off_y = 0.02 - head_y
+        if [ ty > 0.98 ] off_y = 0.98 - head_y
+
+    # 10 eye offsets per head center; first offset is always 0
+    func advance []
+        seq_i += 1
+        if [ seq_i >= 10 ]
+            seq_i  = 0
+            head_x = 0.1 + frand[] * 0.8
+            head_y = 0.1 + frand[] * 0.8
+            off_x  = 0.0
+            off_y  = 0.0
+            return
+        off_x = (frand[] - 0.5) * 0.4
+        off_y = (frand[] - 0.5) * 0.4
+        clamp_offset[]
+
+    func capture []
+        d  : session_dir[]
+        tp : path '{d}/{frame_i}-top.png'
+        bp : path '{d}/{frame_i}-bot.png'
+        ok_t : bool [ (top) ? top.save_frame[ tp ] : false ]
+        ok_b : bool [ (bot) ? bot.save_frame[ bp ] : false ]
+        s  : string 'labels:\n    center: {head_x} {head_y}\n    offset: {off_x} {off_y}\nimages:\n    top: {frame_i}-top.png\n    bot: {frame_i}-bot.png\n'
+        ag : path '{d}/{frame_i}.agi'
+        ag.save[ s, null ]
+        puts 'capture {frame_i}: head=({head_x}, {head_y}) off=({off_x}, {off_y}) top={ok_t} bot={ok_b}'
+        frame_i += 1
+
+    # read a `key: x y` pair out of a frame's agi (-1,-1 when absent)
+    func read_pair [ fid: string, key: string ] -> vec2f
+        p : path '{session_dir[]}/{fid}.agi'
+        s : (p.load[ typeid[ string ], null ] to string)
+        r : vec2f [ x: -1.0, y: -1.0 ]
+        if [ !s ] return r
+        k  : string '{key}:'
+        ix : num [ s.index_of[ k ] ]
+        if [ ix < 0 ] return r
+        st : i32 [ i32[ ix ] + k.count ]
+        ln : i32 [ s.count - st ]
+        if [ ln > 48 ] ln = 48
+        rest  : s.mid[ st, ln ].trim[]
+        parts : rest.split[ ' ' ]
+        if [ parts.count < 2 ] return r
+        r = vec2f [ x: f32[ atof[ parts[0].chars ] ], y: f32[ atof[ parts[1].chars ] ] ]
+        return r
+
+    func ann_append [ txt: string ]
+        p : path '{session_dir[]}/{ann_files[ann_i]}.agi'
+        f : fopen [ p, 'a' ]
+        if [ !f ] return
+        fputs[ txt.chars, f ]
+        fclose[ f ]
+
+    func ann_load []
+        fid : ann_files[ ann_i ]
+        ip  : path '{session_dir[]}/{fid}-{ann_cam}.png'
+        im  : Image [ uri: ip ]
+        ann_tex = Texture [ vk: vk, w: ux, width: im.width, height: im.height, linear: true ]
+        sz : i32 [ im.width * im.height * 4 ]
+        ann_tex.upload[ im.vdata[], sz ]
+        ann_median = vec2f [ x: -1.0, y: -1.0 ]
+        if [ mode == 'scale' ]
+            l : read_pair[ fid, '{ann_cam}_left' ]
+            r : read_pair[ fid, '{ann_cam}_right' ]
+            if [ l.x >= 0.0 && r.x >= 0.0 ]
+                ann_median = vec2f [ x: (l.x + r.x) * 0.5, y: (l.y + r.y) * 0.5 ]
+
+    func ann_exit []
+        mode       = ''
+        fullscreen = false
+        ann_tex    = null
+        ux.set_fullscreen[ false ]
+
+    func ann_advance []
+        ann_i += 1
+        if [ ann_i >= ann_files.count ]
+            if [ ann_cam == 'top' ]
+                ann_cam = 'bot'
+                ann_i   = 0
+            el
+                ann_exit[]
+                return
+        ann_load[]
+
+    func start_annotate [ m: string ]
+        d : session_dir[]
+        ann_files = array string [ ]
+        k : i32 [ 0 ]
+        while [ true ]
+            p : path '{d}/{k}.agi'
+            if [ !p.exists[] ] break
+            ann_files.push[ string '{k}' ]
+            k += 1
+        if [ ann_files.count == 0 ]
+            puts 'annotate: no frames in {d}'
+            return
+        mode    = m
+        ann_cam = 'top'
+        ann_i   = 0
+        ann_load[]
+        fullscreen = true
+        ux.set_fullscreen[ true ]
 
     public func on_canvas [ cv: Canvas ]
         if [ !fullscreen ]
             super.on_canvas[ cv ]
             return
+        sw : f32 [ f32[ ux.width ] ]
+        sh : f32 [ f32[ ux.height ] ]
+        if [ mode == 'record' ]
+            # cameras are hidden in record mode; pump their frames here
+            if [ top && top.camera ] top.camera.update[]
+            if [ bot && bot.camera ] bot.camera.update[]
+            cx : f32 [ head_x * sw ]
+            cy : f32 [ head_y * sh ]
+            cv.arc[ cx, cy, 48.0, 0.0, 6.2831853 ]
+            cv.fill_color[ '#0000' ]
+            cv.stroke_color[ '#fff' ]
+            cv.stroke_width[ 2.0 ]
+            cv.paint[]
+            cv.sync_fence[]
+            dx : f32 [ (head_x + off_x) * sw ]
+            dy : f32 [ (head_y + off_y) * sh ]
+            cv.arc[ dx, dy, 2.0, 0.0, 6.2831853 ]
+            cv.fill_color[ '#fff' ]
+            cv.stroke_width[ 0.0 ]
+            cv.paint[]
+            return
+        # annotate modes: the current capture, aspect-fit, centered
+        if [ !ann_tex ] return
+        side : f32 [ (sw < sh) ? sw * 0.8 : sh * 0.8 ]
+        ann_rect = rect [ x: (sw - side) * 0.5, y: (sh - side) * 0.5, w: side, h: side ]
+        cv.draw_image[ ann_tex, ann_rect ]
+        if [ mode == 'scale' && ann_median.x >= 0.0 ]
+            mx : f32 [ ann_rect.x + ann_median.x * ann_rect.w ]
+            my : f32 [ ann_rect.y + ann_median.y * ann_rect.h ]
+            # circle edge rides the mouse; click saves that radius
+            ex : f32 [ cursor_pos.x * sw ]
+            ey : f32 [ cursor_pos.y * sh ]
+            ddx : f32 [ ex - mx ]
+            ddy : f32 [ ey - my ]
+            r  : f32 [ sqrt[ ddx * ddx + ddy * ddy ] ]
+            if [ r < 4.0 ] r = 4.0
+            cv.sync_fence[]
+            cv.arc[ mx, my, r, 0.0, 6.2831853 ]
+            cv.fill_color[ '#0000' ]
+            cv.stroke_color[ '#f80' ]
+            cv.stroke_width[ 2.0 ]
+            cv.paint[]
 
     public func on_key [ ev: Event ]
-        if [ ev.key.state && ev.key.unicode == 256 && fullscreen ]
-            fullscreen = false
-            ux.set_fullscreen[ false ]
+        if [ !ev.key.state ] return
+        if [ ev.key.unicode == 256 && fullscreen ]
+            if [ mode == 'record' ]
+                mode       = ''
+                fullscreen = false
+                ux.set_fullscreen[ false ]
+            el
+                ann_exit[]
+            ev.stop_propagation[]
+            return
+        if [ ev.key.unicode == 32 && fullscreen && mode == 'record' ]
+            capture[]
+            advance[]
             ev.stop_propagation[]
 
+    func ann_click [ ev: Event ]
+        if [ !ann_tex || ann_rect.w <= 0.0 ] return
+        nx : f32 [ (ev.mouse.pos.x - ann_rect.x) / ann_rect.w ]
+        ny : f32 [ (ev.mouse.pos.y - ann_rect.y) / ann_rect.h ]
+        if [ nx < 0.0 || nx > 1.0 || ny < 0.0 || ny > 1.0 ] return
+        fid : ann_files[ ann_i ]
+        if [ mode == 'left' ]
+            ann_append[ string '{ann_cam}_left: {nx} {ny}\n' ]
+        el [ mode == 'right' ]
+            ann_append[ string '{ann_cam}_right: {nx} {ny}\n' ]
+        el [ mode == 'scale' ]
+            if [ ann_median.x < 0.0 ]
+                puts 'scale: no left/right for {fid}-{ann_cam}, skipping'
+                ann_advance[]
+                return
+            ddx : f32 [ nx - ann_median.x ]
+            ddy : f32 [ ny - ann_median.y ]
+            sc  : f32 [ sqrt[ ddx * ddx + ddy * ddy ] ]
+            ann_append[ string '{ann_cam}_scale: {sc}\n' ]
+        ann_advance[]
+
+    # nearest-sample a region of an rgba8 Image into a 32x32x1 gray tensor.
+    # cx/cy/side are normalized to image width; side <= 0 = whole image
+    # square crop (center + side in image-width units) -> 32x32 gray.
+    # area-average: each dest pixel averages the source rect it covers
+    func crop_tensor [ src: Image, cx: f32, cy: f32, side: f32 ] -> tensor
+        t       : tensor [ tensor_shape: 32x32x1 ]
+        data    : ref u8 [ src.vdata[] ]
+        img_w   : f32 [ f32[ src.width ] ]
+        side_px : f32 [ (side > 0.0) ? side * img_w : img_w ]
+        x0      : f32 [ (side > 0.0) ? cx * img_w - side_px * 0.5 : 0.0 ]
+        y0      : f32 [ (side > 0.0) ? cy * img_w - side_px * 0.5 : 0.0 ]
+        step    : f32 [ side_px / 32.0 ]
+        for [ oy: i32 0, oy < 32, oy += 1 ]
+            ys : i32 [ i32[ y0 + f32[ oy ] * step ] ]
+            ye : i32 [ i32[ y0 + (f32[ oy ] + 1.0) * step ] ]
+            if [ ye <= ys ] ye = ys + 1
+            for [ ox: i32 0, ox < 32, ox += 1 ]
+                xs : i32 [ i32[ x0 + f32[ ox ] * step ] ]
+                xe : i32 [ i32[ x0 + (f32[ ox ] + 1.0) * step ] ]
+                if [ xe <= xs ] xe = xs + 1
+                acc : f32 [ 0.0 ]
+                cnt : i32 [ 0 ]
+                for [ sy: i32 ys, sy < ye, sy += 1 ]
+                    py : i32 [ sy ]
+                    if [ py < 0 ] py = 0
+                    if [ py >= src.height ] py = src.height - 1
+                    for [ sx: i32 xs, sx < xe, sx += 1 ]
+                        px : i32 [ sx ]
+                        if [ px < 0 ] px = 0
+                        if [ px >= src.width ] px = src.width - 1
+                        acc += f32[ data[ (py * src.width + px) * 4 ] ]
+                        cnt += 1
+                t.floats[ oy * 32 + ox ] = acc / (f32[ cnt ] * 255.0)
+        return t
+
+    func build_target [] -> keras
+        t_in    : tensor [ tensor_shape: 32x32x1 ]
+        t_conv  : tensor [ tensor_shape: 32x32x1 ]
+        t_pool  : tensor [ tensor_shape: 32x32x8 ]
+        t_flat  : tensor [ tensor_shape: 16x16x8 ]
+        t_d1    : tensor [ tensor_shape: 1x2048 ]
+        t_d2    : tensor [ tensor_shape: 1x64 ]
+        t_out   : tensor [ tensor_shape: 1x5 ]
+        w_conv  : tensor [ tensor_shape: 72x1,    initializer: glorot_uniform ]
+        b_conv  : tensor [ tensor_shape: 8x1,     initializer: zeros ]
+        w_d1    : tensor [ tensor_shape: 12288x64, initializer: glorot_uniform ]
+        b_d1    : tensor [ tensor_shape: 1x64,    initializer: zeros ]
+        w_d2    : tensor [ tensor_shape: 64x5,    initializer: glorot_uniform ]
+        b_d2    : tensor [ tensor_shape: 1x5,     initializer: zeros ]
+        o_in   : input_op [ input: t_in,   name: 'input',  lr_scale: 1.0f ]
+        o_c    : conv     [ input: t_conv, name: 'conv',
+                            padding: Padding.same, kernel_size: 3x3, stride_shape: 1x1,
+                            out_channels: 8, activation: Activation.relu,
+                            weights: w_conv, bias: b_conv, lr_scale: 1.0f ]
+        o_p    : pool     [ input: t_pool, name: 'pool',
+                            pool_size: 2x2, pool_type: Pooling.max,
+                            stride_shape: 2x2, lr_scale: 1.0f ]
+        o_f    : flatten  [ input: t_flat, name: 'flatten', lr_scale: 1.0f ]
+        o_d1   : dense    [ input: t_d1,   name: 'dense1',
+                            units: 64, in_dim: 12288, out_dim: 64,
+                            activation: Activation.relu,
+                            weights: w_d1, bias: b_d1, lr_scale: 1.0f ]
+        o_d2   : dense    [ input: t_d2,   name: 'dense2',
+                            units: 5, in_dim: 64, out_dim: 5,
+                            weights: w_d2, bias: b_d2, lr_scale: 1.0f ]
+        o_out  : output_op [ input: t_out, name: 'output', lr_scale: 1.0f ]
+        o_in.inputs  = array string [ ]
+        o_c.inputs   = array string [ 'input' ]
+        o_p.inputs   = array string [ 'conv' ]
+        o_f.inputs   = array string [ 'pool' ]
+        o_d1.inputs  = array string [ 'flatten' ]
+        o_d2.inputs  = array string [ 'dense1' ]
+        o_out.inputs = array string [ 'dense2' ]
+        all2 : array op [ o_in, o_c, o_p, o_f, o_d1, o_d2, o_out ]
+        return keras [ ident: 'target', ops: all2 ]
+
+    func build_look [] -> keras
+        t_inL   : tensor [ tensor_shape: 32x32x1 ]
+        t_inR   : tensor [ tensor_shape: 32x32x1 ]
+        t_inF   : tensor [ tensor_shape: 32x32x1 ]
+        t_convL : tensor [ tensor_shape: 32x32x1 ]
+        t_convR : tensor [ tensor_shape: 32x32x1 ]
+        t_convF : tensor [ tensor_shape: 32x32x1 ]
+        # conv width C=16: dependent shapes are 9C, C, 3C, 768C below
+        t_cat   : tensor [ tensor_shape: 32x32x48 ]
+        t_pool  : tensor [ tensor_shape: 32x32x48 ]
+        t_flat  : tensor [ tensor_shape: 16x16x48 ]
+        t_d1    : tensor [ tensor_shape: 1x12288 ]
+        t_cat2  : tensor [ tensor_shape: 1x71 ]
+        t_d2    : tensor [ tensor_shape: 1x71 ]
+        t_aux   : tensor [ tensor_shape: 1x7 ]
+        t_out   : tensor [ tensor_shape: 1x4 ]
+        w_convL : tensor [ tensor_shape: 144x1,   initializer: glorot_uniform ]
+        b_convL : tensor [ tensor_shape: 16x1,    initializer: zeros ]
+        w_convR : tensor [ tensor_shape: 144x1,   initializer: glorot_uniform ]
+        b_convR : tensor [ tensor_shape: 16x1,    initializer: zeros ]
+        w_convF : tensor [ tensor_shape: 144x1,   initializer: glorot_uniform ]
+        b_convF : tensor [ tensor_shape: 16x1,    initializer: zeros ]
+        w_d1    : tensor [ tensor_shape: 12288x64, initializer: glorot_uniform ]
+        b_d1    : tensor [ tensor_shape: 1x64,    initializer: zeros ]
+        w_d2    : tensor [ tensor_shape: 71x64,   initializer: glorot_uniform ]
+        b_d2    : tensor [ tensor_shape: 1x64,    initializer: zeros ]
+        w_d3    : tensor [ tensor_shape: 64x4,    initializer: glorot_uniform ]
+        b_d3    : tensor [ tensor_shape: 1x4,     initializer: zeros ]
+        t_d3    : tensor [ tensor_shape: 1x64 ]
+        o_inL  : input_op [ input: t_inL,  name: 'inL',  lr_scale: 1.0f ]
+        o_inR  : input_op [ input: t_inR,  name: 'inR',  lr_scale: 1.0f ]
+        o_inF  : input_op [ input: t_inF,  name: 'inF',  lr_scale: 1.0f ]
+        o_aux  : input_op [ input: t_aux,  name: 'aux',  lr_scale: 1.0f ]
+        o_cL   : conv     [ input: t_convL, name: 'convL',
+                            padding: Padding.same, kernel_size: 3x3, stride_shape: 1x1,
+                            out_channels: 16, activation: Activation.relu,
+                            weights: w_convL, bias: b_convL, lr_scale: 1.0f ]
+        o_cR   : conv     [ input: t_convR, name: 'convR',
+                            padding: Padding.same, kernel_size: 3x3, stride_shape: 1x1,
+                            out_channels: 16, activation: Activation.relu,
+                            weights: w_convR, bias: b_convR, lr_scale: 1.0f ]
+        o_cF   : conv     [ input: t_convF, name: 'convF',
+                            padding: Padding.same, kernel_size: 3x3, stride_shape: 1x1,
+                            out_channels: 16, activation: Activation.relu,
+                            weights: w_convF, bias: b_convF, lr_scale: 1.0f ]
+        o_cat  : concatenate [ input: t_cat, name: 'cat', axis: 2, lr_scale: 1.0f ]
+        o_p    : pool     [ input: t_pool, name: 'pool',
+                            pool_size: 2x2, pool_type: Pooling.max,
+                            stride_shape: 2x2, lr_scale: 1.0f ]
+        o_f    : flatten  [ input: t_flat, name: 'flatten', lr_scale: 1.0f ]
+        o_d1   : dense    [ input: t_d1,   name: 'dense1',
+                            units: 64, in_dim: 12288, out_dim: 64,
+                            activation: Activation.relu,
+                            weights: w_d1, bias: b_d1, lr_scale: 1.0f ]
+        o_cat2 : concatenate [ input: t_cat2, name: 'cat2', axis: 1, lr_scale: 1.0f ]
+        o_d2   : dense    [ input: t_d2,   name: 'dense2',
+                            units: 64, in_dim: 71, out_dim: 64,
+                            activation: Activation.relu,
+                            weights: w_d2, bias: b_d2, lr_scale: 1.0f ]
+        o_d3   : dense    [ input: t_d3,   name: 'dense3',
+                            units: 4, in_dim: 64, out_dim: 4,
+                            weights: w_d3, bias: b_d3, lr_scale: 1.0f ]
+        o_out  : output_op [ input: t_out, name: 'output', lr_scale: 1.0f ]
+        o_d1.result = tensor [ tensor_shape: 1x64 ]
+        o_inL.inputs  = array string [ ]
+        o_inR.inputs  = array string [ ]
+        o_aux.inputs  = array string [ ]
+        o_inF.inputs  = array string [ ]
+        o_cL.inputs   = array string [ 'inL' ]
+        o_cR.inputs   = array string [ 'inR' ]
+        o_cF.inputs   = array string [ 'inF' ]
+        o_cat.inputs  = array string [ 'convL', 'convR', 'convF' ]
+        o_p.inputs    = array string [ 'cat' ]
+        o_f.inputs    = array string [ 'pool' ]
+        o_d1.inputs   = array string [ 'flatten' ]
+        o_cat2.inputs = array string [ 'dense1', 'aux' ]
+        o_d2.inputs   = array string [ 'cat2' ]
+        o_d3.inputs   = array string [ 'dense2' ]
+        o_out.inputs  = array string [ 'dense3' ]
+        all2 : array op [ o_inL, o_inR, o_inF, o_aux, o_cL, o_cR, o_cF, o_cat, o_p, o_f, o_d1, o_cat2, o_d2, o_d3, o_out ]
+        return keras [ ident: 'look', ops: all2 ]
+
+    # saved model (.agi + weights .bin) wins; build_look bootstraps the first run
+    func load_look [] -> keras
+        p : path 'models/look.agi'
+        if [ p.exists[] ]
+            txt : (p.load[ typeid[ string ], null ] to string)
+            if [ txt ]
+                m : (Au.parse_agi[ typeid[ keras ], txt.chars, null ] to keras)
+                if [ m ]
+                    if [ m.weights_bin ]
+                        m.load_weights[ m.weights_bin ]
+                    puts 'loaded {p} (best epoch {m.best_epoch}, avg err {m.best_err})'
+                    return m
+        return build_look[]
+
+    func shuffled_order [ n: i32 ] -> array i32
+        order : array i32 [ ]
+        for [ i: i32 0, i < n, i += 1 ]
+            order.push[ i ]
+        for [ i: i32 n - 1, i > 0, i -= 1 ]
+            j : i32 [ i32[ frand[] * f32[ i + 1 ] ] ]
+            tmp : i32 [ order[i] ]
+            order[i] = order[j]
+            order[j] = tmp
+        return order
+
+    func axis_err [ pred: f32, actual: f32 ] -> f64
+        diff : f64 [ f64[ pred - actual ] ]
+        return (diff > 0.0) ? diff : -diff
+
+    # head focus + absolute gaze (screen 0..1)
+    func eval_look [ m: keras, samples: array sample ]
+        if [ samples.count == 0 ] return
+        hx : f64 0
+        hy : f64 0
+        gx : f64 0
+        gy : f64 0
+        for [ smp: sample ] in samples
+            p : m.predict_s[ smp ]
+            hx += axis_err[ p.floats[0], smp.target.floats[0] ]
+            hy += axis_err[ p.floats[1], smp.target.floats[1] ]
+            gx += axis_err[ p.floats[2], smp.target.floats[2] ]
+            gy += axis_err[ p.floats[3], smp.target.floats[3] ]
+        n : f64 [ f64[ samples.count ] ]
+        ahx : f64 [ hx / n ]
+        ahy : f64 [ hy / n ]
+        agx : f64 [ gx / n ]
+        agy : f64 [ gy / n ]
+        puts 'look eval ({samples.count} held out): head err x {ahx} y {ahy}, gaze err x {agx} y {agy}'
+
+    # central-difference dL/dw (L = sum of squared error, matching d_out)
+    func num_grad [ m: keras, smp: sample, w: tensor, idx: i32 ] -> f64
+        h : f32 [ 0.0005 ]
+        orig : f32 [ w.floats[idx] ]
+        t : smp.target.count
+        w.floats[idx] = orig + h
+        pp : m.predict_s[ smp ]
+        lp : f64 0
+        for [ i: i32 0, i < t, i += 1 ]
+            dp : f64 [ f64[ pp.floats[i] - smp.target.floats[i] ] ]
+            lp += dp * dp
+        w.floats[idx] = orig - h
+        pm : m.predict_s[ smp ]
+        lm : f64 0
+        for [ i: i32 0, i < t, i += 1 ]
+            dm : f64 [ f64[ pm.floats[i] - smp.target.floats[i] ] ]
+            lm += dm * dm
+        w.floats[idx] = orig
+        return (lp - lm) / (2.0 * f64[ h ])
+
+    func check_op [ m: keras, smp: sample, o: op ]
+        if [ o.result ]
+            puts '{o.name}: result shape {o.result.tensor_shape}'
+        if [ !o.weights ] return
+        bp0 : f64 [ f64[ o.weights.grad[0] ] ]
+        nm0 : num_grad[ m, smp, o.weights, 0 ]
+        bp1 : f64 [ f64[ o.weights.grad[7] ] ]
+        nm1 : num_grad[ m, smp, o.weights, 7 ]
+        bb0 : f64 [ f64[ o.bias.grad[0] ] ]
+        nb0 : num_grad[ m, smp, o.bias, 0 ]
+        puts '{o.name}: w[0] bp {bp0} num {nm0}   w[7] bp {bp1} num {nm1}   b[0] bp {bb0} num {nb0}'
+
+    func grad_check [ smp: sample ]
+        m : build_look[]
+        for [ o: op ] in m.ops
+            o.grad_debug = true
+        p : m.predict_s[ smp ]
+        t : smp.target.count
+        d_out : tensor [ tensor_shape: smp.target.tensor_shape ]
+        for [ i: i32 0, i < t, i += 1 ]
+            d_out.floats[i] = 2.0 * (p.floats[i] - smp.target.floats[i])
+        din : m.back[ d_out ]
+        for [ o: op ] in m.ops
+            check_op[ m, smp, o ]
+
+    func train_models []
+        dir            : session_dir[]
+        target_samples : map tensor[tensor] [ ]
+        look_samples   : array sample [ ]
+        cams           : array string [ 'top', 'bot' ]
+        frame_num      : i32 [ 0 ]
+        while [ true ]
+            agi_path : path '{dir}/{frame_num}.agi'
+            if [ !agi_path.exists[] ] break
+            frame_id : string '{frame_num}'
+            center   : read_pair[ frame_id, 'center' ]
+            offset   : read_pair[ frame_id, 'offset' ]
+            for [ cam: string ] in cams
+                left_eye  : read_pair[ frame_id, '{cam}_left' ]
+                right_eye : read_pair[ frame_id, '{cam}_right' ]
+                eye_scale : read_pair[ frame_id, '{cam}_scale' ]
+                if [ left_eye.x < 0.0 || right_eye.x < 0.0 || eye_scale.x < 0.0 ]
+                    continue
+                png_path : path '{dir}/{frame_id}-{cam}.png'
+                if [ !png_path.exists[] ]
+                    continue
+                image      : Image [ uri: png_path ]
+                full_frame : crop_tensor[ image, 0.0, 0.0, 0.0 ]
+                target_label : tensor [ tensor_shape: 1x5 ]
+                target_label.floats[0] = left_eye.x
+                target_label.floats[1] = left_eye.y
+                target_label.floats[2] = right_eye.x
+                target_label.floats[3] = right_eye.y
+                target_label.floats[4] = eye_scale.x
+                target_samples[ full_frame ] = target_label
+                if [ center.x < 0.0 ]
+                    continue
+                crop_side : f32 [ eye_scale.x * 0.5 ]
+                if [ crop_side < 0.05 ] crop_side = 0.05
+                left_crop  : crop_tensor[ image, left_eye.x,  left_eye.y,  crop_side ]
+                right_crop : crop_tensor[ image, right_eye.x, right_eye.y, crop_side ]
+                med_x : f32 [ (left_eye.x + right_eye.x) * 0.5 ]
+                med_y : f32 [ (left_eye.y + right_eye.y) * 0.5 ]
+                face_crop : crop_tensor[ image, med_x, med_y, 0.3 ]
+                aux : tensor [ tensor_shape: 1x7 ]
+                aux.floats[0] = (left_eye.x + right_eye.x) * 0.5
+                aux.floats[1] = (left_eye.y + right_eye.y) * 0.5
+                aux.floats[2] = eye_scale.x
+                aux.floats[3] = left_eye.x
+                aux.floats[4] = left_eye.y
+                aux.floats[5] = right_eye.x
+                aux.floats[6] = right_eye.y
+                # head focus + ABSOLUTE gaze (the dot is exact ground
+                # truth); the head-gaze delta is usable for filtering
+                look_label : tensor [ tensor_shape: 1x4 ]
+                look_label.floats[0] = center.x
+                look_label.floats[1] = center.y
+                look_label.floats[2] = center.x + offset.x
+                look_label.floats[3] = center.y + offset.y
+                look_inputs : array tensor [ ]
+                look_inputs.push[ left_crop ]
+                look_inputs.push[ right_crop ]
+                look_inputs.push[ face_crop ]
+                look_inputs.push[ aux ]
+                look_samples.push[ sample [ inputs: look_inputs, target: look_label ] ]
+            frame_num += 1
+        # diag: easy labels only the image branch can learn
+        if [ diag ]
+            for [ smp: sample ] in look_samples
+                lc : smp.inputs[0]
+                rc : smp.inputs[1]
+                ax : smp.inputs[3]
+                lmean : f32 [ 0.0 ]
+                rmean : f32 [ 0.0 ]
+                for [ i: i32 0, i < 1024, i += 1 ]
+                    lmean += lc.floats[i]
+                    rmean += rc.floats[i]
+                lmean /= 1024.0
+                rmean /= 1024.0
+                for [ i: i32 0, i < 7, i += 1 ]
+                    ax.floats[i] = 0.0
+                smp.target.floats[0] = lmean
+                smp.target.floats[1] = rmean
+
+        if [ gradcheck ]
+            grad_check[ look_samples[0] ]
+            return
+
+        # shuffle, hold 10% aside for eval
+        target_images : array tensor [ ]
+        target_labels : array tensor [ ]
+        for [ lbl: tensor, img2: tensor ] in target_samples
+            target_images.push[ img2 ]
+            target_labels.push[ lbl ]
+        target_count : i32 [ target_images.count ]
+        target_order : array i32 [ shuffled_order[ target_count ] ]
+        target_eval_n : i32 [ target_count / 10 ]
+        target_train : map tensor[tensor] [ ]
+        target_eval  : map tensor[tensor] [ ]
+        for [ i: i32 0, i < target_count, i += 1 ]
+            si : i32 [ target_order[i] ]
+            if [ i < target_count - target_eval_n ]
+                target_train[ target_images[si] ] = target_labels[si]
+            el
+                target_eval[ target_images[si] ] = target_labels[si]
+
+        look_count : i32 [ look_samples.count ]
+        look_order : array i32 [ shuffled_order[ look_count ] ]
+        look_eval_n : i32 [ look_count / 10 ]
+        look_train : array sample [ ]
+        look_eval  : array sample [ ]
+        for [ i: i32 0, i < look_count, i += 1 ]
+            si : i32 [ look_order[i] ]
+            smp : look_samples[si]
+            if [ i < look_count - look_eval_n ]
+                look_train.push[ smp ]
+            el
+                look_eval.push[ smp ]
+
+        puts 'train: {target_train.count} target (+{target_eval.count} eval), {look_train.count} look (+{look_eval.count} eval)'
+        #if [ target_train.count > 0 ]
+        #    target_model : build_target[]
+        #    target_model.out_labels = array string [ 'left.x', 'left.y', 'right.x', 'right.y', 'scale' ]
+        #    target_model.verbose = verbose
+        #    target_model.train[ epochs, target_train, target_eval, lr, optimizer ]
+        #    target_model.save_weights[ path '{dir}/target.w' ]
+        #    puts 'saved {dir}/target.w'
+        if [ look_train.count > 0 ]
+            look_model : load_look[]
+            look_model.out_labels = array string [ 'head.x', 'head.y', 'gaze.x', 'gaze.y' ]
+            look_model.verbose = verbose
+            look_model.checkpoint = path 'models/look.agi'
+            look_model.train_s[ epochs, look_train, look_eval, lr, optimizer ]
+            eval_look[ look_model, look_eval ]
+
     public func on_click [ ev: Event ]
-        e : (ev.target to element)
+        if [ fullscreen ]
+            if [ mode != 'record' ] ann_click[ ev ]
+            return
+        e : (ev.origin to element)
         if [ !e ] return
         if [ e.id == 'record-looks' ]
+            root_dir : path '/src/hyperspace-sessions'
+            root_dir.make_dir[]
+            sd : session_dir[]
+            sd.make_dir[]
+            frame_i = 0
+            while [ true ]
+                fp : path '{sd}/{frame_i}.agi'
+                if [ !fp.exists[] ] break
+                frame_i += 1
+            lcg     = u32[ epoch_millis[] ]
+            seq_i   = 0
+            head_x  = 0.5
+            head_y  = 0.5
+            off_x   = 0.0
+            off_y   = 0.0
+            mode       = 'record'
             fullscreen = true
             ux.set_fullscreen[ true ]
-        el [ e.id == 'annotate-targets' ]
-            puts 'annotate targets'
-        el [ e.id == 'train' ]
-            puts 'train'
+        el [ e.id == 'plot-left' ]
+            start_annotate[ 'left' ]
+        el [ e.id == 'plot-right' ]
+            start_annotate[ 'right' ]
+        el [ e.id == 'plot-scale' ]
+            start_annotate[ 'scale' ]
         el [ e.id == 'testbed' ]
             puts 'testbed'
         ev.stop_propagation[]
 
     public func render [] -> Elements
-        if [ fullscreen ]
-            return Elements [ ]
-        return Elements [
-            "toolbar": Toolbar [
+        e : Elements [ ]
+        if [ !fullscreen ]
+            e['toolbar'] = Toolbar [
                 elements: Elements [
-                    "record-looks":     Button [ label: 'record looks'     ],
-                    "annotate-targets": Button [ label: 'annotate targets' ],
-                    "train":            Button [ label: 'train'            ],
-                    "testbed":          Button [ label: 'testbed'          ]
+                    "record-looks": Button [ label: 'record looks' ],
+                    "plot-left":    Button [ label: 'plot left'    ],
+                    "plot-right":   Button [ label: 'plot right'   ],
+                    "plot-scale":   Button [ label: 'plot scale'   ],
+                    "testbed":      Button [ label: 'testbed'      ]
                 ]
             ]
-        ]
+        e['top'] = CameraView [ device: '/dev/video2', hide: fullscreen ]
+        e['bot'] = CameraView [ device: '/dev/video6', hide: fullscreen ]
+        return e

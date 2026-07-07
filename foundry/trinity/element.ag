@@ -597,6 +597,8 @@ class Layer
 # process same way, different gen method (make_class -> make_decl)
 class Event
     mutable target         : element
+    # the element the event hit (find_target result); target walks the bubble
+    mutable origin         : element
     mutable mouse          : MouseState
     mutable key            : KeyboardState
     mutable no_default     : bool
@@ -615,8 +617,9 @@ class Event
         no_propagation = true
         return true
 
-    func clear [ ] 
+    func clear [ ]
         target         = null
+        origin         = null
         key            = []
         no_default     = false
         no_propagation = false

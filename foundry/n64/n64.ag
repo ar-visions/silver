@@ -17,6 +17,13 @@ import <math.h>
 import <pthread.h>
 import <unistd.h>
 
+# in-loop ares oracle: the vendored ares N64 core, no-LTO, merged into one
+# clang-linkable archive (see reference/ares/build-cosim.sh). arescore_* is the
+# extern-C ABI in reference/ares/ares_cosim.cpp.
+import <reference/ares/ares_cosim.h>
+	-l/src/silver/foundry/n64/reference/ares/libares_cosim.a
+	-ldl
+
 class cpu_vr4300
 	r         : new i64 [ 32 ]      # GPRs (64-bit)
 	fpr       : new u64 [ 32 ]      # FPU raw bits
@@ -217,14 +224,49 @@ ModelViewProject N64GX
 	}
 
 
+class ares
+	func load [ rom: cstr ] -> i32
+		return arescore_load[ rom ]
+	func step [] -> none
+		arescore_step[]
+	func snapshot [ s: ref ares_cpu_state ] -> none
+		arescore_state[ s ]
+	func rd8 [ addr: u32 ] -> u8
+		return arescore_rdram8[ addr ]
+	func rpc [] -> u32
+		return arescore_pc[]
+	func reg [ i: i32 ] -> u64
+		return arescore_reg[ i ]
+	func rhi [] -> u64
+		return arescore_hi[]
+	func rlo [] -> u64
+		return arescore_lo[]
+	func si_status [] -> u32
+		return arescore_si_status[]
+	func acount [] -> u64
+		return arescore_count[]
+	func save_ckpt [ fn: cstr ] -> i32
+		return arescore_save_file[ fn ]
+	func load_ckpt [ fn: cstr ] -> i32
+		return arescore_load_file[ fn ]
+
 element n64 : trinity
 	public  width        : i32    [ 960 ]
 	public  height       : i32    [ 720 ]
 	public  title        : string [ 'n64' ]
 	public  background   : string [ 'Background' ]
 	public  rom          : path
-	public  volume       : f32 [ 0.5 ]
+	public  volume       : f32 [ 0.1 ]
 	mutable cpu          : cpu_vr4300
+	mutable oracle       : ares          # in-loop ares reference (co-sim)
+	mutable cosim        : bool [ true ]  # lockstep against ares, halt on divergence
+	mutable cosim_seq    : i64
+	mutable cosim_ppc    : u32            # pc of the last instruction we executed (culprit on diverge)
+	mutable cosim_pop    : u32            # opcode of that instruction
+	mutable cosim_pbase  : u32            # base register value before exec (loads clobber rt==rs)
+	mutable cosim_ff     : i64            # fast-forward budget: run ours alone this many steps on resume
+	mutable cosim_next   : i64            # next seq at which to write the validated checkpoint
+	mutable cosim_iv     : i64 [ 1 ]      # checkpoint EVERY validated instruction (frontier); N64_COSIM_IV overrides
 	mutable rdram        : new u8 [ 0x800000 ]
 	mutable dmem         : new u8 [ 0x1000 ]
 	mutable imem         : new u8 [ 0x1000 ]
@@ -443,11 +485,22 @@ element n64 : trinity
 	mutable pi_dram      : u32
 	mutable pi_cart      : u32
 	mutable pi_status    : u32
+	mutable pi_dma_p     : bool              # a PI DMA is in flight (dmaBusy); completion deferred
+	mutable pi_dma_at    : u32               # cpu.c_count at which PI DMA completes + raises interrupt
+	mutable pi_d1_lat    : u32               # PI_BSD_DOM1 latency/pulseWidth/pageSize/release
+	mutable pi_d1_pwd    : u32
+	mutable pi_d1_pgs    : u32
+	mutable pi_d1_rls    : u32
+	mutable pi_d2_lat    : u32               # PI_BSD_DOM2
+	mutable pi_d2_pwd    : u32
+	mutable pi_d2_pgs    : u32
+	mutable pi_d2_rls    : u32
 	# SI
 	mutable si_dram      : u32
 	mutable si_status    : u32
 	mutable si_dma_p     : bool              # an SI DMA is in flight; its completion interrupt is deferred
 	mutable si_dma_at    : u32               # cpu.c_count at which the deferred SI interrupt fires
+	mutable si_buslatch  : u32               # last SI bus-write word (returned by a read that force-finishes)
 	mutable si_lat       : u32 [ 4000 ]      # SI DMA latency in c_count units (N64_SIDELAY overrides)
 	# SP (RSP stubs until the RSP pass)
 	mutable sp_status    : u32 [ 1 ]        # halted
@@ -487,6 +540,13 @@ element n64 : trinity
 	mutable gx_vt        : new f32 [ 160 ]   # 16 slots x 10: cx cy cz cw u v r g b a
 	mutable gx_clip      : new f32 [ 80 ]    # near-clip scratch (up to 8 verts)
 	mutable gx_scr       : new f32 [ 80 ]    # screen-space: sx sy sz invw u_ow v_ow r g b a
+	# PN-triangle smoothing (option): tessellate lit tris with curved corners.
+	public  smooth       : i32 [ 0 ]         # tess level (0=off, 2/3 typical)
+	mutable gx_smooth_cos: f32 [ 0.5 ]       # hard-edge gate: min normal dot to smooth (cos 60deg)
+	mutable pn_P         : new f32 [ 9 ]     # 3 corner positions (obj)
+	mutable pn_N         : new f32 [ 9 ]     # 3 corner normals (normalized)
+	mutable pn_cp        : new f32 [ 30 ]    # 10 Bezier control points (b300..b111) xyz
+	mutable pn_at        : new f32 [ 15 ]    # 3 corners x (u v alpha vmtx vls)
 	mutable gx_geom      : u32
 	mutable gx_texon     : bool
 	mutable gx_texs      : f32
@@ -525,6 +585,7 @@ element n64 : trinity
 	mutable fp_hash      : u64
 	mutable fp_seq       : i32
 	mutable dc_tag       : new u32 [ 512 ]    # VR4300 D-cache timing model: 8KB direct-mapped, 16B lines. per line: tag|0xFFF-masked, bit0=valid, bit1=dirty
+	mutable ic_tag       : new u32 [ 512 ]    # I-cache timing model: 16KB, 32B lines. tag = paddr&~0xFFF, bit0=valid
 	mutable dc_on        : bool               # D-cache timing enable (isolation switch)
 	mutable velargs      : new u32 [ 8 ]
 	mutable tl_pal       : new u32 [ 8 ]
@@ -556,7 +617,7 @@ element n64 : trinity
 	# ---- GPU renderer (Vulkan; N64_GPU=0 falls back to CPU raster) ----
 	mutable gpu_on       : bool [ true ]
 	mutable gx_vraw      : new f32 [ 192 ]       # per-slot raw: x y z u v r g b a lit mtx ls (VTX-time state)
-	mutable gxv          : new f32 [ 425984 ]    # 32768 verts x 13 floats
+	mutable gxv          : new f32 [ 1703936 ]   # 131072 verts x 13 floats
 	mutable gxv_n        : i32
 	mutable st_tex       : new f32 [ 24576 ]     # 2048x3 rgba32f staging
 	mutable st_mtx_n     : i32
@@ -577,7 +638,7 @@ element n64 : trinity
 	mutable atk_key      : new i64 [ 256 ]
 	mutable atk_rect     : new i32 [ 1024 ]
 	mutable atk_n        : i32
-	mutable pub_gxv      : new f32 [ 425984 ]
+	mutable pub_gxv      : new f32 [ 1703936 ]
 	mutable pub_gxv_n    : i32
 	mutable pub_st       : new f32 [ 24576 ]
 	mutable pub_at_dirty : bool
@@ -626,7 +687,7 @@ element n64 : trinity
 	func init []
 		animated  = true
 		focusable = true
-		if [ volume == 0.0 ] volume = 0.5
+		if [ volume == 0.0 ] volume = 0.1
 		if [ getenv[ 'N64_DBG' ] ] dbg_on = true
 		if [ getenv[ 'N64_HASH' ] ] hash_on = true
 		if [ getenv[ 'N64_LLE' ] ] lle = true
@@ -644,6 +705,12 @@ element n64 : trinity
 			el [ sv9 == 2 ] gx_ss = 2
 			el gx_ss = 1
 		el gx_ss = 1
+		re9 : symbol [ getenv[ 'N64_ROM' ] ]
+		if [ re9 ] rom = path[ re9 ]
+		if [ ! rom ] rom = path[ '/src/silver/mario64.z64' ]
+		ive : symbol [ getenv[ 'N64_COSIM_IV' ] ]
+		if [ ive ] cosim_iv = i64[ atoi[ ive ] ]
+		if [ getenv[ 'N64_COSIM_OFF' ] ] cosim = false
 
 	# ---------------- ROM + HLE boot ----------------
 	func load_rom [] -> bool
@@ -721,6 +788,7 @@ element n64 : trinity
 	func boot []
 		cpu = cpu_vr4300 []
 		entry : u32 [ rom32[ 8 ] ]
+		if [ cosim ] lle = true                          # co-sim needs the same LLE boot ares does
 		if [ lle ]
 			# real boot: CPU runs IPL1/IPL2 from the embedded PIF ROM at 0xBFC00000,
 			# which reads the CIC secrets we seed into PIF RAM, copies IPL3 from the
@@ -732,6 +800,26 @@ element n64 : trinity
 			cpu.npc = 0xBFC00004
 			booted  = true
 			puts 'n64: LLE boot from 0xBFC00000 (real PIF ROM IPL), entry={entry}'
+			if [ cosim ]
+				oracle = ares []
+				lr : i32 [ oracle.load[ rom.chars ] ]
+				if [ lr != 0 ]
+					puts 'n64 cosim: ares load failed ({lr}) — lockstep off'
+					cosim = false
+				el
+					cosim_next = cosim_iv
+					sseq : i64 [ ckpt_read_seq[] ]
+					if [ sseq > 0 && ! reset_requested[] ]
+						lr2 : i32 [ oracle.load_ckpt[ '/src/silver/foundry/n64/cosim.ares' ] ]
+						lo2 : i32 [ load_ours[ '/src/silver/foundry/n64/cosim.ours' ] ]
+						if [ lr2 == 0 && lo2 == 0 ]
+							cosim_seq  = sseq                # both sides loaded AT the frontier — no replay
+							cosim_next = sseq + cosim_iv
+							puts 'n64 cosim: RESUME at validated seq={sseq} — ours+ares loaded directly, no replay'
+						el
+							puts 'n64 cosim: checkpoint load failed (ares={lr2} ours={lo2}) — fresh lockstep'
+					el
+						puts 'n64 cosim: fresh lockstep from 0xBFC00000 (--reset or no checkpoint)'
 			return
 		# IPL3 copies 1MB of game code from ROM 0x1000 to the entry address
 		sz : i64 [ 0x100000 ]
@@ -793,10 +881,14 @@ element n64 : trinity
 			return (u32[m[o]] << 24) | (u32[m[o+1]] << 16) | (u32[m[o+2]] << 8) | u32[m[o+3]]
 		if [ pa >= 0x10000000 && pa < 0x10000000 + u32[ rom_size ] ]
 			return rom32[ i64[ pa - 0x10000000 ] ]
-		if [ pa >= 0x1FC00000 && pa < 0x1FC007C0 ]
-			o3 : u32 [ pa - 0x1FC00000 ]
-			return (u32[pif_rom[o3]] << 24) | (u32[pif_rom[o3+1]] << 16) | (u32[pif_rom[o3+2]] << 8) | u32[pif_rom[o3+3]]
-		if [ pa >= 0x1FC007C0 && pa < 0x1FC00800 ]
+		if [ pa >= 0x1FC00000 && pa < 0x1FC00800 ]
+			if [ si_status & 0x2 ]                                # ioBusy: a bus write is in flight
+				si_status = si_status & (~u32[0x2])              # read force-finishes it (ares writeForceFinish)
+				si_dma_p  = false                                # cancelled: never completes, no interrupt
+				return si_buslatch                               # returns the latched bus-write word, not PIF
+			if [ pa < 0x1FC007C0 ]
+				o3 : u32 [ pa - 0x1FC00000 ]
+				return (u32[pif_rom[o3]] << 24) | (u32[pif_rom[o3+1]] << 16) | (u32[pif_rom[o3+2]] << 8) | u32[pif_rom[o3+3]]
 			o2 : u32 [ pa - 0x1FC007C0 ]
 			return (u32[pif_ram[o2]] << 24) | (u32[pif_ram[o2+1]] << 16) | (u32[pif_ram[o2+2]] << 8) | u32[pif_ram[o2+3]]
 		return io_read[ pa ]
@@ -828,6 +920,7 @@ element n64 : trinity
 			m[o+3] = u8[ v ]
 			return
 		if [ pa >= 0x1FC007C0 && pa < 0x1FC00800 ]
+			if [ si_status & 0x2 ] return                    # ioBusy: prior bus write in flight, ignore (ares)
 			o2 : u32 [ pa - 0x1FC007C0 ]
 			pif_ram[o2]   = u8[ v >> 24 ]
 			pif_ram[o2+1] = u8[ v >> 16 ]
@@ -838,7 +931,8 @@ element n64 : trinity
 			# a single-word CPU write to PIF RAM is an SI bus transaction: it
 			# completes ~3225 Count cycles later and raises the SI interrupt (ares
 			# SI_BUS_Write, 2150*3 Thread-clocks). IPL3 uses this during boot.
-			si_status = si_status | 0x1
+			si_buslatch = v                                  # latched word: a read force-finishes to this
+			si_status = (si_status & 0x1000) | 0x09B3        # ioBusy|dmaBusy|pch=b|dmaState=9
 			si_dma_p  = true
 			si_dma_at = cpu.c_count + 3225
 			return
@@ -846,6 +940,7 @@ element n64 : trinity
 
 	# ---------------- I/O registers ----------------
 	func io_read [ pa: u32 ] -> u32
+		rcp_poll[]                                           # DMA may complete mid-instruction (ares)
 		if [ dbg_on && frames >= 224 && frames < 232 ]
 			printf[ "n64 IOR %08X (pc=%08X)\n", pa, cpu.pc ]
 		if [ pa == 0x04040010 ] return sp_status
@@ -855,7 +950,7 @@ element n64 : trinity
 			sp_semaphore = 1
 			return s
 		if [ pa == 0x04080000 ] return sp_pc
-		if [ pa == 0x0410000C ] return dpc_status
+		if [ pa == 0x0410000C ] return dpc_status | 0x80    # bit7 ready: HLE RDP always idle (ares reset)
 		if [ pa == 0x04300008 ] return mi_intr
 		if [ pa == 0x0430000C ] return mi_mask
 		if [ pa == 0x04300004 ] return 0x02020102           # MI version
@@ -869,7 +964,13 @@ element n64 : trinity
 			if [ ai_fifo_n >= 2 ] return 0xC0000001
 			if [ ai_fifo_n == 1 ] return 0x40000000
 			return 0
-		if [ pa >= 0x04700000 && pa < 0x04800000 ] return 0x1  # RI: initialized
+		if [ pa >= 0x04700000 && pa < 0x04800000 ]             # RI regs: PIF-ROM RDRAM self-test result
+			ra : u32 [ (pa & 0x1F) >> 2 ]
+			if [ ra == 0 ] return 0x0E                        # RI_MODE
+			if [ ra == 1 ] return 0x40                        # RI_CONFIG
+			if [ ra == 3 ] return 0x14                        # RI_SELECT (RDRAM present)
+			if [ ra == 4 ] return 0x00063634                  # RI_REFRESH
+			return 0                                           # CURRENT_LOAD/LATENCY/RERROR/WERROR
 		if [ pa >= 0x03F00000 && pa < 0x04000000 ] return 0
 		return 0
 
@@ -894,6 +995,42 @@ element n64 : trinity
 						el rdram[ dd ] = imem[ mo & 0xFFF ]
 			ma += ln
 			da += ln + skip
+
+	# PI cartridge-DMA duration (ares PI::dmaDuration). returns thread-clocks
+	# (cycles*3); the caller halves it into our count units. lraw = PI_*_LEN reg.
+	func pi_dma_dur [ lraw: u32, pbus: u32 ] -> u32
+		len : u32 [ (lraw | 1) + 1 ]
+		dsel : u32 [ (pbus >> 24) & 0xFF ]
+		d2 : bool [ dsel == 0x05 || (dsel >= 0x08 && dsel <= 0x0F) ]
+		lat : u32 [ (d2) ? pi_d2_lat : pi_d1_lat ]
+		pwd : u32 [ (d2) ? pi_d2_pwd : pi_d1_pwd ]
+		pgs : u32 [ (d2) ? pi_d2_pgs : pi_d1_pgs ]
+		rls : u32 [ (d2) ? pi_d2_rls : pi_d1_rls ]
+		pshift : u32 [ pgs + 2 ]
+		psize : u32 [ u32[ 1 ] << pshift ]
+		pmask : u32 [ psize - 1 ]
+		pfirst : u32 [ pbus ]
+		plast : u32 [ pbus + len - 2 ]
+		pfpage : u32 [ pfirst >> pshift ]
+		plpage : u32 [ plast >> pshift ]
+		ppages : u32 [ plpage - pfpage + 1 ]
+		nbuf : u32 [ 0 ]
+		pbytes : u32 [ 0 ]
+		if [ pfpage == plpage ]
+			if [ len == 128 ] nbuf = 1
+			el pbytes = len
+		el
+			if [ (pfirst & pmask) == 0 ] nbuf += 1
+			el pbytes += psize - (pfirst & pmask)
+			if [ ((plast + 2) & pmask) == 0 ] nbuf += 1
+			el pbytes += (plast & pmask) + 2
+			if [ pfpage + 1 < plpage ] nbuf += (ppages - 2) * psize / 128
+		cyc : u32 [ 0 ]
+		cyc += (14 + lat + 1) * ppages
+		cyc += (pwd + 1 + rls + 1) * len / 2
+		cyc += nbuf * 28
+		cyc += pbytes
+		return cyc * 3
 
 	func io_write [ pa: u32, v: u32 ]
 		if [ dbg_on && frames >= 224 && frames < 232 ]
@@ -1022,12 +1159,47 @@ element n64 : trinity
 			for [ i: u32 0, i < ln, i += 1 ]
 				bv : u32 [ (src + i64[i] < rom_size && src + i64[i] >= 0) ? u32[ rom_data[ src + i64[i] ] ] : 0 ]
 				if [ pi_dram + i < 0x800000 ] rdram[ pi_dram + i ] = u8[ bv ]
-			mi_intr = mi_intr | 0x10
-			mi_check[]
+			pi_status = pi_status | 0x1                       # dmaBusy; interrupt deferred (ares)
+			pi_dma_p  = true
+			pi_dma_at = cpu.c_count + pi_dma_dur[ v & 0xFFFFFF, pi_cart ] / 2
 			return
-		if [ pa == 0x04600010 ]                              # PI status write = clear PI int
-			mi_intr = mi_intr & (~u32[0x10])
-			mi_check[]
+		if [ pa == 0x04600008 ]                              # PI read length: RDRAM -> cart
+			pi_status = pi_status | 0x1                       # dmaBusy; RDRAM->cart write ignored (ROM)
+			pi_dma_p  = true
+			pi_dma_at = cpu.c_count + pi_dma_dur[ v & 0xFFFFFF, pi_cart ] / 2
+			return
+		if [ pa == 0x04600014 ]
+			pi_d1_lat = v & 0xFF
+			return
+		if [ pa == 0x04600018 ]
+			pi_d1_pwd = v & 0xFF
+			return
+		if [ pa == 0x0460001C ]
+			pi_d1_pgs = v & 0xF
+			return
+		if [ pa == 0x04600020 ]
+			pi_d1_rls = v & 0x3
+			return
+		if [ pa == 0x04600024 ]
+			pi_d2_lat = v & 0xFF
+			return
+		if [ pa == 0x04600028 ]
+			pi_d2_pwd = v & 0xFF
+			return
+		if [ pa == 0x0460002C ]
+			pi_d2_pgs = v & 0xF
+			return
+		if [ pa == 0x04600030 ]
+			pi_d2_rls = v & 0x3
+			return
+		if [ pa == 0x04600010 ]                              # PI_STATUS write
+			if [ v & 0x1 ]                                    # reset controller: clear dmaBusy + cancel
+				pi_status = pi_status & (~u32[0x1])
+				pi_dma_p  = false
+			if [ v & 0x2 ]                                    # clear PI interrupt
+				pi_status = pi_status & (~u32[0x8])
+				mi_intr = mi_intr & (~u32[0x10])
+				mi_check[]
 			return
 		if [ pa == 0x04800000 ]
 			si_dram = v & 0xFFFFFF
@@ -1036,7 +1208,7 @@ element n64 : trinity
 			pif_joybus[]
 			for [ i: u32 0, i < 64, i += 1 ]
 				rdram[ si_dram + i ] = pif_ram[ i ]
-			si_status = si_status | 0x1                     # DMA busy (SI_STATUS bit0)
+			si_status = (si_status & 0x1000) | 0x0141        # dmaBusy|pch=4|dmaState=1
 			si_dma_p  = true                                 # defer completion interrupt (real HW: ~ms later)
 			si_dma_at = cpu.c_count + si_lat
 			if [ hash_on ] printf[ "SIKICK rd seq=%llu count=%u at=%u\n", hash_seq, cpu.c_count, si_dma_at ]
@@ -1046,12 +1218,13 @@ element n64 : trinity
 				pif_ram[ i ] = rdram[ si_dram + i ]
 			if [ pif_state < 5 ] pif_tick []
 			pif_joybus[]
-			si_status = si_status | 0x1                     # DMA busy (SI_STATUS bit0)
+			si_status = (si_status & 0x1000) | 0x0411        # dmaBusy|pch=1|dmaState=4
 			si_dma_p  = true
 			si_dma_at = cpu.c_count + si_lat
 			if [ hash_on ] printf[ "SIKICK wr seq=%llu count=%u at=%u\n", hash_seq, cpu.c_count, si_dma_at ]
 			return
 		if [ pa == 0x04800018 ]
+			si_status = si_status & (~u32[0x1000])            # ack clears SI_STATUS interrupt bit12
 			mi_intr = mi_intr & (~u32[0x2])
 			mi_check[]
 			return
@@ -2174,7 +2347,7 @@ element n64 : trinity
 	# emit one vertex (13 floats) from a raw slot; matrix/light state was
 	# captured per slot at VTX time (RSP transforms at load, not at TRI)
 	func gxe_vert [ sl: i32, fl: u32, mat: i32 ]
-		if [ gxv_n >= 32760 ]
+		if [ gxv_n >= 131064 ]
 			if [ dbg_on && (gxv_n & 1023) == 0 ] printf[ "n64 OVERFLOW vertex buffer f%u\n", frames ]
 			return
 		rb : i32 [ sl * 12 ]
@@ -2204,9 +2377,156 @@ element n64 : trinity
 			printf[ "n64 VTXUV flv=%X lit=%d col/n=(%.2f,%.2f,%.2f) vls=%.0f pos=(%.1f,%.1f) f%u\n", flv, flv & 1, f64[ gx_vraw[ rb + 5 ] ], f64[ gx_vraw[ rb + 6 ] ], f64[ gx_vraw[ rb + 7 ] ], f64[ gx_vraw[ rb + 11 ] ], f64[ gx_vraw[ rb ] ], f64[ gx_vraw[ rb + 1 ] ], frames ]
 		gxv_n += 1
 
+	# PN-triangle (curved point-normal) smoothing for low-poly lit meshes.
+	# object-space tessellation; corners/UVs preserved. every lit tri is
+	# tessellated — crack avoidance is per-edge (see gx_pn_edge) so smoothed
+	# and hard-edge neighbors always share identical edge points.
+	func gx_pn_gate [ i0: i32, i1: i32, i2: i32 ] -> bool
+		r0 : i32 [ i0 * 12 ]
+		r1 : i32 [ i1 * 12 ]
+		r2 : i32 [ i2 * 12 ]
+		if [ gx_vraw[ r0 + 9 ] < 0.5 ] return false
+		if [ gx_vraw[ r1 + 9 ] < 0.5 ] return false
+		if [ gx_vraw[ r2 + 9 ] < 0.5 ] return false
+		return true
+
+	# gather corner c (0..2) from raw slot sl into pn_P/pn_N/pn_at
+	func gx_pn_gather [ c: i32, sl: i32 ]
+		rb : i32 [ sl * 12 ]
+		pb : i32 [ c * 3 ]
+		pn_P[ pb ]     = gx_vraw[ rb ]
+		pn_P[ pb + 1 ] = gx_vraw[ rb + 1 ]
+		pn_P[ pb + 2 ] = gx_vraw[ rb + 2 ]
+		nx : f32 [ gx_vraw[ rb + 5 ] ]
+		ny : f32 [ gx_vraw[ rb + 6 ] ]
+		nz : f32 [ gx_vraw[ rb + 7 ] ]
+		nl : f32 [ sqrt[ nx * nx + ny * ny + nz * nz ] ]
+		if [ nl < 0.0001 ] nl = 1.0
+		pn_N[ pb ]     = nx / nl
+		pn_N[ pb + 1 ] = ny / nl
+		pn_N[ pb + 2 ] = nz / nl
+		ab : i32 [ c * 5 ]
+		pn_at[ ab ]     = gx_vraw[ rb + 3 ]
+		pn_at[ ab + 1 ] = gx_vraw[ rb + 4 ]
+		pn_at[ ab + 2 ] = gx_vraw[ rb + 8 ]
+		pn_at[ ab + 3 ] = gx_vraw[ rb + 10 ]
+		pn_at[ ab + 4 ] = gx_vraw[ rb + 11 ]
+
+	# edge control point b_ij = (2Pi + Pj - w*Ni)/3, w = dot(Pj-Pi, Ni).
+	# depends only on the two shared endpoints so neighbors match (watertight).
+	# hard edge (endpoint normals disagree) collapses to the straight 1/3 point.
+	func gx_pn_edge [ i: i32, j: i32, ci: i32 ]
+		bi : i32 [ i * 3 ]
+		bj : i32 [ j * 3 ]
+		co : i32 [ ci * 3 ]
+		nd : f32 [ pn_N[ bi ] * pn_N[ bj ] + pn_N[ bi + 1 ] * pn_N[ bj + 1 ] + pn_N[ bi + 2 ] * pn_N[ bj + 2 ] ]
+		if [ nd < gx_smooth_cos ]
+			pn_cp[ co ]     = (2.0 * pn_P[ bi ]     + pn_P[ bj ]) / 3.0
+			pn_cp[ co + 1 ] = (2.0 * pn_P[ bi + 1 ] + pn_P[ bj + 1 ]) / 3.0
+			pn_cp[ co + 2 ] = (2.0 * pn_P[ bi + 2 ] + pn_P[ bj + 2 ]) / 3.0
+			return
+		dx : f32 [ pn_P[ bj ]     - pn_P[ bi ] ]
+		dy : f32 [ pn_P[ bj + 1 ] - pn_P[ bi + 1 ] ]
+		dz : f32 [ pn_P[ bj + 2 ] - pn_P[ bi + 2 ] ]
+		w : f32 [ dx * pn_N[ bi ] + dy * pn_N[ bi + 1 ] + dz * pn_N[ bi + 2 ] ]
+		pn_cp[ co ]     = (2.0 * pn_P[ bi ]     + pn_P[ bj ]     - w * pn_N[ bi ]) / 3.0
+		pn_cp[ co + 1 ] = (2.0 * pn_P[ bi + 1 ] + pn_P[ bj + 1 ] - w * pn_N[ bi + 1 ]) / 3.0
+		pn_cp[ co + 2 ] = (2.0 * pn_P[ bi + 2 ] + pn_P[ bj + 2 ] - w * pn_N[ bi + 2 ]) / 3.0
+
+	# evaluate cubic Bezier triangle at barycentric (l0,l1,l2); emit one vertex
+	func gxe_pn [ l0: f32, l1: f32, l2: f32, fl: u32, mat: i32 ]
+		if [ gxv_n >= 131064 ] return
+		flv : u32 [ fl | 1 ]
+		if [ gx_geom & 0x40000 ] flv = flv | 2
+		if [ !gx_zset && (flv & 4096) == 0 && (flv & 8192) == 0 ]
+			gx_zsplit = gxv_n
+			gx_zset = true
+		bez : local f32 [ 10 ]
+		bez[ 0 ] = l0 * l0 * l0
+		bez[ 1 ] = l1 * l1 * l1
+		bez[ 2 ] = l2 * l2 * l2
+		bez[ 3 ] = 3.0 * l0 * l0 * l1
+		bez[ 4 ] = 3.0 * l0 * l1 * l1
+		bez[ 5 ] = 3.0 * l1 * l1 * l2
+		bez[ 6 ] = 3.0 * l1 * l2 * l2
+		bez[ 7 ] = 3.0 * l0 * l2 * l2
+		bez[ 8 ] = 3.0 * l0 * l0 * l2
+		bez[ 9 ] = 6.0 * l0 * l1 * l2
+		px : f32 [ 0.0 ]
+		py : f32 [ 0.0 ]
+		pz : f32 [ 0.0 ]
+		for [ k: i32 0, k < 10, k += 1 ]
+			cb : i32 [ k * 3 ]
+			px += bez[ k ] * pn_cp[ cb ]
+			py += bez[ k ] * pn_cp[ cb + 1 ]
+			pz += bez[ k ] * pn_cp[ cb + 2 ]
+		nx : f32 [ l0 * pn_N[ 0 ] + l1 * pn_N[ 3 ] + l2 * pn_N[ 6 ] ]
+		ny : f32 [ l0 * pn_N[ 1 ] + l1 * pn_N[ 4 ] + l2 * pn_N[ 7 ] ]
+		nz : f32 [ l0 * pn_N[ 2 ] + l1 * pn_N[ 5 ] + l2 * pn_N[ 8 ] ]
+		nl : f32 [ sqrt[ nx * nx + ny * ny + nz * nz ] ]
+		if [ nl < 0.0001 ] nl = 1.0
+		au : f32 [ l0 * pn_at[ 0 ] + l1 * pn_at[ 5 ]  + l2 * pn_at[ 10 ] ]
+		av : f32 [ l0 * pn_at[ 1 ] + l1 * pn_at[ 6 ]  + l2 * pn_at[ 11 ] ]
+		aa : f32 [ l0 * pn_at[ 2 ] + l1 * pn_at[ 7 ]  + l2 * pn_at[ 12 ] ]
+		vls : f32 [ l0 * pn_at[ 4 ] + l1 * pn_at[ 9 ] + l2 * pn_at[ 14 ] ]
+		ob : i32 [ gxv_n * 13 ]
+		gxv[ ob ]      = px
+		gxv[ ob + 1 ]  = py
+		gxv[ ob + 2 ]  = pz
+		gxv[ ob + 3 ]  = nx / nl
+		gxv[ ob + 4 ]  = ny / nl
+		gxv[ ob + 5 ]  = nz / nl
+		gxv[ ob + 6 ]  = aa
+		gxv[ ob + 7 ]  = au
+		gxv[ ob + 8 ]  = av
+		gxv[ ob + 9 ]  = pn_at[ 3 ]
+		gxv[ ob + 10 ] = f32[ flv ]
+		gxv[ ob + 11 ] = vls
+		gxv[ ob + 12 ] = f32[ mat ]
+		gxv_n += 1
+
+	# emit one tessellated vertex at grid coords (a,b) of an L-subdivided tri
+	func gx_pn_v [ ga: i32, gb: i32, L: i32, fl: u32, mat: i32 ]
+		fL : f32 [ f32[ L ] ]
+		l1 : f32 [ f32[ ga ] / fL ]
+		l2 : f32 [ f32[ gb ] / fL ]
+		l0 : f32 [ 1.0 - l1 - l2 ]
+		gxe_pn[ l0, l1, l2, fl, mat ]
+
+	# build the 10 control points then tessellate into L^2 sub-triangles
+	func gx_pn_tri [ i0: i32, i1: i32, i2: i32, fl: u32, mat: i32 ]
+		gx_pn_gather[ 0, i0 ]
+		gx_pn_gather[ 1, i1 ]
+		gx_pn_gather[ 2, i2 ]
+		for [ d: i32 0, d < 3, d += 1 ]
+			pn_cp[ d ]     = pn_P[ d ]
+			pn_cp[ 3 + d ] = pn_P[ 3 + d ]
+			pn_cp[ 6 + d ] = pn_P[ 6 + d ]
+		gx_pn_edge[ 0, 1, 3 ]
+		gx_pn_edge[ 1, 0, 4 ]
+		gx_pn_edge[ 1, 2, 5 ]
+		gx_pn_edge[ 2, 1, 6 ]
+		gx_pn_edge[ 2, 0, 7 ]
+		gx_pn_edge[ 0, 2, 8 ]
+		for [ d: i32 0, d < 3, d += 1 ]
+			ee : f32 [ (pn_cp[ 9 + d ] + pn_cp[ 12 + d ] + pn_cp[ 15 + d ] + pn_cp[ 18 + d ] + pn_cp[ 21 + d ] + pn_cp[ 24 + d ]) / 6.0 ]
+			vv : f32 [ (pn_P[ d ] + pn_P[ 3 + d ] + pn_P[ 6 + d ]) / 3.0 ]
+			pn_cp[ 27 + d ] = ee + (ee - vv) * 0.5
+		L : i32 [ smooth ]
+		if [ L < 1 ] L = 1
+		for [ ga: i32 0, ga < L, ga += 1 ]
+			for [ gb: i32 0, gb < L - ga, gb += 1 ]
+				gx_pn_v[ ga, gb, L, fl, mat ]
+				gx_pn_v[ ga + 1, gb, L, fl, mat ]
+				gx_pn_v[ ga, gb + 1, L, fl, mat ]
+				if [ gb < L - 1 - ga ]
+					gx_pn_v[ ga + 1, gb, L, fl, mat ]
+					gx_pn_v[ ga + 1, gb + 1, L, fl, mat ]
+					gx_pn_v[ ga, gb + 1, L, fl, mat ]
+
 	# emit a screen-space quad (ortho matrix slot 0): pixel coords + z + uv + color
 	func gxe_quad [ qx0: f32, qy0: f32, qx1: f32, qy1: f32, zz: f32, u0: f32, v0: f32, u1: f32, v1: f32, cr: f32, cg: f32, cb: f32, fl: u32, mat: i32 ]
-		if [ gxv_n >= 32754 ] return
+		if [ gxv_n >= 131058 ] return
 		for [ k: i32 0, k < 6, k += 1 ]
 			cx : f32 [ ((k == 1 || k == 2 || k == 4)) ? qx1 : qx0 ]
 			cy : f32 [ ((k == 2 || k == 4 || k == 5)) ? qy1 : qy0 ]
@@ -2241,6 +2561,9 @@ element n64 : trinity
 				ya2 : i32 [ dr_r16[ gx_vsrc[ i2 ] + 2 ] ]
 				if [ ya0 > 850 || ya1 > 850 || ya2 > 850 ]
 					printf[ "n64 STRAND tri va=(%06X,%06X,%06X) Y=(%d,%d,%d) geom=%05X texon=%d cctex=%d prim=%08X env=%08X othl=%08X f%u\n", gx_vsrc[i0], gx_vsrc[i1], gx_vsrc[i2], ya0, ya1, ya2, gx_geom, gx_texon, gx_cc_tex, gx_prim, gx_env, gx_oth_l, frames ]
+			if [ smooth > 0 && gx_pn_gate[ i0, i1, i2 ] ]
+				gx_pn_tri[ i0, i1, i2, fl, mat ]
+				return
 			gxe_vert[ i0, fl, mat ]
 			gxe_vert[ i1, fl, mat ]
 			gxe_vert[ i2, fl, mat ]
@@ -2792,6 +3115,25 @@ element n64 : trinity
 
 	# VR4300 D-cache timing (ref: ares dcache.cpp). 8KB direct-mapped, 16B lines, index = va[12:4].
 	# hit +1, line fill +40, dirty-line eviction writeback +40. Only cached KSEG0 (0x80-0x9F).
+	# ares charges DefaultReadCycles*2=40 count (20 our half-units) for each
+	# uncached RCP-register read; boot runs from IMEM uncached so every fetch
+	# and MMIO load pays it. cached reads go through dcache; writes cost 0.
+	func io_rcost [ va: u32, pa: u32 ] -> i32
+		if [ (va & 0xE0000000) == 0x80000000 ] return 0                     # KSEG0 cached: dcache charged it
+		if [ pa >= 0x04000000 && pa < 0x04900000 ] return 20               # RSP/RDP/MI/VI/AI/PI/RI/SI regs
+		if [ pa >= 0x1FC00000 && pa < 0x1FD00000 ] return 20               # PIF ROM/RAM via SI
+		return 0
+
+	# I-cache timing: cached (KSEG0) fetch miss fills at ares step(48*2)/2.
+	func icache [ va: u32, pa: u32 ]
+		if [ (va & 0xE0000000) != 0x80000000 ] return                       # KSEG1 uncached: io_rcost charged it
+		idx : i32 [ i32[ (va >> 5) & 0x1FF ] ]
+		tag : u32 [ pa & 0x1FFFF000 ]
+		cur : u32 [ ic_tag[ idx ] ]
+		if [ (cur & 1) != 0 && (cur & 0x1FFFF000) == tag ] return           # hit: base +1 already paid
+		cpu.c_count += 48                                                    # miss fill: ares step(48*2)/2
+		ic_tag[ idx ] = tag | 1
+
 	func dcache [ va: u32, w: bool ]
 		if [ (va & 0xE0000000) != 0x80000000 ] return                       # KSEG1/uncached & mapped: no dcache
 		idx : i32 [ i32[ (va >> 4) & 0x1FF ] ]
@@ -2801,24 +3143,31 @@ element n64 : trinity
 			cpu.c_count += 1
 			if [ w ] dc_tag[ idx ] = cur | 2
 		el                                                                  # miss
-			if [ (cur & 1) != 0 && (cur & 2) != 0 ] cpu.c_count += 21   # evict dirty (calib test)
-			cpu.c_count += 21                                               # fill (calib test)
+			if [ (cur & 1) != 0 && (cur & 2) != 0 ] cpu.c_count += 40   # evict dirty: ares step(40*2)/2
+			cpu.c_count += 40                                               # fill: ares step(40*2)/2
 			dc_tag[ idx ] = (w) ? (tag | 3) : (tag | 1)
 
 	func rd8  [ va: u32 ] -> u32
 		dcache[ va, false ]
-		return rd_phys8[ vmap[ va ] ]
+		p : u32 [ vmap[ va ] ]
+		cpu.c_count += i64[ io_rcost[ va, p ] ]
+		return rd_phys8[ p ]
 	func rd16 [ va: u32 ] -> u32
 		dcache[ va, false ]
 		p : u32 [ vmap[ va ] ]
+		cpu.c_count += i64[ io_rcost[ va, p ] ]
 		return (rd_phys8[ p ] << 8) | rd_phys8[ p + 1 ]
 	func rd32v [ va: u32 ] -> u32
 		dcache[ va, false ]
-		return rd_phys32[ vmap[ va ] ]
+		p : u32 [ vmap[ va ] ]
+		cpu.c_count += i64[ io_rcost[ va, p ] ]
+		return rd_phys32[ p ]
 	func rd64 [ va: u32 ] -> i64
 		dcache[ va, false ]
-		h : u32 [ rd_phys32[ vmap[ va ] ] ]
-		l : u32 [ rd_phys32[ vmap[ va ] + 4 ] ]
+		p : u32 [ vmap[ va ] ]
+		cpu.c_count += i64[ io_rcost[ va, p ] ]
+		h : u32 [ rd_phys32[ p ] ]
+		l : u32 [ rd_phys32[ p + 4 ] ]
 		return (i64[ h ] << 32) | i64[ l ]
 	func wr8v  [ va: u32, v: u32 ]
 		dcache[ va, true ]
@@ -2934,12 +3283,169 @@ element n64 : trinity
 		if [ ww >= 0x8000 ] ww = ww | 0xFFFF0000
 		return i64[ i32[ ww ] ]
 
+	func cosim_check []
+		apc : u32 [ oracle.rpc[] ]
+		bad : bool [ false ]
+		if [ apc != cpu.pc ] bad = true
+		for [ i: i32 0, i < 32, i += 1 ]
+			if [ oracle.reg[ i ] != u64[ cpu.r[ i ] ] ] bad = true
+		if [ u64[ cpu.hi ] != oracle.rhi[] ] bad = true
+		if [ u64[ cpu.lo ] != oracle.rlo[] ] bad = true
+		if [ bad ]
+			printf[ "n64 COSIM DIVERGE seq=%lld ours pc=%08X ares pc=%08X\n", cosim_seq, cpu.pc, apc ]
+			printf[ "  count ours=%u ares=%llu (ares/2=%llu)\n", cpu.c_count, oracle.acount[], oracle.acount[] / 2 ]
+			# NOTE: exact count parity still WIP — cache-miss timing calibration
+			printf[ "  culprit: last exec pc=%08X op=%08X\n", cosim_ppc, cosim_pop ]
+			crs : i32 [ i32[ (cosim_pop >> 21) & 31 ] ]
+			cad : u32 [ cosim_pbase + u32[ sx16[ cosim_pop ] ] ]
+			printf[ "  load base r%d=%08X + %04X -> addr=%08X (phys=%08X) ; ours mem=%08X\n", crs, cosim_pbase, cosim_pop & 0xFFFF, cad, cad & 0x1FFFFFFF, rd_phys32[ vmap[ cad ] ] ]
+			for [ i: i32 0, i < 32, i += 1 ]
+				ov : u64 [ u64[ cpu.r[ i ] ] ]
+				av : u64 [ oracle.reg[ i ] ]
+				if [ ov != av ] printf[ "  r%-2d ours=%016llx ares=%016llx\n", i, ov, av ]
+			if [ u64[ cpu.hi ] != oracle.rhi[] ] printf[ "  hi ours=%016llx ares=%016llx\n", u64[ cpu.hi ], oracle.rhi[] ]
+			if [ u64[ cpu.lo ] != oracle.rlo[] ] printf[ "  lo ours=%016llx ares=%016llx\n", u64[ cpu.lo ], oracle.rlo[] ]
+			cosim  = false
+			booted = false
+			return
+		# agreed at pre-instruction cosim_seq: advance the validated checkpoint
+		if [ cosim_seq >= cosim_next ]
+			r9 : i32 [ ckpt_write[] ]
+			if [ (cosim_seq & 511) == 0 ] printf[ "n64 cosim: agree seq=%lld ckpt=%d\n", cosim_seq, r9 ]
+			cosim_next = cosim_seq + cosim_iv
+		oracle.step[]
+		cosim_seq += 1
+
+	# validated-state checkpoint: cosim.seq (our cycle id) + cosim.ares (ares savestate).
+	# written only at agreed points, never on divergence — so a resume never re-runs
+	# already-validated states.
+	func ckpt_read_seq [] -> i64
+		f : ref FILE [ fopen[ '/src/silver/foundry/n64/cosim.seq', 'rb' ] ]
+		if [ ! f ] return i64[ -1 ]
+		v : i64 [ 0 ]
+		fread[ ref v, 8, 1, f ]
+		fclose[ f ]
+		return v
+
+	# fresh boot instead of resume: --reset on the command line (or N64_COSIM_RESTART).
+	func reset_requested [] -> bool
+		if [ getenv[ 'N64_COSIM_RESTART' ] ] return true
+		f : ref FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
+		if [ ! f ] return false
+		buf : local u8 [ 512 ]
+		n : i64 [ fread[ buf, 1, 511, f ] ]
+		fclose[ f ]
+		for [ i: i64 0, i + 5 <= n, i += 1 ]
+			if [ buf[i]==114 && buf[i+1]==101 && buf[i+2]==115 && buf[i+3]==101 && buf[i+4]==116 ]
+				return true                          # 'reset' present in argv
+		return false
+
+	func ckpt_write [] -> i32
+		r : i32 [ oracle.save_ckpt[ '/src/silver/foundry/n64/cosim.ares' ] ]
+		if [ r != 0 ] return r
+		if [ save_ours[ '/src/silver/foundry/n64/cosim.ours' ] != 0 ] return 4
+		f : ref FILE [ fopen[ '/src/silver/foundry/n64/cosim.seq', 'wb' ] ]
+		if [ f ]
+			v : i64 [ cosim_seq ]
+			fwrite[ ref v, 8, 1, f ]
+			fclose[ f ]
+		return 0
+
+	# our full machine state: CPU + memory + timing/interrupt regs. render (gx_*/
+	# tmem) and audio-DSP (a_*) state omitted — they don't feed the CPU lockstep.
+	func save_ours [ fn: cstr ] -> i32
+		f : ref FILE [ fopen[ fn, 'wb' ] ]
+		if [ ! f ] return 1
+		fwrite[ rdram, 1, 0x800000, f ]
+		fwrite[ dmem, 1, 0x1000, f ]
+		fwrite[ imem, 1, 0x1000, f ]
+		fwrite[ pif_ram, 1, 64, f ]
+		fwrite[ cpu.r, 8, 32, f ]
+		fwrite[ cpu.fpr, 8, 32, f ]
+		fwrite[ cpu.tlb_hi, 4, 32, f ]
+		fwrite[ cpu.tlb_pm, 4, 32, f ]
+		fwrite[ cpu.tlb_lo0, 4, 32, f ]
+		fwrite[ cpu.tlb_lo1, 4, 32, f ]
+		fwrite[ ai_fifo_dram, 4, 2, f ]
+		fwrite[ ai_fifo_len, 4, 2, f ]
+		sc : local u64 [ 80 ]
+		sc[ 0 ]=u64[cpu.hi]  sc[ 1 ]=u64[cpu.lo]  sc[ 2 ]=u64[cpu.pc]  sc[ 3 ]=u64[cpu.npc]  sc[ 4 ]=u64[cpu.fcr31]
+		sc[ 5 ]=u64[cpu.c_index]  sc[ 6 ]=u64[cpu.c_count]  sc[ 7 ]=u64[cpu.c_compare]  sc[ 8 ]=u64[cpu.c_status]
+		sc[ 9 ]=u64[cpu.c_cause]  sc[ 10]=u64[cpu.c_epc]  sc[ 11]=u64[cpu.c_config]  sc[ 12]=u64[cpu.c_wired]
+		sc[ 13]=u64[cpu.c_entrylo0]  sc[ 14]=u64[cpu.c_entrylo1]  sc[ 15]=u64[cpu.c_entryhi]  sc[ 16]=u64[cpu.c_pagemask]
+		sc[ 17]=u64[cpu.tlb_used]  sc[ 18]=u64[cpu.ll_bit]
+		sc[ 19]=u64[sys_clk]  sc[ 20]=u64[mi_intr]  sc[ 21]=u64[mi_mask]  sc[ 22]=u64[mi_mode]
+		sc[ 23]=u64[vi_ctrl]  sc[ 24]=u64[vi_origin]  sc[ 25]=u64[vi_width]  sc[ 26]=u64[vi_intr_line]  sc[ 27]=u64[vi_current]
+		sc[ 28]=u64[vi_hstart]  sc[ 29]=u64[vi_vstart]  sc[ 30]=u64[vi_xscale]  sc[ 31]=u64[vi_yscale]
+		sc[ 32]=u64[vi_vcounter]  sc[ 33]=u64[vi_field]  sc[ 34]=u64[vi_leapcnt]  sc[ 35]=u64[vi_line_clk]  sc[ 36]=u64[vi_clkfrac]
+		sc[ 37]=u64[vi_refreshed]  sc[ 38]=u64[si_dram]  sc[ 39]=u64[si_status]  sc[ 40]=u64[si_dma_p]  sc[ 41]=u64[si_dma_at]
+		sc[ 42]=u64[pi_dram]  sc[ 43]=u64[pi_cart]  sc[ 44]=u64[pi_status]
+		sc[ 45]=u64[sp_dram]  sc[ 46]=u64[sp_mem]  sc[ 47]=u64[sp_pc]  sc[ 48]=u64[sp_semaphore]  sc[ 49]=u64[dpc_status]
+		sc[ 50]=u64[ai_dram]  sc[ 51]=u64[ai_len]  sc[ 52]=u64[ai_ctrl]  sc[ 53]=u64[ai_dacrate]  sc[ 54]=u64[ai_fifo_n]
+		sc[ 55]=u64[pif_state]  sc[ 56]=u64[lle]  sc[ 57]=u64[frames]  sc[ 58]=u64[pad_st]  sc[ 59]=u64[stick_x]  sc[ 60]=u64[stick_y]
+		sc[ 61]=u64[cosim_seq]
+		sc[ 62]=u64[vi_hlpf]  sc[ 63]=u64[vi_qld]  sc[ 64]=u64[vi_leappat]  sc[ 65]=u64[vi_hleap0]  sc[ 66]=u64[vi_hleap1]
+		sc[ 67]=u64[si_lat]  sc[ 68]=u64[sp_status]
+		fwrite[ sc, 8, 80, f ]
+		fclose[ f ]
+		return 0
+
+	func load_ours [ fn: cstr ] -> i32
+		f : ref FILE [ fopen[ fn, 'rb' ] ]
+		if [ ! f ] return 1
+		fread[ rdram, 1, 0x800000, f ]
+		fread[ dmem, 1, 0x1000, f ]
+		fread[ imem, 1, 0x1000, f ]
+		fread[ pif_ram, 1, 64, f ]
+		fread[ cpu.r, 8, 32, f ]
+		fread[ cpu.fpr, 8, 32, f ]
+		fread[ cpu.tlb_hi, 4, 32, f ]
+		fread[ cpu.tlb_pm, 4, 32, f ]
+		fread[ cpu.tlb_lo0, 4, 32, f ]
+		fread[ cpu.tlb_lo1, 4, 32, f ]
+		fread[ ai_fifo_dram, 4, 2, f ]
+		fread[ ai_fifo_len, 4, 2, f ]
+		sc : local u64 [ 80 ]
+		fread[ sc, 8, 80, f ]
+		fclose[ f ]
+		cpu.hi=i64[sc[ 0 ]]  cpu.lo=i64[sc[ 1 ]]  cpu.pc=u32[sc[ 2 ]]  cpu.npc=u32[sc[ 3 ]]  cpu.fcr31=u32[sc[ 4 ]]
+		cpu.c_index=u32[sc[ 5 ]]  cpu.c_count=u32[sc[ 6 ]]  cpu.c_compare=u32[sc[ 7 ]]  cpu.c_status=u32[sc[ 8 ]]
+		cpu.c_cause=u32[sc[ 9 ]]  cpu.c_epc=u32[sc[ 10]]  cpu.c_config=u32[sc[ 11]]  cpu.c_wired=u32[sc[ 12]]
+		cpu.c_entrylo0=u32[sc[ 13]]  cpu.c_entrylo1=u32[sc[ 14]]  cpu.c_entryhi=u32[sc[ 15]]  cpu.c_pagemask=u32[sc[ 16]]
+		cpu.tlb_used=sc[ 17]!=0  cpu.ll_bit=sc[ 18]!=0
+		sys_clk=i64[sc[ 19]]  mi_intr=u32[sc[ 20]]  mi_mask=u32[sc[ 21]]  mi_mode=u32[sc[ 22]]
+		vi_ctrl=u32[sc[ 23]]  vi_origin=u32[sc[ 24]]  vi_width=u32[sc[ 25]]  vi_intr_line=u32[sc[ 26]]  vi_current=u32[sc[ 27]]
+		vi_hstart=u32[sc[ 28]]  vi_vstart=u32[sc[ 29]]  vi_xscale=u32[sc[ 30]]  vi_yscale=u32[sc[ 31]]
+		vi_vcounter=u32[sc[ 32]]  vi_field=u32[sc[ 33]]  vi_leapcnt=u32[sc[ 34]]  vi_line_clk=i64[sc[ 35]]  vi_clkfrac=i64[sc[ 36]]
+		vi_refreshed=sc[ 37]!=0  si_dram=u32[sc[ 38]]  si_status=u32[sc[ 39]]  si_dma_p=sc[ 40]!=0  si_dma_at=u32[sc[ 41]]
+		pi_dram=u32[sc[ 42]]  pi_cart=u32[sc[ 43]]  pi_status=u32[sc[ 44]]
+		sp_dram=u32[sc[ 45]]  sp_mem=u32[sc[ 46]]  sp_pc=u32[sc[ 47]]  sp_semaphore=u32[sc[ 48]]  dpc_status=u32[sc[ 49]]
+		ai_dram=u32[sc[ 50]]  ai_len=u32[sc[ 51]]  ai_ctrl=u32[sc[ 52]]  ai_dacrate=u32[sc[ 53]]  ai_fifo_n=i32[sc[ 54]]
+		pif_state=i32[sc[ 55]]  lle=sc[ 56]!=0  frames=u32[sc[ 57]]  pad_st=u32[sc[ 58]]  stick_x=i32[sc[ 59]]  stick_y=i32[sc[ 60]]
+		cosim_seq=i64[sc[ 61]]
+		vi_hlpf=u32[sc[ 62]]  vi_qld=u32[sc[ 63]]  vi_leappat=u32[sc[ 64]]  vi_hleap0=u32[sc[ 65]]  vi_hleap1=u32[sc[ 66]]
+		si_lat=u32[sc[ 67]]  sp_status=u32[sc[ 68]]
+		return 0
+
 	func step []
+		if [ cosim ]
+			if [ cosim_ff > 0 ]
+				cosim_ff  = cosim_ff - 1               # replaying ours to the validated cycle
+				cosim_seq = cosim_seq + 1
+			el
+				cosim_check[]
 		# pending interrupt (IE, not EXL/ERL, enabled + pending lines)
 		st : u32 [ cpu.c_status ]
-		if [ (st & 1) && !(st & 6) ]
-			if [ cpu.c_cause & st & 0xFF00 ] take_int[]
-		op  : u32 [ rd_phys32[ vmap[ cpu.pc ] ] ]     # fetch: icache path, not dcache (base +1 in step[])
+		if [ (st & 1) && !(st & 6) && (cpu.c_cause & st & 0xFF00) ]
+			take_int[]                                # ares: interrupt-taken is its OWN step —
+			cpu.c_count += 1                          # the interrupt step (ares step(1*2)/2)
+			step_cycle[ 0 ]                           # redirect to vector, 1 count cycle, retire nothing
+			return
+		fpa : u32 [ vmap[ cpu.pc ] ]
+		op  : u32 [ rd_phys32[ fpa ] ]                # fetch: icache path, not dcache
+		cpu.c_count += 1                              # fetch base (ares step(1*2)/2), BEFORE the data read
+		cpu.c_count += i64[ io_rcost[ cpu.pc, fpa ] ] # uncached fetch (IMEM/KSEG1) pays RCP read cost
+		icache[ cpu.pc, fpa ]                         # cached fetch: charge I-cache miss fill
 		cur : u32 [ cpu.pc ]
 		if [ hash_on ]
 			rh : u64 [ 0xcbf29ce484222325 ]
@@ -2993,21 +3499,38 @@ element n64 : trinity
 		cpu.pc  = cpu.npc
 		cpu.npc = cpu.pc + 4
 		c0 : u32 [ cpu.c_count ]                              # exec adds multicycle stall cycles (mul/div/...)
+		cosim_pbase = u32[ cpu.r[ (op >> 21) & 31 ] ]        # base reg before exec (culprit report)
 		exec[ op, cur ]
+		cosim_ppc = cur                                       # remember for co-sim culprit report
+		cosim_pop = op
 		cpu.r[ 0 ] = 0
 		dcyc : u32 [ cpu.c_count - c0 ]
 		if [ dcyc > 200 ] dcyc = 0                            # guard: mtc0 COUNT write, not a cycle cost
-		cpu.c_count += 1
+		step_cycle[ dcyc ]
+
+	# advance one Count cycle: clock, VI, timer-compare, deferred SI DMA.
+	# shared by the normal instruction path and the interrupt-taken step.
+	func step_cycle [ dcyc: u32 ]
 		sys_clk = sys_clk + 2 + 2 * i64[ dcyc ]               # Thread-clocks: 2 per Count cycle (ares)
 		vi_sync[]                                             # advance VI line counter to this cycle
 		if [ cpu.c_count == cpu.c_compare ]
 			cpu.c_cause = cpu.c_cause | 0x8000
+		rcp_poll[]
+
+	# fire any SI/PI DMA whose deferred completion time has arrived. called at
+	# instruction end AND before a status read, so a poll samples the same
+	# completion instant ares does (it fires mid-instruction during a step()).
+	func rcp_poll []
 		if [ si_dma_p && cpu.c_count >= si_dma_at ]           # deferred SI DMA completion
 			si_dma_p  = false
-			si_status = si_status & (~u32[0x1])
+			si_status = 0x1000                               # busy/pch/dmaState clear; interrupt held to ack
 			mi_intr   = mi_intr | 0x2
 			mi_check[]
-			if [ hash_on ] printf[ "SIBUSDONE seq=%llu count=%u mask=%X\n", hash_seq, cpu.c_count, mi_mask ]
+		if [ pi_dma_p && cpu.c_count >= pi_dma_at ]           # deferred PI DMA completion
+			pi_dma_p  = false
+			pi_status = (pi_status & (~u32[0x1])) | 0x8       # dmaBusy clear, interrupt set
+			mi_intr   = mi_intr | 0x10
+			mi_check[]
 
 	func branch [ cond: bool, cur: u32, op: u32, likely: bool ]
 		if [ cond ]
@@ -3701,7 +4224,7 @@ element n64 : trinity
 		vm[3].size   = 16
 		vm[3].offset = 36
 		vsz : i32 [ 52 ]
-		vct : i32 [ 32768 ]
+		vct : i32 [ 131072 ]
 		vmc : i32 [ 4 ]
 		r_vbo = Gpu [ vk: cv.vk, name: 'n64v', members: vm, member_count: vmc, vertex_size: vsz, vertex_count: vct ]
 		r_vbo.sync[ cv.w ]

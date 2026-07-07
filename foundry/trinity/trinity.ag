@@ -1088,6 +1088,7 @@ Display Window
         seam_hl    = rect[]
         orig_pos : vec2f [ ev.mouse.pos ]
         f : find_target[ root, ev, null ]
+        ev.origin = f
         # resize cursor while hovering a seam band (find_target set seam_hover)
         seam_cursor[ (seam_hover) ? ((seam_hover.axis == 0) ? 1 : 2) : 0 ]
         # find_target folded the leaf-local mouse pos into ev.mouse.pos; keep it for the
@@ -1173,6 +1174,7 @@ Display Window
         # it (then bubbles to parents), regardless of focus. capture still wins
         # during an active drag.
         target_el : element [ (capture) ? capture : find_target[ root, ev, null ] ]
+        ev.origin = target_el
         consumed_w : bool [ false ]
         for [ e: element* target_el, e && !consumed_w, e = e.parent ]
             ev.target = e
@@ -1198,6 +1200,8 @@ Display Window
         seam_hover = null
         seam_hl    = rect[]
         f : find_target[ root, ev, null ]
+        ev.origin = f
+        puts 'DBG press f={(f) ? f.id : null} pos={ev.mouse.pos.x} {ev.mouse.pos.y}'
         # live inspector (cmd held): cmd+click → matching CSS blocks; cmd+shift+click → the
         # element's DECLARATION site (Au header source:line). consumes the press.
         if [ f && ev.key.meta ]
@@ -1293,6 +1297,8 @@ Display Window
             seam_drag = null
             return
         f : find_target[ root, ev, capture ]
+        ev.origin = f
+        puts 'DBG rel f={(f) ? f.id : null} ap={(action_pressed) ? action_pressed.id : null}'
         consumed_r : bool [ false ]
         for [ e: element* f, e && !consumed_r, e = e.parent ]
             ev.target = e
@@ -2827,7 +2833,10 @@ Display Window
                     draw_cv.stroke_grad_radial [ false ]
                     draw_cv.stroke_grad_mirror [ false ]
                 if [ layer.inner_glow ]
-                    draw_cv.inner_glow   [ layer.inner_glow.color, layer.inner_glow.blur ]
+                    if [ !layer.inner_glow.color ]
+                        puts 'DBG glow null-color: element={e.id} layer={lkey}'
+                    el
+                        draw_cv.inner_glow   [ layer.inner_glow.color, layer.inner_glow.blur ]
                 draw_cv.paint            [ ]
                 draw_cv.restore          [ ]
 

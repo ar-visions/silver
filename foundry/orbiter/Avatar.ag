@@ -314,7 +314,6 @@ Orbiter PBR
         gl_Position    = ubo.proj * ubo.view * world_pos;
     }
 
-
 Orbiter Aura
 	attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
@@ -340,7 +339,6 @@ Orbiter Aura
         v_eye_pos      = inverse(ubo.view)[3].xyz;
 		gl_Position    = vec4(ndc, 0.0, 1.0);
 	}
-
 
 	func nhash [ p: vec3f ] -> GLSL float {
 		p = fract(p * 0.3183099 + vec3(0.1));

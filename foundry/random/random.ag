@@ -63,21 +63,20 @@ intern func ensure_seeded []
     if [ rng_state.seeded ]
         return
     
-    rng_seed u64 [ time[null] ] ^ u64[ clock ] * 6364136223846793005
+    rng_seed u64 [ time[null] ] ^ u64[ clock[] ] * 6364136223846793005
 
 
 # xoshiro256++ core — returns uniform u64
 func rng_next [] -> u64
     ensure_seeded
-    s: rng_state.state
-    result: u64 [ rotl23[s[0] + s[3]] + s[0] ]
-    t:      u64 [ s[1] << 17 ]
-    s[2] ^= s[0]
-    s[3] ^= s[1]
-    s[1] ^= s[2]
-    s[0] ^= s[3]
-    s[2] ^= t
-    s[3]  = rotl45[s[3]]
+    result: u64 [ rotl23[rng_state.state[0] + rng_state.state[3]] + rng_state.state[0] ]
+    t:      u64 [ rng_state.state[1] << 17 ]
+    rng_state.state[2] ^= rng_state.state[0]
+    rng_state.state[3] ^= rng_state.state[1]
+    rng_state.state[1] ^= rng_state.state[2]
+    rng_state.state[0] ^= rng_state.state[3]
+    rng_state.state[2] ^= t
+    rng_state.state[3]  = rotl45[rng_state.state[3]]
     return result
 
 
@@ -86,24 +85,24 @@ func rng_next [] -> u64
 func randf [] -> f32
     #i:rando
     #i2:rando
-    return f32[rng_next >> 40] * 0x1.0p-24
+    return f32[rng_next[] >> 40] * 0x1.0p-24
 
 # uniform f64 [0, 1) — upper 53 bits
 func randf64 [] -> f64
-    return f64[rng_next >> 11] * 0x1.0p-53
+    return f64[rng_next[] >> 11] * 0x1.0p-53
 
 # uniform u64 [0, bound)
 func rng_range [bound: u64] -> u64
-    return rng_next % bound
+    return rng_next[] % bound
 
 # standard normal (mean=0, stddev=1) via Box-Muller
 func randn [] -> f32
-    u1: randf
-    u2: randf
+    u1: randf[]
+    u2: randf[]
     if [ u1 < 1.0e-7 ]
         u1 = 1.0e-7
     return sqrtf[ -2.0 * logf[u1] ] * cosf[ 6.283185307 * u2 ]
 
 # normal with specified mean and stddev
 func randn_params [mean: f32, stddev: f32] -> f32
-    return randn * stddev + mean
+    return randn[] * stddev + mean

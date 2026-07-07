@@ -13,6 +13,12 @@ running silver with --clean will always rebuild the module
 
 ---
 
+## Rule #3 — Comments: one line, 60 characters max
+
+A comment states the one constraint the code can't show. Never more than one line, never exceeding 60 characters. No comment blocks, no narrative prose, no AI sales cadence ("not just X but Y"). If it doesn't fit in 60 chars, fix the code or put it in a doc.
+
+---
+
 Silver is a systems programming language with an LLVM backend. It compiles `.ag` source files into native binaries via LLVM IR. The compiler itself is written in C, built on the **Au** object system.
 
 ## Build & Run

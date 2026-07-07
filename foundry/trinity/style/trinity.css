@@ -9,15 +9,15 @@ Layer base [ ]
     stroke_width:           0.5
     stroke_color:           #fff2
     radius:                 8
-    :hovered
-        fill_color:         #fff3
+:hovered
+    fill_color:             #fff3
 
 Layer face [ ]
     label_color:            #fffc
     label_size:             15
     label_align:            0.5 0.5
-    :hovered
-        label_color:        #ffff
+:hovered
+    label_color:            #ffff
 
 Button {
     area:                       l8+px t4px wc24px h30px
