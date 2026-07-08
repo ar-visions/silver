@@ -1,0 +1,71 @@
+export 0.8.8
+
+import <stdio.h>
+import <stdlib.h>
+import img
+import ai
+
+app tbcheck
+    public targ : keras
+
+    func crop32 [ src: Image, cx: f32, cy: f32, side: f32 ] -> tensor
+        t       : tensor [ tensor_shape: 32x32x1 ]
+        data    : ref u8 [ src.vdata[] ]
+        bpp     : i32 [ (src.format == Pixel.u8) ? 1 : 4 ]
+        img_w   : f32 [ f32[ src.width ] ]
+        side_px : f32 [ (side > 0.0) ? side * img_w : img_w ]
+        x0      : f32 [ (side > 0.0) ? cx * img_w - side_px * 0.5 : 0.0 ]
+        y0      : f32 [ (side > 0.0) ? cy * img_w - side_px * 0.5 : 0.0 ]
+        step    : f32 [ side_px / 32.0 ]
+        for [ oy: i32 0, oy < 32, oy += 1 ]
+            ys : i32 [ i32[ y0 + f32[ oy ] * step ] ]
+            ye : i32 [ i32[ y0 + (f32[ oy ] + 1.0) * step ] ]
+            if [ ye <= ys ] ye = ys + 1
+            for [ ox: i32 0, ox < 32, ox += 1 ]
+                xs : i32 [ i32[ x0 + f32[ ox ] * step ] ]
+                xe : i32 [ i32[ x0 + (f32[ ox ] + 1.0) * step ] ]
+                if [ xe <= xs ] xe = xs + 1
+                acc : f32 [ 0.0 ]
+                cnt : i32 [ 0 ]
+                for [ sy: i32 ys, sy < ye, sy += 1 ]
+                    py : i32 [ sy ]
+                    if [ py < 0 ] py = 0
+                    if [ py >= src.height ] py = src.height - 1
+                    for [ sx: i32 xs, sx < xe, sx += 1 ]
+                        px : i32 [ sx ]
+                        if [ px < 0 ] px = 0
+                        if [ px >= src.width ] px = src.width - 1
+                        acc += f32[ data[ (py * src.width + px) * bpp ] ]
+                        cnt += 1
+                t.floats[ oy * 32 + ox ] = acc / (f32[ cnt ] * 255.0)
+        return t
+
+    func check [ cam2: string ]
+        # from the full frame, through the training-style crop
+        p : path '/src/hyperspace-sessions/basic2/tbdump-{cam2}.png'
+        if [ p.exists[] ]
+            im : Image [ uri: p ]
+            full : crop32[ im, 0.0, 0.0, 0.0 ]
+            t5 : targ.forward[ full ]
+            puts 'tbcheck {cam2} (frame): left {t5.floats[0]} {t5.floats[1]} right {t5.floats[2]} {t5.floats[3]} scale {t5.floats[4]}'
+        # from the exact 32x32 net input the testbed dumped
+        pn : path '/src/hyperspace-sessions/basic2/tbdump-{cam2}-net.png'
+        if [ pn.exists[] ]
+            im2 : Image [ uri: pn ]
+            bpp : i32 [ (im2.format == Pixel.u8) ? 1 : 4 ]
+            d2  : ref u8 [ im2.vdata[] ]
+            tn  : tensor [ tensor_shape: 32x32x1 ]
+            for [ i: i32 0, i < 1024, i += 1 ]
+                tn.floats[i] = f32[ d2[i * bpp] ] / 255.0
+            t6 : targ.forward[ tn ]
+            puts 'tbcheck {cam2} (net32): left {t6.floats[0]} {t6.floats[1]} right {t6.floats[2]} {t6.floats[3]} scale {t6.floats[4]}'
+
+    func init []
+        tp : path '/src/silver/platform/native/share/hyperspace/models/target.agi'
+        tt : (tp.load[ typeid[ string ], null ] to string)
+        targ = (Au.parse_agi[ typeid[ keras ], tt.chars, null ] to keras)
+        targ.hold[]
+        targ.load_weights[ path '/src/silver/platform/native/share/hyperspace/models/target.bin' ]
+        check[ string 'top' ]
+        check[ string 'bot' ]
+        exit[ 0 ]

@@ -1,0 +1,37 @@
+export 0.8.8
+
+import <stdio.h>
+import <stdlib.h>
+import ai
+
+app lookrepro
+    public look : keras
+    public targ : keras
+
+    func init []
+        lp : path '/src/silver/platform/native/share/hyperspace/models/look.agi'
+        tp : path '/src/silver/platform/native/share/hyperspace/models/target.agi'
+        lt : (lp.load[ typeid[ string ], null ] to string)
+        tt : (tp.load[ typeid[ string ], null ] to string)
+        if [ !lt || !tt ]
+            puts 'missing model agi'
+            exit[ 1 ]
+        look = (Au.parse_agi[ typeid[ keras ], lt.chars, null ] to keras)
+        look.hold[]
+        targ = (Au.parse_agi[ typeid[ keras ], tt.chars, null ] to keras)
+        targ.hold[]
+        look.load_weights[ path '/src/silver/platform/native/share/hyperspace/models/look.bin' ]
+        targ.load_weights[ path '/src/silver/platform/native/share/hyperspace/models/target.bin' ]
+        puts 'loaded'
+        for [ fr: i32 0, fr < 50, fr += 1 ]
+            full2 : tensor [ tensor_shape: 32x32x1 ]
+            t6 : targ.forward[ full2 ]
+            ins : array tensor [ ]
+            ins.push[ tensor [ tensor_shape: 32x32x1 ] ]
+            ins.push[ tensor [ tensor_shape: 32x32x1 ] ]
+            ins.push[ tensor [ tensor_shape: 32x32x1 ] ]
+            ins.push[ tensor [ tensor_shape: 1x7 ] ]
+            smp : sample [ inputs: ins ]
+            p4 : look.predict_s[ smp ]
+        puts 'done'
+        exit[ 0 ]

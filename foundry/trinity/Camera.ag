@@ -381,6 +381,10 @@ class Camera
         ifdef [ linux ]
             if [ fd < 0 ]
                 return
+            if [ cpu_upload ]
+                if [ !staging_ptr ] return
+            if [ !src_rect ]
+                src_rect = rect [ x: 0.0, y: 0.0, w: f32[ width ], h: f32[ height ] ]
             deq : v4l2_buffer [ ]
             deq.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE
             deq.memory = V4L2_MEMORY_MMAP
@@ -465,12 +469,18 @@ element CameraView
 
     # write the latest CPU frame (staging) as a grayscale png
     public func save_frame [ p: path ] -> bool
-        if [ !camera || !camera.staging_ptr ] return false
+        img : frame_image[]
+        if [ !img ] return false
+        img.png[ p ]
+        return true
+
+    # latest CPU frame as a grayscale Image (null when not ready)
+    public func frame_image [] -> Image
+        if [ !camera || !camera.staging_ptr ] return null
         img : Image [ width: camera.width, height: camera.height, format: Pixel.u8 ]
         sz : i32 [ camera.width * camera.height ]
         memcpy[ img.vdata[], camera.staging_ptr, sz ]
-        img.png[ p ]
-        return true
+        return img
 
     func draw [ w: Window ]
         if [ !camera ] return

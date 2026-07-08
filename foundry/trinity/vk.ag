@@ -455,6 +455,8 @@ class Render
         # READING the render's color (blit/sample) or presenting, which must see all of
         # this canvas's accumulated draws.
         flush_submit[]
+        # a slot with no pending submit has an unsignalable fence — nothing to wait
+        if [ ring_primed[ring_last] == 0 ] return
         t0: i64 [ epoch_micros[] ]
         result: vkWaitForFences[ vk.device, 1, ref vk_fences[ring_last], VK_TRUE, UINT64_MAX ]
         vk.sync_us    += epoch_micros[] - t0

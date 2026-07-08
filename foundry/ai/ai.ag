@@ -54,9 +54,17 @@ class tensor
 
         has_f32: bool [ floats ]
         count   = tensor_shape.total[]
-        floats  = floats || new f32[tensor_shape]
-        quants  = quants || new i8 [tensor_shape]
-        grad    = grad   || new f32[tensor_shape]
+        # new'd buffers in ref members have no owner — hold them or the
+        # app's per-frame autorelease drain frees them under the model
+        if [ !floats ]
+            floats = new f32[tensor_shape]
+            hold[ (floats to Au) ]
+        if [ !quants ]
+            quants = new i8[tensor_shape]
+            hold[ (quants to Au) ]
+        if [ !grad ]
+            grad = new f32[tensor_shape]
+            hold[ (grad to Au) ]
 
         switch [ initializer ]
         case random
@@ -320,6 +328,11 @@ op dense
         if [ weights ]
             if [ weights.count != in_dim * out_dim ]
                 puts '{name}: weights {weights.count} != in_dim {in_dim} * out_dim {out_dim}'
+                exit[ 1 ]
+        # back loops write d_input[in_dim] — a lying in_dim overflows the heap
+        if [ input ]
+            if [ input.count != in_dim ]
+                puts '{name}: in_dim {in_dim} != input size {input.count}'
                 exit[ 1 ]
         if [ bias ]
             if [ bias.count != out_dim ]
@@ -1468,7 +1481,15 @@ class keras
                     out_w:    (in_w - filter_w + 2 * pad_w) / stride_w + 1
                     o.result = tensor [ tensor_shape: c.input.tensor_shape * c.out_channels ]
 
-        
+        # single-input consumers read the producer's result object — a
+        # parsed model arrives with distinct tensors; rebind restores the
+        # aliased dataflow that find_result creates on the build path
+        for [ o: op ] in ops
+            if [ o.op_inputs.count == 1 ]
+                dep : o.op_inputs[0]
+                if [ dep.result ]
+                    o.input = dep.result
+
         out_op: op_map['output']
         k_output = out_op.input
 
@@ -1615,6 +1636,13 @@ class keras
         puts ln
 
     # weights .bin path derived from the checkpoint .agi path
+    func param_count [] -> i64
+        n : i64 [ 0 ]
+        for [ layer: op ] in ops
+            if [ layer.weights ] n += layer.weights.count
+            if [ layer.bias ]    n += layer.bias.count
+        return n
+
     func weights_path [] -> path
         s  : string '{checkpoint}'
         ix : num [ s.index_of[ '.agi' ] ]
@@ -1709,6 +1737,9 @@ class keras
         for [ layer: op ] in ops
             layer.set_optimizer optimizer
         
+        # checkpoint gate is per-run: eval splits differ between runs
+        best_epoch = 0
+        best_err   = 0.0
         errs : tensor [ tensor_shape: k_output.tensor_shape ]
         if [ eval_samples.count > 0 ] metrics_header[]
         for [ epoch: i32 0, epoch < epochs, epoch += 1 ]
@@ -1770,9 +1801,19 @@ class keras
             if [ eval_samples.count > 0 ]
                 ev : eval_metrics[ eval_samples, errs ]
                 metrics_line[ epoch + 1, epochs, lavg, ev, errs ]
+                maybe_checkpoint[ epoch + 1, errs ]
             el
                 puts 'epoch {epoch + 1}/{epochs} train {lavg}'
 
+        if [ checkpoint && epochs > 0 ]
+            if [ best_epoch > 0 ]
+                load_weights[ weights_bin ]
+                puts 'best epoch {best_epoch} (avg err {best_err}) -> {checkpoint}'
+            el
+                weights_bin = weights_path[]
+                save_weights[ weights_bin ]
+                export_agi[]
+                puts 'saved final weights -> {checkpoint} (no eval set)'
         puts 'training complete'
 
     # multi-input training: each sample carries one tensor per input_op, in ops order
@@ -1782,6 +1823,9 @@ class keras
         inputs2 : array op [ ]
         for [ o: op ] in ops
             if [ o is input_op ] inputs2.push[ o ]
+        # checkpoint gate is per-run: eval splits differ between runs
+        best_epoch = 0
+        best_err   = 0.0
         errs : tensor [ tensor_shape: k_output.tensor_shape ]
         if [ eval_samples.count > 0 ] metrics_header[]
         for [ epoch: i32 0, epoch < epochs, epoch += 1 ]
@@ -1812,7 +1856,7 @@ class keras
                 maybe_checkpoint[ epoch + 1, errs ]
             el
                 puts 'epoch {epoch + 1}/{epochs} train {lavg}'
-        if [ checkpoint ]
+        if [ checkpoint && epochs > 0 ]
             if [ best_epoch > 0 ]
                 load_weights[ weights_bin ]
                 puts 'best epoch {best_epoch} (avg err {best_err}) -> {checkpoint}'
