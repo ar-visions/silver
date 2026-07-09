@@ -14,6 +14,7 @@ import <stdio.h>
 import <stdlib.h>
 import <string.h>
 import <math.h>
+import <fenv.h>
 import <pthread.h>
 import <unistd.h>
 
@@ -243,6 +244,12 @@ class ares
 		return arescore_lo[]
 	func si_status [] -> u32
 		return arescore_si_status[]
+	func amiintr [] -> u32
+		return arescore_mi_intr[]
+	func adctag [ idx: i32 ] -> u32
+		return arescore_dcache_tag[ idx ]
+	func aspstat [] -> u32
+		return arescore_sp_status[]
 	func acount [] -> u64
 		return arescore_count[]
 	func acause [] -> u64
@@ -261,6 +268,8 @@ class ares
 		return arescore_vi_clockfrac[]
 	func acpuclk [] -> i64
 		return i64[ arescore_cpuclock[] ]
+	func aselftest [ n: i32 ] -> u64
+		return arescore_selftest[ n ]
 	func save_ckpt [ fn: cstr ] -> i32
 		return arescore_save_file[ fn ]
 	func load_ckpt [ fn: cstr ] -> i32
@@ -289,8 +298,16 @@ element n64 : trinity
 	mutable cosim_pre_ours : u32          # our count before the pending instruction
 	mutable cosim_pre_ares : i64          # ares count before the pending instruction
 	mutable cosim_cnt_rep  : i32          # count-mismatch reports emitted (cap the spam)
+	mutable dbg_clkdelta   : i64 [ 0x7FFFFFFFFFFFFFFF ]  # last sys_clk - ares cpuclock
+	mutable dbg_psys       : i64          # prev sys_clk for per-step cost
+	mutable dbg_pares      : i64          # prev ares cpuclock for per-step cost
+	mutable dbg_dch        : i64          # dcache hits
+	mutable dbg_dcm        : i64          # dcache misses
+	mutable dbg_icm        : i64          # icache misses
+	mutable dbg_rcc        : i64          # io_rcost nonzero charges
 	mutable cosim_cdef     : i64          # running net count deficit (ares - ours)
-	mutable cosim_resyncs  : i32          # count of tolerated VI-interrupt skews
+	mutable dbg_dch2       : u32          # prev our dc_tag[194] (dcache co-sim probe)
+	mutable dbg_dcm2       : u32          # prev ares dc_tag[194] (dcache co-sim probe)
 	mutable rdram        : new u8 [ 0x800000 ]
 	mutable dmem         : new u8 [ 0x1000 ]
 	mutable imem         : new u8 [ 0x1000 ]
@@ -570,7 +587,7 @@ element n64 : trinity
 	mutable gx_clip      : new f32 [ 80 ]    # near-clip scratch (up to 8 verts)
 	mutable gx_scr       : new f32 [ 80 ]    # screen-space: sx sy sz invw u_ow v_ow r g b a
 	# PN-triangle smoothing (option): tessellate lit tris with curved corners.
-	public  smooth       : i32 [ 0 ]         # tess level (0=off, 2/3 typical)
+	public  smooth       : i32 [ 6 ]         # tess level (0=off, 2/3 typical)
 	mutable gx_smooth_cos: f32 [ 0.5 ]       # hard-edge gate: min normal dot to smooth (cos 60deg)
 	mutable pn_P         : new f32 [ 9 ]     # 3 corner positions (obj)
 	mutable pn_N         : new f32 [ 9 ]     # 3 corner normals (normalized)
@@ -834,6 +851,13 @@ element n64 : trinity
 			if [ cosim ]
 				oracle = ares []
 				lr : i32 [ oracle.load[ rom.chars ] ]
+				if [ getenv[ 'N64_ARES_SELFTEST' ] && lr == 0 ]
+					h1 : u64 [ oracle.aselftest[ 500000 ] ]
+					h2 : u64 [ oracle.aselftest[ 500000 ] ]
+					h3 : u64 [ oracle.aselftest[ 500000 ] ]
+					printf[ "n64 ARES SELFTEST h1=%016llx h2=%016llx h3=%016llx det=%d\n", h1, h2, h3, i32[ h1 == h2 && h2 == h3 ] ]
+					fflush[ null ]
+					exit[ 9 ]
 				if [ lr != 0 ]
 					puts 'n64 cosim: ares load failed ({lr}) — lockstep off'
 					cosim = false
@@ -966,7 +990,7 @@ element n64 : trinity
 			si_buslatch = v                                  # latched word: a read force-finishes to this
 			si_status = (si_status & 0x1000) | 0x09B3        # ioBusy|dmaBusy|pch=b|dmaState=9
 			si_dma_p  = true
-			si_dma_at = cpu.c_count + 3225
+			si_dma_at = c_istart + 3225                      # ares schedules from pre-instr clock
 			return
 		io_write[ pa, v ]
 
@@ -975,7 +999,9 @@ element n64 : trinity
 		rcp_poll[]                                           # DMA may complete mid-instruction (ares)
 		if [ dbg_on && frames >= 224 && frames < 232 ]
 			printf[ "n64 IOR %08X (pc=%08X)\n", pa, cpu.pc ]
-		if [ pa == 0x04040010 ] return sp_status
+		if [ pa == 0x04040010 ]
+			if [ cosim ] return oracle.aspstat[]             # HLE RSP: status from ares
+			return sp_status
 		if [ pa == 0x04040018 ] return 0                    # SP DMA busy
 		if [ pa == 0x0404001C ]
 			s : u32 [ sp_semaphore ]
@@ -1072,10 +1098,22 @@ element n64 : trinity
 		if [ dbg_on && frames >= 224 && frames < 232 ]
 			printf[ "n64 IOW %08X = %08X (pc=%08X)\n", pa, v, cpu.pc ]
 		if [ hash_on && pa >= 0x04800000 && pa < 0x04800020 ] printf[ "SIW %08X=%08X seq=%llu\n", pa, v, hash_seq ]
-		if [ pa == 0x04040010 ]                              # SP status
-			if [ v & 0x8 ] mi_intr = mi_intr & (~u32[1])
-			if [ v & 0x2 ] sp_status = sp_status | 1
-			if [ v & 0x1 ]                                    # START: HLE-run the task
+		if [ pa == 0x04040010 ]                              # SP_STATUS write: set/clear pairs (ares RSP::Status)
+			if [ (v & 0x4) != 0 ] sp_status = sp_status & (~u32[0x2])                       # clear broke
+			if [ (v & 0x8) != 0 && (v & 0x10) == 0 ] mi_intr = mi_intr & (~u32[0x1])        # clear SP int
+			if [ (v & 0x10) != 0 && (v & 0x8) == 0 ] mi_intr = mi_intr | 0x1                # set SP int
+			if [ (v & 0x20) != 0 && (v & 0x40) == 0 ] sp_status = sp_status & (~u32[0x20])  # clear single-step
+			if [ (v & 0x40) != 0 && (v & 0x20) == 0 ] sp_status = sp_status | 0x20          # set single-step
+			if [ (v & 0x80) != 0 && (v & 0x100) == 0 ] sp_status = sp_status & (~u32[0x40]) # clear intr-on-break
+			if [ (v & 0x100) != 0 && (v & 0x80) == 0 ] sp_status = sp_status | 0x40         # set intr-on-break
+			for [ si9: i32 0, si9 < 8, si9 += 1 ]                                           # signals 0-7 (read 7-14)
+				clrb : u32 [ u32[1] << u32[ 9 + si9 * 2 ] ]
+				setb : u32 [ u32[1] << u32[ 10 + si9 * 2 ] ]
+				rdb  : u32 [ u32[1] << u32[ 7 + si9 ] ]
+				if [ (v & clrb) != 0 && (v & setb) == 0 ] sp_status = sp_status & (~rdb)
+				if [ (v & setb) != 0 && (v & clrb) == 0 ] sp_status = sp_status | rdb
+			if [ (v & 0x2) != 0 && (v & 0x1) == 0 ] sp_status = sp_status | 0x1             # set halt
+			if [ (v & 0x1) != 0 && (v & 0x2) == 0 && (v & 0x40) == 0 && (sp_status & 0x20) == 0 ]  # clear halt (not single-step): START -> HLE the task
 				# OSTask header sits at DMEM 0xFC0; type: 1=gfx 2=audio.
 				# audio runs the ABI1 alist interpreter; gfx still fake-
 				# completes (halt + SIG2, SP int, + DP int) so the scheduler
@@ -1083,9 +1121,10 @@ element n64 : trinity
 				tt : u32 [ (u32[dmem[0xFC0]] << 24) | (u32[dmem[0xFC1]] << 16) | (u32[dmem[0xFC2]] << 8) | u32[dmem[0xFC3]] ]
 				if [ tt == 2 ] audio_task[]
 				if [ tt == 1 ] gfx_task[]
-				sp_status = 0x1 | 0x200
-				mi_intr = mi_intr | 0x1
-				if [ tt == 1 ] mi_intr = mi_intr | 0x20
+				if [ !cosim ]                                    # cosim: SP_STATUS + SP/DP int come from ares
+					sp_status = (sp_status & 0x7FC0) | 0x1 | 0x200   # halt + SIG2, preserve intr-on-break/signals
+					mi_intr = mi_intr | 0x1
+					if [ tt == 1 ] mi_intr = mi_intr | 0x20
 				if [ trace && tt != 2 ] printf[ "n64 SP task type=%u f%u (fake-complete)\n", tt, frames ]
 				if [ dbg_on && dbg_ic < 3000 ] printf[ "n64 task t=%u f%u\n", tt, frames ]
 			mi_check[]
@@ -1201,12 +1240,12 @@ element n64 : trinity
 				if [ pi_dram + i < 0x800000 ] rdram[ pi_dram + i ] = u8[ bv ]
 			pi_status = pi_status | 0x1                       # dmaBusy; interrupt deferred (ares)
 			pi_dma_p  = true
-			pi_dma_at = cpu.c_count + (pi_dma_dur[ v & 0xFFFFFF, pi_cart ] + 1) / 2
+			pi_dma_at = c_istart + (pi_dma_dur[ v & 0xFFFFFF, pi_cart ] + 1) / 2
 			return
 		if [ pa == 0x04600008 ]                              # PI read length: RDRAM -> cart
 			pi_status = pi_status | 0x1                       # dmaBusy; RDRAM->cart write ignored (ROM)
 			pi_dma_p  = true
-			pi_dma_at = cpu.c_count + (pi_dma_dur[ v & 0xFFFFFF, pi_cart ] + 1) / 2
+			pi_dma_at = c_istart + (pi_dma_dur[ v & 0xFFFFFF, pi_cart ] + 1) / 2
 			return
 		if [ pa == 0x04600014 ]
 			pi_d1_lat = v & 0xFF
@@ -1250,7 +1289,7 @@ element n64 : trinity
 				rdram[ si_dram + i ] = pif_ram[ i ]
 			si_status = (si_status & 0x1000) | 0x0141        # dmaBusy|pch=4|dmaState=1
 			si_dma_p  = true                                 # defer completion interrupt (real HW: ~ms later)
-			si_dma_at = cpu.c_count + si_lat
+			si_dma_at = c_istart + si_lat
 			if [ hash_on ] printf[ "SIKICK rd seq=%llu count=%u at=%u\n", hash_seq, cpu.c_count, si_dma_at ]
 			return
 		if [ pa == 0x04800010 ]                              # SI write64: RDRAM -> PIF
@@ -1260,7 +1299,7 @@ element n64 : trinity
 			pif_joybus[]
 			si_status = (si_status & 0x1000) | 0x0411        # dmaBusy|pch=1|dmaState=4
 			si_dma_p  = true
-			si_dma_at = cpu.c_count + si_lat
+			si_dma_at = c_istart + si_lat
 			if [ hash_on ] printf[ "SIKICK wr seq=%llu count=%u at=%u\n", hash_seq, cpu.c_count, si_dma_at ]
 			return
 		if [ pa == 0x04800018 ]
@@ -3120,7 +3159,7 @@ element n64 : trinity
 
 	func take_int []
 		dbg_ic += 1
-		cpu.c_cause = cpu.c_cause & (~u32[0x7C])            # ExcCode 0
+		cpu.c_cause = cpu.c_cause & (~u32[0x3000007C])      # ExcCode 0 + CE 0 (ares sets coproc=0)
 		if [ cpu.npc != cpu.pc + 4 ]                         # in a branch delay slot:
 			cpu.c_epc = cpu.pc - 4                           # EPC = the branch, BD set,
 			cpu.c_cause = cpu.c_cause | 0x80000000           # so ERET re-runs branch+slot
@@ -3140,7 +3179,7 @@ element n64 : trinity
 		if [ dbg_esc < 40 ]
 			dbg_esc += 1
 			printf[ "n64 FAULT exc=%u pc=%08X op=%08X f%u\n", code, cur, rd32v[ cur ], frames ]
-		cpu.c_cause = (cpu.c_cause & (~u32[0x7C])) | ((code & 0x1F) << 2)
+		cpu.c_cause = (cpu.c_cause & (~u32[0x3000007C])) | ((code & 0x1F) << 2)   # CE 0
 		cpu.c_epc = cur
 		cpu.c_status = cpu.c_status | 0x2                    # EXL
 		cpu.pc  = 0x80000180
@@ -3196,6 +3235,7 @@ element n64 : trinity
 		cur : u32 [ ic_tag[ idx ] ]
 		if [ (cur & 1) != 0 && (cur & 0x1FFFF000) == tag ] return           # hit: base +1 already paid
 		cpu.c_count += 48                                                    # miss fill: ares step(48*2)/2
+		dbg_icm += 1
 		ic_tag[ idx ] = tag | 1
 
 	# CACHE instruction: mirror ares cost + cache-state change (interpreter-ipu CACHE).
@@ -3219,10 +3259,11 @@ element n64 : trinity
 		if [ cop == 0x01 ]                                   # dcache index writeback invalidate
 			if [ (cur & 1) != 0 && drt ] cpu.c_count += 40
 			dc_tag[ di ] = 0
-		el [ cop == 0x19 ]                                   # dcache hit writeback invalidate
-			if [ hit && drt ] cpu.c_count += 40
-			if [ hit ] dc_tag[ di ] = 0
-		el [ cop == 0x15 ]                                   # dcache hit writeback
+		el [ cop == 0x15 ]                                   # dcache hit writeback invalidate
+			if [ hit ]
+				if [ drt ] cpu.c_count += 40
+				dc_tag[ di ] = 0
+		el [ cop == 0x19 ]                                   # dcache hit writeback (line stays valid)
 			if [ hit && drt ]
 				cpu.c_count += 40
 				dc_tag[ di ] = cur & (~u32[2])
@@ -3239,10 +3280,12 @@ element n64 : trinity
 		cur : u32 [ dc_tag[ idx ] ]
 		if [ (cur & 1) != 0 && (cur & 0x1FFFF000) == tag ]                   # hit
 			cpu.c_count += 1
+			dbg_dch += 1
 			if [ w ] dc_tag[ idx ] = cur | 2
 		el                                                                  # miss
 			if [ (cur & 1) != 0 && (cur & 2) != 0 ] cpu.c_count += 40   # evict dirty: ares step(40*2)/2
 			cpu.c_count += 40                                               # fill: ares step(40*2)/2
+			dbg_dcm += 1
 			dc_tag[ idx ] = (w) ? (tag | 3) : (tag | 1)
 
 	func rd8  [ va: u32 ] -> u32
@@ -3353,6 +3396,28 @@ element n64 : trinity
 		up : ref u64 [ ((ref bb[0]) to ref u64) ]
 		fset64[ n, up[ 0 ] ]
 
+	# map host IEEE exceptions to FCR31 cause (12-16) + sticky flags (2-6),
+	# honoring the enable bits (7-11). matches ares checkFPUExceptions.
+	func fpu_flags []
+		exc : i32 [ fetestexcept[ 0x3D ] ]
+		cpu.fcr31 = cpu.fcr31 & (~u32[ 0x3F000 ])            # clear cause field per op
+		en : u32 [ (cpu.fcr31 >> 7) & 0x1F ]
+		if [ (exc & 0x20) != 0 ]                             # inexact
+			cpu.fcr31 = cpu.fcr31 | 0x1000
+			if [ (en & 0x01) == 0 ] cpu.fcr31 = cpu.fcr31 | 0x4
+		if [ (exc & 0x10) != 0 ]                             # underflow
+			cpu.fcr31 = cpu.fcr31 | 0x2000
+			if [ (en & 0x02) == 0 ] cpu.fcr31 = cpu.fcr31 | 0x8
+		if [ (exc & 0x08) != 0 ]                             # overflow
+			cpu.fcr31 = cpu.fcr31 | 0x4000
+			if [ (en & 0x04) == 0 ] cpu.fcr31 = cpu.fcr31 | 0x10
+		if [ (exc & 0x04) != 0 ]                             # divide by zero
+			cpu.fcr31 = cpu.fcr31 | 0x8000
+			if [ (en & 0x08) == 0 ] cpu.fcr31 = cpu.fcr31 | 0x20
+		if [ (exc & 0x01) != 0 ]                             # invalid
+			cpu.fcr31 = cpu.fcr31 | 0x10000
+			if [ (en & 0x10) == 0 ] cpu.fcr31 = cpu.fcr31 | 0x40
+
 	# round to nearest, ties to even (VR4300 RN mode + round.w/round.l)
 	func rne [ x: f64 ] -> f64
 		f : f64 [ floor[ x ] ]
@@ -3381,20 +3446,6 @@ element n64 : trinity
 		if [ ww >= 0x8000 ] ww = ww | 0xFFFF0000
 		return i64[ i32[ ww ] ]
 
-	func cosim_gpr_bad [] -> bool
-		for [ i: i32 0, i < 32, i += 1 ]
-			if [ oracle.reg[ i ] != u64[ cpu.r[ i ] ] ] return true
-		if [ u64[ cpu.hi ] != oracle.rhi[] ] return true
-		if [ u64[ cpu.lo ] != oracle.rlo[] ] return true
-		return false
-
-	# after a VI-int-skew resync the two sides serviced the same interrupt one
-	# instruction apart, leaving COP0 BD/EPC as a 1-instr artifact. reconcile
-	# them from ares so the leftover doesn't surface as a false divergence later.
-	func cosim_cop0_sync []
-		cpu.c_cause = (cpu.c_cause & (~u32[0x80000000])) | (u32[ oracle.acause[] ] & 0x80000000)
-		cpu.c_epc   = u32[ oracle.aepc[] ]
-
 	func cosim_check []
 		apc : u32 [ oracle.rpc[] ]
 		bad : bool [ false ]
@@ -3403,35 +3454,27 @@ element n64 : trinity
 			if [ oracle.reg[ i ] != u64[ cpu.r[ i ] ] ] bad = true
 		if [ u64[ cpu.hi ] != oracle.rhi[] ] bad = true
 		if [ u64[ cpu.lo ] != oracle.rlo[] ] bad = true
-		# VI-interrupt-delivery skew tolerance: the CPU spins waiting on the VI
-		# interrupt; our VI clock lands within ~1 instruction of ares, so one side
-		# enters the 0x80000180 vector a few instructions before the other. That is
-		# harmless jitter, not an op divergence — resync at the vector and continue.
-		if [ bad && cpu.pc == 0x80000180 && apc != 0x80000180 ] # we took VI int first: step ares up
-			n : i32 [ 0 ]
-			while [ oracle.rpc[] != 0x80000180 && n < 4096 ]
-				oracle.step[]
-				n += 1
-			if [ oracle.rpc[] == cpu.pc ]
-				apc = oracle.rpc[]
-				bad = cosim_gpr_bad[]
-				if [ !bad ]
-					cosim_cop0_sync[]
-					cosim_resyncs += 1
-		el [ bad && apc == 0x80000180 && cpu.pc != 0x80000180 ] # ares took VI int first: step ours up
-			cosim = false                                    # bare-step (skip re-entrant cosim_check)
-			m : i32 [ 0 ]
-			while [ cpu.pc != 0x80000180 && m < 4096 ]
-				step[]
-				m += 1
-			cosim = true
-			if [ cpu.pc == apc ]
-				bad = cosim_gpr_bad[]
-				if [ !bad ]
-					cosim_cop0_sync[]
-					cosim_resyncs += 1
+		if [ (cpu.c_cause & 0x8000007C) != (u32[ oracle.acause[] ] & 0x8000007C) ] bad = true   # BD + ExcCode
+		cdelta : i64 [ sys_clk - oracle.acpuclk[] ]
+		if [ cosim_seq >= 719950 && cosim_seq <= 719978 ]
+			printf[ "n64 STEP seq=%lld pc=%08X ppc=%08X pop=%08X sys_step=%lld ares_step=%lld delta=%lld\n", cosim_seq, cpu.pc, cosim_ppc, cosim_pop, sys_clk - dbg_psys, oracle.acpuclk[] - dbg_pares, cdelta ]
+		if [ cdelta != dbg_clkdelta && cosim_seq > 23200000 && cosim_cnt_rep < 120 ]
+			cosim_cnt_rep += 1
+			dea : u32 [ cosim_pbase + u32[ sx16[ cosim_pop ] ] ]
+			ddi : i32 [ i32[ (dea >> 4) & 0x1FF ] ]
+			printf[ "n64 DRIFT seq=%lld pc=%08X op=%08X ea=%08X dcidx=%d dctag=%08X cdelta %lld->%lld (ours=%lld ares=%lld)\n", cosim_seq, cosim_ppc, cosim_pop, dea, ddi, dc_tag[ ddi ], dbg_clkdelta, cdelta, sys_clk - dbg_psys, oracle.acpuclk[] - dbg_pares ]
+		if [ cosim_seq >= 23283000 && cosim_seq <= 23286735 ]
+			o194 : u32 [ dc_tag[ 194 ] ]
+			a194 : u32 [ oracle.adctag[ 194 ] ]
+			if [ (o194 != dbg_dch2) || (a194 != dbg_dcm2) ]
+				printf[ "n64 DC194 seq=%lld ppc=%08X pop=%08X our=%08X->%08X ares=%08X->%08X\n", cosim_seq, cosim_ppc, cosim_pop, dbg_dch2, o194, dbg_dcm2, a194 ]
+				dbg_dch2 = o194
+				dbg_dcm2 = a194
+		dbg_clkdelta = cdelta
+		dbg_psys  = sys_clk
+		dbg_pares = oracle.acpuclk[]
 		if [ bad ]
-			printf[ "n64 COSIM DIVERGE seq=%lld ours pc=%08X ares pc=%08X (resyncs=%d)\n", cosim_seq, cpu.pc, apc, cosim_resyncs ]
+			printf[ "n64 COSIM DIVERGE seq=%lld ours pc=%08X ares pc=%08X\n", cosim_seq, cpu.pc, apc ]
 			printf[ "  count ours=%u ares=%llu (ares/2=%llu)\n", cpu.c_count, oracle.acount[], oracle.acount[] / 2 ]
 			printf[ "  cause ours=%08X ares=%08llX ; status ours=%08X ares=%08llX ; mi_intr=%X mi_mask=%X\n", cpu.c_cause, oracle.acause[], cpu.c_status, oracle.astatus[], mi_intr, mi_mask ]
 			printf[ "  VI vcount ours=%u ares=%u ; intr_line ours=%u ares=%u ; vi_field=%u vi_hlpf=%u\n", vi_vcounter, oracle.avcount[], vi_intr_line, oracle.avintr[], vi_field, vi_hlpf ]
@@ -3447,13 +3490,8 @@ element n64 : trinity
 				if [ ov != av ] printf[ "  r%-2d ours=%016llx ares=%016llx\n", i, ov, av ]
 			if [ u64[ cpu.hi ] != oracle.rhi[] ] printf[ "  hi ours=%016llx ares=%016llx\n", u64[ cpu.hi ], oracle.rhi[] ]
 			if [ u64[ cpu.lo ] != oracle.rlo[] ] printf[ "  lo ours=%016llx ares=%016llx\n", u64[ cpu.lo ], oracle.rlo[] ]
-			cosim  = false
-			booted = false
-			return
-		# pc/GPR match here. BD/EPC are set by whichever instruction took the last
-		# exception; a 1-instr interrupt-delivery skew leaves them differing even
-		# after pc re-converges. reconcile from ares every step (harmless jitter).
-		cosim_cop0_sync[]
+			fflush[ null ]                                   # flush before halting the process
+			exit[ 3 ]                                        # STOP on divergence — never continue
 		# agreed at pre-instruction cosim_seq: advance the validated checkpoint
 		if [ cosim_seq >= cosim_next ]
 			r9 : i32 [ ckpt_write[] ]
@@ -3587,6 +3625,8 @@ element n64 : trinity
 				cosim_ff  = cosim_ff - 1               # replaying ours to the validated cycle
 				cosim_seq = cosim_seq + 1
 			el
+				mi_intr = (mi_intr & (~u32[0x21])) | (oracle.amiintr[] & 0x21)   # HLE RSP/RDP: SP+DP int timing from ares
+				mi_check[]
 				cosim_check[]
 		# pending interrupt (IE, not EXL/ERL, enabled + pending lines)
 		st : u32 [ cpu.c_status ]
@@ -4099,6 +4139,9 @@ element n64 : trinity
 			v2 : f32 [ fgs[ i32[ (op >> 16) & 31 ] ] ]
 			ab_a : u32 [ fget32[ fs ] ]
 			ab_b : u32 [ fget32[ i32[ (op >> 16) & 31 ] ] ]
+			fpe : bool [ fn <= 4 ]
+			if [ fn >= 8 && fn <= 37 ] fpe = true
+			if [ fpe ] feclearexcept[ 0x3D ]
 			if [ fn == 0 ] fss[ fd, v1 + v2 ]
 			el [ fn == 1 ] fss[ fd, v1 - v2 ]
 			el [ fn == 2 ] fss[ fd, v1 * v2 ]
@@ -4119,6 +4162,11 @@ element n64 : trinity
 			el [ fn == 36 ] fset32[ fd, u32[ i32[ fcvt_rm[ f64[ v1 ] ] ] ] ]       # cvt.w.s: honor FCR31 RM
 			el [ fn == 37 ] fset64[ fd, u64[ i64[ fcvt_rm[ f64[ v1 ] ] ] ] ]       # cvt.l.s: honor FCR31 RM
 			el [ fn >= 48 ] fcmp[ f64[ v1 ], f64[ v2 ], fn ]
+			if [ fn >= 8 && fn <= 37 ]                        # sw float->int conv: inexact if non-integer
+				if [ fn != 33 ]
+					dv9 : f64 [ f64[ v1 ] ]
+					if [ floor[ dv9 ] != dv9 ] feraiseexcept[ 0x20 ]
+			if [ fpe ] fpu_flags[]
 			# COP1 fmt.S (rs=16) VR4300 cycle cost. base +1 charged in step[]; extra = latency-1.
 			# ref: ares interpreter-fpu.cpp step((lat-1)*2), Count = clocks>>1 (cpu.cpp:144)
 			#   fn0  add.s    lat3  +2   | fn8  round.l.s lat5 +4 | fn12 round.w.s lat5 +4
@@ -4161,6 +4209,9 @@ element n64 : trinity
 			bd : f64 [ fgd[ i32[ (op >> 16) & 31 ] ] ]
 			dd_a : u64 [ fget64[ fs ] ]
 			dd_b : u64 [ fget64[ i32[ (op >> 16) & 31 ] ] ]
+			fpe : bool [ fn <= 4 ]
+			if [ fn >= 8 && fn <= 37 ] fpe = true
+			if [ fpe ] feclearexcept[ 0x3D ]
 			if [ fn == 0 ] fsd[ fd, ad + bd ]
 			el [ fn == 1 ] fsd[ fd, ad - bd ]
 			el [ fn == 2 ] fsd[ fd, ad * bd ]
@@ -4181,6 +4232,10 @@ element n64 : trinity
 			el [ fn == 36 ] fset32[ fd, u32[ i32[ fcvt_rm[ ad ] ] ] ]             # cvt.w.d: honor FCR31 RM
 			el [ fn == 37 ] fset64[ fd, u64[ i64[ fcvt_rm[ ad ] ] ] ]             # cvt.l.d: honor FCR31 RM
 			el [ fn >= 48 ] fcmp[ ad, bd, fn ]
+			if [ fn >= 8 && fn <= 37 ]                        # sw float->int conv: inexact if non-integer
+				if [ fn != 32 ]
+					if [ floor[ ad ] != ad ] feraiseexcept[ 0x20 ]
+			if [ fpe ] fpu_flags[]
 			# COP1 fmt.D (rs=17) VR4300 cycle cost. base +1 in step[]; extra = latency-1.
 			# ref: ares interpreter-fpu.cpp
 			#   fn0  add.d  lat3  +2  | fn2  mul.d   lat8  +7  | fn3  div.d  lat58 +57
@@ -4198,14 +4253,18 @@ element n64 : trinity
 			return
 		if [ rs == 20 ]                                        # fmt W
 			iw : i32 [ i32[ fget32[ fs ] ] ]
+			feclearexcept[ 0x3D ]
 			if [ fn == 32 ] fss[ fd, f32[ iw ] ]                                  # cvt.s.w
 			el [ fn == 33 ] fsd[ fd, f64[ iw ] ]                                  # cvt.d.w
+			fpu_flags[]
 			cpu.c_count += 4                                   # cvt.s.w/cvt.d.w lat5 (ref: ares FCVT_S_W/FCVT_D_W)
 			return
 		if [ rs == 21 ]                                        # fmt L
 			il : i64 [ i64[ fget64[ fs ] ] ]
+			feclearexcept[ 0x3D ]
 			if [ fn == 32 ] fss[ fd, f32[ il ] ]                                  # cvt.s.l
 			el [ fn == 33 ] fsd[ fd, f64[ il ] ]                                  # cvt.d.l
+			fpu_flags[]
 			cpu.c_count += 4                                   # cvt.s.l/cvt.d.l lat5 (ref: ares FCVT_S_L/FCVT_D_L)
 
 	func fcmp [ fa: f64, fb: f64, fn: u32 ]
@@ -4233,7 +4292,7 @@ element n64 : trinity
 			if [ frames == 410 ] pad_st = pad_st & (~u32[0x1000])
 			if [ frames == 470 && getenv[ 'N64_AUTO2' ] ] pad_st = pad_st | 0x8000
 			if [ frames == 480 ] pad_st = pad_st & (~u32[0x8000])
-		ai_drain[]
+		if [ !getenv[ 'N64_NO_AIDRAIN' ] ] ai_drain[]
 		if [ dbg_on && frames == 600 ]
 			printf[ "n64 f600 pc=%08X ra=%08X sp=%08X a0=%08X op=%08X\n", cpu.pc, u32[ cpu.r[31] ], u32[ cpu.r[29] ], u32[ cpu.r[4] ], rd32v[ cpu.pc ] ]
 			printf[ "n64 regs a1=%08X a2=%08X a3=%08X v0=%08X v1=%08X s0=%08X s1=%08X s2=%08X s3=%08X t0=%08X\n", u32[ cpu.r[5] ], u32[ cpu.r[6] ], u32[ cpu.r[7] ], u32[ cpu.r[2] ], u32[ cpu.r[3] ], u32[ cpu.r[16] ], u32[ cpu.r[17] ], u32[ cpu.r[18] ], u32[ cpu.r[19] ], u32[ cpu.r[8] ] ]
@@ -4301,7 +4360,7 @@ element n64 : trinity
 
 	func emu_tick []
 		run_frame[]
-		publish[]
+		if [ !getenv[ 'N64_NO_PUBLISH' ] ] publish[]
 		if [ hold_f > 0 && frames >= hold_f ] paused = true
 
 	func emu_entry [] -> none
@@ -4311,6 +4370,22 @@ element n64 : trinity
 				emu_running = false
 				return
 			boot[]
+		if [ getenv[ 'N64_RUNFRAME_TEST' ] ]
+			for [ k8: i32 0, k8 < 8, k8 += 1 ]
+				emu_tick[]
+			hh8 : u64 [ 0xcbf29ce484222325 ]
+			hh8 = fnv_u64[ hh8, u64[ cpu.pc ] ]
+			for [ r8: i32 0, r8 < 32, r8 += 1 ]
+				hh8 = fnv_u64[ hh8, u64[ cpu.r[ r8 ] ] ]
+			printf[ "n64 RUNFRAME TEST pc=%08X cnt=%u sys_clk=%lld frames=%u h=%016llx\n", cpu.pc, cpu.c_count, sys_clk, frames, hh8 ]
+			fflush[ null ]
+			exit[ 12 ]
+		if [ getenv[ 'N64_OURS_SELFTEST' ] ]
+			for [ k9: i32 0, k9 < 2500000, k9 += 1 ]
+				step[]
+			printf[ "n64 OURS SELFTEST cnt=%u sys_clk=%lld dch=%lld dcm=%lld icm=%lld ic=%d\n", cpu.c_count, sys_clk, dbg_dch, dbg_dcm, dbg_icm, dbg_ic ]
+			fflush[ null ]
+			exit[ 11 ]
 		while [ !emu_stop ]
 			if [ context_req ]
 				context_req = false
@@ -4420,8 +4495,11 @@ element n64 : trinity
 			emu_started = true
 			trace = getenv[ 'N64_TRACE' ] != null
 			pub_lock = mutex [ cond: false ]
-			tid : local u64 [ 1 ]
-			pthread_create[ tid, null, ref emu_entry, a ]
+			if [ cosim ]
+				emu_entry[]                              # cosim: run inline, single-threaded (no render race)
+			el
+				tid : local u64 [ 1 ]
+				pthread_create[ tid, null, ref emu_entry, a ]
 		if [ gpu_on && pub_gxv_n > 0 ]
 			gxr_setup[ cv ]
 			if [ !r_render ] return

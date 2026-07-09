@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # TensorFlow reference for hyperspace --train: same nets, data, labels, args.
-import argparse, os, re, sys
+import argparse, os, re, sys, warnings
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
+warnings.filterwarnings('ignore')
 import numpy as np
 
 def parse_args():
@@ -21,8 +23,13 @@ def parse_args():
     p.add_argument('--preview',   action='store_true')   # dump look inputs as pngs
     p.add_argument('--alternate', type=int, default=0)   # 1 = old vision-train track net
     p.add_argument('--export',    default='')            # write silver .bin (implies silver-parity net)
-    p.add_argument('--look_rot',  type=float, default=5.0)  # +/- deg on look scale variants
+    p.add_argument('--look_rot',  type=float, default=0.0)  # unused: look rotation removed
     p.add_argument('--export_tflite', default='')           # write .tflite for the app's tflite-c runtime
+    p.add_argument('--seed',      type=int, default=1234)   # split/augment seed; 0 = random
+    p.add_argument('--zero_aux',  type=int, default=0)      # 1 = feed zeros as aux (dead-input test)
+    p.add_argument('--aux_dense', type=int, default=0)      # widen aux to N features before concat
+    p.add_argument('--validate',  action='store_true')      # dump raw tensor values entering fit()
+    p.add_argument('--film',      type=int, default=1)      # aux modulates image features (0 = plain concat)
     return p.parse_args()
 
 args = parse_args()
@@ -59,20 +66,20 @@ def crop_tensor(gray, cx, cy, side):
 
 def load_session(session_dir):
     # cached: PNG decode + base crops go to one .npz, keyed by dir mtime
-    cache = os.path.join(session_dir, f'.tfcache-{args.size}-c{args.cams}-v2.npz')
+    cache = os.path.join(session_dir, f'.tfcache-{args.size}-c{args.cams}-v5.npz')
     newest = max((os.path.getmtime(os.path.join(session_dir, f))
                   for f in os.listdir(session_dir) if f.endswith('.agi')), default=0)
     if os.path.exists(cache) and os.path.getmtime(cache) >= newest:
         z = np.load(cache, allow_pickle=True)
         return (z['tx'], z['ty'], list(z['tgray']),
                 [z[k] for k in ('tl', 'tr', 'tf', 'bl', 'br', 'bf')],
-                z['laux'], z['ly'], z['lg'], z['lmeta'])
+                z['laux'], z['ly'], z['lg'], z['lmeta'], z['lfid'])
     r = load_session_uncached(session_dir)
-    tx, ty, tgray, limgs, laux, ly, lg, lmeta = r
+    tx, ty, tgray, limgs, laux, ly, lg, lmeta, lfid = r
     np.savez_compressed(cache, tx=tx, ty=ty, tgray=np.array(tgray),
                         tl=limgs[0], tr=limgs[1], tf=limgs[2],
                         bl=limgs[3], br=limgs[4], bf=limgs[5],
-                        laux=laux, ly=ly, lg=lg, lmeta=lmeta)
+                        laux=laux, ly=ly, lg=lg, lmeta=lmeta, lfid=lfid)
     return r
 
 def load_session_uncached(session_dir):
@@ -82,7 +89,7 @@ def load_session_uncached(session_dir):
     target_x, target_y, target_gray = [], [], []
     # look: one sample per FRAME, both cameras fused (stereo)
     look = {k: [] for k in ('tl', 'tr', 'tf', 'bl', 'br', 'bf')}
-    look_aux, look_y, look_g, look_meta = [], [], [], []
+    look_aux, look_y, look_g, look_meta, look_fid = [], [], [], [], []
     groups = {}
     frame = 0
     while True:
@@ -107,12 +114,12 @@ def load_session_uncached(session_dir):
             target_x.append(full)
             target_y.append([left[0], left[1], right[0], right[1], scale[0]])
             target_gray.append(gray)
-            side = max(scale[0] * 0.5, 0.05)
+            side = max(scale[0] / 3.0, 0.05)
             med  = ((left[0] + right[0]) * 0.5, (left[1] + right[1]) * 0.5)
             cams[cam] = dict(
                 l=crop_tensor(gray, left[0],  left[1],  side),
                 r=crop_tensor(gray, right[0], right[1], side),
-                f=crop_tensor(gray, med[0], med[1], 0.3),
+                f=crop_tensor(gray, med[0], med[1], max(scale[0], 0.1)),
                 aux=[med[0], med[1], scale[0],
                      left[0], left[1], right[0], right[1]],
                 meta=[len(target_gray) - 1, left[0], left[1],
@@ -130,6 +137,7 @@ def load_session_uncached(session_dir):
                 metav += cams[c]['meta']
             look_aux.append(auxv)
             look_meta.append(metav)
+            look_fid.append(frame)
             # head focus + absolute gaze (dot = exact ground truth)
             look_y.append([center[0], center[1],
                            center[0] + offset[0], center[1] + offset[1]])
@@ -141,7 +149,7 @@ def load_session_uncached(session_dir):
     return (np.array(target_x), np.array(target_y, np.float32), target_gray,
             [np.array(look[k]) for k in ('tl', 'tr', 'tf', 'bl', 'br', 'bf')],
             np.array(look_aux, np.float32), np.array(look_y, np.float32),
-            np.array(look_g), np.array(look_meta, np.float32))
+            np.array(look_g), np.array(look_meta, np.float32), np.array(look_fid))
 
 def aug_crop(gray, cx, cy, side):
     # like crop_tensor but out-of-frame samples are BLACK: zero-pad the
@@ -284,45 +292,38 @@ def augment_look(grays, limgs, laux, ly, lmeta, idxs, n_scale=4, n_photo=3):
                 b = (np.random.rand() - 0.5) * 0.3
                 xs[k].append(np.clip((crops[k] - 0.5) * c + 0.5 + b, 0.0, 1.0))
             auxs.append(auxv); ys.append(y)
-    def emit(crops, auxv, y):
-        emit_one(crops, auxv, y)
-        if not args.mirror:
-            return
-        # mirror flips screen x: labels 1-x, eye crops swap L<->R
-        # (each mirrored), aux x-coords flip + swap
-        mc = []
-        for c in range(nc):
-            l, r, f = crops[c * 3:c * 3 + 3]
-            mc += [r[:, ::-1, :], l[:, ::-1, :], f[:, ::-1, :]]
-        ma = np.array(auxv, np.float32).copy()
-        for c in range(nc):
-            b = c * 7
-            lx, lyy, rx, ryy = ma[b + 3], ma[b + 4], ma[b + 5], ma[b + 6]
-            ma[b] = 1.0 - ma[b]
-            ma[b + 3], ma[b + 4] = 1.0 - rx, ryy
-            ma[b + 5], ma[b + 6] = 1.0 - lx, lyy
-        my = np.array(y, np.float32).copy()
-        my[0], my[2] = 1.0 - my[0], 1.0 - my[2]
-        emit_one(mc, ma, my)
+    # no mirror for look: flipped faces measurably hurt gaze (A/B'd)
+    emit = emit_one
     for i in idxs:
         emit([limgs[k][i] for k in range(3 * nc)], laux[i], ly[i])
         for _ in range(n_scale - 1):
             s = 0.9 + np.random.rand() * 0.2
-            d = (np.random.rand() - 0.5) * args.look_rot * 2.0
+            d = 0.0   # no rotation: it would change the screen point
             crops, auxv = [], list(laux[i])
             for c in range(nc):
                 tgi, lx, lyv, rx, ry, sc = lmeta[i][c * 6:(c + 1) * 6]
                 g = grays[int(tgi)]
                 sc2  = sc * s
-                side = max(sc2 * 0.5, 0.05)
+                side = max(sc2 / 3.0, 0.05)
                 med  = ((lx + rx) * 0.5, (lyv + ry) * 0.5)
                 crops += [rot_crop(g, lx, lyv, side, d),
                           rot_crop(g, rx, ry, side, d),
-                          rot_crop(g, med[0], med[1], 0.3 * s, d)]
+                          rot_crop(g, med[0], med[1], max(sc2, 0.1), d)]
                 auxv[c * 7 + 2] = sc2
             emit(crops, np.array(auxv, np.float32), ly[i])
     return ([np.array(x) for x in xs], np.array(auxs, np.float32),
             np.array(ys, np.float32))
+
+def stamp_rows(imgs, auxarr):
+    # row 0 of every crop IS the crop info: zeroed, first 7 px = that
+    # camera's aux. stamped after all pixel augmentation.
+    out = []
+    for k, im in enumerate(imgs):
+        im = np.array(im, np.float32, copy=True)
+        im[:, 0, :, 0] = 0.0
+        im[:, 0, :7, 0] = auxarr[:, (k // 3) * 7:(k // 3) * 7 + 7]
+        out.append(im)
+    return out
 
 def build_target(tf):
     global args
@@ -382,7 +383,18 @@ def build_look(tf):
     h = tf.keras.layers.MaxPool2D(2)(h)
     h = tf.keras.layers.Flatten()(h)
     h = tf.keras.layers.Dense(16, activation='relu')(h)
-    h = tf.keras.layers.Concatenate(axis=-1)([h, aux])
+    a = aux
+    if args.aux_dense:
+        a = tf.keras.layers.Dense(args.aux_dense, activation='relu')(aux)
+    if args.film:
+        # aux MODULATES the image features (scale+shift per feature):
+        # screen point = f(iris) conditioned on head pose — the coupling
+        # is multiplicative, so the optimizer cannot bypass the aux
+        g = tf.keras.layers.Dense(16, activation='tanh')(a)
+        b = tf.keras.layers.Dense(16)(a)
+        h = tf.keras.layers.Multiply()([h, tf.keras.layers.Lambda(lambda t: 1.0 + t)(g)])
+        h = tf.keras.layers.Add()([h, b])
+    h = tf.keras.layers.Concatenate(axis=-1)([h, a])
     h = tf.keras.layers.Dense(128, activation='relu')(h)
     y = tf.keras.layers.Dense(4)(h)
     return tf.keras.Model(imgs + [aux], y)
@@ -445,6 +457,46 @@ def fit_loop(tf, model, x_tr, y_tr, x_ev, y_ev, args, out_labels):
     opt = (tf.keras.optimizers.Adam(args.lr) if args.optimizer == 'adam'
            else tf.keras.optimizers.SGD(args.lr))
     model.compile(opt, 'mse')
+    # --preview proof: the dumped pngs ARE the vectors entering fit()
+    if args.preview and len(x_tr) > 1:
+        from PIL import Image as PImage
+        pd = os.path.join(f'/src/hyperspace-sessions/{args.session}', 'preview-tf')
+        ok = bad = 0
+        for j in range(0, len(y_tr), 4):
+            p = os.path.join(pd, f'look_{j:05d}.png')
+            if not os.path.exists(p):
+                continue
+            saved = np.asarray(PImage.open(p))
+            row = (np.hstack([x[j][:, :, 0] for x in x_tr[:-1]]) * 255).astype(np.uint8)
+            if saved.shape == row.shape and np.array_equal(saved, row):
+                ok += 1
+            else:
+                bad += 1
+        print(f'preview vs training vectors: {ok} identical, {bad} MISMATCHED')
+    if args.validate:
+        # raw values entering fit(): global stats + first samples verbatim
+        names2 = ([f'img{k}' for k in range(len(x_tr) - 1)] + ['aux']
+                  if len(x_tr) > 1 else ['img0'])
+        print('validate: raw training tensors')
+        for nm, x in zip(names2, x_tr):
+            x = np.asarray(x)
+            print(f'  {nm}: shape {x.shape} dtype {x.dtype} '
+                  f'min {x.min():.6f} max {x.max():.6f} mean {x.mean():.6f} '
+                  f'nan {int(np.isnan(x).sum())}')
+        yv = np.asarray(y_tr)
+        print(f'  label: shape {yv.shape} min {yv.min():.6f} max {yv.max():.6f} '
+              f'nan {int(np.isnan(yv).sum())}')
+        # one sample per SOURCE FRAME (16 augment copies per frame sit
+        # consecutively; consecutive rows sharing aux is by design)
+        step = 16
+        fids = getattr(args, '_val_fids', None)
+        for f2 in range(min(8, len(y_tr) // step)):
+            j = f2 * step
+            if len(x_tr) > 1:
+                tag = f'{fids[f2]}.agi' if fids is not None else f'frame {f2}'
+                print(f'  {tag} (sample {j}): aux '
+                      f'{np.array2string(np.asarray(x_tr[-1][j]), precision=4)}'
+                      f'  label {np.array2string(yv[j], precision=4)}')
     print(pad('epoch', 10) + pad('train') + pad('eval') +
           ''.join(pad(c) for c in out_labels))
     # checkpoint like silver: keep + write best mean |err| epoch
@@ -475,10 +527,20 @@ def fit_loop(tf, model, x_tr, y_tr, x_ev, y_ev, args, out_labels):
 
 def main():
     args = parse_args()
-    import tensorflow as tf
+    if args.seed:
+        np.random.seed(args.seed)
+    # port.cc chatter ignores TF_CPP_MIN_LOG_LEVEL; mute stderr on import
+    err, devnull = os.dup(2), os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, 2)
+    try:
+        import tensorflow as tf
+    finally:
+        os.dup2(err, 2)
+        os.close(err)
+        os.close(devnull)
     tf.get_logger().setLevel('ERROR')
     session_dir = f'/src/hyperspace-sessions/{args.session}'
-    tx, ty, tgray, limgs, laux, ly, lgroups, lmeta = load_session(session_dir)
+    tx, ty, tgray, limgs, laux, ly, lgroups, lmeta, lfid = load_session(session_dir)
     n_te, n_le = len(ty) // 10, len(ly) // 10
     print(f'train: {len(ty) - n_te} target (+{n_te} eval), '
           f'{len(ly) - n_le} look (+{n_le} eval)')
@@ -519,6 +581,7 @@ def main():
         ev = np.array([i for i in range(len(ly)) if lgroups[i] in ev_g])
         tr = np.array([i for i in range(len(ly)) if lgroups[i] not in ev_g])
         ax, aaux, ay = augment_look(tgray, limgs, laux, ly, lmeta, tr)
+        ax = stamp_rows(ax, aaux)
         print(f'look augmented: {len(ay)} train / {len(ev)} eval '
               f'({len(ev_g)} of {len(gids)} circles held out)')
         if args.preview:
@@ -530,13 +593,46 @@ def main():
                 row = np.hstack([ax[k][j][:, :, 0] for k in range(3 * args.cams)])
                 PImage.fromarray((row * 255).astype(np.uint8)).save(
                     os.path.join(pd, f'look_{j:05d}.png'))
-            print(f'preview: {(len(ay) + 3) // 4} pngs -> {pd}')
+            # per canonical sample: full frame + the crop rects used
+            # rects are NEVER shrunk to fit: frame sits on a black
+            # margin so off-frame windows show at true position/size
+            def draw_rect(img, cx, cy, side, iw, pad):
+                h2, w2 = img.shape
+                x0 = int(np.clip((cx - side / 2) * iw + pad, 0, w2 - 1))
+                x1 = int(np.clip((cx + side / 2) * iw + pad, 0, w2 - 1))
+                y0 = int(np.clip((cy - side / 2) * iw + pad, 0, h2 - 1))
+                y1 = int(np.clip((cy + side / 2) * iw + pad, 0, h2 - 1))
+                img[y0:y1 + 1, x0] = img[y0:y1 + 1, x1] = 255
+                img[y0, x0:x1 + 1] = img[y1, x0:x1 + 1] = 255
+            block = 4 * (1 + 3)   # n_scale x (1 + n_photo)
+            for k2, i in enumerate(tr):
+                j = k2 * block
+                if j >= len(ay): break
+                for c in range(args.cams):
+                    tgi, lx, lyv, rx, ry, sc = lmeta[i][c * 6:(c + 1) * 6]
+                    src = tgray[int(tgi)].astype(np.uint8)
+                    iw = src.shape[1]
+                    pad = iw // 3
+                    fr = np.zeros((src.shape[0] + 2 * pad, iw + 2 * pad), np.uint8)
+                    fr[pad:pad + src.shape[0], pad:pad + iw] = src
+                    es = max(sc / 3.0, 0.05)
+                    draw_rect(fr, lx, lyv, es, iw, pad)
+                    draw_rect(fr, rx, ry, es, iw, pad)
+                    draw_rect(fr, (lx + rx) / 2, (lyv + ry) / 2, max(sc, 0.1), iw, pad)
+                    sfx = '' if args.cams == 1 else f'_c{c}'
+                    PImage.fromarray(fr).save(
+                        os.path.join(pd, f'look_{j:05d}_frame{sfx}.png'))
+            print(f'preview: {(len(ay) + 3) // 4} crop pngs + {len(tr)} frame pngs -> {pd}')
+        if args.zero_aux:
+            aaux = np.zeros_like(aaux)
+            laux = np.zeros_like(laux)
         if want_look:
+            args._val_fids = lfid[tr]
             lm = build_look(tf)
+            sev = stamp_rows([x[ev] for x in limgs[:3 * args.cams]], laux[ev])
             run(tf, lm, None, None, args,
                 ['head.x', 'head.y', 'gaze.x', 'gaze.y'],
-                presplit=(ax + [aaux], ay,
-                          [x[ev] for x in limgs[:3 * args.cams]] + [laux[ev]], ly[ev]))
+                presplit=(ax + [aaux], ay, sev + [laux[ev]], ly[ev]))
             if args.export:
                 export_bin(tf, lm, args.export)
             if args.export_tflite:
@@ -568,11 +664,13 @@ def main():
             print(f'look_{bx}_{by}: {int(m_tr.sum())} train / {int(m_ev.sum())} eval')
             if not m_tr.any() or not m_ev.any():
                 continue
+            args._val_fids = lfid[tr][in_band]
             em = build_look(tf)
+            sxe = stamp_rows([x[m_tr] for x in exa], exaux[m_tr])
+            see = stamp_rows([x[ev][m_ev] for x in limgs[:3 * args.cams]], laux[ev][m_ev])
             run(tf, em, None, None, args,
                 ['head.x', 'head.y', 'gaze.x', 'gaze.y'],
-                presplit=([x[m_tr] for x in exa] + [exaux[m_tr]], ty2,
-                          [x[ev][m_ev] for x in limgs[:3 * args.cams]] + [laux[ev][m_ev]], ey2))
+                presplit=(sxe + [exaux[m_tr]], ty2, see + [laux[ev][m_ev]], ey2))
             if args.export:
                 export_bin(tf, em, args.export)
             if args.export_tflite:

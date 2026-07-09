@@ -1,0 +1,11 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+new file mode 100644
+--- /dev/null
++++ b/CMakeLists.txt
+@@ -0,0 +1,6 @@
++# silver import shim: tensorflow has no root cmake; expose lite/c
++cmake_minimum_required(VERSION 3.16)
++project(tensorflowlite_c C CXX)
++add_subdirectory(tensorflow/lite/c)
++install(TARGETS tensorflowlite_c LIBRARY DESTINATION lib)
++install(DIRECTORY tensorflow/lite DESTINATION include/tensorflow FILES_MATCHING PATTERN "*.h")
