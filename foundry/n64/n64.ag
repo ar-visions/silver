@@ -289,6 +289,9 @@ element n64 : trinity
 	mutable cosim_ppc    : u32            # pc of the last instruction we executed (culprit on diverge)
 	mutable cosim_pop    : u32            # opcode of that instruction
 	mutable cosim_pbase  : u32            # base register value before exec (loads clobber rt==rs)
+	mutable cosim_asp    : u32            # ares SP_STATUS captured at pre-instruction (aligned to our read)
+	mutable in_ds        : bool           # current instruction sits in a branch delay slot (Cause.BD)
+	mutable ds_pend      : bool           # this instruction makes the next one a delay slot
 	mutable cosim_ff     : i64            # fast-forward budget: run ours alone this many steps on resume
 	mutable cosim_next   : i64            # next seq at which to write the validated checkpoint
 	mutable cosim_iv     : i64 [ 1 ]      # checkpoint EVERY validated instruction (frontier); N64_COSIM_IV overrides
@@ -306,12 +309,11 @@ element n64 : trinity
 	mutable dbg_icm        : i64          # icache misses
 	mutable dbg_rcc        : i64          # io_rcost nonzero charges
 	mutable cosim_cdef     : i64          # running net count deficit (ares - ours)
-	mutable dbg_dch2       : u32          # prev our dc_tag[194] (dcache co-sim probe)
-	mutable dbg_dcm2       : u32          # prev ares dc_tag[194] (dcache co-sim probe)
 	mutable rdram        : new u8 [ 0x800000 ]
 	mutable dmem         : new u8 [ 0x1000 ]
 	mutable imem         : new u8 [ 0x1000 ]
 	mutable pif_ram      : new u8 [ 64 ]
+	mutable eeprom       : new u8 [ 512 ]    # cartridge 4kbit EEPROM (joybus channel 4)
 	mutable pif_rom      : new u8 [ 1984 ] [
 		0x3C, 0x09, 0x34, 0x00, 0x40, 0x89, 0x60, 0x00, 0x3C, 0x09, 0x00, 0x06, 0x35, 0x29, 0xE4, 0x63,
 		0x40, 0x89, 0x80, 0x00, 0x3C, 0x08, 0xA4, 0x04, 0x8D, 0x08, 0x00, 0x10, 0x31, 0x08, 0x00, 0x01,
@@ -835,6 +837,7 @@ element n64 : trinity
 	# documented post-IPL state, PC = header entry point
 	func boot []
 		cpu = cpu_vr4300 []
+		for [ ei: i32 0, ei < 512, ei += 1 ] eeprom[ ei ] = 0xFF   # ares Writable default fill
 		entry : u32 [ rom32[ 8 ] ]
 		if [ cosim ] lle = true                          # co-sim needs the same LLE boot ares does
 		if [ lle ]
@@ -1000,7 +1003,7 @@ element n64 : trinity
 		if [ dbg_on && frames >= 224 && frames < 232 ]
 			printf[ "n64 IOR %08X (pc=%08X)\n", pa, cpu.pc ]
 		if [ pa == 0x04040010 ]
-			if [ cosim ] return oracle.aspstat[]             # HLE RSP: status from ares
+			if [ cosim ] return cosim_asp                    # HLE RSP: pre-instruction SP_STATUS from ares
 			return sp_status
 		if [ pa == 0x04040018 ] return 0                    # SP DMA busy
 		if [ pa == 0x0404001C ]
@@ -1017,7 +1020,7 @@ element n64 : trinity
 			return vi_current
 		if [ pa == 0x04600010 ] return pi_status
 		if [ pa == 0x04800018 ] return si_status
-		if [ pa == 0x04500004 ] return ai_len
+		if [ pa == 0x04500004 ] return ai_fifo_len[ 0 ]     # ares: live dmaLength[0], decrements as DMA plays
 		if [ pa == 0x0450000C ]                              # AI status (ares AI_STATUS bits)
 			st : u32 [ 0x01100000 ]                          # bit20 + bit24 always set
 			if [ ai_fifo_n > 1 ] st = st | 0x80000001        # bit31 + bit0: fifo full
@@ -1093,6 +1096,39 @@ element n64 : trinity
 		cyc += nbuf * 28
 		cyc += pbytes
 		return cyc * 3
+
+	# SI DMA read duration (ares PIF::estimateTiming). Parses the joybus send
+	# packet in PIF RAM; returns cycles (caller *3 -> thread-clocks). No
+	# controllers connected in co-sim -> device-absent 18000 per channel.
+	func pif_est_timing [] -> u32
+		cyc : u32 [ 13600 ]
+		scmd : u32 [ 0 ]
+		off : u32 [ 0 ]
+		ch : u32 [ 0 ]
+		while [ off < 64 && ch < 5 ]
+			send : u32 [ u32[ pif_ram[ off & 63 ] ] ]
+			off += 1
+			if [ send == 0xFE ]
+				scmd += 1
+				off = 64                                     # end of packets: break
+			el [ send == 0x00 ]
+				scmd += 1
+				ch += 1
+			el [ send == 0xFD ]
+				scmd += 1
+				ch += 1
+			el [ send == 0xFF ]
+				scmd += 1
+			el
+				recv : u32 [ u32[ pif_ram[ off & 63 ] ] ]
+				off += 1
+				off += send & 0x3F                           # send data bytes
+				off += recv & 0x3F                           # recv data bytes
+				if [ ch < 4 ] cyc += 18000
+				el cyc += 20000
+				ch += 1
+		cyc += 1420 * scmd
+		return cyc
 
 	func io_write [ pa: u32, v: u32 ]
 		if [ dbg_on && frames >= 224 && frames < 232 ]
@@ -1289,7 +1325,7 @@ element n64 : trinity
 				rdram[ si_dram + i ] = pif_ram[ i ]
 			si_status = (si_status & 0x1000) | 0x0141        # dmaBusy|pch=4|dmaState=1
 			si_dma_p  = true                                 # defer completion interrupt (real HW: ~ms later)
-			si_dma_at = c_istart + si_lat
+			si_dma_at = c_istart + (pif_est_timing[] * 3 + 1) / 2   # ares SI_DMA_Read: estimateTiming*3 thread-clocks
 			if [ hash_on ] printf[ "SIKICK rd seq=%llu count=%u at=%u\n", hash_seq, cpu.c_count, si_dma_at ]
 			return
 		if [ pa == 0x04800010 ]                              # SI write64: RDRAM -> PIF
@@ -1299,7 +1335,7 @@ element n64 : trinity
 			pif_joybus[]
 			si_status = (si_status & 0x1000) | 0x0411        # dmaBusy|pch=1|dmaState=4
 			si_dma_p  = true
-			si_dma_at = c_istart + si_lat
+			si_dma_at = c_istart + (4065 * 3 + 1) / 2        # ares SI_DMA_Write: 4065*3 thread-clocks
 			if [ hash_on ] printf[ "SIKICK wr seq=%llu count=%u at=%u\n", hash_seq, cpu.c_count, si_dma_at ]
 			return
 		if [ pa == 0x04800018 ]
@@ -3093,16 +3129,33 @@ element n64 : trinity
 				continue
 			rx : i32 [ i32[ pif_ram[ i + 1 ] ] & 0x3F ]
 			cmd : i32 [ i32[ pif_ram[ i + 2 ] ] ]
-			if [ ch == 0 && (cmd == 0 || cmd == 0xFF) && i + 4 < 64 ]      # info
+			present : bool [ ch == 0 && !cosim ]                          # co-sim ares has no controller plugged in
+			if [ present && (cmd == 0 || cmd == 0xFF) && i + 4 < 64 ]      # info
 				pif_ram[ i + 3 ] = 0x05
 				pif_ram[ i + 4 ] = 0x00
 				pif_ram[ i + 5 ] = 0x02                                    # no pak
-			el [ ch == 0 && cmd == 1 && i + 6 < 64 ]                       # read state
+			el [ present && cmd == 1 && i + 6 < 64 ]                       # read state
 				pif_ram[ i + 3 ] = u8[ pad_st >> 8 ]
 				pif_ram[ i + 4 ] = u8[ pad_st ]
 				pif_ram[ i + 5 ] = u8[ stick_x ]
 				pif_ram[ i + 6 ] = u8[ stick_y ]
-			el [ ch > 0 && i + 1 < 64 ]                                    # absent channels
+			el [ ch == 4 && (cmd == 0 || cmd == 0xFF) && i + 5 < 64 ]      # cartridge EEPROM info (4kbit)
+				pif_ram[ i + 3 ] = 0x00
+				pif_ram[ i + 4 ] = 0x80
+				pif_ram[ i + 5 ] = 0x00                                    # not busy
+			el [ ch == 4 && cmd == 0x04 && i + 3 < 64 ]                    # EEPROM read: recv bytes after send data
+				ea6 : i32 [ (i32[ pif_ram[ i + 3 ] ] & 0xFF) * 8 ]
+				op6 : i32 [ i + 2 + (t & 0x3F) ]
+				for [ k6: i32 0, k6 < rx, k6 += 1 ]
+					if [ op6 + k6 < 64 ] pif_ram[ op6 + k6 ] = eeprom[ (ea6 + k6) & 0x1FF ]
+			el [ ch == 4 && cmd == 0x05 && i + 3 < 64 ]                    # EEPROM write: send-2 data bytes
+				ea7 : i32 [ (i32[ pif_ram[ i + 3 ] ] & 0xFF) * 8 ]
+				nb7 : i32 [ (t & 0x3F) - 2 ]
+				for [ k7: i32 0, k7 < nb7, k7 += 1 ]
+					if [ i + 4 + k7 < 64 ] eeprom[ (ea7 + k7) & 0x1FF ] = pif_ram[ i + 4 + k7 ]
+				op7 : i32 [ i + 2 + (t & 0x3F) ]
+				if [ op7 < 64 ] pif_ram[ op7 ] = 0x00                      # not busy
+			el [ i + 1 < 64 ]                                             # absent channel: flag no device
 				pif_ram[ i + 1 ] = u8[ u32[ rx ] | 0x80 ]
 			i += 3 + (t & 0x3F) + rx
 			ch += 1
@@ -3160,12 +3213,13 @@ element n64 : trinity
 	func take_int []
 		dbg_ic += 1
 		cpu.c_cause = cpu.c_cause & (~u32[0x3000007C])      # ExcCode 0 + CE 0 (ares sets coproc=0)
-		if [ cpu.npc != cpu.pc + 4 ]                         # in a branch delay slot:
+		if [ in_ds ]                                         # in a branch delay slot (taken or not):
 			cpu.c_epc = cpu.pc - 4                           # EPC = the branch, BD set,
 			cpu.c_cause = cpu.c_cause | 0x80000000           # so ERET re-runs branch+slot
 		el
 			cpu.c_epc = cpu.pc
 			cpu.c_cause = cpu.c_cause & (~u32[0x80000000])
+		in_ds = false                                        # exception vector is not a delay slot
 		if [ dbg_esc < 40 && (cpu.pc < 0x80000000 || cpu.pc >= 0x80400000) ]
 			dbg_esc += 1
 			printf[ "n64 INT from bogus pc=%08X ra=%08X f%u\n", cpu.pc, u32[ cpu.r[31] ], frames ]
@@ -3400,6 +3454,12 @@ element n64 : trinity
 	# honoring the enable bits (7-11). matches ares checkFPUExceptions.
 	func fpu_flags []
 		exc : i32 [ fetestexcept[ 0x3D ] ]
+		if [ cosim_seq > 288901900 && cosim_seq < 288902120 ]
+			fop : u32 [ rd_phys32[ vmap[ cpu.pc - 4 ] ] ]
+			ffs : i32 [ i32[ (fop >> 11) & 31 ] ]
+			fft : i32 [ i32[ (fop >> 16) & 31 ] ]
+			ffd : i32 [ i32[ (fop >> 6) & 31 ] ]
+			printf[ "n64 FPU seq=%lld pc=%08X op=%08X exc=%02X fcr31=%08X fs=%016llX ft=%016llX fd=%016llX\n", cosim_seq, cpu.pc - 4, fop, exc, cpu.fcr31, fget64[ ffs ], fget64[ fft ], fget64[ ffd ] ]
 		cpu.fcr31 = cpu.fcr31 & (~u32[ 0x3F000 ])            # clear cause field per op
 		en : u32 [ (cpu.fcr31 >> 7) & 0x1F ]
 		if [ (exc & 0x20) != 0 ]                             # inexact
@@ -3458,18 +3518,11 @@ element n64 : trinity
 		cdelta : i64 [ sys_clk - oracle.acpuclk[] ]
 		if [ cosim_seq >= 719950 && cosim_seq <= 719978 ]
 			printf[ "n64 STEP seq=%lld pc=%08X ppc=%08X pop=%08X sys_step=%lld ares_step=%lld delta=%lld\n", cosim_seq, cpu.pc, cosim_ppc, cosim_pop, sys_clk - dbg_psys, oracle.acpuclk[] - dbg_pares, cdelta ]
-		if [ cdelta != dbg_clkdelta && cosim_seq > 23200000 && cosim_cnt_rep < 120 ]
+		if [ cdelta != dbg_clkdelta && cosim_seq > 1000 && cosim_cnt_rep < 120 ]   # count-cost drift vs ares
 			cosim_cnt_rep += 1
 			dea : u32 [ cosim_pbase + u32[ sx16[ cosim_pop ] ] ]
 			ddi : i32 [ i32[ (dea >> 4) & 0x1FF ] ]
 			printf[ "n64 DRIFT seq=%lld pc=%08X op=%08X ea=%08X dcidx=%d dctag=%08X cdelta %lld->%lld (ours=%lld ares=%lld)\n", cosim_seq, cosim_ppc, cosim_pop, dea, ddi, dc_tag[ ddi ], dbg_clkdelta, cdelta, sys_clk - dbg_psys, oracle.acpuclk[] - dbg_pares ]
-		if [ cosim_seq >= 23283000 && cosim_seq <= 23286735 ]
-			o194 : u32 [ dc_tag[ 194 ] ]
-			a194 : u32 [ oracle.adctag[ 194 ] ]
-			if [ (o194 != dbg_dch2) || (a194 != dbg_dcm2) ]
-				printf[ "n64 DC194 seq=%lld ppc=%08X pop=%08X our=%08X->%08X ares=%08X->%08X\n", cosim_seq, cosim_ppc, cosim_pop, dbg_dch2, o194, dbg_dcm2, a194 ]
-				dbg_dch2 = o194
-				dbg_dcm2 = a194
 		dbg_clkdelta = cdelta
 		dbg_psys  = sys_clk
 		dbg_pares = oracle.acpuclk[]
@@ -3627,6 +3680,7 @@ element n64 : trinity
 			el
 				mi_intr = (mi_intr & (~u32[0x21])) | (oracle.amiintr[] & 0x21)   # HLE RSP/RDP: SP+DP int timing from ares
 				mi_check[]
+				cosim_asp = oracle.aspstat[]           # pre-instruction SP_STATUS (aligned to our SP_STATUS reads)
 				cosim_check[]
 		# pending interrupt (IE, not EXL/ERL, enabled + pending lines)
 		st : u32 [ cpu.c_status ]
@@ -3695,7 +3749,9 @@ element n64 : trinity
 		cpu.npc = cpu.pc + 4
 		c0 : u32 [ cpu.c_count ]                              # exec adds multicycle stall cycles (mul/div/...)
 		cosim_pbase = u32[ cpu.r[ (op >> 21) & 31 ] ]        # base reg before exec (culprit report)
+		ds_pend = false                                      # branch/jump sets this if next instr is a delay slot
 		exec[ op, cur ]
+		in_ds = ds_pend                                      # next instruction is a delay slot iff this branched
 		cosim_ppc = cur                                       # remember for co-sim culprit report
 		cosim_pop = op
 		cpu.r[ 0 ] = 0
@@ -3736,9 +3792,11 @@ element n64 : trinity
 	func branch [ cond: bool, cur: u32, op: u32, likely: bool ]
 		if [ cond ]
 			cpu.npc = cur + 4 + (u32[ sx16[ op ] ] << 2)
+			ds_pend = true
 		el [ likely ]
-			cpu.pc  = cpu.npc
+			cpu.pc  = cpu.npc                                # branch-likely not taken: nullify delay slot
 			cpu.npc = cpu.pc + 4
+		el ds_pend = true                                    # regular not-taken: delay slot still executes
 
 	func exec [ op: u32, cur: u32 ]
 		o  : u32 [ op >> 26 ]
@@ -3771,9 +3829,11 @@ element n64 : trinity
 			branch[ c, cur, op, false ]
 		case 0x02                                              # J
 			cpu.npc = ((cur + 4) & 0xF0000000) | ((op & 0x3FFFFFF) << 2)
+			ds_pend = true
 		case 0x03                                              # JAL
 			cpu.r[ 31 ] = sx32[ cur + 8 ]
 			cpu.npc = ((cur + 4) & 0xF0000000) | ((op & 0x3FFFFFF) << 2)
+			ds_pend = true
 		case 0x04
 			branch[ cpu.r[ rs ] == cpu.r[ rt ], cur, op, false ]
 		case 0x05
@@ -3844,22 +3904,28 @@ element n64 : trinity
 			wr8v[ u32[ cpu.r[ rs ] + im ], u32[ cpu.r[ rt ] ] ]
 		case 0x29
 			wr16v[ u32[ cpu.r[ rs ] + im ], u32[ cpu.r[ rt ] ] ]
-		case 0x2A                                              # SWL
+		case 0x2A                                              # SWL (ares: partial byte/half/word, no RMW read)
 			a4 : u32 [ u32[ cpu.r[ rs ] + im ] ]
-			sh3 : u32 [ (a4 & 3) * 8 ]
-			w3 : u32 [ rd32v[ a4 & (~u32[3]) ] ]
-			ov3 : u32 [ u32[ cpu.r[ rt ] ] ]
-			nv : u32 [ (sh3 == 0) ? ov3 : ((w3 & (~(u32[0xFFFFFFFF] >> sh3))) | (ov3 >> sh3)) ]
-			wr32v[ a4 & (~u32[3]), nv ]
+			d4 : u32 [ u32[ cpu.r[ rt ] ] ]
+			al4 : u32 [ a4 & 3 ]
+			if [ al4 == 0 ] wr32v[ a4, d4 ]
+			el [ al4 == 1 ]
+				wr8v[ a4, d4 >> 24 ]
+				wr16v[ a4 + 1, d4 >> 8 ]
+			el [ al4 == 2 ] wr16v[ a4, d4 >> 16 ]
+			el wr8v[ a4, d4 >> 24 ]
 		case 0x2B
 			wr32v[ u32[ cpu.r[ rs ] + im ], u32[ cpu.r[ rt ] ] ]
-		case 0x2E                                              # SWR
+		case 0x2E                                              # SWR (ares: partial byte/half/word, no RMW read)
 			a5 : u32 [ u32[ cpu.r[ rs ] + im ] ]
-			sh4 : u32 [ (3 - (a5 & 3)) * 8 ]
-			w4 : u32 [ rd32v[ a5 & (~u32[3]) ] ]
-			ov4 : u32 [ u32[ cpu.r[ rt ] ] ]
-			nv2 : u32 [ (sh4 == 0) ? ov4 : ((w4 & (~(u32[0xFFFFFFFF] << sh4))) | (ov4 << sh4)) ]
-			wr32v[ a5 & (~u32[3]), nv2 ]
+			d5 : u32 [ u32[ cpu.r[ rt ] ] ]
+			al5 : u32 [ a5 & 3 ]
+			if [ al5 == 0 ] wr8v[ a5, d5 ]
+			el [ al5 == 1 ] wr16v[ a5 & (~u32[1]), d5 ]      # ares write<Half> aligns to even
+			el [ al5 == 2 ]
+				wr8v[ a5, d5 ]
+				wr16v[ a5 - 2, d5 >> 8 ]
+			el wr32v[ a5 & (~u32[3]), d5 ]                    # ares write<Word> aligns to word
 		case 0x2F                                              # CACHE
 			cache_op[ u32[ rt ], u32[ cpu.r[ rs ] + im ] ]
 			return
@@ -3903,9 +3969,11 @@ element n64 : trinity
 			cpu.r[ rd ] = sx32[ u32[ i32[ cpu.r[ rt ] ] >> i32[ cpu.r[ rs ] & 31 ] ] ]
 		case 0x08                                              # JR
 			cpu.npc = u32[ cpu.r[ rs ] ]
-		case 0x09
+			ds_pend = true
+		case 0x09                                              # JALR
 			cpu.r[ rd ] = sx32[ cpu.pc + 4 ]
 			cpu.npc = u32[ cpu.r[ rs ] ]
+			ds_pend = true
 		case 0x0F                                              # SYNC
 			return
 		case 0x10

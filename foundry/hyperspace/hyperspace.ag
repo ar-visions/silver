@@ -717,9 +717,11 @@ element hyperspace : trinity
             ts_gate.forward1[ full, g6, 32 ]
             # gate says face unusable: settle to center
             if [ g6.floats[0] < 0.0 ] return null
-        t5   : tensor [ tensor_shape: 1x5 ]
+        t5   : tensor [ tensor_shape: 1x6 ]
         if [ ts_target ]
             ts_target.forward1[ full, t5, 32 ]
+            # target's own off_screen logit: second detector after gate
+            if [ t5.floats[5] > 0.0 ] return null
         el [ lt_target ]
             tin5 : array tensor [ full ]
             lt_target.forward_n[ tin5, t5 ]

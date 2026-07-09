@@ -343,7 +343,7 @@ def load_plot_frames(session_dir):
 
 def build_plot_cache(session_dir):
     tag = args.model
-    cache = os.path.join(session_dir, f'.torchcache-{tag}-{args.size}-w{args.rwin}-v8.npz')
+    cache = os.path.join(session_dir, f'.torchcache-{tag}-{args.size}-w{args.rwin}-v10.npz')
     dirs = [session_dir] + [os.path.join(session_dir, s)
                             for s in ('volume_look', 'volume_head',
                                       'applied_look', 'applied_head')
@@ -375,8 +375,15 @@ def build_plot_cache(session_dir):
                 sh2[y0s:y1s, x0s:x1s] = gray[y0s - sy:y1s - sy, x0s - sx:x1s - sx]
                 xs.append(crop_tensor(sh2, 0.0, 0.0, 0.0))
                 dx, dy = sx / w2, sy / w2
+                # centroid within half a face-scale of an edge: the
+                # face is effectively leaving the view -> off_screen
+                cxs = (lab[0] + lab[2]) / 2 + dx
+                cys = (lab[1] + lab[3]) / 2 + dy
+                hs = lab[4] / 2
+                offl = 1.0 if (cxs < hs or cxs > 1 - hs
+                               or cys < hs or cys > 1 - hs) else 0.0
                 ys.append([lab[0] + dx, lab[1] + dy,
-                           lab[2] + dx, lab[3] + dy, lab[4]])
+                           lab[2] + dx, lab[3] + dy, lab[4], offl])
         else:
             lx, lyv, rx, ry, sc = lab
             for _ in range(args.rwin):
@@ -392,6 +399,25 @@ def build_plot_cache(session_dir):
                     continue
                 xs.append(crop_tensor(gray, cx, cy, ws))
                 ys.append(wl)
+    # 6th column: off_screen. domain frames 0; volume_off frames 1
+    # (coords masked) — a second detector besides the gate. shifted
+    # variants may already carry their own off label
+    ys = [lab + [0.0] if len(lab) == 5 else lab for lab in ys]
+    if args.model == 'target':
+        nd = os.path.join(session_dir, 'volume_off')
+        neg = 0
+        i = 0
+        while os.path.exists(os.path.join(nd, f'{i}.agi')):
+            png = os.path.join(nd, f'{i}-top.png')
+            i += 1
+            if not os.path.exists(png):
+                continue
+            gray = np.asarray(Image.open(png).convert('L'))
+            xs.append(crop_tensor(gray, 0.0, 0.0, 0.0))
+            ys.append([0.5, 0.5, 0.5, 0.5, 0.2, 1.0])
+            neg += 1
+        if neg:
+            print(f'volume_off: {neg} off-screen negatives')
     x = np.array(xs, np.float32)
     y = np.array(ys, np.float32)
     np.savez_compressed(cache, x=x, y=y)
@@ -414,7 +440,7 @@ class PlotNet(nn.Module):
             nn.MaxPool2d(2), nn.Flatten(),
             nn.Linear(s * s * 32, 64), nn.ReLU())
         self.head = nn.Sequential(nn.Linear(3 * k + 64, 64), nn.ReLU(),
-                                  nn.Linear(64, 5))
+                                  nn.Linear(64, 6))   # 5 coords + off_screen logit
         self.register_buffer('lin', torch.linspace(0.0, 1.0, args.size))
 
     def forward(self, x):
@@ -546,6 +572,14 @@ def annotate_frames():
                             gated += 1
                             continue
                     t5 = nets['target'](nchw(full[None]).to(dev))[0].cpu().numpy()
+                    if len(t5) > 5:
+                        p_off2 = 1.0 / (1.0 + np.exp(-float(t5[5])))
+                        if p_off2 > (0.35 if is_vol else 0.5):
+                            agi_strip(ap, ('top_left', 'top_right',
+                                           'top_scale', '    head'))
+                            agi_put(ap, 'off_screen', 'true')
+                            gated += 1
+                            continue
                     lx, lyv, rx, ry, sc = [float(v) for v in t5[:5]]
                     fcx0 = (lx + rx) / 2
                     fcy0 = (lyv + ry) / 2
@@ -709,7 +743,7 @@ def train_plot():
     ytr = torch.from_numpy(y[tr]).to(dev)
     xev = nchw(x[ev]).to(dev)
     yev = torch.from_numpy(y[ev]).to(dev)
-    cols = ['left.x', 'left.y', 'right.x', 'right.y', 'scale']
+    cols = ['left.x', 'left.y', 'right.x', 'right.y', 'scale', 'off.err']
     print(pad('epoch', 10) + pad('train') + pad('eval') +
           ''.join(pad(c) for c in cols))
     best, best_state, best_ep = None, None, 0
@@ -724,16 +758,22 @@ def train_plot():
             if args.noise > 0:
                 xb = xb + torch.randn_like(xb) * args.noise
             p = m(xb)
-            loss = ((p - ytr[idx]) ** 2).mean()
+            pm = (1.0 - ytr[idx, 5:6])
+            coord = (((p[:, :5] - ytr[idx, :5]) ** 2) * pm).sum() / (pm.sum() * 5 + 1e-6)
+            offb  = nn.functional.binary_cross_entropy_with_logits(p[:, 5], ytr[idx, 5])
+            loss = coord + 0.2 * offb
             opt.zero_grad()
             loss.backward()
             opt.step()
-            tot += float(loss.detach()) * len(idx)
+            tot += float(coord.detach()) * len(idx)
         m.eval()
         with torch.no_grad():
             p = m(xev)
-            eval_loss = float(((p - yev) ** 2).mean())
-            errs = (p - yev).abs().mean(0).cpu().numpy()
+            onm = yev[:, 5] < 0.5
+            eval_loss = float(((p[onm, :5] - yev[onm, :5]) ** 2).mean())
+            errs = (p[onm, :5] - yev[onm, :5]).abs().mean(0).cpu().numpy()
+            oacc = float(((p[:, 5] > 0) == (yev[:, 5] > 0.5)).float().mean())
+            errs = np.concatenate([errs, [1.0 - oacc]])
         print(pad(f'{epoch + 1}/{args.epochs}', 10) +
               pad(f'{tot / len(ytr):.6g}') + pad(f'{eval_loss:.6g}') +
               ''.join(pad(f'{e:.6g}') for e in errs))
