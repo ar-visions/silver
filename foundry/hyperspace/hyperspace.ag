@@ -126,6 +126,7 @@ element hyperspace : trinity
     intern rv_files   : array string
     intern rv_bad     : array string
     intern rv_i       : i32
+    intern tb_blind   : i64
     intern mv_last    : i64
     intern mv_cap     : i64
     intern mv_at      : i64
@@ -174,7 +175,9 @@ element hyperspace : trinity
     intern tb_dump    : bool
     intern tb_live_i  : i32
     intern heads_only : bool
-    intern edges_only : bool
+    intern ed_t       : f32
+    intern ed_last    : i64
+    intern ed_cap     : i64
 
     func init []
         active = 'record-looks'
@@ -245,26 +248,8 @@ element hyperspace : trinity
         seq_i += 1
         if [ seq_i >= 10 ]
             seq_i  = 0
-            if [ edges_only ]
-                # head circle pinned to a random screen edge; the 10
-                # offset dots then iterate from there
-                s5 : i32 [ i32[ frand[] * 3.999 ] ]
-                t5 : f32 [ 0.05 + frand[] * 0.9 ]
-                if [ s5 == 0 ]
-                    head_x = t5
-                    head_y = 0.05
-                el [ s5 == 1 ]
-                    head_x = t5
-                    head_y = 0.95
-                el [ s5 == 2 ]
-                    head_x = 0.05
-                    head_y = t5
-                el
-                    head_x = 0.95
-                    head_y = t5
-            el
-                head_x = 0.1 + frand[] * 0.8
-                head_y = 0.1 + frand[] * 0.8
+            head_x = 0.1 + frand[] * 0.8
+            head_y = 0.1 + frand[] * 0.8
             off_x  = 0.0
             off_y  = 0.0
             return
@@ -574,9 +559,30 @@ element hyperspace : trinity
             return
         rv_show[]
 
+    # edge recording: marker circles the monitor perimeter; 2/sec
+    # captures with head = look = the marker
+    func start_edges []
+        root_dir : path '/src/hyperspace-sessions'
+        root_dir.make_dir[]
+        sd : session_dir[]
+        sd.make_dir[]
+        frame_i = 0
+        while [ true ]
+            fp : path '{sd}/{frame_i}.agi'
+            if [ !fp.exists[] ] break
+            frame_i += 1
+        lcg     = u32[ epoch_millis[] ]
+        ed_t    = frand[] * 4.0
+        ed_last = epoch_millis[]
+        ed_cap  = 0
+        off_x   = 0.0
+        off_y   = 0.0
+        mode       = 'edges'
+        fullscreen = true
+        ux.set_fullscreen[ true ]
+
     func start_record [ heads: bool ]
         heads_only = heads
-        edges_only = false
         root_dir : path '/src/hyperspace-sessions'
         root_dir.make_dir[]
         sd : session_dir[]
@@ -854,6 +860,47 @@ element hyperspace : trinity
         sw : f32 [ f32[ ux.width ] ]
         sh : f32 [ f32[ ux.height ] ]
         if [ mv_at > 0 && mode != 'movie' && epoch_millis[] >= mv_at ] start_movie[]
+        if [ mode == 'edges' ]
+            if [ top && top.camera ] top.camera.update[]
+            now5 : i64 [ epoch_millis[] ]
+            dt5  : f32 [ f32[ now5 - ed_last ] * 0.001 ]
+            ed_last = now5
+            m5 : f32 [ 0.03 ]
+            L5 : f32 [ 1.0 - 2.0 * m5 ]
+            per : f32 [ 4.0 * L5 ]
+            ed_t += mv_speed * dt5
+            while [ ed_t >= per ] ed_t -= per
+            ex5 : f32 [ m5 ]
+            ey5 : f32 [ m5 ]
+            if [ ed_t < L5 ]
+                ex5 = m5 + ed_t
+            el [ ed_t < 2.0 * L5 ]
+                ex5 = 1.0 - m5
+                ey5 = m5 + (ed_t - L5)
+            el [ ed_t < 3.0 * L5 ]
+                ex5 = 1.0 - m5 - (ed_t - 2.0 * L5)
+                ey5 = 1.0 - m5
+            el
+                ex5 = m5
+                ey5 = 1.0 - m5 - (ed_t - 3.0 * L5)
+            head_x = ex5
+            head_y = ey5
+            cx5 : f32 [ ex5 * sw ]
+            cy5 : f32 [ ey5 * sh ]
+            cv.arc[ cx5, cy5, 48.0, 0.0, 6.2831853 ]
+            cv.fill_color[ '#0000' ]
+            cv.stroke_color[ '#fff' ]
+            cv.stroke_width[ 2.0 ]
+            cv.paint[]
+            cv.sync_fence[]
+            cv.arc[ cx5, cy5, 1.5, 0.0, 6.2831853 ]
+            cv.fill_color[ '#fff' ]
+            cv.stroke_width[ 0.0 ]
+            cv.paint[]
+            if [ now5 - ed_cap >= 500 ]
+                ed_cap = now5
+                capture[]
+            return
         if [ mode == 'movie' ]
             if [ top && top.camera ] top.camera.update[]
             now3 : i64 [ epoch_millis[] ]
@@ -967,9 +1014,14 @@ element hyperspace : trinity
             ps2 : f32 [ sh * 0.35 ]
             c1  : tb_cam[ cv, top, true,  rect [ x: 8.0, y: sh - ps2 - 8.0, w: ps2, h: ps2 ] ]
             if [ !c1 ]
-                # eyes unreadable: settle toward screen center (orange)
-                tb_x += (0.5 - tb_x) * 0.2
-                tb_y += (0.5 - tb_y) * 0.2
+                # brief blindness HOLDS position (an edge gaze must not
+                # get dragged to center); only sustained blindness
+                # settles back
+                now6 : i64 [ epoch_millis[] ]
+                if [ tb_blind == 0 ] tb_blind = now6
+                if [ now6 - tb_blind > 1000 ]
+                    tb_x += (0.5 - tb_x) * 0.2
+                    tb_y += (0.5 - tb_y) * 0.2
                 gx0 : f32 [ tb_x * sw ]
                 gy0 : f32 [ tb_y * sh ]
                 cv.arc[ gx0, gy0, 24.0, 0.0, 6.2831853 ]
@@ -978,6 +1030,7 @@ element hyperspace : trinity
                 cv.stroke_width[ 3.0 ]
                 cv.paint[]
                 return
+            tb_blind = 0
             a1 : (c1[3] to tensor)
             aux14 : tensor [ tensor_shape: 1x7 ]
             if [ cameras > 1 ] aux14 = tensor [ tensor_shape: 1x14 ]
@@ -1049,7 +1102,7 @@ element hyperspace : trinity
     public func on_key [ ev: Event ]
         if [ !ev.key.state ] return
         if [ ev.key.unicode == 256 && fullscreen ]
-            if [ mode == 'record' || mode == 'movie' ]
+            if [ mode == 'record' || mode == 'movie' || mode == 'edges' ]
                 mode       = ''
                 fullscreen = false
                 ux.set_fullscreen[ false ]
@@ -1946,10 +1999,7 @@ element hyperspace : trinity
         el [ e.id == 'plot-scale' ]
             start_annotate[ 'scale' ]
         el [ e.id == 'edges' ]
-            start_record[ false ]
-            edges_only = true
-            seq_i = 9
-            advance[]
+            start_edges[]
         el [ e.id == 'review-head' ]
             start_review[]
         el [ e.id == 'volume-head' ]

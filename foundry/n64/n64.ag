@@ -238,6 +238,8 @@ class ares
 		return arescore_pc[]
 	func reg [ i: i32 ] -> u64
 		return arescore_reg[ i ]
+	func fpr [ i: i32 ] -> u64
+		return arescore_fpr[ i ]
 	func rhi [] -> u64
 		return arescore_hi[]
 	func rlo [] -> u64
@@ -301,6 +303,7 @@ element n64 : trinity
 	mutable cosim_pre_ours : u32          # our count before the pending instruction
 	mutable cosim_pre_ares : i64          # ares count before the pending instruction
 	mutable cosim_cnt_rep  : i32          # count-mismatch reports emitted (cap the spam)
+	mutable cosim_fpr_rep  : i32          # fpr-mismatch reports emitted (dcache co-sim probe)
 	mutable dbg_clkdelta   : i64 [ 0x7FFFFFFFFFFFFFFF ]  # last sys_clk - ares cpuclock
 	mutable dbg_psys       : i64          # prev sys_clk for per-step cost
 	mutable dbg_pares      : i64          # prev ares cpuclock for per-step cost
@@ -589,7 +592,7 @@ element n64 : trinity
 	mutable gx_clip      : new f32 [ 80 ]    # near-clip scratch (up to 8 verts)
 	mutable gx_scr       : new f32 [ 80 ]    # screen-space: sx sy sz invw u_ow v_ow r g b a
 	# PN-triangle smoothing (option): tessellate lit tris with curved corners.
-	public  smooth       : i32 [ 6 ]         # tess level (0=off, 2/3 typical)
+	public  smooth       : i32 [ 0 ]         # tess level (0=off, 2/3 typical)
 	mutable gx_smooth_cos: f32 [ 0.5 ]       # hard-edge gate: min normal dot to smooth (cos 60deg)
 	mutable pn_P         : new f32 [ 9 ]     # 3 corner positions (obj)
 	mutable pn_N         : new f32 [ 9 ]     # 3 corner normals (normalized)
@@ -633,6 +636,7 @@ element n64 : trinity
 	mutable fp_hash      : u64
 	mutable fp_seq       : i32
 	mutable dc_tag       : new u32 [ 512 ]    # VR4300 D-cache timing model: 8KB direct-mapped, 16B lines. per line: tag|0xFFF-masked, bit0=valid, bit1=dirty
+	mutable dc_cached    : bool               # last vmap resolved a cached access (KSEG0 or TLB C!=2)
 	mutable ic_tag       : new u32 [ 512 ]    # I-cache timing model: 16KB, 32B lines. tag = paddr&~0xFFF, bit0=valid
 	mutable dc_on        : bool               # D-cache timing enable (isolation switch)
 	mutable velargs      : new u32 [ 8 ]
@@ -3255,7 +3259,12 @@ element n64 : trinity
 	# 0x04000000 via osMapTLB); anything unmapped falls back to the physical
 	# mask so the pre-TLB boot path keeps working.
 	func vmap [ va: u32 ] -> u32
-		if [ va >= 0x80000000 && va < 0xC0000000 ] return va & 0x1FFFFFFF
+		if [ va >= 0x80000000 && va < 0xA0000000 ]
+			dc_cached = true                                            # KSEG0 cached
+			return va & 0x1FFFFFFF
+		if [ va >= 0xA0000000 && va < 0xC0000000 ]
+			dc_cached = false                                           # KSEG1 uncached
+			return va & 0x1FFFFFFF
 		if [ cpu.tlb_used ]
 			for [ i: i32 0, i < 32, i += 1 ]
 				pm : u32 [ cpu.tlb_pm[ i ] ]
@@ -3265,7 +3274,10 @@ element n64 : trinity
 					if [ (!g) && ((cpu.tlb_hi[ i ] & 0xFF) != (cpu.c_entryhi & 0xFF)) ] continue   # ASID mismatch (non-global)
 					hpg : u32 [ (pm + 0x2000) >> 1 ]
 					lo : u32 [ (va & hpg) ? cpu.tlb_lo1[ i ] : cpu.tlb_lo0[ i ] ]
-					if [ lo & 2 ] return (((lo >> 6) & 0xFFFFFF) << 12) | (va & (hpg - 1))
+					if [ lo & 2 ]
+						dc_cached = ((lo >> 3) & 7) != 2                 # TLB C field: cached unless C==2
+						return (((lo >> 6) & 0xFFFFFF) << 12) | (va & (hpg - 1))
+		dc_cached = false
 		return va & 0x1FFFFFFF
 
 	# VR4300 D-cache timing (ref: ares dcache.cpp). 8KB direct-mapped, 16B lines, index = va[12:4].
@@ -3274,7 +3286,7 @@ element n64 : trinity
 	# uncached RCP-register read; boot runs from IMEM uncached so every fetch
 	# and MMIO load pays it. cached reads go through dcache; writes cost 0.
 	func io_rcost [ va: u32, pa: u32 ] -> i32
-		if [ (va & 0xE0000000) == 0x80000000 ] return 0                     # KSEG0 cached: dcache charged it
+		if [ dc_cached ] return 0                                           # cached: dcache charged it
 		if [ pa >= 0x04000000 && pa < 0x04900000 ] return 20               # RSP/RDP/MI/VI/AI/PI/RI/SI regs
 		if [ pa >= 0x1FC00000 && pa < 0x1FD00000 ] return 20               # PIF ROM/RAM via SI
 		if [ pa >= 0x05000000 && pa <= 0x1FBFFFFF ] return 270             # PI cart domain: RCP 20 + PI 250
@@ -3327,10 +3339,10 @@ element n64 : trinity
 			if [ (!hit) && drt ] cpu.c_count += 40
 			dc_tag[ di ] = dtg | 3
 
-	func dcache [ va: u32, w: bool ]
-		if [ (va & 0xE0000000) != 0x80000000 ] return                       # KSEG1/uncached & mapped: no dcache
+	func dcache [ va: u32, pa: u32, w: bool ]
+		if [ !dc_cached ] return                                            # uncached: no dcache timing
 		idx : i32 [ i32[ (va >> 4) & 0x1FF ] ]
-		tag : u32 [ va & 0x1FFFF000 ]                                        # paddr line tag (paddr & ~0xFFF)
+		tag : u32 [ pa & 0x1FFFF000 ]                                        # paddr line tag (paddr & ~0xFFF)
 		cur : u32 [ dc_tag[ idx ] ]
 		if [ (cur & 1) != 0 && (cur & 0x1FFFF000) == tag ]                   # hit
 			cpu.c_count += 1
@@ -3343,33 +3355,35 @@ element n64 : trinity
 			dc_tag[ idx ] = (w) ? (tag | 3) : (tag | 1)
 
 	func rd8  [ va: u32 ] -> u32
-		dcache[ va, false ]
 		p : u32 [ vmap[ va ] ]
+		dcache[ va, p, false ]
 		cpu.c_count += i64[ io_rcost[ va, p ] ]
 		return rd_phys8[ p ]
 	func rd16 [ va: u32 ] -> u32
-		dcache[ va, false ]
 		p : u32 [ vmap[ va ] ]
+		dcache[ va, p, false ]
 		cpu.c_count += i64[ io_rcost[ va, p ] ]
 		return (rd_phys8[ p ] << 8) | rd_phys8[ p + 1 ]
 	func rd32v [ va: u32 ] -> u32
-		dcache[ va, false ]
 		p : u32 [ vmap[ va ] ]
+		dcache[ va, p, false ]
 		cpu.c_count += i64[ io_rcost[ va, p ] ]
 		return rd_phys32[ p ]
 	func rd64 [ va: u32 ] -> i64
-		dcache[ va, false ]
 		p : u32 [ vmap[ va ] ]
+		dcache[ va, p, false ]
 		cpu.c_count += i64[ io_rcost[ va, p ] ]
 		h : u32 [ rd_phys32[ p ] ]
 		l : u32 [ rd_phys32[ p + 4 ] ]
 		return (i64[ h ] << 32) | i64[ l ]
 	func wr8v  [ va: u32, v: u32 ]
-		dcache[ va, true ]
+		p : u32 [ vmap[ va ] ]
+		dcache[ va, p, true ]
 		wrsig[ va & 0x1FFFFFFF, v & 0xFF ]
-		wr_phys8[ vmap[ va ], v ]
+		wr_phys8[ p, v ]
 	func wr16v [ va: u32, v: u32 ]
-		dcache[ va, true ]
+		p : u32 [ vmap[ va ] ]
+		dcache[ va, p, true ]
 		wrsig[ va & 0x1FFFFFFF, v & 0xFFFF ]
 		if [ dbg_on && frames == 377 && (va & 0x1FFFFFFF) >= 0x88000 && (va & 0x1FFFFFFF) < 0x88200 && (va & 6) == 2 ]
 			printf[ "n64 HW16 pc=%08X va=%08X v=%04X\n", cpu.pc, va & 0x1FFFFFFF, v & 0xFFFF ]
@@ -3380,11 +3394,11 @@ element n64 : trinity
 				t2 : u32 [ u32[ cpu.r[10] ] ]
 				src : u32 [ t2 + 0x24 ]
 				printf[ "n64 SPKSRC t2=%08X srcaddr=%08X floatbits=%08X f8bits=%08X\n", t2, src & 0x1FFFFFFF, rd32v[ src ], fget32[ 8 ] ]
-		p : u32 [ vmap[ va ] ]
 		wr_phys8[ p, (v >> 8) & 0xFF ]
 		wr_phys8[ p + 1, v & 0xFF ]
 	func wr32v [ va: u32, v: u32 ]
-		dcache[ va, true ]
+		p : u32 [ vmap[ va ] ]
+		dcache[ va, p, true ]
 		wrsig[ va & 0x1FFFFFFF, v ]
 		if [ dbg_on && frames == 377 && (va & 0x1FFFFFFF) >= 0x88830 && (va & 0x1FFFFFFF) < 0x88840 ]
 			printf[ "n64 SPK32 pc=%08X va=%08X v=%08X f%u\n", cpu.pc, va & 0x1FFFFFFF, v, frames ]
@@ -3403,11 +3417,12 @@ element n64 : trinity
 				printf[ "n64 MTXW gt=%u pc=%08X ra=%08X va=%08X v=%08X\n", mgt, cpu.pc, u32[ cpu.r[31] ], va & 0x1FFFFFFF, v ]
 			if [ dbg_on && fparm && (va & 0x1FFFFFFC) == 0x00206B0C ]
 				printf[ "n64 STK pc=%08X v=%08X\n", cpu.pc, v ]
-		wr_phys32[ vmap[ va ], v ]
+		wr_phys32[ p, v ]
 	func wr64 [ va: u32, v: i64 ]
-		dcache[ va, true ]
-		wr_phys32[ vmap[ va ], u32[ v >> 32 ] ]
-		wr_phys32[ vmap[ va ] + 4, u32[ v ] ]
+		p : u32 [ vmap[ va ] ]
+		dcache[ va, p, true ]
+		wr_phys32[ p, u32[ v >> 32 ] ]
+		wr_phys32[ p + 4, u32[ v ] ]
 
 	# ---------------- FPU register file (FR=0 pairing) ----------------
 	func fget32 [ n: i32 ] -> u32
@@ -3454,12 +3469,6 @@ element n64 : trinity
 	# honoring the enable bits (7-11). matches ares checkFPUExceptions.
 	func fpu_flags []
 		exc : i32 [ fetestexcept[ 0x3D ] ]
-		if [ cosim_seq > 288901900 && cosim_seq < 288902120 ]
-			fop : u32 [ rd_phys32[ vmap[ cpu.pc - 4 ] ] ]
-			ffs : i32 [ i32[ (fop >> 11) & 31 ] ]
-			fft : i32 [ i32[ (fop >> 16) & 31 ] ]
-			ffd : i32 [ i32[ (fop >> 6) & 31 ] ]
-			printf[ "n64 FPU seq=%lld pc=%08X op=%08X exc=%02X fcr31=%08X fs=%016llX ft=%016llX fd=%016llX\n", cosim_seq, cpu.pc - 4, fop, exc, cpu.fcr31, fget64[ ffs ], fget64[ fft ], fget64[ ffd ] ]
 		cpu.fcr31 = cpu.fcr31 & (~u32[ 0x3F000 ])            # clear cause field per op
 		en : u32 [ (cpu.fcr31 >> 7) & 0x1F ]
 		if [ (exc & 0x20) != 0 ]                             # inexact
@@ -3515,6 +3524,12 @@ element n64 : trinity
 		if [ u64[ cpu.hi ] != oracle.rhi[] ] bad = true
 		if [ u64[ cpu.lo ] != oracle.rlo[] ] bad = true
 		if [ (cpu.c_cause & 0x8000007C) != (u32[ oracle.acause[] ] & 0x8000007C) ] bad = true   # BD + ExcCode
+		if [ cosim_fpr_rep < 30 && cosim_seq > 1000 ]                     # first FPR (low-32) divergences
+			for [ fi: i32 0, fi < 32, fi += 1 ]
+				if [ (cpu.fpr[ fi ] & 0xFFFFFFFF) != (oracle.fpr[ fi ] & 0xFFFFFFFF) ]
+					cosim_fpr_rep += 1
+					printf[ "n64 FPRDIFF seq=%lld ppc=%08X f%d ours=%016llx ares=%016llx\n", cosim_seq, cosim_ppc, fi, cpu.fpr[ fi ], oracle.fpr[ fi ] ]
+					fi = 32
 		cdelta : i64 [ sys_clk - oracle.acpuclk[] ]
 		if [ cosim_seq >= 719950 && cosim_seq <= 719978 ]
 			printf[ "n64 STEP seq=%lld pc=%08X ppc=%08X pop=%08X sys_step=%lld ares_step=%lld delta=%lld\n", cosim_seq, cpu.pc, cosim_ppc, cosim_pop, sys_clk - dbg_psys, oracle.acpuclk[] - dbg_pares, cdelta ]
@@ -4209,15 +4224,17 @@ element n64 : trinity
 			ab_b : u32 [ fget32[ i32[ (op >> 16) & 31 ] ] ]
 			fpe : bool [ fn <= 4 ]
 			if [ fn >= 8 && fn <= 37 ] fpe = true
+			if [ fn == 5 || fn == 7 ] fpe = true              # abs/neg reset cause (ares fpuCheckStart)
+			if [ fn >= 48 ] fpe = true                        # c.cond resets cause (ares fpuCheckStart)
 			if [ fpe ] feclearexcept[ 0x3D ]
 			if [ fn == 0 ] fss[ fd, v1 + v2 ]
 			el [ fn == 1 ] fss[ fd, v1 - v2 ]
 			el [ fn == 2 ] fss[ fd, v1 * v2 ]
 			el [ fn == 3 ] fss[ fd, v1 / v2 ]
 			el [ fn == 4 ] fss[ fd, sqrt[ v1 ] ]
-			el [ fn == 5 ] fss[ fd, (v1 < 0.0) ? (0.0 - v1) : v1 ]
+			el [ fn == 5 ] fset32[ fd, fget32[ fs ] & 0x7FFFFFFF ]                # abs.s (sign clear, handles -0.0)
 			el [ fn == 6 ] fss[ fd, v1 ]
-			el [ fn == 7 ] fss[ fd, 0.0 - v1 ]
+			el [ fn == 7 ] fset32[ fd, fget32[ fs ] ^ u32[ 0x80000000 ] ]         # neg.s (sign flip, handles +0.0)
 			el [ fn == 13 ] fset32[ fd, u32[ i32[ v1 ] ] ]                        # trunc.w.s
 			el [ fn == 12 ] fset32[ fd, u32[ i32[ rne[ f64[ v1 ] ] ] ] ]          # round.w.s (ties even)
 			el [ fn == 14 ] fset32[ fd, u32[ i32[ ceil[ v1 ] ] ] ]                # ceil.w.s
@@ -4279,15 +4296,17 @@ element n64 : trinity
 			dd_b : u64 [ fget64[ i32[ (op >> 16) & 31 ] ] ]
 			fpe : bool [ fn <= 4 ]
 			if [ fn >= 8 && fn <= 37 ] fpe = true
+			if [ fn == 5 || fn == 7 ] fpe = true              # abs/neg reset cause (ares fpuCheckStart)
+			if [ fn >= 48 ] fpe = true                        # c.cond resets cause (ares fpuCheckStart)
 			if [ fpe ] feclearexcept[ 0x3D ]
 			if [ fn == 0 ] fsd[ fd, ad + bd ]
 			el [ fn == 1 ] fsd[ fd, ad - bd ]
 			el [ fn == 2 ] fsd[ fd, ad * bd ]
 			el [ fn == 3 ] fsd[ fd, ad / bd ]
 			el [ fn == 4 ] fsd[ fd, sqrt[ ad ] ]
-			el [ fn == 5 ] fsd[ fd, (ad < 0.0) ? (0.0 - ad) : ad ]
+			el [ fn == 5 ] fset64[ fd, fget64[ fs ] & u64[ 0x7FFFFFFFFFFFFFFF ] ]   # abs.d (sign clear)
 			el [ fn == 6 ] fsd[ fd, ad ]
-			el [ fn == 7 ] fsd[ fd, 0.0 - ad ]
+			el [ fn == 7 ] fset64[ fd, fget64[ fs ] ^ u64[ 0x8000000000000000 ] ]   # neg.d (sign flip)
 			el [ fn == 13 ] fset32[ fd, u32[ i32[ ad ] ] ]                        # trunc.w.d
 			el [ fn == 12 ] fset32[ fd, u32[ i32[ rne[ ad ] ] ] ]                 # round.w.d
 			el [ fn == 14 ] fset32[ fd, u32[ i32[ ceil[ ad ] ] ] ]                # ceil.w.d

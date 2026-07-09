@@ -44,8 +44,9 @@ def parse_args():
     p.add_argument('--bins_x',    type=int,   default=16)    # balance grid: 16x9 screen areas
     p.add_argument('--bins_y',    type=int,   default=9)
     p.add_argument('--annotate',  action='store_true')      # plot eyes on unannotated frames (torch models)
-    p.add_argument('--process',   default='', choices=['', 'base', 'volumes', 'look'])
+    p.add_argument('--process',   default='', choices=['', 'base', 'volumes', 'look', 'gen'])
     p.add_argument('--export_ts', action='store_true')      # trace models -> app .ptc files
+    p.add_argument('--preview',   action='store_true')      # dump look training samples as pngs
     p.add_argument('--group_by',  default='headdir', choices=['circle', 'pose', 'headdir'])  # eval holdout unit
     return p.parse_args()
 
@@ -796,13 +797,16 @@ def export_ts():
     os.makedirs(out, exist_ok=True)
 
     class LookWrap(nn.Module):
-        def __init__(self, m):
+        # applies the anti-compression calibration measured at training
+        def __init__(self, m, cal):
             super().__init__()
             self.m = m
+            self.register_buffer('slope', torch.from_numpy(cal[:, 0]))
+            self.register_buffer('bias',  torch.from_numpy(cal[:, 1]))
 
         def forward(self, l, r, f, a):
             c, g = self.m(l, r, f, a)
-            return torch.cat([c, g], 1)
+            return torch.cat([c, g], 1) * self.slope + self.bias
 
     S = args.size
     jobs = [('target_torch.pt', PlotNet, 'target.ptc'),
@@ -818,7 +822,10 @@ def export_ts():
         m.load_state_dict(torch.load(p, map_location='cpu'))
         m.eval()
         if cls is CenterNet:
-            m = LookWrap(m)
+            calp = p.replace('.pt', '_cal.npy')
+            cal = (np.load(calp) if os.path.exists(calp)
+                   else np.tile(np.array([[1.0, 0.0]], np.float32), (4, 1)))
+            m = LookWrap(m, cal.astype(np.float32))
             ex = (torch.zeros(1, 1, S, S), torch.zeros(1, 1, S, S),
                   torch.zeros(1, 1, S, S), torch.zeros(1, 7))
         else:
@@ -826,6 +833,29 @@ def export_ts():
         ts = torch.jit.trace(m, ex)
         ts.save(os.path.join(out, dst))
         print(f'exported {dst} -> {out}')
+
+
+def run_base(with_look):
+    # base set: target, refine, gate (when volume_off exists), and the
+    # gold-only look that face-focus estimation depends on.
+    # target and the gold look take DOUBLE epochs; refine/gate single
+    base_e = args.epochs
+    for nm in ('target', 'refine'):
+        args.model = nm
+        args.epochs = base_e * 2
+        print(f'== base: training {nm} ({args.epochs} epochs) ==')
+        train_plot()
+    args.epochs = base_e
+    if os.path.isdir(f'/src/hyperspace-sessions/{args.session}/volume_off'):
+        print('== base: training gate (domain vs off-camera) ==')
+        train_gate()
+    if with_look:
+        args.model = 'look'
+        args.volume = 0
+        args.epochs = base_e * 2
+        print(f'== base: training look (gold only, {args.epochs} epochs) ==')
+        train_look()
+    args.epochs = base_e
 
 
 def main():
@@ -837,20 +867,36 @@ def main():
         export_ts()
         return
     if args.process == 'base':
-        # process 1: the base set from gold annotations — target,
-        # refine, and the gold-only look (volumes needs it for
-        # face-focus estimation)
-        for nm in ('target', 'refine'):
-            args.model = nm
-            print(f'== base: training {nm} ==')
-            train_plot()
-        if os.path.isdir(f'/src/hyperspace-sessions/{args.session}/volume_off'):
-            print('== base: training gate (domain vs off-camera) ==')
-            train_gate()
+        run_base(with_look=True)
+        return
+    if args.process == 'gen':
+        # one full generation: fresh applied dirs, base from gold,
+        # apply volumes, base AGAIN on the smoothed volume labels,
+        # re-apply volumes with the sharper plotters, final look.
+        # look gets the double improvement on volume.
+        import shutil, glob
+        sd2 = f'/src/hyperspace-sessions/{args.session}'
+        for sub in ('applied_look', 'applied_head'):
+            p2 = os.path.join(sd2, sub)
+            if os.path.isdir(p2):
+                shutil.rmtree(p2)
+        for c2 in glob.glob(os.path.join(sd2, '.torchcache-*')):
+            os.remove(c2)
+        print('== gen: applied dirs + caches cleared ==')
+        print('== gen 1/5: base (gold) ==')
+        run_base(with_look=True)
+        print('== gen 2/5: volumes (first application) ==')
+        annotate_frames()
+        print('== gen 3/5: base again (volume-smoothed labels) ==')
+        run_base(with_look=False)
+        print('== gen 4/5: volumes (re-application) ==')
+        annotate_frames()
+        args.epochs = args.epochs * 2
+        print(f'== gen 5/5: final look ({args.epochs} epochs) ==')
         args.model = 'look'
-        args.volume = 0
-        print('== base: training look (gold only) ==')
+        args.volume = 1
         train_look()
+        export_ts()
         return
     if args.process == 'volumes':
         # process 2: apply ops over both volumes — eye plots + face
@@ -908,6 +954,24 @@ def train_look():
         tr = tr[np.sort(keep)]
     if args.zero_aux:
         laux = np.zeros_like(laux)
+    if args.preview:
+        # every canonical training sample: crops + source + labels in
+        # the filename — review what look actually learns from
+        from PIL import Image as PImage
+        pd = os.path.join(sd, 'preview-look')
+        os.makedirs(pd, exist_ok=True)
+        def up4(t):
+            return np.kron((t[:, :, 0] * 255).astype(np.uint8),
+                           np.ones((4, 4), np.uint8))
+        for i in tr:
+            row = np.hstack([up4(limgs[k][i]) for k in range(3)])
+            fid = int(lfid[i])
+            src2 = 'gold' if fid < 100000 else ('vlook' if fid < 200000 else 'vhead')
+            fn = (f'{src2}_{fid % 100000:05d}'
+                  f'_h{ly[i][0]:.3f}-{ly[i][1]:.3f}'
+                  f'_g{ly[i][2]:.3f}-{ly[i][3]:.3f}.png')
+            PImage.fromarray(row).save(os.path.join(pd, fn))
+        print(f'preview: {len(tr)} look samples -> {pd}')
     # fake head translation: SAME crops, aux shifted by d, screen point
     # shifted k*d/scale (closer head = bigger scale = smaller shift)
     timgs = [limgs[k][tr] for k in range(3)]
@@ -981,7 +1045,12 @@ def train_look():
         by = np.clip((g5[:, 1] * args.bins_y).astype(int), 0, args.bins_y - 1)
         bid = by * args.bins_x + bx
         cnt = np.bincount(bid, minlength=args.bins_x * args.bins_y).astype(np.float64)
-        w5 = 1.0 / cnt[bid]
+        # ring emphasis on top of count-normalization: edge bins 4x,
+        # the ring inside them 2x, center 1x
+        ring = np.minimum(np.minimum(bx, args.bins_x - 1 - bx),
+                          np.minimum(by, args.bins_y - 1 - by))
+        mult = np.where(ring == 0, 4.0, np.where(ring == 1, 2.0, 1.0))
+        w5 = mult / cnt[bid]
         bw = torch.from_numpy((w5 / w5.sum()).astype(np.float32)).to(dev)
         occ = cnt[cnt > 0]
         print(f'balance: {len(occ)} occupied bins, counts {int(occ.min())}..{int(occ.max())}')
@@ -1004,9 +1073,13 @@ def train_look():
             # delta supervised directly against the measured eye offset:
             # keeps the eyes' head from absorbing center errors
             d_true = ytr[idx, 2:4] - ytr[idx, :2]
+            # variance matching fights mean-regression IN training: the
+            # prediction spread must equal the label spread per axis
+            vterm = ((g.std(0) - ytr[idx, 2:4].std(0)) ** 2).mean()
             loss = (((c - ytr[idx, :2]) ** 2).mean()
                     + 2.0 * ((g - ytr[idx, 2:4]) ** 2).mean()
-                    + 2.0 * (((g - c) - d_true) ** 2).mean())
+                    + 2.0 * (((g - c) - d_true) ** 2).mean()
+                    + 0.5 * vterm)
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -1030,10 +1103,23 @@ def train_look():
         m.load_state_dict(best_state)
         out = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
         os.makedirs(out, exist_ok=True)
+        # regression compresses toward the mean: measure the per-axis
+        # expansion (pred -> true) and export it with the model
+        m.eval()
+        with torch.no_grad():
+            c, g = m(*xtr, atr)
+            pr = torch.cat([c, g], 1).cpu().numpy()
+        ty2 = tly[:len(pr)]
+        cal = np.zeros((4, 2), np.float32)
+        for k2 in range(4):
+            s2, b2 = np.polyfit(pr[:, k2], ty2[:, k2], 1)
+            cal[k2] = (s2, b2)
+        print('calibration slopes:', np.round(cal[:, 0], 3))
         # the volumes process trains the gold-only bootstrap look;
         # the final process (applied volumes included) is look_final
         nm = 'look_final_torch.pt' if args.process == 'look' else 'look_torch.pt'
         torch.save(best_state, os.path.join(out, nm))
+        np.save(os.path.join(out, nm.replace('.pt', '_cal.npy')), cal)
         print(f'best epoch {best_ep} (avg err {best:.6g}) -> {os.path.join(out, nm)}')
     print('training complete')
 
