@@ -4336,13 +4336,28 @@ enode e_create_from_array(aether a, etype t, array ar) {
     
     if (all_const) {
         etype ptr = pointer(a, (Au)element_type);
-        etype elem_t = resolve(t);
+        LLVMTypeRef ety = lltype(element_type);
         LLVMValueRef *elems = malloc(sizeof(LLVMValueRef) * ln);
         for (int i = 0; i < ln; i++) {
             enode node = (enode)ar->origin[i];
-            elems[i]   = node->value;
+            LLVMValueRef v  = node->value;
+            LLVMTypeKind ek = LLVMGetTypeKind(ety);
+            LLVMTypeKind vk = LLVMGetTypeKind(LLVMTypeOf(v));
+            // literals default to i64/f64 — remake as the element type
+            if (LLVMTypeOf(v) != ety) {
+                bool e_int = ek == LLVMIntegerTypeKind;
+                bool v_int = vk == LLVMIntegerTypeKind;
+                bool e_fp  = ek == LLVMFloatTypeKind || ek == LLVMDoubleTypeKind || ek == LLVMHalfTypeKind;
+                bool v_fp  = vk == LLVMFloatTypeKind || vk == LLVMDoubleTypeKind || vk == LLVMHalfTypeKind;
+                LLVMBool loses = false;
+                if      (e_int && v_int) v = LLVMConstInt (ety, LLVMConstIntGetSExtValue(v), true);
+                else if (e_fp  && v_int) v = LLVMConstReal(ety, (double)LLVMConstIntGetSExtValue(v));
+                else if (e_fp  && v_fp)  v = LLVMConstReal(ety, LLVMConstRealGetDouble(v, &loses));
+                else if (e_int && v_fp)  v = LLVMConstInt (ety, (long long)LLVMConstRealGetDouble(v, &loses), true);
+            }
+            elems[i] = v;
         }
-        LLVMValueRef const_arr = LLVMConstArray(lltype(elem_t), elems, ln);
+        LLVMValueRef const_arr = LLVMConstArray(ety, elems, ln);
         free(elems);
         static int ident = 0;
         char vname[32];
