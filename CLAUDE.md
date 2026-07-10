@@ -218,7 +218,7 @@ asm [ args ]                # void/statement-level asm
 - Intel syntax
 - `asm <define>` on same line = conditional compilation (skips block if define is false)
 - Auto-gather: when no `[args]` given, asm scans body for in-scope variables
-- Platform defines: `x86_64`, `arm64`, `mac`, `linux`, `windows`
+- Platform defines: `x86_64`, `arm64`, `apple`, `linux`, `windows`
 
 ### String Interpolation
 ```
