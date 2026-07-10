@@ -127,6 +127,10 @@ element hyperspace : trinity
     intern rv_bad     : array string
     intern rv_i       : i32
     intern tb_blind   : i64
+    intern fx_hx      : ref f32
+    intern fx_hy      : ref f32
+    intern fx_i       : i32
+    intern fx_n       : i32
     intern mv_last    : i64
     intern mv_cap     : i64
     intern mv_at      : i64
@@ -264,7 +268,7 @@ element hyperspace : trinity
         ok_b : bool [ false ]
         lk_x : f32 [ head_x + off_x ]
         lk_y : f32 [ head_y + off_y ]
-        s  : string 'labels:\n    head: {head_x} {head_y}\n    look: {lk_x} {lk_y}\nimages:\n    top: {frame_i}-top.png\n'
+        s  : string 'labels:\n    head: {head_x - 0.5} {head_y - 0.5}\n    look: {lk_x - 0.5} {lk_y - 0.5}\nimages:\n    top: {frame_i}-top.png\n'
         if [ cameras > 1 ]
             bp : path '{d}/{frame_i}-bot.png'
             ok_b = (bot) ? bot.save_frame[ bp ] : false
@@ -475,7 +479,7 @@ element hyperspace : trinity
         d  : path '{session_dir[]}/volume_{volume}'
         tp : path '{d}/{frame_i}-top.png'
         ok_t : bool [ (top) ? top.save_frame[ tp ] : false ]
-        s  : string 'labels:\n    look: {mv_x} {mv_y}\nimages:\n    top: {frame_i}-top.png\nvolume: {volume}\n'
+        s  : string 'labels:\n    look: {mv_x - 0.5} {mv_y - 0.5}\nimages:\n    top: {frame_i}-top.png\nvolume: {volume}\n'
         if [ volume == 'off' ]
             # face off camera: the label IS the frame, no annotation
             s = string 'labels:\n    off_screen: true\nimages:\n    top: {frame_i}-top.png\nvolume: off\n'
@@ -681,6 +685,12 @@ element hyperspace : trinity
             puts 'testbed: look -> tflite'
         tb_x = 0.5
         tb_y = 0.5
+        fx_hx = new f32 [ 16 ]
+        hold[ (fx_hx to Au) ]
+        fx_hy = new f32 [ 16 ]
+        hold[ (fx_hy to Au) ]
+        fx_i = 0
+        fx_n = 0
         mode       = 'test'
         fullscreen = true
         ux.set_fullscreen[ true ]
@@ -746,7 +756,7 @@ element hyperspace : trinity
         if [ rs3 < 0.15 ] rs3 = 0.15
         rcy : f32 [ mry - rs3 * 0.1 ]
         rwin2 : aug_crop[ gray, mrx, rcy, rs3 ]
-        r5 : tensor [ tensor_shape: 1x5 ]
+        r5 : tensor [ tensor_shape: 1x6 ]
         if [ ts_refine ]
             ts_refine.forward1[ rwin2, r5, 32 ]
         el [ lt_refine ]
@@ -754,6 +764,8 @@ element hyperspace : trinity
             lt_refine.forward_n[ rin5, r5 ]
         el
             r5 = tb_refine.forward[ rwin2 ]
+        # refine's own off_screen logit: clipped past usable
+        if [ ts_refine && r5.floats[5] > 0.0 ] return null
         ox3 : f32 [ mrx - rs3 * 0.5 ]
         oy3 : f32 [ rcy - rs3 * 0.5 ]
         lx  = ox3 + r5.floats[0] * rs3
@@ -761,10 +773,11 @@ element hyperspace : trinity
         rx  = ox3 + r5.floats[2] * rs3
         ry  = oy3 + r5.floats[3] * rs3
         sc2 = r5.floats[4] * rs3
-        # face centroid off screen = face not usable
+        # face centroid far off screen = face not usable; a margin
+        # keeps partially-clipped faces tracking
         fc_x : f32 [ (lx + rx) * 0.5 ]
         fc_y : f32 [ (ly + ry) * 0.5 ]
-        if [ fc_x < 0.0 || fc_x > 1.0 || fc_y < 0.0 || fc_y > 1.0 ] return null
+        if [ fc_x < -0.15 || fc_x > 1.15 || fc_y < -0.15 || fc_y > 1.15 ] return null
         # both eyes plotted off-frame: nothing usable to crop
         l_off : bool [ lx < 0.0 || lx > 1.0 || ly < 0.0 || ly > 1.0 ]
         r_off : bool [ rx < 0.0 || rx > 1.0 || ry < 0.0 || ry > 1.0 ]
@@ -1066,15 +1079,50 @@ element hyperspace : trinity
             el
                 smp2 : sample [ inputs: ins2 ]
                 p4 = tb_look.predict_s[ smp2 ]
-            # 20% toward the fresh prediction — smooth cursor
-            tb_x += (p4.floats[2] - tb_x) * 0.2
-            tb_y += (p4.floats[3] - tb_y) * 0.2
+            # labels are centered (-0.5..0.5); screen space is 0..1
+            px6 : f32 [ p4.floats[2] + 0.5 ]
+            py6 : f32 [ p4.floats[3] + 0.5 ]
+            # temporal intent: gaze only ENGAGES during stillness.
+            # rolling half-second window; low dispersion = fixation
+            fx_hx[fx_i] = px6
+            fx_hy[fx_i] = py6
+            fx_i = (fx_i + 1) % 16
+            if [ fx_n < 16 ] fx_n += 1
+            mnx : f32 [ 9.0 ]
+            mxx : f32 [ -9.0 ]
+            mny : f32 [ 9.0 ]
+            mxy : f32 [ -9.0 ]
+            smx : f32 [ 0.0 ]
+            smy : f32 [ 0.0 ]
+            for [ i: i32 0, i < fx_n, i += 1 ]
+                vx7 : f32 [ fx_hx[i] ]
+                vy7 : f32 [ fx_hy[i] ]
+                if [ vx7 < mnx ] mnx = vx7
+                if [ vx7 > mxx ] mxx = vx7
+                if [ vy7 < mny ] mny = vy7
+                if [ vy7 > mxy ] mxy = vy7
+                smx += vx7
+                smy += vy7
+            smx /= f32[ fx_n ]
+            smy /= f32[ fx_n ]
+            fixed : bool [ fx_n >= 12 && (mxx - mnx) < 0.05 && (mxy - mny) < 0.05 ]
+            if [ fixed ]
+                # engaged: dwell average is far steadier than a frame
+                tb_x += (smx - tb_x) * 0.35
+                tb_y += (smy - tb_y) * 0.35
+            el
+                tb_x += (px6 - tb_x) * 0.2
+                tb_y += (py6 - tb_y) * 0.2
             gx : f32 [ tb_x * sw ]
             gy : f32 [ tb_y * sh ]
             cv.arc[ gx, gy, 24.0, 0.0, 6.2831853 ]
             cv.fill_color[ '#0000' ]
-            cv.stroke_color[ '#0f8' ]
-            cv.stroke_width[ 3.0 ]
+            if [ fixed ]
+                cv.stroke_color[ '#0f8' ]
+                cv.stroke_width[ 4.0 ]
+            el
+                cv.stroke_color[ '#555' ]
+                cv.stroke_width[ 2.0 ]
             cv.paint[]
             return
         # annotate modes: the current capture, aspect-fit, centered
@@ -1618,9 +1666,11 @@ element hyperspace : trinity
             if [ !agi_path.exists[] ] break
             frame_id : string '{frame_num}'
             center   : read_pair[ frame_id, 'head' ]
+            if [ center.x > -900.0 ] center = vec2f [ x: center.x + 0.5, y: center.y + 0.5 ]
             if [ center.x < -900.0 ] center = read_pair[ frame_id, 'center' ]
             offset   : read_pair[ frame_id, 'offset' ]
             lkp      : read_pair[ frame_id, 'look' ]
+            if [ lkp.x > -900.0 ] lkp = vec2f [ x: lkp.x + 0.5, y: lkp.y + 0.5 ]
             if [ lkp.x > -900.0 ]
                 offset = vec2f [ x: lkp.x - center.x, y: lkp.y - center.y ]
             # vs 0 = canonical; rest = scale variants, ONE factor
