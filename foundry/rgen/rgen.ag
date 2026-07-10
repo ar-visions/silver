@@ -7,7 +7,7 @@
 # in reference/VDP_TIMING.md and cited inline as [VDP_TIMING §N].
 #
 # Architecture mirrors asnes: single-threaded, cycle-synced, one trinity
-# window driven by on_canvas, ALSA audio paced by snd_pcm_avail. No threads.
+# window driven by on_canvas, audio paced by spectra's blocking AudioOut.
 # Built in phases — this is phase 1: system clock model, chip state, the
 # synced frame loop, window + framebuffer display, and modular audio.
 # =====================================================================
@@ -16,8 +16,7 @@ export 0.8.8
 
 import trinity
 import vec
-import <alsa/asoundlib.h>
-	-lasound
+import spectra
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
@@ -165,58 +164,7 @@ class psg_state
 	noise_lfsr     : u16               # 16-bit shift register
 	latch          : u8                # last-latched register (channel + type)
 
-# ---------------------------------------------------------------------
-# Modular audio sink. Owns the ALSA PCM device; the FM + PSG mixers feed
-# it. Kept separate from chip state so the audio backend can be swapped
-# without touching emulation. Mirrors asnes's ALSA setup.
-# ---------------------------------------------------------------------
-class audio_out
-	pcm_handle     : ref snd_pcm_t
-	buffer         : ref i16
-	buffer_size    : sz
-	sample_rate    : i32
-	channels       : i32
-
-	func open [] -> bool
-		sample_rate = 53267            # YM2612 native: 68k clock / 144
-		channels    = 2
-		buffer_size = 1024
-		buffer      = calloc[ 1, buffer_size * channels * 2 ]
-
-		pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
-		err : i32 [ snd_pcm_open[ ref pcm_handle, 'pulse', pb, 0 ] ]
-		if [ err < 0 ] return false
-
-		psz    : snd_pcm_hw_params_sizeof[]
-		params : ref snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
-		snd_pcm_hw_params_any[ pcm_handle, params ]
-		rw  : i32 [ SND_PCM_ACCESS_RW_INTERLEAVED ]
-		fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
-		snd_pcm_hw_params_set_access  [ pcm_handle, params, rw ]
-		snd_pcm_hw_params_set_format  [ pcm_handle, params, fmt ]
-		snd_pcm_hw_params_set_channels[ pcm_handle, params, channels ]
-		snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
-		# small ring so snd_pcm_avail paces the emulator to real time
-		bufsz : sz [ 4096 ]
-		persz : sz [ 1024 ]
-		snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, ref bufsz ]
-		snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, ref persz, null ]
-
-		ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
-		if [ ok ]
-			perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
-			if [ perr < 0 ]
-				puts 'rgen audio: prepare failed {snd_strerror[ perr ]}'
-				ok = false
-		return ok
-
-	# push `frames` stereo S16 samples; recovers from underrun like asnes.
-	func write [ frames: i32 ] -> none
-		if [ ! pcm_handle ] return
-		wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
-		if [ wr < 0 ]
-			snd_pcm_recover[ pcm_handle, wr, 0 ]
-			snd_pcm_prepare[ pcm_handle ]
+# audio sink is spectra's AudioOut (ALSA on linux, AudioQueue on mac)
 
 # ---------------------------------------------------------------------
 # The application — a trinity window hosting the emulator. on_canvas is
@@ -323,7 +271,7 @@ element rgen : trinity
 	mutable vdp          : vdp_state
 	mutable ym           : ym2612_state
 	mutable psg          : psg_state
-	mutable audio        : audio_out
+	mutable audio        : AudioOut
 	mutable ram68k       : new u8 [ 0x10000 ]   # 64 KB 68000 work RAM ($FF0000-$FFFFFF)
 	mutable ea_last      : u32                    # last-resolved effective address (RMW / dest write)
 	mutable mclk_carry   : i64                    # master-clock overshoot carried across frames
@@ -436,7 +384,8 @@ element rgen : trinity
 		vdp   = vdp_state []
 		ym    = ym2612_state []
 		psg   = psg_state []
-		audio = audio_out []
+		# 53267 Hz = YM2612 native: 68k clock / 144
+		audio = AudioOut [ sample_rate: 53267, channels: 2, buffer_size: 1024 ]
 		if [ ! audio.open[] ]
 			puts 'rgen: audio device unavailable — continuing muted'
 		# PSG amplitude table: 2 dB per attenuation step, entry 15 = mute
@@ -678,9 +627,9 @@ element rgen : trinity
 	# frame audio: exact samples-per-frame at 53267 Hz against the NTSC
 	# frame length (53267 * 896040 / 53693175 ≈ 888.93/frame, fractional
 	# carry kept). SILENCE until the Z80/YM2612/PSG land — the blocking
-	# snd_pcm_writei is what paces the emulation thread to real time.
+	# audio write is what paces the emulation thread to real time.
 	func generate_audio [] -> none
-		if [ ! audio || ! audio.pcm_handle ]
+		if [ ! audio || ! audio.active ]
 			usleep[ 15000 ]                  # muted fallback pacing
 			return
 		sample_frac += 47731382680           # 53267 * 896040 per frame

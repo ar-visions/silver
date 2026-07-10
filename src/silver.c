@@ -4,6 +4,7 @@
 #include <ports.h>
 #include <sys/file.h>   // flock — serialize external-checkout builds across processes
 #include <fcntl.h>
+#include <dlfcn.h>      // coverage libraries run in-process after build
 
 #ifdef BUILD_LIBRARY
 
@@ -1257,6 +1258,14 @@ static void silver_live_run(silver a) {
     // infinite rebuild loop. on the first build (app never ran) we simply quit; main
     // returns non-zero so the live-host's rebuild sees the failure and aborts.
     if (a->error) return;
+    // coverage library built directly: load it and run its exported tests
+    if (((aether)a)->has_coverage && !a->is_external && !a->build) {
+        void* h = dlopen(a->product->chars, RTLD_NOW);
+        verify(h, "coverage: cannot load %o: %s", a->product, dlerror());
+        int (*cov)(void) = (int(*)(void))dlsym(h, "silver_coverage_run");
+        verify(cov, "coverage: silver_coverage_run not found in %o", a->product);
+        exit(cov());
+    }
     if (!((aether)a)->is_live && !a->is_external) {
         path host = f(path, "%o/%o", a->build_dir, a->name);
         if (file_exists("%o", host)) {
