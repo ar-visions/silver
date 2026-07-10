@@ -2695,8 +2695,19 @@ enode aether_e_short_circuit(aether a, OPType optype, enode L) {
         LLVMPositionBuilderAtEnd(B, eval_r_block);
         enode R = (enode)a->parse_expr((Au)a, null);
         if (!R->loaded) R = enode_value(R, false);
-        verify(LLVMGetTypeKind(LLVMTypeOf(L->value)) == LLVMPointerTypeKind &&
-               LLVMGetTypeKind(LLVMTypeOf(R->value)) == LLVMPointerTypeKind,
+        // R not a pointer (`ref && flag`): degrade result to bool
+        if (LLVMGetTypeKind(LLVMTypeOf(R->value)) != LLVMPointerTypeKind) {
+            enode R_bool = e_create(a, etypeid(bool), (Au)R);
+            LLVMBasicBlockRef R_block = LLVMGetInsertBlock(B);
+            LLVMBuildBr(B, merge_block);
+            LLVMPositionBuilderAtEnd(B, merge_block);
+            LLVMValueRef phi = LLVMBuildPhi(B, lltype(etypeid(bool)), "sc_result");
+            LLVMValueRef      vals[] = { L_bool->value, R_bool->value };
+            LLVMBasicBlockRef bbs[]  = { L_final,       R_block };
+            LLVMAddIncoming(phi, vals, bbs, 2);
+            return enode(mod, a, autype, etypeid(bool)->autype, loaded, true, value, phi);
+        }
+        verify(LLVMGetTypeKind(LLVMTypeOf(L->value)) == LLVMPointerTypeKind,
             "short-circuit on ref member requires pointer operands");
         LLVMBasicBlockRef R_block = LLVMGetInsertBlock(B);
         LLVMBuildBr(B, merge_block);
@@ -6687,18 +6698,20 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             return;
         }
 
-        // build test main that runs each coverage subclass
-        Au_t au_f_main = def_member(a->autype, "main", typeid(i32), AU_MEMBER_FUNC, 0);
-        Au_t argc = def_arg(au_f_main, "argc", typeid(i32), 0);
-        Au_t argv = def_arg(au_f_main, "argv", typeid(cstrs), 0);
+        // coverage module is still a LIBRARY (apps are element-based);
+        // export silver_coverage_run for a host to dlopen and invoke —
+        // the global ctor performs module init at load
+        set_global_construct(a, module_init_fn);
+        a->is_library    = true;
+        a->has_coverage  = true;
 
-        au_f_main->is_export = true;
-        efunc main_fn = efunc(mod, a, autype, au_f_main,
+        Au_t au_f_cov = def_member(a->autype, "silver_coverage_run", typeid(i32), AU_MEMBER_FUNC, 0);
+        au_f_cov->is_export = true;
+        efunc cov_fn = efunc(mod, a, autype, au_f_cov,
             loaded, true, used, true, has_code, true);
-        etype_implement((etype)main_fn, false);
+        etype_implement((etype)cov_fn, false);
 
-        push_scope(a, (Au)main_fn, 9);
-        e_fn_call(a, module_init_fn, null, false, false);
+        push_scope(a, (Au)cov_fn, 9);
 
         Au_t fn_run = find_member(cov_spec->autype, "run", AU_MEMBER_FUNC, 0, false);
         verify(fn_run, "coverage abstract missing run method");

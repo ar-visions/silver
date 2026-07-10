@@ -883,9 +883,8 @@ public:
 
     bool VisitEnumDecl(EnumDecl* decl) {
         push_context(decl, e);
-        if (!decl->getNameAsString().empty()) {
-            create_enum(decl, ctx, e, get_name((NamedDecl*)decl));
-        }
+        // anonymous enums (CF_ENUM style) still export their constants
+        create_enum(decl, ctx, e, get_name((NamedDecl*)decl));
         pop_context(decl, e);
         return true;
     }
@@ -1135,6 +1134,23 @@ path aether_lookup_include(aether e, string include) {
                 if (path_exists(r))
                     return r;
             }
+    }
+
+    // framework include: First/Header.h -> First.framework/Headers/Header.h
+    if (e->framework_paths) {
+        symbol ch    = include->chars;
+        symbol slash = strchr(ch, '/');
+        size_t n     = slash ? (size_t)(slash - ch) : 0;
+        char   fw[256];
+        if (n && n < sizeof(fw)) {
+            memcpy(fw, ch, n);
+            fw[n] = 0;
+            each(e->framework_paths, path, fp) {
+                path r = f(path, "%o/%s.framework/Headers/%s", fp, fw, slash + 1);
+                if (path_exists(r))
+                    return r;
+            }
+        }
     }
 
     // not found in silver's tracked paths. don't be fatal: a system header may
