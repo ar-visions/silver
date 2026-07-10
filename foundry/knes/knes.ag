@@ -2,7 +2,7 @@
 # knes — Nintendo Entertainment System emulator
 #
 # Built on the rgen (Genesis) template: single emulation thread paced by
-# the blocking ALSA write (asnes pattern), trinity window, published
+# spectra's blocking AudioOut write, trinity window, published
 # framebuffer, savestates, Super Eagle upscale.
 #
 # Clock model (NTSC): master 21.477272 MHz
@@ -17,8 +17,7 @@ export 0.8.8
 
 import trinity
 import vec
-import <alsa/asoundlib.h>
-	-lasound
+import spectra
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
@@ -26,7 +25,7 @@ import <unistd.h>
 import <pthread.h>
 import <math.h>
 
-# ALSA sink (rgen template): blocking writei paces the emulation thread
+# audio sink is spectra's AudioOut (ALSA on linux, AudioQueue on mac)
 class cpu6502_state
 	a              : u8
 	x              : u8
@@ -96,49 +95,6 @@ class nes_apu
 	fc_acc         : i64
 	fc_step        : i32
 
-class knes_audio_out
-	pcm_handle     : ref snd_pcm_t
-	buffer         : ref i16
-	buffer_size    : sz
-	sample_rate    : i32
-	channels       : i32
-
-	func open [] -> bool
-		sample_rate = 53267
-		channels    = 2
-		buffer_size = 1024
-		buffer      = calloc[ 1, buffer_size * channels * 2 ]
-		pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
-		err : i32 [ snd_pcm_open[ ref pcm_handle, 'pulse', pb, 0 ] ]
-		if [ err < 0 ] return false
-		psz    : snd_pcm_hw_params_sizeof[]
-		params : ref snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
-		snd_pcm_hw_params_any[ pcm_handle, params ]
-		rw  : i32 [ SND_PCM_ACCESS_RW_INTERLEAVED ]
-		fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
-		snd_pcm_hw_params_set_access  [ pcm_handle, params, rw ]
-		snd_pcm_hw_params_set_format  [ pcm_handle, params, fmt ]
-		snd_pcm_hw_params_set_channels[ pcm_handle, params, channels ]
-		snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
-		bufsz : sz [ 2048 ]
-		persz : sz [ 256 ]
-		snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, ref bufsz ]
-		snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, ref persz, null ]
-		ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
-		if [ ok ]
-			perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
-			if [ perr < 0 ]
-				puts 'knes audio: prepare failed {snd_strerror[ perr ]}'
-				ok = false
-		return ok
-
-	func write [ frames: i32 ] -> none
-		if [ ! pcm_handle ] return
-		wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
-		if [ wr < 0 ]
-			snd_pcm_recover[ pcm_handle, wr, 0 ]
-			snd_pcm_writei[ pcm_handle, buffer, frames ]
-
 element knes : trinity
 	public  width        : i32    [ 1024 ]   # 256 x4
 	public  height       : i32    [ 896 ]    # 224 x4 (top/bottom 8 cropped)
@@ -157,7 +113,7 @@ element knes : trinity
 	mutable cpu          : cpu6502_state
 	mutable ppu          : nes_ppu
 	mutable apu          : nes_apu
-	mutable audio        : knes_audio_out
+	mutable audio        : AudioOut
 	mutable prg          : ref u8            # PRG ROM
 	mutable prg_size     : sz
 	mutable chr          : ref u8            # CHR ROM (or ppu.chr_ram)
@@ -291,6 +247,7 @@ element knes : trinity
 		animated   = true                    # emulator: repaint every frame, never cache-skip (NOT style-owned `volatile`)
 		focusable  = true
 		if [ volume == 0.0 ] volume = 0.04
+		smooth = true                        # [ true ] initializer doesn't apply on element publics
 
 	# NES pad: WASD = D-pad, J = A, K = B, Shift = Select, Enter = Start.
 	# P = save state, O = load state.
@@ -1529,7 +1486,7 @@ element knes : trinity
 		ppu_render[]                              # render from this frame's snapshots
 
 	func generate_audio [] -> none
-		if [ ! audio || ! audio.pcm_handle ]
+		if [ ! audio || ! audio.active ]
 			usleep[ 15000 ]
 			return
 		# 53267 Hz vs NTSC frame (60.0988): 53267 * 357368 / 21477272
@@ -1831,7 +1788,7 @@ element knes : trinity
 		cpu = cpu6502_state []
 		ppu = nes_ppu []
 		apu = nes_apu []
-		audio = knes_audio_out []
+		audio = AudioOut [ sample_rate: 53267, channels: 2, buffer_size: 1024 ]
 		if [ ! audio.open[] ]
 			puts 'knes: audio device unavailable — continuing muted'
 		apu.n_lfsr = 1

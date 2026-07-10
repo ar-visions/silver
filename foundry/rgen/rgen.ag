@@ -288,6 +288,7 @@ element rgen : trinity
 		animated   = true                    # emulator: repaint every frame, never cache-skip (NOT style-owned `volatile`)
 		focusable  = true
 		if [ volume == 0.0 ] volume = 0.25
+		smooth = true                        # [ true ] initializer doesn't apply on element publics
 
 	# Keyboard -> Genesis pad 1. WASD = D-pad, ,/./ = A/B/C, Enter = Start.
 	# P = save state, O = load state (applied at the next frame boundary).
@@ -985,11 +986,15 @@ element rgen : trinity
 					dac_writes += 1
 				if [ ym.latch_addr == 0x2B ] ym.dac_enable = (v & 0x80) != 0
 				if [ ym.latch_addr == 0x28 ] ym_keyon[ v ]
+				if [ ym.latch_addr == 0x27 ]
+					# bits 4/5 strobe-clear the A/B overflow flags
+					if [ (v & 0x10) != 0 ] ym.status &= 0xFE
+					if [ (v & 0x20) != 0 ] ym.status &= 0xFD
 			el
 				ym.regs1[ ym.latch_addr ] = v
 
 	func ym_status [] -> u8
-		return ym.status                       # busy always clear; timers TODO
+		return ym.status                       # bit0/1 timer A/B; busy always clear
 
 	# key on/off (reg $28): bits 0-2 channel (0-2, 4-6), bits 4-7 = S1..S4
 	func ym_keyon [ v: u8 ] -> none
@@ -1100,6 +1105,21 @@ element rgen : trinity
 	# one FM stereo sample into fm_l/fm_r. phases advance at fnum/blk/DT/MUL;
 	# EG ticks every 3rd sample; 8 algorithms with op1 feedback; ch6 DAC.
 	func ym_sample [] -> none
+		# timers: 1 sample = 144 MCLK = 2 units of the /72 prescaler.
+		# Timer A period (1024-NA) units, B 16*(256-NB) [YM2608 manual]
+		mode : u8 [ ym.regs0[ 0x27 ] ]
+		if [ (mode & 1) != 0 ]
+			ym.timer_a_ct += 2
+			na : i32 [ (i32[ ym.regs0[ 0x24 ] ] << 2) | (i32[ ym.regs0[ 0x25 ] ] & 3) ]
+			if [ i32[ ym.timer_a_ct ] >= 1024 - na ]
+				ym.timer_a_ct = 0
+				if [ (mode & 4) != 0 ] ym.status |= 1
+		if [ (mode & 2) != 0 ]
+			ym.timer_b_ct += 2
+			nb : i32 [ 16 * (256 - i32[ ym.regs0[ 0x26 ] ]) ]
+			if [ i32[ ym.timer_b_ct ] >= nb ]
+				ym.timer_b_ct = 0
+				if [ (mode & 8) != 0 ] ym.status |= 2
 		ym.eg_tick += 1
 		egnow : bool [ false ]
 		if [ ym.eg_tick >= 3 ]

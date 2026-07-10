@@ -237,26 +237,48 @@ func fft [ re: ref f32, im: ref f32, n: i32 ]
     free [ re_odd ]
     free [ im_odd ]
 
-# coverage: AudioOut opens, plays ~1s of 440 Hz, closes.
-# 48 chunks > 4-buffer ring, so the blocking pace path is exercised.
+# coverage: AudioOut plays Ode to Joy (Beethoven, public domain).
+# sustained writes far exceed the 4-buffer ring, so the blocking
+# pace path is exercised throughout.
 coverage test
+    intern out   : AudioOut
+    intern phase : f64
+
+    # one note: sine + 2 harmonics, 10ms attack / 40ms release
+    func tone [ freq: f64, ms: i32 ] -> none
+        step  : f64 [ freq * 6.28318530718 / 48000.0 ]
+        total : i32 [ 48 * ms ]
+        done  : i32 [ 0 ]
+        for [ done < total ]
+            c : i32 [ ((total - done) > 1024) ? 1024 : (total - done) ]
+            for [ i: i32 0, i < c, i += 1 ]
+                t   : i32 [ done + i ]
+                env : f64 [ 1.0 ]
+                if [ t < 480 ] env = f64[ t ] / 480.0
+                rem : i32 [ total - t ]
+                if [ rem < 1920 ] env = env * f64[ rem ] / 1920.0
+                s : f64 [ sin[ phase ] + 0.35 * sin[ phase * 2.0 ] + 0.15 * sin[ phase * 3.0 ] ]
+                v : i16 [ i16[ s * env * 5200.0 ] ]
+                out.buffer[ i * 2 ]     = v
+                out.buffer[ i * 2 + 1 ] = v
+                phase += step
+            out.write[ c ]
+            done += c
+
     func run[] -> Au
-        out : AudioOut [ sample_rate: 48000, channels: 2, buffer_size: 1024 ]
+        out = AudioOut [ sample_rate: 48000, channels: 2, buffer_size: 1024 ]
         if [ ! out.open[] ]
             puts 'spectra test: audio device unavailable'
             return false
         if [ ! out.active ]
             puts 'spectra test: open ok but active not set'
             return false
-        phase : f64 [ 0.0 ]
-        step  : f64 [ 440.0 * 6.28318530718 / 48000.0 ]
-        for [ chunk: i32 0, chunk < 48, chunk += 1 ]
-            for [ i: i32 0, i < 1024, i += 1 ]
-                s : i16 [ i16[ sin[ phase ] * 6000.0 ] ]
-                out.buffer[ i * 2 ]     = s
-                out.buffer[ i * 2 + 1 ] = s
-                phase += step
-            out.write[ 1024 ]
+        # melody as semitones from C4; time in half-beats (250ms, 120 bpm)
+        st : array i32 [ 4,4,5,7, 7,5,4,2, 0,0,2,4, 4,2,2,  4,4,5,7, 7,5,4,2, 0,0,2,4, 2,0,0 ]
+        bt : array i32 [ 2,2,2,2, 2,2,2,2, 2,2,2,2, 3,1,4,  2,2,2,2, 2,2,2,2, 2,2,2,2, 3,1,4 ]
+        for [ n: i32 0, n < 30, n += 1 ]
+            f : f64 [ 261.63 * pow[ 2.0, f64[ st[n] ] / 12.0 ] ]
+            tone[ f, bt[n] * 250 ]
         out.close
         puts 'spectra test: AudioOut ok'
         return true
