@@ -129,6 +129,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  bool,                     verbose) \
     M(X, Y, i, prop,     public,  path,                     install) \
     M(X, Y, i, prop,     public,  bool,                     is_library) \
+    M(X, Y, i, prop,     public,  bool,                     has_coverage) \
     M(X, Y, i, prop,     public,  bool,                     is_live) \
     M(X, Y, i, prop,     public,  bool,                     cmode) \
     M(X, Y, i, prop,     public,  bool,                     no_build) \
