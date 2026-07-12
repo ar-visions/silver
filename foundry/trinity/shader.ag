@@ -1233,8 +1233,20 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
         # their VertexInputs in this same order (a_pos, a_normal, a_uv, ...)
         # and always receive the right stream regardless of key hashing.
         sems : array string [ 'POSITION', 'NORMAL', 'TEXCOORD_0', 'TANGENT', 'TEXCOORD_1', 'TEXCOORD_2', 'TEXCOORD_3', 'COLOR_0', 'JOINTS_0', 'WEIGHTS_0' ]
+        # COLOR_0 sits before JOINTS_0/WEIGHTS_0; packing it when the shader
+        # has no color input shifts the joint/weight streams by one slot
+        want_color : bool [ false ]
+        csh : Au_t [ Au.header[ s ].au ]
+        while [ csh != typeid[ shader ] ]
+            for [ mi: i32 0, mi < csh.members.count, mi += 1 ]
+                cm : Au_t [ csh.members.origin[ mi ] ]
+                if [ cm.src == typeid[ VertexInput ] ]
+                    if [ strstr[ cm.ident, 'color' ] ] want_color = true
+            csh = csh.context
         for [ w: i32 0, w < 10, w += 1 ]
             want : sems[w]
+            if [ want == 'COLOR_0' ]
+                if [ !want_color ] continue
             for [ value:ref i64, a_name:string ] in prim.attributes
                 if [ a_name != want ] continue
                 ac_index: value[0]

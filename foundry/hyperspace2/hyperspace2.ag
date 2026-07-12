@@ -297,6 +297,7 @@ element ModelView
     mutable lastx      : f32
     mutable lasty      : f32
     mutable frame_n    : i32
+    mutable nose_gain  : f32 [ 0.03 ]         # nose scale from _V_NOSE mask
 
     func init []
         animated  = true
@@ -364,6 +365,80 @@ element ModelView
         if [ gaze_x < -0.6 ] gaze_x = -0.6
         if [ gaze_y >  0.5 ] gaze_y =  0.5
         if [ gaze_y < -0.5 ] gaze_y = -0.5
+
+    # scale the nose region by the painted _V_NOSE blue mask (gray 0.216 =
+    # neutral, brighter = push out). baked into POSITION once, before upload.
+    func bake_nose []
+        if [ !gmodel ] return
+        neutral : f32 [ 0.216 ]
+        for [ msh: Mesh ] in gmodel.meshes
+            for [ prim: Primitive ] in msh.primitives
+                pos_ai  : i32 [ -1 ]
+                nose_ai : i32 [ -1 ]
+                for [ value: ref i64, a_name: string ] in prim.attributes
+                    if [ a_name == 'POSITION' ] pos_ai  = i32[ value[0] ]
+                    if [ a_name == '_V_NOSE'  ] nose_ai = i32[ value[0] ]
+                if [ pos_ai  < 0 ] continue
+                if [ nose_ai < 0 ] continue
+                pac : gmodel.accessors[ pos_ai ]
+                nac : gmodel.accessors[ nose_ai ]
+                pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
+                nbv : gmodel.bufferViews[ i32[ nac.bufferView ] ]
+                pbb : gmodel.buffers[ i32[ pbv.buffer ] ]
+                nbb : gmodel.buffers[ i32[ nbv.buffer ] ]
+                pbase : ref i8 [ pbb.data ]
+                nbase : ref i8 [ nbb.data ]
+                pstride : i64 [ pac.stride ]
+                nstride : i64 [ nac.stride ]
+                if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
+                if [ nbv.byteStride > 0 ] nstride = nbv.byteStride
+                poff : i64 [ pbv.byteOffset + pac.byteOffset ]
+                noff : i64 [ nbv.byteOffset + nac.byteOffset ]
+                vc : i32 [ i32[ pac.count ] ]
+                cx : f32 [ 0.0 ]
+                cy : f32 [ 0.0 ]
+                cz : f32 [ 0.0 ]
+                wsum : f32 [ 0.0 ]
+                for [ i: i32 0, i < vc, i += 1 ]
+                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
+                    if [ m <= 0.02 ] continue
+                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    cx += pf[0] * m
+                    cy += pf[1] * m
+                    cz += pf[2] * m
+                    wsum += m
+                if [ wsum <= 0.0 ] continue
+                cx /= wsum
+                cy /= wsum
+                cz /= wsum
+                rad : f32 [ 0.0 ]
+                for [ i: i32 0, i < vc, i += 1 ]
+                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
+                    if [ m <= 0.02 ] continue
+                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    dx : f32 [ pf[0] - cx ]
+                    dy : f32 [ pf[1] - cy ]
+                    dz : f32 [ pf[2] - cz ]
+                    d  : f32 [ sqrt[ dx * dx + dy * dy + dz * dz ] ]
+                    if [ d > rad ] rad = d
+                if [ rad <= 0.0 ] continue
+                for [ i: i32 0, i < vc, i += 1 ]
+                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
+                    if [ m <= 0.02 ] continue
+                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    dx : f32 [ pf[0] - cx ]
+                    dy : f32 [ pf[1] - cy ]
+                    dz : f32 [ pf[2] - cz ]
+                    d  : f32 [ sqrt[ dx * dx + dy * dy + dz * dz ] ]
+                    if [ d < 0.000001 ] continue
+                    s  : f32 [ (m / (1.0 - neutral)) * rad * nose_gain / d ]
+                    pf[0] = pf[0] + dx * s
+                    pf[1] = pf[1] + dy * s
+                    pf[2] = pf[2] + dz * s
+                puts 'hyperspace2: baked nose on prim verts={vc} rad={rad}'
 
     # read the skin: inverse-bind matrices + which joint node is the hinge, and
     # allocate the joint-matrix palette storage buffer (one mat4 per joint)
@@ -545,6 +620,8 @@ element ModelView
             # bind the skin/eye albedo maps onto the named materials before
             # the pipelines build (mat_tex reads baseColorTexture)
             bind_albedos[]
+            # bake the painted nose scale into POSITION before the vbo uploads
+            bake_nose[]
             # read the skin's inverse-bind matrices, find the joint node, build
             # the joint-matrix palette storage buffer
             setup_skin[]
