@@ -320,21 +320,21 @@ none mat4f_with_quatf(mat4f* mat, quatf* q) {
     f32 wy = w * y;
     f32 wz = w * z;
 
-    // Fill matrix values in row-major order
-    mat->m[0]  = 1.0f - 2.0f * (yy + zz); // Row 1, Col 1
-    mat->m[1]  = 2.0f * (xy - wz);        // Row 1, Col 2
-    mat->m[2]  = 2.0f * (xz + wy);        // Row 1, Col 3
-    mat->m[3]  = 0.0f;                    // Row 1, Col 4
+    // column-major fill (m[col*4 + row]) to match mul/translate/mul_v4
+    mat->m[0]  = 1.0f - 2.0f * (yy + zz); // (0,0)
+    mat->m[1]  = 2.0f * (xy + wz);        // (1,0)
+    mat->m[2]  = 2.0f * (xz - wy);        // (2,0)
+    mat->m[3]  = 0.0f;
 
-    mat->m[4]  = 2.0f * (xy + wz);        // Row 2, Col 1
-    mat->m[5]  = 1.0f - 2.0f * (xx + zz); // Row 2, Col 2
-    mat->m[6]  = 2.0f * (yz - wx);        // Row 2, Col 3
-    mat->m[7]  = 0.0f;                    // Row 2, Col 4
+    mat->m[4]  = 2.0f * (xy - wz);        // (0,1)
+    mat->m[5]  = 1.0f - 2.0f * (xx + zz); // (1,1)
+    mat->m[6]  = 2.0f * (yz + wx);        // (2,1)
+    mat->m[7]  = 0.0f;
 
-    mat->m[8]  = 2.0f * (xz - wy);        // Row 3, Col 1
-    mat->m[9]  = 2.0f * (yz + wx);        // Row 3, Col 2
-    mat->m[10] = 1.0f - 2.0f * (xx + yy); // Row 3, Col 3
-    mat->m[11] = 0.0f;                    // Row 3, Col 4
+    mat->m[8]  = 2.0f * (xz + wy);        // (0,2)
+    mat->m[9]  = 2.0f * (yz - wx);        // (1,2)
+    mat->m[10] = 1.0f - 2.0f * (xx + yy); // (2,2)
+    mat->m[11] = 0.0f;
 
     mat->m[12] = 0.0f;                    // Row 4, Col 1
     mat->m[13] = 0.0f;                    // Row 4, Col 2
@@ -564,18 +564,19 @@ mat4f mat4f_rotate(mat4f* mat, quatf* q) {
     f32 xy = x * y, xz = x * z, yz = y * z;
     f32 wx = w * x, wy = w * y, wz = w * z;
 
+    // column-major fill (m[col*4 + row]) to match mul/translate/mul_v4
     res.m[0]  = 1.0f - 2.0f * (yy + zz);
-    res.m[1]  = 2.0f * (xy - wz);
-    res.m[2]  = 2.0f * (xz + wy);
+    res.m[1]  = 2.0f * (xy + wz);
+    res.m[2]  = 2.0f * (xz - wy);
     res.m[3]  = 0.0f;
 
-    res.m[4]  = 2.0f * (xy + wz);
+    res.m[4]  = 2.0f * (xy - wz);
     res.m[5]  = 1.0f - 2.0f * (xx + zz);
-    res.m[6]  = 2.0f * (yz - wx);
+    res.m[6]  = 2.0f * (yz + wx);
     res.m[7]  = 0.0f;
 
-    res.m[8]  = 2.0f * (xz - wy);
-    res.m[9]  = 2.0f * (yz + wx);
+    res.m[8]  = 2.0f * (xz + wy);
+    res.m[9]  = 2.0f * (yz - wx);
     res.m[10] = 1.0f - 2.0f * (xx + yy);
     res.m[11] = 0.0f;
 
