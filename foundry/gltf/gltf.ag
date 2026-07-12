@@ -290,7 +290,7 @@ class Primitive
     public targets:         array map
 
 class MeshExtras
-    public target_names:    array string
+    public targetNames:     array string
 
 class Mesh
     public name:            string

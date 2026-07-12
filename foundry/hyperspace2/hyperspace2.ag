@@ -298,10 +298,15 @@ element ModelView
     mutable lasty      : f32
     mutable frame_n    : i32
     mutable nose_gain  : f32 [ 0.03 ]         # nose scale from _V_NOSE mask
+    mutable morph_w    : map f32 [ string ]   # morph target name -> blend weight
+    mutable subdiv_on  : bool [ true ]        # Catmull-Clark subdivide at load
+    mutable subdiv_levels : i32 [ 2 ]         # number of Catmull-Clark passes
 
     func init []
         animated  = true
         focusable = true
+        morph_w   = map f32 [ string ] [ ]
+        # drive morphs per-sample: morph_w[ 'Body Asian' ] = 1.0, etc.
 
     public func on_press [ ev: Event ]
         dragging = true
@@ -365,6 +370,56 @@ element ModelView
         if [ gaze_x < -0.6 ] gaze_x = -0.6
         if [ gaze_y >  0.5 ] gaze_y =  0.5
         if [ gaze_y < -0.5 ] gaze_y = -0.5
+
+    # blend selected shape keys (glTF morph targets) into POSITION at load,
+    # weighted by morph_w[name]. runs before skinning and the _V_* detail.
+    func apply_morphs []
+        if [ !gmodel ] return
+        if [ !morph_w ] return
+        for [ msh: Mesh ] in gmodel.meshes
+            if [ !msh.extras ] continue
+            names : msh.extras.targetNames
+            if [ !names ] continue
+            for [ prim: Primitive ] in msh.primitives
+                if [ !prim.targets ] continue
+                if [ prim.targets.count == 0 ] continue
+                pos_ai : i32 [ -1 ]
+                for [ value: ref i64, a_name: string ] in prim.attributes
+                    if [ a_name == 'POSITION' ] pos_ai = i32[ value[0] ]
+                if [ pos_ai < 0 ] continue
+                pac : gmodel.accessors[ pos_ai ]
+                pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
+                pbb : gmodel.buffers[ i32[ pbv.buffer ] ]
+                pbase : ref i8 [ pbb.data ]
+                pstride : i64 [ pac.stride ]
+                if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
+                poff : i64 [ pbv.byteOffset + pac.byteOffset ]
+                vc : i32 [ i32[ pac.count ] ]
+                for [ w: f32, nm: string ] in morph_w
+                    if [ w < 0.001 ] continue
+                    ti : i32 [ -1 ]
+                    for [ ni: i32 0, ni < names.count, ni += 1 ]
+                        if [ names[ ni ] == nm ] ti = ni
+                    if [ ti < 0 ] continue
+                    if [ ti >= prim.targets.count ] continue
+                    tmap : prim.targets[ ti ]
+                    dpos_ai : i32 [ -1 ]
+                    for [ value: ref i64, a_name: string ] in tmap
+                        if [ a_name == 'POSITION' ] dpos_ai = i32[ value[0] ]
+                    if [ dpos_ai < 0 ] continue
+                    dac : gmodel.accessors[ dpos_ai ]
+                    dbv : gmodel.bufferViews[ i32[ dac.bufferView ] ]
+                    dbb : gmodel.buffers[ i32[ dbv.buffer ] ]
+                    dbase : ref i8 [ dbb.data ]
+                    dstride : i64 [ dac.stride ]
+                    if [ dbv.byteStride > 0 ] dstride = dbv.byteStride
+                    doff : i64 [ dbv.byteOffset + dac.byteOffset ]
+                    for [ i: i32 0, i < vc, i += 1 ]
+                        pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                        df : ref f32 [ ((ref dbase[ doff + i64[ i ] * dstride ]) to ref f32) ]
+                        pf[0] = pf[0] + w * df[0]
+                        pf[1] = pf[1] + w * df[1]
+                        pf[2] = pf[2] + w * df[2]
 
     # scale the nose region by the painted _V_NOSE blue mask (gray 0.216 =
     # neutral, brighter = push out). baked into POSITION once, before upload.
@@ -439,6 +494,644 @@ element ModelView
                     pf[1] = pf[1] + dy * s
                     pf[2] = pf[2] + dz * s
                 puts 'hyperspace2: baked nose on prim verts={vc} rad={rad}'
+
+    # 1-to-4 loop split: every triangle -> 4 via edge-midpoint verts, each
+    # attribute the average of the two endpoints. runs last (after morph +
+    # _V_* bake) so it only carries render/skin streams, not morphs/masks.
+    func subdivide []
+        if [ !subdiv_on ] return
+        if [ !gmodel ] return
+        for [ lv: i32 0, lv < subdiv_levels, lv += 1 ]
+            for [ msh: Mesh ] in gmodel.meshes
+                for [ prim: Primitive ] in msh.primitives
+                    puts 'subdiv L{lv}: {msh.name} -> subdividing'
+                    subdivide_prim[ prim ]
+
+    func subdivide_prim [ prim: Primitive ]
+        pos_i : i32 [ -1 ]
+        nrm_i : i32 [ -1 ]
+        uv_i  : i32 [ -1 ]
+        uv1_i : i32 [ -1 ]
+        tan_i : i32 [ -1 ]
+        jnt_i : i32 [ -1 ]
+        wgt_i : i32 [ -1 ]
+        for [ value: ref i64, a_name: string ] in prim.attributes
+            if [ a_name == 'POSITION'   ] pos_i = i32[ value[0] ]
+            if [ a_name == 'NORMAL'     ] nrm_i = i32[ value[0] ]
+            if [ a_name == 'TEXCOORD_0' ] uv_i  = i32[ value[0] ]
+            if [ a_name == 'TEXCOORD_1' ] uv1_i = i32[ value[0] ]
+            if [ a_name == 'TANGENT'    ] tan_i = i32[ value[0] ]
+            if [ a_name == 'JOINTS_0'   ] jnt_i = i32[ value[0] ]
+            if [ a_name == 'WEIGHTS_0'  ] wgt_i = i32[ value[0] ]
+        puts 'subdiv_prim: pos={pos_i} nrm={nrm_i} uv={uv_i} uv1={uv1_i} tan={tan_i} jnt={jnt_i} wgt={wgt_i}'
+        if [ pos_i < 0 ] return
+        if [ nrm_i < 0 ] return
+        if [ uv_i  < 0 ] return
+        if [ tan_i < 0 ] return
+        # uv1 and skin are optional (the eye prims have neither); dummy their
+        # accessor to POSITION so lookups are valid, and gate all use on the flag
+        has_uv1  : bool [ uv1_i >= 0 ]
+        has_skin : bool [ (jnt_i >= 0) && (wgt_i >= 0) ]
+        u1_use : i32 [ uv1_i ]
+        j_use  : i32 [ jnt_i ]
+        w_use  : i32 [ wgt_i ]
+        if [ !has_uv1 ] u1_use = pos_i
+        if [ !has_skin ] j_use = pos_i
+        if [ !has_skin ] w_use = pos_i
+        pac : gmodel.accessors[ pos_i ]
+        nac : gmodel.accessors[ nrm_i ]
+        uac : gmodel.accessors[ uv_i  ]
+        u1ac: gmodel.accessors[ u1_use ]
+        tac : gmodel.accessors[ tan_i ]
+        jac : gmodel.accessors[ j_use ]
+        wac : gmodel.accessors[ w_use ]
+        iac : gmodel.accessors[ i32[ prim.indices ] ]
+        pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
+        nbv : gmodel.bufferViews[ i32[ nac.bufferView ] ]
+        ubv : gmodel.bufferViews[ i32[ uac.bufferView ] ]
+        u1bv: gmodel.bufferViews[ i32[ u1ac.bufferView ] ]
+        tbv : gmodel.bufferViews[ i32[ tac.bufferView ] ]
+        jbv : gmodel.bufferViews[ i32[ jac.bufferView ] ]
+        wbv : gmodel.bufferViews[ i32[ wac.bufferView ] ]
+        ibv : gmodel.bufferViews[ i32[ iac.bufferView ] ]
+        pbase : ref i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
+        nbase : ref i8 [ gmodel.buffers[ i32[ nbv.buffer ] ].data ]
+        ubase : ref i8 [ gmodel.buffers[ i32[ ubv.buffer ] ].data ]
+        u1base: ref i8 [ gmodel.buffers[ i32[ u1bv.buffer ] ].data ]
+        tbase : ref i8 [ gmodel.buffers[ i32[ tbv.buffer ] ].data ]
+        jbase : ref i8 [ gmodel.buffers[ i32[ jbv.buffer ] ].data ]
+        wbase : ref i8 [ gmodel.buffers[ i32[ wbv.buffer ] ].data ]
+        ibase : ref i8 [ gmodel.buffers[ i32[ ibv.buffer ] ].data ]
+        poff : i64 [ pbv.byteOffset + pac.byteOffset ]
+        noff : i64 [ nbv.byteOffset + nac.byteOffset ]
+        uoff : i64 [ ubv.byteOffset + uac.byteOffset ]
+        u1off: i64 [ u1bv.byteOffset + u1ac.byteOffset ]
+        toff : i64 [ tbv.byteOffset + tac.byteOffset ]
+        joff : i64 [ jbv.byteOffset + jac.byteOffset ]
+        woff : i64 [ wbv.byteOffset + wac.byteOffset ]
+        ioff : i64 [ ibv.byteOffset + iac.byteOffset ]
+        pstride : i64 [ pac.stride ]
+        nstride : i64 [ nac.stride ]
+        ustride : i64 [ uac.stride ]
+        u1stride: i64 [ u1ac.stride ]
+        tstride : i64 [ tac.stride ]
+        jstride : i64 [ jac.stride ]
+        wstride : i64 [ wac.stride ]
+        istride : i64 [ iac.stride ]
+        if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
+        if [ nbv.byteStride > 0 ] nstride = nbv.byteStride
+        if [ ubv.byteStride > 0 ] ustride = ubv.byteStride
+        if [ u1bv.byteStride > 0 ] u1stride = u1bv.byteStride
+        if [ tbv.byteStride > 0 ] tstride = tbv.byteStride
+        if [ jbv.byteStride > 0 ] jstride = jbv.byteStride
+        if [ wbv.byteStride > 0 ] wstride = wbv.byteStride
+        if [ ibv.byteStride > 0 ] istride = ibv.byteStride
+        nv : i32 [ i32[ pac.count ] ]
+        tc : i32 [ i32[ iac.count ] / 3 ]
+        ne : i32 [ tc * 3 ]
+        ov : i32 [ tc * 7 ]
+        ot : i32 [ tc * 6 ]
+        puts 'subdiv_prim: in_verts={nv} in_tris={tc} -> out_verts={ov} out_tris={ot}'
+        r_nrm : i32 [ ov * 12 ]
+        r_uv  : i32 [ ov * 24 ]
+        r_uv1 : i32 [ ov * 32 ]
+        r_tan : i32 [ ov * 40 ]
+        r_jnt : i32 [ ov * 56 ]
+        r_wgt : i32 [ ov * 60 ]
+        r_idx : i32 [ ov * 76 ]
+        total : i32 [ ov * 76 + ot * 12 ]
+        nbuf : GltfBuffer [ ]
+        nbuf.data = new u8 [ total ]
+        nbuf.byteLength = total
+        nbuf.hold[]
+        bidx : i32 [ i32[ gmodel.buffers.count ] ]
+        gmodel.buffers += nbuf
+        ndata : ref i8 [ nbuf.data ]
+        opos : ref f32 [ ((ref ndata[ 0     ]) to ref f32) ]
+        onrm : ref f32 [ ((ref ndata[ r_nrm ]) to ref f32) ]
+        ouv  : ref f32 [ ((ref ndata[ r_uv  ]) to ref f32) ]
+        ouv1 : ref f32 [ ((ref ndata[ r_uv1 ]) to ref f32) ]
+        otan : ref f32 [ ((ref ndata[ r_tan ]) to ref f32) ]
+        ojnt : ref u8  [ ((ref ndata[ r_jnt ]) to ref u8 ) ]
+        owgt : ref f32 [ ((ref ndata[ r_wgt ]) to ref f32) ]
+        oidx : ref u32 [ ((ref ndata[ r_idx ]) to ref u32) ]
+        # Catmull-Clark on the recovered quads, welded by position (no seam crease)
+        nf    : i32 [ tc / 2 ]
+        ne4   : i32 [ nf * 4 ]
+        ncpx  : i32 [ nv + ne4 + nf ]
+        topo  : new i32 [ nv ]
+        tpx   : new f32 [ nv ]
+        tpy   : new f32 [ nv ]
+        tpz   : new f32 [ nv ]
+        accfx : new f32 [ nv ]
+        accfy : new f32 [ nv ]
+        accfz : new f32 [ nv ]
+        accfn : new i32 [ nv ]
+        accex : new f32 [ nv ]
+        accey : new f32 [ nv ]
+        accez : new f32 [ nv ]
+        accen : new i32 [ nv ]
+        bmx   : new f32 [ nv ]
+        bmy   : new f32 [ nv ]
+        bmz   : new f32 [ nv ]
+        bcn   : new i32 [ nv ]
+        npx   : new f32 [ nv ]
+        npy   : new f32 [ nv ]
+        npz   : new f32 [ nv ]
+        fc0   : new i32 [ nf ]
+        fc1   : new i32 [ nf ]
+        fc2   : new i32 [ nf ]
+        fc3   : new i32 [ nf ]
+        fi0   : new i32 [ nf ]
+        fi1   : new i32 [ nf ]
+        fi2   : new i32 [ nf ]
+        fi3   : new i32 [ nf ]
+        fpx   : new f32 [ nf ]
+        fpy   : new f32 [ nf ]
+        fpz   : new f32 [ nf ]
+        fe_u  : new i32 [ ne4 ]
+        fe_v  : new i32 [ ne4 ]
+        fe_f0 : new i32 [ ne4 ]
+        fe_f1 : new i32 [ ne4 ]
+        fe_fn : new i32 [ ne4 ]
+        epx   : new f32 [ ne4 ]
+        epy   : new f32 [ ne4 ]
+        epz   : new f32 [ ne4 ]
+        face_e: new i32 [ ne4 ]
+        cpx   : new f32 [ ncpx ]
+        cpy   : new f32 [ ncpx ]
+        cpz   : new f32 [ ncpx ]
+        nccx  : new f32 [ ncpx ]
+        nccy  : new f32 [ ncpx ]
+        nccz  : new f32 [ ncpx ]
+        fcv   : new i32 [ 4 ]
+        fiv   : new i32 [ 4 ]
+        sc    : new i32 [ 4 ]
+        mj    : new i32 [ 16 ]
+        mw    : new f32 [ 16 ]
+        # read the index buffer once, at its real width (u16 base, u32 re-subdiv)
+        idxbuf : new i32 [ tc * 3 ]
+        iu16 : bool [ iac.componentType == ComponentType.UNSIGNED_SHORT ]
+        for [ ii: i32 0, ii < tc * 3, ii += 1 ]
+            if [ iu16 ]
+                pr16 : ref u16 [ ((ref ibase[ ioff + i64[ ii ] * istride ]) to ref u16) ]
+                idxbuf[ ii ] = i32[ pr16[0] ]
+            el
+                pr32 : ref u32 [ ((ref ibase[ ioff + i64[ ii ] * istride ]) to ref u32) ]
+                idxbuf[ ii ] = i32[ pr32[0] ]
+        # pass 1: weld input verts to topo ids by quantized position
+        wmap : map i32 [ string ] [ ]
+        tv : i32 [ 0 ]
+        for [ v: i32 0, v < nv, v += 1 ]
+            p : ref f32 [ ((ref pbase[ poff + i64[ v ] * pstride ]) to ref f32) ]
+            qx : i64 [ i64[ round[ p[0] * 100000.0 ] ] ]
+            qy : i64 [ i64[ round[ p[1] * 100000.0 ] ] ]
+            qz : i64 [ i64[ round[ p[2] * 100000.0 ] ] ]
+            key : '{qx}_{qy}_{qz}'
+            if [ wmap.contains[ key ] ]
+                topo[ v ] = wmap[ key ]
+            el
+                topo[ v ] = tv
+                tpx[ tv ] = p[0]
+                tpy[ tv ] = p[1]
+                tpz[ tv ] = p[2]
+                accfx[ tv ] = 0.0
+                accfy[ tv ] = 0.0
+                accfz[ tv ] = 0.0
+                accfn[ tv ] = 0
+                accex[ tv ] = 0.0
+                accey[ tv ] = 0.0
+                accez[ tv ] = 0.0
+                accen[ tv ] = 0
+                bmx[ tv ] = 0.0
+                bmy[ tv ] = 0.0
+                bmz[ tv ] = 0.0
+                bcn[ tv ] = 0
+                wmap[ key ] = tv
+                tv += 1
+        # pass 2: pair consecutive triangles back into quads. every pair shares
+        # one edge (the diagonal); the two unshared verts are opposite corners.
+        # quad winding [ R, P, S, Q ]: R,P,Q keep triangle A's order, S = apex of B
+        for [ pp: i32 0, pp < nf, pp += 1 ]
+            ia0 : i32 [ idxbuf[ pp*6 + 0 ] ]
+            ia1 : i32 [ idxbuf[ pp*6 + 1 ] ]
+            ia2 : i32 [ idxbuf[ pp*6 + 2 ] ]
+            ib0 : i32 [ idxbuf[ pp*6 + 3 ] ]
+            ib1 : i32 [ idxbuf[ pp*6 + 4 ] ]
+            ib2 : i32 [ idxbuf[ pp*6 + 5 ] ]
+            a0in : bool [ (ia0 == ib0) || (ia0 == ib1) || (ia0 == ib2) ]
+            a1in : bool [ (ia1 == ib0) || (ia1 == ib1) || (ia1 == ib2) ]
+            ra : i32 [ ia2 ]
+            rp : i32 [ ia0 ]
+            rq : i32 [ ia1 ]
+            if [ !a0in ]
+                ra = ia0
+                rp = ia1
+                rq = ia2
+            if [ !a1in ]
+                ra = ia1
+                rp = ia2
+                rq = ia0
+            b1in : bool [ (ib1 == ia0) || (ib1 == ia1) || (ib1 == ia2) ]
+            b2in : bool [ (ib2 == ia0) || (ib2 == ia1) || (ib2 == ia2) ]
+            sv : i32 [ ib0 ]
+            if [ !b1in ] sv = ib1
+            if [ !b2in ] sv = ib2
+            fi0[ pp ] = ra
+            fi1[ pp ] = rp
+            fi2[ pp ] = sv
+            fi3[ pp ] = rq
+            fc0[ pp ] = topo[ ra ]
+            fc1[ pp ] = topo[ rp ]
+            fc2[ pp ] = topo[ sv ]
+            fc3[ pp ] = topo[ rq ]
+        # pass 3: face points + per-vertex face-point accumulation
+        for [ f: i32 0, f < nf, f += 1 ]
+            A : i32 [ fc0[f] ]
+            B : i32 [ fc1[f] ]
+            C : i32 [ fc2[f] ]
+            D : i32 [ fc3[f] ]
+            fxx : f32 [ (tpx[A] + tpx[B] + tpx[C] + tpx[D]) * 0.25 ]
+            fyy : f32 [ (tpy[A] + tpy[B] + tpy[C] + tpy[D]) * 0.25 ]
+            fzz : f32 [ (tpz[A] + tpz[B] + tpz[C] + tpz[D]) * 0.25 ]
+            fpx[ f ] = fxx
+            fpy[ f ] = fyy
+            fpz[ f ] = fzz
+            accfx[A] += fxx
+            accfy[A] += fyy
+            accfz[A] += fzz
+            accfn[A] += 1
+            accfx[B] += fxx
+            accfy[B] += fyy
+            accfz[B] += fzz
+            accfn[B] += 1
+            accfx[C] += fxx
+            accfy[C] += fyy
+            accfz[C] += fzz
+            accfn[C] += 1
+            accfx[D] += fxx
+            accfy[D] += fyy
+            accfz[D] += fzz
+            accfn[D] += 1
+        # pass 4: unique quad edges with adjacent faces
+        femap : map i32 [ string ] [ ]
+        nedge2 : i32 [ 0 ]
+        for [ f: i32 0, f < nf, f += 1 ]
+            fcv[0] = fc0[f]
+            fcv[1] = fc1[f]
+            fcv[2] = fc2[f]
+            fcv[3] = fc3[f]
+            for [ e: i32 0, e < 4, e += 1 ]
+                en : i32 [ e + 1 ]
+                if [ en >= 4 ] en = 0
+                u : i32 [ fcv[e] ]
+                w : i32 [ fcv[en] ]
+                lo : i32 [ u ]
+                hi : i32 [ w ]
+                if [ u > w ]
+                    lo = w
+                    hi = u
+                key : '{lo}_{hi}'
+                eid : i32 [ 0 ]
+                if [ femap.contains[ key ] ]
+                    eid = femap[ key ]
+                    fe_f1[ eid ] = f
+                    fe_fn[ eid ] += 1
+                el
+                    eid = nedge2
+                    femap[ key ] = eid
+                    fe_u[ eid ] = lo
+                    fe_v[ eid ] = hi
+                    fe_f0[ eid ] = f
+                    fe_f1[ eid ] = f
+                    fe_fn[ eid ] = 1
+                    nedge2 += 1
+                face_e[ f*4 + e ] = eid
+        # pass 5: edge points + per-vertex edge-midpoint accumulation
+        for [ eid: i32 0, eid < nedge2, eid += 1 ]
+            u : i32 [ fe_u[ eid ] ]
+            w : i32 [ fe_v[ eid ] ]
+            mx : f32 [ (tpx[u] + tpx[w]) * 0.5 ]
+            my : f32 [ (tpy[u] + tpy[w]) * 0.5 ]
+            mz : f32 [ (tpz[u] + tpz[w]) * 0.5 ]
+            accex[u] += mx
+            accey[u] += my
+            accez[u] += mz
+            accen[u] += 1
+            accex[w] += mx
+            accey[w] += my
+            accez[w] += mz
+            accen[w] += 1
+            if [ fe_fn[ eid ] >= 2 ]
+                f0 : i32 [ fe_f0[ eid ] ]
+                f1 : i32 [ fe_f1[ eid ] ]
+                epx[ eid ] = (tpx[u] + tpx[w] + fpx[f0] + fpx[f1]) * 0.25
+                epy[ eid ] = (tpy[u] + tpy[w] + fpy[f0] + fpy[f1]) * 0.25
+                epz[ eid ] = (tpz[u] + tpz[w] + fpz[f0] + fpz[f1]) * 0.25
+            el
+                epx[ eid ] = mx
+                epy[ eid ] = my
+                epz[ eid ] = mz
+                bmx[u] += mx
+                bmy[u] += my
+                bmz[u] += mz
+                bcn[u] += 1
+                bmx[w] += mx
+                bmy[w] += my
+                bmz[w] += mz
+                bcn[w] += 1
+        # pass 5: updated original-vertex positions
+        for [ t: i32 0, t < tv, t += 1 ]
+            if [ bcn[t] == 2 ]
+                npx[t] = tpx[t] * 0.5 + bmx[t] * 0.25
+                npy[t] = tpy[t] * 0.5 + bmy[t] * 0.25
+                npz[t] = tpz[t] * 0.5 + bmz[t] * 0.25
+            el [ bcn[t] > 0 ]
+                npx[t] = tpx[t]
+                npy[t] = tpy[t]
+                npz[t] = tpz[t]
+            el [ accen[t] < 3 ]
+                npx[t] = tpx[t]
+                npy[t] = tpy[t]
+                npz[t] = tpz[t]
+            el
+                nf : f32 [ f32[ accen[t] ] ]
+                fdx : f32 [ accfx[t] / f32[ accfn[t] ] ]
+                fdy : f32 [ accfy[t] / f32[ accfn[t] ] ]
+                fdz : f32 [ accfz[t] / f32[ accfn[t] ] ]
+                rdx : f32 [ accex[t] / nf ]
+                rdy : f32 [ accey[t] / nf ]
+                rdz : f32 [ accez[t] / nf ]
+                npx[t] = (fdx + 2.0 * rdx + (nf - 3.0) * tpx[t]) / nf
+                npy[t] = (fdy + 2.0 * rdy + (nf - 3.0) * tpy[t]) / nf
+                npz[t] = (fdz + 2.0 * rdz + (nf - 3.0) * tpz[t]) / nf
+        # pass 7: unified Catmull-Clark point positions (vertex, edge, face) then
+        # smooth normals -- accumulate each output triangle's normal into its points
+        for [ t: i32 0, t < tv, t += 1 ]
+            cpx[ t ] = npx[ t ]
+            cpy[ t ] = npy[ t ]
+            cpz[ t ] = npz[ t ]
+        for [ eid: i32 0, eid < nedge2, eid += 1 ]
+            be : i32 [ tv + eid ]
+            cpx[ be ] = epx[ eid ]
+            cpy[ be ] = epy[ eid ]
+            cpz[ be ] = epz[ eid ]
+        for [ f: i32 0, f < nf, f += 1 ]
+            bf : i32 [ tv + nedge2 + f ]
+            cpx[ bf ] = fpx[ f ]
+            cpy[ bf ] = fpy[ f ]
+            cpz[ bf ] = fpz[ f ]
+        for [ q: i32 0, q < ncpx, q += 1 ]
+            nccx[ q ] = 0.0
+            nccy[ q ] = 0.0
+            nccz[ q ] = 0.0
+        for [ f: i32 0, f < nf, f += 1 ]
+            fcv[0] = fc0[f]
+            fcv[1] = fc1[f]
+            fcv[2] = fc2[f]
+            fcv[3] = fc3[f]
+            gfp : i32 [ tv + nedge2 + f ]
+            fx : f32 [ cpx[gfp] ]
+            fy : f32 [ cpy[gfp] ]
+            fz : f32 [ cpz[gfp] ]
+            for [ i: i32 0, i < 4, i += 1 ]
+                ip : i32 [ i - 1 ]
+                if [ ip < 0 ] ip = 3
+                gvp : i32 [ fcv[i] ]
+                een : i32 [ face_e[ f*4 + i ] ]
+                eep : i32 [ face_e[ f*4 + ip ] ]
+                gen : i32 [ tv + een ]
+                gep : i32 [ tv + eep ]
+                vpx : f32 [ cpx[gvp] ]
+                vpy : f32 [ cpy[gvp] ]
+                vpz : f32 [ cpz[gvp] ]
+                enx : f32 [ cpx[gen] ]
+                eny : f32 [ cpy[gen] ]
+                enz : f32 [ cpz[gen] ]
+                qpx : f32 [ cpx[gep] ]
+                qpy : f32 [ cpy[gep] ]
+                qpz : f32 [ cpz[gep] ]
+                a1x : f32 [ (eny - vpy) * (fz - vpz) - (enz - vpz) * (fy - vpy) ]
+                a1y : f32 [ (enz - vpz) * (fx - vpx) - (enx - vpx) * (fz - vpz) ]
+                a1z : f32 [ (enx - vpx) * (fy - vpy) - (eny - vpy) * (fx - vpx) ]
+                nccx[gvp] += a1x
+                nccy[gvp] += a1y
+                nccz[gvp] += a1z
+                nccx[gen] += a1x
+                nccy[gen] += a1y
+                nccz[gen] += a1z
+                nccx[gfp] += a1x
+                nccy[gfp] += a1y
+                nccz[gfp] += a1z
+                a2x : f32 [ (fy - vpy) * (qpz - vpz) - (fz - vpz) * (qpy - vpy) ]
+                a2y : f32 [ (fz - vpz) * (qpx - vpx) - (fx - vpx) * (qpz - vpz) ]
+                a2z : f32 [ (fx - vpx) * (qpy - vpy) - (fy - vpy) * (qpx - vpx) ]
+                nccx[gvp] += a2x
+                nccy[gvp] += a2y
+                nccz[gvp] += a2z
+                nccx[gfp] += a2x
+                nccy[gfp] += a2y
+                nccz[gfp] += a2z
+                nccx[gep] += a2x
+                nccy[gep] += a2y
+                nccz[gep] += a2z
+        # pass 8: emit 9 verts + 8 tris per quad face (4 corners, 4 edge points,
+        # 1 face point). positions/normals from the CC point arrays; uv/tan/skin
+        # averaged from the source corners so seams stay per-corner
+        for [ f: i32 0, f < nf, f += 1 ]
+            fcv[0] = fc0[f]
+            fcv[1] = fc1[f]
+            fcv[2] = fc2[f]
+            fcv[3] = fc3[f]
+            fiv[0] = fi0[f]
+            fiv[1] = fi1[f]
+            fiv[2] = fi2[f]
+            fiv[3] = fi3[f]
+            ob : i32 [ f * 9 ]
+            gfp : i32 [ tv + nedge2 + f ]
+            for [ s: i32 0, s < 9, s += 1 ]
+                ovi : i32 [ ob + s ]
+                o3 : i32 [ ovi * 3 ]
+                o2 : i32 [ ovi * 2 ]
+                o4 : i32 [ ovi * 4 ]
+                nci : i32 [ gfp ]
+                scn : i32 [ 1 ]
+                sc[0] = fiv[0]
+                if [ s < 4 ]
+                    nci = fcv[ s ]
+                    scn = 1
+                    sc[0] = fiv[ s ]
+                el [ s < 8 ]
+                    ei : i32 [ s - 4 ]
+                    en : i32 [ ei + 1 ]
+                    if [ en >= 4 ] en = 0
+                    nci = tv + face_e[ f*4 + ei ]
+                    scn = 2
+                    sc[0] = fiv[ ei ]
+                    sc[1] = fiv[ en ]
+                el
+                    nci = gfp
+                    scn = 4
+                    sc[0] = fiv[0]
+                    sc[1] = fiv[1]
+                    sc[2] = fiv[2]
+                    sc[3] = fiv[3]
+                opos[ o3 + 0 ] = cpx[ nci ]
+                opos[ o3 + 1 ] = cpy[ nci ]
+                opos[ o3 + 2 ] = cpz[ nci ]
+                uvx : f32 [ 0.0 ]
+                uvy : f32 [ 0.0 ]
+                u1x : f32 [ 0.0 ]
+                u1y : f32 [ 0.0 ]
+                tx : f32 [ 0.0 ]
+                ty : f32 [ 0.0 ]
+                tz : f32 [ 0.0 ]
+                tw : f32 [ 0.0 ]
+                mc : i32 [ 0 ]
+                for [ ci: i32 0, ci < scn, ci += 1 ]
+                    cv : i32 [ sc[ci] ]
+                    uu : ref f32 [ ((ref ubase[ uoff + i64[ cv ] * ustride ]) to ref f32) ]
+                    u1 : ref f32 [ ((ref u1base[ u1off + i64[ cv ] * u1stride ]) to ref f32) ]
+                    tt : ref f32 [ ((ref tbase[ toff + i64[ cv ] * tstride ]) to ref f32) ]
+                    jc : ref u8 [ ((ref jbase[ joff + i64[ cv ] * jstride ]) to ref u8) ]
+                    wc : ref f32 [ ((ref wbase[ woff + i64[ cv ] * wstride ]) to ref f32) ]
+                    uvx += uu[0]
+                    uvy += uu[1]
+                    u1x += u1[0]
+                    u1y += u1[1]
+                    tx += tt[0]
+                    ty += tt[1]
+                    tz += tt[2]
+                    tw += tt[3]
+                    if [ has_skin ]
+                        for [ k: i32 0, k < 4, k += 1 ]
+                            jw : f32 [ wc[k] ]
+                            if [ jw <= 0.0 ] continue
+                            ji : i32 [ i32[ jc[k] ] ]
+                            found : bool [ false ]
+                            for [ m: i32 0, m < mc, m += 1 ]
+                                if [ mj[m] == ji ]
+                                    mw[m] += jw
+                                    found = true
+                            if [ !found ]
+                                mj[mc] = ji
+                                mw[mc] = jw
+                                mc += 1
+                invn : f32 [ 1.0 / f32[ scn ] ]
+                gx : f32 [ nccx[ nci ] ]
+                gy : f32 [ nccy[ nci ] ]
+                gz : f32 [ nccz[ nci ] ]
+                nl : f32 [ sqrt[ gx*gx + gy*gy + gz*gz ] ]
+                if [ nl <= 0.0 ] nl = 1.0
+                onrm[ o3 + 0 ] = gx / nl
+                onrm[ o3 + 1 ] = gy / nl
+                onrm[ o3 + 2 ] = gz / nl
+                ouv[ o2 + 0 ] = uvx * invn
+                ouv[ o2 + 1 ] = uvy * invn
+                ouv1[ o2 + 0 ] = u1x * invn
+                ouv1[ o2 + 1 ] = u1y * invn
+                otan[ o4 + 0 ] = tx * invn
+                otan[ o4 + 1 ] = ty * invn
+                otan[ o4 + 2 ] = tz * invn
+                otan[ o4 + 3 ] = tw * invn
+                for [ o: i32 0, o < 4, o += 1 ]
+                    best : i32 [ -1 ]
+                    bw : f32 [ 0.0 ]
+                    for [ m: i32 0, m < mc, m += 1 ]
+                        if [ mw[m] > bw ]
+                            bw = mw[m]
+                            best = m
+                    if [ best < 0 ]
+                        ojnt[ o4 + o ] = 0
+                        owgt[ o4 + o ] = 0.0
+                    el
+                        ojnt[ o4 + o ] = u8[ mj[best] ]
+                        owgt[ o4 + o ] = mw[best]
+                        mw[best] = -1.0
+                wsum : f32 [ owgt[ o4 + 0 ] + owgt[ o4 + 1 ] + owgt[ o4 + 2 ] + owgt[ o4 + 3 ] ]
+                if [ wsum > 0.0 ]
+                    owgt[ o4 + 0 ] = owgt[ o4 + 0 ] / wsum
+                    owgt[ o4 + 1 ] = owgt[ o4 + 1 ] / wsum
+                    owgt[ o4 + 2 ] = owgt[ o4 + 2 ] / wsum
+                    owgt[ o4 + 3 ] = owgt[ o4 + 3 ] / wsum
+            # 4 sub-quads per face, each split into 2 triangles
+            oi : i32 [ f * 24 ]
+            for [ qi: i32 0, qi < 4, qi += 1 ]
+                ip : i32 [ qi - 1 ]
+                if [ ip < 0 ] ip = 3
+                lvp : i32 [ ob + qi ]
+                lne : i32 [ ob + 4 + qi ]
+                lfp : i32 [ ob + 8 ]
+                lpe : i32 [ ob + 4 + ip ]
+                oq : i32 [ oi + qi * 6 ]
+                oidx[ oq + 0 ] = u32[ lvp ]
+                oidx[ oq + 1 ] = u32[ lne ]
+                oidx[ oq + 2 ] = u32[ lfp ]
+                oidx[ oq + 3 ] = u32[ lvp ]
+                oidx[ oq + 4 ] = u32[ lfp ]
+                oidx[ oq + 5 ] = u32[ lpe ]
+        ovc : i32 [ nf * 9 ]
+        otc : i32 [ nf * 8 ]
+        pbv.buffer = bidx
+        pbv.byteOffset = 0
+        pbv.byteLength = ovc * 12
+        pbv.byteStride = 0
+        pac.byteOffset = 0
+        pac.count = ovc
+        pac.init[]
+        nbv.buffer = bidx
+        nbv.byteOffset = r_nrm
+        nbv.byteLength = ovc * 12
+        nbv.byteStride = 0
+        nac.byteOffset = 0
+        nac.count = ovc
+        nac.init[]
+        ubv.buffer = bidx
+        ubv.byteOffset = r_uv
+        ubv.byteLength = ovc * 8
+        ubv.byteStride = 0
+        uac.byteOffset = 0
+        uac.count = ovc
+        uac.init[]
+        if [ has_uv1 ]
+            u1bv.buffer = bidx
+            u1bv.byteOffset = r_uv1
+            u1bv.byteLength = ovc * 8
+            u1bv.byteStride = 0
+            u1ac.byteOffset = 0
+            u1ac.count = ovc
+            u1ac.init[]
+        tbv.buffer = bidx
+        tbv.byteOffset = r_tan
+        tbv.byteLength = ovc * 16
+        tbv.byteStride = 0
+        tac.byteOffset = 0
+        tac.count = ovc
+        tac.init[]
+        if [ has_skin ]
+            jbv.buffer = bidx
+            jbv.byteOffset = r_jnt
+            jbv.byteLength = ovc * 4
+            jbv.byteStride = 0
+            jac.byteOffset = 0
+            jac.count = ovc
+            jac.init[]
+            wbv.buffer = bidx
+            wbv.byteOffset = r_wgt
+            wbv.byteLength = ovc * 16
+            wbv.byteStride = 0
+            wac.byteOffset = 0
+            wac.count = ovc
+            wac.init[]
+        # mirrored L/R prims SHARE one index accessor -- mutating it in place
+        # corrupts the sibling. build a fresh index accessor + view per prim.
+        nibv_i : i32 [ i32[ gmodel.bufferViews.count ] ]
+        nibv : BufferView [ buffer: bidx, byteOffset: r_idx, byteLength: otc * 12, byteStride: 0 ]
+        gmodel.bufferViews += nibv
+        prim.indices = i32[ gmodel.accessors.count ]
+        niac : Accessor [ bufferView: nibv_i, componentType: ComponentType.UNSIGNED_INT, type: CompoundType.SCALAR, byteOffset: 0, count: otc * 3 ]
+        gmodel.accessors += niac
+        puts 'hyperspace2: subdivided quads {nf} -> {otc} tris ({ovc} verts)'
 
     # read the skin: inverse-bind matrices + which joint node is the hinge, and
     # allocate the joint-matrix palette storage buffer (one mat4 per joint)
@@ -620,8 +1313,11 @@ element ModelView
             # bind the skin/eye albedo maps onto the named materials before
             # the pipelines build (mat_tex reads baseColorTexture)
             bind_albedos[]
-            # bake the painted nose scale into POSITION before the vbo uploads
+            # blend shape keys, then bake the painted nose scale, into POSITION
+            apply_morphs[]
             bake_nose[]
+            # tessellate the base mesh (1-to-4) after all CPU deformation
+            subdivide[]
             # read the skin's inverse-bind matrices, find the joint node, build
             # the joint-matrix palette storage buffer
             setup_skin[]
