@@ -1,5 +1,11 @@
 9# Silver
 
+## Rule #0 — Plain simple English, always
+
+Speak plainly. Name the image, the axis, and the units in every description of geometry or data ("the crop's center moves up the y axis by 10% of the crop size" — never "raised 0.1"). No jargon, no compressed geometry-speak, no trying to sound sophisticated — that reads as obtuse and hides the meaning. Show the diff of every code and file change.
+
+---
+
 ## Rule #1 — NEVER perform git operations
 
 DO NOT run `git checkout`, `git reset`, `git restore`, `git clean`, or any other git command that modifies or discards file contents. These operations destroy work irreversibly. The only git commands permitted are read-only: `git status`, `git diff`, `git log`, `git blame`. If asked to "revert" something, edit the file directly — never use git to do it.
