@@ -11,24 +11,25 @@ import torch.nn as nn
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--session',   default='basic')
+    p.add_argument('--session',   default='a7')
     p.add_argument('--epochs',    type=int,   default=30)
     p.add_argument('--optimizer', default='adam', choices=['adam', 'sgd'])
     p.add_argument('--lr',        type=float, default=0.001)
-    p.add_argument('--batch',     type=int,   default=32)
+    p.add_argument('--batch',     type=int,   default=1)   # batch > 1 is faster, never better
     p.add_argument('--train',     action='store_true')   # parity with silver CLI
     p.add_argument('--size',      type=int,   default=32)
     p.add_argument('--cams',      type=int,   default=1)
     p.add_argument('--seed',      type=int,   default=1234)
     p.add_argument('--zero_aux',  type=int,   default=0)
-    p.add_argument('--dropout',   type=float, default=0.2)
+    p.add_argument('--dropout',   type=float, default=0.000)
+    p.add_argument('--eps',       type=float, default=0.005)  # error tolerance, screen units
+    p.add_argument('--mirror',    type=int,   default=0)     # 1 = mirror half of each batch
     p.add_argument('--wd',        type=float, default=1e-4)   # weight decay (AdamW)
-    p.add_argument('--noise',     type=float, default=0.02)   # train pixel noise
-    p.add_argument('--aux_noise', type=float, default=0.005)  # train aux jitter
-    p.add_argument('--photo',     type=float, default=0.25)   # contrast/brightness jitter, +/- fraction
+    p.add_argument('--noise',     type=float, default=0.00)   # train pixel noise
+    p.add_argument('--photo',     type=float, default=0.10)   # contrast/brightness jitter, +/- fraction
     p.add_argument('--eye_div',   type=float, default=2.12)   # eye crop side = scale / eye_div (2x area vs /3)
     p.add_argument('--taug',   type=int,   default=0)     # fake-translation variants per sample
-    p.add_argument('--trange', type=float, default=0.1)   # max |head shift|, frame units
+    p.add_argument('--trange', type=float, default=0.04)   # max |head shift|, frame units
     p.add_argument('--tkx',    type=float, default=1.0)   # screen shift = tk * shift / scale
     p.add_argument('--tky',    type=float, default=1.0)
     p.add_argument('--saug',   type=int,   default=0)     # fake-depth variants per sample
@@ -39,21 +40,22 @@ def parse_args():
     p.add_argument('--fraction',  type=float, default=1.0)   # train on this fraction of frames
     p.add_argument('--volume',    type=int,   default=1)     # ingest volume_look/volume_head folders
     p.add_argument('--vel_tol',   type=float, default=0.02)  # max detection deviation vs smoothed track
-    p.add_argument('--model',     default='look', choices=['look', 'target', 'refine', 'gate', 'tlook'])
     p.add_argument('--rwin',      type=int,   default=4)     # refine: jittered windows per frame
     p.add_argument('--balance',   type=int,   default=1)     # look: equalize screen-gaze bin sampling
     p.add_argument('--bins_x',    type=int,   default=16)    # balance grid: 16x9 screen areas
     p.add_argument('--bins_y',    type=int,   default=9)
     p.add_argument('--annotate',  action='store_true')      # plot eyes on unannotated frames (torch models)
-    p.add_argument('--process',   default='', choices=['', 'base', 'volumes', 'look', 'gen'])
+    p.add_argument('--process',   default='', choices=['', 'base', 'volumes', 'gen',
+                                                       'look', 'target', 'refine', 'noise'])
     p.add_argument('--export_ts', action='store_true')      # trace models -> app .ptc files
     p.add_argument('--preview',   action='store_true')      # dump look training samples as pngs
     p.add_argument('--stats',     action='store_true')      # dataset variety / coverage report
-    p.add_argument('--tsteps',    type=int, default=8)      # tlook: frames per sequence window
-    p.add_argument('--group_by',  default='headdir', choices=['circle', 'pose', 'headdir'])  # eval holdout unit
+    p.add_argument('--oc_span_m', type=float, default=0.117) # measured outer-corner span: the unit truth (4.6in)
+    p.add_argument('--group_by',  default='frame', choices=['circle', 'pose', 'headdir', 'frame'])  # eval holdout unit
     return p.parse_args()
 
 args = parse_args()
+args.model = 'look' if args.process in ('', 'look', 'gen', 'base', 'volumes') else args.process
 
 
 def read_pair(agi_text, key):
@@ -62,6 +64,91 @@ def read_pair(agi_text, key):
     if not m:
         return (-1.0, -1.0)
     return (float(m.group(1)), float(m.group(2)) if m.group(2) else 0.0)
+
+
+def oc_or_extrap(text, left, right):
+    # outer corners in GLOBAL camera coords; frames not yet corner-
+    # plotted extrapolate along the eye line (~35% spacing outward)
+    ocl = read_pair(text, 'top_left_oc')
+    ocr = read_pair(text, 'top_right_oc')
+    if ocl[0] < -0.5 or ocr[0] < -0.5:
+        dx9, dy9 = left[0] - right[0], left[1] - right[1]
+        ocl = (left[0] + 0.35 * dx9, left[1] + 0.35 * dy9)
+        ocr = (right[0] - 0.35 * dx9, right[1] - 0.35 * dy9)
+    return ocl, ocr
+
+
+def pupil_geometry(session_dir, cam='top'):
+    # pupil-zero groups: two zero-frame clicks + one end-of-group
+    # drift click fix eye centers for EVERY member; drift lerps
+    # 0 -> measured across capture order. scale = span, floor 0.15
+    zeros, members, drifts = {}, {}, {}
+    for i in agi_ids(session_dir):
+        text = open(os.path.join(session_dir, f'{i}.agi')).read()
+        if 'zero: true' in text:
+            pl = read_pair(text, f'{cam}_pupil_left')
+            pr = read_pair(text, f'{cam}_pupil_right')
+            if pl[0] > -0.5 and pr[0] > -0.5:
+                zeros[i] = (pl, pr)
+        m = re.search(r'^sequence:\s*(\d+)', text, re.M)
+        if m:
+            z = int(m.group(1))
+            members.setdefault(z, []).append(i)
+            d = read_pair(text, f'{cam}_drift')
+            if d != (-1.0, -1.0):
+                drifts.setdefault(z, {})[i] = d
+    geo = {}
+    # ungrouped head-focused frames (edges laps): their two clicks
+    # are a complete single-frame geometry
+    for i in agi_ids(session_dir):
+        text = open(os.path.join(session_dir, f'{i}.agi')).read()
+        if ('zero: true' not in text
+                and not re.search(r'^sequence:\s*\d+', text, re.M)):
+            pl = read_pair(text, f'{cam}_pupil_left')
+            pr = read_pair(text, f'{cam}_pupil_right')
+            if pl[0] > -0.5 and pr[0] > -0.5:
+                span = ((pl[0] - pr[0]) ** 2 + (pl[1] - pr[1]) ** 2) ** 0.5
+                geo[i] = (pl, pr, span)
+    for z, (pl, pr) in zeros.items():
+        mem = sorted(members.get(z, []))
+        # anchors: zero frame is drift 0; each annotated frame is its
+        # own correction; drift between anchors is piecewise-linear,
+        # held flat past the last one (drift is NOT globally linear)
+        anchors = [(z, (0.0, 0.0))] + sorted(drifts.get(z, {}).items())
+        for fid in [z] + mem:
+            prev, nxt = anchors[0], None
+            for a in anchors:
+                if a[0] <= fid:
+                    prev = a
+                else:
+                    nxt = a
+                    break
+            if nxt is None:
+                dd = prev[1]
+            else:
+                w = (fid - prev[0]) / (nxt[0] - prev[0])
+                dd = (prev[1][0] + (nxt[1][0] - prev[1][0]) * w,
+                      prev[1][1] + (nxt[1][1] - prev[1][1]) * w)
+            l9 = (pl[0] + dd[0], pl[1] + dd[1])
+            r9 = (pr[0] + dd[0], pr[1] + dd[1])
+            span = ((l9[0] - r9[0]) ** 2 + (l9[1] - r9[1]) ** 2) ** 0.5
+            geo[fid] = (l9, r9, span)
+    return geo
+
+
+def agi_ids(d):
+    # root frame ids are no longer contiguous (edge sweeps moved to
+    # edges/) — enumerate what exists instead of walking until a gap
+    if not os.path.isdir(d):
+        return []
+    return sorted(int(f[:-4]) for f in os.listdir(d)
+                  if f.endswith('.agi') and f[:-4].isdigit())
+
+
+def noise_dir(sd):
+    # off-camera negatives live in noise/ (volume_off = legacy name)
+    nd = os.path.join(sd, 'noise')
+    return nd if os.path.isdir(nd) else os.path.join(sd, 'volume_off')
 
 
 def eyes_off_frame(left, right):
@@ -93,119 +180,64 @@ def crop_tensor(gray, cx, cy, side):
     return (out / 255.0).reshape(size, size, 1)
 
 
+def crop_rect(gray, cx, cy, side_w, side_h):
+    # rectangular crop (both sides in image-width units) -> SxS,
+    # anisotropic coverage-average; edge-clamped like crop_tensor
+    h, w = gray.shape
+    img_w = float(w)
+    size = args.size
+    swp, shp = side_w * img_w, side_h * img_w
+    x0 = cx * img_w - swp * 0.5
+    y0 = cy * img_w - shp * 0.5
+    stx, sty = swp / size, shp / size
+    nsx = int(min(max(stx, 1) + 2, 12))
+    nsy = int(min(max(sty, 1) + 2, 12))
+    oxs = (np.arange(nsx) + 0.5) / nsx * stx
+    oys = (np.arange(nsy) + 0.5) / nsy * sty
+    xs = np.clip((x0 + (np.arange(size) * stx)[:, None] + oxs[None, :])
+                 .reshape(-1).astype(int), 0, w - 1)
+    ys = np.clip((y0 + (np.arange(size) * sty)[:, None] + oys[None, :])
+                 .reshape(-1).astype(int), 0, h - 1)
+    vals = gray.astype(np.float32)[np.ix_(ys, xs)]
+    out = vals.reshape(size, nsy, size, nsx).mean(axis=(1, 3))
+    return (out / 255.0).reshape(size, size, 1)
+
+
 def load_session(session_dir):
-    # cached: PNG decode + crops in one .npz, keyed by .agi mtimes
-    cache = os.path.join(session_dir, f'.torchcache-{args.size}-c{args.cams}-e{args.eye_div}-v18.npz')
-    dirs = [session_dir] + [os.path.join(session_dir, s)
-                            for s in ('volume_look', 'volume_head',
-                                      'applied_look', 'applied_head')
-                            if os.path.isdir(os.path.join(session_dir, s))]
-    newest = max((os.path.getmtime(os.path.join(d, f))
-                  for d in dirs for f in os.listdir(d) if f.endswith('.agi')), default=0)
-    if os.path.exists(cache) and os.path.getmtime(cache) >= newest:
+    # the trainer builds NO crops. silver's build_inputs (the exact
+    # runtime function) writes crops/ via --export_crops; we load it.
+    cd = os.path.join(session_dir, 'crops')
+    idx = os.path.join(cd, 'index.txt')
+    if not os.path.exists(idx):
+        raise SystemExit('crops/index.txt missing — run: silver hyperspace --export_crops')
+    cache = os.path.join(session_dir, f'.torchcache-look-v29.npz')
+    if os.path.exists(cache) and os.path.getmtime(cache) >= os.path.getmtime(idx):
         z = np.load(cache)
         return [z[k] for k in ('tl', 'tr', 'tf')], z['laux'], z['ly'], z['lg'], z['lfid']
     from PIL import Image
-    print(f'building crop cache at size {args.size} ...')
+    print('loading exported crops ...')
     look = {'tl': [], 'tr': [], 'tf': []}
     laux, ly, lg, lfid = [], [], [], []
     groups = {}
-    frame = 0
-    while True:
-        agi = os.path.join(session_dir, f'{frame}.agi')
-        if not os.path.exists(agi):
-            break
-        text = open(agi).read()
+    for line in open(idx):
+        parts = line.split()
+        if len(parts) != 13:
+            continue
+        fid = int(parts[0])
+        text = open(os.path.join(session_dir, f'{fid}.agi')).read()
         center = read_pair(text, 'head')
-        if center[0] <= -0.9:
-            center = read_pair(text, 'center')
-        offset = read_pair(text, 'offset')
         lkm    = read_pair(text, 'look')
-        if lkm[0] <= -0.9:
-            lkm = (center[0] + offset[0], center[1] + offset[1])
-        left   = read_pair(text, 'top_left')
-        right  = read_pair(text, 'top_right')
-        scale  = read_pair(text, 'top_scale')
-        png    = os.path.join(session_dir, f'{frame}-top.png')
-        if (center[0] > -0.9 and left[0] >= -100.0 and right[0] >= -100.0
-                and scale[0] > 0.0 and os.path.exists(png)
-                and left[0] != -1.0 and right[0] != -1.0
-                and not eyes_off_frame(left, right)):
-            gray = np.asarray(Image.open(png).convert('L'))
-            side = max(scale[0] / args.eye_div, 0.03)
-            med  = ((left[0] + right[0]) * 0.5, (left[1] + right[1]) * 0.5)
-            look['tl'].append(crop_tensor(gray, left[0],  left[1],  side))
-            look['tr'].append(crop_tensor(gray, right[0], right[1], side))
-            look['tf'].append(crop_tensor(gray, med[0], med[1], max(scale[0] * 2.0, 0.1)))
-            laux.append([med[0], med[1], scale[0],
-                         left[0], left[1], right[0], right[1]])
-            ly.append([center[0], center[1], lkm[0], lkm[1]])
-            gk = (round(center[0], 5), round(center[1], 5))
-            lg.append(groups.setdefault(gk, len(groups)))
-            lfid.append(frame)
-        frame += 1
-    # volume folders: sequential captures; the head moves slowly, so
-    # detections that jump off the median-smoothed track are dropped
-    if args.volume:
-        from PIL import Image
-        for si, sub in enumerate(('look', 'head')):
-            vd = os.path.join(session_dir, 'volume_' + sub)
-            ad = os.path.join(session_dir, 'applied_' + sub)
-            seq = []
-            i = 0
-            while os.path.exists(os.path.join(ad, f'{i}.agi')):
-                text = open(os.path.join(ad, f'{i}.agi')).read()
-                if 'off_screen: true' in text:
-                    i += 1
-                    continue
-                center = read_pair(text, 'head')
-                if center[0] <= -0.9:
-                    center = read_pair(text, 'center')
-                offset = read_pair(text, 'offset')
-                lkv = read_pair(text, 'look')
-                left   = read_pair(text, 'top_left')
-                right  = read_pair(text, 'top_right')
-                scale  = read_pair(text, 'top_scale')
-                png    = os.path.join(vd, f'{i}-top.png')
-                if lkv[0] <= -0.9:
-                    lkv = (center[0] + offset[0], center[1] + offset[1])
-                if center[0] <= -0.9:
-                    center = lkv
-                if (center[0] > -0.9 and left[0] > -900.0 and right[0] > -900.0
-                        and scale[0] > 0.0 and os.path.exists(png)
-                        and not eyes_off_frame(left, right)):
-                    seq.append((i, center, lkv, left, right, scale[0], png))
-                i += 1
-            if len(seq) < 5:
-                continue
-            med = np.array([[(s[3][0] + s[4][0]) / 2, (s[3][1] + s[4][1]) / 2]
-                            for s in seq])
-            k5 = 5
-            sm = med.copy()
-            for j in range(len(med)):
-                a = max(0, j - k5 // 2)
-                sm[j] = np.median(med[a:a + k5], axis=0)
-            ok = np.abs(med - sm).max(1) < args.vel_tol
-            kept = 0
-            for j, s in enumerate(seq):
-                if not ok[j]:
-                    continue
-                fi, center, offset, left, right, sc, png = s
-                gray = np.asarray(Image.open(png).convert('L'))
-                side = max(sc / args.eye_div, 0.03)
-                m2 = ((left[0] + right[0]) * 0.5, (left[1] + right[1]) * 0.5)
-                look['tl'].append(crop_tensor(gray, left[0],  left[1],  side))
-                look['tr'].append(crop_tensor(gray, right[0], right[1], side))
-                look['tf'].append(crop_tensor(gray, m2[0], m2[1], max(sc * 2.0, 0.1)))
-                laux.append([m2[0], m2[1], sc,
-                             left[0], left[1], right[0], right[1]])
-                gz = offset   # slot carries the absolute look now
-                ly.append([center[0], center[1], gz[0], gz[1]])
-                gk = (round(gz[0], 5), round(gz[1], 5))
-                lg.append(groups.setdefault(gk, len(groups)))
-                lfid.append(100000 * (si + 1) + fi)
-                kept += 1
-            print(f'{sub}: {kept} kept / {len(seq)} annotated ({int((~ok).sum())} velocity-rejected)')
+        if center[0] <= -0.9 or lkm[0] <= -0.9:
+            continue
+        for key, tag in (('tl', 'l'), ('tr', 'r'), ('tf', 'f')):
+            px = np.asarray(Image.open(os.path.join(cd, f'{fid}-{tag}.png')),
+                            np.float32) / 255.0
+            look[key].append(px.reshape(args.size, args.size, 1))
+        laux.append([float(v) for v in parts[1:13]])
+        ly.append([center[0], center[1], lkm[0], lkm[1]])
+        gk = (round(center[0], 5), round(center[1], 5))
+        lg.append(groups.setdefault(gk, len(groups)))
+        lfid.append(fid)
     r = ([np.array(look[k], np.float32) for k in ('tl', 'tr', 'tf')],
          np.array(laux, np.float32), np.array(ly, np.float32),
          np.array(lg), np.array(lfid))
@@ -214,48 +246,40 @@ def load_session(session_dir):
     return r
 
 
-class ImgEnc(nn.Module):
-    # size x size x 1 -> 64 features; shared between both eyes
-    def __init__(self):
-        super().__init__()
-        s = args.size // 4
-        self.net = nn.Sequential(
-            nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Flatten(),
-            nn.Linear(s * s * 32, 64), nn.ReLU())
-
-    def forward(self, x):
-        return self.net(x)
+def coord_grid(S):
+    # CoordConv: constant x/y ramps — conv features become position-aware,
+    # because the translation AMOUNT is the signal in this task
+    ys, xs = torch.meshgrid(torch.linspace(-1, 1, S),
+                            torch.linspace(-1, 1, S), indexing='ij')
+    return torch.stack([xs, ys])          # (2,S,S)
 
 
 class EyeEnc(nn.Module):
     # hybrid: sub-pixel soft-argmax coordinates (no pooling on that
     # path — a 1px iris shift moves them directly) PLUS pooled
     # appearance features for context. 24 + 64 = 88 per eye.
-    def __init__(self, k=16):
+    def __init__(self, k=4):
         super().__init__()
         self.k = k
         self.trunk = nn.Sequential(
-            nn.Conv2d(1, 32, 3, padding=1), nn.GroupNorm(4, 32), nn.ReLU(),
-            nn.Conv2d(32, 64, 3, padding=1), nn.GroupNorm(8, 64), nn.ReLU(),
-            nn.Conv2d(64, 64, 3, padding=1), nn.GroupNorm(8, 64), nn.ReLU())
-        self.heat = nn.Conv2d(64, k, 1)
+            nn.Conv2d(3, 4, 5, padding=2), nn.GroupNorm(1, 4), nn.ReLU(),
+            nn.Conv2d(4, 8, 5, padding=2), nn.GroupNorm(2, 8), nn.ReLU(),
+            nn.Conv2d(8, 8, 5, padding=2), nn.GroupNorm(2, 8), nn.ReLU())
+        self.register_buffer('cgrid', coord_grid(args.size))
+        self.heat = nn.Conv2d(8, k, 1)
         self.temp = nn.Parameter(torch.tensor(8.0))
         s = args.size // 4
         self.app = nn.Sequential(
             nn.MaxPool2d(2),
-            nn.Conv2d(64, 64, 3, padding=1), nn.GroupNorm(8, 64), nn.ReLU(),
-            nn.MaxPool2d(2),
-            nn.Flatten(),
-            nn.Linear(s * s * 64, 64), nn.ReLU())
+            nn.Conv2d(8, 8, 5, padding=2), nn.GroupNorm(2, 8), nn.ReLU(),
+            nn.MaxPool2d(2), nn.MaxPool2d(2),
+            nn.Flatten())
         lin = torch.linspace(0.0, 1.0, args.size)
         self.register_buffer('lin', lin)
 
     def forward(self, x):
-        t = self.trunk(x)
+        g = self.cgrid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
+        t = self.trunk(torch.cat([x, g], 1))
         hm = self.heat(t)                      # B,k,S,S
         B, k, S, _ = hm.shape
         p = torch.softmax(hm.reshape(B, k, -1) * self.temp, -1).reshape(B, k, S, S)
@@ -268,28 +292,34 @@ class EyeEnc(nn.Module):
 class CenterNet(nn.Module):
     def __init__(self):
         super().__init__()
-        self.eye  = EyeEnc()                   # shared, 112 feats/eye
-        self.face = ImgEnc()
-        self.aux  = nn.Sequential(nn.Linear(7, 64), nn.ReLU(),
-                                  nn.Linear(64, 64), nn.ReLU())
-        self.center = nn.Sequential(nn.Linear(128, 128), nn.ReLU(),
+        # aux joins LATE: image features run their dense first, the
+        # raw aux concatenates just before each head's final dense
+        # ONE encoder design everywhere: eyes, face, scene
+        # three SEPARATE CNN columns (left eye, right eye, face);
+        # each column's dense gets its own copy of the aux, and the
+        # join gets the aux AGAIN. head reads the face column only.
+        self.eyeL = EyeEnc()
+        self.eyeR = EyeEnc()
+        self.face = EyeEnc()
+        fe = 3 * 4 + 128                       # encoder output width
+        self.colL = nn.Sequential(nn.Linear(fe + 12, 64), nn.ReLU())
+        self.colR = nn.Sequential(nn.Linear(fe + 12, 64), nn.ReLU())
+        self.colF = nn.Sequential(nn.Linear(fe + 12, 64), nn.ReLU())
+        self.center = nn.Sequential(nn.Linear(64 + 12, 32), nn.ReLU(),
                                     nn.Dropout(args.dropout),
-                                    nn.Linear(128, 2))
-        self.gamma = nn.Linear(64, 288)
-        self.beta  = nn.Linear(64, 288)
-        self.delta = nn.Sequential(nn.Linear(288 + 64, 128), nn.ReLU(),
+                                    nn.Linear(32, 2))
+        self.delta = nn.Sequential(nn.Linear(64 * 3 + 12 + 2, 64), nn.ReLU(),
                                    nn.Dropout(args.dropout),
-                                   nn.Linear(128, 2))
+                                   nn.Linear(64, 2))
 
     def forward(self, l, r, f, a):
-        el = self.eye(l)
-        er = self.eye(torch.flip(r, [3]))   # mirror: shared chirality
-        ef = self.face(f)
-        ea = self.aux(a)
-        center = self.center(torch.cat([ef, ea], 1))
-        feats  = torch.cat([el, er, ef], 1)    # 112+112+64 = 288
-        feats  = feats * (1.0 + torch.tanh(self.gamma(ea))) + self.beta(ea)
-        delta  = self.delta(torch.cat([feats, ea], 1))
+        hl = self.colL(torch.cat([self.eyeL(l), a], 1))
+        hr = self.colR(torch.cat([self.eyeR(r), a], 1))
+        hf = self.colF(torch.cat([self.face(f), a], 1))
+        center = self.center(torch.cat([hf, a], 1))
+        # the face direction itself feeds the gaze stage (detached:
+        # the head stays trained by the face alone)
+        delta  = self.delta(torch.cat([hl, hr, hf, a, center.detach()], 1))
         return center, center + delta
 
 
@@ -306,8 +336,8 @@ def load_plot_frames(session_dir):
     # median-smoothed auto-annotations (velocity outliers dropped)
     from PIL import Image
     entries = []
-    i = 0
-    while os.path.exists(os.path.join(session_dir, f'{i}.agi')):
+    geo = {cam: pupil_geometry(session_dir, cam) for cam in ('top', 'bot')}
+    for i in agi_ids(session_dir):
         text = open(os.path.join(session_dir, f'{i}.agi')).read()
         # every camera's view is an independent plot sample
         for cam in ('top', 'bot'):
@@ -315,9 +345,17 @@ def load_plot_frames(session_dir):
             right = read_pair(text, f'{cam}_right')
             scale = read_pair(text, f'{cam}_scale')
             png = os.path.join(session_dir, f'{i}-{cam}.png')
-            if left[0] > -900 and right[0] > -900 and scale[0] > 0 and os.path.exists(png):
-                entries.append((png, [left[0], left[1], right[0], right[1], scale[0]]))
-        i += 1
+            g9 = geo[cam].get(i)
+            # edge frames carry the extreme poses the detectors die
+            # on: they weigh 32x for BOTH target and refine
+            rep = 32 if 'edges: true' in text else 1
+            if g9 is not None and os.path.exists(png):
+                l9, r9, s9 = g9
+                for _ in range(rep):
+                    entries.append((png, [l9[0], l9[1], r9[0], r9[1], s9]))
+            elif left[0] > -900 and right[0] > -900 and scale[0] > 0 and os.path.exists(png):
+                for _ in range(rep):
+                    entries.append((png, [left[0], left[1], right[0], right[1], scale[0]]))
     n_gold = len(entries)
     for sub in ('look', 'head'):
         vd = os.path.join(session_dir, 'volume_' + sub)
@@ -345,7 +383,7 @@ def load_plot_frames(session_dir):
         for j, s in enumerate(seq):
             if ok[j]:
                 entries.append((s[0], sm[j].tolist()))
-        print(f'{sub}: {int(ok.sum())} kept / {len(seq)} ({int((~ok).sum())} velocity-rejected)')
+        print(f'  plots from volume_{sub}: {int(ok.sum())} kept / {len(seq)} ({int((~ok).sum())} velocity-rejected)')
     print(f'plot frames: {len(entries)} total ({n_gold} gold)')
     return entries
 
@@ -359,7 +397,7 @@ def build_plot_cache(session_dir):
             entries += load_plot_frames(f'/src/hyperspace-sessions/{s}')
         return _plot_arrays(entries)
     tag = args.model
-    cache = os.path.join(session_dir, f'.torchcache-{tag}-{args.size}-w{args.rwin}-v12.npz')
+    cache = os.path.join(session_dir, f'.torchcache-{tag}-{args.size}-w{args.rwin}-v22.npz')
     dirs = [session_dir] + [os.path.join(session_dir, s)
                             for s in ('volume_look', 'volume_head',
                                       'applied_look', 'applied_head')
@@ -377,6 +415,73 @@ def build_plot_cache(session_dir):
     return x, y
 
 
+def _patch_sources(session_dir):
+    # organic patch images recorded into {session}/patch/
+    from PIL import Image
+    import glob as g2
+    out = []
+    for f in sorted(g2.glob(os.path.join(session_dir, 'patch', '*-top.png'))):
+        out.append(np.asarray(Image.open(f).convert('L'), np.float32) / 255.0)
+    return out
+
+
+def _patch_blobs(t, src, wl, thr=0.62, mid_guard=0.0):
+    # smooth noise blobs of eye-free organic imagery cover parts of
+    # the window — sections picked at one of 16 scales; one eye
+    # always stays visible. thr raises = smaller blobs; mid_guard
+    # keeps a clear disc around the eye midpoint (face protection)
+    from PIL import Image
+    S = t.shape[0]
+    # noise grid 2..8 cells: big and small blob scales; edges FEATHER
+    # most of the time (wide soft band), hard only 1 in 5
+    gn = int(np.random.choice([2, 3, 4, 6, 8]))
+    g8 = (np.random.rand(gn, gn) * 255).astype(np.uint8)
+    ge = np.asarray(Image.fromarray(g8).resize((S, S), Image.BILINEAR),
+                    np.float32) / 255.0
+    alpha = (np.clip((ge - thr + 0.07) / 0.3, 0.0, 1.0)
+             if np.random.rand() < 0.8 else None)
+    mask = ge > thr
+    if mid_guard > 0.0:
+        gx = (wl[0] + wl[2]) * 0.5
+        gy = (wl[1] + wl[3]) * 0.5
+        yy, xx = np.ogrid[:S, :S]
+        d2g = (xx - gx * (S - 1)) ** 2 + (yy - gy * (S - 1)) ** 2
+        keepg = d2g > (S * mid_guard) ** 2
+        mask &= keepg
+        if alpha is not None:
+            alpha = alpha * keepg
+    if not mask.any():
+        return t
+    def covered(x, y):
+        px, py = int(x * (S - 1)), int(y * (S - 1))
+        return mask[max(py - 1, 0):py + 2, max(px - 1, 0):px + 2].any()
+    eyes = [(wl[0], wl[1]), (wl[2], wl[3])]
+    ins = [e for e in eyes if 0.0 <= e[0] <= 1.0 and 0.0 <= e[1] <= 1.0]
+    if len(ins) == 2 and covered(*ins[0]) and covered(*ins[1]):
+        ex, ey = ins[np.random.randint(2)]
+        yy, xx = np.ogrid[:S, :S]
+        d2 = (xx - ex * (S - 1)) ** 2 + (yy - ey * (S - 1)) ** 2
+        keep = d2 > (S * 0.18) ** 2
+        mask &= keep
+        if alpha is not None:
+            alpha = alpha * keep
+    h, w = src.shape
+    lvl = np.random.randint(16)
+    side = int(S + (min(h, w) - 1 - S) * lvl / 15)
+    y0 = np.random.randint(0, h - side + 1)
+    x0 = np.random.randint(0, w - side + 1)
+    sec = src[y0:y0 + side, x0:x0 + side]
+    if side != S:
+        sec = np.asarray(Image.fromarray((sec * 255).astype(np.uint8))
+                         .resize((S, S)), np.float32) / 255.0
+    t = t.copy()
+    if alpha is not None:
+        t[:, :, 0] = t[:, :, 0] * (1.0 - alpha) + sec * alpha
+    else:
+        t[:, :, 0][mask] = sec[mask]
+    return t
+
+
 def _plot_arrays(entries):
     from PIL import Image
     xs, ys = [], []
@@ -385,69 +490,87 @@ def _plot_arrays(entries):
         if args.model == 'target':
             xs.append(crop_tensor(gray, 0.0, 0.0, 0.0))
             ys.append(lab)
-            # 4x: view shifted up to +/-20%, black backfill — the head
-            # goes off screen and the net keeps placing it from
-            # neck/shoulder context
+            # 7x: +/-30% zoom BOTH ways (distance AND close-up, where
+            # a big face clips the frame) then shifts up to HALF the
+            # screen — eyes stay supervised on partial faces
             h2, w2 = gray.shape
-            for _ in range(3):
-                sx = int((np.random.rand() - 0.5) * 0.4 * w2)
-                sy = int((np.random.rand() - 0.5) * 0.4 * w2)
-                sh2 = np.zeros_like(gray)
+            for _ in range(6):
+                f9 = 0.7 + np.random.rand() * 0.6
+                if f9 < 0.98:
+                    rw, rh = max(2, int(w2 * f9)), max(2, int(h2 * f9))
+                    small = np.asarray(Image.fromarray(gray).resize((rw, rh)))
+                    zg = np.zeros_like(gray)
+                    x0z, y0z = (w2 - rw) // 2, (h2 - rh) // 2
+                    zg[y0z:y0z + rh, x0z:x0z + rw] = small
+                elif f9 > 1.02:
+                    rw, rh = int(w2 * f9), int(h2 * f9)
+                    big = np.asarray(Image.fromarray(gray).resize((rw, rh)))
+                    x0z, y0z = (rw - w2) // 2, (rh - h2) // 2
+                    zg = big[y0z:y0z + h2, x0z:x0z + w2]
+                else:
+                    zg = gray
+                if abs(f9 - 1.0) > 0.02:
+                    lab9 = [0.5 + (lab[0] - 0.5) * f9, 0.5 + (lab[1] - 0.5) * f9,
+                            0.5 + (lab[2] - 0.5) * f9, 0.5 + (lab[3] - 0.5) * f9,
+                            lab[4] * f9]
+                else:
+                    lab9 = list(lab)
+                sx = int((np.random.rand() - 0.5) * 1.0 * w2)
+                sy = int((np.random.rand() - 0.5) * 1.0 * w2)
+                sh2 = np.zeros_like(zg)
                 x0s, x1s = max(0, sx), min(w2, w2 + sx)
                 y0s, y1s = max(0, sy), min(h2, h2 + sy)
-                sh2[y0s:y1s, x0s:x1s] = gray[y0s - sy:y1s - sy, x0s - sx:x1s - sx]
+                sh2[y0s:y1s, x0s:x1s] = zg[y0s - sy:y1s - sy, x0s - sx:x1s - sx]
                 xs.append(crop_tensor(sh2, 0.0, 0.0, 0.0))
                 dx, dy = sx / w2, sy / w2
                 # centroid within half a face-scale of an edge: the
                 # face is effectively leaving the view -> off_screen
-                cxs = (lab[0] + lab[2]) / 2 + dx
-                cys = (lab[1] + lab[3]) / 2 + dy
-                hs = lab[4] / 2
+                cxs = (lab9[0] + lab9[2]) / 2 + dx
+                cys = (lab9[1] + lab9[3]) / 2 + dy
+                hs = lab9[4] / 2
                 offl = 1.0 if (cxs < hs or cxs > 1 - hs
                                or cys < hs or cys > 1 - hs) else 0.0
-                ys.append([lab[0] + dx, lab[1] + dy,
-                           lab[2] + dx, lab[3] + dy, lab[4], offl])
+                ys.append([lab9[0] + dx, lab9[1] + dy,
+                           lab9[2] + dx, lab9[3] + dy, lab9[4], offl])
         else:
+            # crop centers on the median eye, x/y offset +/-35% of plot scale
             lx, lyv, rx, ry, sc = lab
-            for _ in range(args.rwin):
-                ws = max(sc * 1.25 * (0.6 + np.random.rand() * 0.9), 0.15)
-                cx = (lx + rx) / 2 + (np.random.rand() - 0.5) * 0.2
-                cy = (lyv + ry) / 2 - ws * 0.1 + (np.random.rand() - 0.5) * 0.2
-                wl = [(lx - (cx - ws / 2)) / ws, (lyv - (cy - ws / 2)) / ws,
-                      (rx - (cx - ws / 2)) / ws, (ry - (cy - ws / 2)) / ws, sc / ws]
-                # eyes MAY sit outside the window (face part-occluded at
-                # a frame edge): refine must learn to point beyond its
-                # own bounds instead of dragging features inward
-                if not all(-0.5 <= v <= 1.5 for v in wl[:4]):
-                    continue
+            mx = (lx + rx) / 2
+            my = (lyv + ry) / 2
+            for _ in range(args.rwin * 2):
+                # crop size 1.25x plot scale, adjusted +/-75%; center
+                # offset +/-70% of scale on each axis
+                ws = max(sc * 1.25 * (1.0 + (np.random.rand() - 0.5) * 1.5), 0.15)
+                cx = mx + (np.random.rand() - 0.5) * 1.4 * sc
+                cy = my + (np.random.rand() - 0.5) * 1.4 * sc
+                ox, oy = cx - ws / 2, cy - ws / 2
+                wl = [(lx - ox) / ws, (lyv - oy) / ws,
+                      (rx - ox) / ws, (ry - oy) / ws, sc / ws]
+                l_in = 0.0 <= wl[0] <= 1.0 and 0.0 <= wl[1] <= 1.0
+                r_in = 0.0 <= wl[2] <= 1.0 and 0.0 <= wl[3] <= 1.0
+                offl = 0.0 if (l_in or r_in) else 1.0
                 xs.append(crop_tensor(gray, cx, cy, ws))
-                ys.append(wl)
-            # clipped-face variants: window displaced so the face is
-            # cut like at a frame edge. coords stay supervised; the
-            # off label fires when BOTH eyes leave the window
-            for ci in range(4):
-                ws = max(sc * 1.25 * (0.8 + np.random.rand() * 0.5), 0.15)
-                sgn = 1.0 if np.random.rand() < 0.5 else -1.0
-                mag = 0.45 + np.random.rand() * 0.65
-                if ci % 2 == 0:
-                    cx = (lx + rx) / 2 + sgn * ws * mag
-                    cy = (lyv + ry) / 2 - ws * 0.1 + (np.random.rand() - 0.5) * 0.3 * ws
-                else:
-                    cx = (lx + rx) / 2 + (np.random.rand() - 0.5) * 0.3 * ws
-                    cy = (lyv + ry) / 2 - ws * 0.1 + sgn * ws * mag
-                wl = [(lx - (cx - ws / 2)) / ws, (lyv - (cy - ws / 2)) / ws,
-                      (rx - (cx - ws / 2)) / ws, (ry - (cy - ws / 2)) / ws, sc / ws]
-                def _in(x2, y2):
-                    return 0.0 <= x2 <= 1.0 and 0.0 <= y2 <= 1.0
-                offl = 0.0 if (_in(wl[0], wl[1]) or _in(wl[2], wl[3])) else 1.0
+                ys.append(wl + [offl, 0.0])
+            # BIG search windows (50-70% of the image): refine learns
+            # to find the eyes in a wide view, so the testbed can run
+            # refine alone as its own detector
+            for _ in range(4):
+                ws = 0.5 + np.random.rand() * 0.2
+                cx = mx + (np.random.rand() - 0.5) * 0.5 * ws
+                cy = my + (np.random.rand() - 0.5) * 0.5 * ws
+                ox, oy = cx - ws / 2, cy - ws / 2
+                wl = [(lx - ox) / ws, (lyv - oy) / ws,
+                      (rx - ox) / ws, (ry - oy) / ws, sc / ws]
+                l_in = 0.0 <= wl[0] <= 1.0 and 0.0 <= wl[1] <= 1.0
+                r_in = 0.0 <= wl[2] <= 1.0 and 0.0 <= wl[3] <= 1.0
+                offl = 0.0 if (l_in or r_in) else 1.0
                 xs.append(crop_tensor(gray, cx, cy, ws))
-                ys.append(wl + [offl])
-    # 6th column: off_screen. domain frames 0; volume_off frames 1
-    # (coords masked) — a second detector besides the gate. shifted
-    # variants may already carry their own off label
-    ys = [lab + [0.0] if len(lab) == 5 else lab for lab in ys]
+                ys.append(wl + [offl, 0.0])
+    # 6th column: off_screen; 7th: clip-window marker (eval split
+    # only). shifted/clip variants may carry their own off label
+    ys = [lab + [0.0, 0.0] if len(lab) == 5 else lab + [1.0] for lab in ys]
     if args.model == 'target':
-        nd = os.path.join(session_dir, 'volume_off')
+        nd = noise_dir(f'/src/hyperspace-sessions/{args.session.split(",")[0]}')
         neg = 0
         i = 0
         while os.path.exists(os.path.join(nd, f'{i}.agi')):
@@ -457,10 +580,10 @@ def _plot_arrays(entries):
                 continue
             gray = np.asarray(Image.open(png).convert('L'))
             xs.append(crop_tensor(gray, 0.0, 0.0, 0.0))
-            ys.append([0.5, 0.5, 0.5, 0.5, 0.2, 1.0])
+            ys.append([0.5, 0.5, 0.5, 0.5, 0.2, 1.0, 0.0])
             neg += 1
         if neg:
-            print(f'volume_off: {neg} off-screen negatives')
+            print(f'noise: {neg} off-screen negatives')
     x = np.array(xs, np.float32)
     y = np.array(ys, np.float32)
     return x, y
@@ -472,9 +595,10 @@ class PlotNet(nn.Module):
         super().__init__()
         k = 8
         self.trunk = nn.Sequential(
-            nn.Conv2d(1, 32, 3, padding=1), nn.ReLU(),
+            nn.Conv2d(3, 32, 3, padding=1), nn.ReLU(),
             nn.Conv2d(32, 32, 3, padding=1), nn.ReLU())
         self.heat = nn.Conv2d(32, k, 1)
+        self.register_buffer('cgrid', coord_grid(args.size))
         s = args.size // 4
         self.app = nn.Sequential(
             nn.MaxPool2d(2),
@@ -486,7 +610,8 @@ class PlotNet(nn.Module):
         self.register_buffer('lin', torch.linspace(0.0, 1.0, args.size))
 
     def forward(self, x):
-        t = self.trunk(x)
+        g = self.cgrid.unsqueeze(0).expand(x.shape[0], -1, -1, -1)
+        t = self.trunk(torch.cat([x, g], 1))
         hm = self.heat(t)
         B, k, S, _ = hm.shape
         p = torch.softmax(hm.reshape(B, k, -1) * 8.0, -1).reshape(B, k, S, S)
@@ -540,21 +665,21 @@ def annotate_frames():
     here = os.path.dirname(os.path.abspath(__file__))
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     nets = {}
-    gp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models', 'gate_torch.pt')
+    gp = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models', 'noise.pt')
     gate = None
     if os.path.exists(gp):
-        gate = GateNet().to('cuda' if torch.cuda.is_available() else 'cpu')
+        gate = NoiseNet().to('cuda' if torch.cuda.is_available() else 'cpu')
         gate.load_state_dict(torch.load(gp))
         gate.eval()
     for nm in ('target', 'refine'):
         m = PlotNet().to(dev)
-        m.load_state_dict(torch.load(os.path.join(here, 'models', f'{nm}_torch.pt'),
+        m.load_state_dict(torch.load(os.path.join(here, 'models', f'{nm}.pt'),
                                      map_location=dev))
         m.eval()
         nets[nm] = m
     # face-focus estimation for volume_look needs an initial look model
     look_net = None
-    lp = os.path.join(here, 'models', 'look_torch.pt')
+    lp = os.path.join(here, 'models', 'look.pt')
     if os.path.exists(lp):
         look_net = CenterNet().to(dev)
         look_net.load_state_dict(torch.load(lp, map_location=dev))
@@ -631,7 +756,7 @@ def annotate_frames():
                         continue   # face truly gone: unplotted
                     ws = max(sc * 1.25, 0.15)
                     cx = (lx + rx) / 2
-                    cy = (lyv + ry) / 2 - ws * 0.1
+                    cy = (lyv + ry) / 2
                     rwin = crop_tensor(gray, cx, cy, ws)
                     r5 = nets['refine'](nchw(rwin[None]).to(dev))[0].cpu().numpy()
                     if len(r5) > 5:
@@ -643,6 +768,7 @@ def annotate_frames():
                             gated += 1
                             continue
                     ox, oy = cx - ws / 2, cy - ws / 2
+                    # exact set: target -> zoom 125% -> refine
                     lx, lyv = ox + float(r5[0]) * ws, oy + float(r5[1]) * ws
                     rx, ry  = ox + float(r5[2]) * ws, oy + float(r5[3]) * ws
                     sc = float(r5[4]) * ws
@@ -669,10 +795,14 @@ def annotate_frames():
                         dot = read_pair(raw, 'center')
                     side = max(sc / args.eye_div, 0.03)
                     m2 = ((lx + rx) / 2, (lyv + ry) / 2)
-                    li = crop_tensor(gray, lx, lyv, side)
-                    ri = crop_tensor(gray, rx, ry, side)
-                    fi = crop_tensor(gray, m2[0], m2[1], max(sc * 2.0, 0.1))
-                    av = np.array([[m2[0], m2[1], sc, lx, lyv, rx, ry]], np.float32)
+                    li = crop_rect(gray, lx, lyv, side * 1.5, side)
+                    ri = crop_rect(gray, rx, ry, side * 1.5, side)
+                    fi = crop_rect(gray, m2[0], m2[1],
+                                   max(sc * 1.8, 0.1), max(sc * 1.2, 0.067))
+                    oc9l, oc9r = oc_or_extrap(open(ap).read(), (lx, lyv), (rx, ry))
+                    av = np.array([[m2[0], m2[1], sc, lx, lyv, rx, ry,
+                                    oc9l[0], oc9l[1], oc9r[0], oc9r[1],
+                                    args.oc_span_m]], np.float32)
                     c, g = look_net(nchw(li[None]).to(dev), nchw(ri[None]).to(dev),
                                     nchw(fi[None]).to(dev), torch.from_numpy(av).to(dev))
                     fcx, fcy = float(c[0, 0]), float(c[0, 1])
@@ -682,8 +812,8 @@ def annotate_frames():
     print(f'annotate: {done} frames eye-plotted, {faced} face-focus estimated, {gated} gate-excluded')
 
 
-class GateNet(nn.Module):
-    # face-usable vs off-camera: binary gate on the full frame
+class NoiseNet(nn.Module):
+    # face-usable vs off-camera noise: binary on the full frame
     def __init__(self):
         super().__init__()
         s = args.size // 4
@@ -699,13 +829,13 @@ class GateNet(nn.Module):
         return self.net(x)
 
 
-def train_gate():
+def train_noise():
     from PIL import Image
     sd = f'/src/hyperspace-sessions/{args.session}'
-    cache = os.path.join(sd, f'.torchcache-gate-{args.size}-v1.npz')
+    cache = os.path.join(sd, f'.torchcache-noise-{args.size}-v2.npz')
     dirs_pos = [sd] + [os.path.join(sd, s) for s in ('volume_look', 'volume_head')
                        if os.path.isdir(os.path.join(sd, s))]
-    nd = os.path.join(sd, 'volume_off')
+    nd = noise_dir(sd)
     all_dirs = dirs_pos + ([nd] if os.path.isdir(nd) else [])
     newest = max((os.path.getmtime(os.path.join(d, f))
                   for d in all_dirs for f in os.listdir(d) if f.endswith('.agi')), default=0)
@@ -713,14 +843,12 @@ def train_gate():
         z = np.load(cache)
         x, y = z['x'], z['y']
     else:
-        print('building gate cache ...')
+        print('building noise cache ...')
         xs, ys = [], []
         for d in all_dirs:
-            lab = 0.0 if d.endswith('volume_off') else 1.0
-            i = 0
-            while os.path.exists(os.path.join(d, f'{i}.agi')):
+            lab = 0.0 if d == nd else 1.0
+            for i in agi_ids(d):
                 png = os.path.join(d, f'{i}-top.png')
-                i += 1
                 if not os.path.exists(png):
                     continue
                 gray = np.asarray(Image.open(png).convert('L'))
@@ -731,12 +859,12 @@ def train_gate():
         np.savez_compressed(cache, x=x, y=y)
     n = len(y)
     n_neg = int((y < 0.5).sum())
-    print(f'gate: {n - n_neg} domain / {n_neg} off-camera')
+    print(f'noise: {n - n_neg} domain / {n_neg} off-camera')
     order = np.random.permutation(n)
     n_ev = max(1, n // 10)
     ev, tr = order[:n_ev], order[n_ev:]
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
-    m = GateNet().to(dev)
+    m = NoiseNet().to(dev)
     opt = torch.optim.AdamW(m.parameters(), lr=args.lr, weight_decay=args.wd)
     xtr, ytr = nchw(x[tr]).to(dev), torch.from_numpy(y[tr]).to(dev)
     xev, yev = nchw(x[ev]).to(dev), torch.from_numpy(y[ev]).to(dev)
@@ -773,8 +901,8 @@ def train_gate():
         m.load_state_dict(best_state)
         out = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
         os.makedirs(out, exist_ok=True)
-        torch.save(best_state, os.path.join(out, 'gate_torch.pt'))
-        print(f'best eval acc {best:.4f} -> {out}/gate_torch.pt')
+        torch.save(best_state, os.path.join(out, 'noise.pt'))
+        print(f'best eval acc {best:.4f} -> {out}/noise.pt')
     print('training complete')
 
 
@@ -791,11 +919,49 @@ def train_plot():
     opt = (torch.optim.AdamW(m.parameters(), lr=args.lr, weight_decay=args.wd)
            if args.optimizer == 'adam'
            else torch.optim.SGD(m.parameters(), lr=args.lr, weight_decay=args.wd))
-    xtr = nchw(x[tr]).to(dev)
+    # organic patch blobs go on TRAIN windows only — eval stays clean.
+    # refine gets a light touch: fewer windows, smaller blobs, and a
+    # protected disc over the face between the eyes
+    xtr_np = x[tr]
+    srcs = _patch_sources(sd)
+    if len(srcs):
+        prob = 0.15 if args.model == 'refine' else 0.5
+        thr = 0.72 if args.model == 'refine' else 0.62
+        mg = 0.3 if args.model == 'refine' else 0.0
+        xtr_np = xtr_np.copy()
+        n_p = 0
+        for i5 in range(len(xtr_np)):
+            if np.random.rand() < prob:
+                xtr_np[i5] = _patch_blobs(xtr_np[i5],
+                                          srcs[np.random.randint(len(srcs))],
+                                          y[tr][i5][:4], thr, mg)
+                n_p += 1
+        print(f'patched {n_p} train windows from {len(srcs)} organic sources')
+    # preview up to 100 of the ACTUAL training windows with labels
+    from PIL import Image as PImage, ImageDraw
+    pv = os.path.join(sd, 'previews', args.model)
+    os.makedirs(pv, exist_ok=True)
+    for f5 in os.listdir(pv):
+        os.remove(os.path.join(pv, f5))
+    ytr_np = y[tr]
+    picks = np.random.permutation(len(ytr_np))[:min(100, len(ytr_np) // 100)]
+    for i in picks:
+        im5 = PImage.fromarray((xtr_np[i][:, :, 0] * 255).astype(np.uint8))
+        im5 = im5.resize((160, 160), PImage.NEAREST).convert('RGB')
+        d5 = ImageDraw.Draw(im5)
+        for k5, col in ((0, (255, 60, 60)), (2, (60, 255, 60))):
+            px5, py5 = float(ytr_np[i, k5]) * 160, float(ytr_np[i, k5 + 1]) * 160
+            if -10 <= px5 <= 170 and -10 <= py5 <= 170:
+                d5.ellipse([px5 - 5, py5 - 5, px5 + 5, py5 + 5],
+                           outline=col, width=2)
+        im5.save(os.path.join(pv, f'{i}_s{ytr_np[i, 4]:.2f}_off{int(ytr_np[i, 5])}.png'))
+    print(f'previews: {len(picks)} -> {pv}')
+    xtr = nchw(xtr_np).to(dev)
     ytr = torch.from_numpy(y[tr]).to(dev)
     xev = nchw(x[ev]).to(dev)
     yev = torch.from_numpy(y[ev]).to(dev)
-    cols = ['left.x', 'left.y', 'right.x', 'right.y', 'scale', 'off.err']
+    cols = ['left.x', 'left.y', 'right.x', 'right.y', 'scale', 'off.err', 'clip.err']
+    print(f'==================== {args.model.upper()} ====================')
     print(pad('epoch', 10) + pad('train') + pad('eval') +
           ''.join(pad(c) for c in cols))
     best, best_state, best_ep = None, None, 0
@@ -815,7 +981,7 @@ def train_plot():
                 # clipped windows keep accurate coords: supervise them
                 pm = torch.ones_like(pm)
             coord = (((p[:, :5] - ytr[idx, :5]) ** 2) * pm).sum() / (pm.sum() * 5 + 1e-6)
-            offb  = nn.functional.binary_cross_entropy_with_logits(p[:, 5], ytr[idx, 5])
+            offb  = nn.functional.binary_cross_entropy_with_logits(p[:, 5], ytr[idx, 5:6].squeeze(1))
             loss = coord + 0.2 * offb
             opt.zero_grad()
             loss.backward()
@@ -824,13 +990,17 @@ def train_plot():
         m.eval()
         with torch.no_grad():
             p = m(xev)
-            onm = (yev[:, 5] < 0.5) | (torch.ones_like(yev[:, 5], dtype=torch.bool)
-                                       if args.model == 'refine' else
-                                       torch.zeros_like(yev[:, 5], dtype=torch.bool))
+            # NORMAL windows score the main columns; clip windows get
+            # their own aggregate so the table stays comparable
+            nmm = yev[:, 6] < 0.5
+            onm = nmm & (yev[:, 5] < 0.5)
             eval_loss = float(((p[onm, :5] - yev[onm, :5]) ** 2).mean())
             errs = (p[onm, :5] - yev[onm, :5]).abs().mean(0).cpu().numpy()
             oacc = float(((p[:, 5] > 0) == (yev[:, 5] > 0.5)).float().mean())
-            errs = np.concatenate([errs, [1.0 - oacc]])
+            clipm = ~nmm
+            cerr = (float((p[clipm, :4] - yev[clipm, :4]).abs().mean())
+                    if bool(clipm.any()) else 0.0)
+            errs = np.concatenate([errs, [1.0 - oacc], [cerr]])
         print(pad(f'{epoch + 1}/{args.epochs}', 10) +
               pad(f'{tot / len(ytr):.6g}') + pad(f'{eval_loss:.6g}') +
               ''.join(pad(f'{e:.6g}') for e in errs))
@@ -841,8 +1011,8 @@ def train_plot():
     if best_state is not None:
         out = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
         os.makedirs(out, exist_ok=True)
-        torch.save(best_state, os.path.join(out, f'{args.model}_torch.pt'))
-        print(f'best epoch {best_ep} (avg err {best:.6g}) -> {out}/{args.model}_torch.pt')
+        torch.save(best_state, os.path.join(out, f'{args.model}.pt'))
+        print(f'best epoch {best_ep} (avg err {best:.6g}) -> {out}/{args.model}.pt')
     print('training complete')
 
 
@@ -865,10 +1035,10 @@ def export_ts():
             return torch.cat([c, g], 1) * self.slope + self.bias
 
     S = args.size
-    jobs = [('target_torch.pt', PlotNet, 'target.ptc'),
-            ('refine_torch.pt', PlotNet, 'refine.ptc'),
-            ('gate_torch.pt', GateNet, 'gate.ptc'),
-            ('look_final_torch.pt', CenterNet, 'look_final.ptc')]
+    jobs = [('target.pt', PlotNet, 'target.ptc'),
+            ('refine.pt', PlotNet, 'refine.ptc'),
+            ('noise.pt', NoiseNet, 'noise.ptc'),
+            ('look.pt', CenterNet, 'look.ptc')]
     for src, cls, dst in jobs:
         p = os.path.join(here, 'models', src)
         if not os.path.exists(p):
@@ -883,7 +1053,7 @@ def export_ts():
                    else np.tile(np.array([[1.0, 0.0]], np.float32), (4, 1)))
             m = LookWrap(m, cal.astype(np.float32))
             ex = (torch.zeros(1, 1, S, S), torch.zeros(1, 1, S, S),
-                  torch.zeros(1, 1, S, S), torch.zeros(1, 7))
+                  torch.zeros(1, 1, S, S), torch.zeros(1, 12))
         else:
             ex = (torch.zeros(1, 1, S, S),)
         ts = torch.jit.trace(m, ex)
@@ -892,26 +1062,26 @@ def export_ts():
 
 
 def run_base(with_look):
-    # base set: target, refine, gate (when volume_off exists), and the
+    # base set: target, refine, gate (when noise/ exists), and the
     # gold-only look that face-focus estimation depends on.
-    # target and the gold look take DOUBLE epochs; refine/gate single
+    # every stage runs the STATED epoch count except the gold look (2x)
     base_e = args.epochs
     for nm in ('target', 'refine'):
         args.model = nm
-        args.epochs = base_e * 2 if nm == 'target' else base_e
+        args.epochs = base_e
         print(f'== base: training {nm} ({args.epochs} epochs) ==')
         train_plot()
     args.epochs = base_e
-    if os.path.isdir(f'/src/hyperspace-sessions/{args.session}/volume_off'):
-        print('== base: training gate (domain vs off-camera) ==')
-        train_gate()
+    if os.path.isdir(noise_dir(f'/src/hyperspace-sessions/{args.session}')):
+        print('== base: training noise (domain vs off-camera) ==')
+        train_noise()
     if with_look:
         args.model = 'look'
         args.volume = 0
-        args.epochs = base_e * 2
-        print(f'== base: training look (gold only, {args.epochs} epochs) ==')
+        print(f'== base: training look ({args.epochs} epochs) ==')
         train_look()
     args.epochs = base_e
+    export_ts()
 
 
 def data_stats():
@@ -959,114 +1129,6 @@ def data_stats():
     print(f'  redundancy: {100 * (nn < 0.01).mean():.1f}% of samples have a '
           f'near-twin (<0.01 in pose+gaze space)')
     print(f'  coverage maps -> {sd}/stats/')
-
-
-class TLook(nn.Module):
-    # temporal gaze: shared per-frame encoder -> GRU over T frames.
-    # motion context replaces single-frame shakiness
-    def __init__(self):
-        super().__init__()
-        self.eye  = EyeEnc()
-        self.face = ImgEnc()
-        self.aux  = nn.Sequential(nn.Linear(7, 64), nn.ReLU(),
-                                  nn.Linear(64, 64), nn.ReLU())
-        self.fuse = nn.Sequential(nn.Linear(88 + 88 + 64 + 64, 128), nn.ReLU())
-        self.gru  = nn.GRU(128, 128, batch_first=True)
-        self.head = nn.Sequential(nn.Linear(128, 64), nn.ReLU(),
-                                  nn.Linear(64, 4))
-
-    def forward(self, l, r, f, a):
-        # l/r/f: (B,T,S,S)  a: (B,T,7)
-        B, T, S, _ = l.shape
-        el = self.eye(l.reshape(B * T, 1, S, S))
-        er = self.eye(torch.flip(r.reshape(B * T, 1, S, S), [3]))
-        ef = self.face(f.reshape(B * T, 1, S, S))
-        ea = self.aux(a.reshape(B * T, 7))
-        z = self.fuse(torch.cat([el, er, ef, ea], 1)).reshape(B, T, 128)
-        o, _ = self.gru(z)
-        return self.head(o[:, -1])
-
-
-def train_tlook():
-    sd = f'/src/hyperspace-sessions/{args.session}'
-    limgs, laux, ly, lg, lfid = load_session(sd)
-    T = args.tsteps
-    # sliding windows over volume sequences: rows whose fids run
-    # consecutively within one folder (velocity gaps break windows)
-    row_of = {int(f): i for i, f in enumerate(lfid)}
-    wins = []
-    for i, f in enumerate(lfid):
-        f = int(f)
-        if f < 100000:
-            continue
-        seq2 = [row_of.get(f - k) for k in range(T - 1, -1, -1)]
-        if all(v is not None for v in seq2):
-            wins.append(seq2)
-    wins = np.array(wins)
-    if len(wins) < 100:
-        print(f'tlook: only {len(wins)} windows — record more volume')
-        return
-    import hashlib
-    def hd(y):
-        key = f'{round(y[0] / 0.05)}_{round(y[1] / 0.05)}'
-        return int(hashlib.md5(key.encode()).hexdigest(), 16)
-    last = wins[:, -1]
-    evm = np.array([hd(ly[i]) % 10 == 0 for i in last])
-    wtr, wev = wins[~evm], wins[evm]
-    print(f'tlook: {len(wtr)} train / {len(wev)} eval windows (T={T})')
-    dev = 'cuda' if torch.cuda.is_available() else 'cpu'
-    m = TLook().to(dev)
-    opt = torch.optim.AdamW(m.parameters(), lr=args.lr, weight_decay=args.wd)
-    fx = [torch.from_numpy(np.ascontiguousarray(
-          limgs[k][:, :, :, 0])).to(dev) for k in range(3)]
-    fa = torch.from_numpy(laux).to(dev)
-    fy = torch.from_numpy(ly).to(dev)
-    wtr_t = torch.from_numpy(wtr).to(dev)
-    wev_t = torch.from_numpy(wev).to(dev)
-    cols = ['head.x', 'head.y', 'gaze.x', 'gaze.y']
-    print(pad('epoch', 10) + pad('train') + pad('eval') +
-          ''.join(pad(c) for c in cols))
-    best, best_state, best_ep = None, None, 0
-    bs = max(8, args.batch // 2)
-    for epoch in range(args.epochs):
-        m.train()
-        order = torch.randperm(len(wtr_t), device=dev)
-        tot = 0.0
-        for b in range(0, len(wtr_t), bs):
-            w = wtr_t[order[b:b + bs]]
-            xb = [fx[k][w] for k in range(3)]
-            ab = fa[w]
-            yb = fy[w[:, -1]]
-            p = m(*xb, ab)
-            loss = ((p - yb) ** 2).mean()
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-            tot += float(loss.detach()) * len(w)
-        m.eval()
-        errs_l = []
-        with torch.no_grad():
-            for b in range(0, len(wev_t), 256):
-                w = wev_t[b:b + 256]
-                p = m(*(fx[k][w] for k in range(3)), fa[w])
-                errs_l.append((p - fy[w[:, -1]]).abs())
-            ea2 = torch.cat(errs_l).mean(0).cpu().numpy()
-            evl = float((torch.cat(errs_l) ** 2).mean())
-        print(pad(f'{epoch + 1}/{args.epochs}', 10) +
-              pad(f'{tot / len(wtr_t):.6g}') + pad(f'{evl:.6g}') +
-              ''.join(pad(f'{e:.6g}') for e in ea2))
-        mval = float(ea2.mean())
-        if best is None or mval < best:
-            best, best_ep = mval, epoch + 1
-            best_state = {k2: v.clone() for k2, v in m.state_dict().items()}
-    if best_state is not None:
-        out = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
-        os.makedirs(out, exist_ok=True)
-        torch.save(best_state, os.path.join(out, 'tlook_torch.pt'))
-        print(f'best epoch {best_ep} (avg err {best:.6g}) -> {out}/tlook_torch.pt')
-    print('training complete')
-
-
 def main():
     assert args.cams == 1, 'torch trainer is single-cam'
     if args.seed:
@@ -1097,6 +1159,14 @@ def main():
         print('== gen: applied dirs + caches cleared ==')
         print('== gen 1/5: base (gold) ==')
         run_base(with_look=True)
+        has_vol = any(os.path.isdir(os.path.join(sd2, f'volume_{s}'))
+                      for s in ('look', 'head'))
+        if not has_vol:
+            # no volume recordings: a second base would retrain on
+            # the exact same counts — base IS the whole generation
+            print('== gen: no volumes recorded, done at base ==')
+            export_ts()
+            return
         print('== gen 2/5: volumes (first application) ==')
         annotate_frames()
         print('== gen 3/5: base again (volume-smoothed labels) ==')
@@ -1116,23 +1186,20 @@ def main():
         annotate_frames()
         return
     if args.process == 'look':
-        # process 3: final look with the applied volumes included,
-        # then export ALL app models so the testbed is never stale
-        args.volume = 1
         train_look()
+        export_ts()
+        return
+    if args.process == 'noise':
+        train_noise()
+        export_ts()
+        return
+    if args.process in ('target', 'refine'):
+        args.model = args.process
+        train_plot()
         export_ts()
         return
     if args.annotate:
         annotate_frames()
-        return
-    if args.model == 'gate':
-        train_gate()
-        return
-    if args.model == 'tlook':
-        train_tlook()
-        return
-    if args.model in ('target', 'refine'):
-        train_plot()
         return
     train_look()
 
@@ -1148,7 +1215,15 @@ def train_look():
             (round(a[0] / 0.06), round(a[1] / 0.06), round(a[2] / 0.03)),
             len(keys)) for a in laux])
     # hold out whole groups; no augmentation anywhere
-    if args.group_by == 'headdir':
+    if args.group_by == 'frame':
+        # sparse islands: every sequence feeds BOTH sides — hold out
+        # a deterministic 10% of frames within each group
+        import hashlib
+        evm = np.array([int(hashlib.md5(f'{args.seed}_{f}'.encode()).hexdigest(), 16) % 10 == 0
+                        for f in lfid])
+        ev = np.where(evm)[0]
+        tr = np.where(~evm)[0]
+    elif args.group_by == 'headdir':
         # hash of binned head direction -> deterministic 10% eval;
         # every frame sharing a head-look lands on the same side
         import hashlib
@@ -1201,7 +1276,7 @@ def train_look():
         base_a = laux[tr][bi]
         base_y = ly[tr][bi]
         a2 = base_a.copy()
-        for col in (0, 1, 3, 4, 5, 6):
+        for col in (0, 1, 3, 4, 5, 6, 7, 8, 9, 10):
             a2[:, col] = 0.5 + (a2[:, col] - 0.5) * f
         a2[:, 2] = base_a[:, 2] * f
         s0 = base_a[:, 2]
@@ -1221,8 +1296,8 @@ def train_look():
         dx = (np.random.rand(len(bi)) - 0.5) * 2.0 * args.trange
         dy = (np.random.rand(len(bi)) - 0.5) * 2.0 * args.trange
         a2 = taux[bi].copy()
-        for col in (0, 3, 5): a2[:, col] += dx
-        for col in (1, 4, 6): a2[:, col] += dy
+        for col in (0, 3, 5, 7, 9): a2[:, col] += dx
+        for col in (1, 4, 6, 8, 10): a2[:, col] += dy
         sc = taux[bi][:, 2]
         y2 = tly[bi].copy()
         y2[:, 0] += args.tkx * dx / sc
@@ -1232,7 +1307,9 @@ def train_look():
         timgs = [np.concatenate([timgs[k], timgs[k][bi]]) for k in range(3)]
         taux  = np.concatenate([taux, a2]).astype(np.float32)
         tly   = np.concatenate([tly, y2]).astype(np.float32)
-    print(f'look: {len(tly)} train / {len(ev)} eval ({args.group_by} holdout)')
+    n_aug = max(len(tly), 100000)
+    print(f'look: {len(tly)} source frames -> {n_aug} augmented per epoch'
+          f' / {len(ev)} eval ({args.group_by} holdout)')
 
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     m = CenterNet().to(dev)
@@ -1243,6 +1320,8 @@ def train_look():
     xtr = [nchw(timgs[k]).to(dev) for k in range(3)]
     atr = torch.from_numpy(taux).to(dev)
     ytr = torch.from_numpy(tly).to(dev)
+    gtr = (torch.from_numpy(lg[tr].astype(np.int64)).to(dev)
+           if len(lg[tr]) == len(tly) else None)
     xev = [nchw(limgs[k][ev]).to(dev) for k in range(3)]
     aev = torch.from_numpy(laux[ev]).to(dev)
     yev = torch.from_numpy(ly[ev]).to(dev)
@@ -1260,24 +1339,41 @@ def train_look():
         by = np.clip((g5[:, 1] * args.bins_y).astype(int), 0, args.bins_y - 1)
         bid = by * args.bins_x + bx
         cnt = np.bincount(bid, minlength=args.bins_x * args.bins_y).astype(np.float64)
-        # the proven recipe: pure count normalization — every occupied
-        # bin (corners included) draws an equal per-epoch share
+        # count normalization: every occupied bin draws an equal
+        # share — then CENTER bins (middle third of the screen) get
+        # 4x weight, since the center is where it performs worst
         w5 = 1.0 / cnt[bid]
+        ctr = ((np.abs(tly[:, 2]) < 0.17) & (np.abs(tly[:, 3]) < 0.17))
+        w5[ctr] *= 4.0
         bw = torch.from_numpy((w5 / w5.sum()).astype(np.float32)).to(dev)
         occ = cnt[cnt > 0]
         print(f'balance: {len(occ)} occupied bins, counts {int(occ.min())}..{int(occ.max())}')
     cols = ['head.x', 'head.y', 'gaze.x', 'gaze.y']
+    print('==================== LOOK ====================')
     print(pad('epoch', 10) + pad('train') + pad('eval') +
           ''.join(pad(c) for c in cols))
     best, best_state, best_ep = None, None, 0
+    # every epoch is 100k samples: each draw repeats a frame with a
+    # fresh random translation, so the islands fill into a continuum
+    draw = max(n, 100000)
+    # staged: first half trains the HEAD expert (face column only),
+    # second half freezes it and trains the eye columns + gaze
+    head_epochs = args.epochs // 2
+    frozen = False
     for epoch in range(args.epochs):
+        if epoch >= head_epochs and not frozen:
+            frozen = True
+            for mod in (m.face, m.colF, m.center):
+                for prm in mod.parameters():
+                    prm.requires_grad_(False)
+            print(f'-- head frozen at epoch {epoch + 1}: training gaze --')
         m.train()
         if bw is not None:
-            order = torch.multinomial(bw, n, replacement=True)
+            order = torch.multinomial(bw, draw, replacement=True)
         else:
-            order = torch.randperm(n, device=dev)
+            order = torch.randint(0, n, (draw,), device=dev)
         tot = 0.0
-        for b in range(0, n, bs):
+        for b in range(0, draw, bs):
             idx = order[b:b + bs]
             xb = []
             for x in xtr:
@@ -1287,26 +1383,85 @@ def train_look():
                     cc = 1.0 + (torch.rand(v.shape[0], 1, 1, 1, device=v.device) - 0.5) * 2.0 * args.photo
                     bb = (torch.rand(v.shape[0], 1, 1, 1, device=v.device) - 0.5) * 2.0 * args.photo
                     v = ((v - 0.5) * cc + 0.5 + bb).clamp(0.0, 1.0)
-                if args.noise > 0:
-                    v = v + torch.randn_like(v) * args.noise
                 xb.append(v)
-            ab = atr[idx] + torch.randn_like(atr[idx]) * args.aux_noise
+            # mirror half the batch: crops flip and swap eyes, screen
+            # x labels negate — the aux is unused by the net now
+            mir = (torch.rand(len(idx), 1, 1, 1, device=dev) < 0.5) & (args.mirror > 0)
+            mv = mir.reshape(-1)
+            lf = torch.flip(xb[1], [3])
+            rf = torch.flip(xb[0], [3])
+            xb[0] = torch.where(mir, lf, xb[0])
+            xb[1] = torch.where(mir, rf, xb[1])
+            xb[2] = torch.where(mir, torch.flip(xb[2], [3]), xb[2])
+            yb = ytr[idx].clone()
+            ybm = yb.clone()
+            ybm[:, 0] = 0.0 - yb[:, 0]
+            ybm[:, 2] = 0.0 - yb[:, 2]
+            yb = torch.where(mv[:, None], ybm, yb)
+            # aux mirrors with the crops: camera x -> 1-x, eyes swap
+            ab = atr[idx]
+            abm = ab.clone()
+            abm[:, 0] = 1.0 - ab[:, 0]
+            abm[:, 3] = 1.0 - ab[:, 5]
+            abm[:, 4] = ab[:, 6]
+            abm[:, 5] = 1.0 - ab[:, 3]
+            abm[:, 6] = ab[:, 4]
+            abm[:, 7] = 1.0 - ab[:, 9]
+            abm[:, 8] = ab[:, 10]
+            abm[:, 9] = 1.0 - ab[:, 7]
+            abm[:, 10] = ab[:, 8]
+            ab = torch.where(mv[:, None], abm, ab)
+            # mixup, LOCAL only: blend with a shuffled partner when
+            # both head and gaze labels sit within 0.05 of the screen
+            # — interpolation stays physically plausible
+            lam = torch.rand(len(idx), 1, device=dev) * 0.5
+            pj = torch.randperm(len(idx), device=dev)
+            near = ((yb - yb[pj]).abs().max(1).values < 0.05).float().reshape(-1, 1)
+            lam = lam * near
+            l4 = lam.reshape(-1, 1, 1, 1)
+            for k4 in range(3):
+                xb[k4] = xb[k4] * (1.0 - l4) + xb[k4][pj] * l4
+            ab = ab * (1.0 - lam) + ab[pj] * lam
+            yb = yb * (1.0 - lam) + yb[pj] * lam
             c, g = m(*xb, ab)
             # delta supervised directly against the measured eye offset:
             # keeps the eyes' head from absorbing center errors
-            d_true = ytr[idx, 2:4] - ytr[idx, :2]
-            # variance matching fights mean-regression IN training: the
-            # prediction spread must equal the label spread per axis
-            vterm = ((g.std(0) - ytr[idx, 2:4].std(0)) ** 2).mean()
-            loss = (((c - ytr[idx, :2]) ** 2).mean()
-                    + 2.0 * ((g - ytr[idx, 2:4]) ** 2).mean()
-                    + 2.0 * (((g - c) - d_true) ** 2).mean()
-                    + 0.5 * vterm)
+            d_true = yb[:, 2:4] - yb[:, :2]
+            # slope matching: pred-vs-true regression slope must be 1
+            # per axis — forbids compression toward the mean without
+            # rewarding a blind stretch (which wrecked the middle)
+            def slope1(p, y):
+                yc = y - y.mean(0)
+                pc = p - p.mean(0)
+                s = (pc * yc).mean(0) / (yc * yc).mean(0).clamp_min(1e-6)
+                return ((1.0 - s) ** 2).mean()
+            # same group = same head: the head output may not react
+            # to the eyes roaming inside the face crop
+            cterm = c.sum() * 0.0
+            if gtr is not None:
+                sg = (gtr[idx] == gtr[idx][pj]).float()
+                cterm = (((c - c[pj]) ** 2).sum(1) * sg).mean()
+            # zero cost inside eps, quadratic beyond, and 10x extra
+            # on anything off by more than 0.1 of the screen
+            def tol(e):
+                a2 = e.abs()
+                return ((torch.relu(a2 - args.eps) ** 2).mean()
+                        + 10.0 * (torch.relu(a2 - 0.1) ** 2).mean())
+            if epoch < head_epochs:
+                # stage 1: head expert only
+                loss = (tol(c - yb[:, :2])
+                        + 0.5 * slope1(c, yb[:, :2])
+                        + 1.0 * cterm)
+            else:
+                # stage 2: gaze on top of the frozen head
+                loss = (2.0 * tol(g - yb[:, 2:4])
+                        + 2.0 * tol((g - c) - d_true)
+                        + 0.5 * slope1(g, yb[:, 2:4]))
             opt.zero_grad()
             loss.backward()
             opt.step()
             # report plain mse so train and eval columns are comparable
-            plain = float(((torch.cat([c, g], 1) - ytr[idx]) ** 2).mean().detach())
+            plain = float(((torch.cat([c, g], 1) - yb) ** 2).mean().detach())
             tot += plain * len(idx)
         m.eval()
         with torch.no_grad():
@@ -1315,7 +1470,7 @@ def train_look():
             eval_loss = float(((p - yev) ** 2).mean())
             errs = (p - yev).abs().mean(0).cpu().numpy()
         print(pad(f'{epoch + 1}/{args.epochs}', 10) +
-              pad(f'{tot / n:.6g}') + pad(f'{eval_loss:.6g}') +
+              pad(f'{tot / draw:.6g}') + pad(f'{eval_loss:.6g}') +
               ''.join(pad(f'{e:.6g}') for e in errs))
         mval = float(errs.mean())
         if best is None or mval < best:
@@ -1337,12 +1492,9 @@ def train_look():
             s2, b2 = np.polyfit(pr[:, k2], ty2[:, k2], 1)
             cal[k2] = (s2, b2)
         print('calibration slopes:', np.round(cal[:, 0], 3))
-        # the volumes process trains the gold-only bootstrap look;
-        # the final process (applied volumes included) is look_final
-        nm = 'look_final_torch.pt' if args.process == 'look' else 'look_torch.pt'
-        torch.save(best_state, os.path.join(out, nm))
-        np.save(os.path.join(out, nm.replace('.pt', '_cal.npy')), cal)
-        print(f'best epoch {best_ep} (avg err {best:.6g}) -> {os.path.join(out, nm)}')
+        torch.save(best_state, os.path.join(out, 'look.pt'))
+        np.save(os.path.join(out, 'look_cal.npy'), cal)
+        print(f'best epoch {best_ep} (avg err {best:.6g}) -> {out}/look.pt')
     print('training complete')
 
 

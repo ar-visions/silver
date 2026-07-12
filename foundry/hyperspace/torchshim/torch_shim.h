@@ -11,8 +11,11 @@ void* ts_load(const char* path);
 int   ts_forward1(void* model, const float* img, int S,
                   float* out, int out_cap);
 int   ts_forward4(void* model, const float* l, const float* r,
-                  const float* f, const float* aux, int S,
+                  const float* f, const float* aux, int S, int aux_n,
                   float* out, int out_cap);
+int   ts_forward5(void* model, const float* l, const float* r,
+                  const float* f, const float* w, const float* aux,
+                  int S, int aux_n, float* out, int out_cap);
 
 #ifdef __cplusplus
 }

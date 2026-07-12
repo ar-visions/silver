@@ -1,0 +1,18 @@
+import gltf
+
+# one-shot packer: bundle the human model + all its textures into
+# a single obscured human.res via the Res encoder (password 12345)
+app reszip
+    func init []
+        base : path '/src/silver/foundry/hyperspace'
+        blen : i32 [ base.count + 1 ]
+        names : array string [ ]
+        names += 'models/human.gltf'
+        names += 'models/human.bin'
+        texdir : path '{base}/share/textures'
+        files  : texdir.ls[ '.png', true ]
+        for [ f: path ] in files
+            rel : f.mid[ blen, f.count - blen ]
+            names += rel
+        dest : path '{base}/models/human.res'
+        Res.pack[ base, names, dest, '12345', true ]

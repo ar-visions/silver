@@ -1175,15 +1175,25 @@ ModelViewProject CanvasBlurH
 # path) and bind it under `name` in the pipeline's sampler map
 func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string, out: map Au[string] ]
     if [ !ti ] return
-    p : mdl.texture_uri[ ti ]
-    if [ !p ] return
+    p0 : mdl.texture_uri[ ti ]
+    if [ !p0 ] return
+    # resolve through the wrapper: share dir, cwd, loose base, then cache
+    p : Res.res_path[ p0 ]
     key : '{p}'
     tx : Texture m.tex_cache[ key ]
     if [ !tx ]
         if [ !p.exists[] ]
             puts 'gltf: material texture missing: {p}'
             return
-        tx = Texture [ w: m.w, vk: m.vk, sampler: Image [ uri: p ] ]
+        # UNORM like every other engine texture: the swapchain is raw-value
+        # passthrough, so sampling as sRGB (the default) double-darkens.
+        # full mip chain so anisotropic sampling kills fibre aliasing
+        im : Image [ uri: p ]
+        mx : i32 [ (im.width > im.height) ? im.width : im.height ]
+        ml : i32 [ 1 ]
+        for [ q: i32 mx, q > 1, q = q / 2 ]
+            ml += 1
+        tx = Texture [ w: m.w, vk: m.vk, linear: true, mip_levels: ml, sampler: im ]
         m.tex_cache[ key ] = tx
     out[ name ] = tx
 
@@ -1309,7 +1319,7 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
         mat_tex[ m, mdl, (pmr) ? pmr.metallicRoughnessTexture : null, 'rough',  use_samplers ]
         mat_tex[ m, mdl, material.normalTexture,                      'normal', use_samplers ]
     pipe: Pipeline [ vk: vk, w: m.w, name: (n) ? n.name : null,
-        r: m.r, s: s, vbo: vbo, default_model: mdl_mat, render_id: render_id,
+        r: m.r, s: s, vbo: vbo, default_model: mdl_mat, src_node: n, render_id: render_id,
         material: material, samplers: use_samplers,
         straight_alpha: sa, depth_no_write: transparent ]
     s.hold[]

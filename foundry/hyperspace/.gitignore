@@ -14,7 +14,7 @@ human.blend
 node_modules
 sessions
 rubiks*
-*.gltf
+share/textures
 *.svg
 *.bin
 *.png
@@ -24,3 +24,5 @@ rubiks*
 *.blend
 *.pyc
 __pycache__
+cache
+*.res

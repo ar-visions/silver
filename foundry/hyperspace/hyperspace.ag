@@ -6,13 +6,7 @@ import <stdio.h>
 import <stdlib.h>
 import <string.h>
 
-# tflite c api: models train in tensorflow, forward bit-exact here
-# (tensorflow.diff shims a root CMakeLists exposing lite/c + install)
-import tensorflow:tensorflow/v2.16.2 <tensorflow/lite/c/c_api.h>
-    -DTFLITE_ENABLE_XNNPACK=OFF
-    -ltensorflowlite_c
-
-# libtorch runtime: TorchScript models from hyperspace_torch.py
+# libtorch runtime: TorchScript models from hyperspace.py
 # (checkout/torchshim symlinks foundry/hyperspace/torchshim)
 import ar-visions:torchshim/main <torch_shim.h>
     -ltorch_shim
@@ -29,53 +23,6 @@ enum TrainModel
     look_2_0: 8
     look_2_1: 9
 
-# tflite-c forward path — bit-exact parity with the TF trainer
-class lite_model
-    public uri    : path
-    public names  : array string
-    intern lmodel : ref TfLiteModel
-    intern interp : ref TfLiteInterpreter
-    intern islots : ref i32
-
-    func init []
-        us : string '{uri}'
-        lmodel = TfLiteModelCreateFromFile[ us.chars ]
-        if [ !lmodel ]
-            puts 'tflite: cannot load {uri}'
-            exit[ 1 ]
-        opts : TfLiteInterpreterOptionsCreate[]
-        TfLiteInterpreterOptionsSetNumThreads[ opts, 2 ]
-        interp = TfLiteInterpreterCreate[ lmodel, opts ]
-        TfLiteInterpreterAllocateTensors[ interp ]
-        islots = new i32 [ 8 ]
-        hold[ (islots to Au) ]
-        for [ i: i32 0, i < 8, i += 1 ]
-            islots[i] = i
-        # tflite scrambles input order; match tensors by name
-        nc6 : i32 [ 0 ]
-        if [ names ] nc6 = names.count
-        nin : i32 [ TfLiteInterpreterGetInputTensorCount[ interp ] ]
-        for [ j: i32 0, j < nc6, j += 1 ]
-            pat : string '_{names[j]}:'
-            found : bool [ false ]
-            for [ i: i32 0, i < nin, i += 1 ]
-                t : TfLiteInterpreterGetInputTensor[ interp, i ]
-                if [ strstr[ TfLiteTensorName[ t ], pat.chars ] ]
-                    islots[j] = i
-                    found = true
-            if [ !found ]
-                puts 'tflite: input {names[j]} missing in {uri}'
-                exit[ 1 ]
-
-    func forward_n [ inputs: array tensor, out: tensor ]
-        for [ j: i32 0, j < inputs.count, j += 1 ]
-            t : TfLiteInterpreterGetInputTensor[ interp, islots[j] ]
-            src3 : inputs[j]
-            TfLiteTensorCopyFromBuffer[ t, src3.floats, TfLiteTensorByteSize[ t ] ]
-        TfLiteInterpreterInvoke[ interp ]
-        ot : TfLiteInterpreterGetOutputTensor[ interp, 0 ]
-        TfLiteTensorCopyToBuffer[ ot, out.floats, TfLiteTensorByteSize[ ot ] ]
-
 # TorchScript forward path — the torch trainer's own runtime
 class ts_model
     public uri : path
@@ -91,15 +38,18 @@ class ts_model
     func forward1 [ img: tensor, out: tensor, s2: i32 ]
         ts_forward1[ hnd, img.floats, s2, out.floats, 8 ]
 
-    func forward4 [ l2: tensor, r2: tensor, f2: tensor, a2: tensor, out: tensor, s2: i32 ]
-        ts_forward4[ hnd, l2.floats, r2.floats, f2.floats, a2.floats, s2, out.floats, 8 ]
+    func forward4 [ l2: tensor, r2: tensor, f2: tensor, a2: tensor, out: tensor, s2: i32, an2: i32 ]
+        ts_forward4[ hnd, l2.floats, r2.floats, f2.floats, a2.floats, s2, an2, out.floats, 8 ]
+
+    func forward5 [ l2: tensor, r2: tensor, f2: tensor, w2: tensor, a2: tensor, out: tensor, s2: i32, an2: i32 ]
+        ts_forward5[ hnd, l2.floats, r2.floats, f2.floats, w2.floats, a2.floats, s2, an2, out.floats, 8 ]
 
 element hyperspace : trinity
     public width      : i32    [ 1280 ]
     public height     : i32    [ 800 ]
     public background : string [ 'Background' ]
     public title      : string [ 'hyperspace' ]
-    public session    : string [ 'basic4' ]
+    public session    : string [ 'a7' ]
     public train      : bool
     public epochs     : i32    [ 4 ]
     public optimizer  : Optimizer [ Optimizer.adam ]
@@ -108,6 +58,16 @@ element hyperspace : trinity
     public diag       : bool
     public gradcheck  : bool
     public testbed    : bool
+    public annotate   : bool
+    public export_crops : bool
+    public look_gain  : f32 [ 1.0 ]
+    public no_refine  : bool
+    intern tb_hx      : f32
+    intern tb_hy      : f32
+    intern tb_return  : bool
+    intern tb_qwin    : Texture
+    intern ann_at     : i64
+    intern tb_pv      : array Texture
     public preview    : bool
     public import_bin : string
     public zero_aux   : bool
@@ -127,6 +87,9 @@ element hyperspace : trinity
     intern rv_bad     : array string
     intern rv_i       : i32
     intern tb_blind   : i64
+    intern ob_cy      : f32
+    intern ob_oz      : f32
+    intern ob_sc      : f32
     intern fx_hx      : ref f32
     intern fx_hy      : ref f32
     intern fx_i       : i32
@@ -136,6 +99,12 @@ element hyperspace : trinity
     intern mv_at      : i64
     public mirror     : bool [ true ]
     public look_rot   : f32  [ 5.0 ]
+    public cam_k      : f32  [ 0.055 ]  # meters: d = cam_k / scale (calibrate: K = d0*s0)
+    public screen_w_m : f32  [ 0.709 ]
+    public screen_h_m : f32  [ 0.399 ]
+    public cam_dy_m   : f32  [ 0.22 ]   # lens height above screen center (h/2 + bezel)
+    public cam_tilt   : f32  [ 25.0 ]   # degrees the camera pitches DOWN toward you
+    public oc_span_m  : f32  [ 0.117 ]  # tape-measured outer-corner span: THE yardstick (4.6in)
     public cameras    : i32  [ 1 ]
     public model      : TrainModel [ TrainModel.all ]
     public redo       : string
@@ -157,19 +126,24 @@ element hyperspace : trinity
     intern ann_i      : i32
     intern ann_cam    : string
     intern ann_tex    : Texture
+    intern ann_base   : Texture
+    intern ann_qset   : bool
+    intern ann_qtex   : Texture
+    intern ann_qx     : f32
+    intern ann_qy     : f32
+    intern ann_qcx    : f32
+    intern ann_qcy    : f32
     intern ann_rect   : rect
     intern ann_median : vec2f
     intern ann_last   : i64
     intern tb_look    : keras
     intern tb_target  : keras
     intern tb_refine  : keras
-    intern lt_look    : lite_model
-    intern lt_target  : lite_model
-    intern lt_refine  : lite_model
     intern ts_look    : ts_model
     intern ts_target  : ts_model
     intern ts_refine  : ts_model
-    intern ts_gate    : ts_model
+    intern ts_noise   : ts_model
+    intern ts_corners : ts_model
     intern tb_x       : f32 [ 0.5 ]
     intern tb_y       : f32 [ 0.5 ]
     intern tb_tex_top : Texture
@@ -197,6 +171,13 @@ element hyperspace : trinity
         if [ volume && volume.count > 0 ] mv_at = epoch_millis[] + 3000
         # --testbed: start well after the cameras have come up
         if [ testbed ] tb_at = epoch_millis[] + 3000
+        if [ annotate ] ann_at = epoch_millis[] + 3000
+        puts 'flags: annotate={annotate} testbed={testbed} ann_at={ann_at}'
+        # --export_crops: write the training set via build_inputs
+        # (the runtime function) and exit — no window, no cameras
+        if [ export_crops ]
+            write_crops[]
+            exit[ 0 ]
 
     func session_dir [] -> path
         return path '/src/hyperspace-sessions/{session}'
@@ -331,6 +312,7 @@ element hyperspace : trinity
         fid : ann_files[ ann_i ]
         ip  : path '{session_dir[]}/{fid}-{ann_cam}.png'
         im  : Image [ uri: ip ]
+        ann_qset = false
         ann_tex = Texture [ vk: vk, w: ux, width: im.width, height: im.height, linear: true ]
         sz : i32 [ im.width * im.height * 4 ]
         ann_tex.upload[ im.vdata[], sz ]
@@ -340,19 +322,61 @@ element hyperspace : trinity
             r : read_pair[ fid, '{ann_cam}_right' ]
             if [ l.x >= -100.0 && r.x >= -100.0 ]
                 ann_median = vec2f [ x: (l.x + r.x) * 0.5, y: (l.y + r.y) * 0.5 ]
+        if [ mode == 'last' ]
+            ann_base = null
+            zp2 : path '{session_dir[]}/{fid}.agi'
+            zs2 : (zp2.load[ typeid[ string ], null ] to string)
+            if [ zs2 ]
+                ix2 : num [ zs2.index_of[ 'sequence:' ] ]
+                if [ ix2 >= 0 ]
+                    r3 : zs2.mid[ i32[ ix2 ] + 9, zs2.count - i32[ ix2 ] - 9 ]
+                    nl2 : num [ r3.index_of[ '\n' ] ]
+                    if [ nl2 > 0 ] r3 = r3.mid[ 0, i32[ nl2 ] ]
+                    z4 : i32 [ i32[ atof[ r3.chars ] ] ]
+                    bp : path '{session_dir[]}/{z4}-{ann_cam}.png'
+                    bi : Image [ uri: bp ]
+                    ann_base = Texture [ vk: vk, w: ux, width: bi.width, height: bi.height, linear: true ]
+                    szb : i32 [ bi.width * bi.height * 4 ]
+                    ann_base.upload[ bi.vdata[], szb ]
 
     func ann_exit []
         mode       = ''
         fullscreen = false
         ann_tex    = null
+        ann_base   = null
+        if [ tb_return ]
+            tb_return = false
+            start_testbed[]
         ux.set_fullscreen[ false ]
 
     # only frames still missing this mode's annotation get visited;
     # a --redo list forces its frames through every mode again
     func ann_needed [ fid: string ] -> bool
         if [ redo && redo.count > 0 ] return true
-        v : read_pair[ fid, '{ann_cam}_{mode}' ]
-        return v.x < -100.0
+        k7 : string '{ann_cam}_{mode}'
+        if [ mode == 'pupils' || mode == 'eyes' ] k7 = string '{ann_cam}_pupil_left'
+        if [ mode == 'last' ] k7 = string '{ann_cam}_drift'
+        v : read_pair[ fid, '{k7}' ]
+        if [ v.x > -100.0 && mode != 'pupils' && mode != 'eyes' ] return false
+        # pupils: ONLY head-focused zero-frames (head == look), where
+        # the pupil sits at its rotational zero — the true eye center
+        if [ mode == 'pupils' ]
+            v2 : read_pair[ fid, '{ann_cam}_pupil_right' ]
+            if [ v.x > -100.0 && v2.x > -100.0 ] return false
+            # ONLY marked zero-frames: edge laps are head-focused on
+            # every frame and must not flood the pupil queue
+            zp : path '{session_dir[]}/{fid}.agi'
+            zs : (zp.load[ typeid[ string ], null ] to string)
+            if [ !zs || zs.index_of[ 'zero: true' ] < 0 ] return false
+            return true
+        if [ mode == 'eyes' ]
+            v2 : read_pair[ fid, '{ann_cam}_pupil_right' ]
+            if [ v.x > -100.0 && v2.x > -100.0 ] return false
+            zp : path '{session_dir[]}/{fid}.agi'
+            zs : (zp.load[ typeid[ string ], null ] to string)
+            if [ !zs || zs.index_of[ 'edges: true' ] < 0 ] return false
+            return true
+        return true
 
     func ann_seek [] -> bool
         while [ true ]
@@ -367,11 +391,22 @@ element hyperspace : trinity
                 ann_i += 1
 
     func ann_advance []
-        ann_i += 1
-        if [ !ann_seek[] ]
-            ann_exit[]
+        while [ true ]
+            ann_i += 1
+            if [ !ann_seek[] ]
+                # pupils done -> line up each group's drift next
+                if [ mode == 'pupils' ]
+                    ann_sub = 0
+                    start_annotate[ 'eyes' ]
+                    if [ mode != '' ] return
+                ann_exit[]
+                return
+            ann_load[]
+            # a drift frame is useless without its zero image under it
+            if [ mode == 'last' && !ann_base ]
+                puts 'skip {ann_files[ann_i]}: zero image missing'
+                continue
             return
-        ann_load[]
 
     # heads: fresh head position each capture, gaze pinned to center
     # volume capture: follow the pixel dot (head kind: point your FACE
@@ -382,7 +417,8 @@ element hyperspace : trinity
         root_dir.make_dir[]
         sd : session_dir[]
         sd.make_dir[]
-        vd : path '{sd}/volume_{volume}'
+        vn : string [ (volume == 'off') ? string 'noise' : string 'volume_{volume}' ]
+        vd : path '{sd}/{vn}'
         vd.make_dir[]
         frame_i = 0
         while [ true ]
@@ -407,20 +443,10 @@ element hyperspace : trinity
 
     # batch pass: target+refine plot the eyes on unannotated frames
     func annotate_session []
-        pT : path 'models/target.tflite'
-        if [ pT.exists[] ]
-            lt_target = lite_model [ uri: pT ]
-            lt_target.hold[]
-        el
-            tb_target = load_target[]
-            tb_target.hold[]
-        pR : path 'models/refine.tflite'
-        if [ pR.exists[] ]
-            lt_refine = lite_model [ uri: pR ]
-            lt_refine.hold[]
-        el
-            tb_refine = load_refine[]
-            tb_refine.hold[]
+        tb_target = load_target[]
+        tb_target.hold[]
+        tb_refine = load_refine[]
+        tb_refine.hold[]
         d : session_dir[]
         prefixes : array string [ '', 'volume_look/', 'volume_head/' ]
         done2 : i32 [ 0 ]
@@ -438,11 +464,7 @@ element hyperspace : trinity
                 img : Image [ uri: ip ]
                 full : crop_tensor[ img, 0.0, 0.0, 0.0 ]
                 t5 : tensor [ tensor_shape: 1x5 ]
-                if [ lt_target ]
-                    ti5 : array tensor [ full ]
-                    lt_target.forward_n[ ti5, t5 ]
-                el
-                    t5 = tb_target.forward[ full ]
+                t5 = tb_target.forward[ full ]
                 lx  : f32 [ t5.floats[0] ]
                 ly  : f32 [ t5.floats[1] ]
                 rx  : f32 [ t5.floats[2] ]
@@ -452,14 +474,10 @@ element hyperspace : trinity
                 mry : f32 [ (ly + ry) * 0.5 ]
                 rs3 : f32 [ sc2 * 1.25 ]
                 if [ rs3 < 0.15 ] rs3 = 0.15
-                rcy : f32 [ mry - rs3 * 0.1 ]
-                rwin2 : aug_crop[ img, mrx, rcy, rs3 ]
+                rcy : f32 [ mry ]
+                rwin2 : crop_tensor[ img, mrx, rcy, rs3 ]
                 r5 : tensor [ tensor_shape: 1x5 ]
-                if [ lt_refine ]
-                    ri5 : array tensor [ rwin2 ]
-                    lt_refine.forward_n[ ri5, r5 ]
-                el
-                    r5 = tb_refine.forward[ rwin2 ]
+                r5 = tb_refine.forward[ rwin2 ]
                 ox3 : f32 [ mrx - rs3 * 0.5 ]
                 oy3 : f32 [ rcy - rs3 * 0.5 ]
                 lx  = ox3 + r5.floats[0] * rs3
@@ -476,7 +494,8 @@ element hyperspace : trinity
 
     # volume frames live in {session}/volume_{kind}/, own numbering
     func mv_capture []
-        d  : path '{session_dir[]}/volume_{volume}'
+        vn2 : string [ (volume == 'off') ? string 'noise' : string 'volume_{volume}' ]
+        d  : path '{session_dir[]}/{vn2}'
         tp : path '{d}/{frame_i}-top.png'
         ok_t : bool [ (top) ? top.save_frame[ tp ] : false ]
         s  : string 'labels:\n    look: {mv_x - 0.5} {mv_y - 0.5}\nimages:\n    top: {frame_i}-top.png\nvolume: {volume}\n'
@@ -489,28 +508,59 @@ element hyperspace : trinity
 
     # review: page applied_head previews; X marks a frame for manual
     # plotting (loads the marked set into the plot buttons via redo)
-    func start_review []
+    intern rv_kind : string
+    intern au_phase : i32
+    intern au_dx    : f32
+    intern au_dy    : f32
+    intern au_tx    : f32
+    intern au_ty    : f32
+    intern au_seq   : i32
+    intern au_dwell : i64
+    intern au_last  : i64
+    intern au_zero  : i32
+    intern au_sx    : f32
+    intern au_sy    : f32
+    intern au_t0    : i64
+    intern au_T     : f32
+    intern au_cap   : i64
+    intern au_leg   : i32
+    intern au_px    : f32
+    intern au_py    : f32
+    intern au_u     : f32
+    intern ann_sub  : i32
+
+    func start_review [ kind: string ]
+        rv_kind = kind
         d : session_dir[]
         rv_files = array string [ ]
         i2 : i32 [ 0 ]
         while [ true ]
-            ap : path '{d}/volume_head/{i2}.agi'
+            ap : path '{d}/volume_{kind}/{i2}.agi'
             if [ !ap.exists[] ] break
-            pv : path '{d}/applied_head/preview/{i2}.png'
+            pv : path '{d}/applied_{kind}/preview/{i2}.png'
             if [ pv.exists[] ] rv_files.push[ string '{i2}' ]
             i2 += 1
         if [ rv_files.count == 0 ]
-            puts 'review: no previews in applied_head'
+            puts 'review: no previews in applied_{kind}'
             return
         # randomized order: consecutive frames are near-identical
         lcg = u32[ epoch_millis[] ]
         nrv : i32 [ rv_files.count ]
+        orv : new i32 [ nrv ]
+        for [ i3: i32 0, i3 < nrv, i3 += 1 ]
+            orv[i3] = i3
         for [ i3: i32 0, i3 < nrv, i3 += 1 ]
             j3 : i32 [ i3 + i32[ frand[] * f32[ nrv - i3 ] ] ]
             if [ j3 >= nrv ] j3 = nrv - 1
-            tmp2 : rv_files[ i3 ]
-            rv_files[ i3 ] = rv_files[ j3 ]
-            rv_files[ j3 ] = tmp2
+            t8 : i32 [ orv[i3] ]
+            orv[i3] = orv[j3]
+            orv[j3] = t8
+        # sample: a review session is ~300 frames, not ten thousand
+        cap9 : i32 [ (nrv < 300) ? nrv : 300 ]
+        nrv2 : array string [ ]
+        for [ i3: i32 0, i3 < cap9, i3 += 1 ]
+            nrv2.push[ rv_files[ orv[i3] ] ]
+        rv_files = nrv2
         rv_bad = array string [ ]
         rv_i = 0
         mode = 'review'
@@ -519,7 +569,7 @@ element hyperspace : trinity
         ux.set_fullscreen[ true ]
 
     func rv_show []
-        ip : path '{session_dir[]}/applied_head/preview/{rv_files[rv_i]}.png'
+        ip : path '{session_dir[]}/applied_{rv_kind}/preview/{rv_files[rv_i]}.png'
         im : Image [ uri: ip ]
         ann_tex = Texture [ vk: vk, w: ux, width: im.width, height: im.height, linear: true ]
         sz2 : i32 [ im.width * im.height * 4 ]
@@ -538,17 +588,17 @@ element hyperspace : trinity
     # dirs never carry annotations; a ledger retires the applied copy
     func promote_frame [ vid: string ] -> string
         d : session_dir[]
-        lk : read_pair[ string 'volume_head/{vid}', 'look' ]
+        lk : read_pair[ string 'volume_{rv_kind}/{vid}', 'look' ]
         if [ lk.x < -900.0 ] return string ''
         n2 : i32 [ 0 ]
         while [ true ]
             gp : path '{d}/{n2}.agi'
             if [ !gp.exists[] ] break
             n2 += 1
-        im : Image [ uri: path '{d}/volume_head/{vid}-top.png' ]
+        im : Image [ uri: path '{d}/volume_{rv_kind}/{vid}-top.png' ]
         dp : path '{d}/{n2}-top.png'
         im.png[ dp ]
-        s3 : string 'labels:\n    head: {lk.x} {lk.y}\n    look: {lk.x} {lk.y}\nimages:\n    top: {n2}-top.png\n'
+        s3 : string 'labels:\n    head: {lk.x} {lk.y}\n    look: {lk.x} {lk.y}\nimages:\n    top: {n2}-top.png\npriority: true\n'
         gp2 : path '{d}/{n2}.agi'
         gp2.save[ s3, null ]
         return string '{n2}'
@@ -585,6 +635,96 @@ element hyperspace : trinity
         fullscreen = true
         ux.set_fullscreen[ true ]
 
+    # auto sequences: SPACE sets a position (zero-frame banked),
+    # SPACE starts the offset animation (captures are automatic),
+    # SPACE advances to the next position
+    func start_auto []
+        root_dir : path '/src/hyperspace-sessions'
+        root_dir.make_dir[]
+        sd : session_dir[]
+        sd.make_dir[]
+        frame_i = 0
+        while [ true ]
+            fp : path '{sd}/{frame_i}.agi'
+            if [ !fp.exists[] ] break
+            frame_i += 1
+        lcg     = u32[ epoch_millis[] ]
+        heads_only = false
+        au_phase = 0
+        head_x = 0.1 + frand[] * 0.8
+        head_y = 0.1 + frand[] * 0.8
+        au_dx = head_x
+        au_dy = head_y
+        au_tx = head_x
+        au_ty = head_y
+        au_seq = 0
+        au_leg = 0
+        au_px = 0.0
+        au_py = 0.0
+        au_u = 0.04 + frand[] * 0.035
+        au_last = epoch_millis[]
+        mode       = 'auto'
+        fullscreen = true
+        ux.set_fullscreen[ true ]
+
+    # square spiral: leg k moves (k/2+1) units, direction cycles
+    # E, S, W, N. returns the OFFSET endpoint of leg k
+    func au_leg_end [ k: i32, ox9: f32, oy9: f32 ] -> vec2f
+        u9 : f32 [ au_u ]
+        ln9 : f32 [ f32[ k / 2 + 1 ] * u9 ]
+        d9 : i32 [ k % 4 ]
+        r9 : vec2f [ x: ox9, y: oy9 ]
+        if [ d9 == 0 ] r9 = vec2f [ x: ox9 + ln9, y: oy9 ]
+        el [ d9 == 1 ] r9 = vec2f [ x: ox9, y: oy9 + ln9 ]
+        el [ d9 == 2 ] r9 = vec2f [ x: ox9 - ln9, y: oy9 ]
+        el              r9 = vec2f [ x: ox9, y: oy9 - ln9 ]
+        return r9
+
+    func au_next_target []
+        nx9 : au_leg_end[ au_leg, au_px, au_py ]
+        gx9 : f32 [ head_x + nx9.x ]
+        gy9 : f32 [ head_y + nx9.y ]
+        done9 : bool [ nx9.x < -0.2 || nx9.x > 0.2 || nx9.y < -0.2 || nx9.y > 0.2 ]
+        if [ gx9 < 0.02 || gx9 > 0.98 || gy9 < 0.02 || gy9 > 0.98 ] done9 = true
+        if [ done9 ]
+            au_new_position[]
+            return
+        au_px = nx9.x
+        au_py = nx9.y
+        au_leg += 1
+        off_x = au_px
+        off_y = au_py
+        au_tx = head_x + au_px
+        au_ty = head_y + au_py
+        au_sx = au_dx
+        au_sy = au_dy
+        au_t0 = epoch_millis[]
+        ddxT : f32 [ au_tx - au_sx ]
+        ddyT : f32 [ au_ty - au_sy ]
+        au_T = sqrt[ ddxT * ddxT + ddyT * ddyT ] / mv_speed * 1.5
+        # ease into the run: the first legs off the center go slower
+        slow9 : f32 [ 2.0 - 0.5 * f32[ au_leg - 1 ] ]
+        if [ slow9 > 1.0 ] au_T = au_T * slow9
+        if [ au_T < 0.4 ] au_T = 0.4
+        au_dwell = 0
+
+    func au_new_position []
+        au_phase = 0
+        au_seq = 0
+        au_leg = 0
+        au_px = 0.0
+        au_py = 0.0
+        # fresh spiral pitch each group
+        au_u = 0.04 + frand[] * 0.035
+        head_x = 0.1 + frand[] * 0.8
+        head_y = 0.1 + frand[] * 0.8
+        off_x = 0.0
+        off_y = 0.0
+        au_dx = head_x
+        au_dy = head_y
+        au_tx = head_x
+        au_ty = head_y
+
     func start_record [ heads: bool ]
         heads_only = heads
         root_dir : path '/src/hyperspace-sessions'
@@ -611,16 +751,107 @@ element hyperspace : trinity
         ann_files = array string [ ]
         if [ redo && redo.count > 0 ]
             ann_files = redo.split[ ',' ]
-        el
+        el [ m == 'last' ]
+            # one sequence at a time; frames RANDOM inside it, so a
+            # partial pass covers that sequence's drift curve evenly
+            sv9 : array i32 [ ]
+            sk9 : array i32 [ ]
             k : i32 [ 0 ]
             while [ true ]
                 p : path '{d}/{k}.agi'
                 if [ !p.exists[] ] break
-                ann_files.push[ string '{k}' ]
+                s : (p.load[ typeid[ string ], null ] to string)
+                if [ s ]
+                    ix : num [ s.index_of[ 'sequence:' ] ]
+                    if [ ix >= 0 ]
+                        r2 : s.mid[ i32[ ix ] + 9, 16 ]
+                        nl : num [ r2.index_of[ '\n' ] ]
+                        if [ nl > 0 ] r2 = r2.mid[ 0, i32[ nl ] ]
+                        sv9.push[ i32[ atof[ r2.trim[].chars ] ] ]
+                        sk9.push[ k ]
                 k += 1
+            # fixed seed: reopening resumes the exact same order
+            lcg = u32[ 2654435769 ]
+            for [ i3: i32 0, i3 < sv9.count, i3 += 1 ]
+                z3 : i32 [ sv9[i3] ]
+                seen3 : bool [ false ]
+                for [ j3: i32 0, j3 < i3, j3 += 1 ]
+                    if [ sv9[j3] == z3 ] seen3 = true
+                if [ seen3 ] continue
+                grp3 : new i32 [ sv9.count ]
+                n3 : i32 [ 0 ]
+                for [ j3: i32 0, j3 < sv9.count, j3 += 1 ]
+                    if [ sv9[j3] == z3 ]
+                        grp3[n3] = sk9[j3]
+                        n3 += 1
+                for [ j3: i32 0, j3 < n3, j3 += 1 ]
+                    x3 : i32 [ j3 + i32[ frand[] * f32[ n3 - j3 ] ] ]
+                    if [ x3 >= n3 ] x3 = n3 - 1
+                    t3 : i32 [ grp3[j3] ]
+                    grp3[j3] = grp3[x3]
+                    grp3[x3] = t3
+                for [ j3: i32 0, j3 < n3, j3 += 1 ]
+                    k4 : i32 [ grp3[j3] ]
+                    ann_files.push[ string '{k4}' ]
+            puts 'drift queue: {ann_files.count} frames across unique sequences'
+        el [ m == 'eyes' ]
+            # edge frames live in the root now, marked edges: true;
+            # ann_needed filters to those still missing pupils
+            ents2 : array [ d.ls[ null, false ] ]
+            mx2 : i32 [ -1 ]
+            for [ p2: path ] in ents2
+                fn2 : p2.filename[]
+                if [ fn2.index_of[ '.agi' ] < 0 ] continue
+                id2 : i32 [ i32[ atof[ p2.stem[].chars ] ] ]
+                if [ id2 > mx2 ] mx2 = id2
+            for [ k: i32 0, k <= mx2, k += 1 ]
+                p : path '{d}/{k}.agi'
+                if [ p.exists[] ] ann_files.push[ string '{k}' ]
+        el
+            # root ids have gaps (edge sweeps moved out) — walk 0..max
+            ents : array [ d.ls[ null, false ] ]
+            mx9 : i32 [ -1 ]
+            for [ p9: path ] in ents
+                fn9 : p9.filename[]
+                if [ fn9.index_of[ '.agi' ] < 0 ] continue
+                id9 : i32 [ i32[ atof[ p9.stem[].chars ] ] ]
+                if [ id9 > mx9 ] mx9 = id9
+            for [ k: i32 0, k <= mx9, k += 1 ]
+                p : path '{d}/{k}.agi'
+                if [ p.exists[] ] ann_files.push[ string '{k}' ]
         if [ ann_files.count == 0 ]
             puts 'annotate: no frames in {d}'
             return
+        # deterministic shuffle: identical order EVERY run, so a
+        # stopped session resumes exactly where the seek left off
+        # the drift queue keeps its own per-sequence order
+        if [ !(redo && redo.count > 0) && m != 'last' ]
+            lcg = u32[ 2654435769 ]
+            na9 : i32 [ ann_files.count ]
+            ord9 : new i32 [ na9 ]
+            for [ i3: i32 0, i3 < na9, i3 += 1 ]
+                ord9[i3] = i3
+            for [ i3: i32 0, i3 < na9, i3 += 1 ]
+                j3 : i32 [ i3 + i32[ frand[] * f32[ na9 - i3 ] ] ]
+                if [ j3 >= na9 ] j3 = na9 - 1
+                t9 : i32 [ ord9[i3] ]
+                ord9[i3] = ord9[j3]
+                ord9[j3] = t9
+            ns9 : array string [ ]
+            # priority-flagged frames come FIRST; shuffle serves the rest
+            for [ i3: i32 0, i3 < na9, i3 += 1 ]
+                fid9 : ann_files[ ord9[i3] ]
+                p9 : path '{d}/{fid9}.agi'
+                s9 : (p9.load[ typeid[ string ], null ] to string)
+                if [ s9 && s9.index_of[ 'priority: true' ] >= 0 ]
+                    ns9.push[ fid9 ]
+            for [ i3: i32 0, i3 < na9, i3 += 1 ]
+                fid9 : ann_files[ ord9[i3] ]
+                p9 : path '{d}/{fid9}.agi'
+                s9 : (p9.load[ typeid[ string ], null ] to string)
+                if [ !s9 || s9.index_of[ 'priority: true' ] < 0 ]
+                    ns9.push[ fid9 ]
+            ann_files = ns9
         mode    = m
         ann_cam = 'top'
         ann_i   = 0
@@ -629,6 +860,8 @@ element hyperspace : trinity
             mode = ''
             return
         ann_load[]
+        if [ mode == 'last' && !ann_base ] ann_advance[]
+        if [ mode == '' ] return
         fullscreen = true
         ux.set_fullscreen[ true ]
 
@@ -640,7 +873,7 @@ element hyperspace : trinity
         tb_target.hold[]
         tb_refine = load_refine[]
         tb_refine.hold[]
-        # torchscript wins, then tflite, then silver inference
+        # torchscript wins, then silver inference
         qT : path 'models/target.ptc'
         if [ qT.exists[] ]
             ts_target = ts_model [ uri: qT ]
@@ -651,38 +884,21 @@ element hyperspace : trinity
             ts_refine = ts_model [ uri: qR ]
             ts_refine.hold[]
             puts 'testbed: refine -> torchscript'
-        qG : path 'models/gate.ptc'
+        qC : path 'models/corners.ptc'
+        if [ qC.exists[] ]
+            ts_corners = ts_model [ uri: qC ]
+            ts_corners.hold[]
+            puts 'testbed: corners -> torchscript'
+        qG : path 'models/noise.ptc'
         if [ qG.exists[] ]
-            ts_gate = ts_model [ uri: qG ]
-            ts_gate.hold[]
-            puts 'testbed: gate -> torchscript'
-        qL : path 'models/look_final.ptc'
+            ts_noise = ts_model [ uri: qG ]
+            ts_noise.hold[]
+            puts 'testbed: noise -> torchscript'
+        qL : path 'models/look.ptc'
         if [ qL.exists[] ]
             ts_look = ts_model [ uri: qL ]
             ts_look.hold[]
             puts 'testbed: look -> torchscript'
-        # .tflite checkpoints win over silver inference when present
-        pT : path 'models/target.tflite'
-        if [ pT.exists[] ]
-            lt_target = lite_model [ uri: pT ]
-            lt_target.hold[]
-            puts 'testbed: target -> tflite'
-        pR : path 'models/refine.tflite'
-        if [ pR.exists[] ]
-            lt_refine = lite_model [ uri: pR ]
-            lt_refine.hold[]
-            puts 'testbed: refine -> tflite'
-        pL : path 'models/look.tflite'
-        if [ pL.exists[] ]
-            ns5 : array string [ 'inTL', 'inTR', 'inTF' ]
-            if [ cameras > 1 ]
-                ns5.push[ string 'inBL' ]
-                ns5.push[ string 'inBR' ]
-                ns5.push[ string 'inBF' ]
-            ns5.push[ string 'aux' ]
-            lt_look = lite_model [ uri: pL, names: ns5 ]
-            lt_look.hold[]
-            puts 'testbed: look -> tflite'
         tb_x = 0.5
         tb_y = 0.5
         fx_hx = new f32 [ 16 ]
@@ -728,51 +944,109 @@ element hyperspace : trinity
         cv.draw_image[ t2, prect ]
         cv.paint[]
         full : crop_tensor[ gray, 0.0, 0.0, 0.0 ]
-        if [ ts_gate ]
+        if [ ts_noise ]
             g6 : tensor [ tensor_shape: 1x1 ]
-            ts_gate.forward1[ full, g6, 32 ]
+            ts_noise.forward1[ full, g6, 32 ]
             # gate says face unusable: settle to center
             if [ g6.floats[0] < 0.0 ] return null
-        t5   : tensor [ tensor_shape: 1x6 ]
+        if [ !ts_refine ] return null
+        # target's coarse estimate joins the refine window votes
+        t5 : tensor [ tensor_shape: 1x6 ]
+        tmx : f32 [ -1.0 ]
+        tmy : f32 [ -1.0 ]
+        tsc : f32 [ -1.0 ]
         if [ ts_target ]
             ts_target.forward1[ full, t5, 32 ]
-            # target's own off_screen logit: second detector after gate
-            if [ t5.floats[5] > 0.0 ] return null
-        el [ lt_target ]
-            tin5 : array tensor [ full ]
-            lt_target.forward_n[ tin5, t5 ]
-        el
-            t5 = tb_target.forward[ full ]
-        lx  : f32 [ t5.floats[0] ]
-        ly  : f32 [ t5.floats[1] ]
-        rx  : f32 [ t5.floats[2] ]
-        ry  : f32 [ t5.floats[3] ]
-        sc2 : f32 [ t5.floats[4] ]
-        # refine pass: window from the coarse estimate (side 1.25x scale,
-        # raised 0.1 side), eyes re-regressed in window space
-        mrx : f32 [ (lx + rx) * 0.5 ]
-        mry : f32 [ (ly + ry) * 0.5 ]
-        rs3 : f32 [ sc2 * 1.25 ]
-        if [ rs3 < 0.15 ] rs3 = 0.15
-        rcy : f32 [ mry - rs3 * 0.1 ]
-        rwin2 : aug_crop[ gray, mrx, rcy, rs3 ]
+            if [ t5.floats[5] <= 0.0 ]
+                tmx = (t5.floats[0] + t5.floats[2]) * 0.5
+                tmy = (t5.floats[1] + t5.floats[3]) * 0.5
+                tsc = t5.floats[4]
+        # refine window votes: 50/60/70% of the image, median wins
+        cand_x : new f32 [ 16 ]
+        cand_y : new f32 [ 16 ]
+        cand_s : new f32 [ 16 ]
+        ncand : i32 [ 0 ]
         r5 : tensor [ tensor_shape: 1x6 ]
-        if [ ts_refine ]
-            ts_refine.forward1[ rwin2, r5, 32 ]
-        el [ lt_refine ]
-            rin5 : array tensor [ rwin2 ]
-            lt_refine.forward_n[ rin5, r5 ]
-        el
-            r5 = tb_refine.forward[ rwin2 ]
-        # refine's own off_screen logit: clipped past usable
-        if [ ts_refine && r5.floats[5] > 0.0 ] return null
-        ox3 : f32 [ mrx - rs3 * 0.5 ]
-        oy3 : f32 [ rcy - rs3 * 0.5 ]
-        lx  = ox3 + r5.floats[0] * rs3
-        ly  = oy3 + r5.floats[1] * rs3
-        rx  = ox3 + r5.floats[2] * rs3
-        ry  = oy3 + r5.floats[3] * rs3
-        sc2 = r5.floats[4] * rs3
+        for [ si: i32 0, si < 3, si += 1 ]
+            ws9 : f32 [ 0.5 + f32[ si ] * 0.1 ]
+            for [ gy9: i32 0, gy9 < 2, gy9 += 1 ]
+                for [ gx9: i32 0, gx9 < 2, gx9 += 1 ]
+                    cx9 : f32 [ 0.33 + f32[ gx9 ] * 0.34 ]
+                    cy9 : f32 [ 0.33 + f32[ gy9 ] * 0.34 ]
+                    # crop_tensor: edge-CLAMPED like every training window
+                    rw9 : crop_tensor[ gray, cx9, cy9, ws9 ]
+                    ts_refine.forward1[ rw9, r5, 32 ]
+                    if [ r5.floats[5] > 0.0 ] continue
+                    ox9 : f32 [ cx9 - ws9 * 0.5 ]
+                    oy9 : f32 [ cy9 - ws9 * 0.5 ]
+                    mx9 : f32 [ ox9 + (r5.floats[0] + r5.floats[2]) * 0.5 * ws9 ]
+                    my9 : f32 [ oy9 + (r5.floats[1] + r5.floats[3]) * 0.5 * ws9 ]
+                    sp9 : f32 [ r5.floats[4] * ws9 ]
+                    if [ mx9 < -0.2 || mx9 > 1.2 || my9 < -0.2 || my9 > 1.2 ] continue
+                    if [ sp9 < 0.02 ] continue
+                    cand_x[ncand] = mx9
+                    cand_y[ncand] = my9
+                    cand_s[ncand] = sp9
+                    ncand += 1
+        if [ ncand == 0 ] return null
+        # median per list: bubble the <=12 candidates
+        for [ i8: i32 0, i8 < ncand, i8 += 1 ]
+            for [ j8: i32 0, j8 < ncand - 1, j8 += 1 ]
+                if [ cand_x[j8] > cand_x[j8 + 1] ]
+                    tx8 : f32 [ cand_x[j8] ]
+                    cand_x[j8] = cand_x[j8 + 1]
+                    cand_x[j8 + 1] = tx8
+                if [ cand_y[j8] > cand_y[j8 + 1] ]
+                    ty8 : f32 [ cand_y[j8] ]
+                    cand_y[j8] = cand_y[j8 + 1]
+                    cand_y[j8 + 1] = ty8
+                if [ cand_s[j8] > cand_s[j8 + 1] ]
+                    ts8 : f32 [ cand_s[j8] ]
+                    cand_s[j8] = cand_s[j8 + 1]
+                    cand_s[j8 + 1] = ts8
+        med_x : f32 [ cand_x[ncand / 2] ]
+        med_y : f32 [ cand_y[ncand / 2] ]
+        med_s : f32 [ cand_s[ncand / 2] ]
+        # mix target's center with the vote median, then mix that
+        # scale 50/50 with half the camera width
+        if [ tmx > -0.5 ]
+            med_x = (med_x + tmx) * 0.5
+            med_y = (med_y + tmy) * 0.5
+            med_s = (med_s + tsc) * 0.5
+        rs3 : f32 [ (med_s * 1.25 + 0.5) * 0.5 ]
+        if [ rs3 < 0.15 ] rs3 = 0.15
+        rwin2 : crop_tensor[ gray, med_x, med_y, rs3 ]
+        ts_refine.forward1[ rwin2, r5, 32 ]
+        if [ r5.floats[5] > 0.0 ] return null
+        ox3 : f32 [ med_x - rs3 * 0.5 ]
+        oy3 : f32 [ med_y - rs3 * 0.5 ]
+        lx  : f32 [ ox3 + r5.floats[0] * rs3 ]
+        ly  : f32 [ oy3 + r5.floats[1] * rs3 ]
+        rx  : f32 [ ox3 + r5.floats[2] * rs3 ]
+        ry  : f32 [ oy3 + r5.floats[3] * rs3 ]
+        sc2 : f32 [ r5.floats[4] * rs3 ]
+        # second pass: mix the RETURNED position and scale with the
+        # consensus, refine once more on that window
+        p2x : f32 [ ((lx + rx) * 0.5 + med_x) * 0.5 ]
+        p2y : f32 [ ((ly + ry) * 0.5 + med_y) * 0.5 ]
+        s2m : f32 [ (sc2 + med_s) * 0.5 ]
+        rs4 : f32 [ s2m * 1.25 ]
+        if [ rs4 < 0.15 ] rs4 = 0.15
+        rwin3 : crop_tensor[ gray, p2x, p2y, rs4 ]
+        ts_refine.forward1[ rwin3, r5, 32 ]
+        if [ r5.floats[5] > 0.0 ] return null
+        o4x : f32 [ p2x - rs4 * 0.5 ]
+        o4y : f32 [ p2y - rs4 * 0.5 ]
+        lx = o4x + r5.floats[0] * rs4
+        ly = o4y + r5.floats[1] * rs4
+        rx = o4x + r5.floats[2] * rs4
+        ry = o4y + r5.floats[3] * rs4
+        sc2 = r5.floats[4] * rs4
+        # refine's LIVE input window, on screen every frame
+        if [ !tb_qwin ]
+            tb_qwin = Texture [ vk: vk, w: ux, width: 32, height: 32, linear: true ]
+            tb_qwin.hold[]
+        upload_tensor[ tb_qwin, rwin3 ]
         # face centroid far off screen = face not usable; a margin
         # keeps partially-clipped faces tracking
         fc_x : f32 [ (lx + rx) * 0.5 ]
@@ -790,24 +1064,50 @@ element hyperspace : trinity
             sd2 : session_dir[]
             preview_tensor[ sd2, string 'tbdump-{cam2}-net', full ]
             puts 'tbdump {cam2}: left {lx} {ly} right {rx} {ry} scale {sc2}'
+            # observer in screen-centered meters (head-coupled basis)
+            oz : f32 [ cam_k / sc2 ]
+            ow : f32 [ oz * 0.063 / cam_k ]
+            omx : f32 [ (lx + rx) * 0.5 ]
+            omy : f32 [ (ly + ry) * 0.5 ]
+            ox4 : f32 [ (omx - 0.5) * ow ]
+            oy4 : f32 [ (omy - 0.5) * ow + cam_dy_m ]
+            puts 'observer: x {ox4}m y {oy4}m z {oz}m (screen {screen_w_m}x{screen_h_m})'
             if [ !is_top ] tb_dump = false
+        ins0 : build_inputs[ gray, lx, ly, rx, ry, sc2 ]
+        lc  : (ins0[0] to tensor)
+        rc  : (ins0[1] to tensor)
+        fcr : (ins0[2] to tensor)
+        aux : (ins0[3] to tensor)
+        # display-only geometry (panels + overlays); the NET inputs
+        # above come solely from build_inputs
         side2 : f32 [ sc2 / 2.12 ]
         if [ side2 < 0.05 ] side2 = 0.05
-        lc  : crop_tensor[ gray, lx, ly, side2 ]
-        rc  : crop_tensor[ gray, rx, ry, side2 ]
         mx2 : f32 [ (lx + rx) * 0.5 ]
         my2 : f32 [ (ly + ry) * 0.5 ]
-        fs5 : f32 [ sc2 * 2.0 ]
-        if [ fs5 < 0.1 ] fs5 = 0.1
-        fcr : crop_tensor[ gray, mx2, my2, fs5 ]
-        aux : tensor [ tensor_shape: 1x7 ]
-        aux.floats[0] = mx2
-        aux.floats[1] = my2
-        aux.floats[2] = sc2
-        aux.floats[3] = lx
-        aux.floats[4] = ly
-        aux.floats[5] = rx
-        aux.floats[6] = ry
+        fw5 : f32 [ sc2 * 1.8 ]
+        if [ fw5 < 0.1 ] fw5 = 0.1
+        fh5 : f32 [ sc2 * 1.2 ]
+        if [ fh5 < 0.067 ] fh5 = 0.067
+        # live crop regions at CAMERA resolution, drawn above the
+        # feed preview — the exact areas the tensors are cut from
+        if [ !tb_pv ] tb_pv = array Texture [ ]
+        if [ tb_pv.count < 6 ]
+            for [ c9: i32 0, c9 < 2, c9 += 1 ]
+                tb_pv.push[ Texture [ vk: vk, w: ux, width: 192, height: 128, linear: true ] ]
+                tb_pv.push[ Texture [ vk: vk, w: ux, width: 192, height: 128, linear: true ] ]
+                tb_pv.push[ Texture [ vk: vk, w: ux, width: 192, height: 128, linear: true ] ]
+        b9 : i32 [ (is_top) ? 0 : 3 ]
+        upload_region[ tb_pv[b9],     gray, lx,  ly,  side2 * 1.5, side2, 192, 128 ]
+        upload_region[ tb_pv[b9 + 1], gray, rx,  ry,  side2 * 1.5, side2, 192, 128 ]
+        upload_region[ tb_pv[b9 + 2], gray, mx2, my2, fw5, fh5, 192, 128 ]
+        ps9 : f32 [ prect.w * 0.28 ]
+        py9 : f32 [ prect.y - ps9 - 4.0 ]
+        cv.draw_image[ tb_pv[b9],     rect [ x: prect.x,                   y: py9, w: ps9, h: ps9 ] ]
+        cv.draw_image[ tb_pv[b9 + 1], rect [ x: prect.x + ps9 + 2.0,       y: py9, w: ps9, h: ps9 ] ]
+        cv.draw_image[ tb_pv[b9 + 2], rect [ x: prect.x + 2.0 * ps9 + 4.0, y: py9, w: ps9 * 1.5, h: ps9 ] ]
+        if [ tb_qwin ]
+            # 4th panel: the exact 32x32 refine just consumed
+            cv.draw_image[ tb_qwin, rect [ x: prect.x + 3.5 * ps9 + 8.0, y: py9, w: ps9, h: ps9 ] ]
         hs2 : f32 [ side2 * 0.5 ]
         px  : f32 [ prect.x ]
         py  : f32 [ prect.y ]
@@ -860,6 +1160,7 @@ element hyperspace : trinity
         ins.push[ rc ]
         ins.push[ fcr ]
         ins.push[ aux ]
+        ins.push[ (ins0[4] to tensor) ]
         return ins
 
     public func on_canvas [ cv: Canvas ]
@@ -867,6 +1168,10 @@ element hyperspace : trinity
         if [ tb_at > 0 && mode != 'test' && epoch_millis[] >= tb_at ]
             tb_at = 0
             start_testbed[]
+        if [ ann_at > 0 && mode == '' && epoch_millis[] >= ann_at ]
+            ann_at = 0
+            ann_sub = 0
+            start_annotate[ 'pupils' ]
         if [ !fullscreen ]
             super.on_canvas[ cv ]
             return
@@ -913,6 +1218,69 @@ element hyperspace : trinity
             if [ now5 - ed_cap >= 500 ]
                 ed_cap = now5
                 capture[]
+                agi_put[ string '{frame_i - 1}', string 'edges', string 'true' ]
+            return
+        if [ mode == 'auto' ]
+            if [ top && top.camera ] top.camera.update[]
+            nowA : i64 [ epoch_millis[] ]
+            dtA  : f32 [ f32[ nowA - au_last ] * 0.001 ]
+            au_last = nowA
+            if [ au_phase == 1 ]
+                # 4x/sec continuous capture: the dot is exact truth
+                # mid-glide too (smooth pursuit)
+                if [ nowA - au_cap >= 250 ]
+                    au_cap = nowA
+                    off_x = au_dx - head_x
+                    off_y = au_dy - head_y
+                    capture[]
+                    agi_put[ string '{frame_i - 1}', string 'sequence', string '{au_zero}' ]
+                # smoothstep: gentle pull-away, cruise, gentle arrival
+                uA : f32 [ f32[ nowA - au_t0 ] * 0.001 / au_T ]
+                if [ uA >= 1.0 ]
+                    au_dx = au_tx
+                    au_dy = au_ty
+                    if [ au_dwell == 0 ] au_dwell = nowA
+                    # settled 400ms: capture, then next offset
+                    if [ nowA - au_dwell >= 400 ]
+                        au_seq += 1
+                        au_next_target[]
+                el
+                    sA : f32 [ uA * uA * (3.0 - 2.0 * uA) ]
+                    au_dx = au_sx + (au_tx - au_sx) * sA
+                    au_dy = au_sy + (au_ty - au_sy) * sA
+            # the full spiral path, known in advance, in dim gray
+            ppx : f32 [ 0.0 ]
+            ppy : f32 [ 0.0 ]
+            cv.move_to[ head_x * sw, head_y * sh ]
+            for [ k9: i32 0, k9 < 16, k9 += 1 ]
+                pe9 : au_leg_end[ k9, ppx, ppy ]
+                if [ pe9.x < -0.2 || pe9.x > 0.2 || pe9.y < -0.2 || pe9.y > 0.2 ] break
+                cv.line_to[ (head_x + pe9.x) * sw, (head_y + pe9.y) * sh ]
+                ppx = pe9.x
+                ppy = pe9.y
+            cv.fill_color[ '#0000' ]
+            cv.stroke_color[ '#404040' ]
+            cv.stroke_width[ 1.0 ]
+            cv.paint[]
+            cv.sync_fence[]
+            cxA : f32 [ head_x * sw ]
+            cyA : f32 [ head_y * sh ]
+            cv.move_to[ cxA - 48.0, cyA - 48.0 ]
+            cv.line_to[ cxA + 48.0, cyA - 48.0 ]
+            cv.line_to[ cxA + 48.0, cyA + 48.0 ]
+            cv.line_to[ cxA - 48.0, cyA + 48.0 ]
+            cv.line_to[ cxA - 48.0, cyA - 48.0 ]
+            cv.fill_color[ '#0000' ]
+            cv.stroke_color[ (au_phase == 0) ? '#ff0' : '#fff' ]
+            cv.stroke_width[ 2.0 ]
+            cv.paint[]
+            cv.sync_fence[]
+            dxA : f32 [ au_dx * sw ]
+            dyA : f32 [ au_dy * sh ]
+            cv.arc[ dxA, dyA, 1.5, 0.0, 6.2831853 ]
+            cv.fill_color[ '#fff' ]
+            cv.stroke_width[ 0.0 ]
+            cv.paint[]
             return
         if [ mode == 'movie' ]
             if [ top && top.camera ] top.camera.update[]
@@ -1045,9 +1413,9 @@ element hyperspace : trinity
                 return
             tb_blind = 0
             a1 : (c1[3] to tensor)
-            aux14 : tensor [ tensor_shape: 1x7 ]
-            if [ cameras > 1 ] aux14 = tensor [ tensor_shape: 1x14 ]
-            for [ i: i32 0, i < 7, i += 1 ]
+            aux14 : tensor [ tensor_shape: 1x12 ]
+            if [ cameras > 1 ] aux14 = tensor [ tensor_shape: 1x24 ]
+            for [ i: i32 0, i < 12, i += 1 ]
                 aux14.floats[i] = a1.floats[i]
             ins2 : array tensor [ ]
             ins2.push[ c1[0] ]
@@ -1057,13 +1425,13 @@ element hyperspace : trinity
                 c2 : tb_cam[ cv, bot, false, rect [ x: sw - ps2 - 8.0, y: sh - ps2 - 8.0, w: ps2, h: ps2 ] ]
                 if [ !c2 ] return
                 a2 : (c2[3] to tensor)
-                for [ i: i32 0, i < 7, i += 1 ]
-                    aux14.floats[i + 7] = a2.floats[i]
+                for [ i: i32 0, i < 12, i += 1 ]
+                    aux14.floats[i + 12] = a2.floats[i]
                 ins2.push[ c2[0] ]
                 ins2.push[ c2[1] ]
                 ins2.push[ c2[2] ]
             if [ zero_aux ]
-                zn : i32 [ 7 * cameras ]
+                zn : i32 [ 12 * cameras ]
                 for [ z6: i32 0, z6 < zn, z6 += 1 ]
                     aux14.floats[z6] = 0.0
             for [ sc6: i32 0, sc6 < cameras, sc6 += 1 ]
@@ -1073,15 +1441,13 @@ element hyperspace : trinity
             ins2.push[ aux14 ]
             p4 : tensor [ tensor_shape: 1x4 ]
             if [ ts_look ]
-                ts_look.forward4[ ins2[0], ins2[1], ins2[2], ins2[3], p4, 32 ]
-            el [ lt_look ]
-                lt_look.forward_n[ ins2, p4 ]
+                ts_look.forward4[ ins2[0], ins2[1], ins2[2], ins2[3], p4, 32, 12 * cameras ]
             el
                 smp2 : sample [ inputs: ins2 ]
                 p4 = tb_look.predict_s[ smp2 ]
             # labels are centered (-0.5..0.5); screen space is 0..1
-            px6 : f32 [ p4.floats[2] + 0.5 ]
-            py6 : f32 [ p4.floats[3] + 0.5 ]
+            px6 : f32 [ p4.floats[2] * look_gain + 0.5 ]
+            py6 : f32 [ p4.floats[3] * look_gain + 0.5 ]
             # temporal intent: gaze only ENGAGES during stillness.
             # rolling half-second window; low dispersion = fixation
             fx_hx[fx_i] = px6
@@ -1113,23 +1479,109 @@ element hyperspace : trinity
             el
                 tb_x += (px6 - tb_x) * 0.2
                 tb_y += (py6 - tb_y) * 0.2
-            gx : f32 [ tb_x * sw ]
-            gy : f32 [ tb_y * sh ]
-            cv.arc[ gx, gy, 24.0, 0.0, 6.2831853 ]
+            # observer position painted live (screen-centered meters)
+            a9 : (c1[3] to tensor)
+            sc9 : f32 [ a9.floats[2] ]
+            if [ sc9 > 0.01 ]
+                # camera-frame eye position (x = observer right, y = up)
+                # depth from the CORNER yardstick when available
+                sp9 : f32 [ 0.0 ]
+                dspx : f32 [ a9.floats[7] - a9.floats[9] ]
+                dspy : f32 [ a9.floats[8] - a9.floats[10] ]
+                sp9 = sqrt[ dspx * dspx + dspy * dspy ]
+                oz : f32 [ cam_k / sc9 ]
+                if [ ts_corners && sp9 > 0.01 ]
+                    oz = cam_k * (oc_span_m / 0.063) / sp9
+                ow : f32 [ oz * 0.063 / cam_k ]
+                cx9 : f32 [ 0.0 - (a9.floats[0] - 0.5) * ow ]
+                cy9 : f32 [ 0.0 - (a9.floats[1] - 0.5) * ow ]
+                # rotate by the camera's downward tilt, then translate
+                # from lens to screen center
+                ob_cy = cy9
+                ob_oz = oz
+                ob_sc = sc9
+                tr9 : f32 [ cam_tilt * 0.017453293 ]
+                ct9 : f32 [ cos[ tr9 ] ]
+                st9 : f32 [ sin[ tr9 ] ]
+                ys9 : f32 [ cy9 * ct9 - oz * st9 + cam_dy_m ]
+                zs9 : f32 [ oz * ct9 + cy9 * st9 ]
+                ox4 : f32 [ cx9 ]
+                oy4 : f32 [ ys9 ]
+                od9 : f32 [ sqrt[ ox4 * ox4 + oy4 * oy4 + zs9 * zs9 ] ]
+                ot9 : string 'observer  x {ox4}m  y {oy4}m  z {zs9}m   dist {od9}m'
+                cv.fill_color[ '#ccc' ]
+                cv.draw_text[ ot9,
+                    rect [ x: 16.0, y: 12.0, w: sw - 32.0, h: 28.0 ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                cv.paint[]
+            # head focus = big blue ring, look = yellow ring
+            # head ring gets the same 20% blend the gaze enjoys
+            tb_hx += (p4.floats[0] * look_gain + 0.5 - tb_hx) * 0.2
+            tb_hy += (p4.floats[1] * look_gain + 0.5 - tb_hy) * 0.2
+            hx6 : f32 [ tb_hx * sw ]
+            hy6 : f32 [ tb_hy * sh ]
+            cv.sync_fence[]
+            cv.arc[ hx6, hy6, 64.0, 0.0, 6.2831853 ]
             cv.fill_color[ '#0000' ]
-            if [ fixed ]
-                cv.stroke_color[ '#0f8' ]
-                cv.stroke_width[ 4.0 ]
-            el
-                cv.stroke_color[ '#555' ]
-                cv.stroke_width[ 2.0 ]
+            cv.stroke_color[ '#48f' ]
+            cv.stroke_width[ 4.0 ]
+            cv.paint[]
+            cv.sync_fence[]
+            gx6 : f32 [ tb_x * sw ]
+            gy6 : f32 [ tb_y * sh ]
+            cv.arc[ gx6, gy6, 24.0, 0.0, 6.2831853 ]
+            cv.fill_color[ '#0000' ]
+            cv.stroke_color[ '#fd0' ]
+            cv.stroke_width[ 3.0 ]
             cv.paint[]
             return
         # annotate modes: the current capture, aspect-fit, centered
         if [ !ann_tex ] return
         side : f32 [ (sw < sh) ? sw * 0.8 : sh * 0.8 ]
         ann_rect = rect [ x: (sw - side) * 0.5, y: (sh - side) * 0.5, w: side, h: side ]
+        # pass + frame id always visible while annotating
+        fid0 : ann_files[ ann_i ]
+        cv.sync_fence[]
+        cv.fill_color[ '#9ab' ]
+        cv.draw_text[ '{mode}  {ann_cam}  #{fid0}',
+            rect [ x: 16.0, y: 12.0, w: sw - 32.0, h: 28.0 ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        cv.paint[]
+        if [ mode == 'last' && ann_base ]
+            cv.draw_image[ ann_base, ann_rect ]
+            # mouse movement after a Q suggestion takes control back
+            mvd : f32 [ (cursor_pos.x - ann_qcx) * (cursor_pos.x - ann_qcx) + (cursor_pos.y - ann_qcy) * (cursor_pos.y - ann_qcy) ]
+            if [ ann_qset && mvd > 0.0001 ] ann_qset = false
+            ex9 : f32 [ cursor_pos.x * sw ]
+            ey9 : f32 [ cursor_pos.y * sh ]
+            ox9 : f32 [ ex9 - sw * 0.5 ]
+            oy9 : f32 [ ey9 - sh * 0.5 ]
+            if [ ann_qset ]
+                ox9 = 0.0 - ann_qx * ann_rect.w
+                oy9 = 0.0 - ann_qy * ann_rect.h
+            ov9 : rect [ x: ann_rect.x + ox9, y: ann_rect.y + oy9, w: ann_rect.w, h: ann_rect.h ]
+            cv.set_opacity[ 0.5 ]
+            cv.draw_image[ ann_tex, ov9 ]
+            cv.set_opacity[ 1.0 ]
+            if [ ann_qtex ]
+                cv.draw_image[ ann_qtex, rect [ x: 16.0, y: sh - 216.0, w: 200.0, h: 200.0 ] ]
+            cv.sync_fence[]
+            cv.fill_color[ '#8f8' ]
+            cv.draw_text[ 'line up the image, click to set drift',
+                rect [ x: 0.0, y: 16.0, w: sw, h: 32.0 ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
+            return
         cv.draw_image[ ann_tex, ann_rect ]
+        if [ mode == 'pupils' || mode == 'eyes' ]
+            # tell the user which eye this click plots
+            pr9 : string [ (ann_sub == 0) ? 'plot left' : 'plot right' ]
+            cv.sync_fence[]
+            cv.fill_color[ (ann_sub == 0) ? '#8cf' : '#fc8' ]
+            cv.draw_text[ pr9,
+                rect [ x: 0.0, y: 16.0, w: sw, h: 32.0 ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
         if [ mode == 'scale' && ann_median.x >= -100.0 ]
             mx : f32 [ ann_rect.x + ann_median.x * ann_rect.w ]
             my : f32 [ ann_rect.y + ann_median.y * ann_rect.h ]
@@ -1150,7 +1602,7 @@ element hyperspace : trinity
     public func on_key [ ev: Event ]
         if [ !ev.key.state ] return
         if [ ev.key.unicode == 256 && fullscreen ]
-            if [ mode == 'record' || mode == 'movie' || mode == 'edges' ]
+            if [ mode == 'record' || mode == 'movie' || mode == 'edges' || mode == 'auto' ]
                 mode       = ''
                 fullscreen = false
                 ux.set_fullscreen[ false ]
@@ -1169,6 +1621,93 @@ element hyperspace : trinity
                 rv_next[ true ]
                 ev.stop_propagation[]
                 return
+        if [ ev.key.unicode == 32 && fullscreen && mode == 'auto' ]
+            if [ au_phase == 0 ]
+                # zero-frame: head focused on the circle, offset 0.
+                # its id is the sequence key for the whole group
+                off_x = 0.0
+                off_y = 0.0
+                capture[]
+                au_zero = frame_i - 1
+                agi_put[ string '{au_zero}', string 'zero', string 'true' ]
+                au_phase = 1
+                au_next_target[]
+            el
+                if [ tb_return ]
+                    # spiral done: plot this group's eye centers,
+                    # then ann_exit routes back to the testbed
+                    redo = string '{au_zero}'
+                    ann_sub = 0
+                    start_annotate[ 'pupils' ]
+                    redo = null
+                el
+                    au_new_position[]
+            ev.stop_propagation[]
+            return
+        if [ ev.key.unicode == 32 && fullscreen && (mode == 'pupils' || mode == 'last' || mode == 'eyes') ]
+            # SPACE: skip this frame, write nothing
+            ann_sub = 0
+            ann_advance[]
+            ev.stop_propagation[]
+            return
+        if [ (ev.key.unicode == 81 || ev.key.unicode == 113) && fullscreen && mode == 'last' ]
+            # Q: refine finds the eyes near the mouse, at the zero
+            # frame's pupil-distance scale, and sets this drift
+            if [ !ts_refine ]
+                qR2 : path 'models/refine.ptc'
+                if [ qR2.exists[] ]
+                    ts_refine = ts_model [ uri: qR2 ]
+                    ts_refine.hold[]
+            if [ ts_refine && ann_rect.w > 0.0 ]
+                fid : ann_files[ ann_i ]
+                zp5 : path '{session_dir[]}/{fid}.agi'
+                zs5 : (zp5.load[ typeid[ string ], null ] to string)
+                if [ zs5 ]
+                    ix5 : num [ zs5.index_of[ 'sequence:' ] ]
+                    if [ ix5 >= 0 ]
+                        r6 : zs5.mid[ i32[ ix5 ] + 9, 16 ]
+                        nl5 : num [ r6.index_of[ '\n' ] ]
+                        if [ nl5 > 0 ] r6 = r6.mid[ 0, i32[ nl5 ] ]
+                        z5 : i32 [ i32[ atof[ r6.trim[].chars ] ] ]
+                        pl5 : read_pair[ string '{z5}', 'top_pupil_left' ]
+                        pr5 : read_pair[ string '{z5}', 'top_pupil_right' ]
+                        if [ pl5.x > -900.0 && pr5.x > -900.0 ]
+                            zmx : f32 [ (pl5.x + pr5.x) * 0.5 ]
+                            zmy : f32 [ (pl5.y + pr5.y) * 0.5 ]
+                            dsx : f32 [ pl5.x - pr5.x ]
+                            dsy : f32 [ pl5.y - pr5.y ]
+                            sp5 : f32 [ sqrt[ dsx * dsx + dsy * dsy ] ]
+                            # drift is small: the eyes sit at the zero
+                            # frame's midpoint, so center the crop there
+                            cx5 : f32 [ zmx ]
+                            cy5 : f32 [ zmy ]
+                            rs5 : f32 [ sp5 * 1.25 ]
+                            puts 'Q: frame {fid} zero {z5} left {pl5.x} {pl5.y} right {pr5.x} {pr5.y} crop {cx5} {cy5} size {rs5}'
+                            ip6 : path '{session_dir[]}/{fid}-{ann_cam}.png'
+                            im6 : Image [ uri: ip6 ]
+                            rw6 : crop_tensor[ im6, cx5, cy5, rs5 ]
+                            # the exact 32x32 handed to refine, shown lower-left
+                            if [ !ann_qtex ]
+                                ann_qtex = Texture [ vk: vk, w: ux, width: 32, height: 32, linear: true ]
+                                ann_qtex.hold[]
+                            upload_tensor[ ann_qtex, rw6 ]
+                            sd6 : session_dir[]
+                            preview_tensor[ sd6, string 'qdump', rw6 ]
+                            r7 : tensor [ tensor_shape: 1x6 ]
+                            ts_refine.forward1[ rw6, r7, 32 ]
+                            o6x : f32 [ cx5 - rs5 * 0.5 ]
+                            o6y : f32 [ cy5 - rs5 * 0.5 ]
+                            rmx : f32 [ o6x + (r7.floats[0] + r7.floats[2]) * 0.5 * rs5 ]
+                            rmy : f32 [ o6y + (r7.floats[1] + r7.floats[3]) * 0.5 * rs5 ]
+                            # show the suggestion; click accepts it,
+                            # moving the mouse takes control back
+                            ann_qx = rmx - zmx
+                            ann_qy = rmy - zmy
+                            ann_qcx = cursor_pos.x
+                            ann_qcy = cursor_pos.y
+                            ann_qset = true
+            ev.stop_propagation[]
+            return
         if [ ev.key.unicode == 32 && fullscreen && mode == 'record' ]
             capture[]
             advance[]
@@ -1176,23 +1715,39 @@ element hyperspace : trinity
         if [ ev.key.unicode == 32 && fullscreen && mode == 'test' ]
             tb_dump = true
             ev.stop_propagation[]
+        if [ (ev.key.unicode == 99 || ev.key.unicode == 67) && fullscreen && mode == 'test' ]
+            # C: ONE FOOT calibration. eyes level with screen center
+            # at exactly 0.3048m -> the eye-lens range is known, which
+            # fixes cam_k AND the tilt together.
+            if [ ob_sc > 0.01 ]
+                r0 : f32 [ sqrt[ 0.3048 * 0.3048 + cam_dy_m * cam_dy_m ] ]
+                cam_k = r0 * ob_sc
+                aA : f32 [ ob_cy ]
+                bB : f32 [ r0 ]
+                cC : f32 [ cam_dy_m ]
+                rR : f32 [ sqrt[ aA * aA + bB * bB ] ]
+                if [ rR > 0.0001 ]
+                    ph : f32 [ atan2[ bB, aA ] ]
+                    ac : f32 [ (0.0 - cC) / rR ]
+                    if [ ac > 1.0 ] ac = 1.0
+                    if [ ac < -1.0 ] ac = -1.0
+                    th : f32 [ acos[ ac ] - ph ]
+                    cam_tilt = th * 57.29578
+                puts 'calibrated at 1ft: cam_k = {cam_k}, cam_tilt = {cam_tilt} degrees'
+            ev.stop_propagation[]
 
     func ann_click [ ev: Event ]
         if [ !ann_tex || ann_rect.w <= 0.0 ] return
         # hard debounce: one annotation per half second, no exceptions
         now2 : i64 [ epoch_millis[] ]
-        if [ now2 - ann_last < 500 ] return
+        if [ now2 - ann_last < 250 ] return
         ann_last = now2
         nx : f32 [ (ev.mouse.pos.x - ann_rect.x) / ann_rect.w ]
         ny : f32 [ (ev.mouse.pos.y - ann_rect.y) / ann_rect.h ]
         # clicks OFF the image are valid: eyes out of view extrapolate
         # past the frame (< 0.0 or > 1.0)
         fid : ann_files[ ann_i ]
-        if [ mode == 'left' ]
-            ann_write[ string '{ann_cam}_left', string '{nx} {ny}' ]
-        el [ mode == 'right' ]
-            ann_write[ string '{ann_cam}_right', string '{nx} {ny}' ]
-        el [ mode == 'scale' ]
+        if [ mode == 'scale' ]
             if [ ann_median.x < -100.0 ]
                 puts 'scale: no left/right for {fid}-{ann_cam}, skipping'
                 ann_advance[]
@@ -1201,12 +1756,73 @@ element hyperspace : trinity
             ddy : f32 [ ny - ann_median.y ]
             sc  : f32 [ sqrt[ ddx * ddx + ddy * ddy ] ]
             ann_write[ string '{ann_cam}_scale', string '{sc}' ]
+        el [ mode == 'pupils' || mode == 'eyes' ]
+            # click 1 = left pupil, click 2 = right pupil, advance
+            if [ ann_sub == 0 ]
+                ann_write[ string '{ann_cam}_pupil_left', string '{nx} {ny}' ]
+                ann_sub = 1
+                return
+            ann_write[ string '{ann_cam}_pupil_right', string '{nx} {ny}' ]
+            ann_sub = 0
+        el [ mode == 'last' ]
+            # drift = current - zero: the negated overlay shift that
+            # made the frames line up, in image-normalized units
+            ox9 : f32 [ ev.mouse.pos.x - (ann_rect.x + ann_rect.w * 0.5) ]
+            oy9 : f32 [ ev.mouse.pos.y - (ann_rect.y + ann_rect.h * 0.5) ]
+            dx9 : f32 [ (0.0 - ox9) / ann_rect.w ]
+            dy9 : f32 [ (0.0 - oy9) / ann_rect.h ]
+            if [ ann_qset ]
+                # accept the refine suggestion shown on screen
+                dx9 = ann_qx
+                dy9 = ann_qy
+                ann_qset = false
+            ann_write[ string '{ann_cam}_drift', string '{dx9} {dy9}' ]
+        el
+            # any point mode writes its own key (left, right, left_oc,
+            # right_oc, ...) — never silently swallow a click again
+            ann_write[ string '{ann_cam}_{mode}', string '{nx} {ny}' ]
         ann_advance[]
 
     # nearest-sample a region of an rgba8 Image into a 32x32x1 gray tensor.
     # cx/cy/side are normalized to image width; side <= 0 = whole image
     # square crop (center + side in image-width units) -> 32x32 gray.
     # area-average: each dest pixel averages the source rect it covers
+    # rectangular variant: both sides in image-width units -> 32x32
+    # anisotropic; used for the 3:2 upper-face band
+    func crop_rect [ src: Image, cx: f32, cy: f32, sw2: f32, sh2: f32 ] -> tensor
+        t       : tensor [ tensor_shape: 32x32x1 ]
+        data    : ref u8 [ src.vdata[] ]
+        bpp     : i32 [ (src.format == Pixel.u8) ? 1 : 4 ]
+        img_w   : f32 [ f32[ src.width ] ]
+        swp     : f32 [ sw2 * img_w ]
+        shp     : f32 [ sh2 * img_w ]
+        x0      : f32 [ cx * img_w - swp * 0.5 ]
+        y0      : f32 [ cy * img_w - shp * 0.5 ]
+        stx     : f32 [ swp / 32.0 ]
+        sty     : f32 [ shp / 32.0 ]
+        for [ oy: i32 0, oy < 32, oy += 1 ]
+            ys : i32 [ i32[ y0 + f32[ oy ] * sty ] ]
+            ye : i32 [ i32[ y0 + (f32[ oy ] + 1.0) * sty ] ]
+            if [ ye <= ys ] ye = ys + 1
+            for [ ox: i32 0, ox < 32, ox += 1 ]
+                xs : i32 [ i32[ x0 + f32[ ox ] * stx ] ]
+                xe : i32 [ i32[ x0 + (f32[ ox ] + 1.0) * stx ] ]
+                if [ xe <= xs ] xe = xs + 1
+                acc : f32 [ 0.0 ]
+                cnt : i32 [ 0 ]
+                for [ sy: i32 ys, sy < ye, sy += 1 ]
+                    py : i32 [ sy ]
+                    if [ py < 0 ] py = 0
+                    if [ py >= src.height ] py = src.height - 1
+                    for [ sx: i32 xs, sx < xe, sx += 1 ]
+                        px : i32 [ sx ]
+                        if [ px < 0 ] px = 0
+                        if [ px >= src.width ] px = src.width - 1
+                        acc += f32[ data[ (py * src.width + px) * bpp ] ]
+                        cnt += 1
+                t.floats[ oy * 32 + ox ] = acc / (f32[ cnt ] * 255.0)
+        return t
+
     func crop_tensor [ src: Image, cx: f32, cy: f32, side: f32 ] -> tensor
         t       : tensor [ tensor_shape: 32x32x1 ]
         data    : ref u8 [ src.vdata[] ]
@@ -1528,6 +2144,148 @@ element hyperspace : trinity
             check_op[ m, smp, o ]
 
     # 32x32 trainer input -> png, exactly as fed to the network
+    # walk every group frame, build its inputs with build_inputs,
+    # write crops/{fid}-l|r|f.png + index.txt (fid + 12 aux floats).
+    # the trainer loads these files verbatim — it builds NOTHING.
+    func write_crops []
+        d  : session_dir[]
+        cd : path '{d}/crops'
+        cd.make_dir[]
+        ents : array [ d.ls[ null, false ] ]
+        mx9 : i32 [ -1 ]
+        for [ p9: path ] in ents
+            fn9 : p9.filename[]
+            if [ fn9.index_of[ '.agi' ] < 0 ] continue
+            id9 : i32 [ i32[ atof[ p9.stem[].chars ] ] ]
+            if [ id9 > mx9 ] mx9 = id9
+        index : string ''
+        n9 : i32 [ 0 ]
+        for [ k: i32 0, k <= mx9, k += 1 ]
+            p : path '{d}/{k}.agi'
+            if [ !p.exists[] ] continue
+            s : (p.load[ typeid[ string ], null ] to string)
+            if [ !s ] continue
+            # sequence members use their zero frame's pupils; zero
+            # frames and pupil-clicked edge frames use their own
+            z9 : i32 [ k ]
+            if [ s.index_of[ 'zero: true' ] < 0 ]
+                ix : num [ s.index_of[ 'sequence:' ] ]
+                if [ ix >= 0 ]
+                    r2 : s.mid[ i32[ ix ] + 9, 16 ]
+                    nl : num [ r2.index_of[ '\n' ] ]
+                    if [ nl > 0 ] r2 = r2.mid[ 0, i32[ nl ] ]
+                    z9 = i32[ atof[ r2.trim[].chars ] ]
+            pl : read_pair[ string '{z9}', 'top_pupil_left' ]
+            pr : read_pair[ string '{z9}', 'top_pupil_right' ]
+            if [ pl.x < -900.0 || pr.x < -900.0 ] continue
+            ip : path '{d}/{k}-top.png'
+            if [ !ip.exists[] ] continue
+            im : Image [ uri: ip ]
+            dsx : f32 [ pl.x - pr.x ]
+            dsy : f32 [ pl.y - pr.y ]
+            sc9 : f32 [ sqrt[ dsx * dsx + dsy * dsy ] ]
+            ins9 : build_inputs[ im, pl.x, pl.y, pr.x, pr.y, sc9 ]
+            preview_tensor[ cd, string '{k}-l', (ins9[0] to tensor) ]
+            preview_tensor[ cd, string '{k}-r', (ins9[1] to tensor) ]
+            preview_tensor[ cd, string '{k}-f', (ins9[2] to tensor) ]
+            preview_tensor[ cd, string '{k}-w', (ins9[4] to tensor) ]
+            a9 : (ins9[3] to tensor)
+            ln9 : string '{k}'
+            for [ q: i32 0, q < 12, q += 1 ]
+                ln9 = string '{ln9} {a9.floats[q]}'
+            index = string '{index}{ln9}\n'
+            n9 += 1
+        pix : path '{cd}/index.txt'
+        pix.save[ index, null ]
+        puts 'export_crops: {n9} frames -> {cd}'
+
+    # THE single source of look-net inputs. the testbed AND the
+    # --export_crops trainer feed both come from here — one code
+    # path, so training and runtime cannot drift apart again.
+    func build_inputs [ gray: Image, lx: f32, ly: f32, rx: f32, ry: f32, sc2: f32 ] -> array tensor
+        side2 : f32 [ sc2 / 2.12 ]
+        if [ side2 < 0.05 ] side2 = 0.05
+        # 3:2 eye crops: extra width shows the eye's side context
+        lc  : crop_rect[ gray, lx, ly, side2 * 1.5, side2 ]
+        rc  : crop_rect[ gray, rx, ry, side2 * 1.5, side2 ]
+        mx2 : f32 [ (lx + rx) * 0.5 ]
+        my2 : f32 [ (ly + ry) * 0.5 ]
+        fw5 : f32 [ sc2 * 1.8 ]
+        if [ fw5 < 0.1 ] fw5 = 0.1
+        fh5 : f32 [ sc2 * 1.2 ]
+        if [ fh5 < 0.067 ] fh5 = 0.067
+        fcr : crop_rect[ gray, mx2, my2, fw5, fh5 ]
+        oclx : f32 [ lx + 0.35 * (lx - rx) ]
+        ocly : f32 [ ly + 0.35 * (ly - ry) ]
+        ocrx : f32 [ rx - 0.35 * (lx - rx) ]
+        ocry : f32 [ ry - 0.35 * (ly - ry) ]
+        aux : tensor [ tensor_shape: 1x12 ]
+        aux.floats[0]  = mx2
+        aux.floats[1]  = my2
+        aux.floats[2]  = sc2
+        aux.floats[3]  = lx
+        aux.floats[4]  = ly
+        aux.floats[5]  = rx
+        aux.floats[6]  = ry
+        aux.floats[7]  = oclx
+        aux.floats[8]  = ocly
+        aux.floats[9]  = ocrx
+        aux.floats[10] = ocry
+        aux.floats[11] = oc_span_m
+        # the FULL camera frame rides along as the fifth input
+        wfr : crop_tensor[ gray, 0.0, 0.0, 0.0 ]
+        ins : array tensor [ ]
+        ins.push[ lc ]
+        ins.push[ rc ]
+        ins.push[ fcr ]
+        ins.push[ aux ]
+        ins.push[ wfr ]
+        return ins
+
+    # nearest-resample a camera-space region (center + sides in
+    # image-width units) into a WxH rgba texture at native detail
+    func upload_region [ tex: Texture, src: Image, cx: f32, cy: f32, rw2: f32, rh2: f32, W2: i32, H2: i32 ]
+        d   : ref u8 [ src.vdata[] ]
+        bpp : i32 [ (src.format == Pixel.u8) ? 1 : 4 ]
+        iw  : i32 [ src.width ]
+        ih  : i32 [ src.height ]
+        fw9 : f32 [ f32[ iw ] ]
+        img : Image [ width: W2, height: H2, format: Pixel.rgba8 ]
+        o   : ref u8 [ img.vdata[] ]
+        x0  : f32 [ cx * fw9 - rw2 * fw9 * 0.5 ]
+        y0  : f32 [ cy * fw9 - rh2 * fw9 * 0.5 ]
+        for [ j: i32 0, j < H2, j += 1 ]
+            for [ i: i32 0, i < W2, i += 1 ]
+                sx : i32 [ i32[ x0 + (f32[ i ] + 0.5) * rw2 * fw9 / f32[ W2 ] ] ]
+                sy : i32 [ i32[ y0 + (f32[ j ] + 0.5) * rh2 * fw9 / f32[ H2 ] ] ]
+                if [ sx < 0 ] sx = 0
+                if [ sy < 0 ] sy = 0
+                if [ sx > iw - 1 ] sx = iw - 1
+                if [ sy > ih - 1 ] sy = ih - 1
+                b8 : u8 [ d[ (sy * iw + sx) * bpp ] ]
+                oi : i32 [ (j * W2 + i) * 4 ]
+                o[oi]     = b8
+                o[oi + 1] = b8
+                o[oi + 2] = b8
+                o[oi + 3] = u8[ 255 ]
+        sz5 : i32 [ W2 * H2 * 4 ]
+        tex.upload[ img.vdata[], sz5 ]
+
+    # 32x32 gray tensor -> rgba texture, for on-screen previews
+    func upload_tensor [ tex: Texture, t: tensor ]
+        img : Image [ width: 32, height: 32, format: Pixel.rgba8 ]
+        d : ref u8 [ img.vdata[] ]
+        for [ i: i32 0, i < 1024, i += 1 ]
+            v : f32 [ t.floats[i] * 255.0 ]
+            if [ v < 0.0 ]   v = 0.0
+            if [ v > 255.0 ] v = 255.0
+            b : u8 [ u8[ i32[ v ] ] ]
+            d[i * 4]     = b
+            d[i * 4 + 1] = b
+            d[i * 4 + 2] = b
+            d[i * 4 + 3] = u8[ 255 ]
+        tex.upload[ img.vdata[], 4096 ]
+
     func preview_tensor [ dirp: path, name2: string, t: tensor ]
         img : Image [ width: 32, height: 32, format: Pixel.u8 ]
         d : ref u8 [ img.vdata[] ]
@@ -1539,36 +2297,6 @@ element hyperspace : trinity
         pp : path '{dirp}/{name2}.png'
         img.png[ pp ]
 
-    # like crop_tensor, but out-of-frame samples are black (augmentation)
-    func aug_crop [ src: Image, cx: f32, cy: f32, side: f32 ] -> tensor
-        t       : tensor [ tensor_shape: 32x32x1 ]
-        data    : ref u8 [ src.vdata[] ]
-        bpp     : i32 [ (src.format == Pixel.u8) ? 1 : 4 ]
-        img_w   : f32 [ f32[ src.width ] ]
-        side_px : f32 [ side * img_w ]
-        x0      : f32 [ cx * img_w - side_px * 0.5 ]
-        y0      : f32 [ cy * img_w - side_px * 0.5 ]
-        step    : f32 [ side_px / 32.0 ]
-        for [ oy: i32 0, oy < 32, oy += 1 ]
-            ys : i32 [ i32[ y0 + f32[ oy ] * step ] ]
-            ye : i32 [ i32[ y0 + (f32[ oy ] + 1.0) * step ] ]
-            if [ ye <= ys ] ye = ys + 1
-            for [ ox: i32 0, ox < 32, ox += 1 ]
-                xs : i32 [ i32[ x0 + f32[ ox ] * step ] ]
-                xe : i32 [ i32[ x0 + (f32[ ox ] + 1.0) * step ] ]
-                if [ xe <= xs ] xe = xs + 1
-                acc : f32 [ 0.0 ]
-                cnt : i32 [ 0 ]
-                for [ sy: i32 ys, sy < ye, sy += 1 ]
-                    for [ sx: i32 xs, sx < xe, sx += 1 ]
-                        if [ sy >= 0 && sy < src.height ]
-                            if [ sx >= 0 && sx < src.width ]
-                                acc += f32[ data[ (sy * src.width + sx) * bpp ] ]
-                        cnt += 1
-                t.floats[ oy * 32 + ox ] = acc / (f32[ cnt ] * 255.0)
-        return t
-
-    # look sample inputs side by side, 3 per camera (as fed, 32x32 each)
     func preview_look [ dirp: path, name2: string, smp: sample ]
         nimg : i32 [ 3 * cameras ]
         img : Image [ width: 96, height: 32, format: Pixel.u8 ]
@@ -1813,7 +2541,7 @@ element hyperspace : trinity
                 # never uses augmented data
                 rsE : f32 [ sT * 1.25 ]
                 if [ rsE < 0.15 ] rsE = 0.15
-                rcE : f32 [ myT - rsE * 0.1 ]
+                rcE : f32 [ myT ]
                 oxE : f32 [ mxT - rsE * 0.5 ]
                 oyE : f32 [ rcE - rsE * 0.5 ]
                 rlE : tensor [ tensor_shape: 1x5 ]
@@ -1822,7 +2550,7 @@ element hyperspace : trinity
                 rlE.floats[2] = (lbl.floats[2] - oxE) / rsE
                 rlE.floats[3] = (lbl.floats[3] - oyE) / rsE
                 rlE.floats[4] = sT / rsE
-                refine_eval[ aug_crop[ src, mxT, rcE, rsE ] ] = rlE
+                refine_eval[ crop_tensor[ src, mxT, rcE, rsE ] ] = rlE
                 continue
             target_train[ full2 ] = lbl
             if [ preview ] preview_tensor[ pdir, string 'train_{i}_orig', full2 ]
@@ -2030,6 +2758,21 @@ element hyperspace : trinity
 
     public func on_click [ ev: Event ]
         if [ fullscreen ]
+            if [ mode == 'test' ]
+                # click a screen spot from the testbed: record a
+                # group there (eye center + spiral), then return
+                nx7 : f32 [ ev.mouse.pos.x / f32[ ux.width ] ]
+                ny7 : f32 [ ev.mouse.pos.y / f32[ ux.height ] ]
+                tb_return = true
+                start_auto[]
+                head_x = nx7
+                head_y = ny7
+                au_dx = nx7
+                au_dy = ny7
+                au_tx = nx7
+                au_ty = ny7
+                ev.stop_propagation[]
+                return
             if [ mode != 'record' ] ann_click[ ev ]
             # without this the app-object dispatch re-delivers the click:
             # ann_click ran twice and stamped the NEXT frame with this
@@ -2042,16 +2785,31 @@ element hyperspace : trinity
             start_record[ true ]
         el [ e.id == 'record-looks' ]
             start_record[ false ]
+        el [ e.id == 'record-auto' ]
+            start_auto[]
         el [ e.id == 'plot-left' ]
             start_annotate[ 'left' ]
         el [ e.id == 'plot-right' ]
             start_annotate[ 'right' ]
         el [ e.id == 'plot-scale' ]
             start_annotate[ 'scale' ]
+        el [ e.id == 'oc-left' ]
+            start_annotate[ 'left_oc' ]
+        el [ e.id == 'oc-right' ]
+            start_annotate[ 'right_oc' ]
+        el [ e.id == 'plot-eyes' ]
+            # eye centers only: group zero frames, then edge frames
+            ann_sub = 0
+            start_annotate[ 'pupils' ]
+            if [ mode == '' ] start_annotate[ 'eyes' ]
+        el [ e.id == 'plot-drift' ]
+            start_annotate[ 'last' ]
         el [ e.id == 'edges' ]
             start_edges[]
         el [ e.id == 'review-head' ]
-            start_review[]
+            start_review[ 'head' ]
+        el [ e.id == 'review-look' ]
+            start_review[ 'look' ]
         el [ e.id == 'volume-head' ]
             volume = string 'head'
             start_movie[]
@@ -2070,16 +2828,11 @@ element hyperspace : trinity
         if [ !fullscreen ]
             e['toolbar'] = Toolbar [
                 elements: Elements [
-                    "head-focus":   Button [ label: 'head focus'   ],
-                    "record-looks": Button [ label: 'record looks' ],
+                    "record-auto":  Button [ label: 'record'       ],
                     "edges":        Button [ label: 'edges'        ],
-                    "volume-head":  Button [ label: 'volume head'  ],
-                    "volume-look":  Button [ label: 'volume look'  ],
-                    "volume-off":   Button [ label: 'volume off'   ],
-                    "review-head":  Button [ label: 'review head'  ],
-                    "plot-left":    Button [ label: 'plot left'    ],
-                    "plot-right":   Button [ label: 'plot right'   ],
-                    "plot-scale":   Button [ label: 'plot scale'   ],
+                    "volume-off":   Button [ label: 'noise'        ],
+                    "plot-eyes":    Button [ label: 'eyes'         ],
+                    "plot-drift":   Button [ label: 'drift'        ],
                     "testbed":      Button [ label: 'testbed'      ]
                 ]
             ]

@@ -330,16 +330,18 @@ class GltfBuffer
     func init []
         if [ !uri ]
             return
-        str : string[ uri ]
-        fp : ref FILE [ null ]
-        if [ base ]
-            fp = fopen[ '{base}/{str}', 'rb' ]
-            if [ !fp ]
-                fp = fopen[ '{base}/{uri.filename[]}', 'rb' ]
+        str  : string[ uri ]
+        # resolve the buffer uri through the resource wrapper: cwd/loose
+        # first, then any mounted .res archive cache
+        name : (base) ? '{base}/{str}' : str
+        rp : Res.res_path[ name ]
+        fp : ref FILE [ fopen[ rp.chars, "rb" ] ]
         if [ !fp ]
-            fp = fopen[ (str.starts_with['models/']) ? uri : 'models/{uri}', "rb" ]
+            alt : (str.starts_with[ 'models/' ]) ? str : 'models/{str}'
+            rp2 : Res.res_path[ alt ]
+            fp = fopen[ rp2.chars, "rb" ]
         if [ !fp ]
-            puts 'GltfBuffer: failed to open {uri.chars}'
+            puts 'GltfBuffer: failed to open {name}'
             return
         fseek[ fp, 0, SEEK_END ]
         length: i64 [ ftell[ fp ] ]
@@ -354,6 +356,310 @@ class GltfBuffer
         fclose[ fp ]
         data       = buf
         byteLength = length
+
+# chained keystream for the .res joke format: seed = password x16,
+# hashed into a 256-byte sequence used 22 passes, then rehashed
+class ResKey
+    intern h    : u64
+    intern seq  : ref u8
+    intern bidx : i32
+    intern pass : i32
+
+    func init []
+        seq = new u8 [ 256 ]
+
+    # regenerate the 256-byte sequence from the current hash state
+    func rehash []
+        for [ w: i32 0, w < 32, w += 1 ]
+            h = h ^ (h << 13)
+            h = h ^ (h >> 7)
+            h = h ^ (h << 17)
+            for [ b: i32 0, b < 8, b += 1 ]
+                sh : u64 [ u64[ b ] * 8 ]
+                seq[ w * 8 + b ] = u8[ (h >> sh) & 255 ]
+
+    # seed input is the password repeated 16 times (Spaceballs: 12345)
+    func seed [ pw: string ]
+        s : string [ ]
+        for [ r: i32 0, r < 16, r += 1 ]
+            s = '{s}{pw}'
+        h = 0xcbf29ce484222325
+        for [ i: i32 0, i < s.count, i += 1 ]
+            h = (h ^ u64[ u8[ s.chars[ i ] ] ]) * 0x100000001b3
+        rehash[]
+        bidx = 0
+        pass = 0
+
+    # fast-forward the keystream to global blob position pos (random access);
+    # one sequence spans 22 passes of 256 bytes = 5632 bytes
+    func seek [ pos: u64 ]
+        s : u64 [ pos / 5632 ]
+        for [ k: u64 0, k < s, k += 1 ]
+            rehash[]
+        rem : u64 [ pos - s * 5632 ]
+        pass = i32[ rem / 256 ]
+        bidx = i32[ rem % 256 ]
+
+    # xor n bytes in place, advancing the 22-passes-then-rehash schedule
+    func apply [ buf: ref u8, n: i64 ]
+        for [ j: i64 0, j < n, j += 1 ]
+            buf[ j ] = buf[ j ] ^ seq[ bidx ]
+            bidx = bidx + 1
+            if [ bidx >= 256 ]
+                bidx = 0
+                pass = pass + 1
+                if [ pass >= 22 ]
+                    pass = 0
+                    rehash[]
+
+# fnv-1a 64-bit over a name string
+func res_hname [ name: string ] -> u64
+    h : u64 [ 0xcbf29ce484222325 ]
+    for [ i: i32 0, i < name.count, i += 1 ]
+        h = (h ^ u64[ u8[ name.chars[ i ] ] ]) * 0x100000001b3
+    return h
+
+# cache key from filename + filesize alone (no content read): identical
+# name+size copies once, a resized file re-copies under a new key
+func res_hkey [ name: string, size: u64 ] -> u64
+    return (res_hname[ name ] ^ size) * 0x100000001b3
+
+# .res — one opaque archive: model, .bin and textures packed together.
+# the blob is xor-obscured with ResKey. each entry is content-addressed:
+# its cache filename is a hash of (name, size, contents) so the cache
+# stores no plaintext names, dedupes identical files, and skips anything
+# already extracted. the directory maps name-hash -> content-hash so a
+# loader resolves a name to its cache file (cwd is tried first).
+class Res
+    intern static magic : u32 [ 0x32534552 ]
+
+    intern isrc    : path
+    intern ibase   : path
+    intern icache  : path
+    intern ipw     : string
+    intern iobsc   : bool
+    intern iblob   : u64
+    intern icount  : i32
+    intern inhash  : ref u64
+    intern ichash  : ref u64
+    intern ioffs   : ref u64
+    intern isizes  : ref u64
+
+    # 16-hex-char cache filename from a 64-bit content hash
+    static func hex16 [ v: u64 ] -> string
+        buf : new i8 [ 17 ]
+        snprintf[ buf, 17, "%016lx", v ]
+        return string[ buf ]
+
+    # pack files (relative names under base) into dest .res
+    static func pack [ base: path, names: array string, dest: path, pw: string, obscure: bool ] -> bool
+        n     : i32 [ names.count ]
+        sizes : new u64 [ n ]
+        nhash : new u64 [ n ]
+        chash : new u64 [ n ]
+        chunk : new u8 [ 65536 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            nm : names[ i ]
+            fp : ref FILE [ fopen[ '{base}/{nm}', 'rb' ] ]
+            if [ !fp ]
+                puts 'res: cannot open {base}/{nm}'
+                return false
+            fseek[ fp, 0, SEEK_END ]
+            sz : u64 [ u64[ ftell[ fp ] ] ]
+            fclose[ fp ]
+            sizes[ i ] = sz
+            nhash[ i ] = res_hname[ nm ]
+            chash[ i ] = res_hkey[ nm, sz ]
+        out : ref FILE [ fopen[ dest.chars, 'wb' ] ]
+        if [ !out ]
+            puts 'res: cannot write {dest.chars}'
+            return false
+        m  : u32 [ magic ]
+        v  : u32 [ 2 ]
+        ob : u32 [ (obscure) ? 1 : 0 ]
+        c  : u32 [ u32[ n ] ]
+        fwrite[ ref m,  4, 1, out ]
+        fwrite[ ref v,  4, 1, out ]
+        fwrite[ ref ob, 4, 1, out ]
+        fwrite[ ref c,  4, 1, out ]
+        off : u64 [ 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            nh : u64 [ nhash[ i ] ]
+            ch : u64 [ chash[ i ] ]
+            sz : u64 [ sizes[ i ] ]
+            fwrite[ ref nh,  8, 1, out ]
+            fwrite[ ref ch,  8, 1, out ]
+            fwrite[ ref off, 8, 1, out ]
+            fwrite[ ref sz,  8, 1, out ]
+            off = off + sz
+        key : ResKey [ ]
+        key.seed[ pw ]
+        total : u64 [ 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            fp : ref FILE [ fopen[ '{base}/{names[ i ]}', 'rb' ] ]
+            if [ !fp ] return false
+            remain : u64 [ sizes[ i ] ]
+            while [ remain > 0 ]
+                want : i64 [ (remain > 65536) ? 65536 : i64[ remain ] ]
+                got  : i64 [ fread[ chunk, 1, want, fp ] ]
+                if [ got <= 0 ] break
+                if [ obscure ] key.apply[ chunk, got ]
+                fwrite[ chunk, 1, got, out ]
+                total  = total + u64[ got ]
+                remain = remain - u64[ got ]
+            fclose[ fp ]
+        fclose[ out ]
+        puts 'res: packed {n} files -> {dest.chars} ({total} bytes, obscured={ob})'
+        return true
+
+    # open a .res and read its directory; base_dir is where loose dev files
+    # resolve, cache_dir is where extracted entries land
+    func load [ res_path: path, base_dir: path, cache_dir: path, password: string ] -> bool
+        isrc   = res_path
+        ibase  = base_dir
+        icache = cache_dir
+        ipw    = password
+        fp : ref FILE [ fopen[ res_path.chars, 'rb' ] ]
+        if [ !fp ]
+            puts 'res: cannot open {res_path.chars}'
+            return false
+        m  : u32 [ 0 ]
+        v  : u32 [ 0 ]
+        ob : u32 [ 0 ]
+        c  : u32 [ 0 ]
+        fread[ ref m,  4, 1, fp ]
+        fread[ ref v,  4, 1, fp ]
+        fread[ ref ob, 4, 1, fp ]
+        fread[ ref c,  4, 1, fp ]
+        if [ m != magic ]
+            puts 'res: bad magic in {res_path.chars}'
+            fclose[ fp ]
+            return false
+        iobsc  = ob != 0
+        icount = i32[ c ]
+        inhash = new u64 [ icount ]
+        ichash = new u64 [ icount ]
+        ioffs  = new u64 [ icount ]
+        isizes = new u64 [ icount ]
+        for [ i: i32 0, i < icount, i += 1 ]
+            nh : u64 [ 0 ]
+            ch : u64 [ 0 ]
+            o  : u64 [ 0 ]
+            s  : u64 [ 0 ]
+            fread[ ref nh, 8, 1, fp ]
+            fread[ ref ch, 8, 1, fp ]
+            fread[ ref o,  8, 1, fp ]
+            fread[ ref s,  8, 1, fp ]
+            inhash[ i ] = nh
+            ichash[ i ] = ch
+            ioffs[ i ]  = o
+            isizes[ i ] = s
+        cbytes : u64 [ u64[ icount ] * 32 ]
+        iblob  = 16 + cbytes
+        fclose[ fp ]
+        icache.make_dir[]
+        return true
+
+    # '.ext' for a name, or '' when it has none — the cache filename keeps
+    # the type tag so extension-driven loaders (png) still decode
+    static func dotext [ name: string ] -> string
+        np : path [ name ]
+        e  : np.ext[]
+        if [ e && e.count > 0 ] return '.{e}'
+        return ''
+
+    # cache path for entry i (content-hash filename + original type tag)
+    func cache_path [ i: i32, ext: string ] -> path
+        hx : Res.hex16[ ichash[ i ] ]
+        return path '{icache}/{hx}{ext}'
+
+    # extract entry i into the cache if not already present
+    func ensure [ i: i32, ext: string ] -> path
+        cp : cache_path[ i, ext ]
+        if [ cp.exists[] ] return cp
+        fp : ref FILE [ fopen[ isrc.chars, 'rb' ] ]
+        if [ !fp ] return cp
+        fseek[ fp, i64[ iblob + ioffs[ i ] ], SEEK_SET ]
+        key : ResKey [ ]
+        if [ iobsc ]
+            key.seed[ ipw ]
+            key.seek[ ioffs[ i ] ]
+        out : ref FILE [ fopen[ cp.chars, 'wb' ] ]
+        if [ !out ]
+            fclose[ fp ]
+            return cp
+        chunk : new u8 [ 65536 ]
+        remain : u64 [ isizes[ i ] ]
+        while [ remain > 0 ]
+            want : i64 [ (remain > 65536) ? 65536 : i64[ remain ] ]
+            got  : i64 [ fread[ chunk, 1, want, fp ] ]
+            if [ got <= 0 ] break
+            if [ iobsc ] key.apply[ chunk, got ]
+            fwrite[ chunk, 1, got, out ]
+            remain = remain - u64[ got ]
+        fclose[ out ]
+        fclose[ fp ]
+        return cp
+
+    # extract every entry (skips ones already in the cache). no names here,
+    # so entries land without a type tag — fine, the lazy path adds it
+    func extract_all []
+        for [ i: i32 0, i < icount, i += 1 ]
+            ensure[ i, '' ]
+        puts 'res: extract_all {icount} entries -> {icache.chars}'
+
+    # resolve a name: a loose file in cwd wins, else its cached hash file.
+    # normalize collapses '..' so 'models/../share/x' matches archive key 'share/x'
+    func find [ name: string ] -> path
+        p : path name
+        if [ p.exists[] ] return p
+        nm : p.normalize[]
+        ext : Res.dotext[ name ]
+        nh : u64 [ res_hname[ nm ] ]
+        for [ i: i32 0, i < icount, i += 1 ]
+            if [ inhash[ i ] == nh ] return ensure[ i, ext ]
+        return p
+
+    # archive-only resolve: cache path if this archive holds name, else null
+    func lookup [ name: string ] -> path
+        nm : path [ name ]
+        nm = nm.normalize[]
+        ext : Res.dotext[ name ]
+        nh : u64 [ res_hname[ nm ] ]
+        for [ i: i32 0, i < icount, i += 1 ]
+            if [ inhash[ i ] == nh ] return ensure[ i, ext ]
+        return null
+
+    # --- overlay registry: archives mounted for the fopen wrapper ---
+    intern static mounts : array Res
+
+    # load a .res and register it as an overlay. resolution is lazy: a
+    # loose file in the base dir wins, else the entry is extracted to the
+    # cache on first open (skipped if already there)
+    static func mount [ res_path: path, base_dir: path, cache_dir: path, password: string ] -> Res
+        arc : Res [ ]
+        if [ !arc.load[ res_path, base_dir, cache_dir, password ] ] return null
+        if [ !mounts ] mounts = array Res [ ]
+        mounts += arc
+        return arc
+
+    # resolve a name to a real path: the app's deployed share/<app> module
+    # dir first, then name as-given (cwd), then each overlay's loose base
+    # dir, then its extracted cache file
+    static func res_path [ name: string ] -> path
+        sh : path.path_share_path[]
+        if [ sh ]
+            sp : path '{sh}/{name}'
+            if [ sp.exists[] ] return sp
+        p : path name
+        if [ p.exists[] ] return p
+        if [ mounts ]
+            for [ arc: Res ] in mounts
+                loose : path '{arc.ibase}/{name}'
+                if [ loose.exists[] ] return loose
+                cp : arc.lookup[ name ]
+                if [ cp ] return cp
+        return p
 
 class TextureInfo
     public index:           i64

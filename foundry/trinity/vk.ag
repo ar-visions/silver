@@ -1276,6 +1276,10 @@ class Pipeline
     expect name             : string
     public render_id        : i32
     public default_model    : mat4f
+    # the gltf node this pipeline draws — borrowed (the Model's id owns it and
+    # outlives every pipeline). lets an animated node's world be re-pushed to
+    # the uniform each frame via refresh_model.
+    mutable src_node        : Node
     public shader_reloads   : i32
     public material         : Material
     # the pipeline co-owns the model's samplers map (held, not a weak context):
@@ -1372,6 +1376,12 @@ class Pipeline
 
     public   func rebind_image [ tx: Texture ]
         rebind_texture[ image_slot, tx ]
+
+    # re-push this pipeline's node world to the uniform (for animated rigid
+    # nodes whose bone parent rotates after the pipeline was built)
+    public   func refresh_model [ ]
+        if [ src_node && src_node.world.m[15] != 0.0 ]
+            shader_uniforms.node_model = src_node.world
 
     public   func rebind_atlas [ tx: Texture ]
         rebind_texture[ atlas_slot, tx ]
@@ -1945,11 +1955,21 @@ class Model
     public straight_alpha   : bool
     public cull_none        : bool
     public transparent_s    : shader
+    # non-skinned primitives (no JOINTS_0) use this shader instead of s;
+    # driven by the node's world matrix (ubo.model) rather than a joint palette
+    public rigid_s          : shader
 
     public func rebind_model [ ]
         if [ pipelines ]
             for [ p: Pipeline ] in pipelines
                 p.rebind[]
+
+    # re-push every pipeline's node world to its uniform — call after the gltf
+    # node transforms change (e.g. a bone rotated) so rigid meshes follow
+    public func update_animated [ ]
+        if [ pipelines ]
+            for [ p: Pipeline ] in pipelines
+                p.refresh_model[]
 
     public func finish [ r_target: Render, render_id: i32 ]
         r = r_target
@@ -1991,12 +2011,18 @@ class Model
                         if [ id.materials && id.materials.count > mat_id ]
                             mat: id.materials[ mat_id ]
                             base_a = mat.pbrMetallicRoughness.baseColorFactor.w
-                        is_alpha: (base_a > 0.0 && base_a < 1.0) || s.transparent
+                        # non-skinned prims (no JOINTS_0) go through rigid_s so
+                        # the skinning shader never reads absent joint streams
+                        skinned: bool [ false ]
+                        for [ value: ref i64, a_name: string ] in prim.attributes
+                            if [ a_name == 'JOINTS_0' ] skinned = true
+                        es: shader [ (!skinned && rigid_s) ? rigid_s : s ]
+                        is_alpha: (base_a > 0.0 && base_a < 1.0) || es.transparent
                         if [ !is_alpha ]
-                            model_init_pipeline[ a, n, prim, s, render_id, false ]
+                            model_init_pipeline[ a, n, prim, es, render_id, false ]
                         if [ is_alpha ]
                             ts: shader [ transparent_s ]
-                            if [ !ts ] ts = s
+                            if [ !ts ] ts = es
                             model_init_pipeline[ a, n, prim, ts, render_id, true ]
             if [ pipelines.count == 0 ]
                 model_init_pipeline[ a, null, null, s, render_id, false ]
@@ -3064,6 +3090,10 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
     is_surface_enum: bool [ surface_enum_type == typeid[ Surface ] ]
 
     for [ img: Image, name: string ] in p.samplers
+        # storage buffers ride the same samplers map; their keys are attrib
+        # names, not Surface members — skip them so evalue never faults
+        skip_buf: Buffer [ img inherits Buffer ]
+        if [ skip_buf ] continue
         ia: Au.evalue[ surface_enum_type, name ]
         tx: Texture [ img inherits Texture ]
         re: Render  [ img inherits Render ]

@@ -31,6 +31,9 @@ build
 *.nes
 *.state
 *.z64
+*.v64
+*.raw
+*.retired
 *.npy
 *.seq
 *.pt
@@ -40,3 +43,5 @@ athlete
 /shot*png
 /*.ag
 sessions
+cache
+*.res

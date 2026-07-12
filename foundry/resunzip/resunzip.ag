@@ -1,0 +1,23 @@
+import gltf
+import <stdio.h>
+
+# extract the viewer's actual resource set from human.res straight into
+# foundry/hyperspace/cache (lookup bypasses the loose-file check, so it
+# always writes the content-hash file with its type tag)
+app resunzip
+    func init []
+        base  : path '/src/silver/foundry/hyperspace'
+        src   : path '{base}/models/human.res'
+        cache : path '{base}/cache'
+        arc : Res [ ]
+        if [ !arc.load[ src, base, cache, '12345' ] ] return
+        used : array string [ ]
+        used += 'models/human.gltf'
+        used += 'models/human.bin'
+        used += 'share/textures/head/skin_albedo.1001.png'
+        used += 'share/textures/head/skin_albedo.1002.png'
+        used += 'share/textures/eye/sclera_albedo.png'
+        used += 'share/textures/eye/iris_fibres.png'
+        for [ nm: string ] in used
+            cp : arc.lookup[ nm ]
+            puts 'extracted {nm} -> {cp}'

@@ -1,0 +1,663 @@
+import vec
+import img
+import gltf
+import trinity
+import <stdio.h>
+import <stdlib.h>
+import <math.h>
+
+# basic glTF model viewer: `hyperspace2 --model path/to/model.gltf`
+# drag orbits the camera, wheel zooms, R resets the view.
+
+ModelViewProject ViewerLit
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_normal  : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
+
+    attrib v_normal  : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        v_normal    = mat3(ubo.model) * a_normal;
+        v_uv        = a_uv;
+        gl_Position = ubo.proj * ubo.view * ubo.model * vec4(a_pos, 1.0);
+    }
+
+    # two directional lights + ambient over the material color — enough to read
+    # form on any model without needing a full PBR/environment setup
+    func fragment [] -> GLSL none {
+        vec4  c  = texture(color, v_uv);
+        vec3  n  = normalize(v_normal);
+        float l  = max(dot(n, normalize(vec3( 0.35, 0.75,  0.55))), 0.0) * 0.75
+                 + max(dot(n, normalize(vec3(-0.50, 0.20, -0.60))), 0.0) * 0.25 + 0.22;
+        fragColor = vec4(c.rgb * l, 1.0);
+    }
+
+# skinned variant: exactly the hinge's attributes (pos/normal/uv + joints/weights)
+# plus a joint-matrix palette (SSBO, 4 vec4 per mat4). the vertex is transformed
+# by the weighted blend of its joints' matrices, then the model/view/proj.
+ModelViewProject SkinnedLit
+    mutable ir  : f32         # 1 = near-IR headlamp look, 0 = textured color
+    mutable sss : f32 [ 0.4 ] # subsurface wrap: 0 = hard lambert, ~0.5 = waxy skin
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+
+    # declared in CANONICAL packing order — the engine binds vertex inputs to
+    # packed attributes by position, so a_tangent/a_uv1 must be present (even if
+    # unused) or a_joints/a_weights would bind to TANGENT/TEXCOORD_1 instead
+    attrib a_pos     : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal  : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv      : VertexInput [ type:typeid[ vec2f ] ]
+    attrib a_tangent : VertexInput [ type:typeid[ vec4f ] ]     # TANGENT (unused, for layout)
+    attrib a_uv1     : VertexInput [ type:typeid[ vec2f ] ]     # TEXCOORD_1 (unused, for layout)
+    attrib a_joints  : VertexInput [ type:typeid[ vec4f ] ]     # JOINTS_0 rgba8 UNORM -> *255 = index
+    attrib a_weights : VertexInput [ type:typeid[ vec4f ] ]     # WEIGHTS_0
+
+    attrib joints_pal : StorageBuffer [ type:typeid[ Surface ], id:Surface.environment, count:1, format:typeid[ vec4f ] ]
+
+    attrib v_normal  : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib v_vpos    : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_vnorm   : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+        ir    = 1.0
+
+    func vertex [] -> GLSL none {
+        int j0 = int(a_joints.x * 255.0 + 0.5);
+        int j1 = int(a_joints.y * 255.0 + 0.5);
+        int j2 = int(a_joints.z * 255.0 + 0.5);
+        int j3 = int(a_joints.w * 255.0 + 0.5);
+        mat4 m0 = mat4(joints_pal[j0*4], joints_pal[j0*4+1], joints_pal[j0*4+2], joints_pal[j0*4+3]);
+        mat4 m1 = mat4(joints_pal[j1*4], joints_pal[j1*4+1], joints_pal[j1*4+2], joints_pal[j1*4+3]);
+        mat4 m2 = mat4(joints_pal[j2*4], joints_pal[j2*4+1], joints_pal[j2*4+2], joints_pal[j2*4+3]);
+        mat4 m3 = mat4(joints_pal[j3*4], joints_pal[j3*4+1], joints_pal[j3*4+2], joints_pal[j3*4+3]);
+        mat4 sm = a_weights.x*m0 + a_weights.y*m1 + a_weights.z*m2 + a_weights.w*m3;
+        vec4 sp     = sm * vec4(a_pos, 1.0);
+        vec4 vp     = ubo.view * sp;
+        v_normal    = normalize(mat3(sm) * a_normal);
+        v_vnorm     = mat3(ubo.view) * (mat3(sm) * a_normal);
+        v_vpos      = vp.xyz;
+        v_uv        = a_uv;
+        gl_Position = ubo.proj * vp;
+    }
+
+    # ubo.ir toggles the two looks: near-IR headlamp (light at the camera,
+    # N.V falloff, soft broad sheen, distance falloff) vs textured color
+    func fragment [] -> GLSL none {
+        if (ubo.ir > 0.5) {
+            vec3  N   = normalize(v_vnorm);
+            vec3  V   = normalize(-v_vpos);
+            float ndv = max(dot(N, V), 0.0);
+            // subsurface: NIR diffuses under skin, so wrap light past the
+            // terminator (soft shadows) and add a broad deep-scatter glow
+            float w    = ubo.sss;
+            float ndvw = clamp((ndv + w) / (1.0 + w), 0.0, 1.0);
+            float diff = pow(ndvw, 1.2);
+            float scat = pow(ndvw, 0.5) * w * 0.35;
+            float spec = pow(ndv, 16.0) * 0.25;
+            float d    = length(v_vpos);
+            float fall = clamp(2.0 / (1.0 + 0.04 * d * d), 0.0, 1.0);
+            float g    = (0.60 * (diff + scat) + spec) * fall;
+            fragColor  = vec4(vec3(g), 1.0);
+        } else {
+            vec4  c  = texture(color, v_uv);
+            vec3  n  = normalize(v_normal);
+            float l  = max(dot(n, normalize(vec3( 0.35, 0.75,  0.55))), 0.0) * 0.75
+                     + max(dot(n, normalize(vec3(-0.50, 0.20, -0.60))), 0.0) * 0.25 + 0.22;
+            fragColor = vec4(c.rgb * l, 1.0);
+        }
+    }
+
+# non-skinned primitives (eyeballs, teeth, tongue): rigid transform by the
+# node's world matrix (ubo.model), driven by whichever bone the mesh parents to
+# augmentation params (driven per synthetic sample): pupil aperture radius
+# (dilation) and its fuzz, the outer iris/limbus radius and its fuzz, the
+# retina glow strength, and the iris fibre brightness
+ModelViewProject RigidLit
+    mutable ir          : f32     # 1 = near-IR headlamp look, 0 = textured color
+    mutable pupil_r     : f32 [ 0.15 ]
+    mutable pupil_soft  : f32 [ 0.05 ]
+    mutable iris_r      : f32 [ 0.45 ]
+    mutable iris_soft   : f32 [ 0.04 ]
+    mutable iris_glow   : f32 [ 0.95 ]
+    mutable iris_bright : f32 [ 0.40 ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos     : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal  : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv      : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_normal  : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib v_vpos    : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_vnorm   : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+        ir    = 1.0
+
+    func vertex [] -> GLSL none {
+        vec4 wp     = ubo.model * vec4(a_pos, 1.0);
+        vec4 vp     = ubo.view * wp;
+        v_normal    = normalize(mat3(ubo.model) * a_normal);
+        v_vnorm     = mat3(ubo.view) * (mat3(ubo.model) * a_normal);
+        v_vpos      = vp.xyz;
+        v_uv        = a_uv;
+        gl_Position = ubo.proj * vp;
+    }
+
+    # ubo.ir toggles: near-IR headlamp (the wet eyeball keeps a sharp glint)
+    # vs textured color
+    func fragment [] -> GLSL none {
+        if (ubo.ir > 0.5) {
+            vec3  V    = normalize(-v_vpos);
+            float d    = length(v_vpos);
+            float fall = clamp(2.0 / (1.0 + 0.04 * d * d), 0.0, 1.0);
+            // iris fibres live in the texture ALPHA (0 at the pupil, ~0.3..0.7
+            // across the ring); unbound pupil sampler is transparent-black
+            vec4  t    = texture(color, v_uv);
+            float m    = t.a;
+            // aperture axis is the eye's LOCAL +z pushed to view space, so the
+            // retro return follows gaze, not the doming surface normals. broad
+            // in the axis dot -> stays bright ~60 deg off-axis
+            vec3  fwd  = normalize(mat3(ubo.view) * (mat3(ubo.model) * vec3(0.0, 0.0, 1.0)));
+            float retro = pow(max(dot(fwd, V), 0.0), 0.45);
+            // parameterized shape: pupil opening (inner) and limbus (outer)
+            // are soft radial edges; the fibre detail comes from the texture
+            float r    = length(v_uv - vec2(0.5));
+            float pin  = smoothstep(ubo.pupil_r - ubo.pupil_soft, ubo.pupil_r + ubo.pupil_soft, r);
+            float pout = 1.0 - smoothstep(ubo.iris_r - ubo.iris_soft, ubo.iris_r + ubo.iris_soft, r);
+            float glow = (0.15 + ubo.iris_glow)      * retro;
+            float iris = (0.14 + ubo.iris_bright * m) * retro;
+            float g    = mix(glow, iris, pin) * pout * fall;
+            fragColor  = vec4(vec3(g), 1.0);
+        } else {
+            vec4  c  = texture(color, v_uv);
+            vec3  n  = normalize(v_normal);
+            float l  = max(dot(n, normalize(vec3( 0.35, 0.75,  0.55))), 0.0) * 0.75
+                     + max(dot(n, normalize(vec3(-0.50, 0.20, -0.60))), 0.0) * 0.25 + 0.22;
+            fragColor = vec4(c.rgb * l, 1.0);
+        }
+    }
+
+# the wet cornea layer, drawn transparent over the opaque iris: near-clear on the
+# forward bulge so the iris reads through, opaque pale sclera at grazing angles,
+# and one sharp on-axis Purkinje glint toward the camera
+# augmentation params (driven per synthetic sample): sclera brightness facing
+# the camera vs at the periphery, its falloff shape, and the glint strength
+ModelViewProject CorneaIR
+    mutable ir        : f32
+    mutable glint     : f32 [ 0.9 ]
+    mutable sclera_hi : f32 [ 0.95 ]
+    mutable sclera_lo : f32 [ 0.20 ]
+    mutable sclera_k  : f32 [ 1.5 ]
+    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos     : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal  : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv      : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_normal  : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib v_vpos    : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_vnorm   : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+        ir    = 1.0
+
+    func vertex [] -> GLSL none {
+        vec4 wp     = ubo.model * vec4(a_pos, 1.0);
+        vec4 vp     = ubo.view * wp;
+        v_normal    = normalize(mat3(ubo.model) * a_normal);
+        v_vnorm     = mat3(ubo.view) * (mat3(ubo.model) * a_normal);
+        v_vpos      = vp.xyz;
+        v_uv        = a_uv;
+        gl_Position = ubo.proj * vp;
+    }
+
+    func fragment [] -> GLSL none {
+        vec3  N    = normalize(v_vnorm);
+        vec3  V    = normalize(-v_vpos);
+        float ndv  = max(dot(N, V), 0.0);
+        float spec = pow(ndv, 120.0) * ubo.glint;
+        float face = pow(ndv, 2.0);
+        float sc   = texture(color, v_uv).r;
+        float d    = length(v_vpos);
+        float fall = clamp(2.0 / (1.0 + 0.04 * d * d), 0.0, 1.0);
+        // sclera opaque and pale; cornea front near-clear so the iris shows;
+        // the glint forces alpha up so the blend keeps the bright dot. the
+        // outer sclera (grazing, low ndv) darkens in IR toward sclera_lo
+        float shade  = mix(ubo.sclera_lo, ubo.sclera_hi, pow(ndv, ubo.sclera_k));
+        float sclera = sc * shade * fall;
+        float base_a = mix(1.0, 0.10, face);
+        float alpha  = clamp(base_a + spec, 0.0, 1.0);
+        float g      = sclera + spec;
+        fragColor    = vec4(vec3(g), alpha);
+    }
+
+element ModelView
+    # required at construction — the caller must provide it (null is a valid
+    # explicit provision; the draw guard then reports the missing file)
+    expect  model_path : path
+    mutable vshader    : SkinnedLit
+    mutable rshader    : RigidLit
+    mutable cshader    : CorneaIR
+    mutable vmodel     : Model
+    mutable vrender    : Render
+    mutable gmodel     : GltfModel
+    mutable joint_buf  : Buffer
+    mutable ibm        : array mat4f          # inverse bind matrices, one per joint
+    mutable skin_idx   : i32 [ -1 ]
+    mutable hinge_node : i32 [ -1 ]           # the node we rotate (the joint)
+    mutable hinge_ang  : f32                  # joint angle, radians
+    # eye rig (from the .blend): DAMPED_TRACK aims Eyeball +Y at the target;
+    # Eyelids Drag copies 0.8 of eyeball pitch (X) + 0.2 of yaw (Z); Caruncle
+    # copies 0.8 X + 0.5 Z. we drive those bones directly at those fractions.
+    mutable ebl        : i32 [ -1 ]           # Eyeball.L node index
+    mutable ebr        : i32 [ -1 ]           # Eyeball.R
+    mutable dgl        : i32 [ -1 ]           # Eyelids Drag.L
+    mutable dgr        : i32 [ -1 ]           # Eyelids Drag.R
+    mutable crl        : i32 [ -1 ]           # Caruncle.L
+    mutable crr        : i32 [ -1 ]           # Caruncle.R
+    mutable ebl_rest   : quatf
+    mutable ebr_rest   : quatf
+    mutable dgl_rest   : quatf
+    mutable dgr_rest   : quatf
+    mutable crl_rest   : quatf
+    mutable crr_rest   : quatf
+    mutable ir_on      : bool [ true ]        # near-IR look vs textured color
+    mutable gaze_x     : f32                  # eye yaw (left/right), radians
+    mutable gaze_y     : f32                  # eye pitch (up/down), radians
+    mutable yaw        : f32
+    mutable pitch      : f32 [ 0.05 ]
+    mutable dist       : f32 [ 3.5 ]
+    mutable look_x     : f32
+    mutable look_y     : f32 [ 1.0 ]
+    mutable look_z     : f32
+    mutable dragging   : bool
+    mutable lastx      : f32
+    mutable lasty      : f32
+    mutable frame_n    : i32
+
+    func init []
+        animated  = true
+        focusable = true
+
+    public func on_press [ ev: Event ]
+        dragging = true
+        lastx = ev.mouse.pos.x
+        lasty = ev.mouse.pos.y
+        set_capture[]
+
+    public func on_release [ ev: Event ]
+        dragging = false
+        release_capture[]
+
+    public func on_move [ ev: Event ]
+        if [ !dragging ] return
+        dx : f32 [ ev.mouse.pos.x - lastx ]
+        dy : f32 [ ev.mouse.pos.y - lasty ]
+        lastx = ev.mouse.pos.x
+        lasty = ev.mouse.pos.y
+        if [ ev.key.shift ]
+            # shift-drag PANS: translate the look target along the camera's
+            # right and screen-up axes, scaled so the content tracks the cursor
+            sc : f32 [ dist * 0.0016 ]
+            syw : f32 [ sin[ yaw ] ]
+            cyw : f32 [ cos[ yaw ] ]
+            spt : f32 [ sin[ pitch ] ]
+            cpt : f32 [ cos[ pitch ] ]
+            look_x += (cyw * dx + syw * spt * dy) * sc
+            look_y += cpt * dy * sc
+            look_z += ((0.0 - syw) * dx + cyw * spt * dy) * sc
+        el
+            yaw   += dx * 0.01
+            pitch += dy * 0.01
+            if [ pitch >  1.5 ] pitch =  1.5
+            if [ pitch < -1.5 ] pitch = -1.5
+
+    public func on_wheel [ ev: Event ]
+        dist *= 1.0 - f32[ ev.mouse.wheel_delta.y ] * 0.1
+        if [ dist < 0.2 ]  dist = 0.2
+        if [ dist > 50.0 ] dist = 50.0
+
+    public func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        if [ ev.key.unicode == 82 ]        # R: reset view
+            yaw   = 0.0
+            pitch = 0.05
+        if [ ev.key.unicode == 81 ] hinge_ang -= 0.1   # Q: rotate joint -
+        if [ ev.key.unicode == 69 ] hinge_ang += 0.1   # E: rotate joint +
+        if [ ev.key.unicode == 73 ]                    # I: toggle IR / color
+            ir_on = !ir_on
+            irf : f32 [ (ir_on) ? 1.0 : 0.0 ]
+            if [ vshader ] vshader.ir = irf
+            if [ rshader ] rshader.ir = irf
+            if [ cshader ] cshader.ir = irf
+        if [ hinge_ang >  3.0 ] hinge_ang =  3.0
+        if [ hinge_ang < -3.0 ] hinge_ang = -3.0
+        # arrow keys aim the eyes (move the look target left/right/up/down)
+        if [ ev.key.unicode == 263 ] gaze_x -= 0.05     # left
+        if [ ev.key.unicode == 262 ] gaze_x += 0.05     # right
+        if [ ev.key.unicode == 265 ] gaze_y -= 0.05     # up
+        if [ ev.key.unicode == 264 ] gaze_y += 0.05     # down
+        if [ gaze_x >  0.6 ] gaze_x =  0.6
+        if [ gaze_x < -0.6 ] gaze_x = -0.6
+        if [ gaze_y >  0.5 ] gaze_y =  0.5
+        if [ gaze_y < -0.5 ] gaze_y = -0.5
+
+    # read the skin: inverse-bind matrices + which joint node is the hinge, and
+    # allocate the joint-matrix palette storage buffer (one mat4 per joint)
+    func setup_skin []
+        if [ !gmodel.skins || gmodel.skins.count == 0 ] return
+        skin_idx = 0
+        sk : gmodel.skins[ 0 ]
+        nj : i32 [ i32[ sk.joints.count ] ]
+        iba : gmodel.accessors[ sk.inverseBindMatrices ]
+        ibv : gmodel.bufferViews[ i32[ iba.bufferView ] ]
+        ibb : gmodel.buffers[ i32[ ibv.buffer ] ]
+        base : ref i8 [ ibb.data ]
+        src  : ref f32 [ ((ref base[ ibv.byteOffset + iba.byteOffset ]) to ref f32) ]
+        ibm = array mat4f [ ]
+        for [ j: i32 0, j < nj, j += 1 ]
+            mm : mat4f [ mat4f.identity[] ]
+            for [ k: i32 0, k < 16, k += 1 ]
+                mm.m[ k ] = src[ j * 16 + k ]
+            ibm.push[ mm ]
+        for [ j: i32 0, j < nj, j += 1 ]
+            jn : gmodel.nodes[ sk.joints[ j ] ]
+            if [ jn.name && jn.name == 'Hinge' ] hinge_node = i32[ sk.joints[ j ] ]
+        # locate the eye bones and remember their rest local rotation so gaze
+        # is applied as a delta on top (node.rotation = gaze x rest)
+        # find the eyeball aim bones and the lid-drag / caruncle follow bones
+        ni : i32 [ 0 ]
+        for [ nd: Node ] in gmodel.nodes
+            if [ nd.name && nd.name == 'Eyeball.L' ]
+                ebl = ni
+                ebl_rest = nd.rotation
+            if [ nd.name && nd.name == 'Eyeball.R' ]
+                ebr = ni
+                ebr_rest = nd.rotation
+            if [ nd.name && nd.name == 'Eyelids Drag.L' ]
+                dgl = ni
+                dgl_rest = nd.rotation
+            if [ nd.name && nd.name == 'Eyelids Drag.R' ]
+                dgr = ni
+                dgr_rest = nd.rotation
+            if [ nd.name && nd.name == 'Caruncle.L' ]
+                crl = ni
+                crl_rest = nd.rotation
+            if [ nd.name && nd.name == 'Caruncle.R' ]
+                crr = ni
+                crr_rest = nd.rotation
+            ni += 1
+        puts 'hyperspace2: ebl={ebl} ebr={ebr} dgl={dgl} dgr={dgr} crl={crl} crr={crr}'
+        joint_buf = Buffer [ vk: vshader.vk, size: nj * 64,
+            u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        joint_buf.hold[]
+        puts 'hyperspace2: skin joints={nj} hinge_node={hinge_node}'
+
+    # hamilton product r = a x b (quaternion compose)
+    func qmul [ qa: quatf, qb: quatf ] -> quatf
+        r : quatf
+        r.w = qa.w * qb.w - qa.x * qb.x - qa.y * qb.y - qa.z * qb.z
+        r.x = qa.w * qb.x + qa.x * qb.w + qa.y * qb.z - qa.z * qb.y
+        r.y = qa.w * qb.y - qa.x * qb.z + qa.y * qb.w + qa.z * qb.x
+        r.z = qa.w * qb.z + qa.x * qb.y - qa.y * qb.x + qa.z * qb.w
+        return r
+
+    # delta rotation from pitch about local X and yaw about local Z (the eyeball
+    # local frame has +Y forward, so pitch=X and yaw=Z, per the DAMPED_TRACK)
+    func delta_q [ ax: f32, az: f32 ] -> quatf
+        qx : quatf [ x: sin[ ax * 0.5 ], y: 0.0, z: 0.0, w: cos[ ax * 0.5 ] ]
+        qz : quatf [ x: 0.0, y: 0.0, z: sin[ az * 0.5 ], w: cos[ az * 0.5 ] ]
+        return qmul[ qx, qz ]
+
+    func set_bone [ idx: i32, rest: quatf, d: quatf ]
+        if [ idx < 0 ] return
+        nb : gmodel.nodes[ idx ]
+        nb.rotation = qmul[ d, rest ]
+
+    # aim eyeballs by gaze; drive lids by the rig's copy-rotation fractions
+    # (Eyelids Drag: 0.8 pitch + 0.2 yaw, Caruncle: 0.8 pitch + 0.5 yaw)
+    func aim_eyes []
+        if [ ebl < 0 && ebr < 0 ] return
+        eb : quatf [ delta_q[ gaze_y, gaze_x ] ]
+        set_bone[ ebl, ebl_rest, eb ]
+        set_bone[ ebr, ebr_rest, eb ]
+        dg : quatf [ delta_q[ gaze_y * 0.8, gaze_x * 0.2 ] ]
+        set_bone[ dgl, dgl_rest, dg ]
+        set_bone[ dgr, dgr_rest, dg ]
+        cr : quatf [ delta_q[ gaze_y * 0.8, gaze_x * 0.5 ] ]
+        set_bone[ crl, crl_rest, cr ]
+        set_bone[ crr, crr_rest, cr ]
+
+    # pose the rig for this frame (hinge + eyes), recompose worlds, and write the
+    # skin palette; the caller then pushes rigid node worlds via update_animated
+    func update_palette []
+        if [ skin_idx < 0 || !joint_buf ] return
+        sk : gmodel.skins[ skin_idx ]
+        nj : i32 [ i32[ sk.joints.count ] ]
+        if [ hinge_node >= 0 ]
+            hn : gmodel.nodes[ hinge_node ]
+            s2 : f32 [ sin[ hinge_ang * 0.5 ] ]
+            hn.rotation = quatf [ x: s2, y: 0.0, z: 0.0, w: cos[ hinge_ang * 0.5 ] ]
+        aim_eyes[]
+        gmodel.compute_worlds[]
+        dst : ref f32 [ ((joint_buf.data) to ref f32) ]
+        for [ j: i32 0, j < nj, j += 1 ]
+            jn : gmodel.nodes[ sk.joints[ j ] ]
+            jm : mat4f [ jn.world.mul[ ibm[ j ] ] ]
+            for [ k: i32 0, k < 16, k += 1 ]
+                dst[ j * 16 + k ] = jm.m[ k ]
+
+    # point a named material's baseColorTexture at an albedo map. uri is
+    # relative to the model dir (models/), so textures one level up under
+    # share/textures use '../'. resolves through Res.res_path at load time
+    func set_albedo [ matname: string, uri: string ]
+        if [ !gmodel || !gmodel.materials ] return
+        if [ !gmodel.images ]   gmodel.images   = array GltfImage [ ]
+        if [ !gmodel.textures ] gmodel.textures = array GltfTexture [ ]
+        img : GltfImage [ uri: path uri ]
+        gmodel.images += img
+        iidx : i64 [ gmodel.images.count - 1 ]
+        tx : GltfTexture [ source: iidx ]
+        gmodel.textures += tx
+        tidx : i64 [ gmodel.textures.count - 1 ]
+        for [ m: Material ] in gmodel.materials
+            if [ m.name == matname ]
+                if [ !m.pbrMetallicRoughness ]
+                    m.pbrMetallicRoughness = PbrMetallicRoughness [ ]
+                m.pbrMetallicRoughness.baseColorTexture = TextureInfo [ index: tidx ]
+
+    # give a material a base-color alpha in (0,1) so the pipeline routes it to
+    # the transparent shader (drawn after opaque, depth-test no-write)
+    func mark_transparent [ matname: string, av: f32 ]
+        if [ !gmodel || !gmodel.materials ] return
+        for [ m: Material ] in gmodel.materials
+            if [ m.name == matname ]
+                if [ !m.pbrMetallicRoughness ]
+                    m.pbrMetallicRoughness = PbrMetallicRoughness [ ]
+                m.pbrMetallicRoughness.baseColorFactor = vec4f [ 1.0, 1.0, 1.0, av ]
+
+    # wire the purchased skin/eye albedo maps onto the model's materials
+    func bind_albedos []
+        set_albedo[ 'Head',    '../share/textures/head/skin_albedo.1001.png' ]
+        set_albedo[ 'Body',    '../share/textures/head/skin_albedo.1002.png' ]
+        set_albedo[ 'Eyeball', '../share/textures/eye/sclera_albedo.png' ]
+        set_albedo[ 'Iris',    '../share/textures/eye/iris_fibres.png' ]
+        # the eyeball is the translucent cornea layer over the iris
+        mark_transparent[ 'Eyeball', 0.5 ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        ux.will_animate = true
+        if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
+        cv : Canvas [ w.screen ]
+        if [ !vrender ]
+            expect model_path, 'no model path given'
+            vshader   = SkinnedLit [ vk: cv.vk, name: 'skinned' ]
+            rshader   = RigidLit   [ vk: cv.vk, name: 'rigid' ]
+            cshader   = CorneaIR   [ vk: cv.vk, name: 'cornea' ]
+            # load only the body and the eyes — skip teeth/tongue/etc.
+            vshader.groups = array string [ 'Body', 'Eye L', 'Eye R', 'Iris L', 'Iris R' ]
+            # mount the .res sidecar if present, then resolve the model and
+            # its buffer uris through the wrapper: loose files win, else the
+            # archive cache. base = the asset root, one dir above the model
+            root    : path model_path.parent_dir[].parent_dir[]
+            resf    : model_path.change_ext[ "res" ]
+            reldir  : model_path.parent_dir[].filename[]
+            relname : '{reldir}/{model_path.filename[]}'
+            gpath   : model_path
+            if [ resf.exists[] ]
+                Res.mount[ resf, root, path '{root}/cache', '12345' ]
+                gpath = Res.res_path[ relname ]
+                GltfBuffer.set_base[ path reldir ]
+            el
+                GltfBuffer.set_base[ model_path.parent_dir[] ]
+            expect gpath && gpath.exists[], 'model does not exist: {model_path}'
+            # member sets outside init do NOT retain: without the hold the
+            # loaded model drops before Render init and Model.finish silently
+            # falls back to the default quad
+            gm : GltfModel [ gpath.load[ typeid[ GltfModel ], null ] ]
+            gm.hold[]
+            gmodel = gm
+            gm.compute_worlds[]
+            # bind the skin/eye albedo maps onto the named materials before
+            # the pipelines build (mat_tex reads baseColorTexture)
+            bind_albedos[]
+            # read the skin's inverse-bind matrices, find the joint node, build
+            # the joint-matrix palette storage buffer
+            setup_skin[]
+            update_palette[]
+            sm : map Au[string] [ ]
+            if [ joint_buf ] sm[ 'joints_pal' ] = joint_buf
+            vmodel    = Model [ vk: cv.vk, w: w, s: vshader, rigid_s: rshader, transparent_s: cshader, samplers: sm ]
+            vmodel.id = gm
+            # auto-frame: union of POSITION bounds in WORLD space — each mesh
+            # node's composed scene-graph transform applied to its box corners
+            mnx : f32 [  1e9 ]
+            mny : f32 [  1e9 ]
+            mnz : f32 [  1e9 ]
+            mxx : f32 [ -1e9 ]
+            mxy : f32 [ -1e9 ]
+            mxz : f32 [ -1e9 ]
+            for [ nd: Node ] in gm.nodes
+                if [ !nd.AF_query_name[ 'mesh' ] ] continue
+                me : gm.meshes[ nd.mesh ]
+                if [ !me ] continue
+                wmat : mat4f [ nd.world ]
+                for [ pr: Primitive ] in me.primitives
+                    for [ av: ref i64, an: string ] in pr.attributes
+                        if [ an == 'POSITION' ]
+                            ac : gm.accessors[ av[0] ]
+                            for [ cn: i32 0, cn < 8, cn += 1 ]
+                                cxv : f32 [ ((cn & 1) != 0) ? ac.max.x : ac.min.x ]
+                                cyv : f32 [ ((cn & 2) != 0) ? ac.max.y : ac.min.y ]
+                                czv : f32 [ ((cn & 4) != 0) ? ac.max.z : ac.min.z ]
+                                # column-major transform, scalar math (a C
+                                # vec4f-by-value return crosses the aether/clang
+                                # struct-return ABI wrong — see mul_v4 note)
+                                wcx : f32 [ wmat.m[0] * cxv + wmat.m[4] * cyv + wmat.m[8]  * czv + wmat.m[12] ]
+                                wcy : f32 [ wmat.m[1] * cxv + wmat.m[5] * cyv + wmat.m[9]  * czv + wmat.m[13] ]
+                                wcz : f32 [ wmat.m[2] * cxv + wmat.m[6] * cyv + wmat.m[10] * czv + wmat.m[14] ]
+                                if [ wcx < mnx ] mnx = wcx
+                                if [ wcy < mny ] mny = wcy
+                                if [ wcz < mnz ] mnz = wcz
+                                if [ wcx > mxx ] mxx = wcx
+                                if [ wcy > mxy ] mxy = wcy
+                                if [ wcz > mxz ] mxz = wcz
+            if [ mxx > mnx ]
+                sx : f32 [ mxx - mnx ]
+                sy : f32 [ mxy - mny ]
+                sz : f32 [ mxz - mnz ]
+                r  : f32 [ sx ]
+                if [ sy > r ] r = sy
+                if [ sz > r ] r = sz
+                look_x = (mnx + mxx) * 0.5
+                look_y = mny + (mxy - mny) * 0.93
+                look_z = (mnz + mxz) * 0.5
+                dist   = (mxy - mny) * 0.20
+                if [ dist < 0.2 ] dist = 0.2
+                puts 'hyperspace2: model bounds {sx}x{sy}x{sz} center=({look_x},{look_y},{look_z}) -> dist={dist}'
+            vrender   = Render [ vk: cv.vk, w: w, wscale: 1.0, use_depth: true, clear_color: vec4f [ 0.015, 0.015, 0.015, 1.0 ], models: array Model [ vmodel ] ]
+            puts 'hyperspace2: bounds={bounds.w}x{bounds.h} window={w.width}x{w.height} scale={w.scale}'
+        # orbit camera: spherical eye around the look point (matches the Avatar
+        # camera conventions — up is -Y, fov is horizontal)
+        tgt : vec3f [ look_x, look_y, look_z ]
+        eye : vec3f [
+            tgt.x + dist * cos[ pitch ] * sin[ yaw ],
+            tgt.y + dist * sin[ pitch ],
+            tgt.z + dist * cos[ pitch ] * cos[ yaw ] ]
+        up  : vec3f [ 0.0f, -1.0f, 0.0f ]
+        asp : f32 [ bounds.w / bounds.h ]
+        fy  : f32 [ 2.0f * atan[ tan[ radians[ 40.0f ] * 0.5f ] / asp ] ]
+        vshader.model = mat4f.identity[]
+        vshader.view  = mat4f.look_at[ eye, tgt, up ]
+        vshader.proj  = mat4f.perspective[ fy, asp, 0.05f, 200.0f ]
+        # rigid meshes (eyeballs) need the same camera; their model matrix is the
+        # per-node world (ubo.model = rshader.model x node_model), so keep it identity
+        if [ rshader ]
+            rshader.model = mat4f.identity[]
+            rshader.view  = vshader.view
+            rshader.proj  = vshader.proj
+        if [ cshader ]
+            cshader.model = mat4f.identity[]
+            cshader.view  = vshader.view
+            cshader.proj  = vshader.proj
+        update_palette[]
+        # rigid meshes (eyeballs) follow their bone: re-push node worlds
+        if [ vmodel ] vmodel.update_animated[]
+        vrender.update[]
+        vrender.draw[]
+        vrender.flush_submit[]
+        vrender.sync_fence[]
+        # HS2_DUMP=1: write the render target to /tmp/hyperspace2_target.png once
+        # (~frame 60) — discriminates render corruption from present corruption
+        frame_n += 1
+        if [ frame_n == 60 && getenv[ 'HS2_DUMP' ] ]
+            tex : Texture vrender.color
+            dsz : i32 [ tex.width * tex.height * 4 ]
+            db : Buffer [ vk: tex.vk, size: dsz,
+                u_dst: true, m_host_visible: true, m_host_coherent: true ]
+            db.transfer[ tex ]
+            dshot : Image [ width: tex.width, height: tex.height, format: Pixel.rgba8 ]
+            memcpy[ dshot.vdata[], db.mmap[], dsz ]
+            db.unmap[]
+            dshot.png[ path '/tmp/hyperspace2_target.png' ]
+            puts 'hyperspace2: dumped {tex.width}x{tex.height} target'
+        cv.draw_image[ vrender.color, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+
+element hyperspace2 : trinity
+    public model      : path
+    public width      : i32    [ 1280 ]
+    public height     : i32    [ 960 ]
+    public title      : string [ 'hyperspace2' ]
+    # solid-color background: the swapchain blit presents the LAST render's
+    # color — the background chain's r_view (targeting the screen canvas) is
+    # that render, so an app without one has nothing to present
+    public background : string [ 'Background' ]
+
+    public func render [] -> Elements
+        e : Elements [ ]
+        e['view'] = ModelView [ model_path: model ]
+        return e
