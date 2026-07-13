@@ -13,6 +13,8 @@ build
 .chatgpt
 .claude
 .gemini
+uface.*
+foundry/hyperspace2/share/textures
 *.ares
 *.ours
 *.rom
