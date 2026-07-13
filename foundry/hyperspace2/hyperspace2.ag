@@ -227,6 +227,10 @@ ModelViewProject CorneaIR
     mutable sclera_vein : f32 [ 0.15 ]
     mutable pupil_r     : f32 [ 0.40 ]
     mutable pupil_soft  : f32 [ 0.08 ]
+    # dilation: pupil_r is the rendered pupil edge; the iris band (pupil_tex..1
+    # in the texture) is remapped into (pupil_r..1) with a 2-part warp
+    mutable pupil_tex   : f32 [ 0.28 ]
+    mutable dilate_warp : f32 [ 1.0 ]
     mutable iris_glow   : f32 [ 0.9 ]
     mutable retro_k     : f32 [ 1.5 ]
     mutable retina_min  : f32 [ 0.25 ]
@@ -305,7 +309,12 @@ ModelViewProject CorneaIR
             float ca  = cos(ubo.iris_rot);
             float sa  = sin(ubo.iris_rot);
             vec2  rxy = vec2(hxy.x * ca - hxy.y * sa, hxy.x * sa + hxy.y * ca);
-            vec2  iuv = vec2(0.5) + 0.5 * rxy / (ubo.iris_radius * ubo.iris_tex_scale);
+            // pupil dilation: remap the iris band into (pupil_r..1) with a
+            // 2-part warp, so tissue near the pupil compresses vs the rim
+            float u   = clamp((rr - ubo.pupil_r) / max(1.0 - ubo.pupil_r, 1e-3), 0.0, 1.0);
+            float tr  = ubo.pupil_tex + pow(u, ubo.dilate_warp) * (1.0 - ubo.pupil_tex);
+            vec2  dir = (rr > 1e-4) ? rxy / (rr * ubo.iris_radius) : vec2(0.0);
+            vec2  iuv = vec2(0.5) + 0.5 * dir * (tr / ubo.iris_tex_scale);
             float fib = texture(iris, iuv).a;
             float mel = texture(iris_melanin, iuv).r;
             float da  = texture(iris_disp_a, iuv).r;
@@ -1505,6 +1514,9 @@ element ModelView
             cshader.model = mat4f.identity[]
             cshader.view  = vshader.view
             cshader.proj  = vshader.proj
+            # sweep pupil dilation max<->min on a sine each frame
+            ph : f32 [ f32[ frame_n ] * 0.02f ]
+            cshader.pupil_r = 0.35f + 0.20f * sin[ ph ]
         update_palette[]
         # rigid meshes (eyeballs) follow their bone: re-push node worlds
         if [ vmodel ] vmodel.update_animated[]
