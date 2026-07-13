@@ -26,10 +26,11 @@ class StorageImage
 #   layout(std430, set=1, binding=N) readonly buffer <name>_t { vec4 <name>[]; };
 # host provides a Buffer (created with u_storage = true) via the samplers map.
 class StorageBuffer
-    type    : Au_t
-    id      : int
-    count   : u32
-    format  : Au_t
+    type     : Au_t
+    id       : int
+    count    : u32
+    format   : Au_t
+    writable : bool          # emit a writable (non-readonly) buffer
 
 class VertexInput
     public type : Au_t
@@ -1128,12 +1129,19 @@ class Gpu
     intern vk_sampler    : VkSampler
     intern vma_alloc     : VmaAllocation
     public compute       : bool
+    # externally-owned vbo/ibo (e.g. a compute pass's out_pos): when set, the
+    # draw binds these instead of building buffers from vertex_data/index_data
+    public ext_vertex    : Buffer
+    public ext_index     : Buffer
 
     intern func index_type [ ] -> VkIndexType
         return (index_size == 1) ? VK_INDEX_TYPE_UINT8 :
                (index_size == 2) ? VK_INDEX_TYPE_UINT16    : VK_INDEX_TYPE_UINT32
         
-    func sync [ w: Display ] 
+    func sync [ w: Display ]
+        # an externally-owned buffer (compute out_pos) drives the draw directly
+        if [ ext_vertex && !vertex ] vertex = ext_vertex
+        if [ ext_index  && !index  ] index  = ext_index
         # vbo/ibo maintained on init only
         if [ vertex_size && !vertex ]
             comp: compute

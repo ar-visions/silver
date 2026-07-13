@@ -144,6 +144,31 @@ class Image
         memcpy res.vdata[], vdata[], byte_count[]
         return res
 
+    # copy a sub-rectangle into a fresh Image (clamped to the source bounds)
+    func crop[ cx:i32, cy:i32, cw:i32, ch:i32 ] -> Image
+        check width > 0 && height > 0, "null Image given to crop"
+        x0 : i32 [ (cx < 0) ? 0 : cx ]
+        y0 : i32 [ (cy < 0) ? 0 : cy ]
+        x1 : i32 [ cx + cw ]
+        y1 : i32 [ cy + ch ]
+        if [ x1 > width  ] x1 = width
+        if [ y1 > height ] y1 = height
+        ow : i32 [ x1 - x0 ]
+        oh : i32 [ y1 - y0 ]
+        check ow > 0 && oh > 0, "empty crop"
+        output : Image
+            width:  ow,
+            height: oh,
+            :format, :surface, :channels
+        ps  : i32 [ pixel_size ]
+        src : ref u8 vdata[]
+        dst : ref u8 output.vdata[]
+        for [ ry: i32 0, ry < oh, ry += 1 ]
+            so : i64 [ (i64[ y0 + ry ] * i64[ width ] + i64[ x0 ]) * i64[ ps ] ]
+            df : i64 [ i64[ ry ] * i64[ ow ] * i64[ ps ] ]
+            memcpy ref dst[ df ], ref src[ so ], i64[ ow * ps ]
+        return output
+
     func resize[ out_w:i32, out_h:i32 ] -> Image
         check width > 0 && height > 0, "null Image given to resize"
         check out_w > 0 && out_h  > 0, "invalid size"

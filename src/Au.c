@@ -4191,6 +4191,11 @@ none map_set(map m, Au k, Au v) {
         if (i->value != v) {
             if (!m->unmanaged) drop(i->value);
             i->value = m->unmanaged ? v : Au_hold(v);
+            item ref = (item)i->ref; // keep the FIFO value in sync on overwrite
+            if (ref) {
+                if (!m->unmanaged) drop(ref->value);
+                ref->value = m->unmanaged ? v : Au_hold(v);
+            }
         } else {
             return;
         }

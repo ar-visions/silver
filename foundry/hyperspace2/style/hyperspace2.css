@@ -3,18 +3,21 @@
 Layer root_bg [ ]
     fill_color: #181420
 
+Layer flat [ fill ]
+    fill_color: $fill
+
 element.root {
     layers.root_bg [ ]
 }
 
-.face_a {
-    area: l0 t0 r0 b0
+ModelView.face_main {
+    area: l0 t0 r0 b384px
 }
 
-.face_a:split {
-    area: l0 t0 r50% b0
+ModelView.vote_0 {
+    area: l0px t640px w512px b0
 }
 
-.face_b {
-    area: l50% t0 r0 b0
+ModelView.vote_1 {
+    area: l512px t640px w512px b0
 }

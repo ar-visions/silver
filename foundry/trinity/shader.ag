@@ -158,7 +158,13 @@ class shader
                     binding += 1
 
                 el [ val inherits StorageBuffer ]
-                    result = '{result}layout(std430, set = 1, binding = {binding}) readonly buffer {mem.ident}_t {{ vec4 {mem.ident}[]; }};\n'
+                    sb: StorageBuffer[val]
+                    # element type from the meta format; default vec4
+                    sb_elem: (sb.format == typeid[ i32 ]) ? "int" :
+                             (sb.format == typeid[ u32 ]) ? "uint" :
+                             (sb.format == typeid[ f32 ]) ? "float" : "vec4"
+                    sb_qual: (sb.writable) ? "" : "readonly "
+                    result = '{result}layout(std430, set = 1, binding = {binding}) {sb_qual}buffer {mem.ident}_t {{ {sb_elem} {mem.ident}[]; }};\n'
                     binding += 1
 
                 el [ val inherits VertexInput && stage == ShaderStage.vertex ]
@@ -882,6 +888,82 @@ ModelViewProject VectorScale
         fragColor = vec4(c.rgb * c.a, c.a);   // premultiplied compositing
     }
 
+
+# --- GPU subdivision surface (Catmull-Clark, one level) --------------------
+# storage-buffer slots for the subdivision compute pass; IDs only need to be
+# unique within the enum (looked up by attrib name in the samplers map).
+enum SubdivSurface
+    in_pos:      0
+    face_corner: 1
+    edge_data:   2
+    vfo:         3
+    vf:          4
+    veo:         5
+    ve:          6
+    out_pos:     7
+
+# one Catmull-Clark level on the GPU. reads the base control positions plus a
+# fixed topology (built once on the CPU) and writes the subdivided vertex
+# buffer. one invocation per OUTPUT vertex; output order is vertex-points (N),
+# then edge-points (E), then face-points (F). run only on adjustment.
+shader SubdivCompute
+    mutable n_base : i32
+    mutable n_edge : i32
+    mutable n_face : i32
+
+    attrib in_pos      : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.in_pos,      count:1, format:typeid[ vec4f ] ]
+    attrib face_corner : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.face_corner, count:1, format:typeid[ i32 ] ]
+    attrib edge_data   : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.edge_data,   count:1, format:typeid[ i32 ] ]
+    attrib vfo         : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.vfo,          count:1, format:typeid[ i32 ] ]
+    attrib vf          : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.vf,           count:1, format:typeid[ i32 ] ]
+    attrib veo         : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.veo,          count:1, format:typeid[ i32 ] ]
+    attrib ve          : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.ve,           count:1, format:typeid[ i32 ] ]
+    attrib out_pos     : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.out_pos,      count:1, format:typeid[ vec4f ], writable:true ]
+
+    # face point = average of the quad's four corners
+    func face_point [ f: i32 ] -> GLSL vec3f {
+        return (in_pos[face_corner[f*4+0]].xyz + in_pos[face_corner[f*4+1]].xyz
+              + in_pos[face_corner[f*4+2]].xyz + in_pos[face_corner[f*4+3]].xyz) * 0.25;
+    }
+
+    func compute [] -> GLSL none {
+        uint gid = gl_GlobalInvocationID.x;
+        uint N = uint(ubo.n_base);
+        uint E = uint(ubo.n_edge);
+        uint F = uint(ubo.n_face);
+        if (gid >= N + E + F) return;
+
+        if (gid < N) {{
+            int v = int(gid);
+            vec3 P = in_pos[v].xyz;
+            int f0 = vfo[v]; int f1 = vfo[v+1];
+            int nf = f1 - f0;
+            vec3 Favg = vec3(0.0);
+            for (int i = f0; i < f1; i++) Favg += face_point(vf[i]);
+            if (nf > 0) Favg /= float(nf);
+            int e0 = veo[v]; int e1 = veo[v+1];
+            int ne = e1 - e0;
+            vec3 Ravg = vec3(0.0);
+            for (int i = e0; i < e1; i++) Ravg += (in_pos[edge_data[ve[i]*4+0]].xyz + in_pos[edge_data[ve[i]*4+1]].xyz) * 0.5;
+            if (ne > 0) Ravg /= float(ne);
+            float n = float(nf);
+            vec3 np = (n > 0.0) ? (Favg + 2.0*Ravg + (n-3.0)*P) / n : P;
+            out_pos[int(gid)] = vec4(np, 1.0);
+        }} else if (gid < N + E) {{
+            int e = int(gid - N);
+            int v0 = edge_data[e*4+0]; int v1 = edge_data[e*4+1];
+            int fa = edge_data[e*4+2]; int fb = edge_data[e*4+3];
+            vec3 pm = (in_pos[v0].xyz + in_pos[v1].xyz) * 0.5;
+            if (fb < 0) {{
+                out_pos[int(gid)] = vec4(pm, 1.0);
+            }} else {{
+                out_pos[int(gid)] = vec4((in_pos[v0].xyz + in_pos[v1].xyz + face_point(fa) + face_point(fb)) * 0.25, 1.0);
+            }}
+        }} else {{
+            int f = int(gid - N - E);
+            out_pos[int(gid)] = vec4(face_point(f), 1.0);
+        }}
+    }
 
 shader Env
     mutable view : mat4f.identity[]

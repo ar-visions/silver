@@ -66,6 +66,7 @@ ModelViewProject SkinnedLit
     attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
     attrib v_vpos    : VertexOutput   [ type:typeid[ vec3f ] ]
     attrib v_vnorm   : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_edge    : VertexOutput   [ type:typeid[ f32 ] ]
     attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
 
     func init [ ]
@@ -90,12 +91,16 @@ ModelViewProject SkinnedLit
         v_vnorm     = mat3(ubo.view) * (mat3(sm) * a_normal);
         v_vpos      = vp.xyz;
         v_uv        = a_uv;
+        v_edge      = a_uv1.x;
         gl_Position = ubo.proj * vp;
     }
 
     # ubo.ir toggles the two looks: near-IR headlamp (light at the camera,
     # N.V falloff, soft broad sheen, distance falloff) vs textured color
     func fragment [] -> GLSL none {
+        // mask edge alpha: _V_EDGE (carried in uv1.x) = 1 at the border, so
+        // alpha fades to 0 there; premultiplied output for the "over" blend
+        float ea = clamp(1.0 - v_edge, 0.0, 1.0);
         if (ubo.ir > 0.5) {
             vec3  N   = normalize(v_vnorm);
             vec3  V   = normalize(-v_vpos);
@@ -110,13 +115,13 @@ ModelViewProject SkinnedLit
             float d    = length(v_vpos);
             float fall = clamp(2.0 / (1.0 + 0.04 * d * d), 0.0, 1.0);
             float g    = (0.60 * (diff + scat) + spec) * fall;
-            fragColor  = vec4(vec3(g), 1.0);
+            fragColor  = vec4(vec3(g) * ea, ea);
         } else {
             vec4  c  = texture(color, v_uv);
             vec3  n  = normalize(v_normal);
             float l  = max(dot(n, normalize(vec3( 0.35, 0.75,  0.55))), 0.0) * 0.75
                      + max(dot(n, normalize(vec3(-0.50, 0.20, -0.60))), 0.0) * 0.25 + 0.22;
-            fragColor = vec4(c.rgb * l, 1.0);
+            fragColor = vec4(c.rgb * l * ea, ea);
         }
     }
 
@@ -398,14 +403,41 @@ element ModelView
     mutable lasty      : f32
     mutable frame_n    : i32
     mutable last_press : i32 [ -100 ]         # frame of the last click (dbl-click)
+    mutable rng2       : i64 [ 88172645463325252 ]  # control-cage deform seed
+    # two-octave value-noise face maps (wavelength as fraction of face size)
+    mutable n_large_wl  : f32 [ 1.2 ]         # large map wavelength (broad shape)
+    mutable n_large_amp : f32 [ 0.03 ]        # large map magnitude
+    mutable n_small_wl  : f32 [ 0.4 ]         # small map wavelength (detail)
+    mutable n_small_amp : f32 [ 0.012 ]       # small map magnitude, added on top
+    mutable n_tan_amp   : f32 [ 0.015 ]       # tangent-plane slide magnitude
+    # training label: per control-cage vertex world-space delta the perlin applied
+    mutable cage_delta  : ref f32
+    mutable cage_n      : i32 [ 0 ]           # control-cage vertex count
+    # perlin-labeled export: capture two yaw angles + the cage-delta label
+    mutable export_step : i32 [ 0 ]           # 0 idle; 3 arm; 1 cap-A; 2 cap-B
+    mutable export_idx  : i32 [ 0 ]           # next sample number
+    mutable export_yaw0 : f32 [ 0.0 ]         # yaw saved across the two shots
+    mutable export_dyaw : f32 [ 0.3 ]         # half-angle between the two views
+    mutable cap_a       : Image               # angle-A full frame, held to step 2
+    mutable view_a      : mat4f               # angle-A view matrix snapshot
+    mutable patch_px    : i32 [ 32 ]          # scan window size (the input patch)
+    mutable scan_px     : i32 [ 128 ]         # full face render is scanned at this
+    mutable patch_stride: i32 [ 16 ]          # window step (overlap for the blend)
+    mutable pj          : ref f32             # per-vert projections, 5 f32 each
+    mutable pj_cap      : i32 [ 0 ]           # pj capacity in verts
+    mutable recbuf      : ref f32             # 6-float label record scratch
     mutable nose_gain  : f32 [ 0.03 ]         # nose scale from _V_NOSE mask
     # nose landmark fit (mm); defaults equal the model rest -> no-op until set
     mutable nostril_span : f32 [ 38.5 ]       # nostril edge-to-edge, x
     mutable mid_nose     : f32 [ 33.9 ]       # mid-nose width, x
     mutable nostril_y    : f32 [ 42.3 ]       # nostril below eye plane, y
-    public  split    : bool                   # CSS :split state -> half width
+    public  face_idx : i32                     # 0-3: which grid cell / variant
+    mutable moved    : bool                    # drag vs click discriminator
+    mutable press_x  : f32
+    mutable press_y  : f32
     # last-baked fit values; when the parent picker feeds new landmarks the
     # mismatch triggers a rebuild so this face re-bakes to them
+    mutable baked_fidx : i32 [ -999 ]         # face_idx last built (r-regen)
     mutable baked_span : f32 [ -1.0 ]
     mutable baked_nos  : f32 [ -1.0 ]
     mutable baked_mid  : f32 [ -1.0 ]
@@ -413,7 +445,32 @@ element ModelView
     mutable eye_tex : array Texture           # held eye maps, dropped on reload
     mutable morph_w    : map f32 [ string ]   # morph target name -> blend weight
     mutable subdiv_on  : bool [ true ]        # Catmull-Clark subdivide at load
-    mutable subdiv_levels : i32 [ 2 ]         # number of Catmull-Clark passes
+    mutable subdiv_levels : i32 [ 1 ]         # 1 Catmull-Clark pass for the generator
+    # GPU-subdivision topology, extracted once (fixed while only positions move)
+    mutable sd_N : i32 [ 0 ]                   # welded base verts
+    mutable sd_E : i32 [ 0 ]                   # edges
+    mutable sd_F : i32 [ 0 ]                   # quad faces
+    mutable sd_out_tris : i32 [ 0 ]           # output triangles (8 per quad)
+    mutable sd_face_corner : ref i32          # F*4 welded corner ids per quad
+    mutable sd_edge_data   : ref i32          # E*4: v0,v1,f0,f1 (f1=-1 boundary)
+    mutable sd_vfo : ref i32                   # N+1 vert->face CSR offsets
+    mutable sd_vf  : ref i32                   # 4F vert->face flat
+    mutable sd_veo : ref i32                   # N+1 vert->edge CSR offsets
+    mutable sd_ve  : ref i32                   # 2E vert->edge flat
+    mutable sd_out_idx : ref i32              # out_tris*3 indices into out_pos
+    mutable sd_rep : ref i32                   # N representative base vert per welded id
+    # GPU subdivision compute + its storage buffers
+    mutable sd_compute : SubdivCompute
+    mutable sd_in_buf  : Buffer               # vec4[N] base positions (per adjust)
+    mutable sd_fc_buf  : Buffer
+    mutable sd_ed_buf  : Buffer
+    mutable sd_vfo_buf : Buffer
+    mutable sd_vf_buf  : Buffer
+    mutable sd_veo_buf : Buffer
+    mutable sd_ve_buf  : Buffer
+    mutable sd_out_buf : Buffer               # vec4[N+E+F] compute out + vbo
+    mutable sd_crender : Render               # compute-only render for dispatch
+    mutable sd_cmodel  : Model                # the compute model added to vrender
 
     func init []
         animated  = true
@@ -430,18 +487,21 @@ element ModelView
         return (parent) to hyperspace2
 
     public func on_press [ ev: Event ]
-        # double-click (two presses within ~20 frames) toggles the A|B split
-        fp : picker[]
-        if [ fp && (frame_n - last_press) < 20 ] fp.split = !fp.split
-        last_press = frame_n
+        moved = false
+        press_x = ev.mouse.pos.x
+        press_y = ev.mouse.pos.y
         dragging = true
         lastx = ev.mouse.pos.x
         lasty = ev.mouse.pos.y
         set_capture[]
 
+    # a click (press+release without dragging) picks this face's variant
     public func on_release [ ev: Event ]
         dragging = false
         release_capture[]
+        if [ !moved ]
+            fp : picker[]
+            if [ fp ] fp.pick[ face_idx ]
 
     public func on_move [ ev: Event ]
         if [ !dragging ] return
@@ -449,6 +509,9 @@ element ModelView
         if [ !fp ] return
         dx : f32 [ ev.mouse.pos.x - lastx ]
         dy : f32 [ ev.mouse.pos.y - lasty ]
+        ddx : f32 [ ev.mouse.pos.x - press_x ]
+        ddy : f32 [ ev.mouse.pos.y - press_y ]
+        if [ ddx * ddx + ddy * ddy > 16.0 ] moved = true
         lastx = ev.mouse.pos.x
         lasty = ev.mouse.pos.y
         if [ ev.key.shift ]
@@ -741,6 +804,265 @@ element ModelView
                     pf[1] = pf[1] + w * yw * dy_full
                 puts 'hyperspace2: nose fit hw0={hw0} hw1={hw1} nostril dy={dy_full}'
 
+    # extract the fixed subdivision topology once (weld, quads, edges, vertex
+    # adjacency, output index buffer). only positions move on a deform, so this
+    # survives every regen and the GPU compute re-applies it to write out_pos.
+    func capture_subdiv_topology [ prim: Primitive ]
+        pos_i : i32 [ -1 ]
+        for [ value: ref i64, a_name: string ] in prim.attributes
+            if [ a_name == 'POSITION' ] pos_i = i32[ value[0] ]
+        if [ pos_i < 0 ] return
+        pac : gmodel.accessors[ pos_i ]
+        iac : gmodel.accessors[ i32[ prim.indices ] ]
+        pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
+        ibv : gmodel.bufferViews[ i32[ iac.bufferView ] ]
+        pbase : ref i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
+        ibase : ref i8 [ gmodel.buffers[ i32[ ibv.buffer ] ].data ]
+        pstride : i64 [ pac.stride ]
+        istride : i64 [ iac.stride ]
+        if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
+        if [ ibv.byteStride > 0 ] istride = ibv.byteStride
+        poff : i64 [ pbv.byteOffset + pac.byteOffset ]
+        ioff : i64 [ ibv.byteOffset + iac.byteOffset ]
+        nv : i32 [ i32[ pac.count ] ]
+        tc : i32 [ i32[ iac.count ] / 3 ]
+        nf : i32 [ tc / 2 ]
+        idxbuf : new i32 [ tc * 3 ]
+        iu16 : bool [ iac.componentType == ComponentType.UNSIGNED_SHORT ]
+        for [ ii: i32 0, ii < tc * 3, ii += 1 ]
+            if [ iu16 ]
+                pr16 : ref u16 [ ((ref ibase[ ioff + i64[ ii ] * istride ]) to ref u16) ]
+                idxbuf[ ii ] = i32[ pr16[0] ]
+            el
+                pr32 : ref u32 [ ((ref ibase[ ioff + i64[ ii ] * istride ]) to ref u32) ]
+                idxbuf[ ii ] = i32[ pr32[0] ]
+        # pass 1: weld base verts by quantized position -> welded id
+        topo : new i32 [ nv ]
+        rep  : new i32 [ nv ]
+        wmap : map i32 [ string ] [ ]
+        tv : i32 [ 0 ]
+        for [ v: i32 0, v < nv, v += 1 ]
+            p : ref f32 [ ((ref pbase[ poff + i64[ v ] * pstride ]) to ref f32) ]
+            qx : i64 [ i64[ round[ p[0] * 100000.0 ] ] ]
+            qy : i64 [ i64[ round[ p[1] * 100000.0 ] ] ]
+            qz : i64 [ i64[ round[ p[2] * 100000.0 ] ] ]
+            key : '{qx}_{qy}_{qz}'
+            if [ wmap.contains[ key ] ]
+                topo[ v ] = wmap[ key ]
+            el
+                topo[ v ] = tv
+                rep[ tv ] = v
+                wmap[ key ] = tv
+                tv += 1
+        # pass 2: pair tris into quads -> welded corner ids
+        qcorn : new i32 [ nf * 4 ]
+        for [ pp: i32 0, pp < nf, pp += 1 ]
+            ia0 : i32 [ idxbuf[ pp*6 + 0 ] ]
+            ia1 : i32 [ idxbuf[ pp*6 + 1 ] ]
+            ia2 : i32 [ idxbuf[ pp*6 + 2 ] ]
+            ib0 : i32 [ idxbuf[ pp*6 + 3 ] ]
+            ib1 : i32 [ idxbuf[ pp*6 + 4 ] ]
+            ib2 : i32 [ idxbuf[ pp*6 + 5 ] ]
+            a0in : bool [ (ia0 == ib0) || (ia0 == ib1) || (ia0 == ib2) ]
+            a1in : bool [ (ia1 == ib0) || (ia1 == ib1) || (ia1 == ib2) ]
+            ra : i32 [ ia2 ]
+            rp : i32 [ ia0 ]
+            rq : i32 [ ia1 ]
+            if [ !a0in ]
+                ra = ia0
+                rp = ia1
+                rq = ia2
+            if [ !a1in ]
+                ra = ia1
+                rp = ia2
+                rq = ia0
+            b1in : bool [ (ib1 == ia0) || (ib1 == ia1) || (ib1 == ia2) ]
+            b2in : bool [ (ib2 == ia0) || (ib2 == ia1) || (ib2 == ia2) ]
+            sv : i32 [ ib0 ]
+            if [ !b1in ] sv = ib1
+            if [ !b2in ] sv = ib2
+            qcorn[ pp*4 + 0 ] = topo[ ra ]
+            qcorn[ pp*4 + 1 ] = topo[ rp ]
+            qcorn[ pp*4 + 2 ] = topo[ sv ]
+            qcorn[ pp*4 + 3 ] = topo[ rq ]
+        # pass 4: unique quad edges + per-face edge ids
+        ne4 : i32 [ nf * 4 ]
+        fe_u : new i32 [ ne4 ]
+        fe_v : new i32 [ ne4 ]
+        fe_f0 : new i32 [ ne4 ]
+        fe_f1 : new i32 [ ne4 ]
+        fe_fn : new i32 [ ne4 ]
+        face_e : new i32 [ ne4 ]
+        femap : map i32 [ string ] [ ]
+        nedge2 : i32 [ 0 ]
+        for [ f: i32 0, f < nf, f += 1 ]
+            for [ e: i32 0, e < 4, e += 1 ]
+                en : i32 [ e + 1 ]
+                if [ en >= 4 ] en = 0
+                u : i32 [ qcorn[ f*4 + e ] ]
+                w : i32 [ qcorn[ f*4 + en ] ]
+                lo : i32 [ u ]
+                hi : i32 [ w ]
+                if [ u > w ]
+                    lo = w
+                    hi = u
+                key : '{lo}_{hi}'
+                eid : i32 [ 0 ]
+                if [ femap.contains[ key ] ]
+                    eid = femap[ key ]
+                    fe_f1[ eid ] = f
+                    fe_fn[ eid ] += 1
+                el
+                    eid = nedge2
+                    femap[ key ] = eid
+                    fe_u[ eid ] = lo
+                    fe_v[ eid ] = hi
+                    fe_f0[ eid ] = f
+                    fe_f1[ eid ] = f
+                    fe_fn[ eid ] = 1
+                    nedge2 += 1
+                face_e[ f*4 + e ] = eid
+        # store the flat topology buffers the compute shader reads
+        sd_face_corner = new i32 [ nf * 4 ]
+        sd_edge_data = new i32 [ nedge2 * 4 ]
+        sd_rep = new i32 [ tv ]
+        for [ i: i32 0, i < nf * 4, i += 1 ] sd_face_corner[ i ] = qcorn[ i ]
+        for [ i: i32 0, i < tv, i += 1 ] sd_rep[ i ] = rep[ i ]
+        for [ eid: i32 0, eid < nedge2, eid += 1 ]
+            sd_edge_data[ eid*4 + 0 ] = fe_u[ eid ]
+            sd_edge_data[ eid*4 + 1 ] = fe_v[ eid ]
+            sd_edge_data[ eid*4 + 2 ] = fe_f0[ eid ]
+            sd_edge_data[ eid*4 + 3 ] = (fe_fn[ eid ] >= 2) ? fe_f1[ eid ] : -1
+        # vert->face CSR (count, prefix-sum, fill)
+        sd_vfo = new i32 [ tv + 1 ]
+        sd_vf = new i32 [ nf * 4 ]
+        for [ i: i32 0, i < tv + 1, i += 1 ] sd_vfo[ i ] = 0
+        for [ f: i32 0, f < nf, f += 1 ]
+            for [ c: i32 0, c < 4, c += 1 ] sd_vfo[ qcorn[ f*4 + c ] + 1 ] += 1
+        for [ i: i32 0, i < tv, i += 1 ] sd_vfo[ i+1 ] += sd_vfo[ i ]
+        vf_cur : new i32 [ tv ]
+        for [ i: i32 0, i < tv, i += 1 ] vf_cur[ i ] = sd_vfo[ i ]
+        for [ f: i32 0, f < nf, f += 1 ]
+            for [ c: i32 0, c < 4, c += 1 ]
+                vv : i32 [ qcorn[ f*4 + c ] ]
+                pf : i32 [ vf_cur[ vv ] ]
+                sd_vf[ pf ] = f
+                vf_cur[ vv ] += 1
+        # vert->edge CSR
+        sd_veo = new i32 [ tv + 1 ]
+        sd_ve = new i32 [ nedge2 * 2 ]
+        for [ i: i32 0, i < tv + 1, i += 1 ] sd_veo[ i ] = 0
+        for [ eid: i32 0, eid < nedge2, eid += 1 ]
+            sd_veo[ fe_u[ eid ] + 1 ] += 1
+            sd_veo[ fe_v[ eid ] + 1 ] += 1
+        for [ i: i32 0, i < tv, i += 1 ] sd_veo[ i+1 ] += sd_veo[ i ]
+        ve_cur : new i32 [ tv ]
+        for [ i: i32 0, i < tv, i += 1 ] ve_cur[ i ] = sd_veo[ i ]
+        for [ eid: i32 0, eid < nedge2, eid += 1 ]
+            uu : i32 [ fe_u[ eid ] ]
+            ww : i32 [ fe_v[ eid ] ]
+            pu : i32 [ ve_cur[ uu ] ]
+            sd_ve[ pu ] = eid
+            ve_cur[ uu ] += 1
+            pw : i32 [ ve_cur[ ww ] ]
+            sd_ve[ pw ] = eid
+            ve_cur[ ww ] += 1
+        # output index buffer: 4 sub-quads/quad, 2 tris each, into out_pos
+        # (verts [0,tv), edges [tv,tv+E), faces [tv+E,tv+E+F))
+        sd_out_idx = new i32 [ nf * 8 * 3 ]
+        oi : i32 [ 0 ]
+        for [ f: i32 0, f < nf, f += 1 ]
+            fp : i32 [ tv + nedge2 + f ]
+            for [ i: i32 0, i < 4, i += 1 ]
+                ip : i32 [ i - 1 ]
+                if [ ip < 0 ] ip = 3
+                cv : i32 [ qcorn[ f*4 + i ] ]
+                en : i32 [ tv + face_e[ f*4 + i ] ]
+                ep : i32 [ tv + face_e[ f*4 + ip ] ]
+                sd_out_idx[ oi + 0 ] = cv
+                sd_out_idx[ oi + 1 ] = en
+                sd_out_idx[ oi + 2 ] = fp
+                sd_out_idx[ oi + 3 ] = cv
+                sd_out_idx[ oi + 4 ] = fp
+                sd_out_idx[ oi + 5 ] = ep
+                oi += 6
+        sd_N = tv
+        sd_E = nedge2
+        sd_F = nf
+        sd_out_tris = nf * 8
+        puts 'subdiv topo: N={sd_N} E={sd_E} F={sd_F} out_verts={sd_N + sd_E + sd_F} out_tris={sd_out_tris}'
+
+    # build the GPU subdivision buffers + compute model once. topology buffers
+    # are fixed; in_pos holds the base control positions (re-uploaded per edit).
+    func gpu_subdiv_build [ vkc: vk_context, w: Window ] -> none
+        if [ sd_N == 0 || sd_compute ] return
+        if [ !gmodel ] return
+        # locate the Head POSITION accessor for the base control positions
+        pos_i : i32 [ -1 ]
+        for [ msh: Mesh ] in gmodel.meshes
+            for [ prim: Primitive ] in msh.primitives
+                midx : i32 [ prim.material ]
+                mnm : string [ '' ]
+                if [ gmodel.materials && gmodel.materials.count > midx ]
+                    mnm = gmodel.materials[ midx ].name
+                if [ mnm != 'Head' ] continue
+                for [ value: ref i64, a_name: string ] in prim.attributes
+                    if [ a_name == 'POSITION' ] pos_i = i32[ value[0] ]
+        if [ pos_i < 0 ] return
+        pac : gmodel.accessors[ pos_i ]
+        pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
+        pbase : ref i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
+        pstride : i64 [ pac.stride ]
+        if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
+        poff : i64 [ pbv.byteOffset + pac.byteOffset ]
+        # byte sizes: vec4 positions (16), i32 topology (4)
+        in_bytes  : i32 [ sd_N * 16 ]
+        fc_bytes  : i32 [ sd_F * 4 * 4 ]
+        ed_bytes  : i32 [ sd_E * 4 * 4 ]
+        vfo_bytes : i32 [ (sd_N + 1) * 4 ]
+        vf_bytes  : i32 [ sd_F * 4 * 4 ]
+        veo_bytes : i32 [ (sd_N + 1) * 4 ]
+        ve_bytes  : i32 [ sd_E * 2 * 4 ]
+        out_bytes : i32 [ (sd_N + sd_E + sd_F) * 16 ]
+        sd_in_buf  = Buffer [ vk: vkc, size: in_bytes,  u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        sd_fc_buf  = Buffer [ vk: vkc, size: fc_bytes,  u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        sd_ed_buf  = Buffer [ vk: vkc, size: ed_bytes,  u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        sd_vfo_buf = Buffer [ vk: vkc, size: vfo_bytes, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        sd_vf_buf  = Buffer [ vk: vkc, size: vf_bytes,  u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        sd_veo_buf = Buffer [ vk: vkc, size: veo_bytes, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        sd_ve_buf  = Buffer [ vk: vkc, size: ve_bytes,  u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        sd_out_buf = Buffer [ vk: vkc, size: out_bytes, u_storage: true, u_vertex: true, m_host_visible: true, m_host_coherent: true ]
+        # fill base positions through the welded-representative map
+        ip : ref f32 [ sd_in_buf.data ]
+        for [ t: i32 0, t < sd_N, t += 1 ]
+            rv : i32 [ sd_rep[ t ] ]
+            p : ref f32 [ ((ref pbase[ poff + i64[ rv ] * pstride ]) to ref f32) ]
+            ip[ t*4 + 0 ] = p[0]
+            ip[ t*4 + 1 ] = p[1]
+            ip[ t*4 + 2 ] = p[2]
+            ip[ t*4 + 3 ] = 1.0
+        # fill the fixed topology buffers
+        fcd : ref i32 [ sd_fc_buf.data ]
+        for [ i: i32 0, i < sd_F * 4, i += 1 ] fcd[ i ] = sd_face_corner[ i ]
+        edd : ref i32 [ sd_ed_buf.data ]
+        for [ i: i32 0, i < sd_E * 4, i += 1 ] edd[ i ] = sd_edge_data[ i ]
+        vfod : ref i32 [ sd_vfo_buf.data ]
+        for [ i: i32 0, i < sd_N + 1, i += 1 ] vfod[ i ] = sd_vfo[ i ]
+        vfd : ref i32 [ sd_vf_buf.data ]
+        for [ i: i32 0, i < sd_F * 4, i += 1 ] vfd[ i ] = sd_vf[ i ]
+        veod : ref i32 [ sd_veo_buf.data ]
+        for [ i: i32 0, i < sd_N + 1, i += 1 ] veod[ i ] = sd_veo[ i ]
+        ved : ref i32 [ sd_ve_buf.data ]
+        for [ i: i32 0, i < sd_E * 2, i += 1 ] ved[ i ] = sd_ve[ i ]
+        # compute shader + model (compute is auto-detected from the shader stage)
+        sd_compute = SubdivCompute [ vk: vkc ]
+        sd_compute.n_base = sd_N
+        sd_compute.n_edge = sd_E
+        sd_compute.n_face = sd_F
+        cs : map Au[string] [ 'in_pos': sd_in_buf, 'face_corner': sd_fc_buf, 'edge_data': sd_ed_buf, 'vfo': sd_vfo_buf, 'vf': sd_vf_buf, 'veo': sd_veo_buf, 've': sd_ve_buf, 'out_pos': sd_out_buf ]
+        sd_cmodel = Model [ vk: vkc, w: w, s: sd_compute, samplers: cs ]
+        puts 'gpu_subdiv_build: N={sd_N} E={sd_E} F={sd_F} dispatch_x={(sd_N + sd_E + sd_F + 15) / 16}'
+
     # 1-to-4 loop split: every triangle -> 4 via edge-midpoint verts, each
     # attribute the average of the two endpoints. runs last (after morph +
     # _V_* bake) so it only carries render/skin streams, not morphs/masks.
@@ -758,6 +1080,9 @@ element ModelView
                     # carry blender modifiers baked in (skip to avoid a freeze)
                     keep : bool [ (mnm == 'Head') || (mnm == 'Body') ]
                     if [ !keep ] continue
+                    # capture the base Head topology once for the GPU path
+                    if [ mnm == 'Head' && lv == 0 ]
+                        capture_subdiv_topology[ prim ]
                     puts 'subdiv L{lv}: {msh.name} mat={mnm} -> subdividing'
                     subdivide_prim[ prim ]
 
@@ -1593,6 +1918,217 @@ element ModelView
                     fall : f32 [ 1.0 - (t * t * (3.0 - 2.0 * t)) ]
                     pf[0] = pf[0] + sgn * eye_spacing * fall
 
+    # integer lattice hash → value in [-1, 1)
+    func ihash [ ia: i32, ib: i32, ic: i32 ] -> f32
+        h : i64 [ i64[ ia ] * 73856093 + i64[ ib ] * 19349663 + i64[ ic ] * 83492791 ]
+        h = h * 6364136223846793005 + 1442695040888963407
+        r : i64 [ (h >> 33) & 2097151 ]
+        return f32[ r ] / 1048576.0 - 1.0
+
+    # 3D value noise: smoothstep-interpolated lattice hash, range [-1, 1]
+    func vnoise [ x: f32, y: f32, z: f32 ] -> f32
+        x0 : i32 [ i32[ floor[ x ] ] ]
+        y0 : i32 [ i32[ floor[ y ] ] ]
+        z0 : i32 [ i32[ floor[ z ] ] ]
+        xf : f32 [ x - f32[ x0 ] ]
+        yf : f32 [ y - f32[ y0 ] ]
+        zf : f32 [ z - f32[ z0 ] ]
+        u : f32 [ xf * xf * (3.0 - 2.0 * xf) ]
+        v : f32 [ yf * yf * (3.0 - 2.0 * yf) ]
+        w : f32 [ zf * zf * (3.0 - 2.0 * zf) ]
+        c000 : f32 [ ihash[ x0,     y0,     z0     ] ]
+        c100 : f32 [ ihash[ x0 + 1, y0,     z0     ] ]
+        c010 : f32 [ ihash[ x0,     y0 + 1, z0     ] ]
+        c110 : f32 [ ihash[ x0 + 1, y0 + 1, z0     ] ]
+        c001 : f32 [ ihash[ x0,     y0,     z0 + 1 ] ]
+        c101 : f32 [ ihash[ x0 + 1, y0,     z0 + 1 ] ]
+        c011 : f32 [ ihash[ x0,     y0 + 1, z0 + 1 ] ]
+        c111 : f32 [ ihash[ x0 + 1, y0 + 1, z0 + 1 ] ]
+        x00 : f32 [ c000 + (c100 - c000) * u ]
+        x10 : f32 [ c010 + (c110 - c010) * u ]
+        x01 : f32 [ c001 + (c101 - c001) * u ]
+        x11 : f32 [ c011 + (c111 - c011) * u ]
+        y0i : f32 [ x00 + (x10 - x00) * v ]
+        y1i : f32 [ x01 + (x11 - x01) * v ]
+        return y0i + (y1i - y0i) * w
+
+    # two-octave value noise, EVEN about x=0 (both face halves match), at a seed
+    # offset. large octave + small octave weighted by esw.
+    func ev2 [ ex: f32, ey: f32, ez: f32, efl: f32, efs: f32, esd: f32, esw: f32, eoff: f32 ] -> f32
+        gl : f32 [ 0.5 * (vnoise[ ex * efl + esd + eoff, ey * efl + esd + eoff, ez * efl + esd + eoff ] + vnoise[ (0.0 - ex) * efl + esd + eoff, ey * efl + esd + eoff, ez * efl + esd + eoff ]) ]
+        gs : f32 [ 0.5 * (vnoise[ ex * efs + esd + eoff, ey * efs + esd + eoff, ez * efs + esd + eoff ] + vnoise[ (0.0 - ex) * efs + esd + eoff, ey * efs + esd + eoff, ez * efs + esd + eoff ]) ]
+        return gl + esw * gs
+
+    # universal face generator: two octaves of value noise (a large map for
+    # broad shape, a small map added on top for detail) displace the base Head
+    # verts in x/y/z. sampled at folded |x| so both halves stay mirror-symmetric;
+    # the eye centres are pinned so the outer-eye anchors barely move. one pair of
+    # maps + the eye anchors fits basically any face. NOT tied to any painted mask.
+    func deform_cage []
+        if [ !gmodel ] return
+        lcx : f32 [ 0.0 ]
+        lcy : f32 [ 0.0 ]
+        lcz : f32 [ 0.0 ]
+        rcx : f32 [ 0.0 ]
+        rcy : f32 [ 0.0 ]
+        rcz : f32 [ 0.0 ]
+        gotl : bool [ false ]
+        gotr : bool [ false ]
+        for [ nd: Node ] in gmodel.nodes
+            if [ nd.name && nd.name == 'Eye.L' ]
+                wl : mat4f [ nd.world ]
+                lcx = wl.m[12]
+                lcy = wl.m[13]
+                lcz = wl.m[14]
+                gotl = true
+            if [ nd.name && nd.name == 'Eye.R' ]
+                wr : mat4f [ nd.world ]
+                rcx = wr.m[12]
+                rcy = wr.m[13]
+                rcz = wr.m[14]
+                gotr = true
+        if [ !gotl || !gotr ] return
+        dxc : f32 [ lcx - rcx ]
+        ipd : f32 [ (dxc < 0.0) ? (0.0 - dxc) : dxc ]
+        face_sz  : f32 [ ipd * 3.0 ]
+        corner_r : f32 [ ipd * 0.6 ]
+        for [ msh: Mesh ] in gmodel.meshes
+            for [ prim: Primitive ] in msh.primitives
+                midx : i32 [ prim.material ]
+                mnm : string [ '' ]
+                if [ gmodel.materials && gmodel.materials.count > midx ]
+                    mnm = gmodel.materials[ midx ].name
+                if [ mnm != 'Head' ] continue
+                pos_ai : i32 [ -1 ]
+                nrm_ai : i32 [ -1 ]
+                tan_ai : i32 [ -1 ]
+                for [ value: ref i64, a_name: string ] in prim.attributes
+                    if [ a_name == 'POSITION' ] pos_ai = i32[ value[0] ]
+                    if [ a_name == 'NORMAL'   ] nrm_ai = i32[ value[0] ]
+                    if [ a_name == 'TANGENT'  ] tan_ai = i32[ value[0] ]
+                if [ pos_ai < 0 || nrm_ai < 0 || tan_ai < 0 ] continue
+                pac : gmodel.accessors[ pos_ai ]
+                nac : gmodel.accessors[ nrm_ai ]
+                tac : gmodel.accessors[ tan_ai ]
+                pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
+                nbv : gmodel.bufferViews[ i32[ nac.bufferView ] ]
+                tbv : gmodel.bufferViews[ i32[ tac.bufferView ] ]
+                pbase : ref i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
+                nbase : ref i8 [ gmodel.buffers[ i32[ nbv.buffer ] ].data ]
+                tbase : ref i8 [ gmodel.buffers[ i32[ tbv.buffer ] ].data ]
+                pstride : i64 [ pac.stride ]
+                nstride : i64 [ nac.stride ]
+                tstride : i64 [ tac.stride ]
+                if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
+                if [ nbv.byteStride > 0 ] nstride = nbv.byteStride
+                if [ tbv.byteStride > 0 ] tstride = tbv.byteStride
+                poff : i64 [ pbv.byteOffset + pac.byteOffset ]
+                noff : i64 [ nbv.byteOffset + nac.byteOffset ]
+                toff : i64 [ tbv.byteOffset + tac.byteOffset ]
+                vc : i32 [ i32[ pac.count ] ]
+                # per-vertex label buffer (world delta) — the training target
+                dsz : i32 [ vc * 3 ]
+                if [ cage_n != vc ]
+                    cage_delta = new f32 [ dsz ]
+                    cage_n = vc
+                # large map = broad shape; small map adds detail on top.
+                # freq = 1/wavelength (in face_sz units); amp scales the face.
+                fl : f32 [ 1.0 / (face_sz * n_large_wl) ]
+                fs : f32 [ 1.0 / (face_sz * n_small_wl) ]
+                an : f32 [ face_sz * n_large_amp ]        # along-normal magnitude
+                at : f32 [ face_sz * n_tan_amp ]          # tangent-plane magnitude
+                swt : f32 [ (n_large_amp > 0.0) ? (n_small_amp / n_large_amp) : 0.4 ]
+                seam_band : f32 [ ipd * 0.4 ]
+                # per-variant seed offset walks the noise field to a new region
+                sd : f32 [ f32[ face_idx ] * 17.0 ]
+                for [ i: i32 0, i < vc, i += 1 ]
+                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    nf : ref f32 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref f32) ]
+                    tf : ref f32 [ ((ref tbase[ toff + i64[ i ] * tstride ]) to ref f32) ]
+                    px : f32 [ pf[0] ]
+                    py : f32 [ pf[1] ]
+                    pz : f32 [ pf[2] ]
+                    # local surface frame: normal N, tangent T, bitangent B = NxT*w
+                    nln : f32 [ sqrt[ nf[0] * nf[0] + nf[1] * nf[1] + nf[2] * nf[2] ] ]
+                    tln : f32 [ sqrt[ tf[0] * tf[0] + tf[1] * tf[1] + tf[2] * tf[2] ] ]
+                    if [ nln <= 0.0 || tln <= 0.0 ] continue
+                    nx : f32 [ nf[0] / nln ]
+                    ny : f32 [ nf[1] / nln ]
+                    nz : f32 [ nf[2] / nln ]
+                    tx : f32 [ tf[0] / tln ]
+                    ty : f32 [ tf[1] / tln ]
+                    tz : f32 [ tf[2] / tln ]
+                    tw : f32 [ tf[3] ]
+                    bx : f32 [ (ny * tz - nz * ty) * tw ]
+                    by : f32 [ (nz * tx - nx * tz) * tw ]
+                    bz : f32 [ (nx * ty - ny * tx) * tw ]
+                    # one perlin along the normal, two across the tangent plane
+                    pn : f32 [ ev2[ px, py, pz, fl, fs, sd, swt, 11.0 ] ]
+                    pt : f32 [ ev2[ px, py, pz, fl, fs, sd, swt, 53.0 ] ]
+                    pb : f32 [ ev2[ px, py, pz, fl, fs, sd, swt, 97.0 ] ]
+                    # mix the three into a world-space offset
+                    ox : f32 [ an * pn * nx + at * pt * tx + at * pb * bx ]
+                    oy : f32 [ an * pn * ny + at * pt * ty + at * pb * by ]
+                    oz : f32 [ an * pn * nz + at * pt * tz + at * pb * bz ]
+                    # keep the midline welded: zero lateral (x) movement at x=0
+                    afx : f32 [ (px < 0.0) ? (0.0 - px) : px ]
+                    sxt : f32 [ afx / seam_band ]
+                    if [ sxt > 1.0 ] sxt = 1.0
+                    ox = ox * (sxt * sxt * (3.0 - 2.0 * sxt))
+                    dl : f32 [ sqrt[ (px - lcx) * (px - lcx) + (py - lcy) * (py - lcy) + (pz - lcz) * (pz - lcz) ] ]
+                    dr : f32 [ sqrt[ (px - rcx) * (px - rcx) + (py - rcy) * (py - rcy) + (pz - rcz) * (pz - rcz) ] ]
+                    da : f32 [ (dl < dr) ? dl : dr ]
+                    damp : f32 [ da / corner_r ]
+                    if [ damp > 1.0 ] damp = 1.0
+                    dxv : f32 [ ox * damp ]
+                    dyv : f32 [ oy * damp ]
+                    dzv : f32 [ oz * damp ]
+                    pf[0] += dxv
+                    pf[1] += dyv
+                    pf[2] += dzv
+                    if [ cage_delta ]
+                        cage_delta[ i * 3 ]     = dxv
+                        cage_delta[ i * 3 + 1 ] = dyv
+                        cage_delta[ i * 3 + 2 ] = dzv
+                puts 'deform_cage: face={face_idx} an={an} at={at} nv={vc} label={vc * 3}'
+
+    # copy the painted _V_EDGE red channel into TEXCOORD_1.x so subdivide carries
+    # it to the GPU; the skinned shader turns it into alpha, fading the mask edge
+    # to transparent so it mixes into the background
+    func bake_edge_uv1 []
+        if [ !gmodel ] return
+        for [ msh: Mesh ] in gmodel.meshes
+            for [ prim: Primitive ] in msh.primitives
+                midx : i32 [ prim.material ]
+                mnm : string [ '' ]
+                if [ gmodel.materials && gmodel.materials.count > midx ]
+                    mnm = gmodel.materials[ midx ].name
+                if [ mnm != 'Head' ] continue
+                edge_ai : i32 [ -1 ]
+                uv1_ai  : i32 [ -1 ]
+                for [ value: ref i64, a_name: string ] in prim.attributes
+                    if [ a_name == '_V_EDGE'    ] edge_ai = i32[ value[0] ]
+                    if [ a_name == 'TEXCOORD_1' ] uv1_ai  = i32[ value[0] ]
+                if [ edge_ai < 0 || uv1_ai < 0 ] continue
+                eac : gmodel.accessors[ edge_ai ]
+                uac : gmodel.accessors[ uv1_ai ]
+                ebv : gmodel.bufferViews[ i32[ eac.bufferView ] ]
+                ubv : gmodel.bufferViews[ i32[ uac.bufferView ] ]
+                ebase : ref i8 [ gmodel.buffers[ i32[ ebv.buffer ] ].data ]
+                ubase : ref i8 [ gmodel.buffers[ i32[ ubv.buffer ] ].data ]
+                estride : i64 [ eac.stride ]
+                ustride : i64 [ uac.stride ]
+                if [ ebv.byteStride > 0 ] estride = ebv.byteStride
+                if [ ubv.byteStride > 0 ] ustride = ubv.byteStride
+                eoff : i64 [ ebv.byteOffset + eac.byteOffset ]
+                uoff : i64 [ ubv.byteOffset + uac.byteOffset ]
+                vc : i32 [ i32[ eac.count ] ]
+                for [ i: i32 0, i < vc, i += 1 ]
+                    eu : ref u16 [ ((ref ebase[ eoff + i64[ i ] * estride ]) to ref u16) ]
+                    uv : ref f32 [ ((ref ubase[ uoff + i64[ i ] * ustride ]) to ref f32) ]
+                    uv[0] = f32[ eu[0] ] / 65535.0
+                puts 'bake_edge_uv1: verts={vc}'
+
     # pose the rig for this frame (hinge + eyes), recompose worlds, and write the
     # skin palette; the caller then pushes rigid node worlds via update_animated
     func update_palette []
@@ -1650,12 +2186,211 @@ element ModelView
         set_albedo[ 'Iris',    '../share/textures/eye/iris_fibres.png' ]
         # the eyeball is the translucent cornea layer over the iris
 
+    # find the head mesh index (first mesh carrying a 'Head'-material prim)
+    func head_mesh_index [] -> i32
+        mi : i32 [ 0 ]
+        for [ msh: Mesh ] in gmodel.meshes
+            for [ prim: Primitive ] in msh.primitives
+                midx : i32 [ prim.material ]
+                if [ gmodel.materials && gmodel.materials.count > midx ]
+                    if [ gmodel.materials[ midx ].name == 'Head' ] return mi
+            mi += 1
+        return -1
+
+    # overlay the control cage: project every Head vertex and drop a pixel dot
+    # so you SEE the cage you are fitting (element-local coords, over the render)
+    func draw_cage_dots [ cv: Canvas ] -> none
+        if [ !gmodel ] return
+        hmesh : i32 [ head_mesh_index[] ]
+        if [ hmesh < 0 ] return
+        W : mat4f [ mat4f.identity[] ]
+        for [ nd: Node ] in gmodel.nodes
+            if [ !nd.AF_query_name[ 'mesh' ] ] continue
+            if [ i32[ nd.mesh ] == hmesh ] W = nd.world
+        mvp : mat4f [ vshader.proj.mul[ vshader.view ].mul[ W ] ]
+        pos_ai : i32 [ -1 ]
+        for [ msh: Mesh ] in gmodel.meshes
+            for [ prim: Primitive ] in msh.primitives
+                midx : i32 [ prim.material ]
+                if [ !gmodel.materials || gmodel.materials.count <= midx ] continue
+                if [ gmodel.materials[ midx ].name != 'Head' ] continue
+                for [ value: ref i64, a_name: string ] in prim.attributes
+                    if [ a_name == 'POSITION' ] pos_ai = i32[ value[0] ]
+        if [ pos_ai < 0 ] return
+        pac : gmodel.accessors[ pos_ai ]
+        pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
+        pbase : ref i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
+        pstride : i64 [ pac.stride ]
+        if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
+        poff : i64 [ pbv.byteOffset + pac.byteOffset ]
+        vc : i32 [ i32[ pac.count ] ]
+        bw : f32 [ bounds.w ]
+        bh : f32 [ bounds.h ]
+        cv.fill_color[ '#39ff14' ]
+        for [ i: i32 0, i < vc, i += 1 ]
+            pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+            px : f32 [ pf[0] ]
+            py : f32 [ pf[1] ]
+            pz : f32 [ pf[2] ]
+            cw : f32 [ mvp.m[3] * px + mvp.m[7] * py + mvp.m[11] * pz + mvp.m[15] ]
+            if [ cw <= 0.0001 ] continue
+            cx : f32 [ mvp.m[0] * px + mvp.m[4] * py + mvp.m[8]  * pz + mvp.m[12] ]
+            cy : f32 [ mvp.m[1] * px + mvp.m[5] * py + mvp.m[9]  * pz + mvp.m[13] ]
+            sx : f32 [ (cx / cw * 0.5 + 0.5) * bw ]
+            sy : f32 [ (cy / cw * 0.5 + 0.5) * bh ]
+            cv.fill_rect_fast[ sx - 1.0, sy - 1.0, 2.0, 2.0 ]
+
+    # scan the 128px face with a 32px window; each window that catches control
+    # points is one training patch (two poses) whose label is those points'
+    # normalized position, world offset, and a diffuse center-falloff weight
+    func export_patches [ idx: i32 ] -> none
+        if [ !gmodel || !cap_a || !vrender || !cage_delta ] return
+        cap_b : Image [ vrender.color ]
+        # normalize both poses to the scan resolution
+        fa : cap_a.resize[ scan_px, scan_px ]
+        fb : cap_b.resize[ scan_px, scan_px ]
+        hmesh : i32 [ head_mesh_index[] ]
+        if [ hmesh < 0 ] return
+        W : mat4f [ mat4f.identity[] ]
+        for [ nd: Node ] in gmodel.nodes
+            if [ !nd.AF_query_name[ 'mesh' ] ] continue
+            if [ i32[ nd.mesh ] == hmesh ] W = nd.world
+        mvpA : mat4f [ vshader.proj.mul[ view_a ].mul[ W ] ]
+        mvpB : mat4f [ vshader.proj.mul[ vshader.view ].mul[ W ] ]
+        sdir : path 'samples'
+        sdir.make_dir[]
+        # locate the head POSITION stream
+        pos_ai : i32 [ -1 ]
+        for [ msh: Mesh ] in gmodel.meshes
+            for [ prim: Primitive ] in msh.primitives
+                midx : i32 [ prim.material ]
+                if [ !gmodel.materials || gmodel.materials.count <= midx ] continue
+                if [ gmodel.materials[ midx ].name != 'Head' ] continue
+                for [ value: ref i64, a_name: string ] in prim.attributes
+                    if [ a_name == 'POSITION' ] pos_ai = i32[ value[0] ]
+        if [ pos_ai < 0 ] return
+        pac : gmodel.accessors[ pos_ai ]
+        pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
+        pbase : ref i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
+        pstride : i64 [ pac.stride ]
+        if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
+        poff : i64 [ pbv.byteOffset + pac.byteOffset ]
+        vc : i32 [ i32[ pac.count ] ]
+        sp : f32 [ f32[ scan_px ] ]
+        # project every control vert into both poses once (5 f32 per vert)
+        if [ pj_cap != vc ]
+            pj = new f32 [ vc * 5 ]
+            pj_cap = vc
+        if [ !recbuf ] recbuf = new f32 [ 6 ]
+        for [ i: i32 0, i < vc, i += 1 ]
+            pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+            px : f32 [ pf[0] ]
+            py : f32 [ pf[1] ]
+            pz : f32 [ pf[2] ]
+            cwa : f32 [ mvpA.m[3] * px + mvpA.m[7] * py + mvpA.m[11] * pz + mvpA.m[15] ]
+            cwb : f32 [ mvpB.m[3] * px + mvpB.m[7] * py + mvpB.m[11] * pz + mvpB.m[15] ]
+            ok : f32 [ 1.0 ]
+            if [ cwa <= 0.0001 || cwb <= 0.0001 ] ok = 0.0
+            if [ ok < 0.5 ]
+                pj[ i * 5 + 4 ] = 0.0
+                continue
+            cxa : f32 [ mvpA.m[0] * px + mvpA.m[4] * py + mvpA.m[8]  * pz + mvpA.m[12] ]
+            cya : f32 [ mvpA.m[1] * px + mvpA.m[5] * py + mvpA.m[9]  * pz + mvpA.m[13] ]
+            cxb : f32 [ mvpB.m[0] * px + mvpB.m[4] * py + mvpB.m[8]  * pz + mvpB.m[12] ]
+            cyb : f32 [ mvpB.m[1] * px + mvpB.m[5] * py + mvpB.m[9]  * pz + mvpB.m[13] ]
+            pj[ i * 5 + 0 ] = (cxa / cwa * 0.5 + 0.5) * sp
+            pj[ i * 5 + 1 ] = (cya / cwa * 0.5 + 0.5) * sp
+            pj[ i * 5 + 2 ] = (cxb / cwb * 0.5 + 0.5) * sp
+            pj[ i * 5 + 3 ] = (cyb / cwb * 0.5 + 0.5) * sp
+            pj[ i * 5 + 4 ] = 1.0
+        pw : f32 [ f32[ patch_px ] ]
+        bhalf : i32 [ patch_px / 2 ]
+        lim : i32 [ scan_px - patch_px ]
+        np : i32 [ 0 ]
+        # slide the window; anchor membership in pose A, follow the same points
+        # into pose B so both crops frame the same patch of face
+        for [ wy: i32 0, wy <= lim, wy += patch_stride ]
+            for [ wx: i32 0, wx <= lim, wx += patch_stride ]
+                n : i32 [ 0 ]
+                bcx : f32 [ 0.0 ]
+                bcy : f32 [ 0.0 ]
+                for [ i: i32 0, i < vc, i += 1 ]
+                    if [ pj[ i * 5 + 4 ] < 0.5 ] continue
+                    ax : f32 [ pj[ i * 5 + 0 ] ]
+                    ay : f32 [ pj[ i * 5 + 1 ] ]
+                    if [ ax < f32[ wx ] || ax >= f32[ wx + patch_px ] ] continue
+                    if [ ay < f32[ wy ] || ay >= f32[ wy + patch_px ] ] continue
+                    bcx += pj[ i * 5 + 2 ]
+                    bcy += pj[ i * 5 + 3 ]
+                    n += 1
+                if [ n < 1 ] continue
+                bcx = bcx / f32[ n ]
+                bcy = bcy / f32[ n ]
+                bwx : i32 [ i32[ bcx ] - bhalf ]
+                bwy : i32 [ i32[ bcy ] - bhalf ]
+                ca : fa.crop[ wx, wy, patch_px, patch_px ]
+                cb : fb.crop[ bwx, bwy, patch_px, patch_px ]
+                ca.png[ path 'samples/{idx}_{wy}_{wx}_a.png' ]
+                cb.png[ path 'samples/{idx}_{wy}_{wx}_b.png' ]
+                lp : path 'samples/{idx}_{wy}_{wx}.f32'
+                f : ref FILE [ fopen[ lp, 'wb' ] ]
+                if [ f ]
+                    for [ i: i32 0, i < vc, i += 1 ]
+                        if [ pj[ i * 5 + 4 ] < 0.5 ] continue
+                        ax : f32 [ pj[ i * 5 + 0 ] ]
+                        ay : f32 [ pj[ i * 5 + 1 ] ]
+                        if [ ax < f32[ wx ] || ax >= f32[ wx + patch_px ] ] continue
+                        if [ ay < f32[ wy ] || ay >= f32[ wy + patch_px ] ] continue
+                        nx : f32 [ (ax - f32[ wx ]) / pw ]
+                        ny : f32 [ (ay - f32[ wy ]) / pw ]
+                        cx : f32 [ (nx - 0.5) * 2.0 ]
+                        cy : f32 [ (ny - 0.5) * 2.0 ]
+                        r  : f32 [ sqrt[ cx * cx + cy * cy ] ]
+                        if [ r > 1.0 ] r = 1.0
+                        wgt : f32 [ (1.0 - r) * (1.0 - r) ]
+                        recbuf[ 0 ] = nx
+                        recbuf[ 1 ] = ny
+                        recbuf[ 2 ] = cage_delta[ i * 3 ]
+                        recbuf[ 3 ] = cage_delta[ i * 3 + 1 ]
+                        recbuf[ 4 ] = cage_delta[ i * 3 + 2 ]
+                        recbuf[ 5 ] = wgt
+                        fwrite[ recbuf, 4, i64[ 6 ], f ]
+                    fclose[ f ]
+                np += 1
+        puts 'export: idx={idx} patches={np} scan={scan_px} win={patch_px} stride={patch_stride}'
+
+    # arm a two-angle per-region patch capture (driven in draw[])
+    public func begin_export [] -> none
+        if [ export_step != 0 ] return
+        export_yaw0 = yaw
+        export_step = 3
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         ux.will_animate = true
         if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
+        # perlin-labeled export: the render target holds the yaw uploaded on the
+        # PREVIOUS frame, so aim one frame ahead and grab on the next
+        if [ vrender && export_step != 0 ]
+            if [ export_step == 3 ]
+                yaw = export_yaw0 - export_dyaw
+                export_step = 1
+            el [ export_step == 1 ]
+                cap_a = Image [ vrender.color ]
+                cap_a.hold[]
+                view_a = vshader.view
+                yaw = export_yaw0 + export_dyaw
+                export_step = 2
+            el [ export_step == 2 ]
+                export_patches[ export_idx ]
+                yaw = export_yaw0
+                if [ cap_a ] cap_a.drop[]
+                cap_a = null
+                export_idx += 1
+                export_step = 0
+                puts 'hyperspace2: exported sample {export_idx}'
         # the picker fed new landmarks -> rebuild this face to them
-        if [ vrender && (span_mm != baked_span || nostril_span != baked_nos || mid_nose != baked_mid || nostril_y != baked_ny) ]
+        if [ vrender && (face_idx != baked_fidx || span_mm != baked_span || nostril_span != baked_nos || mid_nose != baked_mid || nostril_y != baked_ny) ]
             reload_model[]
         cv : Canvas [ w.screen ]
         if [ !vrender ]
@@ -1691,19 +2426,22 @@ element ModelView
             # bind the skin/eye albedo maps onto the named materials before
             # the pipelines build (mat_tex reads baseColorTexture)
             bind_albedos[]
-            # blend shape keys, then bake the painted nose scale, into POSITION
+            # blend shape keys into POSITION
             apply_morphs[]
-            bake_nose[]
-            # fit the nose to the person's measured landmarks (mm)
-            bake_nose_landmarks[]
-            # set eye spacing to the person's IPD (mm); eyeballs follow the bone
-            bake_eye_spacing[]
+            # generic control-cage deform (random field per variant for now)
+            deform_cage[]
+            # stash the mask-edge alpha in uv1 so it survives subdivide
+            bake_edge_uv1[]
+            baked_fidx = face_idx
             baked_span = span_mm
             baked_nos  = nostril_span
             baked_mid  = mid_nose
             baked_ny   = nostril_y
             # tessellate the base mesh (1-to-4) after all CPU deformation
             subdivide[]
+            # build the GPU subdivision compute (buffers + model) from the
+            # captured topology; dispatched inside vrender each adjustment
+            gpu_subdiv_build[ cv.vk, w ]
             # read the skin's inverse-bind matrices, find the joint node, build
             # the joint-matrix palette storage buffer
             setup_skin[]
@@ -1773,13 +2511,22 @@ element ModelView
                 if [ sy > r ] r = sy
                 if [ sz > r ] r = sz
                 fpf.look_x = (mnx + mxx) * 0.5
-                fpf.look_y = mny + (mxy - mny) * 0.93
+                fpf.look_y = mny + (mxy - mny) * 0.5
                 fpf.look_z = (mnz + mxz) * 0.5
-                fpf.dist   = (mxy - mny) * 0.20
+                fpf.dist   = (mxy - mny) * 1.8
                 if [ fpf.dist < 0.2 ] fpf.dist = 0.2
                 fpf.cam_ready = true
                 puts 'hyperspace2: model bounds {sx}x{sy}x{sz} center=({fpf.look_x},{fpf.look_y},{fpf.look_z}) -> dist={fpf.dist}'
-            vrender   = Render [ vk: cv.vk, w: w, wscale: 1.0, use_depth: true, clear_color: vec4f [ 0.015, 0.015, 0.015, 1.0 ], models: array Model [ vmodel ] ]
+            gw : i32 [ i32[ bounds.w ] ]
+            gh : i32 [ i32[ bounds.h ] ]
+            mdls : array Model [ vmodel ]
+            if [ sd_cmodel ] mdls = array Model [ sd_cmodel, vmodel ]
+            vrender   = Render [ vk: cv.vk, w: w, width: gw, height: gh, use_depth: true, clear_color: vec4f [ 0.015, 0.015, 0.015, 1.0 ], models: mdls ]
+            # register as an element target so trinity draws + fences it at frame
+            # top (before compose); draw[] then only updates uniforms and blits.
+            # a raw self-submit here corrupts the screen batch for sibling panes.
+            w.element_targets[ 'hs2_{id}' ] = vrender
+            vrender.wscale = 0.0
             puts 'hyperspace2: bounds={bounds.w}x{bounds.h} window={w.width}x{w.height} scale={w.scale}'
         # orbit camera: spherical eye around the look point (matches the Avatar
         # camera conventions — up is -Y, fov is horizontal)
@@ -1810,30 +2557,38 @@ element ModelView
         update_palette[]
         # rigid meshes (eyeballs) follow their bone: re-push node worlds
         if [ vmodel ] vmodel.update_animated[]
+        # GPU subdivision: one invocation per output vertex (N+E+F), 16 per
+        # workgroup in x. pipelines exist only after the render's first bind.
+        if [ sd_cmodel && sd_cmodel.pipelines && sd_cmodel.pipelines.count > 0 ]
+            tot : i32 [ sd_N + sd_E + sd_F ]
+            sd_cmodel.pipelines[0].dispatch_x = (tot + 15) / 16
+            sd_cmodel.pipelines[0].dispatch_y = 1
+            sd_cmodel.pipelines[0].dispatch_z = 1
+        # one-shot check: GPU face-point 0 vs the CPU average of its 4 corners
+        if [ sd_out_buf && sd_in_buf && frame_n == 60 ]
+            op  : ref f32 [ sd_out_buf.data ]
+            ipp : ref f32 [ sd_in_buf.data ]
+            fb  : i32 [ (sd_N + sd_E) * 4 ]
+            c0  : i32 [ sd_face_corner[0] ]
+            c1  : i32 [ sd_face_corner[1] ]
+            c2  : i32 [ sd_face_corner[2] ]
+            c3  : i32 [ sd_face_corner[3] ]
+            cxr : f32 [ (ipp[c0*4]   + ipp[c1*4]   + ipp[c2*4]   + ipp[c3*4]  ) * 0.25 ]
+            cyr : f32 [ (ipp[c0*4+1] + ipp[c1*4+1] + ipp[c2*4+1] + ipp[c3*4+1]) * 0.25 ]
+            czr : f32 [ (ipp[c0*4+2] + ipp[c1*4+2] + ipp[c2*4+2] + ipp[c3*4+2]) * 0.25 ]
+            puts 'gpu_subdiv verify: GPU fp0=({op[fb]},{op[fb+1]},{op[fb+2]}) CPU fp0=({cxr},{cyr},{czr})'
+        # trinity's element_targets loop draws + fences this render at frame top;
+        # here we only upload the fresh uniforms for the next frame's draw
         vrender.update[]
-        vrender.draw[]
-        vrender.flush_submit[]
-        vrender.sync_fence[]
         # HS2_DUMP=1: write the render target to /tmp/hyperspace2_target.png once
         # (~frame 60) — discriminates render corruption from present corruption
         frame_n += 1
-        if [ frame_n == 60 && getenv[ 'HS2_DUMP' ] ]
-            tex : Texture vrender.color
-            dsz : i32 [ tex.width * tex.height * 4 ]
-            db : Buffer [ vk: tex.vk, size: dsz,
-                u_dst: true, m_host_visible: true, m_host_coherent: true ]
-            db.transfer[ tex ]
-            dshot : Image [ width: tex.width, height: tex.height, format: Pixel.rgba8 ]
-            memcpy[ dshot.vdata[], db.mmap[], dsz ]
-            db.unmap[]
-            dshot.png[ path '/tmp/hyperspace2_target.png' ]
-            puts 'hyperspace2: dumped {tex.width}x{tex.height} target'
         cv.draw_image[ vrender.color, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
 element hyperspace2 : trinity
-    public model      : path
-    public width      : i32    [ 1280 ]
-    public height     : i32    [ 960 ]
+    public model      : path   [ path 'models/uface.gltf' ]
+    public width      : i32    [ 1024 ]
+    public height     : i32    [ 1024 ]
     public title      : string [ 'hyperspace2' ]
     # solid-color background: the swapchain blit presents the LAST render's
     # color — the background chain's r_view (targeting the screen canvas) is
@@ -1843,17 +2598,19 @@ element hyperspace2 : trinity
     # app_object). champion (A = running centre) vs challenger (B = centre +
     # noise); space or a face double-click splits them side by side.
     mutable seeded   : bool
+    mutable gen      : i32                      # r-key regeneration counter
+    public  face_main : ModelView              # auto-binds to e['face_main']
     mutable rng      : i64 [ 88172645463325252 ]
     mutable ab_sigma : f32 [ 1.0 ]            # challenger spread
     mutable c_eye : f32 [ 91.0 ]             # champion (running centre), mm
     mutable c_nos : f32 [ 38.5 ]
     mutable c_mid : f32 [ 33.9 ]
     mutable c_ny  : f32 [ 42.3 ]
-    mutable b_eye : f32                       # challenger, mm
-    mutable b_nos : f32
-    mutable b_mid : f32
-    mutable b_ny  : f32
-    mutable split : bool                       # A and B side by side
+    # 4 variants shown in a 2x2 grid: [0] = champion (unperturbed), 1-3 challengers
+    mutable veye : array f32
+    mutable vnos : array f32
+    mutable vmid : array f32
+    mutable vny  : array f32
     # one camera shared by both faces so they always show the same angle; a
     # drag on either face writes back here and both faces read it each frame
     mutable yaw    : f32
@@ -1874,55 +2631,76 @@ element hyperspace2 : trinity
     func gauss [] -> f32
         return rnd[] + rnd[] + rnd[] - 1.5
 
-    # draw a fresh challenger around the champion, spread by ab_sigma. the
-    # per-param base widths are rough human population ranges (mm)
+    # draw 4 variants around the champion: index 0 unperturbed, 1-3 spread by
+    # ab_sigma. per-param base widths are rough human population ranges (mm)
     func resample []
-        b_eye = c_eye + gauss[] * 6.0 * ab_sigma
-        b_nos = c_nos + gauss[] * 5.0 * ab_sigma
-        b_mid = c_mid + gauss[] * 4.0 * ab_sigma
-        b_ny  = c_ny  + gauss[] * 5.0 * ab_sigma
+        veye = array f32 [ ]
+        vnos = array f32 [ ]
+        vmid = array f32 [ ]
+        vny  = array f32 [ ]
+        for [ i: i32 0, i < 4, i += 1 ]
+            s : f32 [ (i == 0) ? 0.0 : ab_sigma ]
+            veye += c_eye + gauss[] * 6.0 * s
+            vnos += c_nos + gauss[] * 5.0 * s
+            vmid += c_mid + gauss[] * 4.0 * s
+            vny  += c_ny  + gauss[] * 5.0 * s
+
+    # adopt variant i as the new champion; adapt the spread by how far it sat
+    # from the centre (index-0/near picks narrow, far picks keep exploring)
+    public func pick [ i: i32 ]
+        if [ i < 0 || i >= 4 ] return
+        if [ !veye || veye.count < 4 ] return
+        ne  : f32 [ veye[i] ]
+        nn  : f32 [ vnos[i] ]
+        nm  : f32 [ vmid[i] ]
+        nyv : f32 [ vny[i] ]
+        den : f32 [ ab_sigma ]
+        if [ den < 0.001 ] den = 0.001
+        de : f32 [ ne  - c_eye ]
+        dn : f32 [ nn  - c_nos ]
+        dm : f32 [ nm  - c_mid ]
+        dy : f32 [ nyv - c_ny ]
+        se : f32 [ ((de < 0.0) ? (0.0 - de) : de) / (6.0 * den) ]
+        sn : f32 [ ((dn < 0.0) ? (0.0 - dn) : dn) / (5.0 * den) ]
+        sm : f32 [ ((dm < 0.0) ? (0.0 - dm) : dm) / (4.0 * den) ]
+        sy : f32 [ ((dy < 0.0) ? (0.0 - dy) : dy) / (5.0 * den) ]
+        step : f32 [ (se + sn + sm + sy) * 0.25 ]
+        c_eye = ne
+        c_nos = nn
+        c_mid = nm
+        c_ny  = nyv
+        if [ i == 0 ]
+            ab_sigma = ab_sigma * 0.7
+        el
+            ab_sigma = ab_sigma * (0.55 + step)
+        if [ ab_sigma > 1.5 ]  ab_sigma = 1.5
+        if [ ab_sigma < 0.15 ] ab_sigma = 0.15
+        resample[]
+        puts 'hyperspace2: pick {i} sigma={ab_sigma} eye={c_eye} nos={c_nos} mid={c_mid} ny={c_ny}'
 
     public func on_key [ ev: Event ]
         if [ !ev.key.state ] return
-        if [ ev.key.unicode == 32 ] split = !split   # space: split A | B
-        if [ ev.key.unicode == 65 ]                  # A: keep champion, narrow
-            ab_sigma = ab_sigma * 0.7
-            if [ ab_sigma < 0.15 ] ab_sigma = 0.15
-            resample[]
-        if [ ev.key.unicode == 66 ]                  # B: adopt challenger
-            den : f32 [ ab_sigma ]
-            if [ den < 0.001 ] den = 0.001
-            de : f32 [ b_eye - c_eye ]
-            dn : f32 [ b_nos - c_nos ]
-            dm : f32 [ b_mid - c_mid ]
-            dy : f32 [ b_ny  - c_ny ]
-            se : f32 [ ((de < 0.0) ? (0.0 - de) : de) / (6.0 * den) ]
-            sn : f32 [ ((dn < 0.0) ? (0.0 - dn) : dn) / (5.0 * den) ]
-            sm : f32 [ ((dm < 0.0) ? (0.0 - dm) : dm) / (4.0 * den) ]
-            sy : f32 [ ((dy < 0.0) ? (0.0 - dy) : dy) / (5.0 * den) ]
-            step : f32 [ (se + sn + sm + sy) * 0.25 ]
-            c_eye = b_eye
-            c_nos = b_nos
-            c_mid = b_mid
-            c_ny  = b_ny
-            ab_sigma = ab_sigma * (0.55 + step)
-            if [ ab_sigma > 1.5 ]  ab_sigma = 1.5
-            if [ ab_sigma < 0.15 ] ab_sigma = 0.15
-            resample[]
-        puts 'hyperspace2: sigma={ab_sigma} eye={c_eye} nos={c_nos} mid={c_mid} ny={c_ny}'
+        if [ ev.key.unicode == 49 ] pick[ 0 ]     # 1: top-left
+        if [ ev.key.unicode == 50 ] pick[ 1 ]     # 2: top-right
+        if [ ev.key.unicode == 51 ] pick[ 2 ]     # 3: bottom-left
+        if [ ev.key.unicode == 52 ] pick[ 3 ]     # 4: bottom-right
+        # R (GLFW keycode 82): regenerate the vote variants (new seeds)
+        if [ ev.key.unicode == 82 ] gen += 1
+        # G (GLFW keycode 71): capture a two-angle perlin-labeled sample
+        if [ ev.key.unicode == 71 ]
+            if [ face_main ] face_main.begin_export[]
 
     public func render [] -> Elements
         if [ !seeded ]
             resample[]
             seeded = true
         e : Elements [ ]
-        # face_a = champion (full, or left half when split); face_b = challenger
-        # (right half), present only while split. both share this camera.
-        e['face_a'] = ModelView [ model_path: model, split: split,
-            yaw: yaw, pitch: pitch, dist: dist, look_x: look_x, look_y: look_y, look_z: look_z,
-            span_mm: c_eye, nostril_span: c_nos, mid_nose: c_mid, nostril_y: c_ny ]
-        if [ split ]
-            e['face_b'] = ModelView [ model_path: model, split: split,
-                yaw: yaw, pitch: pitch, dist: dist, look_x: look_x, look_y: look_y, look_z: look_z,
-                span_mm: b_eye, nostril_span: b_nos, mid_nose: b_mid, nostril_y: b_ny ]
+        # main champion view on top; two bottom strips of 128x128 vote cells —
+        # 'low' (broad, large-map variants) and 'high' (detail, small-map)
+        e['face_main'] = ModelView [ model_path: model, face_idx: 0,
+            yaw: yaw, pitch: pitch, dist: dist, look_x: look_x, look_y: look_y, look_z: look_z ]
+        e['vote_0'] = ModelView [ model_path: model, face_idx: 10 + gen * 100,
+            yaw: yaw, pitch: pitch, dist: dist, look_x: look_x, look_y: look_y, look_z: look_z ]
+        e['vote_1'] = ModelView [ model_path: model, face_idx: 11 + gen * 100,
+            yaw: yaw, pitch: pitch, dist: dist, look_x: look_x, look_y: look_y, look_z: look_z ]
         return e
