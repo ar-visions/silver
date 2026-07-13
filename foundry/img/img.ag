@@ -56,6 +56,12 @@ enum Surface
     ao              : 7
     ior             : 8
     environment     : 9
+    iris            : 10
+    iris_melanin    : 11
+    iris_disp_a     : 12
+    iris_disp_b     : 13
+    iris_disp_c     : 14
+    sclera_disp     : 15
 
 enum Cap
     none            : 0

@@ -206,7 +206,38 @@ ModelViewProject CorneaIR
     mutable sclera_hi : f32 [ 0.95 ]
     mutable sclera_lo : f32 [ 0.20 ]
     mutable sclera_k  : f32 [ 1.5 ]
+    # volume eye: refract the view ray at the cornea and march it through the
+    # anterior chamber to the iris plane sitting inside the eyeball sphere.
+    # geometry from the model: eyeball radius ~0.0122, iris plane z~0.009,
+    # iris radius ~0.0105 (local, metres)
+    mutable ior         : f32 [ 1.20 ]
+    mutable cornea_c    : f32 [ 0.0025 ]
+    mutable cornea_r    : f32 [ 0.0110 ]
+    mutable iris_z      : f32 [ 0.009 ]
+    mutable iris_radius : f32 [ 0.0046 ]
+    mutable iris_tex_scale : f32 [ 1.0 ]
+    mutable iris_rot    : f32 [ 0.0 ]
+    mutable limbus_soft : f32 [ 0.22 ]
+    # iris map mixing: melanin pigment, 3 displacement variants, sclera veins
+    mutable mel_amt     : f32 [ 1.0 ]
+    mutable disp_wa     : f32 [ 1.0 ]
+    mutable disp_wb     : f32 [ 0.0 ]
+    mutable disp_wc     : f32 [ 0.0 ]
+    mutable disp_amt    : f32 [ 0.35 ]
+    mutable sclera_vein : f32 [ 0.15 ]
+    mutable pupil_r     : f32 [ 0.40 ]
+    mutable pupil_soft  : f32 [ 0.08 ]
+    mutable iris_glow   : f32 [ 0.9 ]
+    mutable retro_k     : f32 [ 1.5 ]
+    mutable retina_min  : f32 [ 0.25 ]
+    mutable iris_bright : f32 [ 0.65 ]
     attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+    attrib iris  : LayoutBinding [ type:typeid[ Surface ], id:Surface.iris,  count:1, format: typeid[ rgba8 ] ]
+    attrib iris_melanin : LayoutBinding [ type:typeid[ Surface ], id:Surface.iris_melanin, count:1, format: typeid[ rgba8 ] ]
+    attrib iris_disp_a  : LayoutBinding [ type:typeid[ Surface ], id:Surface.iris_disp_a,  count:1, format: typeid[ rgba8 ] ]
+    attrib iris_disp_b  : LayoutBinding [ type:typeid[ Surface ], id:Surface.iris_disp_b,  count:1, format: typeid[ rgba8 ] ]
+    attrib iris_disp_c  : LayoutBinding [ type:typeid[ Surface ], id:Surface.iris_disp_c,  count:1, format: typeid[ rgba8 ] ]
+    attrib sclera_disp  : LayoutBinding [ type:typeid[ Surface ], id:Surface.sclera_disp,  count:1, format: typeid[ rgba8 ] ]
 
     attrib a_pos     : VertexInput [ type:typeid[ vec3f ] ]
     attrib a_normal  : VertexInput [ type:typeid[ vec3f ] ]
@@ -235,23 +266,75 @@ ModelViewProject CorneaIR
     }
 
     func fragment [] -> GLSL none {
-        vec3  N    = normalize(v_vnorm);
-        vec3  V    = normalize(-v_vpos);
-        float ndv  = max(dot(N, V), 0.0);
-        float spec = pow(ndv, 120.0) * ubo.glint;
-        float face = pow(ndv, 2.0);
-        float sc   = texture(color, v_uv).r;
-        float d    = length(v_vpos);
-        float fall = clamp(2.0 / (1.0 + 0.04 * d * d), 0.0, 1.0);
-        // sclera opaque and pale; cornea front near-clear so the iris shows;
-        // the glint forces alpha up so the blend keeps the bright dot. the
-        // outer sclera (grazing, low ndv) darkens in IR toward sclera_lo
-        float shade  = mix(ubo.sclera_lo, ubo.sclera_hi, pow(ndv, ubo.sclera_k));
-        float sclera = sc * shade * fall;
-        float base_a = mix(1.0, 0.10, face);
-        float alpha  = clamp(base_a + spec, 0.0, 1.0);
-        float g      = sclera + spec;
-        fragColor    = vec4(vec3(g), alpha);
+        // eye local frame (right/up/fwd) and center, all in view space
+        mat3  MV    = mat3(ubo.view) * mat3(ubo.model);
+        vec3  fwd   = normalize(MV * vec3(0.0, 0.0, 1.0));
+        vec3  right = normalize(MV * vec3(1.0, 0.0, 0.0));
+        vec3  up    = normalize(MV * vec3(0.0, 1.0, 0.0));
+        vec3  Cc    = (ubo.view * ubo.model * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+
+        vec3  N     = normalize(v_vnorm);
+        vec3  Vd    = normalize(-v_vpos);
+        float ndv   = max(dot(N, Vd), 0.0);
+
+        // VOLUME: the flat iris disc only rasterizes the eye region; here we
+        // trace the real cornea analytically. intersect the camera ray with a
+        // cornea sphere sitting in front of the iris, refract at that surface,
+        // then march to the iris plane. true depth + parallax, no flat sprite.
+        vec3  D     = normalize(v_vpos);
+        vec3  Sc    = Cc + fwd * ubo.cornea_c;
+        float b     = dot(D, Sc);
+        float c     = dot(Sc, Sc) - ubo.cornea_r * ubo.cornea_r;
+        float disc  = b * b - c;
+        float m     = 0.0;
+        float rr    = 2.0;
+        float spec  = 0.0;
+        if (disc > 0.0) {
+            float tt  = b - sqrt(disc);
+            vec3  Pin = D * tt;
+            vec3  Nin = normalize(Pin - Sc);
+            vec3  R   = refract(D, Nin, 1.0 / ubo.ior);
+            if (dot(R, R) < 1e-6) { R = D; }
+            float Rz  = dot(R, fwd);
+            Rz = (Rz < 0.0) ? min(Rz, -1e-3) : max(Rz, 1e-3);
+            float s   = (ubo.iris_z - dot(Pin - Cc, fwd)) / Rz;
+            vec3  hit = Pin + R * s;
+            vec2  hxy = vec2(dot(hit - Cc, right), dot(hit - Cc, up));
+            rr        = length(hxy) / ubo.iris_radius;
+            // rotate the iris texture, then scale its inner detail
+            float ca  = cos(ubo.iris_rot);
+            float sa  = sin(ubo.iris_rot);
+            vec2  rxy = vec2(hxy.x * ca - hxy.y * sa, hxy.x * sa + hxy.y * ca);
+            vec2  iuv = vec2(0.5) + 0.5 * rxy / (ubo.iris_radius * ubo.iris_tex_scale);
+            float fib = texture(iris, iuv).a;
+            float mel = texture(iris_melanin, iuv).r;
+            float da  = texture(iris_disp_a, iuv).r;
+            float db  = texture(iris_disp_b, iuv).r;
+            float dc  = texture(iris_disp_c, iuv).r;
+            float dsp = da * ubo.disp_wa + db * ubo.disp_wb + dc * ubo.disp_wc;
+            // melanin sets iris darkness; fibres + displacement crypts add relief
+            float base= mix(1.0, mel, ubo.mel_amt);
+            m         = clamp(base * (0.6 + 0.4 * fib) + (dsp - 0.5) * ubo.disp_amt, 0.0, 1.0);
+            spec      = pow(max(dot(Nin, Vd), 0.0), 120.0) * ubo.glint;
+        }
+
+        // pupil, iris fibres, and the retina retroreflection (4x facing the eye)
+        float retro = pow(max(dot(fwd, Vd), 0.0), ubo.retro_k);
+        float pin   = smoothstep(ubo.pupil_r - ubo.pupil_soft, ubo.pupil_r + ubo.pupil_soft, rr);
+        float retina= 1.0 - smoothstep(0.0, ubo.pupil_r, rr) * 0.6;
+        float glow  = ubo.iris_glow * mix(ubo.retina_min, 1.0, retro) * retina;
+        float irG   = ubo.iris_bright * m;
+        float irisV = mix(glow, irG, pin);
+        float inIr  = 1.0 - smoothstep(1.0 - ubo.limbus_soft, 1.0, rr);
+
+        // white sclera outside the iris
+        float shade = mix(ubo.sclera_lo, ubo.sclera_hi, pow(ndv, ubo.sclera_k));
+        float sc    = texture(color, v_uv).r;
+        float sdsp  = texture(sclera_disp, v_uv).r;
+        float sclera= sc * shade + (sdsp - 0.5) * ubo.sclera_vein;
+
+        float g     = mix(sclera, irisV, inIr) + spec;
+        fragColor   = vec4(vec3(g), 1.0);
     }
 
 element ModelView
@@ -504,7 +587,15 @@ element ModelView
         for [ lv: i32 0, lv < subdiv_levels, lv += 1 ]
             for [ msh: Mesh ] in gmodel.meshes
                 for [ prim: Primitive ] in msh.primitives
-                    puts 'subdiv L{lv}: {msh.name} -> subdividing'
+                    midx : i32 [ prim.material ]
+                    mnm : string [ '' ]
+                    if [ gmodel.materials && gmodel.materials.count > midx ]
+                        mnm = gmodel.materials[ midx ].name
+                    # only the body needs our subdivision; eyes/teeth/tongue
+                    # carry blender modifiers baked in (skip to avoid a freeze)
+                    keep : bool [ (mnm == 'Head') || (mnm == 'Body') ]
+                    if [ !keep ] continue
+                    puts 'subdiv L{lv}: {msh.name} mat={mnm} -> subdividing'
                     subdivide_prim[ prim ]
 
     func subdivide_prim [ prim: Primitive ]
@@ -1274,7 +1365,6 @@ element ModelView
         set_albedo[ 'Eyeball', '../share/textures/eye/sclera_albedo.png' ]
         set_albedo[ 'Iris',    '../share/textures/eye/iris_fibres.png' ]
         # the eyeball is the translucent cornea layer over the iris
-        mark_transparent[ 'Eyeball', 0.5 ]
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
@@ -1286,8 +1376,9 @@ element ModelView
             vshader   = SkinnedLit [ vk: cv.vk, name: 'skinned' ]
             rshader   = RigidLit   [ vk: cv.vk, name: 'rigid' ]
             cshader   = CorneaIR   [ vk: cv.vk, name: 'cornea' ]
-            # load only the body and the eyes — skip teeth/tongue/etc.
-            vshader.groups = array string [ 'Body', 'Eye L', 'Eye R', 'Iris L', 'Iris R' ]
+            # load the body and the eyeball spheres (Eye L/R -> CorneaIR volume,
+            # the real bump). drop the flat Iris disc meshes (RigidLit planes)
+            vshader.groups = array string [ 'Body', 'Eye L', 'Eye R' ]
             # mount the .res sidecar if present, then resolve the model and
             # its buffer uris through the wrapper: loose files win, else the
             # archive cache. base = the asset root, one dir above the model
@@ -1324,7 +1415,24 @@ element ModelView
             update_palette[]
             sm : map Au[string] [ ]
             if [ joint_buf ] sm[ 'joints_pal' ] = joint_buf
-            vmodel    = Model [ vk: cv.vk, w: w, s: vshader, rigid_s: rshader, transparent_s: cshader, samplers: sm ]
+            # bind every eye map onto the cornea shader; the single frag samples
+            # fibres, melanin, three iris displacements, and the sclera veins
+            eye_files : array string [ 'iris_fibres.png', 'iris_melanin.png', 'iris_displacement_a.png', 'iris_displacement_b.png', 'iris_displacement_c.png', 'sclera_displacement.png' ]
+            eye_keys  : array string [ 'iris', 'iris_melanin', 'iris_disp_a', 'iris_disp_b', 'iris_disp_c', 'sclera_disp' ]
+            for [ ei: i32 0, ei < eye_files.count, ei += 1 ]
+                kf : eye_files[ ei ]
+                kk : eye_keys[ ei ]
+                ep : path '{model_path.parent_dir[]}/../share/textures/eye/{kf}'
+                if [ !ep.exists[] ] continue
+                eim : Image [ uri: ep ]
+                emx : i32 [ (eim.width > eim.height) ? eim.width : eim.height ]
+                eml : i32 [ 1 ]
+                for [ q: i32 emx, q > 1, q = q / 2 ]
+                    eml += 1
+                etx : Texture [ w: w, vk: cv.vk, linear: true, mip_levels: eml, sampler: eim ]
+                etx.hold[]
+                sm[ kk ] = etx
+            vmodel    = Model [ vk: cv.vk, w: w, s: vshader, rigid_s: cshader, transparent_s: cshader, samplers: sm ]
             vmodel.id = gm
             # auto-frame: union of POSITION bounds in WORLD space — each mesh
             # node's composed scene-graph transform applied to its box corners
