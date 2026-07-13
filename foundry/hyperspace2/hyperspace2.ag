@@ -376,6 +376,14 @@ element ModelView
     mutable dgr_rest   : quatf
     mutable crl_rest   : quatf
     mutable crr_rest   : quatf
+    # eye spacing (IPD): nudge the eyeball globe bones apart, and let the
+    # lid/socket skin follow via a one-time world-space vertex bake (falloff)
+    mutable gbl        : i32 [ -1 ]           # Eyeball.L node (globe bone)
+    mutable gbr        : i32 [ -1 ]           # Eyeball.R node (globe bone)
+    mutable gbl_rest   : vec3f                # Eyeball.L rest translation
+    mutable gbr_rest   : vec3f                # Eyeball.R rest translation
+    mutable eye_spacing : f32 [ 0.0 ]         # per-eye outward shift, metres (derived)
+    mutable span_mm    : f32 [ 91.0 ]         # outer-corner to outer-corner, mm
     mutable ir_on      : bool [ true ]        # near-IR look vs textured color
     mutable gaze_x     : f32                  # eye yaw (left/right), radians
     mutable gaze_y     : f32                  # eye pitch (up/down), radians
@@ -389,7 +397,20 @@ element ModelView
     mutable lastx      : f32
     mutable lasty      : f32
     mutable frame_n    : i32
+    mutable last_press : i32 [ -100 ]         # frame of the last click (dbl-click)
     mutable nose_gain  : f32 [ 0.03 ]         # nose scale from _V_NOSE mask
+    # nose landmark fit (mm); defaults equal the model rest -> no-op until set
+    mutable nostril_span : f32 [ 38.5 ]       # nostril edge-to-edge, x
+    mutable mid_nose     : f32 [ 33.9 ]       # mid-nose width, x
+    mutable nostril_y    : f32 [ 42.3 ]       # nostril below eye plane, y
+    public  split    : bool                   # CSS :split state -> half width
+    # last-baked fit values; when the parent picker feeds new landmarks the
+    # mismatch triggers a rebuild so this face re-bakes to them
+    mutable baked_span : f32 [ -1.0 ]
+    mutable baked_nos  : f32 [ -1.0 ]
+    mutable baked_mid  : f32 [ -1.0 ]
+    mutable baked_ny   : f32 [ -1.0 ]
+    mutable eye_tex : array Texture           # held eye maps, dropped on reload
     mutable morph_w    : map f32 [ string ]   # morph target name -> blend weight
     mutable subdiv_on  : bool [ true ]        # Catmull-Clark subdivide at load
     mutable subdiv_levels : i32 [ 2 ]         # number of Catmull-Clark passes
@@ -399,8 +420,20 @@ element ModelView
         focusable = true
         morph_w   = map f32 [ string ] [ ]
         # drive morphs per-sample: morph_w[ 'Body Asian' ] = 1.0, etc.
+        # this face is param-driven by the FacePicker parent; not focusable so
+        # keys reach the picker (mouse orbit still works by position)
+        focusable = false
+
+    # the shared camera + A/B state live on the hyperspace2 app root parent
+    func picker [] -> hyperspace2
+        if [ !parent ] return null
+        return (parent) to hyperspace2
 
     public func on_press [ ev: Event ]
+        # double-click (two presses within ~20 frames) toggles the A|B split
+        fp : picker[]
+        if [ fp && (frame_n - last_press) < 20 ] fp.split = !fp.split
+        last_press = frame_n
         dragging = true
         lastx = ev.mouse.pos.x
         lasty = ev.mouse.pos.y
@@ -412,6 +445,8 @@ element ModelView
 
     public func on_move [ ev: Event ]
         if [ !dragging ] return
+        fp : picker[]
+        if [ !fp ] return
         dx : f32 [ ev.mouse.pos.x - lastx ]
         dy : f32 [ ev.mouse.pos.y - lasty ]
         lastx = ev.mouse.pos.x
@@ -419,24 +454,26 @@ element ModelView
         if [ ev.key.shift ]
             # shift-drag PANS: translate the look target along the camera's
             # right and screen-up axes, scaled so the content tracks the cursor
-            sc : f32 [ dist * 0.0016 ]
-            syw : f32 [ sin[ yaw ] ]
-            cyw : f32 [ cos[ yaw ] ]
-            spt : f32 [ sin[ pitch ] ]
-            cpt : f32 [ cos[ pitch ] ]
-            look_x += (cyw * dx + syw * spt * dy) * sc
-            look_y += cpt * dy * sc
-            look_z += ((0.0 - syw) * dx + cyw * spt * dy) * sc
+            sc : f32 [ fp.dist * 0.0016 ]
+            syw : f32 [ sin[ fp.yaw ] ]
+            cyw : f32 [ cos[ fp.yaw ] ]
+            spt : f32 [ sin[ fp.pitch ] ]
+            cpt : f32 [ cos[ fp.pitch ] ]
+            fp.look_x += (cyw * dx + syw * spt * dy) * sc
+            fp.look_y += cpt * dy * sc
+            fp.look_z += ((0.0 - syw) * dx + cyw * spt * dy) * sc
         el
-            yaw   += dx * 0.01
-            pitch += dy * 0.01
-            if [ pitch >  1.5 ] pitch =  1.5
-            if [ pitch < -1.5 ] pitch = -1.5
+            fp.yaw   += dx * 0.01
+            fp.pitch += dy * 0.01
+            if [ fp.pitch >  1.5 ] fp.pitch =  1.5
+            if [ fp.pitch < -1.5 ] fp.pitch = -1.5
 
     public func on_wheel [ ev: Event ]
-        dist *= 1.0 - f32[ ev.mouse.wheel_delta.y ] * 0.1
-        if [ dist < 0.2 ]  dist = 0.2
-        if [ dist > 50.0 ] dist = 50.0
+        fp : picker[]
+        if [ !fp ] return
+        fp.dist *= 1.0 - f32[ ev.mouse.wheel_delta.y ] * 0.1
+        if [ fp.dist < 0.2 ]  fp.dist = 0.2
+        if [ fp.dist > 50.0 ] fp.dist = 50.0
 
     public func on_key [ ev: Event ]
         if [ !ev.key.state ] return
@@ -462,6 +499,23 @@ element ModelView
         if [ gaze_x < -0.6 ] gaze_x = -0.6
         if [ gaze_y >  0.5 ] gaze_y =  0.5
         if [ gaze_y < -0.5 ] gaze_y = -0.5
+
+    # tear down the loaded model so the next draw re-inits with the new fit
+    func reload_model []
+        if [ eye_tex ]
+            for [ tx: Texture ] in eye_tex
+                tx.drop[]
+            eye_tex = null
+        if [ gmodel ] gmodel.drop[]
+        if [ joint_buf ] joint_buf.drop[]
+        gmodel    = null
+        joint_buf = null
+        vmodel    = null
+        vrender   = null
+        skin_idx  = -1
+        hinge_node = -1
+        gbl = -1
+        gbr = -1
 
     # blend selected shape keys (glTF morph targets) into POSITION at load,
     # weighted by morph_w[name]. runs before skinning and the _V_* detail.
@@ -586,6 +640,106 @@ element ModelView
                     pf[1] = pf[1] + dy * s
                     pf[2] = pf[2] + dz * s
                 puts 'hyperspace2: baked nose on prim verts={vc} rad={rad}'
+
+    # fit the nose to measured landmarks: lateral width at the nostril and mid
+    # bands, a depth profile (top/mid/tip) out from the eye plane, and nostril
+    # height. per-vertex bake over the painted _V_NOSE region; each vert's
+    # height picks its band. defaults equal the model's rest so no-op until set.
+    func bake_nose_landmarks []
+        if [ !gmodel ] return
+        neutral : f32 [ 0.216 ]
+        # eye-plane height (y) datum, from the eye bone
+        epy : f32 [ 1.622 ]
+        for [ nd: Node ] in gmodel.nodes
+            if [ nd.name && nd.name == 'Eye.L' ]
+                wl : mat4f [ nd.world ]
+                epy = wl.m[13]
+        for [ msh: Mesh ] in gmodel.meshes
+            for [ prim: Primitive ] in msh.primitives
+                pos_ai  : i32 [ -1 ]
+                nose_ai : i32 [ -1 ]
+                for [ value: ref i64, a_name: string ] in prim.attributes
+                    if [ a_name == 'POSITION' ] pos_ai  = i32[ value[0] ]
+                    if [ a_name == '_V_NOSE'  ] nose_ai = i32[ value[0] ]
+                if [ pos_ai  < 0 ] continue
+                if [ nose_ai < 0 ] continue
+                pac : gmodel.accessors[ pos_ai ]
+                nac : gmodel.accessors[ nose_ai ]
+                pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
+                nbv : gmodel.bufferViews[ i32[ nac.bufferView ] ]
+                pbb : gmodel.buffers[ i32[ pbv.buffer ] ]
+                nbb : gmodel.buffers[ i32[ nbv.buffer ] ]
+                pbase : ref i8 [ pbb.data ]
+                nbase : ref i8 [ nbb.data ]
+                pstride : i64 [ pac.stride ]
+                nstride : i64 [ nac.stride ]
+                if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
+                if [ nbv.byteStride > 0 ] nstride = nbv.byteStride
+                poff : i64 [ pbv.byteOffset + pac.byteOffset ]
+                noff : i64 [ nbv.byteOffset + nac.byteOffset ]
+                vc : i32 [ i32[ pac.count ] ]
+                # pass 1: nose y-range
+                ny0 : f32 [  1000000.0 ]
+                ny1 : f32 [ -1000000.0 ]
+                for [ i: i32 0, i < vc, i += 1 ]
+                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
+                    if [ m <= 0.02 ] continue
+                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    if [ pf[1] < ny0 ] ny0 = pf[1]
+                    if [ pf[1] > ny1 ] ny1 = pf[1]
+                if [ ny1 <= ny0 ] continue
+                yspan : f32 [ ny1 - ny0 ]
+                # pass 2: rest half-width (max |x|) at the nostril and mid bands
+                hw0 : f32 [ 0.0 ]
+                hw1 : f32 [ 0.0 ]
+                cn0 : i32 [ 0 ]
+                cn1 : i32 [ 0 ]
+                for [ i: i32 0, i < vc, i += 1 ]
+                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
+                    if [ m <= 0.02 ] continue
+                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    t  : f32 [ (pf[1] - ny0) / yspan ]
+                    ax : f32 [ (pf[0] < 0.0) ? (0.0 - pf[0]) : pf[0] ]
+                    if [ t < 0.333 ]
+                        if [ ax > hw0 ] hw0 = ax
+                        cn0 += 1
+                    el [ t < 0.667 ]
+                        if [ ax > hw1 ] hw1 = ax
+                        cn1 += 1
+                if [ cn0 == 0 || cn1 == 0 ] continue
+                # target/rest width ratios at nostril (t=0) and mid (t=0.5)
+                ns : f32 [ 1.0 ]
+                ms : f32 [ 1.0 ]
+                if [ hw0 > 0.0 ] ns = (nostril_span / 1000.0) / (2.0 * hw0)
+                if [ hw1 > 0.0 ] ms = (mid_nose / 1000.0) / (2.0 * hw1)
+                # nostril target y = the person's eye-to-nostril distance
+                nyt : f32 [ epy - nostril_y / 1000.0 ]
+                dy_full : f32 [ nyt - ny0 ]
+                # pass 3: apply
+                for [ i: i32 0, i < vc, i += 1 ]
+                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
+                    if [ m <= 0.02 ] continue
+                    w  : f32 [ m / (1.0 - neutral) ]
+                    if [ w > 1.0 ] w = 1.0
+                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    t  : f32 [ (pf[1] - ny0) / yspan ]
+                    if [ t < 0.0 ] t = 0.0
+                    if [ t > 1.0 ] t = 1.0
+                    # lateral width: nostril -> mid -> unchanged at the root
+                    ws : f32 [ 1.0 ]
+                    if [ t < 0.5 ]
+                        ws = ns + (ms - ns) * (t / 0.5)
+                    el
+                        ws = ms + (1.0 - ms) * ((t - 0.5) / 0.5)
+                    pf[0] = pf[0] * (1.0 + w * (ws - 1.0))
+                    # nostril height: shift the lower band in y, taper out by mid
+                    yw : f32 [ 1.0 - t / 0.5 ]
+                    if [ yw < 0.0 ] yw = 0.0
+                    pf[1] = pf[1] + w * yw * dy_full
+                puts 'hyperspace2: nose fit hw0={hw0} hw1={hw1} nostril dy={dy_full}'
 
     # 1-to-4 loop split: every triangle -> 4 via edge-midpoint verts, each
     # attribute the average of the two endpoints. runs last (after morph +
@@ -1262,9 +1416,13 @@ element ModelView
             if [ nd.name && nd.name == 'Eyeball.L' ]
                 ebl = ni
                 ebl_rest = nd.rotation
+                gbl = ni
+                gbl_rest = nd.translation
             if [ nd.name && nd.name == 'Eyeball.R' ]
                 ebr = ni
                 ebr_rest = nd.rotation
+                gbr = ni
+                gbr_rest = nd.translation
             if [ nd.name && nd.name == 'Eyelids Drag.L' ]
                 dgl = ni
                 dgl_rest = nd.rotation
@@ -1319,6 +1477,122 @@ element ModelView
         set_bone[ crl, crl_rest, cr ]
         set_bone[ crr, crr_rest, cr ]
 
+    # nudge the eyeball globe bones outward so each eyeball follows the socket;
+    # local-x maps to world -x on these bones, so subtract to move both apart
+    func apply_spacing []
+        if [ gbl >= 0 ]
+            nl : gmodel.nodes[ gbl ]
+            nl.translation = vec3f [ gbl_rest.x - eye_spacing, gbl_rest.y, gbl_rest.z ]
+        if [ gbr >= 0 ]
+            nr : gmodel.nodes[ gbr ]
+            nr.translation = vec3f [ gbr_rest.x + eye_spacing, gbr_rest.y, gbr_rest.z ]
+
+    # move the lid/socket skin to follow the eyeballs: one-time, at load. shift
+    # each Head/Body vert along world x toward its nearest eye, by eye_spacing
+    # with a smooth falloff to zero at rad. the eyelid verts (skinned to Eye.L/
+    # Caruncle/Eyelids Drag) and the surrounding cheek move together -> no squeeze
+    func bake_eye_spacing []
+        if [ !gmodel ] return
+        lcx : f32 [ 0.0 ]
+        lcy : f32 [ 0.0 ]
+        lcz : f32 [ 0.0 ]
+        rcx : f32 [ 0.0 ]
+        rcy : f32 [ 0.0 ]
+        rcz : f32 [ 0.0 ]
+        gotl : bool [ false ]
+        gotr : bool [ false ]
+        for [ nd: Node ] in gmodel.nodes
+            if [ nd.name && nd.name == 'Eye.L' ]
+                wl : mat4f [ nd.world ]
+                lcx = wl.m[12]
+                lcy = wl.m[13]
+                lcz = wl.m[14]
+                gotl = true
+            if [ nd.name && nd.name == 'Eye.R' ]
+                wr : mat4f [ nd.world ]
+                rcx = wr.m[12]
+                rcy = wr.m[13]
+                rcz = wr.m[14]
+                gotr = true
+        if [ !gotl || !gotr ] return
+        # the outer eye corner sits about one eyeball radius lateral to the eye
+        # centre; measure the globe's x-extent to convert corner span to a shift
+        eye_rad : f32 [ 0.0126 ]
+        gxmin : f32 [  1000000.0 ]
+        gxmax : f32 [ -1000000.0 ]
+        gotrad : bool [ false ]
+        for [ emsh: Mesh ] in gmodel.meshes
+            for [ eprim: Primitive ] in emsh.primitives
+                emidx : i32 [ eprim.material ]
+                emnm : string [ '' ]
+                if [ gmodel.materials && gmodel.materials.count > emidx ]
+                    emnm = gmodel.materials[ emidx ].name
+                if [ emnm != 'Eyeball' ] continue
+                epos_ai : i32 [ -1 ]
+                for [ value: ref i64, a_name: string ] in eprim.attributes
+                    if [ a_name == 'POSITION' ] epos_ai = i32[ value[0] ]
+                if [ epos_ai < 0 ] continue
+                eac : gmodel.accessors[ epos_ai ]
+                ebv : gmodel.bufferViews[ i32[ eac.bufferView ] ]
+                ebb : gmodel.buffers[ i32[ ebv.buffer ] ]
+                ebase : ref i8 [ ebb.data ]
+                estride : i64 [ eac.stride ]
+                if [ ebv.byteStride > 0 ] estride = ebv.byteStride
+                eoff : i64 [ ebv.byteOffset + eac.byteOffset ]
+                evc : i32 [ i32[ eac.count ] ]
+                for [ i: i32 0, i < evc, i += 1 ]
+                    ef : ref f32 [ ((ref ebase[ eoff + i64[ i ] * estride ]) to ref f32) ]
+                    if [ ef[0] < gxmin ] gxmin = ef[0]
+                    if [ ef[0] > gxmax ] gxmax = ef[0]
+                    gotrad = true
+        if [ gotrad ] eye_rad = (gxmax - gxmin) * 0.5
+        # per-eye shift = half the gap between the target and the rest corner span
+        dxc : f32 [ lcx - rcx ]
+        rest_ipd : f32 [ (dxc < 0.0) ? (0.0 - dxc) : dxc ]
+        rest_span : f32 [ rest_ipd + 2.0 * eye_rad ]
+        eye_spacing = (span_mm / 1000.0 - rest_span) * 0.5
+        puts 'hyperspace2: corner-span target={span_mm}mm rest={rest_span}m rad={eye_rad}m -> shift={eye_spacing}m'
+        rad : f32 [ 0.055 ]
+        for [ msh: Mesh ] in gmodel.meshes
+            for [ prim: Primitive ] in msh.primitives
+                midx : i32 [ prim.material ]
+                mnm : string [ '' ]
+                if [ gmodel.materials && gmodel.materials.count > midx ]
+                    mnm = gmodel.materials[ midx ].name
+                keep : bool [ (mnm == 'Head') || (mnm == 'Body') ]
+                if [ !keep ] continue
+                pos_ai : i32 [ -1 ]
+                for [ value: ref i64, a_name: string ] in prim.attributes
+                    if [ a_name == 'POSITION' ] pos_ai = i32[ value[0] ]
+                if [ pos_ai < 0 ] continue
+                pac : gmodel.accessors[ pos_ai ]
+                pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
+                pbb : gmodel.buffers[ i32[ pbv.buffer ] ]
+                pbase : ref i8 [ pbb.data ]
+                pstride : i64 [ pac.stride ]
+                if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
+                poff : i64 [ pbv.byteOffset + pac.byteOffset ]
+                vc : i32 [ i32[ pac.count ] ]
+                for [ i: i32 0, i < vc, i += 1 ]
+                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    dlx : f32 [ pf[0] - lcx ]
+                    dly : f32 [ pf[1] - lcy ]
+                    dlz : f32 [ pf[2] - lcz ]
+                    drx : f32 [ pf[0] - rcx ]
+                    dry : f32 [ pf[1] - rcy ]
+                    drz : f32 [ pf[2] - rcz ]
+                    dl : f32 [ sqrt[ dlx * dlx + dly * dly + dlz * dlz ] ]
+                    dr : f32 [ sqrt[ drx * drx + dry * dry + drz * drz ] ]
+                    d   : f32 [ dl ]
+                    sgn : f32 [ (lcx >= 0.0) ? 1.0 : -1.0 ]
+                    if [ dr < dl ]
+                        d = dr
+                        sgn = (rcx >= 0.0) ? 1.0 : -1.0
+                    if [ d >= rad ] continue
+                    t : f32 [ d / rad ]
+                    fall : f32 [ 1.0 - (t * t * (3.0 - 2.0 * t)) ]
+                    pf[0] = pf[0] + sgn * eye_spacing * fall
+
     # pose the rig for this frame (hinge + eyes), recompose worlds, and write the
     # skin palette; the caller then pushes rigid node worlds via update_animated
     func update_palette []
@@ -1330,6 +1604,7 @@ element ModelView
             s2 : f32 [ sin[ hinge_ang * 0.5 ] ]
             hn.rotation = quatf [ x: s2, y: 0.0, z: 0.0, w: cos[ hinge_ang * 0.5 ] ]
         aim_eyes[]
+        apply_spacing[]
         gmodel.compute_worlds[]
         dst : ref f32 [ ((joint_buf.data) to ref f32) ]
         for [ j: i32 0, j < nj, j += 1 ]
@@ -1379,6 +1654,9 @@ element ModelView
         if [ w.draw_stage != CanvasType.screen ] return
         ux.will_animate = true
         if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
+        # the picker fed new landmarks -> rebuild this face to them
+        if [ vrender && (span_mm != baked_span || nostril_span != baked_nos || mid_nose != baked_mid || nostril_y != baked_ny) ]
+            reload_model[]
         cv : Canvas [ w.screen ]
         if [ !vrender ]
             expect model_path, 'no model path given'
@@ -1416,6 +1694,14 @@ element ModelView
             # blend shape keys, then bake the painted nose scale, into POSITION
             apply_morphs[]
             bake_nose[]
+            # fit the nose to the person's measured landmarks (mm)
+            bake_nose_landmarks[]
+            # set eye spacing to the person's IPD (mm); eyeballs follow the bone
+            bake_eye_spacing[]
+            baked_span = span_mm
+            baked_nos  = nostril_span
+            baked_mid  = mid_nose
+            baked_ny   = nostril_y
             # tessellate the base mesh (1-to-4) after all CPU deformation
             subdivide[]
             # read the skin's inverse-bind matrices, find the joint node, build
@@ -1428,6 +1714,7 @@ element ModelView
             # fibres, melanin, three iris displacements, and the sclera veins
             eye_files : array string [ 'iris_fibres.png', 'iris_melanin.png', 'iris_displacement_a.png', 'iris_displacement_b.png', 'iris_displacement_c.png', 'sclera_displacement.png' ]
             eye_keys  : array string [ 'iris', 'iris_melanin', 'iris_disp_a', 'iris_disp_b', 'iris_disp_c', 'sclera_disp' ]
+            eye_tex = array Texture [ ]
             for [ ei: i32 0, ei < eye_files.count, ei += 1 ]
                 kf : eye_files[ ei ]
                 kk : eye_keys[ ei ]
@@ -1441,6 +1728,7 @@ element ModelView
                 etx : Texture [ w: w, vk: cv.vk, linear: true, mip_levels: eml, sampler: eim ]
                 etx.hold[]
                 sm[ kk ] = etx
+                eye_tex += etx
             vmodel    = Model [ vk: cv.vk, w: w, s: vshader, rigid_s: cshader, transparent_s: cshader, samplers: sm ]
             vmodel.id = gm
             # auto-frame: union of POSITION bounds in WORLD space — each mesh
@@ -1476,19 +1764,21 @@ element ModelView
                                 if [ wcx > mxx ] mxx = wcx
                                 if [ wcy > mxy ] mxy = wcy
                                 if [ wcz > mxz ] mxz = wcz
-            if [ mxx > mnx ]
+            fpf : picker[]
+            if [ mxx > mnx && fpf && !fpf.cam_ready ]
                 sx : f32 [ mxx - mnx ]
                 sy : f32 [ mxy - mny ]
                 sz : f32 [ mxz - mnz ]
                 r  : f32 [ sx ]
                 if [ sy > r ] r = sy
                 if [ sz > r ] r = sz
-                look_x = (mnx + mxx) * 0.5
-                look_y = mny + (mxy - mny) * 0.93
-                look_z = (mnz + mxz) * 0.5
-                dist   = (mxy - mny) * 0.20
-                if [ dist < 0.2 ] dist = 0.2
-                puts 'hyperspace2: model bounds {sx}x{sy}x{sz} center=({look_x},{look_y},{look_z}) -> dist={dist}'
+                fpf.look_x = (mnx + mxx) * 0.5
+                fpf.look_y = mny + (mxy - mny) * 0.93
+                fpf.look_z = (mnz + mxz) * 0.5
+                fpf.dist   = (mxy - mny) * 0.20
+                if [ fpf.dist < 0.2 ] fpf.dist = 0.2
+                fpf.cam_ready = true
+                puts 'hyperspace2: model bounds {sx}x{sy}x{sz} center=({fpf.look_x},{fpf.look_y},{fpf.look_z}) -> dist={fpf.dist}'
             vrender   = Render [ vk: cv.vk, w: w, wscale: 1.0, use_depth: true, clear_color: vec4f [ 0.015, 0.015, 0.015, 1.0 ], models: array Model [ vmodel ] ]
             puts 'hyperspace2: bounds={bounds.w}x{bounds.h} window={w.width}x{w.height} scale={w.scale}'
         # orbit camera: spherical eye around the look point (matches the Avatar
@@ -1549,8 +1839,90 @@ element hyperspace2 : trinity
     # color — the background chain's r_view (targeting the screen canvas) is
     # that render, so an app without one has nothing to present
     public background : string [ 'Background' ]
+    # A/B face fitter (folded into the app root so it always gets keys as
+    # app_object). champion (A = running centre) vs challenger (B = centre +
+    # noise); space or a face double-click splits them side by side.
+    mutable seeded   : bool
+    mutable rng      : i64 [ 88172645463325252 ]
+    mutable ab_sigma : f32 [ 1.0 ]            # challenger spread
+    mutable c_eye : f32 [ 91.0 ]             # champion (running centre), mm
+    mutable c_nos : f32 [ 38.5 ]
+    mutable c_mid : f32 [ 33.9 ]
+    mutable c_ny  : f32 [ 42.3 ]
+    mutable b_eye : f32                       # challenger, mm
+    mutable b_nos : f32
+    mutable b_mid : f32
+    mutable b_ny  : f32
+    mutable split : bool                       # A and B side by side
+    # one camera shared by both faces so they always show the same angle; a
+    # drag on either face writes back here and both faces read it each frame
+    mutable yaw    : f32
+    mutable pitch  : f32 [ 0.05 ]
+    mutable dist   : f32 [ 3.5 ]
+    mutable look_x : f32
+    mutable look_y : f32 [ 1.0 ]
+    mutable look_z : f32
+    mutable cam_ready : bool                    # a face has auto-framed once
+
+    # uniform 0..1 from a 64-bit LCG; no Math.random in the module
+    func rnd [] -> f32
+        rng = rng * 6364136223846793005 + 1442695040888963407
+        r : i64 [ (rng >> 33) & 2147483647 ]
+        return f32[ r ] / 2147483647.0
+
+    # ~zero-mean noise (triangular), range about [-1.5, 1.5]
+    func gauss [] -> f32
+        return rnd[] + rnd[] + rnd[] - 1.5
+
+    # draw a fresh challenger around the champion, spread by ab_sigma. the
+    # per-param base widths are rough human population ranges (mm)
+    func resample []
+        b_eye = c_eye + gauss[] * 6.0 * ab_sigma
+        b_nos = c_nos + gauss[] * 5.0 * ab_sigma
+        b_mid = c_mid + gauss[] * 4.0 * ab_sigma
+        b_ny  = c_ny  + gauss[] * 5.0 * ab_sigma
+
+    public func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        if [ ev.key.unicode == 32 ] split = !split   # space: split A | B
+        if [ ev.key.unicode == 65 ]                  # A: keep champion, narrow
+            ab_sigma = ab_sigma * 0.7
+            if [ ab_sigma < 0.15 ] ab_sigma = 0.15
+            resample[]
+        if [ ev.key.unicode == 66 ]                  # B: adopt challenger
+            den : f32 [ ab_sigma ]
+            if [ den < 0.001 ] den = 0.001
+            de : f32 [ b_eye - c_eye ]
+            dn : f32 [ b_nos - c_nos ]
+            dm : f32 [ b_mid - c_mid ]
+            dy : f32 [ b_ny  - c_ny ]
+            se : f32 [ ((de < 0.0) ? (0.0 - de) : de) / (6.0 * den) ]
+            sn : f32 [ ((dn < 0.0) ? (0.0 - dn) : dn) / (5.0 * den) ]
+            sm : f32 [ ((dm < 0.0) ? (0.0 - dm) : dm) / (4.0 * den) ]
+            sy : f32 [ ((dy < 0.0) ? (0.0 - dy) : dy) / (5.0 * den) ]
+            step : f32 [ (se + sn + sm + sy) * 0.25 ]
+            c_eye = b_eye
+            c_nos = b_nos
+            c_mid = b_mid
+            c_ny  = b_ny
+            ab_sigma = ab_sigma * (0.55 + step)
+            if [ ab_sigma > 1.5 ]  ab_sigma = 1.5
+            if [ ab_sigma < 0.15 ] ab_sigma = 0.15
+            resample[]
+        puts 'hyperspace2: sigma={ab_sigma} eye={c_eye} nos={c_nos} mid={c_mid} ny={c_ny}'
 
     public func render [] -> Elements
+        if [ !seeded ]
+            resample[]
+            seeded = true
         e : Elements [ ]
-        e['view'] = ModelView [ model_path: model ]
+        # face_a = champion (full, or left half when split); face_b = challenger
+        # (right half), present only while split. both share this camera.
+        e['face_a'] = ModelView [ model_path: model, split: split,
+            yaw: yaw, pitch: pitch, dist: dist, look_x: look_x, look_y: look_y, look_z: look_z,
+            span_mm: c_eye, nostril_span: c_nos, mid_nose: c_mid, nostril_y: c_ny ]
+        if [ split ]
+            e['face_b'] = ModelView [ model_path: model, split: split,
+                yaw: yaw, pitch: pitch, dist: dist, look_x: look_x, look_y: look_y, look_z: look_z,
+                span_mm: b_eye, nostril_span: b_nos, mid_nose: b_mid, nostril_y: b_ny ]
         return e

@@ -7,6 +7,14 @@ element.root {
     layers.root_bg [ ]
 }
 
-ModelView {
+.face_a {
     area: l0 t0 r0 b0
+}
+
+.face_a:split {
+    area: l0 t0 r50% b0
+}
+
+.face_b {
+    area: l50% t0 r0 b0
 }
