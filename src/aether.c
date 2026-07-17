@@ -600,7 +600,8 @@ bool is_explicit_ref(enode arg) {
 }
 
 static int fbits_index(Au_t type_au, Au_t member);
-static void mark_set(enode n, u64 mask0, u64 mask1);
+#define AF_WORDS 4
+static void mark_set(enode n, u64* masks);
 
 void aether_emit_listen_value(aether a, enode n); // defined below (debug listen trace)
 
@@ -867,14 +868,12 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
             etype parent_etype = u(etype, parent_type);
             if (parent_etype && _lltype_slot(parent_etype)) {
                 int idx = fbits_index(parent_type, L->autype);
-                if (idx >= 0) {
-                    u64 mask0 = (idx <  64) ? (1ULL << idx) : 0;
-                    // idx >= 128 has no tracked fbit — wrapping (idx % 64) into word 1
-                    // marked an UNRELATED member as set and suppressed its default
-                    u64 mask1 = (idx >= 64 && idx < 128) ? (1ULL << (idx - 64)) : 0;
+                if (idx >= 0 && idx < AF_WORDS * 64) {
+                    u64 masks[AF_WORDS] = { 0 };
+                    masks[idx / 64] = 1ULL << (idx % 64);
                     LLVMValueRef base_ptr = LLVMGetOperand(L->value, 0);
                     enode parent_node = enode(mod, a, value, base_ptr, autype, parent_type, loaded, false);
-                    mark_set(parent_node, mask0, mask1);
+                    mark_set(parent_node, masks);
                 }
             }
         }
@@ -3969,17 +3968,17 @@ enode is_set(enode n, evar prop) {
     bool has_fbits = au->is_class && !au->is_system && !au->is_c && !au->is_au_native &&
         au->module != typeid(Au)->module;
 
-    if (!has_fbits || word >= 2) {
-        // no fbits, or member beyond the 128 tracked flag bits — always return
+    LLVMTypeRef fbits_ty = has_fbits ? LLVMStructGetTypeAtIndex(_lltype_slot(t), 1) : NULL;
+    if (!has_fbits || word >= (int)LLVMCountStructElementTypes(fbits_ty)) {
+        // no fbits, or member beyond the tracked flag bits — always return
         // i1 false (default always applies). returning the raw i64 zero here made
         // LLVMBuildCondBr receive a non-i1 condition ("br i64 0") and verify failed
-        // as soon as a class crossed 128 constructible members.
+        // as soon as a class crossed the tracked member count.
         return enode(mod, a, autype, etypeid(bool)->autype, value,
             LLVMConstInt(LLVMInt1TypeInContext(a->module_ctx), 0, 0));
     }
 
     LLVMValueRef fbits_struct = LLVMBuildStructGEP2(B, _lltype_slot(t), n->value, 1, "fbits");
-    LLVMTypeRef  fbits_ty = LLVMStructGetTypeAtIndex(_lltype_slot(t), 1);
     LLVMValueRef gep = LLVMBuildStructGEP2(B, fbits_ty, fbits_struct, word, "fbits_word");
     LLVMValueRef fbits = LLVMBuildLoad2(B, _lltype_slot(i64_type), gep, "fbits_load");
     LLVMValueRef mask  = LLVMConstInt(_lltype_slot(i64_type), 1ULL << index0, 0);
@@ -3991,7 +3990,7 @@ enode is_set(enode n, evar prop) {
 
 
 // mark props as set in the __f bitfield — takes pre-built masks
-void mark_set(enode n, u64 mask0, u64 mask1) {
+void mark_set(enode n, u64* masks) {
     aether a = au_active(n->mod);
     etype i64_type = etypeid(i64);
     etype t = canonical((etype)n);
@@ -4004,27 +4003,23 @@ void mark_set(enode n, u64 mask0, u64 mask1) {
 
     LLVMValueRef fbits_struct = LLVMBuildStructGEP2(B, _lltype_slot(t), n->value, 1, "fbits");
     LLVMTypeRef  fbits_ty = LLVMStructGetTypeAtIndex(_lltype_slot(t), 1);
+    unsigned     nwords   = LLVMCountStructElementTypes(fbits_ty);
 
-    if (mask0) {
-        LLVMValueRef gep   = LLVMBuildStructGEP2(B, fbits_ty, fbits_struct, 0, "fbits_word0");
+    for (unsigned w = 0; w < nwords && w < AF_WORDS; w++) {
+        if (!masks[w]) continue;
+        LLVMValueRef gep   = LLVMBuildStructGEP2(B, fbits_ty, fbits_struct, w, "fbits_word");
         LLVMValueRef fbits = LLVMBuildLoad2(B, _lltype_slot(i64_type), gep, "fbits_load");
-        LLVMValueRef ored  = LLVMBuildOr(B, fbits, LLVMConstInt(_lltype_slot(i64_type), mask0, 0), "fbits_set");
-        LLVMBuildStore(B, ored, gep);
-    }
-    if (mask1) {
-        LLVMValueRef gep   = LLVMBuildStructGEP2(B, fbits_ty, fbits_struct, 1, "fbits_word1");
-        LLVMValueRef fbits = LLVMBuildLoad2(B, _lltype_slot(i64_type), gep, "fbits_load");
-        LLVMValueRef ored  = LLVMBuildOr(B, fbits, LLVMConstInt(_lltype_slot(i64_type), mask1, 0), "fbits_set");
+        LLVMValueRef ored  = LLVMBuildOr(B, fbits, LLVMConstInt(_lltype_slot(i64_type), masks[w], 0), "fbits_set");
         LLVMBuildStore(B, ored, gep);
     }
 }
 
-// set the af-bit field to EXACTLY mask0/mask1 in one store per word (overwrite,
+// set the af-bit field to EXACTLY masks[] in one store per word (overwrite,
 // not OR). called after init to reset the bits to only the programmer-passed
 // args — discarding the override/default bits that mark_set flipped during
 // construction purely to suppress base-class defaults. apply_args then reconciles
 // only what the renderer actually wrote, never inherited override defaults.
-void set_fbits_exact(enode n, u64 mask0, u64 mask1) {
+void set_fbits_exact(enode n, u64* masks) {
     aether a = au_active(n->mod);
     etype i64_type = etypeid(i64);
     etype t  = canonical((etype)n);
@@ -4038,13 +4033,9 @@ void set_fbits_exact(enode n, u64 mask0, u64 mask1) {
     LLVMTypeRef  fbits_ty     = LLVMStructGetTypeAtIndex(_lltype_slot(t), 1);
     unsigned     nwords       = LLVMCountStructElementTypes(fbits_ty);
 
-    if (nwords >= 1) {
-        LLVMValueRef gep = LLVMBuildStructGEP2(B, fbits_ty, fbits_struct, 0, "fbits_word0");
-        LLVMBuildStore(B, LLVMConstInt(_lltype_slot(i64_type), mask0, 0), gep);
-    }
-    if (nwords >= 2) {
-        LLVMValueRef gep = LLVMBuildStructGEP2(B, fbits_ty, fbits_struct, 1, "fbits_word1");
-        LLVMBuildStore(B, LLVMConstInt(_lltype_slot(i64_type), mask1, 0), gep);
+    for (unsigned w = 0; w < nwords && w < AF_WORDS; w++) {
+        LLVMValueRef gep = LLVMBuildStructGEP2(B, fbits_ty, fbits_struct, w, "fbits_word");
+        LLVMBuildStore(B, LLVMConstInt(_lltype_slot(i64_type), masks[w], 0), gep);
     }
 }
 
@@ -4069,7 +4060,8 @@ void aether_apply_overrides(aether a, enode alloc) {
     // itself (build_init_preamble), and set_fbits_exact resets the bits to
     // only programmer args after init.
     if (alloc_type->module && (Au_t)alloc_type->module != a->autype) return;
-    u64 ov_mask0 = 0, ov_mask1 = 0;
+    u64 ov_masks[AF_WORDS] = { 0 };
+    bool ov_any = false;
     Au_t cur = alloc_type;
     while (cur && cur != typeid(Au)) {
         if (cur->context && cur->context != typeid(Au)) {
@@ -4080,15 +4072,16 @@ void aether_apply_overrides(aether a, enode alloc) {
                     (cstr)mb->ident, AU_MEMBER_VAR, 0, true);
                 if (!inherited) continue;
                 int idx = fbits_index(alloc_type, inherited);
-                if      (idx >= 0 && idx < 64)   ov_mask0 |= 1ULL << idx;
-                else if (idx >= 64 && idx < 128) ov_mask1 |= 1ULL << (idx - 64);
-                // idx >= 128: no tracked fbit — never wrap into word 1
+                if (idx >= 0 && idx < AF_WORDS * 64) {
+                    ov_masks[idx / 64] |= 1ULL << (idx % 64);
+                    ov_any = true;
+                }
             }
         }
         if (cur->context == cur) break;
         cur = cur->context;
     }
-    if (ov_mask0 || ov_mask1) mark_set(alloc, ov_mask0, ov_mask1);
+    if (ov_any) mark_set(alloc, ov_masks);
     if (a->emit_overrides)
         ((void(*)(Au, Au))a->emit_overrides)((Au)a, (Au)alloc);
 }
@@ -4134,7 +4127,8 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     // marked before init (so user-set props suppress their own defaults), then
     // re-stored exactly after init so the af-bits reflect ONLY these — not the
     // override/default bits flipped during construction.
-    u64 mask0 = 0, mask1 = 0;
+    u64 masks[AF_WORDS] = { 0 };
+    bool masks_any = false;
 
     // 1. call constructor if provided.
     // `post construct` (flagged via is_default on the ctr au) defers to after
@@ -4168,13 +4162,14 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
                             (int)mem->af_index, (int)mem->member_index, idx, idx / 64, idx % 64);
                         fflush(stdout);
                     }
-                    if (idx >= 0 && idx < 64)        mask0 |= 1ULL << idx;
-                    else if (idx >= 64 && idx < 128) mask1 |= 1ULL << (idx - 64);
-                    // idx >= 128: no tracked fbit — never wrap into word 1
+                    if (idx >= 0 && idx < AF_WORDS * 64) {
+                        masks[idx / 64] |= 1ULL << (idx % 64);
+                        masks_any = true;
+                    }
                 }
             }
         }
-        if (mask0 || mask1) mark_set(alloc, mask0, mask1);
+        if (masks_any) mark_set(alloc, masks);
         a->init_props_retain_skip = false;
     }
 
@@ -4252,7 +4247,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
     // overrides/defaults flipped bits during init only to suppress base defaults;
     // they must not appear as "set by the renderer" or apply_args will reconcile
     // (overwrite) the live instance from the template every frame.
-    set_fbits_exact(alloc, mask0, mask1);
+    set_fbits_exact(alloc, masks);
 
     res->autype     = alloc->autype;
     res->meta_a = hold(alloc->meta_a);
@@ -6098,6 +6093,13 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     verify(elem_au, "e_offset: no element type on %s", au->ident ? au->ident : "?");
     LLVMTypeRef elem_ty = lltype(u(etype, elem_au));
     
+    // a nested subscript index (a[b[i]]) arrives as an unloaded GEP —
+    // materialize the integer before using it as a GEP index
+    if (!i->loaded && i->value &&
+        LLVMGetTypeKind(LLVMTypeOf(i->value)) == LLVMPointerTypeKind &&
+        !is_struct(canonical(i)))
+        i = enode_value(i, true);
+
     // widen the index to i64 before the GEP. a narrow integer index (e.g. a
     // u16 address like 0xFFFC) is otherwise used as an i16/i32 GEP index, which
     // LLVM SIGN-extends — so 0x8000 becomes -32768 and the access faults. zero-

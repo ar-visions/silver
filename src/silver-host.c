@@ -257,6 +257,10 @@ int main(int argc, char** argv) {
     // user passes nothing. SILVER_DEFER_RELOAD is just a dev override that forces it on.
     int host_defer = (getenv("SILVER_DEFER_RELOAD") != NULL);
 
+    // SILVER_NO_RELOAD: live reload fully OFF — the watch loop never polls
+    // sources and never recompiles; the app runs the build it started with
+    int no_reload = (getenv("SILVER_NO_RELOAD") != NULL);
+
     char product[4096];
     snprintf(product, sizeof(product), "%s/%s.product", bindir, name);
 
@@ -319,6 +323,7 @@ int main(int argc, char** argv) {
         // watch source files — when any .ag/.c changes
         int force = 0;
         int changed = 0;
+        if (!no_reload)
         for (int i = 0; i < nsr; i++) {
             if (file_mtime(srcs[i].path) != srcs[i].mtime) {
                 fprintf(stdout, "%s: source changed: %s\n", name, srcs[i].path);
