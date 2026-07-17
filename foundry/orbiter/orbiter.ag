@@ -97,6 +97,8 @@ class orbiter_state
 
 class FmtWatch
     public proj  : string
+    # the .ag file we handed the language server — it drives the build/analyze
+    public file  : path
     public pid   : i32 [ 0 ]
     public fd    : i32 [ -1 ]
     public map   : string
@@ -134,6 +136,9 @@ element orbiter : trinity # implements compiler
     # console instances from orbiter.agi (shells / AI agents), keyed by name. drives the
     # bottom Instances bar's tab strip; active_console = the one shown in the console.
     public consoles      : map ConsoleInstance [string]
+    # per-module embedded-console sessions (keyed 'ed:<mod>'), persisted across
+    # renders so the pane's Console reuses one session instead of restarting bash
+    intern ed_sessions   : map ConsoleSession [string]
     intern active_console : string
     # screenshot counter — unique /tmp names within a session so the agent
     # never sees a stale image under a reused path
@@ -640,7 +645,8 @@ element orbiter : trinity # implements compiler
                 p.root = resolve_local[ p.root ]
                 if [ p.cwd ] p.cwd = resolve_local[ p.cwd ]
         sync_targets[]
-        fmt_sync[]
+        # (language servers are driven by the open .ag files now, synced from the
+        # once-a-second poll — not from the project load.)
         if [ projects ]
             puts 'loaded {projects.count} projects:'
             for [ p: Project, name: string ] in projects
@@ -691,13 +697,13 @@ element orbiter : trinity # implements compiler
         au_space_clear[]
         compile_log.push[ 'done: {mod}' ]
 
-    # ---- per-project format watchers (language server), one per silver project ----------
-    func fmt_stop [ proj: string ]
+    # ---- per-file format watchers (language server), one per open .ag file ----------
+    func fmt_stop [ key: string ]
         if [ !fmt_watch ] return
-        fw : FmtWatch fmt_watch[ proj ]
+        fw : FmtWatch fmt_watch[ key ]
         if [ !fw ] return
         if [ fw.fd >= 0 ] close[ fw.fd ]
-        fmt_watch.rm[ proj ]
+        fmt_watch.rm[ key ]
 
     func fmt_stop_all []
         if [ !fmt_watch ] return
@@ -729,7 +735,7 @@ element orbiter : trinity # implements compiler
         # a plain --build now writes the syntax cache as a byproduct to its standard path
         # (<install>/syntax/<proj>.f) — no --format flag. redirect stdout+stderr to a log so a
         # compile error / crash is captured (a partial cache is itself the not-compiled signal).
-        cmd : 'cd {startup_path} && unset IMPORT && exec ./platform/native/debug/silver {fw.proj} --build > /tmp/orbiter-fmt-{fw.proj}.log 2>&1'
+        cmd : 'cd {startup_path} && unset IMPORT && exec ./platform/native/debug/silver {fw.file} --build > /tmp/orbiter-fmt-{fw.proj}.log 2>&1'
         fd  : i32 [ -1 ]
         pid : i32 [ forkpty[ ref fd, null, null, null ] ]
         if [ pid == 0 ]
@@ -744,31 +750,57 @@ element orbiter : trinity # implements compiler
             fw.fd  = fd
             fcntl[ fd, F_SETFL, O_NONBLOCK ]
 
-    func fmt_start [ proj: string ]
-        if [ !proj || proj.count == 0 || proj == 'system' ] return
+    # resolve an open .ag file to the MAIN file of the module it belongs to. silver
+    # keeps a module at <dir>/<dir>.ag with sibling .ag files as extensions, so the
+    # module main is <dir>/<dirname>.ag — building it colors every file in the module
+    # (extension files can't build standalone). a loose .ag with no match builds itself.
+    func fmt_main [ f: path ] -> path
+        dir  : path f.parent_dir[]
+        modn : string dir.filename[]
+        m    : path '{dir}/{modn}.ag'
+        if [ m.exists[] ] return m
+        return f
+
+    func fmt_start [ f: path ]
+        if [ !f ] return
         if [ !startup_path ] startup_path = path.path_startup[]
         if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
-        if [ fmt_watch[ proj ] ] return
-        # the build writes each project's syntax cache to <install>/syntax/<proj>.f — translate
-        # the project name to that path and read it (install symlinks to platform/native). the
-        # build is NOT kicked here: fmt_poll loads the existing cache first (instant colors),
-        # then kicks it once. priming leads, the compile trails.
-        fw : FmtWatch [ proj: proj, map: '{startup_path}/install/syntax/{proj}.f', start_us: epoch_micros[] ]
-        fmt_watch[ proj ] = fw
+        k : string '{f}'
+        if [ fmt_watch[ k ] ] return
+        # module stem = filename without .ag — silver writes the syntax cache to
+        # <install>/syntax/<stem>.f whether given the name or the .ag file, so read it
+        # there. the build is NOT kicked here: fmt_poll loads the existing cache first
+        # (instant colors), then kicks it once. priming leads, the compile trails.
+        fn   : string f.filename[]
+        stem : string fn
+        di   : i32 [ fn.rindex_of[ '.' ] ]
+        if [ di > 0 ] stem = fn.mid[ 0, di ]
+        fw : FmtWatch [ proj: stem, file: f, map: '{startup_path}/install/syntax/{stem}.f', start_us: epoch_micros[] ]
+        fmt_watch[ k ] = fw
 
-    # keep the running watchers in sync with the silver projects in the .agi: start one for
-    # each silver project not yet watched, stop any whose project is gone or no longer silver.
+    # keep the running language servers in sync with the .ag files we have open: we
+    # hand silver each open .ag file (no project list — the files ARE the input) and
+    # it decides what to do with it. one watcher per open .ag file, keyed by its path;
+    # start one for any not yet tracked, drop any whose file is no longer open.
     func fmt_sync []
         if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
-        if [ !projects ] return
-        # one format map per PROJECT in the .agi (silver, hyperspace, test4, ...) — each
-        # project's map covers all the files silver associates with it. start one for any
-        # project not yet tracked; drop any whose project is gone.
-        for [ p: Project, name: string ] in projects
-            if [ !fmt_watch[ name ] ] fmt_start[ name ]
+        if [ !open_files ] return
+        live : map bool [string] []
+        for [ i: i32 0, i < open_files.count, i += 1 ]
+            f : path open_files[i]
+            if [ !f ] continue
+            fn : string f.filename[]
+            if [ fn.count < 3 ] continue
+            if [ fn.mid[ fn.count - 3, 3 ].compare[ '.ag' ] != 0 ] continue
+            # resolve to the module's MAIN file so extension files build via their
+            # parent (they can't build standalone) and siblings share one watcher.
+            main : path fmt_main[ f ]
+            k : string '{main}'
+            live[k] = true
+            if [ !fmt_watch[ k ] ] fmt_start[ main ]
         stale : array string []
-        for [ fw: FmtWatch, name: string ] in fmt_watch
-            if [ !projects[ name ] ] stale += name
+        for [ fw: FmtWatch, k: string ] in fmt_watch
+            if [ !live[ k ] ] stale += k
         for [ i: i32 0, i < stale.count, i += 1 ]
             fmt_stop[ stale[i] ]
 
@@ -1252,6 +1284,34 @@ element orbiter : trinity # implements compiler
             no_scroll: true
             elements: ttl
         ]
+        # bottom toolbar (footer): a fixed band styled like the top toolbar. for now
+        # it carries only the play/stop button, which runs this module in-pane. shown
+        # for silver .ag sources; ▶ starts, ■ stops (reflects the pane's run_view).
+        app_running : bool [ (ed_live && ed_live.run_view) ? true : false ]
+        run_ok : bool [ app_running ]
+        if [ !run_ok && p ]
+            fnm : p.filename[]
+            if [ fnm.count >= 3 && fnm.mid[ fnm.count - 3, 3 ].compare[ '.ag' ] == 0 ] run_ok = true
+        if [ run_ok ]
+            # the bottom split area: a resizable band (sized in CSS via @ed_split)
+            # holding the toolbar on top and the per-module console filling below.
+            # one child of the pane, so its area drives both the split + collapse.
+            emod : string [ (p) ? p.filename[] : 'app' ]
+            di2  : i32    [ emod.index_of[ '.' ] ]
+            if [ di2 > 0 ] emod = emod.mid[ 0, di2 ]
+            if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
+            fels : Elements []
+            fels['run'] = Option [ selected: app_running, manual_mode: true ]
+            cf2 : Elements []
+            cf2['console_filter'] = element [ label: emod, focusable: true, no_scroll: true ]
+            # the run command comes straight off the pane's live AppView — when it
+            # exists (play pressed) the console runs the module's build+run; null
+            # otherwise. the console dispatches it itself, so nothing walks the tree.
+            runcmd : string [ (ed_live && ed_live.run_view) ? ed_live.run_view.cmd : null ]
+            bels : Elements []
+            bels['tools']   = Group [ topmost: true, elements: fels ]
+            bels['console'] = Console [ session_id: 'ed:{emod}', sessions: ed_sessions, feed: null, run_line: runcmd, animated: true, elements: cf2 ]
+            pe['bottom'] = element [ elements: bels ]
         # (callstack + fields no longer live in the editor — they're toggled from the
         # bottom console title and render in the Instances bar.)
         # the dock + search results render as the editor's lines (run_search), not a
@@ -1835,12 +1895,11 @@ element orbiter : trinity # implements compiler
 
     # the selected project's root path (browse navigation is bounded to it). the
     # settings/system target is rooted at silver's launch dir.
+    # orbiter is rooted at the directory it was launched in — a plain set of edit
+    # pages over that tree. no orbiter.agi project/target drives the root anymore.
     func project_root [] -> path
-        if [ active_target.compare[ 'system' ] == 0 ] return path '{startup_path}'
-        for [ i: i32 0, i < target_names.count, i += 1 ]
-            if [ target_names[i].compare[ active_target ] == 0 ] return target_roots[i]
-        if [ target_roots.count > 0 ] return target_roots[0]
-        return nav_root
+        if [ !startup_path ] startup_path = path.path_startup[]
+        return path '{startup_path}'
 
     # push a directory as a 2-slot title link. `label` lets the up entry read '..'.
     func push_dir_hit [ p: path, label: string ]
@@ -2253,6 +2312,17 @@ element orbiter : trinity # implements compiler
             rekeep_listing[]
             ev.no_default = true
             force_update[]
+            return
+        # play/stop: toggle the focused pane between source and a live AppView of
+        # its module (the app runs in its own process, sharing frames).
+        if [ ev.target.id == 'run' ]
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits Editor ]
+                    ed : Editor e
+                    ed.toggle_app_run[]
+                    break
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
             return
         # resource view toggles (view_game / view_assembly / view_tiles): switch
         # the pane's sub-view; a TEXT view swaps the editor lines in (editable
@@ -2737,9 +2807,19 @@ element orbiter : trinity # implements compiler
             mt : i64 [ sp.modified_time[] ]
             if [ mt != settings_mtime ]
                 load_settings[]
-            # reload any watcher map whose mtime advanced (i.e. the watcher just iterated)
+            # pick up newly opened / closed .ag files, then reload any watcher map
+            # whose mtime advanced (i.e. the watcher just iterated).
+            fmt_sync[]
             fmt_poll[]
 
+        # drain the per-editor consoles' shells (build + app output). ed_sessions is
+        # the app's own map — no tree walk — and a live pty keeps the frame loop awake
+        # so the animated console repaints the output as it streams in.
+        if [ ed_sessions ]
+            for [ s: ConsoleSession, k: string ] in ed_sessions
+                if [ s.pty_fd >= 0 ]
+                    w.will_animate = true
+                    s.read_output[]
         ce : element (show_console && instances) ? instances.elements['console'] : null
         cons : Console ce
         if [ cons ]
@@ -2859,73 +2939,11 @@ element orbiter : trinity # implements compiler
         egroup_els : Elements []
         egroup_els['editors'] = EditorView [ selected: (editor_slots.count > 1), elements: editor_els ]
 
-        # the console bar (Instances). the stack sub-column (callstack + fields) is
-        # toggled per-editor by the menu icon in each editor's title — not here.
-        # console-instance tabs (shells / AI agents) from orbiter.agi — they control the
-        # agent view; sit top-right next to the project tabs (same topbar parent).
-        console_nav : Elements []
-        if [ consoles ]
-            for [ ci: ConsoleInstance, cname: string ] in consoles
-                console_nav[cname] = ConsoleTab [ label: cname, kind: ci.kind, selected: active_console == cname ]
-
-        # the bottom area is its own pane split, reusing the editor pane machinery: the
-        # active-target console (left) and the debug callstack (right), sharing one
-        # vertical seam (@inst_split1). both are windowed controls — an editable filter
-        # title over the body control. the 'console'/'callstack' keys double as the CSS
-        # slot classes (Instances / *.* in the stylesheet) and keep the existing
-        # instances.elements['console'] lookups working.
-        inst_els : Elements []
-        cfilter : Elements []
-        cfilter['console_filter'] = element [ label: active_target, focusable: true, no_scroll: true ]
-        inst_els['console'] = Console [ session_id: active_target, feed: null, elements: cfilter ]
-
-        # right-side debug panels, side by side, only present when toggled on. callstack
-        # takes the left slot (l@inst_split1..l@inst_split2), fields the right slot
-        # (l@inst_split2..r0). the app drives the seams so a single panel fills the right
-        # area (see layout_inst_split). @inst_split1 = console|callstack drag seam.
-        if [ show_callstack ]
-            sfilter : Elements []
-            sfilter['list_filter'] = element [ label: 'callstack', focusable: true, no_scroll: true ]
-            inst_els['callstack'] = Callstack [ frames: debug_frames[], elements: sfilter ]
-        if [ show_fields ]
-            ffilter : Elements []
-            ffilter['fields_filter'] = element [ label: 'variables', focusable: true, no_scroll: true ]
-            inst_els['fields'] = Fields [ vars: debug_vars, elements: ffilter ]
-
-        # the panel toggles: hamburger reveals the callstack, the fields icon the
-        # variables. pinned to the FAR-RIGHT of the whole Instances bar, in the title
-        # row (topmost so they sit over whichever panel's title is on the right edge and
-        # win the click). independent toggles; both can be on (panels side by side).
-        inav : Elements []
-        inav['toggle_callstack'] = Option [ selected: show_callstack ]
-        #inav['toggle_fields']    = Option [ selected: show_fields ]
-        inst_els['inst_nav'] = element [ topmost: true, elements: inav ]
-
-        # top strip: play button + project session tabs (left) + console/agent tabs (right),
-        # in a Group so it gets the same fill/inner-glow shading as the console bar.
-        topbar_els : Elements []
-        topbar_els['tools'] = Tabs [ elements: Elements [
-            'play': Option [ disable: active_target == 'system', selected: play_running, manual_mode: true ]
-        ] ]
-        topbar_els['source_nav']  = Tabs [ elements: source_nav ]
-        topbar_els['console_nav'] = Tabs [ elements: console_nav ]
-        # deferred live-reload: when the host has staged a source change it sets pending;
-        # show a 'reload' affordance top-right after the console tabs — clicking it applies.
-        if [ au_live_get_pending[] != 0 ]
-            topbar_els['reload_ready'] = Option [ label: 'reload', selected: true ]
-
+        # the editor group is the whole window now. the old top toolbar (play +
+        # project/agent tabs) and the global Instances console bar are gone — each
+        # editor carries its own bottom toolbar and per-module console instead.
         return Elements [
-            "topbar": Group [ elements: topbar_els ],
-
-            "editor_group": Group [
-                # right edge follows the right_w seam (→ r0/full when the panel is
-                # toggled off), so no selected-based fill override is needed; this
-                # also keeps the console_h seam live while the right panel is hidden.
-                # elements (editors + optional pin column) built above in egroup_els.
-                elements: egroup_els
-            ],
-
-            "instances": Instances [ elements: inst_els, selected: show_console, wide: true ]
+            "editor_group": Group [ elements: egroup_els ]
         ]
 
     public func on_canvas [ cv: Canvas ]

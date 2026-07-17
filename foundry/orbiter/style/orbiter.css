@@ -543,7 +543,7 @@ Group.topbar {
 }
 
 Group.editor_group {
-    area:                       l0 t1.5 r0 b@console_h=6.9|0|4
+    area:                       l0 t0 r0 b0
 
     /* the editor area background lives HERE, behind the panes — NOT on the panes
        themselves. the panes blit through an edge-fade mask (long lines dissolve),
@@ -554,7 +554,7 @@ Group.editor_group {
     layers.compose: sq [ ]
     layers.bordering: region [ l0 t34px r0 b0 ]
 :selected
-    area: l0 t0 r0 b6.9
+    area: l0 t0 r0 b0
 }
 
 
@@ -794,8 +794,36 @@ DebugPanel {
 Editor {
     focusable:              true
     bordering:              true
-    layers.content: code [ ]
-    layers.scrollbar: scroll_over [ l0 t44px r0 b0 ]
+    layers.content: code [ l0 t44px r0 b8 ]
+    layers.scrollbar: scroll_over [ l0 t44px r0 b8 ]
+}
+
+/* the bottom split area (toolbar + console), one child of the editor pane. its
+   top edge is a draggable seam bound to @console_h (units up from the pane
+   bottom) — drag it up to grow the console, down to collapse. the max=66px
+   clamp is the collapse floor (~3 units): the toolbar (1.5) stays fully visible
+   with a sliver of console under it, never clipped; min=0 lets it grow to fill. */
+Editor / element.bottom {
+    area:                       l0 b@console_h=8|0|50 r0 b0
+}
+
+Editor / element.bottom / element.tools {
+    area:                       l0 t0 r0 h1.5
+    focusable:                  true
+    bordering:                  true
+    layers.base: title_bar [ ]
+    layers.divider: band [ #fff2, l0 t0px r0 h1px ]
+}
+
+Editor / element.bottom / element.tools / element.run {
+    area:                       l8px t8px w1.5 h1
+    layers.base: wmp_r [ 8 ]
+    layers.svg: play_svg [ ]
+}
+
+Editor / element.bottom / element.console {
+    area:                       l0 t1.5 r0 b0
+    layers.base: flat [ #000000 ]
 }
 
 Tabs / Button {

@@ -20,6 +20,8 @@ int   ts_forward6i(void* model, const float* a, const float* b,
                    const float* c, const float* d, const float* e,
                    const float* f, const float* aux, int S, int aux_n,
                    float* out, int out_cap);
+int   ts_read_cols(void* model, const float* img, int h, int w,
+                   float* out, int out_cap);
 int   ts_forward5(void* model, const float* l, const float* r,
                   const float* f, const float* w, const float* aux,
                   int S, int aux_n, float* out, int out_cap);

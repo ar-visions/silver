@@ -959,6 +959,15 @@ Layer TermLayer
         if [ !con ] return
         s : ConsoleSession con.session[]
         if [ !s ] return
+        # declarative run: the editor sets run_line to its module's build+run
+        # command. dispatch it the frame it changes; clear the marker when it
+        # goes away so replaying the same command re-runs it.
+        if [ !con.run_line || con.run_line.count == 0 ]
+            con.last_run = null
+        el [ !con.last_run || con.last_run.compare[ con.run_line ] != 0 ]
+            con.last_run = con.run_line
+            con.dispatch[ con.session_id, con.run_line ]
+            s = con.session[]
         if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
         # integer line height: rows sit on a fixed pixel grid so scrolling steps by
         # whole lines and lines never jiggle relative to each other (fractional lh
@@ -1279,6 +1288,11 @@ Control Console
     # like claude). empty = interactive shell. without it, an agent tab whose
     # session materializes here (first frame, reload) degrades to a bare shell.
     public  launch     : string
+    # a shell command line to run in this console's session (the editor's module
+    # build+run). set declaratively by the editor each frame; dispatched once
+    # when it changes — no owner reaches into the element tree to push it.
+    public  run_line   : string
+    mutable last_run   : string
 
     func session [] -> ConsoleSession
         sid : string (session_id && session_id.count > 0) ? session_id : 'default'

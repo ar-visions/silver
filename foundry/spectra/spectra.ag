@@ -3,6 +3,7 @@ import <stdio.h>
 import <stdlib.h>
 import <string.h>
 import <unistd.h>
+import <sys/stat.h>
 import <math.h>
     -lm
 import <pthread.h>
@@ -11,6 +12,15 @@ import img
 import knik0:faad2/2.11.2 <neaacdec.h>
     -DBUILD_SHARED_LIBS=ON
     -lfaad
+
+import <mpg123min.h>
+    -l:libmpg123.so.0
+
+import <torch_shim.h>
+    -ltorch_shim
+
+import trinity
+import vec
 
 # platform audio backend: CoreAudio (AudioQueue) on mac, ALSA elsewhere.
 # AudioOut is the shared surface — construct with prop pairs
@@ -218,6 +228,12 @@ class AudioClip
 func be32 [ b: ref u8, o: i32 ] -> i64
     return i64[ b[o] ] * 16777216 + i64[ b[o+1] ] * 65536 + i64[ b[o+2] ] * 256 + i64[ b[o+3] ]
 
+func le32 [ b: ref u8, o: i32 ] -> i64
+    return i64[ b[o] ] + i64[ b[o+1] ] * 256 + i64[ b[o+2] ] * 65536 + i64[ b[o+3] ] * 16777216
+
+func le16 [ b: ref u8, o: i32 ] -> i32
+    return i32[ b[o] ] + i32[ b[o+1] ] * 256
+
 func be64 [ b: ref u8, o: i32 ] -> i64
     hi : i64 [ be32[ b, o ] ]
     lo : i64 [ be32[ b, o + 4 ] ]
@@ -387,6 +403,92 @@ func m4a_parse [ buf: ref u8, fsz: i32 ] -> AacStream
     st.nvalid = 0
     return st
 
+# .wav (RIFF PCM S16) -> PCM. hand-parsed: fmt + data chunks only
+func wav_load [ p: path ] -> AudioClip
+    fp : ref FILE [ fopen[ '{p}', 'rb' ] ]
+    if [ !fp ]
+        puts 'wav: cannot open {p}'
+        return null
+    fseek[ fp, 0, SEEK_END ]
+    fsz : i32 [ i32[ ftell[ fp ] ] ]
+    fseek[ fp, 0, SEEK_SET ]
+    buf : new u8 [ fsz ]
+    fread[ buf, 1, fsz, fp ]
+    fclose[ fp ]
+    if [ fsz < 44 || be32[ buf, 0 ] != 1380533830 || be32[ buf, 8 ] != 1463899717 ]
+        puts 'wav: not RIFF/WAVE: {p}'
+        return null
+    rate : i32 [ 0 ]
+    ch : i32 [ 0 ]
+    bits : i32 [ 0 ]
+    doff : i32 [ 0 ]
+    dsz : i32 [ 0 ]
+    o : i32 [ 12 ]
+    for [ o + 8 <= fsz ]
+        cid : i64 [ be32[ buf, o ] ]
+        csz : i32 [ i32[ le32[ buf, o + 4 ] ] ]
+        if [ cid == 1718449184 ]
+            ch   = le16[ buf, o + 10 ]
+            rate = i32[ le32[ buf, o + 12 ] ]
+            bits = le16[ buf, o + 22 ]
+        if [ cid == 1684108385 ]
+            doff = o + 8
+            dsz = csz
+        o += 8 + csz + (csz % 2)
+    if [ rate < 1 || ch < 1 || bits != 16 || dsz < 2 ]
+        puts 'wav: unsupported format in {p} (need PCM S16)'
+        return null
+    nfr : i64 [ i64[ dsz ] / i64[ ch * 2 ] ]
+    cnt : i32 [ i32[ nfr ] * ch ]
+    pcm : new i16 [ cnt ]
+    memcpy[ pcm, ref buf[ doff ], i64[ cnt ] * 2 ]
+    clip : AudioClip [ rate: rate, channels: ch, frames: nfr ]
+    clip.pcm = pcm
+    return clip
+
+# .mp3 -> PCM via system libmpg123 (vendored decls: mpg123min.h)
+func mp3_load [ p: path ] -> AudioClip
+    mpg123_init[]
+    err9 : i32 [ 0 ]
+    mh : ref mpg123_handle [ mpg123_new[ null, ref err9 ] ]
+    if [ !mh ]
+        puts 'mp3: mpg123_new failed ({err9})'
+        return null
+    if [ mpg123_open[ mh, '{p}' ] != 0 ]
+        puts 'mp3: cannot open {p}'
+        mpg123_delete[ mh ]
+        return null
+    mpg123_scan[ mh ]
+    rate9 : i64 [ 0 ]
+    ch9   : i32 [ 0 ]
+    enc9  : i32 [ 0 ]
+    mpg123_getformat[ mh, ref rate9, ref ch9, ref enc9 ]
+    if [ rate9 < 1 || ch9 < 1 ]
+        puts 'mp3: no stream format in {p}'
+        mpg123_close[ mh ]
+        mpg123_delete[ mh ]
+        return null
+    mpg123_format_none[ mh ]
+    mpg123_format[ mh, rate9, ch9, MPG123_ENC_SIGNED_16 ]
+    nfr : i64 [ mpg123_length[ mh ] ]
+    if [ nfr < 1 ] nfr = rate9 * 600
+    cap : i64 [ (nfr + 8192) * i64[ ch9 ] ]
+    pcm : new i16 [ cap ]
+    wr : i64 [ 0 ]
+    for [ true ]
+        room : i64 [ (cap - wr) * 2 ]
+        if [ room < 9216 ] break
+        done9 : u64 [ 0 ]
+        r9 : i32 [ mpg123_read[ mh, ref pcm[ wr ], room, ref done9 ] ]
+        wr += i64[ done9 ] / 2
+        if [ r9 != MPG123_OK ] break
+    mpg123_close[ mh ]
+    mpg123_delete[ mh ]
+    clip : AudioClip [ rate: i32[ rate9 ], channels: ch9, frames: wr / i64[ ch9 ] ]
+    clip.pcm = pcm
+    puts 'mp3: {p} rate={clip.rate} ch={clip.channels} frames={clip.frames}'
+    return clip
+
 # .caf or .m4a (Apple shipped m4a bytes under .caf names) -> PCM
 func caf_load [ p: path ] -> AudioClip
     fp : ref FILE [ fopen[ '{p}', 'rb' ] ]
@@ -405,6 +507,12 @@ func caf_load [ p: path ] -> AudioClip
     el [ be32[ buf, 4 ] == 1718909296 ]
         st = m4a_parse[ buf, fsz ]
     if [ !st ]
+        # ID3 tag or bare MPEG sync = mp3, decode via libmpg123
+        if [ (buf[0] == 73 && buf[1] == 68 && buf[2] == 51) || buf[0] == 255 ]
+            return mp3_load[ p ]
+        # RIFF = wav
+        if [ be32[ buf, 0 ] == 1380533830 ]
+            return wav_load[ p ]
         puts 'caf: unsupported container: {p}'
         return null
     h : NeAACDecOpen[]
@@ -544,35 +652,48 @@ class AudioMixer
             out.write[ n ]
         out.close[]
 
+# iterative in-place radix-2, e^-i2pik/n forward — the same transform
+# the old recursive form computed, with ZERO allocations (that version
+# heap-allocated four buffers per level per call)
 func fft [ re: ref f32, im: ref f32, n: i32 ]
     if [ n <= 1 ]
         return
-
-    half2: i32 [ n / 2 ]
-    re_even: new f32 [ half2 ]
-    im_even: new f32 [ half2 ]
-    re_odd:  new f32 [ half2 ]
-    im_odd:  new f32 [ half2 ]
-
-    for [ i: i32 0, i < half2, i += 1 ]
-        re_even[i] = re[i * 2]
-        im_even[i] = im[i * 2]
-        re_odd[i]  = re[i * 2 + 1]
-        im_odd[i]  = im[i * 2 + 1]
-
-    fft [ re_even, im_even, half2 ]
-    fft [ re_odd,  im_odd,  half2 ]
-
-    for [ i: i32 0, i < half2, i += 1 ]
-        angle: f32 [ -6.28318530718 * i / n ]
-        wr: f32 [ cos [ angle ] ]
-        wi: f32 [ sin [ angle ] ]
-        tr: f32 [ wr * re_odd[i] - wi * im_odd[i] ]
-        ti: f32 [ wi * re_odd[i] + wr * im_odd[i] ]
-        re[i]        = re_even[i] + tr
-        im[i]        = im_even[i] + ti
-        re[i + half2] = re_even[i] - tr
-        im[i + half2] = im_even[i] - ti
+    j : i32 [ 0 ]
+    for [ i: i32 1, i < n, i += 1 ]
+        m2 : i32 [ n / 2 ]
+        for [ m2 >= 1 && j >= m2 ]
+            j -= m2
+            m2 = m2 / 2
+        j += m2
+        if [ i < j ]
+            tr0 : f32 [ re[ i ] ]
+            re[ i ] = re[ j ]
+            re[ j ] = tr0
+            ti0 : f32 [ im[ i ] ]
+            im[ i ] = im[ j ]
+            im[ j ] = ti0
+    ln : i32 [ 2 ]
+    for [ ln <= n ]
+        ha : i32 [ ln / 2 ]
+        ang0 : f32 [ -6.28318530718 / f32[ ln ] ]
+        wr0 : f32 [ cos[ ang0 ] ]
+        wi0 : f32 [ sin[ ang0 ] ]
+        for [ s: i32 0, s < n, s += ln ]
+            wr : f32 [ 1.0 ]
+            wi : f32 [ 0.0 ]
+            for [ k: i32 0, k < ha, k += 1 ]
+                i0 : i32 [ s + k ]
+                i1 : i32 [ s + k + ha ]
+                tr : f32 [ wr * re[ i1 ] - wi * im[ i1 ] ]
+                ti : f32 [ wi * re[ i1 ] + wr * im[ i1 ] ]
+                re[ i1 ] = re[ i0 ] - tr
+                im[ i1 ] = im[ i0 ] - ti
+                re[ i0 ] = re[ i0 ] + tr
+                im[ i0 ] = im[ i0 ] + ti
+                wn : f32 [ wr * wr0 - wi * wi0 ]
+                wi = wr * wi0 + wi * wr0
+                wr = wn
+        ln = ln * 2
 
 # heat colormap: black -> deep blue -> purple -> orange -> white
 # returns r*65536 + g*256 + b
@@ -623,16 +744,30 @@ func heat [ t0: f32 ] -> i32
 
 # per-channel spectrograph, log-frequency 20Hz..10kHz, dB heat map.
 # channels stack top to bottom (L then R); time runs right.
-func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32 ] -> bool
+# gray: single-channel magnitude image (the MODEL input); false =
+# heat colormap rgba for human eyes. act (nullable): filled with the
+# per-column mean magnitude — the annotator's energy trace
+func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax: f32, gray: bool, act: ref f32 ] -> bool
     if [ !c || c.frames < 4096 ] return false
     n : i32 [ 2048 ]
+    # the analysis window matches the LIVE stream's 42.7ms slice at
+    # ANY clip rate: wn samples of real signal, zero-padded into the
+    # 2048 fft, magnitudes scaled by the fill ratio. without this a
+    # 16k clip would get 128ms windows — 3x the temporal smear of
+    # what the mic stream produces, a real domain gap
+    wn : i32 [ i32[ i64[ c.rate ] * 2048 / 48000 ] ]
+    if [ wn > n ] wn = n
+    if [ wn < 64 ] wn = 64
+    mscale : f32 [ f32[ n ] / f32[ wn ] ]
     re : new f32 [ n ]
     im : new f32 [ n ]
     win : new f32 [ n ]
-    for [ i: i32 0, i < n, i += 1 ]
-        ang : f32 [ 6.28318530718 * f32[ i ] / f32[ n ] ]
+    for [ i: i32 0, i < wn, i += 1 ]
+        ang : f32 [ 6.28318530718 * f32[ i ] / f32[ wn ] ]
         win[ i ] = 0.5 - 0.5 * cos[ ang ]
-    img2 : Image [ width: w2, height: h2, format: Pixel.rgba8, channels: 4 ]
+    nch5 : i32 [ (gray) ? 1 : 4 ]
+    pfmt : Pixel [ (gray) ? Pixel.u8 : Pixel.rgba8 ]
+    img2 : Image [ width: w2, height: h2, format: pfmt, channels: nch5 ]
     pd : ref u8 [ img2.vdata[] ]
     ch : i32 [ c.channels ]
     gap : i32 [ (ch > 1) ? 2 : 0 ]
@@ -640,25 +775,30 @@ func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32 ] -> bool
     span : i64 [ c.frames - i64[ n ] ]
     hop : i64 [ span / i64[ w2 ] ]
     if [ hop < 1 ] hop = 1
-    fmin : f32 [ 20.0 ]
-    fmax : f32 [ 10000.0 ]
     nyq : f32 [ f32[ c.rate ] * 0.5 ]
-    if [ fmax > nyq ] fmax = nyq
-    lr : f32 [ log[ fmax / fmin ] ]
+    fx2 : f32 [ (fmax > nyq) ? nyq : fmax ]
+    lr : f32 [ log[ fx2 / fmin ] ]
     # divider rows between channel bands
     for [ y: i32 0, y < h2, y += 1 ]
         for [ x: i32 0, x < w2, x += 1 ]
-            di : i64 [ (i64[ y ] * w2 + x) * 4 ]
-            pd[ di ]     = 0
-            pd[ di + 1 ] = 0
-            pd[ di + 2 ] = 0
-            pd[ di + 3 ] = 255
+            if [ gray ]
+                dg0 : i64 [ i64[ y ] * w2 + x ]
+                pd[ dg0 ] = 0
+            el
+                di : i64 [ (i64[ y ] * w2 + x) * 4 ]
+                pd[ di ]     = 0
+                pd[ di + 1 ] = 0
+                pd[ di + 2 ] = 0
+                pd[ di + 3 ] = 255
     for [ x: i32 0, x < w2, x += 1 ]
         s0 : i64 [ i64[ x ] * hop ]
         for [ c2: i32 0, c2 < ch, c2 += 1 ]
-            for [ i: i32 0, i < n, i += 1 ]
+            for [ i: i32 0, i < wn, i += 1 ]
                 b9 : i64 [ (s0 + i64[ i ]) * ch + c2 ]
                 re[ i ] = f32[ c.pcm[ b9 ] ] / 32768.0 * win[ i ]
+                im[ i ] = 0.0
+            for [ i: i32 wn, i < n, i += 1 ]
+                re[ i ] = 0.0
                 im[ i ] = 0.0
             fft[ re, im, n ]
             ytop : i32 [ c2 * (band + gap) ]
@@ -672,17 +812,215 @@ func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32 ] -> bool
                 m0 : f32 [ sqrt[ re[ bi ] * re[ bi ] + im[ bi ] * im[ bi ] ] ]
                 m1 : f32 [ sqrt[ re[ bi + 1 ] * re[ bi + 1 ] + im[ bi + 1 ] * im[ bi + 1 ] ] ]
                 mag : f32 [ m0 + (m1 - m0) * fr ]
-                amp : f32 [ mag / 512.0 ]
+                amp : f32 [ mag * mscale / 512.0 ]
                 db : f32 [ 8.6858896 * log[ amp + 0.0000000001 ] ]
                 tv : f32 [ (db + 80.0) / 80.0 ]
-                rgb : i32 [ heat[ tv ] ]
-                di : i64 [ (i64[ ytop + y ] * w2 + x) * 4 ]
-                pd[ di ]     = u8[ rgb / 65536 ]
-                pd[ di + 1 ] = u8[ (rgb / 256) % 256 ]
-                pd[ di + 2 ] = u8[ rgb % 256 ]
-                pd[ di + 3 ] = 255
+                if [ tv < 0.0 ] tv = 0.0
+                if [ tv > 1.0 ] tv = 1.0
+                if [ act && c2 == 0 ]
+                    act[ x ] += tv / f32[ band ]
+                if [ gray ]
+                    dg1 : i64 [ i64[ ytop + y ] * w2 + x ]
+                    pd[ dg1 ] = u8[ tv * 255.0 ]
+                el
+                    rgb : i32 [ heat[ tv ] ]
+                    di : i64 [ (i64[ ytop + y ] * w2 + x) * 4 ]
+                    pd[ di ]     = u8[ rgb / 65536 ]
+                    pd[ di + 1 ] = u8[ (rgb / 256) % 256 ]
+                    pd[ di + 2 ] = u8[ rgb % 256 ]
+                    pd[ di + 3 ] = 255
     img2.png[ out2 ]
     return true
+
+# LibriSpeech + MFA alignments -> our spectral set, BORN ANNOTATED:
+# reads {root}/{subset}-align.txt (one line per utterance: the
+# alignment file path, utt id, "comma,words", "comma,end,times" —
+# "" entries are silences), decodes the wav beside the alignment
+# file, writes {split}_{i}.png + .agi carrying wspans (start end per
+# word, in columns) — full word boundaries, no clicking, no CTC-only
+func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] -> i32
+    Au.auto_free[ true ]
+    root.hold[]
+    subset.hold[]
+    outdir.hold[]
+    idxp : path '{root}/{subset}-align.txt'
+    s : (idxp.load[ typeid[ string ], null ] to string)
+    if [ !s ]
+        puts 'libri_translate: cannot read {idxp} (run the extract step)'
+        return 0
+    mkdir[ '{outdir}', 493 ]
+    lines : array string [ s.split[ '\n' ] ]
+    lines.hold[]
+    n9 : i32 [ 0 ]
+    for [ li: i32 0, li < lines.count, li += 1 ]
+        ln : lines[ li ]
+        if [ !ln || ln.count < 8 ] continue
+        # fields: alignpath uttid "words" "times"
+        q1 : num [ ln.index_of[ '"' ] ]
+        if [ q1 < 0 ] continue
+        head9 : ln.mid[ 0, i32[ q1 ] ]
+        parts : array string [ head9.split[ ' ' ] ]
+        if [ parts.count < 2 ] continue
+        apath : parts[ 0 ]
+        uttid : parts[ 1 ]
+        rest9 : ln.mid[ i32[ q1 ] + 1, ln.count - i32[ q1 ] - 1 ]
+        q2 : num [ rest9.index_of[ '"' ] ]
+        if [ q2 < 0 ] continue
+        wstr : rest9.mid[ 0, i32[ q2 ] ]
+        rest8 : rest9.mid[ i32[ q2 ] + 1, rest9.count - i32[ q2 ] - 1 ]
+        q3 : num [ rest8.index_of[ '"' ] ]
+        if [ q3 < 0 ] continue
+        rest7 : rest8.mid[ i32[ q3 ] + 1, rest8.count - i32[ q3 ] - 1 ]
+        q4 : num [ rest7.index_of[ '"' ] ]
+        if [ q4 < 0 ] continue
+        tstr : rest7.mid[ 0, i32[ q4 ] ]
+        # wav lives beside the alignment file
+        sl9 : num [ apath.rindex_of[ '/' ] ]
+        if [ sl9 < 0 ] continue
+        adir : apath.mid[ 0, i32[ sl9 ] ]
+        wp : path '{root}/{adir}/{uttid}.wav'
+        c : caf_load[ wp ]
+        if [ !c ] continue
+        if [ c.frames < 4096 ] continue
+        hop9 : i64 [ i64[ c.rate ] * 2048 / 48000 ]
+        if [ hop9 < 1 ] hop9 = 1
+        w9 : i32 [ i32[ (c.frames - 2048) / hop9 ] ]
+        if [ w9 < 16 ] continue
+        if [ w9 > 4096 ]
+            Au.auto_free[ false ]
+            continue
+        op : path '{outdir}/{subset}_{n9}.png'
+        act9 : new f32 [ w9 ]
+        if [ !spectrograph[ c, op, w9, 64, 150.0, 8000.0, true, act9 ] ]
+            Au.auto_free[ false ]
+            continue
+        # words + end times -> per-word column spans; "" = silence
+        wlist : array string [ wstr.split[ ',' ] ]
+        tlist : array string [ tstr.split[ ',' ] ]
+        sent : string ''
+        wsp : string ''
+        t0 : f32 [ 0.0 ]
+        nw9 : i32 [ 0 ]
+        for [ wi9: i32 0, wi9 < wlist.count, wi9 += 1 ]
+            if [ wi9 >= tlist.count ] break
+            te : tlist[ wi9 ]
+            t1 : f32 [ te.real_value[] ]
+            wd : wlist[ wi9 ]
+            if [ wd && wd.count > 0 ]
+                c0 : i32 [ i32[ t0 * 23.4375 ] ]
+                c1 : i32 [ i32[ t1 * 23.4375 ] ]
+                if [ c1 > w9 ] c1 = w9
+                sent = '{sent}{wd} '
+                wsp = '{wsp}{c0} {c1} '
+                nw9 += 1
+            t0 = t1
+        if [ nw9 < 1 ]
+            Au.auto_free[ false ]
+            continue
+        dur : f32 [ f32[ c.frames ] / f32[ c.rate ] ]
+        body : string 'image: {subset}_{n9}.png\nsentence: {sent}\nspeaker: {uttid}\nrate: {c.rate}\nframes: {c.frames}\nduration: {dur}\nsource: {wp}\nwspans: {wsp}\n'
+        ag : path '{outdir}/{subset}_{n9}.agi'
+        ag.save[ body, null ]
+        n9 += 1
+        if [ (n9 % 100) == 0 ] puts 'libri_translate: {n9} translated'
+        Au.auto_free[ false ]
+        if [ limit > 0 && n9 >= limit ] break
+    puts 'libri_translate: {root} ({subset}) -> {outdir}: {n9} clips'
+    return n9
+
+# schema-translate a Common Voice dir into our own spectral set:
+# {split}.tsv + en_{split}_0/*.mp3 -> {outdir}/{split}_{i}.png
+# (GRAY model input: 64 rows 150Hz..8kHz, one column per live-stream
+# window) + {split}_{i}.agi (sentence, speaker, age/gender/accents,
+# rate/frames/duration)
+func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> i32
+    # adopt everything alive now (the half-initialized app, args,
+    # rows) so the per-clip sweep below only frees loop garbage —
+    # the same true-then-false pattern trinity's run loop uses
+    Au.auto_free[ true ]
+    dataset.hold[]
+    split.hold[]
+    outdir.hold[]
+    tsvp : path '{dataset}/{split}.tsv'
+    s : (tsvp.load[ typeid[ string ], null ] to string)
+    if [ !s ]
+        puts 'cv_translate: cannot read {tsvp}'
+        return 0
+    mkdir[ '{outdir}', 493 ]
+    lines : array string [ s.split[ '\n' ] ]
+    lines.hold[]
+    n9 : i32 [ 0 ]
+    for [ li: i32 1, li < lines.count, li += 1 ]
+        ln : lines[ li ]
+        if [ !ln || ln.count < 8 ] continue
+        colsx : array string [ ln.split[ '\t' ] ]
+        if [ colsx.count < 12 ] continue
+        fname : colsx[ 1 ]
+        sent  : colsx[ 3 ]
+        spk0  : colsx[ 0 ]
+        age9  : colsx[ 7 ]
+        gen9  : colsx[ 8 ]
+        acc9  : colsx[ 9 ]
+        mp : path '{dataset}/en_{split}_0/{fname}'
+        c : caf_load[ mp ]
+        if [ !c ] continue
+        if [ c.frames < 4096 ] continue
+        # the LIVE cadence: one 2048 window per column at the 48k
+        # clock — training inputs generate exactly like the stream
+        hop9 : i64 [ i64[ c.rate ] * 2048 / 48000 ]
+        if [ hop9 < 1 ] hop9 = 1
+        w9 : i32 [ i32[ (c.frames - 2048) / hop9 ] ]
+        if [ w9 < 16 ] continue
+        if [ w9 > 4096 ] w9 = 4096
+        op : path '{outdir}/{split}_{n9}.png'
+        act9 : new f32 [ w9 ]
+        if [ !spectrograph[ c, op, w9, 64, 150.0, 8000.0, true, act9 ] ] continue
+        # spectra AS ANNOTATOR: the live tracker's envelope (fast
+        # attack, slow release) segments sustained-energy sections —
+        # when section count matches word count, the trainer gets
+        # full word boundaries; otherwise it falls back to CTC.
+        # threshold ADAPTS per clip: recording levels vary 2x, so it
+        # sits 35% up this clip's own floor-to-peak envelope range
+        emt9 : new f32 [ w9 ]
+        ema9 : f32 [ 0.0 ]
+        elo9 : f32 [ 1.0 ]
+        ehi9 : f32 [ 0.0 ]
+        for [ x8: i32 0, x8 < w9, x8 += 1 ]
+            e8 : f32 [ act9[ x8 ] ]
+            if [ e8 > ema9 ]
+                ema9 = ema9 * 0.6 + e8 * 0.4
+            el
+                ema9 = ema9 * 0.88 + e8 * 0.12
+            emt9[ x8 ] = ema9
+            if [ ema9 < elo9 ] elo9 = ema9
+            if [ ema9 > ehi9 ] ehi9 = ema9
+        thr9 : f32 [ elo9 + (ehi9 - elo9) * 0.35 ]
+        sect9 : string [ '' ]
+        nsec9 : i32 [ 0 ]
+        sx9 : i32 [ -1 ]
+        for [ x8: i32 0, x8 < w9, x8 += 1 ]
+            on8 : bool [ emt9[ x8 ] > thr9 ]
+            if [ on8 && sx9 < 0 ] sx9 = x8
+            if [ !on8 && sx9 >= 0 ]
+                sect9 = '{sect9}{sx9} {x8} '
+                nsec9 += 1
+                sx9 = -1
+        if [ sx9 >= 0 ]
+            sect9 = '{sect9}{sx9} {w9} '
+            nsec9 += 1
+        dur : f32 [ f32[ c.frames ] / f32[ c.rate ] ]
+        spk : spk0.mid[ 0, 16 ]
+        body : string 'image: {split}_{n9}.png\nsentence: {sent}\nspeaker: {spk}\nage: {age9}\ngender: {gen9}\naccents: {acc9}\nrate: {c.rate}\nframes: {c.frames}\nduration: {dur}\nsource: {mp}\nsections: {sect9}\n'
+        ag : path '{outdir}/{split}_{n9}.agi'
+        ag.save[ body, null ]
+        n9 += 1
+        if [ (n9 % 100) == 0 ] puts 'cv_translate: {n9} translated'
+        # per-clip sweep: pcm, file buffers and images free here — a
+        # CLI loop never reaches trinity's per-frame auto_free
+        Au.auto_free[ false ]
+        if [ limit > 0 && n9 >= limit ] break
+    puts 'cv_translate: {dataset} ({split}) -> {outdir}: {n9} clips'
+    return n9
 
 # coverage: AudioOut plays Ode to Joy (Beethoven, public domain).
 # sustained writes far exceed the 4-buffer ring, so the blocking
@@ -692,9 +1030,9 @@ coverage test
     intern phase : f64
 
     # one note: sine + 2 harmonics, 10ms attack / 40ms release
-    func tone [ freq: f64, ms: i32 ] -> none
+    func tone [ freq: f64, msec: i32 ] -> none
         step  : f64 [ freq * 6.28318530718 / 48000.0 ]
-        total : i32 [ 48 * ms ]
+        total : i32 [ 48 * msec ]
         done  : i32 [ 0 ]
         for [ done < total ]
             c : i32 [ ((total - done) > 1024) ? 1024 : (total - done) ]
@@ -731,13 +1069,553 @@ coverage test
         return true
 
 
-# CLI demo moved out of the module: an app class makes the module a plain
-# PIE executable, which importers cannot dlopen (spectra is a LIBRARY now)
-#app main
-#    func run[] -> int
-#        s: spectra [ size: 1024, sample_rate: 48000, device: 'hw:1,0' ]
-#        if [ !s.open[] ]
-#            return 1
+# a word read out of the stream: a column span + its text, drawn in
+# the label lane under the waterfall with its span highlighted above
+class SpectWord
+    public x0   : i32
+    public x1   : i32
+    public text : string
+
+# time-stretch WITHOUT pitch change (youtube 0.5x): SOLA — grains
+# overlap-added at a slower hop, each aligned to the output tail by
+# a short cross-correlation search. mono only; stereo returns as-is
+func stretch_clip [ c: AudioClip, factor: f32 ] -> AudioClip
+    if [ !c || c.channels != 1 ] return c
+    n : i32 [ c.rate * 30 / 1000 ]
+    ov : i32 [ n / 2 ]
+    hopo : i32 [ n - ov ]
+    hopi : f32 [ f32[ hopo ] / factor ]
+    srch : i32 [ c.rate * 8 / 1000 ]
+    ocap : i32 [ i32[ f32[ c.frames ] * factor ] + n * 2 ]
+    outp : new i16 [ ocap ]
+    for [ i: i32 0, i < n, i += 1 ]
+        outp[ i ] = c.pcm[ i ]
+    wpos : i32 [ hopo ]
+    ipos : f32 [ 0.0 ]
+    for [ true ]
+        ipos += hopi
+        base : i32 [ i32[ ipos ] ]
+        if [ i64[ base + n + srch + 1 ] >= c.frames ] break
+        if [ wpos + n >= ocap ] break
+        if [ base - srch < 0 ] continue
+        # best alignment of the grain against the written tail
+        best : i32 [ base ]
+        bsc : f32 [ -1e30 ]
+        for [ off: i32 0 - srch, off <= srch, off += 2 ]
+            sc : f32 [ 0.0 ]
+            for [ k: i32 0, k < ov, k += 4 ]
+                sc += f32[ outp[ wpos + k ] ] * f32[ c.pcm[ base + off + k ] ]
+            if [ sc > bsc ]
+                bsc = sc
+                best = base + off
+        # crossfade the overlap, copy the fresh half
+        for [ k2: i32 0, k2 < ov, k2 += 1 ]
+            t2 : f32 [ f32[ k2 ] / f32[ ov ] ]
+            v2 : f32 [ f32[ outp[ wpos + k2 ] ] * (1.0 - t2) + f32[ c.pcm[ best + k2 ] ] * t2 ]
+            outp[ wpos + k2 ] = i16[ v2 ]
+        for [ k3: i32 ov, k3 < n, k3 += 1 ]
+            outp[ wpos + k3 ] = c.pcm[ best + k3 ]
+        wpos += hopo
+    s2 : AudioClip [ rate: c.rate, channels: 1, frames: i64[ wpos + ov ] ]
+    s2.pcm = outp
+    return s2
+
+# run the module by itself and it presents itself; importers still
+# dlopen the .so. CLI modes do their work and exit; a bare run opens
+# a window with a live mic spectrum when a capture device is present
+# spectra --file <caf/m4a/mp3> [--out png] [--img_w N] [--img_h N]
+# spectra --dataset <cv dir> --split dev --outdir <dir> [--limit N]
+element main : trinity
+    # the swapchain presents the LAST render's color; the Background
+    # chain provides it — an app without one has nothing to present
+    public background : string [ 'Background' ]
+    public file    : string
+    public out     : string [ '/tmp/spectrograph.png' ]
+    public img_w   : i32 [ 1024 ]
+    public img_h   : i32 [ 512 ]
+    public dataset : string
+    public libri   : string                # LibriSpeech root (extracted)
+    public split   : string [ 'dev' ]
+    public outdir  : string
+    public limit   : i32 [ 0 ]
+    intern cap     : spectra
+    intern cap_ok  : bool
+    intern st_x    : i32
+    intern st_buf  : ref u8                # 1024 x 64 rgba sweep image
+    intern st_tex  : Texture
+    intern st_act  : ref f32               # per-column speech-band energy
+    intern st_ema  : f32                   # ~100ms running avg of energy
+    intern st_words : array SpectWord      # read results land here
+    # the reader: read1.ptc on interval over the trailing window
+    intern rd_hnd  : ARef                  # torchscript handle
+    intern st_mag  : ref f32               # gray magnitudes, 64 x 1024 ring
+    intern st_abs  : i64                   # absolute column counter
+    intern rd_next : i64                   # next read at this abs column
+    intern rd_in   : ref f32               # contiguous window, 64 x W
+    intern rd_out  : ref f32               # per-column token/prob/sect
+    intern voc_tok : ref i32               # vocab: token ids
+    intern voc_w   : array string          # vocab: words (same order)
+    intern voc_n   : i32
+    intern rd_q    : string                # the unnamed-word glyph
+    # --annotate: play random translated clips, click word boundaries
+    public annotate : bool
+    intern ann_n    : i32                  # clips in outdir
+    intern ann_id   : i32                  # current clip id
+    intern ann_img  : Image
+    intern ann_tex  : Texture
+    intern ann_clip : AudioClip
+    intern ann_out  : AudioOut
+    intern ann_pos  : i64                  # playback cursor, frames
+    intern ann_marks : ref f32             # boundary columns, sorted
+    intern ann_nm   : i32
+    intern ann_words : array string
+    intern ann_sent : string
+    intern ann_rx   : f32                  # spectro rect, set in draw
+    intern ann_rw   : f32
+    intern ann_seed : i64
+
+    # one line of a translated .agi by key
+    func ann_field [ text: string, key: string ] -> string
+        lines2 : array string [ text.split[ '\n' ] ]
+        pre : string '{key}: '
+        for [ li2: i32 0, li2 < lines2.count, li2 += 1 ]
+            ln2 : lines2[ li2 ]
+            if [ ln2.count <= pre.count ] continue
+            hd2 : ln2.mid[ 0, pre.count ]
+            if [ hd2 == pre ]
+                return ln2.mid[ pre.count, ln2.count - pre.count ]
+        return string ''
+
+    func ann_pick []
+        ann_seed = ann_seed * 6364136223846793005 + 1442695040888963407
+        ann_id = i32[ (ann_seed % i64[ ann_n ] + i64[ ann_n ]) % i64[ ann_n ] ]
+        ap : path '{outdir}/{split}_{ann_id}.agi'
+        text : (ap.load[ typeid[ string ], null ] to string)
+        if [ !text ] return
+        img5 : ann_field[ text, 'image' ]
+        src5 : ann_field[ text, 'source' ]
+        ann_sent = ann_field[ text, 'sentence' ]
+        ann_sent.hold[]
+        ann_words = ann_sent.split[ ' ' ]
+        ann_words.hold[]
+        ann_img = Image [ uri: path '{outdir}/{img5}' ]
+        ann_img.hold[]
+        ann_tex = null
+        # half speed, same pitch (youtube 0.5x): the clip itself is
+        # SOLA-stretched 2x and plays at its normal rate
+        ann_clip = stretch_clip[ caf_load[ path src5 ], 2.0 ]
+        if [ ann_clip ] ann_clip.hold[]
+        ann_pos = 0
+        ann_nm = 0
+        if [ ann_clip && (!ann_out || !ann_out.active) ]
+            ann_out = AudioOut [ sample_rate: ann_clip.rate, channels: ann_clip.channels, buffer_size: 512 ]
+            ann_out.hold[]
+            ann_out.open[]
+
+    # marks in column order (placed order preserved in ann_marks)
+    func ann_sorted [ dst: ref f32 ]
+        for [ i7: i32 0, i7 < ann_nm, i7 += 1 ]
+            v7 : f32 [ ann_marks[ i7 ] ]
+            j7 : i32 [ i7 ]
+            for [ j7 > 0 && dst[ j7 - 1 ] > v7 ]
+                dst[ j7 ] = dst[ j7 - 1 ]
+                j7 -= 1
+            dst[ j7 ] = v7
+
+    # rewrite this clip's .agi with the clicked marks line
+    func ann_save []
+        ap : path '{outdir}/{split}_{ann_id}.agi'
+        text : (ap.load[ typeid[ string ], null ] to string)
+        if [ !text ] return
+        lines3 : array string [ text.split[ '\n' ] ]
+        body3 : string ''
+        for [ li3: i32 0, li3 < lines3.count, li3 += 1 ]
+            ln3 : lines3[ li3 ]
+            if [ ln3.count < 1 ] continue
+            hd3 : string ''
+            if [ ln3.count > 7 ] hd3 = ln3.mid[ 0, 7 ]
+            if [ hd3 == 'marks: ' ] continue
+            body3 = '{body3}{ln3}\n'
+        srt3 : local f32 [ 256 ]
+        ann_sorted[ srt3 ]
+        mk3 : string ''
+        for [ mi3: i32 0, mi3 < ann_nm, mi3 += 1 ]
+            v3 : i32 [ i32[ srt3[ mi3 ] ] ]
+            mk3 = '{mk3}{v3} '
+        body3 = '{body3}marks: {mk3}\n'
+        ap.save[ body3, null ]
+        puts 'annotate: {split}_{ann_id} marks: {mk3}'
+
+    func init []
+        if [ libri ]
+            if [ !outdir ]
+                puts 'spectra: --libri needs --outdir'
+                exit[ 1 ]
+            libri_translate[ path libri, split, path outdir, limit ]
+            exit[ 0 ]
+        if [ dataset ]
+            if [ !outdir ]
+                puts 'spectra: --dataset needs --outdir'
+                exit[ 1 ]
+            cv_translate[ path dataset, split, path outdir, limit ]
+            exit[ 0 ]
+        if [ annotate ]
+            if [ !outdir ]
+                puts 'spectra: --annotate needs --outdir (the translated set)'
+                exit[ 1 ]
+            n5 : i32 [ 0 ]
+            for [ true ]
+                p5 : path '{outdir}/{split}_{n5}.agi'
+                if [ !p5.exists[] ] break
+                n5 += 1
+            if [ n5 < 1 ]
+                puts 'spectra: no {split}_*.agi under {outdir}'
+                exit[ 1 ]
+            ann_n = n5
+            ann_marks = new f32 [ 256 ]
+            ann_seed = epoch_millis[]
+            ann_pick[]
+            animated = true
+            focusable = true
+            puts 'annotate: {ann_n} clips — click between words; click a mark again to finish; U undo, N skip, space replay'
+            return
+        if [ file ]
+            c : caf_load[ path file ]
+            if [ !c ] exit[ 1 ]
+            if [ spectrograph[ c, path out, img_w, img_h, 20.0, 10000.0, false, null ] ]
+                puts 'spectrograph: {out}'
+            exit[ 0 ]
+        cap = spectra [ size: 2048, sample_rate: 48000, device: 'default' ]
+        cap.hold[]
+        cap_ok = cap.open[]
+        if [ !cap_ok ] puts 'spectra: no capture device — window stays silent'
+        # stream continuously: repaint every frame, never cache-skip
+        animated = true
+        # the word reader (optional): models/read1.ptc + its vocab
+        mp8 : string [ '/src/silver/foundry/spectra' ]
+        rp8 : path 'models/read1.ptc'
+        if [ !rp8.exists[] ] rp8 = path '{mp8}/models/read1.ptc'
+        if [ rp8.exists[] ]
+            rs8 : string '{rp8}'
+            rd_hnd = ts_load[ rs8.chars ]
+        if [ rd_hnd ]
+            st_mag = new f32 [ 65536 ]
+            rd_in = new f32 [ 12288 ]
+            rd_out = new f32 [ 576 ]
+            rd_q = string '?'
+            rd_q.hold[]
+            voc_tok = new i32 [ 4200 ]
+            voc_w = array string [ alloc: 4200 ]
+            voc_w.hold[]
+            vp8 : path '{mp8}/models/read1-vocab.txt'
+            vs8 : (vp8.load[ typeid[ string ], null ] to string)
+            if [ vs8 ]
+                vl8 : array string [ vs8.split[ '\n' ] ]
+                for [ vi8: i32 0, vi8 < vl8.count, vi8 += 1 ]
+                    lv8 : vl8[ vi8 ]
+                    if [ !lv8 || lv8.count < 3 ] continue
+                    sp8 : num [ lv8.index_of[ ' ' ] ]
+                    if [ sp8 < 1 ] continue
+                    tk8 : lv8.mid[ 0, i32[ sp8 ] ]
+                    wd8 : lv8.mid[ i32[ sp8 ] + 1, lv8.count - i32[ sp8 ] - 1 ]
+                    if [ voc_n >= 4200 ] break
+                    voc_tok[ voc_n ] = i32[ tk8.real_value[] ]
+                    voc_w += wd8
+                    voc_n += 1
+            puts 'spectra: reader loaded ({voc_n} words named)'
+        el
+            puts 'spectra: no models/read1.ptc — stream view only'
+
+    # live stream: 64 fft bands (150Hz..8kHz, the model's own range) in
+    # a 1024x64 sweep image, drawn as a 128px strip off the element
+    # bottom. columns advance left to right and wrap, painting over the
+    # last pass. the canvas clears every repaint, so history lives in
+    # the texture; ticks and word labels paint with the canvas
+    # merge one read's word runs into st_words. the key is COLUMN
+    # OVERLAP in absolute stream position — an overlapping span is the
+    # same word instance re-read (newer wins: more right context);
+    # disjoint spans NEVER join, so repeated words stay separate
+    func rd_merge [ base9: i32, n9: i32 ]
+        i9 : i32 [ 0 ]
+        for [ i9 < n9 ]
+            tk : i32 [ i32[ rd_out[ i9 * 3 ] ] ]
+            if [ tk == 0 ]
+                i9 += 1
+                continue
+            j9 : i32 [ i9 ]
+            ps : f32 [ 0.0 ]
+            ss : f32 [ 0.0 ]
+            for [ j9 < n9 && i32[ rd_out[ j9 * 3 ] ] == tk ]
+                ps += rd_out[ j9 * 3 + 1 ]
+                ss += rd_out[ j9 * 3 + 2 ]
+                j9 += 1
+            # a word spans >= 3 columns (~130ms); shorter = toggle noise
+            ln9 : i32 [ j9 - i9 ]
+            ok9 : bool [ ln9 >= 3 ]
+            if [ ok9 && ps / f32[ ln9 ] < 0.30 ] ok9 = false
+            if [ ok9 && ss / f32[ ln9 ] < 0.35 ] ok9 = false
+            if [ ok9 ]
+                a0 : i32 [ base9 + i9 ]
+                a1 : i32 [ base9 + j9 ]
+                wd : rd_q
+                for [ v9: i32 0, v9 < voc_n, v9 += 1 ]
+                    if [ voc_tok[ v9 ] == tk ]
+                        wd = voc_w[ v9 ]
+                        break
+                bi9 : i32 [ -1 ]
+                bo9 : i32 [ 0 ]
+                for [ wi9: i32 0, wi9 < st_words.count, wi9 += 1 ]
+                    ew : st_words[ wi9 ]
+                    o0 : i32 [ (ew.x0 > a0) ? ew.x0 : a0 ]
+                    o1 : i32 [ (ew.x1 < a1) ? ew.x1 : a1 ]
+                    if [ o1 - o0 > bo9 ]
+                        bo9 = o1 - o0
+                        bi9 = wi9
+                if [ bi9 >= 0 ]
+                    uw : st_words[ bi9 ]
+                    uw.x0 = a0
+                    uw.x1 = a1
+                    uw.text = wd
+                el
+                    nw : SpectWord [ x0: a0, x1: a1, text: wd ]
+                    st_words += nw
+            i9 = j9
+        # prune once the oldest word falls off the ring
+        if [ st_words.count > 0 ]
+            h0 : st_words[ 0 ]
+            if [ i64[ h0.x1 ] < st_abs - 1024 ]
+                keep : array SpectWord [ ]
+                for [ ki: i32 0, ki < st_words.count, ki += 1 ]
+                    kw : st_words[ ki ]
+                    if [ i64[ kw.x1 ] >= st_abs - 1024 ] keep += kw
+                keep.hold[]
+                st_words = keep
+
+    # annotate view: the clip's spectrogram large, audio looping,
+    # marks as green lines; words label their regions once counts fit
+    func ann_draw [ w: Window ]
+        ux.will_animate = true
+        cv : w.screen
+        if [ ann_clip && ann_out && ann_out.active ]
+            ch5 : i32 [ ann_clip.channels ]
+            fr5 : i64 [ 512 ]
+            if [ ann_pos + fr5 > ann_clip.frames ]
+                ann_pos = 0
+            nb5 : i64 [ fr5 * i64[ ch5 ] * 2 ]
+            memcpy[ ann_out.buffer, ref ann_clip.pcm[ ann_pos * i64[ ch5 ] ], nb5 ]
+            ann_out.write[ i32[ fr5 ] ]
+            ann_pos += fr5
+        if [ ann_img && !ann_tex ]
+            ann_tex = Texture [ vk: cv.vk, w: ux, linear: true, mip_levels: 1, sampler: ann_img ]
+            ann_tex.hold[]
+        if [ !ann_tex ] return
+        cols : f32 [ f32[ ann_img.width ] ]
+        ann_rx = 40.0
+        ann_rw = bounds.w - 80.0
+        ry : f32 [ bounds.h * 0.18 ]
+        rh : f32 [ bounds.h * 0.5 ]
+        cv.draw_image[ ann_tex, rect [ x: ann_rx, y: ry, w: ann_rw, h: rh ] ]
+        cv.paint[]
+        # playback cursor
+        if [ ann_clip && ann_clip.frames > 0 ]
+            px5 : f32 [ ann_rx + f32[ ann_pos ] / f32[ ann_clip.frames ] * ann_rw ]
+            cv.rounded_rect[ px5, ry, 2.0, rh, 0.0, 0.0, 0.0, 0.0 ]
+            cv.fill_color[ rgba [ r: 1.0, g: 1.0, b: 1.0, a: 0.6 ] ]
+            cv.paint[]
+        # boundary marks
+        for [ m5: i32 0, m5 < ann_nm, m5 += 1 ]
+            mx5 : f32 [ ann_rx + ann_marks[ m5 ] / cols * ann_rw ]
+            cv.rounded_rect[ mx5 - 1.0, ry - 8.0, 3.0, rh + 16.0, 0.0, 0.0, 0.0, 0.0 ]
+            cv.fill_color[ rgba [ r: 0.3, g: 1.0, b: 0.55, a: 0.9 ] ]
+            cv.paint[]
+        # region words once the marks split the clip into word count
+        need5 : i32 [ ann_words.count - 1 ]
+        cv.sync_fence[]
+        if [ ann_nm == need5 ]
+            srt5 : local f32 [ 256 ]
+            ann_sorted[ srt5 ]
+            for [ r5: i32 0, r5 < ann_words.count, r5 += 1 ]
+                x05 : f32 [ 0.0 ]
+                x15 : f32 [ cols ]
+                if [ r5 > 0 ] x05 = srt5[ r5 - 1 ]
+                if [ r5 < ann_nm ] x15 = srt5[ r5 ]
+                wd5 : ann_words[ r5 ]
+                cv.fill_color[ '#8fc' ]
+                cv.draw_text[ '{wd5}',
+                    rect [ x: ann_rx + x05 / cols * ann_rw, y: ry + rh + 8.0, w: (x15 - x05) / cols * ann_rw, h: 20.0 ],
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                cv.paint[]
+        el
+            cv.fill_color[ '#9ab' ]
+            cv.draw_text[ '{ann_sent}',
+                rect [ x: ann_rx, y: ry + rh + 8.0, w: ann_rw, h: 20.0 ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
+        cv.fill_color[ '#678' ]
+        cv.draw_text[ '{split}_{ann_id}  marks {ann_nm}/{need5}  click between words - click a mark to finish - U undo - N skip - space replay',
+            rect [ x: ann_rx, y: bounds.h - 32.0, w: ann_rw, h: 20.0 ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        cv.paint[]
+
+    public func on_click [ ev: Event ]
+        if [ !annotate || !ann_img ] return
+        if [ ann_rw < 1.0 ] return
+        ev.stop_propagation[]
+        mx : f32 [ ev.mouse.pos.x - bounds.x ]
+        cols : f32 [ f32[ ann_img.width ] ]
+        c5 : f32 [ (mx - ann_rx) / ann_rw * cols ]
+        if [ c5 < 0.0 || c5 > cols ] return
+        # clicking an existing mark again ENDS the clip: save + next
+        tol : f32 [ cols * 0.012 ]
+        for [ i5: i32 0, i5 < ann_nm, i5 += 1 ]
+            d5 : f32 [ ann_marks[ i5 ] - c5 ]
+            if [ d5 < 0.0 ] d5 = 0.0 - d5
+            if [ d5 < tol ]
+                ann_save[]
+                ann_pick[]
+                return
+        if [ ann_nm >= 256 ] return
+        # PLACED order: space replays from the last one put down and
+        # U undoes it; regions/save sort a copy
+        ann_marks[ ann_nm ] = c5
+        ann_nm += 1
+
+    public func on_key [ ev: Event ]
+        if [ !annotate ] return
+        k5 : i32 [ ev.key.unicode ]
+        if [ k5 == 32 && ann_img && ann_clip ]
+            # replay from the LAST MARK PUT DOWN, 100ms early
+            cols6 : f32 [ f32[ ann_img.width ] ]
+            pm6 : f32 [ 0.0 ]
+            if [ ann_nm > 0 ] pm6 = ann_marks[ ann_nm - 1 ]
+            np6 : i64 [ i64[ pm6 / cols6 * f32[ ann_clip.frames ] ] - i64[ ann_clip.rate ] / 10 ]
+            if [ np6 < 0 ] np6 = 0
+            ann_pos = np6
+        if [ k5 == 85 && ann_nm > 0 ] ann_nm -= 1
+        if [ k5 == 78 ] ann_pick[]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ annotate ]
+            ann_draw[ w ]
+            return
+        if [ !cap_ok ] return
+        ux.will_animate = true
+        cv : w.screen
+        sw9 : i32 [ 1024 ]
+        nb : i32 [ 64 ]
+        if [ !st_act ]
+            st_act = new f32 [ sw9 ]
+            st_words = array SpectWord [ ]
+            st_words.hold[]
+            nby : i32 [ sw9 * nb * 4 ]
+            nb2 : new u8 [ nby ]
+            for [ z9: i32 0, z9 < nby, z9 += 4 ]
+                nb2[ z9 + 3 ] = 255
+            st_buf = nb2
+        if [ !st_tex ]
+            st_tex = Texture [ vk: cv.vk, w: cv.w, width: sw9, height: nb, linear: true ]
+            st_tex.hold[]
+        strip : f32 [ 128.0 ]
+        y0 : f32 [ bounds.h - strip ]
+        xs9 : f32 [ bounds.w / f32[ sw9 ] ]
+        if [ cap.capture[] ]
+            fmin : f32 [ 150.0 ]
+            fmax : f32 [ 8000.0 ]
+            nyq : f32 [ f32[ cap.sample_rate ] * 0.5 ]
+            if [ fmax > nyq ] fmax = nyq
+            lr : f32 [ log[ fmax / fmin ] ]
+            half2 : i32 [ cap.size / 2 ]
+            en9 : f32 [ 0.0 ]
+            for [ b: i32 0, b < nb, b += 1 ]
+                t : f32 [ f32[ nb - 1 - b ] / f32[ nb - 1 ] ]
+                fq : f32 [ fmin * exp[ t * lr ] ]
+                fb : f32 [ fq * f32[ cap.size ] / f32[ cap.sample_rate ] ]
+                bi : i32 [ i32[ fb ] ]
+                if [ bi > half2 - 2 ] bi = half2 - 2
+                fr : f32 [ fb - f32[ bi ] ]
+                m0 : f32 [ cap.bins[ bi ] ]
+                m1 : f32 [ cap.bins[ bi + 1 ] ]
+                mag : f32 [ m0 + (m1 - m0) * fr ]
+                en9 += mag
+                amp : f32 [ mag / 512.0 ]
+                db : f32 [ 8.6858896 * log[ amp + 0.0000000001 ] ]
+                tv : f32 [ (db + 80.0) / 80.0 ]
+                if [ tv < 0.0 ] tv = 0.0
+                if [ tv > 1.0 ] tv = 1.0
+                rgb : i32 [ heat[ tv ] ]
+                di : i32 [ (b * sw9 + st_x) * 4 ]
+                st_buf[ di ]     = u8[ rgb / 65536 ]
+                st_buf[ di + 1 ] = u8[ (rgb / 256) % 256 ]
+                st_buf[ di + 2 ] = u8[ rgb % 256 ]
+                st_buf[ di + 3 ] = 255
+                if [ st_mag ]
+                    st_mag[ b * sw9 + st_x ] = tv
+            # tracking state: ~100ms running average of band energy —
+            # green only when the sound STAYS continuous, one hot
+            # window alone decays before it crosses the threshold
+            en9 = en9 / (f32[ nb ] * 24.0)
+            if [ en9 > 1.0 ] en9 = 1.0
+            # fast attack, slow release: rising sound catches in ~100ms,
+            # the tail hangs on ~3x longer before the tick lets go
+            if [ en9 > st_ema ]
+                st_ema = st_ema * 0.6 + en9 * 0.4
+            el
+                st_ema = st_ema * 0.88 + en9 * 0.12
+            st_act[ st_x ] = st_ema
+            # the sweep cursor: a dark gap one column ahead
+            nx9 : i32 [ (st_x + 1) % sw9 ]
+            for [ y2: i32 0, y2 < nb, y2 += 1 ]
+                dg : i32 [ (y2 * sw9 + nx9) * 4 ]
+                st_buf[ dg ]     = 15
+                st_buf[ dg + 1 ] = 13
+                st_buf[ dg + 2 ] = 26
+                st_buf[ dg + 3 ] = 255
+            st_x = nx9
+            st_abs += 1
+            st_tex.upload[ st_buf, sw9 * nb * 4 ]
+            # interval read: every 12 columns (~0.5s) the reader takes
+            # the trailing window in ONE pass; words merge by span
+            if [ rd_hnd && st_mag && st_abs >= rd_next ]
+                rd_next = st_abs + 12
+                w7 : i32 [ (st_abs < 192) ? i32[ st_abs ] : 192 ]
+                if [ w7 >= 24 ]
+                    for [ y7: i32 0, y7 < nb, y7 += 1 ]
+                        for [ x7: i32 0, x7 < w7, x7 += 1 ]
+                            rx7 : i32 [ i32[ (st_abs - i64[ w7 ] + i64[ x7 ]) % i64[ sw9 ] ] ]
+                            rd_in[ y7 * w7 + x7 ] = st_mag[ y7 * sw9 + rx7 ]
+                    n7r : i32 [ ts_read_cols[ rd_hnd, rd_in, nb, w7, rd_out, 576 ] ]
+                    if [ n7r > 0 ] rd_merge[ i32[ st_abs ] - w7, n7r ]
+        cv.draw_image[ st_tex, rect [ x: 0.0, y: y0, w: bounds.w, h: strip ] ]
+        cv.paint[]
+        # activity ticks: bright marks over the columns fit to read
+        run0 : i32 [ -1 ]
+        for [ x3: i32 0, x3 <= sw9, x3 += 1 ]
+            on9 : bool [ false ]
+            if [ x3 < sw9 ]
+                on9 = st_act[ x3 ] > 0.12
+            if [ on9 && run0 < 0 ] run0 = x3
+            if [ !on9 && run0 >= 0 ]
+                cv.rounded_rect[ f32[ run0 ] * xs9, y0 - 4.0, f32[ x3 - run0 ] * xs9, 4.0, 0.0, 0.0, 0.0, 0.0 ]
+                cv.fill_color[ rgba [ r: 0.3, g: 1.0, b: 0.55, a: 1.0 ] ]
+                cv.paint[]
+                run0 = -1
+        # found words drawn OVER the spectra graph at their spans
+        # (abs -> ring columns; seam-crossing spans skip one pass)
+        for [ wi: i32 0, wi < st_words.count, wi += 1 ]
+            sw2 : st_words[ wi ]
+            if [ i64[ sw2.x0 ] < st_abs - i64[ sw9 ] ] continue
+            r0w : i32 [ sw2.x0 % sw9 ]
+            r1w : i32 [ sw2.x1 % sw9 ]
+            if [ r1w <= r0w ] continue
+            wx0 : f32 [ f32[ r0w ] * xs9 ]
+            wx1 : f32 [ f32[ r1w ] * xs9 ]
+            cv.sync_fence[]
+            cv.fill_color[ '#dfe' ]
+            cv.draw_text[ '{sw2.text}',
+                rect [ x: wx0, y: y0 + 6.0, w: wx1 - wx0, h: 18.0 ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
 #        half2: s.size / 2
 #        for [ true ]
 #            if [ s.capture[] ]

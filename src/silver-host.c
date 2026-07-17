@@ -392,17 +392,13 @@ int main(int argc, char** argv) {
             last_mtime = cur;
             fprintf(stderr, "%s: reloading\n", name);
 
-            // Load new .so FIRST so dependency refcounts are bumped before old is closed.
-            n = readlink(product, lib, sizeof(lib) - 1);
-            if (n < 0) break;
-            lib[n] = '\0';
-            void* new_handle = reload_dlopen(lib, cur);
-            if (!new_handle) {
-                fprintf(stderr, "%s: reload failed: %s\n", name, dlerror());
-                return 1;
-            }
-
-            // Destroy old instance (uses old code/inst_g) then release old handle.
+            // Destroy the OLD instance FIRST. Its silver_live_destroy runs
+            // module_erase_silver, clearing the old silver modules — so the
+            // registry is CLEAN before the new .so's global constructors register
+            // fresh types. (Previously the new .so was loaded first, its
+            // constructors registered, and THEN this erase wiped the just-
+            // registered new module — leaving find_type unable to resolve the
+            // app's own element types on reload.)
             // SILVER_RELOAD_SAVE is set ONLY for the reload-path destroy (the final
             // exit destroy never sees it) — apps use it to flash-save live state.
             // SILVER_RELOAD_LOAD stays set afterward: every subsequent init in this
@@ -411,6 +407,18 @@ int main(int argc, char** argv) {
             if (do_destroy) do_destroy();
             unsetenv("SILVER_RELOAD_SAVE");
             setenv("SILVER_RELOAD_LOAD", "1", 1);
+
+            // Load the new .so — its constructors register into the cleared
+            // registry. The old handle stays open until the dlclose below, so
+            // shared dependency refcounts never hit zero during the swap.
+            n = readlink(product, lib, sizeof(lib) - 1);
+            if (n < 0) break;
+            lib[n] = '\0';
+            void* new_handle = reload_dlopen(lib, cur);
+            if (!new_handle) {
+                fprintf(stderr, "%s: reload failed: %s\n", name, dlerror());
+                return 1;
+            }
             dlclose(handle);
 
             // Initialize new instance now that old is gone

@@ -221,6 +221,7 @@ ResourceView AppView
     mutable frames     : AppFrames     # trinity owns the imported buffers + texture
     mutable pid        : i32
     mutable sock_path  : string
+    mutable cmd        : string      # the build+run command the console executes
     mutable started    : bool
     mutable ready      : bool
     mutable dead       : bool
@@ -235,9 +236,14 @@ ResourceView AppView
     mutable fity       : f32
     mutable fitw       : f32
     mutable fith       : f32
+    # PiP thumbnail rect (canvas space) drawn over code while minimized
+    mutable pipx       : f32
+    mutable pipy       : f32
+    mutable pipw       : f32
+    mutable piph       : f32
 
-    # not extension-triggered — the editor's Run action (Ctrl-R) creates this
-    # on demand for the current module, so opening an .ag still shows code
+    # not extension-triggered — the pane's play button (title nav) runs the
+    # module on demand, so opening an .ag shows code by default
     func extensions [] -> array string
         return array string [ ]
 
@@ -247,10 +253,14 @@ ResourceView AppView
     func continuous [] -> bool
         return true
 
-    func render [ cv: Canvas, bounds: rect ]
-        if [ !started ] start[ cv ]
+    # keep the app alive + draining frames every frame, even when the pane is
+    # showing code — otherwise the producer blocks on a full socket
+    func service [ cv: Canvas ]
+        if [ !started ] start[]
         pump[ cv ]
-        reap[]
+
+    # paint the latest frame into the pane (only when the app view is shown)
+    func draw_frame [ cv: Canvas, bounds: rect ]
         if [ frames && have_frame ]
             ar : f32 [ f32[ aw ] / f32[ ah ] ]
             fw : f32 [ bounds.w ]
@@ -266,6 +276,34 @@ ResourceView AppView
         if [ dead || !ready ]
             overlay[ cv, bounds ]
 
+    func render [ cv: Canvas, bounds: rect ]
+        service[ cv ]
+        draw_frame[ cv, bounds ]
+
+    # minimized: draw the live app as a small thumbnail in the lower-right over
+    # the code — click it to restore. it keeps updating (service still runs).
+    func draw_pip [ cv: Canvas, bounds: rect ]
+        if [ !frames || !have_frame ] return
+        ar : f32 [ f32[ aw ] / f32[ ah ] ]
+        pw : f32 [ bounds.w * 0.30 ]
+        ph : f32 [ pw / ar ]
+        pipx = bounds.x + bounds.w - pw - 16.0
+        pipy = bounds.y + bounds.h - ph - 16.0
+        pipw = pw
+        piph = ph
+        frames.draw[ cv, rect [ x: pipx, y: pipy, w: pipw, h: piph ] ]
+
+    # lower-right corner of the fullscreen app = the minimize-to-code hotspot
+    func hit_minimize [ x: f32, y: f32 ] -> bool
+        if [ fitw <= 0.0 ] return false
+        hx : f32 [ fitx + fitw - 56.0 ]
+        hy : f32 [ fity + fith - 56.0 ]
+        return x >= hx && y >= hy && x <= fitx + fitw && y <= fity + fith
+
+    func hit_pip [ x: f32, y: f32 ] -> bool
+        if [ pipw <= 0.0 ] return false
+        return x >= pipx && y >= pipy && x <= pipx + pipw && y <= pipy + piph
+
     func overlay [ cv: Canvas, bounds: rect ]
         msg : (dead) ? note : string 'launching…'
         if [ dead ] msg = '{note} — click to restart'
@@ -275,7 +313,10 @@ ResourceView AppView
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint[]
 
-    func start [ cv: Canvas ]
+    # serve the socket + build the run command. the editor's embedded console
+    # actually runs it (build + exec the attached binary) so its compile/app
+    # output streams there; we detect the app dying via the socket closing.
+    func start []
         started = true
         sp  : path.path_startup[]
         fn  : src.filename[]
@@ -288,19 +329,7 @@ ResourceView AppView
             dead = true
             note = 'socket failed'
             return
-        # build (compile-only), then exec the produced binary in attach mode.
-        # output to a log so a compile error / crash is captured, not our tty.
-        cmd : 'cd {sp} && unset IMPORT && ./platform/native/debug/silver {mod} --build && exec ./platform/native/debug/{mod} --attach {sock_path} --width 1280 --height 720 > /tmp/orbiter-app-{mod}.log 2>&1'
-        cpid : i32 [ fork[] ]
-        if [ cpid == 0 ]
-            dashc : string '-c'
-            execl[ '/bin/bash', 'bash', dashc.chars, cmd.chars, null ]
-            _exit[ 1 ]
-        el [ cpid > 0 ]
-            pid = cpid
-        el
-            dead = true
-            note = 'fork failed'
+        cmd = 'cd {sp} && unset IMPORT && ./platform/native/debug/silver {mod} --build && exec ./platform/native/debug/{mod} --attach {sock_path} --width 1280 --height 720'
 
     func pump [ cv: Canvas ]
         if [ !link || dead ] return
@@ -335,21 +364,6 @@ ResourceView AppView
                     fcount += 1
                     if [ fcount % 120 == 1 ] puts 'appview: received frame {fcount} (slot {fslot})'
 
-    # reap the child without blocking; a death here can never crash orbiter
-    func reap []
-        if [ pid <= 0 || dead ] return
-        st : i32 [ 0 ]
-        r  : i32 [ waitpid[ pid, ref st, WNOHANG ] ]
-        if [ r == pid ]
-            code : i32 [ (st >> 8) & 0xFF ]
-            sig  : i32 [ st & 0x7F ]
-            dead = true
-            pid  = 0
-            if [ sig != 0 ]
-                note = 'app crashed (signal {sig})'
-            el
-                note = 'app exited (code {code})'
-
     func on_key [ ev: Event ]
         if [ dead || !link || link.sock < 0 ] return
         mods : i32 [ 0 ]
@@ -382,12 +396,9 @@ ResourceView AppView
         note       = ''
 
     intern func cleanup []
+        # closing the socket makes the attached app exit (its recv hits EOF); the
+        # console owns the actual process, so we don't kill/reap here.
         if [ link ] link.shutdown[]
-        if [ pid > 0 ]
-            kill[ pid, 9 ]
-            wst : i32 [ 0 ]
-            waitpid[ pid, ref wst, 0 ]
-            pid = 0
         if [ frames ]
             frames.dispose[]
             frames = null
@@ -682,6 +693,17 @@ Layer EditorLayer
         # but NOT while this pane is showing the finder/browse list (show_hits), so the
         # title still brings up the file index over an image pane. render* = poly dispatch
         # to the subclass (plain render[] would call the no-op base).
+        # running-app pager: keep the app alive/draining EVERY frame; paint it only
+        # when app_view is on, otherwise fall through to the code below.
+        if [ editor.run_view ]
+            editor.run_view.service[ cv ]
+            if [ editor.app_view && !editor.show_hits ]
+                editor.run_view.vx = bounds.x
+                editor.run_view.vy = bounds.y
+                editor.run_view.vw = bounds.w
+                editor.run_view.vh = bounds.h
+                editor.run_view.draw_frame[ cv, bounds ]
+                return
         if [ editor.rview && !editor.show_hits ]
             if [ !editor.rview.view_text*[ editor.rview.view_sel ] ]
                 editor.rview.vx = bounds.x
@@ -741,6 +763,13 @@ Layer EditorLayer
             din = dbg_el.bounds.w
         pin_in  : f32 [ (editor.elements['pins']) ? 144.0 : 0.0 ]
         rin     : f32 [ maxf[ pin_in, din ] ]
+        # footer inset: the height of the bottom split (toolbar + console) measured
+        # up from the pane bottom. drives both the code region height (vh) and where
+        # the bottom edge-fade sits, so the code dissolves into the console top.
+        foot_ins : f32 [ 0.0 ]
+        foot_el  : element editor.elements['bottom']
+        if [ foot_el && foot_el.bounds && foot_el.bounds.h > 0.0 ]
+            foot_ins = bounds.y + bounds.h - foot_el.bounds.y
         # edge text fades via the element's grayscale mask: the rightmost 1/8 always
         # fades (long lines dissolve), and on horizontal scroll the left fade turns on,
         # originating at the gutter's right edge (max there) so off-screen-left code
@@ -768,8 +797,10 @@ Layer EditorLayer
             te : element parent.elements['title']
             if [ te && te.bounds ]
                 title_bottom = te.bounds.y + te.bounds.h
-            # left inset = gut_w so the left fade originates at the gutter edge, not x=0.
-            parent.mask_inset = vec4f [ title_bottom, 0.0, 0.0, gut_w ]
+            # left inset = gut_w so the left fade originates at the gutter edge, not
+            # x=0; bottom inset = foot_ins so the bottom fade rides the console top
+            # (not the pane bottom, where it hid behind the opaque console).
+            parent.mask_inset = vec4f [ title_bottom, 0.0, foot_ins, gut_w ]
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
         editor.text_lines_frame = 0
@@ -820,9 +851,14 @@ Layer EditorLayer
             editor.content_h = f32[ editor.line_count[] ] * lh + lh * 2.0
         editor.scroll_speed = (editor.grid_mode) ? grid_ch : lh
 
+        # the code region is what's left between the laid-out child bands: the title
+        # (top) and the footer/toolbar (bottom). foot_ins (computed above, before the
+        # mask) is the footer height, so the code stays inside its content area
+        # (the element paradigm) instead of painting over the toolbar/console.
+        vh : f32 [ bounds.h - foot_ins ]
         # clamp scroll to [0, content - viewport] every frame so it can't go
         # negative (above the top) or past the end of the content.
-        max_scroll : f32 [ editor.content_h - bounds.h ]
+        max_scroll : f32 [ editor.content_h - vh ]
         if [ max_scroll < 0.0 ] max_scroll = 0.0
         # fold this frame's accumulated raw wheel delta into the target (speed applied here,
         # once, with the current line height) and clear it.
@@ -853,7 +889,7 @@ Layer EditorLayer
         wtx : f32 [ cv.transform_tx[] ]
         wty : f32 [ cv.transform_ty[] ]
         cv.set_crop[ wtx + bounds.x, wty + bounds.y,
-            wtx + bounds.x + bounds.w - rin, wty + bounds.y + bounds.h ]
+            wtx + bounds.x + bounds.w - rin, wty + bounds.y + vh ]
 
         # ---- grid view: the index entries tiled as cells — thumbnail on top, two labels
         # (name over dir) under it; cells separated by a margin; rounded selection box ----
@@ -1056,7 +1092,7 @@ Layer EditorLayer
         # drew under the wider editor-bounds crop.
         if [ editor.scroll.x > 0.0 ]
             cv.set_crop[ wtx + bounds.x + gut_w, wty + bounds.y,
-                wtx + bounds.x + bounds.w - rin, wty + bounds.y + bounds.h ]
+                wtx + bounds.x + bounds.w - rin, wty + bounds.y + vh ]
         # band mode: composite code rows into vertical tiles and blit a handful of large
         # render targets instead of one tiny RT per line. reserve the visible bands' slots
         # first (so a top-band miss can't recycle a slot a lower visible band still needs),
@@ -1544,6 +1580,11 @@ Layer EditorLayer
 
             cv.restore[ ]
 
+        # minimized running app: draw its live frame as a PiP over the code
+        # (also the "app loaded / running" indicator). click it to restore.
+        if [ editor.run_view && !editor.app_view && !editor.show_hits ]
+            editor.run_view.draw_pip[ cv, bounds ]
+
         # release the editor-bounds crop so following elements aren't clipped
         cv.clear_crop[ ]
 
@@ -1596,6 +1637,10 @@ Control Editor
     mutable pane_index    : i32 [ 0 ]
     # non-text presentation view (image/audio/…) for the current src, else null (code).
     mutable rview         : ResourceView
+    # play-button app pager: the running app persists here so the pane can flip
+    # back to code (app_view=false) WITHOUT stopping it — it keeps draining.
+    mutable run_view      : AppView
+    mutable app_view      : bool
     # the file's scroll position, stashed when the pane enters finder/browse mode so it
     # can be restored when the finder closes (the browse list reuses scroll.y).
     mutable saved_scroll  : f32
@@ -2527,21 +2572,33 @@ Control Editor
     # the app runs in its OWN process and shares frames — a crash can't reach us.
     # (AppView lives in a sibling extend file, so we reach it via the base's
     # is_app_host virtual + the make_app_view free function, never by name here.)
-    func toggle_run []
-        if [ rview && rview.is_app_host*[] ]
-            rview.release*[]
-            rview    = null
+    # play/stop: create or destroy the running app (its OWN process). starting
+    # shows the app; stopping kills it and returns to code.
+    func toggle_app_run []
+        if [ run_view ]
+            run_view.release*[]
+            run_view = null
+            app_view = false
             animated = false
             load_file[]
             return
         if [ !src ] return
         nv : AppView [ ]
         nv.src   = src
-        rview    = nv
+        nv.start[]                     # serve socket + build the run command
+        run_view = nv
+        app_view = true
         animated = true
-        lines    = list string []
-        scroll.x = 0.0
-        scroll.y = 0.0
+        # the embedded console picks up nv.cmd declaratively (pane_for feeds it as
+        # the console's run_line) and dispatches it itself — its build + app output
+        # streams there and the app attaches back over the socket.
+
+    # code/app: flip the pane display WITHOUT stopping the app — it keeps running
+    # and draining in the background. only meaningful while an app is running.
+    func toggle_app_view []
+        if [ !run_view ] return
+        app_view = !app_view
+        if [ !app_view ] load_file[]
 
     func init [ ]
         file_cache = map FileBuf[string] []
@@ -2646,6 +2703,22 @@ Control Editor
         sel_col  = cl
 
     func on_press [ ev: Event ]
+        # running-app pager: fullscreen app → lower-right hotspot minimizes to
+        # code; minimized → clicking the app PiP restores it; else the press goes
+        # into the app itself.
+        if [ run_view ]
+            if [ app_view ]
+                if [ run_view.hit_minimize[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+                    toggle_app_view[]
+                    ev.no_default = true
+                    return
+                if [ run_view.view_press*[ ev ] ]
+                    ev.no_default = true
+                    return
+            el [ run_view.hit_pip[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+                toggle_app_view[]
+                ev.no_default = true
+                return
         # non-text resource view (tiles): the view handles its own presses
         if [ rview && !rview.view_text*[ rview.view_sel ] ]
             if [ rview.view_press*[ ev ] ]
@@ -3061,6 +3134,10 @@ Control Editor
         # a continuous ResourceView (emulator pane) owns plain keys while this
         # pane is focused — including key-UP (button release) and shift
         # (Select). ctrl/meta chords stay with the editor (save, pane ops).
+        # the running app owns plain keys while it fills the pane
+        if [ run_view && app_view && !ev.key.ctrl && !ev.key.meta ]
+            run_view.on_key*[ ev ]
+            return
         if [ rview && !ev.key.ctrl && !ev.key.meta ]
             if [ rview.continuous*[] ]
                 rview.on_key*[ ev ]
@@ -3096,7 +3173,7 @@ Control Editor
         # run: Ctrl/Cmd-R hosts the current module as a live AppView pane in a
         # separate process (shared-texture); a second press returns to source
         if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 82 ]    # Key.R
-            toggle_run[]
+            toggle_app_run[]
             return
 
         # copy: Ctrl/Cmd-C copies the highlighted text to the system clipboard.

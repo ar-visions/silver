@@ -51,6 +51,39 @@ int ts_forward4(void* model, const float* l, const float* r,
     return run(m, iv, out, out_cap);
 }
 
+int ts_read_cols(void* model, const float* img, int h, int w,
+                 float* out, int out_cap) {
+    // spectral reader: (1,1,h,w) -> per-column [token, prob, sect]
+    auto* m = (torch::jit::script::Module*)model;
+    std::vector<torch::jit::IValue> iv;
+    iv.push_back(torch::from_blob((void*)img, {1, 1, h, w}, torch::kFloat32));
+    try {
+        torch::NoGradGuard ng;
+        auto r   = m->forward(iv).toTuple();
+        auto ch  = r->elements()[0].toTensor()[0];        // NCLS, T
+        auto se  = r->elements()[1].toTensor()[0][0];     // T
+        auto pr  = torch::softmax(ch, 0);
+        auto mx  = pr.max(0);
+        auto ids = std::get<1>(mx).contiguous();
+        auto pb  = std::get<0>(mx).contiguous();
+        auto sp  = torch::sigmoid(se).contiguous();
+        int T = (int)ids.size(0);
+        int n = std::min(T, out_cap / 3);
+        auto ia = ids.accessor<int64_t, 1>();
+        auto pa = pb.accessor<float, 1>();
+        auto sa = sp.accessor<float, 1>();
+        for (int i = 0; i < n; i++) {
+            out[i * 3]     = (float)ia[i];
+            out[i * 3 + 1] = pa[i];
+            out[i * 3 + 2] = sa[i];
+        }
+        return n;
+    } catch (const std::exception& e) {
+        fprintf(stderr, "ts_read_cols: %s\n", e.what());
+        return -1;
+    }
+}
+
 int ts_forward2i(void* model, const float* a, const float* b,
                  const float* aux, int S, int aux_n,
                  float* out, int out_cap) {
