@@ -29,6 +29,8 @@ foundry/orion
 *.srm
 *.wav
 *.spc
+*.txt
+*.ptc
 *.bps
 *.smc
 *.bsz

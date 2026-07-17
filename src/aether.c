@@ -4608,6 +4608,14 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             if (LLVMIsAConstantPointerNull(input->value))
                 return value(mdl, LLVMConstPointerNull(lltype(mdl)));
 
+            // a loaded POINTER value typed as a prim is a ref-member
+            // read: pass it through — boxing would store 8 bytes into
+            // a prim-sized alloc and hand the callee the box
+            if (!input_estr && input->loaded && input->value &&
+                    LLVMGetTypeKind(LLVMTypeOf(input->value)) == LLVMPointerTypeKind)
+                return value(canonical(mdl),
+                    LLVMBuildBitCast(B, input->value, lltype(canonical(mdl)), "ref_to_au"));
+
             efunc f_alloc    = (efunc)u(efunc,
                 find_member(etypeid(Au)->autype, "alloc_new", AU_MEMBER_FUNC, 0, false));
             enode bxn_src; Au bxn_line, bxn_seq;
