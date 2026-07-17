@@ -1470,6 +1470,77 @@ int  au_live_take_apply()       { int v = au_live_apply_flag; au_live_apply_flag
 handle live_window_get() { return au_live_window; }
 void   live_window_set(handle w) { au_live_window = w; }
 
+// own-stdout tee: fd 1 becomes a pipe drained each frame
+static int au_tee_read = -1;
+static int au_tee_real = -1;
+
+// exit can outrun the frame drain: push whatever remains through
+static void au_tee_flush() {
+    if (au_tee_read < 0 || au_tee_real < 0) return;
+    fflush(stdout);
+    char buf[4096];
+    int  n;
+    while ((n = (int)read(au_tee_read, buf, sizeof(buf))) > 0) {
+        int off = 0;
+        while (off < n) {
+            int w = (int)write(au_tee_real, buf + off, (size_t)(n - off));
+            if (w <= 0) break;
+            off += w;
+        }
+    }
+}
+
+i32 stdout_tee() {
+    if (au_tee_read >= 0) return au_tee_read;
+    int p[2];
+    if (pipe(p)) return -1;
+    au_tee_real = dup(1);
+    dup2(p[1], 1);
+    close(p[1]);
+    au_tee_read = p[0];
+    fcntl(au_tee_read, F_SETFL, O_NONBLOCK);
+    // pipes are fully buffered by default; keep lines timely
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    atexit(au_tee_flush);
+    return au_tee_read;
+}
+
+// drain the tee and return the next complete line (null = none);
+// every byte read is passed through to the real terminal fd
+string stdout_line() {
+    static char acc[8192];
+    static int  acc_n = 0;
+    if (au_tee_read < 0) return null;
+    char buf[4096];
+    int  n;
+    while ((n = (int)read(au_tee_read, buf, sizeof(buf))) > 0) {
+        if (au_tee_real >= 0) {
+            int off = 0;
+            while (off < n) {
+                int w = (int)write(au_tee_real, buf + off, (size_t)(n - off));
+                if (w <= 0) break;
+                off += w;
+            }
+        }
+        int keep = n;
+        if (acc_n + keep > (int)sizeof(acc)) keep = (int)sizeof(acc) - acc_n;
+        if (keep > 0) {
+            memcpy(acc + acc_n, buf, keep);
+            acc_n += keep;
+        }
+    }
+    for (int i = 0; i < acc_n; i++) {
+        if (acc[i] == '\n') {
+            acc[i] = 0;
+            string s = string(acc);
+            memmove(acc, acc + i + 1, acc_n - i - 1);
+            acc_n -= i + 1;
+            return s;
+        }
+    }
+    return null;
+}
+
 handle live_vk_get() { return au_live_vk; }
 void   live_vk_set(handle vk) {
     if (au_live_vk) drop(au_live_vk);
@@ -1800,7 +1871,7 @@ none push_type(Au_t type, Au_t to_mod) {
         def_member(mt, "b", typeid(Au),   AU_MEMBER_VAR, 0)->offset = offsetof(meta_t, b);
  
         Au_t required_bits = def_member(au_t, "required_bits",  typeid(u64), AU_MEMBER_VAR, 0);
-        required_bits->elements = 2;
+        required_bits->elements = 4;
 
         // we are having trouble creating the space inside an inlay struct at the tail of Au_t; this is to compensate
         def_member(au_t, "ft_space", typeid(ARef), AU_MEMBER_VAR, 0)
@@ -2038,7 +2109,9 @@ bool Au_validator(Au a) {
 
     u64* f = af_bits_ptr(a);
     if (((type->required_bits[0] & f[0]) != type->required_bits[0]) ||
-        ((type->required_bits[1] & f[1]) != type->required_bits[1])) {
+        ((type->required_bits[1] & f[1]) != type->required_bits[1]) ||
+        ((type->required_bits[2] & f[2]) != type->required_bits[2]) ||
+        ((type->required_bits[3] & f[3]) != type->required_bits[3])) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = (Au_t)type->members.origin[i];
             if ((m->traits & AU_TRAIT_REQUIRED) != 0 && m->af_index && AF_get(f, m->af_index - 1) == 0) {
@@ -3159,7 +3232,10 @@ Au Au_with_cstrs(Au a, cstrs argv) {
                 strcmp(argv[argc + 1], "false") == 0)) {
                 value = argv[++argc];
             }
-            else if (is_bool || !argv[argc + 1] || argv[argc + 1][0] == '-')
+            else if (is_bool || !argv[argc + 1] ||
+                    (argv[argc + 1][0] == '-' &&
+                     !(argv[argc + 1][1] >= '0' && argv[argc + 1][1] <= '9') &&
+                       argv[argc + 1][1] != '.'))
                 value = null;
             else
                 value = argv[++argc];
@@ -3186,6 +3262,9 @@ Au Au_with_cstrs(Au a, cstrs argv) {
             }
 
             Au conv = value ? convert(mem->type, (Au)string(value)) : _bool(true);
+            if (getenv("AU_ARG_DEBUG"))
+                fprintf(stderr, "AU_ARG %s = %s (af_index %lld)\n",
+                    mem->ident, value ? value : "(true)", (long long)mem->af_index);
             Au_set_property(a, mem->ident, conv);
         } else {
             Au_t def  = find_member(rtype, null, AU_MEMBER_VAR, AU_TRAIT_IS_DEFAULT, true);
@@ -3610,8 +3689,9 @@ Au Au_member_object(Au a, Au_t m) {
     if (!(m->member_type == AU_MEMBER_VAR))
         return null; // we do this so much, that its useful as a filter in for statements
 
-    bool is_primitive = (m->type->traits & AU_TRAIT_PRIMITIVE) != 0 || 
-                        (m->type->traits & AU_TRAIT_STRUCT) != 0;
+    bool is_primitive = (m->type->traits & AU_TRAIT_PRIMITIVE) != 0 ||
+                        (m->type->traits & AU_TRAIT_STRUCT) != 0 ||
+                        (m->type->traits & AU_TRAIT_ENUM) != 0;
     bool is_inlay     = (m->type->traits & AU_TRAIT_INLAY) != 0;
     Au result;
     ARef   member_ptr = (ARef)((cstr)a + m->offset);
@@ -5494,6 +5574,10 @@ bool path_touch(path a) {
     if (f)
         fclose(f);
     return f != null;
+}
+
+bool path_remove(path a) {
+    return unlink(a->chars) == 0;
 }
 
 bool path_remove_dir(path a) {

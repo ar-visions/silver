@@ -276,7 +276,7 @@ typedef struct _Au_t {
     micro_          args;
     meta_t_         meta;
     union {
-        u64             required_bits[2];
+        u64             required_bits[4];
         struct _Au_t_f* fn;
     };
     struct {
