@@ -21,3 +21,19 @@ ModelView.vote_0 {
 ModelView.vote_1 {
     area: l512px t640px w512px b0
 }
+
+ModelView.cap_root {
+    area: l0 t0 r0 b0
+}
+
+CameraView.top {
+    area: l0 t32px w496px h496px
+}
+
+CameraView.bot {
+    area: l500px t32px w496px h496px
+}
+
+Toolbar {
+    area: l0 t0 r0 h32px
+}

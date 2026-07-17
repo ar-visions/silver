@@ -51,6 +51,33 @@ int ts_forward4(void* model, const float* l, const float* r,
     return run(m, iv, out, out_cap);
 }
 
+int ts_forward2i(void* model, const float* a, const float* b,
+                 const float* aux, int S, int aux_n,
+                 float* out, int out_cap) {
+    auto* m = (torch::jit::script::Module*)model;
+    std::vector<torch::jit::IValue> iv;
+    iv.push_back(torch::from_blob((void*)a,   {1, 1, S, S}, torch::kFloat32));
+    iv.push_back(torch::from_blob((void*)b,   {1, 1, S, S}, torch::kFloat32));
+    iv.push_back(torch::from_blob((void*)aux, {1, aux_n},   torch::kFloat32));
+    return run(m, iv, out, out_cap);
+}
+
+int ts_forward6i(void* model, const float* a, const float* b,
+                 const float* c, const float* d, const float* e,
+                 const float* f, const float* aux, int S, int aux_n,
+                 float* out, int out_cap) {
+    auto* m = (torch::jit::script::Module*)model;
+    std::vector<torch::jit::IValue> iv;
+    iv.push_back(torch::from_blob((void*)a,   {1, 1, S, S}, torch::kFloat32));
+    iv.push_back(torch::from_blob((void*)b,   {1, 1, S, S}, torch::kFloat32));
+    iv.push_back(torch::from_blob((void*)c,   {1, 1, S, S}, torch::kFloat32));
+    iv.push_back(torch::from_blob((void*)d,   {1, 1, S, S}, torch::kFloat32));
+    iv.push_back(torch::from_blob((void*)e,   {1, 1, S, S}, torch::kFloat32));
+    iv.push_back(torch::from_blob((void*)f,   {1, 1, S, S}, torch::kFloat32));
+    iv.push_back(torch::from_blob((void*)aux, {1, aux_n},   torch::kFloat32));
+    return run(m, iv, out, out_cap);
+}
+
 int ts_forward5(void* model, const float* l, const float* r,
                 const float* f, const float* w, const float* aux,
                 int S, int aux_n, float* out, int out_cap) {

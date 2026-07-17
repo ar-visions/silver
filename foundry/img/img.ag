@@ -138,6 +138,10 @@ class Image
     func dealloc [ ]  # some comment
         info : header[ a ]
         if [ res_dealloc ] res_dealloc [ a ]
+        # zero-copy pixels (res_bits) rebind the header data to foreign
+        # memory (a mapped buffer); the release hook owns it — clear the
+        # pointer so the base dealloc never drops non-Au memory
+        if [ res_bits ] info.data = null
 
     func copy[ ] -> Image
         res: Image[ width:1, height:2, format:format, surface:surface ]
@@ -167,6 +171,77 @@ class Image
             so : i64 [ (i64[ y0 + ry ] * i64[ width ] + i64[ x0 ]) * i64[ ps ] ]
             df : i64 [ i64[ ry ] * i64[ ow ] * i64[ ps ] ]
             memcpy ref dst[ df ], ref src[ so ], i64[ ow * ps ]
+        return output
+
+    # horizontal mirror into a fresh Image — converts a render's mirror-view
+    # to real camera handedness (subject's left on the image's right)
+    func mirror_x[ ] -> Image
+        check width > 0 && height > 0, "null Image given to mirror_x"
+        output : Image
+            width:  width,
+            height: height,
+            :format, :surface, :channels
+        ps  : i32 [ pixel_size ]
+        src : ref u8 vdata[]
+        dst : ref u8 output.vdata[]
+        for [ ry: i32 0, ry < height, ry += 1 ]
+            ro : i64 [ i64[ ry ] * i64[ width ] * i64[ ps ] ]
+            for [ rx: i32 0, rx < width, rx += 1 ]
+                so : i64 [ ro + i64[ rx ] * i64[ ps ] ]
+                df : i64 [ ro + i64[ width - 1 - rx ] * i64[ ps ] ]
+                memcpy ref dst[ df ], ref src[ so ], i64[ ps ]
+        return output
+
+    # single-channel copy (first channel, no averaging): mono sensors save
+    # a quarter of the bytes and encode ~4x faster
+    func gray[] -> Image
+        check width > 0 && height > 0, "null Image given to gray"
+        if [ channels == 1 ] return copy[]
+        output : Image
+            width:    width,
+            height:   height,
+            format:   Pixel.u8,
+            channels: 1,
+            :surface
+        ps  : i32 [ pixel_size ]
+        src : ref u8 vdata[]
+        dst : ref u8 output.vdata[]
+        n : i32 [ width * height ]
+        for [ i: i32 0, i < n, i += 1 ]
+            si : i64 [ i64[ i ] * i64[ ps ] ]
+            dst[ i ] = src[ si ]
+        return output
+
+    # box-average reduction by an integer factor: each output pixel is the
+    # plain mean of its f x f source block (u8 channels). the cheapest
+    # correct filter — supersampled renders reduce through this.
+    func reduce_box[ f: i32 ] -> Image
+        check width > 0 && height > 0, "null Image given to reduce_box"
+        check f > 0, "invalid reduce_box factor"
+        if [ f == 1 ] return copy[]
+        ow : i32 [ width / f ]
+        oh : i32 [ height / f ]
+        check ow > 0 && oh > 0, "reduce_box factor exceeds image size"
+        output : Image
+            width:  ow,
+            height: oh,
+            :format, :surface, :channels
+        ps  : i32 [ pixel_size ]
+        src : ref u8 vdata[]
+        dst : ref u8 output.vdata[]
+        area : i32 [ f * f ]
+        for [ ry: i32 0, ry < oh, ry += 1 ]
+            for [ rx: i32 0, rx < ow, rx += 1 ]
+                for [ c: i32 0, c < ps, c += 1 ]
+                    acc : i32 [ 0 ]
+                    for [ by: i32 0, by < f, by += 1 ]
+                        so : i64 [ (i64[ ry * f + by ] * i64[ width ] + i64[ rx * f ]) * i64[ ps ] + i64[ c ] ]
+                        for [ bx: i32 0, bx < f, bx += 1 ]
+                            si : i64 [ so + i64[ bx * ps ] ]
+                            acc += i32[ src[ si ] ]
+                    di : i64 [ (i64[ ry ] * i64[ ow ] + i64[ rx ]) * i64[ ps ] + i64[ c ] ]
+                    av : i32 [ acc / area ]
+                    dst[ di ] = u8[ av ]
         return output
 
     func resize[ out_w:i32, out_h:i32 ] -> Image
@@ -232,8 +307,9 @@ class Image
 
             if [ !setjmp[ png_jmpbuf[ png2 ] ] ]
                 png_init_io png2, file
-
-                #png_t_seIHDR
+                # fast zlib: encode-bound batch exports (IR frames) go ~3x
+                # quicker for a few percent of file size
+                png_set_compression_level png2, 1
 
                 ctype2 : i32 [ PNG_COLOR_TYPE_RGBA ]
                 if [ channels == 1 ] ctype2 = PNG_COLOR_TYPE_GRAY

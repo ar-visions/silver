@@ -5,6 +5,12 @@ import <string.h>
 import <unistd.h>
 import <math.h>
     -lm
+import <pthread.h>
+import img
+
+import knik0:faad2/2.11.2 <neaacdec.h>
+    -DBUILD_SHARED_LIBS=ON
+    -lfaad
 
 # platform audio backend: CoreAudio (AudioQueue) on mac, ALSA elsewhere.
 # AudioOut is the shared surface — construct with prop pairs
@@ -202,6 +208,342 @@ el
             pcm_handle = null
             active = false
 
+# decoded PCM, interleaved S16
+class AudioClip
+    public rate     : i32
+    public channels : i32
+    public frames   : i64
+    public pcm      : ref i16
+
+func be32 [ b: ref u8, o: i32 ] -> i64
+    return i64[ b[o] ] * 16777216 + i64[ b[o+1] ] * 65536 + i64[ b[o+2] ] * 256 + i64[ b[o+3] ]
+
+func be64 [ b: ref u8, o: i32 ] -> i64
+    hi : i64 [ be32[ b, o ] ]
+    lo : i64 [ be32[ b, o + 4 ] ]
+    return hi * 4294967296 + lo
+
+# parsed AAC packet stream, container-agnostic
+class AacStream
+    public asc_o   : i32
+    public asc_n   : i32
+    public npkts   : i64
+    public sizes   : ref i32
+    public offs    : ref i32
+    public priming : i32
+    public nvalid  : i64
+
+func box_find [ b: ref u8, s: i32, e: i32, cc: i64 ] -> i32
+    o : i32 [ s ]
+    while [ o + 8 <= e ]
+        bs : i64 [ be32[ b, o ] ]
+        bt : i64 [ be32[ b, o + 4 ] ]
+        if [ bt == cc ] return o
+        if [ bs < 8 ] return -1
+        adv : i32 [ i32[ bs ] ]
+        o += adv
+    return -1
+
+# esds descriptor chain: tag 5 payload is the raw ASC.
+# returns offset * 65536 + length, or -1
+func esds_asc [ b: ref u8, s: i32, e: i32 ] -> i64
+    q : i32 [ s ]
+    while [ q < e ]
+        tag : i32 [ i32[ b[ q ] ] ]
+        q += 1
+        ln : i32 [ 0 ]
+        while [ true ]
+            b9 : i32 [ i32[ b[ q ] ] ]
+            q += 1
+            ln = ln * 128 + (b9 & 127)
+            if [ (b9 & 128) == 0 ] break
+        if [ tag == 5 ]
+            return i64[ q ] * 65536 + i64[ ln ]
+        el [ tag == 3 ]
+            q += 3
+        el [ tag == 4 ]
+            q += 13
+        el
+            q += ln
+    return -1
+
+# CAF: desc/kuki/pakt/data big-endian chunks
+func caf_parse [ buf: ref u8, fsz: i32 ] -> AacStream
+    o      : i32 [ 8 ]
+    kuki_o : i32 [ -1 ]
+    kuki_n : i32 [ 0 ]
+    pakt_o : i32 [ -1 ]
+    data_o : i32 [ -1 ]
+    while [ o + 12 <= fsz ]
+        ct : i64 [ be32[ buf, o ] ]
+        cs : i64 [ be64[ buf, o + 4 ] ]
+        o += 12
+        if [ ct == 1802659689 ]
+            kuki_o = o
+            kuki_n = i32[ cs ]
+        el [ ct == 1885432180 ]
+            pakt_o = o
+        el [ ct == 1684108385 ]
+            data_o = o + 4
+        if [ cs < 0 ] break
+        adv : i32 [ i32[ cs ] ]
+        o += adv
+    if [ kuki_o < 0 || pakt_o < 0 || data_o < 0 ] return null
+    st : AacStream [ asc_o: kuki_o, asc_n: kuki_n ]
+    if [ i32[ buf[ kuki_o ] ] == 3 ]
+        pk : i64 [ esds_asc[ buf, kuki_o, kuki_o + kuki_n ] ]
+        if [ pk < 0 ] return null
+        st.asc_o = i32[ pk / 65536 ]
+        st.asc_n = i32[ pk % 65536 ]
+    st.npkts   = be64[ buf, pakt_o ]
+    st.nvalid  = be64[ buf, pakt_o + 8 ]
+    st.priming = i32[ be32[ buf, pakt_o + 16 ] ]
+    np : i32 [ i32[ st.npkts ] ]
+    st.sizes = new i32 [ np ]
+    st.offs  = new i32 [ np ]
+    po : i32 [ pakt_o + 24 ]
+    doff : i32 [ data_o ]
+    for [ k: i32 0, k < np, k += 1 ]
+        psz : i32 [ 0 ]
+        while [ true ]
+            b9 : i32 [ i32[ buf[ po ] ] ]
+            po += 1
+            psz = psz * 128 + (b9 & 127)
+            if [ (b9 & 128) == 0 ] break
+        st.sizes[ k ] = psz
+        st.offs[ k ]  = doff
+        doff += psz
+    return st
+
+# M4A/MP4: moov.trak.mdia.minf.stbl — esds config, stsz sizes,
+# stsc/stco chunk layout. Apple shipped these with a .caf name.
+func m4a_parse [ buf: ref u8, fsz: i32 ] -> AacStream
+    moov : i32 [ box_find[ buf, 0, fsz, 1836019574 ] ]
+    if [ moov < 0 ] return null
+    me   : i32 [ moov + i32[ be32[ buf, moov ] ] ]
+    trak : i32 [ box_find[ buf, moov + 8, me, 1953653099 ] ]
+    if [ trak < 0 ] return null
+    te   : i32 [ trak + i32[ be32[ buf, trak ] ] ]
+    # elst media_time = encoder priming in media samples
+    priming : i32 [ 2112 ]
+    edts : i32 [ box_find[ buf, trak + 8, te, 1701082227 ] ]
+    if [ edts >= 0 ]
+        ee   : i32 [ edts + i32[ be32[ buf, edts ] ] ]
+        elst : i32 [ box_find[ buf, edts + 8, ee, 1701606260 ] ]
+        if [ elst >= 0 ]
+            nent : i32 [ i32[ be32[ buf, elst + 12 ] ] ]
+            if [ nent > 0 ]
+                mt : i32 [ i32[ be32[ buf, elst + 20 ] ] ]
+                if [ mt > 0 ] priming = mt
+    mdia : i32 [ box_find[ buf, trak + 8, te, 1835297121 ] ]
+    if [ mdia < 0 ] return null
+    de   : i32 [ mdia + i32[ be32[ buf, mdia ] ] ]
+    minf : i32 [ box_find[ buf, mdia + 8, de, 1835626086 ] ]
+    if [ minf < 0 ] return null
+    fe   : i32 [ minf + i32[ be32[ buf, minf ] ] ]
+    stbl : i32 [ box_find[ buf, minf + 8, fe, 1937007212 ] ]
+    if [ stbl < 0 ] return null
+    se   : i32 [ stbl + i32[ be32[ buf, stbl ] ] ]
+    stsd : i32 [ box_find[ buf, stbl + 8, se, 1937011556 ] ]
+    stsz : i32 [ box_find[ buf, stbl + 8, se, 1937011578 ] ]
+    stsc : i32 [ box_find[ buf, stbl + 8, se, 1937011555 ] ]
+    stco : i32 [ box_find[ buf, stbl + 8, se, 1937007471 ] ]
+    if [ stsd < 0 || stsz < 0 || stsc < 0 || stco < 0 ] return null
+    # stsd first entry is the mp4a sample entry; esds is its child
+    entry : i32 [ stsd + 16 ]
+    entry_e : i32 [ entry + i32[ be32[ buf, entry ] ] ]
+    esds : i32 [ box_find[ buf, entry + 36, entry_e, 1702061171 ] ]
+    if [ esds < 0 ] return null
+    ese : i32 [ esds + i32[ be32[ buf, esds ] ] ]
+    pk : i64 [ esds_asc[ buf, esds + 12, ese ] ]
+    if [ pk < 0 ] return null
+    st : AacStream [ asc_o: i32[ pk / 65536 ], asc_n: i32[ pk % 65536 ], priming: priming ]
+    np : i32 [ i32[ be32[ buf, stsz + 16 ] ] ]
+    fixed : i32 [ i32[ be32[ buf, stsz + 12 ] ] ]
+    st.npkts = np
+    st.sizes = new i32 [ np ]
+    st.offs  = new i32 [ np ]
+    for [ k: i32 0, k < np, k += 1 ]
+        st.sizes[ k ] = (fixed > 0) ? fixed : i32[ be32[ buf, stsz + 20 + k * 4 ] ]
+    nchunk : i32 [ i32[ be32[ buf, stco + 12 ] ] ]
+    nsc    : i32 [ i32[ be32[ buf, stsc + 12 ] ] ]
+    k2 : i32 [ 0 ]
+    sci : i32 [ 0 ]
+    for [ ci: i32 0, ci < nchunk, ci += 1 ]
+        # advance the stsc run whose first_chunk covers this chunk
+        while [ sci + 1 < nsc ]
+            nfc : i32 [ i32[ be32[ buf, stsc + 16 + (sci + 1) * 12 ] ] ]
+            if [ ci + 1 >= nfc ]
+                sci += 1
+            el
+                break
+        spc : i32 [ i32[ be32[ buf, stsc + 16 + sci * 12 + 4 ] ] ]
+        coff : i32 [ i32[ be32[ buf, stco + 16 + ci * 4 ] ] ]
+        for [ j: i32 0, j < spc, j += 1 ]
+            if [ k2 >= np ] break
+            st.offs[ k2 ] = coff
+            coff += st.sizes[ k2 ]
+            k2 += 1
+    st.nvalid = 0
+    return st
+
+# .caf or .m4a (Apple shipped m4a bytes under .caf names) -> PCM
+func caf_load [ p: path ] -> AudioClip
+    fp : ref FILE [ fopen[ '{p}', 'rb' ] ]
+    if [ !fp ]
+        puts 'caf: cannot open {p}'
+        return null
+    fseek[ fp, 0, SEEK_END ]
+    fsz : i32 [ i32[ ftell[ fp ] ] ]
+    fseek[ fp, 0, SEEK_SET ]
+    buf : new u8 [ fsz ]
+    fread[ buf, 1, fsz, fp ]
+    fclose[ fp ]
+    st : AacStream [ null ]
+    if [ be32[ buf, 0 ] == 1667327590 ]
+        st = caf_parse[ buf, fsz ]
+    el [ be32[ buf, 4 ] == 1718909296 ]
+        st = m4a_parse[ buf, fsz ]
+    if [ !st ]
+        puts 'caf: unsupported container: {p}'
+        return null
+    h : NeAACDecOpen[]
+    conf : NeAACDecGetCurrentConfiguration[ h ]
+    conf.outputFormat = FAAD_FMT_16BIT
+    NeAACDecSetConfiguration[ h, conf ]
+    sr9 : u64 [ 0 ]
+    ch9 : u8 [ 0 ]
+    ir : i64 [ NeAACDecInit2[ h, ref buf[ st.asc_o ], u64[ st.asc_n ], ref sr9, ref ch9 ] ]
+    if [ ir != 0 ]
+        puts 'caf: faad init failed on {p}'
+        NeAACDecClose[ h ]
+        return null
+    ch : i32 [ i32[ ch9 ] ]
+    rate : i32 [ i32[ sr9 ] ]
+    cap : i64 [ (st.npkts + 2) * 2048 * ch ]
+    pcm : new i16 [ cap ]
+    wr : i64 [ 0 ]
+    np : i32 [ i32[ st.npkts ] ]
+    for [ k: i32 0, k < np, k += 1 ]
+        info : NeAACDecFrameInfo
+        doff : i32 [ st.offs[ k ] ]
+        psz  : i32 [ st.sizes[ k ] ]
+        smp : ref i16 [ NeAACDecDecode[ h, ref info, ref buf[ doff ], psz ] ]
+        if [ info.error != 0 || !smp ] continue
+        if [ i32[ info.channels ] > 0 ] ch = i32[ info.channels ]
+        ns : i64 [ i64[ info.samples ] ]
+        if [ wr + ns > cap ] break
+        nb : i64 [ ns * 2 ]
+        memcpy[ ref pcm[ wr ], smp, nb ]
+        wr += ns
+    NeAACDecClose[ h ]
+    # drop encoder priming; trim to the container's frame count if known
+    start : i64 [ i64[ st.priming ] * ch ]
+    total : i64 [ wr - start ]
+    if [ st.nvalid > 0 ]
+        nv : i64 [ st.nvalid * ch ]
+        if [ nv < total ] total = nv
+    if [ total < 0 ] total = 0
+    if [ start > 0 && total > 0 ]
+        tb : i64 [ total * 2 ]
+        memmove[ pcm, ref pcm[ start ], tb ]
+    clip : AudioClip [ rate: rate, channels: ch, frames: total / ch ]
+    clip.pcm = pcm
+    puts 'caf: {p} rate={rate} ch={ch} frames={clip.frames}'
+    return clip
+
+class Voice
+    public clip   : AudioClip
+    public pos    : f64
+    public gain   : f32
+    public pitch  : f32 [ 1.0 ]
+    public loop   : bool
+    public active : bool
+
+# tiny software mixer on its own thread; AudioOut's blocking
+# write paces it. play[] is safe from the UI thread.
+class AudioMixer
+    public sample_rate : i32 [ 44100 ]
+    public out    : AudioOut
+    intern voices : array Voice
+    intern acc    : ref i32
+    intern stop   : bool
+
+    func start [] -> bool
+        out = AudioOut [ sample_rate: sample_rate, channels: 2, buffer_size: 1024 ]
+        if [ !out.open[] ]
+            puts 'mixer: audio device unavailable'
+            return false
+        voices = array Voice [ ]
+        voices.hold[]
+        nacc : i32 [ out.buffer_size * 2 ]
+        acc = new i32 [ nacc ]
+        tid : local u64 [ 1 ]
+        pthread_create[ tid, null, ref mix_entry, a ]
+        return true
+
+    # pitch: OpenAL AL_PITCH semantics — playback rate multiplier
+    func play_p [ c: AudioClip, loop2: bool, gain2: f32, pitch2: f32 ]
+        if [ !c || !out || !out.active ] return
+        for [ v: Voice ] in voices
+            if [ !v.active ]
+                v.clip = c
+                v.pos = 0.0
+                v.gain = gain2
+                v.pitch = pitch2
+                v.loop = loop2
+                v.active = true
+                return
+        nv : Voice [ clip: c, pos: 0.0, gain: gain2, pitch: pitch2, loop: loop2 ]
+        voices += nv
+        nv.active = true
+
+    func play [ c: AudioClip, loop2: bool, gain2: f32 ]
+        play_p[ c, loop2, gain2, 1.0 ]
+
+    func mix_entry [] -> none
+        n : i32 [ out.buffer_size ]
+        n2 : i32 [ n * 2 ]
+        while [ !stop ]
+            for [ i: i32 0, i < n2, i += 1 ] acc[ i ] = 0
+            for [ v: Voice ] in voices
+                if [ !v.active ] continue
+                c : v.clip
+                step : f64 [ f64[ c.rate ] / f64[ sample_rate ] * f64[ v.pitch ] ]
+                ch : i32 [ c.channels ]
+                for [ i: i32 0, i < n, i += 1 ]
+                    lim : f64 [ f64[ c.frames - 1 ] ]
+                    if [ v.pos >= lim ]
+                        if [ v.loop ]
+                            v.pos = 0.0
+                        el
+                            v.active = false
+                            break
+                    i0 : i64 [ i64[ v.pos ] ]
+                    fr : f32 [ f32[ v.pos - f64[ i0 ] ] ]
+                    b0 : i64 [ i0 * ch ]
+                    b1 : i64 [ (i0 + 1) * ch ]
+                    l0 : f32 [ f32[ c.pcm[ b0 ] ] ]
+                    l1 : f32 [ f32[ c.pcm[ b1 ] ] ]
+                    ls : f32 [ (l0 + (l1 - l0) * fr) * v.gain ]
+                    rs : f32 [ ls ]
+                    if [ ch > 1 ]
+                        r0 : f32 [ f32[ c.pcm[ b0 + 1 ] ] ]
+                        r1 : f32 [ f32[ c.pcm[ b1 + 1 ] ] ]
+                        rs = (r0 + (r1 - r0) * fr) * v.gain
+                    li : i32 [ i32[ ls ] ]
+                    ri : i32 [ i32[ rs ] ]
+                    acc[ i * 2 ] += li
+                    acc[ i * 2 + 1 ] += ri
+                    v.pos += step
+            for [ i: i32 0, i < n2, i += 1 ]
+                s5 : i32 [ acc[ i ] ]
+                if [ s5 > 32767 ] s5 = 32767
+                if [ s5 < -32768 ] s5 = -32768
+                out.buffer[ i ] = i16[ s5 ]
+            out.write[ n ]
+        out.close[]
+
 func fft [ re: ref f32, im: ref f32, n: i32 ]
     if [ n <= 1 ]
         return
@@ -232,10 +574,115 @@ func fft [ re: ref f32, im: ref f32, n: i32 ]
         re[i + half2] = re_even[i] - tr
         im[i + half2] = im_even[i] - ti
 
-    free [ re_even ]
-    free [ im_even ]
-    free [ re_odd ]
-    free [ im_odd ]
+# heat colormap: black -> deep blue -> purple -> orange -> white
+# returns r*65536 + g*256 + b
+func heat [ t0: f32 ] -> i32
+    t : f32 [ t0 ]
+    if [ t < 0.0 ] t = 0.0
+    if [ t > 1.0 ] t = 1.0
+    r0 : f32 [ 0.0 ]
+    g0 : f32 [ 0.0 ]
+    b0 : f32 [ 0.0 ]
+    r1 : f32 [ 0.0 ]
+    g1 : f32 [ 0.0 ]
+    b1 : f32 [ 0.0 ]
+    f : f32 [ 0.0 ]
+    if [ t < 0.25 ]
+        r1 = 22.0
+        g1 = 24.0
+        b1 = 96.0
+        f = t * 4.0
+    el [ t < 0.5 ]
+        r0 = 22.0
+        g0 = 24.0
+        b0 = 96.0
+        r1 = 128.0
+        g1 = 32.0
+        b1 = 142.0
+        f = (t - 0.25) * 4.0
+    el [ t < 0.75 ]
+        r0 = 128.0
+        g0 = 32.0
+        b0 = 142.0
+        r1 = 244.0
+        g1 = 124.0
+        b1 = 44.0
+        f = (t - 0.5) * 4.0
+    el
+        r0 = 244.0
+        g0 = 124.0
+        b0 = 44.0
+        r1 = 255.0
+        g1 = 244.0
+        b1 = 210.0
+        f = (t - 0.75) * 4.0
+    r : i32 [ i32[ r0 + (r1 - r0) * f ] ]
+    g : i32 [ i32[ g0 + (g1 - g0) * f ] ]
+    b : i32 [ i32[ b0 + (b1 - b0) * f ] ]
+    return r * 65536 + g * 256 + b
+
+# per-channel spectrograph, log-frequency 20Hz..10kHz, dB heat map.
+# channels stack top to bottom (L then R); time runs right.
+func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32 ] -> bool
+    if [ !c || c.frames < 4096 ] return false
+    n : i32 [ 2048 ]
+    re : new f32 [ n ]
+    im : new f32 [ n ]
+    win : new f32 [ n ]
+    for [ i: i32 0, i < n, i += 1 ]
+        ang : f32 [ 6.28318530718 * f32[ i ] / f32[ n ] ]
+        win[ i ] = 0.5 - 0.5 * cos[ ang ]
+    img2 : Image [ width: w2, height: h2, format: Pixel.rgba8, channels: 4 ]
+    pd : ref u8 [ img2.vdata[] ]
+    ch : i32 [ c.channels ]
+    gap : i32 [ (ch > 1) ? 2 : 0 ]
+    band : i32 [ (h2 - gap * (ch - 1)) / ch ]
+    span : i64 [ c.frames - i64[ n ] ]
+    hop : i64 [ span / i64[ w2 ] ]
+    if [ hop < 1 ] hop = 1
+    fmin : f32 [ 20.0 ]
+    fmax : f32 [ 10000.0 ]
+    nyq : f32 [ f32[ c.rate ] * 0.5 ]
+    if [ fmax > nyq ] fmax = nyq
+    lr : f32 [ log[ fmax / fmin ] ]
+    # divider rows between channel bands
+    for [ y: i32 0, y < h2, y += 1 ]
+        for [ x: i32 0, x < w2, x += 1 ]
+            di : i64 [ (i64[ y ] * w2 + x) * 4 ]
+            pd[ di ]     = 0
+            pd[ di + 1 ] = 0
+            pd[ di + 2 ] = 0
+            pd[ di + 3 ] = 255
+    for [ x: i32 0, x < w2, x += 1 ]
+        s0 : i64 [ i64[ x ] * hop ]
+        for [ c2: i32 0, c2 < ch, c2 += 1 ]
+            for [ i: i32 0, i < n, i += 1 ]
+                b9 : i64 [ (s0 + i64[ i ]) * ch + c2 ]
+                re[ i ] = f32[ c.pcm[ b9 ] ] / 32768.0 * win[ i ]
+                im[ i ] = 0.0
+            fft[ re, im, n ]
+            ytop : i32 [ c2 * (band + gap) ]
+            for [ y: i32 0, y < band, y += 1 ]
+                # log frequency: band bottom = 20Hz, top = 10kHz
+                t : f32 [ f32[ band - 1 - y ] / f32[ band - 1 ] ]
+                fq : f32 [ fmin * exp[ t * lr ] ]
+                fb : f32 [ fq * f32[ n ] / f32[ c.rate ] ]
+                bi : i32 [ i32[ fb ] ]
+                fr : f32 [ fb - f32[ bi ] ]
+                m0 : f32 [ sqrt[ re[ bi ] * re[ bi ] + im[ bi ] * im[ bi ] ] ]
+                m1 : f32 [ sqrt[ re[ bi + 1 ] * re[ bi + 1 ] + im[ bi + 1 ] * im[ bi + 1 ] ] ]
+                mag : f32 [ m0 + (m1 - m0) * fr ]
+                amp : f32 [ mag / 512.0 ]
+                db : f32 [ 8.6858896 * log[ amp + 0.0000000001 ] ]
+                tv : f32 [ (db + 80.0) / 80.0 ]
+                rgb : i32 [ heat[ tv ] ]
+                di : i64 [ (i64[ ytop + y ] * w2 + x) * 4 ]
+                pd[ di ]     = u8[ rgb / 65536 ]
+                pd[ di + 1 ] = u8[ (rgb / 256) % 256 ]
+                pd[ di + 2 ] = u8[ rgb % 256 ]
+                pd[ di + 3 ] = 255
+    img2.png[ out2 ]
+    return true
 
 # coverage: AudioOut plays Ode to Joy (Beethoven, public domain).
 # sustained writes far exceed the 4-buffer ring, so the blocking

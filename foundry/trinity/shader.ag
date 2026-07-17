@@ -902,28 +902,37 @@ enum SubdivSurface
     ve:          6
     out_pos:     7
 
-# one Catmull-Clark level on the GPU. reads the base control positions plus a
-# fixed topology (built once on the CPU) and writes the subdivided vertex
-# buffer. one invocation per OUTPUT vertex; output order is vertex-points (N),
-# then edge-points (E), then face-points (F). run only on adjustment.
+# one Catmull-Clark level on the GPU. reads the level's control positions plus
+# a fixed topology (built once on the CPU) and writes the subdivided positions.
+# one invocation per OUTPUT vertex; output order is vertex-points (N), then
+# edge-points (E), then face-points (F). in/out are float buffers walked with a
+# stride in floats — the final level writes straight into the interleaved VBO.
 shader SubdivCompute
-    mutable n_base : i32
-    mutable n_edge : i32
-    mutable n_face : i32
+    mutable n_base     : i32
+    mutable n_edge     : i32
+    mutable n_face     : i32
+    mutable in_stride  : i32                   # floats per input vertex
+    mutable out_stride : i32                   # floats per output vertex
 
-    attrib in_pos      : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.in_pos,      count:1, format:typeid[ vec4f ] ]
+    attrib in_pos      : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.in_pos,      count:1, format:typeid[ f32 ] ]
     attrib face_corner : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.face_corner, count:1, format:typeid[ i32 ] ]
     attrib edge_data   : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.edge_data,   count:1, format:typeid[ i32 ] ]
     attrib vfo         : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.vfo,          count:1, format:typeid[ i32 ] ]
     attrib vf          : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.vf,           count:1, format:typeid[ i32 ] ]
     attrib veo         : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.veo,          count:1, format:typeid[ i32 ] ]
     attrib ve          : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.ve,           count:1, format:typeid[ i32 ] ]
-    attrib out_pos     : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.out_pos,      count:1, format:typeid[ vec4f ], writable:true ]
+    attrib out_pos     : StorageBuffer [ type:typeid[ SubdivSurface ], id:SubdivSurface.out_pos,      count:1, format:typeid[ f32 ], writable:true ]
+
+    # strided position read from the input float buffer
+    func read_pos [ v: i32 ] -> GLSL vec3f {
+        int b = v * ubo.in_stride;
+        return vec3(in_pos[b], in_pos[b+1], in_pos[b+2]);
+    }
 
     # face point = average of the quad's four corners
     func face_point [ f: i32 ] -> GLSL vec3f {
-        return (in_pos[face_corner[f*4+0]].xyz + in_pos[face_corner[f*4+1]].xyz
-              + in_pos[face_corner[f*4+2]].xyz + in_pos[face_corner[f*4+3]].xyz) * 0.25;
+        return (read_pos(face_corner[f*4+0]) + read_pos(face_corner[f*4+1])
+              + read_pos(face_corner[f*4+2]) + read_pos(face_corner[f*4+3])) * 0.25;
     }
 
     func compute [] -> GLSL none {
@@ -931,38 +940,104 @@ shader SubdivCompute
         uint N = uint(ubo.n_base);
         uint E = uint(ubo.n_edge);
         uint F = uint(ubo.n_face);
-        if (gid >= N + E + F) return;
-
+        if (gid >= N + E + F || gl_GlobalInvocationID.y > 0u) return;
+        vec3 np;
         if (gid < N) {{
             int v = int(gid);
-            vec3 P = in_pos[v].xyz;
-            int f0 = vfo[v]; int f1 = vfo[v+1];
-            int nf = f1 - f0;
-            vec3 Favg = vec3(0.0);
-            for (int i = f0; i < f1; i++) Favg += face_point(vf[i]);
-            if (nf > 0) Favg /= float(nf);
+            vec3 P = read_pos(v);
             int e0 = veo[v]; int e1 = veo[v+1];
-            int ne = e1 - e0;
-            vec3 Ravg = vec3(0.0);
-            for (int i = e0; i < e1; i++) Ravg += (in_pos[edge_data[ve[i]*4+0]].xyz + in_pos[edge_data[ve[i]*4+1]].xyz) * 0.5;
-            if (ne > 0) Ravg /= float(ne);
-            float n = float(nf);
-            vec3 np = (n > 0.0) ? (Favg + 2.0*Ravg + (n-3.0)*P) / n : P;
-            out_pos[int(gid)] = vec4(np, 1.0);
+            // boundary verts (mouth rim, lip contact) use the crease rule;
+            // the interior formula would drag them toward the surface hole
+            int nb = 0;
+            vec3 bsum = vec3(0.0);
+            for (int i = e0; i < e1; i++) {{
+                int ee = ve[i];
+                if (edge_data[ee*4+3] < 0) {{
+                    int b0 = edge_data[ee*4+0]; int b1 = edge_data[ee*4+1];
+                    bsum += read_pos((b0 == v) ? b1 : b0);
+                    nb++;
+                }}
+            }}
+            if (nb == 2) {{
+                np = 0.75 * P + 0.125 * bsum;
+            }} else if (nb > 0) {{
+                np = P;
+            }} else {{
+                int f0 = vfo[v]; int f1 = vfo[v+1];
+                int nf = f1 - f0;
+                vec3 Favg = vec3(0.0);
+                for (int i = f0; i < f1; i++) Favg += face_point(vf[i]);
+                if (nf > 0) Favg /= float(nf);
+                int ne = e1 - e0;
+                vec3 Ravg = vec3(0.0);
+                for (int i = e0; i < e1; i++) Ravg += (read_pos(edge_data[ve[i]*4+0]) + read_pos(edge_data[ve[i]*4+1])) * 0.5;
+                if (ne > 0) Ravg /= float(ne);
+                float n = float(nf);
+                np = (n > 0.0) ? (Favg + 2.0*Ravg + (n-3.0)*P) / n : P;
+            }}
         }} else if (gid < N + E) {{
             int e = int(gid - N);
             int v0 = edge_data[e*4+0]; int v1 = edge_data[e*4+1];
             int fa = edge_data[e*4+2]; int fb = edge_data[e*4+3];
-            vec3 pm = (in_pos[v0].xyz + in_pos[v1].xyz) * 0.5;
             if (fb < 0) {{
-                out_pos[int(gid)] = vec4(pm, 1.0);
+                np = (read_pos(v0) + read_pos(v1)) * 0.5;
             }} else {{
-                out_pos[int(gid)] = vec4((in_pos[v0].xyz + in_pos[v1].xyz + face_point(fa) + face_point(fb)) * 0.25, 1.0);
+                np = (read_pos(v0) + read_pos(v1) + face_point(fa) + face_point(fb)) * 0.25;
             }}
         }} else {{
             int f = int(gid - N - E);
-            out_pos[int(gid)] = vec4(face_point(f), 1.0);
+            np = face_point(f);
         }}
+        int ob = int(gid) * ubo.out_stride;
+        out_pos[ob]   = np.x;
+        out_pos[ob+1] = np.y;
+        out_pos[ob+2] = np.z;
+    }
+
+# smooth normals for the subdivided mesh, recomputed from the OUTPUT quads
+# every frame (positions move with the control cage). one invocation per
+# output vertex: sum the normals of its adjacent quads, normalize, write into
+# the interleaved VBO at nrm_off. reads and writes the same float buffer —
+# positions (offset 0) are never written here, so there is no race.
+enum SubdivNrm
+    v_buf: 0
+    n_fc:  1
+    n_vfo: 2
+    n_vf:  3
+
+shader SubdivNormals
+    mutable n_verts : i32
+    mutable stride  : i32                      # floats per vertex in the VBO
+    mutable nrm_off : i32                      # float offset of the normal
+
+    attrib v_buf : StorageBuffer [ type:typeid[ SubdivNrm ], id:SubdivNrm.v_buf, count:1, format:typeid[ f32 ], writable:true ]
+    attrib n_fc  : StorageBuffer [ type:typeid[ SubdivNrm ], id:SubdivNrm.n_fc,  count:1, format:typeid[ i32 ] ]
+    attrib n_vfo : StorageBuffer [ type:typeid[ SubdivNrm ], id:SubdivNrm.n_vfo, count:1, format:typeid[ i32 ] ]
+    attrib n_vf  : StorageBuffer [ type:typeid[ SubdivNrm ], id:SubdivNrm.n_vf,  count:1, format:typeid[ i32 ] ]
+
+    func vpos [ v: i32 ] -> GLSL vec3f {
+        int b = v * ubo.stride;
+        return vec3(v_buf[b], v_buf[b+1], v_buf[b+2]);
+    }
+
+    func compute [] -> GLSL none {
+        int v = int(gl_GlobalInvocationID.x);
+        if (v >= ubo.n_verts || gl_GlobalInvocationID.y > 0u) return;
+        vec3 acc = vec3(0.0);
+        for (int i = n_vfo[v]; i < n_vfo[v+1]; i++) {{
+            int f = n_vf[i];
+            vec3 c0 = vpos(n_fc[f*4+0]);
+            vec3 c1 = vpos(n_fc[f*4+1]);
+            vec3 c2 = vpos(n_fc[f*4+2]);
+            vec3 c3 = vpos(n_fc[f*4+3]);
+            acc += cross(c1 - c0, c3 - c0) + cross(c3 - c2, c1 - c2);
+        }}
+        float alen = length(acc);
+        vec3 nn = (alen > 1e-20) ? (acc / alen) : vec3(0.0, 0.0, 1.0);
+        int b = v * ubo.stride + ubo.nrm_off;
+        v_buf[b]   = nn.x;
+        v_buf[b+1] = nn.y;
+        v_buf[b+2] = nn.z;
     }
 
 shader Env
@@ -1279,6 +1354,603 @@ func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string, out: map
         m.tex_cache[ key ] = tx
     out[ name ] = tx
 
+func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: ref i32, with_edges: bool ] -> SubdivTopo
+    t : SubdivTopo [ ]
+    t.nv = nv
+    t.nf = nf
+    nf4 : i32 [ nf * 4 ]
+    t.qcorn = new i32 [ nf4 ]
+    for [ i: i32 0, i < nf4, i += 1 ] t.qcorn[ i ] = qcorn[ i ]
+    # vert->face CSR (count, prefix-sum, fill)
+    nv1 : i32 [ nv + 1 ]
+    t.vfo = new i32 [ nv1 ]
+    t.vf  = new i32 [ nf4 ]
+    for [ i: i32 0, i < nv1, i += 1 ] t.vfo[ i ] = 0
+    for [ f: i32 0, f < nf, f += 1 ]
+        for [ c: i32 0, c < 4, c += 1 ] t.vfo[ qcorn[ f*4 + c ] + 1 ] += 1
+    for [ i: i32 0, i < nv, i += 1 ] t.vfo[ i+1 ] += t.vfo[ i ]
+    vf_cur : new i32 [ nv ]
+    for [ i: i32 0, i < nv, i += 1 ] vf_cur[ i ] = t.vfo[ i ]
+    for [ f: i32 0, f < nf, f += 1 ]
+        for [ c: i32 0, c < 4, c += 1 ]
+            vv : i32 [ qcorn[ f*4 + c ] ]
+            pf : i32 [ vf_cur[ vv ] ]
+            t.vf[ pf ] = f
+            vf_cur[ vv ] += 1
+    # the normal-pass topology only reads corners + vert->face; skip edges
+    if [ !with_edges ] return t
+    # unique quad edges: bucket every side by its low corner, dedupe within
+    # the bucket (bucket size = vertex valence). no maps — load-time hot path
+    side_lo : new i32 [ nf4 ]
+    side_hi : new i32 [ nf4 ]
+    for [ f: i32 0, f < nf, f += 1 ]
+        for [ e: i32 0, e < 4, e += 1 ]
+            en : i32 [ e + 1 ]
+            if [ en >= 4 ] en = 0
+            u  : i32 [ qcorn[ f*4 + e ] ]
+            w2 : i32 [ qcorn[ f*4 + en ] ]
+            lo : i32 [ u ]
+            hi : i32 [ w2 ]
+            if [ u > w2 ]
+                lo = w2
+                hi = u
+            side_lo[ f*4 + e ] = lo
+            side_hi[ f*4 + e ] = hi
+    boff : new i32 [ nv1 ]
+    for [ i: i32 0, i < nv1, i += 1 ] boff[ i ] = 0
+    for [ s: i32 0, s < nf4, s += 1 ] boff[ side_lo[ s ] + 1 ] += 1
+    for [ i: i32 0, i < nv, i += 1 ] boff[ i+1 ] += boff[ i ]
+    bcur : new i32 [ nv ]
+    for [ i: i32 0, i < nv, i += 1 ] bcur[ i ] = boff[ i ]
+    bside : new i32 [ nf4 ]
+    for [ s: i32 0, s < nf4, s += 1 ]
+        pos : i32 [ bcur[ side_lo[ s ] ] ]
+        bside[ pos ] = s
+        bcur[ side_lo[ s ] ] += 1
+    fe_u  : new i32 [ nf4 ]
+    fe_v  : new i32 [ nf4 ]
+    fe_f0 : new i32 [ nf4 ]
+    fe_f1 : new i32 [ nf4 ]
+    fe_fn : new i32 [ nf4 ]
+    beid  : new i32 [ nf4 ]
+    t.face_e = new i32 [ nf4 ]
+    nedge : i32 [ 0 ]
+    for [ v: i32 0, v < nv, v += 1 ]
+        b0 : i32 [ boff[ v ] ]
+        b1 : i32 [ boff[ v + 1 ] ]
+        for [ i: i32 b0, i < b1, i += 1 ]
+            si  : i32 [ bside[ i ] ]
+            shi : i32 [ side_hi[ si ] ]
+            sf  : i32 [ si / 4 ]
+            eid : i32 [ -1 ]
+            for [ j: i32 b0, j < i, j += 1 ]
+                if [ side_hi[ bside[ j ] ] == shi ]
+                    eid = beid[ j ]
+                    break
+            if [ eid < 0 ]
+                eid = nedge
+                fe_u[ eid ] = v
+                fe_v[ eid ] = shi
+                fe_f0[ eid ] = sf
+                fe_f1[ eid ] = sf
+                fe_fn[ eid ] = 1
+                nedge += 1
+            el
+                fe_f1[ eid ] = sf
+                fe_fn[ eid ] += 1
+            beid[ i ] = eid
+            t.face_e[ si ] = eid
+    t.ne = nedge
+    ne4 : i32 [ nedge * 4 ]
+    t.edata = new i32 [ ne4 ]
+    t.n_bound = 0
+    t.n_nonman = 0
+    for [ eid: i32 0, eid < nedge, eid += 1 ]
+        t.edata[ eid*4 + 0 ] = fe_u[ eid ]
+        t.edata[ eid*4 + 1 ] = fe_v[ eid ]
+        t.edata[ eid*4 + 2 ] = fe_f0[ eid ]
+        t.edata[ eid*4 + 3 ] = (fe_fn[ eid ] >= 2) ? fe_f1[ eid ] : -1
+        if [ fe_fn[ eid ] == 1 ] t.n_bound += 1
+        if [ fe_fn[ eid ] >= 3 ] t.n_nonman += 1
+    # vert->edge CSR
+    ne2 : i32 [ nedge * 2 ]
+    t.veo = new i32 [ nv1 ]
+    t.ve  = new i32 [ ne2 ]
+    for [ i: i32 0, i < nv1, i += 1 ] t.veo[ i ] = 0
+    for [ eid: i32 0, eid < nedge, eid += 1 ]
+        t.veo[ fe_u[ eid ] + 1 ] += 1
+        t.veo[ fe_v[ eid ] + 1 ] += 1
+    for [ i: i32 0, i < nv, i += 1 ] t.veo[ i+1 ] += t.veo[ i ]
+    ve_cur : new i32 [ nv ]
+    for [ i: i32 0, i < nv, i += 1 ] ve_cur[ i ] = t.veo[ i ]
+    for [ eid: i32 0, eid < nedge, eid += 1 ]
+        uu : i32 [ fe_u[ eid ] ]
+        ww : i32 [ fe_v[ eid ] ]
+        pu : i32 [ ve_cur[ uu ] ]
+        t.ve[ pu ] = eid
+        ve_cur[ uu ] += 1
+        pw : i32 [ ve_cur[ ww ] ]
+        t.ve[ pw ] = eid
+        ve_cur[ ww ] += 1
+    return t
+
+# next level: every quad splits into 4 sub-quads [corner, edge-pt, face-pt,
+# prev-edge-pt]; new vert ids follow the compute output order (N, E, F)
+func subdiv_next_topo [ t: SubdivTopo, with_edges: bool ] -> SubdivTopo
+    nv2 : i32 [ t.nv + t.ne + t.nf ]
+    nf2 : i32 [ t.nf * 4 ]
+    q2sz : i32 [ nf2 * 4 ]
+    q2 : new i32 [ q2sz ]
+    for [ f: i32 0, f < t.nf, f += 1 ]
+        fp : i32 [ t.nv + t.ne + f ]
+        for [ i: i32 0, i < 4, i += 1 ]
+            ip : i32 [ i - 1 ]
+            if [ ip < 0 ] ip = 3
+            qi : i32 [ (f*4 + i) * 4 ]
+            q2[ qi + 0 ] = t.qcorn[ f*4 + i ]
+            q2[ qi + 1 ] = t.nv + t.face_e[ f*4 + i ]
+            q2[ qi + 2 ] = fp
+            q2[ qi + 3 ] = t.nv + t.face_e[ f*4 + ip ]
+    return subdiv_topo_from_quads[ nv2, nf2, q2, with_edges ]
+
+# host-visible i32 storage buffer filled from a CPU array
+func subdiv_i32_buf [ vkc: vk_context, src: ref i32, count: i32 ] -> Buffer
+    bts : i32 [ count * 4 ]
+    b : Buffer [ vk: vkc, size: bts, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+    d : ref i8 [ b.data ]
+    s0 : ref i8 [ ((ref src[ 0 ]) to ref i8) ]
+    memcpy[ d, s0, bts ]
+    return b
+
+# merge the 4-slot joint/weight pairs of ncont contributor verts into dst
+# vert dv: accumulate per joint, keep the 4 heaviest, renormalize to sum 1
+func subdiv_merge_jw [ cur_j: ref i32, cur_w: ref f32, cont: ref i32, ncont: i32, dst_j: ref i32, dst_w: ref f32, dv: i32 ]
+    mj : local i32 [ 16 ]
+    mw : local f32 [ 16 ]
+    cnt : i32 [ 0 ]
+    inv : f32 [ 1.0 / f32[ ncont ] ]
+    for [ ci: i32 0, ci < ncont, ci += 1 ]
+        cv : i32 [ cont[ ci ] ]
+        for [ s: i32 0, s < 4, s += 1 ]
+            jj : i32 [ cur_j[ cv*4 + s ] ]
+            ww : f32 [ cur_w[ cv*4 + s ] * inv ]
+            if [ ww <= 0.0 ] continue
+            found : i32 [ -1 ]
+            for [ q: i32 0, q < cnt, q += 1 ]
+                if [ mj[ q ] == jj ]
+                    found = q
+                    break
+            if [ found >= 0 ]
+                mw[ found ] += ww
+            el
+                if [ cnt < 16 ]
+                    mj[ cnt ] = jj
+                    mw[ cnt ] = ww
+                    cnt += 1
+    # all contributors weightless: copy the first verbatim so the skinned
+    # position never collapses to the zero matrix (origin spikes)
+    if [ cnt == 0 ]
+        cv0 : i32 [ cont[ 0 ] ]
+        for [ s: i32 0, s < 4, s += 1 ]
+            dst_j[ dv*4 + s ] = cur_j[ cv0*4 + s ]
+            dst_w[ dv*4 + s ] = cur_w[ cv0*4 + s ]
+        return
+    for [ s: i32 0, s < 4, s += 1 ]
+        bi : i32 [ -1 ]
+        bw : f32 [ 0.0 ]
+        for [ q: i32 0, q < cnt, q += 1 ]
+            if [ mw[ q ] > bw ]
+                bw = mw[ q ]
+                bi = q
+        if [ bi >= 0 ]
+            dst_j[ dv*4 + s ] = mj[ bi ]
+            dst_w[ dv*4 + s ] = bw
+            mw[ bi ] = 0.0
+        el
+            dst_j[ dv*4 + s ] = 0
+            dst_w[ dv*4 + s ] = 0.0
+    tw : f32 [ dst_w[ dv*4 ] + dst_w[ dv*4 + 1 ] + dst_w[ dv*4 + 2 ] + dst_w[ dv*4 + 3 ] ]
+    if [ tw > 0.0 ]
+        for [ s: i32 0, s < 4, s += 1 ] dst_w[ dv*4 + s ] = dst_w[ dv*4 + s ] / tw
+
+# generic GPU subdivision for one primitive's interleaved vbo. welds verts by
+# position, pairs consecutive triangles back into quads, chains m.subdiv
+# Catmull-Clark levels of topology, then:
+#   positions — SubdivCompute pipeline per level, re-run every frame
+#   normals   — SubdivNormals pipeline from the output quads, every frame
+#   the rest  — averaged once on the CPU here (joints+weights merged)
+# returns the subdivided Gpu (external compute-fed vbo), or null to keep the
+# base mesh (odd triangle count / non-quad pairing / no POSITION first).
+func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name: string ] -> Gpu
+    levels : i32 [ m.subdiv ]
+    vsz : i32 [ base.vertex_size ]
+    vc  : i32 [ base.vertex_count ]
+    ic  : i32 [ base.index_count ]
+    if [ levels <= 0 || ic <= 0 || vc <= 0 ] return null
+    if [ sems_of[ 0 ] != 0 ] return null
+    tc : i32 [ ic / 3 ]
+    if [ tc * 3 != ic ] return null
+    nf0 : i32 [ tc / 2 ]
+    if [ nf0 * 2 != tc ] return null
+    vdata : ref i8 [ base.vertex_data ]
+    idata : ref i8 [ base.index_data ]
+    # indices at their real width
+    idxbuf : new i32 [ ic ]
+    if [ base.index_size == 2 ]
+        i16p : ref u16 [ ((ref idata[ 0 ]) to ref u16) ]
+        for [ ii: i32 0, ii < ic, ii += 1 ] idxbuf[ ii ] = i32[ i16p[ ii ] ]
+    el
+        i32p : ref u32 [ ((ref idata[ 0 ]) to ref u32) ]
+        for [ ii: i32 0, ii < ic, ii += 1 ] idxbuf[ ii ] = i32[ i32p[ ii ] ]
+    # weld verts by quantized position + coarse normal: UV-seam duplicates
+    # (same normal) merge, but coinciding lip-contact verts (opposite normals)
+    # stay separate — a position-only weld glues them into non-manifold points
+    n_off : i32 [ -1 ]
+    mems0 : ref vertex_member_t [ base.members ]
+    for [ k: i32 0, k < base.member_count, k += 1 ]
+        if [ sems_of[ k ] == 1 ] n_off = i32[ mems0[ k ].offset ]
+    topo : new i32 [ vc ]
+    rep  : new i32 [ vc ]
+    # open-addressed integer hash on the quantized tuple (string-keyed maps
+    # here cost seconds per model at load)
+    hcap : i32 [ 64 ]
+    hneed : i32 [ vc * 2 ]
+    while [ hcap < hneed ] hcap = hcap * 2
+    htab : new i32 [ hcap ]
+    for [ i: i32 0, i < hcap, i += 1 ] htab[ i ] = -1
+    q6sz : i32 [ vc * 6 ]
+    q6 : new i64 [ q6sz ]
+    tv : i32 [ 0 ]
+    for [ v: i32 0, v < vc, v += 1 ]
+        p : ref f32 [ ((ref vdata[ v * vsz ]) to ref f32) ]
+        qx : i64 [ i64[ round[ p[0] * 100000.0 ] ] ]
+        qy : i64 [ i64[ round[ p[1] * 100000.0 ] ] ]
+        qz : i64 [ i64[ round[ p[2] * 100000.0 ] ] ]
+        nx : i64 [ 0 ]
+        ny : i64 [ 0 ]
+        nz : i64 [ 0 ]
+        if [ n_off >= 0 ]
+            nrm : ref f32 [ ((ref vdata[ v * vsz + n_off ]) to ref f32) ]
+            nx = i64[ round[ nrm[0] * 4.0 ] ]
+            ny = i64[ round[ nrm[1] * 4.0 ] ]
+            nz = i64[ round[ nrm[2] * 4.0 ] ]
+        h : i64 [ qx ]
+        h = h * 1000003 + qy
+        h = h * 1000003 + qz
+        h = h * 1000003 + nx
+        h = h * 1000003 + ny
+        h = h * 1000003 + nz
+        hs : i64 [ h % i64[ hcap ] ]
+        if [ hs < 0 ] hs += i64[ hcap ]
+        slot : i32 [ i32[ hs ] ]
+        wid : i32 [ -1 ]
+        while [ true ]
+            ex : i32 [ htab[ slot ] ]
+            if [ ex < 0 ] break
+            same : bool [ q6[ex*6] == qx && q6[ex*6+1] == qy && q6[ex*6+2] == qz && q6[ex*6+3] == nx && q6[ex*6+4] == ny && q6[ex*6+5] == nz ]
+            if [ same ]
+                wid = ex
+                break
+            slot += 1
+            if [ slot >= hcap ] slot = 0
+        if [ wid >= 0 ]
+            topo[ v ] = wid
+        el
+            topo[ v ] = tv
+            rep[ tv ] = v
+            q6[ tv*6 + 0 ] = qx
+            q6[ tv*6 + 1 ] = qy
+            q6[ tv*6 + 2 ] = qz
+            q6[ tv*6 + 3 ] = nx
+            q6[ tv*6 + 4 ] = ny
+            q6[ tv*6 + 5 ] = nz
+            htab[ slot ] = tv
+            tv += 1
+    # pair consecutive triangles back into quads; bail if a pair does not
+    # share exactly one edge (the mesh is not a triangulated quad grid)
+    q0sz : i32 [ nf0 * 4 ]
+    qcorn0 : new i32 [ q0sz ]
+    for [ pp: i32 0, pp < nf0, pp += 1 ]
+        ia0 : i32 [ idxbuf[ pp*6 + 0 ] ]
+        ia1 : i32 [ idxbuf[ pp*6 + 1 ] ]
+        ia2 : i32 [ idxbuf[ pp*6 + 2 ] ]
+        ib0 : i32 [ idxbuf[ pp*6 + 3 ] ]
+        ib1 : i32 [ idxbuf[ pp*6 + 4 ] ]
+        ib2 : i32 [ idxbuf[ pp*6 + 5 ] ]
+        a0in : bool [ (ia0 == ib0) || (ia0 == ib1) || (ia0 == ib2) ]
+        a1in : bool [ (ia1 == ib0) || (ia1 == ib1) || (ia1 == ib2) ]
+        a2in : bool [ (ia2 == ib0) || (ia2 == ib1) || (ia2 == ib2) ]
+        shared : i32 [ 0 ]
+        if [ a0in ] shared += 1
+        if [ a1in ] shared += 1
+        if [ a2in ] shared += 1
+        if [ shared != 2 ] return null
+        ra : i32 [ ia2 ]
+        rp : i32 [ ia0 ]
+        rq : i32 [ ia1 ]
+        if [ !a0in ]
+            ra = ia0
+            rp = ia1
+            rq = ia2
+        if [ !a1in ]
+            ra = ia1
+            rp = ia2
+            rq = ia0
+        b1in : bool [ (ib1 == ia0) || (ib1 == ia1) || (ib1 == ia2) ]
+        b2in : bool [ (ib2 == ia0) || (ib2 == ia1) || (ib2 == ia2) ]
+        sv : i32 [ ib0 ]
+        if [ !b1in ] sv = ib1
+        if [ !b2in ] sv = ib2
+        qcorn0[ pp*4 + 0 ] = topo[ ra ]
+        qcorn0[ pp*4 + 1 ] = topo[ rp ]
+        qcorn0[ pp*4 + 2 ] = topo[ sv ]
+        qcorn0[ pp*4 + 3 ] = topo[ rq ]
+    # chain the level topologies; nt = output-mesh quads (for normals + index)
+    topos : array SubdivTopo [ ]
+    topos += subdiv_topo_from_quads[ tv, nf0, qcorn0, true ]
+    for [ lv: i32 1, lv < levels, lv += 1 ]
+        prev : topos[ lv - 1 ]
+        topos += subdiv_next_topo[ prev, true ]
+    fin : topos[ levels - 1 ]
+    nout : i32 [ fin.nv + fin.ne + fin.nf ]
+    nt : subdiv_next_topo[ fin, false ]
+    oic : i32 [ nt.nf * 6 ]
+    # mesh-health report: degenerate quads (repeated corner) and non-manifold
+    # edges point at bad welds; boundary edges are normal (mouth interior rim)
+    t0 : topos[ 0 ]
+    ndegen : i32 [ 0 ]
+    for [ f: i32 0, f < t0.nf, f += 1 ]
+        c0 : i32 [ t0.qcorn[ f*4 + 0 ] ]
+        c1 : i32 [ t0.qcorn[ f*4 + 1 ] ]
+        c2 : i32 [ t0.qcorn[ f*4 + 2 ] ]
+        c3 : i32 [ t0.qcorn[ f*4 + 3 ] ]
+        bad : bool [ (c0 == c1) || (c0 == c2) || (c0 == c3) || (c1 == c2) || (c1 == c3) || (c2 == c3) ]
+        if [ bad ] ndegen += 1
+    puts 'subdiv health: {name} welded={t0.nv} quads={t0.nf} boundary_edges={t0.n_bound} nonmanifold_edges={t0.n_nonman} degenerate_quads={ndegen}'
+    # the compute-fed interleaved output vbo (storage for writes, vertex for draw)
+    out_bytes : i32 [ nout * vsz ]
+    obuf : Buffer [ vk: m.vk, size: out_bytes, u_storage: true, u_vertex: true, m_host_visible: true, m_host_coherent: true ]
+    odata : ref i8 [ obuf.data ]
+    # index buffer: 2 triangles per output quad
+    oi_bytes : i32 [ oic * 4 ]
+    xbuf : Buffer [ vk: m.vk, size: oi_bytes, u_index: true, u_dst: true, u_shader: true, m_host_visible: true, m_host_coherent: true ]
+    ixd : ref i32 [ xbuf.data ]
+    for [ q: i32 0, q < nt.nf, q += 1 ]
+        ixd[ q*6 + 0 ] = nt.qcorn[ q*4 + 0 ]
+        ixd[ q*6 + 1 ] = nt.qcorn[ q*4 + 1 ]
+        ixd[ q*6 + 2 ] = nt.qcorn[ q*4 + 2 ]
+        ixd[ q*6 + 3 ] = nt.qcorn[ q*4 + 0 ]
+        ixd[ q*6 + 4 ] = nt.qcorn[ q*4 + 2 ]
+        ixd[ q*6 + 5 ] = nt.qcorn[ q*4 + 3 ]
+    # ---- CPU attribute pass (once): fill the whole interleave ----
+    mems : ref vertex_member_t [ base.members ]
+    mc : i32 [ base.member_count ]
+    # rep indirection: final welded vert -> base unwelded vert (int streams).
+    # in-place: vertex points keep their slot, edge/face points append past
+    # t.nv reading only slots below it — no double buffer, no copy-back
+    srcv : new i32 [ nout ]
+    for [ v: i32 0, v < tv, v += 1 ] srcv[ v ] = rep[ v ]
+    for [ lv: i32 0, lv < levels, lv += 1 ]
+        t : topos[ lv ]
+        for [ e: i32 0, e < t.ne, e += 1 ] srcv[ t.nv + e ] = srcv[ t.edata[ e*4 ] ]
+        for [ f: i32 0, f < t.nf, f += 1 ] srcv[ t.nv + t.ne + f ] = srcv[ t.qcorn[ f*4 ] ]
+    # joints + weights pair (merged, not averaged)
+    jk : i32 [ -1 ]
+    wk : i32 [ -1 ]
+    for [ k: i32 0, k < mc, k += 1 ]
+        if [ sems_of[ k ] == 8 ] jk = k
+        if [ sems_of[ k ] == 9 ] wk = k
+    jw_ok : bool [ jk >= 0 && wk >= 0 ]
+    jsz : i32 [ 0 ]
+    if [ jw_ok ]
+        jm : ref mems[ jk ]
+        wm : ref mems[ wk ]
+        jsz = i32[ jm.size ]
+        wsz : i32 [ i32[ wm.size ] ]
+        if [ !((jsz == 4 || jsz == 8) && wsz == 16) ] jw_ok = false
+    if [ jw_ok ]
+        joff : i32 [ i32[ mems[ jk ].offset ] ]
+        woff : i32 [ i32[ mems[ wk ].offset ] ]
+        jw_cap : i32 [ nout * 4 ]
+        cur_j : new i32 [ jw_cap ]
+        cur_w : new f32 [ jw_cap ]
+        for [ v: i32 0, v < tv, v += 1 ]
+            rv : i32 [ rep[ v ] ]
+            wp : ref f32 [ ((ref vdata[ rv * vsz + woff ]) to ref f32) ]
+            jp8  : ref u8  [ ((ref vdata[ rv * vsz + joff ]) to ref u8) ]
+            jp16 : ref u16 [ ((ref vdata[ rv * vsz + joff ]) to ref u16) ]
+            for [ s: i32 0, s < 4, s += 1 ]
+                if [ jsz == 4 ]
+                    cur_j[ v*4 + s ] = i32[ jp8[ s ] ]
+                el
+                    cur_j[ v*4 + s ] = i32[ jp16[ s ] ]
+                cur_w[ v*4 + s ] = wp[ s ]
+        # in-place: merges write at t.nv+ reading contributors below t.nv
+        cont : local i32 [ 4 ]
+        for [ lv: i32 0, lv < levels, lv += 1 ]
+            t : topos[ lv ]
+            for [ e: i32 0, e < t.ne, e += 1 ]
+                cont[ 0 ] = t.edata[ e*4 + 0 ]
+                cont[ 1 ] = t.edata[ e*4 + 1 ]
+                subdiv_merge_jw[ cur_j, cur_w, cont, 2, cur_j, cur_w, t.nv + e ]
+            for [ f: i32 0, f < t.nf, f += 1 ]
+                cont[ 0 ] = t.qcorn[ f*4 + 0 ]
+                cont[ 1 ] = t.qcorn[ f*4 + 1 ]
+                cont[ 2 ] = t.qcorn[ f*4 + 2 ]
+                cont[ 3 ] = t.qcorn[ f*4 + 3 ]
+                subdiv_merge_jw[ cur_j, cur_w, cont, 4, cur_j, cur_w, t.nv + t.ne + f ]
+        for [ v: i32 0, v < nout, v += 1 ]
+            dw : ref f32 [ ((ref odata[ v * vsz + woff ]) to ref f32) ]
+            dj8  : ref u8  [ ((ref odata[ v * vsz + joff ]) to ref u8) ]
+            dj16 : ref u16 [ ((ref odata[ v * vsz + joff ]) to ref u16) ]
+            for [ s: i32 0, s < 4, s += 1 ]
+                if [ jsz == 4 ]
+                    dj8[ s ] = u8[ cur_j[ v*4 + s ] ]
+                el
+                    dj16[ s ] = u16[ cur_j[ v*4 + s ] ]
+                dw[ s ] = cur_w[ v*4 + s ]
+    # per-member fill: float streams average down the chain; anything else
+    # copies from the representative base vert (jw pair handled above).
+    # POSITION and NORMAL are skipped — the compute passes write those regions
+    # every frame before anything reads them
+    for [ k: i32 0, k < mc, k += 1 ]
+        if [ sems_of[ k ] == 0 || sems_of[ k ] == 1 ] continue
+        if [ jw_ok && (k == jk || k == wk) ] continue
+        mem : ref mems[ k ]
+        moff : i32 [ i32[ mem.offset ] ]
+        msz  : i32 [ i32[ mem.size ] ]
+        is_f : bool [ mem.src == typeid[ f32 ] || mem.src == typeid[ vec2f ] || mem.src == typeid[ vec3f ] || mem.src == typeid[ vec4f ] ]
+        if [ !is_f ]
+            for [ v: i32 0, v < nout, v += 1 ]
+                sv2 : i32 [ srcv[ v ] ]
+                dstp : ref i8 [ ref odata[ v * vsz + moff ] ]
+                srcp : ref i8 [ ref vdata[ sv2 * vsz + moff ] ]
+                memcpy[ dstp, srcp, msz ]
+            continue
+        ncf : i32 [ msz / 4 ]
+        fcap : i32 [ nout * ncf ]
+        cur : new f32 [ fcap ]
+        for [ v: i32 0, v < tv, v += 1 ]
+            rv : i32 [ rep[ v ] ]
+            sp : ref f32 [ ((ref vdata[ rv * vsz + moff ]) to ref f32) ]
+            for [ c: i32 0, c < ncf, c += 1 ] cur[ v * ncf + c ] = sp[ c ]
+        # in-place: edge/face points append past t.nv, reading below it
+        for [ lv: i32 0, lv < levels, lv += 1 ]
+            t : topos[ lv ]
+            for [ e: i32 0, e < t.ne, e += 1 ]
+                v0 : i32 [ t.edata[ e*4 + 0 ] ]
+                v1 : i32 [ t.edata[ e*4 + 1 ] ]
+                dv : i32 [ t.nv + e ]
+                for [ c: i32 0, c < ncf, c += 1 ] cur[ dv * ncf + c ] = 0.5 * (cur[ v0 * ncf + c ] + cur[ v1 * ncf + c ])
+            for [ f: i32 0, f < t.nf, f += 1 ]
+                c0 : i32 [ t.qcorn[ f*4 + 0 ] ]
+                c1 : i32 [ t.qcorn[ f*4 + 1 ] ]
+                c2 : i32 [ t.qcorn[ f*4 + 2 ] ]
+                c3 : i32 [ t.qcorn[ f*4 + 3 ] ]
+                dv : i32 [ t.nv + t.ne + f ]
+                for [ c: i32 0, c < ncf, c += 1 ] cur[ dv * ncf + c ] = 0.25 * (cur[ c0 * ncf + c ] + cur[ c1 * ncf + c ] + cur[ c2 * ncf + c ] + cur[ c3 * ncf + c ])
+        for [ v: i32 0, v < nout, v += 1 ]
+            dp : ref f32 [ ((ref odata[ v * vsz + moff ]) to ref f32) ]
+            for [ c: i32 0, c < ncf, c += 1 ] dp[ c ] = cur[ v * ncf + c ]
+    # ---- GPU position chain: one SubdivCompute pipeline per level ----
+    in0sz : i32 [ tv * 3 * 4 ]
+    in0 : Buffer [ vk: m.vk, size: in0sz, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+    ip : ref f32 [ in0.data ]
+    for [ v: i32 0, v < tv, v += 1 ]
+        rv : i32 [ rep[ v ] ]
+        p : ref f32 [ ((ref vdata[ rv * vsz ]) to ref f32) ]
+        ip[ v*3 + 0 ] = p[ 0 ]
+        ip[ v*3 + 1 ] = p[ 1 ]
+        ip[ v*3 + 2 ] = p[ 2 ]
+    # expose the live cage: level-0 topo + its position buffer (the mapped
+    # buffer memory IS the vertex list — Model.cage_shuffle edits it in place)
+    t0.cage_buf = in0
+    in0.hold[]
+    # base snapshot: user derivation masks save as current - base. also the
+    # CPU-side read copy — ip maps write-combined GPU memory, and reading
+    # that is ~1000x slower than heap (the mirror build froze on it)
+    tv3b : i32 [ tv * 3 ]
+    t0.base = new f32 [ tv3b ]
+    for [ i: i32 0, i < tv3b, i += 1 ] t0.base[ i ] = ip[ i ]
+    # welded -> source vert map: apps sample painted vertex regions with it
+    t0.rep = new i32 [ tv ]
+    for [ i: i32 0, i < tv, i += 1 ] t0.rep[ i ] = rep[ i ]
+    # mirror pairs across x=0 so cage edits land on both face halves:
+    # nearest welded vert to (-x, y, z), accepted within 2% of the extent.
+    # brute-force pairing — gated to small cages (the head, not baked eyes)
+    if [ tv <= 8192 ]
+        bp : ref f32 [ t0.base ]
+        t0.mirror = new i32 [ tv ]
+        bmn : f32 [  1e30 ]
+        bmx : f32 [ -1e30 ]
+        for [ i: i32 0, i < tv3b, i += 1 ]
+            if [ bp[ i ] < bmn ] bmn = bp[ i ]
+            if [ bp[ i ] > bmx ] bmx = bp[ i ]
+        tol : f32 [ (bmx - bmn) * 0.02 ]
+        tol2 : f32 [ tol * tol ]
+        for [ v: i32 0, v < tv, v += 1 ]
+            tx : f32 [ 0.0 - bp[ v*3 + 0 ] ]
+            ty : f32 [ bp[ v*3 + 1 ] ]
+            tz : f32 [ bp[ v*3 + 2 ] ]
+            bd : f32 [ 1e30 ]
+            bi : i32 [ -1 ]
+            for [ u2: i32 0, u2 < tv, u2 += 1 ]
+                ddx : f32 [ bp[ u2*3 + 0 ] - tx ]
+                ddy : f32 [ bp[ u2*3 + 1 ] - ty ]
+                ddz : f32 [ bp[ u2*3 + 2 ] - tz ]
+                dd2 : f32 [ ddx*ddx + ddy*ddy + ddz*ddz ]
+                if [ dd2 < bd ]
+                    bd = dd2
+                    bi = u2
+            t0.mirror[ v ] = (bd <= tol2) ? bi : -1
+    m.cages.push[ t0 ]
+    in_cur : Buffer [ null ]
+    in_cur = in0
+    for [ lv: i32 0, lv < levels, lv += 1 ]
+        t : topos[ lv ]
+        outv : i32 [ t.nv + t.ne + t.nf ]
+        is_final : bool [ lv == levels - 1 ]
+        ob : Buffer [ null ]
+        ob = obuf
+        if [ !is_final ]
+            ob_bytes : i32 [ outv * 12 ]
+            ob = Buffer [ vk: m.vk, size: ob_bytes, u_storage: true, m_host_visible: true, m_host_coherent: true ]
+        nf4 : i32 [ t.nf * 4 ]
+        ne4 : i32 [ t.ne * 4 ]
+        nv1 : i32 [ t.nv + 1 ]
+        ne2 : i32 [ t.ne * 2 ]
+        fc_b  : subdiv_i32_buf[ m.vk, t.qcorn, nf4 ]
+        ed_b  : subdiv_i32_buf[ m.vk, t.edata, ne4 ]
+        vfo_b : subdiv_i32_buf[ m.vk, t.vfo, nv1 ]
+        vf_b  : subdiv_i32_buf[ m.vk, t.vf, nf4 ]
+        veo_b : subdiv_i32_buf[ m.vk, t.veo, nv1 ]
+        ve_b  : subdiv_i32_buf[ m.vk, t.ve, ne2 ]
+        cs : SubdivCompute [ vk: m.vk ]
+        cs.n_base = t.nv
+        cs.n_edge = t.ne
+        cs.n_face = t.nf
+        cs.in_stride = 3
+        cs.out_stride = (is_final) ? vsz / 4 : 3
+        smap : map Au[string] [ 'in_pos': in_cur, 'face_corner': fc_b, 'edge_data': ed_b, 'vfo': vfo_b, 'vf': vf_b, 'veo': veo_b, 've': ve_b, 'out_pos': ob ]
+        cpipe : Pipeline [ vk: m.vk, w: m.w, name: '{name}_sd{lv}', r: m.r, s: cs, render_id: render_id, default_model: mat4f.identity[], samplers: smap ]
+        cpipe.dispatch_x = (outv + 15) / 16
+        cpipe.dispatch_y = 1
+        cpipe.dispatch_z = 1
+        cs.hold[]
+        cpipe.hold[]
+        m.pipelines.push[ cpipe ]
+        in_cur = ob
+    # ---- normal recompute over the output quads, after the final level ----
+    nrm_k : i32 [ -1 ]
+    for [ k: i32 0, k < mc, k += 1 ]
+        if [ sems_of[ k ] == 1 ] nrm_k = k
+    if [ nrm_k >= 0 ]
+        ntf4 : i32 [ nt.nf * 4 ]
+        ntv1 : i32 [ nt.nv + 1 ]
+        nfc_b  : subdiv_i32_buf[ m.vk, nt.qcorn, ntf4 ]
+        nvfo_b : subdiv_i32_buf[ m.vk, nt.vfo, ntv1 ]
+        nvf_b  : subdiv_i32_buf[ m.vk, nt.vf, ntf4 ]
+        ns : SubdivNormals [ vk: m.vk ]
+        ns.n_verts = nout
+        ns.stride = vsz / 4
+        ns.nrm_off = i32[ mems[ nrm_k ].offset ] / 4
+        nmap : map Au[string] [ 'v_buf': obuf, 'n_fc': nfc_b, 'n_vfo': nvfo_b, 'n_vf': nvf_b ]
+        npipe : Pipeline [ vk: m.vk, w: m.w, name: '{name}_sdnrm', r: m.r, s: ns, render_id: render_id, default_model: mat4f.identity[], samplers: nmap ]
+        npipe.dispatch_x = (nout + 15) / 16
+        npipe.dispatch_y = 1
+        npipe.dispatch_z = 1
+        ns.hold[]
+        npipe.hold[]
+        m.pipelines.push[ npipe ]
+    puts 'subdiv: {name} levels={levels} verts {vc} -> {nout} tris {tc} -> {oic / 3}'
+    g : Gpu [ vk: m.vk, name: name,
+        members: base.members, member_count: mc,
+        vertex_size: vsz, vertex_count: nout,
+        index_size: 4, index_count: oic,
+        ext_vertex: obuf, ext_index: xbuf ]
+    g.hold[]
+    return g
+
 func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render_id: i32, transparent: bool ]
     mdl:      m.id
     vk:       m.vk
@@ -1318,6 +1990,7 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
         # COLOR_0 sits before JOINTS_0/WEIGHTS_0; packing it when the shader
         # has no color input shifts the joint/weight streams by one slot
         want_color : bool [ false ]
+        sems_of : new i32 [ 16 ]
         csh : Au_t [ Au.header[ s ].au ]
         while [ csh != typeid[ shader ] ]
             for [ mi: i32 0, mi < csh.members.count, mi += 1 ]
@@ -1343,6 +2016,7 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
                 expect ac.count, "count not set on accessor"
                 expect !vertex_count || ac.count == vertex_count, "invalid vbo data"
                 vertex_count = ac.count
+                sems_of[ member_count ] = w
                 member_count += 1
         
         vbo = Gpu [ vk: vk, name: name,
@@ -1387,6 +2061,12 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
                 vf[0], vf[1], vf[2], vf[st], vf[st+1], vf[st+2],
                 i32[ip[0]], i32[ip[1]], i32[ip[2]], i32[ip[3]], i32[ip[4]], i32[ip[5]] ]
 
+        # generic GPU subdivision: replace the vbo with the compute-fed
+        # subdivided one (falls back to the base mesh when pairing fails)
+        if [ m.subdiv > 0 ]
+            sd_vbo : subdiv_build[ m, vbo, sems_of, render_id, name ]
+            if [ sd_vbo ] vbo = sd_vbo
+
         # the node's composed scene-graph WORLD transform (GltfModel.compute_worlds
         # — Model.finish runs it before the node loop). axis-fix/scale live in
         # parent chains on sketchfab-style exports; a flat local here rendered
@@ -1415,7 +2095,7 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
     pipe: Pipeline [ vk: vk, w: m.w, name: (n) ? n.name : null,
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat, src_node: n, render_id: render_id,
         material: material, samplers: use_samplers,
-        straight_alpha: sa, depth_no_write: transparent ]
+        straight_alpha: sa, depth_no_write: transparent, cull_none: m.cull_none ]
     s.hold[]
     pipe.hold[]
     vbo.hold[]

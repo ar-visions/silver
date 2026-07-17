@@ -175,7 +175,7 @@ typedef double                 *ref_f64;
     void*           member_map; \
     micro_          args; \
     meta_t_         meta; \
-    u64             required_bits[2];
+    u64             required_bits[4];
 
 #define CAT4(A, B, C, D) A ## B ## C ## D
 #define XCAT4(A, B, C, D) CAT4(A, B, C, D)
@@ -837,6 +837,8 @@ forward(any)
     M(AA,BB, s, method, public, none,   module_erase,   Au_t, symbol) \
     M(AA,BB, s, method, public, handle, live_window_get) \
     M(AA,BB, s, method, public, none,   live_window_set, handle) \
+    M(AA,BB, s, method, public, i32,    stdout_tee) \
+    M(AA,BB, s, method, public, string, stdout_line) \
     M(AA,BB, s, method, public, handle, live_vk_get) \
     M(AA,BB, s, method, public, none,   live_vk_set,    handle) \
     M(AA,BB, s, method, public, handle, live_surface_get) \
@@ -1303,20 +1305,16 @@ declare_abstract(imported)
 /// meta gives us access to one token we can override with (F)
 
 static inline bool AF_get(u64* f, u32 bit_index) {
-    if (bit_index >= 128) return false;   // beyond the tracked bits: always unset
-    if (bit_index < 64) {
-        return (f[0] & (((u64)1) << bit_index)) != 0;
-    } else {
-        return (f[1] & (((u64)1) << (bit_index - 64))) != 0;
-    }
+    if (bit_index >= 256) return false;   // beyond the tracked bits: always unset
+    return (f[bit_index / 64] & (((u64)1) << (bit_index % 64))) != 0;
 }
 
-// bounded to the 128 tracked flag bits (2 words): af_index beyond 128 has no
-// tracked bit (compile side treats it as always-unset) — an unbounded write
-// here lands OUTSIDE the target (required_bits is u64[2]; object af words are
-// finite) and corrupts adjacent memory. classes crossed 128 members in 2026-07.
+// object af storage is u64[4] = 256 bits everywhere (declare_class _afbits[4],
+// silver fbits 4xi64). classes crossed 128 members in 2026-07 and their late
+// members silently lost arg tracking at the old 128 clamp. type->required_bits
+// is u64[4] too (Au + object.h layouts must match).
 #define AF_set(f, bit_index) \
-    do { if ((u32)(bit_index) < 128) ((u64*)(f))[(bit_index) / 64] |= ((u64)1) << ((bit_index) % 64); } while (0)
+    do { if ((u32)(bit_index) < 256) ((u64*)(f))[(bit_index) / 64] |= ((u64)1) << ((bit_index) % 64); } while (0)
 
 /*
 static inline void AF_set(u64* f, u32 bit_index) {
@@ -1939,6 +1937,7 @@ declare_class(fmt_file)
     M(AA,BB, i, method,  public, path,   normalize) \
     M(AA,BB, i, method,  public, bool,   make_dir) \
     M(AA,BB, i, method,  public, bool,   remove_dir) \
+    M(AA,BB, i, method,  public, bool,   remove) \
     M(AA,BB, i, method,  public, bool,   is_ext, symbol) \
     M(AA,BB, i, method,  public, bool,   is_empty) \
     M(AA,BB, i, method,  public, bool,   is_dir) \

@@ -461,6 +461,7 @@ element CameraView
     public device   : string
     public cam_size : i32 [ 340 ]
     public src_rect : rect
+    public paint_off : bool                   # pump frames, never paint
     mutable once : bool
 
     func init []
@@ -489,6 +490,11 @@ element CameraView
                 rect [ x: 0.0, y: 0.0, w: f32[ camera.width ], h: f32[ camera.height ] ]
             camera.update[]
             once = true
+        # paint_off: keep the frame pump alive, draw nothing (capture
+        # modes that must not cover the screen)
+        if [ paint_off ]
+            once = false
+            return
         cv : Canvas w.screen
         cv.draw_image[ camera.image, rect [ x: 0, y: 0, w: a.bounds.w, h: a.bounds.h ] ]
         cv.paint[]

@@ -95,6 +95,13 @@ ielement element
     # label). CSS targets it with `:has_value` — e.g. ghost the label until entered.
     public  has_value       : bool
     public  label2          : string
+    # --screenshot <file> on any app: dump the frame + exit (adopted by trinity)
+    public  screenshot      : path
+    # --shot-frame N: frame index the screenshot captures at
+    public  shot_frame      : i32 [ 60 ]
+    # --attach <sock>: render offscreen and share the frame with orbiter over
+    # an AF_UNIX socket instead of opening a window (adopted by trinity)
+    public  attach          : path
     mutable layers          : map Layer[string]
     mutable shaders         : map shader  [string]
     #mutable bindings        : map ModelBind[string]
@@ -170,6 +177,8 @@ ielement element
     public func on_inspect [ hits: array StyleHit ] return
     # screen canvas hook: called on the app element before the tree paints
     public func on_canvas  [ cv: Canvas ] return
+    # like on_canvas, but AFTER the element tree paints — overlays
+    public func on_overlay [ cv: Canvas ] return
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
     intern transitions  : map StyleTransition[string]

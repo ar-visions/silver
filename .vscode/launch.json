@@ -413,6 +413,15 @@
             }
         },
         {
+            "name":       "silver / orion",
+            "type":       "lldb",
+            "request":    "launch",
+            "stopOnEntry": false,
+            "program":    "${workspaceFolder}/platform/native/debug/orion",
+            "args":     [ ],
+            "cwd":        "/src/silver"
+        },
+        {
             "name":       "silver / hyperspace",
             "type":       "lldb",
             "request":    "launch",
