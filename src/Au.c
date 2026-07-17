@@ -1350,7 +1350,6 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     if (member_type == AU_MEMBER_MODULE) {
         micro_push((micro_*)&modules, (Au)type); // we should error if we ever find a duplicate here
     }
-    
     return type;
 }
 
