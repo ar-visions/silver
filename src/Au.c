@@ -6994,7 +6994,7 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
             if (arr_member) {
                 // keyed blocks -> array elements (string_agi emits items keyed
                 // by their name/ident); insertion order is the array order
-                Au_t elem = (Au_t)(mem->meta.b ? mem->meta.b : mem->meta.a);
+                Au_t elem = mem->meta.b ? (Au_t)mem->meta.b : mem->meta.a;
                 cstr brem = after;
                 map  mm   = (map)parse_agi_block(after, nx, typeid(map), elem, &brem, null);
                 array arr = array(32);
@@ -7048,7 +7048,7 @@ static Au parse_agi_block(cstr scan, int indent, Au_t schema, Au_t meta, cstr* r
                 value = null;
             } else if (c0 == '[') {
                 // agi arrays allow bare symbols: [ inL, inR ]
-                Au_t elem = mem ? (Au_t)(mem->meta.b ? mem->meta.b : mem->meta.a) : meta;
+                Au_t elem = mem ? (mem->meta.b ? (Au_t)mem->meta.b : mem->meta.a) : meta;
                 array arr = array(32);
                 cstr  p   = v + 1;
                 while (p < ve && *p != ']') {

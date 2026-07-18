@@ -6,7 +6,7 @@ SILVER := $(patsubst %/,%,$(dir $(shell readlink -f $(lastword $(MAKEFILE_LIST))
 PROJECT_PATH := $(CURDIR)
 PROJECT_NAME := $(notdir $(PROJECT_PATH))
 
-BUILD_ROOT ?= $(SILVER)/install/debug
+BUILD_ROOT ?= $(SILVER)/install/build
 
 # the vendored ninja — invoked by absolute path so the build never depends on ninja
 # being on PATH (no env-var/PATH requirement to build silver).
@@ -17,16 +17,16 @@ export PROJECT_NAME
 
 .PHONY: all bootstrap build clean debug release asan
 
-all: build
+all: release
 
 debug:
-	$(MAKE) BUILD_ROOT=$(SILVER)/install/debug build
+	$(MAKE) BUILD_ROOT=$(SILVER)/install/build CONFIG=debug build
 
 release:
-	$(MAKE) BUILD_ROOT=$(SILVER)/install/release build
+	$(MAKE) BUILD_ROOT=$(SILVER)/install/build CONFIG=release build
 
 asan:
-	$(MAKE) BUILD_ROOT=$(SILVER)/install/debug ASAN=1 build
+	$(MAKE) BUILD_ROOT=$(SILVER)/install/build CONFIG=debug ASAN=1 build
 
 # put `silver` on the user's PATH without any env-var/profile edits: symlink it
 # into the first writable directory already on PATH (no sudo). last `make
@@ -41,22 +41,23 @@ install: build
 	echo "linked $$bin_dir/dbg -> $(SILVER)/dbg"; \
 	case ":$$PATH:" in *":$$bin_dir:"*) ;; *) echo "note: add $$bin_dir to your PATH";; esac
 
+CONFIG ?= debug
+
 bootstrap:
 ifeq ($(OS),Windows_NT)
-	@case "$(BUILD_ROOT)" in *debug) \
-		"$(SILVER)/bootstrap.bat" --debug $(if $(ASAN),--asan);; \
-	*) \
-		"$(SILVER)/bootstrap.bat" --release;; \
-	esac
+	@"$(SILVER)/bootstrap.bat" --$(CONFIG) $(if $(ASAN),--asan)
 else
-	@case "$(BUILD_ROOT)" in *debug) \
-		"$(SILVER)/bootstrap.sh" --debug $(if $(ASAN),--asan);; \
-	*) \
-		"$(SILVER)/bootstrap.sh" --release;; \
-	esac
+	@"$(SILVER)/bootstrap.sh" --$(CONFIG) $(if $(ASAN),--asan)
 endif
 
 build: bootstrap
+	@stamp="$(SILVER)/install/.active-config"; \
+	if [ ! -f "$$stamp" ]; then \
+		echo "$(CONFIG)" > "$$stamp"; \
+	elif [ "$$(cat "$$stamp")" != "$(CONFIG)" ]; then \
+		echo "config switch: $$(cat "$$stamp") -> $(CONFIG) (ninja rehashes the cores)"; \
+		echo "$(CONFIG)" > "$$stamp"; \
+	fi
 	echo "$(NINJA) -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja"
 	$(NINJA) -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja
 	@ln -sfn "$(BUILD_ROOT)/silver" "$(SILVER)/install/bin/silver"; \
@@ -68,8 +69,6 @@ ifeq ($(OS),Windows_NT)
 	@if exist $(SILVER)\install\debug rmdir /S /Q $(SILVER)\install\debug\.headers_generated
 	@if exist $(SILVER)\install\release rmdir /S /Q $(SILVER)\install\release\.headers_generated
 else
-	@rm -rf $(SILVER)/install/debug/.headers_generated
-	@rm -rf $(SILVER)/install/release/.headers_generated
-	@if [ -d "$(SILVER)/install/debug" ]; then rm -f $(SILVER)/install/debug/*.o; fi
-	@if [ -d "$(SILVER)/install/release" ]; then rm -f $(SILVER)/install/release/*.o; fi
+	@rm -rf $(SILVER)/install/build/.headers_generated
+	@rm -f $(SILVER)/install/build/*.o
 endif

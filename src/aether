@@ -101,6 +101,7 @@ forward(evar)
     M(X, Y, i, prop,     public,  bool,                     direct) \
     M(X, Y, i, prop,     public,  bool,                     import_c) \
     M(X, Y, i, prop,     public,  bool,                     release) \
+    M(X, Y, i, prop,     public,  bool,                     strip_expect) \
     M(X, Y, i, prop,     public,  bool,                     debug) \
     M(X, Y, i, prop,     public,  bool,                     asan) \
     M(X, Y, i, prop,     public,  bool,                     coverage) \
