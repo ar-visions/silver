@@ -169,8 +169,11 @@ class ConsoleSession
                 ec    : string 'exec {launch_cmd}'
                 execl[ '/bin/bash', 'bash', dashc.chars, ec.chars, null ]
             el
-                # prompt = the project node's label; --norc so bash keeps our PS1
+                # prompt = the project node's label; --norc so bash keeps our PS1.
+                # strip the 'ed:' session-namespace prefix — it's a key, not a label
                 lbl : string (name && name.count > 0) ? name : 'sh'
+                if [ lbl.count > 3 && lbl.mid[ 0, 3 ] == 'ed:' ]
+                    lbl = lbl.mid[ 3, lbl.count - 3 ]
                 setenv[ 'PS1', '{lbl}> ', 1 ]
                 norc : string '--norc'
                 execl[ '/bin/bash', 'bash', norc.chars, null ]

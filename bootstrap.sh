@@ -197,9 +197,11 @@ cd "$SELF_PATH"
 export SILVER="$(pwd)"
 export CHECKOUT="$PROJECT_PATH/checkout"
 export NATIVE="$SILVER/platform/native"
-export IMPORT="$NATIVE"
-export BUILD="$NATIVE/$TYPE"
-export PATH="$BUILD:$NATIVE/bin:$PATH"
+# install is the platform-STABLE alias (symlink -> platform/<plat>); all
+# build + source-map references must use it so they survive a platform change
+export IMPORT="$SILVER/install"
+export BUILD="$IMPORT/build"
+export PATH="$BUILD:$IMPORT/bin:$PATH"
 export ARCH="$ARCH"
 
 # rpath (@executable_path/../lib) resolves our libs at runtime, so this should

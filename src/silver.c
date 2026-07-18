@@ -906,8 +906,8 @@ void silver_parse(silver a) {
     }
     members(a->autype, mem) {
         etype e = u(etype, mem);
-        // release: expect tests are not emitted at all
-        if (a->release && is_func((Au)mem) && mem->access_type == interface_expect)
+        // strip_expect: expect tests are not emitted at all
+        if (a->strip_expect && is_func((Au)mem) && mem->access_type == interface_expect)
             continue;
         if (is_func((Au)mem) && !mem->is_system && e && e != a->fn_init && !e->user_built) {
             push(work, (Au)e); push(wrec, null);
@@ -1049,7 +1049,7 @@ static void exporter(silver a) {
         exports exp = (exports)i->value;
         if (!exp->version && !exp->areas)
             continue;
-        path edir = f(path, "%s/export", SILVER);
+        path edir = f(path, "%o/export", a->install);
         make_dir(edir);
         path   efile = f(path, "%o/%o.agi", edir, i->key);
         string body  = string(alloc, 256);
@@ -1331,12 +1331,10 @@ void silver_init(silver a) {
             a->run = hold(r);
     }
 
-    // release gate: the debug tests must pass before a release is built
-    if (a->release && !a->is_external && a->module) {
-        print("release: running debug tests for %o", a->module);
-        vexec(true, "debug-tests",
-            "%s/platform/native/debug/silver --test %o", SILVER, a->module);
-    }
+    // expects live in every build EXCEPT a shipping release; --release --test
+    // keeps them, at full optimization, so performance is measurable. a plain
+    // --release just builds — testing is opt-in, never forced before a run
+    a->strip_expect = a->release && !a->test;
 
     // `import M with ext…`: the importer stashed the ext path list here right before
     // constructing this instance — claim it (and clear) before the build runs below.
@@ -1410,7 +1408,28 @@ void silver_init(silver a) {
     //a->asan         = true;
 #endif
     a->exports      = map(hsize, 16);
-    a->build_dir    = f(path, "%o/%s", a->install, a->debug ? "debug" : "release");
+    // ONE module product home for both configs. the active-config stamp is
+    // the epoch: any product older than it belongs to the other config
+    a->build_dir    = f(path, "%o/modules", a->install);
+    make_dir(a->build_dir);
+
+    // one active config per platform: module builds must match the cores
+    // make last built (the platform's lib dir is singular — mixing lies)
+    if (!a->is_external) {
+        path stamp = f(path, "%o/.active-config", a->install);
+        if (file_exists("%o", stamp)) {
+            char sbuf[512] = { 0 };
+            FILE* sf = fopen(stamp->chars, "r");
+            if (sf) {
+                fgets(sbuf, sizeof(sbuf), sf);
+                fclose(sf);
+                bool core_debug = strstr(sbuf, "debug") != NULL;
+                verify(core_debug == !a->release,
+                    "active config is %s — run `make %s` first (one active config)",
+                    core_debug ? "debug" : "release", a->release ? "release" : "debug");
+            }
+        }
+    }
     string n = string("test44");
     a->product_link = f(path, "%o/%o.product", a->build_dir, a->name);
     // the syntax map (language service) is ALWAYS written, coupled to the build — it's just a
@@ -1564,8 +1583,13 @@ void silver_init(silver a) {
 
     bool product_exists = file_exists("%o", a->product_link);
     u64  product_m      = product_exists ? modified_time(a->product_link) : 0;
-        
-    if (product_exists && product_m > module_file_m) {
+
+    // config epoch: products predating the stamp were built by the OTHER
+    // config — stale by definition in the one shared home
+    path cfg_stamp = f(path, "%o/.active-config", a->install);
+    u64  stamp_m   = file_exists("%o", cfg_stamp) ? modified_time(cfg_stamp) : 0;
+
+    if (product_exists && product_m > module_file_m && product_m > stamp_m) {
 
         if (file_exists("%o", a->artifacts_path) && modified_time(a->artifacts_path) > 0) {
             FILE *f = fopen(a->artifacts_path->chars, "r");
@@ -1592,6 +1616,9 @@ void silver_init(silver a) {
     }
 
     if (a->clean) update_product = true;
+    // --release --test builds are measurement artifacts: always rebuilt,
+    // never cached — the shipping release product must stay expect-free
+    if (a->release && a->test) update_product = true;
     // (removed) root no longer force-rebuilt on --run: the dependency tree's transitive
     // .source now busts the root's cache precisely when any inner source changed, so the
     // blanket force is redundant — a no-change --run relinks/relaunches from cache.
@@ -1625,7 +1652,7 @@ void silver_init(silver a) {
 #else
                 cstr host_libs = "-ldl -lglfw3 -lX11 -lm";
 #endif
-                vexec(a->verbose, "silver-host", "%s/platform/native/bin/clang %s %s -o %o %o %s -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
+                vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"'",
                     SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
             }
         }
@@ -5619,7 +5646,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         vexec(a->verbose, "build", "%o%o cmake --build %o -j16", docker, env, build_f);
         vexec(a->verbose, "install", "%o%o cmake --install %o", docker, env, build_f);
     } else if (is_meson) { // build for meson
-        cstr build = debug ? "debug" : "release";
+        // externals always build release — debug is for OUR code
+        cstr build = "release";
 
         vexec(a->verbose, "setup",
               "%o%o meson setup %o --prefix=%o --buildtype=%s %o",
@@ -5628,12 +5656,12 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         vexec(a->verbose, "compile", "%o%o meson compile -C %o", docker, env, build_f);
         vexec(a->verbose, "install", "%o%o meson install -C %o", docker, env, build_f);
     } else if (is_gn) {
-        cstr is_debug = debug ? "true" : "false";
+        cstr is_debug = "false";
         vexec(a->verbose, "gen", "%ogn gen %o --args='is_debug=%s is_official_build=true %o'", docker, build_f, is_debug, config);
         vexec(a->verbose, "ninja", "%oninja -C %o -j8", docker, build_f);
     } else if (is_rust) { // todo: copy bin/lib after
-        vexec(a->verbose, "rust", "%ocargo build --%s --manifest-path %o/Cargo.toml --target-dir %o",
-              docker, debug ? "debug" : "release", project_f, build_f);
+        vexec(a->verbose, "rust", "%ocargo build --release --manifest-path %o/Cargo.toml --target-dir %o",
+              docker, project_f, build_f);
     } else if (is_silver) { // build for Au-type projects
         silver sf = silver(debug_type, a->debug_type, debugmember, a->debugmember, module, silver_f, breakpoint, a->breakpoint, release, a->release,
             clean, a->clean, verbose, a->verbose, format, a->format, is_external, a->is_external ? a->is_external : a, is_child, a);
@@ -5928,9 +5956,13 @@ none silver_build_product(silver a) {
             install, a->build_dir, install, libs, cflags, fw_flags_d, cpp_libs_d) == 0,
             "link failed (platform: %o)", a->platform);
 
-        unlink(a->product_link->chars);
-        verify(create_symlink(a->product, a->product_link),
-            "could not create product symlink from %o -> %o", a->product_link, a->product);
+        // --release --test artifacts are never recorded as the product:
+        // the next plain --release must not inherit a test-carrying binary
+        if (!(a->release && a->test)) {
+            unlink(a->product_link->chars);
+            verify(create_symlink(a->product, a->product_link),
+                "could not create product symlink from %o -> %o", a->product_link, a->product);
+        }
 
     } else {
 
@@ -6047,7 +6079,7 @@ none silver_build_product(silver a) {
 #else
         cstr host_libs = "-ldl -lglfw3 -lX11 -lm";
 #endif
-        vexec(a->verbose, "silver-host", "%s/platform/native/bin/clang %s %s -o %o %o %s -I%s/platform/native/include -L%s/platform/native/lib -DSILVER_ROOT='\"%s\"'",
+        vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"'",
             SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
         a->live_binary = hold(host_dst);
     }
@@ -6077,9 +6109,9 @@ none silver_build_product(silver a) {
         }
     }
 
-    // deploy resource files into share/{app-name}/
-    // debug: symlink each resource dir so edits are live without redeploy
-    // release: copy files
+    // deploy resource files into share/{app-name}/ — ALWAYS symlink, both
+    // configs. copying froze a snapshot that could desync from source (a
+    // .gltf and its .bin drifting apart); one source of truth removes that
     if (len(a->resources) && (!a->is_library || ((aether)a)->is_live)) {
         path share = f(path, "%o/share/%o", install, a->name);
         make_dir(share);
@@ -6089,13 +6121,8 @@ none silver_build_product(silver a) {
             struct stat dsts;
             if (lstat(dst->chars, &dsts) == 0 && S_ISLNK(dsts.st_mode))
                 unlink(dst->chars);
-            if (a->debug) {
-                make_dir(dst);
-                symlink_resources(res, dst);
-            } else {
-                make_dir(dst);
-                deploy_resources(res, dst);
-            }
+            make_dir(dst);
+            symlink_resources(res, dst);
         }
     }
 
@@ -7516,6 +7543,8 @@ static bool import_emits_header(silver a, import im) {
 // emit `#define Name_schema(...)` + `declare_struct(Name)` for every struct.
 // called before the class schemas so a class can use a struct by value.
 static void write_struct_schemas(silver a, FILE* module_f) {
+    #undef write
+    #undef line
     #define write(f,s,...) fputs(fmt(s     __VA_OPT__(,) __VA_ARGS__)->chars, f)
     #define line(f,s,...)  fputs(fmt(s"\n" __VA_OPT__(,) __VA_ARGS__)->chars, f)
     members(a->autype, m) {
@@ -7633,6 +7662,8 @@ void silver_write_header(silver a) {
 
     #undef  line
     #undef  write
+    #undef write
+    #undef line
     #define write(f,s,...) fputs(fmt(s     __VA_OPT__(,) __VA_ARGS__)->chars, f)
     #define line(f,s,...)  fputs(fmt(s"\n" __VA_OPT__(,) __VA_ARGS__)->chars, f)
     

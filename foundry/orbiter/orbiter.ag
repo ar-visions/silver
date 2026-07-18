@@ -663,7 +663,7 @@ element orbiter : trinity # implements compiler
         for [ i: i32 0, i < target_names.count, i += 1 ]
             name    : string target_names[i]
             src     : path   target_srcs[i]
-            product : path  '{startup_path}/platform/native/debug/{name}'
+            product : path  '{startup_path}/install/modules/{name}'
             if [ !product.exists[] ]
                 compile_log.push[ 'stale (no product): {name}' ]
                 compile[ name ]
@@ -724,7 +724,7 @@ element orbiter : trinity # implements compiler
         # a plain --build now writes the syntax cache as a byproduct to its standard path
         # (<install>/syntax/<proj>.f) — no --format flag. redirect stdout+stderr to a log so a
         # compile error / crash is captured (a partial cache is itself the not-compiled signal).
-        cmd : 'cd {startup_path} && unset IMPORT && exec ./platform/native/debug/silver {fw.file} --build > /tmp/orbiter-fmt-{fw.proj}.log 2>&1'
+        cmd : 'cd {startup_path} && unset IMPORT && exec ./install/bin/silver --build {fw.file} > /tmp/orbiter-fmt-{fw.proj}.log 2>&1'
         fd  : i32 [ -1 ]
         pid : i32 [ forkpty[ @fd, null, null, null ] ]
         if [ pid == 0 ]
@@ -1001,12 +1001,12 @@ element orbiter : trinity # implements compiler
         if [ !projects ] return
         p : Project projects[name]
         if [ !p ] return
-        # the launchable binary: explicit product, else <startup>/install/debug/<run>
-        # (silver builds an app to install/debug/<name>; run carries the binary name).
+        # the launchable binary: explicit product, else <startup>/install/modules/<run>
+        # (silver builds an app to install/modules/<name>; run carries the binary name).
         loc : path p.product
         if [ !loc && p.run && p.run.count > 0 ]
             rb : string p.run[0].chars
-            ps : string '{startup_path}/install/debug/{rb}'
+            ps : string '{startup_path}/install/modules/{rb}'
             loc = path [ ps.chars ]
         if [ !loc ] return
         puts 'start_debug {name}: launching {loc}'
@@ -2757,7 +2757,7 @@ element orbiter : trinity # implements compiler
             run_search[]
         # deferred dbg launch: run_node armed pending_debug + set the build running.
         # once that shell returns to prompt (is_running flips false) the --clean build
-        # is done and install/debug/<name> is the FRESH product — launch it now so we
+        # is done and install/modules/<name> is the FRESH product — launch it now so we
         # never exec the stale pre-build binary.
         if [ pending_debug && pending_debug.count > 0 ]
             dcon : ui_console[]

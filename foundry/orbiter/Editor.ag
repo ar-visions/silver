@@ -353,7 +353,7 @@ ResourceView AppView
             dead = true
             note = 'socket failed'
             return
-        cmd = 'cd {sp} && unset IMPORT && ./platform/native/debug/silver {mod} --build && exec ./platform/native/debug/{mod} --attach {sock_path} --width 1280 --height 720'
+        cmd = 'cd {sp} && unset IMPORT && ./install/bin/silver --build {mod} && exec ./install/modules/{mod} --attach {sock_path} --width 1280 --height 720'
 
     func pump [ cv: Canvas ]
         if [ !link || dead ] return
@@ -1692,7 +1692,7 @@ Control Editor
     # ext → ResourceView subclass Au_t. built ONCE (scan of direct subclasses), shared
     # across panes; file-open is then a map lookup, not a re-scan of every class.
     intern static view_registry : map Au_t[string]
-    # {SILVER}/export registry: extension -> handler module name
+    # {SILVER}/install/export registry: extension -> handler module name
     intern static export_registry : map string[string]
     mutable lines         : list string
     mutable file_cache    : map FileBuf[string]
@@ -2536,14 +2536,14 @@ Control Editor
                     for [ e: string ] in exts
                         view_registry[ e ] = t
 
-    # build the ext → module map ONCE from {SILVER}/export/*.agi — modules
-    # emitted their extensions at their own build; we just interpret them.
+    # build the ext → module map ONCE from {SILVER}/install/export/*.agi —
+    # modules emit extensions at their own build; we just interpret them.
     func ensure_export_registry []
         if [ export_registry ] return
         export_registry = map string[string] []
         root : getenv[ 'SILVER' ]
         if [ !root || root.count == 0 ] return
-        d : path '{root}/export'
+        d : path '{root}/install/export'
         entries : array [ d.ls[ null, false ] ]
         if [ !entries ] return
         for [ e: path ] in entries

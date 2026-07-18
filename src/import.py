@@ -165,7 +165,7 @@ def build_import(name, uri, commit, _config_lines, install_dir, extra):
 
     overlay_dir  = Path(root)   / Path('overlay') / name
     checkout_dir = Path(root)   / Path('checkout') / name
-    build_dir    = Path(IMPORT) / Path('release')  / name
+    build_dir    = Path(IMPORT) / Path('build')  / name
     CMakeLists   = checkout_dir / 'CMakeLists.txt'
 
     config_lines, pre, post, env = parse_from_config(_config_lines) # pre has > and post as >> infront ... everything else is a config_line
