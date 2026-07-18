@@ -274,6 +274,10 @@ int main(int argc, char** argv) {
         setenv("SILVER_STARTUP", launch_cwd, 1);
         printf("silver-host: launch cwd = %s (SILVER_STARTUP set)\n", launch_cwd);
     }
+#ifdef SILVER_ROOT
+    // apps resolve {SILVER}/export and foundry modules through this
+    setenv("SILVER", SILVER_ROOT, 1);
+#endif
     cd_share(bindir, name);
 
     // up-front staleness check: only recompile when a source is actually newer

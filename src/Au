@@ -1965,6 +1965,8 @@ declare_class(fmt_file)
     M(AA,BB, s, method,  public, path,   path_share_path) \
     M(AA,BB, s, method,  public, path,   path_cwd) \
     M(AA,BB, s, method,  public, path,   path_startup) \
+    M(AA,BB, s, method,  public, path,   path_storage, cstr) \
+    M(AA,BB, s, method,  public, path,   path_cache, cstr) \
     M(AA,BB, s, method,  public, path,   path_tempfile, symbol) \
     M(AA,BB, i, ctr,     public, string) \
     M(AA,BB, i, ctr,     public, tokens) \
@@ -2312,6 +2314,8 @@ int   au_capture_stdout(void); // redirect stdout/stderr to a pipe; returns non-
 int   au_stdout_orig(void);    // dup of the real stdout saved by au_capture_stdout (-1 if not captured)
 void  au_main_args(int argc, cstrs argv); // silver-host stashes process argv for the app
 void  au_apply_args(Au a);                // parse the stashed argv into app instance `a`
+int   au_argv_stop(void);                 // argv index after the default (positional) value
+cstrs au_argv(void);                      // the stashed process argv
 void module_erase_silver(void);
 none validate_meta(Au_t actual, Au_t expected);
 

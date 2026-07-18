@@ -66,24 +66,17 @@ token aether_peek_safe(silver);
     struct _token* pk = aether_peek_safe(a); \
     struct _token* prev = (struct _token*)silver_element(a, -1); \
     if (prev && pk && prev->line != pk->line) pk = prev; \
-    string s; \
-    if (pk->line == 0) { \
-        s = (string)formatter( \
-            (Au_t)null, false, stderr, (Au) true, seq, \
-            (symbol)"\n%s:%i\n" t, __FILE__, __LINE__ \
-            __VA_OPT__(,) __VA_ARGS__); \
-        if (level_err >= fault_level) { \
-            halt(s, pk); \
-        } \
-    } else { \
-        s = (string)formatter( \
-            (Au_t)null, false, stderr, (Au) true, seq, \
-            (symbol) "\n%o:%i:%i (%s:%i%o)\n" t, \
-            (pk->source ? pk->source : a->module_file), \
-            pk->line, pk->column, __FILE__, __LINE__, seq ? f(string, "@%i", seq) : string("") __VA_OPT__(,) __VA_ARGS__); \
-        if (level_err >= fault_level) { \
-            halt(s, aether_peek_safe(a)); \
-        } \
+    /* replayed/synthesized tokens carry line 0 — fall back to the last \
+       consumed token so the module location is never dropped */ \
+    if (pk && pk->line == 0 && prev && prev->line) pk = prev; \
+    string s = (string)formatter( \
+        (Au_t)null, false, stderr, (Au) true, seq, \
+        (symbol) "\n%o:%i:%i (%s:%i%o)\n" t, \
+        (pk && pk->source ? (Au)pk->source : (Au)a->module_file), \
+        pk ? pk->line : 0, pk ? pk->column : 0, __FILE__, __LINE__, \
+        seq ? f(string, "@%i", seq) : string("") __VA_OPT__(,) __VA_ARGS__); \
+    if (level_err >= fault_level) { \
+        halt(s, aether_peek_safe(a)); \
     } \
     false; \
 })
@@ -913,6 +906,9 @@ void silver_parse(silver a) {
     }
     members(a->autype, mem) {
         etype e = u(etype, mem);
+        // release: expect tests are not emitted at all
+        if (a->release && is_func((Au)mem) && mem->access_type == interface_expect)
+            continue;
         if (is_func((Au)mem) && !mem->is_system && e && e != a->fn_init && !e->user_built) {
             push(work, (Au)e); push(wrec, null);
         }
@@ -1018,10 +1014,10 @@ static path is_git_project(silver a) {
     // if so, return a->project_path
     // walk up from project_path to find the git repo root
     path dir = parent_dir(a->module_path);
-    while (len(dir) != 1 && !dir_exists("%o/.git", dir))
+    while (dir && len(dir) > 1 && !dir_exists("%o/.git", dir))
         dir = parent_dir(dir);
-    
-    return len(dir) > 1 ? dir : null;
+
+    return (dir && len(dir) > 1) ? dir : null;
 }
 
 static void exporter(silver a) {
@@ -1045,6 +1041,35 @@ static void exporter(silver a) {
 
         if (compare(hash, rev_parse) != 0)
             vexec(true, "git-tag", "git -C %o tag -f %o", a->project_path, tag);
+    }
+
+    // registry: {SILVER}/export/<module_name>.agi — one file per module,
+    // iterable by any app; keys are the module's exported areas
+    pairs(a->exports, i) {
+        exports exp = (exports)i->value;
+        if (!exp->version && !exp->areas)
+            continue;
+        path edir = f(path, "%s/export", SILVER);
+        make_dir(edir);
+        path   efile = f(path, "%o/%o.agi", edir, i->key);
+        string body  = string(alloc, 256);
+        if (exp->version)
+            concat(body, f(string, "version: %o\n", exp->version));
+        if (exp->areas)
+            pairs(exp->areas, j) {
+                array vals = (array)j->value;
+                char line[1024];
+                int  off = snprintf(line, sizeof(line), "%s: [", ((string)j->key)->chars);
+                bool first = true;
+                each(vals, string, v) {
+                    off += snprintf(line + off, sizeof(line) - off, "%s'%s'",
+                                    first ? "" : ", ", v->chars);
+                    first = false;
+                }
+                snprintf(line + off, sizeof(line) - off, "]\n");
+                append(body, line);
+            }
+        save(efile, (Au)body, null);
     }
 }
 
@@ -1284,6 +1309,8 @@ static void silver_live_run(silver a) {
             argv[i++] = cast(string, arg)->chars;
         }
         argv[i] = NULL;
+        // --test: the app runs its expect tests, reports, and exits
+        if (a->test) setenv("SILVER_EXPECT", "1", 1);
         execvp(argv[0], argv);
         fprintf(stderr, "execvp failed for %s: %s\n", argv[0], strerror(errno));
         _exit(1);
@@ -1292,6 +1319,24 @@ static void silver_live_run(silver a) {
 
 void silver_init(silver a) {
     hold(a);
+
+    // silver [flags] module [app-args…] — the module name is the separator;
+    // Au stopped parsing there and the rest rides to the launched app as-is
+    if (!a->is_external && !a->run && au_argv() && au_argv_stop() > 0) {
+        cstrs av = au_argv();
+        array r  = array(8);
+        for (int i = au_argv_stop(); av[i]; i++)
+            push(r, (Au)string(av[i]));
+        if (len(r))
+            a->run = hold(r);
+    }
+
+    // release gate: the debug tests must pass before a release is built
+    if (a->release && !a->is_external && a->module) {
+        print("release: running debug tests for %o", a->module);
+        vexec(true, "debug-tests",
+            "%s/platform/native/debug/silver --test %o", SILVER, a->module);
+    }
 
     // `import M with ext…`: the importer stashed the ext path list here right before
     // constructing this instance — claim it (and clear) before the build runs below.
@@ -1766,7 +1811,7 @@ static void silver_module() {
     keywords = hold(array_of_cstr(
         "class",    "struct",   "scalar",   "expect",   "fault",    "abstract", "public",   "intern",
         "import",   "export",   "typeid",   
-        "is",       "inherits", "ref",      "in",   "lambda",
+        "is",       "inherits", "ref",      "@",    "in",   "lambda",
         "const",    "no-op",    "<>",
         "return",   "->",       "::",       "...",  
         "asm",      "if",       "switch",   "any",
@@ -2341,6 +2386,11 @@ static shape parse_shape(string str, string* str_res, i64* index) {
     bool single = false;
     int index_stop = *index;
     bool explicit = false;
+    // 0x... is a hex literal (parse_numeric), never a shape
+    int h = *index + (idx(str, *index) == '-' ? 1 : 0);
+    if (idx(str, h) == '0' && h + 2 < ln && idx(str, h + 1) == 'x' &&
+        isxdigit(idx(str, h + 2)))
+        return null;
     for (int i = *index; i < ln; i++) {
         i32 chr = idx(str, i);
         bool start = (i == *index);
@@ -2536,7 +2586,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
     a->source_raw = (string)hold(input_string);
 
     list symbols = list();
-    string special = string(".{}$,<>()![]/+*:=#~@|&^?");
+    string special = string(".{}$,<>()![]/+*:=#~@|&^?`");
     i32 special_ln = len(special);
     for (int i = 0; i < special_ln; i++)
         push(symbols, (Au)unicode_char((i32)special->chars[i]));
@@ -3225,10 +3275,14 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                 // Load previous member to traverse into it
                 enode prop = !is_struct(canonical(mem)) ? e_load(a, mem, null) : mem;
                 if (null_guard && is_ptr(prop)) {
-                    // emit null check: if null, short-circuit to default
+                    // emit null check: if null, short-circuit to default —
+                    // primitives get their zero value; objects are NULL,
+                    // never a constructed instance
                     enode cond = e_not(a, prop);
                     mem = access(prop, alpha);
-                    enode def = e_null(a, canonical(mem));
+                    etype ct  = canonical(mem);
+                    enode def = is_prim((Au)ct) ? e_default_value(a, ct)
+                                                : e_null(a, ct);
                     mem = e_ternary(a, cond, def, mem);
                 } else {
                     mem = access(prop, alpha);
@@ -3238,7 +3292,9 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                 if (null_guard && is_ptr(mem)) {
                     enode cond = e_not(a, mem);
                     enode accessed = access(mem, alpha);
-                    enode def = e_null(a, canonical(accessed));
+                    etype ct  = canonical(accessed);
+                    enode def = is_prim((Au)ct) ? e_default_value(a, ct)
+                                                : e_null(a, ct);
                     mem = e_ternary(a, cond, def, accessed);
                 } else {
                     mem = access(mem, alpha);
@@ -3402,7 +3458,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     // this is more useful than anyone realizes, being in the center of the stack here in read_enode
     // likely needs implementation in read_etype since thats a very common place
-    if (!a->no_build && read_if(a, "@"))
+    if (!a->no_build && read_if(a, "`"))
         raise(SIGTRAP);
 
     bool      cmode     = is_cmode(a);
@@ -3938,7 +3994,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
     // it is reduced in nature, to define line by line rather than add horizontal inline features
     // its less surface area for complexity
 
-    else if (!cmode && read_if(a, "ref")) {
+    else if (!cmode && (read_if(a, "ref") || read_if(a, "@"))) {
         static int seq2;
         seq2++;
         validate(!from_ref, "unexpected double-ref (use type definitions)");
@@ -4734,7 +4790,7 @@ efunc parse_func(silver a, Au_t mem, enum AU_MEMBER member_type, u64 traits, OPT
             }
         }
         
-        bool is_ref = read_if(a, "ref") != null;
+        bool is_ref = read_if(a, "ref") != null || read_if(a, "@") != null;
         if (!t) t = read_etype(a, null); // we need to avoid the literal check in here!
         validate(t, "expected alpha-numeric identity for type or name, found %o", peek(a));
         Au_t arg = alloc_arg(au, n ? n->chars : null, t->autype);
@@ -4953,7 +5009,7 @@ etype read_etype(silver a, array* p_expr) { sequencer
     if (!f || f->literal) return null;
 
     push_current(a);
-    bool is_ref    = read_if(a, "ref") != null;
+    bool is_ref    = read_if(a, "ref") != null || read_if(a, "@") != null;
     bool is_struct = read_if(a, "struct") != null;
     bool  explicit_sign = !mdl && read_if(a, "signed") != null;
     bool  explicit_un   = !mdl && !explicit_sign && read_if(a, "unsigned") != null;
@@ -5160,13 +5216,8 @@ array chatgpt_generate_fn(chatgpt gpt, Au_t f, array query) {
     verify(len(key),
            "chatgpt requires an api key stored in environment variable CHATGPT");
 
-    map headers = m(
-        "Authorization", f(string, "Bearer %o", key));
-
-    uri addr = uri("POST https://api.openai.com/v1/chat/completions");
-    sock chatgpt = sock(addr);
-    bool connected = connect_to(chatgpt);
-    verify(connected, "failed to connect to chatgpt (online access required for remote codegen)");
+    // remote transport moved to the silver net module (foundry/net);
+    // wire Http there when this feature lands
     string str_args = string();
     for (int i = 0; i < f->args.count; i++) {
         Au_t mem = (Au_t)f->args.origin[i];
@@ -5517,8 +5568,9 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         }
     }
 
-    // we build to another folder, not inside the source, or checkout
-    path build_f    = f(path, "%o/%s/%o", install, debug ? "debug" : "build", name);
+    // we build to another folder, not inside the source, or checkout.
+    // imports build ONCE to install/build — never per-config, never debug
+    path build_f    = f(path, "%o/build/%o", install, name);
     path rust_f     = f(path, "%o/Cargo.toml", project_f);
     path meson_f    = f(path, "%o/meson.build", project_f);
     path cmake_f    = f(path, "%o/CMakeLists.txt", project_f);
@@ -5556,7 +5608,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     }
 
     if (is_cmake) { // build for cmake
-        cstr build = debug ? "Debug" : "Release";
+        // externals always build Release — debug is for OUR code, not deps
+        cstr build = "Release";
         string opt = a->isysroot ? f(string, "-DCMAKE_OSX_SYSROOT=%o", a->isysroot) : string("");
 
         vexec(a->verbose, "configure",
@@ -6664,16 +6717,49 @@ enode parse_export(silver a) {
         return e_noop(a, null);
     }
 
+    // export area ['value', 'value'] — registry entry (export extensions ['.n64'])
+    if (t && t->chars[0] >= 'a' && t->chars[0] <= 'z') {
+        string area = read_alpha(a);
+        validate(area, "expected export area name");
+        validate(read_if(a, "["), "expected [ after export %o", area);
+        silver og = a->is_external ? a->is_external : a;
+        exports exp = (exports)get(og->exports, (Au)string(a->name->chars));
+        if (!exp) {
+            exp = exports(module_path, a->module_path, module_file, a->module_file,
+                          project_path, a->project_path);
+            set(og->exports, (Au)string(a->name->chars), (Au)exp);
+        }
+        if (!exp->areas)
+            exp->areas = map(hsize, 8);
+        array vals = (array)get(exp->areas, (Au)area);
+        if (!vals) {
+            vals = array(8);
+            set(exp->areas, (Au)area, (Au)vals);
+        }
+        for (;;) {
+            string val = read_string(a);
+            validate(val, "expected string value for export %o", area);
+            push(vals, (Au)interpolate(val, (Au)a));
+            if (!read_if(a, ","))
+                break;
+        }
+        validate(read_if(a, "]"), "expected ] after export %o values", area);
+        return e_noop(a, null);
+    }
+
     a->exported_version = hold(read_compacted(a));
     verify(len(a->exported_version), "expected version");
 
     // register with the main silver instance (og) so tags are collected in one place
+    // find-or-create: an earlier area export must not be clobbered here
     silver og = a->is_external ? a->is_external : a;
-    set(og->exports, (Au)string(a->name->chars), (Au)exports(
-        module_path,    a->module_path,
-        module_file,    a->module_file,
-        project_path,   a->project_path,
-        version,        a->exported_version));
+    exports exp = (exports)get(og->exports, (Au)string(a->name->chars));
+    if (!exp) {
+        exp = exports(module_path, a->module_path, module_file, a->module_file,
+                      project_path, a->project_path);
+        set(og->exports, (Au)string(a->name->chars), (Au)exp);
+    }
+    exp->version = hold(a->exported_version);
 
     // a hash can be made of the entire module-dir,
     // not so efficient to compute back from git data
@@ -8887,7 +8973,7 @@ enode silver_parse_assignment(silver a, enode mem, OPType op_val, bool is_const)
     // e_assign already keeps these slots weak (no auto hold/drop), so the
     // restriction here was protecting the wrong thing.
     etype t = (etype)etype_of(mem);
-    bool is_bind_ref = (op_val == OPType__bind) ? next_is(a, "ref") : false;
+    bool is_bind_ref = (op_val == OPType__bind) ? (next_is(a, "ref") || next_is(a, "@")) : false;
 
     // for : bind on DECL, peek at explicit type for meta propagation (don't consume)
     etype bind_type = null;
@@ -9432,7 +9518,7 @@ etype silver_read_def(silver a, interface access) {
         validate(alias_name, "expected name after alias");
         validate(read_if(a, ":"), "expected ':' after alias name");
 
-        bool    is_ref = read_if(a, "ref") != null;
+        bool    is_ref = read_if(a, "ref") != null || read_if(a, "@") != null;
 
         Au_t    top = top_scope(a);
         Au_t    alias_au = def(top, alias_name->chars, AU_MEMBER_TYPE, AU_TRAIT_ALIAS);
