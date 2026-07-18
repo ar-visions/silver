@@ -7126,7 +7126,7 @@ none etype_init(etype t) {
             n_args++;
         }
 
-        _lltype_set(fn, LLVMFunctionType(
+        _lltype_set((etype)fn, LLVMFunctionType(
             au->rtype ? lltype(u(etype, au->rtype)) : LLVMVoidTypeInContext(a->module_ctx),
             arg_types, n_args, au->is_vargs));
 
@@ -8215,7 +8215,7 @@ static bool is_expect_test(Au_t mem) {
 
 // SILVER_EXPECT is a test run: after module init, report and exit 0
 static void emit_expect_exit(aether a) {
-    if (a->release) return;
+    if (a->strip_expect) return;
     LLVMTypeRef  i8p       = LLVMPointerTypeInContext(a->module_ctx, 0);
     LLVMTypeRef  getenv_ty = LLVMFunctionType(i8p, &i8p, 1, 0);
     LLVMValueRef getenv_fn = LLVMGetNamedFunction(a->module_ref, "getenv");
@@ -8245,7 +8245,7 @@ static void emit_expect_exit(aether a) {
 
 // module init tail: run expect tests when SILVER_EXPECT is set
 static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
-    if (a->release) return;
+    if (a->strip_expect) return;
     bool any = false;
     members(module_base, mem)
         if (is_expect_test(mem)) any = true;
@@ -8413,8 +8413,8 @@ none aether_build_module_initializer(aether a, enode init) {
 
         if (mem->is_system || mem->is_schema) continue;
 
-        // release: expect tests are not emitted at all
-        if (a->release && is_func(mem) && mem->access_type == interface_expect)
+        // strip_expect: expect members are not emitted at all
+        if (a->strip_expect && is_func(mem) && mem->access_type == interface_expect)
             continue;
 
         if (is_func(mem) && mem->access_type != interface_intern) {
@@ -9200,8 +9200,8 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     if (a->debug && a->dbg_builder)
         LLVMDIBuilderFinalize(a->dbg_builder);
 
-    *ll = form(path, "%o/%s/%o.ll", a->install, a->debug ? "debug" : "release", a);
-    *bc = form(path, "%o/%s/%o.bc", a->install, a->debug ? "debug" : "release", a);
+    *ll = form(path, "%o/modules/%o.ll", a->install, a);
+    *bc = form(path, "%o/modules/%o.bc", a->install, a);
 
     bool validation_error = false;
     // dump before verbose check to catch crashes

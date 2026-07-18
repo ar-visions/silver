@@ -149,7 +149,7 @@ static pid_t rebuild_spawn(const char* name) {
     // the live host), spawning a whole second process+window on every reload while this one
     // keeps running. we just want the fresh .so produced so the host below hot-swaps it.
     snprintf(cmd, sizeof(cmd),
-        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/platform/native/debug/silver\" %s --build",
+        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build",
         name);
     fprintf(stdout, "%s: source changed — rebuilding (app keeps running)\n", name);
     fflush(stdout);
@@ -209,9 +209,8 @@ int main(int argc, char** argv) {
 
 #ifdef SILVER_ROOT
     setenv("LD_LIBRARY_PATH",
-        SILVER_ROOT "/platform/native/lib:"
         SILVER_ROOT "/install/lib:"
-        SILVER_ROOT "/install/debug",
+        SILVER_ROOT "/install/build",
         1);
 #endif
 
