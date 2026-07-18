@@ -214,6 +214,20 @@ if ! [ -L "$SILVER/install" ]; then
     ln -sf ./platform/native "$SILVER/install"
 fi
 
+# persist our bin paths in the user's shell rc so built apps resolve in new shells
+RC="$HOME/.bashrc"
+case "$SHELL" in
+    */zsh)  RC="$HOME/.zshrc" ;;
+esac
+if ! grep -q '# silver PATH' "$RC" 2>/dev/null; then
+    {
+        echo ''
+        echo '# silver PATH'
+        echo "export PATH=\"$SILVER/install/$TYPE:$SILVER/install/bin:\$PATH\""
+    } >> "$RC"
+    echo "added silver PATH to $RC (open a new shell or: source $RC)"
+fi
+
 # Au's ports.h must be reachable as <ports.h> by modules that build OUTSIDE the
 # src tree (e.g. foundry/dbg) — symlink it into the install include dir.
 ln -sf "$SILVER/src/ports.h" "$NATIVE/include/ports.h"

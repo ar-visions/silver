@@ -1,3 +1,3 @@
 type:    shared
 libname: silver
-modules: Au net aether
+modules: Au aether

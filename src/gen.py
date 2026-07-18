@@ -262,13 +262,13 @@ def write_ninja(project, root, import_dir, build_dir, plat):
     
     # rules for compiling
     n.append("rule cc")
-    n.append(f"  command = $clang @$builddir/compile.rsp $cflags -DPROJECT=\"\\\"$project\\\"\" -c $in -o $out")
+    n.append(f"  command = $clang @$builddir/compile.rsp $cflags -MD -MF $out.d -DPROJECT=\"\\\"$project\\\"\" -c $in -o $out")
     n.append("  description = compiling c $in")
     n.append("  depfile = $out.d")
     n.append("  deps = gcc")
     n.append("")
     n.append("rule cxx")
-    n.append(f"  command = $clangcpp @$builddir/compile.rsp $cxxflags -DPROJECT=\"\\\"$project\\\"\" -c $in -o $out")
+    n.append(f"  command = $clangcpp @$builddir/compile.rsp $cxxflags -MD -MF $out.d -DPROJECT=\"\\\"$project\\\"\" -c $in -o $out")
     n.append("  description = compiling c++ $in")
     n.append("  depfile = $out.d")
     n.append("  deps = gcc")

@@ -59,6 +59,8 @@ endif
 build: bootstrap
 	echo "$(NINJA) -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja"
 	$(NINJA) -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja
+	@ln -sfn "$(BUILD_ROOT)/silver" "$(SILVER)/install/bin/silver"; \
+	echo "silver -> $(BUILD_ROOT)/silver (last built wins)"
 
 # ---- clean ----
 clean:

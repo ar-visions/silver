@@ -343,7 +343,17 @@ enode enode_ref(aether a, enode expr, etype ref_type) {
     LLVMValueRef v = expr->value;
     if (is_func((Au)expr->autype)) {
         efunc fn = u(efunc, expr->autype);
+        if (!fn) fn = (efunc)etype_prep(a, expr->autype);
         etype_implement((etype)fn, false);
+        if (!fn->value && !a->no_build) {
+            // extern C fn never called directly: declare it now
+            cstr n = expr->autype->alt ? expr->autype->alt
+                                       : expr->autype->ident;
+            fn->value = LLVMGetNamedFunction(a->module_ref, n);
+            if (!fn->value && _lltype_slot((etype)fn))
+                fn->value = LLVMAddFunction(a->module_ref, n,
+                    _lltype_slot((etype)fn));
+        }
         v = fn->value;
     }
     return enode(mod, a, value, v, loaded, true, autype, ref_type->autype);
@@ -5152,11 +5162,13 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
 
     // Step 3: Handle the "then" (true) branch
     LLVMPositionBuilderAtEnd(mod->builder, then_block);
-    // load unloaded prim GEPs in-branch — a ptr/prim phi is invalid IR
+    // load unloaded member GEPs in-branch — the phi needs the field VALUE.
+    // structs stay as addresses; fixed arrays decay (the GEP is the value).
     if (false_expr && !true_expr->loaded &&
         LLVMGetTypeKind(LLVMTypeOf(true_expr->value)) == LLVMPointerTypeKind) {
         Au_t tau = au_arg_type((Au)true_expr);
-        if (tau && tau->is_primitive && !tau->is_pointer)
+        if (tau && !tau->is_struct && !(tau->elements > 0) &&
+            (tau->is_primitive || tau->is_pointer || tau->is_class))
             true_expr = e_load(a, true_expr, null);
     }
     LLVMValueRef true_value = !false_expr ? cond_expr->value : true_expr->value;
@@ -5167,7 +5179,8 @@ enode aether_e_ternary(aether a, enode cond_expr, enode true_expr, enode false_e
     if (false_expr && !false_expr->loaded &&
         LLVMGetTypeKind(LLVMTypeOf(false_expr->value)) == LLVMPointerTypeKind) {
         Au_t fau = au_arg_type((Au)false_expr);
-        if (fau && fau->is_primitive && !fau->is_pointer)
+        if (fau && !fau->is_struct && !(fau->elements > 0) &&
+            (fau->is_primitive || fau->is_pointer || fau->is_class))
             false_expr = e_load(a, false_expr, null);
     }
     enode default_expr = !false_expr ? e_create(a, (etype)rmdl, (Au)true_expr) : null;
@@ -6470,6 +6483,8 @@ static void set_global_construct(aether a, efunc fn) {
     LLVMSetGlobalConstant(global, false);
 }
 
+static void emit_expect_exit(aether a);
+
 static void build_entrypoint(aether a, efunc module_init_fn) {
     Au_t module_base = a->autype;
 
@@ -6529,6 +6544,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             LLVMSetLinkage(ctor_fn->value, LLVMExternalLinkage);
             push_scope(a, (Au)ctor_fn, 11);
             e_fn_call(a, module_init_fn, null, false, false);
+            emit_expect_exit(a);
 
             bool saved = a->skip_context_resolve;
             a->skip_context_resolve = true;
@@ -6764,6 +6780,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
 
     push_scope(a, (Au)main_fn, 10);
     e_fn_call(a, module_init_fn, null, false, false);
+    emit_expect_exit(a);
 
     // call engage
     efunc Au_engage = u(efunc, find_member(typeid(Au), "engage", AU_MEMBER_FUNC, 0, false));
@@ -8109,6 +8126,13 @@ enode aether_e_asm(aether a, array body, array input_nodes, etype out_type, stri
             append(constraint, ",");
         append(constraint, (has_out && i == return_input) ? "0" : "r");
     }
+    // clobbers: the block writes memory through pointer inputs and uses
+    // vector registers freely. without these, -O2 caches memory across
+    // the asm (stale reads) and keeps live values in ymm regs we smash.
+    if (len(constraint)) append(constraint, ",");
+    append(constraint, "~{memory},~{cc}");
+    for (int xi = 0; xi < 16; xi++)
+        concat(constraint, f(string, ",~{ymm%d}", xi));
 
     // ---- build LLVM types ----
     LLVMTypeRef   ret    = has_out ? lltype(out_type) : LLVMVoidTypeInContext(a->module_ctx);
@@ -8162,6 +8186,126 @@ enode enode_offset(enode ptr, etype offset_type, i64 index) { sequencer
         lltype(offset_type), base, &idx, 1, N);
     
     return enode(mod, a, autype, au_arg_type((Au)ptr->autype), loaded, false, value, result);
+}
+
+// emit puts(msg) at the current builder position
+static void emit_expect_puts(aether a, const char* msg) {
+    LLVMTypeRef  i8p     = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef  i32_ty  = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMValueRef gstr    = LLVMBuildGlobalStringPtr(B, msg, "");
+    LLVMTypeRef  puts_ty = LLVMFunctionType(i32_ty, &i8p, 1, 0);
+    LLVMValueRef puts_fn = LLVMGetNamedFunction(a->module_ref, "puts");
+    if (!puts_fn)
+        puts_fn = LLVMAddFunction(a->module_ref, "puts", puts_ty);
+    LLVMBuildCall2(B, puts_ty, puts_fn, &gstr, 1, "");
+    // flush so the line survives an abort in the test body
+    LLVMTypeRef  fflush_ty = LLVMFunctionType(i32_ty, &i8p, 1, 0);
+    LLVMValueRef fflush_fn = LLVMGetNamedFunction(a->module_ref, "fflush");
+    if (!fflush_fn)
+        fflush_fn = LLVMAddFunction(a->module_ref, "fflush", fflush_ty);
+    LLVMValueRef nullp = LLVMConstNull(i8p);
+    LLVMBuildCall2(B, fflush_ty, fflush_fn, &nullp, 1, "");
+}
+
+static bool is_expect_test(Au_t mem) {
+    return mem->member_type == AU_MEMBER_FUNC &&
+           mem->access_type == interface_expect &&
+           mem->rtype == typeid(bool);
+}
+
+// SILVER_EXPECT is a test run: after module init, report and exit 0
+static void emit_expect_exit(aether a) {
+    if (a->release) return;
+    LLVMTypeRef  i8p       = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef  getenv_ty = LLVMFunctionType(i8p, &i8p, 1, 0);
+    LLVMValueRef getenv_fn = LLVMGetNamedFunction(a->module_ref, "getenv");
+    if (!getenv_fn)
+        getenv_fn = LLVMAddFunction(a->module_ref, "getenv", getenv_ty);
+    LLVMValueRef key   = LLVMBuildGlobalStringPtr(B, "SILVER_EXPECT", "");
+    LLVMValueRef env   = LLVMBuildCall2(B, getenv_ty, getenv_fn, &key, 1, "expect_env");
+    LLVMValueRef isset = LLVMBuildICmp(B, LLVMIntNE, env, LLVMConstNull(i8p), "expect_on");
+    LLVMValueRef fnv   = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
+    LLVMBasicBlockRef bb_exit = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.exit");
+    LLVMBasicBlockRef bb_go   = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.go");
+    LLVMBuildCondBr(B, isset, bb_exit, bb_go);
+    LLVMPositionBuilderAtEnd(B, bb_exit);
+    char buf[256];
+    snprintf(buf, sizeof(buf), "[%s] expect: complete", a->autype->ident);
+    emit_expect_puts(a, buf);
+    LLVMTypeRef  i32_ty  = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMTypeRef  exit_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), &i32_ty, 1, 0);
+    LLVMValueRef exit_fn = LLVMGetNamedFunction(a->module_ref, "exit");
+    if (!exit_fn)
+        exit_fn = LLVMAddFunction(a->module_ref, "exit", exit_ty);
+    LLVMValueRef zero = LLVMConstInt(i32_ty, 0, 0);
+    LLVMBuildCall2(B, exit_ty, exit_fn, &zero, 1, "");
+    LLVMBuildUnreachable(B);
+    LLVMPositionBuilderAtEnd(B, bb_go);
+}
+
+// module init tail: run expect tests when SILVER_EXPECT is set
+static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
+    if (a->release) return;
+    bool any = false;
+    members(module_base, mem)
+        if (is_expect_test(mem)) any = true;
+    if (!any) return;
+    push_scope(a, (Au)f, 13);
+    LLVMTypeRef  i8p       = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef  getenv_ty = LLVMFunctionType(i8p, &i8p, 1, 0);
+    LLVMValueRef getenv_fn = LLVMGetNamedFunction(a->module_ref, "getenv");
+    if (!getenv_fn)
+        getenv_fn = LLVMAddFunction(a->module_ref, "getenv", getenv_ty);
+    LLVMValueRef key   = LLVMBuildGlobalStringPtr(B, "SILVER_EXPECT", "");
+    LLVMValueRef env   = LLVMBuildCall2(B, getenv_ty, getenv_fn, &key, 1, "expect_env");
+    LLVMValueRef isset = LLVMBuildICmp(B, LLVMIntNE, env, LLVMConstNull(i8p), "expect_on");
+    LLVMValueRef fnv   = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
+    LLVMBasicBlockRef bb_run  = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.run");
+    LLVMBasicBlockRef bb_skip = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "expect.skip");
+    LLVMBuildCondBr(B, isset, bb_run, bb_skip);
+    LLVMPositionBuilderAtEnd(B, bb_run);
+    efunc fn_drop = (efunc)u(efunc,
+        find_member(etypeid(Au)->autype, "drop", AU_MEMBER_FUNC, 0, false));
+    members(module_base, mem) {
+        if (!is_expect_test(mem)) continue;
+        efunc tf = (efunc)u(efunc, mem);
+        if (!tf) continue;
+        char buf[512];
+        // args must all be default-constructible classes
+        bool constructible = true;
+        arg_list(mem, arg) {
+            etype at = etype_prep(a, au_arg_type((Au)arg));
+            if (!at || !is_class(at)) { constructible = false; break; }
+        }
+        if (!constructible) {
+            snprintf(buf, sizeof(buf), "[%s] expect: %s skipped (args not constructible)",
+                module_base->ident, mem->ident);
+            emit_expect_puts(a, buf);
+            continue;
+        }
+        tf->used = true;
+        etype_implement((etype)tf, false);
+        snprintf(buf, sizeof(buf), "[%s] expect: %s", module_base->ident, mem->ident);
+        emit_expect_puts(a, buf);
+        array vals = array(alloc, 8);
+        arg_list(mem, arg) {
+            etype at = etype_prep(a, au_arg_type((Au)arg));
+            enode inst = e_init(a, e_alloc(a, at), null, null, null);
+            push(vals, (Au)inst);
+        }
+        enode r = e_fn_call(a, tf, len(vals) ? vals : null, false, false);
+        snprintf(buf, sizeof(buf), "[%s] expect: %s failed\n", module_base->ident, mem->ident);
+        enode msg = e_create(a, etypeid(string), (Au)const_string(chars, buf));
+        e_expect(a, r, msg);
+        snprintf(buf, sizeof(buf), "[%s] expect: %s passed", module_base->ident, mem->ident);
+        emit_expect_puts(a, buf);
+        if (fn_drop)
+            each(vals, Au, v)
+                e_fn_call(a, fn_drop, a((enode)v), false, false);
+    }
+    LLVMBuildBr(B, bb_skip);
+    LLVMPositionBuilderAtEnd(B, bb_skip);
+    pop_scope(a);
 }
 
 none aether_build_module_initializer(aether a, enode init) {
@@ -8268,6 +8412,10 @@ none aether_build_module_initializer(aether a, enode init) {
         evar var_mdl2 = u(evar, mem);
 
         if (mem->is_system || mem->is_schema) continue;
+
+        // release: expect tests are not emitted at all
+        if (a->release && is_func(mem) && mem->access_type == interface_expect)
+            continue;
 
         if (is_func(mem) && mem->access_type != interface_intern) {
             efunc mf = (efunc)u(etype, mem);
@@ -8600,6 +8748,7 @@ none aether_build_module_initializer(aether a, enode init) {
         }
     }
     pop_scope(a);
+    emit_expect_tests(a, module_base, f);
     build_entrypoint(a, f);
 }
 

@@ -6,6 +6,14 @@
 /// opaque
 forward(Session)
 
+#define protocol_module_ net
+#define web_module_      net
+#define uri_module_      net
+#define sock_module_     net
+#define Session_module_  net
+#define message_module_  net
+#define TLS_module_      net
+
 #define protocol_schema(E,T,Y,...) \
     enum_value(E,T,Y, undefined,  0) \
     enum_value(E,T,Y, http,       1) \
@@ -124,5 +132,7 @@ string dns(string hostname);
 Au json_request(uri addr, map args, map headers, subprocedure success_handler, subprocedure failure_handler);
 
 Au request(uri url, map args);
+
+i64 download(uri url, cstr dest);
 
 #endif
