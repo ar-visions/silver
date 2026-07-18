@@ -10,7 +10,7 @@ app tbcheck
 
     func crop32 [ src: Image, cx: f32, cy: f32, side: f32 ] -> tensor
         t       : tensor [ tensor_shape: 32x32x1 ]
-        data    : ref u8 [ src.vdata[] ]
+        data    : @u8 [ src.vdata[] ]
         bpp     : i32 [ (src.format == Pixel.u8) ? 1 : 4 ]
         img_w   : f32 [ f32[ src.width ] ]
         side_px : f32 [ (side > 0.0) ? side * img_w : img_w ]
@@ -53,7 +53,7 @@ app tbcheck
         if [ pn.exists[] ]
             im2 : Image [ uri: pn ]
             bpp : i32 [ (im2.format == Pixel.u8) ? 1 : 4 ]
-            d2  : ref u8 [ im2.vdata[] ]
+            d2  : @u8 [ im2.vdata[] ]
             tn  : tensor [ tensor_shape: 32x32x1 ]
             for [ i: i32 0, i < 1024, i += 1 ]
                 tn.floats[i] = f32[ d2[i * bpp] ] / 255.0

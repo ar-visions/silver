@@ -114,9 +114,9 @@ element knes : trinity
 	mutable ppu          : nes_ppu
 	mutable apu          : nes_apu
 	mutable audio        : AudioOut
-	mutable prg          : ref u8            # PRG ROM
+	mutable prg          : @u8            # PRG ROM
 	mutable prg_size     : sz
-	mutable chr          : ref u8            # CHR ROM (or ppu.chr_ram)
+	mutable chr          : @u8            # CHR ROM (or ppu.chr_ram)
 	mutable chr_is_ram   : bool
 	mutable chr_size     : sz
 	mutable mapper       : i32
@@ -293,11 +293,11 @@ element knes : trinity
 		dis_ready = true
 		dis_mn = 'BRKORA?????????ORAASL???PHPORAASL??????ORAASL???BPLORA?????????ORAASL???CLCORA?????????ORAASL???JSRAND??????BITANDROL???PLPANDROL???BITANDROL???BMIAND?????????ANDROL???SECAND?????????ANDROL???RTIEOR?????????EORLSR???PHAEORLSR???JMPEORLSR???BVCEOR?????????EORLSR???CLIEOR?????????EORLSR???RTSADC?????????ADCROR???PLAADCROR???JMPADCROR???BVSADC?????????ADCROR???SEIADC?????????ADCROR??????STA??????STYSTASTX???DEY???TXA???STYSTASTX???BCCSTA??????STYSTASTX???TYASTATXS??????STA??????LDYLDALDX???LDYLDALDX???TAYLDATAX???LDYLDALDX???BCSLDA??????LDYLDALDX???CLVLDATSX???LDYLDALDX???CPYCMP??????CPYCMPDEC???INYCMPDEX???CPYCMPDEC???BNECMP?????????CMPDEC???CLDCMP?????????CMPDEC???CPXSBC??????CPXSBCINC???INXSBCNOP???CPXSBCINC???BEQSBC?????????SBCINC???SEDSBC?????????SBCINC???'
 		mds : string [ '0900022001000550;:000330070006605900222001005550;:000330070006600900022001005550;:000330070006600900022001008550;:000330070006600900222000005550;:003340070006001910222001005550;:003340070066701900222001005550;:000330070006601900222001005550;:00033007000660' ]
-		mp : ref u8 [ (mds.chars to ref u8) ]
+		mp : @u8 [ (mds.chars to @u8) ]
 		for [ i: i32 0, i < 256, i += 1 ]
 			dis_md[ i ] = mp[ i ] - 48
 		lns : string [ '122223333222' ]
-		ln : ref u8 [ (lns.chars to ref u8) ]
+		ln : @u8 [ (lns.chars to @u8) ]
 		for [ i: i32 0, i < 12, i += 1 ]
 			dis_len[ i ] = ln[ i ] - 48
 
@@ -389,7 +389,7 @@ element knes : trinity
 	# parse hex digits (uppercase) from a string slice
 	func unhex [ hs: string ] -> i32
 		v : i32 [ 0 ]
-		hp : ref u8 [ (hs.chars to ref u8) ]
+		hp : @u8 [ (hs.chars to @u8) ]
 		for [ i: i32 0, i < i32[ hs.count ], i += 1 ]
 			c : i32 [ i32[ hp[ i ] ] ]
 			d : i32 [ -1 ]
@@ -445,7 +445,7 @@ element knes : trinity
 		dis_prepare[]
 		if [ !cpu ] return false
 		if [ text.count < 10 ] return false
-		tp : ref u8 [ (text.chars to ref u8) ]
+		tp : @u8 [ (text.chars to @u8) ]
 		if [ tp[ 4 ] != 58 ] return false          # 'HHHH:' shape required
 		addr : u32 [ u32[ unhex[ text.mid[ 0, 4 ] ] ] ]
 		if [ addr < 0x8000 ] return false
@@ -454,7 +454,7 @@ element knes : trinity
 		if [ text.count > 10 ] rest = text.mid[ 11, i32[ text.count ] - 11 ]
 		md2 : i32 [ 0 ]
 		v : i32 [ 0 ]
-		rp : ref u8 [ (rest.chars to ref u8) ]
+		rp : @u8 [ (rest.chars to @u8) ]
 		rc : i32 [ i32[ rest.count ] ]
 		if [ rc == 0 ] md2 = 0
 		el [ rp[ 0 ] == 35 ]                        # #$xx
@@ -479,7 +479,7 @@ element knes : trinity
 			v = unhex[ rest.mid[ 1, hx ] ]
 			tail : string [ '' ]
 			if [ hp2 < rc ] tail = rest.mid[ hp2, rc - hp2 ]
-			mb : ref u8 [ (mne.chars to ref u8) ]
+			mb : @u8 [ (mne.chars to @u8) ]
 			if [ mb[ 0 ] == 66 && mne.compare[ 'BIT' ] != 0 && mne.compare[ 'BRK' ] != 0 ]
 				md2 = 11                             # B__ branch: operand is the target
 				v = (v - (i32[ addr ] + 2)) & 0xFF
@@ -576,7 +576,7 @@ element knes : trinity
 
 	# ---- cartridge: iNES format, mapper 0 (NROM) ----
 	func load_cart [] -> none
-		f : ref FILE [ fopen[ rom, 'rb' ] ]
+		f : @FILE [ fopen[ rom, 'rb' ] ]
 		if [ ! f ]
 			puts 'knes: could not open ROM {rom}'
 			return
@@ -1507,7 +1507,7 @@ element knes : trinity
 
 	func save_state [] -> none
 		spx : rom.change_ext[ 'state' ]
-		f : ref FILE [ fopen[ spx, 'wb' ] ]
+		f : @FILE [ fopen[ spx, 'wb' ] ]
 		if [ ! f ] return
 		st_hdr[ 0 ] = u32[ cpu.a ]
 		st_hdr[ 1 ] = u32[ cpu.x ]
@@ -1536,7 +1536,7 @@ element knes : trinity
 
 	func load_state [] -> none
 		spx : rom.change_ext[ 'state' ]
-		f : ref FILE [ fopen[ spx, 'rb' ] ]
+		f : @FILE [ fopen[ spx, 'rb' ] ]
 		if [ ! f ]
 			puts 'knes: no state file'
 			return
@@ -1594,7 +1594,7 @@ element knes : trinity
 			el pad_st = pad_st & 0xFFFFFFEF
 		run_frame[]
 		if [ seq_to > 0 && ticks >= i64[ seq_from ] && ticks < i64[ seq_to ] ]
-			sf : ref FILE [ fopen[ '/tmp/knes_seq_{ticks}.ppm', 'wb' ] ]
+			sf : @FILE [ fopen[ '/tmp/knes_seq_{ticks}.ppm', 'wb' ] ]
 			if [ sf ]
 				fprintf[ sf, "P6\n256 240\n255\n" ]
 				for [ qi2: i32 0, qi2 < 256 * 240, qi2 += 1 ]
@@ -1603,7 +1603,7 @@ element knes : trinity
 					fputc[ i32[ (qp2 >> 8) & 0xFF ], sf ]
 					fputc[ i32[ (qp2 >> 16) & 0xFF ], sf ]
 				fclose[ sf ]
-			lf : ref FILE [ fopen[ '/tmp/knes_lines_{ticks}.bin', 'wb' ] ]
+			lf : @FILE [ fopen[ '/tmp/knes_lines_{ticks}.bin', 'wb' ] ]
 			if [ lf ]
 				fwrite[ line_sx, 1, 240, lf ]
 				fwrite[ line_sy, 1, 240, lf ]
@@ -1732,7 +1732,7 @@ element knes : trinity
 			nzn : i32 [ 0 ]
 			for [ ni: i32 0, ni < 0x800, ni += 1 ]
 				if [ ppu.vram[ ni ] != 0 ] nzn += 1
-			vf : ref FILE [ fopen[ '/tmp/knes_vram.bin', 'wb' ] ]
+			vf : @FILE [ fopen[ '/tmp/knes_vram.bin', 'wb' ] ]
 			if [ vf ]
 				fwrite[ ppu.vram, 1, 0x800, vf ]
 				fwrite[ ppu.palette, 1, 32, vf ]
@@ -1740,7 +1740,7 @@ element knes : trinity
 				fclose[ vf ]
 			puts 'L70 sy={line_sy[70]} nt={line_nt[70]} sx={line_sx[70]} | L150 sy={line_sy[150]} nt={line_nt[150]} | L30 sy={line_sy[30]} nt={line_nt[30]} t={ppu.t_reg}'
 			puts 'chr_nz={nzc} nt_nz={nzn} pal0={ppu.palette[0]} pal1={ppu.palette[1]} m1ctrl={m1_ctrl} chr0={m1_chr0} chr1={m1_chr1} prgb={m1_prg} mir={mir_mode}'
-			pf : ref FILE [ fopen[ '/tmp/knes_fb.ppm', 'wb' ] ]
+			pf : @FILE [ fopen[ '/tmp/knes_fb.ppm', 'wb' ] ]
 			if [ pf ]
 				fprintf[ pf, "P6\n256 240\n255\n" ]
 				for [ qi: i32 0, qi < 256 * 240, qi += 1 ]
@@ -1886,7 +1886,7 @@ element knes : trinity
 				emu_started = true
 				pub_lock = mutex [ cond: false ]
 				tid : local u64 [ 1 ]
-				pthread_create[ tid, null, ref emu_entry, a ]
+				pthread_create[ tid, null, @emu_entry, a ]
 			if [ ! spr_tex ]
 				spr_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 240, linear: true ]
 			if [ ! hud_tex ]

@@ -120,7 +120,7 @@ class Image
     res2:           handle
     res_dealloc:    hook
     manual res_bits: ARef
-    manual pixels:  ref u8
+    manual pixels:  @u8
 
     construct [ i:symbol ]
         uri = path i
@@ -165,12 +165,12 @@ class Image
             height: oh,
             :format, :surface, :channels
         ps  : i32 [ pixel_size ]
-        src : ref u8 vdata[]
-        dst : ref u8 output.vdata[]
+        src : @u8 vdata[]
+        dst : @u8 output.vdata[]
         for [ ry: i32 0, ry < oh, ry += 1 ]
             so : i64 [ (i64[ y0 + ry ] * i64[ width ] + i64[ x0 ]) * i64[ ps ] ]
             df : i64 [ i64[ ry ] * i64[ ow ] * i64[ ps ] ]
-            memcpy ref dst[ df ], ref src[ so ], i64[ ow * ps ]
+            memcpy @dst[ df ], @src[ so ], i64[ ow * ps ]
         return output
 
     # horizontal mirror into a fresh Image — converts a render's mirror-view
@@ -182,14 +182,14 @@ class Image
             height: height,
             :format, :surface, :channels
         ps  : i32 [ pixel_size ]
-        src : ref u8 vdata[]
-        dst : ref u8 output.vdata[]
+        src : @u8 vdata[]
+        dst : @u8 output.vdata[]
         for [ ry: i32 0, ry < height, ry += 1 ]
             ro : i64 [ i64[ ry ] * i64[ width ] * i64[ ps ] ]
             for [ rx: i32 0, rx < width, rx += 1 ]
                 so : i64 [ ro + i64[ rx ] * i64[ ps ] ]
                 df : i64 [ ro + i64[ width - 1 - rx ] * i64[ ps ] ]
-                memcpy ref dst[ df ], ref src[ so ], i64[ ps ]
+                memcpy @dst[ df ], @src[ so ], i64[ ps ]
         return output
 
     # single-channel copy (first channel, no averaging): mono sensors save
@@ -204,8 +204,8 @@ class Image
             channels: 1,
             :surface
         ps  : i32 [ pixel_size ]
-        src : ref u8 vdata[]
-        dst : ref u8 output.vdata[]
+        src : @u8 vdata[]
+        dst : @u8 output.vdata[]
         n : i32 [ width * height ]
         for [ i: i32 0, i < n, i += 1 ]
             si : i64 [ i64[ i ] * i64[ ps ] ]
@@ -227,8 +227,8 @@ class Image
             height: oh,
             :format, :surface, :channels
         ps  : i32 [ pixel_size ]
-        src : ref u8 vdata[]
-        dst : ref u8 output.vdata[]
+        src : @u8 vdata[]
+        dst : @u8 output.vdata[]
         area : i32 [ f * f ]
         for [ ry: i32 0, ry < oh, ry += 1 ]
             for [ rx: i32 0, rx < ow, rx += 1 ]
@@ -259,10 +259,10 @@ class Image
             height   :out_h,
             :format, :surface, :channels
 
-        src  : ref u8 vdata[]
-        src2 : ref u8 vdata[]
-        src3 : ref u8 vdata[]
-        dst  : ref u8 output.vdata[]
+        src  : @u8 vdata[]
+        src2 : @u8 vdata[]
+        src3 : @u8 vdata[]
+        dst  : @u8 output.vdata[]
 
         opencv_resize_area
             src,      dst,   format == Pixel.rgbaf32,
@@ -279,8 +279,8 @@ class Image
             :width,  :height,
             :format, :surface, :channels
 
-        src : ref u8 vdata[]
-        dst : ref u8 output.vdata[]
+        src : @u8 vdata[]
+        dst : @u8 output.vdata[]
 
         opencv_gaussian
             src, dst, format == Pixel.rgbaf32,
@@ -321,16 +321,16 @@ class Image
 
                 png_write_info png2, info
                 rows : new png_bytep [ sizeof png_bytep * height ]
-                data2 : ref u8 vdata[]
+                data2 : @u8 vdata[]
                 for [ y : 0, y < height, y += 1 ]
-                    rows[y] = ref data2 [ y * width * channels ]
+                    rows[y] = @data2 [ y * width * channels ]
 
                 png_write_image png2, rows
                 png_write_end   png2, null
             el
                 success = 0
             
-            png_destroy_write_struct ref png2, ref info
+            png_destroy_write_struct @png2, @info
             fclose file
 
         el
@@ -347,15 +347,15 @@ class Image
         return width * height * pixel_size
 
     func get[ y:num ] -> Au
-        row : ref u8 vdata[]
-        return ref row [ pixel_size * width * y ]
+        row : @u8 vdata[]
+        return @row [ pixel_size * width * y ]
 
 
 # all 4 opencv functions implemented in img.cc
-func opencv_resize_area[ref u8, ref u8, int, int, int, int, int, int] 
+func opencv_resize_area[@u8, @u8, int, int, int, int, int, int] 
 
-func opencv_gaussian[ref u8, ref u8, int, int, int, int, float] 
+func opencv_gaussian[@u8, @u8, int, int, int, int, float] 
 
-func opencv_gaussian_fast[ref u8, ref u8, int, int, int, int , float] 
+func opencv_gaussian_fast[@u8, @u8, int, int, int, int , float] 
 
-func opencv_blur_equirect[ref u8, int, int] 
+func opencv_blur_equirect[@u8, int, int] 

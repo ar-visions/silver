@@ -38,13 +38,17 @@ make clean              # cleans generated headers
 # Compile a .ag program (foundry/ prefix is optional — it's searched first)
 ./platform/native/debug/silver trinity
 
-# With options (module path first, then flags)
-silver trinity --watch    # file watcher mode
-silver trinity --clean    # force rebuild all imports
-silver trinity --release  # release build
+# silver [flags] <module> [app-args…] — silver's flags come BEFORE the
+# module name; everything AFTER the module passes verbatim to the app
+silver --watch trinity      # file watcher mode
+silver --clean trinity      # force rebuild all imports
+silver --release trinity    # release build
+silver --build orbiter      # compile only, no launch
+silver --test expectest     # run the module's expect tests, exit
+silver orbiter --width 1920 # --width goes to orbiter, not silver
 
-# Primary development workflow — always use -v --clean --run together
-silver orbiter -v --clean --run
+# Primary development workflow (bare launch builds AND runs)
+silver --clean orbiter
 ```
 
 - `make` defaults to debug. Debug binary goes to `platform/native/debug/silver`. Release binary goes to `platform/native/bin/silver`.

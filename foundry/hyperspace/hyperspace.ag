@@ -90,8 +90,8 @@ element hyperspace : trinity
     intern ob_cy      : f32
     intern ob_oz      : f32
     intern ob_sc      : f32
-    intern fx_hx      : ref f32
-    intern fx_hy      : ref f32
+    intern fx_hx      : @f32
+    intern fx_hy      : @f32
     intern fx_i       : i32
     intern fx_n       : i32
     intern mv_last    : i64
@@ -921,8 +921,8 @@ element hyperspace : trinity
         gw : i32 [ gray.width ]
         gh : i32 [ gray.height ]
         rgba : Image [ width: gw, height: gh, format: Pixel.rgba8 ]
-        gd : ref u8 [ gray.vdata[] ]
-        rd : ref u8 [ rgba.vdata[] ]
+        gd : @u8 [ gray.vdata[] ]
+        rd : @u8 [ rgba.vdata[] ]
         n2 : i32 [ gw * gh ]
         for [ i: i32 0, i < n2, i += 1 ]
             gv : u8 [ gd[i] ]
@@ -1124,7 +1124,7 @@ element hyperspace : trinity
         cv.paint[]
         # the live 32x32 net input, upscaled beside the feed
         nb : Image [ width: 32, height: 32, format: Pixel.rgba8 ]
-        nd : ref u8 [ nb.vdata[] ]
+        nd : @u8 [ nb.vdata[] ]
         for [ i: i32 0, i < 1024, i += 1 ]
             nv : f32 [ full.floats[i] * 255.0 ]
             if [ nv < 0.0 ]   nv = 0.0
@@ -1294,8 +1294,8 @@ element hyperspace : trinity
                     gw4 : i32 [ gray4.width ]
                     gh4 : i32 [ gray4.height ]
                     rgba4 : Image [ width: gw4, height: gh4, format: Pixel.rgba8 ]
-                    gd4 : ref u8 [ gray4.vdata[] ]
-                    rd4 : ref u8 [ rgba4.vdata[] ]
+                    gd4 : @u8 [ gray4.vdata[] ]
+                    rd4 : @u8 [ rgba4.vdata[] ]
                     n4 : i32 [ gw4 * gh4 ]
                     for [ i: i32 0, i < n4, i += 1 ]
                         gv4 : u8 [ gd4[i] ]
@@ -1791,7 +1791,7 @@ element hyperspace : trinity
     # anisotropic; used for the 3:2 upper-face band
     func crop_rect [ src: Image, cx: f32, cy: f32, sw2: f32, sh2: f32 ] -> tensor
         t       : tensor [ tensor_shape: 32x32x1 ]
-        data    : ref u8 [ src.vdata[] ]
+        data    : @u8 [ src.vdata[] ]
         bpp     : i32 [ (src.format == Pixel.u8) ? 1 : 4 ]
         img_w   : f32 [ f32[ src.width ] ]
         swp     : f32 [ sw2 * img_w ]
@@ -1825,7 +1825,7 @@ element hyperspace : trinity
 
     func crop_tensor [ src: Image, cx: f32, cy: f32, side: f32 ] -> tensor
         t       : tensor [ tensor_shape: 32x32x1 ]
-        data    : ref u8 [ src.vdata[] ]
+        data    : @u8 [ src.vdata[] ]
         bpp     : i32 [ (src.format == Pixel.u8) ? 1 : 4 ]
         img_w   : f32 [ f32[ src.width ] ]
         side_px : f32 [ (side > 0.0) ? side * img_w : img_w ]
@@ -2245,13 +2245,13 @@ element hyperspace : trinity
     # nearest-resample a camera-space region (center + sides in
     # image-width units) into a WxH rgba texture at native detail
     func upload_region [ tex: Texture, src: Image, cx: f32, cy: f32, rw2: f32, rh2: f32, W2: i32, H2: i32 ]
-        d   : ref u8 [ src.vdata[] ]
+        d   : @u8 [ src.vdata[] ]
         bpp : i32 [ (src.format == Pixel.u8) ? 1 : 4 ]
         iw  : i32 [ src.width ]
         ih  : i32 [ src.height ]
         fw9 : f32 [ f32[ iw ] ]
         img : Image [ width: W2, height: H2, format: Pixel.rgba8 ]
-        o   : ref u8 [ img.vdata[] ]
+        o   : @u8 [ img.vdata[] ]
         x0  : f32 [ cx * fw9 - rw2 * fw9 * 0.5 ]
         y0  : f32 [ cy * fw9 - rh2 * fw9 * 0.5 ]
         for [ j: i32 0, j < H2, j += 1 ]
@@ -2274,7 +2274,7 @@ element hyperspace : trinity
     # 32x32 gray tensor -> rgba texture, for on-screen previews
     func upload_tensor [ tex: Texture, t: tensor ]
         img : Image [ width: 32, height: 32, format: Pixel.rgba8 ]
-        d : ref u8 [ img.vdata[] ]
+        d : @u8 [ img.vdata[] ]
         for [ i: i32 0, i < 1024, i += 1 ]
             v : f32 [ t.floats[i] * 255.0 ]
             if [ v < 0.0 ]   v = 0.0
@@ -2288,7 +2288,7 @@ element hyperspace : trinity
 
     func preview_tensor [ dirp: path, name2: string, t: tensor ]
         img : Image [ width: 32, height: 32, format: Pixel.u8 ]
-        d : ref u8 [ img.vdata[] ]
+        d : @u8 [ img.vdata[] ]
         for [ i: i32 0, i < 1024, i += 1 ]
             v : f32 [ t.floats[i] * 255.0 ]
             if [ v < 0.0 ]   v = 0.0
@@ -2301,7 +2301,7 @@ element hyperspace : trinity
         nimg : i32 [ 3 * cameras ]
         img : Image [ width: 96, height: 32, format: Pixel.u8 ]
         if [ cameras > 1 ] img = Image [ width: 192, height: 32, format: Pixel.u8 ]
-        d : ref u8 [ img.vdata[] ]
+        d : @u8 [ img.vdata[] ]
         for [ n: i32 0, n < nimg, n += 1 ]
             t : smp.inputs[n]
             for [ y: i32 0, y < 32, y += 1 ]
@@ -2326,7 +2326,7 @@ element hyperspace : trinity
     # step-matched subsample grid (black outside the frame)
     func rot_crop [ src: Image, cx: f32, cy: f32, side: f32, deg: f32 ] -> tensor
         t     : tensor [ tensor_shape: 32x32x1 ]
-        data  : ref u8 [ src.vdata[] ]
+        data  : @u8 [ src.vdata[] ]
         bpp   : i32 [ (src.format == Pixel.u8) ? 1 : 4 ]
         img_w : f32 [ f32[ src.width ] ]
         sp    : f32 [ side * img_w ]

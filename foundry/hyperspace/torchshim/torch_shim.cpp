@@ -84,6 +84,57 @@ int ts_read_cols(void* model, const float* img, int h, int w,
     }
 }
 
+int ts_align(void* model, const float* img, int h, int w,
+             const int* toks, int n_toks, int* out_spans) {
+    // forced alignment: the sentence is KNOWN — viterbi over the
+    // state chain [blank, tok0, blank, tok1, ... blank] finds where
+    // each word's columns sit. out_spans: start,end per token.
+    auto* m = (torch::jit::script::Module*)model;
+    std::vector<torch::jit::IValue> iv;
+    iv.push_back(torch::from_blob((void*)img, {1, 1, h, w}, torch::kFloat32));
+    try {
+        torch::NoGradGuard ng;
+        auto r  = m->forward(iv).toTuple();
+        auto lp = torch::log_softmax(r->elements()[0].toTensor()[0], 0);
+        auto la = lp.accessor<float, 2>();
+        int T = (int)lp.size(1);
+        int S = 2 * n_toks + 1;                 // blanks interleaved
+        const float NEG = -1e30f;
+        std::vector<float> dp(S, NEG), ndp(S);
+        std::vector<int> bp((size_t)T * S, 0);
+        auto lab = [&](int s) { return (s % 2 == 0) ? 0 : toks[s / 2]; };
+        dp[0] = la[lab(0)][0];
+        if (S > 1) dp[1] = la[lab(1)][0];
+        for (int t = 1; t < T; t++) {
+            for (int s = 0; s < S; s++) {
+                float best = dp[s]; int from = s;
+                if (s > 0 && dp[s - 1] > best) { best = dp[s - 1]; from = s - 1; }
+                // token->token skip over blank (distinct tokens only)
+                if (s > 1 && s % 2 == 1 && lab(s) != lab(s - 2) &&
+                        dp[s - 2] > best) { best = dp[s - 2]; from = s - 2; }
+                ndp[s] = (best <= NEG) ? NEG : best + la[lab(s)][t];
+                bp[(size_t)t * S + s] = from;
+            }
+            dp.swap(ndp);
+        }
+        int s = S - 1;
+        if (S > 1 && dp[S - 2] > dp[S - 1]) s = S - 2;
+        for (int k = 0; k < n_toks; k++) { out_spans[k*2] = -1; out_spans[k*2+1] = -1; }
+        for (int t = T - 1; t >= 0; t--) {
+            if (s % 2 == 1) {
+                int k = s / 2;
+                out_spans[k * 2] = t;
+                if (out_spans[k * 2 + 1] < 0) out_spans[k * 2 + 1] = t + 1;
+            }
+            if (t > 0) s = bp[(size_t)t * S + s];
+        }
+        return T;
+    } catch (const std::exception& e) {
+        fprintf(stderr, "ts_align: %s\n", e.what());
+        return -1;
+    }
+}
+
 int ts_forward2i(void* model, const float* a, const float* b,
                  const float* aux, int S, int aux_n,
                  float* out, int out_cap) {

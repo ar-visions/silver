@@ -49,7 +49,7 @@ class Polaris
         regions = array Region [ alloc: 256 ]
 
     func total [] -> i32
-        return (regions) ? regions.count : 0
+        return regions->count
 
     public func add [ r: Region ]
         if [ !regions ] regions = array Region [ alloc: 256 ]

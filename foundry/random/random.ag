@@ -31,7 +31,7 @@ intern rng_state: rng[]
 
 
 # SplitMix64 — expands a single u64 seed into decorrelated state words
-intern func splitmix64 [state: ref u64] -> u64
+intern func splitmix64 [state: @u64] -> u64
     state[0] += 0x9e3779b97f4a7c15
     z: u64 [ state[0] ]
     z =   (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
@@ -51,10 +51,10 @@ intern func rotl45 [input: u64] -> u64
 public func rng_seed [seed: u64] 
     sm: u64 [ seed ]
     printf "ptr = %p\n", rng_state
-    rng_state.state[0] = splitmix64[ref sm]
-    rng_state.state[1] = splitmix64[ref sm]
-    rng_state.state[2] = splitmix64[ref sm]
-    rng_state.state[3] = splitmix64[ref sm]
+    rng_state.state[0] = splitmix64[@sm]
+    rng_state.state[1] = splitmix64[@sm]
+    rng_state.state[2] = splitmix64[@sm]
+    rng_state.state[3] = splitmix64[@sm]
     rng_state.seeded = true
 
 

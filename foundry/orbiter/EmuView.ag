@@ -123,7 +123,8 @@ ResourceView RGenView
     mutable emu : rgen
     mutable fed_seq : i32
     func extensions [] -> array string
-        return array string [ '.gen', '.68k' ]   # .md/.bin need header sniffing; .smd is interleaved (unsupported)
+        # claims none: .gen routes through {SILVER}/export (rgen exports it)
+        return array string [ ]
     func continuous [] -> bool
         return true
     func context_request [] -> bool

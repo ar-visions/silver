@@ -1,0 +1,224 @@
+export 0.1.0
+
+import Mbed-TLS:mbedtls/ec40440 <mbedtls/ssl.h>
+    -DENABLE_TESTING=0
+    -DPSA_CRYPTO_DRIVERS=0
+    -DCMAKE_POSITION_INDEPENDENT_CODE=1
+    -DLINK_WITH_PTHREAD=1
+    -lmbedcrypto
+    -lmbedx509
+    -lmbedtls
+
+import <mbedtls/net_sockets.h>
+import <mbedtls/x509_crt.h>
+import <psa/crypto.h>
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+
+# client TLS connection: construct with host/port props, init dials +
+# handshakes; connected reflects success. send/recv move raw bytes.
+class TLSClient
+    public host      : string
+    public port      : i32 [ 443 ]
+    public connected : bool
+    intern net_ctx : mbedtls_net_context
+    intern ssl     : mbedtls_ssl_context
+    intern conf    : mbedtls_ssl_config
+    intern cacert  : mbedtls_x509_crt
+
+    func init []
+        mbedtls_net_init          [ @net_ctx ]
+        mbedtls_ssl_init          [ @ssl ]
+        mbedtls_ssl_config_init   [ @conf ]
+        mbedtls_x509_crt_init     [ @cacert ]
+        psa_crypto_init           [ ]
+        # local trust first, then the system CA bundle (debian / rh)
+        ca_ok : i32 [ -1 ]
+        ca0 : path 'ssl/trust.crt'
+        if [ ca0.exists[] ] ca_ok = mbedtls_x509_crt_parse_file[ @cacert, ca0.chars ]
+        if [ ca_ok != 0 ]
+            ca1 : path '/etc/ssl/certs/ca-certificates.crt'
+            if [ ca1.exists[] ] ca_ok = mbedtls_x509_crt_parse_file[ @cacert, ca1.chars ]
+        if [ ca_ok != 0 ]
+            ca2 : path '/etc/pki/tls/certs/ca-bundle.crt'
+            if [ ca2.exists[] ] ca_ok = mbedtls_x509_crt_parse_file[ @cacert, ca2.chars ]
+        if [ ca_ok != 0 ]
+            puts 'net: no CA bundle (ssl/trust.crt or system certs)'
+            return
+        ps : string '{port}'
+        crc : i32 [ mbedtls_net_connect[ @net_ctx, host.chars, ps.chars, MBEDTLS_NET_PROTO_TCP ] ]
+        if [ crc != 0 ]
+            puts 'net: connect to {host}:{port} failed ({crc})'
+            return
+        dfc : i32 [ mbedtls_ssl_config_defaults[ @conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT ] ]
+        if [ dfc != 0 ]
+            puts 'net: ssl config_defaults failed ({dfc})'
+            return
+        mbedtls_ssl_conf_authmode  [ @conf, MBEDTLS_SSL_VERIFY_REQUIRED ]
+        mbedtls_ssl_conf_ca_chain  [ @conf, @cacert, null ]
+        suc : i32 [ mbedtls_ssl_setup[ @ssl, @conf ] ]
+        if [ suc != 0 ]
+            puts 'net: ssl setup failed ({suc})'
+            return
+        shc : i32 [ mbedtls_ssl_set_hostname[ @ssl, host.chars ] ]
+        if [ shc != 0 ]
+            puts 'net: set_hostname failed ({shc})'
+            return
+        mbedtls_ssl_set_bio[ @ssl, @net_ctx, @mbedtls_net_send, @mbedtls_net_recv, null ]
+        for [ true ]
+            hs : i32 [ mbedtls_ssl_handshake[ @ssl ] ]
+            if [ hs == 0 ]
+                connected = true
+                return
+            if [ hs != MBEDTLS_ERR_SSL_WANT_READ && hs != MBEDTLS_ERR_SSL_WANT_WRITE ]
+                puts 'net: tls handshake failed ({hs}) for {host}'
+                return
+
+    func send [ data: @u8, n: i64 ] -> i64
+        sent : i64 [ 0 ]
+        for [ sent < n ]
+            r : i32 [ mbedtls_ssl_write[ @ssl, @data[sent], n - sent ] ]
+            if [ r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE ] continue
+            if [ r <= 0 ] return sent
+            sent += r
+        return sent
+
+    func recv [ data: @u8, n: i64 ] -> i64
+        for [ true ]
+            r : i32 [ mbedtls_ssl_read[ @ssl, data, n ] ]
+            if [ r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE ] continue
+            if [ r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET ] continue
+            return r
+        return -1
+
+    func close []
+        if [ connected ] mbedtls_ssl_close_notify[ @ssl ]
+        mbedtls_net_free        [ @net_ctx ]
+        mbedtls_ssl_free        [ @ssl ]
+        mbedtls_ssl_config_free [ @conf ]
+        mbedtls_x509_crt_free   [ @cacert ]
+        connected = false
+
+# https://host[:port]/path -> host/port/query parts (https only)
+class UrlParts
+    public host  : string
+    public port  : i32 [ 443 ]
+    public query : string
+    public valid : bool
+
+    func from_url [ url: string ]
+        valid = false
+        ip : i32 [ url.index_of[ '://' ] ]
+        if [ ip < 0 ] return
+        rest : url.mid[ ip + 3, url.count - ip - 3 ]
+        is2 : i32 [ rest.index_of[ '/' ] ]
+        hp : (is2 >= 0) ? rest.mid[ 0, is2 ] : rest
+        query = (is2 >= 0) ? rest.mid[ is2, rest.count - is2 ] : '/'
+        ic : i32 [ hp.index_of[ ':' ] ]
+        if [ ic > 0 ]
+            host = hp.mid[ 0, ic ]
+            pstr : hp.mid[ ic + 1, hp.count - ic - 1 ]
+            port = atoi[ pstr.chars ]
+        el
+            host = hp
+            port = 443
+        valid = true
+
+class Http
+    # read one header line's value (case-insensitive key match on the tail)
+    static func header_value [ hdr: string, key_tail: string ] -> string
+        ik : i32 [ hdr.index_of[ key_tail ] ]
+        if [ ik < 0 ] return null
+        vs : i32 [ ik + key_tail.count ]
+        tail2 : hdr.mid[ vs, hdr.count - vs ]
+        ve : i32 [ tail2.index_of[ '\r\n' ] ]
+        if [ ve < 0 ] return null
+        return tail2.mid[ 0, ve ]
+
+    # stream a GET to a file, following redirects. returns bytes or -1.
+    static func download [ url: string, dest: path ] -> i64
+        u : UrlParts [ ]
+        u.from_url[ url ]
+        if [ !u.valid ]
+            puts 'net: bad url {url}'
+            return -1
+        for [ hop: i32 0, hop < 6, hop += 1 ]
+            puts 'net: download {u.host}{u.query}'
+            t : TLSClient [ host: u.host, port: u.port ]
+            if [ !t.connected ]
+                puts 'net: no tls connection to {u.host}:{u.port}'
+                t.close[]
+                return -1
+            req : string 'GET {u.query} HTTP/1.1\r\nHost: {u.host}\r\nUser-Agent: silver\r\nAccept: */*\r\nConnection: close\r\n\r\n'
+            if [ t.send[ (req.chars to @u8), req.count ] != req.count ]
+                puts 'net: send failed to {u.host}'
+                t.close[]
+                return -1
+            # headers: byte-at-a-time until the blank line
+            hmax : i32 [ 16384 ]
+            hbuf : new u8 [ hmax ]
+            hn   : i32 [ 0 ]
+            for [ hn < hmax - 1 ]
+                r : i64 [ t.recv[ @hbuf[hn], 1 ] ]
+                if [ r != 1 ] break
+                hn += 1
+                if [ hn >= 4 && hbuf[hn - 4] == 13 && hbuf[hn - 3] == 10 && hbuf[hn - 2] == 13 && hbuf[hn - 1] == 10 ] break
+            hbuf[hn] = 0
+            hdr : string [ (@hbuf[0] to cstr) ]
+            # status code sits after 'HTTP/1.1 '
+            code : i32 [ 0 ]
+            if [ hdr.count > 12 ]
+                cs : hdr.mid[ 9, 3 ]
+                code = atoi[ cs.chars ]
+            if [ code >= 300 && code < 400 ]
+                loc : header_value[ hdr, 'ocation: ' ]
+                t.close[]
+                if [ !loc ]
+                    puts 'net: {code} with no location'
+                    return -1
+                # relative redirect: keep host, swap the query path
+                if [ loc.chars[0] == '/' ]
+                    u.query = loc
+                el
+                    u.from_url[ loc ]
+                    if [ !u.valid ]
+                        puts 'net: bad redirect location {loc}'
+                        return -1
+                continue
+            if [ code != 200 ]
+                puts 'net: status {code} for {u.host}'
+                t.close[]
+                return -1
+            cl : header_value[ hdr, 'ontent-Length: ' ]
+            total : i64 [ (cl) ? atoll[ cl.chars ] : -1 ]
+            fp : @FILE [ fopen[ dest.chars, 'wb' ] ]
+            if [ !fp ]
+                puts 'net: cannot write {dest}'
+                t.close[]
+                return -1
+            csz  : i32 [ 262144 ]
+            data : new u8 [ csz ]
+            got  : i64 [ 0 ]
+            mark : i64 [ 0 ]
+            for [ true ]
+                r : i64 [ t.recv[ data, csz ] ]
+                if [ r <= 0 ] break
+                wr : i64 [ fwrite[ data, 1, r, fp ] ]
+                if [ wr != r ]
+                    got = -1
+                    break
+                got += r
+                if [ got - mark >= 268435456 ]
+                    mark = got
+                    mb  : i64 [ got / 1048576 ]
+                    mbt : i64 [ total / 1048576 ]
+                    puts 'net: {mb} / {mbt} MB'
+                if [ total > 0 && got >= total ] break
+            fclose[ fp ]
+            t.close[]
+            if [ got < 0 || (total > 0 && got < total) ]
+                puts 'net: body short — got {got} of {total}'
+                return -1
+            return got
+        return -1

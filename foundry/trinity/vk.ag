@@ -221,7 +221,7 @@ class Render
                 width:           width  / ((i == 0) ? 1 : 4),
                 height:          height / ((i == 0) ? 1 : 4),
                 layers:          1
-            ], null, ref vk_framebuffer[i] ]
+            ], null, @vk_framebuffer[i] ]
 
             expect result == VK_SUCCESS, "Failed to create framebuffer"
 
@@ -231,10 +231,10 @@ class Render
             return
         s : i32 [ ring_i ]
         if [ ring_primed[s] != 0 ]
-            vkWaitForFences[ vk.device, 1, ref vk_fences[s], VK_TRUE, UINT64_MAX ]
+            vkWaitForFences[ vk.device, 1, @vk_fences[s], VK_TRUE, UINT64_MAX ]
         vk_command_buffer = vk_command_buffers[s]
         vk_fence          = vk_fences[s]
-        vkResetFences[ vk.device, 1, ref vk_fence ]
+        vkResetFences[ vk.device, 1, @vk_fence ]
         vkResetCommandBuffer[ vk_command_buffer, 0 ]
         vkBeginCommandBuffer[ vk_command_buffer, VkCommandBufferBeginInfo [
             sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -258,9 +258,9 @@ class Render
         submitInfo: VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
             commandBufferCount: 1,
-            pCommandBuffers:    ref vk_command_buffer
+            pCommandBuffers:    @vk_command_buffer
         ]
-        vkQueueSubmit[ vk.queue, 1, ref submitInfo, vk_fence ]
+        vkQueueSubmit[ vk.queue, 1, @submitInfo, vk_fence ]
         vk.submit_calls += 1
         ring_primed[s] = 1
         ring_last      = s
@@ -342,7 +342,7 @@ class Render
     func draw_immediate [ ]
         s : i32 [ ring_i ]
         if [ ring_primed[s] != 0 ]
-            vkWaitForFences[ vk.device, 1, ref vk_fences[s], VK_TRUE, UINT64_MAX ]
+            vkWaitForFences[ vk.device, 1, @vk_fences[s], VK_TRUE, UINT64_MAX ]
         vk_command_buffer = vk_command_buffers[s]
         vk_fence          = vk_fences[s]
         vk.cur_ring       = s
@@ -353,7 +353,7 @@ class Render
                 reduction.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 sync_fence[]
 
-            vkResetFences[ vk.device, 1, ref vk_fence ]
+            vkResetFences[ vk.device, 1, @vk_fence ]
             frame: VkCommandBuffer [ vk_command_buffer ]
             vkResetCommandBuffer[ frame, 0 ]
             vkBeginCommandBuffer[ frame, VkCommandBufferBeginInfo [
@@ -375,7 +375,7 @@ class Render
             vkCmdPipelineBarrier[ frame,
                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                0, 1, ref mem_bar, 0, null, 0, null ]
+                0, 1, @mem_bar, 0, null, 0, null ]
 
             fw: i32 [ (i == 0) ? width : width / 4 ]
             fh: i32 [ (i == 0) ? height : height / 4 ]
@@ -388,7 +388,7 @@ class Render
                 extent: VkExtent2D [ fw, fh ]
             ] ]
             clear_values: local VkClearValue [2]
-            mc : i64 [ (models) ? models.count : 0 ]
+            mc : i64 [ models->count ]
 
             clear_values[0].color.float32[0] = clear_color.x
             clear_values[0].color.float32[1] = clear_color.y
@@ -437,14 +437,14 @@ class Render
             submitInfo: VkSubmitInfo [
                 sType:                VK_STRUCTURE_TYPE_SUBMIT_INFO,
                 commandBufferCount:   1,
-                pCommandBuffers:      ref frame,
+                pCommandBuffers:      @frame,
                 waitSemaphoreCount:   (vk_swap_image) ? 1 : 0,
-                pWaitSemaphores:      (vk_swap_image) ? ref w.semaphore_frame.vk_image_available_semaphore : null,
-                pWaitDstStageMask:    (vk_swap_image) ? ref s_flags : null,
+                pWaitSemaphores:      (vk_swap_image) ? @w.semaphore_frame.vk_image_available_semaphore : null,
+                pWaitDstStageMask:    (vk_swap_image) ? @s_flags : null,
                 signalSemaphoreCount: (vk_swap_image) ? 1 : 0,
-                pSignalSemaphores:    (vk_swap_image) ? ref w.semaphore_frame.vk_render_finished_semaphore : null
+                pSignalSemaphores:    (vk_swap_image) ? @w.semaphore_frame.vk_render_finished_semaphore : null
             ]
-            vkQueueSubmit[ vk.queue, 1, ref submitInfo, vk_fence ]
+            vkQueueSubmit[ vk.queue, 1, @submitInfo, vk_fence ]
 
         # this slot now has work in flight; advance so the next draw uses a fresh one.
         ring_primed[s] = 1
@@ -459,7 +459,7 @@ class Render
         # a slot with no pending submit has an unsignalable fence — nothing to wait
         if [ ring_primed[ring_last] == 0 ] return
         t0: i64 [ epoch_micros[] ]
-        result: vkWaitForFences[ vk.device, 1, ref vk_fences[ring_last], VK_TRUE, UINT64_MAX ]
+        result: vkWaitForFences[ vk.device, 1, @vk_fences[ring_last], VK_TRUE, UINT64_MAX ]
         vk.sync_us    += epoch_micros[] - t0
         vk.sync_calls += 1
         expect result == VK_SUCCESS, "fence wait failed"
@@ -494,7 +494,7 @@ class Render
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: u32[ ring_n ]
         ]
-        result : vkAllocateCommandBuffers[ vk.device, ref cmdAllocInfo, vk_command_buffers ]
+        result : vkAllocateCommandBuffers[ vk.device, @cmdAllocInfo, vk_command_buffers ]
         expect result == VK_SUCCESS, "failed to allocate command buffers"
         vk_command_buffer = vk_command_buffers[0]
 
@@ -537,8 +537,8 @@ class Render
         subpass : VkSubpassDescription [
             pipelineBindPoint:       VK_PIPELINE_BIND_POINT_GRAPHICS,
             colorAttachmentCount:    1,
-            pColorAttachments:       ref color_attachment_ref,
-            pDepthStencilAttachment: (has_depth_init) ? ref depth_attachment_ref : null,
+            pColorAttachments:       @color_attachment_ref,
+            pDepthStencilAttachment: (has_depth_init) ? @depth_attachment_ref : null,
             pResolveAttachments:     null
         ]
 
@@ -573,7 +573,7 @@ class Render
             attachmentCount: (has_depth_init) ? 2 : 1,
             pAttachments:    attachments,
             subpassCount:    1,
-            pSubpasses:      ref subpass,
+            pSubpasses:      @subpass,
             dependencyCount: 2,
             pDependencies:   dependencies
         ]
@@ -585,16 +585,16 @@ class Render
                 render_pass_info.attachmentCount = 1
                 subpass.pDepthStencilAttachment  = null
                 attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            result = vkCreateRenderPass[ vk.device, ref render_pass_info, null, ref vk_render_pass[i] ]
+            result = vkCreateRenderPass[ vk.device, @render_pass_info, null, @vk_render_pass[i] ]
             expect result == VK_SUCCESS, "failed to create render pass"
 
         if [ !backbuffer ]
             semaphore_info : VkSemaphoreCreateInfo [
                 sType: VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
             ]
-            result = vkCreateSemaphore[ vk.device, ref semaphore_info, null, ref vk_image_available_semaphore ]
+            result = vkCreateSemaphore[ vk.device, @semaphore_info, null, @vk_image_available_semaphore ]
             expect result == VK_SUCCESS, "failed to create image available semaphore"
-            result = vkCreateSemaphore[ vk.device, ref semaphore_info, null, ref vk_render_finished_semaphore ]
+            result = vkCreateSemaphore[ vk.device, @semaphore_info, null, @vk_render_finished_semaphore ]
             expect result == VK_SUCCESS, "failed to create render finished semaphore"
 
         fenceInfo : VkFenceCreateInfo [
@@ -603,7 +603,7 @@ class Render
         ]
         # one fence per ring slot (ring_n = frames-in-flight, NOT the paint batch ceiling)
         for [ ri: i32 0, ri < ring_n, ri += 1 ]
-            result = vkCreateFence[ vk.device, ref fenceInfo, null, ref vk_fences[ri] ]
+            result = vkCreateFence[ vk.device, @fenceInfo, null, @vk_fences[ri] ]
             expect result == VK_SUCCESS, "failed to create fence"
         vk_fence = vk_fences[0]
 
@@ -702,7 +702,7 @@ class Layout
         ]
         barrier.srcAccessMask = access
         barrier.dstAccessMask = trans_to.access
-        vkCmdPipelineBarrier[ cmd.cmd, stage, trans_to.stage, 0, 0, null, 0, null, 1, ref barrier ]
+        vkCmdPipelineBarrier[ cmd.cmd, stage, trans_to.stage, 0, 0, null, 0, null, 1, @barrier ]
         cmd.submit
 
 
@@ -713,6 +713,24 @@ class vk_context
     intern  device              : VkDevice
     intern  queue               : VkQueue
     intern  command_pool        : VkCommandPool
+    # low-priority compute queue + worker-thread pool; -1 family = none
+    intern  compute_queue       : VkQueue
+    intern  compute_pool        : VkCommandPool
+    intern  compute_family      : i32 [ -1 ]
+    intern  compute_index       : i32
+
+    # handle accessors for cross-module compute consumers (ai): field
+    # reads from another module land at shifted offsets past interns
+    public func dev_handle [] -> handle
+        return (device to handle)
+    public func queue_handle [] -> handle
+        return (queue to handle)
+    public func pool_handle [] -> handle
+        return (command_pool to handle)
+    public func compute_queue_handle [] -> handle
+        return (compute_queue to handle)
+    public func compute_pool_handle [] -> handle
+        return (compute_pool to handle)
     # one reused command buffer for immediate (out-of-band) layout transitions — was
     # allocated fresh on every transition, which is costly on MoltenVK.
     intern  xfer_cmd            : Command
@@ -826,12 +844,12 @@ class vk_context
         result: vkCreateInstance[ VkInstanceCreateInfo [
             sType:                   VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
             flags:                   inst_flags,
-            pApplicationInfo:        ref app_info,
+            pApplicationInfo:        @app_info,
             enabledExtensionCount:   instance_exts.count,
             ppEnabledExtensionNames: instance_exts.origin,
             enabledLayerCount:       u32[ enable_validation ],
-            ppEnabledLayerNames:     ref validation_layer
-        ], null, ref instance ]
+            ppEnabledLayerNames:     @validation_layer
+        ], null, @instance ]
 
         expect result == VK_SUCCESS, "failed to create Vulkan instance"
 
@@ -841,18 +859,18 @@ class vk_context
 
         # enumerate physical devices
         device_count: u32 0
-        vkEnumeratePhysicalDevices[ instance, ref device_count, null ]
+        vkEnumeratePhysicalDevices[ instance, @device_count, null ]
         expect device_count > 0, "failed to find GPUs with Vulkan support"
         physical_devices: local VkPhysicalDevice [ device_count ]
-        vkEnumeratePhysicalDevices[ instance, ref device_count, physical_devices ]
+        vkEnumeratePhysicalDevices[ instance, @device_count, physical_devices ]
         physical_device = physical_devices[0]
 
         # check device extensions
         ext_count: u32 0
-        vkEnumerateDeviceExtensionProperties[ physical_device, null, ref ext_count, null ]
+        vkEnumerateDeviceExtensionProperties[ physical_device, null, @ext_count, null ]
         expect ext_count > 0, "failed to find device extensions"
         extensions: local VkExtensionProperties [ ext_count ]
-        res2 : VkResult vkEnumerateDeviceExtensionProperties[ physical_device, null, ref ext_count, extensions ]
+        res2 : VkResult vkEnumerateDeviceExtensionProperties[ physical_device, null, @ext_count, extensions ]
         
 
         ext2 : symbol extensions[0].extensionName
@@ -909,25 +927,57 @@ class vk_context
         ]
         features2: VkPhysicalDeviceFeatures2 [
             sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-            pNext: ref buffer_addr_features
+            pNext: @buffer_addr_features
         ]
-        vkGetPhysicalDeviceFeatures2[ physical_device, ref features2 ]
+        vkGetPhysicalDeviceFeatures2[ physical_device, @features2 ]
+
+        # pick a compute home: prefer a dedicated compute-only family, else a
+        # second queue on family 0. compute runs at LOW priority — graphics
+        # keeps quality of service while long dispatch chains grind
+        qf_count: u32 0
+        vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, @qf_count, null ]
+        qf_props: new VkQueueFamilyProperties [ qf_count ]
+        vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, @qf_count, qf_props ]
+        compute_family = -1
+        compute_index  = 0
+        for [ qi: u32 1, qi < qf_count, qi += 1 ]
+            has_c : bool [ (qf_props[qi].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0 ]
+            has_g : bool [ (qf_props[qi].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 ]
+            if [ has_c && !has_g ]
+                compute_family = i32[ qi ]
+                break
+        if [ compute_family < 0 && qf_count > 0 ]
+            if [ qf_props[0].queueCount > 1 ]
+                compute_family = 0
+                compute_index  = 1
 
         # create logical device
-        queue_priority: f32 1.0
+        pris   : local f32 [2] [ 1.0, 0.0 ]
+        pris_c : local f32 [1] [ 0.0 ]
+        qinfos : local VkDeviceQueueCreateInfo [2]
+        qinfos[0] = VkDeviceQueueCreateInfo [
+            sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            queueFamilyIndex:    0,
+            queueCount:          1,
+            pQueuePriorities:    pris ]
+        qi_count : u32 [ 1 ]
+        if [ compute_family == 0 ]
+            qinfos[0].queueCount = 2
+        el [ compute_family > 0 ]
+            qi_count = 2
+            qinfos[1] = VkDeviceQueueCreateInfo [
+                sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                queueFamilyIndex:    u32[ compute_family ],
+                queueCount:          1,
+                pQueuePriorities:    pris_c ]
         result = vkCreateDevice[ physical_device, VkDeviceCreateInfo [
             sType:                   VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            pNext:                   ref features2,
-            queueCreateInfoCount:    1,
-            pQueueCreateInfos:       VkDeviceQueueCreateInfo [
-                sType:               VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                queueFamilyIndex:    0,
-                queueCount:          1,
-                pQueuePriorities:    ref queue_priority
-            ],
+            pNext:                   @features2,
+            queueCreateInfoCount:    qi_count,
+            pQueueCreateInfos:       qinfos,
             enabledExtensionCount:   enabled_ext_count,
             ppEnabledExtensionNames: enabled_dev_exts
-        ], null, ref device ]
+        ], null, @device ]
         
         expect result == VK_SUCCESS, "cannot create logical device"
         queue_family_index = -1
@@ -938,7 +988,7 @@ class vk_context
                 _vkGetMemoryFdKHR           = vkGetDeviceProcAddr[ device, "vkGetMemoryFdKHR" ]
 
         # query memory properties for find_memory_type
-        vkGetPhysicalDeviceMemoryProperties[ physical_device, ref props ]
+        vkGetPhysicalDeviceMemoryProperties[ physical_device, @props ]
 
         # create VMA allocator
         result = vmaCreateAllocator[ VmaAllocatorCreateInfo [
@@ -948,7 +998,7 @@ class vk_context
             vulkanApiVersion:  VK_API_VERSION_1_2,
             pVulkanFunctions:  null,
             flags:             VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT
-        ], ref allocator ]
+        ], @allocator ]
         expect result == VK_SUCCESS, "cannot create vma allocator"
 
         gltf_quad2: path [ 'models/uv-quad2.gltf' ]
@@ -997,10 +1047,10 @@ class vk_context
     func set_queue_index [ vk_surface: handle ] 
         queue_family_count: u32 0
         vkGetPhysicalDeviceQueueFamilyProperties[
-            physical_device, ref queue_family_count, null ]
+            physical_device, @queue_family_count, null ]
         #expect queue_family_count > 0, "failed to find queue families"
         queue_families: new VkQueueFamilyProperties [ queue_family_count ] # auto freeing data from /src/silver/foundry/trinity/trinity.ag:784
-        vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, ref queue_family_count, queue_families ]
+        vkGetPhysicalDeviceQueueFamilyProperties[ physical_device, @queue_family_count, queue_families ]
         
         found: false
         if [ !vk_surface ]
@@ -1009,7 +1059,7 @@ class vk_context
         el
             for [ i: u32 0, i < queue_family_count, i += 1 ]
                 present_support: VkBool32 [ VK_FALSE ]
-                vkGetPhysicalDeviceSurfaceSupportKHR[ physical_device, i, vk_surface, ref present_support ]
+                vkGetPhysicalDeviceSurfaceSupportKHR[ physical_device, i, vk_surface, @present_support ]
                 if [ queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && present_support ]
                     queue_family_index = i
                     found = true
@@ -1028,22 +1078,22 @@ class vk_context
         # producer: allocate a device-local buffer whose memory is EXPORTABLE as
         # a dma-buf, and hand back the fd. the app copies its composed frame into
         # this buffer (TRANSFER_DST) and orbiter imports the same fd to read it.
-        func export_dmabuf [ byte_size: i32, out_buf: ref VkBuffer, out_mem: ref VkDeviceMemory ] -> i32
+        func export_dmabuf [ byte_size: i32, out_buf: @VkBuffer, out_mem: @VkDeviceMemory ] -> i32
             expect _vkGetMemoryFdKHR, 'appshare: vkGetMemoryFdKHR not loaded'
             ext : VkExternalMemoryBufferCreateInfo [ ]
             ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO
             ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
             bci : VkBufferCreateInfo [ ]
             bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
-            bci.pNext       = ref ext
+            bci.pNext       = @ext
             bci.size        = byte_size
             bci.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
             bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE
             buf : VkBuffer [ null ]
-            err : i32 [ vkCreateBuffer[ device, ref bci, null, ref buf ] ]
+            err : i32 [ vkCreateBuffer[ device, @bci, null, @buf ] ]
             expect err == 0, 'appshare: vkCreateBuffer (export) failed'
             mreq : VkMemoryRequirements [ ]
-            vkGetBufferMemoryRequirements[ device, buf, ref mreq ]
+            vkGetBufferMemoryRequirements[ device, buf, @mreq ]
             mti : u32 [ find_memory_type[ mreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ] ]
             # export + dedicate the allocation to this buffer
             exp : VkExportMemoryAllocateInfo [ ]
@@ -1052,14 +1102,14 @@ class vk_context
             ded : VkMemoryDedicatedAllocateInfo [ ]
             ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
             ded.buffer = buf
-            ded.pNext  = ref exp
+            ded.pNext  = @exp
             mai : VkMemoryAllocateInfo [ ]
             mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
-            mai.pNext           = ref ded
+            mai.pNext           = @ded
             mai.allocationSize  = mreq.size
             mai.memoryTypeIndex = mti
             mem : VkDeviceMemory [ null ]
-            err = vkAllocateMemory[ device, ref mai, null, ref mem ]
+            err = vkAllocateMemory[ device, @mai, null, @mem ]
             expect err == 0, 'appshare: vkAllocateMemory (export) failed'
             err = vkBindBufferMemory[ device, buf, mem, 0 ]
             expect err == 0, 'appshare: vkBindBufferMemory (export) failed'
@@ -1068,33 +1118,33 @@ class vk_context
             gi.memory     = mem
             gi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
             fd : i32 [ 0 - 1 ]
-            err = _vkGetMemoryFdKHR[ device, ref gi, ref fd ]
+            err = _vkGetMemoryFdKHR[ device, @gi, @fd ]
             expect err == 0, 'appshare: vkGetMemoryFdKHR failed'
             out_buf = buf
             out_mem = mem
             return fd
 
         # consumer: import a dma-buf fd as a TRANSFER_SRC buffer (Camera recipe)
-        func import_dmabuf [ dma_fd: i32, byte_size: i32, out_buf: ref VkBuffer, out_mem: ref VkDeviceMemory ] -> bool
+        func import_dmabuf [ dma_fd: i32, byte_size: i32, out_buf: @VkBuffer, out_mem: @VkDeviceMemory ] -> bool
             ext : VkExternalMemoryBufferCreateInfo [ ]
             ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO
             ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
             bci : VkBufferCreateInfo [ ]
             bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
-            bci.pNext       = ref ext
+            bci.pNext       = @ext
             bci.size        = byte_size
             bci.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
             bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE
             buf : VkBuffer [ null ]
-            err : i32 [ vkCreateBuffer[ device, ref bci, null, ref buf ] ]
+            err : i32 [ vkCreateBuffer[ device, @bci, null, @buf ] ]
             expect err == 0, 'appshare: vkCreateBuffer (import) failed'
             mreq : VkMemoryRequirements [ ]
-            vkGetBufferMemoryRequirements[ device, buf, ref mreq ]
+            vkGetBufferMemoryRequirements[ device, buf, @mreq ]
             fd_props : VkMemoryFdPropertiesKHR [ ]
             fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
             expect _vkGetMemoryFdPropertiesKHR, 'appshare: vkGetMemoryFdPropertiesKHR not loaded'
             err = _vkGetMemoryFdPropertiesKHR[ device,
-                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, ref fd_props ]
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
             expect err == 0, 'appshare: vkGetMemoryFdPropertiesKHR failed'
             allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
             expect allowed != 0, 'appshare: no memory type for dmabuf fd'
@@ -1108,16 +1158,16 @@ class vk_context
             ded.buffer = buf
             imp : VkImportMemoryFdInfoKHR [ ]
             imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
-            imp.pNext      = ref ded
+            imp.pNext      = @ded
             imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
             imp.fd         = dma_fd
             mai : VkMemoryAllocateInfo [ ]
             mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
-            mai.pNext           = ref imp
+            mai.pNext           = @imp
             mai.allocationSize  = byte_size
             mai.memoryTypeIndex = mti
             mem : VkDeviceMemory [ null ]
-            err = vkAllocateMemory[ device, ref mai, null, ref mem ]
+            err = vkAllocateMemory[ device, @mai, null, @mem ]
             expect err == 0, 'appshare: vkAllocateMemory (import) failed'
             err = vkBindBufferMemory[ device, buf, mem, 0 ]
             expect err == 0, 'appshare: vkBindBufferMemory (import) failed'
@@ -1134,7 +1184,7 @@ class vk_context
                 sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                 commandPool:        command_pool,
                 level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                commandBufferCount: 1 ], ref cmd ]
+                commandBufferCount: 1 ], @cmd ]
             tex.transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
             vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
                 sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1155,9 +1205,9 @@ class vk_context
             vkQueueSubmit[ queue, 1, VkSubmitInfo [
                 sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
                 commandBufferCount: 1,
-                pCommandBuffers:    ref cmd ], null ]
+                pCommandBuffers:    @cmd ], null ]
             vkQueueWaitIdle[ queue ]
-            vkFreeCommandBuffers[ device, command_pool, 1, ref cmd ]
+            vkFreeCommandBuffers[ device, command_pool, 1, @cmd ]
             tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
         # consumer: release one imported dma-buf buffer + its memory
@@ -1168,7 +1218,7 @@ class vk_context
     func attach [ vk_surface:handle ]
         if [ queue_family_index == -1 ]
             set_queue_index[ vk_surface ]
-            vkGetDeviceQueue[ device, queue_family_index, 0, ref queue ]
+            vkGetDeviceQueue[ device, queue_family_index, 0, @queue ]
             expect queue, "Failed to retrieve graphics queue"
             vk: handle[ a ]
             if [ _vkCreateDebugUtilsMessengerEXT ]
@@ -1180,9 +1230,9 @@ class vk_context
                             VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
                         messageType: VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
-                        pfnUserCallback: ref trinity_log, pUserData: vk
+                        pfnUserCallback: @trinity_log, pUserData: vk
                     ],
-                    null, ref debug
+                    null, @debug
                 ]
                 expect result2 == VK_SUCCESS, "debug messenger" # at base... one above has 1 extra space, and the error shows... i am not sure where to look
                 
@@ -1191,8 +1241,20 @@ class vk_context
                 queueFamilyIndex: queue_family_index,
                 flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
             ]
-            result: vkCreateCommandPool[ device, pool_info, null, ref command_pool ]
+            result: vkCreateCommandPool[ device, pool_info, null, @command_pool ]
             expect result == VK_SUCCESS, "failed to create command pool"
+            # compute queue + its own pool: owned by whichever worker thread
+            # runs compute — never shared with the graphics queue or pool
+            if [ compute_family >= 0 ]
+                vkGetDeviceQueue[ device, u32[ compute_family ], u32[ compute_index ], @compute_queue ]
+                cpool_info: VkCommandPoolCreateInfo [
+                    sType:            VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                    queueFamilyIndex: u32[ compute_family ],
+                    flags:            VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+                ]
+                cres : vkCreateCommandPool[ device, cpool_info, null, @compute_pool ]
+                expect cres == VK_SUCCESS, "failed to create compute pool"
+                puts 'vk: compute queue ready (family {compute_family} index {compute_index}, low priority)'
 
     intern func create_mipmaps [ vk_image: VkImage, w: i32, h: i32, mips: i32, layers: i32 ] 
         if [ mips > 1 ]
@@ -1259,7 +1321,7 @@ class Gpu
     public tx            : Texture
     public vertex_data   : new i8 [ 1 ]
     public index_data    : new i8 [ 1 ]
-    public members       : ref vertex_member_t
+    public members       : @vertex_member_t
     public member_count  : i32
     public index_size    : i32
     public index_count   : i32
@@ -1338,7 +1400,7 @@ class Gpu
 class uniforms
     context vk       : vk_context
     expect s         : shader
-    public u_memory  : ref u8
+    public u_memory  : @u8
     public u_buffers : array Buffer [ ]
     # this pipeline's gltf NODE transform (Pipeline.default_model). composed
     # under the shader's model each update so file placement survives — it was
@@ -1357,9 +1419,9 @@ class uniforms
                 # `model` is the FIRST ubo member for every ModelViewProject
                 # (base-class members serialize first) -> offset 0, 64 bytes
                 mm : mat4f [ mvp.model.mul[ node_model ] ]
-                memcpy[ b.data, ref mm, 64 ]
+                memcpy[ b.data, @mm, 64 ]
         if [ getenv[ 'TRIN_UBOLOG' ] ]
-            fp : ref f32 [ b.data ]
+            fp : @f32 [ b.data ]
             printf[ "UBOLOG %s ring=%d m0=%.3f m12=%.3f v14=%.3f p0=%.3f p5=%.3f\n",
                 s.name.chars, vk.cur_ring, fp[0], fp[12], fp[30], fp[32], fp[37] ]
         b.update[ null ]
@@ -1392,7 +1454,7 @@ class uniforms
         for [ ri: i32 0, ri < 64, ri += 1 ]
             uniform_buf: Buffer [ vk: vk, size: total_uniform,
                 u_uniform: true, u_dst: true, m_host_visible: true, m_host_coherent: true,
-                data: ref u_memory[0], user: leaf ]
+                data: @u_memory[0], user: leaf ]
             u_buffers.push [ uniform_buf ]
 
 # lets declare something about how we want to use this meta-A type slot
@@ -1521,9 +1583,9 @@ class Pipeline
             dstBinding:      slot,
             descriptorCount: 1,
             descriptorType:  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            pImageInfo:      ref info
+            pImageInfo:      @info
         ]
-        vkUpdateDescriptorSets[ vk.device, 1, ref write, 0, null ]
+        vkUpdateDescriptorSets[ vk.device, 1, @write, 0, null ]
 
     public   func rebind_image [ tx: Texture ]
         rebind_texture[ image_slot, tx ]
@@ -1555,8 +1617,10 @@ class Pipeline
         # bind BOTH descriptor sets (set 0 = uniforms, set 1 = sampler/storage).
         # the original code only bound set 0 because the compute-on-vbo
         # pattern didn't have any storage bindings; the SDF compute does.
+        # standalone compute (no Render) uses ring slot 0
+        ds2 : i32 [ (r) ? r.draw_slot : 0 ]
         vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_COMPUTE,
-            layout, 0, 2, ref descriptor_sets[ 2 * r.draw_slot ], 0, null ]
+            layout, 0, 2, @descriptor_sets[ 2 * ds2 ], 0, null ]
         # explicit dispatch counts override the default vertex-buffer-driven
         # workgroup count from the C foundation's compute-on-vbo pattern.
         dx: i32 [ (dispatch_x > 0) ? dispatch_x : ((memory) ? memory.vertex_count : 1) ]
@@ -1572,7 +1636,7 @@ class Pipeline
         ]
         vkCmdPipelineBarrier[ frame, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-            0, 1, ref mem_barrier, 0, null, 0, null ]
+            0, 1, @mem_barrier, 0, null, 0, null ]
         # in-band barrier: now that the compute write is recorded, transition
         # storage images to SHADER_READ_ONLY_OPTIMAL so downstream graphics
         # pipelines that sample them are happy. Must happen before the render
@@ -1597,9 +1661,9 @@ class Pipeline
         vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_render ]
         offsets: local VkDeviceSize[ 1 ] [ 0 ]
         vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            layout, 0, 2, ref descriptor_sets[ 2 * r.draw_slot ], 0, null ]
+            layout, 0, 2, @descriptor_sets[ 2 * r.draw_slot ], 0, null ]
 
-        vkCmdBindVertexBuffers[ frame, 0, 1, ref vbo.vertex.vk_buffer, offsets ]
+        vkCmdBindVertexBuffers[ frame, 0, 1, @vbo.vertex.vk_buffer, offsets ]
         if [ vbo.index ]
             vkCmdBindIndexBuffer[ frame, vbo.index.vk_buffer, 0,
                 vbo.index_type[ ] ]
@@ -1778,12 +1842,12 @@ class Pipeline
                 sType:        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                 bindingCount: uniform_count,
                 pBindings:    uniform_bindings
-            ], null, ref descriptor_layouts[0] ]
+            ], null, @descriptor_layouts[0] ]
             vkCreateDescriptorSetLayout[ vk.device, VkDescriptorSetLayoutCreateInfo [
                 sType:        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                 bindingCount: set1_binds,
                 pBindings:    sampler_bindings
-            ], null, ref descriptor_layouts[1] ]
+            ], null, @descriptor_layouts[1] ]
             # pool/alloc are RINGED: 2 sets per slot, sized x pipe_ring.
             sizes: local VkDescriptorPoolSize[4]
             desc: VkDescriptorPoolCreateInfo [
@@ -1808,7 +1872,7 @@ class Pipeline
                 sizes[desc.poolSizeCount].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER
                 sizes[desc.poolSizeCount].descriptorCount = storage_buffer_count * pipe_ring
                 desc.poolSizeCount += 1
-            vkCreateDescriptorPool[ vk.device, desc, null, ref descriptor_pool ]
+            vkCreateDescriptorPool[ vk.device, desc, null, @descriptor_pool ]
             # interleaved layouts: [set0, set1] repeated per ring slot
             set_layouts : local VkDescriptorSetLayout [128]
             for [ rs: i32 0, rs < pipe_ring, rs += 1 ]
@@ -1839,7 +1903,7 @@ class Pipeline
                     dstBinding:      i,
                     descriptorType:  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                     descriptorCount: 1,
-                    pBufferInfo:     ref buffer_infos[bi]
+                    pBufferInfo:     @buffer_infos[bi]
                 ]
                 wcount += 1
             for [ i: 0, i < set1_binds, i += 1 ]
@@ -1853,7 +1917,7 @@ class Pipeline
                         dstArrayElement: 0,
                         descriptorType:  dtype,
                         descriptorCount: 1,
-                        pBufferInfo:     ref storage_buf_infos[i]
+                        pBufferInfo:     @storage_buf_infos[i]
                     ]
                 el
                     descriptor_writes[wcount] = VkWriteDescriptorSet [
@@ -1864,7 +1928,7 @@ class Pipeline
                         dstArrayElement: 0,
                         descriptorType:  dtype,
                         descriptorCount: 1,
-                        pImageInfo:      ref image_infos[i]
+                        pImageInfo:      @image_infos[i]
                     ]
                 wcount += 1
         vkUpdateDescriptorSets[ vk.device, wcount, descriptor_writes, 0, null ]
@@ -1881,7 +1945,7 @@ class Pipeline
             pSetLayouts:            descriptor_layouts,
             pushConstantRangeCount: 0
         ]
-        result: vkCreatePipelineLayout[ vk.device, pipeline_layout_info, null, ref layout ]
+        result: vkCreatePipelineLayout[ vk.device, pipeline_layout_info, null, @layout ]
         expect result == VK_SUCCESS, "Failed to create pipeline layout"
         # If the shader is compute-only (has vk_comp but no vk_vert/vk_frag),
         # always create a compute pipeline regardless of whether the Model
@@ -1914,7 +1978,7 @@ class Pipeline
             for [ i: 0, i < vbo.member_count, i +=1 ]
                 if [ i >= shader_input_count ]
                     break
-                mem: ref vbo.members[i]
+                mem: @vbo.members[i]
                 attributes[attr_count].binding  = 0
                 attributes[attr_count].location = attr_count
                 attributes[attr_count].format =
@@ -1938,7 +2002,7 @@ class Pipeline
             vertex_input_info: VkPipelineVertexInputStateCreateInfo [
                 sType: VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
                 vertexBindingDescriptionCount: 1,
-                pVertexBindingDescriptions:    ref binding_description,
+                pVertexBindingDescriptions:    @binding_description,
                 vertexAttributeDescriptionCount: attr_count,
                 pVertexAttributeDescriptions:    attributes
             ]
@@ -2008,7 +2072,7 @@ class Pipeline
                 sType:           VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                 logicOpEnable:   VK_FALSE,
                 attachmentCount: 1,
-                pAttachments:    ref color_blend_attachment
+                pAttachments:    @color_blend_attachment
             ]
 
             dynamic_states: local VkDynamicState[2] [
@@ -2036,21 +2100,21 @@ class Pipeline
                 sType:               VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
                 stageCount:          n_stages,
                 pStages:             shader_stages,
-                pDepthStencilState:  ref depth_stencil,
-                pVertexInputState:   ref vertex_input_info,
-                pInputAssemblyState: ref input_assembly_info,
-                pViewportState:      ref viewport_state,
-                pRasterizationState: ref rasterization_state,
-                pMultisampleState:   ref multisample_state,
-                pColorBlendState:    ref color_blend_state,
-                pDynamicState:       ref dynamic_state,
+                pDepthStencilState:  @depth_stencil,
+                pVertexInputState:   @vertex_input_info,
+                pInputAssemblyState: @input_assembly_info,
+                pViewportState:      @viewport_state,
+                pRasterizationState: @rasterization_state,
+                pMultisampleState:   @multisample_state,
+                pColorBlendState:    @color_blend_state,
+                pDynamicState:       @dynamic_state,
                 layout:              layout,
                 renderPass:          r.vk_render_pass[render_id],
                 subpass:             0,
                 basePipelineHandle:  null
             ]
             result = vkCreateGraphicsPipelines[
-                vk.device, null, 1, pipeline_info, null, ref vk_render ]
+                vk.device, null, 1, pipeline_info, null, @vk_render ]
             expect result == VK_SUCCESS, "pipeline creation fail"
             
         el [ s && s.vk_comp != null ]
@@ -2065,7 +2129,7 @@ class Pipeline
                 ]
             ]
             result = vkCreateComputePipelines[
-                vk.device, null, 1, comp_info, null, ref vk_compute ]
+                vk.device, null, 1, comp_info, null, @vk_compute ]
             expect result == VK_SUCCESS, "failed to create compute pipeline"
 
     func init [ ]
@@ -2108,25 +2172,25 @@ class SubdivTopo
     public ne     : i32                        # unique edges
     public n_bound  : i32                      # edges with 1 face (boundary)
     public n_nonman : i32                      # edges with 3+ faces (bad weld)
-    public qcorn  : ref i32                    # nf*4 corner vert ids
-    public edata  : ref i32                    # ne*4: v0,v1,f0,f1 (-1 boundary)
-    public vfo    : ref i32                    # nv+1 vert->face offsets
-    public vf     : ref i32                    # nf*4 vert->face ids
-    public veo    : ref i32                    # nv+1 vert->edge offsets
-    public ve     : ref i32                    # ne*2 vert->edge ids
-    public face_e : ref i32                    # nf*4 edge id per quad side
+    public qcorn  : @i32                    # nf*4 corner vert ids
+    public edata  : @i32                    # ne*4: v0,v1,f0,f1 (-1 boundary)
+    public vfo    : @i32                    # nv+1 vert->face offsets
+    public vf     : @i32                    # nf*4 vert->face ids
+    public veo    : @i32                    # nv+1 vert->edge offsets
+    public ve     : @i32                    # ne*2 vert->edge ids
+    public face_e : @i32                    # nf*4 edge id per quad side
     public cage_buf : Buffer                   # level-0 only: control positions
-    public base   : ref f32                    # 3*nv build-time positions
-    public rep    : ref i32                    # nv: source unwelded vert
-    public mirror : ref i32                    # nv: vert at (-x,y,z), -1 none
-    public pin    : ref f32                    # nv: 0..1, 1 = vert never moves
-    public wmap   : ref f32                    # nv: painted region weights
+    public base   : @f32                    # 3*nv build-time positions
+    public rep    : @i32                    # nv: source unwelded vert
+    public mirror : @i32                    # nv: vert at (-x,y,z), -1 none
+    public pin    : @f32                    # nv: 0..1, 1 = vert never moves
+    public wmap   : @f32                    # nv: painted region weights
 
 class Model
     context vk              : vk_context
     context w               : Display
     context r               : Render   # render target; weak back-ref (target owns the Model — avoids a Canvas<->Model cycle)
-    mutable transforms      : ref mat4f null
+    mutable transforms      : @mat4f null
     mutable transform_count : i32
     public id               : GltfModel
     public nodes            : array gltf_node
@@ -2168,8 +2232,8 @@ class Model
             st : src.cages[ ci ]
             if [ !dt.cage_buf || !st.cage_buf ] continue
             if [ dt.nv != st.nv ] continue
-            dd : ref i8 [ dt.cage_buf.data ]
-            sd : ref i8 [ st.cage_buf.data ]
+            dd : @i8 [ dt.cage_buf.data ]
+            sd : @i8 [ st.cage_buf.data ]
             nb : i32 [ dt.nv * 12 ]
             memcpy[ dd, sd, nb ]
 
@@ -2184,7 +2248,7 @@ class Model
             pv : i32 [ t.nv ]
             t.pin = new f32 [ pv ]
             for [ i: i32 0, i < t.nv, i += 1 ] t.pin[ i ] = 0.0
-        pos : ref f32 [ t.cage_buf.data ]
+        pos : @f32 [ t.cage_buf.data ]
         rs : f32 [ (r_soft > r_hard) ? r_soft : r_hard ]
         rs2 : f32 [ rs * rs ]
         for [ v: i32 0, v < t.nv, v += 1 ]
@@ -2211,7 +2275,7 @@ class Model
         nax : f32 [ ax / al ]
         nay : f32 [ ay / al ]
         naz : f32 [ az / al ]
-        pos : ref f32 [ t.cage_buf.data ]
+        pos : @f32 [ t.cage_buf.data ]
         for [ v: i32 0, v < t.nv, v += 1 ]
             wt : f32 [ t.wmap[ v ] ]
             if [ wt <= 0.0 ] continue
@@ -2239,7 +2303,7 @@ class Model
         nax : f32 [ ax / al ]
         nay : f32 [ ay / al ]
         naz : f32 [ az / al ]
-        pos : ref f32 [ t.cage_buf.data ]
+        pos : @f32 [ t.cage_buf.data ]
         mpx : f32 [ 0.0 - px ]
         for [ v: i32 0, v < t.nv, v += 1 ]
             wt : f32 [ t.wmap[ v ] ]
@@ -2280,7 +2344,7 @@ class Model
         if [ !cages || ci < 0 || ci >= cages.count ] return
         t : cages[ ci ]
         if [ !t.cage_buf || !t.wmap ] return
-        pos : ref f32 [ t.cage_buf.data ]
+        pos : @f32 [ t.cage_buf.data ]
         mpx : f32 [ 0.0 - px ]
         for [ v: i32 0, v < t.nv, v += 1 ]
             wt : f32 [ t.wmap[ v ] ]
@@ -2312,7 +2376,7 @@ class Model
         if [ !cages || ci < 0 || ci >= cages.count ] return
         t : cages[ ci ]
         if [ !t.cage_buf || center < 0 || center >= t.nv || radius <= 0.0 ] return
-        pos : ref f32 [ t.cage_buf.data ]
+        pos : @f32 [ t.cage_buf.data ]
         cx : f32 [ pos[ center*3 + 0 ] ]
         cy : f32 [ pos[ center*3 + 1 ] ]
         cz : f32 [ pos[ center*3 + 2 ] ]
@@ -2432,7 +2496,7 @@ class Model
                         # non-skinned prims (no JOINTS_0) go through rigid_s so
                         # the skinning shader never reads absent joint streams
                         skinned: bool [ false ]
-                        for [ value: ref i64, a_name: string ] in prim.attributes
+                        for [ value: @i64, a_name: string ] in prim.attributes
                             if [ a_name == 'JOINTS_0' ] skinned = true
                         es: shader [ (!skinned && rigid_s) ? rigid_s : s ]
                         is_alpha: (base_a > 0.0 && base_a < 1.0) || es.transparent
@@ -2469,7 +2533,7 @@ class Command
         si: VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
             commandBufferCount: 1,
-            pCommandBuffers:    ref cmd
+            pCommandBuffers:    @cmd
         ]
         vkQueueSubmit[ vk.queue, 1, si, null ]
         vkQueueWaitIdle[ vk.queue ]
@@ -2481,11 +2545,11 @@ class Command
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             commandBufferCount: 1
         ]
-        vkAllocateCommandBuffers[ vk.device, alloc_info, ref cmd ]
+        vkAllocateCommandBuffers[ vk.device, alloc_info, @cmd ]
 
     func dealloc [ ]
         if [ cmd ]
-            vkFreeCommandBuffers[ vk.device, vk.command_pool, 1, ref cmd ]
+            vkFreeCommandBuffers[ vk.device, vk.command_pool, 1, @cmd ]
 
 
 class Buffer
@@ -2524,7 +2588,7 @@ class Buffer
             sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
             commandPool:        vk.command_pool,
             level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            commandBufferCount: 1 ], ref cmd ]
+            commandBufferCount: 1 ], @cmd ]
         vkBeginCommandBuffer [ cmd, VkCommandBufferBeginInfo [
             sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
@@ -2546,9 +2610,9 @@ class Buffer
         vkQueueSubmit [ vk.queue, 1, VkSubmitInfo [
             sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
             commandBufferCount: 1,
-            pCommandBuffers:    ref cmd ], null ]
+            pCommandBuffers:    @cmd ], null ]
         vkQueueWaitIdle [ vk.queue ]
-        vkFreeCommandBuffers [ vk.device, vk.command_pool, 1, ref cmd ]
+        vkFreeCommandBuffers [ vk.device, vk.command_pool, 1, @cmd ]
         tx.transition [ prev ]
 
     func update [ d: ARef ]
@@ -2561,7 +2625,7 @@ class Buffer
 
     func mmap [ ] -> ARef
         mapped: ARef
-        result: vmaMapMemory[ vk.allocator, vma_alloc, ref mapped ]
+        result: vmaMapMemory[ vk.allocator, vma_alloc, @mapped ]
         expect result == VK_SUCCESS, "failed to map buffer memory"
         return mapped
 
@@ -2603,7 +2667,7 @@ class Buffer
             alloc_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT
         # ask VMA to fill in the persistently-mapped pointer for us
         vma_info: VmaAllocationInfo
-        result: vmaCreateBuffer[ vk.allocator, buffer_info, alloc_info, ref vk_buffer, ref vma_alloc, ref vma_info ]
+        result: vmaCreateBuffer[ vk.allocator, buffer_info, alloc_info, @vk_buffer, @vma_alloc, @vma_info ]
         expect result == VK_SUCCESS, "failed to create buffer"
         if [ data ]
             # caller-provided source data: copy in once.
@@ -2672,7 +2736,7 @@ class Texture
 
     cast -> Image
         channels: i32 [ 0 ]
-        pixel: pixel_from_format[ vk_format, ref channels ]
+        pixel: pixel_from_format[ vk_format, @channels ]
         expect pixel != 0, "unsupported format for texture_cast_image"
         bpp: i32 [ (pixel == Pixel.rgbaf32 || pixel == Pixel.f32) ? channels * 4 : channels ]
         b: Buffer [ vk: vk, size: width * height * bpp,
@@ -2681,7 +2745,7 @@ class Texture
         m2: b.mmap[]
         # BGRA targets map to Pixel.rgba8; swap R/B so the bytes match
         if [ vk_format == VK_FORMAT_B8G8R8A8_UNORM || vk_format == VK_FORMAT_B8G8R8A8_SRGB ]
-            pd: ref u8 [ m2 ]
+            pd: @u8 [ m2 ]
             n2: i32 [ width * height ]
             for [ i: i32 0, i < n2, i += 1 ]
                 b4: i32 [ i * 4 ]
@@ -2694,7 +2758,7 @@ class Texture
             format:   pixel,
             res_bits: m2,
             res2:     b.hold[],
-            res_dealloc: ref image_release_buffer
+            res_dealloc: @image_release_buffer
         ]
         return res
     
@@ -2743,11 +2807,11 @@ class Texture
         # clobbered each other and only the last paint's shape survived. covering
         # fragment+compute+color-output serializes compute-write vs prior-draw-read.
         src_stage : i32 [ VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
-        vkCmdPipelineBarrier[ cmd, src_stage, dst.stage, 0, 0, null, 0, null, 1, ref barrier ]
+        vkCmdPipelineBarrier[ cmd, src_stage, dst.stage, 0, 0, null, 0, null, 1, @barrier ]
         vk_layout = new_layout
 
         
-    func hex_dump [ name: symbol, data: ref u8, size: i32 ]
+    func hex_dump [ name: symbol, data: @u8, size: i32 ]
         printf[ "%s (%d bytes):\n", name, size ]
         for [ i: i32 0, i < size, i += 1 ]
             b: u8 data[ i ]
@@ -2766,7 +2830,7 @@ class Texture
             vulkanApiVersion:  VK_API_VERSION_1_2,                      
             pVulkanFunctions:  null,                                    
             flags: VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT                      
-        ], ref allocator ]
+        ], @allocator ]
 
         if [ result == VK_SUCCESS ]                                 
             vk_image0:  VkImage                                          
@@ -2785,7 +2849,7 @@ class Texture
                 initialLayout: VK_IMAGE_LAYOUT_UNDEFINED                
             ], VmaAllocationCreateInfo [
                 usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE              
-            ], ref vk_image0, ref vma_alloc0, null ]                  
+            ], @vk_image0, @vma_alloc0, null ]                  
             if [ result == VK_SUCCESS ]                                 
                 vmaDestroyImage[ allocator, vk_image, vma_alloc ]
             vmaDestroyAllocator[ allocator ]
@@ -2893,7 +2957,7 @@ class Texture
                 width  = 4
                 height = 4
                 ansio  = 0
-                placeholder_image[ sampler, 4, fill, ref sampler_size, ref pixel_format ]
+                placeholder_image[ sampler, 4, fill, @sampler_size, @pixel_format ]
                 vk_format = vk_format_fn[ pixel_format, false ]
                 is_depth  = vk_format == VK_FORMAT_D32_SFLOAT
         if [ width > 0 || vk_image ]
@@ -2938,7 +3002,7 @@ class Texture
                 alloc_info: VmaAllocationCreateInfo [
                     usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
                 ]
-                result: vmaCreateImage[ vk.allocator, info, alloc_info, ref vk_image, ref vma_alloc, null ]
+                result: vmaCreateImage[ vk.allocator, info, alloc_info, @vk_image, @vma_alloc, null ]
                 expect result == VK_SUCCESS, 'failed to create VkImage: {i32[result]}'
                 expect vk_image, 'vmaCreateImage returned success but vk_image is null'
 
@@ -2991,7 +3055,7 @@ class Texture
                         layerCount:     layer_count
                     ]
                 ]
-                res: vkCreateImageView[ vk.device, viewInfo, null, ref vk_image_view ]
+                res: vkCreateImageView[ vk.device, viewInfo, null, @vk_image_view ]
                 expect res == VK_SUCCESS, "Failed to create VkImageView"
             if [ !vk_sampler ]
                 address_mode: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
@@ -3012,7 +3076,7 @@ class Texture
                     compareOp:               VK_COMPARE_OP_ALWAYS,
                     mipmapMode:              VK_SAMPLER_MIPMAP_MODE_LINEAR
                 ]
-                r: vkCreateSampler[ vk.device, samplerInfo, null, ref vk_sampler ]
+                r: vkCreateSampler[ vk.device, samplerInfo, null, @vk_sampler ]
                 expect r == VK_SUCCESS, "Failed to create VkSampler"
                 vk.sampler_count += 1
 
@@ -3059,11 +3123,11 @@ Texture Display
     mutable offscreens           : array Au [ ]
     mutable list                 : array Render
     intern swap_renders         : array Render
-    intern vk_swap_images       : ref   VkImage
+    intern vk_swap_images       : @VkImage
     intern vk_surface           : VkSurfaceKHR
     intern vk_swapchain         : VkSwapchainKHR
     
-    intern surface_caps         : ref VkSurfaceCapabilitiesKHR
+    intern surface_caps         : @VkSurfaceCapabilitiesKHR
     intern swap_render_current  : Render
     intern draw_seq             : i32
     intern surface_format       : VkSurfaceFormatKHR
@@ -3166,10 +3230,10 @@ Texture Display
             # width/height stay LOGICAL (points); extent is the device-pixel
             # drawable. scale = pixels/points. determine both up front so the
             # r.update[] loop sizes render targets (width*scale) correctly.
-            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, ref caps ]
+            vkGetPhysicalDeviceSurfaceCapabilitiesKHR[ vk.physical_device, vk_surface, @caps ]
             ww_i: i32
             wh_i: i32
-            glfwGetWindowSize[ glfw, ref ww_i, ref wh_i ]
+            glfwGetWindowSize[ glfw, @ww_i, @wh_i ]
             width  = ww_i
             height = wh_i
             if [ caps.currentExtent.width != UINT32_MAX ]
@@ -3215,7 +3279,7 @@ Texture Display
                 presentMode:           present_mode,
                 clipped:               VK_TRUE,
                 oldSwapchain:          old_swapchain
-            ], null, ref vk_swapchain ]
+            ], null, @vk_swapchain ]
             expect result == VK_SUCCESS, "Failed to create swapchain"
             Au.live_swapchain_set[ handle[ vk_swapchain ] ]
             if [ old_swapchain != null ]
@@ -3231,7 +3295,7 @@ Texture Display
                 ]
                 swap_model = Model [ vk: vk, w: a, samplers: samplers ]
 
-            vkGetSwapchainImagesKHR[ vk.device, vk_swapchain, ref swap_image_count, null ]
+            vkGetSwapchainImagesKHR[ vk.device, vk_swapchain, @swap_image_count, null ]
             
             if [ !vk_swap_images ]
                 count : swap_image_count
@@ -3242,7 +3306,7 @@ Texture Display
             el
                 swap_renders.clear[]
             
-            vkGetSwapchainImagesKHR[ vk.device, vk_swapchain, ref swap_image_count, vk_swap_images ]
+            vkGetSwapchainImagesKHR[ vk.device, vk_swapchain, @swap_image_count, vk_swap_images ]
             swap_image_current = 0
             for [ i: 0, i < swap_image_count, i += 1 ]
                 r : Render [
@@ -3302,7 +3366,7 @@ Texture Display
         if [ swap_renders ]
             a.hold[] #test
             result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
-                semaphore_frame.vk_image_available_semaphore, null, ref swap_image_current ]
+                semaphore_frame.vk_image_available_semaphore, null, @swap_image_current ]
             if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
                 swap_needs_recreate = true
             el
@@ -3318,10 +3382,10 @@ Texture Display
                 presentInfo: VkPresentInfoKHR [
                     sType:              VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
                     swapchainCount:     1,
-                    pSwapchains:        ref vk_swapchain,
-                    pImageIndices:      ref swap_image_current,
+                    pSwapchains:        @vk_swapchain,
+                    pImageIndices:      @swap_image_current,
                     waitSemaphoreCount: 1,
-                    pWaitSemaphores:    ref semaphore_frame.vk_render_finished_semaphore
+                    pWaitSemaphores:    @semaphore_frame.vk_render_finished_semaphore
                 ]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
                 result = vkQueuePresentKHR[ vk.queue, presentInfo ]
@@ -3385,20 +3449,20 @@ Texture Display
 
             # re-register callbacks each time (new Display instance on reload)
             glfwSetWindowUserPointer    [ glfw, handle[ a ] ]
-            glfwSetKeyCallback          [ glfw, ref handle_glfw_key ]
-            glfwSetMouseButtonCallback  [ glfw, ref handle_glfw_mouse ]
-            glfwSetCursorPosCallback    [ glfw, ref handle_glfw_cursor ]
-            glfwSetCharCallback         [ glfw, ref handle_glfw_char ]
-            glfwSetScrollCallback       [ glfw, ref handle_glfw_scroll ]
-            glfwSetDropCallback         [ glfw, ref handle_glfw_drop ]
+            glfwSetKeyCallback          [ glfw, @handle_glfw_key ]
+            glfwSetMouseButtonCallback  [ glfw, @handle_glfw_mouse ]
+            glfwSetCursorPosCallback    [ glfw, @handle_glfw_cursor ]
+            glfwSetCharCallback         [ glfw, @handle_glfw_char ]
+            glfwSetScrollCallback       [ glfw, @handle_glfw_scroll ]
+            glfwSetDropCallback         [ glfw, @handle_glfw_drop ]
 
-            glfwSetFramebufferSizeCallback [ glfw, ref handle_glfw_framebuffer_size ]
+            glfwSetFramebufferSizeCallback [ glfw, @handle_glfw_framebuffer_size ]
 
             # reuse persistent surface across hot-reloads — drivers disallow
             # creating a new surface for the same xcb window after destroying the old one
             surf = handle Au.live_surface_get[]
             if [ !surf ]
-                result: glfwCreateWindowSurface[ vk.instance, glfw, null, ref surf ]
+                result: glfwCreateWindowSurface[ vk.instance, glfw, null, @surf ]
                 expect result == VK_SUCCESS, "Failed to create Vulkan surface"
                 Au.live_surface_set[ surf ]
 
@@ -3414,10 +3478,10 @@ Texture Display
 
             # surface format
             format_count: u32 [ 0 ]
-            vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, vk_surface, ref format_count, null ]
+            vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, vk_surface, @format_count, null ]
             expect format_count > 0, "No surface formats found"
             formats: new VkSurfaceFormatKHR [ format_count ]
-            vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, vk_surface, ref format_count, formats ]
+            vkGetPhysicalDeviceSurfaceFormatsKHR[ vk.physical_device, vk_surface, @format_count, formats ]
 
             # use linear UNORM swap format — shader writes raw values and
             # the display reads them as-is (no automatic linear→sRGB
@@ -3444,11 +3508,11 @@ Texture Display
             # present mode
             present_mode_count: u32 [ 0 ]
             vkGetPhysicalDeviceSurfacePresentModesKHR[
-                vk.physical_device, vk_surface, ref present_mode_count, null ]
+                vk.physical_device, vk_surface, @present_mode_count, null ]
             expect present_mode_count > 0, "No present modes found"
             present_modes: new VkPresentModeKHR [ present_mode_count ]
             vkGetPhysicalDeviceSurfacePresentModesKHR[
-                vk.physical_device, vk_surface, ref present_mode_count, present_modes ]
+                vk.physical_device, vk_surface, @present_mode_count, present_modes ]
             present_mode = VK_PRESENT_MODE_FIFO_KHR
             for [ i: u32 0, i < present_mode_count, i += 1 ]
                 if [ present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR ]
@@ -3465,8 +3529,8 @@ Texture Display
             wh_i: i32
             pw_i: i32
             ph_i: i32
-            glfwGetWindowSize[ glfw, ref ww_i, ref wh_i ]
-            glfwGetFramebufferSize[ glfw, ref pw_i, ref ph_i ]
+            glfwGetWindowSize[ glfw, @ww_i, @wh_i ]
+            glfwGetFramebufferSize[ glfw, @pw_i, @ph_i ]
             scale         = (ww_i > 0) ? f32[ pw_i ] / f32[ ww_i ] : 1.0
             width         = ww_i
             height        = wh_i
@@ -3503,7 +3567,7 @@ intern func vk_format_fn [ f: Pixel, linear: bool ] -> VkFormat
     expect result, "incompatible image format"
     return result
 
-intern func pixel_from_format [ f: VkFormat, channels: ref i32 ] -> Pixel
+intern func pixel_from_format [ f: VkFormat, channels: @i32 ] -> Pixel
     pixel: Pixel [
         (f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_B8G8R8A8_UNORM ||
          f == VK_FORMAT_R8G8B8A8_SRGB  || f == VK_FORMAT_B8G8R8A8_SRGB)  ? Pixel.rgba8 :
@@ -3538,8 +3602,8 @@ class AppFrames
     intern  w2     : i32
     intern  h2     : i32
     intern  nslots : i32
-    intern  bufs   : ref VkBuffer         # opaque C handles → must be intern
-    intern  mems   : ref VkDeviceMemory
+    intern  bufs   : @VkBuffer         # opaque C handles → must be intern
+    intern  mems   : @VkDeviceMemory
     intern  tx     : Texture
     intern  got    : i32
 
@@ -3558,7 +3622,7 @@ class AppFrames
         if [ slot >= nslots ] return
         b2 : VkBuffer [ null ]
         m2 : VkDeviceMemory [ null ]
-        if [ vk.import_dmabuf[ fd, bytes, ref b2, ref m2 ] ]
+        if [ vk.import_dmabuf[ fd, bytes, @b2, @m2 ] ]
             bufs[ slot ] = b2
             mems[ slot ] = m2
             got += 1
@@ -3634,7 +3698,7 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
         if [ f_color.r == 0.0 && f_color.g == 0.0 && f_color.b == 0.0 && f_color.a == 0.0 ]
             f_color = f_one
         one:      i64 1
-        single:   shape.shape_from[ 1, ref one ]
+        single:   shape.shape_from[ 1, @one ]
         if [ !is_surface_enum ]
             # not a Surface enum (e.g. CanvasUISurface.atlas/.image): the
             # int value of surface_value is meaningless to the Surface switch
@@ -3691,7 +3755,7 @@ func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_t
         result.push[ res ]
     return result
 
-intern func trinity_log [severity: VkDebugUtilsMessageSeverityFlagBitsEXT, types: VkDebugUtilsMessageTypeFlagsEXT, callbackData:   ref VkDebugUtilsMessengerCallbackDataEXT, userData:       handle ] -> bool
+intern func trinity_log [severity: VkDebugUtilsMessageSeverityFlagBitsEXT, types: VkDebugUtilsMessageTypeFlagsEXT, callbackData:   @VkDebugUtilsMessengerCallbackDataEXT, userData:       handle ] -> bool
     if [ severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT ]
         printf[ "validator: %s", callbackData.pMessage ]
     return false
@@ -3711,7 +3775,7 @@ func radians[f32] -> f32
 
 
 # --- GLFW callbacks ---
-intern func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i32, height: i32 ]
+intern func handle_glfw_framebuffer_size [ glfw_window: @GLFWwindow, width: i32, height: i32 ]
     if [ width == 0 && height == 0 ]
         return
     win : glfwGetWindowUserPointer[ glfw_window ]
@@ -3727,7 +3791,7 @@ intern func handle_glfw_framebuffer_size [ glfw_window: ref GLFWwindow, width: i
         w.in_callback_draw = false
 
 
-intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] 
+intern func handle_glfw_key [ win: @GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] 
     w: (glfwGetWindowUserPointer[ win ] to Window)
     if [ action == GLFW_PRESS && (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN) ]
         w.debug_value += (key == GLFW_KEY_UP) ? 1.0 : -1.0
@@ -3742,7 +3806,7 @@ intern func handle_glfw_key [ win: ref GLFWwindow, key: i32, scan_code: i32, act
     w.key_event[ w.ev ]
 
 
-intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ]
+intern func handle_glfw_scroll [ win: @GLFWwindow, x: f64, y: f64 ]
     w: (glfwGetWindowUserPointer[ win ] to Window)
     w.ev.clear[]
     w.ev.mouse.pos.x         = w.mouse.x
@@ -3762,7 +3826,7 @@ intern func handle_glfw_scroll [ win: ref GLFWwindow, x: f64, y: f64 ]
     w.wheel_event[ w.ev ]
 
 
-intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods: i32 ]
+intern func handle_glfw_mouse [ win: @GLFWwindow, id: i32, action: i32, mods: i32 ]
     w: (glfwGetWindowUserPointer[ win ] to Window)
     w.ev.clear[]
     w.ev.mouse.pos.x  = w.mouse.x
@@ -3780,7 +3844,7 @@ intern func handle_glfw_mouse [ win: ref GLFWwindow, id: i32, action: i32, mods:
         w.release_event[ w.ev ]
 
 
-intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ]
+intern func handle_glfw_char [ win: @GLFWwindow, code_point: u32 ]
     w: (glfwGetWindowUserPointer[ win ] to Window)
     w.ev.clear[]
     cp  : u32 [ code_point ]
@@ -3805,11 +3869,11 @@ intern func handle_glfw_char [ win: ref GLFWwindow, code_point: u32 ]
         buf[3] = i8[ 0x80 | (cp & 0x3F) ]
         nb = 4
     buf[nb] = 0
-    w.ev.key.text = string[ ref buf[0] ]
+    w.ev.key.text = string[ @buf[0] ]
     w.text_event[ w.ev ]
 
 
-intern func handle_glfw_drop [ win: ref GLFWwindow, count: i32, paths: ref symbol ]
+intern func handle_glfw_drop [ win: @GLFWwindow, count: i32, paths: @symbol ]
     w: (glfwGetWindowUserPointer[ win ] to Window)
     if [ count <= 0 ] return
     w.ev.clear[]
@@ -3822,7 +3886,7 @@ intern func handle_glfw_drop [ win: ref GLFWwindow, count: i32, paths: ref symbo
     w.drop_event[ w.ev ]
 
 
-intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ]
+intern func handle_glfw_cursor [ win: @GLFWwindow, x: f64, y: f64 ]
     w: (glfwGetWindowUserPointer[ win ] to Window)
     w.ev.clear[]
     w.mouse.x = x
@@ -3844,7 +3908,7 @@ intern func handle_glfw_cursor [ win: ref GLFWwindow, x: f64, y: f64 ]
 
 func get_required_extensions [ vk: vk_context ]
     count : u32 0
-    glfw_extensions: ref symbol [ glfwGetRequiredInstanceExtensions[ ref count ] ]
+    glfw_extensions: @symbol [ glfwGetRequiredInstanceExtensions[ @count ] ]
     result: new symbol [ count + 4 ]
     memcpy[ result, glfw_extensions, count * sizeof[ symbol ] ]
     ifdef [ apple ]
@@ -3911,7 +3975,7 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
     alloc_info: VmaAllocationCreateInfo [ usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE ]
     image_info.arrayLayers = 6
     for [ i: 0, i < 2, i += 1 ]
-        res: vmaCreateImage[ vk.allocator, image_info, alloc_info, ref vk_image[i], ref vma_alloc[i], null ]
+        res: vmaCreateImage[ vk.allocator, image_info, alloc_info, @vk_image[i], @vma_alloc[i], null ]
         expect res == VK_SUCCESS, "could not create image with vmaCreateImage"
     cmd: Command [ vk: vk ]
     w.list = array Render [ r_env ]
@@ -3932,7 +3996,7 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
         vkCmdCopyImage[ cmd.cmd,
             final.color.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             vk_image[0], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1, ref region ]
+            1, @region ]
         cmd.submit[ ]
         final.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
@@ -4007,49 +4071,49 @@ func uniform_size [ type: Au_t ] -> num
     return total
 
 
-func placeholder_image [ sampler: object, size: i32, fill: ref u8, sampler_size: ref i32, format: ref Pixel ]
+func placeholder_image [ sampler: object, size: i32, fill: @u8, sampler_size: @i32, format: @Pixel ]
     cl : typeid[sampler]
     s: i32 [ size * size ]
 
     if [ cl == typeid[f32] ]
-        data_f32: ref f32 [ sampler ]
-        f32_fill: ref f32 [ ref fill ]
+        data_f32: @f32 [ sampler ]
+        f32_fill: @f32 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             f32_fill[i] = data_f32[0]
         format = Pixel.f32
         sampler_size = s * sizeof[ f32 ]
     el [ cl == (typeid[i8], typeid[u8]) ]
-        data_i8:    ref i8    [ sampler ]
-        data_u8:    ref u8    [ sampler ]
-        u8_fill: ref u8 [ ref fill ]
+        data_i8:    @i8    [ sampler ]
+        data_u8:    @u8    [ sampler ]
+        u8_fill: @u8 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             u8_fill[i] = data_i8[0]
         format = Pixel.u8
         sampler_size = s * sizeof[ i8 ]
     el [ cl == typeid[rgbf] ]
-        data_rgbf:  ref rgbf  [ sampler ]
-        v3_fill: ref rgbf [ ref fill ]
+        data_rgbf:  @rgbf  [ sampler ]
+        v3_fill: @rgbf [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             v3_fill[i] = data_rgbf[0]
         format = Pixel.rgbf32
         sampler_size = s * sizeof[ rgbf ]
     el [ cl == typeid[rgb8] ]
-        data_rgb8:  ref rgb8 [ sampler ]
-        v3_fill: ref rgb8 [ ref fill ]
+        data_rgb8:  @rgb8 [ sampler ]
+        v3_fill: @rgb8 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             v3_fill[i] = data_rgb8[0]
         format = Pixel.rgb8
         sampler_size = s * sizeof[ rgb8 ]
     el [ cl == typeid[rgbaf] ]
-        data_rgbaf:  ref rgbaf  [ sampler ]
-        v4_fill: ref rgbaf [ ref fill ]
+        data_rgbaf:  @rgbaf  [ sampler ]
+        v4_fill: @rgbaf [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             v4_fill[i] = data_rgbaf[0]
         format = Pixel.rgbaf32
         sampler_size = s * sizeof[ rgbaf ]
     el [ cl == typeid[rgba8] ]
-        data_rgba8:  ref rgba8  [ sampler ]
-        v4_fill: ref rgba8 [ ref fill ]
+        data_rgba8:  @rgba8  [ sampler ]
+        v4_fill: @rgba8 [ @fill ]
         for [ i: 0, i < s, i += 1 ]
             v4_fill[i] = data_rgba8[0]
         format = Pixel.rgba8

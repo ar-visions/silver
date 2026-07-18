@@ -136,13 +136,14 @@ class Background
 # words); SLOT messages also carry one dma-buf fd via SCM_RIGHTS. the C
 # plumbing (CMSG_* macros) lives in trinity.cc (linux real, else stubs).
 enum AppMsg
-    none  : 0
-    hello : 1
-    slot  : 2
-    frame : 3
-    key   : 4
-    mouse : 5
-    bye   : 6
+    none   : 0
+    hello  : 1
+    slot   : 2
+    frame  : 3
+    key    : 4
+    mouse  : 5
+    bye    : 6
+    resize : 7
 
 enum AppMouse
     move    : 0
@@ -152,9 +153,11 @@ enum AppMouse
 func appshare_listen   [ p: cstr ]                               -> i32
 func appshare_accept   [ s: i32 ]                                -> i32
 func appshare_connect  [ p: cstr ]                               -> i32
-func appshare_send     [ s: i32, mdata: ref i32 ]               -> i32
-func appshare_send_fd  [ s: i32, fdv: i32, mdata: ref i32 ]     -> i32
-func appshare_recv_fd  [ s: i32, rdata: ref i32, fdout: ref i32 ] -> i32
+func appshare_send     [ s: i32, mdata: @i32 ]               -> i32
+func appshare_send_fd  [ s: i32, fdv: i32, mdata: @i32 ]     -> i32
+func appshare_recv_fd  [ s: i32, rdata: @i32, fdout: @i32 ] -> i32
+func appshare_send_msg [ s: i32, mdata: @i32, payload: cstr, plen: i32 ] -> i32
+func appshare_recv_payload [ s: i32, pdata: @i8, plen: i32 ]  -> i32
 func appshare_close    [ fdv: i32 ]
 
 # one 8-word message link. server side owns lsock (listen) then sock
@@ -163,8 +166,8 @@ func appshare_close    [ fdv: i32 ]
 class AppLink
     mutable sock    : i32 [ -1 ]
     mutable lsock   : i32 [ -1 ]
-    mutable sbuf    : ref i32
-    mutable rbuf    : ref i32
+    mutable sbuf    : @i32
+    mutable rbuf    : @i32
     mutable recv_fd : i32 [ -1 ]
     mutable w1 : i32
     mutable w2 : i32
@@ -223,6 +226,13 @@ class AppLink
         sbuf[2] = seq
         put[ 0 - 1 ]
 
+    # host → app: adopt this backbuffer size (the pane is the app's window)
+    func send_resize [ w: i32, h: i32 ]
+        sbuf[0] = i32[ AppMsg.resize ]
+        sbuf[1] = w
+        sbuf[2] = h
+        put[ 0 - 1 ]
+
     func send_key [ key: i32, scan: i32, action: i32, mods: i32, uni: i32 ]
         sbuf[0] = i32[ AppMsg.key ]
         sbuf[1] = key
@@ -244,7 +254,7 @@ class AppLink
     func poll [] -> i32
         if [ sock < 0 ] return 0
         fdout : i32 [ 0 - 1 ]
-        r : i32 [ appshare_recv_fd[ sock, rbuf, ref fdout ] ]
+        r : i32 [ appshare_recv_fd[ sock, rbuf, @fdout ] ]
         if [ r == 0 ] return 0
         if [ r < 0 ] return i32[ AppMsg.bye ]
         recv_fd = fdout
@@ -262,6 +272,192 @@ class AppLink
         if [ lsock >= 0 ] appshare_close[ lsock ]
         sock  = 0 - 1
         lsock = 0 - 1
+
+# app bus: broadcast messaging between trinity apps. presence IS the
+# socket file {run_dir}/trinity/{name}.sock — apps read a message or dont.
+enum BusMsg
+    none    : 0
+    hello   : 1
+    message : 2
+    bye     : 3
+
+class BusMessage
+    public from : string
+    public body : string
+
+class BusPeer
+    public sock : i32 [ -1 ]
+    public name : string
+
+class AppBus
+    public  name       : string
+    mutable lsock      : i32 [ -1 ]
+    mutable taps       : array BusPeer
+    mutable inbox      : array BusMessage
+    mutable inbox_read : i32
+    mutable sbuf       : @i32
+    mutable rbuf       : @i32
+
+    func init []
+        sbuf  = new i32 [ 8 ]
+        rbuf  = new i32 [ 8 ]
+        taps  = array BusPeer [ ]
+        inbox = array BusMessage [ ]
+
+    # login makes /run/user/{uid}; we only add trinity/ inside it
+    func bus_dir [] -> path
+        rd : getenv[ 'XDG_RUNTIME_DIR' ]
+        if [ !rd || rd.count == 0 ] return null
+        d : path '{rd}/trinity'
+        d.make_dir[]
+        return d
+
+    # presence: listen on {bus_dir}/{nm}.sock
+    func register [ nm: string ] -> bool
+        d : bus_dir[]
+        if [ !d ] return false
+        name = nm
+        name.hold[]
+        sp : '{d}/{nm}.sock'
+        lsock = appshare_listen[ sp.chars ]
+        return lsock >= 0
+
+    func peers [] -> array string
+        res : array string [ ]
+        d : bus_dir[]
+        if [ !d ] return res
+        entries : array [ d.ls[ null, false ] ]
+        if [ entries ]
+            for [ e: path ] in entries
+                ex : e.ext[]
+                if [ ex && ex == 'sock' ]
+                    res.push[ e.stem[] ]
+        return res
+
+    intern func put [ p: BusPeer, t: i32, payload: string ]
+        if [ p.sock < 0 ] return
+        n : i32 [ 0 ]
+        if [ payload ] n = i32[ payload.count ]
+        sbuf[0] = t
+        sbuf[1] = n
+        if [ n > 0 ]
+            appshare_send_msg[ p.sock, sbuf, payload.chars, n ]
+        el
+            appshare_send_msg[ p.sock, sbuf, null, 0 ]
+
+    # find or dial a peer by name; stale sockets are unlinked
+    intern func dial [ to: string ] -> BusPeer
+        for [ p: BusPeer ] in taps
+            if [ p.sock >= 0 && p.name && p.name == to ] return p
+        d : bus_dir[]
+        if [ !d ] return null
+        sp : '{d}/{to}.sock'
+        s2 : i32 [ appshare_connect[ sp.chars ] ]
+        if [ s2 < 0 ]
+            unlink[ sp.chars ]
+            return null
+        np : BusPeer [ sock: s2, name: to ]
+        taps.push[ np ]
+        put[ np, i32[ BusMsg.hello ], name ]
+        return np
+
+    # broadcast: every socket present gets the message; we hear it too
+    func send [ body: string ] -> bool
+        fromn : '?'
+        if [ name ] fromn = name
+        mm : BusMessage [ from: fromn, body: body ]
+        inbox.push[ mm ]
+        d : bus_dir[]
+        if [ !d ] return false
+        sent : bool [ false ]
+        entries : array [ d.ls[ null, false ] ]
+        if [ !entries ] return sent
+        for [ e: path ] in entries
+            ex : e.ext[]
+            if [ ex && ex == 'sock' ]
+                pn : e.stem[]
+                skip : bool [ false ]
+                if [ name && pn == name ] skip = true
+                if [ !skip ]
+                    p : dial[ pn ]
+                    if [ p ]
+                        put[ p, i32[ BusMsg.message ], body ]
+                        sent = true
+        return sent
+
+    intern func drain [ p: BusPeer ]
+        if [ p.sock < 0 ] return
+        for [ k: i32 0, k < 64, k += 1 ]
+            fdout : i32 [ 0 - 1 ]
+            r : i32 [ appshare_recv_fd[ p.sock, rbuf, @fdout ] ]
+            if [ r == 0 ] return
+            if [ r < 0 ]
+                appshare_close[ p.sock ]
+                p.sock = 0 - 1
+                return
+            t : i32 [ rbuf[0] ]
+            n : i32 [ rbuf[1] ]
+            pb : @i8
+            if [ n > 0 && n < 1048576 ]
+                nn : i32 [ n + 1 ]
+                pb = new i8 [ nn ]
+                pr : i32 [ appshare_recv_payload[ p.sock, pb, n ] ]
+                if [ pr < 0 ]
+                    appshare_close[ p.sock ]
+                    p.sock = 0 - 1
+                    return
+                pb[n] = 0
+            if [ t == i32[ BusMsg.bye ] ]
+                appshare_close[ p.sock ]
+                p.sock = 0 - 1
+                return
+            if [ t == i32[ BusMsg.hello ] ]
+                if [ pb ]
+                    p.name = string [ (pb) to cstr ]
+                    p.name.hold[]
+            el [ t == i32[ BusMsg.message ] ]
+                bd : ''
+                if [ pb ] bd = string [ (pb) to cstr ]
+                fromn : '?'
+                if [ p.name ] fromn = p.name
+                m : BusMessage [ from: fromn, body: bd ]
+                inbox.push[ m ]
+
+    # accept new taps, drain every peer into the inbox
+    func pump []
+        if [ lsock >= 0 ]
+            c : i32 [ appshare_accept[ lsock ] ]
+            if [ c >= 0 ]
+                np : BusPeer [ sock: c ]
+                taps.push[ np ]
+        for [ p: BusPeer ] in taps
+            drain[ p ]
+
+    # next message or null; inbox clears once fully read
+    func recv [] -> BusMessage
+        pump[]
+        if [ inbox_read >= inbox.count ]
+            if [ inbox.count > 0 ]
+                inbox.clear[]
+                inbox_read = 0
+            return null
+        m : BusMessage inbox[ inbox_read ]
+        inbox_read += 1
+        return m
+
+    func shutdown []
+        for [ p: BusPeer ] in taps
+            if [ p.sock >= 0 ]
+                put[ p, i32[ BusMsg.bye ], null ]
+                appshare_close[ p.sock ]
+                p.sock = 0 - 1
+        if [ lsock >= 0 ] appshare_close[ lsock ]
+        lsock = 0 - 1
+        if [ name ]
+            d : bus_dir[]
+            if [ d ]
+                sp : '{d}/{name}.sock'
+                unlink[ sp.chars ]
 
 abstract live_app media_app
     context w           : Display*
@@ -287,8 +483,8 @@ abstract live_app media_app
     # exported dma-buf slot, and hands orbiter the fd + a FRAME message.
     public  attach      : path
     intern  at_link     : AppLink
-    intern  at_bufs     : ref VkBuffer
-    intern  at_mems     : ref VkDeviceMemory
+    intern  at_bufs     : @VkBuffer
+    intern  at_mems     : @VkDeviceMemory
     intern  at_nslots   : i32 [ 3 ]
     intern  at_slot     : i32
     intern  at_seq      : i32
@@ -298,6 +494,15 @@ abstract live_app media_app
         Au.auto_free[true]
 
     func frame [ ] -> bool
+        # keep our presence on the app bus and drain broadcasts each frame
+        if [ w ]
+            bwn : Window [ w ]
+            if [ !bwn.bus ]
+                bwn.bus = AppBus [ ]
+                bwn.bus.hold[]
+                ahdr : Au.header[ a ]
+                bwn.bus.register[ string [ ahdr.au.ident ] ]
+            bwn.bus.pump[]
         # attach mode: compose to the backbuffer, publish the frame to orbiter,
         # drain input from the socket. return false once orbiter closes it.
         ifdef [ linux ]
@@ -364,7 +569,7 @@ abstract live_app media_app
                 sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                 commandPool:        vk.command_pool,
                 level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                commandBufferCount: 1 ], ref cmd ]
+                commandBufferCount: 1 ], @cmd ]
             prev : VkImageLayout [ tx.vk_layout ]
             tx.transition[ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
             vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
@@ -386,9 +591,9 @@ abstract live_app media_app
             vkQueueSubmit[ vk.queue, 1, VkSubmitInfo [
                 sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
                 commandBufferCount: 1,
-                pCommandBuffers:    ref cmd ], null ]
+                pCommandBuffers:    @cmd ], null ]
             vkQueueWaitIdle[ vk.queue ]
-            vkFreeCommandBuffers[ vk.device, vk.command_pool, 1, ref cmd ]
+            vkFreeCommandBuffers[ vk.device, vk.command_pool, 1, @cmd ]
             tx.transition[ prev ]
             at_seq += 1
             at_link.send_frame[ at_slot, at_seq ]
@@ -429,7 +634,41 @@ abstract live_app media_app
                             wn.press_event[ wn.ev ]
                         el
                             wn.release_event[ wn.ev ]
+                el [ t == i32[ AppMsg.resize ] ]
+                    rw : i32 [ at_link.w1 ]
+                    rh : i32 [ at_link.w2 ]
+                    if [ rw > 0 && rh > 0 && (rw != wn.width || rh != wn.height) ]
+                        at_resize[ rw, rh ]
             return true
+
+        # host dictated a new size: the pane IS this app's window. rebuild the
+        # backbuffer at the new size, re-export the dma-buf slots, and re-announce
+        # (HELLO + SLOTs) — the host resets its imports on the new HELLO.
+        func at_resize [ rw: i32, rh: i32 ]
+            if [ !at_link ] return
+            wn : Window [ w ]
+            vkQueueWaitIdle[ vk.queue ]
+            for [ i: i32 0, i < at_nslots, i += 1 ]
+                if [ at_bufs[ i ] ] vkDestroyBuffer[ vk.device, at_bufs[ i ], null ]
+                if [ at_mems[ i ] ] vkFreeMemory[ vk.device, at_mems[ i ], null ]
+                at_bufs[ i ] = null
+                at_mems[ i ] = null
+            wn.resize[ rw, rh ]
+            width    = rw
+            height   = rh
+            at_bytes = rw * rh * 4
+            at_slot  = 0
+            at_link.send_hello[ rw, rh, 0, at_nslots ]
+            for [ i: i32 0, i < at_nslots, i += 1 ]
+                b2  : VkBuffer [ null ]
+                m2  : VkDeviceMemory [ null ]
+                fd2 : i32 [ wn.vk.export_dmabuf[ at_bytes, @b2, @m2 ] ]
+                expect fd2 >= 0, 'attach: export_dmabuf failed'
+                at_bufs[ i ] = b2
+                at_mems[ i ] = m2
+                at_link.send_slot[ i, at_bytes, rw * 4, fd2 ]
+                appshare_close[ fd2 ]
+            puts 'attach: resized {rw}x{rh}, {at_nslots} dma-buf slots'
 
     func destroy [ ]
         # hot-reload: vk_context persists (held in libAu), but this module's code
@@ -514,6 +753,7 @@ class BindSeam
 
 Display Window
     mutable app_object          : element*
+    mutable bus                 : AppBus
     mutable cursors             : array CursorPos
     # GLFW resize cursors for seam hover/drag (created lazily, cached). cursor_kind
     # tracks the active one (0=arrow,1=horizontal,2=vertical) to skip redundant sets.
@@ -657,8 +897,8 @@ Display Window
                 if [ strcmp[ member.ident, "label" ] == 0 ] continue
                 if [ strcmp[ member.ident, "edit" ] == 0 ] continue
                 if [ inst.id == 'play' && strcmp[ member.ident, 'selected' ] == 0 ]
-                    ibits : ref u64 [ inst.AF_bits[] ]
-                    ebits : ref u64 [ e.AF_bits[] ]
+                    ibits : @u64 [ inst.AF_bits[] ]
+                    ebits : @u64 [ e.AF_bits[] ]
                     #puts 'PLAY af: af_index={member.af_index} member_index={member.member_index} af_e={e.AF_get_member[member]} af_inst={inst.AF_get_member[member]} e_w0={ebits[0]} e_w1={ebits[1]} i_w0={ibits[0]} i_w1={ibits[1]}'
                 if [ !e.AF_get_member[ member ] ] continue
                 cur : inst.member_object[ member ]
@@ -713,14 +953,14 @@ Display Window
             return
 
         float_count : i32 [ member.src.typesize / 4 ]
-        dst_ptr     : ref f32 [ value_holder.member_ref[ member ] ]
+        dst_ptr     : @f32 [ value_holder.member_ref[ member ] ]
         is_f_color : bool [ strcmp[ member.ident, 'fill_color_pos' ] == 0 ]
 
         # binding: read source member directly from element and apply (with optional filter)
         if [ best.binding ]
             src_m : Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ]
             if [ src_m ]
-                src_ptr : ref f32 [ inst.member_ref[ src_m ] ]
+                src_ptr : @f32 [ inst.member_ref[ src_m ] ]
 
                 if [ best.filter > 0.0 ]
                     decay : pow[ best.filter, inst.ux.frame_factor ]
@@ -735,7 +975,7 @@ Display Window
 
         # filter: EMA dst in-place toward best.instance; snap from zero on first use
         if [ best.filter > 0.0 ]
-            target_ptr  : ref f32 [ best.instance ]
+            target_ptr  : @f32 [ best.instance ]
             unset       : true
             for [ i: i32 0, i < float_count, i += 1 ]
                 if [ dst_ptr[i] != 0.0 ] unset = false
@@ -1020,13 +1260,17 @@ Display Window
                 ta0 : i64 [ epoch_micros[] ]
                 args_changed : bool apply_args[ instance, e ]
                 a.t_apply_args += epoch_micros[] - ta0
+                # a changed data prop = the element's content may differ; without
+                # this a non-styled prop (e.g. run_line) never re-rasterizes its
+                # layers, so paint-hosted logic (TermLayer dispatch) never sees it
+                if [ args_changed ] instance.pristine = false
                 changed = args_changed || instance.restyle || force
                 instance.restyle = false
                 if [ instance.id == 'play' ]
                     op2  : Option instance
                     et2  : Option e
-                    isel : bool [ (op2) ? op2.selected : false ]
-                    tsel : bool [ (et2) ? et2.selected : false ]
+                    isel : bool [ op2->selected ]
+                    tsel : bool [ et2->selected ]
                     #puts 'PLAY upd: args_changed={args_changed} force={force} changed={changed} inst.selected={isel} tmpl.selected={tsel}'
 
             new_first  : bool [ child_pos == 0 ]
@@ -1096,6 +1340,14 @@ Display Window
     func app_render [] -> Elements
         e : Elements [ ]
         e[ 'app' ] = (app_object to element)
+        # framework dev shade: a parallel element the app never defines. topmost so
+        # it paints over the app tree. its container is full-window but sets
+        # user_events=false while closed so clicks pass THROUGH to the app (only its
+        # tab child claims hits); open flips user_events=true so it goes modal.
+        # opt-in: apps set ux_generics true to get the shade + menu tab.
+        ae : (app_object to element)
+        if [ ae && ae.ux_generics ]
+            e[ 'uxgenerics' ] = UXGenerics [ topmost: true, target: ae ]
         return e
 
     public func update_all [ render: Elements ]
@@ -1152,7 +1404,7 @@ Display Window
                 # caret only appeared on the SECOND click. seed 0 for an EMPTY buffer too,
                 # else an empty editable (e.g. a blank replace field) never shows a cursor.
                 if [ focus.sel_col < 0 ]
-                    focus.sel_col    = (focus.edit) ? focus.edit.count : 0
+                    focus.sel_col    = focus.edit->count
                     focus.anchor_col = focus.sel_col
                 focus.restyle = true
                 focus.pristine = false
@@ -1273,22 +1525,29 @@ Display Window
         # the editor) folds its content scroll in and the child's hit area drifts.
         for [ child: element, id: string ] reverse in e.elements
             if [ !child.topmost ] continue
-            ev.mouse.pos.x = (child.no_scroll) ? lx : fx
-            ev.mouse.pos.y = (child.no_scroll) ? ly : fy
+            relx : bool [ child.area && child.area.l.relative ]
+            rely : bool [ child.area && child.area.t.relative ]
+            ev.mouse.pos.x = (child.no_scroll || !relx) ? lx : fx
+            ev.mouse.pos.y = (child.no_scroll || !rely) ? ly : fy
             hit : find_target[ child, ev, must ]
             if [ hit ]
                 return hit
         for [ child: element, id: string ] reverse in e.elements
             if [ child.topmost ] continue
-            ev.mouse.pos.x = (child.no_scroll) ? lx : fx
-            ev.mouse.pos.y = (child.no_scroll) ? ly : fy
+            relx : bool [ child.area && child.area.l.relative ]
+            rely : bool [ child.area && child.area.t.relative ]
+            ev.mouse.pos.x = (child.no_scroll || !relx) ? lx : fx
+            ev.mouse.pos.y = (child.no_scroll || !rely) ? ly : fy
             hit : find_target[ child, ev, must ]
             if [ hit ]
                 return hit
 
         ev.mouse.pos.x = fx
         ev.mouse.pos.y = fy
-        r : element [ ( !must || must == e ) ? e : null ]
+        # a pass-through element (user_events=false) never claims itself — its
+        # children were already tested above, so a click that missed them falls
+        # through to the next sibling / the app instead of being swallowed here.
+        r : element [ ( e.user_events && (!must || must == e) ) ? e : null ]
         if [ !r ]
             ev.mouse.pos.x = x
             ev.mouse.pos.y = y
@@ -1307,6 +1566,14 @@ Display Window
     public func key_event [ ev: Event ]
         ev.target = focus
         if [ focus && focus.on_key*[ ev ] ] return
+        # esc closes the framework shade (uxgenerics) when it's up, before the app
+        # sees the key — it isn't the focus or app_object, so route it here.
+        if [ ev.key.unicode == 256 && root ]
+            sh : UXGenerics (root.elements[ 'uxgenerics' ] to UXGenerics)
+            if [ sh && sh.show_console ]
+                sh.show_console = false
+                restyle = true
+                return
         if [ app_object && app_object.on_key*[ ev ] ] return
         if [ focus ]
             for [ l: Layer, k: string ] in focus.layers
@@ -1338,7 +1605,7 @@ Display Window
             seam_cursor[ (seam_drag.axis == 0) ? 1 : 2 ]
             cur : f32 [ (seam_drag.axis == 0) ? ev.mouse.pos.x : ev.mouse.pos.y ]
             sc  : f32 [ (seam_drag.fc > 0.0) ? seam_drag.fc : 1.0 ]
-            dp  : ref f32 [ seam_drag.app.member_ref[ seam_drag.mem ] ]
+            dp  : @f32 [ seam_drag.app.member_ref[ seam_drag.mem ] ]
             v   : f32 [ seam_start_v + (cur - seam_start_m) / sc * seam_drag.sign ]
             # snap travel to the coord's px range: far-side floor (collapse) =
             # max/fc, near-side limit (full) = (span - min)/fc. magnetic — drag
@@ -1478,7 +1745,7 @@ Display Window
         seam_hl    = rect[]
         f : find_target[ root, ev, null ]
         ev.origin = f
-        puts 'DBG press f={(f) ? f.id : null} pos={ev.mouse.pos.x} {ev.mouse.pos.y}'
+        puts 'DBG press f={f->id} pos={ev.mouse.pos.x} {ev.mouse.pos.y}'
         # live inspector (cmd held): cmd+click → matching CSS blocks; cmd+shift+click → the
         # element's DECLARATION site (Au header source:line). consumes the press.
         if [ f && ev.key.meta ]
@@ -1498,7 +1765,11 @@ Display Window
                     st.inspect_idx = (st.inspect_idx + 1) % hits.count
                 cur : array StyleHit [ ]
                 if [ st.inspect_idx < hits.count ] cur.push[ hits[ st.inspect_idx ] ]
-                if [ app_object ] app_object.on_inspect*[ cur ]
+                # emit only: the cycled style location goes onto the app bus
+                # as view_style; whoever edits (orbiter) handles the goto.
+                if [ bus && cur.count > 0 ]
+                    hb : StyleHit cur[ 0 ]
+                    bus.send[ 'view_style {hb.file}:{hb.line}' ]
             # consume the click: the inspect handled it, so the element under the cursor
             # (a button/tab) must NOT also process the press.
             ev.no_propagation = true
@@ -1509,7 +1780,7 @@ Display Window
         if [ seam_hover ]
             seam_drag    = seam_hover
             seam_start_m = (seam_hover.axis == 0) ? world_m.x : world_m.y
-            sp : ref f32 [ seam_hover.app.member_ref[ seam_hover.mem ] ]
+            sp : @f32 [ seam_hover.app.member_ref[ seam_hover.mem ] ]
             seam_start_v = sp[0]
             return
         element_pos : vec2f [ ev.mouse.pos ]
@@ -1566,16 +1837,17 @@ Display Window
             # collapse snap (value at the floor), so a later restore returns to the
             # real size, not the near-snap value the drag ended on.
             if [ seam_drag.user_mem && seam_drag.fc > 0.0 ]
-                dp    : ref f32 [ seam_drag.app.member_ref[ seam_drag.mem ] ]
+                dp    : @f32 [ seam_drag.app.member_ref[ seam_drag.mem ] ]
                 lo    : f32 [ seam_drag.max / seam_drag.fc ]
                 if [ dp[0] > lo + 0.5 ]
-                    up : ref f32 [ seam_drag.app.member_ref[ seam_drag.user_mem ] ]
+                    up : @f32 [ seam_drag.app.member_ref[ seam_drag.user_mem ] ]
                     up[0] = dp[0]
             seam_drag = null
             return
         f : find_target[ root, ev, capture ]
         ev.origin = f
-        puts 'DBG rel f={(f) ? f.id : null} ap={(action_pressed) ? action_pressed.id : null}'
+        same_i : bool [ action_pressed == f ]
+        puts 'DBG rel f={f->id} ap={action_pressed->id} same={same_i} hov={f->hovered} btn={ev.mouse.button}'
         consumed_r : bool [ false ]
         for [ e: element* f, e && !consumed_r, e = e.parent ]
             ev.target = e
@@ -1750,14 +2022,14 @@ Display Window
             sy : i32
             sw : i32
             sh : i32
-            glfwGetWindowPos [ glfw, ref sx, ref sy ]
-            glfwGetWindowSize[ glfw, ref sw, ref sh ]
+            glfwGetWindowPos [ glfw, @sx, @sy ]
+            glfwGetWindowSize[ glfw, @sw, @sh ]
             fs_saved_x = sx
             fs_saved_y = sy
             fs_saved_w = sw
             fs_saved_h = sh
             mon  : glfwGetPrimaryMonitor[]
-            mode : ref GLFWvidmode [ glfwGetVideoMode[ mon ] ]
+            mode : @GLFWvidmode [ glfwGetVideoMode[ mon ] ]
             # real fullscreen: GLFW sets _NET_WM_STATE_FULLSCREEN so the
             # taskbar is hidden. passing the native refresh rate avoids a
             # video-mode change.
@@ -1927,7 +2199,7 @@ Display Window
     # write one codepoint (+ color slot) into the grid (bounds-checked). when both the
     # existing and incoming chars are box-drawing, write their merged junction so
     # adjacent/overlapping frames share a single line instead of doubling.
-    func cell_set [ grid: ref i32, colg: ref i32, cols: i32, rows: i32, x: i32, y: i32, cp: i32, color: i32 ]
+    func cell_set [ grid: @i32, colg: @i32, cols: i32, rows: i32, x: i32, y: i32, cp: i32, color: i32 ]
         if [ x < 0 || y < 0 || x >= cols || y >= rows ] return
         idx : i32 [ y * cols + x ]
         out : i32 [ cp ]
@@ -1994,7 +2266,7 @@ Display Window
         return false
 
     # stamp a single-line box border (unicode light box-drawing) in `color`.
-    func draw_box [ grid: ref i32, colg: ref i32, cols: i32, rows: i32, x: i32, y: i32, w: i32, h: i32, color: i32 ]
+    func draw_box [ grid: @i32, colg: @i32, cols: i32, rows: i32, x: i32, y: i32, w: i32, h: i32, color: i32 ]
         # clamp the box to the visible grid so a frame wider/taller than the terminal
         # still closes on screen — its right/bottom border lands on the last cell
         # instead of being dropped by cell_set's bounds check (which read as "no side").
@@ -2023,7 +2295,7 @@ Display Window
     # tabs expand to spaces against the field-local column (tab width 4); NO raw \t can
     # reach the grid — the flush emits cells verbatim and a literal tab would expand to
     # the terminal's ABSOLUTE stops, cascading any text not starting at column 0.
-    func stamp_text [ grid: ref i32, colg: ref i32, cols: i32, rows: i32, x: i32, y: i32, s: string, maxw: i32, color: i32 ]
+    func stamp_text [ grid: @i32, colg: @i32, cols: i32, rows: i32, x: i32, y: i32, s: string, maxw: i32, color: i32 ]
         if [ !s || maxw <= 0 ] return
         i   : i32 [ 0 ]
         col : i32 [ 0 ]
@@ -2084,7 +2356,7 @@ Display Window
     # says whether that frame exists — a bordered element inside a bordered parent
     # is drawn as a "header": it shares the parent's top + side borders and adds only
     # a unique bottom rule under its text (├──┤), so nested frames don't endlessly embed.
-    func draw_element_console [ e: element*, grid: ref i32, colg: ref i32, cols: i32, rows: i32, ox: i32, oy: i32, aw: i32, ah: i32, pbx0: i32, pbx1: i32, pbordered: bool, pax: i32, pay: i32 ]
+    func draw_element_console [ e: element*, grid: @i32, colg: @i32, cols: i32, rows: i32, ox: i32, oy: i32, aw: i32, ah: i32, pbx0: i32, pbx1: i32, pbordered: bool, pax: i32, pay: i32 ]
         if [ !e ] return
         if [ !e.area ] e.area = Region [ 0.0 ]
         if [ !e.bounds ] e.bounds = rect[]
@@ -2408,7 +2680,7 @@ Display Window
     # append a string's bytes into the frame buffer starting at p; returns the new p.
     # lets the flush use plain escape-string literals now that the octal \033 escape
     # is fixed (returns the position rather than taking a ref i32, which mis-GEPs).
-    func emit_bytes [ dst: ref u8, p: i32, s: string ] -> i32
+    func emit_bytes [ dst: @u8, p: i32, s: string ] -> i32
         q : i32 [ p ]
         i : i32 [ 0 ]
         while [ i < s.count ]
@@ -2453,7 +2725,7 @@ Display Window
         # else fall back to stdin. stty set the controlling terminal raw (min 0 time 0)
         # so this read is non-blocking either way.
         src : i32 [ (tty_in >= 0) ? tty_in : 0 ]
-        nb : i32 [ read[ src, ref buf[0], 127 ] ]
+        nb : i32 [ read[ src, @buf[0], 127 ] ]
         if [ nb <= 0 ] return
         rb0 : i32 [ i32 buf[0] ]
         rb1 : i32 [ 0 ]
@@ -2554,7 +2826,7 @@ Display Window
                 tb[0] = i8 c
                 tb[1] = 0
                 ev.clear[]
-                ev.key.text = string[ ref tb[0] ]
+                ev.key.text = string[ @tb[0] ]
                 text_event[ ev ]
                 i += 1
                 continue
@@ -2573,12 +2845,12 @@ Display Window
         # sizeof-based macro doesn't fold, so use the literal value. try the request
         # across stdin/stdout/stderr: --log dup2's stdout+stderr onto a pipe, so only
         # stdin (the input tty) may still answer. mac value first, then linux.
-        ok : bool [ ioctl[ 0, 0x40087468, ref ws ] == 0 && ws.ws_col > 0 ]
-        if [ !ok ] ok = ioctl[ 1, 0x40087468, ref ws ] == 0 && ws.ws_col > 0
-        if [ !ok ] ok = ioctl[ 2, 0x40087468, ref ws ] == 0 && ws.ws_col > 0
-        if [ !ok ] ok = ioctl[ 0, 0x5413, ref ws ] == 0 && ws.ws_col > 0
-        if [ !ok ] ok = ioctl[ 1, 0x5413, ref ws ] == 0 && ws.ws_col > 0
-        if [ !ok ] ok = ioctl[ 2, 0x5413, ref ws ] == 0 && ws.ws_col > 0
+        ok : bool [ ioctl[ 0, 0x40087468, @ws ] == 0 && ws.ws_col > 0 ]
+        if [ !ok ] ok = ioctl[ 1, 0x40087468, @ws ] == 0 && ws.ws_col > 0
+        if [ !ok ] ok = ioctl[ 2, 0x40087468, @ws ] == 0 && ws.ws_col > 0
+        if [ !ok ] ok = ioctl[ 0, 0x5413, @ws ] == 0 && ws.ws_col > 0
+        if [ !ok ] ok = ioctl[ 1, 0x5413, @ws ] == 0 && ws.ws_col > 0
+        if [ !ok ] ok = ioctl[ 2, 0x5413, @ws ] == 0 && ws.ws_col > 0
         if [ ok ]
             cols = i32 ws.ws_col
             rows = i32 ws.ws_row
@@ -2687,7 +2959,7 @@ Display Window
         if [ !b || !app_obj ] return
         m : find_member[ typeid[ app_obj ], b.varname.chars, AU_MEMBER_VAR, 0, true ]
         if [ !m ] return
-        p : ref f32 [ app_obj.member_ref[ m ] ]
+        p : @f32 [ app_obj.member_ref[ m ] ]
         v : f32 [ p[0] ]
         # console: the range min/max are px values that don't divide down at fc=1, so
         # the px-range clamp would corrupt the value (e.g. force console_h up to 50).
@@ -2809,7 +3081,7 @@ Display Window
                 e.pristine   = false
                 will_animate = true
 
-        bounds : e.area.rectangle[ rel, null, (last) ? last.bounds : null, e.fc, false ]
+        bounds : e.area.rectangle[ rel, null, last->bounds, e.fc, false ]
 
         # percent sizing: override h/w with fraction of remaining sibling space
         if [ e.area && e.parent && e.parent.elements && (e.area.b.percent || e.area.r.percent) ]
@@ -2894,7 +3166,7 @@ Display Window
         e.bounds.h = bounds.h
         if [ getenv[ 'TRIN_BTNLOG' ] ]
             if [ e inherits Button ]
-                puts 'BTNLOG {e.id} "{e.label}" x={e.bounds.x} y={e.bounds.y} w={e.bounds.w} h={e.bounds.h} parent={(e.parent) ? e.parent.id : null} pw={(e.parent) ? e.parent.bounds.w : 0.0} px={(e.parent) ? e.parent.bounds.x : 0.0}'
+                puts 'BTNLOG {e.id} "{e.label}" x={e.bounds.x} y={e.bounds.y} w={e.bounds.w} h={e.bounds.h} parent={e.parent->id} pw={e.parent->bounds->w} px={e.parent->bounds->x}'
         # collapsed to nothing (e.g. the editor section when the console seam is
         # snapped fully up) — skip this element and all its children.
         if [ e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
@@ -3082,7 +3354,7 @@ Display Window
                 draw_cv.save             [ ]
                 sw_top   : f32 [ (layer.stroke_width) ? layer.stroke_width.top    : 0.0 ]
                 sw_right : f32 [ (layer.stroke_width) ? layer.stroke_width.right  : 0.0 ]
-                sw_bot   : f32 [ (layer.stroke_width) ? layer.stroke_width.bottom : 0.0 ]
+                sw_bot   : f32 [ layer.stroke_width->bottom ]
                 sw_left  : f32 [ (layer.stroke_width) ? layer.stroke_width.left   : 0.0 ]
                 sw_max   : f32 [ maxf[ maxf[ sw_top, sw_right ], maxf[ sw_bot, sw_left ] ] ]
                 # crisp-pixel offset: odd max stroke width needs half-pixel nudge
@@ -3334,12 +3606,19 @@ Display Window
                 cv.restore[ ]
 
         last_2 : element
-        # paint normal children first, then topmost children over them
+        # paint normal children first, then topmost children over them. a scrolling
+        # container offsets its (non-fixed) children by -e.scroll — the generic side
+        # of what the Editor did by hand; a no-op when scroll is 0 (every element that
+        # doesn't set content_h). matches find_target, which already folds scroll.
         for [ ee: element, id: string ] in e.elements
             if [ ee.topmost ] continue
             cv.save[]
             if [ ee.bounds ]
-                cv.translate[ ee.bounds.x, ee.bounds.y ]
+                relx : bool [ ee.area && ee.area.l.relative ]
+                rely : bool [ ee.area && ee.area.t.relative ]
+                sx : f32 [ (ee.no_scroll || !relx) ? 0.0 : e.scroll.x ]
+                sy : f32 [ (ee.no_scroll || !rely) ? 0.0 : e.scroll.y ]
+                cv.translate[ ee.bounds.x - sx, ee.bounds.y - sy ]
             draw_element[ ee, stage, last_2 ]
             last_2 = ee
             cv.restore[]
@@ -3347,7 +3626,11 @@ Display Window
             if [ !ee.topmost ] continue
             cv.save[]
             if [ ee.bounds ]
-                cv.translate[ ee.bounds.x, ee.bounds.y ]
+                relx : bool [ ee.area && ee.area.l.relative ]
+                rely : bool [ ee.area && ee.area.t.relative ]
+                sx : f32 [ (ee.no_scroll || !relx) ? 0.0 : e.scroll.x ]
+                sy : f32 [ (ee.no_scroll || !rely) ? 0.0 : e.scroll.y ]
+                cv.translate[ ee.bounds.x - sx, ee.bounds.y - sy ]
             draw_element[ ee, stage, last_2 ]
             last_2 = ee
             cv.restore[]
@@ -3404,8 +3687,8 @@ abstract media_app trinity
     # can't fold; the wrong value makes ioctl fail on the tty).
     func console_size []
         ws : winsize
-        ok : bool [ ioctl[ 1, 0x40087468, ref ws ] == 0 && ws.ws_col > 0 ]
-        if [ !ok ] ok = ioctl[ 1, 0x5413, ref ws ] == 0 && ws.ws_col > 0
+        ok : bool [ ioctl[ 1, 0x40087468, @ws ] == 0 && ws.ws_col > 0 ]
+        if [ !ok ] ok = ioctl[ 1, 0x5413, @ws ] == 0 && ws.ws_col > 0
         if [ ok ]
             width  = i32 ws.ws_col
             height = i32 ws.ws_row
@@ -3430,7 +3713,7 @@ abstract media_app trinity
         adopt[ 'shot_frame' ]
         adopt[ 'attach' ]
         rt : typeid[ root ]
-        background_type : Au.find_type[ (background) ? background.chars : null, null ]
+        background_type : Au.find_type[ background->chars, null ]
         # console mode: no vk context, no GLFW window — host the tree + layout only.
         if [ console ]
             console_size[]
@@ -3521,7 +3804,7 @@ abstract media_app trinity
             for [ i: i32 0, i < at_nslots, i += 1 ]
                 b2  : VkBuffer [ null ]
                 m2  : VkDeviceMemory [ null ]
-                fd2 : i32 [ awin.vk.export_dmabuf[ at_bytes, ref b2, ref m2 ] ]
+                fd2 : i32 [ awin.vk.export_dmabuf[ at_bytes, @b2, @m2 ] ]
                 expect fd2 >= 0, 'attach: export_dmabuf failed'
                 at_bufs[ i ] = b2
                 at_mems[ i ] = m2
@@ -3557,6 +3840,8 @@ Layer ScrollLayer
     func draw [ cv: Canvas ]
         e : element [ parent ]
         if [ !e || e.content_h <= 0.0 || e.bounds.h >= e.content_h ] return
+        # no_scroll: the element opted out of scrolling — no scrollbar either
+        if [ e.no_scroll ] return
         # align the track top with the content layer — it may be pushed down
         # below our own area top (e.g. the editor's find/replace bar adds a row).
         top     : f32 [ bounds.y ]
@@ -3688,10 +3973,240 @@ element Toolbar
     func render[] -> Elements
         return null
 
+# generic enum selector: given an enum typeid, one tab per member; you select one.
+# `value` mirrors the selected member's constant; writes through `bound` when set.
+Control Tabs
+    public  etype : Au_t
+    public  value : i32
+    mutable bound : @i32
+
+    func member_value [ mem: Au_t ] -> i32
+        pv : (mem.value to @i32)
+        return pv[0]
+
+    func on_press [ ev: Event ]
+        e : (ev.origin to element)
+        if [ !e || !etype ] return
+        for [ m: i32 0, m < etype.members.count, m += 1 ]
+            mem : Au_t etype.members.origin[m]
+            if [ mem.member_type != 10 ] continue          # AU_MEMBER_ENUMV
+            nm : string mem.ident
+            if [ nm == e.id ]
+                value = member_value[ mem ]
+                if [ bound ] bound[0] = value
+                if [ ux ] ux.restyle = true
+                ev.stop_propagation[]
+                return
+
+    func render [] -> Elements
+        # no etype = a plain tab container (composed children pass through)
+        if [ !etype ] return null
+        els : Elements [ ]
+        for [ m: i32 0, m < etype.members.count, m += 1 ]
+            mem : Au_t etype.members.origin[m]
+            if [ mem.member_type != 10 ] continue          # AU_MEMBER_ENUMV
+            nm : string mem.ident
+            sel : bool [ member_value[ mem ] == value ]
+            els[ nm ] = Option [ label: nm, manual_mode: true, selected: sel ]
+        return els
+
+# reflects an f32 member as a range slider: a rounded track, an accent fill up
+# to the value, and a circle handle. press/drag maps x to value in [minv,maxv].
+Control Slider
+    animated : true
+    mutable target : element
+    mutable mem    : Au_t
+    mutable minv   : f32
+    mutable maxv   : f32 [ 1.0 ]
+
+    # the current value lives in element.value (the central control value); we
+    # mirror it to the bound member so the app sees changes.
+    func read [] -> f32
+        if [ value ] return f32[ value ]
+        if [ target && mem ]
+            pf : @f32 [ target.member_ref[ mem ] ]
+            return pf[0]
+        return 0.0
+
+    func write [ lx: f32 ]
+        hr : f32 [ bounds.h / 2.0 - 2.0 ]
+        span : f32 [ bounds.w - 2.0 * hr ]
+        t : f32 [ (span > 0.0) ? (lx - hr) / span : 0.0 ]
+        if [ t < 0.0 ] t = 0.0
+        if [ t > 1.0 ] t = 1.0
+        v : f32 [ minv + t * (maxv - minv) ]
+        value = v
+        if [ target && mem ]
+            pf : @f32 [ target.member_ref[ mem ] ]
+            pf[0] = v
+        pristine = false
+
+    func on_press [ ev: Event ]
+        write[ ev.mouse.pos.x ]
+        ev.stop_propagation[]
+
+    func on_move [ ev: Event ]
+        if [ pressed ] write[ ev.mouse.pos.x ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !target || !mem ] return
+        cv : Canvas w.screen
+        v  : f32 [ read[] ]
+        t  : f32 [ (maxv > minv) ? (v - minv) / (maxv - minv) : 0.0 ]
+        cy : f32 [ bounds.h / 2.0 ]
+        rr : f32 [ 2.5 ]
+        hr : f32 [ bounds.h / 2.0 - 2.0 ]
+        kx : f32 [ hr + t * (bounds.w - 2.0 * hr) ]
+        cv.fill_color[ rgba[ '#ffffff20' ] ]
+        cv.rounded_rect[ 0.0, cy - rr, bounds.w, rr * 2.0, rr, rr, rr, rr ]
+        cv.paint[]
+        cv.fill_color[ rgba[ '#3b6fe0' ] ]
+        cv.rounded_rect[ 0.0, cy - rr, kx, rr * 2.0, rr, rr, rr, rr ]
+        cv.paint[]
+        # handle: a circle = rounded_rect at full (half-size) radius
+        cv.fill_color[ rgba[ '#ffffff' ] ]
+        cv.rounded_rect[ kx - hr, cy - hr, hr * 2.0, hr * 2.0, hr, hr, hr, hr ]
+        cv.paint[]
+
+# reflects an rgba member: a live swatch that expands (row :selected) to an
+# Inkscape-style hue ring + SV triangle. bound writes the picked color back.
+# one control that draws itself — canvas ops in draw[], no styleable layer.
+Control ColorPicker
+    animated : true
+    mutable target : element
+    mutable mem    : Au_t
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        col : rgba [ (value) ? rgba[ value ] : rgba[ '#000000' ] ]
+        cv : Canvas w.screen
+        if [ !selected ]
+            # collapsed: a rounded swatch of the current color
+            cv.fill_color[ col ]
+            cv.rounded_rect[ 0.0, 0.0, bounds.w, bounds.h, 6.0, 6.0, 6.0, 6.0 ]
+            cv.paint[]
+            return
+        # expanded: a hue ring (conic gradient annulus) with the swatch at center
+        cx : f32 [ bounds.w / 2.0 ]
+        cy : f32 [ bounds.h / 2.0 ]
+        rad : f32 [ ((bounds.w < bounds.h) ? bounds.w : bounds.h) / 2.0 - 6.0 ]
+        g : Gradient conic_gradient[ cx, cy, 0.0 ]
+        g.add_stop[ 0.0,     0xffff0000 ]
+        g.add_stop[ 0.1667,  0xffffff00 ]
+        g.add_stop[ 0.3333,  0xff00ff00 ]
+        g.add_stop[ 0.5,     0xff00ffff ]
+        g.add_stop[ 0.6667,  0xff0000ff ]
+        g.add_stop[ 0.8333,  0xffff00ff ]
+        g.add_stop[ 1.0,     0xffff0000 ]
+        cv.set_fill_gradient[ g ]
+        cv.rounded_rect[ cx - rad, cy - rad, rad * 2.0, rad * 2.0, rad, rad, rad, rad ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        # punch the center hole + show the current color there
+        inr : f32 [ rad * 0.62 ]
+        cv.fill_color[ col ]
+        cv.rounded_rect[ cx - inr, cy - inr, inr * 2.0, inr * 2.0, inr, inr, inr, inr ]
+        cv.paint[]
+
 Option Edit
     func on_press[ ev:Event ] return
     func render[] -> Elements
         return null
+
+# framework dev shade — a macOS-9 style panel that drops from a corner tab. trinity
+# injects it over every app (app_render), so the app never designs or defines it. the
+# tab toggles it; when open a full-window scrim catches click-away. the panel itself
+# slides via a CSS :selected transition on element.sheet. focusable is false so the
+# transparent container never steals input — only the tab, scrim, and panel do.
+# a Control (not bare element) so its :selected state can grow the row height —
+# the whole accordion is just that taller area revealing the expanded control.
+Control ShadeRow
+    focusable : false
+    func render [] -> Elements
+        return null
+
+element UXGenerics
+    focusable : false
+    mutable show_console : bool [ true ]
+    # the app object we reflect — its public non-mutable bool/enum members become
+    # the Options rows. set by the Window in app_render.
+    mutable target : element
+    # the member name of the currently-expanded (accordion) row, or empty. only
+    # one row expands at a time; a color picker row uses it to reveal its wheel.
+    mutable expanded : string
+
+    func on_press [ ev: Event ]
+        # use ev.origin (the element find_target hit) — ev.target is reassigned to
+        # each ancestor as the press bubbles, so by the time this parent handler runs
+        # it points at the shade itself, not the tab that was clicked.
+        e : (ev.origin to element)
+        if [ !e ] return
+        if [ e.id == 'tab' ]
+            show_console = !show_console
+            if [ ux ] ux.restyle = true
+            ev.stop_propagation[]
+        # the panel's own close (X) button, and click-away on the container itself
+        # (only reachable when shown, since user_events is false while closed).
+        el [ e.id == 'close' || e.id == 'uxgenerics' ]
+            show_console = false
+            if [ ux ] ux.restyle = true
+            ev.stop_propagation[]
+        # a color picker was clicked → expand/collapse its row (accordion). its
+        # parent is the ShadeRow whose id is the member name.
+        el [ ColorPicker (e) && e.parent ]
+            rid : string e.parent.id
+            expanded = (expanded == rid) ? '' : rid
+            if [ ux ] ux.restyle = true
+            ev.stop_propagation[]
+
+    func render [] -> Elements
+        user_events = show_console   # closed = pass-through, shown = modal
+        els : Elements [ ]
+        if [ show_console ]
+            # dim backdrop; passes clicks through to the container (click-away close)
+            els[ 'scrim' ] = element [ user_events: false ]
+            sheet_els : Elements [ ]
+            sheet_els[ 'title' ] = element [ label: 'Options' ]
+            sheet_els[ 'close' ] = element [ label: 'X', focusable: true ]
+            # reflect the app's own public, non-mutable bool members into check rows
+            if [ target ]
+                rows : Elements [ ]
+                ty : Au_t typeid[ target ]
+                for [ m: i32 0, m < ty.members.count, m += 1 ]
+                    mem : Au_t ty.members.origin[m]
+                    if [ mem.member_type != 4 ] continue           # AU_MEMBER_VAR
+                    if [ !mem.src ] continue                       # need a type
+                    if [ (mem.traits & (1 << 51)) != 0 ] continue  # skip mutable
+                    is_bool : bool [ mem.src == typeid[ bool ] ]
+                    is_enum : bool [ (mem.src.traits & (1 << 5)) != 0 ]  # AU_TRAIT_ENUM
+                    is_rgba : bool [ mem.src == typeid[ rgba ] ]
+                    is_num  : bool [ mem.src == typeid[ f32 ] ]
+                    if [ !is_bool && !is_enum && !is_rgba && !is_num ] continue
+                    nm : string mem.ident
+                    isopen : bool [ is_rgba && nm == expanded ]
+                    row_els : Elements [ ]
+                    row_els[ 'name' ] = element [ label: nm ]
+                    row_els[ 'desc' ] = element [ label: '' ]
+                    if [ is_bool ]
+                        pb : @bool [ target.member_ref[ mem ] ]
+                        row_els[ 'ctl' ] = Check [ selected: pb[0], focusable: true ]
+                    el [ is_enum ]
+                        pe : @i32 [ target.member_ref[ mem ] ]
+                        row_els[ 'ctl' ] = Tabs [ etype: mem.src, value: pe[0], bound: pe ]
+                    el [ is_rgba ]
+                        pr : @rgba [ target.member_ref[ mem ] ]
+                        row_els[ 'ctl' ] = ColorPicker [ value: pr[0], target: target, mem: mem, selected: isopen, focusable: true ]
+                    el [ is_num ]
+                        pf : @f32 [ target.member_ref[ mem ] ]
+                        row_els[ 'ctl' ] = Slider [ value: pf[0], target: target, mem: mem, minv: 0.0, maxv: 1.0, focusable: true ]
+                    rows[ nm ] = ShadeRow [ selected: isopen, elements: row_els ]
+                # content_h (px) = rows x row-height — the generic scroll reads this
+                # to enable the wheel + scrollbar when it exceeds the list's bounds.
+                lh_est : f32 [ f32[ rows.count ] * 57.0 ]
+                sheet_els[ 'list' ] = element [ content_h: lh_est, focusable: true, elements: rows ]
+            els[ 'sheet' ] = element [ elements: sheet_els ]
+        els[ 'tab' ] = Option [ label: 'menu', manual_mode: true, selected: show_console ]
+        return els
 
 
 ModelViewProject UXBackground
@@ -3783,16 +4298,18 @@ expect func test [ vk: vk_context ] -> bool
     c.fill_color[ '#0000' ]
     c.paint[]
     c.restore[]
+    # block until the GPU wrote the color texture before reading it
+    c.sync_fence[]
 
     # fetch Texture and verify
     img: Image[c.color]
     p: path 'canvas_test.png'
-    p.save[ img, null ]
+    img.png[ p ]
     puts 'wrote canvas_test.png'
 
     # average color across Image
     pixels: img.width * img.height
-    data: ref u8 img.vdata[]
+    data: @u8 img.vdata[]
     r_sum: i64 [ 0 ]
     g_sum: i64 [ 0 ]
     b_sum: i64 [ 0 ]

@@ -315,7 +315,7 @@ class AssetDesc
 class GltfBuffer
     public byteLength:      u64
     public uri:             path
-    public data:            ref u8
+    public data:            @u8
     # directory of the .gltf being loaded: relative buffer uris resolve here
     # FIRST, so a model loads from any path — not only {cwd}/models/. callers
     # set it (via set_base) before path.load; null keeps the legacy cwd lookup.
@@ -335,7 +335,7 @@ class GltfBuffer
         # first, then any mounted .res archive cache
         name : (base) ? '{base}/{str}' : str
         rp : Res.res_path[ name ]
-        fp : ref FILE [ fopen[ rp.chars, "rb" ] ]
+        fp : @FILE [ fopen[ rp.chars, "rb" ] ]
         if [ !fp ]
             alt : (str.starts_with[ 'models/' ]) ? str : 'models/{str}'
             rp2 : Res.res_path[ alt ]
@@ -361,7 +361,7 @@ class GltfBuffer
 # hashed into a 256-byte sequence used 22 passes, then rehashed
 class ResKey
     intern h    : u64
-    intern seq  : ref u8
+    intern seq  : @u8
     intern bidx : i32
     intern pass : i32
 
@@ -401,7 +401,7 @@ class ResKey
         bidx = i32[ rem % 256 ]
 
     # xor n bytes in place, advancing the 22-passes-then-rehash schedule
-    func apply [ buf: ref u8, n: i64 ]
+    func apply [ buf: @u8, n: i64 ]
         for [ j: i64 0, j < n, j += 1 ]
             buf[ j ] = buf[ j ] ^ seq[ bidx ]
             bidx = bidx + 1
@@ -440,10 +440,10 @@ class Res
     intern iobsc   : bool
     intern iblob   : u64
     intern icount  : i32
-    intern inhash  : ref u64
-    intern ichash  : ref u64
-    intern ioffs   : ref u64
-    intern isizes  : ref u64
+    intern inhash  : @u64
+    intern ichash  : @u64
+    intern ioffs   : @u64
+    intern isizes  : @u64
 
     # 16-hex-char cache filename from a 64-bit content hash
     static func hex16 [ v: u64 ] -> string
@@ -460,7 +460,7 @@ class Res
         chunk : new u8 [ 65536 ]
         for [ i: i32 0, i < n, i += 1 ]
             nm : names[ i ]
-            fp : ref FILE [ fopen[ '{base}/{nm}', 'rb' ] ]
+            fp : @FILE [ fopen[ '{base}/{nm}', 'rb' ] ]
             if [ !fp ]
                 puts 'res: cannot open {base}/{nm}'
                 return false
@@ -470,7 +470,7 @@ class Res
             sizes[ i ] = sz
             nhash[ i ] = res_hname[ nm ]
             chash[ i ] = res_hkey[ nm, sz ]
-        out : ref FILE [ fopen[ dest.chars, 'wb' ] ]
+        out : @FILE [ fopen[ dest.chars, 'wb' ] ]
         if [ !out ]
             puts 'res: cannot write {dest.chars}'
             return false
@@ -478,25 +478,25 @@ class Res
         v  : u32 [ 2 ]
         ob : u32 [ (obscure) ? 1 : 0 ]
         c  : u32 [ u32[ n ] ]
-        fwrite[ ref m,  4, 1, out ]
-        fwrite[ ref v,  4, 1, out ]
-        fwrite[ ref ob, 4, 1, out ]
-        fwrite[ ref c,  4, 1, out ]
+        fwrite[ @m,  4, 1, out ]
+        fwrite[ @v,  4, 1, out ]
+        fwrite[ @ob, 4, 1, out ]
+        fwrite[ @c,  4, 1, out ]
         off : u64 [ 0 ]
         for [ i: i32 0, i < n, i += 1 ]
             nh : u64 [ nhash[ i ] ]
             ch : u64 [ chash[ i ] ]
             sz : u64 [ sizes[ i ] ]
-            fwrite[ ref nh,  8, 1, out ]
-            fwrite[ ref ch,  8, 1, out ]
-            fwrite[ ref off, 8, 1, out ]
-            fwrite[ ref sz,  8, 1, out ]
+            fwrite[ @nh,  8, 1, out ]
+            fwrite[ @ch,  8, 1, out ]
+            fwrite[ @off, 8, 1, out ]
+            fwrite[ @sz,  8, 1, out ]
             off = off + sz
         key : ResKey [ ]
         key.seed[ pw ]
         total : u64 [ 0 ]
         for [ i: i32 0, i < n, i += 1 ]
-            fp : ref FILE [ fopen[ '{base}/{names[ i ]}', 'rb' ] ]
+            fp : @FILE [ fopen[ '{base}/{names[ i ]}', 'rb' ] ]
             if [ !fp ] return false
             remain : u64 [ sizes[ i ] ]
             while [ remain > 0 ]
@@ -519,7 +519,7 @@ class Res
         ibase  = base_dir
         icache = cache_dir
         ipw    = password
-        fp : ref FILE [ fopen[ res_path.chars, 'rb' ] ]
+        fp : @FILE [ fopen[ res_path.chars, 'rb' ] ]
         if [ !fp ]
             puts 'res: cannot open {res_path.chars}'
             return false
@@ -527,10 +527,10 @@ class Res
         v  : u32 [ 0 ]
         ob : u32 [ 0 ]
         c  : u32 [ 0 ]
-        fread[ ref m,  4, 1, fp ]
-        fread[ ref v,  4, 1, fp ]
-        fread[ ref ob, 4, 1, fp ]
-        fread[ ref c,  4, 1, fp ]
+        fread[ @m,  4, 1, fp ]
+        fread[ @v,  4, 1, fp ]
+        fread[ @ob, 4, 1, fp ]
+        fread[ @c,  4, 1, fp ]
         if [ m != magic ]
             puts 'res: bad magic in {res_path.chars}'
             fclose[ fp ]
@@ -546,10 +546,10 @@ class Res
             ch : u64 [ 0 ]
             o  : u64 [ 0 ]
             s  : u64 [ 0 ]
-            fread[ ref nh, 8, 1, fp ]
-            fread[ ref ch, 8, 1, fp ]
-            fread[ ref o,  8, 1, fp ]
-            fread[ ref s,  8, 1, fp ]
+            fread[ @nh, 8, 1, fp ]
+            fread[ @ch, 8, 1, fp ]
+            fread[ @o,  8, 1, fp ]
+            fread[ @s,  8, 1, fp ]
             inhash[ i ] = nh
             ichash[ i ] = ch
             ioffs[ i ]  = o
@@ -577,14 +577,14 @@ class Res
     func ensure [ i: i32, ext: string ] -> path
         cp : cache_path[ i, ext ]
         if [ cp.exists[] ] return cp
-        fp : ref FILE [ fopen[ isrc.chars, 'rb' ] ]
+        fp : @FILE [ fopen[ isrc.chars, 'rb' ] ]
         if [ !fp ] return cp
         fseek[ fp, i64[ iblob + ioffs[ i ] ], SEEK_SET ]
         key : ResKey [ ]
         if [ iobsc ]
             key.seed[ ipw ]
             key.seek[ ioffs[ i ] ]
-        out : ref FILE [ fopen[ cp.chars, 'wb' ] ]
+        out : @FILE [ fopen[ cp.chars, 'wb' ] ]
         if [ !out ]
             fclose[ fp ]
             return cp

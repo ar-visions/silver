@@ -640,7 +640,7 @@ element ModelView
     mutable n_small_amp : f32 [ 0.012 ]       # small map magnitude, added on top
     mutable n_tan_amp   : f32 [ 0.015 ]       # tangent-plane slide magnitude
     # training label: per control-cage vertex world-space delta the perlin applied
-    mutable cage_delta  : ref f32
+    mutable cage_delta  : @f32
     mutable cage_n      : i32 [ 0 ]           # control-cage vertex count
     # perlin-labeled export: capture two yaw angles + the cage-delta label
     mutable export_step : i32 [ 0 ]           # 0 idle; 3 arm; 1 cap-A; 2 cap-B
@@ -652,9 +652,9 @@ element ModelView
     mutable patch_px    : i32 [ 32 ]          # scan window size (the input patch)
     mutable scan_px     : i32 [ 128 ]         # full face render is scanned at this
     mutable patch_stride: i32 [ 16 ]          # window step (overlap for the blend)
-    mutable pj          : ref f32             # per-vert projections, 5 f32 each
+    mutable pj          : @f32             # per-vert projections, 5 f32 each
     mutable pj_cap      : i32 [ 0 ]           # pj capacity in verts
-    mutable recbuf      : ref f32             # 6-float label record scratch
+    mutable recbuf      : @f32             # 6-float label record scratch
     mutable nose_gain  : f32 [ 0.03 ]         # nose scale from _V_NOSE mask
     # nose landmark fit (mm); defaults equal the model rest -> no-op until set
     mutable nostril_span : f32 [ 38.5 ]       # nostril edge-to-edge, x
@@ -704,21 +704,21 @@ element ModelView
     mutable capture_state : i32 [ 0 ]         # 0 aim, 1 grab
     mutable clip_rejects : i32 [ 0 ]
     mutable cap_cam  : i32 [ 0 ]              # camera being captured now
-    mutable cap_pl   : ref f32                # per-camera plot fields, 9 each
+    mutable cap_pl   : @f32                # per-camera plot fields, 9 each
     mutable cap_rec  : i32 [ -1 ]             # record whose pose this sample wears          # poses re-rolled for eye clip
     mutable anch_lci : i32 [ -1 ]             # corner CONTROL verts: live
     mutable anch_rci : i32 [ -1 ]             # positions feed the oc labels
     mutable anch_lii : i32 [ -1 ]             # inner corner control verts:
     mutable anch_rii : i32 [ -1 ]             # oc-ic midpoint = eye coord
-    mutable cap_gw   : ref f32                # lid group weights, 21 x nv
-    mutable cap_gd   : ref f32                # applied per-vert offsets, 21 x nv x 3
-    mutable cap_gc   : ref f32                # sector centroids, 21 x 2 sides x 3
-    mutable cap_maw  : ref f32                # whole-mesh anchor falloff, nv
-    mutable cap_mp   : ref f32                # applied mesh perlin, nv x 3
-    mutable cap_nd   : ref f32                # applied nose scramble, nv x 3
-    mutable cap_fd   : ref f32                # applied face scramble, nv x 3
-    mutable cap_faw  : ref f32                # face scramble falloff, nv
-    mutable cap_ed   : ref f32                # applied orbital scale, nv x 3
+    mutable cap_gw   : @f32                # lid group weights, 21 x nv
+    mutable cap_gd   : @f32                # applied per-vert offsets, 21 x nv x 3
+    mutable cap_gc   : @f32                # sector centroids, 21 x 2 sides x 3
+    mutable cap_maw  : @f32                # whole-mesh anchor falloff, nv
+    mutable cap_mp   : @f32                # applied mesh perlin, nv x 3
+    mutable cap_nd   : @f32                # applied nose scramble, nv x 3
+    mutable cap_fd   : @f32                # applied face scramble, nv x 3
+    mutable cap_faw  : @f32                # face scramble falloff, nv
+    mutable cap_ed   : @f32                # applied orbital scale, nv x 3
     mutable cap_gn   : i32                    # 0 unbuilt, -1 missing, 1 live
     # the model's inner tear duct runs big: per pose it scales to
     # 0.3..1.0 of modeled size (the globe covers the exposed slack)
@@ -728,11 +728,11 @@ element ModelView
     mutable cap_lnamt : f32                   # per-pose perlin lid-push amount
     mutable cap_lnrad : f32                   # falloff outer radius, globe radii
     mutable cap_lnsd  : i64                   # perlin lid-push seed
-    mutable cap_lnf   : ref f32               # applied lid-push, backed out next pose
+    mutable cap_lnf   : @f32               # applied lid-push, backed out next pose
     # augmentation scale: perlin pushes the lid out along the look
     # direction near the pupil; 0 disables
     public  lid_noise : f32 [ 1.0 ]
-    mutable cap_zf   : ref f32                # applied z-follow, edn_n*2
+    mutable cap_zf   : @f32                # applied z-follow, edn_n*2
     mutable cap_gseed : i64                   # pose-group seed anchor (replay)
     mutable cap_pseed : i64 [ 777 ]           # plot stream: advances across looks
     mutable cap_look_i : i32                  # look index within the pose group
@@ -769,9 +769,9 @@ element ModelView
     # from eye pitch; glTF drops drivers, so the engine recreates the ramp)
     mutable edn_set  : bool
     mutable edn_n    : i32 [ 0 ]              # driven head-cage verts
-    mutable edn_v    : ref i32                # cage vert indices
-    mutable edn_dl   : ref f32                # Eyes Down L deltas
-    mutable edn_dr   : ref f32                # Eyes Down R deltas
+    mutable edn_v    : @i32                # cage vert indices
+    mutable edn_dl   : @f32                # Eyes Down L deltas
+    mutable edn_dr   : @f32                # Eyes Down R deltas
     mutable edn_wl   : f32 [ 0.0 ]            # currently applied weights —
     mutable edn_wr   : f32 [ 0.0 ]            # morph is RELATIVE to the cage
     mutable eyes_down_full : f32 [ 0.5 ]      # radians down = full morph
@@ -780,9 +780,9 @@ element ModelView
     mutable fov_x : f32 [ 40.0 ]              # horizontal FOV, degrees
     # rig config source when hosted headless (no picker parent there)
     mutable rig : hyperspace2
-    mutable eye_w   : ref f32                 # _V_EYE influence per cage vert
-    mutable nose_w  : ref f32                 # _V_NOSE influence per cage vert
-    mutable lip_w   : ref f32                 # _V_LIP_UPPER influence per cage vert
+    mutable eye_w   : @f32                 # _V_EYE influence per cage vert
+    mutable nose_w  : @f32                 # _V_NOSE influence per cage vert
+    mutable lip_w   : @f32                 # _V_LIP_UPPER influence per cage vert
 
     func init []
         animated  = true
@@ -814,7 +814,7 @@ element ModelView
         if [ ev.key.shift && vmodel && head_ci >= 0 && vshader && eye_w && nose_w ]
             hc : vmodel.cages[ head_ci ]
             if [ hc && hc.cage_buf ]
-                bp : ref f32 [ hc.cage_buf.data ]
+                bp : @f32 [ hc.cage_buf.data ]
                 vm : mat4f [ vshader.view ]
                 pm : mat4f [ vshader.proj ]
                 mx : f32 [ ev.mouse.pos.x - bounds.x ]
@@ -901,19 +901,19 @@ element ModelView
                     emnm = gmodel.materials[ emidx ].name
                 if [ emnm != 'Eyeball' ] continue
                 epos_ai : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in eprim.attributes
+                for [ value: @i64, a_name: string ] in eprim.attributes
                     if [ a_name == 'POSITION' ] epos_ai = i32[ value[0] ]
                 if [ epos_ai < 0 ] continue
                 eac : gmodel.accessors[ epos_ai ]
                 ebv : gmodel.bufferViews[ i32[ eac.bufferView ] ]
                 ebb : gmodel.buffers[ i32[ ebv.buffer ] ]
-                ebase : ref i8 [ ebb.data ]
+                ebase : @i8 [ ebb.data ]
                 estride : i64 [ eac.stride ]
                 if [ ebv.byteStride > 0 ] estride = ebv.byteStride
                 eoff : i64 [ ebv.byteOffset + eac.byteOffset ]
                 evc : i32 [ i32[ eac.count ] ]
                 for [ i: i32 0, i < evc, i += 1 ]
-                    ef : ref f32 [ ((ref ebase[ eoff + i64[ i ] * estride ]) to ref f32) ]
+                    ef : @f32 [ ((@ebase[ eoff + i64[ i ] * estride ]) to @f32) ]
                     if [ ef[0] < gxmin ] gxmin = ef[0]
                     if [ ef[0] > gxmax ] gxmax = ef[0]
                     if [ ef[1] < gymin ] gymin = ef[1]
@@ -952,30 +952,30 @@ element ModelView
                 if [ mnm != 'Head' ] continue
                 r_ai : i32 [ -1 ]
                 p_ai : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == '_V_EYE' ] r_ai = i32[ value[0] ]
                     if [ a_name == 'POSITION' ] p_ai = i32[ value[0] ]
                 if [ r_ai < 0 || p_ai < 0 ] continue
                 rac : gmodel.accessors[ r_ai ]
                 rbv : gmodel.bufferViews[ i32[ rac.bufferView ] ]
                 rbb : gmodel.buffers[ i32[ rbv.buffer ] ]
-                rbase : ref i8 [ rbb.data ]
+                rbase : @i8 [ rbb.data ]
                 rstride : i64 [ rac.stride ]
                 if [ rbv.byteStride > 0 ] rstride = rbv.byteStride
                 roff : i64 [ rbv.byteOffset + rac.byteOffset ]
                 pac2 : gmodel.accessors[ p_ai ]
                 pbv2 : gmodel.bufferViews[ i32[ pac2.bufferView ] ]
                 pbb2 : gmodel.buffers[ i32[ pbv2.buffer ] ]
-                pbs2 : ref i8 [ pbb2.data ]
+                pbs2 : @i8 [ pbb2.data ]
                 pst2 : i64 [ pac2.stride ]
                 if [ pbv2.byteStride > 0 ] pst2 = pbv2.byteStride
                 pof2 : i64 [ pbv2.byteOffset + pac2.byteOffset ]
                 vc4 : i32 [ i32[ pac2.count ] ]
                 for [ i: i32 0, i < vc4, i += 1 ]
-                    cu : ref u16 [ ((ref rbase[ roff + i64[ i ] * rstride ]) to ref u16) ]
+                    cu : @u16 [ ((@rbase[ roff + i64[ i ] * rstride ]) to @u16) ]
                     red : f32 [ f32[ cu[0] ] / 65535.0 ]
                     if [ red <= 0.75 ] continue
-                    pv4 : ref f32 [ ((ref pbs2[ pof2 + i64[ i ] * pst2 ]) to ref f32) ]
+                    pv4 : @f32 [ ((@pbs2[ pof2 + i64[ i ] * pst2 ]) to @f32) ]
                     dl4 : f32 [ (pv4[0]-lcx)*(pv4[0]-lcx) + (pv4[1]-lcy)*(pv4[1]-lcy) + (pv4[2]-lcz)*(pv4[2]-lcz) ]
                     dr4 : f32 [ (pv4[0]-rcx)*(pv4[0]-rcx) + (pv4[1]-rcy)*(pv4[1]-rcy) + (pv4[2]-rcz)*(pv4[2]-rcz) ]
                     if [ dl4 < dr4 ]
@@ -1021,7 +1021,7 @@ element ModelView
         if [ head_ci >= 0 ]
             hc0 : vmodel.cages[ head_ci ]
             if [ hc0 && hc0.cage_buf ]
-                cb0 : ref f32 [ hc0.cage_buf.data ]
+                cb0 : @f32 [ hc0.cage_buf.data ]
                 # inner corners: the oc reflected through the globe centre
                 # (the lid_weights ic estimate) snapped to its nearest vert
                 iex : f32 [ eyec_lx + (eyec_lx - anch_lx) ]
@@ -1081,7 +1081,7 @@ element ModelView
     # influence of a painted _V_* vertex color, per welded head-cage vert.
     # mid gray (0.216 linear = 0.5 paint) is the zero point; the blue channel
     # carries influence up to 1.0. sampled at each cage vert's source vert.
-    func region_weights [ rname: string ] -> ref f32
+    func region_weights [ rname: string ] -> @f32
         if [ head_ci < 0 || !vmodel || !gmodel ] return null
         hc : vmodel.cages[ head_ci ]
         if [ !hc.rep ] return null
@@ -1093,13 +1093,13 @@ element ModelView
                     mnm = gmodel.materials[ midx ].name
                 if [ mnm != 'Head' ] continue
                 r_ai : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == rname ] r_ai = i32[ value[0] ]
                 if [ r_ai < 0 ] continue
                 rac : gmodel.accessors[ r_ai ]
                 rbv : gmodel.bufferViews[ i32[ rac.bufferView ] ]
                 rbb : gmodel.buffers[ i32[ rbv.buffer ] ]
-                rbase : ref i8 [ rbb.data ]
+                rbase : @i8 [ rbb.data ]
                 rstride : i64 [ rac.stride ]
                 if [ rbv.byteStride > 0 ] rstride = rbv.byteStride
                 roff : i64 [ rbv.byteOffset + rac.byteOffset ]
@@ -1108,7 +1108,7 @@ element ModelView
                 non0 : i32 [ 0 ]
                 for [ v: i32 0, v < hc.nv, v += 1 ]
                     sv2 : i32 [ hc.rep[ v ] ]
-                    pu : ref u16 [ ((ref rbase[ roff + i64[ sv2 ] * rstride ]) to ref u16) ]
+                    pu : @u16 [ ((@rbase[ roff + i64[ sv2 ] * rstride ]) to @u16) ]
                     wv : f32 [ ((f32[ pu[2] ] / 65535.0) - 0.216) / 0.784 ]
                     # _V_NOSE selection convention: blue 0.5..1.0 -> 0..1,
                     # anything at or below 0.5 is unselected
@@ -1144,7 +1144,7 @@ element ModelView
 
     # painted lid group weights: blue joins the group at > 0.5, and
     # LESS blue = MORE offset (deep blue anchors, 0.5 travels fully)
-    func lid_weights [ rname: string ] -> ref f32
+    func lid_weights [ rname: string ] -> @f32
         if [ head_ci < 0 || !vmodel || !gmodel ] return null
         hc : vmodel.cages[ head_ci ]
         if [ !hc.rep ] return null
@@ -1156,13 +1156,13 @@ element ModelView
                     mnm = gmodel.materials[ midx ].name
                 if [ mnm != 'Head' ] continue
                 r_ai : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == rname ] r_ai = i32[ value[0] ]
                 if [ r_ai < 0 ] continue
                 rac : gmodel.accessors[ r_ai ]
                 rbv : gmodel.bufferViews[ i32[ rac.bufferView ] ]
                 rbb : gmodel.buffers[ i32[ rbv.buffer ] ]
-                rbase : ref i8 [ rbb.data ]
+                rbase : @i8 [ rbb.data ]
                 rstride : i64 [ rac.stride ]
                 if [ rbv.byteStride > 0 ] rstride = rbv.byteStride
                 roff : i64 [ rbv.byteOffset + rac.byteOffset ]
@@ -1171,7 +1171,7 @@ element ModelView
                 non0 : i32 [ 0 ]
                 for [ v: i32 0, v < hc.nv, v += 1 ]
                     sv2 : i32 [ hc.rep[ v ] ]
-                    pu : ref u16 [ ((ref rbase[ roff + i64[ sv2 ] * rstride ]) to ref u16) ]
+                    pu : @u16 [ ((@rbase[ roff + i64[ sv2 ] * rstride ]) to @u16) ]
                     bb : f32 [ f32[ pu[2] ] / 65535.0 ]
                     # deeper blue = MORE travel (the _V_NOSE convention),
                     # joining at blue > 0.5. corner pins always win:
@@ -1420,7 +1420,7 @@ element ModelView
         if [ anch_lci >= 0 && head_ci >= 0 ]
             hc7 : vmodel.cages[ head_ci ]
             if [ hc7 && hc7.cage_buf ]
-                cb7 : ref f32 [ hc7.cage_buf.data ]
+                cb7 : @f32 [ hc7.cage_buf.data ]
                 wxs[2] = cb7[ anch_lci * 3 + 0 ]
                 wys[2] = cb7[ anch_lci * 3 + 1 ]
                 wzs[2] = cb7[ anch_lci * 3 + 2 ]
@@ -1546,7 +1546,7 @@ element ModelView
         nw6 : i32 [ 0 ]
         nh6 : i32 [ 0 ]
         nn6 : i32 [ 0 ]
-        np8 : ref u8
+        np8 : @u8
         nimg : Image
         if [ fp.recs_noise_n > 0 ]
             ni6 : i32 [ (cap_idx * 7919 + cam * 13) % fp.recs_noise_n ]
@@ -1599,9 +1599,9 @@ element ModelView
                 nf9[ fy9 * 128 + fx9 ] = u8[ nv9 * 255.0 ]
         # compose: synthetic (premultiplied alpha) over the record, gray out
         fimg : Image [ width: fw2, height: fh2, format: Pixel.u8, channels: 1 ]
-        dp : ref u8 [ fimg.pixels ]
-        sp8 : ref u8 [ mcap.pixels ]
-        rp8 : ref u8 [ rim.pixels ]
+        dp : @u8 [ fimg.pixels ]
+        sp8 : @u8 [ mcap.pixels ]
+        rp8 : @u8 [ rim.pixels ]
         snch : i32 [ mcap.channels ]
         rnch : i32 [ rim.channels ]
         for [ oy5: i32 0, oy5 < fh2, oy5 += 1 ]
@@ -1875,20 +1875,20 @@ element ModelView
                 emsh2 : gmodel.meshes[ emi ]
                 for [ eprim2: Primitive ] in emsh2.primitives
                     epos2 : i32 [ -1 ]
-                    for [ value: ref i64, a_name: string ] in eprim2.attributes
+                    for [ value: @i64, a_name: string ] in eprim2.attributes
                         if [ a_name == 'POSITION' ] epos2 = i32[ value[0] ]
                     if [ epos2 < 0 ] continue
                     eac2 : gmodel.accessors[ epos2 ]
                     ebv2 : gmodel.bufferViews[ i32[ eac2.bufferView ] ]
                     ebb2 : gmodel.buffers[ i32[ ebv2.buffer ] ]
-                    ebase2 : ref i8 [ ebb2.data ]
+                    ebase2 : @i8 [ ebb2.data ]
                     estr2 : i64 [ eac2.stride ]
                     if [ ebv2.byteStride > 0 ] estr2 = ebv2.byteStride
                     eoff2 : i64 [ ebv2.byteOffset + eac2.byteOffset ]
                     evc2 : i32 [ i32[ eac2.count ] ]
                     ebv3 : i32 [ nv ]
                     for [ i: i32 0, i < evc2, i += 1 ]
-                        ef2 : ref f32 [ ((ref ebase2[ eoff2 + i64[ i ] * estr2 ]) to ref f32) ]
+                        ef2 : @f32 [ ((@ebase2[ eoff2 + i64[ i ] * estr2 ]) to @f32) ]
                         lx2 : f32 [ ef2[0] ]
                         ly2 : f32 [ ef2[1] ]
                         lz2 : f32 [ ef2[2] ]
@@ -1903,12 +1903,12 @@ element ModelView
                     eiac : gmodel.accessors[ i32[ eprim2.indices ] ]
                     eibv : gmodel.bufferViews[ i32[ eiac.bufferView ] ]
                     eibb : gmodel.buffers[ i32[ eibv.buffer ] ]
-                    eib : ref i8 [ eibb.data ]
+                    eib : @i8 [ eibb.data ]
                     eio : i64 [ eibv.byteOffset + eiac.byteOffset ]
                     eic : i32 [ i32[ eiac.count ] ]
                     ew2 : bool [ eiac.componentType == ComponentType.UNSIGNED_INT ]
-                    e16 : ref u16 [ ((ref eib[ eio ]) to ref u16) ]
-                    e32 : ref u32 [ ((ref eib[ eio ]) to ref u32) ]
+                    e16 : @u16 [ ((@eib[ eio ]) to @u16) ]
+                    e32 : @u32 [ ((@eib[ eio ]) to @u32) ]
                     for [ i: i32 0, i < eic, i += 3 ]
                         ea2 : i32 [ (ew2) ? i32[ e32[ i ] ] : i32[ e16[ i ] ] ]
                         eb2 : i32 [ (ew2) ? i32[ e32[ i + 1 ] ] : i32[ e16[ i + 1 ] ] ]
@@ -1948,13 +1948,13 @@ element ModelView
                     mnm = gmodel.materials[ midx ].name
                 if [ mnm != 'Head' && mnm != 'Body' ] continue
                 pos_ai : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == 'POSITION' ] pos_ai = i32[ value[0] ]
                 if [ pos_ai < 0 ] continue
                 pac : gmodel.accessors[ pos_ai ]
                 pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
                 pbb : gmodel.buffers[ i32[ pbv.buffer ] ]
-                pbase : ref i8 [ pbb.data ]
+                pbase : @i8 [ pbb.data ]
                 pstride : i64 [ pac.stride ]
                 if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
                 poff : i64 [ pbv.byteOffset + pac.byteOffset ]
@@ -1962,7 +1962,7 @@ element ModelView
                 s = '{s}o face\n'
                 fbase : i32 [ nv ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
                     wx : f32 [ pf[0] ]
                     wy : f32 [ pf[1] ]
                     wz : f32 [ pf[2] ]
@@ -1974,12 +1974,12 @@ element ModelView
                 iac : gmodel.accessors[ i32[ prim.indices ] ]
                 ibv : gmodel.bufferViews[ i32[ iac.bufferView ] ]
                 ibb : gmodel.buffers[ i32[ ibv.buffer ] ]
-                ibase : ref i8 [ ibb.data ]
+                ibase : @i8 [ ibb.data ]
                 ioff : i64 [ ibv.byteOffset + iac.byteOffset ]
                 ic : i32 [ i32[ iac.count ] ]
                 wide2 : bool [ iac.componentType == ComponentType.UNSIGNED_INT ]
-                i16p : ref u16 [ ((ref ibase[ ioff ]) to ref u16) ]
-                i32p : ref u32 [ ((ref ibase[ ioff ]) to ref u32) ]
+                i16p : @u16 [ ((@ibase[ ioff ]) to @u16) ]
+                i32p : @u32 [ ((@ibase[ ioff ]) to @u32) ]
                 for [ i: i32 0, i < ic, i += 3 ]
                     ia : i32 [ (wide2) ? i32[ i32p[ i ] ] : i32[ i16p[ i ] ] ]
                     ib : i32 [ (wide2) ? i32[ i32p[ i + 1 ] ] : i32[ i16p[ i + 1 ] ] ]
@@ -2021,7 +2021,7 @@ element ModelView
         for [ ci: i32 0, ci < vmodel.cages.count, ci += 1 ]
             cg : vmodel.cages[ ci ]
             if [ !cg.cage_buf ] continue
-            cpos : ref f32 [ cg.cage_buf.data ]
+            cpos : @f32 [ cg.cage_buf.data ]
             for [ v: i32 0, v < cg.nv, v += 1 ]
                 px : f32 [ cpos[ v*3 + 0 ] ]
                 py : f32 [ cpos[ v*3 + 1 ] ]
@@ -2198,13 +2198,13 @@ element ModelView
                 if [ !prim.targets ] continue
                 if [ prim.targets.count == 0 ] continue
                 pos_ai : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == 'POSITION' ] pos_ai = i32[ value[0] ]
                 if [ pos_ai < 0 ] continue
                 pac : gmodel.accessors[ pos_ai ]
                 pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
                 pbb : gmodel.buffers[ i32[ pbv.buffer ] ]
-                pbase : ref i8 [ pbb.data ]
+                pbase : @i8 [ pbb.data ]
                 pstride : i64 [ pac.stride ]
                 if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
                 poff : i64 [ pbv.byteOffset + pac.byteOffset ]
@@ -2218,19 +2218,19 @@ element ModelView
                     if [ ti >= prim.targets.count ] continue
                     tmap : prim.targets[ ti ]
                     dpos_ai : i32 [ -1 ]
-                    for [ value: ref i64, a_name: string ] in tmap
+                    for [ value: @i64, a_name: string ] in tmap
                         if [ a_name == 'POSITION' ] dpos_ai = i32[ value[0] ]
                     if [ dpos_ai < 0 ] continue
                     dac : gmodel.accessors[ dpos_ai ]
                     dbv : gmodel.bufferViews[ i32[ dac.bufferView ] ]
                     dbb : gmodel.buffers[ i32[ dbv.buffer ] ]
-                    dbase : ref i8 [ dbb.data ]
+                    dbase : @i8 [ dbb.data ]
                     dstride : i64 [ dac.stride ]
                     if [ dbv.byteStride > 0 ] dstride = dbv.byteStride
                     doff : i64 [ dbv.byteOffset + dac.byteOffset ]
                     for [ i: i32 0, i < vc, i += 1 ]
-                        pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
-                        df : ref f32 [ ((ref dbase[ doff + i64[ i ] * dstride ]) to ref f32) ]
+                        pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+                        df : @f32 [ ((@dbase[ doff + i64[ i ] * dstride ]) to @f32) ]
                         pf[0] = pf[0] + w * df[0]
                         pf[1] = pf[1] + w * df[1]
                         pf[2] = pf[2] + w * df[2]
@@ -2270,9 +2270,9 @@ element ModelView
                 rmap : prim.targets[ tir ]
                 lpos : i32 [ -1 ]
                 rpos : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in lmap
+                for [ value: @i64, a_name: string ] in lmap
                     if [ a_name == 'POSITION' ] lpos = i32[ value[0] ]
-                for [ value: ref i64, a_name: string ] in rmap
+                for [ value: @i64, a_name: string ] in rmap
                     if [ a_name == 'POSITION' ] rpos = i32[ value[0] ]
                 if [ lpos < 0 || rpos < 0 ] continue
                 lac : gmodel.accessors[ lpos ]
@@ -2291,13 +2291,13 @@ element ModelView
                     scn : i32 [ i32[ lac.sparse.count ] ]
                     sib : gmodel.bufferViews[ i32[ lac.sparse.indices.bufferView ] ]
                     sibb : gmodel.buffers[ i32[ sib.buffer ] ]
-                    sip : ref i8 [ sibb.data ]
+                    sip : @i8 [ sibb.data ]
                     svb : gmodel.bufferViews[ i32[ lac.sparse.values.bufferView ] ]
                     svbb : gmodel.buffers[ i32[ svb.buffer ] ]
-                    svp : ref i8 [ svbb.data ]
-                    svf : ref f32 [ ((ref svp[ svb.byteOffset ]) to ref f32) ]
-                    u16i : ref u16 [ ((ref sip[ sib.byteOffset ]) to ref u16) ]
-                    u32i : ref u32 [ ((ref sip[ sib.byteOffset ]) to ref u32) ]
+                    svp : @i8 [ svbb.data ]
+                    svf : @f32 [ ((@svp[ svb.byteOffset ]) to @f32) ]
+                    u16i : @u16 [ ((@sip[ sib.byteOffset ]) to @u16) ]
+                    u32i : @u32 [ ((@sip[ sib.byteOffset ]) to @u32) ]
                     wide : bool [ lac.sparse.indices.componentType == ComponentType.UNSIGNED_INT ]
                     for [ si: i32 0, si < scn, si += 1 ]
                         dv : i32 [ (wide) ? i32[ u32i[ si ] ] : i32[ u16i[ si ] ] ]
@@ -2309,13 +2309,13 @@ element ModelView
                     scn : i32 [ i32[ rac.sparse.count ] ]
                     sib : gmodel.bufferViews[ i32[ rac.sparse.indices.bufferView ] ]
                     sibb : gmodel.buffers[ i32[ sib.buffer ] ]
-                    sip : ref i8 [ sibb.data ]
+                    sip : @i8 [ sibb.data ]
                     svb : gmodel.bufferViews[ i32[ rac.sparse.values.bufferView ] ]
                     svbb : gmodel.buffers[ i32[ svb.buffer ] ]
-                    svp : ref i8 [ svbb.data ]
-                    svf : ref f32 [ ((ref svp[ svb.byteOffset ]) to ref f32) ]
-                    u16i : ref u16 [ ((ref sip[ sib.byteOffset ]) to ref u16) ]
-                    u32i : ref u32 [ ((ref sip[ sib.byteOffset ]) to ref u32) ]
+                    svp : @i8 [ svbb.data ]
+                    svf : @f32 [ ((@svp[ svb.byteOffset ]) to @f32) ]
+                    u16i : @u16 [ ((@sip[ sib.byteOffset ]) to @u16) ]
+                    u32i : @u32 [ ((@sip[ sib.byteOffset ]) to @u32) ]
                     wide : bool [ rac.sparse.indices.componentType == ComponentType.UNSIGNED_INT ]
                     for [ si: i32 0, si < scn, si += 1 ]
                         dv : i32 [ (wide) ? i32[ u32i[ si ] ] : i32[ u16i[ si ] ] ]
@@ -2374,7 +2374,7 @@ element ModelView
         dwl : f32 [ wl - edn_wl ]
         dwr : f32 [ wr - edn_wr ]
         if [ dwl == 0.0 && dwr == 0.0 ] return
-        bp : ref f32 [ hc.cage_buf.data ]
+        bp : @f32 [ hc.cage_buf.data ]
         for [ k: i32 0, k < edn_n, k += 1 ]
             v3 : i32 [ edn_v[ k ] * 3 ]
             k3 : i32 [ k * 3 ]
@@ -2463,7 +2463,7 @@ element ModelView
             for [ prim: Primitive ] in msh.primitives
                 pos_ai  : i32 [ -1 ]
                 nose_ai : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == 'POSITION' ] pos_ai  = i32[ value[0] ]
                     if [ a_name == '_V_NOSE'  ] nose_ai = i32[ value[0] ]
                 if [ pos_ai  < 0 ] continue
@@ -2474,8 +2474,8 @@ element ModelView
                 nbv : gmodel.bufferViews[ i32[ nac.bufferView ] ]
                 pbb : gmodel.buffers[ i32[ pbv.buffer ] ]
                 nbb : gmodel.buffers[ i32[ nbv.buffer ] ]
-                pbase : ref i8 [ pbb.data ]
-                nbase : ref i8 [ nbb.data ]
+                pbase : @i8 [ pbb.data ]
+                nbase : @i8 [ nbb.data ]
                 pstride : i64 [ pac.stride ]
                 nstride : i64 [ nac.stride ]
                 if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
@@ -2488,10 +2488,10 @@ element ModelView
                 cz : f32 [ 0.0 ]
                 wsum : f32 [ 0.0 ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
-                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
                     cx += pf[0] * m
                     cy += pf[1] * m
                     cz += pf[2] * m
@@ -2502,10 +2502,10 @@ element ModelView
                 cz /= wsum
                 rad : f32 [ 0.0 ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
-                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
                     dx : f32 [ pf[0] - cx ]
                     dy : f32 [ pf[1] - cy ]
                     dz : f32 [ pf[2] - cz ]
@@ -2513,10 +2513,10 @@ element ModelView
                     if [ d > rad ] rad = d
                 if [ rad <= 0.0 ] continue
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
-                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
                     dx : f32 [ pf[0] - cx ]
                     dy : f32 [ pf[1] - cy ]
                     dz : f32 [ pf[2] - cz ]
@@ -2545,7 +2545,7 @@ element ModelView
             for [ prim: Primitive ] in msh.primitives
                 pos_ai  : i32 [ -1 ]
                 nose_ai : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == 'POSITION' ] pos_ai  = i32[ value[0] ]
                     if [ a_name == '_V_NOSE'  ] nose_ai = i32[ value[0] ]
                 if [ pos_ai  < 0 ] continue
@@ -2556,8 +2556,8 @@ element ModelView
                 nbv : gmodel.bufferViews[ i32[ nac.bufferView ] ]
                 pbb : gmodel.buffers[ i32[ pbv.buffer ] ]
                 nbb : gmodel.buffers[ i32[ nbv.buffer ] ]
-                pbase : ref i8 [ pbb.data ]
-                nbase : ref i8 [ nbb.data ]
+                pbase : @i8 [ pbb.data ]
+                nbase : @i8 [ nbb.data ]
                 pstride : i64 [ pac.stride ]
                 nstride : i64 [ nac.stride ]
                 if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
@@ -2569,10 +2569,10 @@ element ModelView
                 ny0 : f32 [  1000000.0 ]
                 ny1 : f32 [ -1000000.0 ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
-                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
                     if [ pf[1] < ny0 ] ny0 = pf[1]
                     if [ pf[1] > ny1 ] ny1 = pf[1]
                 if [ ny1 <= ny0 ] continue
@@ -2583,10 +2583,10 @@ element ModelView
                 cn0 : i32 [ 0 ]
                 cn1 : i32 [ 0 ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
-                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
                     t  : f32 [ (pf[1] - ny0) / yspan ]
                     ax : f32 [ (pf[0] < 0.0) ? (0.0 - pf[0]) : pf[0] ]
                     if [ t < 0.333 ]
@@ -2606,12 +2606,12 @@ element ModelView
                 dy_full : f32 [ nyt - ny0 ]
                 # pass 3: apply
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : ref u16 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref u16) ]
+                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
                     w  : f32 [ m / (1.0 - neutral) ]
                     if [ w > 1.0 ] w = 1.0
-                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
                     t  : f32 [ (pf[1] - ny0) / yspan ]
                     if [ t < 0.0 ] t = 0.0
                     if [ t > 1.0 ] t = 1.0
@@ -2638,8 +2638,8 @@ element ModelView
         iba : gmodel.accessors[ sk.inverseBindMatrices ]
         ibv : gmodel.bufferViews[ i32[ iba.bufferView ] ]
         ibb : gmodel.buffers[ i32[ ibv.buffer ] ]
-        base : ref i8 [ ibb.data ]
-        src  : ref f32 [ ((ref base[ ibv.byteOffset + iba.byteOffset ]) to ref f32) ]
+        base : @i8 [ ibb.data ]
+        src  : @f32 [ ((@base[ ibv.byteOffset + iba.byteOffset ]) to @f32) ]
         ibm = array mat4f [ ]
         for [ j: i32 0, j < nj, j += 1 ]
             mm : mat4f [ mat4f.identity[] ]
@@ -2705,19 +2705,19 @@ element ModelView
         emsh3 : gmodel.meshes[ emi ]
         for [ ep3: Primitive ] in emsh3.primitives
             pos3 : i32 [ -1 ]
-            for [ value: ref i64, a_name: string ] in ep3.attributes
+            for [ value: @i64, a_name: string ] in ep3.attributes
                 if [ a_name == 'POSITION' ] pos3 = i32[ value[0] ]
             if [ pos3 < 0 ] continue
             ac3 : gmodel.accessors[ pos3 ]
             bv3 : gmodel.bufferViews[ i32[ ac3.bufferView ] ]
             bb3 : gmodel.buffers[ i32[ bv3.buffer ] ]
-            pb3 : ref i8 [ bb3.data ]
+            pb3 : @i8 [ bb3.data ]
             st3 : i64 [ ac3.stride ]
             if [ bv3.byteStride > 0 ] st3 = bv3.byteStride
             of3 : i64 [ bv3.byteOffset + ac3.byteOffset ]
             vc3 : i32 [ i32[ ac3.count ] ]
             for [ i: i32 0, i < vc3, i += 1 ]
-                vf3 : ref f32 [ ((ref pb3[ of3 + i64[ i ] * st3 ]) to ref f32) ]
+                vf3 : @f32 [ ((@pb3[ of3 + i64[ i ] * st3 ]) to @f32) ]
                 row : local f32 [ 4 ] [ 0.0, 0.0, 0.0, 1.0 ]
                 row[ 0 ] = vf3[0] * 2.0
                 row[ 1 ] = vf3[1] * 2.0
@@ -2748,19 +2748,19 @@ element ModelView
         apz : f32 [ 0.0 ]
         for [ ep3: Primitive ] in emsh3.primitives
             pos3 : i32 [ -1 ]
-            for [ value: ref i64, a_name: string ] in ep3.attributes
+            for [ value: @i64, a_name: string ] in ep3.attributes
                 if [ a_name == 'POSITION' ] pos3 = i32[ value[0] ]
             if [ pos3 < 0 ] continue
             ac3 : gmodel.accessors[ pos3 ]
             bv3 : gmodel.bufferViews[ i32[ ac3.bufferView ] ]
             bb3 : gmodel.buffers[ i32[ bv3.buffer ] ]
-            pb3 : ref i8 [ bb3.data ]
+            pb3 : @i8 [ bb3.data ]
             st3 : i64 [ ac3.stride ]
             if [ bv3.byteStride > 0 ] st3 = bv3.byteStride
             of3 : i64 [ bv3.byteOffset + ac3.byteOffset ]
             vc3 : i32 [ i32[ ac3.count ] ]
             for [ i: i32 0, i < vc3, i += 1 ]
-                vf3 : ref f32 [ ((ref pb3[ of3 + i64[ i ] * st3 ]) to ref f32) ]
+                vf3 : @f32 [ ((@pb3[ of3 + i64[ i ] * st3 ]) to @f32) ]
                 ddx : f32 [ vf3[0] - ccx3 ]
                 ddy : f32 [ vf3[1] - ccy3 ]
                 ddz : f32 [ vf3[2] - ccz3 ]
@@ -2833,7 +2833,7 @@ element ModelView
         return a0 + (b0 - a0) * suy
 
     # bilinear sample of one channel from CPU image pixels, u/v clamped
-    func img_bilin [ sp: ref u8, iw: i32, ih: i32, nch: i32, co: i32, u: f32, v: f32 ] -> f32
+    func img_bilin [ sp: @u8, iw: i32, ih: i32, nch: i32, co: i32, u: f32, v: f32 ] -> f32
         bux : f32 [ u * f32[ iw - 1 ] ]
         bvy : f32 [ v * f32[ ih - 1 ] ]
         if [ bux < 0.0 ] bux = 0.0
@@ -2868,8 +2868,8 @@ element ModelView
         nc : i32 [ 32 ]
         aw : i32 [ cs * nc ]
         out : Image [ width: aw, height: aw, format: Pixel.rgba8 ]
-        op : ref u8 [ out.pixels ]
-        sp : ref u8 [ src.pixels ]
+        op : @u8 [ out.pixels ]
+        sp : @u8 [ src.pixels ]
         iw : i32 [ src.width ]
         ih : i32 [ src.height ]
         nch : i32 [ src.channels ]
@@ -3058,19 +3058,19 @@ element ModelView
                     emnm = gmodel.materials[ emidx ].name
                 if [ emnm != 'Eyeball' ] continue
                 epos_ai : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in eprim.attributes
+                for [ value: @i64, a_name: string ] in eprim.attributes
                     if [ a_name == 'POSITION' ] epos_ai = i32[ value[0] ]
                 if [ epos_ai < 0 ] continue
                 eac : gmodel.accessors[ epos_ai ]
                 ebv : gmodel.bufferViews[ i32[ eac.bufferView ] ]
                 ebb : gmodel.buffers[ i32[ ebv.buffer ] ]
-                ebase : ref i8 [ ebb.data ]
+                ebase : @i8 [ ebb.data ]
                 estride : i64 [ eac.stride ]
                 if [ ebv.byteStride > 0 ] estride = ebv.byteStride
                 eoff : i64 [ ebv.byteOffset + eac.byteOffset ]
                 evc : i32 [ i32[ eac.count ] ]
                 for [ i: i32 0, i < evc, i += 1 ]
-                    ef : ref f32 [ ((ref ebase[ eoff + i64[ i ] * estride ]) to ref f32) ]
+                    ef : @f32 [ ((@ebase[ eoff + i64[ i ] * estride ]) to @f32) ]
                     if [ ef[0] < gxmin ] gxmin = ef[0]
                     if [ ef[0] > gxmax ] gxmax = ef[0]
                     gotrad = true
@@ -3091,19 +3091,19 @@ element ModelView
                 keep : bool [ (mnm == 'Head') || (mnm == 'Body') ]
                 if [ !keep ] continue
                 pos_ai : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == 'POSITION' ] pos_ai = i32[ value[0] ]
                 if [ pos_ai < 0 ] continue
                 pac : gmodel.accessors[ pos_ai ]
                 pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
                 pbb : gmodel.buffers[ i32[ pbv.buffer ] ]
-                pbase : ref i8 [ pbb.data ]
+                pbase : @i8 [ pbb.data ]
                 pstride : i64 [ pac.stride ]
                 if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
                 poff : i64 [ pbv.byteOffset + pac.byteOffset ]
                 vc : i32 [ i32[ pac.count ] ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
                     dlx : f32 [ pf[0] - lcx ]
                     dly : f32 [ pf[1] - lcy ]
                     dlz : f32 [ pf[2] - lcz ]
@@ -3206,7 +3206,7 @@ element ModelView
                 pos_ai : i32 [ -1 ]
                 nrm_ai : i32 [ -1 ]
                 tan_ai : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == 'POSITION' ] pos_ai = i32[ value[0] ]
                     if [ a_name == 'NORMAL'   ] nrm_ai = i32[ value[0] ]
                     if [ a_name == 'TANGENT'  ] tan_ai = i32[ value[0] ]
@@ -3217,9 +3217,9 @@ element ModelView
                 pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
                 nbv : gmodel.bufferViews[ i32[ nac.bufferView ] ]
                 tbv : gmodel.bufferViews[ i32[ tac.bufferView ] ]
-                pbase : ref i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
-                nbase : ref i8 [ gmodel.buffers[ i32[ nbv.buffer ] ].data ]
-                tbase : ref i8 [ gmodel.buffers[ i32[ tbv.buffer ] ].data ]
+                pbase : @i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
+                nbase : @i8 [ gmodel.buffers[ i32[ nbv.buffer ] ].data ]
+                tbase : @i8 [ gmodel.buffers[ i32[ tbv.buffer ] ].data ]
                 pstride : i64 [ pac.stride ]
                 nstride : i64 [ nac.stride ]
                 tstride : i64 [ tac.stride ]
@@ -3246,9 +3246,9 @@ element ModelView
                 # per-variant seed offset walks the noise field to a new region
                 sd : f32 [ f32[ face_idx ] * 17.0 ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
-                    nf : ref f32 [ ((ref nbase[ noff + i64[ i ] * nstride ]) to ref f32) ]
-                    tf : ref f32 [ ((ref tbase[ toff + i64[ i ] * tstride ]) to ref f32) ]
+                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+                    nf : @f32 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @f32) ]
+                    tf : @f32 [ ((@tbase[ toff + i64[ i ] * tstride ]) to @f32) ]
                     px : f32 [ pf[0] ]
                     py : f32 [ pf[1] ]
                     pz : f32 [ pf[2] ]
@@ -3311,7 +3311,7 @@ element ModelView
                 edge_ai : i32 [ -1 ]
                 shad_ai : i32 [ -1 ]
                 uv1_ai  : i32 [ -1 ]
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == '_V_EDGE'    ] edge_ai = i32[ value[0] ]
                     if [ a_name == '_V_SHADOWS' ] shad_ai = i32[ value[0] ]
                     if [ a_name == 'TEXCOORD_1' ] uv1_ai  = i32[ value[0] ]
@@ -3320,8 +3320,8 @@ element ModelView
                 uac : gmodel.accessors[ uv1_ai ]
                 ebv : gmodel.bufferViews[ i32[ eac.bufferView ] ]
                 ubv : gmodel.bufferViews[ i32[ uac.bufferView ] ]
-                ebase : ref i8 [ gmodel.buffers[ i32[ ebv.buffer ] ].data ]
-                ubase : ref i8 [ gmodel.buffers[ i32[ ubv.buffer ] ].data ]
+                ebase : @i8 [ gmodel.buffers[ i32[ ebv.buffer ] ].data ]
+                ubase : @i8 [ gmodel.buffers[ i32[ ubv.buffer ] ].data ]
                 estride : i64 [ eac.stride ]
                 ustride : i64 [ uac.stride ]
                 if [ ebv.byteStride > 0 ] estride = ebv.byteStride
@@ -3331,7 +3331,7 @@ element ModelView
                 # shadows: blue 0.5..1.0 -> 0..1 darkening in uv1.y;
                 # .y is written for EVERY vert so buffer junk never
                 # darkens unpainted skin
-                sbase : ref i8
+                sbase : @i8
                 sstride : i64 [ 0 ]
                 soff : i64 [ 0 ]
                 if [ shad_ai >= 0 ]
@@ -3343,12 +3343,12 @@ element ModelView
                     soff = sbv.byteOffset + sac.byteOffset
                 vc : i32 [ i32[ eac.count ] ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    eu : ref u16 [ ((ref ebase[ eoff + i64[ i ] * estride ]) to ref u16) ]
-                    uv : ref f32 [ ((ref ubase[ uoff + i64[ i ] * ustride ]) to ref f32) ]
+                    eu : @u16 [ ((@ebase[ eoff + i64[ i ] * estride ]) to @u16) ]
+                    uv : @f32 [ ((@ubase[ uoff + i64[ i ] * ustride ]) to @f32) ]
                     uv[0] = f32[ eu[0] ] / 65535.0
                     uv[1] = 0.0
                     if [ shad_ai >= 0 ]
-                        su : ref u16 [ ((ref sbase[ soff + i64[ i ] * sstride ]) to ref u16) ]
+                        su : @u16 [ ((@sbase[ soff + i64[ i ] * sstride ]) to @u16) ]
                         sw : f32 [ (f32[ su[2] ] / 65535.0 - 0.5) / 0.5 ]
                         if [ sw < 0.0 ] sw = 0.0
                         if [ sw > 1.0 ] sw = 1.0
@@ -3368,7 +3368,7 @@ element ModelView
         aim_eyes[]
         apply_spacing[]
         gmodel.compute_worlds[]
-        dst : ref f32 [ ((joint_buf.data) to ref f32) ]
+        dst : @f32 [ ((joint_buf.data) to @f32) ]
         for [ j: i32 0, j < nj, j += 1 ]
             jn : gmodel.nodes[ sk.joints[ j ] ]
             jm : mat4f [ jn.world.mul[ ibm[ j ] ] ]
@@ -3440,12 +3440,12 @@ element ModelView
                 midx : i32 [ prim.material ]
                 if [ !gmodel.materials || gmodel.materials.count <= midx ] continue
                 if [ gmodel.materials[ midx ].name != 'Head' ] continue
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == 'POSITION' ] pos_ai = i32[ value[0] ]
         if [ pos_ai < 0 ] return
         pac : gmodel.accessors[ pos_ai ]
         pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
-        pbase : ref i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
+        pbase : @i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
         pstride : i64 [ pac.stride ]
         if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
         poff : i64 [ pbv.byteOffset + pac.byteOffset ]
@@ -3454,7 +3454,7 @@ element ModelView
         bh : f32 [ bounds.h ]
         cv.fill_color[ '#39ff14' ]
         for [ i: i32 0, i < vc, i += 1 ]
-            pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+            pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
             px : f32 [ pf[0] ]
             py : f32 [ pf[1] ]
             pz : f32 [ pf[2] ]
@@ -3492,12 +3492,12 @@ element ModelView
                 midx : i32 [ prim.material ]
                 if [ !gmodel.materials || gmodel.materials.count <= midx ] continue
                 if [ gmodel.materials[ midx ].name != 'Head' ] continue
-                for [ value: ref i64, a_name: string ] in prim.attributes
+                for [ value: @i64, a_name: string ] in prim.attributes
                     if [ a_name == 'POSITION' ] pos_ai = i32[ value[0] ]
         if [ pos_ai < 0 ] return
         pac : gmodel.accessors[ pos_ai ]
         pbv : gmodel.bufferViews[ i32[ pac.bufferView ] ]
-        pbase : ref i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
+        pbase : @i8 [ gmodel.buffers[ i32[ pbv.buffer ] ].data ]
         pstride : i64 [ pac.stride ]
         if [ pbv.byteStride > 0 ] pstride = pbv.byteStride
         poff : i64 [ pbv.byteOffset + pac.byteOffset ]
@@ -3509,7 +3509,7 @@ element ModelView
             pj_cap = vc
         if [ !recbuf ] recbuf = new f32 [ 6 ]
         for [ i: i32 0, i < vc, i += 1 ]
-            pf : ref f32 [ ((ref pbase[ poff + i64[ i ] * pstride ]) to ref f32) ]
+            pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
             px : f32 [ pf[0] ]
             py : f32 [ pf[1] ]
             pz : f32 [ pf[2] ]
@@ -3559,7 +3559,7 @@ element ModelView
                 ca.png[ path 'samples/{idx}_{wy}_{wx}_a.png' ]
                 cb.png[ path 'samples/{idx}_{wy}_{wx}_b.png' ]
                 lp : path 'samples/{idx}_{wy}_{wx}.f32'
-                f : ref FILE [ fopen[ lp, 'wb' ] ]
+                f : @FILE [ fopen[ lp, 'wb' ] ]
                 if [ f ]
                     for [ i: i32 0, i < vc, i += 1 ]
                         if [ pj[ i * 5 + 4 ] < 0.5 ] continue
@@ -3892,7 +3892,7 @@ element ModelView
                                         el
                                             cap_gc[ gb9 ] = 1000000.0
                                 if [ cap_gn < 0 ] puts 'lid groups: none painted (_V_LID*, _V_LIDSHAPE_*)'
-                            bp9 : ref f32 [ hc9.cage_buf.data ]
+                            bp9 : @f32 [ hc9.cage_buf.data ]
                             if [ cap_gn > 0 ]
                                 # rim amplitude: LID4 sits inside the eye
                                 # opening (tiny), N3 is the far orbital
@@ -4468,7 +4468,7 @@ element ModelView
                 if [ !me ] continue
                 wmat : mat4f [ nd.world ]
                 for [ pr: Primitive ] in me.primitives
-                    for [ av: ref i64, an: string ] in pr.attributes
+                    for [ av: @i64, an: string ] in pr.attributes
                         if [ an == 'POSITION' ]
                             ac : gm.accessors[ av[0] ]
                             for [ cn: i32 0, cn < 8, cn += 1 ]
@@ -4917,7 +4917,7 @@ element hyperspace2 : trinity
     # (the stage nets train on left-eye anatomy, right eyes mirror in)
     func crop_tensor2 [ src: Image, cx: f32, cy: f32, side: f32, mir: bool ] -> tensor
         t : tensor [ tensor_shape: 32x32x1 ]
-        data : ref u8 [ src.vdata[] ]
+        data : @u8 [ src.vdata[] ]
         bpp : i32 [ (src.format == Pixel.u8) ? 1 : 4 ]
         iw2 : f32 [ f32[ src.width ] ]
         spx : f32 [ side * iw2 ]
@@ -4947,7 +4947,7 @@ element hyperspace2 : trinity
     # a 32x32 gray tensor into a panel texture, for the net-input strip
     func upload_tensor2 [ tex: Texture, t: tensor ]
         img2 : Image [ width: 32, height: 32, format: Pixel.rgba8 ]
-        d : ref u8 [ img2.vdata[] ]
+        d : @u8 [ img2.vdata[] ]
         for [ i: i32 0, i < 1024, i += 1 ]
             v : f32 [ t.floats[i] * 255.0 ]
             if [ v < 0.0 ]   v = 0.0
@@ -5148,7 +5148,7 @@ element hyperspace2 : trinity
     # one record camera's ray through an annotated point. screen center
     # is the origin: +x right, +y up, +z toward the person. cam 0 = top
     # mount (tilted down), cam 1 = the mirror below (tilted up)
-    func cam_ray [ c: i32, nx: f32, ny: f32, ox: ref f32, dx: ref f32 ]
+    func cam_ray [ c: i32, nx: f32, ny: f32, ox: @f32, dx: @f32 ]
         sgn : f32 [ (c == 0) ? 1.0 : -1.0 ]
         ox[0] = cam_x
         ox[1] = sgn * cam_y
@@ -5261,7 +5261,7 @@ element hyperspace2 : trinity
             exit[ 1 ]
         # medians via insertion sort (counts are small)
         for [ a9: i32 0, a9 < 4, a9 += 1 ]
-            arr : ref f32 [ spans ]
+            arr : @f32 [ spans ]
             if [ a9 == 1 ] arr = noses
             if [ a9 == 2 ] arr = dists
             if [ a9 == 3 ] arr = gaps
@@ -5284,7 +5284,7 @@ element hyperspace2 : trinity
     # head yaw/pitch/roll (generator convention) + per-camera 2D triangle
     # mid/span for the composite alignment. out9 layout:
     # [hy, hp, hr, top_mx, top_my, top_span, bot_mx, bot_my, bot_span]
-    func rec_solve [ fid: string, out9: ref f32 ] -> bool
+    func rec_solve [ fid: string, out9: @f32 ] -> bool
         for [ c9: i32 0, c9 < 2, c9 += 1 ]
             for [ s9: i32 0, s9 < 3, s9 += 1 ]
                 if [ !ann_have[ fid, c9, s9 ] ] return false
@@ -5416,7 +5416,7 @@ element hyperspace2 : trinity
                 hnm : string [ (hc9 == 0) ? 'top' : 'bot' ]
                 him : Image [ uri: path '{rd}/{k - 1}-{hnm}.png' ]
                 if [ him.width <= 0 ] continue
-                hp8 : ref u8 [ him.pixels ]
+                hp8 : @u8 [ him.pixels ]
                 hnc : i32 [ him.channels ]
                 hs9 : f32 [ f32[ him.width ] * 0.16 ]
                 hx9 : f32 [ hv9.x * f32[ him.width ] ]
@@ -5873,9 +5873,9 @@ element hyperspace2 : trinity
     mutable ts_target  : ts_model
     mutable ts_refine  : ts_model
     mutable ts_look    : ts_model
-    mutable tb_ex      : ref f32               # 2 cams x 2 eyes x (x,y,side)
-    mutable tb_oc      : ref f32               # 2 cams x 2 eyes x (ocx,ocy)
-    mutable tb_ok      : ref f32               # per-cam cascade success
+    mutable tb_ex      : @f32               # 2 cams x 2 eyes x (x,y,side)
+    mutable tb_oc      : @f32               # 2 cams x 2 eyes x (ocx,ocy)
+    mutable tb_ok      : @f32               # per-cam cascade success
     mutable tb_gx      : f32
     mutable tb_gy      : f32
     mutable tb_hx      : f32
@@ -5883,7 +5883,7 @@ element hyperspace2 : trinity
     mutable tb_have    : bool
     mutable test_wait  : i32                   # draws until autostart
     mutable test_settle : i32                  # frames since test began
-    mutable tb_fb      : ref f32               # 2 cams x (face cx, cy, side)
+    mutable tb_fb      : @f32               # 2 cams x (face cx, cy, side)
     mutable tb_pv      : array Texture         # net-input panels: l/r/face per cam
     # two-step pair stage: offset reads both cams' face crops + aux
     # -> eye coordinate relative to the screen center (meters, person
@@ -5895,7 +5895,7 @@ element hyperspace2 : trinity
     mutable tb_r0      : tensor                # top cam right eye crop
     mutable tb_l1      : tensor                # bottom cam left eye
     mutable tb_r1      : tensor                # bottom cam right eye
-    mutable tb_a36     : ref f32               # both cams' 18-aux
+    mutable tb_a36     : @f32               # both cams' 18-aux
     mutable tb_ox      : f32
     mutable tb_oy      : f32
     mutable tb_oz      : f32
@@ -5920,11 +5920,11 @@ element hyperspace2 : trinity
     # recordings (position stays the generator's uniform draw);
     # each sample picks a random fitted record. 10 minimum.
     mutable recs_n     : i32
-    mutable recs_dat   : ref f32               # 9 per record, see rec_solve
-    mutable recs_fid   : ref i32               # record file id per loaded record
-    mutable recs_noise : ref i32               # noise (no-face) record file ids
+    mutable recs_dat   : @f32               # 9 per record, see rec_solve
+    mutable recs_fid   : @i32               # record file id per loaded record
+    mutable recs_noise : @i32               # noise (no-face) record file ids
     mutable recs_noise_n : i32
-    mutable hair_pat : ref u8                  # 32x32 hair patches from h plots
+    mutable hair_pat : @u8                  # 32x32 hair patches from h plots
     mutable hair_n   : i32
     public  rec_fov    : f32 [ 31.5 ]
     # your true outer-corner span (ruler-measurable). when > 0 the fit
@@ -5984,7 +5984,7 @@ element hyperspace2 : trinity
         sdir : '/src/hyperspace-sessions/{session}'
         mkdir[ sdir.chars, 493 ]
         fpn : '{sdir}/user.cage'
-        fh : ref FILE [ fopen[ fpn.chars, 'wb' ] ]
+        fh : @FILE [ fopen[ fpn.chars, 'wb' ] ]
         if [ !fh ]
             puts 'mask save failed: {fpn}'
             return
@@ -5998,7 +5998,7 @@ element hyperspace2 : trinity
             nvh[0] = t.nv
             fwrite[ nvh, 4, i64[ 1 ], fh ]
             if [ !t.cage_buf || !t.base ] continue
-            cur : ref f32 [ t.cage_buf.data ]
+            cur : @f32 [ t.cage_buf.data ]
             n3 : i32 [ t.nv * 3 ]
             dbuf : new f32 [ n3 ]
             for [ i: i32 0, i < n3, i += 1 ] dbuf[ i ] = cur[ i ] - t.base[ i ]
@@ -6010,7 +6010,7 @@ element hyperspace2 : trinity
     public func load_mask [ mv: ModelView ]
         if [ !mv || !mv.vmodel || !mv.vmodel.cages ] return
         fpn : '/src/hyperspace-sessions/{session}/user.cage'
-        fh : ref FILE [ fopen[ fpn.chars, 'rb' ] ]
+        fh : @FILE [ fopen[ fpn.chars, 'rb' ] ]
         if [ !fh ] return
         hdr : local i32 [ 2 ]
         fread[ hdr, 4, i64[ 2 ], fh ]
@@ -6030,7 +6030,7 @@ element hyperspace2 : trinity
             n3 : i32 [ t.nv * 3 ]
             dbuf : new f32 [ n3 ]
             fread[ dbuf, 4, i64[ n3 ], fh ]
-            cur : ref f32 [ t.cage_buf.data ]
+            cur : @f32 [ t.cage_buf.data ]
             for [ i: i32 0, i < n3, i += 1 ] cur[ i ] = t.base[ i ] + dbuf[ i ]
         fclose[ fh ]
         puts 'mask loaded: {fpn}'

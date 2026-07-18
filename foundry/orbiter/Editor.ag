@@ -222,6 +222,14 @@ ResourceView AppView
     mutable pid        : i32
     mutable sock_path  : string
     mutable cmd        : string      # the build+run command the console executes
+    mutable dispatched : bool        # cmd handed to its console session (once per run)
+    # live-resize state: pane size last seen / last requested + settle counter,
+    # so a seam drag sends ONE resize when it stops, not one per frame
+    mutable pend_w     : i32
+    mutable pend_h     : i32
+    mutable req_w      : i32
+    mutable req_h      : i32
+    mutable settle     : i32
     mutable started    : bool
     mutable ready      : bool
     mutable dead       : bool
@@ -258,6 +266,22 @@ ResourceView AppView
     func service [ cv: Canvas ]
         if [ !started ] start[]
         pump[ cv ]
+        # orbiter dictates the app's size: the pane's workable area IS the app's
+        # window. when the area settles at a new size, ask the app to rebuild its
+        # backbuffer there (it re-HELLOs with fresh dma-buf slots).
+        nw : i32[ vw ]
+        nh : i32[ vh ]
+        if [ ready && link && link.sock >= 0 && nw > 0 && nh > 0 ]
+            if [ nw != pend_w || nh != pend_h ]
+                pend_w = nw
+                pend_h = nh
+                settle = 0
+            el [ nw != aw || nh != ah ]
+                settle += 1
+                if [ settle >= 6 && (nw != req_w || nh != req_h) ]
+                    req_w = nw
+                    req_h = nh
+                    link.send_resize[ nw, nh ]
 
     # paint the latest frame into the pane (only when the app view is shown)
     func draw_frame [ cv: Canvas, bounds: rect ]
@@ -346,6 +370,10 @@ ResourceView AppView
                 ah = link.w2
                 nslots = link.w4
                 if [ nslots < 1 ] nslots = 1
+                # a re-HELLO (live resize) replaces the frame set: hold new frames
+                # until every new slot imports (ready gates the frame blits)
+                ready      = false
+                have_frame = false
                 frames = AppFrames [ ]
                 frames.setup[ cv.vk, aw, ah, nslots, cv.w ]
                 puts 'appview: hello {aw}x{ah}, {nslots} slots'
@@ -381,10 +409,20 @@ ResourceView AppView
         if [ !ready || !link || link.sock < 0 || fitw <= 0.0 ] return false
         bx : f32 [ (ev.mouse.pos.x - fitx) / fitw * f32[ aw ] ]
         by : f32 [ (ev.mouse.pos.y - fity) / fith * f32[ ah ] ]
+        puts 'appview: press pos={ev.mouse.pos.x} {ev.mouse.pos.y} fit={fitx} {fity} {fitw} {fith} -> app={bx} {by}'
         if [ bx < 0.0 || by < 0.0 || bx >= f32[ aw ] || by >= f32[ ah ] ] return false
         # press + release so a click registers (orion menus act on press)
         link.send_mouse[ i32[ bx ], i32[ by ], ev.mouse.button, 1, i32[ AppMouse.press ] ]
         link.send_mouse[ i32[ bx ], i32[ by ], ev.mouse.button, 0, i32[ AppMouse.release ] ]
+        return true
+
+    # hover: forward pointer moves so the app can show hover states
+    func view_move [ ev: Event ] -> bool
+        if [ dead || !ready || !link || link.sock < 0 || fitw <= 0.0 ] return false
+        bx : f32 [ (ev.mouse.pos.x - fitx) / fitw * f32[ aw ] ]
+        by : f32 [ (ev.mouse.pos.y - fity) / fith * f32[ ah ] ]
+        if [ bx < 0.0 || by < 0.0 || bx >= f32[ aw ] || by >= f32[ ah ] ] return false
+        link.send_mouse[ i32[ bx ], i32[ by ], 0, 0, i32[ AppMouse.move ] ]
         return true
 
     func restart []
@@ -698,11 +736,18 @@ Layer EditorLayer
         if [ editor.run_view ]
             editor.run_view.service[ cv ]
             if [ editor.app_view && !editor.show_hits ]
-                editor.run_view.vx = bounds.x
-                editor.run_view.vy = bounds.y
-                editor.run_view.vw = bounds.w
-                editor.run_view.vh = bounds.h
-                editor.run_view.draw_frame[ cv, bounds ]
+                # workable area = layer bounds minus the bottom band (toolbar +
+                # console) — the band is a child whose top edge tracks the seam
+                b2 : rect [ x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h ]
+                bot : element (editor.elements) ? editor.elements['bottom'] : null
+                if [ bot && bot.bounds && bot.bounds.h > 0.0 ]
+                    lim : f32 [ bot.bounds.y - b2.y ]
+                    if [ lim > 0.0 && lim < b2.h ] b2.h = lim
+                editor.run_view.vx = b2.x
+                editor.run_view.vy = b2.y
+                editor.run_view.vw = b2.w
+                editor.run_view.vh = b2.h
+                editor.run_view.draw_frame[ cv, b2 ]
                 return
         if [ editor.rview && !editor.show_hits ]
             if [ !editor.rview.view_text*[ editor.rview.view_sel ] ]
@@ -1163,7 +1208,7 @@ Layer EditorLayer
                 fhh : FindHit (editor.hits && li < editor.hits.count) ? editor.hits[ li ] : null
                 fnm : string (fhh) ? fhh.text : editor.line_get[ li ]
                 fdr : string (fhh) ? fhh.dir : ''
-                fis_dir : bool [ (fhh) ? fhh.is_dir : false ]
+                fis_dir : bool [ fhh->is_dir ]
                 # a directory row is a blue link with a trailing slash; files stay white.
                 if [ fis_dir && fnm.count > 0 ] fnm = '{fnm}/'
                 # icon to the left, vertically centered over the row. only load the SVG if
@@ -1647,6 +1692,8 @@ Control Editor
     # ext → ResourceView subclass Au_t. built ONCE (scan of direct subclasses), shared
     # across panes; file-open is then a map lookup, not a re-scan of every class.
     intern static view_registry : map Au_t[string]
+    # {SILVER}/export registry: extension -> handler module name
+    intern static export_registry : map string[string]
     mutable lines         : list string
     mutable file_cache    : map FileBuf[string]
     # close icon for the per-row 'remove this match' button (lazy-loaded in draw)
@@ -2100,7 +2147,7 @@ Control Editor
     # read a little-endian u32 from the subprocess pipe (silver writes native LE).
     func fmt_u32 [ fp: handle ] -> u32
         b : local u8 [4]
-        n : fread[ ref b[0], 1, 4, fp ]
+        n : fread[ @b[0], 1, 4, fp ]
         if [ n < 4 ] return 0
         return u32[ b[0] ] | (u32[ b[1] ] << 8) | (u32[ b[2] ] << 16) | (u32[ b[3] ] << 24)
 
@@ -2178,7 +2225,7 @@ Control Editor
             ff  : fmt_file files[fi]
             if [ !ff || !ff.source ] continue
             key : string '{ff.source}'
-            ntk : i32 [ (ff.tokens) ? ff.tokens.count : 0 ]
+            ntk : i32 [ ff.tokens->count ]
             #puts 'format:   [{fi}] {key} -> {ntk} tokens'
             buf : FileBuf file_cache[ key ]
             if [ !buf ]
@@ -2186,7 +2233,7 @@ Control Editor
                 file_cache[ key ] = buf
             buf.regions = array ColorRegion []
             mx : i32 [ 0 ]
-            nt : i32 [ (ff.tokens) ? ff.tokens.count : 0 ]
+            nt : i32 [ ff.tokens->count ]
             for [ ti: i32 0, ti < nt, ti += 1 ]
                 tk : fmt_token ff.tokens[ti]
                 # silver token lines are 1-based; editor model lines are 0-based → shift down
@@ -2479,7 +2526,7 @@ Control Editor
         if [ view_registry ] return
         view_registry = map Au_t[string] []
         n    : i64 [ 0 ]
-        subs : ref Au_t [ Au.subclasses[ typeid[ ResourceView ], ref n ] ]
+        subs : @Au_t [ Au.subclasses[ typeid[ ResourceView ], @n ] ]
         for [ i: i64 0, i < n, i += 1 ]
             t : subs[ i ]
             if [ t ]
@@ -2488,6 +2535,59 @@ Control Editor
                     exts : probe.extensions*[]
                     for [ e: string ] in exts
                         view_registry[ e ] = t
+
+    # build the ext → module map ONCE from {SILVER}/export/*.agi — modules
+    # emitted their extensions at their own build; we just interpret them.
+    func ensure_export_registry []
+        if [ export_registry ] return
+        export_registry = map string[string] []
+        root : getenv[ 'SILVER' ]
+        if [ !root || root.count == 0 ] return
+        d : path '{root}/export'
+        entries : array [ d.ls[ null, false ] ]
+        if [ !entries ] return
+        for [ e: path ] in entries
+            ax : e.ext[]
+            if [ ax && ax == 'agi' ]
+                mod     : e.stem[]
+                content : string e.load[ typeid[string], null ]
+                if [ content ]
+                    ix : content.index_of[ 'extensions:' ]
+                    if [ ix >= 0 ]
+                        i  : i32 [ i32[ ix ] ]
+                        n2 : i32 [ i32[ content.count ] ]
+                        q0 : i32 [ 0 - 1 ]
+                        while [ i < n2 ]
+                            c : i32 [ (i32 content.chars[i]) & 255 ]
+                            if [ c == 10 ] break
+                            if [ c == 39 ]
+                                if [ q0 < 0 ]
+                                    q0 = i + 1
+                                el
+                                    ex3 : content.mid[ q0, i - q0 ]
+                                    export_registry[ ex3 ] = mod
+                                    q0 = 0 - 1
+                            i += 1
+
+    # exported handler module for a file's extension, or null
+    func handler_module_for [ p: path ] -> string
+        ext : file_ext[ p ]
+        if [ ext.count == 0 ] return null
+        ensure_export_registry[]
+        return export_registry[ ext ]
+
+    # a module exported this extension — run it exactly like play
+    func launch_handler [ mod: string ]
+        root : getenv[ 'SILVER' ]
+        if [ !root || root.count == 0 ] return
+        nv : AppView [ ]
+        nv.src = path '{root}/foundry/{mod}/{mod}.ag'
+        nv.start[]
+        run_view  = nv
+        app_view  = true
+        animated  = true
+        no_scroll = true
+        if [ ux ] ux.restyle = true
 
     # pick a presentation view for a file format, or null for plain text/code — a map
     # lookup against the once-built registry, then instantiate the bound subclass.
@@ -2541,6 +2641,12 @@ Control Editor
             content_h     = 0.0
             saved_scroll  = 0.0
             return
+        # no in-process view claims it — an exported module might (e.g. rgen '.gen')
+        if [ !run_view ]
+            hm : handler_module_for[ src ]
+            if [ hm ]
+                launch_handler[ hm ]
+                return
         rview = null
         animated = false
         # key by the canonical (realpath) absolute path — the SAME identity silver stamps on
@@ -2580,7 +2686,10 @@ Control Editor
             run_view = null
             app_view = false
             animated = false
+            no_scroll = false
             load_file[]
+            # re-render so pane_for clears the console's run_line (re-run works)
+            if [ ux ] ux.restyle = true
             return
         if [ !src ] return
         nv : AppView [ ]
@@ -2589,9 +2698,14 @@ Control Editor
         run_view = nv
         app_view = true
         animated = true
+        # the pane shows the app now — no code scrolling, no scrollbar
+        no_scroll = true
         # the embedded console picks up nv.cmd declaratively (pane_for feeds it as
         # the console's run_line) and dispatches it itself — its build + app output
         # streams there and the app attaches back over the socket.
+        # restyle here (not at call sites): without a re-render pane_for never
+        # runs, run_line never reaches the console, and the app never launches.
+        if [ ux ] ux.restyle = true
 
     # code/app: flip the pane display WITHOUT stopping the app — it keeps running
     # and draining in the background. only meaningful while an app is running.
@@ -2873,6 +2987,9 @@ Control Editor
         pristine = false
 
     func on_move [ ev: Event ]
+        # app pane: hand hover to the running app and stop editor handling
+        if [ run_view && app_view ]
+            if [ run_view.view_move*[ ev ] ] return
         ele : (layers) ? (layers['content'] to EditorLayer) : null
         if [ scroll_dragging && ele ]
             sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null

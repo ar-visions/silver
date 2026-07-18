@@ -74,36 +74,36 @@ class StyleBlock
     public  src_file  : path
     public  src_line  : i32
 
-    post construct [ p_sc: ref cstr ]
+    post construct [ p_sc: @cstr ]
         sc : cstr p_sc
-        ws[ ref sc ]
+        ws[ @sc ]
         expect sc[0] == '.' || is_alpha2[sc[0]], 'expected Type[.id], or .id'
-        quals = parse_qualifiers[ a, ref sc ]
+        quals = parse_qualifiers[ a, @sc ]
         sc += 1
-        ws[ ref sc ]
+        ws[ @sc ]
         while [ sc[0] && sc[0] != '}' ]
-            ws[ ref sc ]
+            ws[ @sc ]
             start : cstr [ sc ]
-            expect scan_to[ ref sc, ';{{}}' ], 'expected member expression or qualifier'
+            expect scan_to[ @sc, ';{{}}' ], 'expected member expression or qualifier'
             if [ sc[0] == '{' ]
-                bl_n : StyleBlock [ ref sc ]
+                bl_n : StyleBlock [ @sc ]
                 blocks.push[ bl_n ]
                 bl_n.parent = a
                 sc = start
                 expect sc[0] == '}', 'expected }}'
                 sc += 1
-                ws[ ref sc ]
+                ws[ @sc ]
             el [ sc[0] == ';' ]
                 cur : cstr [ start ]
-                expect scan_to[ ref cur, ':' ] && cur < sc, 'expected [member:]value;'
+                expect scan_to[ @cur, ':' ] && cur < sc, 'expected [member:]value;'
                 member : string [ chars: start, ref_length: distance[ start, cur ] ]
                 for [ i: i32 0, i < member.count, i += 1 ]
                     if [ member.chars[i] == '-' ]
                         member.chars[i] = '_'
                 cur += 1
-                ws[ ref cur ]
+                ws[ @cur ]
                 vstart : cstr [ cur ]
-                expect scan_to[ ref cur, ';' ], 'expected member:value[, transition];'
+                expect scan_to[ @cur, ';' ], 'expected member:value[, transition];'
                 vlen     : distance[ vstart, cur ]
                 cb_value : string[ chars: vstart, ref_length: vlen ]
                 cb_value = cb_value.trim[]
@@ -112,7 +112,7 @@ class StyleBlock
                 is_q     : bool [ (q0 == '"' || q0 == '\'') && q0 == q1 ]
                 if [ is_q ]
                     cs : cstr [ cb_value.chars ]
-                    cb_value = parse_quoted[ ref cs, cb_value.count ]
+                    cb_value = parse_quoted[ @cs, cb_value.count ]
                 param : string [ null ]
                 value : object [ null ]
                 ai    : num    [ cb_value.index_of[ '[' ] ]
@@ -147,7 +147,7 @@ class StyleBlock
                 expect value,  'value cannot be blank'
                 entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: a, filter: filter_val ]
                 sc += 1
-                ws[ ref sc ]
+                ws[ @sc ]
         expect !sc[0] || sc[0] == '}', 'expected closed-brace'
         if [ sc[0] == '}' ]
             sc += 1
@@ -576,7 +576,7 @@ class Style
                 end_idx += 1
             bl : StyleBlock [ ]
             sc : cstr [ content.chars ]
-            bl.quals = parse_qualifiers[ bl, ref sc ]
+            bl.quals = parse_qualifiers[ bl, @sc ]
             parse_block_body[ bl, lines, i + 1, end_idx - 1, 0 ]
             bl.src_file = src
             bl.src_line = lines[i].line
@@ -599,7 +599,7 @@ class Style
                     body_end += 1
                 sbl : StyleBlock [ ]
                 ssc : cstr [ state_sel.chars ]
-                sbl.quals = parse_qualifiers[ sbl, ref ssc ]
+                sbl.quals = parse_qualifiers[ sbl, @ssc ]
                 parse_block_body[ sbl, lines, body_start, body_end - 1, 0 ]
                 sbl.src_file = src
                 sbl.src_line = lines[end_idx].line
@@ -778,7 +778,7 @@ struct XCoord
                         relative  = true
                     offset = sx_offset.real_value[]
 
-    func plot [ from: f32, vto: f32, left: ref XCoord, left_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
+    func plot [ from: f32, vto: f32, left: @XCoord, left_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
         off  : f32 [ offset ]
         # console grid: px has no sub-line resolution — a px coord > 16 (≈ one line)
@@ -876,7 +876,7 @@ struct YCoord
                         relative  = true
                     offset = sy_offset.real_value[]
 
-    func plot [ from: f32, vto: f32, top: ref YCoord, top_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
+    func plot [ from: f32, vto: f32, top: @YCoord, top_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
         off  : f32 [ offset ]
         # console grid: px has no sub-line resolution — a px coord > 16 (≈ one line)
@@ -989,7 +989,7 @@ class Region
 
     func rectangle [ win: rect, rel: rect, last: rect, fc: f32, console: bool ] -> rect
         lv : l.plot[ win.x, win.x + win.w, null,  0.0, rel, last, fc, console ]
-        rv : r.plot[ win.x, win.x + win.w, ref l, lv,  rel, last, fc, console ]
+        rv : r.plot[ win.x, win.x + win.w, @l, lv,  rel, last, fc, console ]
         tv : t.plot[ win.y, win.y + win.h, null,  0.0, rel, last, fc, console ]
         rx : f32 [ round[ lv ] ]
         ry : f32 [ round[ tv ] ]
@@ -997,7 +997,7 @@ class Region
         # square: height = computed width
         if [ square ]
             return rect [ x: rx, y: ry, w: ww, h: ww ]
-        bv : b.plot[ win.y, win.y + win.h, ref t, tv,  rel, last, fc, console ]
+        bv : b.plot[ win.y, win.y + win.h, @t, tv,  rel, last, fc, console ]
         return rect [ x: rx, y: ry, w: ww, h: round[ bv ] - ry ]
 
     func mix [ other: Region, f: f64 ] -> Region
@@ -1363,7 +1363,7 @@ Mixable Sides
             left   = parse_css_px[ sp[3] ]
 
 
-func parse_quoted [ cursor: ref cstr, max_len: sz ] -> string
+func parse_quoted [ cursor: @cstr, max_len: sz ] -> string
     first : cstr [ cursor[0] ]
     if [ first[0] != '"' && first[0] != '\'' ]
         return ''
@@ -1385,11 +1385,11 @@ func parse_quoted [ cursor: ref cstr, max_len: sz ] -> string
     slen : sz [ s - start ]
     if [ max_len > 0 && slen > max_len ]                                                                                            
         return ''                            
-    cursor[0] = ref s[1]
+    cursor[0] = @s[1]
     return string [ chars: start, ref_length: slen ] 
 
 
-func parse_qualifiers [ bl:StyleBlock, p: ref cstr ] -> array StyleQualifier
+func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
     expect bl, 'style-block context.. its not set!  dak not steady either'
     start : cstr   [ p[0] ]
     end   : cstr   [ null ]
@@ -1634,20 +1634,20 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
 func is_cmt[c: symbol] -> bool [ c[0] == '/' && c[1] == '*' ]
 
 
-func ws [ p_cursor: ref cstr ] -> bool
+func ws [ p_cursor: @cstr ] -> bool
     cursor : cstr [ p_cursor[0] ]
     while [ isspace[ cursor[0] ] || is_cmt[ cursor ] ]
         while [ isspace[ cursor[0] ] ]
             cursor += 1
         if [ is_cmt[ cursor ] ]
             f : cstr [ strstr[ cursor, '*/' ] ]
-            cursor = (f) ? ref f[2] : ref cursor[ strlen[ cursor ] - 1 ]
+            cursor = (f) ? @f[2] : @cursor[ strlen[ cursor ] - 1 ]
     p_cursor[0] = cursor
     return cursor != 0
 
 
 
-func scan_to [ p_cursor: ref cstr, chars: string ] -> bool
+func scan_to [ p_cursor: @cstr, chars: string ] -> bool
     sl  : false
     qt  : false
     qt2 : false
@@ -1660,7 +1660,7 @@ func scan_to [ p_cursor: ref cstr, chars: string ] -> bool
                 qt2 = !qt2
         sl = cursor[0] == '\\'
         if [ !qt && !qt2 ]
-            if [ chars.index_of[ ref cursor[0] ] >= 0 ]
+            if [ chars.index_of[ @cursor[0] ] >= 0 ]
                 p_cursor[0] = cursor
                 return true
         cursor += 1

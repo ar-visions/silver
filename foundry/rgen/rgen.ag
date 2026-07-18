@@ -13,6 +13,7 @@
 # =====================================================================
 
 export 0.8.8
+export extensions ['.gen', '.smd']
 
 import trinity
 import vec
@@ -264,7 +265,7 @@ element rgen : trinity
 	mutable st_hdr       : new u32 [ 16 ]    # save/load scalar staging
 	public  region_pal   : bool              # PAL timing (default NTSC)
 	mutable dbg_fbp      : i32               # FBPTR diag budget
-	mutable cart         : ref u8            # loaded ROM bytes
+	mutable cart         : @u8            # loaded ROM bytes
 	mutable cart_size    : sz
 	mutable m68k         : m68k_state
 	mutable z80          : z80_state
@@ -316,7 +317,7 @@ element rgen : trinity
 
 	# full machine snapshot (68k + RAM + VDP). one fixed slot for now.
 	func save_state [] -> none
-		f : ref FILE [ fopen[ '/tmp/rgen_state.bin', 'wb' ] ]
+		f : @FILE [ fopen[ '/tmp/rgen_state.bin', 'wb' ] ]
 		if [ ! f ]
 			puts 'rgen: cannot write state'
 			return
@@ -348,7 +349,7 @@ element rgen : trinity
 		puts 'rgen: state saved at frame {frames}'
 
 	func load_state [] -> none
-		f : ref FILE [ fopen[ '/tmp/rgen_state.bin', 'rb' ] ]
+		f : @FILE [ fopen[ '/tmp/rgen_state.bin', 'rb' ] ]
 		if [ ! f ]
 			puts 'rgen: no state file'
 			return
@@ -414,7 +415,7 @@ element rgen : trinity
 		z80.reset = 1                            # held until the game releases it
 		# raw cartridge dump (.bin/.gen/.md). .smd interleaved not handled yet.
 		if [ rom ]
-			f : ref FILE [ fopen[ rom, 'rb' ] ]
+			f : @FILE [ fopen[ rom, 'rb' ] ]
 			if [ ! f ]
 				puts 'rgen: could not open ROM {rom}'
 			el
@@ -562,14 +563,14 @@ element rgen : trinity
 			for [ pi: i32 0, pi < 320 * 224, pi += 1 ]
 				if [ vdp.framebuf[ pi ] != fb0 ] nfb += 1
 			puts 'rgen: frames_exit {frames_exit} vram_nz={nzv} cram_nz={nzc} fb_diff={nfb} r2={vdp.regs[2]} r4={vdp.regs[4]} r12={vdp.regs[12]} pc={m68k.pc}'
-			df : ref FILE [ fopen[ '/tmp/rgen_vdp.bin', 'wb' ] ]
+			df : @FILE [ fopen[ '/tmp/rgen_vdp.bin', 'wb' ] ]
 			if [ df ]
 				fwrite[ vdp.vram,  1, 0x10000, df ]
 				fwrite[ vdp.cram,  1, 128, df ]
 				fwrite[ vdp.vsram, 1, 80, df ]
 				fwrite[ vdp.regs,  1, 24, df ]
 				fclose[ df ]
-			pf : ref FILE [ fopen[ '/tmp/rgen_fb.ppm', 'wb' ] ]
+			pf : @FILE [ fopen[ '/tmp/rgen_fb.ppm', 'wb' ] ]
 			if [ pf ]
 				fprintf[ pf, "P6\n320 224\n255\n" ]
 				for [ qi: i32 0, qi < 320 * 224, qi += 1 ]
@@ -684,7 +685,7 @@ element rgen : trinity
 				emu_started = true
 				pub_lock = mutex [ cond: false ]
 				tid : local u64 [ 1 ]
-				pthread_create[ tid, null, ref emu_entry, a ]
+				pthread_create[ tid, null, @emu_entry, a ]
 			if [ ! a_tex ]
 				a_tex  = Texture [ vk: cv.vk, w: cv.w, width: 320, height: 224, linear: true ]
 				sw_tex = Texture [ vk: cv.vk, w: cv.w, width: 320, height: 224, linear: true ]

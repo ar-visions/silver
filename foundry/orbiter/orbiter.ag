@@ -49,7 +49,6 @@ Option  ProjectTab
 # bottom-bar console instance tab — a shell or an AI agent (claude/chatgpt/gemini).
 Option  ConsoleTab
     public kind : string
-Control Tabs
 Control Instances
     public selected : bool
     # full-width (right toolbar hidden) — drives the :wide style so the console
@@ -480,19 +479,9 @@ element orbiter : trinity # implements compiler
     # is convenience-only (recoverable, not user content) belongs here, NOT in the
     # workspace. linux: $XDG_CACHE_HOME or ~/.cache ; mac: ~/Library/Caches ;
     # windows: %LOCALAPPDATA%. (apple/linux/windows are compile-time platform consts.)
+    # workspace state is persistent, not disposable — storage, not cache
     func cache_dir [] -> path
-        ifdef [ windows ]
-            la : string [ getenv[ 'LOCALAPPDATA' ] ]
-            if [ la && la.count > 0 ] return path '{la}/orbiter'
-        ifdef [ apple ]
-            home : string [ getenv[ 'HOME' ] ]
-            if [ home && home.count > 0 ] return path '{home}/Library/Caches/orbiter'
-        ifdef [ linux ]
-            xdg : string [ getenv[ 'XDG_CACHE_HOME' ] ]
-            if [ xdg && xdg.count > 0 ] return path '{xdg}/orbiter'
-            home : string [ getenv[ 'HOME' ] ]
-            if [ home && home.count > 0 ] return path '{home}/.cache/orbiter'
-        return null
+        return path.path_storage[ 'orbiter' ]
 
     # the single states file holding every workspace's orbiter_state.
     func states_path [] -> path
@@ -681,7 +670,7 @@ element orbiter : trinity # implements compiler
                 continue
             product_mtime : i64 [ product.modified_time[] ]
             src_mtime     : i64 [ 0 ]
-            src.latest_modified[ ref src_mtime ]
+            src.latest_modified[ @src_mtime ]
             if [ src_mtime > product_mtime ]
                 compile_log.push[ 'stale (source newer): {name}' ]
                 compile[ name ]
@@ -737,7 +726,7 @@ element orbiter : trinity # implements compiler
         # compile error / crash is captured (a partial cache is itself the not-compiled signal).
         cmd : 'cd {startup_path} && unset IMPORT && exec ./platform/native/debug/silver {fw.file} --build > /tmp/orbiter-fmt-{fw.proj}.log 2>&1'
         fd  : i32 [ -1 ]
-        pid : i32 [ forkpty[ ref fd, null, null, null ] ]
+        pid : i32 [ forkpty[ @fd, null, null, null ] ]
         if [ pid == 0 ]
             # the flag + command MUST be passed as cstr (.chars) — a bare '-c' literal reaches
             # execl as an Au string object, not char*, so bash reads garbage and drops into an
@@ -826,13 +815,13 @@ element orbiter : trinity # implements compiler
             if [ fw.fd >= 0 ]
                 dbuf : local i8 [256]
                 for [ j: i32 0, j < 64, j += 1 ]
-                    nr : i32 [ read[ fw.fd, ref dbuf[0], 256 ] ]
+                    nr : i32 [ read[ fw.fd, @dbuf[0], 256 ] ]
                     if [ nr <= 0 ] break
             # reap the one-shot --format child without blocking; when it returns, report
             # its exit code so we KNOW it finished (not just that it started).
             if [ fw.pid > 0 ]
                 st : i32 [ 0 ]
-                r  : i32 [ waitpid[ fw.pid, ref st, WNOHANG ] ]
+                r  : i32 [ waitpid[ fw.pid, @st, WNOHANG ] ]
                 if [ r == fw.pid ]
                     code : i32 [ (st >> 8) & 0xFF ]
                     sig  : i32 [ st & 0x7F ]
@@ -1119,7 +1108,7 @@ element orbiter : trinity # implements compiler
                 if [ de ]
                     es.feed_fd[ de.fifo_fd_out ]
                     es.feed_fd[ de.fifo_fd_err ]
-                code : (e) ? e.code : 0
+                code : e->code
                 es.print_text[ '\r\n[process exited, code {code}]\r\n' ]
                 cons.pristine = false
                 win : ux
@@ -1261,10 +1250,10 @@ element orbiter : trinity # implements compiler
         dbgr    : dbg active_debugger[]
         running : bool [ (dbgr) ? true : false ]
         ed_live : Editor pane_at[ pi ]
-        armed   : bool [ (ed_live) ? ed_live.edit_armed : false ]
+        armed   : bool [ ed_live->edit_armed ]
         locked  : bool [ running && !armed ]
         # the dbg sub-column is toggled per editor (its own dbg_open), not globally.
-        dbg_open : bool [ (ed_live) ? ed_live.dbg_open : false ]
+        dbg_open : bool [ ed_live->dbg_open ]
         menu_open : bool [ searchable && (find_showing || nav_showing) ]
         is_res    : bool [ (ed_live && ed_live.rview) ? true : false ]
         # a paused emulator publishes a machine-context dump once — type it
@@ -1272,7 +1261,7 @@ element orbiter : trinity # implements compiler
         if [ is_res ]
             cfeed : ed_live.rview.context_feed*[]
             if [ cfeed ] feed_agent[ cfeed ]
-        ttl : Elements title_nav[ p, grp, diff, win, locked, dbg_open, menu_open, is_res, (ed_live) ? ed_live.rview : null ]
+        ttl : Elements title_nav[ p, grp, diff, win, locked, dbg_open, menu_open, is_res, ed_live->rview ]
         pe : Elements []
         pe['title'] = EditorTitle [
             selected: !p
@@ -1402,7 +1391,7 @@ element orbiter : trinity # implements compiler
     # (Au.watch) and fires on_index_change when anything under the dir changes.
     func start_watching []
         for [ d: path ] in search_dirs
-            iw : watch [ res: d, callback: ref on_index_change, argument: a ]
+            iw : watch [ res: d, callback: @on_index_change, argument: a ]
             iw.start[]
             index_watches += iw
 
@@ -1533,7 +1522,7 @@ element orbiter : trinity # implements compiler
         if [ !ed ] ed = pane_at[ 0 ]
         if [ !ed || !find_hits || find_hits.count == 0 ] return
         q  : string findbar_text
-        qn : i32 [ (q) ? q.count : 0 ]
+        qn : i32 [ q->count ]
         if [ qn == 0 ] return
         n  : i32 [ find_hits.count ]
         cl : i32 [ ed.sel_line ]
@@ -1575,7 +1564,7 @@ element orbiter : trinity # implements compiler
         if [ !ed ] ed = pane_at[ active_pane ]
         if [ !ed ] return
         q : string findbar_text
-        qn : i32 [ (q) ? q.count : 0 ]
+        qn : i32 [ q->count ]
         if [ qn == 0 ] return
         n : i32 [ ed.line_count[] ]
         if [ n <= 0 ] return
@@ -1620,7 +1609,7 @@ element orbiter : trinity # implements compiler
         if [ row >= 0 && row < ed.line_count[] ]
             ln  : string ed.line_get[ row ]
             cw  : f32 [ (ed.cw_cache > 0.0) ? ed.cw_cache : 8.0 ]
-            qn  : i32 [ (findbar_text) ? findbar_text.count : 0 ]
+            qn  : i32 [ findbar_text->count ]
             mex : f32 [ f32[ ed.vis_col[ ln, col + qn ] ] * cw ]
             vw  : f32 [ ((ed.bounds) ? ed.bounds.w : 800.0) - ed.gutter_w ]
             pad : f32 [ cw * 4.0 ]
@@ -2078,7 +2067,7 @@ element orbiter : trinity # implements compiler
             # a focused field shows its OWN edit buffer (the binding doesn't re-sync into a
             # focused field), so mirror the query in directly + drop the caret at the end.
             fe.edit       = findbar_text
-            fe.sel_col    = (findbar_text) ? findbar_text.count : 0
+            fe.sel_col    = findbar_text->count
             fe.anchor_col = fe.sel_col
             fe.set_focus[]
         force_update[]
@@ -2379,7 +2368,7 @@ element orbiter : trinity # implements compiler
             if [ replace_open && ev.target.parent ]
                 re : element ev.target.parent.elements['replace']
                 if [ re ]
-                    re.sel_col    = (re.edit) ? re.edit.count : 0
+                    re.sel_col    = re.edit->count
                     re.anchor_col = re.sel_col
                     re.set_focus[]
             if [ ev.target ] ev.target.ux.restyle = true
@@ -2398,7 +2387,7 @@ element orbiter : trinity # implements compiler
         # focusable path here, so focus it explicitly on click (seed the caret to the end).
         if [ ev.target.id == 'replace' ]
             puts 'replace press: focusable={(ev.target.focusable) ? 1 : 0}'
-            ev.target.sel_col    = (ev.target.edit) ? ev.target.edit.count : 0
+            ev.target.sel_col    = ev.target.edit->count
             ev.target.anchor_col = ev.target.sel_col
             ev.target.set_focus[]
             force_update[]
@@ -2424,7 +2413,7 @@ element orbiter : trinity # implements compiler
                 el
                     # files: load the saved glob into the buffer and focus for editing.
                     pe.edit       = pattern_text
-                    pe.sel_col    = (pattern_text) ? pattern_text.count : 0
+                    pe.sel_col    = pattern_text->count
                     pe.anchor_col = pe.sel_col
                     pe.set_focus[]
             run_find_in_files[]
@@ -2737,10 +2726,10 @@ element orbiter : trinity # implements compiler
         buf  : local i8 [ 4096 ]
         orig : i32 [ au_stdout_orig[] ]
         for [ i: i32 0, i < 256, i += 1 ]
-            n : i32 [ read[ cap_fd, ref buf[0], 4096 ] ]
+            n : i32 [ read[ cap_fd, @buf[0], 4096 ] ]
             if [ n <= 0 ] break
-            if [ orig   >= 0 ] write[ orig,   ref buf[0], n ]
-            if [ log_fd >= 0 ] write[ log_fd, ref buf[0], n ]
+            if [ orig   >= 0 ] write[ orig,   @buf[0], n ]
+            if [ log_fd >= 0 ] write[ log_fd, @buf[0], n ]
 
     public func render [] -> Elements
         w : ux
@@ -2777,7 +2766,7 @@ element orbiter : trinity # implements compiler
                 pending_debug = ''
                 start_debug[ dn ]
         # a breakpoint was toggled in an Editor gutter (count changed) → persist.
-        bpc : i32 [ (breakpoints) ? breakpoints.count : 0 ]
+        bpc : i32 [ breakpoints->count ]
         if [ last_bp_count >= 0 && bpc != last_bp_count ]
             save_session[]
         last_bp_count = bpc
@@ -2812,6 +2801,28 @@ element orbiter : trinity # implements compiler
             fmt_sync[]
             fmt_poll[]
 
+        # dispatch each pane's pending run command (once per AppView). lives here,
+        # not in a paint callback: a collapsed bottom console never paints, so a
+        # paint-hosted dispatch (the old TermLayer run_line path) never fires.
+        for [ pi2: i32 0, pi2 < editor_slots.count, pi2 += 1 ]
+            edp : Editor pane_at[ pi2 ]
+            if [ !edp || !edp.run_view || !edp.run_view.cmd ] continue
+            if [ edp.run_view.dispatched ] continue
+            edp.run_view.dispatched = true
+            efn : string edp.src.filename[]
+            edi : i32 [ efn.index_of[ '.' ] ]
+            if [ edi > 0 ] efn = efn.mid[ 0, edi ]
+            esid : string 'ed:{efn}'
+            if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
+            es : ConsoleSession ed_sessions[esid]
+            if [ !es ]
+                es = ConsoleSession []
+                es.name = esid
+                ed_sessions[esid] = es
+            puts 'run: dispatch {esid}: {edp.run_view.cmd}'
+            es.launch_cmd = ''
+            es.restart[]
+            es.pending = edp.run_view.cmd
         # drain the per-editor consoles' shells (build + app output). ed_sessions is
         # the app's own map — no tree walk — and a live pty keeps the frame loop awake
         # so the animated console repaints the output as it streams in.
@@ -2915,7 +2926,7 @@ element orbiter : trinity # implements compiler
             # tab (claude) into a plain console after a reload.
             ensure_console[ active_console ]
             bcon  : Console ui_console[]
-            csess : map ConsoleSession[string] (bcon) ? bcon.sessions : null
+            csess : map ConsoleSession[string] bcon->sessions
             # editable title = the per-console line filter. label is the shell/agent
             # name (shown as placeholder); the element retains its own typed `edit`.
             # id is 'console_filter' (NOT 'title') so the app on_char's id=='title'
@@ -2946,6 +2957,30 @@ element orbiter : trinity # implements compiler
             "editor_group": Group [ elements: egroup_els ]
         ]
 
+    # app bus: view_style {file}:{line} from any trinity app (or our own
+    # cmd+click) opens the style location in the active editor pane.
+    func on_bus [ m: BusMessage ]
+        s : string m.body
+        if [ !s || s.count < 12 ] return
+        pre : s.mid[ 0, 11 ]
+        if [ !(pre == 'view_style ') ] return
+        rest : s.mid[ 11, s.count - 11 ]
+        ci : i32 [ 0 - 1 ]
+        for [ i: i32 rest.count - 1, i >= 0, i -= 1 ]
+            if [ rest[i] == ':' ]
+                ci = i
+                break
+        if [ ci <= 0 ] return
+        fs : rest.mid[ 0, ci ]
+        lns : rest.mid[ ci + 1, rest.count - ci - 1 ]
+        ln : i32 [ atoi[ lns.chars ] ]
+        open_at_line[ path '{fs}', active_pane, ln ]
+
     public func on_canvas [ cv: Canvas ]
         super.on_canvas[ cv ]
+        if [ ux && ux.bus ]
+            for [ k: i32 0, k < 8, k += 1 ]
+                m : ux.bus.recv[]
+                if [ !m ] break
+                on_bus[ m ]
         cv.sync_fence[ ]

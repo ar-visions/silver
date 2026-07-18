@@ -53,7 +53,7 @@ class spc_state
 	lp_r           	: f32
 	channels       	: new dsp_channel [ 8 ]
 	dsp            	: new u8 [ 128 ]
-	audio_buffer   	: ref i16
+	audio_buffer   	: @i16
 	buffer_size    	: sz
 	sample_rate    	: i32
 	cycle_accum    	: i64               # SPC clock balance vs CPU, EXACT reference hardware ratio 128160:2684659 (=2050560:42954544; APU crystal is 24606720Hz = 32040*768, NOT nominal 24576000); i64 so big-DMA instr_master*128160 can't overflow
@@ -156,7 +156,7 @@ class cpu_state
 	public xh     			: u8
 	public yh     			: u8
 	public ports  			: new u8 [ 4 ]
-	public memory 			: ref u8
+	public memory 			: @u8
 
 
 # SNES Mode 7 affine layer, rendered on the GPU as a textured fullscreen quad.
@@ -326,7 +326,7 @@ element asnes : trinity
 	mutable audio          	: AudioOut         # spectra sink (ALSA linux / AudioQueue mac)
 	mutable ppu            	: ppu_state
 	mutable spc_rom_loaded 	: bool
-	mutable spc_boot_rom   	: ref u8
+	mutable spc_boot_rom   	: @u8
 	mutable nmitimen       	: u8
 	mutable nmi_occurred   	: bool
 	mutable wram_addr      	: u32               # $2181-3 WMADD 17-bit WRAM pointer for $2180
@@ -448,7 +448,7 @@ element asnes : trinity
 	mutable spr_m2x        	: i32               # BG2 delta last frame
 	mutable spr_m2y        	: i32
 	mutable spr_anchor     	: i32               # plane the sprite population follows: 0=BG1 1=BG2
-	mutable lay_out        	: ref u32           # ppu_bg_line layer target (valid when lay_en)
+	mutable lay_out        	: @u32           # ppu_bg_line layer target (valid when lay_en)
 	mutable lay_en         	: bool              # ppu_bg_line writes to lay_out, not the composed planes
 	mutable lay_bg1        	: new u32 [ 73728 ] # provenance layers, 288x256: 16px overscan bleed
 	mutable lay_bg2        	: new u32 [ 73728 ]
@@ -1675,7 +1675,7 @@ element asnes : trinity
 			lay_sw[i]  = 0
 			lay_ss[i]  = 0
 		bg : u16 [ ppu_cgram_color[ 0 ] ]
-		blay : ref u32 [ lay_bg3 ]                     # backdrop rides the first-drawn layer
+		blay : @u32 [ lay_bg3 ]                     # backdrop rides the first-drawn layer
 		if [ frame_b3 ] blay = lay_bg2
 		for [ y: i32 -16, y < 240, y += 1 ]
 			yr : i32 [ y ]
@@ -1724,10 +1724,10 @@ element asnes : trinity
 
 	# subtractive color math in BGR555 space (clamped, optional half). Used for the
 	# Mode 7 distance fog: each scanline subtracts the HDMA'd COLDATA from the plane.
-	func ppu_cmath_sub [ main: u16, sub: u16, hf: bool ] -> u16
-		rr : i32 [ i32[main & 0x1F] - i32[sub & 0x1F] ]
-		gg : i32 [ i32[(main >> 5) & 0x1F] - i32[(sub >> 5) & 0x1F] ]
-		bb : i32 [ i32[(main >> 10) & 0x1F] - i32[(sub >> 10) & 0x1F] ]
+	func ppu_cmath_sub [ mainc: u16, sub: u16, hf: bool ] -> u16
+		rr : i32 [ i32[mainc & 0x1F] - i32[sub & 0x1F] ]
+		gg : i32 [ i32[(mainc >> 5) & 0x1F] - i32[(sub >> 5) & 0x1F] ]
+		bb : i32 [ i32[(mainc >> 10) & 0x1F] - i32[(sub >> 10) & 0x1F] ]
 		if [ rr < 0 ] rr = 0
 		if [ gg < 0 ] gg = 0
 		if [ bb < 0 ] bb = 0
@@ -1739,10 +1739,10 @@ element asnes : trinity
 
 	# additive color math in BGR555 space (clamped, optional half). Used for HUD
 	# fills like F-Zero's POWER bar: COLDATA red added to BG/backdrop inside a window.
-	func ppu_cmath_add [ main: u16, add: u16, hf: bool ] -> u16
-		rr : i32 [ i32[main & 0x1F] + i32[add & 0x1F] ]
-		gg : i32 [ i32[(main >> 5) & 0x1F] + i32[(add >> 5) & 0x1F] ]
-		bb : i32 [ i32[(main >> 10) & 0x1F] + i32[(add >> 10) & 0x1F] ]
+	func ppu_cmath_add [ mainc: u16, add: u16, hf: bool ] -> u16
+		rr : i32 [ i32[mainc & 0x1F] + i32[add & 0x1F] ]
+		gg : i32 [ i32[(mainc >> 5) & 0x1F] + i32[(add >> 5) & 0x1F] ]
+		bb : i32 [ i32[(mainc >> 10) & 0x1F] + i32[(add >> 10) & 0x1F] ]
 		if [ hf ]
 			rr >>= 1
 			gg >>= 1
@@ -2934,9 +2934,9 @@ element asnes : trinity
 	# then we just run spc_step + generate_audio. Proves the SPC core end-to-end.
 	func load_spc []
 		reset_spc[]
-		f : ref FILE [ fopen[ spcfile, 'rb' ] ]
+		f : @FILE [ fopen[ spcfile, 'rb' ] ]
 		expect f, 'could not open spc file: {spcfile}'
-		buf : ref u8 [ calloc[ 1, 0x10200 ] ]
+		buf : @u8 [ calloc[ 1, 0x10200 ] ]
 		fread[ buf, 1, 0x10200, f ]
 		fclose[ f ]
 		spc.pc  = u16[buf[0x25]] | (u16[buf[0x26]] << 8)
@@ -3492,7 +3492,7 @@ element asnes : trinity
 				spc_boot_rom = calloc[ 1, 64 ]
 			# default the SPC700 IPL to bios.rom in the launch cwd unless --spc_rom given
 			if [ !spc_rom ] spc_rom = path '{path.path_startup[]}/bios.rom'
-			f    : ref FILE [ fopen[ spc_rom, 'rb' ] ]
+			f    : @FILE [ fopen[ spc_rom, 'rb' ] ]
 			size : sz [ 0 ]
 			expect f, 'could not open spc-rom file: {spc_rom}'
 			fseek [ f, 0, SEEK_END ]
@@ -3546,7 +3546,7 @@ element asnes : trinity
 		env_fstart  = (getenv['ASNES_FSTART']) ? true : false
 		env_joylog  = (getenv['ASNES_JOYLOG']) ? true : false
 		env_wdump   = (getenv['ASNES_WDUMP']) ? atoi[ getenv['ASNES_WDUMP'] ] : -1
-		f : ref FILE [ fopen[ rom, 'rb' ] ]
+		f : @FILE [ fopen[ rom, 'rb' ] ]
 		expect f, 'could not open ROM file'
 		fseek[ f, 0, SEEK_END ]
 		size : sz [ ftell[ f ] ]
@@ -3568,7 +3568,7 @@ element asnes : trinity
 			ppu.oam[n * 4 + 1] = 0xFF             # every sprite's y-byte powers on 0xFF (reference hardware readObject y-1 of default-0 object)
 		nbanks : i32 [ size / 0x8000 ]
 		if [ nbanks < 1 ] nbanks = 1
-		rombuf : ref u8 [ calloc[ 1, (nbanks + 1) * 0x8000 ] ]
+		rombuf : @u8 [ calloc[ 1, (nbanks + 1) * 0x8000 ] ]
 		fread[ rombuf, 1, size, f ]
 		fclose[ f ]
 		# detect HiROM vs LoROM by the internal-header checksum at the two candidate header
@@ -3918,7 +3918,7 @@ element asnes : trinity
 			emu_started = true
 			pub_lock = mutex [ cond: false ]
 			tid : local u64 [ 1 ]
-			pthread_create[ tid, null, ref emu_entry, a ]
+			pthread_create[ tid, null, @emu_entry, a ]
 		if [ putest ]
 			if [ !screen_tex ]
 				screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
@@ -4148,7 +4148,7 @@ element asnes : trinity
 		return h
 
 	# FNV-1a over an arbitrary memory range — building block for the per-section state signature.
-	func fnv_range [ p: ref u8, off: i32, n: i32 ] -> u32
+	func fnv_range [ p: @u8, off: i32, n: i32 ] -> u32
 		h : u32 [ 2166136261 ]
 		i : i32 [ 0 ]
 		while [ i < n ]
@@ -4309,14 +4309,14 @@ element asnes : trinity
 		printf[ "SIG %s f%u %02X:%04X A=%04X X=%04X Y=%04X S=%04X D=%04X DB=%02X P=%02X E=%d wram=%08X vram=%08X cgram=%08X oam=%08X apu=%08X dsp=%08X spcpc=%04X spca=%02X spcx=%02X spcy=%02X spcs=%02X spcp=%02X accum=%lld pos=%lld\n", tag, dbg_frames, cpu.pbr, cpu.pc, cpu.a | (cpu.b << 8), cpu.x | (cpu.xh << 8), cpu.y | (cpu.yh << 8), cpu.sp, cpu.dp, cpu.dbr, cpu.p, (cpu.e) ? 1 : 0, wram, vram, cgram, oam, apu, dsp, spc.pc, spc.a, spc.x, spc.y, spc.sp, spc.psw, spc.cycle_accum, spc.pos ]
 
 	func dump_pstate [ fn: symbol ]
-		lf : ref FILE [ fopen[ '/tmp/asnes_lines.txt', 'wb' ] ]
+		lf : @FILE [ fopen[ '/tmp/asnes_lines.txt', 'wb' ] ]
 		if [ lf ]
 			for [ ly: i32 0, ly < 224, ly += 1 ]
 				fprintf[ lf, "y%03d ini=%02X mode=%02X tm=%02X tmw=%02X cgad=%02X cgw=%02X cold=%04X wh=%02X,%02X,%02X,%02X w12=%02X bg1v=%04X bg3h=%04X bg3v=%04X\n",
 					ly, u32[line_inidisp[ly]], u32[line_mode[ly]], u32[line_tm[ly]], u32[line_tmw[ly]], u32[line_cgadsub[ly]], u32[line_cgwsel[ly]], u32[line_coldata[ly]],
 					u32[line_wh0[ly]], u32[line_wh1[ly]], u32[line_wh2[ly]], u32[line_wh3[ly]], u32[line_w12sel[ly]], u32[line_v[ly]], u32[line_h[2 * 224 + ly]], u32[line_v[2 * 224 + ly]] ]
 			fclose[ lf ]
-		f : ref FILE [ fopen[ fn, 'wb' ] ]
+		f : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ !f ] return
 		fprintf[ f, "INIDISP %02X\n", u32[ppu.inidisp] ]
 		fprintf[ f, "OBSEL %02X\n", u32[ppu.obsel] ]
@@ -4358,7 +4358,7 @@ element asnes : trinity
 		fclose[ f ]
 
 	func write_snapshot [ fn: symbol ]
-		wf : ref FILE [ fopen[ fn, 'wb' ] ]
+		wf : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ !wf ] return
 		fwrite[ cpu.memory + 0x7E0000, 1, 0x20000, wf ]
 		fwrite[ ppu.vram,  1, 0x10000, wf ]
@@ -4488,7 +4488,7 @@ element asnes : trinity
 	# are intentionally skipped; they self-heal within a few samples on resume.
 	func save_state [ fn: symbol ]
 		if [ !cpu || !spc ] return
-		wf : ref FILE [ fopen[ fn, 'wb' ] ]
+		wf : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ !wf ] return
 		# header: 8-byte magic + 1024-byte zero-padded rom path, so states are
 		# self-describing and a restore can verify it matches the loaded rom
@@ -4641,7 +4641,7 @@ element asnes : trinity
 
 	func load_state [ fn: symbol ]
 		if [ !cpu || !spc ] return
-		rf : ref FILE [ fopen[ fn, 'rb' ] ]
+		rf : @FILE [ fopen[ fn, 'rb' ] ]
 		if [ !rf ] return
 		# header check: new states carry magic + rom path — refuse a state
 		# saved from a different rom. headerless legacy states load as-is.
@@ -4910,26 +4910,26 @@ element asnes : trinity
 		puts 'asnes state loaded'
 
 	# little-endian pack/unpack helpers for savestate scalar block
-	func st_w8 [ b: ref u8, o: i32, v: u8 ] -> i32
+	func st_w8 [ b: @u8, o: i32, v: u8 ] -> i32
 		b[o] = v
 		return o + 1
 
-	func st_w16 [ b: ref u8, o: i32, v: u16 ] -> i32
+	func st_w16 [ b: @u8, o: i32, v: u16 ] -> i32
 		b[o] = u8[v & 0xFF]
 		b[o + 1] = u8[(v >> 8) & 0xFF]
 		return o + 2
 
-	func st_w32 [ b: ref u8, o: i32, v: u32 ] -> i32
+	func st_w32 [ b: @u8, o: i32, v: u32 ] -> i32
 		b[o] = u8[v & 0xFF]
 		b[o + 1] = u8[(v >> 8) & 0xFF]
 		b[o + 2] = u8[(v >> 16) & 0xFF]
 		b[o + 3] = u8[(v >> 24) & 0xFF]
 		return o + 4
 
-	func st_r16 [ b: ref u8, o: i32 ] -> u16
+	func st_r16 [ b: @u8, o: i32 ] -> u16
 		return u16[b[o]] | (u16[b[o + 1]] << 8)
 
-	func st_r32 [ b: ref u8, o: i32 ] -> u32
+	func st_r32 [ b: @u8, o: i32 ] -> u32
 		return u32[b[o]] | (u32[b[o + 1]] << 8) | (u32[b[o + 2]] << 16) | (u32[b[o + 3]] << 24)
 
 	# per-iteration emulation-thread work: rigs + one DAC-paced rom frame + publish
@@ -4970,7 +4970,7 @@ element asnes : trinity
 		# a live reload — pick up exactly where the previous instance left off
 		el [ !state && !state_loaded && getenv[ 'SILVER_RELOAD_LOAD' ] ]
 			state_loaded = true
-			ff : ref FILE [ fopen[ '/tmp/asnes_flash.state', 'rb' ] ]
+			ff : @FILE [ fopen[ '/tmp/asnes_flash.state', 'rb' ] ]
 			if [ ff ]
 				fclose[ ff ]
 				load_state[ '/tmp/asnes_flash.state' ]

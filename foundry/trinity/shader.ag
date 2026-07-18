@@ -7,7 +7,7 @@ struct vertex_member_t
     size:   i64
     offset: i64
 
-alias ShaderModuleRef : ref VkShaderModule
+alias ShaderModuleRef : @VkShaderModule
 
 class shader
     context vk          : vk_context
@@ -300,15 +300,15 @@ class shader
             fputs[ src, fp ]
             fclose[ fp ]
 
-    func uniform_transfer [ data2: ref u8, type: Au_t ] -> i64
+    func uniform_transfer [ data2: @u8, type: Au_t ] -> i64
         instance:a
         expect instance inherits shader, "shader instance not provided"
-        src: ref u8 [ instance ]
+        src: @u8 [ instance ]
 ##
         if [strcmp[type.ident, "Earth"] == 0]
-            fdata: ref f32 [ ref data2[0] ]
-            memcpy[ fdata, ref src[84], 64 ]
-            m4 : ref mat4f [ fdata ] 
+            fdata: @f32 [ @data2[0] ]
+            memcpy[ fdata, @src[84], 64 ]
+            m4 : @mat4f [ fdata ] 
             return 192
 ##
         index: num [ 0 ]
@@ -320,10 +320,10 @@ class shader
                 if [ is_uniform_field[ mem ] ]
                     type_size: mem.src.typesize
                     if [ (mem.src.traits & (1 << 8)) || (mem.src.traits & (1 << 0)) ]
-                        memcpy[ ref data2[index], ref src[mem.offset], type_size ]
+                        memcpy[ @data2[index], @src[mem.offset], type_size ]
                     el
-                        dst_ptr: (ref src[mem.offset] to ref handle)
-                        memcpy[ ref data2[index], dst_ptr, type_size ]
+                        dst_ptr: (@src[mem.offset] to @handle)
+                        memcpy[ @data2[index], dst_ptr, type_size ]
                     index += type_size
 
         return index
@@ -347,8 +347,8 @@ class shader
             found = true
             source_stat: struct stat
             spv_stat:    struct stat
-            src_exists: stat[ input, ref source_stat ] == 0
-            spv_exists: stat[ spv_file, ref spv_stat ] == 0
+            src_exists: stat[ input, @source_stat ] == 0
+            spv_exists: stat[ spv_file, @spv_stat ] == 0
             #make_spv: false -- this is needed now, and thats wrong
             ifdef [ linux ]
                 make_spv : !spv_exists || source_stat.st_mtim.tv_sec > spv_stat.st_mtim.tv_sec
@@ -390,7 +390,7 @@ class shader
                 pCode:    spirv
             ]
             mod: VkShaderModule
-            vkResult: vkCreateShaderModule[ vk.device, createInfo, null, ref mod ]
+            vkResult: vkCreateShaderModule[ vk.device, createInfo, null, @mod ]
             if [ vkResult != VK_SUCCESS ]
                 puts 'failed to create vulkan shader module: {spv_file}'
                 free[ spirv ]
@@ -1354,7 +1354,7 @@ func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string, out: map
         m.tex_cache[ key ] = tx
     out[ name ] = tx
 
-func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: ref i32, with_edges: bool ] -> SubdivTopo
+func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: @i32, with_edges: bool ] -> SubdivTopo
     t : SubdivTopo [ ]
     t.nv = nv
     t.nf = nf
@@ -1494,17 +1494,17 @@ func subdiv_next_topo [ t: SubdivTopo, with_edges: bool ] -> SubdivTopo
     return subdiv_topo_from_quads[ nv2, nf2, q2, with_edges ]
 
 # host-visible i32 storage buffer filled from a CPU array
-func subdiv_i32_buf [ vkc: vk_context, src: ref i32, count: i32 ] -> Buffer
+func subdiv_i32_buf [ vkc: vk_context, src: @i32, count: i32 ] -> Buffer
     bts : i32 [ count * 4 ]
     b : Buffer [ vk: vkc, size: bts, u_storage: true, m_host_visible: true, m_host_coherent: true ]
-    d : ref i8 [ b.data ]
-    s0 : ref i8 [ ((ref src[ 0 ]) to ref i8) ]
+    d : @i8 [ b.data ]
+    s0 : @i8 [ ((@src[ 0 ]) to @i8) ]
     memcpy[ d, s0, bts ]
     return b
 
 # merge the 4-slot joint/weight pairs of ncont contributor verts into dst
 # vert dv: accumulate per joint, keep the 4 heaviest, renormalize to sum 1
-func subdiv_merge_jw [ cur_j: ref i32, cur_w: ref f32, cont: ref i32, ncont: i32, dst_j: ref i32, dst_w: ref f32, dv: i32 ]
+func subdiv_merge_jw [ cur_j: @i32, cur_w: @f32, cont: @i32, ncont: i32, dst_j: @i32, dst_w: @f32, dv: i32 ]
     mj : local i32 [ 16 ]
     mw : local f32 [ 16 ]
     cnt : i32 [ 0 ]
@@ -1561,7 +1561,7 @@ func subdiv_merge_jw [ cur_j: ref i32, cur_w: ref f32, cont: ref i32, ncont: i32
 #   the rest  — averaged once on the CPU here (joints+weights merged)
 # returns the subdivided Gpu (external compute-fed vbo), or null to keep the
 # base mesh (odd triangle count / non-quad pairing / no POSITION first).
-func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name: string ] -> Gpu
+func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: string ] -> Gpu
     levels : i32 [ m.subdiv ]
     vsz : i32 [ base.vertex_size ]
     vc  : i32 [ base.vertex_count ]
@@ -1572,21 +1572,21 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
     if [ tc * 3 != ic ] return null
     nf0 : i32 [ tc / 2 ]
     if [ nf0 * 2 != tc ] return null
-    vdata : ref i8 [ base.vertex_data ]
-    idata : ref i8 [ base.index_data ]
+    vdata : @i8 [ base.vertex_data ]
+    idata : @i8 [ base.index_data ]
     # indices at their real width
     idxbuf : new i32 [ ic ]
     if [ base.index_size == 2 ]
-        i16p : ref u16 [ ((ref idata[ 0 ]) to ref u16) ]
+        i16p : @u16 [ ((@idata[ 0 ]) to @u16) ]
         for [ ii: i32 0, ii < ic, ii += 1 ] idxbuf[ ii ] = i32[ i16p[ ii ] ]
     el
-        i32p : ref u32 [ ((ref idata[ 0 ]) to ref u32) ]
+        i32p : @u32 [ ((@idata[ 0 ]) to @u32) ]
         for [ ii: i32 0, ii < ic, ii += 1 ] idxbuf[ ii ] = i32[ i32p[ ii ] ]
     # weld verts by quantized position + coarse normal: UV-seam duplicates
     # (same normal) merge, but coinciding lip-contact verts (opposite normals)
     # stay separate — a position-only weld glues them into non-manifold points
     n_off : i32 [ -1 ]
-    mems0 : ref vertex_member_t [ base.members ]
+    mems0 : @vertex_member_t [ base.members ]
     for [ k: i32 0, k < base.member_count, k += 1 ]
         if [ sems_of[ k ] == 1 ] n_off = i32[ mems0[ k ].offset ]
     topo : new i32 [ vc ]
@@ -1602,7 +1602,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
     q6 : new i64 [ q6sz ]
     tv : i32 [ 0 ]
     for [ v: i32 0, v < vc, v += 1 ]
-        p : ref f32 [ ((ref vdata[ v * vsz ]) to ref f32) ]
+        p : @f32 [ ((@vdata[ v * vsz ]) to @f32) ]
         qx : i64 [ i64[ round[ p[0] * 100000.0 ] ] ]
         qy : i64 [ i64[ round[ p[1] * 100000.0 ] ] ]
         qz : i64 [ i64[ round[ p[2] * 100000.0 ] ] ]
@@ -1610,7 +1610,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
         ny : i64 [ 0 ]
         nz : i64 [ 0 ]
         if [ n_off >= 0 ]
-            nrm : ref f32 [ ((ref vdata[ v * vsz + n_off ]) to ref f32) ]
+            nrm : @f32 [ ((@vdata[ v * vsz + n_off ]) to @f32) ]
             nx = i64[ round[ nrm[0] * 4.0 ] ]
             ny = i64[ round[ nrm[1] * 4.0 ] ]
             nz = i64[ round[ nrm[2] * 4.0 ] ]
@@ -1710,11 +1710,11 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
     # the compute-fed interleaved output vbo (storage for writes, vertex for draw)
     out_bytes : i32 [ nout * vsz ]
     obuf : Buffer [ vk: m.vk, size: out_bytes, u_storage: true, u_vertex: true, m_host_visible: true, m_host_coherent: true ]
-    odata : ref i8 [ obuf.data ]
+    odata : @i8 [ obuf.data ]
     # index buffer: 2 triangles per output quad
     oi_bytes : i32 [ oic * 4 ]
     xbuf : Buffer [ vk: m.vk, size: oi_bytes, u_index: true, u_dst: true, u_shader: true, m_host_visible: true, m_host_coherent: true ]
-    ixd : ref i32 [ xbuf.data ]
+    ixd : @i32 [ xbuf.data ]
     for [ q: i32 0, q < nt.nf, q += 1 ]
         ixd[ q*6 + 0 ] = nt.qcorn[ q*4 + 0 ]
         ixd[ q*6 + 1 ] = nt.qcorn[ q*4 + 1 ]
@@ -1723,7 +1723,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
         ixd[ q*6 + 4 ] = nt.qcorn[ q*4 + 2 ]
         ixd[ q*6 + 5 ] = nt.qcorn[ q*4 + 3 ]
     # ---- CPU attribute pass (once): fill the whole interleave ----
-    mems : ref vertex_member_t [ base.members ]
+    mems : @vertex_member_t [ base.members ]
     mc : i32 [ base.member_count ]
     # rep indirection: final welded vert -> base unwelded vert (int streams).
     # in-place: vertex points keep their slot, edge/face points append past
@@ -1743,8 +1743,8 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
     jw_ok : bool [ jk >= 0 && wk >= 0 ]
     jsz : i32 [ 0 ]
     if [ jw_ok ]
-        jm : ref mems[ jk ]
-        wm : ref mems[ wk ]
+        jm : @mems[ jk ]
+        wm : @mems[ wk ]
         jsz = i32[ jm.size ]
         wsz : i32 [ i32[ wm.size ] ]
         if [ !((jsz == 4 || jsz == 8) && wsz == 16) ] jw_ok = false
@@ -1756,9 +1756,9 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
         cur_w : new f32 [ jw_cap ]
         for [ v: i32 0, v < tv, v += 1 ]
             rv : i32 [ rep[ v ] ]
-            wp : ref f32 [ ((ref vdata[ rv * vsz + woff ]) to ref f32) ]
-            jp8  : ref u8  [ ((ref vdata[ rv * vsz + joff ]) to ref u8) ]
-            jp16 : ref u16 [ ((ref vdata[ rv * vsz + joff ]) to ref u16) ]
+            wp : @f32 [ ((@vdata[ rv * vsz + woff ]) to @f32) ]
+            jp8  : @u8  [ ((@vdata[ rv * vsz + joff ]) to @u8) ]
+            jp16 : @u16 [ ((@vdata[ rv * vsz + joff ]) to @u16) ]
             for [ s: i32 0, s < 4, s += 1 ]
                 if [ jsz == 4 ]
                     cur_j[ v*4 + s ] = i32[ jp8[ s ] ]
@@ -1780,9 +1780,9 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
                 cont[ 3 ] = t.qcorn[ f*4 + 3 ]
                 subdiv_merge_jw[ cur_j, cur_w, cont, 4, cur_j, cur_w, t.nv + t.ne + f ]
         for [ v: i32 0, v < nout, v += 1 ]
-            dw : ref f32 [ ((ref odata[ v * vsz + woff ]) to ref f32) ]
-            dj8  : ref u8  [ ((ref odata[ v * vsz + joff ]) to ref u8) ]
-            dj16 : ref u16 [ ((ref odata[ v * vsz + joff ]) to ref u16) ]
+            dw : @f32 [ ((@odata[ v * vsz + woff ]) to @f32) ]
+            dj8  : @u8  [ ((@odata[ v * vsz + joff ]) to @u8) ]
+            dj16 : @u16 [ ((@odata[ v * vsz + joff ]) to @u16) ]
             for [ s: i32 0, s < 4, s += 1 ]
                 if [ jsz == 4 ]
                     dj8[ s ] = u8[ cur_j[ v*4 + s ] ]
@@ -1796,15 +1796,15 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
     for [ k: i32 0, k < mc, k += 1 ]
         if [ sems_of[ k ] == 0 || sems_of[ k ] == 1 ] continue
         if [ jw_ok && (k == jk || k == wk) ] continue
-        mem : ref mems[ k ]
+        mem : @mems[ k ]
         moff : i32 [ i32[ mem.offset ] ]
         msz  : i32 [ i32[ mem.size ] ]
         is_f : bool [ mem.src == typeid[ f32 ] || mem.src == typeid[ vec2f ] || mem.src == typeid[ vec3f ] || mem.src == typeid[ vec4f ] ]
         if [ !is_f ]
             for [ v: i32 0, v < nout, v += 1 ]
                 sv2 : i32 [ srcv[ v ] ]
-                dstp : ref i8 [ ref odata[ v * vsz + moff ] ]
-                srcp : ref i8 [ ref vdata[ sv2 * vsz + moff ] ]
+                dstp : @i8 [ @odata[ v * vsz + moff ] ]
+                srcp : @i8 [ @vdata[ sv2 * vsz + moff ] ]
                 memcpy[ dstp, srcp, msz ]
             continue
         ncf : i32 [ msz / 4 ]
@@ -1812,7 +1812,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
         cur : new f32 [ fcap ]
         for [ v: i32 0, v < tv, v += 1 ]
             rv : i32 [ rep[ v ] ]
-            sp : ref f32 [ ((ref vdata[ rv * vsz + moff ]) to ref f32) ]
+            sp : @f32 [ ((@vdata[ rv * vsz + moff ]) to @f32) ]
             for [ c: i32 0, c < ncf, c += 1 ] cur[ v * ncf + c ] = sp[ c ]
         # in-place: edge/face points append past t.nv, reading below it
         for [ lv: i32 0, lv < levels, lv += 1 ]
@@ -1830,15 +1830,15 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
                 dv : i32 [ t.nv + t.ne + f ]
                 for [ c: i32 0, c < ncf, c += 1 ] cur[ dv * ncf + c ] = 0.25 * (cur[ c0 * ncf + c ] + cur[ c1 * ncf + c ] + cur[ c2 * ncf + c ] + cur[ c3 * ncf + c ])
         for [ v: i32 0, v < nout, v += 1 ]
-            dp : ref f32 [ ((ref odata[ v * vsz + moff ]) to ref f32) ]
+            dp : @f32 [ ((@odata[ v * vsz + moff ]) to @f32) ]
             for [ c: i32 0, c < ncf, c += 1 ] dp[ c ] = cur[ v * ncf + c ]
     # ---- GPU position chain: one SubdivCompute pipeline per level ----
     in0sz : i32 [ tv * 3 * 4 ]
     in0 : Buffer [ vk: m.vk, size: in0sz, u_storage: true, m_host_visible: true, m_host_coherent: true ]
-    ip : ref f32 [ in0.data ]
+    ip : @f32 [ in0.data ]
     for [ v: i32 0, v < tv, v += 1 ]
         rv : i32 [ rep[ v ] ]
-        p : ref f32 [ ((ref vdata[ rv * vsz ]) to ref f32) ]
+        p : @f32 [ ((@vdata[ rv * vsz ]) to @f32) ]
         ip[ v*3 + 0 ] = p[ 0 ]
         ip[ v*3 + 1 ] = p[ 1 ]
         ip[ v*3 + 2 ] = p[ 2 ]
@@ -1859,7 +1859,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: ref i32, render_id: i32, name:
     # nearest welded vert to (-x, y, z), accepted within 2% of the extent.
     # brute-force pairing — gated to small cages (the head, not baked eyes)
     if [ tv <= 8192 ]
-        bp : ref f32 [ t0.base ]
+        bp : @f32 [ t0.base ]
         t0.mirror = new i32 [ tv ]
         bmn : f32 [  1e30 ]
         bmx : f32 [ -1e30 ]
@@ -2002,7 +2002,7 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
             want : sems[w]
             if [ want == 'COLOR_0' ]
                 if [ !want_color ] continue
-            for [ value:ref i64, a_name:string ] in prim.attributes
+            for [ value:@i64, a_name:string ] in prim.attributes
                 if [ a_name != want ] continue
                 ac_index: value[0]
                 ac:       mdl.accessors[ ac_index ]
@@ -2025,36 +2025,36 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
             index_size: index_size, index_count: index_count ]
         vbo.hold[]
 
-        vdata: ref i8 [ vbo.vertex_data ]
-        idata: ref i8 [ vbo.index_data ]
+        vdata: @i8 [ vbo.vertex_data ]
+        idata: @i8 [ vbo.index_data ]
 
         for [ k: 0, k < member_count, k += 1 ]
-            mem:        ref members[k]
+            mem:        @members[k]
             bv:         mdl.bufferViews[ mem.ac.bufferView ]
             b:          mdl.buffers[ bv.buffer ]
             expect b.data, 'gltf buffer has no data (uri failed to load): {b.uri}'
-            src_base:   ref i8[b.data]
+            src_base:   @i8[b.data]
             # accessor byteOffset positions this stream WITHIN the view (shared
             # interleaved views); the view's byteStride is the element step for
             # interleaved data — tight packing (accessor stride) otherwise
-            src:        ref src_base[bv.byteOffset + mem.ac.byteOffset]
+            src:        @src_base[bv.byteOffset + mem.ac.byteOffset]
             stride:     (bv.byteStride > 0) ? bv.byteStride : mem.ac.stride
 
             for [ j: 0, j < vertex_count, j += 1 ]
-                data_dst: ref vdata[j * vertex_size + mem.offset]
-                dst:  ref i8[data_dst]
-                data_src: ref src[j * stride]
-                src0: ref i8[data_src]
+                data_dst: @vdata[j * vertex_size + mem.offset]
+                dst:  @i8[data_dst]
+                data_src: @src[j * stride]
+                src0: @i8[data_src]
                 memcpy[ dst, src0, mem.size ] # highlight these in the variables list
 
-        view:  ref i8[ibuffer.data]
-        i_src: ref view [ iview.byteOffset + ai.byteOffset ]
+        view:  @i8[ibuffer.data]
+        i_src: @view [ iview.byteOffset + ai.byteOffset ]
 
         memcpy[ idata, i_src, u64[ index_count ] * itype.typesize ]
 
         if [ getenv[ 'TRIN_VBOLOG' ] ]
-            vf : ref f32 [ vdata ]
-            ip : ref u16 [ idata ]
+            vf : @f32 [ vdata ]
+            ip : @u16 [ idata ]
             st : i32 [ i32[ vertex_size ] / 4 ]
             printf[ "VBOLOG prim=%s verts=%d vsize=%d idxn=%d mc=%d v0=(%.2f %.2f %.2f) v1=(%.2f %.2f %.2f) i=[%d %d %d %d %d %d]\n",
                 name.chars, vertex_count, vertex_size, index_count, member_count,
@@ -2089,10 +2089,10 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
         use_samplers[ sk ] = sv
     if [ material && mdl ]
         pmr : material.pbrMetallicRoughness
-        mat_tex[ m, mdl, (pmr) ? pmr.baseColorTexture : null,         'color',  use_samplers ]
-        mat_tex[ m, mdl, (pmr) ? pmr.metallicRoughnessTexture : null, 'rough',  use_samplers ]
+        mat_tex[ m, mdl, pmr->baseColorTexture,         'color',  use_samplers ]
+        mat_tex[ m, mdl, pmr->metallicRoughnessTexture, 'rough',  use_samplers ]
         mat_tex[ m, mdl, material.normalTexture,                      'normal', use_samplers ]
-    pipe: Pipeline [ vk: vk, w: m.w, name: (n) ? n.name : null,
+    pipe: Pipeline [ vk: vk, w: m.w, name: n->name,
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat, src_node: n, render_id: render_id,
         material: material, samplers: use_samplers,
         straight_alpha: sa, depth_no_write: transparent, cull_none: m.cull_none ]

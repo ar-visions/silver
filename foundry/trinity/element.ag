@@ -141,10 +141,17 @@ ielement element
     mutable odd             : bool
     mutable even            : bool
     public  focusable       : bool
+    # app root only: opt into the framework dev shade (menu tab + generics)
+    public  ux_generics     : bool
     public cursor_pos       : vec2f
     # a fixed child: not part of the parent's scrolled content, so find_target must
     # hit-test it in UNSCROLLED local space (don't fold the parent's scroll into it).
     public  no_scroll       : bool
+    # when false, find_target does NOT claim this element as its own hit target —
+    # clicks pass THROUGH to siblings / the app — but its CHILDREN still hit-test.
+    # lets a full-window overlay be a transparent pass-through while idle and go
+    # modal (user_events=true) while active.
+    public  user_events     : bool [ true ]
     mutable maps_populated  : bool
     mutable sel_col         : i32 [ -1 ]
     mutable anchor_col      : i32 [ 0 ]

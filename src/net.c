@@ -155,15 +155,20 @@ sz Session_send_string(Session s, string v) {
 
 vector Session_read_until(Session s, string match, i32 max_len) {
     vector rbytes = new(vector);
+    // byte vector: without this the scalar defaults to the vector
+    // type itself and every push strides/copies ~111 bytes
+    Au fh = head(rbytes);
+    fh->scalar = typeid(i8);
     vector_reallocate(rbytes, max_len + 1);
 
     sz slen = match->count;
-    cstr buf = (cstr)vdata(rbytes);
-    
+
     for (;;) {
         vector_vpush(rbytes, _i8(0)); // extend buffer size here with a null, giving us space to read
         sz sz = rbytes->count;
         verify(sz, "invalid");
+        // re-fetch every pass: vpush can regrow and move the buffer
+        cstr buf = (cstr)vdata(rbytes);
         if (!recv(s, &buf[sz - 1], 1))
             return null;
             
@@ -264,9 +269,17 @@ none TLS_init(TLS tls) {
             return;
         }
     } else {
-        path cw = path_cwd();
-        string trust = f(string, "ssl/trust.crt");
-        int parse_res = mbedtls_x509_crt_parse_file(&tls->srvcert, trust->chars);
+        // local trust first, then the system CA bundle (debian / rh paths)
+        static cstr ca_paths[] = {
+            "ssl/trust.crt",
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt" };
+        int parse_res = -1;
+        for (int ci = 0; ci < 3 && parse_res != 0; ci++)
+            if (file_exists("%s", ca_paths[ci]))
+                parse_res = mbedtls_x509_crt_parse_file(&tls->srvcert, ca_paths[ci]);
+        if (parse_res != 0)
+            print("tls: no CA bundle found (ssl/trust.crt or system certs)");
         mbedtls_ssl_conf_ca_chain(&tls->conf, &tls->srvcert, NULL);
     }
 
@@ -322,7 +335,8 @@ none message_init(message m) {
     if (!contains(headers, (Au)ac)) set(headers, (Au)ac, (Au)f(string, "text/html,application/xhtml+xml,application/xml;q=0.9,*;q=0.8"));
     if (!contains(headers, (Au)al)) set(headers, (Au)al, (Au)f(string, "en-US,en;q=0.9"));
     if (!contains(headers, (Au)ae)) set(headers, (Au)ae, (Au)f(string, "identity"));
-    if (!contains(headers, (Au)h))  set(headers, (Au)h,  (Au)query->host);
+    if (!contains(headers, (Au)h) && query)
+        set(headers, (Au)h, (Au)query->host);
 }
 
 message message_with_sock(message m, sock sc) {
@@ -751,11 +765,7 @@ Au request(uri url, map args) {
     if (!connect_to(client))
         return null;
 
-    // Send request line
-    string method = e_str(web, query->mtype);
-    send_object(client, (Au)f(string, "%o %o HTTP/1.1\r\n", method, query->query));
-
-    // Default headers
+    // message_write emits the request line itself
     message request = message(content, content, headers, headers, query, query);
     write(request, client, true);
 
@@ -763,6 +773,61 @@ Au request(uri url, map args) {
     close(client);
 
     return (Au)response;
+}
+
+// stream a GET to a file, following redirects (HF resolve links 302
+// to a CDN). returns bytes written, -1 on any failure.
+i64 download(uri url, cstr dest) {
+    uri cur = url;
+    for (int hop = 0; hop < 6; hop++) {
+        cur->mtype = web_Get;
+        sock client = sock(cur);
+        print("(net) download: %o", (Au)cur->host);
+        if (!connect_to(client))
+            return -1;
+        Au  null_content = null;
+        map hdrs = new(map);
+        message req = message(content, null_content, headers, hdrs, query, cur);
+        write(req, client, true);
+        message resp = new(message);
+        if (!read_headers(resp, client)) { close(client); return -1; }
+        string status = (string)get(resp->headers, (Au)string("Status"));
+        i32 code = status ? atoi(status->chars) : 0;
+        if (code >= 300 && code < 400) {
+            string loc = (string)get(resp->headers, (Au)string("Location"));
+            close(client);
+            if (!loc) return -1;
+            cur = uri(loc);
+            continue;
+        }
+        if (code != 200) {
+            print("(net) download: status %d", code);
+            close(client);
+            return -1;
+        }
+        string cls  = (string)get(resp->headers, (Au)string("Content-Length"));
+        i64 total   = cls ? atoll(cls->chars) : -1;
+        FILE* fp = fopen(dest, "wb");
+        if (!fp) { close(client); return -1; }
+        static char buf[262144];
+        i64 got = 0, mark = 0;
+        for (;;) {
+            sz n = sock_recv(client, (handle)buf, sizeof(buf));
+            if (n <= 0) break;
+            if (fwrite(buf, 1, n, fp) != (size_t)n) { got = -1; break; }
+            got += n;
+            if (got - mark >= (i64)(256 << 20)) {
+                mark = got;
+                print("(net) download: %lld / %lld MB", got >> 20, total >> 20);
+            }
+            if (total > 0 && got >= total) break;
+        }
+        fclose(fp);
+        close(client);
+        if (got < 0 || (total > 0 && got < total)) return -1;
+        return got;
+    }
+    return -1;
 }
 
 uri uri_with_string(uri a, string raw) {

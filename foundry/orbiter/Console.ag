@@ -154,7 +154,7 @@ class ConsoleSession
 
     func start []
         if [ pty_fd >= 0 ] return
-        pid = forkpty[ ref pty_fd, null, null, null ]
+        pid = forkpty[ @pty_fd, null, null, null ]
         if [ pid == 0 ]
             setenv[ 'TERM', 'xterm-256color', 1 ]
             # we emulate 24-bit SGR (38;2;r;g;b) — advertise it so TUIs use true color
@@ -219,7 +219,7 @@ class ConsoleSession
 
     # copy n cells src→dst (whole-buffer blit) — used to stash/restore the normal
     # screen when a full-screen TUI takes over the alt screen.
-    func blit_cells [ dst: ref TermCell, src: ref TermCell, n: i32 ]
+    func blit_cells [ dst: @TermCell, src: @TermCell, n: i32 ]
         for [ i: i32 0, i < n, i += 1 ]
             dst[i].ch   = src[i].ch
             dst[i].fg   = src[i].fg
@@ -228,7 +228,7 @@ class ConsoleSession
 
     # initialize a freshly-allocated buffer to blank, transparent cells (bg = -1 so
     # untouched cells draw nothing and the console's own background shows through).
-    func init_cells [ buf: ref TermCell, n: i32 ]
+    func init_cells [ buf: @TermCell, n: i32 ]
         for [ i: i32 0, i < n, i += 1 ]
             buf[i].ch   = 32
             buf[i].fg   = -1
@@ -266,7 +266,7 @@ class ConsoleSession
 
     # encode the codepoints of cells[off+c0 .. off+c1) into a UTF-8 string. works on
     # any TermCell buffer (the live screen or the scrollback color store).
-    func cells_text [ cells: ref TermCell, off: i32, c0: i32, c1: i32 ] -> string
+    func cells_text [ cells: @TermCell, off: i32, c0: i32, c1: i32 ] -> string
         buf : local i8 [ (c1 - c0) * 4 + 1 ]
         bi  : i32 [ 0 ]
         for [ c: i32 c0, c < c1, c += 1 ]
@@ -291,7 +291,7 @@ class ConsoleSession
                 buf[bi+3] = i8[ 128 | (cp & 63) ]
                 bi += 4
         buf[bi] = 0
-        return string[ ref buf[0] ]
+        return string[ @buf[0] ]
 
     # encode the codepoints of cells [c0,c1) on screen row r into a UTF-8 string.
     func cell_text [ r: i32, c0: i32, c1: i32 ] -> string
@@ -310,7 +310,7 @@ class ConsoleSession
     # copy scrollback line `li`'s boxed cells into the contiguous scratch row and
     # return it, so the shared draw_cells (which wants a flat ref TermCell) can render
     # it. off into the result is always 0; len is sb_line_len[ li ].
-    func sb_line_buf [ li: i32 ] -> ref TermCell
+    func sb_line_buf [ li: i32 ] -> @TermCell
         off : i32 [ sb_off[ li ] ]
         len : i32 [ sb_line_len[ li ] ]
         for [ c: i32 0, c < len && c < 2048, c += 1 ]
@@ -854,7 +854,7 @@ class ConsoleSession
                     screen[d].bg   = tmp[s].bg
                     screen[d].attr = tmp[s].attr
         el [ nr > orows ]
-            init_cells[ ref screen[ orows * cols ], (nr - orows) * cols ]
+            init_cells[ @screen[ orows * cols ], (nr - orows) * cols ]
         # NOTE: do NOT flush the per-line cache here. it's keyed by content-hash and sized
         # by each line's own drawable width — neither depends on rows. a cols change reflows
         # the cells (new hashes → natural miss); a height-only resize keeps the lines valid.
@@ -869,7 +869,7 @@ class ConsoleSession
         ws[2] = 0
         ws[3] = 0
         if [ pty_fd >= 0 ]
-            ioctl[ pty_fd, TIOCSWINSZ, ref ws[0] ]
+            ioctl[ pty_fd, TIOCSWINSZ, @ws[0] ]
         dirty = true
 
     func read_output []
@@ -879,10 +879,10 @@ class ConsoleSession
         buf[1] = 0
         got : string ''
         for [ i: i32 0, i < 4096, i += 1 ]
-            nr : i32 [ read[ pty_fd, ref buf[0], 1 ] ]
+            nr : i32 [ read[ pty_fd, @buf[0], 1 ] ]
             if [ nr <= 0 ] break
             dirty = true
-            got = got + string[ ref buf[0] ]
+            got = got + string[ @buf[0] ]
             process_byte[ (i32 buf[0]) & 255 ]
         # a run that's returned to our shell prompt has ended (lldb quit, or the
         # build/run errored and bash bounced back) → clear running so the button
@@ -908,7 +908,7 @@ class ConsoleSession
         buf : local i8 [ 2 ]
         buf[1] = 0
         for [ i: i32 0, i < 4096, i += 1 ]
-            nr : i32 [ read[ fd, ref buf[0], 1 ] ]
+            nr : i32 [ read[ fd, @buf[0], 1 ] ]
             if [ nr <= 0 ] break
             dirty = true
             process_byte[ (i32 buf[0]) & 255 ]
@@ -930,12 +930,12 @@ class ConsoleSession
     # (which collapses 'ESC [ Z' to the single byte 0x1b). tail carries no \x escapes.
     func send_esc [ tail: string ]
         if [ pty_fd < 0 ] return
-        n : i32 [ (tail) ? tail.count : 0 ]
+        n : i32 [ tail->count ]
         buf : local i8 [ n + 2 ]
         buf[0] = i8[ 27 ]
         for [ i: i32 0, i < n, i += 1 ]
             buf[i + 1] = tail.chars[i]
-        write[ pty_fd, ref buf[0], n + 1 ]
+        write[ pty_fd, @buf[0], n + 1 ]
 
 
 # one pooled render of a single scrollback line. `li` is the scrollback index it
@@ -959,15 +959,8 @@ Layer TermLayer
         if [ !con ] return
         s : ConsoleSession con.session[]
         if [ !s ] return
-        # declarative run: the editor sets run_line to its module's build+run
-        # command. dispatch it the frame it changes; clear the marker when it
-        # goes away so replaying the same command re-runs it.
-        if [ !con.run_line || con.run_line.count == 0 ]
-            con.last_run = null
-        el [ !con.last_run || con.last_run.compare[ con.run_line ] != 0 ]
-            con.last_run = con.run_line
-            con.dispatch[ con.session_id, con.run_line ]
-            s = con.session[]
+        # (run dispatch moved to the app's per-frame loop in orbiter.ag — a
+        # collapsed console never paints, so it can't live here.)
         if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
         # integer line height: rows sit on a fixed pixel grid so scrolling steps by
         # whole lines and lines never jiggle relative to each other (fractional lh
@@ -1078,7 +1071,11 @@ Layer TermLayer
 
         # clip to the content bounds so a partially-scrolled top/bottom row doesn't
         # bleed above into the title bar (or below the pane). the shaders honor crop.
-        cv.set_crop[ bounds.x, bounds.y, bounds.x + bounds.w, bounds.y + bounds.h ]
+        # crop is WORLD-space px: transform offset + local bounds (the embedded
+        # console sits deep in the pane tree, so local != world here).
+        wtx : f32 [ cv.transform_tx[] ]
+        wty : f32 [ cv.transform_ty[] ]
+        cv.set_crop[ wtx + bounds.x, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
 
         # selection highlight behind the text — shared render with the editor.
         cv.draw_selection[ x0, y0, lh, cw, s.scroll, bounds.y, bounds.w, bounds.h,
@@ -1154,7 +1151,7 @@ Layer TermLayer
     # render n cells from `cells` starting at `off` as colored runs (consecutive cells
     # sharing fg/bg/attr draw as one text span, with a bg rect when bg isn't default).
     # used by both the live grid (screen) and the scrollback color store.
-    func draw_cells [ cv: Canvas, s: ConsoleSession, cells: ref TermCell, off: i32, n: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
+    func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell, off: i32, n: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
         if [ n <= 0 ] return
         c : i32 [ 0 ]
         while [ c < n ]
@@ -1350,7 +1347,7 @@ Control Console
     # per-instance run (lldb) state, used by the play↔stop button.
     func is_running [ sid: string ] -> bool
         s : ConsoleSession sessions[sid]
-        return (s) ? s.running : false
+        return s->running
 
     func set_running [ sid: string, r: bool ]
         s : ConsoleSession sessions[sid]
@@ -1489,7 +1486,7 @@ Control Console
             send_fkey[ s, ev, k ]
         el [ ev.key.ctrl && k >= 64 && k <= 95 ]
             b : i8 [ i8[k - 64] ]
-            write[ s.pty_fd, ref b, 1 ]
+            write[ s.pty_fd, @b, 1 ]
 
     # map a mouse position to a (line, col) in the line model and set the cursor —
     # mirrors EditorLayer.place_cursor over the console's line_count/line_get.
@@ -1699,6 +1696,8 @@ Control Console
         if [ ns < 0.0 ] ns = 0.0
         if [ ns > s.max_scroll ] ns = s.max_scroll
         s.scroll = ns
+        # find_target folds scroll.y — sync NOW, not at next draw
+        scroll.y = ns
         s.user_scrolled = ns < s.max_scroll - 1.0
         fl : i32 [ (lh > 0.0) ? i32[ round[ ns / lh ] ] : 0 ]
         if [ fl != s.first_line ]

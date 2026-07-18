@@ -28,6 +28,9 @@ def parse():
     p.add_argument('--limit',   type=int, default=0)
     p.add_argument('--max_t',   type=int, default=512)
     p.add_argument('--vocab',   type=int, default=4096)
+    # trunk width: 192 plateaued at ~0.36 eval on 1000 words — the
+    # train loss floor said capacity-bound, not lr-bound
+    p.add_argument('--width',   type=int, default=384)
     # the LIMITED SET: only the top-N frequent words get their own
     # token; everything else is one <other> class — detected and
     # bounded, just not named. rare words are unlearnable anyway
@@ -190,27 +193,29 @@ class ReadNet(nn.Module):
     # native, nothing needs re-feeding)
     def __init__(self):
         super().__init__()
+        W = args.width
+        E = W // 6
         self.enc = nn.Sequential(
-            nn.Conv2d(1, 16, 3, stride=(2, 1), padding=1),
-            nn.BatchNorm2d(16), nn.ReLU(),
-            nn.Conv2d(16, 32, 3, stride=(2, 1), padding=1),
-            nn.BatchNorm2d(32), nn.ReLU(),
-            nn.Conv2d(32, 48, 3, stride=(2, 1), padding=1),
-            nn.BatchNorm2d(48), nn.ReLU(),
-            nn.Conv2d(48, 64, 3, stride=(2, 1), padding=1),
-            nn.BatchNorm2d(64), nn.ReLU())
+            nn.Conv2d(1, E, 3, stride=(2, 1), padding=1),
+            nn.BatchNorm2d(E), nn.ReLU(),
+            nn.Conv2d(E, E * 2, 3, stride=(2, 1), padding=1),
+            nn.BatchNorm2d(E * 2), nn.ReLU(),
+            nn.Conv2d(E * 2, E * 3, 3, stride=(2, 1), padding=1),
+            nn.BatchNorm2d(E * 3), nn.ReLU(),
+            nn.Conv2d(E * 3, E * 4, 3, stride=(2, 1), padding=1),
+            nn.BatchNorm2d(E * 4), nn.ReLU())
         # dilation widens each column's view to ~±20 columns (~0.9s
         # either side) — a whole word plus its neighbors — while time
         # stays stride 1 so spans keep their 1:1 column mapping
         self.tconv = nn.Sequential(
-            nn.Conv1d(64 * 4, 192, 5, padding=2),
-            nn.BatchNorm1d(192), nn.ReLU(),
-            nn.Conv1d(192, 192, 5, padding=4, dilation=2),
-            nn.BatchNorm1d(192), nn.ReLU(),
-            nn.Conv1d(192, 192, 5, padding=8, dilation=4),
-            nn.BatchNorm1d(192), nn.ReLU())
-        self.tokens = nn.Conv1d(192, NCLS, 1)
-        self.sect = nn.Conv1d(192, 1, 1)
+            nn.Conv1d(E * 4 * 4, W, 5, padding=2),
+            nn.BatchNorm1d(W), nn.ReLU(),
+            nn.Conv1d(W, W, 5, padding=4, dilation=2),
+            nn.BatchNorm1d(W), nn.ReLU(),
+            nn.Conv1d(W, W, 5, padding=8, dilation=4),
+            nn.BatchNorm1d(W), nn.ReLU())
+        self.tokens = nn.Conv1d(W, NCLS, 1)
+        self.sect = nn.Conv1d(W, 1, 1)
 
     def forward(self, x):
         # flatten, not reshape-from-unpacked-shape: tracing bakes

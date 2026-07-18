@@ -3,15 +3,38 @@ import img
 import trinity
 import <stdio.h>
 
+enum Quality
+    low:    0
+    medium: 1
+    high:   2
+
+enum Theme
+    dark:   0
+    light:  1
+    auto:   2
+
 element buttontest : trinity
     intern clicks     : i32    0
     public width      : i32    [ 480 ]
-    public height     : i32    [ 320 ]
+    public height     : i32    [ 560 ]
     public background : string [ 'Background' ]
     public title      : string [ 'buttontest' ]
+    # public bools become checks in the framework Options shade (reflected)
+    public wireframe  : bool
+    public paused     : bool [ true ]
+    public show_grid  : bool
+    public vsync      : bool [ true ]
+    # public enums become accordion drop-downs (one open at a time)
+    public quality    : Quality [ Quality.medium ]
+    public theme      : Theme [ Theme.dark ]
+    # public rgba becomes an Inkscape-style color wheel (expands on select)
+    public tint       : rgba [ '#e0508c' ]
+    # public f32 becomes a range slider (0..1)
+    public volume     : f32 [ 0.7 ]
+    public opacity    : f32 [ 0.35 ]
 
     public func on_click [ ev: Event ]
-        e : (ev.target to element)
+        e : (ev.origin to element)
         if [ !e ] return
         if [ e.id == 'hello' ]
             clicks += 1

@@ -1427,7 +1427,7 @@ Render Canvas
         cmd : Command [ vk: vk ]
         cmd.begin[]
         vkCmdClearColorImage[ cmd.cmd, color.vk_image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ref cv, 1, ref rng ]
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, @cv, 1, @rng ]
         cmd.submit[]
         color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
         
@@ -1503,7 +1503,7 @@ Render Canvas
     func measure_text [ text: string ] -> TextMetrics
         ensure_font[]
         st  : CanvasState states[state_depth - 1]
-        n   : (text) ? text.count : 0
+        n   : text->count
         tw  : f32 [ 0.0 ]
         i   : i64 [ 0 ]
         while [ i < n ]
@@ -1575,7 +1575,7 @@ Render Canvas
     func current_state [] -> CanvasState
         return states[state_depth - 1]
 
-    func hex_dump [ name: symbol, data: ref u8, size: i32 ]
+    func hex_dump [ name: symbol, data: @u8, size: i32 ]
         #printf[ "%s (%d bytes) data ptr = %p :\n", name, size, data ]
         for [ i: i32 0, i < size, i += 1 ]
             b: u8 data[ i ]
@@ -1941,7 +1941,7 @@ Render Canvas
         text_vbo = text_vbo_ring[ text_vbo_idx % text_ring_n ]
         text_pipeline.vbo = text_vbo
         text_vbo_idx += 1
-        verts : ref f32 [ text_vbo.vertex_data ]
+        verts : @f32 [ text_vbo.vertex_data ]
         vi    : i32 [ 0 ]
         pen_x : f32 [ pen_x_in ]
         pen_y : f32 [ pen_y_in ]
@@ -2070,8 +2070,8 @@ Render Canvas
             text_shader.text_color_pos = vec2f [ 0.0, 0.0 ]
             text_shader.text_grad_pos  = vec2f [ 0.0, 0.0 ]
             text_shader.grad_params    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-            sx : f32 [ (shadow.offset) ? shadow.offset.x : 0.0 ]
-            sy : f32 [ (shadow.offset) ? shadow.offset.y : 0.0 ]
+            sx : f32 [ shadow.offset->x ]
+            sy : f32 [ shadow.offset->y ]
             draw_text_pass[ display, tm, pen_x + sx, pen_y + sy ]
 
         # main pass: full text_color + optional gradient.
@@ -2149,7 +2149,7 @@ Render Canvas
         printf[ "  viewport   = (%f, %f)\n", f32 width, f32 height ]
         ##
 
-    func setup_gradient [ st: ref CanvasState ] -> f32
+    func setup_gradient [ st: @CanvasState ] -> f32
         if [ st.fill_gradient && st.fill_gradient.kind != GradientType.none ]
             g : Gradient st.fill_gradient
             ui_shader.grad0 = vec4f [ g.x0, g.y0, g.x1, g.y1 ]
@@ -2482,7 +2482,7 @@ Render Canvas
         by0 : f32
         bw  : f32
         bh  : f32
-        edges : ref SDFEdge
+        edges : @SDFEdge
         n     : i32
 
         if [ cache_hit ]
@@ -2517,7 +2517,7 @@ Render Canvas
                     by1 = pt.y
             bw = bx1 - bx0
             bh = by1 - by0
-            edges = sdf_extract_edges [ flat, ref n ]
+            edges = sdf_extract_edges [ flat, @n ]
             # snapshot the path op log + flatten/extract result for the next call
             path.cached_points = array PathPt [ ]
             for [ pi: i32 0, pi < pcount, pi += 1 ]
@@ -2622,7 +2622,7 @@ Render Canvas
             if [ !cache_hit ]
                 # pack edges into the storage buffer (4 floats per edge).
                 # only on cache miss — on hit, the buffer is already valid.
-                edge_data : ref f32 [ edge_buf.data ]
+                edge_data : @f32 [ edge_buf.data ]
                 for [ ei: i32 0, ei < ne, ei += 1 ]
                     e : SDFEdge edges[ei]
                     edge_data[ei * 4 + 0] = e.x0
@@ -2711,7 +2711,7 @@ struct TextMetrics
 struct GlyphEntry
     codepoint  : u32
     size_px    : i32
-    bitmap     : ref u8
+    bitmap     : @u8
     bmp_w      : i32
     bmp_h      : i32
     bearing_x  : i32
@@ -2739,7 +2739,7 @@ class CanvasFont
     public atlas      : GlyphAtlas
 
     func init []
-        err  : i32 FT_New_Face [ ft_lib, uri.chars, 0, ref ft_face ]
+        err  : i32 FT_New_Face [ ft_lib, uri.chars, 0, @ft_face ]
         expect err == 0, 'failed to load font: {uri}'
         FT_Set_Pixel_Sizes [ ft_face, 0, size_px ]
 
@@ -2775,7 +2775,7 @@ class CanvasFont
         if [ size != size_px ]
             size_px = size
             FT_Set_Pixel_Sizes [ ft_face, 0, size ]
-            fm : ref FT_FaceRec_ [ ft_face ]
+            fm : @FT_FaceRec_ [ ft_face ]
             ascent      = f32 fm.size.metrics.ascender / 64.0
             descent     = f32 fm.size.metrics.descender / 64.0
             line_height = f32 fm.size.metrics.height / 64.0
@@ -2813,7 +2813,7 @@ class CanvasFont
         bh   : i32 [ slot.bitmap.rows ]
 
         # copy bitmap (FT reuses its internal buffer)
-        bmp : ref u8 [ null ]
+        bmp : @u8 [ null ]
         if [ bw > 0 && bh > 0 ]
             sz  : i32 [ bw * bh ]
             bmp = malloc [ sz ]
@@ -2821,7 +2821,7 @@ class CanvasFont
             for [ row: i32 0, row < bh, row += 1 ]
                 src_off : i32 [ row * slot.bitmap.pitch ]
                 dst_off : i32 [ row * bw ]
-                memcpy [ ref bmp[ dst_off ], ref slot.bitmap.buffer[ src_off ], bw ]
+                memcpy [ @bmp[ dst_off ], @slot.bitmap.buffer[ src_off ], bw ]
 
         entry : GlyphEntry [
             codepoint: codepoint,
@@ -2866,7 +2866,7 @@ class GlyphAtlas
     intern  shelf_x     : i32
     intern  shelf_y     : i32
     intern  shelf_h     : i32
-    intern  staging     : ref u8    # scratch buffer for upload (atlas-sized)
+    intern  staging     : @u8    # scratch buffer for upload (atlas-sized)
 
     func release_gpu []
         if [ texture ] texture.release_gpu[]
@@ -3161,7 +3161,7 @@ func conic_gradient[ cx: f32, cy: f32, start_angle: f32 ] -> Gradient
 # extract line-segment edges from a flattened path into ONE contiguous SDFEdge
 # value buffer (via `new`), not an array of boxed Au objects. count_out receives
 # the edge count. caller owns the buffer (free[] it). returns null if 0 edges.
-func sdf_extract_edges [ flat: array PathPt, count_out: ref i32 ] -> ref SDFEdge
+func sdf_extract_edges [ flat: array PathPt, count_out: @i32 ] -> @SDFEdge
     n     : flat.count
     # pass 1 — count the segments we keep, so we can size the buffer exactly.
     cnt   : i32 [ 0 ]
@@ -3258,9 +3258,9 @@ func sdf_winding [ edges: array SDFEdge, px: f32, py: f32 ] -> i32
 # tw,th = SDF Texture dimensions
 # pad = extra world-space padding around bounds
 # returns f32 array [tw*th], negative = inside, positive = outside
-func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: i32, th: i32, pad: f32 ] -> ref f32
+func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: i32, th: i32, pad: f32 ] -> @f32
     ne    : i32 [ 0 ]
-    edges : sdf_extract_edges [ flat, ref ne ]
+    edges : sdf_extract_edges [ flat, @ne ]
     if [ ne == 0 ]
         return null
 
@@ -3411,7 +3411,7 @@ func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: 
 
 
 # convert f32 SDF to R8 Texture (maps [-spread..+spread] to [0..255])
-func sdf_to_r8 [ sdf: ref f32, count: i32, spread: f32 ] -> ref u8
+func sdf_to_r8 [ sdf: @f32, count: i32, spread: f32 ] -> @u8
     tex : new u8 [ count ]
     inv : f32 [ 0.5 / spread ]
     for [ i: i32 0, i < count, i += 1 ]
@@ -3421,6 +3421,6 @@ func sdf_to_r8 [ sdf: ref f32, count: i32, spread: f32 ] -> ref u8
 
 func ft_init [] -> handle
     if [ !ft_library ]
-        err : i32 FT_Init_FreeType [ ref ft_library ]
+        err : i32 FT_Init_FreeType [ @ft_library ]
         expect err == 0, 'FreeType init failed'
     return ft_library

@@ -55,8 +55,8 @@ class cpu_vr4300
 	ll_bit    : bool
 
 class n64_audio_out
-	pcm_handle     : ref snd_pcm_t
-	buffer         : ref i16
+	pcm_handle     : @snd_pcm_t
+	buffer         : @i16
 	buffer_size    : sz
 	sample_rate    : i32
 	channels       : i32
@@ -67,10 +67,10 @@ class n64_audio_out
 		buffer_size = 2048
 		buffer      = calloc[ 1, buffer_size * channels * 2 ]
 		pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
-		err : i32 [ snd_pcm_open[ ref pcm_handle, 'pulse', pb, 0 ] ]
+		err : i32 [ snd_pcm_open[ @pcm_handle, 'pulse', pb, 0 ] ]
 		if [ err < 0 ] return false
 		psz    : snd_pcm_hw_params_sizeof[]
-		params : ref snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
+		params : @snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
 		snd_pcm_hw_params_any[ pcm_handle, params ]
 		rw  : i32 [ SND_PCM_ACCESS_RW_INTERLEAVED ]
 		fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
@@ -80,8 +80,8 @@ class n64_audio_out
 		snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
 		bufsz : sz [ 3072 ]
 		persz : sz [ 512 ]
-		snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, ref bufsz ]
-		snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, ref persz, null ]
+		snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, @bufsz ]
+		snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, @persz, null ]
 		ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
 		if [ ok ]
 			perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
@@ -233,7 +233,7 @@ class ares
 		return arescore_load[ rom ]
 	func step [] -> none
 		arescore_step[]
-	func snapshot [ s: ref ares_cpu_state ] -> none
+	func snapshot [ s: @ares_cpu_state ] -> none
 		arescore_state[ s ]
 	func rd8 [ addr: u32 ] -> u8
 		return arescore_rdram8[ addr ]
@@ -467,7 +467,7 @@ element n64 : trinity
 		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF ]   # real PIF NTSC boot ROM (IPL1/2), LLE boot
 	mutable lle          : bool              # N64_LLE: boot from 0xBFC00000 (real IPL) vs HLE
 	mutable pif_state    : i32               # PIF boot state: 0 Init 1 Lockout 2 GetChk 3 ChkChk 4 TermBoot 5 Run
-	mutable rom_data     : ref u8
+	mutable rom_data     : @u8
 	mutable rom_size     : i64
 	# MI
 	mutable mi_intr      : u32              # pending: SP DP? bit0=SP 1=SI 2=AI 3=VI 4=PI 5=DP
@@ -809,7 +809,7 @@ element n64 : trinity
 
 	# ---------------- ROM + HLE boot ----------------
 	func load_rom [] -> bool
-		f : ref FILE [ fopen[ rom.chars, 'rb' ] ]
+		f : @FILE [ fopen[ rom.chars, 'rb' ] ]
 		if [ !f ]
 			puts 'n64: cannot open rom {rom}'
 			return false
@@ -1107,7 +1107,7 @@ element n64 : trinity
 			return (u32[rdram[pa]] << 24) | (u32[rdram[pa+1]] << 16) | (u32[rdram[pa+2]] << 8) | u32[rdram[pa+3]]
 		if [ pa >= 0x04000000 && pa < 0x04002000 ]
 			b : u32 [ pa & 0x1FFF ]
-			m : ref u8 [ (b < 0x1000) ? dmem : imem ]
+			m : @u8 [ (b < 0x1000) ? dmem : imem ]
 			o : u32 [ b & 0xFFF ]
 			return (u32[m[o]] << 24) | (u32[m[o+1]] << 16) | (u32[m[o+2]] << 8) | u32[m[o+3]]
 		if [ pa >= 0x10000000 && pa < 0x10000000 + u32[ rom_size ] ]
@@ -1146,7 +1146,7 @@ element n64 : trinity
 			return
 		if [ pa >= 0x04000000 && pa < 0x04002000 ]
 			b : u32 [ pa & 0x1FFF ]
-			m : ref u8 [ (b < 0x1000) ? dmem : imem ]
+			m : @u8 [ (b < 0x1000) ? dmem : imem ]
 			o : u32 [ b & 0xFFF ]
 			m[o]   = u8[ v >> 24 ]
 			m[o+1] = u8[ v >> 16 ]
@@ -3783,19 +3783,19 @@ element n64 : trinity
 		cpu.fpr[ n - (n & 1) ] = v
 	func fgs [ n: i32 ] -> f32
 		bb : local u32 [ 1 ] [ fget32[ n ] ]
-		fp : ref f32 [ ((ref bb[0]) to ref f32) ]
+		fp : @f32 [ ((@bb[0]) to @f32) ]
 		return fp[ 0 ]
 	func fss [ n: i32, v: f32 ]
 		bb : local f32 [ 1 ] [ v ]
-		up : ref u32 [ ((ref bb[0]) to ref u32) ]
+		up : @u32 [ ((@bb[0]) to @u32) ]
 		fset32[ n, up[ 0 ] ]
 	func fgd [ n: i32 ] -> f64
 		bb : local u64 [ 1 ] [ fget64[ n ] ]
-		fp : ref f64 [ ((ref bb[0]) to ref f64) ]
+		fp : @f64 [ ((@bb[0]) to @f64) ]
 		return fp[ 0 ]
 	func fsd [ n: i32, v: f64 ]
 		bb : local f64 [ 1 ] [ v ]
-		up : ref u64 [ ((ref bb[0]) to ref u64) ]
+		up : @u64 [ ((@bb[0]) to @u64) ]
 		fset64[ n, up[ 0 ] ]
 
 	# map host IEEE exceptions to FCR31 cause (12-16) + sticky flags (2-6),
@@ -3835,19 +3835,19 @@ element n64 : trinity
 	# bit reinterpret
 	func f32bits [ b: u32 ] -> f32
 		bb : local u32 [ 1 ] [ b ]
-		fp : ref f32 [ ((ref bb[ 0 ]) to ref f32) ]
+		fp : @f32 [ ((@bb[ 0 ]) to @f32) ]
 		return fp[ 0 ]
 	func bits32 [ v: f32 ] -> u32
 		bb : local f32 [ 1 ] [ v ]
-		up : ref u32 [ ((ref bb[ 0 ]) to ref u32) ]
+		up : @u32 [ ((@bb[ 0 ]) to @u32) ]
 		return up[ 0 ]
 	func f64bits [ b: u64 ] -> f64
 		bb : local u64 [ 1 ] [ b ]
-		fp : ref f64 [ ((ref bb[ 0 ]) to ref f64) ]
+		fp : @f64 [ ((@bb[ 0 ]) to @f64) ]
 		return fp[ 0 ]
 	func bits64 [ v: f64 ] -> u64
 		bb : local f64 [ 1 ] [ v ]
-		up : ref u64 [ ((ref bb[ 0 ]) to ref u64) ]
+		up : @u64 [ ((@bb[ 0 ]) to @u64) ]
 		return up[ 0 ]
 
 	# FR=0 role accessors: fs even-masked, ft/fd raw index (fgr_s/fgr_t/fgr_d)
@@ -4273,17 +4273,17 @@ element n64 : trinity
 	# written only at agreed points, never on divergence — so a resume never re-runs
 	# already-validated states.
 	func ckpt_read_seq [] -> i64
-		f : ref FILE [ fopen[ '/src/silver/foundry/n64/cosim.seq', 'rb' ] ]
+		f : @FILE [ fopen[ '/src/silver/foundry/n64/cosim.seq', 'rb' ] ]
 		if [ ! f ] return i64[ -1 ]
 		v : i64 [ 0 ]
-		fread[ ref v, 8, 1, f ]
+		fread[ @v, 8, 1, f ]
 		fclose[ f ]
 		return v
 
 	# fresh boot instead of resume: --reset on the command line (or N64_COSIM_RESTART).
 	func reset_requested [] -> bool
 		if [ getenv[ 'N64_COSIM_RESTART' ] ] return true
-		f : ref FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
+		f : @FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
 		if [ ! f ] return false
 		buf : local u8 [ 512 ]
 		n : i64 [ fread[ buf, 1, 511, f ] ]
@@ -4296,7 +4296,7 @@ element n64 : trinity
 	# 'loadstate' on the command line: load n64.state right after boot,
 	# so a run comes up directly at the saved gameplay point for debug.
 	func loadstate_requested [] -> bool
-		f : ref FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
+		f : @FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
 		if [ ! f ] return false
 		buf : local u8 [ 512 ]
 		n : i64 [ fread[ buf, 1, 511, f ] ]
@@ -4309,7 +4309,7 @@ element n64 : trinity
 	# 'aresfb' on the command line: at cosim resume, dump both cores'
 	# framebuffers (ours + ares) from the matched frontier, then exit.
 	func aresfb_requested [] -> bool
-		f : ref FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
+		f : @FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
 		if [ ! f ] return false
 		buf : local u8 [ 512 ]
 		n : i64 [ fread[ buf, 1, 511, f ] ]
@@ -4322,7 +4322,7 @@ element n64 : trinity
 	# 'aresreb' on the command line: rebuild cosim.ares by stepping ares
 	# standalone from boot to the seq recorded in cosim.seq, then save + exit.
 	func aresrebuild_requested [] -> bool
-		f : ref FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
+		f : @FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
 		if [ ! f ] return false
 		buf : local u8 [ 512 ]
 		n : i64 [ fread[ buf, 1, 511, f ] ]
@@ -4335,7 +4335,7 @@ element n64 : trinity
 	# 'aresprin' on the command line: step ares to the princess-frame c_count
 	# and dump its RDP framebuffers for comparison with our HLE render.
 	func aresprin_requested [] -> bool
-		f : ref FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
+		f : @FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
 		if [ ! f ] return false
 		buf : local u8 [ 512 ]
 		n : i64 [ fread[ buf, 1, 511, f ] ]
@@ -4349,28 +4349,28 @@ element n64 : trinity
 		r : i32 [ oracle.save_ckpt[ '/src/silver/foundry/n64/cosim.ares' ] ]
 		if [ r != 0 ] return r
 		if [ save_ours[ '/src/silver/foundry/n64/cosim.ours' ] != 0 ] return 4
-		f : ref FILE [ fopen[ '/src/silver/foundry/n64/cosim.seq', 'wb' ] ]
+		f : @FILE [ fopen[ '/src/silver/foundry/n64/cosim.seq', 'wb' ] ]
 		if [ f ]
 			v : i64 [ cosim_seq ]
-			fwrite[ ref v, 8, 1, f ]
+			fwrite[ @v, 8, 1, f ]
 			fclose[ f ]
 		return 0
 
 	# our full machine state: CPU + memory + timing/interrupt regs. render (gx_*/
 	# tmem) and audio-DSP (a_*) state omitted — they don't feed the CPU lockstep.
 	func dump_atlas [ fn: cstr ] -> i32
-		f : ref FILE [ fopen[ fn, 'wb' ] ]
+		f : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ ! f ] return 1
 		fwrite[ at_stage, 4, 1048576, f ]
 		fclose[ f ]
 		return 0
 
-	func fput_dec [ f: ref FILE, v: i32 ]
+	func fput_dec [ f: @FILE, v: i32 ]
 		if [ v >= 10 ] fput_dec[ f, v / 10 ]
 		fputc[ 48 + (v % 10), f ]
 
 	func dump_fb [ fn: cstr ] -> i32
-		f : ref FILE [ fopen[ fn, 'wb' ] ]
+		f : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ ! f ] return 1
 		fputc[ 80, f ]  fputc[ 54, f ]  fputc[ 10, f ]
 		fput_dec[ f, pub_w ]  fputc[ 32, f ]  fput_dec[ f, pub_h ]  fputc[ 10, f ]
@@ -4385,7 +4385,7 @@ element n64 : trinity
 
 	# dump the 16bpp 5551 framebuffer at org from ours or ares rdram
 	func dump_rd_fb [ fn: cstr, use_ares: bool, org: u32, w7: i32, h7: i32 ] -> i32
-		f : ref FILE [ fopen[ fn, 'wb' ] ]
+		f : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ ! f ] return 1
 		fputc[ 80, f ]  fputc[ 54, f ]  fputc[ 10, f ]
 		fput_dec[ f, w7 ]  fputc[ 32, f ]  fput_dec[ f, h7 ]  fputc[ 10, f ]
@@ -4411,7 +4411,7 @@ element n64 : trinity
 		return 0
 
 	func save_ours [ fn: cstr ] -> i32
-		f : ref FILE [ fopen[ fn, 'wb' ] ]
+		f : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ ! f ] return 1
 		fwrite[ rdram, 1, 0x800000, f ]
 		fwrite[ dmem, 1, 0x1000, f ]
@@ -4450,7 +4450,7 @@ element n64 : trinity
 		return 0
 
 	func load_ours [ fn: cstr ] -> i32
-		f : ref FILE [ fopen[ fn, 'rb' ] ]
+		f : @FILE [ fopen[ fn, 'rb' ] ]
 		if [ ! f ] return 1
 		fread[ rdram, 1, 0x800000, f ]
 		fread[ dmem, 1, 0x1000, f ]
@@ -5249,7 +5249,7 @@ element n64 : trinity
 				el sb[ k ] = 46
 			sb[ 96 ] = 0
 			printf[ "n64 a0 str: %s\n", sb ]
-			gdf : ref FILE [ fopen[ '/tmp/n64_gd.bin', 'wb' ] ]
+			gdf : @FILE [ fopen[ '/tmp/n64_gd.bin', 'wb' ] ]
 			if [ gdf ]
 				fwrite[ rdram, 1, 0x800000, gdf ]
 				fclose[ gdf ]
@@ -5486,7 +5486,7 @@ element n64 : trinity
 				emu_entry[]                              # cosim: run inline, single-threaded (ares libco needs main thread)
 			el
 				tid : local u64 [ 1 ]
-				pthread_create[ tid, null, ref emu_entry, a ]
+				pthread_create[ tid, null, @emu_entry, a ]
 		if [ gpu_on && pub_gxv_n > 0 ]
 			gxr_setup[ cv ]
 			if [ !r_render ] return
@@ -5497,7 +5497,7 @@ element n64 : trinity
 			pub_st[ 2047 * 4 ] = f32[ pub_gxv_n ]     # total drawn vertices → shader draw-order normalizer (texel 2047,0)
 			pub_st[ 2046 * 4 ] = f32[ pub_zsplit ]    # first z-enabled vertex index → z-disabled backdrop/overlay split (texel 2046,0)
 			r_state.upload[ pub_st, 2048 * 3 * 16 ]
-			vd9 : ref f32 [ r_vbo.vertex_data ]
+			vd9 : @f32 [ r_vbo.vertex_data ]
 			nf9 : i32 [ pub_gxv_n * 13 ]
 			for [ i: i32 0, i < nf9, i += 1 ]
 				vd9[ i ] = pub_gxv[ i ]

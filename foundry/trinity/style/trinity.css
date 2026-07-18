@@ -24,3 +24,212 @@ Button {
     layers.base [ ]
     layers.face [ ]
 }
+
+/* a positioned solid strip — dividers, borders, fills. fill + area params. */
+Layer band [ fill, coords ]
+    fill_color:                 $fill
+    area:                       $coords
+
+/* ---- framework dev shade: corner tab + macOS-9 drop-down panel ------------
+   trinity injects UXGenerics over every app, so these defaults make it render
+   with no app CSS. the container is a transparent full-window host; only the
+   tab, scrim, and panel draw. the panel slides on :selected (open). */
+
+Layer shade_dim [ ]
+    fill_color:             #0009
+
+Layer shade_panel [ ]
+    fill_color:             #16161c
+    stroke_width:           1
+    stroke_color:           #fff1
+    radius:                 0
+
+Layer shade_title [ ]
+    label_color:            #e8e8ec
+    label_size:             18
+    label_align:            0.0 0.5
+
+Layer shade_tab [ ]
+    fill_color:             #20202a
+    stroke_width:           1
+    stroke_color:           #fff1
+    radius:                 8
+
+Layer shade_tab_face [ ]
+    label_color:            #d8d8de
+    label_size:             15
+    label_align:            0.5 0.5
+
+Layer shade_close [ ]
+    fill_color:             #fff1
+    label_color:            #b8b8c0
+    label_size:             16
+    label_align:            0.5 0.5
+    radius:                 6
+:hovered
+    fill_color:             #fff2
+    label_color:            #ffffff
+
+UXGenerics {
+    area:                   l0 t0 r0 b0
+}
+
+UXGenerics / Option.tab {
+    area:                   l8px t8px w96px h32px
+    focusable:              true
+    layers.shade_tab [ ]
+    layers.shade_tab_face [ ]
+}
+
+UXGenerics / element.scrim {
+    area:                   l0 t0 r0 b0
+    layers.shade_dim [ ]
+}
+
+UXGenerics / element.sheet {
+    area:                   l0 t0 r0 b0
+    layers.shade_panel [ ]
+}
+
+UXGenerics / element.sheet / element.title {
+    area:                   l20px t16px r20px h30px
+    layers.shade_title [ ]
+}
+
+UXGenerics / element.sheet / element.close {
+    area:                   r1.7 t0.4 r0.4 h1.3
+    focusable:              true
+    layers.shade_close [ ]
+}
+
+/* the reflected options list: rows stack under the title, each a name + smaller
+   description on the left with the control right-anchored. no bold in the engine,
+   so the name leads by size + darker color, the description trails muted. */
+Layer shade_name [ ]
+    label_color:            #e6e6ea
+    label_size:             15
+    label_align:            0.0 0.5
+
+Layer shade_desc [ ]
+    label_color:            #86868e
+    label_size:             12
+    label_align:            0.0 0.5
+
+/* the darker rounded-rect pane the rows sit inside — a mac gone black + flat */
+Layer shade_pane [ ]
+    fill_color:             #101014
+    stroke_width:           1
+    stroke_color:           #fff1
+    radius:                 10
+
+Layer shade_row [ ]
+    stroke_width:           0.5
+    stroke_color:           #fff1
+
+Layer switch_track [ ]
+    fill_color:             #fff1
+    stroke_width:           1
+    stroke_color:           #fff2
+    radius:                 14
+:selected
+    fill_color:             #3b6fe0
+    stroke_color:           #3b6fe0
+
+Layer switch_knob [ ]
+    area:                   l3px t3px w22px h22px
+    fill_color:             #c8c8d0
+    radius:                 11
+:selected
+    area:                   l25px t3px w22px h22px
+    fill_color:             #ffffff
+
+ScrollLayer shade_scroll [ ]
+    overlay:                true
+    area:                   l0 t0 r0 b0
+    thumb_color:            #fff3
+    thumb_w:                6
+    thumb_min_h:            32
+    thumb_radius:           4
+
+UXGenerics / element.sheet / element.list {
+    area:                   l14px t2.4 r14px b14px
+    layers.shade_pane [ ]
+    layers.shade_scroll [ ]
+}
+
+UXGenerics / element.sheet / element.list / ShadeRow {
+    area:                   l0 t0+ r0 h57px
+    layers.divider: band [ #fff1, l16px b0 r16px h1px ]
+:selected
+    area:                   l0 t0+ r0 h220px
+:last
+    layers.divider: band [ #fff0, l16px b0 r16px h1px ]
+}
+
+UXGenerics / element.sheet / element.list / ShadeRow / element.name {
+    area:                   l24px t0.4 r6 h1.1
+    layers.shade_name [ ]
+}
+
+UXGenerics / element.sheet / element.list / ShadeRow / element.desc {
+    area:                   l24px t1.5 r6 h0.9
+    layers.shade_desc [ ]
+}
+
+UXGenerics / element.sheet / element.list / ShadeRow / Check.ctl {
+    area:                   r66px t14px r16px h28px
+    focusable:              true
+    layers.switch_track [ ]
+    layers.switch_knob [ ]
+}
+
+/* enum tabs: same track as the switch (radius 14), segments nest like the knob
+   (3px inset, radius 11). base/face reassigned so the Button defaults don't
+   draw a second pill + second label under ours. */
+Layer tabs_track [ ]
+    fill_color:             #fff1
+    stroke_width:           1
+    stroke_color:           #fff2
+    radius:                 14
+
+Layer tab_seg [ ]
+    fill_color:             #0000
+    radius:                 11
+:hovered
+    fill_color:             #fff2
+:selected
+    fill_color:             #3b6fe0
+
+Layer tab_seg_face [ ]
+    label_color:            #b8b8c0
+    label_size:             13
+    label_align:            0.5 0.5
+:selected
+    label_color:            #ffffff
+
+UXGenerics / element.sheet / element.list / ShadeRow / Tabs.ctl {
+    area:                   r244px t14px r16px h28px
+    layers.tabs_track [ ]
+}
+
+UXGenerics / element.sheet / element.list / ShadeRow / Tabs.ctl / Option {
+    area:                   l3+px t3px w72px h22px
+    focusable:              true
+    layers.base: tab_seg [ ]
+    layers.face: tab_seg_face [ ]
+}
+
+/* rgba color picker — one self-drawing control (no layer); it paints its swatch
+   / wheel in ColorPicker.draw. just give it bounds. */
+UXGenerics / element.sheet / element.list / ShadeRow / ColorPicker.ctl {
+    area:                   r52px t14px r16px h28px
+    focusable:              true
+:selected
+    area:                   l16px t48px r16px b16px
+}
+
+/* f32 range slider — one self-drawing control (track + fill + circle handle) */
+UXGenerics / element.sheet / element.list / ShadeRow / Slider.ctl {
+    area:                   r160px t14px r16px h28px
+    focusable:              true
+}

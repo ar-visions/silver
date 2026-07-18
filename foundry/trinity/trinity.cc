@@ -126,6 +126,29 @@ extern "C" int appshare_recv_fd(int s, void* buf, int* fd_out) {
 }
 
 extern "C" void appshare_close(int fd) { if (fd >= 0) close(fd); }
+
+// one frame then plen payload bytes on the same stream
+extern "C" int appshare_send_msg(int s, const void* msg, const void* payload, int plen) {
+    int r = appshare_write_all(s, msg, APPSHARE_MSG_BYTES);
+    if (r != 1) return r;
+    if (plen > 0 && payload)
+        return appshare_write_all(s, payload, (unsigned)plen);
+    return 1;
+}
+
+// spin-read exactly len promised payload bytes; 1 ok, -1 closed
+extern "C" int appshare_recv_payload(int s, void* buf, int len) {
+    char* p = (char*)buf; int off = 0;
+    while (off < len) {
+        ssize_t n = read(s, p + off, (size_t)(len - off));
+        if (n > 0) { off += (int)n; continue; }
+        if (n == 0) return -1;
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+        return -1;
+    }
+    return 1;
+}
 #else
 // non-linux stubs: the feature is linux-only (dma-buf), but the symbols must
 // exist so AppLink links. every call reports "no connection".
@@ -135,5 +158,7 @@ extern "C" int  appshare_connect(const char* p)                    { return -1; 
 extern "C" int  appshare_send(int s, const void* m)                { return -1; }
 extern "C" int  appshare_send_fd(int s, int fd, const void* m)     { return -1; }
 extern "C" int  appshare_recv_fd(int s, void* b, int* fdo)         { return -1; }
+extern "C" int  appshare_send_msg(int s, const void* m, const void* p, int n) { return -1; }
+extern "C" int  appshare_recv_payload(int s, void* b, int n)       { return -1; }
 extern "C" void appshare_close(int fd)                             { }
 #endif

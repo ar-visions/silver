@@ -49,6 +49,7 @@ athlete
 */n64/reference
 /shot*png
 /*.ag
+export
 sessions
 cache
 *.res

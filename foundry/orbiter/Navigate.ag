@@ -68,7 +68,7 @@ class Navigate
         stack = array NavPoint [ alloc: 64 ]
 
     func count [] -> i32
-        return (stack) ? stack.count : 0
+        return stack->count
 
     func can_back [] -> bool
         return idx > 0

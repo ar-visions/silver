@@ -19,6 +19,8 @@ import <mpg123min.h>
 import <torch_shim.h>
     -ltorch_shim
 
+import net
+import ai
 import trinity
 import vec
 
@@ -33,7 +35,7 @@ ifdef [ apple ]
 
     # completion callback: user data points at the freed-buffer counter
     func aq_output_done [ user: handle, q: AudioQueueRef, b: AudioQueueBufferRef ] -> none
-        c : ref u64 [ user ]
+        c : @u64 [ user ]
         c[0] += 1
 
     class AudioOut
@@ -42,10 +44,10 @@ ifdef [ apple ]
         public buffer_size : sz  [ 1024 ]
         public device      : string
         public active      : bool
-        public buffer      : ref i16
+        public buffer      : @i16
         intern queue       : AudioQueueRef
-        intern aq_bufs     : ref AudioQueueBufferRef
-        intern freed       : ref u64           # callback-owned counter
+        intern aq_bufs     : @AudioQueueBufferRef
+        intern freed       : @u64           # callback-owned counter
         intern used        : u64               # write-side counter
         intern next        : i32               # round-robin buffer index
 
@@ -55,7 +57,7 @@ ifdef [ apple ]
             freed  = calloc[ 1, 8 ]
             aq_bufs = calloc[ 4, 8 ]
             fmt : AudioStreamBasicDescription
-            memset[ ref fmt, 0, sizeof[ AudioStreamBasicDescription ] ]
+            memset[ @fmt, 0, sizeof[ AudioStreamBasicDescription ] ]
             fmt.mSampleRate       = sample_rate
             fmt.mFormatID         = kAudioFormatLinearPCM
             fmt.mFormatFlags      = kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked
@@ -64,12 +66,12 @@ ifdef [ apple ]
             fmt.mBytesPerFrame    = channels * 2
             fmt.mChannelsPerFrame = channels
             fmt.mBitsPerChannel   = 16
-            err : i32 [ AudioQueueNewOutput[ ref fmt, ref aq_output_done, freed, null, null, 0, ref queue ] ]
+            err : i32 [ AudioQueueNewOutput[ @fmt, @aq_output_done, freed, null, null, 0, @queue ] ]
             if [ err != 0 ] return false
             # prime all buffers with silence so playback paces immediately
             for [ i: i32 0, i < 4, i += 1 ]
                 b : AudioQueueBufferRef
-                AudioQueueAllocateBuffer[ queue, bytes, ref b ]
+                AudioQueueAllocateBuffer[ queue, bytes, @b ]
                 memset[ b.mAudioData, 0, bytes ]
                 b.mAudioDataByteSize = bytes
                 AudioQueueEnqueueBuffer[ queue, b, 0, null ]
@@ -107,11 +109,11 @@ el
         public sample_rate: i32
         public channels:    i32
         public device:      cstr
-        public pcm:         ref snd_pcm_t
-        public re:          ref f32
-        public im:          ref f32
-        public buf:         ref i16
-        public bins:        ref f32
+        public pcm:         @snd_pcm_t
+        public re:          @f32
+        public im:          @f32
+        public buf:         @i16
+        public bins:        @f32
 
         func init []
             channels = 1
@@ -121,12 +123,12 @@ el
             bins = new f32 [ size / 2 ]
 
         func open [] -> bool
-            rc: snd_pcm_open [ ref pcm, device, SND_PCM_STREAM_CAPTURE, 0 ]
+            rc: snd_pcm_open [ @pcm, device, SND_PCM_STREAM_CAPTURE, 0 ]
             if [ rc < 0 ]
                 printf [ "cannot open: %s\n", snd_strerror [ rc ] ]
                 return false
-            params2: ref snd_pcm_hw_params_t
-            snd_pcm_hw_params_malloc       [ ref params2 ]
+            params2: @snd_pcm_hw_params_t
+            snd_pcm_hw_params_malloc       [ @params2 ]
             snd_pcm_hw_params_any          [ pcm, params2 ]
             snd_pcm_hw_params_set_access   [ pcm, params2, SND_PCM_ACCESS_RW_INTERLEAVED ]
             snd_pcm_hw_params_set_format   [ pcm, params2, SND_PCM_FORMAT_S16_LE ]
@@ -134,11 +136,11 @@ el
 
             rate:           u32 [ sample_rate ]
             dir2:           i32 [ 0 ]
-            snd_pcm_hw_params_set_rate_near        [ pcm, params2, ref rate, ref dir2 ]
+            snd_pcm_hw_params_set_rate_near        [ pcm, params2, @rate, @dir2 ]
 
             period_size:    i32 size
             dir_period:     i32 0
-            snd_pcm_hw_params_set_period_size_near [ pcm, params2, ref period_size, ref dir_period ]
+            snd_pcm_hw_params_set_period_size_near [ pcm, params2, @period_size, @dir_period ]
             rc = snd_pcm_hw_params [ pcm, params2 ]
             snd_pcm_hw_params_free [ params2 ]
             if [ rc < 0 ]
@@ -172,17 +174,17 @@ el
         public buffer_size : sz  [ 1024 ]
         public device      : string
         public active      : bool
-        public buffer      : ref i16
-        public pcm_handle  : ref snd_pcm_t
+        public buffer      : @i16
+        public pcm_handle  : @snd_pcm_t
 
         func open [] -> bool
             buffer = calloc[ 1, buffer_size * channels * 2 ]
             pb  : i32 [ SND_PCM_STREAM_PLAYBACK ]
             dev : symbol [ (device && device.count) ? device.chars : 'pulse' ]
-            err : i32 [ snd_pcm_open[ ref pcm_handle, dev, pb, 0 ] ]
+            err : i32 [ snd_pcm_open[ @pcm_handle, dev, pb, 0 ] ]
             if [ err < 0 ] return false
             psz    : snd_pcm_hw_params_sizeof[]
-            params : ref snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
+            params : @snd_pcm_hw_params_t [ calloc[ 1, psz ] ]
             snd_pcm_hw_params_any[ pcm_handle, params ]
             rw  : i32 [ SND_PCM_ACCESS_RW_INTERLEAVED ]
             fmt : i32 [ SND_PCM_FORMAT_S16_LE ]
@@ -192,8 +194,8 @@ el
             snd_pcm_hw_params_set_rate    [ pcm_handle, params, sample_rate, 0 ]
             bufsz : sz [ buffer_size * 2 ]
             persz : sz [ buffer_size / 4 ]
-            snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, ref bufsz ]
-            snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, ref persz, null ]
+            snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, @bufsz ]
+            snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, @persz, null ]
             ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
             free[ params ]
             if [ ok ]
@@ -223,18 +225,18 @@ class AudioClip
     public rate     : i32
     public channels : i32
     public frames   : i64
-    public pcm      : ref i16
+    public pcm      : @i16
 
-func be32 [ b: ref u8, o: i32 ] -> i64
+func be32 [ b: @u8, o: i32 ] -> i64
     return i64[ b[o] ] * 16777216 + i64[ b[o+1] ] * 65536 + i64[ b[o+2] ] * 256 + i64[ b[o+3] ]
 
-func le32 [ b: ref u8, o: i32 ] -> i64
+func le32 [ b: @u8, o: i32 ] -> i64
     return i64[ b[o] ] + i64[ b[o+1] ] * 256 + i64[ b[o+2] ] * 65536 + i64[ b[o+3] ] * 16777216
 
-func le16 [ b: ref u8, o: i32 ] -> i32
+func le16 [ b: @u8, o: i32 ] -> i32
     return i32[ b[o] ] + i32[ b[o+1] ] * 256
 
-func be64 [ b: ref u8, o: i32 ] -> i64
+func be64 [ b: @u8, o: i32 ] -> i64
     hi : i64 [ be32[ b, o ] ]
     lo : i64 [ be32[ b, o + 4 ] ]
     return hi * 4294967296 + lo
@@ -244,12 +246,12 @@ class AacStream
     public asc_o   : i32
     public asc_n   : i32
     public npkts   : i64
-    public sizes   : ref i32
-    public offs    : ref i32
+    public sizes   : @i32
+    public offs    : @i32
     public priming : i32
     public nvalid  : i64
 
-func box_find [ b: ref u8, s: i32, e: i32, cc: i64 ] -> i32
+func box_find [ b: @u8, s: i32, e: i32, cc: i64 ] -> i32
     o : i32 [ s ]
     while [ o + 8 <= e ]
         bs : i64 [ be32[ b, o ] ]
@@ -262,7 +264,7 @@ func box_find [ b: ref u8, s: i32, e: i32, cc: i64 ] -> i32
 
 # esds descriptor chain: tag 5 payload is the raw ASC.
 # returns offset * 65536 + length, or -1
-func esds_asc [ b: ref u8, s: i32, e: i32 ] -> i64
+func esds_asc [ b: @u8, s: i32, e: i32 ] -> i64
     q : i32 [ s ]
     while [ q < e ]
         tag : i32 [ i32[ b[ q ] ] ]
@@ -284,7 +286,7 @@ func esds_asc [ b: ref u8, s: i32, e: i32 ] -> i64
     return -1
 
 # CAF: desc/kuki/pakt/data big-endian chunks
-func caf_parse [ buf: ref u8, fsz: i32 ] -> AacStream
+func caf_parse [ buf: @u8, fsz: i32 ] -> AacStream
     o      : i32 [ 8 ]
     kuki_o : i32 [ -1 ]
     kuki_n : i32 [ 0 ]
@@ -333,7 +335,7 @@ func caf_parse [ buf: ref u8, fsz: i32 ] -> AacStream
 
 # M4A/MP4: moov.trak.mdia.minf.stbl — esds config, stsz sizes,
 # stsc/stco chunk layout. Apple shipped these with a .caf name.
-func m4a_parse [ buf: ref u8, fsz: i32 ] -> AacStream
+func m4a_parse [ buf: @u8, fsz: i32 ] -> AacStream
     moov : i32 [ box_find[ buf, 0, fsz, 1836019574 ] ]
     if [ moov < 0 ] return null
     me   : i32 [ moov + i32[ be32[ buf, moov ] ] ]
@@ -405,7 +407,7 @@ func m4a_parse [ buf: ref u8, fsz: i32 ] -> AacStream
 
 # .wav (RIFF PCM S16) -> PCM. hand-parsed: fmt + data chunks only
 func wav_load [ p: path ] -> AudioClip
-    fp : ref FILE [ fopen[ '{p}', 'rb' ] ]
+    fp : @FILE [ fopen[ '{p}', 'rb' ] ]
     if [ !fp ]
         puts 'wav: cannot open {p}'
         return null
@@ -441,7 +443,7 @@ func wav_load [ p: path ] -> AudioClip
     nfr : i64 [ i64[ dsz ] / i64[ ch * 2 ] ]
     cnt : i32 [ i32[ nfr ] * ch ]
     pcm : new i16 [ cnt ]
-    memcpy[ pcm, ref buf[ doff ], i64[ cnt ] * 2 ]
+    memcpy[ pcm, @buf[ doff ], i64[ cnt ] * 2 ]
     clip : AudioClip [ rate: rate, channels: ch, frames: nfr ]
     clip.pcm = pcm
     return clip
@@ -450,7 +452,7 @@ func wav_load [ p: path ] -> AudioClip
 func mp3_load [ p: path ] -> AudioClip
     mpg123_init[]
     err9 : i32 [ 0 ]
-    mh : ref mpg123_handle [ mpg123_new[ null, ref err9 ] ]
+    mh : @mpg123_handle [ mpg123_new[ null, @err9 ] ]
     if [ !mh ]
         puts 'mp3: mpg123_new failed ({err9})'
         return null
@@ -462,7 +464,7 @@ func mp3_load [ p: path ] -> AudioClip
     rate9 : i64 [ 0 ]
     ch9   : i32 [ 0 ]
     enc9  : i32 [ 0 ]
-    mpg123_getformat[ mh, ref rate9, ref ch9, ref enc9 ]
+    mpg123_getformat[ mh, @rate9, @ch9, @enc9 ]
     if [ rate9 < 1 || ch9 < 1 ]
         puts 'mp3: no stream format in {p}'
         mpg123_close[ mh ]
@@ -479,7 +481,7 @@ func mp3_load [ p: path ] -> AudioClip
         room : i64 [ (cap - wr) * 2 ]
         if [ room < 9216 ] break
         done9 : u64 [ 0 ]
-        r9 : i32 [ mpg123_read[ mh, ref pcm[ wr ], room, ref done9 ] ]
+        r9 : i32 [ mpg123_read[ mh, @pcm[ wr ], room, @done9 ] ]
         wr += i64[ done9 ] / 2
         if [ r9 != MPG123_OK ] break
     mpg123_close[ mh ]
@@ -491,7 +493,7 @@ func mp3_load [ p: path ] -> AudioClip
 
 # .caf or .m4a (Apple shipped m4a bytes under .caf names) -> PCM
 func caf_load [ p: path ] -> AudioClip
-    fp : ref FILE [ fopen[ '{p}', 'rb' ] ]
+    fp : @FILE [ fopen[ '{p}', 'rb' ] ]
     if [ !fp ]
         puts 'caf: cannot open {p}'
         return null
@@ -521,7 +523,7 @@ func caf_load [ p: path ] -> AudioClip
     NeAACDecSetConfiguration[ h, conf ]
     sr9 : u64 [ 0 ]
     ch9 : u8 [ 0 ]
-    ir : i64 [ NeAACDecInit2[ h, ref buf[ st.asc_o ], u64[ st.asc_n ], ref sr9, ref ch9 ] ]
+    ir : i64 [ NeAACDecInit2[ h, @buf[ st.asc_o ], u64[ st.asc_n ], @sr9, @ch9 ] ]
     if [ ir != 0 ]
         puts 'caf: faad init failed on {p}'
         NeAACDecClose[ h ]
@@ -536,13 +538,13 @@ func caf_load [ p: path ] -> AudioClip
         info : NeAACDecFrameInfo
         doff : i32 [ st.offs[ k ] ]
         psz  : i32 [ st.sizes[ k ] ]
-        smp : ref i16 [ NeAACDecDecode[ h, ref info, ref buf[ doff ], psz ] ]
+        smp : @i16 [ NeAACDecDecode[ h, @info, @buf[ doff ], psz ] ]
         if [ info.error != 0 || !smp ] continue
         if [ i32[ info.channels ] > 0 ] ch = i32[ info.channels ]
         ns : i64 [ i64[ info.samples ] ]
         if [ wr + ns > cap ] break
         nb : i64 [ ns * 2 ]
-        memcpy[ ref pcm[ wr ], smp, nb ]
+        memcpy[ @pcm[ wr ], smp, nb ]
         wr += ns
     NeAACDecClose[ h ]
     # drop encoder priming; trim to the container's frame count if known
@@ -554,7 +556,7 @@ func caf_load [ p: path ] -> AudioClip
     if [ total < 0 ] total = 0
     if [ start > 0 && total > 0 ]
         tb : i64 [ total * 2 ]
-        memmove[ pcm, ref pcm[ start ], tb ]
+        memmove[ pcm, @pcm[ start ], tb ]
     clip : AudioClip [ rate: rate, channels: ch, frames: total / ch ]
     clip.pcm = pcm
     puts 'caf: {p} rate={rate} ch={ch} frames={clip.frames}'
@@ -574,7 +576,7 @@ class AudioMixer
     public sample_rate : i32 [ 44100 ]
     public out    : AudioOut
     intern voices : array Voice
-    intern acc    : ref i32
+    intern acc    : @i32
     intern stop   : bool
 
     func start [] -> bool
@@ -587,7 +589,7 @@ class AudioMixer
         nacc : i32 [ out.buffer_size * 2 ]
         acc = new i32 [ nacc ]
         tid : local u64 [ 1 ]
-        pthread_create[ tid, null, ref mix_entry, a ]
+        pthread_create[ tid, null, @mix_entry, a ]
         return true
 
     # pitch: OpenAL AL_PITCH semantics — playback rate multiplier
@@ -655,7 +657,7 @@ class AudioMixer
 # iterative in-place radix-2, e^-i2pik/n forward — the same transform
 # the old recursive form computed, with ZERO allocations (that version
 # heap-allocated four buffers per level per call)
-func fft [ re: ref f32, im: ref f32, n: i32 ]
+func fft [ re: @f32, im: @f32, n: i32 ]
     if [ n <= 1 ]
         return
     j : i32 [ 0 ]
@@ -747,7 +749,7 @@ func heat [ t0: f32 ] -> i32
 # gray: single-channel magnitude image (the MODEL input); false =
 # heat colormap rgba for human eyes. act (nullable): filled with the
 # per-column mean magnitude — the annotator's energy trace
-func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax: f32, gray: bool, act: ref f32 ] -> bool
+func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax: f32, gray: bool, act: @f32 ] -> bool
     if [ !c || c.frames < 4096 ] return false
     n : i32 [ 2048 ]
     # the analysis window matches the LIVE stream's 42.7ms slice at
@@ -768,7 +770,7 @@ func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax:
     nch5 : i32 [ (gray) ? 1 : 4 ]
     pfmt : Pixel [ (gray) ? Pixel.u8 : Pixel.rgba8 ]
     img2 : Image [ width: w2, height: h2, format: pfmt, channels: nch5 ]
-    pd : ref u8 [ img2.vdata[] ]
+    pd : @u8 [ img2.vdata[] ]
     ch : i32 [ c.channels ]
     gap : i32 [ (ch > 1) ? 2 : 0 ]
     band : i32 [ (h2 - gap * (ch - 1)) / ch ]
@@ -830,6 +832,172 @@ func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax:
                     pd[ di + 2 ] = u8[ rgb % 256 ]
                     pd[ di + 3 ] = 255
     img2.png[ out2 ]
+    return true
+
+# ---- whisper frontend -----------------------------------------------------
+# mono 16kHz, exactly 30s (480000 samples), f32 -1..1 (truncate / zero-pad)
+func whisper_pcm [ c: AudioClip ] -> @f32
+    out9 : new f32 [ 480000 ]
+    ch : i32 [ c.channels ]
+    ratio : f64 [ f64[ c.rate ] / 16000.0 ]
+    n16 : i64 [ i64[ f64[ c.frames ] / ratio ] ]
+    if [ n16 > 480000 ] n16 = 480000
+    den : f32 [ f32[ ch ] * 32768.0f ]
+    for [ i: i64 0, i < n16, i += 1 ]
+        sp : f64 [ f64[ i ] * ratio ]
+        i0 : i64 [ i64[ sp ] ]
+        fr : f32 [ f32[ sp - f64[ i0 ] ] ]
+        i1 : i64 [ i0 + 1 ]
+        if [ i1 >= c.frames ] i1 = c.frames - 1
+        a9 : f32 [ 0.0 ]
+        b9 : f32 [ 0.0 ]
+        for [ c2: i32 0, c2 < ch, c2 += 1 ]
+            a9 += f32[ c.pcm[ i0 * ch + c2 ] ]
+            b9 += f32[ c.pcm[ i1 * ch + c2 ] ]
+        va : f32 [ a9 / den ]
+        vb : f32 [ b9 / den ]
+        out9[i] = va + (vb - va) * fr
+    return out9
+
+# slaney hz->mel / mel->hz (librosa htk=false)
+func hz_mel [ f: f64 ] -> f64
+    if [ f < 1000.0 ] return f * 3.0 / 200.0
+    return 15.0 + log[ f / 1000.0 ] * 27.0 / 1.8562979903656263
+func mel_hz [ m: f64 ] -> f64
+    if [ m < 15.0 ] return 200.0 * m / 3.0
+    return 1000.0 * exp[ 1.8562979903656263 / 27.0 * (m - 15.0) ]
+
+# whisper log-mel: n_fft 400 hop 160 periodic hann, center reflect pad,
+# 80 slaney mels 0..8kHz, log10, clamp to max-8, then (x+4)/4.
+# 400-pt DFT done directly (not radix-2) with mod-400 angle tables so
+# bin frequencies match whisper exactly. returns 3000 x 80 tensor.
+func whisper_mel [ c: AudioClip ] -> tensor
+    pcm9 : whisper_pcm[ c ]
+    nfft : i32 [ 400 ]
+    nb   : i32 [ 201 ]
+    hop9 : i32 [ 160 ]
+    # trim to the real audio + 0.5s tail (whisper pads to 30s, but the
+    # encoder handles shorter windows — 5x less work on a 6s clip)
+    ratio9 : f64 [ f64[ c.rate ] / 16000.0 ]
+    n16r : i64 [ i64[ f64[ c.frames ] / ratio9 ] ]
+    if [ n16r > 480000 ] n16r = 480000
+    tt : i32 [ i32[ n16r / 160 ] + 50 ]
+    tt = ((tt + 1) / 2) * 2
+    if [ tt > 3000 ] tt = 3000
+    if [ tt < 100 ] tt = 100
+    win9 : new f32 [ 400 ]
+    for [ i: i32 0, i < nfft, i += 1 ]
+        win9[i] = f32[ 0.5 - 0.5 * cos[ 6.28318530717958648 * f64[ i ] / 400.0 ] ]
+    # angle = 2π/400 * ((b*i) mod 400) — exact for all b,i. expanded to
+    # contiguous per-bin rows so the dot products run 8-wide
+    cs9 : new f32 [ 400 ]
+    sn9 : new f32 [ 400 ]
+    for [ i: i32 0, i < nfft, i += 1 ]
+        ang : f64 [ 6.28318530717958648 * f64[ i ] / 400.0 ]
+        cs9[i] = f32[ cos[ ang ] ]
+        sn9[i] = f32[ sin[ ang ] ]
+    tabn : i32 [ 80400 ]
+    csf : new f32 [ tabn ]
+    snf : new f32 [ tabn ]
+    for [ b: i32 0, b < nb, b += 1 ]
+        for [ i: i32 0, i < nfft, i += 1 ]
+            mi : i32 [ (b * i) % 400 ]
+            csf[b * 400 + i] = cs9[mi]
+            snf[b * 400 + i] = sn9[mi]
+    # slaney filterbank: 82 mel points 0..8kHz, triangles over bins b*40Hz
+    mhi : f64 [ hz_mel[ 8000.0 ] ]
+    pts : new f64 [ 82 ]
+    for [ k: i32 0, k < 82, k += 1 ]
+        pts[k] = mel_hz[ mhi * f64[ k ] / 81.0 ]
+    mw : new f32 [ 16080 ]
+    for [ m: i32 0, m < 80, m += 1 ]
+        f0 : f64 [ pts[m] ]
+        f1 : f64 [ pts[m + 1] ]
+        f2 : f64 [ pts[m + 2] ]
+        norm : f64 [ 2.0 / (f2 - f0) ]
+        for [ b: i32 0, b < nb, b += 1 ]
+            fb : f64 [ f64[ b ] * 40.0 ]
+            lo : f64 [ (fb - f0) / (f1 - f0) ]
+            hi : f64 [ (f2 - fb) / (f2 - f1) ]
+            w9 : f64 [ (lo < hi) ? lo : hi ]
+            if [ w9 < 0.0 ] w9 = 0.0
+            mw[m * nb + b] = f32[ w9 * norm ]
+    mdv : new i64 [ 2 ]
+    mdv[0] = tt
+    mdv[1] = 80
+    msh : shape.shape_from[ 2, mdv ]
+    mel_t : tensor [ tensor_shape: msh ]
+    fr9 : new f32 [ 400 ]
+    pw  : new f32 [ 201 ]
+    acc8r : new f32 [ 8 ]
+    acc8i : new f32 [ 8 ]
+    mmax : f32 [ -1.0e30f ]
+    for [ t: i32 0, t < tt, t += 1 ]
+        base : i32 [ t * hop9 - 200 ]
+        for [ i: i32 0, i < nfft, i += 1 ]
+            j : i32 [ base + i ]
+            if [ j < 0 ] j = 0 - j
+            if [ j >= 480000 ] j = 959998 - j
+            fr9[i] = pcm9[j] * win9[i]
+        for [ b: i32 0, b < nb, b += 1 ]
+            brow : i32 [ b * 400 ]
+            # self-contained blocks: accumulate via memory (ymm regs do
+            # not survive between asm blocks under -O2)
+            for [ z2: i32 0, z2 < 8, z2 += 1 ]
+                acc8r[z2] = 0.0f
+                acc8i[z2] = 0.0f
+            for [ c8: i32 0, c8 < 400, c8 += 8 ]
+                f_off : i64 [ c8 * 4 ]
+                t_off : i64 [ (brow + c8) * 4 ]
+                asm x86_64
+                    vmovups ymm0, ymmword ptr [acc8r]
+                    vmovups ymm5, ymmword ptr [acc8i]
+                    vmovups ymm1, ymmword ptr [fr9 + f_off]
+                    vmovups ymm2, ymmword ptr [csf + t_off]
+                    vfmadd231ps ymm0, ymm1, ymm2
+                    vmovups ymm3, ymmword ptr [snf + t_off]
+                    vfmadd231ps ymm5, ymm1, ymm3
+                    vmovups ymmword ptr [acc8r], ymm0
+                    vmovups ymmword ptr [acc8i], ymm5
+            re9 : f32 [ acc8r[0] + acc8r[1] + acc8r[2] + acc8r[3] + acc8r[4] + acc8r[5] + acc8r[6] + acc8r[7] ]
+            im9 : f32 [ 0.0f - (acc8i[0] + acc8i[1] + acc8i[2] + acc8i[3] + acc8i[4] + acc8i[5] + acc8i[6] + acc8i[7]) ]
+            pw[b] = re9 * re9 + im9 * im9
+        for [ m: i32 0, m < 80, m += 1 ]
+            e9 : f32 [ 0.0 ]
+            for [ b: i32 0, b < nb, b += 1 ]
+                e9 += mw[m * nb + b] * pw[b]
+            if [ e9 < 1.0e-10f ] e9 = 1.0e-10f
+            l9 : f32 [ f32[ log[ f64[ e9 ] ] / 2.30258509299404568 ] ]
+            mel_t.floats[t * 80 + m] = l9
+            if [ l9 > mmax ] mmax = l9
+    floor9 : f32 [ mmax - 8.0f ]
+    ntot9 : i64 [ i64[ tt ] * 80 ]
+    for [ i: i64 0, i < ntot9, i += 1 ]
+        v9 : f32 [ mel_t.floats[i] ]
+        if [ v9 < floor9 ] v9 = floor9
+        mel_t.floats[i] = (v9 + 4.0f) / 4.0f
+    return mel_t
+
+# render the 3000x80 mel as a heat map png: time right, low mel at
+# bottom, each mel row 3px tall (3000 x 240)
+func mel_png [ m: tensor, out2: path ] -> bool
+    w2 : i32 [ i32[ m.tensor_shape[0] ] ]
+    h2 : i32 [ 240 ]
+    img3 : Image [ width: w2, height: h2, format: Pixel.rgba8, channels: 4 ]
+    pd : @u8 [ img3.vdata[] ]
+    for [ y: i32 0, y < h2, y += 1 ]
+        mrow : i32 [ 79 - (y / 3) ]
+        for [ x: i32 0, x < w2, x += 1 ]
+            tv : f32 [ m.floats[x * 80 + mrow] ]
+            if [ tv < 0.0 ] tv = 0.0
+            if [ tv > 1.0 ] tv = 1.0
+            rgb : i32 [ heat[ tv ] ]
+            di : i64 [ (i64[ y ] * w2 + x) * 4 ]
+            pd[ di ]     = u8[ rgb / 65536 ]
+            pd[ di + 1 ] = u8[ (rgb / 256) % 256 ]
+            pd[ di + 2 ] = u8[ rgb % 256 ]
+            pd[ di + 3 ] = 255
+    img3.png[ out2 ]
     return true
 
 # LibriSpeech + MFA alignments -> our spectral set, BORN ANNOTATED:
@@ -1122,6 +1290,41 @@ func stretch_clip [ c: AudioClip, factor: f32 ] -> AudioClip
 
 # run the module by itself and it presents itself; importers still
 # dlopen the .so. CLI modes do their work and exit; a bare run opens
+# the ai whisper model class, aliased clear of the --whisper flag prop
+alias WhisperNet: whisper
+
+# one live transcription: raw mono 48k utterance in, text out. runs on
+# its own pthread so the render loop never blocks; the app polls done.
+class WhisperJob
+    public model : WhisperNet
+    public pcm  : @i16
+    public n    : i64
+    public done : bool
+    public text : string
+    # the utterance's sweep-column span (st_abs units) for placement
+    public c0   : i64
+    public c1   : i64
+    # gpu path with a compute queue: the worker encodes AND decodes; the
+    # render thread only spawns. enc pre-set = legacy render-thread encode
+    public enc  : tensor
+    public gpu  : whisper_vk
+
+func spectra_whisper_thread [ arg: handle ] -> handle
+    j : (arg to WhisperJob)
+    enc : j.enc
+    if [ !enc ]
+        c : AudioClip [ rate: 48000, channels: 1, frames: j.n, pcm: j.pcm ]
+        m : whisper_mel[ c ]
+        mel_png[ m, path '/tmp/live-mel.png' ]
+        if [ j.gpu ]
+            enc = j.gpu.encode[ m ]
+        el
+            enc = j.model.encode[ m ]
+    ids : j.model.transcribe[ enc, 96 ]
+    j.text = j.model.text_for[ ids ]
+    j.done = true
+    return null
+
 # a window with a live mic spectrum when a capture device is present
 # spectra --file <caf/m4a/mp3> [--out png] [--img_w N] [--img_h N]
 # spectra --dataset <cv dir> --split dev --outdir <dir> [--limit N]
@@ -1138,25 +1341,56 @@ element main : trinity
     public split   : string [ 'dev' ]
     public outdir  : string
     public limit   : i32 [ 0 ]
+    # --whisper <size>: fetch the real openai weights (safetensors)
+    # into models/whisper-<size>.safetensors, then exit
+    public whisper : string
+    # --check: run the whisper self-test (reader/encode/decode) and exit
+    public check   : bool
     intern cap     : spectra
     intern cap_ok  : bool
     intern st_x    : i32
-    intern st_buf  : ref u8                # 1024 x 64 rgba sweep image
+    intern st_buf  : @u8                # 1024 x 64 rgba sweep image
     intern st_tex  : Texture
-    intern st_act  : ref f32               # per-column speech-band energy
+    intern st_act  : @f32               # per-column speech-band energy
     intern st_ema  : f32                   # ~100ms running avg of energy
     intern st_words : array SpectWord      # read results land here
+    # live whisper: rolling mic ring + utterance state + worker job
+    intern w_net   : WhisperNet
+    intern w_raw   : @i16                  # 32s mono 48k ring
+    intern w_wr    : i64                   # absolute samples written
+    intern w_state : i32
+    intern w_start : i64
+    intern w_act   : i64                   # last sample where speech energy held
+    intern w_quiet : i32
+    intern w_tid   : u64
+    intern w_job   : WhisperJob
+    intern w_text  : string
+    intern w_gpu   : whisper_vk
+    intern w_gtry  : bool
     # the reader: read1.ptc on interval over the trailing window
     intern rd_hnd  : ARef                  # torchscript handle
-    intern st_mag  : ref f32               # gray magnitudes, 64 x 1024 ring
+    intern st_mag  : @f32               # gray magnitudes, 64 x 1024 ring
     intern st_abs  : i64                   # absolute column counter
     intern rd_next : i64                   # next read at this abs column
-    intern rd_in   : ref f32               # contiguous window, 64 x W
-    intern rd_out  : ref f32               # per-column token/prob/sect
-    intern voc_tok : ref i32               # vocab: token ids
+    intern rd_in   : @f32               # contiguous window, 64 x W
+    intern rd_out  : @f32               # per-column token/prob/sect
+    intern voc_tok : @i32               # vocab: token ids
     intern voc_w   : array string          # vocab: words (same order)
     intern voc_n   : i32
     intern rd_q    : string                # the unnamed-word glyph
+    # --teach: read prompted sentences; the model force-aligns each
+    # take (the sentence is KNOWN) and writes self_{i} training clips
+    public teach   : bool
+    intern th_sent : string
+    intern th_words : array string
+    intern th_toks : @i32
+    intern th_ntk  : i32
+    intern th_state : i32                  # 0 wait, 1 speaking
+    intern th_quiet : i32
+    intern th_start : i64
+    intern th_i    : i32
+    intern th_spans : @i32
+    intern th_last : string                # last save announcement
     # --annotate: play random translated clips, click word boundaries
     public annotate : bool
     intern ann_n    : i32                  # clips in outdir
@@ -1166,7 +1400,7 @@ element main : trinity
     intern ann_clip : AudioClip
     intern ann_out  : AudioOut
     intern ann_pos  : i64                  # playback cursor, frames
-    intern ann_marks : ref f32             # boundary columns, sorted
+    intern ann_marks : @f32             # boundary columns, sorted
     intern ann_nm   : i32
     intern ann_words : array string
     intern ann_sent : string
@@ -1213,7 +1447,7 @@ element main : trinity
             ann_out.open[]
 
     # marks in column order (placed order preserved in ann_marks)
-    func ann_sorted [ dst: ref f32 ]
+    func ann_sorted [ dst: @f32 ]
         for [ i7: i32 0, i7 < ann_nm, i7 += 1 ]
             v7 : f32 [ ann_marks[ i7 ] ]
             j7 : i32 [ i7 ]
@@ -1246,7 +1480,109 @@ element main : trinity
         ap.save[ body3, null ]
         puts 'annotate: {split}_{ann_id} marks: {mk3}'
 
+    # app-private storage (path.path_storage): downloaded models + the
+    # last-used model name. share stays static build resources.
+    func whisper_weights [ nm: string ] -> path
+        d : path.path_storage[ 'spectra' ]
+        return path '{d}/whisper-{nm}.safetensors'
+
+    func whisper_vocab [] -> path
+        d : path.path_storage[ 'spectra' ]
+        return path '{d}/whisper-vocab.json'
+
+    # the whisper model name last used, persisted across launches
+    func saved_model [] -> string
+        d : path.path_storage[ 'spectra' ]
+        if [ !d ] return null
+        mp : path '{d}/whisper.txt'
+        if [ !mp.exists[] ] return null
+        txt : string [ mp.load[ typeid[string], null ] ]
+        if [ !txt ] return null
+        return txt.trim[]
+
+    func save_model [ nm: string ]
+        d : path.path_storage[ 'spectra' ]
+        if [ !d ] return
+        mp2 : path '{d}/whisper.txt'
+        mp2.save[ nm, null ]
+
     func init []
+        if [ file && whisper ]
+            c8 : caf_load[ path file ]
+            if [ !c8 ] exit[ 1 ]
+            mel8 : whisper_mel[ c8 ]
+            if [ mel_png[ mel8, path out ] ]
+                puts 'whisper mel: {out}'
+            dst8 : whisper_weights[ whisper ]
+            if [ dst8.exists[] ]
+                wsp8 : WhisperNet [ src: dst8 ]
+                if [ wsp8.valid ]
+                    puts 'whisper: encoding…'
+                    enc8 : wsp8.encode[ mel8 ]
+                    puts 'whisper: decoding…'
+                    ids8 : wsp8.transcribe[ enc8, 64 ]
+                    txt8 : wsp8.text_for[ ids8 ]
+                    if [ txt8 ]
+                        puts 'whisper:{txt8}'
+                    el
+                        line8 : string [ '' ]
+                        for [ k8: i32 0, k8 < ids8.count, k8 += 1 ]
+                            line8 = '{line8} {ids8[k8]}'
+                        puts 'whisper tokens:{line8}'
+            exit[ 0 ]
+        if [ whisper ]
+            dst : whisper_weights[ whisper ]
+            vjs : whisper_vocab[]
+            if [ !vjs.exists[] ]
+                nv0 : i64 [ Http.download[ 'https://huggingface.co/openai/whisper-{whisper}/resolve/main/vocab.json', vjs ] ]
+                if [ nv0 > 0 ]
+                    puts 'spectra: fetched vocab ({nv0} bytes)'
+            if [ !dst.exists[] ]
+                puts 'spectra: fetching whisper-{whisper} weights…'
+                n9 : i64 [ Http.download[ 'https://huggingface.co/openai/whisper-{whisper}/resolve/main/model.safetensors', dst ] ]
+                if [ n9 <= 0 ]
+                    puts 'spectra: download failed'
+                    exit[ 1 ]
+                mb9 : i64 [ n9 / 1048576 ]
+                puts 'spectra: wrote {dst} ({mb9} MB)'
+            if [ check ]
+                # verify the reader end-to-end (header + one tensor)
+                st9 : safetensors [ src: dst ]
+                t9 : st9.tensor_named[ 'model.decoder.embed_positions.weight' ]
+                if [ !t9 ]
+                    puts 'spectra: {dst} present but reader failed'
+                    exit[ 1 ]
+                n9c : i64 [ t9.tensor_shape.total[] ]
+                sum9 : f64 [ 0.0 ]
+                for [ i9: i64 0, i9 < n9c, i9 += 1 ]
+                    sum9 += f64[ t9.floats[i9] ]
+                mean9 : f64 [ sum9 / f64[ n9c ] ]
+                puts 'spectra: whisper-{whisper} ok — {n9c} floats, mean {mean9}'
+                # encoder smoke: deterministic 8x80 mel through all 12 blocks
+                wsp : WhisperNet [ src: dst ]
+                if [ !wsp.valid ]
+                    puts 'spectra: whisper model load failed'
+                    exit[ 1 ]
+                mel9 : tensor [ tensor_shape: 8x80 ]
+                for [ tt: i32 0, tt < 8, tt += 1 ]
+                    for [ cc: i32 0, cc < 80, cc += 1 ]
+                        mel9.floats[tt * 80 + cc] = sinf[ f32[tt] * 0.1f + f32[cc] * 0.05f ]
+                enc9 : wsp.encode[ mel9 ]
+                ne9 : i64 [ enc9.tensor_shape.total[] ]
+                se9 : f64 [ 0.0 ]
+                for [ i9: i64 0, i9 < ne9, i9 += 1 ]
+                    se9 += f64[ enc9.floats[i9] ]
+                me9 : f64 [ se9 / f64[ ne9 ] ]
+                puts 'spectra: encode ok — {ne9} floats, mean {me9}, first {enc9.floats[0]} {enc9.floats[1]} {enc9.floats[2]}'
+                # decoder smoke: one greedy step from the seed prompt
+                seed9 : new i32 [ 8 ]
+                seed9[0] = 50258
+                seed9[1] = 50259
+                seed9[2] = 50359
+                seed9[3] = 50363
+                tk9 : i32 [ wsp.decode_step[ enc9, (seed9 to handle), 4 ] ]
+                puts 'spectra: decode ok — first token {tk9}'
+                exit[ 0 ]
         if [ libri ]
             if [ !outdir ]
                 puts 'spectra: --libri needs --outdir'
@@ -1289,6 +1625,25 @@ element main : trinity
         cap.hold[]
         cap_ok = cap.open[]
         if [ !cap_ok ] puts 'spectra: no capture device — window stays silent'
+        # live whisper: always load when the model is on disk (--whisper
+        # only picks a size / provisions). the draw loop segments
+        # utterances; a worker thread transcribes on each pause.
+        if [ cap_ok ]
+            wname : string [ whisper ]
+            if [ !wname || wname.count == 0 ] wname = saved_model[]
+            if [ !wname || wname.count == 0 ] wname = 'small'
+            wm : whisper_weights[ wname ]
+            if [ wm.exists[] ]
+                puts 'spectra: loading whisper-{wname}…'
+                w_net = WhisperNet [ src: wm ]
+                w_net.hold[]
+                if [ w_net.valid ]
+                    w_raw = new i16 [ 1536000 ]
+                    hold[ (w_raw to Au) ]
+                    save_model[ wname ]
+                    puts 'spectra: whisper ready — speak; a pause transcribes'
+            el [ whisper ]
+                puts 'spectra: no {wm}'
         # stream continuously: repaint every frame, never cache-skip
         animated = true
         # the word reader (optional): models/read1.ptc + its vocab
@@ -1325,12 +1680,108 @@ element main : trinity
             puts 'spectra: reader loaded ({voc_n} words named)'
         el
             puts 'spectra: no models/read1.ptc — stream view only'
+        if [ teach ]
+            if [ !outdir ]
+                puts 'spectra: --teach needs --outdir (the training set dir)'
+                exit[ 1 ]
+            if [ !rd_hnd ]
+                puts 'spectra: --teach needs models/read1.ptc'
+                exit[ 1 ]
+            th_toks = new i32 [ 64 ]
+            th_spans = new i32 [ 128 ]
+            ann_seed = epoch_millis[]
+            for [ true ]
+                pt5 : path '{outdir}/self_{th_i}.agi'
+                if [ !pt5.exists[] ] break
+                th_i += 1
+            th_pick[]
+            puts 'teach: read each sentence aloud — silence ends the take (N skips)'
 
     # live stream: 64 fft bands (150Hz..8kHz, the model's own range) in
     # a 1024x64 sweep image, drawn as a 128px strip off the element
     # bottom. columns advance left to right and wrap, painting over the
     # last pass. the canvas clears every repaint, so history lives in
     # the texture; ticks and word labels paint with the canvas
+    # the trainer's tokenizer, reproduced: fnv1a-32 of the lowercase
+    # word, % 4096 + 1; words outside the named vocab -> 4097 <other>
+    func th_hash [ wd: string ] -> i32
+        h : u32 [ 2166136261 ]
+        cs : symbol [ wd.chars ]
+        for [ i: i32 0, i < wd.count, i += 1 ]
+            c : u32 [ u32[ i32[ cs[ i ] ] ] ]
+            h = (h ^ c) * 16777619
+        t : i32 [ i32[ h % 4096 ] + 1 ]
+        for [ v: i32 0, v < voc_n, v += 1 ]
+            if [ voc_tok[ v ] == t ] return t
+        return 4097
+
+    # next prompt: a random short sentence from the translated set
+    func th_pick []
+        for [ true ]
+            ann_seed = ann_seed * 6364136223846793005 + 1442695040888963407
+            k : i32 [ i32[ (ann_seed % 2703 + 2703) % 2703 ] ]
+            ap : path '{outdir}/dev-clean_{k}.agi'
+            if [ !ap.exists[] ] continue
+            text : (ap.load[ typeid[ string ], null ] to string)
+            if [ !text ] continue
+            sn : ann_field[ text, 'sentence' ]
+            ws : array string [ sn.split[ ' ' ] ]
+            nw : i32 [ 0 ]
+            for [ wi: i32 0, wi < ws.count, wi += 1 ]
+                wv : ws[ wi ]
+                if [ wv && wv.count > 0 ] nw += 1
+            if [ nw < 4 || nw > 9 ] continue
+            th_sent = sn
+            th_sent.hold[]
+            th_words = array string [ ]
+            th_words.hold[]
+            th_ntk = 0
+            for [ wi2: i32 0, wi2 < ws.count, wi2 += 1 ]
+                wv2 : ws[ wi2 ]
+                if [ !wv2 || wv2.count < 1 ] continue
+                th_words += wv2
+                th_toks[ th_ntk ] = th_hash[ wv2 ]
+                th_ntk += 1
+            th_state = 0
+            th_quiet = 0
+            return
+
+    # one finished take: force-align the known words, save the clip
+    func th_save [ a0: i64, a1: i64 ]
+        w6 : i32 [ i32[ a1 - a0 ] ]
+        if [ w6 < 16 || w6 > 1000 ] return
+        for [ y6: i32 0, y6 < 64, y6 += 1 ]
+            for [ x6: i32 0, x6 < w6, x6 += 1 ]
+                rx6 : i32 [ i32[ (a0 + i64[ x6 ]) % 1024 ] ]
+                rd_in[ y6 * w6 + x6 ] = st_mag[ y6 * 1024 + rx6 ]
+        n6 : i32 [ ts_align[ rd_hnd, rd_in, 64, w6, th_toks, th_ntk, th_spans ] ]
+        if [ n6 < 1 ]
+            th_last = string 'alignment failed — take skipped'
+            th_last.hold[]
+            return
+        img6 : Image [ width: w6, height: 64, format: Pixel.u8, channels: 1 ]
+        pd6 : @u8 [ img6.vdata[] ]
+        for [ y8: i32 0, y8 < 64, y8 += 1 ]
+            for [ x8: i32 0, x8 < w6, x8 += 1 ]
+                dg8 : i64 [ i64[ y8 ] * w6 + x8 ]
+                pd6[ dg8 ] = u8[ rd_in[ y8 * w6 + x8 ] * 255.0 ]
+        img6.png[ path '{outdir}/self_{th_i}.png' ]
+        wsp6 : string ''
+        for [ k6: i32 0, k6 < th_ntk, k6 += 1 ]
+            s6 : i32 [ th_spans[ k6 * 2 ] ]
+            e6 : i32 [ th_spans[ k6 * 2 + 1 ] ]
+            if [ s6 < 0 ] s6 = 0
+            if [ e6 <= s6 ] e6 = s6 + 1
+            wsp6 = '{wsp6}{s6} {e6} '
+        fr6 : i64 [ i64[ w6 ] * 2048 ]
+        body6 : string 'image: self_{th_i}.png\nsentence: {th_sent}\nspeaker: self\nrate: 48000\nframes: {fr6}\nduration: {f32[ w6 ] * 0.0427}\nsource: live\nwspans: {wsp6}\n'
+        ag6 : path '{outdir}/self_{th_i}.agi'
+        ag6.save[ body6, null ]
+        th_last = string 'saved self_{th_i} ({th_ntk} words aligned)'
+        th_last.hold[]
+        puts 'teach: saved self_{th_i}'
+        th_i += 1
+
     # merge one read's word runs into st_words. the key is COLUMN
     # OVERLAP in absolute stream position — an overlapping span is the
     # same word instance re-read (newer wins: more right context);
@@ -1402,7 +1853,7 @@ element main : trinity
             if [ ann_pos + fr5 > ann_clip.frames ]
                 ann_pos = 0
             nb5 : i64 [ fr5 * i64[ ch5 ] * 2 ]
-            memcpy[ ann_out.buffer, ref ann_clip.pcm[ ann_pos * i64[ ch5 ] ], nb5 ]
+            memcpy[ ann_out.buffer, @ann_clip.pcm[ ann_pos * i64[ ch5 ] ], nb5 ]
             ann_out.write[ i32[ fr5 ] ]
             ann_pos += fr5
         if [ ann_img && !ann_tex ]
@@ -1481,6 +1932,10 @@ element main : trinity
         ann_nm += 1
 
     public func on_key [ ev: Event ]
+        if [ teach ]
+            kt : i32 [ ev.key.unicode ]
+            if [ kt == 78 ] th_pick[]
+            return
         if [ !annotate ] return
         k5 : i32 [ ev.key.unicode ]
         if [ k5 == 32 && ann_img && ann_clip ]
@@ -1563,6 +2018,117 @@ element main : trinity
             el
                 st_ema = st_ema * 0.88 + en9 * 0.12
             st_act[ st_x ] = st_ema
+            # teach take machine: speech starts the take, ~0.9s of
+            # quiet ends it — align + save, then the next prompt
+            if [ teach && th_ntk > 0 ]
+                if [ th_state == 0 ]
+                    if [ st_ema > 0.12 ]
+                        th_state = 1
+                        th_start = st_abs - 5
+                        if [ th_start < 0 ] th_start = 0
+                        th_quiet = 0
+                el
+                    if [ st_ema < 0.08 ]
+                        th_quiet += 1
+                        if [ th_quiet >= 20 ]
+                            th_save[ th_start, st_abs - 14 ]
+                            th_pick[]
+                    el
+                        th_quiet = 0
+            # gpu engine: built lazily at first frame (pipeline compile is
+            # a one-time hitch), verified against the cpu encoder
+            if [ w_net && !w_gtry && !teach ]
+                w_gtry = true
+                puts 'whisper: building gpu pipelines…'
+                g0 : whisper_vk [ model: w_net, vk: cv.vk, win: w ]
+                if [ g0.valid ]
+                    g0.hold[]
+                    w_gpu = g0
+                    melg : tensor [ tensor_shape: 8x80 ]
+                    for [ tg: i32 0, tg < 8, tg += 1 ]
+                        for [ cg: i32 0, cg < 80, cg += 1 ]
+                            melg.floats[tg * 80 + cg] = sinf[ f32[tg] * 0.1f + f32[cg] * 0.05f ]
+                    eg : w_gpu.encode[ melg ]
+                    ec : w_net.encode[ melg ]
+                    ng : i64 [ eg.tensor_shape.total[] ]
+                    sg : f64 [ 0.0 ]
+                    sc : f64 [ 0.0 ]
+                    for [ ig: i64 0, ig < ng, ig += 1 ]
+                        sg += f64[ eg.floats[ig] ]
+                        sc += f64[ ec.floats[ig] ]
+                    puts 'whisper: gpu encoder ready — parity gpu {sg / f64[ng]} cpu {sc / f64[ng]}'
+                el
+                    puts 'whisper: gpu unavailable — cpu encoder'
+            # live whisper: ring the raw window in, segment utterances the
+            # same way the teach take machine does, hand a copy to a thread
+            if [ w_net && w_raw && !teach ]
+                ns5 : i64 [ cap.size ]
+                for [ i5: i64 0, i5 < ns5, i5 += 1 ]
+                    w_raw[(w_wr + i5) % 1536000] = cap.buf[i5]
+                w_wr += ns5
+                if [ !w_job ]
+                    if [ w_state == 0 ]
+                        if [ st_ema > 0.12 ]
+                            w_state = 1
+                            w_start = w_wr - 38400
+                            if [ w_start < 0 ] w_start = 0
+                            w_act   = w_wr
+                            w_quiet = 0
+                    el
+                        # the utterance END is the last column the band-energy
+                        # gate held — the same detector that started the take
+                        if [ st_ema > 0.10 ] w_act = w_wr
+                        if [ st_ema < 0.08 ]
+                            w_quiet += 1
+                        el
+                            w_quiet = 0
+                        too_long : bool [ w_wr - w_start > 576000 ]
+                        if [ w_quiet >= 20 || too_long ]
+                            w_state = 0
+                            e5 : i64 [ w_act + 16800 ]
+                            if [ e5 > w_wr ] e5 = w_wr
+                            n5 : i64 [ e5 - w_start ]
+                            if [ n5 > 24000 ]
+                                buf5 : new i16 [ n5 ]
+                                hold[ (buf5 to Au) ]
+                                for [ i5: i64 0, i5 < n5, i5 += 1 ]
+                                    buf5[i5] = w_raw[(w_start + i5) % 1536000]
+                                j5 : WhisperJob [ model: w_net, pcm: buf5, n: n5, c0: w_start / 2048, c1: e5 / 2048 ]
+                                j5.hold[]
+                                # gpu path: with a compute queue the WORKER
+                                # encodes (low priority, sliced submits) —
+                                # graphics never waits. no compute queue →
+                                # legacy render-thread encode
+                                if [ w_gpu ]
+                                    if [ w_gpu.threaded[] ]
+                                        j5.gpu = w_gpu
+                                    el
+                                        c7 : AudioClip [ rate: 48000, channels: 1, frames: n5, pcm: buf5 ]
+                                        m7 : whisper_mel[ c7 ]
+                                        mel_png[ m7, path '/tmp/live-mel.png' ]
+                                        e7 : w_gpu.encode[ m7 ]
+                                        e7.hold[]
+                                        j5.enc = e7
+                                w_job = j5
+                                puts 'whisper: transcribing {n5 / 48000}s…'
+                                pthread_create[ @w_tid, null, @spectra_whisper_thread, (j5 to handle) ]
+                                pthread_detach[ w_tid ]
+            if [ w_job && w_job.done ]
+                w_text = w_job.text
+                if [ w_text && w_text.count > 0 ]
+                    puts 'whisper:{w_text}'
+                    # anchor the transcript to its own span on the sweep
+                    nw5 : SpectWord [ x0: i32[ w_job.c0 ], x1: i32[ w_job.c1 ], text: w_text ]
+                    st_words += nw5
+                    # prune entries that scrolled out of the ring
+                    if [ st_words.count > 48 ]
+                        keep5 : array SpectWord [ ]
+                        for [ ki5: i32 0, ki5 < st_words.count, ki5 += 1 ]
+                            kw5 : st_words[ ki5 ]
+                            if [ i64[ kw5.x0 ] >= st_abs - i64[ sw9 ] ] keep5 += kw5
+                        st_words = keep5
+                        st_words.hold[]
+                w_job = null
             # the sweep cursor: a dark gap one column ahead
             nx9 : i32 [ (st_x + 1) % sw9 ]
             for [ y2: i32 0, y2 < nb, y2 += 1 ]
@@ -1576,7 +2142,7 @@ element main : trinity
             st_tex.upload[ st_buf, sw9 * nb * 4 ]
             # interval read: every 12 columns (~0.5s) the reader takes
             # the trailing window in ONE pass; words merge by span
-            if [ rd_hnd && st_mag && st_abs >= rd_next ]
+            if [ rd_hnd && !w_net && st_mag && st_abs >= rd_next ]
                 rd_next = st_abs + 12
                 w7 : i32 [ (st_abs < 192) ? i32[ st_abs ] : 192 ]
                 if [ w7 >= 24 ]
@@ -1587,6 +2153,13 @@ element main : trinity
                     n7r : i32 [ ts_read_cols[ rd_hnd, rd_in, nb, w7, rd_out, 576 ] ]
                     if [ n7r > 0 ] rd_merge[ i32[ st_abs ] - w7, n7r ]
         cv.draw_image[ st_tex, rect [ x: 0.0, y: y0, w: bounds.w, h: strip ] ]
+        # busy hint; transcripts render anchored at their spans (st_words)
+        if [ w_job ]
+            cv.font_size[ 18 ]
+            cv.fill_color[ '#9a9aa8' ]
+            cv.draw_text[ 'transcribing…', rect [ x: 16.0, y: y0 - 42.0, w: bounds.w - 32.0, h: 32.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
         cv.paint[]
         # activity ticks: bright marks over the columns fit to read
         run0 : i32 [ -1 ]
@@ -1600,6 +2173,20 @@ element main : trinity
                 cv.fill_color[ rgba [ r: 0.3, g: 1.0, b: 0.55, a: 1.0 ] ]
                 cv.paint[]
                 run0 = -1
+        # teach prompt: the sentence to read, take state underneath
+        if [ teach && th_sent ]
+            cv.sync_fence[]
+            cv.fill_color[ '#fff' ]
+            cv.draw_text[ '{th_sent}',
+                rect [ x: 20.0, y: bounds.h * 0.3, w: bounds.w - 40.0, h: 30.0 ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
+            st5 : string [ (th_state == 1) ? 'listening...' : 'read it aloud' ]
+            cv.fill_color[ '#8fc' ]
+            cv.draw_text[ '{st5}   {th_last}',
+                rect [ x: 20.0, y: bounds.h * 0.3 + 36.0, w: bounds.w - 40.0, h: 20.0 ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
         # found words drawn OVER the spectra graph at their spans
         # (abs -> ring columns; seam-crossing spans skip one pass)
         for [ wi: i32 0, wi < st_words.count, wi += 1 ]

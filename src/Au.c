@@ -1693,8 +1693,11 @@ int au_stdout_orig(void) { return g_stdout_orig; }
 // silver_live_init); au_apply_args then parses it into the freshly-created app
 // instance, so an app receives its own command-line flags through its schema.
 static cstrs g_main_argv = NULL;
+static int   g_argv_stop = 0;
 void au_main_args(int argc, cstrs argv) { (void)argc; g_main_argv = argv; }
 void au_apply_args(Au a) { if (a && g_main_argv) Au_with_cstrs((Au)a, g_main_argv); }
+int   au_argv_stop(void) { return g_argv_stop; }
+cstrs au_argv(void)      { return g_main_argv; }
 
 // live-reload rebuild flag, lives in libAu so the host and the dlopen'd app both
 // see it. silver-host sets it true around a blocking recompile (pumping one app
@@ -3200,6 +3203,7 @@ static void au_arg_usage(Au a, cstrs argv) {
 
 Au Au_with_cstrs(Au a, cstrs argv) {
     engage(argv);
+    if (!g_main_argv) g_main_argv = argv;
     int argc = argv[0] ? 1 : 0; // skip executable
     Au_t rtype = isa(a);
     while (argv[argc]) { // C standard puts a null char* on end, by law (see: Brannigans law)
@@ -3211,6 +3215,7 @@ Au Au_with_cstrs(Au a, cstrs argv) {
             while (type != typeid(Au)) {
                 for (num i = 0; i < type->members.count; i++) {
                     Au_t m = (Au_t)type->members.origin[i];
+                    if (m->access_type == interface_intern) continue;
                     if ((m->member_type == AU_MEMBER_VAR) &&
                         ( single &&        m->ident[0] == arg[1]) ||
                         (!single && strcmp(m->ident,     &arg[2]) == 0)) {
@@ -3269,6 +3274,10 @@ Au Au_with_cstrs(Au a, cstrs argv) {
             Au_t def  = find_member(rtype, null, AU_MEMBER_VAR, AU_TRAIT_IS_DEFAULT, true);
             Au   conv = def ? convert(def->type, (Au)string(arg)) : null;
             if  (conv) Au_set_property(a, def->ident, (Au)conv);
+            // the default value is the separator: everything after it
+            // belongs to the launched program (see au_argv_stop)
+            g_argv_stop = argc + 1;
+            break;
         }
         argc++;
     }
@@ -5979,6 +5988,9 @@ path path_parent_dir(path a) {
     for (int i = len - 2; i >= 0; i--) { // -2 because we dont mind the first
         char ch = a->chars[i];
         if  (ch == '/') {
+            // slash at 0: ref_length 0 means strlen — would copy a whole
+            if (i == 0)
+                return new(path, chars, "/");
             string trim = new(string, chars, a->chars, ref_length, i);
             return new(path, chars, trim->chars);
         }
@@ -6039,6 +6051,62 @@ path path_share_path() {
     if (dir_exists("%o", res))
         return res;
     return null;
+}
+
+// disposable per-app cache, scoped by name: safe to delete anytime.
+// linux ~/.cache/<app> (XDG), mac ~/Library/Caches, win LOCALAPPDATA.
+path path_cache(cstr app) {
+    string dir = null;
+#ifdef _WIN32
+    cstr la = getenv("LOCALAPPDATA");
+    if (la && strlen(la)) dir = f(string, "%s/%s/cache", la, app);
+#elif defined(__APPLE__)
+    cstr home = getenv("HOME");
+    if (home && strlen(home))
+        dir = f(string, "%s/Library/Caches/%s", home, app);
+#else
+    cstr xdg = getenv("XDG_CACHE_HOME");
+    if (xdg && strlen(xdg))
+        dir = f(string, "%s/%s", xdg, app);
+    else {
+        cstr home = getenv("HOME");
+        if (home && strlen(home))
+            dir = f(string, "%s/.cache/%s", home, app);
+    }
+#endif
+    if (!dir) return null;
+    path p = f(path, "%o", dir);
+    make_dir(p);
+    return p;
+}
+
+// app-private mutable state, scoped by name (usually the module).
+// share is static build resources; this is the runtime home:
+// linux ~/.local/state/<app> (XDG), mac Application Support, win
+// LOCALAPPDATA. created on first use.
+path path_storage(cstr app) {
+    string dir = null;
+#ifdef _WIN32
+    cstr la = getenv("LOCALAPPDATA");
+    if (la && strlen(la)) dir = f(string, "%s/%s", la, app);
+#elif defined(__APPLE__)
+    cstr home = getenv("HOME");
+    if (home && strlen(home))
+        dir = f(string, "%s/Library/Application Support/%s", home, app);
+#else
+    cstr xdg = getenv("XDG_STATE_HOME");
+    if (xdg && strlen(xdg))
+        dir = f(string, "%s/%s", xdg, app);
+    else {
+        cstr home = getenv("HOME");
+        if (home && strlen(home))
+            dir = f(string, "%s/.local/state/%s", home, app);
+    }
+#endif
+    if (!dir) return null;
+    path p = f(path, "%o", dir);
+    make_dir(p);
+    return p;
 }
 
 bool path_is_symlink(path p) {
