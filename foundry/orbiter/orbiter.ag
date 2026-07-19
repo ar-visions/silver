@@ -263,6 +263,13 @@ element orbiter : trinity # implements compiler
     intern console_seq      : i32
     # pane whose finder should focus once its Editor exists (console → nav list)
     intern pending_finder   : i32 [ -1 ]
+    # the last area string applied to each pane instance — areas assign only on
+    # change so the instance's Region (and its seam bind state) persists
+    intern pane_area_cur    : array string
+    intern band_area_cur    : array string
+    # the run band pane_for built this frame — placed as the editor's SIBLING
+    # (they share the @ed_split seam identity, like panes share split1)
+    intern pending_band     : element
     public active_pane      : i32
     # per-pane navigation history (Cmd/Ctrl+Left/Right). runtime-only — never serialized
     # (save_states writes only tabs/target/breakpoints), so it starts empty each session.
@@ -475,6 +482,8 @@ element orbiter : trinity # implements compiler
         # one editor pane to start, empty (the 'Open' finder)
         editor_slots   = array i32 [-1]
         pane_console   = array string ['']
+        pane_area_cur  = array string []
+        band_area_cur  = array string []
         active_pane    = 0
         nav_panes      = array Navigate []
         for [ i: i32 0, i < 8, i += 1 ]
@@ -1415,13 +1424,12 @@ element orbiter : trinity # implements compiler
             bels : Elements []
             bels['tools']   = ToolsHeader [ spacing_x: 0.2, spacing_y: 0.2, topmost: true, elements: fels ]
             bels['console'] = RunConsole [ session_id: 'ed:{emod}', sessions: ed_sessions, feed: null, run_line: runcmd, animated: true, elements: cf2 ]
-            pe['bottom'] = RunBand [ elements: bels ]
+            pending_band = RunBand [ elements: bels ]
         # (callstack + fields no longer live in the editor — they're toggled from the
         # bottom console title and render in the Instances bar.)
         # the dock + search results render as the editor's lines (run_search), not a
         # tab strip — so no 'pins' overlay anymore.
         return Editor [
-            area: Region [ pane_area[ pi ].chars ],
             src: p, breakpoints: breakpoints, code_font_size: code_font_size,
             nav: nav_panes[ pi ], pane_index: pi,
             debug_running: running, debugger: dbgr, debug_vars: debug_vars,
@@ -1969,12 +1977,23 @@ element orbiter : trinity # implements compiler
         ##
 
     # the split-tiled area for pane index i: panes share seam vars on touching
-    # edges (pane0.r == pane1.l == split1) so each boundary is one draggable seam
-    func pane_area [ pi: i32 ] -> string
-        if [ pi == 0 ] return 'l0 t0 l@split1=50|0|0 b0'
-        if [ pi == 1 ] return 'l@split1=50|0|0 t0 l@split2=100|0|0 b0'
-        if [ pi == 2 ] return 'l@split2=100|0|0 t0 l@split3=150|0|0 b0'
-        return 'l@split3=150|0|0 t0 r0 b0'
+    # edges (pane0.r == pane1.l == split1) so each boundary is one draggable
+    # seam. by supplies the bottom — a run pane's editor ends at @ed_split so
+    # it moves WITH the band, the same eased seam identity.
+    func pane_area [ pi: i32, ty: string, by: string ] -> string
+        if [ pi == 0 ] return 'l0 {ty} l@split1=50|0|0 {by}'
+        if [ pi == 1 ] return 'l@split1=50|0|0 {ty} l@split2=100|0|0 {by}'
+        if [ pi == 2 ] return 'l@split2=100|0|0 {ty} l@split3=150|0|0 {by}'
+        return 'l@split3=150|0|0 {ty} r0 {by}'
+
+    # is pane i showing a runnable module (its band is present)
+    func pane_runnable [ p: path, pi: i32 ] -> bool
+        pei : Editor pane_at[ pi ]
+        if [ pei->run_view ] return true
+        if [ !p ] return false
+        fnm : string p.filename[]
+        if [ fnm.count >= 3 && fnm.mid[ fnm.count - 3, 3 ].compare[ '.ag' ] == 0 ] return true
+        return false
 
     # resolve the i-th live editor pane from the auto-bound editor_group. nested
     # elements don't auto-bind to app fields (only top-level returns do), so this is
@@ -3169,6 +3188,7 @@ element orbiter : trinity # implements compiler
         # own bottom console uses) — a pure-console pane must use THAT map
         if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
         editor_els : Elements []
+        egp2 : element (editor_group) ? editor_group.elements['editors'] : null
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             pid  : 'pane{i}'
             psess : string (i < pane_console.count) ? pane_console[i] : ''
@@ -3185,11 +3205,37 @@ element orbiter : trinity # implements compiler
                 # +split / -unsplit in the console title, same as an editor pane
                 if [ editor_slots.count > 1 ] cst['undock'] = NavButton []
                 if [ editor_slots.count < 4 ] cst['dock']   = NavButton []
-                editor_els[pid] = Console [ area: Region [ pane_area[ i ].chars ], session_id: psess, sessions: ed_sessions, feed: null, launch: agent_cmd[ psess ], animated: true, elements: cst ]
+                editor_els[pid] = Console [ session_id: psess, sessions: ed_sessions, feed: null, launch: agent_cmd[ psess ], animated: true, elements: cst ]
             el
                 slot : i32    [ editor_slots[i] ]
                 spath: path   (slot >= 0 && slot < open_files.count) ? open_files[slot] : null
                 editor_els[pid] = pane_for[ spath, null, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open', i ]
+                # the run band rides BESIDE its editor, sharing the seam
+                if [ pending_band ]
+                    editor_els['band{i}'] = pending_band
+                    pending_band = null
+            # areas live ON the instances, set only when they change — the
+            # Region persists across frames so its seam binds keep their eased
+            # motion (a run editor's bottom moves WITH the band, same curve)
+            rb   : pane_runnable[ (i < editor_slots.count && editor_slots[i] >= 0 && editor_slots[i] < open_files.count) ? open_files[editor_slots[i]] : null, i ]
+            has_band : bool [ rb && !(psess && psess.count > 0) ]
+            want : pane_area[ i, 't0', (has_band) ? 'b@ed_split=8|44|44' : 'b0' ]
+            pin  : element (egp2) ? egp2.elements[pid] : null
+            if [ pin && (i >= pane_area_cur.count || pane_area_cur[i] != want) ]
+                while [ pane_area_cur.count <= i ]
+                    pane_area_cur += ''
+                pane_area_cur[i] = want
+                pin.area = Region [ want.chars ]
+                pin.area.hold[]
+            if [ has_band ]
+                bwant : pane_area[ i, 'b@ed_split=8|44|44', 'b0' ]
+                bpin  : element (egp2) ? egp2.elements['band{i}'] : null
+                if [ bpin && (i >= band_area_cur.count || band_area_cur[i] != bwant) ]
+                    while [ band_area_cur.count <= i ]
+                        band_area_cur += ''
+                    band_area_cur[i] = bwant
+                    bpin.area = Region [ bwant.chars ]
+                    bpin.area.hold[]
         if [ has_console ]
             # materialize the session BEFORE the pane's Console draws — its lazy
             # session[] fallback starts a bare shell, which would hijack an agent
@@ -3208,7 +3254,7 @@ element orbiter : trinity # implements compiler
             # a screenshot of all of orbiter (drag-and-drop, minus the drag)
             ctitle['ctx_copy'] = Button [ label: 'context', no_scroll: true ]
             ctitle['ctx_shot'] = Button [ label: 'screen', no_scroll: true ]
-            editor_els['pane{editor_slots.count}'] = Console [ area: Region [ pane_area[ editor_slots.count ].chars ], session_id: active_console, sessions: csess, feed: null, launch: agent_cmd[ active_console ], elements: ctitle ]
+            editor_els['pane{editor_slots.count}'] = Console [ session_id: active_console, sessions: csess, feed: null, launch: agent_cmd[ active_console ], elements: ctitle ]
 
         # the orbiter avatar peeks in the bottom-right corner. the real 3D Avatar still
         # SIGSEGVs (env-texture vk_image_view not ready at bind), so for now this is a plain
