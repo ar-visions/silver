@@ -4164,6 +4164,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
                 Au_t mem = find_member(alloc->autype, key_name, AU_MEMBER_VAR, 0, true);
                 if (mem) {
                     int idx = fbits_index(alloc->autype, mem);
+                    /*
                     static bool ctor_fbits_printed = false;
                     if (!ctor_fbits_printed && key_name && strcmp(key_name, "selected") == 0) {
                         ctor_fbits_printed = true;
@@ -4171,7 +4172,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
                             alloc->autype && alloc->autype->ident ? alloc->autype->ident : "?",
                             (int)mem->af_index, (int)mem->member_index, idx, idx / 64, idx % 64);
                         fflush(stdout);
-                    }
+                    }*/
                     if (idx >= 0 && idx < AF_WORDS * 64) {
                         masks[idx / 64] |= 1ULL << (idx % 64);
                         masks_any = true;
@@ -4658,6 +4659,29 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
 
 
         enode fmem  = convertible((etype)input, mdl);
+        // unichar literal ('8') -> any type with a string ctr: synthesize the
+        // one-char string at compile time and construct the target from it
+        if (!fmem && input->literal && isa(input->literal) == typeid(unichar) &&
+            canonical(mdl) &&
+            (constructs_with(canonical(mdl)->autype, typeid(string)) ||
+             constructs_with(canonical(mdl)->autype, typeid(cstr))   ||
+             constructs_with(canonical(mdl)->autype, typeid(symbol)))) {
+            extern string unicode_char(i32);
+            string s = unicode_char(*(i32*)input->literal);
+            Au s_lit = (Au)const_string(chars, (cstr)s->chars);
+            enode s_node = e_operand(a, s_lit, etypeid(string));
+            return e_create(a, mdl, (Au)s_node);
+        }
+        // tokens literal -> any type with a string ctr: the tokens cast to
+        // string (joined), then the target constructs from it (Region, Glow)
+        if (!fmem && canonical(input) && canonical(input)->autype == typeid(tokens) &&
+            canonical(mdl) &&
+            (constructs_with(canonical(mdl)->autype, typeid(string)) ||
+             constructs_with(canonical(mdl)->autype, typeid(cstr))   ||
+             constructs_with(canonical(mdl)->autype, typeid(symbol)))) {
+            enode joined = e_create(a, etypeid(string), (Au)input);
+            return e_create(a, mdl, (Au)joined);
+        }
         // runtime conversion fallback via __convert (e.g. string -> enum)
         if (!fmem && canonical(input) && canonical(input)->autype == typeid(string)) {
             Au_t f_convert = find_member(typeid(Au), "__convert", AU_MEMBER_FUNC, 0, false);
@@ -6207,7 +6231,9 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
     etype T = canonical(rtype);
 
     // unichar literal → string: synthesize const_string at compile time from
-    // the known codepoint. avoids the Au_cast_string runtime path.
+    // the known codepoint. avoids the Au_cast_string runtime path. also fires
+    // for any target with a string ctr ('8' → Radius): synthesize the string
+    // and construct the target from it.
     if (expr->literal && isa(expr->literal) == typeid(unichar) &&
         (T->autype == typeid(string) || T->autype == typeid(cstr) || T->autype == typeid(symbol))) {
         extern string unicode_char(i32);
@@ -6215,6 +6241,17 @@ enode aether_e_primitive_convert(aether a, enode expr, etype rtype) { sequencer
         string s = unicode_char(ch);
         Au s_lit = (Au)const_string(chars, (cstr)s->chars);
         return e_operand(a, s_lit, rtype);
+    }
+    if (expr->literal && isa(expr->literal) == typeid(unichar) &&
+        (constructs_with(T->autype, typeid(string)) ||
+         constructs_with(T->autype, typeid(cstr))   ||
+         constructs_with(T->autype, typeid(symbol)))) {
+        extern string unicode_char(i32);
+        i32 ch = *(i32*)expr->literal;
+        string s = unicode_char(ch);
+        Au s_lit = (Au)const_string(chars, (cstr)s->chars);
+        enode s_node = e_operand(a, s_lit, etypeid(string));
+        return (enode)e_create(a, rtype, (Au)s_node);
     }
 
     //
@@ -9200,8 +9237,8 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     if (a->debug && a->dbg_builder)
         LLVMDIBuilderFinalize(a->dbg_builder);
 
-    *ll = form(path, "%o/modules/%o.ll", a->install, a);
-    *bc = form(path, "%o/modules/%o.bc", a->install, a);
+    *ll = form(path, "%o/build/%o.ll", a->install, a);
+    *bc = form(path, "%o/build/%o.bc", a->install, a);
 
     bool validation_error = false;
     // dump before verbose check to catch crashes
