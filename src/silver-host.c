@@ -320,13 +320,17 @@ int main(int argc, char** argv) {
         au_live_set_pending_fn set_pending = (au_live_set_pending_fn)dlsym(handle, "au_live_set_pending");
         au_live_take_apply_fn  take_apply  = (au_live_take_apply_fn) dlsym(handle, "au_live_take_apply");
         au_live_get_defer_fn   get_defer   = (au_live_get_defer_fn)  dlsym(handle, "au_live_get_defer");
+        au_live_get_defer_fn   get_reload  = (au_live_get_defer_fn)  dlsym(handle, "au_live_get_reload");
         // defer is dynamic: the app turns it on (au_live_set_defer); env forces it for devs.
         int defer = host_defer || (get_defer && get_defer());
+        // reload can be turned OFF by the app (au_live_set_reload(0)) — orbiter does,
+        // since it edits its own dependencies and would reload ITSELF otherwise.
+        int reload_off = no_reload || (get_reload && !get_reload());
 
         // watch source files — when any .ag/.c changes
         int force = 0;
         int changed = 0;
-        if (!no_reload)
+        if (!reload_off)
         for (int i = 0; i < nsr; i++) {
             if (file_mtime(srcs[i].path) != srcs[i].mtime) {
                 fprintf(stdout, "%s: source changed: %s\n", name, srcs[i].path);
@@ -391,7 +395,7 @@ int main(int argc, char** argv) {
         // while our own compile is in flight the product relinks BEFORE silver
         // finishes — the reap above owns that reload, so stand down until then.
         time_t cur = file_mtime(product);
-        if (force || (!compile_pid && cur != last_mtime)) {
+        if (!reload_off && (force || (!compile_pid && cur != last_mtime))) {
             last_mtime = cur;
             fprintf(stderr, "%s: reloading\n", name);
 

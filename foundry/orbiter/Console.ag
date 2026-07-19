@@ -1281,6 +1281,12 @@ Layer TermLayer
 
 Control Console
     focusable  : true
+    # declared look: dark terminal fill, the term grid under the 44px filter
+    # title, an overlay scrollbar. member idents key the paint map.
+    cbase     : Layer [ fill_color: rgba [ '#202' ] ]
+    content   : TermLayer [ area: Region { l8px t44px r8px b8px }, label_height: 1.0, label_size: 16 ]
+    scrollbar : ScrollLayer [ overlay: true, area: Region { l8px t44px r8px b8px }, thumb_color: '#fff4',
+        thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
     public  session_id : string
     public  feed       : list string
     public  sessions   : map ConsoleSession[string]
@@ -1603,7 +1609,7 @@ Control Console
         ele : Layer (layers) ? layers[ 'content' ] : null
         if [ !ele || !ele.bounds ] return
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
-        sb : ScrollLayer (layers) ? (layers[ 'scrollbar' ] to ScrollLayer) : null
+        sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
         grab : f32 [ (sb && sb.thumb_w > 0.0) ? sb.thumb_w * 2.0 + 8.0 : 16.0 ]
         if [ sb && sb.scroll_max > 0.0 && rel_x > ele.bounds.w - grab ]
             # subtract scroll.y (the element scroll find_target folds in, constant
@@ -1639,7 +1645,7 @@ Control Console
         if [ !s ] return
         ele : Layer (layers) ? layers[ 'content' ] : null
         if [ s.scroll_dragging && ele && ele.bounds ]
-            sb : ScrollLayer (layers) ? (layers[ 'scrollbar' ] to ScrollLayer) : null
+            sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
             if [ sb ]
                 sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y - scroll.y ] ]
                 # set_scroll snaps to the line grid and only repaints when the top
@@ -1674,7 +1680,7 @@ Control Console
         if [ !s ] return
         s.dragging        = false
         s.scroll_dragging = false
-        sb : ScrollLayer (layers) ? (layers[ 'scrollbar' ] to ScrollLayer) : null
+        sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
         if [ sb ]
             sb.active = false
             ux.will_animate = true

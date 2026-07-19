@@ -70,6 +70,24 @@ enum Clip
     clip : 1
     ellipsis : 2
 
+# every element state in use, one place. bit flags so combined states
+# (pressed & selected) key a single value.
+enum State
+    none      : 0
+    hovered   : 1
+    pressed   : 2
+    focused   : 4
+    selected  : 8
+    disable   : 16
+    first     : 32
+    middle    : 64
+    last      : 128
+    odd       : 256
+    even      : 512
+    has_value : 1024
+    expanded  : 2048
+    replacing : 4096
+
 
 alias Elements : map    element [ string ]
 alias FRender  : lambda Elements[ Display ]
@@ -102,6 +120,8 @@ ielement element
     # --attach <sock>: render offscreen and share the frame with orbiter over
     # an AF_UNIX socket instead of opening a window (adopted by trinity)
     public  attach          : path
+    # --text_mode: render to the terminal character grid (adopted by trinity)
+    public  text_mode       : bool [ false ]
     mutable layers          : map Layer[string]
     mutable shaders         : map shader  [string]
     #mutable bindings        : map ModelBind[string]
@@ -147,6 +167,11 @@ ielement element
     # a fixed child: not part of the parent's scrolled content, so find_target must
     # hit-test it in UNSCROLLED local space (don't fold the parent's scroll into it).
     public  no_scroll       : bool
+    # containers dictate child spacing (units); children inset by their
+    # parent's spacing unless they opt out for something special
+    public  spacing_x       : f32
+    public  spacing_y       : f32
+    public  use_spacing     : bool [ true ]
     # when false, find_target does NOT claim this element as its own hit target —
     # clicks pass THROUGH to siblings / the app — but its CHILDREN still hit-test.
     # lets a full-window overlay be a transparent pass-through while idle and go
@@ -371,6 +396,10 @@ enum Blend
 
 class Layer
     context parent             : element
+    # State BITMASK: which element states this layer paints in. none = always.
+    # a control declares one layer per look (quiet, hovered, selected...) and
+    # paint draws the layers whose mask is satisfied — nothing is keyed.
+    public states              : State
     public ctype               : CanvasType
     # overlay layers (e.g. a scrollbar) draw on the parent canvas AFTER the
     # element's cache is composited, so an element edge mask doesn't affect

@@ -31,14 +31,94 @@ import NodeList
 import FileList
 import Avatar
 
+# the editor area: full-window group behind the panes. bg lives here so the
+# pane edge-fade mask only dissolves text alpha, not the fill.
+Group EditorGroup
+    area : Region { l0 t0 r0 b0 }
+    bg   : Layer [ fill_color: rgba [ '#1a2138' ] ]
+
 element EditorView
     public selected : bool
+    area : Region { l0 t0 r0 b0 }
+    bg   : Layer [ fill_color: rgba [ '#140d2a' ] ]
 
 # editor title bar. `selected` = the "New"/finder state (no file open): shows
 # the magnify and left-aligns the (typed) text. with a file open it's centered
 # and the magnify is hidden. clicking it focuses → editable.
+# the dedicated title component: quiet glow band + the editable face. its
+# look lives HERE as declared layers — the title is orbiter's, not a style's.
 element EditorTitle
     public selected : bool
+    area  : Region { l0 t0 r0 h44px }
+    tbar  : Layer [ fill_color: rgba [ '#2480' ], inner_glow: Glow [ '#8af2 26' ],
+        stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
+    tface : Layer [ label_color: rgba [ '#fff' ], label_size: 19, editable: true,
+        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 44.0, y: 0.0 ] ]
+    tfoc  : Layer [ states: State.focused, label_color: rgba [ '#ffff' ], label_size: 19, editable: true,
+        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 44.0, y: 0.0 ] ]
+    tdiv  : Layer [ fill_color: rgba [ '#fff2' ], area: Region { l0 t43px r0 h1px } ]
+
+# orbiter's own nav icon button (the title-bar +/- chips): look declared here,
+# no stylesheet — a transparent chip with a faint glow that lights blue on hover
+Button NavButton
+    area   : Region { r0+ t0 w1.15 h0.9 }
+    quiet  : Layer [ fill_color: rgba [ '#216' ], radius: Radius [ '8' ], inner_glow: Glow [ '#ccf2 16' ] ]
+    hover  : Layer [ states: State.hovered,  fill_color: rgba [ '#8af6' ],    radius: Radius [ '8' ], inner_glow: Glow [ '#8afa 24' ] ]
+    press  : Layer [ states: State.pressed,  fill_color: rgba [ '#8afa' ],    radius: Radius [ '8' ], inner_glow: Glow [ '#8afc 28' ] ]
+    active : Layer [ states: State.selected, fill_color: rgba [ '#c8641e' ],  radius: Radius [ '8' ], inner_glow: Glow [ '#ffae5ea2 18' ] ]
+
+# orbiter's standard button: the gradient pill body at 8px radius with the
+# inner glow — quiet indigo, blue-lit on hover, ember when selected.
+Button PillButton
+    area   : Region { l6+px t3px w3 h1 }
+    body   : Layer [ fill_color: rgba [ '#114' ], fill_gradient: GradientType.linear,
+        fill_gradient_color: rgba [ '#315f' ], fill_gradient_angle: 90.0,
+        inner_glow: Glow [ '#ccf2 16' ], radius: Radius [ '8' ],
+        stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
+    hover  : Layer [ states: State.hovered, fill_color: rgba [ '#216' ], fill_gradient: GradientType.linear,
+        fill_gradient_color: rgba [ '#327f' ], fill_gradient_angle: 90.0,
+        inner_glow: Glow [ '#ccf4 16' ], radius: Radius [ '8' ] ]
+    active : Layer [ states: State.selected, fill_color: rgba [ '#c8641e' ], fill_gradient: GradientType.linear,
+        fill_gradient_color: rgba [ '#425f' ], fill_gradient_angle: 90.0,
+        inner_glow: Glow [ '#ffae5ea2 18' ], radius: Radius [ '8' ] ]
+    face   : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+# the pane's bottom run band. the draggable @ed_split seam is a CLASS default:
+# the Region persists on the instance across frames, so the seam's ease and
+# snap state (BindCoord active/warmed) survives — a per-frame Region resets it.
+element RunBand
+    area : Region { l0 b@ed_split=8|44|44 r0 b0 }
+
+# the run band's console: fills the band under the header, terminal content
+# inset 8px all around — no 44px title inset (the ToolsHeader is the title).
+Console RunConsole
+    area    : Region { l0 t1.3 r0 b0 }
+    content : TermLayer [ area: Region { 8px }, label_height: 1.0, label_size: 16 ]
+
+# the run band's play toggle (▶ run / ■ stop), left end of the header strip
+Option PlayButton
+    area  : Region { l0 t0 w1.15 h0.9 }
+    quiet  : Layer [ fill_color: rgba [ '#114' ],    radius: Radius [ '8' ], inner_glow: Glow [ '#ccf2 16' ] ]
+    hover  : Layer [ states: State.hovered,  fill_color: rgba [ '#216' ],    radius: Radius [ '8' ], inner_glow: Glow [ '#ccf4 16' ] ]
+    press  : Layer [ states: State.pressed,  fill_color: rgba [ '#327' ],    radius: Radius [ '8' ], inner_glow: Glow [ '#ccf6 18' ] ]
+    active : Layer [ states: State.selected, fill_color: rgba [ '#c8641e' ], radius: Radius [ '8' ], inner_glow: Glow [ '#ffae5ea2 18' ] ]
+
+# the instruments toggle, right end of the header strip
+Option InstButton
+    area  : Region { r0 t0 w1.15 h0.9 }
+    quiet  : Layer [ fill_color: rgba [ '#114' ],    radius: Radius [ '8' ], inner_glow: Glow [ '#ccf2 16' ] ]
+    hover  : Layer [ states: State.hovered,  fill_color: rgba [ '#216' ],    radius: Radius [ '8' ], inner_glow: Glow [ '#ccf4 16' ] ]
+    press  : Layer [ states: State.pressed,  fill_color: rgba [ '#327' ],    radius: Radius [ '8' ], inner_glow: Glow [ '#ccf6 18' ] ]
+    active : Layer [ states: State.selected, fill_color: rgba [ '#c8641e' ], radius: Radius [ '8' ], inner_glow: Glow [ '#ffae5ea2 18' ] ]
+
+# the run band's header strip: the same title-bar look the editor title wears,
+# capping the module console group.
+Group ToolsHeader
+    area : Region { l0 t0 r0 h1.3 }
+    hbar : Layer [ fill_color: rgba [ '#2480' ], inner_glow: Glow [ '#8af2 26' ],
+        stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
+    hdiv : Layer [ fill_color: rgba [ '#fff2' ], area: Region { l0 b0px r0 h1px } ]
 
 Option  DebugPanel
 Option  CallStack
@@ -115,6 +195,8 @@ element orbiter : trinity # implements compiler
     public width         : i32    [ 1888 ]
     public height        : i32    [ 888 ]
     public background    : string [ 'Background' ]
+    # orbiter edits its OWN dependencies — self-reload is insane, so opt out
+    public live_reload   : bool   [ true ]
     public startup_path  : path
     # --log <path>: tee all stdout/puts to this file (truncated on start) WHILE still
     # printing to the console, so a running session's diagnostics can be read back from
@@ -175,6 +257,12 @@ element orbiter : trinity # implements compiler
     # push/remove entries; the render builds one Editor per slot. active_pane is the
     # focused pane index (where opens/finder land).
     public editor_slots     : array i32
+    # per-pane console session: '' = file editor, else this pane IS that console
+    intern pane_console     : array string
+    # each nav pick instances a FRESH session ('{name}#{seq}') — never shared
+    intern console_seq      : i32
+    # pane whose finder should focus once its Editor exists (console → nav list)
+    intern pending_finder   : i32 [ -1 ]
     public active_pane      : i32
     # per-pane navigation history (Cmd/Ctrl+Left/Right). runtime-only — never serialized
     # (save_states writes only tabs/target/breakpoints), so it starts empty each session.
@@ -189,6 +277,8 @@ element orbiter : trinity # implements compiler
     public split1           : f32 [ 50.0 ]
     public split2           : f32 [ 100.0 ]
     public split3           : f32 [ 150.0 ]
+    # the per-pane run band's draggable top seam (b@ed_split), in units
+    public ed_split         : f32 [ 8.0 ]
     # the bottom Instances area is its own 2-pane split (Console | debug Callstack),
     # reusing the editor pane/seam machinery via this dedicated seam — independent of the
     # editor splits above. centered on first layout (layout_inst_split), then persists
@@ -202,6 +292,8 @@ element orbiter : trinity # implements compiler
     # left seam is a draggable shared var: inst_split1 (console|p0), inst_split2 (p0|p1).
     public show_callstack   : bool
     public show_fields      : bool
+    # instruments panel (callstack + app view) covers the console when on
+    public show_instruments : bool
     public inst_split2      : f32 [ 75.0 ]
     # panel count we last laid out for — on a change we redistribute the seams.
     intern inst_last_panels : i32 [ -1 ]
@@ -329,6 +421,9 @@ element orbiter : trinity # implements compiler
     # file watcher) instead of a once-per-session walk.
     intern index_watches : array watch
     public compile_log   : list string
+    # last build-error location (ctrl/cmd+E and the console error pill return here)
+    intern err_file      : path
+    intern err_line      : i32
     public nav_root      : path
     # browse list density: false = the 2-slot double header (name over dir), true = a
     # compact single-line row at the primary code font. Tab toggles it.
@@ -378,8 +473,8 @@ element orbiter : trinity # implements compiler
         # a few default pins so the column has content to look at
         active_idx     = -1
         # one editor pane to start, empty (the 'Open' finder)
-        editor_slots   = array i32 []
-        editor_slots  += -1
+        editor_slots   = array i32 [-1]
+        pane_console   = array string ['']
         active_pane    = 0
         nav_panes      = array Navigate []
         for [ i: i32 0, i < 8, i += 1 ]
@@ -663,7 +758,7 @@ element orbiter : trinity # implements compiler
         for [ i: i32 0, i < target_names.count, i += 1 ]
             name    : string target_names[i]
             src     : path   target_srcs[i]
-            product : path  '{startup_path}/install/modules/{name}'
+            product : path  '{startup_path}/install/build/{name}'
             if [ !product.exists[] ]
                 compile_log.push[ 'stale (no product): {name}' ]
                 compile[ name ]
@@ -832,6 +927,8 @@ element orbiter : trinity # implements compiler
                             cs.print_text[ 'syntax: {name} CRASHED (signal {sig}) — see /tmp/orbiter-fmt-{name}.log\r\n' ]
                         el [ code != 0 ]
                             cs.print_text[ 'syntax: {name} build FAILED (code {code}) — see /tmp/orbiter-fmt-{name}.log\r\n' ]
+                            # jump the editor to silver's first emitted error location
+                            jump_to_error[ '/tmp/orbiter-fmt-{name}.log' ]
                         el
                             cs.print_text[ 'syntax: {name} language service finished\r\n' ]
                     fw.pid = 0
@@ -892,7 +989,11 @@ element orbiter : trinity # implements compiler
     # the launch command for a console tab: its instance's `run` tokens joined
     # ('' for shells) — what the session must exec whenever it is created.
     func agent_cmd [ sid: string ] -> string
-        ci : ConsoleInstance (consoles && sid) ? consoles[sid] : null
+        # instanced ids are '{name}#{seq}' — the template is keyed by name alone
+        base : string sid
+        hx : i32 [ (sid) ? sid.index_of[ '#' ] : -1 ]
+        if [ hx > 0 ] base = sid.mid[ 0, hx ]
+        ci : ConsoleInstance (consoles && base) ? consoles[base] : null
         cmd_str : string ''
         if [ ci && ci.run ]
             for [ c: token ] in ci.run
@@ -1001,12 +1102,12 @@ element orbiter : trinity # implements compiler
         if [ !projects ] return
         p : Project projects[name]
         if [ !p ] return
-        # the launchable binary: explicit product, else <startup>/install/modules/<run>
-        # (silver builds an app to install/modules/<name>; run carries the binary name).
+        # the launchable binary: explicit product, else <startup>/install/build/<run>
+        # (silver builds an app to install/build/<name>; run carries the binary name).
         loc : path p.product
         if [ !loc && p.run && p.run.count > 0 ]
             rb : string p.run[0].chars
-            ps : string '{startup_path}/install/modules/{rb}'
+            ps : string '{startup_path}/install/build/{rb}'
             loc = path [ ps.chars ]
         if [ !loc ] return
         puts 'start_debug {name}: launching {loc}'
@@ -1199,9 +1300,9 @@ element orbiter : trinity # implements compiler
         if [ !is_resource ]
             nav['magnify'] = Button []
         if [ editor_slots.count > 1 ]
-            nav['undock'] = Button []
+            nav['undock'] = NavButton []
         if [ editor_slots.count < 4 ]
-            nav['dock'] = Button []
+            nav['dock'] = NavButton []
         # resource sub-views (game / assembly / tiles): grouped TEXT toggles in
         # the nav flow, after the expand button
         if [ rv ]
@@ -1228,17 +1329,23 @@ element orbiter : trinity # implements compiler
         # not focusable, no edit buffer, so it just shows the file name. toggling
         # find_in_files (→ find_in_file false) makes it focusable + binds the editable
         # pattern_text, so the user can type a glob. the toggle lights in files mode.
-        els['pattern'] = element [
-            label: (hasfile) ? p.filename[] : 'Files',
-            edit: (find_in_file) ? '' : pattern_text,
-            focusable: !find_in_file,
-            elements: [
-                'close_find': Button [],
-                'find_in_files': Option [ selected: !find_in_file ]
+        # findbar children exist only while the findbar is open — presence IS the
+        # state now; no zero-size style collapse.
+        if [ findbar_open ]
+            els['pattern'] = element [
+                label: (hasfile) ? p.filename[] : 'Files',
+                edit: (find_in_file) ? '' : pattern_text,
+                focusable: !find_in_file,
+                elements: [
+                    'close_find': Button [],
+                    'find_in_files': Option [ selected: !find_in_file ]
+                ]
             ]
-        ]
-        els['find']    = element [ label: 'Find',    edit: findbar_text ]
-        els['nav'] = element [ topmost: true, elements: nav ]
+            els['find'] = element [ label: 'Find', edit: findbar_text ]
+        # title buttons are only an id and a class: their class area right-flows,
+        # so they simply append into the title, right to left
+        for [ be: element, bk: string ] in nav
+            els[bk] = be
         return els
 
     # build one editor pane. with a file open the title is the filename; empty it
@@ -1265,6 +1372,7 @@ element orbiter : trinity # implements compiler
         pe : Elements []
         pe['title'] = EditorTitle [
             selected: !p
+            focusable: true
             edit: find_text
             label: (p) ? p.filename[] : empty_label
             # fixed top band (not scrolled with the code) — so find_target hit-tests it
@@ -1290,22 +1398,30 @@ element orbiter : trinity # implements compiler
             if [ di2 > 0 ] emod = emod.mid[ 0, di2 ]
             if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
             fels : Elements []
-            fels['run'] = Option [ selected: app_running, manual_mode: true ]
+            fels['run'] = PlayButton [ icon: (app_running) ? 'stop' : 'play', selected: app_running, manual_mode: true ]
+            # a build error → an orange jump-to-error pill in the console header
+            if [ err_file && err_line > 0 ]
+                fels['error'] = Option [ label: 'error {err_line}', manual_mode: true ]
+            # instruments toggle (menu icon), right side of the separator toolbar
+            fels['instruments'] = InstButton [ icon: 'gear', selected: show_instruments, manual_mode: true ]
             cf2 : Elements []
-            cf2['console_filter'] = element [ label: emod, focusable: true, no_scroll: true ]
+            # compact right-aligned filter chip — must NOT cover the terminal,
+            # or clicks focus it and typing lands in its edit instead of the shell
+            cf2['console_filter'] = element [ area: Region { r8px t4px w6 h32px }, label: emod, focusable: true, no_scroll: true ]
             # the run command comes straight off the pane's live AppView — when it
             # exists (play pressed) the console runs the module's build+run; null
             # otherwise. the console dispatches it itself, so nothing walks the tree.
             runcmd : string [ (ed_live && ed_live.run_view) ? ed_live.run_view.cmd : null ]
             bels : Elements []
-            bels['tools']   = Group [ topmost: true, elements: fels ]
-            bels['console'] = Console [ session_id: 'ed:{emod}', sessions: ed_sessions, feed: null, run_line: runcmd, animated: true, elements: cf2 ]
-            pe['bottom'] = element [ elements: bels ]
+            bels['tools']   = ToolsHeader [ spacing_x: 0.2, spacing_y: 0.2, topmost: true, elements: fels ]
+            bels['console'] = RunConsole [ session_id: 'ed:{emod}', sessions: ed_sessions, feed: null, run_line: runcmd, animated: true, elements: cf2 ]
+            pe['bottom'] = RunBand [ elements: bels ]
         # (callstack + fields no longer live in the editor — they're toggled from the
         # bottom console title and render in the Instances bar.)
         # the dock + search results render as the editor's lines (run_search), not a
         # tab strip — so no 'pins' overlay anymore.
         return Editor [
+            area: Region [ pane_area[ pi ].chars ],
             src: p, breakpoints: breakpoints, code_font_size: code_font_size,
             nav: nav_panes[ pi ], pane_index: pi,
             debug_running: running, debugger: dbgr, debug_vars: debug_vars,
@@ -1798,7 +1914,11 @@ element orbiter : trinity # implements compiler
         # fall back until the first pane is laid out (self-corrects next frame).
         ew : f32 [ 100.0 ]
         have_ew : bool [ false ]
-        p0 : Editor pane_at[ 0 ]
+        # pane0 may be an Editor OR a Console — read fc off the raw element so a
+        # console-in-pane0 still computes the seam widths (pane_at is Editor-only)
+        p0 : element
+        egp : element (editor_group) ? editor_group.elements['editors'] : null
+        if [ egp ] p0 = egp.elements['pane0']
         if [ p0 && p0.fc > 0.0 && p0.parent && p0.parent.bounds && p0.parent.bounds.w > 0.0 ]
             ew = p0.parent.bounds.w / p0.fc
             have_ew = true
@@ -1848,6 +1968,14 @@ element orbiter : trinity # implements compiler
                 puts '  pane{i}: <null>'
         ##
 
+    # the split-tiled area for pane index i: panes share seam vars on touching
+    # edges (pane0.r == pane1.l == split1) so each boundary is one draggable seam
+    func pane_area [ pi: i32 ] -> string
+        if [ pi == 0 ] return 'l0 t0 l@split1=50|0|0 b0'
+        if [ pi == 1 ] return 'l@split1=50|0|0 t0 l@split2=100|0|0 b0'
+        if [ pi == 2 ] return 'l@split2=100|0|0 t0 l@split3=150|0|0 b0'
+        return 'l@split3=150|0|0 t0 r0 b0'
+
     # resolve the i-th live editor pane from the auto-bound editor_group. nested
     # elements don't auto-bind to app fields (only top-level returns do), so this is
     # the one place that reaches editor_group's children; everything else goes through
@@ -1856,7 +1984,11 @@ element orbiter : trinity # implements compiler
         if [ !editor_group ] return null
         eds : element editor_group.elements['editors']
         if [ !eds ] return null
-        return Editor eds.elements[ 'pane{i}' ]
+        pe : element eds.elements[ 'pane{i}' ]
+        # a pure-console pane is NOT an Editor — the `to` cast is unchecked, so
+        # every `Editor pane_at[i]` would read garbage off a Console. gate it.
+        if [ !pe || !(pe inherits Editor) ] return null
+        return Editor pe
 
     # the joined console pane (the selected shell/agent), sitting just past the last
     # editor slot. null unless a shell is selected (active_console set).
@@ -1918,6 +2050,16 @@ element orbiter : trinity # implements compiler
                     push_file_hit[ p, true ]
                     combined.push[ '{p}' ]
             el
+                # orbiter.agi consoles first — at the very top, above pins.
+                if [ consoles ]
+                    for [ ci: ConsoleInstance, sk: string ] in consoles
+                        # synthetic file satisfies the nav render; click routes on
+                        # session. label the continuation slot 'console' so it isn't
+                        # a blank row under each session in the 2-slot list.
+                        sfp : path 'session:{sk}'
+                        find_hits.push[ FindHit [ is_header: true, session: sk, text: sk, dir: 'console', file: sfp ] ]
+                        if [ !browse_single ]
+                            find_hits.push[ FindHit [ is_header: true, session: sk, text: '', dir: 'console', file: sfp ] ]
                 # pinned dock entries first — at the top of the browse list, unless the
                 # pins toggle hid them (to maximize the results view).
                 if [ docked && show_pins ]
@@ -1991,6 +2133,8 @@ element orbiter : trinity # implements compiler
         idx : i32 [ file_slot[ p ] ]
         if [ pi >= 0 && pi < editor_slots.count ]
             editor_slots[pi] = idx
+            # opening a FILE here → this pane is no longer a console session
+            if [ pi < pane_console.count ] pane_console[pi] = ''
             active_pane = pi
         active_idx = idx
         exit_finder[]
@@ -2001,6 +2145,42 @@ element orbiter : trinity # implements compiler
     # open a file into a pane AND jump to a specific 1-based line — used by a find
     # result double-click. closes the find bar/results, then selects + reveals the line
     # (same reveal math as the ':<n>' goto and the debugger break).
+    # scan silver's build log for its first `<file>.ag:<line>:<col>` error and
+    # open that file at the line — the next thing to fix, shown in-editor
+    func jump_to_error [ logpath: string ]
+        lp : path '{logpath}'
+        if [ !lp.exists[] ] return
+        content : string lp.load[ typeid[string], null ]
+        if [ !content || content.count == 0 ] return
+        ai : i32 [ content.index_of[ '.ag:' ] ]
+        if [ ai < 0 ] return
+        # walk back to the path start (stop at space/newline/escape/paren/bracket)
+        ps : i32 [ ai ]
+        while [ ps > 0 ]
+            c : i32 [ (i32 content.chars[ ps - 1 ]) & 255 ]
+            if [ c == 32 || c == 10 || c == 13 || c == 27 || c == 40 || c == 41 || c == 91 ] break
+            ps -= 1
+        fp : string content.mid[ ps, ai + 3 - ps ]
+        # line digits after '.ag:'
+        li : i32 [ ai + 4 ]
+        ls : ''
+        while [ li < content.count ]
+            c : i32 [ (i32 content.chars[ li ]) & 255 ]
+            if [ c < 48 || c > 57 ] break
+            ls = '{ls}{content.mid[ li, 1 ]}'
+            li += 1
+        if [ ls.count == 0 ] return
+        ln : i32 [ atoi[ ls.chars ] ]
+        err_file = path '{fp}'
+        err_file.hold[]
+        err_line = ln
+        open_at_line[ err_file, active_pane, ln ]
+
+    # ctrl/cmd+E and the console error pill: re-open the last build error
+    func goto_error []
+        if [ !err_file || err_line <= 0 ] return
+        open_at_line[ err_file, active_pane, err_line ]
+
     func open_at_line [ p: path, pi: i32, to_line: i32 ]
         findbar_open = false
         find_showing = false
@@ -2115,8 +2295,18 @@ element orbiter : trinity # implements compiler
         win.restyle = true
 
     func sync_editor []
+        # keep pane_console the SAME length as editor_slots — it drifts whenever
+        # editor_slots is rebuilt/resized elsewhere, and a misaligned index is
+        # what crashes on remove. pad new slots as file editors ('').
+        if [ !pane_console ] pane_console = array string []
+        while [ pane_console.count < editor_slots.count ]
+            pane_console += ''
+        while [ pane_console.count > editor_slots.count && pane_console.count > 0 ]
+            pane_console.remove[ pane_console.count - 1 ]
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             slot : i32 [ editor_slots[i] ]
+            # a console pane isn't backed by a file — skip the file load for it
+            if [ i < pane_console.count && pane_console[i].count > 0 ] continue
             ed   : Editor pane_at[ i ]
             if [ !ed ] continue
             if [ slot >= 0 && slot < open_files.count ]
@@ -2169,6 +2359,21 @@ element orbiter : trinity # implements compiler
                     fl.pending_open = null
                     sync_editor[]
                     return
+            # a console pane's title bar opens the SAME nav list every pane has:
+            # flip the pane back to its editor slot and focus its finder title
+            # (the Editor only exists next frame — pending_finder defers it).
+            if [ e inherits Console ]
+                co  : Console e
+                cid : string co.id
+                if [ ev.target.id == 'console_filter' && cid && cid.count > 4 && cid.mid[ 0, 4 ].compare[ 'pane' ] == 0 ]
+                    ppi : i32 [ cid.mid[ 4, cid.count - 4 ].real_value[] ]
+                    if [ ppi < editor_slots.count && ppi < pane_console.count ]
+                        pane_console[ppi] = ''
+                        active_pane    = ppi
+                        pending_finder = ppi
+                        ev.no_default  = true
+                        force_update[]
+                        return
             # clicking a result row while searching opens it (works whether or
             # not a file is already open in the pane — driven by an active query,
             # not by the pane being empty)
@@ -2183,6 +2388,29 @@ element orbiter : trinity # implements compiler
                     # click so the popup stays open instead of closing on the default.
                     if [ h && h.is_spacer ]
                         ev.no_default = true
+                        return
+                    if [ h && h.session && h.session.count > 0 ]
+                        # the CLICKED pane becomes that console (not active_pane —
+                        # you can pick a session in a pane that isn't active). the
+                        # pane index comes from the Editor whose nav was clicked.
+                        cpi : i32 [ ed.id.mid[ 4, ed.id.count - 4 ].real_value[] ]
+                        while [ pane_console.count <= cpi ]
+                            pane_console += ''
+                        # every pick instances a FRESH session — a shared instance
+                        # would give every pane the same view state
+                        console_seq += 1
+                        sid : string '{h.session}#{console_seq}'
+                        pane_console[cpi] = sid
+                        active_pane = cpi
+                        if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
+                        ns : ConsoleSession []
+                        ns.name = sid
+                        ns.launch_cmd = agent_cmd[ sid ]
+                        ed_sessions[sid] = ns
+                        ns.start[]
+                        exit_find_mode[]
+                        ev.no_default = true
+                        if [ ev.target ] ev.target.ux.restyle = true
                         return
                     if [ h && h.is_dir && h.file ]
                         # a folder link → navigate INTO it: rebuild the browse list rooted
@@ -2239,6 +2467,10 @@ element orbiter : trinity # implements compiler
             au_live_request_apply[]
             ev.no_default = true
             return
+        if [ ev.target.id == 'error' ]
+            goto_error[]
+            ev.no_default = true
+            return
         if [ ev.target.id == 'play' ]
             con : ui_console[]
             dl  : dbg (debuggers) ? debuggers[ active_target ] : null
@@ -2256,6 +2488,10 @@ element orbiter : trinity # implements compiler
         # the bottom-area debug panel toggles (in the console title nav): the hamburger
         # reveals the callstack, the fields tab reveals the variables. independent — both
         # can be on (side by side, right of the console). off → console fills the bar.
+        if [ ev.target.id == 'instruments' ]
+            show_instruments = !show_instruments
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
         if [ ev.target.id == 'toggle_callstack' ]
             show_callstack = !show_callstack
             if [ ev.target ] ev.target.ux.restyle = true
@@ -2429,19 +2665,24 @@ element orbiter : trinity # implements compiler
         # '+' (dock) appends a new empty pane up to the 4-pane cap; '-' (undock)
         # removes the editor whose title the button is on.
         if [ ev.target.id == 'dock' ]
+            puts 'on_press: DOCK handler reached'
             if [ editor_slots.count < 4 ]
                 editor_slots += -1
+                pane_console  += ''
                 active_pane = editor_slots.count - 1
             save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
         if [ ev.target.id == 'undock' ]
+            puts 'on_press: UNDOCK handler reached'
+            # find THIS pane by id (Editor OR Console) — a console pane is not an
+            # Editor, so the old `inherits Editor` walk missed it entirely.
             for [ e: element* ev.target, e, e = e.parent ]
-                if [ e inherits Editor ]
-                    ed : Editor e
-                    pi : i32 [ ed.id.mid[ 4, ed.id.count - 4 ].real_value[] ]
+                if [ e.id && e.id.count >= 5 && e.id.mid[ 0, 4 ] == 'pane' ]
+                    pi : i32 [ e.id.mid[ 4, e.id.count - 4 ].real_value[] ]
                     if [ editor_slots.count > 1 && pi >= 0 && pi < editor_slots.count ]
                         editor_slots.remove[ pi ]
+                        if [ pi < pane_console.count ] pane_console.remove[ pi ]
                         if [ active_pane >= editor_slots.count ] active_pane = editor_slots.count - 1
                     break
             sync_editor[]
@@ -2757,7 +2998,7 @@ element orbiter : trinity # implements compiler
             run_search[]
         # deferred dbg launch: run_node armed pending_debug + set the build running.
         # once that shell returns to prompt (is_running flips false) the --clean build
-        # is done and install/modules/<name> is the FRESH product — launch it now so we
+        # is done and install/build/<name> is the FRESH product — launch it now so we
         # never exec the stale pre-build binary.
         if [ pending_debug && pending_debug.count > 0 ]
             dcon : ui_console[]
@@ -2779,6 +3020,15 @@ element orbiter : trinity # implements compiler
         if [ w && !w.seam_drag && settled && (chd > 0.001 || chd < 0.0 - 0.001) ]
             save_session[]
         console_h_last = console_h
+        # a console pane flipped back to its editor last frame (title-bar nav):
+        # focus the finder title once the Editor exists so the nav list opens.
+        if [ pending_finder >= 0 ]
+            fed : Editor pane_at[ pending_finder ]
+            if [ fed ]
+                fte : element fed.elements['title']
+                if [ fte ]
+                    fte.set_focus[]
+                    pending_finder = -1
         # finder transitions: rebuild the navigate list when the title gains focus
         # (show the dock as lines) or loses it (restore the file), AND when focus
         # moves to a different pane's title (so the results follow to that pane).
@@ -2909,17 +3159,37 @@ element orbiter : trinity # implements compiler
         # a selected shell joins an extra console pane on the right (the "effective" set:
         # the user's editor on one side, the shell/agent on the other).
         has_console : bool [ active_console && active_console.count > 0 ]
+        if [ editor_slots.count == 0 ] editor_slots += -1
         ecount : i32 [ editor_slots.count + ((has_console) ? 1 : 0) ]
         if [ ecount < 1 ] ecount = 1
         layout_splits[ ecount ]
         layout_inst_split[]
         sp : string search_pane[]
+        # the ed: sessions the nav lists live in ed_sessions (same map the pane's
+        # own bottom console uses) — a pure-console pane must use THAT map
+        if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
         editor_els : Elements []
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             pid  : 'pane{i}'
-            slot : i32    [ editor_slots[i] ]
-            spath: path   (slot >= 0 && slot < open_files.count) ? open_files[slot] : null
-            editor_els[pid] = pane_for[ spath, null, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open', i ]
+            psess : string (i < pane_console.count) ? pane_console[i] : ''
+            if [ psess && psess.count > 0 ]
+                # this pane IS the console session — a pure session view, no file.
+                # launch = the agent's run command (claude for an agent tab); a
+                # plain editor console has none and falls back to a bash shell.
+                cst : Elements []
+                # title shows the template name, not the instanced '{name}#{seq}'
+                plabel : string psess
+                phx : i32 [ plabel.index_of[ '#' ] ]
+                if [ phx > 0 ] plabel = plabel.mid[ 0, phx ]
+                cst['console_filter'] = element [ label: plabel, focusable: true, no_scroll: true ]
+                # +split / -unsplit in the console title, same as an editor pane
+                if [ editor_slots.count > 1 ] cst['undock'] = NavButton []
+                if [ editor_slots.count < 4 ] cst['dock']   = NavButton []
+                editor_els[pid] = Console [ area: Region [ pane_area[ i ].chars ], session_id: psess, sessions: ed_sessions, feed: null, launch: agent_cmd[ psess ], animated: true, elements: cst ]
+            el
+                slot : i32    [ editor_slots[i] ]
+                spath: path   (slot >= 0 && slot < open_files.count) ? open_files[slot] : null
+                editor_els[pid] = pane_for[ spath, null, false, (sp == pid), (findbar_open && findbar_pane == pid), w, 'Open', i ]
         if [ has_console ]
             # materialize the session BEFORE the pane's Console draws — its lazy
             # session[] fallback starts a bare shell, which would hijack an agent
@@ -2938,7 +3208,7 @@ element orbiter : trinity # implements compiler
             # a screenshot of all of orbiter (drag-and-drop, minus the drag)
             ctitle['ctx_copy'] = Button [ label: 'context', no_scroll: true ]
             ctitle['ctx_shot'] = Button [ label: 'screen', no_scroll: true ]
-            editor_els['pane{editor_slots.count}'] = Console [ session_id: active_console, sessions: csess, feed: null, launch: agent_cmd[ active_console ], elements: ctitle ]
+            editor_els['pane{editor_slots.count}'] = Console [ area: Region [ pane_area[ editor_slots.count ].chars ], session_id: active_console, sessions: csess, feed: null, launch: agent_cmd[ active_console ], elements: ctitle ]
 
         # the orbiter avatar peeks in the bottom-right corner. the real 3D Avatar still
         # SIGSEGVs (env-texture vk_image_view not ready at bind), so for now this is a plain
@@ -2954,17 +3224,15 @@ element orbiter : trinity # implements compiler
         # project/agent tabs) and the global Instances console bar are gone — each
         # editor carries its own bottom toolbar and per-module console instead.
         return Elements [
-            "editor_group": Group [ elements: egroup_els ]
+            "editor_group": EditorGroup [ elements: egroup_els ]
         ]
 
     # app bus: view_style {file}:{line} from any trinity app (or our own
     # cmd+click) opens the style location in the active editor pane.
     func on_bus [ m: BusMessage ]
-        s : string m.body
-        if [ !s || s.count < 12 ] return
-        pre : s.mid[ 0, 11 ]
-        if [ !(pre == 'view_style ') ] return
-        rest : s.mid[ 11, s.count - 11 ]
+        if [ !m.key || !(m.key == 'view_style') ] return
+        rest : string m.body
+        if [ !rest || rest.count < 3 ] return
         ci : i32 [ 0 - 1 ]
         for [ i: i32 rest.count - 1, i >= 0, i -= 1 ]
             if [ rest[i] == ':' ]
@@ -2976,11 +3244,7 @@ element orbiter : trinity # implements compiler
         ln : i32 [ atoi[ lns.chars ] ]
         open_at_line[ path '{fs}', active_pane, ln ]
 
+    # bus messages arrive via the trinity frame drain -> on_bus override now
     public func on_canvas [ cv: Canvas ]
         super.on_canvas[ cv ]
-        if [ ux && ux.bus ]
-            for [ k: i32 0, k < 8, k += 1 ]
-                m : ux.bus.recv[]
-                if [ !m ] break
-                on_bus[ m ]
         cv.sync_fence[ ]

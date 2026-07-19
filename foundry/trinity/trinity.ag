@@ -159,6 +159,8 @@ func appshare_recv_fd  [ s: i32, rdata: @i32, fdout: @i32 ] -> i32
 func appshare_send_msg [ s: i32, mdata: @i32, payload: cstr, plen: i32 ] -> i32
 func appshare_recv_payload [ s: i32, pdata: @i8, plen: i32 ]  -> i32
 func appshare_close    [ fdv: i32 ]
+# host live-reload control: the app turns its own source watch off (orbiter)
+func au_live_set_reload [ on: i32 ]
 
 # one 8-word message link. server side owns lsock (listen) then sock
 # (accepted); client side just owns sock. poll[] returns the AppMsg type
@@ -283,6 +285,7 @@ enum BusMsg
 
 class BusMessage
     public from : string
+    public key  : string
     public body : string
 
 class BusPeer
@@ -334,14 +337,19 @@ class AppBus
                     res.push[ e.stem[] ]
         return res
 
-    intern func put [ p: BusPeer, t: i32, payload: string ]
+    # key + value ride one payload blob; word2 carries the key's byte length
+    # so the receiver splits them — no in-band string prefixes.
+    intern func put [ p: BusPeer, t: i32, key: string, payload: string ]
         if [ p.sock < 0 ] return
+        klen : i32 [ (key) ? i32[ key.count ] : 0 ]
+        data : string ((key) ? ((payload) ? '{key}{payload}' : key) : payload)
         n : i32 [ 0 ]
-        if [ payload ] n = i32[ payload.count ]
+        if [ data ] n = i32[ data.count ]
         sbuf[0] = t
         sbuf[1] = n
+        sbuf[2] = klen
         if [ n > 0 ]
-            appshare_send_msg[ p.sock, sbuf, payload.chars, n ]
+            appshare_send_msg[ p.sock, sbuf, data.chars, n ]
         el
             appshare_send_msg[ p.sock, sbuf, null, 0 ]
 
@@ -358,14 +366,14 @@ class AppBus
             return null
         np : BusPeer [ sock: s2, name: to ]
         taps.push[ np ]
-        put[ np, i32[ BusMsg.hello ], name ]
+        put[ np, i32[ BusMsg.hello ], null, name ]
         return np
 
     # broadcast: every socket present gets the message; we hear it too
-    func send [ body: string ] -> bool
-        fromn : '?'
+    func send [ key: string, body: string ] -> bool
+        fromn : string '?'
         if [ name ] fromn = name
-        mm : BusMessage [ from: fromn, body: body ]
+        mm : BusMessage [ from: fromn, key: key, body: body ]
         inbox.push[ mm ]
         d : bus_dir[]
         if [ !d ] return false
@@ -381,7 +389,7 @@ class AppBus
                 if [ !skip ]
                     p : dial[ pn ]
                     if [ p ]
-                        put[ p, i32[ BusMsg.message ], body ]
+                        put[ p, i32[ BusMsg.message ], key, body ]
                         sent = true
         return sent
 
@@ -416,11 +424,17 @@ class AppBus
                     p.name = string [ (pb) to cstr ]
                     p.name.hold[]
             el [ t == i32[ BusMsg.message ] ]
-                bd : ''
-                if [ pb ] bd = string [ (pb) to cstr ]
-                fromn : '?'
+                full : string ''
+                if [ pb ] full = string [ (pb) to cstr ]
+                klen : i32 [ rbuf[2] ]
+                mkey : string ''
+                bd   : string full
+                if [ klen > 0 && klen <= full.count ]
+                    mkey = full.mid[ 0, klen ]
+                    bd   = full.mid[ klen, full.count - klen ]
+                fromn : string '?'
                 if [ p.name ] fromn = p.name
-                m : BusMessage [ from: fromn, body: bd ]
+                m : BusMessage [ from: fromn, key: mkey, body: bd ]
                 inbox.push[ m ]
 
     # accept new taps, drain every peer into the inbox
@@ -448,7 +462,7 @@ class AppBus
     func shutdown []
         for [ p: BusPeer ] in taps
             if [ p.sock >= 0 ]
-                put[ p, i32[ BusMsg.bye ], null ]
+                put[ p, i32[ BusMsg.bye ], null, null ]
                 appshare_close[ p.sock ]
                 p.sock = 0 - 1
         if [ lsock >= 0 ] appshare_close[ lsock ]
@@ -465,17 +479,23 @@ abstract live_app media_app
     intern  arg         : object
     public  width       : i32
     public  height      : i32
-    # render to a terminal character grid (box-drawing borders) instead of the
-    # GLFW/Vulkan window. when set, init/frame/run never touch glfw or vk_context;
-    # the element tree, layout and styles run unchanged — only the paint differs.
-    # default OFF: apps render to the GLFW/Vulkan window; set this true to opt into
-    # the terminal renderer.
-    public  console     : bool [ false ]
+    # live-reload: watch this app's sources and hot-swap on change. an app that
+    # edits its OWN dependencies (orbiter) must set this false or it reloads
+    # itself the moment you touch trinity/etc.
+    public  live_reload : bool [ true ]
+    # --text_mode: render to a terminal character grid (box-drawing borders)
+    # instead of the GLFW/Vulkan window. when set, init/frame/run never touch
+    # glfw or vk_context; the element tree, layout and styles run unchanged —
+    # only the paint differs. default OFF (apps render to the vulkan window).
+    public  text_mode   : bool [ false ]
     # --screenshot <file>: render, settle, write the composed frame, exit
     public  screenshot  : path
     # --shot-frame N: which frame to capture (default 60)
     public  shot_frame  : i32 [ 60 ]
     intern  shot_frames : i32
+    # on-demand capture from the bus (ux_shot <path>): written after the next
+    # composed frame, then announced back on the bus. the app keeps running.
+    intern  shot_request : path
     intern  next_second : i64
     intern  frames      : i32
     # --attach <sock>: share the composed frame with orbiter as a remote pane.
@@ -491,7 +511,118 @@ abstract live_app media_app
     intern  at_bytes    : i32
 
     func run [ ]
+        # tell the host whether to watch + hot-swap this app's sources
+        au_live_set_reload[ (live_reload) ? 1 : 0 ]
         Au.auto_free[true]
+
+    # app-bus messages the generic ux handler didn't take route here; apps
+    # override this to handle their own protocol (orbiter: view_style)
+    func on_bus [ m: BusMessage ]
+        return
+
+    # build an element subtree as plain data (maps/arrays) — string_agi turns
+    # it into the agi text the agent reads. what exists, where, what it says.
+    func ux_serialize [ e: element ] -> map object [string]
+        em : map object [string] []
+        if [ !e ] return em
+        hdr : Au.header[ e ]
+        em['type'] = string [ hdr.au.ident ]
+        if [ e.bounds ]
+            em['bounds'] = array f32 [ e.bounds.x, e.bounds.y, e.bounds.w, e.bounds.h ]
+        if [ e.label && e.label.count > 0 ]
+            em['label'] = e.label
+        if [ e.hide      ] em['hide']      = string 'true'
+        if [ e.focusable ] em['focusable'] = string 'true'
+        if [ e.elements ]
+            kids : map object [string] []
+            for [ ch: element, k: string ] in e.elements
+                if [ ch ] kids[k] = ux_serialize[ ch ]
+            if [ kids.count > 0 ] em['elements'] = kids
+        return em
+
+    # find an element: 'a/b/c' walks ids from root; a bare id is depth-first
+    func ux_find [ e: element, fid: string ] -> element
+        if [ !e || !fid ] return null
+        si : i32 [ fid.index_of[ '/' ] ]
+        if [ si >= 0 ]
+            head : string fid.mid[ 0, si ]
+            tail : string fid.mid[ si + 1, fid.count - si - 1 ]
+            if [ !e.elements ] return null
+            ch : element e.elements[ head ]
+            if [ !ch ] return null
+            return ux_find[ ch, tail ]
+        if [ e.id && e.id == fid ] return e
+        if [ e.elements ]
+            for [ ch: element, k: string ] in e.elements
+                r : element ux_find[ ch, fid ]
+                if [ r ] return r
+        return null
+
+    # press+release the center of an element (by id/path) or at 'x y' coords —
+    # the same dispatch a real mouse uses; the app cannot tell the difference
+    func ux_press_at [ cx: f32, cy: f32 ]
+        wn : Window [ w ]
+        wn.ev.clear[]
+        wn.mouse.x        = f64[ cx ]
+        wn.mouse.y        = f64[ cy ]
+        wn.ev.mouse.pos.x = cx
+        wn.ev.mouse.pos.y = cy
+        wn.move_event[ wn.ev ]
+        wn.ev.clear[]
+        wn.ev.mouse.pos.x  = cx
+        wn.ev.mouse.pos.y  = cy
+        wn.ev.mouse.button = 0
+        wn.ev.mouse.state  = 1
+        wn.press_event[ wn.ev ]
+        wn.ev.clear[]
+        wn.ev.mouse.pos.x  = cx
+        wn.ev.mouse.pos.y  = cy
+        wn.ev.mouse.button = 0
+        wn.ev.mouse.state  = 0
+        wn.release_event[ wn.ev ]
+
+    # the generic agent interface over the app bus: the message key selects the
+    # command, the body is its value. true = message consumed.
+    # ux_tree            -> the element tree as agi
+    # ux_text            -> the box-drawing text render of the screen
+    # ux_shot <path>     -> write a png of the composed frame
+    # ux_click <id|path> -> click that element's center
+    # ux_click <x> <y>   -> click window coords (list rows have no id)
+    func ux_command [ m: BusMessage ] -> bool
+        k : string m.key
+        if [ !k || k.count == 0 ] return false
+        wn : Window [ w ]
+        if [ !wn || !wn.root || !wn.bus ] return false
+        if [ k == 'ux_tree' ]
+            top : map object [string] []
+            top['root'] = ux_serialize[ wn.root ]
+            wn.bus.send[ 'ux_tree', Au.string_agi[ top ] ]
+            return true
+        if [ k == 'ux_text' ]
+            wn.bus.send[ 'ux_text', wn.text_grid[ 0, 0 ] ]
+            return true
+        if [ k == 'ux_shot' ]
+            if [ m.body && m.body.count > 0 ] shot_request = path [ m.body.chars ]
+            return true
+        if [ k == 'ux_click' ]
+            fid : string m.body
+            if [ !fid || fid.count == 0 ] return true
+            sp  : i32 [ fid.index_of[ ' ' ] ]
+            c0  : i8  [ fid[ 0 ] ]
+            if [ sp > 0 && c0 >= '0' && c0 <= '9' ]
+                xs : string fid.mid[ 0, sp ]
+                ys : string fid.mid[ sp + 1, fid.count - sp - 1 ]
+                ux_press_at[ f32[ xs.real_value[] ], f32[ ys.real_value[] ] ]
+                wn.bus.send[ 'ux_click', '{fid} ok' ]
+                return true
+            e : element ux_find[ wn.root, fid ]
+            if [ !e || !e.bounds ]
+                wn.bus.send[ 'ux_click', '{fid} not found' ]
+                return true
+            ux_press_at[ e.bounds.x + e.bounds.w * 0.5, e.bounds.y + e.bounds.h * 0.5 ]
+            wn.bus.send[ 'ux_click', '{fid} ok' ]
+            return true
+        return false
 
     func frame [ ] -> bool
         # keep our presence on the app bus and drain broadcasts each frame
@@ -503,6 +634,16 @@ abstract live_app media_app
                 ahdr : Au.header[ a ]
                 bwn.bus.register[ string [ ahdr.au.ident ] ]
             bwn.bus.pump[]
+            # generic agent interface first (ux_tree/ux_click), the app's own
+            # bus protocol for everything else. our OWN broadcasts (the reply
+            # echo in the inbox) must never re-enter ux_command — that loops.
+            for [ k: i32 0, k < 8, k += 1 ]
+                m : BusMessage bwn.bus.recv[]
+                if [ !m ] break
+                if [ m.from && bwn.bus.name && m.from == bwn.bus.name ]
+                    on_bus*[ m ]
+                el
+                    if [ !ux_command[ m ] ] on_bus*[ m ]
         # attach mode: compose to the backbuffer, publish the frame to orbiter,
         # drain input from the socket. return false once orbiter closes it.
         ifdef [ linux ]
@@ -513,9 +654,9 @@ abstract live_app media_app
                 Au.auto_free[ false ]
                 usleep[ 4000 ]
                 return alive
-        # console mode: no glfw event pump, no swapchain, no vk perf counters.
+        # text mode: no glfw event pump, no swapchain, no vk perf counters.
         # render the terminal grid each tick and keep running (Ctrl-C to exit).
-        if [ console ]
+        if [ text_mode ]
             render*[]
             Au.auto_free[false]
             usleep[ 16000 ]
@@ -526,7 +667,7 @@ abstract live_app media_app
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            puts 'PERF fps={frames} draw={vk.draw_us} syncs={vk.sync_calls} syncus={vk.sync_us} bindus={vk.bindres_us} rallocs={vk.render_allocs} resize={vk.resize_us} rcalls={vk.resize_calls} paints={vk.paint_calls} samplers={vk.sampler_count}'
+            #puts 'PERF fps={frames} draw={vk.draw_us} syncs={vk.sync_calls} syncus={vk.sync_us} bindus={vk.bindres_us} rallocs={vk.render_allocs} resize={vk.resize_us} rcalls={vk.resize_calls} paints={vk.paint_calls} samplers={vk.sampler_count}'
             vk.resize_us    = 0
             vk.resize_calls = 0
             frames = 0
@@ -544,6 +685,12 @@ abstract live_app media_app
             vk.bindres_us    = 0
             vk.br_schema_us  = 0
         render*[]
+        if [ shot_request ]
+            im2 : Image [ w.last_render[].color ]
+            im2.png[ shot_request ]
+            swn : Window [ w ]
+            if [ swn.bus ] swn.bus.send[ 'ux_shot', '{shot_request} done' ]
+            shot_request = null
         if [ screenshot ]
             shot_frames += 1
             if [ shot_frames >= shot_frame ]
@@ -676,8 +823,8 @@ abstract live_app media_app
         # are still mapped — otherwise the next instance returns a stale CanvasFont
         # and calling its methods jumps into freed code (SIGSEGV). ensure_font
         # rebuilds the cache lazily on the new instance.
-        # console mode: restore the terminal (cooked mode, mouse off, cursor on).
-        if [ console && w ]
+        # text mode: restore the terminal (cooked mode, mouse off, cursor on).
+        if [ text_mode && w ]
             cwin : Window [ w ]
             cwin.console_input_close[]
         # give every live element its teardown hook (threads, external state)
@@ -700,8 +847,8 @@ abstract live_app media_app
 
     func init [ ]
         next_second = epoch_millis[] / 1000
-        # console mode draws to the terminal — no window, no vulkan context.
-        if [ console ]
+        # text mode draws to the terminal — no window, no vulkan context.
+        if [ text_mode ]
             return
         if [ !Au.live_window_get[] ]
             init_res : glfwInit[]
@@ -1002,6 +1149,7 @@ Display Window
 
 
     public func cache_style [ inst:element, style_avail: map StyleEntries[string], force_update:bool, home_object:Au ]
+        if [ !style_avail ] return
         if [ inst.maps_populated && !force_update ]
             return
  
@@ -1056,6 +1204,8 @@ Display Window
         inst.maps_populated = false
         if [!inst.layers]
             inst.layers = map Layer[string] []
+        # no stylesheet: elements instance their look from declared layers alone
+        if [ !style_avail ] return
 
         # create layers in the order they render
         cache_style[inst, style_avail, false, home_object]
@@ -1293,7 +1443,7 @@ Display Window
 
             if [ changed ]
                 e.restyle = false
-                avail  : st.compute[ instance ]
+                avail  : (st) ? st.compute[ instance ] : null
                 ts0 : i64 [ epoch_micros[] ]
                 apply_style[ instance, avail, home_object ]
                 a.t_apply_style += epoch_micros[] - ts0
@@ -1301,10 +1451,37 @@ Display Window
                 # init finally called after context and style is applied
                 # our holds are too many for properties applied in style, though.
                 if [ call_init && !instance.initialized ]
-                    # console mode has no vk context; elements still init + lay out.
-                    if [ !console ]
+                    # text mode has no vk context; elements still init + lay out.
+                    if [ !text_mode ]
                         expect instance.vk, "no vk context set for new instance"
                     instance.initialize[]
+                    # declared Layer members (default initializers) join the
+                    # paint path in declaration order, base class first, keyed
+                    # by member ident — no strings at any access site
+                    ltys : array Au_t []
+                    for [ lty : typeid[ instance ], lty != typeid[ Au ], lty = lty.context ]
+                        ltys.push[ lty ]
+                    for [ lti: i32 ltys.count - 1, lti >= 0, lti -= 1 ]
+                        lty2 : Au_t ltys[lti]
+                        for [ lmi: i32 0, lmi < lty2.members.count, lmi += 1 ]
+                            lmem : Au_t lty2.members.origin[lmi]
+                            if [ lmem.member_type != AU_MEMBER_VAR ] continue
+                            if [ !lmem.src ] continue
+                            if [ !Au.inherits[ lmem.src, typeid[ Layer ] ] ] continue
+                            lv : Au instance.member_object[ lmem ]
+                            if [ !lv ] continue
+                            lvl : (lv to Layer)
+                            lvl.set_context_from[ instance ]
+                            lvl.initialize[]
+                            if [ !instance.layers ] instance.layers = map Layer[string] []
+                            instance.layers[ string[ lmem.ident ] ] = lvl
+                    # the icon layer paints LAST — base-first population put
+                    # Button's iconl under subclass backgrounds; re-append it
+                    if [ instance.layers ]
+                        bic : Layer instance.layers[ 'iconl' ]
+                        if [ bic ]
+                            instance.layers.rm[ 'iconl' ]
+                            instance.layers[ string[ 'iconl' ] ] = bic
                     instance.initialized = true
                     instance.hold_members[]
                     instance.restyle = true
@@ -1327,6 +1504,20 @@ Display Window
                 if [ e.flags & 1 ]
                     e.flags  = 0
                     retry    = true
+                    # input refs pointing into the dropped subtree must clear —
+                    # the next mouse move would dispatch into freed elements
+                    for [ h: element* hovered, h, h = h.parent ]
+                        if [ h == e ]
+                            hovered = null
+                            break
+                    for [ h: element* focus, h, h = h.parent ]
+                        if [ h == e ]
+                            focus = null
+                            break
+                    for [ h: element* capture, h, h = h.parent ]
+                        if [ h == e ]
+                            capture = null
+                            break
                     e.parent = null
                     e.drop_members[]
                     parent.elements.rm[ id ]
@@ -1353,10 +1544,10 @@ Display Window
     public func update_all [ render: Elements ]
         if [ !root ]
             root    = element [ id: string[ 'root' ], ux:a ]
-            root_styles = st.compute[ root ]
+            root_styles = (st) ? st.compute[ root ] : null
             restyle = true
-        
-        force_restyle : (!restyle) ? st.check_reload[] : false
+
+        force_restyle : (!restyle && st) ? st.check_reload[] : false
         if [ force_restyle ]
             root_styles = st.compute[ root ]
             restyle     = true
@@ -1745,31 +1936,24 @@ Display Window
         seam_hl    = rect[]
         f : find_target[ root, ev, null ]
         ev.origin = f
-        puts 'DBG press f={f->id} pos={ev.mouse.pos.x} {ev.mouse.pos.y}'
-        # live inspector (cmd held): cmd+click → matching CSS blocks; cmd+shift+click → the
-        # element's DECLARATION site (Au header source:line). consumes the press.
-        if [ f && ev.key.meta ]
-            if [ ev.key.shift ]
-                eh  : array StyleHit [ ]
-                hdr : Au.header[ f ]
-                if [ hdr && hdr.source ]
-                    eh.push[ StyleHit [ file: path '{hdr.source}', line: hdr.line ] ]
-                if [ app_object ] app_object.on_inspect*[ eh ]
-            el [ st ]
-                hits : array StyleHit [ st.element_style_blocks[ f ] ]
-                # repeated cmd+clicks on the same element cycle through its matched blocks
-                if [ f != st.inspect_el ]
-                    st.inspect_el  = f
-                    st.inspect_idx = 0
-                el [ hits.count > 0 ]
-                    st.inspect_idx = (st.inspect_idx + 1) % hits.count
-                cur : array StyleHit [ ]
-                if [ st.inspect_idx < hits.count ] cur.push[ hits[ st.inspect_idx ] ]
-                # emit only: the cycled style location goes onto the app bus
-                # as view_style; whoever edits (orbiter) handles the goto.
-                if [ bus && cur.count > 0 ]
-                    hb : StyleHit cur[ 0 ]
-                    bus.send[ 'view_style {hb.file}:{hb.line}' ]
+        # live inspector (cmd/ctrl held): click → matching CSS blocks; +shift → the
+        # element's DECLARATION site (Au header source:line). ctrl||meta matches
+        # orbiter's merged convention (Linux presses ctrl, not super). consumes it.
+        if [ f && (ev.key.meta || ev.key.ctrl) && st ]
+            # ctrl/cmd+click ALWAYS goes to the CSS style rule (.css). repeated
+            # clicks on the same element cycle through its matched blocks.
+            hits : array StyleHit [ st.element_style_blocks[ f ] ]
+            if [ f != st.inspect_el ]
+                st.inspect_el  = f
+                st.inspect_idx = 0
+            el [ hits.count > 0 ]
+                st.inspect_idx = (st.inspect_idx + 1) % hits.count
+            cur : array StyleHit [ ]
+            if [ st.inspect_idx < hits.count ] cur.push[ hits[ st.inspect_idx ] ]
+            if [ app_object ] app_object.on_inspect*[ cur ]
+            if [ bus && cur.count > 0 ]
+                hb : StyleHit cur[ 0 ]
+                bus.send[ 'view_style', '{hb.file}:{hb.line}' ]
             # consume the click: the inspect handled it, so the element under the cursor
             # (a button/tab) must NOT also process the press.
             ev.no_propagation = true
@@ -2105,7 +2289,7 @@ Display Window
         # own stdout, element-less: the app's prints stack at the top
         # left, newest last; the box fades out after a quiet stretch.
         # hidden windows have no reader — never tee their stdout
-        if [ stdout_overlay && !console && !hidden ]
+        if [ stdout_overlay && !text_mode && !hidden ]
             Au.stdout_tee[]
             if [ !so_lines ]
                 so_lines = array string [ ]
@@ -2374,7 +2558,7 @@ Display Window
             if [ e.area.bind_t ] e.area.t.offset = bind_value[ e.area.bind_t, app_obj, f32 ah, 1.0 ]
             if [ e.area.bind_r ] e.area.r.offset = bind_value[ e.area.bind_r, app_obj, f32 aw, 1.0 ]
             if [ e.area.bind_b ] e.area.b.offset = bind_value[ e.area.bind_b, app_obj, f32 ah, 1.0 ]
-        b : e.area.rectangle[ rel, null, null, 1.0, true ]
+        b : e.area.rectangle[ rel, null, null, 1.0, true, 0.0, 0.0 ]
         bw : i32 [ i32 b.w ]
         bh : i32 [ i32 b.h ]
         # the root fills the screen if it carries no explicit size; children must
@@ -2403,7 +2587,7 @@ Display Window
             for [ lau: Au, lk: string ] in e.layers
                 lyr : Layer [ lau to Layer ]
                 if [ lyr ]
-                    lyr.bounds = (lyr.area) ? lyr.area.rectangle[ e.bounds, null, null, 1.0, true ] : e.bounds.copy[]
+                    lyr.bounds = (lyr.area) ? lyr.area.rectangle[ e.bounds, null, null, 1.0, true, 0.0, 0.0 ] : e.bounds.copy[]
 
         # a frame is drawn only when the element opts in via `bordering`. borderless
         # elements (the common case) just position their children, so structural
@@ -2933,6 +3117,59 @@ Display Window
         out[p] = 0
         printf[ "%s", out ]
 
+    # agent view: the same box-drawing render console mode uses, returned as a
+    # plain text grid (no ANSI) — served over the app bus (ux_text). the tree
+    # is re-laid out at cell units for the stamp, then restored to the live
+    # pixel size so the vulkan path never sees the borrowed layout.
+    func text_grid [ tcols: i32, trows: i32 ] -> string
+        cols : i32 [ (tcols > 8) ? tcols : 120 ]
+        rows : i32 [ (trows > 4) ? trows : 44 ]
+        w0 : i32 [ width ]
+        h0 : i32 [ height ]
+        width  = cols
+        height = rows
+        update_all[ app_render[] ]
+        if [ root ] tick_binds[ root ]
+        n : i32 [ cols * rows ]
+        grid : new i32 [ n ]
+        colg : new i32 [ n ]
+        for [ i: i32 0, i < n, i += 1 ]
+            grid[ i ] = 32
+            colg[ i ] = 0
+        if [ root ]
+            draw_element_console[ root, grid, colg, cols, rows, 0, 0, cols, rows, 0, 0, false, 0, 0 ]
+        cap : i32 [ n * 4 + rows + 8 ]
+        tout : new u8 [ cap ]
+        p : i32 [ 0 ]
+        for [ y: i32 0, y < rows, y += 1 ]
+            for [ x: i32 0, x < cols, x += 1 ]
+                cp : i32 [ grid[ y * cols + x ] ]
+                if [ cp < 0x80 ]
+                    tout[p] = u8 cp
+                    p += 1
+                el [ cp < 0x800 ]
+                    tout[p] = u8 (0xC0 | (cp >> 6))
+                    p += 1
+                    tout[p] = u8 (0x80 | (cp & 0x3F))
+                    p += 1
+                el
+                    tout[p] = u8 (0xE0 | (cp >> 12))
+                    p += 1
+                    tout[p] = u8 (0x80 | ((cp >> 6) & 0x3F))
+                    p += 1
+                    tout[p] = u8 (0x80 | (cp & 0x3F))
+                    p += 1
+            tout[p] = 0x0A
+            p += 1
+        tout[p] = 0
+        res : string [ (tout) to cstr ]
+        # restore the live pixel layout before the next composed frame
+        width  = w0
+        height = h0
+        update_all[ app_render[] ]
+        if [ root ] tick_binds[ root ]
+        return res
+
     # resolve a bound coord against the app object: read the named f32 field via
     # member_ref (the app object is the only scope — never the element/parent).
     # a missing field falls back to the coord's inline default.
@@ -2961,11 +3198,11 @@ Display Window
         if [ !m ] return
         p : @f32 [ app_obj.member_ref[ m ] ]
         v : f32 [ p[0] ]
-        # console: the range min/max are px values that don't divide down at fc=1, so
-        # the px-range clamp would corrupt the value (e.g. force console_h up to 50).
-        # take the app var directly, no clamp and no easing — a grid has no sub-frame
-        # animation to settle anyway.
-        if [ console ]
+        # text mode: the range min/max are px values that don't divide down at fc=1,
+        # so the px-range clamp would corrupt the value (e.g. force console_h up to
+        # 50). take the app var directly, no clamp and no easing — a grid has no
+        # sub-frame animation to settle anyway.
+        if [ text_mode ]
             b.active     = v
             b.has_active = true
             b.moving     = false
@@ -3081,7 +3318,9 @@ Display Window
                 e.pristine   = false
                 will_animate = true
 
-        bounds : e.area.rectangle[ rel, null, last->bounds, e.fc, false ]
+        spx : f32 [ (e.use_spacing && e.parent) ? e.parent.spacing_x * e.fc : 0.0 ]
+        spy : f32 [ (e.use_spacing && e.parent) ? e.parent.spacing_y * e.fc : 0.0 ]
+        bounds : e.area.rectangle[ rel, null, last->bounds, e.fc, false, spx, spy ]
 
         # percent sizing: override h/w with fraction of remaining sibling space
         if [ e.area && e.parent && e.parent.elements && (e.area.b.percent || e.area.r.percent) ]
@@ -3093,11 +3332,11 @@ Display Window
                 if [ sib == e || !sib.area ] continue
                 if [ e.area.b.percent && sib.area.b.y_type == YAlign.height && !sib.area.b.percent ]
                     sfc : f32 [ (sib.fc > 0.0) ? sib.fc : pfc ]
-                    tb  : sib.area.rectangle[ prel, null, null, sfc, false ]
+                    tb  : sib.area.rectangle[ prel, null, null, sfc, false, 0.0, 0.0 ]
                     fixed_h += tb.h
                 if [ e.area.r.percent && sib.area.r.x_type == XAlign.width && !sib.area.r.percent ]
                     sfc : f32 [ (sib.fc > 0.0) ? sib.fc : pfc ]
-                    tb  : sib.area.rectangle[ prel, null, null, sfc, false ]
+                    tb  : sib.area.rectangle[ prel, null, null, sfc, false, 0.0, 0.0 ]
                     fixed_w += tb.w
             if [ e.area.b.percent ] bounds.h = e.area.b.offset * (rel.h - fixed_h)
             if [ e.area.r.percent ] bounds.w = e.area.r.offset * (rel.w - fixed_w)
@@ -3125,7 +3364,7 @@ Display Window
                     if [ ce.area.t.y_type == YAlign.middle || ce.area.t.y_type == YAlign.bottom ] continue
                     if [ ce.area.r.x_type == XAlign.middle || ce.area.r.x_type == XAlign.right || ce.area.r.percent ] continue
                     if [ ce.area.b.y_type == YAlign.middle || ce.area.b.y_type == YAlign.bottom || ce.area.b.percent ] continue
-                    cb : ce.area.rectangle[ prov, null, lastc, e.fc, false ]
+                    cb : ce.area.rectangle[ prov, null, lastc, e.fc, false, (ce.use_spacing) ? e.spacing_x * e.fc : 0.0, (ce.use_spacing) ? e.spacing_y * e.fc : 0.0 ]
                     if [ cb.x + cb.w > maxr ] maxr = cb.x + cb.w
                     if [ cb.y + cb.h > maxb ] maxb = cb.y + cb.h
                     lastc    = cb
@@ -3205,7 +3444,7 @@ Display Window
         for [ psc_au: Au, psc_k: string ] in e.layers
             psc_lay : Layer [ psc_au to Layer ]
             if [ !psc_lay || !psc_lay.area ] continue
-            psc_b  : psc_lay.area.rectangle[ e.bounds, null, null, e.fc, false ]
+            psc_b  : psc_lay.area.rectangle[ e.bounds, null, null, e.fc, false, 0.0, 0.0 ]
             psc_lx : f32  [ psc_b.x - e.bounds.x ]
             psc_ly : f32  [ psc_b.y - e.bounds.y ]
             psc_rx : f32  [ psc_b.x + psc_b.w - e.bounds.x - e.bounds.w ]
@@ -3298,15 +3537,38 @@ Display Window
         defer_scroll : bool [ e.cache_canvas && !e.volatile && !e.animated && stage == CanvasType.screen ]
 
         # compute layer bounds and draw each layer
+        # the element's live state bools fold to one State mask; layers with
+        # declared state overrides resolve through state_applies before draw
+        e_mask : i32 [ 0 ]
+        if [ e.hovered   ] e_mask += i32[ State.hovered ]
+        if [ e.pressed   ] e_mask += i32[ State.pressed ]
+        if [ e.focused   ] e_mask += i32[ State.focused ]
+        if [ e.disable   ] e_mask += i32[ State.disable ]
+        if [ e.first     ] e_mask += i32[ State.first ]
+        if [ e.middle    ] e_mask += i32[ State.middle ]
+        if [ e.last      ] e_mask += i32[ State.last ]
+        if [ e.odd       ] e_mask += i32[ State.odd ]
+        if [ e.even      ] e_mask += i32[ State.even ]
+        if [ e.has_value ] e_mask += i32[ State.has_value ]
+        # selected lives on Option (not element) — fold it in typed
+        eopt : Option [ e inherits Option ]
+        if [ eopt->selected ] e_mask += i32[ State.selected ]
         for [ layer_au: Au, lkey: string ] in e.layers
             if [ !redraw ] break
             layer : Layer [ layer_au to Layer ]
-            if [ !layer || layer.ctype != stage || layer.hide ]
+            if [ !layer ]
+                continue
+            # the layer's State BITMASK gates its paint: none = always; set =
+            # draws only while every one of its states is live on the element
+            lsm : i32 [ i32[ layer.states ] ]
+            if [ lsm != 0 && (e_mask & lsm) != lsm ]
+                continue
+            if [ layer.ctype != stage || layer.hide ]
                 continue
             if [ defer_scroll && lkey == 'scrollbar' ]
                 continue
 
-            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null, e.fc, false ] : e.bounds.copy[]
+            layer.bounds = (layer.area) ? layer.area.rectangle[ e.bounds, null, null, e.fc, false, 0.0, 0.0 ] : e.bounds.copy[]
             layer.bounds.x -= e.bounds.x
             layer.bounds.y -= e.bounds.y
             b  : rect   [ layer.bounds ]
@@ -3598,7 +3860,7 @@ Display Window
             # without the element having to redraw its whole cache.
             sbl : ScrollLayer (e.layers) ? (e.layers['scrollbar'] to ScrollLayer) : null
             if [ sbl && sbl.ctype == stage && !sbl.hide ]
-                sbl.bounds = (sbl.area) ? sbl.area.rectangle[ e.bounds, null, null, e.fc, false ] : e.bounds.copy[]
+                sbl.bounds = (sbl.area) ? sbl.area.rectangle[ e.bounds, null, null, e.fc, false, 0.0, 0.0 ] : e.bounds.copy[]
                 sbl.bounds.x -= e.bounds.x
                 sbl.bounds.y -= e.bounds.y
                 cv.save[ ]
@@ -3707,18 +3969,18 @@ abstract media_app trinity
         adopt[ 'width' ]
         adopt[ 'height' ]
         adopt[ 'background' ]
-        adopt[ 'console' ]
+        adopt[ 'text_mode' ]
         adopt[ 'hidden' ]
         adopt[ 'screenshot' ]
         adopt[ 'shot_frame' ]
         adopt[ 'attach' ]
         rt : typeid[ root ]
         background_type : Au.find_type[ background->chars, null ]
-        # console mode: no vk context, no GLFW window — host the tree + layout only.
-        if [ console ]
+        # text mode: no vk context, no GLFW window — host the tree + layout only.
+        if [ text_mode ]
             console_size[]
-            cwin : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
-                width:width, height:height, background_type:background_type, console: true ]
+            cwin : Window[ app_object: root, title:(title) ?? rt.ident,
+                width:width, height:height, background_type:background_type, text_mode: true ]
             cwin.hold[]
             w = cwin
             cwin.console_input_open[]
@@ -3734,7 +3996,7 @@ abstract media_app trinity
                 at_start[ background_type, rt ]
                 Au.auto_free[ true ]
                 return
-        window : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
+        window : Window[ app_object: root, title:(title) ?? rt.ident,
             width:(width) ?? 1888, height:(height) ?? 888, background_type:background_type,
             hidden: hidden ]
         expect window.vk, "context didnt work"
@@ -3752,7 +4014,7 @@ abstract media_app trinity
 
     # 22
     func render[]
-        if [ console ]
+        if [ text_mode ]
             update_scene*[]
             cwin : Window[w]
             cwin.draw_console[]
@@ -3782,7 +4044,7 @@ abstract media_app trinity
         func at_start [ background_type: Au_t, rt: Au_t ]
             aw : i32 [ (width)  ?? 1280 ]
             ah : i32 [ (height) ?? 720 ]
-            awin : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
+            awin : Window[ app_object: root, title:(title) ?? rt.ident,
                 width: aw, height: ah, background_type: background_type, backbuffer: true,
                 format: Pixel.rgba8 ]
             awin.hold[]
@@ -3936,6 +4198,15 @@ element Control
         return null
 
 Control Button
+    # icon by NAME ('play' -> images/play.svg): a shortcut that feeds the
+    # button's final declared layer below — nothing outside Button touches it
+    public icon  : string
+    iconl : Layer [ image_align: Align [ x: XAlign.middle, y: YAlign.middle ], image_scale: 1.7 ]
+
+    func init []
+        if [ icon && icon.count > 0 ]
+            iconl.image_svg = SVGModel [ 'images/{icon}.svg' ]
+
     func render[] -> Elements
         return null
 

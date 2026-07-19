@@ -733,9 +733,9 @@ struct XCoord
     pct_off_pixel : bool
 
     construct [ sx: string ]
-        uni : unichar[ sx.first[] ]
-        f : string[ uni ]
-        if [ f.chars[ 0 ] == '-' || isdigit[f.chars[ 0 ]]]
+        # first char as a STRING (mid), not string[unichar] — that ctr faults
+        f : string [ (sx.count > 0) ? sx.mid[ 0, 1 ] : '' ]
+        if [ f.chars[ 0 ] == '-' || isdigit[ f.chars[ 0 ] ] ]
             sx_r : string [ sx ]
             if [ sx_r.last[] == 'x' && sx_r.count >= 2 ]
                 if [ sx_r.chars[ sx_r.count - 2 ] == 'p' ]
@@ -833,7 +833,8 @@ struct YCoord
     pct_off_pixel : bool
 
     construct [ sy: string ]
-        f : string [ sy.first[] ]
+        # first char as a STRING (mid), not string[unichar] — that ctr faults
+        f : string [ (sy.count > 0) ? sy.mid[ 0, 1 ] : '' ]
         if [ f.chars[0] == '-' || isdigit[f.chars[0]]]
             sy_r : string [ sy ]
             if [ sy_r.last[] == 'x' && sy_r.count >= 2 ]
@@ -987,17 +988,41 @@ class Region
         s : string[cs]
         construct [ s ]
 
-    func rectangle [ win: rect, rel: rect, last: rect, fc: f32, console: bool ] -> rect
-        lv : l.plot[ win.x, win.x + win.w, null,  0.0, rel, last, fc, console ]
-        rv : r.plot[ win.x, win.x + win.w, @l, lv,  rel, last, fc, console ]
-        tv : t.plot[ win.y, win.y + win.h, null,  0.0, rel, last, fc, console ]
+    # sx/sy: the container's spacing — the gap BETWEEN flowed siblings
+    # ([b1][gap][b2]); applies only when a `+` coord follows a previous
+    # sibling, never at the edges.
+    func rectangle [ win: rect, rel: rect, last: rect, fc: f32, console: bool, sx: f32, sy: f32 ] -> rect
+        # right-anchored placement with a width slot ALWAYS includes the
+        # element's own width: x = cursor - inset - width. `r<gap>+` flows the
+        # cursor from the previous sibling's left edge; static `r<inset>`
+        # anchors the parent's right edge.
+        if [ l.x_type == XAlign.right && r.x_type > XAlign.right ]
+            gfc : f32 [ (fc > 0.0 && !l.pixel) ? fc : 1.0 ]
+            gap : f32 [ l.offset * ((l.pixel) ? 1.0 : gfc) ]
+            wfc : f32 [ (fc > 0.0 && !r.pixel) ? fc : 1.0 ]
+            wv  : f32 [ r.offset * ((r.pixel) ? 1.0 : wfc) ]
+            cur : f32 [ (l.relative && last) ? (last.x - sx) : (win.x + win.w - sx) ]
+            tv2 : f32 [ t.plot[ win.y, win.y + win.h, null, 0.0, rel, last, fc, console ] ]
+            if [ t.y_type == YAlign.top ] tv2 += sy
+            bv2 : b.plot[ win.y, win.y + win.h, @t, tv2, rel, last, fc, console ]
+            rx2 : f32 [ round[ cur - gap - wv ] ]
+            return rect [ x: rx2, y: round[ tv2 ], w: round[ wv ], h: round[ bv2 ] - round[ tv2 ] ]
+        lv : f32 [ l.plot[ win.x, win.x + win.w, null,  0.0, rel, last, fc, console ] ]
+        rv : f32 [ r.plot[ win.x, win.x + win.w, @l, lv,  rel, last, fc, console ] ]
+        tv : f32 [ t.plot[ win.y, win.y + win.h, null,  0.0, rel, last, fc, console ] ]
+        # anchored edges respect the container's spacing: left/top anchors
+        # inset inward, exact right anchors pull in; flow gets it as the gap
+        if [ l.x_type == XAlign.left  ] lv += sx
+        if [ r.x_type == XAlign.right ] rv -= sx
+        if [ t.y_type == YAlign.top   ] tv += sy
         rx : f32 [ round[ lv ] ]
         ry : f32 [ round[ tv ] ]
         ww : f32 [ round[ rv ] - rx ]
         # square: height = computed width
         if [ square ]
             return rect [ x: rx, y: ry, w: ww, h: ww ]
-        bv : b.plot[ win.y, win.y + win.h, @t, tv,  rel, last, fc, console ]
+        bv : f32 [ b.plot[ win.y, win.y + win.h, @t, tv,  rel, last, fc, console ] ]
+        if [ b.y_type == YAlign.bottom ] bv -= sy
         return rect [ x: rx, y: ry, w: ww, h: round[ bv ] - ry ]
 
     func mix [ other: Region, f: f64 ] -> Region

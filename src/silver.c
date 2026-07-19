@@ -1410,12 +1410,16 @@ void silver_init(silver a) {
     a->exports      = map(hsize, 16);
     // ONE module product home for both configs. the active-config stamp is
     // the epoch: any product older than it belongs to the other config
-    a->build_dir    = f(path, "%o/modules", a->install);
+    a->build_dir    = f(path, "%o/build", a->install);
     make_dir(a->build_dir);
 
     // one active config per platform: module builds must match the cores
     // make last built (the platform's lib dir is singular — mixing lies)
-    if (!a->is_external) {
+    // a module MUST build in the same config as the cores it links (no mixing).
+    // so ADOPT the active-config stamp — never refuse. a plain `silver X` (from
+    // orbiter's launcher) then always matches, and --release --test still forces
+    // release for optimized testing (which needs release cores present anyway)
+    if (!a->is_external && !(a->release && a->test)) {
         path stamp = f(path, "%o/.active-config", a->install);
         if (file_exists("%o", stamp)) {
             char sbuf[512] = { 0 };
@@ -1423,10 +1427,9 @@ void silver_init(silver a) {
             if (sf) {
                 fgets(sbuf, sizeof(sbuf), sf);
                 fclose(sf);
-                bool core_debug = strstr(sbuf, "debug") != NULL;
-                verify(core_debug == !a->release,
-                    "active config is %s — run `make %s` first (one active config)",
-                    core_debug ? "debug" : "release", a->release ? "release" : "debug");
+                bool core_release = strstr(sbuf, "release") != NULL;
+                a->release = core_release;
+                a->debug   = !core_release;
             }
         }
     }
@@ -2029,8 +2032,10 @@ static array read_within(silver a) {
     return body;
 }
 
-// read compacted keyword tokens inside { ... } — returns tokens literal
-static enode read_keywords(silver a) {
+// read compacted keyword tokens inside { ... } — returns tokens literal.
+// an expected non-tokens type with a string ctr receives the literal as a
+// space-joined string through that ctr (area: Region { l0 t0 r0 b0 })
+static enode read_keywords(silver a, etype mdl_expect) {
     if (!next_is(a, "{"))
         return null;
     consume(a, Syntax__none); // consume {
@@ -2053,9 +2058,25 @@ static enode read_keywords(silver a) {
         }
         push(toks, (Au)compacted);
     }
+    Au_t target = (mdl_expect && mdl_expect->autype) ?
+        au_arg_type(mdl_expect->autype) : null;
+    if (target && target != typeid(tokens)) {
+        if (constructs_with(target, typeid(string)) ||
+            constructs_with(target, typeid(cstr))   ||
+            constructs_with(target, typeid(symbol))) {
+            string joined = string(alloc, 64);
+            for (int i = 0; i < len(toks); i++) {
+                if (i) push(joined, ' ');
+                concat(joined, (string)toks->origin[i]);
+            }
+            return (enode)e_create((aether)a, (etype)mdl_expect,
+                (Au)e_operand((aether)a, (Au)joined, etypeid(string)));
+        }
+    }
     // build tokens object at runtime: alloc + push each string
     efunc f_alloc = (efunc)u(efunc, find_member(etypeid(Au)->autype, "alloc_new", AU_MEMBER_FUNC, 0, false));
-    efunc f_push  = (efunc)u(efunc, find_member(etypeid(collective)->autype, "push", AU_MEMBER_FUNC, 0, true));
+    // bind array's push (tokens extends array) — collective's is the fault stub
+    efunc f_push  = (efunc)u(efunc, find_member(etypeid(array)->autype, "push", AU_MEMBER_FUNC, 0, true));
     enode n_src; Au n_line, n_seq;
     alloc_origin_args((aether)a, &n_src, &n_line, &n_seq);
     enode res = e_fn_call(a, f_alloc, a(
@@ -2063,10 +2084,15 @@ static enode read_keywords(silver a) {
         e_null(a, etypeid(Au_t)), e_null(a, etypeid(Au)),
         (Au)n_src, n_line, n_seq), false, false);
     res->autype = etypeid(tokens)->autype;
+    // tokens is meta'd to token elements: construct a real token per compacted
+    // string via runtime __convert (e_create shortcuts subclass conversions)
+    efunc f_convert = (efunc)u(efunc, find_member(etypeid(Au)->autype, "__convert", AU_MEMBER_FUNC, 0, false));
     for (int i = 0; i < len(toks); i++) {
         string s = (string)toks->origin[i];
         enode str_const = e_operand(a, (Au)s, etypeid(string));
-        e_fn_call(a, f_push, a(res, str_const), false, false);
+        enode type_node = e_typeid(a, etypeid(token));
+        enode tok_const = e_fn_call(a, f_convert, a(type_node, str_const), false, false);
+        e_fn_call(a, f_push, a(res, tok_const), false, false);
     }
     return res;
 }
@@ -3964,7 +3990,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
 
     // { keyword tokens } — compacted token literals
     if (!cmode && next_is(a, "{")) {
-        return read_keywords(a);
+        return read_keywords(a, (etype)mdl_expect);
     }
 
     if (!cmode && next_is(a, "[")) {
@@ -6082,6 +6108,11 @@ none silver_build_product(silver a) {
         vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"'",
             SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
         a->live_binary = hold(host_dst);
+        // symlink install/bin/<name> -> the built host binary, so the app runs
+        // by name and dbg/lldb find it (the binary itself stays in build/)
+        path bin_link = f(path, "%o/bin/%o", a->install, a->name);
+        unlink(bin_link->chars);
+        create_symlink(host_dst, bin_link);
     }
 
     // --link: symlink this app's binary into the first writable PATH dir, so it

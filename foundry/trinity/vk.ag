@@ -3170,10 +3170,10 @@ Texture Display
     intern swap_needs_recreate  : bool
     intern in_callback_draw     : bool
     public backbuffer           : bool
-    # console mode: terminal character-grid output. no glfw window, no vk surface
+    # text mode: terminal character-grid output. no glfw window, no vk surface
     # or swapchain, no vk_context — the Display only hosts the element tree + layout
     # while Window.draw_console paints to a terminal (see trinity.ag).
-    public console              : bool
+    public text_mode            : bool
     # create the glfw window invisible (batch generation: full pipeline,
     # nothing on screen)
     public hidden               : bool
@@ -3204,7 +3204,7 @@ Texture Display
         return
 
     func set_fullscreen [ on: bool ]
-        if [ console || backbuffer || !glfw ] return
+        if [ text_mode || backbuffer || !glfw ] return
         if [ on ]
             mon : glfwGetPrimaryMonitor[]
             if [ !mon ] return
@@ -3428,9 +3428,9 @@ Texture Display
             width  = 1200
             height = 1200
 
-        # console mode: never touch glfw or vk. the element tree + layout live on
+        # text mode: never touch glfw or vk. the element tree + layout live on
         # this Display, but all paint goes to the terminal (Window.draw_console).
-        if [ console ]
+        if [ text_mode ]
             if [ scale <= 0.0 ] scale = 1.0
             return
 
@@ -3836,8 +3836,9 @@ intern func handle_glfw_mouse [ win: @GLFWwindow, id: i32, action: i32, mods: i3
     lshift            : i32 [ glfwGetKey[ win, 340 ] ]
     rshift            : i32 [ glfwGetKey[ win, 344 ] ]
     w.ev.key.shift    = lshift == GLFW_PRESS || rshift == GLFW_PRESS
-    w.ev.key.meta     = (mods & 8) != 0
-    w.ev.key.alt      = (mods & 4) != 0
+    w.ev.key.meta     = (mods & GLFW_MOD_SUPER)   != 0
+    w.ev.key.ctrl     = (mods & GLFW_MOD_CONTROL) != 0
+    w.ev.key.alt      = (mods & GLFW_MOD_ALT)     != 0
     if [ w.ev.mouse.state ]
         w.press_event[ w.ev ]
     el

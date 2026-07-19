@@ -34,6 +34,8 @@ class FindHit
     public is_dir    : bool
     # a blank reserved row (single-line dock divider) — renders nothing, no hover/glow.
     public is_spacer : bool
+    # a running console session (not a file) — clicking shows it in the pane.
+    public session   : string
     public file      : path
     public line      : i32
 
@@ -317,6 +319,41 @@ ResourceView AppView
         piph = ph
         frames.draw[ cv, rect [ x: pipx, y: pipy, w: pipw, h: piph ] ]
 
+    # instrument accordion on the right: each section is [title] then [control].
+    # callstack on top (placeholder area for now), the app's live view on the
+    # bottom. first-cut layout drawn imperatively; converts to real elements next.
+    func draw_side [ cv: Canvas, bounds: rect ]
+        sw : f32 [ bounds.w * 0.36 ]
+        sx : f32 [ bounds.x + bounds.w - sw ]
+        sy : f32 [ bounds.y ]
+        sh : f32 [ bounds.h ]
+        hh : f32 [ 26.0 ]
+        # column background
+        cv.fill_color[ '#0e1626' ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ sx, sy, sw, sh ]
+        cv.paint[]
+        # split: callstack section (top half), app section (bottom half)
+        hlf : f32 [ sh * 0.5 ]
+        # --- callstack section: [title] then [control] ---
+        cv.fill_color[ '#1c2840' ]
+        cv.rect_to[ sx, sy, sw, hh ]
+        cv.paint[]
+        cv.fill_color[ '#cfe' ]
+        cv.font_size[ 14 ]
+        cv.draw_text[ 'callstack', rect [ x: sx + 8.0, y: sy, w: sw - 16.0, h: hh ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        # --- app section: [title] then the live app view ---
+        ay : f32 [ sy + hlf ]
+        cv.fill_color[ '#1c2840' ]
+        cv.rect_to[ sx, ay, sw, hh ]
+        cv.paint[]
+        cv.fill_color[ '#cfe' ]
+        cv.draw_text[ 'app', rect [ x: sx + 8.0, y: ay, w: sw - 16.0, h: hh ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        appr : rect [ x: sx, y: ay + hh, w: sw, h: hlf - hh ]
+        draw_frame[ cv, appr ]
+
     # lower-right corner of the fullscreen app = the minimize-to-code hotspot
     func hit_minimize [ x: f32, y: f32 ] -> bool
         if [ fitw <= 0.0 ] return false
@@ -353,7 +390,7 @@ ResourceView AppView
             dead = true
             note = 'socket failed'
             return
-        cmd = 'cd {sp} && unset IMPORT && ./install/bin/silver --build {mod} && exec ./install/modules/{mod} --attach {sock_path} --width 1280 --height 720'
+        cmd = 'cd {sp} && unset IMPORT && ./install/bin/silver --build {mod} && exec ./install/build/{mod} --attach {sock_path} --width 1280 --height 720'
 
     func pump [ cv: Canvas ]
         if [ !link || dead ] return
@@ -747,6 +784,10 @@ Layer EditorLayer
                 editor.run_view.vy = b2.y
                 editor.run_view.vw = b2.w
                 editor.run_view.vh = b2.h
+                # the app frame draws into THIS element's cached canvas; the code
+                # edge-fade mask would dim its edges, so clear it (like grid mode)
+                parent.mask_glow  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+                parent.mask_inset = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
                 editor.run_view.draw_frame[ cv, b2 ]
                 return
         if [ editor.rview && !editor.show_hits ]
@@ -1210,7 +1251,7 @@ Layer EditorLayer
                 fdr : string (fhh) ? fhh.dir : ''
                 fis_dir : bool [ fhh->is_dir ]
                 # a directory row is a blue link with a trailing slash; files stay white.
-                if [ fis_dir && fnm.count > 0 ] fnm = '{fnm}/'
+                if [ fis_dir && fnm->count > 0 ] fnm = '{fnm}/'
                 # icon to the left, vertically centered over the row. only load the SVG if
                 # it exists — constructing SVGModel on a missing path crashes. text shifts
                 # right only when an icon actually drew.
@@ -1233,7 +1274,7 @@ Layer EditorLayer
                     cv.fill_color[ (fis_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
                     cv.draw_text[ fnm, rect [ x: tx0, y: y, w: bounds.w - rin - tx0, h: rh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                    if [ fdr.count > 0 ]
+                    if [ fdr->count > 0 ]
                         # anchor the dir at a fixed ~50% column so rows line up instead of
                         # staggering after the filename; push past it only when a name is
                         # long enough to reach the column.
@@ -1250,11 +1291,11 @@ Layer EditorLayer
                     # isn't stuck at the top with empty space below.
                     hfs : i32 [ (editor.header_size > 0) ? editor.header_size : code_fs ]
                     cv.font_size[ hfs ]
-                    nmh : f32 [ (fdr.count > 0) ? lh : rh ]
+                    nmh : f32 [ (fdr->count > 0) ? lh : rh ]
                     cv.fill_color[ (fis_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
                     cv.draw_text[ fnm, rect [ x: tx0, y: y, w: bounds.w - rin - tx0, h: nmh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-                    if [ fdr.count > 0 ]
+                    if [ fdr->count > 0 ]
                         dfs : i32 [ (editor.dir_size > 0) ? editor.dir_size : hfs ]
                         cv.font_size[ dfs ]
                         cv.fill_color[ rgba['#ffffff66'] ]
@@ -1308,8 +1349,6 @@ Layer EditorLayer
                 slc   : code_slot[ cv, editor, msl, ln, cmt_c, lh, cw_tm.w, code_fs ]
                 if [ slc && slc.canvas ]
                     cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
-        if [ editor.text_lines_frame > 0 ]
-            puts 'TEXT RASTER: {editor.text_lines_frame} lines this frame ({editor.text_lines_total} total)'
         cv.paint[ ]
 
         # separator line dividing the pinned dock (top rows) from the browse results
@@ -1625,16 +1664,24 @@ Layer EditorLayer
 
             cv.restore[ ]
 
-        # minimized running app: draw its live frame as a PiP over the code
-        # (also the "app loaded / running" indicator). click it to restore.
+        # running app, not fullscreen: a right-side instrument accordion —
+        # callstack section on top, the app's live view docked on the bottom.
         if [ editor.run_view && !editor.app_view && !editor.show_hits ]
-            editor.run_view.draw_pip[ cv, bounds ]
+            editor.run_view.draw_side[ cv, bounds ]
 
         # release the editor-bounds crop so following elements aren't clipped
         cv.clear_crop[ ]
 
 
 Control Editor
+    # the code content + overlay scrollbar, declared here — the editor's look
+    # is the editor's, not a stylesheet's. members key the paint map by ident.
+    content   : EditorLayer [ area: Region { l0 t45px r0 b0 }, label_height: 1.0,
+        line_color: rgba [ '#fff1' ], item_color: rgba [ '#2b3a5500' ], sel_color: rgba [ '#264f78' ],
+        hl_fill: rgba [ '#ff6a2e55' ], hl_grad: rgba [ '#c0381844' ],
+        hl_glow: rgba [ '#ff8a3a99' ], hl_text: rgba [ '#ffe6d2' ] ]
+    scrollbar : ScrollLayer [ overlay: true, area: Region { 8px }, thumb_color: '#fff4',
+        thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
     public  selected      : bool
     # find/replace bar open: drives the title's CSS :expanded state, which swaps the
     # single title row in place for the one-line findbar (scope | find | replace | all).
@@ -1686,6 +1733,8 @@ Control Editor
     # back to code (app_view=false) WITHOUT stopping it — it keeps draining.
     mutable run_view      : AppView
     mutable app_view      : bool
+    # a console session shown in this pane instead of code (nav-list selectable)
+    mutable session_view  : string
     # the file's scroll position, stashed when the pane enters finder/browse mode so it
     # can be restored when the finder closes (the browse list reuses scroll.y).
     mutable saved_scroll  : f32
@@ -2479,9 +2528,9 @@ Control Editor
             target : path [ hits[sel_line].file ]
             if [ !target ] return
             tkey    : '{target}'
-            content : string [ target.load[ typeid[string], null ] ]
-            if [ !content ] return
-            parts : array string [ content.split["\n"] ]
+            ftext : string [ target.load[ typeid[string], null ] ]
+            if [ !ftext ] return
+            parts : array string [ ftext.split["\n"] ]
             for [ i: i32 0, i < hits.count, i += 1 ]
                 h : FindHit hits[i]
                 if [ h.is_header ]
@@ -2550,21 +2599,21 @@ Control Editor
             ax : e.ext[]
             if [ ax && ax == 'agi' ]
                 mod     : e.stem[]
-                content : string e.load[ typeid[string], null ]
-                if [ content ]
-                    ix : content.index_of[ 'extensions:' ]
+                ftext : string e.load[ typeid[string], null ]
+                if [ ftext ]
+                    ix : ftext.index_of[ 'extensions:' ]
                     if [ ix >= 0 ]
                         i  : i32 [ i32[ ix ] ]
-                        n2 : i32 [ i32[ content.count ] ]
+                        n2 : i32 [ i32[ ftext.count ] ]
                         q0 : i32 [ 0 - 1 ]
                         while [ i < n2 ]
-                            c : i32 [ (i32 content.chars[i]) & 255 ]
+                            c : i32 [ (i32 ftext.chars[i]) & 255 ]
                             if [ c == 10 ] break
                             if [ c == 39 ]
                                 if [ q0 < 0 ]
                                     q0 = i + 1
                                 el
-                                    ex3 : content.mid[ q0, i - q0 ]
+                                    ex3 : ftext.mid[ q0, i - q0 ]
                                     export_registry[ ex3 ] = mod
                                     q0 = 0 - 1
                             i += 1
@@ -2658,9 +2707,9 @@ Control Editor
             lines = buf.lines
             swap_history[ buf ]   # restore this file's own undo/redo (or seed it)
             return
-        content : string src.load[ typeid[string], null ]
-        if [ !content ] return
-        parts : content.split["\n"]
+        ftext : string src.load[ typeid[string], null ]
+        if [ !ftext ] return
+        parts : ftext.split["\n"]
         new_lines : list string []
         for [ i: i32 0, i < parts.count, i += 1 ]
             new_lines.push[ parts[i] ]

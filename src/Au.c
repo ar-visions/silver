@@ -678,8 +678,13 @@ Au array_push(array a, Au b) {
         vtype->ident, a->last_type->ident, info->source, info->line);
     a->last_type = vtype;
 
-    if (Au_is_meta((Au)a) && Au_meta_index((Au)a, 0) != typeid(Au))
-        assert(Au_is_meta_compatible((Au)a, (Au)b), "not meta compatible");
+    if (Au_is_meta((Au)a) && Au_meta_index((Au)a, 0) != typeid(Au) &&
+        !Au_is_meta_compatible((Au)a, (Au)b)) {
+        Au_t ma = Au_meta_index((Au)a, 0);
+        fault("not meta compatible: pushing %s into %s of %s (%s:%i)",
+            isa(b)->ident, t->ident, ma ? ma->ident : "(null)",
+            info->source, info->line);
+    }
 
     a->origin[a->count++] = Au_hold(b);
     return b;
@@ -1459,8 +1464,11 @@ void au_compile_invoke(const char* name) {
 static int au_live_defer_flag   = 0;   // app -> host: stage changes, don't auto-reload
 static int au_live_pending_flag = 0;   // host -> app: a rebuilt module is staged & ready
 static int au_live_apply_flag   = 0;   // app -> host: please recompile + hot-swap now
+static int au_live_reload_flag  = 1;   // app -> host: watch + reload at all (orbiter: off)
 void au_live_set_defer(int v)   { au_live_defer_flag = v ? 1 : 0; }   // the APP turns defer on
 int  au_live_get_defer()        { return au_live_defer_flag; }        // the host polls it
+void au_live_set_reload(int v)  { au_live_reload_flag = v ? 1 : 0; }  // the APP turns reload off
+int  au_live_get_reload()       { return au_live_reload_flag; }       // the host polls it
 void au_live_set_pending(int v) { au_live_pending_flag = v ? 1 : 0; }
 int  au_live_get_pending()      { return au_live_pending_flag; }
 void au_live_request_apply()    { au_live_apply_flag = 1; }
@@ -3081,14 +3089,26 @@ u64  Au_hash(Au a) {
 
     u64 hash = 0;
     Au_f* fn = (Au_f*)info;
-    if (((Au_f*)info)->ft.hash != ((Au_f*)typeid(Au))->ft.hash) {
+    if (fn->ft.hash && fn->ft.hash != ((Au_f*)typeid(Au))->ft.hash) {
         hash = hash(a);
+    } else if (info->is_enum || (info->traits & AU_TRAIT_PRIMITIVE)) {
+        // silver-built enums/primitives carry no ftable — hash the value bytes
+        hash = (u64)fnv1a_hash(a, info->typesize, OFFSET_BASIS);
     } else {
         string s = cast(string, a);
         verify(s, "%o cast string required");
         hash = (u64)fnv1a_hash(s->chars, s->count, OFFSET_BASIS);
     }
     return hash;
+}
+
+// map-key compare that survives types with no ftable (silver enums): dispatch
+// the override when present, else raw byte compare
+static i32 au_key_compare(Au a, Au b) {
+    Au_t t = isa(a);
+    if (((Au_f*)t)->ft.compare && ((Au_f*)t)->ft.compare != ((Au_f*)typeid(Au))->ft.compare)
+        return compare(a, b);
+    return Au_compare(a, b);
 }
 
 bool Au_cast_bool (Au a) {
@@ -3216,9 +3236,11 @@ Au Au_with_cstrs(Au a, cstrs argv) {
                 for (num i = 0; i < type->members.count; i++) {
                     Au_t m = (Au_t)type->members.origin[i];
                     if (m->access_type == interface_intern) continue;
+                    // && binds tighter than || — parenthesized so BOTH forms
+                    // require a VAR member (a method must never match a flag)
                     if ((m->member_type == AU_MEMBER_VAR) &&
-                        ( single &&        m->ident[0] == arg[1]) ||
-                        (!single && strcmp(m->ident,     &arg[2]) == 0)) {
+                        (( single &&        m->ident[0] == arg[1]) ||
+                         (!single && strcmp(m->ident,     &arg[2]) == 0))) {
                         mem = m;
                         break;
                     }
@@ -3226,7 +3248,22 @@ Au Au_with_cstrs(Au a, cstrs argv) {
                 if (mem) break; // most-derived match wins; don't let a base class clobber it
                 type = type->context;
             }
-            if (!mem) au_arg_usage(a, argv);   // unknown flag (e.g. --help)
+            if (!mem) {
+                if (getenv("AU_ARG_DEBUG")) {
+                    Au_t t2 = isa(a);
+                    while (t2 && t2 != typeid(Au)) {
+                        fprintf(stderr, "AU_ARG walk %s:\n", t2->ident);
+                        for (num i = 0; i < t2->members.count; i++) {
+                            Au_t m2 = (Au_t)t2->members.origin[i];
+                            fprintf(stderr, "  member %s mt=%d at=%d\n",
+                                m2->ident, (int)m2->member_type, (int)m2->access_type);
+                        }
+                        if (t2->context == t2) break;
+                        t2 = t2->context;
+                    }
+                }
+                au_arg_usage(a, argv);   // unknown flag (e.g. --help)
+            }
             bool is_bool = mem->src == typeid(bool);
             cstr value = null;
             if (is_bool && argv[argc + 1] && (
@@ -3312,6 +3349,15 @@ Au Au_with_cereal(Au a, cereal _cs) {
     else if (type == typeid(u64)) sscanf(cs, "%llu", (u64*)a);
     else if (type == typeid(bool)) {
         *(bool*)a = (cs[0] == 't' || cs[0] == 'T' || cs[0] == '1');
+    }
+    else if (type == typeid(unichar)) {
+        // first UTF-8 codepoint of the text
+        u8 *p = (u8*)cs;
+        u32 c = p[0];
+        if      ((c & 0xE0) == 0xC0) c = ((c & 0x1F) << 6)  |  (p[1] & 0x3F);
+        else if ((c & 0xF0) == 0xE0) c = ((c & 0x0F) << 12) | ((p[1] & 0x3F) << 6)  |  (p[2] & 0x3F);
+        else if ((c & 0xF8) == 0xF0) c = ((c & 0x07) << 18) | ((p[1] & 0x3F) << 12) | ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+        *(unichar*)a = (unichar)c;
     }
     else if (type == typeid(string)) {
         string  res = (string)a;
@@ -4078,7 +4124,7 @@ list   list_copy(list a) {
 }
 
 u64 item_hash(item f) {
-    return hash(f->key ? f->key : f->value);
+    return Au_hash(f->key ? f->key : f->value);
 }
 
 none item_init(item a) {
@@ -4211,17 +4257,17 @@ none map_dealloc(map m) {
 
 item map_lookup(map m, Au k) {
     if (!m->hlist) {
-        u64 h = hash(k);
+        u64 h = Au_hash(k);
         for (item i = m->first; i; i = i->next)
-            if (i->h == h && (m->hash_only || compare(i->key, k) == 0))
+            if (i->h == h && (m->hash_only || au_key_compare(i->key, k) == 0))
                 return i;
     }
     item* hlist = m->hlist;
     Au_t k_type = isa(k);
-    u64 h = hash(k);
+    u64 h = Au_hash(k);
     i64 b = h % m->hsize;
     for (item i = hlist[b]; i; i = i->next) {
-        if (i->h == h && (m->hash_only || compare(i->key, k) == 0))
+        if (i->h == h && (m->hash_only || au_key_compare(i->key, k) == 0))
             return i;
     }
     return null;
@@ -4239,7 +4285,7 @@ Au map_get(map m, Au k) {
 item map_fetch(map m, Au k) {
     item i = map_lookup(m, k);
     if (!i) {
-        u64 h = hash(k);
+        u64 h = Au_hash(k);
         i64 b = h % m->hsize;
 
         ((item*)m->hlist)[b] = i = hold(
@@ -4318,12 +4364,12 @@ none map_rm_item(map m, item i) {
 }
 
 none map_rm(map m, Au k) {
-    u64  h    = hash(k);
+    u64  h    = Au_hash(k);
     i64  b    = h % m->hsize;
     item prev = null;
     if (m->hlist)
         for (item i = ((item*)m->hlist)[b]; i; i = i->next) {
-            if (i->h == h && (m->hash_only || compare(i->key, k) == 0)) {
+            if (i->h == h && (m->hash_only || au_key_compare(i->key, k) == 0)) {
                 if (prev) {
                     prev->next = i->next;
                 } else {
@@ -4730,12 +4776,12 @@ string string_interpolate(string a, Au ff) {
     return res;
 }
 
-i32   string_getter_i64(string a, i64 index) {
+i8    string_getter_i64(string a, i64 index) {
     if (index < 0)
         index += a->count;
     if (index >= a->count)
         return 0;
-    return (i32)a->chars[index];
+    return (i8)a->chars[index];
 }
 
 array string_split(string a, symbol sp) {
@@ -6476,10 +6522,11 @@ array path_ls(path a, string pattern, bool recur) {
         snprintf(abs, sizeof(abs), "%s/%s", base_dir, entry->d_name);
         string s_abs = string(abs);
         if (stat(abs, &statbuf) == 0) {
-            if (S_ISREG(statbuf.st_mode)) {
+            // sockets are listable files too (app-bus presence lives on them)
+            if (S_ISREG(statbuf.st_mode) || S_ISSOCK(statbuf.st_mode)) {
                 if (!pattern || !pattern->count || ends_with(s_abs, pattern->chars))
                     push(list, (Au)new(path, chars, abs));
-                
+
             } else if (S_ISDIR(statbuf.st_mode)) {
                 if (recur) {
                     path subdir = new(path, chars, abs);
