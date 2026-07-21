@@ -1410,6 +1410,22 @@ Au header(Au a) {
     return (((struct _Au*)a) - 1);
 }
 
+// attach a companion object onto a's header (meta_b), owning it. this is the
+// per-object side-channel transitions ride on: the animated element carries
+// its transition state here, freed with the element in Au_dealloc.
+none Au_attach(Au a, Au other) {
+    if (!a) return;
+    Au hd = header(a);
+    if (hd->meta_b == other) return;
+    if (other) hold(other);
+    if (hd->meta_b) drop(hd->meta_b);
+    hd->meta_b = other;
+}
+
+Au Au_attached(Au a) {
+    return a ? header(a)->meta_b : null;
+}
+
 none def_init(func f) {
     if (call_last_count == call_last_alloc) {
         global_init_fn* prev      = call_last;
@@ -2913,6 +2929,11 @@ none Au_hold_members(Au a) {
 Au Au_set_property(Au a, symbol name, Au value) {
     Au_t type = isa(a);
     Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, 0, true);
+    /// a persisted .agi outlives the schema that wrote it; skip dropped fields
+    if (!m) {
+        print("set_property: no member %s on %s (skipped)", name, type->ident);
+        return value;
+    }
     member_set(a, m, value);
     return value;
 }
@@ -3068,12 +3089,16 @@ none Au_drop_members(Au a) {
     }
 }
 
-none Au_dealloc(Au a) { 
+none Au_dealloc(Au a) {
     Au   f    = header(a);
     Au_t type = (Au_t)f->au;
 
     drop_members(a);
-    
+    // NOTE: do NOT drop f->meta_b here. collections store their value/element
+    // TYPE in the header meta_b (a shared singleton, unheld) — dropping it
+    // underflows the type's refcount and corrupts the heap. Au_attach's
+    // companion is intentionally not auto-freed until a safe owner exists.
+
     if ((Au)f->data != (Au)a) {
         drop(f->data);
         f->data = null;
@@ -3221,6 +3246,20 @@ static void au_arg_usage(Au a, cstrs argv) {
     exit(0);
 }
 
+// a path-typed arg is built into a real absolute path, never stored as a
+// string. cwd is the app's share bundle (cd_share), so a RELATIVE user arg
+// resolves against SILVER_STARTUP (the launch dir); an absolute one passes
+// through. this is why apps declare file inputs as `path`, not `string`.
+static Au au_arg_path(cstr value) {
+    if (!value) return null;
+    if (value[0] == '/') return (Au)path(value);
+    const char* sp = getenv("SILVER_STARTUP");
+    if (!sp || !*sp) return (Au)path(value);
+    char buf[4096];
+    snprintf(buf, sizeof(buf), "%s/%s", sp, value);
+    return (Au)path(buf);
+}
+
 Au Au_with_cstrs(Au a, cstrs argv) {
     engage(argv);
     if (!g_main_argv) g_main_argv = argv;
@@ -3302,14 +3341,22 @@ Au Au_with_cstrs(Au a, cstrs argv) {
                 break;
             }
 
-            Au conv = value ? convert(mem->type, (Au)string(value)) : _bool(true);
+            Au conv;
+            if (mem->src == typeid(path))
+                conv = value ? au_arg_path(value) : null;
+            else
+                conv = value ? convert(mem->type, (Au)string(value)) : _bool(true);
             if (getenv("AU_ARG_DEBUG"))
                 fprintf(stderr, "AU_ARG %s = %s (af_index %lld)\n",
                     mem->ident, value ? value : "(true)", (long long)mem->af_index);
             Au_set_property(a, mem->ident, conv);
         } else {
             Au_t def  = find_member(rtype, null, AU_MEMBER_VAR, AU_TRAIT_IS_DEFAULT, true);
-            Au   conv = def ? convert(def->type, (Au)string(arg)) : null;
+            Au   conv = null;
+            if (def && def->src == typeid(path))
+                conv = au_arg_path(arg);
+            else if (def)
+                conv = convert(def->type, (Au)string(arg));
             if  (conv) Au_set_property(a, def->ident, (Au)conv);
             // the default value is the separator: everything after it
             // belongs to the launched program (see au_argv_stop)
@@ -5663,7 +5710,7 @@ path path_tempfile(symbol tmpl) {
 }
 
 path path_with_string(path a, string s) {
-    a->chars = copy_cstr((cstr)s->chars);
+    a->chars = copy_cstr((s && s->chars) ? (cstr)s->chars : "");
     a->count   = strlen(a->chars);
     return a;
 }
@@ -7656,6 +7703,7 @@ Au async_sync(async t, Au w) {
             thread_t* thread = &t->threads[i];
             lock(thread->lock);
             thread->next = null;
+            cond_signal(thread->lock); // wake a parked runner or join hangs
             unlock(thread->lock);
             pthread_join(thread->obj, null);
         }

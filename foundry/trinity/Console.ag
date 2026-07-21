@@ -1,15 +1,14 @@
-extend orbiter
+extend trinity
 
 
+# unistd/fcntl/ioctl come from trinity.ag — re-importing them here would
+# re-register C symbols (struct stat shadowed the stat() function in shader.ag)
 ifdef [ apple ]
     import <util.h>     # forkpty/openpty live in util.h on macOS
         -lutil
 ifdef [ linux ]
     import <pty.h>
         -lutil
-import <unistd.h>
-import <fcntl.h>
-import <sys/ioctl.h>
 
 # one terminal cell: a Unicode codepoint plus its pen. fg/bg are packed 0xRRGGBB
 # (-1 = terminal default); attr bits: 1 bold, 2 underline, 4 inverse, 8 dim.
@@ -964,6 +963,14 @@ Layer TermLayer
         if [ !s ] return
         # (run dispatch moved to the app's per-frame loop in orbiter.ag — a
         # collapsed console never paints, so it can't live here.)
+        ch : f32 [ paint_term[ cv, s, bounds, con.filter[], con.feed, label_size, label_height ] ]
+        con.content_h = ch
+        con.scroll.y  = s.scroll
+
+# paint a terminal session into `bounds`, returning the content height (scrollback
+# plus one viewport) so the caller can drive its scrollbar. element-free so any
+# host can render a session — the Console layer and ConsoleView both use it.
+func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed: list string, label_size: f32, label_height: f32 ] -> f32
         if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
         # integer line height: rows sit on a fixed pixel grid so scrolling steps by
         # whole lines and lines never jiggle relative to each other (fractional lh
@@ -973,17 +980,16 @@ Layer TermLayer
         x0 : f32 [ bounds.x ]
         y0 : f32 [ bounds.y ]
 
-        flt     : string con.filter[]
         has_flt : bool [ flt && flt.count > 0 ]
 
         if [ s.pty_fd < 0 ]
-            if [ !con.feed ] return
-            n      : i32 [ con.feed.count ]
+            if [ !feed ] return 0.0
+            n      : i32 [ feed.count ]
             max_s  : f32 [ maxf[ f32[n] * lh - bounds.h, 0.0 ] ]
             # filtered lines render consecutively from the top (no bottom-anchor scroll).
             dr     : i32 [ 0 ]
             for [ li: i32 0, li < n, li += 1 ]
-                ln : string con.feed.value_by_index[ li ]
+                ln : string feed.value_by_index[ li ]
                 if [ has_flt && ln.index_of[ flt ] < 0 ] continue
                 y : f32 [ y0 + f32[dr] * lh - ((has_flt) ? 0.0 : max_s) ]
                 dr += 1
@@ -994,7 +1000,7 @@ Layer TermLayer
                     rect [ x: x0, y: y, w: bounds.w, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
             cv.paint[]
-            return
+            return f32[n] * lh
 
         # output is drained off the render path (orbiter.on_render) so this draw
         # only runs when the screen actually changed; no per-frame forcing here.
@@ -1034,7 +1040,7 @@ Layer TermLayer
                 cv.draw_text[ ln, rect [ x: x0, y: y, w: bounds.w, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
             cv.paint[]
-            return
+            return f32[dr] * lh
 
         # the alt screen is standalone (no scrollback above it). base = the rows of
         # scrollback shown above the live grid (0 on the alt buffer).
@@ -1069,8 +1075,6 @@ Layer TermLayer
         # shared ScrollLayer (it reads them off the element).
         s.lh_cache    = lh
         s.cw_cache    = cw
-        con.content_h = total_h
-        con.scroll.y  = s.scroll
 
         # clip to the content bounds so a partially-scrolled top/bottom row doesn't
         # bleed above into the title bar (or below the pane). the shaders honor crop.
@@ -1148,138 +1152,250 @@ Layer TermLayer
             cv.rect_to     [ cur_px, cur_py, cw, lh ]
             cv.paint[]
         cv.clear_crop[]
+        return total_h
 
     # one screen row rendered as colored runs: consecutive cells sharing fg/bg/attr
     # draw as a single text span (and a bg rect when the bg isn't the default).
     # render n cells from `cells` starting at `off` as colored runs (consecutive cells
     # sharing fg/bg/attr draw as one text span, with a bg rect when bg isn't default).
     # used by both the live grid (screen) and the scrollback color store.
-    func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell, off: i32, n: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
-        if [ n <= 0 ] return
-        c : i32 [ 0 ]
-        while [ c < n ]
-            fg : i32 [ cells[off + c].fg ]
-            bg : i32 [ cells[off + c].bg ]
-            at : i32 [ cells[off + c].attr ]
-            c2 : i32 [ c + 1 ]
-            while [ c2 < n && cells[off + c2].fg == fg && cells[off + c2].bg == bg && cells[off + c2].attr == at ]
-                c2 += 1
-            inv : bool [ (at & 4) != 0 ]
-            rfg : i32 [ (inv) ? ((bg < 0) ? 0x000000 : bg) : ((fg < 0) ? 0xdddddd : fg) ]
-            rbg : i32 [ (inv) ? ((fg < 0) ? 0xdddddd : fg) : bg ]
-            rx : f32 [ x0 + f32[c] * cw ]
-            rw : f32 [ f32[c2 - c] * cw ]
-            if [ rbg >= 0 ]
-                cv.fill_color[ col_of[ rbg ] ]
-                cv.stroke_width[ 0.0 ]
-                cv.rect_to[ rx, y, rw, lh ]
-                cv.paint[]
-            # skip the text pass for an all-space run — it draws nothing but still
-            # builds the string + runs the whole glyph/draw_text pipeline.
-            blank : bool [ true ]
-            for [ ci: i32 c, ci < c2 && blank, ci += 1 ]
-                if [ cells[off + ci].ch != 32 ] blank = false
-            if [ !blank ]
-                txt : string s.cells_text[ cells, off, c, c2 ]
-                cv.fill_color[ col_of[ rfg ] ]
-                cv.draw_text[ txt, rect [ x: rx, y: y, w: rw + cw, h: lh ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-            c = c2
+func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell, off: i32, n: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
+    if [ n <= 0 ] return
+    c : i32 [ 0 ]
+    while [ c < n ]
+        fg : i32 [ cells[off + c].fg ]
+        bg : i32 [ cells[off + c].bg ]
+        at : i32 [ cells[off + c].attr ]
+        c2 : i32 [ c + 1 ]
+        while [ c2 < n && cells[off + c2].fg == fg && cells[off + c2].bg == bg && cells[off + c2].attr == at ]
+            c2 += 1
+        inv : bool [ (at & 4) != 0 ]
+        rfg : i32 [ (inv) ? ((bg < 0) ? 0x000000 : bg) : ((fg < 0) ? 0xdddddd : fg) ]
+        rbg : i32 [ (inv) ? ((fg < 0) ? 0xdddddd : fg) : bg ]
+        rx : f32 [ x0 + f32[c] * cw ]
+        rw : f32 [ f32[c2 - c] * cw ]
+        if [ rbg >= 0 ]
+            cv.fill_color[ col_of[ rbg ] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ rx, y, rw, lh ]
+            cv.paint[]
+        # skip the text pass for an all-space run — it draws nothing but still
+        # builds the string + runs the whole glyph/draw_text pipeline.
+        blank : bool [ true ]
+        for [ ci: i32 c, ci < c2 && blank, ci += 1 ]
+            if [ cells[off + ci].ch != 32 ] blank = false
+        if [ !blank ]
+            txt : string s.cells_text[ cells, off, c, c2 ]
+            cv.fill_color[ col_of[ rfg ] ]
+            cv.draw_text[ txt, rect [ x: rx, y: y, w: rw + cw, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        c = c2
 
-    func draw_row [ cv: Canvas, s: ConsoleSession, r: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
-        draw_cells[ cv, s, s.screen, r * s.cols, s.cols, x0, y, lh, cw ]
+func draw_row [ cv: Canvas, s: ConsoleSession, r: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
+    draw_cells[ cv, s, s.screen, r * s.cols, s.cols, x0, y, lh, cw ]
 
-    # return the pooled render for scrollback line `li`: a cache hit returns the
-    # existing slot (caller just blits it); a miss claims a free/grown slot and
-    # rasterizes the line's cells into it at local origin. recycled slots (li=-1)
-    # are reused so the pool never exceeds the on-screen line count.
-    func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
-        # empty line: no slot, no canvas, no raster — the caller draws nothing.
-        if [ s.sb_line_len[ li ] <= 0 ] return null
-        for [ slc: TermLineCache ] in s.sb_lines
-            if [ slc.li == li ] return slc
-        use : TermLineCache [ null ]
-        for [ slc: TermLineCache ] in s.sb_lines
-            if [ slc.li < 0 ]
-                use = slc
-                break
-        if [ !use ]
-            use = TermLineCache [ ]
-            s.sb_lines.push[ use ]
-        len  : i32 [ s.sb_line_len[ li ] ]
-        cw_i : i32 [ i32[ ceil[ f32[len] * cw + cw ] ] ]
-        if [ cw_i < 1 ] cw_i = 1
-        lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
-        if [ !use.canvas ]
-            use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true ]
-            use.canvas.update[]
-        el [ use.canvas.content_w != cw_i || use.canvas.content_h != lh_i ]
-            use.canvas.resize[ cw_i, lh_i ]
-        use.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
-        if [ fs > 0 ] use.canvas.font_size[ fs ]
-        draw_cells[ use.canvas, s, s.sb_line_buf[ li ], 0, len, 0.0, 0.0, lh, cw ]
-        use.canvas.paint[]
-        use.li = li
-        return use
+# return the pooled render for scrollback line `li`: a cache hit returns the
+# existing slot (caller just blits it); a miss claims a free/grown slot and
+# rasterizes the line's cells into it at local origin. recycled slots (li=-1)
+# are reused so the pool never exceeds the on-screen line count.
+func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
+    # empty line: no slot, no canvas, no raster — the caller draws nothing.
+    if [ s.sb_line_len[ li ] <= 0 ] return null
+    for [ slc: TermLineCache ] in s.sb_lines
+        if [ slc.li == li ] return slc
+    use : TermLineCache [ null ]
+    for [ slc: TermLineCache ] in s.sb_lines
+        if [ slc.li < 0 ]
+            use = slc
+            break
+    if [ !use ]
+        use = TermLineCache [ ]
+        s.sb_lines.push[ use ]
+    len  : i32 [ s.sb_line_len[ li ] ]
+    cw_i : i32 [ i32[ ceil[ f32[len] * cw + cw ] ] ]
+    if [ cw_i < 1 ] cw_i = 1
+    lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
+    if [ !use.canvas ]
+        use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true ]
+        use.canvas.update[]
+    el [ use.canvas.content_w != cw_i || use.canvas.content_h != lh_i ]
+        use.canvas.resize[ cw_i, lh_i ]
+    use.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+    if [ fs > 0 ] use.canvas.font_size[ fs ]
+    draw_cells[ use.canvas, s, s.sb_line_buf[ li ], 0, len, 0.0, 0.0, lh, cw ]
+    use.canvas.paint[]
+    use.li = li
+    return use
 
-    # content hash of live grid row `r` — ch/fg/bg/attr of every cell. compared per
-    # frame so an unchanged row blits its cached canvas instead of re-rasterizing.
-    func row_hash [ s: ConsoleSession, r: i32, n: i32 ] -> i64
-        h    : i64 [ i64[ n ] ]
-        base : i32 [ r * s.cols ]
-        for [ c: i32 0, c < n, c += 1 ]
-            idx : i32 [ base + c ]
-            h = h * 131 + i64[ s.screen[ idx ].ch ]
-            h = h * 131 + i64[ s.screen[ idx ].fg ]
-            h = h * 131 + i64[ s.screen[ idx ].bg ]
-            h = h * 131 + i64[ s.screen[ idx ].attr ]
-        return h
+# content hash of live grid row `r` — ch/fg/bg/attr of every cell. compared per
+# frame so an unchanged row blits its cached canvas instead of re-rasterizing.
+func row_hash [ s: ConsoleSession, r: i32, n: i32 ] -> i64
+    h    : i64 [ i64[ n ] ]
+    base : i32 [ r * s.cols ]
+    for [ c: i32 0, c < n, c += 1 ]
+        idx : i32 [ base + c ]
+        h = h * 131 + i64[ s.screen[ idx ].ch ]
+        h = h * 131 + i64[ s.screen[ idx ].fg ]
+        h = h * 131 + i64[ s.screen[ idx ].bg ]
+        h = h * 131 + i64[ s.screen[ idx ].attr ]
+    return h
 
-    # content-addressed render of LIVE grid row `r`. a hit = any pooled canvas already
-    # holding this exact content (hash), no matter which row rendered it — so when the
-    # grid scrolls, last frame's line canvases are reused (blitted) and only genuinely
-    # new content rasterizes. a miss recycles a slot whose content scrolled off (frame
-    # != current) or grows the pool.
-    func live_slot [ cv: Canvas, s: ConsoleSession, r: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
-        # trim trailing default cells: cache keyed on the DRAWABLE content only, so lines
-        # differing only in padding share a canvas, and the canvas is content-width.
-        dl : i32 [ s.row_drawable[ r ] ]
-        if [ dl <= 0 ] return null
-        h : i64 [ row_hash[ s, r, dl ] ]
-        for [ slot: TermLineCache ] in s.live_lines
-            if [ slot.canvas && slot.hash == h ]
-                slot.frame = s.frame_id
-                return slot
-        use : TermLineCache [ null ]
-        for [ slot: TermLineCache ] in s.live_lines
-            if [ slot.frame != s.frame_id ]
-                use = slot
-                break
-        if [ !use ]
-            use = TermLineCache [ ]
-            s.live_lines.push[ use ]
-        cw_i : i32 [ i32[ ceil[ f32[dl] * cw + cw ] ] ]
-        if [ cw_i < 1 ] cw_i = 1
-        lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
-        if [ !use.canvas ]
-            use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true ]
-            use.canvas.update[]
-        el [ use.canvas.content_w != cw_i || use.canvas.content_h != lh_i ]
-            use.canvas.resize[ cw_i, lh_i ]
-        use.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
-        if [ fs > 0 ] use.canvas.font_size[ fs ]
-        draw_cells[ use.canvas, s, s.screen, r * s.cols, dl, 0.0, 0.0, lh, cw ]
-        use.canvas.paint[]
-        use.hash  = h
-        use.frame = s.frame_id
-        return use
+# content-addressed render of LIVE grid row `r`. a hit = any pooled canvas already
+# holding this exact content (hash), no matter which row rendered it — so when the
+# grid scrolls, last frame's line canvases are reused (blitted) and only genuinely
+# new content rasterizes. a miss recycles a slot whose content scrolled off (frame
+# != current) or grows the pool.
+func live_slot [ cv: Canvas, s: ConsoleSession, r: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
+    # trim trailing default cells: cache keyed on the DRAWABLE content only, so lines
+    # differing only in padding share a canvas, and the canvas is content-width.
+    dl : i32 [ s.row_drawable[ r ] ]
+    if [ dl <= 0 ] return null
+    h : i64 [ row_hash[ s, r, dl ] ]
+    for [ slot: TermLineCache ] in s.live_lines
+        if [ slot.canvas && slot.hash == h ]
+            slot.frame = s.frame_id
+            return slot
+    use : TermLineCache [ null ]
+    for [ slot: TermLineCache ] in s.live_lines
+        if [ slot.frame != s.frame_id ]
+            use = slot
+            break
+    if [ !use ]
+        use = TermLineCache [ ]
+        s.live_lines.push[ use ]
+    cw_i : i32 [ i32[ ceil[ f32[dl] * cw + cw ] ] ]
+    if [ cw_i < 1 ] cw_i = 1
+    lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
+    if [ !use.canvas ]
+        use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true ]
+        use.canvas.update[]
+    el [ use.canvas.content_w != cw_i || use.canvas.content_h != lh_i ]
+        use.canvas.resize[ cw_i, lh_i ]
+    use.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+    if [ fs > 0 ] use.canvas.font_size[ fs ]
+    draw_cells[ use.canvas, s, s.screen, r * s.cols, dl, 0.0, 0.0, lh, cw ]
+    use.canvas.paint[]
+    use.hash  = h
+    use.frame = s.frame_id
+    return use
 
-    # packed 0xRRGGBB → rgba (components 0..1).
-    func col_of [ v: i32 ] -> rgba
-        return rgba [ r: f32[(v >> 16) & 255] / 255.0, g: f32[(v >> 8) & 255] / 255.0, b: f32[v & 255] / 255.0, a: 1.0 ]
+# packed 0xRRGGBB → rgba (components 0..1).
+func col_of [ v: i32 ] -> rgba
+    return rgba [ r: f32[(v >> 16) & 255] / 255.0, g: f32[(v >> 8) & 255] / 255.0, b: f32[v & 255] / 255.0, a: 1.0 ]
+
+# xterm modifier parameter: 1 + shift(1) + alt(2) + ctrl(4). 1 = no modifiers.
+func keymod [ ev: Event ] -> i32
+    m : i32 [ 1 ]
+    if [ ev.key.shift ] m += 1
+    if [ ev.key.alt ]   m += 2
+    if [ ev.key.ctrl ]  m += 4
+    return m
+
+# cursor / Home / End ('A'..'D','H','F'): modified → CSI 1;mod L; otherwise SS3
+# (ESC O L) when the app set DECCKM, else plain CSI (ESC [ L). app-cursor mode is
+# what makes arrow-key menu navigation work in TUIs like claude code.
+func send_cursor [ s: ConsoleSession, ev: Event, letter: string ]
+    m : i32 [ keymod[ ev ] ]
+    if [ m > 1 ]
+        s.send_esc[ '[1;{m}{letter}' ]
+    el [ s.app_cursor ]
+        s.send_esc[ 'O{letter}' ]
+    el
+        s.send_esc[ '[{letter}' ]
+
+# Insert/Delete/Page/etc: ESC [ n ~   (modified → ESC [ n ; mod ~)
+func send_tilde [ s: ConsoleSession, ev: Event, n: i32 ]
+    m : i32 [ keymod[ ev ] ]
+    if [ m > 1 ]
+        s.send_esc[ '[{n};{m}~' ]
+    el
+        s.send_esc[ '[{n}~' ]
+
+# function keys. F1-F4 = SS3 (ESC O P..S); F5-F12 = CSI n ~. modified forms add
+# the ;mod parameter.
+func send_fkey [ s: ConsoleSession, ev: Event, k: i32 ]
+    m : i32 [ keymod[ ev ] ]
+    if [ k <= 293 ]
+        letter : string [ (k == 290) ? 'P' : ((k == 291) ? 'Q' : ((k == 292) ? 'R' : 'S')) ]
+        if [ m > 1 ]
+            s.send_esc[ '[1;{m}{letter}' ]
+        el
+            s.send_esc[ 'O{letter}' ]
+    el
+        # F5=15 F6=17 F7=18 F8=19 F9=20 F10=21 F11=23 F12=24
+        n : i32 [ 15 ]
+        if [ k == 295 ]
+            n = 17
+        el [ k == 296 ]
+            n = 18
+        el [ k == 297 ]
+            n = 19
+        el [ k == 298 ]
+            n = 20
+        el [ k == 299 ]
+            n = 21
+        el [ k == 300 ]
+            n = 23
+        el [ k == 301 ]
+            n = 24
+        send_tilde[ s, ev, n ]
+
+# map one key event onto the session's input stream. `vh` is the visible height,
+# used for the page-up/down step. returns true when it scrolled our own view
+# instead of forwarding (the caller repaints). shared by Console and ConsoleView.
+func term_key [ s: ConsoleSession, ev: Event, vh: f32 ] -> bool
+    if [ !ev.key.state || !s ] return false
+    k : i32 [ i32 ev.key.unicode ]
+    # page up / down on the NORMAL buffer scroll OUR view (scrollback). on the alt
+    # screen (or modified) they fall through and are forwarded to the app.
+    if [ (k == 266 || k == 267) && !s.in_alt ]
+        lh   : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
+        page : f32 [ ((vh > 0.0) ? vh : f32[s.rows] * lh) - lh ]
+        s.user_scrolled = true
+        s.scroll = s.scroll + ((k == 266) ? 0.0 - page : page)
+        if [ s.scroll < 0.0 ] s.scroll = 0.0
+        if [ s.scroll > s.max_scroll ] s.scroll = s.max_scroll
+        return true
+    if [ k == 257 ]                       # Enter
+        s.write_input[ '\r' ]
+    el [ k == 258 ]                       # Tab / Shift-Tab (back-tab = CSI Z)
+        if [ ev.key.shift ]
+            s.send_esc[ '[Z' ]
+        el
+            s.write_input[ '\t' ]
+    el [ k == 256 ]                       # Escape
+        s.send_esc[ '' ]
+    el [ k == 259 ]                       # Backspace (Ctrl → ^H, else DEL)
+        s.write_input[ (ev.key.ctrl) ? '\x08' : '\x7f' ]
+    el [ k == 265 ]                       # Up
+        send_cursor[ s, ev, 'A' ]
+    el [ k == 264 ]                       # Down
+        send_cursor[ s, ev, 'B' ]
+    el [ k == 262 ]                       # Right
+        send_cursor[ s, ev, 'C' ]
+    el [ k == 263 ]                       # Left
+        send_cursor[ s, ev, 'D' ]
+    el [ k == 268 ]                       # Home
+        send_cursor[ s, ev, 'H' ]
+    el [ k == 269 ]                       # End
+        send_cursor[ s, ev, 'F' ]
+    el [ k == 260 ]                       # Insert
+        send_tilde[ s, ev, 2 ]
+    el [ k == 261 ]                       # Delete
+        send_tilde[ s, ev, 3 ]
+    el [ k == 266 ]                       # PageUp  (alt screen / modified)
+        send_tilde[ s, ev, 5 ]
+    el [ k == 267 ]                       # PageDown
+        send_tilde[ s, ev, 6 ]
+    el [ k >= 290 && k <= 301 ]           # F1..F12
+        send_fkey[ s, ev, k ]
+    el [ ev.key.ctrl && k >= 64 && k <= 95 ]
+        b : i8 [ i8[k - 64] ]
+        write[ s.pty_fd, @b, 1 ]
+    return false
 
 
-Control Console
+element Console
     focusable  : true
     # declared look: dark terminal fill, the term grid under the 44px filter
     # title, an overlay scrollbar. member idents key the paint map.
@@ -1369,63 +1485,6 @@ Control Console
         s.restart[]
         s.running = false
 
-    # xterm modifier parameter: 1 + shift(1) + alt(2) + ctrl(4). 1 = no modifiers.
-    func keymod [ ev: Event ] -> i32
-        m : i32 [ 1 ]
-        if [ ev.key.shift ] m += 1
-        if [ ev.key.alt ]   m += 2
-        if [ ev.key.ctrl ]  m += 4
-        return m
-
-    # cursor / Home / End ('A'..'D','H','F'): modified → CSI 1;mod L; otherwise SS3
-    # (ESC O L) when the app set DECCKM, else plain CSI (ESC [ L). app-cursor mode is
-    # what makes arrow-key menu navigation work in TUIs like claude code.
-    func send_cursor [ s: ConsoleSession, ev: Event, letter: string ]
-        m : i32 [ keymod[ ev ] ]
-        if [ m > 1 ]
-            s.send_esc[ '[1;{m}{letter}' ]
-        el [ s.app_cursor ]
-            s.send_esc[ 'O{letter}' ]
-        el
-            s.send_esc[ '[{letter}' ]
-
-    # Insert/Delete/Page/etc: ESC [ n ~   (modified → ESC [ n ; mod ~)
-    func send_tilde [ s: ConsoleSession, ev: Event, n: i32 ]
-        m : i32 [ keymod[ ev ] ]
-        if [ m > 1 ]
-            s.send_esc[ '[{n};{m}~' ]
-        el
-            s.send_esc[ '[{n}~' ]
-
-    # function keys. F1-F4 = SS3 (ESC O P..S); F5-F12 = CSI n ~. modified forms add
-    # the ;mod parameter.
-    func send_fkey [ s: ConsoleSession, ev: Event, k: i32 ]
-        m : i32 [ keymod[ ev ] ]
-        if [ k <= 293 ]
-            letter : string [ (k == 290) ? 'P' : ((k == 291) ? 'Q' : ((k == 292) ? 'R' : 'S')) ]
-            if [ m > 1 ]
-                s.send_esc[ '[1;{m}{letter}' ]
-            el
-                s.send_esc[ 'O{letter}' ]
-        el
-            # F5=15 F6=17 F7=18 F8=19 F9=20 F10=21 F11=23 F12=24
-            n : i32 [ 15 ]
-            if [ k == 295 ]
-                n = 17
-            el [ k == 296 ]
-                n = 18
-            el [ k == 297 ]
-                n = 19
-            el [ k == 298 ]
-                n = 20
-            el [ k == 299 ]
-                n = 21
-            el [ k == 300 ]
-                n = 23
-            el [ k == 301 ]
-                n = 24
-            send_tilde[ s, ev, n ]
-
     func on_char [ ev: Event ]
         s : ConsoleSession session[]
         # Alt+<char> is sent as ESC then the char (meta prefix), like a real terminal.
@@ -1434,68 +1493,39 @@ Control Console
         el
             s.write_input[ ev.key.text ]
 
-    # a dropped file path. wrap it in bracketed-paste markers (ESC[200~ … ESC[201~)
-    # when the app has paste mode on, so claude/gemini recognize it as a paste (and
-    # ingest an image path as [Image #N]) rather than treating it as typed text.
-    func on_drop [ ev: Event ]
+    # paste text into the session as a real terminal paste: wrapped in
+    # bracketed-paste markers (ESC[200~ … ESC[201~) when the app has paste mode
+    # on, so claude/gemini recognize it as a paste (and ingest an image path as
+    # [Image #N]) rather than treating it as typed text.
+    func paste [ text: string ]
         s : ConsoleSession session[]
-        if [ !ev.key.text || ev.key.text.count == 0 ] return
+        if [ !s || !text || text.count == 0 ] return
         if [ s.bracketed_paste ]
             s.send_esc[ '[200~' ]
-            s.write_input[ ev.key.text ]
+            s.write_input[ text ]
             s.send_esc[ '[201~' ]
         el
-            s.write_input[ ev.key.text ]
+            s.write_input[ text ]
+
+    # a dropped file path rides the same paste path
+    func on_drop [ ev: Event ]
+        if [ !ev.key.text || ev.key.text.count == 0 ] return
+        paste[ ev.key.text ]
 
     func on_key [ ev: Event ]
-        if [ !ev.key.state ] return
         s : ConsoleSession session[]
-        k : i32 [ i32 ev.key.unicode ]
-        # page up / down on the NORMAL buffer scroll OUR view (scrollback). on the alt
-        # screen (or modified) they fall through and are forwarded to the app.
-        if [ (k == 266 || k == 267) && !s.in_alt ]
-            lh  : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
-            ele : Layer (layers) ? layers[ 'content' ] : null
-            vh  : f32 [ (ele && ele.bounds) ? ele.bounds.h : f32[s.rows] * lh ]
-            page : f32 [ vh - lh ]
-            scroll_by[ s, (k == 266) ? -page : page ]
-            return
-        if [ k == 257 ]                       # Enter
-            s.write_input[ '\r' ]
-        el [ k == 258 ]                       # Tab / Shift-Tab (back-tab = CSI Z)
-            if [ ev.key.shift ]
-                s.send_esc[ '[Z' ]
-            el
-                s.write_input[ '\t' ]
-        el [ k == 256 ]                       # Escape
-            s.send_esc[ '' ]
-        el [ k == 259 ]                       # Backspace (Ctrl → ^H, else DEL)
-            s.write_input[ (ev.key.ctrl) ? '\x08' : '\x7f' ]
-        el [ k == 265 ]                       # Up
-            send_cursor[ s, ev, 'A' ]
-        el [ k == 264 ]                       # Down
-            send_cursor[ s, ev, 'B' ]
-        el [ k == 262 ]                       # Right
-            send_cursor[ s, ev, 'C' ]
-        el [ k == 263 ]                       # Left
-            send_cursor[ s, ev, 'D' ]
-        el [ k == 268 ]                       # Home
-            send_cursor[ s, ev, 'H' ]
-        el [ k == 269 ]                       # End
-            send_cursor[ s, ev, 'F' ]
-        el [ k == 260 ]                       # Insert
-            send_tilde[ s, ev, 2 ]
-        el [ k == 261 ]                       # Delete
-            send_tilde[ s, ev, 3 ]
-        el [ k == 266 ]                       # PageUp  (alt screen / modified)
-            send_tilde[ s, ev, 5 ]
-        el [ k == 267 ]                       # PageDown
-            send_tilde[ s, ev, 6 ]
-        el [ k >= 290 && k <= 301 ]           # F1..F12
-            send_fkey[ s, ev, k ]
-        el [ ev.key.ctrl && k >= 64 && k <= 95 ]
-            b : i8 [ i8[k - 64] ]
-            write[ s.pty_fd, @b, 1 ]
+        if [ !s ] return
+        # Ctrl/Cmd-C with an active selection copies it; no selection → SIGINT
+        if [ ev.key.state && (ev.key.ctrl || ev.key.meta) && i32[ev.key.unicode] == 67 ]
+            if [ s.sel_line >= 0 ]
+                txt : string s.selection_text[]
+                if [ txt.count > 0 && ux ] ux.set_clipboard[ txt ]
+                s.sel_line = -1
+                pristine = false
+                return
+        ele : Layer (layers) ? layers[ 'content' ] : null
+        vh  : f32 [ (ele && ele.bounds) ? ele.bounds.h : 0.0 ]
+        if [ term_key[ s, ev, vh ] ] pristine = false
 
     # map a mouse position to a (line, col) in the line model and set the cursor —
     # mirrors EditorLayer.place_cursor over the console's line_count/line_get.
@@ -1553,8 +1583,8 @@ Control Console
         s.link_c1 = b
         return true
 
-    # if the (line,col) sits on a `path:line(:col)` token in the output, open that
-    # file at that line in editor pane 0 (mirrors apply_break) and return true.
+    # if the (line,col) sits on a `path:line(:col)` token in the output, hand it
+    # to the app root's open_at (orbiter opens an editor pane) and return true.
     func open_link_at [ ln: i32, col: i32 ] -> bool
         s : ConsoleSession session[]
         if [ !s ] return false
@@ -1564,33 +1594,13 @@ Control Console
         parts : array string word.split[ ':' ]
         fp : string parts[ 0 ]
         lno : i32 [ i32[ parts[ 1 ].integer_value[] ] ]
-        # ux is the Window; the app (orbiter) is ux.app_object. casting ux itself to
-        # orbiter reinterprets a Window as an orbiter → garbage self → SIGBUS.
+        sc  : i32 [ (parts.count > 2 && parts[ 2 ].is_numeric[]) ? i32[ parts[ 2 ].integer_value[] ] : 0 ]
+        # ux is the Window; the app root is ux.app_object. casting ux itself
+        # reinterprets a Window as an element → garbage self → SIGBUS.
         if [ !ux || !ux.app_object ] return false
-        orb : cast orbiter [ ux.app_object ]
-        if [ !orb ] return false
-        orb.open_in_pane[ path '{fp}', 0 ]
-        ed : Editor orb.pane_at[ 0 ]
-        if [ ed ]
-            sl : i32 [ (lno > 0) ? lno - 1 : 0 ]
-            sc : i32 [ (parts.count > 2 && parts[ 2 ].is_numeric[]) ? i32[ parts[ 2 ].integer_value[] ] : 0 ]
-            ed.sel_line = sl
-            ed.sel_col  = sc
-            # collapse the selection onto the caret — without resetting the anchor the
-            # editor draws a range from the previous anchor to this new caret.
-            ed.anchor_line = sl
-            ed.anchor_col  = sc
-            lh  : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
-            vh  : f32 [ (ed.bounds) ? ed.bounds.h : 600.0 ]
-            top : f32 [ f32[ sl ] * lh ]
-            if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
-                ed.scroll.y = top - vh * 0.4
-                if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
-                # pin the animation target too — otherwise the scroll animator lerps
-                # scroll.y back to the stale scroll_target (the old caret location).
-                ed.scroll_target = ed.scroll.y
-            ed.pristine = false
-        return true
+        app : cast element [ ux.app_object ]
+        if [ !app ] return false
+        return app.open_at*[ path '{fp}', lno, sc ]
 
     func on_press [ ev: Event ]
         s : ConsoleSession session[]
@@ -1598,13 +1608,11 @@ Control Console
         # take keyboard focus so key_event/text_event (both dispatch to `focus`) route
         # here — without this, nothing reaches the terminal's on_key/on_char.
         set_focus[]
-        # right-click copies the current selection to the clipboard (before any
-        # left-click would replace it). does not disturb the selection.
+        # right-click pastes the clipboard (what Ctrl-C copied) into the session.
         if [ ev.mouse.button == 1 ]
-            txt : string s.selection_text[]
-            if [ txt.count > 0 && ux ] ux.set_clipboard[ txt ]
-            s.sel_line = -1        # void the selection once copied
-            pristine = false
+            if [ ux ]
+                clip : string ux.get_clipboard[]
+                if [ clip && clip.count > 0 ] paste[ clip ]
             return
         ele : Layer (layers) ? layers[ 'content' ] : null
         if [ !ele || !ele.bounds ] return
@@ -1751,8 +1759,7 @@ Layer CompileLayer
         cv.paint[]
 
 
-Control CompileConsole
-    public selected : bool
+element CompileConsole
     public log : list string
     func init []
         log = list string []

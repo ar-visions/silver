@@ -1,0 +1,34 @@
+import vec
+import img
+import trinity
+import <stdio.h>
+
+# an empty window — no app content at all. everything visible is trinity's own
+# chrome (the UX generics tab), which is the point: it isolates the framework's
+# menu button so a change to it can be seen on its own.
+# dictation: the app does NOT record. the dictate toggle broadcasts on the app
+# bus and crashman (the supervisor shell) owns the mic and the LLM connection.
+Background ExperimentBackground
+    func init[]
+        color = rgba[ '#ff0000' ]
+
+Button MidButton
+    area  : Region { m0 m0 w3 h1 }
+    body  : Layer [ fill_color: rgba [ '#2e7d32' ], radius: Radius [ '8' ] ]
+    hover : Layer [ states: State.hovered, fill_color: rgba [ '#388e3c' ], radius: Radius [ '8' ] ]
+    face  : Layer [ label_color: rgba [ '#fff' ], label_size: 14, label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+element experiment : trinity
+    public width      : i32    [ 480 ]
+    public height     : i32    [ 560 ]
+    public background : string [ 'ExperimentBackground' ]
+    public title      : string [ 'experiment' ]
+    # the framework shade — the only thing this window shows
+    public ux_generics : bool [ true ]
+    # reflected into the shade: a public rgba becomes a color wheel row
+    public tint        : rgba [ '#e0508c' ]
+
+    public func render [] -> Elements
+        return Elements [
+            "mid": MidButton [ label: 'click me' ]
+        ]

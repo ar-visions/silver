@@ -1407,11 +1407,18 @@ class uniforms
     # previously stored and never consumed (every node rendered untransformed).
     # zero matrix (m[15]==0) = not set = skip.
     public node_model : mat4f
+    # standalone compute runs on a WORKER thread while the main thread paints
+    # and advances vk.cur_ring — so a compute pipeline pins its own fixed slot
+    # (set by Pipeline). -1 = follow the shared ring (graphics). without this
+    # the uniform lands in one slot while the dispatch binds another → the
+    # shader reads zero dims → writes nothing (the whisper [Music] bug).
+    public force_slot : i32 [ -1 ]
 
     # write the CURRENT ring slot's uniform buffer only — each draw gets a private
     # copy of the shader state so a later draw can't overwrite an in-flight one.
     public func update [ ]
-        b : u_buffers[ vk.cur_ring ]
+        sl : i32 [ (force_slot >= 0) ? force_slot : vk.cur_ring ]
+        b : u_buffers[ sl ]
         s.uniform_transfer[ b.data, b.user ]
         if [ node_model.m[15] != 0.0 ]
             mvp : (s inherits ModelViewProject)
@@ -1612,13 +1619,20 @@ class Pipeline
         frame: VkCommandBuffer [ f ]
         for [ t: Texture ] in storage_textures
             t.transition_in[ f, VK_IMAGE_LAYOUT_GENERAL ]
+        # standalone compute runs off-thread from the paint ring. this
+        # pipeline's u_buffers are private (the main thread paints with OTHER
+        # pipelines), so slot 0 is exclusively ours — pin it so the uniform we
+        # write and the descriptor we bind are the SAME slot. without this the
+        # worker wrote slot cur_ring (advanced by paints) while binding slot 0
+        # → the shader read zero dims → wrote nothing (the whisper [Music] bug).
+        cslot : i32 [ 0 ]
+        if [ !r ] shader_uniforms.force_slot = cslot
         shader_uniforms.update[ ]
         vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_COMPUTE, vk_compute ]
         # bind BOTH descriptor sets (set 0 = uniforms, set 1 = sampler/storage).
         # the original code only bound set 0 because the compute-on-vbo
         # pattern didn't have any storage bindings; the SDF compute does.
-        # standalone compute (no Render) uses ring slot 0
-        ds2 : i32 [ (r) ? r.draw_slot : 0 ]
+        ds2 : i32 [ (r) ? r.draw_slot : cslot ]
         vkCmdBindDescriptorSets[ frame, VK_PIPELINE_BIND_POINT_COMPUTE,
             layout, 0, 2, @descriptor_sets[ 2 * ds2 ], 0, null ]
         # explicit dispatch counts override the default vertex-buffer-driven
@@ -1874,7 +1888,7 @@ class Pipeline
                 desc.poolSizeCount += 1
             vkCreateDescriptorPool[ vk.device, desc, null, @descriptor_pool ]
             # interleaved layouts: [set0, set1] repeated per ring slot
-            set_layouts : local VkDescriptorSetLayout [128]
+            set_layouts : local VkDescriptorSetLayout [1024]
             for [ rs: i32 0, rs < pipe_ring, rs += 1 ]
                 set_layouts[ 2 * rs ]     = descriptor_layouts[0]
                 set_layouts[ 2 * rs + 1 ] = descriptor_layouts[1]
@@ -3638,6 +3652,11 @@ class AppFrames
 
     func draw [ cv: Canvas, dst: rect ]
         if [ tx ] cv.draw_image[ tx, dst ]
+
+    func save_png [ p: path ]
+        if [ !tx ] return
+        im : Image [ tx ]
+        im.png[ p ]
 
     func dispose []
         if [ bufs ]

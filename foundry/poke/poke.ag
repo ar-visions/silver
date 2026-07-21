@@ -1,0 +1,28 @@
+import trinity
+import <stdio.h>
+import <unistd.h>
+
+# agent driver: broadcast one message on the trinity app bus and print
+# replies for 3s. e.g.  poke --msg ux_click --arg magnify
+app poke
+    public msg : string
+    public arg : string
+
+    func init []
+        if [ !msg || msg.count == 0 ]
+            puts 'usage: poke --msg ux_click --arg <id|x y>'
+            return
+        bus : AppBus []
+        bus.register[ 'poke' ]
+        bus.send[ msg, (arg) ? arg : '' ]
+        t0 : i64 [ epoch_millis[] ]
+        while [ epoch_millis[] - t0 < 3000 ]
+            m : BusMessage bus.recv[]
+            if [ m ]
+                skip : bool [ false ]
+                if [ bus.name && m.from == bus.name ] skip = true
+                if [ !skip ]
+                    puts '{m.from}: {m.key} {m.body}'
+            el
+                usleep[ 50000 ]
+        bus.shutdown[]

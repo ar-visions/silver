@@ -1,0 +1,351 @@
+import vec
+import img
+import trinity
+import spectra
+import <stdio.h>
+import <stdlib.h>
+
+# the report surface: where the fault lands and where you talk back to an agent
+# about it. flush coral surface: no margins, no rounding, no title — the report
+# line rides the 38px toolbar and the console fills everything under it.
+element CrashConsole
+    area  : Region { l0 t0 r0 b0 }
+    body  : Layer [ fill_color: rgba [ '#e8556d' ] ]
+    face  : Layer [ label_color: rgba [ '#ffe2e6' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.0 ], label_offset: vec2f [ x: 8.0, y: 10.0 ] ]
+
+# the agent terminal: a claude session with the app context, full width — the
+# app itself is either right behind the overlay or gone; no view column.
+Console CrashAgent
+    area     : Region [ 'l0 t38px r0 b0' ]
+    animated : true
+    # no filter title here — drop the base 44px content inset to a flat 8px
+    content   : TermLayer [ area: Region { 8px }, label_height: 1.0, label_size: 16 ]
+    scrollbar : ScrollLayer [ overlay: true, area: Region { 8px }, thumb_color: '#fff4',
+        thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
+
+# toolbar action chip: 1px outline, transparent fill, white text
+element CrashBtn
+    public kind    : string
+    public enabled : bool [ true ]
+    body  : Layer [ stroke_width: 1.0, stroke_color: rgba [ '#ffffff' ],
+        radius: Radius [ '6' ], label_color: rgba [ '#ffffff' ], label_size: 13,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+    hover : Layer [ states: State.hovered, fill_color: rgba [ '#fff2' ],
+        stroke_width: 1.0, stroke_color: rgba [ '#ffffff' ], radius: Radius [ '6' ],
+        label_color: rgba [ '#ffffff' ], label_size: 13,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+    func on_press [ ev: Event ]
+        if [ !enabled ] return
+        cm : cast crashman [ parent ]
+        if [ !cm ] return
+        if [ kind && kind == 'back' ]
+            # tell the app to fold the overlay (ring 1); crashman stays alive
+            host_post[ 1, i32[ HM.bye ], 0, 0, 0 ]
+        el [ kind && kind == 'relaunch' ]
+            cm.do_relaunch[]
+        el [ kind && kind == 'shot' ]
+            cm.paste_shot[]
+        ev.stop_propagation[]
+
+CrashBtn BackBtn
+    area : Region [ 'r8px t8px w104px h22px' ]
+
+CrashBtn RelaunchBtn
+    area : Region [ 'r120px t8px w104px h22px' ]
+
+CrashBtn ShotBtn
+    area : Region [ 'r120px t8px w150px h22px' ]
+
+# crashman — the supervisor's shell. attached (--attach), it composites INSIDE
+# the running app's window as an overlay; own-window, it came up because the
+# app crashed. it owns the mic and the LLM connection either way.
+element crashman : trinity
+    public width      : i32    [ 960 ]
+    public height     : i32    [ 640 ]
+    public background : string [ 'Background' ]
+    public title      : string [ 'crashman' ]
+    public ux_generics : bool  [ false ]
+    # the shell's own tint
+    public tint        : rgba [ '#1c58e0' ]
+    bg : Layer [ fill_color: rgba [ '#b8324a' ] ]
+    # the live capture, owned HERE rather than in the app — a dictation must
+    # outlive the thing being dictated into.
+    intern cap_on      : bool
+    # auto-binds to els['agent'] after the first tree
+    mutable agent      : CrashAgent
+    # the crash verdict has been typed into the agent session
+    intern reported    : bool
+    # utterances already voiced (claude's speak markers persist on screen)
+    intern spoken      : array string
+    # agent_ready broadcast once the bus exists
+    intern announced   : bool
+
+    # literal {{ / }} for the speak-marker protocol, built once from bytes so
+    # the interpolation parser never sees raw braces
+    intern oc : string
+    intern cc : string
+    # the take submits on STOP; this winds down the final transcription
+    intern flushing : bool
+    # claude is working: its status line shows 'esc to interrupt' only while a
+    # request is in flight. the single reliable signal that it's thinking.
+    intern thinking : bool
+    # frame tick for the animated thinking dots
+    intern spin : i32
+
+    func init []
+        # own presence name — the host app owns the default 'trinity' socket
+        bus_name = 'crashman'
+        bus_name.hold[]
+        ob : local i8 [ 3 ]
+        ob[0] = 123
+        ob[1] = 123
+        ob[2] = 0
+        oc = string [ @ob[0] ]
+        oc.hold[]
+        cb : local i8 [ 3 ]
+        cb[0] = 125
+        cb[1] = 125
+        cb[2] = 0
+        cc = string [ @cb[0] ]
+        cc.hold[]
+
+    # ask the host to relaunch the app (env is the channel); it comes back
+    # WINDOWED — crashman keeps its window and keeps supervising
+    public func do_relaunch []
+        k : string 'SILVER_ISOLATE_RESTART'
+        v : string '1'
+        setenv[ k.chars, v.chars, 1 ]
+
+    # attach the app's frozen context to the claude session: screenshot +
+    # element state, both saved beside the shell socket the moment the user
+    # switched here. Console.paste bracket-pastes so claude ingests the png
+    # as an image.
+    public func paste_shot []
+        if [ !agent ] return
+        ss : string ''
+        se : getenv[ 'SILVER_ISOLATE_SESSION' ]
+        if [ se ] ss = string [ se ]
+        shot : path '/tmp/silver-app-{ss}.png'
+        tree : path '/tmp/silver-app-{ss}.agi'
+        if [ shot.exists[] ] agent.paste[ '{shot}' ]
+        s : ConsoleSession agent.session[]
+        if [ s && tree.exists[] ] s.write_input[ ' element tree: {tree} ' ]
+
+    # last dictate command (edge-detect); the WndProc (shm_pump) delivers it
+    intern dstate   : i32 [ -1 ]
+    # our attached app's pid (from the --attach path); once it dies, this
+    # crashman is an orphan writing a dead app's shm frame — it MUST exit,
+    # or two crashmans race the same shared texture (the side-to-side jitter)
+    intern app_pid  : i32 [ 0 ]
+
+    # HM.dictate from the app: 0 idle, 1 recording, 2 cancel. crashman owns the
+    # mic; the live confirm goes back on ring 1 (the button turns blue).
+    public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
+        if [ mt != 1 ] return
+        s : i32 [ wp ]
+        if [ s == dstate ] return
+        puts 'crashman on_host dictate: {dstate} -> {s}'
+        dstate = s
+        if [ s == 1 ]
+            rc : dictation_start[]
+            if [ rc == 0 ]
+                cap_on = true
+                host_live_set[ 1 ]
+        el [ s == 2 ]
+            dictation_cancel[]
+            cap_on   = false
+            flushing = false
+            host_live_set[ 0 ]
+        el
+            if [ cap_on ]
+                dictation_stop[]
+                cap_on   = false
+                flushing = true
+            host_live_set[ 0 ]
+
+    # the held-back app context rides the FIRST message instead of launch
+    intern ctx      : string
+    intern ctx_sent : bool
+    # delayed follow-up Enter: the TUI can swallow a \r that lands mid-redraw
+    intern enter_at : i32
+    # frames since claude's TUI first painted — input typed before it reads
+    # stdin is DISCARDED at its boot, so the context waits this out
+    intern ctx_wait : i32
+
+    # compose a message for the agent: spoken text wrapped user {{ ... }},
+    # the app context prepended exactly once (the first thing it ever hears)
+    func agent_send [ body: string ]
+        if [ !agent ]
+            puts 'agent_send: NO agent bound'
+            return
+        s6 : ConsoleSession agent.session[]
+        if [ !s6 ]
+            puts 'agent_send: NO session'
+            return
+        puts 'agent_send: {body}'
+        m6 : string body
+        if [ !ctx_sent && ctx && ctx.count > 0 ]
+            ctx_sent = true
+            m6 = ((body && body.count > 0) ? '{ctx} {body}' : ctx)
+        if [ !m6 || m6.count == 0 ] return
+        # every request carries the app's current screenshot + serialized tree,
+        # frozen the moment recording stopped. session-keyed so 1000 instances
+        # of one app never read each other's freeze.
+        ss : string ''
+        se : getenv[ 'SILVER_ISOLATE_SESSION' ]
+        if [ se ] ss = string [ se ]
+        shot : path '/tmp/silver-app-{ss}.png'
+        tree : path '/tmp/silver-app-{ss}.agi'
+        if [ shot.exists[] ] m6 = 'app screenshot: {shot}  {m6}'
+        if [ tree.exists[] ] m6 = 'element tree: {tree}  {m6}'
+        s6.write_input[ '{m6}\r' ]
+        # a second Enter lands shortly after — no-op if the first submitted
+        enter_at = 120
+
+    # build the whisper gpu encoder from the SCREEN CANVAS — exactly where the
+    # spectra app does it (cv.vk). the element's context vk gave zero encodes.
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ cap_on ] dictation_gpu[ Canvas w.screen ]
+
+    public func render [] -> Elements
+        # attached and our app is gone → orphan. exit so we stop writing the
+        # shared shm frame (a second crashman owns the live app now).
+        if [ attach ]
+            if [ app_pid == 0 ]
+                app_pid = -1
+                pe : getenv[ 'SILVER_ISOLATE_APP_PID' ]
+                if [ pe ]
+                    ps : string [ pe ]
+                    app_pid = i32[ ps.integer_value[] ]
+            if [ app_pid > 0 && host_pid_alive[ app_pid ] == 0 ] exit[ 0 ]
+        # the mic command arrives via on_host (the WndProc, ring 0). here we
+        # just keep the capture fed while it runs.
+        if [ cap_on ] dictation_poll[]
+        # render every frame so the WndProc pump keeps running
+        if [ ux ] ux.will_animate = true
+        # the deferred submit Enter (see agent_send)
+        if [ enter_at > 0 ]
+            enter_at -= 1
+            if [ enter_at == 0 && agent ]
+                s7 : ConsoleSession agent.session[]
+                if [ s7 ] s7.write_input[ '\r' ]
+        an  : getenv[ 'SILVER_ISOLATE_APP' ]
+        # the report line: the host posts the verdict when the child dies
+        st  : getenv[ 'SILVER_ISOLATE_STATUS' ]
+        rpt : (st) ? string 'app died — {st}' : string ((an) ? 'running — {an}' : 'no isolated app')
+        if [ cap_on ] rpt = '{rpt} · listening'
+        # animated dots make the thinking state unmistakable and self-evidently
+        # LIVE (a frozen indicator can't be told from a hang)
+        if [ thinking ]
+            spin += 1
+            nd : i32 [ (spin / 12) % 4 ]
+            dots : string ''
+            for [ k: i32 0, k < nd, k += 1 ] dots = '{dots}.'
+            rpt = '{rpt} · thinking{dots}'
+        els : Elements [ ]
+        els[ 'console' ] = CrashConsole [ label: rpt ]
+        # the agent console is ALWAYS up: claude starts with the app context and
+        # waits; no isolated app = a plain interactive shell
+        sv : getenv[ 'SILVER' ]
+        lc : string ''
+        if [ an ]
+            # attached = the user SWITCHED here; own-window = the app crashed.
+            # the speak marker gives claude a voice: we say those lines aloud.
+            # the voice rule and app context BOTH ride the first posted
+            # message — claude launches bare and idle
+            vox : string 'every single reply must end with one line of the exact form speak {oc} one short spoken sentence {cc} — that line is synthesized aloud to the user; never omit it. the user speaks by voice and their words arrive wrapped user {oc} like this {cc}.'
+            prm : string 'the app {an} runs under crashman supervision. its source is {sv}/foundry/{an}/{an}.ag. when it crashes the report is typed here — investigate and help fix it.'
+            if [ attach ]
+                prm = 'the user switched to this context from the running app {an}. its source is {sv}/foundry/{an}/{an}.ag — assist with the app live; if it faults, the crash report is typed here.'
+            if [ !ctx ]
+                ctx = '{prm} {vox}'
+                ctx.hold[]
+            # permissions hard-coded for now; moves to a config file later
+            lc = 'claude --model sonnet --dangerously-skip-permissions'
+        sid : (an) ? string '{an}' : string 'crash'
+        els[ 'agent' ] = CrashAgent [ session_id: sid, launch: lc ]
+        if [ attach ]
+            # inside the app: back folds the overlay; shot hands the app's
+            # frozen look to the agent
+            els[ 'back' ] = BackBtn [ kind: 'back', label: 'back to app' ]
+            els[ 'shot' ] = ShotBtn [ kind: 'shot', label: 'attach context' ]
+        el
+            # back needs a live app to return to — dead app disables it
+            els[ 'back' ]     = BackBtn [ kind: 'back', label: 'back to app', enabled: (st) ? false : true ]
+            els[ 'relaunch' ] = RelaunchBtn [ kind: 'relaunch', label: 'relaunch', enabled: (st) ? true : false ]
+        # the context/protocol is NOT sent on its own — it rides the FIRST
+        # real dictation (agent_send prepends it once). no voice, no message.
+        # drain the agent's pty every frame — output can't stream otherwise
+        # (same motion as orbiter's on_render over ed_sessions)
+        if [ agent ]
+            s2 : ConsoleSession agent.session[]
+            if [ s2 && s2.pty_fd >= 0 ]
+                if [ ux ] ux.will_animate = true
+                s2.read_output[]
+            # reliable thinking signal: claude's status line carries 'esc to
+            # interrupt' while a request runs, and drops it when idle
+            if [ s2 ]
+                busy : bool [ false ]
+                nlz  : i32 [ s2.line_count[] ]
+                loz  : i32 [ (nlz > 20) ? nlz - 20 : 0 ]
+                for [ li: i32 loz, li < nlz, li += 1 ]
+                    lz : string s2.line_get[ li ]
+                    if [ !lz || lz.count == 0 ] continue
+                    if [ lz.index_of[ 'esc to interrupt' ] >= 0 ] busy = true
+                thinking = busy
+            # voice claude's speak markers, once each (they persist on screen)
+            if [ s2 ]
+                if [ !spoken ]
+                    spoken = array string [ ]
+                    spoken.hold[]
+                mk : string 'speak {oc}'
+                nl : i32 [ s2.line_count[] ]
+                lo : i32 [ (nl > 60) ? nl - 60 : 0 ]
+                for [ li: i32 lo, li < nl, li += 1 ]
+                    ln2 : string s2.line_get[ li ]
+                    if [ !ln2 || ln2.count == 0 ] continue
+                    a2 : i32 [ ln2.index_of[ mk ] ]
+                    if [ a2 < 0 ] continue
+                    st2  : i32 [ a2 + i32[ mk.count ] ]
+                    rest : string ln2.mid[ st2, ln2.count - st2 ]
+                    b2 : i32 [ rest.index_of[ cc ] ]
+                    if [ b2 <= 0 ] continue
+                    ut : string rest.mid[ 0, b2 ]
+                    if [ !ut || ut.count == 0 ] continue
+                    # the prompt's own example echoes on screen — never say it
+                    if [ ut == ' one short spoken sentence ' ] continue
+                    dup : bool [ false ]
+                    for [ sp2: string ] in spoken
+                        if [ sp2 == ut ]
+                            dup = true
+                            break
+                    if [ dup ] continue
+                    spoken.push[ ut ]
+                    td2 : string '/src/silver/models/kokoro-en'
+                    if [ tts_init[ td2.chars ] == 0 ]
+                        tts_say[ ut.chars, 8, 1.0 ]
+        # the take submits when the user STOPS: wind down the final
+        # transcription, then the whole session goes over as ONE message
+        if [ flushing ]
+            if [ dictation_flush[] ]
+                flushing = false
+                dt : dictation_take[]
+                if [ dt && dt.count > 0 ]
+                    puts 'crashman: submitting take "{dt}"'
+                    agent_send[ 'user {oc} {dt} {cc}' ]
+        # type the verdict into the live session, once, when the child dies;
+        # a relaunch clears the status → re-arm for the next crash. spoken
+        # too — kokoro voice 8; the model dir moves to a config file later.
+        if [ st && !reported && agent ]
+            reported = true
+            agent_send[ 'the app crashed: {st} — investigate.' ]
+            td : string '/src/silver/models/kokoro-en'
+            if [ tts_init[ td.chars ] == 0 ]
+                sp : string 'your app crashed with {st}. the report went to the agent.'
+                tts_say[ sp.chars, 8, 1.0 ]
+        el [ !st ]
+            reported = false
+        return els

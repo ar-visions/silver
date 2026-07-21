@@ -1,0 +1,25 @@
+import spectra
+import <stdio.h>
+import <unistd.h>
+
+# speaks one line through the flat tts surface, then waits out the playback.
+#   ttstest --text 'hello' --dir /src/silver/models/kokoro-en --voice 0
+app ttstest
+    public text  : string
+    public dir   : string
+    public voice : i32
+    public wait  : i32
+
+    func init []
+        d : string ((dir && dir.count > 0) ? dir : string '/src/silver/models/kokoro-en')
+        t : string ((text && text.count > 0) ? text : string 'crashman is online. your app is supervised.')
+        rc : i32 [ tts_init[ d.chars ] ]
+        if [ rc != 0 ]
+            puts 'ttstest: init failed ({rc})'
+            return
+        r2 : i32 [ tts_say[ t.chars, voice, 1.0 ] ]
+        puts 'ttstest: say rc={r2}'
+        if [ r2 == 0 ]
+            # let the mixer thread finish the utterance
+            w : i32 [ (wait > 0) ? wait : 6 ]
+            sleep[ w ]

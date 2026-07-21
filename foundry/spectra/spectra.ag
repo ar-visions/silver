@@ -13,11 +13,24 @@ import knik0:faad2/2.11.2 <neaacdec.h>
     -DBUILD_SHARED_LIBS=ON
     -lfaad
 
+import k2-fsa:sherpa-onnx/v1.13.4 <sherpa-onnx/c-api/c-api.h>                                                             
+    -DSHERPA_ONNX_ENABLE_TESTS=OFF                                                                                        
+    -DSHERPA_ONNX_ENABLE_PYTHON=OFF                                                                                       
+    -DSHERPA_ONNX_ENABLE_WEBSOCKET=OFF                                                                                    
+    -DSHERPA_ONNX_ENABLE_BINARY=OFF                                                                                       
+    -DBUILD_SHARED_LIBS=ON                                                                                                
+    -lsherpa-onnx-c-api                                                                                                             
+
 import <mpg123min.h>
     -l:libmpg123.so.0
 
 import <torch_shim.h>
     -ltorch_shim
+
+# audio formats spectra claims. a module emits its extensions at build time
+# into {SILVER}/install/export/spectra.agi; orbiter reads that and hands us
+# the file — it has no per-format code of its own.
+export extensions ['.mp3']
 
 import net
 import ai
@@ -165,8 +178,21 @@ el
                 bins[i] = sqrt [ re[i] * re[i] + im[i] * im[i] ]
             return true
 
+        # discard any audio ALSA queued while we weren't reading (between
+        # takes the device stays open and accumulates — draining here means a
+        # new take captures FRESH audio, not the stale backlog)
+        func drain []
+            if [ !pcm ] return
+            snd_pcm_drop    [ pcm ]
+            snd_pcm_prepare [ pcm ]
+            snd_pcm_start   [ pcm ]
+
         func close []
+            # pcm is null when open[] failed (no capture device) — closing then
+            # segfaults inside alsa. null it after, so a second close is safe too.
+            if [ !pcm ] return
             snd_pcm_close [ pcm ]
+            pcm = null
 
     class AudioOut
         public sample_rate : i32 [ 48000 ]
@@ -1326,14 +1352,407 @@ func spectra_whisper_thread [ arg: handle ] -> handle
     return null
 
 # a window with a live mic spectrum when a capture device is present
+# ---- dictation: a flat C-callable surface -----------------------------------
+# the capture loop used to live inside spectra's own app draw[], so it only ever
+# worked when spectra WAS the app. these are plain module functions: no trinity,
+# no element, no render loop — so the mic can be owned by whatever process
+# should outlive the app being dictated into (silver-host, not the app).
+struct DictState
+    cap : spectra
+    ok  : bool
+    lvl : f32
+    txt : string
+    # the same live-whisper machine the spectra app runs: 32s ring,
+    # level-gated utterance segmentation, worker-thread transcribe
+    net    : WhisperNet
+    gpu    : whisper_vk
+    gpu_no : bool
+    # worker-thread gpu encode verified; false = encode on the caller
+    gpu_thr : bool
+    raw    : @i16
+    wr    : i64
+    state : i32
+    start : i64
+    act   : i64
+    quiet : i32
+    job   : WhisperJob
+    tid   : u64
+    polls : i32
+    # cancel: discard everything this take produced (incl. a late job)
+    drop    : bool
+    # this take's audio has already been sent to whisper (once, on stop)
+    flushed : bool
+    # rolling index for the per-utterance .wav dumps
+    wavn    : i32
+
+intern dict : DictState
+
+# 0 = capturing, non-zero = no device. the record click loads EVERYTHING:
+# capture opens and whisper-small comes up right here, first time.
+# the device stays OPEN across takes — closing then reopening 'default'
+# fails intermittently (the second take never went live), so stop ends the
+# take, not the stream; a start just re-arms the segmenter.
+func dictation_start [] -> i32
+    if [ !dict.cap ]
+        dict.cap = spectra [ size: 2048, sample_rate: 48000, device: 'default' ]
+        dict.cap.hold[]
+    if [ !dict.ok ]
+        dict.ok = dict.cap.open[]
+    if [ !dict.ok ]
+        puts 'dictation: no capture device'
+        return 1
+    if [ !dict.net ]
+        d9 : path.path_storage[ 'spectra' ]
+        wm : path '{d9}/whisper-small.safetensors'
+        if [ wm.exists[] ]
+            puts 'dictation: loading whisper-small…'
+            n8 : WhisperNet [ src: wm ]
+            if [ n8.valid ]
+                n8.hold[]
+                dict.net = n8
+                dict.raw = new i16 [ 1536000 ]
+                r9 : (dict.raw to Au)
+                r9.hold[]
+                puts 'dictation: whisper ready — speak; a pause transcribes'
+            el
+                puts 'dictation: whisper load failed — capture only'
+        el
+            puts 'dictation: no whisper weights — capture only'
+    # HARD reset — every enable is a clean slate. a stale job pointer or a
+    # stuck quiet counter from the previous take blocked segmentation (poll
+    # gates on !dict.job), which is why the mic went dead after take one.
+    # drop ALSA's queued backlog so this take starts from live audio
+    dict.cap.drain[]
+    dict.job     = null
+    dict.wr      = 0
+    dict.state   = 0
+    dict.quiet   = 0
+    dict.drop    = false
+    dict.flushed = false
+    dict.txt     = ''
+    puts 'dictation: capturing (fresh, backlog dropped)'
+    return 0
+
+# end the TAKE — the device stays open (see dictation_start). the flush path
+# reads dict.ok to force the final utterance, so it is cleared by the caller
+# after the flush, not here.
+func dictation_stop [] -> none
+    # leave dict.state alone — dictation_flush forces the in-progress
+    # utterance (state==1) into the final job
+    dict.lvl = 0.0
+    puts 'dictation: take ended'
+
+# real teardown — close the mic (app exit / cancel keeps device for reuse,
+# so only call when the recorder is truly done)
+func dictation_release [] -> none
+    if [ !dict.ok ] return
+    dict.cap.close[]
+    dict.ok = false
+    puts 'dictation: released'
+
+# pull one buffer off the device. true when a frame was read — the caller may be
+# a render loop or a plain thread; nothing here needs a window.
+func dictation_poll [] -> bool
+    if [ !dict.ok ] return false
+    if [ !dict.cap.capture[] ] return false
+    # band energy — the spectra app's PROVEN detector: log-spaced bands
+    # 150Hz..8k summed, /24 per band, fast attack / slow release EMA
+    fmin : f32 [ 150.0 ]
+    fmax : f32 [ 8000.0 ]
+    nyq  : f32 [ f32[ dict.cap.sample_rate ] * 0.5 ]
+    if [ fmax > nyq ] fmax = nyq
+    lr9   : f32 [ log[ fmax / fmin ] ]
+    half2 : i32 [ dict.cap.size / 2 ]
+    nb9   : i32 [ 96 ]
+    en9   : f32 [ 0.0 ]
+    for [ b: i32 0, b < nb9, b += 1 ]
+        t9 : f32 [ f32[ nb9 - 1 - b ] / f32[ nb9 - 1 ] ]
+        fq : f32 [ fmin * exp[ t9 * lr9 ] ]
+        fb : f32 [ fq * f32[ dict.cap.size ] / f32[ dict.cap.sample_rate ] ]
+        bi : i32 [ i32[ fb ] ]
+        if [ bi > half2 - 2 ] bi = half2 - 2
+        fr : f32 [ fb - f32[ bi ] ]
+        m0 : f32 [ dict.cap.bins[ bi ] ]
+        m1 : f32 [ dict.cap.bins[ bi + 1 ] ]
+        en9 += m0 + (m1 - m0) * fr
+    en9 = en9 / (f32[ nb9 ] * 24.0)
+    if [ en9 > 1.0 ] en9 = 1.0
+    if [ en9 > dict.lvl ]
+        dict.lvl = dict.lvl * 0.6 + en9 * 0.4
+    el
+        dict.lvl = dict.lvl * 0.88 + en9 * 0.12
+    # TAKE model: while the mic is on, only BUFFER audio — no per-pause
+    # transcription. the whole take transcribes ONCE on stop (dictation_flush),
+    # so nothing overlaps/doubles and nothing trails behind. cap 30s @ 48k.
+    if [ dict.net && dict.raw ]
+        ns5 : i64 [ dict.cap.size ]
+        for [ i5: i64 0, i5 < ns5, i5 += 1 ]
+            w2 : i64 [ dict.wr + i5 ]
+            if [ w2 < 1440000 ] dict.raw[ w2 ] = dict.cap.buf[i5]
+        dict.wr += ns5
+        if [ dict.wr > 1440000 ] dict.wr = 1440000
+    return true
+
+# spawn a whisper job over raw[a..b], on the GPU worker exactly like the demo
+func dict_spawn [ a: i64, b: i64 ]
+    e5 : i64 [ b ]
+    if [ e5 > dict.wr ] e5 = dict.wr
+    n5 : i64 [ e5 - a ]
+    if [ n5 <= 24000 ] return
+    # 1s of trailing SILENCE (whisper needs speech-then-silence to emit
+    # end-of-text; a take that ends mid-word otherwise loops the last phrase)
+    pad5 : i64 [ 48000 ]
+    tot5 : i64 [ n5 + pad5 ]
+    buf5 : new i16 [ tot5 ]
+    b9 : (buf5 to Au)
+    b9.hold[]
+    for [ i6: i64 0, i6 < n5, i6 += 1 ]
+        buf5[i6] = dict.raw[(a + i6) % 1536000]
+    for [ i7: i64 n5, i7 < tot5, i7 += 1 ]
+        buf5[i7] = 0
+    # dump the padded clip to a .wav so the input can be verified
+    dict_write_wav[ buf5, tot5 ]
+    j5 : WhisperJob [ model: dict.net, pcm: buf5, n: tot5 ]
+    j5.hold[]
+    if [ dict.gpu && dict.gpu.threaded[] ] j5.gpu = dict.gpu
+    dict.job = j5
+    puts 'dictation: transcribing {n5 / 48000}s speech + 1s pad…'
+    pthread_create[ @dict.tid, null, @spectra_whisper_thread, (j5 to handle) ]
+    pthread_detach[ dict.tid ]
+
+# dump a mono 48k i16 utterance to /tmp/dict-<n>.wav for validation
+func dict_write_wav [ pcm: @i16, n: i64 ]
+    p : string '/tmp/dict-{dict.wavn}.wav'
+    dict.wavn += 1
+    fp : @FILE [ fopen[ p.chars, 'wb' ] ]
+    if [ !fp ] return
+    rate  : i32 [ 48000 ]
+    bytes : i32 [ i32[ n ] * 2 ]
+    hdr   : local i32 [ 11 ]
+    hdr[0] = 1179011410           # 'RIFF'
+    hdr[1] = 36 + bytes
+    hdr[2] = 1163280727           # 'WAVE'
+    hdr[3] = 544501094            # 'fmt '
+    hdr[4] = 16
+    hdr[5] = 65537                # PCM(1) | channels(1)<<16
+    hdr[6] = rate
+    hdr[7] = rate * 2             # byte rate (mono, 2 bytes/sample)
+    hdr[8] = 131074              # blockalign(2) | bits(16)<<16
+    hdr[9] = 1635017060           # 'data'
+    hdr[10] = bytes
+    fwrite[ @hdr[0], 1, 44, fp ]
+    fwrite[ pcm, 1, bytes, fp ]
+    fclose[ fp ]
+    puts 'dictation: wrote {p} ({n} samples)'
+
+# remove whisper's (music)/[BLANK_AUDIO] annotation spans from anywhere
+func strip_annotations [ s: string ] -> string
+    if [ !s ] return s
+    out : string ''
+    depth : i32 [ 0 ]
+    for [ i: i32 0, i < i32[ s.count ], i += 1 ]
+        c : i8 [ s.chars[ i ] ]
+        if [ c == '(' || c == '[' ]
+            depth += 1
+        el [ c == ')' || c == ']' ]
+            if [ depth > 0 ] depth -= 1
+        el [ depth == 0 ]
+            ch : s.mid[ i, 1 ]
+            out = '{out}{ch}'
+    return out.trim[]
+
+# collect a finished utterance, APPEND its text to the take
+# collect the finished transcription — the take is exactly what whisper
+# returned (one pass over the whole recording), annotations stripped.
+func dictation_harvest []
+    if [ !dict.job || !dict.job.done ] return
+    t8 : string dict.job.text
+    puts 'dictation harvest: raw "{t8}" drop={dict.drop}'
+    if [ t8 && t8.count > 0 && !dict.drop ]
+        clean : string strip_annotations[ t8 ]
+        if [ clean && clean.count > 0 ]
+            puts 'dictation:{clean}'
+            dict.txt = clean
+            dict.txt.hold[]
+    dict.job = null
+
+# mic OFF: transcribe the WHOLE take in ONE pass, then wait for it.
+# true once the transcript is ready. flushed guards against re-spawning.
+func dictation_flush [] -> bool
+    if [ dict.job ]
+        dictation_harvest[]
+        return (dict.job == null)
+    if [ dict.flushed ] return true
+    dict.flushed = true
+    dict_spawn[ 0, dict.wr ]
+    return (dict.job == null)
+
+# esc: throw the whole take away — no transcription, no send
+func dictation_cancel []
+    dict.drop    = true
+    dict.txt     = ''
+    dict.wr      = 0
+    dict.flushed = true
+    dictation_stop[]
+    puts 'dictation: cancelled'
+
+func dictation_level [] -> f32
+    return dict.lvl
+
+# what was heard so far — the host shows this for sign-off before it is sent
+func dictation_text [] -> string
+    return dict.txt
+
+# build the gpu encoder EXACTLY as the spectra app does: whisper_vk from the
+# screen Canvas's vk, use it if valid. no parity gate, no fallback games.
+func dictation_gpu [ cv: Canvas ] -> bool
+    if [ !dict.net || !cv ] return false
+    if [ dict.gpu ] return true
+    if [ dict.gpu_no ] return false
+    puts 'dictation: building gpu pipelines…'
+    g0 : whisper_vk [ model: dict.net, vk: cv.vk, win: cv.w ]
+    if [ !g0.valid ]
+        puts 'dictation: gpu unavailable — cpu encoder'
+        dict.gpu_no = true
+        return false
+    g0.hold[]
+    dict.gpu = g0
+    dict.gpu_thr = g0.threaded[]
+    puts 'dictation: gpu encoder ready (threaded {dict.gpu_thr})'
+    return true
+
+# claim the transcript: returns the accumulated text and clears it, so the
+# caller (crashman) types each utterance into the agent exactly once
+func dictation_take [] -> string
+    t : dict.txt
+    if [ !t || t.count == 0 ] return null
+    dict.txt = ''
+    return t
+
+# ---- tts: a flat C-callable surface (sherpa-onnx, kokoro voices) ------------
+# same single-owner shape as dictation_*: plain module functions, no element,
+# so whatever process should speak (crashman) owns the engine and the device.
+struct TtsState
+    eng : @SherpaOnnxOfflineTts
+    mix : AudioMixer
+    ok  : bool
+
+intern tts : TtsState
+
+# dir holds model.onnx, voices.bin, tokens.txt, espeak-ng-data.
+# 0 = ready; 1 = no model at dir; 2 = engine failed
+func tts_init [ dir: cstr ] -> i32
+    if [ tts.ok ] return 0
+    mdl : string '{dir}/model.onnx'
+    vcs : string '{dir}/voices.bin'
+    tks : string '{dir}/tokens.txt'
+    dd  : string '{dir}/espeak-ng-data'
+    mp  : path '{mdl}'
+    if [ !mp.exists[] ]
+        puts 'tts: no model at {mdl}'
+        return 1
+    prov : string 'cpu'
+    cfg : SherpaOnnxOfflineTtsConfig [
+        model: SherpaOnnxOfflineTtsModelConfig [
+            kokoro: SherpaOnnxOfflineTtsKokoroModelConfig [
+                model: mdl.chars, voices: vcs.chars, tokens: tks.chars,
+                data_dir: dd.chars, length_scale: 1.0 ],
+            num_threads: 4, provider: prov.chars ],
+        max_num_sentences: 1 ]
+    tts.eng = SherpaOnnxCreateOfflineTts[ @cfg ]
+    if [ !tts.eng ]
+        puts 'tts: engine failed'
+        return 2
+    puts 'tts: ready ({dir})'
+    tts.ok = true
+    return 0
+
+func tts_ready [] -> bool
+    return tts.ok
+
+# synthesize and play. generation blocks the caller (kokoro runs faster than
+# realtime on cpu); playback rides the mixer thread.
+func tts_say [ text: cstr, sid: i32, speed: f32 ] -> i32
+    if [ !tts.ok ] return 1
+    gc : SherpaOnnxGenerationConfig [ silence_scale: 0.2, speed: speed, sid: sid ]
+    au2 : SherpaOnnxOfflineTtsGenerateWithConfig[ tts.eng, text, @gc, null, null ]
+    if [ !au2 ] return 2
+    n : i32 [ au2.n ]
+    if [ n <= 0 ]
+        SherpaOnnxDestroyOfflineTtsGeneratedAudio[ au2 ]
+        return 2
+    c : AudioClip [ rate: au2.sample_rate, channels: 1, frames: i64[ n ] ]
+    c.pcm = new i16 [ n ]
+    for [ i: i32 0, i < n, i += 1 ]
+        s5 : f32 [ au2.samples[ i ] * 32767.0 ]
+        if [ s5 >  32767.0 ] s5 =  32767.0
+        if [ s5 < -32768.0 ] s5 = -32768.0
+        c.pcm[ i ] = i16[ s5 ]
+    SherpaOnnxDestroyOfflineTtsGeneratedAudio[ au2 ]
+    if [ !tts.mix ]
+        tts.mix = AudioMixer [ sample_rate: 48000 ]
+        tts.mix.hold[]
+        if [ !tts.mix.start[] ]
+            tts.mix = null
+            return 3
+    # the mixer voice borrows the clip; hold so it survives this call
+    c.hold[]
+    tts.mix.play[ c, false, 1.0 ]
+    return 0
+
+# the element form, for a host that just wants to drop one in. it owns nothing:
+# the flat functions above hold the device, so there is a single owner.
+element Dictation
+    # flip to start/stop the stream; the host owns the button
+    public  active   : bool
+    # what was heard so far — the host shows this for sign-off
+    public  text     : string
+    # speech-band energy of the last frame (0..1), for a level readout
+    public  level    : f32
+    intern  was_on   : bool
+
+    func render [] -> Elements
+        if [ active != was_on ]
+            was_on = active
+            if [ active ]
+                dictation_start[]
+            el
+                dictation_stop[]
+        if [ !active ] return null
+        # keep frames coming; a stalled window would stall the pump
+        if [ ux ] ux.will_animate = true
+        dictation_poll[]
+        level = dictation_level[]
+        text  = dictation_text[]
+        return null
+
+    public func on_unload [ ]
+        dictation_stop[]
+
 # spectra --file <caf/m4a/mp3> [--out png] [--img_w N] [--img_h N]
 # spectra --dataset <cv dir> --split dev --outdir <dir> [--limit N]
 element main : trinity
     # the swapchain presents the LAST render's color; the Background
     # chain provides it — an app without one has nothing to present
     public background : string [ 'Background' ]
-    public file    : string
-    public out     : string [ '/tmp/spectrograph.png' ]
+    # a host (orbiter) sizes an attached app with these — the standard set an
+    # app declares to be launchable in a pane.
+    public width      : i32 [ 1280 ]
+    public height     : i32 [ 720 ]
+    # the document — spectra's default (positional) argument, so orbiter hands
+    # us a claimed .mp3 with no flag at all. a `path` so with_cstrs normalizes
+    # a relative arg to absolute against the launch dir (cwd is the bundle).
+    default file   : path
+    # --out makes --file a ONE-SHOT spectrograph render; without it, --file
+    # opens the player: the spectrograph is the scrub track and it plays.
+    public out     : string
+    # player state: the decoded clip, its mixer voice, and the spectrograph
+    # drawn as the scrub track (playhead rides it; a click seeks).
+    intern pclip   : AudioClip
+    intern pmix    : AudioMixer
+    intern pvoice  : Voice
+    intern ptex    : Texture
+    intern ptrack  : Image
     public img_w   : i32 [ 1024 ]
     public img_h   : i32 [ 512 ]
     public dataset : string
@@ -1507,8 +1926,8 @@ element main : trinity
         mp2.save[ nm, null ]
 
     func init []
-        if [ file && whisper ]
-            c8 : caf_load[ path file ]
+        if [ file && whisper && whisper.count > 0 ]
+            c8 : caf_load[ file ]
             if [ !c8 ] exit[ 1 ]
             mel8 : whisper_mel[ c8 ]
             if [ mel_png[ mel8, path out ] ]
@@ -1530,7 +1949,7 @@ element main : trinity
                             line8 = '{line8} {ids8[k8]}'
                         puts 'whisper tokens:{line8}'
             exit[ 0 ]
-        if [ whisper ]
+        if [ whisper && whisper.count > 0 ]
             dst : whisper_weights[ whisper ]
             vjs : whisper_vocab[]
             if [ !vjs.exists[] ]
@@ -1615,12 +2034,33 @@ element main : trinity
             focusable = true
             puts 'annotate: {ann_n} clips — click between words; click a mark again to finish; U undo, N skip, space replay'
             return
-        if [ file ]
-            c : caf_load[ path file ]
+        if [ file && out && out.count > 0 ]
+            c : caf_load[ file ]
             if [ !c ] exit[ 1 ]
             if [ spectrograph[ c, path out, img_w, img_h, 20.0, 10000.0, false, null ] ]
                 puts 'spectrograph: {out}'
             exit[ 0 ]
+        # player: decode, render the spectrograph as the scrub track, and play.
+        # caf_load sniffs the container (ID3/MPEG sync -> mp3_load), so this is
+        # the same path for every audio format spectra claims.
+        if [ file ]
+            pclip = caf_load[ file ]
+            if [ !pclip ]
+                puts 'spectra: cannot decode {file}'
+                exit[ 1 ]
+            pclip.hold[]
+            # play FIRST — the spectrograph over a long clip is expensive and
+            # must not delay audio (a 30-min file made it 'sit there')
+            pmix = AudioMixer [ sample_rate: pclip.rate ]
+            pmix.hold[]
+            if [ pmix.start[] ]
+                pmix.play_p[ pclip, false, 1.0, 1.0 ]
+            puts 'spectra: playing {file} ({pclip.frames} frames @ {pclip.rate})'
+            # then build the scrub track
+            trk : path '/tmp/spectra-track-{getpid[]}.png'
+            if [ spectrograph[ pclip, trk, img_w, img_h, 20.0, 10000.0, false, null ] ]
+                ptrack = Image [ uri: trk ]
+                if [ ptrack ] ptrack.hold[]
         cap = spectra [ size: 2048, sample_rate: 48000, device: 'default' ]
         cap.hold[]
         cap_ok = cap.open[]

@@ -102,12 +102,111 @@ class ResourceView
     func extensions [] -> array string
         return array string [ ]
     # draw into the pane's content bounds each frame. lazy-loads on first call — load_file
-    # runs with no Canvas, but GPU/host resources need vk + window from cv. (no-op base.)
+    # runs with no Canvas, but GPU/host resources need vk + window from cv. the BASE view
+    # is the hex dump: any binary no subclass claims renders here (hx_on set by load_file).
     func render [ cv: Canvas, bounds: rect ]
-        return
-    # drop held resources when the pane switches away or closes. (no-op base.)
+        if [ !hx_on ] return
+        hx_open[]
+        if [ !hx_fh || hx_size <= 0 ] return
+        cwm : cv.measure_text[ '0' ]
+        cw  : f32 [ cwm.w ]
+        lh  : f32 [ round[ cv.get_line_height[] ] ]
+        if [ lh <= 0.0 || cw <= 0.0 ] return
+        # columns: 8-digit offset, 16 hex byte pairs (gap after 8), 16 ascii chars
+        x_off : f32 [ bounds.x + 8.0 ]
+        x_hex : f32 [ x_off + cw * 10.0 ]
+        x_asc : f32 [ x_hex + cw * 51.0 ]
+        hx_hexx = x_hex
+        hx_ascx = x_asc
+        hx_cw   = cw
+        hx_lh   = lh
+        nvis  : i32 [ i32[ bounds.h / lh ] + 2 ]
+        r0    : i64 [ i64[ hx_scroll / lh ] ]
+        if [ r0 < 0 ] r0 = 0
+        total : i64 [ (hx_size + 15) / 16 ]
+        band  : i64 [ i64[ nvis ] * 16 ]
+        if [ band > hx_size - r0 * 16 ] band = hx_size - r0 * 16
+        if [ band <= 0 ] return
+        if [ !hx_window[ r0 * 16, i32[ band ] ] ] return
+        yb : f32 [ bounds.y - hx_scroll ]
+        lo : i64 [ (hx_s0 < hx_s1) ? hx_s0 : hx_s1 ]
+        hi : i64 [ (hx_s0 < hx_s1) ? hx_s1 : hx_s0 ]
+        b  : local u8 [ 64 ]
+        # pass 1: selection boxes — the SAME byte range boxed in BOTH columns
+        if [ hx_s0 >= 0 ]
+            cv.stroke_width [ 0.0 ]
+            cv.fill_color   [ rgba['#264f78'] ]
+            for [ vr: i32 0, vr < nvis, vr += 1 ]
+                row : i64 [ r0 + i64[ vr ] ]
+                if [ row >= total ] break
+                off : i64 [ row * 16 ]
+                nb  : i32 [ ((hx_size - off) >= 16) ? 16 : i32[ hx_size - off ] ]
+                if [ lo > off + i64[ nb ] - 1 || hi < off ] continue
+                c0  : i32 [ (lo > off) ? i32[ lo - off ] : 0 ]
+                c1  : i32 [ (hi < off + i64[ nb ] - 1) ? i32[ hi - off ] : nb - 1 ]
+                y   : f32 [ yb + f32[ row ] * lh ]
+                sc  : i32 [ c0 * 3 + ((c0 >= 8) ? 1 : 0) ]
+                ec  : i32 [ c1 * 3 + 2 + ((c1 >= 8) ? 1 : 0) ]
+                cv.rounded_rect [ x_hex + f32[ sc ] * cw - 2.0, y + 1.0,
+                    f32[ ec - sc ] * cw + 4.0, lh - 2.0, 3.0, 3.0, 3.0, 3.0 ]
+                cv.rounded_rect [ x_asc + f32[ c0 ] * cw - 1.0, y + 1.0,
+                    f32[ c1 - c0 + 1 ] * cw + 2.0, lh - 2.0, 3.0, 3.0, 3.0, 3.0 ]
+            cv.paint [ ]
+        # pass 2: offset column
+        cv.fill_color [ rgba['#808080'] ]
+        for [ vr: i32 0, vr < nvis, vr += 1 ]
+            row : i64 [ r0 + i64[ vr ] ]
+            if [ row >= total ] break
+            j : i32 [ hx_put[ @b[0], 0, row * 16, 8 ] ]
+            b[ j ] = 0
+            cv.draw_text [ string [ (@b[0]) to cstr ],
+                rect [ x: x_off, y: yb + f32[ row ] * lh, w: cw * 8.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        cv.paint [ ]
+        # pass 3: hex bytes
+        cv.fill_color [ rgba['#d4d4d4'] ]
+        for [ vr: i32 0, vr < nvis, vr += 1 ]
+            row : i64 [ r0 + i64[ vr ] ]
+            if [ row >= total ] break
+            off : i64 [ row * 16 ]
+            nb  : i32 [ ((hx_size - off) >= 16) ? 16 : i32[ hx_size - off ] ]
+            bi  : i32 [ i32[ off - hx_woff ] ]
+            j   : i32 [ 0 ]
+            for [ k: i32 0, k < nb, k += 1 ]
+                if [ k == 8 ]
+                    b[ j ] = 32
+                    j += 1
+                j = hx_put[ @b[0], j, i64[ hx_win[ bi + k ] ], 2 ]
+                b[ j ] = 32
+                j += 1
+            b[ j ] = 0
+            cv.draw_text [ string [ (@b[0]) to cstr ],
+                rect [ x: x_hex, y: yb + f32[ row ] * lh, w: cw * 49.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        cv.paint [ ]
+        # pass 4: ascii column (unprintable → '.')
+        cv.fill_color [ rgba['#b5cea8'] ]
+        for [ vr: i32 0, vr < nvis, vr += 1 ]
+            row : i64 [ r0 + i64[ vr ] ]
+            if [ row >= total ] break
+            off : i64 [ row * 16 ]
+            nb  : i32 [ ((hx_size - off) >= 16) ? 16 : i32[ hx_size - off ] ]
+            bi  : i32 [ i32[ off - hx_woff ] ]
+            for [ k: i32 0, k < nb, k += 1 ]
+                c : i32 [ i32[ hx_win[ bi + k ] ] ]
+                b[ k ] = u8[ (c >= 32 && c < 127) ? c : 46 ]
+            b[ nb ] = 0
+            cv.draw_text [ string [ (@b[0]) to cstr ],
+                rect [ x: x_asc, y: yb + f32[ row ] * lh, w: cw * 16.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+        cv.paint [ ]
+    # drop held resources when the pane switches away or closes.
     func release []
-        return
+        if [ hx_fh ]
+            fclose[ hx_fh ]
+            hx_fh = null
+        hx_woff = -1
+        loaded  = false
     # true for a hosted-app pane (AppView) — the editor's Run toggle keys on
     # this instead of the type name (AppView lives in a sibling extend file)
     func is_app_host [] -> bool
@@ -115,6 +214,16 @@ class ResourceView
     # a continuous view (emulator, video) needs its pane redrawn every frame
     # and receives the plain keys while the pane is focused. (base: static.)
     func continuous [] -> bool
+        return false
+    # extra title chips this view contributes. the tab adds its own expand/collapse
+    # first, then appends these — so a view extends the title without the app
+    # knowing what it put there. keys are element ids; a press on one routes back
+    # through title_press. (no-op base → a view with no chips changes nothing.)
+    func title_elements [] -> Elements
+        return null
+    # one of OUR chips was pressed. the view acts on itself and answers true when
+    # it consumed the press, so the app's id chain never sees it.
+    func title_press [ tid: string, ev: Event ] -> bool
         return false
     # named sub-VIEWS of this resource, shown as grouped toggles on the title
     # row (e.g. an emulator's game / assembly / tiles). base: null = one view.
@@ -142,7 +251,28 @@ class ResourceView
     mutable vw : f32
     mutable vh : f32
     func view_press [ ev: Event ] -> bool
-        return false
+        if [ !hx_on ] return false
+        # find_target folded scroll.y into the event y; x is unfolded
+        cy : f32 [ ev.mouse.pos.y - vy ]
+        if [ ev.mouse.pos.x < vx || ev.mouse.pos.x >= vx + vw ] return false
+        if [ cy < hx_scroll || cy >= hx_scroll + vh ] return false
+        bt : i64 [ hx_byte_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ bt < 0 ]
+            hx_s0 = -1
+            hx_s1 = -1
+            return true
+        hx_s0   = bt
+        hx_s1   = bt
+        hx_drag = true
+        return true
+    # drag extends the dual selection (both columns track the same bytes)
+    func view_move [ ev: Event ] -> bool
+        if [ !hx_on || !hx_drag ] return false
+        bt : i64 [ hx_byte_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ bt >= 0 ] hx_s1 = bt
+        return true
+    func view_release [ ev: Event ]
+        hx_drag = false
     func view_undo [] -> bool
         return false
     func view_redo [] -> bool
@@ -163,6 +293,70 @@ class ResourceView
     # (no-op base → files with no preview fall back to a file icon.)
     func thumbnail [ cv: Canvas ] -> Texture
         return null
+    # ---- hex fallback state (binary files nothing else claims) ----
+    mutable hx_on     : bool           # set by load_file's binary sniff
+    mutable hx_fh     : handle
+    mutable hx_size   : i64
+    mutable hx_win    : ref u8         # 16KB read window over the file
+    mutable hx_woff   : i64 [ -1 ]     # window's byte offset (-1 = empty)
+    mutable hx_wlen   : i32
+    mutable hx_scroll : f32            # editor scroll.y, stashed pre-render
+    mutable hx_s0     : i64 [ -1 ]     # selection anchor (byte offset)
+    mutable hx_s1     : i64 [ -1 ]     # selection end (byte offset)
+    mutable hx_drag   : bool
+    mutable hx_hexx   : f32            # hex column x (stashed for hit-tests)
+    mutable hx_ascx   : f32            # ascii column x
+    mutable hx_cw     : f32
+    mutable hx_lh     : f32
+    func hx_open []
+        if [ hx_fh || !src ] return
+        ps : '{src}'
+        hx_fh = fopen[ ps.chars, "rb" ]
+        if [ !hx_fh ] return
+        fseek[ hx_fh, 0, 2 ]
+        hx_size = ftell[ hx_fh ]
+        fseek[ hx_fh, 0, 0 ]
+        hx_woff = -1
+    # rows come from FILE SIZE — no line list exists for a binary
+    func hx_rows [] -> i64
+        hx_open[]
+        if [ hx_size <= 0 ] return 0
+        return (hx_size + 15) / 16
+    # slide the 16KB window so [off, off+need) is resident
+    func hx_window [ off: i64, need: i32 ] -> bool
+        if [ !hx_fh ] return false
+        if [ !hx_win ] hx_win = new u8 [ 16384 ]
+        if [ hx_woff >= 0 && off >= hx_woff && (off + i64[ need ]) <= (hx_woff + i64[ hx_wlen ]) ] return true
+        fseek[ hx_fh, off, 0 ]
+        rd : i64 [ fread[ hx_win, 1, 16384, hx_fh ] ]
+        hx_woff = off
+        hx_wlen = i32[ rd ]
+        return hx_wlen >= need
+    # writes nd lowercase hex digits of v at b[i]; returns i + nd
+    func hx_put [ b: ref u8, i: i32, v: i64, nd: i32 ] -> i32
+        j : i32 [ i ]
+        for [ k: i32 nd - 1, k >= 0, k -= 1 ]
+            d : i32 [ i32[ ((v >> (k * 4)) & 15) ] ]
+            b[ j ] = u8[ (d < 10) ? (48 + d) : (87 + d) ]
+            j += 1
+        return j
+    # byte offset under the mouse, in EITHER column; -1 = neither
+    func hx_byte_at [ mx: f32, my: f32 ] -> i64
+        if [ !hx_on || hx_lh <= 0.0 || hx_cw <= 0.0 || hx_size <= 0 ] return -1
+        row : i64 [ i64[ (my - vy) / hx_lh ] ]
+        if [ row < 0 ] return -1
+        col : i32 [ -1 ]
+        if [ mx >= hx_hexx && mx < hx_ascx - hx_cw ]
+            ch : i32 [ i32[ (mx - hx_hexx) / hx_cw ] ]
+            if [ ch >= 25 ] ch -= 1
+            col = ch / 3
+        el [ mx >= hx_ascx && mx < hx_ascx + hx_cw * 16.0 ]
+            col = i32[ (mx - hx_ascx) / hx_cw ]
+        if [ col < 0 ] return -1
+        if [ col > 15 ] col = 15
+        bt : i64 [ row * 16 + i64[ col ] ]
+        if [ bt >= hx_size ] bt = hx_size - 1
+        return bt
 
 # image viewer: decodes via the img product, blits the texture fit-to-pane (centered).
 ResourceView ImageView
@@ -225,6 +419,8 @@ ResourceView AppView
     mutable sock_path  : string
     mutable cmd        : string      # the build+run command the console executes
     mutable dispatched : bool        # cmd handed to its console session (once per run)
+    # the document this app was launched FOR (a registered handler opens it)
+    mutable doc        : path
     # live-resize state: pane size last seen / last requested + settle counter,
     # so a seam drag sends ONE resize when it stops, not one per frame
     mutable pend_w     : i32
@@ -390,7 +586,10 @@ ResourceView AppView
             dead = true
             note = 'socket failed'
             return
-        cmd = 'cd {sp} && unset IMPORT && ./install/bin/silver --build {mod} && exec ./install/build/{mod} --attach {sock_path} --width 1280 --height 720'
+        # a handler module is launched FOR a document — the path rides as the
+        # app's DEFAULT argument (bare, after its own flags).
+        darg : string [ (doc) ? ' {doc}' : '' ]
+        cmd = 'cd {sp} && unset IMPORT && ./install/bin/silver --build {mod} && exec ./install/build/{mod} --attach {sock_path} --width 1280 --height 720{darg}'
 
     func pump [ cv: Canvas ]
         if [ !link || dead ] return
@@ -792,6 +991,50 @@ Layer EditorLayer
                 return
         if [ editor.rview && !editor.show_hits ]
             if [ !editor.rview.view_text*[ editor.rview.view_sel ] ]
+                if [ editor.rview.hx_on ]
+                    # hex pane scrolls in ROW units: content height comes from file
+                    # size; same wheel fold + ease the code path below uses.
+                    hfs : i32 [ (editor.code_font_size > 0) ? editor.code_font_size : 15 ]
+                    cv.font_size[ hfs ]
+                    hlh2 : f32 [ round[ cv.get_line_height[] ] ]
+                    editor.content_h    = f32[ editor.rview.hx_rows[] ] * hlh2
+                    editor.scroll_speed = hlh2
+                    hms : f32 [ editor.content_h - bounds.h ]
+                    if [ hms < 0.0 ] hms = 0.0
+                    # a scrollbar drag writes scroll.y DIRECTLY. without adopting
+                    # it as the target, the ease below pulls straight back to the
+                    # old target and the thumb reads as dead.
+                    hjd : f32 [ editor.scroll.y - editor.hx_last_y ]
+                    if [ hjd > 0.5 || hjd < 0.0 - 0.5 ]
+                        editor.scroll_target = editor.scroll.y
+                    if [ editor.pending_wheel != 0.0 ]
+                        editor.scroll_target = editor.scroll_target - editor.pending_wheel * hlh2 * 0.375
+                        editor.pending_wheel = 0.0
+                    if [ editor.scroll_target < 0.0 ] editor.scroll_target = 0.0
+                    if [ editor.scroll_target > hms ] editor.scroll_target = hms
+                    hdy : f32 [ editor.scroll_target - editor.scroll.y ]
+                    if [ (hdy > 0.5) || (hdy < 0.0 - 0.5) ]
+                        editor.scroll.y = editor.scroll.y + hdy * 0.35
+                        parent.needs_frame = true
+                        if [ editor.ux ] editor.ux.will_animate = true
+                    el
+                        editor.scroll.y = editor.scroll_target
+                    if [ editor.scroll.y < 0.0 ] editor.scroll.y = 0.0
+                    if [ editor.scroll.y > hms ] editor.scroll.y = hms
+                    editor.lh_cache = hlh2
+                    editor.hx_last_y       = editor.scroll.y
+                    editor.rview.hx_scroll = editor.scroll.y
+                    # same top fade as the code path: one row dissolves into the
+                    # title once there is hidden content above. no side fades —
+                    # the columns are fixed width and never scroll horizontally.
+                    hxf : f32 [ (editor.scroll.y > 0.0) ? hlh2 : 0.0 ]
+                    parent.mask_glow   = vec4f [ hxf, 0.0, 0.0, 0.0 ]
+                    parent.mask_keep_l = 0.0
+                    parent.mask_inset  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+                    wtx2 : f32 [ cv.transform_tx[] ]
+                    wty2 : f32 [ cv.transform_ty[] ]
+                    cv.set_crop[ wtx2 + bounds.x, wty2 + bounds.y,
+                        wtx2 + bounds.x + bounds.w, wty2 + bounds.y + bounds.h ]
                 editor.rview.vx = bounds.x
                 editor.rview.vy = bounds.y
                 editor.rview.vw = bounds.w
@@ -843,19 +1086,12 @@ Layer EditorLayer
         # side overlays: the pin list (144px while searching) and the stack sub-
         # column (its actual rendered width while open). take the wider — the pins
         # draw in front of the sub-column when both are present.
-        dbg_el  : element editor.elements['dbg']
+        dbg_el  : element (editor.elements) ? editor.elements['dbg'] : null
         din     : f32 [ 0.0 ]
         if [ dbg_el && dbg_el.bounds ]
             din = dbg_el.bounds.w
-        pin_in  : f32 [ (editor.elements['pins']) ? 144.0 : 0.0 ]
+        pin_in  : f32 [ (editor.elements && editor.elements['pins']) ? 144.0 : 0.0 ]
         rin     : f32 [ maxf[ pin_in, din ] ]
-        # footer inset: the height of the bottom split (toolbar + console) measured
-        # up from the pane bottom. drives both the code region height (vh) and where
-        # the bottom edge-fade sits, so the code dissolves into the console top.
-        foot_ins : f32 [ 0.0 ]
-        foot_el  : element editor.elements['bottom']
-        if [ foot_el && foot_el.bounds && foot_el.bounds.h > 0.0 ]
-            foot_ins = bounds.y + bounds.h - foot_el.bounds.y
         # edge text fades via the element's grayscale mask: the rightmost 1/8 always
         # fades (long lines dissolve), and on horizontal scroll the left fade turns on,
         # originating at the gutter's right edge (max there) so off-screen-left code
@@ -871,22 +1107,14 @@ Layer EditorLayer
             # top fade: one line, ONLY when scrolled down (there's hidden code above) — at the
             # very top of the file there's nothing to dissolve into, so no top fade.
             top_fade  : f32 [ (editor.scroll.y > 0.0) ? lh : 0.0 ]
-            # bottom fade (3 line-heights) — same grayscale-mask gradient as the right/left
-            # edges, so the console can sit clear OVER the editor and the code dissolves into
-            # it instead of butting against a hard edge. vec4 = (top, right, bottom, left).
-            parent.mask_glow = vec4f [ top_fade, bounds.w / 8.0, lh * 3.0, left_fade ]
+            # no bottom fade — the band is a sibling below, not an overlay to
+            # dissolve into. vec4 = (top, right, bottom, left).
+            parent.mask_glow = vec4f [ top_fade, bounds.w / 8.0, 0.0, left_fade ]
             # keep the line-number gutter fully opaque; the left fade starts just past it.
             parent.mask_keep_l = gut_w
-            # start the top fade at the bottom of the title bar so code scrolls
-            # cleanly under it; fall back to 70px if the title isn't laid out yet.
-            title_bottom : f32 [ 70.0 ]
-            te : element parent.elements['title']
-            if [ te && te.bounds ]
-                title_bottom = te.bounds.y + te.bounds.h
-            # left inset = gut_w so the left fade originates at the gutter edge, not
-            # x=0; bottom inset = foot_ins so the bottom fade rides the console top
-            # (not the pane bottom, where it hid behind the opaque console).
-            parent.mask_inset = vec4f [ title_bottom, 0.0, foot_ins, gut_w ]
+            # the mask spans the whole control — title and band are siblings now,
+            # so there is no margin to inset against.
+            parent.mask_inset = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
         editor.text_lines_frame = 0
@@ -931,17 +1159,12 @@ Layer EditorLayer
             editor.g_pins    = grid_pins
             editor.g_resoff  = grid_resoff
         el
-            # 2 line-heights of bottom padding: lets the scroll go just past the last
-            # line so it isn't flush at the bottom edge. no rows live there, so the
-            # gutter shows no numbers for the padding.
-            editor.content_h = f32[ editor.line_count[] ] * lh + lh * 2.0
+            # no tail padding — the band sits below us, nothing overlays the last line
+            editor.content_h = f32[ editor.line_count[] ] * lh
         editor.scroll_speed = (editor.grid_mode) ? grid_ch : lh
 
-        # the code region is what's left between the laid-out child bands: the title
-        # (top) and the footer/toolbar (bottom). foot_ins (computed above, before the
-        # mask) is the footer height, so the code stays inside its content area
-        # (the element paradigm) instead of painting over the toolbar/console.
-        vh : f32 [ bounds.h - foot_ins ]
+        # the code region is the whole control — title and band are siblings.
+        vh : f32 [ bounds.h ]
         # clamp scroll to [0, content - viewport] every frame so it can't go
         # negative (above the top) or past the end of the content.
         max_scroll : f32 [ editor.content_h - vh ]
@@ -974,6 +1197,7 @@ Layer EditorLayer
         # offset + local bounds). same crop data the shaders read for shapes.
         wtx : f32 [ cv.transform_tx[] ]
         wty : f32 [ cv.transform_ty[] ]
+        puts 'ED clip: bounds y={bounds.y} h={bounds.h} vh={vh} content_h={editor.content_h} max={max_scroll} scroll={editor.scroll.y} wty={wty} clipB={wty + bounds.y + vh}'
         cv.set_crop[ wtx + bounds.x, wty + bounds.y,
             wtx + bounds.x + bounds.w - rin, wty + bounds.y + vh ]
 
@@ -1039,6 +1263,9 @@ Layer EditorLayer
                     ico : SVGModel [ (h.is_dir) ? editor.folder_icon : editor.file_icon ]
                     if [ ico ]
                         hsz : f32 [ gth * 0.5 ]
+                        # neutral tint (see list view) — icon shows authored colors
+                        cv.fill_color[ rgba['#ffffff'] ]
+                        cv.stroke_color[ rgba['#ffffff'] ]
                         cv.draw_svg[ ico, ix + gth * 0.25, iy + gth * 0.25, hsz, hsz ]
                 # one label under the thumbnail: the name (like a folder cell)
                 ty : f32 [ cy + gm + gth + 2.0 ]
@@ -1266,6 +1493,11 @@ Layer EditorLayer
                 if [ imdl ]
                     isz : f32 [ round[ lh * ((single) ? 0.7 : 1.0) ] ]
                     iy  : f32 [ round[ y + (rh - isz) * 0.5 ] ]
+                    # neutral tint: draw_svg reads fill/stroke as the icon TINT, and
+                    # on the shared main canvas they hold the PRIOR row's text color.
+                    # white is a no-op so the icon shows its authored colors.
+                    cv.fill_color[ rgba['#ffffff'] ]
+                    cv.stroke_color[ rgba['#ffffff'] ]
                     cv.draw_svg[ imdl, x0, iy, isz, isz ]
                     tx0 = x0 + isz + 8.0
                 if [ single ]
@@ -1676,7 +1908,7 @@ Layer EditorLayer
 Control Editor
     # the code content + overlay scrollbar, declared here — the editor's look
     # is the editor's, not a stylesheet's. members key the paint map by ident.
-    content   : EditorLayer [ area: Region { l0 t45px r0 b0 }, label_height: 1.0,
+    content   : EditorLayer [ area: Region { l0 t0 r0 b0 }, label_height: 1.0,
         line_color: rgba [ '#fff1' ], item_color: rgba [ '#2b3a5500' ], sel_color: rgba [ '#264f78' ],
         hl_fill: rgba [ '#ff6a2e55' ], hl_grad: rgba [ '#c0381844' ],
         hl_glow: rgba [ '#ff8a3a99' ], hl_text: rgba [ '#ffe6d2' ] ]
@@ -1729,6 +1961,8 @@ Control Editor
     mutable pane_index    : i32 [ 0 ]
     # non-text presentation view (image/audio/…) for the current src, else null (code).
     mutable rview         : ResourceView
+    # the user pressed stop on a registered handler — don't auto-relaunch it
+    mutable stopped       : bool
     # play-button app pager: the running app persists here so the pane can flip
     # back to code (app_view=false) WITHOUT stopping it — it keeps draining.
     mutable run_view      : AppView
@@ -1776,6 +2010,9 @@ Control Editor
     # motion is paced by the frame rate and the per-event delta is never transformed.
     mutable scroll_target : f32 [ 0.0 ]
     mutable pending_wheel : f32 [ 0.0 ]
+    # last scroll.y the hex branch itself wrote — a value differing from this
+    # came from outside (a scrollbar drag), so the target adopts it.
+    mutable hx_last_y     : f32 [ 0.0 ]
     # DIAG: line RASTERIZATION counters (cache misses only) — per-frame + cumulative.
     mutable text_lines_frame : i32 [ 0 ]
     mutable text_lines_total : i64 [ 0 ]
@@ -2590,8 +2827,11 @@ Control Editor
     func ensure_export_registry []
         if [ export_registry ] return
         export_registry = map string[string] []
-        root : getenv[ 'SILVER' ]
-        if [ !root || root.count == 0 ] return
+        # the checkout root is the launch dir Au captured — NOT $SILVER, which
+        # is unset for a desktop-launched orbiter (registry silently empty, so
+        # every registered format fell through to plain text).
+        root : path.path_startup[]
+        if [ !root ] return
         d : path '{root}/install/export'
         entries : array [ d.ls[ null, false ] ]
         if [ !entries ] return
@@ -2625,18 +2865,44 @@ Control Editor
         ensure_export_registry[]
         return export_registry[ ext ]
 
-    # a module exported this extension — run it exactly like play
-    func launch_handler [ mod: string ]
-        root : getenv[ 'SILVER' ]
-        if [ !root || root.count == 0 ] return
+    # a module exported this extension — run it exactly like play, handing it
+    # the document it claimed.
+    func launch_handler [ mod: string, p: path ]
+        root : path.path_startup[]
+        if [ !root ] return
         nv : AppView [ ]
         nv.src = path '{root}/foundry/{mod}/{mod}.ag'
+        nv.doc = p
         nv.start[]
         run_view  = nv
         app_view  = true
         animated  = true
         no_scroll = true
         if [ ux ] ux.restyle = true
+
+    # binary sniff: a NUL byte in the first 4KB means not text
+    # binary = anything outside the nominal text range in the head of the file.
+    # printable ascii (0x20..0x7E) plus tab/LF/CR/FF/ESC are text; so is every
+    # byte >= 0x80, because UTF-8 source is full of them and must NOT read as
+    # binary. a NUL settles it outright; otherwise it takes a real share of
+    # control bytes, so one stray \x01 in a text file doesn't flip it.
+    func file_is_binary [ p: path ] -> bool
+        ps : '{p}'
+        fp : fopen[ ps.chars, "rb" ]
+        if [ !fp ] return false
+        b : local u8 [ 4096 ]
+        n : i32 [ i32[ fread[ @b[0], 1, 4096, fp ] ] ]
+        fclose[ fp ]
+        if [ n <= 0 ] return false
+        ctrl : i32 [ 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            c : i32 [ i32[ b[i] ] ]
+            if [ c == 0 ] return true
+            if [ c >= 32 ] continue                  # printable + all high bytes
+            if [ c == 9 || c == 10 || c == 13 ] continue
+            if [ c == 12 || c == 27 ] continue       # form feed, escape
+            ctrl += 1
+        return ctrl * 100 > n * 10                   # >10% control bytes
 
     # pick a presentation view for a file format, or null for plain text/code — a map
     # lookup against the once-built registry, then instantiate the bound subclass.
@@ -2678,6 +2944,7 @@ Control Editor
         # non-text formats render through a ResourceView instead of as code lines.
         rv : ResourceView resource_view_for[ src ]
         if [ rv ]
+            if [ rview ] rview.release*[]
             rview = rv
             rview.src = src
             animated = rview.continuous*[]         # emulator panes redraw every frame
@@ -2691,11 +2958,28 @@ Control Editor
             saved_scroll  = 0.0
             return
         # no in-process view claims it — an exported module might (e.g. rgen '.gen')
-        if [ !run_view ]
+        if [ !run_view && !stopped ]
             hm : handler_module_for[ src ]
             if [ hm ]
-                launch_handler[ hm ]
+                launch_handler[ hm, src ]
                 return
+        # nothing claims it: NUL bytes in the head mean binary — the BASE
+        # ResourceView is the hex dump; no line buffers are ever built.
+        if [ file_is_binary[ src ] ]
+            if [ rview ] rview.release*[]
+            hv : ResourceView [ ]
+            hv.hx_on = true
+            hv.src   = src
+            rview    = hv
+            animated = false
+            lines    = list string []
+            scroll.x      = 0.0
+            scroll.y      = 0.0
+            scroll_target = 0.0
+            content_h     = 0.0
+            saved_scroll  = 0.0
+            return
+        if [ rview ] rview.release*[]
         rview = null
         animated = false
         # key by the canonical (realpath) absolute path — the SAME identity silver stamps on
@@ -2736,11 +3020,15 @@ Control Editor
             app_view = false
             animated = false
             no_scroll = false
+            # the user stopped it — load_file must NOT relaunch the registered
+            # handler, or stop immediately restarts the app it just killed.
+            stopped  = true
             load_file[]
             # re-render so pane_for clears the console's run_line (re-run works)
             if [ ux ] ux.restyle = true
             return
         if [ !src ] return
+        stopped  = false
         nv : AppView [ ]
         nv.src   = src
         nv.start[]                     # serve socket + build the run command
@@ -2882,6 +3170,27 @@ Control Editor
                 toggle_app_view[]
                 ev.no_default = true
                 return
+        # the scrollbar owns the right edge, and it must be checked BEFORE the
+        # resource view — a view_press consumes every click inside the pane (hex
+        # byte selection does), which swallowed the thumb grab entirely.
+        sbe : (layers) ? (layers['content'] to EditorLayer) : null
+        sbl : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
+        sbg : f32 [ (sbl && sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
+        if [ rview && sbe && sbl && sbl.scroll_max > 0.0 ]
+            sbx : f32 [ ev.mouse.pos.x - sbe.bounds.x ]
+            if [ sbx > sbe.bounds.w - sbg ]
+                smy : f32 [ ev.mouse.pos.y - sbe.bounds.y - scroll.y ]
+                sbl.grab_at[ smy ]
+                ssy : f32 [ sbl.drag_to[ smy ] ]
+                if [ ssy >= 0.0 ]
+                    scroll.y        = ssy
+                    scroll_target   = ssy
+                    scroll_dragging = true
+                    sbl.active      = true
+                    pristine        = false
+                    ux.will_animate = true
+                ev.no_default = true
+                return
         # non-text resource view (tiles): the view handles its own presses
         if [ rview && !rview.view_text*[ rview.view_sel ] ]
             if [ rview.view_press*[ ev ] ]
@@ -2926,7 +3235,7 @@ Control Editor
         # that band belongs to the dbg panel (its buttons/panels), never the editor
         # content. bail geometrically (like the pin column) so it works even if
         # find_target mis-routed the press back to the editor (e.g. scroll fold).
-        dbg_el : element elements['dbg']
+        dbg_el : element (elements) ? elements['dbg'] : null
         if [ ele && dbg_el && dbg_el.bounds && rel_x > ele.bounds.w - dbg_el.bounds.w ]
             return
         # click to expand/collapse a node in the inline debug tree: a virtual object
@@ -2978,7 +3287,7 @@ Control Editor
             return
         # a click in the pin column (right 144, present while searching) is a pin
         # click handled by the app — don't move the cursor or start a selection.
-        if [ ele && elements['pins'] && rel_x > ele.bounds.w - 144.0 ]
+        if [ ele && elements && elements['pins'] && rel_x > ele.bounds.w - 144.0 ]
             return
         # gutter click: in results it's the per-row remove control (close icon shown
         # on hover); in normal file editing it toggles a breakpoint on the line.
@@ -3039,6 +3348,13 @@ Control Editor
         # app pane: hand hover to the running app and stop editor handling
         if [ run_view && app_view ]
             if [ run_view.view_move*[ ev ] ] return
+        # hex pane: drag extends the dual (hex + ascii) selection — but NOT while
+        # the scrollbar thumb is held, or the view swallows the drag and the bar
+        # only ever moves on the initial press.
+        if [ !scroll_dragging && rview && rview.view_move*[ ev ] ]
+            pristine = false
+            ux.will_animate = true
+            return
         ele : (layers) ? (layers['content'] to EditorLayer) : null
         if [ scroll_dragging && ele ]
             sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
@@ -3107,6 +3423,7 @@ Control Editor
             pristine = false
 
     func on_release [ ev: Event ]
+        if [ rview ] rview.view_release*[ ev ]
         dragging        = false
         scroll_dragging = false
         sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
@@ -3519,5 +3836,3 @@ Control Editor
         ensure_caret_visible[]
         pristine = false
 
-    public func render [] -> Elements
-        return null

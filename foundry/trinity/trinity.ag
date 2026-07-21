@@ -106,6 +106,7 @@ import vk
 import shader
 import Style
 import Canvas
+import Console
 
 ifdef [ linux ]
 	func usleep[u64]
@@ -144,6 +145,22 @@ enum AppMsg
     mouse  : 5
     bye    : 6
     resize : 7
+    text   : 8
+
+# host message-ring types (mirror trinity.cc HM_*). ring 0 = app->shell,
+# ring 1 = shell->app. one channel replaces the socket/pointer plumbing.
+enum HM
+    none    : 0
+    dictate : 1
+    live    : 2
+    press   : 3
+    release : 4
+    move    : 5
+    key     : 6
+    text    : 7
+    frame   : 8
+    resize  : 9
+    bye     : 10
 
 enum AppMouse
     move    : 0
@@ -159,6 +176,31 @@ func appshare_recv_fd  [ s: i32, rdata: @i32, fdout: @i32 ] -> i32
 func appshare_send_msg [ s: i32, mdata: @i32, payload: cstr, plen: i32 ] -> i32
 func appshare_recv_payload [ s: i32, pdata: @i8, plen: i32 ]  -> i32
 func appshare_close    [ fdv: i32 ]
+# ask the supervising silver-host to bring up crashman (no-op unsupervised)
+func host_ask_crashman [] -> i32
+# dictation signalling through the message ring (reload-proof, no sockets)
+func host_dictate_set [ v: i32 ]
+func host_dictate_get [] -> i32
+func host_live_set    [ v: i32 ]
+func host_live_get    [] -> i32
+# tee this run's output to /tmp/<name>.log (fresh each run) + terminal
+func host_log_setup   [ name: cstr ]
+func host_mailbox     [ base: cstr ]
+# is a pid alive? reload (alive) vs exit (gone) for the isolate shell
+func host_pid_alive   [ pid: i32 ] -> i32
+# host message channel (WndProc-style): ring 0 = app->shell, 1 = shell->app.
+# post a message; poll returns the next type (0 = empty) with pa/pb/pc params.
+func host_post        [ ring: i32, type: i32, a: i32, b: i32, c: i32 ]
+func host_poll        [ ring: i32 ] -> i32
+func host_pa          [] -> i32
+func host_pb          [] -> i32
+func host_pc          [] -> i32
+# shared frame buffer: crashman writes its RGBA, the app reads + blits
+func host_frame_write [ px: @u8, w: i32, h: i32 ]
+func host_frame_seq   [] -> i32
+func host_frame_w     [] -> i32
+func host_frame_h     [] -> i32
+func host_frame_read  [ out: @u8, maxbytes: i32 ] -> i32
 # host live-reload control: the app turns its own source watch off (orbiter)
 func au_live_set_reload [ on: i32 ]
 
@@ -186,6 +228,11 @@ class AppLink
     func serve [ p: cstr ] -> bool
         lsock = appshare_listen[ p ]
         return lsock >= 0
+
+    # serve on a listen socket someone else already bound (silver-host binds
+    # the isolate socket before the child exists; we adopt its fd)
+    func adopt_listen [ fd: i32 ]
+        lsock = fd
 
     func poll_accept [] -> bool
         if [ sock >= 0 ] return true
@@ -242,6 +289,13 @@ class AppLink
         sbuf[3] = action
         sbuf[4] = mods
         sbuf[5] = uni
+        put[ 0 - 1 ]
+
+    # typed character (host → app): key_event carries GLFW keycodes, never
+    # text — this is the text_event side of the wire
+    func send_text [ uni: i32 ]
+        sbuf[0] = i32[ AppMsg.text ]
+        sbuf[1] = uni
         put[ 0 - 1 ]
 
     func send_mouse [ x: i32, y: i32, button: i32, action: i32, kind: i32 ]
@@ -509,6 +563,25 @@ abstract live_app media_app
     intern  at_slot     : i32
     intern  at_seq      : i32
     intern  at_bytes    : i32
+    # host-visible readback buffer: crashman copies its backbuffer here, maps
+    # it, and host_frame_write's the pixels to the shared frame buffer (NO
+    # socket). isolate shell only — orbiter panes keep the dma-buf socket path.
+    intern  shm_buf     : Buffer
+    intern  shm_on      : bool
+    # the supervised app's pid, parsed from the attach sock (isolate shell).
+    # 0 = not parsed yet
+    intern  shell_app_pid : i32
+
+    # /tmp/silver-crashman-<pid>.sock -> <pid>, for reload-vs-exit detection
+    public func parse_shell_pid [] -> i32
+        if [ !attach ] return 0
+        ap : string [ attach ]
+        k  : i32 [ ap.index_of[ 'crashman-' ] ]
+        if [ k < 0 ] return 0
+        rest : string ap.mid[ k + 9, ap.count - k - 9 ]
+        d : i32 [ rest.index_of[ '.sock' ] ]
+        if [ d <= 0 ] return 0
+        return i32[ rest.mid[ 0, d ].integer_value[] ]
 
     func run [ ]
         # tell the host whether to watch + hot-swap this app's sources
@@ -596,13 +669,18 @@ abstract live_app media_app
         if [ k == 'ux_tree' ]
             top : map object [string] []
             top['root'] = ux_serialize[ wn.root ]
-            wn.bus.send[ 'ux_tree', Au.string_agi[ top ] ]
+            wn.bus.send[ 'ux_tree.re', Au.string_agi[ top ] ]
             return true
         if [ k == 'ux_text' ]
-            wn.bus.send[ 'ux_text', wn.text_grid[ 0, 0 ] ]
+            wn.bus.send[ 'ux_text.re', wn.text_grid[ 0, 0 ] ]
             return true
         if [ k == 'ux_shot' ]
             if [ m.body && m.body.count > 0 ] shot_request = path [ m.body.chars ]
+            return true
+        # open the crashman overlay — same as shift+click on dictate
+        if [ k == 'ux_shell' ]
+            wn.shell_open[]
+            wn.bus.send[ 'ux_shell.re', 'ok' ]
             return true
         if [ k == 'ux_click' ]
             fid : string m.body
@@ -613,14 +691,14 @@ abstract live_app media_app
                 xs : string fid.mid[ 0, sp ]
                 ys : string fid.mid[ sp + 1, fid.count - sp - 1 ]
                 ux_press_at[ f32[ xs.real_value[] ], f32[ ys.real_value[] ] ]
-                wn.bus.send[ 'ux_click', '{fid} ok' ]
+                wn.bus.send[ 'ux_click.re', '{fid} ok' ]
                 return true
             e : element ux_find[ wn.root, fid ]
             if [ !e || !e.bounds ]
-                wn.bus.send[ 'ux_click', '{fid} not found' ]
+                wn.bus.send[ 'ux_click.re', '{fid} not found' ]
                 return true
             ux_press_at[ e.bounds.x + e.bounds.w * 0.5, e.bounds.y + e.bounds.h * 0.5 ]
-            wn.bus.send[ 'ux_click', '{fid} ok' ]
+            wn.bus.send[ 'ux_click.re', '{fid} ok' ]
             return true
         return false
 
@@ -632,27 +710,62 @@ abstract live_app media_app
                 bwn.bus = AppBus [ ]
                 bwn.bus.hold[]
                 ahdr : Au.header[ a ]
-                bwn.bus.register[ string [ ahdr.au.ident ] ]
+                nm3  : string [ ahdr.au.ident ]
+                # `a` is the live wrapper, NOT the element — the app element
+                # rides Window.app_object (same as app_render)
+                ae3  : (bwn.app_object to element)
+                if [ ae3 && ae3.bus_name && ae3.bus_name.count > 0 ] nm3 = ae3.bus_name
+                bwn.bus.register[ nm3 ]
             bwn.bus.pump[]
+            # app side of the host message channel: drain ring 1 (shell->app).
+            # the SOLE ring-1 consumer — HM.live drives the dictate button, the
+            # newest HM.frame seq tells HostedShell a fresh frame is ready.
+            if [ !attach ]
+                for [ pk: i32 0, pk < 128, pk += 1 ]
+                    ht : i32 [ host_poll[ 1 ] ]
+                    if [ ht == 0 ] break
+                    if [ ht == i32[ HM.live ] ]
+                        bwn.dict_live = host_pa[] != 0
+                        bwn.restyle   = true
+                    el [ ht == i32[ HM.frame ] ]
+                        bwn.shell_frame_seq = host_pc[]
+                    el [ ht == i32[ HM.bye ] ]
+                        bwn.shell_fold = true
             # generic agent interface first (ux_tree/ux_click), the app's own
             # bus protocol for everything else. our OWN broadcasts (the reply
             # echo in the inbox) must never re-enter ux_command — that loops.
             for [ k: i32 0, k < 8, k += 1 ]
                 m : BusMessage bwn.bus.recv[]
                 if [ !m ] break
+                ae4 : (bwn.app_object to element)
                 if [ m.from && bwn.bus.name && m.from == bwn.bus.name ]
                     on_bus*[ m ]
+                    if [ ae4 ] ae4.on_bus*[ m ]
                 el
-                    if [ !ux_command[ m ] ] on_bus*[ m ]
-        # attach mode: compose to the backbuffer, publish the frame to orbiter,
-        # drain input from the socket. return false once orbiter closes it.
+                    if [ !ux_command[ m ] ]
+                        on_bus*[ m ]
+                        if [ ae4 ] ae4.on_bus*[ m ]
+        # attach mode. the isolate shell (crashman) hands frames off via the
+        # SHARED-MEMORY channel (no sockets, survives the hot-reload). orbiter
+        # panes keep the dma-buf socket path (at_publish/at_pump).
         ifdef [ linux ]
+            if [ attach && shm_on ]
+                render*[]
+                shm_publish[]
+                shm_pump[]
+                Au.auto_free[ false ]
+                usleep[ 4000 ]
+                return true
             if [ attach ]
                 render*[]
                 at_publish[]
                 alive : bool [ at_pump[] ]
                 Au.auto_free[ false ]
                 usleep[ 4000 ]
+                if [ !alive && getenv[ 'SILVER_ISOLATE_APP' ] ]
+                    if [ shell_app_pid == 0 ] shell_app_pid = parse_shell_pid[]
+                    if [ shell_app_pid > 0 && host_pid_alive[ shell_app_pid ] != 0 ]
+                        return true
                 return alive
         # text mode: no glfw event pump, no swapchain, no vk perf counters.
         # render the terminal grid each tick and keep running (Ctrl-C to exit).
@@ -689,7 +802,7 @@ abstract live_app media_app
             im2 : Image [ w.last_render[].color ]
             im2.png[ shot_request ]
             swn : Window [ w ]
-            if [ swn.bus ] swn.bus.send[ 'ux_shot', '{shot_request} done' ]
+            if [ swn.bus ] swn.bus.send[ 'ux_shot.re', '{shot_request} done' ]
             shot_request = null
         if [ screenshot ]
             shot_frames += 1
@@ -766,6 +879,13 @@ abstract live_app media_app
                     wn.ev.key.alt       = (at_link.w4 & 4) != 0
                     wn.ev.key.shift     = (at_link.w4 & 1) != 0
                     wn.key_event[ wn.ev ]
+                el [ t == i32[ AppMsg.text ] ]
+                    wn.ev.clear[]
+                    tb : local i8 [ 2 ]
+                    tb[0] = i8[ at_link.w1 ]
+                    tb[1] = 0
+                    wn.ev.key.text = string[ @tb[0] ]
+                    wn.text_event[ wn.ev ]
                 el [ t == i32[ AppMsg.mouse ] ]
                     wn.ev.clear[]
                     wn.mouse.x        = f64[ at_link.w1 ]
@@ -817,6 +937,80 @@ abstract live_app media_app
                 appshare_close[ fd2 ]
             puts 'attach: resized {rw}x{rh}, {at_nslots} dma-buf slots'
 
+        # shared-memory frame handoff: copy the backbuffer to the host-visible
+        # buffer, map it, write the pixels to the shm frame buffer. no sockets.
+        func shm_publish []
+            if [ !shm_buf || !w ] return
+            awin : Window [ w ]
+            tx : Texture [ awin.last_render[].color ]
+            if [ !tx || !tx.vk_image ] return
+            shm_buf.transfer[ tx ]
+            m9 : shm_buf.mmap[]
+            host_frame_write[ (m9 to @u8), tx.width, tx.height ]
+            shm_buf.unmap[]
+
+        # drain input the app posted on ring 0 into the element tree, and the
+        # resize request. the WndProc for the isolate shell.
+        func shm_pump []
+            wn : Window [ w ]
+            ae9 : (wn.app_object to element)
+            for [ i: i32 0, i < 64, i += 1 ]
+                t : i32 [ host_poll[ 0 ] ]
+                if [ t == 0 ] return
+                # non-input messages (HM.dictate etc.) go to the app element
+                if [ t == i32[ HM.dictate ] ]
+                    if [ ae9 ] ae9.on_host*[ t, host_pa[], host_pb[], host_pc[] ]
+                el [ t == i32[ HM.press ] ]
+                    wn.ev.clear[]
+                    wn.ev.mouse.pos.x = f32[ host_pa[] ]
+                    wn.ev.mouse.pos.y = f32[ host_pb[] ]
+                    wn.ev.mouse.button = host_pc[]
+                    wn.ev.mouse.state  = 1
+                    wn.mouse.x = f64[ host_pa[] ]
+                    wn.mouse.y = f64[ host_pb[] ]
+                    wn.press_event[ wn.ev ]
+                el [ t == i32[ HM.release ] ]
+                    wn.ev.clear[]
+                    wn.ev.mouse.pos.x = f32[ host_pa[] ]
+                    wn.ev.mouse.pos.y = f32[ host_pb[] ]
+                    wn.ev.mouse.button = host_pc[]
+                    wn.ev.mouse.state  = 0
+                    wn.release_event[ wn.ev ]
+                el [ t == i32[ HM.move ] ]
+                    wn.ev.clear[]
+                    wn.ev.mouse.pos.x = f32[ host_pa[] ]
+                    wn.ev.mouse.pos.y = f32[ host_pb[] ]
+                    wn.mouse.x = f64[ host_pa[] ]
+                    wn.mouse.y = f64[ host_pb[] ]
+                    wn.move_event[ wn.ev ]
+                el [ t == i32[ HM.key ] ]
+                    wn.ev.clear[]
+                    wn.ev.key.unicode = host_pa[]
+                    wn.ev.key.state   = host_pb[]
+                    m9 : i32 [ host_pc[] ]
+                    wn.ev.key.shift = (m9 & 1) != 0
+                    wn.ev.key.ctrl  = (m9 & 2) != 0
+                    wn.ev.key.alt   = (m9 & 4) != 0
+                    wn.ev.key.meta  = (m9 & 8) != 0
+                    wn.key_event[ wn.ev ]
+                el [ t == i32[ HM.text ] ]
+                    wn.ev.clear[]
+                    tb9 : local i8 [ 2 ]
+                    tb9[0] = i8[ host_pa[] ]
+                    tb9[1] = 0
+                    wn.ev.key.text = string[ @tb9[0] ]
+                    wn.text_event[ wn.ev ]
+                el [ t == i32[ HM.resize ] ]
+                    rw9 : i32 [ host_pa[] ]
+                    rh9 : i32 [ host_pb[] ]
+                    if [ rw9 > 0 && rh9 > 0 ]
+                        wn.resize[ rw9, rh9 ]
+                        at_bytes = rw9 * rh9 * 4
+                        if [ shm_buf ]
+                            shm_buf.drop[]
+                            shm_buf = Buffer [ vk: wn.vk, size: at_bytes,
+                                u_dst: true, m_host_visible: true, m_host_cached: true ]
+                            shm_buf.hold[]
     func destroy [ ]
         # hot-reload: vk_context persists (held in libAu), but this module's code
         # is about to be dlclose'd. drop the cached fonts NOW, while their vtables
@@ -901,6 +1095,25 @@ class BindSeam
 Display Window
     mutable app_object          : element*
     mutable bus                 : AppBus
+    # crashman overlay: the app SERVES this link; the supervisor spawns
+    # crashman --attach against it and HostedShell composites the frames
+    # inside this window — no second window, the shell feels built in.
+    mutable shell_link          : AppLink
+    mutable shell_active        : bool
+    # the shade's dictation state, held here so the agent-ready handshake can
+    # replay it to a crashman that booted after the click
+    mutable dict_on             : bool
+    # crashman's confirmation: the mic is ACTUALLY capturing (drives the
+    # dictate button's orange-loading → blue-live border)
+    mutable dict_live           : bool
+    # newest shell frame seq from ring 1 — HostedShell blits when it changes
+    mutable shell_frame_seq     : i32
+    # a crashman summon is in flight or connected — cleared when it leaves,
+    # so the next open summons a FRESH one (reopening was black before)
+    mutable shell_asked         : bool
+    # crashman's back button posts HM.bye on ring 1 — HostedShell folds the
+    # overlay, crashman keeps running (it owns the mic)
+    mutable shell_fold          : bool
     mutable cursors             : array CursorPos
     # GLFW resize cursors for seam hover/drag (created lazily, cached). cursor_kind
     # tracks the active one (0=arrow,1=horizontal,2=vertical) to skip redundant sets.
@@ -1528,6 +1741,68 @@ Display Window
         if [ capture ] return true
         return root.is_animating[]
 
+    # freeze the app's look AND element state — crashman's 'attach context'
+    # hands both to the agent (sock siblings)
+    func shell_freeze []
+        sess : getenv[ 'SILVER_ISOLATE_SESSION' ]
+        if [ !sess ] return
+        ss : string [ sess ]
+        lr : last_render[]
+        if [ lr && lr.color ]
+            im : Image [ lr.color ]
+            im.png[ path '/tmp/silver-app-{ss}.png' ]
+        tr : cast trinity [ app_object ]
+        if [ tr && root ]
+            tree : map object [string] []
+            tree['root'] = tr.ux_serialize[ root ]
+            tp : path '/tmp/silver-app-{ss}.agi'
+            tp.save[ Au.string_agi[ tree ], null ]
+
+    # summon the agent service WITHOUT showing it: serve the shell socket and
+    # ask the supervisor to attach crashman. deterministic path (our pid) so
+    # the host needs no side channel. first dictation lands here — the mic
+    # owner must exist before anything records.
+    func shell_ensure []
+        if [ shell_asked ] return
+        if [ !shell_link ]
+            shell_link = AppLink [ ]
+            shell_link.hold[]
+            sp : string '/tmp/silver-crashman-{getpid[]}.sock'
+            if [ !shell_link.serve[ sp.chars ] ]
+                puts 'shell_ensure: cannot serve {sp}'
+                shell_link = null
+                return
+        shell_freeze[]
+        shell_asked = true
+        host_ask_crashman[]
+
+    # show the shell (shift+click): summon if needed, refresh the frozen
+    # context, then the overlay composites it
+    func shell_open []
+        if [ shell_active ] return
+        shell_ensure[]
+        if [ !shell_link ] return
+        shell_freeze[]
+        shell_active = true
+        restyle = true
+
+    # a hidden shell still publishes; drain it or its sends spin the peer.
+    # frames are dropped; slot fds must close so they never leak.
+    func shell_pump_hidden []
+        if [ !shell_link || shell_active ] return
+        if [ !shell_link.poll_accept[] ] return
+        for [ i: i32 0, i < 64, i += 1 ]
+            t : i32 [ shell_link.poll[] ]
+            if [ t == 0 ] return
+            if [ t == i32[ AppMsg.bye ] ]
+                if [ shell_link.sock >= 0 ]
+                    appshare_close[ shell_link.sock ]
+                    shell_link.sock = 0 - 1
+                shell_asked = false
+                return
+            if [ t == i32[ AppMsg.slot ] ]
+                if [ shell_link.recv_fd >= 0 ] appshare_close[ shell_link.recv_fd ]
+
     func app_render [] -> Elements
         e : Elements [ ]
         e[ 'app' ] = (app_object to element)
@@ -1539,6 +1814,9 @@ Display Window
         ae : (app_object to element)
         if [ ae && ae.ux_generics ]
             e[ 'uxgenerics' ] = UXGenerics [ topmost: true, target: ae ]
+        # crashman overlay: composites the attached shell over the app
+        if [ shell_active ]
+            e[ 'hostedshell' ] = HostedShell [ topmost: true ]
         return e
 
     public func update_all [ render: Elements ]
@@ -1757,6 +2035,13 @@ Display Window
     public func key_event [ ev: Event ]
         ev.target = focus
         if [ focus && focus.on_key*[ ev ] ] return
+        # esc while dictating CANCELS the take — nothing submits
+        if [ ev.key.unicode == 256 && ev.key.state && dict_on ]
+            dict_on   = false
+            dict_live = false
+            host_dictate_set[ 2 ]
+            restyle = true
+            return
         # esc closes the framework shade (uxgenerics) when it's up, before the app
         # sees the key — it isn't the focus or app_object, so route it here.
         if [ ev.key.unicode == 256 && root ]
@@ -1989,7 +2274,7 @@ Display Window
         # elements get focus — buttons, text controls, etc. opt in), then
         # capture, then pressed/hovered state bookkeeping.
         edit_l : Layer [ null ]
-        if [ f ]
+        if [ f && !f.read_only ]
             for [ l: Layer, k: string ] in f.layers
                 if [ l.editable ]
                     edit_l = l
@@ -2273,7 +2558,7 @@ Display Window
         # compute the whole tree's bounds first, then paint — so every element
         # (and its cv.translate / cache size) reads THIS frame's bounds, not last
         # frame's. fc comes from the screen canvas (the paint target).
-        layout_element[ root, null, screen ]
+        layout_element[ root, null, null, null, screen ]
 
         draw_element[ root, CanvasType.screen, null ]
 
@@ -3279,7 +3564,13 @@ Display Window
     # cv.translate / cache size reads bounds that this frame hasn't finalized yet,
     # so a seam drag paints one frame behind. separating the two fixes that with no
     # compose pre-pass. cv supplies the per-target font metric (fc) only — no drawing.
-    func layout_element [ e: element*, last: element, cv: Canvas ]
+    # last          = immediate previous sibling (vertical flow / rectangle cursor)
+    # last_l/last_r = previous sibling anchored on the SAME side. children lay out
+    # in map order, which is insertion-over-the-session (an existing child keeps
+    # its slot, only new ids append), so a left chip can land between two `r0+`
+    # ones. the flow is pairwise — x = prev.x - w — so once that link breaks there
+    # is no running total to recover from and the chip resets onto the edge.
+    func layout_element [ e: element*, last: element, last_l: element, last_r: element, cv: Canvas ]
         expect e inherits element, 'e is not an element'
         rel : rect [ (e.parent) ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
@@ -3308,10 +3599,22 @@ Display Window
         # the live variable drives layout — read each frame, so a drag reflows.
         if [ e.ux && e.ux.app_object && e.area ]
             app_obj : Au e.ux.app_object
-            if [ e.area.bind_l ] e.area.l.offset = bind_value[ e.area.bind_l, app_obj, rel.w, e.fc ]
-            if [ e.area.bind_t ] e.area.t.offset = bind_value[ e.area.bind_t, app_obj, rel.h, e.fc ]
-            if [ e.area.bind_r ] e.area.r.offset = bind_value[ e.area.bind_r, app_obj, rel.w, e.fc ]
-            if [ e.area.bind_b ] e.area.b.offset = bind_value[ e.area.bind_b, app_obj, rel.h, e.fc ]
+            # a fresh (per-frame) Region's BindCoord has has_active=false, so
+            # bind_value would return the DEFAULT seam — the clip-gap flash. warm
+            # it HERE (do the seam's own warm step) before reading, so the real
+            # app value lands on the first frame; a warmed bind rides tick_binds.
+            if [ e.area.bind_l ]
+                if [ !e.area.bind_l.warmed ] bind_advance[ e.area.bind_l, app_obj, rel.w, e.fc ]
+                e.area.l.offset = bind_value[ e.area.bind_l, app_obj, rel.w, e.fc ]
+            if [ e.area.bind_t ]
+                if [ !e.area.bind_t.warmed ] bind_advance[ e.area.bind_t, app_obj, rel.h, e.fc ]
+                e.area.t.offset = bind_value[ e.area.bind_t, app_obj, rel.h, e.fc ]
+            if [ e.area.bind_r ]
+                if [ !e.area.bind_r.warmed ] bind_advance[ e.area.bind_r, app_obj, rel.w, e.fc ]
+                e.area.r.offset = bind_value[ e.area.bind_r, app_obj, rel.w, e.fc ]
+            if [ e.area.bind_b ]
+                if [ !e.area.bind_b.warmed ] bind_advance[ e.area.bind_b, app_obj, rel.h, e.fc ]
+                e.area.b.offset = bind_value[ e.area.bind_b, app_obj, rel.h, e.fc ]
             # a bound coord still easing → this control's box moved: repaint it and
             # keep the loop animating until it settles (the goal/active diff hits 0).
             if [ (e.area.bind_l && e.area.bind_l.moving) || (e.area.bind_t && e.area.bind_t.moving) || (e.area.bind_r && e.area.bind_r.moving) || (e.area.bind_b && e.area.bind_b.moving) ]
@@ -3396,8 +3699,20 @@ Display Window
         # a sibling that is itself right-anchored — a full-width or left-flowed
         # neighbor (e.g. the console title's filter) starts the run instead, so
         # the first right-flow element anchors at the container's right edge.
-        if [ e.area.l.x_type == XAlign.right && e.area.l.relative && last && last.bounds && last.area && last.area.l.x_type == XAlign.right ]
-            bounds.x = last.bounds.x - e.area.l.offset * ((e.area.l.pixel) ? 1.0 : e.fc) - bounds.w
+        # `r0+` = step left from the last RIGHT-side control; with none, start at
+        # this container's right edge. a left-anchored neighbour is skipped, not
+        # treated as the end of the run.
+        if [ e.area.l.x_type == XAlign.right && e.area.l.relative ]
+            if [ last_r && last_r.bounds ]
+                bounds.x = last_r.bounds.x - e.area.l.offset * ((e.area.l.pixel) ? 1.0 : e.fc) - spx - bounds.w
+            el
+                bounds.x = rel.w - e.area.l.offset * ((e.area.l.pixel) ? 1.0 : e.fc) - spx - bounds.w
+        # `l0+` mirrors it: step right from the last LEFT-side control.
+        if [ e.area.l.x_type == XAlign.left && e.area.l.relative ]
+            if [ last_l && last_l.bounds ]
+                bounds.x = last_l.bounds.x + last_l.bounds.w + e.area.l.offset * ((e.area.l.pixel) ? 1.0 : e.fc) + spx
+            el
+                bounds.x = e.area.l.offset * ((e.area.l.pixel) ? 1.0 : e.fc) + spx
 
         e.bounds.x = bounds.x
         e.bounds.y = bounds.y
@@ -3413,15 +3728,30 @@ Display Window
         # bounds final for this element — lay out children in the SAME order
         # draw_element paints them (normal first, then topmost), threading the
         # previous sibling for flow layout. no painting here.
+        # one cursor per anchor side. advanced AFTER the child lays out, when its
+        # area is resolved — reading the side before the call classifies every
+        # child as left (area not yet set) and the run never forms.
         last_2 : element
+        last_l : element
+        last_r : element
         for [ ee: element, id: string ] in e.elements
             if [ ee.topmost ] continue
-            layout_element[ ee, last_2, cv ]
+            layout_element[ ee, last_2, last_l, last_r, cv ]
             last_2 = ee
+            if [ ee.area && ee.area.l.relative ]
+                if [ ee.area.l.x_type == XAlign.right ]
+                    last_r = ee
+                el [ ee.area.l.x_type == XAlign.left ]
+                    last_l = ee
         for [ ee: element, id: string ] in e.elements
             if [ !ee.topmost ] continue
-            layout_element[ ee, last_2, cv ]
+            layout_element[ ee, last_2, last_l, last_r, cv ]
             last_2 = ee
+            if [ ee.area && ee.area.l.relative ]
+                if [ ee.area.l.x_type == XAlign.right ]
+                    last_r = ee
+                el [ ee.area.l.x_type == XAlign.left ]
+                    last_l = ee
 
     public func draw_element [ e: element*, stage: CanvasType, last:element ]
         draw_stage = stage
@@ -3693,10 +4023,23 @@ Display Window
                 sc : f32 (layer.image_scale > 0.0) ? layer.image_scale : 1.0
                 dw : f32 layer.image_svg.w * sc
                 dh : f32 layer.image_svg.h * sc
+                # image_fit is region-relative: 1.0 fills the element, aspect
+                # kept — independent of the svg's authored size.
+                if [ layer.image_fit > 0.0 && layer.image_svg.w > 0.0 && layer.image_svg.h > 0.0 ]
+                    f2 : f32 [ min[ (b.w * layer.image_fit) / layer.image_svg.w,
+                                    (b.h * layer.image_fit) / layer.image_svg.h ] ]
+                    dw = layer.image_svg.w * f2
+                    dh = layer.image_svg.h * f2
                 dx : f32 b.x + (b.w - dw) * 0.5
                 dy : f32 b.y + (b.h - dh) * 0.5
                 draw_cv.save[]
                 draw_cv.set_opacity[ (layer.opacity > 0.0) ? layer.opacity : 1.0 ]
+                # the layer's own colors TINT the glyph — an icon layer that sets
+                # no color leaves white, which scales to the shape's own color and
+                # is therefore a no-op for every existing icon.
+                icf : rgba [ (layer.image_color) ? layer.image_color : rgba [ '#ffffff' ] ]
+                draw_cv.fill_color  [ icf ]
+                draw_cv.stroke_color[ icf ]
                 draw_cv.draw_svg[ layer.image_svg, dx, dy, dw, dh ]
                 draw_cv.restore[]
 
@@ -3959,6 +4302,9 @@ abstract media_app trinity
 
     func init []
         expect root, 'trinity requires a root element'
+        # tee this run's output to /tmp/<app>.log (fresh each run) + terminal
+        rtn : typeid[ root ]
+        host_log_setup[ rtn.ident ]
         # the cwd we launched in (Au captured it in engage before cd'ing to share).
         startup_path = path.path_startup[]
         # the app element initializes at construction (defaults + user init),
@@ -4055,6 +4401,14 @@ abstract media_app trinity
             w.resize[ aw, ah ]
             awin.restyle = true
             at_bytes = aw * ah * 4
+            # isolate shell (crashman): shared-memory frame handoff, NO socket
+            if [ getenv[ 'SILVER_ISOLATE_APP' ] ]
+                shm_on  = true
+                shm_buf = Buffer [ vk: awin.vk, size: at_bytes,
+                    u_dst: true, m_host_visible: true, m_host_cached: true ]
+                shm_buf.hold[]
+                puts 'attach: shared-memory frame channel {aw}x{ah}'
+                return
             at_bufs  = new VkBuffer       [ at_nslots ]
             at_mems  = new VkDeviceMemory [ at_nslots ]
             at_link  = AppLink [ ]
@@ -4073,6 +4427,8 @@ abstract media_app trinity
                 at_link.send_slot[ i, at_bytes, aw * 4, fd2 ]
                 appshare_close[ fd2 ]
             puts 'attach: connected {aw}x{ah}, {at_nslots} dma-buf slots'
+
+
 
 
 
@@ -4192,7 +4548,6 @@ element Group2
         return null
 
 element Control
-    public selected   : bool
     focusable : true
     func render[] -> Elements
         return null
@@ -4202,12 +4557,26 @@ Control Button
     # button's final declared layer below — nothing outside Button touches it
     public icon  : string
     iconl : Layer [ image_align: Align [ x: XAlign.middle, y: YAlign.middle ], image_scale: 1.7 ]
+    # the icon NAME we last resolved. the instance persists across frames, so a
+    # prop that flips (play <-> stop) must re-resolve — init alone bakes in
+    # whatever the first frame asked for.
+    intern icon_cur : string
+    # glyph size as a fraction of the BUTTON, whatever size the svg was drawn
+    # at. 0 = leave the layer's own image_scale alone.
+    public  icon_fit : f32
+
+    func sync_icon []
+        if [ icon_fit > 0.0 ] iconl.image_fit = icon_fit
+        if [ !icon || icon.count == 0 ] return
+        if [ icon_cur && icon_cur.compare[ icon ] == 0 ] return
+        icon_cur = icon
+        iconl.image_svg = SVGModel [ 'images/{icon}.svg' ]
 
     func init []
-        if [ icon && icon.count > 0 ]
-            iconl.image_svg = SVGModel [ 'images/{icon}.svg' ]
+        sync_icon[]
 
     func render[] -> Elements
+        sync_icon[]
         return null
 
 Button Check
@@ -4384,21 +4753,267 @@ Option Edit
     func render[] -> Elements
         return null
 
+# the shade's corner tab: a thin white outline around the menu icon, nothing else.
+# no fill — it sits over whatever the app is drawing, so a filled chip would read
+# as part of the app rather than as framework chrome.
+Option UXMenuButton
+    # direction is the subclass (UXMenuLeft / UXMenuRight); this is the size and
+    # the look every chip shares.
+    area    : Region { r0.22+ t0.22 w1.0 h1.0 }
+    # dictate feedback: orange border while the recorder loads, blue when live
+    public wait_state : bool
+    public live_state : bool
+    # at rest the chip is the glyph alone — the border only appears on hover, so
+    # the framework's chrome stays out of the app's way until reached for.
+    outline : Layer [ radius: Radius [ '8' ], stroke_width: 0.0,
+        stroke_color: rgba [ '#0000' ], fill_color: rgba [ '#0000' ] ]
+    hover   : Layer [ states: State.hovered, radius: Radius [ '8' ],
+        stroke_width: 0.5, stroke_color: rgba [ '#ffff' ], fill_color: rgba [ '#ffffff14' ] ]
+    active  : Layer [ states: State.selected, radius: Radius [ '8' ],
+        stroke_width: 0.5, stroke_color: rgba [ '#ffff' ], fill_color: rgba [ '#0000' ] ]
+
+    # the glyph's own tint, resolved per frame — a Layer state can't express it
+    # because there is one icon layer, not one per state. quiet at rest, full
+    # white under the cursor, ember while engaged.
+    func render [] -> Elements
+        sync_icon[]
+        if [ selected ]
+            iconl.image_color = rgba [ '#c8641e' ]
+        el [ hovered ]
+            iconl.image_color = rgba [ '#ffffff' ]
+        el
+            iconl.image_color = rgba [ '#ffffff80' ]
+        # recorder feedback rides the outline layer, resolved per frame
+        if [ live_state ]
+            outline.stroke_width = 1.0
+            outline.stroke_color = rgba [ '#3b6fe0' ]
+        el [ wait_state ]
+            outline.stroke_width = 1.0
+            outline.stroke_color = rgba [ '#e08a1e' ]
+        el
+            outline.stroke_width = 0.0
+            outline.stroke_color = rgba [ '#0000' ]
+        return null
+
+# direction subclasses — the flow anchor is the only difference
+UXMenuButton UXMenuLeft
+    area : Region { l0.22+ t0.22 w1.0 h1.0 }
+
+UXMenuButton UXMenuRight
+    area : Region { r0.22+ t0.22 w1.0 h1.0 }
+
 # framework dev shade — a macOS-9 style panel that drops from a corner tab. trinity
 # injects it over every app (app_render), so the app never designs or defines it. the
 # tab toggles it; when open a full-window scrim catches click-away. the panel itself
 # slides via a CSS :selected transition on element.sheet. focusable is false so the
 # transparent container never steals input — only the tab, scrim, and panel do.
+# the shade's parts, each carrying its own region + look. they were defaults in
+# style/trinity.css, which only loads for an app that HAS a stylesheet — so the
+# panel rendered at zero size for every app without one. stated here instead.
+
+# the crashman shell composited INSIDE the app's window (the app serves the
+# link; the supervisor spawned crashman --attach). full-window scrim feel:
+# frames letterbox on a dim fill; input forwards into the shell; crashman
+# exiting (bye) closes the overlay.
+# the crashman overlay, composited from the SHARED-MEMORY frame buffer (no
+# sockets). crashman always writes frames; the app shows/hides this locally,
+# so re-opening after a hot-reload just works. input posts back on ring 0.
+element HostedShell
+    area       : Region { l0 t0 r0 b0 }
+    animated   : true
+    focusable  : true
+    mutable tex     : Texture
+    mutable px      : @u8
+    mutable pxcap   : i32
+    mutable aw      : i32
+    mutable ah      : i32
+    mutable seq     : i32
+    mutable have    : bool
+    mutable fitx    : f32
+    mutable fity    : f32
+    mutable fitw    : f32
+    mutable fith    : f32
+    mutable dim     : f32
+    mutable closing : bool
+    mutable req_w   : i32
+    mutable req_h   : i32
+
+    # pull the newest shared frame into our texture when the seq advances
+    func service [ cv: Canvas ]
+        s : i32 [ host_frame_seq[] ]
+        if [ s == seq ] return
+        w9 : i32 [ host_frame_w[] ]
+        h9 : i32 [ host_frame_h[] ]
+        if [ w9 <= 0 || h9 <= 0 ] return
+        need : i32 [ w9 * h9 * 4 ]
+        if [ !px || pxcap < need ]
+            px = new u8 [ need ]
+            pa9 : (px to Au)
+            pa9.hold[]
+            pxcap = need
+        got : i32 [ host_frame_read[ px, pxcap ] ]
+        if [ got < 0 ] return
+        seq = got
+        if [ w9 != aw || h9 != ah || !tex ]
+            aw = w9
+            ah = h9
+            if [ tex ] tex.drop[]
+            tex = Texture [ vk: cv.vk, w: cv.w, width: aw, height: ah,
+                pixel_format: Pixel.rgba8, linear: true ]
+            tex.hold[]
+        tex.upload[ (px to ARef), need ]
+        have = true
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas w.screen
+        service[ cv ]
+        # ask crashman to render at OUR size so frames map 1:1 (post once per
+        # size change on ring 0)
+        nw : i32 [ i32[ bounds.w ] ]
+        nh : i32 [ i32[ bounds.h ] ]
+        if [ nw > 0 && nh > 0 && (nw != req_w || nh != req_h) ]
+            req_w = nw
+            req_h = nh
+            host_post[ 0, i32[ HM.resize ], nw, nh, 0 ]
+        # crashman asked to fold (its back button) — start the close fade
+        if [ ux.shell_fold ]
+            ux.shell_fold = false
+            closing = true
+        if [ closing ]
+            dim -= 0.06
+            if [ dim <= 0.0 ]
+                dim     = 0.0
+                closing = false
+                ux.shell_active = false
+                ux.restyle      = true
+                return
+        el [ dim < 1.0 ]
+            dim += 0.05
+            if [ dim > 1.0 ] dim = 1.0
+        cv.set_opacity[ dim ]
+        cv.fill_color[ rgba [ '#0a0e16' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        if [ tex && have ]
+            ar : f32 [ f32[ aw ] / f32[ ah ] ]
+            fw : f32 [ bounds.w ]
+            fh : f32 [ fw / ar ]
+            if [ fh > bounds.h ]
+                fh = bounds.h
+                fw = fh * ar
+            fitx = (bounds.w - fw) * 0.5
+            fity = (bounds.h - fh) * 0.5
+            fitw = fw
+            fith = fh
+            cv.draw_image[ tex, rect [ x: fitx, y: fity, w: fitw, h: fith ] ]
+        cv.set_opacity[ 1.0 ]
+
+    # map a pointer event into crashman's frame space and post it on ring 0
+    func post_mouse [ ev: Event, type: i32 ]
+        if [ fitw <= 0.0 ] return
+        bx : f32 [ (ev.mouse.pos.x - fitx) / fitw * f32[ aw ] ]
+        by : f32 [ (ev.mouse.pos.y - fity) / fith * f32[ ah ] ]
+        if [ bx < 0.0 ] bx = 0.0
+        if [ by < 0.0 ] by = 0.0
+        if [ bx >= f32[ aw ] ] bx = f32[ aw ] - 1.0
+        if [ by >= f32[ ah ] ] by = f32[ ah ] - 1.0
+        host_post[ 0, type, i32[ bx ], i32[ by ], ev.mouse.button ]
+
+    func on_press [ ev: Event ]
+        set_focus[]
+        post_mouse[ ev, i32[ HM.press ] ]
+        ev.stop_propagation[]
+
+    func on_release [ ev: Event ]
+        post_mouse[ ev, i32[ HM.release ] ]
+
+    func on_move [ ev: Event ]
+        post_mouse[ ev, i32[ HM.move ] ]
+
+    func on_char [ ev: Event ]
+        if [ !ev.key.text || ev.key.text.count == 0 ] return
+        for [ i: i32 0, i < i32[ ev.key.text.count ], i += 1 ]
+            host_post[ 0, i32[ HM.text ], (i32 ev.key.text.chars[ i ]) & 255, 0, 0 ]
+
+    func on_key [ ev: Event ]
+        # shift+esc folds the overlay (crashman keeps running for the mic)
+        if [ ev.key.unicode == 256 && ev.key.shift && ev.key.state ]
+            closing = true
+            return
+        mods : i32 [ 0 ]
+        if [ ev.key.shift ] mods = mods | 1
+        if [ ev.key.ctrl ]  mods = mods | 2
+        if [ ev.key.alt ]   mods = mods | 4
+        if [ ev.key.meta ]  mods = mods | 8
+        act : i32 [ (ev.key.state) ? 1 : 0 ]
+        host_post[ 0, i32[ HM.key ], i32[ ev.key.unicode ], act, mods ]
+
+# full-window dim behind the panel; passes clicks through for click-away close.
+element UXShadeScrim
+    area : Region { l0 t0 r0 b0 }
+    dim  : Layer [ fill_color: rgba [ '#0009' ] ]
+
+# the panel itself — fills the window over the scrim.
+element UXShadeSheet
+    area  : Region { l0 t0 r0 b0 }
+    panel : Layer [ fill_color: rgba [ '#16161c' ], stroke_width: 1.0,
+        stroke_color: rgba [ '#fff1' ] ]
+
+element UXShadeTitle
+    area : Region { l20px t16px r20px h30px }
+    face : Layer [ label_color: rgba [ '#e8e8ec' ], label_size: 18,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element UXShadeClose
+    area  : Region { r1.7 t0.4 r0.4 h1.3 }
+    body  : Layer [ fill_color: rgba [ '#fff1' ], radius: Radius [ '6' ],
+        label_color: rgba [ '#b8b8c0' ], label_size: 16,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+    hover : Layer [ states: State.hovered, fill_color: rgba [ '#fff2' ],
+        radius: Radius [ '6' ], label_color: rgba [ '#ffffff' ], label_size: 16,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+# the rounded pane the reflected rows sit inside, with the overlay scrollbar.
+element UXShadeList
+    area      : Region { l14px t2.4 r14px b14px }
+    pane      : Layer [ fill_color: rgba [ '#101014' ], stroke_width: 1.0,
+        stroke_color: rgba [ '#fff1' ], radius: Radius [ '10' ] ]
+    scrollbar : ScrollLayer [ overlay: true, area: Region { l0 t0 r0 b0 },
+        thumb_color: '#fff3', thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
+
+# a row's name leads by size + brighter color; the description trails muted.
+element UXShadeName
+    area : Region { l24px t0.4 r6 h1.1 }
+    face : Layer [ label_color: rgba [ '#e6e6ea' ], label_size: 15,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element UXShadeDesc
+    area : Region { l24px t1.5 r6 h0.9 }
+    face : Layer [ label_color: rgba [ '#86868e' ], label_size: 12,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
 # a Control (not bare element) so its :selected state can grow the row height —
 # the whole accordion is just that taller area revealing the expanded control.
 Control ShadeRow
     focusable : false
+    # rows stack (t0+); selected grows to reveal the expanded control
+    area    : Region { l0 t0+ r0 h57px }
+    divider : Layer [ fill_color: rgba [ '#fff1' ], area: Region { l16px b0 r16px h1px } ]
+    open    : Layer [ states: State.selected ]
+
     func render [] -> Elements
         return null
 
 element UXGenerics
     focusable : false
-    mutable show_console : bool [ true ]
+    # closed until the tab is pressed — the shade is chrome, not a startup dialog
+    mutable show_console : bool
+    # dictation: click on to start the stream, click again to end it. the button
+    # is manual_mode, so this flag is the only thing driving its state.
+    mutable recording    : bool
+    mutable dict_dbg     : bool
     # the app object we reflect — its public non-mutable bool/enum members become
     # the Options rows. set by the Window in app_render.
     mutable target : element
@@ -4414,6 +5029,30 @@ element UXGenerics
         if [ !e ] return
         if [ e.id == 'tab' ]
             show_console = !show_console
+            if [ ux ] ux.restyle = true
+            ev.stop_propagation[]
+        # dictation toggle: on starts the stream, off ends it. crashman owns
+        # the mic and the LLM — the app only SIGNALS the state (bus). the
+        # legacy on_dictate hand-off stays for apps that self-record.
+        # shift+click additionally raises crashman with this app inside it.
+        el [ e.id == 'dictate' ]
+            # shift: straight to crashman, composited INSIDE this window —
+            # the record state does not change
+            if [ ev.key.shift ]
+                if [ ux ] ux.shell_open[]
+            el
+                recording = !recording
+                if [ ux ]
+                    ux.dict_on = recording
+                    # first record: summon the agent service (mic owner)
+                    if [ recording ] ux.shell_ensure[]
+                    # stop: freeze the app frame + tree NOW, so the request
+                    # crashman is about to send carries the current screenshot
+                    if [ !recording ] ux.shell_freeze[]
+                    # signal crashman THROUGH the supervisor — reload-proof
+                    host_dictate_set[ (recording) ? 1 : 0 ]
+                    puts 'app: host_dictate_set {(recording) ? 1 : 0}'
+                if [ target ] target.on_dictate*[ recording ]
             if [ ux ] ux.restyle = true
             ev.stop_propagation[]
         # the panel's own close (X) button, and click-away on the container itself
@@ -4435,10 +5074,10 @@ element UXGenerics
         els : Elements [ ]
         if [ show_console ]
             # dim backdrop; passes clicks through to the container (click-away close)
-            els[ 'scrim' ] = element [ user_events: false ]
+            els[ 'scrim' ] = UXShadeScrim [ user_events: false ]
             sheet_els : Elements [ ]
-            sheet_els[ 'title' ] = element [ label: 'Options' ]
-            sheet_els[ 'close' ] = element [ label: 'X', focusable: true ]
+            sheet_els[ 'title' ] = UXShadeTitle [ label: 'Options' ]
+            sheet_els[ 'close' ] = UXShadeClose [ label: 'X', focusable: true ]
             # reflect the app's own public, non-mutable bool members into check rows
             if [ target ]
                 rows : Elements [ ]
@@ -4456,8 +5095,8 @@ element UXGenerics
                     nm : string mem.ident
                     isopen : bool [ is_rgba && nm == expanded ]
                     row_els : Elements [ ]
-                    row_els[ 'name' ] = element [ label: nm ]
-                    row_els[ 'desc' ] = element [ label: '' ]
+                    row_els[ 'name' ] = UXShadeName [ label: nm ]
+                    row_els[ 'desc' ] = UXShadeDesc [ label: '' ]
                     if [ is_bool ]
                         pb : @bool [ target.member_ref[ mem ] ]
                         row_els[ 'ctl' ] = Check [ selected: pb[0], focusable: true ]
@@ -4474,9 +5113,16 @@ element UXGenerics
                 # content_h (px) = rows x row-height — the generic scroll reads this
                 # to enable the wheel + scrollbar when it exceeds the list's bounds.
                 lh_est : f32 [ f32[ rows.count ] * 57.0 ]
-                sheet_els[ 'list' ] = element [ content_h: lh_est, focusable: true, elements: rows ]
-            els[ 'sheet' ] = element [ elements: sheet_els ]
-        els[ 'tab' ] = Option [ label: 'menu', manual_mode: true, selected: show_console ]
+                sheet_els[ 'list' ] = UXShadeList [ content_h: lh_est, focusable: true, elements: rows ]
+            els[ 'sheet' ] = UXShadeSheet [ elements: sheet_els ]
+        els[ 'tab' ]     = UXMenuLeft  [ icon: 'menu', icon_fit: 0.58, manual_mode: true, selected: show_console ]
+        # an external cancel (esc) clears the window state — follow it down
+        if [ recording && ux && !ux.dict_on ] recording = false
+        # blue confirm comes from crashman through the supervisor mailbox
+        dlv : bool [ (ux) ? ux.dict_live : false ]
+        els[ 'dictate' ] = UXMenuRight [ icon: 'orbiter4', icon_fit: 0.7,
+            manual_mode: true, selected: recording,
+            wait_state: (recording && !dlv), live_state: (recording && dlv) ]
         return els
 
 

@@ -1387,6 +1387,10 @@ Render Canvas
         save[]
         defaults : states[state_depth - 1]
         defaults.font_size = 22
+        # neutral tint by default: an icon drawn before any fill/stroke is set
+        # takes white (a no-op), not uninitialized memory
+        defaults.fill_color   = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
+        defaults.stroke_color = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
 
     # invoke the inherited Render pipeline once all canvas state has been
     # built up. drives framebuffer/extent setup, runs the render pass, and
@@ -1430,6 +1434,14 @@ Render Canvas
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, @cv, 1, @rng ]
         cmd.submit[]
         color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+        # reset the DRAW STATE too, not just the pixels. a recycled cache canvas
+        # kept the prior row's fill_color, so an icon drawn before any color was
+        # set (draw_svg reads fill/stroke as its TINT) inherited garbage — wrong
+        # colors AND a tint that changed every frame (endless re-raster → crash).
+        # white = a no-op tint, so an untinted icon shows its authored colors.
+        if [ state_depth > 0 ]
+            states[state_depth - 1].fill_color   = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
+            states[state_depth - 1].stroke_color = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
         
 
     # reuse this canvas at a new size instead of rebuilding it — keeps the
@@ -2219,19 +2231,41 @@ Render Canvas
             return
         if [ rw < 1.0 || rh < 1.0 ]
             return
-        if [ !mdl.cache || mdl.cache_rw != rw || mdl.cache_rh != rh ]
-            ps   : i32 [ (mdl.pixel_scale > 0) ? mdl.pixel_scale : 4 ]
-            cw4  : i32 [ i32(mdl.w) * ps ]
-            ch4  : i32 [ i32(mdl.h) * ps ]
-            if [ mdl.cache ]
-                chdr : Au.header[ mdl.cache ]
-                if [ chdr.refs > 1 ]
-                    puts 'SVG cache replace: refs={chdr.refs} (held elsewhere — wont free)'
-            mdl.cache    = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: cw4, height: ch4, reduce: false, load_existing: true ]
-            mdl.cache.update[]
+        # the caller's colors TINT the icon: each shape's own fill and stroke are
+        # scaled by them, so a flat glyph takes the color outright while a
+        # multi-color one keeps its relationships. read from canvas state, so a
+        # cv.fill_color before draw_svg is all a caller needs.
+        tf : vec4f [ states[state_depth - 1].fill_color ]
+        ts : vec4f [ states[state_depth - 1].stroke_color ]
+        tint_same : bool [ memcmp[ @mdl.cache_fill,   @tf, sizeof[ vec4f ] ] == 0 &&
+                           memcmp[ @mdl.cache_stroke, @ts, sizeof[ vec4f ] ] == 0 ]
+        # only the SIZE forces a new render target; a tint change reuses the
+        # SAME Canvas. allocating a Canvas (a full Render: command pool,
+        # semaphores, fences, render passes) per frame while a navlist icon's
+        # hover/select color animated exhausted Vulkan in ~1s → vkCreate fault.
+        need_alloc : bool [ !mdl.cache || mdl.cache_rw != rw || mdl.cache_rh != rh ]
+        if [ need_alloc || !tint_same ]
+            # raster at the size we DRAW, not the size the svg was authored at.
+            # keying off mdl.w meant a 512px logo rasterized 2048 square and got
+            # minified ~100x into a 21px chip — no mip chain, so fine detail
+            # speckled. it also cost ~16MB per icon for pixels thrown away.
+            ps   : i32 [ (mdl.pixel_scale > 0) ? mdl.pixel_scale : 2 ]
+            cw4  : i32 [ i32( rw ) * ps ]
+            ch4  : i32 [ i32( rh ) * ps ]
+            if [ cw4 < 1 ] cw4 = 1
+            if [ ch4 < 1 ] ch4 = 1
+            if [ need_alloc ]
+                if [ mdl.cache ]
+                    chdr : Au.header[ mdl.cache ]
+                    if [ chdr.refs > 1 ]
+                        puts 'SVG cache replace: refs={chdr.refs} (held elsewhere — wont free)'
+                mdl.cache = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: cw4, height: ch4, reduce: false, load_existing: true ]
+                mdl.cache.update[]
             mdl.cache.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
-            mdl.cache_rw = rw
-            mdl.cache_rh = rh
+            mdl.cache_rw     = rw
+            mdl.cache_rh     = rh
+            mdl.cache_fill   = tf
+            mdl.cache_stroke = ts
             rw4   : f32 [ f32(cw4) ]
             rh4   : f32 [ f32(ch4) ]
             sx    : f32 (mdl.w > 0.0) ? rw4 / mdl.w : 1.0
@@ -2243,15 +2277,15 @@ Render Canvas
                 fc : rgba rgba[ '#00000000' ]
                 sc : rgba rgba[ '#00000000' ]
                 if [ !shape.fill_none && shape.fill ]
-                    fc.r = shape.fill.r
-                    fc.g = shape.fill.g
-                    fc.b = shape.fill.b
-                    fc.a = shape.fill.a
+                    fc.r = shape.fill.r * tf.x
+                    fc.g = shape.fill.g * tf.y
+                    fc.b = shape.fill.b * tf.z
+                    fc.a = shape.fill.a * tf.w
                 if [ !shape.stroke_none && shape.stroke ]
-                    sc.r = shape.stroke.r
-                    sc.g = shape.stroke.g
-                    sc.b = shape.stroke.b
-                    sc.a = shape.stroke.a
+                    sc.r = shape.stroke.r * ts.x
+                    sc.g = shape.stroke.g * ts.y
+                    sc.b = shape.stroke.b * ts.z
+                    sc.a = shape.stroke.a * ts.w
                 mdl.cache.save[]
                 mdl.cache.set_opacity[ shape.opacity ]
                 mdl.cache.fill_color[ fc ]

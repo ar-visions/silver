@@ -152,6 +152,10 @@ ielement element
     # floating controls that overlap a full-area sibling, e.g. a toggle button
     # sitting on top of an editor view.
     public  topmost         : bool
+    # requested size. a host sizes an attached app with --width/--height, so
+    # every element carries them; an app sets its own default where it wants.
+    public  width           : i32
+    public  height          : i32
     mutable hovered         : bool
     mutable pressed         : bool
     mutable focused         : bool
@@ -161,6 +165,8 @@ ielement element
     mutable odd             : bool
     mutable even            : bool
     public  focusable       : bool
+    # editable layers stay display-only while set (label mode)
+    public  read_only       : bool
     # app root only: opt into the framework dev shade (menu tab + generics)
     public  ux_generics     : bool
     public cursor_pos       : vec2f
@@ -222,6 +228,11 @@ ielement element
     # `volatile` looks similar but is OWNED BY THE STYLE ENGINE (active
     # transitions/EMA) and is cleared when styles settle — do not hijack it.
     public  animated     : bool
+    # selection state for control-like elements (buttons, options, consoles);
+    # styles key on :selected, so it lives on the base
+    public  selected     : bool
+    # app-bus presence name override (crashman must not collide with its host)
+    public  bus_name     : string
     intern cache_canvas  : Canvas
     intern cache_w       : i32
     intern cache_h       : i32
@@ -271,6 +282,29 @@ ielement element
     # audio) stop them here; dealloc order is not deterministic enough for
     # thread teardown.
     public func on_unload [ ]
+        return
+
+    # the shade's dictation toggle, handed to the app. trinity cannot start a
+    # recording itself — spectra imports trinity, so the dependency only runs
+    # one way; the app is the layer that can hold both. no-op by default, so an
+    # app that ignores it simply has a button that does nothing.
+    public func on_dictate [ on: bool ]
+        return
+
+    # open a source location (a clicked path:line link in a Console). the app
+    # root overrides this (orbiter opens an editor pane); default = unhandled.
+    public func open_at [ fp: path, lno: i32, col: i32 ] -> bool
+        return false
+
+    # host message-channel hook: the WndProc forwards non-input messages here
+    # (crashman handles HM.dictate to drive the mic). no-op by default.
+    # params are WndProc-style (a is silver's implicit self, so wp/lp/xp).
+    public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
+        return
+
+    # app-bus message hook: the frame drain forwards here — the live wrapper's
+    # own on_bus never reaches the app element, so this is the app's real ear
+    public func on_bus [ m: BusMessage ]
         return
 
     func unload_tree [ ]
@@ -461,6 +495,14 @@ class Layer
     public font                : Font
     public image_svg           : SVGModel
     public image_scale         : f32 [ 1.0 ]
+    # glyph size as a FRACTION OF THE ELEMENT, aspect preserved. image_scale
+    # multiplies the svg's OWN dimensions, so the same value gives wildly
+    # different results for a 512px logo and a 24px line icon — this doesn't
+    # care how the source was authored. 0 = fall back to image_scale.
+    public image_fit           : f32
+    # tints an svg glyph: each shape's fill/stroke is SCALED by this, so white
+    # (the default when unset) leaves the icon exactly as authored.
+    public image_color         : rgba
     public image_source        : Image
     public image_align         : Align
     public image_tranform      : Transform

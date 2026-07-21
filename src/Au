@@ -856,6 +856,8 @@ forward(any)
     M(AA,BB, i, method, public, Au,     member_object,  Au_t) \
     M(AA,BB, i, method, public, bool,   member_set, Au_t, Au) \
     M(AA,BB, s, method, public, Au,     header, Au) \
+    M(AA,BB, i, method, public, none,   attach,   Au) \
+    M(AA,BB, i, method, public, Au,     attached) \
     M(AA,BB, i, method, public, Au,     vdata) \
     M(AA,BB, i, method, public, Au_t,   vdata_type) \
     M(AA,BB, i, method, public, i64,    vdata_stride) \

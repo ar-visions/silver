@@ -33,6 +33,11 @@ class SVGModel
     public cache        : Canvas
     public cache_rw     : f32
     public cache_rh     : f32
+    # the tint the cached raster was baked with. shapes are drawn with their own
+    # fill/stroke SCALED by the canvas colors, so a colour change must re-raster —
+    # the cache is otherwise keyed on size alone and would hand back the old tint.
+    public cache_fill   : vec4f
+    public cache_stroke : vec4f
     public pixel_scale  : i32 [ 4 ]
 
     construct [ src: path ]

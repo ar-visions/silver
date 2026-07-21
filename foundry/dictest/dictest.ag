@@ -1,0 +1,36 @@
+import vec
+import img
+import trinity
+import spectra
+import <stdio.h>
+
+# standalone dictation tester: own swapchain window, same flat dictation_*
+# surface crashman uses. click dictate, speak, click off — transcript prints.
+element dictest : trinity
+    public width       : i32    [ 420 ]
+    public height       : i32    [ 240 ]
+    public title       : string [ 'dictest' ]
+    public ux_generics : bool   [ true ]
+    intern cap_on      : bool
+    intern flushing    : bool
+
+    public func on_dictate [ on: bool ]
+        if [ on ]
+            if [ dictation_start[] == 0 ] cap_on = true
+        el
+            dictation_stop[]
+            cap_on   = false
+            flushing = true
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ cap_on ] dictation_gpu[ Canvas w.screen ]
+
+    public func render [] -> Elements
+        if [ cap_on ] dictation_poll[]
+        if [ flushing ]
+            if [ dictation_flush[] ]
+                flushing = false
+                t : dictation_take[]
+                if [ t && t.count > 0 ] puts 'TAKE >>> {t}'
+        return Elements [ ]
