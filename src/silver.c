@@ -4335,10 +4335,14 @@ enode parse_statement(silver a)
     } else if (rec_top && read_if(a, "context")) {
         access = interface_context;
         traits = AU_TRAIT_IS_CONTEXT;
+    } else if (rec_top && read_if(a, "default")) {
+        /// a public that also carries the default-argument bit: a bare argv
+        /// value converts into it (Au_args -> find_member AU_TRAIT_IS_DEFAULT),
+        /// and it is the separator — everything after belongs to the program.
+        access = interface_public;
+        traits = AU_TRAIT_IS_DEFAULT;
     } else
         access = read_enum(a, interface_undefined, typeid(interface));
-
-    //bool is_default = !access ? read_if(a, "default") != null : false;
     bool has_access = access != interface_undefined;
     if (access == interface_intern && next_is(a, "")) {
 
@@ -8592,7 +8596,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
                 cstr key_name = isa(k) == typeid(const_string) ? 
                     ((const_string)k)->chars : null;
                 if (key_name) {
-                    Au_t mem = find_member(mdl->autype, key_name, AU_MEMBER_VAR, 0, false);
+                    Au_t mem = find_member(mdl->autype, key_name, AU_MEMBER_VAR, 0, true);
                     if (mem && mem->src) {
                         mdl_field = u(etype, mem->src);
                         if (!mdl_field)

@@ -45,6 +45,8 @@ foundry/orion
 *.seq
 *.pt
 *.gen
+/models
+mozart.mp3
 athlete
 */n64/reference
 /shot*png
