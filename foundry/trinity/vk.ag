@@ -898,7 +898,7 @@ class vk_context
                 portability_supported = true
         expect swapchain_supported, "VK_KHR_swapchain not supported by physical device"
 
-        enabled_dev_exts  : new symbol [ 6 ]
+        enabled_dev_exts  : new symbol [ 8 ]
         enabled_ext_count : u32 0
         enabled_dev_exts[ enabled_ext_count ] = VK_KHR_SWAPCHAIN_EXTENSION_NAME
         enabled_ext_count += 1
@@ -1075,33 +1075,21 @@ class vk_context
         return 0
 
     ifdef [ linux ]
-        # producer: allocate a device-local buffer whose memory is EXPORTABLE as
-        # a dma-buf, and hand back the fd. the app copies its composed frame into
-        # this buffer (TRANSFER_DST) and orbiter imports the same fd to read it.
-        func export_dmabuf [ byte_size: i32, out_buf: @VkBuffer, out_mem: @VkDeviceMemory ] -> i32
-            expect _vkGetMemoryFdKHR, 'appshare: vkGetMemoryFdKHR not loaded'
-            ext : VkExternalMemoryBufferCreateInfo [ ]
-            ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO
-            ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
-            bci : VkBufferCreateInfo [ ]
-            bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO
-            bci.pNext       = @ext
-            bci.size        = byte_size
-            bci.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT
-            bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE
-            buf : VkBuffer [ null ]
-            err : i32 [ vkCreateBuffer[ device, @bci, null, @buf ] ]
-            expect err == 0, 'appshare: vkCreateBuffer (export) failed'
+        # backing for a shareable texture: a dedicated, exportable dma-buf
+        # allocation bound to the image the app renders into. returns the fd
+        # naming this GPU memory cross-process; it stays open for the
+        # texture's whole life so consumers can pull duplicates of it.
+        func export_image_memory [ img: VkImage, out_mem: @VkDeviceMemory ] -> i32
+            expect _vkGetMemoryFdKHR, 'share: vkGetMemoryFdKHR not loaded'
             mreq : VkMemoryRequirements [ ]
-            vkGetBufferMemoryRequirements[ device, buf, @mreq ]
+            vkGetImageMemoryRequirements[ device, img, @mreq ]
             mti : u32 [ find_memory_type[ mreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT ] ]
-            # export + dedicate the allocation to this buffer
             exp : VkExportMemoryAllocateInfo [ ]
             exp.sType       = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO
             exp.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
             ded : VkMemoryDedicatedAllocateInfo [ ]
             ded.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
-            ded.buffer = buf
+            ded.image  = img
             ded.pNext  = @exp
             mai : VkMemoryAllocateInfo [ ]
             mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
@@ -1109,20 +1097,83 @@ class vk_context
             mai.allocationSize  = mreq.size
             mai.memoryTypeIndex = mti
             mem : VkDeviceMemory [ null ]
-            err = vkAllocateMemory[ device, @mai, null, @mem ]
-            expect err == 0, 'appshare: vkAllocateMemory (export) failed'
-            err = vkBindBufferMemory[ device, buf, mem, 0 ]
-            expect err == 0, 'appshare: vkBindBufferMemory (export) failed'
+            err : i32 [ vkAllocateMemory[ device, @mai, null, @mem ] ]
+            expect err == 0, 'share: vkAllocateMemory (export) failed'
+            err = vkBindImageMemory[ device, img, mem, 0 ]
+            expect err == 0, 'share: vkBindImageMemory (export) failed'
             gi : VkMemoryGetFdInfoKHR [ ]
             gi.sType      = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR
             gi.memory     = mem
             gi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
             fd : i32 [ 0 - 1 ]
             err = _vkGetMemoryFdKHR[ device, @gi, @fd ]
-            expect err == 0, 'appshare: vkGetMemoryFdKHR failed'
-            out_buf = buf
+            expect err == 0, 'share: vkGetMemoryFdKHR failed'
             out_mem = mem
             return fd
+
+        # consumer: import a published screen texture. the dma-buf fd IS the
+        # same GPU memory the publisher renders into — sampling it shows the
+        # publisher's live frame. the fd is consumed by the import.
+        func import_shared_tex [ dma_fd: i32, w2: i32, h2: i32, fmt: i32, disp: Display ] -> Texture
+            ext : VkExternalMemoryImageCreateInfo [ ]
+            ext.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
+            ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+            info : VkImageCreateInfo [ ]
+            info.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO
+            info.pNext         = @ext
+            info.imageType     = VK_IMAGE_TYPE_2D
+            info.format        = fmt
+            info.extent        = VkExtent3D [ w2, h2, 1 ]
+            info.mipLevels     = 1
+            info.arrayLayers   = 1
+            info.samples       = VK_SAMPLE_COUNT_1_BIT
+            info.tiling        = VK_IMAGE_TILING_OPTIMAL
+            info.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT     |
+                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT     |
+                                 VK_IMAGE_USAGE_SAMPLED_BIT
+            info.sharingMode   = VK_SHARING_MODE_EXCLUSIVE
+            info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+            img : VkImage [ null ]
+            err : i32 [ vkCreateImage[ device, @info, null, @img ] ]
+            expect err == 0, 'share: vkCreateImage (import) failed'
+            mreq : VkMemoryRequirements [ ]
+            vkGetImageMemoryRequirements[ device, img, @mreq ]
+            expect _vkGetMemoryFdPropertiesKHR, 'share: vkGetMemoryFdPropertiesKHR not loaded'
+            fd_props : VkMemoryFdPropertiesKHR [ ]
+            fd_props.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR
+            err = _vkGetMemoryFdPropertiesKHR[ device,
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, @fd_props ]
+            expect err == 0, 'share: vkGetMemoryFdPropertiesKHR failed'
+            allowed : u32 [ mreq.memoryTypeBits & fd_props.memoryTypeBits ]
+            expect allowed != 0, 'share: no memory type for dmabuf fd'
+            mti : u32 [ 0 ]
+            for [ k: u32 0, k < 32, k += 1 ]
+                if [ allowed & (u32[1] << k) ]
+                    mti = k
+                    break
+            ded : VkMemoryDedicatedAllocateInfo [ ]
+            ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO
+            ded.image = img
+            imp : VkImportMemoryFdInfoKHR [ ]
+            imp.sType      = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR
+            imp.pNext      = @ded
+            imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+            imp.fd         = dma_fd
+            mai : VkMemoryAllocateInfo [ ]
+            mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
+            mai.pNext           = @imp
+            mai.allocationSize  = mreq.size
+            mai.memoryTypeIndex = mti
+            mem : VkDeviceMemory [ null ]
+            err = vkAllocateMemory[ device, @mai, null, @mem ]
+            expect err == 0, 'share: vkAllocateMemory (import) failed'
+            err = vkBindImageMemory[ device, img, mem, 0 ]
+            expect err == 0, 'share: vkBindImageMemory (import) failed'
+            t : Texture [ vk: a, w: disp, width: w2, height: h2,
+                vk_format: fmt, vk_image: img, vk_memory: mem ]
+            t.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+            return t
 
         # consumer: import a dma-buf fd as a TRANSFER_SRC buffer (Camera recipe)
         func import_dmabuf [ dma_fd: i32, byte_size: i32, out_buf: @VkBuffer, out_mem: @VkDeviceMemory ] -> bool
@@ -1175,32 +1226,43 @@ class vk_context
             out_mem = mem
             return true
 
-        # consumer: copy an imported dma-buf into a sampled texture. keeps every
-        # VK_* symbol on the trinity side so orbiter needs no Vulkan headers.
-        func blit_buffer_to_tex [ buf: VkBuffer, tex: Texture, w2: i32, h2: i32 ]
-            if [ !buf || !tex || !tex.vk_image ] return
+        # consumer: release one imported dma-buf buffer + its memory
+        func free_import [ buf: VkBuffer, mem: VkDeviceMemory ]
+            if [ buf ] vkDestroyBuffer[ device, buf, null ]
+            if [ mem ] vkFreeMemory[ device, mem, null ]
+
+        # producer: GPU copy of a completed frame into a shared texture
+        # (one-time submit + wait, so the flip that follows is truthful)
+        func copy_image [ src: Texture, dst: Texture ]
+            if [ !src || !dst || !src.vk_image || !dst.vk_image ] return
             cmd : VkCommandBuffer
             vkAllocateCommandBuffers[ device, VkCommandBufferAllocateInfo [
                 sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
                 commandPool:        command_pool,
                 level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
                 commandBufferCount: 1 ], @cmd ]
-            tex.transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+            prev : VkImageLayout [ src.vk_layout ]
+            src.transition[ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+            dst.transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
             vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
                 sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                 flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
-            vkCmdCopyBufferToImage[ cmd, buf, tex.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                VkBufferImageCopy [
-                    bufferOffset:      0,
-                    bufferRowLength:   0,
-                    bufferImageHeight: 0,
-                    imageSubresource:  VkImageSubresourceLayers [
+            vkCmdCopyImage[ cmd, src.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                dst.vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                VkImageCopy [
+                    srcSubresource: VkImageSubresourceLayers [
                         aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
                         mipLevel:       0,
                         baseArrayLayer: 0,
                         layerCount:     1 ],
-                    imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
-                    imageExtent: VkExtent3D [ width: u32[ w2 ], height: u32[ h2 ], depth: 1 ] ] ]
+                    srcOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
+                    dstSubresource: VkImageSubresourceLayers [
+                        aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                        mipLevel:       0,
+                        baseArrayLayer: 0,
+                        layerCount:     1 ],
+                    dstOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
+                    extent: VkExtent3D [ width: u32[ src.width ], height: u32[ src.height ], depth: 1 ] ] ]
             vkEndCommandBuffer[ cmd ]
             vkQueueSubmit[ queue, 1, VkSubmitInfo [
                 sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -1208,12 +1270,8 @@ class vk_context
                 pCommandBuffers:    @cmd ], null ]
             vkQueueWaitIdle[ queue ]
             vkFreeCommandBuffers[ device, command_pool, 1, @cmd ]
-            tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
-
-        # consumer: release one imported dma-buf buffer + its memory
-        func free_import [ buf: VkBuffer, mem: VkDeviceMemory ]
-            if [ buf ] vkDestroyBuffer[ device, buf, null ]
-            if [ mem ] vkFreeMemory[ device, mem, null ]
+            src.transition[ prev ]
+            dst.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
 
     func attach [ vk_surface:handle ]
         if [ queue_family_index == -1 ]
@@ -2724,15 +2782,21 @@ class Texture
     public silly_test4      : bool
     public title            : string 'default title'
     public nearest          : bool   # sampler filters NEAREST (hard pixel edges) instead of linear
+    # allocate as an exportable dma-buf so other processes can import this
+    # exact GPU memory (cross-process shared Vulkan texture)
+    public shareable        : bool
     # NOTE: appended LAST — inserting mid-schema shifts af-bit indices of the
     # members after it (misread set-detection broke m7_src's mip/aniso config)
-    
+
     intern vk_layout        : VkImageLayout
     intern vk_format        : VkFormat
     intern vk_image         : VkImage
     intern vk_image_view    : VkImageView
     intern vk_sampler       : VkSampler
     intern vma_alloc        : VmaAllocation
+    # non-VMA backing for shareable/imported textures + its exported fd
+    intern vk_memory        : VkDeviceMemory
+    intern shared_fd        : i32 [ -1 ]
 
     func resize [ w_new: i32, h_new: i32 ] -> Texture
         if [ w_new == width && h_new == height ]
@@ -3013,12 +3077,23 @@ class Texture
             ]
 
             if [ !vk_image && vk_format ]
-                alloc_info: VmaAllocationCreateInfo [
-                    usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
-                ]
-                result: vmaCreateImage[ vk.allocator, info, alloc_info, @vk_image, @vma_alloc, null ]
-                expect result == VK_SUCCESS, 'failed to create VkImage: {i32[result]}'
-                expect vk_image, 'vmaCreateImage returned success but vk_image is null'
+                ifdef [ linux ]
+                    if [ shareable ]
+                        ext9 : VkExternalMemoryImageCreateInfo [ ]
+                        ext9.sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO
+                        ext9.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
+                        info.pNext = @ext9
+                        r9 : i32 [ vkCreateImage[ vk.device, @info, null, @vk_image ] ]
+                        expect r9 == VK_SUCCESS, 'shared texture: vkCreateImage failed'
+                        shared_fd = vk.export_image_memory[ vk_image, @vk_memory ]
+                        expect shared_fd >= 0, 'shared texture: export failed'
+                if [ !vk_image ]
+                    alloc_info: VmaAllocationCreateInfo [
+                        usage: VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE
+                    ]
+                    result: vmaCreateImage[ vk.allocator, info, alloc_info, @vk_image, @vma_alloc, null ]
+                    expect result == VK_SUCCESS, 'failed to create VkImage: {i32[result]}'
+                    expect vk_image, 'vmaCreateImage returned success but vk_image is null'
 
             if [ sampler_size > 0 ]
                 transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
@@ -3109,7 +3184,16 @@ class Texture
         # swap textures wrap a VkImage owned by the swapchain — destroying the
         # swapchain already invalidated it; we must NOT call vmaDestroyImage.
         if [ !swap && vk_image ]
-            vmaDestroyImage[ vk.allocator, vk_image, vma_alloc ]
+            if [ vk_memory ]
+                # shareable/imported: plain image + dedicated device memory
+                vkDestroyImage[ vk.device, vk_image, null ]
+                vkFreeMemory[ vk.device, vk_memory, null ]
+                vk_memory = null
+                if [ shared_fd >= 0 ]
+                    close[ shared_fd ]
+                    shared_fd = 0 - 1
+            el
+                vmaDestroyImage[ vk.allocator, vk_image, vma_alloc ]
             vk_image  = null
             vma_alloc = null
         vk_layout = VK_IMAGE_LAYOUT_UNDEFINED
@@ -3611,63 +3695,6 @@ intern func pixel_from_format [ f: VkFormat, channels: @i32 ] -> Pixel
 # ALL Vulkan handles live here (trinity), so a host like orbiter passes only
 # ints and draws through draw[] — no VkBuffer crosses the module edge (opaque
 # handles have no stable cross-module type identity).
-class AppFrames
-    intern  vk     : vk_context
-    intern  w2     : i32
-    intern  h2     : i32
-    intern  nslots : i32
-    intern  bufs   : @VkBuffer         # opaque C handles → must be intern
-    intern  mems   : @VkDeviceMemory
-    intern  tx     : Texture
-    intern  got    : i32
-
-    func setup [ vkc: vk_context, ww: i32, hh: i32, nsl: i32, disp: Display ]
-        vk     = vkc
-        w2     = ww
-        h2     = hh
-        nslots = nsl
-        bufs   = new VkBuffer       [ nsl ]
-        mems   = new VkDeviceMemory [ nsl ]
-        tx     = Texture [ vk: vkc, w: disp, width: ww, height: hh, pixel_format: Pixel.rgba8, linear: true ]
-        tx.hold[]
-
-    func import_slot [ slot: i32, fd: i32, bytes: i32 ]
-        if [ slot < 0 ] return
-        if [ slot >= nslots ] return
-        b2 : VkBuffer [ null ]
-        m2 : VkDeviceMemory [ null ]
-        if [ vk.import_dmabuf[ fd, bytes, @b2, @m2 ] ]
-            bufs[ slot ] = b2
-            mems[ slot ] = m2
-            got += 1
-
-    func ready [] -> bool
-        if [ nslots <= 0 ] return false
-        return got >= nslots
-
-    func blit [ slot: i32 ]
-        if [ slot < 0 ] return
-        if [ slot >= nslots ] return
-        vk.blit_buffer_to_tex[ bufs[ slot ], tx, w2, h2 ]
-
-    func draw [ cv: Canvas, dst: rect ]
-        if [ tx ] cv.draw_image[ tx, dst ]
-
-    func save_png [ p: path ]
-        if [ !tx ] return
-        im : Image [ tx ]
-        im.png[ p ]
-
-    func dispose []
-        if [ bufs ]
-            for [ i: i32 0, i < nslots, i += 1 ]
-                vk.free_import[ bufs[ i ], mems[ i ] ]
-        bufs = null
-        mems = null
-        if [ tx ]
-            tx.drop[]
-            tx = null
-
 func Surface_resources [ surface_enum_type: Au_t, surface_value: Surface, meta_type: Au_t, p: Pipeline ] -> array Gpu
     res: Gpu
     result: array Gpu [ alloc: 32 ]

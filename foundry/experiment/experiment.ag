@@ -7,7 +7,7 @@ import <stdio.h>
 # chrome (the UX generics tab), which is the point: it isolates the framework's
 # menu button so a change to it can be seen on its own.
 # dictation: the app does NOT record. the dictate toggle broadcasts on the app
-# bus and crashman (the supervisor shell) owns the mic and the LLM connection.
+# bus and orbiter (the supervisor shell) owns the mic and the LLM connection.
 Background ExperimentBackground
     func init[]
         color = rgba[ '#ff0000' ]

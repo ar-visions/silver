@@ -5,7 +5,7 @@ import spectra
 import <stdio.h>
 
 # standalone dictation tester: own swapchain window, same flat dictation_*
-# surface crashman uses. click dictate, speak, click off — transcript prints.
+# surface orbiter uses. click dictate, speak, click off — transcript prints.
 element dictest : trinity
     public width       : i32    [ 420 ]
     public height       : i32    [ 240 ]

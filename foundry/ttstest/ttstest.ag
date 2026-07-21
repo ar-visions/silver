@@ -12,7 +12,7 @@ app ttstest
 
     func init []
         d : string ((dir && dir.count > 0) ? dir : string '/src/silver/models/kokoro-en')
-        t : string ((text && text.count > 0) ? text : string 'crashman is online. your app is supervised.')
+        t : string ((text && text.count > 0) ? text : string 'orbiter here.')
         rc : i32 [ tts_init[ d.chars ] ]
         if [ rc != 0 ]
             puts 'ttstest: init failed ({rc})'

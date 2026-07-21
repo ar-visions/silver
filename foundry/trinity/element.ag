@@ -231,8 +231,6 @@ ielement element
     # selection state for control-like elements (buttons, options, consoles);
     # styles key on :selected, so it lives on the base
     public  selected     : bool
-    # app-bus presence name override (crashman must not collide with its host)
-    public  bus_name     : string
     intern cache_canvas  : Canvas
     intern cache_w       : i32
     intern cache_h       : i32
@@ -297,14 +295,9 @@ ielement element
         return false
 
     # host message-channel hook: the WndProc forwards non-input messages here
-    # (crashman handles HM.dictate to drive the mic). no-op by default.
+    # (orbiter handles HM.dictate to drive the mic). no-op by default.
     # params are WndProc-style (a is silver's implicit self, so wp/lp/xp).
     public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
-        return
-
-    # app-bus message hook: the frame drain forwards here — the live wrapper's
-    # own on_bus never reaches the app element, so this is the app's real ear
-    public func on_bus [ m: BusMessage ]
         return
 
     func unload_tree [ ]

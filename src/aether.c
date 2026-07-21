@@ -8477,13 +8477,19 @@ none aether_build_module_initializer(aether a, enode init) {
             ), false, false);
 
             arg_list(mem, arg) {
-                etype arg_type = u(etype, arg->src);
-
+                // ref args cross as pointer typeids (primitives) or as
+                // flag + bare src (structs: no ref_<T> typeid to import)
+                bool ref_prim = arg->is_explicit_ref && arg->src->is_primitive;
+                etype arg_type = ref_prim ?
+                    pointer(a, (Au)arg->src) :
+                    u(etype, arg->src);
+                i64 arg_traits = (arg->is_explicit_ref && !ref_prim) ?
+                    AU_TRAIT_EXPLICIT_REF : 0;
                 e_fn_call(a, fn_def_arg, a(
                     fn,
                     const_string(chars, arg->ident),
                     e_typeid(a, arg_type),
-                    _i64(0)
+                    _i64(arg_traits)
                 ), false, false);
             }
         }
@@ -8657,12 +8663,18 @@ none aether_build_module_initializer(aether a, enode init) {
                 }
 
                 arg_list(mem, arg) {
-                    etype arg_type = u(etype, arg->src);
+                    // same ref-arg crossing convention as module free funcs
+                    bool ref_prim = arg->is_explicit_ref && arg->src->is_primitive;
+                    etype arg_type = ref_prim ?
+                        pointer(a, (Au)arg->src) :
+                        u(etype, arg->src);
+                    i64 arg_traits = (arg->is_explicit_ref && !ref_prim) ?
+                        AU_TRAIT_EXPLICIT_REF : 0;
                     e_fn_call(a, fn_def_arg, a(
                         e_mem,
                         const_string(chars, arg->ident),
                         e_typeid(a, arg_type),
-                        _i64(0)
+                        _i64(arg_traits)
                     ), false, false);
                 }
 

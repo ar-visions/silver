@@ -46,6 +46,7 @@ foundry/orion
 *.pt
 *.gen
 /models
+/shaders
 mozart.mp3
 athlete
 */n64/reference

@@ -1622,7 +1622,7 @@ func dictation_gpu [ cv: Canvas ] -> bool
     return true
 
 # claim the transcript: returns the accumulated text and clears it, so the
-# caller (crashman) types each utterance into the agent exactly once
+# caller (orbiter) types each utterance into the agent exactly once
 func dictation_take [] -> string
     t : dict.txt
     if [ !t || t.count == 0 ] return null
@@ -1631,7 +1631,7 @@ func dictation_take [] -> string
 
 # ---- tts: a flat C-callable surface (sherpa-onnx, kokoro voices) ------------
 # same single-owner shape as dictation_*: plain module functions, no element,
-# so whatever process should speak (crashman) owns the engine and the device.
+# so whatever process should speak (orbiter) owns the engine and the device.
 struct TtsState
     eng : @SherpaOnnxOfflineTts
     mix : AudioMixer

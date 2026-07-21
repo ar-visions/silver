@@ -2,240 +2,106 @@
 #define VMA_IMPLEMENTATION
 #include <vk_mem_alloc.h>
 
-// ---------------------------------------------------------------------------
-// appshare: AF_UNIX + SCM_RIGHTS fd-passing shim. the CMSG_* macros are not
-// callable from silver, so the socket plumbing lives here as plain C. all
-// messages are a fixed 32-byte frame (8 x u32 words); SLOT also carries one
-// dma-buf fd out of band. every fd/socket is non-blocking. the symbols are
-// defined on every platform (stubs off linux) so AppLink links everywhere.
-// ---------------------------------------------------------------------------
 #if defined(__linux__)
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
 #include <errno.h>
 
-#define APPSHARE_MSG_BYTES 32
-
-static void appshare_nonblock(int fd) {
-    int fl = fcntl(fd, F_GETFL, 0);
-    if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
-}
-
-extern "C" int appshare_listen(const char* path) {
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (s < 0) return -1;
-    struct sockaddr_un addr; memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
-    unlink(path);
-    if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(s); return -1; }
-    if (listen(s, 1) < 0) { close(s); return -1; }
-    appshare_nonblock(s);
-    return s;
-}
-
-// non-blocking accept: -1 = none yet / error, else the connected fd
-extern "C" int appshare_accept(int s) {
-    int c = accept(s, 0, 0);
-    if (c < 0) return -1;
-    appshare_nonblock(c);
-    return c;
-}
-
-extern "C" int appshare_connect(const char* path) {
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (s < 0) return -1;
-    struct sockaddr_un addr; memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
-    if (connect(s, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(s); return -1; }
-    appshare_nonblock(s);
-    return s;
-}
-
-// write one fixed frame. returns 1 ok, 0 peer gone / not draining, -1 error.
-// MSG_NOSIGNAL: a peer that exited must read as EPIPE, not SIGPIPE.
-// EAGAIN: the socket is FULL because the peer stopped reading (e.g. the app
-// hot-reloaded and isn't draining the shell yet). do NOT busy-spin — that was
-// a 100%-CPU userspace hang that starved the render/dictation loop. drop the
-// frame cleanly at a message boundary (off==0); frames are transient. only a
-// partial write (off>0, rare on a 32B message) briefly retries to avoid
-// corrupting the stream.
-static int appshare_write_all(int s, const void* buf, unsigned len) {
-    const char* p = (const char*)buf; unsigned off = 0;
-    int spins = 0;
-    while (off < len) {
-        ssize_t n = send(s, p + off, len - off, MSG_NOSIGNAL);
-        if (n > 0) { off += (unsigned)n; spins = 0; continue; }
-        if (n == 0) return 0;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (off == 0) return 0;              // clean drop, nothing sent
-            if (++spins > 200) return 0;         // partial: give up ~100ms
-            usleep(500);
-            continue;
-        }
-        if (errno == EPIPE) return 0;
-        return -1;
-    }
-    return 1;
-}
-
-extern "C" int appshare_send(int s, const void* msg) {
-    return appshare_write_all(s, msg, APPSHARE_MSG_BYTES);
-}
-
-// send one 32-byte frame + one fd via SCM_RIGHTS. returns 1 ok, 0 peer gone, -1.
-extern "C" int appshare_send_fd(int s, int fd, const void* msg) {
-    struct iovec io; io.iov_base = (void*)msg; io.iov_len = APPSHARE_MSG_BYTES;
-    char cbuf[CMSG_SPACE(sizeof(int))]; memset(cbuf, 0, sizeof(cbuf));
-    struct msghdr mh; memset(&mh, 0, sizeof(mh));
-    mh.msg_iov = &io; mh.msg_iovlen = 1;
-    mh.msg_control = cbuf; mh.msg_controllen = sizeof(cbuf);
-    struct cmsghdr* cm = CMSG_FIRSTHDR(&mh);
-    cm->cmsg_level = SOL_SOCKET; cm->cmsg_type = SCM_RIGHTS;
-    cm->cmsg_len = CMSG_LEN(sizeof(int));
-    memcpy(CMSG_DATA(cm), &fd, sizeof(int));
-    for (;;) {
-        ssize_t n = sendmsg(s, &mh, MSG_NOSIGNAL);
-        if (n > 0) return 1;
-        if (n == 0) return 0;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
-        if (errno == EPIPE) return 0;
-        return -1;
-    }
-}
-
-// non-blocking recv of one 32-byte frame. returns 1 got one, 0 none yet,
-// -1 peer closed / error. if a fd rides along it is stored in *fd_out (else -1).
-extern "C" int appshare_recv_fd(int s, void* buf, int* fd_out) {
-    if (fd_out) *fd_out = -1;
-    struct iovec io; io.iov_base = buf; io.iov_len = APPSHARE_MSG_BYTES;
-    char cbuf[CMSG_SPACE(sizeof(int))]; memset(cbuf, 0, sizeof(cbuf));
-    struct msghdr mh; memset(&mh, 0, sizeof(mh));
-    mh.msg_iov = &io; mh.msg_iovlen = 1;
-    mh.msg_control = cbuf; mh.msg_controllen = sizeof(cbuf);
-    ssize_t n;
-    for (;;) {
-        n = recvmsg(s, &mh, 0);
-        if (n >= 0) break;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
-        return -1;
-    }
-    if (n == 0) return -1;                 // peer closed
-    if (n != APPSHARE_MSG_BYTES) return -1;
-    struct cmsghdr* cm = CMSG_FIRSTHDR(&mh);
-    if (cm && cm->cmsg_level == SOL_SOCKET && cm->cmsg_type == SCM_RIGHTS &&
-        cm->cmsg_len == CMSG_LEN(sizeof(int)) && fd_out) {
-        memcpy(fd_out, CMSG_DATA(cm), sizeof(int));
-    }
-    return 1;
-}
-
-extern "C" void appshare_close(int fd) { if (fd >= 0) close(fd); }
-
-// one frame then plen payload bytes on the same stream
-extern "C" int appshare_send_msg(int s, const void* msg, const void* payload, int plen) {
-    int r = appshare_write_all(s, msg, APPSHARE_MSG_BYTES);
-    if (r != 1) return r;
-    if (plen > 0 && payload)
-        return appshare_write_all(s, payload, (unsigned)plen);
-    return 1;
-}
-
-// spin-read exactly len promised payload bytes; 1 ok, -1 closed
-extern "C" int appshare_recv_payload(int s, void* buf, int len) {
-    char* p = (char*)buf; int off = 0;
-    while (off < len) {
-        ssize_t n = read(s, p + off, (size_t)(len - off));
-        if (n > 0) { off += (int)n; continue; }
-        if (n == 0) return -1;
-        if (errno == EINTR) continue;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
-        return -1;
-    }
-    return 1;
-}
-// ask the supervising silver-host to bring up crashman (SIGUSR1). guarded on
-// the isolate-child marker so an unsupervised app never signals its shell.
+// is pid alive? distinguishes an app RELOAD (in-process, same pid) from an
+// app EXIT (pid gone) so a consumer knows whether to keep running.
 #include <signal.h>
 #include <stdlib.h>
-extern "C" int host_ask_crashman(void) {
-    if (!getenv("SILVER_ISOLATE_CHILD")) return -1;
-    return kill(getppid(), SIGUSR1);
-}
-
-// is pid alive? distinguishes an app RELOAD (in-process, same pid) from an
-// app EXIT (pid gone) so the isolate shell knows whether to keep running.
 extern "C" int host_pid_alive(int pid) {
     if (pid <= 0) return 0;
     return kill(pid, 0) == 0 ? 1 : 0;
 }
 
 // ===========================================================================
-// host message channel — ONE WndProc-style interface, no sockets, no scattered
-// per-feature function pointers. a single shared-memory region (fixed path, so
-// it survives the app's hot-reload) holds two SPSC message rings + one frame
-// buffer. the app posts to ring 0 / polls ring 1; crashman posts to ring 1 /
-// polls ring 0. each side pumps its inbound ring and switches on msg.type.
+// the app hosting channel. ONE anonymous memfd (RAM-backed, no filesystem
+// name, no socket, no file — EVER) created by silver-host and inherited by
+// every process it spawns (SILVER_SHM_FD). it holds a table of app slots;
+// each slot is two SPSC message rings plus two shared-texture descriptors.
+//
+// pixels never cross the channel. every app already renders into its screen
+// texture; when hosted, that texture is allocated as an exportable dma-buf
+// and the descriptor below names its fd. a consumer duplicates the fd out of
+// the publisher with pidfd_getfd and imports the SAME GPU memory as a
+// VkImage. no copies, no broker, no per-frame traffic — just the texture.
+// this struct layout MIRRORS silver-host.c — keep the two in lockstep.
 // ===========================================================================
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <stdint.h>
+#include <sys/syscall.h>
+#include <sys/prctl.h>
 
 enum {
-    HM_NONE = 0,
-    HM_DICTATE,   // app->shell   a=state (0 idle,1 rec,2 cancel)
-    HM_LIVE,      // shell->app   a=0/1 mic live (button blue)
-    HM_PRESS,     // app->shell   a=x b=y c=button
-    HM_RELEASE,   // app->shell   a=x b=y c=button
-    HM_MOVE,      // app->shell   a=x b=y
-    HM_KEY,       // app->shell   a=unicode b=state c=mods
-    HM_TEXT,      // app->shell   a=codepoint
-    HM_FRAME,     // shell->app   a=w b=h c=seq (pixels in shm frame buffer)
-    HM_RESIZE,    // app->shell   a=w b=h  (overlay size the shell renders to)
-    HM_BYE        // either       overlay dismissed
+    HM_NONE    = 0,
+    HM_DICTATE = 1,   // app->ide     a=state (0 idle,1 rec,2 cancel)
+    HM_LIVE    = 2,   // ide->app     a=0/1 mic live (button blue)
+    HM_PRESS   = 3,   //              a=x b=y c=button
+    HM_RELEASE = 4,   //              a=x b=y c=button
+    HM_MOVE    = 5,   //              a=x b=y
+    HM_KEY     = 6,   //              a=unicode b=state c=mods
+    HM_TEXT    = 7,   //              a=codepoint
+    HM_RESIZE  = 9,   //              a=w b=h (render at this size)
+    HM_CLOSE   = 10   // either       overlay/pane closed
 };
 
-#define HM_SLOTS 1024
+#define HM_SLOTS  1024
+#define HOST_APPS 8
 typedef struct { int32_t type, a, b, c; } HostMsg;
 typedef struct { volatile uint32_t head, tail; HostMsg m[HM_SLOTS]; } HostRing;
-#define HM_FRAME_MAX (1920 * 1200 * 4)
+// a cross-process shared Vulkan surface: TWO textures + a front index, so a
+// consumer always samples a COMPLETE frame while the producer fills the
+// other (single-texture sharing tears — the consumer catches the clear).
+// fds are dma-buf fd NUMBERS valid in the publisher (pid); consumers
+// duplicate them via pidfd_getfd. gen bumps on every (re)publish — a resize
+// makes new textures, new fds, a new gen. front flips per finished frame.
 typedef struct {
-    HostRing to_shell;   // app  -> shell
-    HostRing to_app;     // shell -> app
-    volatile int32_t fw, fh, fseq;
-    uint8_t frame[HM_FRAME_MAX];
+    volatile int32_t pid, fd0, fd1, front, gen, width, height, format;
+} SharedTex;
+typedef struct {
+    HostRing  to_ide;      // toward the ide/consumer side
+    HostRing  to_app;      // toward the app side (input, resize, close)
+    SharedTex app_tex;     // the app's screen texture
+    SharedTex ide_tex;     // orbiter's screen texture (summon overlay)
+    volatile int32_t app_pid;   // process bound to this slot
+    volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
+    char name[192];             // "module [default-arg]" silver-host spawns
+} HostApp;
+typedef struct {
+    volatile int32_t host_pid;  // supervising silver-host; spawn asks signal it
+    HostApp app[HOST_APPS];
 } HostShared;
 
 static HostShared* g_hs = 0;
 static HostShared* host_shared(void) {
     if (g_hs) return g_hs;
-    // the channel is per-session: keyed to the supervisor's pid (handed down
-    // as SILVER_ISOLATE_SESSION). no session → not isolated → no channel.
-    const char* sess = getenv("SILVER_ISOLATE_SESSION");
-    if (!sess || !*sess) return 0;
-    char path[128];
-    snprintf(path, sizeof(path), "/tmp/silver-crashman-%s.shm", sess);
-    int fd = open(path, O_RDWR | O_CREAT, 0600);
+    // NO file. silver-host created an anonymous memfd, sized it, and handed
+    // us the fd by inheritance — its number is in SILVER_SHM_FD.
+    const char* fds = getenv("SILVER_SHM_FD");
+    if (!fds || !*fds) return 0;
+    int fd = atoi(fds);
     if (fd < 0) return 0;
-    if (ftruncate(fd, sizeof(HostShared)) != 0) { close(fd); return 0; }
     void* p = mmap(0, sizeof(HostShared), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    close(fd);
     if (p == MAP_FAILED) return 0;
     g_hs = (HostShared*)p;
     return g_hs;
 }
 
-// post a message to a ring (0 = to_shell, 1 = to_app). SPSC: one producer.
-extern "C" void host_post(int ring, int type, int a, int b, int c) {
-    HostShared* h = host_shared(); if (!h) return;
-    HostRing* r = ring ? &h->to_app : &h->to_shell;
+// this process's own slot (SILVER_APP_SLOT, 0 when unset — the primary app)
+extern "C" int host_slot(void) {
+    const char* s = getenv("SILVER_APP_SLOT");
+    return (s && *s) ? atoi(s) : 0;
+}
+
+// post a message to a slot's ring (0 = to_ide, 1 = to_app). SPSC.
+extern "C" void host_post2(int slot, int ring, int type, int a, int b, int c) {
+    HostShared* h = host_shared();
+    if (!h || slot < 0 || slot >= HOST_APPS) return;
+    HostRing* r = ring ? &h->app[slot].to_app : &h->app[slot].to_ide;
     uint32_t head = r->head;
     r->m[head % HM_SLOTS].type = type;
     r->m[head % HM_SLOTS].a = a;
@@ -245,11 +111,12 @@ extern "C" void host_post(int ring, int type, int a, int b, int c) {
     r->head = head + 1;
 }
 
-// pop next message from a ring; fills g_last, returns type (0 = empty).
+// pop next message from a slot's ring; fills g_last, returns type (0 = empty).
 static HostMsg g_last;
-extern "C" int host_poll(int ring) {
-    HostShared* h = host_shared(); if (!h) return 0;
-    HostRing* r = ring ? &h->to_app : &h->to_shell;
+extern "C" int host_poll2(int slot, int ring) {
+    HostShared* h = host_shared();
+    if (!h || slot < 0 || slot >= HOST_APPS) return 0;
+    HostRing* r = ring ? &h->app[slot].to_app : &h->app[slot].to_ide;
     if (r->tail == r->head) { g_last.type = 0; return 0; }
     g_last = r->m[r->tail % HM_SLOTS];
     __sync_synchronize();
@@ -260,43 +127,133 @@ extern "C" int host_pa(void) { return g_last.a; }
 extern "C" int host_pb(void) { return g_last.b; }
 extern "C" int host_pc(void) { return g_last.c; }
 
-// frame buffer: crashman writes its composed RGBA; the app reads + blits.
-extern "C" void host_frame_write(const void* rgba, int w, int h) {
-    HostShared* hh = host_shared(); if (!hh || !rgba) return;
-    int64_t bytes = (int64_t)w * h * 4;
-    if (bytes <= 0 || bytes > HM_FRAME_MAX) return;
-    memcpy(hh->frame, rgba, (size_t)bytes);
-    hh->fw = w; hh->fh = h;
-    __sync_synchronize();
-    hh->fseq = hh->fseq + 1;
-    host_post(1, HM_FRAME, w, h, hh->fseq);
+// own-slot conveniences (the common case for an app or a summoned orbiter)
+extern "C" void host_post(int ring, int type, int a, int b, int c) {
+    host_post2(host_slot(), ring, type, a, b, c);
 }
-extern "C" int  host_frame_seq(void) { HostShared* h = host_shared(); return h ? h->fseq : -1; }
-extern "C" int  host_frame_w(void)   { HostShared* h = host_shared(); return h ? h->fw : 0; }
-extern "C" int  host_frame_h(void)   { HostShared* h = host_shared(); return h ? h->fh : 0; }
-// copy the frame into `out` (out must hold w*h*4). returns seq copied.
-extern "C" int  host_frame_read(void* out, int maxbytes) {
-    HostShared* h = host_shared(); if (!h || !out) return -1;
-    int64_t bytes = (int64_t)h->fw * h->fh * 4;
-    if (bytes <= 0 || bytes > maxbytes) return -1;
-    memcpy(out, h->frame, (size_t)bytes);
-    return h->fseq;
+extern "C" int host_poll(int ring) { return host_poll2(host_slot(), ring); }
+
+// publish this process's shared surface (side 0 = app, 1 = ide): both
+// texture fds at once. the fds stay open here for the textures' whole
+// life; consumers pull dups.
+extern "C" void host_tex_publish(int slot, int side, int fd0, int fd1, int w, int h, int fmt) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS) return;
+    // let any same-uid consumer pull our fds (yama scope 1 blocks otherwise)
+    prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+    SharedTex* t = side ? &hs->app[slot].ide_tex : &hs->app[slot].app_tex;
+    t->pid    = (int)getpid();
+    t->fd0    = fd0;
+    t->fd1    = fd1;
+    t->front  = -1;              // nothing complete yet
+    t->width  = w;
+    t->height = h;
+    t->format = fmt;
+    __sync_synchronize();
+    t->gen = t->gen + 1;
+    if (!side) hs->app[slot].state = 2;
 }
 
-// ---- legacy dictation mailbox (thin wrappers over the message ring so the
-// existing app/crashman dictation code keeps working during the transition) --
-extern "C" void host_mailbox(const char* base) { (void)base; }
-static int g_dict_state = 0, g_dict_live = 0;
-extern "C" void host_dictate_set(int v) { g_dict_state = v; host_post(0, HM_DICTATE, v, 0, 0); }
-extern "C" int  host_dictate_get(void)  {
-    while (host_poll(0)) { if (g_last.type == HM_DICTATE) g_dict_state = g_last.a; }
-    return g_dict_state;
+extern "C" int host_tex_gen(int slot, int side) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
+    SharedTex* t = side ? &hs->app[slot].ide_tex : &hs->app[slot].app_tex;
+    return t->gen;
 }
-extern "C" void host_live_set(int v) { g_dict_live = v; host_post(1, HM_LIVE, v, 0, 0); }
-extern "C" int  host_live_get(void)  {
-    while (host_poll(1)) { if (g_last.type == HM_LIVE) g_dict_live = g_last.a; }
-    return g_dict_live;
+
+// producer: this texture now holds a COMPLETE frame — show it
+extern "C" void host_tex_flip(int slot, int side, int front) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS) return;
+    SharedTex* t = side ? &hs->app[slot].ide_tex : &hs->app[slot].app_tex;
+    __sync_synchronize();
+    t->front = front;
 }
+
+// consumer: which of the two textures holds the newest complete frame
+extern "C" int host_tex_front(int slot, int side) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS) return -1;
+    SharedTex* t = side ? &hs->app[slot].ide_tex : &hs->app[slot].app_tex;
+    return t->front;
+}
+
+// duplicate one published texture fd (which = 0/1) out of its owner.
+// returns a LOCAL fd (caller owns it; vulkan import consumes it) or -1.
+extern "C" int host_tex_pull(int slot, int side, int which, int* w, int* h, int* fmt) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS) return -1;
+    SharedTex* t = side ? &hs->app[slot].ide_tex : &hs->app[slot].app_tex;
+    int fd = which ? t->fd1 : t->fd0;
+    if (t->gen <= 0 || t->pid <= 0 || fd < 0) return -1;
+    if (w)   *w   = t->width;
+    if (h)   *h   = t->height;
+    if (fmt) *fmt = t->format;
+    if (t->pid == (int)getpid()) return dup(fd);
+    int pfd = (int)syscall(SYS_pidfd_open, (pid_t)t->pid, 0);
+    if (pfd < 0) return -1;
+    int r = (int)syscall(SYS_pidfd_getfd, pfd, fd, 0);
+    close(pfd);
+    return r;
+}
+
+// ask silver-host to build (if needed) + spawn a module into a free slot.
+// returns the slot to watch, or -1 (no supervisor / table full).
+extern "C" int host_app_request(const char* nm) {
+    HostShared* hs = host_shared();
+    if (!hs || !nm || !*nm || hs->host_pid <= 0) return -1;
+    for (int i = 1; i < HOST_APPS; i++) {
+        HostApp* ap = &hs->app[i];
+        if (ap->state == 0 || ap->state == 3) {
+            memset((void*)&ap->app_tex, 0, sizeof(SharedTex));
+            memset((void*)&ap->ide_tex, 0, sizeof(SharedTex));
+            ap->to_ide.tail = ap->to_ide.head;
+            ap->to_app.tail = ap->to_app.head;
+            ap->app_pid = 0;
+            strncpy((char*)ap->name, nm, sizeof(ap->name) - 1);
+            ((char*)ap->name)[sizeof(ap->name) - 1] = 0;
+            __sync_synchronize();
+            ap->state = 1;
+            kill((pid_t)hs->host_pid, SIGUSR1);
+            return i;
+        }
+    }
+    return -1;
+}
+
+extern "C" int host_app_state(int slot) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
+    return hs->app[slot].state;
+}
+
+extern "C" int host_app_pid(int slot) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
+    return hs->app[slot].app_pid;
+}
+
+// stop a hosted app; silver-host reaps it and marks the slot exited
+extern "C" void host_app_stop(int slot) {
+    HostShared* hs = host_shared();
+    if (!hs || slot <= 0 || slot >= HOST_APPS) return;
+    int pid = hs->app[slot].app_pid;
+    if (pid > 0 && kill((pid_t)pid, 0) == 0) kill((pid_t)pid, SIGTERM);
+}
+
+// ask the supervising silver-host to bring up orbiter (SIGUSR1). guarded on
+// the isolate-child marker so an unsupervised app never signals its ide.
+extern "C" int host_ask_orbiter(void) {
+    if (!getenv("SILVER_ISOLATE_CHILD")) return -1;
+    HostShared* hs = host_shared();
+    if (hs && hs->host_pid > 0) return kill((pid_t)hs->host_pid, SIGUSR1);
+    return kill(getppid(), SIGUSR1);
+}
+
+// dictate (app->ide) and live-confirm (ide->app) are single latest-wins
+// signals over the rings
+extern "C" void host_dictate_set(int v) { host_post(0, HM_DICTATE, v, 0, 0); }
+extern "C" void host_live_set(int v)    { host_post(1, HM_LIVE, v, 0, 0); }
 
 // tee all stdout/stderr to /tmp/<name>.log (fresh each run) AND the terminal,
 // so a run's full output is always readable without pasting. one tee thread
@@ -339,33 +296,28 @@ extern "C" void host_log_setup(const char* name) {
     pthread_detach(t);
 }
 #else
-// non-linux stubs: the feature is linux-only (dma-buf), but the symbols must
-// exist so AppLink links. every call reports "no connection".
-extern "C" int  appshare_listen(const char* p)                     { return -1; }
-extern "C" int  host_ask_crashman(void)                            { return -1; }
+// non-linux stubs: hosting is linux-only (dma-buf, memfd, pidfd), but the
+// symbols must exist so the module links. every call reports "nothing there".
+extern "C" int  host_ask_orbiter(void)                             { return -1; }
 extern "C" void host_dictate_set(int v)                            { }
-extern "C" int  host_dictate_get(void)                             { return -1; }
 extern "C" void host_live_set(int v)                               { }
-extern "C" int  host_live_get(void)                                { return -1; }
 extern "C" void host_log_setup(const char* name)                   { }
-extern "C" void host_mailbox(const char* base)                     { }
 extern "C" int  host_pid_alive(int pid)                            { return 0; }
+extern "C" int  host_slot(void)                                    { return 0; }
 extern "C" void host_post(int r, int t, int a, int b, int c)       { }
 extern "C" int  host_poll(int r)                                   { return 0; }
+extern "C" void host_post2(int s, int r, int t, int a, int b, int c) { }
+extern "C" int  host_poll2(int s, int r)                           { return 0; }
 extern "C" int  host_pa(void)                                      { return 0; }
 extern "C" int  host_pb(void)                                      { return 0; }
 extern "C" int  host_pc(void)                                      { return 0; }
-extern "C" void host_frame_write(const void* p, int w, int h)      { }
-extern "C" int  host_frame_seq(void)                               { return -1; }
-extern "C" int  host_frame_w(void)                                 { return 0; }
-extern "C" int  host_frame_h(void)                                 { return 0; }
-extern "C" int  host_frame_read(void* o, int m)                    { return -1; }
-extern "C" int  appshare_accept(int s)                             { return -1; }
-extern "C" int  appshare_connect(const char* p)                    { return -1; }
-extern "C" int  appshare_send(int s, const void* m)                { return -1; }
-extern "C" int  appshare_send_fd(int s, int fd, const void* m)     { return -1; }
-extern "C" int  appshare_recv_fd(int s, void* b, int* fdo)         { return -1; }
-extern "C" int  appshare_send_msg(int s, const void* m, const void* p, int n) { return -1; }
-extern "C" int  appshare_recv_payload(int s, void* b, int n)       { return -1; }
-extern "C" void appshare_close(int fd)                             { }
+extern "C" void host_tex_publish(int s, int sd, int f0, int f1, int w, int h, int f) { }
+extern "C" int  host_tex_gen(int s, int sd)                        { return 0; }
+extern "C" void host_tex_flip(int s, int sd, int fr)               { }
+extern "C" int  host_tex_front(int s, int sd)                      { return -1; }
+extern "C" int  host_tex_pull(int s, int sd, int wh, int* w, int* h, int* f) { return -1; }
+extern "C" int  host_app_request(const char* nm)                   { return -1; }
+extern "C" int  host_app_state(int s)                              { return 0; }
+extern "C" int  host_app_pid(int s)                                { return 0; }
+extern "C" void host_app_stop(int s)                               { }
 #endif

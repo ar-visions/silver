@@ -112,10 +112,12 @@ class ResourceView
         cw  : f32 [ cwm.w ]
         lh  : f32 [ round[ cv.get_line_height[] ] ]
         if [ lh <= 0.0 || cw <= 0.0 ] return
-        # columns: 8-digit offset, 16 hex byte pairs (gap after 8), 16 ascii chars
-        x_off : f32 [ bounds.x + 8.0 ]
+        # columns: 8-digit offset, 16 hex byte pairs (gap after 8), 16 ascii chars.
+        # shift left by the horizontal scroll so a narrow pane can reach the ascii.
+        x_off : f32 [ bounds.x + 8.0 - hx_scroll_x ]
         x_hex : f32 [ x_off + cw * 10.0 ]
         x_asc : f32 [ x_hex + cw * 51.0 ]
+        hx_content_w = cw * 67.0 + 16.0
         hx_hexx = x_hex
         hx_ascx = x_asc
         hx_cw   = cw
@@ -301,6 +303,8 @@ class ResourceView
     mutable hx_woff   : i64 [ -1 ]     # window's byte offset (-1 = empty)
     mutable hx_wlen   : i32
     mutable hx_scroll : f32            # editor scroll.y, stashed pre-render
+    mutable hx_scroll_x : f32          # editor scroll.x, stashed pre-render
+    mutable hx_content_w : f32         # full row width (px) for h-scroll clamp
     mutable hx_s0     : i64 [ -1 ]     # selection anchor (byte offset)
     mutable hx_s1     : i64 [ -1 ]     # selection end (byte offset)
     mutable hx_drag   : bool
@@ -408,16 +412,16 @@ ResourceView ImageView
         loaded = false
 
 # a remote trinity app hosted as an editor pane. the editor's Run action
-# (Ctrl-R) spawns `silver <mod> --build` then the produced binary in --attach
-# mode; the app renders in its OWN process and shares each frame as a dma-buf.
-# a crash/hang in the app cannot reach orbiter — we only read validated
-# messages + imported fds, reap the child, and show a note.
+# (Ctrl-R) asks silver-host (our supervisor) to build + spawn the module
+# into a channel slot; the app renders in its OWN process into a shared
+# texture we import and draw. a crash/hang in the app cannot reach orbiter —
+# silver-host reaps it and marks the slot; we just show a note.
 ResourceView AppView
-    mutable link       : AppLink
-    mutable frames     : AppFrames     # trinity owns the imported buffers + texture
-    mutable pid        : i32
-    mutable sock_path  : string
-    mutable cmd        : string      # the build+run command the console executes
+    mutable slot       : i32 [ -1 ]  # our channel slot at silver-host
+    mutable tex0       : Texture     # the app's shared surface pair, imported
+    mutable tex1       : Texture
+    mutable gen        : i32         # generation of the imported surface
+    mutable cmd        : string      # console command (streams the app's log)
     mutable dispatched : bool        # cmd handed to its console session (once per run)
     # the document this app was launched FOR (a registered handler opens it)
     mutable doc        : path
@@ -434,9 +438,7 @@ ResourceView AppView
     mutable note       : string
     mutable aw         : i32
     mutable ah         : i32
-    mutable nslots     : i32
     mutable have_frame : bool
-    mutable fcount     : i32
     # letterbox rect (canvas space) of the last drawn frame — maps clicks back
     mutable fitx       : f32
     mutable fity       : f32
@@ -459,17 +461,44 @@ ResourceView AppView
     func continuous [] -> bool
         return true
 
-    # keep the app alive + draining frames every frame, even when the pane is
-    # showing code — otherwise the producer blocks on a full socket
+    # watch the slot every frame, even when the pane is showing code: import
+    # the app's shared texture whenever it re-publishes (startup, resize),
+    # and notice silver-host marking the slot exited.
     func service [ cv: Canvas ]
         if [ !started ] start[]
-        pump[ cv ]
-        # orbiter dictates the app's size: the pane's workable area IS the app's
-        # window. when the area settles at a new size, ask the app to rebuild its
-        # backbuffer there (it re-HELLOs with fresh dma-buf slots).
+        if [ slot < 0 ] return
+        st : i32 [ host_app_state[ slot ] ]
+        if [ st == 3 && !dead ]
+            dead = true
+            note = 'app exited'
+        if [ dead ] return
+        g9 : i32 [ host_tex_gen[ slot, 0 ] ]
+        if [ g9 != gen && g9 > 0 ]
+            w9 : i32
+            h9 : i32
+            f9 : i32
+            fd0 : i32 [ host_tex_pull[ slot, 0, 0, @w9, @h9, @f9 ] ]
+            fd1 : i32 [ host_tex_pull[ slot, 0, 1, @w9, @h9, @f9 ] ]
+            if [ fd0 >= 0 && fd1 >= 0 ]
+                if [ tex0 ]
+                    tex0.drop[]
+                    tex1.drop[]
+                tex0 = cv.vk.import_shared_tex[ fd0, w9, h9, f9, cv.w ]
+                tex1 = cv.vk.import_shared_tex[ fd1, w9, h9, f9, cv.w ]
+                tex0.hold[]
+                tex1.hold[]
+                aw  = w9
+                ah  = h9
+                gen = g9
+                ready      = true
+                have_frame = true
+                puts 'appview: imported surface {aw}x{ah} (slot {slot})'
+        # orbiter dictates the app's size: the pane's workable area IS the
+        # app's window. when the area settles at a new size, ask the app to
+        # rebuild its backbuffer there (a fresh shared texture follows).
         nw : i32[ vw ]
         nh : i32[ vh ]
-        if [ ready && link && link.sock >= 0 && nw > 0 && nh > 0 ]
+        if [ ready && nw > 0 && nh > 0 ]
             if [ nw != pend_w || nh != pend_h ]
                 pend_w = nw
                 pend_h = nh
@@ -479,11 +508,18 @@ ResourceView AppView
                 if [ settle >= 6 && (nw != req_w || nh != req_h) ]
                     req_w = nw
                     req_h = nh
-                    link.send_resize[ nw, nh ]
+                    host_post2[ slot, 1, i32[ HM.resize ], nw, nh, 0 ]
 
-    # paint the latest frame into the pane (only when the app view is shown)
+    # the newest complete frame of the app's surface (null until one flips)
+    func front [] -> Texture
+        fr : i32 [ host_tex_front[ slot, 0 ] ]
+        if [ fr < 0 || !tex0 ] return null
+        return (fr == 0) ? tex0 : tex1
+
+    # paint the live frame into the pane (only when the app view is shown)
     func draw_frame [ cv: Canvas, bounds: rect ]
-        if [ frames && have_frame ]
+        ft : front[]
+        if [ ft && have_frame ]
             ar : f32 [ f32[ aw ] / f32[ ah ] ]
             fw : f32 [ bounds.w ]
             fh : f32 [ fw / ar ]
@@ -494,7 +530,7 @@ ResourceView AppView
             fity = bounds.y + (bounds.h - fh) * 0.5
             fitw = fw
             fith = fh
-            frames.draw[ cv, rect [ x: fitx, y: fity, w: fitw, h: fith ] ]
+            cv.draw_image[ ft, rect [ x: fitx, y: fity, w: fitw, h: fith ] ]
         if [ dead || !ready ]
             overlay[ cv, bounds ]
 
@@ -505,7 +541,8 @@ ResourceView AppView
     # minimized: draw the live app as a small thumbnail in the lower-right over
     # the code — click it to restore. it keeps updating (service still runs).
     func draw_pip [ cv: Canvas, bounds: rect ]
-        if [ !frames || !have_frame ] return
+        ft : front[]
+        if [ !ft || !have_frame ] return
         ar : f32 [ f32[ aw ] / f32[ ah ] ]
         pw : f32 [ bounds.w * 0.30 ]
         ph : f32 [ pw / ar ]
@@ -513,7 +550,7 @@ ResourceView AppView
         pipy = bounds.y + bounds.h - ph - 16.0
         pipw = pw
         piph = ph
-        frames.draw[ cv, rect [ x: pipx, y: pipy, w: pipw, h: piph ] ]
+        cv.draw_image[ ft, rect [ x: pipx, y: pipy, w: pipw, h: piph ] ]
 
     # instrument accordion on the right: each section is [title] then [control].
     # callstack on top (placeholder area for now), the app's live view on the
@@ -570,95 +607,55 @@ ResourceView AppView
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint[]
 
-    # serve the socket + build the run command. the editor's embedded console
-    # actually runs it (build + exec the attached binary) so its compile/app
-    # output streams there; we detect the app dying via the socket closing.
+    # ask silver-host (our supervisor) to build + spawn the module into a
+    # channel slot. the console command just streams the app's teed log — the
+    # process belongs to silver-host, not to a shell.
     func start []
         started = true
-        sp  : path.path_startup[]
         fn  : src.filename[]
         di  : i32 [ fn.index_of[ '.' ] ]
         mod : (di > 0) ? fn.mid[ 0, di ] : fn
-        sock_path = '/tmp/orbiter-app-{getpid[]}-{mod}-{epoch_millis[]}.sock'
-        link = AppLink [ ]
-        link.hold[]
-        if [ !link.serve[ sock_path.chars ] ]
-            dead = true
-            note = 'socket failed'
-            return
         # a handler module is launched FOR a document — the path rides as the
-        # app's DEFAULT argument (bare, after its own flags).
-        darg : string [ (doc) ? ' {doc}' : '' ]
-        cmd = 'cd {sp} && unset IMPORT && ./install/bin/silver --build {mod} && exec ./install/build/{mod} --attach {sock_path} --width 1280 --height 720{darg}'
-
-    func pump [ cv: Canvas ]
-        if [ !link || dead ] return
-        if [ !link.poll_accept[] ] return
-        for [ i: i32 0, i < 128, i += 1 ]
-            t : i32 [ link.poll[] ]
-            if [ t == 0 ] return
-            if [ t == i32[ AppMsg.bye ] ]
-                dead = true
-                note = 'app exited'
-                return
-            if [ t == i32[ AppMsg.hello ] ]
-                aw = link.w1
-                ah = link.w2
-                nslots = link.w4
-                if [ nslots < 1 ] nslots = 1
-                # a re-HELLO (live resize) replaces the frame set: hold new frames
-                # until every new slot imports (ready gates the frame blits)
-                ready      = false
-                have_frame = false
-                frames = AppFrames [ ]
-                frames.setup[ cv.vk, aw, ah, nslots, cv.w ]
-                puts 'appview: hello {aw}x{ah}, {nslots} slots'
-            el [ t == i32[ AppMsg.slot ] ]
-                slot : i32 [ link.w1 ]
-                bytes : i32 [ link.w2 ]
-                fd : i32 [ link.recv_fd ]
-                if [ frames && fd >= 0 ]
-                    frames.import_slot[ slot, fd, bytes ]
-                    if [ frames.ready[] ] ready = true
-            el [ t == i32[ AppMsg.frame ] ]
-                fslot : i32 [ link.w1 ]
-                if [ ready && frames ]
-                    frames.blit[ fslot ]
-                    have_frame = true
-                    fcount += 1
-                    if [ fcount % 120 == 1 ] puts 'appview: received frame {fcount} (slot {fslot})'
+        # app's DEFAULT argument (silver-host appends it to the spawn argv)
+        req : string [ (doc) ? '{mod} {doc}' : '{mod}' ]
+        slot = host_app_request[ req.chars ]
+        if [ slot < 0 ]
+            dead = true
+            note = 'no silver-host supervisor'
+            return
+        cmd = 'tail -n +1 -F /tmp/{mod}.log'
+        puts 'appview: requested {mod} (slot {slot})'
 
     func on_key [ ev: Event ]
-        if [ dead || !link || link.sock < 0 ] return
+        if [ dead || slot < 0 ] return
         mods : i32 [ 0 ]
         if [ ev.key.shift ] mods = mods | 1
         if [ ev.key.ctrl ]  mods = mods | 2
         if [ ev.key.alt ]   mods = mods | 4
         if [ ev.key.meta ]  mods = mods | 8
         act : i32 [ (ev.key.state) ? 1 : 0 ]
-        link.send_key[ i32[ ev.key.unicode ], i32[ ev.key.scan_code ], act, mods, i32[ ev.key.unicode ] ]
+        host_post2[ slot, 1, i32[ HM.key ], i32[ ev.key.unicode ], act, mods ]
 
     func view_press [ ev: Event ] -> bool
         if [ dead ]
             restart[]
             return true
-        if [ !ready || !link || link.sock < 0 || fitw <= 0.0 ] return false
+        if [ !ready || slot < 0 || fitw <= 0.0 ] return false
         bx : f32 [ (ev.mouse.pos.x - fitx) / fitw * f32[ aw ] ]
         by : f32 [ (ev.mouse.pos.y - fity) / fith * f32[ ah ] ]
-        puts 'appview: press pos={ev.mouse.pos.x} {ev.mouse.pos.y} fit={fitx} {fity} {fitw} {fith} -> app={bx} {by}'
         if [ bx < 0.0 || by < 0.0 || bx >= f32[ aw ] || by >= f32[ ah ] ] return false
         # press + release so a click registers (orion menus act on press)
-        link.send_mouse[ i32[ bx ], i32[ by ], ev.mouse.button, 1, i32[ AppMouse.press ] ]
-        link.send_mouse[ i32[ bx ], i32[ by ], ev.mouse.button, 0, i32[ AppMouse.release ] ]
+        host_post2[ slot, 1, i32[ HM.press ],   i32[ bx ], i32[ by ], ev.mouse.button ]
+        host_post2[ slot, 1, i32[ HM.release ], i32[ bx ], i32[ by ], ev.mouse.button ]
         return true
 
     # hover: forward pointer moves so the app can show hover states
     func view_move [ ev: Event ] -> bool
-        if [ dead || !ready || !link || link.sock < 0 || fitw <= 0.0 ] return false
+        if [ dead || !ready || slot < 0 || fitw <= 0.0 ] return false
         bx : f32 [ (ev.mouse.pos.x - fitx) / fitw * f32[ aw ] ]
         by : f32 [ (ev.mouse.pos.y - fity) / fith * f32[ ah ] ]
         if [ bx < 0.0 || by < 0.0 || bx >= f32[ aw ] || by >= f32[ ah ] ] return false
-        link.send_mouse[ i32[ bx ], i32[ by ], 0, 0, i32[ AppMouse.move ] ]
+        host_post2[ slot, 1, i32[ HM.move ], i32[ bx ], i32[ by ], 0 ]
         return true
 
     func restart []
@@ -670,18 +667,19 @@ ResourceView AppView
         note       = ''
 
     intern func cleanup []
-        # closing the socket makes the attached app exit (its recv hits EOF); the
-        # console owns the actual process, so we don't kill/reap here.
-        if [ link ] link.shutdown[]
-        if [ frames ]
-            frames.dispose[]
-            frames = null
-        if [ link ]
-            link.drop[]
-            link = null
-        if [ sock_path ]
-            p9 : path [ sock_path ]
-            p9.remove[]
+        # ask the app to fold, then have silver-host take it down; the slot
+        # is marked exited on reap and becomes reusable
+        if [ slot >= 0 ]
+            host_post2[ slot, 1, i32[ HM.close ], 0, 0, 0 ]
+            host_app_stop[ slot ]
+            slot = 0 - 1
+        if [ tex0 ]
+            tex0.drop[]
+            tex1.drop[]
+            tex0 = null
+            tex1 = null
+        gen        = 0
+        have_frame = false
 
     func release []
         cleanup[]
@@ -1024,11 +1022,20 @@ Layer EditorLayer
                     editor.lh_cache = hlh2
                     editor.hx_last_y       = editor.scroll.y
                     editor.rview.hx_scroll = editor.scroll.y
-                    # same top fade as the code path: one row dissolves into the
-                    # title once there is hidden content above. no side fades —
-                    # the columns are fixed width and never scroll horizontally.
+                    # horizontal scroll: clamp to the row width (published by the
+                    # last render) and stash for this render so a narrow pane can
+                    # reach the ascii column.
+                    hxmx : f32 [ editor.rview.hx_content_w - bounds.w ]
+                    if [ hxmx < 0.0 ] hxmx = 0.0
+                    if [ editor.scroll.x < 0.0 ] editor.scroll.x = 0.0
+                    if [ editor.scroll.x > hxmx ] editor.scroll.x = hxmx
+                    editor.rview.hx_scroll_x = editor.scroll.x
+                    # same edge fades as the code path: top row dissolves into the
+                    # title (only when scrolled), and the right/bottom/left edges
+                    # softly fade so content dissolves at every side of the pane.
                     hxf : f32 [ (editor.scroll.y > 0.0) ? hlh2 : 0.0 ]
-                    parent.mask_glow   = vec4f [ hxf, 0.0, 0.0, 0.0 ]
+                    hxl : f32 [ (editor.scroll.x > 0.0) ? bounds.w / 8.0 : 0.0 ]
+                    parent.mask_glow   = vec4f [ hxf, bounds.w / 8.0, hlh2, hxl ]
                     parent.mask_keep_l = 0.0
                     parent.mask_inset  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
                     wtx2 : f32 [ cv.transform_tx[] ]
@@ -1107,14 +1114,17 @@ Layer EditorLayer
             # top fade: one line, ONLY when scrolled down (there's hidden code above) — at the
             # very top of the file there's nothing to dissolve into, so no top fade.
             top_fade  : f32 [ (editor.scroll.y > 0.0) ? lh : 0.0 ]
-            # no bottom fade — the band is a sibling below, not an overlay to
-            # dissolve into. vec4 = (top, right, bottom, left).
-            parent.mask_glow = vec4f [ top_fade, bounds.w / 8.0, 0.0, left_fade ]
+            # bottom fade: the code softly dissolves into the run band below it,
+            # one line tall. vec4 = (top, right, bottom, left).
+            bot_fade  : f32 [ lh ]
+            parent.mask_glow = vec4f [ top_fade, bounds.w / 8.0, bot_fade, left_fade ]
             # keep the line-number gutter fully opaque; the left fade starts just past it.
             parent.mask_keep_l = gut_w
-            # the mask spans the whole control — title and band are siblings now,
-            # so there is no margin to inset against.
-            parent.mask_inset = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+            # inset the mask's LEFT edge to the gutter so the left fade originates
+            # AT the gutter's right edge (where scrolled-away code dissolves),
+            # instead of at x=0 where the opaque gutter keep-strip hides it.
+            lft_in : f32 [ (left_fade > 0.0) ? gut_w : 0.0 ]
+            parent.mask_inset = vec4f [ 0.0, 0.0, 0.0, lft_in ]
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
         editor.text_lines_frame = 0
@@ -1197,7 +1207,6 @@ Layer EditorLayer
         # offset + local bounds). same crop data the shaders read for shapes.
         wtx : f32 [ cv.transform_tx[] ]
         wty : f32 [ cv.transform_ty[] ]
-        puts 'ED clip: bounds y={bounds.y} h={bounds.h} vh={vh} content_h={editor.content_h} max={max_scroll} scroll={editor.scroll.y} wty={wty} clipB={wty + bounds.y + vh}'
         cv.set_crop[ wtx + bounds.x, wty + bounds.y,
             wtx + bounds.x + bounds.w - rin, wty + bounds.y + vh ]
 

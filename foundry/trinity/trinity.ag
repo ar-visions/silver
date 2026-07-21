@@ -132,23 +132,8 @@ class Background
     func update[]
         return
 
-# app-share: a remote trinity app renders offscreen and hands orbiter its
-# frame over an AF_UNIX socket. messages are a fixed 32-byte frame (8 i32
-# words); SLOT messages also carry one dma-buf fd via SCM_RIGHTS. the C
-# plumbing (CMSG_* macros) lives in trinity.cc (linux real, else stubs).
-enum AppMsg
-    none   : 0
-    hello  : 1
-    slot   : 2
-    frame  : 3
-    key    : 4
-    mouse  : 5
-    bye    : 6
-    resize : 7
-    text   : 8
-
-# host message-ring types (mirror trinity.cc HM_*). ring 0 = app->shell,
-# ring 1 = shell->app. one channel replaces the socket/pointer plumbing.
+# host message-ring types (mirror trinity.cc HM_*). every hosted app has a
+# channel slot: ring 0 flows toward the ide/consumer, ring 1 toward the app.
 enum HM
     none    : 0
     dictate : 1
@@ -158,374 +143,47 @@ enum HM
     move    : 5
     key     : 6
     text    : 7
-    frame   : 8
     resize  : 9
-    bye     : 10
+    close   : 10
 
-enum AppMouse
-    move    : 0
-    press   : 1
-    release : 2
-
-func appshare_listen   [ p: cstr ]                               -> i32
-func appshare_accept   [ s: i32 ]                                -> i32
-func appshare_connect  [ p: cstr ]                               -> i32
-func appshare_send     [ s: i32, mdata: @i32 ]               -> i32
-func appshare_send_fd  [ s: i32, fdv: i32, mdata: @i32 ]     -> i32
-func appshare_recv_fd  [ s: i32, rdata: @i32, fdout: @i32 ] -> i32
-func appshare_send_msg [ s: i32, mdata: @i32, payload: cstr, plen: i32 ] -> i32
-func appshare_recv_payload [ s: i32, pdata: @i8, plen: i32 ]  -> i32
-func appshare_close    [ fdv: i32 ]
-# ask the supervising silver-host to bring up crashman (no-op unsupervised)
-func host_ask_crashman [] -> i32
-# dictation signalling through the message ring (reload-proof, no sockets)
+# ask the supervising silver-host to bring up orbiter (no-op unsupervised)
+func host_ask_orbiter [] -> i32
+# dictate (app->ide) and live-confirm (ide->app) over the rings
 func host_dictate_set [ v: i32 ]
-func host_dictate_get [] -> i32
 func host_live_set    [ v: i32 ]
-func host_live_get    [] -> i32
 # tee this run's output to /tmp/<name>.log (fresh each run) + terminal
 func host_log_setup   [ name: cstr ]
-func host_mailbox     [ base: cstr ]
 # is a pid alive? reload (alive) vs exit (gone) for the isolate shell
 func host_pid_alive   [ pid: i32 ] -> i32
-# host message channel (WndProc-style): ring 0 = app->shell, 1 = shell->app.
-# post a message; poll returns the next type (0 = empty) with pa/pb/pc params.
+# the hosting channel: an anonymous memfd silver-host creates and every
+# spawned process inherits. it holds app slots — two message rings plus the
+# shared-texture descriptors. host_post/host_poll act on THIS process's own
+# slot; the 2-suffix forms name a slot (orbiter driving its hosted panes).
+func host_slot        [] -> i32
 func host_post        [ ring: i32, type: i32, a: i32, b: i32, c: i32 ]
 func host_poll        [ ring: i32 ] -> i32
+func host_post2       [ slot: i32, ring: i32, type: i32, a: i32, b: i32, c: i32 ]
+func host_poll2       [ slot: i32, ring: i32 ] -> i32
 func host_pa          [] -> i32
 func host_pb          [] -> i32
 func host_pc          [] -> i32
-# shared frame buffer: crashman writes its RGBA, the app reads + blits
-func host_frame_write [ px: @u8, w: i32, h: i32 ]
-func host_frame_seq   [] -> i32
-func host_frame_w     [] -> i32
-func host_frame_h     [] -> i32
-func host_frame_read  [ out: @u8, maxbytes: i32 ] -> i32
+# the shared surface: TWO textures + a front index, so a consumer always
+# samples a COMPLETE frame (single-texture sharing tears on the clear). the
+# publisher names both dma-buf fds (side 0 = app, 1 = ide); a consumer pulls
+# duplicates (pidfd) and imports the same GPU memory. per frame the producer
+# copies the finished frame into the back texture (GPU only) and flips.
+func host_tex_publish [ slot: i32, side: i32, fd0: i32, fd1: i32, w2: i32, h2: i32, fmt: i32 ]
+func host_tex_gen     [ slot: i32, side: i32 ] -> i32
+func host_tex_flip    [ slot: i32, side: i32, front: i32 ]
+func host_tex_front   [ slot: i32, side: i32 ] -> i32
+func host_tex_pull    [ slot: i32, side: i32, which: i32, w2: @i32, h2: @i32, fmt: @i32 ] -> i32
+# hosted apps: ask silver-host to build+spawn a module into a free slot
+func host_app_request [ nm: cstr ] -> i32
+func host_app_state   [ slot: i32 ] -> i32
+func host_app_pid     [ slot: i32 ] -> i32
+func host_app_stop    [ slot: i32 ]
 # host live-reload control: the app turns its own source watch off (orbiter)
 func au_live_set_reload [ on: i32 ]
-
-# one 8-word message link. server side owns lsock (listen) then sock
-# (accepted); client side just owns sock. poll[] returns the AppMsg type
-# of the next frame and fills w1..w7 + recv_fd.
-class AppLink
-    mutable sock    : i32 [ -1 ]
-    mutable lsock   : i32 [ -1 ]
-    mutable sbuf    : @i32
-    mutable rbuf    : @i32
-    mutable recv_fd : i32 [ -1 ]
-    mutable w1 : i32
-    mutable w2 : i32
-    mutable w3 : i32
-    mutable w4 : i32
-    mutable w5 : i32
-    mutable w6 : i32
-    mutable w7 : i32
-
-    func init []
-        sbuf = new i32 [ 8 ]
-        rbuf = new i32 [ 8 ]
-
-    func serve [ p: cstr ] -> bool
-        lsock = appshare_listen[ p ]
-        return lsock >= 0
-
-    # serve on a listen socket someone else already bound (silver-host binds
-    # the isolate socket before the child exists; we adopt its fd)
-    func adopt_listen [ fd: i32 ]
-        lsock = fd
-
-    func poll_accept [] -> bool
-        if [ sock >= 0 ] return true
-        if [ lsock < 0 ] return false
-        c : i32 [ appshare_accept[ lsock ] ]
-        if [ c >= 0 ]
-            sock = c
-            return true
-        return false
-
-    func dial [ p: cstr ] -> bool
-        sock = appshare_connect[ p ]
-        return sock >= 0
-
-    intern func put [ fd: i32 ]
-        if [ sock < 0 ] return
-        if [ fd >= 0 ]
-            appshare_send_fd[ sock, fd, sbuf ]
-        el
-            appshare_send[ sock, sbuf ]
-
-    func send_hello [ w: i32, h: i32, fmt: i32, n: i32 ]
-        sbuf[0] = i32[ AppMsg.hello ]
-        sbuf[1] = w
-        sbuf[2] = h
-        sbuf[3] = fmt
-        sbuf[4] = n
-        put[ 0 - 1 ]
-
-    func send_slot [ slot: i32, bytes: i32, pitch: i32, fd: i32 ]
-        sbuf[0] = i32[ AppMsg.slot ]
-        sbuf[1] = slot
-        sbuf[2] = bytes
-        sbuf[3] = pitch
-        put[ fd ]
-
-    func send_frame [ slot: i32, seq: i32 ]
-        sbuf[0] = i32[ AppMsg.frame ]
-        sbuf[1] = slot
-        sbuf[2] = seq
-        put[ 0 - 1 ]
-
-    # host → app: adopt this backbuffer size (the pane is the app's window)
-    func send_resize [ w: i32, h: i32 ]
-        sbuf[0] = i32[ AppMsg.resize ]
-        sbuf[1] = w
-        sbuf[2] = h
-        put[ 0 - 1 ]
-
-    func send_key [ key: i32, scan: i32, action: i32, mods: i32, uni: i32 ]
-        sbuf[0] = i32[ AppMsg.key ]
-        sbuf[1] = key
-        sbuf[2] = scan
-        sbuf[3] = action
-        sbuf[4] = mods
-        sbuf[5] = uni
-        put[ 0 - 1 ]
-
-    # typed character (host → app): key_event carries GLFW keycodes, never
-    # text — this is the text_event side of the wire
-    func send_text [ uni: i32 ]
-        sbuf[0] = i32[ AppMsg.text ]
-        sbuf[1] = uni
-        put[ 0 - 1 ]
-
-    func send_mouse [ x: i32, y: i32, button: i32, action: i32, kind: i32 ]
-        sbuf[0] = i32[ AppMsg.mouse ]
-        sbuf[1] = x
-        sbuf[2] = y
-        sbuf[3] = button
-        sbuf[4] = action
-        sbuf[5] = kind
-        put[ 0 - 1 ]
-
-    func poll [] -> i32
-        if [ sock < 0 ] return 0
-        fdout : i32 [ 0 - 1 ]
-        r : i32 [ appshare_recv_fd[ sock, rbuf, @fdout ] ]
-        if [ r == 0 ] return 0
-        if [ r < 0 ] return i32[ AppMsg.bye ]
-        recv_fd = fdout
-        w1 = rbuf[1]
-        w2 = rbuf[2]
-        w3 = rbuf[3]
-        w4 = rbuf[4]
-        w5 = rbuf[5]
-        w6 = rbuf[6]
-        w7 = rbuf[7]
-        return rbuf[0]
-
-    func shutdown []
-        if [ sock >= 0 ] appshare_close[ sock ]
-        if [ lsock >= 0 ] appshare_close[ lsock ]
-        sock  = 0 - 1
-        lsock = 0 - 1
-
-# app bus: broadcast messaging between trinity apps. presence IS the
-# socket file {run_dir}/trinity/{name}.sock — apps read a message or dont.
-enum BusMsg
-    none    : 0
-    hello   : 1
-    message : 2
-    bye     : 3
-
-class BusMessage
-    public from : string
-    public key  : string
-    public body : string
-
-class BusPeer
-    public sock : i32 [ -1 ]
-    public name : string
-
-class AppBus
-    public  name       : string
-    mutable lsock      : i32 [ -1 ]
-    mutable taps       : array BusPeer
-    mutable inbox      : array BusMessage
-    mutable inbox_read : i32
-    mutable sbuf       : @i32
-    mutable rbuf       : @i32
-
-    func init []
-        sbuf  = new i32 [ 8 ]
-        rbuf  = new i32 [ 8 ]
-        taps  = array BusPeer [ ]
-        inbox = array BusMessage [ ]
-
-    # login makes /run/user/{uid}; we only add trinity/ inside it
-    func bus_dir [] -> path
-        rd : getenv[ 'XDG_RUNTIME_DIR' ]
-        if [ !rd || rd.count == 0 ] return null
-        d : path '{rd}/trinity'
-        d.make_dir[]
-        return d
-
-    # presence: listen on {bus_dir}/{nm}.sock
-    func register [ nm: string ] -> bool
-        d : bus_dir[]
-        if [ !d ] return false
-        name = nm
-        name.hold[]
-        sp : '{d}/{nm}.sock'
-        lsock = appshare_listen[ sp.chars ]
-        return lsock >= 0
-
-    func peers [] -> array string
-        res : array string [ ]
-        d : bus_dir[]
-        if [ !d ] return res
-        entries : array [ d.ls[ null, false ] ]
-        if [ entries ]
-            for [ e: path ] in entries
-                ex : e.ext[]
-                if [ ex && ex == 'sock' ]
-                    res.push[ e.stem[] ]
-        return res
-
-    # key + value ride one payload blob; word2 carries the key's byte length
-    # so the receiver splits them — no in-band string prefixes.
-    intern func put [ p: BusPeer, t: i32, key: string, payload: string ]
-        if [ p.sock < 0 ] return
-        klen : i32 [ (key) ? i32[ key.count ] : 0 ]
-        data : string ((key) ? ((payload) ? '{key}{payload}' : key) : payload)
-        n : i32 [ 0 ]
-        if [ data ] n = i32[ data.count ]
-        sbuf[0] = t
-        sbuf[1] = n
-        sbuf[2] = klen
-        if [ n > 0 ]
-            appshare_send_msg[ p.sock, sbuf, data.chars, n ]
-        el
-            appshare_send_msg[ p.sock, sbuf, null, 0 ]
-
-    # find or dial a peer by name; stale sockets are unlinked
-    intern func dial [ to: string ] -> BusPeer
-        for [ p: BusPeer ] in taps
-            if [ p.sock >= 0 && p.name && p.name == to ] return p
-        d : bus_dir[]
-        if [ !d ] return null
-        sp : '{d}/{to}.sock'
-        s2 : i32 [ appshare_connect[ sp.chars ] ]
-        if [ s2 < 0 ]
-            unlink[ sp.chars ]
-            return null
-        np : BusPeer [ sock: s2, name: to ]
-        taps.push[ np ]
-        put[ np, i32[ BusMsg.hello ], null, name ]
-        return np
-
-    # broadcast: every socket present gets the message; we hear it too
-    func send [ key: string, body: string ] -> bool
-        fromn : string '?'
-        if [ name ] fromn = name
-        mm : BusMessage [ from: fromn, key: key, body: body ]
-        inbox.push[ mm ]
-        d : bus_dir[]
-        if [ !d ] return false
-        sent : bool [ false ]
-        entries : array [ d.ls[ null, false ] ]
-        if [ !entries ] return sent
-        for [ e: path ] in entries
-            ex : e.ext[]
-            if [ ex && ex == 'sock' ]
-                pn : e.stem[]
-                skip : bool [ false ]
-                if [ name && pn == name ] skip = true
-                if [ !skip ]
-                    p : dial[ pn ]
-                    if [ p ]
-                        put[ p, i32[ BusMsg.message ], key, body ]
-                        sent = true
-        return sent
-
-    intern func drain [ p: BusPeer ]
-        if [ p.sock < 0 ] return
-        for [ k: i32 0, k < 64, k += 1 ]
-            fdout : i32 [ 0 - 1 ]
-            r : i32 [ appshare_recv_fd[ p.sock, rbuf, @fdout ] ]
-            if [ r == 0 ] return
-            if [ r < 0 ]
-                appshare_close[ p.sock ]
-                p.sock = 0 - 1
-                return
-            t : i32 [ rbuf[0] ]
-            n : i32 [ rbuf[1] ]
-            pb : @i8
-            if [ n > 0 && n < 1048576 ]
-                nn : i32 [ n + 1 ]
-                pb = new i8 [ nn ]
-                pr : i32 [ appshare_recv_payload[ p.sock, pb, n ] ]
-                if [ pr < 0 ]
-                    appshare_close[ p.sock ]
-                    p.sock = 0 - 1
-                    return
-                pb[n] = 0
-            if [ t == i32[ BusMsg.bye ] ]
-                appshare_close[ p.sock ]
-                p.sock = 0 - 1
-                return
-            if [ t == i32[ BusMsg.hello ] ]
-                if [ pb ]
-                    p.name = string [ (pb) to cstr ]
-                    p.name.hold[]
-            el [ t == i32[ BusMsg.message ] ]
-                full : string ''
-                if [ pb ] full = string [ (pb) to cstr ]
-                klen : i32 [ rbuf[2] ]
-                mkey : string ''
-                bd   : string full
-                if [ klen > 0 && klen <= full.count ]
-                    mkey = full.mid[ 0, klen ]
-                    bd   = full.mid[ klen, full.count - klen ]
-                fromn : string '?'
-                if [ p.name ] fromn = p.name
-                m : BusMessage [ from: fromn, key: mkey, body: bd ]
-                inbox.push[ m ]
-
-    # accept new taps, drain every peer into the inbox
-    func pump []
-        if [ lsock >= 0 ]
-            c : i32 [ appshare_accept[ lsock ] ]
-            if [ c >= 0 ]
-                np : BusPeer [ sock: c ]
-                taps.push[ np ]
-        for [ p: BusPeer ] in taps
-            drain[ p ]
-
-    # next message or null; inbox clears once fully read
-    func recv [] -> BusMessage
-        pump[]
-        if [ inbox_read >= inbox.count ]
-            if [ inbox.count > 0 ]
-                inbox.clear[]
-                inbox_read = 0
-            return null
-        m : BusMessage inbox[ inbox_read ]
-        inbox_read += 1
-        return m
-
-    func shutdown []
-        for [ p: BusPeer ] in taps
-            if [ p.sock >= 0 ]
-                put[ p, i32[ BusMsg.bye ], null, null ]
-                appshare_close[ p.sock ]
-                p.sock = 0 - 1
-        if [ lsock >= 0 ] appshare_close[ lsock ]
-        lsock = 0 - 1
-        if [ name ]
-            d : bus_dir[]
-            if [ d ]
-                sp : '{d}/{name}.sock'
-                unlink[ sp.chars ]
 
 abstract live_app media_app
     context w           : Display*
@@ -547,51 +205,32 @@ abstract live_app media_app
     # --shot-frame N: which frame to capture (default 60)
     public  shot_frame  : i32 [ 60 ]
     intern  shot_frames : i32
-    # on-demand capture from the bus (ux_shot <path>): written after the next
-    # composed frame, then announced back on the bus. the app keeps running.
-    intern  shot_request : path
     intern  next_second : i64
     intern  frames      : i32
-    # --attach <sock>: share the composed frame with orbiter as a remote pane.
-    # renders to a backbuffer (no glfw/swapchain), copies each frame into an
-    # exported dma-buf slot, and hands orbiter the fd + a FRAME message.
+    # --attach shm: hosted mode. renders to a backbuffer window (no glfw, no
+    # swapchain) and shares its frames as a two-texture dma-buf surface.
+    # silver-host spawns us with the channel memfd inherited.
     public  attach      : path
-    intern  at_link     : AppLink
-    intern  at_bufs     : @VkBuffer
-    intern  at_mems     : @VkDeviceMemory
-    intern  at_nslots   : i32 [ 3 ]
-    intern  at_slot     : i32
-    intern  at_seq      : i32
-    intern  at_bytes    : i32
-    # host-visible readback buffer: crashman copies its backbuffer here, maps
-    # it, and host_frame_write's the pixels to the shared frame buffer (NO
-    # socket). isolate shell only — orbiter panes keep the dma-buf socket path.
-    intern  shm_buf     : Buffer
-    intern  shm_on      : bool
-    # the supervised app's pid, parsed from the attach sock (isolate shell).
-    # 0 = not parsed yet
-    intern  shell_app_pid : i32
+    # the shared surface pair + which one we fill next
+    intern  share_tex0  : Texture
+    intern  share_tex1  : Texture
+    intern  share_back  : i32
+    # last imported generation of the peer's shared surface
+    intern  peer_gen    : i32
+    # the supervised app's pid (summon shell): 0 = not parsed yet
+    intern  app_pid : i32
 
-    # /tmp/silver-crashman-<pid>.sock -> <pid>, for reload-vs-exit detection
-    public func parse_shell_pid [] -> i32
-        if [ !attach ] return 0
-        ap : string [ attach ]
-        k  : i32 [ ap.index_of[ 'crashman-' ] ]
-        if [ k < 0 ] return 0
-        rest : string ap.mid[ k + 9, ap.count - k - 9 ]
-        d : i32 [ rest.index_of[ '.sock' ] ]
-        if [ d <= 0 ] return 0
-        return i32[ rest.mid[ 0, d ].integer_value[] ]
+    public func parse_app_pid [] -> i32
+        # the supervised app's pid — silver-host publishes it in the env
+        pe : getenv[ 'SILVER_ISOLATE_APP_PID' ]
+        if [ !pe ] return 0
+        ps : string [ pe ]
+        return i32[ ps.integer_value[] ]
 
     func run [ ]
         # tell the host whether to watch + hot-swap this app's sources
         au_live_set_reload[ (live_reload) ? 1 : 0 ]
         Au.auto_free[true]
-
-    # app-bus messages the generic ux handler didn't take route here; apps
-    # override this to handle their own protocol (orbiter: view_style)
-    func on_bus [ m: BusMessage ]
-        return
 
     # build an element subtree as plain data (maps/arrays) — string_agi turns
     # it into the agi text the agent reads. what exists, where, what it says.
@@ -613,113 +252,12 @@ abstract live_app media_app
             if [ kids.count > 0 ] em['elements'] = kids
         return em
 
-    # find an element: 'a/b/c' walks ids from root; a bare id is depth-first
-    func ux_find [ e: element, fid: string ] -> element
-        if [ !e || !fid ] return null
-        si : i32 [ fid.index_of[ '/' ] ]
-        if [ si >= 0 ]
-            head : string fid.mid[ 0, si ]
-            tail : string fid.mid[ si + 1, fid.count - si - 1 ]
-            if [ !e.elements ] return null
-            ch : element e.elements[ head ]
-            if [ !ch ] return null
-            return ux_find[ ch, tail ]
-        if [ e.id && e.id == fid ] return e
-        if [ e.elements ]
-            for [ ch: element, k: string ] in e.elements
-                r : element ux_find[ ch, fid ]
-                if [ r ] return r
-        return null
-
-    # press+release the center of an element (by id/path) or at 'x y' coords —
-    # the same dispatch a real mouse uses; the app cannot tell the difference
-    func ux_press_at [ cx: f32, cy: f32 ]
-        wn : Window [ w ]
-        wn.ev.clear[]
-        wn.mouse.x        = f64[ cx ]
-        wn.mouse.y        = f64[ cy ]
-        wn.ev.mouse.pos.x = cx
-        wn.ev.mouse.pos.y = cy
-        wn.move_event[ wn.ev ]
-        wn.ev.clear[]
-        wn.ev.mouse.pos.x  = cx
-        wn.ev.mouse.pos.y  = cy
-        wn.ev.mouse.button = 0
-        wn.ev.mouse.state  = 1
-        wn.press_event[ wn.ev ]
-        wn.ev.clear[]
-        wn.ev.mouse.pos.x  = cx
-        wn.ev.mouse.pos.y  = cy
-        wn.ev.mouse.button = 0
-        wn.ev.mouse.state  = 0
-        wn.release_event[ wn.ev ]
-
-    # the generic agent interface over the app bus: the message key selects the
-    # command, the body is its value. true = message consumed.
-    # ux_tree            -> the element tree as agi
-    # ux_text            -> the box-drawing text render of the screen
-    # ux_shot <path>     -> write a png of the composed frame
-    # ux_click <id|path> -> click that element's center
-    # ux_click <x> <y>   -> click window coords (list rows have no id)
-    func ux_command [ m: BusMessage ] -> bool
-        k : string m.key
-        if [ !k || k.count == 0 ] return false
-        wn : Window [ w ]
-        if [ !wn || !wn.root || !wn.bus ] return false
-        if [ k == 'ux_tree' ]
-            top : map object [string] []
-            top['root'] = ux_serialize[ wn.root ]
-            wn.bus.send[ 'ux_tree.re', Au.string_agi[ top ] ]
-            return true
-        if [ k == 'ux_text' ]
-            wn.bus.send[ 'ux_text.re', wn.text_grid[ 0, 0 ] ]
-            return true
-        if [ k == 'ux_shot' ]
-            if [ m.body && m.body.count > 0 ] shot_request = path [ m.body.chars ]
-            return true
-        # open the crashman overlay — same as shift+click on dictate
-        if [ k == 'ux_shell' ]
-            wn.shell_open[]
-            wn.bus.send[ 'ux_shell.re', 'ok' ]
-            return true
-        if [ k == 'ux_click' ]
-            fid : string m.body
-            if [ !fid || fid.count == 0 ] return true
-            sp  : i32 [ fid.index_of[ ' ' ] ]
-            c0  : i8  [ fid[ 0 ] ]
-            if [ sp > 0 && c0 >= '0' && c0 <= '9' ]
-                xs : string fid.mid[ 0, sp ]
-                ys : string fid.mid[ sp + 1, fid.count - sp - 1 ]
-                ux_press_at[ f32[ xs.real_value[] ], f32[ ys.real_value[] ] ]
-                wn.bus.send[ 'ux_click.re', '{fid} ok' ]
-                return true
-            e : element ux_find[ wn.root, fid ]
-            if [ !e || !e.bounds ]
-                wn.bus.send[ 'ux_click.re', '{fid} not found' ]
-                return true
-            ux_press_at[ e.bounds.x + e.bounds.w * 0.5, e.bounds.y + e.bounds.h * 0.5 ]
-            wn.bus.send[ 'ux_click.re', '{fid} ok' ]
-            return true
-        return false
-
     func frame [ ] -> bool
-        # keep our presence on the app bus and drain broadcasts each frame
+        # app side of the host message channel: drain ring 1 (shell->app).
+        # the SOLE ring-1 consumer — control only: HM.live drives the
+        # dictate button, HM.close folds the overlay.
         if [ w ]
             bwn : Window [ w ]
-            if [ !bwn.bus ]
-                bwn.bus = AppBus [ ]
-                bwn.bus.hold[]
-                ahdr : Au.header[ a ]
-                nm3  : string [ ahdr.au.ident ]
-                # `a` is the live wrapper, NOT the element — the app element
-                # rides Window.app_object (same as app_render)
-                ae3  : (bwn.app_object to element)
-                if [ ae3 && ae3.bus_name && ae3.bus_name.count > 0 ] nm3 = ae3.bus_name
-                bwn.bus.register[ nm3 ]
-            bwn.bus.pump[]
-            # app side of the host message channel: drain ring 1 (shell->app).
-            # the SOLE ring-1 consumer — HM.live drives the dictate button, the
-            # newest HM.frame seq tells HostedShell a fresh frame is ready.
             if [ !attach ]
                 for [ pk: i32 0, pk < 128, pk += 1 ]
                     ht : i32 [ host_poll[ 1 ] ]
@@ -727,45 +265,28 @@ abstract live_app media_app
                     if [ ht == i32[ HM.live ] ]
                         bwn.dict_live = host_pa[] != 0
                         bwn.restyle   = true
-                    el [ ht == i32[ HM.frame ] ]
-                        bwn.shell_frame_seq = host_pc[]
-                    el [ ht == i32[ HM.bye ] ]
-                        bwn.shell_fold = true
-            # generic agent interface first (ux_tree/ux_click), the app's own
-            # bus protocol for everything else. our OWN broadcasts (the reply
-            # echo in the inbox) must never re-enter ux_command — that loops.
-            for [ k: i32 0, k < 8, k += 1 ]
-                m : BusMessage bwn.bus.recv[]
-                if [ !m ] break
-                ae4 : (bwn.app_object to element)
-                if [ m.from && bwn.bus.name && m.from == bwn.bus.name ]
-                    on_bus*[ m ]
-                    if [ ae4 ] ae4.on_bus*[ m ]
-                el
-                    if [ !ux_command[ m ] ]
-                        on_bus*[ m ]
-                        if [ ae4 ] ae4.on_bus*[ m ]
-        # attach mode. the isolate shell (crashman) hands frames off via the
-        # SHARED-MEMORY channel (no sockets, survives the hot-reload). orbiter
-        # panes keep the dma-buf socket path (at_publish/at_pump).
+                    el [ ht == i32[ HM.close ] ]
+                        bwn.ide_close = true
+        # attach mode: the screen texture IS the shared surface — publish its
+        # fd once (and again on resize), pump the rings for input. the summon
+        # ide (SILVER_ISOLATE_APP) is the ide side of slot 0; a hosted pane
+        # app is the app side of its own slot. one mechanism, no sockets.
         ifdef [ linux ]
-            if [ attach && shm_on ]
+            if [ attach && getenv[ 'SILVER_ISOLATE_APP' ] ]
                 render*[]
-                shm_publish[]
-                shm_pump[]
+                share_publish[ 1 ]
+                ide_pump[]
                 Au.auto_free[ false ]
                 usleep[ 4000 ]
+                if [ app_pid == 0 ] app_pid = parse_app_pid[]
+                if [ app_pid > 0 && host_pid_alive[ app_pid ] == 0 ] return false
                 return true
             if [ attach ]
                 render*[]
-                at_publish[]
-                alive : bool [ at_pump[] ]
+                share_publish[ 0 ]
+                alive : bool [ attach_pump[] ]
                 Au.auto_free[ false ]
                 usleep[ 4000 ]
-                if [ !alive && getenv[ 'SILVER_ISOLATE_APP' ] ]
-                    if [ shell_app_pid == 0 ] shell_app_pid = parse_shell_pid[]
-                    if [ shell_app_pid > 0 && host_pid_alive[ shell_app_pid ] != 0 ]
-                        return true
                 return alive
         # text mode: no glfw event pump, no swapchain, no vk perf counters.
         # render the terminal grid each tick and keep running (Ctrl-C to exit).
@@ -798,12 +319,11 @@ abstract live_app media_app
             vk.bindres_us    = 0
             vk.br_schema_us  = 0
         render*[]
-        if [ shot_request ]
-            im2 : Image [ w.last_render[].color ]
-            im2.png[ shot_request ]
-            swn : Window [ w ]
-            if [ swn.bus ] swn.bus.send[ 'ux_shot.re', '{shot_request} done' ]
-            shot_request = null
+        # summoned: share the finished frame (GPU copy into the back texture
+        # of the surface pair, then flip)
+        ifdef [ linux ]
+            wp9 : Window [ w ]
+            if [ wp9.ide_asked ] share_publish[ 0 ]
         if [ screenshot ]
             shot_frames += 1
             if [ shot_frames >= shot_frame ]
@@ -815,145 +335,119 @@ abstract live_app media_app
         return !glfwWindowShouldClose[ w.glfw ]
 
     ifdef [ linux ]
-        # attach: copy the composed backbuffer into the current slot buffer,
-        # then hand orbiter a FRAME message naming the slot. one-time submit +
-        # wait keeps the buffer complete before the message (the socket is the
-        # fence). uses only base-class state (w, vk, at_*).
-        func at_publish []
-            if [ !at_link ] return
-            tx : Texture [ w.last_render[].color ]
+        # share this window's frame: keep a two-texture shared surface sized
+        # like the screen canvas, GPU-copy the finished frame into the back
+        # texture, flip the front index. consumers always sample a complete
+        # frame; a resize re-creates + re-publishes the pair (gen bump).
+        func share_publish [ side: i32 ]
+            wn : Window [ w ]
+            scv : Canvas [ wn.screen ]
+            if [ !scv ] return
+            tx : Texture [ scv.color ]
             if [ !tx || !tx.vk_image ] return
-            buf : VkBuffer [ at_bufs[ at_slot ] ]
-            cmd : VkCommandBuffer
-            vkAllocateCommandBuffers[ vk.device, VkCommandBufferAllocateInfo [
-                sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-                commandPool:        vk.command_pool,
-                level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-                commandBufferCount: 1 ], @cmd ]
-            prev : VkImageLayout [ tx.vk_layout ]
-            tx.transition[ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
-            vkBeginCommandBuffer[ cmd, VkCommandBufferBeginInfo [
-                sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-                flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
-            vkCmdCopyImageToBuffer[ cmd, tx.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1,
-                VkBufferImageCopy [
-                    bufferOffset:      0,
-                    bufferRowLength:   0,
-                    bufferImageHeight: 0,
-                    imageSubresource:  VkImageSubresourceLayers [
-                        aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
-                        mipLevel:       0,
-                        baseArrayLayer: 0,
-                        layerCount:     1 ],
-                    imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
-                    imageExtent: VkExtent3D [ width: u32[ tx.width ], height: u32[ tx.height ], depth: 1 ] ] ]
-            vkEndCommandBuffer[ cmd ]
-            vkQueueSubmit[ vk.queue, 1, VkSubmitInfo [
-                sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                commandBufferCount: 1,
-                pCommandBuffers:    @cmd ], null ]
-            vkQueueWaitIdle[ vk.queue ]
-            vkFreeCommandBuffers[ vk.device, vk.command_pool, 1, @cmd ]
-            tx.transition[ prev ]
-            at_seq += 1
-            at_link.send_frame[ at_slot, at_seq ]
-            if [ at_seq % 120 == 1 ] puts 'attach: published frame {at_seq} (slot {at_slot})'
-            at_slot = (at_slot + 1) % at_nslots
+            if [ !share_tex0 || share_tex0.width != tx.width || share_tex0.height != tx.height ]
+                if [ share_tex0 ]
+                    share_tex0.drop[]
+                    share_tex1.drop[]
+                share_tex0 = Texture [ vk: vk, w: wn, width: tx.width, height: tx.height,
+                    vk_format: tx.vk_format, shareable: true ]
+                share_tex1 = Texture [ vk: vk, w: wn, width: tx.width, height: tx.height,
+                    vk_format: tx.vk_format, shareable: true ]
+                share_tex0.hold[]
+                share_tex1.hold[]
+                share_back = 0
+                host_tex_publish[ host_slot[], side, share_tex0.shared_fd, share_tex1.shared_fd,
+                    tx.width, tx.height, i32[ tx.vk_format ] ]
+                puts 'share: published {tx.width}x{tx.height} (fds {share_tex0.shared_fd},{share_tex1.shared_fd}, side {side})'
+            bt : (share_back == 0) ? share_tex0 : share_tex1
+            vk.copy_image[ tx, bt ]
+            host_tex_flip[ host_slot[], side, share_back ]
+            share_back = 1 - share_back
 
-        # drain input messages from orbiter into the element tree. returns
-        # false when orbiter closes the socket (app should exit).
-        func at_pump [] -> bool
-            if [ !at_link ] return true
+        # hosted pane app: drain ring 1 (input orbiter forwards, resize,
+        # close). returns false when the pane closed (app should exit).
+        func attach_pump [] -> bool
             wn : Window [ w ]
             for [ i: i32 0, i < 64, i += 1 ]
-                t : i32 [ at_link.poll[] ]
-                if [ t == 0 ] return true
-                if [ t == i32[ AppMsg.bye ] ] return false
-                if [ t == i32[ AppMsg.key ] ]
+                t : i32 [ host_poll[ 1 ] ]
+                if [ t == 0 ] break
+                if [ t == i32[ HM.close ] ] return false
+                if [ t == i32[ HM.key ] ]
                     wn.ev.clear[]
-                    wn.ev.key.unicode   = at_link.w1
-                    wn.ev.key.scan_code = u32[ at_link.w2 ]
-                    wn.ev.key.state     = at_link.w3
-                    wn.ev.key.meta      = (at_link.w4 & 8) != 0
-                    wn.ev.key.ctrl      = (at_link.w4 & 2) != 0
-                    wn.ev.key.alt       = (at_link.w4 & 4) != 0
-                    wn.ev.key.shift     = (at_link.w4 & 1) != 0
+                    wn.ev.key.unicode = host_pa[]
+                    wn.ev.key.state   = host_pb[]
+                    m8 : i32 [ host_pc[] ]
+                    wn.ev.key.shift = (m8 & 1) != 0
+                    wn.ev.key.ctrl  = (m8 & 2) != 0
+                    wn.ev.key.alt   = (m8 & 4) != 0
+                    wn.ev.key.meta  = (m8 & 8) != 0
                     wn.key_event[ wn.ev ]
-                el [ t == i32[ AppMsg.text ] ]
+                el [ t == i32[ HM.text ] ]
                     wn.ev.clear[]
                     tb : local i8 [ 2 ]
-                    tb[0] = i8[ at_link.w1 ]
+                    tb[0] = i8[ host_pa[] ]
                     tb[1] = 0
                     wn.ev.key.text = string[ @tb[0] ]
                     wn.text_event[ wn.ev ]
-                el [ t == i32[ AppMsg.mouse ] ]
+                el [ t == i32[ HM.press ] ]
                     wn.ev.clear[]
-                    wn.mouse.x        = f64[ at_link.w1 ]
-                    wn.mouse.y        = f64[ at_link.w2 ]
-                    wn.ev.mouse.pos.x = f32[ at_link.w1 ]
-                    wn.ev.mouse.pos.y = f32[ at_link.w2 ]
-                    if [ at_link.w5 == i32[ AppMouse.move ] ]
-                        wn.move_event[ wn.ev ]
-                    el
-                        wn.ev.mouse.button = at_link.w3
-                        wn.ev.mouse.state  = (at_link.w5 == i32[ AppMouse.press ]) ? 1 : 0
-                        if [ wn.ev.mouse.state ]
-                            wn.press_event[ wn.ev ]
-                        el
-                            wn.release_event[ wn.ev ]
-                el [ t == i32[ AppMsg.resize ] ]
-                    rw : i32 [ at_link.w1 ]
-                    rh : i32 [ at_link.w2 ]
+                    wn.mouse.x        = f64[ host_pa[] ]
+                    wn.mouse.y        = f64[ host_pb[] ]
+                    wn.ev.mouse.pos.x = f32[ host_pa[] ]
+                    wn.ev.mouse.pos.y = f32[ host_pb[] ]
+                    wn.ev.mouse.button = host_pc[]
+                    wn.ev.mouse.state  = 1
+                    wn.press_event[ wn.ev ]
+                el [ t == i32[ HM.release ] ]
+                    wn.ev.clear[]
+                    wn.ev.mouse.pos.x = f32[ host_pa[] ]
+                    wn.ev.mouse.pos.y = f32[ host_pb[] ]
+                    wn.ev.mouse.button = host_pc[]
+                    wn.ev.mouse.state  = 0
+                    wn.release_event[ wn.ev ]
+                el [ t == i32[ HM.move ] ]
+                    wn.ev.clear[]
+                    wn.mouse.x        = f64[ host_pa[] ]
+                    wn.mouse.y        = f64[ host_pb[] ]
+                    wn.ev.mouse.pos.x = f32[ host_pa[] ]
+                    wn.ev.mouse.pos.y = f32[ host_pb[] ]
+                    wn.move_event[ wn.ev ]
+                el [ t == i32[ HM.resize ] ]
+                    rw : i32 [ host_pa[] ]
+                    rh : i32 [ host_pb[] ]
+                    # the pane IS this app's window: rebuild the backbuffer at
+                    # the new size — a new shared texture publishes itself
                     if [ rw > 0 && rh > 0 && (rw != wn.width || rh != wn.height) ]
-                        at_resize[ rw, rh ]
+                        vkQueueWaitIdle[ vk.queue ]
+                        wn.resize[ rw, rh ]
+                        width  = rw
+                        height = rh
             return true
 
-        # host dictated a new size: the pane IS this app's window. rebuild the
-        # backbuffer at the new size, re-export the dma-buf slots, and re-announce
-        # (HELLO + SLOTs) — the host resets its imports on the new HELLO.
-        func at_resize [ rw: i32, rh: i32 ]
-            if [ !at_link ] return
-            wn : Window [ w ]
-            vkQueueWaitIdle[ vk.queue ]
-            for [ i: i32 0, i < at_nslots, i += 1 ]
-                if [ at_bufs[ i ] ] vkDestroyBuffer[ vk.device, at_bufs[ i ], null ]
-                if [ at_mems[ i ] ] vkFreeMemory[ vk.device, at_mems[ i ], null ]
-                at_bufs[ i ] = null
-                at_mems[ i ] = null
-            wn.resize[ rw, rh ]
-            width    = rw
-            height   = rh
-            at_bytes = rw * rh * 4
-            at_slot  = 0
-            at_link.send_hello[ rw, rh, 0, at_nslots ]
-            for [ i: i32 0, i < at_nslots, i += 1 ]
-                b2  : VkBuffer [ null ]
-                m2  : VkDeviceMemory [ null ]
-                fd2 : i32 [ wn.vk.export_dmabuf[ at_bytes, @b2, @m2 ] ]
-                expect fd2 >= 0, 'attach: export_dmabuf failed'
-                at_bufs[ i ] = b2
-                at_mems[ i ] = m2
-                at_link.send_slot[ i, at_bytes, rw * 4, fd2 ]
-                appshare_close[ fd2 ]
-            puts 'attach: resized {rw}x{rh}, {at_nslots} dma-buf slots'
-
-        # shared-memory frame handoff: copy the backbuffer to the host-visible
-        # buffer, map it, write the pixels to the shm frame buffer. no sockets.
-        func shm_publish []
-            if [ !shm_buf || !w ] return
-            awin : Window [ w ]
-            tx : Texture [ awin.last_render[].color ]
-            if [ !tx || !tx.vk_image ] return
-            shm_buf.transfer[ tx ]
-            m9 : shm_buf.mmap[]
-            host_frame_write[ (m9 to @u8), tx.width, tx.height ]
-            shm_buf.unmap[]
-
-        # drain input the app posted on ring 0 into the element tree, and the
-        # resize request. the WndProc for the isolate shell.
-        func shm_pump []
+        # ORBITER SUMMON SIDE (attach + SILVER_ISOLATE_APP): the app's shared
+        # surface appears in slot 0 — import both textures whenever its
+        # generation changes (startup, resize) and hold them for the PiP.
+        func ide_pump []
             wn : Window [ w ]
             ae9 : (wn.app_object to element)
+            g9 : i32 [ host_tex_gen[ host_slot[], 0 ] ]
+            if [ g9 != peer_gen ]
+                w9 : i32
+                h9 : i32
+                f9 : i32
+                fd0 : i32 [ host_tex_pull[ host_slot[], 0, 0, @w9, @h9, @f9 ] ]
+                fd1 : i32 [ host_tex_pull[ host_slot[], 0, 1, @w9, @h9, @f9 ] ]
+                if [ fd0 >= 0 && fd1 >= 0 ]
+                    if [ wn.app_tex0 ]
+                        wn.app_tex0.drop[]
+                        wn.app_tex1.drop[]
+                    wn.app_tex0 = wn.vk.import_shared_tex[ fd0, w9, h9, f9, wn ]
+                    wn.app_tex1 = wn.vk.import_shared_tex[ fd1, w9, h9, f9, wn ]
+                    wn.app_tex0.hold[]
+                    wn.app_tex1.hold[]
+                    wn.app_tex_have = true
+                    peer_gen = g9
+                    puts 'ide: imported app surface {w9}x{h9}'
             for [ i: i32 0, i < 64, i += 1 ]
                 t : i32 [ host_poll[ 0 ] ]
                 if [ t == 0 ] return
@@ -1003,14 +497,10 @@ abstract live_app media_app
                 el [ t == i32[ HM.resize ] ]
                     rw9 : i32 [ host_pa[] ]
                     rh9 : i32 [ host_pb[] ]
+                    # the imported app texture is size-independent — only
+                    # the backbuffer follows the new size
                     if [ rw9 > 0 && rh9 > 0 ]
                         wn.resize[ rw9, rh9 ]
-                        at_bytes = rw9 * rh9 * 4
-                        if [ shm_buf ]
-                            shm_buf.drop[]
-                            shm_buf = Buffer [ vk: wn.vk, size: at_bytes,
-                                u_dst: true, m_host_visible: true, m_host_cached: true ]
-                            shm_buf.hold[]
     func destroy [ ]
         # hot-reload: vk_context persists (held in libAu), but this module's code
         # is about to be dlclose'd. drop the cached fonts NOW, while their vtables
@@ -1094,26 +584,32 @@ class BindSeam
 
 Display Window
     mutable app_object          : element*
-    mutable bus                 : AppBus
-    # crashman overlay: the app SERVES this link; the supervisor spawns
-    # crashman --attach against it and HostedShell composites the frames
-    # inside this window — no second window, the shell feels built in.
-    mutable shell_link          : AppLink
-    mutable shell_active        : bool
+    # orbiter overlay: NO socket, NO file, NO copies. both sides render into
+    # shared textures; each imports the other's through the memfd channel.
+    # control rides the two rings.
+    mutable ide_active        : bool
     # the shade's dictation state, held here so the agent-ready handshake can
-    # replay it to a crashman that booted after the click
+    # replay it to an orbiter that booted after the click
     mutable dict_on             : bool
-    # crashman's confirmation: the mic is ACTUALLY capturing (drives the
+    # orbiter's confirmation: the mic is ACTUALLY capturing (drives the
     # dictate button's orange-loading → blue-live border)
     mutable dict_live           : bool
-    # newest shell frame seq from ring 1 — HostedShell blits when it changes
-    mutable shell_frame_seq     : i32
-    # a crashman summon is in flight or connected — cleared when it leaves,
+    # an orbiter summon is in flight or connected — cleared when it leaves,
     # so the next open summons a FRESH one (reopening was black before)
-    mutable shell_asked         : bool
-    # crashman's back button posts HM.bye on ring 1 — HostedShell folds the
-    # overlay, crashman keeps running (it owns the mic)
-    mutable shell_fold          : bool
+    mutable ide_asked         : bool
+    # orbiter posts HM.close on ring 1 — IDEOverlay closes the overlay,
+    # orbiter keeps running (it owns the mic)
+    mutable ide_close          : bool
+    # the app's live scene as an attached orbiter sees it (its PiP): the
+    # app's shared surface pair, imported in ide_pump; front picks per draw
+    mutable app_tex0    : Texture
+    mutable app_tex1    : Texture
+    mutable app_tex_have    : bool
+    # the two window sizes: the app's own, and the unfolded IDE size
+    mutable app_size_w        : i32
+    mutable app_size_h        : i32
+    mutable ide_size_w         : i32
+    mutable ide_size_h         : i32
     mutable cursors             : array CursorPos
     # GLFW resize cursors for seam hover/drag (created lazily, cached). cursor_kind
     # tracks the active one (0=arrow,1=horizontal,2=vertical) to skip redundant sets.
@@ -1741,9 +1237,9 @@ Display Window
         if [ capture ] return true
         return root.is_animating[]
 
-    # freeze the app's look AND element state — crashman's 'attach context'
+    # freeze the app's look AND element state — orbiter's 'attach context'
     # hands both to the agent (sock siblings)
-    func shell_freeze []
+    func capture_context []
         sess : getenv[ 'SILVER_ISOLATE_SESSION' ]
         if [ !sess ] return
         ss : string [ sess ]
@@ -1758,50 +1254,38 @@ Display Window
             tp : path '/tmp/silver-app-{ss}.agi'
             tp.save[ Au.string_agi[ tree ], null ]
 
-    # summon the agent service WITHOUT showing it: serve the shell socket and
-    # ask the supervisor to attach crashman. deterministic path (our pid) so
-    # the host needs no side channel. first dictation lands here — the mic
-    # owner must exist before anything records.
-    func shell_ensure []
-        if [ shell_asked ] return
-        if [ !shell_link ]
-            shell_link = AppLink [ ]
-            shell_link.hold[]
-            sp : string '/tmp/silver-crashman-{getpid[]}.sock'
-            if [ !shell_link.serve[ sp.chars ] ]
-                puts 'shell_ensure: cannot serve {sp}'
-                shell_link = null
-                return
-        shell_freeze[]
-        shell_asked = true
-        host_ask_crashman[]
+    # summon orbiter WITHOUT showing it: the screen texture is already shared
+    # (share_color set at startup when supervised) — just signal the
+    # supervisor. first dictation lands here — the mic owner must exist
+    # before anything records.
+    func ide_ensure []
+        if [ ide_asked ] return
+        capture_context[]
+        ide_asked = true
+        host_ask_orbiter[]
 
     # show the shell (shift+click): summon if needed, refresh the frozen
     # context, then the overlay composites it
-    func shell_open []
-        if [ shell_active ] return
-        shell_ensure[]
-        if [ !shell_link ] return
-        shell_freeze[]
-        shell_active = true
+    func ide_open []
+        if [ ide_active ] return
+        ide_ensure[]
+        capture_context[]
+        # unfold: the window zooms to the IDE size (remembered across folds);
+        # the app's own size is restored when the overlay folds back
+        app_size_w = width
+        app_size_h = height
+        iw : i32 [ (ide_size_w > 0) ? ide_size_w : 1888 ]
+        ih : i32 [ (ide_size_h > 0) ? ide_size_h : 888 ]
+        if [ glfw && (iw != width || ih != height) ] glfwSetWindowSize[ glfw, iw, ih ]
+        ide_active = true
         restyle = true
 
-    # a hidden shell still publishes; drain it or its sends spin the peer.
-    # frames are dropped; slot fds must close so they never leak.
-    func shell_pump_hidden []
-        if [ !shell_link || shell_active ] return
-        if [ !shell_link.poll_accept[] ] return
-        for [ i: i32 0, i < 64, i += 1 ]
-            t : i32 [ shell_link.poll[] ]
-            if [ t == 0 ] return
-            if [ t == i32[ AppMsg.bye ] ]
-                if [ shell_link.sock >= 0 ]
-                    appshare_close[ shell_link.sock ]
-                    shell_link.sock = 0 - 1
-                shell_asked = false
-                return
-            if [ t == i32[ AppMsg.slot ] ]
-                if [ shell_link.recv_fd >= 0 ] appshare_close[ shell_link.recv_fd ]
+    # fold: remember the IDE size, give the app its own window back
+    func ide_restore_size []
+        ide_size_w = width
+        ide_size_h = height
+        if [ glfw && app_size_w > 0 && app_size_h > 0 ]
+            glfwSetWindowSize[ glfw, app_size_w, app_size_h ]
 
     func app_render [] -> Elements
         e : Elements [ ]
@@ -1814,9 +1298,9 @@ Display Window
         ae : (app_object to element)
         if [ ae && ae.ux_generics ]
             e[ 'uxgenerics' ] = UXGenerics [ topmost: true, target: ae ]
-        # crashman overlay: composites the attached shell over the app
-        if [ shell_active ]
-            e[ 'hostedshell' ] = HostedShell [ topmost: true ]
+        # orbiter overlay: composites the attached shell over the app
+        if [ ide_active ]
+            e[ 'hostedshell' ] = IDEOverlay [ topmost: true ]
         return e
 
     public func update_all [ render: Elements ]
@@ -2236,9 +1720,6 @@ Display Window
             cur : array StyleHit [ ]
             if [ st.inspect_idx < hits.count ] cur.push[ hits[ st.inspect_idx ] ]
             if [ app_object ] app_object.on_inspect*[ cur ]
-            if [ bus && cur.count > 0 ]
-                hb : StyleHit cur[ 0 ]
-                bus.send[ 'view_style', '{hb.file}:{hb.line}' ]
             # consume the click: the inspect handled it, so the element under the cursor
             # (a button/tab) must NOT also process the press.
             ev.no_propagation = true
@@ -3403,9 +2884,9 @@ Display Window
         printf[ "%s", out ]
 
     # agent view: the same box-drawing render console mode uses, returned as a
-    # plain text grid (no ANSI) — served over the app bus (ux_text). the tree
-    # is re-laid out at cell units for the stamp, then restored to the live
-    # pixel size so the vulkan path never sees the borrowed layout.
+    # plain text grid (no ANSI). the tree is re-laid out at cell units for the
+    # stamp, then restored to the live pixel size so the vulkan path never
+    # sees the borrowed layout.
     func text_grid [ tcols: i32, trows: i32 ] -> string
         cols : i32 [ (tcols > 8) ? tcols : 120 ]
         rows : i32 [ (trows > 4) ? trows : 44 ]
@@ -3599,22 +3080,10 @@ Display Window
         # the live variable drives layout — read each frame, so a drag reflows.
         if [ e.ux && e.ux.app_object && e.area ]
             app_obj : Au e.ux.app_object
-            # a fresh (per-frame) Region's BindCoord has has_active=false, so
-            # bind_value would return the DEFAULT seam — the clip-gap flash. warm
-            # it HERE (do the seam's own warm step) before reading, so the real
-            # app value lands on the first frame; a warmed bind rides tick_binds.
-            if [ e.area.bind_l ]
-                if [ !e.area.bind_l.warmed ] bind_advance[ e.area.bind_l, app_obj, rel.w, e.fc ]
-                e.area.l.offset = bind_value[ e.area.bind_l, app_obj, rel.w, e.fc ]
-            if [ e.area.bind_t ]
-                if [ !e.area.bind_t.warmed ] bind_advance[ e.area.bind_t, app_obj, rel.h, e.fc ]
-                e.area.t.offset = bind_value[ e.area.bind_t, app_obj, rel.h, e.fc ]
-            if [ e.area.bind_r ]
-                if [ !e.area.bind_r.warmed ] bind_advance[ e.area.bind_r, app_obj, rel.w, e.fc ]
-                e.area.r.offset = bind_value[ e.area.bind_r, app_obj, rel.w, e.fc ]
-            if [ e.area.bind_b ]
-                if [ !e.area.bind_b.warmed ] bind_advance[ e.area.bind_b, app_obj, rel.h, e.fc ]
-                e.area.b.offset = bind_value[ e.area.bind_b, app_obj, rel.h, e.fc ]
+            if [ e.area.bind_l ] e.area.l.offset = bind_value[ e.area.bind_l, app_obj, rel.w, e.fc ]
+            if [ e.area.bind_t ] e.area.t.offset = bind_value[ e.area.bind_t, app_obj, rel.h, e.fc ]
+            if [ e.area.bind_r ] e.area.r.offset = bind_value[ e.area.bind_r, app_obj, rel.w, e.fc ]
+            if [ e.area.bind_b ] e.area.b.offset = bind_value[ e.area.bind_b, app_obj, rel.h, e.fc ]
             # a bound coord still easing → this control's box moved: repaint it and
             # keep the loop animating until it settles (the goal/active diff hits 0).
             if [ (e.area.bind_l && e.area.bind_l.moving) || (e.area.bind_t && e.area.bind_t.moving) || (e.area.bind_r && e.area.bind_r.moving) || (e.area.bind_b && e.area.bind_b.moving) ]
@@ -4335,8 +3804,8 @@ abstract media_app trinity
             Au.auto_free[ true ]
             return
         # attach mode: render to a backbuffer (no glfw window, no swapchain)
-        # and share each frame with orbiter over the socket at `attach`. only
-        # on linux (dma-buf export); elsewhere it falls through to a window.
+        # whose screen texture is shared — the host imports and displays it.
+        # only on linux (dma-buf); elsewhere it falls through to a window.
         ifdef [ linux ]
             if [ attach ]
                 at_start[ background_type, rt ]
@@ -4385,8 +3854,9 @@ abstract media_app trinity
             frames += 1
 
     ifdef [ linux ]
-        # attach: build the backbuffer window, connect, export N dma-buf slots,
-        # and announce them (HELLO + one SLOT per fd) to orbiter.
+        # attach: build the backbuffer window. the frame loop shares finished
+        # frames through the two-texture surface in our channel slot —
+        # nothing else to announce.
         func at_start [ background_type: Au_t, rt: Au_t ]
             aw : i32 [ (width)  ?? 1280 ]
             ah : i32 [ (height) ?? 720 ]
@@ -4400,33 +3870,7 @@ abstract media_app trinity
             render   *[]
             w.resize[ aw, ah ]
             awin.restyle = true
-            at_bytes = aw * ah * 4
-            # isolate shell (crashman): shared-memory frame handoff, NO socket
-            if [ getenv[ 'SILVER_ISOLATE_APP' ] ]
-                shm_on  = true
-                shm_buf = Buffer [ vk: awin.vk, size: at_bytes,
-                    u_dst: true, m_host_visible: true, m_host_cached: true ]
-                shm_buf.hold[]
-                puts 'attach: shared-memory frame channel {aw}x{ah}'
-                return
-            at_bufs  = new VkBuffer       [ at_nslots ]
-            at_mems  = new VkDeviceMemory [ at_nslots ]
-            at_link  = AppLink [ ]
-            at_link.hold[]
-            ap : string [ attach ]
-            expect at_link.dial[ ap.chars ], 'attach: cannot connect to {attach}'
-            # format 0 = RGBA8 backbuffer (matches the consumer default)
-            at_link.send_hello[ aw, ah, 0, at_nslots ]
-            for [ i: i32 0, i < at_nslots, i += 1 ]
-                b2  : VkBuffer [ null ]
-                m2  : VkDeviceMemory [ null ]
-                fd2 : i32 [ awin.vk.export_dmabuf[ at_bytes, @b2, @m2 ] ]
-                expect fd2 >= 0, 'attach: export_dmabuf failed'
-                at_bufs[ i ] = b2
-                at_mems[ i ] = m2
-                at_link.send_slot[ i, at_bytes, aw * 4, fd2 ]
-                appshare_close[ fd2 ]
-            puts 'attach: connected {aw}x{ah}, {at_nslots} dma-buf slots'
+            puts 'attach: hosted {aw}x{ah} (slot {host_slot[]})'
 
 
 
@@ -4811,24 +4255,17 @@ UXMenuButton UXMenuRight
 # style/trinity.css, which only loads for an app that HAS a stylesheet — so the
 # panel rendered at zero size for every app without one. stated here instead.
 
-# the crashman shell composited INSIDE the app's window (the app serves the
-# link; the supervisor spawned crashman --attach). full-window scrim feel:
-# frames letterbox on a dim fill; input forwards into the shell; crashman
-# exiting (bye) closes the overlay.
-# the crashman overlay, composited from the SHARED-MEMORY frame buffer (no
-# sockets). crashman always writes frames; the app shows/hides this locally,
-# so re-opening after a hot-reload just works. input posts back on ring 0.
-element HostedShell
+# the orbiter shell composited INSIDE the app's window (the supervisor
+# spawned orbiter --attach). orbiter renders into its own shared screen
+# texture; we import that texture and draw it — no copies, no messages
+# about frames. input posts toward orbiter on ring 0.
+element IDEOverlay
     area       : Region { l0 t0 r0 b0 }
     animated   : true
     focusable  : true
-    mutable tex     : Texture
-    mutable px      : @u8
-    mutable pxcap   : i32
-    mutable aw      : i32
-    mutable ah      : i32
-    mutable seq     : i32
-    mutable have    : bool
+    mutable tex0    : Texture
+    mutable tex1    : Texture
+    mutable gen     : i32
     mutable fitx    : f32
     mutable fity    : f32
     mutable fitw    : f32
@@ -4838,54 +4275,57 @@ element HostedShell
     mutable req_w   : i32
     mutable req_h   : i32
 
-    # pull the newest shared frame into our texture when the seq advances
+    # import orbiter's shared surface (side 1) whenever its generation
+    # changes — startup and resizes; the front texture is always complete
     func service [ cv: Canvas ]
-        s : i32 [ host_frame_seq[] ]
-        if [ s == seq ] return
-        w9 : i32 [ host_frame_w[] ]
-        h9 : i32 [ host_frame_h[] ]
-        if [ w9 <= 0 || h9 <= 0 ] return
-        need : i32 [ w9 * h9 * 4 ]
-        if [ !px || pxcap < need ]
-            px = new u8 [ need ]
-            pa9 : (px to Au)
-            pa9.hold[]
-            pxcap = need
-        got : i32 [ host_frame_read[ px, pxcap ] ]
-        if [ got < 0 ] return
-        seq = got
-        if [ w9 != aw || h9 != ah || !tex ]
-            aw = w9
-            ah = h9
-            if [ tex ] tex.drop[]
-            tex = Texture [ vk: cv.vk, w: cv.w, width: aw, height: ah,
-                pixel_format: Pixel.rgba8, linear: true ]
-            tex.hold[]
-        tex.upload[ (px to ARef), need ]
-        have = true
+        g9 : i32 [ host_tex_gen[ host_slot[], 1 ] ]
+        if [ g9 == gen || g9 <= 0 ] return
+        w9 : i32
+        h9 : i32
+        f9 : i32
+        fd0 : i32 [ host_tex_pull[ host_slot[], 1, 0, @w9, @h9, @f9 ] ]
+        fd1 : i32 [ host_tex_pull[ host_slot[], 1, 1, @w9, @h9, @f9 ] ]
+        if [ fd0 < 0 || fd1 < 0 ] return
+        if [ tex0 ]
+            tex0.drop[]
+            tex1.drop[]
+        tex0 = cv.vk.import_shared_tex[ fd0, w9, h9, f9, cv.w ]
+        tex1 = cv.vk.import_shared_tex[ fd1, w9, h9, f9, cv.w ]
+        tex0.hold[]
+        tex1.hold[]
+        gen = g9
+
+    # the newest complete frame of orbiter's surface (null until one flips)
+    func front [] -> Texture
+        fr : i32 [ host_tex_front[ host_slot[], 1 ] ]
+        if [ fr < 0 || !tex0 ] return null
+        return (fr == 0) ? tex0 : tex1
 
     public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen ] return
-        cv : Canvas w.screen
+        # compose stage: the screen canvas stays clean of this overlay, so
+        # the app publishes its true scene while the window shows orbiter
+        if [ w.draw_stage != CanvasType.compose ] return
+        cv : Canvas w.compose
         service[ cv ]
-        # ask crashman to render at OUR size so frames map 1:1 (post once per
-        # size change on ring 0)
+        # ask orbiter to render at OUR size so frames map 1:1 (one control
+        # message on ring 1, once per size change)
         nw : i32 [ i32[ bounds.w ] ]
         nh : i32 [ i32[ bounds.h ] ]
         if [ nw > 0 && nh > 0 && (nw != req_w || nh != req_h) ]
             req_w = nw
             req_h = nh
             host_post[ 0, i32[ HM.resize ], nw, nh, 0 ]
-        # crashman asked to fold (its back button) — start the close fade
-        if [ ux.shell_fold ]
-            ux.shell_fold = false
+        # orbiter asked to close the overlay — start the fade
+        if [ ux.ide_close ]
+            ux.ide_close = false
             closing = true
         if [ closing ]
             dim -= 0.06
             if [ dim <= 0.0 ]
                 dim     = 0.0
                 closing = false
-                ux.shell_active = false
+                ux.ide_active = false
+                ux.ide_restore_size[]
                 ux.restyle      = true
                 return
         el [ dim < 1.0 ]
@@ -4896,8 +4336,11 @@ element HostedShell
         cv.stroke_width[ 0.0 ]
         cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
         cv.paint[]
-        if [ tex && have ]
-            ar : f32 [ f32[ aw ] / f32[ ah ] ]
+        ft : front[]
+        if [ ft ]
+            aw : f32 [ f32[ ft.width ] ]
+            ah : f32 [ f32[ ft.height ] ]
+            ar : f32 [ aw / ah ]
             fw : f32 [ bounds.w ]
             fh : f32 [ fw / ar ]
             if [ fh > bounds.h ]
@@ -4907,19 +4350,22 @@ element HostedShell
             fity = (bounds.h - fh) * 0.5
             fitw = fw
             fith = fh
-            cv.draw_image[ tex, rect [ x: fitx, y: fity, w: fitw, h: fith ] ]
+            cv.draw_image[ ft, rect [ x: fitx, y: fity, w: fitw, h: fith ] ]
         cv.set_opacity[ 1.0 ]
 
-    # map a pointer event into crashman's frame space and post it on ring 0
-    func post_mouse [ ev: Event, type: i32 ]
-        if [ fitw <= 0.0 ] return
-        bx : f32 [ (ev.mouse.pos.x - fitx) / fitw * f32[ aw ] ]
-        by : f32 [ (ev.mouse.pos.y - fity) / fith * f32[ ah ] ]
+    # map a pointer event into orbiter's frame space and forward it on
+    # ring 0; ide_pump replays it into orbiter's tree
+    func post_mouse [ ev: Event, kind: i32 ]
+        if [ fitw <= 0.0 || !tex0 ] return
+        aw : f32 [ f32[ tex0.width ] ]
+        ah : f32 [ f32[ tex0.height ] ]
+        bx : f32 [ (ev.mouse.pos.x - fitx) / fitw * aw ]
+        by : f32 [ (ev.mouse.pos.y - fity) / fith * ah ]
         if [ bx < 0.0 ] bx = 0.0
         if [ by < 0.0 ] by = 0.0
-        if [ bx >= f32[ aw ] ] bx = f32[ aw ] - 1.0
-        if [ by >= f32[ ah ] ] by = f32[ ah ] - 1.0
-        host_post[ 0, type, i32[ bx ], i32[ by ], ev.mouse.button ]
+        if [ bx >= aw ] bx = aw - 1.0
+        if [ by >= ah ] by = ah - 1.0
+        host_post[ 0, kind, i32[ bx ], i32[ by ], ev.mouse.button ]
 
     func on_press [ ev: Event ]
         set_focus[]
@@ -4938,7 +4384,7 @@ element HostedShell
             host_post[ 0, i32[ HM.text ], (i32 ev.key.text.chars[ i ]) & 255, 0, 0 ]
 
     func on_key [ ev: Event ]
-        # shift+esc folds the overlay (crashman keeps running for the mic)
+        # shift+esc closes the overlay (orbiter keeps running for the mic)
         if [ ev.key.unicode == 256 && ev.key.shift && ev.key.state ]
             closing = true
             return
@@ -5031,25 +4477,25 @@ element UXGenerics
             show_console = !show_console
             if [ ux ] ux.restyle = true
             ev.stop_propagation[]
-        # dictation toggle: on starts the stream, off ends it. crashman owns
+        # dictation toggle: on starts the stream, off ends it. orbiter owns
         # the mic and the LLM — the app only SIGNALS the state (bus). the
         # legacy on_dictate hand-off stays for apps that self-record.
-        # shift+click additionally raises crashman with this app inside it.
+        # shift+click additionally raises orbiter with this app inside it.
         el [ e.id == 'dictate' ]
-            # shift: straight to crashman, composited INSIDE this window —
+            # shift: straight to orbiter, composited INSIDE this window —
             # the record state does not change
             if [ ev.key.shift ]
-                if [ ux ] ux.shell_open[]
+                if [ ux ] ux.ide_open[]
             el
                 recording = !recording
                 if [ ux ]
                     ux.dict_on = recording
                     # first record: summon the agent service (mic owner)
-                    if [ recording ] ux.shell_ensure[]
+                    if [ recording ] ux.ide_ensure[]
                     # stop: freeze the app frame + tree NOW, so the request
-                    # crashman is about to send carries the current screenshot
-                    if [ !recording ] ux.shell_freeze[]
-                    # signal crashman THROUGH the supervisor — reload-proof
+                    # orbiter is about to send carries the current screenshot
+                    if [ !recording ] ux.capture_context[]
+                    # signal orbiter THROUGH the supervisor — reload-proof
                     host_dictate_set[ (recording) ? 1 : 0 ]
                     puts 'app: host_dictate_set {(recording) ? 1 : 0}'
                 if [ target ] target.on_dictate*[ recording ]
@@ -5118,7 +4564,7 @@ element UXGenerics
         els[ 'tab' ]     = UXMenuLeft  [ icon: 'menu', icon_fit: 0.58, manual_mode: true, selected: show_console ]
         # an external cancel (esc) clears the window state — follow it down
         if [ recording && ux && !ux.dict_on ] recording = false
-        # blue confirm comes from crashman through the supervisor mailbox
+        # blue confirm comes from orbiter through the supervisor mailbox
         dlv : bool [ (ux) ? ux.dict_live : false ]
         els[ 'dictate' ] = UXMenuRight [ icon: 'orbiter4', icon_fit: 0.7,
             manual_mode: true, selected: recording,

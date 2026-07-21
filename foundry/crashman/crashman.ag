@@ -95,9 +95,6 @@ element crashman : trinity
     intern spin : i32
 
     func init []
-        # own presence name — the host app owns the default 'trinity' socket
-        bus_name = 'crashman'
-        bus_name.hold[]
         ob : local i8 [ 3 ]
         ob[0] = 123
         ob[1] = 123

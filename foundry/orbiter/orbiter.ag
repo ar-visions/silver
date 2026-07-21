@@ -8,6 +8,7 @@ import trinity
 import silver
 import project
 import dbg
+import spectra
 import asnes
 import knes
 import rgen
@@ -45,12 +46,6 @@ element EditorView
     public pane_index : i32
     area : Region { l0 t0 r0 b0 }
     bg   : Layer [ fill_color: rgba [ '#140d2a' ] ]
-    # the text child's area, PERSISTED across frames. a fresh Region each frame
-    # resets its @ed_split seam BindCoord, so bind_value returns the DEFAULT
-    # (not the warmed seam) → the code clips short and a gap shows above the run
-    # band until a drag warms it. rebuilt only when the layout shape changes.
-    mutable text_area     : Region
-    mutable text_area_key : i32 [ -1 ]
 
     # this pane's Editor child (the text), or null before the first tree
     func text_of [] -> Editor
@@ -112,7 +107,7 @@ element EditorView
             if [ phx > 0 ] tl = tl.mid[ 0, phx ]
         if [ findbar_on ] tl = ''
         els['title'] = EditorTitle [
-            area: (findbar_on) ? Region { l0 t0 r0 h2.6 } : Region { l0 t0 r0 h1.3 }
+            area: Region { l0 t0 r0 h1.3 }
             selected: !p
             focusable: true
             spacing_x: 0.2
@@ -130,16 +125,9 @@ element EditorView
         if [ !run_ok && p && !is_con ]
             fnm : p.filename[]
             if [ fnm.count >= 3 && fnm.mid[ fnm.count - 3, 3 ].compare[ '.ag' ] == 0 ] run_ok = true
-        # an open findbar doubles the title, so the text starts one row lower.
-        # reuse the SAME Region object while the layout shape is unchanged, so
-        # its @ed_split BindCoord keeps its warmed/active state (see text_area).
-        akey : i32 [ ((findbar_on) ? 1 : 0) | ((run_ok) ? 2 : 0) ]
-        if [ !text_area || text_area_key != akey ]
-            if [ findbar_on ]
-                text_area = (run_ok) ? Region { l0 t2.6 r0 b@ed_split=8|44|44 } : Region { l0 t2.6 r0 b0 }
-            el
-                text_area = (run_ok) ? Region { l0 t1.3 r0 b@ed_split=8|44|44 } : Region { l0 t1.3 r0 b0 }
-            text_area_key = akey
+        # the title is a fixed-height band; the text always starts just below it
+        tarea : Region
+        tarea = (run_ok) ? Region { l0 t1.3 r0 b@ed_split=8|44|44 } : Region { l0 t1.3 r0 b0 }
 
         # the content slot: whichever element claims this tab. a console session IS
         # an element (Console), so it needs no host — it goes straight in. it sits
@@ -147,13 +135,13 @@ element EditorView
         if [ is_con ]
             orb.ensure_console[ psess ]
             els['text'] = Console [
-                area: text_area
+                area: tarea
                 session_id: psess, sessions: orb.ed_sessions, feed: null,
                 launch: orb.agent_cmd[ psess ], animated: true ]
             return els
 
         els['text'] = Editor [
-            area: text_area
+            area: tarea
             src: p
             breakpoints: orb.breakpoints, code_font_size: orb.code_font_size,
             nav: orb.nav_panes[ pi ], pane_index: pi,
@@ -204,7 +192,7 @@ element EditorTitle
         label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 84.0, y: 0.0 ] ]
     tfoc  : Layer [ states: State.focused, label_color: rgba [ '#ffff' ], label_size: 19, editable: true,
         label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 84.0, y: 0.0 ] ]
-    tdiv  : Layer [ fill_color: rgba [ '#fff2' ], area: Region { l0 t43px r0 h1px } ]
+    tdiv  : Layer [ fill_color: rgba [ '#fff2' ], area: Region { l0 b0 r0 h1px } ]
 
 # orbiter's own nav icon button (the title-bar +/- chips): look declared here,
 # no stylesheet — a transparent chip with a faint glow that lights blue on hover
@@ -370,6 +358,36 @@ class FmtWatch
     # cache loads and colors render first, uncontended by the compile.
     public start_us  : i64 [ 0 ]
 
+# the supervised app's live picture-in-picture: the front texture of the
+# app's shared surface, imported by trinity (ide_pump). click = fold back.
+element OrbitApp
+    animated  : true
+    focusable : true
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas w.screen
+        if [ !w.app_tex0 || !w.app_tex_have ] return
+        fr : i32 [ host_tex_front[ host_slot[], 0 ] ]
+        if [ fr < 0 ] return
+        atx : (fr == 0) ? w.app_tex0 : w.app_tex1
+        aw : i32 [ atx.width ]
+        ah : i32 [ atx.height ]
+        if [ aw <= 0 || ah <= 0 ] return
+        ar : f32 [ f32[ aw ] / f32[ ah ] ]
+        fw : f32 [ bounds.w ]
+        fh : f32 [ fw / ar ]
+        if [ fh > bounds.h ]
+            fh = bounds.h
+            fw = fh * ar
+        cv.draw_image[ atx, rect [
+            x: (bounds.w - fw) * 0.5, y: (bounds.h - fh) * 0.5, w: fw, h: fh ] ]
+
+    # clicking the live picture folds the window back to the app
+    func on_press [ ev: Event ]
+        host_post[ 1, i32[ HM.close ], 0, 0, 0 ]
+        ev.stop_propagation[]
+
 element orbiter : trinity # implements compiler
     public width         : i32    [ 1888 ]
     public height        : i32    [ 888 ]
@@ -405,6 +423,30 @@ element orbiter : trinity # implements compiler
     # screenshot counter — unique /tmp names within a session so the agent
     # never sees a stale image under a reused path
     intern shot_n        : i32
+    # supervised-shell state (SILVER_ISOLATE_APP set): orbiter is the shell —
+    # crash verdicts, dictation, and the app agent all land here
+    intern orbit_app      : string
+    # the agent tab's session id ('' = shell mode off)
+    intern orbit_sid      : string
+    # app context rides the FIRST message to the agent, exactly once
+    intern orbit_ctx      : string
+    intern orbit_ctx_sent : bool
+    # the crash verdict has been typed into the agent session
+    intern orbit_reported : bool
+    # delayed follow-up Enter: the TUI can swallow a mid-redraw \r
+    intern orbit_enter_at : i32
+    # utterances already voiced (speak markers persist on screen)
+    intern orbit_spoken   : array string
+    # mic capture running / final transcription winding down
+    intern orbit_cap_on   : bool
+    intern orbit_flushing : bool
+    # last dictate command (edge-detect) via on_host
+    intern orbit_dstate   : i32 [ -1 ]
+    # attached app's pid — once it dies this shell must exit
+    intern orbit_app_pid  : i32 [ 0 ]
+    # literal {{ / }} built from bytes for the speak-marker protocol
+    intern orbit_oc       : string
+    intern orbit_cc       : string
     # per-workspace session state (open tabs + future props), keyed by workspace
     # path. loaded from / saved to <os-cache>/orbiter/states.agi via parse_agi.
     public states        : map orbiter_state [string]
@@ -640,6 +682,25 @@ element orbiter : trinity # implements compiler
         # browse + search are rooted at the (restored) active project, not always the
         # first one — project_root[] resolves it (silver's root for the system target).
         nav_root       = project_root[]
+        # supervised shell? the host publishes the app name in the environment
+        ae : getenv[ 'SILVER_ISOLATE_APP' ]
+        if [ ae ]
+            orbit_app = string [ ae ]
+            orbit_app.hold[]
+            ob : local i8 [ 3 ]
+            ob[0] = 123
+            ob[1] = 123
+            ob[2] = 0
+            orbit_oc = string [ @ob[0] ]
+            orbit_oc.hold[]
+            cb : local i8 [ 3 ]
+            cb[0] = 125
+            cb[1] = 125
+            cb[2] = 0
+            orbit_cc = string [ @cb[0] ]
+            orbit_cc.hold[]
+            # the supervised app is the default resource — its source opens
+            if [ !resource || resource.count == 0 ] resource = orbit_app
         # `orbiter <file>`: a directory roots the browser there, a file opens in
         # pane 0. AFTER restore_session so the argument wins over the session.
         dbg_start : bool [ false ]
@@ -689,6 +750,24 @@ element orbiter : trinity # implements compiler
                         dbg_start     = true
                     el
                         puts 'orbiter: no such resource {resource}'
+        if [ orbit_app ]
+            # the shell never auto-runs the app — relaunch is deliberate
+            pending_run = -1
+            # the app agent: claude in its own pane, right of the source
+            orbit_sid = 'agent:{orbit_app}'
+            orbit_sid.hold[]
+            pi9 : i32 [ editor_slots.count ]
+            editor_slots += -1
+            while [ pane_console.count <= pi9 ]
+                pane_console += ''
+            pane_console[pi9] = orbit_sid
+            if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
+            ns9 : ConsoleSession []
+            ns9.name = orbit_sid
+            ns9.launch_cmd = 'claude --model sonnet --dangerously-skip-permissions'
+            ed_sessions[orbit_sid] = ns9
+            ns9.start[]
+            active_pane = 0
         filter_text    = ''
         find_text      = ''
         findbar_open   = false
@@ -1206,6 +1285,163 @@ element orbiter : trinity # implements compiler
         s.send_esc[ '[200~' ]
         s.write_input[ text ]
         s.send_esc[ '[201~' ]
+
+    # the supervised-app agent session (shell mode only)
+    func orbit_session [] -> ConsoleSession
+        if [ !orbit_sid || orbit_sid.count == 0 ] return null
+        if [ !ed_sessions ] return null
+        return ed_sessions[orbit_sid]
+
+    # ask the host to relaunch the app (env is the channel); it comes
+    # back WINDOWED — orbiter keeps its window and keeps supervising
+    public func orbit_relaunch []
+        k : string 'SILVER_ISOLATE_RESTART'
+        v : string '1'
+        setenv[ k.chars, v.chars, 1 ]
+
+    # fold the overlay (attach mode) — the app keeps orbiter running
+    public func orbit_close []
+        host_post[ 1, i32[ HM.close ], 0, 0, 0 ]
+
+    # compose a message for the agent: the app context prepended exactly
+    # once, the frozen screenshot + element tree on every message
+    func orbit_send [ body: string ]
+        s6 : ConsoleSession orbit_session[]
+        if [ !s6 ]
+            puts 'orbit_send: NO session'
+            return
+        m6 : string body
+        if [ !orbit_ctx_sent && orbit_ctx && orbit_ctx.count > 0 ]
+            orbit_ctx_sent = true
+            m6 = ((body && body.count > 0) ? '{orbit_ctx} {body}' : orbit_ctx)
+        if [ !m6 || m6.count == 0 ] return
+        ss : string ''
+        se : getenv[ 'SILVER_ISOLATE_SESSION' ]
+        if [ se ] ss = string [ se ]
+        shot : path '/tmp/silver-app-{ss}.png'
+        tree : path '/tmp/silver-app-{ss}.agi'
+        if [ shot.exists[] ] m6 = 'app screenshot: {shot}  {m6}'
+        if [ tree.exists[] ] m6 = 'element tree: {tree}  {m6}'
+        s6.write_input[ '{m6}\r' ]
+        # a second Enter lands shortly after — no-op if the first submitted
+        orbit_enter_at = 120
+
+    # HM.dictate from the app: 0 idle, 1 recording, 2 cancel. orbiter owns
+    # the mic; the live confirm goes back on ring 1 (button turns blue).
+    public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
+        if [ mt != 1 ] return
+        s : i32 [ wp ]
+        if [ s == orbit_dstate ] return
+        puts 'orbiter on_host dictate: {orbit_dstate} -> {s}'
+        orbit_dstate = s
+        if [ s == 1 ]
+            rc : dictation_start[]
+            if [ rc == 0 ]
+                orbit_cap_on = true
+                host_live_set[ 1 ]
+        el [ s == 2 ]
+            dictation_cancel[]
+            orbit_cap_on   = false
+            orbit_flushing = false
+            host_live_set[ 0 ]
+        el
+            if [ orbit_cap_on ]
+                dictation_stop[]
+                orbit_cap_on   = false
+                orbit_flushing = true
+            host_live_set[ 0 ]
+
+    # feed the whisper gpu encoder from the SCREEN canvas while capturing
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ orbit_cap_on ] dictation_gpu[ Canvas w.screen ]
+
+    # per-frame shell duties: orphan exit, mic feed, deferred Enter, the
+    # crash verdict, spoken markers, and the dictation take submit
+    func orbit_frame [ w: Window ]
+        # attached and our app is gone → orphan. exit so we stop writing
+        # the shared shm frame (a fresh shell owns the live app now).
+        if [ attach ]
+            if [ orbit_app_pid == 0 ]
+                orbit_app_pid = -1
+                pe : getenv[ 'SILVER_ISOLATE_APP_PID' ]
+                if [ pe ]
+                    ps : string [ pe ]
+                    orbit_app_pid = i32[ ps.integer_value[] ]
+            if [ orbit_app_pid > 0 && host_pid_alive[ orbit_app_pid ] == 0 ] exit[ 0 ]
+        # render every frame so the WndProc pump keeps running
+        w.will_animate = true
+        if [ orbit_cap_on ] dictation_poll[]
+        # the app context waits for the agent's first message (see orbit_send);
+        # built here, not init — `attach` isn't resolved until the tree is up
+        if [ !orbit_ctx ]
+            sv : getenv[ 'SILVER' ]
+            sroot : string ((sv) ? string [ sv ] : string '{startup_path}')
+            vox : string 'every single reply must end with one line of the exact form speak {orbit_oc} one short spoken sentence {orbit_cc} — that line is synthesized aloud to the user; never omit it. the user speaks by voice and their words arrive wrapped user {orbit_oc} like this {orbit_cc}.'
+            prm : string 'the app {orbit_app} runs under orbiter. its source is {sroot}/foundry/{orbit_app}/{orbit_app}.ag. when it crashes the report is typed here — investigate and help fix it.'
+            if [ attach ]
+                prm = 'the user switched to orbiter from the running app {orbit_app}. its source is {sroot}/foundry/{orbit_app}/{orbit_app}.ag — assist with the app live; if it faults, the crash report is typed here.'
+            orbit_ctx = '{prm} {vox}'
+            orbit_ctx.hold[]
+        # the deferred submit Enter (see orbit_send)
+        if [ orbit_enter_at > 0 ]
+            orbit_enter_at -= 1
+            if [ orbit_enter_at == 0 ]
+                s7 : ConsoleSession orbit_session[]
+                if [ s7 ] s7.write_input[ '\r' ]
+        # voice the agent's speak markers, once each (they persist on screen)
+        s2 : ConsoleSession orbit_session[]
+        if [ s2 ]
+            if [ !orbit_spoken ]
+                orbit_spoken = array string [ ]
+                orbit_spoken.hold[]
+            mk : string 'speak {orbit_oc}'
+            nl : i32 [ s2.line_count[] ]
+            lo : i32 [ (nl > 60) ? nl - 60 : 0 ]
+            for [ li: i32 lo, li < nl, li += 1 ]
+                ln2 : string s2.line_get[ li ]
+                if [ !ln2 || ln2.count == 0 ] continue
+                a2 : i32 [ ln2.index_of[ mk ] ]
+                if [ a2 < 0 ] continue
+                st2  : i32 [ a2 + i32[ mk.count ] ]
+                rest : string ln2.mid[ st2, ln2.count - st2 ]
+                b2 : i32 [ rest.index_of[ orbit_cc ] ]
+                if [ b2 <= 0 ] continue
+                ut : string rest.mid[ 0, b2 ]
+                if [ !ut || ut.count == 0 ] continue
+                # the prompt's own example echoes on screen — never say it
+                if [ ut == ' one short spoken sentence ' ] continue
+                dup : bool [ false ]
+                for [ sp2: string ] in orbit_spoken
+                    if [ sp2 == ut ]
+                        dup = true
+                        break
+                if [ dup ] continue
+                orbit_spoken.push[ ut ]
+                td2 : string '/src/silver/models/kokoro-en'
+                if [ tts_init[ td2.chars ] == 0 ]
+                    tts_say[ ut.chars, 8, 1.0 ]
+        # the take submits when the user STOPS: wind down the final
+        # transcription, then the whole session goes over as ONE message
+        if [ orbit_flushing ]
+            if [ dictation_flush[] ]
+                orbit_flushing = false
+                dt : dictation_take[]
+                if [ dt && dt.count > 0 ]
+                    puts 'orbiter: submitting take "{dt}"'
+                    orbit_send[ 'user {orbit_oc} {dt} {orbit_cc}' ]
+        # type the verdict into the live session, once, when the child dies;
+        # a relaunch clears the status → re-arm for the next crash
+        st : getenv[ 'SILVER_ISOLATE_STATUS' ]
+        if [ st && !orbit_reported ]
+            orbit_reported = true
+            orbit_send[ 'the app crashed: {st} — investigate.' ]
+            td : string '/src/silver/models/kokoro-en'
+            if [ tts_init[ td.chars ] == 0 ]
+                sp : string 'the app crashed with {st}.'
+                tts_say[ sp.chars, 8, 1.0 ]
+        el [ !st ]
+            orbit_reported = false
 
     # the console title's context button: ask the live emulator pane for a
     # machine-state dump (focused pane first, else the first resource pane);
@@ -2976,6 +3212,9 @@ element orbiter : trinity # implements compiler
     public func render [] -> Elements
         w : ux
 
+        # supervised shell: crash verdicts, mic, voice — see orbit_frame
+        if [ orbit_app ] orbit_frame[ w ]
+
         # runaway-leak guard: if our RSS passes 20% of physical RAM, quit before
         # the leak thrashes the machine into a solid lock. cheap (/proc read).
         if [ au_mem_fraction[] > 0.20 ]
@@ -3113,27 +3352,14 @@ element orbiter : trinity # implements compiler
         # topmost placeholder element so the spot/size is visible.
         editor_els['avatar'] = Avatar [ expanded: avatar_expanded, topmost: true, hide: true ]
 
+        # supervised shell: the app's live picture-in-picture, lower right.
+        # clicking it folds the window back to the app.
+        if [ orbit_app && attach ]
+            editor_els['orbitapp'] = OrbitApp [ topmost: true, area: Region { r1 b1 w20 h12 } ]
+
         # the tabs ARE the window — each owns its title, text, toolbar and console.
         return editor_els
 
-    # app bus: view_style {file}:{line} from any trinity app (or our own
-    # cmd+click) opens the style location in the active editor pane.
-    func on_bus [ m: BusMessage ]
-        if [ !m.key || !(m.key == 'view_style') ] return
-        rest : string m.body
-        if [ !rest || rest.count < 3 ] return
-        ci : i32 [ 0 - 1 ]
-        for [ i: i32 rest.count - 1, i >= 0, i -= 1 ]
-            if [ rest[i] == ':' ]
-                ci = i
-                break
-        if [ ci <= 0 ] return
-        fs : rest.mid[ 0, ci ]
-        lns : rest.mid[ ci + 1, rest.count - ci - 1 ]
-        ln : i32 [ atoi[ lns.chars ] ]
-        open_at_line[ path '{fs}', active_pane, ln ]
-
-    # bus messages arrive via the trinity frame drain -> on_bus override now
     public func on_canvas [ cv: Canvas ]
         super.on_canvas[ cv ]
         cv.sync_fence[ ]
