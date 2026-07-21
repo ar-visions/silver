@@ -1199,6 +1199,7 @@ Au_t def_arg(Au_t context, symbol ident, Au_t arg, u64 traits) {
     var->ident = cstr_copy((cstr)ident);
     var->ident_hash = au_hash_ident(ident);
     var->traits = traits;
+    if (traits & AU_TRAIT_EXPLICIT_REF) var->is_explicit_ref = true;
     return var;
 }
 
