@@ -17,7 +17,7 @@ consoles:
 		name:	shell
 		kind:	shell
 
-	jean: ConsoleInstance
+	claude: ConsoleInstance
 		name:	claude
 		kind:	claude
-		run:	claude --dangerously-skip-permissions
+		run:	claude --dangerously-skip-permissions --model sonnet
