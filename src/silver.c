@@ -7243,6 +7243,12 @@ enode parse_import(silver a) {
                     if (index_of(og->artifacts, (Au)external_product) < 0) {
                         push(og->artifacts, (Au)external_product);
                     }
+                    // credit the importing module too — a module built as an
+                    // external otherwise writes an EMPTY .artifacts and never
+                    // notices its deps rebuilding (stale .so vs new trinity)
+                    if (a != og && index_of(a->artifacts, (Au)external_product) < 0) {
+                        push(a->artifacts, (Au)external_product);
+                    }
                 }
 
                 if (external->module_file) {

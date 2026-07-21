@@ -11,11 +11,39 @@
 #include <sys/wait.h>
 #include <spawn.h>
 #include <errno.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <fcntl.h>
+#include <sys/mman.h>
+#include <stdint.h>
+#include <sys/syscall.h>
 
 extern char** environ;
+
+// ---- app hosting channel -----------------------------------------------------
+// ONE anonymous memfd (RAM-backed shared memory, no filesystem name, no
+// socket, no file — EVER) created by this process and inherited by every
+// child we spawn (SILVER_SHM_FD). it holds a table of app slots: two message
+// rings + two shared-texture descriptors each. apps publish the dma-buf fd
+// of the screen texture they already render into; consumers pull it with
+// pidfd_getfd and import the same GPU memory. this process only spawns and
+// reaps — it never touches pixels or fds. layout MIRRORS trinity.cc.
+#define HM_SLOTS   1024
+#define HOST_APPS  8
+typedef struct { int32_t type, a, b, c; } HostMsg;
+typedef struct { volatile uint32_t head, tail; HostMsg m[HM_SLOTS]; } HostRing;
+typedef struct { volatile int32_t pid, fd0, fd1, front, gen, width, height, format; } SharedTex;
+typedef struct {
+    HostRing  to_ide, to_app;
+    SharedTex app_tex, ide_tex;
+    volatile int32_t app_pid;   // process bound to this slot
+    volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
+    char name[192];             // "module [default-arg]" to spawn
+} HostApp;
+typedef struct {
+    volatile int32_t host_pid;  // this supervisor; spawn requests SIGUSR1 it
+    HostApp app[HOST_APPS];
+} HostShared;
+
+static int rebuild_blocking(const char* name);
 
 typedef int        (*frame_fn)(void);
 typedef void       (*destroy_fn)(void);
@@ -52,30 +80,54 @@ static const char* g_app_name = "app";
 // alive after the child is gone), and can report what failed.
 //
 // the child is told not to recurse by SILVER_ISOLATE_CHILD. the parent then
-// continues through main() as `crashman` — a trinity shell that owns the
-// window, serves the frame socket the child dials with --attach, and reports
-// what failed over the last frame the app managed to publish.
+// continues through main() as `orbiter` — the IDE shell that owns the
+// window and reports what failed over the last frame the app published.
 #define ISOLATE_ENV        "SILVER_ISOLATE"
 #define ISOLATE_CHILD_ENV  "SILVER_ISOLATE_CHILD"
-#define ISOLATE_SOCK_ENV   "SILVER_ISOLATE_SOCK"
-#define ISOLATE_LSOCK_ENV  "SILVER_ISOLATE_LSOCK"
 #define ISOLATE_APP_ENV    "SILVER_ISOLATE_APP"
 #define ISOLATE_APP_PID_ENV "SILVER_ISOLATE_APP_PID"
-// the SESSION key = this supervisor's pid. every process it spawns (app child
-// AND crashman) inherits it and derives the SAME shm path from it, so 1000
-// instances of one app never share a channel — each supervisor owns its own.
+// the SESSION key = this supervisor's pid. it names only the agent-context
+// snapshot files (PNG/tree) the agent ingests — NOT the channel, which is an
+// anonymous memfd inherited by fd, so N app copies never collide.
 #define ISOLATE_SESSION_ENV "SILVER_ISOLATE_SESSION"
 #define ISOLATE_STATUS_ENV "SILVER_ISOLATE_STATUS"
 #define IDE_ENV            "IN_IDE"
 #define ISOLATE_RESTART_ENV "SILVER_ISOLATE_RESTART"
-#define ISOLATE_SHELL      "crashman"
+#define ISOLATE_SHELL      "orbiter"
 
 static pid_t g_isolate_child = 0;
-static int   g_isolate_ls    = -1;
-static char  g_isolate_sock[128];
 static char  g_isolate_cwd[4096];
 static int   g_argc;
 static char** g_argv;
+
+// the app<->ide channel: an anonymous memfd (RAM-backed shared memory, no
+// filesystem name, no socket) created once here and inherited by every
+// process we spawn. its number in each child is published as SILVER_SHM_FD.
+static int         g_shm_fd = -1;
+static HostShared* g_shm    = NULL;
+#define SILVER_SHM_CHILD_FD 21   // fixed number the channel lands on in children
+
+static void shm_create(void) {
+    if (g_shm_fd >= 0) return;
+    g_shm_fd = memfd_create("silver-ide", 0);
+    if (g_shm_fd < 0) { perror("silver-host: memfd_create"); return; }
+    if (ftruncate(g_shm_fd, sizeof(HostShared)) != 0) {
+        perror("silver-host: ftruncate"); close(g_shm_fd); g_shm_fd = -1; return;
+    }
+    void* p = mmap(0, sizeof(HostShared), PROT_READ | PROT_WRITE, MAP_SHARED, g_shm_fd, 0);
+    if (p == MAP_FAILED) { close(g_shm_fd); g_shm_fd = -1; return; }
+    memset(p, 0, sizeof(HostShared));
+    g_shm = (HostShared*)p;
+    g_shm->host_pid = (int32_t)getpid();
+}
+
+// place the channel memfd at the fixed child fd number and name it in env.
+// call inside a spawn's file-actions + env build.
+static void shm_inherit(posix_spawn_file_actions_t* fa, char* fdenv, size_t cap) {
+    if (g_shm_fd >= 0)
+        posix_spawn_file_actions_adddup2(fa, g_shm_fd, SILVER_SHM_CHILD_FD);
+    snprintf(fdenv, cap, "SILVER_SHM_FD=%d", g_shm_fd >= 0 ? SILVER_SHM_CHILD_FD : -1);
+}
 
 // isolation is the DEFAULT: the window and mic survive an app fault. off when:
 // we ARE the child; the app is hosted via --attach (an orbiter pane IS the
@@ -91,53 +143,28 @@ static int isolate_requested(int argc, char** argv) {
     return 1;
 }
 
-// bind+listen the frame socket BEFORE the child exists: connect() succeeds
-// the moment listen() returns, so the child can dial while crashman is still
-// coming up. crashman adopts the fd via SILVER_ISOLATE_LSOCK. non-blocking
-// to match appshare_listen, since appshare_accept polls it every frame.
-static int isolate_listen(const char* path) {
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (s < 0) return -1;
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
-    unlink(path);
-    if (bind(s, (struct sockaddr*)&addr, sizeof(addr)) < 0 ||
-        listen(s, 1) < 0) {
-        close(s);
-        return -1;
-    }
-    fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
-    return s;
-}
-
-// spawn the app child: same binary, same argv — plus, when `attach` is set,
-// --attach <sock> so it renders to a backbuffer and publishes frames to us.
-// runs from the LAUNCH cwd (a relaunch happens after cd_share moved us to
-// crashman's share dir). posix_spawn, NOT fork(): a relaunch happens with
-// Vulkan fully up, and fork() from a live nvidia/UVM process poisons the
-// PARENT — its next queue submit blocks forever in the driver. (verified:
-// relaunch wedged the frame loop inside Command_submit until fork was removed.)
-static pid_t isolate_spawn(int attach) {
-    char** cargv = malloc((g_argc + 3) * sizeof(char*));
+// spawn the app child: same binary, same argv. runs from the LAUNCH cwd (a
+// relaunch happens after cd_share moved us to orbiter's share dir).
+// posix_spawn, NOT fork(): a relaunch happens with Vulkan fully up, and
+// fork() from a live nvidia/UVM process poisons the PARENT — its next queue
+// submit blocks forever in the driver. (verified: relaunch wedged the frame
+// loop inside Command_submit until fork was removed.)
+static pid_t isolate_spawn(void) {
+    char** cargv = malloc((g_argc + 1) * sizeof(char*));
     for (int i = 0; i < g_argc; i++) cargv[i] = g_argv[i];
-    int ac = g_argc;
-    if (attach) {
-        cargv[ac++] = "--attach";
-        cargv[ac++] = g_isolate_sock;
-    }
-    cargv[ac] = NULL;
-    int n = 0;
-    while (environ[n]) n++;
-    char** cenv = malloc((n + 2) * sizeof(char*));
-    memcpy(cenv, environ, n * sizeof(char*));
-    cenv[n]     = ISOLATE_CHILD_ENV "=1";
-    cenv[n + 1] = NULL;
+    cargv[g_argc] = NULL;
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
-    if (g_isolate_ls >= 0) posix_spawn_file_actions_addclose(&fa, g_isolate_ls);
     if (g_isolate_cwd[0])  posix_spawn_file_actions_addchdir_np(&fa, g_isolate_cwd);
+    static char fdenv[32];
+    shm_inherit(&fa, fdenv, sizeof(fdenv));   // hand the app the channel memfd
+    int n = 0;
+    while (environ[n]) n++;
+    char** cenv = malloc((n + 3) * sizeof(char*));
+    memcpy(cenv, environ, n * sizeof(char*));
+    cenv[n]     = ISOLATE_CHILD_ENV "=1";
+    cenv[n + 1] = fdenv;
+    cenv[n + 2] = NULL;
     pid_t pid = 0;
     int sp = posix_spawn(&pid, "/proc/self/exe", &fa, NULL, cargv, cenv);
     posix_spawn_file_actions_destroy(&fa);
@@ -150,96 +177,158 @@ static pid_t isolate_spawn(int attach) {
     return pid;
 }
 
-static pid_t isolate_spawn_child(void) { return isolate_spawn(1); }
-
-// bind the frame socket and publish the env contract crashman reads.
-static int isolate_attach_setup(const char* appname) {
-    snprintf(g_isolate_sock, sizeof(g_isolate_sock),
-        "/tmp/silver-isolate-%d.sock", getpid());
-    g_isolate_ls = isolate_listen(g_isolate_sock);
-    if (g_isolate_ls < 0) {
-        perror("silver-host: isolate socket");
-        return -1;
+// a hosted-app spawn request (orbiter wrote name + state=1 into a slot and
+// signalled us). build the module if its binary is missing, then spawn it
+// attached: it inherits the channel memfd and publishes its screen texture
+// into its slot. the binary is itself this supervisor for that module, so a
+// stale build recompiles on its own at startup.
+static void spawn_slot_app(int k, const char* bindir) {
+    HostApp* ap = &g_shm->app[k];
+    char name[192];
+    strncpy(name, (const char*)ap->name, sizeof(name) - 1);
+    name[sizeof(name) - 1] = 0;
+    if (!name[0]) { ap->state = 3; return; }
+    // "module [default-arg]": the arg (a document path) rides the spawn argv
+    char* arg = strchr(name, ' ');
+    if (arg) { *arg = 0; arg++; }
+    // app binaries live beside this supervisor binary (one products dir)
+    char bin[4300];
+    snprintf(bin, sizeof(bin), "%s/%s", bindir, name);
+    struct stat st;
+    if (stat(bin, &st) != 0 && rebuild_blocking(name) != 0) {
+        fprintf(stderr, "silver-host: %s build failed — slot %d dead\n", name, k);
+        ap->state = 3;
+        return;
     }
-    char fdbuf[16];
-    snprintf(fdbuf, sizeof(fdbuf), "%d", g_isolate_ls);
-    setenv(ISOLATE_LSOCK_ENV, fdbuf, 1);
-    setenv(ISOLATE_SOCK_ENV,  g_isolate_sock, 1);
-    setenv(ISOLATE_APP_ENV,   appname, 1);
-    return 0;
+    char* cargv[] = { bin, "--attach", "shm", arg, NULL };
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    if (g_isolate_cwd[0]) posix_spawn_file_actions_addchdir_np(&fa, g_isolate_cwd);
+    static char fdenv[32];
+    shm_inherit(&fa, fdenv, sizeof(fdenv));
+    static char slotenv[32];
+    snprintf(slotenv, sizeof(slotenv), "SILVER_APP_SLOT=%d", k);
+    int n = 0;
+    while (environ[n]) n++;
+    char** cenv = malloc((n + 3) * sizeof(char*));
+    memcpy(cenv, environ, n * sizeof(char*));
+    cenv[n]     = fdenv;
+    cenv[n + 1] = slotenv;
+    cenv[n + 2] = NULL;
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, bin, &fa, NULL, cargv, cenv);
+    posix_spawn_file_actions_destroy(&fa);
+    free(cenv);
+    if (rc != 0) {
+        fprintf(stderr, "silver-host: spawn %s failed: %s\n", name, strerror(rc));
+        ap->state = 3;
+        return;
+    }
+    ap->app_pid = (int32_t)pid;
+    ap->state   = 2;
+    fprintf(stderr, "silver-host: hosting %s (pid %d, slot %d)\n", name, (int)pid, k);
 }
 
-// the app asks for crashman by signaling its supervisor with SIGUSR1
-static volatile sig_atomic_t g_ask_crashman = 0;
-static void on_sigusr1(int sig) { (void)sig; g_ask_crashman = 1; }
-// the attached crashman's pid, so a reload can't summon a SECOND one — the
+// kill every hosted slot app (the window that hosts them is going away)
+static void slots_shutdown(void) {
+    if (!g_shm) return;
+    for (int k = 1; k < HOST_APPS; k++) {
+        int p = g_shm->app[k].app_pid;
+        if (g_shm->app[k].state == 2 && p > 0 && kill((pid_t)p, 0) == 0)
+            kill((pid_t)p, SIGTERM);
+    }
+}
+
+// the app asks for orbiter by signaling its supervisor with SIGUSR1
+static volatile sig_atomic_t g_ask_orbiter = 0;
+static void on_sigusr1(int sig) { (void)sig; g_ask_orbiter = 1; }
+// the attached orbiter's pid, so a reload can't summon a SECOND one — the
 // app hot-reloads (claude editing it), re-asks, and we must reuse the shell
 // that is already up rather than orphaning it.
 static pid_t g_shell_pid = 0;
 
 // phase 1: THIN supervision. the child owns a normal window; this process
-// holds nothing (no vulkan, no crashman) and just waits — the usual lifecycle
-// is one app process with an invisible supervisor. crashman loads only when
+// holds nothing (no vulkan, no orbiter) and just waits — the usual lifecycle
+// is one app process with an invisible supervisor. orbiter loads only when
 // the child crashes or the app asks (SIGUSR1). returns 1 = continue as
-// crashman, 0 = child exited normally (*exit_code set), -1 = fall back
+// orbiter, 0 = child exited normally (*exit_code set), -1 = fall back
 // in-process (spawn failed).
 static int supervise_wait(int argc, char** argv, const char* appname,
                           const char* bindir, int* exit_code) {
     g_argc = argc;
     g_argv = argv;
     if (!getcwd(g_isolate_cwd, sizeof(g_isolate_cwd))) g_isolate_cwd[0] = '\0';
-    // publish the session key BEFORE spawning: children inherit it via environ
+    // session key still names the agent-context snapshots (real PNG/tree
+    // files the agent ingests) — NOT the channel, which is anonymous.
     char sess[64];
     snprintf(sess, sizeof(sess), "%d", (int)getpid());
     setenv(ISOLATE_SESSION_ENV, sess, 1);
+    // the anonymous channel exists BEFORE any child, so all inherit the same
+    // memfd. no file, no socket, no session-keyed path.
+    shm_create();
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_sigusr1;          // no SA_RESTART: waitpid must EINTR
     sigaction(SIGUSR1, &sa, NULL);
-    pid_t pid = isolate_spawn(0);
+    pid_t pid = isolate_spawn();
     if (pid < 0) return -1;
     printf("silver-host: supervising %s (pid %d) — %s loads on crash or ask\n",
         appname, pid, ISOLATE_SHELL);
     for (;;) {
         int   st = 0;
-        pid_t r  = waitpid(-1, &st, 0);   // -1: also reaps attached crashman
+        pid_t r  = waitpid(-1, &st, 0);   // -1: also reaps hosted apps + shell
         if (r < 0 && errno == EINTR) {
-            if (!g_ask_crashman) continue;
-            g_ask_crashman = 0;
+            if (!g_ask_orbiter) continue;
+            g_ask_orbiter = 0;
+            // hosted-app spawn requests first: a child wrote name + state=1
+            // into slots and signalled us. if any exist, this signal was a
+            // spawn ask, not a summon.
+            int spawned = 0;
+            if (g_shm)
+                for (int k = 1; k < HOST_APPS; k++)
+                    if (g_shm->app[k].state == 1) { spawn_slot_app(k, bindir); spawned = 1; }
+            if (spawned) continue;
             // a shell is already attached (the app hot-reloaded and re-asked)
             // — reuse it, never spawn a duplicate. kill(pid,0) probes liveness.
             if (g_shell_pid > 0 && kill(g_shell_pid, 0) == 0) {
-                fprintf(stderr, "silver-host: crashman already up (pid %d) — reusing\n",
+                fprintf(stderr, "silver-host: orbiter already up (pid %d) — reusing\n",
                     (int)g_shell_pid);
                 continue;
             }
-            // the app asked: crashman INSIDE the app. the app serves
-            // /tmp/silver-crashman-<pid>.sock; spawn the crashman binary
-            // attached to it — no second window, the app composites.
-            char sock[128], shell[4200];
-            snprintf(sock, sizeof(sock), "/tmp/silver-crashman-%d.sock", (int)pid);
+            // the app asked: orbiter INSIDE the app. the app's screen texture
+            // is published in slot 0; orbiter pulls the fd itself — nothing
+            // to broker, nothing to inherit but the channel memfd.
+            char shell[4200];
             snprintf(shell, sizeof(shell), "%s/%s", bindir, ISOLATE_SHELL);
-            char* sargv[] = { shell, "--attach", sock, NULL };
+            char* sargv[] = { shell, "--attach", "shm", NULL };
+            posix_spawn_file_actions_t fa;
+            posix_spawn_file_actions_init(&fa);
+            static char fdenv[32];
+            shm_inherit(&fa, fdenv, sizeof(fdenv));
             int n = 0;
             while (environ[n]) n++;
-            char** cenv = malloc((n + 3) * sizeof(char*));
+            char** cenv = malloc((n + 5) * sizeof(char*));
             memcpy(cenv, environ, n * sizeof(char*));
             static char appenv[256];
             snprintf(appenv, sizeof(appenv), ISOLATE_APP_ENV "=%s", appname);
-            // the app pid so an orphaned crashman can watch it and self-exit
             static char pidenv[64];
             snprintf(pidenv, sizeof(pidenv), ISOLATE_APP_PID_ENV "=%d", (int)pid);
+            static char slotenv[32];
+            snprintf(slotenv, sizeof(slotenv), "SILVER_APP_SLOT=%d", 0);
             cenv[n]     = appenv;
             cenv[n + 1] = pidenv;
-            cenv[n + 2] = NULL;
+            cenv[n + 2] = slotenv;
+            cenv[n + 3] = fdenv;
+            cenv[n + 4] = NULL;
             pid_t sp = 0;
-            int rc = posix_spawn(&sp, shell, NULL, NULL, sargv, cenv);
+            int rc = posix_spawn(&sp, shell, &fa, NULL, sargv, cenv);
+            posix_spawn_file_actions_destroy(&fa);
             free(cenv);
             if (rc != 0)
-                fprintf(stderr, "silver-host: crashman spawn failed: %s\n", strerror(rc));
+                fprintf(stderr, "silver-host: orbiter spawn failed: %s\n", strerror(rc));
             else {
                 g_shell_pid = sp;
-                fprintf(stderr, "silver-host: crashman attached inside %s (pid %d)\n",
+                fprintf(stderr, "silver-host: orbiter attached inside %s (pid %d)\n",
                     appname, (int)sp);
             }
             continue;
@@ -249,8 +338,11 @@ static int supervise_wait(int argc, char** argv, const char* appname,
             *exit_code = 1;
             return 0;
         }
-        if (r != pid) {                    // an attached crashman exited
+        if (r != pid) {                    // a hosted app or the shell exited
             if (r == g_shell_pid) g_shell_pid = 0;
+            if (g_shm)
+                for (int k = 1; k < HOST_APPS; k++)
+                    if (g_shm->app[k].app_pid == (int32_t)r) g_shm->app[k].state = 3;
             continue;
         }
         if (WIFSIGNALED(st)) {
@@ -259,22 +351,30 @@ static int supervise_wait(int argc, char** argv, const char* appname,
                 WTERMSIG(st), strsignal(WTERMSIG(st)));
             fprintf(stderr, "silver-host: app died: %s — loading %s\n",
                 msg, ISOLATE_SHELL);
-            if (isolate_attach_setup(appname) != 0) return -1;
+            slots_shutdown();
+            setenv(ISOLATE_APP_ENV, appname, 1);
             setenv(ISOLATE_STATUS_ENV, msg, 1);
+            // continue as orbiter IN-PROCESS: point the channel env at the
+            // memfd we still hold (no inheritance step for in-process)
+            if (g_shm_fd >= 0) {
+                char fb[16]; snprintf(fb, sizeof(fb), "%d", g_shm_fd);
+                setenv("SILVER_SHM_FD", fb, 1);
+            }
             g_isolate_child = 0;
             return 1;
         }
         *exit_code = WIFEXITED(st) ? WEXITSTATUS(st) : 1;
-        // app done — take our attached crashman down with us so it can't
-        // orphan and keep writing the shared shm frame
+        // app done — take the shell and every hosted app down with us so
+        // nothing orphans against a dead channel
         if (g_shell_pid > 0 && kill(g_shell_pid, 0) == 0) kill(g_shell_pid, SIGTERM);
+        slots_shutdown();
         return 0;
     }
 }
 
-// crashman asks for a relaunch by setting SILVER_ISOLATE_RESTART (env is
+// orbiter asks for a relaunch by setting SILVER_ISOLATE_RESTART (env is
 // process-global — same channel as the status verdict, other direction).
-// the app comes back WINDOWED (its own window, the usual mode) — crashman
+// the app comes back WINDOWED (its own window, the usual mode) — orbiter
 // keeps its window and keeps reaping, so a re-crash posts a fresh verdict.
 static void isolate_restart_check(void) {
     if (g_isolate_child) return;
@@ -282,7 +382,7 @@ static void isolate_restart_check(void) {
     if (!r || !*r) return;
     unsetenv(ISOLATE_RESTART_ENV);
     unsetenv(ISOLATE_STATUS_ENV);
-    pid_t pid = isolate_spawn(0);
+    pid_t pid = isolate_spawn();
     if (pid > 0) {
         g_isolate_child = pid;
         fprintf(stderr, "silver-host: relaunched app as pid %d\n", pid);
@@ -290,7 +390,7 @@ static void isolate_restart_check(void) {
 }
 
 // reap a dead isolated child without blocking; publish what happened through
-// the environment (same process — crashman reads it with getenv each frame).
+// the environment (same process — orbiter reads it with getenv each frame).
 static void isolate_reap(void) {
     if (!g_isolate_child) return;
     int   st = 0;
@@ -532,16 +632,29 @@ int main(int argc, char** argv) {
     // the launch directory and does the whole normal startup itself. hooking in
     // later handed it the share dir as its launch cwd and made both processes
     // race the same rebuild. the supervisor blocks in supervise_wait for the
-    // app's whole normal lifetime; only a crash (or SIGUSR1 ask) continues
-    // this process below AS the crashman shell — same bindir, name swapped —
-    // so the ordinary product-resolution / dlopen / frame-loop code runs for
-    // crashman. crashman itself never isolates (it would supervise itself).
-    if (strcmp(name, ISOLATE_SHELL) != 0 && isolate_requested(argc, argv)) {
+    // app's whole normal lifetime; it also spawns hosted apps into channel
+    // slots on request. only a crash (or SIGUSR1 ask) continues this process
+    // below AS the orbiter shell — same bindir, name swapped. orbiter itself
+    // is supervised like any app — its silver-host hosts its pane apps.
+    if (isolate_requested(argc, argv)) {
         int exit_code = 0;
         int r = supervise_wait(argc, argv, name, bindir, &exit_code);
         if (r == 0) return exit_code;
         if (r > 0)  name = ISOLATE_SHELL;
         // r < 0: isolation unavailable — run the app in-process below
+    } else if (strcmp(name, ISOLATE_SHELL) == 0) {
+        // an unsupervised orbiter start is just the IDE: no inherited agent
+        // contract (launching from inside a supervised app's console leaks
+        // the env) — only --attach shells keep it
+        int attached = 0;
+        for (int i = 1; i < argc; i++)
+            if (strcmp(argv[i], "--attach") == 0) attached = 1;
+        if (!attached && !getenv(ISOLATE_CHILD_ENV)) {
+            unsetenv(ISOLATE_APP_ENV);
+            unsetenv(ISOLATE_APP_PID_ENV);
+            unsetenv(ISOLATE_STATUS_ENV);
+            unsetenv(ISOLATE_SESSION_ENV);
+        }
     }
     g_app_name = name;
     // the log is named for the APP, not the root element — so the tee
@@ -651,8 +764,8 @@ int main(int argc, char** argv) {
     pid_t compile_pid = 0;  // async recompile in flight — the app keeps running while it builds
 
     while (do_frame && do_frame()) {
-        // isolated child died? publish the verdict for crashman to render.
-        // and relaunch it when crashman asks (SILVER_ISOLATE_RESTART).
+        // isolated child died? publish the verdict for orbiter to render.
+        // and relaunch it when orbiter asks (SILVER_ISOLATE_RESTART).
         isolate_reap();
         isolate_restart_check();
 
@@ -793,7 +906,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // crashman closed: take the isolated child down with the window
+    // orbiter closed: take the isolated child down with the window
     if (g_isolate_child) {
         kill(g_isolate_child, SIGTERM);
         waitpid(g_isolate_child, NULL, 0);
