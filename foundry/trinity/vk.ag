@@ -1667,8 +1667,14 @@ class Pipeline
     public   func rebind_mask [ tx: Texture ]
         rebind_texture[ mask_slot, tx ]
 
+    # run-once compute: static subdiv chains record a single time
+    public  run_once : bool
+    mutable ran_once : bool
+
     public   func dispatch [ f: handle ]
         if [ !vk_compute ]
+            return
+        if [ run_once && ran_once ]
             return
         if [ !resources ]
             bind_resources[]
@@ -1699,6 +1705,7 @@ class Pipeline
         dy: i32 [ (dispatch_y > 0) ? dispatch_y : 1 ]
         dz: i32 [ (dispatch_z > 0) ? dispatch_z : 1 ]
         vkCmdDispatch[ frame, dx, dy, dz ]
+        ran_once = true
         # buffer writes must land before the next dispatch (chained subdiv
         # levels) and before vertex/index fetch reads the produced VBO
         mem_barrier : VkMemoryBarrier [
@@ -2287,6 +2294,12 @@ class Model
     # level-0 topo per subdivided primitive; cage_buf holds the live control
     # positions the compute chain re-reads every frame
     mutable cages           : array SubdivTopo [ ]
+    # rigid models: refine ONCE at load instead of every frame
+    public subdiv_once      : bool
+    # weld subdiv topology by POSITION alone: flat-shaded parts
+    # (split normals per face) must still join into one surface.
+    # off for models with coincident opposite-normal skins (lips)
+    public weld_pos_only    : bool
 
     public func rebind_model [ ]
         if [ pipelines ]
@@ -2538,11 +2551,11 @@ class Model
             id = vk.quad_m
 
         if [ is_clear ]
-            model_init_pipeline[ a, null, null, null, render_id, false ]
+            model_init_pipeline[ a, null, null, null, null, render_id, false ]
         el [ nodes ]
             for [ n: gltf_node ] in nodes
                 for [ p: gltf_part ] in n.parts
-                    model_init_pipeline[ a, n.id, p.id, (p.s) ? p.s : s, render_id, false ]
+                    model_init_pipeline[ a, n.id, p.id, null, (p.s) ? p.s : s, render_id, false ]
         el [ id ]
             id.compute_worlds[]
             for [ n: Node ] in id.nodes
@@ -2573,13 +2586,22 @@ class Model
                         es: shader [ (!skinned && rigid_s) ? rigid_s : s ]
                         is_alpha: (base_a > 0.0 && base_a < 1.0) || es.transparent
                         if [ !is_alpha ]
-                            model_init_pipeline[ a, n, prim, es, render_id, false ]
+                            model_init_pipeline[ a, n, prim, mesh, es, render_id, false ]
                         if [ is_alpha ]
                             ts: shader [ transparent_s ]
                             if [ !ts ] ts = es
-                            model_init_pipeline[ a, n, prim, ts, render_id, true ]
+                            model_init_pipeline[ a, n, prim, mesh, ts, render_id, true ]
             if [ pipelines.count == 0 ]
-                model_init_pipeline[ a, null, null, s, render_id, false ]
+                model_init_pipeline[ a, null, null, null, s, render_id, false ]
+        # transparent draws LAST so alpha blends against a finished
+        # opaque scene; stable partition keeps relative order
+        resort : array Pipeline [ alloc: 16 ]
+        for [ p2: Pipeline ] in pipelines
+            if [ !p2.depth_no_write ] resort.push[ p2 ]
+        for [ p2: Pipeline ] in pipelines
+            if [ p2.depth_no_write ] resort.push[ p2 ]
+        resort.hold[]
+        pipelines = resort
 
     construct [ p: string ]
         gltf_path : path [ p ]

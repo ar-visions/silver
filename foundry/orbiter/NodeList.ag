@@ -161,7 +161,12 @@ class Frame
     public line      : i32
 
 # the callstack panel: a NodeList of stack frames, rendered through NodeLayer.
+# same #202 background as the console so it reads as one surface with it.
 NodeList Callstack
+    # a Split pane on the console's own #202 surface; the Split draws the divider.
+    area    : Region { l0 t0 r0 b0 }
+    cbase   : Layer [ fill_color: rgba [ '#202' ], area: Region { l0 t0 r0 b0 } ]
+    content : NodeLayer [ area: Region { l4px t2px r4px b2px }, label_size: 15, row_spacing: 1.2, text_color: '#cfe' ]
     public frames : array Frame
 
     func row_count [] -> i32
@@ -185,6 +190,9 @@ NodeList Callstack
 # from the last break); later it doubles as the autocomplete list. element-list
 # rows are `variable` objects (name/type/value), cast at draw.
 NodeList Fields
+    area    : Region { l0 t0 r0 b0 }
+    cbase   : Layer [ fill_color: rgba [ '#202' ], area: Region { l0 t0 r0 b0 } ]
+    content : FieldsLayer [ area: Region { l4px t2px r4px b2px }, label_size: 15, row_spacing: 1.2 ]
     public vars : array
 
     func row_count [] -> i32

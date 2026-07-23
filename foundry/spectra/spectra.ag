@@ -1926,6 +1926,7 @@ element main : trinity
         mp2.save[ nm, null ]
 
     func init []
+		puts 'init called' 
         if [ file && whisper && whisper.count > 0 ]
             c8 : caf_load[ file ]
             if [ !c8 ] exit[ 1 ]

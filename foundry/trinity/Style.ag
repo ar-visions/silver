@@ -1034,6 +1034,25 @@ class Region
         reg.square = square || other.square
         return reg
 
+    # carry one edge's live seam state (eased position + flags) forward.
+    func seam_carry [ n: BindCoord, o: BindCoord ]
+        if [ !n || !o ] return
+        if [ !o.has_active || n.varname != o.varname ] return
+        n.active     = o.active
+        n.has_active = o.has_active
+        n.warmed     = o.warmed
+        n.moving     = o.moving
+
+    # a per-frame template's area rebuilds the seam binds fresh (has_active=false),
+    # so the eased drag position is lost each reconcile. copy the live seam state
+    # from the persistent instance's `old` area so the seam survives + stays draggable.
+    func inherit_seams [ old: Region ]
+        if [ !old ] return
+        seam_carry[ bind_l, old.bind_l ]
+        seam_carry[ bind_t, old.bind_t ]
+        seam_carry[ bind_r, old.bind_r ]
+        seam_carry[ bind_b, old.bind_b ]
+
 class Scaling
     public value : vec3f
 

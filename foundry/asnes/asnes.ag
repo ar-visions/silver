@@ -5276,6 +5276,16 @@ element asnes : trinity
 	# hot-reload flash save: the host sets SILVER_RELOAD_SAVE around the
 	# reload-path destroy only — the fresh instance restores this state so a
 	# recompile drops you back exactly where you were.
+	# closing the pane releases the view — stop the emulation thread here so the
+	# audio doesn't keep playing after the tab is gone. dealloc also does this, but
+	# the emulator stays ref-held by the render-target registry, so it won't run.
+	public func release []
+		if [ emu_started ]
+			emu_stop = true
+			while [ emu_running ]
+				usleep[ 2000 ]
+			emu_started = false
+
 	public func on_unload []
 		if [ emu_started ]
 			emu_stop = true

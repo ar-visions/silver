@@ -418,6 +418,8 @@ ResourceView ImageView
 # silver-host reaps it and marks the slot; we just show a note.
 ResourceView AppView
     mutable slot       : i32 [ -1 ]  # our channel slot at silver-host
+    mutable app_mod    : string      # module name (orbiter resolves its binary to attach)
+    public  attached   : bool        # orbiter has attached lldb to this app's pid
     mutable tex0       : Texture     # the app's shared surface pair, imported
     mutable tex1       : Texture
     mutable gen        : i32         # generation of the imported surface
@@ -566,16 +568,9 @@ ResourceView AppView
         cv.stroke_width[ 0.0 ]
         cv.rect_to[ sx, sy, sw, sh ]
         cv.paint[]
-        # split: callstack section (top half), app section (bottom half)
+        # the whole side column is the docked app's live view now — the call
+        # stack + variables live in the console band, not here.
         hlf : f32 [ sh * 0.5 ]
-        # --- callstack section: [title] then [control] ---
-        cv.fill_color[ '#1c2840' ]
-        cv.rect_to[ sx, sy, sw, hh ]
-        cv.paint[]
-        cv.fill_color[ '#cfe' ]
-        cv.font_size[ 14 ]
-        cv.draw_text[ 'callstack', rect [ x: sx + 8.0, y: sy, w: sw - 16.0, h: hh ],
-            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
         # --- app section: [title] then the live app view ---
         ay : f32 [ sy + hlf ]
         cv.fill_color[ '#1c2840' ]
@@ -616,8 +611,11 @@ ResourceView AppView
         di  : i32 [ fn.index_of[ '.' ] ]
         mod : (di > 0) ? fn.mid[ 0, di ] : fn
         # a handler module is launched FOR a document — the path rides as the
-        # app's DEFAULT argument (silver-host appends it to the spawn argv)
-        req : string [ (doc) ? '{mod} {doc}' : '{mod}' ]
+        # app's DEFAULT argument (silver-host appends it to the spawn argv).
+        # the leading '!' asks silver-host to self-stop the app before init so
+        # orbiter can attach lldb (the in-pane app IS the debug target).
+        req : string [ (doc) ? '!{mod} {doc}' : '!{mod}' ]
+        app_mod = mod
         slot = host_app_request[ req.chars ]
         if [ slot < 0 ]
             dead = true
@@ -961,6 +959,15 @@ Layer EditorLayer
     func draw [ cv: Canvas ]
         editor : Editor[ parent ]
         if [ !editor ] return
+        # this pane's element is reused across a pane-count re-index — if its src
+        # changed under it (e.g. a closed middle tab shifted files), reload/clear.
+        sc : string [ (editor.src) ? '{editor.src}' : '' ]
+        lc : string [ (editor.loaded_src) ? '{editor.loaded_src}' : '' ]
+        if [ sc.compare[ lc ] != 0 ]
+            # a DIFFERENT file: clear the stopped-latch so its handler (spectra,
+            # etc.) can launch — the latch only means "don't relaunch THIS file".
+            editor.stopped = false
+            editor.load_file[]
         # a non-text resource (image/…) renders through its ResourceView, not as code —
         # but NOT while this pane is showing the finder/browse list (show_hits), so the
         # title still brings up the file index over an image pane. render* = poly dispatch
@@ -1033,15 +1040,13 @@ Layer EditorLayer
                     # same edge fades as the code path: top row dissolves into the
                     # title (only when scrolled), and the right/bottom/left edges
                     # softly fade so content dissolves at every side of the pane.
-                    hxf : f32 [ (editor.scroll.y > 0.0) ? hlh2 : 0.0 ]
-                    hxl : f32 [ (editor.scroll.x > 0.0) ? bounds.w / 8.0 : 0.0 ]
-                    parent.mask_glow   = vec4f [ hxf, bounds.w / 8.0, hlh2, hxl ]
+                    hxf : f32 [ (editor.scroll.y > 0.0) ? 0.0 : 0.0 ]
+                    hxl : f32 [ (editor.scroll.x > 0.0) ? 0.0 : 0.0 ]
+                    # right fade is a fixed short edge, not width-proportional
+                    parent.mask_glow   = vec4f [ hxf, 48.0, hlh2, hxl ]
                     parent.mask_keep_l = 0.0
                     parent.mask_inset  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-                    wtx2 : f32 [ cv.transform_tx[] ]
-                    wty2 : f32 [ cv.transform_ty[] ]
-                    cv.set_crop[ wtx2 + bounds.x, wty2 + bounds.y,
-                        wtx2 + bounds.x + bounds.w, wty2 + bounds.y + bounds.h ]
+                    
                 editor.rview.vx = bounds.x
                 editor.rview.vy = bounds.y
                 editor.rview.vw = bounds.w
@@ -1117,7 +1122,7 @@ Layer EditorLayer
             # bottom fade: the code softly dissolves into the run band below it,
             # one line tall. vec4 = (top, right, bottom, left).
             bot_fade  : f32 [ lh ]
-            parent.mask_glow = vec4f [ top_fade, bounds.w / 8.0, bot_fade, left_fade ]
+            parent.mask_glow = vec4f [ top_fade, 48.0, bot_fade, left_fade ]
             # keep the line-number gutter fully opaque; the left fade starts just past it.
             parent.mask_keep_l = gut_w
             # inset the mask's LEFT edge to the gutter so the left fade originates
@@ -1125,6 +1130,7 @@ Layer EditorLayer
             # instead of at x=0 where the opaque gutter keep-strip hides it.
             lft_in : f32 [ (left_fade > 0.0) ? gut_w : 0.0 ]
             parent.mask_inset = vec4f [ 0.0, 0.0, 0.0, lft_in ]
+        
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
         editor.text_lines_frame = 0
@@ -1917,7 +1923,7 @@ Layer EditorLayer
 Control Editor
     # the code content + overlay scrollbar, declared here — the editor's look
     # is the editor's, not a stylesheet's. members key the paint map by ident.
-    content   : EditorLayer [ area: Region { l0 t0 r0 b0 }, label_height: 1.0,
+    content   : EditorLayer [ area: Region { l0 t2px r0 b2px }, label_height: 1.0,
         line_color: rgba [ '#fff1' ], item_color: rgba [ '#2b3a5500' ], sel_color: rgba [ '#264f78' ],
         hl_fill: rgba [ '#ff6a2e55' ], hl_grad: rgba [ '#c0381844' ],
         hl_glow: rgba [ '#ff8a3a99' ], hl_text: rgba [ '#ffe6d2' ] ]
@@ -1964,6 +1970,9 @@ Control Editor
     public  show_nav      : bool
     public  editor_mode   : string
     public  src           : path
+    # the src load_file last handled — when the pane re-indexes, `src` changes
+    # under a reused element, so we detect the mismatch and reload/clear.
+    mutable loaded_src    : path
     # injected each frame by orbiter (the Editor is rebuilt per frame): this pane's own
     # navigation history (back/forward), and its pane index (pane0..3, stamped on each stop).
     mutable nav           : Navigate
@@ -2943,7 +2952,18 @@ Control Editor
         return tex
 
     func load_file []
-        if [ !src ] return
+        loaded_src = src
+        if [ !src ]
+            # blank pane (e.g. a re-index shifted this file out): drop any previous
+            # file's view/app, else it keeps showing the old content (mp3 hex, etc.)
+            if [ rview ] rview.release*[]
+            rview    = null
+            if [ run_view ] run_view.release*[]
+            run_view = null
+            app_view = false
+            lines    = list string []
+            lines.push[ '' ]
+            return
         # a resource view already loaded for THIS file → keep it. recreating it every
         # reload churns the GPU texture and the drop of the old view crashes; reuse it.
         if [ rview && rview.src ]

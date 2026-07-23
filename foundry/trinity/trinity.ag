@@ -759,6 +759,14 @@ Display Window
                 if [ !e.AF_get_member[ member ] ] continue
                 cur : inst.member_object[ member ]
                 nv  : e.member_object[ member ]
+                # area carries live seam state (eased drag position). the template's
+                # fresh area would reset it every frame, so carry it forward and keep
+                # the persistent instance's Region — the seam survives + stays draggable.
+                if [ strcmp[ member.ident, "area" ] == 0 && cur && nv ]
+                    ir : Region cast Region [ inst.member_object[ member ] ]
+                    er : Region cast Region [ e.member_object[ member ] ]
+                    if [ ir && er && (ir.bind_l || ir.bind_t || ir.bind_r || ir.bind_b) ]
+                        er.inherit_seams[ ir ]
                 # a change is: presence flipped, OR both present and unequal. a false/0
                 # value boxes as null, so a false→true flip is cur=null, nv=non-null —
                 # the old `cur.compare[nv]` then ran compare on a null cur and missed it
@@ -1105,8 +1113,8 @@ Display Window
                         home_object = (parent.ux.app_object to element)
                         home_type   = typeid[ home_object ]
                 
-                imember : find_member[ home_type, id.chars, AU_MEMBER_VAR, 0, true ]
-                if [ imember ]
+                imember : (home_type && id) ? find_member[ home_type, id.chars, AU_MEMBER_VAR, 0, true ] : null
+                if [ imember && home_object ]
                     home_object.member_set[ imember, instance ]
                  
                 instance.set_context_from[ home_object ]
@@ -1391,7 +1399,7 @@ Display Window
     # show the OS resize cursor over a seam: kind 0=arrow, 1=horizontal (x-axis
     # seam), 2=vertical (y-axis seam). standard cursors are created on first use
     # and cached; cursor_kind skips redundant glfwSetCursor calls.
-    func seam_cursor [ kind: i32 ]
+    public func seam_cursor [ kind: i32 ]
         if [ kind == cursor_kind ] return
         g : handle [ Au.live_window_get[] ]
         if [ !g ] return
@@ -1705,21 +1713,15 @@ Display Window
         seam_hl    = rect[]
         f : find_target[ root, ev, null ]
         ev.origin = f
-        # live inspector (cmd/ctrl held): click → matching CSS blocks; +shift → the
-        # element's DECLARATION site (Au header source:line). ctrl||meta matches
-        # orbiter's merged convention (Linux presses ctrl, not super). consumes it.
-        if [ f && (ev.key.meta || ev.key.ctrl) && st ]
-            # ctrl/cmd+click ALWAYS goes to the CSS style rule (.css). repeated
-            # clicks on the same element cycle through its matched blocks.
-            hits : array StyleHit [ st.element_style_blocks[ f ] ]
-            if [ f != st.inspect_el ]
-                st.inspect_el  = f
-                st.inspect_idx = 0
-            el [ hits.count > 0 ]
-                st.inspect_idx = (st.inspect_idx + 1) % hits.count
-            cur : array StyleHit [ ]
-            if [ st.inspect_idx < hits.count ] cur.push[ hits[ st.inspect_idx ] ]
-            if [ app_object ] app_object.on_inspect*[ cur ]
+        # live inspector (cmd/ctrl held): jump to the element's construction site.
+        # styles live in the .ag now (no css), and every Au object records its
+        # source:line in its header. ctrl||meta matches orbiter's merged convention
+        # (Linux presses ctrl, not super). consumes the click.
+        if [ f && (ev.key.meta || ev.key.ctrl) ]
+            if [ f.source && app_object ]
+                cur : array StyleHit [ ]
+                cur.push[ StyleHit [ file: path '{f.source}', line: f.line ] ]
+                app_object.on_inspect*[ cur ]
             # consume the click: the inspect handled it, so the element under the cursor
             # (a button/tab) must NOT also process the press.
             ev.no_propagation = true
@@ -3676,6 +3678,10 @@ Display Window
                 sbl.bounds.x -= e.bounds.x
                 sbl.bounds.y -= e.bounds.y
                 cv.save[ ]
+                # clip the bar to the control — never let it spill past the pane edges
+                sbtx : f32 [ cv.transform_tx[] ]
+                sbty : f32 [ cv.transform_ty[] ]
+                cv.set_crop[ sbtx, sbty, sbtx + e.bounds.w, sbty + e.bounds.h ]
                 sbl.draw[ cv ]
                 cv.restore[ ]
 
@@ -3892,6 +3898,9 @@ Layer ScrollLayer
     mutable track_vis   : f32
     mutable scroll_max  : f32
     mutable grab_w      : f32
+    # gap between the mouse-y origin (content top) and the track top, so drag
+    # math undoes the visual top nudge (track top != content top).
+    mutable top_pad     : f32
     # offset from the thumb top to where it was grabbed — kept constant during a
     # drag so the thumb doesn't snap its center to the cursor (relative grab).
     mutable grab_off    : f32
@@ -3906,13 +3915,19 @@ Layer ScrollLayer
         if [ e.no_scroll ] return
         # align the track top with the content layer — it may be pushed down
         # below our own area top (e.g. the editor's find/replace bar adds a row).
+        # nudge it down a few px so the top gap matches the bottom's small inset.
         top     : f32 [ bounds.y ]
         cl      : Layer (e.layers) ? e.layers['content'] : null
-        if [ cl && cl.bounds ] top = cl.bounds.y
+        if [ cl && cl.bounds ] top = cl.bounds.y + 8.0
+        # mouse-y is measured from the content top; the track top sits `top_pad`
+        # below it, so drag_to/grab_at subtract this to stay in the track frame.
+        top_pad = (cl && cl.bounds) ? top - cl.bounds.y : 0.0
         total_h : f32 [ e.content_h ]
         vis_h   : f32 [ bounds.y + bounds.h - top ]
         ratio   : f32 [ vis_h / total_h ]
         min_h   : f32 [ (thumb_min_h > 0.0) ? thumb_min_h : 32.0 ]
+        # no room for even the minimum thumb — don't draw a stub bar
+        if [ vis_h < min_h ] return
         thumb_h : f32 [ (ratio * vis_h < min_h) ? min_h : ratio * vis_h ]
         travel  : f32 [ vis_h - thumb_h ]
         max_sc  : f32 [ total_h - vis_h ]
@@ -3935,7 +3950,10 @@ Layer ScrollLayer
         if [ active ] prox = 1.0
         eff_w : f32 [ base_w * (1.0 + prox) ]
         r     : f32 [ thumb_radius * (1.0 - prox) ]
-        thumb_x : f32 [ bounds.x + bounds.w - eff_w ]
+        # fixed center inset base_w from the edge, so the widest state still fits;
+        # the thumb scales symmetrically about it (both sides grow), never re-pinning.
+        cx      : f32 [ bounds.x + bounds.w - base_w ]
+        thumb_x : f32 [ cx - eff_w * 0.5 ]
         # cache geometry for the element's drag handling. track_vis is the track
         # height starting at the content top, which is also where mouse-y is measured
         # from (ev.mouse.pos.y - content_layer.bounds.y), so drag_to needs no offset.
@@ -3967,14 +3985,15 @@ Layer ScrollLayer
     public func drag_to [ my: f32 ] -> f32
         travel : f32 [ track_vis - thumb_h_px ]
         if [ travel <= 0.0 ] return -1.0
-        thumb_top : f32 [ my - grab_off ]
+        thumb_top : f32 [ my - top_pad - grab_off ]
         return clamp[ (thumb_top / travel) * scroll_max, 0.0, scroll_max ]
 
     # call on grab: record where in the thumb the cursor landed (relative grab when
     # on the thumb; centered when clicking the empty track).
     public func grab_at [ my: f32 ]
-        if [ my >= thumb_y_px && my <= thumb_y_px + thumb_h_px ]
-            grab_off = my - thumb_y_px
+        mt : f32 [ my - top_pad ]
+        if [ mt >= thumb_y_px && mt <= thumb_y_px + thumb_h_px ]
+            grab_off = mt - thumb_y_px
         el
             grab_off = thumb_h_px * 0.5
 
@@ -3990,6 +4009,292 @@ element Group
 element Group2
     func render[] -> Elements
         return null
+
+# a segmented icon strip drawn as ONE element — no child buttons, no style
+# layers, no states. give it a `buttons` id list; it draws each as a pill
+# segment (leftmost rounded-left, rightmost rounded-right, rest square),
+# tracks selection + hover itself, and shift+drag reorders the segments.
+element TButtons
+    animated : true
+    public  buttons   : array string  # segment ids, e.g. [ 'minus', 'plus' ]
+    public  icons     : bool [ true ] # ids resolve to images/<id>.svg
+    public  manual    : bool          # actions, not toggles — no latched selection
+    public  selected  : i32 [ -1 ]
+    # multi-select: when set, each bit i lit = segment i toggled on (independent).
+    # overrides `selected` for the lit test so more than one can show at once.
+    public  sel_mask  : i32
+    public  seg_radius : f32 [ 8.0 ]
+    intern  items     : array string
+    intern  svgs      : array SVGModel
+    intern  hover_ix  : i32 [ -1 ]
+    intern  drag_ix   : i32 [ -1 ]
+    intern  dragging  : bool         # true only during a shift+drag reorder
+
+    # snapshot the ids into `items` (+ load each svg) once, and re-sync only when
+    # the button count changes — so a shift+drag reorder (which mutates `items`)
+    # survives across frames instead of being reset from `buttons` every draw.
+    func ensure_items []
+        if [ !buttons ] return
+        if [ items && items.count == buttons.count ] return
+        items = array string [ ]
+        svgs  = array SVGModel [ ]
+        for [ i: i32 0, i < buttons.count, i += 1 ]
+            items.push[ buttons[ i ] ]
+            if [ icons ] svgs.push[ SVGModel [ 'images/{buttons[ i ]}.svg' ] ]
+
+    # segment index under the cursor, or -1 outside the strip.
+    func seg_at [ ev: Event ] -> i32
+        ensure_items[ ]
+        if [ !items ] return -1
+        n : i32 [ items.count ]
+        if [ n == 0 ] return -1
+        # ev.mouse.pos is already element-local (0..bounds.w), like the draw coords
+        rel : f32 [ ev.mouse.pos.x ]
+        if [ rel < 0.0 || rel >= bounds.w ] return -1
+        return i32 [ rel / (bounds.w / f32[ n ]) ]
+
+    # canvas is translated to the element origin — draw in LOCAL coords (0,0 top-left).
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        ensure_items[]
+        n : i32 [ items.count ]
+        if [ n == 0 || !bounds ] return
+        cv : Canvas w.screen
+        # on_move stops firing once the cursor leaves the element, so clear the
+        # hover here when the framework says we're no longer hovered.
+        if [ !hovered ] hover_ix = -1
+        seg_w : f32 [ bounds.w / f32[ n ] ]
+        for [ i: i32 0, i < n, i += 1 ]
+            x  : f32 [ f32[ i ] * seg_w ]
+            # only the leftmost keeps rounded-left, rightmost rounded-right
+            tl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
+            bl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
+            tr : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
+            br : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
+            # fill + inner glow per state, matching NavButton (quiet/hover/selected)
+            fcol : rgba [ '#614' ]
+            gc   : rgba [ '#ccf2' ]
+            gpx  : f32  [ 16.0 ]
+            # hover brightens first, at half strength...
+            if [ i == hover_ix ]
+                fcol = rgba [ '#413' ]
+                gc   = rgba [ '#fcc3' ]
+                gpx  = 18.0
+            # ...then the toggled state always brightens over it
+            lit : bool [ (sel_mask != 0) ? ((sel_mask & (1 << i)) != 0) : (i == selected) ]
+            if [ lit ]
+                fcol = rgba [ '#826' ]
+                gc   = rgba [ '#fcc6' ]
+                gpx  = 18.0
+            # glow only the group's OUTER edges — no glow on the seam sides, so
+            # neighboring segments don't stack into a thick dark band there.
+            gl : f32 [ (i == 0)     ? gpx : 0.0 ]
+            gr : f32 [ (i == n - 1) ? gpx : 0.0 ]
+            cv.fill_color[ fcol ]
+            cv.inner_glow_sides[ gc, gpx, gr, gpx, gl ]
+            cv.rounded_rect[ x, 0.0, seg_w, bounds.h, tl, tr, br, bl ]
+            cv.paint[ ]
+            cv.inner_glow_sides[ rgba [ '#0000' ], 0.0, 0.0, 0.0, 0.0 ]
+            # icon centered, tinted white (draw_svg reads fill_color as its tint)
+            if [ icons && svgs && i < svgs.count && svgs[ i ] ]
+                isz : f32 [ bounds.h * 0.55 ]
+                ix  : f32 [ x + (seg_w - isz) * 0.5 ]
+                iy  : f32 [ (bounds.h - isz) * 0.5 ]
+                cv.fill_color[ rgba [ '#fff' ] ]
+                cv.draw_svg[ svgs[ i ], ix, iy, isz, isz ]
+        # separators between segments: a dark hairline then a light one beside it,
+        # so each seam reads as a soft bevel. skip the outer left/right edges.
+        dvy : f32 [ bounds.h * 0.2 ]
+        dvh : f32 [ bounds.h * 0.6 ]
+        for [ i: i32 1, i < n, i += 1 ]
+            dx : f32 [ f32[ i ] * seg_w ]
+            cv.fill_color[ rgba [ r: 0.0, g: 0.0, b: 0.0, a: 0.3 ] ]
+            cv.rounded_rect[ dx - 1.0, dvy, 1.0, dvh, 0.0, 0.0, 0.0, 0.0 ]
+            cv.paint[ ]
+            cv.fill_color[ rgba [ r: 1.0, g: 1.0, b: 1.0, a: 0.3 ] ]
+            cv.rounded_rect[ dx, dvy, 1.0, dvh, 0.0, 0.0, 0.0, 0.0 ]
+            cv.paint[ ]
+
+    func on_press [ ev: Event ]
+        i : i32 [ seg_at[ ev ] ]
+        if [ i < 0 ] return
+        if [ ev.key.shift ]
+            drag_ix  = i
+            dragging = true
+            ev.no_default = true
+            return
+        if [ !manual ] selected = i
+        # emit the clicked segment's id as this element's id so the app's id-based
+        # on_press (which reads ev.target.id) routes it. don't consume — the app
+        # handles the action. the reconcile resets id from the map key next frame.
+        a.id = items[ i ]
+
+    func on_move [ ev: Event ]
+        if [ dragging ]
+            j : i32 [ seg_at[ ev ] ]
+            if [ j >= 0 && j != drag_ix ]
+                # hold across the reassignment: the slot overwrite frees the old
+                # value, so a plain borrow would dangle and double-free.
+                ti : hold[ items[ drag_ix ] ]
+                ts : hold[ svgs[ drag_ix ] ]
+                items[ drag_ix ] = items[ j ]
+                svgs[ drag_ix ]  = svgs[ j ]
+                items[ j ] = ti
+                svgs[ j ]  = ts
+                drop[ ti ]
+                drop[ ts ]
+                if [ selected == drag_ix ] selected = j
+                el [ selected == j ]       selected = drag_ix
+                drag_ix = j
+        el
+            hover_ix = seg_at[ ev ]
+
+    func on_release [ ev: Event ]
+        drag_ix  = -1
+        dragging = false
+
+# a draggable multi-pane splitter. children come via `elements` in insertion
+# order. the FIRST child is the flex pane — it takes all leftover space. every
+# other child has a saved pixel size in `sizes`, keyed by its child id (so it
+# persists), and a draggable divider on its leading edge. horizontal by default;
+# `vertical` stacks top→bottom. this replaces the Region @seam binding: the sizes
+# live HERE on the persistent instance, so nothing depends on per-frame area binds.
+element Split
+    animated : true
+    # children come via `kids` (NOT `elements`): apply_args skips `elements`, so a
+    # toggled-in child would never reach the persistent instance; `kids` propagates
+    # on change. render positions them and returns them as the real `elements`.
+    public kids     : map element [ string ]
+    public vertical : bool
+    # sizes is a paired array [ id, px, id, px, ... ] — NOT a map: Au map iteration
+    # misses entries in small maps (per CLAUDE.md). stride-2 lookup instead.
+    public sizes    : array
+    public bar      : f32 [ 8.0 ]          # divider grab half-width px
+    public gap      : f32 [ 8.0 ]          # visible gap between panes (holds divider)
+    public inset    : f32 [ 0.0 ]          # leading inset (units) for each child
+    public deflt    : f32 [ 320.0 ]        # size for a sized child with none saved
+    intern drag_id  : string
+    intern dseam    : array f32            # divider px positions, hit-test + draw
+
+    # sizes is a paired array [ id, px, ... ]; cast each key with `string [ ... ]`
+    # (an un-bracketed `string x` does not produce a comparable string).
+    func size_of [ id: string ] -> f32
+        if [ !sizes || !id ] return deflt
+        for [ i: i32 0, i + 1 < sizes.count, i += 2 ]
+            k : string [ sizes[ i ] ]
+            if [ k && k.compare[ id ] == 0 ]
+                fv : f32 [ sizes[ i + 1 ] ]
+                return (fv > 0.0) ? fv : deflt
+        return deflt
+
+    # store a size for a child id (update in place, else append the pair).
+    func set_size [ id: string, val: f32 ]
+        if [ !sizes ] sizes = array [ ]
+        for [ i: i32 0, i + 1 < sizes.count, i += 2 ]
+            k : string [ sizes[ i ] ]
+            if [ k && k.compare[ id ] == 0 ]
+                sizes[ i + 1 ] = val
+                return
+        sizes.push[ id ]
+        sizes.push[ val ]
+
+    func order [] -> array string
+        ids : array string [ ]
+        if [ kids ]
+            for [ ce: element, id: string ] in kids
+                ids.push[ id ]
+        return ids
+
+    # leftover for the flex (first) pane after the sized panes + divider gaps.
+    func flex_of [ ids: array string, span: f32 ] -> f32
+        sums : f32 [ 0.0 ]
+        for [ i: i32 1, i < ids.count, i += 1 ]
+            sums += size_of[ ids[ i ] ]
+        gaps : f32 [ f32[ ids.count - 1 ] * gap ]
+        f : f32 [ span - sums - gaps ]
+        return (f < 60.0) ? 60.0 : f
+
+    # position each child from its size (first = flex), leaving a `gap` between
+    # panes; the seam centers land in the gaps where draw[] paints the dividers.
+    func render [] -> Elements
+        if [ !kids ] return null
+        if [ !sizes ] sizes = array [ ]
+        ids : array string [ order[] ]
+        n   : i32 [ ids.count ]
+        if [ n == 0 ] return null
+        span : f32 [ (bounds) ? ((vertical) ? bounds.h : bounds.w) : 1200.0 ]
+        flex : f32 [ flex_of[ ids, span ] ]
+        ti   : string [ (inset > 0.0) ? '{inset}' : '0' ]
+        out  : Elements [ ]
+        dseam = array f32 [ ]
+        pos : f32 [ 0.0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            w  : f32 [ (i == 0) ? flex : size_of[ ids[ i ] ] ]
+            ch : element kids[ ids[ i ] ]
+            a0 : f32 [ pos ]
+            a1 : f32 [ pos + w ]
+            if [ vertical ]
+                ch.area = Region [ 'l0 t{a0}px r0 t{a1}px' ]
+            el
+                ch.area = Region [ 'l{a0}px t{ti} l{a1}px b0' ]
+            out[ ids[ i ] ] = ch
+            pos += w
+            if [ i < n - 1 ]
+                hg  : f32 [ gap * 0.5 ]
+                mid : f32 [ pos + hg ]
+                dseam.push[ mid ]
+                pos += gap
+        return out
+
+
+    # grab the divider (gap center) under the cursor; it fronts sized child i+1.
+    # capture the pointer so every following move routes here until release.
+    func on_press [ ev: Event ]
+        if [ !bounds || !dseam ] return
+        ids : array string [ order[] ]
+        at  : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
+        for [ di: i32 0, di < dseam.count, di += 1 ]
+            d : f32 [ dseam[ di ] ]
+            if [ at >= d - bar && at <= d + bar ]
+                if [ di + 1 < ids.count ] drag_id = ids[ di + 1 ]
+                ux.set_capture[ a ]
+                ev.no_default   = true
+                ev.no_propagation = true
+                return
+
+    # on_move fires while the cursor is in a Split gap (or captured mid-drag), so
+    # show the resize cursor here; on_leave clears it.
+    func on_move [ ev: Event ]
+        if [ !bounds ] return
+        ux.seam_cursor[ (vertical) ? 2 : 1 ]
+        if [ !drag_id ] return
+        ids  : array string [ order[] ]
+        span : f32 [ (vertical) ? bounds.h : bounds.w ]
+        at   : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
+        # dragged pane's fixed trailing edge = span - (sizes after) - (gaps after);
+        # its new size = trailing edge - cursor. the flex pane absorbs the rest.
+        kidx  : i32 [ -1 ]
+        after : f32 [ 0.0 ]
+        for [ i: i32 1, i < ids.count, i += 1 ]
+            if [ ids[ i ].compare[ drag_id ] == 0 ] kidx = i
+            el [ kidx >= 0 ] after += size_of[ ids[ i ] ]
+        if [ kidx < 0 ] return
+        gaps  : f32 [ f32[ ids.count - 1 - kidx ] * gap ]
+        trail : f32 [ span - after - gaps ]
+        sz    : f32 [ trail - at ]
+        if [ sz < 40.0 ] sz = 40.0
+        if [ sz > span - 60.0 ] sz = span - 60.0
+        set_size[ drag_id, sz ]
+        pristine        = false
+        ux.will_animate = true
+        ev.no_default   = true
+
+    func on_release [ ev: Event ]
+        if [ drag_id && drag_id.count > 0 ] ux.release_capture[ a ]
+        drag_id = ''
+
+    func on_leave [ ev: Event ]
+        if [ !drag_id ] ux.seam_cursor[ 0 ]
 
 element Control
     focusable : true

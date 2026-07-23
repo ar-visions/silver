@@ -249,6 +249,22 @@ none dbg_start(dbg debug) {
     }
 }
 
+// attach to an already-running pid (the in-pane app silver-host spawned). the app
+// self-stops (SILVER_DEBUG) just before init, so we attach here, the caller installs
+// breakpoints, then cont() resumes it — init breakpoints still arm.
+none dbg_attach(dbg debug, i32 pid) {
+    lldb::SBError      error;
+    lldb::SBAttachInfo attach_info((lldb::pid_t)pid);
+    S(debug)->process = S(debug)->target.Attach(attach_info, error);
+    if (!error.Success()) {
+        printf("dbg: attach pid=%i failed: %s\n", (i32)pid, error.GetCString());
+    } else {
+        printf("dbg: attached pid=%i\n", (i32)pid);
+        debug->running = true;
+        debug->active  = true;
+    }
+}
+
 none dbg_stop(dbg debug) {
     if (debug->active) {                   // alive = paused OR running (not just running)
         if (S(debug)->process.IsValid())
@@ -426,6 +442,34 @@ array dbg_read_statics  (dbg debug) {
     lldb::SBValueList args   = frame.GetVariables(
         false, false, true, false);
     return dbg_read_vars(debug, result, args);
+}
+
+// the full call stack of the selected thread: outermost first. each frame is the
+// function name plus its .ag source location (empty file for system frames).
+array dbg_read_frames   (dbg debug) {
+    array          result = new0(array, alloc, 32);
+    lldb::SBThread thread = S(debug)->process.GetSelectedThread();
+    if (!thread.IsValid()) return result;
+    uint32_t nf = thread.GetNumFrames();
+    for (uint32_t i = 0; i < nf; ++i) {
+        lldb::SBFrame frm = thread.GetFrameAtIndex(i);
+        if (!frm.IsValid()) continue;
+        const char* fn = frm.GetFunctionName();
+        string func_name = hold(f(string, "%s", fn ? fn : "?"));
+        lldb::SBLineEntry le = frm.GetLineEntry();
+        char fp[1024]; fp[0] = 0;
+        le.GetFileSpec().GetPath(fp, sizeof(fp));
+        path src = hold(f(path, "%s", fp));
+        u32  ln  = le.GetLine();
+        frame fr = new0(frame,
+            debug,     debug,
+            func_name, func_name,
+            source,    src,
+            line,      ln
+        );
+        array_qpush(result, (Au)hold(fr));
+    }
+    return result;
 }
 
 array dbg_read_globals  (dbg debug) {

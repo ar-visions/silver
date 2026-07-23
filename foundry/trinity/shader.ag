@@ -412,9 +412,15 @@ class shader
             ty: typeid[ a ]
             expect ty != typeid[ shader ], "shader requires a subclass"
             name = ty.ident
-        vert = 'shaders/{name}.vert'
-        frag = 'shaders/{name}.frag'
-        comp = 'shaders/{name}.comp'
+        # shaders live in the user app's cache dir (~/.cache/<app>/shaders),
+        # NOT the launch cwd — a hosted app's cwd is silver root / a share dir.
+        app : string 'silver'
+        se  : getenv[ 'SILVER_APP' ]
+        if [ se ] app = string [ se ]
+        sdir : '{path.path_cache[ app.chars ]}/shaders'
+        vert = '{sdir}/{name}.vert'
+        frag = '{sdir}/{name}.frag'
+        comp = '{sdir}/{name}.comp'
         if [ !vk.shader_cache ]
             vk.shader_cache = store[]
             vk.shader_cache.hold[]
@@ -1561,7 +1567,7 @@ func subdiv_merge_jw [ cur_j: @i32, cur_w: @f32, cont: @i32, ncont: i32, dst_j: 
 #   the rest  — averaged once on the CPU here (joints+weights merged)
 # returns the subdivided Gpu (external compute-fed vbo), or null to keep the
 # base mesh (odd triangle count / non-quad pairing / no POSITION first).
-func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: string ] -> Gpu
+func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: string, crease: array f32 ] -> Gpu
     levels : i32 [ m.subdiv ]
     vsz : i32 [ base.vertex_size ]
     vc  : i32 [ base.vertex_count ]
@@ -1609,7 +1615,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         nx : i64 [ 0 ]
         ny : i64 [ 0 ]
         nz : i64 [ 0 ]
-        if [ n_off >= 0 ]
+        if [ n_off >= 0 && !m.weld_pos_only ]
             nrm : @f32 [ ((@vdata[ v * vsz + n_off ]) to @f32) ]
             nx = i64[ round[ nrm[0] * 4.0 ] ]
             ny = i64[ round[ nrm[1] * 4.0 ] ]
@@ -1688,6 +1694,56 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
     # chain the level topologies; nt = output-mesh quads (for normals + index)
     topos : array SubdivTopo [ ]
     topos += subdiv_topo_from_quads[ tv, nf0, qcorn0, true ]
+    # authored creases (gltf extras, endpoint position pairs): mark
+    # matching edges with the boundary sentinel so they take the
+    # crease rule — the same math a hole rim gets. level 1 only.
+    if [ crease && crease.count >= 6 ]
+        tc0 : topos[ 0 ]
+        ncr : i32 [ i32[ crease.count ] / 6 ]
+        nmark : i32 [ 0 ]
+        for [ ci: i32 0, ci < ncr, ci += 1 ]
+            ax3 : i64 [ i64[ round[ crease[ ci*6 + 0 ] * 100000.0 ] ] ]
+            ay3 : i64 [ i64[ round[ crease[ ci*6 + 1 ] * 100000.0 ] ] ]
+            az3 : i64 [ i64[ round[ crease[ ci*6 + 2 ] * 100000.0 ] ] ]
+            bx3 : i64 [ i64[ round[ crease[ ci*6 + 3 ] * 100000.0 ] ] ]
+            by3 : i64 [ i64[ round[ crease[ ci*6 + 4 ] * 100000.0 ] ] ]
+            bz3 : i64 [ i64[ round[ crease[ ci*6 + 5 ] * 100000.0 ] ] ]
+            # all welded ids at each endpoint (normals split welds)
+            sa : local i32 [ 8 ]
+            sb : local i32 [ 8 ]
+            na2 : i32 [ 0 ]
+            nb2 : i32 [ 0 ]
+            for [ wv: i32 0, wv < tv, wv += 1 ]
+                if [ q6[wv*6] == ax3 && q6[wv*6+1] == ay3 && q6[wv*6+2] == az3 ]
+                    if [ na2 < 8 ]
+                        sa[ na2 ] = wv
+                        na2 += 1
+                if [ q6[wv*6] == bx3 && q6[wv*6+1] == by3 && q6[wv*6+2] == bz3 ]
+                    if [ nb2 < 8 ]
+                        sb[ nb2 ] = wv
+                        nb2 += 1
+            if [ na2 == 0 || nb2 == 0 ] continue
+            for [ ei: i32 0, ei < tc0.ne, ei += 1 ]
+                if [ tc0.edata[ ei*4 + 3 ] < 0 ] continue
+                e0 : i32 [ tc0.edata[ ei*4 + 0 ] ]
+                e1 : i32 [ tc0.edata[ ei*4 + 1 ] ]
+                m0a : bool [ false ]
+                m1b : bool [ false ]
+                m0b : bool [ false ]
+                m1a : bool [ false ]
+                for [ k2: i32 0, k2 < na2, k2 += 1 ]
+                    if [ sa[ k2 ] == e0 ] m0a = true
+                    if [ sa[ k2 ] == e1 ] m1a = true
+                for [ k2: i32 0, k2 < nb2, k2 += 1 ]
+                    if [ sb[ k2 ] == e0 ] m0b = true
+                    if [ sb[ k2 ] == e1 ] m1b = true
+                mtch : bool [ false ]
+                if [ m0a && m1b ] mtch = true
+                if [ m0b && m1a ] mtch = true
+                if [ mtch ]
+                    tc0.edata[ ei*4 + 3 ] = -1
+                    nmark += 1
+        if [ nmark > 0 ] puts 'subdiv: {name} creased edges marked={nmark}'
     for [ lv: i32 1, lv < levels, lv += 1 ]
         prev : topos[ lv - 1 ]
         topos += subdiv_next_topo[ prev, true ]
@@ -1916,6 +1972,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         cpipe.dispatch_x = (outv + 15) / 16
         cpipe.dispatch_y = 1
         cpipe.dispatch_z = 1
+        cpipe.run_once = m.subdiv_once
         cs.hold[]
         cpipe.hold[]
         m.pipelines.push[ cpipe ]
@@ -1939,6 +1996,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         npipe.dispatch_x = (nout + 15) / 16
         npipe.dispatch_y = 1
         npipe.dispatch_z = 1
+        npipe.run_once = m.subdiv_once
         ns.hold[]
         npipe.hold[]
         m.pipelines.push[ npipe ]
@@ -1951,7 +2009,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
     g.hold[]
     return g
 
-func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render_id: i32, transparent: bool ]
+func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: shader, render_id: i32, transparent: bool ]
     mdl:      m.id
     vk:       m.vk
     r:        m.r
@@ -2064,7 +2122,8 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, s: shader, render
         # generic GPU subdivision: replace the vbo with the compute-fed
         # subdivided one (falls back to the base mesh when pairing fails)
         if [ m.subdiv > 0 ]
-            sd_vbo : subdiv_build[ m, vbo, sems_of, render_id, name ]
+            crs : array f32 [ (msh && msh.extras) ? msh.extras.crease : null ]
+            sd_vbo : subdiv_build[ m, vbo, sems_of, render_id, name, crs ]
             if [ sd_vbo ] vbo = sd_vbo
 
         # the node's composed scene-graph WORLD transform (GltfModel.compute_worlds

@@ -291,6 +291,9 @@ class Primitive
 
 class MeshExtras
     public targetNames:     array string
+    # creased edges as endpoint position pairs (6 floats per edge,
+    # mesh-local gltf space) — gltf has no native crease concept
+    public crease:          array f32
 
 class Mesh
     public name:            string

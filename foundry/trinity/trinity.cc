@@ -281,7 +281,13 @@ extern "C" void host_log_setup(const char* name) {
     if (app && *app) name = app;
     char path[256];
     snprintf(path, sizeof(path), "/tmp/%s.log", name);
-    g_log_file = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    // hosted apps (spawned into a slot) APPEND: the supervisor already truncated the
+    // log and wrote the build output into it — the console tails this file, so
+    // truncating here would erase the compilation output. the primary app truncates.
+    const char* slot = getenv("SILVER_APP_SLOT");
+    int lflags = (slot && *slot) ? (O_WRONLY | O_CREAT | O_APPEND)
+                                 : (O_WRONLY | O_CREAT | O_TRUNC);
+    g_log_file = open(path, lflags, 0644);
     if (g_log_file < 0) return;
     int pf[2];
     if (pipe(pf) != 0) { close(g_log_file); g_log_file = -1; return; }

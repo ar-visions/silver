@@ -165,7 +165,10 @@ element EditorView
             fels['run'] = LButton [ icon: (app_running) ? 'stop' : 'play', selected: app_running, manual_mode: true ]
             if [ orb.err_file && orb.err_line > 0 ]
                 fels['error'] = Option [ label: 'error {orb.err_line}', manual_mode: true ]
-            fels['instruments'] = RButton [ icon: 'gear', selected: orb.show_instruments, manual_mode: true ]
+            smask : i32 [ 0 ]
+            if [ orb.show_instruments ] smask = smask | 1
+            if [ orb.show_variables ]   smask = smask | 2
+            fels['instruments'] = TButtons [ buttons: [ 'callstack', 'fields' ], manual: true, sel_mask: smask, area: Region { r0+ t0 w2.3 h0.9 } ]
             cf2 : Elements []
             # compact right-aligned filter chip — must NOT cover the terminal,
             # or clicks focus it and typing lands in its edit instead of the shell
@@ -173,8 +176,17 @@ element EditorView
             runcmd : string [ (ed_live && ed_live.run_view) ? ed_live.run_view.cmd : null ]
             bels : Elements []
             bels['tools']   = ToolsHeader [ spacing_x: 0.2, spacing_y: 0.2, topmost: true, elements: fels ]
-            bels['console'] = RunConsole [ session_id: 'ed:{emod}', sessions: orb.ed_sessions,
+            con : RunConsole [ session_id: 'ed:{emod}', sessions: orb.ed_sessions,
                 feed: null, run_line: runcmd, animated: true, elements: cf2 ]
+            # the console + any open debug panels share the band via a draggable Split:
+            # the console is the flex pane (first), each panel a saved-width pane after.
+            sp_kids : Elements [ ]
+            sp_kids['console'] = con
+            if [ orb.show_instruments ] sp_kids['callstack'] = Callstack [ frames: orb.debug_frames[] ]
+            if [ orb.show_variables ]   sp_kids['fields']    = Fields [ vars: orb.debug_vars ]
+            # one shared sizes map (the app owns it) so drags persist + serialize.
+            if [ !orb.dbg_sizes ] orb.dbg_sizes = array [ ]
+            bels['split'] = Split [ area: Region { l0 t1.3 r0 b0 }, sizes: orb.dbg_sizes, kids: sp_kids ]
             els['band'] = RunBand [ elements: bels ]
         return els
 
@@ -189,9 +201,7 @@ element EditorTitle
     tbar  : Layer [ fill_color: rgba [ '#2480' ], inner_glow: Glow [ '#8af2 26' ],
         stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
     tface : Layer [ label_color: rgba [ '#fff' ], label_size: 19, editable: true,
-        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 84.0, y: 0.0 ] ]
-    tfoc  : Layer [ states: State.focused, label_color: rgba [ '#ffff' ], label_size: 19, editable: true,
-        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 84.0, y: 0.0 ] ]
+        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 52.0, y: 0.0 ] ]
     tdiv  : Layer [ fill_color: rgba [ '#fff2' ], area: Region { l0 b0 r0 h1px } ]
 
 # orbiter's own nav icon button (the title-bar +/- chips): look declared here,
@@ -201,8 +211,15 @@ element EditorTitle
 # right-flows by default, a construction may anchor it anywhere with `area`.
 
 Option NavButton
-    quiet  : Layer [ fill_color: rgba [ '#216' ], radius: Radius [ '8' ], inner_glow: Glow [ '#ccf2 16' ] ]
-    hover  : Layer [ states: State.hovered,  fill_color: rgba [ '#327' ],    radius: Radius [ '8' ], inner_glow: Glow [ '#ccf6 20' ] ]
+    quiet  : Layer [ 
+		fill_color: rgba 	[ '#614' ],
+		radius: 	Radius 	[ '8' ],
+		inner_glow: Glow 	[ '#ccf2 16' ] ]
+    hover  : Layer [
+		states: 	State.hovered,
+		fill_color: rgba [ '#826' ],
+		radius: 	Radius [ '8' ],
+		inner_glow: Glow [ '#fcc6 20' ] ]
     press  : Layer [ states: State.pressed,  fill_color: rgba [ '#438' ],    radius: Radius [ '8' ], inner_glow: Glow [ '#ccf8 22' ] ]
     active : Layer [ states: State.selected, fill_color: rgba [ '#c8641e' ],  radius: Radius [ '8' ], inner_glow: Glow [ '#ffae5ea2 18' ] ]
 
@@ -232,7 +249,7 @@ element PatternField
 
 # findbar query input: sits where the title label normally is
 element FindField
-    area : Region { l2.7 t0 r20 b0 }
+    area : Region { l1.37 t0 r20 b0 }
     face : Layer [ label_color: rgba [ '#fff6' ], label_size: 19, editable: true,
         label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 0.0, y: 0.0 ] ]
     foc  : Layer [ states: State.focused, label_color: rgba [ '#ffff' ], label_size: 19, editable: true,
@@ -491,6 +508,9 @@ element orbiter : trinity # implements compiler
     # the last area string applied to each pane instance — areas assign only on
     # change so the instance's Region (and its seam bind state) persists
     intern pane_area_cur    : array string
+    # pane count the area cache was valid for — a removed+re-added pane comes back
+    # as a NEW element (class-default area), so the index-keyed cache is stale.
+    intern pane_area_ecount : i32
     public active_pane      : i32
     # per-pane navigation history (Cmd/Ctrl+Left/Right). runtime-only — never serialized
     # (save_states writes only tabs/target/breakpoints), so it starts empty each session.
@@ -509,9 +529,18 @@ element orbiter : trinity # implements compiler
     public ed_split         : f32 [ 8.0 ]
     # instruments panel (callstack + app view) covers the console when on
     public show_instruments : bool
+    # the variables panel — the other tab of the stack menu
+    public show_variables   : bool
+    # saved widths (px) for the run-band Split's sized panes, keyed by child id
+    # ('callstack'/'fields'); the console is the flex pane and has no entry.
+    public dbg_sizes        : array
     # last pane count we redistributed for — when editor_slots.count changes we reset
     # the seams to an equal division.
     intern last_ecount      : i32
+    # a pending redistribution: set on ANY count change, cleared only once the
+    # division actually runs (needs a laid-out pane for the real width). survives
+    # a fast add→remove→add so the seams don't get stranded at a deferred count.
+    intern splits_dirty     : bool
     public active_idx       : i32
     public config_side      : i32
     public active_panel  : string
@@ -534,8 +563,8 @@ element orbiter : trinity # implements compiler
     # the SHARED width of the dbg sub-column seam (draggable via @stack_w in CSS).
     # on/off is per-editor (Editor.dbg_open builds it); this is just how wide it is
     # when shown — non-zero so a freshly-opened panel has width. drag adjusts it.
-    public stack_w       : f32 [ 15.0 ]
-    public stack_w_user  : f32 [ 15.0 ]
+    public stack_w       : f32 [ 90.0 ]
+    public stack_w_user  : f32 [ 90.0 ]
     public filter_text   : string
     # finder search text typed into an editor title (magnify) when it has no file
     public find_text     : string
@@ -1233,13 +1262,15 @@ element orbiter : trinity # implements compiler
                 fmt_spawn[ fw ]
                 fw.kicked = true
 
-    # the current debug callstack (placeholder frames until lldb GetFrames() is
-    # wired through the running session).
+    # the current debug callstack: the paused session's real lldb frames, else empty.
     func debug_frames [] -> array Frame
-        fr : array Frame [ alloc: 8 ]
-        fr.push[ Frame [ func_name: 'main',         file: path '{startup_path}/src/silver.c', line: 8870 ] ]
-        fr.push[ Frame [ func_name: 'silver_build', file: path '{startup_path}/src/silver.c', line: 5281 ] ]
-        fr.push[ Frame [ func_name: 'aether_emit',  file: path '{startup_path}/src/aether.c', line: 8610 ] ]
+        fr : array Frame [ ]
+        dv : dbg active_debugger[]
+        if [ !dv ] return fr
+        dfr : array dv.read_frames[]
+        if [ !dfr ] return fr
+        for [ df: frame ] in dfr
+            fr.push[ Frame [ func_name: df.func_name, file: df.source, line: i32[ df.line ] ] ]
         return fr
 
     # the launch command for a console tab: its instance's `run` tokens joined
@@ -1534,6 +1565,34 @@ element orbiter : trinity # implements compiler
         sync_breakpoints[ d ]
         d.start[]
 
+    # attach lldb to an in-pane app that silver-host spawned and self-stopped before
+    # init. resolve its binary, attach to the live pid, install breakpoints while it's
+    # parked, then continue — init breakpoints arm because no app code has run yet.
+    func attach_appview [ av: AppView, pid: i32 ]
+        if [ av.attached ] return
+        av.attached = true
+        mod : string av.app_mod
+        if [ !mod || mod.count == 0 ] return
+        loc : path
+        ps  : string '{startup_path}/install/build/{mod}'
+        l   : path [ ps.chars ]
+        if [ l.exists[] ] loc = l
+        if [ !loc ]
+            ps2 : string '{startup_path}/platform/native/build/{mod}'
+            l2  : path [ ps2.chars ]
+            if [ l2.exists[] ] loc = l2
+        if [ !loc ]
+            puts 'attach_appview: no binary for {mod}'
+            return
+        if [ !debuggers ] debuggers = map dbg [string] []
+        d : dbg [ location: loc, target: a, auto_start: false ]
+        debuggers[ mod ] = d
+        active_target = mod
+        d.attach[ pid ]
+        sync_breakpoints[ d ]
+        d.cont[]
+        puts 'attach_appview: attached {mod} pid={pid}'
+
     # install every app-global breakpoint into a dbg session's target. keys are
     # "absolute/source:line" — split on the LAST ':' (linux paths have no ':'), the
     # value is the condition (empty = plain). the for yields value-then-key.
@@ -1682,8 +1741,7 @@ element orbiter : trinity # implements compiler
         # [f] alternates find-in-file(s) vs the filename finder.
         browse_open : bool [ menu_open && nav_showing ]
         engaged : bool [ browse_open || fb_on || tfoc ]
-        if [ engaged ]
-            els['title_close'] = LButton [ icon: 'close', manual_mode: true ]
+        # no close chip — Escape closes the finder
         if [ engaged && !is_resource ]
             els['magnify'] = LButton [ icon: 'magnify', selected: fb_on, manual_mode: true ]
 
@@ -1694,10 +1752,16 @@ element orbiter : trinity # implements compiler
         # the tab's own buttons lead: same slot on every pane, whatever it holds.
         # actions, not toggles — without manual_mode an Option latches its own
         # selected state on click and stays lit (NavButton paints that orange).
-        if [ editor_slots.count < 4 ]
-            els['dock'] = RButton [ icon: 'expand2', manual_mode: true ]
-        if [ editor_slots.count > 1 ]
-            els['undock'] = RButton [ icon: 'collapse2', manual_mode: true ]
+        # the +/- pane controls as ONE grouped pill: collapse2 (-) removes, expand2
+        # (+) adds. TButtons emits the clicked segment's id, routed below like the
+        # old separate buttons were.
+        tnav : array string [ ]
+        if [ editor_slots.count > 1 ] tnav.push[ 'undock' ]
+        if [ editor_slots.count < 4 ] tnav.push[ 'dock' ]
+        if [ tnav.count == 2 ]
+            els['tabnav'] = TButtons [ buttons: tnav, manual: true, area: Region { r0+ t0 w2.3 h0.9 } ]
+        el [ tnav.count == 1 ]
+            els['tabnav'] = TButtons [ buttons: tnav, manual: true, area: Region { r0+ t0 w1.15 h0.9 } ]
 
         # pins/grid toggles belong to the browse index only — right after the
         # tab buttons, so the folder sits left of the +/- pair.
@@ -2221,8 +2285,13 @@ element orbiter : trinity # implements compiler
         # area width is real. on the count-change frame the new pane isn't laid out
         # yet (ew is the 100.0 fallback), so seating the seams then squashes the last
         # pane (~80/20); defer until have_ew so the division lands on the true width.
-        if [ n != last_ecount && have_ew ]
-            last_ecount = n
+        # mark a redistribution pending on ANY count change (even if we can't do it
+        # yet), so a fast add→remove→add can't leave last_ecount stranded and skip it.
+        if [ n != last_ecount ]
+            last_ecount  = n
+            splits_dirty = true
+        if [ splits_dirty && have_ew ]
+            splits_dirty = false
             if [ n >= 2 ] split1 = ew * 1.0 / f32[ n ]
             if [ n >= 3 ] split2 = ew * 2.0 / f32[ n ]
             if [ n >= 4 ] split3 = ew * 3.0 / f32[ n ]
@@ -2613,9 +2682,9 @@ element orbiter : trinity # implements compiler
         sprintf[str, "%04i", n]
         return str
 
-    # live inspector: trinity hands us {file,line} hits for a cmd-clicked element — the
-    # matching CSS blocks (cmd+click) or the element's declaration site (cmd+shift+click,
-    # element_mode). either way, open the source so orbiter inspects its own UI.
+    # live inspector: trinity hands us {file,line} for a ctrl/cmd-clicked element —
+    # the element's own construction site (Au header source:line). open it so orbiter
+    # inspects its own UI where the look is stated in the .ag.
     public func on_inspect [ hits: array StyleHit ]
         if [ !hits || hits.count == 0 ] return
         h : StyleHit hits[ 0 ]
@@ -2760,9 +2829,11 @@ element orbiter : trinity # implements compiler
                     start_debug[ active_target ]
             ev.no_default = true
             return
-        if [ ev.target.id == 'instruments' ]
+        if [ ev.target.id == 'callstack' ]
             show_instruments = !show_instruments
-            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        if [ ev.target.id == 'fields' ]
+            show_variables = !show_variables
             return
         puts 'on_press: {ev.target.id}'
         for [ i: i32 0, i < open_files.count, i += 1 ]
@@ -2943,6 +3014,15 @@ element orbiter : trinity # implements compiler
                 if [ e.id && e.id.count >= 5 && e.id.mid[ 0, 4 ] == 'pane' ]
                     pi : i32 [ e.id.mid[ 4, e.id.count - 4 ].real_value[] ]
                     if [ editor_slots.count > 1 && pi >= 0 && pi < editor_slots.count ]
+                        # stop this pane's running app / resource view (spectra mp3,
+                        # an emulator's audio) before dropping the slot, else it keeps
+                        # playing after the tab is gone.
+                        pe : Editor pane_at[ pi ]
+                        puts 'UNDOCK pe={(pe) ? 1 : 0} run_view={(pe && pe.run_view) ? 1 : 0} rview={(pe && pe.rview) ? 1 : 0}'
+                        if [ pe && pe.run_view ] pe.toggle_app_run[]
+                        if [ pe && pe.rview ]
+                            pe.rview.release*[]
+                            pe.rview = null
                         editor_slots.remove[ pi ]
                         if [ pi < pane_console.count ] pane_console.remove[ pi ]
                         if [ active_pane >= editor_slots.count ] active_pane = editor_slots.count - 1
@@ -3286,7 +3366,14 @@ element orbiter : trinity # implements compiler
         # paint-hosted dispatch (the old TermLayer run_line path) never fires.
         for [ pi2: i32 0, pi2 < editor_slots.count, pi2 += 1 ]
             edp : Editor pane_at[ pi2 ]
-            if [ !edp || !edp.run_view || !edp.run_view.cmd ] continue
+            if [ !edp || !edp.run_view ] continue
+            # the in-pane app self-stopped before init (SILVER_DEBUG); once silver-host
+            # reports its pid, attach lldb + arm breakpoints, then continue it.
+            av : AppView edp.run_view
+            if [ !av.attached && av.slot >= 0 ]
+                apid : i32 [ host_app_pid[ av.slot ] ]
+                if [ apid > 0 ] attach_appview[ av, apid ]
+            if [ !edp.run_view.cmd ] continue
             if [ edp.run_view.dispatched ] continue
             edp.run_view.dispatched = true
             efn : string edp.src.filename[]
@@ -3334,6 +3421,11 @@ element orbiter : trinity # implements compiler
         # own bottom console uses) — a pure-console pane must use THAT map
         if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
         editor_els : Elements []
+        # any pane-count change may have re-created pane elements with the class
+        # default area — drop the index-keyed cache so every pane re-applies.
+        if [ pane_area_ecount != editor_slots.count ]
+            pane_area_ecount = editor_slots.count
+            pane_area_cur    = array string []
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             pid  : 'pane{i}'
             editor_els[pid] = EditorView [ pane_index: i, selected: (sp == pid) ]
@@ -3341,7 +3433,10 @@ element orbiter : trinity # implements compiler
             # persists across frames so its seam binds keep their eased motion
             want : pane_area[ i ]
             pin  : element (elements) ? elements[pid] : null
-            if [ pin && (i >= pane_area_cur.count || pane_area_cur[i] != want) ]
+            # apply when the string changed OR the element has no area yet — a
+            # pane re-created on a count change comes back area-less, and the
+            # index-keyed cache would otherwise skip it (all panes stack at l0).
+            if [ pin && (!pin.area || i >= pane_area_cur.count || pane_area_cur[i] != want) ]
                 while [ pane_area_cur.count <= i ]
                     pane_area_cur += ''
                 pane_area_cur[i] = want

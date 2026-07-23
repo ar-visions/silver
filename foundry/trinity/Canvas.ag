@@ -133,6 +133,7 @@ shader CanvasUI
     mutable stroke_color : vec4f
     mutable params     : vec4f     # stroke_width, opacity, blur, mode
     mutable grad0      : vec4f     # Gradient endpoints / tex rect
+    mutable mask_uv    : vec4f     # mask tex rect (its own content/capacity)
     mutable grad_c0    : vec4f     # Gradient stop color 0
     mutable grad_c1    : vec4f     # Gradient stop color 1
     # stroke options: (join, cap, miter_limit, reserved)
@@ -389,10 +390,11 @@ shader CanvasUI
         // mask texture. mask.r = keep factor (white = full, black = fade out).
         // both sampled with the same uv so the mask aligns 1:1 with content.
         if (mode == 8.0) {{
-            vec2 uv    = (lpos - ubo.rect.xy) / ubo.rect.zw;
-            uv         = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
+            vec2 uv_rect = (lpos - ubo.rect.xy) / ubo.rect.zw;
+            vec2 uv    = mix(ubo.grad0.xy,   ubo.grad0.zw,   uv_rect);
+            vec2 uv_m  = mix(ubo.mask_uv.xy, ubo.mask_uv.zw, uv_rect);
             vec4 texel = texture(image, uv);
-            float m    = texture(mask, uv).r;
+            float m    = texture(mask, uv_m).r;
             float aa   = 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = texel * m * aa * opacity;
             return;
@@ -1198,6 +1200,7 @@ Render Canvas
     public  content_w     : i32
     public  content_h     : i32
     mutable image_uv      : vec4f
+    mutable mask_uv       : vec4f
     # opt-in 64px capacity quantization (see resize). only per-element CACHE
     # canvases set this — the main compose/screen/glyph canvases present to the
     # swapchain and must stay exactly window-sized.
@@ -1288,6 +1291,7 @@ Render Canvas
         width       = i32[ width  * cs ]
         height      = i32[ height * cs ]
         image_uv    = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+        mask_uv     = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
         VK : vk
         ui_shader = CanvasUI [ vk: vk ]
         # R32F + STORAGE_BIT so the compute shader can imageStore distances
@@ -2376,15 +2380,21 @@ Render Canvas
         mtex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
         mask_override  = mtex
-        # crop to content (src and mask share the uv; both should be sized alike).
+        # image + mask each crop to their OWN content/capacity — their textures
+        # can quantize to different widths, so a shared uv reads past the mask.
         ss  : f32 [ (src.w.scale > 0) ? src.w.scale : 1.0 ]
         uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
         uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
+        ms  : f32 [ (mask_src.w.scale > 0) ? mask_src.w.scale : 1.0 ]
+        muvx : f32 [ (mask_src.width  > 0) ? f32[ mask_src.content_w ] * ms / f32[ mask_src.width  ] : 1.0 ]
+        muvy : f32 [ (mask_src.height > 0) ? f32[ mask_src.content_h ] * ms / f32[ mask_src.height ] : 1.0 ]
         image_uv = vec4f [ 0.0, 0.0, uvx, uvy ]
+        mask_uv  = vec4f [ 0.0, 0.0, muvx, muvy ]
         path.clear[]
         path.add_rect[ x, y, rw, rh ]
         paint[]
         image_uv = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+        mask_uv  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
         image_override = null
         mask_override  = null
         if [ models ]
@@ -2585,7 +2595,10 @@ Render Canvas
             ui_shader.fill_color = st.fill_color
             # for an image blit (draw_canvas), grad0 is the texture UV rect — crop to
             # the source's content region; image_uv is (0,0,1,1) for normal fills.
-            ui_shader.grad0  = image_uv
+            ui_shader.grad0   = image_uv
+            # mask has its OWN uv — its capacity may quantize differently than the
+            # source's, so sharing grad0 samples past the mask content into padding.
+            ui_shader.mask_uv = mask_uv
             # fill + stroke gradients: same model as the compute path — world-space
             # anchors in *_grad_pts, second color in grad_c1/stroke_grad_c1 (alpha 0
             # disables), mode (linear/mirror/radial) in stroke_opts.z/.w.

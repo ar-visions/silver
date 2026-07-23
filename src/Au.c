@@ -4309,6 +4309,7 @@ item map_lookup(map m, Au k) {
         for (item i = m->first; i; i = i->next)
             if (i->h == h && (m->hash_only || au_key_compare(i->key, k) == 0))
                 return i;
+        return null;
     }
     item* hlist = m->hlist;
     Au_t k_type = isa(k);

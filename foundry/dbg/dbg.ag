@@ -21,6 +21,13 @@ class variable
     # editor-side: this node is expanded into its child rows in the inline tree view.
     public  expanded : bool
 
+# one call-stack frame (read_frames): the function plus its source location.
+class frame
+    intern  debug     : dbg
+    public  func_name : string
+    public  source    : path
+    public  line      : u32
+
 # delivered to on_exit when the inferior terminates.
 class exited
     intern  debug : dbg
@@ -74,9 +81,11 @@ class dbg
     func pause              [ ]
     func cont               [ ]
     func start              [ ]
+    func attach             [ pid: i32 ]
     func stop               [ ]
     func read_arguments     [ ] -> array
     func read_locals        [ ] -> array
+    func read_frames        [ ] -> array
     func read_statics       [ ] -> array
     func read_globals       [ ] -> array
     func read_registers     [ ] -> array
