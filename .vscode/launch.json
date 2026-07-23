@@ -401,7 +401,6 @@
             "name":       "silver / orbiter",
             "type":       "lldb",
             "request":    "launch",
-            "preLaunchTask": "build-silver-ninja",
             "program":    "${workspaceFolder}/install/bin/silver",
             "args":     [ "${workspaceFolder}/../orbiter/orbiter" ],
             "cwd":        "/src/silver",

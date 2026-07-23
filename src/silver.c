@@ -1273,6 +1273,23 @@ void silver_write_fmt(silver a, array toks) {
 }
 
 // run a live app by default (build+run when invoked directly). recovers is_live for
+// compile silver-host.c into build_dir/name (the live-app launcher binary) and
+// return that path. never cached — recompiled every build so a host source edit
+// (silver-host.c) always takes. callers own their own guard + symlink/live_binary.
+static path build_silver_host(silver a) {
+    path host_src = f(path, "%s/src/silver-host.c", SILVER);
+    path host_dst = f(path, "%o/%o", a->build_dir, a->name);
+    verify(file_exists("%o", host_src), "silver-host.c not found at %o", host_src);
+#ifdef __APPLE__
+    cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lglfw3 -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
+#else
+    cstr host_libs = "-ldl -lglfw3 -lX11 -lm";
+#endif
+    vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"'",
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
+    return host_dst;
+}
+
 // CACHED builds — the host binary (build_dir/name) persists from a prior build, so a
 // fully-cached `silver <app>` still runs instead of silently building and exiting.
 // execvp replaces this process; returns only when there's nothing to run (library /
@@ -1421,16 +1438,40 @@ void silver_init(silver a) {
     // release for optimized testing (which needs release cores present anyway)
     if (!a->is_external && !(a->release && a->test)) {
         path stamp = f(path, "%o/.active-config", a->install);
+        // explicit --release/--debug flips the config; else adopt.
+        // writing the stamp re-epochs every product (mtime compare)
+        bool  cfg_explicit = false;
+        bool  cfg_release  = false;
+        cstrs av   = au_argv();
+        int   stop = au_argv_stop();
+        for (int i = 1; av && av[i] && (stop <= 0 || i < stop); i++) {
+            if (strcmp(av[i], "--release") == 0) { cfg_explicit = true; cfg_release = true;  }
+            if (strcmp(av[i], "--debug")   == 0) { cfg_explicit = true; cfg_release = false; }
+        }
+        char sbuf[512] = { 0 };
         if (file_exists("%o", stamp)) {
-            char sbuf[512] = { 0 };
             FILE* sf = fopen(stamp->chars, "r");
             if (sf) {
                 fgets(sbuf, sizeof(sbuf), sf);
                 fclose(sf);
-                bool core_release = strstr(sbuf, "release") != NULL;
-                a->release = core_release;
-                a->debug   = !core_release;
             }
+        }
+        bool core_release = strstr(sbuf, "release") != NULL;
+        if (cfg_explicit) {
+            a->release = cfg_release;
+            a->debug   = !cfg_release;
+            if (!sbuf[0] || core_release != cfg_release) {
+                FILE* sf = fopen(stamp->chars, "w");
+                if (sf) {
+                    fputs(cfg_release ? "release\n" : "debug\n", sf);
+                    fclose(sf);
+                    printf("config switch: %s (module products re-epoch)\n",
+                        cfg_release ? "release" : "debug");
+                }
+            }
+        } else if (sbuf[0]) {
+            a->release = core_release;
+            a->debug   = !core_release;
         }
     }
     string n = string("test44");
@@ -1646,18 +1687,9 @@ void silver_init(silver a) {
         // main, so never build the host for it (it would overwrite the real exe).
         // recompiled (never cached) for live apps, matching the gated build below.
         if (((aether)a)->is_live) {
-            path host_src = f(path, "%s/src/silver-host.c", SILVER);
             path host_dst = f(path, "%o/%o", a->build_dir, a->name);
-            if (file_exists("%o", host_src) && file_exists("%o", host_dst)) {
-                printf("silver-host: %s -> %s\n", host_src->chars, host_dst->chars);
-#ifdef __APPLE__
-                cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lglfw3 -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
-#else
-                cstr host_libs = "-ldl -lglfw3 -lX11 -lm";
-#endif
-                vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"'",
-                    SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
-            }
+            if (file_exists("%o", host_dst))
+                build_silver_host(a);
         }
         // cached build still runs by default (recovers is_live from the host binary)
         silver_live_run(a);
@@ -6100,17 +6132,7 @@ none silver_build_product(silver a) {
 
     // for live_app modules: compile the host launcher as the app binary (never cached)
     if (((aether)a)->is_live) {
-        path host_src = f(path, "%s/src/silver-host.c", SILVER);
-        path host_dst = f(path, "%o/%o", a->build_dir, a->name);
-        verify(file_exists("%o", host_src), "silver-host.c not found at %o", host_src);
-        printf("silver-host: %s -> %s\n", host_src->chars, host_dst->chars);
-#ifdef __APPLE__
-        cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lglfw3 -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
-#else
-        cstr host_libs = "-ldl -lglfw3 -lX11 -lm";
-#endif
-        vexec(a->verbose, "silver-host", "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -DSILVER_ROOT='\"%s\"'",
-            SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER);
+        path host_dst = build_silver_host(a);
         a->live_binary = hold(host_dst);
         // symlink install/bin/<name> -> the built host binary, so the app runs
         // by name and dbg/lldb find it (the binary itself stays in build/)
