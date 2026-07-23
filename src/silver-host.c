@@ -18,6 +18,8 @@
 
 extern char** environ;
 
+static void symbolize_crash_log(const char* appname);
+
 // ---- app hosting channel -----------------------------------------------------
 // ONE anonymous memfd (RAM-backed shared memory, no filesystem name, no
 // socket, no file — EVER) created by this process and inherited by every
@@ -191,11 +193,20 @@ static void spawn_slot_app(int k, const char* bindir) {
     // "module [default-arg]": the arg (a document path) rides the spawn argv
     char* arg = strchr(name, ' ');
     if (arg) { *arg = 0; arg++; }
+    // leading '!' on the module = debug: the app self-stops before init (below)
+    // so orbiter can attach lldb + arm breakpoints (incl. init), then continue.
+    int   dbg = (name[0] == '!');
+    char* nm  = dbg ? name + 1 : name;
     // app binaries live beside this supervisor binary (one products dir)
     char bin[4300];
-    snprintf(bin, sizeof(bin), "%s/%s", bindir, name);
+    snprintf(bin, sizeof(bin), "%s/%s", bindir, nm);
+    // fresh app log for this run; the app APPENDS (host_log_setup honors the slot),
+    // so the build output below + the app's runtime both land here for the console.
+    { char lp[256]; snprintf(lp, sizeof(lp), "/tmp/%s.log", nm);
+      int lfd = open(lp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (lfd >= 0) close(lfd); }
     struct stat st;
-    if (stat(bin, &st) != 0 && rebuild_blocking(name) != 0) {
+    if (stat(bin, &st) != 0 && rebuild_blocking(nm) != 0) {
         fprintf(stderr, "silver-host: %s build failed — slot %d dead\n", name, k);
         ap->state = 3;
         return;
@@ -210,11 +221,12 @@ static void spawn_slot_app(int k, const char* bindir) {
     snprintf(slotenv, sizeof(slotenv), "SILVER_APP_SLOT=%d", k);
     int n = 0;
     while (environ[n]) n++;
-    char** cenv = malloc((n + 3) * sizeof(char*));
+    char** cenv = malloc((n + 4) * sizeof(char*));
     memcpy(cenv, environ, n * sizeof(char*));
     cenv[n]     = fdenv;
     cenv[n + 1] = slotenv;
-    cenv[n + 2] = NULL;
+    cenv[n + 2] = dbg ? (char*)"SILVER_DEBUG=1" : NULL;
+    cenv[n + 3] = NULL;
     pid_t pid = 0;
     int rc = posix_spawn(&pid, bin, &fa, NULL, cargv, cenv);
     posix_spawn_file_actions_destroy(&fa);
@@ -351,6 +363,7 @@ static int supervise_wait(int argc, char** argv, const char* appname,
                 WTERMSIG(st), strsignal(WTERMSIG(st)));
             fprintf(stderr, "silver-host: app died: %s — loading %s\n",
                 msg, ISOLATE_SHELL);
+            symbolize_crash_log(appname);
             slots_shutdown();
             setenv(ISOLATE_APP_ENV, appname, 1);
             setenv(ISOLATE_STATUS_ENV, msg, 1);
@@ -408,6 +421,7 @@ static void isolate_reap(void) {
         snprintf(msg, sizeof(msg), "exit %d", WEXITSTATUS(st));
     fprintf(stderr, "silver-host: isolated app died: %s\n", msg);
     setenv(ISOLATE_STATUS_ENV, msg, 1);
+    if (WIFSIGNALED(st)) symbolize_crash_log(getenv(ISOLATE_APP_ENV));
 }
 
 static void crash_handler(int sig) {
@@ -433,14 +447,79 @@ static void crash_handler(int sig) {
     int lf = open(lp, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (lf >= 0) {
         (void)write(lf, hdr, (size_t)hl);
-        backtrace_symbols_fd(frames, nframes, lf);
+        // module-relative addresses for the supervisor's addr2line
+        // pass (return addrs -1 so lines point AT the call site)
+        for (int i = 0; i < nframes; i++) {
+            Dl_info di;
+            if (dladdr(frames[i], &di) && di.dli_fname && di.dli_fbase) {
+                unsigned long off =
+                    (unsigned long)((char*)frames[i] - (char*)di.dli_fbase);
+                if (i > 0 && off > 0) off -= 1;
+                char fl[600];
+                int  fn = snprintf(fl, sizeof(fl), "  @ %s +0x%lx\n",
+                    di.dli_fname, off);
+                if (fn > 0) (void)write(lf, fl, (size_t)fn);
+            }
+        }
         fsync(lf);
         close(lf);
     }
     (void)write(STDERR_FILENO, hdr, (size_t)hl);
-    backtrace_symbols_fd(frames, nframes, STDERR_FILENO);
     signal(sig, SIG_DFL);
     raise(sig);
+}
+
+// resolve the "  @ module +0xoff" frames the crash handler left in
+// /tmp/<app>.log to file:line (addr2line reads the module's DWARF);
+// runs in the supervisor AFTER the child died — popen is safe here
+static void symbolize_crash_log(const char* appname) {
+    if (!appname || !*appname) return;
+    char lp[256];
+    snprintf(lp, sizeof(lp), "/tmp/%s.log", appname);
+    FILE* f = fopen(lp, "r");
+    if (!f) return;
+    char          line[1024];
+    static char   mods[64][512];
+    unsigned long offs[64];
+    int           n = 0;
+    while (fgets(line, sizeof(line), f)) {
+        // a new crash header restarts collection: keep the LAST block
+        if (strstr(line, ": signal ")) n = 0;
+        char          m[512];
+        unsigned long o;
+        if (sscanf(line, "  @ %511s +0x%lx", m, &o) == 2 && n < 64) {
+            snprintf(mods[n], sizeof(mods[n]), "%s", m);
+            offs[n] = o;
+            n++;
+        }
+    }
+    fclose(f);
+    if (!n) return;
+    FILE* out = fopen(lp, "a");
+    if (out) fprintf(out, "\nsymbolized:\n");
+    fprintf(stderr, "silver-host: symbolized crash:\n");
+    for (int i = 0; i < n; i++) {
+        char cmd[700];
+        snprintf(cmd, sizeof(cmd),
+            "addr2line -e '%s' -f -C -p 0x%lx 2>/dev/null", mods[i], offs[i]);
+        char  res[1024] = { 0 };
+        FILE* p = popen(cmd, "r");
+        if (p) {
+            if (!fgets(res, sizeof(res), p)) res[0] = 0;
+            pclose(p);
+        }
+        res[strcspn(res, "\n")] = 0;
+        const char* base = strrchr(mods[i], '/');
+        base = base ? base + 1 : mods[i];
+        if (res[0]) {
+            fprintf(stderr, "  %s\n", res);
+            if (out) fprintf(out, "  %s\n", res);
+        } else {
+            fprintf(stderr, "  %s +0x%lx\n", base, offs[i]);
+            if (out) fprintf(out, "  %s +0x%lx\n", base, offs[i]);
+        }
+    }
+    if (out) fclose(out);
 }
 
 // NON-fatal backtrace on SIGUSR2: `kill -USR2 <pid>` dumps where the process
@@ -553,8 +632,22 @@ static pid_t rebuild_spawn(const char* name) {
     snprintf(cmd, sizeof(cmd),
         "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build",
         name);
-    fprintf(stdout, "%s: source changed — rebuilding (app keeps running)\n", name);
-    fflush(stdout);
+    // send the compile output to the app's OWN log so orbiter's console (which tails
+    // /tmp/<app>.log) shows the compilation. spawn_slot_app truncated it beforehand,
+    // and the app appends (host_log_setup) so build + runtime share the one file.
+    char lp[256];
+    snprintf(lp, sizeof(lp), "/tmp/%s.log", name);
+    { int hfd = open(lp, O_WRONLY | O_CREAT | O_APPEND, 0644);
+      if (hfd >= 0) {
+          char h[300];
+          int hl = snprintf(h, sizeof(h), "%s: compiling...\n", name);
+          if (hl > 0) (void)write(hfd, h, (size_t)hl);
+          close(hfd);
+      } }
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_addopen(&fa, 1, lp, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    posix_spawn_file_actions_adddup2(&fa, 1, 2);
     // posix_spawn, NOT system(): system() fork()s, and this host is a multithreaded
     // GUI process (MoltenVK / libdispatch / GLFW). fork() from a multithreaded process
     // copies only the calling thread but inherits locks held by the others — the child
@@ -562,7 +655,8 @@ static pid_t rebuild_spawn(const char* name) {
     // posix_spawn execs without running user code in the child, so it can't deadlock.
     char* sh_argv[] = { "/bin/sh", "-c", cmd, NULL };
     pid_t pid = 0;
-    int sp = posix_spawn(&pid, "/bin/sh", NULL, NULL, sh_argv, environ);
+    int sp = posix_spawn(&pid, "/bin/sh", &fa, NULL, sh_argv, environ);
+    posix_spawn_file_actions_destroy(&fa);
     if (sp != 0) {
         fprintf(stderr, "%s: BUILD ERROR — posix_spawn failed: %s\n", name, strerror(sp));
         return -1;
@@ -640,7 +734,11 @@ int main(int argc, char** argv) {
         int exit_code = 0;
         int r = supervise_wait(argc, argv, name, bindir, &exit_code);
         if (r == 0) return exit_code;
-        if (r > 0)  name = ISOLATE_SHELL;
+        if (r > 0) {
+            // orbiter IS the crash shell — it must not relaunch itself
+            if (strcmp(name, ISOLATE_SHELL) == 0) return exit_code ? exit_code : 1;
+            name = ISOLATE_SHELL;
+        }
         // r < 0: isolation unavailable — run the app in-process below
     } else if (strcmp(name, ISOLATE_SHELL) == 0) {
         // an unsupervised orbiter start is just the IDE: no inherited agent
@@ -757,6 +855,12 @@ int main(int argc, char** argv) {
     frame_fn   do_frame   = dlsym(handle, FRAME_SYM);
     destroy_fn do_destroy = dlsym(handle, DESTROY_SYM);
     stash_args(handle, argc, argv);
+    // debug launch: park HERE, before any app code, so orbiter can attach lldb and
+    // arm breakpoints (including in init) before continuing us (SIGCONT).
+    if (getenv("SILVER_DEBUG")) {
+        fprintf(stderr, "silver-host: SILVER_DEBUG — pid %d stopped before init for attach\n", (int)getpid());
+        raise(SIGSTOP);
+    }
     if (do_init) do_init();
 
     time_t last_mtime = file_mtime(product);

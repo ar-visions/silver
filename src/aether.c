@@ -9263,8 +9263,8 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
         return false;
     }
     verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll), &err), "print-to-module: %s (path: %s)", err ? err : "unknown", cstring(*ll));
-    printf("wrote %s\n", cstring(*ll));
-    fflush(stdout);
+    //printf("wrote %s\n", cstring(*ll));
+    //fflush(stdout);
     if (LLVMWriteBitcodeToFile(a->module_ref, cstring(*bc)) != 0)
         fault("LLVMWriteBitcodeToFile failed");
     validation_error  = LLVMVerifyModule(a->module_ref, LLVMReturnStatusAction, &err);
