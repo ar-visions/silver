@@ -301,7 +301,10 @@ abstract live_app media_app
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            #puts 'PERF fps={frames} draw={vk.draw_us} syncs={vk.sync_calls} syncus={vk.sync_us} bindus={vk.bindres_us} rallocs={vk.render_allocs} resize={vk.resize_us} rcalls={vk.resize_calls} paints={vk.paint_calls} samplers={vk.sampler_count}'
+            puts 'PERF fps={frames} draw={vk.draw_us} syncs={vk.sync_calls} syncus={vk.sync_us} bindus={vk.bindres_us} rallocs={vk.render_allocs} resize={vk.resize_us} rcalls={vk.resize_calls} paints={vk.paint_calls} samplers={vk.sampler_count}'
+            puts 'SAMP rcolor={vk.samp_rcolor} sdf={vk.samp_sdf} svg={vk.samp_svg} band={vk.samp_band} line={vk.samp_line} cons={vk.samp_cons} flist={vk.samp_flist} atlas={vk.samp_atlas} other={vk.samp_other}'
+            puts 'PIPES {vk.pipe_draws} paints={vk.paint_calls} fps={frames}'
+            vk.pipe_draws   = 0
             vk.resize_us    = 0
             vk.resize_calls = 0
             frames = 0
@@ -561,27 +564,6 @@ class CursorPos
     public y : f32
     public h : f32
 
-# a draggable layout seam — a bound coord's edge. mem/app is the app field a drag
-# writes (via member_ref); axis 0 = x (l/r → horizontal drag), 1 = y (t/b → vertical);
-# sign +1 for left/top anchors, -1 for right/bottom; fc = px-per-unit at that edge.
-class BindSeam
-    public mem  : Au_t
-    public app  : Au
-    public axis : i32
-    public sign : f32
-    public fc   : f32
-    # px clamp (from the coord) + the parent extent along the axis, so the drag
-    # can clamp the value: collapse floor = max/fc, full = (span - min)/fc.
-    public min       : f32
-    public max       : f32
-    public span      : f32
-    public has_range : bool
-    # optional companion field `<varname>_user`: the last NON-snapped (open)
-    # position. updated on open drags, left alone when the drag snaps to collapse,
-    # so the app can restore the user's real size after a collapse.
-    public user_mem  : Au_t
-
-
 Display Window
     mutable app_object          : element*
     # orbiter overlay: NO socket, NO file, NO copies. both sides render into
@@ -676,21 +658,12 @@ Display Window
     # within the time window AND near the previous one sets ev.mouse.double_click.
     mutable last_click_us       : i64
     mutable last_click_pos      : vec2f
-    # layout-seam drag: seam_hover = bound edge under the cursor this hit-test;
-    # seam_drag = the one being dragged; start_m/v = mouse axis + var at drag start
-    mutable seam_hover          : BindSeam
-    mutable seam_hl             : rect
-    # draw the hover/drag seam band — debug-only now (seams are grabbable without it)
-    public  seam_debug          : bool
     # the app's OWN stdout lands in-window as an element-less overlay
     # (prints still reach the real terminal); off by default — opt in per app
     public  stdout_overlay      : bool [ false ]
     public  stdout_y            : f32 [ 10.0 ]  # overlay top offset, app-tunable
     mutable so_lines            : array string
     mutable so_last             : i64
-    mutable seam_drag           : BindSeam
-    mutable seam_start_m        : f32
-    mutable seam_start_v        : f32
     mutable t_apply_args        : i64
     mutable t_apply_style       : i64
     mutable t_render            : i64
@@ -752,28 +725,22 @@ Display Window
                 if [ strcmp[ member.ident, "elements" ] == 0 ] continue
                 if [ strcmp[ member.ident, "label" ] == 0 ] continue
                 if [ strcmp[ member.ident, "edit" ] == 0 ] continue
-                if [ inst.id == 'play' && strcmp[ member.ident, 'selected' ] == 0 ]
-                    ibits : @u64 [ inst.AF_bits[] ]
-                    ebits : @u64 [ e.AF_bits[] ]
-                    #puts 'PLAY af: af_index={member.af_index} member_index={member.member_index} af_e={e.AF_get_member[member]} af_inst={inst.AF_get_member[member]} e_w0={ebits[0]} e_w1={ebits[1]} i_w0={ibits[0]} i_w1={ibits[1]}'
                 if [ !e.AF_get_member[ member ] ] continue
                 cur : inst.member_object[ member ]
                 nv  : e.member_object[ member ]
-                # area carries live seam state (eased drag position). the template's
-                # fresh area would reset it every frame, so carry it forward and keep
-                # the persistent instance's Region — the seam survives + stays draggable.
-                if [ strcmp[ member.ident, "area" ] == 0 && cur && nv ]
-                    ir : Region cast Region [ inst.member_object[ member ] ]
-                    er : Region cast Region [ e.member_object[ member ] ]
-                    if [ ir && er && (ir.bind_l || ir.bind_t || ir.bind_r || ir.bind_b) ]
-                        er.inherit_seams[ ir ]
                 # a change is: presence flipped, OR both present and unequal. a false/0
-                # value boxes as null, so a false→true flip is cur=null, nv=non-null —
-                # the old `cur.compare[nv]` then ran compare on a null cur and missed it
-                # (left manual_mode :selected styles, e.g. the play↔stop icon, stale).
-                if [ (!cur) != (!nv) || ((cur && nv) && cur.compare[ nv ] != 0) ]
+                # value boxes as null, so a false→true flip is cur=null, nv=non-null.
+                # compare* dispatches the VALUE compare of the runtime type — the
+                # static Au compare memcmps object headers, which differ for every
+                # fresh template value and forced a copy + repaint EVERY frame.
+                if [ (!cur) != (!nv) || ((cur && nv) && cur.compare*[ nv ] != 0) ]
                     inst.member_set[ member, nv ]
                     changed = true
+                    # an icon prop lands NOW: re-resolve the icon layer at
+                    # application time — render is after the fact and too late
+                    if [ strcmp[ member.ident, "icon" ] == 0 ]
+                        bb : Button [ inst inherits Button ]
+                        if [ bb ] bb.sync_icon[]
         return changed
 
     
@@ -1074,6 +1041,7 @@ Display Window
                 if [ !instance.id ]
                     brand_new = true # component within element map
                 el [ typeid[instance] != typeid[e] ]
+                    instance.teardown_canvases[]
                     parent.elements.rm[ id ]
                     instance = null
 
@@ -1085,6 +1053,10 @@ Display Window
                     win.test_element = e
                 
                 new_inst         = true
+                ndbg : handle [ fopen[ "/tmp/spl.txt", "a" ] ]
+                if [ ndbg ]
+                    fputs[ 'NEW {id} parent={parent.id}\n', ndbg ]
+                    fclose[ ndbg ]
                 instance         = (instance) ? instance : e.hold[]
                 instance.restyle = true
                 instance.id      = id
@@ -1133,12 +1105,6 @@ Display Window
                 if [ args_changed ] instance.pristine = false
                 changed = args_changed || instance.restyle || force
                 instance.restyle = false
-                if [ instance.id == 'play' ]
-                    op2  : Option instance
-                    et2  : Option e
-                    isel : bool [ op2->selected ]
-                    tsel : bool [ et2->selected ]
-                    #puts 'PLAY upd: args_changed={args_changed} force={force} changed={changed} inst.selected={isel} tmpl.selected={tsel}'
 
             new_first  : bool [ child_pos == 0 ]
             new_last   : bool [ child_pos == total_rendered - 1 ]
@@ -1219,6 +1185,10 @@ Display Window
             retry = false
             for [ e:element, id:string ] in parent.elements
                 if [ e.flags & 1 ]
+                    udbg : handle [ fopen[ "/tmp/spl.txt", "a" ] ]
+                    if [ udbg ]
+                        fputs[ 'UNMOUNT {id} parent={parent.id}\n', udbg ]
+                        fclose[ udbg ]
                     e.flags  = 0
                     retry    = true
                     # input refs pointing into the dropped subtree must clear —
@@ -1236,6 +1206,7 @@ Display Window
                             capture = null
                             break
                     e.parent = null
+                    e.teardown_canvases[]
                     e.drop_members[]
                     parent.elements.rm[ id ]
                     break
@@ -1376,26 +1347,6 @@ Display Window
             focus.restyle = true
             focus = null
 
-    # build a seam descriptor for a child's bound coord edge (app field via member_ref)
-    func make_seam [ bc: BindCoord, c: element, axis: i32, sign: f32 ] -> BindSeam
-        if [ !bc || !c.ux || !c.ux.app_object ] return null
-        ap : Au c.ux.app_object
-        m  : find_member[ typeid[ ap ], bc.varname.chars, AU_MEMBER_VAR, 0, true ]
-        if [ !m ] return null
-        # optional `<varname>_user` companion that records the last open position.
-        un : bc.varname + '_user'
-        um : find_member[ typeid[ ap ], un.chars, AU_MEMBER_VAR, 0, true ]
-        # parent extent along the drag axis (px), for clamping the seam travel.
-        sp : f32 [ (c.parent && c.parent.bounds) ?
-            ( (axis == 1) ? c.parent.bounds.h : c.parent.bounds.w ) :
-            ( (axis == 1) ? height : width ) ]
-        # use the parent's px-per-unit (the seam's coordinate space), matching the
-        # clamp in tick_binds — so a drag-snap collapses to the same floor the layout
-        # renders at, regardless of this element's own font.
-        sfc : f32 [ (c.parent && c.parent.fc > 0.0) ? c.parent.fc : c.fc ]
-        return BindSeam [ mem: m, app: ap, axis: axis, sign: sign, fc: sfc,
-            min: bc.min, max: bc.max, span: sp, has_range: bc.has_range, user_mem: um ]
-
     # show the OS resize cursor over a seam: kind 0=arrow, 1=horizontal (x-axis
     # seam), 2=vertical (y-axis seam). standard cursors are created on first use
     # and cached; cursor_kind skips redundant glfwSetCursor calls.
@@ -1412,37 +1363,6 @@ Display Window
             glfwSetCursor[ g, cursor_vresize ]
         el
             glfwSetCursor[ g, null ]
-
-    # is the mouse (in this child's coordinate space) on a bound edge's 6px inset
-    # slider band? bands run from the edge INTO the control (the embedded-on-edges
-    # model — no centered origin). sets seam_hover when hit.
-    func seam_check [ c: element, mx: f32, my: f32 ]
-        if [ !c.area ] return
-        if [ !(c.area.bind_l || c.area.bind_t || c.area.bind_r || c.area.bind_b) ] return
-        b : rect c.bounds
-        # a collapsed / sub-band-width child can't host the 6px grab band — skip it, else
-        # its phantom seam sits at the edge over the scrollbar, shows the <-> resize
-        # cursor, and steals the press across that strip (can't drag a 0-width panel).
-        if [ b.w < 6.0 || b.h < 6.0 ] return
-        # band is the slot's element edge; drag sign follows the coord's ANCHOR
-        # (bottom/right-anchored offsets shrink as the mouse moves toward them).
-        if      [ c.area.bind_t && mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + 6.0 ]
-            seam_hover = make_seam[ c.area.bind_t, c, 1, (c.area.t.y_type == YAlign.bottom) ? -1.0 : 1.0 ]
-            seam_hl    = rect [ x: b.x, y: b.y, w: b.w, h: 6.0 ]
-        el [ c.area.bind_b && mx >= b.x && mx <= b.x + b.w && my >= b.y + b.h - 6.0 && my <= b.y + b.h ]
-            seam_hover = make_seam[ c.area.bind_b, c, 1, (c.area.b.y_type == YAlign.bottom) ? -1.0 : 1.0 ]
-            seam_hl    = rect [ x: b.x, y: b.y + b.h - 6.0, w: b.w, h: 6.0 ]
-        el [ c.area.bind_l && my >= b.y && my <= b.y + b.h && mx >= b.x && mx <= b.x + 6.0 ]
-            seam_hover = make_seam[ c.area.bind_l, c, 0, (c.area.l.x_type == XAlign.right) ? -1.0 : 1.0 ]
-            seam_hl    = rect [ x: b.x, y: b.y, w: 6.0, h: b.h ]
-        el [ c.area.bind_r && my >= b.y && my <= b.y + b.h && mx >= b.x + b.w - 6.0 && mx <= b.x + b.w ]
-            # a visible vertical scrollbar lives on this right edge and its grab zone owns
-            # the strip — so the seam is off-limits on this side (drag it from the
-            # neighbor's edge instead). otherwise the <-> cursor steals the scrollbar.
-            has_vscroll : bool [ c.content_h > 0.0 && b.h < c.content_h && c.layers && c.layers['scrollbar'] != null ]
-            if [ !has_vscroll ]
-                seam_hover = make_seam[ c.area.bind_r, c, 0, (c.area.r.x_type == XAlign.right) ? -1.0 : 1.0 ]
-                seam_hl    = rect [ x: b.x + b.w - 6.0, y: b.y, w: 6.0, h: b.h ]
 
     public func find_target [ e: element, ev: Event, must: element ] -> element
         # fully-transparent elements are hidden — ignore them (and their
@@ -1469,12 +1389,6 @@ Display Window
         fy : f32 [ ly + e.scroll.y ]
         ev.mouse.pos.x = fx
         ev.mouse.pos.y = fy
-
-        # seam detection: a child's bound edge is a draggable slider. mouse and
-        # child.bounds are both in THIS element's local space here, so the inset
-        # band test is in the right relative coordinate space.
-        for [ sc: element, scid: string ] in e.elements
-            seam_check[ sc, ev.mouse.pos.x, ev.mouse.pos.y ]
 
         # hit-test in REVERSE of paint order: children are painted first→last
         # (later draws on top), so the topmost-drawn sibling must be tested
@@ -1524,7 +1438,25 @@ Display Window
                     l.on_char[ ev ]
                     break
 
+    # mark the whole tree for repaint — for global-state flips (shift) that
+    # gate layers without any element's own state changing.
+    func dirty_tree [ e: element* ]
+        if [ !e ] return
+        e.pristine = false
+        if [ e.elements ]
+            for [ ce: element, ck: string ] in e.elements
+                dirty_tree[ ce ]
+
     public func key_event [ ev: Event ]
+        # track the GLOBAL shift state before any consumer can return — layers
+        # with State.shifted repaint on the flip. bare shift presses carry the
+        # key code (340 left / 344 right), not always the mod bit.
+        s2 : bool [ ev.key.shift ]
+        if [ ev.key.unicode == 340 || ev.key.unicode == 344 ] s2 = (ev.key.state) ? true : false
+        if [ shift != s2 ]
+            shift = s2
+            if [ root ] dirty_tree[ root ]
+            will_animate = true
         ev.target = focus
         if [ focus && focus.on_key*[ ev ] ] return
         # esc while dictating CANCELS the take — nothing submits
@@ -1567,42 +1499,9 @@ Display Window
     # chain, the app sees it; finally window's default handler runs (focus
     # transfer, capture, pressed/hovered bookkeeping) regardless of consume.
     public func move_event [ ev: Event ]
-        # active seam drag: write the app var from the mouse delta (px / fc → units,
-        # signed by the anchor). next layout reflows; skip normal hover/move.
-        if [ seam_drag ]
-            seam_cursor[ (seam_drag.axis == 0) ? 1 : 2 ]
-            cur : f32 [ (seam_drag.axis == 0) ? ev.mouse.pos.x : ev.mouse.pos.y ]
-            sc  : f32 [ (seam_drag.fc > 0.0) ? seam_drag.fc : 1.0 ]
-            dp  : @f32 [ seam_drag.app.member_ref[ seam_drag.mem ] ]
-            v   : f32 [ seam_start_v + (cur - seam_start_m) / sc * seam_drag.sign ]
-            # snap travel to the coord's px range: far-side floor (collapse) =
-            # max/fc, near-side limit (full) = (span - min)/fc. magnetic — drag
-            # within (or past) the snap radius of an end and it jumps to that
-            # detent, so the bottom collapses (editor appears higher) and the
-            # top fills, instead of overshooting.
-            if [ seam_drag.has_range ]
-                lo   : f32 [ seam_drag.max / sc ]
-                hi   : f32 [ (seam_drag.span - seam_drag.min) / sc ]
-                snap : f32 [ 1.5 ]
-                if [ v < lo + snap ] v = lo
-                if [ hi > lo && v > hi - snap ] v = hi
-            dp[0] = v
-            # NOTE: user_mem (the restore position) is recorded on release, NOT
-            # per-move — otherwise dragging toward a collapse leaves it at the last
-            # near-snap value instead of the user's real open size.
-            # will_animate (NOT restyle): bind_value eases the active position and
-            # draw_element repaints the moved controls (pristine=false) each frame.
-            # restyle here would re-run the whole stylesheet per mouse event (the
-            # 155→20fps cap + the void banding from incomplete per-event repaints).
-            will_animate = true
-            return
-        seam_hover = null
-        seam_hl    = rect[]
         orig_pos : vec2f [ ev.mouse.pos ]
         f : find_target[ root, ev, null ]
         ev.origin = f
-        # resize cursor while hovering a seam band (find_target set seam_hover)
-        seam_cursor[ (seam_hover) ? ((seam_hover.axis == 0) ? 1 : 2) : 0 ]
         # find_target folded the leaf-local mouse pos into ev.mouse.pos; keep it for the
         # move bubble (which unwinds it per level like press_event). re-fold to the
         # capture target when one is held.
@@ -1709,8 +1608,6 @@ Display Window
             ev.mouse.double_click = (last_click_us > 0) && (now - last_click_us) < 350000 && (dx * dx + dy * dy) <= 36.0
             last_click_us  = now
             last_click_pos = world_m
-        seam_hover = null
-        seam_hl    = rect[]
         f : find_target[ root, ev, null ]
         ev.origin = f
         # live inspector (cmd/ctrl held): jump to the element's construction site.
@@ -1726,14 +1623,6 @@ Display Window
             # (a button/tab) must NOT also process the press.
             ev.no_propagation = true
             ev.no_default     = true
-            return
-        # a bound seam under the cursor wins the press: start a drag instead of
-        # pressing an element. the seam writes its app var as the mouse moves.
-        if [ seam_hover ]
-            seam_drag    = seam_hover
-            seam_start_m = (seam_hover.axis == 0) ? world_m.x : world_m.y
-            sp : @f32 [ seam_hover.app.member_ref[ seam_hover.mem ] ]
-            seam_start_v = sp[0]
             return
         element_pos : vec2f [ ev.mouse.pos ]
         # element bubble. element* gives poly dispatch so subclasses
@@ -1783,19 +1672,6 @@ Display Window
             context_pressed = f
 
     public func release_event [ ev: Event ]
-        # end an active seam drag; don't dispatch a release to elements
-        if [ seam_drag ]
-            # record the settled OPEN position as the restore point — but skip a
-            # collapse snap (value at the floor), so a later restore returns to the
-            # real size, not the near-snap value the drag ended on.
-            if [ seam_drag.user_mem && seam_drag.fc > 0.0 ]
-                dp    : @f32 [ seam_drag.app.member_ref[ seam_drag.mem ] ]
-                lo    : f32 [ seam_drag.max / seam_drag.fc ]
-                if [ dp[0] > lo + 0.5 ]
-                    up : @f32 [ seam_drag.app.member_ref[ seam_drag.user_mem ] ]
-                    up[0] = dp[0]
-            seam_drag = null
-            return
         f : find_target[ root, ev, capture ]
         ev.origin = f
         same_i : bool [ action_pressed == f ]
@@ -2012,8 +1888,6 @@ Display Window
         # null root (trap in layout_element).
         update_all      [ app_render[] ]
         animate         [ ]
-        # advance every seam's eased active ONCE here, before the layout pass reads it.
-        tick_binds      [ root ]
         if [ !compose ] return
         # UI bounds + paint now live entirely in on_screen (layout_element then
         # draw_element); the compose canvas is no longer part of that path. kept below
@@ -2030,10 +1904,10 @@ Display Window
         if [ !screen ] return
         vk.defer_tick[]
         if [ resizing ] return
-        # while a seam/split is being dragged, every canvas drains each paint (no batched
-        # ring) so the per-frame composites can't desync their per-slot UBO/UV. set from the
-        # live drag state each frame so it always clears the moment the drag ends.
-        vk.sync_paints = bool[ seam_drag ]
+        # while a Splitter divider is being dragged, every canvas drains each paint (no
+        # batched ring) so the per-frame composites can't desync their per-slot UBO/UV.
+        # set from the live capture each frame so it clears the moment the drag ends.
+        vk.sync_paints = bool[ capture && (capture inherits Splitter) ]
         screen.save[]
 
         app_object.on_canvas*[ screen ]
@@ -2047,12 +1921,6 @@ Display Window
 
         # app overlays paint OVER the tree (on_canvas paints under it)
         app_object.on_overlay*[ screen ]
-
-        # highlight the hovered/dragged layout seam band — debug-only overlay
-        if [ seam_debug && seam_hl && seam_hl.w > 0.0 && seam_hl.h > 0.0 ]
-            screen.fill_color[ '#ffcc00cc' ]
-            screen.rect_to[ seam_hl.x, seam_hl.y, seam_hl.w, seam_hl.h ]
-            screen.paint[]
 
         # own stdout, element-less: the app's prints stack at the top
         # left, newest last; the box fades out after a quiet stretch.
@@ -2317,15 +2185,6 @@ Display Window
         # rule is applied by rectangle when console_units is set below.
         e.fc = 1.0
         rel : rect [ x: 0, y: 0, w: f32 aw, h: f32 ah ]
-        # resolve bound coords (`<axis>@var=default`, e.g. the editor split seams)
-        # against the live app object, same as the vk path — without this the panes
-        # ignore split1/split2 and never fill the console window.
-        if [ e.ux && e.ux.app_object && e.area ]
-            app_obj : Au e.ux.app_object
-            if [ e.area.bind_l ] e.area.l.offset = bind_value[ e.area.bind_l, app_obj, f32 aw, 1.0 ]
-            if [ e.area.bind_t ] e.area.t.offset = bind_value[ e.area.bind_t, app_obj, f32 ah, 1.0 ]
-            if [ e.area.bind_r ] e.area.r.offset = bind_value[ e.area.bind_r, app_obj, f32 aw, 1.0 ]
-            if [ e.area.bind_b ] e.area.b.offset = bind_value[ e.area.bind_b, app_obj, f32 ah, 1.0 ]
         b : e.area.rectangle[ rel, null, null, 1.0, true, 0.0, 0.0 ]
         bw : i32 [ i32 b.w ]
         bh : i32 [ i32 b.h ]
@@ -2815,7 +2674,6 @@ Display Window
         # build / reconcile the element tree + advance animation (no Canvas)
         update_all[ app_render[] ]
         animate[]
-        if [ root ] tick_binds[ root ]
 
         # fill the grid with spaces (default color), then stamp the tree
         n : i32 [ cols * rows ]
@@ -2897,7 +2755,6 @@ Display Window
         width  = cols
         height = rows
         update_all[ app_render[] ]
-        if [ root ] tick_binds[ root ]
         n : i32 [ cols * rows ]
         grid : new i32 [ n ]
         colg : new i32 [ n ]
@@ -2935,111 +2792,7 @@ Display Window
         width  = w0
         height = h0
         update_all[ app_render[] ]
-        if [ root ] tick_binds[ root ]
         return res
-
-    # resolve a bound coord against the app object: read the named f32 field via
-    # member_ref (the app object is the only scope — never the element/parent).
-    # a missing field falls back to the coord's inline default.
-    # READ-ONLY accessor used during layout — called in BOTH the compose and screen
-    # tree walks. it returns the eased ACTIVE position only; it must NOT advance the
-    # filter here. if it did, active would step once per walk (twice per frame) and
-    # the cache content (composed at one active) would be blitted into a rect sized
-    # from a further-stepped active — a per-frame scale distortion on the moving edge
-    # that grows with the filter rate. the ease is advanced exactly once per frame by
-    # tick_binds, before any walk, so both walks read the same settled value.
-    func bind_value [ b: BindCoord, app_obj: Au, span: f32, fc: f32 ] -> f32
-        if [ !b ] return 0.0
-        if [ !b.has_active ] return b.dflt
-        return b.active
-
-    # advance ONE bound coord's eased active toward its goal. called once per frame
-    # by tick_binds, before on_compose draws. `v` is the GOAL (where drag/toggle put
-    # the seam); active is filtered toward it. clamps the app var into the style's
-    # range (`|min|max`, px) and writes the clamped goal back so the var never holds
-    # an out-of-range value. `moving` is set on any frame active changed (incl. the
-    # snap frame) so draw_element repaints the edge and the loop keeps animating until
-    # it settles.
-    func bind_advance [ b: BindCoord, app_obj: Au, span: f32, fc: f32 ]
-        if [ !b || !app_obj ] return
-        m : find_member[ typeid[ app_obj ], b.varname.chars, AU_MEMBER_VAR, 0, true ]
-        if [ !m ] return
-        p : @f32 [ app_obj.member_ref[ m ] ]
-        v : f32 [ p[0] ]
-        # text mode: the range min/max are px values that don't divide down at fc=1,
-        # so the px-range clamp would corrupt the value (e.g. force console_h up to
-        # 50). take the app var directly, no clamp and no easing — a grid has no
-        # sub-frame animation to settle anyway.
-        if [ text_mode ]
-            b.active     = v
-            b.has_active = true
-            b.moving     = false
-            return
-        if [ b.has_range && fc > 0.0 && span > 0.0 ]
-            lo : f32 [ b.max / fc ]
-            hi : f32 [ (span - b.min) / fc ]
-            if [ v < lo ] v = lo
-            if [ hi > lo && v > hi ] v = hi
-            # magnetic detents — same radius as the seam drag (move_event): a value
-            # within `snp` of an end resolves TO that end. this makes a stored seam
-            # position that was near a detent (e.g. a collapsed console) reproduce the
-            # collapse on load without needing a fresh drag to re-snap it.
-            snp : f32 [ 1.5 ]
-            if [ v < lo + snp ] v = lo
-            if [ hi > lo && v > hi - snp ] v = hi
-            # clamp/snap the DISPLAY (active eases toward this), but do NOT write back
-            # into the app var: early frames use a default fc (font not loaded yet) whose
-            # floor (max/fc) is wrong, and writing it back permanently corrupts the
-            # stored/saved seam position. the seam drag already keeps the var in range.
-        if [ !b.has_active ]
-            b.active     = v
-            b.has_active = true
-            b.moving     = false
-        el [ !b.warmed ]
-            # load warm-up: snap the display straight to the goal (no ease) while the
-            # font/fc is still settling, so the seam shows already-positioned. mark
-            # warmed once it stops moving — from then on, eases normally (drag/toggle).
-            d : f32 [ v - b.active ]
-            b.active = v
-            b.moving = d != 0.0
-            if [ !b.moving ] b.warmed = true
-        el
-            d : f32 [ v - b.active ]
-            if [ d != 0.0 ]
-                b.moving = true
-                if [ d < 0.02 && d > -0.02 ]
-                    b.active = v
-                el
-                    b.active = filter_n[ b.active, v, 0.28, frame_factor ]
-                    #b.active = b.active * 0.7 + v * 0.3
-            el
-                b.moving = false
-        if [ b.moving ] will_animate = true
-
-    # advance every bound coord in the element tree once per frame (see bind_advance),
-    # before on_compose draws. uses the parent's last-laid-out bounds for the clamp
-    # span — fine, that only keeps the goal in range. recurses the whole tree.
-    func tick_binds [ e: element* ]
-        if [ !e ] return
-        if [ e.ux && e.ux.app_object && e.area ]
-            app_obj : Au e.ux.app_object
-            rel_w : f32 [ (e.parent && e.parent.bounds) ? e.parent.bounds.w : width ]
-            rel_h : f32 [ (e.parent && e.parent.bounds) ? e.parent.bounds.h : height ]
-            # bound coords are LAYOUT seams shared by siblings — clamp them in the
-            # PARENT's px-per-unit, not the element's own font-derived fc. two binders
-            # of one seam (e.g. console_h: the editor group + the console pane) have
-            # different fonts; using each one's own fc gives them conflicting collapse
-            # floors (max/fc), and the early-frame default (fc=22, before the font
-            # loads) bakes a wrong floor into the saved value. the parent fc is stable
-            # (laid out first) and identical for both, so the floor agrees with render.
-            fcv   : f32 [ (e.parent && e.parent.fc > 0.0) ? e.parent.fc : ((e.fc > 0.0) ? e.fc : 22.0) ]
-            if [ e.area.bind_l ] bind_advance[ e.area.bind_l, app_obj, rel_w, fcv ]
-            if [ e.area.bind_t ] bind_advance[ e.area.bind_t, app_obj, rel_h, fcv ]
-            if [ e.area.bind_r ] bind_advance[ e.area.bind_r, app_obj, rel_w, fcv ]
-            if [ e.area.bind_b ] bind_advance[ e.area.bind_b, app_obj, rel_h, fcv ]
-        if [ e.elements ]
-            for [ ce: element, ck: string ] in e.elements
-                tick_binds[ ce ]
 
     # LAYOUT pass — compute e.bounds for the whole tree BEFORE any painting. the
     # paint walk (draw_element) reads e.bounds (its own, its parent's via rel, its
@@ -3077,20 +2830,6 @@ Display Window
             e.area = Region [ 0.0 ]
 
         if [!e.bounds] e.bounds = rect[]
-
-        # resolve any bound coords (`r[varname:default]`) against the app object so
-        # the live variable drives layout — read each frame, so a drag reflows.
-        if [ e.ux && e.ux.app_object && e.area ]
-            app_obj : Au e.ux.app_object
-            if [ e.area.bind_l ] e.area.l.offset = bind_value[ e.area.bind_l, app_obj, rel.w, e.fc ]
-            if [ e.area.bind_t ] e.area.t.offset = bind_value[ e.area.bind_t, app_obj, rel.h, e.fc ]
-            if [ e.area.bind_r ] e.area.r.offset = bind_value[ e.area.bind_r, app_obj, rel.w, e.fc ]
-            if [ e.area.bind_b ] e.area.b.offset = bind_value[ e.area.bind_b, app_obj, rel.h, e.fc ]
-            # a bound coord still easing → this control's box moved: repaint it and
-            # keep the loop animating until it settles (the goal/active diff hits 0).
-            if [ (e.area.bind_l && e.area.bind_l.moving) || (e.area.bind_t && e.area.bind_t.moving) || (e.area.bind_r && e.area.bind_r.moving) || (e.area.bind_b && e.area.bind_b.moving) ]
-                e.pristine   = false
-                will_animate = true
 
         spx : f32 [ (e.use_spacing && e.parent) ? e.parent.spacing_x * e.fc : 0.0 ]
         spy : f32 [ (e.use_spacing && e.parent) ? e.parent.spacing_y * e.fc : 0.0 ]
@@ -3228,6 +2967,8 @@ Display Window
         draw_stage = stage
         expect e inherits element, 'e is not an element'
         if [ e.hide ] return
+        # unmounted (parent nulled) — ghost paints recreated freed textures
+        if [ !e.parent && e != root ] return
         # select target canvas directly. (was: new Canvas[2] [screen,compose]
         # then index — that per-call vector dropped its elements on teardown
         # without holding them on init, underflowing screen/compose to 0.)
@@ -3318,6 +3059,9 @@ Display Window
             cv.translate[ -pivot_x, -pivot_y ]
 
         redraw : bool [ e.volatile || e.animated || !e.pristine || stage == CanvasType.compose ]
+        if [ redraw ]
+            peid : string [ (e.id && e.id.count > 0) ? e.id : '(noid)' ]
+            puts 'PAINT {peid} stage={i32[stage]} vol={e.volatile} anim={e.animated} pr={e.pristine}'
         # DIAG: log every element that re-rasterizes its layers (text) this frame into its
         # cache — during a resize the cache is invalidated (pristine=false) per frame, so
         # this fires continuously and proves the text is being re-rendered on every drag step.
@@ -3351,6 +3095,8 @@ Display Window
         if [ e.odd       ] e_mask += i32[ State.odd ]
         if [ e.even      ] e_mask += i32[ State.even ]
         if [ e.has_value ] e_mask += i32[ State.has_value ]
+        # global keyboard shift — every element sees it; layers opt in
+        if [ shift     ] e_mask += i32[ State.shifted ]
         # selected lives on Option (not element) — fold it in typed
         eopt : Option [ e inherits Option ]
         if [ eopt->selected ] e_mask += i32[ State.selected ]
@@ -4036,11 +3782,19 @@ element TButtons
     func ensure_items []
         if [ !buttons ] return
         if [ items && items.count == buttons.count ] return
+        if [ svgs ]
+            for [ sm: SVGModel ] in svgs
+                if [ sm.cache ] sm.cache.teardown_gpu[]
         items = array string [ ]
         svgs  = array SVGModel [ ]
         for [ i: i32 0, i < buttons.count, i += 1 ]
             items.push[ buttons[ i ] ]
             if [ icons ] svgs.push[ SVGModel [ 'images/{buttons[ i ]}.svg' ] ]
+
+    public func on_teardown [ ]
+        if [ svgs ]
+            for [ sm: SVGModel ] in svgs
+                if [ sm.cache ] sm.cache.teardown_gpu[]
 
     # segment index under the cursor, or -1 outside the strip.
     func seg_at [ ev: Event ] -> i32
@@ -4153,50 +3907,65 @@ element TButtons
         drag_ix  = -1
         dragging = false
 
-# a draggable multi-pane splitter. children come via `elements` in insertion
-# order. the FIRST child is the flex pane — it takes all leftover space. every
-# other child has a saved pixel size in `sizes`, keyed by its child id (so it
-# persists), and a draggable divider on its leading edge. horizontal by default;
-# `vertical` stacks top→bottom. this replaces the Region @seam binding: the sizes
-# live HERE on the persistent instance, so nothing depends on per-frame area binds.
-element Split
+# a draggable multi-pane layout manager. children come via `kids` in insertion
+# order. the FIRST child is the flex pane — it takes all leftover space; every
+# other child has a target size in `sizes`, keyed by its child id (app-owned so
+# drags persist), and a draggable divider on its leading edge. displayed sizes
+# ease toward their targets with filter_n, so drags, adds and removes glide.
+# paints ONLY a 1 pixel divider line per gap, colored by `line_color`.
+element Splitter
     animated : true
     # children come via `kids` (NOT `elements`): apply_args skips `elements`, so a
     # toggled-in child would never reach the persistent instance; `kids` propagates
     # on change. render positions them and returns them as the real `elements`.
-    public kids     : map element [ string ]
-    public vertical : bool
+    public kids       : map element [ string ]
+    public vertical   : bool
     # sizes is a paired array [ id, px, id, px, ... ] — NOT a map: Au map iteration
     # misses entries in small maps (per CLAUDE.md). stride-2 lookup instead.
-    public sizes    : array
-    public bar      : f32 [ 8.0 ]          # divider grab half-width px
-    public gap      : f32 [ 8.0 ]          # visible gap between panes (holds divider)
-    public inset    : f32 [ 0.0 ]          # leading inset (units) for each child
-    public deflt    : f32 [ 320.0 ]        # size for a sized child with none saved
-    intern drag_id  : string
-    intern dseam    : array f32            # divider px positions, hit-test + draw
+    public sizes      : array
+    public line_color : rgba [ '#fff2' ]     # the 1px divider line
+    public bar        : f32 [ 6.0 ]          # divider grab half-width px
+    public gap        : f32 [ 1.0 ]          # panes sit flush; the line IS the gap
+    public inset      : f32 [ 0.0 ]          # leading inset (units) for each child
+    public deflt      : f32 [ 320.0 ]        # unsaved-size fallback; 0 = even share
+    public even       : bool                 # count change resets to even shares
+    # a drag well below the minimum snaps the pane's size to 0 — the user forced
+    # it OFF. the app owns what that means: it sees the 0 in `sizes` and closes
+    # the pane (drops the kid, flips its toggle) as if the user had closed it.
+    public snap_close : bool
+    intern shown      : array                # eased sizes, paired like `sizes`
+    # the dragged pane as an ORDER INDEX (0 = none; sized panes start at 1).
+    # index, not id: when a snapped-shut pane is removed by the app mid-drag,
+    # the same index becomes its neighbor — the drag chains onto it by itself.
+    intern drag_ix    : i32
+    intern last_n     : i32
+    intern dseam      : array f32            # divider px positions, hit-test + draw
+    intern cursor_on  : bool                 # WE set the resize cursor; restore it
+    intern dbgf       : i32                  # count-change debug frames left
 
-    # sizes is a paired array [ id, px, ... ]; cast each key with `string [ ... ]`
-    # (an un-bracketed `string x` does not produce a comparable string).
-    func size_of [ id: string ] -> f32
-        if [ !sizes || !id ] return deflt
-        for [ i: i32 0, i + 1 < sizes.count, i += 2 ]
-            k : string [ sizes[ i ] ]
-            if [ k && k.compare[ id ] == 0 ]
-                fv : f32 [ sizes[ i + 1 ] ]
-                return (fv > 0.0) ? fv : deflt
-        return deflt
+    # paired-array key slot; cast each key with `string [ ... ]` (an un-bracketed
+    # `string x` does not produce a comparable string). -1 = no entry.
+    func pair_index [ arr: array, id: string ] -> i32
+        if [ !arr || !id ] return -1
+        for [ i: i32 0, i + 1 < arr.count, i += 2 ]
+            k : string [ arr[ i ] ]
+            if [ k && k.compare[ id ] == 0 ] return i
+        return -1
 
-    # store a size for a child id (update in place, else append the pair).
-    func set_size [ id: string, val: f32 ]
-        if [ !sizes ] sizes = array [ ]
-        for [ i: i32 0, i + 1 < sizes.count, i += 2 ]
-            k : string [ sizes[ i ] ]
+    func pair_get [ arr: array, id: string ] -> f32
+        ix : i32 [ pair_index[ arr, id ] ]
+        if [ ix < 0 ] return 0.0
+        return f32 [ arr[ ix + 1 ] ]
+
+    # store a value for id (update in place, else append the pair).
+    func pair_set [ arr: array, id: string, val: f32 ]
+        for [ i: i32 0, i + 1 < arr.count, i += 2 ]
+            k : string [ arr[ i ] ]
             if [ k && k.compare[ id ] == 0 ]
-                sizes[ i + 1 ] = val
+                arr[ i + 1 ] = val
                 return
-        sizes.push[ id ]
-        sizes.push[ val ]
+        arr.push[ id ]
+        arr.push[ val ]
 
     func order [] -> array string
         ids : array string [ ]
@@ -4205,31 +3974,56 @@ element Split
                 ids.push[ id ]
         return ids
 
-    # leftover for the flex (first) pane after the sized panes + divider gaps.
-    func flex_of [ ids: array string, span: f32 ] -> f32
-        sums : f32 [ 0.0 ]
-        for [ i: i32 1, i < ids.count, i += 1 ]
-            sums += size_of[ ids[ i ] ]
-        gaps : f32 [ f32[ ids.count - 1 ] * gap ]
-        f : f32 [ span - sums - gaps ]
-        return (f < 60.0) ? 60.0 : f
+    # target size for sized child id: saved, else deflt, else an even share.
+    # a STORED 0 under snap_close = the user snapped it shut; hold it at 0
+    # until the app reacts (removes the kid / clears the entry).
+    func target_of [ id: string, span: f32, n: i32 ] -> f32
+        ix : i32 [ pair_index[ sizes, id ] ]
+        if [ ix >= 0 ]
+            v : f32 [ sizes[ ix + 1 ] ]
+            if [ v > 0.0 ] return v
+            if [ snap_close ] return 0.0
+        if [ deflt > 0.0 ] return deflt
+        return (span - f32[ n - 1 ] * gap) / f32[ n ]
 
-    # position each child from its size (first = flex), leaving a `gap` between
-    # panes; the seam centers land in the gaps where draw[] paints the dividers.
+    # displayed (eased) size; a child seen for the first time snaps to target.
+    func shown_of [ id: string, span: f32, n: i32 ] -> f32
+        v : f32 [ pair_get[ shown, id ] ]
+        if [ v > 0.0 ] return v
+        t : f32 [ target_of[ id, span, n ] ]
+        pair_set[ shown, id, t ]
+        return t
+
+    # position each child from its eased size (first = flex), leaving a `gap`
+    # between panes; the seam centers land where draw[] paints the 1px lines.
     func render [] -> Elements
         if [ !kids ] return null
         if [ !sizes ] sizes = array [ ]
+        if [ !shown ] shown = array [ ]
         ids : array string [ order[] ]
         n   : i32 [ ids.count ]
         if [ n == 0 ] return null
+        # pane count change: in even mode forget saved sizes (equal shares),
+        # and ALWAYS snap the displayed sizes to their targets — a tab coming
+        # in or leaving must never animate the ratios; filter_n eases only
+        # within a steady pane set (drags).
+        if [ n != last_n ]
+            last_n = n
+            if [ even ] sizes = array [ ]
+            shown = array [ ]
+            # render runs twice per frame — 20 ticks ≈ 10 frames of trace
+            dbgf  = 20
         span : f32 [ (bounds) ? ((vertical) ? bounds.h : bounds.w) : 1200.0 ]
-        flex : f32 [ flex_of[ ids, span ] ]
+        flex : f32 [ span - f32[ n - 1 ] * gap ]
+        for [ i: i32 1, i < n, i += 1 ]
+            flex -= shown_of[ ids[ i ], span, n ]
+        if [ flex < 60.0 ] flex = 60.0
         ti   : string [ (inset > 0.0) ? '{inset}' : '0' ]
         out  : Elements [ ]
         dseam = array f32 [ ]
         pos : f32 [ 0.0 ]
         for [ i: i32 0, i < n, i += 1 ]
-            w  : f32 [ (i == 0) ? flex : size_of[ ids[ i ] ] ]
+            w  : f32 [ (i == 0) ? flex : shown_of[ ids[ i ], span, n ] ]
             ch : element kids[ ids[ i ] ]
             a0 : f32 [ pos ]
             a1 : f32 [ pos + w ]
@@ -4237,15 +4031,69 @@ element Split
                 ch.area = Region [ 'l0 t{a0}px r0 t{a1}px' ]
             el
                 ch.area = Region [ 'l{a0}px t{ti} l{a1}px b0' ]
+            if [ dbgf > 0 ]
+                bx : f32 [ (ch.bounds) ? ch.bounds.x : -1.0 ]
+                bw : f32 [ (ch.bounds) ? ch.bounds.w : -1.0 ]
+                sdbg : handle [ fopen[ "/tmp/spl.txt", "a" ] ]
+                if [ sdbg ]
+                    fputs[ 'SPL {id} n={n} i={i} kid={ids[i]} a0={a0} a1={a1} prev_bx={bx} prev_bw={bw}\n', sdbg ]
+                    fclose[ sdbg ]
             out[ ids[ i ] ] = ch
             pos += w
             if [ i < n - 1 ]
-                hg  : f32 [ gap * 0.5 ]
-                mid : f32 [ pos + hg ]
+                mid : f32 [ pos + gap * 0.5 ]
                 dseam.push[ mid ]
+                # invisible topmost grab strip over the divider: the panes sit
+                # flush, so without it every press would land in a child.
+                h0 : f32 [ mid - bar ]
+                h1 : f32 [ mid + bar ]
+                hd : element [ topmost: true ]
+                if [ vertical ]
+                    hd.area = Region [ 'l0 t{h0}px r0 t{h1}px' ]
+                el
+                    hd.area = Region [ 'l{h0}px t0 l{h1}px b0' ]
+                out[ 'dv{i}' ] = hd
                 pos += gap
+        if [ dbgf > 0 ] dbgf -= 1
         return out
 
+    # once per frame: ease each shown size toward its target (filter_n, so the
+    # motion is frame-rate independent), then paint the 1px line in each gap.
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        ids : array string [ order[] ]
+        n   : i32 [ ids.count ]
+        if [ n == 0 || !shown ] return
+        span   : f32 [ (vertical) ? bounds.h : bounds.w ]
+        moving : bool [ false ]
+        for [ i: i32 1, i < n, i += 1 ]
+            t : f32 [ target_of[ ids[ i ], span, n ] ]
+            v : f32 [ shown_of[ ids[ i ], span, n ] ]
+            d : f32 [ t - v ]
+            if [ d != 0.0 ]
+                # ONLY a live drag animates; every other change (tabs added,
+                # panels toggled, app-set sizes) lands instantly — zero movement
+                if [ i != drag_ix || (d < 0.5 && d > -0.5) ]
+                    v = t
+                el
+                    v = filter_n[ v, t, 0.28, ux.frame_factor ]
+                    moving = true
+                pair_set[ shown, ids[ i ], v ]
+        if [ moving ]
+            pristine        = false
+            ux.will_animate = true
+        if [ !dseam ] return
+        cv : Canvas w.screen
+        cv.fill_color[ line_color ]
+        for [ di: i32 0, di < dseam.count, di += 1 ]
+            # snap to the pixel column/row holding the gap center — a fractional
+            # (eased) position would blend the 1px line across two pixels.
+            m : f32 [ floor[ dseam[ di ] ] ]
+            if [ vertical ]
+                cv.rounded_rect[ 0.0, m, bounds.w, 1.0, 0.0, 0.0, 0.0, 0.0 ]
+            el
+                cv.rounded_rect[ m, 0.0, 1.0, bounds.h, 0.0, 0.0, 0.0, 0.0 ]
+            cv.paint[ ]
 
     # grab the divider (gap center) under the cursor; it fronts sized child i+1.
     # capture the pointer so every following move routes here until release.
@@ -4256,45 +4104,65 @@ element Split
         for [ di: i32 0, di < dseam.count, di += 1 ]
             d : f32 [ dseam[ di ] ]
             if [ at >= d - bar && at <= d + bar ]
-                if [ di + 1 < ids.count ] drag_id = ids[ di + 1 ]
+                if [ di + 1 < ids.count ] drag_ix = di + 1
                 ux.set_capture[ a ]
                 ev.no_default   = true
                 ev.no_propagation = true
                 return
 
-    # on_move fires while the cursor is in a Split gap (or captured mid-drag), so
-    # show the resize cursor here; on_leave clears it.
+    # moves bubble here from every child, so gate the resize cursor on divider
+    # proximity — and restore the arrow when WE set it (cursor_on), never when a
+    # nested Splitter did. a drag writes the TARGET size — draw[] eases after it.
     func on_move [ ev: Event ]
         if [ !bounds ] return
-        ux.seam_cursor[ (vertical) ? 2 : 1 ]
-        if [ !drag_id ] return
+        hat  : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
+        near : bool [ drag_ix > 0 ]
+        if [ !near && dseam ]
+            for [ di: i32 0, di < dseam.count, di += 1 ]
+                d : f32 [ dseam[ di ] ]
+                if [ hat >= d - bar && hat <= d + bar ] near = true
+        if [ near ]
+            ux.seam_cursor[ (vertical) ? 2 : 1 ]
+            cursor_on = true
+        el [ cursor_on ]
+            ux.seam_cursor[ 0 ]
+            cursor_on = false
+        if [ drag_ix <= 0 ] return
         ids  : array string [ order[] ]
+        n    : i32 [ ids.count ]
+        # the app may have removed snapped-shut panes since the last move —
+        # clamp; the surviving pane now AT this index carries the drag on.
+        if [ drag_ix >= n ] drag_ix = n - 1
+        if [ drag_ix <= 0 ] return
         span : f32 [ (vertical) ? bounds.h : bounds.w ]
         at   : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
-        # dragged pane's fixed trailing edge = span - (sizes after) - (gaps after);
-        # its new size = trailing edge - cursor. the flex pane absorbs the rest.
-        kidx  : i32 [ -1 ]
+        # dragged pane's fixed trailing edge = span - (targets after) - (gaps
+        # after); its new size = trailing edge - cursor. the flex pane absorbs.
         after : f32 [ 0.0 ]
-        for [ i: i32 1, i < ids.count, i += 1 ]
-            if [ ids[ i ].compare[ drag_id ] == 0 ] kidx = i
-            el [ kidx >= 0 ] after += size_of[ ids[ i ] ]
-        if [ kidx < 0 ] return
-        gaps  : f32 [ f32[ ids.count - 1 - kidx ] * gap ]
+        for [ i: i32 1, i < n, i += 1 ]
+            if [ i > drag_ix ] after += target_of[ ids[ i ], span, n ]
+        gaps  : f32 [ f32[ n - 1 - drag_ix ] * gap ]
         trail : f32 [ span - after - gaps ]
         sz    : f32 [ trail - at ]
-        if [ sz < 40.0 ] sz = 40.0
+        # magnetic floor: below the minimum the pane holds at 40px, but pushing
+        # well past it (under 20px) snaps to 0 — the user forced it off. the app
+        # then removes the pane and this index becomes the next divider: one
+        # continuous pull keeps snapping edge after edge.
+        if [ sz < 40.0 ] sz = ((snap_close && sz < 20.0)) ? 0.0 : 40.0
         if [ sz > span - 60.0 ] sz = span - 60.0
-        set_size[ drag_id, sz ]
+        pair_set[ sizes, ids[ drag_ix ], sz ]
         pristine        = false
         ux.will_animate = true
         ev.no_default   = true
 
     func on_release [ ev: Event ]
-        if [ drag_id && drag_id.count > 0 ] ux.release_capture[ a ]
-        drag_id = ''
+        if [ drag_ix > 0 ] ux.release_capture[ a ]
+        drag_ix = 0
 
     func on_leave [ ev: Event ]
-        if [ !drag_id ] ux.seam_cursor[ 0 ]
+        if [ drag_ix <= 0 && cursor_on ]
+            ux.seam_cursor[ 0 ]
+            cursor_on = false
 
 element Control
     focusable : true
@@ -4319,7 +4187,16 @@ Control Button
         if [ !icon || icon.count == 0 ] return
         if [ icon_cur && icon_cur.compare[ icon ] == 0 ] return
         icon_cur = icon
+        # a swapped glyph must reach pixels: drop the old model's raster cache
+        # and invalidate this element's cached surface, or the cache re-blits
+        # the old icon.
+        if [ iconl.image_svg ]
+            if [ iconl.image_svg.cache ] iconl.image_svg.cache.teardown_gpu[]
+            iconl.image_svg.cache = null
         iconl.image_svg = SVGModel [ 'images/{icon}.svg' ]
+        pristine    = false
+        needs_frame = true
+        if [ ux ] ux.will_animate = true
 
     func init []
         sync_icon[]

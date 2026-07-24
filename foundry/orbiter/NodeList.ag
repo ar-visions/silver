@@ -163,7 +163,7 @@ class Frame
 # the callstack panel: a NodeList of stack frames, rendered through NodeLayer.
 # same #202 background as the console so it reads as one surface with it.
 NodeList Callstack
-    # a Split pane on the console's own #202 surface; the Split draws the divider.
+    # a Splitter pane on the console's own #202 surface; the Splitter draws the divider.
     area    : Region { l0 t0 r0 b0 }
     cbase   : Layer [ fill_color: rgba [ '#202' ], area: Region { l0 t0 r0 b0 } ]
     content : NodeLayer [ area: Region { l4px t2px r4px b2px }, label_size: 15, row_spacing: 1.2, text_color: '#cfe' ]
@@ -210,8 +210,8 @@ NodeList Fields
     func render [] -> Elements
         return null
 
-# the Fields grid renderer: key (name) left, value right, with a column divider and
-# per-row separator lines. mirrors NodeLayer but two-column.
+# the Fields grid renderer: key (name) left, value right, with per-row
+# separator lines. mirrors NodeLayer but two-column.
 Layer FieldsLayer
     public label_size  : f32
     public row_spacing : f32
@@ -238,10 +238,6 @@ Layer FieldsLayer
         wty  : f32 [ cv.transform_ty[] ]
         cv.set_crop[ wtx + bounds.x, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
         cv.stroke_width[ 0.0 ]
-        # vertical column divider (key | value)
-        cv.fill_color[ lc ]
-        cv.rect_to[ colx, bounds.y, 1.0, bounds.h ]
-        cv.paint[ ]
         for [ i: i32 0, i < n, i += 1 ]
             y : f32 [ y0 + f32[i] * lh - fl.scroll.y ]
             if [ y + lh < bounds.y ] continue

@@ -1216,7 +1216,7 @@ func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32, lh: f32, cw: f32
     if [ cw_i < 1 ] cw_i = 1
     lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
     if [ !use.canvas ]
-        use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true ]
+        use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true, tag: 'cons' ]
         use.canvas.update[]
     el [ use.canvas.content_w != cw_i || use.canvas.content_h != lh_i ]
         use.canvas.resize[ cw_i, lh_i ]
@@ -1267,7 +1267,7 @@ func live_slot [ cv: Canvas, s: ConsoleSession, r: i32, fs: i32, lh: f32, cw: f3
     if [ cw_i < 1 ] cw_i = 1
     lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
     if [ !use.canvas ]
-        use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true ]
+        use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true, tag: 'cons' ]
         use.canvas.update[]
     el [ use.canvas.content_w != cw_i || use.canvas.content_h != lh_i ]
         use.canvas.resize[ cw_i, lh_i ]

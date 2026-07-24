@@ -129,6 +129,9 @@ class Render
     intern  vk_render_pass                 : new VkRenderPass  [2]
     intern  last_width                     : i32
     intern  last_height                    : i32
+    # creation-site tag; propagates to this render's textures (SAMP)
+    public  tag                            : string
+    intern  ring_defer_frame               : i64
 
     public func hash[] -> u64
         return u64[handle[a]]
@@ -180,15 +183,16 @@ class Render
                 reduce_model.samplers = map Au[string] [ "color": color ]
                 reduce_model.rebind_model[]
         el
+            ctag : string [ (tag) ? tag : 'rcolor' ]
             color = Texture [ vk: vk, w: w, width: width, height: height,
                 vk_format: w.surface_format.format, swap: !backbuffer,
-                surface: Surface.color, vk_image: vk_swap_image ]
+                surface: Surface.color, vk_image: vk_swap_image, tag: ctag ]
             if [ use_depth ]
                 depth = Texture [ vk: vk, w: w, width: width, height: height,
-                    vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer ]
+                    vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer, tag: 'rdepth' ]
             if [ reduce ]
                 reduction = Texture [ vk: vk, w: w, width: width / 4, height: height / 4,
-                    vk_format: w.surface_format.format, swap: !backbuffer ]
+                    vk_format: w.surface_format.format, swap: !backbuffer, tag: 'rreduce' ]
         
         if [ !backbuffer ]
             color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
@@ -275,6 +279,8 @@ class Render
         if [ !vk_framebuffer[0] ]
             return
         vk.paint_calls += 1
+        cvh : u64 [ hash[] ]
+        puts 'CV {cvh} {width}x{height} id={id}'
         # reduction renders (two-pass) + the swapchain blit (semaphores/present) can't
         # batch — they record+submit in one shot, as before.
         if [ reduce > 0 || bool[ vk_swap_image ] ]
@@ -332,6 +338,7 @@ class Render
         for [ m: Model ] in models
             for [ p: Pipeline ] in m.pipelines
                 p.draw[ frame ]
+                vk.pipe_draws += 1
         draw_slot += 1
         # wrap HERE (after the increment, before the next paint's rebind in paint[]):
         # if this batch filled the paint ring, submit+wait so sync_fence resets draw_slot
@@ -427,6 +434,7 @@ class Render
                 for [ m: Model ] in models
                     for [ p: Pipeline ] in m.pipelines
                         p.draw[ frame ]
+                        vk.pipe_draws += 1
             el
                 for [ p: Pipeline ] in reduce_model.pipelines
                     p.draw[ frame ]
@@ -467,16 +475,33 @@ class Render
         # ring_last done ⟹ all prior done): every slot is free now, rewind the ring to 0.
         draw_slot = 0
 
-    func dealloc [ ]
-        info : Au.header[ a ]
+    # idempotent ring teardown: fences, semaphores, framebuffers, render
+    # passes, command buffers — leaked rings exhaust vkCreateFence
+    func destroy_ring [ ]
         for [ i: 0, i < 2, i += 1 ]
-            vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
-            vkDestroyRenderPass[ vk.device, vk_render_pass[i], null ]
-
+            if [ vk_framebuffer[i] ]
+                vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
+                vk_framebuffer[i] = null
+            if [ vk_render_pass[i] ]
+                vkDestroyRenderPass[ vk.device, vk_render_pass[i], null ]
+                vk_render_pass[i] = null
         for [ ri: i32 0, ri < ring_n, ri += 1 ]
-            if [ vk_fences[ri] ] vkDestroyFence[ vk.device, vk_fences[ri], null ]
-        vkDestroySemaphore[ vk.device, vk_image_available_semaphore, null ]
-        vkDestroySemaphore[ vk.device, vk_render_finished_semaphore, null ]
+            if [ vk_fences[ri] ]
+                vkDestroyFence[ vk.device, vk_fences[ri], null ]
+                vk_fences[ri] = null
+        if [ vk_image_available_semaphore ]
+            vkDestroySemaphore[ vk.device, vk_image_available_semaphore, null ]
+            vk_image_available_semaphore = null
+        if [ vk_render_finished_semaphore ]
+            vkDestroySemaphore[ vk.device, vk_render_finished_semaphore, null ]
+            vk_render_finished_semaphore = null
+        if [ vk_command_buffers[0] ]
+            vkFreeCommandBuffers[ vk.device, vk.command_pool, u32[ ring_n ], vk_command_buffers ]
+            for [ ci: i32 0, ci < ring_n, ci += 1 ]
+                vk_command_buffers[ci] = null
+
+    func dealloc [ ]
+        destroy_ring[]
 
 
     func init []
@@ -604,6 +629,9 @@ class Render
         # one fence per ring slot (ring_n = frames-in-flight, NOT the paint batch ceiling)
         for [ ri: i32 0, ri < ring_n, ri += 1 ]
             result = vkCreateFence[ vk.device, @fenceInfo, null, @vk_fences[ri] ]
+            if [ result != VK_SUCCESS ]
+                rvi : i32 [ result ]
+                puts 'vkCreateFence failed: result={rvi} (-4=device_lost -1/-2=oom)'
             expect result == VK_SUCCESS, "failed to create fence"
         vk_fence = vk_fences[0]
 
@@ -706,6 +734,17 @@ class Layout
         cmd.submit
 
 
+# raw GPU handles awaiting deferred destruction (defer_texture)
+class TexDefer
+    mutable vk_sampler    : VkSampler
+    mutable vk_image_view : VkImageView
+    mutable vk_image      : VkImage
+    mutable vk_memory     : VkDeviceMemory
+    mutable vma_alloc     : VmaAllocation
+    mutable shared_fd     : i32 [ -1 ]
+    mutable swap          : bool
+    mutable defer_frame   : i64
+
 class vk_context
     public  user                : Au
     intern  instance            : VkInstance
@@ -756,6 +795,18 @@ class vk_context
     intern  _vkGetMemoryFdKHR               : PFN_vkGetMemoryFdKHR
 
     public  sampler_count       : i32
+    # live sampler counts by Texture.tag creation site
+    public  samp_rcolor         : i32
+    public  samp_rdepth         : i32
+    public  samp_rreduce        : i32
+    public  samp_sdf            : i32
+    public  samp_atlas          : i32
+    public  samp_band           : i32
+    public  samp_line           : i32
+    public  samp_cons           : i32
+    public  samp_flist          : i32
+    public  samp_svg            : i32
+    public  samp_other          : i32
     # perf counters (reset each second in the PERF print): submits issued, sync_fence
     # waits issued, and total microseconds spent blocked in those waits.
     public  submit_calls        : i32
@@ -766,6 +817,7 @@ class vk_context
     public  resize_us           : i64
     public  resize_calls        : i32
     public  paint_calls         : i32
+    public  pipe_draws          : i32
     public  sdf_hit             : i32
     public  sdf_miss            : i32
     public  geom_us             : i64
@@ -774,6 +826,8 @@ class vk_context
     # after DEFER_FRAMES more frames have rendered — no submit that could
     # still reference it remains in flight (premature-recycle device loss)
     intern  defer_list          : array Buffer
+    intern  defer_texs          : array TexDefer
+    intern  defer_rnds          : array Render
     intern  frame_no            : i64
     public  bindres_calls       : i32
     public  bindres_us          : i64
@@ -786,18 +840,61 @@ class vk_context
         b.hold[]
         defer_list.push[ b ]
 
+    # queue texture handles: destroying under an in-flight submit that
+    # still samples them is a device fault (the fast-close SIGTRAP)
+    func defer_texture [ td: TexDefer ] -> none
+        if [ ! defer_texs ] defer_texs = array TexDefer []
+        td.defer_frame = frame_no
+        defer_texs.push[ td ]
+
+    # queue a dead render's ring (fences/cmdbufs) for destruction
+    func defer_render [ r: Render ] -> none
+        if [ ! defer_rnds ] defer_rnds = array Render []
+        r.ring_defer_frame = frame_no
+        r.hold[]
+        defer_rnds.push[ r ]
+
     # once per rendered frame: destroy entries 8+ frames old (>> ring depth)
     func defer_tick [] -> none
         frame_no += 1
-        if [ ! defer_list || defer_list.count == 0 ] return
-        keep : array Buffer [ ]
-        for [ b: Buffer ] in defer_list
-            if [ frame_no - b.defer_frame >= 8 ]
-                b.destroy_now[]
-                b.drop[]
-            el
-                keep.push[ b ]
-        defer_list = keep
+        if [ defer_list && defer_list.count > 0 ]
+            keep : array Buffer [ ]
+            for [ b: Buffer ] in defer_list
+                if [ frame_no - b.defer_frame >= 8 ]
+                    b.destroy_now[]
+                    b.drop[]
+                el
+                    keep.push[ b ]
+            defer_list = keep
+        if [ defer_texs && defer_texs.count > 0 ]
+            tkeep : array TexDefer [ ]
+            for [ td: TexDefer ] in defer_texs
+                if [ frame_no - td.defer_frame >= 8 ]
+                    if [ td.vk_sampler    ] vkDestroySampler[ device, td.vk_sampler, null ]
+                    if [ td.vk_image_view ] vkDestroyImageView[ device, td.vk_image_view, null ]
+                    if [ td.vk_image ]
+                        if [ td.vk_memory ]
+                            vkDestroyImage[ device, td.vk_image, null ]
+                            vkFreeMemory[ device, td.vk_memory, null ]
+                            if [ td.shared_fd >= 0 ] close[ td.shared_fd ]
+                        el
+                            vmaDestroyImage[ allocator, td.vk_image, td.vma_alloc ]
+                el
+                    tkeep.push[ td ]
+            defer_texs = tkeep
+        if [ defer_rnds && defer_rnds.count > 0 ]
+            # swap first: a drop below can re-enter defer_render (dealloc
+            # → teardown_gpu) and must not mutate the list being walked
+            rwork : defer_rnds
+            rwork.hold[]
+            defer_rnds = array Render [ ]
+            for [ r: Render ] in rwork
+                if [ frame_no - r.ring_defer_frame >= 8 ]
+                    r.destroy_ring[]
+                    r.drop[]
+                el
+                    defer_rnds.push[ r ]
+            rwork.drop[]
 
     intern quad_m:    GltfModel
     # cached default shaders. constructing a fresh UVQuad / UVReduce per
@@ -2819,6 +2916,8 @@ class Texture
     # non-VMA backing for shareable/imported textures + its exported fd
     intern vk_memory        : VkDeviceMemory
     intern shared_fd        : i32 [ -1 ]
+    # creation-site tag for live sampler accounting (SAMP print)
+    public tag              : string
 
     func resize [ w_new: i32, h_new: i32 ] -> Texture
         if [ w_new == width && h_new == height ]
@@ -3190,32 +3289,82 @@ class Texture
                 r: vkCreateSampler[ vk.device, samplerInfo, null, @vk_sampler ]
                 expect r == VK_SUCCESS, "Failed to create VkSampler"
                 vk.sampler_count += 1
+                if [ !tag ]
+                    vk.samp_other += 1
+                el [ tag == 'rcolor' ]
+                    vk.samp_rcolor += 1
+                el [ tag == 'rdepth' ]
+                    vk.samp_rdepth += 1
+                el [ tag == 'rreduce' ]
+                    vk.samp_rreduce += 1
+                el [ tag == 'sdf' ]
+                    vk.samp_sdf += 1
+                el [ tag == 'atlas' ]
+                    vk.samp_atlas += 1
+                el [ tag == 'band' ]
+                    vk.samp_band += 1
+                el [ tag == 'line' ]
+                    vk.samp_line += 1
+                el [ tag == 'cons' ]
+                    vk.samp_cons += 1
+                el [ tag == 'flist' ]
+                    vk.samp_flist += 1
+                el [ tag == 'svg' ]
+                    vk.samp_svg += 1
+                el
+                    vk.samp_other += 1
 
     # idempotent GPU teardown — destroys sampler/view/image and nulls the
     # handles, so it's safe to call directly (canvas-driven) AND again from
     # dealloc. textures are owned by their canvas; this lets the canvas reclaim
     # the GPU resources at teardown without depending on the Au refcount.
     func release_gpu [ ]
+        if [ vk_sampler || vk_image_view || (!swap && vk_image) ]
+            # hand the handles to the deferred queue — an in-flight submit
+            # may still sample them (immediate destroy = fast-close SIGTRAP)
+            td : TexDefer [ ]
+            td.vk_sampler    = vk_sampler
+            td.vk_image_view = vk_image_view
+            td.swap          = swap
+            # swap textures wrap a VkImage owned by the swapchain — destroying
+            # the swapchain already invalidated it; never vmaDestroyImage it.
+            if [ !swap ]
+                td.vk_image  = vk_image
+                td.vk_memory = vk_memory
+                td.vma_alloc = vma_alloc
+                td.shared_fd = shared_fd
+            vk.defer_texture[ td ]
         if [ vk_sampler ]
-            vkDestroySampler[ vk.device, vk_sampler, null ]
             vk.sampler_count -= 1
-            vk_sampler = null
-        if [ vk_image_view ]
-            vkDestroyImageView[ vk.device, vk_image_view, null ]
-            vk_image_view = null
-        # swap textures wrap a VkImage owned by the swapchain — destroying the
-        # swapchain already invalidated it; we must NOT call vmaDestroyImage.
-        if [ !swap && vk_image ]
-            if [ vk_memory ]
-                # shareable/imported: plain image + dedicated device memory
-                vkDestroyImage[ vk.device, vk_image, null ]
-                vkFreeMemory[ vk.device, vk_memory, null ]
-                vk_memory = null
-                if [ shared_fd >= 0 ]
-                    close[ shared_fd ]
-                    shared_fd = 0 - 1
+            if [ !tag ]
+                vk.samp_other -= 1
+            el [ tag == 'rcolor' ]
+                vk.samp_rcolor -= 1
+            el [ tag == 'rdepth' ]
+                vk.samp_rdepth -= 1
+            el [ tag == 'rreduce' ]
+                vk.samp_rreduce -= 1
+            el [ tag == 'sdf' ]
+                vk.samp_sdf -= 1
+            el [ tag == 'atlas' ]
+                vk.samp_atlas -= 1
+            el [ tag == 'band' ]
+                vk.samp_band -= 1
+            el [ tag == 'line' ]
+                vk.samp_line -= 1
+            el [ tag == 'cons' ]
+                vk.samp_cons -= 1
+            el [ tag == 'flist' ]
+                vk.samp_flist -= 1
+            el [ tag == 'svg' ]
+                vk.samp_svg -= 1
             el
-                vmaDestroyImage[ vk.allocator, vk_image, vma_alloc ]
+                vk.samp_other -= 1
+            vk_sampler = null
+        vk_image_view = null
+        if [ !swap && vk_image ]
+            vk_memory = null
+            if [ shared_fd >= 0 ] shared_fd = 0 - 1
             vk_image  = null
             vma_alloc = null
         vk_layout = VK_IMAGE_LAYOUT_UNDEFINED

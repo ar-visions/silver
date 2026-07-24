@@ -87,6 +87,7 @@ enum State
     has_value : 1024
     expanded  : 2048
     replacing : 4096
+    shifted   : 8192
 
 
 alias Elements : map    element [ string ]
@@ -304,6 +305,23 @@ ielement element
         on_unload*[]
         for [ ee: element, k: string ] in elements
             ee.unload_tree[]
+
+    # per-element GPU-cache release hook (Editor frees band canvases)
+    public func on_teardown [ ]
+        return
+
+    # reclaim GPU textures for an unmounted subtree (idempotent)
+    func teardown_canvases [ ]
+        puts 'TD {id} cache={(cache_canvas) ? 1 : 0}'
+        on_teardown*[]
+        if [ cache_canvas ] cache_canvas.teardown_gpu[]
+        if [ mask_canvas  ] mask_canvas.teardown_gpu[]
+        for [ ly: Layer, lk: string ] in layers
+            if [ ly.blur_canvas ] ly.blur_canvas.teardown_gpu[]
+            if [ ly.image_svg && ly.image_svg.cache ]
+                ly.image_svg.cache.teardown_gpu[]
+        for [ ee: element, k: string ] in elements
+            ee.teardown_canvases[]
 
     public func render [ ] -> Elements
         return null

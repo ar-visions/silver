@@ -40,17 +40,20 @@ import FileList
 import Avatar
 
 # one editor tab: title, text, and (for a .ag source) its run band + console.
-# area is assigned per instance from the split seams; bg is the pane fill.
+# area is assigned per instance by the 'panes' Splitter; bg is the pane fill.
 element EditorView
     public selected   : bool
     public pane_index : i32
     area : Region { l0 t0 r0 b0 }
     bg   : Layer [ fill_color: rgba [ '#140d2a' ] ]
 
-    # this pane's Editor child (the text), or null before the first tree
+    # this pane's Editor child (the text, under the 'split' Splitter), or null
+    # before the first tree
     func text_of [] -> Editor
         if [ !elements ] return null
-        te : element elements[ 'text' ]
+        spl : element elements[ 'split' ]
+        if [ !spl || !spl.elements ] return null
+        te : element spl.elements[ 'text' ]
         if [ !te || !(te inherits Editor) ] return null
         return Editor te
 
@@ -125,35 +128,32 @@ element EditorView
         if [ !run_ok && p && !is_con ]
             fnm : p.filename[]
             if [ fnm.count >= 3 && fnm.mid[ fnm.count - 3, 3 ].compare[ '.ag' ] == 0 ] run_ok = true
-        # the title is a fixed-height band; the text always starts just below it
-        tarea : Region
-        tarea = (run_ok) ? Region { l0 t1.3 r0 b@ed_split=8|44|44 } : Region { l0 t1.3 r0 b0 }
+        # the content + run band split the area below the title via a vertical
+        # Splitter: the text is the flex pane; the band a sized pane whose height
+        # lives in orb.band_sizes — one shared array, so every pane's band matches.
+        vkids : Elements [ ]
 
         # the content slot: whichever element claims this tab. a console session IS
-        # an element (Console), so it needs no host — it goes straight in. it sits
-        # BELOW the title and above the band, so its bounds are its whole viewport.
+        # an element (Console), so it needs no host — it goes straight in.
         if [ is_con ]
             orb.ensure_console[ psess ]
-            els['text'] = Console [
-                area: tarea
+            vkids['text'] = Console [
                 session_id: psess, sessions: orb.ed_sessions, feed: null,
                 launch: orb.agent_cmd[ psess ], animated: true ]
-            return els
-
-        els['text'] = Editor [
-            area: tarea
-            src: p
-            breakpoints: orb.breakpoints, code_font_size: orb.code_font_size,
-            nav: orb.nav_panes[ pi ], pane_index: pi,
-            debug_running: running, debugger: dbgr, debug_vars: orb.debug_vars,
-            expanded: findbar_on, replacing: (findbar_on && orb.replace_open),
-            show_hits: (searchable) ? (orb.find_showing || orb.nav_showing) : false,
-            single_line: (orb.nav_showing && orb.browse_single),
-            header_size: orb.browse_header_size, dir_size: orb.browse_dir_size,
-            nav_list: (searchable) ? orb.nav_showing : false, dock_rows: orb.nav_dock_rows,
-            grid_mode: (searchable) ? (orb.nav_showing && orb.grid_mode) : false,
-            hits: orb.find_hits,
-            find_query: (searchable && findbar_on) ? orb.findbar_text : '' ]
+        el
+            vkids['text'] = Editor [
+                src: p
+                breakpoints: orb.breakpoints, code_font_size: orb.code_font_size,
+                nav: orb.nav_panes[ pi ], pane_index: pi,
+                debug_running: running, debugger: dbgr, debug_vars: orb.debug_vars,
+                expanded: findbar_on, replacing: (findbar_on && orb.replace_open),
+                show_hits: (searchable) ? (orb.find_showing || orb.nav_showing) : false,
+                single_line: (orb.nav_showing && orb.browse_single),
+                header_size: orb.browse_header_size, dir_size: orb.browse_dir_size,
+                nav_list: (searchable) ? orb.nav_showing : false, dock_rows: orb.nav_dock_rows,
+                grid_mode: (searchable) ? (orb.nav_showing && orb.grid_mode) : false,
+                hits: orb.find_hits,
+                find_query: (searchable && findbar_on) ? orb.findbar_text : '' ]
 
         # the run band + console, INSIDE this tab
         if [ run_ok ]
@@ -162,9 +162,13 @@ element EditorView
             if [ di2 > 0 ] emod = emod.mid[ 0, di2 ]
             if [ !orb.ed_sessions ] orb.ed_sessions = map ConsoleSession [string] [ ]
             fels : Elements []
-            fels['run'] = LButton [ icon: (app_running) ? 'stop' : 'play', selected: app_running, manual_mode: true ]
+            fels['run'] = RunButton [ icon: (app_running) ? 'stop' : 'play', selected: app_running, manual_mode: true ]
             if [ orb.err_file && orb.err_line > 0 ]
                 fels['error'] = Option [ label: 'error {orb.err_line}', manual_mode: true ]
+            # a debug panel snapped shut = the user turned it off: flip its
+            # toggle so the TButtons segment reads unselected.
+            if [ orb.take_closed[ orb.dbg_sizes, 'callstack' ] ] orb.show_instruments = false
+            if [ orb.take_closed[ orb.dbg_sizes, 'fields' ] ]    orb.show_variables   = false
             smask : i32 [ 0 ]
             if [ orb.show_instruments ] smask = smask | 1
             if [ orb.show_variables ]   smask = smask | 2
@@ -178,7 +182,7 @@ element EditorView
             bels['tools']   = ToolsHeader [ spacing_x: 0.2, spacing_y: 0.2, topmost: true, elements: fels ]
             con : RunConsole [ session_id: 'ed:{emod}', sessions: orb.ed_sessions,
                 feed: null, run_line: runcmd, animated: true, elements: cf2 ]
-            # the console + any open debug panels share the band via a draggable Split:
+            # the console + any open debug panels share the band via a draggable Splitter:
             # the console is the flex pane (first), each panel a saved-width pane after.
             sp_kids : Elements [ ]
             sp_kids['console'] = con
@@ -186,8 +190,11 @@ element EditorView
             if [ orb.show_variables ]   sp_kids['fields']    = Fields [ vars: orb.debug_vars ]
             # one shared sizes map (the app owns it) so drags persist + serialize.
             if [ !orb.dbg_sizes ] orb.dbg_sizes = array [ ]
-            bels['split'] = Split [ area: Region { l0 t1.3 r0 b0 }, sizes: orb.dbg_sizes, kids: sp_kids ]
-            els['band'] = RunBand [ elements: bels ]
+            bels['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, sizes: orb.dbg_sizes, kids: sp_kids, snap_close: true ]
+            vkids['band'] = RunBand [ elements: bels ]
+        if [ !orb.band_sizes ] orb.band_sizes = array [ ]
+        els['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
+            kids: vkids, sizes: orb.band_sizes, deflt: 180.0 ]
         return els
 
 # editor title bar. `selected` = the "New"/finder state (no file open): shows
@@ -230,12 +237,27 @@ NavButton LabelButton
     tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
+# a title STATUS chip — a label, not a button: disabled (never hit-tested),
+# border-led: a stroke in the chip color over a ~10% fill of the same color.
+LabelButton StatusLabel
+    disable : true
+    quiet   : Layer [ fill_color: rgba [ '#6611441a' ], stroke_width: 1.0,
+        stroke_color: rgba [ '#661144' ], radius: Radius [ '8' ] ]
+
 # direction is the class: R flows right-to-left, L flows left-to-right
 NavButton RButton
     area : Region { r0+ t0 w1.15 h0.9 }
 
 NavButton LButton
     area : Region { l0+ t0 w1.15 h0.9 }
+
+# the run chip: shift held = electric blue (build-run --clean on click). the
+# running (selected) look is re-declared LAST so a live app overrides the blue.
+LButton RunButton
+    shifted : Layer [ states: State.shifted, fill_color: rgba [ '#26e' ],
+        radius: Radius [ '8' ], inner_glow: Glow [ '#9cf8 20' ] ]
+    running : Layer [ states: State.selected, fill_color: rgba [ '#c8641e' ],
+        radius: Radius [ '8' ], inner_glow: Glow [ '#ffae5ea2 18' ] ]
 
 # findbar scope: filename or cross-file glob, left of the chips.
 # read-only label on transparent until find-in-files (selected)
@@ -292,11 +314,10 @@ Button PillButton
     face   : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
-# the pane's bottom run band. the draggable @ed_split seam is a CLASS default:
-# the Region persists on the instance across frames, so the seam's ease and
-# snap state (BindCoord active/warmed) survives — a per-frame Region resets it.
+# the pane's bottom run band: a sized pane of the tab's vertical Splitter,
+# which assigns its area (and drags/eases its height) each frame.
 element RunBand
-    area : Region { l0 b@ed_split=8|44|44 r0 b0 }
+    area : Region { l0 t0 r0 b0 }
 
 # the run band's console: fills the band under the header, terminal content
 # inset 8px all around — no 44px title inset (the ToolsHeader is the title).
@@ -505,42 +526,31 @@ element orbiter : trinity # implements compiler
     intern pending_findfocus : bool
     # files the last find-in-files run scanned (for the empty-result row)
     intern find_scanned : i32
-    # the last area string applied to each pane instance — areas assign only on
-    # change so the instance's Region (and its seam bind state) persists
-    intern pane_area_cur    : array string
-    # pane count the area cache was valid for — a removed+re-added pane comes back
-    # as a NEW element (class-default area), so the index-keyed cache is stale.
-    intern pane_area_ecount : i32
     public active_pane      : i32
+    # --cycle: pane add/remove soak from code (dock/undock paths)
+    public cycle            : bool
+    intern cycle_frame      : i32
+    intern cycle_count      : i32
+    intern cycle_adding     : bool [ true ]
     # per-pane navigation history (Cmd/Ctrl+Left/Right). runtime-only — never serialized
     # (save_states writes only tabs/target/breakpoints), so it starts empty each session.
     # one Navigate per pane (pane0..3) so back/forward stay on the same editor side; owned
     # here (not on the per-frame-throwaway Editor) and injected into each pane every frame.
     intern nav_panes        : array Navigate
-    # the split seams between panes, as absolute x-positions in layout units from the
-    # editor area's left edge. pane i's right edge = split{i+1}; adjacent panes share
-    # the var on their touching edges so the seam is draggable (trinity seam model).
-    # the last pane's trailing split is pinned to the area width each frame so it
-    # fills; internal seams persist user drags. redistributed equally on add/remove.
-    public split1           : f32 [ 50.0 ]
-    public split2           : f32 [ 100.0 ]
-    public split3           : f32 [ 150.0 ]
-    # the per-pane run band's draggable top seam (b@ed_split), in units
-    public ed_split         : f32 [ 8.0 ]
+    # saved widths (px) for the editor Splitter's sized panes (pane1..pane3);
+    # pane0 is the flex pane. the Splitter drags/eases these; count changes
+    # reset them to even shares (even: true).
+    public pane_sizes       : array
+    # saved height (px) of the run band ('band'), shared by every pane's
+    # vertical Splitter — one entry, so all bands drag together.
+    public band_sizes       : array
     # instruments panel (callstack + app view) covers the console when on
     public show_instruments : bool
     # the variables panel — the other tab of the stack menu
     public show_variables   : bool
-    # saved widths (px) for the run-band Split's sized panes, keyed by child id
+    # saved widths (px) for the run-band Splitter's sized panes, keyed by child id
     # ('callstack'/'fields'); the console is the flex pane and has no entry.
     public dbg_sizes        : array
-    # last pane count we redistributed for — when editor_slots.count changes we reset
-    # the seams to an equal division.
-    intern last_ecount      : i32
-    # a pending redistribution: set on ANY count change, cleared only once the
-    # division actually runs (needs a laid-out pane for the real width). survives
-    # a fast add→remove→add so the seams don't get stranded at a deferred count.
-    intern splits_dirty     : bool
     public active_idx       : i32
     public config_side      : i32
     public active_panel  : string
@@ -559,12 +569,6 @@ element orbiter : trinity # implements compiler
     # the avatar's GPU pipeline currently SIGSEGVs (env-texture view not ready at bind);
     # OFF until that's fixed so orbiter still launches. flip true to render the avatar.
     public avatar_enabled  : bool
-    # the stack sub-column (callstack + fields) inside each editor, on a draggable
-    # the SHARED width of the dbg sub-column seam (draggable via @stack_w in CSS).
-    # on/off is per-editor (Editor.dbg_open builds it); this is just how wide it is
-    # when shown — non-zero so a freshly-opened panel has width. drag adjusts it.
-    public stack_w       : f32 [ 90.0 ]
-    public stack_w_user  : f32 [ 90.0 ]
     public filter_text   : string
     # finder search text typed into an editor title (magnify) when it has no file
     public find_text     : string
@@ -670,7 +674,7 @@ element orbiter : trinity # implements compiler
     # the single place to tune it. line-number labels render smaller still.
     # settable from orbiter.agi (`code_font_size: …`).
     public code_font_size : i32 [ 19 ]
-    # tabs are our own children ('pane0'..'pane3'); pane_at[i] reaches their text.
+    # tabs live under the 'panes' Splitter; pane_at[i] reaches their text.
 
     func init []
         # turn ON deferred live-reload: silver-host stages source changes and signals us
@@ -696,7 +700,6 @@ element orbiter : trinity # implements compiler
         # one editor pane to start, empty (the 'Open' finder)
         editor_slots   = array i32 [-1]
         pane_console   = array string ['']
-        pane_area_cur  = array string []
         active_pane    = 0
         nav_panes      = array Navigate []
         for [ i: i32 0, i < 8, i += 1 ]
@@ -1770,10 +1773,10 @@ element orbiter : trinity # implements compiler
         if [ menu_open && nav_showing ]
             els['grid'] = RButton [ icon: 'files', selected: grid_mode, manual_mode: true ]
 
-        # the active (non-edit) state indicator: shown while the pane is debug-locked;
-        # clicking it re-arms editing. the keyboard otherwise drives the debugger.
+        # the active (non-edit) state indicator: shown while the pane is
+        # debug-locked. a status LABEL only — never clickable.
         if [ dbg_locked ]
-            els['active'] = LabelButton [ label: 'active', manual_mode: true ]
+            els['active'] = StatusLabel [ label: 'active' ]
 
         # then whatever the open view contributes (an emulator's game/assembly/tiles,
         # a console's context/screen).
@@ -2262,100 +2265,57 @@ element orbiter : trinity # implements compiler
             ed.lines = list string []
         ed.pristine = false
 
-    # maintain the split seams (split1/2/3 = absolute x-positions in units) for `n`
-    # panes. on a pane-count change, divide the editor area equally; every frame, pin
-    # the last visible pane's trailing seam to the area width so it fills (except at
-    # the 4-pane cap, where pane3 is r0 and split3 is a real internal seam), then keep
-    # the seams ordered with a minimum pane width so a drag can't invert them.
-    func layout_splits [ n: i32 ]
-        # editor area width in PANE units. the panes' bound coords resolve in each
-        # pane's own fc against the EditorView's width (tick_binds: rel_w =
-        # parent.bounds.w, fcv = e.fc), so ew must be computed from the SAME pair —
-        # a Group and an Editor don't share fc, so editor_group.fc would be wrong.
-        # fall back until the first pane is laid out (self-corrects next frame).
-        ew : f32 [ 100.0 ]
-        have_ew : bool [ false ]
-        # the tab itself carries the fc the seam coords resolve against.
-        # elements is null until the first tree is built — self-corrects next frame.
-        p0 : element (elements) ? elements['pane0'] : null
-        if [ p0 && p0.fc > 0.0 && p0.parent && p0.parent.bounds && p0.parent.bounds.w > 0.0 ]
-            ew = p0.parent.bounds.w / p0.fc
-            have_ew = true
-        # equal division whenever the pane count changes — but only once the editor
-        # area width is real. on the count-change frame the new pane isn't laid out
-        # yet (ew is the 100.0 fallback), so seating the seams then squashes the last
-        # pane (~80/20); defer until have_ew so the division lands on the true width.
-        # mark a redistribution pending on ANY count change (even if we can't do it
-        # yet), so a fast add→remove→add can't leave last_ecount stranded and skip it.
-        if [ n != last_ecount ]
-            last_ecount  = n
-            splits_dirty = true
-        if [ splits_dirty && have_ew ]
-            splits_dirty = false
-            if [ n >= 2 ] split1 = ew * 1.0 / f32[ n ]
-            if [ n >= 3 ] split2 = ew * 2.0 / f32[ n ]
-            if [ n >= 4 ] split3 = ew * 3.0 / f32[ n ]
-        # pin the trailing seam so the last pane fills the area (cap of 4 uses r0)
-        if [ n == 1 ]
-            split1 = ew
-        el [ n == 2 ]
-            split2 = ew
-        el [ n == 3 ]
-            split3 = ew
-        # keep seams ordered with a minimum pane width so a drag can't invert them or
-        # push the last pane off the area. clamp internal seams below the trailing wall
-        # (right-to-left), then enforce the minimum gaps left-to-right.
-        minw : f32 [ 6.0 ]
-        if [ n == 4 ]
-            if [ split3 > ew - minw ] split3 = ew - minw
-            if [ split2 > split3 - minw ] split2 = split3 - minw
-            if [ split1 > split2 - minw ] split1 = split2 - minw
-        el [ n == 3 ]
-            if [ split2 > split3 - minw ] split2 = split3 - minw
-            if [ split1 > split2 - minw ] split1 = split2 - minw
-        el [ n == 2 ]
-            if [ split1 > split2 - minw ] split1 = split2 - minw
-        if [ split1 < minw ] split1 = minw
-        if [ split2 < split1 + minw ] split2 = split1 + minw
-        if [ split3 < split2 + minw ] split3 = split2 + minw
-        # DIAG: pane ids + computed bounds from the previous frame, to confirm the
-        # per-pane CSS area rules are matching (remove once the split layout is confirmed).
-        ##
-        puts 'layout_splits n={n} ew={ew} s1={split1} s2={split2} s3={split3}'
-        for [ i: i32 0, i < n, i += 1 ]
-            pe : Editor pane_at[ i ]
-            if [ pe && pe.bounds ]
-                puts '  pane{i}: id={pe.id} x={pe.bounds.x} w={pe.bounds.w} fc={pe.fc}'
-            el [ pe ]
-                puts '  pane{i}: id={pe.id} <no bounds>'
-            el
-                puts '  pane{i}: <null>'
-        ##
-
-    # the split-tiled area for tab index i: tabs share seam vars on touching
-    # edges (pane0.r == pane1.l == split1) so each boundary is one draggable seam.
-    func pane_area [ pi: i32 ] -> string
-        if [ pi == 0 ] return 'l0 t0 l@split1=50|0|0 b0'
-        if [ pi == 1 ] return 'l@split1=50|0|0 t0 l@split2=100|0|0 b0'
-        if [ pi == 2 ] return 'l@split2=100|0|0 t0 l@split3=150|0|0 b0'
-        return 'l@split3=150|0|0 t0 r0 b0'
+    # the i-th tab element ('pane0'..'pane3') — a child of the 'panes' Splitter.
+    func pane_view [ i: i32 ] -> element
+        spl : element (elements) ? elements[ 'panes' ] : null
+        if [ !spl || !spl.elements ] return null
+        return spl.elements[ 'pane{i}' ]
 
     # the i-th tab's title. it is the TAB's child (sibling of the content), so it
     # is never reached through the Editor.
     func title_at [ i: i32 ] -> element
-        if [ !elements ] return null
-        pv : element elements[ 'pane{i}' ]
+        pv : element pane_view[ i ]
         if [ !pv || !pv.elements ] return null
         return pv.elements[ 'title' ]
 
-    # the i-th tab's text child. tabs are keyed 'pane0'..'pane3'.
+    # a Splitter wrote 0 for this id — the user snapped the pane shut. consume
+    # the entry (so a reopen starts at the default size) and report it.
+    func take_closed [ arr: array, id: string ] -> bool
+        if [ !arr || !id ] return false
+        for [ i: i32 0, i + 1 < arr.count, i += 2 ]
+            k : string [ arr[ i ] ]
+            if [ k && k.compare[ id ] == 0 ]
+                v : f32 [ arr[ i + 1 ] ]
+                if [ v <= 0.0 ]
+                    arr.remove[ i ]
+                    arr.remove[ i ]
+                    return true
+                return false
+        return false
+
+    # close editor pane pi — the one code path for the '-' button AND a divider
+    # snapped shut. stops the pane's running app / resource view first.
+    func close_pane [ pi: i32 ]
+        if [ editor_slots.count <= 1 || pi < 0 || pi >= editor_slots.count ] return
+        pe : Editor pane_at[ pi ]
+        if [ pe && pe.run_view ] pe.toggle_app_run[ false ]
+        if [ pe && pe.rview ]
+            pe.rview.release*[]
+            pe.rview = null
+        editor_slots.remove[ pi ]
+        if [ pi < pane_console.count ] pane_console.remove[ pi ]
+        if [ active_pane >= editor_slots.count ] active_pane = editor_slots.count - 1
+        save_session[]
+
+    # the i-th tab's text child (under the tab's 'split' Splitter).
     func pane_at [ i: i32 ] -> Editor
-        if [ !elements ] return null
-        pv : element elements[ 'pane{i}' ]
-        if [ !pv ] return null
+        pv : element pane_view[ i ]
+        if [ !pv || !pv.elements ] return null
+        spl : element pv.elements[ 'split' ]
+        if [ !spl || !spl.elements ] return null
         # a pure-console pane's 'text' is a Console — the `to` cast is unchecked,
         # so every `Editor pane_at[i]` would read garbage off it. gate it.
-        te : element pv.elements[ 'text' ]
+        te : element spl.elements[ 'text' ]
         if [ !te || !(te inherits Editor) ] return null
         return Editor te
 
@@ -2885,7 +2845,8 @@ element orbiter : trinity # implements compiler
                 if [ e inherits EditorView ]
                     ev2 : EditorView e
                     ed : Editor pane_at[ ev2.pane_index ]
-                    if [ ed ] ed.toggle_app_run[]
+                    # shift+click = build-run --clean (the chip glows blue)
+                    if [ ed ] ed.toggle_app_run[ ev.key.shift ]
                     break
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
@@ -3013,22 +2974,8 @@ element orbiter : trinity # implements compiler
             for [ e: element* ev.target, e, e = e.parent ]
                 if [ e.id && e.id.count >= 5 && e.id.mid[ 0, 4 ] == 'pane' ]
                     pi : i32 [ e.id.mid[ 4, e.id.count - 4 ].real_value[] ]
-                    if [ editor_slots.count > 1 && pi >= 0 && pi < editor_slots.count ]
-                        # stop this pane's running app / resource view (spectra mp3,
-                        # an emulator's audio) before dropping the slot, else it keeps
-                        # playing after the tab is gone.
-                        pe : Editor pane_at[ pi ]
-                        puts 'UNDOCK pe={(pe) ? 1 : 0} run_view={(pe && pe.run_view) ? 1 : 0} rview={(pe && pe.rview) ? 1 : 0}'
-                        if [ pe && pe.run_view ] pe.toggle_app_run[]
-                        if [ pe && pe.rview ]
-                            pe.rview.release*[]
-                            pe.rview = null
-                        editor_slots.remove[ pi ]
-                        if [ pi < pane_console.count ] pane_console.remove[ pi ]
-                        if [ active_pane >= editor_slots.count ] active_pane = editor_slots.count - 1
+                    close_pane[ pi ]
                     break
-            #sync_editor[]
-            save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
         # console-title buttons: 'context' asks the live emulator pane for a
@@ -3042,17 +2989,6 @@ element orbiter : trinity # implements compiler
         if [ ev.target.id == 'ctx_shot' ]
             fn : string snap_window[ ev.target.ux ]
             if [ fn ] feed_agent[ fn + ' ' ]
-            if [ ev.target ] ev.target.ux.restyle = true
-            return
-        # the 'active' state button: drop this editor out of debug-lock into edit mode.
-        if [ ev.target.id == 'active' ]
-            # a title chip: the tab is the ancestor, the Editor is its child
-            for [ e: element* ev.target, e, e = e.parent ]
-                if [ e inherits EditorView ]
-                    av : EditorView e
-                    ed : Editor pane_at[ av.pane_index ]
-                    if [ ed ] ed.edit_armed = true
-                    break
             if [ ev.target ] ev.target.ux.restyle = true
             return
         # clicking a pin (pin{i}) inside an editor opens that docked file
@@ -3295,6 +3231,25 @@ element orbiter : trinity # implements compiler
         # supervised shell: crash verdicts, mic, voice — see orbit_frame
         if [ orbit_app ] orbit_frame[ w ]
 
+        if [ cycle ]
+            cycle_frame += 1
+            if [ cycle_frame % 30 == 0 ]
+                if [ cycle_adding ]
+                    if [ editor_slots.count < 4 ]
+                        editor_slots += -1
+                        pane_console += ''
+                        active_pane = editor_slots.count - 1
+                        save_session[]
+                    el
+                        cycle_adding = false
+                el
+                    if [ editor_slots.count > 1 ]
+                        close_pane[ editor_slots.count - 1 ]
+                    el
+                        cycle_adding = true
+                        cycle_count += 1
+                        puts 'CYCLE {cycle_count}'
+
         # runaway-leak guard: if our RSS passes 20% of physical RAM, quit before
         # the leak thrashes the machine into a solid lock. cheap (/proc read).
         if [ au_mem_fraction[] > 0.20 ]
@@ -3324,7 +3279,7 @@ element orbiter : trinity # implements compiler
         if [ pending_run >= 0 ]
             red : Editor pane_at[ pending_run ]
             if [ red ]
-                if [ !red.run_view ] red.toggle_app_run[]
+                if [ !red.run_view ] red.toggle_app_run[ false ]
                 pending_run = -1
         # findbar opened by [f]: its fields mount a frame later — move focus
         # onto the find input so typing lands in findbar_text, not find_text
@@ -3410,38 +3365,26 @@ element orbiter : trinity # implements compiler
                 ds.feed_fd[ d.fifo_fd_out ]
                 ds.feed_fd[ d.fifo_fd_err ]
 
-        # one tab per split slot, tiled left-to-right between the split seams
-        # (split1/2/3, absolute x in units).
+        # one tab per split slot; the 'panes' Splitter tiles them left-to-right,
+        # eases every seam with filter_n, and paints the 1px divider lines.
         if [ editor_slots.count == 0 ] editor_slots += -1
-        ecount : i32 [ editor_slots.count ]
-        if [ ecount < 1 ] ecount = 1
-        layout_splits[ ecount ]
+        # a divider snapped shut closes that editor — same path as its '-' button.
+        # pane0 is the flex pane and can't snap; scan high→low so removals don't
+        # shift the ids still being checked.
+        for [ ci: i32 editor_slots.count - 1, ci >= 1, ci -= 1 ]
+            if [ take_closed[ pane_sizes, 'pane{ci}' ] ] close_pane[ ci ]
         sp : string search_pane[]
         # the ed: sessions the nav lists live in ed_sessions (same map the pane's
         # own bottom console uses) — a pure-console pane must use THAT map
         if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
         editor_els : Elements []
-        # any pane-count change may have re-created pane elements with the class
-        # default area — drop the index-keyed cache so every pane re-applies.
-        if [ pane_area_ecount != editor_slots.count ]
-            pane_area_ecount = editor_slots.count
-            pane_area_cur    = array string []
+        pane_kids  : Elements []
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             pid  : 'pane{i}'
-            editor_els[pid] = EditorView [ pane_index: i, selected: (sp == pid) ]
-            # areas live ON the instances, set only when they change — the Region
-            # persists across frames so its seam binds keep their eased motion
-            want : pane_area[ i ]
-            pin  : element (elements) ? elements[pid] : null
-            # apply when the string changed OR the element has no area yet — a
-            # pane re-created on a count change comes back area-less, and the
-            # index-keyed cache would otherwise skip it (all panes stack at l0).
-            if [ pin && (!pin.area || i >= pane_area_cur.count || pane_area_cur[i] != want) ]
-                while [ pane_area_cur.count <= i ]
-                    pane_area_cur += ''
-                pane_area_cur[i] = want
-                pin.area = Region [ want.chars ]
-                pin.area.hold[]
+            pane_kids[pid] = EditorView [ pane_index: i, selected: (sp == pid) ]
+        if [ !pane_sizes ] pane_sizes = array [ ]
+        editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b0 }, kids: pane_kids,
+            sizes: pane_sizes, deflt: 0.0, even: true, snap_close: true ]
         # the orbiter avatar peeks in the bottom-right corner. the real 3D Avatar still
         # SIGSEGVs (env-texture vk_image_view not ready at bind), so for now this is a plain
         # topmost placeholder element so the spot/size is visible.

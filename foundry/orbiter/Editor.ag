@@ -425,6 +425,7 @@ ResourceView AppView
     mutable gen        : i32         # generation of the imported surface
     mutable cmd        : string      # console command (streams the app's log)
     mutable dispatched : bool        # cmd handed to its console session (once per run)
+    public  clean_build : bool       # '*' marker: silver-host runs --clean first
     # the document this app was launched FOR (a registered handler opens it)
     mutable doc        : path
     # live-resize state: pane size last seen / last requested + settle counter,
@@ -613,8 +614,9 @@ ResourceView AppView
         # a handler module is launched FOR a document — the path rides as the
         # app's DEFAULT argument (silver-host appends it to the spawn argv).
         # the leading '!' asks silver-host to self-stop the app before init so
-        # orbiter can attach lldb (the in-pane app IS the debug target).
-        req : string [ (doc) ? '!{mod} {doc}' : '!{mod}' ]
+        # orbiter can attach lldb; '*' asks for a --clean rebuild before spawn.
+        mark : string [ (clean_build) ? '!*' : '!' ]
+        req : string [ (doc) ? '{mark}{mod} {doc}' : '{mark}{mod}' ]
         app_mod = mod
         slot = host_app_request[ req.chars ]
         if [ slot < 0 ]
@@ -761,12 +763,13 @@ Layer EditorLayer
         if [ !use ]
             use = EdLineCache [ ]
             editor.code_lines.push[ use ]
+            puts 'LINE+ pool={editor.code_lines.count}'
         disp : editor.display_of[ ln ]
         cw_i : i32 [ i32[ ceil[ f32[ disp.count ] * cw + cw ] ] ]
         if [ cw_i < 1 ] cw_i = 1
         lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
         if [ !use.canvas ]
-            use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true, quantize: true ]
+            use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true, quantize: true, tag: 'line' ]
             use.canvas.update[]
         el [ use.canvas.content_w != cw_i || use.canvas.content_h != lh_i ]
             use.canvas.resize[ cw_i, lh_i ]
@@ -886,8 +889,9 @@ Layer EditorLayer
         if [ !use ]
             use = EdLineCache [ ]
             editor.code_lines.push[ use ]
+            puts 'BAND+ pool={editor.code_lines.count} {maxw}x{lc_h}'
         if [ !use.canvas ]
-            use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: maxw, height: lc_h, load_existing: true, quantize: true ]
+            use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: maxw, height: lc_h, load_existing: true, quantize: true, tag: 'band' ]
             use.canvas.update[]
         el [ use.canvas.content_w != maxw || use.canvas.content_h != lc_h ]
             use.canvas.resize[ maxw, lc_h ]
@@ -1136,6 +1140,8 @@ Layer EditorLayer
         editor.text_lines_frame = 0
         # per-line cache: tick the frame; flush all slots when font metrics change (size/zoom).
         editor.cl_frame += 1
+        if [ editor.cl_frame % 100 == 0 ]
+            puts 'CLPOOL n={editor.code_lines->count} rastered={editor.text_lines_total}'
         if [ editor.cl_cw != cw_tm.w || editor.cl_lh != lh ]
             if [ editor.code_lines ]
                 for [ slot: EdLineCache ] in editor.code_lines
@@ -2041,6 +2047,13 @@ Control Editor
     mutable cl_frame      : i32 [ 0 ]
     mutable cl_cw         : f32 [ 0.0 ]
     mutable cl_lh         : f32 [ 0.0 ]
+
+    # unmount: band/line cache canvases are not element members
+    public func on_teardown [ ]
+        puts 'ED-TD pool={code_lines->count}'
+        for [ slot: EdLineCache ] in code_lines
+            if [ slot.canvas ] slot.canvas.teardown_gpu[]
+        if [ code_lines ] code_lines.clear[]
     # unlimited undo/redo, delta-based. `hist` aliases the current file's cur_buf.hist
     # (linked list of EditAction delta groups, shared by reference like lines↔buf.lines);
     # hist_i is the cursor = number of applied groups, mirrored into cur_buf by touch_hist.
@@ -3041,8 +3054,9 @@ Control Editor
     # (AppView lives in a sibling extend file, so we reach it via the base's
     # is_app_host virtual + the make_app_view free function, never by name here.)
     # play/stop: create or destroy the running app (its OWN process). starting
-    # shows the app; stopping kills it and returns to code.
-    func toggle_app_run []
+    # shows the app; stopping kills it and returns to code. clean = the user
+    # held shift: full --clean rebuild before the launch.
+    func toggle_app_run [ clean: bool ]
         if [ run_view ]
             run_view.release*[]
             run_view = null
@@ -3060,6 +3074,7 @@ Control Editor
         stopped  = false
         nv : AppView [ ]
         nv.src   = src
+        nv.clean_build = clean
         nv.start[]                     # serve socket + build the run command
         run_view = nv
         app_view = true
@@ -3683,9 +3698,10 @@ Control Editor
             return
 
         # run: Ctrl/Cmd-R hosts the current module as a live AppView pane in a
-        # separate process (shared-texture); a second press returns to source
+        # separate process (shared-texture); a second press returns to source.
+        # shift = full --clean rebuild before the launch.
         if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 82 ]    # Key.R
-            toggle_app_run[]
+            toggle_app_run[ ev.key.shift ]
             return
 
         # copy: Ctrl/Cmd-C copies the highlighted text to the system clipboard.

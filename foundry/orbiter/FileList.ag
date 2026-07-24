@@ -120,7 +120,7 @@ Layer FileLayer
 
             if [ !slc.canvas || slc.key != key ]
                 if [ !slc.canvas ]
-                    slc.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true ]
+                    slc.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: cw_i, height: lh_i, load_existing: true, tag: 'flist' ]
                     slc.canvas.update[]
                 el [ slc.canvas.content_w != cw_i || slc.canvas.content_h != lh_i ]
                     slc.canvas.resize[ cw_i, lh_i ]

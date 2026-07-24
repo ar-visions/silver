@@ -1253,6 +1253,8 @@ Render Canvas
         if [ r.color ]     r.color.release_gpu[]
         if [ r.depth ]     r.depth.release_gpu[]
         if [ r.reduction ] r.reduction.release_gpu[]
+        # the ring too — leaked fences exhaust vkCreateFence (SIGTRAP)
+        vk.defer_render[ r ]
 
     # the canvas owns its textures; reclaim their GPU resources directly instead
     # of waiting on a refcount that never reaches 0. called at the cache_canvas
@@ -1301,8 +1303,9 @@ Render Canvas
             test2 += 2
         sdf_w : i32 [ max[ width  / 2, 1 ] ]
         sdf_h : i32 [ max[ height / 2, 1 ] ]
+        stag : string [ (tag) ? tag : 'sdf' ]
         sdf_tex = Texture [ vk: vk, w: w, width: sdf_w, height: sdf_h,
-            pixel_format: Pixel.f32, surface: Surface.color, is_storage: true ]
+            pixel_format: Pixel.f32, surface: Surface.color, is_storage: true, tag: stag ]
         # the glyph atlas (font TEXTURE) is NOT owned by the canvas — it lives on the
         # CanvasFont (per font+size, shared via vk.font_cache, persistent), created
         # lazily on first text draw. so a dropped canvas never frees a font texture,
@@ -1507,6 +1510,17 @@ Render Canvas
                 m.rebind_model[]
         # blur cascade is sized off width/height — drop it so it lazily rebuilds
         # at the new size on next blur[] (cheap; most canvases never blur).
+        # release the old cascade's GPU textures FIRST — nulling alone leaked
+        # ~24 render targets per resize (gigabytes/min under resize churn).
+        if [ blur_stages ]
+            for [ r: Render ] in blur_stages
+                release_render_gpu[ r ]
+        if [ blur_v_arr ]
+            for [ r: Render ] in blur_v_arr
+                release_render_gpu[ r ]
+        if [ blur_h_arr ]
+            for [ r: Render ] in blur_h_arr
+                release_render_gpu[ r ]
         blur_stages = null
         blur_v_arr  = null
         blur_h_arr  = null
@@ -2259,11 +2273,10 @@ Render Canvas
             if [ cw4 < 1 ] cw4 = 1
             if [ ch4 < 1 ] ch4 = 1
             if [ need_alloc ]
-                if [ mdl.cache ]
-                    chdr : Au.header[ mdl.cache ]
-                    if [ chdr.refs > 1 ]
-                        puts 'SVG cache replace: refs={chdr.refs} (held elsewhere — wont free)'
-                mdl.cache = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: cw4, height: ch4, reduce: false, load_existing: true ]
+                # force-free the old cache's GPU textures — refcount never
+                # reaches 0 (pipelines hold it), so replace leaked a canvas
+                if [ mdl.cache ] mdl.cache.teardown_gpu[]
+                mdl.cache = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: cw4, height: ch4, reduce: false, load_existing: true, tag: 'svg' ]
                 mdl.cache.update[]
             mdl.cache.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
             mdl.cache_rw     = rw
@@ -2922,7 +2935,7 @@ class GlyphAtlas
         if [ size == 0 ]
             size = 1024
         texture = Texture [ vk: vk, w: w, width: size, height: size,
-            pixel_format: Pixel.u8, surface: Surface.color ]
+            pixel_format: Pixel.u8, surface: Surface.color, tag: 'atlas' ]
         slots   = array GlyphAtlasSlot []
         shelf_x = 0
         shelf_y = 0
