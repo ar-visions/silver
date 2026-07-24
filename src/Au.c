@@ -3701,7 +3701,12 @@ Au __op(i32 optype, Au L, Au R) {
         if (search->context == search) break;
         search = search->context;
     }
-    assert(op_mem, "operator %d not found on type %s", optype, type->ident ? type->ident : "?");
+    static symbol op_names[] = { "?", "lmul", "ldiv", "lright", "lleft",
+        "add", "sub", "mul", "div", "or", "and", "bitwise_or", "bitwise_and",
+        "xor", "mod" };
+    symbol op_name = (optype > 0 && optype <= 14) ? op_names[optype] : "?";
+    assert(op_mem, "operator %s (%d) not found on type %s — generic Au operand; convert to a concrete type at the call site",
+        op_name, optype, type->ident ? type->ident : "?");
     char*  type_bytes = (char*)type;
     void** ft = (void**)(type_bytes + offsetof(struct _Au_f, ft));
     typedef Au (*op_fn)(Au, Au);

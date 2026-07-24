@@ -45,7 +45,7 @@ typedef struct {
     HostApp app[HOST_APPS];
 } HostShared;
 
-static int rebuild_blocking(const char* name);
+static int rebuild_blocking(const char* name, int clean);
 
 typedef int        (*frame_fn)(void);
 typedef void       (*destroy_fn)(void);
@@ -193,10 +193,15 @@ static void spawn_slot_app(int k, const char* bindir) {
     // "module [default-arg]": the arg (a document path) rides the spawn argv
     char* arg = strchr(name, ' ');
     if (arg) { *arg = 0; arg++; }
-    // leading '!' on the module = debug: the app self-stops before init (below)
-    // so orbiter can attach lldb + arm breakpoints (incl. init), then continue.
-    int   dbg = (name[0] == '!');
-    char* nm  = dbg ? name + 1 : name;
+    // leading markers: '!' = debug (the app self-stops before init so orbiter
+    // can attach lldb); '*' = clean (full --clean rebuild before the spawn).
+    int   dbg = 0, clean = 0;
+    char* nm  = name;
+    while (*nm == '!' || *nm == '*') {
+        if (*nm == '!') dbg   = 1;
+        if (*nm == '*') clean = 1;
+        nm++;
+    }
     // app binaries live beside this supervisor binary (one products dir)
     char bin[4300];
     snprintf(bin, sizeof(bin), "%s/%s", bindir, nm);
@@ -206,7 +211,7 @@ static void spawn_slot_app(int k, const char* bindir) {
       int lfd = open(lp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
       if (lfd >= 0) close(lfd); }
     struct stat st;
-    if (stat(bin, &st) != 0 && rebuild_blocking(nm) != 0) {
+    if ((clean || stat(bin, &st) != 0) && rebuild_blocking(nm, clean) != 0) {
         fprintf(stderr, "silver-host: %s build failed — slot %d dead\n", name, k);
         ap->state = 3;
         return;
@@ -624,14 +629,14 @@ static int sources_newer(const char* product, source_watch* srcs, int nsr) {
 // NOT run the (stale) product when this fails.
 // spawn the recompile WITHOUT waiting — the frame loop keeps the app live while
 // silver builds; the caller reaps with waitpid(WNOHANG) and reloads on success.
-static pid_t rebuild_spawn(const char* name) {
+static pid_t rebuild_spawn(const char* name, int clean) {
     char cmd[8192];
     // --build: compile ONLY. bare `silver <app>` would LAUNCH the app (silver_live_run execs
     // the live host), spawning a whole second process+window on every reload while this one
     // keeps running. we just want the fresh .so produced so the host below hot-swaps it.
     snprintf(cmd, sizeof(cmd),
-        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build",
-        name);
+        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build%s",
+        name, clean ? " --clean" : "");
     // send the compile output to the app's OWN log so orbiter's console (which tails
     // /tmp/<app>.log) shows the compilation. spawn_slot_app truncated it beforehand,
     // and the app appends (host_log_setup) so build + runtime share the one file.
@@ -678,8 +683,8 @@ static int rebuild_status(int rc, const char* name) {
     return 0;
 }
 
-static int rebuild_blocking(const char* name) {
-    pid_t pid = rebuild_spawn(name);
+static int rebuild_blocking(const char* name, int clean) {
+    pid_t pid = rebuild_spawn(name, clean);
     if (pid < 0) return -1;
     int rc = 0;
     if (waitpid(pid, &rc, 0) < 0) {
@@ -697,7 +702,7 @@ static int do_recompile(void* handle, const char* name) {
         invoke_fn(name);   // in-process compiler reports its own errors
         return 0;
     }
-    return rebuild_blocking(name);
+    return rebuild_blocking(name, 0);
 }
 
 int main(int argc, char** argv) {
@@ -832,7 +837,7 @@ int main(int argc, char** argv) {
     int nsr = 0;
     load_sources(artifacts, srcs, &nsr);
     if (sources_newer(product, srcs, nsr)) {
-        if (rebuild_blocking(name) != 0) {
+        if (rebuild_blocking(name, 0) != 0) {
             fprintf(stderr, "%s: fix the build errors above and relaunch.\n", name);
             return 1;
         }
@@ -908,7 +913,7 @@ int main(int argc, char** argv) {
                 // only pause left is the flash save + dlopen swap).
                 for (int j = 0; j < nsr; j++)
                     srcs[j].mtime = file_mtime(srcs[j].path);
-                compile_pid = rebuild_spawn(name);
+                compile_pid = rebuild_spawn(name, 0);
                 if (compile_pid < 0) compile_pid = 0;
             }
             // else: a compile is already in flight — leave the mtimes stale so this
