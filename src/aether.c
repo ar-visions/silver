@@ -1826,16 +1826,20 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
         }
     }
 
-    // runtime operator dispatch for generic Au operands
+    // generic Au operands have no compile-time operator: emitting a runtime
+    // dispatch (__op) faults at app runtime with no source location when the
+    // boxed value is a primitive. reject HERE with the module file:line so the
+    // author converts to a concrete type (e.g. f32[ x ]) at the call site.
     if (optype >= OPType__add && optype <= OPType__mod) {
         bool L_is_au = LV && canonical(LV) && canonical(LV)->autype == typeid(Au);
         bool R_is_au = RV && canonical(RV) && canonical(RV)->autype == typeid(Au);
         if (L_is_au || R_is_au) {
-            Au_t f_op = find_member(typeid(Au), "__op", AU_MEMBER_FUNC, 0, false);
-            if (f_op) {
-                enode op_val = e_operand(a, _i32(optype), etypeid(i32));
-                return e_fn_call(a, u(efunc, f_op), a(op_val, LV, RV), false, true);
-            }
+            token tk = a->statement_origin ? a->statement_origin : aether_peek_safe(a);
+            fault("%o:%i:%i: operator '%o' on a generic Au %s operand — "
+                  "convert to a concrete type first (e.g. f32[ x ])",
+                (tk && tk->source) ? (Au)tk->source : (Au)a->module_file,
+                tk ? (i32)tk->line : 0, tk ? (i32)tk->column : 0,
+                op_name, L_is_au ? "left" : "right");
         }
     }
 
@@ -2458,6 +2462,24 @@ enode aether_e_expect(aether a, enode cond, enode msg) {
         LLVMValueRef stderr_val = LLVMBuildLoad2(B, i8ptr, stderr_fn, "stderr_val");
         LLVMValueRef args[] = { cstr_val->value, stderr_val };
         LLVMBuildCall2(B, fputs_ty, fputs_fn, args, 2, "");
+    #ifdef __APPLE__
+        cstr stdout_sym = "__stdoutp";
+    #else
+        cstr stdout_sym = "stdout";
+    #endif
+        // mirror to stdout + flush — stderr pipe dies at re-raise
+        LLVMValueRef stdout_g = LLVMGetNamedGlobal(a->module_ref, stdout_sym);
+        if (!stdout_g)
+            stdout_g = LLVMAddGlobal(a->module_ref, i8ptr, llvm_id(a, stdout_sym));
+        LLVMValueRef stdout_val = LLVMBuildLoad2(B, i8ptr, stdout_g, "stdout_val");
+        LLVMValueRef args2[] = { cstr_val->value, stdout_val };
+        LLVMBuildCall2(B, fputs_ty, fputs_fn, args2, 2, "");
+        LLVMTypeRef  fflush_ty = LLVMFunctionType(i32_ty, &i8ptr, 1, 0);
+        LLVMValueRef fflush_fn = LLVMGetNamedFunction(a->module_ref, "fflush");
+        if (!fflush_fn)
+            fflush_fn = LLVMAddFunction(a->module_ref, "fflush", fflush_ty);
+        LLVMValueRef nullp = LLVMConstNull(i8ptr);
+        LLVMBuildCall2(B, fflush_ty, fflush_fn, &nullp, 1, "");
     }
     // debugtrap for debugger, then abort
     unsigned trap_id = LLVMLookupIntrinsicID("llvm.debugtrap", 14);
@@ -2500,6 +2522,13 @@ enode aether_e_fault(aether a, enode msg) {
         puts_fn = LLVMAddFunction(a->module_ref, "puts", puts_ty);
     LLVMValueRef args[] = { cstr_msg->value };
     LLVMBuildCall2(B, puts_ty, puts_fn, args, 1, "");
+    // flush — abort discards buffered stdout on the tee pipe
+    LLVMTypeRef  fflush_ty = LLVMFunctionType(i32_ty, &i8ptr, 1, 0);
+    LLVMValueRef fflush_fn = LLVMGetNamedFunction(a->module_ref, "fflush");
+    if (!fflush_fn)
+        fflush_fn = LLVMAddFunction(a->module_ref, "fflush", fflush_ty);
+    LLVMValueRef nullp = LLVMConstNull(i8ptr);
+    LLVMBuildCall2(B, fflush_ty, fflush_fn, &nullp, 1, "");
 
     // abort
     LLVMTypeRef  abort_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), null, 0, 0);
