@@ -2091,7 +2091,7 @@ static enode read_keywords(silver a, etype mdl_expect) {
         push(toks, (Au)compacted);
     }
     Au_t target = (mdl_expect && mdl_expect->autype) ?
-        au_arg_type(mdl_expect->autype) : null;
+        au_arg_type((Au)mdl_expect->autype) : null;
     if (target && target != typeid(tokens)) {
         if (constructs_with(target, typeid(string)) ||
             constructs_with(target, typeid(cstr))   ||

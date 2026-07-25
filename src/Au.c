@@ -77,75 +77,20 @@ int seq;
 #undef hold
 #undef drop
 
-// ---- ref provenance ---------------------------------------------------------
-// track which source:line holds each live ref, for ONE type at a time. off
-// until au_track(name) is called. only the tracked type pays anything; every
-// other object and all call sites are untouched (no signature/header change).
-static Au_t au_track_type = NULL;
+
 // dir: +1 hold, -1 drop. accounting is NET PER CALL-SITE — refs carry
 // no identity, but a site whose holds outnumber its drops IS the leak
 typedef struct { Au obj; void* bt[6]; int n; int dir; } au_prov_t;
 static au_prov_t* au_prov = NULL;
 static int au_prov_count = 0, au_prov_alloc = 0;
 
-none au_track(Au_t type) { au_track_type = type; }
-
 bool inherits(Au_t src, Au_t check);
-static bool au_prov_match(Au a) {
-    if (!au_track_type) return false;
-    // match subclasses too (EditorTitle is an element)
-    return inherits((Au_t)header(a)->au, au_track_type);
-}
-__attribute__((noinline)) static void au_prov_rec(Au a, int dir) {
-    if (au_prov_count == au_prov_alloc) {
-        au_prov_alloc = au_prov_alloc ? au_prov_alloc * 2 : 256;
-        au_prov = (au_prov_t*)realloc(au_prov, au_prov_alloc * sizeof(au_prov_t));
-    }
-    au_prov_t* e = &au_prov[au_prov_count++];
-    e->obj = a;
-    e->n   = backtrace(e->bt, 6);
-    e->dir = dir;
-}
-static void au_prov_push(Au a) { au_prov_rec(a, 1); }
-static void au_prov_pop(Au a)  { au_prov_rec(a, -1); }
-// object freed: its address may be recycled — purge its records
-static void au_prov_purge(Au a) {
-    int w = 0;
-    for (int i = 0; i < au_prov_count; i++)
-        if (au_prov[i].obj != a) au_prov[w++] = au_prov[i];
-    au_prov_count = w;
-}
-// net holds per call-site for `a`: sites with net>0 are live holders
-none au_prov_dump(Au a) {
-    Au f = header(a);
-    printf("=== net holders of %s %p (refs %i) ===\n",
-        (f->au && f->au->ident) ? f->au->ident : "?", (void*)a, (i32)f->refs);
-    void* sites[64]; int net[64]; int rep[64]; int ns = 0;
-    for (int i = 0; i < au_prov_count; i++) {
-        if (au_prov[i].obj != a) continue;
-        void* pc = au_prov[i].n > 2 ? au_prov[i].bt[2] : NULL;
-        int s = -1;
-        for (int j = 0; j < ns; j++) if (sites[j] == pc) { s = j; break; }
-        if (s < 0 && ns < 64) { s = ns++; sites[s] = pc; net[s] = 0; rep[s] = i; }
-        if (s >= 0) net[s] += au_prov[i].dir;
-    }
-    for (int j = 0; j < ns; j++) {
-        if (net[j] == 0) continue;
-        au_prov_t* e = &au_prov[rep[j]];
-        char** s = backtrace_symbols(e->bt, e->n);
-        printf("  net %+d:\n", net[j]);
-        for (int k = 2; k < e->n && k < 5; k++) printf("    %s\n", s[k]);
-        free(s);
-    }
-    fflush(stdout);
-}
 
 Au Au_hold(Au a) {
     if (a) {
         Au f = header(a);
         if (f->managed == 0) return a; // refs of 0 is unmanaged memory (user managed)
         __atomic_fetch_add((i32*)__builtin_assume_aligned(&f->refs, 4), 1, __ATOMIC_SEQ_CST);
-        if (au_prov_match(a)) au_prov_push(a);
     }
     return a;
 }
@@ -2468,9 +2413,7 @@ none Au_drop(Au a) {
     Au info = header(a);
     if (!info->managed) return;
     i32 n = __atomic_sub_fetch((i32*)__builtin_assume_aligned(&info->refs, 4), 1, __ATOMIC_SEQ_CST);
-    if (au_prov_match(a)) au_prov_pop(a);
     if (n <= 0) {
-        if (au_prov_match(a)) au_prov_purge(a);
         af[info->managed] = null;
         Au_free(a);
     }
@@ -2932,10 +2875,6 @@ none Au_hold_members(Au a) {
             Au hd = header(member_value);
             if (hd->managed) {
                 __atomic_fetch_add((i32*)__builtin_assume_aligned(&hd->refs, 4), 1, __ATOMIC_SEQ_CST);
-                if (au_prov_match(member_value)) au_prov_push(member_value);
-                if (hd->refs <= 0 && strcmp(hd->au->ident, "Canvas") == 0) {
-                    printf("(hold members) holding FREED Canvas (%p) with refs now set to %i\n", *mdata, hd->refs);
-                }
             }
         }
         type = type->context;
@@ -5157,16 +5096,6 @@ none Au_free(Au a) {
     Au       aa = header(a);
     // auto_free frees without Au_drop — purge here so recycled
     // addresses never show a previous object's records
-    if (au_prov_match(a)) au_prov_purge(a);
-    //char ch = aa->au->ident[0];
-
-    /*
-    if (ch == 'V') {
-        if (aa->source)
-            printf("freeing %s:%i (%s)\n", aa->source, aa->line, aa->au->ident);
-        //return;
-    }
-    */
 
     // C-imported types are flat memory — no init/dealloc/hold/drop vtable.
     // just free the allocation and skip the chain walk entirely.
