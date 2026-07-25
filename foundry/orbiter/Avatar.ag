@@ -15,6 +15,8 @@ Orbiter PBR
     mutable blend_rings  : f32
     mutable blend_haze   : f32
     mutable blend_bands  : f32
+    # output gamma correction (display transfer), 2.2 unless styled
+    mutable gamma        : f32
 
     attrib color         : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
     attrib normal        : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
@@ -26,10 +28,12 @@ Orbiter PBR
     attrib ior           : LayoutBinding [ type:typeid[ Surface ], id:Surface.ior,          count:1, format: typeid[ f32 ] ]
     attrib environment   : LayoutBinding [ type:typeid[ Surface ], id:Surface.environment,  count:1, format: typeid[ rgbaf ] ]
 
-    attrib a_color_0      : VertexInput    [ type:typeid[ vec4f ] ]
+    # VertexInputs bind POSITIONALLY to the canonical interleave:
+    # POSITION, NORMAL, TEXCOORD_0, ..., COLOR_0 — declare in that order
     attrib a_pos          : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_normal       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_uv           : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib a_color_0      : VertexInput    [ type:typeid[ vec4f ] ]
 
     attrib v_world_normal : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_world_pos    : VertexOutput [ type:typeid[ vec3f ] ]
@@ -45,7 +49,8 @@ Orbiter PBR
         proj  = mat4f.identity[]
         model = mat4f.identity[]
         view  = mat4f.identity[]
-        pulse_width = 1.0
+        if [ pulse_width == 0.0 ] pulse_width = 1.0
+        if [ gamma == 0.0 ] gamma = 2.2
 
     func set_frame [ model_mat: mat4f, view_mat: mat4f, proj_mat: mat4f, ep: vec4f, t: f32 ]
         model = model_mat
@@ -274,7 +279,9 @@ Orbiter PBR
         vec3  plasma_light = vec3(0.1, 0.2, 1.0) * source_dot * pulse_att * ubo.pulse_width * 0.088;
 
         vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow + plasma_light;
-        result           = pow(ACESFilm(result), vec3(1.0 / 2.2));
+        // gamma 0 (unset uniform) would blow the image to white — floor it
+        float g_out      = max(ubo.gamma, 1.0);
+        result           = pow(ACESFilm(result), vec3(1.0 / g_out));
         return vec4(result, baseColor.a);
     }
 
@@ -315,6 +322,14 @@ Orbiter PBR
     }
 
 Orbiter Aura
+	# height of the outer rim halo cylinder, world units
+	mutable halo_height : f32
+	# central beam fade curve: 1 = linear to alpha at the top; higher = fades
+	# out sooner/softer; below 1 holds brightness longer before the falloff
+	mutable beam_fade   : f32
+	# central beam cone: radius scale at the tip (1 = straight column,
+	# 0.3 = narrows to 30% width at the top)
+	mutable beam_cone   : f32
 	attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
 	attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
@@ -327,8 +342,12 @@ Orbiter Aura
 		model         = mat4f.identity[]
 		view          = mat4f.identity[]
 		proj          = mat4f.identity[]
-		pulse_width   = 1.0
-        pulse_height  = 1.0
+		# guarded: init runs AFTER construction props — never clobber them
+		if [ pulse_width  == 0.0 ] pulse_width  = 1.0
+		if [ pulse_height == 0.0 ] pulse_height = 1.0
+		if [ halo_height  == 0.0 ] halo_height  = 0.4
+		if [ beam_fade    == 0.0 ] beam_fade    = 1.6
+		if [ beam_cone    == 0.0 ] beam_cone    = 0.35
 
 	func vertex[] -> GLSL none {
 		vec2 ndc       = a_pos.xy;
@@ -369,90 +388,13 @@ Orbiter Aura
 		float alpha = 0.0;
 		float ta    = ubo.time * 2.0;
 
-		// ── main engine beam ─────────────────────────────────────────
-		vec3  beam_o = (ubo.model * vec4(0.0, -0.5, 0.0, 1.0)).xyz;
-		vec3  beam_d = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
-		float beam_l = 5.0;
-		float beam_r = 0.48;
-		float aura_r = 0.62;
-		vec3  up_ref  = abs(beam_d.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-		vec3  b_tang  = normalize(cross(up_ref, beam_d));
-		vec3  b_binor = cross(beam_d, b_tang);
-		vec3  bm_oc   = ro - beam_o;
-		vec3  bm_rdp  = rd - dot(rd, beam_d) * beam_d;
-		vec3  bm_ocp  = bm_oc - dot(bm_oc, beam_d) * beam_d;
-		float bm_a    = dot(bm_rdp, bm_rdp);
-		float bm_b    = 2.0 * dot(bm_rdp, bm_ocp);
-		float bm_cc   = dot(bm_ocp, bm_ocp) - aura_r * aura_r;
-		float bm_dsc  = bm_b*bm_b - 4.0*bm_a*bm_cc;
-		// center beam hidden for now (remove `false &&` to restore the shaft)
-		if (false && bm_dsc >= 0.0 && bm_a > 1e-6) {
-			float bm_sq = sqrt(bm_dsc);
-			float bm_t0 = (-bm_b - bm_sq) / (2.0 * bm_a);
-			float bm_t1 = (-bm_b + bm_sq) / (2.0 * bm_a);
-			if (bm_t1 >= 0.0) {
-				float t_enter = max(bm_t0, 0.0);
-				float t_exit  = bm_t1;
-				float bm_s0   = dot(bm_oc, beam_d);
-				float bm_drd  = dot(rd, beam_d);
-				if (abs(bm_drd) > 1e-6) {
-					float tc0 = -bm_s0 / bm_drd;
-					float tc1 = (beam_l - bm_s0) / bm_drd;
-					t_enter = max(t_enter, min(tc0, tc1));
-					t_exit  = min(t_exit,  max(tc0, tc1));
-				}
-				if (t_exit > t_enter) {
-					float bm_dt = (t_exit - t_enter) / 32.0;
-					for (int i = 0; i < 32; i++) {
-						if (alpha > 0.97) break;
-						float t   = t_enter + (float(i) + 0.5) * bm_dt;
-						vec3  p   = ro + rd * t;
-						float at  = clamp(dot(p - beam_o, beam_d), 0.0, beam_l);
-						vec3  pax = beam_o + beam_d * at;
-						vec3  rv  = p - pax;
-						float r      = length(rv);
-						float taper  = max(0.08, 1.0 - at / beam_l * 0.70);
-						float rn     = r / (beam_r * taper);
-						float plasma = sin(p.x * 14.0 + p.z *  9.0 + ta * 5.2) * 0.33
-						             + sin(p.y * 11.0 + p.x * 16.0 - ta * 4.3) * 0.33
-						             + sin(p.z * 18.0 + p.y * 12.0 + ta * 6.1) * 0.34;
-						plasma = clamp(plasma * 0.5 + 0.5, 0.0, 1.0);
-						float ripple = pow(max(sin(at * 11.0 - ta * 7.5) * 0.5 + 0.5, 0.0), 2.5);
-						float uc     = dot(rv, b_tang);
-						float vc     = dot(rv, b_binor);
-						float ang    = atan(vc, uc);
-						float sphase = ang * 3.0 + at * 6.0 - ta * 3.8;
-						float spiral = pow(max(sin(sphase) * 0.5 + 0.5, 0.0), 1.5);
-						float inner  = 1.0 - smoothstep(0.0, 0.30, rn);
-						float shell  = smoothstep(0.0, 0.30, rn) * (1.0 - smoothstep(0.30, 1.0, rn));
-						float outer  = max(0.0, 1.0 - rn);
-						float base   = exp(-rn * rn * 7.0);
-						float bmod   = inner  * (0.5 + plasma * 0.5)
-						             + shell  * ripple * 0.5
-						             + outer  * spiral * 0.4;
-						float axis_f = at / beam_l;
-						float f      = max(0.0, 1.0 - at / 2.0);
-						float dens   = base * clamp(bmod, 0.0, 1.0) * f * f;
-						float cap    = smoothstep(0.0, 0.06, axis_f);
-						vec3  c_core  = vec3(2.8, 1.5, 0.4);
-						vec3  c_shaft = vec3(0.4, 0.7, 3.2);
-						vec3  c_halo  = vec3(0.45, 0.08, 1.4);
-						vec3  sc = mix(c_core,  c_shaft, smoothstep(0.0,  0.20, rn));
-						sc       = mix(sc,      c_halo,  smoothstep(0.30, 0.85, rn));
-						float emit = dens * bm_dt * 8.0 * ubo.flame * cap;
-						col   += sc * emit * (1.0 - alpha);
-						alpha += emit * (1.0 - alpha);
-					}
-				}
-			}
-		}
 
 		// ── core beam: a SOLID cylinder straight up the axis, same volume style AND
 		//    colors as the outer ring (fog + center weighting + angular pulse + up-fade) ──
 		float cyl_R   = 0.22;
 		float cyl_h   = 1.0 * ubo.pulse_height;
-		vec3  cyl_o   = (ubo.model * vec4(0.0, -0.40, 0.0, 1.0)).xyz;
-		vec3  cyl_d   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
+		vec3  cyl_o   = (ubo.model * vec4(0.0, -0.05, 0.0, 1.0)).xyz;
+		vec3  cyl_d   = normalize(mat3(ubo.model) * vec3(0.0, -1.0, 0.0));
 		vec3  cyl_oc  = ro - cyl_o;
 		vec3  cyl_rdp = rd - dot(rd, cyl_d) * cyl_d;
 		vec3  cyl_ocp = cyl_oc - dot(cyl_oc, cyl_d) * cyl_d;
@@ -483,13 +425,22 @@ Orbiter Aura
 						float cyl_at  = clamp(dot(cyl_p - cyl_o, cyl_d), 0.0, cyl_h);
 						vec3  cyl_ax  = cyl_o + cyl_d * cyl_at;
 						float cyl_r   = length(cyl_p - cyl_ax);
-						float cyl_t   = cyl_r / cyl_R;
+						// cone: the effective radius narrows toward the tip
+						// taller beams taper harder — QUADRATIC in height so a
+						// tall flame converges to a sharp point; small beams
+						// (height <= 1) keep their authored cone untouched.
+						// the shaft holds full width, then converges to a true
+						// POINT over the last stretch (pow curve, tip radius 0)
+						float ph_c    = max(ubo.pulse_height, 1.0);
+						float cone_k  = pow(cyl_at / cyl_h, 2.5 * ph_c);
+						float cyl_lr  = cyl_R * max(mix(1.0, 0.0, cone_k), 0.02);
+						float cyl_t   = cyl_r / cyl_lr;
 						// steep gaussian radial falloff: a thin dense core at the axis,
 						// sides drop to ~1/10 by mid-radius (not a fat column)
 						float cyl_ctr = exp(-cyl_t * cyl_t * 11.0);
 						float cyl_fg  = pfog(cyl_p * 5.0 + vec3(0.0, ta * 0.25, 0.0));
 						vec3  cyl_col = mix(vec3(2.6, 1.3, 0.5), vec3(1.4, 0.6, 0.15), cyl_at / cyl_h);
-						float cyl_fad = 1.0 - cyl_at / cyl_h;
+						float cyl_fad = pow(max(1.0 - cyl_at / cyl_h, 0.0), ubo.beam_fade);
 						float cyl_den = 11.0 * ubo.flame * (0.3 + cyl_fg) * cyl_ctr * cyl_fad * cyl_dt;
 						col   += cyl_col * cyl_den * (1.0 - alpha);
 						alpha += cyl_den * (1.0 - alpha);
@@ -504,9 +455,9 @@ Orbiter Aura
 		// No p_in/p_out wall-proximity coloring to avoid banding.
 		float rng_Ro  = 0.56;
 		float rng_Ri  = 0.471847;
-		float rng_bh  = 0.4 * ubo.pulse_height;
-		vec3  rng_o   = (ubo.model * vec4(0.0, -0.162, 0.0, 1.0)).xyz;
-		vec3  rng_d   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
+		float rng_bh  = ubo.halo_height;
+		vec3  rng_o   = (ubo.model * vec4(0.0, 0.148, 0.0, 1.0)).xyz;
+		vec3  rng_d   = normalize(mat3(ubo.model) * vec3(0.0, -1.0, 0.0));
 		vec3  rng_ref = abs(rng_d.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
 		vec3  rng_tg  = normalize(cross(rng_d, rng_ref));
 		vec3  rng_bn  = cross(rng_tg, rng_d);
@@ -561,7 +512,7 @@ Orbiter Aura
 		// a gaussian glow sphere at the throat, raymarched with fog noise so it reads
 		// as an internal volume (not a flat disc). hot orange at center → deep orange
 		// at the rim; the PBR walls pick up the matching tone via the throat light.
-		vec3  cor_o  = (ubo.model * vec4(0.0, -0.40, 0.0, 1.0)).xyz;
+		vec3  cor_o  = (ubo.model * vec4(0.0, -0.07, 0.0, 1.0)).xyz;
 		float cor_R  = 0.44;
 		vec3  cor_oc = ro - cor_o;
 		float cor_qb = dot(rd, cor_oc);
@@ -588,7 +539,10 @@ Orbiter Aura
 			}
 		}
 
-		fragColor = vec4(col, clamp(alpha, 0.0, 1.0));
+		// top-edge feather: the volume must never hard-clip at the render
+		// target's border — dissolve anything approaching the frame top
+		float edge_f = smoothstep(0.0, 0.22, v_uv.y);
+		fragColor = vec4(col, clamp(alpha, 0.0, 1.0)) * edge_f;
 	}
 
 
@@ -596,10 +550,10 @@ Orbiter Core
     
     attrib color        : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
-    attrib a_color      : VertexInput  [ type:typeid[ vec4f ] ]
     attrib a_pos        : VertexInput  [ type:typeid[ vec3f ] ]
     attrib a_normal     : VertexInput  [ type:typeid[ vec3f ] ]
     attrib a_uv         : VertexInput  [ type:typeid[ vec2f ] ]
+    attrib a_color      : VertexInput  [ type:typeid[ vec4f ] ]
     attrib v_world_pos  : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_normal     : VertexOutput [ type:typeid[ vec3f ] ]
     attrib v_uv         : VertexOutput [ type:typeid[ vec2f ] ]
@@ -609,7 +563,7 @@ Orbiter Core
     attrib fragColor    : FragmentOutput [ type:typeid[ vec4f ] ]
 
     func init []
-        pulse_width = 1.0
+        if [ pulse_width == 0.0 ] pulse_width = 1.0
 
     func vertex [] -> GLSL none {
         vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
@@ -659,9 +613,10 @@ Orbiter Core
 
 
 Orbiter Plasma
-	attrib a_color      : VertexInput    [ type:typeid[ vec4f ] ]
 	attrib a_pos        : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_normal     : VertexInput    [ type:typeid[ vec3f ] ]
+	attrib a_uv         : VertexInput    [ type:typeid[ vec2f ] ]
+	attrib a_color      : VertexInput    [ type:typeid[ vec4f ] ]
 	attrib v_world_pos  : VertexOutput   [ type:typeid[ vec3f ] ]
 	attrib v_local_pos  : VertexOutput   [ type:typeid[ vec3f ] ]
 	attrib v_normal     : VertexOutput   [ type:typeid[ vec3f ] ]
@@ -671,7 +626,7 @@ Orbiter Plasma
 
 	func init []
 		transparent = true
-		pulse_width  = 2.0
+		if [ pulse_width == 0.0 ] pulse_width = 2.0
 
 	func vertex [] -> GLSL none {
         v_local_pos    = a_pos;
@@ -712,43 +667,141 @@ element Avatar
     #public shaders           : map shader  [string]
     public materials         : map Material[string]
 
-    intern s                 : shader
-    intern plasma            : Plasma
     public model_path        : string
     #public shader_type       : string
     public environment_path  : string
-    public render_scale      : f32
+    # ---- declared style: every look property lives HERE with its default,
+    # overridable at the construction site like any element prop ----
+    public render_scale      : f32   [ 4.0 ]
     public vol_scale         : f32
     public clear_color       : vec4f
     public rotate            : array Rotation
     public translate         : array Translation
     public scale             : array Scaling
     public update            : EventDispatch
-    public eye_pos           : vec3f
-    public target_pos        : vec3f
-    public up_vec            : vec3f
-    public fov               : f32
-    public blend_rings       : f32
-    public blend_haze        : f32
-    public blend_bands       : f32
+    public eye_pos           : vec3f [ 0.0, 3.9, -1.5 ]
+    public target_pos        : vec3f [ 0.0, -0.15, 0.0 ]
+    public up_vec            : vec3f [ 0.0, -1.0, 0.0 ]
+    # view tilt per state, DEGREES off the straight-down axis (0 = face-on),
+    # and the ease filter every transitioned property rides
+    public rest_tilt         : f32
+    public hover_tilt        : f32
+    public press_tilt        : f32
+    public ease_filter       : f32   [ 0.86 ]
+    mutable tilt_cur         : f32
+    intern  cmp_done         : bool
+    public fov               : f32   [ 24.0 ]
+    public blend_rings       : f32   [ 0.2 ]
+    public blend_haze        : f32   [ 1.0 ]
+    public blend_bands       : f32   [ 0.2 ]
+    # the shader passes, declared exactly like Layer members: the member
+    # ident is the shaders-map key (the css `shaders.<key>` form) and the
+    # framework collects them with context (vk) wired
+    # the base class carries the WORKING default look; a style subclass
+    # (see OrbiterAvatar in orbiter.ag) overrides any of it the same way
+
+    public orbiter           : PBR [
+        model_id: 'orbiter32',
+        groups: ["outside","flower","separator"],
+        env_id: 'forest', pulse_width: 4.0, gamma: 2.2 ]
+    
+    public core              : Core [
+        model_id: 'orbiter32',
+        groups: ["core"], 
+        texture: 'textures/core.png', mip_levels: 8, pulse_width: 4.0 ]
+    
+    public plasma            : Plasma  [
+        model_id: 'orbiter32',
+        groups: ["top_ring","flower"],
+        pulse_width: 1.0 ]
+    
+    public aura              : Aura    [ model_id: 'uv-quad2', env_id: 'forest',
+        pulse_width: 0.4, pulse_height: 1.2, halo_height: 0.4,
+        beam_fade: 2.2, beam_cone: 0.35, flame: 0.25 ]
+    public aura_hover        : Aura   [ states: State.hovered, model_id: 'uv-quad2', env_id: 'forest',
+        pulse_width: 2.0, pulse_height: 2.4, halo_height: 0.8,
+        beam_fade: 2.2, beam_cone: 0.30, flame: 0.6 ]
+    public aura_press        : Aura   [ states: State.pressed, model_id: 'uv-quad2', env_id: 'forest',
+        pulse_width: 1.2, pulse_height: 1.8, halo_height: 0.6,
+        beam_fade: 2.2, beam_cone: 0.32, flame: 0.45 ]
     # peek (false) vs full-size (true) — drives the CSS :expanded state. toggled by a click.
     public expanded          : bool
+    # drag state: pointer offset within the element at grab
+    mutable drag_on          : bool
+    mutable grab_x           : f32
+    mutable grab_y           : f32
+    # wheel-zoom: eased px size (cur) chasing the wheel target (want),
+    # scaled about the cursor anchor; targets rebuild when the ease settles
+    mutable want_w           : f32
+    mutable want_h           : f32
+    mutable cur_w            : f32
+    mutable cur_h            : f32
+    mutable anchor_x         : f32
+    mutable anchor_y         : f32
+    # environment-light orientation (radians), pushed to the PBR each frame
+    public  env_yaw          : f32
+    public  env_pitch        : f32
+    # persistent across target rebuilds (zoom): gltf + convolved env caches —
+    # re-running the env convolution mid-draw on every settle faulted the GPU
+    intern  mcache           : map GltfModel[string]
+    intern  envcache         : map Texture[string]
+    mutable env_on           : bool
+
+    # drag anywhere on the avatar moves it; the area re-anchors to l/t px
+    func on_press [ ev: Event ]
+        grab_x  = ev.mouse.pos.x
+        grab_y  = ev.mouse.pos.y
+        drag_on = true
+        set_capture[]
+        ev.no_default = true
+
+    func on_move [ ev: Event ]
+        if [ !drag_on ] return
+        nx : f32 [ bounds.x + (ev.mouse.pos.x - grab_x) ]
+        ny : f32 [ bounds.y + (ev.mouse.pos.y - grab_y) ]
+        if [ cur_w > 0.0 ]
+            area = Region [ 'l{nx}px t{ny}px w{cur_w}px h{cur_h}px' ]
+        el
+            area = Region [ 'l{nx}px t{ny}px w8 h14' ]
+        pristine = false
+
+    func on_release [ ev: Event ]
+        drag_on = false
+        ux.release_capture[ a ]
+
+    # wheel: grow/shrink about the cursor; draw eases toward the target
+    func on_wheel [ ev: Event ]
+        if [ cur_w <= 0.0 ]
+            cur_w  = bounds.w
+            cur_h  = bounds.h
+            want_w = cur_w
+            want_h = cur_h
+        f9 : f32 [ (ev.mouse.wheel_delta.y > 0.0) ? 1.15 : 0.87 ]
+        want_w = want_w * f9
+        want_h = want_h * f9
+        if [ want_w < 60.0 ]
+            want_h = want_h * (60.0 / want_w)
+            want_w = 60.0
+        anchor_x = ev.mouse.pos.x
+        anchor_y = ev.mouse.pos.y
+        pristine = false
 
     func init [ ]
         animated = true
+        if [ !area ] area = Region { r8 b11 w8 h14 }
+        # dump THIS instance's property set (run once per class construction)
+        tyn9 : string [ Au.header[ a ].au.ident ]
         models = map Model[string][]
-        if [ render_scale == 0.0 ]
-            render_scale = 1.0
-        mem : Au.find_member[ a, "shaders", AU_MEMBER_VAR, 0, true ]
-        head : header [ shaders ]
-        if [ !shaders ]
-            shaders = map shader[string] []
-        if [ !shaders.count ]
-            # the aura fragment shader samples `environment` (a Surface.environment sampler);
-            # without an env_id create_target never binds that descriptor, leaving it garbage
-            # → SIGSEGV in vkUpdateDescriptorSets. point it at a real .exr (images/forest.exr).
-            aura : Aura [ vk: vk, env_id: 'forest' ]
-            shaders[ 'aura' ] = aura
+        # the passes reach `shaders` via the declared-member collection;
+        # only their mesh group lists are wired here
+        # full property dump — compare base class vs style subclass
+        orbiter.groups = array string [ 'outside', 'flower', 'separator' ]
+        core.groups    = array string [ 'core' ]
+        plasma.groups  = array string [ 'top_ring', 'flower' ]
+        if [ !rotate ]
+            rotate = array Rotation []
+            rotate.push[ Rotation [ '0 1 0 30deg' ] ]
+            rotate.push[ Rotation [ '1 0 0 20deg' ] ]
 
     func create_target[]
         w_ref : Window [ ux ]
@@ -761,8 +814,8 @@ element Avatar
 
         geo_models : array Model [ alloc: 4 ]
         vol_models : array Model [ alloc: 4 ]
-        env : map Texture[string][]
-        mcache : map GltfModel[string][]
+        if [ !envcache ] envcache = map Texture[string][]
+        if [ !mcache ]   mcache   = map GltfModel[string][]
 
         for [ sh:shader, k:string ] in shaders
             m    : Model [ vk: vk, w: w_ref, s:sh ]
@@ -775,12 +828,16 @@ element Avatar
                 mcache[model_id] = GltfModel[m.id]
 
             if [ sh.env_id ]
-                env_tex : env[sh.env_id]
+                # key per PASS, not per env name: sharing one convolved texture
+                # across passes handed the PBR a texture whose mip chain the
+                # aura path had not completed — it sampled white
+                ekey9 : '{sh.name}:{sh.env_id}'
+                env_tex : envcache[ekey9]
                 if [!env_tex]
                     env_img  : Image [ uri: path['images/{sh.env_id}.exr'], surface:Surface.environment ]
                     env_axis : vec3f [ 0.0, 1.0, 0.0 ]
                     env_tex  = environment[ vk, env_img, env_axis, 0.0 ]
-                    env[sh.env_id] = env_tex
+                    envcache[ekey9] = env_tex
                 m.samplers[ 'environment' ] = env_tex
 
             is_vol : bool [ sh inherits Aura ]
@@ -800,7 +857,9 @@ element Avatar
                     model.s = s
 
         if [ !aura ]
-            aura = Aura [ vk: vk ]
+            # env_id required: a bare Aura leaves the environment descriptor
+            # unbound — SIGSEGV in vkUpdateDescriptorSets
+            aura = Aura [ vk: vk, env_id: 'forest' ]
             another : shaders['aura']
             another = another
 
@@ -824,8 +883,18 @@ element Avatar
         puts 'create_target: bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} render_scale={render_scale} rs={rs} dscale={dscale}'
 
         if [ geo_models.count ]
-            gw : i32 [ bounds.w * rs ]
-            gh : i32 [ bounds.h * rs ]
+            # cap the supersampled target — a zoomed-in avatar at 4x would
+            # exceed VRAM/image limits (the crash after wheel-zoom settle)
+            gwf : f32 [ bounds.w * rs ]
+            ghf : f32 [ bounds.h * rs ]
+            if [ ghf > 2048.0 ]
+                gwf = gwf * (2048.0 / ghf)
+                ghf = 2048.0
+            if [ gwf > 2048.0 ]
+                ghf = ghf * (2048.0 / gwf)
+                gwf = 2048.0
+            gw : i32 [ gwf ]
+            gh : i32 [ ghf ]
             target = Render [
                 vk:          vk,
                 w:           w_ref,
@@ -843,8 +912,16 @@ element Avatar
             target.wscale = 0.0
 
         if [ vol_models.count ]
-            vw : i32 [ bounds.w * rs * vs ]
-            vh : i32 [ bounds.h * rs * vs ]
+            vwf : f32 [ bounds.w * rs * vs ]
+            vhf : f32 [ bounds.h * rs * vs ]
+            if [ vhf > 1024.0 ]
+                vwf = vwf * (1024.0 / vhf)
+                vhf = 1024.0
+            if [ vwf > 1024.0 ]
+                vhf = vhf * (1024.0 / vwf)
+                vwf = 1024.0
+            vw : i32 [ vwf ]
+            vh : i32 [ vhf ]
             vol_target = Render [
                 vk:          vk,
                 w:           w_ref,
@@ -871,6 +948,16 @@ element Avatar
         e_pos : vec3f [ (eye_pos.x != 0.0 || eye_pos.y != 0.0 || eye_pos.z != 0.0) ? eye_pos : vec3f [ 0.0f, 3.5f, -2.0f ] ]
         t_pos : vec3f [ (target_pos.x != 0.0 || target_pos.y != 0.0 || target_pos.z != 0.0) ? target_pos : vec3f [ 0.0f, 0.0f, 0.0f ] ]
         u_vec : vec3f [ (up_vec.x != 0.0 || up_vec.y != 0.0 || up_vec.z != 0.0) ? up_vec : vec3f [ 0.0f, -1.0f, 0.0f ] ]
+        # tilt_cur (degrees, eased) swings the eye off the straight-down axis
+        # around the target: 0 = face-on, positive leans the beam toward us
+        if [ tilt_cur > 0.001 || tilt_cur < -0.001 ]
+            dy9 : f32 [ e_pos.y - t_pos.y ]
+            dz9 : f32 [ e_pos.z - t_pos.z ]
+            rr9 : f32 [ sqrt[ dy9 * dy9 + dz9 * dz9 ] ]
+            a09 : f32 [ atan2[ dz9, dy9 ] ]
+            a19 : f32 [ a09 - radians[ tilt_cur ] ]
+            e_pos.y = t_pos.y + rr9 * cos[ a19 ]
+            e_pos.z = t_pos.z + rr9 * sin[ a19 ]
         f     : f32   [ (fov > 0.0) ? fov : 40.0f ]
         # real aspect (target is sized to bounds); derive vertical fov from height so
         # `fov` stays the HORIZONTAL fov — a taller area then shows more vertical world
@@ -888,11 +975,78 @@ element Avatar
                 mvp.proj         = _proj
                 mvp.view         = _view
                 mvp.time         = w.time
+            pb9 : (sh inherits PBR)
+            if [ pb9 ]
+                pb9.blend_rings = blend_rings
+                pb9.blend_haze  = blend_haze
+                pb9.blend_bands = blend_bands
+                pb9.env_yaw     = env_yaw
+                pb9.env_pitch   = env_pitch
 
+        # state transition: pick the declared style for the live state, then
+        # ease EVERY property toward it (filter_n motion). the base members
+        # are the quiet look; the states-masked ones are the variants — the
+        # subclass declares all of them, nothing is hard-coded here.
+        tgt9 : Aura aura
+        if [ pressed && aura_press ] tgt9 = aura_press
+        el [ hovered && aura_hover ] tgt9 = aura_hover
+        if [ aura && tgt9 ]
+            st9 : f32 [ 1.0 - pow[ ease_filter, w.frame_factor ] ]
+            aura.pulse_width  += (tgt9.pulse_width  - aura.pulse_width)  * st9
+            aura.pulse_height += (tgt9.pulse_height - aura.pulse_height) * st9
+            aura.halo_height  += (tgt9.halo_height  - aura.halo_height)  * st9
+            aura.beam_fade    += (tgt9.beam_fade    - aura.beam_fade)    * st9
+            aura.beam_cone    += (tgt9.beam_cone    - aura.beam_cone)    * st9
+            aura.flame        += (tgt9.flame        - aura.flame)        * st9
+        # view tilt: 0 = face-on (top down); the state's tilt_deg eases in,
+        # lifting the camera off the axis so the beam leans toward the viewer
+        ttd9 : f32 [ (pressed) ? press_tilt : ((hovered) ? hover_tilt : rest_tilt) ]
+        te9  : f32 [ 1.0 - pow[ ease_filter, w.frame_factor ] ]
+        tilt_cur += (ttd9 - tilt_cur) * te9
+
+        # feed the element's live states to the targets — shader passes with
+        # a `states` mask render only while it's satisfied (Layer semantics)
+        msk9 : i32 [ 0 ]
+        if [ hovered ] msk9 = msk9 | i32[ State.hovered ]
+        if [ pressed ] msk9 = msk9 | i32[ State.pressed ]
+        if [ focused ] msk9 = msk9 | i32[ State.focused ]
         if [ target ]
+            target.state_mask = msk9
             target.update[]
         if [ vol_target ]
+            vol_target.state_mask = msk9
             vol_target.update[]
+
+
+        # wheel-zoom ease: chase the target size on a frame-rate-independent
+        # filter, keeping the point under the cursor stationary. targets are
+        # only rebuilt when the ease settles — never per ease frame.
+        if [ want_w > 0.0 ]
+            st9 : f32 [ 1.0 - pow[ 0.82, w.frame_factor ] ]
+            dw9 : f32 [ (want_w - cur_w) * st9 ]
+            dh9 : f32 [ (want_h - cur_h) * st9 ]
+            if [ dw9 > 0.01 || dw9 < -0.01 || dh9 > 0.01 || dh9 < -0.01 ]
+                nl9 : f32 [ bounds.x - dw9 * (anchor_x / bounds.w) ]
+                nt9 : f32 [ bounds.y - dh9 * (anchor_y / bounds.h) ]
+                cur_w += dw9
+                cur_h += dh9
+                area = Region [ 'l{nl9}px t{nt9}px w{cur_w}px h{cur_h}px' ]
+                pristine = false
+            el [ target ]
+                # expected width mirrors create_target's 2048 clamp, else a
+                # capped target re-triggers a rebuild every settle frame
+                tw9 : f32 [ bounds.w * render_scale ]
+                th9 : f32 [ bounds.h * render_scale ]
+                if [ th9 > 2048.0 ]
+                    tw9 = tw9 * (2048.0 / th9)
+                    th9 = 2048.0
+                if [ tw9 > 2048.0 ] tw9 = 2048.0
+                if [ f32[ target.width ] < tw9 - 4.0 || f32[ target.width ] > tw9 + 4.0 ]
+                    # the GPU may still reference the old targets this frame
+                    vk.defer_drop[ target ]
+                    if [ vol_target ] vk.defer_drop[ vol_target ]
+                    target     = null
+                    vol_target = null
 
         ev : Event[ target: a ]
         update.invoke[ ev ]

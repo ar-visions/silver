@@ -685,9 +685,11 @@ ResourceView AppView
         if [ dead ]
             restart[]
             return true
+        puts 'view_press: pos={ev.mouse.pos.x},{ev.mouse.pos.y} fit={fitx},{fity} {fitw}x{fith} ready={ready} slot={slot}'
         if [ !ready || slot < 0 || fitw <= 0.0 ] return false
         bx : f32 [ (ev.mouse.pos.x - fitx) / fitw * f32[ aw ] ]
         by : f32 [ (ev.mouse.pos.y - fity) / fith * f32[ ah ] ]
+        puts 'view_press: app-coords {bx},{by} of {aw}x{ah}'
         if [ bx < 0.0 || by < 0.0 || bx >= f32[ aw ] || by >= f32[ ah ] ] return false
         # press + release so a click registers (orion menus act on press)
         host_post2[ slot, 1, i32[ HM.press ],   i32[ bx ], i32[ by ], ev.mouse.button ]

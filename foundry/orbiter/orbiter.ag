@@ -222,17 +222,69 @@ Option NavButton
     quiet  : Layer [ 
 		fill_color: rgba 	[ '#614' ],
 		radius: 	Radius 	[ '8' ],
-		inner_glow: Glow 	[ '#ccf2 16' ] ]
+		inner_glow: Glow 	[ '#ccf2 16' ]
+    ]
     hover  : Layer [
 		states: 	State.hovered,
 		fill_color: rgba [ '#826' ],
 		radius: 	Radius [ '8' ],
-		inner_glow: Glow [ '#fcc6 20' ] ]
-    press  : Layer [ states: State.pressed,  fill_color: rgba [ '#438' ],    radius: Radius [ '8' ], inner_glow: Glow [ '#ccf8 22' ] ]
-    active : Layer [ states: State.selected, fill_color: rgba [ '#c8641e' ],  radius: Radius [ '8' ], inner_glow: Glow [ '#ffae5ea2 18' ] ]
+		inner_glow: Glow [ '#fcc6 20' ]
+    ]
+    press  : Layer [
+        states:     State.pressed,
+        fill_color: rgba [ '#438' ],
+        radius:     Radius [ '8' ],
+        inner_glow: Glow [ '#ccf8 22' ]
+    ]
+    active : Layer [
+        states:     State.selected,
+        fill_color: rgba [ '#c8641e' ],
+        radius:     Radius [ '8' ],
+        inner_glow: Glow [ '#ffae5ea2 18' ]
+    ]
 
 # a NavButton that renders its label instead of an icon; right-flows
 # wider than the icon chips
+# orbiter's avatar LOOK — the Avatar component styled by subclassing, the
+# same way LabelButton styles NavButton. every value lives here, none in
+# the component: camera, environment, tilt per state, and one shader pass
+# per state (base = quiet, states-masked = the variants it transitions to).
+Avatar OrbiterAvatar
+    area        : Region { r8 b11 w8 h14 }
+    render_scale: 4.0
+    # face-on at rest: eye straight above the puck, up horizontal
+    eye_pos     : vec3f [ 0.0, 4.2, 0.0 ]
+    target_pos  : vec3f [ 0.0, -0.3, 0.0 ]
+    up_vec      : vec3f [ 0.0, 0.0, -1.0 ]
+    fov         : f32   [ 24.0 ]
+    env_yaw     : f32   [ 0.0 ]
+    env_pitch   : f32   [ 0.0 ]
+    blend_rings : f32   [ 0.2 ]
+    blend_haze  : f32   [ 1.0 ]
+    blend_bands : f32   [ 0.2 ]
+    # tilt off the straight-down axis, degrees: none at rest, a small lean
+    # on hover so the beam shoots up-screen, HALF that on press
+    rest_tilt   : f32   [ 0.0 ]
+    hover_tilt  : f32   [ 16.0 ]
+    press_tilt  : f32   [ 8.0 ]
+    ease_filter : f32   [ 0.86 ]
+
+    orbiter : PBR [
+        model_id: 'orbiter32',
+        groups: ['outside','flower','separator'],
+        env_id: 'forest', pulse_width: 4.0, gamma: 2.2 ]
+    
+    core : Core [
+        model_id: 'orbiter32',
+        groups: ['core'], 
+        texture: 'textures/core.png', mip_levels: 8, pulse_width: 4.0 ]
+    
+    plasma : Plasma  [
+        model_id: 'orbiter32',
+        groups: ['top_ring','flower'],
+        pulse_width: 1.0 ]
+
+
 NavButton LabelButton
     area   : Region { r0+ t0 w2.2 h0.9 }
     tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 14,
@@ -3438,10 +3490,9 @@ element orbiter : trinity # implements compiler
         if [ !pane_sizes ] pane_sizes = array [ ]
         editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b0 }, inner: pane_inner,
             sizes: pane_sizes, deflt: 0.0, even: true, snap_close: true ]
-        # the orbiter avatar peeks in the bottom-right corner. the real 3D Avatar still
-        # SIGSEGVs (env-texture vk_image_view not ready at bind), so for now this is a plain
-        # topmost placeholder element so the spot/size is visible.
-        editor_els['avatar'] = Avatar [ expanded: avatar_expanded, topmost: true, hide: true ]
+        # the orbiter avatar peeks in the bottom-right corner, topmost over the
+        # panes. env_yaw / env_pitch (radians) orient the environment lighting
+        editor_els['avatar'] = OrbiterAvatar [ expanded: avatar_expanded, topmost: true ]
 
         # supervised shell: the app's live picture-in-picture, lower right.
         # clicking it folds the window back to the app.

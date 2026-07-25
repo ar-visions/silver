@@ -85,6 +85,9 @@ class Render
     # draw only every N frames (0 or 1 = every frame). for slow-moving
     # backgrounds that don't need per-frame updates.
     public  draw_interval                  : i32
+    # the owning element's live State mask — gates models whose shader
+    # declares `states` (Layer-style mouse states for shader passes)
+    mutable state_mask                     : i32
     # set once this render has drawn at least once — the throttle must never skip
     # the FIRST draw (else a throttled background never appears on load until the
     # global draw_seq happens to align with the interval).
@@ -298,6 +301,8 @@ class Render
             vkCmdEndRenderPass[ frame ]
             pass_open = false
         for [ m: Model ] in models
+            smd9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
+            if [ smd9 != 0 && (state_mask & smd9) != smd9 ] continue
             for [ p: Pipeline ] in m.pipelines
                 p.dispatch[ frame ]
         # open ONE render pass for the whole recording and keep it OPEN across paints.
@@ -333,6 +338,8 @@ class Render
             vkCmdBeginRenderPass[ frame, render_pass_info, VK_SUBPASS_CONTENTS_INLINE ]
             pass_open = true
         for [ m: Model ] in models
+            smb9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
+            if [ smb9 != 0 && (state_mask & smb9) != smb9 ] continue
             for [ p: Pipeline ] in m.pipelines
                 p.draw[ frame ]
                 vk.pipe_draws += 1
@@ -406,6 +413,8 @@ class Render
             # loop is safe to run over every pipeline.
             if [ i == 0 ]
                 for [ m: Model ] in models
+                    sm9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
+                    if [ sm9 != 0 && (state_mask & sm9) != sm9 ] continue
                     pc : i64 [ m.pipelines.count ]
                     for [ p: Pipeline ] in m.pipelines
                         p.dispatch[ frame ]
@@ -429,6 +438,8 @@ class Render
 
             if [ i == 0 ]
                 for [ m: Model ] in models
+                    sm9 : i32 [ (m.s) ? i32[ m.s.states ] : 0 ]
+                    if [ sm9 != 0 && (state_mask & sm9) != sm9 ] continue
                     for [ p: Pipeline ] in m.pipelines
                         p.draw[ frame ]
                         vk.pipe_draws += 1

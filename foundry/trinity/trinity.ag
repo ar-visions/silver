@@ -1154,14 +1154,23 @@ Display Window
                             lmem : Au_t lty2.members.origin[lmi]
                             if [ lmem.member_type != AU_MEMBER_VAR ] continue
                             if [ !lmem.src ] continue
-                            if [ !Au.inherits[ lmem.src, typeid[ Layer ] ] ] continue
                             lv : Au instance.member_object[ lmem ]
                             if [ !lv ] continue
-                            lvl : cast Layer [ lv ]
-                            lvl.set_context_from[ instance ]
-                            lvl.initialize[]
-                            if [ !instance.layers ] instance.layers = map Layer[string] []
-                            instance.layers[ string[ lmem.ident ] ] = lvl
+                            if [ Au.inherits[ lmem.src, typeid[ Layer ] ] ]
+                                lvl : cast Layer [ lv ]
+                                lvl.set_context_from[ instance ]
+                                lvl.initialize[]
+                                if [ !instance.layers ] instance.layers = map Layer[string] []
+                                instance.layers[ string[ lmem.ident ] ] = lvl
+                            # declared shader members join the element's shader
+                            # map the same way, keyed by member ident (the css
+                            # shaders.<key> form) — context wires their vk
+                            el [ Au.inherits[ lmem.src, typeid[ shader ] ] ]
+                                shv : cast shader [ lv ]
+                                shv.set_context_from[ instance ]
+                                shv.initialize[]
+                                if [ !instance.shaders ] instance.shaders = map shader[string] []
+                                instance.shaders[ string[ lmem.ident ] ] = shv
                     # the icon layer paints LAST — base-first population put
                     # Button's iconl under subclass backgrounds; re-append it
                     if [ instance.layers ]
@@ -1211,8 +1220,6 @@ Display Window
                             break
                     e.release_tree[]
                     e.parent = null
-                    ehd : Au.header[ e ]
-                    if [ ehd.refs > 2 ] au_prov_dump[ e ]
                     # hold 8 frames so the dealloc cascade runs out of flight
                     if [ e.ux ] e.ux.vk.defer_drop[ e ]
                     parent.elements.rm[ id ]

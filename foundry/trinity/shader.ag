@@ -25,6 +25,9 @@ class shader
     public transparent  : bool
     public texture      : string
     public mip_levels   : i32
+    # State BITMASK, same semantics as Layer.states: none = always render;
+    # set = this pass renders only while every state is live on the element
+    public states       : State
     
     intern vk_vert      : VkShaderModule
     intern vk_frag      : VkShaderModule
@@ -95,7 +98,18 @@ class shader
 
         # emit void main() from the stage entry point
         main_name: (stage == ShaderStage.vertex) ? "vertex" : (stage == ShaderStage.fragment) ? "fragment" : "compute"
-        main_member:  find_member[ type, main_name, 5, 0, true ]
+        # MOST-DERIVED wins: find_member's inherited search returns the first
+        # match walking UP the chain (the base's stage entry), so a subclassed
+        # shader would emit its PARENT's fragment. scan this type first, then
+        # each ancestor, and take the first definition found going DOWN-UP.
+        main_member: Au_t [ null ]
+        sc9 : Au_t [ type ]
+        while [ sc9 && sc9 != typeid[ shader ] ]
+            m9 : find_member[ sc9, main_name, 5, 0, false ]
+            if [ m9 ]
+                main_member = m9
+                break
+            sc9 = sc9.context
         if [ !main_member || main_member.context == typeid[shader] ]
             return null
 
@@ -428,7 +442,8 @@ class shader
             vk.shader_cache = store[]
             vk.shader_cache.hold[]
             
-        cached: shader [ vk.shader_cache.get[ typeid[ a ] ] ]
+        rty9: typeid[ a ]
+        cached: shader [ vk.shader_cache.get[ rty9 ] ]
         if [ cached ]
             vk_vert = cached.vk_vert
             vk_frag = cached.vk_frag
@@ -436,7 +451,7 @@ class shader
             return
         generate_shaders[ ]
         reload[ ]
-        vk.shader_cache.set[ typeid[ a ], a ]
+        vk.shader_cache.set[ rty9, a ]
 
     func dealloc [ ]
         # default-constructed shader instances (e.g. shader-codegen reflection args

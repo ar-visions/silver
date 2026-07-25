@@ -1170,11 +1170,6 @@ func sk_color [ clr: rgba ] -> vec4f
     return res
 
 
-# ref-provenance debug hooks (Au.c): au_track[typeid] turns on holder tracking
-# for one type; au_prov_dump[obj] prints the live holders' source:lines.
-func au_track     [ t: Au_t ] -> none
-func au_prov_dump [ a: Au ]   -> none
-
 # ---- Canvas class (GPU draw-list builder) ----
 Render Canvas
     public path        : CanvasPath
