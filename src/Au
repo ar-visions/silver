@@ -807,7 +807,7 @@ forward(any)
     M(AA,BB, s, method, public, Au_t,   def_arg,        Au_t, symbol, Au_t, u64) \
     M(AA,BB, s, method, public, Au_t,   def_test,       Au_t, ARef) \
     M(AA,BB, s, method, public, Au_t,   def_meta,       Au_t, symbol, Au_t) \
-    M(AA,BB, s, method, public, Au_t,   def_prop,       Au_t, symbol, Au_t, u64, u32, u32, ARef, Au_t, Au, i32) \
+    M(AA,BB, s, method, public, Au_t,   def_prop,       Au_t, symbol, Au_t, u64, u32, u32, ARef, Au_t, Au, i32, i32) \
     M(AA,BB, s, method, public, Au_t,   def_type,       Au_t, symbol, u64) \
     M(AA,BB, s, method, public, Au_t,   def_member,     Au_t, symbol, Au_t, u32, u64) \
     M(AA,BB, s, method, public, Au_t,   def_class,      Au_t, symbol) \
@@ -2308,6 +2308,8 @@ none array_init(array);
 
 Au_t au_arg(Au a);
 Au_t au_arg_type(Au a);
+none au_track(Au_t type);
+none au_prov_dump(Au a);
 Au_t typeid_string(Au_t check);
 
 void au_space_begin(void* owner);

@@ -15,6 +15,7 @@
 #include <sys/mman.h>
 #include <stdint.h>
 #include <sys/syscall.h>
+#include <sys/prctl.h>
 
 extern char** environ;
 
@@ -292,18 +293,22 @@ static int supervise_wait(int argc, char** argv, const char* appname,
     printf("silver-host: supervising %s (pid %d) — %s loads on crash or ask\n",
         appname, pid, ISOLATE_SHELL);
     for (;;) {
+        // service spawn requests by POLLING the slots, not only on EINTR: a
+        // SIGUSR1 landing anywhere but inside waitpid was lost until the next
+        // child event — the request sat for minutes. the signal now only
+        // shortens the poll tick; state==1 in a slot is the request itself.
+        int spawned = 0;
+        if (g_shm)
+            for (int k = 1; k < HOST_APPS; k++)
+                if (g_shm->app[k].state == 1) { spawn_slot_app(k, bindir); spawned = 1; }
         int   st = 0;
-        pid_t r  = waitpid(-1, &st, 0);   // -1: also reaps hosted apps + shell
-        if (r < 0 && errno == EINTR) {
-            if (!g_ask_orbiter) continue;
+        pid_t r  = waitpid(-1, &st, WNOHANG);   // -1: also reaps hosted apps + shell
+        if (r == 0 || (r < 0 && errno == EINTR)) {
+            if (!g_ask_orbiter) {
+                if (r == 0) usleep(30000);
+                continue;
+            }
             g_ask_orbiter = 0;
-            // hosted-app spawn requests first: a child wrote name + state=1
-            // into slots and signalled us. if any exist, this signal was a
-            // spawn ask, not a summon.
-            int spawned = 0;
-            if (g_shm)
-                for (int k = 1; k < HOST_APPS; k++)
-                    if (g_shm->app[k].state == 1) { spawn_slot_app(k, bindir); spawned = 1; }
             if (spawned) continue;
             // a shell is already attached (the app hot-reloaded and re-asked)
             // — reuse it, never spawn a duplicate. kill(pid,0) probes liveness.
@@ -687,7 +692,9 @@ static int rebuild_blocking(const char* name, int clean) {
     pid_t pid = rebuild_spawn(name, clean);
     if (pid < 0) return -1;
     int rc = 0;
-    if (waitpid(pid, &rc, 0) < 0) {
+    pid_t w;
+    do { w = waitpid(pid, &rc, 0); } while (w < 0 && errno == EINTR);
+    if (w < 0) {
         fprintf(stderr, "%s: BUILD ERROR — waitpid failed\n", name);
         return -1;
     }
@@ -863,6 +870,8 @@ int main(int argc, char** argv) {
     // debug launch: park HERE, before any app code, so orbiter can attach lldb and
     // arm breakpoints (including in init) before continuing us (SIGCONT).
     if (getenv("SILVER_DEBUG")) {
+        // orbiter is a sibling, not our ancestor — yama scope 1 blocks it
+        prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
         fprintf(stderr, "silver-host: SILVER_DEBUG — pid %d stopped before init for attach\n", (int)getpid());
         raise(SIGSTOP);
     }

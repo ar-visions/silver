@@ -7876,6 +7876,15 @@ none etype_implement(etype t, bool w) { sequencer
                     ilargest, union_align, padded, padded / (int)union_align, elem_bits);
         }
 
+        if (!_lltype_slot(t))
+            return;   // id-only types (anonymous fn types) carry no body
+        verify(LLVMGetTypeContext(_lltype_slot(t)) == a->module_ctx,
+            "etype_implement %s: lltype from a foreign LLVM context",
+            au->ident ? au->ident : "?");
+        for (int ci = 0; ci < count; ci++)
+            verify(struct_members[ci],
+                "etype_implement %s: member slot %d has null lltype",
+                au->ident ? au->ident : "?", ci);
         LLVMStructSetBody(_lltype_slot(t), struct_members, count, au->is_c ? 0 : 1);
 
         // assign byte offsets to members so reflection (JSON parser, hold_members)
@@ -8551,7 +8560,8 @@ none aether_build_module_initializer(aether a, enode init) {
                 e_null(a, null),
                 mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                 e_meta_b,
-                _i32(fbits_index(mem->context, mem) + 1) // AF-bit slot (1-based; 0=unset)
+                _i32(fbits_index(mem->context, mem) + 1), // AF-bit slot (1-based; 0=unset)
+                _i32(mem->access_type)
             ), false, false);
         }
     }
@@ -8600,13 +8610,16 @@ none aether_build_module_initializer(aether a, enode init) {
             }
         }
 
-        // calculate internal size and count
+        // calculate internal size and count — ONLY interns that stay
+        // unregistered pad here; registered interns carry their own offsets
         u64 isize = 0;
         i32 icount = 0;
         if (!is_alias_t) {
             members(tau, mem) {
                 if (mem->member_type == AU_MEMBER_VAR &&
-                    mem->access_type == interface_intern) {
+                    mem->access_type == interface_intern &&
+                    (!mem->src || !mem->src->ident || mem->src->is_system ||
+                     mem->src->is_c || !mem->src->is_class)) {
                     isize += mem->typesize;
                     icount++;
                 }
@@ -8648,7 +8661,12 @@ none aether_build_module_initializer(aether a, enode init) {
         i64 max_ft_end = tau->context ? tau->context->table_size : 0;
         if (!tau->is_c)
         members(tau, mem) {
-            if (mem->access_type == interface_intern)
+            // interns register; skip system types, remote C types, and
+            // those without an id (nothing refcounted to drop in them)
+            if (mem->access_type == interface_intern &&
+                (mem->member_type != AU_MEMBER_VAR ||
+                 !mem->src || !mem->src->ident || mem->src->is_system ||
+                 mem->src->is_c || !mem->src->is_class))
                 continue;
 
             if (is_func(mem)) {
@@ -8718,8 +8736,9 @@ none aether_build_module_initializer(aether a, enode init) {
                     continue;
                 enode e_meta_b = e_null(a, etypeid(Au));
                 if (mem->meta.b) {
-                    if (instanceof(mem->meta.b, Au_t))
-                        e_meta_b = (enode)e_typeid(a, u(etype, (Au_t)mem->meta.b));
+                    Au_t mb = (Au_t)instanceof(mem->meta.b, Au_t);
+                    if (mb && mb->ident && !mb->is_system)
+                        e_meta_b = (enode)e_typeid(a, u(etype, mb));
                     else if (instanceof(mem->meta.b, shape)) {
                         shape s = (shape)mem->meta.b;
                         array indices = array(alloc, s->count);
@@ -8759,9 +8778,11 @@ none aether_build_module_initializer(aether a, enode init) {
                     _u32(mem->offset),
                     _u32(mem->abi_size),
                     e_attrib_val,
-                    mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
+                    (mem->meta.a && mem->meta.a->ident && !mem->meta.a->is_system)
+                        ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                     e_meta_b,
-                    _i32(fbits_index(mem->context, mem) + 1) // AF-bit slot (1-based; 0=unset)
+                    _i32(fbits_index(mem->context, mem) + 1), // AF-bit slot (1-based; 0=unset)
+                    _i32(mem->access_type)
                 ), false, false);
             } else if (mem->member_type == AU_MEMBER_ENUMV) {
                 static int seq = 0;
