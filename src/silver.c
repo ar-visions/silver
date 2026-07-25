@@ -3985,6 +3985,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         }
         a->parens_depth++;
         enode expr = parse_expression(a, null, false, true); // Parse the expression
+        /*
         // (expr to Type) — inline cast within parens
         if (read_if(a, "to")) {
             etype target = read_etype(a, null);
@@ -4001,7 +4002,7 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             validate(read_if(a, ")"), "expected ) after (expr to typeid[...])");
             a->parens_depth--;
             return e_fn_call(a, u(efunc, f_convert), a(target_type, expr), false, false);
-        }
+        } */
         validate(read_if(a, ")"), "expected ) after expression, found %o", peek(a));
         a->parens_depth--;
         enode n = (enode)e_create(a, mdl_expect, (Au)
@@ -6273,17 +6274,6 @@ path module_exists(silver a, array idents, bool binary_finary, bool* is_bin) {
 }
 
 enode silver_parse_ternary(silver a, enode expr, etype mdl_expect, bool load) {
-    if (read_if(a, "to")) {
-        etype target = read_etype(a, null);
-        if (target)
-            return e_convert_or_cast((aether)a, canonical(target), expr);
-        // runtime conversion: (expr) to <runtime Au_t expression>
-        enode target_type = parse_expression(a, etypeid(Au_t), false, true);
-        verify(target_type, "expected type or type expression after 'to'");
-        Au_t f_convert = find_member(typeid(Au), "__convert", AU_MEMBER_FUNC, 0, false);
-        verify(f_convert, "Au.__convert not found for runtime 'to' conversion");
-        return e_fn_call(a, u(efunc, f_convert), a(target_type, expr), false, false);
-    }
     if (!read_if(a, "?")) {
         if (!read_if(a, "??"))
             return expr;

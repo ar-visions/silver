@@ -77,22 +77,26 @@ int seq;
 #undef hold
 #undef drop
 
-#ifndef NDEBUG
-// ---- ref provenance (debug) -------------------------------------------------
+// ---- ref provenance ---------------------------------------------------------
 // track which source:line holds each live ref, for ONE type at a time. off
 // until au_track(name) is called. only the tracked type pays anything; every
 // other object and all call sites are untouched (no signature/header change).
 static Au_t au_track_type = NULL;
-typedef struct { Au obj; void* bt[6]; int n; } au_prov_t;
+// dir: +1 hold, -1 drop. accounting is NET PER CALL-SITE — refs carry
+// no identity, but a site whose holds outnumber its drops IS the leak
+typedef struct { Au obj; void* bt[6]; int n; int dir; } au_prov_t;
 static au_prov_t* au_prov = NULL;
 static int au_prov_count = 0, au_prov_alloc = 0;
 
 none au_track(Au_t type) { au_track_type = type; }
 
+bool inherits(Au_t src, Au_t check);
 static bool au_prov_match(Au a) {
-    return au_track_type && header(a)->au == (Au_f*)au_track_type;
+    if (!au_track_type) return false;
+    // match subclasses too (EditorTitle is an element)
+    return inherits((Au_t)header(a)->au, au_track_type);
 }
-static void au_prov_push(Au a) {
+__attribute__((noinline)) static void au_prov_rec(Au a, int dir) {
     if (au_prov_count == au_prov_alloc) {
         au_prov_alloc = au_prov_alloc ? au_prov_alloc * 2 : 256;
         au_prov = (au_prov_t*)realloc(au_prov, au_prov_alloc * sizeof(au_prov_t));
@@ -100,38 +104,48 @@ static void au_prov_push(Au a) {
     au_prov_t* e = &au_prov[au_prov_count++];
     e->obj = a;
     e->n   = backtrace(e->bt, 6);
+    e->dir = dir;
 }
-static void au_prov_pop(Au a) {
-    for (int i = au_prov_count - 1; i >= 0; i--)
-        if (au_prov[i].obj == a) { au_prov[i] = au_prov[--au_prov_count]; return; }
+static void au_prov_push(Au a) { au_prov_rec(a, 1); }
+static void au_prov_pop(Au a)  { au_prov_rec(a, -1); }
+// object freed: its address may be recycled — purge its records
+static void au_prov_purge(Au a) {
+    int w = 0;
+    for (int i = 0; i < au_prov_count; i++)
+        if (au_prov[i].obj != a) au_prov[w++] = au_prov[i];
+    au_prov_count = w;
 }
-// dump the live holders of `a` (their source:line via symbolized stacks).
+// net holds per call-site for `a`: sites with net>0 are live holders
 none au_prov_dump(Au a) {
-    static time_t last = 0;
-    time_t now = time(NULL);
-    if (now == last) return;   // at most one dump/sec — reports live while you drag, no wall
-    last = now;
     Au f = header(a);
-    printf("=== %i live holders of %s %p ===\n",
-        (i32)f->refs, (f->au && f->au->ident) ? f->au->ident : "?", (void*)a);
+    printf("=== net holders of %s %p (refs %i) ===\n",
+        (f->au && f->au->ident) ? f->au->ident : "?", (void*)a, (i32)f->refs);
+    void* sites[64]; int net[64]; int rep[64]; int ns = 0;
     for (int i = 0; i < au_prov_count; i++) {
         if (au_prov[i].obj != a) continue;
-        char** s = backtrace_symbols(au_prov[i].bt, au_prov[i].n);
-        printf("  held by:\n");
-        for (int j = 2; j < au_prov[i].n && j < 5; j++) printf("    %s\n", s[j]);
+        void* pc = au_prov[i].n > 2 ? au_prov[i].bt[2] : NULL;
+        int s = -1;
+        for (int j = 0; j < ns; j++) if (sites[j] == pc) { s = j; break; }
+        if (s < 0 && ns < 64) { s = ns++; sites[s] = pc; net[s] = 0; rep[s] = i; }
+        if (s >= 0) net[s] += au_prov[i].dir;
+    }
+    for (int j = 0; j < ns; j++) {
+        if (net[j] == 0) continue;
+        au_prov_t* e = &au_prov[rep[j]];
+        char** s = backtrace_symbols(e->bt, e->n);
+        printf("  net %+d:\n", net[j]);
+        for (int k = 2; k < e->n && k < 5; k++) printf("    %s\n", s[k]);
         free(s);
     }
+    fflush(stdout);
 }
-#endif
 
 Au Au_hold(Au a) {
     if (a) {
         Au f = header(a);
         if (f->managed == 0) return a; // refs of 0 is unmanaged memory (user managed)
         __atomic_fetch_add((i32*)__builtin_assume_aligned(&f->refs, 4), 1, __ATOMIC_SEQ_CST);
-#ifndef NDEBUG
         if (au_prov_match(a)) au_prov_push(a);
-#endif
     }
     return a;
 }
@@ -1065,7 +1079,7 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
             // slow path: linear scan with filters
             for (int i = 0; i < mdl->members.count; i++) {
                 Au_t au = (Au_t)mdl->members.origin[i];
-                if (au->is_expanding) continue;
+                if (!au || au->is_expanding) continue;
                 if (!member_type || au->member_type == member_type) {
                     if (!traits || (au->traits & traits) == traits) {
                         if (!f || (au->ident && strcmp(au->ident, f) == 0))
@@ -1166,8 +1180,9 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     return au;
 }
 
-Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b, i32 index) {
+Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b, i32 index, i32 access) {
     Au_t prop = def(context, ident, AU_MEMBER_VAR, traits);
+    prop->access_type = (interface)access;
     verify(type, "def_prop: src/type is null for %s.%s", context->ident, ident);
     prop->type      = type;
     prop->offset    = offset;
@@ -2453,10 +2468,9 @@ none Au_drop(Au a) {
     Au info = header(a);
     if (!info->managed) return;
     i32 n = __atomic_sub_fetch((i32*)__builtin_assume_aligned(&info->refs, 4), 1, __ATOMIC_SEQ_CST);
-#ifndef NDEBUG
     if (au_prov_match(a)) au_prov_pop(a);
-#endif
     if (n <= 0) {
+        if (au_prov_match(a)) au_prov_purge(a);
         af[info->managed] = null;
         Au_free(a);
     }
@@ -2918,6 +2932,7 @@ none Au_hold_members(Au a) {
             Au hd = header(member_value);
             if (hd->managed) {
                 __atomic_fetch_add((i32*)__builtin_assume_aligned(&hd->refs, 4), 1, __ATOMIC_SEQ_CST);
+                if (au_prov_match(member_value)) au_prov_push(member_value);
                 if (hd->refs <= 0 && strcmp(hd->au->ident, "Canvas") == 0) {
                     printf("(hold members) holding FREED Canvas (%p) with refs now set to %i\n", *mdata, hd->refs);
                 }
@@ -2946,6 +2961,7 @@ Au Au_get_property_by_type(Au a, Au_t find_type) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = (Au_t)type->members.origin[i];
             if (mem->member_type != AU_MEMBER_VAR) continue;
+            if (mem->access_type == interface_intern) continue;
             if (mem->type == find_type || (Au_t)au_arg_type((Au)mem->type) == find_type) {
                 Au *mdata = (Au*)((cstr)a + mem->offset);
                 return is_inlay(mem) ? primitive(mem->type, mdata) : *mdata;
@@ -3079,7 +3095,6 @@ none Au_drop_members(Au a) {
                 #ifndef NDEBUG
                 if (au_skip_drop_check(type_ident, m->ident)) continue;
                 #endif
-                //printf("Au_dealloc: drop member %s.%s (%s)\n", type->ident, m->ident, m->type->ident);
                 Au*  ref = (Au*)((u8*)a + m->offset);
                 Au info = head(*ref);
                 Au_drop(*ref);
@@ -5140,6 +5155,9 @@ Au Au_copy(Au a) {
 
 none Au_free(Au a) {
     Au       aa = header(a);
+    // auto_free frees without Au_drop — purge here so recycled
+    // addresses never show a previous object's records
+    if (au_prov_match(a)) au_prov_purge(a);
     //char ch = aa->au->ident[0];
 
     /*
@@ -6786,6 +6804,7 @@ Au_t member_first(Au_t type, Au_t find, bool poly) {
     for (num i = 0; i < type->members.count; i++) {
         Au_t m = (Au_t)type->members.origin[i];
         if (!(m->member_type == AU_MEMBER_VAR)) continue;
+        if (m->access_type == interface_intern) continue;
         if (m->type == type) return m;
     }
     return null;

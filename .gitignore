@@ -45,6 +45,7 @@ foundry/orion
 *.seq
 *.pt
 *.gen
+europa
 /models
 /shaders
 flightsim
