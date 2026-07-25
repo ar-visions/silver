@@ -168,35 +168,35 @@ class shader
                     binding += 1
 
                 el [ val inherits VertexInput && stage == ShaderStage.vertex ]
-                    vi: (val to VertexInput)
+                    vi: cast VertexInput [ val ]
                     gtype: glsl_type_name[ vi.type ]
                     if [ gtype ]
                         result = '{result}layout(location = {vert_loc_in}) in {gtype} {mem.ident};\n'
                     vert_loc_in += 1
 
                 el [ val inherits VertexOutput && stage == ShaderStage.vertex ]
-                    vo: (val to VertexOutput)
+                    vo: cast VertexOutput [ val ]
                     gtype: glsl_type_name[ vo.type ]
                     if [ gtype ]
                         result = '{result}layout(location = {vert_loc_out}) out {gtype} {mem.ident};\n'
                     vert_loc_out += 1
 
                 el [ val inherits VertexOutput && stage == ShaderStage.fragment ]
-                    vo: (val to VertexOutput)
+                    vo: cast VertexOutput [ val ]
                     gtype: glsl_type_name[ vo.type ]
                     if [ gtype ]
                         result = '{result}layout(location = {frag_loc_in}) in {gtype} {mem.ident};\n'
                     frag_loc_in += 1
 
                 el [ val inherits FragmentInput && stage == ShaderStage.fragment ]
-                    fi: (val to FragmentInput)
+                    fi: cast FragmentInput [ val ]
                     gtype: glsl_type_name[ fi.type ]
                     if [ gtype ]
                         result = '{result}layout(location = {frag_loc_in}) in {gtype} {mem.ident};\n'
                     frag_loc_in += 1
 
                 el [ val inherits FragmentOutput && stage == ShaderStage.fragment ]
-                    fo: (val to FragmentOutput)
+                    fo: cast FragmentOutput [ val ]
                     gtype: glsl_type_name[ fo.type ]
                     if [ gtype ]
                         result = '{result}layout(location = {frag_loc_out}) out {gtype} {mem.ident};\n'
@@ -319,12 +319,15 @@ class shader
                 mem: Au_t [ ty2.members.origin[m] ]
                 if [ is_uniform_field[ mem ] ]
                     type_size: mem.src.typesize
+                    # std140: vec3/vec4/mat4 align 16, scalars pad to 4
+                    al: num [ (type_size >= 12) ? 16 : ((type_size < 4) ? 4 : type_size) ]
+                    index = (index + al - 1) / al * al
                     if [ (mem.src.traits & (1 << 8)) || (mem.src.traits & (1 << 0)) ]
                         memcpy[ @data2[index], @src[mem.offset], type_size ]
                     el
-                        dst_ptr: (@src[mem.offset] to @handle)
+                        dst_ptr: cast @handle [ @src[mem.offset] ]
                         memcpy[ @data2[index], dst_ptr, type_size ]
-                    index += type_size
+                    index += (type_size < 4) ? 4 : type_size
 
         return index
 
@@ -1504,7 +1507,7 @@ func subdiv_i32_buf [ vkc: vk_context, src: @i32, count: i32 ] -> Buffer
     bts : i32 [ count * 4 ]
     b : Buffer [ vk: vkc, size: bts, u_storage: true, m_host_visible: true, m_host_coherent: true ]
     d : @i8 [ b.data ]
-    s0 : @i8 [ ((@src[ 0 ]) to @i8) ]
+    s0 : cast @i8 [ @src[ 0 ] ]
     memcpy[ d, s0, bts ]
     return b
 
@@ -1583,10 +1586,10 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
     # indices at their real width
     idxbuf : new i32 [ ic ]
     if [ base.index_size == 2 ]
-        i16p : @u16 [ ((@idata[ 0 ]) to @u16) ]
+        i16p : cast @u16 [ @idata[ 0 ] ]
         for [ ii: i32 0, ii < ic, ii += 1 ] idxbuf[ ii ] = i32[ i16p[ ii ] ]
     el
-        i32p : @u32 [ ((@idata[ 0 ]) to @u32) ]
+        i32p : cast @u32 [ @idata[ 0 ] ]
         for [ ii: i32 0, ii < ic, ii += 1 ] idxbuf[ ii ] = i32[ i32p[ ii ] ]
     # weld verts by quantized position + coarse normal: UV-seam duplicates
     # (same normal) merge, but coinciding lip-contact verts (opposite normals)
@@ -1608,7 +1611,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
     q6 : new i64 [ q6sz ]
     tv : i32 [ 0 ]
     for [ v: i32 0, v < vc, v += 1 ]
-        p : @f32 [ ((@vdata[ v * vsz ]) to @f32) ]
+        p : cast @f32 [ @vdata[ v * vsz ] ]
         qx : i64 [ i64[ round[ p[0] * 100000.0 ] ] ]
         qy : i64 [ i64[ round[ p[1] * 100000.0 ] ] ]
         qz : i64 [ i64[ round[ p[2] * 100000.0 ] ] ]
@@ -1616,7 +1619,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         ny : i64 [ 0 ]
         nz : i64 [ 0 ]
         if [ n_off >= 0 && !m.weld_pos_only ]
-            nrm : @f32 [ ((@vdata[ v * vsz + n_off ]) to @f32) ]
+            nrm : cast @f32 [ @vdata[ v * vsz + n_off ] ]
             nx = i64[ round[ nrm[0] * 4.0 ] ]
             ny = i64[ round[ nrm[1] * 4.0 ] ]
             nz = i64[ round[ nrm[2] * 4.0 ] ]
@@ -1812,9 +1815,9 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         cur_w : new f32 [ jw_cap ]
         for [ v: i32 0, v < tv, v += 1 ]
             rv : i32 [ rep[ v ] ]
-            wp : @f32 [ ((@vdata[ rv * vsz + woff ]) to @f32) ]
-            jp8  : @u8  [ ((@vdata[ rv * vsz + joff ]) to @u8) ]
-            jp16 : @u16 [ ((@vdata[ rv * vsz + joff ]) to @u16) ]
+            wp : cast @f32 [ @vdata[ rv * vsz + woff ] ]
+            jp8  : cast @u8 [ @vdata[ rv * vsz + joff ] ]
+            jp16 : cast @u16 [ @vdata[ rv * vsz + joff ] ]
             for [ s: i32 0, s < 4, s += 1 ]
                 if [ jsz == 4 ]
                     cur_j[ v*4 + s ] = i32[ jp8[ s ] ]
@@ -1836,9 +1839,9 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
                 cont[ 3 ] = t.qcorn[ f*4 + 3 ]
                 subdiv_merge_jw[ cur_j, cur_w, cont, 4, cur_j, cur_w, t.nv + t.ne + f ]
         for [ v: i32 0, v < nout, v += 1 ]
-            dw : @f32 [ ((@odata[ v * vsz + woff ]) to @f32) ]
-            dj8  : @u8  [ ((@odata[ v * vsz + joff ]) to @u8) ]
-            dj16 : @u16 [ ((@odata[ v * vsz + joff ]) to @u16) ]
+            dw : cast @f32 [ @odata[ v * vsz + woff ] ]
+            dj8  : cast @u8 [ @odata[ v * vsz + joff ] ]
+            dj16 : cast @u16 [ @odata[ v * vsz + joff ] ]
             for [ s: i32 0, s < 4, s += 1 ]
                 if [ jsz == 4 ]
                     dj8[ s ] = u8[ cur_j[ v*4 + s ] ]
@@ -1868,7 +1871,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         cur : new f32 [ fcap ]
         for [ v: i32 0, v < tv, v += 1 ]
             rv : i32 [ rep[ v ] ]
-            sp : @f32 [ ((@vdata[ rv * vsz + moff ]) to @f32) ]
+            sp : cast @f32 [ @vdata[ rv * vsz + moff ] ]
             for [ c: i32 0, c < ncf, c += 1 ] cur[ v * ncf + c ] = sp[ c ]
         # in-place: edge/face points append past t.nv, reading below it
         for [ lv: i32 0, lv < levels, lv += 1 ]
@@ -1886,7 +1889,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
                 dv : i32 [ t.nv + t.ne + f ]
                 for [ c: i32 0, c < ncf, c += 1 ] cur[ dv * ncf + c ] = 0.25 * (cur[ c0 * ncf + c ] + cur[ c1 * ncf + c ] + cur[ c2 * ncf + c ] + cur[ c3 * ncf + c ])
         for [ v: i32 0, v < nout, v += 1 ]
-            dp : @f32 [ ((@odata[ v * vsz + moff ]) to @f32) ]
+            dp : cast @f32 [ @odata[ v * vsz + moff ] ]
             for [ c: i32 0, c < ncf, c += 1 ] dp[ c ] = cur[ v * ncf + c ]
     # ---- GPU position chain: one SubdivCompute pipeline per level ----
     in0sz : i32 [ tv * 3 * 4 ]
@@ -1894,7 +1897,7 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
     ip : @f32 [ in0.data ]
     for [ v: i32 0, v < tv, v += 1 ]
         rv : i32 [ rep[ v ] ]
-        p : @f32 [ ((@vdata[ rv * vsz ]) to @f32) ]
+        p : cast @f32 [ @vdata[ rv * vsz ] ]
         ip[ v*3 + 0 ] = p[ 0 ]
         ip[ v*3 + 1 ] = p[ 1 ]
         ip[ v*3 + 2 ] = p[ 2 ]

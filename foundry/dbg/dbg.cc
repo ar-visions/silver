@@ -258,9 +258,18 @@ none dbg_attach(dbg debug, i32 pid) {
     S(debug)->process = S(debug)->target.Attach(attach_info, error);
     if (!error.Success()) {
         printf("dbg: attach pid=%i failed: %s\n", (i32)pid, error.GetCString());
+        debug->active = false;   // session never began — caller checks this
     } else {
         printf("dbg: attached pid=%i\n", (i32)pid);
-        debug->running = true;
+        // swallow the attach's own stop — it must not surface as a break
+        lldb::SBEvent ev;
+        for (int i = 0; i < 20; i++) {
+            if (!S(debug)->listener.WaitForEvent(1, ev)) break;
+            if (lldb::SBProcess::EventIsProcessEvent(ev) &&
+                lldb::SBProcess::GetStateFromEvent(ev) == lldb::eStateStopped)
+                break;
+        }
+        debug->running = false;   // parked until the caller cont()s
         debug->active  = true;
     }
 }

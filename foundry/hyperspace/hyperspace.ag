@@ -263,7 +263,7 @@ element hyperspace : trinity
     # real values may sit outside 0..1 (eye inferred off-camera)
     func read_pair [ fid: string, key: string ] -> vec2f
         p : path '{session_dir[]}/{fid}.agi'
-        s : (p.load[ typeid[ string ], null ] to string)
+        s : cast string[ p.load[ typeid[ string ], null ]]
         r : vec2f [ x: -999.0, y: -999.0 ]
         if [ !s ] return r
         k  : string '{key}:'
@@ -289,7 +289,7 @@ element hyperspace : trinity
     func agi_put [ fid: string, key: string, val: string ]
         p : path '{session_dir[]}/{fid}.agi'
         line : string '{key}: {val}\n'
-        s : (p.load[ typeid[ string ], null ] to string)
+        s : cast string [ p.load[ typeid[ string ], null ] ]
         if [ !s ]
             p.save[ line, null ]
             return
@@ -325,7 +325,7 @@ element hyperspace : trinity
         if [ mode == 'last' ]
             ann_base = null
             zp2 : path '{session_dir[]}/{fid}.agi'
-            zs2 : (zp2.load[ typeid[ string ], null ] to string)
+            zs2 : cast string [ zp2.load[ typeid[ string ], null ] ]
             if [ zs2 ]
                 ix2 : num [ zs2.index_of[ 'sequence:' ] ]
                 if [ ix2 >= 0 ]
@@ -366,14 +366,14 @@ element hyperspace : trinity
             # ONLY marked zero-frames: edge laps are head-focused on
             # every frame and must not flood the pupil queue
             zp : path '{session_dir[]}/{fid}.agi'
-            zs : (zp.load[ typeid[ string ], null ] to string)
+            zs : cast string [ zp.load[ typeid[ string ], null ] ]
             if [ !zs || zs.index_of[ 'zero: true' ] < 0 ] return false
             return true
         if [ mode == 'eyes' ]
             v2 : read_pair[ fid, '{ann_cam}_pupil_right' ]
             if [ v.x > -100.0 && v2.x > -100.0 ] return false
             zp : path '{session_dir[]}/{fid}.agi'
-            zs : (zp.load[ typeid[ string ], null ] to string)
+            zs : cast string [ zp.load[ typeid[ string ], null ] ]
             if [ !zs || zs.index_of[ 'edges: true' ] < 0 ] return false
             return true
         return true
@@ -760,7 +760,7 @@ element hyperspace : trinity
             while [ true ]
                 p : path '{d}/{k}.agi'
                 if [ !p.exists[] ] break
-                s : (p.load[ typeid[ string ], null ] to string)
+                s : cast string [ p.load[ typeid[ string ], null ] ]
                 if [ s ]
                     ix : num [ s.index_of[ 'sequence:' ] ]
                     if [ ix >= 0 ]
@@ -842,13 +842,13 @@ element hyperspace : trinity
             for [ i3: i32 0, i3 < na9, i3 += 1 ]
                 fid9 : ann_files[ ord9[i3] ]
                 p9 : path '{d}/{fid9}.agi'
-                s9 : (p9.load[ typeid[ string ], null ] to string)
+                s9 : cast string [ p9.load[ typeid[ string ], null ] ]
                 if [ s9 && s9.index_of[ 'priority: true' ] >= 0 ]
                     ns9.push[ fid9 ]
             for [ i3: i32 0, i3 < na9, i3 += 1 ]
                 fid9 : ann_files[ ord9[i3] ]
                 p9 : path '{d}/{fid9}.agi'
-                s9 : (p9.load[ typeid[ string ], null ] to string)
+                s9 : cast string [ p9.load[ typeid[ string ], null ] ]
                 if [ !s9 || s9.index_of[ 'priority: true' ] < 0 ]
                     ns9.push[ fid9 ]
             ann_files = ns9
@@ -902,9 +902,9 @@ element hyperspace : trinity
         tb_x = 0.5
         tb_y = 0.5
         fx_hx = new f32 [ 16 ]
-        hold[ (fx_hx to Au) ]
+        hold[ cast Au [ fx_hx ] ]
         fx_hy = new f32 [ 16 ]
-        hold[ (fx_hy to Au) ]
+        hold[ cast Au [ fx_hy ] ]
         fx_i = 0
         fx_n = 0
         mode       = 'test'
@@ -1074,10 +1074,10 @@ element hyperspace : trinity
             puts 'observer: x {ox4}m y {oy4}m z {oz}m (screen {screen_w_m}x{screen_h_m})'
             if [ !is_top ] tb_dump = false
         ins0 : build_inputs[ gray, lx, ly, rx, ry, sc2 ]
-        lc  : (ins0[0] to tensor)
-        rc  : (ins0[1] to tensor)
-        fcr : (ins0[2] to tensor)
-        aux : (ins0[3] to tensor)
+        lc  : cast tensor [ ins0[0] ]
+        rc  : cast tensor [ ins0[1] ]
+        fcr : cast tensor [ ins0[2] ]
+        aux : cast tensor [ ins0[3] ]
         # display-only geometry (panels + overlays); the NET inputs
         # above come solely from build_inputs
         side2 : f32 [ sc2 / 2.12 ]
@@ -1160,7 +1160,7 @@ element hyperspace : trinity
         ins.push[ rc ]
         ins.push[ fcr ]
         ins.push[ aux ]
-        ins.push[ (ins0[4] to tensor) ]
+        ins.push[ cast tensor [ ins0[4] ] ]
         return ins
 
     public func on_canvas [ cv: Canvas ]
@@ -1412,7 +1412,7 @@ element hyperspace : trinity
                 cv.paint[]
                 return
             tb_blind = 0
-            a1 : (c1[3] to tensor)
+            a1 : cast tensor [ c1[3] ]
             aux14 : tensor [ tensor_shape: 1x12 ]
             if [ cameras > 1 ] aux14 = tensor [ tensor_shape: 1x24 ]
             for [ i: i32 0, i < 12, i += 1 ]
@@ -1424,7 +1424,7 @@ element hyperspace : trinity
             if [ cameras > 1 ]
                 c2 : tb_cam[ cv, bot, false, rect [ x: sw - ps2 - 8.0, y: sh - ps2 - 8.0, w: ps2, h: ps2 ] ]
                 if [ !c2 ] return
-                a2 : (c2[3] to tensor)
+                a2 : cast tensor [ c2[3] ]
                 for [ i: i32 0, i < 12, i += 1 ]
                     aux14.floats[i + 12] = a2.floats[i]
                 ins2.push[ c2[0] ]
@@ -1480,7 +1480,7 @@ element hyperspace : trinity
                 tb_x += (px6 - tb_x) * 0.2
                 tb_y += (py6 - tb_y) * 0.2
             # observer position painted live (screen-centered meters)
-            a9 : (c1[3] to tensor)
+            a9 : cast tensor [ c1[3] ]
             sc9 : f32 [ a9.floats[2] ]
             if [ sc9 > 0.01 ]
                 # camera-frame eye position (x = observer right, y = up)
@@ -1661,7 +1661,7 @@ element hyperspace : trinity
             if [ ts_refine && ann_rect.w > 0.0 ]
                 fid : ann_files[ ann_i ]
                 zp5 : path '{session_dir[]}/{fid}.agi'
-                zs5 : (zp5.load[ typeid[ string ], null ] to string)
+                zs5 : cast string [ zp5.load[ typeid[ string ], null ] ]
                 if [ zs5 ]
                     ix5 : num [ zs5.index_of[ 'sequence:' ] ]
                     if [ ix5 >= 0 ]
@@ -1996,9 +1996,9 @@ element hyperspace : trinity
     # saved model (.agi + weights .bin) wins; the build fn bootstraps first runs
     func load_model [ p: path ] -> keras
         if [ !p.exists[] ] return null
-        txt : (p.load[ typeid[ string ], null ] to string)
+        txt : cast string [ p.load[ typeid[ string ], null ] ]
         if [ !txt ] return null
-        m : (Au.parse_agi[ typeid[ keras ], txt.chars, null ] to keras)
+        m : cast keras [ Au.parse_agi[ typeid[ keras ], txt.chars, null ] ]
         if [ !m ] return null
         if [ m.weights_bin ]
             m.load_weights[ m.weights_bin ]
@@ -2163,7 +2163,7 @@ element hyperspace : trinity
         for [ k: i32 0, k <= mx9, k += 1 ]
             p : path '{d}/{k}.agi'
             if [ !p.exists[] ] continue
-            s : (p.load[ typeid[ string ], null ] to string)
+            s : cast string [ p.load[ typeid[ string ], null ] ]
             if [ !s ] continue
             # sequence members use their zero frame's pupils; zero
             # frames and pupil-clicked edge frames use their own
@@ -2185,11 +2185,11 @@ element hyperspace : trinity
             dsy : f32 [ pl.y - pr.y ]
             sc9 : f32 [ sqrt[ dsx * dsx + dsy * dsy ] ]
             ins9 : build_inputs[ im, pl.x, pl.y, pr.x, pr.y, sc9 ]
-            preview_tensor[ cd, string '{k}-l', (ins9[0] to tensor) ]
-            preview_tensor[ cd, string '{k}-r', (ins9[1] to tensor) ]
-            preview_tensor[ cd, string '{k}-f', (ins9[2] to tensor) ]
-            preview_tensor[ cd, string '{k}-w', (ins9[4] to tensor) ]
-            a9 : (ins9[3] to tensor)
+            preview_tensor[ cd, string '{k}-l', cast tensor [ ins9[0] ] ]
+            preview_tensor[ cd, string '{k}-r', cast tensor [ ins9[1] ] ]
+            preview_tensor[ cd, string '{k}-f', cast tensor [ ins9[2] ] ]
+            preview_tensor[ cd, string '{k}-w', cast tensor [ ins9[4] ] ]
+            a9 : cast tensor [ ins9[3] ]
             ln9 : string '{k}'
             for [ q: i32 0, q < 12, q += 1 ]
                 ln9 = string '{ln9} {a9.floats[q]}'
@@ -2779,7 +2779,7 @@ element hyperspace : trinity
             # frame's coordinates (the odd-frame corruption)
             ev.stop_propagation[]
             return
-        e : (ev.origin to element)
+        e : cast element [ ev.origin ]
         if [ !e ] return
         if [ e.id == 'head-focus' ]
             start_record[ true ]

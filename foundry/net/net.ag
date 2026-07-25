@@ -151,7 +151,7 @@ class Http
                 t.close[]
                 return -1
             req : string 'GET {u.query} HTTP/1.1\r\nHost: {u.host}\r\nUser-Agent: silver\r\nAccept: */*\r\nConnection: close\r\n\r\n'
-            if [ t.send[ (req.chars to @u8), req.count ] != req.count ]
+            if [ t.send[ cast @u8 [ req.chars ], req.count ] != req.count ]
                 puts 'net: send failed to {u.host}'
                 t.close[]
                 return -1
@@ -165,7 +165,7 @@ class Http
                 hn += 1
                 if [ hn >= 4 && hbuf[hn - 4] == 13 && hbuf[hn - 3] == 10 && hbuf[hn - 2] == 13 && hbuf[hn - 1] == 10 ] break
             hbuf[hn] = 0
-            hdr : string [ (@hbuf[0] to cstr) ]
+            hdr : string [ cast cstr [ @hbuf[0] ] ]
             # status code sits after 'HTTP/1.1 '
             code : i32 [ 0 ]
             if [ hdr.count > 12 ]

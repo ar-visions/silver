@@ -1038,7 +1038,7 @@ func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] ->
     subset.hold[]
     outdir.hold[]
     idxp : path '{root}/{subset}-align.txt'
-    s : (idxp.load[ typeid[ string ], null ] to string)
+    s : cast string [ idxp.load[ typeid[ string ], null ] ]
     if [ !s ]
         puts 'libri_translate: cannot read {idxp} (run the extract step)'
         return 0
@@ -1136,7 +1136,7 @@ func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> 
     split.hold[]
     outdir.hold[]
     tsvp : path '{dataset}/{split}.tsv'
-    s : (tsvp.load[ typeid[ string ], null ] to string)
+    s : cast string [ tsvp.load[ typeid[ string ], null ] ]
     if [ !s ]
         puts 'cv_translate: cannot read {tsvp}'
         return 0
@@ -1336,7 +1336,7 @@ class WhisperJob
     public gpu  : whisper_vk
 
 func spectra_whisper_thread [ arg: handle ] -> handle
-    j : (arg to WhisperJob)
+    j : cast WhisperJob [ arg ]
     enc : j.enc
     if [ !enc ]
         c : AudioClip [ rate: 48000, channels: 1, frames: j.n, pcm: j.pcm ]
@@ -1411,7 +1411,7 @@ func dictation_start [] -> i32
                 n8.hold[]
                 dict.net = n8
                 dict.raw = new i16 [ 1536000 ]
-                r9 : (dict.raw to Au)
+                r9 : cast Au [ dict.raw ]
                 r9.hold[]
                 puts 'dictation: whisper ready — speak; a pause transcribes'
             el
@@ -1504,7 +1504,7 @@ func dict_spawn [ a: i64, b: i64 ]
     pad5 : i64 [ 48000 ]
     tot5 : i64 [ n5 + pad5 ]
     buf5 : new i16 [ tot5 ]
-    b9 : (buf5 to Au)
+    b9 : cast Au [ buf5 ]
     b9.hold[]
     for [ i6: i64 0, i6 < n5, i6 += 1 ]
         buf5[i6] = dict.raw[(a + i6) % 1536000]
@@ -1517,7 +1517,7 @@ func dict_spawn [ a: i64, b: i64 ]
     if [ dict.gpu && dict.gpu.threaded[] ] j5.gpu = dict.gpu
     dict.job = j5
     puts 'dictation: transcribing {n5 / 48000}s speech + 1s pad…'
-    pthread_create[ @dict.tid, null, @spectra_whisper_thread, (j5 to handle) ]
+    pthread_create[ @dict.tid, null, @spectra_whisper_thread, cast handle [ j5 ] ]
     pthread_detach[ dict.tid ]
 
 # dump a mono 48k i16 utterance to /tmp/dict-<n>.wav for validation
@@ -1843,7 +1843,7 @@ element main : trinity
         ann_seed = ann_seed * 6364136223846793005 + 1442695040888963407
         ann_id = i32[ (ann_seed % i64[ ann_n ] + i64[ ann_n ]) % i64[ ann_n ] ]
         ap : path '{outdir}/{split}_{ann_id}.agi'
-        text : (ap.load[ typeid[ string ], null ] to string)
+        text : cast string [ ap.load[ typeid[ string ], null ] ]
         if [ !text ] return
         img5 : ann_field[ text, 'image' ]
         src5 : ann_field[ text, 'source' ]
@@ -1878,7 +1878,7 @@ element main : trinity
     # rewrite this clip's .agi with the clicked marks line
     func ann_save []
         ap : path '{outdir}/{split}_{ann_id}.agi'
-        text : (ap.load[ typeid[ string ], null ] to string)
+        text : cast string [ ap.load[ typeid[ string ], null ] ]
         if [ !text ] return
         lines3 : array string [ text.split[ '\n' ] ]
         body3 : string ''
@@ -2000,7 +2000,7 @@ element main : trinity
                 seed9[1] = 50259
                 seed9[2] = 50359
                 seed9[3] = 50363
-                tk9 : i32 [ wsp.decode_step[ enc9, (seed9 to handle), 4 ] ]
+                tk9 : i32 [ wsp.decode_step[ enc9, cast handle [ seed9 ], 4 ] ]
                 puts 'spectra: decode ok — first token {tk9}'
                 exit[ 0 ]
         if [ libri ]
@@ -2080,7 +2080,7 @@ element main : trinity
                 w_net.hold[]
                 if [ w_net.valid ]
                     w_raw = new i16 [ 1536000 ]
-                    hold[ (w_raw to Au) ]
+                    hold[ cast Au [ w_raw ] ]
                     save_model[ wname ]
                     puts 'spectra: whisper ready — speak; a pause transcribes'
             el [ whisper ]
@@ -2104,7 +2104,7 @@ element main : trinity
             voc_w = array string [ alloc: 4200 ]
             voc_w.hold[]
             vp8 : path '{mp8}/models/read1-vocab.txt'
-            vs8 : (vp8.load[ typeid[ string ], null ] to string)
+            vs8 : cast string [ vp8.load[ typeid[ string ], null ] ]
             if [ vs8 ]
                 vl8 : array string [ vs8.split[ '\n' ] ]
                 for [ vi8: i32 0, vi8 < vl8.count, vi8 += 1 ]
@@ -2163,7 +2163,7 @@ element main : trinity
             k : i32 [ i32[ (ann_seed % 2703 + 2703) % 2703 ] ]
             ap : path '{outdir}/dev-clean_{k}.agi'
             if [ !ap.exists[] ] continue
-            text : (ap.load[ typeid[ string ], null ] to string)
+            text : cast string [ ap.load[ typeid[ string ], null ] ]
             if [ !text ] continue
             sn : ann_field[ text, 'sentence' ]
             ws : array string [ sn.split[ ' ' ] ]
@@ -2531,7 +2531,7 @@ element main : trinity
                             n5 : i64 [ e5 - w_start ]
                             if [ n5 > 24000 ]
                                 buf5 : new i16 [ n5 ]
-                                hold[ (buf5 to Au) ]
+                                hold[ cast Au [ buf5 ] ]
                                 for [ i5: i64 0, i5 < n5, i5 += 1 ]
                                     buf5[i5] = w_raw[(w_start + i5) % 1536000]
                                 j5 : WhisperJob [ model: w_net, pcm: buf5, n: n5, c0: w_start / 2048, c1: e5 / 2048 ]
@@ -2552,7 +2552,7 @@ element main : trinity
                                         j5.enc = e7
                                 w_job = j5
                                 puts 'whisper: transcribing {n5 / 48000}s…'
-                                pthread_create[ @w_tid, null, @spectra_whisper_thread, (j5 to handle) ]
+                                pthread_create[ @w_tid, null, @spectra_whisper_thread, cast handle [ j5 ] ]
                                 pthread_detach[ w_tid ]
             if [ w_job && w_job.done ]
                 w_text = w_job.text

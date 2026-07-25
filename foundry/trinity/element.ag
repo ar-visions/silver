@@ -91,13 +91,15 @@ enum State
 
 
 alias Elements : map    element [ string ]
+alias Layers   : map    Layer   [ string ]
+alias astrings : array  string
 alias FRender  : lambda Elements[ Display ]
 
 # this Au type indicates we do not have an 'init' called
 ielement element
     context vk              : vk_context
     context ux              : Window
-    mutable parent          : element
+    manual parent           : element
     mutable area            : Region
     mutable bounds          : rect
     mutable value           : object
@@ -222,8 +224,8 @@ ielement element
     #intern selections   : map
     intern transitions  : map StyleTransition[string]
 
-    intern restyle       : bool
-    mutable volatile     : bool
+    #intern restyle       : bool
+    #mutable volatile     : bool
     # ALWAYS redraw, never cache: for elements whose content changes every
     # frame regardless of style state (emulators, video, live views).
     # `volatile` looks similar but is OWNED BY THE STYLE ENGINE (active
@@ -306,22 +308,35 @@ ielement element
         for [ ee: element, k: string ] in elements
             ee.unload_tree[]
 
-    # per-element GPU-cache release hook (Editor frees band canvases)
-    public func on_teardown [ ]
-        return
+    # undo the id→member auto-bind: member_set held this instance on
+    # the home object at mount; unmount must release that ownership
+    func unbind_home [ ]
+        if [ !id || id.count == 0 ] return
+        hobj  : Au [ parent ]
+        htype : Au_t [ (parent) ? typeid[ parent ] : null ]
+        if [ htype == typeid[ element ] ]
+            while [ hobj ]
+                he : cast element [ hobj ]
+                hobj = he.parent
+                if [ !hobj ] break
+                htype = typeid[ hobj ]
+                if [ htype != typeid[ element ] ] break
+        if [ !hobj && ux ]
+            hobj  = ux.app_object
+            htype = typeid[ hobj ]
+        if [ !hobj || !htype ] return
+        imember : find_member[ htype, id.chars, AU_MEMBER_VAR, 0, true ]
+        if [ !imember ] return
+        cur : hobj.member_object[ imember ]
+        if [ cur == a ]
+            hobj.member_set[ imember, null ]
 
-    # reclaim GPU textures for an unmounted subtree (idempotent)
-    func teardown_canvases [ ]
-        puts 'TD {id} cache={(cache_canvas) ? 1 : 0}'
-        on_teardown*[]
-        if [ cache_canvas ] cache_canvas.teardown_gpu[]
-        if [ mask_canvas  ] mask_canvas.teardown_gpu[]
-        for [ ly: Layer, lk: string ] in layers
-            if [ ly.blur_canvas ] ly.blur_canvas.teardown_gpu[]
-            if [ ly.image_svg && ly.image_svg.cache ]
-                ly.image_svg.cache.teardown_gpu[]
+    # force GPU release (verified stable). REFS! lines OBSERVE the
+    # ownership model; drops replace the force path once they're quiet
+    func release_tree [ ]
+        unbind_home[]
         for [ ee: element, k: string ] in elements
-            ee.teardown_canvases[]
+            ee.release_tree[]
 
     public func render [ ] -> Elements
         return null
@@ -388,14 +403,15 @@ ielement element
                         mixed : ct.from.mix*[ ct.to, p ]
                         ct.container.member_set[ ct.member, mixed ]
 
-        if [ volatile ]
-            restyle = true
-
         for [ ee: element, id: string ] in elements
             ee.animate_within[ ]
 
     public func is_animating [] -> bool
-        if [ volatile ] return true
+        # hidden elements never draw — they must not hold the frame loop open
+        if [ hide ] return false
+        # a non-pristine element needs a frame to repaint (was `volatile`)
+        if [ !pristine ] return true
+        if [ animated ] return true
         if [ transitions ]
             cur_millis : i64 [ epoch_millis[] ]
             for [ ct: StyleTransition, k: string ] in transitions

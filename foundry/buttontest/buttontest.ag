@@ -34,7 +34,7 @@ element buttontest : trinity
     public opacity    : f32 [ 0.35 ]
 
     public func on_click [ ev: Event ]
-        e : (ev.origin to element)
+        e : cast element [ ev.origin ]
         if [ !e ] return
         if [ e.id == 'hello' ]
             clicks += 1

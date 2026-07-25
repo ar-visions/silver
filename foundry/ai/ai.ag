@@ -62,13 +62,10 @@ class tensor
         # app's per-frame autorelease drain frees them under the model
         if [ !floats ]
             floats = new f32[tensor_shape]
-            hold[ (floats to Au) ]
         if [ !quants ]
             quants = new i8[tensor_shape]
-            hold[ (quants to Au) ]
         if [ !grad ]
             grad = new f32[tensor_shape]
-            hold[ (grad to Au) ]
 
         switch [ initializer ]
         case random
@@ -116,7 +113,7 @@ class tensor
         offset = 0
 
     func hash [] -> u64
-        return fnv1a_hash [ (quants to @u8), count, OFFSET_BASIS ]
+        return fnv1a_hash [ cast @u8 [ quants ], count, OFFSET_BASIS ]
 
 
 
@@ -142,7 +139,7 @@ class safetensors
         hraw : new u8 [ hlen + 1 ]
         if [ fread[ hraw, 1, hlen, fp ] != hlen ] return
         hraw[hlen] = 0
-        hdr  = string [ (@hraw[0] to cstr) ]
+        hdr  = string [ cast cstr [ @hraw[0] ] ]
         doff = 8 + hlen
         valid = true
 
@@ -2398,7 +2395,7 @@ class gpt2_vocab
 
     # ids -> utf-8 text; ids >= n_special_base (50257) are skipped
     func decode [ ids: handle, n: i32 ] -> string
-        idp : (ids to @i32)
+        idp : cast @i32 [ ids ]
         buf : new u8 [ 16384 ]
         bn : i64 [ 0 ]
         for [ i: i32 0, i < n, i += 1 ]
@@ -2411,7 +2408,7 @@ class gpt2_vocab
                     buf[bn] = arena[o + k]
                     bn += 1
         buf[bn] = 0
-        return string [ (@buf[0] to cstr) ]
+        return string [ cast cstr [ @buf[0] ] ]
 
 # whisper encoder (small: dim 768, 12 heads, 12 layers) assembled from
 # this module's ops, weights streamed from the safetensors checkpoint.
@@ -2675,7 +2672,7 @@ class whisper
     # toks_h: pointer to n i32 token ids. handle, not @i32 — module
     # export currently drops ref-ness on prim pointer params
     func decode_step [ enc: tensor, toks_h: handle, n: i32 ] -> i32
-        toks : (toks_h to @i32)
+        toks : cast @i32 [ toks_h ]
         nd : i64 [ n * dim ]
         x : rows2[ n, dim ]
         for [ t: i32 0, t < n, t += 1 ]
@@ -2929,7 +2926,7 @@ class whisper
         tmp : new i32 [ n ]
         for [ i: i32 0, i < n, i += 1 ]
             tmp[i] = ids[i]
-        return vocab.decode[ (tmp to handle), n ]
+        return vocab.decode[ cast handle [ tmp ], n ]
 
 # ---- gpu kernels (vk compute) ---------------------------------------------
 enum WgGemmS
@@ -3346,7 +3343,7 @@ class whisper_vk
     # true when the low-priority compute queue exists: encode may then run
     # on a worker thread without ever touching the graphics queue
     func threaded [] -> bool
-        cq : (vk.compute_queue_handle[] to VkQueue)
+        cq : cast VkQueue [ vk.compute_queue_handle[] ]
         return cq != null
 
     intern func chunk_begin [ dv: VkDevice, cp: VkCommandPool ] -> VkCommandBuffer
@@ -3444,25 +3441,25 @@ class whisper_vk
         p_lnf.dispatch_x = tx
         # trinity-compiled accessors: direct field reads from another
         # module land at wrong offsets (imported-layout intern shift)
-        dv9 : (vk.dev_handle[] to VkDevice)
+        dv9 : cast VkDevice [ vk.dev_handle[] ]
         # prefer the low-priority compute queue + its worker pool — the
         # graphics queue keeps its quality of service while we grind
-        qq9 : (vk.compute_queue_handle[] to VkQueue)
-        cp9 : (vk.compute_pool_handle[] to VkCommandPool)
+        qq9 : cast VkQueue [ vk.compute_queue_handle[] ]
+        cp9 : cast VkCommandPool [ vk.compute_pool_handle[] ]
         if [ !qq9 ]
-            qq9 = (vk.queue_handle[] to VkQueue)
-            cp9 = (vk.pool_handle[] to VkCommandPool)
+            qq9 = cast VkQueue [ vk.queue_handle[] ]
+            cp9 = cast VkCommandPool [ vk.pool_handle[] ]
         # sliced submission: front, one slice per layer, tail — no single
         # submit owns the device long enough to starve a frame
         cmd : chunk_begin[ dv9, cp9 ]
-        ch  : handle [ (cmd to handle) ]
+        ch  : cast handle [ cmd ]
         p_conv1.dispatch[ ch ]
         p_conv2.dispatch[ ch ]
         p_pos.dispatch[ ch ]
         chunk_end[ dv9, cp9, qq9, cmd ]
         for [ li: i32 0, li < model.layers, li += 1 ]
             cmd2 : chunk_begin[ dv9, cp9 ]
-            ch2  : handle [ (cmd2 to handle) ]
+            ch2  : cast handle [ cmd2 ]
             p_ln1[li].dispatch[ ch2 ]
             p_gq[li].dispatch[ ch2 ]
             p_gk[li].dispatch[ ch2 ]
@@ -3476,7 +3473,7 @@ class whisper_vk
             p_a2[li].dispatch[ ch2 ]
             chunk_end[ dv9, cp9, qq9, cmd2 ]
         cmd3 : chunk_begin[ dv9, cp9 ]
-        ch3  : handle [ (cmd3 to handle) ]
+        ch3  : cast handle [ cmd3 ]
         p_lnf.dispatch[ ch3 ]
         chunk_end[ dv9, cp9, qq9, cmd3 ]
         res : model.rows2[ th, dim ]

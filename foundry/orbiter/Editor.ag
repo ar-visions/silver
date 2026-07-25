@@ -161,7 +161,7 @@ class ResourceView
             if [ row >= total ] break
             j : i32 [ hx_put[ @b[0], 0, row * 16, 8 ] ]
             b[ j ] = 0
-            cv.draw_text [ string [ (@b[0]) to cstr ],
+            cv.draw_text [ string [ cast cstr [ @b[0] ] ],
                 rect [ x: x_off, y: yb + f32[ row ] * lh, w: cw * 8.0, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint [ ]
@@ -182,7 +182,7 @@ class ResourceView
                 b[ j ] = 32
                 j += 1
             b[ j ] = 0
-            cv.draw_text [ string [ (@b[0]) to cstr ],
+            cv.draw_text [ string [ cast cstr [ @b[0] ] ],
                 rect [ x: x_hex, y: yb + f32[ row ] * lh, w: cw * 49.0, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint [ ]
@@ -198,7 +198,7 @@ class ResourceView
                 c : i32 [ i32[ hx_win[ bi + k ] ] ]
                 b[ k ] = u8[ (c >= 32 && c < 127) ? c : 46 ]
             b[ nb ] = 0
-            cv.draw_text [ string [ (@b[0]) to cstr ],
+            cv.draw_text [ string [ cast cstr [ @b[0] ] ],
                 rect [ x: x_asc, y: yb + f32[ row ] * lh, w: cw * 16.0, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint [ ]
@@ -442,6 +442,10 @@ ResourceView AppView
     mutable aw         : i32
     mutable ah         : i32
     mutable have_frame : bool
+    # epoch micros of the first PANE-SIZED frame — drives the fade-in over code
+    mutable fade_us    : i64
+    # epoch micros of the first import at any size (fallback fade trigger)
+    mutable seen_us    : i64
     # letterbox rect (canvas space) of the last drawn frame — maps clicks back
     mutable fitx       : f32
     mutable fity       : f32
@@ -495,7 +499,18 @@ ResourceView AppView
                 gen = g9
                 ready      = true
                 have_frame = true
+                if [ seen_us == 0 ] seen_us = epoch_micros[]
+                # fade only once the frame is LAID OUT at the pane's size — the
+                # first publish is the app's default size and lands misplaced
+                dw9 : i32 [ i32[ vw ] - aw ]
+                dh9 : i32 [ i32[ vh ] - ah ]
+                if [ dw9 < 0 ] dw9 = 0 - dw9
+                if [ dh9 < 0 ] dh9 = 0 - dh9
+                if [ fade_us == 0 && dw9 <= 2 && dh9 <= 2 ] fade_us = epoch_micros[]
                 puts 'appview: imported surface {aw}x{ah} (slot {slot})'
+        # sizing never came (app ignores resize) — fade in anyway after 1.5s
+        if [ ready && fade_us == 0 && seen_us != 0 ]
+            if [ epoch_micros[] - seen_us > 1500000 ] fade_us = epoch_micros[]
         # orbiter dictates the app's size: the pane's workable area IS the
         # app's window. when the area settles at a new size, ask the app to
         # rebuild its backbuffer there (a fresh shared texture follows).
@@ -534,7 +549,7 @@ ResourceView AppView
             fitw = fw
             fith = fh
             cv.draw_image[ ft, rect [ x: fitx, y: fity, w: fitw, h: fith ] ]
-        if [ dead || !ready ]
+        if [ dead ]
             overlay[ cv, bounds ]
 
     func render [ cv: Canvas, bounds: rect ]
@@ -595,13 +610,43 @@ ResourceView AppView
         return x >= pipx && y >= pipy && x <= pipx + pipw && y <= pipy + piph
 
     func overlay [ cv: Canvas, bounds: rect ]
-        msg : (dead) ? note : string 'launching…'
+        st9 : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
+        msg : string [ (st9 == 1) ? 'compiling {app_mod}…' : 'starting {app_mod}…' ]
         if [ dead ] msg = '{note} — click to restart'
         cv.font_size[ 16 ]
         cv.fill_color[ '#dddddd' ]
-        cv.draw_text[ msg, rect [ x: bounds.x, y: bounds.y + bounds.h * 0.5 - 12.0, w: bounds.w, h: 24.0 ],
+        cv.draw_text[ msg, rect [ x: bounds.x, y: bounds.y + 16.0, w: bounds.w, h: 24.0 ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint[]
+        # build/launch feed: tail the app log into the pane while waiting
+        if [ !dead && app_mod ]
+            lp9 : string '/tmp/{app_mod}.log'
+            fp9 : fopen[ lp9.chars, 'rb' ]
+            if [ fp9 ]
+                fseek[ fp9, 0, SEEK_END ]
+                sz9 : i32 [ i32[ ftell[ fp9 ] ] ]
+                back : i32 [ (sz9 < 4000) ? sz9 : 4000 ]
+                fseek[ fp9, sz9 - back, SEEK_SET ]
+                b9 : local i8 [ 4096 ]
+                n9 : i32 [ i32[ fread[ @b9[0], 1, back, fp9 ] ] ]
+                fclose[ fp9 ]
+                if [ n9 > 0 ]
+                    b9[n9] = 0
+                    txt9   : string [ @b9[0] ]
+                    lines9 : array string txt9.split[ '\n' ]
+                    lh9  : f32 [ 16.0 ]
+                    maxn : i32 [ i32[ (bounds.h - 56.0) / lh9 ] ]
+                    st0  : i32 [ (lines9.count > maxn) ? lines9.count - maxn : 0 ]
+                    cv.font_size[ 12 ]
+                    cv.fill_color[ '#8899aa' ]
+                    y9 : f32 [ bounds.y + 44.0 ]
+                    for [ i: i32 st0, i < lines9.count, i += 1 ]
+                        ln9 : string lines9[ i ]
+                        if [ ln9 && ln9.count > 0 ]
+                            cv.draw_text[ ln9, rect [ x: bounds.x + 16.0, y: y9, w: bounds.w - 32.0, h: lh9 ],
+                                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                        y9 += lh9
+                    cv.paint[]
 
     # ask silver-host (our supervisor) to build + spawn the module into a
     # channel slot. the console command just streams the app's teed log — the
@@ -664,6 +709,8 @@ ResourceView AppView
         ready      = false
         dead       = false
         have_frame = false
+        fade_us    = 0
+        seen_us    = 0
         note       = ''
 
     intern func cleanup []
@@ -680,6 +727,8 @@ ResourceView AppView
             tex1 = null
         gen        = 0
         have_frame = false
+        fade_us    = 0
+        seen_us    = 0
 
     func release []
         cleanup[]
@@ -763,7 +812,6 @@ Layer EditorLayer
         if [ !use ]
             use = EdLineCache [ ]
             editor.code_lines.push[ use ]
-            puts 'LINE+ pool={editor.code_lines.count}'
         disp : editor.display_of[ ln ]
         cw_i : i32 [ i32[ ceil[ f32[ disp.count ] * cw + cw ] ] ]
         if [ cw_i < 1 ] cw_i = 1
@@ -889,7 +937,6 @@ Layer EditorLayer
         if [ !use ]
             use = EdLineCache [ ]
             editor.code_lines.push[ use ]
-            puts 'BAND+ pool={editor.code_lines.count} {maxw}x{lc_h}'
         if [ !use.canvas ]
             use.canvas = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8, width: maxw, height: lc_h, load_existing: true, quantize: true, tag: 'band' ]
             use.canvas.update[]
@@ -980,9 +1027,15 @@ Layer EditorLayer
         # when app_view is on, otherwise fall through to the code below.
         if [ editor.run_view ]
             editor.run_view.service[ cv ]
+            # no blank pane while the app builds/launches: the code keeps
+            # rendering until the FIRST frame arrives, then the frame fades in
+            # over it (orbiter.on_overlay draws it at rising opacity). only a
+            # fully faded-in app takes over the pane.
             if [ editor.app_view && !editor.show_hits ]
                 # workable area = layer bounds minus the bottom band (toolbar +
-                # console) — the band is a child whose top edge tracks the seam
+                # console) — the band is a child whose top edge tracks the seam.
+                # ALWAYS captured: the resize handshake needs vw/vh before the
+                # first frame exists, and the fade overlay draws from vx/vy.
                 b2 : rect [ x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h ]
                 bot : element (editor.elements) ? editor.elements['bottom'] : null
                 if [ bot && bot.bounds && bot.bounds.h > 0.0 ]
@@ -992,12 +1045,15 @@ Layer EditorLayer
                 editor.run_view.vy = b2.y
                 editor.run_view.vw = b2.w
                 editor.run_view.vh = b2.h
-                # the app frame draws into THIS element's cached canvas; the code
-                # edge-fade mask would dim its edges, so clear it (like grid mode)
-                parent.mask_glow  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-                parent.mask_inset = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-                editor.run_view.draw_frame[ cv, b2 ]
-                return
+                if [ editor.run_view.fade_us != 0 ]
+                    fal : f32 [ f32[ epoch_micros[] - editor.run_view.fade_us ] / 400000.0 ]
+                    if [ fal >= 1.0 ]
+                        # the app frame draws into THIS element's cached canvas; the code
+                        # edge-fade mask would dim its edges, so clear it (like grid mode)
+                        parent.mask_glow  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+                        parent.mask_inset = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+                        editor.run_view.draw_frame[ cv, b2 ]
+                        return
         if [ editor.rview && !editor.show_hits ]
             if [ !editor.rview.view_text*[ editor.rview.view_sel ] ]
                 if [ editor.rview.hx_on ]
@@ -1140,8 +1196,6 @@ Layer EditorLayer
         editor.text_lines_frame = 0
         # per-line cache: tick the frame; flush all slots when font metrics change (size/zoom).
         editor.cl_frame += 1
-        if [ editor.cl_frame % 100 == 0 ]
-            puts 'CLPOOL n={editor.code_lines->count} rastered={editor.text_lines_total}'
         if [ editor.cl_cw != cw_tm.w || editor.cl_lh != lh ]
             if [ editor.code_lines ]
                 for [ slot: EdLineCache ] in editor.code_lines
@@ -2048,12 +2102,6 @@ Control Editor
     mutable cl_cw         : f32 [ 0.0 ]
     mutable cl_lh         : f32 [ 0.0 ]
 
-    # unmount: band/line cache canvases are not element members
-    public func on_teardown [ ]
-        puts 'ED-TD pool={code_lines->count}'
-        for [ slot: EdLineCache ] in code_lines
-            if [ slot.canvas ] slot.canvas.teardown_gpu[]
-        if [ code_lines ] code_lines.clear[]
     # unlimited undo/redo, delta-based. `hist` aliases the current file's cur_buf.hist
     # (linked list of EditAction delta groups, shared by reference like lines↔buf.lines);
     # hist_i is the cursor = number of applied groups, mirrored into cur_buf by touch_hist.
@@ -2901,13 +2949,16 @@ Control Editor
     func launch_handler [ mod: string, p: path ]
         root : path.path_startup[]
         if [ !root ] return
+        puts 'launch_handler: {mod} for {p}'
         nv : AppView [ ]
         nv.src = path '{root}/foundry/{mod}/{mod}.ag'
         nv.doc = p
         nv.start[]
         run_view  = nv
         app_view  = true
+        # a hosted app streams frames — repaint every frame, invalidate now
         animated  = true
+        pristine  = false
         no_scroll = true
         if [ ux ] ux.restyle = true
 
@@ -2971,7 +3022,10 @@ Control Editor
             # file's view/app, else it keeps showing the old content (mp3 hex, etc.)
             if [ rview ] rview.release*[]
             rview    = null
-            if [ run_view ] run_view.release*[]
+            if [ run_view ]
+                orb8 : cast orbiter [ ux.app_object ]
+                if [ orb8 && run_view.app_mod ] orb8.stop_debug[ run_view.app_mod ]
+                run_view.release*[]
             run_view = null
             app_view = false
             lines    = list string []
@@ -3013,7 +3067,7 @@ Control Editor
             hv.hx_on = true
             hv.src   = src
             rview    = hv
-            animated = false
+            pristine = false
             lines    = list string []
             scroll.x      = 0.0
             scroll.y      = 0.0
@@ -3023,7 +3077,7 @@ Control Editor
             return
         if [ rview ] rview.release*[]
         rview = null
-        animated = false
+        pristine = false
         # key by the canonical (realpath) absolute path — the SAME identity silver stamps on
         # each map section — so the buffer the editor renders is the one load_format fills.
         key   : '{src.absolute[]}'
@@ -3058,10 +3112,16 @@ Control Editor
     # held shift: full --clean rebuild before the launch.
     func toggle_app_run [ clean: bool ]
         if [ run_view ]
+            orb9 : cast orbiter [ ux.app_object ]
+            if [ orb9 && run_view.app_mod ]
+                orb9.stop_debug[ run_view.app_mod ]
+                es9 : ConsoleSession (orb9.ed_sessions) ? orb9.ed_sessions[ 'ed:{run_view.app_mod}' ] : null
+                if [ es9 ] es9.print_text[ '\r\nstopped\r\n' ]
             run_view.release*[]
             run_view = null
             app_view = false
             animated = false
+            pristine = false
             no_scroll = false
             # the user stopped it — load_file must NOT relaunch the registered
             # handler, or stop immediately restarts the app it just killed.
@@ -3071,6 +3131,7 @@ Control Editor
             if [ ux ] ux.restyle = true
             return
         if [ !src ] return
+        puts 'toggle_app_run: starting {src}'
         stopped  = false
         nv : AppView [ ]
         nv.src   = src
@@ -3078,7 +3139,9 @@ Control Editor
         nv.start[]                     # serve socket + build the run command
         run_view = nv
         app_view = true
+        # a hosted app streams frames — repaint every frame, invalidate now
         animated = true
+        pristine = false
         # the pane shows the app now — no code scrolling, no scrollbar
         no_scroll = true
         # the embedded console picks up nv.cmd declaratively (pane_for feeds it as
@@ -3148,7 +3211,7 @@ Control Editor
         return -1
 
     func place_cursor [ ev: Event ] -> none
-        ele   : (layers) ? (layers['content'] to EditorLayer) : null
+        ele   : (layers) ? cast EditorLayer [ layers['content'] ] : null
         if [ !ele ] return
         # nothing to place the cursor on (e.g. all results removed)
         if [ line_count[] <= 0 ]
@@ -3217,8 +3280,8 @@ Control Editor
         # the scrollbar owns the right edge, and it must be checked BEFORE the
         # resource view — a view_press consumes every click inside the pane (hex
         # byte selection does), which swallowed the thumb grab entirely.
-        sbe : (layers) ? (layers['content'] to EditorLayer) : null
-        sbl : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
+        sbe : (layers) ? cast EditorLayer [ layers['content'] ] : null
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
         sbg : f32 [ (sbl && sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
         if [ rview && sbe && sbl && sbl.scroll_max > 0.0 ]
             sbx : f32 [ ev.mouse.pos.x - sbe.bounds.x ]
@@ -3273,7 +3336,7 @@ Control Editor
         is_dbl : bool [ ev.mouse.double_click ]
         if [ debug_running && !edit_armed && is_dbl ]
             edit_armed = true
-        ele   : (layers) ? (layers['content'] to EditorLayer) : null
+        ele   : (layers) ? cast EditorLayer [ layers['content'] ] : null
         rel_x : f32 [ (ele) ? ev.mouse.pos.x - ele.bounds.x : 0.0 ]
         # the dbg sub-column overlays the editor's right edge while open — a press in
         # that band belongs to the dbg panel (its buttons/panels), never the editor
@@ -3313,7 +3376,7 @@ Control Editor
                                 return
         # scrollbar: a press in the rightmost grab zone grabs the thumb and scrolls.
         # checked before the pin column so the bar (the very right edge) wins there.
-        sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
+        sb : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
         grab : f32 [ (sb && sb.thumb_w > 0.0) ? sb.thumb_w * 2.0 + 8.0 : 16.0 ]
         if [ ele && sb && sb.scroll_max > 0.0 && rel_x > ele.bounds.w - grab ]
             # find_target folds e.scroll.y into mouse.pos.y; the thumb is screen-space
@@ -3399,9 +3462,9 @@ Control Editor
             pristine = false
             ux.will_animate = true
             return
-        ele : (layers) ? (layers['content'] to EditorLayer) : null
+        ele : (layers) ? cast EditorLayer [ layers['content'] ] : null
         if [ scroll_dragging && ele ]
-            sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
+            sb : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
             if [ sb ]
                 # subtract scroll.y (folded in by find_target) — thumb is screen-space
                 sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y - scroll.y ] ]
@@ -3470,7 +3533,7 @@ Control Editor
         if [ rview ] rview.view_release*[ ev ]
         dragging        = false
         scroll_dragging = false
-        sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
+        sb : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
         if [ sb ]
             sb.active = false
             ux.will_animate = true
@@ -3495,7 +3558,7 @@ Control Editor
     # can push the caret off-screen (Enter past the bottom, arrows, paste). render re-clamps.
     func ensure_caret_visible []
         if [ sel_line < 0 ] return
-        ele : (layers) ? (layers['content'] to EditorLayer) : null
+        ele : (layers) ? cast EditorLayer [ layers['content'] ] : null
         vh  : f32 [ (ele && ele.bounds) ? ele.bounds.h : 400.0 ]
         lh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         top : f32 [ sel_line ] * lh
@@ -3761,7 +3824,7 @@ Control Editor
         # page up / down: move the cursor and scroll by half a viewport
         # (visible lines / 2). scroll.y is re-clamped in draw.
         if [ key == 266 || key == 267 ]    # Key.PageUp / Key.PageDown
-            ele  : (layers) ? (layers['content'] to EditorLayer) : null
+            ele  : (layers) ? cast EditorLayer [ layers['content'] ] : null
             vh   : f32 [ (ele && ele.bounds) ? ele.bounds.h : 400.0 ]
             lh   : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
             half2 : i32 [ i32[ (vh / lh) * 0.5 ] ]

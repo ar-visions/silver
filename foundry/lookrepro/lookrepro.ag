@@ -11,14 +11,14 @@ app lookrepro
     func init []
         lp : path '/src/silver/platform/native/share/hyperspace/models/look.agi'
         tp : path '/src/silver/platform/native/share/hyperspace/models/target.agi'
-        lt : (lp.load[ typeid[ string ], null ] to string)
-        tt : (tp.load[ typeid[ string ], null ] to string)
+        lt : string[ lp.load[ typeid[ string ], null ] ]
+        tt : string[ tp.load[ typeid[ string ], null ] ]
         if [ !lt || !tt ]
             puts 'missing model agi'
             exit[ 1 ]
-        look = (Au.parse_agi[ typeid[ keras ], lt.chars, null ] to keras)
+        look = cast keras [ Au.parse_agi[ typeid[ keras ], lt.chars, null ] ]
         look.hold[]
-        targ = (Au.parse_agi[ typeid[ keras ], tt.chars, null ] to keras)
+        targ = cast keras [ Au.parse_agi[ typeid[ keras ], tt.chars, null ] ]
         targ.hold[]
         look.load_weights[ path '/src/silver/platform/native/share/hyperspace/models/look.bin' ]
         targ.load_weights[ path '/src/silver/platform/native/share/hyperspace/models/target.bin' ]

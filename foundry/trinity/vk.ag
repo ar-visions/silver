@@ -131,7 +131,6 @@ class Render
     intern  last_height                    : i32
     # creation-site tag; propagates to this render's textures (SAMP)
     public  tag                            : string
-    intern  ring_defer_frame               : i64
 
     public func hash[] -> u64
         return u64[handle[a]]
@@ -279,8 +278,6 @@ class Render
         if [ !vk_framebuffer[0] ]
             return
         vk.paint_calls += 1
-        cvh : u64 [ hash[] ]
-        puts 'CV {cvh} {width}x{height} id={id}'
         # reduction renders (two-pass) + the swapchain blit (semaphores/present) can't
         # batch — they record+submit in one shot, as before.
         if [ reduce > 0 || bool[ vk_swap_image ] ]
@@ -478,6 +475,7 @@ class Render
     # idempotent ring teardown: fences, semaphores, framebuffers, render
     # passes, command buffers — leaked rings exhaust vkCreateFence
     func destroy_ring [ ]
+        vk.ring_frees += 1
         for [ i: 0, i < 2, i += 1 ]
             if [ vk_framebuffer[i] ]
                 vkDestroyFramebuffer[ vk.device, vk_framebuffer[i], null ]
@@ -734,6 +732,11 @@ class Layout
         cmd.submit
 
 
+# holds any object 8 frames so its dealloc runs out of flight
+class DropDefer
+    mutable obj         : Au
+    mutable defer_frame : i64
+
 # raw GPU handles awaiting deferred destruction (defer_texture)
 class TexDefer
     mutable vk_sampler    : VkSampler
@@ -761,15 +764,15 @@ class vk_context
     # handle accessors for cross-module compute consumers (ai): field
     # reads from another module land at shifted offsets past interns
     public func dev_handle [] -> handle
-        return (device to handle)
+        return cast handle [ device ]
     public func queue_handle [] -> handle
-        return (queue to handle)
+        return cast handle [ queue ]
     public func pool_handle [] -> handle
-        return (command_pool to handle)
+        return cast handle [ command_pool ]
     public func compute_queue_handle [] -> handle
-        return (compute_queue to handle)
+        return cast handle [ compute_queue ]
     public func compute_pool_handle [] -> handle
-        return (compute_pool to handle)
+        return cast handle [ compute_pool ]
     # one reused command buffer for immediate (out-of-band) layout transitions — was
     # allocated fresh on every transition, which is costly on MoltenVK.
     intern  xfer_cmd            : Command
@@ -807,6 +810,7 @@ class vk_context
     public  samp_flist          : i32
     public  samp_svg            : i32
     public  samp_other          : i32
+    public  ring_frees          : i32
     # perf counters (reset each second in the PERF print): submits issued, sync_fence
     # waits issued, and total microseconds spent blocked in those waits.
     public  submit_calls        : i32
@@ -827,7 +831,7 @@ class vk_context
     # still reference it remains in flight (premature-recycle device loss)
     intern  defer_list          : array Buffer
     intern  defer_texs          : array TexDefer
-    intern  defer_rnds          : array Render
+    intern  defer_drops         : array DropDefer
     intern  frame_no            : i64
     public  bindres_calls       : i32
     public  bindres_us          : i64
@@ -847,12 +851,12 @@ class vk_context
         td.defer_frame = frame_no
         defer_texs.push[ td ]
 
-    # queue a dead render's ring (fences/cmdbufs) for destruction
-    func defer_render [ r: Render ] -> none
-        if [ ! defer_rnds ] defer_rnds = array Render []
-        r.ring_defer_frame = frame_no
-        r.hold[]
-        defer_rnds.push[ r ]
+    # hold obj 8 frames, then release — its dealloc (and every
+    # immediate vkDestroy inside it) runs provably out of flight
+    func defer_drop [ o: Au ] -> none
+        if [ ! defer_drops ] defer_drops = array DropDefer []
+        dd : DropDefer [ obj: o, defer_frame: frame_no ]
+        defer_drops.push[ dd ]
 
     # once per rendered frame: destroy entries 8+ frames old (>> ring depth)
     func defer_tick [] -> none
@@ -882,19 +886,16 @@ class vk_context
                 el
                     tkeep.push[ td ]
             defer_texs = tkeep
-        if [ defer_rnds && defer_rnds.count > 0 ]
-            # swap first: a drop below can re-enter defer_render (dealloc
-            # → teardown_gpu) and must not mutate the list being walked
-            rwork : defer_rnds
-            rwork.hold[]
-            defer_rnds = array Render [ ]
-            for [ r: Render ] in rwork
-                if [ frame_no - r.ring_defer_frame >= 8 ]
-                    r.destroy_ring[]
-                    r.drop[]
-                el
-                    defer_rnds.push[ r ]
-            rwork.drop[]
+        if [ defer_drops && defer_drops.count > 0 ]
+            # swap first: expiring entries cascade deallocs that can
+            # re-enter defer_drop — never mutate the list being walked
+            dwork : defer_drops
+            dwork.hold[]
+            defer_drops = array DropDefer [ ]
+            for [ dd: DropDefer ] in dwork
+                if [ frame_no - dd.defer_frame < 8 ]
+                    defer_drops.push[ dd ]
+            dwork.drop[]
 
     intern quad_m:    GltfModel
     # cached default shaders. constructing a fresh UVQuad / UVReduce per
@@ -1605,7 +1606,7 @@ class uniforms
         leaf:   hdr2.au
         total_uniform: i32 [ uniform_size[ leaf ] ]
         u_memory = new u8 [ total_uniform ]
-        m : (u_memory to Au)
+        m : cast Au [ u_memory ]
         m.hold[]
         # one uniform buffer per draw-ring slot (all share the CPU-side u_memory; each
         # update[] snapshots it into the current slot's GPU buffer). MUST match pipe_ring
@@ -3996,7 +3997,7 @@ intern func handle_glfw_framebuffer_size [ glfw_window: @GLFWwindow, width: i32,
     if [ width == 0 && height == 0 ]
         return
     win : glfwGetWindowUserPointer[ glfw_window ]
-    w: (win to Display)
+    w: cast Display [ win ]
     if [ !w ]
         return
     w.pending_w     = width
@@ -4009,7 +4010,7 @@ intern func handle_glfw_framebuffer_size [ glfw_window: @GLFWwindow, width: i32,
 
 
 intern func handle_glfw_key [ win: @GLFWwindow, key: i32, scan_code: i32, action: i32, mods: i32 ] 
-    w: (glfwGetWindowUserPointer[ win ] to Window)
+    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
     if [ action == GLFW_PRESS && (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN) ]
         w.debug_value += (key == GLFW_KEY_UP) ? 1.0 : -1.0
     w.ev.clear[]
@@ -4024,7 +4025,7 @@ intern func handle_glfw_key [ win: @GLFWwindow, key: i32, scan_code: i32, action
 
 
 intern func handle_glfw_scroll [ win: @GLFWwindow, x: f64, y: f64 ]
-    w: (glfwGetWindowUserPointer[ win ] to Window)
+    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
     w.ev.clear[]
     w.ev.mouse.pos.x         = w.mouse.x
     w.ev.mouse.pos.y         = w.mouse.y
@@ -4044,7 +4045,7 @@ intern func handle_glfw_scroll [ win: @GLFWwindow, x: f64, y: f64 ]
 
 
 intern func handle_glfw_mouse [ win: @GLFWwindow, id: i32, action: i32, mods: i32 ]
-    w: (glfwGetWindowUserPointer[ win ] to Window)
+    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
     w.ev.clear[]
     w.ev.mouse.pos.x  = w.mouse.x
     w.ev.mouse.pos.y  = w.mouse.y
@@ -4063,7 +4064,7 @@ intern func handle_glfw_mouse [ win: @GLFWwindow, id: i32, action: i32, mods: i3
 
 
 intern func handle_glfw_char [ win: @GLFWwindow, code_point: u32 ]
-    w: (glfwGetWindowUserPointer[ win ] to Window)
+    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
     w.ev.clear[]
     cp  : u32 [ code_point ]
     buf : local i8 [ 5 ]
@@ -4092,7 +4093,7 @@ intern func handle_glfw_char [ win: @GLFWwindow, code_point: u32 ]
 
 
 intern func handle_glfw_drop [ win: @GLFWwindow, count: i32, paths: @symbol ]
-    w: (glfwGetWindowUserPointer[ win ] to Window)
+    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
     if [ count <= 0 ] return
     w.ev.clear[]
     s : string ['']
@@ -4105,7 +4106,7 @@ intern func handle_glfw_drop [ win: @GLFWwindow, count: i32, paths: @symbol ]
 
 
 intern func handle_glfw_cursor [ win: @GLFWwindow, x: f64, y: f64 ]
-    w: (glfwGetWindowUserPointer[ win ] to Window)
+    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
     w.ev.clear[]
     w.mouse.x = x
     w.mouse.y = y
@@ -4276,16 +4277,24 @@ func is_uniform_field [ mem: Au_t ] -> bool
     return mem.member_type == 4 && mem.access_type == (0,2,3,4) && bool[mem.src] && !(mem.traits & (1 << 56))
 
 func uniform_size [ type: Au_t ] -> num
-    total: num [ 0 ]
+    chain: array Au_t [ unmanaged: true ]
     ty: Au_t [ type ]
     while [ ty ]
-        for [ m: 0, m < ty.members.count, m += 1 ]
-            mem: Au_t [ ty.members.origin[m] ]
-            if [ is_uniform_field[ mem ] ]
-                total += mem.src.typesize
+        chain += ty
         ty = ty.context
         if [ ty == typeid[ shader ] ]
             break
+    chain = chain.reverse[]
+    total: num [ 0 ]
+    for [ ty2: Au_t ] in chain
+        for [ m: 0, m < ty2.members.count, m += 1 ]
+            mem: Au_t [ ty2.members.origin[m] ]
+            if [ is_uniform_field[ mem ] ]
+                ts: num [ mem.src.typesize ]
+                # std140: vec3/vec4/mat4 align 16, scalars pad to 4
+                al: num [ (ts >= 12) ? 16 : ((ts < 4) ? 4 : ts) ]
+                total = (total + al - 1) / al * al
+                total += (ts < 4) ? 4 : ts
     return total
 
 

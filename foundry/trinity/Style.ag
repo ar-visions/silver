@@ -1499,7 +1499,7 @@ func validate_entries [ entries: StyleEntryMap, ty: Au_t, errors: array string ]
             errors.push[ string 'css: type {ty.ident} has no member {name} (from property {prop})' ]
             continue
         if [ dot > 0 ]
-            sub_bl : (se.value to StyleBlock)
+            sub_bl : cast StyleBlock [ se.value ]
             if [ sub_bl && mem.meta.a ]
                 validate_entries[ sub_bl.entries, mem.meta.a, errors ]
 

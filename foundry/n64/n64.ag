@@ -820,7 +820,7 @@ element n64 : trinity
 		fread[ buf, 1, rom_size, f ]
 		fclose[ f ]
 		rom_data = buf
-		hold[ (buf to Au) ]
+		hold[ cast Au [ buf ] ]
 		# byte order from magic: z64 80371240 (native BE) / v64 37804012
 		# (16-bit swapped) / n64 40123780 (LE words)
 		m0 : u32 [ u32[ buf[0] ] ]
@@ -3783,19 +3783,19 @@ element n64 : trinity
 		cpu.fpr[ n - (n & 1) ] = v
 	func fgs [ n: i32 ] -> f32
 		bb : local u32 [ 1 ] [ fget32[ n ] ]
-		fp : @f32 [ ((@bb[0]) to @f32) ]
+		fp : cast @f32 [ @bb[0] ]
 		return fp[ 0 ]
 	func fss [ n: i32, v: f32 ]
 		bb : local f32 [ 1 ] [ v ]
-		up : @u32 [ ((@bb[0]) to @u32) ]
+		up : cast @u32 [ @bb[0] ]
 		fset32[ n, up[ 0 ] ]
 	func fgd [ n: i32 ] -> f64
 		bb : local u64 [ 1 ] [ fget64[ n ] ]
-		fp : @f64 [ ((@bb[0]) to @f64) ]
+		fp : cast @f64 [ @bb[0] ]
 		return fp[ 0 ]
 	func fsd [ n: i32, v: f64 ]
 		bb : local f64 [ 1 ] [ v ]
-		up : @u64 [ ((@bb[0]) to @u64) ]
+		up : cast @u64 [ @bb[0] ]
 		fset64[ n, up[ 0 ] ]
 
 	# map host IEEE exceptions to FCR31 cause (12-16) + sticky flags (2-6),
@@ -3835,19 +3835,19 @@ element n64 : trinity
 	# bit reinterpret
 	func f32bits [ b: u32 ] -> f32
 		bb : local u32 [ 1 ] [ b ]
-		fp : @f32 [ ((@bb[ 0 ]) to @f32) ]
+		fp : cast @f32 [ @bb[ 0 ] ]
 		return fp[ 0 ]
 	func bits32 [ v: f32 ] -> u32
 		bb : local f32 [ 1 ] [ v ]
-		up : @u32 [ ((@bb[ 0 ]) to @u32) ]
+		up : cast @u32 [ @bb[ 0 ] ]
 		return up[ 0 ]
 	func f64bits [ b: u64 ] -> f64
 		bb : local u64 [ 1 ] [ b ]
-		fp : @f64 [ ((@bb[ 0 ]) to @f64) ]
+		fp : cast @f64 [ @bb[ 0 ] ]
 		return fp[ 0 ]
 	func bits64 [ v: f64 ] -> u64
 		bb : local f64 [ 1 ] [ v ]
-		up : @u64 [ ((@bb[ 0 ]) to @u64) ]
+		up : cast @u64 [ @bb[ 0 ] ]
 		return up[ 0 ]
 
 	# FR=0 role accessors: fs even-masked, ft/fd raw index (fgr_s/fgr_t/fgr_d)

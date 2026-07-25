@@ -20,6 +20,7 @@ import <stdlib.h>
 import <string.h>
 import <unistd.h>
 import <fcntl.h>
+import <signal.h>
 import <sys/wait.h>
 # forkpty (the syntax-map builder) — was inherited from Console.ag before it
 # moved to trinity
@@ -131,17 +132,17 @@ element EditorView
         # the content + run band split the area below the title via a vertical
         # Splitter: the text is the flex pane; the band a sized pane whose height
         # lives in orb.band_sizes — one shared array, so every pane's band matches.
-        vkids : Elements [ ]
+        vinner : Elements [ ]
 
         # the content slot: whichever element claims this tab. a console session IS
         # an element (Console), so it needs no host — it goes straight in.
         if [ is_con ]
             orb.ensure_console[ psess ]
-            vkids['text'] = Console [
+            vinner['text'] = Console [
                 session_id: psess, sessions: orb.ed_sessions, feed: null,
                 launch: orb.agent_cmd[ psess ], animated: true ]
         el
-            vkids['text'] = Editor [
+            vinner['text'] = Editor [
                 src: p
                 breakpoints: orb.breakpoints, code_font_size: orb.code_font_size,
                 nav: orb.nav_panes[ pi ], pane_index: pi,
@@ -184,17 +185,17 @@ element EditorView
                 feed: null, run_line: runcmd, animated: true, elements: cf2 ]
             # the console + any open debug panels share the band via a draggable Splitter:
             # the console is the flex pane (first), each panel a saved-width pane after.
-            sp_kids : Elements [ ]
-            sp_kids['console'] = con
-            if [ orb.show_instruments ] sp_kids['callstack'] = Callstack [ frames: orb.debug_frames[] ]
-            if [ orb.show_variables ]   sp_kids['fields']    = Fields [ vars: orb.debug_vars ]
+            sp_inner : Elements [ ]
+            sp_inner['console'] = con
+            if [ orb.show_instruments ] sp_inner['callstack'] = Callstack [ frames: orb.debug_frames[] ]
+            if [ orb.show_variables ]   sp_inner['fields']    = Fields [ vars: orb.debug_vars ]
             # one shared sizes map (the app owns it) so drags persist + serialize.
             if [ !orb.dbg_sizes ] orb.dbg_sizes = array [ ]
-            bels['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, sizes: orb.dbg_sizes, kids: sp_kids, snap_close: true ]
-            vkids['band'] = RunBand [ elements: bels ]
+            bels['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, sizes: orb.dbg_sizes, inner: sp_inner, snap_close: true ]
+            vinner['band'] = RunBand [ elements: bels ]
         if [ !orb.band_sizes ] orb.band_sizes = array [ ]
         els['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
-            kids: vkids, sizes: orb.band_sizes, deflt: 180.0 ]
+            inner: vinner, sizes: orb.band_sizes, deflt: 180.0 ]
         return els
 
 # editor title bar. `selected` = the "New"/finder state (no file open): shows
@@ -764,10 +765,7 @@ element orbiter : trinity # implements compiler
                     active_idx    = mi
                     active_target = resource
                     nav_root      = path '{startup_path}/foundry/{resource}'
-                    # run it IN-PANE (AppView --attach) once the Editor exists —
-                    # init is before the tree is built. NOT start_debug: that
-                    # execs the product standalone and opens its own window.
-                    pending_run   = 0
+                    # open + select only — running is deliberate (the run chip)
                 el
                     # no source anywhere — a BUILT app by name alone: open the
                     # binary itself (the default hex resource) and debug it.
@@ -1568,6 +1566,21 @@ element orbiter : trinity # implements compiler
         sync_breakpoints[ d ]
         d.start[]
 
+    # attach before the child's PR_SET_PTRACER fails under yama
+    func proc_stopped [ pid: i32 ] -> bool
+        ps : string '/proc/{pid}/stat'
+        fp : fopen[ ps.chars, 'rb' ]
+        if [ !fp ] return false
+        b : local i8 [ 512 ]
+        n : i32 [ i32[ fread[ @b[0], 1, 511, fp ] ] ]
+        fclose[ fp ]
+        if [ n < 4 ] return false
+        i : i32 [ n - 1 ]
+        while [ i > 0 && b[i] != 41 ]
+            i -= 1
+        if [ i + 2 >= n ] return false
+        return b[i + 2] == 84
+
     # attach lldb to an in-pane app that silver-host spawned and self-stopped before
     # init. resolve its binary, attach to the live pid, install breakpoints while it's
     # parked, then continue — init breakpoints arm because no app code has run yet.
@@ -1589,11 +1602,17 @@ element orbiter : trinity # implements compiler
             return
         if [ !debuggers ] debuggers = map dbg [string] []
         d : dbg [ location: loc, target: a, auto_start: false ]
+        d.attach[ pid ]
+        if [ !d.active ]
+            kill[ pid, SIGCONT ]
+            puts 'attach_appview: attach failed — {mod} pid={pid} continued undebugged'
+            return
         debuggers[ mod ] = d
         active_target = mod
-        d.attach[ pid ]
         sync_breakpoints[ d ]
         d.cont[]
+        # clear the pre-init SIGSTOP group-stop; cont alone won't
+        kill[ pid, SIGCONT ]
         puts 'attach_appview: attached {mod} pid={pid}'
 
     # install every app-global breakpoint into a dbg session's target. keys are
@@ -1633,6 +1652,8 @@ element orbiter : trinity # implements compiler
         if [ !cur ] return
         src : path cur.source
         ln  : i32  [ cur.line ]
+        # a stop in system code (glibc etc.) has no openable source
+        if [ src && !src.exists[] ] src = null
         if [ src ]
             open_in_pane[ src, 0 ]
             ed : Editor pane_at[ 0 ]
@@ -1730,6 +1751,37 @@ element orbiter : trinity # implements compiler
     # the tab controls are split: '-' (undock/remove) on the left of the title,
     # always present with a file open; '+' (dock/add) on the right with magnify/menu.
     # the live debug session for the active target, or null if none is running.
+    # fade-in: while a pane's app view is under 1.0 opacity, the code renders
+    # underneath and the frame draws HERE, over the composed screen
+    public func on_overlay [ cv: Canvas ]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            ed : Editor pane_at[ i ]
+            if [ !ed || !ed.run_view || !ed.app_view ] continue
+            av : AppView ed.run_view
+            if [ !av.have_frame || av.fade_us == 0 ] continue
+            fal : f32 [ f32[ epoch_micros[] - av.fade_us ] / 400000.0 ]
+            if [ fal >= 1.0 ] continue
+            if [ fal < 0.0 ] fal = 0.0
+            # vx/vy are pane-local; the screen canvas is world space — offset
+            # by the pane's absolute origin or the fade draws over the title
+            wx : f32 [ av.vx ]
+            wy : f32 [ av.vy ]
+            for [ p: element* ed, p, p = p.parent ]
+                if [ p.bounds ]
+                    wx += p.bounds.x
+                    wy += p.bounds.y
+            cv.set_opacity[ fal ]
+            av.draw_frame[ cv, rect [ x: wx, y: wy, w: av.vw, h: av.vh ] ]
+            cv.set_opacity[ 1.0 ]
+
+    # the pane app was stopped — end its session (kills a parked inferior too)
+    func stop_debug [ mod: string ]
+        if [ !mod || !debuggers ] return
+        d : dbg debuggers[ mod ]
+        if [ !d ] return
+        d.stop[]
+        clear_stop_lines[]
+
     func active_debugger [] -> dbg
         if [ !debuggers ] return null
         d : dbg debuggers[ active_target ]
@@ -3327,7 +3379,8 @@ element orbiter : trinity # implements compiler
             av : AppView edp.run_view
             if [ !av.attached && av.slot >= 0 ]
                 apid : i32 [ host_app_pid[ av.slot ] ]
-                if [ apid > 0 ] attach_appview[ av, apid ]
+                if [ apid > 0 ]
+                    if [ proc_stopped[ apid ] ] attach_appview[ av, apid ]
             if [ !edp.run_view.cmd ] continue
             if [ edp.run_view.dispatched ] continue
             edp.run_view.dispatched = true
@@ -3378,12 +3431,12 @@ element orbiter : trinity # implements compiler
         # own bottom console uses) — a pure-console pane must use THAT map
         if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
         editor_els : Elements []
-        pane_kids  : Elements []
+        pane_inner  : Elements []
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             pid  : 'pane{i}'
-            pane_kids[pid] = EditorView [ pane_index: i, selected: (sp == pid) ]
+            pane_inner[pid] = EditorView [ pane_index: i, selected: (sp == pid) ]
         if [ !pane_sizes ] pane_sizes = array [ ]
-        editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b0 }, kids: pane_kids,
+        editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b0 }, inner: pane_inner,
             sizes: pane_sizes, deflt: 0.0, even: true, snap_close: true ]
         # the orbiter avatar peeks in the bottom-right corner. the real 3D Avatar still
         # SIGSEGVs (env-texture vk_image_view not ready at bind), so for now this is a plain

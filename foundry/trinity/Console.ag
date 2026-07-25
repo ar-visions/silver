@@ -61,9 +61,6 @@ class ConsoleSession
     # repaint when this changes — a drag that hasn't crossed a line boundary leaves the
     # rendered content identical, so we skip it.
     mutable first_line  : i32 [ -2147483647 ]
-    # set when pty output actually changes the screen; lets the console stay
-    # cached (pristine) and skip its full text re-render on idle frames.
-    mutable dirty      : bool
     # last feed line count (system console) — detects new lines without a redraw.
     mutable last_feed_count : i32 [ -1 ]
     mutable read_calls : i32 [ 0 ]
@@ -200,7 +197,6 @@ class ConsoleSession
         scrollback = list string []
         sb_cells   = array TermCell []
         sb_off     = array i32 []
-        dirty      = true
         run_armed  = false
         start[]
 
@@ -872,7 +868,7 @@ class ConsoleSession
         ws[3] = 0
         if [ pty_fd >= 0 ]
             ioctl[ pty_fd, TIOCSWINSZ, @ws[0] ]
-        dirty = true
+        user_scrolled = false
 
     func read_output []
         if [ pty_fd < 0 ] return
@@ -883,7 +879,6 @@ class ConsoleSession
         for [ i: i32 0, i < 4096, i += 1 ]
             nr : i32 [ read[ pty_fd, @buf[0], 1 ] ]
             if [ nr <= 0 ] break
-            dirty = true
             got = got + string[ @buf[0] ]
             process_byte[ (i32 buf[0]) & 255 ]
         # a run that's returned to our shell prompt has ended (lldb quit, or the
@@ -912,7 +907,6 @@ class ConsoleSession
         for [ i: i32 0, i < 4096, i += 1 ]
             nr : i32 [ read[ fd, @buf[0], 1 ] ]
             if [ nr <= 0 ] break
-            dirty = true
             process_byte[ (i32 buf[0]) & 255 ]
 
     # push a host-generated message (e.g. "[process exited]") through the emulator,
@@ -921,7 +915,6 @@ class ConsoleSession
         if [ !s ] return
         for [ i: i32 0, i < s.count, i += 1 ]
             process_byte[ (i32 s.chars[i]) & 255 ]
-        dirty = true
 
     func write_input [ data: string ]
         if [ pty_fd < 0 ] return
@@ -1045,12 +1038,18 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
         # the alt screen is standalone (no scrollback above it). base = the rows of
         # scrollback shown above the live grid (0 on the alt buffer).
         base     : i32 [ (s.in_alt) ? 0 : sc_count ]
-        # the live screen is ALWAYS `rows` lines — a real terminal's screen is fixed
-        # height, so a blanked line is still a line. counting only non-blank rows would
-        # shrink the content when an app erases its bottom line (footer), resizing the
-        # scrollbar and shifting the whole view. the grid is sized to the pane, so this
-        # is exactly scrollback + one viewport.
-        total_h  : f32 [ f32[base + s.rows] * lh ]
+        # alt screen keeps the fixed grid height (full-screen apps own every row).
+        # the normal buffer ends at the last real line — cursor row or the last
+        # drawn row below it — so growing the pane never shows the blank grid
+        # tail as a void under the prompt; the bottom pin lands on the prompt.
+        live     : i32 [ s.rows ]
+        if [ !s.in_alt ]
+            live = s.cy + 1
+            for [ r9: i32 s.rows - 1, r9 > s.cy, r9 -= 1 ]
+                if [ s.row_drawable[ r9 ] > 0 ]
+                    live = r9 + 1
+                    break
+        total_h  : f32 [ f32[base + live] * lh ]
         max_s    : f32 [ maxf[ total_h - bounds.h, 0.0 ] ]
 
         s.max_scroll = max_s
@@ -1427,6 +1426,11 @@ element Console
                 puts 'session[]: creating + starting "{sid}" (launch="{launch}")'
                 s.start[]
             sessions[sid] = s
+            pristine = false
+        # a live pty streams output — the console must repaint every frame
+        if [ s.pty_fd >= 0 && !animated ]
+            animated = true
+            pristine = false
         return s
 
     # the live line filter for this console: the editable title child's typed text.
@@ -1617,7 +1621,7 @@ element Console
         ele : Layer (layers) ? layers[ 'content' ] : null
         if [ !ele || !ele.bounds ] return
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
-        sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
+        sb : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
         grab : f32 [ (sb && sb.thumb_w > 0.0) ? sb.thumb_w * 2.0 + 8.0 : 16.0 ]
         if [ sb && sb.scroll_max > 0.0 && rel_x > ele.bounds.w - grab ]
             # subtract scroll.y (the element scroll find_target folds in, constant
@@ -1653,7 +1657,7 @@ element Console
         if [ !s ] return
         ele : Layer (layers) ? layers[ 'content' ] : null
         if [ s.scroll_dragging && ele && ele.bounds ]
-            sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
+            sb : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
             if [ sb ]
                 sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y - scroll.y ] ]
                 # set_scroll snaps to the line grid and only repaints when the top
@@ -1688,7 +1692,7 @@ element Console
         if [ !s ] return
         s.dragging        = false
         s.scroll_dragging = false
-        sb : ScrollLayer (layers) ? (layers['scrollbar'] to ScrollLayer) : null
+        sb : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
         if [ sb ]
             sb.active = false
             ux.will_animate = true

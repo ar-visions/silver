@@ -1,0 +1,71 @@
+import <stdio.h>
+
+class Thing
+    public tag : i32
+
+class Owner
+    mutable item : Thing
+
+    # self-member reassign inside a method (the `svgs = ...` shape)
+    func swap_self [ nv: Thing ]
+        item = nv
+
+# param-member reassign (the `mdl.cache = ...` shape)
+func swap_param [ o: Owner, nv: Thing ]
+    o.item = nv
+
+app reftest
+    func init []
+        # every Thing gets one manual hold so refs never hit 0 (safe reads)
+        t1 : Thing [ tag: 1 ]
+        t1.hold[]
+        h1 : Au.header[ t1 ]
+        puts 'A construct           refs={h1.refs} (expect 1)'
+        o : Owner [ ]
+        o.item = t1
+        puts 'B member assign       refs={h1.refs} (expect 2: slot retains)'
+        t2 : Thing [ tag: 2 ]
+        t2.hold[]
+        o.item = t2
+        puts 'C member replace old  refs={h1.refs} (expect 1: drop-old — DANGLING if 2)'
+        o.item = null
+        h2 : Au.header[ t2 ]
+        puts 'D member null old     refs={h2.refs} (expect 1: drop-old — DANGLING if 2)'
+
+        m : map Thing [ string ] [ ]
+        t3 : Thing [ tag: 3 ]
+        t3.hold[]
+        h3 : Au.header[ t3 ]
+        m[ 'a' ] = t3
+        puts 'E map set             refs={h3.refs} (expect 3: hash+fifo)'
+        m[ 'a' ] = t3
+        puts 'F map same re-set     refs={h3.refs} (expect 3: no-op)'
+        t4 : Thing [ tag: 4 ]
+        t4.hold[]
+        m[ 'a' ] = t4
+        puts 'G map overwrite old   refs={h3.refs} (expect 1 — DANGLING if more)'
+        h4 : Au.header[ t4 ]
+        m.rm[ 'a' ]
+        puts 'H map rm              refs={h4.refs} (expect 1 — DANGLING if more)'
+
+        o5 : Owner [ ]
+        t5 : Thing [ tag: 5 ]
+        t5.hold[]
+        h5 : Au.header[ t5 ]
+        o5.swap_self[ t5 ]
+        puts 'I self assign         refs={h5.refs} (expect 2)'
+        t6 : Thing [ tag: 6 ]
+        t6.hold[]
+        o5.swap_self[ t6 ]
+        puts 'J self replace old    refs={h5.refs} (expect 1 — DANGLING if 2)'
+
+        o7 : Owner [ ]
+        t7 : Thing [ tag: 7 ]
+        t7.hold[]
+        h7 : Au.header[ t7 ]
+        swap_param[ o7, t7 ]
+        puts 'K param assign        refs={h7.refs} (expect 2)'
+        t8 : Thing [ tag: 8 ]
+        t8.hold[]
+        swap_param[ o7, t8 ]
+        puts 'L param replace old   refs={h7.refs} (expect 1 — DANGLING if 2)'

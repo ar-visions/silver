@@ -246,10 +246,10 @@ abstract live_app media_app
         if [ e.hide      ] em['hide']      = string 'true'
         if [ e.focusable ] em['focusable'] = string 'true'
         if [ e.elements ]
-            kids : map object [string] []
+            inner : map object [string] []
             for [ ch: element, k: string ] in e.elements
-                if [ ch ] kids[k] = ux_serialize[ ch ]
-            if [ kids.count > 0 ] em['elements'] = kids
+                if [ ch ] inner[k] = ux_serialize[ ch ]
+            if [ inner.count > 0 ] em['elements'] = inner
         return em
 
     func frame [ ] -> bool
@@ -301,9 +301,8 @@ abstract live_app media_app
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            puts 'PERF fps={frames} draw={vk.draw_us} syncs={vk.sync_calls} syncus={vk.sync_us} bindus={vk.bindres_us} rallocs={vk.render_allocs} resize={vk.resize_us} rcalls={vk.resize_calls} paints={vk.paint_calls} samplers={vk.sampler_count}'
-            puts 'SAMP rcolor={vk.samp_rcolor} sdf={vk.samp_sdf} svg={vk.samp_svg} band={vk.samp_band} line={vk.samp_line} cons={vk.samp_cons} flist={vk.samp_flist} atlas={vk.samp_atlas} other={vk.samp_other}'
-            puts 'PIPES {vk.pipe_draws} paints={vk.paint_calls} fps={frames}'
+            #puts 'PERF fps={frames} draw={vk.draw_us} syncs={vk.sync_calls} syncus={vk.sync_us} bindus={vk.bindres_us} rallocs={vk.render_allocs} resize={vk.resize_us} rcalls={vk.resize_calls} paints={vk.paint_calls} samplers={vk.sampler_count}'
+            #puts 'SAMP rcolor={vk.samp_rcolor} sdf={vk.samp_sdf} svg={vk.samp_svg} band={vk.samp_band} line={vk.samp_line} cons={vk.samp_cons} flist={vk.samp_flist} atlas={vk.samp_atlas} other={vk.samp_other} born={vk.render_allocs} died={vk.ring_frees}'
             vk.pipe_draws   = 0
             vk.resize_us    = 0
             vk.resize_calls = 0
@@ -318,6 +317,7 @@ abstract live_app media_app
             vk.sdf_miss     = 0
             vk.geom_us      = 0
             vk.render_allocs = 0
+            vk.ring_frees    = 0
             vk.bindres_calls = 0
             vk.bindres_us    = 0
             vk.br_schema_us  = 0
@@ -432,7 +432,7 @@ abstract live_app media_app
         # generation changes (startup, resize) and hold them for the PiP.
         func ide_pump []
             wn : Window [ w ]
-            ae9 : (wn.app_object to element)
+            ae9 : cast element [ wn.app_object ]
             g9 : i32 [ host_tex_gen[ host_slot[], 0 ] ]
             if [ g9 != peer_gen ]
                 w9 : i32
@@ -546,7 +546,7 @@ abstract live_app media_app
                 return
         existing_vk : handle Au.live_vk_get[]
         if [ existing_vk ]
-            vk = (existing_vk to vk_context)
+            vk = cast vk_context [ existing_vk ]
             # startup never reuses the font cache: destroy[] already dropped it at
             # the reload boundary (while the old code was still mapped), so it's
             # null here — ensure_font rebuilds fresh against THIS module's code.
@@ -683,6 +683,7 @@ Display Window
             mem : Au_t dt.members.origin[m]
             if [ mem.member_type != AU_MEMBER_VAR || mem.access_type != 2 ] continue
             if [ strcmp[ mem.ident, "elements" ] == 0 ] continue
+            if [ strcmp[ mem.ident, "parent" ] == 0 ] continue
             sm : Au_t find_member[ typeid[ src ], mem.ident, AU_MEMBER_VAR, 0, true ]
             if [ sm && sm.access_type == 2 && sm.src == mem.src ]
                 dst.member_set[ mem, src.member_object[ sm ] ]
@@ -801,7 +802,7 @@ Display Window
                     for [ i: i32 0, i < float_count, i += 1 ]
                         dst_ptr[i] = src_ptr[i]
 
-                inst.volatile = true
+                inst.pristine = false
             return
 
         # filter: EMA dst in-place toward best.instance; snap from zero on first use
@@ -825,8 +826,8 @@ Display Window
                     el
                         dst_ptr[i] = dst_ptr[i] * decay
                 if [ moving ]
-                    inst.volatile = true
-            #inst.volatile = true
+                    inst.pristine = false
+            #inst.pristine = false
             return
 
         value_holder.member_set[ member, best.instance ]
@@ -853,7 +854,7 @@ Display Window
                     meta_type : Au_t [ entry.member_map.meta.a ]
                     v : Au inst.member_object[ entry.member_map ]
                     mtype : typeid[ v ]
-                    mc : (inst.member_object[ entry.member_map ] to map Layer[string])
+                    mc : cast Layers [ inst.member_object[ entry.member_map ] ]
                     if [ mc && mc.hsize <= 0 ]
                         info : header [ mc ]
                         puts 'bad mc: inst={inst.id} member={entry.member_map.ident} hsize={mc.hsize} key={entry.bl.key}'
@@ -871,7 +872,7 @@ Display Window
                             if [ !has_state ] inst_type = meta_type
                         if [ inst_type ]
                             n : Au.new_object[inst_type, null, null, false, __FILE__, __LINE__, __SEQUENCE__]
-                            ele : (home_object to element)
+                            ele : cast element [ home_object ]
                             home_type : typeid[ home_object ]
                             inst_type : typeid[ inst ]
                             n.set_context_from[ home_object ]
@@ -883,7 +884,6 @@ Display Window
     # needs copies
     public func apply_style [ inst: element, style_avail: map StyleEntries[string], home_object:Au ]
         #puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
-        inst.volatile = false
         inst.pristine = false
         inst.maps_populated = false
         if [!inst.layers]
@@ -905,7 +905,7 @@ Display Window
                 if [ !entries ]
                     continue
                 #puts 'apply_style:   {prop} entries={entries.count}'
-                first : (entries[0] to StyleEntry)
+                first : cast StyleEntry [ entries[0] ]
 
                 # we sometimes have to create a map for 'layers' as well as a Layer instance inside
                 if [ first.bl.property && first.bl.key ]
@@ -922,7 +922,7 @@ Display Window
                         if [!best.member_map]
                             cache_style[inst, style_avail, true, home_object]
 
-                        mc : (inst.member_object[ best.member_map ] to map)
+                        mc : cast Layers [ inst.member_object[ best.member_map ] ]
                         expect mc, "expected map container"
                         layer_inst  : mc.get[best.bl.key]
                         inst_type   : Au.__typeid[layer_inst]
@@ -937,7 +937,7 @@ Display Window
                                 best.instance.set_context_from[ home_object ]
                                 best.instance.call_construct[ best.value ]
                             el
-                                best.instance = (best.value to layer_member.src)
+                                best.instance = Au.__convert[ layer_member.src, best.value ]
                             best.instance.hold[]
 
                         cur : layer_inst.member_object[ layer_member ]
@@ -956,7 +956,7 @@ Display Window
                         val_type  : Au_t [ info.au ]
                         meta_type : Au_t [ member.meta.a ]
                         if [ val_type == typeid[ array ] && member.src == typeid[ array ] && meta_type ]
-                            src_arr  : (best.value to array string)
+                            src_arr  : cast astrings [ best.value ]
                             dst_arr  : array Au [ ]
                             for [ s: string ] in src_arr
                                 obj : Au.new_object[ meta_type, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
@@ -965,7 +965,7 @@ Display Window
                                 dst_arr.push[ obj ]
                             best.instance = dst_arr
                         el [ member.src == typeid[ Au_t ] ]
-                            str : (best.value to string)
+                            str : cast string [ best.value ]
                             found_type : Au.find_type[ str.chars, null ]
                             if [ found_type ]
                                 inst.member_set[ member, found_type ]
@@ -976,7 +976,7 @@ Display Window
                                 best.instance.set_context_from[ home_object ]
                                 best.instance.call_construct[ best.value ]
                             el
-                                best.instance = (best.value to member.src)
+                                best.instance = Au.__convert[ member.src, best.value ]
                         
                         best.instance.hold[]
 
@@ -1031,7 +1031,7 @@ Display Window
         child_pos : i32 [ 0 ]
         for [ e:element, id:string ] in rendered
             instance  : element* parent.elements[ id ]
-            changed   : bool e.restyle
+            changed   : bool [ false ]
             new_inst  : false
             brand_new : false
             call_init : false
@@ -1041,7 +1041,8 @@ Display Window
                 if [ !instance.id ]
                     brand_new = true # component within element map
                 el [ typeid[instance] != typeid[e] ]
-                    instance.teardown_canvases[]
+                    instance.release_tree[]
+                    if [ instance.ux ] instance.ux.vk.defer_drop[ instance ]
                     parent.elements.rm[ id ]
                     instance = null
 
@@ -1057,8 +1058,9 @@ Display Window
                 if [ ndbg ]
                     fputs[ 'NEW {id} parent={parent.id}\n', ndbg ]
                     fclose[ ndbg ]
-                instance         = (instance) ? instance : e.hold[]
-                instance.restyle = true
+                if [ !instance ]
+                    instance = e
+                instance.pristine = false
                 instance.id      = id
                 instance.ux      = a
                 instance.parent  = parent
@@ -1082,17 +1084,21 @@ Display Window
                             if [ home_type != typeid[ element ]]
                                 break
                     if [ !home_object ]
-                        home_object = (parent.ux.app_object to element)
+                        home_object = cast element [ parent.ux.app_object ]
                         home_type   = typeid[ home_object ]
                 
                 imember : (home_type && id) ? find_member[ home_type, id.chars, AU_MEMBER_VAR, 0, true ] : null
-                if [ imember && home_object ]
+                # type guard: only bind when the member can actually hold
+                # this element (blind bind stomped trinity.title, a string)
+                if [ imember && home_object && Au.inherits[ typeid[ instance ], imember.src ] ]
                     home_object.member_set[ imember, instance ]
                  
                 instance.set_context_from[ home_object ]
                 # inherit public fields by name+type: render parent first, app next
-                attempt_instance_write[ parent, instance ]
-                attempt_instance_write[ (parent.ux.app_object to element), instance ]
+                # disabled: this was a no-op until members carried access
+                # values; waking it copied run state between app and panes
+                #attempt_instance_write[ parent, instance ]
+                #attempt_instance_write[ (parent.ux.app_object to element), instance ]
                 call_init = true
                 changed = true
             el
@@ -1103,8 +1109,7 @@ Display Window
                 # this a non-styled prop (e.g. run_line) never re-rasterizes its
                 # layers, so paint-hosted logic (TermLayer dispatch) never sees it
                 if [ args_changed ] instance.pristine = false
-                changed = args_changed || instance.restyle || force
-                instance.restyle = false
+                changed = args_changed || !instance.pristine || force
 
             new_first  : bool [ child_pos == 0 ]
             new_last   : bool [ child_pos == total_rendered - 1 ]
@@ -1125,7 +1130,6 @@ Display Window
             child_pos += 1
 
             if [ changed ]
-                e.restyle = false
                 avail  : (st) ? st.compute[ instance ] : null
                 ts0 : i64 [ epoch_micros[] ]
                 apply_style[ instance, avail, home_object ]
@@ -1153,7 +1157,7 @@ Display Window
                             if [ !Au.inherits[ lmem.src, typeid[ Layer ] ] ] continue
                             lv : Au instance.member_object[ lmem ]
                             if [ !lv ] continue
-                            lvl : (lv to Layer)
+                            lvl : cast Layer [ lv ]
                             lvl.set_context_from[ instance ]
                             lvl.initialize[]
                             if [ !instance.layers ] instance.layers = map Layer[string] []
@@ -1167,7 +1171,7 @@ Display Window
                             instance.layers[ string[ 'iconl' ] ] = bic
                     instance.initialized = true
                     instance.hold_members[]
-                    instance.restyle = true
+                    instance.pristine = false
 
             inst    : typeid[ instance ]
             tr0 : i64 [ epoch_micros[] ]
@@ -1205,9 +1209,12 @@ Display Window
                         if [ h == e ]
                             capture = null
                             break
+                    e.release_tree[]
                     e.parent = null
-                    e.teardown_canvases[]
-                    e.drop_members[]
+                    ehd : Au.header[ e ]
+                    if [ ehd.refs > 2 ] au_prov_dump[ e ]
+                    # hold 8 frames so the dealloc cascade runs out of flight
+                    if [ e.ux ] e.ux.vk.defer_drop[ e ]
                     parent.elements.rm[ id ]
                     break
 
@@ -1268,13 +1275,13 @@ Display Window
 
     func app_render [] -> Elements
         e : Elements [ ]
-        e[ 'app' ] = (app_object to element)
+        e[ 'app' ] = cast element [ app_object ]
         # framework dev shade: a parallel element the app never defines. topmost so
         # it paints over the app tree. its container is full-window but sets
         # user_events=false while closed so clicks pass THROUGH to the app (only its
         # tab child claims hits); open flips user_events=true so it goes modal.
         # opt-in: apps set ux_generics true to get the shade + menu tab.
-        ae : (app_object to element)
+        ae : cast element [ app_object ]
         if [ ae && ae.ux_generics ]
             e[ 'uxgenerics' ] = UXGenerics [ topmost: true, target: ae ]
         # orbiter overlay: composites the attached shell over the app
@@ -1312,11 +1319,11 @@ Display Window
         if [ capture != e ]
             if [ capture ]
                 capture.captured = false
-                capture.restyle  = true
+                capture.pristine = false
             if [ e && !e.ghost ]
                 capture = e
                 capture.captured = true
-                capture.restyle  = true
+                capture.pristine = false
 
     public func release_capture [ e: element ]
         if [ capture && capture == e ]
@@ -1326,7 +1333,7 @@ Display Window
         if [ focus != e ]
             if [ focus ]
                 focus.focused = false
-                focus.restyle = true
+                focus.pristine = false
             if [ e && !e.ghost ]
                 focus = e
                 focus.focused = true
@@ -1338,13 +1345,12 @@ Display Window
                 if [ focus.sel_col < 0 ]
                     focus.sel_col    = focus.edit->count
                     focus.anchor_col = focus.sel_col
-                focus.restyle = true
                 focus.pristine = false
 
     public func release_focus [ e: element ]
         if [ focus && focus == e ]
             focus.focused = false
-            focus.restyle = true
+            focus.pristine = false
             focus = null
 
     # show the OS resize cursor over a seam: kind 0=arrow, 1=horizontal (x-axis
@@ -1469,7 +1475,7 @@ Display Window
         # esc closes the framework shade (uxgenerics) when it's up, before the app
         # sees the key — it isn't the focus or app_object, so route it here.
         if [ ev.key.unicode == 256 && root ]
-            sh : UXGenerics (root.elements[ 'uxgenerics' ] to UXGenerics)
+            sh : cast UXGenerics [ root.elements[ 'uxgenerics' ] ]
             if [ sh && sh.show_console ]
                 sh.show_console = false
                 restyle = true
@@ -1521,7 +1527,7 @@ Display Window
                 if [ prev inherits Button ]
                     prev = prev
                 prev.hovered = false
-                prev.restyle = true
+                prev.pristine = false
                 restyle = true
                 
                 leave_consumed : bool [ false ]
@@ -1534,7 +1540,7 @@ Display Window
             hovered = f
             if [ f ]
                 f.hovered = true
-                f.restyle = true
+                f.pristine = false
                 restyle = true
                 hover_consumed : bool [ false ]
                 for [ e: element* f, e && !hover_consumed, e = e.parent ]
@@ -1564,7 +1570,7 @@ Display Window
         # repaint without a frame). gated to the zone so we don't relayout elsewhere;
         # the zone's outer edge is already thin, so leaving it needs no extra frame.
         if [ f && f.layers ]
-            sbl : ScrollLayer (f.layers['scrollbar'] to ScrollLayer)
+            sbl : cast ScrollLayer [ f.layers['scrollbar'] ]
             if [ sbl && sbl.scroll_max > 0.0 ]
                 fr : f32 [ (1.0 - f.cursor_pos.x) * f.bounds.w ]
                 # generous, bar-independent approach distance so the bar responds well
@@ -1660,10 +1666,10 @@ Display Window
             set_capture[ f ]
         if [ ev.mouse.button == 0 ]
             if [ action_pressed ]
-                action_pressed.restyle = true
+                action_pressed.pristine = false
                 action_pressed.pressed = false
             if [ f ]
-                f.restyle = true
+                f.pristine = false
                 f.pressed = true
                 restyle = true
             
@@ -1685,10 +1691,10 @@ Display Window
             app_object.on_release*[ ev ]
         if [ ev.mouse.button == 0 ]
             if [ action_pressed ]
-                action_pressed.restyle = true
+                action_pressed.pristine = false
                 action_pressed.pressed = false
             if [ f ]
-                f.restyle = true
+                f.pristine = false
                 f.pressed = false
                 restyle = true
             
@@ -2212,7 +2218,7 @@ Display Window
         # layer.bounds (e.g. Editor.on_press caret math) don't deref a null rect.
         if [ e.layers ]
             for [ lau: Au, lk: string ] in e.layers
-                lyr : Layer [ lau to Layer ]
+                lyr : cast Layer [ lau ]
                 if [ lyr ]
                     lyr.bounds = (lyr.area) ? lyr.area.rectangle[ e.bounds, null, null, 1.0, true, 0.0, 0.0 ] : e.bounds.copy[]
 
@@ -2278,7 +2284,7 @@ Display Window
         editing : bool [ false ]
         if [ e.layers ]
             for [ ela: Au, elk: string ] in e.layers
-                elay : Layer [ ela to Layer ]
+                elay : cast Layer [ ela ]
                 if [ elay && elay.editable ]
                     editing = true
                     break
@@ -2787,7 +2793,7 @@ Display Window
             tout[p] = 0x0A
             p += 1
         tout[p] = 0
-        res : string [ (tout) to cstr ]
+        res : string [ cast cstr [ tout ] ]
         # restore the live pixel layout before the next composed frame
         width  = w0
         height = h0
@@ -2984,7 +2990,7 @@ Display Window
         margin_r : i32 [ 0 ]
         margin_b : i32 [ 0 ]
         for [ psc_au: Au, psc_k: string ] in e.layers
-            psc_lay : Layer [ psc_au to Layer ]
+            psc_lay : cast Layer [ psc_au ]
             if [ !psc_lay || !psc_lay.area ] continue
             psc_b  : psc_lay.area.rectangle[ e.bounds, null, null, e.fc, false, 0.0, 0.0 ]
             psc_lx : f32  [ psc_b.x - e.bounds.x ]
@@ -3036,7 +3042,7 @@ Display Window
             e.cache_oy = margin_t
 
         #puts 'target_cv set'
-        target_cv : (e.cache_canvas && !e.volatile && !e.animated && stage == CanvasType.screen) ? e.cache_canvas : cv
+        target_cv : (e.cache_canvas && !e.animated && stage == CanvasType.screen) ? e.cache_canvas : cv
         element_text : (e.label && e.label.count) ? e.label : null
 
         sx       : f32  [ (e.scaling.x != 0.0) ? e.scaling.x : 1.0 ]
@@ -3058,17 +3064,14 @@ Display Window
                 cv.scale_xy[ sx, sy ]
             cv.translate[ -pivot_x, -pivot_y ]
 
-        redraw : bool [ e.volatile || e.animated || !e.pristine || stage == CanvasType.compose ]
-        if [ redraw ]
-            peid : string [ (e.id && e.id.count > 0) ? e.id : '(noid)' ]
-            puts 'PAINT {peid} stage={i32[stage]} vol={e.volatile} anim={e.animated} pr={e.pristine}'
+        redraw : bool [ e.animated || !e.pristine || stage == CanvasType.compose ]
         # DIAG: log every element that re-rasterizes its layers (text) this frame into its
         # cache — during a resize the cache is invalidated (pristine=false) per frame, so
         # this fires continuously and proves the text is being re-rendered on every drag step.
-        if [ redraw && e.cache_canvas && !e.volatile && !e.animated && stage == CanvasType.screen ]
+        if [ redraw && e.cache_canvas && !e.animated && stage == CanvasType.screen ]
             eid : string [ (e.id && e.id.count > 0) ? e.id : '(noid)' ]
             #puts 'REDRAW {eid} {ew}x{eh} pristine={e.pristine}'
-        if [ redraw && e.cache_canvas && !e.volatile && !e.animated && stage == CanvasType.screen ]
+        if [ redraw && e.cache_canvas && !e.animated && stage == CanvasType.screen ]
             e.cache_canvas.reset[ vec4f[0.0, 0.0, 0.0, 0.0] ]
             if [ e.cache_ox > 0 || e.cache_oy > 0 ]
                 target_cv.save[]
@@ -3079,7 +3082,7 @@ Display Window
         # the vertical scrollbar is painted LAST — after the masked cache blit and
         # without the mask (see below) — so the edge fade never dims the bar. when this
         # element caches to the screen, skip it in the cached layer loop and defer it.
-        defer_scroll : bool [ e.cache_canvas && !e.volatile && !e.animated && stage == CanvasType.screen ]
+        defer_scroll : bool [ e.cache_canvas && !e.animated && stage == CanvasType.screen ]
 
         # compute layer bounds and draw each layer
         # the element's live state bools fold to one State mask; layers with
@@ -3102,7 +3105,7 @@ Display Window
         if [ eopt->selected ] e_mask += i32[ State.selected ]
         for [ layer_au: Au, lkey: string ] in e.layers
             if [ !redraw ] break
-            layer : Layer [ layer_au to Layer ]
+            layer : cast Layer [ layer_au ]
             if [ !layer ]
                 continue
             # the layer's State BITMASK gates its paint: none = always; set =
@@ -3141,16 +3144,12 @@ Display Window
                 bw : i32 [ i32[b.w + pad] + 1 ]
                 bh : i32 [ i32[b.h + pad] + 1 ]
                 if [ !layer.blur_canvas || layer.blur_bw != bw || layer.blur_bh != bh ]
-                    # force-free the old canvas's GPU textures/samplers before replacing
-                    # it — a Model/Pipeline still references them, so refcount dealloc
-                    # never runs and the samplers leak on every resize step.
-                    if [ layer.blur_canvas ] layer.blur_canvas.teardown_gpu[]
                     layer.blur_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: bw, height: bh ]
                     layer.blur_canvas.update[]
                     layer.blur_bw = bw
                     layer.blur_bh = bh
                     layer.blur_dirty = true
-                if [ e.volatile ]
+                if [ !e.pristine ]
                     layer.blur_dirty = true
                 if [ layer.blur_dirty ]
                     layer.blur_canvas.reset[ vec4f[0.0, 0.0, 0.0, 0.0] ]
@@ -3339,7 +3338,7 @@ Display Window
             #a.compose = prev_compose
             drop[ prev_screen ]
             #drop[ prev_compose ]
-            if [ !e.volatile && !e.animated && stage == CanvasType.screen ]
+            if [ !e.animated && stage == CanvasType.screen ]
                 if [ e.cache_ox > 0 || e.cache_oy > 0 ]
                     target_cv.restore[]
                 if [ !e.needs_frame ]
@@ -3349,7 +3348,7 @@ Display Window
         # element wants an edge fade, build/refresh a grayscale mask (white
         # center, black inner glow) sized to the cache and composite through it.
         mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
-        if [ e.cache_canvas && !e.volatile && !e.animated && stage == CanvasType.screen ]
+        if [ e.cache_canvas && !e.animated && stage == CanvasType.screen ]
             if [ mask_on ]
                 glow_changed : bool [ e.mask_bg.x != e.mask_glow.x || e.mask_bg.y != e.mask_glow.y || e.mask_bg.z != e.mask_glow.z || e.mask_bg.w != e.mask_glow.w ]
                 # during a seam drag the cache re-rasters every frame (sub-pixel bounds shifts)
@@ -3418,7 +3417,7 @@ Display Window
             # scrollbar over the freshly-blitted (edge-faded) content, in element-local
             # space, with NO mask. runs every screen frame so the bar can widen/animate
             # without the element having to redraw its whole cache.
-            sbl : ScrollLayer (e.layers) ? (e.layers['scrollbar'] to ScrollLayer) : null
+            sbl : ScrollLayer (e.layers) ? cast ScrollLayer [ e.layers['scrollbar'] ] : null
             if [ sbl && sbl.ctype == stage && !sbl.hide ]
                 sbl.bounds = (sbl.area) ? sbl.area.rectangle[ e.bounds, null, null, e.fc, false, 0.0, 0.0 ] : e.bounds.copy[]
                 sbl.bounds.x -= e.bounds.x
@@ -3782,19 +3781,11 @@ element TButtons
     func ensure_items []
         if [ !buttons ] return
         if [ items && items.count == buttons.count ] return
-        if [ svgs ]
-            for [ sm: SVGModel ] in svgs
-                if [ sm.cache ] sm.cache.teardown_gpu[]
         items = array string [ ]
         svgs  = array SVGModel [ ]
         for [ i: i32 0, i < buttons.count, i += 1 ]
             items.push[ buttons[ i ] ]
             if [ icons ] svgs.push[ SVGModel [ 'images/{buttons[ i ]}.svg' ] ]
-
-    public func on_teardown [ ]
-        if [ svgs ]
-            for [ sm: SVGModel ] in svgs
-                if [ sm.cache ] sm.cache.teardown_gpu[]
 
     # segment index under the cursor, or -1 outside the strip.
     func seg_at [ ev: Event ] -> i32
@@ -3907,7 +3898,7 @@ element TButtons
         drag_ix  = -1
         dragging = false
 
-# a draggable multi-pane layout manager. children come via `kids` in insertion
+# a draggable multi-pane layout manager. children come via `inner` in insertion
 # order. the FIRST child is the flex pane — it takes all leftover space; every
 # other child has a target size in `sizes`, keyed by its child id (app-owned so
 # drags persist), and a draggable divider on its leading edge. displayed sizes
@@ -3915,10 +3906,10 @@ element TButtons
 # paints ONLY a 1 pixel divider line per gap, colored by `line_color`.
 element Splitter
     animated : true
-    # children come via `kids` (NOT `elements`): apply_args skips `elements`, so a
-    # toggled-in child would never reach the persistent instance; `kids` propagates
+    # children come via `inner` (NOT `elements`): apply_args skips `elements`, so a
+    # toggled-in child would never reach the persistent instance; `inner` propagates
     # on change. render positions them and returns them as the real `elements`.
-    public kids       : map element [ string ]
+    public inner       : map element [ string ]
     public vertical   : bool
     # sizes is a paired array [ id, px, id, px, ... ] — NOT a map: Au map iteration
     # misses entries in small maps (per CLAUDE.md). stride-2 lookup instead.
@@ -3969,8 +3960,8 @@ element Splitter
 
     func order [] -> array string
         ids : array string [ ]
-        if [ kids ]
-            for [ ce: element, id: string ] in kids
+        if [ inner ]
+            for [ ce: element, id: string ] in inner
                 ids.push[ id ]
         return ids
 
@@ -3997,7 +3988,7 @@ element Splitter
     # position each child from its eased size (first = flex), leaving a `gap`
     # between panes; the seam centers land where draw[] paints the 1px lines.
     func render [] -> Elements
-        if [ !kids ] return null
+        if [ !inner ] return null
         if [ !sizes ] sizes = array [ ]
         if [ !shown ] shown = array [ ]
         ids : array string [ order[] ]
@@ -4024,7 +4015,7 @@ element Splitter
         pos : f32 [ 0.0 ]
         for [ i: i32 0, i < n, i += 1 ]
             w  : f32 [ (i == 0) ? flex : shown_of[ ids[ i ], span, n ] ]
-            ch : element kids[ ids[ i ] ]
+            ch : element inner[ ids[ i ] ]
             a0 : f32 [ pos ]
             a1 : f32 [ pos + w ]
             if [ vertical ]
@@ -4190,9 +4181,6 @@ Control Button
         # a swapped glyph must reach pixels: drop the old model's raster cache
         # and invalidate this element's cached surface, or the cache re-blits
         # the old icon.
-        if [ iconl.image_svg ]
-            if [ iconl.image_svg.cache ] iconl.image_svg.cache.teardown_gpu[]
-            iconl.image_svg.cache = null
         iconl.image_svg = SVGModel [ 'images/{icon}.svg' ]
         pristine    = false
         needs_frame = true
@@ -4230,7 +4218,7 @@ Button Option
             op : Option e
             if [ op ]
                 op.selected = (new_state && a == e)
-                op.restyle  = true
+                op.pristine = false
 
     func render[] -> Elements
         return null
@@ -4247,11 +4235,11 @@ Control Tabs
     mutable bound : @i32
 
     func member_value [ mem: Au_t ] -> i32
-        pv : (mem.value to @i32)
+        pv : cast @i32 [ mem.value ]
         return pv[0]
 
     func on_press [ ev: Event ]
-        e : (ev.origin to element)
+        e : cast element [ ev.origin ]
         if [ !e || !etype ] return
         for [ m: i32 0, m < etype.members.count, m += 1 ]
             mem : Au_t etype.members.origin[m]
@@ -4653,7 +4641,7 @@ element UXGenerics
         # use ev.origin (the element find_target hit) — ev.target is reassigned to
         # each ancestor as the press bubbles, so by the time this parent handler runs
         # it points at the shade itself, not the tab that was clicked.
-        e : (ev.origin to element)
+        e : cast element [ ev.origin ]
         if [ !e ] return
         if [ e.id == 'tab' ]
             show_console = !show_console

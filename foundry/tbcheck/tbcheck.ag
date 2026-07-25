@@ -62,8 +62,8 @@ app tbcheck
 
     func init []
         tp : path '/src/silver/platform/native/share/hyperspace/models/target.agi'
-        tt : (tp.load[ typeid[ string ], null ] to string)
-        targ = (Au.parse_agi[ typeid[ keras ], tt.chars, null ] to keras)
+        tt : cast string [ tp.load[ typeid[ string ], null ] ]
+        targ = cast keras [ Au.parse_agi[ typeid[ keras ], tt.chars, null ] ]
         targ.hold[]
         targ.load_weights[ path '/src/silver/platform/native/share/hyperspace/models/target.bin' ]
         check[ string 'top' ]

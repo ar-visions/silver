@@ -913,7 +913,7 @@ element ModelView
                 eoff : i64 [ ebv.byteOffset + eac.byteOffset ]
                 evc : i32 [ i32[ eac.count ] ]
                 for [ i: i32 0, i < evc, i += 1 ]
-                    ef : @f32 [ ((@ebase[ eoff + i64[ i ] * estride ]) to @f32) ]
+                    ef : cast @f32 [ @ebase[ eoff + i64[ i ] * estride ] ]
                     if [ ef[0] < gxmin ] gxmin = ef[0]
                     if [ ef[0] > gxmax ] gxmax = ef[0]
                     if [ ef[1] < gymin ] gymin = ef[1]
@@ -972,10 +972,10 @@ element ModelView
                 pof2 : i64 [ pbv2.byteOffset + pac2.byteOffset ]
                 vc4 : i32 [ i32[ pac2.count ] ]
                 for [ i: i32 0, i < vc4, i += 1 ]
-                    cu : @u16 [ ((@rbase[ roff + i64[ i ] * rstride ]) to @u16) ]
+                    cu : cast @u16 [ @rbase[ roff + i64[ i ] * rstride ] ]
                     red : f32 [ f32[ cu[0] ] / 65535.0 ]
                     if [ red <= 0.75 ] continue
-                    pv4 : @f32 [ ((@pbs2[ pof2 + i64[ i ] * pst2 ]) to @f32) ]
+                    pv4 : cast @f32 [ @pbs2[ pof2 + i64[ i ] * pst2 ] ]
                     dl4 : f32 [ (pv4[0]-lcx)*(pv4[0]-lcx) + (pv4[1]-lcy)*(pv4[1]-lcy) + (pv4[2]-lcz)*(pv4[2]-lcz) ]
                     dr4 : f32 [ (pv4[0]-rcx)*(pv4[0]-rcx) + (pv4[1]-rcy)*(pv4[1]-rcy) + (pv4[2]-rcz)*(pv4[2]-rcz) ]
                     if [ dl4 < dr4 ]
@@ -1108,7 +1108,7 @@ element ModelView
                 non0 : i32 [ 0 ]
                 for [ v: i32 0, v < hc.nv, v += 1 ]
                     sv2 : i32 [ hc.rep[ v ] ]
-                    pu : @u16 [ ((@rbase[ roff + i64[ sv2 ] * rstride ]) to @u16) ]
+                    pu : cast @u16 [ @rbase[ roff + i64[ sv2 ] * rstride ] ]
                     wv : f32 [ ((f32[ pu[2] ] / 65535.0) - 0.216) / 0.784 ]
                     # _V_NOSE selection convention: blue 0.5..1.0 -> 0..1,
                     # anything at or below 0.5 is unselected
@@ -1171,7 +1171,7 @@ element ModelView
                 non0 : i32 [ 0 ]
                 for [ v: i32 0, v < hc.nv, v += 1 ]
                     sv2 : i32 [ hc.rep[ v ] ]
-                    pu : @u16 [ ((@rbase[ roff + i64[ sv2 ] * rstride ]) to @u16) ]
+                    pu : cast @u16 [ @rbase[ roff + i64[ sv2 ] * rstride ] ]
                     bb : f32 [ f32[ pu[2] ] / 65535.0 ]
                     # deeper blue = MORE travel (the _V_NOSE convention),
                     # joining at blue > 0.5. corner pins always win:
@@ -1888,7 +1888,7 @@ element ModelView
                     evc2 : i32 [ i32[ eac2.count ] ]
                     ebv3 : i32 [ nv ]
                     for [ i: i32 0, i < evc2, i += 1 ]
-                        ef2 : @f32 [ ((@ebase2[ eoff2 + i64[ i ] * estr2 ]) to @f32) ]
+                        ef2 : @f32 [ (@ebase2[ eoff2 + i64[ i ] * estr2 ]) ]
                         lx2 : f32 [ ef2[0] ]
                         ly2 : f32 [ ef2[1] ]
                         lz2 : f32 [ ef2[2] ]
@@ -1907,8 +1907,8 @@ element ModelView
                     eio : i64 [ eibv.byteOffset + eiac.byteOffset ]
                     eic : i32 [ i32[ eiac.count ] ]
                     ew2 : bool [ eiac.componentType == ComponentType.UNSIGNED_INT ]
-                    e16 : @u16 [ ((@eib[ eio ]) to @u16) ]
-                    e32 : @u32 [ ((@eib[ eio ]) to @u32) ]
+                    e16 : cast @u16 [ @eib[ eio ] ]
+                    e32 : cast @u32 [ @eib[ eio ] ]
                     for [ i: i32 0, i < eic, i += 3 ]
                         ea2 : i32 [ (ew2) ? i32[ e32[ i ] ] : i32[ e16[ i ] ] ]
                         eb2 : i32 [ (ew2) ? i32[ e32[ i + 1 ] ] : i32[ e16[ i + 1 ] ] ]
@@ -1962,7 +1962,7 @@ element ModelView
                 s = '{s}o face\n'
                 fbase : i32 [ nv ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+                    pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
                     wx : f32 [ pf[0] ]
                     wy : f32 [ pf[1] ]
                     wz : f32 [ pf[2] ]
@@ -1978,8 +1978,8 @@ element ModelView
                 ioff : i64 [ ibv.byteOffset + iac.byteOffset ]
                 ic : i32 [ i32[ iac.count ] ]
                 wide2 : bool [ iac.componentType == ComponentType.UNSIGNED_INT ]
-                i16p : @u16 [ ((@ibase[ ioff ]) to @u16) ]
-                i32p : @u32 [ ((@ibase[ ioff ]) to @u32) ]
+                i16p : cast @u16 [ @ibase[ ioff ] ]
+                i32p : cast @u32 [ @ibase[ ioff ] ]
                 for [ i: i32 0, i < ic, i += 3 ]
                     ia : i32 [ (wide2) ? i32[ i32p[ i ] ] : i32[ i16p[ i ] ] ]
                     ib : i32 [ (wide2) ? i32[ i32p[ i + 1 ] ] : i32[ i16p[ i + 1 ] ] ]
@@ -2229,8 +2229,8 @@ element ModelView
                     if [ dbv.byteStride > 0 ] dstride = dbv.byteStride
                     doff : i64 [ dbv.byteOffset + dac.byteOffset ]
                     for [ i: i32 0, i < vc, i += 1 ]
-                        pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
-                        df : @f32 [ ((@dbase[ doff + i64[ i ] * dstride ]) to @f32) ]
+                        pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
+                        df : cast @f32 [ @dbase[ doff + i64[ i ] * dstride ] ]
                         pf[0] = pf[0] + w * df[0]
                         pf[1] = pf[1] + w * df[1]
                         pf[2] = pf[2] + w * df[2]
@@ -2295,9 +2295,9 @@ element ModelView
                     svb : gmodel.bufferViews[ i32[ lac.sparse.values.bufferView ] ]
                     svbb : gmodel.buffers[ i32[ svb.buffer ] ]
                     svp : @i8 [ svbb.data ]
-                    svf : @f32 [ ((@svp[ svb.byteOffset ]) to @f32) ]
-                    u16i : @u16 [ ((@sip[ sib.byteOffset ]) to @u16) ]
-                    u32i : @u32 [ ((@sip[ sib.byteOffset ]) to @u32) ]
+                    svf : cast @f32 [ @svp[ svb.byteOffset ] ]
+                    u16i : cast @u16 [ @sip[ sib.byteOffset ] ]
+                    u32i : cast @u32 [ @sip[ sib.byteOffset ] ]
                     wide : bool [ lac.sparse.indices.componentType == ComponentType.UNSIGNED_INT ]
                     for [ si: i32 0, si < scn, si += 1 ]
                         dv : i32 [ (wide) ? i32[ u32i[ si ] ] : i32[ u16i[ si ] ] ]
@@ -2313,9 +2313,9 @@ element ModelView
                     svb : gmodel.bufferViews[ i32[ rac.sparse.values.bufferView ] ]
                     svbb : gmodel.buffers[ i32[ svb.buffer ] ]
                     svp : @i8 [ svbb.data ]
-                    svf : @f32 [ ((@svp[ svb.byteOffset ]) to @f32) ]
-                    u16i : @u16 [ ((@sip[ sib.byteOffset ]) to @u16) ]
-                    u32i : @u32 [ ((@sip[ sib.byteOffset ]) to @u32) ]
+                    svf : cast @f32 [ @svp[ svb.byteOffset ] ]
+                    u16i : cast @u16 [ @sip[ sib.byteOffset ] ]
+                    u32i : cast @u32 [ @sip[ sib.byteOffset ] ]
                     wide : bool [ rac.sparse.indices.componentType == ComponentType.UNSIGNED_INT ]
                     for [ si: i32 0, si < scn, si += 1 ]
                         dv : i32 [ (wide) ? i32[ u32i[ si ] ] : i32[ u16i[ si ] ] ]
@@ -2488,10 +2488,10 @@ element ModelView
                 cz : f32 [ 0.0 ]
                 wsum : f32 [ 0.0 ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
+                    pu : cast @u16 [ @nbase[ noff + i64[ i ] * nstride ] ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
-                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+                    pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
                     cx += pf[0] * m
                     cy += pf[1] * m
                     cz += pf[2] * m
@@ -2502,10 +2502,10 @@ element ModelView
                 cz /= wsum
                 rad : f32 [ 0.0 ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
+                    pu : cast @u16 [ @nbase[ noff + i64[ i ] * nstride ] ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
-                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+                    pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
                     dx : f32 [ pf[0] - cx ]
                     dy : f32 [ pf[1] - cy ]
                     dz : f32 [ pf[2] - cz ]
@@ -2513,10 +2513,10 @@ element ModelView
                     if [ d > rad ] rad = d
                 if [ rad <= 0.0 ] continue
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
+                    pu : cast @u16 [ @nbase[ noff + i64[ i ] * nstride ] ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
-                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+                    pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
                     dx : f32 [ pf[0] - cx ]
                     dy : f32 [ pf[1] - cy ]
                     dz : f32 [ pf[2] - cz ]
@@ -2569,10 +2569,10 @@ element ModelView
                 ny0 : f32 [  1000000.0 ]
                 ny1 : f32 [ -1000000.0 ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
+                    pu : cast @u16 [ @nbase[ noff + i64[ i ] * nstride ] ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
-                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+                    pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
                     if [ pf[1] < ny0 ] ny0 = pf[1]
                     if [ pf[1] > ny1 ] ny1 = pf[1]
                 if [ ny1 <= ny0 ] continue
@@ -2583,10 +2583,10 @@ element ModelView
                 cn0 : i32 [ 0 ]
                 cn1 : i32 [ 0 ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
+                    pu : cast @u16 [ @nbase[ noff + i64[ i ] * nstride ] ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
-                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+                    pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
                     t  : f32 [ (pf[1] - ny0) / yspan ]
                     ax : f32 [ (pf[0] < 0.0) ? (0.0 - pf[0]) : pf[0] ]
                     if [ t < 0.333 ]
@@ -2606,12 +2606,12 @@ element ModelView
                 dy_full : f32 [ nyt - ny0 ]
                 # pass 3: apply
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pu : @u16 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @u16) ]
+                    pu : cast @u16 [ @nbase[ noff + i64[ i ] * nstride ] ]
                     m  : f32 [ (f32[ pu[2] ] / 65535.0) - neutral ]
                     if [ m <= 0.02 ] continue
                     w  : f32 [ m / (1.0 - neutral) ]
                     if [ w > 1.0 ] w = 1.0
-                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+                    pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
                     t  : f32 [ (pf[1] - ny0) / yspan ]
                     if [ t < 0.0 ] t = 0.0
                     if [ t > 1.0 ] t = 1.0
@@ -2639,7 +2639,7 @@ element ModelView
         ibv : gmodel.bufferViews[ i32[ iba.bufferView ] ]
         ibb : gmodel.buffers[ i32[ ibv.buffer ] ]
         base : @i8 [ ibb.data ]
-        src  : @f32 [ ((@base[ ibv.byteOffset + iba.byteOffset ]) to @f32) ]
+        src  : cast @f32 [ @base[ ibv.byteOffset + iba.byteOffset ] ]
         ibm = array mat4f [ ]
         for [ j: i32 0, j < nj, j += 1 ]
             mm : mat4f [ mat4f.identity[] ]
@@ -2717,7 +2717,7 @@ element ModelView
             of3 : i64 [ bv3.byteOffset + ac3.byteOffset ]
             vc3 : i32 [ i32[ ac3.count ] ]
             for [ i: i32 0, i < vc3, i += 1 ]
-                vf3 : @f32 [ ((@pb3[ of3 + i64[ i ] * st3 ]) to @f32) ]
+                vf3 : cast @f32 [ @pb3[ of3 + i64[ i ] * st3 ] ]
                 row : local f32 [ 4 ] [ 0.0, 0.0, 0.0, 1.0 ]
                 row[ 0 ] = vf3[0] * 2.0
                 row[ 1 ] = vf3[1] * 2.0
@@ -2760,7 +2760,7 @@ element ModelView
             of3 : i64 [ bv3.byteOffset + ac3.byteOffset ]
             vc3 : i32 [ i32[ ac3.count ] ]
             for [ i: i32 0, i < vc3, i += 1 ]
-                vf3 : @f32 [ ((@pb3[ of3 + i64[ i ] * st3 ]) to @f32) ]
+                vf3 : cast @f32 [ @pb3[ of3 + i64[ i ] * st3 ] ]
                 ddx : f32 [ vf3[0] - ccx3 ]
                 ddy : f32 [ vf3[1] - ccy3 ]
                 ddz : f32 [ vf3[2] - ccz3 ]
@@ -3070,7 +3070,7 @@ element ModelView
                 eoff : i64 [ ebv.byteOffset + eac.byteOffset ]
                 evc : i32 [ i32[ eac.count ] ]
                 for [ i: i32 0, i < evc, i += 1 ]
-                    ef : @f32 [ ((@ebase[ eoff + i64[ i ] * estride ]) to @f32) ]
+                    ef : cast @f32 [ @ebase[ eoff + i64[ i ] * estride ] ]
                     if [ ef[0] < gxmin ] gxmin = ef[0]
                     if [ ef[0] > gxmax ] gxmax = ef[0]
                     gotrad = true
@@ -3103,7 +3103,7 @@ element ModelView
                 poff : i64 [ pbv.byteOffset + pac.byteOffset ]
                 vc : i32 [ i32[ pac.count ] ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+                    pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
                     dlx : f32 [ pf[0] - lcx ]
                     dly : f32 [ pf[1] - lcy ]
                     dlz : f32 [ pf[2] - lcz ]
@@ -3246,9 +3246,9 @@ element ModelView
                 # per-variant seed offset walks the noise field to a new region
                 sd : f32 [ f32[ face_idx ] * 17.0 ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
-                    nf : @f32 [ ((@nbase[ noff + i64[ i ] * nstride ]) to @f32) ]
-                    tf : @f32 [ ((@tbase[ toff + i64[ i ] * tstride ]) to @f32) ]
+                    pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
+                    nf : cast @f32 [ @nbase[ noff + i64[ i ] * nstride ] ]
+                    tf : cast @f32 [ @tbase[ toff + i64[ i ] * tstride ] ]
                     px : f32 [ pf[0] ]
                     py : f32 [ pf[1] ]
                     pz : f32 [ pf[2] ]
@@ -3343,12 +3343,12 @@ element ModelView
                     soff = sbv.byteOffset + sac.byteOffset
                 vc : i32 [ i32[ eac.count ] ]
                 for [ i: i32 0, i < vc, i += 1 ]
-                    eu : @u16 [ ((@ebase[ eoff + i64[ i ] * estride ]) to @u16) ]
-                    uv : @f32 [ ((@ubase[ uoff + i64[ i ] * ustride ]) to @f32) ]
+                    eu : cast @u16 [ @ebase[ eoff + i64[ i ] * estride ] ]
+                    uv : cast @f32 [ @ubase[ uoff + i64[ i ] * ustride ] ]
                     uv[0] = f32[ eu[0] ] / 65535.0
                     uv[1] = 0.0
                     if [ shad_ai >= 0 ]
-                        su : @u16 [ ((@sbase[ soff + i64[ i ] * sstride ]) to @u16) ]
+                        su : cast @u16 [ @sbase[ soff + i64[ i ] * sstride ] ]
                         sw : f32 [ (f32[ su[2] ] / 65535.0 - 0.5) / 0.5 ]
                         if [ sw < 0.0 ] sw = 0.0
                         if [ sw > 1.0 ] sw = 1.0
@@ -3368,7 +3368,7 @@ element ModelView
         aim_eyes[]
         apply_spacing[]
         gmodel.compute_worlds[]
-        dst : @f32 [ ((joint_buf.data) to @f32) ]
+        dst : cast @f32 [ joint_buf.data ]
         for [ j: i32 0, j < nj, j += 1 ]
             jn : gmodel.nodes[ sk.joints[ j ] ]
             jm : mat4f [ jn.world.mul[ ibm[ j ] ] ]
@@ -3454,7 +3454,7 @@ element ModelView
         bh : f32 [ bounds.h ]
         cv.fill_color[ '#39ff14' ]
         for [ i: i32 0, i < vc, i += 1 ]
-            pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+            pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
             px : f32 [ pf[0] ]
             py : f32 [ pf[1] ]
             pz : f32 [ pf[2] ]
@@ -3509,7 +3509,7 @@ element ModelView
             pj_cap = vc
         if [ !recbuf ] recbuf = new f32 [ 6 ]
         for [ i: i32 0, i < vc, i += 1 ]
-            pf : @f32 [ ((@pbase[ poff + i64[ i ] * pstride ]) to @f32) ]
+            pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
             px : f32 [ pf[0] ]
             py : f32 [ pf[1] ]
             pz : f32 [ pf[2] ]
@@ -4707,7 +4707,7 @@ element hyperspace2 : trinity
     func agi_put2 [ fid: i32, key: string, val: string ]
         p : path '{rec_dir[]}/{fid}.agi'
         line : string '{key}: {val}\n'
-        s : (p.load[ typeid[ string ], null ] to string)
+        s : cast string [ p.load[ typeid[ string ], null ] ]
         if [ !s ]
             p.save[ line, null ]
             return
@@ -4728,7 +4728,7 @@ element hyperspace2 : trinity
 
     func rec_pair_missing [ fid: i32 ] -> bool
         p : path '{rec_dir[]}/{fid}.agi'
-        s : (p.load[ typeid[ string ], null ] to string)
+        s : cast string [ p.load[ typeid[ string ], null ] ]
         if [ !s ] return true
         # negatives have no face: nothing to plot
         if [ s.index_of[ 'noise: true' ] >= 0 ] return false
@@ -4759,7 +4759,7 @@ element hyperspace2 : trinity
         if [ sub == 4 ] k6 = string '{cs}_right_ic:'
         if [ sub == 5 ] k6 = string '{cs}_hair:'
         p : path '{rec_dir[]}/{fid}.agi'
-        s : (p.load[ typeid[ string ], null ] to string)
+        s : cast string [ p.load[ typeid[ string ], null ] ]
         if [ !s ] return r
         ix : num [ s.index_of[ k6 ] ]
         if [ ix < 0 ] return r
@@ -4808,7 +4808,7 @@ element hyperspace2 : trinity
         if [ sub == 4 ] k6 = string '{cs}_right_ic:'
         if [ sub == 5 ] k6 = string '{cs}_hair:'
         p : path '{rec_dir[]}/{fid}.agi'
-        s : (p.load[ typeid[ string ], null ] to string)
+        s : cast string [ p.load[ typeid[ string ], null ] ]
         if [ !s ] return false
         return s.index_of[ k6 ] >= 0
 
@@ -5401,7 +5401,7 @@ element hyperspace2 : trinity
             k += 1
             if [ tn >= 4096 ] break
             # noise pairs (no face) become composite background patches
-            ns9 : (fp9.load[ typeid[ string ], null ] to string)
+            ns9 : cast string [ fp9.load[ typeid[ string ], null ] ]
             if [ ns9 && ns9.index_of[ 'noise: true' ] >= 0 ]
                 if [ recs_noise_n < 512 ]
                     recs_noise[ recs_noise_n ] = k - 1
@@ -5541,7 +5541,7 @@ element hyperspace2 : trinity
                     ann_seek[ true ]
             ev.stop_propagation[]
             return
-        oe : (ev.origin to element)
+        oe : cast element [ ev.origin ]
         if [ !oe ] return
         # consume ONLY our own buttons: anything else falls through to
         # the ModelViews (face edit clicks, camera orbit)

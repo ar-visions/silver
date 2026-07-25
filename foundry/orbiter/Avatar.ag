@@ -735,7 +735,7 @@ element Avatar
     public expanded          : bool
 
     func init [ ]
-        volatile = true
+        animated = true
         models = map Model[string][]
         if [ render_scale == 0.0 ]
             render_scale = 1.0
