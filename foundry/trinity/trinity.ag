@@ -1146,6 +1146,7 @@ Display Window
                     # paint path in declaration order, base class first, keyed
                     # by member ident — no strings at any access site
                     ltys : array Au_t []
+                    svars : array shader []
                     for [ lty : typeid[ instance ], lty != typeid[ Au ], lty = lty.context ]
                         ltys.push[ lty ]
                     for [ lti: i32 ltys.count - 1, lti >= 0, lti -= 1 ]
@@ -1170,7 +1171,23 @@ Display Window
                                 shv.set_context_from[ instance ]
                                 shv.initialize[]
                                 if [ !instance.shaders ] instance.shaders = map shader[string] []
-                                instance.shaders[ string[ lmem.ident ] ] = shv
+                                # a keyed variant modifies a pass; it is not one
+                                if [ shv.key && shv.key.count ]
+                                    svars.push[ shv ]
+                                el
+                                    instance.shaders[ string[ lmem.ident ] ] = shv
+                    # file keyed variants under the pass they name, after the
+                    # walk so a variant may be declared before its base
+                    for [ sv: shader ] in svars
+                        tgt : shader instance.shaders[ sv.key ]
+                        expect tgt, 'no shader keyed {sv.key}'
+                        if [ !tgt.variants ] tgt.variants = array shader []
+                        # an override member is listed on base AND subclass but
+                        # reads one slot — the same object arrives twice
+                        dup9 : bool [ false ]
+                        for [ ev: shader ] in tgt.variants
+                            if [ ev == sv ] dup9 = true
+                        if [ !dup9 ] tgt.variants.push[ sv ]
                     # the icon layer paints LAST — base-first population put
                     # Button's iconl under subclass backgrounds; re-append it
                     if [ instance.layers ]
@@ -3110,6 +3127,8 @@ Display Window
         # selected lives on Option (not element) — fold it in typed
         eopt : Option [ e inherits Option ]
         if [ eopt->selected ] e_mask += i32[ State.selected ]
+        # shader passes take their state attributes from the same mask
+        e.apply_variants[ e_mask ]
         for [ layer_au: Au, lkey: string ] in e.layers
             if [ !redraw ] break
             layer : cast Layer [ layer_au ]

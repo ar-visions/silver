@@ -28,7 +28,22 @@ class shader
     # State BITMASK, same semantics as Layer.states: none = always render;
     # set = this pass renders only while every state is live on the element
     public states       : State
-    
+    # style group; variants sharing a key modify one pass
+    public key          : string
+    # keyed variants targeting this pass, in declaration order
+    intern variants     : array shader
+    # one clock for the whole pass; variant attributes ease as a set
+    public transition   : StyleTransition
+    intern u_n          : i32
+    intern base_u       : @f32
+    intern from_u       : @f32
+    intern last_mask    : i32 [ -1 ]
+    intern t_start      : i64
+    # per-pass model transform; variants may carry their own
+    public rotate       : array Rotation
+    intern base_rot     : array Rotation
+    intern from_rot     : array Rotation
+
     intern vk_vert      : VkShaderModule
     intern vk_frag      : VkShaderModule
     intern vk_comp      : VkShaderModule
@@ -313,6 +328,120 @@ class shader
                 continue
             fputs[ src, fp ]
             fclose[ fp ]
+
+    # every uniform field is float-based (f32/vec2f/vec3f/vec4f/mat4f)
+    intern func u_floats [] -> i32
+        n : i32 [ 0 ]
+        for [ ty: Au_t ] in context_chain[]
+            for [ i: i32 0, i < ty.members.count, i += 1 ]
+                mem : Au_t ty.members.origin[i]
+                if [ is_uniform_field[ mem ] ]
+                    n += mem.src.typesize / 4
+        return n
+
+    # copy this pass's uniform floats out to dst
+    intern func u_save [ dst: @f32 ]
+        inst : a
+        src  : @u8 [ inst ]
+        ix   : i32 [ 0 ]
+        for [ ty: Au_t ] in context_chain[]
+            for [ i: i32 0, i < ty.members.count, i += 1 ]
+                mem : Au_t ty.members.origin[i]
+                if [ !is_uniform_field[ mem ] ] continue
+                fp : @f32 [ @src[ mem.offset ] ]
+                n  : i32  [ mem.src.typesize / 4 ]
+                for [ k: i32 0, k < n, k += 1 ]
+                    dst[ ix ] = fp[ k ]
+                    ix += 1
+
+    # write src floats back into this pass's uniform members
+    intern func u_load [ src2: @f32 ]
+        inst : a
+        dst  : @u8 [ inst ]
+        ix   : i32 [ 0 ]
+        for [ ty: Au_t ] in context_chain[]
+            for [ i: i32 0, i < ty.members.count, i += 1 ]
+                mem : Au_t ty.members.origin[i]
+                if [ !is_uniform_field[ mem ] ] continue
+                fp : @f32 [ @dst[ mem.offset ] ]
+                n  : i32  [ mem.src.typesize / 4 ]
+                for [ k: i32 0, k < n, k += 1 ]
+                    fp[ k ] = src2[ ix ]
+                    ix += 1
+
+    # live currently holds the target; ease it back toward `from` by (1-p)
+    intern func u_mix [ from2: @f32, p: f32 ]
+        inst : a
+        dst  : @u8 [ inst ]
+        ix   : i32 [ 0 ]
+        for [ ty: Au_t ] in context_chain[]
+            for [ i: i32 0, i < ty.members.count, i += 1 ]
+                mem : Au_t ty.members.origin[i]
+                if [ !is_uniform_field[ mem ] ] continue
+                fp : @f32 [ @dst[ mem.offset ] ]
+                n  : i32  [ mem.src.typesize / 4 ]
+                for [ k: i32 0, k < n, k += 1 ]
+                    f0 : f32 [ from2[ ix ] ]
+                    fp[ k ] = f0 + (fp[ k ] - f0) * p
+                    ix += 1
+
+    intern func rot_copy [ src3: array Rotation ] -> array Rotation
+        res : array Rotation []
+        for [ r: Rotation ] in src3
+            res.push[ r ]
+        return res
+
+    intern func rot_mix [ fa: array Rotation, ta: array Rotation, p: f64 ] -> array Rotation
+        n   : i32 [ (fa.count < ta.count) ? fa.count : ta.count ]
+        res : array Rotation []
+        for [ i: i32 0, i < n, i += 1 ]
+            r : fa[i]
+            res.push[ r.mix[ ta[i], p ] ]
+        return res
+
+    # resolve base + variants matching mask m, eased by `transition`.
+    # returns true while still animating, so the element keeps drawing
+    public func apply_states [ m: i32 ] -> bool
+        if [ !variants ] return false
+        if [ u_n == 0 ]
+            u_n    = u_floats[]
+            if [ u_n <= 0 ] return false
+            base_u = new f32 [ u_n ]
+            from_u = new f32 [ u_n ]
+            u_save[ base_u ]
+            if [ rotate ] base_rot = rot_copy[ rotate ]
+        if [ m != last_mask ]
+            last_mask = m
+            u_save[ from_u ]
+            if [ rotate ] from_rot = rot_copy[ rotate ]
+            t_start = epoch_millis[]
+            puts 'APPLYST {name} m={m} nvar={variants.count} rot={bool[rotate]}'
+            for [ pv: shader ] in variants
+                puts '  VAR key={pv.key} states={i32[pv.states]} rot={i32[pv.rotate->count]} match={(i32[pv.states] != 0 && (m & i32[pv.states]) == i32[pv.states])}'
+        u_load[ base_u ]
+        if [ base_rot ] rotate = rot_copy[ base_rot ]
+        for [ sv: shader ] in variants
+            vs : i32 [ i32[ sv.states ] ]
+            if [ vs != 0 && (m & vs) != vs ] continue
+            ty : Au_t [ Au.header[ sv ].au ]
+            while [ ty && ty != typeid[ shader ] ]
+                for [ vi: i32 0, vi < ty.members.count, vi += 1 ]
+                    mem : Au_t ty.members.origin[vi]
+                    if [ mem.member_type != AU_MEMBER_VAR ] continue
+                    if [ !sv.AF_get_member[ mem ] ] continue
+                    member_set[ mem, sv.member_object[ mem ] ]
+                ty = ty.context
+            # rotate lives on shader itself, which the walk above stops before
+            if [ sv.rotate && sv.rotate.count ] rotate = rot_copy[ sv.rotate ]
+        if [ !transition ] return false
+        dur : i64 [ transition.duration.get_millis[] ]
+        if [ dur <= 0 ] return false
+        ms : i64 [ epoch_millis[] - t_start ]
+        if [ ms >= dur ] return false
+        p : f64 [ transition.pos[ f64[ ms ] / f64[ dur ] ] ]
+        u_mix[ from_u, f32[ p ] ]
+        if [ from_rot && rotate ] rotate = rot_mix[ from_rot, rotate, p ]
+        return true
 
     func uniform_transfer [ data2: @u8, type: Au_t ] -> i64
         instance:a

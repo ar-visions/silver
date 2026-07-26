@@ -272,17 +272,32 @@ Avatar OrbiterAvatar
     orbiter : PBR [
         model_id: 'orbiter32',
         groups: ['outside','flower','separator'],
-        env_id: 'forest', pulse_width: 4.0, gamma: 2.2 ]
-    
+        env_id: 'forest', pulse_width: 4.0, gamma: 2.2,
+        transition: StyleTransition [ '1444ms cubic outward' ] ]
+
     core : Core [
         model_id: 'orbiter32',
-        groups: ['core'], 
-        texture: 'textures/core.png', mip_levels: 8, pulse_width: 4.0 ]
-    
+        groups: ['core'],
+        texture: 'textures/core.png', mip_levels: 8, pulse_width: 4.0,
+        transition: StyleTransition [ '1444ms cubic outward' ] ]
+
     plasma : Plasma  [
         model_id: 'orbiter32',
         groups: ['top_ring','flower'],
-        pulse_width: 1.0 ]
+        pulse_width: 1.0,
+        transition: StyleTransition [ '1444ms cubic outward' ] ]
+
+    # one pass; the state variants below only carry their deltas
+    aura : Aura [
+        model_id: 'uv-quad2', env_id: 'forest',
+        pulse_width: 0.4, pulse_height: 1.2, halo_height: 0.4,
+        beam_fade: 2.2, beam_cone: 0.35, flame: 0.0,
+        transition: StyleTransition [ '1444ms cubic outward' ] ]
+
+    # hover leaves the rim light alone — brightness/height belong to other
+    # states. flame stays at 0 until a build state turns it on.
+    aura_press : Aura [ key: 'aura', states: State.pressed,
+        pulse_width: 1.2, pulse_height: 1.8, halo_height: 0.6 ]
 
 
 NavButton LabelButton

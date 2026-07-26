@@ -62,6 +62,8 @@ enum Surface
     iris_disp_b     : 13
     iris_disp_c     : 14
     sclera_disp     : 15
+    spokes          : 16
+    rim             : 17
 
 enum Cap
     none            : 0

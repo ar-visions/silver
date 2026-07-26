@@ -17,6 +17,9 @@ Orbiter PBR
     mutable blend_bands  : f32
     # output gamma correction (display transfer), 2.2 unless styled
     mutable gamma        : f32
+    # model-space radii the spoke unwrap maps between (hub -> rim)
+    mutable spoke_r0     : f32
+    mutable spoke_r1     : f32
 
     attrib color         : LayoutBinding [ type:typeid[ Surface ], id:Surface.color,        count:1, format: typeid[ rgba8 ] ]
     attrib normal        : LayoutBinding [ type:typeid[ Surface ], id:Surface.normal,       count:1, format: typeid[ rgba8 ] ]
@@ -27,6 +30,8 @@ Orbiter PBR
     attrib ao            : LayoutBinding [ type:typeid[ Surface ], id:Surface.ao,           count:1, format: typeid[ u8 ] ]
     attrib ior           : LayoutBinding [ type:typeid[ Surface ], id:Surface.ior,          count:1, format: typeid[ f32 ] ]
     attrib environment   : LayoutBinding [ type:typeid[ Surface ], id:Surface.environment,  count:1, format: typeid[ rgbaf ] ]
+    # polar unwrap of the fin ring: x = angle around, y = hub -> rim
+    attrib spokes        : LayoutBinding [ type:typeid[ Surface ], id:Surface.spokes,       count:1, format: typeid[ rgba8 ] ]
 
     # VertexInputs bind POSITIONALLY to the canonical interleave:
     # POSITION, NORMAL, TEXCOORD_0, ..., COLOR_0 — declare in that order
@@ -306,6 +311,15 @@ Orbiter PBR
               base  = mix(base, vec4(col1, 1.0), clamp(mask1, 0.0, 1.0));
               base  = mix(base, vec4(col3, 1.0), clamp(mask3, 0.0, 1.0));
 
+        // fin lighting sampled from the polar unwrap: x = angle, y = hub -> rim
+        float sp_ang = atan(v_local_pos.z, v_local_pos.x);
+        float sp_u   = sp_ang / 6.28318530718 + 0.5;
+        float sp_r   = length(v_local_pos.xz);
+        float sp_v   = clamp((sp_r - ubo.spoke_r0) / max(ubo.spoke_r1 - ubo.spoke_r0, 0.0001), 0.0, 1.0);
+        // alpha carries the weight: blue field tints, the blob goes full white
+        vec4  sp_s = texture(spokes, vec2(sp_u, sp_v));
+              base = mix(base, vec4(sp_s.rgb, 1.0), step(0.5, v_color.b) * sp_s.a);
+
         fragColor = base;
     }
 
@@ -335,6 +349,9 @@ Orbiter Aura
 	attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
 	attrib v_ray     : VertexOutput   [ type:typeid[ vec3f ] ]
     attrib v_eye_pos : VertexOutput   [ type:typeid[ vec3f ] ]
+
+	# rim unwrap, 32x256: x = height up the halo, y = angle around
+	attrib rim       : LayoutBinding [ type:typeid[ Surface ], id:Surface.rim, count:1, format: typeid[ rgba8 ] ]
 
 	attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
 
@@ -497,8 +514,14 @@ Orbiter Aura
 						float rng_center = sqrt(max(0.0, 1.0 - (2.0 * rng_t - 1.0) * (2.0 * rng_t - 1.0)));
 						vec3  rng_rel    = rng_p - rng_ax;
 						float rng_ang    = atan(dot(rng_rel, rng_bn), dot(rng_rel, rng_tg));
-						float rng_pulse  = pow(max(0.0, cos(rng_ang - ubo.time * 4.0)), 8.0);
-						vec3  rng_col    = mix(vec3(0.0, 0.35, 1.0), vec3(1.0, 0.5, 1.0), rng_pulse);
+						// alpha IS the height fraction the glow reaches at this
+						// angle — 0.25 = a quarter of halo_height, 1.0 = all
+						float rng_h      = clamp(rng_at / rng_bh, 0.0, 1.0);
+						vec2  rng_uv     = vec2(0.5, rng_ang / 6.28318530718 + 0.5);
+						vec4  rng_s      = texture(rim, rng_uv);
+						if (rng_h > rng_s.a) continue;
+						vec3  rng_col    = rng_s.rgb;
+						float rng_pulse  = rng_s.a;
 						float rng_fad    = 1.0 - rng_at / rng_bh;
 						float d          = 10.0 * ubo.pulse_width * (0.3 + rng_fg) * rng_center * (0.2 + rng_pulse) * rng_fad * rng_dt;
 						col   += rng_col * d * (1.0 - alpha);
@@ -715,15 +738,16 @@ element Avatar
         groups: ["top_ring","flower"],
         pulse_width: 1.0 ]
     
+    # flame stays 0 in every state — a build state turns it on
     public aura              : Aura    [ model_id: 'uv-quad2', env_id: 'forest',
         pulse_width: 0.4, pulse_height: 1.2, halo_height: 0.4,
-        beam_fade: 2.2, beam_cone: 0.35, flame: 0.25 ]
+        beam_fade: 2.2, beam_cone: 0.35, flame: 0.0 ]
     public aura_hover        : Aura   [ states: State.hovered, model_id: 'uv-quad2', env_id: 'forest',
         pulse_width: 2.0, pulse_height: 2.4, halo_height: 0.8,
-        beam_fade: 2.2, beam_cone: 0.30, flame: 0.6 ]
+        beam_fade: 2.2, beam_cone: 0.30, flame: 0.0 ]
     public aura_press        : Aura   [ states: State.pressed, model_id: 'uv-quad2', env_id: 'forest',
         pulse_width: 1.2, pulse_height: 1.8, halo_height: 0.6,
-        beam_fade: 2.2, beam_cone: 0.32, flame: 0.45 ]
+        beam_fade: 2.2, beam_cone: 0.32, flame: 0.0 ]
     # peek (false) vs full-size (true) — drives the CSS :expanded state. toggled by a click.
     public expanded          : bool
     # drag state: pointer offset within the element at grab
@@ -743,6 +767,11 @@ element Avatar
     public  env_pitch        : f32
     # persistent across target rebuilds (zoom): gltf + convolved env caches —
     # re-running the env convolution mid-draw on every settle faulted the GPU
+    # 128x128 polar unwrap driving fin lighting; redrawn each frame
+    intern  spoke_tex        : Texture
+    intern  spoke_img        : Image
+    intern  rim_tex          : Texture
+    intern  rim_img          : Image
     intern  mcache           : map GltfModel[string]
     intern  envcache         : map Texture[string]
     mutable env_on           : bool
@@ -798,10 +827,12 @@ element Avatar
         orbiter.groups = array string [ 'outside', 'flower', 'separator' ]
         core.groups    = array string [ 'core' ]
         plasma.groups  = array string [ 'top_ring', 'flower' ]
+        # Y 30 is the wheel's clocking, not tilt — it stays. X is the tilt,
+        # flat on by default; it arrives with the thinking state
         if [ !rotate ]
             rotate = array Rotation []
             rotate.push[ Rotation [ '0 1 0 30deg' ] ]
-            rotate.push[ Rotation [ '1 0 0 20deg' ] ]
+            rotate.push[ Rotation [ '1 0 0 0deg' ] ]
 
     func create_target[]
         w_ref : Window [ ux ]
@@ -839,6 +870,18 @@ element Avatar
                     env_tex  = environment[ vk, env_img, env_axis, 0.0 ]
                     envcache[ekey9] = env_tex
                 m.samplers[ 'environment' ] = env_tex
+
+            # 128x128 polar map: x = angle (24 spoke bands), y = hub -> rim
+            if [ !spoke_tex ]
+                spoke_img = Image [ width: 128, height: 128, format: Pixel.rgba8 ]
+                spoke_tex = Texture [ vk: vk, w: w_ref, sampler: spoke_img ]
+            m.samplers[ 'spokes' ] = spoke_tex
+
+            # 32x256 rim unwrap: x = height up the halo, y = angle around
+            if [ !rim_tex ]
+                rim_img = Image [ width: 32, height: 256, format: Pixel.rgba8 ]
+                rim_tex = Texture [ vk: vk, w: w_ref, sampler: rim_img ]
+            m.samplers[ 'rim' ] = rim_tex
 
             is_vol : bool [ sh inherits Aura ]
             if [ is_vol ]
@@ -883,16 +926,11 @@ element Avatar
         puts 'create_target: bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} render_scale={render_scale} rs={rs} dscale={dscale}'
 
         if [ geo_models.count ]
-            # cap the supersampled target — a zoomed-in avatar at 4x would
-            # exceed VRAM/image limits (the crash after wheel-zoom settle)
+            # NO clamp: reduce divides by 4, so the target must stay exactly
+            # 4x the element or the reduction lands short and blits up soft
             gwf : f32 [ bounds.w * rs ]
             ghf : f32 [ bounds.h * rs ]
-            if [ ghf > 2048.0 ]
-                gwf = gwf * (2048.0 / ghf)
-                ghf = 2048.0
-            if [ gwf > 2048.0 ]
-                ghf = ghf * (2048.0 / gwf)
-                gwf = 2048.0
+            puts 'GEOTGT bounds={bounds.w}x{bounds.h} rs={rs} -> {gwf}x{ghf}'
             gw : i32 [ gwf ]
             gh : i32 [ ghf ]
             target = Render [
@@ -950,14 +988,14 @@ element Avatar
         u_vec : vec3f [ (up_vec.x != 0.0 || up_vec.y != 0.0 || up_vec.z != 0.0) ? up_vec : vec3f [ 0.0f, -1.0f, 0.0f ] ]
         # tilt_cur (degrees, eased) swings the eye off the straight-down axis
         # around the target: 0 = face-on, positive leans the beam toward us
-        if [ tilt_cur > 0.001 || tilt_cur < -0.001 ]
-            dy9 : f32 [ e_pos.y - t_pos.y ]
-            dz9 : f32 [ e_pos.z - t_pos.z ]
-            rr9 : f32 [ sqrt[ dy9 * dy9 + dz9 * dz9 ] ]
-            a09 : f32 [ atan2[ dz9, dy9 ] ]
-            a19 : f32 [ a09 - radians[ tilt_cur ] ]
-            e_pos.y = t_pos.y + rr9 * cos[ a19 ]
-            e_pos.z = t_pos.z + rr9 * sin[ a19 ]
+        #if [ tilt_cur > 0.001 || tilt_cur < -0.001 ]
+        #    dy9 : f32 [ e_pos.y - t_pos.y ]
+        #    dz9 : f32 [ e_pos.z - t_pos.z ]
+        #    rr9 : f32 [ sqrt[ dy9 * dy9 + dz9 * dz9 ] ]
+        #    a09 : f32 [ atan2[ dz9, dy9 ] ]
+        #    a19 : f32 [ a09 - radians[ tilt_cur ] ]
+        #    e_pos.y = t_pos.y + rr9 * cos[ a19 ]
+        #    e_pos.z = t_pos.z + rr9 * sin[ a19 ]
         f     : f32   [ (fov > 0.0) ? fov : 40.0f ]
         # real aspect (target is sized to bounds); derive vertical fov from height so
         # `fov` stays the HORIZONTAL fov — a taller area then shows more vertical world
@@ -969,40 +1007,37 @@ element Avatar
         _pos  : vec4f [ e_pos.x, e_pos.y, e_pos.z, 1.0f ]
 
         for [ sh:shader, k:string ] in shaders
+            # a pass with its own rotate transforms independently of the element
+            sm9 : mat4f [ model_mat ]
+            if [ sh.rotate && sh.rotate.count ]
+                sm9 = mat4f.identity[]
+                for [ r2: Rotation ] in sh.rotate
+                    v2     : vec4f [ r2.axis.x, r2.axis.y, r2.axis.z, radians[ r2.degs ] ]
+                    q2     : quatf [ v2 ]
+                    rm2    : mat4f [ mat4f.identity[].rotate[ q2 ] ]
+                    sm9 = rm2.mul[ sm9 ]
             mvp : (sh inherits ModelViewProject)
             if [ mvp ]
-                mvp.model        = model_mat
+                mvp.model        = sm9
                 mvp.proj         = _proj
                 mvp.view         = _view
                 mvp.time         = w.time
             pb9 : (sh inherits PBR)
             if [ pb9 ]
+                pb9.spoke_r0    = 0.10
+                pb9.spoke_r1    = 0.55
                 pb9.blend_rings = blend_rings
                 pb9.blend_haze  = blend_haze
                 pb9.blend_bands = blend_bands
                 pb9.env_yaw     = env_yaw
                 pb9.env_pitch   = env_pitch
 
-        # state transition: pick the declared style for the live state, then
-        # ease EVERY property toward it (filter_n motion). the base members
-        # are the quiet look; the states-masked ones are the variants — the
-        # subclass declares all of them, nothing is hard-coded here.
-        tgt9 : Aura aura
-        if [ pressed && aura_press ] tgt9 = aura_press
-        el [ hovered && aura_hover ] tgt9 = aura_hover
-        if [ aura && tgt9 ]
-            st9 : f32 [ 1.0 - pow[ ease_filter, w.frame_factor ] ]
-            aura.pulse_width  += (tgt9.pulse_width  - aura.pulse_width)  * st9
-            aura.pulse_height += (tgt9.pulse_height - aura.pulse_height) * st9
-            aura.halo_height  += (tgt9.halo_height  - aura.halo_height)  * st9
-            aura.beam_fade    += (tgt9.beam_fade    - aura.beam_fade)    * st9
-            aura.beam_cone    += (tgt9.beam_cone    - aura.beam_cone)    * st9
-            aura.flame        += (tgt9.flame        - aura.flame)        * st9
+        # aura state easing now runs through shader.apply_states (key variants)
         # view tilt: 0 = face-on (top down); the state's tilt_deg eases in,
         # lifting the camera off the axis so the beam leans toward the viewer
-        ttd9 : f32 [ (pressed) ? press_tilt : ((hovered) ? hover_tilt : rest_tilt) ]
-        te9  : f32 [ 1.0 - pow[ ease_filter, w.frame_factor ] ]
-        tilt_cur += (ttd9 - tilt_cur) * te9
+        #ttd9 : f32 [ (pressed) ? press_tilt : ((hovered) ? hover_tilt : rest_tilt) ]
+        #te9  : f32 [ 1.0 - pow[ ease_filter, w.frame_factor ] ]
+        #tilt_cur += (ttd9 - tilt_cur) * te9
 
         # feed the element's live states to the targets — shader passes with
         # a `states` mask render only while it's satisfied (Layer semantics)
@@ -1033,20 +1068,72 @@ element Avatar
                 area = Region [ 'l{nl9}px t{nt9}px w{cur_w}px h{cur_h}px' ]
                 pristine = false
             el [ target ]
-                # expected width mirrors create_target's 2048 clamp, else a
-                # capped target re-triggers a rebuild every settle frame
+                # mirrors create_target exactly — unclamped, so the 4:1 holds
                 tw9 : f32 [ bounds.w * render_scale ]
-                th9 : f32 [ bounds.h * render_scale ]
-                if [ th9 > 2048.0 ]
-                    tw9 = tw9 * (2048.0 / th9)
-                    th9 = 2048.0
-                if [ tw9 > 2048.0 ] tw9 = 2048.0
+                puts 'ZCHK bounds={bounds.w}x{bounds.h} tw9={tw9} tgt={target.width}'
                 if [ f32[ target.width ] < tw9 - 4.0 || f32[ target.width ] > tw9 + 4.0 ]
-                    # the GPU may still reference the old targets this frame
+                    # the GPU may still reference the old targets this frame.
+                    # unregister FIRST — Display_draw walks element_targets
+                    w.element_targets.rm[ id ]
+                    w.element_targets.rm[ '{id}-vol' ]
                     vk.defer_drop[ target ]
                     if [ vol_target ] vk.defer_drop[ vol_target ]
                     target     = null
                     vol_target = null
+
+        # each of the 24 spoke bands carries one gradient blob, its position
+        # offset by spoke so the light travels around the wheel as it rolls
+        if [ spoke_img && spoke_tex ]
+            pb9 : @u8 [ spoke_img.vdata[] ]
+            for [ xx9: i32 0, xx9 < 128, xx9 += 1 ]
+                sp9 : i32 [ (xx9 * 24) / 128 ]
+                # position across this spoke's band: 1 at centre, 0 at the seam
+                fb9 : f32 [ f32[ xx9 ] * 24.0 / 128.0 ]
+                fr9 : f32 [ fb9 - floor[ fb9 ] ]
+                ec9 : f32 [ (1.0 - abs[ fr9 - 0.5 ] * 2.0) / 0.45 ]
+                if [ ec9 > 1.0 ] ec9 = 1.0
+                ph9 : f32 [ w.time * 3.5 + f32[ sp9 ] / 24.0 ]
+                ph9 = ph9 - floor[ ph9 ]
+                cy9 : f32 [ ph9 * 128.0 ]
+                for [ yy9: i32 0, yy9 < 128, yy9 += 1 ]
+                    d9 : f32 [ f32[ yy9 ] - cy9 ]
+                    if [ d9 >  64.0 ] d9 = d9 - 128.0
+                    if [ d9 < -64.0 ] d9 = d9 + 128.0
+                    g9 : f32 [ 1.0 - abs[ d9 ] / 14.0 ]
+                    if [ g9 < 0.0 ] g9 = 0.0
+                    # field is a low-alpha blue; the blob rises to full white.
+                    # ec9 darkens toward the seams — opaque black either side
+                    cr9 : f32 [ (  40.0 + (255.0 -  40.0) * g9 ) * ec9 ]
+                    cg9 : f32 [ (  90.0 + (255.0 -  90.0) * g9 ) * ec9 ]
+                    cb9 : f32 [ ( 255.0                        ) * ec9 ]
+                    ca9 : f32 [    70.0 + (255.0 -  70.0) * g9 ]
+                    oo9 : i32 [ (yy9 * 128 + xx9) * 4 ]
+                    pb9[ oo9 + 0 ] = u8 [ cr9 ]
+                    pb9[ oo9 + 1 ] = u8 [ cg9 ]
+                    pb9[ oo9 + 2 ] = u8 [ cb9 ]
+                    pb9[ oo9 + 3 ] = u8 [ ca9 + (255.0 - ca9) * (1.0 - ec9) ]
+            spoke_tex.upload[ pb9, 128 * 128 * 4 ]
+
+        # rim: blue field, one bright band sweeping around, fading up the halo
+        if [ rim_img && rim_tex ]
+            rp9 : @u8 [ rim_img.vdata[] ]
+            for [ ry9: i32 0, ry9 < 256, ry9 += 1 ]
+                aa9 : f32 [ f32[ ry9 ] / 256.0 ]
+                sw9 : f32 [ aa9 - w.time * 0.15 ]
+                sw9 = sw9 - floor[ sw9 ]
+                # the gradient zone spans 25% of the rim, peaking at its centre
+                zd9 : f32 [ abs[ sw9 - 0.5 ] / 0.125 ]
+                pk9 : f32 [ 0.0 ]
+                if [ zd9 < 1.0 ] pk9 = 1.0 - zd9
+                # 0.25 of halo_height everywhere, rising to 1.0 at the peak
+                av9 : f32 [ 0.25 + 0.75 * pk9 ]
+                for [ rx9: i32 0, rx9 < 32, rx9 += 1 ]
+                    ro9 : i32 [ (ry9 * 32 + rx9) * 4 ]
+                    rp9[ ro9 + 0 ] = u8 [ 255.0 * pk9 ]
+                    rp9[ ro9 + 1 ] = u8 [  90.0 + 38.0 * pk9 ]
+                    rp9[ ro9 + 2 ] = u8 [ 255.0 ]
+                    rp9[ ro9 + 3 ] = u8 [ 255.0 * av9 ]
+            rim_tex.upload[ rp9, 32 * 256 * 4 ]
 
         ev : Event[ target: a ]
         update.invoke[ ev ]

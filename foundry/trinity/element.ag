@@ -220,6 +220,11 @@ ielement element
     public func on_canvas  [ cv: Canvas ] return
     # like on_canvas, but AFTER the element tree paints — overlays
     public func on_overlay [ cv: Canvas ] return
+    # each pass resolves base + its state variants; keep drawing while easing
+    public func apply_variants [ m: i32 ]
+        if [ !shaders ] return
+        for [ sp: shader, sk: string ] in shaders
+            if [ sp.apply_states[ m ] ] pristine = false
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
     intern transitions  : map StyleTransition[string]
