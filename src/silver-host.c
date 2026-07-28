@@ -39,6 +39,7 @@ typedef struct {
     SharedTex app_tex, ide_tex;
     volatile int32_t app_pid;   // process bound to this slot
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
+    volatile int32_t verdict;   // 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
     char name[192];             // "module [default-arg]" to spawn
 } HostApp;
 typedef struct {
@@ -60,9 +61,13 @@ typedef int        (*au_live_get_defer_fn)(void);
 
 // stash the process argv into libAu (loaded inside the app .so) so silver_live_init
 // can parse the app's command-line flags into its instance. safe no-op on old libs.
+static void (*g_leak_report)(void);
+
 static void stash_args(void* handle, int argc, char** argv) {
     au_main_args_fn set_args = (au_main_args_fn)dlsym(handle, "au_main_args");
     if (set_args) set_args(argc, argv);
+    if (!g_leak_report)
+        g_leak_report = (void(*)(void))dlsym(handle, "au_leak_report");
 }
 #define FRAME_SYM   "silver_live_frame"
 #define DESTROY_SYM "silver_live_destroy"
@@ -214,6 +219,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     struct stat st;
     if ((clean || stat(bin, &st) != 0) && rebuild_blocking(nm, clean) != 0) {
         fprintf(stderr, "silver-host: %s build failed — slot %d dead\n", name, k);
+        ap->verdict = -1000;
         ap->state = 3;
         return;
     }
@@ -239,6 +245,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     free(cenv);
     if (rc != 0) {
         fprintf(stderr, "silver-host: spawn %s failed: %s\n", name, strerror(rc));
+        ap->verdict = -1000;
         ap->state = 3;
         return;
     }
@@ -264,6 +271,40 @@ static void on_sigusr1(int sig) { (void)sig; g_ask_orbiter = 1; }
 // app hot-reloads (claude editing it), re-asks, and we must reuse the shell
 // that is already up rather than orphaning it.
 static pid_t g_shell_pid = 0;
+// the supervised peer (slot 0) — the process that owns the window
+static pid_t g_peer_pid  = 0;
+
+// everything this host spawned dies with it — every exit path, signals
+// included. the peer prints its --leaks report on ITS way out (ctrl+c gave
+// it a SIGINT of its own), and this host's tee drain must stay alive until
+// that output lands — so wait first, nudge with TERM only if the peer got
+// no signal, and KILL only a dead-hung peer. SIGCONT first: a crash-frozen
+// peer sits in SIGSTOP where no signal can land.
+static void host_wait_peer(pid_t p) {
+    if (p <= 0 || kill(p, 0) != 0) return;
+    kill(p, SIGCONT);
+    for (int i = 0; i < 300; i++) {
+        int st;
+        if (waitpid(p, &st, WNOHANG) == p) return;
+        if (kill(p, 0) != 0) return;
+        if (i == 100) kill(p, SIGTERM);
+        usleep(10000);
+    }
+    kill(p, SIGKILL);
+}
+
+static void host_shutdown(void) {
+    if (g_shell_pid > 0 && kill(g_shell_pid, 0) == 0) kill(g_shell_pid, SIGTERM);
+    slots_shutdown();
+    host_wait_peer(g_peer_pid);
+    host_wait_peer(g_isolate_child);
+}
+
+static void host_exit_signal(int sig) {
+    host_shutdown();
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
 
 // phase 1: THIN supervision. the child owns a normal window; this process
 // holds nothing (no vulkan, no orbiter) and just waits — the usual lifecycle
@@ -290,6 +331,18 @@ static int supervise_wait(int argc, char** argv, const char* appname,
     sigaction(SIGUSR1, &sa, NULL);
     pid_t pid = isolate_spawn();
     if (pid < 0) return -1;
+    g_peer_pid = pid;
+    atexit(host_shutdown);
+    signal(SIGINT,  host_exit_signal);
+    signal(SIGTERM, host_exit_signal);
+    signal(SIGHUP,  host_exit_signal);
+    // slot 0 IS the peer process: a summoned orbiter debugs it through the
+    // same slot table (AppView) every hosted pane app uses
+    if (g_shm) {
+        g_shm->app[0].app_pid = (int32_t)pid;
+        g_shm->app[0].verdict = 0;
+        g_shm->app[0].state   = 2;
+    }
     printf("silver-host: supervising %s (pid %d) — %s loads on crash or ask\n",
         appname, pid, ISOLATE_SHELL);
     for (;;) {
@@ -302,7 +355,8 @@ static int supervise_wait(int argc, char** argv, const char* appname,
             for (int k = 1; k < HOST_APPS; k++)
                 if (g_shm->app[k].state == 1) { spawn_slot_app(k, bindir); spawned = 1; }
         int   st = 0;
-        pid_t r  = waitpid(-1, &st, WNOHANG);   // -1: also reaps hosted apps + shell
+        // WUNTRACED: a frozen peer (crash handler raised SIGSTOP) reports here
+        pid_t r  = waitpid(-1, &st, WNOHANG | WUNTRACED);
         if (r == 0 || (r < 0 && errno == EINTR)) {
             if (!g_ask_orbiter) {
                 if (r == 0) usleep(30000);
@@ -360,37 +414,50 @@ static int supervise_wait(int argc, char** argv, const char* appname,
             *exit_code = 1;
             return 0;
         }
+        if (WIFSTOPPED(st)) {
+            // slot-app stops (the '!' debug gate, F8 pauses) are not ours
+            if (r != pid) continue;
+            // the peer froze at a crash site (handler marked state 4). NO
+            // new window EVER: the slot carries the verdict — an attached
+            // orbiter (same window) shows it paused; we just keep waiting.
+            if (!g_shm || g_shm->app[0].state != 4) continue;
+            int fsig = -g_shm->app[0].verdict;
+            fprintf(stderr, "silver-host: peer frozen — signal %d (%s)\n",
+                fsig, strsignal(fsig));
+            symbolize_crash_log(appname);
+            continue;
+        }
         if (r != pid) {                    // a hosted app or the shell exited
             if (r == g_shell_pid) g_shell_pid = 0;
             if (g_shm)
                 for (int k = 1; k < HOST_APPS; k++)
-                    if (g_shm->app[k].app_pid == (int32_t)r) g_shm->app[k].state = 3;
+                    if (g_shm->app[k].app_pid == (int32_t)r) {
+                        g_shm->app[k].verdict = WIFSIGNALED(st)
+                            ? -WTERMSIG(st) : WEXITSTATUS(st) + 1;
+                        g_shm->app[k].state = 3;
+                    }
             continue;
         }
-        if (WIFSIGNALED(st)) {
-            char msg[128];
-            snprintf(msg, sizeof(msg), "signal %d (%s)",
-                WTERMSIG(st), strsignal(WTERMSIG(st)));
-            fprintf(stderr, "silver-host: app died: %s — loading %s\n",
-                msg, ISOLATE_SHELL);
-            symbolize_crash_log(appname);
-            slots_shutdown();
-            setenv(ISOLATE_APP_ENV, appname, 1);
-            setenv(ISOLATE_STATUS_ENV, msg, 1);
-            // continue as orbiter IN-PROCESS: point the channel env at the
-            // memfd we still hold (no inheritance step for in-process)
-            if (g_shm_fd >= 0) {
-                char fb[16]; snprintf(fb, sizeof(fb), "%d", g_shm_fd);
-                setenv("SILVER_SHM_FD", fb, 1);
-            }
-            g_isolate_child = 0;
-            return 1;
+        // the peer ended (stop from the IDE, normal exit, or a hard kill).
+        // record the verdict in the slot either way.
+        if (g_shm) {
+            g_shm->app[0].verdict = WIFSIGNALED(st)
+                ? -WTERMSIG(st) : (WEXITSTATUS(st) + 1);
+            g_shm->app[0].state   = 3;
         }
-        *exit_code = WIFEXITED(st) ? WEXITSTATUS(st) : 1;
-        // app done — take the shell and every hosted app down with us so
-        // nothing orphans against a dead channel
+        if (WIFSIGNALED(st)) {
+            fprintf(stderr, "silver-host: app ended: signal %d (%s)\n",
+                WTERMSIG(st), strsignal(WTERMSIG(st)));
+            symbolize_crash_log(appname);
+        }
+        // the peer process is gone — the shared window went with it, so the
+        // session ends. (stop in the IDE never lands here: it stops the
+        // peer's WORLD in place, the process and window live on.)
         if (g_shell_pid > 0 && kill(g_shell_pid, 0) == 0) kill(g_shell_pid, SIGTERM);
         slots_shutdown();
+        g_peer_pid = 0;
+        *exit_code = WIFSIGNALED(st) ? 128 + WTERMSIG(st)
+                   : (WIFEXITED(st) ? WEXITSTATUS(st) : 1);
         return 0;
     }
 }
@@ -400,14 +467,28 @@ static int supervise_wait(int argc, char** argv, const char* appname,
 // the app comes back WINDOWED (its own window, the usual mode) — orbiter
 // keeps its window and keeps reaping, so a re-crash posts a fresh verdict.
 static void isolate_restart_check(void) {
-    if (g_isolate_child) return;
     const char* r = getenv(ISOLATE_RESTART_ENV);
     if (!r || !*r) return;
+    if (g_isolate_child) {
+        // a frozen peer never blocks a relaunch: kill + reap it first
+        if (g_shm && g_shm->app[0].state == 4) {
+            kill(g_isolate_child, SIGKILL);
+            kill(g_isolate_child, SIGCONT);
+            int st; waitpid(g_isolate_child, &st, 0);
+            g_isolate_child = 0;
+        } else
+            return;
+    }
     unsetenv(ISOLATE_RESTART_ENV);
     unsetenv(ISOLATE_STATUS_ENV);
     pid_t pid = isolate_spawn();
     if (pid > 0) {
         g_isolate_child = pid;
+        if (g_shm) {
+            g_shm->app[0].app_pid = (int32_t)pid;
+            g_shm->app[0].verdict = 0;
+            g_shm->app[0].state   = 2;
+        }
         fprintf(stderr, "silver-host: relaunched app as pid %d\n", pid);
     }
 }
@@ -431,6 +512,11 @@ static void isolate_reap(void) {
         snprintf(msg, sizeof(msg), "exit %d", WEXITSTATUS(st));
     fprintf(stderr, "silver-host: isolated app died: %s\n", msg);
     setenv(ISOLATE_STATUS_ENV, msg, 1);
+    if (g_shm) {
+        g_shm->app[0].verdict = WIFSIGNALED(st)
+            ? -WTERMSIG(st) : WEXITSTATUS(st) + 1;
+        g_shm->app[0].state = 3;
+    }
     if (WIFSIGNALED(st)) symbolize_crash_log(getenv(ISOLATE_APP_ENV));
 }
 
@@ -475,6 +561,20 @@ static void crash_handler(int sig) {
         close(lf);
     }
     (void)write(STDERR_FILENO, hdr, (size_t)hl);
+    // --leaks summary still prints when the app dies by signal
+    if (g_leak_report) g_leak_report();
+    // peer freeze: a supervised app STOPS at the crash site instead of dying.
+    // the supervisor marks the slot frozen, orbiter shows the last frame as
+    // paused and lldb can attach to the stopped pid. a later SIGCONT (resume/
+    // relaunch) falls through and the original signal kills it properly.
+    if (getenv(ISOLATE_CHILD_ENV)) {
+        if (g_shm) {
+            g_shm->app[0].verdict = -sig;
+            g_shm->app[0].state   = 4;
+        }
+        prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
+        raise(SIGSTOP);
+    }
     signal(sig, SIG_DFL);
     raise(sig);
 }
@@ -804,6 +904,18 @@ int main(int argc, char** argv) {
         pa.sa_handler = probe_handler;
         pa.sa_flags   = SA_ONSTACK | SA_RESTART;
         sigaction(SIGUSR2, &pa, NULL);
+    }
+
+    // supervised child: map the channel so the crash handler can publish the
+    // frozen verdict (state 4) before stopping at the crash site
+    if (getenv(ISOLATE_CHILD_ENV) && !g_shm) {
+        const char* fs = getenv("SILVER_SHM_FD");
+        int shmfd = fs ? atoi(fs) : -1;
+        if (shmfd >= 0) {
+            void* p = mmap(0, sizeof(HostShared), PROT_READ | PROT_WRITE,
+                MAP_SHARED, shmfd, 0);
+            if (p != MAP_FAILED) g_shm = (HostShared*)p;
+        }
     }
 
     // --defer-reload (or SILVER_DEFER_RELOAD): don't auto-recompile on a source change —

@@ -641,6 +641,12 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
         !L->autype->is_context &&
         L->autype->src != typeid(Au);
 
+    // `member : new T [...]` slot — a managed buffer: assignment drops the
+    // previous buffer and holds the new one, same lifecycle as class sets
+    bool  is_shaped_slot = L->autype && (L->autype->traits & AU_TRAIT_SHAPED) &&
+        !(L->autype->traits & AU_TRAIT_UNMANAGED) &&
+        !L->autype->is_context;
+
     // hold/drop only on actual member slots, not local scope variables.
     // evar->is_local is set in silver.c when the variable is defined inside a function body.
     evar lv = instanceof(L, evar);
@@ -650,7 +656,7 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     // `:` (first binding) has no previous value to drop — only the hold.
     bool is_reassign_op = op_val == OPType__assign && !is_init;
     LLVMValueRef prev_value = null;
-    if (is_class_set && is_member_slot && is_reassign_op) {
+    if ((is_class_set || is_shaped_slot) && is_member_slot && is_reassign_op) {
         LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
         prev_value = LLVMBuildLoad2(B, ptr_ty, L->value, "prev_ref");
     }
@@ -892,8 +898,40 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     /* ------------------------------------------------------------
      * Phase 7: lifetime management
      * ------------------------------------------------------------ */
-    if (is_class_set && is_member_slot) {
-        if (is_reassign_op && !a->init_props_retain_skip) retain(L);
+    // aether rule: stores to THE INIT TARGET's own members are RAW —
+    // hold_members owns them at construction end. any other object's
+    // members (delegates, other instances of the same class) still retain.
+    // self test = the store's GEP base is init's `a` (param 0), either
+    // directly or loaded from param 0's shadow alloca.
+    // deferred-init classes (is_user_init) already took ownership of their
+    // members at construction — their init runs LATER, as a normal method,
+    // so its stores must own what they assign like any other method's
+    Au_t _p7_cls = (_p65_fn && _p65_fn->autype) ? _p65_fn->autype->context : null;
+    bool _p7_deferred = _p7_cls && _p7_cls->is_user_init;
+    bool _p7_self_init = false;
+    if (_in_init && !_p7_deferred && is_member_slot && L->value &&
+        LLVMGetInstructionOpcode(L->value) == LLVMGetElementPtr &&
+        _p65_fn && _p65_fn->value) {
+        LLVMValueRef _p7_base = LLVMGetOperand(L->value, 0);
+        LLVMValueRef _p7_self = LLVMGetParam(_p65_fn->value, 0);
+        if (_p7_base == _p7_self)
+            _p7_self_init = true;
+        else if (LLVMIsALoadInst(_p7_base)) {
+            LLVMValueRef _p7_src = LLVMGetOperand(_p7_base, 0);
+            if (LLVMIsAAllocaInst(_p7_src))
+                for (LLVMUseRef _p7_u = LLVMGetFirstUse(_p7_self); _p7_u;
+                     _p7_u = LLVMGetNextUse(_p7_u)) {
+                    LLVMValueRef _p7_usr = LLVMGetUser(_p7_u);
+                    if (LLVMIsAStoreInst(_p7_usr) &&
+                        LLVMGetOperand(_p7_usr, 1) == _p7_src) {
+                        _p7_self_init = true;
+                        break;
+                    }
+                }
+        }
+    }
+    if ((is_class_set || is_shaped_slot) && is_member_slot && !_p7_self_init) {
+        if (is_class_set && is_reassign_op && !a->init_props_retain_skip) retain(L);
         if (prev_value) {
             efunc fn_drop = (efunc)u(efunc,
                 find_member(etypeid(Au)->autype, "drop", AU_MEMBER_FUNC, 0, true));
@@ -906,7 +944,8 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     // `new T[N]` vector allocations stored into a member field need a hold so
     // auto_free doesn't reclaim the backing buffer while the object lives.
     bool res_is_vector = !no_store && is_member_slot &&
-        res && res->autype && (res->autype->traits & AU_TRAIT_SHAPED);
+        ((is_shaped_slot && !a->no_build) ||
+         (res && res->autype && (res->autype->traits & AU_TRAIT_SHAPED)));
     if (res_is_vector && !a->no_build) {
         efunc fn_hold = (efunc)u(efunc,
             find_member(etypeid(Au)->autype, "hold", AU_MEMBER_FUNC, 0, true));
@@ -2413,7 +2452,7 @@ none aether_e_cond_return(aether a, enode cond, Au value) {
     // builder is now positioned here, execution continues
 }
 
-enode aether_e_expect(aether a, enode cond, enode msg) {
+enode aether_e_expect_begin(aether a, enode cond) {
     a->is_const_op = false;
     if (a->no_build) return e_noop(a, etypeid(bool));
 
@@ -2434,8 +2473,17 @@ enode aether_e_expect(aether a, enode cond, enode msg) {
     LLVMBasicBlockRef cont  = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "expect.cont");
     LLVMBuildCondBr(B, test, cont, fail);
 
-    // ---- fail block: print message to stderr and abort ----
+    // leave the builder in the fail block: the CALLER parses the message
+    // next, so its string only ever builds on the failing path
     LLVMPositionBuilderAtEnd(B, fail);
+    return enode(mod, a, autype, etypeid(bool)->autype,
+        value, LLVMBasicBlockAsValue(cont), loaded, true);
+}
+
+enode aether_e_expect_end(aether a, enode ctx, enode msg) {
+    a->is_const_op = false;
+    if (a->no_build) return e_noop(a, etypeid(bool));
+
     if (msg) {
         enode str_msg = e_create(a, etypeid(string), (Au)msg);
         // extract ->chars from string object for fputs
@@ -2494,9 +2542,16 @@ enode aether_e_expect(aether a, enode cond, enode msg) {
     LLVMBuildUnreachable(B);
 
     // ---- continue block ----
-    LLVMPositionBuilderAtEnd(B, cont);
+    LLVMPositionBuilderAtEnd(B, LLVMValueAsBasicBlock(ctx->value));
 
     return e_noop(a, etypeid(bool));
+}
+
+enode aether_e_expect(aether a, enode cond, enode msg) {
+    a->is_const_op = false;
+    if (a->no_build) return e_noop(a, etypeid(bool));
+    enode ctx = e_expect_begin(a, cond);
+    return e_expect_end(a, ctx, msg);
 }
 
 enode aether_e_fault(aether a, enode msg) {
@@ -2880,9 +2935,17 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
     if (target_type && first_arg) {
         // only check needed: is first_arg's pointer state compatible with target
         Au info_target_instance = head(arg0);
+        bool direct_Au     = au_arg_type((Au)target_type->autype) == typeid(Au);
         bool arg_is_ptr    = is_ptr((Au)first_arg) || !first_arg->loaded;
         bool target_is_ptr = is_ptr((Au)target_type) || !target_type->loaded || target_type->autype->is_target;
-        verify(arg_is_ptr == target_is_ptr, "target pointer mismatch on %o %i", fn, seq);
+        if (direct_Au) {
+            // an Au target takes any pointer; only a plain value is wrong
+            bool value_is_ptr = first_arg->value &&
+                LLVMGetTypeKind(LLVMTypeOf(first_arg->value)) == LLVMPointerTypeKind;
+            verify(arg_is_ptr || value_is_ptr,
+                "cannot pass primitive value as Au on %o %i", fn, seq);
+        } else
+            verify(arg_is_ptr == target_is_ptr, "target pointer mismatch on %o %i", fn, seq);
     }
 
     bool is_Au = !target_type || inherits(au_arg_type((Au)target_type->autype), typeid(Au));
@@ -4268,6 +4331,9 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
             if (init_f) e_fn_call(a, init_f, a(alloc), false, false);
         }
         a->direct = saved_direct;
+        // is_user_init only defers WHO calls init (the user, after mount) —
+        // it says nothing about ownership: every class owns its members from
+        // construction, or a discarded instance orphans everything it built
         if (alloc->autype && alloc->autype->is_class) {
             efunc f_hold_members = (efunc)u(efunc,
                 find_member(etypeid(Au)->autype, "hold_members", AU_MEMBER_FUNC, 0, false));
@@ -6689,18 +6755,11 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             LLVMSetLinkage(dtor_fn, LLVMExternalLinkage);
             LLVMBasicBlockRef dtor_bb = LLVMAppendBasicBlockInContext(a->module_ctx, dtor_fn, "dentry");
             LLVMPositionBuilderAtEnd(B, dtor_bb);
-            // erase all Silver modules before destroying the instance so module_init
-            // in the reloaded .so starts with a clean registry (no stale Background etc.)
-            {
-                Au_t au_erase_silver = find_member(typeid(Au), "module_erase_silver", AU_MEMBER_FUNC, 0, false);
-                if (au_erase_silver) {
-                    efunc fn_erase = u(efunc, au_erase_silver);
-                    if (fn_erase && fn_erase->value) {
-                        LLVMTypeRef erase_ty = LLVMFunctionType(void_ty, null, 0, false);
-                        LLVMBuildCall2(B, erase_ty, fn_erase->value, null, 0, "");
-                    }
-                }
-            }
+            LLVMTypeRef  puts_ty = LLVMFunctionType(i32_ty, (LLVMTypeRef[]){ptr_ty}, 1, false);
+            LLVMValueRef puts_fn = LLVMGetNamedFunction(a->module_ref, "puts");
+            if (!puts_fn) puts_fn = LLVMAddFunction(a->module_ref, "puts", puts_ty);
+            LLVMBuildCall2(B, puts_ty, puts_fn,
+                (LLVMValueRef[]){LLVMBuildGlobalStringPtr(B, "DSTR live_destroy: enter", "d0")}, 1, "");
             if (fn_destroy) {
                 LLVMValueRef _inst = LLVMBuildLoad2(B, ptr_ty, inst_g, "inst");
                 LLVMValueRef _hdr  = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), _inst,
@@ -6716,6 +6775,8 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             }
             // drop the instance so Display/vk_context dealloc chains fire
             // (cleans up VkSwapchain/VkSurface before the module unloads)
+            LLVMBuildCall2(B, puts_ty, puts_fn,
+                (LLVMValueRef[]){LLVMBuildGlobalStringPtr(B, "DSTR live_destroy: dropping app instance", "d1")}, 1, "");
             Au_t au_drop = find_member(typeid(Au), "drop", AU_MEMBER_FUNC, 0, false);
             if (au_drop) {
                 efunc fn_drop = u(efunc, au_drop);
@@ -6726,7 +6787,45 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
                         (LLVMValueRef[]){_inst_d}, 1, "");
                 }
             }
+            LLVMBuildCall2(B, puts_ty, puts_fn,
+                (LLVMValueRef[]){LLVMBuildGlobalStringPtr(B, "DSTR live_destroy: app dropped; draining + report", "d2")}, 1, "");
             LLVMBuildStore(B, LLVMConstNull(ptr_ty), inst_g);
+
+            // drain the pool and report leaks NOW — after the instance drop,
+            // BEFORE any module erase frees the Au_t idents the report reads
+            {
+                Au_t au_af = find_member(typeid(Au), "auto_free", AU_MEMBER_FUNC, 0, false);
+                if (au_af) {
+                    efunc fn_af = u(efunc, au_af);
+                    if (fn_af && fn_af->value) {
+                        LLVMTypeRef af_ty = LLVMFunctionType(void_ty,
+                            (LLVMTypeRef[]){LLVMInt1TypeInContext(a->module_ctx)}, 1, false);
+                        LLVMBuildCall2(B, af_ty, fn_af->value,
+                            (LLVMValueRef[]){LLVMConstInt(LLVMInt1TypeInContext(a->module_ctx), 0, 0)}, 1, "");
+                    }
+                }
+                Au_t au_lr = find_member(typeid(Au), "leak_report", AU_MEMBER_FUNC, 0, false);
+                if (au_lr) {
+                    efunc fn_lr = u(efunc, au_lr);
+                    if (fn_lr && fn_lr->value) {
+                        LLVMTypeRef lr_ty = LLVMFunctionType(void_ty, null, 0, false);
+                        LLVMBuildCall2(B, lr_ty, fn_lr->value, null, 0, "");
+                    }
+                }
+            }
+            // erase all Silver modules so a reload's module_init starts with a
+            // clean registry — AFTER the report (erase frees type idents), and
+            // still before any dlopen of the rebuilt module
+            {
+                Au_t au_erase_silver = find_member(typeid(Au), "module_erase_silver", AU_MEMBER_FUNC, 0, false);
+                if (au_erase_silver) {
+                    efunc fn_erase = u(efunc, au_erase_silver);
+                    if (fn_erase && fn_erase->value) {
+                        LLVMTypeRef erase_ty = LLVMFunctionType(void_ty, null, 0, false);
+                        LLVMBuildCall2(B, erase_ty, fn_erase->value, null, 0, "");
+                    }
+                }
+            }
 
             // erase this module from Au's global type registry so the next
             // dlopen starts with a clean slate (no stale pointers into old .so)
@@ -6864,6 +6963,21 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     Au_t fn_run = find_member(main_spec->autype, "run", AU_MEMBER_FUNC, 0, false);
 
     enode r = e_fn_call(a, (efunc)u(efunc, fn_run), a(m), false, true);
+
+    // tear the app graph down and drain the pool before atexit runs:
+    // a --leaks report is only meaningful over what teardown left behind
+    efunc Au_drop_fn = (efunc)u(efunc,
+        find_member(typeid(Au), "drop", AU_MEMBER_FUNC, 0, false));
+    e_fn_call(a, Au_drop_fn, a(m), false, false);
+    efunc Au_af_fn = (efunc)u(efunc,
+        find_member(typeid(Au), "auto_free", AU_MEMBER_FUNC, 0, false));
+    e_fn_call(a, Au_af_fn,
+        a((enode)e_operand(a, _bool(false), etypeid(bool))), false, false);
+    // report HERE, while module type data is still alive — the atexit
+    // fallback fires too late (LIFO) and reads erased Au_t idents
+    efunc Au_lr_fn = (efunc)u(efunc,
+        find_member(typeid(Au), "leak_report", AU_MEMBER_FUNC, 0, false));
+    e_fn_call(a, Au_lr_fn, null, false, false);
 
     // give a full-coverage-report to number one
     report_coverage(a);
