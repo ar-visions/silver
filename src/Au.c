@@ -1,5 +1,7 @@
+#define _GNU_SOURCE
 #include <import>
 #include <execinfo.h>
+#include <dlfcn.h>
 
 int seq;
 
@@ -86,19 +88,53 @@ static int au_prov_count = 0, au_prov_alloc = 0;
 
 bool inherits(Au_t src, Au_t check);
 
+int  au_leaks(void);
+none leak_site_push(Au, void*, void*);
+none leak_site_pop (Au);
+// hold()/drop() are thin wrappers, so their return address IS the real call
+// site — stash it rather than unwinding a frame that may not exist
+static __thread void* leak_caller = null;
+
 Au Au_hold(Au a) {
     if (a) {
         Au f = header(a);
         if (f->managed == 0) return a; // refs of 0 is unmanaged memory (user managed)
         __atomic_fetch_add((i32*)__builtin_assume_aligned(&f->refs, 4), 1, __ATOMIC_SEQ_CST);
+        // --leaks: remember WHERE this hold came from, so an unbalanced one
+        // can name its own call site at exit
+        if (au_leaks()) leak_site_push(f, __builtin_return_address(0), leak_caller);
     }
     return a;
 }
 
 none Au_drop(Au a);
 
-Au   hold(Au a) { return Au_hold(a); }
-none drop(Au a) { Au_drop(a); }
+Au   hold(Au a) {
+    leak_caller = __builtin_return_address(0);
+    Au r = Au_hold(a);
+    leak_caller = null;
+    return r;
+}
+none drop(Au a) {
+    leak_caller = __builtin_return_address(0);
+    Au_drop(a);
+    leak_caller = null;
+}
+
+// member-store ownership: BEFORE the owner's hold_members ran (construction
+// still open — iflags bit 1 clear) the slot is a raw store and hold_members
+// takes ownership; AFTER it, the store owns the value (+1) and releases the
+// one it replaces. this makes init-body stores, helper functions called from
+// init, and lazily-initialized classes (elements) all balance to exactly ONE
+// ownership per slot.
+none Au_slot_replace(Au owner, Au nv, Au pv) {
+    if (!owner) return;
+    Au oh = header(owner);
+    if (!(oh->iflags & 0x01)) return;
+    if (nv) Au_hold(nv);
+    if (pv) Au_drop(pv);
+}
+none slot_replace(Au o, Au n, Au p) { Au_slot_replace(o, n, p); }
 
 #define hold(a) (__typeof__(a))hold((Au)(a))
 #define drop(a)                drop((Au)(a))
@@ -286,7 +322,7 @@ bool is_ptr(Au au) {
     if (a->is_explicit_ref) return true;
     Au_t walk = a;
     while (walk) {
-        if (walk->is_pointer || walk->is_class) return true;
+        if (walk->is_pointer || walk->is_class || walk->is_shaped) return true;
         if (!walk->src || walk == walk->src) break;
         walk = walk->src;
     }
@@ -2250,9 +2286,14 @@ Au Au_initialize(Au a) {
     //Au_validator(a);
     #endif
 
+    // deferred-init (is_user_init): ownership is taken BEFORE init, so the
+    // init that runs later owns whatever it assigns itself. normal classes
+    // keep the original order: init's raw stores, then one ownership sweep
+    bool deferred = ((Au_t)f->au)->is_user_init;
+    if (deferred) hold_members(a);
     init_recur(a, (Au_t)f->au, null);
     Au_t_f* ptr = (Au_t_f*)isa(a);
-    hold_members(a);
+    if (!deferred) hold_members(a);
     return a;
 }
 
@@ -2413,7 +2454,20 @@ none Au_drop(Au a) {
     Au info = header(a);
     if (!info->managed) return;
     i32 n = __atomic_sub_fetch((i32*)__builtin_assume_aligned(&info->refs, 4), 1, __ATOMIC_SEQ_CST);
+    if (au_leaks()) leak_site_pop(info);
     if (n <= 0) {
+#ifndef NDEBUG
+        // freed headers carry the -8888 sentinel: a drop landing here is a
+        // DOUBLE drop — name the object and its dropper instead of crashing
+        if (n < -1000) {
+            fprintf(stderr, "DOUBLE-DROP on freed object %s:%i seq=%i — dropper:\n",
+                info->source ? info->source : "?", info->line, info->sequence);
+            void* frames[10];
+            int nf = backtrace(frames, 10);
+            backtrace_symbols_fd(frames + 1, nf - 1, 2);
+            return;
+        }
+#endif
         af[info->managed] = null;
         Au_free(a);
     }
@@ -2423,6 +2477,400 @@ static int total_objects;
 
 int alloc_count(Au_t type) {
     return type ? type->global_count : total_objects;
+}
+
+// --leaks: pointer set of live headers; report top origins at exit
+static int           leaks_top  = 0;
+// each tracked object carries the return addresses of its OUTSTANDING holds:
+// pushed on hold, popped on drop, so whatever remains at exit is precisely
+// the hold nobody balanced — with the call site that took it
+#define LEAK_SITES 4
+typedef struct { Au p; void* site[LEAK_SITES][2]; u8 nsite; } leak_ent;
+static leak_ent*     leak_set   = null;
+static num           leak_cap   = 0;
+static num           leak_live  = 0;
+static volatile char leak_lock;
+
+int au_leaks(void) { return leaks_top; }
+
+static inline none leak_acquire() {
+    while (__atomic_test_and_set(&leak_lock, __ATOMIC_ACQUIRE));
+}
+
+static bool leak_try_acquire(num spins) {
+    while (spins--)
+        if (!__atomic_test_and_set(&leak_lock, __ATOMIC_ACQUIRE))
+            return true;
+    return false;
+}
+
+static inline none leak_release() {
+    __atomic_clear(&leak_lock, __ATOMIC_RELEASE);
+}
+
+static inline num leak_hash(Au p) {
+    u64 h = (u64)(uintptr_t)p;
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33;
+    return (num)(h & 0x7fffffffffffffffULL);
+}
+
+static none leak_grow() {
+    num cap  = leak_cap ? leak_cap << 1 : 4096;
+    leak_ent* set = calloc(cap, sizeof(leak_ent));
+    for (num i = 0; i < leak_cap; i++) {
+        Au p = leak_set[i].p;
+        if (!p) continue;
+        num j = leak_hash(p) & (cap - 1);
+        while (set[j].p) j = (j + 1) & (cap - 1);
+        set[j] = leak_set[i];
+    }
+    free(leak_set);
+    leak_set = set;
+    leak_cap = cap;
+}
+
+static none leak_insert(Au p) {
+    leak_acquire();
+    if (leak_live * 4 >= leak_cap * 3) leak_grow();
+    num mask = leak_cap - 1;
+    num i    = leak_hash(p) & mask;
+    while (leak_set[i].p && leak_set[i].p != p) i = (i + 1) & mask;
+    if (!leak_set[i].p) {
+        leak_set[i].p = p;
+        leak_set[i].nsite = 0;
+        leak_live++;
+    }
+    leak_release();
+}
+
+static none leak_remove(Au p) {
+    leak_acquire();
+    if (leak_cap) {
+        num mask = leak_cap - 1;
+        num i    = leak_hash(p) & mask;
+        while (leak_set[i].p && leak_set[i].p != p) i = (i + 1) & mask;
+        if (leak_set[i].p) {
+            leak_live--;
+            num j = i;
+            for (;;) {
+                j = (j + 1) & mask;
+                if (!leak_set[j].p) break;
+                num ideal = leak_hash(leak_set[j].p) & mask;
+                if (((j - ideal) & mask) >= ((j - i) & mask)) {
+                    leak_set[i] = leak_set[j];
+                    i = j;
+                }
+            }
+            memset(&leak_set[i], 0, sizeof(leak_ent));
+        }
+    }
+    leak_release();
+}
+
+// find the tracked entry for an object header (null when untracked)
+static leak_ent* leak_find(Au h) {
+    if (!leak_cap) return null;
+    num mask = leak_cap - 1;
+    num i    = leak_hash(h) & mask;
+    while (leak_set[i].p) {
+        if (leak_set[i].p == h) return &leak_set[i];
+        i = (i + 1) & mask;
+    }
+    return null;
+}
+
+// hold/drop bookkeeping: the caller's return address identifies the site
+none leak_site_push(Au h, void* site, void* caller) {
+    // diagnostics must never block or deadlock the mutator: if the table is
+    // busy (insert/remove/grow/report) simply skip this sample
+    if (!leak_try_acquire(64)) return;
+    leak_ent* e = leak_find(h);
+    if (e && e->nsite < LEAK_SITES) {
+        e->site[e->nsite][0] = site;
+        e->site[e->nsite][1] = caller;
+        e->nsite++;
+    }
+    leak_release();
+}
+
+none leak_site_pop(Au h) {
+    if (!leak_try_acquire(64)) return;
+    leak_ent* e = leak_find(h);
+    if (e && e->nsite) e->nsite--;
+    leak_release();
+}
+
+typedef struct {
+    Au_t   type;
+    cstr   source;
+    i32    line;
+    num    count;
+    num    bytes;
+    num    held;
+} leak_origin;
+
+static int leak_live_cmp(const void* A, const void* B) {
+    Au a = *(Au*)A, b = *(Au*)B;
+    int c = strcmp(a->au->ident, b->au->ident);
+    if (c) return c;
+    c = strcmp(a->source ? a->source : "", b->source ? b->source : "");
+    if (c) return c;
+    return a->line - b->line;
+}
+
+static int leak_origin_cmp(const void* A, const void* B) {
+    const leak_origin* a = A;
+    const leak_origin* b = B;
+    return (a->count < b->count) - (a->count > b->count);
+}
+
+// holder-graph scratch (report time only)
+static Au*  lg_keys   = null;
+static num* lg_vals   = null;
+static num  lg_mask   = 0;
+static num* lg_holder = null;
+// every reference edge (referrer -> target), so an object's COMPLETE holder
+// set is known; refs beyond this set are phantom holds with no owner
+static num* lg_efrom  = null;
+static num* lg_eto    = null;
+static num  lg_ecount = 0;
+static num  lg_ecap   = 0;
+
+static num lg_idx(Au h) {
+    if (!h || !lg_keys) return -1;
+    num s = leak_hash(h) & lg_mask;
+    while (lg_keys[s]) {
+        if (lg_keys[s] == h) return lg_vals[s];
+        s = (s + 1) & lg_mask;
+    }
+    return -1;
+}
+
+static void lg_link(Au target_data, num from_i) {
+    if (!target_data) return;
+    num t = lg_idx(header(target_data));
+    if (t < 0 || t == from_i) return;
+    if (lg_holder[t] < 0) lg_holder[t] = from_i;
+    if (lg_ecount == lg_ecap) {
+        lg_ecap  = lg_ecap ? lg_ecap * 2 : 8192;
+        lg_efrom = realloc(lg_efrom, lg_ecap * sizeof(num));
+        lg_eto   = realloc(lg_eto,   lg_ecap * sizeof(num));
+    }
+    lg_efrom[lg_ecount] = from_i;
+    lg_eto  [lg_ecount] = t;
+    lg_ecount++;
+}
+
+none au_leak_report(void) {
+    static bool reported;
+    if (reported || !leaks_top) return;
+    reported = true;
+    if (!leak_live) {
+        printf("--leaks: no Au objects alive at exit\n");
+        return;
+    }
+    // hold the set lock through aggregation: a concurrent teardown frees
+    // headers mid-walk otherwise (Au_free blocks in leak_remove while we
+    // read). bounded acquire — a signal can land mid-insert on this thread
+    bool locked = leak_try_acquire(50000000);
+    num max  = leak_live;
+    num n    = 0;
+    Au* live = calloc(max, sizeof(Au));
+    for (num i = 0; i < leak_cap && n < max; i++)
+        if (leak_set[i].p && leak_set[i].p->au) live[n++] = leak_set[i].p;
+    qsort(live, n, sizeof(Au), leak_live_cmp);
+
+    leak_origin* origins = calloc(n, sizeof(leak_origin));
+    num on = 0, total_bytes = 0;
+    for (num i = 0; i < n; i++) {
+        Au   h     = live[i];
+        Au_t type  = (Au_t)h->au;
+        num  bytes = sizeof(struct _Au) + type->typesize * h->alloc;
+        total_bytes += bytes;
+        num held = h->refs > 0 ? 1 : 0;
+        leak_origin* o = on ? &origins[on - 1] : null;
+        bool same = o && strcmp(o->type->ident, type->ident) == 0 &&
+            o->line == h->line &&
+            ((o->source == h->source) ||
+             (o->source && h->source && strcmp(o->source, h->source) == 0));
+        if (same) {
+            o->count++;
+            o->bytes += bytes;
+            o->held  += held;
+        } else
+            origins[on++] = (leak_origin){ type, h->source, h->line, 1, bytes, held };
+    }
+    qsort(origins, on, sizeof(leak_origin), leak_origin_cmp);
+
+    num top = leaks_top < on ? leaks_top : on;
+    printf("--leaks: %lld Au objects alive at exit (%lld KB) from %lld init origins; top %lld:\n",
+        (i64)n, (i64)(total_bytes / 1024), (i64)on, (i64)top);
+    printf("   count        held       bytes  type              init origin\n");
+    for (num i = 0; i < top; i++) {
+        leak_origin* o = &origins[i];
+        printf("%8lld  %10lld  %10lld  %-16s  %s:%d\n",
+            (i64)o->count, (i64)o->held, (i64)o->bytes, o->type->ident,
+            o->source ? o->source : "(no source)", (int)o->line);
+    }
+    // ---- holder graph -------------------------------------------------
+    // every live object's outgoing refs (members + collection contents) are
+    // walked to build a reverse index: for each leak, WHO still points at it.
+    // an object with no live holder is a ROOT — its refcount outlives every
+    // reference to it, i.e. an unbalanced hold. runs only here, at exit.
+    num*  holder = calloc(n, sizeof(num));   // index of a referrer, or -1
+    for (num i = 0; i < n; i++) holder[i] = -1;
+
+    // pointer -> live index, via the same open-addressed hash as leak_set
+    num  imask = 1;
+    while (imask < n * 2) imask <<= 1;
+    Au*  ikeys = calloc(imask, sizeof(Au));
+    num* ivals = calloc(imask, sizeof(num));
+    imask -= 1;
+    for (num i = 0; i < n; i++) {
+        num s = leak_hash(live[i]) & imask;
+        while (ikeys[s]) s = (s + 1) & imask;
+        ikeys[s] = live[i];
+        ivals[s] = i;
+    }
+    lg_keys = ikeys; lg_vals = ivals; lg_mask = imask; lg_holder = holder;
+    for (num i = 0; i < n; i++) {
+        Au   h    = live[i];
+        Au   data = (Au)&h[1];
+        Au_t t    = (Au_t)h->au;
+        for (Au_t w = t; w && w != typeid(Au); w = w->context) {
+            for (num m = 0; m < w->members.count; m++) {
+                Au_t mem = (Au_t)w->members.origin[m];
+                if (mem->member_type != AU_MEMBER_VAR || mem->is_static) continue;
+                if (!mem->type || is_inlay(mem) || !mem->type->is_class) continue;
+                // ownership edges only: weak/context point upward, never own
+                if (mem->meta.a == typeid(weak) || mem->is_context) continue;
+                if (mem->traits & AU_TRAIT_UNMANAGED) continue;
+                lg_link(*(Au*)((u8*)data + mem->offset), i);
+            }
+            if (w->context == w) break;
+        }
+        if (inherits(t, typeid(array))) {
+            array ar = (array)data;
+            if (!ar->unmanaged)
+                for (num k = 0; k < ar->count; k++) lg_link(ar->origin[k], i);
+        }
+        if (inherits(t, typeid(list)) || inherits(t, typeid(map))) {
+            list ls = (list)data;
+            if (!ls->unmanaged)
+                for (item it = ls->first; it; it = it->next) {
+                    lg_link(it->key, i);
+                    lg_link(it->value, i);
+                }
+        }
+        // a map holds each entry TWICE — the hash item and the fifo item —
+        // and drops both on removal. count both or every map value reads
+        // as short one reference
+        if (inherits(t, typeid(map))) {
+            map mp = (map)data;
+            if (!mp->unmanaged && mp->hlist)
+                for (num b = 0; b < mp->hsize; b++)
+                    for (item it = ((item*)mp->hlist)[b]; it; it = it->next) {
+                        lg_link(it->key, i);
+                        lg_link(it->value, i);
+                    }
+        }
+    }
+
+    printf("--leaks holders: who still points at each leak (top %lld):\n", (i64)top);
+    for (num i = 0; i < top; i++) {
+        leak_origin* o = &origins[i];
+        num rep = -1;
+        for (num k = 0; k < n && rep < 0; k++)
+            if ((Au_t)live[k]->au == o->type && live[k]->line == o->line)
+                rep = k;
+        if (rep < 0) continue;
+        // walk up, listing EVERY live reference at each level. a level whose
+        // refs exceed its referrer count carries phantom holds — refs nothing
+        // in the heap accounts for, i.e. the actual leak
+        num cur = rep, depth = 0;
+        while (depth < 24) {
+            Au   hh = live[cur];
+            num  nref = 0;
+            for (num e = 0; e < lg_ecount; e++) if (lg_eto[e] == cur) nref++;
+            printf("  %s%-14s refs=%d refs-found=%lld%s  %s:%d\n",
+                depth ? "  held by " : "", ((Au_t)hh->au)->ident,
+                (int)hh->refs, (i64)nref,
+                (i64)hh->refs > nref ? "  <-- PHANTOM" : "",
+                hh->source ? hh->source : "?", hh->line);
+            // name the unbalanced hold: its call site was recorded at hold time
+            if ((i64)hh->refs > nref) {
+                leak_ent* le = leak_find(hh);
+                for (int q = 0; le && q < le->nsite; q++) {
+                    printf("          unbalanced hold:");
+                    for (int fr = 0; fr < 2; fr++) {
+                        Dl_info di;
+                        void* pc = le->site[q][fr];
+                        if (!pc) continue;
+                        if (dladdr(pc, &di) && di.dli_sname)
+                            printf(" %s+0x%lx <-", di.dli_sname,
+                                (unsigned long)((char*)pc - (char*)di.dli_saddr));
+                        else if (dladdr(pc, &di) && di.dli_fname)
+                            printf(" %s+0x%lx <-", di.dli_fname,
+                                (unsigned long)((char*)pc - (char*)di.dli_fbase));
+                        else
+                            printf(" %p <-", pc);
+                    }
+                    printf("\n");
+                }
+            }
+            for (num e = 0, shown = 0; e < lg_ecount && shown < 4; e++)
+                if (lg_eto[e] == cur && lg_efrom[e] != holder[cur]) {
+                    Au oh = live[lg_efrom[e]];
+                    printf("          also held by %-12s %s:%d\n",
+                        ((Au_t)oh->au)->ident,
+                        oh->source ? oh->source : "?", oh->line);
+                    shown++;
+                }
+            if (holder[cur] < 0) {
+                printf("      ROOT — no live object points at this\n");
+                break;
+            }
+            cur = holder[cur];
+            depth++;
+        }
+    }
+    free(ikeys); free(ivals); free(holder);
+    free(lg_efrom); free(lg_eto);
+    lg_efrom = null; lg_eto = null; lg_ecount = 0; lg_ecap = 0;
+
+    free(live);
+    free(origins);
+    if (locked) leak_release();
+    fflush(stdout);
+}
+
+static void (*leak_prev_int) (int);
+static void (*leak_prev_term)(int);
+
+static volatile sig_atomic_t quit_flag = 0;
+
+bool quit_requested() { return quit_flag != 0; }
+
+none leak_report() { au_leak_report(); }
+
+static void leak_signal(int sig) {
+    // first ctrl-c: request an orderly quit — the app loop exits, the
+    // graph tears down, and the exit report shows only true leaks.
+    // a second ctrl-c (or TERM) reports immediately and dies.
+    if (sig == SIGINT && !quit_flag) {
+        quit_flag = 1;
+        return;
+    }
+    au_leak_report();
+    void (*prev)(int) = sig == SIGINT ? leak_prev_int : leak_prev_term;
+    if (prev && prev != SIG_DFL && prev != SIG_IGN)
+        prev(sig);
+    else {
+        signal(sig, SIG_DFL);
+        raise(sig);
+    }
 }
 
 Au alloc_instance(Au_t type, int n_bytes, bool managed) {
@@ -2435,6 +2883,7 @@ Au alloc_instance(Au_t type, int n_bytes, bool managed) {
     #endif
 
     a = calloc(1, n_bytes);
+    if (leaks_top) leak_insert(a);
     a->refs = 0;
     a->managed = managed ? af_count : 0;
     if (managed && af_count >= af_size) {
@@ -2759,6 +3208,18 @@ none engage(cstrs argv) {
     fault_level = level_err;
     log_funcs   = hold(map(hsize, 32, unmanaged, true));
 
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--leaks") == 0) {
+            leaks_top = 20;
+            if (argv[i + 1] && argv[i + 1][0] >= '1' && argv[i + 1][0] <= '9')
+                leaks_top = atoi(argv[i + 1]);
+            atexit(au_leak_report);
+            leak_prev_int  = signal(SIGINT,  leak_signal);
+            leak_prev_term = signal(SIGTERM, leak_signal);
+            break;
+        }
+    }
+
     /// initialize logging; * == all
     bool explicit_listen = false;
     for (int i = 0; i < argc; i++) {
@@ -2865,16 +3326,20 @@ none Au_hold_members(Au a) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = (Au_t)type->members.origin[i];
             if (mem->member_type != AU_MEMBER_VAR) continue;
-            if (mem->is_unmanaged || mem->is_static || mem->type == typeid(ARef)) continue;
+            if (!mem->type || mem->is_unmanaged || mem->is_static || mem->type == typeid(ARef)) continue;
             bool hold = (!is_inlay(mem) && mem->type->is_class) || mem->type->is_shaped;
             if (!hold) continue;
             if (mem->meta.a == typeid(weak) || mem->is_context) continue;
+            // literal-Au members opt out of lifecycle (e_assign never holds
+            // them: generics are manual) — dropping unheld slots over-drops
+            if (mem->type == typeid(Au)) continue;
             Au *mdata = (Au*)((cstr)a + mem->offset);
             Au member_value = *mdata;
             if (!member_value) continue;
             Au hd = header(member_value);
             if (hd->managed) {
                 __atomic_fetch_add((i32*)__builtin_assume_aligned(&hd->refs, 4), 1, __ATOMIC_SEQ_CST);
+                if (au_leaks()) leak_site_push(hd, __builtin_return_address(0), null);
             }
         }
         type = type->context;
@@ -3016,6 +3481,10 @@ none Au_init(Au a) { }
 none Au_drop_members(Au a) {
     Au   f = header((Au)a);
     Au_t type = (Au_t)f->au;
+    // symmetric with hold_members for DEFERRED-init classes only: an
+    // unmounted user-init template never ran hold_members, so no slot was
+    // ever owned. everything else drops normally.
+    if (!(f->iflags & 0x01) && type && type->is_user_init) return;
     #ifndef NDEBUG
     const char *type_ident = (type && type->ident) ? type->ident : "";
     if (au_skip_drop_check(type_ident, NULL)) return;
@@ -3025,6 +3494,8 @@ none Au_drop_members(Au a) {
             Au_t m = (Au_t)type->members.origin[i];
             if ((m->member_type == AU_MEMBER_VAR) &&
                     !is_inlay(m) && m->type->is_class) {
+                if (m->type == typeid(Au))
+                    continue;
                 if (m->meta.a == typeid(weak))
                     continue;
                 if (m->is_context)
@@ -3222,6 +3693,13 @@ Au Au_with_cstrs(Au a, cstrs argv) {
     Au_t rtype = isa(a);
     while (argv[argc]) { // C standard puts a null char* on end, by law (see: Brannigans law)
         cstr arg = argv[argc];
+        // --leaks [N] is a runtime flag owned by engage, not the app
+        if (strcmp(arg, "--leaks") == 0) {
+            if (argv[argc + 1] && argv[argc + 1][0] >= '1' && argv[argc + 1][0] <= '9')
+                argc++;
+            argc++;
+            continue;
+        }
         if (arg[0] == '-') {
             bool single = arg[1] != '-';
             Au_t mem    = null;
@@ -4298,7 +4776,7 @@ item map_fetch(map m, Au k) {
 
         ((item*)m->hlist)[b] = i = hold(
             item(next, ((item*)m->hlist)[b],
-                key, m->unmanaged ? k : hold(k), h, h));
+                key, hold(k), h, h)); // keys are the map's index — ALWAYS owned
         if (m->hsize == 0)
             m->count++;
     }
@@ -4348,7 +4826,7 @@ none map_set(map m, Au k, Au v) {
     bool in_fifo = i->ref != null;
     if (!in_fifo) {
         item ref = (item)list_push((list)m, v);
-        ref->key = m->unmanaged ? k : Au_hold(k);
+        ref->key = Au_hold(k);
         ref->ref = (Au)i; // these reference each other
         i->ref = (Au)ref;
     }
@@ -4356,13 +4834,12 @@ none map_set(map m, Au k, Au v) {
 
 none map_rm_item(map m, item i) {
     item ref = (item)i->ref;
+    // keys are always owned; unmanaged borrows VALUES only
+    if (i->key)   drop(i->key);
+    if (ref && ref->key) drop(ref->key);
     if (!m->unmanaged) {
-        if (i->key)   drop(i->key);
         if (i->value) drop(i->value);
-        if (ref) {
-            if (ref->key)   drop(ref->key);
-            if (ref->value) drop(ref->value);
-        }
+        if (ref && ref->value) drop(ref->value);
     }
     if (ref) {
         list_remove_item((list)m, ref);
@@ -5094,6 +5571,17 @@ Au Au_copy(Au a) {
 
 none Au_free(Au a) {
     Au       aa = header(a);
+#ifndef NDEBUG
+    // freed headers carry -8888: freeing twice corrupts the heap — name it
+    if (aa->refs < -1000) {
+        fprintf(stderr, "DOUBLE-FREE on object %s:%i — freer:\n",
+            aa->source ? aa->source : "?", aa->line);
+        void* frames[10];
+        int nf = backtrace(frames, 10);
+        backtrace_symbols_fd(frames + 1, nf - 1, 2);
+        return;
+    }
+#endif
     // auto_free frees without Au_drop — purge here so recycled
     // addresses never show a previous object's records
 
@@ -5122,7 +5610,9 @@ none Au_free(Au a) {
             break;
         cur = (Au_f*)cur->context;
     }
-    
+
+    if (leaks_top) leak_remove(aa);
+
 #ifndef NDEBUG
     if (tracing)
         for (int i = 0; i < tracing_count; i++)
@@ -6093,7 +6583,11 @@ Exists resource_exists(Au o);
 path path_share_path() {
     path exe    = path_self();
     path parent = path_parent_dir(exe); // verify this folder is bin?
-    string n = stem(exe);
+    // SILVER_APP names the module this process RUNS, not the exe it runs
+    // in — a crash faults the supervisor into orbiter inside the app's
+    // binary, and its share is share/orbiter, never share/<exe-stem>
+    symbol app = getenv("SILVER_APP");
+    string n = (app && *app) ? string(app) : stem(exe);
     path res    = form(path, "%o/../share/%o/", parent, n);
     if (dir_exists("%o", res))
         return res;
@@ -6533,10 +7027,15 @@ array path_ls(path a, string pattern, bool recur) {
                     path subdir = new(path, chars, abs);
                     array sublist = ls(subdir, pattern, recur);
                     concat(list, sublist);
+                    drop((Au)sublist);
+                    drop((Au)subdir);
                 } else if (!pattern)
                     push(list, (Au)new(path, chars, abs));
             }
         }
+        // per-entry temp; index workers walk 100k+ files off-thread
+        // where the auto-free pool never drains
+        drop((Au)s_abs);
     }
     closedir(dir);
     return list;
@@ -7558,6 +8057,9 @@ static none async_runner(thread_t* thread) {
             ((void(*)(Au,Au))t->work_fn)(t->target, thread->w);
         else
             t->work_fn(thread->w);
+        // task boundary: drain THIS thread's auto-free pool (it is
+        // __thread — nothing else ever collects a worker's temporaries)
+        auto_free(false);
         lock(thread->lock);
         thread->done = true;
         cond_signal(thread->lock);
@@ -8305,6 +8807,7 @@ static cov_module* __cov_modules = NULL;
 void __coverage_report(void);
 static void __coverage_sigint(int sig) {
     __coverage_report();
+    au_leak_report();
     signal(SIGINT, SIG_DFL);
     raise(SIGINT);
 }

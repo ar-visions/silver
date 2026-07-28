@@ -99,8 +99,6 @@ class Sparse
 class Accessor
     public normalized:      bool
     public bufferView:      u64
-    # start of this accessor's data WITHIN its bufferView (shared/interleaved
-    # views place several accessors in one view at different offsets)
     public byteOffset:      u64
     public componentType:   ComponentType
     public type:   CompoundType
@@ -121,10 +119,6 @@ class Accessor
             switch [type]
             case CompoundType.SCALAR
                 res = typeid[i8]
-            #case CompoundType_VEC2
-            #    return typeid[vec2i8]
-            #case CompoundType_VEC3
-            #    return typeid[vec3i8]
             case CompoundType.VEC4
                 res = typeid[rgba8]
             break
@@ -151,10 +145,6 @@ class Accessor
                 return typeid[vec3f]
             case CompoundType.VEC4
                 return typeid[vec4f]
-            #case CompoundType_MAT2
-            #   return typeid[mat2f]
-            #case CompoundType_MAT3
-            #   return typeid[mat3f]
             case CompoundType.MAT4
                 res = typeid[mat4f]
             break
@@ -212,7 +202,6 @@ class BufferView
     public buffer:          u64
     public byteLength:      u64
     public byteOffset:      u64
-    # element stride for INTERLEAVED vertex views; 0/absent = tightly packed
     public byteStride:      u64
     public target:          TargetType
 
@@ -263,11 +252,7 @@ class Node
     public translation:     vec3f
     public rotation:        quatf
     public scale:           vec3f
-    # full column-major node transform (a gltf node carries EITHER matrix OR
-    # TRS) — sketchfab-style exports use matrix + children hierarchies
     public matrix:          mat4f
-    # composed scene-graph WORLD transform (GltfModel.compute_worlds walks the
-    # scene hierarchy). m[15] == 0 until computed.
     mutable world:          mat4f
     public weights:         array f32
     public children:        array i64
@@ -291,8 +276,6 @@ class Primitive
 
 class MeshExtras
     public targetNames:     array string
-    # creased edges as endpoint position pairs (6 floats per edge,
-    # mesh-local gltf space) — gltf has no native crease concept
     public crease:          array f32
 
 class Mesh
@@ -319,9 +302,6 @@ class GltfBuffer
     public byteLength:      u64
     public uri:             path
     public data:            @u8
-    # directory of the .gltf being loaded: relative buffer uris resolve here
-    # FIRST, so a model loads from any path — not only {cwd}/models/. callers
-    # set it (via set_base) before path.load; null keeps the legacy cwd lookup.
     intern static base :    path
 
     static func set_base [ p: path ]
@@ -334,8 +314,6 @@ class GltfBuffer
         if [ !uri ]
             return
         str  : string[ uri ]
-        # resolve the buffer uri through the resource wrapper: cwd/loose
-        # first, then any mounted .res archive cache
         name : (base) ? '{base}/{str}' : str
         rp : Res.res_path[ name ]
         fp : @FILE [ fopen[ rp.chars, "rb" ] ]
@@ -349,9 +327,6 @@ class GltfBuffer
         fseek[ fp, 0, SEEK_END ]
         length: i64 [ ftell[ fp ] ]
         rewind[ fp ]
-        # a .bin much smaller than the .gltf declares is not real vertex data —
-        # the classic case is an UNFETCHED git-lfs pointer (132 bytes of text)
-        # which otherwise renders as garbage geometry with no error anywhere
         if [ byteLength > 0 && u64[ length ] < byteLength ]
             puts 'GltfBuffer: {uri.chars} is {length} bytes but the gltf declares {byteLength} — unfetched git-lfs pointer? (git lfs pull)'
         buf: new u8 [ length ]
@@ -360,8 +335,6 @@ class GltfBuffer
         data       = buf
         byteLength = length
 
-# chained keystream for the .res joke format: seed = password x16,
-# hashed into a 256-byte sequence used 22 passes, then rehashed
 class ResKey
     intern h    : u64
     intern seq  : @u8
@@ -371,7 +344,6 @@ class ResKey
     func init []
         seq = new u8 [ 256 ]
 
-    # regenerate the 256-byte sequence from the current hash state
     func rehash []
         for [ w: i32 0, w < 32, w += 1 ]
             h = h ^ (h << 13)
@@ -381,7 +353,6 @@ class ResKey
                 sh : u64 [ u64[ b ] * 8 ]
                 seq[ w * 8 + b ] = u8[ (h >> sh) & 255 ]
 
-    # seed input is the password repeated 16 times (Spaceballs: 12345)
     func seed [ pw: string ]
         s : string [ ]
         for [ r: i32 0, r < 16, r += 1 ]
@@ -393,8 +364,6 @@ class ResKey
         bidx = 0
         pass = 0
 
-    # fast-forward the keystream to global blob position pos (random access);
-    # one sequence spans 22 passes of 256 bytes = 5632 bytes
     func seek [ pos: u64 ]
         s : u64 [ pos / 5632 ]
         for [ k: u64 0, k < s, k += 1 ]
@@ -403,7 +372,6 @@ class ResKey
         pass = i32[ rem / 256 ]
         bidx = i32[ rem % 256 ]
 
-    # xor n bytes in place, advancing the 22-passes-then-rehash schedule
     func apply [ buf: @u8, n: i64 ]
         for [ j: i64 0, j < n, j += 1 ]
             buf[ j ] = buf[ j ] ^ seq[ bidx ]
@@ -422,17 +390,9 @@ func res_hname [ name: string ] -> u64
         h = (h ^ u64[ u8[ name.chars[ i ] ] ]) * 0x100000001b3
     return h
 
-# cache key from filename + filesize alone (no content read): identical
-# name+size copies once, a resized file re-copies under a new key
 func res_hkey [ name: string, size: u64 ] -> u64
     return (res_hname[ name ] ^ size) * 0x100000001b3
 
-# .res — one opaque archive: model, .bin and textures packed together.
-# the blob is xor-obscured with ResKey. each entry is content-addressed:
-# its cache filename is a hash of (name, size, contents) so the cache
-# stores no plaintext names, dedupes identical files, and skips anything
-# already extracted. the directory maps name-hash -> content-hash so a
-# loader resolves a name to its cache file (cwd is tried first).
 class Res
     intern static magic : u32 [ 0x32534552 ]
 
@@ -515,8 +475,6 @@ class Res
         puts 'res: packed {n} files -> {dest.chars} ({total} bytes, obscured={ob})'
         return true
 
-    # open a .res and read its directory; base_dir is where loose dev files
-    # resolve, cache_dir is where extracted entries land
     func load [ res_path: path, base_dir: path, cache_dir: path, password: string ] -> bool
         isrc   = res_path
         ibase  = base_dir
@@ -563,15 +521,12 @@ class Res
         icache.make_dir[]
         return true
 
-    # '.ext' for a name, or '' when it has none — the cache filename keeps
-    # the type tag so extension-driven loaders (png) still decode
     static func dotext [ name: string ] -> string
         np : path [ name ]
         e  : np.ext[]
         if [ e && e.count > 0 ] return '.{e}'
         return ''
 
-    # cache path for entry i (content-hash filename + original type tag)
     func cache_path [ i: i32, ext: string ] -> path
         hx : Res.hex16[ ichash[ i ] ]
         return path '{icache}/{hx}{ext}'
@@ -604,15 +559,11 @@ class Res
         fclose[ fp ]
         return cp
 
-    # extract every entry (skips ones already in the cache). no names here,
-    # so entries land without a type tag — fine, the lazy path adds it
     func extract_all []
         for [ i: i32 0, i < icount, i += 1 ]
             ensure[ i, '' ]
         puts 'res: extract_all {icount} entries -> {icache.chars}'
 
-    # resolve a name: a loose file in cwd wins, else its cached hash file.
-    # normalize collapses '..' so 'models/../share/x' matches archive key 'share/x'
     func find [ name: string ] -> path
         p : path name
         if [ p.exists[] ] return p
@@ -623,7 +574,6 @@ class Res
             if [ inhash[ i ] == nh ] return ensure[ i, ext ]
         return p
 
-    # archive-only resolve: cache path if this archive holds name, else null
     func lookup [ name: string ] -> path
         nm : path [ name ]
         nm = nm.normalize[]
@@ -633,12 +583,8 @@ class Res
             if [ inhash[ i ] == nh ] return ensure[ i, ext ]
         return null
 
-    # --- overlay registry: archives mounted for the fopen wrapper ---
     intern static mounts : array Res
 
-    # load a .res and register it as an overlay. resolution is lazy: a
-    # loose file in the base dir wins, else the entry is extracted to the
-    # cache on first open (skipped if already there)
     static func mount [ res_path: path, base_dir: path, cache_dir: path, password: string ] -> Res
         arc : Res [ ]
         if [ !arc.load[ res_path, base_dir, cache_dir, password ] ] return null
@@ -646,9 +592,6 @@ class Res
         mounts += arc
         return arc
 
-    # resolve a name to a real path: the app's deployed share/<app> module
-    # dir first, then name as-given (cwd), then each overlay's loose base
-    # dir, then its extracted cache file
     static func res_path [ name: string ] -> path
         sh : path.path_share_path[]
         if [ sh ]
@@ -753,9 +696,6 @@ class GltfModel
     public scene:            u64
     public asset:            AssetDesc
 
-    # resolve a material TextureInfo to its image FILE path (relative uris
-    # resolve against GltfBuffer.base, same as the .bin buffers). null when
-    # the material has no such texture.
     func texture_uri [ ti: TextureInfo ] -> path
         if [ !ti || !textures ] return null
         if [ ti.index < 0 || ti.index >= textures.count ] return null
@@ -773,8 +713,6 @@ class GltfModel
                 return node
         return null
 
-    # a node's LOCAL transform: its matrix when present, else T·R·S per the
-    # gltf spec (guards: absent rotation parses to the ZERO quat — skip it)
     func node_local [ n: Node ] -> mat4f
         if [ n.matrix.m[15] != 0.0 ] return n.matrix
         m : mat4f.identity[]
@@ -794,10 +732,6 @@ class GltfModel
             for [ ci: i32 0, ci < n.children.count, ci += 1 ]
                 compose_world[ n.children[ ci ], w ]
 
-    # compose every node's world matrix from the scene roots — axis-fix and
-    # scale live in sketchfab-style parent chains, so flat node transforms
-    # render models sideways/unscaled. nodes not reached from a scene keep
-    # their local as world (legacy flat files with no scenes).
     func compute_worlds []
         if [ scenes && scenes.count > 0 ]
             sc : scenes[ scene ]

@@ -1,11 +1,5 @@
 extend orbiter
 
-# emulator panes: a ROM file opens as a LIVE emulator inside the editor.
-# each view is a thin host — the emulator itself is a plain trinity element
-# (foundry/asnes|knes|rgen) that knows nothing about ResourceView; the view
-# owns one instance, hands it the pane rect each frame via paint[cv, vp],
-# and forwards the pane's plain keys. releasing the pane drops the element,
-# whose dealloc stops the emulation thread.
 
 ResourceView AsnesView
     mutable emu : asnes
@@ -14,9 +8,6 @@ ResourceView AsnesView
         return array string [ '.smc', '.sfc' ]
     func continuous [] -> bool
         return true
-    # the console's context button asks for a machine-state dump; the emu
-    # thread publishes it and context_feed hands it over exactly once
-    # (context_seq marks each publish)
     func context_request [] -> bool
         if [ !emu ] return false
         emu.context_req = true
@@ -29,8 +20,6 @@ ResourceView AsnesView
         if [ !emu ]
             emu = asnes [ Au.new_object[ typeid[ asnes ], null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
             emu.rom = src
-        # aspect-fit (8.0:7.0) letterboxed inside the pane; crop clamps the
-        # glide overscan bleed so it can't paint over the editor title bar
         ar : f32 [ 8.0 / 7.0 ]
         fw : f32 [ bounds.w ]
         fh : f32 [ fw / ar ]
@@ -75,8 +64,6 @@ ResourceView KnesView
     func commit_line [ text: string ] -> bool
         if [ !emu ] return false
         return emu.asm_patch[ text ]
-    # tiles view: clicks paint pixels; the edits live on this view's undo
-    # stack (routed here from the editor's Ctrl-Z/Y before text history)
     func view_press [ ev: Event ] -> bool
         if [ !emu || view_sel != 2 ] return false
         if [ emu.tile_rw <= 0.0 ] return false
@@ -91,17 +78,11 @@ ResourceView KnesView
         return emu.tile_redo[]
     func render [ cv: Canvas, bounds: rect ]
         if [ !emu ]
-            # element subclasses are is_user_init: bare construction skips the
-            # init chain (the element TREE mount normally runs it). we host the
-            # element outside the tree, so drive the full runtime init here —
-            # defaults, `new` member allocations, the class init[] bodies.
             emu = knes [ Au.new_object[ typeid[ knes ], null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
             emu.rom = src
         if [ view_sel == 2 ]
             emu.paint_tiles[ cv, bounds ]
             return
-        # aspect-fit (8.0:7.0) letterboxed inside the pane; crop clamps the
-        # glide overscan bleed so it can't paint over the editor title bar
         ar : f32 [ 8.0 / 7.0 ]
         fw : f32 [ bounds.w ]
         fh : f32 [ fw / ar ]
@@ -123,7 +104,6 @@ ResourceView RGenView
     mutable emu : rgen
     mutable fed_seq : i32
     func extensions [] -> array string
-        # claims none: .gen routes through {SILVER}/export (rgen exports it)
         return array string [ ]
     func continuous [] -> bool
         return true
@@ -139,8 +119,6 @@ ResourceView RGenView
         if [ !emu ]
             emu = rgen [ Au.new_object[ typeid[ rgen ], null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
             emu.rom = src
-        # aspect-fit (10.0:7.0) letterboxed inside the pane; crop clamps the
-        # glide overscan bleed so it can't paint over the editor title bar
         ar : f32 [ 10.0 / 7.0 ]
         fw : f32 [ bounds.w ]
         fh : f32 [ fw / ar ]

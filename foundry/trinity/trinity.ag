@@ -2,7 +2,6 @@ export 0.1.0
 export VK_LAYER_PATH: '{install}/share/vulkan/explicit_layer.d'
 ifdef [ apple ]
     export VK_ICD_FILENAMES: '{install}/etc/vulkan/icd.d/MoltenVK_icd.json'
-    # MoltenVK log level: 1 = errors only (silences the per-swapchain [mvk-info] spam)
     export MVK_CONFIG_LOG_LEVEL: "1"
 
 import gltf
@@ -16,8 +15,6 @@ import <stdlib.h>
 import <math.h>
 import <vk_mem_alloc.h>
 import <sys/stat.h>
-# ioctl + struct winsize + TIOCGWINSZ — needed on every platform for console
-# mode's terminal-size query (mac provides them via sys/ioctl.h -> sys/ttycom.h).
 import <sys/ioctl.h>
 
 ifdef [ linux ]
@@ -75,9 +72,6 @@ import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
     -DFT_DISABLE_BROTLI=TRUE
     -DFT_DISABLE_BZIP2=TRUE
 
-# Pixar OpenSubdiv — CPU-only (Far stencil eval); all GPU backends + samples off.
-# skin-then-subdivide: Far refines topology + builds stencils once, we push the
-# skinned cage positions through the stencils each frame.
 import PixarAnimationStudios:OpenSubdiv/v3_7_0
     -I{install}/include
     -losdCPU -lstdc++
@@ -124,7 +118,7 @@ scalar ns : i64
     cast -> ms  [ a / 1000000 ]
 
 class Background
-    expect window: Window
+    context window: Window
     public color:  rgba
     public render: Render
     public models: array Model
@@ -132,8 +126,6 @@ class Background
     func update[]
         return
 
-# host message-ring types (mirror trinity.cc HM_*). every hosted app has a
-# channel slot: ring 0 flows toward the ide/consumer, ring 1 toward the app.
 enum HM
     none    : 0
     dictate : 1
@@ -145,20 +137,13 @@ enum HM
     text    : 7
     resize  : 9
     close   : 10
+    shell   : 11
 
-# ask the supervising silver-host to bring up orbiter (no-op unsupervised)
 func host_ask_orbiter [] -> i32
-# dictate (app->ide) and live-confirm (ide->app) over the rings
 func host_dictate_set [ v: i32 ]
 func host_live_set    [ v: i32 ]
-# tee this run's output to /tmp/<name>.log (fresh each run) + terminal
 func host_log_setup   [ name: cstr ]
-# is a pid alive? reload (alive) vs exit (gone) for the isolate shell
 func host_pid_alive   [ pid: i32 ] -> i32
-# the hosting channel: an anonymous memfd silver-host creates and every
-# spawned process inherits. it holds app slots — two message rings plus the
-# shared-texture descriptors. host_post/host_poll act on THIS process's own
-# slot; the 2-suffix forms name a slot (orbiter driving its hosted panes).
 func host_slot        [] -> i32
 func host_post        [ ring: i32, type: i32, a: i32, b: i32, c: i32 ]
 func host_poll        [ ring: i32 ] -> i32
@@ -167,73 +152,52 @@ func host_poll2       [ slot: i32, ring: i32 ] -> i32
 func host_pa          [] -> i32
 func host_pb          [] -> i32
 func host_pc          [] -> i32
-# the shared surface: TWO textures + a front index, so a consumer always
-# samples a COMPLETE frame (single-texture sharing tears on the clear). the
-# publisher names both dma-buf fds (side 0 = app, 1 = ide); a consumer pulls
-# duplicates (pidfd) and imports the same GPU memory. per frame the producer
-# copies the finished frame into the back texture (GPU only) and flips.
 func host_tex_publish [ slot: i32, side: i32, fd0: i32, fd1: i32, w2: i32, h2: i32, fmt: i32 ]
 func host_tex_gen     [ slot: i32, side: i32 ] -> i32
 func host_tex_flip    [ slot: i32, side: i32, front: i32 ]
 func host_tex_front   [ slot: i32, side: i32 ] -> i32
 func host_tex_pull    [ slot: i32, side: i32, which: i32, w2: @i32, h2: @i32, fmt: @i32 ] -> i32
-# hosted apps: ask silver-host to build+spawn a module into a free slot
 func host_app_request [ nm: cstr ] -> i32
 func host_app_state   [ slot: i32 ] -> i32
 func host_app_pid     [ slot: i32 ] -> i32
 func host_app_stop    [ slot: i32 ]
-# host live-reload control: the app turns its own source watch off (orbiter)
+func host_app_verdict [ slot: i32 ] -> i32
+func host_app_pause   [ slot: i32 ]
+func host_app_resume  [ slot: i32 ]
 func au_live_set_reload [ on: i32 ]
 
 abstract live_app media_app
     context w           : Display*
     context vk          : vk_context
     intern  arg         : object
+    intern  destroyed   : bool
     public  width       : i32
     public  height      : i32
-    # live-reload: watch this app's sources and hot-swap on change. an app that
-    # edits its OWN dependencies (orbiter) must set this false or it reloads
-    # itself the moment you touch trinity/etc.
     public  live_reload : bool [ true ]
-    # --text_mode: render to a terminal character grid (box-drawing borders)
-    # instead of the GLFW/Vulkan window. when set, init/frame/run never touch
-    # glfw or vk_context; the element tree, layout and styles run unchanged —
-    # only the paint differs. default OFF (apps render to the vulkan window).
     public  text_mode   : bool [ false ]
-    # --screenshot <file>: render, settle, write the composed frame, exit
     public  screenshot  : path
     # --shot-frame N: which frame to capture (default 60)
     public  shot_frame  : i32 [ 60 ]
     intern  shot_frames : i32
     intern  next_second : i64
     intern  frames      : i32
-    # --attach shm: hosted mode. renders to a backbuffer window (no glfw, no
-    # swapchain) and shares its frames as a two-texture dma-buf surface.
-    # silver-host spawns us with the channel memfd inherited.
     public  attach      : path
     # the shared surface pair + which one we fill next
     intern  share_tex0  : Texture
     intern  share_tex1  : Texture
     intern  share_back  : i32
-    # last imported generation of the peer's shared surface
-    intern  peer_gen    : i32
-    # the supervised app's pid (summon shell): 0 = not parsed yet
     intern  app_pid : i32
 
     public func parse_app_pid [] -> i32
-        # the supervised app's pid — silver-host publishes it in the env
         pe : getenv[ 'SILVER_ISOLATE_APP_PID' ]
         if [ !pe ] return 0
         ps : string [ pe ]
         return i32[ ps.integer_value[] ]
 
     func run [ ]
-        # tell the host whether to watch + hot-swap this app's sources
         au_live_set_reload[ (live_reload) ? 1 : 0 ]
         Au.auto_free[true]
 
-    # build an element subtree as plain data (maps/arrays) — string_agi turns
-    # it into the agi text the agent reads. what exists, where, what it says.
     func ux_serialize [ e: element ] -> map object [string]
         em : map object [string] []
         if [ !e ] return em
@@ -253,9 +217,6 @@ abstract live_app media_app
         return em
 
     func frame [ ] -> bool
-        # app side of the host message channel: drain ring 1 (shell->app).
-        # the SOLE ring-1 consumer — control only: HM.live drives the
-        # dictate button, HM.close folds the overlay.
         if [ w ]
             bwn : Window [ w ]
             if [ !attach ]
@@ -267,10 +228,6 @@ abstract live_app media_app
                         bwn.restyle   = true
                     el [ ht == i32[ HM.close ] ]
                         bwn.ide_close = true
-        # attach mode: the screen texture IS the shared surface — publish its
-        # fd once (and again on resize), pump the rings for input. the summon
-        # ide (SILVER_ISOLATE_APP) is the ide side of slot 0; a hosted pane
-        # app is the app side of its own slot. one mechanism, no sockets.
         ifdef [ linux ]
             if [ attach && getenv[ 'SILVER_ISOLATE_APP' ] ]
                 render*[]
@@ -280,29 +237,24 @@ abstract live_app media_app
                 usleep[ 4000 ]
                 if [ app_pid == 0 ] app_pid = parse_app_pid[]
                 if [ app_pid > 0 && host_pid_alive[ app_pid ] == 0 ] return false
-                return true
+                return !Au.quit_requested[]
             if [ attach ]
                 render*[]
                 share_publish[ 0 ]
                 alive : bool [ attach_pump[] ]
                 Au.auto_free[ false ]
                 usleep[ 4000 ]
-                return alive
-        # text mode: no glfw event pump, no swapchain, no vk perf counters.
-        # render the terminal grid each tick and keep running (Ctrl-C to exit).
+                return alive && !Au.quit_requested[]
         if [ text_mode ]
             render*[]
             Au.auto_free[false]
             usleep[ 16000 ]
-            return true
-        # free-running loop: poll (don't block on events) so we render every iteration
-        # at full speed — measures raw throughput instead of event-gated repaints.
+            return !Au.quit_requested[]
         glfwPollEvents[]
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            #puts 'PERF fps={frames} draw={vk.draw_us} syncs={vk.sync_calls} syncus={vk.sync_us} bindus={vk.bindres_us} rallocs={vk.render_allocs} resize={vk.resize_us} rcalls={vk.resize_calls} paints={vk.paint_calls} samplers={vk.sampler_count}'
-            #puts 'SAMP rcolor={vk.samp_rcolor} sdf={vk.samp_sdf} svg={vk.samp_svg} band={vk.samp_band} line={vk.samp_line} cons={vk.samp_cons} flist={vk.samp_flist} atlas={vk.samp_atlas} other={vk.samp_other} born={vk.render_allocs} died={vk.ring_frees}'
+            puts 'SAMP rcolor={vk.samp_rcolor} sdf={vk.samp_sdf} svg={vk.samp_svg} band={vk.samp_band} line={vk.samp_line} cons={vk.samp_cons} flist={vk.samp_flist} atlas={vk.samp_atlas} other={vk.samp_other} born={vk.render_allocs} died={vk.ring_frees} samplers={vk.sampler_count}'
             vk.pipe_draws   = 0
             vk.resize_us    = 0
             vk.resize_calls = 0
@@ -322,11 +274,10 @@ abstract live_app media_app
             vk.bindres_us    = 0
             vk.br_schema_us  = 0
         render*[]
-        # summoned: share the finished frame (GPU copy into the back texture
-        # of the surface pair, then flip)
         ifdef [ linux ]
             wp9 : Window [ w ]
-            if [ wp9.ide_asked ] share_publish[ 0 ]
+            sup9 : bool [ getenv[ 'SILVER_ISOLATE_CHILD' ] != null ]
+            if [ (wp9.ide_asked || sup9) && !wp9.ide_active ] share_publish[ 0 ]
         if [ screenshot ]
             shot_frames += 1
             if [ shot_frames >= shot_frame ]
@@ -335,13 +286,12 @@ abstract live_app media_app
                 puts 'screenshot: {screenshot}'
                 exit[ 0 ]
         Au.auto_free[false]
-        return !glfwWindowShouldClose[ w.glfw ]
+        afp9 : path 'afprobe'
+        afh9 : Au.header[ afp9 ]
+        if [ afh9.managed > 100000 ] puts 'AFPOOL ix={afh9.managed} — pool NOT draining'
+        return !glfwWindowShouldClose[ w.glfw ] && !Au.quit_requested[]
 
     ifdef [ linux ]
-        # share this window's frame: keep a two-texture shared surface sized
-        # like the screen canvas, GPU-copy the finished frame into the back
-        # texture, flip the front index. consumers always sample a complete
-        # frame; a resize re-creates + re-publishes the pair (gen bump).
         func share_publish [ side: i32 ]
             wn : Window [ w ]
             scv : Canvas [ wn.screen ]
@@ -349,15 +299,10 @@ abstract live_app media_app
             tx : Texture [ scv.color ]
             if [ !tx || !tx.vk_image ] return
             if [ !share_tex0 || share_tex0.width != tx.width || share_tex0.height != tx.height ]
-                if [ share_tex0 ]
-                    share_tex0.drop[]
-                    share_tex1.drop[]
                 share_tex0 = Texture [ vk: vk, w: wn, width: tx.width, height: tx.height,
                     vk_format: tx.vk_format, shareable: true ]
                 share_tex1 = Texture [ vk: vk, w: wn, width: tx.width, height: tx.height,
                     vk_format: tx.vk_format, shareable: true ]
-                share_tex0.hold[]
-                share_tex1.hold[]
                 share_back = 0
                 host_tex_publish[ host_slot[], side, share_tex0.shared_fd, share_tex1.shared_fd,
                     tx.width, tx.height, i32[ tx.vk_format ] ]
@@ -367,8 +312,6 @@ abstract live_app media_app
             host_tex_flip[ host_slot[], side, share_back ]
             share_back = 1 - share_back
 
-        # hosted pane app: drain ring 1 (input orbiter forwards, resize,
-        # close). returns false when the pane closed (app should exit).
         func attach_pump [] -> bool
             wn : Window [ w ]
             for [ i: i32 0, i < 64, i += 1 ]
@@ -418,8 +361,6 @@ abstract live_app media_app
                 el [ t == i32[ HM.resize ] ]
                     rw : i32 [ host_pa[] ]
                     rh : i32 [ host_pb[] ]
-                    # the pane IS this app's window: rebuild the backbuffer at
-                    # the new size — a new shared texture publishes itself
                     if [ rw > 0 && rh > 0 && (rw != wn.width || rh != wn.height) ]
                         vkQueueWaitIdle[ vk.queue ]
                         wn.resize[ rw, rh ]
@@ -427,35 +368,13 @@ abstract live_app media_app
                         height = rh
             return true
 
-        # ORBITER SUMMON SIDE (attach + SILVER_ISOLATE_APP): the app's shared
-        # surface appears in slot 0 — import both textures whenever its
-        # generation changes (startup, resize) and hold them for the PiP.
         func ide_pump []
             wn : Window [ w ]
             ae9 : cast element [ wn.app_object ]
-            g9 : i32 [ host_tex_gen[ host_slot[], 0 ] ]
-            if [ g9 != peer_gen ]
-                w9 : i32
-                h9 : i32
-                f9 : i32
-                fd0 : i32 [ host_tex_pull[ host_slot[], 0, 0, @w9, @h9, @f9 ] ]
-                fd1 : i32 [ host_tex_pull[ host_slot[], 0, 1, @w9, @h9, @f9 ] ]
-                if [ fd0 >= 0 && fd1 >= 0 ]
-                    if [ wn.app_tex0 ]
-                        wn.app_tex0.drop[]
-                        wn.app_tex1.drop[]
-                    wn.app_tex0 = wn.vk.import_shared_tex[ fd0, w9, h9, f9, wn ]
-                    wn.app_tex1 = wn.vk.import_shared_tex[ fd1, w9, h9, f9, wn ]
-                    wn.app_tex0.hold[]
-                    wn.app_tex1.hold[]
-                    wn.app_tex_have = true
-                    peer_gen = g9
-                    puts 'ide: imported app surface {w9}x{h9}'
             for [ i: i32 0, i < 64, i += 1 ]
                 t : i32 [ host_poll[ 0 ] ]
                 if [ t == 0 ] return
-                # non-input messages (HM.dictate etc.) go to the app element
-                if [ t == i32[ HM.dictate ] ]
+                if [ t == i32[ HM.dictate ] || t == i32[ HM.shell ] ]
                     if [ ae9 ] ae9.on_host*[ t, host_pa[], host_pb[], host_pc[] ]
                 el [ t == i32[ HM.press ] ]
                     wn.ev.clear[]
@@ -500,31 +419,21 @@ abstract live_app media_app
                 el [ t == i32[ HM.resize ] ]
                     rw9 : i32 [ host_pa[] ]
                     rh9 : i32 [ host_pb[] ]
-                    # the imported app texture is size-independent — only
-                    # the backbuffer follows the new size
                     if [ rw9 > 0 && rh9 > 0 ]
                         wn.resize[ rw9, rh9 ]
     func destroy [ ]
-        # hot-reload: vk_context persists (held in libAu), but this module's code
-        # is about to be dlclose'd. drop the cached fonts NOW, while their vtables
-        # are still mapped — otherwise the next instance returns a stale CanvasFont
-        # and calling its methods jumps into freed code (SIGSEGV). ensure_font
-        # rebuilds the cache lazily on the new instance.
-        # text mode: restore the terminal (cooked mode, mouse off, cursor on).
+        if [ destroyed ] return
+        destroyed = true
         if [ text_mode && w ]
             cwin : Window [ w ]
             cwin.console_input_close[]
-        # give every live element its teardown hook (threads, external state)
-        # while this module's code is still mapped
         if [ w ]
             rwin : Window [ w ]
             if [ rwin.root ]
                 rwin.root.unload_tree[]
+                rwin.root.release_tree[]
         if [ vk ]
             vk.font_cache = null
-            # shader_cache is keyed by typeid (Au_t of the module that built it)
-            # and holds shader instances whose vtables live in this module —
-            # both go stale at dlclose. drop it now; shaders rebuild lazily.
             vk.shader_cache = null
         if [ w ]
             w.drop[]
@@ -534,7 +443,6 @@ abstract live_app media_app
 
     func init [ ]
         next_second = epoch_millis[] / 1000
-        # text mode draws to the terminal — no window, no vulkan context.
         if [ text_mode ]
             return
         if [ !Au.live_window_get[] ]
@@ -547,15 +455,13 @@ abstract live_app media_app
         existing_vk : handle Au.live_vk_get[]
         if [ existing_vk ]
             vk = cast vk_context [ existing_vk ]
-            # startup never reuses the font cache: destroy[] already dropped it at
-            # the reload boundary (while the old code was still mapped), so it's
-            # null here — ensure_font rebuilds fresh against THIS module's code.
             vk.font_cache = null
         el
             vk = vk_context[]
             Au.live_vk_set[ handle[vk] ]
 
     func dealloc [ ]
+        puts 'DSTR Display dealloc runs'
         destroy[]
 
 
@@ -566,35 +472,16 @@ class CursorPos
 
 Display Window
     mutable app_object          : element*
-    # orbiter overlay: NO socket, NO file, NO copies. both sides render into
-    # shared textures; each imports the other's through the memfd channel.
-    # control rides the two rings.
     mutable ide_active        : bool
-    # the shade's dictation state, held here so the agent-ready handshake can
-    # replay it to an orbiter that booted after the click
     mutable dict_on             : bool
-    # orbiter's confirmation: the mic is ACTUALLY capturing (drives the
-    # dictate button's orange-loading → blue-live border)
     mutable dict_live           : bool
-    # an orbiter summon is in flight or connected — cleared when it leaves,
-    # so the next open summons a FRESH one (reopening was black before)
     mutable ide_asked         : bool
-    # orbiter posts HM.close on ring 1 — IDEOverlay closes the overlay,
-    # orbiter keeps running (it owns the mic)
     mutable ide_close          : bool
-    # the app's live scene as an attached orbiter sees it (its PiP): the
-    # app's shared surface pair, imported in ide_pump; front picks per draw
-    mutable app_tex0    : Texture
-    mutable app_tex1    : Texture
-    mutable app_tex_have    : bool
-    # the two window sizes: the app's own, and the unfolded IDE size
     mutable app_size_w        : i32
     mutable app_size_h        : i32
     mutable ide_size_w         : i32
     mutable ide_size_h         : i32
     mutable cursors             : array CursorPos
-    # GLFW resize cursors for seam hover/drag (created lazily, cached). cursor_kind
-    # tracks the active one (0=arrow,1=horizontal,2=vertical) to skip redundant sets.
     mutable cursor_hresize      : handle
     mutable cursor_vresize      : handle
     mutable cursor_kind         : i32
@@ -630,9 +517,6 @@ Display Window
 
     mutable is_setup             : bool
     mutable user_compose         : bool
-    # console mode: fd of /dev/tty opened for direct terminal I/O. silver forwards
-    # keystrokes to our stdin but not the mouse escape sequences, so we read the real
-    # terminal directly to get clicks. -1 until console_input_open succeeds.
     intern  tty_in               : i32 [ -1 ]
 
 
@@ -649,17 +533,10 @@ Display Window
     mutable context_pressed     : element
     mutable restyle             : bool
     mutable will_animate        : bool
-    # which tree-walk is running (compose or screen): custom element draw
-    # hooks that render to w.screen gate on this — the tree walks TWICE per
-    # frame, and doing GPU work in both walks double-submits and judders
     mutable draw_stage          : CanvasType
     mutable mouse               : vec2f
-    # last left-button press time + position, for the basic double-click event: a press
-    # within the time window AND near the previous one sets ev.mouse.double_click.
     mutable last_click_us       : i64
     mutable last_click_pos      : vec2f
-    # the app's OWN stdout lands in-window as an element-less overlay
-    # (prints still reach the real terminal); off by default — opt in per app
     public  stdout_overlay      : bool [ false ]
     public  stdout_y            : f32 [ 10.0 ]  # overlay top offset, app-tunable
     mutable so_lines            : array string
@@ -673,9 +550,6 @@ Display Window
     public st                   : Style
 
 
-    # at instance birth, fill the instance's public fields from a source object
-    # (its render parent, then the app) when the source declares a public of the
-    # SAME name and EXACT type. union {src,rtype,type} is the field's type.
     func attempt_instance_write [ src: element, dst: element ]
         if [ !src || !dst ] return
         dt : Au_t typeid[ dst ]
@@ -691,34 +565,16 @@ Display Window
     public func apply_args [ inst: element, e: element ] -> bool
         if [ typeid[ inst ] != typeid[ e ] ] return false
         changed : false
-        # label is compared BY VALUE (a real change = a new file opened in an editor
-        # title) and carries a side effect: drop any in-progress edit + release focus.
-        # the generic object compare below is byte/identity and would see a constant
-        # label like 'Find' as "changed" every frame, releasing focus and breaking
-        # the find/replace inputs — so handle label here, value-wise, and skip it below.
-        # treat null and '' as the same: an element that sets no label (e.g. the
-        # code Editor) has empty on both sides every frame and must NOT be seen as
-        # "changed" — otherwise the input-reset below zeroes its cursor each frame.
         il        : string [ inst.label ]
         el_       : string [ e.label ]
         il_empty  : bool   [ !il  || il.count  == 0 ]
         el_empty  : bool   [ !el_ || el_.count == 0 ]
-        # a real change = emptiness flipped, or both non-empty with different text
         label_changed : bool [ (il_empty != el_empty) || (!il_empty && !el_empty && il != el_) ]
         if [ label_changed ]
             inst.label      = e.label
-            # the label IS the bound value for a text input, so a new value drops the
-            # in-progress edit buffer + releases focus. do NOT reset sel_col/anchor_col
-            # here: that is the code Editor's caret, which it owns across frames and
-            # which apply_args must never clobber (was zeroing the caret every frame).
             inst.edit       = ''
             release_focus[ inst ]
             changed = true
-        # copy every other explicitly-set arg (af bit) from the rendered template `e`
-        # to the persistent instance, walking the whole type chain (poly) so ANY
-        # component arg propagates without a hardcoded list. skip `elements` (children
-        # are reconciled by update_element), `label` (handled above), and `edit` (the
-        # live editable buffer, managed by the framework + on_char).
         for [ ty : typeid[ inst ], ty != typeid[ Au ], ty = ty.context ]
             for [ mi: i32 0, mi < ty.members.count, mi += 1 ]
                 member : Au_t ty.members.origin[mi]
@@ -729,16 +585,9 @@ Display Window
                 if [ !e.AF_get_member[ member ] ] continue
                 cur : inst.member_object[ member ]
                 nv  : e.member_object[ member ]
-                # a change is: presence flipped, OR both present and unequal. a false/0
-                # value boxes as null, so a false→true flip is cur=null, nv=non-null.
-                # compare* dispatches the VALUE compare of the runtime type — the
-                # static Au compare memcmps object headers, which differ for every
-                # fresh template value and forced a copy + repaint EVERY frame.
                 if [ (!cur) != (!nv) || ((cur && nv) && cur.compare*[ nv ] != 0) ]
                     inst.member_set[ member, nv ]
                     changed = true
-                    # an icon prop lands NOW: re-resolve the icon layer at
-                    # application time — render is after the fact and too late
                     if [ strcmp[ member.ident, "icon" ] == 0 ]
                         bb : Button [ inst inherits Button ]
                         if [ bb ] bb.sync_icon[]
@@ -788,7 +637,6 @@ Display Window
         dst_ptr     : @f32 [ value_holder.member_ref[ member ] ]
         is_f_color : bool [ strcmp[ member.ident, 'fill_color_pos' ] == 0 ]
 
-        # binding: read source member directly from element and apply (with optional filter)
         if [ best.binding ]
             src_m : Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ]
             if [ src_m ]
@@ -805,7 +653,6 @@ Display Window
                 inst.pristine = false
             return
 
-        # filter: EMA dst in-place toward best.instance; snap from zero on first use
         if [ best.filter > 0.0 ]
             target_ptr  : @f32 [ best.instance ]
             unset       : true
@@ -862,7 +709,6 @@ Display Window
                         mc = map Layer[string][]
                         printf["mc object for %s (%p) is %p\n", inst.id.chars, inst, mc]
                         inst.member_set[ entry.member_map, mc ]
-                        mc.hold[]
                     if [ !mc.contains[entry.bl.key] ]
                         inst_type : Au_t [ (entry.bl.type_name && entry.bl.type_name.count) ? Au.find_type[entry.bl.type_name.chars, null] : null ]
                         if [ !inst_type ]
@@ -883,12 +729,10 @@ Display Window
                    
     # needs copies
     public func apply_style [ inst: element, style_avail: map StyleEntries[string], home_object:Au ]
-        #puts 'apply_style: inst={inst.id} hovered={inst.hovered} pressed={inst.pressed}'
         inst.pristine = false
         inst.maps_populated = false
         if [!inst.layers]
             inst.layers = map Layer[string] []
-        # no stylesheet: elements instance their look from declared layers alone
         if [ !style_avail ] return
 
         # create layers in the order they render
@@ -907,7 +751,6 @@ Display Window
                 #puts 'apply_style:   {prop} entries={entries.count}'
                 first : cast StyleEntry [ entries[0] ]
 
-                # we sometimes have to create a map for 'layers' as well as a Layer instance inside
                 if [ first.bl.property && first.bl.key ]
                     # find the layers member Au_t
                     for [ best : StyleEntry ] in entries
@@ -938,7 +781,6 @@ Display Window
                                 best.instance.call_construct[ best.value ]
                             el
                                 best.instance = Au.__convert[ layer_member.src, best.value ]
-                            best.instance.hold[]
 
                         cur : layer_inst.member_object[ layer_member ]
                         if [ !cur ]
@@ -977,8 +819,6 @@ Display Window
                                 best.instance.call_construct[ best.value ]
                             el
                                 best.instance = Au.__convert[ member.src, best.value ]
-                        
-                        best.instance.hold[]
 
                     cur : inst.member_object[ member ]
                     if [ !cur ]
@@ -994,15 +834,6 @@ Display Window
         now          : i64 [ epoch_millis[] ]
         if [ !start_ms ] start_ms = now
         time          = f64[ now - start_ms ] / 1000.0 / 10.0
-        # frame-rate-independent filter rate: dt as a multiple of a 60fps frame, so
-        # decay = (1-amount)^frame_factor converges at the same REAL-TIME rate no
-        # matter the fps. at 60fps frame_factor=1; at 30fps=2 (one frame covers two
-        # 60fps steps); at 155fps≈0.39. (was (1/60)/dt — inverse, and dt² overall.)
-        # `raw` is the gap since the last PAINT. the ux is event-driven, so after an
-        # idle stretch raw is huge and meaningless — using it would snap the filter
-        # on the first frame of a drag. so if we haven't painted in > 100ms, just
-        # treat this as one normal 60fps step (frame_factor = 1.0); otherwise use the
-        # real dt so a steady animation stays frame-rate independent.
         raw : f32 [ (last_frame_ms > 0) ? f32[ now - last_frame_ms ] / 1000.0 : 0.016 ]
         frame_factor = (raw > 0.1) ? 1.0 : raw * 60.0
         #puts 'frame_factor: raw={raw}s frame_factor={frame_factor}'
@@ -1013,8 +844,6 @@ Display Window
     func update_element [ parent: element, rendered: map element[string], force: bool ]
         if [!parent.elements] parent.elements = Elements[]
 
-        # obtain instance of parent
-        # if a parent reads element within another subclass it contains, then it has access.to
         home_type   : Au_t
         home_object : element
 
@@ -1088,26 +917,16 @@ Display Window
                         home_type   = typeid[ home_object ]
                 
                 imember : (home_type && id) ? find_member[ home_type, id.chars, AU_MEMBER_VAR, 0, true ] : null
-                # type guard: only bind when the member can actually hold
-                # this element (blind bind stomped trinity.title, a string)
                 if [ imember && home_object && Au.inherits[ typeid[ instance ], imember.src ] ]
                     home_object.member_set[ imember, instance ]
                  
                 instance.set_context_from[ home_object ]
-                # inherit public fields by name+type: render parent first, app next
-                # disabled: this was a no-op until members carried access
-                # values; waking it copied run state between app and panes
-                #attempt_instance_write[ parent, instance ]
-                #attempt_instance_write[ (parent.ux.app_object to element), instance ]
                 call_init = true
                 changed = true
             el
                 ta0 : i64 [ epoch_micros[] ]
                 args_changed : bool apply_args[ instance, e ]
                 a.t_apply_args += epoch_micros[] - ta0
-                # a changed data prop = the element's content may differ; without
-                # this a non-styled prop (e.g. run_line) never re-rasterizes its
-                # layers, so paint-hosted logic (TermLayer dispatch) never sees it
                 if [ args_changed ] instance.pristine = false
                 changed = args_changed || !instance.pristine || force
 
@@ -1121,8 +940,6 @@ Display Window
                 changed = true
             instance.odd  = (child_pos % 2 == 0)
             instance.even = (child_pos % 2 == 1)
-            # styleable :has_value — true while the editable buffer holds text. a
-            # transition must mark the element changed so the style re-evaluates on type.
             new_has_value : bool [ instance.edit && instance.edit.count > 0 ]
             if [ instance.has_value != new_has_value ]
                 instance.has_value = new_has_value
@@ -1135,18 +952,11 @@ Display Window
                 apply_style[ instance, avail, home_object ]
                 a.t_apply_style += epoch_micros[] - ts0
 
-                # init finally called after context and style is applied
-                # our holds are too many for properties applied in style, though.
                 if [ call_init && !instance.initialized ]
-                    # text mode has no vk context; elements still init + lay out.
                     if [ !text_mode ]
                         expect instance.vk, "no vk context set for new instance"
                     instance.initialize[]
-                    # declared Layer members (default initializers) join the
-                    # paint path in declaration order, base class first, keyed
-                    # by member ident — no strings at any access site
                     ltys : array Au_t []
-                    svars : array shader []
                     for [ lty : typeid[ instance ], lty != typeid[ Au ], lty = lty.context ]
                         ltys.push[ lty ]
                     for [ lti: i32 ltys.count - 1, lti >= 0, lti -= 1 ]
@@ -1163,33 +973,12 @@ Display Window
                                 lvl.initialize[]
                                 if [ !instance.layers ] instance.layers = map Layer[string] []
                                 instance.layers[ string[ lmem.ident ] ] = lvl
-                            # declared shader members join the element's shader
-                            # map the same way, keyed by member ident (the css
-                            # shaders.<key> form) — context wires their vk
                             el [ Au.inherits[ lmem.src, typeid[ shader ] ] ]
                                 shv : cast shader [ lv ]
                                 shv.set_context_from[ instance ]
                                 shv.initialize[]
                                 if [ !instance.shaders ] instance.shaders = map shader[string] []
-                                # a keyed variant modifies a pass; it is not one
-                                if [ shv.key && shv.key.count ]
-                                    svars.push[ shv ]
-                                el
-                                    instance.shaders[ string[ lmem.ident ] ] = shv
-                    # file keyed variants under the pass they name, after the
-                    # walk so a variant may be declared before its base
-                    for [ sv: shader ] in svars
-                        tgt : shader instance.shaders[ sv.key ]
-                        expect tgt, 'no shader keyed {sv.key}'
-                        if [ !tgt.variants ] tgt.variants = array shader []
-                        # an override member is listed on base AND subclass but
-                        # reads one slot — the same object arrives twice
-                        dup9 : bool [ false ]
-                        for [ ev: shader ] in tgt.variants
-                            if [ ev == sv ] dup9 = true
-                        if [ !dup9 ] tgt.variants.push[ sv ]
-                    # the icon layer paints LAST — base-first population put
-                    # Button's iconl under subclass backgrounds; re-append it
+                                instance.shaders[ string[ lmem.ident ] ] = shv
                     if [ instance.layers ]
                         bic : Layer instance.layers[ 'iconl' ]
                         if [ bic ]
@@ -1198,16 +987,21 @@ Display Window
                     instance.initialized = true
                     instance.hold_members[]
                     instance.pristine = false
+                    if [ instance.layers ]
+                        bic2 : Layer instance.layers[ 'iconl' ]
+                        if [ bic2 ]
+                            bh2 : Au.header[ bic2 ]
+                            puts 'ICONL post-pop refs={bh2.refs}'
 
             inst    : typeid[ instance ]
             tr0 : i64 [ epoch_micros[] ]
-            irender : instance.render*[]
+            rendered_map : Elements instance.render*[]
             a.t_render += epoch_micros[] - tr0
-            # a returned map is authoritative even when empty (clears children);
-            # null means no opinion — fall back to declared/live children
+            irender : Elements rendered_map
             if [ irender == null ] irender = e.elements
             if [ irender == null ] irender = instance.elements
             if [ irender != null ] update_element[ instance, irender, force ]
+            if [ rendered_map ] drop[ rendered_map ]
 
         # perform umount on elements not updated in render
         retry : true
@@ -1221,8 +1015,6 @@ Display Window
                         fclose[ udbg ]
                     e.flags  = 0
                     retry    = true
-                    # input refs pointing into the dropped subtree must clear —
-                    # the next mouse move would dispatch into freed elements
                     for [ h: element* hovered, h, h = h.parent ]
                         if [ h == e ]
                             hovered = null
@@ -1247,8 +1039,6 @@ Display Window
         if [ capture ] return true
         return root.is_animating[]
 
-    # freeze the app's look AND element state — orbiter's 'attach context'
-    # hands both to the agent (sock siblings)
     func capture_context []
         sess : getenv[ 'SILVER_ISOLATE_SESSION' ]
         if [ !sess ] return
@@ -1264,33 +1054,27 @@ Display Window
             tp : path '/tmp/silver-app-{ss}.agi'
             tp.save[ Au.string_agi[ tree ], null ]
 
-    # summon orbiter WITHOUT showing it: the screen texture is already shared
-    # (share_color set at startup when supervised) — just signal the
-    # supervisor. first dictation lands here — the mic owner must exist
-    # before anything records.
     func ide_ensure []
         if [ ide_asked ] return
         capture_context[]
         ide_asked = true
-        host_ask_orbiter[]
+        ra9 : i32 [ host_ask_orbiter[] ]
+        puts 'ide_ensure: ask sent (rc {ra9})'
 
-    # show the shell (shift+click): summon if needed, refresh the frozen
-    # context, then the overlay composites it
     func ide_open []
+        puts 'ide_open: active={ide_active} asked={ide_asked}'
         if [ ide_active ] return
         ide_ensure[]
         capture_context[]
-        # unfold: the window zooms to the IDE size (remembered across folds);
-        # the app's own size is restored when the overlay folds back
         app_size_w = width
         app_size_h = height
         iw : i32 [ (ide_size_w > 0) ? ide_size_w : 1888 ]
         ih : i32 [ (ide_size_h > 0) ? ide_size_h : 888 ]
         if [ glfw && (iw != width || ih != height) ] glfwSetWindowSize[ glfw, iw, ih ]
         ide_active = true
+        host_post[ 0, i32[ HM.shell ], 1, 0, 0 ]
         restyle = true
 
-    # fold: remember the IDE size, give the app its own window back
     func ide_restore_size []
         ide_size_w = width
         ide_size_h = height
@@ -1300,15 +1084,9 @@ Display Window
     func app_render [] -> Elements
         e : Elements [ ]
         e[ 'app' ] = cast element [ app_object ]
-        # framework dev shade: a parallel element the app never defines. topmost so
-        # it paints over the app tree. its container is full-window but sets
-        # user_events=false while closed so clicks pass THROUGH to the app (only its
-        # tab child claims hits); open flips user_events=true so it goes modal.
-        # opt-in: apps set ux_generics true to get the shade + menu tab.
         ae : cast element [ app_object ]
         if [ ae && ae.ux_generics ]
             e[ 'uxgenerics' ] = UXGenerics [ topmost: true, target: ae ]
-        # orbiter overlay: composites the attached shell over the app
         if [ ide_active ]
             e[ 'hostedshell' ] = IDEOverlay [ topmost: true ]
         return e
@@ -1336,7 +1114,6 @@ Display Window
         update_element[ root, render, restyle ]
         t1 : i64 [ epoch_micros[] ]
         dt : i64 [ t1 - t0 ]
-        #if [ dt > 100 ] puts 'update:{dt}us  args:{t_apply_args}us  style:{t_apply_style}us  render:{t_render}us'
         restyle = false
 
     public func set_capture [ e: element ]
@@ -1361,11 +1138,6 @@ Display Window
             if [ e && !e.ghost ]
                 focus = e
                 focus.focused = true
-                # seed the caret to the end of the edit buffer so an editable shows its
-                # cursor on the FIRST focus. without this, sel_col stays -1 until a click
-                # lands on the editable layer (which only exists once focused) — so the
-                # caret only appeared on the SECOND click. seed 0 for an EMPTY buffer too,
-                # else an empty editable (e.g. a blank replace field) never shows a cursor.
                 if [ focus.sel_col < 0 ]
                     focus.sel_col    = focus.edit->count
                     focus.anchor_col = focus.sel_col
@@ -1377,9 +1149,6 @@ Display Window
             focus.pristine = false
             focus = null
 
-    # show the OS resize cursor over a seam: kind 0=arrow, 1=horizontal (x-axis
-    # seam), 2=vertical (y-axis seam). standard cursors are created on first use
-    # and cached; cursor_kind skips redundant glfwSetCursor calls.
     public func seam_cursor [ kind: i32 ]
         if [ kind == cursor_kind ] return
         g : handle [ Au.live_window_get[] ]
@@ -1395,9 +1164,6 @@ Display Window
             glfwSetCursor[ g, null ]
 
     public func find_target [ e: element, ev: Event, must: element ] -> element
-        # fully-transparent elements are hidden — ignore them (and their
-        # children) in event hit-testing so they don't capture clicks. an element
-        # with no bounds yet (not laid out this frame) can't be hit either.
         if [ !e || !e.bounds || e.disable || e.ghost || e.hide || e.transparency >= 1.0 ]
             return null
         b : rect  [ e.bounds ]
@@ -1409,8 +1175,6 @@ Display Window
         if [ !must && (lx < 0.0 || ly < 0.0 || lx >= b.w || ly >= b.h) ]
             return null
 
-        # update cursor on every element in the traversal path — cursor is
-        # always live on all controls, normalized to element-local [0..1].
         bw : f32 [ (b.w > 0.0) ? b.w : 1.0 ]
         bh : f32 [ (b.h > 0.0) ? b.h : 1.0 ]
         e.cursor_pos = vec2f [ x: lx / bw, y: ly / bh ]
@@ -1420,14 +1184,6 @@ Display Window
         ev.mouse.pos.x = fx
         ev.mouse.pos.y = fy
 
-        # hit-test in REVERSE of paint order: children are painted first→last
-        # (later draws on top), so the topmost-drawn sibling must be tested
-        # first. iterate reverse; topmost-flagged children still come before the
-        # rest. this is why a later-declared sibling (e.g. the filter) wins its
-        # own click without needing a per-element topmost.
-        # a no_scroll child is fixed (not in this element's scrolled content), so it's
-        # tested in UNSCROLLED local space (lx/ly) — otherwise a scrolled parent (e.g.
-        # the editor) folds its content scroll in and the child's hit area drifts.
         for [ child: element, id: string ] reverse in e.elements
             if [ !child.topmost ] continue
             relx : bool [ child.area && child.area.l.relative ]
@@ -1449,9 +1205,6 @@ Display Window
 
         ev.mouse.pos.x = fx
         ev.mouse.pos.y = fy
-        # a pass-through element (user_events=false) never claims itself — its
-        # children were already tested above, so a click that missed them falls
-        # through to the next sibling / the app instead of being swallowed here.
         r : element [ ( e.user_events && (!must || must == e) ) ? e : null ]
         if [ !r ]
             ev.mouse.pos.x = x
@@ -1468,8 +1221,6 @@ Display Window
                     l.on_char[ ev ]
                     break
 
-    # mark the whole tree for repaint — for global-state flips (shift) that
-    # gate layers without any element's own state changing.
     func dirty_tree [ e: element* ]
         if [ !e ] return
         e.pristine = false
@@ -1478,9 +1229,6 @@ Display Window
                 dirty_tree[ ce ]
 
     public func key_event [ ev: Event ]
-        # track the GLOBAL shift state before any consumer can return — layers
-        # with State.shifted repaint on the flip. bare shift presses carry the
-        # key code (340 left / 344 right), not always the mod bit.
         s2 : bool [ ev.key.shift ]
         if [ ev.key.unicode == 340 || ev.key.unicode == 344 ] s2 = (ev.key.state) ? true : false
         if [ shift != s2 ]
@@ -1496,8 +1244,6 @@ Display Window
             host_dictate_set[ 2 ]
             restyle = true
             return
-        # esc closes the framework shade (uxgenerics) when it's up, before the app
-        # sees the key — it isn't the focus or app_object, so route it here.
         if [ ev.key.unicode == 256 && root ]
             sh : cast UXGenerics [ root.elements[ 'uxgenerics' ] ]
             if [ sh && sh.show_console ]
@@ -1511,9 +1257,6 @@ Display Window
                     l.on_key[ ev ]
                     break
 
-    # a file drag-drop. ev.key.text carries the dropped path(s). an element that
-    # overrides on_drop (e.g. Console → bracketed paste to its pty) consumes it;
-    # otherwise the path text is inserted into the focused editable like a paste.
     public func drop_event [ ev: Event ]
         ev.target = focus
         if [ focus && focus.on_drop*[ ev ] ] return
@@ -1524,17 +1267,10 @@ Display Window
                     l.on_char[ ev ]
                     break
 
-    # recursive bubble: from deepest element up through parents, each gets
-    # a chance to consume. stops on first `true` return. after the element
-    # chain, the app sees it; finally window's default handler runs (focus
-    # transfer, capture, pressed/hovered bookkeeping) regardless of consume.
     public func move_event [ ev: Event ]
         orig_pos : vec2f [ ev.mouse.pos ]
         f : find_target[ root, ev, null ]
         ev.origin = f
-        # find_target folded the leaf-local mouse pos into ev.mouse.pos; keep it for the
-        # move bubble (which unwinds it per level like press_event). re-fold to the
-        # capture target when one is held.
         m : element [ f ]
         if [ capture ]
             ev.mouse.pos = orig_pos
@@ -1542,10 +1278,7 @@ Display Window
         move_pos : vec2f [ ev.mouse.pos ]
         # hover / leave bubble runs in screen space, as before
         ev.mouse.pos = orig_pos
-        # hover / leave bubble — flip state bools and set restyle; the next
-        # update_element pass picks up restyle and re-applies CSS.
         if [ hovered != f ]
-            #puts 'hover: changed (prev={(hovered) ? hovered.id : null}, new={(f) ? f.id : null})'
             prev : element [ hovered ]
             if [ prev ]
                 if [ prev inherits Button ]
@@ -1573,9 +1306,6 @@ Display Window
                 if [ !hover_consumed && app_object ]
                     ev.target = f
                     app_object.on_hover*[ ev ]
-        # move bubble — element-local coords unwound per level (mirrors press_event),
-        # so each on_move sees its own folded coords instead of raw screen space (which
-        # left every on_move off by the element's offset once it moved away from 0,0).
         ev.mouse.pos = move_pos
         if [ m ]
             move_consumed : bool [ false ]
@@ -1587,20 +1317,11 @@ Display Window
             if [ !ev.no_propagation && app_object ]
                 ev.target = m
                 app_object.on_move*[ ev ]
-        # restore the leaf/capture-folded pos for the trailing handlers below
         ev.mouse.pos = move_pos
-        # scrollbar proximity: while the cursor is within a scrollbar's widen zone,
-        # request a frame this move so the bar can track + widen (a layer can't
-        # repaint without a frame). gated to the zone so we don't relayout elsewhere;
-        # the zone's outer edge is already thin, so leaving it needs no extra frame.
         if [ f && f.layers ]
             sbl : cast ScrollLayer [ f.layers['scrollbar'] ]
             if [ sbl && sbl.scroll_max > 0.0 ]
                 fr : f32 [ (1.0 - f.cursor_pos.x) * f.bounds.w ]
-                # generous, bar-independent approach distance so the bar responds well
-                # before you're on it. set pristine=false too: will_animate alone gives
-                # a frame, but the element stays cached so its scrollbar layer isn't
-                # repainted — the dirty flag forces the layers (incl. the bar) to redraw.
                 if [ fr < 90.0 ]
                     f.pristine = false
                     will_animate = true
@@ -1611,9 +1332,6 @@ Display Window
                     break
 
     public func wheel_event [ ev: Event ]
-        # wheel follows the mouse like every OS: the element UNDER the cursor gets
-        # it (then bubbles to parents), regardless of focus. capture still wins
-        # during an active drag.
         target_el : element [ (capture) ? capture : find_target[ root, ev, null ] ]
         ev.origin = target_el
         consumed_w : bool [ false ]
@@ -1623,14 +1341,10 @@ Display Window
         if [ !ev.no_propagation && app_object ]
             ev.target = target_el
             app_object.on_wheel*[ ev ]
-        # window default: scroll focused/target element (no-op hook for now)
 
     public func press_event [ ev: Event ]
         release_capture[ capture ]
         world_m : vec2f [ ev.mouse.pos ]   # world coords before find_target mangles it
-        # basic double-click event: a left press within 350ms AND within ~6px of the prior
-        # left press. moving the mouse between clicks (the distance gate) cancels it. set
-        # here once so every control just reads ev.mouse.double_click — never re-derives it.
         if [ ev.mouse.button == 0 ]
             now : i64 [ epoch_micros[] ]
             dx  : f32 [ world_m.x - last_click_pos.x ]
@@ -1640,23 +1354,15 @@ Display Window
             last_click_pos = world_m
         f : find_target[ root, ev, null ]
         ev.origin = f
-        # live inspector (cmd/ctrl held): jump to the element's construction site.
-        # styles live in the .ag now (no css), and every Au object records its
-        # source:line in its header. ctrl||meta matches orbiter's merged convention
-        # (Linux presses ctrl, not super). consumes the click.
         if [ f && (ev.key.meta || ev.key.ctrl) ]
             if [ f.source && app_object ]
                 cur : array StyleHit [ ]
                 cur.push[ StyleHit [ file: path '{f.source}', line: f.line ] ]
                 app_object.on_inspect*[ cur ]
-            # consume the click: the inspect handled it, so the element under the cursor
-            # (a button/tab) must NOT also process the press.
             ev.no_propagation = true
             ev.no_default     = true
             return
         element_pos : vec2f [ ev.mouse.pos ]
-        # element bubble. element* gives poly dispatch so subclasses
-        # (Button, CameraView, ...) see their own on_press override.
         consumed_p : bool [ false ]
         for [ e: element* f, e, e = e.parent ]
             cl : typeid[e]
@@ -1672,9 +1378,6 @@ Display Window
         if [ !ev.no_propagation && app_object ]
             ev.target = f
             app_object.on_press*[ ev ]
-        # window defaults: focus transfer on left button (only focusable
-        # elements get focus — buttons, text controls, etc. opt in), then
-        # capture, then pressed/hovered state bookkeeping.
         edit_l : Layer [ null ]
         if [ f && !f.read_only ]
             for [ l: Layer, k: string ] in f.layers
@@ -1751,8 +1454,9 @@ Display Window
             
             background_type = type
             if [ background_type ]
-                args : map Au[string] [ "window": a ]
-                background = Au.construct_with[ background_type, args, null ]
+                bargs : map Au[string] [ ]
+                background = Au.construct_with[ background_type, bargs, null ]
+                background.window = a
                 if [ !background.color ]
                     background.color = rgba[ r:0.022, g:0.088, b:0.122, a:1.0 ]
                 background.render = Render [ vk: a.vk, w: a, wscale: 1.0,
@@ -1772,13 +1476,9 @@ Display Window
             background.update*[]
     
     func update [ ]
-        # determine the background up front so the frosted-compositor chain below is built
-        # only when there's a real (non-solid) background. solid-color app → background null.
         if [ !background && background_type ]
             update_background[ background_type ]
 
-        # glyph (text atlas) and screen are always needed; compose only feeds the frosted
-        # compositor, so it's allocated only when there's a background to frost.
         glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.u8,    :width, :height ]).resize[ width, height ]
         screen   = (screen   || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
         glyph   .update[]
@@ -1795,10 +1495,6 @@ Display Window
             is_setup = true
             ctx: vk_context[ a.vk ]
 
-            # frosted-background compositor: built ONLY when there's a real (non-solid)
-            # background to frost. a solid-color app has background == null and skips this
-            # whole chain — no compose, reduction pyramid, blur/frost, or m_view/r_view —
-            # so it costs nothing and elements draw straight to screen over the clear color.
             if [ background ]
                 background.render.update[]
 
@@ -1855,8 +1551,6 @@ Display Window
                     background.render, r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
                     r_reduce2, r_reduce3, r_frost_v, r_frost,
                     r_view ]
-                # throttle the entire background chain (all but r_view); r_view composites
-                # fresh UI over a cached background frost so it must draw every frame
                 for [ i: i32 0, i < list.count - 1, i += 1 ]
                     bg : Render list[i]
                     bg.draw_interval = 16
@@ -1869,8 +1563,6 @@ Display Window
                         for [ m: Model ] in r.models
                             m.rebind_model[]
 
-    # borderless fullscreen toggle — no video mode change, just sizes the
-    # window to fit the monitor and removes decorations. restores on exit.
     func set_fullscreen [ on: bool ]
         if [ on == fs_active ]
             return
@@ -1888,9 +1580,6 @@ Display Window
             fs_saved_h = sh
             mon  : glfwGetPrimaryMonitor[]
             mode : @GLFWvidmode [ glfwGetVideoMode[ mon ] ]
-            # real fullscreen: GLFW sets _NET_WM_STATE_FULLSCREEN so the
-            # taskbar is hidden. passing the native refresh rate avoids a
-            # video-mode change.
             glfwSetWindowMonitor[ glfw, mon, 0, 0,
                 mode.width, mode.height, mode.refreshRate ]
         el
@@ -1912,16 +1601,9 @@ Display Window
 
     func on_compose []
         if [ resizing ] return
-        # per-frame state update — runs every frame regardless of the compose pass.
-        # MUST run even without a compose canvas (no-background app): update_all
-        # builds the ROOT — gating it on compose left background-less apps with a
-        # null root (trap in layout_element).
         update_all      [ app_render[] ]
-        animate         [ ]
+        if [ !ide_active ] animate [ ]
         if [ !compose ] return
-        # UI bounds + paint now live entirely in on_screen (layout_element then
-        # draw_element); the compose canvas is no longer part of that path. kept below
-        # for future 3D scene compositing — disabled for now via the early return.
         if [ true ] return
         compose.save    [ ]
         compose.clear   [ '#00a' ]
@@ -1934,32 +1616,28 @@ Display Window
         if [ !screen ] return
         vk.defer_tick[]
         if [ resizing ] return
-        # while a Splitter divider is being dragged, every canvas drains each paint (no
-        # batched ring) so the per-frame composites can't desync their per-slot UBO/UV.
-        # set from the live capture each frame so it clears the moment the drag ends.
         vk.sync_paints = bool[ capture && (capture inherits Splitter) ]
         screen.save[]
 
         app_object.on_canvas*[ screen ]
 
-        # compute the whole tree's bounds first, then paint — so every element
-        # (and its cv.translate / cache size) reads THIS frame's bounds, not last
-        # frame's. fc comes from the screen canvas (the paint target).
         layout_element[ root, null, null, null, screen ]
 
-        draw_element[ root, CanvasType.screen, null ]
+        if [ ide_active && root.elements ]
+            hs9 : cast element [ root.elements[ 'hostedshell' ] ]
+            if [ hs9 ]
+                draw_element[ hs9, CanvasType.screen, null ]
+            el
+                draw_element[ root, CanvasType.screen, null ]
+        el
+            draw_element[ root, CanvasType.screen, null ]
 
-        # app overlays paint OVER the tree (on_canvas paints under it)
         app_object.on_overlay*[ screen ]
 
-        # own stdout, element-less: the app's prints stack at the top
-        # left, newest last; the box fades out after a quiet stretch.
-        # hidden windows have no reader — never tee their stdout
         if [ stdout_overlay && !text_mode && !hidden ]
             Au.stdout_tee[]
             if [ !so_lines ]
                 so_lines = array string [ ]
-                so_lines.hold[]
             ln8 : Au.stdout_line[]
             while [ ln8 ]
                 so_lines += ln8
@@ -2004,16 +1682,7 @@ Display Window
         screen.sync_fence[]
         screen.restore[]
 
-    # ---- console (terminal) rendering --------------------------------------
-    # parallel paint path: no Canvas / vk. the element tree, styles and layout
-    # run exactly as for the vulkan path, but each element is stamped as a
-    # box-drawing rectangle into a character grid (1 unit = 1 cell) and the grid
-    # is flushed to the terminal in one write. the border consumes 1 cell on
-    # every side, so children lay out inside the parent's inner (bounds-2) area.
 
-    # light box-drawing chars as edge bitmasks (U=1 D=2 L=4 R=8) and back, so two
-    # overlapping borders merge into the right junction (│+│=│, ┐+┌=┬, ┘+└=┴, etc.)
-    # rather than one clobbering the other.
     func box_bits [ cp: i32 ] -> i32
         if [ cp == 0x2500 ] return 12
         if [ cp == 0x2502 ] return 3
@@ -2046,9 +1715,6 @@ Display Window
         if [ b == 15 ] return 0x253C
         return 0
 
-    # write one codepoint (+ color slot) into the grid (bounds-checked). when both the
-    # existing and incoming chars are box-drawing, write their merged junction so
-    # adjacent/overlapping frames share a single line instead of doubling.
     func cell_set [ grid: @i32, colg: @i32, cols: i32, rows: i32, x: i32, y: i32, cp: i32, color: i32 ]
         if [ x < 0 || y < 0 || x >= cols || y >= rows ] return
         idx : i32 [ y * cols + x ]
@@ -2061,14 +1727,6 @@ Display Window
         grid[ idx ] = out
         colg[ idx ] = color
 
-    # search the whole element tree (from any node down) for a bordered box — other
-    # than `skip` — whose BOTTOM border is on row `ty` and which overlaps the column
-    # span [cx0,cx1]. used to merge a box up onto an adjoining one even when they live
-    # in different containers (e.g. the console's top onto the editors' bottom). uses
-    # last-frame bounds, so it's order-independent.
-    # bounds are stored PARENT-LOCAL (so find_target can subtract each level), so the
-    # absolute screen position of a node is the running sum of bounds.x/.y up the parent
-    # chain. the adjoin search needs absolute edges to compare boxes across containers.
     func abs_x [ n: element* ] -> f32
         v : f32 [ 0.0 ]
         p : element [ n ]
@@ -2099,8 +1757,6 @@ Display Window
                 if [ adjoin_bottom_at[ ce, skip, cx0, cx1, ty ] ] return true
         return false
 
-    # as above, for a bordered box whose RIGHT border is on column `tx` overlapping
-    # the row span [ry0,ry1] (the left-seam / vertical-share case).
     func adjoin_right_at [ node: element*, skip: element, ry0: i32, ry1: i32, tx: i32 ] -> bool
         if [ !node ] return false
         if [ node != skip && node.bordering && node.bounds ]
@@ -2115,11 +1771,7 @@ Display Window
                 if [ adjoin_right_at[ ce, skip, ry0, ry1, tx ] ] return true
         return false
 
-    # stamp a single-line box border (unicode light box-drawing) in `color`.
     func draw_box [ grid: @i32, colg: @i32, cols: i32, rows: i32, x: i32, y: i32, w: i32, h: i32, color: i32 ]
-        # clamp the box to the visible grid so a frame wider/taller than the terminal
-        # still closes on screen — its right/bottom border lands on the last cell
-        # instead of being dropped by cell_set's bounds check (which read as "no side").
         x0 : i32 [ (x < 0) ? 0 : x ]
         y0 : i32 [ (y < 0) ? 0 : y ]
         x1 : i32 [ x + w - 1 ]
@@ -2139,12 +1791,6 @@ Display Window
             cell_set[ grid, colg, cols, rows, x0, j, 0x2502, color ]
             cell_set[ grid, colg, cols, rows, x1, j, 0x2502, color ]
 
-    # stamp text on one row, clipped to maxw cells. UTF-8 aware: a multibyte sequence
-    # decodes to ONE codepoint in ONE cell (the grid stores codepoints and the flush
-    # re-encodes them, so a glyph like ▶ must arrive as 0x25B6, not its raw bytes).
-    # tabs expand to spaces against the field-local column (tab width 4); NO raw \t can
-    # reach the grid — the flush emits cells verbatim and a literal tab would expand to
-    # the terminal's ABSOLUTE stops, cascading any text not starting at column 0.
     func stamp_text [ grid: @i32, colg: @i32, cols: i32, rows: i32, x: i32, y: i32, s: string, maxw: i32, color: i32 ]
         if [ !s || maxw <= 0 ] return
         i   : i32 [ 0 ]
@@ -2191,8 +1837,6 @@ Display Window
                 col += 1
                 i += 4
 
-    # true if the focused element is this element or one of its descendants —
-    # i.e. an editable layer within this subtree currently has focus.
     func has_focus_within [ e: element* ] -> bool
         f : element [ focus ]
         while [ f ]
@@ -2200,37 +1844,20 @@ Display Window
             f = f.parent
         return false
 
-    # recursively lay out + stamp an element and its children.
-    # (ox,oy) is the element's available cell origin; (aw,ah) the available size.
-    # (pbx0,pbx1) are the enclosing frame's left/right border columns and pbordered
-    # says whether that frame exists — a bordered element inside a bordered parent
-    # is drawn as a "header": it shares the parent's top + side borders and adds only
-    # a unique bottom rule under its text (├──┤), so nested frames don't endlessly embed.
     func draw_element_console [ e: element*, grid: @i32, colg: @i32, cols: i32, rows: i32, ox: i32, oy: i32, aw: i32, ah: i32, pbx0: i32, pbx1: i32, pbordered: bool, pax: i32, pay: i32 ]
         if [ !e ] return
         if [ !e.area ] e.area = Region [ 0.0 ]
         if [ !e.bounds ] e.bounds = rect[]
-        # console layout: 1 unit (line-height) = 1 cell, and px coords collapse to
-        # 1 unit each (px is meaningless in a character grid). fc = 1; the px→1-unit
-        # rule is applied by rectangle when console_units is set below.
         e.fc = 1.0
         rel : rect [ x: 0, y: 0, w: f32 aw, h: f32 ah ]
         b : e.area.rectangle[ rel, null, null, 1.0, true, 0.0, 0.0 ]
         bw : i32 [ i32 b.w ]
         bh : i32 [ i32 b.h ]
-        # the root fills the screen if it carries no explicit size; children must
-        # size themselves via their area. a collapsed / unselected control computes
-        # 0 here and is skipped below — exactly as the vk path bails on bounds <= 0,
-        # so things hidden in the window (e.g. an unselected In-File option) stay
-        # hidden in the console instead of being force-filled into view.
         if [ !e.parent ]
             if [ bw < 1 ] bw = aw
             if [ bh < 1 ] bh = ah
         x0 : i32 [ ox + i32 b.x ]
         y0 : i32 [ oy + i32 b.y ]
-        # bounds are stored PARENT-LOCAL (absolute minus the parent's absolute origin),
-        # because find_target/event hit-testing subtracts each level's bounds as a
-        # local offset. x0/y0 stay absolute for grid stamping.
         e.bounds.x = f32 (x0 - pax)
         e.bounds.y = f32 (y0 - pay)
         e.bounds.w = f32 bw
@@ -2238,32 +1865,16 @@ Display Window
         if [ bw < 1 || bh < 1 ] return
         if [ e.transparency >= 1.0 ] return
 
-        # compute layer bounds (as the vk path does) so app handlers that read
-        # layer.bounds (e.g. Editor.on_press caret math) don't deref a null rect.
         if [ e.layers ]
             for [ lau: Au, lk: string ] in e.layers
                 lyr : cast Layer [ lau ]
                 if [ lyr ]
                     lyr.bounds = (lyr.area) ? lyr.area.rectangle[ e.bounds, null, null, 1.0, true, 0.0, 0.0 ] : e.bounds.copy[]
 
-        # a frame is drawn only when the element opts in via `bordering`. borderless
-        # elements (the common case) just position their children, so structural
-        # wrappers don't each draw a box.
         bordered : bool [ e.bordering ]
-        # header: a bordered element inside a bordered parent. it reuses the parent's
-        # top + side borders and contributes only a bottom rule — the shortcut that
-        # keeps nested bordered elements from drawing endlessly-embedded frames.
         header   : bool [ bordered && pbordered ]
-        # uniform dark-blue border (color 4). focus is shown on the text/cursor, not
-        # the chrome — shared seams/junctions belong to two panes, so per-pane border
-        # tinting would color the neighbor's ┬/┼/┴ and read wrong.
         bcolor : i32 [ 4 ]
 
-        # share a seam with an adjoining bordered box (searched across the whole tree,
-        # so it works between different containers — editors vs console). if one's
-        # right border is one cell left of ours, extend our box left; if one's bottom
-        # border is one row above ours, extend our box up. the overlapped │/─ borders
-        # then merge in cell_set into the right junctions (┬ ┴ ├ ┤ ┼) — one shared line.
         lshift : i32 [ 0 ]
         tshift : i32 [ 0 ]
         if [ bordered && !header && e.ux && e.ux.root ]
@@ -2272,12 +1883,6 @@ Display Window
             if [ adjoin_bottom_at[ rootn, e, x0, x0 + bw - 1, y0 - 1 ] ] tshift = 1
 
         if [ header ]
-            # the divider is the implicit bottom of the border, drawn just BELOW the
-            # element's content rows (it doesn't count toward the element's unit
-            # height) and extended to the parent's side borders with ├ / ┤ junctions.
-            # top + sides are the parent's frame. clamp the junction columns to the
-            # visible grid so they land on the SAME clamped column draw_box used for
-            # the parent's side border (an overflowing pane otherwise loses its ┤).
             ry  : i32 [ y0 + bh ]
             jx0 : i32 [ (pbx0 < 0) ? 0 : pbx0 ]
             jx1 : i32 [ (pbx1 > cols - 1) ? cols - 1 : pbx1 ]
@@ -2288,23 +1893,14 @@ Display Window
         el [ bordered && bw >= 2 && bh >= 2 ]
             draw_box[ grid, colg, cols, rows, x0 - lshift, y0 - tshift, bw + lshift, bh + tshift, bcolor ]
 
-        # per-side content insets. a full box insets all four sides; a header insets
-        # nothing — its border is implicit around the content (the divider is drawn
-        # below, decoration, not stealing a content row).
         il : i32 [ (bordered && !header) ? 1 : 0 ]
         it : i32 [ (bordered && !header) ? 1 : 0 ]
         ir : i32 [ (bordered && !header) ? 1 : 0 ]
         ib : i32 [ (bordered && !header) ? 1 : 0 ]
-        # the box may have been extended left/up by lshift/tshift to share a seam;
-        # measure content + labels against that EXTENDED box so they sit just inside
-        # the shared border instead of leaving an empty cell/row where the original
-        # edge used to be.
         bx0 : i32 [ x0 - lshift ]
         by0 : i32 [ y0 - tshift ]
         bbw : i32 [ bw + lshift ]
         bbh : i32 [ bh + tshift ]
-        # an element is an editable field when one of its layers is editable (the
-        # css marks the title's face editable on focus) — render it as a search box.
         editing : bool [ false ]
         if [ e.layers ]
             for [ ela: Au, elk: string ] in e.layers
@@ -2313,20 +1909,14 @@ Display Window
                     editing = true
                     break
 
-        # a borderless element with a label reserves its top row for that label.
         has_lbl  : bool [ e.label && e.label.count > 0 ]
         lbl_row  : i32 [ (!bordered && has_lbl) ? 1 : 0 ]
         if [ editing ]
-            # editable title: the label is a dim gray placeholder; the typed `edit`
-            # text overlaps it from the left in white, with a block (reverse-video)
-            # cursor at the insertion point — so you type the search over the name.
             bxl : i32 [ bx0 + il ]
             bxw : i32 [ bbw - il - ir ]
             if [ bxw > 0 ]
                 ph : string [ (e.label) ? e.label : '' ]
                 ed : string [ (e.edit)  ? e.edit  : '' ]
-                # gray placeholder shows only until the user has typed more than one
-                # char; past that the whole name is erased, leaving just the query.
                 if [ ph.count > 0 && ed.count <= 1 ] stamp_text[ grid, colg, cols, rows, bxl, by0 + it, ph, bxw, 2 ]
                 if [ ed.count > 0 ] stamp_text[ grid, colg, cols, rows, bxl, by0 + it, ed, bxw, 1 ]
                 cpos : i32 [ ed.count ]
@@ -2340,9 +1930,6 @@ Display Window
             lw : i32 [ bbw - il - ir ]
             if [ lw > 0 ] stamp_text[ grid, colg, cols, rows, lx, by0 + it, e.label, lw, 0 ]
 
-        # children overlap this element's frame only when it drew a full box (then
-        # its own border columns are the frame they share); a header passes the
-        # grandparent frame through unchanged.
         child_bordered : bool [ bordered && !header ]
         cpx0 : i32 [ (child_bordered) ? x0 - lshift : pbx0 ]
         cpx1 : i32 [ (child_bordered) ? x0 + bw - 1 : pbx1 ]
@@ -2353,21 +1940,12 @@ Display Window
         cw : i32 [ bbw - il - ir ]
         ch : i32 [ bbh - it - ib - lbl_row ]
 
-        # the topbar (play + project/console tabs) renders as a bordered strip: a top
-        # border, a row of ` label ` buttons separated by │ that connect up to ┬ and
-        # down to ┴, and a bottom border that lands on the editor frame's top row so
-        # cell_set merges the two into one continuous frame (├ ┼ ┤ junctions). no
-        # brackets — the dividers are the chrome. each button's bounds stays
-        # parent-local to its Tabs group so clicks still route topbar → Tabs → Option.
         if [ e.id && e.id == 'topbar' ]
             tby : i32 [ y0 ]
             mby : i32 [ y0 + 1 ]
             bby : i32 [ y0 + 2 ]
             e.bounds.h = 3.0
             rcol : i32 [ x0 + bw - 1 ]
-            # measure the right-anchored groups (the AI/console tabs) so they can be
-            # placed flush to the right border: each button is ` label ` plus a leading
-            # divider = label + 3 cells.
             rwidth : i32 [ 0 ]
             for [ tb: element, tk: string ] in e.elements
                 if [ !(tb.area && tb.area.l.x_type == XAlign.right) ] continue
@@ -2384,10 +1962,6 @@ Display Window
                             rtxt = '{ob.id}'
                         rwidth += rtxt.count + 3
             rstart : i32 [ rcol - rwidth ]
-            # single pass: left-anchored groups flow from the left edge, right-anchored
-            # ones from rstart. each button = leading divider (┬/┴ tying into the top &
-            # bottom borders) + ` label `; bounds stay parent-local to the Tabs group so
-            # clicks route topbar → Tabs → Option.
             lcol : i32 [ x0 ]
             rcur : i32 [ rstart ]
             left_end : i32 [ x0 ]
@@ -2411,8 +1985,6 @@ Display Window
                         cell_set[ grid, colg, cols, rows, col, mby, 0x2502, 4 ]
                         cell_set[ grid, colg, cols, rows, col, bby, 0x2534, 4 ]
                         lbl : ' {txt} '
-                        # cell width counts codepoints, not bytes (▶ is 3 bytes / 1 cell),
-                        # so the border fill + layout advance stay aligned to the glyph.
                         cw2 : i32 [ 0 ]
                         ci : i32 [ 0 ]
                         while [ ci < lbl.count ]
@@ -2447,10 +2019,6 @@ Display Window
                 cell_set[ grid, colg, cols, rows, j, mby, 32, 0 ]
                 cell_set[ grid, colg, cols, rows, j, bby, 0x2500, 4 ]
                 j += 1
-            # force the frame edge cells directly: cell_set MERGES box glyphs, so it
-            # would turn the first button's leading ┬/┴ into a junction instead of a
-            # clean corner. the bottom corners (╰ ╯) are left for the editor frame below
-            # to merge onto (╰+╭ → ├), keeping the two boxes joined into one frame.
             if [ x0 >= 0 && rcol < cols && bby < rows ]
                 grid[ tby * cols + x0 ]   = 0x256D
                 colg[ tby * cols + x0 ]   = 4
@@ -2470,11 +2038,6 @@ Display Window
             for [ ce: element, ck: string ] in e.elements
                 draw_element_console[ ce, grid, colg, cols, rows, cx, cy, cw, ch, cpx0, cpx1, cpb, x0, y0 ]
 
-        # text content: an element that paints rows (the editor's source, a console
-        # log) stamps them into the body. a bordered element reserves its top row(s)
-        # for a title header + its divider, so the code begins below that; a plain
-        # one fills from the content origin. rows are clipped to the box interior so
-        # the bottom border is never overwritten.
         lc : i32 [ e.console_line_count*[] ]
         if [ lc > 0 ]
             tx : i32 [ cx ]
@@ -2483,10 +2046,6 @@ Display Window
             bot : i32 [ by0 + bbh - 1 ]
             body : i32 [ bot - ty ]
             if [ body < 1 ] body = 1
-            # wheel scroll: reuse scroll.y as the first-visible line (1 cell = 1 line).
-            # content_h is set in those same line units so the element's on_wheel can
-            # clamp and step (gentle per-notch speed); the wheel dispatches to on_wheel
-            # for whichever editor the cursor is over (see wheel_event).
             e.content_h    = f32 (lc + (bbh - body))
             e.scroll_speed = 3.0
             maxs : i32 [ (lc > body) ? lc - body : 0 ]
@@ -2498,9 +2057,6 @@ Display Window
                 ln : e.console_line*[ first + vr ]
                 if [ ln && ln.count > 0 ] stamp_text[ grid, colg, cols, rows, tx, ty + vr, ln, tw, 0 ]
                 vr += 1
-            # scrollbar: thicken the segment of the RIGHT border that maps to the
-            # visible window — a heavy │ (┃) over [first, first+body) of lc total. only
-            # when the content actually overflows the box.
             if [ bordered && lc > body ]
                 rbx : i32 [ bx0 + bbw - 1 ]
                 th0 : i32 [ ty + (first * body) / lc ]
@@ -2511,16 +2067,9 @@ Display Window
                     cell_set[ grid, colg, cols, rows, rbx, rr, 0x2503, 1 ]
                     rr += 1
 
-    # ---- console input (terminal mouse + keyboard) -------------------------
-    # raw, non-echoing, non-blocking stdin (via stty) + xterm SGR mouse reporting
-    # with button-motion tracking (?1002) so drags report too; hide the cursor.
-    # write a control string straight to the tty fd (raw syscall, no stdio buffering).
     func tty_write [ s: string ]
         if [ tty_in >= 0 && s ] write[ tty_in, s.chars, s.count ]
 
-    # append a string's bytes into the frame buffer starting at p; returns the new p.
-    # lets the flush use plain escape-string literals now that the octal \033 escape
-    # is fixed (returns the position rather than taking a ref i32, which mis-GEPs).
     func emit_bytes [ dst: @u8, p: i32, s: string ] -> i32
         q : i32 [ p ]
         i : i32 [ 0 ]
@@ -2532,14 +2081,9 @@ Display Window
 
     func console_input_open []
         system[ "stty -icanon -echo min 0 time 0" ]
-        # open the real terminal; grab its fd via fileno and do raw write/read on it.
-        # ESC[?1000h click, ?1002h drag, ?1006h SGR coords, ?7l no-autowrap, ?25l hide.
         tty : handle [ fopen[ "/dev/tty", "r+" ] ]
         if [ tty ]
             tty_in = fileno[ tty ]
-            # alt screen buffer: a dedicated full-screen page that never scrolls the
-            # user's shell history and lets us paint the true last row (the box's
-            # bottom border) — leaving it restores their terminal cleanly on exit.
             tty_write[ "\033[?1049h" ]
             tty_write[ "\033[?1000h" ]
             tty_write[ "\033[?1002h" ]
@@ -2553,18 +2097,11 @@ Display Window
         tty_write[ "\033[?1006l" ]
         tty_write[ "\033[?7h" ]
         tty_write[ "\033[?25h" ]
-        # leave the alt screen → restore the user's shell and scrollback.
         tty_write[ "\033[?1049l" ]
         system[ "stty sane" ]
 
-    # read whatever stdin bytes are queued and turn them into the same events the
-    # GLFW callbacks raise (mouse pos is in cells — our layout space — so the
-    # existing find_target hit-test works unchanged).
     func console_input_poll []
         buf : local u8 [ 128 ]
-        # read the real terminal (mouse + keyboard) directly when /dev/tty is open;
-        # else fall back to stdin. stty set the controlling terminal raw (min 0 time 0)
-        # so this read is non-blocking either way.
         src : i32 [ (tty_in >= 0) ? tty_in : 0 ]
         nb : i32 [ read[ src, @buf[0], 127 ] ]
         if [ nb <= 0 ] return
@@ -2675,17 +2212,9 @@ Display Window
 
     func draw_console []
         console_input_poll[]
-        # terminal size in cells (re-queried each frame for live resize). TIOCGWINSZ
-        # is a sizeof-based _IOR macro the compiler can't fold, so pass the literal
-        # request value per platform (mac differs from linux) — otherwise ioctl fails
-        # on the real tty and we'd be stuck at the fallback size with no resize.
         ws : winsize
         cols : i32 [ 80 ]
         rows : i32 [ 24 ]
-        # TIOCGWINSZ differs by platform (mac 0x40087468, linux 0x5413) and the
-        # sizeof-based macro doesn't fold, so use the literal value. try the request
-        # across stdin/stdout/stderr: --log dup2's stdout+stderr onto a pipe, so only
-        # stdin (the input tty) may still answer. mac value first, then linux.
         ok : bool [ ioctl[ 0, 0x40087468, @ws ] == 0 && ws.ws_col > 0 ]
         if [ !ok ] ok = ioctl[ 1, 0x40087468, @ws ] == 0 && ws.ws_col > 0
         if [ !ok ] ok = ioctl[ 2, 0x40087468, @ws ] == 0 && ws.ws_col > 0
@@ -2695,17 +2224,12 @@ Display Window
         if [ ok ]
             cols = i32 ws.ws_col
             rows = i32 ws.ws_row
-        # the alt screen + no-autowrap (?7l) lets us paint every row including the
-        # last without scrolling, so the box bottom border lands on the true final
-        # line — no reserved row.
         width  = cols
         height = rows
 
-        # build / reconcile the element tree + advance animation (no Canvas)
         update_all[ app_render[] ]
         animate[]
 
-        # fill the grid with spaces (default color), then stamp the tree
         n : i32 [ cols * rows ]
         grid : new i32 [ n ]
         colg : new i32 [ n ]
@@ -2715,20 +2239,9 @@ Display Window
         if [ root ]
             draw_element_console[ root, grid, colg, cols, rows, 0, 0, cols, rows, 0, 0, false, 0, 0 ]
 
-        # serialize to UTF-8 with a leading cursor-home + clear-to-end, one write.
-        # control prefix written numerically so we never depend on string escapes:
-        #   ESC [ H  (home)   ESC [ J  (clear to end of screen)
-        # color runs are emitted as SGR escapes whenever the cell color changes:
-        #   ESC [ 0 m default   ESC [ 9 7 m white   ESC [ 9 0 m gray
         cap : i32 [ n * 24 + rows + 64 ]
         out : new u8 [ cap ]
         p : i32 [ 0 ]
-        # re-assert no-autowrap (?7l) + home + clear-to-end. ?7l every frame is the key
-        # to the bottom border: with autowrap ON, writing the bottom-right cell arms a
-        # "pending wrap" and the next byte (the next frame, or silver-host's rebuild
-        # newline) scrolls the screen — eating the bottom edge and leaving a blank line.
-        # autowrap OFF means the last cell never arms that scroll. (it can get re-enabled
-        # by other output, so we set it per frame rather than once at startup.)
         p = emit_bytes[ out, p, "\033[?7l\033[H\033[J" ]
         cur_col : i32 [ -1 ]
         for [ y: i32 0, y < rows, y += 1 ]
@@ -2737,8 +2250,6 @@ Display Window
                 c   : i32 [ colg[ idx ] ]
                 if [ c != cur_col ]
                     cur_col = c
-                    # reset-prefixed (ESC[0;..) so reverse never leaks. default text,
-                    # 2 = dim, 3 = reverse cursor, 4 = mid/dark-gray border (256-color 240).
                     if [ c == 4 ]
                         p = emit_bytes[ out, p, "\033[0;38;5;240m" ]
                     el [ c == 2 ]
@@ -2773,10 +2284,6 @@ Display Window
         out[p] = 0
         printf[ "%s", out ]
 
-    # agent view: the same box-drawing render console mode uses, returned as a
-    # plain text grid (no ANSI). the tree is re-laid out at cell units for the
-    # stamp, then restored to the live pixel size so the vulkan path never
-    # sees the borrowed layout.
     func text_grid [ tcols: i32, trows: i32 ] -> string
         cols : i32 [ (tcols > 8) ? tcols : 120 ]
         rows : i32 [ (trows > 4) ? trows : 44 ]
@@ -2818,40 +2325,20 @@ Display Window
             p += 1
         tout[p] = 0
         res : string [ cast cstr [ tout ] ]
-        # restore the live pixel layout before the next composed frame
         width  = w0
         height = h0
         update_all[ app_render[] ]
         return res
 
-    # LAYOUT pass — compute e.bounds for the whole tree BEFORE any painting. the
-    # paint walk (draw_element) reads e.bounds (its own, its parent's via rel, its
-    # flow sibling's via last); if layout and paint share one walk, a child's
-    # cv.translate / cache size reads bounds that this frame hasn't finalized yet,
-    # so a seam drag paints one frame behind. separating the two fixes that with no
-    # compose pre-pass. cv supplies the per-target font metric (fc) only — no drawing.
-    # last          = immediate previous sibling (vertical flow / rectangle cursor)
-    # last_l/last_r = previous sibling anchored on the SAME side. children lay out
-    # in map order, which is insertion-over-the-session (an existing child keeps
-    # its slot, only new ids append), so a left chip can land between two `r0+`
-    # ones. the flow is pairwise — x = prev.x - w — so once that link breaks there
-    # is no running total to recover from and the chip resets onto the edge.
     func layout_element [ e: element*, last: element, last_l: element, last_r: element, cv: Canvas ]
         expect e inherits element, 'e is not an element'
         rel : rect [ (e.parent) ?
             rect [ x: 0, y: 0, w: e.parent.bounds.w, h: e.parent.bounds.h ] :
             rect [ x: 0, y: 0, w: width, h: height ] ]
 
-        # fc = px-per-unit from THIS canvas's font line height — per-target, so
-        # console apps (normalized 1-cell fonts) stay compatible. the font is
-        # cached (loaded once), and ensure_font makes line_height available even
-        # for controls that never draw text (FileList etc.).
         cv.ensure_font[]
         e.fc = 22.0
         if [ cv.font ]
-            # font.line_height is in DEVICE pixels (atlas rasterized at sz*scale);
-            # fc is px-per-unit in LOGICAL space, so divide by the canvas's device
-            # scale — otherwise every unit-based size (h2/w6/toolbars) doubles.
             cs : f32 [ (cv.w && cv.w.scale > 0.0) ? cv.w.scale : 1.0 ]
             e.fc = cv.font.line_height / cs
 
@@ -2865,7 +2352,6 @@ Display Window
         spy : f32 [ (e.use_spacing && e.parent) ? e.parent.spacing_y * e.fc : 0.0 ]
         bounds : e.area.rectangle[ rel, null, last->bounds, e.fc, false, spx, spy ]
 
-        # percent sizing: override h/w with fraction of remaining sibling space
         if [ e.area && e.parent && e.parent.elements && (e.area.b.percent || e.area.r.percent) ]
             prel   : rect [ x: 0, y: 0, w: rel.w, h: rel.h ]
             pfc    : f32  [ (e.parent.fc > 0.0) ? e.parent.fc : e.fc ]
@@ -2884,19 +2370,11 @@ Display Window
             if [ e.area.b.percent ] bounds.h = e.area.b.offset * (rel.h - fixed_h)
             if [ e.area.r.percent ] bounds.w = e.area.r.offset * (rel.w - fixed_w)
 
-        # content size (wc / hc): measure the element's content, then size to it.
-        # a right anchor (l-slot is right-typed) offsets the element LEFT by its
-        # computed width; a bottom anchor offsets it UP by its computed height.
         if [ e.area.r.content || e.area.b.content ]
             cw : f32 [ bounds.w ]
             ch : f32 [ bounds.h ]
             measured : bool [ false ]
             if [ e.elements && e.elements.count > 0 ]
-                # content = extent of laid-out children (flow-aware via `last`).
-                # children anchored to the parent's right/middle/bottom (or percent-
-                # sized) DEPEND on the parent's size — counting them is circular and
-                # blows the extent up to the provisional rect. shrink-to-fit counts
-                # only top/left-anchored, self-sized children (as CSS does).
                 prov  : rect [ x: 0.0, y: 0.0, w: 100000.0, h: 100000.0 ]
                 lastc : rect [ null ]
                 maxr  : f32 [ 0.0 ]
@@ -2919,12 +2397,9 @@ Display Window
                 tm : cv.measure_text[ e.label ]
                 cw = tm.w
                 ch = tm.ascent - tm.descent
-            # the coord's own offset is PADDING around the content (`wc20px` =
-            # label width + 20 logical px)
             if [ e.area.r.content ]
                 cw += e.area.r.offset * ((e.area.r.pixel) ? 1.0 : e.fc)
                 if [ e.area.l.x_type == XAlign.right ]  bounds.x = bounds.x - cw
-                # middle anchor: center the content on m — shift left by half the width
                 if [ e.area.l.x_type == XAlign.middle ] bounds.x = bounds.x - cw / 2.0
                 bounds.w = cw
             if [ e.area.b.content ]
@@ -2933,21 +2408,11 @@ Display Window
                 if [ e.area.t.y_type == YAlign.middle ] bounds.y = bounds.y - ch / 2.0
                 bounds.h = ch
 
-        # right-flow: `r<gap>+` as the FIRST coord stacks this element to the
-        # LEFT of the previous sibling (mirror of `l<gap>+`), gap between them.
-        # runs after content sizing so the final width is known. only chains off
-        # a sibling that is itself right-anchored — a full-width or left-flowed
-        # neighbor (e.g. the console title's filter) starts the run instead, so
-        # the first right-flow element anchors at the container's right edge.
-        # `r0+` = step left from the last RIGHT-side control; with none, start at
-        # this container's right edge. a left-anchored neighbour is skipped, not
-        # treated as the end of the run.
         if [ e.area.l.x_type == XAlign.right && e.area.l.relative ]
             if [ last_r && last_r.bounds ]
                 bounds.x = last_r.bounds.x - e.area.l.offset * ((e.area.l.pixel) ? 1.0 : e.fc) - spx - bounds.w
             el
                 bounds.x = rel.w - e.area.l.offset * ((e.area.l.pixel) ? 1.0 : e.fc) - spx - bounds.w
-        # `l0+` mirrors it: step right from the last LEFT-side control.
         if [ e.area.l.x_type == XAlign.left && e.area.l.relative ]
             if [ last_l && last_l.bounds ]
                 bounds.x = last_l.bounds.x + last_l.bounds.w + e.area.l.offset * ((e.area.l.pixel) ? 1.0 : e.fc) + spx
@@ -2961,16 +2426,8 @@ Display Window
         if [ getenv[ 'TRIN_BTNLOG' ] ]
             if [ e inherits Button ]
                 puts 'BTNLOG {e.id} "{e.label}" x={e.bounds.x} y={e.bounds.y} w={e.bounds.w} h={e.bounds.h} parent={e.parent->id} pw={e.parent->bounds->w} px={e.parent->bounds->x}'
-        # collapsed to nothing (e.g. the editor section when the console seam is
-        # snapped fully up) — skip this element and all its children.
         if [ e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
         if [ e.transparency >= 1.0 ] return
-        # bounds final for this element — lay out children in the SAME order
-        # draw_element paints them (normal first, then topmost), threading the
-        # previous sibling for flow layout. no painting here.
-        # one cursor per anchor side. advanced AFTER the child lays out, when its
-        # area is resolved — reading the side before the call classifies every
-        # child as left (area not yet set) and the run never forms.
         last_2 : element
         last_l : element
         last_r : element
@@ -2997,18 +2454,25 @@ Display Window
         draw_stage = stage
         expect e inherits element, 'e is not an element'
         if [ e.hide ] return
-        # unmounted (parent nulled) — ghost paints recreated freed textures
+        sm8 : i32 [ 0 ]
+        if [ e.hovered   ] sm8 += i32[ State.hovered ]
+        if [ e.pressed   ] sm8 += i32[ State.pressed ]
+        if [ e.focused   ] sm8 += i32[ State.focused ]
+        if [ e.disable   ] sm8 += i32[ State.disable ]
+        if [ e.first     ] sm8 += i32[ State.first ]
+        if [ e.middle    ] sm8 += i32[ State.middle ]
+        if [ e.last      ] sm8 += i32[ State.last ]
+        if [ e.odd       ] sm8 += i32[ State.odd ]
+        if [ e.even      ] sm8 += i32[ State.even ]
+        if [ e.has_value ] sm8 += i32[ State.has_value ]
+        if [ shift       ] sm8 += i32[ State.shifted ]
+        eop8 : Option [ e inherits Option ]
+        if [ eop8->selected ] sm8 += i32[ State.selected ]
+        e.on_state*[ sm8 ]
         if [ !e.parent && e != root ] return
-        # select target canvas directly. (was: new Canvas[2] [screen,compose]
-        # then index — that per-call vector dropped its elements on teardown
-        # without holding them on init, underflowing screen/compose to 0.)
         cv : (stage == CanvasType.screen) ? screen : compose
-        # bounds were finalized by layout_element before this paint pass. collapsed
-        # or fully-transparent elements (and their children) were skipped there, so
-        # mirror those skips here to keep the two walks in lockstep.
         if [ !e.bounds || e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
         if [ e.transparency >= 1.0 ] return
-        # pre-scan layers to measure any outset beyond element bounds
         margin_l : i32 [ 0 ]
         margin_t : i32 [ 0 ]
         margin_r : i32 [ 0 ]
@@ -3040,21 +2504,8 @@ Display Window
         ew : i32 [ i32[ceilf[e.bounds.w]] + 1 + margin_l + margin_r ]
         eh : i32 [ i32[ceilf[e.bounds.h]] + 1 + margin_t + margin_b ]
         if [ ( ew > 0 && eh > 0 ) && ( !e.cache_canvas || e.cache_w != ew || e.cache_h != eh ) ]
-            # reuse the existing canvas at the new size — resizes its textures +
-            # framebuffers, keeps the pipelines/shaders/atlas (no VkPipeline
-            # rebuild, which was the resize fps cost). quantize=true rounds the GPU
-            # allocation up to a 64px grid, so most 1px drag steps reuse the same
-            # textures (no realloc) and only the content size + blit UV change; the
-            # cache_w/cache_h we track stays the exact logical size for the blit.
             if [ e.cache_canvas ]
                 e.cache_canvas.resize[ ew, eh ]
-                # ANY logical size change re-renders this cache, so every element reflows at
-                # its new size IN THE SAME frame — chrome and scroll content alike. the old
-                # "resize within capacity → keep the pixels, just blit" shortcut desynced the
-                # tree during a seam drag: a re-rastered title narrowed a frame before the
-                # blit-only editor caught up (title too narrow, editor scrollbar overhanging).
-                # the per-line text cache makes the editor's re-render cheap (re-composite
-                # cached line blits, not re-raster glyphs), so resize-in-sync wins.
                 e.pristine = false
             el
                 e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true, quantize: true ]
@@ -3089,9 +2540,6 @@ Display Window
             cv.translate[ -pivot_x, -pivot_y ]
 
         redraw : bool [ e.animated || !e.pristine || stage == CanvasType.compose ]
-        # DIAG: log every element that re-rasterizes its layers (text) this frame into its
-        # cache — during a resize the cache is invalidated (pristine=false) per frame, so
-        # this fires continuously and proves the text is being re-rendered on every drag step.
         if [ redraw && e.cache_canvas && !e.animated && stage == CanvasType.screen ]
             eid : string [ (e.id && e.id.count > 0) ? e.id : '(noid)' ]
             #puts 'REDRAW {eid} {ew}x{eh} pristine={e.pristine}'
@@ -3103,14 +2551,8 @@ Display Window
 
         e.needs_frame = false
 
-        # the vertical scrollbar is painted LAST — after the masked cache blit and
-        # without the mask (see below) — so the edge fade never dims the bar. when this
-        # element caches to the screen, skip it in the cached layer loop and defer it.
         defer_scroll : bool [ e.cache_canvas && !e.animated && stage == CanvasType.screen ]
 
-        # compute layer bounds and draw each layer
-        # the element's live state bools fold to one State mask; layers with
-        # declared state overrides resolve through state_applies before draw
         e_mask : i32 [ 0 ]
         if [ e.hovered   ] e_mask += i32[ State.hovered ]
         if [ e.pressed   ] e_mask += i32[ State.pressed ]
@@ -3122,20 +2564,15 @@ Display Window
         if [ e.odd       ] e_mask += i32[ State.odd ]
         if [ e.even      ] e_mask += i32[ State.even ]
         if [ e.has_value ] e_mask += i32[ State.has_value ]
-        # global keyboard shift — every element sees it; layers opt in
         if [ shift     ] e_mask += i32[ State.shifted ]
         # selected lives on Option (not element) — fold it in typed
         eopt : Option [ e inherits Option ]
         if [ eopt->selected ] e_mask += i32[ State.selected ]
-        # shader passes take their state attributes from the same mask
-        e.apply_variants[ e_mask ]
         for [ layer_au: Au, lkey: string ] in e.layers
             if [ !redraw ] break
             layer : cast Layer [ layer_au ]
             if [ !layer ]
                 continue
-            # the layer's State BITMASK gates its paint: none = always; set =
-            # draws only while every one of its states is live on the element
             lsm : i32 [ i32[ layer.states ] ]
             if [ lsm != 0 && (e_mask & lsm) != lsm ]
                 continue
@@ -3158,8 +2595,6 @@ Display Window
                 r_br = layer.radius.br
                 r_bl = layer.radius.bl
 
-            # blur setup: draw to per-layer canvas when blur is active.
-            # dirty on first use, size change, or active transition.
             needs_blur  : bool [ layer.blur_x > 0.0 || layer.blur_y > 0.0 ]
             draw_cv     : target_cv
             blur_redraw : bool [ false ]
@@ -3191,7 +2626,6 @@ Display Window
                 sw_bot   : f32 [ layer.stroke_width->bottom ]
                 sw_left  : f32 [ (layer.stroke_width) ? layer.stroke_width.left   : 0.0 ]
                 sw_max   : f32 [ maxf[ maxf[ sw_top, sw_right ], maxf[ sw_bot, sw_left ] ] ]
-                # crisp-pixel offset: odd max stroke width needs half-pixel nudge
                 sw_int : i32 [ i32 sw_max ]
                 crisp  : f32 [ ((sw_int % 2) == 1) ? 0.5 : 0.0 ]
                 if [ crisp > 0.0 ]
@@ -3204,9 +2638,6 @@ Display Window
                 draw_cv.rounded_rect     [ b.x, b.y, b.w, b.h, r_tl, r_tr, r_br, r_bl ]
                 draw_cv.fill_color       [ (layer.fill_color && layer.fill_color.a > 0.0) ? layer.fill_color : rgba [ '#00000000' ] ]
                 draw_cv.stroke_color     [ layer.stroke_color ]
-                # fill gradient anchors — same element-unit → world-pixel
-                # convention as the label gradient. axis straddles the anchor
-                # so mirror puts the highlight ON the anchor point.
                 fp_x : f32 [ layer.fill_color_pos.x * e.bounds.w ]
                 fp_y : f32 [ layer.fill_color_pos.y * e.bounds.h ]
                 # DEBUG: hardcoded to test whether layer fields reach here.
@@ -3265,8 +2696,6 @@ Display Window
                 sc : f32 (layer.image_scale > 0.0) ? layer.image_scale : 1.0
                 dw : f32 layer.image_svg.w * sc
                 dh : f32 layer.image_svg.h * sc
-                # image_fit is region-relative: 1.0 fills the element, aspect
-                # kept — independent of the svg's authored size.
                 if [ layer.image_fit > 0.0 && layer.image_svg.w > 0.0 && layer.image_svg.h > 0.0 ]
                     f2 : f32 [ min[ (b.w * layer.image_fit) / layer.image_svg.w,
                                     (b.h * layer.image_fit) / layer.image_svg.h ] ]
@@ -3276,9 +2705,6 @@ Display Window
                 dy : f32 b.y + (b.h - dh) * 0.5
                 draw_cv.save[]
                 draw_cv.set_opacity[ (layer.opacity > 0.0) ? layer.opacity : 1.0 ]
-                # the layer's own colors TINT the glyph — an icon layer that sets
-                # no color leaves white, which scales to the shape's own color and
-                # is therefore a no-op for every existing icon.
                 icf : rgba [ (layer.image_color) ? layer.image_color : rgba [ '#ffffff' ] ]
                 draw_cv.fill_color  [ icf ]
                 draw_cv.stroke_color[ icf ]
@@ -3299,22 +2725,12 @@ Display Window
                 draw_cv.fill_color   [ layer.label_color ]
                 draw_cv.font_size    [ layer.label_size ]
                 draw_cv.line_height  [ layer.label_height ]
-                # gradient anchor: element-unit → world-pixel. |v| < 1 means
-                # a fraction of e.bounds; otherwise pixels. the axis straddles
-                # the anchor point (p0 = anchor - halfDir, p1 = anchor + halfDir)
-                # so mirror puts the highlight ON the anchor (cursor-following
-                # chrome). direction is label_grad_degrees from +x (screen
-                # coords: 0 = right, 90 = down).
                 cp_x : f32 [ layer.label_color_pos.x * e.bounds.w ]
                 cp_y : f32 [ layer.label_color_pos.y * e.bounds.h ]
                 rad  : f32 [ layer.label_gradient_radius ]
                 ang  : f32 [ radians[ layer.label_gradient_degrees ] ]
                 hx   : f32 [ cosf[ ang ] * rad * 0.5 ]
                 hy   : f32 [ sinf[ ang ] * rad * 0.5 ]
-                # canvas transform is already at the element's world origin
-                # (parent called cv.translate[e.bounds.x, e.bounds.y] before
-                # recursing). v_pos in the shader is world-space, so the
-                # anchor must use the transform, not e.bounds.x/y.
                 ax   : f32 [ draw_cv.transform_tx[] + cp_x ]
                 ay   : f32 [ draw_cv.transform_ty[] + cp_y ]
                 draw_cv.text_grad        [ layer.label_gradient ]
@@ -3350,11 +2766,6 @@ Display Window
             cv.restore[]
 
         if [ redraw ]
-            # redirect window canvases so e.draw* sees the cache target.
-            # hold the saved canvases: `a.screen = target_cv` is a `=` reassign
-            # that drops the field's previous value, and the save is a borrow
-            # (no hold) — without this, the reassign frees screen/compose when
-            # nothing else pads their refcount. released after the restore.
             prev_screen  : hold[ a.screen ]
             #prev_compose : hold[ a.compose ]
             if [ stage == CanvasType.screen ]  a.screen  = target_cv
@@ -3370,36 +2781,16 @@ Display Window
                 if [ !e.needs_frame ]
                     e.pristine = true
 
-        # blit element cache into parent canvas (screen stage only). when the
-        # element wants an edge fade, build/refresh a grayscale mask (white
-        # center, black inner glow) sized to the cache and composite through it.
         mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0 || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
         if [ e.cache_canvas && !e.animated && stage == CanvasType.screen ]
             if [ mask_on ]
                 glow_changed : bool [ e.mask_bg.x != e.mask_glow.x || e.mask_bg.y != e.mask_glow.y || e.mask_bg.z != e.mask_glow.z || e.mask_bg.w != e.mask_glow.w ]
-                # during a seam drag the cache re-rasters every frame (sub-pixel bounds shifts)
-                # while ew (integer) can hold for a frame — refresh the fade mask in lockstep so
-                # its edge extent never lags the cache, else the masked glow reads a stale extent
-                # and squishes. cheap: only while dragging, and the mask is a small canvas.
                 if [ !e.mask_canvas || e.mask_w != ew || e.mask_h != eh || glow_changed || vk.sync_paints ]
-                    # size the mask to the SRC cache's actual (quantized) texture and
-                    # give it the same logical content_w/h, so draw_canvas_masked's
-                    # shared uv (content/texture) maps both identically — otherwise the
-                    # fade samples the wrong place when the cache is quantized.
-                    # cache.width is already device pixels; Canvas init multiplies the
-                    # constructor size by scale, so pre-divide to land exactly on it.
                     mcs : f32 [ (a.scale > 0.0) ? a.scale : 1.0 ]
                     if [ !e.mask_canvas ]
-                        # create the Render ONCE; afterwards we only resize (quantized, so a
-                        # logical-size change within capacity is a no-op realloc) and re-paint
-                        # the fade. recreating it per frame churned a framebuffer (~20ms each)
-                        # on every drag step — the resize 10fps. quantize=true mirrors the
-                        # cache's UV layout so the shared content/texture uv still aligns.
                         e.mask_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: i32[ e.cache_canvas.width / mcs ], height: i32[ e.cache_canvas.height / mcs ], load_existing: true, quantize: true ]
                         e.mask_canvas.update[]
                     el
-                        # match the cache's capacity (same quantized logical size) — within a
-                        # 64px bucket this changes only content_w/h + uv, no GPU realloc.
                         e.mask_canvas.resize[ i32[ e.cache_canvas.width / mcs ], i32[ e.cache_canvas.height / mcs ] ]
                     e.mask_canvas.content_w = ew
                     e.mask_canvas.content_h = eh
@@ -3413,23 +2804,13 @@ Display Window
                     # mask_glow = (top, right, bottom, left) px
                     e.mask_canvas.inner_glow_sides[ rgba['#000'],
                         e.mask_glow.x, e.mask_glow.y, e.mask_glow.z, e.mask_glow.w ]
-                    # mask_inset = (top, right, bottom, left) px: shrink the rect
-                    # so the fade starts inset; outside stays fully masked.
                     mrx : f32 [ e.mask_inset.w ]
                     mry : f32 [ e.mask_inset.x ]
                     mrw : f32 [ f32 ew - e.mask_inset.w - e.mask_inset.y ]
                     mrh : f32 [ f32 eh - e.mask_inset.x - e.mask_inset.z ]
                     e.mask_canvas.rect_to[ mrx, mry, mrw, mrh ]
                     e.mask_canvas.paint[]
-                    # keep a left strip fully opaque (e.g. a fixed gutter) — the left
-                    # fade then originates just right of it. clear the inner glow first
-                    # so this strip is PURE white (otherwise it inherits the fade's glow
-                    # on its own edges and the gutter dims).
                     if [ e.mask_keep_l > 0.0 ]
-                        # keep the gutter opaque on left/right, but carry the SAME top and bottom
-                        # fades as the code (black top+bottom glow) so the line numbers dissolve
-                        # into the top fade (when scrolled) and the console overlay (bottom) too —
-                        # not a hard opaque edge at either end.
                         e.mask_canvas.inner_glow_sides[ rgba['#000'], e.mask_glow.x, 0.0, e.mask_glow.z, 0.0 ]
                         e.mask_canvas.fill_color[ rgba['#fff'] ]
                         e.mask_canvas.rect_to[ 0.0, mry, e.mask_keep_l, mrh ]
@@ -3440,16 +2821,12 @@ Display Window
                     0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
             el
                 cv.draw_canvas[ e.cache_canvas, 0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
-            # scrollbar over the freshly-blitted (edge-faded) content, in element-local
-            # space, with NO mask. runs every screen frame so the bar can widen/animate
-            # without the element having to redraw its whole cache.
             sbl : ScrollLayer (e.layers) ? cast ScrollLayer [ e.layers['scrollbar'] ] : null
             if [ sbl && sbl.ctype == stage && !sbl.hide ]
                 sbl.bounds = (sbl.area) ? sbl.area.rectangle[ e.bounds, null, null, e.fc, false, 0.0, 0.0 ] : e.bounds.copy[]
                 sbl.bounds.x -= e.bounds.x
                 sbl.bounds.y -= e.bounds.y
                 cv.save[ ]
-                # clip the bar to the control — never let it spill past the pane edges
                 sbtx : f32 [ cv.transform_tx[] ]
                 sbty : f32 [ cv.transform_ty[] ]
                 cv.set_crop[ sbtx, sbty, sbtx + e.bounds.w, sbty + e.bounds.h ]
@@ -3457,10 +2834,6 @@ Display Window
                 cv.restore[ ]
 
         last_2 : element
-        # paint normal children first, then topmost children over them. a scrolling
-        # container offsets its (non-fixed) children by -e.scroll — the generic side
-        # of what the Editor did by hand; a no-op when scroll is 0 (every element that
-        # doesn't set content_h). matches find_target, which already folds scroll.
         for [ ee: element, id: string ] in e.elements
             if [ ee.topmost ] continue
             cv.save[]
@@ -3487,10 +2860,6 @@ Display Window
             cv.restore[]
 
 
-# a headless user of Window: hosts an element tree on a backbuffer Display —
-# shared vk, no glfw window, no swapchain, no present. the hosted element
-# renders exactly as it would on screen (element targets, canvases, layout).
-# register on trinity.offscreens and the app loop pumps frame[] each tick.
 class offscreen
     context vk    : vk_context
     public width  : i32 [ 1024 ]
@@ -3504,7 +2873,6 @@ class offscreen
         if [ !st ] st = Style [ root ]
         win : Window [ vk: vk, app_object: root, st: st,
             width: width, height: height, backbuffer: true, title: 'offscreen' ]
-        win.hold[]
         w = win
         root.vk = vk
         w.update*[]
@@ -3515,12 +2883,12 @@ class offscreen
         if [ w ] w.draw[]
 
 abstract media_app trinity
+    func dealloc [ ]
+        puts 'DSTR trinity app dealloc runs'
     public root         : element
     public background   : string
     public title        : string
     public hidden       : bool
-    # the working directory the app started in (its install/share/<app> dir, set
-    # by the host before any app code runs). resources/config resolve against it.
     public startup_path : path
     intern msaa_samples : i64
     intern istroke      : f32 0
@@ -3533,9 +2901,6 @@ abstract media_app trinity
         v : root.get_property[ name.chars ]
         if [ v ] a.set_property[ name.chars, v ]
 
-    # read the terminal size (cells) into width/height for console mode. literal
-    # TIOCGWINSZ request per platform (the macro is a sizeof-based _IOR the compiler
-    # can't fold; the wrong value makes ioctl fail on the tty).
     func console_size []
         ws : winsize
         ok : bool [ ioctl[ 1, 0x40087468, @ws ] == 0 && ws.ws_col > 0 ]
@@ -3548,13 +2913,9 @@ abstract media_app trinity
 
     func init []
         expect root, 'trinity requires a root element'
-        # tee this run's output to /tmp/<app>.log (fresh each run) + terminal
         rtn : typeid[ root ]
         host_log_setup[ rtn.ident ]
-        # the cwd we launched in (Au captured it in engage before cd'ing to share).
         startup_path = path.path_startup[]
-        # the app element initializes at construction (defaults + user init),
-        # before any window exists; mount skips re-init via the latch
         root.initialize[]
         root.initialized = true
         adopt[ 'title' ]
@@ -3568,21 +2929,16 @@ abstract media_app trinity
         adopt[ 'attach' ]
         rt : typeid[ root ]
         background_type : Au.find_type[ background->chars, null ]
-        # text mode: no vk context, no GLFW window — host the tree + layout only.
         if [ text_mode ]
             console_size[]
             cwin : Window[ app_object: root, title:(title) ?? rt.ident,
                 width:width, height:height, background_type:background_type, text_mode: true ]
-            cwin.hold[]
             w = cwin
             cwin.console_input_open[]
             render *[]
             cwin.restyle = true
             Au.auto_free[ true ]
             return
-        # attach mode: render to a backbuffer (no glfw window, no swapchain)
-        # whose screen texture is shared — the host imports and displays it.
-        # only on linux (dma-buf); elsewhere it falls through to a window.
         ifdef [ linux ]
             if [ attach ]
                 at_start[ background_type, rt ]
@@ -3592,15 +2948,11 @@ abstract media_app trinity
             width:(width) ?? 1888, height:(height) ?? 888, background_type:background_type,
             hidden: hidden ]
         expect window.vk, "context didnt work"
-        window.hold[]
         w = window
         root.vk = window.vk
         w.update *[]
         render   *[]
         w.resize[w.width, w.height]
-        # the startup resize ran update[] with resizing=true, so on_compose skipped the
-        # first paint; nothing else flags a repaint, so the loop would idle until the
-        # first mouse event. force the initial paint here (resizing is false again now).
         window.restyle = true
         Au.auto_free[ true ]
 
@@ -3615,7 +2967,6 @@ abstract media_app trinity
         window : Window[w]
         wa : bool [ window.will_animate ]
         window.will_animate = false
-        # full-speed test: render every frame regardless of the dirty/animation gate.
         if [ true ]
             u0 : i64 [ epoch_micros[] ]
             update_scene*[]
@@ -3631,16 +2982,12 @@ abstract media_app trinity
             frames += 1
 
     ifdef [ linux ]
-        # attach: build the backbuffer window. the frame loop shares finished
-        # frames through the two-texture surface in our channel slot —
-        # nothing else to announce.
         func at_start [ background_type: Au_t, rt: Au_t ]
             aw : i32 [ (width)  ?? 1280 ]
             ah : i32 [ (height) ?? 720 ]
             awin : Window[ app_object: root, title:(title) ?? rt.ident,
                 width: aw, height: ah, background_type: background_type, backbuffer: true,
                 format: Pixel.rgba8 ]
-            awin.hold[]
             w = awin
             root.vk = awin.vk
             w.update *[]
@@ -3662,36 +3009,22 @@ Layer ScrollLayer
     public thumb_w      : f32
     public thumb_min_h  : f32
     public thumb_radius : f32
-    # geometry cached each draw so the owning element's press/drag can hit-test and
-    # map a mouse-y to a scroll offset (drag_to). all in element-local screen space.
     mutable thumb_y_px  : f32
     mutable thumb_h_px  : f32
     mutable track_vis   : f32
     mutable scroll_max  : f32
     mutable grab_w      : f32
-    # gap between the mouse-y origin (content top) and the track top, so drag
-    # math undoes the visual top nudge (track top != content top).
     mutable top_pad     : f32
-    # offset from the thumb top to where it was grabbed — kept constant during a
-    # drag so the thumb doesn't snap its center to the cursor (relative grab).
     mutable grab_off    : f32
-    # set by the owning element while the thumb is grabbed — pins the bar to its
-    # full expanded state (max width, squared, border) for the whole drag.
     public  active      : bool
 
     func draw [ cv: Canvas ]
         e : element [ parent ]
         if [ !e || e.content_h <= 0.0 || e.bounds.h >= e.content_h ] return
-        # no_scroll: the element opted out of scrolling — no scrollbar either
         if [ e.no_scroll ] return
-        # align the track top with the content layer — it may be pushed down
-        # below our own area top (e.g. the editor's find/replace bar adds a row).
-        # nudge it down a few px so the top gap matches the bottom's small inset.
         top     : f32 [ bounds.y ]
         cl      : Layer (e.layers) ? e.layers['content'] : null
         if [ cl && cl.bounds ] top = cl.bounds.y + 8.0
-        # mouse-y is measured from the content top; the track top sits `top_pad`
-        # below it, so drag_to/grab_at subtract this to stay in the track frame.
         top_pad = (cl && cl.bounds) ? top - cl.bounds.y : 0.0
         total_h : f32 [ e.content_h ]
         vis_h   : f32 [ bounds.y + bounds.h - top ]
@@ -3704,39 +3037,21 @@ Layer ScrollLayer
         max_sc  : f32 [ total_h - vis_h ]
         thumb_y : f32 [ top + (max_sc > 0.0) ? (e.scroll.y / max_sc) * travel : 0.0 ]
         base_w  : f32 [ thumb_w ]
-        # proximity: widen + un-round as the mouse nears the bar (within base_w*2 of
-        # the right edge). cursor is element-normalized and only valid while hovered,
-        # so the bar rests thin + rounded when the mouse is away.
-        # widen over a generous approach distance so the bar visibly responds as the
-        # mouse nears it (not just in the last few px). grab precision is handled
-        # separately by the element's hit zone.
-        # approach distance over which the bar widens — flat px (not bar-relative) so
-        # a thin bar still has a comfortable zone. matches move_event's frame zone.
         near : f32 [ 90.0 ]
         prox : f32 [ 0.0 ]
         if [ e.hovered ]
             from_right : f32 [ (1.0 - e.cursor_pos.x) * e.bounds.w ]
             prox = clamp[ 1.0 - from_right / near, 0.0, 1.0 ]
-        # while grabbed, stay fully expanded no matter where the cursor drifts
         if [ active ] prox = 1.0
         eff_w : f32 [ base_w * (1.0 + prox) ]
         r     : f32 [ thumb_radius * (1.0 - prox) ]
-        # fixed center inset base_w from the edge, so the widest state still fits;
-        # the thumb scales symmetrically about it (both sides grow), never re-pinning.
         cx      : f32 [ bounds.x + bounds.w - base_w ]
         thumb_x : f32 [ cx - eff_w * 0.5 ]
-        # cache geometry for the element's drag handling. track_vis is the track
-        # height starting at the content top, which is also where mouse-y is measured
-        # from (ev.mouse.pos.y - content_layer.bounds.y), so drag_to needs no offset.
-        # thumb_y_px is TRACK-RELATIVE (0 = content/track top) so it matches the
-        # mouse-y the element passes to drag_to (also track-relative).
         thumb_y_px = thumb_y - top
         thumb_h_px = thumb_h
         track_vis  = vis_h
         scroll_max = max_sc
         grab_w     = base_w * 2.0 + 6.0
-        # while widening, fade in a 1px border around the whole scroll area (the
-        # widened track column) to visually contain the scrollbar. #fff2 at full prox.
         if [ prox > 0.0 ]
             cv.fill_color  [ rgba['#0000'] ]
             cv.stroke_color[ rgba[ r:1.0, g:1.0, b:1.0, a: 0.133 * prox ] ]
@@ -3748,19 +3063,12 @@ Layer ScrollLayer
         cv.rounded_rect[ thumb_x, thumb_y, eff_w, thumb_h, r, r, r, r ]
         cv.paint[]
 
-    # map a mouse-y (element-local screen space) to a scroll offset, centering the
-    # thumb under the cursor. returns -1 when there's nothing to scroll. the owning
-    # element applies the result to its own scroll while the bar is grabbed.
-    # map a (track-relative) mouse-y to a scroll offset, keeping the grab offset so
-    # the thumb tracks the cursor without snapping. returns -1 if nothing to scroll.
     public func drag_to [ my: f32 ] -> f32
         travel : f32 [ track_vis - thumb_h_px ]
         if [ travel <= 0.0 ] return -1.0
         thumb_top : f32 [ my - top_pad - grab_off ]
         return clamp[ (thumb_top / travel) * scroll_max, 0.0, scroll_max ]
 
-    # call on grab: record where in the thumb the cursor landed (relative grab when
-    # on the thumb; centered when clicking the empty track).
     public func grab_at [ my: f32 ]
         mt : f32 [ my - top_pad ]
         if [ mt >= thumb_y_px && mt <= thumb_y_px + thumb_h_px ]
@@ -3781,68 +3089,50 @@ element Group2
     func render[] -> Elements
         return null
 
-# a segmented icon strip drawn as ONE element — no child buttons, no style
-# layers, no states. give it a `buttons` id list; it draws each as a pill
-# segment (leftmost rounded-left, rightmost rounded-right, rest square),
-# tracks selection + hover itself, and shift+drag reorders the segments.
 element TButtons
     animated : true
     public  buttons   : array string  # segment ids, e.g. [ 'minus', 'plus' ]
     public  icons     : bool [ true ] # ids resolve to images/<id>.svg
     public  manual    : bool          # actions, not toggles — no latched selection
     public  selected  : i32 [ -1 ]
-    # multi-select: when set, each bit i lit = segment i toggled on (independent).
-    # overrides `selected` for the lit test so more than one can show at once.
     public  sel_mask  : i32
     public  seg_radius : f32 [ 8.0 ]
-    intern  items     : array string
-    intern  svgs      : array SVGModel
+    intern  svg_cache : map SVGModel [string]
     intern  hover_ix  : i32 [ -1 ]
-    intern  drag_ix   : i32 [ -1 ]
-    intern  dragging  : bool         # true only during a shift+drag reorder
 
-    # snapshot the ids into `items` (+ load each svg) once, and re-sync only when
-    # the button count changes — so a shift+drag reorder (which mutates `items`)
-    # survives across frames instead of being reset from `buttons` every draw.
-    func ensure_items []
-        if [ !buttons ] return
-        if [ items && items.count == buttons.count ] return
-        items = array string [ ]
-        svgs  = array SVGModel [ ]
-        for [ i: i32 0, i < buttons.count, i += 1 ]
-            items.push[ buttons[ i ] ]
-            if [ icons ] svgs.push[ SVGModel [ 'images/{buttons[ i ]}.svg' ] ]
+    # the svg for a segment id, loaded on first use
+    func seg_svg [ id: string ] -> SVGModel
+        if [ !id ] return null
+        if [ !svg_cache ] svg_cache = map SVGModel [string] [ ]
+        m9 : SVGModel svg_cache[ id ]
+        if [ !m9 ]
+            m9 = SVGModel [ 'images/{id}.svg' ]
+            svg_cache[ id ] = m9
+        return m9
 
     # segment index under the cursor, or -1 outside the strip.
     func seg_at [ ev: Event ] -> i32
-        ensure_items[ ]
-        if [ !items ] return -1
-        n : i32 [ items.count ]
+        if [ !buttons ] return -1
+        n : i32 [ buttons.count ]
         if [ n == 0 ] return -1
-        # ev.mouse.pos is already element-local (0..bounds.w), like the draw coords
         rel : f32 [ ev.mouse.pos.x ]
         if [ rel < 0.0 || rel >= bounds.w ] return -1
         return i32 [ rel / (bounds.w / f32[ n ]) ]
 
-    # canvas is translated to the element origin — draw in LOCAL coords (0,0 top-left).
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
-        ensure_items[]
-        n : i32 [ items.count ]
+        if [ !buttons ] return
+        n : i32 [ buttons.count ]
         if [ n == 0 || !bounds ] return
         cv : Canvas w.screen
-        # on_move stops firing once the cursor leaves the element, so clear the
-        # hover here when the framework says we're no longer hovered.
         if [ !hovered ] hover_ix = -1
         seg_w : f32 [ bounds.w / f32[ n ] ]
         for [ i: i32 0, i < n, i += 1 ]
             x  : f32 [ f32[ i ] * seg_w ]
-            # only the leftmost keeps rounded-left, rightmost rounded-right
             tl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
             bl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
             tr : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
             br : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
-            # fill + inner glow per state, matching NavButton (quiet/hover/selected)
             fcol : rgba [ '#614' ]
             gc   : rgba [ '#ccf2' ]
             gpx  : f32  [ 16.0 ]
@@ -3857,8 +3147,6 @@ element TButtons
                 fcol = rgba [ '#826' ]
                 gc   = rgba [ '#fcc6' ]
                 gpx  = 18.0
-            # glow only the group's OUTER edges — no glow on the seam sides, so
-            # neighboring segments don't stack into a thick dark band there.
             gl : f32 [ (i == 0)     ? gpx : 0.0 ]
             gr : f32 [ (i == n - 1) ? gpx : 0.0 ]
             cv.fill_color[ fcol ]
@@ -3866,15 +3154,13 @@ element TButtons
             cv.rounded_rect[ x, 0.0, seg_w, bounds.h, tl, tr, br, bl ]
             cv.paint[ ]
             cv.inner_glow_sides[ rgba [ '#0000' ], 0.0, 0.0, 0.0, 0.0 ]
-            # icon centered, tinted white (draw_svg reads fill_color as its tint)
-            if [ icons && svgs && i < svgs.count && svgs[ i ] ]
+            sv9 : SVGModel (icons) ? seg_svg[ buttons[ i ] ] : null
+            if [ sv9 ]
                 isz : f32 [ bounds.h * 0.55 ]
                 ix  : f32 [ x + (seg_w - isz) * 0.5 ]
                 iy  : f32 [ (bounds.h - isz) * 0.5 ]
                 cv.fill_color[ rgba [ '#fff' ] ]
-                cv.draw_svg[ svgs[ i ], ix, iy, isz, isz ]
-        # separators between segments: a dark hairline then a light one beside it,
-        # so each seam reads as a soft bevel. skip the outer left/right edges.
+                cv.draw_svg[ sv9, ix, iy, isz, isz ]
         dvy : f32 [ bounds.h * 0.2 ]
         dvh : f32 [ bounds.h * 0.6 ]
         for [ i: i32 1, i < n, i += 1 ]
@@ -3889,56 +3175,16 @@ element TButtons
     func on_press [ ev: Event ]
         i : i32 [ seg_at[ ev ] ]
         if [ i < 0 ] return
-        if [ ev.key.shift ]
-            drag_ix  = i
-            dragging = true
-            ev.no_default = true
-            return
         if [ !manual ] selected = i
-        # emit the clicked segment's id as this element's id so the app's id-based
-        # on_press (which reads ev.target.id) routes it. don't consume — the app
-        # handles the action. the reconcile resets id from the map key next frame.
-        a.id = items[ i ]
+        a.id = buttons[ i ]
 
     func on_move [ ev: Event ]
-        if [ dragging ]
-            j : i32 [ seg_at[ ev ] ]
-            if [ j >= 0 && j != drag_ix ]
-                # hold across the reassignment: the slot overwrite frees the old
-                # value, so a plain borrow would dangle and double-free.
-                ti : hold[ items[ drag_ix ] ]
-                ts : hold[ svgs[ drag_ix ] ]
-                items[ drag_ix ] = items[ j ]
-                svgs[ drag_ix ]  = svgs[ j ]
-                items[ j ] = ti
-                svgs[ j ]  = ts
-                drop[ ti ]
-                drop[ ts ]
-                if [ selected == drag_ix ] selected = j
-                el [ selected == j ]       selected = drag_ix
-                drag_ix = j
-        el
-            hover_ix = seg_at[ ev ]
+        hover_ix = seg_at[ ev ]
 
-    func on_release [ ev: Event ]
-        drag_ix  = -1
-        dragging = false
-
-# a draggable multi-pane layout manager. children come via `inner` in insertion
-# order. the FIRST child is the flex pane — it takes all leftover space; every
-# other child has a target size in `sizes`, keyed by its child id (app-owned so
-# drags persist), and a draggable divider on its leading edge. displayed sizes
-# ease toward their targets with filter_n, so drags, adds and removes glide.
-# paints ONLY a 1 pixel divider line per gap, colored by `line_color`.
 element Splitter
     animated : true
-    # children come via `inner` (NOT `elements`): apply_args skips `elements`, so a
-    # toggled-in child would never reach the persistent instance; `inner` propagates
-    # on change. render positions them and returns them as the real `elements`.
     public inner       : map element [ string ]
     public vertical   : bool
-    # sizes is a paired array [ id, px, id, px, ... ] — NOT a map: Au map iteration
-    # misses entries in small maps (per CLAUDE.md). stride-2 lookup instead.
     public sizes      : array
     public line_color : rgba [ '#fff2' ]     # the 1px divider line
     public bar        : f32 [ 6.0 ]          # divider grab half-width px
@@ -3946,22 +3192,14 @@ element Splitter
     public inset      : f32 [ 0.0 ]          # leading inset (units) for each child
     public deflt      : f32 [ 320.0 ]        # unsaved-size fallback; 0 = even share
     public even       : bool                 # count change resets to even shares
-    # a drag well below the minimum snaps the pane's size to 0 — the user forced
-    # it OFF. the app owns what that means: it sees the 0 in `sizes` and closes
-    # the pane (drops the kid, flips its toggle) as if the user had closed it.
     public snap_close : bool
     intern shown      : array                # eased sizes, paired like `sizes`
-    # the dragged pane as an ORDER INDEX (0 = none; sized panes start at 1).
-    # index, not id: when a snapped-shut pane is removed by the app mid-drag,
-    # the same index becomes its neighbor — the drag chains onto it by itself.
     intern drag_ix    : i32
     intern last_n     : i32
     intern dseam      : array f32            # divider px positions, hit-test + draw
     intern cursor_on  : bool                 # WE set the resize cursor; restore it
     intern dbgf       : i32                  # count-change debug frames left
 
-    # paired-array key slot; cast each key with `string [ ... ]` (an un-bracketed
-    # `string x` does not produce a comparable string). -1 = no entry.
     func pair_index [ arr: array, id: string ] -> i32
         if [ !arr || !id ] return -1
         for [ i: i32 0, i + 1 < arr.count, i += 2 ]
@@ -3974,7 +3212,6 @@ element Splitter
         if [ ix < 0 ] return 0.0
         return f32 [ arr[ ix + 1 ] ]
 
-    # store a value for id (update in place, else append the pair).
     func pair_set [ arr: array, id: string, val: f32 ]
         for [ i: i32 0, i + 1 < arr.count, i += 2 ]
             k : string [ arr[ i ] ]
@@ -3991,9 +3228,6 @@ element Splitter
                 ids.push[ id ]
         return ids
 
-    # target size for sized child id: saved, else deflt, else an even share.
-    # a STORED 0 under snap_close = the user snapped it shut; hold it at 0
-    # until the app reacts (removes the kid / clears the entry).
     func target_of [ id: string, span: f32, n: i32 ] -> f32
         ix : i32 [ pair_index[ sizes, id ] ]
         if [ ix >= 0 ]
@@ -4003,7 +3237,6 @@ element Splitter
         if [ deflt > 0.0 ] return deflt
         return (span - f32[ n - 1 ] * gap) / f32[ n ]
 
-    # displayed (eased) size; a child seen for the first time snaps to target.
     func shown_of [ id: string, span: f32, n: i32 ] -> f32
         v : f32 [ pair_get[ shown, id ] ]
         if [ v > 0.0 ] return v
@@ -4011,8 +3244,6 @@ element Splitter
         pair_set[ shown, id, t ]
         return t
 
-    # position each child from its eased size (first = flex), leaving a `gap`
-    # between panes; the seam centers land where draw[] paints the 1px lines.
     func render [] -> Elements
         if [ !inner ] return null
         if [ !sizes ] sizes = array [ ]
@@ -4020,15 +3251,10 @@ element Splitter
         ids : array string [ order[] ]
         n   : i32 [ ids.count ]
         if [ n == 0 ] return null
-        # pane count change: in even mode forget saved sizes (equal shares),
-        # and ALWAYS snap the displayed sizes to their targets — a tab coming
-        # in or leaving must never animate the ratios; filter_n eases only
-        # within a steady pane set (drags).
         if [ n != last_n ]
             last_n = n
             if [ even ] sizes = array [ ]
             shown = array [ ]
-            # render runs twice per frame — 20 ticks ≈ 10 frames of trace
             dbgf  = 20
         span : f32 [ (bounds) ? ((vertical) ? bounds.h : bounds.w) : 1200.0 ]
         flex : f32 [ span - f32[ n - 1 ] * gap ]
@@ -4060,8 +3286,6 @@ element Splitter
             if [ i < n - 1 ]
                 mid : f32 [ pos + gap * 0.5 ]
                 dseam.push[ mid ]
-                # invisible topmost grab strip over the divider: the panes sit
-                # flush, so without it every press would land in a child.
                 h0 : f32 [ mid - bar ]
                 h1 : f32 [ mid + bar ]
                 hd : element [ topmost: true ]
@@ -4074,8 +3298,6 @@ element Splitter
         if [ dbgf > 0 ] dbgf -= 1
         return out
 
-    # once per frame: ease each shown size toward its target (filter_n, so the
-    # motion is frame-rate independent), then paint the 1px line in each gap.
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         ids : array string [ order[] ]
@@ -4088,8 +3310,6 @@ element Splitter
             v : f32 [ shown_of[ ids[ i ], span, n ] ]
             d : f32 [ t - v ]
             if [ d != 0.0 ]
-                # ONLY a live drag animates; every other change (tabs added,
-                # panels toggled, app-set sizes) lands instantly — zero movement
                 if [ i != drag_ix || (d < 0.5 && d > -0.5) ]
                     v = t
                 el
@@ -4103,8 +3323,6 @@ element Splitter
         cv : Canvas w.screen
         cv.fill_color[ line_color ]
         for [ di: i32 0, di < dseam.count, di += 1 ]
-            # snap to the pixel column/row holding the gap center — a fractional
-            # (eased) position would blend the 1px line across two pixels.
             m : f32 [ floor[ dseam[ di ] ] ]
             if [ vertical ]
                 cv.rounded_rect[ 0.0, m, bounds.w, 1.0, 0.0, 0.0, 0.0, 0.0 ]
@@ -4112,8 +3330,6 @@ element Splitter
                 cv.rounded_rect[ m, 0.0, 1.0, bounds.h, 0.0, 0.0, 0.0, 0.0 ]
             cv.paint[ ]
 
-    # grab the divider (gap center) under the cursor; it fronts sized child i+1.
-    # capture the pointer so every following move routes here until release.
     func on_press [ ev: Event ]
         if [ !bounds || !dseam ] return
         ids : array string [ order[] ]
@@ -4127,9 +3343,6 @@ element Splitter
                 ev.no_propagation = true
                 return
 
-    # moves bubble here from every child, so gate the resize cursor on divider
-    # proximity — and restore the arrow when WE set it (cursor_on), never when a
-    # nested Splitter did. a drag writes the TARGET size — draw[] eases after it.
     func on_move [ ev: Event ]
         if [ !bounds ] return
         hat  : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
@@ -4147,24 +3360,16 @@ element Splitter
         if [ drag_ix <= 0 ] return
         ids  : array string [ order[] ]
         n    : i32 [ ids.count ]
-        # the app may have removed snapped-shut panes since the last move —
-        # clamp; the surviving pane now AT this index carries the drag on.
         if [ drag_ix >= n ] drag_ix = n - 1
         if [ drag_ix <= 0 ] return
         span : f32 [ (vertical) ? bounds.h : bounds.w ]
         at   : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
-        # dragged pane's fixed trailing edge = span - (targets after) - (gaps
-        # after); its new size = trailing edge - cursor. the flex pane absorbs.
         after : f32 [ 0.0 ]
         for [ i: i32 1, i < n, i += 1 ]
             if [ i > drag_ix ] after += target_of[ ids[ i ], span, n ]
         gaps  : f32 [ f32[ n - 1 - drag_ix ] * gap ]
         trail : f32 [ span - after - gaps ]
         sz    : f32 [ trail - at ]
-        # magnetic floor: below the minimum the pane holds at 40px, but pushing
-        # well past it (under 20px) snaps to 0 — the user forced it off. the app
-        # then removes the pane and this index becomes the next divider: one
-        # continuous pull keeps snapping edge after edge.
         if [ sz < 40.0 ] sz = ((snap_close && sz < 20.0)) ? 0.0 : 40.0
         if [ sz > span - 60.0 ] sz = span - 60.0
         pair_set[ sizes, ids[ drag_ix ], sz ]
@@ -4187,16 +3392,9 @@ element Control
         return null
 
 Control Button
-    # icon by NAME ('play' -> images/play.svg): a shortcut that feeds the
-    # button's final declared layer below — nothing outside Button touches it
     public icon  : string
     iconl : Layer [ image_align: Align [ x: XAlign.middle, y: YAlign.middle ], image_scale: 1.7 ]
-    # the icon NAME we last resolved. the instance persists across frames, so a
-    # prop that flips (play <-> stop) must re-resolve — init alone bakes in
-    # whatever the first frame asked for.
     intern icon_cur : string
-    # glyph size as a fraction of the BUTTON, whatever size the svg was drawn
-    # at. 0 = leave the layer's own image_scale alone.
     public  icon_fit : f32
 
     func sync_icon []
@@ -4204,9 +3402,6 @@ Control Button
         if [ !icon || icon.count == 0 ] return
         if [ icon_cur && icon_cur.compare[ icon ] == 0 ] return
         icon_cur = icon
-        # a swapped glyph must reach pixels: drop the old model's raster cache
-        # and invalidate this element's cached surface, or the cache re-blits
-        # the old icon.
         iconl.image_svg = SVGModel [ 'images/{icon}.svg' ]
         pristine    = false
         needs_frame = true
@@ -4230,8 +3425,6 @@ Button Option
     public left_view  : bool
     public right_view : bool
     public toggle     : bool
-    # when set, the option never toggles its own `selected` — the app owns that
-    # state and drives it (e.g. a play↔stop button bound to a running flag).
     public manual_mode : bool
     func on_press[ ev:Event ]
         if [ manual_mode ] return
@@ -4253,8 +3446,6 @@ element Toolbar
     func render[] -> Elements
         return null
 
-# generic enum selector: given an enum typeid, one tab per member; you select one.
-# `value` mirrors the selected member's constant; writes through `bound` when set.
 Control Tabs
     public  etype : Au_t
     public  value : i32
@@ -4279,7 +3470,6 @@ Control Tabs
                 return
 
     func render [] -> Elements
-        # no etype = a plain tab container (composed children pass through)
         if [ !etype ] return null
         els : Elements [ ]
         for [ m: i32 0, m < etype.members.count, m += 1 ]
@@ -4290,8 +3480,6 @@ Control Tabs
             els[ nm ] = Option [ label: nm, manual_mode: true, selected: sel ]
         return els
 
-# reflects an f32 member as a range slider: a rounded track, an accent fill up
-# to the value, and a circle handle. press/drag maps x to value in [minv,maxv].
 Control Slider
     animated : true
     mutable target : element
@@ -4299,8 +3487,6 @@ Control Slider
     mutable minv   : f32
     mutable maxv   : f32 [ 1.0 ]
 
-    # the current value lives in element.value (the central control value); we
-    # mirror it to the bound member so the app sees changes.
     func read [] -> f32
         if [ value ] return f32[ value ]
         if [ target && mem ]
@@ -4348,9 +3534,6 @@ Control Slider
         cv.rounded_rect[ kx - hr, cy - hr, hr * 2.0, hr * 2.0, hr, hr, hr, hr ]
         cv.paint[]
 
-# reflects an rgba member: a live swatch that expands (row :selected) to an
-# Inkscape-style hue ring + SV triangle. bound writes the picked color back.
-# one control that draws itself — canvas ops in draw[], no styleable layer.
 Control ColorPicker
     animated : true
     mutable target : element
@@ -4366,7 +3549,6 @@ Control ColorPicker
             cv.rounded_rect[ 0.0, 0.0, bounds.w, bounds.h, 6.0, 6.0, 6.0, 6.0 ]
             cv.paint[]
             return
-        # expanded: a hue ring (conic gradient annulus) with the swatch at center
         cx : f32 [ bounds.w / 2.0 ]
         cy : f32 [ bounds.h / 2.0 ]
         rad : f32 [ ((bounds.w < bounds.h) ? bounds.w : bounds.h) / 2.0 - 6.0 ]
@@ -4393,18 +3575,10 @@ Option Edit
     func render[] -> Elements
         return null
 
-# the shade's corner tab: a thin white outline around the menu icon, nothing else.
-# no fill — it sits over whatever the app is drawing, so a filled chip would read
-# as part of the app rather than as framework chrome.
 Option UXMenuButton
-    # direction is the subclass (UXMenuLeft / UXMenuRight); this is the size and
-    # the look every chip shares.
     area    : Region { r0.22+ t0.22 w1.0 h1.0 }
-    # dictate feedback: orange border while the recorder loads, blue when live
     public wait_state : bool
     public live_state : bool
-    # at rest the chip is the glyph alone — the border only appears on hover, so
-    # the framework's chrome stays out of the app's way until reached for.
     outline : Layer [ radius: Radius [ '8' ], stroke_width: 0.0,
         stroke_color: rgba [ '#0000' ], fill_color: rgba [ '#0000' ] ]
     hover   : Layer [ states: State.hovered, radius: Radius [ '8' ],
@@ -4412,9 +3586,6 @@ Option UXMenuButton
     active  : Layer [ states: State.selected, radius: Radius [ '8' ],
         stroke_width: 0.5, stroke_color: rgba [ '#ffff' ], fill_color: rgba [ '#0000' ] ]
 
-    # the glyph's own tint, resolved per frame — a Layer state can't express it
-    # because there is one icon layer, not one per state. quiet at rest, full
-    # white under the cursor, ember while engaged.
     func render [] -> Elements
         sync_icon[]
         if [ selected ]
@@ -4423,7 +3594,6 @@ Option UXMenuButton
             iconl.image_color = rgba [ '#ffffff' ]
         el
             iconl.image_color = rgba [ '#ffffff80' ]
-        # recorder feedback rides the outline layer, resolved per frame
         if [ live_state ]
             outline.stroke_width = 1.0
             outline.stroke_color = rgba [ '#3b6fe0' ]
@@ -4435,26 +3605,13 @@ Option UXMenuButton
             outline.stroke_color = rgba [ '#0000' ]
         return null
 
-# direction subclasses — the flow anchor is the only difference
 UXMenuButton UXMenuLeft
     area : Region { l0.22+ t0.22 w1.0 h1.0 }
 
 UXMenuButton UXMenuRight
     area : Region { r0.22+ t0.22 w1.0 h1.0 }
 
-# framework dev shade — a macOS-9 style panel that drops from a corner tab. trinity
-# injects it over every app (app_render), so the app never designs or defines it. the
-# tab toggles it; when open a full-window scrim catches click-away. the panel itself
-# slides via a CSS :selected transition on element.sheet. focusable is false so the
-# transparent container never steals input — only the tab, scrim, and panel do.
-# the shade's parts, each carrying its own region + look. they were defaults in
-# style/trinity.css, which only loads for an app that HAS a stylesheet — so the
-# panel rendered at zero size for every app without one. stated here instead.
 
-# the orbiter shell composited INSIDE the app's window (the supervisor
-# spawned orbiter --attach). orbiter renders into its own shared screen
-# texture; we import that texture and draw it — no copies, no messages
-# about frames. input posts toward orbiter on ring 0.
 element IDEOverlay
     area       : Region { l0 t0 r0 b0 }
     animated   : true
@@ -4471,8 +3628,6 @@ element IDEOverlay
     mutable req_w   : i32
     mutable req_h   : i32
 
-    # import orbiter's shared surface (side 1) whenever its generation
-    # changes — startup and resizes; the front texture is always complete
     func service [ cv: Canvas ]
         g9 : i32 [ host_tex_gen[ host_slot[], 1 ] ]
         if [ g9 == gen || g9 <= 0 ] return
@@ -4481,76 +3636,43 @@ element IDEOverlay
         f9 : i32
         fd0 : i32 [ host_tex_pull[ host_slot[], 1, 0, @w9, @h9, @f9 ] ]
         fd1 : i32 [ host_tex_pull[ host_slot[], 1, 1, @w9, @h9, @f9 ] ]
-        if [ fd0 < 0 || fd1 < 0 ] return
-        if [ tex0 ]
-            tex0.drop[]
-            tex1.drop[]
+        if [ fd0 < 0 || fd1 < 0 ]
+            puts 'overlay: pull failed gen {g9} fds {fd0},{fd1}'
+            return
         tex0 = cv.vk.import_shared_tex[ fd0, w9, h9, f9, cv.w ]
         tex1 = cv.vk.import_shared_tex[ fd1, w9, h9, f9, cv.w ]
-        tex0.hold[]
-        tex1.hold[]
         gen = g9
+        puts 'overlay: imported orbiter surface {w9}x{h9} gen {g9}'
 
-    # the newest complete frame of orbiter's surface (null until one flips)
     func front [] -> Texture
         fr : i32 [ host_tex_front[ host_slot[], 1 ] ]
         if [ fr < 0 || !tex0 ] return null
         return (fr == 0) ? tex0 : tex1
 
     public func draw [ w: Window ]
-        # compose stage: the screen canvas stays clean of this overlay, so
-        # the app publishes its true scene while the window shows orbiter
-        if [ w.draw_stage != CanvasType.compose ] return
-        cv : Canvas w.compose
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas w.screen
         service[ cv ]
-        # ask orbiter to render at OUR size so frames map 1:1 (one control
-        # message on ring 1, once per size change)
         nw : i32 [ i32[ bounds.w ] ]
         nh : i32 [ i32[ bounds.h ] ]
         if [ nw > 0 && nh > 0 && (nw != req_w || nh != req_h) ]
             req_w = nw
             req_h = nh
             host_post[ 0, i32[ HM.resize ], nw, nh, 0 ]
-        # orbiter asked to close the overlay — start the fade
         if [ ux.ide_close ]
             ux.ide_close = false
-            closing = true
-        if [ closing ]
-            dim -= 0.06
-            if [ dim <= 0.0 ]
-                dim     = 0.0
-                closing = false
-                ux.ide_active = false
-                ux.ide_restore_size[]
-                ux.restyle      = true
-                return
-        el [ dim < 1.0 ]
-            dim += 0.05
-            if [ dim > 1.0 ] dim = 1.0
-        cv.set_opacity[ dim ]
-        cv.fill_color[ rgba [ '#0a0e16' ] ]
-        cv.stroke_width[ 0.0 ]
-        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
-        cv.paint[]
-        ft : front[]
-        if [ ft ]
-            aw : f32 [ f32[ ft.width ] ]
-            ah : f32 [ f32[ ft.height ] ]
-            ar : f32 [ aw / ah ]
-            fw : f32 [ bounds.w ]
-            fh : f32 [ fw / ar ]
-            if [ fh > bounds.h ]
-                fh = bounds.h
-                fw = fh * ar
-            fitx = (bounds.w - fw) * 0.5
-            fity = (bounds.h - fh) * 0.5
-            fitw = fw
-            fith = fh
-            cv.draw_image[ ft, rect [ x: fitx, y: fity, w: fitw, h: fith ] ]
-        cv.set_opacity[ 1.0 ]
+            ux.shell_tex  = null
+            ux.ide_active = false
+            host_post[ 0, i32[ HM.shell ], 0, 0, 0 ]
+            ux.ide_restore_size[]
+            ux.restyle    = true
+            return
+        fitx = 0.0
+        fity = 0.0
+        fitw = bounds.w
+        fith = bounds.h
+        ux.shell_tex = front[]
 
-    # map a pointer event into orbiter's frame space and forward it on
-    # ring 0; ide_pump replays it into orbiter's tree
     func post_mouse [ ev: Event, kind: i32 ]
         if [ fitw <= 0.0 || !tex0 ] return
         aw : f32 [ f32[ tex0.width ] ]
@@ -4580,9 +3702,8 @@ element IDEOverlay
             host_post[ 0, i32[ HM.text ], (i32 ev.key.text.chars[ i ]) & 255, 0, 0 ]
 
     func on_key [ ev: Event ]
-        # shift+esc closes the overlay (orbiter keeps running for the mic)
         if [ ev.key.unicode == 256 && ev.key.shift && ev.key.state ]
-            closing = true
+            ux.ide_close = true
             return
         mods : i32 [ 0 ]
         if [ ev.key.shift ] mods = mods | 1
@@ -4592,7 +3713,6 @@ element IDEOverlay
         act : i32 [ (ev.key.state) ? 1 : 0 ]
         host_post[ 0, i32[ HM.key ], i32[ ev.key.unicode ], act, mods ]
 
-# full-window dim behind the panel; passes clicks through for click-away close.
 element UXShadeScrim
     area : Region { l0 t0 r0 b0 }
     dim  : Layer [ fill_color: rgba [ '#0009' ] ]
@@ -4617,7 +3737,6 @@ element UXShadeClose
         radius: Radius [ '6' ], label_color: rgba [ '#ffffff' ], label_size: 16,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
-# the rounded pane the reflected rows sit inside, with the overlay scrollbar.
 element UXShadeList
     area      : Region { l14px t2.4 r14px b14px }
     pane      : Layer [ fill_color: rgba [ '#101014' ], stroke_width: 1.0,
@@ -4625,7 +3744,6 @@ element UXShadeList
     scrollbar : ScrollLayer [ overlay: true, area: Region { l0 t0 r0 b0 },
         thumb_color: '#fff3', thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
 
-# a row's name leads by size + brighter color; the description trails muted.
 element UXShadeName
     area : Region { l24px t0.4 r6 h1.1 }
     face : Layer [ label_color: rgba [ '#e6e6ea' ], label_size: 15,
@@ -4636,11 +3754,8 @@ element UXShadeDesc
     face : Layer [ label_color: rgba [ '#86868e' ], label_size: 12,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
-# a Control (not bare element) so its :selected state can grow the row height —
-# the whole accordion is just that taller area revealing the expanded control.
 Control ShadeRow
     focusable : false
-    # rows stack (t0+); selected grows to reveal the expanded control
     area    : Region { l0 t0+ r0 h57px }
     divider : Layer [ fill_color: rgba [ '#fff1' ], area: Region { l16px b0 r16px h1px } ]
     open    : Layer [ states: State.selected ]
@@ -4650,36 +3765,20 @@ Control ShadeRow
 
 element UXGenerics
     focusable : false
-    # closed until the tab is pressed — the shade is chrome, not a startup dialog
     mutable show_console : bool
-    # dictation: click on to start the stream, click again to end it. the button
-    # is manual_mode, so this flag is the only thing driving its state.
     mutable recording    : bool
     mutable dict_dbg     : bool
-    # the app object we reflect — its public non-mutable bool/enum members become
-    # the Options rows. set by the Window in app_render.
     mutable target : element
-    # the member name of the currently-expanded (accordion) row, or empty. only
-    # one row expands at a time; a color picker row uses it to reveal its wheel.
     mutable expanded : string
 
     func on_press [ ev: Event ]
-        # use ev.origin (the element find_target hit) — ev.target is reassigned to
-        # each ancestor as the press bubbles, so by the time this parent handler runs
-        # it points at the shade itself, not the tab that was clicked.
         e : cast element [ ev.origin ]
         if [ !e ] return
         if [ e.id == 'tab' ]
             show_console = !show_console
             if [ ux ] ux.restyle = true
             ev.stop_propagation[]
-        # dictation toggle: on starts the stream, off ends it. orbiter owns
-        # the mic and the LLM — the app only SIGNALS the state (bus). the
-        # legacy on_dictate hand-off stays for apps that self-record.
-        # shift+click additionally raises orbiter with this app inside it.
         el [ e.id == 'dictate' ]
-            # shift: straight to orbiter, composited INSIDE this window —
-            # the record state does not change
             if [ ev.key.shift ]
                 if [ ux ] ux.ide_open[]
             el
@@ -4688,8 +3787,6 @@ element UXGenerics
                     ux.dict_on = recording
                     # first record: summon the agent service (mic owner)
                     if [ recording ] ux.ide_ensure[]
-                    # stop: freeze the app frame + tree NOW, so the request
-                    # orbiter is about to send carries the current screenshot
                     if [ !recording ] ux.capture_context[]
                     # signal orbiter THROUGH the supervisor — reload-proof
                     host_dictate_set[ (recording) ? 1 : 0 ]
@@ -4697,14 +3794,10 @@ element UXGenerics
                 if [ target ] target.on_dictate*[ recording ]
             if [ ux ] ux.restyle = true
             ev.stop_propagation[]
-        # the panel's own close (X) button, and click-away on the container itself
-        # (only reachable when shown, since user_events is false while closed).
         el [ e.id == 'close' || e.id == 'uxgenerics' ]
             show_console = false
             if [ ux ] ux.restyle = true
             ev.stop_propagation[]
-        # a color picker was clicked → expand/collapse its row (accordion). its
-        # parent is the ShadeRow whose id is the member name.
         el [ ColorPicker (e) && e.parent ]
             rid : string e.parent.id
             expanded = (expanded == rid) ? '' : rid
@@ -4715,12 +3808,10 @@ element UXGenerics
         user_events = show_console   # closed = pass-through, shown = modal
         els : Elements [ ]
         if [ show_console ]
-            # dim backdrop; passes clicks through to the container (click-away close)
             els[ 'scrim' ] = UXShadeScrim [ user_events: false ]
             sheet_els : Elements [ ]
             sheet_els[ 'title' ] = UXShadeTitle [ label: 'Options' ]
             sheet_els[ 'close' ] = UXShadeClose [ label: 'X', focusable: true ]
-            # reflect the app's own public, non-mutable bool members into check rows
             if [ target ]
                 rows : Elements [ ]
                 ty : Au_t typeid[ target ]
@@ -4752,15 +3843,11 @@ element UXGenerics
                         pf : @f32 [ target.member_ref[ mem ] ]
                         row_els[ 'ctl' ] = Slider [ value: pf[0], target: target, mem: mem, minv: 0.0, maxv: 1.0, focusable: true ]
                     rows[ nm ] = ShadeRow [ selected: isopen, elements: row_els ]
-                # content_h (px) = rows x row-height — the generic scroll reads this
-                # to enable the wheel + scrollbar when it exceeds the list's bounds.
                 lh_est : f32 [ f32[ rows.count ] * 57.0 ]
                 sheet_els[ 'list' ] = UXShadeList [ content_h: lh_est, focusable: true, elements: rows ]
             els[ 'sheet' ] = UXShadeSheet [ elements: sheet_els ]
         els[ 'tab' ]     = UXMenuLeft  [ icon: 'menu', icon_fit: 0.58, manual_mode: true, selected: show_console ]
-        # an external cancel (esc) clears the window state — follow it down
         if [ recording && ux && !ux.dict_on ] recording = false
-        # blue confirm comes from orbiter through the supervisor mailbox
         dlv : bool [ (ux) ? ux.dict_live : false ]
         els[ 'dictate' ] = UXMenuRight [ icon: 'orbiter4', icon_fit: 0.7,
             manual_mode: true, selected: recording,
@@ -4857,7 +3944,6 @@ expect func test [ vk: vk_context ] -> bool
     c.fill_color[ '#0000' ]
     c.paint[]
     c.restore[]
-    # block until the GPU wrote the color texture before reading it
     c.sync_fence[]
 
     # fetch Texture and verify
@@ -4884,6 +3970,4 @@ expect func test [ vk: vk_context ] -> bool
     avg_a: a_sum / pixels
     puts 'average color: r={avg_r} g={avg_g} b={avg_b} a={avg_a}'
 
-    # the blob should produce non-zero color and non-zero alpha
-    # transparent cutout lowers the averages but doesn't zero them
     return avg_a > 10 && (avg_r > 0 || avg_g > 0 || avg_b > 0)

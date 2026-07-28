@@ -70,8 +70,6 @@ enum Clip
     clip : 1
     ellipsis : 2
 
-# every element state in use, one place. bit flags so combined states
-# (pressed & selected) key a single value.
 enum State
     none      : 0
     hovered   : 1
@@ -107,23 +105,13 @@ ielement element
     mutable flags           : i64
     intern  initialized     : bool
     mutable label           : string
-    # editable text buffer — SEPARATE storage from `label`. `label` is the
-    # app-set display string; when a layer is editable, the user types into
-    # `edit`, never over `label`. label renders as a dim placeholder while
-    # `edit` is empty.
     mutable edit            : string
-    # styleable state: true while the editable buffer holds text (vs the placeholder
-    # label). CSS targets it with `:has_value` — e.g. ghost the label until entered.
     public  has_value       : bool
     public  label2          : string
-    # --screenshot <file> on any app: dump the frame + exit (adopted by trinity)
     public  screenshot      : path
     # --shot-frame N: frame index the screenshot captures at
     public  shot_frame      : i32 [ 60 ]
-    # --attach <sock>: render offscreen and share the frame with orbiter over
-    # an AF_UNIX socket instead of opening a window (adopted by trinity)
     public  attach          : path
-    # --text_mode: render to the terminal character grid (adopted by trinity)
     public  text_mode       : bool [ false ]
     mutable layers          : map Layer[string]
     mutable shaders         : map shader  [string]
@@ -135,28 +123,15 @@ ielement element
     mutable scroll          : vec2f
     mutable content_h       : f32
     public  scroll_speed    : f32
-    # per-element 2D transform. scale default (1,1), rotate in radians,
-    # transform_origin normalized to element bounds (0.5,0.5 = center).
-    # all three are transitionable via CSS just like colors.
     mutable scaling         : vec2f
     mutable rotation        : f32
     mutable transform_origin : vec2f
     public  ghost           : bool
-    # fully hidden: not painted and not hit-tested (layout still computes).
     public  hide            : bool
     mutable captured        : bool
     public  disable         : bool
-    # console rendering: draw a box-drawing border around this element and inset
-    # its children by 1 cell on every side. off by default, so structural/layout
-    # wrappers stay borderless — only opted-in elements get a frame.
     public  bordering       : bool
-    # topmost children paint LAST (drawn over their siblings) and are hit-tested
-    # FIRST (they get the event before siblings underneath them). use for
-    # floating controls that overlap a full-area sibling, e.g. a toggle button
-    # sitting on top of an editor view.
     public  topmost         : bool
-    # requested size. a host sizes an attached app with --width/--height, so
-    # every element carries them; an app sets its own default where it wants.
     public  width           : i32
     public  height          : i32
     mutable hovered         : bool
@@ -170,30 +145,18 @@ ielement element
     public  focusable       : bool
     # editable layers stay display-only while set (label mode)
     public  read_only       : bool
-    # app root only: opt into the framework dev shade (menu tab + generics)
     public  ux_generics     : bool
     public cursor_pos       : vec2f
-    # a fixed child: not part of the parent's scrolled content, so find_target must
-    # hit-test it in UNSCROLLED local space (don't fold the parent's scroll into it).
     public  no_scroll       : bool
-    # containers dictate child spacing (units); children inset by their
-    # parent's spacing unless they opt out for something special
     public  spacing_x       : f32
     public  spacing_y       : f32
     public  use_spacing     : bool [ true ]
-    # when false, find_target does NOT claim this element as its own hit target —
-    # clicks pass THROUGH to siblings / the app — but its CHILDREN still hit-test.
-    # lets a full-window overlay be a transparent pass-through while idle and go
-    # modal (user_events=true) while active.
     public  user_events     : bool [ true ]
     mutable maps_populated  : bool
     mutable sel_col         : i32 [ -1 ]
     mutable anchor_col      : i32 [ 0 ]
     mutable text_dragging   : bool
 
-    # input event hooks. return true to swallow; false to let the window
-    # continue to the app-level handler. both element and the app get a
-    # chance at each event: element first, then app_object.
     public func on_click   [ ev: Event ] return
     public func on_press   [ ev: Event ] return
     public func on_release [ ev: Event ] return
@@ -212,55 +175,27 @@ ielement element
     public func on_key     [ ev: Event ] return
     public func on_char    [ ev: Event ] return
     public func on_drop    [ ev: Event ] return
-    # live inspector: cmd+click hands the app element the matched style blocks
-    # ({file,line}) for the clicked element; cmd+shift+click hands its
-    # DECLARATION site. no-op base.
     public func on_inspect [ hits: array StyleHit ] return
-    # screen canvas hook: called on the app element before the tree paints
     public func on_canvas  [ cv: Canvas ] return
-    # like on_canvas, but AFTER the element tree paints — overlays
     public func on_overlay [ cv: Canvas ] return
-    # each pass resolves base + its state variants; keep drawing while easing
-    public func apply_variants [ m: i32 ]
-        if [ !shaders ] return
-        for [ sp: shader, sk: string ] in shaders
-            if [ sp.apply_states[ m ] ] pristine = false
+    public func on_state   [ m: i32 ] return
     intern style_avail  : map StyleEntries[string]
     #intern selections   : map
     intern transitions  : map StyleTransition[string]
 
-    #intern restyle       : bool
-    #mutable volatile     : bool
-    # ALWAYS redraw, never cache: for elements whose content changes every
-    # frame regardless of style state (emulators, video, live views).
-    # `volatile` looks similar but is OWNED BY THE STYLE ENGINE (active
-    # transitions/EMA) and is cleared when styles settle — do not hijack it.
     public  animated     : bool
-    # selection state for control-like elements (buttons, options, consoles);
-    # styles key on :selected, so it lives on the base
     public  selected     : bool
     intern cache_canvas  : Canvas
     intern cache_w       : i32
     intern cache_h       : i32
     intern cache_ox      : i32
     intern cache_oy      : i32
-    # edge fade mask: when any mask_glow component > 0, the cache blit is
-    # modulated by a grayscale mask canvas (white center, black edges via a
-    # black per-edge inner glow). mask_glow = (top, right, bottom, left) px.
-    # built lazily at the blit, rebuilt on cache resize.
     intern mask_canvas   : Canvas
     intern mask_w        : i32
     intern mask_h        : i32
     public mask_glow     : vec4f
-    # the glow the mask was last built with — rebuild the mask when it changes (not
-    # just on resize), so a fade that turns on/off (e.g. on horizontal scroll) shows.
     intern mask_bg       : vec4f
-    # px on the left kept fully opaque after the fade is built (e.g. a fixed gutter):
-    # the left fade originates just right of it. 0 = no kept strip.
     public mask_keep_l   : f32
-    # inset (top, right, bottom, left) px: shrinks the masked rect so the fade
-    # starts inset from each edge. region outside the inset stays fully masked
-    # (e.g. content scrolling under a titlebar). 0 = fade from the edge.
     public mask_inset    : vec4f
     mutable pristine     : bool [ false ]
     mutable needs_frame  : bool
@@ -282,29 +217,15 @@ ielement element
     public func draw [ w: Window ]
         return
 
-    # teardown hook: called for the whole live tree at app destroy (hot-reload
-    # boundary or exit) BEFORE the window drops — while this module's code is
-    # still mapped. elements that own threads or external state (emulators,
-    # audio) stop them here; dealloc order is not deterministic enough for
-    # thread teardown.
     public func on_unload [ ]
         return
 
-    # the shade's dictation toggle, handed to the app. trinity cannot start a
-    # recording itself — spectra imports trinity, so the dependency only runs
-    # one way; the app is the layer that can hold both. no-op by default, so an
-    # app that ignores it simply has a button that does nothing.
     public func on_dictate [ on: bool ]
         return
 
-    # open a source location (a clicked path:line link in a Console). the app
-    # root overrides this (orbiter opens an editor pane); default = unhandled.
     public func open_at [ fp: path, lno: i32, col: i32 ] -> bool
         return false
 
-    # host message-channel hook: the WndProc forwards non-input messages here
-    # (orbiter handles HM.dictate to drive the mic). no-op by default.
-    # params are WndProc-style (a is silver's implicit self, so wp/lp/xp).
     public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
         return
 
@@ -313,8 +234,6 @@ ielement element
         for [ ee: element, k: string ] in elements
             ee.unload_tree[]
 
-    # undo the id→member auto-bind: member_set held this instance on
-    # the home object at mount; unmount must release that ownership
     func unbind_home [ ]
         if [ !id || id.count == 0 ] return
         hobj  : Au [ parent ]
@@ -336,8 +255,6 @@ ielement element
         if [ cur == a ]
             hobj.member_set[ imember, null ]
 
-    # force GPU release (verified stable). REFS! lines OBSERVE the
-    # ownership model; drops replace the force path once they're quiet
     func release_tree [ ]
         unbind_home[]
         for [ ee: element, k: string ] in elements
@@ -346,11 +263,6 @@ ielement element
     public func render [ ] -> Elements
         return null
 
-    # console (terminal) render hook: an element that paints text content (an
-    # editor, a console log) overrides these so the box-drawing render path can
-    # stamp its rows. console_line_count[] is the number of text rows available;
-    # console_line[vr] returns the text for visual row vr (null/'' = blank). the
-    # default is a non-text element (count 0), so structural elements draw nothing.
     public func console_line_count [] -> i32
         return 0
 
@@ -412,9 +324,7 @@ ielement element
             ee.animate_within[ ]
 
     public func is_animating [] -> bool
-        # hidden elements never draw — they must not hold the frame loop open
         if [ hide ] return false
-        # a non-pristine element needs a frame to repaint (was `volatile`)
         if [ !pristine ] return true
         if [ animated ] return true
         if [ transitions ]
@@ -462,14 +372,8 @@ enum Blend
 
 class Layer
     context parent             : element
-    # State BITMASK: which element states this layer paints in. none = always.
-    # a control declares one layer per look (quiet, hovered, selected...) and
-    # paint draws the layers whose mask is satisfied — nothing is keyed.
     public states              : State
     public ctype               : CanvasType
-    # overlay layers (e.g. a scrollbar) draw on the parent canvas AFTER the
-    # element's cache is composited, so an element edge mask doesn't affect
-    # them — the mask stays scoped to the content layers in the cache.
     public overlay             : bool
     public test2               : bool
     public area                : Region
@@ -527,13 +431,7 @@ class Layer
     public font                : Font
     public image_svg           : SVGModel
     public image_scale         : f32 [ 1.0 ]
-    # glyph size as a FRACTION OF THE ELEMENT, aspect preserved. image_scale
-    # multiplies the svg's OWN dimensions, so the same value gives wildly
-    # different results for a 512px logo and a 24px line icon — this doesn't
-    # care how the source was authored. 0 = fall back to image_scale.
     public image_fit           : f32
-    # tints an svg glyph: each shape's fill/stroke is SCALED by this, so white
-    # (the default when unset) leaves the icon exactly as authored.
     public image_color         : rgba
     public image_source        : Image
     public image_align         : Align
@@ -648,26 +546,14 @@ class Layer
 
     func draw [ cv: Canvas ]
         if [ !editable || !cv ] return
-        # set the size first: measure_text/draw_text call ensure_font, which
-        # otherwise reloads the default font at the canvas's state size (22) and
-        # clobbers any set_font below.
         cv.font_size[ i32[label_size] ]
         if [ label_font && label_font.count > 0 ]
             if [ !label_font_cache ]
                 label_font_cache = CanvasFont [ ft_lib: cv.ft_lib, uri: label_font, size_px: i32[label_size] ]
             cv.set_font[ label_font_cache ]
         el
-            # load the default font NOW. font_size only sets the size; the font is loaded
-            # lazily by measure_text/draw_text — which are below the guard. on a fresh canvas
-            # (an editable element with no other text, e.g. an empty find/replace field) cv.font
-            # would still be null here and the draw would bail before ever loading it.
             cv.ensure_font[]
         if [ !cv.font ] return
-        # the editable buffer is separate storage; the label is shown as a dim
-        # placeholder ONLY while actively focused with nothing typed yet. with
-        # text, or once focus is lost, the label/text renders at full brightness
-        # (so a just-cleared, unfocused title is bright, not stuck dim). the
-        # caret/selection only ever ride the edit buffer, never the label.
         etext    : string [ (parent.edit) ? parent.edit : '' ]
         has_edit : bool   [ etext.count > 0 ]
         disp     : string [ (has_edit) ? etext : ((parent.label) ? parent.label : '') ]
@@ -696,8 +582,6 @@ class Layer
             cv.rect_to[ x0 + f32[sc] * cw, y0 - tm.ascent + 2.0, f32[ec - sc] * cw, fh - 4.0 ]
             cv.paint[]
 
-        # single tone: the label_color from CSS. gray for the placeholder, white once
-        # the field has a value (driven by the :has_value state, not a built-in alpha).
         cv.fill_color[ label_color ]
         cv.draw_text[ disp, bounds, vec2f [ ax, ay ], vec2f [ ox, oy ], Overflow.visible, null ]
         cv.paint[]
@@ -712,11 +596,8 @@ class Layer
             cv.paint[]
 
 
-# forward declarations need resolver support
-# process same way, different gen method (make_class -> make_decl)
 class Event
     mutable target         : element
-    # the element the event hit (find_target result); target walks the bubble
     mutable origin         : element
     mutable mouse          : MouseState
     mutable key            : KeyboardState

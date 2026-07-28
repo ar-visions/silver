@@ -140,9 +140,6 @@ class Image
     func dealloc [ ]  # some comment
         info : header[ a ]
         if [ res_dealloc ] res_dealloc [ a ]
-        # zero-copy pixels (res_bits) rebind the header data to foreign
-        # memory (a mapped buffer); the release hook owns it — clear the
-        # pointer so the base dealloc never drops non-Au memory
         if [ res_bits ] info.data = null
 
     func copy[ ] -> Image
@@ -150,7 +147,6 @@ class Image
         memcpy res.vdata[], vdata[], byte_count[]
         return res
 
-    # copy a sub-rectangle into a fresh Image (clamped to the source bounds)
     func crop[ cx:i32, cy:i32, cw:i32, ch:i32 ] -> Image
         check width > 0 && height > 0, "null Image given to crop"
         x0 : i32 [ (cx < 0) ? 0 : cx ]
@@ -175,8 +171,6 @@ class Image
             memcpy @dst[ df ], @src[ so ], i64[ ow * ps ]
         return output
 
-    # horizontal mirror into a fresh Image — converts a render's mirror-view
-    # to real camera handedness (subject's left on the image's right)
     func mirror_x[ ] -> Image
         check width > 0 && height > 0, "null Image given to mirror_x"
         output : Image
@@ -194,8 +188,6 @@ class Image
                 memcpy @dst[ df ], @src[ so ], i64[ ps ]
         return output
 
-    # single-channel copy (first channel, no averaging): mono sensors save
-    # a quarter of the bytes and encode ~4x faster
     func gray[] -> Image
         check width > 0 && height > 0, "null Image given to gray"
         if [ channels == 1 ] return copy[]
@@ -214,9 +206,6 @@ class Image
             dst[ i ] = src[ si ]
         return output
 
-    # box-average reduction by an integer factor: each output pixel is the
-    # plain mean of its f x f source block (u8 channels). the cheapest
-    # correct filter — supersampled renders reduce through this.
     func reduce_box[ f: i32 ] -> Image
         check width > 0 && height > 0, "null Image given to reduce_box"
         check f > 0, "invalid reduce_box factor"
@@ -291,7 +280,6 @@ class Image
         return output
 
 
-    # save gray or colored png based on channel count; if we want conversion we may just use methods to alter an object
     func png [ image_uri:path ] -> i32
         e       : image_uri.ext[]
         success : 1
@@ -309,8 +297,6 @@ class Image
 
             if [ !setjmp[ png_jmpbuf[ png2 ] ] ]
                 png_init_io png2, file
-                # fast zlib: encode-bound batch exports (IR frames) go ~3x
-                # quicker for a few percent of file size
                 png_set_compression_level png2, 1
 
                 ctype2 : i32 [ PNG_COLOR_TYPE_RGBA ]

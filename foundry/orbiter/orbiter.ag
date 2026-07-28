@@ -1,3 +1,4 @@
+# hello
 export 0.8.8
 
 # import silver modules
@@ -22,8 +23,6 @@ import <unistd.h>
 import <fcntl.h>
 import <signal.h>
 import <sys/wait.h>
-# forkpty (the syntax-map builder) — was inherited from Console.ag before it
-# moved to trinity
 ifdef [ apple ]
     import <util.h>
         -lutil
@@ -40,16 +39,12 @@ import NodeList
 import FileList
 import Avatar
 
-# one editor tab: title, text, and (for a .ag source) its run band + console.
-# area is assigned per instance by the 'panes' Splitter; bg is the pane fill.
 element EditorView
     public selected   : bool
     public pane_index : i32
     area : Region { l0 t0 r0 b0 }
     bg   : Layer [ fill_color: rgba [ '#140d2a' ] ]
 
-    # this pane's Editor child (the text, under the 'split' Splitter), or null
-    # before the first tree
     func text_of [] -> Editor
         if [ !elements ] return null
         spl : element elements[ 'split' ]
@@ -64,15 +59,12 @@ element EditorView
         pi  : i32 [ pane_index ]
         w   : Window ux
 
-        # a console tab is an ordinary tab — the session is the Editor's content,
-        # hosted by a ConsoleView, so it keeps the standard title bar below.
         psess : string (pi < orb.pane_console.count) ? orb.pane_console[pi] : ''
         is_con : bool [ psess && psess.count > 0 ]
 
         slot : i32  [ (pi < orb.editor_slots.count) ? orb.editor_slots[pi] : -1 ]
         p    : path (slot >= 0 && slot < orb.open_files.count) ? orb.open_files[slot] : null
 
-        # active debug session locks editing → keyboard drives the debugger
         dbgr    : dbg orb.active_debugger[]
         running : bool [ (dbgr) ? true : false ]
         ed_live : Editor text_of[]
@@ -83,27 +75,19 @@ element EditorView
         findbar_on : bool [ orb.findbar_open && orb.findbar_pane == id ]
         menu_open  : bool [ searchable && (orb.find_showing || orb.nav_showing) ]
         is_res     : bool [ (ed_live && ed_live.rview) ? true : false ]
-        # a paused emulator publishes a machine-context dump once — type it
-        # into the AI agent console so the user can ask about the live state
         if [ is_res ]
             cfeed : ed_live.rview.context_feed*[]
             if [ cfeed ] orb.feed_agent[ cfeed ]
-        # this pane's title has focus (typed-in finder state). the title is OUR
-        # child now, so the parent to match is this tab — not the Editor.
         tfoc : bool [ false ]
         if [ w && w.focus ]
             if [ w.focus.id == 'title' && w.focus.parent == a ] tfoc = true
 
         els : Elements []
         ttl : Elements orb.title_nav[ p, null, false, w, locked, dbg_open, menu_open,
-            is_res, ed_live->rview, findbar_on, tfoc ]
-        # a console tab gets the agent feed buttons: 'context' copies the live
-        # emulator's machine dump into the prompt, 'screen' attaches a screenshot.
+            is_res, ed_live->rview, findbar_on, tfoc, pi ]
         if [ is_con ]
             ttl['ctx_copy'] = LabelButton [ label: 'context', manual_mode: true ]
             ttl['ctx_shot'] = LabelButton [ label: 'screen',  manual_mode: true ]
-        # the title is the console's template name ('{name}#{seq}' → name), else
-        # the filename. the open findbar owns the span, so blank it under one.
         tl : string [ (p) ? p.filename[] : 'Open' ]
         if [ is_con ]
             tl = psess
@@ -122,20 +106,13 @@ element EditorView
             elements: ttl
         ]
 
-        # a silver source gets a run band, so the text stops at the band seam.
-        # a console tab never does — the session already fills the pane.
-        app_running : bool [ (ed_live && ed_live.run_view) ? true : false ]
+        app_running : bool [ (ed_live && ed_live.run_view && !ed_live.run_view.ended) ? true : false ]
         run_ok : bool [ app_running && !is_con ]
         if [ !run_ok && p && !is_con ]
             fnm : p.filename[]
             if [ fnm.count >= 3 && fnm.mid[ fnm.count - 3, 3 ].compare[ '.ag' ] == 0 ] run_ok = true
-        # the content + run band split the area below the title via a vertical
-        # Splitter: the text is the flex pane; the band a sized pane whose height
-        # lives in orb.band_sizes — one shared array, so every pane's band matches.
         vinner : Elements [ ]
 
-        # the content slot: whichever element claims this tab. a console session IS
-        # an element (Console), so it needs no host — it goes straight in.
         if [ is_con ]
             orb.ensure_console[ psess ]
             vinner['text'] = Console [
@@ -163,33 +140,34 @@ element EditorView
             if [ di2 > 0 ] emod = emod.mid[ 0, di2 ]
             if [ !orb.ed_sessions ] orb.ed_sessions = map ConsoleSession [string] [ ]
             fels : Elements []
-            fels['run'] = RunButton [ icon: (app_running) ? 'stop' : 'play', selected: app_running, manual_mode: true ]
+            if [ !app_running ]
+                fels['run'] = RunButton [ icon: 'play', manual_mode: true ]
+            el
+                app_paused : bool [ ed_live.run_view.is_paused*[] ]
+                fels['run']  = RunButton [ icon: (app_paused) ? 'play' : 'pause', selected: app_paused, manual_mode: true ]
+                fels['stop'] = RunButton [ icon: 'stop', manual_mode: true ]
             if [ orb.err_file && orb.err_line > 0 ]
                 fels['error'] = Option [ label: 'error {orb.err_line}', manual_mode: true ]
-            # a debug panel snapped shut = the user turned it off: flip its
-            # toggle so the TButtons segment reads unselected.
             if [ orb.take_closed[ orb.dbg_sizes, 'callstack' ] ] orb.show_instruments = false
             if [ orb.take_closed[ orb.dbg_sizes, 'fields' ] ]    orb.show_variables   = false
+            if [ orb.take_closed[ orb.dbg_sizes, 'avatar' ] ]    orb.show_orbiter     = false
             smask : i32 [ 0 ]
             if [ orb.show_instruments ] smask = smask | 1
             if [ orb.show_variables ]   smask = smask | 2
-            fels['instruments'] = TButtons [ buttons: [ 'callstack', 'fields' ], manual: true, sel_mask: smask, area: Region { r0+ t0 w2.3 h0.9 } ]
+            if [ orb.show_orbiter ]     smask = smask | 4
+            fels['instruments'] = TButtons [ buttons: [ 'callstack', 'fields', 'orbiter4' ], manual: true, sel_mask: smask, area: Region { r0+ t0 w3.5 h0.9 } ]
             cf2 : Elements []
-            # compact right-aligned filter chip — must NOT cover the terminal,
-            # or clicks focus it and typing lands in its edit instead of the shell
             cf2['console_filter'] = element [ area: Region { r8px t4px w6 h32px }, label: emod, focusable: true, no_scroll: true ]
             runcmd : string [ (ed_live && ed_live.run_view) ? ed_live.run_view.cmd : null ]
             bels : Elements []
             bels['tools']   = ToolsHeader [ spacing_x: 0.2, spacing_y: 0.2, topmost: true, elements: fels ]
             con : RunConsole [ session_id: 'ed:{emod}', sessions: orb.ed_sessions,
                 feed: null, run_line: runcmd, animated: true, elements: cf2 ]
-            # the console + any open debug panels share the band via a draggable Splitter:
-            # the console is the flex pane (first), each panel a saved-width pane after.
             sp_inner : Elements [ ]
             sp_inner['console'] = con
             if [ orb.show_instruments ] sp_inner['callstack'] = Callstack [ frames: orb.debug_frames[] ]
             if [ orb.show_variables ]   sp_inner['fields']    = Fields [ vars: orb.debug_vars ]
-            # one shared sizes map (the app owns it) so drags persist + serialize.
+            if [ orb.show_orbiter ]     sp_inner['avatar']    = OrbiterAvatar [ src_file: p, docked: true ]
             if [ !orb.dbg_sizes ] orb.dbg_sizes = array [ ]
             bels['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, sizes: orb.dbg_sizes, inner: sp_inner, snap_close: true ]
             vinner['band'] = RunBand [ elements: bels ]
@@ -198,11 +176,6 @@ element EditorView
             inner: vinner, sizes: orb.band_sizes, deflt: 180.0 ]
         return els
 
-# editor title bar. `selected` = the "New"/finder state (no file open): shows
-# the magnify and left-aligns the (typed) text. with a file open it's centered
-# and the magnify is hidden. clicking it focuses → editable.
-# the dedicated title component: quiet glow band + the editable face. its
-# look lives HERE as declared layers — the title is orbiter's, not a style's.
 element EditorTitle
     public selected : bool
     area  : Region { l0 t0 r0 h1.3 }
@@ -212,11 +185,6 @@ element EditorTitle
         label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 52.0, y: 0.0 ] ]
     tdiv  : Layer [ fill_color: rgba [ '#fff2' ], area: Region { l0 b0 r0 h1px } ]
 
-# orbiter's own nav icon button (the title-bar +/- chips): look declared here,
-# no stylesheet — a transparent chip with a faint glow that lights blue on hover
-# THE nav button — every chip in every title and toolbar. a toggle is not a
-# class: `selected`/`manual_mode` are properties (Option). icon by name;
-# right-flows by default, a construction may anchor it anywhere with `area`.
 
 Option NavButton
     quiet  : Layer [ 
@@ -243,16 +211,9 @@ Option NavButton
         inner_glow: Glow [ '#ffae5ea2 18' ]
     ]
 
-# a NavButton that renders its label instead of an icon; right-flows
-# wider than the icon chips
-# orbiter's avatar LOOK — the Avatar component styled by subclassing, the
-# same way LabelButton styles NavButton. every value lives here, none in
-# the component: camera, environment, tilt per state, and one shader pass
-# per state (base = quiet, states-masked = the variants it transitions to).
 Avatar OrbiterAvatar
-    area        : Region { r8 b11 w8 h14 }
     render_scale: 4.0
-    # face-on at rest: eye straight above the puck, up horizontal
+    public src_file : path
     eye_pos     : vec3f [ 0.0, 4.2, 0.0 ]
     target_pos  : vec3f [ 0.0, -0.3, 0.0 ]
     up_vec      : vec3f [ 0.0, 0.0, -1.0 ]
@@ -262,42 +223,101 @@ Avatar OrbiterAvatar
     blend_rings : f32   [ 0.2 ]
     blend_haze  : f32   [ 1.0 ]
     blend_bands : f32   [ 0.2 ]
-    # tilt off the straight-down axis, degrees: none at rest, a small lean
-    # on hover so the beam shoots up-screen, HALF that on press
     rest_tilt   : f32   [ 0.0 ]
-    hover_tilt  : f32   [ 16.0 ]
-    press_tilt  : f32   [ 8.0 ]
-    ease_filter : f32   [ 0.86 ]
+    # filter_n approach per frame; the tilt eases in slowly
+    ease_amount : f32   [ 0.14 ]
+    busy_amount : f32   [ 0.10 ]
+    # tilt away while the agent is working
+    busy_tilt   : f32   [ 34.0 ]
+    # the halo glow hover used to show — it answers to busy now
+    rest_pulse  : f32   [ 0.4 ]
+    busy_pulse  : f32   [ 2.0 ]
+    rest_ph     : f32   [ 1.2 ]
+    busy_ph     : f32   [ 2.4 ]
+    rest_halo   : f32   [ 0.4 ]
+    busy_halo   : f32   [ 0.8 ]
+    rest_spin   : f32   [ 0.25 ]
+    busy_spin   : f32   [ 2.66 ]
+    # how fast the RATE itself approaches; low = a long spin-up
+    spin_amount : f32   [ 0.04 ]
+    mutable spin_rate  : f32 [ 0.25 ]
+    mutable spin_phase : f32
+    intern  spin_dbg   : bool
+    # the wheel's in-plane clocking, held in every state
+    clock_deg   : f32   [ 30.0 ]
+    mutable tilt_cur : f32
+    intern  st_logged : bool
+    # how fast the rim crosses between dark and blue
+    listen_amount : f32 [ 0.20 ]
+    mutable listen_cur : f32
 
-    orbiter : PBR [
+    func on_click [ ev: Event ]
+        if [ drag_moved ] return
+        orb : orbiter [ ux.app_object ]
+        if [ orb ] orb.toggle_listen[ src_file ]
+        ev.no_propagation = true
+
+    # called each frame with the live State bitmask
+    func on_state [ m: i32 ]
+        orb  : orbiter [ ux.app_object ]
+        if [ !st_logged ]
+            st_logged = true
+            puts 'ONSTATE reached m={m} orb={bool[orb]} busy={orb->busy}'
+        want : f32 [ rest_tilt ]
+        amt  : f32 [ ease_amount ]
+        if [ orb->busy ]
+            want = busy_tilt
+            amt  = busy_amount
+        tilt_cur = filter_n[ tilt_cur, want, amt, ux->frame_factor ]
+        lv : bool [ false ]
+        if [ orb ] lv = orb.listening[]
+        lw : f32 [ (lv) ? 1.0 : 0.0 ]
+        listen_cur = filter_n[ listen_cur, lw, listen_amount, ux->frame_factor ]
+        if [ body ] body.listen = listen_cur
+        # the rim halo swells on the same clock as the tilt
+        if [ aura ]
+            gp : f32 [ (orb->busy) ? busy_pulse : rest_pulse ]
+            gv : f32 [ (orb->busy) ? busy_ph    : rest_ph ]
+            gh : f32 [ (orb->busy) ? busy_halo  : rest_halo ]
+            aura.pulse_width  = filter_n[ aura.pulse_width,  gp, amt, ux->frame_factor ]
+            aura.pulse_height = filter_n[ aura.pulse_height, gv, amt, ux->frame_factor ]
+            aura.halo_height  = filter_n[ aura.halo_height,  gh, amt, ux->frame_factor ]
+            gs : f32 [ (orb->busy) ? busy_spin : rest_spin ]
+            spin_rate  = filter_n[ spin_rate, gs, spin_amount, ux->frame_factor ]
+            spin_phase = spin_phase + spin_rate * (ux->frame_factor / 60.0)
+            if [ spin_phase > 6.2831853 ] spin_phase = spin_phase - 6.2831853
+            aura.spin  = spin_phase
+            if [ orb->busy != spin_dbg ]
+                spin_dbg = orb->busy
+                puts 'SPIN busy={orb->busy} rate={spin_rate} goal={gs} ff={ux->frame_factor}'
+        if [ !rotate ]
+            rotate = array Rotation []
+            rotate.push[ Rotation [ '0 1 0 30deg' ] ]
+            rotate.push[ Rotation [ '1 0 0 0deg' ] ]
+        rotate[0] = Rotation [ '0 1 0 {clock_deg}deg' ]
+        rotate[1] = Rotation [ '1 0 0 {tilt_cur}deg' ]
+        pristine = false
+
+    body : PBR [
         model_id: 'orbiter32',
         groups: ['outside','flower','separator'],
-        env_id: 'forest', pulse_width: 4.0, gamma: 2.2,
-        transition: StyleTransition [ '1444ms cubic outward' ] ]
+        env_id: 'forest', pulse_width: 4.0, gamma: 2.2 ]
 
     core : Core [
         model_id: 'orbiter32',
         groups: ['core'],
-        texture: 'textures/core.png', mip_levels: 8, pulse_width: 4.0,
-        transition: StyleTransition [ '1444ms cubic outward' ] ]
+        texture: 'textures/core.png', mip_levels: 8, pulse_width: 4.0 ]
 
     plasma : Plasma  [
         model_id: 'orbiter32',
         groups: ['top_ring','flower'],
-        pulse_width: 1.0,
-        transition: StyleTransition [ '1444ms cubic outward' ] ]
+        pulse_width: 1.0 ]
 
-    # one pass; the state variants below only carry their deltas
     aura : Aura [
         model_id: 'uv-quad2', env_id: 'forest',
         pulse_width: 0.4, pulse_height: 1.2, halo_height: 0.4,
-        beam_fade: 2.2, beam_cone: 0.35, flame: 0.0,
-        transition: StyleTransition [ '1444ms cubic outward' ] ]
+        beam_fade: 2.2, beam_cone: 0.35, flame: 0.0 ]
 
-    # hover leaves the rim light alone — brightness/height belong to other
-    # states. flame stays at 0 until a build state turns it on.
-    aura_press : Aura [ key: 'aura', states: State.pressed,
-        pulse_width: 1.2, pulse_height: 1.8, halo_height: 0.6 ]
 
 
 NavButton LabelButton
@@ -305,31 +325,23 @@ NavButton LabelButton
     tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
-# a title STATUS chip — a label, not a button: disabled (never hit-tested),
-# border-led: a stroke in the chip color over a ~10% fill of the same color.
 LabelButton StatusLabel
     disable : true
     quiet   : Layer [ fill_color: rgba [ '#6611441a' ], stroke_width: 1.0,
         stroke_color: rgba [ '#661144' ], radius: Radius [ '8' ] ]
 
-# direction is the class: R flows right-to-left, L flows left-to-right
 NavButton RButton
     area : Region { r0+ t0 w1.15 h0.9 }
 
 NavButton LButton
     area : Region { l0+ t0 w1.15 h0.9 }
 
-# the run chip: shift held = electric blue (build-run --clean on click). the
-# running (selected) look is re-declared LAST so a live app overrides the blue.
 LButton RunButton
     shifted : Layer [ states: State.shifted, fill_color: rgba [ '#26e' ],
         radius: Radius [ '8' ], inner_glow: Glow [ '#9cf8 20' ] ]
     running : Layer [ states: State.selected, fill_color: rgba [ '#c8641e' ],
         radius: Radius [ '8' ], inner_glow: Glow [ '#ffae5ea2 18' ] ]
 
-# findbar scope: filename or cross-file glob, left of the chips.
-# read-only label on transparent until find-in-files (selected)
-# turns it into the editable quiet chip
 element PatternField
     public selected : bool
     area : Region { r0+ t0 w7 h0.9 }
@@ -337,7 +349,6 @@ element PatternField
     face : Layer [ label_color: rgba [ '#fff' ], label_size: 19, editable: true,
         label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 12.0, y: 0.0 ] ]
 
-# findbar query input: sits where the title label normally is
 element FindField
     area : Region { l1.37 t0 r20 b0 }
     face : Layer [ label_color: rgba [ '#fff6' ], label_size: 19, editable: true,
@@ -353,8 +364,6 @@ element ReplaceField
     foc  : Layer [ states: State.focused, label_color: rgba [ '#ffff' ], label_size: 14, editable: true,
         label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 10.0, y: 0.0 ] ]
 
-# orbiter's standard button: the gradient pill body at 8px radius with the
-# inner glow — quiet indigo, blue-lit on hover, ember when selected.
 Button PillButton
     area   : Region { l6+px t3px w3 h1 }
     body   : Layer [ fill_color: rgba [ '#114' ], fill_gradient: GradientType.linear,
@@ -382,131 +391,62 @@ Button PillButton
     face   : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
-# the pane's bottom run band: a sized pane of the tab's vertical Splitter,
-# which assigns its area (and drags/eases its height) each frame.
 element RunBand
     area : Region { l0 t0 r0 b0 }
 
-# the run band's console: fills the band under the header, terminal content
-# inset 8px all around — no 44px title inset (the ToolsHeader is the title).
 Console RunConsole
     area    : Region { l0 t1.3 r0 b0 }
     content : TermLayer [ area: Region { 8px }, label_height: 1.0, label_size: 16 ]
 
 
-# the run band's header strip: the same title-bar look the editor title wears,
-# capping the module console group.
 Group ToolsHeader
     area : Region { l0 t0 r0 h1.3 }
     hbar : Layer [ fill_color: rgba [ '#2480' ], inner_glow: Glow [ '#8af2 26' ],
         stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
     hdiv : Layer [ fill_color: rgba [ '#fff2' ], area: Region { l0 b0px r0 h1px } ]
 
-# left-column tab for a project: a running-process context (process, shell
-# output, lldb). `state` drives the side status light color.
 Option  ProjectTab
     public state : string
 
-#proto compiler ... this is in effect what we are doing, and if we 'wanted' to we could register this for enumeration at runtime
-#      func compiler [ module: string ]
 
 func au_space_clear[] -> none
 
-# resident set size as a fraction of total physical RAM (0..1), 0 if unknown.
-# used as a runaway-leak guard so the app bails out before it locks the machine.
 func au_mem_fraction[] -> f32
 
-# deferred live-reload: au_live_set_defer turns it ON (host stages source changes instead
-# of auto-reloading, sets pending=1, and waits). au_live_get_pending → a change is staged;
-# au_live_request_apply → tell the host to recompile + hot-swap now.
 func au_live_set_defer[ on: i32 ] -> none
 func au_live_get_pending[]   -> i32
 func au_live_request_apply[] -> none
 
-# redirect stdout/stderr into a pipe (returns a non-blocking read fd); au_stdout_orig
-# is a dup of the real stdout so --log can tee captured output back to the terminal.
 func au_capture_stdout[] -> i32
 func au_stdout_orig[] -> i32
 
-# per-workspace UI/session state, persisted to <os-cache>/orbiter/states.agi as a
-# map keyed by the workspace (startup) path. starts with the open tabs; more fields
-# (active pane, splits, scroll positions, etc.) get added here over time.
 class orbiter_state
     public tabs        : array path
-    # the file shown in each editor pane, in pane order ('-' = an empty pane). restores
-    # the actual editor layout, not just the flat set of open files.
     public panes       : array path
-    # pinned dock files (shown at the top of the file list), restored on next launch.
     public docked      : array path
-    # breakpoints for this workspace — same "source:line" -> condition map orbiter
-    # keeps live (empty condition = plain breakpoint).
     public breakpoints : map string [string]
     # the selected project/target name, restored on next launch.
     public target      : string
 
 class FmtWatch
     public proj  : string
-    # the .ag file we handed the language server — it drives the build/analyze
     public file  : path
     public pid   : i32 [ 0 ]
     public fd    : i32 [ -1 ]
     public map   : string
     public mtime : i64 [ 0 ]
-    # mtime of OUR source the last time we spawned — a change here (and only
-    # here) re-runs this one watcher, never the whole set.
     public src_mtime : i64 [ 0 ]
-    # printed the "starting" line to the console yet (deferred until the console exists)
     public announced : bool
-    # kicked the initial build yet — deferred until AFTER the existing cache is loaded (prime),
-    # so colors appear instantly from the last build and we never read a half-written file.
     public kicked    : bool
-    # epoch micros when this watch was registered; the initial build waits ~1s past this so the
-    # cache loads and colors render first, uncontended by the compile.
     public start_us  : i64 [ 0 ]
-
-# the supervised app's live picture-in-picture: the front texture of the
-# app's shared surface, imported by trinity (ide_pump). click = fold back.
-element OrbitApp
-    animated  : true
-    focusable : true
-
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen ] return
-        cv : Canvas w.screen
-        if [ !w.app_tex0 || !w.app_tex_have ] return
-        fr : i32 [ host_tex_front[ host_slot[], 0 ] ]
-        if [ fr < 0 ] return
-        atx : (fr == 0) ? w.app_tex0 : w.app_tex1
-        aw : i32 [ atx.width ]
-        ah : i32 [ atx.height ]
-        if [ aw <= 0 || ah <= 0 ] return
-        ar : f32 [ f32[ aw ] / f32[ ah ] ]
-        fw : f32 [ bounds.w ]
-        fh : f32 [ fw / ar ]
-        if [ fh > bounds.h ]
-            fh = bounds.h
-            fw = fh * ar
-        cv.draw_image[ atx, rect [
-            x: (bounds.w - fw) * 0.5, y: (bounds.h - fh) * 0.5, w: fw, h: fh ] ]
-
-    # clicking the live picture folds the window back to the app
-    func on_press [ ev: Event ]
-        host_post[ 1, i32[ HM.close ], 0, 0, 0 ]
-        ev.stop_propagation[]
 
 element orbiter : trinity # implements compiler
     public width         : i32    [ 1888 ]
     public height        : i32    [ 888 ]
     public background    : string [ 'Background' ]
-    # orbiter edits its OWN dependencies — self-reload is insane, so opt out
     public live_reload   : bool   [ true ]
     public startup_path  : path
-    # `orbiter <file>` — the document to open, orbiter's default (positional)
-    # argument. a directory roots the browser there instead.
     default resource     : string
-    # --log <path>: tee all stdout/puts to this file (truncated on start) WHILE still
-    # printing to the console, so a running session's diagnostics can be read back from
-    # disk. cap_fd = the pipe au_capture_stdout drains; log_fd = the open log file.
     public log           : string
     intern tee_started   : bool
     intern cap_fd        : i32 [ -1 ]
@@ -515,33 +455,27 @@ element orbiter : trinity # implements compiler
     intern target_names  : array string
     intern target_roots  : array path
     intern target_srcs   : array path
-    # projects loaded from orbiter.agi (the source of truth). orbiter.agi sets
-    # this map directly on the orbiter instance via parse_agi; target_names/roots/
-    # srcs are derived from it (sync_targets) so the rest of the app keeps using
-    # the flat arrays. cleared + reloaded whenever orbiter.agi changes.
     public projects      : map Project [string]
-    # console instances from orbiter.agi (shells / AI agents), keyed by name —
-    # the templates the nav list offers when picking a console into a tab.
     public consoles      : map ConsoleInstance [string]
-    # live console sessions, keyed by session id. a tab's console reuses one
-    # session across renders instead of restarting its shell.
     intern ed_sessions   : map ConsoleSession [string]
-    # screenshot counter — unique /tmp names within a session so the agent
-    # never sees a stale image under a reused path
     intern shot_n        : i32
-    # supervised-shell state (SILVER_ISOLATE_APP set): orbiter is the shell —
-    # crash verdicts, dictation, and the app agent all land here
     intern orbit_app      : string
+    # summoned shell bound its pane-0 AppView to the peer (once)
+    intern orbit_bound    : bool
     # the agent tab's session id ('' = shell mode off)
     intern orbit_sid      : string
-    # app context rides the FIRST message to the agent, exactly once
+    # the one agent session is working — drives the avatar tilt
+    public busy           : bool
+    intern busy_at        : i64
+    intern cell_dumped    : bool
     intern orbit_ctx      : string
     intern orbit_ctx_sent : bool
+    intern orbit_hello_at : i32
+    # one-shot startup voice test fired
+    intern orbit_voice_tested : bool
     # the crash verdict has been typed into the agent session
     intern orbit_reported : bool
-    # delayed follow-up Enter: the TUI can swallow a mid-redraw \r
     intern orbit_enter_at : i32
-    # utterances already voiced (speak markers persist on screen)
     intern orbit_spoken   : array string
     # mic capture running / final transcription winding down
     intern orbit_cap_on   : bool
@@ -550,217 +484,98 @@ element orbiter : trinity # implements compiler
     intern orbit_dstate   : i32 [ -1 ]
     # attached app's pid — once it dies this shell must exit
     intern orbit_app_pid  : i32 [ 0 ]
-    # literal {{ / }} built from bytes for the speak-marker protocol
     intern orbit_oc       : string
     intern orbit_cc       : string
-    # per-workspace session state (open tabs + future props), keyed by workspace
-    # path. loaded from / saved to <os-cache>/orbiter/states.agi via parse_agi.
     public states        : map orbiter_state [string]
-    # live debug sessions, keyed by project name. each is a `dbg` (our LLDB SB-API
-    # driver) launched on the project's product; its on_* callbacks land on the
-    # handlers below (on_stdout/on_break/...).
     intern debuggers     : map dbg [string]
-    # the inspected variables for the Fields panel — locals read at the last break
-    # (read_locals only works while paused), cached here and cleared on continue/exit.
     intern debug_vars         : array
-    # last seen breakpoint-map size — a change (toggle in an Editor's gutter) means the
-    # session state is dirty, so on_render re-saves. count catches add/remove.
     intern last_bp_count      : i32 [ -1 ]
-    # orbiter.agi reload: polled once a second from on_render. settings_mtime is
-    # the file mtime we last loaded; settings_check_ms throttles the stat to ~1Hz.
     intern settings_mtime    : i64
     intern settings_check_ms : i64
     public open_files       : array path
-    # the dock: files pinned to the TOP of the file list (shown above the browse tree).
-    # one unified dock for all panes (not per-side). persisted in the session.
     public docked           : array path
-    # number of find_hits rows occupied by the pinned dock — the editor draws a
-    # separator line after them, dividing the dock from the browse results.
     intern nav_dock_rows    : i32
-    # the editor split: one entry per visible editor pane, each an index into
-    # open_files (-1 = empty 'Open' finder pane). up to 4. the + / - title buttons
-    # push/remove entries; the render builds one Editor per slot. active_pane is the
-    # focused pane index (where opens/finder land).
     public editor_slots     : array i32
-    # per-pane console session: '' = file editor, else this pane IS that console
     intern pane_console     : array string
-    # each nav pick instances a FRESH session ('{name}#{seq}') — never shared
     intern console_seq      : i32
-    # pane whose finder should focus once its Editor exists (console → nav list)
     intern pending_finder   : i32 [ -1 ]
-    # `orbiter <module>`: start that pane's app once its Editor exists
     intern pending_run      : i32 [ -1 ]
-    # findbar just opened: focus its find input once it exists (next frame)
     intern pending_findfocus : bool
-    # files the last find-in-files run scanned (for the empty-result row)
     intern find_scanned : i32
     public active_pane      : i32
-    # --cycle: pane add/remove soak from code (dock/undock paths)
     public cycle            : bool
     intern cycle_frame      : i32
     intern cycle_count      : i32
     intern cycle_adding     : bool [ true ]
-    # per-pane navigation history (Cmd/Ctrl+Left/Right). runtime-only — never serialized
-    # (save_states writes only tabs/target/breakpoints), so it starts empty each session.
-    # one Navigate per pane (pane0..3) so back/forward stay on the same editor side; owned
-    # here (not on the per-frame-throwaway Editor) and injected into each pane every frame.
     intern nav_panes        : array Navigate
-    # saved widths (px) for the editor Splitter's sized panes (pane1..pane3);
-    # pane0 is the flex pane. the Splitter drags/eases these; count changes
-    # reset them to even shares (even: true).
     public pane_sizes       : array
-    # saved height (px) of the run band ('band'), shared by every pane's
-    # vertical Splitter — one entry, so all bands drag together.
     public band_sizes       : array
-    # instruments panel (callstack + app view) covers the console when on
     public show_instruments : bool
     # the variables panel — the other tab of the stack menu
     public show_variables   : bool
-    # saved widths (px) for the run-band Splitter's sized panes, keyed by child id
-    # ('callstack'/'fields'); the console is the flex pane and has no entry.
+    public show_orbiter     : bool [ true ]
+    intern listen_file      : path
     public dbg_sizes        : array
     public active_idx       : i32
     public config_side      : i32
     public active_panel  : string
     public editor_panel  : string
     public active_target : string
-    # one `silver <proj> -w --format <map>` language-server instance per silver project,
-    # keyed by project name. kept in sync with the .agi project set (fmt_sync), never tied
-    # to the active tab or the render loop.
     intern fmt_watch  : map FmtWatch [string]
-    # an empty editor pane (no file) shows the Avatar in its elemental state; this
-    # toggles the Avatar view via the pane's titlebar hide/show option.
     public show_avatar   : bool [ true ]
-    # the avatar peeks in the bottom-right corner; clicking it expands to a full-size
-    # interactive area, clicking again collapses back to the peek.
     public avatar_expanded : bool
-    # the avatar's GPU pipeline currently SIGSEGVs (env-texture view not ready at bind);
-    # OFF until that's fixed so orbiter still launches. flip true to render the avatar.
     public avatar_enabled  : bool
     public filter_text   : string
-    # finder search text typed into an editor title (magnify) when it has no file
     public find_text     : string
-    # in-editor find/replace bar (toggled by the title magnify). findbar_open is the
-    # expand state — held on the app (the Editor element is rebuilt each frame so it
-    # can't keep the flag), fed into the Editor via its `expanded` prop. findbar_text
-    # is the Find query, replace_text the Replace query. kept separate from find_text
-    # (the file finder) so typing here doesn't trigger the finder's pin list.
     public findbar_open  : bool
-    # which pane's magnify opened the findbar ('pane'/'pane_right') — so the bar
-    # stays on that editor and focus moving to the other title doesn't pull it over.
     public findbar_pane  : string
     public findbar_text  : string
-    # the query that produced the current find_hits — so a second Enter on the same
-    # phrase advances to the next match instead of re-running the search. find_last_scope
-    # mirrors the scope field (pattern_text) at run time: if EITHER changes, Enter is a
-    # NEW search, not a next-match step.
     intern find_last_query : string
     intern find_last_scope : string
     public replace_text  : string
-    # file-pattern (glob) that scopes find-in-files — the right cell of the
-    # Replace row.
     public pattern_text  : string
-    # find/replace scope, a radio pair in the right column: true = the current
-    # file only ('In-File' on the Find row); false = files matching the pattern
-    # ('Files' on the Replace row).
     public find_in_file  : bool
-    # the 'Replace' nav button is a toggle: off = just the Find row; on = exposes the
-    # replace input + the 'All' (replace-all) button. drives the Editor's :replacing state.
     public replace_open  : bool
-    # find-in-files results: find_showing makes the editor pane render find_hits
-    # (file-title headers + matched lines) instead of file content. fed to the
-    # Editor each frame via props.
     public find_showing  : bool
-    # the tab/navigate file list reuses the SAME find_hits header rendering (each file
-    # a 2-slot title: filename bright + dir dimmed). nav_showing turns that on for the
-    # search pane independently of find_showing, so the two never clobber each other.
     public nav_showing   : bool
     public find_hits     : array FindHit
-    # directories the finder searches (default: the project path). users add more.
     public search_dirs   : array path
-    # flat index of every file path under search_dirs (built once, filtered in
-    # memory per keystroke). find_results is the editor finder's current match set.
     public file_index    : list string
-    # cap on indexed files — the walk stops here so a huge tree can't run away.
-    # settable from orbiter.agi (`max_search: …`).
     public max_search    : i32 [ 400000 ]
-    # index nested git repositories (external/vendored deps) at all? true = index them
-    # last, false = skip entirely. settable from orbiter.agi (`search_external: false`).
     public search_external : bool [ true ]
     public find_results  : list string
-    # tracks whether the finder was active last frame, so we run_search on the
-    # transition (open → show the dock as lines; close → restore the file).
     intern was_finder    : bool
-    # double-click detection on find-result rows: timestamp + row of the last press,
-    # so a second press on the same match row within the window opens it at its line.
     intern last_hit_row      : i32 [ -1 ]
-    # the pane id the finder last targeted ('pane'/'pane_right'), so focus moving
-    # between panes re-runs the search into the newly-focused one.
     intern was_search_pane : string
-    # set true by the inotify watch thread when anything under search_dirs
-    # changes. the next search rebuilds file_index lazily on the main thread.
     public index_dirty   : bool
-    # set when a project switch re-rooted the index with a live query — once the new
-    # index finishes building, re-run the search so results reflect the new project.
     intern index_research : bool
-    # same signal, for the syntax formatter: a source file changed, so the format
-    # map(s) are stale — fmt_poll re-invokes `silver <proj> --format` to refresh them.
-    # one async worker thread builds the index off the UI thread
     intern index_task    : async
     # guards file_index: search reads while the worker fills
     intern index_lock    : mutex
     # main thread raises this to stop a running worker early
     intern index_cancel  : bool
     intern index_building : bool
-    # one inotify watch per search dir; keeps file_index fresh (like vscode's
-    # file watcher) instead of a once-per-session walk.
     intern index_watches : array watch
     public compile_log   : list string
-    # last build-error location (ctrl/cmd+E and the console error pill return here)
     intern err_file      : path
     intern err_line      : i32
     public nav_root      : path
-    # browse list density: false = the 2-slot double header (name over dir), true = a
-    # compact single-line row at the primary code font. Tab toggles it.
     public browse_single : bool
-    # show/hide the pinned dock at the top of the browse list — toggled from the editor
-    # nav so the results can be maximized. (eventual home of a thumbnail grid.)
     public show_pins     : bool [ true ]
-    # render the index as a thumbnail grid instead of the row list (same find_hits data).
     public grid_mode     : bool
-    # the (larger) font size used for the NAME line of the two-line double-header rows.
-    # single-line uses the primary code font; double-line's name is bigger.
     public browse_header_size : i32 [ 18 ]
-    # the dir (second) line font of a double header — smaller than the name, sized
-    # between the single-line primary font and the name line.
     public browse_dir_size : i32 [ 16 ]
-    # breakpoints are app-global, keyed by "source:line" -> condition string
-    # (empty = plain breakpoint, non-empty = conditional). the same map is
-    # handed to every Editor so they all share one set.
     public breakpoints   : map string[string]
-    # code font size (px) for editors. canvas default is large (~22); this is
-    # the single place to tune it. line-number labels render smaller still.
-    # settable from orbiter.agi (`code_font_size: …`).
     public code_font_size : i32 [ 19 ]
-    # tabs live under the 'panes' Splitter; pane_at[i] reaches their text.
 
     func init []
-        # turn ON deferred live-reload: silver-host stages source changes and signals us
-        # instead of auto-reloading, so the 'reload' chip appears and WE apply on click.
-        # the user passes nothing — orbiter drives this via the au_live_* host channel.
         au_live_set_defer[ 1 ]
-        # create the shared breakpoint set first so it always exists before any
-        # Editor is built and handed a reference to it.
         breakpoints    = map string[string] []
 
-        # targets come from orbiter.agi (parsed into the projects map, then
-        # flattened into target_names/roots/srcs). load_settings populates them.
         target_names   = array string []
         target_roots   = array path []
         target_srcs    = array path []
         load_settings[]
-        # no files open at start — files open from the FileList (main on click,
-        # right pane on shift+click)
         open_files     = array path []
         docked         = array path []
         # a few default pins so the column has content to look at
@@ -775,14 +590,8 @@ element orbiter : trinity # implements compiler
         active_panel   = 'files'
         editor_panel   = 'editor'
         active_target  = 'silver'
-        # reopen last session's tabs / breakpoints / selected-project (no-op on first
-        # run). MUST come after the defaults above — esp. active_target = 'silver' —
-        # so the restored selection isn't immediately clobbered.
         restore_session[]
-        # browse + search are rooted at the (restored) active project, not always the
-        # first one — project_root[] resolves it (silver's root for the system target).
         nav_root       = project_root[]
-        # supervised shell? the host publishes the app name in the environment
         ae : getenv[ 'SILVER_ISOLATE_APP' ]
         if [ ae ]
             orbit_app = string [ ae ]
@@ -799,15 +608,9 @@ element orbiter : trinity # implements compiler
             cb[2] = 0
             orbit_cc = string [ @cb[0] ]
             orbit_cc.hold[]
-            # the supervised app is the default resource — its source opens
             if [ !resource || resource.count == 0 ] resource = orbit_app
-        # `orbiter <file>`: a directory roots the browser there, a file opens in
-        # pane 0. AFTER restore_session so the argument wins over the session.
         dbg_start : bool [ false ]
         if [ resource && resource.count > 0 ]
-            # user inputs are always normalized to an ABSOLUTE path. cwd is the
-            # app's share bundle (cd_share), so a relative arg is against the
-            # LAUNCH dir; an absolute one is taken as-is.
             rp : path '{startup_path}/{resource}'
             if [ resource.chars[0] == 47 ] rp = path '{resource}'
             if [ rp.exists[] ]
@@ -820,9 +623,6 @@ element orbiter : trinity # implements compiler
                     active_pane = 0
                     active_idx  = ri
             el
-                # not a path — try it as a MODULE name (foundry/<n>/<n>.ag).
-                # opening its main source and selecting it as the target; the
-                # debugger launches on its built binary at the end of init.
                 mp : path '{startup_path}/foundry/{resource}/{resource}.ag'
                 if [ mp.exists[] ]
                     mi : i32 [ file_slot[ mp ] ]
@@ -834,8 +634,6 @@ element orbiter : trinity # implements compiler
                     nav_root      = path '{startup_path}/foundry/{resource}'
                     # open + select only — running is deliberate (the run chip)
                 el
-                    # no source anywhere — a BUILT app by name alone: open the
-                    # binary itself (the default hex resource) and debug it.
                     bp : path '{startup_path}/install/build/{resource}'
                     if [ bp.exists[] ]
                         bi : i32 [ file_slot[ bp ] ]
@@ -850,21 +648,21 @@ element orbiter : trinity # implements compiler
         if [ orbit_app ]
             # the shell never auto-runs the app — relaunch is deliberate
             pending_run = -1
-            # the app agent: claude in its own pane, right of the source
-            orbit_sid = 'agent:{orbit_app}'
-            orbit_sid.hold[]
+            active_pane = 0
+        orbit_sid = 'agent'
+        orbit_sid.hold[]
+        if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
+        if [ !ed_sessions[ orbit_sid ] ]
             pi9 : i32 [ editor_slots.count ]
             editor_slots += -1
             while [ pane_console.count <= pi9 ]
                 pane_console += ''
             pane_console[pi9] = orbit_sid
-            if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
             ns9 : ConsoleSession []
             ns9.name = orbit_sid
             ns9.launch_cmd = 'claude --model sonnet --dangerously-skip-permissions'
             ed_sessions[orbit_sid] = ns9
             ns9.start[]
-            active_pane = 0
         filter_text    = ''
         find_text      = ''
         findbar_open   = false
@@ -874,7 +672,6 @@ element orbiter : trinity # implements compiler
         find_in_file   = true
         find_showing   = false
         find_hits      = array FindHit []
-        # index/search is rooted at the active project (matches nav_root above)
         search_dirs    = array path []
         search_dirs   += project_root[]
         file_index     = list string []
@@ -886,18 +683,8 @@ element orbiter : trinity # implements compiler
         # kick off the index build on its worker thread
         start_index[]
         compile_log    = list string []
-        # staleness + recompile-before-load is owned by silver-host now (it checks
-        # every watched source against the product and rebuilds only what changed).
-        # the old in-app check_stale[] recompiled silver/hyperspace on every startup
-        # and broke on the 'silver' target (a C compiler, not a silver module — it
-        # resolved to /silver.ag). left here disabled rather than removed.
-        # check_stale[]
         ensure_user_config[]
-        # `orbiter <app>`: launch the debugger on the named app right away
         if [ dbg_start ] start_debug[ resource ]
-        # silver-host owns compiling (subprocess); we don't register as the compiler
-        # — we only want its build output routed into our log (system console).
-        #au_set_compiler[a]
 
     func ensure_user_config []
         home : string [ getenv[ 'HOME' ] ]
@@ -907,19 +694,11 @@ element orbiter : trinity # implements compiler
         dir  : path '{base}/orbiter'
         dir.make_dir[]
         cfg  : path '{base}/orbiter/orbiter.config'
-        #if [ !cfg.exists[] ]
-        #    cfg.save[ '# orbiter user config\n' ]
  
-    # orbiter.agi lives in the startup cwd. startup_path is captured in trinity.run[]
-    # before cwd changes to the share — but init runs first, so lazy-init it here.
     func agi_path [] -> path
         if [ !startup_path ] startup_path = path.path_startup[]
         p : path '{startup_path}/orbiter.agi'
         if [ p.exists[] ] return p
-        # launched from a dir with no orbiter.agi (e.g. the app's own share dir,
-        # …/platform/native/share/orbiter): walk up to the nearest ancestor that
-        # holds one — the checkout root — and rebase startup_path there so the
-        # .agi's relative project roots resolve against that checkout.
         d : path startup_path
         for [ i: i32 0, i < 6, i += 1 ]
             d = d.parent_dir[]
@@ -930,12 +709,6 @@ element orbiter : trinity # implements compiler
                 return p2
         return p
 
-    # resolve a project path (root/cwd/file) from orbiter.agi against the actual
-    # launch directory Au captured at startup. an absolute path passes through; a
-    # relative path (or '.'/empty) is rebased onto startup_path so the SAME .agi
-    # works from any checkout location — no hardcoded '/src/silver'. this is how
-    # orbiter.agi references "our silver locally": the silver project root is '.',
-    # which resolves to the directory orbiter.agi was found in.
     func resolve_local [ p: path ] -> path
         if [ !startup_path ] startup_path = path.path_startup[]
         if [ !p ] return path '{startup_path}'
@@ -944,27 +717,19 @@ element orbiter : trinity # implements compiler
         if [ s[0] == '/' ] return p
         return path '{startup_path}/{s}'
 
-    # OS-specific per-user cache dir for orbiter (created on demand). app state that
-    # is convenience-only (recoverable, not user content) belongs here, NOT in the
-    # workspace. linux: $XDG_CACHE_HOME or ~/.cache ; mac: ~/Library/Caches ;
-    # windows: %LOCALAPPDATA%. (apple/linux/windows are compile-time platform consts.)
-    # workspace state is persistent, not disposable — storage, not cache
     func cache_dir [] -> path
         return path.path_storage[ 'orbiter' ]
 
-    # the single states file holding every workspace's orbiter_state.
     func states_path [] -> path
         d : cache_dir[]
         if [ !d ] return null
         d.make_dir[]
         return path '{d}/states.agi'
 
-    # the current workspace key — the startup path (where orbiter.agi lives).
     func workspace_key [] -> string
         if [ !startup_path ] startup_path = path.path_startup[]
         return string '{startup_path}'
 
-    # read states.agi → parse_agi sets the `states` map directly on this instance.
     func load_states []
         sp : states_path[]
         if [ !sp || !sp.exists[] ] return
@@ -972,8 +737,6 @@ element orbiter : trinity # implements compiler
         if [ !txt || txt.count == 0 ] return
         Au.parse_agi[ null, txt.chars, a ]
 
-    # serialize the `states` map back to states.agi (agi: map of quoted workspace
-    # keys → orbiter_state blocks; tabs is a whitespace-delimited path array).
     func save_states []
         sp : states_path[]
         if [ !sp || !states ] return
@@ -997,14 +760,12 @@ element orbiter : trinity # implements compiler
             out = out + dline + '\n'
             if [ st.target && st.target.count > 0 ]
                 out = out + '\t\ttarget: \'{st.target}\'\n'
-            # breakpoints as a nested map: '<source:line>': '<condition>'
             if [ st.breakpoints && st.breakpoints.count > 0 ]
                 out = out + '\t\tbreakpoints:\n'
                 for [ cond: string, key: string ] in st.breakpoints
                     out = out + '\t\t\t\'{key}\': \'{cond}\'\n'
         sp.save[ out, null ]
 
-    # capture the current open tabs into states[workspace] and persist.
     func save_session []
         ws : workspace_key[]
         if [ !ws || ws.count == 0 ] return
@@ -1018,8 +779,6 @@ element orbiter : trinity # implements compiler
         for [ i: i32 0, i < open_files.count, i += 1 ]
             if [ open_files[i] ] tabs.push[ open_files[i] ]
         st.tabs        = tabs
-        # the per-pane layout: the file each pane shows, in pane order. empty panes are
-        # simply skipped — there's nothing to restore for them.
         panes : array path []
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             slot : i32 [ editor_slots[i] ]
@@ -1027,12 +786,10 @@ element orbiter : trinity # implements compiler
                 panes.push[ open_files[slot] ]
         st.panes       = panes
         st.docked      = docked
-        # the live breakpoint map is workspace-scoped — snapshot it into the state.
         st.breakpoints = breakpoints
         st.target      = active_target
         save_states[]
 
-    # on startup: load all states, then reopen the tabs saved for this workspace.
     func restore_session []
         load_states[]
         ws : workspace_key[]
@@ -1050,7 +807,6 @@ element orbiter : trinity # implements compiler
             for [ i: i32 0, i < st.docked.count, i += 1 ]
                 p : path st.docked[i]
                 if [ p ] docked += p
-        # restore the per-pane layout: each saved pane's file into its own slot
         if [ st.panes && st.panes.count > 0 ]
             editor_slots = array i32 []
             for [ i: i32 0, i < st.panes.count, i += 1 ]
@@ -1062,7 +818,6 @@ element orbiter : trinity # implements compiler
         el [ st.tabs && open_files.count > 0 && editor_slots.count > 0 ]
             editor_slots[0] = 0
 
-        # restore breakpoints into the live (shared) map so editors pick them up
         if [ st.breakpoints && breakpoints ]
             for [ cond: string, key: string ] in st.breakpoints
                 breakpoints[key] = cond
@@ -1070,13 +825,7 @@ element orbiter : trinity # implements compiler
         # restore the selected project
         if [ st.target && st.target.count > 0 ]
             active_target = st.target
-        # the open tabs ARE the restored session (above) — they're workspace state, not
-        # project state, so we do NOT override them with a project's default file set.
 
-    # read orbiter.agi and let parse_agi set members directly on this orbiter
-    # instance (`a`) — chiefly the `projects` map. we clear projects first so a
-    # reload is a clean rebuild (no stale entries lingering), then reparse and
-    # flatten projects into the flat target arrays the UI already uses.
     func load_settings []
         sp  : agi_path[]
         puts 'load_settings: startup_path={startup_path} -> agi={sp}'
@@ -1087,15 +836,11 @@ element orbiter : trinity # implements compiler
         settings_mtime = sp.modified_time[]
         if [ projects ] projects.clear[]
         Au.parse_agi[ null, txt.chars, a ]
-        # rebase project roots/cwds onto the launch dir so relative .agi paths
-        # (e.g. silver root '.') resolve to this local checkout, not a hardcoded path.
         if [ projects ]
             for [ p: Project, name: string ] in projects
                 p.root = resolve_local[ p.root ]
                 if [ p.cwd ] p.cwd = resolve_local[ p.cwd ]
         sync_targets[]
-        # (language servers are driven by the open .ag files now, synced from the
-        # once-a-second poll — not from the project load.)
         if [ projects ]
             puts 'loaded {projects.count} projects:'
             for [ p: Project, name: string ] in projects
@@ -1106,8 +851,6 @@ element orbiter : trinity # implements compiler
         el
             puts 'loaded 0 projects (projects is null)'
 
-    # flatten the projects map (source of truth) into the flat target_names/
-    # target_roots/target_srcs arrays the tabs, search and nav code consume.
     func sync_targets []
         target_names = array string []
         target_roots = array path []
@@ -1146,7 +889,6 @@ element orbiter : trinity # implements compiler
         au_space_clear[]
         compile_log.push[ 'done: {mod}' ]
 
-    # ---- per-file format watchers (language server), one per open .ag file ----------
     func fmt_stop [ key: string ]
         if [ !fmt_watch ] return
         fw : FmtWatch fmt_watch[ key ]
@@ -1160,37 +902,16 @@ element orbiter : trinity # implements compiler
             if [ fw.fd >= 0 ] close[ fw.fd ]
         fmt_watch = map FmtWatch [string] []
 
-    # start a `silver <proj> -w --format <map>` watcher for one silver project. exec'd
-    # through bash so the arg string matches the terminal; exec makes silver the pty leader
-    # (clean SIGHUP on close).
-    # (re)run the one-shot `silver <proj> --format <map>` for a watch entry. --format
-    # writes the syntax map and needs nothing else (no build; NO -w watch mode — that
-    # segfaults). called once at start and again whenever a source file changes.
     func fmt_spawn [ fw: FmtWatch ]
         if [ !fw ] return
-        # startup_path may not be captured yet when this first runs at load; without it the
-        # command becomes `cd  && exec ./platform/...` → cd to $HOME → binary not found (127).
         if [ !startup_path ] startup_path = path.path_startup[]
-        # close a prior generation's pty fd before re-spawning (regen).
         if [ fw.fd >= 0 ]
             close[ fw.fd ]
             fw.fd = -1
-        # --build (compile only): emit the syntax map as a byproduct and EXIT. without it,
-        # bare `silver <proj>` also RUNS the app — spawning a windowed orbiter that never
-        # returns and never cleanly hands us the map.
-        # unset IMPORT: a login shell sets IMPORT=.../sdk/native, pointing the build at the
-        # INSTALLED (stale) Au headers — which fail to compile and yield a partial map.
-        # clearing it uses the dev tree (platform/native), matching the running binary.
-        # a plain --build now writes the syntax cache as a byproduct to its standard path
-        # (<install>/syntax/<proj>.f) — no --format flag. redirect stdout+stderr to a log so a
-        # compile error / crash is captured (a partial cache is itself the not-compiled signal).
         cmd : 'cd {startup_path} && unset IMPORT && exec ./install/bin/silver --build {fw.file} > /tmp/orbiter-fmt-{fw.proj}.log 2>&1'
         fd  : i32 [ -1 ]
         pid : i32 [ forkpty[ @fd, null, null, null ] ]
         if [ pid == 0 ]
-            # the flag + command MUST be passed as cstr (.chars) — a bare '-c' literal reaches
-            # execl as an Au string object, not char*, so bash reads garbage and drops into an
-            # idle interactive shell (no command runs). same pattern as ConsoleSession.start.
             dashc : string '-c'
             execl[ '/bin/bash', 'bash', dashc.chars, cmd.chars, null ]
             _exit[ 1 ]
@@ -1199,10 +920,6 @@ element orbiter : trinity # implements compiler
             fw.fd  = fd
             fcntl[ fd, F_SETFL, O_NONBLOCK ]
 
-    # resolve an open .ag file to the MAIN file of the module it belongs to. silver
-    # keeps a module at <dir>/<dir>.ag with sibling .ag files as extensions, so the
-    # module main is <dir>/<dirname>.ag — building it colors every file in the module
-    # (extension files can't build standalone). a loose .ag with no match builds itself.
     func fmt_main [ f: path ] -> path
         dir  : path f.parent_dir[]
         modn : string dir.filename[]
@@ -1216,10 +933,6 @@ element orbiter : trinity # implements compiler
         if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
         k : string '{f}'
         if [ fmt_watch[ k ] ] return
-        # module stem = filename without .ag — silver writes the syntax cache to
-        # <install>/syntax/<stem>.f whether given the name or the .ag file, so read it
-        # there. the build is NOT kicked here: fmt_poll loads the existing cache first
-        # (instant colors), then kicks it once. priming leads, the compile trails.
         fn   : string f.filename[]
         stem : string fn
         di   : i32 [ fn.rindex_of[ '.' ] ]
@@ -1227,12 +940,6 @@ element orbiter : trinity # implements compiler
         fw : FmtWatch [ proj: stem, file: f, map: '{startup_path}/install/syntax/{stem}.f', start_us: epoch_micros[] ]
         fmt_watch[ k ] = fw
 
-    # keep the running language servers in sync with the .ag files we have open: we
-    # hand silver each open .ag file (no project list — the files ARE the input) and
-    # it decides what to do with it. one watcher per open .ag file, keyed by its path;
-    # start one for any not yet tracked, drop any whose file is no longer open.
-    # a language service runs for what we are VIEWING, not for everything that
-    # happens to be open — a tab's mere presence is not a reason to compile it.
     func fmt_sync []
         if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
         if [ !open_files ] return
@@ -1245,8 +952,6 @@ element orbiter : trinity # implements compiler
             fn : string f.filename[]
             if [ fn.count < 3 ] continue
             if [ fn.mid[ fn.count - 3, 3 ].compare[ '.ag' ] != 0 ] continue
-            # resolve to the module's MAIN file so extension files build via their
-            # parent (they can't build standalone) and siblings share one watcher.
             main : path fmt_main[ f ]
             k : string '{main}'
             live[k] = true
@@ -1257,14 +962,8 @@ element orbiter : trinity # implements compiler
         for [ i: i32 0, i < stale.count, i += 1 ]
             fmt_stop[ stale[i] ]
 
-    # drain each watcher's pty (so it can't block) and, when its map's mtime advances, reload
-    # it into the editor panes. NOT called from render.
     func fmt_poll []
         if [ !fmt_watch ] return
-        # a source file changed (flagged by the watch thread) → regenerate every map.
-        # cheap: --format just tokenizes, no build. debounced to one regen per change.
-        # per-source: re-run ONLY the watcher whose own .ag actually changed, and
-        # only once it has already kicked (a pending first build isn't a change).
         for [ fw: FmtWatch, name: string ] in fmt_watch
             if [ fw.kicked && fw.pid == 0 && fw.file ]
                 sm : i64 [ fw.file.modified_time[] ]
@@ -1282,8 +981,6 @@ element orbiter : trinity # implements compiler
                 for [ j: i32 0, j < 64, j += 1 ]
                     nr : i32 [ read[ fw.fd, @dbuf[0], 256 ] ]
                     if [ nr <= 0 ] break
-            # reap the one-shot --format child without blocking; when it returns, report
-            # its exit code so we KNOW it finished (not just that it started).
             if [ fw.pid > 0 ]
                 st : i32 [ 0 ]
                 r  : i32 [ waitpid[ fw.pid, @st, WNOHANG ] ]
@@ -1303,19 +1000,12 @@ element orbiter : trinity # implements compiler
                 mp : path fw.map
                 if [ mp.exists[] ]
                     m : mp.modified_time[]
-                    # apply PER EDITOR, every frame, to any pane behind the current map mtime.
-                    # this is not a one-shot: a pane created after the map loaded (or a fresh
-                    # map) is picked up on the next poll — no race between the load and pane
-                    # creation. load_format only runs on a real mismatch, so it's cheap idle.
                     applied : bool [ false ]
                     for [ i: i32 0, i < editor_slots.count, i += 1 ]
                         ed : Editor pane_at[ i ]
                         if [ ed && ed.fmt_mtime < m ]
                             ed.load_format[ fw.map ]
                             ed.fmt_mtime = m
-                            # the new colors change the pane's content → invalidate its cached
-                            # canvas so it re-renders, and wake the render loop. without this the
-                            # coloring only appeared after a hover happened to dirty the pane.
                             ed.pristine = false
                             applied = true
                     if [ applied ]
@@ -1323,14 +1013,10 @@ element orbiter : trinity # implements compiler
                         if [ win ] win.will_animate = true
                         if [ m > fw.mtime ]
                             fw.mtime = m
-            # priming: the existing cache (if any) was loaded above — instant colors from the
-            # last build. kick the refresh build once, ~1s later, so the colors paint first and
-            # the compile doesn't contend with that initial render.
             if [ !fw.kicked && epoch_micros[] - fw.start_us >= 1000000 ]
                 fmt_spawn[ fw ]
                 fw.kicked = true
 
-    # the current debug callstack: the paused session's real lldb frames, else empty.
     func debug_frames [] -> array Frame
         fr : array Frame [ ]
         dv : dbg active_debugger[]
@@ -1341,10 +1027,7 @@ element orbiter : trinity # implements compiler
             fr.push[ Frame [ func_name: df.func_name, file: df.source, line: i32[ df.line ] ] ]
         return fr
 
-    # the launch command for a console tab: its instance's `run` tokens joined
-    # ('' for shells) — what the session must exec whenever it is created.
     func agent_cmd [ sid: string ] -> string
-        # instanced ids are '{name}#{seq}' — the template is keyed by name alone
         base : string sid
         hx : i32 [ (sid) ? sid.index_of[ '#' ] : -1 ]
         if [ hx > 0 ] base = sid.mid[ 0, hx ]
@@ -1355,8 +1038,17 @@ element orbiter : trinity # implements compiler
                 cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
         return cmd_str
 
-    # create-or-get a session in the per-tab map. an agent instance ALWAYS launches
-    # with its `run` — a bare shell here is how an agent tab silently degrades.
+    func last_editor_pane [] -> i32
+        for [ i: i32 editor_slots.count - 1, i >= 0, i -= 1 ]
+            if [ i >= pane_console.count ] return i
+            if [ pane_console[i] != 'agent' ] return i
+        return -1
+
+    func agent_pane [] -> i32
+        for [ i: i32 0, i < pane_console.count, i += 1 ]
+            if [ pane_console[i] == 'agent' ] return i
+        return -1
+
     func ensure_console [ sid: string ] -> ConsoleSession
         if [ !sid || sid.count == 0 ] return null
         if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
@@ -1369,9 +1061,6 @@ element orbiter : trinity # implements compiler
         s.start[]
         return s
 
-    # type `text` into the first AI agent console (non-shell instance), launching
-    # its session on first use. wrapped in bracketed paste so multi-line context
-    # lands as ONE prompt block — nothing auto-submits.
     func feed_agent [ text: string ] -> none
         if [ !consoles ] return
         sid : string ''
@@ -1391,19 +1080,14 @@ element orbiter : trinity # implements compiler
         if [ !ed_sessions ] return null
         return ed_sessions[orbit_sid]
 
-    # ask the host to relaunch the app (env is the channel); it comes
-    # back WINDOWED — orbiter keeps its window and keeps supervising
     public func orbit_relaunch []
         k : string 'SILVER_ISOLATE_RESTART'
         v : string '1'
         setenv[ k.chars, v.chars, 1 ]
 
-    # fold the overlay (attach mode) — the app keeps orbiter running
     public func orbit_close []
         host_post[ 1, i32[ HM.close ], 0, 0, 0 ]
 
-    # compose a message for the agent: the app context prepended exactly
-    # once, the frozen screenshot + element tree on every message
     func orbit_send [ body: string ]
         s6 : ConsoleSession orbit_session[]
         if [ !s6 ]
@@ -1422,11 +1106,8 @@ element orbiter : trinity # implements compiler
         if [ shot.exists[] ] m6 = 'app screenshot: {shot}  {m6}'
         if [ tree.exists[] ] m6 = 'element tree: {tree}  {m6}'
         s6.write_input[ '{m6}\r' ]
-        # a second Enter lands shortly after — no-op if the first submitted
         orbit_enter_at = 120
 
-    # HM.dictate from the app: 0 idle, 1 recording, 2 cancel. orbiter owns
-    # the mic; the live confirm goes back on ring 1 (button turns blue).
     public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
         if [ mt != 1 ] return
         s : i32 [ wp ]
@@ -1450,16 +1131,43 @@ element orbiter : trinity # implements compiler
                 orbit_flushing = true
             host_live_set[ 0 ]
 
-    # feed the whisper gpu encoder from the SCREEN canvas while capturing
+    public func toggle_listen [ src: path ]
+        if [ orbit_cap_on ]
+            dictation_stop[]
+            orbit_cap_on   = false
+            orbit_flushing = true
+        el
+            rc : dictation_start[]
+            if [ rc == 0 ]
+                orbit_cap_on = true
+                listen_file  = src
+        puts 'orbiter: mic {orbit_cap_on} file {listen_file}'
+
+    public func listening [] -> bool
+        return orbit_cap_on
+
+    func mic_frame []
+        if [ orbit_cap_on ] dictation_poll[]
+        if [ !orbit_flushing ] return
+        if [ !dictation_flush[] ] return
+        orbit_flushing = false
+        dt : dictation_take[]
+        if [ !dt || dt.count == 0 ] return
+        puts 'orbiter: submitting take "{dt}"'
+        bd : string dt
+        if [ listen_file ] bd = '{listen_file}  {dt}'
+        listen_file = null
+        if [ orbit_app ]
+            orbit_send[ 'user {orbit_oc} {bd} {orbit_cc}' ]
+            return
+        sa : ConsoleSession ensure_console[ 'agent' ]
+        if [ sa ] sa.write_input[ '{bd}\r' ]
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         if [ orbit_cap_on ] dictation_gpu[ Canvas w.screen ]
 
-    # per-frame shell duties: orphan exit, mic feed, deferred Enter, the
-    # crash verdict, spoken markers, and the dictation take submit
     func orbit_frame [ w: Window ]
-        # attached and our app is gone → orphan. exit so we stop writing
-        # the shared shm frame (a fresh shell owns the live app now).
         if [ attach ]
             if [ orbit_app_pid == 0 ]
                 orbit_app_pid = -1
@@ -1470,9 +1178,14 @@ element orbiter : trinity # implements compiler
             if [ orbit_app_pid > 0 && host_pid_alive[ orbit_app_pid ] == 0 ] exit[ 0 ]
         # render every frame so the WndProc pump keeps running
         w.will_animate = true
-        if [ orbit_cap_on ] dictation_poll[]
-        # the app context waits for the agent's first message (see orbit_send);
-        # built here, not init — `attach` isn't resolved until the tree is up
+        if [ !orbit_voice_tested ]
+            orbit_voice_tested = true
+            tdv : string '/src/silver/models/kokoro-en'
+            rcv : i32 [ tts_init[ tdv.chars ] ]
+            puts 'voice-test: tts_init rc {rcv}'
+            if [ rcv == 0 ]
+                vt9 : string 'orbiter voice is working'
+                tts_say[ vt9.chars, 8, 1.0 ]
         if [ !orbit_ctx ]
             sv : getenv[ 'SILVER' ]
             sroot : string ((sv) ? string [ sv ] : string '{startup_path}')
@@ -1482,13 +1195,16 @@ element orbiter : trinity # implements compiler
                 prm = 'the user switched to orbiter from the running app {orbit_app}. its source is {sroot}/foundry/{orbit_app}/{orbit_app}.ag — assist with the app live; if it faults, the crash report is typed here.'
             orbit_ctx = '{prm} {vox}'
             orbit_ctx.hold[]
+        if [ !orbit_ctx_sent ]
+            if [ orbit_hello_at == 0 ] orbit_hello_at = 240
+            orbit_hello_at -= 1
+            if [ orbit_hello_at == 1 ] orbit_send[ '' ]
         # the deferred submit Enter (see orbit_send)
         if [ orbit_enter_at > 0 ]
             orbit_enter_at -= 1
             if [ orbit_enter_at == 0 ]
                 s7 : ConsoleSession orbit_session[]
                 if [ s7 ] s7.write_input[ '\r' ]
-        # voice the agent's speak markers, once each (they persist on screen)
         s2 : ConsoleSession orbit_session[]
         if [ s2 ]
             if [ !orbit_spoken ]
@@ -1518,19 +1234,10 @@ element orbiter : trinity # implements compiler
                 if [ dup ] continue
                 orbit_spoken.push[ ut ]
                 td2 : string '/src/silver/models/kokoro-en'
-                if [ tts_init[ td2.chars ] == 0 ]
+                rc2 : i32 [ tts_init[ td2.chars ] ]
+                puts 'speak-scan: voicing "{ut}" (tts_init rc {rc2})'
+                if [ rc2 == 0 ]
                     tts_say[ ut.chars, 8, 1.0 ]
-        # the take submits when the user STOPS: wind down the final
-        # transcription, then the whole session goes over as ONE message
-        if [ orbit_flushing ]
-            if [ dictation_flush[] ]
-                orbit_flushing = false
-                dt : dictation_take[]
-                if [ dt && dt.count > 0 ]
-                    puts 'orbiter: submitting take "{dt}"'
-                    orbit_send[ 'user {orbit_oc} {dt} {orbit_cc}' ]
-        # type the verdict into the live session, once, when the child dies;
-        # a relaunch clears the status → re-arm for the next crash
         st : getenv[ 'SILVER_ISOLATE_STATUS' ]
         if [ st && !orbit_reported ]
             orbit_reported = true
@@ -1542,9 +1249,6 @@ element orbiter : trinity # implements compiler
         el [ !st ]
             orbit_reported = false
 
-    # the console title's context button: ask the live emulator pane for a
-    # machine-state dump (focused pane first, else the first resource pane);
-    # the emu thread publishes it and the pane_for drain types it into the agent.
     func request_context [] -> none
         done : bool [ false ]
         ed : Editor pane_at[ active_pane ]
@@ -1554,10 +1258,6 @@ element orbiter : trinity # implements compiler
                 ed2 : Editor pane_at[ i ]
                 if [ ed2 && ed2.rview ] done = ed2.rview.context_request*[]
 
-    # the console title's screen button: read back the window's composed frame
-    # (screen canvas — everything orbiter just presented), write it as a PNG,
-    # and return the path. feeding that path to the agent is the same motion
-    # as dragging an image into its terminal.
     func snap_window [ w: Window ] -> string
         if [ !w || !w.screen ] return null
         tex : Texture w.screen.color
@@ -1574,11 +1274,6 @@ element orbiter : trinity # implements compiler
         shot.png[ path fn ]
         return fn
 
-    # build/run a project node by name: process its deps FIRST (a dep is just
-    # another node — same function, recursively), then run this node's build
-    # tokens. there is NO silver-vs-other distinction — every node is just its
-    # build command(s) (e.g. test4's build is `silver test4`), written into the
-    # node's own shell session so it runs in that project's terminal.
     func run_node [ name: string ] -> none
         if [ !projects ] return
         p : Project projects[name]
@@ -1591,9 +1286,6 @@ element orbiter : trinity # implements compiler
         for [ c: token ] in p.build
             cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
         cmd : string 'cd "{p.root}" && {cmd_str}'
-        # the build runs in this project's own session; a runnable node then launches
-        # under our dbg (LLDB SB API), NOT a shell process — its stdout/stderr stream
-        # back through dbg's on_stdout/on_stderr callbacks, and stops hit on_break.
         s : ConsoleSession ensure_console[ name ]
         if [ !s ] return
         s.pending = cmd
@@ -1601,20 +1293,13 @@ element orbiter : trinity # implements compiler
         if [ has_run ]
             start_debug[ name ]
 
-    # launch a dbg (LLDB SB-API) session on a project's product. auto_start runs the
-    # binary immediately; its callbacks land on the on_* handlers below. NOTE: the
-    # build above is async in the shell, so the product must already exist for this
-    # launch to be current.
     func start_debug [ name: string ] -> none
         p : Project (projects) ? projects[name] : null
-        # the launchable binary: explicit product, else <startup>/install/build/<run>
-        # (silver builds an app to install/build/<name>; run carries the binary name).
         loc : path (p) ? p.product : null
         if [ !loc && p && p.run && p.run.count > 0 ]
             rb : string p.run[0].chars
             ps : string '{startup_path}/install/build/{rb}'
             loc = path [ ps.chars ]
-        # no project node — an app named alone still debugs its built binary
         if [ !loc ]
             ps2 : string '{startup_path}/install/build/{name}'
             l2  : path [ ps2.chars ]
@@ -1622,12 +1307,9 @@ element orbiter : trinity # implements compiler
         if [ !loc ]
             puts 'start_debug {name}: no binary to launch'
             return
-        # the inferior's stdout/stderr drain into this session on render
         ensure_console[ name ]
         puts 'start_debug {name}: launching {loc}'
         if [ !debuggers ] debuggers = map dbg [string] []
-        # auto_start:false so breakpoints install into the target BEFORE the inferior
-        # runs — otherwise the process would blow past them. then launch.
         d : dbg [ location: loc, target: a, auto_start: false ]
         debuggers[name] = d
         sync_breakpoints[ d ]
@@ -1648,9 +1330,6 @@ element orbiter : trinity # implements compiler
         if [ i + 2 >= n ] return false
         return b[i + 2] == 84
 
-    # attach lldb to an in-pane app that silver-host spawned and self-stopped before
-    # init. resolve its binary, attach to the live pid, install breakpoints while it's
-    # parked, then continue — init breakpoints arm because no app code has run yet.
     func attach_appview [ av: AppView, pid: i32 ]
         if [ av.attached ] return
         av.attached = true
@@ -1682,9 +1361,6 @@ element orbiter : trinity # implements compiler
         kill[ pid, SIGCONT ]
         puts 'attach_appview: attached {mod} pid={pid}'
 
-    # install every app-global breakpoint into a dbg session's target. keys are
-    # "absolute/source:line" — split on the LAST ':' (linux paths have no ':'), the
-    # value is the condition (empty = plain). the for yields value-then-key.
     func sync_breakpoints [ d: dbg ]
         if [ !breakpoints || !d ] return
         for [ cond: string, key: string ] in breakpoints
@@ -1695,13 +1371,6 @@ element orbiter : trinity # implements compiler
             if [ blin <= 0 ] continue
             d.set_breakpoint[ path [ bsrc ], u32[ blin ], 0 ]
 
-    # dbg callbacks. Au_binding builds the target method name as <self_type>_<name>
-    # = dbg_on_stdout/... (self_type is `dbg`, no id), so the handlers carry that
-    # dbg_ prefix.
-    # inert: the inferior's stdout/stderr are now drained on the main/render thread
-    # in on_render (cons.feed_fd off the dbg PTY masters) into the project's own
-    # console session — NOT pushed through a dbg io-thread callback (that raced the
-    # renderer and printed to orbiter's own stdout). kept only so the binding resolves.
     func dbg_on_stdout [ buf: iobuffer ] -> Au
         return null
     func dbg_on_stderr [ buf: iobuffer ] -> Au
@@ -1712,9 +1381,6 @@ element orbiter : trinity # implements compiler
         apply_break[ cur ]
         return null
 
-    # open the break's source in the first editor pane (pane0 always exists from init),
-    # select its line, follow it with the scroll, and read the paused frame's locals.
-    # called straight from the dbg break/crash callbacks.
     func apply_break [ cur: cursor ]
         if [ !cur ] return
         src : path cur.source
@@ -1728,11 +1394,7 @@ element orbiter : trinity # implements compiler
                 # stop_line drives the white ">" arrow / current-line glow.
                 sl : i32 [ (ln > 0) ? ln - 1 : 0 ]
                 ed.stop_line = sl
-                # the exact stop column → its own marker, separate from the edit
-                # selection. silver emits the DWARF column as a 0-based char index.
                 ed.stop_col  = i32[ cur.column ]
-                # do NOT move the edit caret on a step — only the stop marker moves;
-                # scroll to follow the stop line only when it's outside the visible band.
                 lh  : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
                 vh  : f32 [ (ed.bounds) ? ed.bounds.h : 600.0 ]
                 top : f32 [ f32[sl] * lh ]
@@ -1740,25 +1402,19 @@ element orbiter : trinity # implements compiler
                     ed.scroll.y = top - vh * 0.4
                     if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
                     ed.scroll_target = ed.scroll.y
-                # a fresh stop → back into active mode (keyboard drives the debugger).
                 ed.edit_armed = false
                 ed.pristine  = false
-        # we're paused here → read this frame's locals for the Fields panel.
         dv : active_debugger[]
         if [ dv ] debug_vars = dv.read_locals[]
         win : ux
         win.will_animate = true
 
-    # clear the debugger's stop-line marker on every pane (called when the inferior
-    # continues, stops, exits or crashes — there's no live execution point anymore).
     func clear_stop_lines []
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             ed : Editor pane_at[ i ]
             if [ ed ]
                 ed.stop_line  = -1
                 ed.stop_col   = -1
-                # session ended → re-lock editing so the next run starts in the
-                # active (keyboard-drives-debugger) state, not left armed for edit.
                 ed.edit_armed = false
                 ed.pristine   = false
         # no live frame anymore → drop the inspected variables.
@@ -1768,7 +1424,6 @@ element orbiter : trinity # implements compiler
         es : ConsoleSession (ed_sessions) ? ed_sessions[ active_target ] : null
         de : dbg (debuggers) ? debuggers[ active_target ] : null
         if [ es ]
-            # pull the final flush (fds still open until stop/dealloc) before the notice
             if [ de ]
                 es.feed_fd[ de.fifo_fd_out ]
                 es.feed_fd[ de.fifo_fd_err ]
@@ -1779,13 +1434,9 @@ element orbiter : trinity # implements compiler
         return null
     func dbg_on_crash [ cur: cursor ] -> Au
         if [ cur ] puts 'dbg crash {cur.source}:{cur.line}'
-        # a crash IS an execution point — open + mark it the same as a break stop.
         if [ cur ] apply_break[ cur ]
         return null
 
-    # map a path to its slot in open_files, registering it if not yet present.
-    # (renamed from file_index — that name is the search-index prop; silver is
-    # like swift, a func can't shadow a prop.)
     func file_slot [ p: path ] -> i32
         for [ i: i32 0, i < open_files.count, i += 1 ]
             if [ open_files[i] == p ] return i
@@ -1799,8 +1450,6 @@ element orbiter : trinity # implements compiler
             if [ docked[i] == p ] return true
         return false
 
-    # toggle a file's pin in the dock (persist + refresh the list so it moves to/from
-    # the pinned section at the top).
     func toggle_dock [ p: path ]
         if [ !p ] return
         if [ !docked ] docked = array path []
@@ -1814,12 +1463,6 @@ element orbiter : trinity # implements compiler
         save_session[]
         run_search[]
 
-    # build the editor-title nav (git + dock toggle) for a pane. the git button
-    # the tab controls are split: '-' (undock/remove) on the left of the title,
-    # always present with a file open; '+' (dock/add) on the right with magnify/menu.
-    # the live debug session for the active target, or null if none is running.
-    # fade-in: while a pane's app view is under 1.0 opacity, the code renders
-    # underneath and the frame draws HERE, over the composed screen
     public func on_overlay [ cv: Canvas ]
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             ed : Editor pane_at[ i ]
@@ -1829,8 +1472,6 @@ element orbiter : trinity # implements compiler
             fal : f32 [ f32[ epoch_micros[] - av.fade_us ] / 400000.0 ]
             if [ fal >= 1.0 ] continue
             if [ fal < 0.0 ] fal = 0.0
-            # vx/vy are pane-local; the screen canvas is world space — offset
-            # by the pane's absolute origin or the fade draws over the title
             wx : f32 [ av.vx ]
             wy : f32 [ av.vy ]
             for [ p: element* ed, p, p = p.parent ]
@@ -1841,7 +1482,6 @@ element orbiter : trinity # implements compiler
             av.draw_frame[ cv, rect [ x: wx, y: wy, w: av.vw, h: av.vh ] ]
             cv.set_opacity[ 1.0 ]
 
-    # the pane app was stopped — end its session (kills a parked inferior too)
     func stop_debug [ mod: string ]
         if [ !mod || !debuggers ] return
         d : dbg debuggers[ mod ]
@@ -1852,53 +1492,33 @@ element orbiter : trinity # implements compiler
     func active_debugger [] -> dbg
         if [ !debuggers ] return null
         d : dbg debuggers[ active_target ]
-        # `active` = session alive (paused or running); `running` is false while
-        # paused, so it would wrongly unlock the editor exactly at a breakpoint.
         return (d && d.active) ? d : null
 
-    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window, dbg_locked: bool, dbg_open: bool, menu_open: bool, is_resource: bool, rv: ResourceView, fb_on: bool, tfoc: bool ] -> Elements
+    func title_nav [ p: path, grp: array path, has_diff: bool, win: Window, dbg_locked: bool, dbg_open: bool, menu_open: bool, is_resource: bool, rv: ResourceView, fb_on: bool, tfoc: bool, pane_ix: i32 ] -> Elements
         hasfile  : bool [ p && p.exists[] ]
         els : Elements []
-        # left title chips, in order: [x] always leads when engaged;
-        # [f] alternates find-in-file(s) vs the filename finder.
         browse_open : bool [ menu_open && nav_showing ]
         engaged : bool [ browse_open || fb_on || tfoc ]
         # no close chip — Escape closes the finder
         if [ engaged && !is_resource ]
             els['magnify'] = LButton [ icon: 'magnify', selected: fb_on, manual_mode: true ]
 
-        # the right-flow run, in one unbroken block. a right-flow chip only chains
-        # off a RIGHT-anchored previous sibling — a left-anchored one between them
-        # restarts the run at the container edge, stacking chips on top of each
-        # other. so every right-flowing chip is emitted here, contiguously.
-        # the tab's own buttons lead: same slot on every pane, whatever it holds.
-        # actions, not toggles — without manual_mode an Option latches its own
-        # selected state on click and stays lit (NavButton paints that orange).
-        # the +/- pane controls as ONE grouped pill: collapse2 (-) removes, expand2
-        # (+) adds. TButtons emits the clicked segment's id, routed below like the
-        # old separate buttons were.
         tnav : array string [ ]
         if [ editor_slots.count > 1 ] tnav.push[ 'undock' ]
         if [ editor_slots.count < 4 ] tnav.push[ 'dock' ]
-        if [ tnav.count == 2 ]
-            els['tabnav'] = TButtons [ buttons: tnav, manual: true, area: Region { r0+ t0 w2.3 h0.9 } ]
-        el [ tnav.count == 1 ]
-            els['tabnav'] = TButtons [ buttons: tnav, manual: true, area: Region { r0+ t0 w1.15 h0.9 } ]
+        if [ agent_pane[] < 0 && pane_ix == last_editor_pane[] ] tnav.push[ 'gear' ]
+        wn9 : f32 [ f32[ tnav.count ] * 1.15 ]
+        if [ tnav.count > 0 ]
+            els['tabnav'] = TButtons [ buttons: tnav, manual: true, area: Region [ 'r0+ t0 w{wn9} h0.9' ] ]
 
-        # pins/grid toggles belong to the browse index only — right after the
-        # tab buttons, so the folder sits left of the +/- pair.
         if [ menu_open && nav_showing && docked && docked.count > 0 ]
             els['pins'] = RButton [ icon: (show_pins) ? 'side_on' : 'side_off', selected: show_pins, manual_mode: true ]
         if [ menu_open && nav_showing ]
             els['grid'] = RButton [ icon: 'files', selected: grid_mode, manual_mode: true ]
 
-        # the active (non-edit) state indicator: shown while the pane is
-        # debug-locked. a status LABEL only — never clickable.
         if [ dbg_locked ]
             els['active'] = StatusLabel [ label: 'active' ]
 
-        # then whatever the open view contributes (an emulator's game/assembly/tiles,
-        # a console's context/screen).
         if [ rv ]
             vel : Elements rv.title_elements*[]
             if [ vel ]
@@ -1910,7 +1530,6 @@ element orbiter : trinity # implements compiler
             if [ replace_open ]
                 els['replace'] = ReplaceField [ label: 'replace', edit: replace_text, focusable: true ]
                 els['replace_all_action'] = LabelButton [ label: 'All', manual_mode: true ]
-        # pattern joins the right flow AFTER the chips → sits left of them all
         if [ fb_on ]
             els['pattern'] = PatternField [
                 label: (hasfile) ? p.filename[] : 'Files',
@@ -1926,9 +1545,6 @@ element orbiter : trinity # implements compiler
         return els
 
 
-    # build the docked-tab strip for a group: one tab per docked file, the
-    # active file selected. ids are prefix+index so the click handler can map
-    # back to the path. rendered inline in the editor title when not editing.
     func dock_tabs [ grp: array path, prefix: string, active: path, win: Window ] -> Elements
         els : Elements []
         for [ i: i32 0, i < grp.count, i += 1 ]
@@ -1937,7 +1553,6 @@ element orbiter : trinity # implements compiler
             els[tid] = Option [ label: p.filename[], selected: active && p == active ]
         return els
 
-    # restart the index build; if one is running, cancel + mark dirty
     func start_index []
         if [ index_building ]
             index_cancel = true
@@ -1955,7 +1570,6 @@ element orbiter : trinity # implements compiler
         work.push[ dirs ]
         index_task     = async [ target: a, work_fn: @index_work, work: work ]
 
-    # worker thread: walk the search roots, filling file_index under lock
     func index_work [ dirs: array path ] -> none
         stack : array path []
         repos : array path []
@@ -1970,8 +1584,6 @@ element orbiter : trinity # implements compiler
                     stack.push[ rp ]
                 repos = array path []
             n : i32 [ stack.count - 1 ]
-            # hold across remove[]: remove drops the array's ref, and `d` is a
-            # borrow — without the hold the path frees before d.ls[] runs.
             d : path hold[ stack[n] ]
             stack.remove[ n ]
             entries : array [ d.ls[ null, false ] ]
@@ -1981,13 +1593,9 @@ element orbiter : trinity # implements compiler
                 for [ i: i32 0, i < entries.count, i += 1 ]
                     e : path entries[i]
                     if [ e.is_dir[] ]
-                        # skip vendored deps and git internals — checkout alone is
-                        # ~235k files and buries foundry/src under the index cap.
                         dn : string e.filename[]
                         if [ dn == 'checkout' || dn == '.git' ]
                             continue
-                        # a nested git repo (has .git): index it deferred to the end when
-                        # search_external is on, otherwise skip it entirely.
                         gp : path '{e}/.git'
                         if [ gp.exists[] ]
                             if [ search_external ]
@@ -2007,16 +1615,12 @@ element orbiter : trinity # implements compiler
         index_building = false
         index_lock.unlock[]
 
-    # spawn one inotify watch per search dir. the watch runs on its own pthread
-    # (Au.watch) and fires on_index_change when anything under the dir changes.
     func start_watching []
         for [ d: path ] in search_dirs
             iw : watch [ res: d, callback: @on_index_change, argument: a ]
             iw.start[]
             index_watches += iw
 
-    # re-root the file index + its inotify watch onto the SELECTED project's root, so
-    # the search service stays in sync with the active project. called on tab change.
     func reroot_index []
         r : path project_root[]
         if [ !r ] return
@@ -2025,7 +1629,6 @@ element orbiter : trinity # implements compiler
             s0 : string '{search_dirs[0]}'
             rs : string '{r}'
             if [ s0.compare[ rs ] == 0 ] return
-        # stop the old root's watch, then re-point everything at the new root
         if [ index_watches ]
             for [ iw: watch ] in index_watches
                 iw.pause[]
@@ -2034,28 +1637,12 @@ element orbiter : trinity # implements compiler
         search_dirs  += r
         start_index[]
         start_watching[]
-        # if a query is live, the just-cleared index is empty — re-run the search once
-        # the new project's index has rebuilt (render re-runs it when the build ends).
         if [ find_text && find_text.count > 0 ] index_research = true
 
-    # called FROM the watch thread — keep it trivial. just flag the index stale;
-    # the rebuild happens on the main thread in the next run_search.
     func on_index_change [ changed: Au ] -> none
-        # ONLY the file index. this fires for every write under the search dirs
-        # — including the build outputs the language service itself produces —
-        # so driving fmt from here is a feedback loop: build writes, watch fires,
-        # every watcher respawns, writes again. fmt_poll checks source mtimes.
         index_dirty = true
 
-    # reload safety: each watch thread holds a raw callback (on_index_change) into
-    # THIS module's code. before the .so unloads they must be stopped, else a file
-    # event after dlclose fires a dangling pointer (crash in watch_runner). pause[]
-    # joins each thread synchronously, independent of refcount/auto_free timing.
     public func on_unload [ ]
-        # a live reload dlcloses this module — a debug session left running would
-        # orphan its lldb inferior AND leave stale vtables on the dbg objects. stop
-        # and drop them all here while vtables are still valid (start_debug recreates
-        # the map lazily after the reload).
         if [ debuggers ]
             for [ d: dbg, name: string ] in debuggers
                 if [ d && d.active ] d.stop[]
@@ -2063,23 +1650,18 @@ element orbiter : trinity # implements compiler
         if [ index_watches ]
             for [ iw: watch ] in index_watches
                 iw.pause[ ]
-        # index worker holds a raw work_fn into this module too —
-        # cancel it and join (drop) before the .so unloads
         index_cancel = true
         index_task   = null
+        drop[ file_index ]
+        file_index   = list string []
+        find_results = list string []
+        ed_sessions  = map ConsoleSession [string] [ ]
         super.on_unload[ ]
 
-    # index_search is the SERVICE: filter the cached file_index by `query` and RETURN
-    # the ranked matches. it owns no display state and touches no shared query field,
-    # so the editor finder and the FileList can each call it with their own query.
     func index_search [ query: string ] -> list string
         out : list string []
-        # if a change is pending and we're idle, restart the incremental build; this
-        # just filters what's there (instant) — never walks the tree on a keystroke.
         if [ index_dirty && !index_building ]
             start_index[]
-        # rank by right-distance: how far the right-most occurrence sits from the END
-        # of the path. 0 = match at the very end (most relevant). clamp into last tier.
         tiers   : i32 [ 32 ]
         matches : array string []
         dists   : array i32 []
@@ -2101,32 +1683,20 @@ element orbiter : trinity # implements compiler
                         out.push[ matches[i] ]
         return out
 
-    # find-in-files: build find_hits from findbar_text, scoped by find_in_file
-    # (current file) vs Files (file_index filtered by pattern_text). each matching
-    # file gets a header row then one row per matched source line.
     func run_find_in_files []
         find_hits = array FindHit []
         q : string findbar_text
         find_last_query = q
-        # snapshot the scope this run used, so a scope change (e.g. clearing **.ag back to
-        # this file) makes the next Enter a fresh search rather than stepping stale results.
         find_last_scope = (pattern_text) ? pattern_text : ''
         if [ !q || q.count == 0 ]
             find_showing = false
             return
         a_slot : i32 [ (active_pane >= 0 && active_pane < editor_slots.count) ? editor_slots[active_pane] : -1 ]
         p : path (a_slot >= 0 && a_slot < open_files.count) ? open_files[a_slot] : null
-        # the find_in_files toggle drives it: lit (find_in_file) → search THIS file; off →
-        # walk the foundry tree (the glob in pattern_text still filters which files).
         scan_current : bool [ find_in_file && p ]
         if [ scan_current ]
-            # in-file = Notepad-style: the editor stays AS-IS (no filtered list) and the
-            # matches highlight in place via find_query (live, per keystroke). so there's no
-            # hits view to show — leave find_showing off and let the highlight do the work.
             find_showing = false
             return
-        # Files mode (or In-File with no open file): walk the foundry tree and render the
-        # filtered occurrence list.
         root : path '{startup_path}/foundry'
         find_scanned = 0
         walk_find[ root, q ]
@@ -2134,8 +1704,6 @@ element orbiter : trinity # implements compiler
             find_hits.push[ FindHit [ is_header: true, text: 'No results in {find_scanned} files', dir: 'within foundry/', file: null ] ]
             find_hits.push[ FindHit [ is_header: true, text: '', file: null ] ]
         find_showing = true
-        # a fresh result set → clear the results-pane selection so the next Enter
-        # ("next match") starts at the first occurrence, not wherever it last sat.
         sp : string search_pane[]
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             e : Editor pane_at[ i ]
@@ -2143,9 +1711,6 @@ element orbiter : trinity # implements compiler
                 e.sel_line    = -1
                 e.anchor_line = -1
 
-    # advance the selection to the next match row in the results pane (wrapping past
-    # the file-title headers), and scroll it into view. used when Enter is pressed and
-    # the results are already up for the current phrase — step through occurrences.
     func next_match []
         sp : string search_pane[]
         ed : Editor null
@@ -2160,7 +1725,6 @@ element orbiter : trinity # implements compiler
         n  : i32 [ find_hits.count ]
         cl : i32 [ ed.sel_line ]
         cc : i32 [ ed.sel_col ]
-        # 1) another occurrence on the CURRENT row, after the active one
         if [ cl >= 0 && cl < n && !find_hits[ cl ].is_header ]
             ln : string find_hits[ cl ].text
             st : i32 [ cc + 1 ]
@@ -2171,7 +1735,6 @@ element orbiter : trinity # implements compiler
                 if [ rel >= 0 ]
                     reveal_match[ ed, cl, st + rel ]
                     return
-        # 2) otherwise the first occurrence of the next match row (wrapping)
         r : i32 [ cl ]
         for [ step: i32 0, step < n, step += 1 ]
             r = r + 1
@@ -2184,10 +1747,6 @@ element orbiter : trinity # implements compiler
                     reveal_match[ ed, r, rel ]
                     return
 
-    # IN-FILE find (Notepad-style): step the selection to the next occurrence of the find
-    # text in the active pane's own file (the editor stays as-is; the active match gets the
-    # yellow fill via sel_line/sel_col, the rest stay outlined). searches from just after the
-    # current selection, wrapping once.
     func find_file_next []
         sp : string search_pane[]
         ed : Editor null
@@ -2215,26 +1774,18 @@ element orbiter : trinity # implements compiler
                     reveal_match[ ed, row, start + rel ]
                     return
 
-    # place the caret on a specific match (row + column) and scroll the row into view.
     func reveal_match [ ed: Editor, row: i32, col: i32 ]
         ed.sel_line    = row
         ed.sel_col     = col
         ed.anchor_line = row
         ed.anchor_col  = col
         lh : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
-        # the text is its own element now — its bounds ARE the viewport
         vh : f32 [ (ed.bounds) ? ed.bounds.h : 600.0 ]
         top : f32 [ f32[ row ] * lh ]
-        # only scroll when the line is actually cut off (above the top, or its bottom
-        # past the viewport) — no margin, so a fully-visible line near the bottom edge
-        # doesn't trigger a scroll just because a sliver of the next line shows below it.
         if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
             ed.scroll.y = top - vh * 0.4
             if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
             ed.scroll_target = ed.scroll.y
-        # horizontal: default to the line start (base); when the match wouldn't fit
-        # from there, scroll right only as far as needed so the match END plus a 4-char
-        # pad sits at the right edge — minimal travel, never further than required.
         if [ row >= 0 && row < ed.line_count[] ]
             ln  : string ed.line_get[ row ]
             cw  : f32 [ (ed.cw_cache > 0.0) ? ed.cw_cache : 8.0 ]
@@ -2251,12 +1802,6 @@ element orbiter : trinity # implements compiler
         win : ux
         if [ win ] win.will_animate = true
 
-    # glob matcher for the find-in-files pattern, matched against a file's full path:
-    #   *   any run of chars except '/'
-    #   **  any run including '/' (any directory depth)
-    #   ?   any single char except '/'
-    # a leading ** absorbs the absolute prefix, so `**/*/a.*` matches
-    # <anything>/<one-dir>/a.<ext>. recursive with backtracking on * / **.
     func glob_at [ pat: string, pi0: i32, str: string, si0: i32 ] -> bool
         pi : i32 [ pi0 ]
         si : i32 [ si0 ]
@@ -2290,8 +1835,6 @@ element orbiter : trinity # implements compiler
     func glob_match [ pat: string, str: string ] -> bool
         return glob_at[ pat, 0, str, 0 ]
 
-    # a glob with no '/' matches the FILENAME ('*.ag'); one with '/'
-    # matches the path relative to the launch dir ('foundry/*/x.ag')
     func glob_pass [ e: path ] -> bool
         if [ !pattern_text || pattern_text.count == 0 ] return true
         if [ pattern_text.index_of[ '/' ] < 0 ]
@@ -2303,8 +1846,6 @@ element orbiter : trinity # implements compiler
             if [ es.count > 0 && es[0] == '/' ] es = es.mid[ 1, es.count - 1 ]
         return glob_match[ pattern_text, es ]
 
-    # recursively walk `dir`, scanning each file's content for `q`. when a find pattern
-    # is set, only files whose path matches the glob are scanned (dirs are still walked).
     func walk_find [ dir: path, q: string ]
         entries : array [ dir.ls[ null, false ] ]
         if [ !entries ] return
@@ -2316,8 +1857,6 @@ element orbiter : trinity # implements compiler
                 find_scanned += 1
                 scan_file_hits[ e, q ]
 
-    # scan one file for substring `q`, appending a header (once) + a row per
-    # matched line (with its 1-based source line number) to find_hits.
     func scan_file_hits [ p: path, q: string ]
         if [ !p || !p.exists[] ] return
         content : string [ p.load[ typeid[string], null ] ]
@@ -2328,14 +1867,9 @@ element orbiter : trinity # implements compiler
             ln : string parts[i]
             if [ ln.index_of[ q ] >= 0 ]
                 if [ !header_added ]
-                    # a file title occupies 2 uniform row-slots (so every row stays
-                    # one line-height tall and the editor's cursor math is untouched).
-                    # the first slot carries the filename (bright) + its directory
-                    # (dimmed), drawn spanning both; the second is an empty continuation.
                     fn  : string p.filename[]
                     drs : string '{p.directory[]}'
                     sp  : string '{startup_path}'
-                    # show the directory relative to the launch dir when it's under it
                     if [ sp.count > 0 && drs.index_of[ sp ] == 0 ]
                         drs = drs.mid[ sp.count, drs.count - sp.count ]
                         if [ drs.count > 0 && drs[0] == '/' ] drs = drs.mid[ 1, drs.count - 1 ]
@@ -2344,32 +1878,22 @@ element orbiter : trinity # implements compiler
                     header_added = true
                 find_hits.push[ FindHit [ is_header: false, text: ln, file: p, line: i + 1 ] ]
 
-    # which editor pane the finder targets: the one whose title is focused, else the
-    # first pane. (search results render only in this pane; the other keeps its file.)
     func search_pane [] -> string
         win : ux
         if [ win && win.focus && win.focus.id == 'title' ]
-            # the title is the TAB's child now (sibling of the content), so the
-            # pane id lives on the EditorView above it — not on the Editor.
             for [ e: element* win.focus, e, e = e.parent ]
                 if [ e inherits EditorView ] return e.id
         return 'pane0'
 
-    # set one pane to the search list (if it's the active search pane) or restore its
-    # own file (the file at `slot`), so the search never leaves a stale copy in a
-    # non-search pane.
     func apply_pane [ ed: Editor, is_search: bool, slot: i32 ]
         if [ !ed ] return
         was_search : bool [ ed.finder_list ]
-        # entering finder: stash the file's scroll (the browse list reuses scroll.y) and
-        # start the list at the top.
         if [ is_search && !was_search ]
             ed.saved_scroll  = ed.scroll.y
             ed.scroll.y      = 0.0
             ed.scroll_target = 0.0
         ed.finder_list = is_search
         if [ is_search ]
-            # the focused search pane shows the navigate list (dock + matches)
             ed.lines = find_results
         el [ slot >= 0 && slot < open_files.count ]
             # any other pane with a file open: restore its content
@@ -2380,25 +1904,19 @@ element orbiter : trinity # implements compiler
                 ed.scroll.y      = ed.saved_scroll
                 ed.scroll_target = ed.saved_scroll
         el
-            # a non-search, file-less pane is blank — NOT a copy of the dock
             ed.lines = list string []
         ed.pristine = false
 
-    # the i-th tab element ('pane0'..'pane3') — a child of the 'panes' Splitter.
     func pane_view [ i: i32 ] -> element
         spl : element (elements) ? elements[ 'panes' ] : null
         if [ !spl || !spl.elements ] return null
         return spl.elements[ 'pane{i}' ]
 
-    # the i-th tab's title. it is the TAB's child (sibling of the content), so it
-    # is never reached through the Editor.
     func title_at [ i: i32 ] -> element
         pv : element pane_view[ i ]
         if [ !pv || !pv.elements ] return null
         return pv.elements[ 'title' ]
 
-    # a Splitter wrote 0 for this id — the user snapped the pane shut. consume
-    # the entry (so a reopen starts at the default size) and report it.
     func take_closed [ arr: array, id: string ] -> bool
         if [ !arr || !id ] return false
         for [ i: i32 0, i + 1 < arr.count, i += 2 ]
@@ -2412,8 +1930,6 @@ element orbiter : trinity # implements compiler
                 return false
         return false
 
-    # close editor pane pi — the one code path for the '-' button AND a divider
-    # snapped shut. stops the pane's running app / resource view first.
     func close_pane [ pi: i32 ]
         if [ editor_slots.count <= 1 || pi < 0 || pi >= editor_slots.count ] return
         pe : Editor pane_at[ pi ]
@@ -2423,66 +1939,58 @@ element orbiter : trinity # implements compiler
             pe.rview = null
         editor_slots.remove[ pi ]
         if [ pi < pane_console.count ] pane_console.remove[ pi ]
+        if [ pane_sizes ]
+            for [ qi: i32 0, qi + 1 < pane_sizes.count, qi += 2 ]
+                qk : string [ pane_sizes[ qi ] ]
+                if [ qk && qk.compare[ 'pane{pi}' ] == 0 ]
+                    pane_sizes.remove[ qi ]
+                    pane_sizes.remove[ qi ]
+                    break
+            for [ qj: i32 pi + 1, qj <= editor_slots.count, qj += 1 ]
+                for [ qi: i32 0, qi + 1 < pane_sizes.count, qi += 2 ]
+                    qk : string [ pane_sizes[ qi ] ]
+                    if [ qk && qk.compare[ 'pane{qj}' ] == 0 ]
+                        pane_sizes[ qi ] = 'pane{qj - 1}'
+                        break
         if [ active_pane >= editor_slots.count ] active_pane = editor_slots.count - 1
         save_session[]
 
-    # the i-th tab's text child (under the tab's 'split' Splitter).
     func pane_at [ i: i32 ] -> Editor
         pv : element pane_view[ i ]
         if [ !pv || !pv.elements ] return null
         spl : element pv.elements[ 'split' ]
         if [ !spl || !spl.elements ] return null
-        # a pure-console pane's 'text' is a Console — the `to` cast is unchecked,
-        # so every `Editor pane_at[i]` would read garbage off it. gate it.
         te : element spl.elements[ 'text' ]
         if [ !te || !(te inherits Editor) ] return null
         return Editor te
 
-    # push a file as a 2-slot title (filename bright + directory dimmed). show_dir
-    # adds the dir on the right (relative to the launch dir) — on for the flat filtered
-    # search, off in browse mode where every entry shares nav_root.
     func push_file_hit [ p: path, show_dir: bool ]
         fn  : string p.filename[]
         drs : string ''
-        # the dock/results combine items across projects, so show the full absolute
-        # directory (project root + path) — a launch-relative path would be ambiguous.
         if [ show_dir ]
             drs = '{p.directory[]}'
         find_hits.push[ FindHit [ is_header: true, text: fn, dir: drs, file: p ] ]
-        # single-line mode is one slot per entry; the double header adds a continuation.
         if [ !browse_single ]
             find_hits.push[ FindHit [ is_header: true, text: '', file: p ] ]
 
-    # the selected project's root path (browse navigation is bounded to it). the
-    # settings/system target is rooted at silver's launch dir.
-    # orbiter is rooted at the directory it was launched in — a plain set of edit
-    # pages over that tree. no orbiter.agi project/target drives the root anymore.
     func project_root [] -> path
         if [ !startup_path ] startup_path = path.path_startup[]
         return path '{startup_path}'
 
-    # push a directory as a 2-slot title link. `label` lets the up entry read '..'.
     func push_dir_hit [ p: path, label: string ]
         find_hits.push[ FindHit [ is_header: true, is_dir: true, text: label, dir: '', file: p ] ]
         if [ !browse_single ]
             find_hits.push[ FindHit [ is_header: true, is_dir: true, text: '', file: p ] ]
 
-    # the navigate list: with a query it's the ranked file-index search; with no query
-    # it BROWSES nav_root (the project root by default) — folders first as links that
-    # navigate in, then files. rendered through the find_hits header path; find_results
-    # keeps a flat one-path-per-row list for Enter-opens-first.
     func run_search []
         win : ux
         sp     : string search_pane[]
         active : bool [ (find_text && find_text.count > 0) || (win && win.focus && win.focus.id == 'title') ]
-        # only (re)build the navigate hits while the list is actually shown — otherwise
-        # leave find_hits alone so a live find-in-files result set isn't clobbered.
         if [ active ]
             combined : list string []
             find_hits = array FindHit []
             nav_dock_rows = 0
             if [ find_text && find_text.count > 0 ]
-                # FILTERED: ranked index search across the whole project (files only)====.
                 matches : list string [ index_search[ find_text ] ]
                 for [ i: i32 0, i < matches.count, i += 1 ]
                     p : path '{matches.value_by_index[ i ]}'
@@ -2492,15 +2000,10 @@ element orbiter : trinity # implements compiler
                 # orbiter.agi consoles first — at the very top, above pins.
                 if [ consoles ]
                     for [ ci: ConsoleInstance, sk: string ] in consoles
-                        # synthetic file satisfies the nav render; click routes on
-                        # session. label the continuation slot 'console' so it isn't
-                        # a blank row under each session in the 2-slot list.
                         sfp : path 'session:{sk}'
                         find_hits.push[ FindHit [ is_header: true, session: sk, text: sk, dir: 'console', file: sfp ] ]
                         if [ !browse_single ]
                             find_hits.push[ FindHit [ is_header: true, session: sk, text: '', dir: 'console', file: sfp ] ]
-                # pinned dock entries first — at the top of the browse list, unless the
-                # pins toggle hid them (to maximize the results view).
                 if [ docked && show_pins ]
                     for [ i: i32 0, i < docked.count, i += 1 ]
                         dp : path docked[i]
@@ -2508,14 +2011,10 @@ element orbiter : trinity # implements compiler
                             push_file_hit[ dp, true ]
                             combined.push[ '{dp}' ]
                     nav_dock_rows = find_hits.count
-                    # single-line mode reserves a blank row between the dock and the
-                    # results so the divider sits on its own line (drawn at its y middle).
                     if [ browse_single && nav_dock_rows > 0 ]
                         find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
-                # BROWSE: list nav_root — a parent '..' link, then folders, then files
                 if [ !nav_root ] nav_root = target_roots[0]
                 if [ nav_root ]
-                    # '..' only while we're BELOW the selected project root — never above it
                     pr  : path   project_root[]
                     nrs : string '{nav_root}'
                     prs : string '{pr}'
@@ -2545,9 +2044,6 @@ element orbiter : trinity # implements compiler
             ed  : Editor pane_at[ i ]
             apply_pane[ ed, active && (sp == pid), editor_slots[i] ]
 
-    # if a pane is currently presenting the file listing, keep it presented and
-    # re-rooted after a project switch: re-focus that pane's title (so the finder
-    # stays active) and rebuild against the new nav_root. called on tab change.
     func rekeep_listing []
         if [ !nav_showing ] return
         sp : string search_pane[]
@@ -2560,10 +2056,7 @@ element orbiter : trinity # implements compiler
     func open_file [ p: path ]
         open_in_pane[ p, active_pane ]
 
-    # open a file into a specific pane index (used by finder-row clicks)
     func open_in_pane [ p: path, pi: i32 ]
-        # leave a nav bookmark at the spot we're jumping FROM, so cmd+left returns here
-        # after a finder/result open. (the destination is preserved by nav_walk's save_top.)
         if [ pi >= 0 && pi < editor_slots.count && pi < nav_panes.count ]
             cur : Editor pane_at[ pi ]
             if [ cur && cur.src ]
@@ -2571,15 +2064,12 @@ element orbiter : trinity # implements compiler
         idx : i32 [ file_slot[ p ] ]
         if [ pi >= 0 && pi < editor_slots.count ]
             editor_slots[pi] = idx
-            # opening a FILE here → this pane is no longer a console session
             if [ pi < pane_console.count ] pane_console[pi] = ''
             active_pane = pi
         active_idx = idx
         exit_finder[]
-        # the open-tab set changed → persist this workspace's session.
         save_session[]
 
-    # a Console link click (path:line:col) — open in editor pane 0 and reveal.
     public func open_at [ fp: path, lno: i32, col: i32 ] -> bool
         open_in_pane[ fp, 0 ]
         ed : Editor pane_at[ 0 ]
@@ -2587,8 +2077,6 @@ element orbiter : trinity # implements compiler
             sl : i32 [ (lno > 0) ? lno - 1 : 0 ]
             ed.sel_line = sl
             ed.sel_col  = col
-            # collapse the selection onto the caret — without resetting the anchor the
-            # editor draws a range from the previous anchor to this new caret.
             ed.anchor_line = sl
             ed.anchor_col  = col
             lh  : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
@@ -2597,17 +2085,10 @@ element orbiter : trinity # implements compiler
             if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
                 ed.scroll.y = top - vh * 0.4
                 if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
-                # pin the animation target too — otherwise the scroll animator lerps
-                # scroll.y back to the stale scroll_target (the old caret location).
                 ed.scroll_target = ed.scroll.y
             ed.pristine = false
         return true
 
-    # open a file into a pane AND jump to a specific 1-based line — used by a find
-    # result double-click. closes the find bar/results, then selects + reveals the line
-    # (same reveal math as the ':<n>' goto and the debugger break).
-    # scan silver's build log for its first `<file>.ag:<line>:<col>` error and
-    # open that file at the line — the next thing to fix, shown in-editor
     func jump_to_error [ logpath: string ]
         lp : path '{logpath}'
         if [ !lp.exists[] ] return
@@ -2615,7 +2096,6 @@ element orbiter : trinity # implements compiler
         if [ !content || content.count == 0 ] return
         ai : i32 [ content.index_of[ '.ag:' ] ]
         if [ ai < 0 ] return
-        # walk back to the path start (stop at space/newline/escape/paren/bracket)
         ps : i32 [ ai ]
         while [ ps > 0 ]
             c : i32 [ (i32 content.chars[ ps - 1 ]) & 255 ]
@@ -2637,7 +2117,6 @@ element orbiter : trinity # implements compiler
         err_line = ln
         open_at_line[ err_file, active_pane, ln ]
 
-    # ctrl/cmd+E and the console error pill: re-open the last build error
     func goto_error []
         if [ !err_file || err_line <= 0 ] return
         open_at_line[ err_file, active_pane, err_line ]
@@ -2660,23 +2139,15 @@ element orbiter : trinity # implements compiler
             ed.scroll.y      = tp - vh * 0.4
             if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
             ed.scroll_target = ed.scroll.y
-        # this IS the intended position — keep the finder-restore from undoing it.
         ed.saved_scroll = ed.scroll.y
         ed.pristine = false
 
-    # opening the bar / moving focus changes a CSS state (:expanded, :focused) and the
-    # finder transition — none of which paint until the next input event. force a restyle
-    # + an animate frame so the change shows immediately instead of stalling.
     func force_update []
         win : ux
         if [ win ]
             win.restyle      = true
             win.will_animate = true
 
-    # fully leave any find/finder state back to plain editing: close the find bar, hide
-    # results, drop the typed query, and release focus from WHATEVER finder field holds it
-    # (findbar rows or the title) — exit_finder alone only releases the title, which is how
-    # we kept trapping ourselves. esc routes here from anywhere.
     func exit_find_mode []
         findbar_open = false
         find_showing = false
@@ -2688,13 +2159,10 @@ element orbiter : trinity # implements compiler
             win.release_focus[ win.focus ]
         force_update[]
 
-    # ctrl/cmd+F: open the find-in-files bar on the active pane and focus its Find input.
     func open_find []
         findbar_open = true
         findbar_pane = 'pane{active_pane}'
         ed : Editor pane_at[ active_pane ]
-        # pre-fill Find with the editor's current selection (first line), Notepad-style — so
-        # selecting a word/phrase then Ctrl+F searches it immediately.
         if [ ed ]
             sel : ed.selected_text[]
             if [ sel && sel.count > 0 ]
@@ -2704,31 +2172,23 @@ element orbiter : trinity # implements compiler
         if [ !te ] return
         fe : element te.elements['find']
         if [ fe ]
-            # a focused field shows its OWN edit buffer (the binding doesn't re-sync into a
-            # focused field), so mirror the query in directly + drop the caret at the end.
             fe.edit       = findbar_text
             fe.sel_col    = findbar_text->count
             fe.anchor_col = fe.sel_col
             fe.set_focus[]
         force_update[]
 
-    # ctrl/cmd+G: focus the active pane's title — the editor file-index / browse search.
     func focus_finder []
         te : element title_at[ active_pane ]
         if [ te ] te.set_focus[]
         force_update[]
 
-    # leave finder/edit mode: clear the typed query and drop focus from the
-    # editor title so it returns to showing the (centered) filename, not an
-    # editable field.
     func exit_finder []
         find_text    = ''
         find_results = list string []
         win : ux
         if [ !win ] return
         if [ win.focus && win.focus.id == 'title' ]
-            # clear the live edit buffer too — release_focus only drops focus, so without
-            # this the typed text (e.g. ':5') lingers in the title after we navigate.
             win.focus.edit = ''
             win.release_focus[ win.focus ]
 
@@ -2741,7 +2201,6 @@ element orbiter : trinity # implements compiler
         if [ !tb ] return
         nav : element tb.elements['source_nav']
         if [ !nav ] return
-        # project tabs select by active_target (keys are the project names)
         for [ i: i32 0, i < target_names.count, i += 1 ]
             name : string target_names[i]
             op   : Option nav.elements[name]
@@ -2761,9 +2220,6 @@ element orbiter : trinity # implements compiler
         sprintf[str, "%04i", n]
         return str
 
-    # live inspector: trinity hands us {file,line} for a ctrl/cmd-clicked element —
-    # the element's own construction site (Au header source:line). open it so orbiter
-    # inspects its own UI where the look is stated in the .ag.
     public func on_inspect [ hits: array StyleHit ]
         if [ !hits || hits.count == 0 ] return
         h : StyleHit hits[ 0 ]
@@ -2783,9 +2239,6 @@ element orbiter : trinity # implements compiler
                         open_file[ fl.pending_open ]
                     fl.pending_open = null
                     return
-            # a console pane's title bar opens the SAME nav list every pane has:
-            # flip the pane back to its editor slot and focus its finder title
-            # (the Editor only exists next frame — pending_finder defers it).
             if [ e inherits Console ]
                 co  : Console e
                 cid : string co.id
@@ -2798,30 +2251,17 @@ element orbiter : trinity # implements compiler
                         ev.no_default  = true
                         force_update[]
                         return
-            # clicking a result row while searching opens it (works whether or
-            # not a file is already open in the pane — driven by an active query,
-            # not by the pane being empty)
             if [ e inherits Editor ]
                 ed : Editor e
-                # finder active (dock and/or results shown as lines): clicking a code
-                # ROW opens it — but a click on the title bar focuses the finder, so
-                # exclude it (otherwise focusing the finder immediately opens a row).
                 if [ ev.target == e && (was_finder || find_showing) && ed.sel_line >= 0 && ed.sel_line < find_hits.count ]
                     h : FindHit find_hits[ ed.sel_line ]
-                    # the dock divider's blank spacer row is not actionable — consume the
-                    # click so the popup stays open instead of closing on the default.
                     if [ h && h.is_spacer ]
                         ev.no_default = true
                         return
                     if [ h && h.session && h.session.count > 0 ]
-                        # the CLICKED pane becomes that console (not active_pane —
-                        # you can pick a session in a pane that isn't active). the
-                        # pane index comes from the Editor whose nav was clicked.
                         cpi : i32 [ ed.pane_index ]
                         while [ pane_console.count <= cpi ]
                             pane_console += ''
-                        # every pick instances a FRESH session — a shared instance
-                        # would give every pane the same view state
                         console_seq += 1
                         sid : string '{h.session}#{console_seq}'
                         pane_console[cpi] = sid
@@ -2837,15 +2277,7 @@ element orbiter : trinity # implements compiler
                         if [ ev.target ] ev.target.ux.restyle = true
                         return
                     if [ h && h.is_dir && h.file ]
-                        # a folder link → navigate INTO it: rebuild the browse list rooted
-                        # there, with the selection cleared so it starts at the top. KEEP
-                        # the finder open by re-focusing the title (the list shows only
-                        # while the title is focused) and suppress the default focus
-                        # transfer that would otherwise close it.
                         nav_root  = h.file
-                        # reset selection + scroll so the new folder starts clean at top.
-                        # also clear hover — without a mouse move the stale row index can
-                        # point past the new (shorter) list and highlight an empty row.
                         ed.sel_line      = -1
                         ed.anchor_line   = -1
                         ed.hover_line    = -1
@@ -2857,12 +2289,7 @@ element orbiter : trinity # implements compiler
                         ev.no_default = true
                         if [ ev.target ] ev.target.ux.restyle = true
                     el [ h && !h.is_header && h.line > 0 && h.file ]
-                        # a find-in-files MATCH row: double-click jumps INTO the file at
-                        # that line and closes find; a single click just selects/previews
-                        # (so you can scan matches without losing the results).
                         pi  : i32 [ ed.pane_index ]
-                        # basic double-click event (time+distance gate in the window layer);
-                        # plus app logic: it must be the SAME result row.
                         dbl : bool [ ev.mouse.double_click && last_hit_row == ed.sel_line ]
                         last_hit_row = ed.sel_line
                         if [ dbl ] open_at_line[ h.file, pi, h.line ]
@@ -2874,18 +2301,9 @@ element orbiter : trinity # implements compiler
         # avatar pane titlebar toggle: hide/show the 3D avatar view
         if [ ev.target.id == 'avatar_hide' ]
             show_avatar = !show_avatar
-            # rebuild the tree so the avatar pane re-renders with/without the view.
             if [ ev.target ] ev.target.ux.restyle = true
-            return
-        # avatar peek: click toggles between the corner peek and the full-size area.
-        if [ ev.target.id == 'avatar' ]
-            avatar_expanded = !avatar_expanded
-            if [ ev.target ] ev.target.ux.restyle = true
-            ev.no_default = true
             force_update[]
             return
-        # play: build/run the active project node (processes its deps first)
-        # deferred live-reload 'reload' chip: tell the host to recompile + hot-swap now.
         if [ ev.target.id == 'reload_ready' ]
             au_live_request_apply[]
             ev.no_default = true
@@ -2914,6 +2332,9 @@ element orbiter : trinity # implements compiler
         if [ ev.target.id == 'fields' ]
             show_variables = !show_variables
             return
+        if [ ev.target.id == 'orbiter4' ]
+            show_orbiter = !show_orbiter
+            return
         puts 'on_press: {ev.target.id}'
         for [ i: i32 0, i < open_files.count, i += 1 ]
             key : string 'tab_{i}'
@@ -2921,8 +2342,6 @@ element orbiter : trinity # implements compiler
                 rel_x    : f32 [ ev.mouse.pos.x - ev.target.bounds.x ]
                 in_right : bool [ rel_x > ev.target.bounds.w - 14.0 ]
                 active_panel = 'editor'
-                # shift / right-edge click opens into a secondary pane; plain click
-                # replaces the active pane's file.
                 if [ (ev.key.shift || in_right) && editor_slots.count > 1 ]
                     si : i32 [ (active_pane + 1 < editor_slots.count) ? active_pane + 1 : 0 ]
                     editor_slots[si] = i
@@ -2938,16 +2357,12 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             return
         
-        # back: the borderless arrow left of the title text — closes the finder popup.
         if [ ev.target.id == 'back' ]
             exit_finder[]
             ev.no_default = true
             if [ ev.target ] ev.target.ux.restyle = true
             return
         
-        # pins: show/hide the pinned dock in the browse list (maximize the results).
-        # rekeep_listing re-focuses the search title + re-runs the search, so the index
-        # stays open; no_default stops the click from closing the popup.
         if [ ev.target.id == 'pins' ]
             show_pins = !show_pins
             rekeep_listing[]
@@ -2955,23 +2370,44 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
         
-        # play/stop: toggle the focused pane between source and a live AppView of
-        # its module (the app runs in its own process, sharing frames).
         if [ ev.target.id == 'run' ]
-            # the run button sits in the BAND, a sibling of the text — so the
-            # walk finds the tab, and the Editor comes from the tab's index.
             for [ e: element* ev.target, e, e = e.parent ]
                 if [ e inherits EditorView ]
                     ev2 : EditorView e
                     ed : Editor pane_at[ ev2.pane_index ]
-                    # shift+click = build-run --clean (the chip glows blue)
-                    if [ ed ] ed.toggle_app_run[ ev.key.shift ]
+                    if [ ed ]
+                        if [ ed.run_view ]
+                            av2 : AppView ed.run_view
+                            if [ av2.ended ]
+                                # stopped peer: play brings the session back
+                                av2.ended = false
+                                av2.note = ''
+                            el
+                                av2.pause_toggle*[]
+                        el
+                            # shift+click = build-run --clean
+                            ed.toggle_app_run[ ev.key.shift ]
+                    break
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'stop' ]
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits EditorView ]
+                    ev4 : EditorView e
+                    ed4 : Editor pane_at[ ev4.pane_index ]
+                    if [ ed4 && ed4.run_view ]
+                        av4 : AppView ed4.run_view
+                        if [ av4.slot == 0 ]
+                            av4.ended = true
+                            av4.note = 'stopped'
+                        el
+                            ed4.toggle_app_run[ false ]
                     break
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
 
-        # grid: list ↔ thumbnail grid for the index (same data, different layout).
         if [ ev.target.id == 'grid' ]
             grid_mode = !grid_mode
             rekeep_listing[]
@@ -2979,10 +2415,6 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
         
-        # magnify: toggle the find/replace bar. it belongs to the pane whose magnify
-        # was clicked (findbar_pane), so moving focus to the other title doesn't drag
-        # the open bar onto it.
-        # title [x]: leave the finder/nav entirely (same as Escape)
         if [ ev.target.id == 'title_close' ]
             exit_finder[]
             findbar_open = false
@@ -2994,7 +2426,6 @@ element orbiter : trinity # implements compiler
         if [ ev.target.id == 'magnify' ]
             findbar_open = !findbar_open
             if [ findbar_open ] pending_findfocus = true
-            # the magnify sits in the TITLE, whose parent is the tab — not the Editor
             for [ e: element* ev.target, e, e = e.parent ]
                 if [ e inherits EditorView ]
                     findbar_pane = e.id
@@ -3004,9 +2435,6 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             return
         
-        # replace_btn: toggle the replace input + 'All' button into the bar. opening it
-        # focuses the input (like open_find does for Find) so it's immediately editable —
-        # seed the caret to the end of the live buffer so the cursor shows on first focus.
         if [ ev.target.id == 'replace_btn' ]
             replace_open = !replace_open
             if [ replace_open && ev.target.parent ]
@@ -3020,7 +2448,6 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
         
-        # close_find: the X inside the scope field — closes the find/replace bar.
         if [ ev.target.id == 'close_find' ]
             findbar_open = false
             find_showing = false
@@ -3029,8 +2456,6 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
         
-        # replace input: a plain editable element isn't reliably focused by the default
-        # focusable path here, so focus it explicitly on click (seed the caret to the end).
         if [ ev.target.id == 'replace' ]
             puts 'replace press: focusable={(ev.target.focusable) ? 1 : 0}'
             ev.target.sel_col    = ev.target.edit->count
@@ -3039,26 +2464,16 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
         
-        # find_in_files: toggle the search scope. lit (the toggle, selected: !find_in_file)
-        # = files mode → the scope becomes an editable glob; off = Notepad-style in-file find
-        # where the scope is just the static filename. entering files mode focuses the scope
-        # so the user can type the pattern right away.
         if [ ev.target.id == 'find_in_files' ]
             find_in_file = !find_in_file
-            # the scope keeps TWO separate stores: the live edit buffer (pe.edit, what the
-            # field shows) and pattern_text (the persistent glob). apply_args never copies
-            # `edit`, so the buffer is set explicitly here when the mode flips.
             pe : element ev.target.parent
             if [ pe ]
                 if [ find_in_file ]
-                    # back to in-file: clear the buffer so the field shows the static
-                    # filename label again; pattern_text is preserved for next time.
                     pe.edit       = ''
                     pe.sel_col    = 0
                     pe.anchor_col = 0
                     pe.release_focus[]
                 el
-                    # files: load the saved glob into the buffer and focus for editing.
                     pe.edit       = pattern_text
                     pe.sel_col    = pattern_text->count
                     pe.anchor_col = pe.sel_col
@@ -3068,15 +2483,9 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
         
-        # the scope field (id 'pattern') is now a plain editable — a click just focuses it
-        # for typing a glob; no toggle. typing + Enter re-runs the search (on_key).
-        # mid action buttons — run find / replace (logic TBD)
         if [ ev.target.id == 'replace_all_action' ]
             return
         
-        # + / - manage which editors exist (the editors render from editor_slots):
-        # '+' (dock) appends a new empty pane up to the 4-pane cap; '-' (undock)
-        # removes the editor whose title the button is on.
         if [ ev.target.id == 'dock' ]
             puts 'on_press: DOCK handler reached'
             if [ editor_slots.count < 4 ]
@@ -3086,10 +2495,20 @@ element orbiter : trinity # implements compiler
             save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
+        if [ ev.target.id == 'gear' ]
+            if [ agent_pane[] < 0 && editor_slots.count < 4 ]
+                editor_slots += -1
+                pane_console  += ''
+                pn9 : i32 [ editor_slots.count - 1 ]
+                pane_console[ pn9 ] = 'agent'
+                active_pane = pn9
+                ensure_console[ 'agent' ]
+            save_session[]
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
         if [ ev.target.id == 'undock' ]
             puts 'on_press: UNDOCK handler reached'
-            # find THIS pane by id (Editor OR Console) — a console pane is not an
-            # Editor, so the old `inherits Editor` walk missed it entirely.
             for [ e: element* ev.target, e, e = e.parent ]
                 if [ e.id && e.id.count >= 5 && e.id.mid[ 0, 4 ] == 'pane' ]
                     pi : i32 [ e.id.mid[ 4, e.id.count - 4 ].real_value[] ]
@@ -3097,10 +2516,6 @@ element orbiter : trinity # implements compiler
                     break
             if [ ev.target ] ev.target.ux.restyle = true
             return
-        # console-title buttons: 'context' asks the live emulator pane for a
-        # machine dump (typed into the agent when it lands); 'screen' captures
-        # the whole orbiter window and hands the agent the PNG path — the same
-        # thing dragging an image into its terminal does.
         if [ ev.target.id == 'ctx_copy' ]
             request_context[]
             if [ ev.target ] ev.target.ux.restyle = true
@@ -3110,7 +2525,6 @@ element orbiter : trinity # implements compiler
             if [ fn ] feed_agent[ fn + ' ' ]
             if [ ev.target ] ev.target.ux.restyle = true
             return
-        # clicking a pin (pin{i}) inside an editor opens that docked file
         tid : string ev.target.id
         if [ ev.target.id == 'config' ]
             rel_x    : f32 [ ev.mouse.pos.x - ev.target.bounds.x ]
@@ -3123,13 +2537,8 @@ element orbiter : trinity # implements compiler
             return
         if [ ev.target inherits Option ]
             oid : string ev.target.id
-            # switching the project changes the build/run/console target and the browse
-            # root — but NOT the open editors. tabs are workspace state, so cycling
-            # projects never blends or overrides what's open.
             if [ oid == 'system' ]
                 active_target = 'system'
-                # settings target browses silver's root (the launch dir, where
-                # orbiter.agi lives) — so the file index shows that tree.
                 nav_root = path '{startup_path}'
                 reroot_index[]
                 rekeep_listing[]
@@ -3159,17 +2568,12 @@ element orbiter : trinity # implements compiler
         if [ ev.target.id == 'filter' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
                 filter_text = filter_text + ev.key.text
-                # apply_args doesn't propagate custom public fields per-frame, so set
-                # the query straight on the FileList instance and rebuild. the FileList
-                # runs its own local substring search over its folder.
                 fl : FileList ev.target.parent.elements['files']
                 if [ fl ]
                     fl.find_text = filter_text
                     fl.last_find = filter_text
                     fl.build_visible[]
                     fl.pristine  = false
-                # a keystroke doesn't set the render gate on its own — request a frame
-                # so the FileList repaints with the new results as you type.
                 uxw : Window ev.target.ux
                 if [ uxw ] uxw.will_animate = true
         # typing into the find/replace bar rows (each its own query)
@@ -3201,8 +2605,6 @@ element orbiter : trinity # implements compiler
     
     func on_key [ ev: Event ]
         if [ !ev.target ] return
-        # global shortcuts (work from any focus): ctrl/cmd+F opens find-in-files and
-        # focuses the Find input; ctrl/cmd+G focuses the editor index / file search.
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta) ]
             kc : i32 [ i32[ ev.key.unicode ] ]
             if [ kc == 70 ]    # 'F'
@@ -3213,8 +2615,6 @@ element orbiter : trinity # implements compiler
                 focus_finder[]
                 ev.no_default = true
                 return
-        # global Escape: from anywhere, if any find/finder state is up, drop back to
-        # editing (so we never get trapped in the bar / finder regardless of focus).
         if [ ev.key.state && i32[ ev.key.unicode ] == 256 && (findbar_open || find_showing || nav_showing) ]
             exit_find_mode[]
             ev.no_default = true
@@ -3241,7 +2641,6 @@ element orbiter : trinity # implements compiler
                 uxw : Window ev.target.ux
                 if [ uxw ] uxw.will_animate = true
 
-        # find/replace bar rows: backspace trims, escape collapses the bar
         if [ ev.target.id == 'find' || ev.target.id == 'replace' || ev.target.id == 'pattern' ]
             if [ !ev.key.state ] return
             k : i32 [ i32 ev.key.unicode ]
@@ -3258,14 +2657,10 @@ element orbiter : trinity # implements compiler
             el [ k == 257 ]    # Key.Enter
                 in_file : bool [ find_in_file ]
                 if [ in_file ]
-                    # Notepad-style: Enter steps to the next occurrence in THIS file (the
-                    # yellow active-match follows the selection); no filtered list.
                     find_last_query = findbar_text
                     find_last_scope = ''
                     find_file_next[]
                 el
-                    # files mode: first Enter runs the search; a repeat on the SAME phrase +
-                    # scope steps to the next result row. a changed scope is a fresh search.
                     cur_scope  : string [ (pattern_text)    ? pattern_text    : '' ]
                     last_scope : string [ (find_last_scope) ? find_last_scope : '' ]
                     scope_same : bool [ cur_scope.compare[ last_scope ] == 0 ]
@@ -3294,15 +2689,12 @@ element orbiter : trinity # implements compiler
                     ev.target.pristine = false
                     run_search[]
             el [ k == 257 ]    # Key.Enter
-                # ':<n>' jumps the current editor to line n; otherwise enter opens the
-                # first matching result.
                 handled : bool false
                 if [ find_text && find_text.count > 1 && find_text[0] == ':' ]
                     num : string find_text.mid[ 1, find_text.count - 1 ]
                     if [ num.is_numeric[] ]
                         ed : Editor pane_at[ active_pane ]
                         if [ ed ]
-                            # bookmark where we were before the goto so cmd+left returns.
                             if [ ed.nav && ed.src ]
                                 ed.nav.record[ active_pane, '{ed.src.absolute[]}', ed.sel_line, ed.sel_col, ed.scroll.y ]
                             sl : i32 [ i32[ num.integer_value[] ] ]
@@ -3319,8 +2711,6 @@ element orbiter : trinity # implements compiler
                                 ed.scroll.y      = tp - vh * 0.4
                                 if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
                                 ed.scroll_target = ed.scroll.y
-                            # the goto IS the intended position — don't let the finder-exit
-                            # scroll-restore override it.
                             ed.saved_scroll = ed.scroll.y
                             ed.pristine = false
                         exit_finder[]
@@ -3336,10 +2726,6 @@ element orbiter : trinity # implements compiler
                 run_search[]
                 if [ ev.target.ux ] ev.target.ux.restyle = true
             el [ k == 256 ]    # Key.Escape
-                # esc: leave the finder entirely — drop the query AND release focus
-                # so the title goes non-editable (as if clicked away); exit_finder
-                # clears the query + results and releases title focus, and the finder
-                # transition in on_render restores the pane's file.
                 exit_finder[]
                 ev.target.pristine = false
                 if [ ev.target.ux ] ev.target.ux.restyle = true
@@ -3347,8 +2733,8 @@ element orbiter : trinity # implements compiler
     public func render [] -> Elements
         w : ux
 
-        # supervised shell: crash verdicts, mic, voice — see orbit_frame
         if [ orbit_app ] orbit_frame[ w ]
+        mic_frame[]
 
         if [ cycle ]
             cycle_frame += 1
@@ -3369,39 +2755,28 @@ element orbiter : trinity # implements compiler
                         cycle_count += 1
                         puts 'CYCLE {cycle_count}'
 
-        # runaway-leak guard: if our RSS passes 20% of physical RAM, quit before
-        # the leak thrashes the machine into a solid lock. cheap (/proc read).
         if [ au_mem_fraction[] > 0.20 ]
             puts 'orbiter: memory exceeded 20% of system RAM — quitting '
             exit[ 1 ]
 
-        # a project switch re-rooted the index with a live query — once the rebuild has
-        # finished, re-run the search so the results reflect the newly selected project
-        # (as if the query box was re-entered against the new index).
         if [ index_research && !index_building ]
             index_research = false
             run_search[]
 
-        # a breakpoint was toggled in an Editor gutter (count changed) → persist.
         bpc : i32 [ breakpoints->count ]
         if [ last_bp_count >= 0 && bpc != last_bp_count ]
             save_session[]
         last_bp_count = bpc
-        # a console pane flipped back to its editor last frame (title-bar nav):
-        # focus the finder title once the Editor exists so the nav list opens.
         if [ pending_finder >= 0 ]
             fte : element title_at[ pending_finder ]
             if [ fte ]
                 fte.set_focus[]
                 pending_finder = -1
-        # `orbiter <module>` — start its app in-pane once the Editor exists
         if [ pending_run >= 0 ]
             red : Editor pane_at[ pending_run ]
             if [ red ]
                 if [ !red.run_view ] red.toggle_app_run[ false ]
                 pending_run = -1
-        # findbar opened by [f]: its fields mount a frame later — move focus
-        # onto the find input so typing lands in findbar_text, not find_text
         if [ pending_findfocus ]
             if [ !findbar_open ]
                 pending_findfocus = false
@@ -3413,16 +2788,12 @@ element orbiter : trinity # implements compiler
                     if [ ffe ]
                         ffe.set_focus[]
                         pending_findfocus = false
-        # finder transitions: rebuild the navigate list when the title gains focus
-        # (show the dock as lines) or loses it (restore the file), AND when focus
-        # moves to a different pane's title (so the results follow to that pane).
         fin_now : bool   [ (w.focus && w.focus.id == 'title') || (find_text && find_text.count > 0) ]
         sp_now  : string search_pane[]
         if [ fin_now != was_finder || sp_now != was_search_pane ]
             run_search[]
         was_finder      = fin_now
         was_search_pane = sp_now
-        # poll orbiter.agi once a second; reload projects if its mtime changed.
         now_ms : i64 [ Au.epoch_millis[] ]
         if [ now_ms - settings_check_ms >= 1000 ]
             settings_check_ms = now_ms
@@ -3430,19 +2801,18 @@ element orbiter : trinity # implements compiler
             mt : i64 [ sp.modified_time[] ]
             if [ mt != settings_mtime ]
                 load_settings[]
-            # pick up newly opened / closed .ag files, then reload any watcher map
-            # whose mtime advanced (i.e. the watcher just iterated).
             fmt_sync[]
             fmt_poll[]
 
-        # dispatch each pane's pending run command (once per AppView). lives here,
-        # not in a paint callback: a collapsed bottom console never paints, so a
-        # paint-hosted dispatch (the old TermLayer run_line path) never fires.
+        if [ orbit_app && attach && !orbit_bound ]
+            edo : Editor pane_at[ 0 ]
+            if [ edo ]
+                edo.attach_app_run[ orbit_app ]
+                orbit_bound = true
+
         for [ pi2: i32 0, pi2 < editor_slots.count, pi2 += 1 ]
             edp : Editor pane_at[ pi2 ]
             if [ !edp || !edp.run_view ] continue
-            # the in-pane app self-stopped before init (SILVER_DEBUG); once silver-host
-            # reports its pid, attach lldb + arm breakpoints, then continue it.
             av : AppView edp.run_view
             if [ !av.attached && av.slot >= 0 ]
                 apid : i32 [ host_app_pid[ av.slot ] ]
@@ -3465,17 +2835,15 @@ element orbiter : trinity # implements compiler
             es.launch_cmd = ''
             es.restart[]
             es.pending = edp.run_view.cmd
-        # drain the per-editor consoles' shells (build + app output). ed_sessions is
-        # the app's own map — no tree walk — and a live pty keeps the frame loop awake
-        # so the animated console repaints the output as it streams in.
         if [ ed_sessions ]
             for [ s: ConsoleSession, k: string ] in ed_sessions
                 if [ s.pty_fd >= 0 ]
                     w.will_animate = true
                     s.read_output[]
-        # debug inferiors don't run in a bash pty — their stdout/stderr come back on
-        # the dbg PTY masters. drain them here (main thread) into the matching
-        # project's session, so a stepped `puts` lands where its build ran.
+        if [ ed_sessions ]
+            ags : ConsoleSession ed_sessions[ 'agent' ]
+            if [ ags && ags.agent_busy[] ] busy_at = epoch_millis[]
+            busy = (epoch_millis[] - busy_at) < 500
         if [ debuggers && ed_sessions ]
             for [ d: dbg, dn: string ] in debuggers
                 if [ !d || !d.active ] continue
@@ -3485,17 +2853,10 @@ element orbiter : trinity # implements compiler
                 ds.feed_fd[ d.fifo_fd_out ]
                 ds.feed_fd[ d.fifo_fd_err ]
 
-        # one tab per split slot; the 'panes' Splitter tiles them left-to-right,
-        # eases every seam with filter_n, and paints the 1px divider lines.
         if [ editor_slots.count == 0 ] editor_slots += -1
-        # a divider snapped shut closes that editor — same path as its '-' button.
-        # pane0 is the flex pane and can't snap; scan high→low so removals don't
-        # shift the ids still being checked.
         for [ ci: i32 editor_slots.count - 1, ci >= 1, ci -= 1 ]
             if [ take_closed[ pane_sizes, 'pane{ci}' ] ] close_pane[ ci ]
         sp : string search_pane[]
-        # the ed: sessions the nav lists live in ed_sessions (same map the pane's
-        # own bottom console uses) — a pure-console pane must use THAT map
         if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
         editor_els : Elements []
         pane_inner  : Elements []
@@ -3505,16 +2866,7 @@ element orbiter : trinity # implements compiler
         if [ !pane_sizes ] pane_sizes = array [ ]
         editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b0 }, inner: pane_inner,
             sizes: pane_sizes, deflt: 0.0, even: true, snap_close: true ]
-        # the orbiter avatar peeks in the bottom-right corner, topmost over the
-        # panes. env_yaw / env_pitch (radians) orient the environment lighting
-        editor_els['avatar'] = OrbiterAvatar [ expanded: avatar_expanded, topmost: true ]
 
-        # supervised shell: the app's live picture-in-picture, lower right.
-        # clicking it folds the window back to the app.
-        if [ orbit_app && attach ]
-            editor_els['orbitapp'] = OrbitApp [ topmost: true, area: Region { r1 b1 w20 h12 } ]
-
-        # the tabs ARE the window — each owns its title, text, toolbar and console.
         return editor_els
 
     public func on_canvas [ cv: Canvas ]

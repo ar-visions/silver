@@ -141,7 +141,8 @@ class Render
     public func update [ ]
         backbuffer: !vk_swap_image
         # w.width/height are LOGICAL; render targets allocate at device pixels.
-        s : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
+        # offscreen renders (environment convolve, headless) have no display
+        s : f32 [ (w->scale > 0) ? w->scale : 1.0 ]
         width  = (wscale > 0) ? i32[ w.width  * wscale * s ] : width
         height = (wscale > 0) ? i32[ w.height * wscale * s ] : height
 
@@ -179,7 +180,7 @@ class Render
             color.resize[ width, height ]
             if [ depth ]
                 depth.resize[ width, height ]
-            if [ reduce ]
+            if [ reduce && reduction ]
                 reduction.resize[ width / 4, height / 4 ]
             if [ reduce && reduce_model ]
                 reduce_model.samplers = map Au[string] [ "color": color ]
@@ -278,6 +279,10 @@ class Render
         # UBO clobber on the gutter overlays. draw_slot free-runs; only a real drain rewinds it.
 
     public func draw [ ]
+        # width/height may have been assigned since the last frame (avatar
+        # settle, pane resize) — rebuild attachments BEFORE the render pass
+        # uses the new extent, or it begins against the stale framebuffer
+        update[]
         if [ !vk_framebuffer[0] ]
             return
         vk.paint_calls += 1
@@ -360,9 +365,12 @@ class Render
         draw_slot         = s
         index: u32 [ 0 ]
         for [ i: 0, i < 1 + reduce, i += 1 ]
-            if [ i == 1 && bool[ reduction ] ]
-                reduction.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-                sync_fence[]
+            # pass 0 was submitted on THIS fence and command buffer; both are
+            # reset below, so that submit must complete first
+            if [ i == 1 ]
+                vkWaitForFences[ vk.device, 1, @vk_fence, VK_TRUE, UINT64_MAX ]
+                if [ reduction ]
+                    reduction.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
             vkResetFences[ vk.device, 1, @vk_fence ]
             frame: VkCommandBuffer [ vk_command_buffer ]
@@ -478,6 +486,9 @@ class Render
         result: vkWaitForFences[ vk.device, 1, @vk_fences[ring_last], VK_TRUE, UINT64_MAX ]
         vk.sync_us    += epoch_micros[] - t0
         vk.sync_calls += 1
+        if [ result != VK_SUCCESS ]
+            rc9 : i32 [ cast i32 [ result ] ]
+            puts 'fence wait failed: id {id} {width}x{height} result {rc9} slot {ring_last}'
         expect result == VK_SUCCESS, "fence wait failed"
         # the wait drained every in-flight submit (command buffers run in submit order, so
         # ring_last done ⟹ all prior done): every slot is free now, rewind the ring to 0.
@@ -930,9 +941,10 @@ class vk_context
         hold[]
         get_required_extensions[ a ]
         # validation layer adds 10-100x overhead PER vulkan call (every draw, descriptor
-        # bind, image transition) — it was pinning the UI to ~10fps. keep it OFF for
-        # normal runs; flip to true only when debugging a Vulkan correctness issue.
-        enable_validation: bool [ getenv[ 'TRINITY_VALIDATE' ] != null ]
+        # bind, image transition). on in debug builds, off in release.
+        enable_validation: bool [ false ]
+        ifdef [ debug ]
+            enable_validation = true
         validation_layer: symbol [ (enable_validation) ? "VK_LAYER_KHRONOS_validation" : null ]
         app_info: VkApplicationInfo [
             sType:              VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -1557,11 +1569,8 @@ class Gpu
     func init [ ]
         if [ vertex_size ]
             vertex_data = new i8 [ vertex_size * vertex_count ]
-            vertex_data.hold[]
-            
         if [ index_size ]
             index_data  = new i8 [ index_size * index_count ]
-            index_data.hold[]
 
 
 class uniforms
@@ -1617,8 +1626,6 @@ class uniforms
         leaf:   hdr2.au
         total_uniform: i32 [ uniform_size[ leaf ] ]
         u_memory = new u8 [ total_uniform ]
-        m : cast Au [ u_memory ]
-        m.hold[]
         # one uniform buffer per draw-ring slot (all share the CPU-side u_memory; each
         # update[] snapshots it into the current slot's GPU buffer). MUST match pipe_ring
         # / ring_n — the descriptor write count (and thus resize re-bind cost) scales with
@@ -1658,7 +1665,7 @@ GLSL VertGLSL : RType
 class Pipeline
     context vk              : vk_context
     context w               : Display
-    context r               : Render   # render target; weak back-ref (canvas→model→pipeline owns down; r points back up — avoids a cycle)
+    manual r                : Render   # render target; weak back-ref (canvas→model→pipeline owns down; r points back up — avoids a cycle)
     expect s                : shader
     expect name             : string
     public render_id        : i32
@@ -1690,7 +1697,7 @@ class Pipeline
     public depth_no_write   : bool
     intern resources        : array Gpu
     intern storage_textures : array Texture
-    intern shader_uniforms  : uniforms
+    manual shader_uniforms  : uniforms
     # public so a caller can ring it (point the draw at a different vertex buffer of the
     # SAME layout per draw) — used by Canvas text to avoid a GPU fence per draw_text.
     public vbo              : Gpu
@@ -1787,8 +1794,6 @@ class Pipeline
             return
         if [ !resources ]
             bind_resources[]
-        if [ s.reload[ ] && !w.resizing ]
-            reassemble[]
         frame: VkCommandBuffer [ f ]
         for [ t: Texture ] in storage_textures
             t.transition_in[ f, VK_IMAGE_LAYOUT_GENERAL ]
@@ -1838,8 +1843,6 @@ class Pipeline
             return
         if [ !resources ]
             bind_resources[]
-        if [ s.reload[ ] && !w.resizing ]
-            reassemble[]
         for [ g: Gpu ] in resources
             if [ g.tx ]
                 g.tx.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
@@ -1880,10 +1883,6 @@ class Pipeline
         descriptor_writes: local VkWriteDescriptorSet         [1024]
         resources        = array Gpu     [ alloc: 32 ]
         storage_textures = array Texture [ alloc: 8  ]
-        # TEST: extra hold to see if the use-after-free is this array being freed
-        # (refcount 0) while still referenced on the resize re-bind path.
-        resources.hold[]
-        storage_textures.hold[]
 
         if [ vbo ]
             vbo.sync[ w ]
@@ -1894,7 +1893,7 @@ class Pipeline
                      VK_SHADER_STAGE_FRAGMENT_BIT |
                      VK_SHADER_STAGE_COMPUTE_BIT
         shader_uniforms = uniforms [ vk: vk, s: s, node_model: default_model ]
-        shader_uniforms.hold[]
+        Au.hold[shader_uniforms]
         s_hdr: Au.header[ s ]
 
         # u_buffers is now a ring (pipe_ring copies of the shader's single UBO), so the
@@ -2377,7 +2376,7 @@ class SubdivTopo
 class Model
     context vk              : vk_context
     context w               : Display
-    context r               : Render   # render target; weak back-ref (target owns the Model — avoids a Canvas<->Model cycle)
+    manual r                : Render   # render target; weak back-ref (target owns the Model — avoids a Canvas<->Model cycle)
     mutable transforms      : @mat4f null
     mutable transform_count : i32
     public id               : GltfModel
@@ -2413,6 +2412,11 @@ class Model
     public func rebind_model [ ]
         if [ pipelines ]
             for [ p: Pipeline ] in pipelines
+                # pipelines bound a COPY of the model's samplers at creation —
+                # push the changed entries down or the rebind re-reads stale
+                # textures (material-injected keys not in the model map stay)
+                for [ sv: Au, sk: string ] in samplers
+                    p.samplers[ sk ] = sv
                 p.rebind[]
 
     # copy every cage's control positions from another model of the same
@@ -2709,7 +2713,6 @@ class Model
             if [ !p2.depth_no_write ] resort.push[ p2 ]
         for [ p2: Pipeline ] in pipelines
             if [ p2.depth_no_write ] resort.push[ p2 ]
-        resort.hold[]
         pipelines = resort
 
     construct [ p: string ]
@@ -3398,6 +3401,10 @@ Texture Display
     intern fs_saved_w           : i32
     intern fs_saved_h           : i32
     intern swap_model           : Model
+    # while orbiter is composited over this window the swapchain samples
+    # ITS imported texture; null returns presentation to last_render
+    mutable shell_tex           : Texture
+    intern  shell_bound         : Au
     public element_targets      : map   Render [string]
     # headless element hosts (trinity offscreen objects) pumped by the app
     # loop alongside this window; array Au — the class lives in trinity.ag
@@ -3598,7 +3605,6 @@ Texture Display
                     models:        array Model [ swap_model ]
                 ]
                 swap_renders += r
-                r.hold[]
             semaphore_frame = swap_renders.first_element[]
             swap_render_current = swap_renders[0]
         return a
@@ -3645,7 +3651,6 @@ Texture Display
         on_screen*[]
 
         if [ swap_renders ]
-            a.hold[] #test
             result: vkAcquireNextImageKHR[ vk.device, vk_swapchain, UINT64_MAX,
                 semaphore_frame.vk_image_available_semaphore, null, @swap_image_current ]
             if [ result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ]
@@ -3656,8 +3661,18 @@ Texture Display
                 last_render[].color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
                 swap_render_current.color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
+                # shell presentation switch: sample orbiter's imported frame
+                # instead of the app's final render while the shell is up
+                shell9 : Au [ (shell_tex && shell_tex.vk_image) ? Au[ shell_tex ] : Au[ last_render[] ] ]
+                if [ shell9 != shell_bound ]
+                    puts 'swap: presenting {(shell_tex) ? "orbiter" : "app"}'
+                    swap_model.samplers = map Au[string] [ "color": shell9 ]
+                    swap_model.rebind_model[]
+                    shell_bound = shell9
+                if [ shell_tex && shell_tex.vk_image ]
+                    shell_tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+
                 info : Au.header[swap_render_current]
-                swap_render_current.hold[]
                 swap_render_current.draw[]
                 last_render[].color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 presentInfo: VkPresentInfoKHR [
@@ -4280,7 +4295,7 @@ func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] ->
     #w.drop[ ]
     #cube.drop[ ]
     #cllone.drop[ ]
-    img.user = convolve.hold[ ]
+    img.user = convolve
     return img.user
 
 

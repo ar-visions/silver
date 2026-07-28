@@ -9,7 +9,6 @@ class Camera
     public  height        : i32    340
     public  buffer_count  : i32    3
     public  cpu_upload    : bool   true   # CPU memcpy → staging → image (reliable).
-                                          # false = import dmabuf as VkBuffer (zero-copy but NVIDIA issues).
 
     intern  backend       : handle
     intern  fd            : i32    -1
@@ -30,7 +29,6 @@ class Camera
     intern  best_sum      : u64    0         # peak brightness seen so far
     intern  best_bytes    : @u8           # copy of brightest frame seen
 
-    # camera output texture — latest frame is blitted into this image.
     public  image         : Texture
     public  src_rect      : rect
 
@@ -55,9 +53,6 @@ class Camera
         expect width  > 0, 'camera: invalid width {width}'
         expect height > 0, 'camera: invalid height {height}'
 
-        # single GPU-aligned VkImage that each frame's buffer will be copied
-        # into. whatever row padding NVIDIA demands, the image picks its own
-        # layout — the copy handles conversion from tight-packed dmabuf.
         img_info : VkImageCreateInfo [
             sType:         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             imageType:     VK_IMAGE_TYPE_2D,
@@ -441,7 +436,6 @@ class Camera
         release_gpu[]
 
 ifdef [ apple ]
-    # primitive C bridge implemented in trinity.mm (pure Cocoa/AVFoundation)
     func trinity_camera_count  []                                              -> i32
     func trinity_camera_name   [ index: i32 ]                                  -> cstr
     func trinity_camera_open   [ device: cstr, req_w: i32, req_h: i32, out_w: @i32, out_h: @i32, out_pitch: @u32 ] -> handle
@@ -475,7 +469,6 @@ element CameraView
         img.png[ p ]
         return true
 
-    # latest CPU frame as a grayscale Image (null when not ready)
     public func frame_image [] -> Image
         if [ !camera || !camera.staging_ptr ] return null
         img : Image [ width: camera.width, height: camera.height, format: Pixel.u8 ]
@@ -490,8 +483,6 @@ element CameraView
                 rect [ x: 0.0, y: 0.0, w: f32[ camera.width ], h: f32[ camera.height ] ]
             camera.update[]
             once = true
-        # paint_off: keep the frame pump alive, draw nothing (capture
-        # modes that must not cover the screen)
         if [ paint_off ]
             once = false
             return

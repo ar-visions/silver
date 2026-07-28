@@ -7,8 +7,6 @@ class obj
     field2: int
     field3: short
 
-# the simplest foundry module orbiter can load and run: a class whose init
-# prints a line a few times. used to bring up the run/debug path from orbiter.
 app test4
     func testfunc[] -> int
         ii : int 44

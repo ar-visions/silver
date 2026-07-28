@@ -84,8 +84,6 @@ app ai-test
 
         model: keras [ident: 'ai-test', ops: all_ops]
 
-        # --- generate training data ---
-        # two random grayscale 32x32 images, label = average of both averages
         num_samples: i32 [20]
         samples: map tensor[tensor] []
         pixels:  i32 [1024]

@@ -29,8 +29,6 @@ enum GradientType
     radial  : 2
     conic   : 3
 
-# ---- GPU shader for UI rendering ----
-# members become uniforms, name maps to shaders/CanvasUI.vert/.frag
 
 enum CanvasUISurface
     atlas: 0
@@ -38,10 +36,6 @@ enum CanvasUISurface
     mask:  2
 
 
-# CanvasUISurface enum extension for storage bindings used by the SDF
-# compute pipeline. these IDs are not used by the named-sampler loop in
-# Surface_resources (the storage path looks them up by attrib name in the
-# samplers map directly), so they only need to be unique within the enum.
 enum CanvasSDFSurface
     edges:   0
     sdf_out: 1
@@ -52,12 +46,6 @@ enum BlurPair
     high: 1
 
 
-# Compute shader that builds an SDF from a list of edges. ported from
-# foundry/shaders.bak/canvas/canvas_sdf.comp with the push_constant block
-# replaced by UBO mutables (silver doesn't currently support push consts)
-# and the bindings expressed via Silver's StorageBuffer/StorageImage attribs.
-#
-# Workgroup size is 16x16. Caller must dispatch ceil(tw/16) x ceil(th/16) x 1.
 shader CanvasSDFCompute
     # UBO params (was push constant in the original .comp file)
     mutable wx     : f32
@@ -124,9 +112,6 @@ shader CanvasSDFCompute
 
 
 shader CanvasUI
-    # vec4s declared first so silver's packed buffer layout matches GLSL
-    # std140 alignment. vec2f viewport is last so it lands at the end
-    # without upsetting the vec4 16-byte alignment of every other field.
     mutable rect       : vec4f
     mutable radii      : vec4f
     mutable fill_color : vec4f
@@ -136,14 +121,7 @@ shader CanvasUI
     mutable mask_uv    : vec4f     # mask tex rect (its own content/capacity)
     mutable grad_c0    : vec4f     # Gradient stop color 0
     mutable grad_c1    : vec4f     # Gradient stop color 1
-    # stroke options: (join, cap, miter_limit, reserved)
-    # join values match silver's Join enum: 0=none, 1=miter (square),
-    # 2=round, 3=bevel — only miter vs round affect the rect SDF outer
-    # corner shape; cap and miter_limit are for path strokes (TODO).
     mutable stroke_opts : vec4f
-    # 2D affine transform packed as 2 vec4s (avoid std140 mat3 padding):
-    #   xform_row0 = (ma, mb, mc, md)  -- the 2x2 linear part [ma mb; mc md]
-    #   xform_row1 = (tx, ty, 0, 0)    -- translation
     mutable xform_row0 : vec4f
     mutable xform_row1 : vec4f
     mutable inner_glow_color   : vec4f
@@ -151,26 +129,14 @@ shader CanvasUI
     mutable stroke_shadow_color: vec4f
     mutable outer_glow_color   : vec4f
     mutable outer_shadow_color : vec4f
-    # x = inner_glow_px, y = outer_glow_px, z = decay_k, w = inner_shadow_px
     mutable glow_params   : vec4f
-    # x = outer_shadow_px, y = hue_shift (deg), z = sat_mul, w = val_mul
     mutable glow_params2  : vec4f
     # inner_ofs.xy, outer_shadow_ofs.zw — pixel offsets
     mutable glow_ofs      : vec4f
-    # fill gradient anchors in world-pixel space (x = p0.xy, y = p1.xy).
-    # gated on grad_c1.a > 0; stroke_opts.z carries the fill grad mode.
     mutable fill_grad_pts   : vec4f
-    # stroke gradient anchors; gated on stroke_grad_c1.a > 0.
-    # stroke_opts.w carries the stroke grad mode (0=linear,1=mirror,2=radial).
     mutable stroke_grad_pts : vec4f
     mutable stroke_grad_c1  : vec4f
-    # crop rect (x0 y0 x1 y1 world-px; x1<=x0 = no clip). same data the text
-    # shader uses — fed from CanvasState.crop so shapes and glyphs clip
-    # identically. kept in the vec4 block so tight packing == std140.
     mutable crop_rect       : vec4f
-    # per-edge inner-glow distances (top, right, bottom, left) in px. when any
-    # component > 0 the inner glow uses nearest-edge selection (like
-    # stroke_sides) instead of the uniform inner_glow_px. drives the edge mask.
     mutable glow_sides      : vec4f
     mutable viewport        : vec2f
     mutable fill_offset   : f32
@@ -182,8 +148,6 @@ shader CanvasUI
     attrib  image      : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.image, count:1, format:typeid[ rgba8 ]
     ]
-    # grayscale alpha mask sampled in mode image_masked (8): content * mask.r.
-    # white = keep, black = fade out. rebound per-composite via rebind_mask.
     attrib  mask       : LayoutBinding [
         type:typeid[ CanvasUISurface ], id: CanvasUISurface.mask, count:1, format:typeid[ rgba8 ]
     ]
@@ -219,12 +183,6 @@ shader CanvasUI
         return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - cr;
     }
 
-    # smoothed rounded-rect distance used for inner glow.
-    # the standard SDF has a 45° gradient kink inside the "core rect"
-    # because max(d.x, d.y) picks one axis or the other. That kink shows
-    # up in the inner-glow iso-contours as a visible wedge along the
-    # corner diagonals. Replacing max with a quadratic soft-max smooths
-    # the iso-contours without moving the zero crossing meaningfully.
     func smax [ a: f32, b: f32, k: f32 ] -> GLSL float {
         float h = clamp(0.5 + 0.5*(b-a)/k, 0.0, 1.0);
         return mix(a, b, h) + k*h*(1.0-h);
@@ -321,8 +279,6 @@ shader CanvasUI
 
     # ---- fragment shader ----
     func fragment [] -> GLSL none {
-        #o_color = vec4(0.0, 0.0, 1.0, 1.0);
-        #return;
 
         // crop rect clip (same test/data as CanvasText): x1>x0 = active.
         // v_pos is world-space pixels, crop_rect is world-space pixels.
@@ -741,23 +697,11 @@ shader CanvasUI
     }
 
 
-# ---- text shader: instanced/batched glyph quads in one draw call ----
-# canvas owns one Pipeline using this shader, with a custom vbo holding
-# 6 vertices per glyph (two triangles, no index buffer). draw_text builds
-# the vbo per call and a dedicated text_render renders it via its own
-# render pass over the canvas's color attachment in a single vkCmdDraw.
 shader CanvasText
-    # std140: silver packs the UBO tightly (uniform_transfer sums type_size with
-    # no padding) but the generated GLSL struct is laid out by std140, which
-    # 16-byte-aligns every vec4. To keep the two in lockstep, declare ALL vec4s
-    # before any vec2 — then tight packing == std140 and crop_rect lands at the
-    # offset the shader actually reads. (vec2s after the vec4s stay 8-aligned.)
     mutable text_color     : vec4f
     mutable text_grad      : vec4f     # second color for gradient; alpha 0 = solid
     mutable grad_params    : vec4f     # x = mirror (0/1), y/z/w reserved
     mutable crop_rect      : vec4f     # x0 y0 x1 y1 world-px; x1<=x0 = no clip
-    # canvas stays literal — positions below are world-space pixels, already
-    # resolved by the element layer from whatever unit convention it uses.
     mutable text_color_pos : vec2f
     mutable text_grad_pos  : vec2f
     mutable viewport       : vec2f
@@ -819,44 +763,46 @@ shader CanvasText
     }
 
 
-# ---- path class ----
-# Internally journals every move/line/curve op into `points`. The Canvas
-# draw path keeps a snapshot of the previous draw's `points` plus its
-# computed edge list AND bounding box — on the next draw, if the ops are
-# byte-for-byte identical, we skip the de Casteljau flatten + edge extract
-# + storage buffer upload entirely. Invisible to the user: they keep
-# calling the normal Canvas API; the cache hits whenever the geometry
-# hasn't changed (e.g. a static shape rotating via the canvas affine).
 class CanvasPath
-    public points    : array PathPt
+    public points    : new PathPt [ 2048 ]
+    public pcount    : i32
+    public palloc    : i32 [ 2048 ]
     public start_x   : f32
     public start_y   : f32
     public cursor_x  : f32
     public cursor_y  : f32
     public is_closed  : bool
-    # per-corner radii for a primitive rounded-rect path (set by add_rounded_rect).
-    # lives on the path so it clears with the path — never leaks rounding onto a
-    # sibling/child sharp rect, and the fast path reads it instead of canvas state.
     public corner_radii : vec4f
-    # cached flatten/extract result from the previous draw of this path.
-    # cached_points is the snapshot of `points` that produced cached_edges.
-    intern cached_points : array PathPt
-    # contiguous SDFEdge buffer (owned, from new) + its count. freed/replaced on a
-    # cache miss; not an array of boxed edges.
+    intern cached_points     : new PathPt
+    intern cached_pcount     : i32
     intern cached_edges      : new SDFEdge
     intern cached_edge_count : i32
-    intern cached_bx0    : f32
-    intern cached_by0    : f32
-    intern cached_bw     : f32
-    intern cached_bh     : f32
-    intern cached_valid  : bool
+    intern cached_bx0        : f32
+    intern cached_by0        : f32
+    intern cached_bw         : f32
+    intern cached_bh         : f32
+    intern cached_valid      : bool
 
-    func init []
-        points = array PathPt []
-        points.hold[]
+    func dealloc [ ]
+        drop[ points ]
+        drop[ cached_points ]
+        drop[ cached_edges ]
+    
+    func realloc_check [ ]
+        if [ pcount < palloc ] return
+        na    : i32 [ palloc << 1 ]
+        grown : new PathPt [ na ]
+        memcpy[ grown, points, sizeof[ PathPt ] * pcount ]
+        points = grown
+        palloc = na
+
+    func append [ pt: PathPt ]
+        realloc_check[]
+        memcpy[ @points[pcount], @pt, sizeof[ PathPt ] ]
+        pcount += 1
 
     func reset []
-        points.clear[]
+        pcount   = 0
         start_x  = 0.0
         start_y  = 0.0
         cursor_x = 0.0
@@ -867,9 +813,7 @@ class CanvasPath
 
     func move_to [ x: f32, y: f32 ]
         pt : PathPt [ cmd: path_cmd.move, x: x, y: y ]
-        info_cv : header [ a ]
-        info : header[ points ]
-        points.push[ pt ]
+        append[ pt ]
         start_x  = x
         start_y  = y
         cursor_x = x
@@ -878,24 +822,23 @@ class CanvasPath
 
     func line_to [ x: f32, y: f32 ]
         pt : PathPt [ cmd: path_cmd.line, x: x, y: y ]
-        points.push[ pt ]
+        append[ pt ]
         cursor_x = x
         cursor_y = y
 
     func quad_to [ cx: f32, cy: f32, x: f32, y: f32 ]
         pt : PathPt [ cmd: path_cmd.quad, x: x, y: y, cx1: cx, cy1: cy ]
-        points.push[ pt ]
+        append[ pt ]
         cursor_x = x
         cursor_y = y
 
     func cubic_to [ c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32 ]
         pt : PathPt [ cmd: path_cmd.cubic, x: x, y: y, cx1: c1x, cy1: c1y, cx2: c2x, cy2: c2y ]
-        points.push[ pt ]
+        append[ pt ]
         cursor_x = x
         cursor_y = y
 
     func arc_to [ x1: f32, y1: f32, x2: f32, y2: f32, radius: f32 ]
-        # compute arc tangent to lines (cursor->x1,y1) and (x1,y1->x2,y2)
         dx0 : cursor_x - x1
         dy0 : cursor_y - y1
         dx1 : x2 - x1
@@ -936,7 +879,7 @@ class CanvasPath
         a1 : atan2[ t1y - ncy, t1x - ncx ]
 
         line_to [ t0x, t0y ]
-        flatten_arc [ points, ncx, ncy, radius, a0, a1 ]
+        flatten_arc [ a, ncx, ncy, radius, a0, a1 ]
         cursor_x = t1x
         cursor_y = t1y
 
@@ -944,7 +887,7 @@ class CanvasPath
         sx : cx + radius * cos[ start_angle ]
         sy : cy + radius * sin[ start_angle ]
         move_to [ sx, sy ]
-        flatten_arc [ points, cx, cy, radius, start_angle, end_angle ]
+        flatten_arc [ a, cx, cy, radius, start_angle, end_angle ]
         ex : cx + radius * cos[ end_angle ]
         ey : cy + radius * sin[ end_angle ]
         cursor_x = ex
@@ -958,12 +901,6 @@ class CanvasPath
         close_path
 
     func add_rounded_rect [ x: f32, y: f32, w: f32, h: f32, tl: f32, tr: f32, br: f32, bl: f32 ]
-        # every rounded rect is emitted as a primitive 5-point rect (move + 4 lines +
-        # close) so paint[] takes the fast in-shader rect SDF path. the per-corner radii
-        # ride on the PATH (consumed by paint, cleared with the path) and the shader
-        # rounds the bbox from ubo.radii. this keeps rects OFF the arbitrary-path compute
-        # SDF — that path writes a single shared sdf_tex that batched paints clobber
-        # (wrong fill + rounded glow bleeding onto everything). only real curves use it.
         half2 : f32 [ minf[ w, h ] * 0.5 ]
         corner_radii = vec4f [ minf[ tl, half2 ], minf[ tr, half2 ], minf[ br, half2 ], minf[ bl, half2 ] ]
         move_to [ x,     y     ]
@@ -978,9 +915,7 @@ class CanvasPath
             is_closed = true
 
     func clear[]
-        points  = array PathPt []
-        points.hold[]   # TEST: does holding the path points array stop the crash?
-        info : header[points]
+        pcount  = 0
         start_x = 0.0
         start_y = 0.0
         is_closed = false
@@ -1000,9 +935,6 @@ class Gradient
     public y0       : f32
     public x1       : f32
     public y1       : f32
-    # radial: center + radius (x0,y0 = center, x1 = inner radius, y1 = outer radius)
-    # conic:  x0,y0 = center, x1 = start angle
-    # mirror: reflect the ramp (Photoshop "Reflected"): A at ends, B at midpoint
     public mirror   : bool
 
     func init []
@@ -1079,9 +1011,6 @@ class Gradient
         return sample[ t ]
 
 
-# ---- SDF path rendering ----
-# generates signed distance fields from arbitrary paths
-# handles holes via winding number: outer contour CCW, holes CW (or vice versa)
 
 struct SDFEdge
     x0 : f32
@@ -1124,20 +1053,14 @@ struct CanvasState
     outer_shadow_color : vec4f
     outer_shadow_px    : f32
     outer_shadow_ofs   : vec2f
-    # power-curve exponent for glow alpha. larger = steeper cliff near edge
-    # with a long flat tail; smaller = gentler, more visible spread.
     glow_falloff      : f32
-    # HSV colorize on final output. defaults (0, 1, 1) = identity.
     hue_shift         : f32
     sat_mul           : f32
     val_mul           : f32
-    # text gradient — second color + axis anchors in world pixels. alpha 0 on
-    # text_grad disables the gradient entirely (falls back to fill_color).
     text_grad         : vec4f
     text_color_pos    : vec2f
     text_grad_pos     : vec2f
     text_grad_mirror  : bool
-    # fill gradient — same model as text. alpha 0 on fill_grad = off.
     fill_grad         : vec4f
     fill_color_pos    : vec2f
     fill_grad_pos     : vec2f
@@ -1149,7 +1072,6 @@ struct CanvasState
     stroke_grad_mirror : bool
     stroke_grad_radial : bool
     crop          : vec4f
-    # per-edge inner-glow distances (top, right, bottom, left); 0 = uniform glow
     glow_sides    : vec4f
 
 
@@ -1182,81 +1104,42 @@ Render Canvas
     intern sdf_tex       : Texture
     intern image_override : Texture
     intern mask_override  : Texture
-    # per-ring-slot flag: draw_canvas left a TRANSIENT (line-cache) texture bound in binding #1
-    # of this descriptor slot. a later solid paint that reuses the slot (free-running draw_slot)
-    # must reset binding #1 to the always-alive sdf_tex placeholder first — the transient view
-    # may have been destroyed by the source canvas's resize, and binding a dead view is a crash.
     intern image_dirty   : new bool [ 64 ]
-    # logical content size — what the caller draws into (top-left of the texture).
-    # width/height are the QUANTIZED GPU capacity (rounded up to a 64px grid by
-    # resize), so a 1px drag reuses the same textures instead of reallocating every
-    # frame. content_w/content_h <= width/height; the unused margin is transparent
-    # and cropped out by the blit UV (image_uv = content/capacity).
     public  content_w     : i32
     public  content_h     : i32
     mutable image_uv      : vec4f
     mutable mask_uv       : vec4f
-    # opt-in 64px capacity quantization (see resize). only per-element CACHE
-    # canvases set this — the main compose/screen/glyph canvases present to the
-    # swapchain and must stay exactly window-sized.
     public  quantize      : bool
     public format	   : Pixel[Pixel.rgba8]
-    # current 2D affine — held directly on Canvas because writing back
-    # into states[state_depth-1].transform via array-of-struct field assignment
-    # doesn't stick (silver returns a copy, edits the copy, drops it).
     mutable cur_xform  : affine
     mutable xform_stack : array affine
-    # ---- Gpu sdf compute path ----
-    # toggle this to switch between CPU SDF (sdf_generate + sdf_to_r8 + upload)
-    # and GPU compute SDF (CanvasSDFCompute writes directly into sdf_tex).
     public  gpu_sdf          : bool
     public  load_existing    : bool [ true ]
     intern  sdf_compute      : CanvasSDFCompute
     intern  edge_buf         : Buffer       # storage buffer holding flattened edge list
     intern  edge_buf_capacity : i32         # max edges the buffer can hold
-    # ---- text rendering: own Render that layers text over canvas color ----
-    # canvas builds these inline (no subclass) so the calls stay direct.
-    # text_render shares the canvas's color/depth and uses LOAD_OP_LOAD so
-    # the text quads composite on top of whatever the canvas just drew.
     intern  text_shader      : CanvasText
     intern  text_vbo         : Gpu          # current ring slot (vec2 pos, vec2 uv) layout
     intern  text_pipeline    : Pipeline     # bound to text_shader + text_vbo
     intern  text_model       : Model        # holds text_pipeline; lives in text_render.models
     intern  text_render      : Render       # own Render targeting canvas color
     intern  text_max_verts   : i32 [ 4096 ]
-    # ring of vertex buffers: each draw_text_pass writes the NEXT slot and BATCHES its draw
-    # into text_render (no per-draw submit/wait). draw[] advances text_render.draw_slot so each
-    # batched draw gets its own descriptor/UBO slot too — vbo AND uniform ring stay in lockstep.
-    # we fence ONLY when the ring wraps (once per text_ring_n draws), which frees every slot and
-    # resets draw_slot together. flush_text[] submits the trailing partial batch before sampling.
     intern  text_vbo_ring    : array Gpu
     intern  text_vbo_idx     : i32 [ 0 ]
     intern  text_ring_n      : i32 [ 8 ]
-    # ---- blur cascade (built in init) ----
-    # 8 reduction stages (1/2, 1/4, ..., 1/256); per-stage blur_v + blur_h.
-    # Canvas.blur[radius] picks stage k = clamp(ceil(log2(radius/4)), 0, 7)
-    # and runs reductions 0..k then blur_v[k] then blur_h[k].
     intern  blur_count       : i32 [ 8 ]
     intern  blur_stages      : array Render
     intern  blur_v_arr       : array Render
     intern  blur_h_arr       : array Render
 
-    # release a Render's owned textures' GPU resources (idempotent — shared
-    # color textures across self/text_render only get destroyed once).
     func release_render_gpu [ r: Render ]
         if [ !r ] return
         if [ r.color ]     r.color.release_gpu[]
         if [ r.depth ]     r.depth.release_gpu[]
         if [ r.reduction ] r.reduction.release_gpu[]
 
-    # the canvas owns its textures; reclaim their GPU resources directly instead
-    # of waiting on a refcount that never reaches 0. called at the cache_canvas
-    # replace point so it runs every churn regardless of whether the old canvas
-    # object ever frees. idempotent, so a later dealloc is harmless.
     func teardown_gpu []
         if [ sdf_tex ]     sdf_tex.release_gpu[]
-        # NOTE: never release glyph_atlas here — the atlas is owned by the CanvasFont
-        # (per font+size, shared via font_cache), not this canvas's to free.
         release_render_gpu[ a ]
         release_render_gpu[ text_render ]
         if [ blur_stages ]
@@ -1275,16 +1158,9 @@ Render Canvas
             puts 'Canvas dealloc text_render refs={thd.refs}'
 
     func init [ ]
-        # default: transparent — canvas can be used as an overlay layer.
-        # call reset[ vec4f ] to force a direct image clear (bypasses any
-        # render-pass blending) when you need a hard wipe of the pixels.
         clear_color = vec4f [ 0.0, 0.0, 0.0, 1.0 ]
         cur_xform   = affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
         xform_stack = array affine [ ]
-        # created at an exact size — content fills the whole texture until the first
-        # resize quantizes the capacity. full-texture UV until then. the constructor
-        # width/height are LOGICAL; allocate the texture at content*scale (device
-        # pixels) so even canvases that never call resize[] are retina-sharp.
         content_w   = width
         content_h   = height
         cs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
@@ -1294,8 +1170,6 @@ Render Canvas
         mask_uv     = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
         VK : vk
         ui_shader = CanvasUI [ vk: vk ]
-        # R32F + STORAGE_BIT so the compute shader can imageStore distances
-        # directly and the fragment shader still samples it as a texture.
         if [ width <= 0 || height <= 0 ]
             test2 :  2
             test2 += 2
@@ -1304,17 +1178,7 @@ Render Canvas
         stag : string [ (tag) ? tag : 'sdf' ]
         sdf_tex = Texture [ vk: vk, w: w, width: sdf_w, height: sdf_h,
             pixel_format: Pixel.f32, surface: Surface.color, is_storage: true, tag: stag ]
-        # the glyph atlas (font TEXTURE) is NOT owned by the canvas — it lives on the
-        # CanvasFont (per font+size, shared via vk.font_cache, persistent), created
-        # lazily on first text draw. so a dropped canvas never frees a font texture,
-        # we don't make one per canvas, and different fonts keep their own glyphs.
-        # the 'atlas' sampler starts on sdf_tex as a placeholder; draw_text_pass
-        # rebinds the text pipeline's atlas to the current font's atlas per draw.
         ft_lib   = ft_init[]
-        # font is lazy now — built by ensure_font[] on first text draw, so
-        # canvases that never render text never parse the .ttf.
-        # 'mask' starts bound to sdf_tex as a placeholder; draw_canvas_masked
-        # rebinds it to the real mask texture per composite.
         canvas_samplers : map Au[string] [ 'image': sdf_tex, 'atlas': sdf_tex, 'mask': sdf_tex ]
         graphics_model : Model [ vk: vk, w: w, s: ui_shader, samplers: canvas_samplers ]
 
@@ -1332,12 +1196,9 @@ Render Canvas
         for [ m: Model ] in models
             m.finish[ a, 0 ]
 
-        # ---- text rendering: own Render layered over canvas color ----
-        # by this point Render base init has already created `color`/`depth`,
-        # so we hand them to a second Render that uses LOAD_OP_LOAD and
-        # carries one Pipeline that draws the per-glyph quads from text_vbo.
         text_shader = CanvasText [ vk: vk ]
-        # vertex layout: vec2f a_pos (offset 0) + vec2f a_uv (offset 8). 16 bytes per vertex.
+        tsv9 : Au.header[ text_shader.vert ]
+        puts 'POSTCON CanvasText vert refs={tsv9.refs}'
         text_members : new vertex_member_t [ 2 ]
         text_members[0].src    = typeid[ vec2f ]
         text_members[0].size   = 8
@@ -1345,12 +1206,9 @@ Render Canvas
         text_members[1].src    = typeid[ vec2f ]
         text_members[1].size   = 8
         text_members[1].offset = 8
-        # use explicit local i32 for vertex_size/vertex_count so the prop
-        # pair gets the right type (matches model_init_pipeline pattern).
         text_vsize  : i32 [ 16 ]
         text_vcount : i32 [ text_max_verts ]
         text_mcount : i32 [ 2 ]
-        # allocate the ring of text vbos (all same layout); text_vbo points at the current one
         text_vbo_ring = array Gpu [ alloc: text_ring_n ]
         for [ ri: i32 0, ri < text_ring_n, ri += 1 ]
             g : Gpu [ vk: vk, name: 'text',
@@ -1359,63 +1217,42 @@ Render Canvas
             g.sync[ w ]
             text_vbo_ring.push[ g ]
         text_vbo = text_vbo_ring[ 0 ]
-        # text_render is constructed BEFORE its pipeline so we have a Render
-        # for the pipeline's `r` field. We pass color pre-set so this Render
-        # reuses the canvas's existing color attachment instead of allocating
-        # a new one. No depth — text doesn't need depth testing.
-        # load_existing=true so its render pass preserves whatever the canvas
-        # just drew (LOAD_OP_LOAD).
         text_render = Render [ vk: vk, w: w,
             color: a.color,
             width: width, height: height, load_existing: true ]
-        # 'atlas' starts on sdf_tex as a placeholder so descriptor creation has a
-        # valid texture; draw_text_pass rebinds it to the current font's atlas.
+        trh1 : Au.header[ text_render ]
+        puts 'TRREF birth {trh1.refs}'
         text_pipeline = Pipeline [ vk: vk, w: w, name: string 'text',
             r: text_render, s: text_shader, vbo: text_vbo,
             samplers: map Au[string] [ 'atlas': sdf_tex ],
             straight_alpha: true ]
         text_model = Model [ vk: vk, w: w, s: text_shader,
             samplers: map Au[string] [ 'atlas': sdf_tex ] ]
+        trh2 : Au.header[ text_render ]
+        puts 'TRREF post-pipeline {trh2.refs}'
         text_model.pipelines = array Pipeline [ alloc: 1 ]
         text_model.pipelines.push[ text_pipeline ]
         text_model.r = text_render
         text_render.models = array Model [ text_model ]
         text_vbo.vertex_count = 0
+        trh3 : Au.header[ text_render ]
+        puts 'TRREF post-wiring {trh3.refs}'
 
-        # blur cascade is lazy — created on first call to blur[] to avoid
-        # allocating 24 Render/Texture/VkSampler objects on every cache canvas
 
         path   = CanvasPath []
-        path.hold[]
         states = array CanvasState []
         state_depth  = 0
         save[]
         defaults : states[state_depth - 1]
         defaults.font_size = 22
-        # neutral tint by default: an icon drawn before any fill/stroke is set
-        # takes white (a no-op), not uninitialized memory
         defaults.fill_color   = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
         defaults.stroke_color = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
 
-    # invoke the inherited Render pipeline once all canvas state has been
-    # built up. drives framebuffer/extent setup, runs the render pass, and
-    # blocks until the GPU has finished writing the color attachment.
     func flush []
         #update[]
         draw[]
-        # NO per-paint sync_fence: draw[] now rings command buffer/fence/descriptors/
-        # uniforms, so it only stalls on a ring wrap. the canvas is fenced once at the
-        # end of its draw session (on_compose/on_screen call sync_fence) before sampling.
-        # EXCEPT during an interactive split/seam drag (vk.sync_paints): drain each paint so
-        # the batched ring's per-slot UBO/UV can't desync across a frame's many composites.
         if [ vk.sync_paints ] sync_fence[]
 
-    # hard-clear the canvas's color texture to a chosen color via
-    # vkCmdClearColorImage. this happens OUTSIDE any render pass and
-    # bypasses all blending — the pixels are directly overwritten with
-    # `c` regardless of what was there before. use this when you need a
-    # genuine "reset to transparent" (or any other clean state) before
-    # the next frame's draws.
     func reset [ c: vec4f ]
         if [ !color || !color.vk_image ]
             return
@@ -1439,34 +1276,20 @@ Render Canvas
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, @cv, 1, @rng ]
         cmd.submit[]
         color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
-        # reset the DRAW STATE too, not just the pixels. a recycled cache canvas
-        # kept the prior row's fill_color, so an icon drawn before any color was
-        # set (draw_svg reads fill/stroke as its TINT) inherited garbage — wrong
-        # colors AND a tint that changed every frame (endless re-raster → crash).
-        # white = a no-op tint, so an untinted icon shows its authored colors.
         if [ state_depth > 0 ]
             states[state_depth - 1].fill_color   = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
             states[state_depth - 1].stroke_color = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
         
 
-    # reuse this canvas at a new size instead of rebuilding it — keeps the
-    # pipelines/shaders/font/atlas (no VkPipeline creation, the resize fps cost)
-    # and only reallocates the size-dependent textures + framebuffers.
     func resize [ rw: i32, rh: i32 ] -> Canvas
-        # logical content size (points) — what the caller draws into. layout/draw
-        # coords are all logical; the GPU texture is allocated at content*scale so
-        # the UI rasterizes at native device pixels (retina) while coords stay the
-        # same on every OS. the shader viewport uniform uses content_w/h (logical).
+        if [ text_render ]
+            trh7 : Au.header[ text_render ]
+            puts 'TRREF resize-entry {trh7.refs}'
         content_w = rw
         content_h = rh
         s  : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
         pw : i32 [ i32[ rw * s ] ]
         ph : i32 [ i32[ rh * s ] ]
-        # cache canvases quantize the GPU allocation UP to a 64px grid: a 1px drag
-        # almost never crosses a boundary, so we keep the same color/depth/framebuffers
-        # (the expensive realloc) and only the content size + blit UV change. up to
-        # 63px of headroom per axis is unused (transparent) and cropped by the blit.
-        # main canvases (quantize=false) stay exactly window-sized for the swapchain.
         qw : i32 [ pw ]
         qh : i32 [ ph ]
         if [ quantize ]
@@ -1474,20 +1297,11 @@ Render Canvas
             qh = ((ph + 63) / 64) * 64
             if [ qw < 64 ] qw = 64
             if [ qh < 64 ] qh = 64
-            # high-water mark: never shrink the allocation. going smaller is then free —
-            # only content_w/h and the blit UV crop change, no realloc. only growth past
-            # the current capacity reallocs (and the 64px headroom absorbs most growth).
             if [ qw < width  ] qw = width
             if [ qh < height ] qh = height
         if [ qw == width && qh == height ] return a  # capacity unchanged — no realloc
         rz0 : i64 [ epoch_micros[] ]
         vk.resize_calls += 1
-        # we're about to DESTROY this canvas's color/depth/framebuffers and recreate them at the
-        # new size. any in-flight command buffer (a prior frame's screen/compose batch still on
-        # the queue, or another canvas compositing THIS one) may still reference the old views —
-        # freeing them under an executing submit is a device-lost ("Invalid Resource") that
-        # surfaces later as a crash in sync_fence. drain the GPU before reallocating. this only
-        # runs on an actual capacity grow (quantize boundary crossing), so it's rare, not per-frame.
         vkDeviceWaitIdle[ vk.device ]
         width  = qw
         height = qh 
@@ -1497,21 +1311,24 @@ Render Canvas
         if [ text_render ]
             text_render.width  = width
             text_render.height = height
+            trh5 : Au.header[ text_render ]
+            puts 'TRREF pre-tr-update {trh5.refs}'
             text_render.update[]                     # text framebuffer over the shared color
-        # textures got new GPU handles — force the pipelines to rebind their
-        # descriptors on the next dispatch (rebind sets resources = null).
+            trh6 : Au.header[ text_render ]
+            puts 'TRREF post-tr-update {trh6.refs}'
         if [ models ]
             for [ m: Model ] in models
                 m.rebind_model[]
         if [ text_render && text_render.models ]
             for [ m: Model ] in text_render.models
                 m.rebind_model[]
-        # blur cascade is sized off width/height — drop it so it lazily rebuilds
-        # at the new size on next blur[] (cheap; most canvases never blur).
         blur_stages = null
         blur_v_arr  = null
         blur_h_arr  = null
         vk.resize_us += epoch_micros[] - rz0
+        if [ text_render ]
+            trh4 : Au.header[ text_render ]
+            puts 'TRREF post-resize {trh4.refs}'
         return a
 
 
@@ -1544,11 +1361,7 @@ Render Canvas
             g  : font.get_glyph [ cp ]
             if [ g.cached ]
                 tw += f32 g.advance
-        # state.line_height is a multiplier (CSS-style): 1.0 = natural,
-        # 1.5 = 150% of the font's intrinsic line height. 0 = unset → 1.0.
         scale : f32 [ (st.line_height > 0.0) ? st.line_height : 1.0 ]
-        # the atlas is rasterized at device pixels (font metrics are in dev px);
-        # divide by device scale so all measurements are LOGICAL like layout.
         inv : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
         lh    : f32 [ font.line_height * scale * inv ]
         return TextMetrics [
@@ -1593,7 +1406,6 @@ Render Canvas
         return states[state_depth - 1]
 
     func hex_dump [ name: symbol, data: @u8, size: i32 ]
-        #printf[ "%s (%d bytes) data ptr = %p :\n", name, size, data ]
         for [ i: i32 0, i < size, i += 1 ]
             b: u8 data[ i ]
             printf[ "%02x ", u32[b] ]
@@ -1622,9 +1434,6 @@ Render Canvas
                 stroke_offset: 0.0,
                 corner_radii:  vec4f [ 0.0, 0.0, 0.0, 0.0 ],
                 stroke_sides:  vec4f [ 1.0, 1.0, 1.0, 1.0 ],
-                # gradient defaults: alpha-0 colors disable the gradient paths,
-                # so anchors/mirror only matter when a layer actually sets a
-                # gradient color. mirror defaults to true (reflected).
                 text_grad:         vec4f [ 0.0, 0.0, 0.0, 0.0 ],
                 text_color_pos:    vec2f [ 0.0, 0.0 ],
                 text_grad_pos:     vec2f [ 0.0, 0.0 ],
@@ -1644,7 +1453,6 @@ Render Canvas
         el
             prev : states[state_depth - 1]
             states.push[ prev ]
-        # snapshot the current transform so restore[] can roll it back.
         xform_stack.push[ cur_xform ]
         state_depth += 1
 
@@ -1665,21 +1473,13 @@ Render Canvas
     func line_height [ px: f32 ]
         states[state_depth - 1].line_height = px
 
-    # line height for the current font_size — ensures the font is loaded, then
-    # returns its line_height (or the state line_height when there's no font).
-    # callers use this instead of poking cv.font / calling ensure_font themselves.
     public func get_line_height [] -> f32
         ensure_font []
-        # font.line_height is DEVICE pixels (atlas rasterized at sz*scale); callers
-        # (editor/console cell sizing) work in LOGICAL space, so divide by scale.
         if [ font ]
             cs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
             return font.line_height / cs
         return states[state_depth - 1].line_height
 
-    # shared line/col selection highlight: rounded rects per line for an
-    # anchor→cursor span over a monospace line model (col*cw). used by both the
-    # editor and the console so selection looks identical in each.
     public func draw_selection [ x0: f32, y0: f32, lh: f32, cw: f32, scroll: f32, by: f32, bw: f32, bh: f32, a_line: i32, a_col: i32, s_line: i32, s_col: i32, color: rgba ]
         if [ s_line < 0 ] return
         before     : bool [ a_line < s_line || (a_line == s_line && a_col <= s_col) ]
@@ -1700,22 +1500,12 @@ Render Canvas
             paint[]
         restore[]
 
-    # sync the shared CanvasFont's freetype face to this canvas's current
-    # font_size before any glyph/metrics call. avoids bleeding size changes
-    # from one canvas into another when they share a font.
     public func ensure_font []
         sz : i32 [ states[state_depth - 1].font_size ]
         if [ sz <= 0 ] sz = 22
-        # rasterize the atlas at device pixels (sz * scale) so text is retina-sharp;
-        # font metrics are reported back in LOGICAL units (divided by scale) so
-        # layout/measure stay in the same coordinate space as every other op.
         ds  : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
         dsz : i32 [ i32[ sz * ds ] ]
         if [ dsz <= 0 ] dsz = sz
-        # shared, immutable per-(name,size) font cached on vk: each is born at
-        # its size (init does FT_Set_Pixel_Sizes) so it's NEVER set_size'd —
-        # mutating a shared instance re-rasterizes + invalidates its glyph cache,
-        # which is what randomized glyphs. loaded once, never unloaded, borrowed.
         if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
         key : string 'SpaceMono-Combined@{dsz}'
         cf  : CanvasFont vk.font_cache[ key ]
@@ -1798,9 +1588,6 @@ Render Canvas
         states[state_depth - 1].inner_shadow_color = c
         states[state_depth - 1].inner_shadow_px    = px
 
-    # per-edge inner glow: distinct fade distance per side (top, right, bottom,
-    # left) in px. nearest-edge selection in the shader (like stroke_sides), so
-    # a line can fade a lot on the right and barely on the left.
     func inner_glow_sides [ color: rgba, top: f32, right: f32, bottom: f32, left: f32 ]
         c : vec4f [ sk_color[ color ] ]
         states[state_depth - 1].inner_glow_color = c
@@ -1889,10 +1676,6 @@ Render Canvas
     func rotate [ radians: f32 ]
         states[state_depth - 1].transform = states[state_depth - 1].transform.rotate [ radians ]
 
-    # ---- path building (delegate to CanvasPath) ----
-    # path coords are stored in LOCAL space; the GPU vertex shader applies
-    # ubo.xform per draw. that lets the same path be drawn with multiple
-    # transforms without rebuilding it (and matches Web Canvas semantics).
 
     func move_to [ x: f32, y: f32 ]
         path.move_to [ x, y ]
@@ -1937,22 +1720,11 @@ Render Canvas
         ]
 
     func draw_text_pass [ display: string, tm: TextMetrics, pen_x_in: f32, pen_y_in: f32 ]
-        # the glyph atlas belongs to the FONT (per font+size, shared via font_cache),
-        # not the canvas. create it lazily on first use with this canvas's vk/w, then
-        # point glyph_atlas at it so the rest of this pass rasterizes/samples the
-        # right per-font atlas. different fonts thus keep separate glyphs.
         if [ !font.atlas ]
             font.atlas = GlyphAtlas [ vk: vk, w: w, size: 1024 ]
         glyph_atlas = font.atlas
         atlas_size : f32 [ f32 glyph_atlas.size ]
-        # glyph bitmaps/metrics are in device pixels (atlas rasterized at sz*scale);
-        # the quad is emitted in LOGICAL coords, so scale glyph extents/advance by
-        # inv. UVs stay in atlas texels (sample the full-res bitmap) — that's what
-        # makes the text crisp instead of an upscaled logical-size atlas.
         inv : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
-        # pick the next ring slot up front so the glyphs we write below land in a buffer the GPU
-        # isn't reading. fence ONLY on wrap (idx % N == 0) — that drains the whole prior cycle so
-        # every slot AND text_render.draw_slot (the descriptor/UBO ring) are free together.
         if [ text_vbo_idx % text_ring_n == 0 && text_vbo_idx > 0 ]
             text_render.sync_fence[]
         text_vbo = text_vbo_ring[ text_vbo_idx % text_ring_n ]
@@ -1969,8 +1741,6 @@ Render Canvas
 
         i : i32 [ 0 ]
         while [ i < display.count ]
-            # decode one UTF-8 codepoint (NOT one byte) so multibyte glyphs — box
-            # drawing, arrows, bullets, emoji — look up the right glyph, not 3 bytes.
             b  : i32 [ display[i] & 255 ]
             cp : u32 [ 0 ]
             if [ b < 128 ]
@@ -2034,52 +1804,30 @@ Render Canvas
         text_vbo.vertex_count = vi
         if [ text_vbo.vertex && vi > 0 ]
             text_vbo.vertex.update[ text_vbo.vertex_data ]
-            # point the text pipeline's 'atlas' sampler at THIS font's atlas before
-            # drawing (the sampler was created on a placeholder). ensure_bound first
-            # so atlas_slot is known, or the rebind no-ops on the first draw.
             text_pipeline.ensure_bound[]
             text_pipeline.rebind_atlas[ font.atlas.texture ]
-            # text shares this canvas's color via LOAD_OP_LOAD. SUBMIT the pending ui batch
-            # (don't cpu-wait) so text loads its pixels and lands ON TOP — Metal serializes
-            # the queue, so submission order is execution order. waiting here cost a GPU
-            # round-trip PER text line (the fps wall); the ring-wrap is the only real wait.
             flush_submit[]
             text_render.update[]
-            # BATCH — no submit/wait here. draw[] records into text_render's open command buffer
-            # and advances draw_slot (this draw's own UBO/descriptor slot). consecutive draw_text
-            # calls thus pipeline with zero GPU round-trips; the only wait is the wrap-fence above.
-            # flush_text[] (called from draw_canvas before sampling) submits the trailing batch.
             text_render.draw[]
 
     func draw_text [ text: string, bounds: rect, align: vec2f, offset: vec2f, overflow: Overflow, shadow: Shadow ] -> rect
         if [ !text ] return bounds
-        # load the font lazily here (and in measure_text) — callers must never have
-        # to invoke ensure_font themselves. without this, a first text draw on a
-        # fresh/lazy canvas bails on the null font and the text never appears.
         ensure_font[]
         if [ !font ] return bounds
 
         display : string [ (overflow == Overflow.ellipsis) ? text_ellipsis[ text, bounds.w ] : text ]
         tm     : measure_text[ display ]
         tx     : f32 [ bounds.x + (bounds.w - tm.w) * align.x + offset.x ]
-        # Standard: ascender top at bounds.y for align=0, descender bottom at bounds.h for align=1.
-        # descent is negative so (ascent - descent) = full font height.
         font_h : f32 [ tm.ascent - tm.descent ]
         ty     : f32 [ bounds.y + tm.ascent + (bounds.h - font_h) * align.y + offset.y ]
 
         st : CanvasState states[state_depth - 1]
-        # viewport (for ndc) is the TEXTURE in logical units = width/scale, NOT
-        # content_w: the texture is quantized up to a 64px grid, so content only
-        # fills content*scale of it. using content_w would stretch content to the
-        # quantized width and the blit's content*scale/width crop would squish it.
         tcs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
         text_shader.viewport   = vec2f [ f32 width / tcs, f32 height / tcs ]
         text_shader.crop_rect  = st.crop
         pen_x : roundf[ tx + st.transform.tx ]
         pen_y : roundf[ ty + st.transform.ty ]
 
-        # shadow pass: one draw at offset with the shadow color, no gradient.
-        # runs BEFORE the main text so the text composites on top.
         has_shadow : bool [ shadow && shadow.color && shadow.color.a > 0.0 ]
         if [ has_shadow ]
             text_shader.text_color     = sk_color[ shadow.color ]
@@ -2111,8 +1859,6 @@ Render Canvas
         ]
 
     func setup_shader [ st: CanvasState, rx: f32, ry: f32, rw: f32, rh: f32 ]
-        # texture in logical units (width/scale), not content_w — see draw_text:
-        # the quantized texture margin must be accounted for or the blit squishes.
         ucs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
         ui_shader.viewport      = vec2f [ f32 width / ucs, f32 height / ucs ]
         ui_shader.crop_rect     = st.crop
@@ -2129,10 +1875,7 @@ Render Canvas
         ui_shader.grad_c1         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         ui_shader.stroke_grad_pts = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         ui_shader.stroke_grad_c1  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        # stroke options: x = join enum (0=none,1=miter,2=round,3=bevel)
         ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, 0.0, 0.0 ]
-        # 2D affine transform packed as two vec4s for the vertex shader
-        # to apply: world_px = mat2(ma,mc, mb,md) * local_px + (tx,ty)
         ui_shader.xform_row0 = vec4f [ st.transform.ma, st.transform.mb,
                                        st.transform.mc, st.transform.md ]
         ui_shader.xform_row1 = vec4f [ st.transform.tx, st.transform.ty, 0.0, 0.0 ]
@@ -2149,8 +1892,6 @@ Render Canvas
         ui_shader.glow_params2 = vec4f [ st.outer_shadow_px, st.hue_shift, sat, val ]
         ui_shader.glow_ofs     = vec4f [ st.inner_glow_ofs.x, st.inner_glow_ofs.y,
                                          st.outer_shadow_ofs.x, st.outer_shadow_ofs.y ]
-        # print the full UBO contents we just wrote, so we can compare
-        # what silver thinks it's sending vs what the GPU actually reads.
         ##
         printf[ "setup_shader ubo:\n" ]
         printf[ "  rect       = (%f, %f, %f, %f)\n", rx, ry, rw, rh ]
@@ -2175,7 +1916,6 @@ Render Canvas
                 ui_shader.grad_c0 = color_to_vec4 [ g.stops[0].color ]
             if [ n >= 2 ]
                 ui_shader.grad_c1 = color_to_vec4 [ g.stops[n - 1].color ]
-            # stash the mirror bit on stroke_opts.z (0 otherwise in UI paths)
             ui_shader.stroke_opts.z = (g.mirror) ? 1.0 : 0.0
             return f32 [i32[g.kind]]
         ui_shader.stroke_opts.z = 0.0
@@ -2236,24 +1976,12 @@ Render Canvas
             return
         if [ rw < 1.0 || rh < 1.0 ]
             return
-        # the caller's colors TINT the icon: each shape's own fill and stroke are
-        # scaled by them, so a flat glyph takes the color outright while a
-        # multi-color one keeps its relationships. read from canvas state, so a
-        # cv.fill_color before draw_svg is all a caller needs.
         tf : vec4f [ states[state_depth - 1].fill_color ]
         ts : vec4f [ states[state_depth - 1].stroke_color ]
         tint_same : bool [ memcmp[ @mdl.cache_fill,   @tf, sizeof[ vec4f ] ] == 0 &&
                            memcmp[ @mdl.cache_stroke, @ts, sizeof[ vec4f ] ] == 0 ]
-        # only the SIZE forces a new render target; a tint change reuses the
-        # SAME Canvas. allocating a Canvas (a full Render: command pool,
-        # semaphores, fences, render passes) per frame while a navlist icon's
-        # hover/select color animated exhausted Vulkan in ~1s → vkCreate fault.
         need_alloc : bool [ !mdl.cache || mdl.cache_rw != rw || mdl.cache_rh != rh ]
         if [ need_alloc || !tint_same ]
-            # raster at the size we DRAW, not the size the svg was authored at.
-            # keying off mdl.w meant a 512px logo rasterized 2048 square and got
-            # minified ~100x into a 21px chip — no mip chain, so fine detail
-            # speckled. it also cost ~16MB per icon for pixels thrown away.
             ps   : i32 [ (mdl.pixel_scale > 0) ? mdl.pixel_scale : 2 ]
             cw4  : i32 [ i32( rw ) * ps ]
             ch4  : i32 [ i32( rh ) * ps ]
@@ -2314,35 +2042,20 @@ Render Canvas
                         mdl.cache.close_path[]
                 mdl.cache.paint[]
                 mdl.cache.restore[]
-                # serialize each shape before the next. an arbitrary (curved) path paints
-                # through the shared compute-SDF `sdf_tex`; without draining here, the NEXT
-                # shape's compute write clobbers this shape's fragment read (a WAR hazard on
-                # sdf_tex), so a multi-shape icon (e.g. the 4-bar hamburger) renders garbage
-                # while a single-shape icon (magnify) is fine. one-time cost — the cache is
-                # built once per size and reused every frame.
                 mdl.cache.sync_fence[]
         draw_canvas[ mdl.cache, ox, oy, rw, rh ]
 
-    # submit text_render's trailing (post-wrap) batch so its glyphs land on the queue BEFORE
-    # this canvas is sampled. no-op if no text was drawn (flush_submit returns when !recording).
-    # flush only (no cpu-wait) — queue order guarantees the text executes before any later sample.
     public func flush_text []
         if [ text_render ]
             text_render.flush_submit[]
 
     func draw_canvas [ src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
-        # 1-wait-per-frame: SUBMIT src's batch but DON'T cpu-wait it here. queue order
-        # guarantees src executes before this canvas's draws (submitted after), so the
-        # sample reads finished pixels without 70 per-composite vkWaitForFences/frame.
         if [ src ]
             src.flush_submit[]
             src.flush_text[]
         tex : Texture [ (src.reduction) ? src.reduction : src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
-        # crop to src's content — content_w/h are LOGICAL, but the texture holds
-        # content*scale device pixels (plus up to 63px quantize headroom we must
-        # not sample), so the filled fraction is content*scale / capacity.
         ss  : f32 [ (src.w.scale > 0) ? src.w.scale : 1.0 ]
         uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
         uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
@@ -2359,13 +2072,7 @@ Render Canvas
                     p : Pipeline cmod.pipelines[0]
                     p.rebind_image[ sdf_tex ]
 
-    # composite `src` canvas into the rect, modulated by `mask_src` (grayscale:
-    # white = keep, black = fade). content and mask sampled with the same uv,
-    # so both canvases should share the dst rect's coordinate space.
     func draw_canvas_masked [ src: Canvas, mask_src: Canvas, x: f32, y: f32, rw: f32, rh: f32 ]
-        # drain both sources' rings before sampling them — their paints are still in
-        # flight under the draw ring (no per-paint fence), and reading an attachment the
-        # GPU is still writing is a Metal "Invalid Resource" → device lost.
         if [ src ]
             src.flush_submit[]
             src.flush_text[]
@@ -2378,8 +2085,6 @@ Render Canvas
         mtex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
         mask_override  = mtex
-        # image + mask each crop to their OWN content/capacity — their textures
-        # can quantize to different widths, so a shared uv reads past the mask.
         ss  : f32 [ (src.w.scale > 0) ? src.w.scale : 1.0 ]
         uvx : f32 [ (src.width  > 0) ? f32[ src.content_w ] * ss / f32[ src.width  ] : 1.0 ]
         uvy : f32 [ (src.height > 0) ? f32[ src.content_h ] * ss / f32[ src.height ] : 1.0 ]
@@ -2450,15 +2155,9 @@ Render Canvas
             r_h    : Render      [ vk: vk, w: w, color: a.color, width: width, height: height, models: array Model [ m_h ] ]
             blur_h_arr.push[ r_h ]
 
-    # blur canvas.color in place.
-    # blur_reduce: quad-samples canvas.color at 1/4 size
-    # blur_v:      vertical gaussian on the reduced source
-    # blur_h:      horizontal gaussian, writes back to canvas.color
     func blur [ radius: f32 ]
         if [ radius < 1.0 ] return
         init_blur[]
-        # smooth stage selection: k_lo = floor(log2(radius/4)),
-        # frac = fractional part, mix between blur_v[k_lo] and blur_v[k_lo+1].
         lg   : f32 [ log2[ radius / 4.0 ] ]
         if [ lg < 0.0 ] lg = 0.0
         max_lg : f32 [ f32[ blur_count - 1 ] ]
@@ -2493,33 +2192,13 @@ Render Canvas
         bh.update*[] bh.draw*[] bh.sync_fence[]
 
     func paint []
-        # the ring slot for the upcoming draw is the Render's LIVE ring_i; rebind_texture
-        # and the descriptor bind both key off r.ring_i directly, and the slot-drain wait
-        # lives in rebind (before it mutates the set). nothing to claim here.
         st   : states[state_depth - 1]
-        # ---- ordered-guess cache check ----
-        # if path.points byte-matches the snapshot from the previous draw,
-        # the de Casteljau flatten + edge extract + bounding box are all
-        # also the same — reuse them and skip the work. invisible to the
-        # user: they keep calling the normal Canvas API; the cache hits
-        # whenever the geometry hasn't changed (e.g. a static shape that
-        # just rotates via the canvas affine transform).
         cache_hit : bool [ false ]
-        pcount    : i32  [ path.points.count ]
-        if [ pcount > 0 && path.cached_valid && path.cached_points
-          && path.cached_points.count == pcount ]
-            same : bool [ true ]
-            for [ pi: i32 0, pi < pcount && same, pi += 1 ]
-                a_pt : PathPt path.points[pi]
-                b_pt : PathPt path.cached_points[pi]
-                if [ a_pt.cmd != b_pt.cmd
-                  || a_pt.x   != b_pt.x   || a_pt.y   != b_pt.y
-                  || a_pt.cx1 != b_pt.cx1 || a_pt.cy1 != b_pt.cy1
-                  || a_pt.cx2 != b_pt.cx2 || a_pt.cy2 != b_pt.cy2 ]
-                    same = false
-            cache_hit = same
+        pcount    : i32  [ path.pcount ]
+        if [ pcount > 0 && path.cached_valid && path.cached_pcount == pcount ]
+            cache_hit = memcmp[ path.points, path.cached_points,
+                sizeof[ PathPt ] * pcount ] == 0
 
-        # bounding box in local-space (the GPU vertex shader transforms it)
         bx0 : f32
         by0 : f32
         bw  : f32
@@ -2560,13 +2239,9 @@ Render Canvas
             bw = bx1 - bx0
             bh = by1 - by0
             edges = sdf_extract_edges [ flat, @n ]
-            # snapshot the path op log + flatten/extract result for the next call
-            path.cached_points = array PathPt [ ]
-            for [ pi: i32 0, pi < pcount, pi += 1 ]
-                cp : PathPt path.points[pi]
-                path.cached_points.push[ cp ]
-            # the cache owns one contiguous SDFEdge buffer — free the previous
-            # before replacing it.
+            path.cached_points = new PathPt [ pcount ]
+            memcpy[ path.cached_points, path.points, sizeof[ PathPt ] * pcount ]
+            path.cached_pcount = pcount
             path.cached_edges      = edges
             path.cached_edge_count = n
             path.cached_bx0   = bx0
@@ -2579,27 +2254,12 @@ Render Canvas
         if [ bw < 0.5 || bh < 0.5 ]
             return
 
-        # path classification: a primitive axis-aligned rect produces
-        # exactly 5 PathPt entries (4 corners + close = 4 edges).
-        # anything else (curves, chamfers, polygons) goes through the
-        # SDF-from-path generator and gets sampled by mode 6.
         if [ pcount == 5 && n == 4 ]
-            # primitive rect — use the in-shader rect SDF (mode 0), or
-            # mode 5 (image) if draw_canvas set image_override.
             setup_shader [ st, bx0, by0, bw, bh ]
-            # corner rounding rides on the PATH (cleared with it) — a plain rect has
-            # zero radii and stays sharp; a rounded rect carries its per-corner radii.
             ui_shader.radii = path.corner_radii
             ui_shader.fill_color = st.fill_color
-            # for an image blit (draw_canvas), grad0 is the texture UV rect — crop to
-            # the source's content region; image_uv is (0,0,1,1) for normal fills.
             ui_shader.grad0   = image_uv
-            # mask has its OWN uv — its capacity may quantize differently than the
-            # source's, so sharing grad0 samples past the mask content into padding.
             ui_shader.mask_uv = mask_uv
-            # fill + stroke gradients: same model as the compute path — world-space
-            # anchors in *_grad_pts, second color in grad_c1/stroke_grad_c1 (alpha 0
-            # disables), mode (linear/mirror/radial) in stroke_opts.z/.w.
             ui_shader.grad_c0         = st.fill_color
             ui_shader.grad_c1         = st.fill_grad
             ui_shader.fill_grad_pts   = vec4f [ st.fill_color_pos.x, st.fill_color_pos.y,
@@ -2611,8 +2271,6 @@ Render Canvas
             sgrad_mode : f32 [ (st.stroke_grad_radial) ? 2.0 : (st.stroke_grad_mirror) ? 1.0 : 0.0 ]
             ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, fgrad_mode, sgrad_mode ]
             is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
-            # mask_override present → masked composite (content * mask).
-            # otherwise r8 → image_r, rgba → image, none → solid.
             img_mode : f32  [ (mask_override) ? DrawMode.image_masked
                             : ((is_r8) ? DrawMode.image_r : DrawMode.image) ]
             mode     : f32  [ (image_override) ? img_mode : DrawMode.solid ]
@@ -2622,21 +2280,13 @@ Render Canvas
                     cmod : Model models[mi]
                     if [ cmod.pipelines && cmod.pipelines.count > 0 ]
                         p : Pipeline cmod.pipelines[0]
-                        # discover image_slot etc. before applying the override, so
-                        # the override binds on the FIRST draw (not silently dropped).
                         p.ensure_bound[]
                         p.rebind_image[ image_override ]
                         if [ mask_override ]
                             p.rebind_mask[ mask_override ]
-                # this slot now holds a transient texture in binding #1 — mark it so a later
-                # solid paint that lands on the same ring slot resets it before binding.
                 if [ draw_slot >= 0 && draw_slot < 64 ]
                     image_dirty[ draw_slot ] = true
         el
-            # arbitrary path — GPU compute SDF. on cache miss the edge list
-            # was just extracted above; on cache hit we reuse the edges that
-            # are already in the storage buffer from the previous frame and
-            # only need to refresh the UBO params (transform may have moved).
             sdf_w  : i32 [ width / 2 ]
             sdf_h  : i32 [ height / 2 ]
             pad    : f32 [ maxf [ 4.0, st.stroke_width * 0.5 + 4.0 ] ]
@@ -2651,12 +2301,6 @@ Render Canvas
                 while [ ne > edge_buf_capacity ]
                     edge_buf_capacity *= 2
                 new_bytes : i32 [ edge_buf_capacity * 16 ]
-                # the draw ring keeps command buffers in flight that still reference the
-                # OLD edge_buf through their descriptor sets. without the old per-paint
-                # fence, freeing it here would invalidate those in-flight submits (Metal
-                # "Invalid Resource" → device lost). drain the GPU before replacing it.
-                # growth is rare (capacity doubles, then stabilizes) so this never hits
-                # the steady-state path.
                 vkDeviceWaitIdle[ vk.device ]
                 edge_buf = Buffer [ vk: vk, size: new_bytes,
                     u_storage: true, m_host_visible: true, m_host_coherent: true ]
@@ -2665,8 +2309,6 @@ Render Canvas
                 cmod_grow.rebind_model[]
                 path.cached_valid = false
             if [ !cache_hit ]
-                # pack edges into the storage buffer (4 floats per edge).
-                # only on cache miss — on hit, the buffer is already valid.
                 edge_data : @f32 [ edge_buf.data ]
                 for [ ei: i32 0, ei < ne, ei += 1 ]
                     e : SDFEdge edges[ei]
@@ -2714,9 +2356,6 @@ Render Canvas
                 st.stroke_grad_pos.x,  st.stroke_grad_pos.y ]
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, DrawMode.sdf_path ]
 
-        # if THIS draw isn't an image composite but the ring slot it's about to use still has a
-        # transient (line-cache) texture bound from an earlier draw_canvas, that view may be dead
-        # (the source resized) — rebind binding #1 to the always-alive sdf_tex before drawing.
         if [ !image_override && models && draw_slot >= 0 && draw_slot < 64 ]
             slot_dirty : bool [ image_dirty[ draw_slot ] ]
             if [ slot_dirty ]
@@ -2752,7 +2391,6 @@ struct TextMetrics
     cap_height  : f32
 
 
-# glyph cache entry: pre-rendered bitmap + metrics for one codepoint at one size
 struct GlyphEntry
     codepoint  : u32
     size_px    : i32
@@ -2777,10 +2415,6 @@ class CanvasFont
     public cap_height : f32
     public cache      : array GlyphEntry
     public cache_size : i32
-    # the GPU glyph atlas for THIS font+size. owned by the font (which is cached
-    # persistently in vk.font_cache), not by any canvas — so it's never freed when a
-    # canvas drops, it's shared by every canvas using this font, and different fonts
-    # keep separate glyphs. created lazily on first text draw (draw_text_pass).
     public atlas      : GlyphAtlas
 
     func init []
@@ -2841,11 +2475,6 @@ class CanvasFont
             if [ g.cached && g.codepoint == codepoint && g.size_px == size_px ]
                 return g
 
-        # render with freetype using FT_LOAD_DEFAULT (0) — the font's native
-        # hinting gives the sharpest result. FT_LOAD_TARGET_LIGHT (0x10000)
-        # is grayscale-friendlier but visibly blurrier; the bimodal-looking
-        # alpha that drove me there was actually atlas bleed at slot edges,
-        # not the hinting, and the gutter+inset fix took care of that.
         gi  : u32 FT_Get_Char_Index [ ft_face, codepoint ]
         err : i32 FT_Load_Glyph [ ft_face, gi, 0 ]
         if [ err != 0 ]
@@ -2883,8 +2512,6 @@ class CanvasFont
         return entry
 
 
-# atlas slot for one glyph: where in the atlas it lives + the layout
-# metrics needed to position the glyph quad relative to the pen.
 struct GlyphAtlasSlot
     codepoint  : u32
     size_px    : i32
@@ -2898,13 +2525,9 @@ struct GlyphAtlasSlot
     cached     : bool
 
 
-# r8 glyph atlas with a simple shelf packer. each font instance owns one.
-# layout: rows of fixed `shelf_height` filled left to right; when the
-# current shelf is full a new shelf starts below. when the atlas is full
-# we currently just stop accepting new glyphs (TODO: LRU evict).
 class GlyphAtlas
-    public  vk          : vk_context
-    public  w           : Display
+    context vk          : vk_context
+    context w           : Display
     public  size        : i32       # square atlas dimension
     intern  texture     : Texture
     intern  slots       : array GlyphAtlasSlot
@@ -2934,8 +2557,6 @@ class GlyphAtlas
                 return s
         return GlyphAtlasSlot [ cached: false ]
 
-    # rasterize-and-pack a single glyph from `font` into the atlas. on
-    # cache hit the existing slot is returned without re-uploading.
     func get [ font: CanvasFont, codepoint: u32 ] -> GlyphAtlasSlot
         existing : GlyphAtlasSlot find [ codepoint, font.size_px ]
         if [ existing.cached ]
@@ -2948,8 +2569,6 @@ class GlyphAtlas
         gw : i32 [ g.bmp_w ]
         gh : i32 [ g.bmp_h ]
 
-        # zero-area glyphs (e.g. space) still need a slot for advance metrics
-        # but no atlas pixels — record an empty rect at the current pen.
         if [ gw == 0 || gh == 0 ]
             slot : GlyphAtlasSlot [
                 codepoint: codepoint, size_px: font.size_px,
@@ -2959,10 +2578,6 @@ class GlyphAtlas
             slots.push[ slot ]
             return slot
 
-        # shelf packer with a 2-pixel gutter between glyphs so bilinear
-        # sampling at the edge of one slot never reads pixels from a
-        # neighboring slot (the seams between letters were exactly that) —
-        # 2px gives headroom now that glyphs are rasterized at sz*scale.
         gutter : i32 [ 2 ]
         gw_pad : i32 [ gw + gutter ]
         gh_pad : i32 [ gh + gutter ]
@@ -2971,7 +2586,6 @@ class GlyphAtlas
             shelf_x  = 0
             shelf_h  = 0
         if [ shelf_y + gh_pad > size ]
-            # atlas full — fail soft. Caller treats !cached as "skip glyph".
             return GlyphAtlasSlot [ cached: false ]
         if [ gh_pad > shelf_h ]
             shelf_h = gh_pad
@@ -2980,7 +2594,6 @@ class GlyphAtlas
         ay : i32 [ shelf_y ]
         shelf_x += gw_pad
 
-        # one-shot upload of just this glyph's bitmap into its packed slot.
         texture.upload_region[ ax, ay, gw, gh, g.bitmap, gw * gh ]
         slot : GlyphAtlasSlot [
             codepoint: codepoint, size_px: font.size_px,
@@ -3045,8 +2658,6 @@ func maxf [ x: f32, y: f32 ] -> f32
 
 # ---- bezier flattening ----
 
-# flatten quadratic bezier to line segments, appending to edges
-# p0 -> p1 (control) -> p2
 func flatten_quad [ pts: array PathPt, x0: f32, y0: f32, cx: f32, cy: f32, x1: f32, y1: f32, tol: f32 ]
     # flatness: deviation of control point from chord midpoint
     mx : 0.5 * (x0 + x1) - cx
@@ -3068,10 +2679,7 @@ func flatten_quad [ pts: array PathPt, x0: f32, y0: f32, cx: f32, cy: f32, x1: f
     flatten_quad [ pts, abx, aby, bx, by, x1, y1, tol ]
 
 
-# flatten cubic bezier to line segments
-# p0 -> c1 -> c2 -> p1
 func flatten_cubic [ pts: array PathPt, x0: f32, y0: f32, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x1: f32, y1: f32, tol: f32 ]
-    # flatness test: deviation of control points from chord at t=1/3, 2/3
     dx : x1 - x0
     dy : y1 - y0
     d2 : abs[ c1x - x0 - dx * 0.333 ] + abs[ c1y - y0 - dy * 0.333 ]
@@ -3100,9 +2708,8 @@ func flatten_cubic [ pts: array PathPt, x0: f32, y0: f32, c1x: f32, c1y: f32, c2
     flatten_cubic [ pts, mx, my, m123x, m123y, m23x, m23y, x1, y1, tol ]
 
 
-# flatten arc to line segments
 # center cx,cy  radius r  from angle0 to angle1 (radians)
-func flatten_arc [ pts: array PathPt, cx: f32, cy: f32, r: f32, angle0: f32, angle1: f32 ]
+func flatten_arc [ cp: CanvasPath, cx: f32, cy: f32, r: f32, angle0: f32, angle1: f32 ]
     sweep : angle1 - angle0
     if [ sweep < 0.0 ]
         sweep = sweep + 6.2831853
@@ -3117,13 +2724,13 @@ func flatten_arc [ pts: array PathPt, cx: f32, cy: f32, r: f32, angle0: f32, ang
         px : cx + r * cos[ t ]
         py : cy + r * sin[ t ]
         pt : PathPt [ cmd: path_cmd.line, x: px, y: py ]
-        pts.push[ pt ]
+        cp.append[ pt ]
 
 
 # flatten all curves in path, return flat line-only path
 func path_flatten [ src: CanvasPath, tol: f32 ] -> array PathPt
     flat : array PathPt [ alloc: 64 ]
-    n    : src.points.count
+    n    : src.pcount
     px   : f32 [ 0.0 ]
     py   : f32 [ 0.0 ]
 
@@ -3199,16 +2806,8 @@ func conic_gradient[ cx: f32, cy: f32, start_angle: f32 ] -> Gradient
 
 
 
-# extract line segments from flattened path. callers must close paths
-# explicitly via line_to back to start (CanvasPath.close_path does this),
-# so no closing-edge synthesis here. degenerate (zero-length) segments
-# are skipped.
-# extract line-segment edges from a flattened path into ONE contiguous SDFEdge
-# value buffer (via `new`), not an array of boxed Au objects. count_out receives
-# the edge count. caller owns the buffer (free[] it). returns null if 0 edges.
 func sdf_extract_edges [ flat: array PathPt, count_out: @i32 ] -> @SDFEdge
     n     : flat.count
-    # pass 1 — count the segments we keep, so we can size the buffer exactly.
     cnt   : i32 [ 0 ]
     px    : f32 [ 0.0 ]
     py    : f32 [ 0.0 ]
@@ -3231,7 +2830,6 @@ func sdf_extract_edges [ flat: array PathPt, count_out: @i32 ] -> @SDFEdge
     count_out[0] = cnt
     if [ cnt == 0 ]
         return null
-    # pass 2 — fill the contiguous buffer in place (no per-edge object).
     edges : new SDFEdge [ cnt ]
     ei    : i32 [ 0 ]
     px = 0.0
@@ -3276,8 +2874,6 @@ func sdf_seg_dist [ ex0: f32, ey0: f32, ex1: f32, ey1: f32, px: f32, py: f32 ] -
     return sqrt[ ddx * ddx + ddy * ddy ]
 
 
-# winding number at point (non-zero fill rule)
-# positive winding = inside for CCW contours, holes wind CW and cancel
 func sdf_winding [ edges: array SDFEdge, px: f32, py: f32 ] -> i32
     n  : edges.count
     wn : i32 [ 0 ]
@@ -3298,11 +2894,6 @@ func sdf_winding [ edges: array SDFEdge, px: f32, py: f32 ] -> i32
     return wn
 
 
-# generate signed distance field for a path (grid-accelerated)
-# bx,by,bw,bh = world-space bounding box of the path
-# tw,th = SDF Texture dimensions
-# pad = extra world-space padding around bounds
-# returns f32 array [tw*th], negative = inside, positive = outside
 func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: i32, th: i32, pad: f32 ] -> @f32
     ne    : i32 [ 0 ]
     edges : sdf_extract_edges [ flat, @ne ]
@@ -3315,8 +2906,6 @@ func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: 
     ww : f32 [ bw + pad * 2.0 ]
     wh : f32 [ bh + pad * 2.0 ]
 
-    # grid: cells cover the SDF area, each cell holds edge indices
-    # cell size ~ 8 texels worth of world space for good locality
     cell_tx : i32 [ 8 ]
     cell_ty : i32 [ 8 ]
     gw : i32 [ (tw + cell_tx - 1) / cell_tx ]
@@ -3417,9 +3006,6 @@ func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: 
             cell_off : grid_offsets[cell_idx]
             nc       : grid_counts[cell_idx]
 
-            # min distance from ALL edges (no cell binning) — same reason
-            # as the winding loop: edge counts are small enough that the
-            # optimization isn't worth the bug surface.
             md : f32 [ 999999.0 ]
             for [ ei3: i32 0, ei3 < ne, ei3 += 1 ]
                 e : SDFEdge edges[ei3]
@@ -3427,10 +3013,6 @@ func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: 
                 if [ d < md ]
                     md = d
 
-            # winding number using ALL edges (no row binning). path counts
-            # are tiny (5-50 edges), so the O(W*H*E) cost is fine and we
-            # avoid any subtle precedence/round-off bugs in the row-bin
-            # offsets that were dropping edges from the test.
             wn : i32 [ 0 ]
             for [ ei2: i32 0, ei2 < ne, ei2 += 1 ]
                 e : SDFEdge edges[ei2]
@@ -3455,7 +3037,6 @@ func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: 
     return sdf
 
 
-# convert f32 SDF to R8 Texture (maps [-spread..+spread] to [0..255])
 func sdf_to_r8 [ sdf: @f32, count: i32, spread: f32 ] -> @u8
     tex : new u8 [ count ]
     inv : f32 [ 0.5 / spread ]

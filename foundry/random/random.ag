@@ -1,16 +1,9 @@
-# ============================================================================
-# xoshiro256++ — state of the art PRNG
-# Blackman & Vigna (2018), sub-nanosecond, passes all known statistical tests
-# 256-bit state, period 2^256-1
-# ============================================================================
 import <stdio.h>
 import <time.h>
 import <math.h>
 
 import rand1 as r1
 
-# --- xoshiro256++ state (module-level) ---
-# intern classes have no exported type-id and no introspection
 intern class rng
     test1:  i32 1
     test2:  i32 2
@@ -19,18 +12,11 @@ intern class rng
     state:  new u64[ 4 ] 
     seeded: bool [ false ]
 
-# new is vector, because the arg given to construct-with is a shape
-# NO inits are called because NO inner elements are constructed from the call
 
 
-# silver does have internal module state with interface to it, 
-# however we must init these classes once, only
-# we do not 'mutate' the member values in global, 
-# so module-level members are read-only but may have their own state
 intern rng_state: rng[]
 
 
-# SplitMix64 — expands a single u64 seed into decorrelated state words
 intern func splitmix64 [state: @u64] -> u64
     state[0] += 0x9e3779b97f4a7c15
     z: u64 [ state[0] ]
@@ -80,11 +66,7 @@ func rng_next [] -> u64
     return result
 
 
-# --- distributions ---
-# uniform f32 [0, 1) — upper 24 bits, full mantissa precision
 func randf [] -> f32
-    #i:rando
-    #i2:rando
     return f32[rng_next[] >> 40] * 0x1.0p-24
 
 # uniform f64 [0, 1) — upper 53 bits

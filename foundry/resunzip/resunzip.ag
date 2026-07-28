@@ -1,9 +1,6 @@
 import gltf
 import <stdio.h>
 
-# extract the viewer's actual resource set from human.res straight into
-# foundry/hyperspace/cache (lookup bypasses the loose-file check, so it
-# always writes the content-hash file with its type tag)
 app resunzip
     func init []
         base  : path '/src/silver/foundry/hyperspace'

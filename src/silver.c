@@ -751,6 +751,45 @@ void etype_register(aether, Au, Au, bool);
 
 void finalize_coverage(silver);
 
+// compile progress: one line on stderr, redrawn in place. other output
+// simply prints over it; the next update repaints the bar.
+static bool progress_active = false;
+
+static void progress_draw(silver a, double frac) {
+    if (!isatty(2) || a->verbose) return;
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    static silver last_mod   = null;
+    static int    last_mille = -1;
+    int mille = (int)(frac * 1000.0);
+    if (a == last_mod && mille == last_mille) return;
+    last_mod   = a;
+    last_mille = mille;
+    static const char* part_cells[] =
+        { "", "▏", "▎", "▍", "▌", "▋", "▊", "▉" };
+    const int width = 28;
+    double fcells = frac * width;
+    int    full   = (int)fcells;
+    int    part   = (int)((fcells - full) * 8);
+    char bar[512]; int o = 0;
+    for (int i = 0; i < full; i++) o += sprintf(bar + o, "█");
+    if (full < width && part) o += sprintf(bar + o, "%s", part_cells[part]);
+    int used = full + (part ? 1 : 0);
+    for (int i = used; i < width; i++) bar[o++] = ' ';
+    bar[o] = 0;
+    fprintf(stderr, "\r\x1b[K%-12s %s %3d%%",
+        a->name ? a->name->chars : "", bar, (int)(frac * 100.0));
+    fflush(stderr);
+    progress_active = true;
+}
+
+static void progress_done(silver a) {
+    if (!progress_active) return;
+    fprintf(stderr, "\r\x1b[K");
+    fflush(stderr);
+    progress_active = false;
+}
+
 void silver_parse(silver a) {
     efunc init = module_initializer(a);
 
@@ -785,7 +824,7 @@ void silver_parse(silver a) {
     Au_t m_x86   = def_member(a->autype, "x86_64",  typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
     Au_t m_arm64 = def_member(a->autype, "arm64",   typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
 
-    etype_register((aether)a, (Au)m_debug, (Au)hold(e_operand(a, _bool(true),       etypeid(bool))), false);
+    etype_register((aether)a, (Au)m_debug, (Au)hold(e_operand(a, _bool(!a->release), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_mac,   (Au)hold(e_operand(a, _bool(target_mac), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_lin,   (Au)hold(e_operand(a, _bool(target_lin), etypeid(bool))), false);
     etype_register((aether)a, (Au)m_win,   (Au)hold(e_operand(a, _bool(target_win), etypeid(bool))), false);
@@ -820,7 +859,9 @@ void silver_parse(silver a) {
     void* saved_prepare = a->prepare_record;
     a->prepare_record = null;
 
+    i64 ntok = len(a->tokens);
     while (peek(a)) {
+        progress_draw(a, 0.5 * (double)a->cursor / (double)(ntok ? ntok : 1));
         validate(parse_statement(a), "unexpected token found for statement: %o", peek(a));
         incremental_resolve(a);
     }
@@ -916,6 +957,7 @@ void silver_parse(silver a) {
 
     int nwork = len(work);
     for (int i = 0; i < nwork; i++) {
+        progress_draw(a, 0.5 + 0.5 * (double)i / (double)nwork);
         efunc    f2  = (efunc)work->origin[i];
         etype    rec = (etype)wrec->origin[i];
         callback pre = get(inits, (Au)f2) ? build_init_preamble : null;
@@ -942,6 +984,8 @@ void silver_parse(silver a) {
     a->building_initializer = true;
     build_fn(a, init, build_init_preamble, null);
     a->building_initializer = false;
+    progress_draw(a, 1.0);
+    progress_done(a);
 }
 
 none aether_test_write(aether a);
@@ -1318,10 +1362,16 @@ static void silver_live_run(silver a) {
     // --build compiles only: skip launching the app (a bare `silver <app>` runs it).
     if (!a->build && (a->run || (((aether)a)->is_live && !a->is_external))) {
         int n = a->run ? len(a->run) : 0;
-        char** argv = calloc(n + 2, sizeof(char*));
+        char** argv = calloc(n + 4, sizeof(char*));
         path run_binary = a->live_binary ? a->live_binary : a->product;
         argv[0] = run_binary->chars;
         int i = 1;
+        char leaks_n[16];
+        if (au_leaks()) {
+            snprintf(leaks_n, sizeof(leaks_n), "%d", au_leaks());
+            argv[i++] = "--leaks";
+            argv[i++] = leaks_n;
+        }
         if (a->run) each(a->run, Au, arg) {
             argv[i++] = cast(string, arg)->chars;
         }
@@ -1336,6 +1386,19 @@ static void silver_live_run(silver a) {
 
 void silver_init(silver a) {
     hold(a);
+
+    // one build at a time: the root instance holds a lock for the session
+    if (!a->is_external) {
+        path lk = f(path, "%s/install/build/.silver.lock", SILVER);
+        int fd = open(cstring(lk), O_CREAT | O_RDWR, 0644);
+        if (fd >= 0) {
+            if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+                printf("silver: waiting for another build\n");
+                fflush(stdout);
+                flock(fd, LOCK_EX);
+            }
+        }
+    }
 
     // silver [flags] module [app-args…] — the module name is the separator;
     // Au stopped parsing there and the rest rides to the launched app as-is
@@ -1643,6 +1706,13 @@ void silver_init(silver a) {
                 while (fgets(buf, sizeof(buf), f)) {
                     buf[strcspn(buf, "\n")] = '\0';
                     if (!*buf) continue;
+                    // a submodule's .so/.a is a LINK input, not a source: it
+                    // being newer means the dep recompiled, which never
+                    // invalidates OUR object code. only real sources (.source)
+                    // decide staleness.
+                    int bl = (int)strlen(buf);
+                    if ((bl > 3 && strcmp(buf + bl - 3, ".so") == 0) ||
+                        (bl > 2 && strcmp(buf + bl - 2, ".a")  == 0)) continue;
                     path artifact = path(buf);
                     u64 m = modified_time(artifact);
                     if (m > newest) newest = m;
@@ -2221,7 +2291,9 @@ evar read_evar(silver a) {
 
 /// check if a platform define is truthy (used by asm conditional and ifdef)
 static bool eval_define(silver a, string name) {
-    Au_t  mem  = lexical(a->lexical, cstring(name));
+    // module defines first: class members must not shadow them
+    Au_t  mem  = find_member(a->autype, cstring(name), AU_MEMBER_VAR, 0, false);
+    if (!mem) mem = lexical(a->lexical, cstring(name));
     enode node = mem ? (enode)get(a->registry, (Au)mem) : null;
     Au    val  = node ? node->literal : null;
     return val && cast(bool, val);
@@ -4325,8 +4397,14 @@ enode parse_statement(silver a)
             } else {
                 read_if(a, "expect");
                 enode cond = parse_expression(a, null, false, true);
-                enode msg  = read_if(a, ",") ? parse_expression(a, etypeid(string), false, true) : null;
-                return e_expect(a, cond, msg);
+                if (read_if(a, ",")) {
+                    // message emits INSIDE the fail branch — a passing
+                    // expect never builds its string
+                    enode ctx = e_expect_begin(a, cond);
+                    enode msg = parse_expression(a, etypeid(string), false, true);
+                    return e_expect_end(a, ctx, msg);
+                }
+                return e_expect(a, cond, null);
             }
         }
         if (next_is(a, "for") || next_is(a, "while"))
@@ -4588,6 +4666,9 @@ enode parse_statement(silver a)
             etype rtype = (mem && mem->autype->member_type == AU_MEMBER_DECL) && !is_f ?
                             read_etype(a, null) : null;
             bool  is_const = false;
+            // `member : new T [...]` — a managed buffer slot: assignment
+            // auto-drops the old value and holds the new one (e_assign)
+            bool  decl_new = !rtype && next_is(a, "new");
             a->expr_level++;
             array expr = rtype ? read_initializer(a) : read_expression(a, (etype*)&rtype, &is_const);
             a->expr_level--;
@@ -4611,6 +4692,9 @@ enode parse_statement(silver a)
             // dangling pointer, and the member becomes indexable.
             if (rtype->autype->elements > 0 && !mem->autype->elements)
                 mem->autype->elements = rtype->autype->elements;
+
+            if (decl_new)
+                mem->autype->is_shaped = true;
 
             if (mem->autype->src->is_pointer && rtype->is_explicit_ref) { // this is easier to register and maintain (membership will dictate the start of this ref model)
                 mem->autype->is_explicit_ref = true;
@@ -7922,7 +8006,7 @@ void silver_write_header(silver a) {
                         string ss = cast(string, aa);
                         concat(args, cname(ss));
                     }
-                    
+
                     string rtype = cname(cast(string, u(etype, f->autype->rtype)));
                     bool show_comma = f->target && mi->args.count > 1 ||
                                      !f->target && mi->args.count > 0;

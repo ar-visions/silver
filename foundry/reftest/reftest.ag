@@ -6,7 +6,6 @@ class Thing
 class Owner
     mutable item : Thing
 
-    # self-member reassign inside a method (the `svgs = ...` shape)
     func swap_self [ nv: Thing ]
         item = nv
 
@@ -16,7 +15,6 @@ func swap_param [ o: Owner, nv: Thing ]
 
 app reftest
     func init []
-        # every Thing gets one manual hold so refs never hit 0 (safe reads)
         t1 : Thing [ tag: 1 ]
         t1.hold[]
         h1 : Au.header[ t1 ]
@@ -69,3 +67,24 @@ app reftest
         t8.hold[]
         swap_param[ o7, t8 ]
         puts 'L param replace old   refs={h7.refs} (expect 1 — DANGLING if 2)'
+
+        t9 : Thing [ tag: 9 ]
+        t9.hold[]
+        h9 : Au.header[ t9 ]
+        ar9 : array Thing [ t9 ]
+        puts 'M array literal hold  refs={h9.refs} (expect 2)'
+        ar9 = null
+        Au.auto_free[ false ]
+        puts 'N array pool-reap     refs={h9.refs} (expect 1 — LEAK if 2)'
+
+        oA : Owner [ ]
+        tA : Thing [ tag: 10 ]
+        tA.hold[]
+        oA.item = tA
+        hA : Au.header[ tA ]
+        puts 'O pre                 refs={hA.refs} (expect 2: manual + slot)'
+        arA : array Thing [ oA.item ]
+        puts 'P member->array hold  refs={hA.refs} (expect 3)'
+        arA = null
+        Au.auto_free[ false ]
+        puts 'Q member-array reap   refs={hA.refs} (expect 2 — LEAK if 3)'

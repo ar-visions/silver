@@ -3,11 +3,6 @@ import img
 import trinity
 import <stdio.h>
 
-# an empty window — no app content at all. everything visible is trinity's own
-# chrome (the UX generics tab), which is the point: it isolates the framework's
-# menu button so a change to it can be seen on its own.
-# dictation: the app does NOT record. the dictate toggle broadcasts on the app
-# bus and orbiter (the supervisor shell) owns the mic and the LLM connection.
 Background ExperimentBackground
     func init[]
         color = rgba[ '#ff0000' ]
@@ -25,7 +20,6 @@ element experiment : trinity
     public title      : string [ 'experiment' ]
     # the framework shade — the only thing this window shows
     public ux_generics : bool [ true ]
-    # reflected into the shade: a public rgba becomes a color wheel row
     public tint        : rgba [ '#e0508c' ]
 
     public func render [] -> Elements

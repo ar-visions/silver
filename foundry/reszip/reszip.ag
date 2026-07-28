@@ -1,7 +1,5 @@
 import gltf
 
-# one-shot packer: bundle the human model + all its textures into
-# a single obscured human.res via the Res encoder (password 12345)
 app reszip
     func init []
         base : path '/src/silver/foundry/hyperspace'

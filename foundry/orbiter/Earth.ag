@@ -172,8 +172,6 @@ ModelViewProject EarthShader
         return value;
     }
 
-    # applies atmospheric limb tint to a surface color. blue during day,
-    # warm at terminator. vdir must be world-space (cam_pos - world_pos).
     func atmos_tint [ surf: vec3f, n: vec3f, vdir: vec3f, sdir: vec3f ] -> GLSL vec3f {
         float ndv      = max(dot(n, vdir), 0.0);
         float raw_sl   = dot(n, sdir);
@@ -395,9 +393,6 @@ EarthShader OceanShader
     }
 
 EarthShader CloudShader
-    # cloud needs an extra per-vertex varying so the fragment can divide
-    # the per-pixel cloud sample by a smoothed local average. computed in
-    # the vertex shader via a 7-tap separable kernel.
     attrib v_cloud_avg  : VertexOutput [ type:typeid[ f32 ] ]
 
     func vertex[] -> GLSL none {
@@ -617,23 +612,16 @@ Background Earth
         time : window.time
         if [time == 0.0]
             time = -54.0
-        # ---- 16:9 astronaut/ISS orbital perspective ----
-        # earth at origin, radius=1.0. altitude = h/R (0.063 ≈ ISS 400km).
-        # tilt = angle off nadir; 75° puts horizon in upper-third of a 16:9 frame.
         altitude : f32 [ 0.063 ]
         eye_dist : f32 [ 1.0 + altitude ]
         tilt     : f32 [ radians[ 50.0 ] ]
         aspect   : f32 [ 16.0 / 9.0 ]
 
-        # camera orbits around the earth (Y axis); earth stays fixed so the
-        # sunlight direction sweeps across the surface as we go around.
         time -= 0.0244 * window.frame_factor
         orbit_a : radians[ time ]
         co      : cos[ orbit_a ]
         so      : sin[ orbit_a ]
 
-        # local camera frame (earth at origin, eye on +Z, looking toward -Z
-        # with a tilt that puts horizon in upper-third)
         ex_l  : f32 [ 0.0 ]
         ey_l  : f32 [ 0.0 ]
         ez_l  : f32 [ eye_dist ]
@@ -917,7 +905,6 @@ shader Aura2
     public  beam           : Canvas
     intern  w              : Window
 
-    # attrib are static members for properties; generic class handlers use this information for operation
     attrib  color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:2, format: typeid[ rgba8 ] ]
 
     func init []

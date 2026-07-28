@@ -2,8 +2,6 @@ import spectra
 import <stdio.h>
 import <unistd.h>
 
-# speaks one line through the flat tts surface, then waits out the playback.
-#   ttstest --text 'hello' --dir /src/silver/models/kokoro-en --voice 0
 app ttstest
     public text  : string
     public dir   : string

@@ -12,6 +12,7 @@
 // app EXIT (pid gone) so a consumer knows whether to keep running.
 #include <signal.h>
 #include <stdlib.h>
+#include <execinfo.h>
 extern "C" int host_pid_alive(int pid) {
     if (pid <= 0) return 0;
     return kill(pid, 0) == 0 ? 1 : 0;
@@ -69,6 +70,7 @@ typedef struct {
     SharedTex ide_tex;     // orbiter's screen texture (summon overlay)
     volatile int32_t app_pid;   // process bound to this slot
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
+    volatile int32_t verdict;   // 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
     char name[192];             // "module [default-arg]" silver-host spawns
 } HostApp;
 typedef struct {
@@ -210,6 +212,7 @@ extern "C" int host_app_request(const char* nm) {
             ap->to_ide.tail = ap->to_ide.head;
             ap->to_app.tail = ap->to_app.head;
             ap->app_pid = 0;
+            ap->verdict = 0;
             strncpy((char*)ap->name, nm, sizeof(ap->name) - 1);
             ((char*)ap->name)[sizeof(ap->name) - 1] = 0;
             __sync_synchronize();
@@ -233,12 +236,37 @@ extern "C" int host_app_pid(int slot) {
     return hs->app[slot].app_pid;
 }
 
-// stop a hosted app; silver-host reaps it and marks the slot exited
+// stop a hosted app; silver-host reaps it and marks the slot exited.
+// NEVER slot 0: the peer OWNS the shared window — one window, many
+// processes is the whole design. stopping the peer stops its WORLD, in
+// place, while the process keeps compositing the shell.
 extern "C" void host_app_stop(int slot) {
     HostShared* hs = host_shared();
     if (!hs || slot <= 0 || slot >= HOST_APPS) return;
     int pid = hs->app[slot].app_pid;
     if (pid > 0 && kill((pid_t)pid, 0) == 0) kill((pid_t)pid, SIGTERM);
+}
+
+// how the peer ended: 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
+extern "C" int host_app_verdict(int slot) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
+    return hs->app[slot].verdict;
+}
+
+// freeze the peer process (debug-session stop) / thaw it again. slot 0 is
+// allowed: the summoned shell pauses the very app it rides inside
+extern "C" void host_app_pause(int slot) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS) return;
+    int pid = hs->app[slot].app_pid;
+    if (pid > 0) kill((pid_t)pid, SIGSTOP);
+}
+extern "C" void host_app_resume(int slot) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS) return;
+    int pid = hs->app[slot].app_pid;
+    if (pid > 0) kill((pid_t)pid, SIGCONT);
 }
 
 // ask the supervising silver-host to bring up orbiter (SIGUSR1). guarded on
@@ -326,4 +354,7 @@ extern "C" int  host_app_request(const char* nm)                   { return -1; 
 extern "C" int  host_app_state(int s)                              { return 0; }
 extern "C" int  host_app_pid(int s)                                { return 0; }
 extern "C" void host_app_stop(int s)                               { }
+extern "C" int  host_app_verdict(int s)                            { return 0; }
+extern "C" void host_app_pause(int s)                              { }
+extern "C" void host_app_resume(int s)                             { }
 #endif

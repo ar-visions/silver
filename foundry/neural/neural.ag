@@ -6,10 +6,6 @@ import <string.h>
 import ai
 import random
 
-# ============================================================================
-# Neural Foundation Module
-# Advanced AI extensions for Silver
-# ============================================================================
 
 # --- Loss Functions ---
 

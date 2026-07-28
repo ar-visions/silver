@@ -10,8 +10,6 @@ import <stdlib.h>
 import <math.h>
 import <sys/stat.h>
 
-# basic glTF model viewer: `hyperspace2 --model path/to/model.gltf`
-# drag orbits the camera, wheel zooms, R resets the view.
 
 # TorchScript forward path — the torch trainer's own runtime
 class ts_model
@@ -59,8 +57,6 @@ ModelViewProject ViewerLit
         gl_Position = ubo.proj * ubo.view * ubo.model * vec4(a_pos, 1.0);
     }
 
-    # two directional lights + ambient over the material color — enough to read
-    # form on any model without needing a full PBR/environment setup
     func fragment [] -> GLSL none {
         vec4  c  = texture(color, v_uv);
         vec3  n  = normalize(v_normal);
@@ -69,9 +65,6 @@ ModelViewProject ViewerLit
         fragColor = vec4(c.rgb * l, 1.0);
     }
 
-# skinned variant: exactly the hinge's attributes (pos/normal/uv + joints/weights)
-# plus a joint-matrix palette (SSBO, 4 vec4 per mat4). the vertex is transformed
-# by the weighted blend of its joints' matrices, then the model/view/proj.
 ModelViewProject SkinnedLit
     mutable ir  : f32         # 1 = near-IR headlamp look, 0 = textured color
     mutable sss : f32 [ 0.4 ] # subsurface wrap: 0 = hard lambert, ~0.5 = waxy skin
@@ -79,8 +72,6 @@ ModelViewProject SkinnedLit
     mutable light_y : f32
     mutable light_z : f32
     mutable shadow_amt : f32 [ 1.0 ] # _V_SHADOWS darkening: 0.5 half .. 1 black
-    # rest-space eye centres: shading contrast collapses around the
-    # lids — real orbital skin never shadows as hard as raw N.L
     mutable eye_lx : f32
     mutable eye_ly : f32
     mutable eye_lz : f32
@@ -89,9 +80,6 @@ ModelViewProject SkinnedLit
     mutable eye_rz : f32
     attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
-    # declared in CANONICAL packing order — the engine binds vertex inputs to
-    # packed attributes by position, so a_tangent/a_uv1 must be present (even if
-    # unused) or a_joints/a_weights would bind to TANGENT/TEXCOORD_1 instead
     attrib a_pos     : VertexInput [ type:typeid[ vec3f ] ]
     attrib a_normal  : VertexInput [ type:typeid[ vec3f ] ]
     attrib a_uv      : VertexInput [ type:typeid[ vec2f ] ]
@@ -139,9 +127,6 @@ ModelViewProject SkinnedLit
         gl_Position = ubo.proj * vp;
     }
 
-    # ubo.ir toggles the two looks: near-IR lamp at ubo.light_* (world,
-    # the camera mount), N.L falloff, soft sheen, lamp-distance falloff
-    # — vs textured color
     func fragment [] -> GLSL none {
         // mask edge alpha: _V_EDGE (carried in uv1.x) = 1 at the border, so
         // alpha fades to 0 there; premultiplied output for the "over" blend
@@ -185,11 +170,6 @@ ModelViewProject SkinnedLit
         }
     }
 
-# non-skinned primitives (eyeballs, teeth, tongue): rigid transform by the
-# node's world matrix (ubo.model), driven by whichever bone the mesh parents to
-# augmentation params (driven per synthetic sample): pupil aperture radius
-# (dilation) and its fuzz, the outer iris/limbus radius and its fuzz, the
-# retina glow strength, and the iris fibre brightness
 ModelViewProject RigidLit
     mutable ir          : f32     # 1 = near-IR headlamp look, 0 = textured color
     mutable pupil_r     : f32 [ 0.15 ]
@@ -229,8 +209,6 @@ ModelViewProject RigidLit
         gl_Position = ubo.proj * vp;
     }
 
-    # ubo.ir toggles: near-IR headlamp (the wet eyeball keeps a sharp glint)
-    # vs textured color
     func fragment [] -> GLSL none {
         if (ubo.ir > 0.5) {
             vec3  V    = normalize(-v_vpos);
@@ -266,21 +244,12 @@ ModelViewProject RigidLit
         }
     }
 
-# the wet cornea layer, drawn transparent over the opaque iris: near-clear on the
-# forward bulge so the iris reads through, opaque pale sclera at grazing angles,
-# and one sharp on-axis Purkinje glint toward the camera
-# augmentation params (driven per synthetic sample): sclera brightness facing
-# the camera vs at the periphery, its falloff shape, and the glint strength
 ModelViewProject CorneaIR
     mutable ir        : f32
     mutable glint     : f32 [ 0.9 ]
     mutable sclera_hi : f32 [ 0.95 ]
     mutable sclera_lo : f32 [ 0.34 ]
     mutable sclera_k  : f32 [ 1.5 ]
-    # volume eye: refract the view ray at the cornea and march it through the
-    # anterior chamber to the iris plane sitting inside the eyeball sphere.
-    # geometry from the model: eyeball radius ~0.0122, iris plane z~0.009,
-    # iris radius ~0.0105 (local, metres)
     mutable ior         : f32 [ 1.20 ]
     mutable cornea_c    : f32 [ 0.0025 ]
     mutable cornea_r    : f32 [ 0.0110 ]
@@ -294,50 +263,34 @@ ModelViewProject CorneaIR
     mutable iris_cells  : f32 [ 1.0 ]  # atlas grid divisor; 1 = plain maps
     mutable sclera_rot  : f32 [ 0.0 ]  # whites+veins rotate independently
     mutable limbus_soft : f32 [ 0.22 ]
-    # iris map mixing: melanin pigment, 3 displacement variants, sclera veins
     mutable mel_amt     : f32 [ 1.0 ]
     mutable disp_wa     : f32 [ 1.0 ]
     mutable disp_wb     : f32 [ 0.0 ]
     mutable disp_wc     : f32 [ 0.0 ]
     mutable disp_amt    : f32 [ 0.35 ]
     mutable sclera_vein : f32 [ 0.15 ]
-    # per-sample whites factor 0.7..1.0 — applied at half strength mid
-    # (near the iris), full strength out at the sides
     mutable sclera_var  : f32 [ 1.0 ]
     mutable sclera_scale : f32 [ 1.0 ]  # whites texture zoom per sample
-    # darken the OUTER EDGE of the whites (toward the opening rim),
-    # applied after the texture + vein stage; per-sample amount
     mutable sclera_edge : f32 [ 0.3 ]
     mutable pupil_r     : f32 [ 0.40 ]
     mutable pupil_soft  : f32 [ 0.08 ]
-    # dilation: pupil_r is the rendered pupil edge; the iris band (pupil_tex..1
-    # in the texture) is remapped into (pupil_r..1) with a 2-part warp
     mutable pupil_tex   : f32 [ 0.28 ]
     mutable dilate_warp : f32 [ 1.0 ]
     mutable iris_glow   : f32 [ 0.9 ]
     mutable retro_k     : f32 [ 1.5 ]
     mutable retina_min  : f32 [ 0.25 ]
     mutable iris_bright : f32 [ 0.65 ]
-    # mean-shift the iris band down without crushing fibre contrast
     mutable iris_dark   : f32 [ 0.0 ]
-    # per-sample perlin over the iris: deviates the value around the
-    # mean (radial probability, strongest mid-band). the one clean
-    # iris map otherwise overfits — real irises never hold one depth
     mutable irisn_amt   : f32 [ 0.0 ]  # perlin amplitude around the mean
     mutable irisn_mean  : f32 [ 0.0 ]  # per-sample mean shift
     mutable irisn_freq  : f32 [ 5.0 ]  # lumps per iris diameter
     mutable irisn_seed  : f32 [ 0.0 ]
-    # procedural iris: multi-octave perlin replaces the map (98%),
-    # feature density set by two radial bands — usually one at the
-    # edge and one mid-iris, sometimes rolled anywhere
     mutable iris_proc   : f32 [ 0.98 ]  # perlin vs map mix
     mutable irisd_c1    : f32 [ 1.0 ]   # density band 1 center
     mutable irisd_c2    : f32 [ 0.5 ]   # density band 2 center
     mutable irisd_w     : f32 [ 0.12 ]  # density band width
     mutable irisd_freq  : f32 [ 9.0 ]   # detail lumps per diameter
     mutable irisd_con   : f32 [ 1.0 ]   # feature contrast
-    # radial darkening bands: 1D perlin over radius — random ring
-    # distributions, usually mild, sometimes strong
     mutable irisb_amt   : f32 [ 0.0 ]   # band darkening strength
     mutable irisb_freq  : f32 [ 6.0 ]   # bands across the radius
     mutable irisb_seed  : f32 [ 0.0 ]
@@ -565,8 +518,6 @@ ModelViewProject CorneaIR
     }
 
 element ModelView
-    # required at construction — the caller must provide it (null is a valid
-    # explicit provision; the draw guard then reports the missing file)
     expect  model_path : path
     mutable vshader    : SkinnedLit
     mutable rshader    : RigidLit
@@ -579,9 +530,6 @@ element ModelView
     mutable skin_idx   : i32 [ -1 ]
     mutable hinge_node : i32 [ -1 ]           # the node we rotate (the joint)
     mutable hinge_ang  : f32                  # joint angle, radians
-    # eye rig (from the .blend): DAMPED_TRACK aims Eyeball +Y at the target;
-    # Eyelids Drag copies 0.8 of eyeball pitch (X) + 0.2 of yaw (Z); Caruncle
-    # copies 0.8 X + 0.5 Z. we drive those bones directly at those fractions.
     mutable ebl        : i32 [ -1 ]           # Eyeball.L node index
     mutable ebr        : i32 [ -1 ]           # Eyeball.R
     mutable dgl        : i32 [ -1 ]           # Eyelids Drag.L
@@ -594,8 +542,6 @@ element ModelView
     mutable dgr_rest   : quatf
     mutable crl_rest   : quatf
     mutable crr_rest   : quatf
-    # eye spacing (IPD): nudge the eyeball globe bones apart, and let the
-    # lid/socket skin follow via a one-time world-space vertex bake (falloff)
     mutable gbl        : i32 [ -1 ]           # Eyeball.L node (globe bone)
     mutable gbr        : i32 [ -1 ]           # Eyeball.R node (globe bone)
     mutable gbl_rest   : vec3f                # Eyeball.L rest translation
@@ -633,16 +579,13 @@ element ModelView
     mutable frame_n    : i32
     mutable last_press : i32 [ -100 ]         # frame of the last click (dbl-click)
     mutable rng2       : i64 [ 88172645463325252 ]  # control-cage deform seed
-    # two-octave value-noise face maps (wavelength as fraction of face size)
     mutable n_large_wl  : f32 [ 1.2 ]         # large map wavelength (broad shape)
     mutable n_large_amp : f32 [ 0.03 ]        # large map magnitude
     mutable n_small_wl  : f32 [ 0.4 ]         # small map wavelength (detail)
     mutable n_small_amp : f32 [ 0.012 ]       # small map magnitude, added on top
     mutable n_tan_amp   : f32 [ 0.015 ]       # tangent-plane slide magnitude
-    # training label: per control-cage vertex world-space delta the perlin applied
     mutable cage_delta  : @f32
     mutable cage_n      : i32 [ 0 ]           # control-cage vertex count
-    # perlin-labeled export: capture two yaw angles + the cage-delta label
     mutable export_step : i32 [ 0 ]           # 0 idle; 3 arm; 1 cap-A; 2 cap-B
     mutable export_idx  : i32 [ 0 ]           # next sample number
     mutable export_yaw0 : f32 [ 0.0 ]         # yaw saved across the two shots
@@ -656,7 +599,6 @@ element ModelView
     mutable pj_cap      : i32 [ 0 ]           # pj capacity in verts
     mutable recbuf      : @f32             # 6-float label record scratch
     mutable nose_gain  : f32 [ 0.03 ]         # nose scale from _V_NOSE mask
-    # nose landmark fit (mm); defaults equal the model rest -> no-op until set
     mutable nostril_span : f32 [ 38.5 ]       # nostril edge-to-edge, x
     mutable mid_nose     : f32 [ 33.9 ]       # mid-nose width, x
     mutable nostril_y    : f32 [ 42.3 ]       # nostril below eye plane, y
@@ -666,8 +608,6 @@ element ModelView
     mutable drag_mode : i32                    # ctrl-drag: 1 eye, 2 nose
     mutable press_x  : f32
     mutable press_y  : f32
-    # last-baked fit values; when the parent picker feeds new landmarks the
-    # mismatch triggers a rebuild so this face re-bakes to them
     mutable baked_fidx : i32 [ -999 ]         # face_idx last built (r-regen)
     mutable baked_span : f32 [ -1.0 ]
     mutable baked_nos  : f32 [ -1.0 ]
@@ -676,13 +616,10 @@ element ModelView
     mutable eye_tex : array Texture           # held eye maps, dropped on reload
     mutable morph_w    : map f32 [ string ]   # morph target name -> blend weight
     mutable subdiv_levels : i32 [ 2 ]         # trinity GPU Catmull-Clark levels (0 = off)
-    # cage paint: click unprojects to the nearest control vert (pick_cage)
     mutable paint_radius : f32 [ 0.0 ]        # brush radius, model units
     mutable paint_amount : f32 [ 0.0 ]        # max vert move per scatter
     mutable picked_cage : i32 [ -1 ]          # last pick: cage index
     mutable picked_vert : i32 [ -1 ]          # last pick: control vert
-    # outer-eye anchors: the coordinate frame for parametric cage edits.
-    # the corners are pinned — no edit or click can ever move them
     mutable anch_set  : bool
     mutable anch_lx : f32
     mutable anch_ly : f32
@@ -720,8 +657,6 @@ element ModelView
     mutable cap_faw  : @f32                # face scramble falloff, nv
     mutable cap_ed   : @f32                # applied orbital scale, nv x 3
     mutable cap_gn   : i32                    # 0 unbuilt, -1 missing, 1 live
-    # the model's inner tear duct runs big: per pose it scales to
-    # 0.3..1.0 of modeled size (the globe covers the exposed slack)
     public  caruncle : f32 [ 1.0 ]
     mutable cap_carm : f32 [ 1.0 ]            # applied caruncle multiplier
     mutable cap_zamt : f32                    # per-pose lid z-follow amount
@@ -729,8 +664,6 @@ element ModelView
     mutable cap_lnrad : f32                   # falloff outer radius, globe radii
     mutable cap_lnsd  : i64                   # perlin lid-push seed
     mutable cap_lnf   : @f32               # applied lid-push, backed out next pose
-    # augmentation scale: perlin pushes the lid out along the look
-    # direction near the pupil; 0 disables
     public  lid_noise : f32 [ 1.0 ]
     mutable cap_zf   : @f32                # applied z-follow, edn_n*2
     mutable cap_gseed : i64                   # pose-group seed anchor (replay)
@@ -743,7 +676,6 @@ element ModelView
     mutable plot_u : f32                      # current plot, -0.5..0.5
     mutable plot_v : f32
     mutable cap_seed : i64 [ 987654321 ]      # plot random stream
-    # per-sample head pose: rotation about the eye midpoint (world axes)
     mutable cap_hy : f32                      # head yaw
     mutable cap_hp : f32                      # head pitch
     mutable cap_hr : f32                      # head roll
@@ -754,8 +686,6 @@ element ModelView
     mutable cap_tx : f32                      # this sample's gaze target
     mutable cap_ty : f32
     mutable cap_tz : f32
-    # the eye bone's forward axis in ITS OWN frame, captured at rest (the
-    # rest gaze is world +z). closes the aim loop against the real rig.
     mutable fwd_set : bool
     mutable fwd_lx : f32
     mutable fwd_ly : f32
@@ -765,8 +695,6 @@ element ModelView
     mutable fwd_rz : f32
     mutable globe_rad : f32 [ 0.0126 ]        # eyeball radius, meters
     mutable eye_rest_w : mat4f                # eye bone rest world rotation
-    # gaze-driven 'Eyes Down L/R' corrective morphs (Blender drives these
-    # from eye pitch; glTF drops drivers, so the engine recreates the ramp)
     mutable edn_set  : bool
     mutable edn_n    : i32 [ 0 ]              # driven head-cage verts
     mutable edn_v    : @i32                # cage vert indices
@@ -778,7 +706,6 @@ element ModelView
     mutable meas_az : f32                     # measured actual gaze angles
     mutable meas_el : f32
     mutable fov_x : f32 [ 40.0 ]              # horizontal FOV, degrees
-    # rig config source when hosted headless (no picker parent there)
     mutable rig : hyperspace2
     mutable eye_w   : @f32                 # _V_EYE influence per cage vert
     mutable nose_w  : @f32                 # _V_NOSE influence per cage vert
@@ -788,13 +715,8 @@ element ModelView
         animated  = true
         focusable = true
         morph_w   = map f32 [ string ] [ ]
-        # drive morphs per-sample: morph_w[ 'Body Asian' ] = 1.0, etc.
-        # this face is param-driven by the FacePicker parent; not focusable so
-        # keys reach the picker (mouse orbit still works by position)
         focusable = false
 
-    # the shared camera + A/B state live on the hyperspace2 app root parent.
-    # type-checked: hosted headless, the parent is NOT the app root
     func picker [] -> hyperspace2
         if [ !parent ] return null
         return (parent inherits hyperspace2)
@@ -806,10 +728,6 @@ element ModelView
         dragging = true
         lastx = ev.mouse.pos.x
         lasty = ev.mouse.pos.y
-        # shift-press picks the feature by PAINT, not geometry: the
-        # nearest cage vertex to the cursor names its region by the
-        # deepest painted weight there — eye slants, nose stretches,
-        # lip drops. unpainted verts leave shift-drag as the pan
         drag_mode = 0
         if [ ev.key.shift && vmodel && head_ci >= 0 && vshader && eye_w && nose_w ]
             hc : vmodel.cages[ head_ci ]
@@ -845,9 +763,6 @@ element ModelView
                     if [ wl5 > wn5 && wl5 > we5 && wl5 > 0.0 ] drag_mode = 3
         set_capture[]
 
-    # a click (press+release without dragging) enters the cage A/B loop:
-    # main view -> scatter proposals on the vote views; vote view -> merge
-    # its cage back into the main. the root routes by face_idx.
     public func on_release [ ev: Event ]
         dragging = false
         release_capture[]
@@ -860,8 +775,6 @@ element ModelView
             fp : picker[]
             if [ fp ] fp.cage_click[ a, ev.mouse.pos.x - bounds.x, ev.mouse.pos.y - bounds.y ]
 
-    # outer eye corners: the eye node centres pushed one globe radius
-    # outward. pins them on every cage and picks the head cage (largest)
     func setup_cage_anchors []
         if [ anch_set || !gmodel || !vmodel || !vmodel.cages ] return
         lcx : f32 [ 0.0 ]
@@ -886,7 +799,6 @@ element ModelView
                 rcz = wr.m[14]
                 gotr = true
         if [ !gotl || !gotr ] return
-        # globe radius from the Eyeball mesh x extent (fallback: human 12.6mm)
         eye_rad : f32 [ 0.0126 ]
         gxmin : f32 [  1000000.0 ]
         gxmax : f32 [ -1000000.0 ]
@@ -920,8 +832,6 @@ element ModelView
                     if [ ef[1] > gymax ] gymax = ef[1]
                     gotrad = true
         if [ gotrad ] eye_rad = (gxmax - gxmin) * 0.5
-        # globe centre sits below the bone origin: the mesh vertices are
-        # per-globe local, so their y midpoint is the bone->centre offset
         ycen : f32 [ 0.0 ]
         if [ gotrad ] ycen = (gymin + gymax) * 0.5
         puts 'hyperspace2: eye globe rad={eye_rad}m bone->centre y offset={ycen}m'
@@ -937,10 +847,6 @@ element ModelView
         anch_rx = rcx + ((rcx > lcx) ? eye_rad : (0.0 - eye_rad))
         anch_ry = rcy + ycen
         anch_rz = rcz
-        # painted TRUE outer corners: _V_EYE red > 0.75 marks exactly one
-        # skin vert per side (the lateral canthus). the radius-push above
-        # floats beside the eye — not on skin, not inferrable — and stays
-        # only as the fallback for unpainted models
         bl4 : f32 [ 0.75 ]
         br4 : f32 [ 0.75 ]
         for [ msh: Mesh ] in gmodel.meshes
@@ -998,7 +904,6 @@ element ModelView
         sdy : f32 [ anch_ly - anch_ry ]
         sdz : f32 [ anch_lz - anch_rz ]
         anch_span = sqrt[ sdx*sdx + sdy*sdy + sdz*sdz ]
-        # pin both corners on every cage; pick the largest cage as the head
         best_ext : f32 [ 0.0 ]
         for [ ci: i32 0, ci < vmodel.cages.count, ci += 1 ]
             vmodel.cage_pin[ ci, anch_lx, anch_ly, anch_lz, anch_span * 0.04, anch_span * 0.10 ]
@@ -1015,15 +920,10 @@ element ModelView
                 best_ext = bmx - bmn
                 head_ci = ci
         anch_set = true
-        # track each corner's CONTROL VERT so labels project the LIVE
-        # deformed position — the plot must match the rendered pixel
-        # even after cage edits, morphs and face variance
         if [ head_ci >= 0 ]
             hc0 : vmodel.cages[ head_ci ]
             if [ hc0 && hc0.cage_buf ]
                 cb0 : @f32 [ hc0.cage_buf.data ]
-                # inner corners: the oc reflected through the globe centre
-                # (the lid_weights ic estimate) snapped to its nearest vert
                 iex : f32 [ eyec_lx + (eyec_lx - anch_lx) ]
                 iey : f32 [ eyec_ly ]
                 iez : f32 [ eyec_lz ]
@@ -1052,8 +952,6 @@ element ModelView
                     if [ dr1 < bdr1 ]
                         bdr1 = dr1
                         anch_rii = v0
-        # eye-bone forward in bone frame: at rest the gaze is world +z, so
-        # forward_local = R_rest^T * z (rows of the rest world rotation)
         ei : i32 [ (ebl >= 0) ? ebl : ebr ]
         if [ ei >= 0 ]
             nbf : gmodel.nodes[ ei ]
@@ -1064,8 +962,6 @@ element ModelView
             fwd_set = true
             globe_rad = eye_rad
             eye_rest_w = wf
-            # Head Bone rest rotation: peel the eye's local rest off its
-            # world — the damped-track arc is computed in this frame
             rrq : quatf [ ebl_rest ]
             if [ ebl < 0 ] rrq = ebr_rest
             qcr : quatf [ qconj[ rrq ] ]
@@ -1078,9 +974,6 @@ element ModelView
         lip_w  = region_weights[ '_V_LIP_UPPER' ]
         setup_eyes_down[]
 
-    # influence of a painted _V_* vertex color, per welded head-cage vert.
-    # mid gray (0.216 linear = 0.5 paint) is the zero point; the blue channel
-    # carries influence up to 1.0. sampled at each cage vert's source vert.
     func region_weights [ rname: string ] -> @f32
         if [ head_ci < 0 || !vmodel || !gmodel ] return null
         hc : vmodel.cages[ head_ci ]
@@ -1110,8 +1003,6 @@ element ModelView
                     sv2 : i32 [ hc.rep[ v ] ]
                     pu : cast @u16 [ @rbase[ roff + i64[ sv2 ] * rstride ] ]
                     wv : f32 [ ((f32[ pu[2] ] / 65535.0) - 0.216) / 0.784 ]
-                    # _V_NOSE selection convention: blue 0.5..1.0 -> 0..1,
-                    # anything at or below 0.5 is unselected
                     if [ rname == '_V_NOSE' ]
                         wv = ((f32[ pu[2] ] / 65535.0) - 0.5) / 0.5
                     if [ wv < 0.03 ] wv = 0.0
@@ -1123,17 +1014,11 @@ element ModelView
         puts 'region {rname}: not found on the Head primitive'
         return null
 
-    # nose length: stretch the painted _V_NOSE region along the nose's own
-    # slant axis — bridge (between the anchors) toward the base landmark
-    # (blender 0,-0.119,1.57 -> gltf 0,1.57,0.119), down and forward. the
-    # tip carries the length, the bridge end stays.
     public func nose_length [ d: f32 ]
         if [ !anch_set || !vmodel || !nose_w ] return
         pxm : f32 [ (anch_lx + anch_rx) * 0.5 ]
         pym : f32 [ (anch_ly + anch_ry) * 0.5 ]
         pzm : f32 [ (anch_lz + anch_rz) * 0.5 ]
-        # noses grow DOWN at a standard angle off the face plane (~30
-        # degrees forward of straight down), from the bridge pivot
         nang : f32 [ radians[ 30.0 ] ]
         axx : f32 [ 0.0 ]
         axy : f32 [ 0.0 - cos[ nang ] ]
@@ -1142,8 +1027,6 @@ element ModelView
         hc.wmap = nose_w
         vmodel.cage_stretch_axis[ head_ci, pxm, pym, pzm, axx, axy, axz, d ]
 
-    # painted lid group weights: blue joins the group at > 0.5, and
-    # LESS blue = MORE offset (deep blue anchors, 0.5 travels fully)
     func lid_weights [ rname: string ] -> @f32
         if [ head_ci < 0 || !vmodel || !gmodel ] return null
         hc : vmodel.cages[ head_ci ]
@@ -1173,9 +1056,6 @@ element ModelView
                     sv2 : i32 [ hc.rep[ v ] ]
                     pu : cast @u16 [ @rbase[ roff + i64[ sv2 ] * rstride ] ]
                     bb : f32 [ f32[ pu[2] ] / 65535.0 ]
-                    # deeper blue = MORE travel (the _V_NOSE convention),
-                    # joining at blue > 0.5. corner pins always win:
-                    # the oc anchors are truth and never ride the groups
                     wv : f32 [ (bb - 0.5) / 0.5 ]
                     if [ wv < 0.0 ] wv = 0.0
                     if [ wv > 1.0 ] wv = 1.0
@@ -1214,8 +1094,6 @@ element ModelView
                         wv = wv * wf5
                     wout[ v ] = wv
                     if [ wv > 0.0 ] non0 += 1
-                # the paint lives on ONE side of the face: mirror the
-                # weights across X — the painted vert of each pair wins
                 if [ hc.base ]
                     for [ v6: i32 0, v6 < hc.nv, v6 += 1 ]
                         if [ wout[ v6 ] > 0.0 ] continue
@@ -1239,8 +1117,6 @@ element ModelView
                 return wout
         return null
 
-    # upper lip: drop the painted _V_LIP_UPPER region straight down from
-    # the bridge pivot — drag down = longer eye-to-lip distance
     public func lip_drop [ d: f32 ]
         if [ !anch_set || !vmodel || !lip_w ] return
         pxm : f32 [ (anch_lx + anch_rx) * 0.5 ]
@@ -1250,29 +1126,19 @@ element ModelView
         hc.wmap = lip_w
         vmodel.cage_stretch_axis[ head_ci, pxm, pym, pzm, 0.0, -1.0, 0.0, d ]
 
-    # eye size: mirrored scale about the fixed outer corners — the inner
-    # side carries the change, so no inner-corner annotation is needed
     public func eye_size [ d: f32 ]
         if [ !anch_set || !vmodel || !eye_w ] return
         hc : vmodel.cages[ head_ci ]
         hc.wmap = eye_w
         vmodel.cage_scale_w[ head_ci, anch_lx, anch_ly, anch_lz, d ]
 
-    # eye slant: rotate the painted _V_EYE region about the OUTER corner in
-    # the face plane; the mirrored rotation slants the other eye with it
     public func eye_slant [ d: f32 ]
         if [ !anch_set || !vmodel || !eye_w ] return
         hc : vmodel.cages[ head_ci ]
         hc.wmap = eye_w
         vmodel.cage_rotate_w[ head_ci, anch_lx, anch_ly, anch_lz, 0.0, 0.0, 1.0, d ]
 
-    # aim ONE eye at the target from ITS OWN globe centre — the rig's
-    # DAMPED_TRACK onto the Eye Target mark, done exactly: the bone's
-    # rest forward is rotated onto the eye->mark line by a shortest-arc
-    # quat in the Head Bone frame. no iteration, no residual.
     func solve_eye [ ei: i32, ex: f32, ey: f32, ez: f32, tx: f32, ty: f32, tz: f32, is_l: bool, free: bool ] -> bool
-        # the head pose moves this eye about the pair midpoint: aim from
-        # the eye's POSED position, not its rest position
         epx : f32 [ cap_rot.m[0]*ex + cap_rot.m[4]*ey + cap_rot.m[8]*ez  + cap_rot.m[12] ]
         epy : f32 [ cap_rot.m[1]*ex + cap_rot.m[5]*ey + cap_rot.m[9]*ez  + cap_rot.m[13] ]
         epz : f32 [ cap_rot.m[2]*ex + cap_rot.m[6]*ey + cap_rot.m[10]*ez + cap_rot.m[14] ]
@@ -1293,12 +1159,9 @@ element ModelView
         if [ !free ]
             if [ gxd >  0.6 || gxd < -0.6 ] return false
             if [ gyd >  0.5 || gyd < -0.5 ] return false
-        # model-space direction -> Head Bone frame (rotation transpose)
         dpx : f32 [ head_rw.m[0]*dlx + head_rw.m[1]*dly + head_rw.m[2]*dlz ]
         dpy : f32 [ head_rw.m[4]*dlx + head_rw.m[5]*dly + head_rw.m[6]*dlz ]
         dpz : f32 [ head_rw.m[8]*dlx + head_rw.m[9]*dly + head_rw.m[10]*dlz ]
-        # rest forward in the same frame: R(rest) applied to the eye's
-        # OWN corneal axis (the visible iris direction, not a +Y proxy)
         rq : quatf [ (is_l) ? ebl_rest : ebr_rest ]
         rm : mat4f [ mat4f.identity[] ]
         rm = rm.rotate[ rq ]
@@ -1309,15 +1172,10 @@ element ModelView
         fpy : f32 [ rm.m[1]*fbx + rm.m[5]*fby + rm.m[9]*fbz ]
         fpz : f32 [ rm.m[2]*fbx + rm.m[6]*fby + rm.m[10]*fbz ]
         dq : quatf [ arc_q[ fpx, fpy, fpz, dpx, dpy, dpz ] ]
-        # gaze angles stored in delta_q convention for the lid/caruncle
-        # drives: measured, delta_q(+a) lands the bone at -a, so the
-        # drive angles are the NEGATED measure-convention target angles
         if [ is_l ]
             eye_dq_l = dq
             gaze_lx = 0.0 - gxd
             gaze_ly = 0.0 - gyd
-            # unit gaze dir in the head frame: the pupil label projects
-            # from eye centre + this * globe_rad
             gdir_lx = dlx
             gdir_ly = dly
             gdir_lz = dlz
@@ -1328,8 +1186,6 @@ element ModelView
             gdir_rx = dlx
             gdir_ry = dly
             gdir_rz = dlz
-        # honesty gate through the real bones: the measured forward must
-        # land on the target (catches any frame mistake at zero cost)
         if [ fwd_set ]
             measure_gaze[ ei ]
             ra : f32 [ gxd - meas_az ]
@@ -1340,10 +1196,6 @@ element ModelView
             puts 'solve_eye L={is_l} UNGATED (fwd_set false) az={gxd} el={gyd}'
         return true
 
-    # aim the eyes at screen plot (u,v) — or refuse. the target must be
-    # within the eyes' mechanical range (same limits as the arrow keys);
-    # nothing is clamped, so a saved label is always a true fixation.
-    # returns false when this plot is unreachable from the current pose.
     func aim_at_plot [ fp: hyperspace2, u: f32, v: f32 ] -> bool
         tx : f32 [ cap_scx - u * fp.screen_w ]
         ty : f32 [ cap_scy - v * fp.screen_h ]
@@ -1353,7 +1205,6 @@ element ModelView
         if [ ebl >= 0 ] okl = solve_eye[ ebl, eyec_lx, eyec_ly, eyec_lz, tx, ty, tz, true, fp.free_gaze ]
         if [ ebr >= 0 ] okr = solve_eye[ ebr, eyec_rx, eyec_ry, eyec_rz, tx, ty, tz, false, fp.free_gaze ]
         if [ !okl || !okr ] return false
-        # cyclopean pair: drives the lids and the opening-centre plots
         gaze_x = (gaze_lx + gaze_rx) * 0.5
         gaze_y = (gaze_ly + gaze_ry) * 0.5
         cap_tx = tx
@@ -1361,8 +1212,6 @@ element ModelView
         cap_tz = tz
         return true
 
-    # ONE eye's ACTUAL gaze angles (head frame) for its current aim:
-    # pose the bones, recompose worlds, read that eye's cornea axis
     func measure_gaze [ ei: i32 ]
         aim_eyes[]
         gmodel.compute_worlds[]
@@ -1378,28 +1227,13 @@ element ModelView
         meas_az = atan[ (0.0 - axw) / azw ]
         meas_el = 0.0 - atan[ ayw / sqrt[ axw*axw + azw*azw ] ]
 
-    # save one plot sample in the hyperspace .agi format: a 3:2 face frame,
-    # 3:2 crops around both eyes, and {i}.agi carrying the plots. eye-center
-    # plots are the RESTING globe centers (the socket middle — gaze rotates
-    # about them, so they hold still), _oc are the outer corners. face_off
-    # is the face->screen-center offset in meters (person frame: +x right,
-    # +y up, +z toward the person).
     func save_plot_sample [ fp: hyperspace2, cam: i32 ] -> bool
         gw : i32 [ vrender.width ]
         gh : i32 [ vrender.height ]
-        # SQUARE frame at full render resolution, like the IR sensor —
-        # python crops and averages from this, the app never reduces
         fw2 : i32 [ (gw < gh) ? gw : gh ]
         fh2 : i32 [ fw2 ]
         fx : i32 [ (gw - fw2) / 2 ]
         fy : i32 [ (gh - fh2) / 2 ]
-        # eye plots = the RESTING globe centers, gaze-INDEPENDENT by
-        # contract: the crop anchor must hold still so the iris MOVES
-        # within the crop — that displacement IS the gaze signal. a
-        # gaze-following anchor (tried: lid-dragged opening centers)
-        # cancels the signal out of the pixels and nothing can train
-        # slots 4/5: the PUPIL centres — globe centre pushed along the
-        # solved gaze direction to the surface (head frame, like the rest)
         pplx : f32 [ eyec_lx + gdir_lx * globe_rad ]
         pply : f32 [ eyec_ly + gdir_ly * globe_rad ]
         pplz : f32 [ eyec_lz + gdir_lz * globe_rad ]
@@ -1409,8 +1243,6 @@ element ModelView
         wxs : local f32 [ 6 ] [ eyec_lx, eyec_rx, anch_lx, anch_rx, pplx, pprx ]
         wys : local f32 [ 6 ] [ eyec_ly, eyec_ry, anch_ly, anch_ry, pply, ppry ]
         wzs : local f32 [ 6 ] [ eyec_lz, eyec_rz, anch_lz, anch_rz, pplz, pprz ]
-        # outer corners project from their LIVE control verts, so the
-        # label lands on the rendered pixel under any deformation
         ilx : f32 [ eyec_lx + (eyec_lx - anch_lx) ]
         ily : f32 [ eyec_ly ]
         ilz : f32 [ eyec_lz ]
@@ -1442,7 +1274,6 @@ element ModelView
             wx0 : f32 [ wxs[ k ] ]
             wy0 : f32 [ wys[ k ] ]
             wz0 : f32 [ wzs[ k ] ]
-            # apply the sample's head pose (rotation about the eye midpoint)
             px : f32 [ cap_rot.m[0]*wx0 + cap_rot.m[4]*wy0 + cap_rot.m[8]*wz0  + cap_rot.m[12] ]
             py : f32 [ cap_rot.m[1]*wx0 + cap_rot.m[5]*wy0 + cap_rot.m[9]*wz0  + cap_rot.m[13] ]
             pz : f32 [ cap_rot.m[2]*wx0 + cap_rot.m[6]*wy0 + cap_rot.m[10]*wz0 + cap_rot.m[14] ]
@@ -1455,10 +1286,6 @@ element ModelView
             if [ cwp <= 0.0001 ] cwp = 0.0001
             pxs[ k ] = (cxp / cwp + 1.0) * 0.5 * f32[ gw ]
             pys[ k ] = (cyp / cwp + 1.0) * 0.5 * f32[ gh ]
-        # CLIP GATE: the eye crop python takes is a square of side
-        # inter-eye-distance / eye_div (2.12), centered on each eye center.
-        # if either crop would leave the frame, the sample lies — reject it
-        # BEFORE any file is written and let the caller re-roll the pose
         edx : f32 [ pxs[0] - pxs[1] ]
         edy : f32 [ pys[0] - pys[1] ]
         esep : f32 [ sqrt[ edx*edx + edy*edy ] ]
@@ -1473,18 +1300,9 @@ element ModelView
         mkdir[ '/src/hyperspace-sessions', 493 ]
         sdir : '/src/hyperspace-sessions/{fp.session}'
         mkdir[ sdir.chars, 493 ]
-        # the render is a mirror view; real camera output is unmirrored
-        # (subject's left eye on the image's right, like basic4) and MONO,
-        # like the IR sensor. keep rgba here: the alpha plane is the mask
-        # the record frame composites under
         cap : Image [ vrender.color ]
         cimg : cap.crop[ fx, fy, fw2, fh2 ]
         mcap : cimg.mirror_x[]
-        # no eye-crop files: the eyes are ANNOTATED in the face image by the
-        # plots below. ZERO-CENTERED image coords: (0,0) is the image center,
-        # -0.5 left/top, +0.5 right/bottom — same convention as the screen
-        # plots. x mirrored with the image. (basic4 real data is 0..1: shift
-        # it by -0.5 in the loader to match.)
         flx : f32 [ 0.5 - (pxs[0] - f32[ fx ]) / f32[ fw2 ] ]
         fly : f32 [ (pys[0] - f32[ fy ]) / f32[ fh2 ] - 0.5 ]
         frx : f32 [ 0.5 - (pxs[1] - f32[ fx ]) / f32[ fw2 ] ]
@@ -1500,11 +1318,6 @@ element ModelView
         sdx : f32 [ flx - frx ]
         sdy : f32 [ fly - fry ]
         fscale : f32 [ sqrt[ sdx*sdx + sdy*sdy ] ]
-        # record frame under the mask: the sample's record image is
-        # scale-matched by outer-corner span (mask 6% proud so no real
-        # eye pixels survive) and shifted so the record's oc midpoint
-        # lands at the mask's oc midpoint. the frame must land fully
-        # inside the record image — an overflow re-rolls the pose
         if [ cap_rec < 0 ] return false
         rfid : i32 [ fp.recs_fid[ cap_rec ] ]
         rnm : string [ (cam == 0) ? 'top' : 'bot' ]
@@ -1527,9 +1340,6 @@ element ModelView
         if [ s5 < 0.05 ] return false
         rcx : f32 [ rmx * f32[ riw ] ]
         rcy : f32 [ rmy * f32[ rih ] ]
-        # the record only has to cover what the trainer reads: the face
-        # crop (face_scale x 1.75, eye-midpoint centered) plus margin.
-        # frame pixels past the record edge-clamp — never cropped
         fcx : f32 [ ((flx + frx) * 0.5 + 0.5) * f32[ fw2 ] ]
         fcy : f32 [ ((fly + fry) * 0.5 + 0.5) * f32[ fh2 ] ]
         fch : f32 [ fscale * f32[ fw2 ] * 1.75 * 1.15 * 0.5 ]
@@ -1540,9 +1350,6 @@ element ModelView
             rv0 : f32 [ (cy5 - smy) / s5 + rcy ]
             if [ ru0 < 0.0 || rv0 < 0.0 ] return false
             if [ ru0 > f32[ riw - 1 ] || rv0 > f32[ rih - 1 ] ] return false
-        # frame areas past the record's coverage: patch from a noise
-        # (no-face) record so the background has real features to
-        # train against; black when no noise frames exist
         nw6 : i32 [ 0 ]
         nh6 : i32 [ 0 ]
         nn6 : i32 [ 0 ]
@@ -1557,25 +1364,14 @@ element ModelView
                 nh6 = nimg.height
                 nn6 = nimg.channels
                 np8 = nimg.pixels
-        # photometric augmentation: three perlin frequencies centered on
-        # the face drive brightness and contrast — uneven lighting and
-        # soft shadows for free. only the iris position and the two eye
-        # corners stay truth; the field is baked small and sampled
-        # keyed to the POSE GROUP: every look of one pose shares the
-        # same lighting field — only gaze differs inside a group
         as9 : i64 [ cap_gseed * 2862933555777941757 + 3037000493 ]
         ab9 : f32 [ f32[ (as9 % 1000 + 1000) % 1000 ] / 1000.0 * 0.45 ]
         as9 = as9 * 6364136223846793005 + 1442695040888963407
         ac9 : f32 [ f32[ (as9 % 1000 + 1000) % 1000 ] / 1000.0 * 0.45 ]
-        # GLOBAL exposure, always on: contrast mostly comes OUT (real IR
-        # frames run flat, 0.45..1.10), and darkening is gentler than
-        # brightening (-15%..+30%)
         as9 = as9 * 6364136223846793005 + 1442695040888963407
         gb9 : f32 [ (f32[ (as9 % 1000 + 1000) % 1000 ] / 1000.0 - 0.333) * 0.45 ]
         as9 = as9 * 6364136223846793005 + 1442695040888963407
         gc9 : f32 [ 0.45 + f32[ (as9 % 1000 + 1000) % 1000 ] / 1000.0 * 0.65 ]
-        # a quarter of samples carry NO field at all; the rest scale the
-        # whole pattern anywhere from half to 2.5x its base frequency
         as9 = as9 * 6364136223846793005 + 1442695040888963407
         if [ ((as9 % 4 + 4) % 4) == 0 ]
             ab9 = 0.0
@@ -1597,7 +1393,6 @@ element ModelView
                 nv9 = nv9 + vnoise2[ sa2, gx9 * 3.3, gy9 * 3.3 ] * 0.3
                 nv9 = nv9 + vnoise2[ sa3, gx9 * 7.1, gy9 * 7.1 ] * 0.2
                 nf9[ fy9 * 128 + fx9 ] = u8[ nv9 * 255.0 ]
-        # compose: synthetic (premultiplied alpha) over the record, gray out
         fimg : Image [ width: fw2, height: fh2, format: Pixel.u8, channels: 1 ]
         dp : @u8 [ fimg.pixels ]
         sp8 : @u8 [ mcap.pixels ]
@@ -1623,10 +1418,6 @@ element ModelView
                 if [ g5 > 255.0 ] g5 = 255.0
                 do5 : i64 [ i64[ oy5 ] * i64[ fw2 ] + i64[ ox5 ] ]
                 dp[ do5 ] = u8[ g5 ]
-        # hair passes: pooled real-hair patches stamped under perlin
-        # section masks — ringed around the face, sometimes across it;
-        # a third of samples get none. stamped BEFORE the lighting
-        # field so hair shares the sample's light
         if [ fp.hair_n > 0 ]
             hs5 : i64 [ cap_gseed * 3202034522624059733 + 1103515245 ]
             hs5 = hs5 * 6364136223846793005 + 1442695040888963407
@@ -1657,8 +1448,6 @@ element ModelView
                         dx5 : i32 [ hx0 + qx5 ]
                         if [ dx5 < 0 || dx5 >= fw2 ] continue
                         uq : f32 [ f32[ qx5 ] / f32[ hw5 - 1 ] ]
-                        # two smooth low-frequency octaves + a soft
-                        # threshold: big organic sections, no speckle
                         nm5 : f32 [ vnoise2[ hs5, uq * 1.6, vq * 1.6 ] * 0.65 ]
                         nm5 = nm5 + vnoise2[ hs5 + 7919, uq * 3.2, vq * 3.2 ] * 0.35
                         a5 : f32 [ (nm5 - 0.42) * 3.0 ]
@@ -1674,9 +1463,6 @@ element ModelView
                         hv5 : f32 [ f32[ fp.hair_pat[ i64[ hi5 ] * 1024 + i64[ pyp ] * 32 + i64[ pxp ] ] ] ]
                         od5 : i64 [ i64[ dy5 ] * i64[ fw2 ] + i64[ dx5 ] ]
                         dp[ od5 ] = u8[ a5 * hv5 + (1.0 - a5) * f32[ dp[ od5 ] ] ]
-        # the lighting field covers mask, record, noise and hair alike,
-        # so no blend seam ever shows in the lighting; global exposure
-        # rides on top of it and is never off
         for [ oy6: i32 0, oy6 < fh2, oy6 += 1 ]
             nvy6 : f32 [ f32[ oy6 ] / f32[ fh2 - 1 ] ]
             for [ ox6: i32 0, ox6 < fw2, ox6 += 1 ]
@@ -1688,10 +1474,6 @@ element ModelView
                 if [ v6 < 0.0 ] v6 = 0.0
                 dp[ do6 ] = u8[ v6 ]
         fimg.png[ path '{sdir}/{cap_idx}-face{cam}.png' ]
-        # stash this camera's plots; the .agi writes once, after the last
-        # camera, with one indexed block per camera. slot 9 = the head's
-        # angle off this camera's axis in degrees — an extreme view on
-        # one mount is still a sample, the trainer weighs it by this
         if [ !cap_pl ]
             cap_pl = new f32 [ 56 ]
         eex : f32 [ look_x + dist * cos[ pitch ] * sin[ yaw ] ]
@@ -1725,9 +1507,6 @@ element ModelView
         cap_pl[ c9 + 12 ] = prx
         cap_pl[ c9 + 13 ] = pry
         if [ cam < fp.cameras - 1 ] return true
-        # face->screen-center offset in meters (person frame) + head plot:
-        # the head AXIS ray (rotated by the sample's pose) intersected with
-        # the screen plane. screen placement is this sample's own.
         scx : f32 [ cap_scx ]
         scy : f32 [ cap_scy ]
         scz : f32 [ cap_scz ]
@@ -1737,10 +1516,6 @@ element ModelView
         ofx : f32 [ 0.0 - (scx - mxm) ]
         ofy : f32 [ scy - mym ]
         ofz : f32 [ 0.0 - (scz - mzm) ]
-        # eye_off: the EYE COORDINATE (oc-ic midpoint per eye on the
-        # live cage, then between both eyes, posed) relative to the
-        # screen center. meters, person frame: +x their right, +y up,
-        # +z toward the person
         mgx : f32 [ ((wxs[2] + ilx) * 0.5 + (wxs[3] + irx) * 0.5) * 0.5 ]
         mgy : f32 [ ((wys[2] + ily) * 0.5 + (wys[3] + iry) * 0.5) * 0.5 ]
         mgz : f32 [ ((wzs[2] + ilz) * 0.5 + (wzs[3] + irz) * 0.5) * 0.5 ]
@@ -1759,10 +1534,6 @@ element ModelView
         hiy : f32 [ mym + hfy * ht ]
         hu : f32 [ (scx - hix) / fp.screen_w ]
         hv : f32 [ (scy - hiy) / fp.screen_h ]
-        # head rotation relative to the SCREEN CENTER: the camera-relative
-        # pose re-expressed in the frame whose forward axis runs from the eye
-        # midpoint to the screen center (the mount transform composed in).
-        # same yaw/pitch/roll convention as head_rot.
         sdx2 : f32 [ scx - mxm ]
         sdy2 : f32 [ scy - mym ]
         sdz2 : f32 [ scz - mzm ]
@@ -1771,7 +1542,6 @@ element ModelView
         fwx : f32 [ sdx2 / sdl ]
         fwy : f32 [ sdy2 / sdl ]
         fwz : f32 [ sdz2 / sdl ]
-        # right = normalize((0,1,0) x fwd) = (fwd.z, 0, -fwd.x); up = fwd x right
         rgx : f32 [ fwz ]
         rgz : f32 [ 0.0 - fwx ]
         rgl : f32 [ sqrt[ rgx*rgx + rgz*rgz ] ]
@@ -1792,8 +1562,6 @@ element ModelView
         hys : f32 [ atan2[ rs02, rs22 ] ]
         hps : f32 [ asin[ sp2 ] ]
         hrs : f32 [ atan2[ rs10, rs11 ] ]
-        # pupil radius as a fraction of the inter-eye distance: python
-        # scales it by the pixel eye separation for the weight-map sigma
         iedx : f32 [ eyec_lx - eyec_rx ]
         iedy : f32 [ eyec_ly - eyec_ry ]
         iedz : f32 [ eyec_lz - eyec_rz ]
@@ -1827,10 +1595,6 @@ element ModelView
         cap_idx += 1
         return true
 
-    # independent 3D confirmation: the ACTUAL posed face mesh, eye spheres
-    # at the posed globe centres, a ray from each eye along the bones'
-    # true 3D aim, the screen quad, and the target quad on it. open the
-    # .obj in Blender: the rays either pierce the target or the data lies
     func save_check_obj [ fp: hyperspace2, sdir: string ]
         s : string 'o screen\n'
         nv : i32 [ 0 ]
@@ -1852,7 +1616,6 @@ element ModelView
         t1y : f32 [ tqy + 0.01 ]
         s = '{s}o target\nv {t0x} {t0y} {tqz}\nv {t1x} {t0y} {tqz}\nv {t1x} {t1y} {tqz}\nv {t0x} {t1y} {tqz}\nf {nv + 1} {nv + 2} {nv + 3} {nv + 4}\n'
         nv += 4
-        # eye spheres + true aim rays, both under the head pose (cap_rot)
         for [ ei2: i32 0, ei2 < 2, ei2 += 1 ]
             ex : f32 [ (ei2 == 0) ? eyec_lx : eyec_rx ]
             ey : f32 [ (ei2 == 0) ? eyec_ly : eyec_ry ]
@@ -1860,9 +1623,6 @@ element ModelView
             px : f32 [ cap_rot.m[0]*ex + cap_rot.m[4]*ey + cap_rot.m[8]*ez  + cap_rot.m[12] ]
             py : f32 [ cap_rot.m[1]*ex + cap_rot.m[5]*ey + cap_rot.m[9]*ez  + cap_rot.m[13] ]
             pz : f32 [ cap_rot.m[2]*ex + cap_rot.m[6]*ey + cap_rot.m[10]*ez + cap_rot.m[14] ]
-            # the ACTUAL eyeball mesh under the transforms the renderer
-            # uses (node world posed by the aim, then the head pose) —
-            # the corneal bulge shows the true rotation in Blender
             enm : string [ (ei2 == 0) ? 'Eye L' : 'Eye R' ]
             emi : i32 [ -1 ]
             ewm : mat4f
@@ -1917,7 +1677,6 @@ element ModelView
                         fb2 : i32 [ ebv3 + eb2 + 1 ]
                         fc3 : i32 [ ebv3 + ec2 + 1 ]
                         s = '{s}f {fa2} {fb2} {fc3}\n'
-            # the bone's ACTUAL forward (posed by aim), then the head pose
             bi : i32 [ (ei2 == 0) ? ebl : ebr ]
             nb3 : gmodel.nodes[ bi ]
             wm3 : mat4f [ nb3.world ]
@@ -1939,7 +1698,6 @@ element ModelView
             qz : f32 [ pz + rdz / rl2 * rlen ]
             s = '{s}o ray{ei2}\nv {px} {py} {pz}\nv {qx} {qy} {qz}\nl {nv + 1} {nv + 2}\n'
             nv += 2
-        # the actual face mesh (Head/Body materials), posed by cap_rot
         for [ msh: Mesh ] in gmodel.meshes
             for [ prim: Primitive ] in msh.primitives
                 midx : i32 [ prim.material ]
@@ -1992,8 +1750,6 @@ element ModelView
         ob.save[ s, null ]
         puts 'check obj: {cap_idx}-check.obj'
 
-    # verification frame: rendered from the gaze target itself. saved next
-    # to the sample it checks (save_plot_sample already advanced cap_idx)
     func save_verify_frame [ fp: hyperspace2 ]
         cap : Image [ vrender.color ]
         gw : i32 [ vrender.width ]
@@ -2008,8 +1764,6 @@ element ModelView
         fimg : cimg.mirror_x[]
         fimg.png[ path '{sdir}/{vid}-verify.png' ]
 
-    # unproject the click: project every control vert with the render's own
-    # view/proj and take the nearest on screen; result in picked_cage/vert
     func pick_cage [ mx: f32, my: f32 ] -> bool
         picked_cage = -1
         picked_vert = -1
@@ -2056,9 +1810,6 @@ element ModelView
         lastx = ev.mouse.pos.x
         lasty = ev.mouse.pos.y
         if [ ev.key.shift && drag_mode > 0 ]
-            # shift-drag edits the grabbed feature: eyes slant about
-            # their fixed outer corners (up = inner corners up); nose
-            # and lip travel their axes (drag down = longer/lower)
             if [ drag_mode == 1 ]
                 # vertical slants, horizontal resizes (right = bigger)
                 eye_slant[ 0.0 - dy * 0.0005 ]
@@ -2069,8 +1820,6 @@ element ModelView
                 nose_length[ dy * 0.0005 ]
             nose_edited = true
         el [ ev.key.shift ]
-            # shift-drag PANS: translate the look target along the camera's
-            # right and screen-up axes, scaled so the content tracks the cursor
             sc : f32 [ fp.dist * 0.0016 ]
             syw : f32 [ sin[ fp.yaw ] ]
             cyw : f32 [ cos[ fp.yaw ] ]
@@ -2107,9 +1856,6 @@ element ModelView
             if [ cshader ] cshader.ir = irf
         if [ hinge_ang >  3.0 ] hinge_ang =  3.0
         if [ hinge_ang < -3.0 ] hinge_ang = -3.0
-        # arrow keys drag a REAL gaze mark in space (the Blender target):
-        # both eyes converge on it, lids and the eyes-down morph follow.
-        # plain arrows move it in the plane; shift+up/down changes depth
         tmoved : bool [ false ]
         if [ ev.key.unicode == 263 || ev.key.unicode == 262 || ev.key.unicode == 265 || ev.key.unicode == 264 ]
             if [ tgt_z == 0.0 ]
@@ -2137,9 +1883,6 @@ element ModelView
             gaze_y = (gaze_ly + gaze_ry) * 0.5
             apply_eyes_down[]
             puts 'gaze mark: ({tgt_x}, {tgt_y}, {tgt_z})'
-        # S: slant the _V_EYE region about the outer corners; N: stretch the
-        # _V_NOSE region along the nose axis (shift inverts); each step
-        # persists to the session mask
         edited : bool [ false ]
         if [ ev.key.unicode == 83 ]
             eye_slant[ (ev.key.shift) ? -0.02 : 0.02 ]
@@ -2151,13 +1894,8 @@ element ModelView
             pfk : picker[]
             if [ pfk ] pfk.save_mask[ a ]
 
-    # arm the plot capture on THIS view (the root calls it on the off-screen
-    # capture element); forces IR and lets draw's state machine run
     public func begin_capture [ n: i32 ]
         if [ capture_left != 0 || n <= 0 ] return
-        # cage_copy_from may have replaced the control cage just before:
-        # whatever was applied here is gone with it, so the RELATIVE morph
-        # restarts from zero on the copied cage
         edn_wl = 0.0
         edn_wr = 0.0
         capture_left = n
@@ -2168,7 +1906,6 @@ element ModelView
         if [ rshader ] rshader.ir = irc
         if [ cshader ] cshader.ir = irc
 
-    # tear down the loaded model so the next draw re-inits with the new fit
     func reload_model []
         if [ eye_tex ]
             for [ tx: Texture ] in eye_tex
@@ -2185,8 +1922,6 @@ element ModelView
         gbl = -1
         gbr = -1
 
-    # blend selected shape keys (glTF morph targets) into POSITION at load,
-    # weighted by morph_w[name]. runs before skinning and the _V_* detail.
     func apply_morphs []
         if [ !gmodel ] return
         if [ !morph_w ] return
@@ -2235,9 +1970,6 @@ element ModelView
                         pf[1] = pf[1] + w * df[1]
                         pf[2] = pf[2] + w * df[2]
 
-    # collect the 'Eyes Down L/R' morph deltas per head-cage vert, with a
-    # rest snapshot of the live cage. apply_eyes_down blends them into the
-    # cage buffer — the subdiv compute re-reads that buffer every frame
     func setup_eyes_down []
         if [ edn_set || head_ci < 0 || !gmodel || !vmodel ]
             puts 'eyes-down: skip (set={edn_set} head_ci={head_ci})'
@@ -2278,9 +2010,6 @@ element ModelView
                 lac : gmodel.accessors[ lpos ]
                 rac : gmodel.accessors[ rpos ]
                 nsrc : i32 [ i32[ lac.count ] ]
-                # Blender exports morph deltas as SPARSE accessors (no base
-                # view: implicit zeros + index/value overlay). expand both
-                # targets to dense heap tables first
                 ns3 : i32 [ nsrc * 3 ]
                 dlf : new f32 [ ns3 ]
                 drf : new f32 [ ns3 ]
@@ -2356,10 +2085,6 @@ element ModelView
                 puts 'hyperspace2: eyes-down morph drive on {edn_n} cage verts'
                 return
 
-    # blend the eyes-down correctives by how far each eye aims down
-    # (delta_q convention: negative pitch = down). RELATIVE: only the
-    # weight CHANGE is added onto the live cage, so user cage edits
-    # underneath are never touched and weight 0 rolls it back off
     func apply_eyes_down []
         if [ !edn_set || head_ci < 0 ] return
         hc : vmodel.cages[ head_ci ]
@@ -2383,9 +2108,6 @@ element ModelView
             bp[ v3 + 2 ] = bp[ v3 + 2 ] + dwl * edn_dl[ k3 + 2 ] + dwr * edn_dr[ k3 + 2 ]
         edn_wl = wl
         edn_wr = wr
-        # lid z-follow: the lid the pupil is nearest bulges out along z
-        # (the blender rig does this, the down-morph alone doesn't);
-        # cap_zamt sets how much this pose shows it
         if [ cap_zamt > 0.0 && hc.base ]
             if [ !cap_zf ] cap_zf = new f32 [ edn_n ]
             gl9 : f32 [ gaze_ly / eyes_down_full ]
@@ -2408,10 +2130,6 @@ element ModelView
                 nz9 : f32 [ cap_zamt * fz9 ]
                 bp[ v3 + 2 ] = bp[ v3 + 2 ] + nz9 - cap_zf[ k ]
                 cap_zf[ k ] = nz9
-        # perlin lid push: noise bulges the lid outward IN the pupil's
-        # look direction, in a broad area around the pupil — augmentation.
-        # runs when cap_lnf exists even at amount 0 so the previous
-        # pose's push always backs out
         if [ (cap_lnamt > 0.0 || cap_lnf) && hc.base ]
             if [ !cap_lnf ]
                 n39 : i32 [ edn_n * 3 ]
@@ -2454,8 +2172,6 @@ element ModelView
                 cap_lnf[ k3 + 1 ] = ly9
                 cap_lnf[ k3 + 2 ] = lz9
 
-    # scale the nose region by the painted _V_NOSE blue mask (gray 0.216 =
-    # neutral, brighter = push out). baked into POSITION once, before upload.
     func bake_nose []
         if [ !gmodel ] return
         neutral : f32 [ 0.216 ]
@@ -2528,10 +2244,6 @@ element ModelView
                     pf[2] = pf[2] + dz * s
                 puts 'hyperspace2: baked nose on prim verts={vc} rad={rad}'
 
-    # fit the nose to measured landmarks: lateral width at the nostril and mid
-    # bands, a depth profile (top/mid/tip) out from the eye plane, and nostril
-    # height. per-vertex bake over the painted _V_NOSE region; each vert's
-    # height picks its band. defaults equal the model's rest so no-op until set.
     func bake_nose_landmarks []
         if [ !gmodel ] return
         neutral : f32 [ 0.216 ]
@@ -2577,7 +2289,6 @@ element ModelView
                     if [ pf[1] > ny1 ] ny1 = pf[1]
                 if [ ny1 <= ny0 ] continue
                 yspan : f32 [ ny1 - ny0 ]
-                # pass 2: rest half-width (max |x|) at the nostril and mid bands
                 hw0 : f32 [ 0.0 ]
                 hw1 : f32 [ 0.0 ]
                 cn0 : i32 [ 0 ]
@@ -2622,14 +2333,11 @@ element ModelView
                     el
                         ws = ms + (1.0 - ms) * ((t - 0.5) / 0.5)
                     pf[0] = pf[0] * (1.0 + w * (ws - 1.0))
-                    # nostril height: shift the lower band in y, taper out by mid
                     yw : f32 [ 1.0 - t / 0.5 ]
                     if [ yw < 0.0 ] yw = 0.0
                     pf[1] = pf[1] + w * yw * dy_full
                 puts 'hyperspace2: nose fit hw0={hw0} hw1={hw1} nostril dy={dy_full}'
 
-    # read the skin: inverse-bind matrices + which joint node is the hinge, and
-    # allocate the joint-matrix palette storage buffer (one mat4 per joint)
     func setup_skin []
         if [ !gmodel.skins || gmodel.skins.count == 0 ] return
         skin_idx = 0
@@ -2649,9 +2357,6 @@ element ModelView
         for [ j: i32 0, j < nj, j += 1 ]
             jn : gmodel.nodes[ sk.joints[ j ] ]
             if [ jn.name && jn.name == 'Hinge' ] hinge_node = i32[ sk.joints[ j ] ]
-        # locate the eye bones and remember their rest local rotation so gaze
-        # is applied as a delta on top (node.rotation = gaze x rest)
-        # find the eyeball aim bones and the lid-drag / caruncle follow bones
         ni : i32 [ 0 ]
         for [ nd: Node ] in gmodel.nodes
             if [ nd.name && nd.name == 'Eyeball.L' ]
@@ -2683,11 +2388,6 @@ element ModelView
         joint_buf.hold[]
         puts 'hyperspace2: skin joints={nj} hinge_node={hinge_node}'
 
-    # one eye's TRUE forward: sphere-fit the eyeball mesh, take the
-    # corneal apex (the vertex protruding past the fitted sphere), and
-    # express centre->apex in the aim bone's local frame. the old
-    # "rest gaze is world +z" assumption was 5.8 degrees off the mesh —
-    # a constant per-eye lie baked into every gaze label
     func fit_eye_axis [ is_l: bool ]
         enm : string [ (is_l) ? 'Eye L' : 'Eye R' ]
         emi : i32 [ -1 ]
@@ -2697,7 +2397,6 @@ element ModelView
                 emi = i32[ nd5.mesh ]
                 ewm = nd5.world
         if [ emi < 0 ] return
-        # normal equations for |v-c|^2 = r^2 (linear in 2c and c^2-r^2)
         mm : local f32 [ 16 ]
         rh : local f32 [ 4 ]
         for [ i: i32 0, i < 16, i += 1 ] mm[ i ] = 0.0
@@ -2775,7 +2474,6 @@ element ModelView
         apx = apx / al3
         apy = apy / al3
         apz = apz / al3
-        # mesh-local axis -> world -> aim bone local (rotation transpose)
         awx : f32 [ ewm.m[0]*apx + ewm.m[4]*apy + ewm.m[8]*apz ]
         awy : f32 [ ewm.m[1]*apx + ewm.m[5]*apy + ewm.m[9]*apz ]
         awz : f32 [ ewm.m[2]*apx + ewm.m[6]*apy + ewm.m[10]*apz ]
@@ -2796,8 +2494,6 @@ element ModelView
             fwd_rz = blz
         puts 'eye axis {enm}: bone-local ({blx}, {bly}, {blz})'
 
-    # value noise over angle, wrapping at period p (the perlin mask that
-    # drives iris sector cloning); returns -1..1, deterministic per seed
     func vnoise_ang [ seed: i64, t: f32, p: i32 ] -> f32
         tf : f32 [ t - floor[ t / f32[ p ] ] * f32[ p ] ]
         i0 : i32 [ i32[ floor[ tf ] ] % p ]
@@ -2832,7 +2528,6 @@ element ModelView
         b0 : f32 [ v01 + (v11 - v01) * sux ]
         return a0 + (b0 - a0) * suy
 
-    # bilinear sample of one channel from CPU image pixels, u/v clamped
     func img_bilin [ sp: @u8, iw: i32, ih: i32, nch: i32, co: i32, u: f32, v: f32 ] -> f32
         bux : f32 [ u * f32[ iw - 1 ] ]
         bvy : f32 [ v * f32[ ih - 1 ] ]
@@ -2858,11 +2553,6 @@ element ModelView
         t1 : f32 [ a2 + (a3 - a2) * fx2 ]
         return (t0 + (t1 - t0) * fy2) / 255.0
 
-    # 1024-iris atlas (32x32 cells of 64px): every cell is a NEW iris
-    # synthesized from the real map by radial sector cloning — three
-    # rotated copies of the source blended by value noise over angle,
-    # radial jitter, blend form varying per cell. covers the iris DOMAIN;
-    # no real person's iris is reproduced or reproducible
     func build_iris_atlas [ src: Image, co_in: i32, seed0: i64 ] -> Image
         cs : i32 [ 128 ]
         nc : i32 [ 32 ]
@@ -2883,8 +2573,6 @@ element ModelView
                 rot2 : f32 [ f32[ cseed % 1000 ] / 1000.0 * 3.14159265 ]
                 cseed = cseed * 6364136223846793005 + 1442695040888963407
                 rot3 : f32 [ f32[ cseed % 1000 ] / 1000.0 * 3.14159265 ]
-                # inner iris (collarette) stays coherent: it only gets a
-                # per-cell uniform scale, ENLARGING only — never wiggled
                 cseed = cseed * 6364136223846793005 + 1442695040888963407
                 inns : f32 [ 1.0 + (f32[ (cseed % 1000 + 1000) % 1000 ] / 1000.0) * 0.22 ]
                 for [ pyi: i32 0, pyi < cs, pyi += 1 ]
@@ -2896,10 +2584,6 @@ element ModelView
                         rr2 : f32 [ 2.0 * sqrt[ ddx*ddx + ddy*ddy ] ]
                         th2 : f32 [ atan2[ ddy, ddx ] ]
                         tn : f32 [ (th2 + 3.14159265) / 6.2831853 * 8.0 ]
-                        # sector cloning ramps in with radius (zero at the
-                        # pupil). the clone is PURELY ANGULAR — sectors
-                        # move around the ring at the same radius, so the
-                        # iris keeps its natural roundness exactly
                         ramp : f32 [ rr2 * rr2 * 2.5 ]
                         if [ ramp > 1.0 ] ramp = 1.0
                         rj : f32 [ rr2 / inns ]
@@ -2909,10 +2593,6 @@ element ModelView
                         s1v : f32 [ img_bilin[ sp, iw, ih, nch, co, 0.5 + 0.5 * rj * cos[ th2 + rot1 ], 0.5 + 0.5 * rj * sin[ th2 + rot1 ] ] ]
                         s2v : f32 [ img_bilin[ sp, iw, ih, nch, co, 0.5 + 0.5 * rj * cos[ th2 + rot2 ], 0.5 + 0.5 * rj * sin[ th2 + rot2 ] ] ]
                         s3v : f32 [ img_bilin[ sp, iw, ih, nch, co, 0.5 + 0.5 * rj * cos[ th2 + rot3 ], 0.5 + 0.5 * rj * sin[ th2 + rot3 ] ] ]
-                        # winner-take-most: each angle shows ONE coherent
-                        # rotated copy with narrow smooth seams — a real
-                        # sector MOVE, not a translucent 3-way stack (that
-                        # stack modulated ring brightness = the wobble)
                         q1 : f32 [ w1 * w1 ]
                         q2 : f32 [ w2 * w2 ]
                         q3 : f32 [ w3 * w3 ]
@@ -2950,7 +2630,6 @@ element ModelView
         r.z = 0.0 - q.z
         return r
 
-    # shortest-arc quat rotating unit vector a onto unit vector b
     func arc_q [ ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32 ] -> quatf
         d : f32 [ ax*bx + ay*by + az*bz ]
         r : quatf
@@ -2971,14 +2650,11 @@ element ModelView
         r.z = cz / nl
         return r
 
-    # delta rotation from pitch about local X and yaw about local Z (the eyeball
-    # local frame has +Y forward, so pitch=X and yaw=Z, per the DAMPED_TRACK)
     func delta_q [ ax: f32, az: f32 ] -> quatf
         qx : quatf [ x: sin[ ax * 0.5 ], y: 0.0, z: 0.0, w: cos[ ax * 0.5 ] ]
         qz : quatf [ x: 0.0, y: 0.0, z: sin[ az * 0.5 ], w: cos[ az * 0.5 ] ]
         return qmul[ qx, qz ]
 
-    # head-pose quat in world axes: yaw about y, pitch about x, roll about z
     func head_q [ hy: f32, hp: f32, hr: f32 ] -> quatf
         qy : quatf [ x: 0.0, y: sin[ hy * 0.5 ], z: 0.0, w: cos[ hy * 0.5 ] ]
         qx : quatf [ x: sin[ hp * 0.5 ], y: 0.0, z: 0.0, w: cos[ hp * 0.5 ] ]
@@ -2990,9 +2666,6 @@ element ModelView
         nb : gmodel.nodes[ idx ]
         nb.rotation = qmul[ d, rest ]
 
-    # aim each eyeball by ITS OWN angles (vergence); drive each lid by its
-    # eye's copy-rotation fractions (Eyelids Drag: 0.8 pitch + 0.2 yaw,
-    # Caruncle: 0.8 pitch + 0.5 yaw)
     func aim_eyes []
         if [ ebl < 0 && ebr < 0 ] return
         set_bone[ ebl, ebl_rest, eye_dq_l ]
@@ -3006,8 +2679,6 @@ element ModelView
         set_bone[ crl, crl_rest, crql ]
         set_bone[ crr, crr_rest, crqr ]
 
-    # nudge the eyeball globe bones outward so each eyeball follows the socket;
-    # local-x maps to world -x on these bones, so subtract to move both apart
     func apply_spacing []
         if [ gbl >= 0 ]
             nl : gmodel.nodes[ gbl ]
@@ -3016,10 +2687,6 @@ element ModelView
             nr : gmodel.nodes[ gbr ]
             nr.translation = vec3f [ gbr_rest.x + eye_spacing, gbr_rest.y, gbr_rest.z ]
 
-    # move the lid/socket skin to follow the eyeballs: one-time, at load. shift
-    # each Head/Body vert along world x toward its nearest eye, by eye_spacing
-    # with a smooth falloff to zero at rad. the eyelid verts (skinned to Eye.L/
-    # Caruncle/Eyelids Drag) and the surrounding cheek move together -> no squeeze
     func bake_eye_spacing []
         if [ !gmodel ] return
         lcx : f32 [ 0.0 ]
@@ -3044,8 +2711,6 @@ element ModelView
                 rcz = wr.m[14]
                 gotr = true
         if [ !gotl || !gotr ] return
-        # the outer eye corner sits about one eyeball radius lateral to the eye
-        # centre; measure the globe's x-extent to convert corner span to a shift
         eye_rad : f32 [ 0.0126 ]
         gxmin : f32 [  1000000.0 ]
         gxmax : f32 [ -1000000.0 ]
@@ -3075,7 +2740,6 @@ element ModelView
                     if [ ef[0] > gxmax ] gxmax = ef[0]
                     gotrad = true
         if [ gotrad ] eye_rad = (gxmax - gxmin) * 0.5
-        # per-eye shift = half the gap between the target and the rest corner span
         dxc : f32 [ lcx - rcx ]
         rest_ipd : f32 [ (dxc < 0.0) ? (0.0 - dxc) : dxc ]
         rest_span : f32 [ rest_ipd + 2.0 * eye_rad ]
@@ -3129,7 +2793,6 @@ element ModelView
         r : i64 [ (h >> 33) & 2097151 ]
         return f32[ r ] / 1048576.0 - 1.0
 
-    # 3D value noise: smoothstep-interpolated lattice hash, range [-1, 1]
     func vnoise [ x: f32, y: f32, z: f32 ] -> f32
         x0 : i32 [ i32[ floor[ x ] ] ]
         y0 : i32 [ i32[ floor[ y ] ] ]
@@ -3156,18 +2819,11 @@ element ModelView
         y1i : f32 [ x01 + (x11 - x01) * v ]
         return y0i + (y1i - y0i) * w
 
-    # two-octave value noise, EVEN about x=0 (both face halves match), at a seed
-    # offset. large octave + small octave weighted by esw.
     func ev2 [ ex: f32, ey: f32, ez: f32, efl: f32, efs: f32, esd: f32, esw: f32, eoff: f32 ] -> f32
         gl : f32 [ 0.5 * (vnoise[ ex * efl + esd + eoff, ey * efl + esd + eoff, ez * efl + esd + eoff ] + vnoise[ (0.0 - ex) * efl + esd + eoff, ey * efl + esd + eoff, ez * efl + esd + eoff ]) ]
         gs : f32 [ 0.5 * (vnoise[ ex * efs + esd + eoff, ey * efs + esd + eoff, ez * efs + esd + eoff ] + vnoise[ (0.0 - ex) * efs + esd + eoff, ey * efs + esd + eoff, ez * efs + esd + eoff ]) ]
         return gl + esw * gs
 
-    # universal face generator: two octaves of value noise (a large map for
-    # broad shape, a small map added on top for detail) displace the base Head
-    # verts in x/y/z. sampled at folded |x| so both halves stay mirror-symmetric;
-    # the eye centres are pinned so the outer-eye anchors barely move. one pair of
-    # maps + the eye anchors fits basically any face. NOT tied to any painted mask.
     func deform_cage []
         if [ !gmodel ] return
         lcx : f32 [ 0.0 ]
@@ -3230,20 +2886,16 @@ element ModelView
                 noff : i64 [ nbv.byteOffset + nac.byteOffset ]
                 toff : i64 [ tbv.byteOffset + tac.byteOffset ]
                 vc : i32 [ i32[ pac.count ] ]
-                # per-vertex label buffer (world delta) — the training target
                 dsz : i32 [ vc * 3 ]
                 if [ cage_n != vc ]
                     cage_delta = new f32 [ dsz ]
                     cage_n = vc
-                # large map = broad shape; small map adds detail on top.
-                # freq = 1/wavelength (in face_sz units); amp scales the face.
                 fl : f32 [ 1.0 / (face_sz * n_large_wl) ]
                 fs : f32 [ 1.0 / (face_sz * n_small_wl) ]
                 an : f32 [ face_sz * n_large_amp ]        # along-normal magnitude
                 at : f32 [ face_sz * n_tan_amp ]          # tangent-plane magnitude
                 swt : f32 [ (n_large_amp > 0.0) ? (n_small_amp / n_large_amp) : 0.4 ]
                 seam_band : f32 [ ipd * 0.4 ]
-                # per-variant seed offset walks the noise field to a new region
                 sd : f32 [ f32[ face_idx ] * 17.0 ]
                 for [ i: i32 0, i < vc, i += 1 ]
                     pf : cast @f32 [ @pbase[ poff + i64[ i ] * pstride ] ]
@@ -3252,7 +2904,6 @@ element ModelView
                     px : f32 [ pf[0] ]
                     py : f32 [ pf[1] ]
                     pz : f32 [ pf[2] ]
-                    # local surface frame: normal N, tangent T, bitangent B = NxT*w
                     nln : f32 [ sqrt[ nf[0] * nf[0] + nf[1] * nf[1] + nf[2] * nf[2] ] ]
                     tln : f32 [ sqrt[ tf[0] * tf[0] + tf[1] * tf[1] + tf[2] * tf[2] ] ]
                     if [ nln <= 0.0 || tln <= 0.0 ] continue
@@ -3296,9 +2947,6 @@ element ModelView
                         cage_delta[ i * 3 + 2 ] = dzv
                 puts 'deform_cage: face={face_idx} an={an} at={at} nv={vc} label={vc * 3}'
 
-    # copy the painted _V_EDGE red channel into TEXCOORD_1.x so subdivide carries
-    # it to the GPU; the skinned shader turns it into alpha, fading the mask edge
-    # to transparent so it mixes into the background
     func bake_edge_uv1 []
         if [ !gmodel ] return
         for [ msh: Mesh ] in gmodel.meshes
@@ -3328,9 +2976,6 @@ element ModelView
                 if [ ubv.byteStride > 0 ] ustride = ubv.byteStride
                 eoff : i64 [ ebv.byteOffset + eac.byteOffset ]
                 uoff : i64 [ ubv.byteOffset + uac.byteOffset ]
-                # shadows: blue 0.5..1.0 -> 0..1 darkening in uv1.y;
-                # .y is written for EVERY vert so buffer junk never
-                # darkens unpainted skin
                 sbase : @i8
                 sstride : i64 [ 0 ]
                 soff : i64 [ 0 ]
@@ -3355,8 +3000,6 @@ element ModelView
                         uv[1] = sw
                 puts 'bake_edge_uv1: verts={vc} shadows={shad_ai}'
 
-    # pose the rig for this frame (hinge + eyes), recompose worlds, and write the
-    # skin palette; the caller then pushes rigid node worlds via update_animated
     func update_palette []
         if [ skin_idx < 0 || !joint_buf ] return
         sk : gmodel.skins[ skin_idx ]
@@ -3375,9 +3018,6 @@ element ModelView
             for [ k: i32 0, k < 16, k += 1 ]
                 dst[ j * 16 + k ] = jm.m[ k ]
 
-    # point a named material's baseColorTexture at an albedo map. uri is
-    # relative to the model dir (models/), so textures one level up under
-    # share/textures use '../'. resolves through Res.res_path at load time
     func set_albedo [ matname: string, uri: string ]
         if [ !gmodel || !gmodel.materials ] return
         if [ !gmodel.images ]   gmodel.images   = array GltfImage [ ]
@@ -3394,8 +3034,6 @@ element ModelView
                     m.pbrMetallicRoughness = PbrMetallicRoughness [ ]
                 m.pbrMetallicRoughness.baseColorTexture = TextureInfo [ index: tidx ]
 
-    # give a material a base-color alpha in (0,1) so the pipeline routes it to
-    # the transparent shader (drawn after opaque, depth-test no-write)
     func mark_transparent [ matname: string, av: f32 ]
         if [ !gmodel || !gmodel.materials ] return
         for [ m: Material ] in gmodel.materials
@@ -3404,7 +3042,6 @@ element ModelView
                     m.pbrMetallicRoughness = PbrMetallicRoughness [ ]
                 m.pbrMetallicRoughness.baseColorFactor = vec4f [ 1.0, 1.0, 1.0, av ]
 
-    # wire the purchased skin/eye albedo maps onto the model's materials
     func bind_albedos []
         set_albedo[ 'Head',    '../share/textures/head/skin_albedo.1001.png' ]
         set_albedo[ 'Body',    '../share/textures/head/skin_albedo.1002.png' ]
@@ -3412,7 +3049,6 @@ element ModelView
         set_albedo[ 'Iris',    '../share/textures/eye/iris_fibres.png' ]
         # the eyeball is the translucent cornea layer over the iris
 
-    # find the head mesh index (first mesh carrying a 'Head'-material prim)
     func head_mesh_index [] -> i32
         mi : i32 [ 0 ]
         for [ msh: Mesh ] in gmodel.meshes
@@ -3423,8 +3059,6 @@ element ModelView
             mi += 1
         return -1
 
-    # overlay the control cage: project every Head vertex and drop a pixel dot
-    # so you SEE the cage you are fitting (element-local coords, over the render)
     func draw_cage_dots [ cv: Canvas ] -> none
         if [ !gmodel ] return
         hmesh : i32 [ head_mesh_index[] ]
@@ -3466,9 +3100,6 @@ element ModelView
             sy : f32 [ (cy / cw * 0.5 + 0.5) * bh ]
             cv.fill_rect_fast[ sx - 1.0, sy - 1.0, 2.0, 2.0 ]
 
-    # scan the 128px face with a 32px window; each window that catches control
-    # points is one training patch (two poses) whose label is those points'
-    # normalized position, world offset, and a diffuse center-falloff weight
     func export_patches [ idx: i32 ] -> none
         if [ !gmodel || !cap_a || !vrender || !cage_delta ] return
         cap_b : Image [ vrender.color ]
@@ -3503,7 +3134,6 @@ element ModelView
         poff : i64 [ pbv.byteOffset + pac.byteOffset ]
         vc : i32 [ i32[ pac.count ] ]
         sp : f32 [ f32[ scan_px ] ]
-        # project every control vert into both poses once (5 f32 per vert)
         if [ pj_cap != vc ]
             pj = new f32 [ vc * 5 ]
             pj_cap = vc
@@ -3533,8 +3163,6 @@ element ModelView
         bhalf : i32 [ patch_px / 2 ]
         lim : i32 [ scan_px - patch_px ]
         np : i32 [ 0 ]
-        # slide the window; anchor membership in pose A, follow the same points
-        # into pose B so both crops frame the same patch of face
         for [ wy: i32 0, wy <= lim, wy += patch_stride ]
             for [ wx: i32 0, wx <= lim, wx += patch_stride ]
                 n : i32 [ 0 ]
@@ -3585,7 +3213,6 @@ element ModelView
                 np += 1
         puts 'export: idx={idx} patches={np} scan={scan_px} win={patch_px} stride={patch_stride}'
 
-    # arm a two-angle per-region patch capture (driven in draw[])
     public func begin_export [] -> none
         if [ export_step != 0 ] return
         export_yaw0 = yaw
@@ -3595,8 +3222,6 @@ element ModelView
         if [ w.draw_stage != CanvasType.screen ] return
         ux.will_animate = true
         if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
-        # perlin-labeled export: the render target holds the yaw uploaded on the
-        # PREVIOUS frame, so aim one frame ahead and grab on the next
         if [ vrender && export_step != 0 ]
             if [ export_step == 3 ]
                 yaw = export_yaw0 - export_dyaw
@@ -3615,31 +3240,17 @@ element ModelView
                 export_idx += 1
                 export_step = 0
                 puts 'hyperspace2: exported sample {export_idx}'
-        # plot capture: aim at a random screen plot one frame, grab and save
-        # the next (the render target holds the previous frame's pose)
         if [ vrender && capture_left > 0 && anch_set ]
             fpc : picker[]
             if [ rig ] fpc = rig
             if [ fpc ]
                 if [ capture_state == 0 ]
-                    # pose GROUPS: look 0 anchors the group seed, later
-                    # looks REPLAY it — the same seat, head, identity and
-                    # lighting come back out; only the plot stream (its
-                    # own seed) moves, so gaze alone varies in the group
                     if [ cap_look_i == 0 ]
                         cap_gseed = cap_seed
                     el
                         cap_seed = cap_gseed
-                    # ~10% of pose groups render CLEAN (no augmentation)
-                    # and carry clean: 1 — the eval set; augmented frames
-                    # must never grade themselves
                     cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                     cap_clean = ((cap_seed % 1000 + 1000) % 1000) < 100
-                    # the person shifts per sample: lateral/vertical offset
-                    # and seat distance vary; the camera axis stays fixed on
-                    # the rig, so the face lands off-center in frame. all
-                    # camera state is THIS view's own — the shared root
-                    # camera is untouched
                     cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                     r1 : f32 [ f32[ cap_seed % 1000 ] / 1000.0 ]
                     cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
@@ -3649,18 +3260,10 @@ element ModelView
                     mxc : f32 [ (eyec_lx + eyec_rx) * 0.5 ]
                     myc : f32 [ (eyec_ly + eyec_ry) * 0.5 ]
                     mzc : f32 [ (eyec_lz + eyec_rz) * 0.5 ]
-                    # dist_min/max = CAMERA-to-face range, sampled uniform
-                    # in APPARENT SIZE (1/range): half the set sits nearer
-                    # than ~0.3m, the nearest filling the frame
                     u3 : f32 [ (r3 + 1.0) * 0.5 ]
                     ia : f32 [ 1.0 / fpc.dist_min ]
                     ib : f32 [ 1.0 / fpc.dist_max ]
                     rng : f32 [ 1.0 / (ib + u3 * (ia - ib)) ]
-                    # the face is placed INSIDE the camera's view cone: an
-                    # angular offset up to 60% of half-fov, capped by the
-                    # move_x/y world extents. the camera + screen mount is
-                    # then derived around the fixed face — a close face can
-                    # no longer fall outside the mounted camera's view
                     hfov : f32 [ radians[ fpc.cam_fov_deg ] * 0.5 ]
                     axm : f32 [ hfov * 0.6 ]
                     aym : f32 [ hfov * 0.6 ]
@@ -3671,8 +3274,6 @@ element ModelView
                     tilt : f32 [ radians[ fpc.cam_tilt_deg ] ]
                     tnx : f32 [ tan[ r1 * axm ] ]
                     tny : f32 [ tan[ r2 * aym ] ]
-                    # ray from camera to face in world: tilted forward plus
-                    # the in-frame angular offset along the camera basis
                     dx2 : f32 [ tnx ]
                     dy2 : f32 [ 0.0 - sin[ tilt ] - tny * cos[ tilt ] ]
                     dz2 : f32 [ 0.0 - cos[ tilt ] + tny * sin[ tilt ] ]
@@ -3687,9 +3288,6 @@ element ModelView
                     cap_scx = ccx + fpc.cam_x
                     cap_scy = ccy - fpc.cam_y
                     cap_scz = ccz + fpc.cam_z
-                    # the BOTTOM mount needs a physical working distance
-                    # too: closer than dist_min slices the head on the
-                    # near plane — a pose no real capture can produce
                     b1x : f32 [ cap_scx - fpc.cam_x - mxc ]
                     b1y : f32 [ cap_scy - fpc.cam_y - myc ]
                     b1z : f32 [ cap_scz - fpc.cam_z - mzc ]
@@ -3701,9 +3299,6 @@ element ModelView
                     look_y = ccy - sin[ tilt ]
                     look_z = ccz - cos[ tilt ]
                     fov_x = fpc.cam_fov_deg
-                    # head pose: independent uniform draw, world axes —
-                    # gaze plots stay uniform over the screen (coupling the
-                    # two was tried and trained WORSE; keep them decoupled)
                     pex0 : f32 [ fpc.plot_extent ]
                     if [ pex0 > 1.0 ] pex0 = 1.0
                     cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
@@ -3715,8 +3310,6 @@ element ModelView
                     cap_hy = r4 * fpc.rot_yaw
                     cap_hp = r5 * fpc.rot_pitch
                     cap_hr = r6 * fpc.rot_roll
-                    # head ORIENTATION comes from a random fitted
-                    # recording; position stays the uniform draw
                     if [ fpc.recs_n > 0 ]
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         ri9 : i32 [ i32[ (cap_seed % i64[ fpc.recs_n ] + i64[ fpc.recs_n ]) % i64[ fpc.recs_n ] ] ]
@@ -3724,9 +3317,6 @@ element ModelView
                         cap_hp = fpc.recs_dat[ ri9 * 9 + 1 ]
                         cap_hr = fpc.recs_dat[ ri9 * 9 + 2 ]
                         cap_rec = ri9
-                    # per-sample eye identity: atlas cell, independent iris
-                    # and sclera rotations, texture scale, dome (-1 caved ..
-                    # +1 convex), displacement mix, melanin, pupil dilation
                     if [ cshader ]
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         cell5 : i32 [ i32[ (cap_seed % 1024 + 1024) % 1024 ] ]
@@ -3750,8 +3340,6 @@ element ModelView
                         cshader.mel_amt = 0.75 + f32[ cap_seed % 1000 ] / 1000.0 * 0.25
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         cshader.pupil_r = 0.35 + f32[ cap_seed % 1000 ] / 1000.0 * 0.18
-                        # the eyeball itself varies only ~1%; the CORNEA
-                        # BUMP is what really differs between people
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         ees : f32 [ 0.99 + f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 * 0.02 ]
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
@@ -3763,8 +3351,6 @@ element ModelView
                         cshader.cornea_r    = 0.0110 * ees
                         cshader.iris_z      = 0.0090 * ees
                         cshader.iris_radius = 0.0046 * ees * isz
-                        # perlin around the iris mean: mean biased darker,
-                        # amplitude/frequency/seed fresh per sample
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         cshader.irisn_mean = 0.0 - 0.35 + f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 * 0.45
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
@@ -3773,8 +3359,6 @@ element ModelView
                         cshader.irisn_freq = 2.5 + f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 * 6.0
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         cshader.irisn_seed = f32[ (cap_seed % 1000 + 1000) % 1000 ] / 3.7
-                        # procedural iris density bands: usually edge +
-                        # middle, ~25% each rolls anywhere in the band
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         if [ (cap_seed % 1000 + 1000) % 1000 < 250 ]
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
@@ -3795,8 +3379,6 @@ element ModelView
                         cshader.irisd_freq = 6.0 + f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 * 10.0
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         cshader.irisd_con = 0.7 + f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 * 0.6
-                        # radial darkening bands: squared roll = usually
-                        # mild, sometimes deep; fresh ring layout per seed
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         ubb : f32 [ f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 ]
                         cshader.irisb_amt = ubb * ubb * 0.6
@@ -3811,8 +3393,6 @@ element ModelView
                         cshader.scln_freq = 1.5 + f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 * 2.5
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         cshader.scln_seed = f32[ (cap_seed % 1000 + 1000) % 1000 ] / 3.1
-                        # clean group: photometric augmentation off, iris
-                        # at nominal size with default density bands
                         if [ cap_clean ]
                             cshader.irisn_mean = 0.0
                             cshader.irisn_amt  = 0.0
@@ -3843,9 +3423,6 @@ element ModelView
                         if [ vshader ]
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                             vshader.shadow_amt = 0.5 + f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 * 0.5
-                    # painted lid groups _V_LID_0..3: ONE rigid offset per
-                    # group per pose — coherent lid shifts, never crumple.
-                    # magnitudes cube-biased: mostly tiny, sometimes large
                     if [ anch_set && head_ci >= 0 ]
                         hc9 : vmodel.cages[ head_ci ]
                         if [ hc9 && hc9.cage_buf && hc9.base ]
@@ -3866,8 +3443,6 @@ element ModelView
                                     cap_gn = 1
                                     for [ q9: i32 0, q9 < hc9.nv, q9 += 1 ]
                                         cap_gw[ g9 * hc9.nv + q9 ] = gw9[ q9 ]
-                                # per-side sector centroids (rest): the
-                                # straighten line and scales pivot on them
                                 cap_gc = new f32 [ 126 ]
                                 for [ g9: i32 0, g9 < 21, g9 += 1 ]
                                     for [ sd9: i32 0, sd9 < 2, sd9 += 1 ]
@@ -3894,11 +3469,6 @@ element ModelView
                                 if [ cap_gn < 0 ] puts 'lid groups: none painted (_V_LID*, _V_LIDSHAPE_*)'
                             bp9 : @f32 [ hc9.cage_buf.data ]
                             if [ cap_gn > 0 ]
-                                # rim amplitude: LID4 sits inside the eye
-                                # opening (tiny), N3 is the far orbital
-                                # (massive); the 13 LIDSHAPE sectors run
-                                # top-around-to-bottom and shape the lid
-                                # contour. u^3 keeps most rolls small
                                 gsc : local f32 [ 21 ] [ 0.25, 0.20, 0.18, 0.12, 0.06, 0.28, 0.30, 0.34, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18 ]
                                 kf9 : f32 [ 1.0 / (globe_rad * 1.2) ]
                                 # PHASE 1: roll every sector independently
@@ -3928,9 +3498,6 @@ element ModelView
                                     cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
                                     ut9 : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5 ]
                                     sec_ta[ si ] = ut9 * ut9 * ut9 * 8.0 * globe_rad * 0.22
-                                # PHASE 2: half the time, AVERAGE the sector
-                                # paths by a rolled degree — hardest at the
-                                # TOP (sector 0), killing the fold
                                 cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
                                 avon : bool [ ((cap_pseed % 2 + 2) % 2) == 0 ]
                                 cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
@@ -3957,9 +3524,6 @@ element ModelView
                                         fl2 : f32 [ sec_fl[ si ] + avdg * tp9 * 0.5 ]
                                         if [ fl2 > 1.0 ] fl2 = 1.0
                                         sec_fl[ si ] = fl2
-                                # bottom sectors hug the globe: they may
-                                # lift but barely sag or pull outward — a
-                                # dropped lower lid opens a dark gap
                                 for [ si: i32 8, si < 13, si += 1 ]
                                     if [ sec_nd[ si * 3 + 1 ] < 0.0 ] sec_nd[ si * 3 + 1 ] = sec_nd[ si * 3 + 1 ] * 0.25
                                     if [ sec_ra[ si ] > 0.0 ] sec_ra[ si ] = sec_ra[ si ] * 0.4
@@ -4013,8 +3577,6 @@ element ModelView
                                                 # radial in/out + shuffle along the edge
                                                 sx3 = rrx * ra9 + (0.0 - rry) * ta9 * ss9
                                                 sy3 = rry * ra9 + rrx * ta9 * ss9
-                                                # straighten: pull y,z toward the sector
-                                                # line — extreme kills the fold
                                                 sy3 += (cap_gc[ gb9 + 1 ] - hc9.base[ q93 + 1 ]) * fl9
                                                 sz3 = (cap_gc[ gb9 + 2 ] - hc9.base[ q93 + 2 ]) * fl9
                                         for [ x9: i32 0, x9 < 3, x9 += 1 ]
@@ -4023,8 +3585,6 @@ element ModelView
                                             tt9 : f32 [ (nd3[ x9 ] + pn9 + st9) * wg9 ]
                                             bp9[ q93 + x9 ] += tt9 - cap_gd[ d93 + x9 ]
                                             cap_gd[ d93 + x9 ] = tt9
-                            # caruncle: shrink toward each INNER corner
-                            # point — variance PARKED, base scale only
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                             cm9 : f32 [ caruncle ]
                             for [ s9: i32 0, s9 < 2, s9 += 1 ]
@@ -4047,13 +3607,8 @@ element ModelView
                                     bp9[ q83 + 1 ] = ecy + (bp9[ q83 + 1 ] - ecy) * fo8
                                     bp9[ q83 + 2 ] = ecz + (bp9[ q83 + 2 ] - ecz) * fo8
                             cap_carm = cm9
-                            # lid z-follow amount for this pose: visible,
-                            # never alien (0.06..0.20 of the globe radius)
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                             cap_zamt = globe_rad * (0.06 + f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 * 0.14)
-                            # perlin lid push for this pose: on ~70% of
-                            # poses at 0.02..0.14 globe radii along the
-                            # look direction; breadth varies 2.2..3.8
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                             if [ (cap_seed % 1000 + 1000) % 1000 < 300 ]
                                 cap_lnamt = 0.0
@@ -4065,9 +3620,6 @@ element ModelView
                             cap_lnrad = 2.2 + (f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0) * 1.6
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                             cap_lnsd = cap_seed
-                            # NOSE: every painted vert fully randomized,
-                            # fresh per LOOK — the nose buys the net
-                            # nothing, so slower cues (eye slant) catch
                             if [ nose_w ]
                                 if [ !cap_nd ]
                                     cap_nd = new f32 [ hc9.nv * 3 ]
@@ -4084,9 +3636,6 @@ element ModelView
                                         nd8 : f32 [ (f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 2.0 * nam * wn8 ]
                                         bp9[ q83 + x8 ] += nd8 - cap_nd[ q83 + x8 ]
                                         cap_nd[ q83 + x8 ] = nd8
-                            # general perlin over the WHOLE mesh, fresh per
-                            # LOOK — zero near the four corner anchors
-                            # (oc + ic): those are truth and never move
                             if [ !cap_maw ]
                                 cap_maw = new f32 [ hc9.nv ]
                                 cap_mp = new f32 [ hc9.nv * 3 ]
@@ -4143,12 +3692,6 @@ element ModelView
                                     mn7 : f32 [ (vnoise2[ ms3[ x7 ], bx7, by7 ] - 0.5) * 2.0 * mam * wa7 ]
                                     bp9[ q73 + x7 ] += mn7 - cap_mp[ q73 + x7 ]
                                     cap_mp[ q73 + x7 ] = mn7
-                            # FACE: every other vert scrambled like the
-                            # nose at 1/3 the amount, fresh per LOOK —
-                            # the head net memorizes static geometry
-                            # within one epoch otherwise. still point =
-                            # midpoint between each eye's ic and oc; the
-                            # globe center is not observable at inference
                             if [ !cap_faw ]
                                 cap_faw = new f32 [ hc9.nv ]
                                 mly : f32 [ (anch_ly + eyec_ly) * 0.5 ]
@@ -4185,10 +3728,6 @@ element ModelView
                                     fd6 : f32 [ (f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 2.0 * fam * wf6 ]
                                     bp9[ q63 + x6 ] += fd6 - cap_fd[ q63 + x6 ]
                                     cap_fd[ q63 + x6 ] = fd6
-                            # ORBITAL: whole painted eye region scales per
-                            # LOOK about the outer corners — mostly BIGGER
-                            # (square-biased to +14%), small only ~15%:
-                            # shrunken openings read weird
                             if [ eye_w ]
                                 if [ !cap_ed ]
                                     cap_ed = new f32 [ hc9.nv * 3 ]
@@ -4226,9 +3765,6 @@ element ModelView
                     cap_rot = cap_rot.translate[ vec3f [ mxc, myc, mzc ] ]
                     cap_rot = cap_rot.rotate[ hq ]
                     cap_rot = cap_rot.translate[ vec3f [ ncx, ncy, ncz ] ]
-                    # up to 16 plot candidates for this seat + pose: the eyes
-                    # must actually fixate the point — a clamped gaze would be
-                    # a lying label. no fit -> the whole sample re-rolls
                     aimed : bool [ false ]
                     for [ t2: i32 0, t2 < 16, t2 += 1 ]
                         cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
@@ -4245,13 +3781,9 @@ element ModelView
                         apply_eyes_down[]
                         capture_state = 1
                     el
-                        # a pose that can't fixate a fresh plot ends its
-                        # group; a new pose rolls next frame
                         cap_look_i = 0
                 el [ capture_state == 1 ]
                     if [ !save_plot_sample[ fpc, cap_cam ] ]
-                        # an eye region would clip this camera's frame:
-                        # discard the pose entirely, re-roll a fresh sample
                         clip_rejects += 1
                         if [ (clip_rejects % 200) == 0 ] puts 'plot capture: {clip_rejects} poses re-rolled for eye clip'
                         cap_cam = 0
@@ -4259,15 +3791,11 @@ element ModelView
                         capture_state = 0
                     el
                         if [ cap_cam == 0 ]
-                            # IR lamp for the verify frame = the TOP mount
-                            # camera; stash before the view moves
                             cap_camx = look_x + dist * cos[ pitch ] * sin[ yaw ]
                             cap_camy = look_y + dist * sin[ pitch ]
                             cap_camz = look_z + dist * cos[ pitch ] * cos[ yaw ]
                         cap_cam += 1
                         if [ cap_cam < fpc.cameras ]
-                            # next camera: the mirror mount BELOW the screen
-                            # (same offsets, opposite sign), tilted up
                             tc2 : f32 [ radians[ fpc.cam_tilt_deg ] ]
                             c1x : f32 [ cap_scx - fpc.cam_x ]
                             c1y : f32 [ cap_scy - fpc.cam_y ]
@@ -4295,19 +3823,12 @@ element ModelView
                                     if [ fpc.gen > 0 ] exit[ 0 ]
                     if [ capture_state == 3 ]
                         capture_state = 2
-                        # verify pose (--verify): camera AT the gaze target,
-                        # looking back at the eye midpoint, zoomed for pupil
-                        # reading. the gaze bones hold still; only the
-                        # camera moves.
                         mxv : f32 [ (eyec_lx + eyec_rx) * 0.5 ]
                         myv : f32 [ (eyec_ly + eyec_ry) * 0.5 ]
                         mzv : f32 [ (eyec_lz + eyec_rz) * 0.5 ]
                         dxv : f32 [ cap_tx - mxv ]
                         dyv : f32 [ cap_ty - myv ]
                         dzv : f32 [ cap_tz - mzv ]
-                        # side_verify: park the proof camera beside the
-                        # face instead, so lid/caruncle skin reads in
-                        # profile while the eyes still track the mark
                         if [ fpc.side_verify ]
                             dxv = 0.24
                             dyv = 0.02
@@ -4340,12 +3861,7 @@ element ModelView
             vshader   = SkinnedLit [ vk: cv.vk, name: 'skinned' ]
             rshader   = RigidLit   [ vk: cv.vk, name: 'rigid' ]
             cshader   = CorneaIR   [ vk: cv.vk, name: 'cornea' ]
-            # load the body and the eyeball spheres (Eye L/R -> CorneaIR volume,
-            # the real bump). drop the flat Iris disc meshes (RigidLit planes)
             vshader.groups = array string [ 'Body', 'Eye L', 'Eye R' ]
-            # mount the .res sidecar if present, then resolve the model and
-            # its buffer uris through the wrapper: loose files win, else the
-            # archive cache. base = the asset root, one dir above the model
             root    : path model_path.parent_dir[].parent_dir[]
             resf    : model_path.change_ext[ "res" ]
             reldir  : model_path.parent_dir[].filename[]
@@ -4358,19 +3874,13 @@ element ModelView
             el
                 GltfBuffer.set_base[ model_path.parent_dir[] ]
             expect gpath && gpath.exists[], 'model does not exist: {model_path}'
-            # member sets outside init do NOT retain: without the hold the
-            # loaded model drops before Render init and Model.finish silently
-            # falls back to the default quad
             gm : GltfModel [ gpath.load[ typeid[ GltfModel ], null ] ]
             gm.hold[]
             gmodel = gm
             gm.compute_worlds[]
-            # bind the skin/eye albedo maps onto the named materials before
-            # the pipelines build (mat_tex reads baseColorTexture)
             bind_albedos[]
             # blend shape keys into POSITION
             apply_morphs[]
-            # generic control-cage deform (random field per variant for now)
             deform_cage[]
             # stash the mask-edge alpha in uv1 so it survives subdivide
             bake_edge_uv1[]
@@ -4379,14 +3889,10 @@ element ModelView
             baked_nos  = nostril_span
             baked_mid  = mid_nose
             baked_ny   = nostril_y
-            # read the skin's inverse-bind matrices, find the joint node, build
-            # the joint-matrix palette storage buffer
             setup_skin[]
             update_palette[]
             sm : map Au[string] [ ]
             if [ joint_buf ] sm[ 'joints_pal' ] = joint_buf
-            # bind every eye map onto the cornea shader; the single frag samples
-            # fibres, melanin, three iris displacements, and the sclera veins
             eye_files : array string [ 'iris_fibres.png', 'iris_melanin.png', 'iris_displacement_a.png', 'iris_displacement_b.png', 'iris_displacement_c.png', 'sclera_displacement.png' ]
             eye_keys  : array string [ 'iris', 'iris_melanin', 'iris_disp_a', 'iris_disp_b', 'iris_disp_c', 'sclera_disp' ]
             eye_tex = array Texture [ ]
@@ -4400,15 +3906,8 @@ element ModelView
                 eml : i32 [ 1 ]
                 for [ q: i32 emx, q > 1, q = q / 2 ]
                     eml += 1
-                # fibres + melanin + the three speckle overlays become
-                # 1024-variant atlases (mips cap at 3 so filtering never
-                # bleeds across cells) — but ONLY when generating: the
-                # synthesis costs seconds and interactive/record use
-                # needs none of it
                 acfg : picker[]
                 agen : hyperspace2 [ (rig) ? rig : acfg ]
-                # only the offscreen capture view pays for synthesis —
-                # interactive panes never sample the atlas cells
                 wants : bool [ agen && ((agen.gen > 0 && rig) || agen.dump_iris) ]
                 is_atlas : bool [ false ]
                 if [ wants && kk == 'iris' ]
@@ -4431,8 +3930,6 @@ element ModelView
                     eim = build_iris_atlas[ eim, 0, 224737 ]
                     eml = 3
                     is_atlas = true
-                # --dump_iris: every synthesized variant as its own 128px
-                # png under /src/hyperspace-sessions/iris-preview
                 if [ is_atlas ]
                     dpk : picker[]
                     dcfg : hyperspace2 [ (rig) ? rig : dpk ]
@@ -4454,8 +3951,6 @@ element ModelView
                 if [ is_atlas ] cshader.iris_cells = 32.0
             vmodel    = Model [ vk: cv.vk, w: w, s: vshader, rigid_s: cshader, transparent_s: cshader, samplers: sm, subdiv: subdiv_levels ]
             vmodel.id = gm
-            # auto-frame: union of POSITION bounds in WORLD space — each mesh
-            # node's composed scene-graph transform applied to its box corners
             mnx : f32 [  1e9 ]
             mny : f32 [  1e9 ]
             mnz : f32 [  1e9 ]
@@ -4475,9 +3970,6 @@ element ModelView
                                 cxv : f32 [ ((cn & 1) != 0) ? ac.max.x : ac.min.x ]
                                 cyv : f32 [ ((cn & 2) != 0) ? ac.max.y : ac.min.y ]
                                 czv : f32 [ ((cn & 4) != 0) ? ac.max.z : ac.min.z ]
-                                # column-major transform, scalar math (a C
-                                # vec4f-by-value return crosses the aether/clang
-                                # struct-return ABI wrong — see mul_v4 note)
                                 wcx : f32 [ wmat.m[0] * cxv + wmat.m[4] * cyv + wmat.m[8]  * czv + wmat.m[12] ]
                                 wcy : f32 [ wmat.m[1] * cxv + wmat.m[5] * cyv + wmat.m[9]  * czv + wmat.m[13] ]
                                 wcz : f32 [ wmat.m[2] * cxv + wmat.m[6] * cyv + wmat.m[10] * czv + wmat.m[14] ]
@@ -4508,22 +4000,13 @@ element ModelView
                 puts 'hyperspace2: model bounds {sx}x{sy}x{sz} center=({fpf.look_x},{fpf.look_y},{fpf.look_z}) -> dist={fpf.dist}'
             gw : i32 [ i32[ bounds.w ] ]
             gh : i32 [ i32[ bounds.h ] ]
-            # capture view clears alpha 0: background pixels stay
-            # transparent so the record frame composites under the mask
-            # rig marks the capture view — trinity stamps the offscreen
-            # root's id to 'app', so id can't identify it here
             cca : f32 [ 1.0 ]
             if [ rig ] cca = 0.0
             vrender   = Render [ vk: cv.vk, w: w, width: gw, height: gh, use_depth: true, clear_color: vec4f [ 0.015, 0.015, 0.015, cca ], models: array Model [ vmodel ] ]
-            # register as an element target so trinity draws + fences it at frame
-            # top (before compose); draw[] then only updates uniforms and blits.
-            # a raw self-submit here corrupts the screen batch for sibling panes.
             w.element_targets[ 'hs2_{id}' ] = vrender
             vrender.wscale = 0.0
             # anchors + pins first, so nothing can ever move the corners
             setup_cage_anchors[]
-            # user mask: the main view applies the session's saved cage
-            # deltas at startup; --reset writes a zeroed mask instead
             if [ face_idx == 0 ]
                 fpm : picker[]
                 if [ fpm ]
@@ -4540,8 +4023,6 @@ element ModelView
                         fpm.cap_started = true
                         fpm.run_fit[]
             puts 'hyperspace2: bounds={bounds.w}x{bounds.h} window={w.width}x{w.height} scale={w.scale}'
-        # orbit camera: spherical eye around the look point (matches the Avatar
-        # camera conventions — up is -Y, fov is horizontal)
         tgt : vec3f [ look_x, look_y, look_z ]
         eye : vec3f [
             tgt.x + dist * cos[ pitch ] * sin[ yaw ],
@@ -4550,12 +4031,8 @@ element ModelView
         up  : vec3f [ 0.0f, -1.0f, 0.0f ]
         asp : f32 [ bounds.w / bounds.h ]
         fy  : f32 [ 2.0f * atan[ tan[ radians[ fov_x ] * 0.5f ] / asp ] ]
-        # capture head pose: the whole model (skin + eyeballs) rotates about
-        # the eye midpoint; identity outside a capture
         mdlm : mat4f [ mat4f.identity[] ]
         if [ capture_left > 0 ] mdlm = cap_rot
-        # IR lamp: coaxial with the render camera EXCEPT the verify
-        # frame, where the lamp stays put on the camera mount
         lgx : f32 [ eye.x ]
         lgy : f32 [ eye.y ]
         lgz : f32 [ eye.z ]
@@ -4575,8 +4052,6 @@ element ModelView
         vshader.eye_rx = eyec_rx
         vshader.eye_ry = eyec_ry
         vshader.eye_rz = eyec_rz
-        # rigid meshes (eyeballs) need the same camera; their model matrix is the
-        # per-node world (ubo.model = rshader.model x node_model)
         if [ rshader ]
             rshader.model = mdlm
             rshader.view  = vshader.view
@@ -4591,20 +4066,12 @@ element ModelView
             cshader.light_x = lgx
             cshader.light_y = lgy
             cshader.light_z = lgz
-            # interactive: sweep pupil dilation on a sine each frame.
-            # capture: pupil is PER SAMPLE (set in state 0) — the sine
-            # would change dilation between the two cameras' frames
             if [ capture_left == 0 ]
                 ph : f32 [ f32[ frame_n ] * 0.02f ]
                 cshader.pupil_r = 0.35f + 0.20f * sin[ ph ]
         update_palette[]
-        # rigid meshes (eyeballs) follow their bone: re-push node worlds
         if [ vmodel ] vmodel.update_animated[]
-        # trinity's element_targets loop draws + fences this render at frame top;
-        # here we only upload the fresh uniforms for the next frame's draw
         vrender.update[]
-        # HS2_DUMP=1: write the render target to /tmp/hyperspace2_target.png once
-        # (~frame 60) — discriminates render corruption from present corruption
         frame_n += 1
         cv.draw_image[ vrender.color, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
@@ -4613,13 +4080,7 @@ element hyperspace2 : trinity
     public width      : i32    [ 1024 ]
     public height     : i32    [ 1024 ]
     public title      : string [ 'hyperspace2' ]
-    # solid-color background: the swapchain blit presents the LAST render's
-    # color — the background chain's r_view (targeting the screen canvas) is
-    # that render, so an app without one has nothing to present
     public background : string [ 'Background' ]
-    # A/B face fitter (folded into the app root so it always gets keys as
-    # app_object). champion (A = running centre) vs challenger (B = centre +
-    # noise); space or a face double-click splits them side by side.
     mutable seeded   : bool
     mutable regen_i  : i32                      # r-key regeneration counter
     public  face_main : ModelView              # auto-binds to e['face_main']
@@ -4629,17 +4090,8 @@ element hyperspace2 : trinity
     mutable cap_view  : ModelView              # the element inside it
     mutable cage_ci   : i32 [ -1 ]             # last main-view pick: cage
     mutable cage_v    : i32 [ -1 ]             # last main-view pick: vert
-    # user derivation mask: per-vert cage deltas from base, kept per session
-    # at /src/hyperspace-sessions/{session}/user.cage. loads at startup,
-    # re-saves on every merge; --reset writes it back to all zeros
     public  session   : string [ 'default' ]
     public  reset     : bool
-    # --- real-camera recording + outer-corner annotation ---------------
-    # record: dual-camera frame pairs into {session}/record, one shot per
-    # 600ms (click anywhere to stop). annotate: fullscreen pass over the
-    # unplotted pairs — click the LEFT outer corner then the RIGHT, top
-    # camera image then bottom; keys {cam}_left_oc / {cam}_right_oc in
-    # image-normalized 0..1 coords (hyperspace.ag's convention)
     public  top       : CameraView             # auto-binds to e['top']
     public  bot       : CameraView             # auto-binds to e['bot']
     public  cam_top_dev : string [ '/dev/video2' ]
@@ -4684,8 +4136,6 @@ element hyperspace2 : trinity
             puts 'record ERROR: need both cameras — {cam_top_dev} exists={tdev.exists[]} {cam_bot_dev} exists={bdev.exists[]}'
             return
         rd : rec_dir[]
-        # next id = one past the highest existing (deleted pairs leave
-        # holes; filling a hole would shadow neighbors' image files)
         rec_i = 0
         k7 : i32 [ 0 ]
         miss7 : i32 [ 0 ]
@@ -4740,15 +4190,12 @@ element hyperspace2 : trinity
         if [ s.index_of[ 'bot_left_oc:' ] < 0 ] return true
         if [ s.index_of[ 'bot_right_oc:' ] < 0 ] return true
         if [ s.index_of[ 'bot_nose_base:' ] < 0 ] return true
-        # inner corners are the shift-extended pass: their absence keeps
-        # the pair queued, the base flow auto-skips past it
         if [ s.index_of[ 'top_left_ic:' ] < 0 ] return true
         if [ s.index_of[ 'top_right_ic:' ] < 0 ] return true
         if [ s.index_of[ 'bot_left_ic:' ] < 0 ] return true
         if [ s.index_of[ 'bot_right_ic:' ] < 0 ] return true
         return false
 
-    # read a saved plot 'key: x y' for one image; absent = (-999,-999)
     func rec_read [ fid: string, cam: i32, sub: i32 ] -> vec2f
         r : vec2f [ x: -999.0, y: -999.0 ]
         cs : string [ (cam == 0) ? 'top' : 'bot' ]
@@ -4781,8 +4228,6 @@ element hyperspace2 : trinity
         ann_m4 = rec_read[ fid, ann_cam, 4 ]
         ann_m5 = rec_read[ fid, ann_cam, 5 ]
 
-    # a saved plot on screen: colored ring + center dot (reads over any
-    # background). left oc orange, right oc blue, nose base yellow
     func ann_mark [ cv: Canvas, mv: vec2f, col: string ]
         if [ mv.x < -100.0 ] return
         mx : f32 [ ann_rect.x + mv.x * ann_rect.w ]
@@ -4797,8 +4242,6 @@ element hyperspace2 : trinity
         cv.stroke_width[ 0.0 ]
         cv.paint[]
 
-    # key built HERE, used HERE: returning a locally-built string from
-    # a helper hands the caller a dangling borrow
     func ann_have [ fid: string, cam: i32, sub: i32 ] -> bool
         cs : string [ (cam == 0) ? 'top' : 'bot' ]
         k6 : string '{cs}_left_oc:'
@@ -4812,12 +4255,8 @@ element hyperspace2 : trinity
         if [ !s ] return false
         return s.index_of[ k6 ] >= 0
 
-    # move to the next MISSING plot: already-plotted clicks are skipped
-    # (unless redo_oc overwrites); exits annotate when nothing is left
     func ann_seek [ advance: bool ]
         if [ advance ] ann_sub += 1
-        # shift extends the pass to the inner corners (subs 3, 4); the
-        # base pass never stops on them
         lim7 : i32 [ (ann_ext) ? 5 : 3 ]
         while [ true ]
             if [ ann_sub >= lim7 ]
@@ -4847,8 +4286,6 @@ element hyperspace2 : trinity
         if [ im.width <= 0 ]
             puts 'annotate ERROR: cannot load {ip}'
             return
-        # GPU texture is built lazily in on_canvas with the CANVAS vk —
-        # the app element's own vk is not the render context
         im.hold[]
         ann_img = im
         ann_tex = null
@@ -4875,10 +4312,6 @@ element hyperspace2 : trinity
         if [ ann_files.count == 0 ]
             puts 'annotate: nothing to plot (record first, or all done)'
             return
-        # shuffled by PER-PAIR HASH (cameras stay together): uniform
-        # coverage on partial passes, and the order is stable regardless
-        # of what enters or leaves the queue between sessions. sorted as
-        # plain ints — swapping array strings in place dangles borrows
         n5 : i32 [ ann_files.count ]
         fs5 : new i64 [ n5 ]
         for [ i: i32 0, i < n5, i += 1 ]
@@ -4893,8 +4326,6 @@ element hyperspace2 : trinity
                 fs5[ sj ] = fs5[ sj - 1 ]
                 sj -= 1
             fs5[ sj ] = cur
-        # finish-what-you-started: pairs with ANY plots lead the queue,
-        # untouched pairs follow — hash order within each group
         af5 : array string [ ]
         for [ i: i32 0, i < n5, i += 1 ]
             fi5 : i64 [ fs5[ i ] ]
@@ -4911,10 +4342,6 @@ element hyperspace2 : trinity
         rec_mode = 'annotate'
         ann_seek[ false ]
 
-    # box-average a square window of the frame into a 32x32 tensor.
-    # coords/side are fractions of the image width; out-of-frame is
-    # ZERO-padded like the trainer's crop_gray; mir flips horizontally
-    # (the stage nets train on left-eye anatomy, right eyes mirror in)
     func crop_tensor2 [ src: Image, cx: f32, cy: f32, side: f32, mir: bool ] -> tensor
         t : tensor [ tensor_shape: 32x32x1 ]
         data : @u8 [ src.vdata[] ]
@@ -4944,7 +4371,6 @@ element hyperspace2 : trinity
                 t.floats[ oy * 32 + dox ] = acc / (f32[ cnt ] * 255.0)
         return t
 
-    # a 32x32 gray tensor into a panel texture, for the net-input strip
     func upload_tensor2 [ tex: Texture, t: tensor ]
         img2 : Image [ width: 32, height: 32, format: Pixel.rgba8 ]
         d : @u8 [ img2.vdata[] ]
@@ -4959,9 +4385,6 @@ element hyperspace2 : trinity
             d[i * 4 + 3] = u8[ 255 ]
         tex.upload[ img2.vdata[], 4096 ]
 
-    # one camera through the cascade: track each eye (target snaps the
-    # window, refine polishes center + outer corner + size), build the
-    # look inputs at the training conventions, read head + gaze
     func tb_cam2 [ c: i32, gray: Image ] -> bool
         for [ e2: i32 0, e2 < 2, e2 += 1 ]
             b3 : i32 [ (c * 2 + e2) * 3 ]
@@ -5007,7 +4430,6 @@ element hyperspace2 : trinity
             tb_ex[ b3 + 0 ] = ex
             tb_ex[ b3 + 1 ] = ey
             tb_ex[ b3 + 2 ] = es
-        # look inputs from the two tracked eyes, training conventions
         bl3 : i32 [ c * 6 ]
         elx : f32 [ tb_ex[ bl3 + 0 ] ]
         ely : f32 [ tb_ex[ bl3 + 1 ] ]
@@ -5051,8 +4473,6 @@ element hyperspace2 : trinity
         ax.floats[15] = fmx - 0.5
         ax.floats[16] = fmy - 0.5
         ax.floats[17] = sc5 * 1.75
-        # stash this camera's crops + aux: offset and look both read
-        # the PAIR in one forward after the camera loop
         fd9 : tb_f0
         ld9 : tb_l0
         rd9 : tb_r0
@@ -5117,9 +4537,6 @@ element hyperspace2 : trinity
         bd.make_dir[]
         return bd
 
-    # REAL test capture: the mark rides a breathing spiral (no line
-    # bias) and every 600ms tick saves a camera pair whose .agi carries
-    # the mark position as its gaze label. click anywhere to stop
     public func start_bench []
         tdev : path '{cam_top_dev}'
         bdev : path '{cam_bot_dev}'
@@ -5145,9 +4562,6 @@ element hyperspace2 : trinity
         ux.set_fullscreen[ true ]
         puts 'benchmark: -> {bd} starting at {bench_i} — follow the mark (click to stop)'
 
-    # one record camera's ray through an annotated point. screen center
-    # is the origin: +x right, +y up, +z toward the person. cam 0 = top
-    # mount (tilted down), cam 1 = the mirror below (tilted up)
     func cam_ray [ c: i32, nx: f32, ny: f32, ox: @f32, dx: @f32 ]
         sgn : f32 [ (c == 0) ? 1.0 : -1.0 ]
         ox[0] = cam_x
@@ -5180,9 +4594,6 @@ element hyperspace2 : trinity
         dx[1] = vy / vl
         dx[2] = vz / vl
 
-    # one fit pass: for every fully annotated non-noise pair, triangulate
-    # the three landmarks (closest point of the two mount rays); medians
-    # land in fit_span/fit_nose/fit_seat/fit_gap
     func fit_pass []
         rd : rec_dir[]
         cap9 : i32 [ 4096 ]
@@ -5280,10 +4691,6 @@ element hyperspace2 : trinity
         fit_seat = dists[ mid9 ]
         fit_gap = gaps[ mid9 ]
 
-    # solve ONE record: triangulate its landmark triangle, derive the
-    # head yaw/pitch/roll (generator convention) + per-camera 2D triangle
-    # mid/span for the composite alignment. out9 layout:
-    # [hy, hp, hr, top_mx, top_my, top_span, bot_mx, bot_my, bot_span]
     func rec_solve [ fid: string, out9: @f32 ] -> bool
         for [ c9: i32 0, c9 < 2, c9 += 1 ]
             for [ s9: i32 0, s9 < 3, s9 += 1 ]
@@ -5311,8 +4718,6 @@ element hyperspace2 : trinity
             pw[ s9*3 + 0 ] = (o1[0] + d1[0]*t1 + o2[0] + d2[0]*t2) * 0.5
             pw[ s9*3 + 1 ] = (o1[1] + d1[1]*t1 + o2[1] + d2[1]*t2) * 0.5
             pw[ s9*3 + 2 ] = (o1[2] + d1[2]*t1 + o2[2] + d2[2]*t2) * 0.5
-        # triangle axes (record frame: +z toward person). the generator
-        # frame is the record frame yawed 180: (x,y,z)g = (-x, y, -z)r
         xax : local f32 [ 3 ]
         xax[0] = 0.0 - (pw[0] - pw[3])
         xax[1] = pw[1] - pw[4]
@@ -5326,8 +4731,6 @@ element hyperspace2 : trinity
         upx : f32 [ 0.0 - ((pw[0] + pw[3]) * 0.5 - pw[6]) ]
         upy : f32 [ (pw[1] + pw[4]) * 0.5 - pw[7] ]
         upz : f32 [ 0.0 - ((pw[2] + pw[5]) * 0.5 - pw[8]) ]
-        # forward = up x left-axis, orthonormal via double cross.
-        # rest axes in gen frame: x=(-1,0,0), y=(0,1,0), z=(0,0,1)
         zx : f32 [ upy*xax[2] - upz*xax[1] ]
         zy : f32 [ upz*xax[0] - upx*xax[2] ]
         zz : f32 [ upx*xax[1] - upy*xax[0] ]
@@ -5343,8 +4746,6 @@ element hyperspace2 : trinity
         yx : f32 [ zy*xax[2] - zz*xax[1] ]
         yy : f32 [ zz*xax[0] - zx*xax[2] ]
         yz : f32 [ zx*xax[1] - zy*xax[0] ]
-        # yaw/pitch from the forward axis; roll from where the up axis
-        # lands after yaw+pitch alone
         hy9 : f32 [ atan2[ zx, zz ] ]
         sp9 : f32 [ 0.0 - zy ]
         if [ sp9 > 1.0 ] sp9 = 1.0
@@ -5365,7 +4766,6 @@ element hyperspace2 : trinity
         out9[0] = hy9
         out9[1] = hp9
         out9[2] = hr9
-        # per-camera 2D mid + span for composite alignment (raw annots)
         for [ c9: i32 0, c9 < 2, c9 += 1 ]
             l2 : rec_read[ fid, c9, 0 ]
             r2 : rec_read[ fid, c9, 1 ]
@@ -5407,8 +4807,6 @@ element hyperspace2 : trinity
                     recs_noise[ recs_noise_n ] = k - 1
                     recs_noise_n += 1
                 continue
-            # hair samples: a 10%-of-frame patch at each h plot, pooled
-            # for generation's hair patching passes (nearest sampling)
             for [ hc9: i32 0, hc9 < 2, hc9 += 1 ]
                 if [ hair_n >= 256 ] break
                 hv9 : rec_read[ fid, hc9, 5 ]
@@ -5443,9 +4841,6 @@ element hyperspace2 : trinity
         if [ tn == 0 ]
             puts 'records: 0 fitted poses loaded for generation'
             return
-        # the person FACED THE SCREEN on average while recording, so
-        # the median solved yaw/pitch is the anatomical solve bias
-        # (eye-mid minus subnasale leans backward) — remove it
         sya : new f32 [ tn ]
         spa : new f32 [ tn ]
         for [ i6: i32 0, i6 < tn, i6 += 1 ]
@@ -5467,8 +4862,6 @@ element hyperspace2 : trinity
             dy9 : f32 [ (tmp_dat[ i6 * 9 + 0 ] - my6) * 57.29578 ]
             dp9 : f32 [ (tmp_dat[ i6 * 9 + 1 ] - mp6) * 57.29578 ]
             dr9 : f32 [ tmp_dat[ i6 * 9 + 2 ] * 57.29578 ]
-            # sane seated pose only: facing the screen within 60 degrees
-            # of yaw, 40 up/down, 40 roll — outside = bad annotation
             bad9 : bool [ false ]
             if [ dy9 > 60.0 || dy9 < -60.0 ] bad9 = true
             if [ dp9 > 40.0 || dp9 < -40.0 ] bad9 = true
@@ -5487,9 +4880,6 @@ element hyperspace2 : trinity
         mpdeg : f32 [ mp6 * 57.29578 ]
         puts 'records: {recs_n} of {tn} poses usable, {recs_noise_n} noise frames, {hair_n} hair patches (bias removed: yaw={mydeg} pitch={mpdeg})'
 
-    # --fit driver: with span_known set, SOLVE the camera fov first —
-    # bisect until the stereo span equals the ruler truth (span grows
-    # monotonically with fov)
     func run_fit []
         if [ span_known > 0.0 ]
             lo9 : f32 [ 15.0 ]
@@ -5543,8 +4933,6 @@ element hyperspace2 : trinity
             return
         oe : cast element [ ev.origin ]
         if [ !oe ] return
-        # consume ONLY our own buttons: anything else falls through to
-        # the ModelViews (face edit clicks, camera orbit)
         if [ oe.id == 'record' ]
             start_record[ false ]
             ev.stop_propagation[]
@@ -5561,13 +4949,9 @@ element hyperspace2 : trinity
             start_bench[]
             ev.stop_propagation[]
 
-    # the testbed paints OVER the element tree (on_canvas paints under
-    # it — feeds would cover the targets)
     public func on_overlay [ cv: Canvas ]
         sw : f32 [ f32[ ux.width ] ]
         sh : f32 [ f32[ ux.height ] ]
-        # --test: autostart only after the tree has settled — swapping
-        # the tree during init kills in-flight renders (device lost)
         if [ test && rec_mode != 'test' ]
             test_wait += 1
             if [ test_wait > 90 ] start_test[]
@@ -5576,12 +4960,8 @@ element hyperspace2 : trinity
             if [ test_wait > 90 ] start_bench[]
         if [ rec_mode == 'test' ]
             if [ !ts_look ] return
-            # the swap frame binds top/bot to a template that's
-            # immediately discarded — let the tree settle first
             test_settle += 1
             if [ test_settle < 5 ] return
-            # net-input panels are built here: the app element's own vk
-            # is not the render context, the canvas's is
             if [ !tb_pv ]
                 tb_pv = array Texture [ ]
                 tb_pv.hold[]
@@ -5597,9 +4977,6 @@ element hyperspace2 : trinity
                 gr7 : v7.frame_image[]
                 if [ !gr7 ] continue
                 if [ tb_cam2[ c7, gr7 ] ] n7 += 1
-            # two-step pair stage: offset reads both face crops, then
-            # look reads both cams' crops + that offset — ONE result,
-            # no per-camera averaging (one view can't triangulate)
             if [ n7 == 2 && ts_off && ts_look ]
                 ax7 : tensor [ tensor_shape: 1x36 ]
                 for [ q7: i32 0, q7 < 36, q7 += 1 ]
@@ -5642,8 +5019,6 @@ element hyperspace2 : trinity
                     tb_hx = tb_hx * 0.7 + h7x * 0.3
                     tb_hy = tb_hy * 0.7 + h7y * 0.3
             if [ tb_have ]
-                # gaze mark (green) and head mark (orange): rings + a
-                # small center dot, the annotate idiom that renders true
                 gpx : f32 [ (tb_gx + 0.5) * sw ]
                 gpy : f32 [ (tb_gy + 0.5) * sh ]
                 hpx : f32 [ (tb_hx + 0.5) * sw ]
@@ -5670,9 +5045,6 @@ element hyperspace2 : trinity
                     rect [ x: sw * 0.5 - 300.0, y: sh - 40.0, w: 600.0, h: 20.0 ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
                 cv.paint[]
-            # tracked state over each feed: eye boxes (yellow), outer
-            # corners (orange dots) — what the cascade believes, on the
-            # pixels it believes it about
             for [ c8: i32 0, c8 < 2, c8 += 1 ]
                 # member ternary yields the slot, not the value: assign
                 ve : top
@@ -5726,17 +5098,12 @@ element hyperspace2 : trinity
         if [ rec_mode == 'bench' ]
             now8 : i64 [ epoch_millis[] ]
             tsec : f32 [ f32[ now8 - bench_t0 ] / 1000.0 ]
-            # breathing spiral: angle advances steadily while the radius
-            # swells 0 -> full -> 0 over ~45s. pure curves, no line bias
             th8 : f32 [ tsec * 1.1 ]
             rr8 : f32 [ 0.5 - 0.5 * cos[ tsec * 0.1396 ] ]
             bench_u = 0.47 * rr8 * cos[ th8 ]
             bench_v = 0.47 * rr8 * sin[ th8 ]
             mpx : f32 [ (bench_u + 0.5) * sw ]
             mpy : f32 [ (bench_v + 0.5) * sh ]
-            # STATIONARY blue ring (128px circle, 2px stroke) at center
-            # for the head; the gaze dot travels the spiral. both are
-            # rounded rects at full radius — the in-shader circle path
             cv.rounded_rect[ sw * 0.5 - 64.0, sh * 0.5 - 64.0, 128.0, 128.0, 64.0, 64.0, 64.0, 64.0 ]
             cv.fill_color[ '#0000' ]
             cv.stroke_color[ '#08f' ]
@@ -5775,8 +5142,6 @@ element hyperspace2 : trinity
                 okt : bool [ (top) ? top.save_frame[ tp ] : false ]
                 okb : bool [ (bot) ? bot.save_frame[ bp ] : false ]
                 s : string 'images:\n    top: {rec_i}-top.png\n    bot: {rec_i}-bot.png\ncameras: 2\n'
-                # negatives: no face in frame — the loader skips them for
-                # gaze and feeds them as face-absent counterexamples
                 if [ rec_noise ] s = string '{s}noise: true\n'
                 ag : path '{rd}/{rec_i}.agi'
                 ag.save[ s, null ]
@@ -5805,21 +5170,12 @@ element hyperspace2 : trinity
                 rect [ x: 16.0, y: 12.0, w: sw - 32.0, h: 28.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
             cv.paint[]
-            # every SAVED plot of this image stays on screen, straight
-            # from disk: left oc ORANGE, right oc BLUE, nose base YELLOW
             ann_mark[ cv, ann_m0, '#f80' ]
             ann_mark[ cv, ann_m1, '#08f' ]
             ann_mark[ cv, ann_m2, '#ff0' ]
             ann_mark[ cv, ann_m3, '#f4a' ]
             ann_mark[ cv, ann_m4, '#0dd' ]
             ann_mark[ cv, ann_m5, '#4c4' ]
-    # IR rig: the view is an IR camera mounted ON TOP of the LCD screen.
-    # cam_x/y/z place the camera relative to the SCREEN CENTER, in meters,
-    # in the person's screen frame: +x right, +y up, +z toward the person.
-    # plots are screen positions: (0,0) center, -0.5 left/top, 0.5 right/bottom.
-    # defaults = the real rig: 32" 16:9 panel (0.708 x 0.398 m), camera 1.5"
-    # above the top edge (half height + 0.038), 1" proud of the screen plane
-    # toward the person, tilted ~25 degrees down, ~60 degree IR optics
     public  screen_w  : f32 [ 0.708 ]          # LCD width, meters
     public  screen_h  : f32 [ 0.398 ]          # LCD height, meters
     public  cam_x     : f32 [ 0.0 ]
@@ -5828,47 +5184,27 @@ element hyperspace2 : trinity
     public  cam_tilt_deg : f32 [ 25.0 ]        # mount tilt down, degrees
     public  cam_fov_deg  : f32 [ 60.0 ]        # IR horizontal FOV, degrees
     public  face_dist : f32 [ 0.55 ]           # camera to face, meters
-    # per-sample person movement: the face sits at a different offset from
-    # the screen center every sample. 6 inches to 4 feet — the clip gate
-    # re-rolls near poses whose eye crops would leave the frame
     public  dist_min  : f32 [ 0.20 ]           # nearest seat distance (8in)
     public  dist_max  : f32 [ 0.61 ]           # farthest seat distance (2ft)
-    # capture cameras: 0 = top mount (above screen, tilted down), 1 = the
-    # mirror (below screen, tilted up); every sample saves one face image
-    # per camera and the .agi indexes the plots per camera
     public  cameras   : i32 [ 2 ]
     public  check_obj : bool                   # write 3D confirm .obj, first 4
     public  dump_iris : bool                   # dump 1024 iris variants as pngs
     public  move_x    : f32 [ 0.08 ]           # max lateral shift, meters
     public  move_y    : f32 [ 0.05 ]           # max vertical shift, meters
-    # per-sample head pose variance (radians, max magnitude each axis);
-    # the eyes still hit their plot — gaze compensates like a real person
     public  rot_yaw   : f32 [ 0.35 ]           # turn left/right (~20 deg)
     public  rot_pitch : f32 [ 0.2 ]            # nod up/down (~11 deg)
     public  rot_roll  : f32 [ 0.12 ]           # tilt (~7 deg)
-    # max |plot| sampled: 0.5 = on screen only; up to 1.0 allows an
-    # off-screen band around it; never bigger. every sample's eyes MUST
-    # physically reach their plot (16 tries, then the sample re-rolls)
     public  plot_extent : f32 [ 0.5 ]
-    # pin every sample to one exact plot (verification): -999 = off
     public  side_verify : bool                 # proof camera beside the face
     public  free_gaze : bool                   # test: no mechanical range gates
     public  eyes_down : f32 [ 1.0 ]            # eyes-down morph percentage
     public  plot_fx : f32 [ -999.0 ]
     public  plot_fy : f32 [ -999.0 ]
-    # capture render: the IR camera is SQUARE. frames save at full render
-    # resolution — python crops and box-averages, the app never does
     public  cap_w      : i32 [ 2048 ]
     public  cap_h      : i32 [ 2048 ]
-    # windowless generation: --hidden --gen N starts an N-sample batch
-    # at launch with no visible window and exits when done
     public  hidden     : bool
     public  gen        : i32
-    # look multiplier: each pose renders this many gaze positions with
-    # the seat, head, identity and lighting held — gaze alone varies
     public  looks      : i32 [ 10 ]
-    # --test: the live fullscreen testbed — both cameras through the
-    # target -> refine -> look cascade, gaze dot on screen
     public  test       : bool
     mutable ts_target  : ts_model
     mutable ts_refine  : ts_model
@@ -5885,9 +5221,6 @@ element hyperspace2 : trinity
     mutable test_settle : i32                  # frames since test began
     mutable tb_fb      : @f32               # 2 cams x (face cx, cy, side)
     mutable tb_pv      : array Texture         # net-input panels: l/r/face per cam
-    # two-step pair stage: offset reads both cams' face crops + aux
-    # -> eye coordinate relative to the screen center (meters, person
-    # frame); look reads BOTH cams' crops + that offset -> head/gaze
     mutable ts_off     : ts_model
     mutable tb_f0      : tensor                # top cam face crop
     mutable tb_f1      : tensor                # bottom cam face crop
@@ -5900,11 +5233,7 @@ element hyperspace2 : trinity
     mutable tb_oy      : f32
     mutable tb_oz      : f32
     mutable tb_ohave   : bool
-    # --verify: also render each sample's proof frame (camera at the
-    # gaze target); off by default — it costs a third render per sample
     public  verify     : bool
-    # --benchmark: record REAL test pairs while the user's eyes ride a
-    # curved spiral mark — each pair carries the mark as its gaze label
     public  benchmark  : bool
     mutable bench_i    : i32
     mutable bench_last : i64
@@ -5912,13 +5241,7 @@ element hyperspace2 : trinity
     mutable bench_t0   : i64                  # spiral clock zero
     mutable bench_u    : f32
     mutable bench_v    : f32
-    # --fit: triangulate the annotated record landmarks through the two
-    # mount cameras -> the user's true face metrics; writes fit.agi and
-    # exits. rec_fov = the record cameras' horizontal fov (degrees)
     public  fit        : bool
-    # generation drives head ORIENTATION from the annotated
-    # recordings (position stays the generator's uniform draw);
-    # each sample picks a random fitted record. 10 minimum.
     mutable recs_n     : i32
     mutable recs_dat   : @f32               # 9 per record, see rec_solve
     mutable recs_fid   : @i32               # record file id per loaded record
@@ -5927,8 +5250,6 @@ element hyperspace2 : trinity
     mutable hair_pat : @u8                  # 32x32 hair patches from h plots
     mutable hair_n   : i32
     public  rec_fov    : f32 [ 31.5 ]
-    # your true outer-corner span (ruler-measurable). when > 0 the fit
-    # SOLVES rec_fov by bisection until the stereo span matches it
     public  span_known : f32 [ 88.0 ]
     mutable fit_n      : i32
     mutable fit_span   : f32
@@ -5942,13 +5263,10 @@ element hyperspace2 : trinity
     mutable c_nos : f32 [ 38.5 ]
     mutable c_mid : f32 [ 33.9 ]
     mutable c_ny  : f32 [ 42.3 ]
-    # 4 variants shown in a 2x2 grid: [0] = champion (unperturbed), 1-3 challengers
     mutable veye : array f32
     mutable vnos : array f32
     mutable vmid : array f32
     mutable vny  : array f32
-    # one camera shared by both faces so they always show the same angle; a
-    # drag on either face writes back here and both faces read it each frame
     mutable yaw    : f32
     mutable pitch  : f32 [ 0.05 ]
     mutable dist   : f32 [ 3.5 ]
@@ -5957,10 +5275,6 @@ element hyperspace2 : trinity
     mutable look_z : f32
     mutable cam_ready : bool                    # a face has auto-framed once
 
-    # cage A/B loop. click on the MAIN view: unproject to the nearest control
-    # vert, then give each vote view the main's cage plus its OWN random
-    # scatter around that vert. click on a VOTE view: merge its cage back
-    # into the main. corrections from randoms keep accumulating.
     public func cage_click [ mv: ModelView, mx: f32, my: f32 ]
         if [ !face_main || !face_main.vmodel ] return
         if [ mv.face_idx == 0 ]
@@ -5976,8 +5290,6 @@ element hyperspace2 : trinity
             save_mask[ face_main ]
             puts 'cage merge: face_idx={mv.face_idx} -> main'
 
-    # write the user mask: per cage, current control positions minus the
-    # build-time base — the whole-cage derivation this session has built up
     public func save_mask [ mv: ModelView ]
         if [ !mv || !mv.vmodel || !mv.vmodel.cages ] return
         mkdir[ '/src/hyperspace-sessions', 493 ]
@@ -6006,7 +5318,6 @@ element hyperspace2 : trinity
         fclose[ fh ]
         puts 'mask saved: {fpn}'
 
-    # apply the user mask: current = base + saved deltas, whole cage
     public func load_mask [ mv: ModelView ]
         if [ !mv || !mv.vmodel || !mv.vmodel.cages ] return
         fpn : '/src/hyperspace-sessions/{session}/user.cage'
@@ -6035,15 +5346,12 @@ element hyperspace2 : trinity
         fclose[ fh ]
         puts 'mask loaded: {fpn}'
 
-    # copy the champion cage into a vote view and shuffle around the picked
-    # vert with a fresh random stream
     func cage_scatter [ vv: ModelView ]
         if [ !vv || !vv.vmodel || cage_v < 0 ] return
         vv.vmodel.cage_copy_from[ face_main.vmodel ]
         rng = rng * 6364136223846793005 + 1442695040888963407
         vv.vmodel.cage_shuffle[ cage_ci, cage_v, vv.paint_radius, vv.paint_amount, rng ]
 
-    # uniform 0..1 from a 64-bit LCG; no Math.random in the module
     func rnd [] -> f32
         rng = rng * 6364136223846793005 + 1442695040888963407
         r : i64 [ (rng >> 33) & 2147483647 ]
@@ -6053,8 +5361,6 @@ element hyperspace2 : trinity
     func gauss [] -> f32
         return rnd[] + rnd[] + rnd[] - 1.5
 
-    # draw 4 variants around the champion: index 0 unperturbed, 1-3 spread by
-    # ab_sigma. per-param base widths are rough human population ranges (mm)
     func resample []
         veye = array f32 [ ]
         vnos = array f32 [ ]
@@ -6067,8 +5373,6 @@ element hyperspace2 : trinity
             vmid += c_mid + gauss[] * 4.0 * s
             vny  += c_ny  + gauss[] * 5.0 * s
 
-    # adopt variant i as the new champion; adapt the spread by how far it sat
-    # from the centre (index-0/near picks narrow, far picks keep exploring)
     public func pick [ i: i32 ]
         if [ i < 0 || i >= 4 ] return
         if [ !veye || veye.count < 4 ] return
@@ -6102,16 +5406,12 @@ element hyperspace2 : trinity
 
     public func on_key [ ev: Event ]
         if [ !ev.key.state ] return
-        # space: skip this PAIR entirely (both cameras) during annotation
         if [ rec_mode == 'annotate' && ev.key.unicode == 32 ]
             ann_sub = 5
             ann_cam = 1
             ann_ext = ev.key.shift
             ann_seek[ false ]
             return
-        # H: flag HAIR at the cursor (green ring) — one plot per camera,
-        # re-press moves it; the sequence stays where it is. generation
-        # later patches hair sections from here under perlin masks
         if [ rec_mode == 'annotate' && ev.key.unicode == 72 ]
             if [ ann_rect.w > 0.0 ]
                 nx8 : f32 [ (ux.mouse.x - ann_rect.x) / ann_rect.w ]
@@ -6122,15 +5422,11 @@ element hyperspace2 : trinity
                 puts 'annotate: #{fidh} {cam8} hair at ({nx8}, {ny8})'
                 ann_refresh_marks[]
             return
-        # F: this pair is the FACE IDENTIFIER — the reference record
-        # automatic face fitting reads proportions from. stays on screen
         if [ rec_mode == 'annotate' && ev.key.unicode == 70 ]
             fidn7 : i32 [ i32[ atof[ ann_files[ ann_i ].chars ] ] ]
             agi_put2[ fidn7, 'face_id', 'true' ]
             puts 'annotate: #{fidn7} marked face identifier'
             return
-        # N: this pair is NOISE (no usable face) — mark it a negative
-        # and skip it; it never re-enters the annotation queue
         if [ rec_mode == 'annotate' && ev.key.unicode == 78 ]
             fidn6 : i32 [ i32[ atof[ ann_files[ ann_i ].chars ] ] ]
             agi_put2[ fidn6, string 'noise', string 'true' ]
@@ -6144,20 +5440,12 @@ element hyperspace2 : trinity
         if [ ev.key.unicode == 50 ] pick[ 1 ]     # 2: top-right
         if [ ev.key.unicode == 51 ] pick[ 2 ]     # 3: bottom-left
         if [ ev.key.unicode == 52 ] pick[ 3 ]     # 4: bottom-right
-        # R (GLFW keycode 82): regenerate the vote variants (new seeds)
         if [ ev.key.unicode == 82 ] regen_i += 1
-        # G (GLFW keycode 71): capture a two-angle perlin-labeled sample
         if [ ev.key.unicode == 71 ]
             if [ face_main ] face_main.begin_export[]
-        # X: run the IR plot capture on the OFF-SCREEN capture element
         if [ ev.key.unicode == 88 ] start_capture[]
-        # gaze arrows, hinge Q/E, IR toggle I live on the main view — keys
-        # only reach focus/app_object, and ModelView is not focusable
         if [ face_main ] face_main.on_key[ ev ]
 
-    # start the plot capture: the SAME ModelView element, hosted headless on
-    # a trinity offscreen (backbuffer window, 3:2, no present). the champion
-    # cage carries across; the interactive views never move.
     public func start_capture []
         if [ cap_view && cap_view.capture_left != 0 ] return
         if [ recs_n == 0 ]
@@ -6180,8 +5468,6 @@ element hyperspace2 : trinity
             return
         if [ face_main && face_main.vmodel ]
             cap_view.vmodel.cage_copy_from[ face_main.vmodel ]
-        # regen always deletes what it annotated before: stale higher
-        # indices from a longer prior run would poison the training set
         for [ di: i32 0, true, di += 1 ]
             da : path '/src/hyperspace-sessions/{session}/{di}.agi'
             if [ !da.exists[] ] break
@@ -6199,7 +5485,6 @@ element hyperspace2 : trinity
                 if [ dpc.exists[] ] dpc.remove[]
                 dic : path '/src/hyperspace-sessions/{session}/{di}-inputs{dc}.png'
                 if [ dic.exists[] ] dic.remove[]
-        # --gen counts POSES; each pose renders `looks` gaze positions
         np5 : i32 [ (gen > 0) ? gen : 100 ]
         lk5 : i32 [ (looks > 0) ? looks : 1 ]
         n5 : i32 [ np5 * lk5 ]
@@ -6213,14 +5498,9 @@ element hyperspace2 : trinity
             ux.stdout_y = 32.0
             seeded = true
         e : Elements [ ]
-        # record mode: ONLY the two live feeds (stacked like the physical
-        # rig, top over bottom) + the toolbar — you see what you record
-        # annotate: bare stage — on_canvas draws the image + click cues;
-        # any mounted view would paint right over it
         if [ rec_mode == 'annotate' ]
             return e
         if [ rec_mode == 'record' ]
-            # own id: a toolbar reused across modes keeps its OLD children
             e['rec-toolbar'] = Toolbar [ elements: Elements [
                 'record':  Button [ label: 'stop' ] ] ]
             # animated: live feeds must repaint every frame, never cache
@@ -6237,8 +5517,6 @@ element hyperspace2 : trinity
             e['top'] = CameraView [ device: cam_top_dev, animated: true, paint_off: true ]
             e['bot'] = CameraView [ device: cam_bot_dev, animated: true, paint_off: true ]
             return e
-        # main champion view on top; two bottom strips of 128x128 vote cells —
-        # 'low' (broad, large-map variants) and 'high' (detail, small-map)
         e['face_main'] = ModelView [ model_path: model, face_idx: 0,
             yaw: yaw, pitch: pitch, dist: dist, look_x: look_x, look_y: look_y, look_z: look_z ]
         e['vote_0'] = ModelView [ model_path: model, face_idx: 10 + regen_i * 100,

@@ -58,8 +58,6 @@ class tensor
 
         has_f32: bool [ floats ]
         count   = tensor_shape.total[]
-        # new'd buffers in ref members have no owner — hold them or the
-        # app's per-frame autorelease drain frees them under the model
         if [ !floats ]
             floats = new f32[tensor_shape]
         if [ !quants ]
@@ -117,10 +115,6 @@ class tensor
 
 
 
-# safetensors weights: 8-byte LE header length, JSON header of
-# {name:{dtype,shape,data_offsets}}, then raw little-endian data.
-# the header is scanned with string ops (rigid format, no spaces);
-# tensors are fseek'd straight into tensor.floats on demand. F32 only.
 class safetensors
     public src   : path
     public valid : bool
@@ -143,7 +137,6 @@ class safetensors
         doff = 8 + hlen
         valid = true
 
-    # the bracketed list after `key` within [at, at+span): '1,2,3'
     intern func bracket_list [ key: string, at: i32, span: i32 ] -> string
         seg : hdr.mid[ at, span ]
         ik : i32 [ seg.index_of[ key ] ]
@@ -424,7 +417,6 @@ op dense
             if [ weights.count != in_dim * out_dim ]
                 puts '{name}: weights {weights.count} != in_dim {in_dim} * out_dim {out_dim}'
                 exit[ 1 ]
-        # back loops write d_input[in_dim] — a lying in_dim overflows the heap
         if [ input ]
             if [ input.count != in_dim ]
                 puts '{name}: in_dim {in_dim} != input size {input.count}'
@@ -469,7 +461,6 @@ op dense
                     dest_f[i * n + j] = v
         result.quantize[]
 
-    # AVX2/FMA3 vectorized forward — processes 8 output columns at a time
     func forward_avx2 [] 
         m:       i32 input.tensor_shape[0]
         k:       i32 input.tensor_shape[1]
@@ -491,7 +482,6 @@ op dense
             for [ j: i32 n8, j < n, j += 1 ]
                 dest_f[i * n + j] = bias_f[j]
 
-            # --- AVX2 FMA (broadcast a, multiply 8 b values, accumulate into dest) ---
             for [ ki: i32 0, ki < k, ki += 1 ]
                 for [ j: i32 0, j < n8, j += 8 ]
                     a_off: i64 [ (i * k + ki) * 4 ]
@@ -540,7 +530,6 @@ op dense
             el [ activation == Activation.tanh ]
                 d_out_f[i] *= 1.0 - out[i] * out[i]
 
-        # weights are in-major (in_dim x out_dim), matching forward's w[ki*n + j]
         for [ i: i32 0, i < odim, i += 1 ]
             d_b[i] = d_out_f[i]
             for [ j: i32 0, j < idim, j += 1 ]
@@ -566,7 +555,6 @@ op dense
         inp:     input.floats
         out:     result.floats
 
-        # --- activation derivative (scalar, odim is typically small) ---
         for [ i: i32 0, i < odim, i += 1 ]
             if [ activation == Activation.relu ]
                 d_out_f[i] *= (out[i] > 0.0) ? 1.0 : 0.0
@@ -577,8 +565,6 @@ op dense
         for [ i: i32 0, i < odim, i += 1 ]
             d_b[i] = d_out_f[i]
 
-        # weights are in-major (in_dim x out_dim), same as forward:
-        # d_w[j*odim+i] += inp[j] * d_out_f[i], 8 outputs at a time
         odim8: i32 [ (odim / 8) * 8 ]
         for [ j: i32 0, j < idim, j += 1 ]
             in_off: i64 [ j * 4 ]
@@ -594,7 +580,6 @@ op dense
             for [ i: i32 odim8, i < odim, i += 1 ]
                 d_w[j * odim + i] += d_out_f[i] * inp[j]
 
-        # --- input gradient: d_in_f[j] = dot(w[j*odim..], d_out_f) ---
         acc: local f32 [8]
         for [ j: i32 0, j < idim, j += 1 ]
             for [ z: i32 0, z < 8, z += 1 ]
@@ -743,10 +728,6 @@ op conv
                     out[i * out_c + oc] = v
         result.quantize[]
 
-    # AVX2 int8 im2col + gemm forward
-    # im2col fill is scalar (runs once), gemm uses vpmovsxbw + vpmaddwd + vpaddd
-    # weights repacked to w_pk[oc * col_k + ki] so both operands are contiguous along k
-    # processes 16 i8 multiply-adds per asm block
     func forward_q8_im2col [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
@@ -773,8 +754,6 @@ op conv
         w_sum:    new f32 [ out_c ]
         k32:      i32 [ (col_k / 32) * 32 ]
 
-        # --- repack weights: w_q[ki * out_c + oc] -> w_pk[oc * col_k + ki] ---
-        # and compute weight column sums for u8 bias compensation
         for [ oc: i32 0, oc < out_c, oc += 1 ]
             ws: i32 [ 0 ]
             for [ ki: i32 0, ki < col_k, ki += 1 ]
@@ -799,10 +778,6 @@ op conv
                                 col[row * col_k + k_idx] = i8[0]
                             k_idx += 1
 
-        # --- int8 gemm with AVX2 (32-wide vpmaddubsw) ---
-        # vpmaddubsw(u8, i8) -> 16 i16, then vpmaddwd -> 8 i32
-        # col values biased to u8 via vpxor 0x80 (adds 128)
-        # compensation: result -= 128 * sum(weights_for_oc)
         for [ i: i32 0, i < out_hw, i += 1 ]
             for [ oc: i32 0, oc < out_c, oc += 1 ]
                 acc_mem: i64 [ 0 ]
@@ -895,7 +870,6 @@ op conv
                     el
                         out[(oh * out_w + ow) * out_c + oc] = s
 
-    # AVX2 conv forward — vectorizes across output channels (8 at a time)
     func forward_avx2 [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
@@ -927,7 +901,6 @@ op conv
                 for [ oc: i32 oc8, oc < out_c, oc += 1 ]
                     out[out_base + oc] = b[oc]
 
-                # --- AVX2 conv accumulate: broadcast input, FMA across 8 output channels ---
                 for [ ic: i32 0, ic < in_c, ic += 1 ]
                     for [ kh: i32 0, kh < filter_h, kh += 1 ]
                         ih: oh * stride - pad + kh
@@ -961,7 +934,6 @@ op conv
                         idx: out_base + oc
                         out[idx] = tanhf[ out[idx] ]
 
-    # im2col + gemm forward — replaces 6-nested-loop conv with matrix multiply
     func forward_im2col [] 
         in_h:     input.tensor_shape[0]
         in_w:     input.tensor_shape[1]
@@ -999,8 +971,6 @@ op conv
                                 col[row * col_k + k_idx] = 0.0
                             k_idx += 1
 
-        # --- gemm: result = col @ weights + bias ---
-        # col (out_hw x col_k) @ weights (col_k x out_c) = result (out_hw x out_c)
         for [ i: i32 0, i < out_hw, i += 1 ]
             # bias init
             for [ oc: i32 0, oc < oc8, oc += 8 ]
@@ -1150,7 +1120,6 @@ op conv
             for [ i: i32 0, i < result.count, i += 1 ]
                 d_out_f[i] *= 1.0 - out[i] * out[i]
 
-        # --- bias gradient: d_b[oc] += sum over spatial of d_out_f ---
         for [ oh: i32 0, oh < out_h, oh += 1 ]
             for [ ow: i32 0, ow < out_w, ow += 1 ]
                 oi_base: i64 [ (oh * out_w + ow) * out_c ]
@@ -1181,7 +1150,6 @@ op conv
                                     w_base:    i64 [ ((kh * filter_w + kw) * in_c + ic) * out_c ]
                                     do_off:    i64 [ oi_base * 4 ]
 
-                                    # AVX2 weight gradient: d_w[w_base+oc] += inp[input_idx] * d_out_f[oi_base+oc]
                                     for [ oc: i32 0, oc < oc8, oc += 8 ]
                                         dw_off: i64 [ (w_base + oc) * 4 ]
                                         oi_off: i64 [ (oi_base + oc) * 4 ]
@@ -1192,7 +1160,6 @@ op conv
                                             vfmadd231ps ymm0, ymm1, ymm2
                                             vmovups ymmword ptr [d_w + dw_off], ymm0
 
-                                    # AVX2 input gradient: d_in_f[input_idx] += dot(w[w_base..+oc], d_out_f[oi_base..+oc])
                                     for [ oc: i32 0, oc < oc8, oc += 8 ]
                                         w_off:  i64 [ (w_base + oc) * 4 ]
                                         oi_off: i64 [ (oi_base + oc) * 4 ]
@@ -1428,7 +1395,6 @@ op pool
             for [ ow: i32 0, ow < out_w, ow += 1 ]
                 out_base: i64 [ (oh * out_w + ow) * in_c ]
 
-                # --- AVX2 path: init output to -inf, then vmaxps each pool position ---
                 for [ c: i32 0, c < c8, c += 8 ]
                     for [ ci: i32 0, ci < 8, ci += 1 ]
                         out[out_base + c + ci] = -99998.0
@@ -1495,7 +1461,6 @@ op pool
 
         return d_input
 
-# per-row normalize over the last dim: weights = gamma, bias = beta
 op layer_norm
     public dim : i32
 
@@ -1513,9 +1478,6 @@ op layer_norm
         mi1_off : i64 [ 4 ]
         for [ r: i32 0, r < rows, r += 1 ]
             base: i32 [ r * dim ]
-            # every asm block is self-contained (memory accumulators +
-            # per-block broadcasts): ymm does not survive across blocks
-            # under -O2
             for [ z2: i32 0, z2 < 8, z2 += 1 ]
                 acc8[z2] = 0.0f
             for [ c8: i32 0, c8 < d8, c8 += 8 ]
@@ -1564,7 +1526,6 @@ op layer_norm
             for [ i: i32 d8, i < dim, i += 1 ]
                 dst[base + i] = (x[base + i] - mean) * inv * g[i] + b[i]
 
-# 1D conv over T x Cin rows: weights [k x Cin x Cout], same pad
 op conv1d
     public in_ch  : i32
     public out_ch : i32
@@ -1613,10 +1574,6 @@ op conv1d
                     xg: f32 [ dst[drow + j] ]
                     dst[drow + j] = 0.5f * xg * (1.0f + erff[ xg * 0.70710678f ])
 
-# multi-head attention. input = queries (Tq x dim); kv = key/value
-# source rows (self-attention when kv is the input tensor). causal
-# masks j > i. wq/wk/wv/wo are dim x dim in-major like dense; k has
-# no bias in whisper so bk stays optional (null = zero).
 op attention
     public heads  : i32
     public dim    : i32
@@ -1694,8 +1651,6 @@ op attention
                 for [ j: i32 0, j < jmax, j += 1 ]
                     krow: i32 [ j * dim + ho ]
                     a_ptr: @f32 [ @acc8[0] ]
-                    # memory accumulator: ymm regs do NOT survive between
-                    # asm blocks under -O2
                     for [ z2: i32 0, z2 < 8, z2 += 1 ]
                         acc8[z2] = 0.0f
                     for [ c8: i32 0, c8 < h8, c8 += 8 ]
@@ -1740,7 +1695,6 @@ op attention
                         ctx[crow + c] += p * v[vrow + c]
         proj[ ctx, tq, wo, bo, result.floats ]
 
-# one multi-input training example: tensors parallel to the model's input_ops
 class sample
     public inputs : array tensor
     public target : tensor
@@ -1796,9 +1750,6 @@ class keras
                     needs_own_result[dep.name] = dep
 
         for [ o: op ] in ops
-            # input ops pass data through: result IS the input tensor.
-            # find_result would alias the CONSUMER's input — circular for
-            # concat deps (cat_size reads the consumer's own shape)
             if [ o is input_op ] o.result = o.input
             if [ !o.result ] o.result = find_result[ o ]
             for [ dep: op ] in o.op_inputs
@@ -1825,9 +1776,6 @@ class keras
                     out_w:    (in_w - filter_w + 2 * pad_w) / stride_w + 1
                     o.result = tensor [ tensor_shape: c.input.tensor_shape * c.out_channels ]
 
-        # single-input consumers read the producer's result object — a
-        # parsed model arrives with distinct tensors; rebind restores the
-        # aliased dataflow that find_result creates on the build path
         for [ o: op ] in ops
             if [ o.op_inputs.count == 1 ]
                 dep : o.op_inputs[0]
@@ -1905,7 +1853,6 @@ class keras
             io.source = smp.inputs[ii]
         return forward[ smp.inputs[0] ]
 
-    # avg loss over a sample set; fills errs with per-output avg |err|
     func eval_metrics [samples: map tensor[tensor], errs: tensor] -> f64
         k : i32 [ errs.count ]
         for [ i: i32 0, i < k, i += 1 ]
@@ -1998,7 +1945,6 @@ class keras
         s : Au.string_agi[ a ]
         checkpoint.save[ s, null ]
 
-    # save weights + .agi when mean |err| across outputs hits a new low
     func maybe_checkpoint [ epoch: i32, errs: tensor ]
         if [ !checkpoint ] return
         k : i32 [ errs.count ]
@@ -2081,7 +2027,6 @@ class keras
         for [ layer: op ] in ops
             layer.set_optimizer optimizer
         
-        # checkpoint gate is per-run: eval splits differ between runs
         best_epoch = 0
         best_err   = 0.0
         errs : tensor [ tensor_shape: k_output.tensor_shape ]
@@ -2160,14 +2105,12 @@ class keras
                 puts 'saved final weights -> {checkpoint} (no eval set)'
         puts 'training complete'
 
-    # multi-input training: each sample carries one tensor per input_op, in ops order
     func train_s [epochs: i32, samples: array sample, eval_samples: array sample, learning_rate: f32, optimizer: Optimizer]
         for [ layer: op ] in ops
             layer.set_optimizer optimizer
         inputs2 : array op [ ]
         for [ o: op ] in ops
             if [ o is input_op ] inputs2.push[ o ]
-        # checkpoint gate is per-run: eval splits differ between runs
         best_epoch = 0
         best_err   = 0.0
         errs : tensor [ tensor_shape: k_output.tensor_shape ]
@@ -2247,7 +2190,6 @@ class keras
                         vh: layer.b_v.floats[i] / bc2
                         layer.bias.floats[i] -= r * mh / (sqrtf[vh] + epsilon)
 
-    # weight persistence: flat f32 dump of every op's weights+bias, in ops order
     func save_weights [ p: path ] -> bool
         f : fopen [ p, 'wb' ]
         if [ !f ] return false
@@ -2290,10 +2232,6 @@ class keras
         lavg: ltotal / samples.count
         puts 'q8 eval loss: {lavg}'
 
-# GPT-2 style BPE vocab, decode-only: vocab.json maps token strings
-# (byte-unicode encoded, \uXXXX escaped) to ids. we invert to id ->
-# raw bytes in one arena, and map the byte-unicode codepoints back to
-# bytes with the standard gpt2 table. special ids (>= n_text) skip.
 class gpt2_vocab
     public src   : path
     public valid : bool
@@ -2339,7 +2277,6 @@ class gpt2_vocab
         offs  = new i32 [ 120000 ]
         for [ i: i32 0, i < 120000, i += 1 ]
             offs[i] = 0
-        # scan {"key":id,...} — keys hold \uXXXX escapes and raw utf-8
         p : i64 [ 0 ]
         ap : i64 [ 0 ]
         for [ p < fl ]
@@ -2393,7 +2330,6 @@ class gpt2_vocab
                 offs[id * 2 + 1] = i32[ ap - koff ]
         valid = true
 
-    # ids -> utf-8 text; ids >= n_special_base (50257) are skipped
     func decode [ ids: handle, n: i32 ] -> string
         idp : cast @i32 [ ids ]
         buf : new u8 [ 16384 ]
@@ -2410,10 +2346,6 @@ class gpt2_vocab
         buf[bn] = 0
         return string [ cast cstr [ @buf[0] ] ]
 
-# whisper encoder (small: dim 768, 12 heads, 12 layers) assembled from
-# this module's ops, weights streamed from the safetensors checkpoint.
-# HF layouts repacked at load: Linear [out,in] -> in-major [in,out];
-# conv [Cout,Cin,k] -> [k,Cin,Cout]. k_proj has no bias in whisper.
 class whisper
     public src   : path
     public valid : bool
@@ -2444,8 +2376,6 @@ class whisper
     intern fc1_b    : array tensor
     intern fc2_w    : array tensor
     intern fc2_b    : array tensor
-    # decoder: token/pos embeddings (tokens tied to output logits), 12
-    # blocks of causal self-attn + cross-attn into encoder states + mlp
     intern dec_emb  : tensor
     intern dec_pos  : tensor
     intern dlnf_w   : tensor
@@ -2474,7 +2404,6 @@ class whisper
     intern dfc1_b   : array tensor
     intern dfc2_w   : array tensor
     intern dfc2_b   : array tensor
-    # kv cache: cross K/V once per utterance; self K/V grows per token
     intern zb768    : tensor
     intern kx_c     : array tensor
     intern vx_c     : array tensor
@@ -2666,11 +2595,6 @@ class whisper
         nf.forward[]
         return h
 
-    # one greedy step: run tokens[0..n) through the decoder against enc
-    # states, return the argmax token for the LAST position. logits are
-    # h_last dotted with the (tied) token embedding rows.
-    # toks_h: pointer to n i32 token ids. handle, not @i32 — module
-    # export currently drops ref-ness on prim pointer params
     func decode_step [ enc: tensor, toks_h: handle, n: i32 ] -> i32
         toks : cast @i32 [ toks_h ]
         nd : i64 [ n * dim ]
@@ -2721,9 +2645,6 @@ class whisper
                 best   = i32[ v ]
         return best
 
-    # greedy transcribe: <|sot|><|en|><|transcribe|><|notimestamps|> then
-    # argmax until <|eot|> (50257) or max_toks. kv-cached: cross K/V once
-    # (prepare), one incremental row per token. returns text token ids.
     func transcribe [ enc: tensor, max_toks: i32 ] -> array i32
         prepare[ enc ]
         last : i32 [ step[ 50258 ] ]
@@ -2735,9 +2656,6 @@ class whisper
         for [ s2: i32 0, s2 < lim, s2 += 1 ]
             if [ last == 50257 ] break
             res.push[ last ]
-            # phrase-loop guard: greedy decode repeats on silence — any
-            # period-1..8 token cycle appearing twice ends the transcript,
-            # and the second copy is trimmed from the result
             rc : i32 [ res.count ]
             p_hit : i32 [ 0 ]
             for [ p9: i32 1, p9 <= 8, p9 += 1 ]
@@ -2754,7 +2672,6 @@ class whisper
             last = step[ last ]
         return res
 
-    # cross-attention K/V for every layer, computed once per utterance
     func prepare [ enc: tensor ]
         th : i64 [ enc.tensor_shape[0] ]
         kv_enc = enc
@@ -2776,7 +2693,6 @@ class whisper
             ks_c.push[ rows2[ 448, dim ] ]
             vs_c.push[ rows2[ 448, dim ] ]
 
-    # attend one query row over n rows of cached K/V into ctx (per head)
     intern func attend_row [ q: @f32, kc: tensor, vc: tensor, nrows: i64, cxo: @f32, prow: @f32 ]
         hd : i32 [ dim / heads ]
         kf : kc.floats
@@ -2832,8 +2748,6 @@ class whisper
                 for [ c2: i32 h8, c2 < hd, c2 += 1 ]
                     cxo[ho + c2] += p2 * vf[vrow + c2]
 
-    # one incremental token through the cached decoder; appends its self
-    # K/V and returns the argmax id for this position
     func step [ tok: i32 ] -> i32
         pidx : i32 [ n_kv ]
         th : i64 [ kv_enc.tensor_shape[0] ]
@@ -2897,8 +2811,6 @@ class whisper
         d8 : i32 [ (dim / 8) * 8 ]
         for [ v: i64 0, v < nvr, v += 1 ]
             erow : i64 [ v * dim ]
-            # accumulate through memory: ymm regs do NOT survive between
-            # asm blocks in release (-O2 scaffolding clobbers them)
             for [ z2: i32 0, z2 < 8, z2 += 1 ]
                 acc8[z2] = 0.0f
             for [ c8: i32 0, c8 < d8, c8 += 8 ]
@@ -2928,15 +2840,12 @@ class whisper
             tmp[i] = ids[i]
         return vocab.decode[ cast handle [ tmp ], n ]
 
-# ---- gpu kernels (vk compute) ---------------------------------------------
 enum WgGemmS
     a_in:  0
     w_in:  1
     b_in:  2
     c_out: 3
 
-# C[m,n] = A[m,k] @ W[k,n] + bias, optional gelu. W is in-major like
-# the cpu dense op. one invocation per output element.
 shader WgGemm
     mutable m_rows : i32
     mutable n_cols : i32
@@ -3008,8 +2917,6 @@ enum WgAttnS
     v_in:  2
     o_out: 3
 
-# multi-head attention: one invocation per (query row, head). two-pass
-# softmax (max then sum) so no scratch buffer is needed.
 shader WgAttn
     mutable tq     : i32
     mutable tkv    : i32
@@ -3080,8 +2987,6 @@ enum WgConvS
     b_in:  2
     y_out: 3
 
-# 1d conv over t x cin rows, weights [k,cin,cout], same pad, + gelu.
-# one invocation per (output channel, output row).
 shader WgConv
     mutable t_in   : i32
     mutable t_out  : i32
@@ -3116,10 +3021,6 @@ shader WgConv
         y_out[t * CO + oc] = 0.5 * acc * (1.0 + s * e);
     }
 
-# whisper encoder on the gpu: weights resident in storage buffers, the
-# full 12-layer graph recorded as ONE command buffer of chained
-# dispatches (each dispatch carries a compute->compute barrier).
-# dispatch counts are built for max T; kernels guard on live ubo dims.
 class whisper_vk
     public model : whisper
     public vk    : vk_context
@@ -3340,8 +3241,6 @@ class whisper_vk
         p_lnf.hold[]
         valid = true
 
-    # true when the low-priority compute queue exists: encode may then run
-    # on a worker thread without ever touching the graphics queue
     func threaded [] -> bool
         cq : cast VkQueue [ vk.compute_queue_handle[] ]
         return cq != null
@@ -3368,7 +3267,6 @@ class whisper_vk
         vkQueueWaitIdle[ qq ]
         vkFreeCommandBuffers[ dv, cp, 1, @cb ]
 
-    # mel (T x 80) -> encoder states (T/2 x dim), sliced submissions
     func encode [ mel: tensor ] -> tensor
         t_in : i32 [ i32[ mel.tensor_shape[0] ] ]
         th   : i32 [ (t_in + 1) / 2 ]
@@ -3418,8 +3316,6 @@ class whisper_vk
             s_a2[li].n_el   = nel
         s_lnf.rows = th
         s_lnf.dim  = dim
-        # live dispatch grids: work scales with THIS utterance, not the
-        # 30s ceiling the pipelines were built for (~15x waste on 2s)
         tx : i32 [ (th + 15) / 16 ]
         dx : i32 [ (dim + 15) / 16 ]
         ex : i32 [ (nel + 16383) / 16384 / 16 + 1 ]
@@ -3439,18 +3335,12 @@ class whisper_vk
             p_g2[li].dispatch_y  = tx
             p_a2[li].dispatch_y  = ex
         p_lnf.dispatch_x = tx
-        # trinity-compiled accessors: direct field reads from another
-        # module land at wrong offsets (imported-layout intern shift)
         dv9 : cast VkDevice [ vk.dev_handle[] ]
-        # prefer the low-priority compute queue + its worker pool — the
-        # graphics queue keeps its quality of service while we grind
         qq9 : cast VkQueue [ vk.compute_queue_handle[] ]
         cp9 : cast VkCommandPool [ vk.compute_pool_handle[] ]
         if [ !qq9 ]
             qq9 = cast VkQueue [ vk.queue_handle[] ]
             cp9 = cast VkCommandPool [ vk.pool_handle[] ]
-        # sliced submission: front, one slice per layer, tail — no single
-        # submit owns the device long enough to starve a frame
         cmd : chunk_begin[ dv9, cp9 ]
         ch  : cast handle [ cmd ]
         p_conv1.dispatch[ ch ]

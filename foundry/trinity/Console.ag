@@ -1,8 +1,6 @@
 extend trinity
 
 
-# unistd/fcntl/ioctl come from trinity.ag — re-importing them here would
-# re-register C symbols (struct stat shadowed the stat() function in shader.ag)
 ifdef [ apple ]
     import <util.h>     # forkpty/openpty live in util.h on macOS
         -lutil
@@ -10,8 +8,6 @@ ifdef [ linux ]
     import <pty.h>
         -lutil
 
-# one terminal cell: a Unicode codepoint plus its pen. fg/bg are packed 0xRRGGBB
-# (-1 = terminal default); attr bits: 1 bold, 2 underline, 4 inverse, 8 dim.
 struct TermCell
     ch   : i32 [ 32 ]
     fg   : i32 [ -1 ]
@@ -21,14 +17,8 @@ struct TermCell
 class ConsoleSession
     mutable pty_fd     : i32 [ -1 ]
     mutable pid        : i32 [ 0  ]
-    # the session key (project node name); used as the shell prompt label.
     mutable name       : string
-    # agent launch command (claude/gemini): when set, start[] execs it directly
-    # instead of an interactive shell, so the console shows only the agent's output
-    # with no prompt/echo line. shells leave this empty and get an interactive bash.
     mutable launch_cmd : string
-    # a command queued to send once the shell is ready (first output arrives, i.e.
-    # bash is in raw mode) — avoids the cooked-mode double echo of an early write.
     mutable pending    : string
     mutable esc_state  : i32 [ 0  ]
     mutable esc_n0     : i32 [ 0  ]
@@ -43,29 +33,14 @@ class ConsoleSession
     mutable rows       : i32 [ 24 ]
     mutable screen      : new TermCell [ 2048 * 2048 ]
     mutable scrollback : list string
-    # color/attr for each scrollback line, kept in parallel with `scrollback` so the
-    # history renders with its original colors (not a flat monochrome string). cells
-    # are stored contiguously; sb_off[i] is line i's start index into sb_cells.
     mutable sb_cells   : array TermCell
     mutable sb_off     : array i32
-    # scratch row used to render a scrollback line: sb_cells stores boxed TermCell
-    # objects (array push), so it can't be read as a flat ref TermCell — we copy a
-    # line into this contiguous buffer and feed that to the shared draw_cells.
     mutable sb_scratch : new TermCell [ 2048 ]
     mutable scroll     : f32 [ 0.0 ]
-    # wheel delta accumulates here in LINE units; we only move the view when a whole
-    # line is crossed, so a mac trackpad's stream of tiny fractional deltas doesn't
-    # fire a redraw per pixel (the laggy "hammering"). sub-line motion just buffers.
     mutable wheel_accum : f32 [ 0.0 ]
-    # index of the top visible line at the last console repaint. scroll only forces a
-    # repaint when this changes — a drag that hasn't crossed a line boundary leaves the
-    # rendered content identical, so we skip it.
     mutable first_line  : i32 [ -2147483647 ]
-    # last feed line count (system console) — detects new lines without a redraw.
     mutable last_feed_count : i32 [ -1 ]
     mutable read_calls : i32 [ 0 ]
-    # line/col text selection over the line model (same as the Editor). sel_line
-    # -1 = no selection. lh/cw cached from draw for the mouse→cell mapping.
     mutable sel_line    : i32 [ -1 ]
     mutable sel_col     : i32 [ 0 ]
     mutable anchor_line : i32 [ 0 ]
@@ -74,63 +49,34 @@ class ConsoleSession
     mutable scroll_dragging : bool
     mutable lh_cache    : f32
     mutable cw_cache    : f32
-    # hovered file:line link span: content-space line + [link_c0, link_c1) columns.
-    # hover_link_line -1 = nothing hovered. set in on_move when the mouse sits on a
-    # path:number token; the draw underlines that span so it reads as a link.
     mutable hover_link_line : i32 [ -1 ]
     mutable link_c0     : i32 [ 0 ]
     mutable link_c1     : i32 [ 0 ]
-    # per-scrollback-line render cache. each VISIBLE line is rasterized into a pooled
-    # canvas once (keyed by line index) then blitted every frame; slots are recycled
-    # as lines scroll off, so the pool stays at the visible-line count — never the
-    # scrollback depth. cache_cw/cache_lh invalidate the whole pool on font/reflow.
     mutable sb_lines    : array TermLineCache
-    # live-grid row cache, indexed by row. live rows mutate, so each slot also stores
-    # a content hash — an unchanged row blits, only a changed row re-rasterizes. this
-    # is what keeps an idle/streaming TUI (claude) from re-drawing every row per frame.
     mutable live_lines  : array TermLineCache
     mutable cache_cw    : f32 [ -1.0 ]
     mutable cache_lh    : f32 [ -1.0 ]
-    # incrementing draw-frame id; live_slot marks the slots it touched this frame so
-    # the next miss can recycle a slot whose content is no longer on screen.
     mutable frame_id    : i32 [ 0 ]
-    # true while a run (lldb) is live in this session — drives the play↔stop button.
     mutable running     : bool
-    # armed after a run command is sent; the next return to our shell prompt means
-    # the run ended (quit/errored) → clear running.
     mutable run_armed   : bool
-    # the user scrolled away from the bottom (wheel/page/drag) → suspend cursor
-    # auto-follow until they return to the bottom. max_scroll cached from draw.
     mutable user_scrolled : bool
     mutable max_scroll  : f32
-    # epoch micros of the last resize — scroll_up won't feed scrollback within ~200ms of
-    # it, so an app's resize-redraw scrolls don't leak its frame into history.
     mutable last_resize_us : i64 [ 0 ]
 
-    # --- full VT/xterm emulator state (to host TUIs like claude code) ---
-    # `screen` is the one live grid. while a full-screen TUI borrows it (alt screen),
-    # the normal grid is stashed here and restored on exit.
     mutable alt_bak     : new TermCell [ 2048 * 2048 ]
     mutable in_alt      : bool
-    # DECSTBM scroll region (inclusive rows); LF/IND/RI scroll within it.
     mutable scroll_top  : i32 [ 0  ]
     mutable scroll_bot  : i32 [ 23 ]
-    # current pen (applied to every glyph written). packed rgb or -1 = default.
     mutable pen_fg      : i32 [ -1 ]
     mutable pen_bg      : i32 [ -1 ]
     mutable pen_attr    : i32 [ 0  ]
     mutable cursor_visible  : bool [ true ]
     mutable bracketed_paste : bool
-    # DECCKM: when set (ESC[?1h), arrows/Home/End are sent as SS3 (ESC O A) not CSI
-    # (ESC [ A). TUIs like claude code enable this; without it menu nav doesn't work.
     mutable app_cursor      : bool
     mutable alt_save_x  : i32 [ 0 ]
     mutable alt_save_y  : i32 [ 0 ]
-    # UTF-8 decode accumulator (ground state, multibyte lead → continuation).
     mutable utf_need    : i32 [ 0 ]
     mutable utf_cp      : i32 [ 0 ]
-    # CSI parameter collection: a fixed array of numeric params, a count, the
-    # current index being typed, and the private-intro byte ('?'/'>'/'!') if any.
     mutable esc_priv    : i32 [ 0 ]
     mutable esc_pv      : array i32
     mutable esc_pc      : i32 [ 0 ]
@@ -140,8 +86,6 @@ class ConsoleSession
         scrollback  = list string []
         sb_cells    = array TermCell []
         sb_off      = array i32 []
-        # screen is pre-allocated once (2048x2048 max) at construct; resize never
-        # reallocates. only the rows*cols region in use is initialized.
         init_cells[ screen, rows * cols ]
         scroll_bot = rows - 1
         esc_pv     = array i32 []
@@ -153,20 +97,12 @@ class ConsoleSession
         pid = forkpty[ @pty_fd, null, null, null ]
         if [ pid == 0 ]
             setenv[ 'TERM', 'xterm-256color', 1 ]
-            # we emulate 24-bit SGR (38;2;r;g;b) — advertise it so TUIs use true color
             setenv[ 'COLORTERM', 'truecolor', 1 ]
             if [ launch_cmd && launch_cmd.count > 0 ]
-                # agent session (claude/gemini): exec the command directly via a
-                # non-interactive shell — no PS1 prompt and no command echo, so the
-                # console shows ONLY the agent's output (no "name> cmd" line eating a row).
-                # pass the flag + command as cstr (.chars) — bare literals reach execl as
-                # Au string objects, not char*, and bash reads garbage from them.
                 dashc : string '-c'
                 ec    : string 'exec {launch_cmd}'
                 execl[ '/bin/bash', 'bash', dashc.chars, ec.chars, null ]
             el
-                # prompt = the project node's label; --norc so bash keeps our PS1.
-                # strip the 'ed:' session-namespace prefix — it's a key, not a label
                 lbl : string (name && name.count > 0) ? name : 'sh'
                 if [ lbl.count > 3 && lbl.mid[ 0, 3 ] == 'ed:' ]
                     lbl = lbl.mid[ 3, lbl.count - 3 ]
@@ -177,13 +113,8 @@ class ConsoleSession
         el [ pid < 0 ]
             puts 'ConsoleSession.start[{name}]: forkpty FAILED (pid={pid})'
         el
-            # silenced: console render mode writes the UI to stdout, so a stray line
-            # here scrolls the frame.
-            #puts 'ConsoleSession.start[{name}]: pty_fd={pty_fd} pid={pid}'
             fcntl[ pty_fd, F_SETFL, O_NONBLOCK ]
 
-    # fresh session: close the old shell (pty close → SIGHUP → bash exits), clear
-    # the buffer, then start a new bash. used when a run is (re)launched.
     func restart []
         if [ pty_fd >= 0 ]
             close[ pty_fd ]
@@ -200,8 +131,6 @@ class ConsoleSession
         run_armed  = false
         start[]
 
-    # blank one cell (flat index) to a space carrying the current background, so an
-    # erase inside a colored region keeps that region's color (apps rely on this).
     func bl_cell [ i: i32 ]
         screen[i].ch   = 32
         screen[i].fg   = -1
@@ -215,8 +144,6 @@ class ConsoleSession
         screen[dst].bg   = screen[src].bg
         screen[dst].attr = screen[src].attr
 
-    # copy n cells src→dst (whole-buffer blit) — used to stash/restore the normal
-    # screen when a full-screen TUI takes over the alt screen.
     func blit_cells [ dst: @TermCell, src: @TermCell, n: i32 ]
         for [ i: i32 0, i < n, i += 1 ]
             dst[i].ch   = src[i].ch
@@ -224,8 +151,6 @@ class ConsoleSession
             dst[i].bg   = src[i].bg
             dst[i].attr = src[i].attr
 
-    # initialize a freshly-allocated buffer to blank, transparent cells (bg = -1 so
-    # untouched cells draw nothing and the console's own background shows through).
     func init_cells [ buf: @TermCell, n: i32 ]
         for [ i: i32 0, i < n, i += 1 ]
             buf[i].ch   = 32
@@ -262,8 +187,6 @@ class ConsoleSession
         l : i32 [ (n - 232) * 10 + 8 ]
         return (l << 16) | (l << 8) | l
 
-    # encode the codepoints of cells[off+c0 .. off+c1) into a UTF-8 string. works on
-    # any TermCell buffer (the live screen or the scrollback color store).
     func cells_text [ cells: @TermCell, off: i32, c0: i32, c1: i32 ] -> string
         buf : local i8 [ (c1 - c0) * 4 + 1 ]
         bi  : i32 [ 0 ]
@@ -291,7 +214,6 @@ class ConsoleSession
         buf[bi] = 0
         return string[ @buf[0] ]
 
-    # encode the codepoints of cells [c0,c1) on screen row r into a UTF-8 string.
     func cell_text [ r: i32, c0: i32, c1: i32 ] -> string
         return cells_text[ screen, r * cols, c0, c1 ]
 
@@ -299,15 +221,11 @@ class ConsoleSession
     func cell_bg   [ r: i32, c: i32 ] -> i32   return screen[r * cols + c].bg
     func cell_attr [ r: i32, c: i32 ] -> i32   return screen[r * cols + c].attr
 
-    # scrollback line geometry: start index + cell length for line `li`.
     func sb_line_off [ li: i32 ] -> i32   return sb_off[ li ]
     func sb_line_len [ li: i32 ] -> i32
         nx : i32 [ (li + 1 < sb_off.count) ? sb_off[ li + 1 ] : sb_cells.count ]
         return nx - sb_off[ li ]
 
-    # copy scrollback line `li`'s boxed cells into the contiguous scratch row and
-    # return it, so the shared draw_cells (which wants a flat ref TermCell) can render
-    # it. off into the result is always 0; len is sb_line_len[ li ].
     func sb_line_buf [ li: i32 ] -> @TermCell
         off : i32 [ sb_off[ li ] ]
         len : i32 [ sb_line_len[ li ] ]
@@ -321,10 +239,6 @@ class ConsoleSession
     func row_to_string [ r: i32 ] -> string
         return cell_text[ r, 0, cols ]
 
-    # drawable width of live row `r`: 1 + the last column that ISN'T a fully-default cell
-    # (space, default fg/bg, no attr). trailing default padding is trimmed so a line caches
-    # at its content width — but a COLORED space (bg set, e.g. claude's footer bar) counts
-    # as drawable, so the bar isn't trimmed away.
     func row_drawable [ r: i32 ] -> i32
         base : i32 [ r * cols ]
         for [ c: i32 cols - 1, c >= 0, c -= 1 ]
@@ -333,12 +247,6 @@ class ConsoleSession
                 return c + 1
         return 0
 
-    # highest grid row that has any non-blank cell. used for content height so the
-    # scrollable region reaches the app's bottom rows (input box / footer hints below
-    # the cursor), instead of stopping at the cursor row. a cell counts as used if it
-    # has a glyph OR a non-default background — TUI status bars (claude-code's "bypass
-    # permissions" footer) are colored SPACES, which a char-only test would skip,
-    # leaving the bar one line below the scrollable bottom and hidden.
     func last_row [] -> i32
         for [ r: i32 rows - 1, r >= 0, r -= 1 ]
             for [ c: i32 0, c < cols, c += 1 ]
@@ -348,8 +256,33 @@ class ConsoleSession
                     return r
         return 0
 
-    # line model — the displayed content as one list of lines (scrollback then the
-    # live screen rows). lets the console reuse the Editor's line/col selection.
+    func agent_busy [] -> bool
+        for [ r: i32 rows - 1, r >= 0, r -= 1 ]
+            c0 : i32 [ screen[ r * cols + 0 ].ch ]
+            # ascii, box rules and the prompt are chrome — keep looking
+            if [ c0 < 128 ] continue
+            if [ c0 == 9472 || c0 == 10095 ] continue
+            if [ c0 >= 9600 && c0 <= 9631 ] continue
+            f0 : i32 [ screen[ r * cols + 0 ].fg ]
+            if [ f0 < 0 ] return false
+            rr : i32 [ (f0 / 65536) % 256 ]
+            gg : i32 [ (f0 / 256)   % 256 ]
+            bb : i32 [  f0          % 256 ]
+            hi : i32 [ (rr > gg) ? rr : gg ]
+            if [ bb > hi ] hi = bb
+            lo : i32 [ (rr < gg) ? rr : gg ]
+            if [ bb < lo ] lo = bb
+            return (hi - lo) > 24
+        return false
+
+    func dump_cells [ ]
+        for [ r: i32 rows - 1, r >= 0, r -= 1 ]
+            c0 : i32 [ screen[ r * cols + 0 ].ch ]
+            if [ c0 < 128 ] continue
+            f0 : i32 [ screen[ r * cols + 0 ].fg ]
+            ln : string row_to_string[ r ]
+            puts 'GLYPH ch={c0} fg={f0} row={r} | {ln}'
+
     func line_count [] -> i32
         return scrollback.count + rows
 
@@ -358,20 +291,14 @@ class ConsoleSession
         if [ i < sc ] return scrollback.value_by_index[ i ]
         return row_to_string[ i - sc ]
 
-    # true when the cursor sits on our own shell prompt ('<name>> ') — i.e. bash is
-    # idle, no foreground command running. used to detect a run ending/erroring.
     func at_prompt [] -> bool
         if [ cy < 0 || cy >= rows ] return false
         lbl : string (name && name.count > 0) ? name : 'sh'
         p   : string '{lbl}> '
         row : string row_to_string[ cy ]
         if [ row.index_of[ p ] != 0 ] return false
-        # idle only when the cursor sits right after the prompt (nothing typed/echoed
-        # after it — a command-echo line also starts with the prompt but has cx past it).
         return cx <= p.count
 
-    # the currently-selected text over the line model (anchor→cursor), lines joined
-    # with newlines. empty when there is no selection.
     func selection_text [] -> string
         if [ sel_line < 0 ] return ''
         before : bool [ anchor_line < sel_line || (anchor_line == sel_line && anchor_col <= sel_col) ]
@@ -388,21 +315,11 @@ class ConsoleSession
             if [ li < el2 ] out = out + '\n'
         return out
 
-    # scroll the region up one line. only the normal buffer with a top-anchored
-    # region feeds scrollback (the alt screen and inner regions never do).
     func scroll_up []
-        # scrollback captures a line ONLY when the default region (full screen) scrolls
-        # during genuine output. a resize shrinks the pty, the app's frame overflows and
-        # its redraw scrolls — but that's rewriting existing lines, not new output, so it
-        # must not feed history (it would leave a ghost copy of the frame above the live
-        # one). suppress the feed for a moment after any resize; steady-state scrolls feed.
         quiet : bool [ (epoch_micros[] - last_resize_us) > 200000 ]
         if [ !in_alt && scroll_top == 0 && scroll_bot == rows - 1 && quiet ]
             scrollback.push[ row_to_string[ scroll_top ] ]
-            # capture the line's color/attr cells in parallel (sb_off marks its start)
             sb_off.push[ sb_cells.count ]
-            # store only the DRAWABLE cells — trailing default padding never accumulates in
-            # history (smaller sb_cells, narrower cached canvas). sb_line_len = this count.
             dl   : i32 [ row_drawable[ scroll_top ] ]
             srow : i32 [ scroll_top * cols ]
             for [ c: i32 0, c < dl, c += 1 ]
@@ -455,7 +372,6 @@ class ConsoleSession
         for [ c: i32 cx, c < cx + n && c < cols, c += 1 ]
             bl_cell[ cy * cols + c ]
 
-    # write a glyph at the cursor under the current pen, wrapping at the right edge.
     func put_char [ cp: i32 ]
         if [ cx >= cols ]
             cx = 0
@@ -484,9 +400,6 @@ class ConsoleSession
             for [ i: i32 0, i <= cx, i += 1 ]
                 bl_cell[ cy * cols + i ]
         el [ m == 3 ]
-            # ED(3) = erase saved lines (scrollback) only; the grid is untouched. apps
-            # send ESC[3J on a full repaint to drop history — without honoring it the old
-            # rows stay in scrollback and re-render (duplicated banners on resize).
             scrollback = list string []
             sb_cells   = array TermCell []
             sb_off     = array i32 []
@@ -505,7 +418,6 @@ class ConsoleSession
             for [ i: i32 0, i < cols, i += 1 ]
                 bl_cell[ cy * cols + i ]
 
-    # SGR: walk the params, updating the pen (colors + attributes).
     func sgr []
         if [ esc_pc == 0 ]
             pen_fg   = -1
@@ -561,8 +473,6 @@ class ConsoleSession
                 pen_bg = pal256[ v - 100 + 8 ]
             i += 1
 
-    # enter the alternate screen buffer (full-screen TUIs): save cursor, swap to the
-    # alt buffer and clear it. leave_alt swaps back and restores the cursor.
     func enter_alt []
         if [ in_alt ] return
         alt_save_x = cx
@@ -802,33 +712,18 @@ class ConsoleSession
             utf_need = 1
             utf_cp   = c & 31
 
-    # resize the grid to (nr, nc) within the pre-allocated 2048x2048 buffer — no
-    # reallocation. the row stride changes with cols, so old cells land at stale
-    # offsets: blank the grid and let the child repaint on SIGWINCH (no copy).
     func resize [ nr_in: i32, nc_in: i32 ]
         nr : i32 [ (nr_in < 1) ? 1 : nr_in ]
         nc : i32 [ (nc_in < 1) ? 1 : nc_in ]
         if [ nr > 2048 ] nr = 2048
         if [ nc > 2048 ] nc = 2048
         if [ nr == rows && nc == cols ] return
-        # mark the resize time — scroll_up suppresses scrollback feeding for a moment
-        # after, so the app's resize-redraw scrolls don't leak its frame into history.
         last_resize_us = epoch_micros[]
         orows : i32 [ rows ]
         ocols : i32 [ cols ]
         cols = nc
         rows = nr
-        # preserve existing content across a resize. only a stride (cols) change makes the
-        # r*cols+c offsets invalid, so only then re-blank the whole grid. a height-only
-        # change keeps the rows where they are (the app may NOT repaint a taller window —
-        # it's just more space — so blanking everything would lose the text until the next
-        # repaint); only blank rows newly brought into view.
         if [ ocols != nc ]
-            # a stride (cols) change shifts every r*cols+c offset, so the grid can't be
-            # reinterpreted in place. snapshot the old visible region, blank the new grid,
-            # then write the snapshot back at the new stride — PRESERVING on-screen history.
-            # (blanking and waiting for the child to repaint lost everything above the
-            # prompt: readline only redraws its own line on SIGWINCH, not the lines above.)
             cc : i32 [ (ocols < nc) ? ocols : nc ]
             cr : i32 [ (orows < nr) ? orows : nr ]
             tmp : array TermCell [ ]
@@ -853,10 +748,6 @@ class ConsoleSession
                     screen[d].attr = tmp[s].attr
         el [ nr > orows ]
             init_cells[ @screen[ orows * cols ], (nr - orows) * cols ]
-        # NOTE: do NOT flush the per-line cache here. it's keyed by content-hash and sized
-        # by each line's own drawable width — neither depends on rows. a cols change reflows
-        # the cells (new hashes → natural miss); a height-only resize keeps the lines valid.
-        # flushing on every resize made an animating pane re-rasterize all lines per frame.
         scroll_top = 0
         scroll_bot = rows - 1
         if [ cx >= cols ] cx = cols - 1
@@ -881,25 +772,14 @@ class ConsoleSession
             if [ nr <= 0 ] break
             got = got + string[ @buf[0] ]
             process_byte[ (i32 buf[0]) & 255 ]
-        # a run that's returned to our shell prompt has ended (lldb quit, or the
-        # build/run errored and bash bounced back) → clear running so the button
-        # reverts to play. checked BEFORE flushing a pending command, whose own
-        # initial prompt would otherwise read as a return.
         if [ run_armed && at_prompt[] ]
             running   = false
             run_armed = false
-        # shell is ready once it has emitted (its prompt) — now in raw mode, so
-        # sending the queued command echoes exactly once via readline.
         if [ got.count > 0 && pending && pending.count > 0 ]
             write_input[ pending + '\r' ]
             pending = ''
             if [ running ] run_armed = true
 
-    # drain bytes from an external fd (a debug inferior's PTY master, owned by dbg)
-    # straight into the terminal emulator. same byte pump as read_output but for a
-    # session whose output comes from lldb rather than our bash — so no prompt /
-    # run-armed bookkeeping. called on the main (render) thread, so the screen and
-    # scrollback stay single-threaded.
     func feed_fd [ fd: i32 ]
         if [ fd < 0 ] return
         buf : local i8 [ 2 ]
@@ -909,8 +789,6 @@ class ConsoleSession
             if [ nr <= 0 ] break
             process_byte[ (i32 buf[0]) & 255 ]
 
-    # push a host-generated message (e.g. "[process exited]") through the emulator,
-    # as if the inferior had printed it. ascii only; main-thread caller.
     func print_text [ s: string ]
         if [ !s ] return
         for [ i: i32 0, i < s.count, i += 1 ]
@@ -920,9 +798,6 @@ class ConsoleSession
         if [ pty_fd < 0 ] return
         write[ pty_fd, data.chars, data.count ]
 
-    # write ESC followed by `tail` to the pty. built from an explicit 0x1b byte + the
-    # plain tail so we sidestep the lexer treating '\x1b[...' as a hex char literal
-    # (which collapses 'ESC [ Z' to the single byte 0x1b). tail carries no \x escapes.
     func send_esc [ tail: string ]
         if [ pty_fd < 0 ] return
         n : i32 [ tail->count ]
@@ -933,19 +808,10 @@ class ConsoleSession
         write[ pty_fd, @buf[0], n + 1 ]
 
 
-# one pooled render of a single scrollback line. `li` is the scrollback index it
-# currently holds (-1 = free for reuse). scrollback content is immutable per index,
-# so a cached line stays valid until it scrolls out of view and its slot is recycled.
 class TermLineCache
     mutable canvas : Canvas
     mutable li     : i32 [ -1 ]
-    # content hash of the row this canvas holds. scrollback lines are immutable so li
-    # alone keys them. LIVE grid rows are content-addressed by hash: a row blits the
-    # canvas holding its content from ANYWHERE in the pool, so a scrolled grid reuses
-    # last frame's renders (only genuinely new content rasterizes). -1 = never rendered.
     mutable hash   : i64 [ -1 ]
-    # last draw frame this slot was used (for live rows) — lets us reclaim slots whose
-    # content scrolled off (frame != current) without disturbing still-visible ones.
     mutable frame  : i32 [ -1 ]
 
 Layer TermLayer
@@ -954,20 +820,12 @@ Layer TermLayer
         if [ !con ] return
         s : ConsoleSession con.session[]
         if [ !s ] return
-        # (run dispatch moved to the app's per-frame loop in orbiter.ag — a
-        # collapsed console never paints, so it can't live here.)
         ch : f32 [ paint_term[ cv, s, bounds, con.filter[], con.feed, label_size, label_height ] ]
         con.content_h = ch
         con.scroll.y  = s.scroll
 
-# paint a terminal session into `bounds`, returning the content height (scrollback
-# plus one viewport) so the caller can drive its scrollbar. element-free so any
-# host can render a session — the Console layer and ConsoleView both use it.
 func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed: list string, label_size: f32, label_height: f32 ] -> f32
         if [ label_size > 0.0 ] cv.font_size[ i32[label_size] ]
-        # integer line height: rows sit on a fixed pixel grid so scrolling steps by
-        # whole lines and lines never jiggle relative to each other (fractional lh
-        # would round consecutive rows to alternating 18/19px gaps). standard console.
         lh : f32 [ round[ cv.get_line_height[] * ((label_height > 0.0) ? label_height : 1.0) ] ]
         if [ lh < 1.0 ] lh = 1.0
         x0 : f32 [ bounds.x ]
@@ -979,7 +837,6 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
             if [ !feed ] return 0.0
             n      : i32 [ feed.count ]
             max_s  : f32 [ maxf[ f32[n] * lh - bounds.h, 0.0 ] ]
-            # filtered lines render consecutively from the top (no bottom-anchor scroll).
             dr     : i32 [ 0 ]
             for [ li: i32 0, li < n, li += 1 ]
                 ln : string feed.value_by_index[ li ]
@@ -995,21 +852,15 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
             cv.paint[]
             return f32[n] * lh
 
-        # output is drained off the render path (orbiter.on_render) so this draw
-        # only runs when the screen actually changed; no per-frame forcing here.
         cw       : f32 [ cv.measure_text[ 'x' ].w ]
         sc_count : i32 [ s.scrollback.count ]
 
-        # match the emulator grid to the pane so the child app lays out to the real
-        # size (and gets a SIGWINCH on changes). guarded so it only reallocs on change.
         if [ cw > 0.0 && lh > 0.0 ]
             dcols : i32 [ i32[ bounds.w / cw ] ]
             drows : i32 [ i32[ bounds.h / lh ] ]
             if [ dcols >= 2 && drows >= 2 && (dcols != s.cols || drows != s.rows) ]
                 s.resize[ drows, dcols ]
 
-        # filtered view: only lines (scrollback + live grid) containing the filter,
-        # rendered consecutively from the top. no scroll/cursor while filtering.
         if [ has_flt ]
             dr : i32 [ 0 ]
             for [ li: i32 0, li < sc_count, li += 1 ]
@@ -1035,13 +886,7 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
             cv.paint[]
             return f32[dr] * lh
 
-        # the alt screen is standalone (no scrollback above it). base = the rows of
-        # scrollback shown above the live grid (0 on the alt buffer).
         base     : i32 [ (s.in_alt) ? 0 : sc_count ]
-        # alt screen keeps the fixed grid height (full-screen apps own every row).
-        # the normal buffer ends at the last real line — cursor row or the last
-        # drawn row below it — so growing the pane never shows the blank grid
-        # tail as a void under the prompt; the bottom pin lands on the prompt.
         live     : i32 [ s.rows ]
         if [ !s.in_alt ]
             live = s.cy + 1
@@ -1053,9 +898,6 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
         max_s    : f32 [ maxf[ total_h - bounds.h, 0.0 ] ]
 
         s.max_scroll = max_s
-        # auto-follow: stick to the bottom of the content (so the app's last rows —
-        # input box, footer — are visible), NOT just the cursor. suspended while
-        # dragging the thumb or after the user scrolled up to read history.
         if [ !s.scroll_dragging && !s.user_scrolled ]
             s.scroll = max_s
         if [ s.scroll < 0.0 ]
@@ -1066,32 +908,18 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
         if [ s.scroll >= max_s - 1.0 ]
             s.user_scrolled = false
 
-        # record the top visible line for this paint — set_scroll compares against it
-        # so a scroll that doesn't change the first line skips the repaint entirely.
         s.first_line  = (lh > 0.0) ? i32[ round[ s.scroll / lh ] ] : 0
 
-        # cache metrics for the mouse→cell mapping; feed content_h/scroll.y to the
-        # shared ScrollLayer (it reads them off the element).
         s.lh_cache    = lh
         s.cw_cache    = cw
 
-        # clip to the content bounds so a partially-scrolled top/bottom row doesn't
-        # bleed above into the title bar (or below the pane). the shaders honor crop.
-        # crop is WORLD-space px: transform offset + local bounds (the embedded
-        # console sits deep in the pane tree, so local != world here).
         wtx : f32 [ cv.transform_tx[] ]
         wty : f32 [ cv.transform_ty[] ]
         cv.set_crop[ wtx + bounds.x, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
 
-        # selection highlight behind the text — shared render with the editor.
         cv.draw_selection[ x0, y0, lh, cw, s.scroll, bounds.y, bounds.w, bounds.h,
             s.anchor_line, s.anchor_col, s.sel_line, s.sel_col, rgba['#264f78'] ]
 
-        # per-line cache: each visible line rasterizes ONCE into a content-width canvas
-        # keyed by its drawable cells, then composites every frame. an unchanged line just
-        # composites (these batch into the one open main render pass — no per-line submit);
-        # only a CHANGED line re-rasterizes, the lone path that pays the text_vbo cost. a
-        # cw/lh change (font/reflow) isn't in the hash, so flush the pool when it changes.
         fs : i32 [ (label_size > 0.0) ? i32[label_size] : 0 ]
         s.frame_id   += 1
         if [ !s.sb_lines ]   s.sb_lines   = array TermLineCache [ alloc: 64 ]
@@ -1106,11 +934,9 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
             s.cache_lh = lh
 
         if [ !s.in_alt && sc_count > 0 ]
-            # visible scrollback range from the scroll offset — O(visible), not O(history).
             last_li : i32 [ sc_count - 1 ]
             vlo : i32 [ clamp[ i32[ (s.scroll - lh) / lh ], 0, last_li ] ]
             vhi : i32 [ clamp[ i32[ (s.scroll + bounds.h) / lh ] + 1, 0, last_li ] ]
-            # recycle slots whose line scrolled out of view (pool stays at the visible count)
             for [ slc: TermLineCache ] in s.sb_lines
                 if [ slc.li >= 0 && (slc.li < vlo || slc.li > vhi) ]
                     slc.li = -1
@@ -1130,9 +956,6 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
             if [ lvc && lvc.canvas ]
                 cv.draw_canvas[ lvc.canvas, x0, round[ y ], f32[ lvc.canvas.content_w ], lh ]
 
-        # underline the hovered path:line token (set in on_move) so it reads as a link.
-        # drawn after the line blits so it sits on top, in the same content-space y as
-        # the rows (line index → y0 + line*lh - scroll, valid for scrollback + live).
         if [ s.hover_link_line >= 0 ]
             uy : f32 [ y0 + f32[ s.hover_link_line ] * lh - s.scroll ]
             if [ uy + lh > bounds.y && uy < bounds.y + bounds.h ]
@@ -1153,11 +976,6 @@ func paint_term [ cv: Canvas, s: ConsoleSession, bounds: rect, flt: string, feed
         cv.clear_crop[]
         return total_h
 
-    # one screen row rendered as colored runs: consecutive cells sharing fg/bg/attr
-    # draw as a single text span (and a bg rect when the bg isn't the default).
-    # render n cells from `cells` starting at `off` as colored runs (consecutive cells
-    # sharing fg/bg/attr draw as one text span, with a bg rect when bg isn't default).
-    # used by both the live grid (screen) and the scrollback color store.
 func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell, off: i32, n: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
     if [ n <= 0 ] return
     c : i32 [ 0 ]
@@ -1178,8 +996,6 @@ func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell, off: i32, n: 
             cv.stroke_width[ 0.0 ]
             cv.rect_to[ rx, y, rw, lh ]
             cv.paint[]
-        # skip the text pass for an all-space run — it draws nothing but still
-        # builds the string + runs the whole glyph/draw_text pipeline.
         blank : bool [ true ]
         for [ ci: i32 c, ci < c2 && blank, ci += 1 ]
             if [ cells[off + ci].ch != 32 ] blank = false
@@ -1193,12 +1009,7 @@ func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell, off: i32, n: 
 func draw_row [ cv: Canvas, s: ConsoleSession, r: i32, x0: f32, y: f32, lh: f32, cw: f32 ]
     draw_cells[ cv, s, s.screen, r * s.cols, s.cols, x0, y, lh, cw ]
 
-# return the pooled render for scrollback line `li`: a cache hit returns the
-# existing slot (caller just blits it); a miss claims a free/grown slot and
-# rasterizes the line's cells into it at local origin. recycled slots (li=-1)
-# are reused so the pool never exceeds the on-screen line count.
 func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
-    # empty line: no slot, no canvas, no raster — the caller draws nothing.
     if [ s.sb_line_len[ li ] <= 0 ] return null
     for [ slc: TermLineCache ] in s.sb_lines
         if [ slc.li == li ] return slc
@@ -1226,8 +1037,6 @@ func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32, lh: f32, cw: f32
     use.li = li
     return use
 
-# content hash of live grid row `r` — ch/fg/bg/attr of every cell. compared per
-# frame so an unchanged row blits its cached canvas instead of re-rasterizing.
 func row_hash [ s: ConsoleSession, r: i32, n: i32 ] -> i64
     h    : i64 [ i64[ n ] ]
     base : i32 [ r * s.cols ]
@@ -1239,14 +1048,7 @@ func row_hash [ s: ConsoleSession, r: i32, n: i32 ] -> i64
         h = h * 131 + i64[ s.screen[ idx ].attr ]
     return h
 
-# content-addressed render of LIVE grid row `r`. a hit = any pooled canvas already
-# holding this exact content (hash), no matter which row rendered it — so when the
-# grid scrolls, last frame's line canvases are reused (blitted) and only genuinely
-# new content rasterizes. a miss recycles a slot whose content scrolled off (frame
-# != current) or grows the pool.
 func live_slot [ cv: Canvas, s: ConsoleSession, r: i32, fs: i32, lh: f32, cw: f32 ] -> TermLineCache
-    # trim trailing default cells: cache keyed on the DRAWABLE content only, so lines
-    # differing only in padding share a canvas, and the canvas is content-width.
     dl : i32 [ s.row_drawable[ r ] ]
     if [ dl <= 0 ] return null
     h : i64 [ row_hash[ s, r, dl ] ]
@@ -1282,7 +1084,6 @@ func live_slot [ cv: Canvas, s: ConsoleSession, r: i32, fs: i32, lh: f32, cw: f3
 func col_of [ v: i32 ] -> rgba
     return rgba [ r: f32[(v >> 16) & 255] / 255.0, g: f32[(v >> 8) & 255] / 255.0, b: f32[v & 255] / 255.0, a: 1.0 ]
 
-# xterm modifier parameter: 1 + shift(1) + alt(2) + ctrl(4). 1 = no modifiers.
 func keymod [ ev: Event ] -> i32
     m : i32 [ 1 ]
     if [ ev.key.shift ] m += 1
@@ -1290,9 +1091,6 @@ func keymod [ ev: Event ] -> i32
     if [ ev.key.ctrl ]  m += 4
     return m
 
-# cursor / Home / End ('A'..'D','H','F'): modified → CSI 1;mod L; otherwise SS3
-# (ESC O L) when the app set DECCKM, else plain CSI (ESC [ L). app-cursor mode is
-# what makes arrow-key menu navigation work in TUIs like claude code.
 func send_cursor [ s: ConsoleSession, ev: Event, letter: string ]
     m : i32 [ keymod[ ev ] ]
     if [ m > 1 ]
@@ -1302,7 +1100,6 @@ func send_cursor [ s: ConsoleSession, ev: Event, letter: string ]
     el
         s.send_esc[ '[{letter}' ]
 
-# Insert/Delete/Page/etc: ESC [ n ~   (modified → ESC [ n ; mod ~)
 func send_tilde [ s: ConsoleSession, ev: Event, n: i32 ]
     m : i32 [ keymod[ ev ] ]
     if [ m > 1 ]
@@ -1310,8 +1107,6 @@ func send_tilde [ s: ConsoleSession, ev: Event, n: i32 ]
     el
         s.send_esc[ '[{n}~' ]
 
-# function keys. F1-F4 = SS3 (ESC O P..S); F5-F12 = CSI n ~. modified forms add
-# the ;mod parameter.
 func send_fkey [ s: ConsoleSession, ev: Event, k: i32 ]
     m : i32 [ keymod[ ev ] ]
     if [ k <= 293 ]
@@ -1339,14 +1134,9 @@ func send_fkey [ s: ConsoleSession, ev: Event, k: i32 ]
             n = 24
         send_tilde[ s, ev, n ]
 
-# map one key event onto the session's input stream. `vh` is the visible height,
-# used for the page-up/down step. returns true when it scrolled our own view
-# instead of forwarding (the caller repaints). shared by Console and ConsoleView.
 func term_key [ s: ConsoleSession, ev: Event, vh: f32 ] -> bool
     if [ !ev.key.state || !s ] return false
     k : i32 [ i32 ev.key.unicode ]
-    # page up / down on the NORMAL buffer scroll OUR view (scrollback). on the alt
-    # screen (or modified) they fall through and are forwarded to the app.
     if [ (k == 266 || k == 267) && !s.in_alt ]
         lh   : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
         page : f32 [ ((vh > 0.0) ? vh : f32[s.rows] * lh) - lh ]
@@ -1396,8 +1186,6 @@ func term_key [ s: ConsoleSession, ev: Event, vh: f32 ] -> bool
 
 element Console
     focusable  : true
-    # declared look: dark terminal fill, the term grid under the 44px filter
-    # title, an overlay scrollbar. member idents key the paint map.
     cbase     : Layer [ fill_color: rgba [ '#202' ] ]
     content   : TermLayer [ area: Region { l8px t44px r8px b8px }, label_height: 1.0, label_size: 16 ]
     scrollbar : ScrollLayer [ overlay: true, area: Region { l8px t44px r8px b8px }, thumb_color: '#fff4',
@@ -1405,13 +1193,7 @@ element Console
     public  session_id : string
     public  feed       : list string
     public  sessions   : map ConsoleSession[string]
-    # command to exec when THIS console's session is lazily created (an agent
-    # like claude). empty = interactive shell. without it, an agent tab whose
-    # session materializes here (first frame, reload) degrades to a bare shell.
     public  launch     : string
-    # a shell command line to run in this console's session (the editor's module
-    # build+run). set declaratively by the editor each frame; dispatched once
-    # when it changes — no owner reaches into the element tree to push it.
     public  run_line   : string
     mutable last_run   : string
 
@@ -1427,14 +1209,11 @@ element Console
                 s.start[]
             sessions[sid] = s
             pristine = false
-        # a live pty streams output — the console must repaint every frame
         if [ s.pty_fd >= 0 && !animated ]
             animated = true
             pristine = false
         return s
 
-    # the live line filter for this console: the editable title child's typed text.
-    # null/empty = show everything. used by TermLayer to drop non-matching lines.
     func filter [] -> string
         if [ !elements ] return null
         t : element elements['console_filter']
@@ -1444,9 +1223,6 @@ element Console
     func init []
         if [ !sessions ] sessions = map ConsoleSession[string] []
 
-    # launch an AI agent (claude/gemini) in a named session: exec the command
-    # directly (no interactive shell, no prompt/echo line) so the console shows only
-    # the agent's output. fresh session → create + start; existing → restart with it.
     func launch_agent [ sid: string, cmd: string ]
         s : ConsoleSession sessions[sid]
         if [ s ]
@@ -1459,21 +1235,16 @@ element Console
             sessions[sid] = s
             s.start[]
 
-    # run a command line in a named session's shell (create + start if needed) so
-    # it executes in that project's own terminal and streams output to the console.
     func dispatch [ sid: string, ln: string ]
         s : ConsoleSession sessions[sid]
         if [ !s ]
             s = ConsoleSession []
             s.name = sid
             sessions[sid] = s
-        # build/run commands run in an interactive shell (prompt bounce-back drives the
-        # run-armed state) — clear any agent launch_cmd so restart doesn't re-exec it.
         s.launch_cmd = ''
         s.restart[]
         s.pending = ln
 
-    # per-instance run (lldb) state, used by the play↔stop button.
     func is_running [ sid: string ] -> bool
         s : ConsoleSession sessions[sid]
         return s->running
@@ -1482,7 +1253,6 @@ element Console
         s : ConsoleSession sessions[sid]
         if [ s ] s.running = r
 
-    # stop a running session: restart its shell (kills lldb/the process) and clear.
     func stop [ sid: string ]
         s : ConsoleSession sessions[sid]
         if [ !s ] return
@@ -1491,16 +1261,11 @@ element Console
 
     func on_char [ ev: Event ]
         s : ConsoleSession session[]
-        # Alt+<char> is sent as ESC then the char (meta prefix), like a real terminal.
         if [ ev.key.alt && ev.key.text && ev.key.text.count > 0 ]
             s.send_esc[ ev.key.text ]
         el
             s.write_input[ ev.key.text ]
 
-    # paste text into the session as a real terminal paste: wrapped in
-    # bracketed-paste markers (ESC[200~ … ESC[201~) when the app has paste mode
-    # on, so claude/gemini recognize it as a paste (and ingest an image path as
-    # [Image #N]) rather than treating it as typed text.
     func paste [ text: string ]
         s : ConsoleSession session[]
         if [ !s || !text || text.count == 0 ] return
@@ -1519,7 +1284,6 @@ element Console
     func on_key [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
-        # Ctrl/Cmd-C with an active selection copies it; no selection → SIGINT
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta) && i32[ev.key.unicode] == 67 ]
             if [ s.sel_line >= 0 ]
                 txt : string s.selection_text[]
@@ -1531,8 +1295,6 @@ element Console
         vh  : f32 [ (ele && ele.bounds) ? ele.bounds.h : 0.0 ]
         if [ term_key[ s, ev, vh ] ] pristine = false
 
-    # map a mouse position to a (line, col) in the line model and set the cursor —
-    # mirrors EditorLayer.place_cursor over the console's line_count/line_get.
     func place_cursor [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
@@ -1543,9 +1305,6 @@ element Console
             return
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
         cw : f32 [ (s.cw_cache > 0.0) ? s.cw_cache : 8.0 ]
-        # find_target already folds the element's scroll.y into mouse.pos.y (we set
-        # con.scroll.y = s.scroll for the ScrollLayer), so it's already in content
-        # space — do NOT add s.scroll again or the line is off by the scroll amount.
         rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
         ln : i32 [ clamp[ rel_y / lh, 0, s.line_count[] - 1 ] ]
@@ -1553,15 +1312,10 @@ element Console
         s.sel_line = ln
         s.sel_col  = cl
 
-    # is char i of txt whitespace (word boundary for link detection)
     func is_ws [ txt: string, i: i32 ] -> bool
         c : string txt.mid[ i, 1 ]
         return c == ' ' || c == '	'
 
-    # if (line,col) sits on a `path:line(:col)` token, set s.link_c0/c1 to the token's
-    # [a, b) column span and return true. the path must look like a file (has / or .)
-    # and carry a numeric line after the colon. shared by the click (open) and the
-    # hover (underline) paths so both agree on exactly what counts as a link.
     func detect_link [ ln: i32, col: i32 ] -> bool
         s : ConsoleSession session[]
         if [ !s ] return false
@@ -1580,15 +1334,12 @@ element Console
         parts : array string word.split[ ':' ]
         if [ parts.count < 2 ] return false
         fp : string parts[ 0 ]
-        # must look like a path (has / or .) with a numeric line after the colon
         if [ fp.count == 0 || !parts[ 1 ].is_numeric[] ] return false
         if [ fp.index_of[ '/' ] < 0 && fp.index_of[ '.' ] < 0 ] return false
         s.link_c0 = a
         s.link_c1 = b
         return true
 
-    # if the (line,col) sits on a `path:line(:col)` token in the output, hand it
-    # to the app root's open_at (orbiter opens an editor pane) and return true.
     func open_link_at [ ln: i32, col: i32 ] -> bool
         s : ConsoleSession session[]
         if [ !s ] return false
@@ -1599,8 +1350,6 @@ element Console
         fp : string parts[ 0 ]
         lno : i32 [ i32[ parts[ 1 ].integer_value[] ] ]
         sc  : i32 [ (parts.count > 2 && parts[ 2 ].is_numeric[]) ? i32[ parts[ 2 ].integer_value[] ] : 0 ]
-        # ux is the Window; the app root is ux.app_object. casting ux itself
-        # reinterprets a Window as an element → garbage self → SIGBUS.
         if [ !ux || !ux.app_object ] return false
         app : cast element [ ux.app_object ]
         if [ !app ] return false
@@ -1609,10 +1358,7 @@ element Console
     func on_press [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
-        # take keyboard focus so key_event/text_event (both dispatch to `focus`) route
-        # here — without this, nothing reaches the terminal's on_key/on_char.
         set_focus[]
-        # right-click pastes the clipboard (what Ctrl-C copied) into the session.
         if [ ev.mouse.button == 1 ]
             if [ ux ]
                 clip : string ux.get_clipboard[]
@@ -1624,22 +1370,15 @@ element Console
         sb : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
         grab : f32 [ (sb && sb.thumb_w > 0.0) ? sb.thumb_w * 2.0 + 8.0 : 16.0 ]
         if [ sb && sb.scroll_max > 0.0 && rel_x > ele.bounds.w - grab ]
-            # subtract scroll.y (the element scroll find_target folds in, constant
-            # within a frame) — NOT s.scroll, which we mutate per drag event.
             my : f32 [ ev.mouse.pos.y - ele.bounds.y - scroll.y ]
             sb.grab_at[ my ]
             sy : f32 [ sb.drag_to[ my ] ]
             if [ sy >= 0.0 ]
-                # snap to the line grid and repaint only on a line change (set_scroll);
-                # a sub-line drag updates the thumb but leaves the console untouched.
                 s.scroll_dragging = true
                 sb.active         = true
                 set_scroll[ s, sy ]
             return
         place_cursor[ ev ]
-        # clicking a file:line token opens it in the editor instead of selecting.
-        # mark the event consumed so it doesn't reach app_object.on_press, which
-        # would re-route the click to the editor and scroll/select there.
         if [ open_link_at[ s.sel_line, s.sel_col ] ]
             s.sel_line = -1
             pristine    = false
@@ -1660,18 +1399,12 @@ element Console
             sb : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
             if [ sb ]
                 sy : f32 [ sb.drag_to[ ev.mouse.pos.y - ele.bounds.y - scroll.y ] ]
-                # set_scroll snaps to the line grid and only repaints when the top
-                # line changes — so dragging the thumb within a line is free, and the
-                # physical scroll moves only on whole-line boundaries.
                 if [ sy >= 0.0 ] set_scroll[ s, sy ]
             return
         if [ s.dragging ]
             place_cursor[ ev ]
             pristine = false
             return
-        # not dragging: underline a path:line token sitting under the cursor so it
-        # reads as a clickable link. mirrors place_cursor's mouse→(line,col) mapping
-        # but never touches the selection.
         if [ !ele || !ele.bounds || s.line_count[] <= 0 ] return
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
         cw : f32 [ (s.cw_cache > 0.0) ? s.cw_cache : 8.0 ]
@@ -1697,19 +1430,12 @@ element Console
             sb.active = false
             ux.will_animate = true
 
-    # cursor left the console (hover moved to another element) — drop any link
-    # underline so it doesn't linger. bubbled from the content layer up to here.
     func on_leave [ ev: Event ]
         s : ConsoleSession session[]
         if [ s && s.hover_link_line >= 0 ]
             s.hover_link_line = -1
             pristine = false
 
-    # scroll the view by line, set the user-scrolled lock so output doesn't yank it.
-    # apply an absolute scroll target: snap to the whole-line grid, clamp, and force a
-    # console repaint ONLY when the top visible line index changes. a drag that stays
-    # within a line snaps to the same value and the rendered content is identical, so
-    # nothing repaints. the draw owns s.first_line (set to the actual top line drawn).
     func set_scroll [ s: ConsoleSession, target: f32 ]
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
         ns : f32 [ target ]
@@ -1732,9 +1458,6 @@ element Console
         s : ConsoleSession session[]
         if [ !s ] return
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
-        # accumulate in lines (3 lines per wheel unit); only move on whole-line steps
-        # so a trackpad's fractional momentum deltas buffer instead of firing a redraw
-        # per event. the remainder carries to the next event.
         s.wheel_accum = s.wheel_accum - ev.mouse.wheel_delta.y * 3.0
         lines : i32 [ i32[ s.wheel_accum ] ]
         if [ lines != 0 ]

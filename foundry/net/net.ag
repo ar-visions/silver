@@ -16,8 +16,6 @@ import <stdio.h>
 import <stdlib.h>
 import <string.h>
 
-# client TLS connection: construct with host/port props, init dials +
-# handshakes; connected reflects success. send/recv move raw bytes.
 class TLSClient
     public host      : string
     public port      : i32 [ 443 ]
@@ -100,7 +98,6 @@ class TLSClient
         mbedtls_x509_crt_free   [ @cacert ]
         connected = false
 
-# https://host[:port]/path -> host/port/query parts (https only)
 class UrlParts
     public host  : string
     public port  : i32 [ 443 ]
@@ -126,7 +123,6 @@ class UrlParts
         valid = true
 
 class Http
-    # read one header line's value (case-insensitive key match on the tail)
     static func header_value [ hdr: string, key_tail: string ] -> string
         ik : i32 [ hdr.index_of[ key_tail ] ]
         if [ ik < 0 ] return null
@@ -136,7 +132,6 @@ class Http
         if [ ve < 0 ] return null
         return tail2.mid[ 0, ve ]
 
-    # stream a GET to a file, following redirects. returns bytes or -1.
     static func download [ url: string, dest: path ] -> i64
         u : UrlParts [ ]
         u.from_url[ url ]

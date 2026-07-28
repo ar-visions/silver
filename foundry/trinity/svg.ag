@@ -33,9 +33,6 @@ class SVGModel
     public cache        : Canvas
     public cache_rw     : f32
     public cache_rh     : f32
-    # the tint the cached raster was baked with. shapes are drawn with their own
-    # fill/stroke SCALED by the canvas colors, so a colour change must re-raster —
-    # the cache is otherwise keyed on size alone and would hand back the old tint.
     public cache_fill   : vec4f
     public cache_stroke : vec4f
     public pixel_scale  : i32 [ 4 ]
@@ -109,11 +106,8 @@ class SVGModel
             stroke_opacity:1.0,
             opacity:       1.0
         ]
-        shapes = hold[ array SVGShape [] ]
+        shapes = array SVGShape []
         svg_walk[ shapes, svg_node.children, xf0, st0 ]
-        #max_shapes : i32 512
-        #while [ shapes.count > max_shapes ]
-        #    shapes.pop[]
 
     public func render [ cv: Canvas, ox: f32, oy: f32, rw_in: f32, rh_in: f32 ]
         if [ !shapes || shapes.count == 0 ]

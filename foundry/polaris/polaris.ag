@@ -1,26 +1,6 @@
-# ============================================================================
-# polaris — the runtime/edge half of the dictation-driven code locator. it does
-# NOT summarize. it loads frozen, pre-annotated Regions (each carrying its source
-# identity / G and an embedding the small model produced upstream) and answers a
-# spoken intent vector with the location to jump to. orbiter calls this when you
-# dictate 'go to where we construct vulkan devices' — voice in, location out.
-#
-# named for the fixed star: you orient by a known reference (the source identity)
-# to know exactly where you are.
-#
-# identity is the index: every Region knows its source (G) and whether it's our
-# own code or a vendored/remote checkout, so the same index serves both the
-# default (local-only) goto and the widened (include-external) search by a single
-# filter — no separate model, no retraining. meaning lives in the embedding;
-# provenance lives beside it.
-# ============================================================================
 
 import <stdio.h>
 
-# one annotated, embeddable unit of the corpus: a code REGION (a function or
-# block with a line span), NOT a single line — 'the area' the user navigates to.
-# carries provenance (source/G + remote flag) for the local-vs-external filter,
-# and the embedding vector the trained model produced for `note`.
 class Region
     public path   : string          # file the region lives in
     public start  : i32  [ 0 ]      # first line of the region (1-based)
@@ -30,18 +10,12 @@ class Region
     public note   : string          # the LLM annotation: what this region does
     public emb    : array f32       # embedding vector for `note`
 
-# a ranked search result: where to jump and how confident. shaped to feed the
-# editor's route_to (path + line); score lets the caller threshold or sort.
 class Hit
     public path   : string
     public line   : i32  [ 0 ]
     public source : string
     public score  : f32  [ 0.0 ]
 
-# the search service. holds the frozen region index and answers an intent
-# vector with the best location. embedding of the QUERY happens upstream (the
-# small trained model); this service is pure index + similarity, so it stays
-# tiny and deterministic — it 'holds still'.
 class Polaris
     intern regions : array Region
 
@@ -55,8 +29,6 @@ class Polaris
         if [ !regions ] regions = array Region [ alloc: 256 ]
         regions.push[ r ]
 
-    # cosine similarity of two equal-length vectors. returns 0 when either is
-    # empty or degenerate, so an unembedded region can never win a search.
     intern func cosine [ lhs: array f32, rhs: array f32 ] -> f32
         if [ !lhs || !rhs ] return 0.0
         la : i32 [ lhs.count ]
@@ -75,9 +47,6 @@ class Polaris
         if [ ma <= 0.0 || mb <= 0.0 ] return 0.0
         return dot / (sqrt[ma] * sqrt[mb])
 
-    # best location for an intent vector. want_remote=false restricts to our own
-    # code (the default goto); true widens to vendored/external sources. returns
-    # null when nothing scores. this is the whole 'goto the area where ...' gesture.
     public func best [ q: array f32, want_remote: bool ] -> Hit
         if [ !regions ] return null
         top   : Region null

@@ -1,53 +1,25 @@
-# ============================================================================
-# project — the shared model describing a buildable/runnable silver project.
-#
-# defined in its own shared module so that BOTH orbiter and a user-authored
-# `projects.ag` import the same `Project` type. that single registration is
-# what lets orbiter dlopen a compiled `projects.so` and read back its exported
-# `array Project` with matching Au type identity across the module boundary.
-# ============================================================================
 
 import <stdio.h>
 
-# a single project/target. mirrors the per-module `.g` build descriptor
-# (type/modules) plus the absolute paths orbiter needs to build, stale-check,
-# and run it without resolving names against the running binary's cwd.
 class Project
-    # display + target name (e.g. 'silver', 'hyperspace', 'orbiter')
     public name     : string
 
-    # project root — the repository/workspace dir the project lives under
     public root     : path
 
-    # built artifact: the binary for an app, or lib<name>.so for a shared module
     public product  : path
 
-    # the command(s) to build this project — whatever the user runs (one per
-    # element; multiple commands allowed, e.g. a generator step then a build step).
     public build    : array token
 
-    # graph edges: names of prerequisite nodes (build deps / run-ordering), bare
-    # alphanumerical identifiers in .agi (no quotes), resolved against the node map.
     public deps     : array token
 
-    # what to launch under lldb: the program followed by its args, as one token
-    # list (e.g. `run: test4 --foo bar`) — program and args aren't separated.
     public run      : array token
 
-    # working directory for the RUN only (the launched app under lldb); the build
-    # runs in `root`, not here.
     public cwd      : path
 
-    # initial files to open as a row of editor panes when this target is selected.
-    # whitespace-delimited like build/run; each relative to `root` unless absolute.
     public files    : array token
 
-# a console instance from orbiter.agi (parsed the same as Project): a named console that's
-# either a shell or an AI agent. kind: 'shell' | 'claude' | 'chatgpt' | 'gemini'.
 class ConsoleInstance
     public name : string
     public kind : string
 
-    # optional command to launch when this console is first selected (whitespace-
-    # delimited tokens, like Project.build/run) — e.g. `run: claude --dangerously-skip-permissions`.
     public run  : array token

@@ -1,27 +1,18 @@
-# dbg — the LLDB driver, as a proper silver module. this .ag is the SCHEMA;
-# dbg.cc implements the methods against the LLDB SB API. the lldb::SB* objects
-# are held as intern opaque inline buffers (sized to the C++ types) so the public
-# silver surface never exposes an lldb type — dbg.cc casts the buffers back to the
-# real SB classes. external importers (orbiter) only see the public interface.
 
-# a stopped/crashed source position handed to the on_break / on_crash callbacks.
 class cursor
     intern  debug   : dbg
     public  source  : path
     public  line    : u32
     public  column  : u32
 
-# one inspected value (local/arg/global/register), with its rendered children.
 class variable
     intern  debug    : dbg
     public  name     : string
     public  type     : string
     public  value    : string
     public  children : array
-    # editor-side: this node is expanded into its child rows in the inline tree view.
     public  expanded : bool
 
-# one call-stack frame (read_frames): the function plus its source location.
 class frame
     intern  debug     : dbg
     public  func_name : string
@@ -33,14 +24,11 @@ class exited
     intern  debug : dbg
     public  code  : i32
 
-# a chunk of inferior stdout/stderr handed to the on_stdout / on_stderr callbacks.
 class iobuffer
     intern  debug : dbg
     public  bytes : cstr
     public  count : i32
 
-# a live breakpoint handle. lldb_bp is an opaque pointer to a C++-allocated
-# lldb::SBBreakpoint (dbg.cc owns it).
 class breakpoint
     intern  debug   : dbg
     intern  removed : bool
@@ -65,14 +53,8 @@ class dbg
     public   stderr_fifo : path
     public   fifo_fd_out : i32
     public   fifo_fd_err : i32
-    # true from start until the inferior exits or is stopped — i.e. a session is
-    # alive whether the program is running OR paused at a break. (running is false
-    # while paused, so it's the wrong signal for "are we debugging".)
     public   active      : bool
 
-    # opaque pointer to the C++ struct dbg.cc allocates, which holds the live
-    # lldb::SBDebugger / SBTarget / SBProcess / SBListener. the lldb types never
-    # appear in the silver schema — dbg.cc casts this back to its own struct.
     intern   impl        : handle
 
     func step_into          [ ]

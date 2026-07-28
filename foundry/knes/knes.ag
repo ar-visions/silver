@@ -1,17 +1,3 @@
-# =====================================================================
-# knes — Nintendo Entertainment System emulator
-#
-# Built on the rgen (Genesis) template: single emulation thread paced by
-# spectra's blocking AudioOut write, trinity window, published
-# framebuffer, savestates, Super Eagle upscale.
-#
-# Clock model (NTSC): master 21.477272 MHz
-#   CPU (2A03 / 6502 core) = master / 12 = 1.789773 MHz
-#   PPU (2C02)             = master / 4  (3 dots per CPU cycle)
-#   frame = 262 lines x 341 dots; vblank + NMI at line 241
-# 6502 cycle counts per the MOS datasheet incl. page-cross penalties.
-# APU: 2 pulse + triangle + noise (DMC deferred), NESdev-documented.
-# =====================================================================
 
 export 0.8.8
 
@@ -25,7 +11,6 @@ import <unistd.h>
 import <pthread.h>
 import <math.h>
 
-# audio sink is spectra's AudioOut (ALSA on linux, AudioQueue on mac)
 class cpu6502_state
 	a              : u8
 	x              : u8
@@ -62,7 +47,6 @@ class nes_ppu
 	framebuf       : new u32 [ 256 * 240 ]
 
 class nes_apu
-	# pulse 1/2: [duty, envelope/vol, sweep, timer lo, len/timer hi]
 	p_duty         : new u8  [ 2 ]
 	p_vol          : new u8  [ 2 ]     # $4000/$4004: DDLC VVVV
 	p_sweep        : new u8  [ 2 ]
@@ -202,9 +186,6 @@ element knes : trinity
 	mutable line_sx      : new u8 [ 240 ]    # per-line scroll snapshots (SMB
 	mutable line_sy      : new u8 [ 240 ]    # status-bar split: scroll only
 	mutable line_nt      : new u8 [ 240 ]    # exists between s0 hit and vblank)
-	# --- ground-truth scroll interpolation: the display runs ~165Hz vs the
-	# emulated 60Hz; we KNOW the camera delta from the scroll registers, so
-	# the render thread slides the scene sub-pixel between emulated frames ---
 	public  smooth       : bool [ true ]
 	mutable cam_prev     : i32               # previous camera x (nt<<8 | sx, 9-bit)
 	mutable cam_prev_y   : i32               # previous camera y (0..479)
@@ -225,13 +206,11 @@ element knes : trinity
 	mutable ticks        : i64               # session ticks (savestate-independent)
 	mutable pub_time     : i64               # wall us at publish
 	mutable pub_model    : i64               # phase-locked publish clock (jitter-free)
-	# split layers: bg glides with the camera, sprites stay screen-anchored
 	mutable fb_spr       : new u32 [ 256 * 240 ]   # sprite layer, alpha 0 = empty
 	mutable pub_spr      : new u32 [ 256 * 240 ]
 	mutable spr_tex      : Texture
 	mutable pub_hud      : new u32 [ 256 * 240 ]   # HUD rows (scroll != camera), anchored
 	mutable hud_tex      : Texture
-	# world-locked sprites (OAM delta == -camera delta) glide with the bg
 	mutable fb_sprw      : new u32 [ 256 * 240 ]
 	mutable pub_sprw     : new u32 [ 256 * 240 ]
 	mutable sprw_tex     : Texture
@@ -249,8 +228,6 @@ element knes : trinity
 		if [ volume == 0.0 ] volume = 0.04
 		smooth = true                        # [ true ] initializer doesn't apply on element publics
 
-	# NES pad: WASD = D-pad, J = A, K = B, Shift = Select, Enter = Start.
-	# P = save state, O = load state.
 	public func on_key [ ev: Event ]
 		code : i32  [ ev.key.unicode ]
 		down : bool [ ev.key.state ]
@@ -352,9 +329,6 @@ element knes : trinity
 	# CHR pattern tables as a 256x128 tile sheet (tiles view)
 	func paint_tiles [ cv: Canvas, vp: rect ]
 		if [ !cpu ] return
-		# CHR is colorless 2-bit indices — paint each table with the game's
-		# LIVE palette (left: background pal 0, right: sprite pal 0) so the
-		# sheet reads the way the game currently colors it
 		gr : local u32 [ 8 ] [ 0, 0, 0, 0, 0, 0, 0, 0 ]
 		for [ ci: i32 0, ci < 4, ci += 1 ]
 			gr[ ci ]     = nes_pal[ i32[ pal_shot[ ci ] ] & 63 ]
@@ -400,7 +374,6 @@ element knes : trinity
 			v = (v << 4) | d
 		return v
 
-	# one disassembled line at addr (same format the assembler parses back)
 	func dis_text [ addr: u32 ] -> string
 		op : u32 [ u32[ bus_rd[ addr ] ] ]
 		md2 : i32 [ i32[ dis_md[ i32[ op ] ] ] ]
@@ -439,8 +412,6 @@ element knes : trinity
 			addr = addr + u32[ dis_last_len ]
 		return out
 
-	# assemble one edited line back into PRG. same-length in-place patches
-	# only — a longer/shorter encoding would shift every following byte.
 	func asm_patch [ text: string ] -> bool
 		dis_prepare[]
 		if [ !cpu ] return false
@@ -509,7 +480,6 @@ element knes : trinity
 		if [ il > 2 ] prg[ po + 2 ] = u8[ (v >> 8) & 0xFF ]
 		return true
 
-	# CHR byte write through the mapper (ROM buffer in memory, or CHR-RAM)
 	func chr_poke [ pa: u32, v: u8 ]
 		if [ chr_is_ram ]
 			ppu.chr_ram[ chr_off[ pa ] & 0x1FFF ] = v
@@ -517,12 +487,9 @@ element knes : trinity
 		co : u32 [ chr_off[ pa ] ]
 		if [ sz[ co ] < chr_size ] chr[ co ] = v
 
-	# read/modify one tile row pair (both bitplanes packed as b0 | b1<<8)
 	func chr_row [ pa: u32 ] -> u32
 		return u32[ ppu_rd[ pa ] ] | (u32[ ppu_rd[ pa + 8 ] ] << 8)
 
-	# click a sheet pixel: cycle its 2-bit color and record an undo entry.
-	# sx 0..255 (two tables side by side), sy 0..127.
 	func tile_click [ sx: i32, sy: i32 ] -> bool
 		if [ sx < 0 || sx > 255 || sy < 0 || sy > 127 ] return false
 		tb : i32 [ (sx >= 128) ? 1 : 0 ]
@@ -539,7 +506,6 @@ element knes : trinity
 		b1 = (b1 & (~(u32[1] << fx))) | (((np >> 1) & 1) << fx)
 		chr_poke[ pa, u8[ b0 ] ]
 		chr_poke[ pa + 8, u8[ b1 ] ]
-		# undo ring: truncate any redo tail, append (drop oldest when full)
 		if [ tu_pos < tu_n ] tu_n = tu_pos
 		if [ tu_n >= 256 ]
 			for [ i: i32 1, i < 256, i += 1 ]
@@ -570,7 +536,6 @@ element knes : trinity
 		tu_pos += 1
 		return true
 
-	# drop per-view scratch when the pane tabs away (views rebuild on entry)
 	func view_release []
 		chr_tex = null
 
@@ -606,7 +571,6 @@ element knes : trinity
 		el [ mapper != 0 ] puts 'knes: mapper {mapper} not yet supported (NROM/MMC1)'
 		puts 'knes: prg={prg_size} chr={chr_size} mapper={mapper} vmirror={(mirror_v) ? 1 : 0}'
 
-	# ---- PPU memory ($0000 pattern, $2000 nametables, $3F00 palette) ----
 	func nt_index [ a2: u32 ] -> u32
 		t : u32 [ (a2 >> 10) & 3 ]
 		if [ mir_mode == 2 ] t = t & 1               # vertical
@@ -644,8 +608,6 @@ element knes : trinity
 		if [ pi >= 16 && (pi & 3) == 0 ] pi -= 16
 		ppu.palette[ pi ] = v
 
-	# ---- CPU bus ----
-	# CPU address ($8000+) -> PRG byte offset through the active mapper banks
 	func prg_index [ a2: u32 ] -> u32
 		o : u32 [ a2 - 0x8000 ]
 		if [ mapper == 1 ]
@@ -735,7 +697,6 @@ element knes : trinity
 					ppu.t_reg = (ppu.t_reg & 0xFF00) | u16[ v ]
 					ppu.addr = ppu.t_reg
 					ppu.t_dirty = true         # address until proven scroll ($2005/$2000 clean it)
-					# v load: vertical scroll takes effect NOW (the $2006 technique)
 					ppu.eff_sy  = u8[ ((ppu.t_reg >> 2) & 0xF8) | ((ppu.t_reg >> 12) & 7) ]
 					ppu.eff_nty = u8[ (ppu.t_reg >> 11) & 1 ]
 				ppu.latch = ! ppu.latch
@@ -791,9 +752,6 @@ element knes : trinity
 	func rd16 [ a2: u32 ] -> u32
 		return u32[ bus_rd[ a2 ] ] | (u32[ bus_rd[ a2 + 1 ] ] << 8)
 
-	# =================================================================
-	# 6502 core — MOS datasheet cycles, page-cross penalties via xtra
-	# =================================================================
 	func push8 [ v: u8 ] -> none
 		bus_wr[ 0x100 + u32[ cpu.sp ], v ]
 		cpu.sp = cpu.sp - 1
@@ -1209,9 +1167,6 @@ element knes : trinity
 		if [ trace ] puts 'knes 6502: unhandled opcode {op}'
 		return 2
 
-	# =================================================================
-	# APU — pulse x2, triangle, noise; frame counter at 240 Hz
-	# =================================================================
 	func apu_wr [ a2: u32, v: u8 ] -> none
 		r : u32 [ a2 & 0x1F ]
 		if [ r <= 7 ]                              # pulse 1/2
@@ -1265,7 +1220,6 @@ element knes : trinity
 			return
 		if [ r == 0x17 ] apu.fc_mode = (v >> 7) & 1
 
-	# quarter/half frame clocks (envelopes, linear, length, sweep)
 	func apu_frame_tick [] -> none
 		apu.fc_step = (apu.fc_step + 1) % ((apu.fc_mode != 0) ? 5 : 4)
 		# quarter: envelopes + triangle linear counter
@@ -1318,7 +1272,6 @@ element knes : trinity
 		while [ apu.fc_acc >= 53267 ]
 			apu.fc_acc -= 53267
 			apu_frame_tick[]
-		# advance channel timers by elapsed CPU cycles (1789773 / 53267)
 		n : i32 [ 33 ]
 		s : i32 [ 0 ]
 		for [ ch: i32 0, ch < 2, ch += 1 ]
@@ -1355,9 +1308,6 @@ element knes : trinity
 				s += nv * 323
 		return s
 
-	# =================================================================
-	# PPU render — frame-based like rgen's vdp_render
-	# =================================================================
 	func ppu_render [] -> none
 		ppu.s0_line = -1
 		memset[ fb_spr, 0, 256 * 240 * 4 ]        # sprite layers start empty
@@ -1365,9 +1315,6 @@ element knes : trinity
 		bg_pat : u32 [ ((ppu.ctrl & 0x10) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
 		sp_pat : u32 [ ((ppu.ctrl & 0x08) != 0) ? u32[ 0x1000 ] : u32[ 0 ] ]
 		big : bool [ (ppu.ctrl & 0x20) != 0 ]
-		# per-LINE enable (cave/room loads disable rendering mid-frame while
-		# VRAM is rewritten — hardware shows backdrop there, never the
-		# half-rewritten nametable with the new palette)
 		bg_on : bool [ true ]
 		sp_on : bool [ true ]
 		ub : u32 [ nes_pal[ i32[ pal_shot[ 0 ] ] & 63 ] ]
@@ -1376,9 +1323,6 @@ element knes : trinity
 			base_nt : u32 [ u32[ line_nt[ y ] ] ]
 			cur_chr0 = line_chr0[ y ]
 			cur_chr1 = line_chr1[ y ]
-			# vertical scroll set MID-FRAME ($2006 technique) renders from
-			# that source row AT that line: anchor each vertical region where
-			# its sy changed and count rows from the anchor (hardware-true)
 			if [ y > 0 ]
 				if [ line_sy[ y ] != line_sy[ y - 1 ] || ((line_nt[ y ] ^ line_nt[ y - 1 ]) & 2) != 0 ] vanch = y
 			bg_on = (line_mask[ y ] & 0x08) != 0
@@ -1442,21 +1386,12 @@ element knes : trinity
 		cur_chr0 = m1_chr0
 		cur_chr1 = m1_chr1
 
-	# =================================================================
-	# frame + thread + audio (rgen template)
-	# =================================================================
-	# one NTSC frame: 262 lines x 341 dots x 4 master; CPU cycle = 12 master
 	func run_frame [] -> none
 		for [ line: i32 0, line < 262, line += 1 ]
 			if [ line == 0 ]                      # pre-render v reload: vertical from t
 				ppu.eff_sy  = u8[ ((ppu.t_reg >> 2) & 0xF8) | ((ppu.t_reg >> 12) & 7) ]
 				ppu.eff_nty = u8[ (ppu.t_reg >> 11) & 1 ]
 			if [ line < 240 ]                     # snapshot loopy t + CHR banks per line
-				# while t holds a VRAM address ($2007 burst in flight), hold
-				# the last scroll-intent tuple — an address is not a scroll
-				# X follows t per line (hardware hblank reload); Y follows the
-				# EFFECTIVE v (frame start / $2006 loads only). during $2007
-				# bursts t is an address — hold last scroll-intent X
 				if [ ! ppu.t_dirty ]
 					line_sx[ line ] = u8[ ((ppu.t_reg & 0x1F) << 3) | u16[ ppu.fine_x ] ]
 					line_nt[ line ] = u8[ ((ppu.t_reg >> 10) & 1) | (u16[ ppu.eff_nty ] << 1) ]
@@ -1489,7 +1424,6 @@ element knes : trinity
 		if [ ! audio || ! audio.active ]
 			usleep[ 15000 ]
 			return
-		# 53267 Hz vs NTSC frame (60.0988): 53267 * 357368 / 21477272
 		sample_frac += i64[ 53267 ] * 357368
 		n : i32 [ i32[ sample_frac / 21477272 ] ]
 		sample_frac -= i64[ n ] * 21477272
@@ -1609,14 +1543,11 @@ element knes : trinity
 				fwrite[ line_sy, 1, 240, lf ]
 				fwrite[ line_nt, 1, 240, lf ]
 				fclose[ lf ]
-		# camera x from the game-area snapshot (line 200 — below any HUD split),
-		# 9-bit with the nametable bit; wrap-aware delta, teleports zeroed
 		cam : i32 [ (i32[ line_nt[ 200 ] & 1 ] << 8) | i32[ line_sx[ 200 ] ] ]
 		dx : i32 [ (cam - cam_prev) & 511 ]
 		if [ dx >= 256 ] dx -= 512
 		if [ dx > 32 || dx < -32 ] dx = 0
 		cam_prev = cam
-		# vertical camera: nt bit1 selects the second 240-row nametable
 		camy : i32 [ i32[ (line_nt[ 200 ] >> 1) & 1 ] * 240 + i32[ line_sy[ 200 ] ] ]
 		dy : i32 [ camy - cam_prev_y ]
 		if [ dy >= 240 ] dy -= 480
@@ -1626,8 +1557,6 @@ element knes : trinity
 		cam_prev_y = camy
 		cur_dx = dx
 		cur_dy = dy
-		# world-locked sprite classification: OAM delta == -camera delta on
-		# every moving axis -> the sprite rides the world (sticky per slot)
 		if [ dx != 0 || dy != 0 ]
 			for [ si: i32 0, si < 64, si += 1 ]
 				syv : i32 [ i32[ ppu.oam[ si * 4 ] ] ]
@@ -1642,9 +1571,6 @@ element knes : trinity
 			for [ si2: i32 0, si2 < 64, si2 += 1 ]
 				spr_world[ si2 ] = 0
 		memcpy[ prev_oam, ppu.oam, 256 ]
-		# anchored rows = EDGE bands whose scroll tuple disagrees with the
-		# camera ("it never moves relative"): vertical transitions differ in
-		# sy, horizontal in sx/nt — compare all three
 		c3x : i32 [ i32[ line_sx[ 200 ] ] ]
 		c3y : i32 [ i32[ line_sy[ 200 ] ] ]
 		c3n : i32 [ i32[ line_nt[ 200 ] ] ]
@@ -1672,8 +1598,6 @@ element knes : trinity
 		memset[ pub_hud, 0, 256 * 240 * 4 ]
 		if [ split > 0 ]
 			memcpy[ pub_hud, ppu.framebuf, split * 256 * 4 ]
-			# bg copy: fill the pinned band with the seam row so vertical
-			# glide slides a clean room edge under the HUD, not a ghost HUD
 			for [ er: i32 0, er < split, er += 1 ]
 				memcpy[ pub_framebuf + er * 1024, ppu.framebuf + split * 1024, 1024 ]
 		if [ bsplit < 240 ]
@@ -1690,9 +1614,6 @@ element knes : trinity
 		p3x = c3x
 		p3y = c3y
 		p3n = c3n
-		# phase-locked publish clock: the ALSA ring quantizes the thread's
-		# wake times (+-ms jitter), but the long-run rate is exactly the DAC
-		# clock. advance by one frame period and correct drift softly.
 		noww : i64 [ wall_us[] ]
 		if [ pub_model == 0 ] pub_model = noww
 		el
@@ -1701,9 +1622,6 @@ element knes : trinity
 			if [ errt > 8000 || errt < -8000 ] pub_model = noww
 			el pub_model += errt / 16
 		pub_time = pub_model
-		# publish each axis only when it MOVED; the replay window is the
-		# measured cadence (Zelda steps y every 2nd frame -> 33ms window,
-		# SMB every frame -> 17ms). deltas replay continuously, never park.
 		gapx += 1
 		gapy += 1
 		if [ dx != 0 ]
@@ -1767,8 +1685,6 @@ element knes : trinity
 				emu_tick[]
 		emu_running = false
 
-	# machine-state dump published when the emulation pauses — the host feeds
-	# this to the AI console so it can reason about the live machine
 	func context_text [] -> string
 		if [ !cpu ] return 'knes paused: no machine state (rom not loaded)'
 		dis_prepare[]
@@ -1842,7 +1758,6 @@ element knes : trinity
 		noise_tab[ 13 ] = 1016
 		noise_tab[ 14 ] = 2034
 		noise_tab[ 15 ] = 4068
-		# 2C02 master palette (standard NTSC set), packed ABGR for the texture
 		pr : new u32 [ 64 ] [
 			0x666666, 0x002A88, 0x1412A7, 0x3B00A4, 0x5C007E, 0x6E0040, 0x6C0600, 0x561D00,
 			0x333500, 0x0B4800, 0x005200, 0x004F08, 0x00404D, 0x000000, 0x000000, 0x000000,
@@ -1862,14 +1777,11 @@ element knes : trinity
 				if [ resume ] load_state[]
 		booted = true
 
-	# element paint hook (screen walk only — the compose walk would double-run
-	# GPU submits and sample the glide clock twice)
 	public func draw [ w: Window ]
 		if [ w.draw_stage != CanvasType.screen ] return
 		ux.will_animate = true
 		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
-	# draw the emulator into `vp` on any canvas (element path or orbiter pane)
 	public func paint [ cv: Canvas, vp: rect ]
 		bounds = vp
 		if [ ! booted ] boot[]
@@ -1923,14 +1835,11 @@ element knes : trinity
 					ppu.framebuf[ y * 256 + x ] = 0xFF000000 | (u32[ (x + y + i32[ frames ]) & 0xFF ] << 8)
 			frames += 1
 			screen_tex.upload[ ppu.framebuf, 256 * 240 * 4 ]
-		# bg glides with the camera; HUD + sprites draw unshifted on top.
-		# 8 source px of overscan bleed hides the slide at the edges.
 		out : rect [ x: vp.x - bl + ox, y: vp.y - bl + oy, w: ow, h: oh ]
 		out_spr : rect [ x: vp.x - bl, y: vp.y - bl, w: ow, h: oh ]
 		if [ vec || se_2d || blocky ]
 			if [ prg && ! ps_render ]
 				if [ se_2d && ! vec ]
-					# Super Eagle computes on its native 2x lattice (half window)
 					se_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
 					se_model  = Model [ w: cv.w, s: se_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
 					se_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ se_model ] ]
@@ -1955,7 +1864,6 @@ element knes : trinity
 					psw_model  = Model [ w: cv.w, s: vsw_shader, samplers: map Texture[string] [ 'color': sprw_tex ] ]
 					psw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ psw_model ] ]
 				el
-					# sharp-bilinear lifts (SE 2x result, or the raw layers) to window res
 					ps_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
 					ps_model  = Model [ w: cv.w, s: ps_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se_render.color : screen_tex ] ]
 					ps_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ps_model ] ]

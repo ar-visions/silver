@@ -17,7 +17,6 @@ class shader
     public comp         : path
     public reload_count : i32
 
-    # used by elements which make shader instances central to drawing order
     public model_id     : string
     public env_id       : string
     public groups       : array string
@@ -25,24 +24,7 @@ class shader
     public transparent  : bool
     public texture      : string
     public mip_levels   : i32
-    # State BITMASK, same semantics as Layer.states: none = always render;
-    # set = this pass renders only while every state is live on the element
     public states       : State
-    # style group; variants sharing a key modify one pass
-    public key          : string
-    # keyed variants targeting this pass, in declaration order
-    intern variants     : array shader
-    # one clock for the whole pass; variant attributes ease as a set
-    public transition   : StyleTransition
-    intern u_n          : i32
-    intern base_u       : @f32
-    intern from_u       : @f32
-    intern last_mask    : i32 [ -1 ]
-    intern t_start      : i64
-    # per-pass model transform; variants may carry their own
-    public rotate       : array Rotation
-    intern base_rot     : array Rotation
-    intern from_rot     : array Rotation
 
     intern vk_vert      : VkShaderModule
     intern vk_frag      : VkShaderModule
@@ -113,10 +95,6 @@ class shader
 
         # emit void main() from the stage entry point
         main_name: (stage == ShaderStage.vertex) ? "vertex" : (stage == ShaderStage.fragment) ? "fragment" : "compute"
-        # MOST-DERIVED wins: find_member's inherited search returns the first
-        # match walking UP the chain (the base's stage entry), so a subclassed
-        # shader would emit its PARENT's fragment. scan this type first, then
-        # each ancestor, and take the first definition found going DOWN-UP.
         main_member: Au_t [ null ]
         sc9 : Au_t [ type ]
         while [ sc9 && sc9 != typeid[ shader ] ]
@@ -128,14 +106,10 @@ class shader
         if [ !main_member || main_member.context == typeid[shader] ]
             return null
 
-        # local size for compute stage. fixed at 16x16 — matches the
-        # canvas_sdf.comp prototype. could be made per-shader configurable
-        # via a class field if other compute shaders need different sizes.
         if [ stage == ShaderStage.compute ]
             result = '{result}layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;\n\n'
 
 
-        # UBO from mutable members — emit base-first to match C struct layout
         ubo_name: type.ident
         result = '{result}layout(set = 0, binding = 0) uniform {ubo_name} {{\n'
         chain: context_chain[]
@@ -179,8 +153,6 @@ class shader
 
                 el [ val inherits StorageImage ]
                     si: StorageImage[val]
-                    # GLSL format qualifier from the meta type. only the formats
-                    # we actually use are mapped; extend as needed.
                     img_fmt: (si.format == typeid[ f32 ]) ? "r32f" :
                              (si.format == typeid[ rgbaf ]) ? "rgba32f" : "r32f"
                     result = '{result}layout({img_fmt}, set = 1, binding = {binding}) writeonly uniform image2D {mem.ident};\n'
@@ -232,7 +204,6 @@ class shader
                     frag_loc_out += 1
 
 
-        # for methods, its preferrable to go top down since we may handle overrides easier
         scan : type
         while [ scan != typeid[ shader ] ]
             for [ i: 0, i < scan.members.count, i += 1 ]
@@ -248,7 +219,6 @@ class shader
                 if [ !ret_name ]
                     ret_name = "void"
 
-                # build arg list from method.args (skip first arg which is self)
                 arg_str: ''
                 for [ j: 1, j < method.args.count, j += 1 ]
                     arg: Au_t [ method.args.origin[j] ]
@@ -294,14 +264,6 @@ class shader
             if [ !src ]
                 continue
             
-            # only write the .vert/.frag/.comp if its content has actually
-            # changed. a redundant rewrite bumps mtime and forces an
-            # unnecessary glslangValidator recompile (which used to race
-            # between concurrent shader instances of the same type) — but
-            # if we just blanket-skip on existence, the user editing the
-            # GLSL inside the .ag file silently has no effect because the
-            # stale on-disk shader keeps loading. compare byte-for-byte
-            # and only skip when truly identical.
 
             should_write : bool true
             if [ p.exists[] ]
@@ -328,120 +290,6 @@ class shader
                 continue
             fputs[ src, fp ]
             fclose[ fp ]
-
-    # every uniform field is float-based (f32/vec2f/vec3f/vec4f/mat4f)
-    intern func u_floats [] -> i32
-        n : i32 [ 0 ]
-        for [ ty: Au_t ] in context_chain[]
-            for [ i: i32 0, i < ty.members.count, i += 1 ]
-                mem : Au_t ty.members.origin[i]
-                if [ is_uniform_field[ mem ] ]
-                    n += mem.src.typesize / 4
-        return n
-
-    # copy this pass's uniform floats out to dst
-    intern func u_save [ dst: @f32 ]
-        inst : a
-        src  : @u8 [ inst ]
-        ix   : i32 [ 0 ]
-        for [ ty: Au_t ] in context_chain[]
-            for [ i: i32 0, i < ty.members.count, i += 1 ]
-                mem : Au_t ty.members.origin[i]
-                if [ !is_uniform_field[ mem ] ] continue
-                fp : @f32 [ @src[ mem.offset ] ]
-                n  : i32  [ mem.src.typesize / 4 ]
-                for [ k: i32 0, k < n, k += 1 ]
-                    dst[ ix ] = fp[ k ]
-                    ix += 1
-
-    # write src floats back into this pass's uniform members
-    intern func u_load [ src2: @f32 ]
-        inst : a
-        dst  : @u8 [ inst ]
-        ix   : i32 [ 0 ]
-        for [ ty: Au_t ] in context_chain[]
-            for [ i: i32 0, i < ty.members.count, i += 1 ]
-                mem : Au_t ty.members.origin[i]
-                if [ !is_uniform_field[ mem ] ] continue
-                fp : @f32 [ @dst[ mem.offset ] ]
-                n  : i32  [ mem.src.typesize / 4 ]
-                for [ k: i32 0, k < n, k += 1 ]
-                    fp[ k ] = src2[ ix ]
-                    ix += 1
-
-    # live currently holds the target; ease it back toward `from` by (1-p)
-    intern func u_mix [ from2: @f32, p: f32 ]
-        inst : a
-        dst  : @u8 [ inst ]
-        ix   : i32 [ 0 ]
-        for [ ty: Au_t ] in context_chain[]
-            for [ i: i32 0, i < ty.members.count, i += 1 ]
-                mem : Au_t ty.members.origin[i]
-                if [ !is_uniform_field[ mem ] ] continue
-                fp : @f32 [ @dst[ mem.offset ] ]
-                n  : i32  [ mem.src.typesize / 4 ]
-                for [ k: i32 0, k < n, k += 1 ]
-                    f0 : f32 [ from2[ ix ] ]
-                    fp[ k ] = f0 + (fp[ k ] - f0) * p
-                    ix += 1
-
-    intern func rot_copy [ src3: array Rotation ] -> array Rotation
-        res : array Rotation []
-        for [ r: Rotation ] in src3
-            res.push[ r ]
-        return res
-
-    intern func rot_mix [ fa: array Rotation, ta: array Rotation, p: f64 ] -> array Rotation
-        n   : i32 [ (fa.count < ta.count) ? fa.count : ta.count ]
-        res : array Rotation []
-        for [ i: i32 0, i < n, i += 1 ]
-            r : fa[i]
-            res.push[ r.mix[ ta[i], p ] ]
-        return res
-
-    # resolve base + variants matching mask m, eased by `transition`.
-    # returns true while still animating, so the element keeps drawing
-    public func apply_states [ m: i32 ] -> bool
-        if [ !variants ] return false
-        if [ u_n == 0 ]
-            u_n    = u_floats[]
-            if [ u_n <= 0 ] return false
-            base_u = new f32 [ u_n ]
-            from_u = new f32 [ u_n ]
-            u_save[ base_u ]
-            if [ rotate ] base_rot = rot_copy[ rotate ]
-        if [ m != last_mask ]
-            last_mask = m
-            u_save[ from_u ]
-            if [ rotate ] from_rot = rot_copy[ rotate ]
-            t_start = epoch_millis[]
-            puts 'APPLYST {name} m={m} nvar={variants.count} rot={bool[rotate]}'
-            for [ pv: shader ] in variants
-                puts '  VAR key={pv.key} states={i32[pv.states]} rot={i32[pv.rotate->count]} match={(i32[pv.states] != 0 && (m & i32[pv.states]) == i32[pv.states])}'
-        u_load[ base_u ]
-        if [ base_rot ] rotate = rot_copy[ base_rot ]
-        for [ sv: shader ] in variants
-            vs : i32 [ i32[ sv.states ] ]
-            if [ vs != 0 && (m & vs) != vs ] continue
-            ty : Au_t [ Au.header[ sv ].au ]
-            while [ ty && ty != typeid[ shader ] ]
-                for [ vi: i32 0, vi < ty.members.count, vi += 1 ]
-                    mem : Au_t ty.members.origin[vi]
-                    if [ mem.member_type != AU_MEMBER_VAR ] continue
-                    if [ !sv.AF_get_member[ mem ] ] continue
-                    member_set[ mem, sv.member_object[ mem ] ]
-                ty = ty.context
-            # rotate lives on shader itself, which the walk above stops before
-            if [ sv.rotate && sv.rotate.count ] rotate = rot_copy[ sv.rotate ]
-        if [ !transition ] return false
-        dur : i64 [ transition.duration.get_millis[] ]
-        if [ dur <= 0 ] return false
-        ms : i64 [ epoch_millis[] - t_start ]
-        if [ ms >= dur ] return false
-        p : f64 [ transition.pos[ f64[ ms ] / f64[ dur ] ] ]
-        u_mix[ from_u, f32[ p ] ]
-        if [ from_rot && rotate ] rotate = rot_mix[ from_rot, rotate, p ]
-        return true
 
     func uniform_transfer [ data2: @u8, type: Au_t ] -> i64
         instance:a
@@ -475,9 +323,17 @@ class shader
         return index
 
     intern func reload [ ] -> bool
+        if [ vert ]
+            vh9 : Au.header[ vert ]
+            puts 'RLD-in  {name}: vert refs={vh9.refs}'
         paths:  array path [ vert, frag, comp ]
+        if [ vert ]
+            vh8 : Au.header[ vert ]
+            ph8 : Au.header[ paths ]
+            puts 'RLD-arr {name}: vert refs={vh8.refs} paths-refs={ph8.refs} pool-ix={ph8.managed}'
         values: new VkShaderModule[3] [ vk_vert, vk_frag, vk_comp ]
-        values.hold[]
+        #values.hold[]
+        puts 'shader reload? {name}'
         found:      false
         recompiled: false
         for [ i: 0, i < 3, i += 1 ]
@@ -502,8 +358,6 @@ class shader
                 make_spv : !spv_exists || source_stat.st_mtimespec.tv_sec > spv_stat.st_mtimespec.tv_sec
 
             if [ make_spv ]
-                # use the vendored glslangValidator by absolute path (no PATH dependence);
-                # fall back to PATH only if the vendored binary isn't present.
                 glsl: path '{path.path_startup[]}/platform/native/bin/glslangValidator'
                 glsl_bin: (glsl.exists[]) ? '{glsl}' : 'glslangValidator'
                 cmd: '{glsl_bin} -V100 --target-env vulkan1.2 {shader_file} -o {spv_file}'
@@ -558,8 +412,6 @@ class shader
             ty: typeid[ a ]
             expect ty != typeid[ shader ], "shader requires a subclass"
             name = ty.ident
-        # shaders live in the user app's cache dir (~/.cache/<app>/shaders),
-        # NOT the launch cwd — a hosted app's cwd is silver root / a share dir.
         app : string 'silver'
         se  : getenv[ 'SILVER_APP' ]
         if [ se ] app = string [ se ]
@@ -569,7 +421,6 @@ class shader
         comp = '{sdir}/{name}.comp'
         if [ !vk.shader_cache ]
             vk.shader_cache = store[]
-            vk.shader_cache.hold[]
             
         rty9: typeid[ a ]
         cached: shader [ vk.shader_cache.get[ rty9 ] ]
@@ -581,11 +432,10 @@ class shader
         generate_shaders[ ]
         reload[ ]
         vk.shader_cache.set[ rty9, a ]
+        vhi : Au.header[ vert ]
+        puts 'SHINIT {name} vert refs={vhi.refs}'
 
     func dealloc [ ]
-        # default-constructed shader instances (e.g. shader-codegen reflection args
-        # built via method_call's missing-arg path) never got a vk context, so they
-        # have no shader modules and nothing to free. guard the null vk deref.
         if [ !vk ] return
         cached: shader [ vk.shader_cache.get[ typeid[ a ] ] ]
         if [ cached != a ]
@@ -665,18 +515,6 @@ ModelViewProject UVReduce
 
 
 
-# Super Eagle 2x pixel-art upscaler as a post-effect pass.
-#
-#   SuperEagle algorithm: Copyright (C) 2002-2007 The DOSBox Team — License: GNU GPL
-#   GET_RESULT logic:     Copyright (c) 1999-2001 Derek Liauw Kie Fa — License: GNU GPL
-#   GLSL adaptation by guest(r) (2007); ported from libretro/glsl-shaders
-#   (eagle/shaders/supereagle.glsl). Re-expressed in trinity's shader form here.
-#   This file therefore includes GPL-licensed work — keep this notice.
-#
-# Alpha runs through the same pattern selection as color, so sprite-edge coverage is
-# diagonal-smoothed and composites over whatever sits beneath (e.g. the Mode-7 plane);
-# transparent texels borrow the nearest opaque neighbor's rgb so no black fringes are
-# blended in. Bind the 256x224 framebuffer as 'color'.
 ModelViewProject SuperEagle
     attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
@@ -779,11 +617,6 @@ ModelViewProject SuperEagle
     }
 
 
-# Sharp-bilinear pixel scaler. Nearest-neighbor squares with a transition
-# exactly one DESTINATION pixel wide at each texel boundary: hard pixel-art
-# edges that stay stable under sub-pixel motion (no crawl or shimmer), at any
-# scale factor including non-integer, evaluated at the output resolution.
-# Source must be sampled LINEAR — the transition rides the hw bilinear.
 ModelViewProject PixelSharp
     attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
 
@@ -818,17 +651,6 @@ ModelViewProject PixelSharp
     }
 
 
-# Continuous pixel-art edge reconstruction ("vector look"). EPX/Scale2x
-# corner rules (public-domain algorithm) evaluated per DESTINATION pixel:
-# where a corner rule fires, the texel is cut by the ideal 45-degree line and
-# the output pixel takes the side it falls on, with a one-dest-pixel AA band.
-# Diagonals render as exact straight edges at ANY scale — no 2x lattice.
-# generic character/prop PBR (gltf metallic-roughness), tuned for HUMANS:
-# standard GGX for clothes/props plus a light SUBSURFACE term (wrap diffuse +
-# warm back-transmission) that reads as skin and fades out with metalness.
-# samples the material textures model_init_pipeline binds (color / mr /
-# normal), each on its material-declared UV set (uv_map: x=color y=mr
-# z=normal — value 0/1/2 selects TEXCOORD_0/1/2).
 ModelViewProject HumanPBR
     mutable eye    : vec4f
     mutable uv_map : vec4f
@@ -1042,9 +864,6 @@ ModelViewProject VectorScale
     }
 
 
-# --- GPU subdivision surface (Catmull-Clark, one level) --------------------
-# storage-buffer slots for the subdivision compute pass; IDs only need to be
-# unique within the enum (looked up by attrib name in the samplers map).
 enum SubdivSurface
     in_pos:      0
     face_corner: 1
@@ -1055,11 +874,6 @@ enum SubdivSurface
     ve:          6
     out_pos:     7
 
-# one Catmull-Clark level on the GPU. reads the level's control positions plus
-# a fixed topology (built once on the CPU) and writes the subdivided positions.
-# one invocation per OUTPUT vertex; output order is vertex-points (N), then
-# edge-points (E), then face-points (F). in/out are float buffers walked with a
-# stride in floats — the final level writes straight into the interleaved VBO.
 shader SubdivCompute
     mutable n_base     : i32
     mutable n_edge     : i32
@@ -1147,11 +961,6 @@ shader SubdivCompute
         out_pos[ob+2] = np.z;
     }
 
-# smooth normals for the subdivided mesh, recomputed from the OUTPUT quads
-# every frame (positions move with the control cage). one invocation per
-# output vertex: sum the normals of its adjacent quads, normalize, write into
-# the interleaved VBO at nrm_off. reads and writes the same float buffer —
-# positions (offset 0) are never written here, so there is no race.
 enum SubdivNrm
     v_buf: 0
     n_fc:  1
@@ -1392,10 +1201,6 @@ ModelViewProject Blur
     }
 
 
-# CanvasBlurV — samples a mipped source at a fractional LOD with a
-# vertical gaussian kernel. the mip chain (populated by Canvas.blur
-# via vkCmdBlitImage) provides the wide reduce+resample; this pass
-# blurs vertically across the entire output at full res.
 ModelViewProject CanvasBlurV
     mutable radius_uv : f32
     attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
@@ -1432,10 +1237,6 @@ ModelViewProject CanvasBlurV
     }
 
 
-# CanvasBlurH — final stage. samples blur_v output at LOD 0 (full res,
-# already V-blurred) and applies a horizontal gaussian. fine-tune
-# kernel width comes from the fixed sigma; the mip LOD on V carried
-# the wide-radius reduce.
 ModelViewProject CanvasBlurH
     mutable radius_uv  : f32
     mutable mix_factor : f32
@@ -1481,13 +1282,10 @@ ModelViewProject CanvasBlurH
     }
 
 
-# load a gltf material texture (once per model — m.tex_cache keyed by file
-# path) and bind it under `name` in the pipeline's sampler map
 func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string, out: map Au[string] ]
     if [ !ti ] return
     p0 : mdl.texture_uri[ ti ]
     if [ !p0 ] return
-    # resolve through the wrapper: share dir, cwd, loose base, then cache
     p : Res.res_path[ p0 ]
     key : '{p}'
     tx : Texture m.tex_cache[ key ]
@@ -1495,9 +1293,6 @@ func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string, out: map
         if [ !p.exists[] ]
             puts 'gltf: material texture missing: {p}'
             return
-        # UNORM like every other engine texture: the swapchain is raw-value
-        # passthrough, so sampling as sRGB (the default) double-darkens.
-        # full mip chain so anisotropic sampling kills fibre aliasing
         im : Image [ uri: p ]
         mx : i32 [ (im.width > im.height) ? im.width : im.height ]
         ml : i32 [ 1 ]
@@ -1530,10 +1325,7 @@ func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: @i32, with_edges: bool ] 
             pf : i32 [ vf_cur[ vv ] ]
             t.vf[ pf ] = f
             vf_cur[ vv ] += 1
-    # the normal-pass topology only reads corners + vert->face; skip edges
     if [ !with_edges ] return t
-    # unique quad edges: bucket every side by its low corner, dedupe within
-    # the bucket (bucket size = vertex valence). no maps — load-time hot path
     side_lo : new i32 [ nf4 ]
     side_hi : new i32 [ nf4 ]
     for [ f: i32 0, f < nf, f += 1 ]
@@ -1627,8 +1419,6 @@ func subdiv_topo_from_quads [ nv: i32, nf: i32, qcorn: @i32, with_edges: bool ] 
         ve_cur[ ww ] += 1
     return t
 
-# next level: every quad splits into 4 sub-quads [corner, edge-pt, face-pt,
-# prev-edge-pt]; new vert ids follow the compute output order (N, E, F)
 func subdiv_next_topo [ t: SubdivTopo, with_edges: bool ] -> SubdivTopo
     nv2 : i32 [ t.nv + t.ne + t.nf ]
     nf2 : i32 [ t.nf * 4 ]
@@ -1655,8 +1445,6 @@ func subdiv_i32_buf [ vkc: vk_context, src: @i32, count: i32 ] -> Buffer
     memcpy[ d, s0, bts ]
     return b
 
-# merge the 4-slot joint/weight pairs of ncont contributor verts into dst
-# vert dv: accumulate per joint, keep the 4 heaviest, renormalize to sum 1
 func subdiv_merge_jw [ cur_j: @i32, cur_w: @f32, cont: @i32, ncont: i32, dst_j: @i32, dst_w: @f32, dv: i32 ]
     mj : local i32 [ 16 ]
     mw : local f32 [ 16 ]
@@ -1680,8 +1468,6 @@ func subdiv_merge_jw [ cur_j: @i32, cur_w: @f32, cont: @i32, ncont: i32, dst_j: 
                     mj[ cnt ] = jj
                     mw[ cnt ] = ww
                     cnt += 1
-    # all contributors weightless: copy the first verbatim so the skinned
-    # position never collapses to the zero matrix (origin spikes)
     if [ cnt == 0 ]
         cv0 : i32 [ cont[ 0 ] ]
         for [ s: i32 0, s < 4, s += 1 ]
@@ -1706,14 +1492,6 @@ func subdiv_merge_jw [ cur_j: @i32, cur_w: @f32, cont: @i32, ncont: i32, dst_j: 
     if [ tw > 0.0 ]
         for [ s: i32 0, s < 4, s += 1 ] dst_w[ dv*4 + s ] = dst_w[ dv*4 + s ] / tw
 
-# generic GPU subdivision for one primitive's interleaved vbo. welds verts by
-# position, pairs consecutive triangles back into quads, chains m.subdiv
-# Catmull-Clark levels of topology, then:
-#   positions — SubdivCompute pipeline per level, re-run every frame
-#   normals   — SubdivNormals pipeline from the output quads, every frame
-#   the rest  — averaged once on the CPU here (joints+weights merged)
-# returns the subdivided Gpu (external compute-fed vbo), or null to keep the
-# base mesh (odd triangle count / non-quad pairing / no POSITION first).
 func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: string, crease: array f32 ] -> Gpu
     levels : i32 [ m.subdiv ]
     vsz : i32 [ base.vertex_size ]
@@ -1735,17 +1513,12 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
     el
         i32p : cast @u32 [ @idata[ 0 ] ]
         for [ ii: i32 0, ii < ic, ii += 1 ] idxbuf[ ii ] = i32[ i32p[ ii ] ]
-    # weld verts by quantized position + coarse normal: UV-seam duplicates
-    # (same normal) merge, but coinciding lip-contact verts (opposite normals)
-    # stay separate — a position-only weld glues them into non-manifold points
     n_off : i32 [ -1 ]
     mems0 : @vertex_member_t [ base.members ]
     for [ k: i32 0, k < base.member_count, k += 1 ]
         if [ sems_of[ k ] == 1 ] n_off = i32[ mems0[ k ].offset ]
     topo : new i32 [ vc ]
     rep  : new i32 [ vc ]
-    # open-addressed integer hash on the quantized tuple (string-keyed maps
-    # here cost seconds per model at load)
     hcap : i32 [ 64 ]
     hneed : i32 [ vc * 2 ]
     while [ hcap < hneed ] hcap = hcap * 2
@@ -1799,8 +1572,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
             q6[ tv*6 + 5 ] = nz
             htab[ slot ] = tv
             tv += 1
-    # pair consecutive triangles back into quads; bail if a pair does not
-    # share exactly one edge (the mesh is not a triangulated quad grid)
     q0sz : i32 [ nf0 * 4 ]
     qcorn0 : new i32 [ q0sz ]
     for [ pp: i32 0, pp < nf0, pp += 1 ]
@@ -1838,12 +1609,8 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         qcorn0[ pp*4 + 1 ] = topo[ rp ]
         qcorn0[ pp*4 + 2 ] = topo[ sv ]
         qcorn0[ pp*4 + 3 ] = topo[ rq ]
-    # chain the level topologies; nt = output-mesh quads (for normals + index)
     topos : array SubdivTopo [ ]
     topos += subdiv_topo_from_quads[ tv, nf0, qcorn0, true ]
-    # authored creases (gltf extras, endpoint position pairs): mark
-    # matching edges with the boundary sentinel so they take the
-    # crease rule — the same math a hole rim gets. level 1 only.
     if [ crease && crease.count >= 6 ]
         tc0 : topos[ 0 ]
         ncr : i32 [ i32[ crease.count ] / 6 ]
@@ -1898,8 +1665,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
     nout : i32 [ fin.nv + fin.ne + fin.nf ]
     nt : subdiv_next_topo[ fin, false ]
     oic : i32 [ nt.nf * 6 ]
-    # mesh-health report: degenerate quads (repeated corner) and non-manifold
-    # edges point at bad welds; boundary edges are normal (mouth interior rim)
     t0 : topos[ 0 ]
     ndegen : i32 [ 0 ]
     for [ f: i32 0, f < t0.nf, f += 1 ]
@@ -1910,7 +1675,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         bad : bool [ (c0 == c1) || (c0 == c2) || (c0 == c3) || (c1 == c2) || (c1 == c3) || (c2 == c3) ]
         if [ bad ] ndegen += 1
     puts 'subdiv health: {name} welded={t0.nv} quads={t0.nf} boundary_edges={t0.n_bound} nonmanifold_edges={t0.n_nonman} degenerate_quads={ndegen}'
-    # the compute-fed interleaved output vbo (storage for writes, vertex for draw)
     out_bytes : i32 [ nout * vsz ]
     obuf : Buffer [ vk: m.vk, size: out_bytes, u_storage: true, u_vertex: true, m_host_visible: true, m_host_coherent: true ]
     odata : @i8 [ obuf.data ]
@@ -1925,12 +1689,8 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         ixd[ q*6 + 3 ] = nt.qcorn[ q*4 + 0 ]
         ixd[ q*6 + 4 ] = nt.qcorn[ q*4 + 2 ]
         ixd[ q*6 + 5 ] = nt.qcorn[ q*4 + 3 ]
-    # ---- CPU attribute pass (once): fill the whole interleave ----
     mems : @vertex_member_t [ base.members ]
     mc : i32 [ base.member_count ]
-    # rep indirection: final welded vert -> base unwelded vert (int streams).
-    # in-place: vertex points keep their slot, edge/face points append past
-    # t.nv reading only slots below it — no double buffer, no copy-back
     srcv : new i32 [ nout ]
     for [ v: i32 0, v < tv, v += 1 ] srcv[ v ] = rep[ v ]
     for [ lv: i32 0, lv < levels, lv += 1 ]
@@ -1968,7 +1728,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
                 el
                     cur_j[ v*4 + s ] = i32[ jp16[ s ] ]
                 cur_w[ v*4 + s ] = wp[ s ]
-        # in-place: merges write at t.nv+ reading contributors below t.nv
         cont : local i32 [ 4 ]
         for [ lv: i32 0, lv < levels, lv += 1 ]
             t : topos[ lv ]
@@ -1992,10 +1751,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
                 el
                     dj16[ s ] = u16[ cur_j[ v*4 + s ] ]
                 dw[ s ] = cur_w[ v*4 + s ]
-    # per-member fill: float streams average down the chain; anything else
-    # copies from the representative base vert (jw pair handled above).
-    # POSITION and NORMAL are skipped — the compute passes write those regions
-    # every frame before anything reads them
     for [ k: i32 0, k < mc, k += 1 ]
         if [ sems_of[ k ] == 0 || sems_of[ k ] == 1 ] continue
         if [ jw_ok && (k == jk || k == wk) ] continue
@@ -2017,7 +1772,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
             rv : i32 [ rep[ v ] ]
             sp : cast @f32 [ @vdata[ rv * vsz + moff ] ]
             for [ c: i32 0, c < ncf, c += 1 ] cur[ v * ncf + c ] = sp[ c ]
-        # in-place: edge/face points append past t.nv, reading below it
         for [ lv: i32 0, lv < levels, lv += 1 ]
             t : topos[ lv ]
             for [ e: i32 0, e < t.ne, e += 1 ]
@@ -2035,7 +1789,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         for [ v: i32 0, v < nout, v += 1 ]
             dp : cast @f32 [ @odata[ v * vsz + moff ] ]
             for [ c: i32 0, c < ncf, c += 1 ] dp[ c ] = cur[ v * ncf + c ]
-    # ---- GPU position chain: one SubdivCompute pipeline per level ----
     in0sz : i32 [ tv * 3 * 4 ]
     in0 : Buffer [ vk: m.vk, size: in0sz, u_storage: true, m_host_visible: true, m_host_coherent: true ]
     ip : @f32 [ in0.data ]
@@ -2045,22 +1798,12 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         ip[ v*3 + 0 ] = p[ 0 ]
         ip[ v*3 + 1 ] = p[ 1 ]
         ip[ v*3 + 2 ] = p[ 2 ]
-    # expose the live cage: level-0 topo + its position buffer (the mapped
-    # buffer memory IS the vertex list — Model.cage_shuffle edits it in place)
     t0.cage_buf = in0
-    in0.hold[]
-    # base snapshot: user derivation masks save as current - base. also the
-    # CPU-side read copy — ip maps write-combined GPU memory, and reading
-    # that is ~1000x slower than heap (the mirror build froze on it)
     tv3b : i32 [ tv * 3 ]
     t0.base = new f32 [ tv3b ]
     for [ i: i32 0, i < tv3b, i += 1 ] t0.base[ i ] = ip[ i ]
-    # welded -> source vert map: apps sample painted vertex regions with it
     t0.rep = new i32 [ tv ]
     for [ i: i32 0, i < tv, i += 1 ] t0.rep[ i ] = rep[ i ]
-    # mirror pairs across x=0 so cage edits land on both face halves:
-    # nearest welded vert to (-x, y, z), accepted within 2% of the extent.
-    # brute-force pairing — gated to small cages (the head, not baked eyes)
     if [ tv <= 8192 ]
         bp : @f32 [ t0.base ]
         t0.mirror = new i32 [ tv ]
@@ -2120,11 +1863,8 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         cpipe.dispatch_y = 1
         cpipe.dispatch_z = 1
         cpipe.run_once = m.subdiv_once
-        cs.hold[]
-        cpipe.hold[]
         m.pipelines.push[ cpipe ]
         in_cur = ob
-    # ---- normal recompute over the output quads, after the final level ----
     nrm_k : i32 [ -1 ]
     for [ k: i32 0, k < mc, k += 1 ]
         if [ sems_of[ k ] == 1 ] nrm_k = k
@@ -2144,8 +1884,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         npipe.dispatch_y = 1
         npipe.dispatch_z = 1
         npipe.run_once = m.subdiv_once
-        ns.hold[]
-        npipe.hold[]
         m.pipelines.push[ npipe ]
     puts 'subdiv: {name} levels={levels} verts {vc} -> {nout} tris {tc} -> {oic / 3}'
     g : Gpu [ vk: m.vk, name: name,
@@ -2153,7 +1891,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         vertex_size: vsz, vertex_count: nout,
         index_size: 4, index_count: oic,
         ext_vertex: obuf, ext_index: xbuf ]
-    g.hold[]
     return g
 
 func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: shader, render_id: i32, transparent: bool ]
@@ -2182,18 +1919,9 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
         vertex_count: 0
         member_count: 0
         index_size:   itype.typesize
-        # the ACCESSOR's count is this primitive's index count — the view can
-        # be shared by several primitives (byteLength spans them all)
         index_count:  i32[ ai.count ]
 
-        # the vertex interleave is built in CANONICAL semantic order — NOT the
-        # prim.attributes map's iteration order (a hash map: bucket order, not
-        # file order). shader locations bind positionally, so shaders declare
-        # their VertexInputs in this same order (a_pos, a_normal, a_uv, ...)
-        # and always receive the right stream regardless of key hashing.
         sems : array string [ 'POSITION', 'NORMAL', 'TEXCOORD_0', 'TANGENT', 'TEXCOORD_1', 'TEXCOORD_2', 'TEXCOORD_3', 'COLOR_0', 'JOINTS_0', 'WEIGHTS_0' ]
-        # COLOR_0 sits before JOINTS_0/WEIGHTS_0; packing it when the shader
-        # has no color input shifts the joint/weight streams by one slot
         want_color : bool [ false ]
         sems_of : new i32 [ 16 ]
         csh : Au_t [ Au.header[ s ].au ]
@@ -2228,7 +1956,6 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
             members: members, member_count: member_count,
             vertex_size: vertex_size, vertex_count: vertex_count,
             index_size: index_size, index_count: index_count ]
-        vbo.hold[]
 
         vdata: @i8 [ vbo.vertex_data ]
         idata: @i8 [ vbo.index_data ]
@@ -2239,9 +1966,6 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
             b:          mdl.buffers[ bv.buffer ]
             expect b.data, 'gltf buffer has no data (uri failed to load): {b.uri}'
             src_base:   @i8[b.data]
-            # accessor byteOffset positions this stream WITHIN the view (shared
-            # interleaved views); the view's byteStride is the element step for
-            # interleaved data — tight packing (accessor stride) otherwise
             src:        @src_base[bv.byteOffset + mem.ac.byteOffset]
             stride:     (bv.byteStride > 0) ? bv.byteStride : mem.ac.stride
 
@@ -2266,17 +1990,11 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
                 vf[0], vf[1], vf[2], vf[st], vf[st+1], vf[st+2],
                 i32[ip[0]], i32[ip[1]], i32[ip[2]], i32[ip[3]], i32[ip[4]], i32[ip[5]] ]
 
-        # generic GPU subdivision: replace the vbo with the compute-fed
-        # subdivided one (falls back to the base mesh when pairing fails)
         if [ m.subdiv > 0 ]
             crs : array f32 [ (msh && msh.extras) ? msh.extras.crease : null ]
             sd_vbo : subdiv_build[ m, vbo, sems_of, render_id, name, crs ]
             if [ sd_vbo ] vbo = sd_vbo
 
-        # the node's composed scene-graph WORLD transform (GltfModel.compute_worlds
-        # — Model.finish runs it before the node loop). axis-fix/scale live in
-        # parent chains on sketchfab-style exports; a flat local here rendered
-        # them sideways and unscaled.
         if [ n.world.m[15] != 0.0 ]
             mdl_mat = n.world
         el
@@ -2287,10 +2005,8 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
     sa: bool [ transparent || m.straight_alpha ]
     if [ s.texture && s.texture.count && !m.samplers['color'] ]
         m.samplers[ 'color' ] = Texture [ w:m.w, vk: vk, mip_levels: s.mip_levels, sampler: Image [ s.texture ] ]
-    # bind this primitive's MATERIAL textures (gltf: baseColor / normal /
-    # metallicRoughness) under the conventional sampler names — per-PIPELINE,
-    # since materials differ per primitive. loaded once per file (m.tex_cache).
     use_samplers : map Au[string] [ ]
+    use_samplers.unmanaged = true
     for [ sv: Au, sk: string ] in m.samplers
         use_samplers[ sk ] = sv
     if [ material && mdl ]
@@ -2302,10 +2018,4 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat, src_node: n, render_id: render_id,
         material: material, samplers: use_samplers,
         straight_alpha: sa, depth_no_write: transparent, cull_none: m.cull_none ]
-    s.hold[]
-    pipe.hold[]
-    vbo.hold[]
     m.pipelines.push[ pipe ]
-    s.hold[]
-    pipe.hold[]
-    vbo.hold[]

@@ -22,9 +22,6 @@ class FileNode
             if [ !e.is_dir[] ]
                 children.push[ FileNode [ p: e, depth: depth + 1, is_dir: false ] ]
 
-# one cached row, keyed by what it currently shows. the icon+text are rasterized
-# into `canvas` once; while `key` matches we just re-blit it. pooled per on-screen
-# row (not per file), so memory is bounded by visible lines.
 class LineCache
     mutable canvas : Canvas
     mutable key    : string
@@ -71,12 +68,6 @@ Layer FileLayer
         wty : f32 [ cv.transform_ty[] ]
         cv.set_crop[ wtx + bounds.x, wty + clip_y0, wtx + bounds.x + bounds.w, wty + clip_y1 ]
 
-        # one cached canvas per ON-SCREEN row (slot pool, bounded by visible lines).
-        # a row's icon+text is rasterized into its slot ONCE and re-rendered only when
-        # the label/icon that slot shows changes (scroll brings a new line, filter,
-        # expand). every other repaint (resize, idle) just blits the cached row — no
-        # glyph work, no per-row text submit. the selection highlight stays on the
-        # main canvas so selecting/hovering a row never invalidates a slot.
         if [ !fl.line_cache ] fl.line_cache = array LineCache [ alloc: 64 ]
         lh_i : i32 [ ceil[ lh ] ]
         slot : i32 [ 0 ]
@@ -87,8 +78,6 @@ Layer FileLayer
             if [ y + lh < clip_y0 ] continue
             if [ y > clip_y1 ] break
 
-            # selection highlight — drawn on the MAIN canvas (not the line cache), so
-            # selection state never dirties a cached row.
             if [ i == fl.sel && y >= clip_y0 ]
                 r : f32 [ (sel_radius > 0.0) ? sel_radius : 0.0 ]
                 cv.save[]
@@ -104,9 +93,6 @@ Layer FileLayer
                 cv.paint[]
                 cv.restore[]
 
-            # row geometry, measured from the row's left edge (line-cache local x=0
-            # corresponds to x0). the cache is sized to the icon+text content, NOT the
-            # row width, so a horizontal resize never re-renders a row.
             fname : n.p.filename[]
             xl_l  : f32 [ 5.0 ]
             ix_l  : f32 [ xl_l + icon_col + icon_text_gap + f32[n.depth] * indent_width ]
@@ -138,8 +124,6 @@ Layer FileLayer
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
                 slc.key = key
 
-            # blit at integer pixels — fractional positions sample the cached row at
-            # sub-pixel offsets and blur the (already crisp) text/icon.
             cv.draw_canvas[ slc.canvas, round[ x0 ], round[ y ], f32[ cw_i ], f32[ lh_i ] ]
             slot += 1
 
@@ -148,19 +132,14 @@ Layer FileLayer
 NodeList FileList
     public  root           : path
     public  pending_open   : path
-    # this FileList's own substring search. find_text is the live query (set by the
-    # navigator's filter handler); build_visible walks root recursively for matches.
     public  find_text      : string
     mutable last_find      : string
     mutable root_node      : FileNode
     mutable visible        : array FileNode
-    # per-on-screen-row render cache (see LineCache). bounded by visible lines.
     mutable line_cache     : array LineCache
-    # sel / row_height / content_y / view_h are inherited from NodeList.
     mutable expand_icon    : SVGModel
     mutable collapse_icon  : SVGModel
 
-    # row count for the NodeList base (scroll/select math) — the visible tree rows.
     func row_count [] -> i32
         if [ !visible ] return 0
         return visible.count

@@ -1,9 +1,5 @@
 extend orbiter
 
-# generic scrollable, selectable list. subclasses provide: row_count[] (how many
-# rows), row_label[i] (the text for the generic NodeLayer), and activate[idx] (what
-# selecting a row does). the scroll / selection / keyboard plumbing lives here once
-# so FileList and Callstack don't each re-implement it.
 Option NodeList
     mutable sel        : i32 [ -1 ]
     mutable row_height : f32 [ 20.0 ]
@@ -18,9 +14,6 @@ Option NodeList
     func activate [ idx: i32 ]
         return
 
-    # the per-list line filter: the editable title child's typed text (mirrors the
-    # console pane's console_filter). null/empty = no filter. rows whose label doesn't
-    # contain it are hidden — same index_of skip the Console uses.
     func flt [] -> string
         if [ !elements ] return null
         t : element elements[ 'list_filter' ]
@@ -31,7 +24,6 @@ Option NodeList
         if [ !f || f.count == 0 ] return true
         return row_label[ i ].index_of[ f ] >= 0
 
-    # model index of the n-th currently-visible (matching) row, or -1.
     func visible_index [ vrow: i32, f: string ] -> i32
         seen : i32 [ 0 ]
         for [ i: i32 0, i < row_count[], i += 1 ]
@@ -58,13 +50,9 @@ Option NodeList
         pristine = false
 
     func on_press [ ev: Event ]
-        # consume the press so it doesn't bubble to the editor underneath (the dbg
-        # sub-column overlays the code — a click here must not move the caret).
         ev.stop_propagation[]
         rel_y : f32 [ ev.mouse.pos.y - content_y ]
         if [ rel_y < 0.0 ] return
-        # rel_y maps to the n-th VISIBLE row; resolve it back to the model index so a
-        # filtered list selects the right frame.
         idx   : i32 [ visible_index[ i32[ rel_y / row_height ], flt[] ] ]
         if [ idx < 0 ] return
         select[ idx ]
@@ -100,9 +88,6 @@ Option NodeList
     func render [] -> Elements
         return null
 
-# generic one-line-per-row renderer: selection highlight + the subclass's row_label.
-# (FileList keeps its own richer FileLayer with icons/indent; simple text lists like
-# the callstack use this.)
 Layer NodeLayer
     public label_size  : f32
     public row_spacing : f32
@@ -117,8 +102,6 @@ Layer NodeLayer
         lh : f32 [ cv.get_line_height[] * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
         n  : i32 [ nl.row_count[] ]
         f  : string nl.flt[]
-        # content height counts only the matching (visible) rows so the scrollbar +
-        # auto-follow track the filtered view.
         mc : i32 [ 0 ]
         for [ i: i32 0, i < n, i += 1 ]
             if [ nl.row_match[ i, f ] ] mc += 1
@@ -154,16 +137,12 @@ Layer NodeLayer
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
         cv.clear_crop[]
 
-# one stack frame (placeholder content until lldb's GetFrames() is wired).
 class Frame
     public func_name : string
     public file      : path
     public line      : i32
 
-# the callstack panel: a NodeList of stack frames, rendered through NodeLayer.
-# same #202 background as the console so it reads as one surface with it.
 NodeList Callstack
-    # a Splitter pane on the console's own #202 surface; the Splitter draws the divider.
     area    : Region { l0 t0 r0 b0 }
     cbase   : Layer [ fill_color: rgba [ '#202' ], area: Region { l0 t0 r0 b0 } ]
     content : NodeLayer [ area: Region { l4px t2px r4px b2px }, label_size: 15, row_spacing: 1.2, text_color: '#cfe' ]
@@ -180,15 +159,11 @@ NodeList Callstack
         return '{f.func_name}   {fn}:{f.line}'
 
     func activate [ idx: i32 ]
-        # jump to the frame's source line (wired to the editor later)
         return
 
     func render [] -> Elements
         return null
 
-# the Fields panel: variables as a key/value grid. holds debug locals now (cached
-# from the last break); later it doubles as the autocomplete list. element-list
-# rows are `variable` objects (name/type/value), cast at draw.
 NodeList Fields
     area    : Region { l0 t0 r0 b0 }
     cbase   : Layer [ fill_color: rgba [ '#202' ], area: Region { l0 t0 r0 b0 } ]
@@ -210,8 +185,6 @@ NodeList Fields
     func render [] -> Elements
         return null
 
-# the Fields grid renderer: key (name) left, value right, with per-row
-# separator lines. mirrors NodeLayer but two-column.
 Layer FieldsLayer
     public label_size  : f32
     public row_spacing : f32

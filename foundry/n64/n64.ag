@@ -1,9 +1,5 @@
 export 0.8.8
 
-# N64 emulator — foundation pass: VR4300 CPU (integer + COP0 + FPU), memory
-# map, HLE CIC-6102 boot, PI/SI DMA, MI/VI interrupts, 60Hz frame loop.
-# Target: Super Mario 64. RSP (Fast3D HLE) + RDP shader pipeline follow.
-# References: foundry/n64/reference/ (n64brew wiki, SGI docs, ares core).
 
 import vec
 import img
@@ -19,9 +15,6 @@ import <fenv.h>
 import <pthread.h>
 import <unistd.h>
 
-# in-loop ares oracle: the vendored ares N64 core, no-LTO, merged into one
-# clang-linkable archive (see reference/ares/build-cosim.sh). arescore_* is the
-# extern-C ABI in reference/ares/ares_cosim.cpp.
 import <reference/ares/ares_cosim.h>
 	-l/src/silver/foundry/n64/reference/ares/libares_cosim.a
 	-ldl
@@ -107,10 +100,6 @@ enum N64Surface
 	atlas : 0
 	state : 1
 
-# N64 ubershader: raw Fast3D vertices in, transform + vertex lighting in the
-# vertex stage (matrix/light/material palettes live in the `state` rgbaf
-# texture, row 0 = matrices, row 1 = light sets, row 2 = materials), combiner
-# + wrapped atlas sampling in the fragment stage.
 ModelViewProject N64GX
 	attrib atlas : LayoutBinding [ type:typeid[ N64Surface ], id:N64Surface.atlas, count:1, format: typeid[ rgba8 ] ]
 	attrib state : LayoutBinding [ type:typeid[ N64Surface ], id:N64Surface.state, count:1, format: typeid[ rgbaf ] ]
@@ -483,9 +472,6 @@ element n64 : trinity
 	mutable vi_vstart    : u32
 	mutable vi_xscale    : u32
 	mutable vi_yscale    : u32
-	# cycle-accurate VI line clock (ares VI::main port): vcounter advances one line
-	# per (quarterLineDuration+1) video-clocks, converted to CPU Thread-clocks.
-	# V_CURRENT = vcounter<<1 | field, synced to the live cycle on every read.
 	mutable vi_hlpf      : u32 [ 525 ]       # VI_V_TOTAL halfLinesPerField (NTSC default)
 	mutable vi_qld       : u32 [ 3092 ]      # VI_H_TOTAL quarterLineDuration (NTSC default)
 	mutable vi_leappat   : u32 [ 0 ]
@@ -498,7 +484,6 @@ element n64 : trinity
 	mutable vi_clkfrac   : i64               # VI->CPU clock remainder (ares clockFraction)
 	mutable vi_refreshed : bool
 	mutable sys_clk      : i64               # free-running CPU Thread-clocks (2/instr), never reset
-	# AI: 2-deep DMA fifo, drained one buffer per video frame into ALSA
 	mutable ai_dram      : u32
 	mutable ai_len       : u32
 	mutable ai_ctrl      : u32
@@ -513,9 +498,6 @@ element n64 : trinity
 	mutable ai_out_n     : i32            # ALSA ring depth
 	mutable audio        : n64_audio_out
 	mutable audio_fail   : bool
-	# audio HLE: ABI1 alist state (ref: mupen64plus-rsp-hle alist_audio.c).
-	# abuf mirrors the ucode sample workspace (big-endian words); command
-	# dmem offsets are relative to DMEM_BASE 0x5C0.
 	mutable abuf         : new u8  [ 0x1000 ]
 	mutable aseg         : new u32 [ 16 ]
 	mutable a_in         : u32
@@ -536,7 +518,6 @@ element n64 : trinity
 	mutable a_table      : new i32 [ 128 ]
 	mutable ad_last      : new i32 [ 16 ]
 	mutable ad_frame     : new i32 [ 16 ]
-	# RSP resampler 4-tap kernel, 64 phases (mupen64plus-rsp-hle audio.c)
 	intern  res_lut      : new i16 [256] [
 		3129, 26285, 3398, -33, 2873, 26262, 3679, -40, 2628, 26217, 3971, -48, 2394, 26150, 4276, -56
 		2173, 26061, 4592, -65, 1963, 25950, 4920, -74, 1764, 25817, 5260, -84, 1576, 25663, 5611, -95
@@ -617,7 +598,6 @@ element n64 : trinity
 	mutable gx_vt        : new f32 [ 160 ]   # 16 slots x 10: cx cy cz cw u v r g b a
 	mutable gx_clip      : new f32 [ 80 ]    # near-clip scratch (up to 8 verts)
 	mutable gx_scr       : new f32 [ 80 ]    # screen-space: sx sy sz invw u_ow v_ow r g b a
-	# PN-triangle smoothing (option): tessellate lit tris with curved corners.
 	public  smooth       : i32 [ 0 ]         # tess level (0=off, 2/3 typical)
 	mutable gx_smooth_cos: f32 [ 0.5 ]       # hard-edge gate: min normal dot to smooth (cos 60deg)
 	mutable pn_P         : new f32 [ 9 ]     # 3 corner positions (obj)
@@ -696,7 +676,6 @@ element n64 : trinity
 	mutable gx_dls       : new u32 [ 20 ]
 	mutable gx_dsp       : i32
 	mutable gx_unk       : new u32 [ 256 ]
-	# ---- GPU renderer (Vulkan; N64_GPU=0 falls back to CPU raster) ----
 	mutable gpu_on       : bool [ true ]
 	mutable gx_vraw      : new f32 [ 192 ]       # per-slot raw: x y z u v r g b a lit mtx ls (VTX-time state)
 	mutable gxv          : new f32 [ 1703936 ]   # 131072 verts x 13 floats
@@ -749,8 +728,6 @@ element n64 : trinity
 	mutable gx_csel      : new u32 [ 16 ]        # a0,b0,c0,d0,a1,b1,c1,d1, aa0..ad1
 	mutable gx_cin       : new f32 [ 24 ]        # per-pixel: [input*4+ch] COMB,TEX0,TEX1,PRIM,SHADE,ENV
 	mutable gx_2cyc      : bool
-	# runaway-PC diagnostic: ring of the last 32 (pc, op) pairs; one-shot
-	# dump the first time the PC maps outside RDRAM/DMEM/IMEM/ROM
 	mutable dbg_ring     : new u32 [ 64 ]
 	mutable dbg_ri       : i32
 	mutable dbg_esc      : i32
@@ -821,8 +798,6 @@ element n64 : trinity
 		fclose[ f ]
 		rom_data = buf
 		hold[ cast Au [ buf ] ]
-		# byte order from magic: z64 80371240 (native BE) / v64 37804012
-		# (16-bit swapped) / n64 40123780 (LE words)
 		m0 : u32 [ u32[ buf[0] ] ]
 		if [ m0 == 0x37 ]
 			for [ i: i64 0, i < rom_size, i += 2 ]
@@ -843,16 +818,7 @@ element n64 : trinity
 		if [ off + 3 >= rom_size ] return 0
 		return (u32[rom_data[off]] << 24) | (u32[rom_data[off+1]] << 16) | (u32[rom_data[off+2]] << 8) | u32[rom_data[off+3]]
 
-	# HLE the PIF + IPL3 (CIC-6102): game code to RDRAM, registers to the
-	# ---- functional PIF/CIC boot handshake (CIC-6102) ----
-	# ares runs the PIF main state machine (hle.cpp) interleaved with the CPU while
-	# IPL2 drives it through the command byte at PIF RAM 0x3F. We reproduce the same
-	# RAM-visible results functionally: seed the CIC-6102 secrets at Init, then advance
-	# the state machine each time IPL2 writes the command byte. Checksum verification is
-	# skipped (ares' inaccurate path), which does not affect post-boot RDRAM state.
 	func pif_init_secrets []
-		# memSwapSecrets result for CIC-6102 cold boot: osInfo[0]=0xB4 (ver bit + hi
-		# nibble 0xB), osInfo[1]=osInfo[2]=0x3F (the 6102 seed byte, hi=lo=0x3F)
 		pif_ram[ 0x25 ] = 0xB4
 		pif_ram[ 0x26 ] = 0x3F
 		pif_ram[ 0x27 ] = 0x3F
@@ -886,10 +852,6 @@ element n64 : trinity
 		entry : u32 [ rom32[ 8 ] ]
 		if [ cosim ] lle = true                          # co-sim needs the same LLE boot ares does
 		if [ lle ]
-			# real boot: CPU runs IPL1/IPL2 from the embedded PIF ROM at 0xBFC00000,
-			# which reads the CIC secrets we seed into PIF RAM, copies IPL3 from the
-			# cart, and IPL3 copies the game into RDRAM. No faked globals or register
-			# state — the ROM sets Status/config/etc. itself.
 			pif_init_secrets []
 			cpu.r[ 29 ] = i64[ i32[ 0xA4001FF0 ] ]        # sp (only reset reg ares sets)
 			cpu.pc  = 0xBFC00000
@@ -1052,14 +1014,11 @@ element n64 : trinity
 					el
 						puts 'n64 cosim: fresh lockstep from 0xBFC00000 (--reset or no checkpoint)'
 			return
-		# IPL3 copies 1MB of game code from ROM 0x1000 to the entry address
 		sz : i64 [ 0x100000 ]
 		if [ rom_size - 0x1000 < sz ] sz = rom_size - 0x1000
 		dst : i64 [ i64[ entry & 0x1FFFFFFF ] ]
 		for [ i: i64 0, i < sz, i += 1 ]
 			rdram[ dst + i ] = rom_data[ 0x1000 + i ]
-		# IPL boot globals: osTvType/osRomBase/osMemSize (osRomBase feeds
-		# osPiStartDma's cart address — without it PI DMA sources from 0)
 		wr_phys32[ 0x300, 1 ]                # osTvType: NTSC
 		wr_phys32[ 0x308, 0xB0000000 ]       # osRomBase: cart domain 1
 		wr_phys32[ 0x318, 0x800000 ]         # osMemSize for 6102
@@ -1162,9 +1121,6 @@ element n64 : trinity
 			pif_ram[o2+3] = u8[ v ]
 			if [ pif_state < 5 ] pif_tick []
 			pif_joybus[]
-			# a single-word CPU write to PIF RAM is an SI bus transaction: it
-			# completes ~3225 Count cycles later and raises the SI interrupt (ares
-			# SI_BUS_Write, 2150*3 Thread-clocks). IPL3 uses this during boot.
 			si_buslatch = v                                  # latched word: a read force-finishes to this
 			si_status = (si_status & 0x1000) | 0x09B3        # ioBusy|dmaBusy|pch=b|dmaState=9
 			si_dma_p  = true
@@ -1217,8 +1173,6 @@ element n64 : trinity
 		if [ pa >= 0x03F00000 && pa < 0x04000000 ] return 0
 		return 0
 
-	# SP DMA: length reg = { skip[31:20], count[19:12], length[11:0] };
-	# sp_mem bit 12 selects IMEM, rows advance dram by length+skip
 	func sp_dma [ v: u32, to_sp: bool ]
 		ln : u32 [ ((v & 0xFFF) | 7) + 1 ]
 		cnt : u32 [ ((v >> 12) & 0xFF) + 1 ]
@@ -1239,8 +1193,6 @@ element n64 : trinity
 			ma += ln
 			da += ln + skip
 
-	# PI cartridge-DMA duration (ares PI::dmaDuration). returns thread-clocks
-	# (cycles*3); the caller halves it into our count units. lraw = PI_*_LEN reg.
 	func pi_dma_dur [ lraw: u32, pbus: u32 ] -> u32
 		len : u32 [ (lraw | 1) + 1 ]
 		dsel : u32 [ (pbus >> 24) & 0xFF ]
@@ -1275,9 +1227,6 @@ element n64 : trinity
 		cyc += pbytes
 		return cyc * 3
 
-	# SI DMA read duration (ares PIF::estimateTiming). Parses the joybus send
-	# packet in PIF RAM; returns cycles (caller *3 -> thread-clocks). No
-	# controllers connected in co-sim -> device-absent 18000 per channel.
 	func pif_est_timing [] -> u32
 		cyc : u32 [ 13600 ]
 		scmd : u32 [ 0 ]
@@ -1308,8 +1257,6 @@ element n64 : trinity
 		cyc += 1420 * scmd
 		return cyc
 
-	# DPC kick: dump the raw command stream (same format as the
-	# gopher64 reference log) and raise DP interrupt on full sync
 	func rdp_kick []
 		a9 : u32 [ dpc_currentr ]
 		while [ a9 < dpc_endr ]
@@ -1353,13 +1300,7 @@ element n64 : trinity
 				if [ (v & setb) != 0 && (v & clrb) == 0 ] sp_status = sp_status | rdb
 			if [ (v & 0x2) != 0 && (v & 0x1) == 0 ] sp_status = sp_status | 0x1             # set halt
 			if [ (v & 0x1) != 0 && (v & 0x2) == 0 && (v & 0x40) == 0 && (sp_status & 0x20) == 0 ]  # clear halt (not single-step): START -> HLE the task
-				# OSTask header sits at DMEM 0xFC0; type: 1=gfx 2=audio.
-				# audio runs the ABI1 alist interpreter; gfx still fake-
-				# completes (halt + SIG2, SP int, + DP int) so the scheduler
-				# flows until the Fast3D pass.
 				tt : u32 [ (u32[dmem[0xFC0]] << 24) | (u32[dmem[0xFC1]] << 16) | (u32[dmem[0xFC2]] << 8) | u32[dmem[0xFC3]] ]
-				# full OSTask header: type flags bootcode bootsize
-				# ucode ucode_size ucode_data udata_size dram_stack ...
 				printf[ "SPTASK type=%u pc=%08X hdr:", tt, sp_pc ]
 				for [ th: u32 0, th < 16, th += 4 ]
 					tw : u32 [ (u32[dmem[0xFC0+th]] << 24) | (u32[dmem[0xFC1+th]] << 16) | (u32[dmem[0xFC2+th]] << 8) | u32[dmem[0xFC3+th]] ]
@@ -1570,11 +1511,6 @@ element n64 : trinity
 			mi_check[]
 			return
 
-	# controller reads: interpret joybus commands in PIF RAM
-	# ---------------- audio HLE: ABI1 alist interpreter ----------------
-	# Faithful port of mupen64plus-rsp-hle alist_audio.c/alist.c (vendored in
-	# reference/). abuf holds big-endian 16-bit samples; all dmem offsets are
-	# pre-biased by DMEM_BASE 0x5C0 at command decode.
 
 	func ab_r8 [ off: u32 ] -> u32
 		return u32[ abuf[ off & 0xFFF ] ]
@@ -1646,7 +1582,6 @@ element n64 : trinity
 			a += 4
 		return h
 
-	# whole-system-state hash: entire 4MB RDRAM + all 32 GPRs + all 32 FPRs + HI + LO (full data state)
 	func sys_hash [] -> u64
 		h : u64 [ 0xcbf29ce484222325 ]
 		a : u32 [ 0 ]
@@ -1712,8 +1647,6 @@ element n64 : trinity
 		for [ i: u32 0, i < count, i += 1 ]
 			ab_w8[ dmo + i, ab_r8[ dmi + i ] ]
 
-	# adpcm_compute_residuals: dst/src are ad_last/ad_frame at base, cb indexes
-	# a_table (book1 = cb, book2 = cb+8), l1/l2 = ad_last[lofs], ad_last[lofs+1]
 	func a_resid [ base: i32, cb: i32, lofs: i32 ]
 		l1 : i32 [ ad_last[ lofs ] ]
 		l2 : i32 [ ad_last[ lofs + 1 ] ]
@@ -1763,8 +1696,6 @@ element n64 : trinity
 		for [ i: i32 0, i < 16, i += 1 ]
 			dr_w16[ addr + u32[ i * 2 ], ad_last[ i ] ]
 
-	# alist_envmix_exp: exponential envelope ramps, state saved in DRAM at addr
-	# (layout internal to the HLE: 10 big-endian i32 fields, 40 bytes)
 	func a_envmix [ init: bool, aux: bool, addr: u32 ]
 		dry : i32 [ a_dry ]
 		wet : i32 [ a_wet ]
@@ -1980,9 +1911,6 @@ element n64 : trinity
 			el [ cmd == 15 ]                                  # SETLOOP
 				a_loop = a_addr[ w2 ]
 
-	# retire ALL queued AI buffers each video frame: convert the big-endian
-	# stereo s16 blocks from RDRAM, blocking-write to ALSA (this paces the
-	# emu thread to real time), raising an AI interrupt per retired buffer
 	func ai_drain []
 		if [ ai_out_n == 0 ] return
 		if [ !audio && !audio_fail ]
@@ -2019,9 +1947,6 @@ element n64 : trinity
 					done += chunk
 		ai_out_n = 0
 
-	# cycle-accurate AI DMA playback (ares AI::sample). Consumes the head
-	# buffer one sample per ai_period sys_clk; raises the AI interrupt when a
-	# buffer drains and another is queued. CPU-facing timing, no audio output.
 	func ai_sync []
 		if [ ai_period <= 0 ] return
 		while [ sys_clk > ai_clk ]                            # free-runs like ares sample()
@@ -2037,11 +1962,6 @@ element n64 : trinity
 						mi_check[]
 			ai_clk = ai_clk + ai_period
 
-	# ---------------- gfx HLE: Fast3D -> software raster ----------------
-	# Interprets SM64's F3D display lists on SP gfx tasks and rasterizes
-	# straight into the RDRAM color image (16bpp 5551) that the game's RDP
-	# commands target; the VI scanout publishes it unchanged. Perspective-
-	# correct nearest-texel sampling, vertex lighting, 1-bit alpha cutout.
 
 	func dr_r8 [ ad: u32 ] -> u32
 		return u32[ rdram[ ad & 0x7FFFFF ] ]
@@ -2056,14 +1976,12 @@ element n64 : trinity
 		sb : u32 [ gx_seg[ sg ] ]
 		return (sb + (so & 0xFFFFFF)) & 0x7FFFFF
 
-	# read a 16.16 fixed N64 matrix at ad into mats slot 12 (tmpA)
 	func gx_mtx_read [ ad: u32 ]
 		for [ i: i32 0, i < 16, i += 1 ]
 			ih : i32 [ dr_r16[ ad + u32[ i * 2 ] ] ]
 			fl : u32 [ dr_ru16[ ad + 32 + u32[ i * 2 ] ] ]
 			gx_mats[ 192 + i ] = f32[ ih ] + f32[ fl ] / 65536.0
 
-	# mats[ob] = mats[ab] * mats[bb] (row-vector convention), via tmpB
 	func gx_mmul [ ab: i32, bb: i32, ob: i32 ]
 		for [ rr: i32 0, rr < 4, rr += 1 ]
 			for [ cc: i32 0, cc < 4, cc += 1 ]
@@ -2234,7 +2152,6 @@ element n64 : trinity
 				gx_vt[ ob + 8 ] = f32[ dr_r8[ va + 14 ] ] / 255.0
 			gx_vt[ ob + 9 ] = aa
 
-	# nearest-texel sample from the render tile; returns r<<24|g<<16|b<<8|a
 	func gx_texel [ su: i32, tv: i32 ] -> u32
 		tn : i32 [ gx_tile ]
 		ss : i32 [ su - i32[ tl_uls[ tn ] >> 2 ] ]
@@ -2312,11 +2229,6 @@ element n64 : trinity
 			return gx_tlut[ (tl_pal[ gx_tile ] << 4) | n3 ]
 		return 0xFFFFFFFF
 
-	# px/py in SUPERSAMPLED coords (native * gx_ss). Writes the RGBA ss_buf
-	# (publish path) and, on the top-left subsample, the game-visible RDRAM
-	# 5551 color image.
-	# RDP color combiner (A-B)*C+D. gx_cin[input*4+ch] set per pixel:
-	# input 0=COMBINED 1=TEXEL0 2=TEXEL1 3=PRIM 4=SHADE 5=ENV
 	func cin_abd [ sel: u32, ch: i32, one6: bool ] -> f32
 		if [ sel < 6 ] return gx_cin[ i32[ sel ] * 4 + ch ]
 		if [ sel == 6 ]
@@ -2388,7 +2300,6 @@ element n64 : trinity
 			rdram[ off ]     = u8[ (v16 >> 8) & 0xFF ]
 			rdram[ off + 1 ] = u8[ v16 & 0xFF ]
 
-	# rasterize one screen-space triangle from gx_scr at slot offsets
 	func gx_raster [ o0: i32, o1: i32, o2: i32 ]
 		x0 : f32 [ gx_scr[ o0 ] ]
 		y0 : f32 [ gx_scr[ o0 + 1 ] ]
@@ -2538,7 +2449,6 @@ element n64 : trinity
 		gx_bl_add = false
 		gx_bl_xlu = false
 
-	# near-clip the triangle in gx_clip (n verts), project, fan-rasterize
 	func gx_tri_out [ nin: i32 ]
 		# clip against cw > eps
 		no : i32 [ 0 ]
@@ -2585,7 +2495,6 @@ element n64 : trinity
 			gx_raster[ 0, (i - 1) * 10, i * 10 ]
 		gx_raster_done[]
 
-	# ---------------- GPU batching: palettes + atlas + vertex emit ----------------
 	func st_put [ x: i32, y: i32, c0: f32, c1: f32, c2: f32, c3: f32 ]
 		bi : i32 [ (y * 2048 + x) * 4 ]
 		st_tex[ bi ]     = c0
@@ -2593,9 +2502,6 @@ element n64 : trinity
 		st_tex[ bi + 2 ] = c2
 		st_tex[ bi + 3 ] = c3
 
-	# ensure the current MVP (with the game's viewport folded in, matching the
-	# CPU raster: screen = vtrans + ndc*vscale, then mapped to NDC) is in the
-	# matrix palette (row 0, 4 texels/slot)
 	func st_mtx_ensure [] -> i32
 		if [ gx_mslot >= 0 ] return gx_mslot
 		if [ st_mtx_n >= 511 ]
@@ -2618,7 +2524,6 @@ element n64 : trinity
 		gx_mslot = sl
 		return sl
 
-	# ensure current light state is in the light palette (row 1, 8 texels/set)
 	func st_ls_ensure [] -> i32
 		if [ gx_lsslot >= 0 ] return gx_lsslot
 		if [ st_ls_n >= 255 ]
@@ -2638,13 +2543,10 @@ element n64 : trinity
 		gx_lsslot = sl
 		return sl
 
-	# decode the render tile into the atlas (cached by content hash); returns
-	# the packed rect via atk_rect index
 	func at_ensure [] -> i32
 		tn : i32 [ gx_tile ]
 		tw : i32 [ i32[ (tl_lrs[ tn ] - tl_uls[ tn ]) >> 2 ] + 1 ]
 		th : i32 [ i32[ (tl_lrt[ tn ] - tl_ult[ tn ]) >> 2 ] + 1 ]
-		# degenerate tilesize (fonts/sprites relying on wrap): mask defines extent
 		if [ tw <= 1 && tl_masks[ tn ] > 0 ] tw = 1 << i32[ tl_masks[ tn ] ]
 		if [ th <= 1 && tl_maskt[ tn ] > 0 ] th = 1 << i32[ tl_maskt[ tn ] ]
 		if [ tw < 1 ] tw = 1
@@ -2711,7 +2613,6 @@ element n64 : trinity
 		atk_n += 1
 		return sl
 
-	# ensure current material (atlas rect + wrap + prim/env) in row 2
 	func st_mat_ensure [] -> i32
 		if [ gx_matslot >= 0 ] return gx_matslot
 		if [ st_mat_n >= 511 ]
@@ -2741,7 +2642,6 @@ element n64 : trinity
 		gx_matslot = sl
 		return sl
 
-	# combiner/blend flags word for the current state (+lit/texgen per-vertex)
 	func gx_flags [ lit: bool ] -> u32
 		fl : u32 [ 0 ]
 		if [ lit ] fl = fl | 1
@@ -2770,8 +2670,6 @@ element n64 : trinity
 			printf[ "n64 FLAG geom=%05X zbuf=%d fl=%X (4096=%d)\n", gx_geom & 0xFFFFF, i32[ (gx_geom & 1) != 0 ], fl, i32[ (fl & 4096) != 0 ] ]
 		return fl
 
-	# emit one vertex (13 floats) from a raw slot; matrix/light state was
-	# captured per slot at VTX time (RSP transforms at load, not at TRI)
 	func gxe_vert [ sl: i32, fl: u32, mat: i32 ]
 		if [ gxv_n >= 131064 ]
 			if [ dbg_on && (gxv_n & 1023) == 0 ] printf[ "n64 OVERFLOW vertex buffer f%u\n", frames ]
@@ -2803,10 +2701,6 @@ element n64 : trinity
 			printf[ "n64 VTXUV flv=%X lit=%d col/n=(%.2f,%.2f,%.2f) vls=%.0f pos=(%.1f,%.1f) f%u\n", flv, flv & 1, f64[ gx_vraw[ rb + 5 ] ], f64[ gx_vraw[ rb + 6 ] ], f64[ gx_vraw[ rb + 7 ] ], f64[ gx_vraw[ rb + 11 ] ], f64[ gx_vraw[ rb ] ], f64[ gx_vraw[ rb + 1 ] ], frames ]
 		gxv_n += 1
 
-	# PN-triangle (curved point-normal) smoothing for low-poly lit meshes.
-	# object-space tessellation; corners/UVs preserved. every lit tri is
-	# tessellated — crack avoidance is per-edge (see gx_pn_edge) so smoothed
-	# and hard-edge neighbors always share identical edge points.
 	func gx_pn_gate [ i0: i32, i1: i32, i2: i32 ] -> bool
 		r0 : i32 [ i0 * 12 ]
 		r1 : i32 [ i1 * 12 ]
@@ -2816,7 +2710,6 @@ element n64 : trinity
 		if [ gx_vraw[ r2 + 9 ] < 0.5 ] return false
 		return true
 
-	# gather corner c (0..2) from raw slot sl into pn_P/pn_N/pn_at
 	func gx_pn_gather [ c: i32, sl: i32 ]
 		rb : i32 [ sl * 12 ]
 		pb : i32 [ c * 3 ]
@@ -2838,9 +2731,6 @@ element n64 : trinity
 		pn_at[ ab + 3 ] = gx_vraw[ rb + 10 ]
 		pn_at[ ab + 4 ] = gx_vraw[ rb + 11 ]
 
-	# edge control point b_ij = (2Pi + Pj - w*Ni)/3, w = dot(Pj-Pi, Ni).
-	# depends only on the two shared endpoints so neighbors match (watertight).
-	# hard edge (endpoint normals disagree) collapses to the straight 1/3 point.
 	func gx_pn_edge [ i: i32, j: i32, ci: i32 ]
 		bi : i32 [ i * 3 ]
 		bj : i32 [ j * 3 ]
@@ -2859,7 +2749,6 @@ element n64 : trinity
 		pn_cp[ co + 1 ] = (2.0 * pn_P[ bi + 1 ] + pn_P[ bj + 1 ] - w * pn_N[ bi + 1 ]) / 3.0
 		pn_cp[ co + 2 ] = (2.0 * pn_P[ bi + 2 ] + pn_P[ bj + 2 ] - w * pn_N[ bi + 2 ]) / 3.0
 
-	# evaluate cubic Bezier triangle at barycentric (l0,l1,l2); emit one vertex
 	func gxe_pn [ l0: f32, l1: f32, l2: f32, fl: u32, mat: i32 ]
 		if [ gxv_n >= 131064 ] return
 		flv : u32 [ fl | 1 ]
@@ -2911,7 +2800,6 @@ element n64 : trinity
 		gxv[ ob + 12 ] = f32[ mat ]
 		gxv_n += 1
 
-	# emit one tessellated vertex at grid coords (a,b) of an L-subdivided tri
 	func gx_pn_v [ ga: i32, gb: i32, L: i32, fl: u32, mat: i32 ]
 		fL : f32 [ f32[ L ] ]
 		l1 : f32 [ f32[ ga ] / fL ]
@@ -2919,7 +2807,6 @@ element n64 : trinity
 		l0 : f32 [ 1.0 - l1 - l2 ]
 		gxe_pn[ l0, l1, l2, fl, mat ]
 
-	# build the 10 control points then tessellate into L^2 sub-triangles
 	func gx_pn_tri [ i0: i32, i1: i32, i2: i32, fl: u32, mat: i32 ]
 		gx_pn_gather[ 0, i0 ]
 		gx_pn_gather[ 1, i1 ]
@@ -2950,7 +2837,6 @@ element n64 : trinity
 					gx_pn_v[ ga + 1, gb + 1, L, fl, mat ]
 					gx_pn_v[ ga, gb + 1, L, fl, mat ]
 
-	# emit a screen-space quad (ortho matrix slot 0): pixel coords + z + uv + color
 	func gxe_quad [ qx0: f32, qy0: f32, qx1: f32, qy1: f32, zz: f32, u0: f32, v0: f32, u1: f32, v1: f32, cr: f32, cg: f32, cb: f32, fl: u32, mat: i32 ]
 		if [ gxv_n >= 131058 ] return
 		for [ k: i32 0, k < 6, k += 1 ]
@@ -3113,8 +2999,6 @@ element n64 : trinity
 
 	func gfx_task []
 		dp : u32 [ (u32[dmem[0xFF0]] << 24) | (u32[dmem[0xFF1]] << 16) | (u32[dmem[0xFF2]] << 8) | u32[dmem[0xFF3]] ]
-		# ucode dialect: the name string "F3DEX" sits near the ucode
-		# data block; F3DEX renumbers G_VTX/G_TRI encodings
 		ud9 : u32 [ ((u32[dmem[0xFD8]] << 24) | (u32[dmem[0xFD9]] << 16) | (u32[dmem[0xFDA]] << 8) | u32[dmem[0xFDB]]) & 0x7FFFFF ]
 		gx_ex = false
 		sb9 : u32 [ (ud9 > 0x400) ? ud9 - 0x400 : 0 ]
@@ -3155,7 +3039,6 @@ element n64 : trinity
 			gx_mslot = -1
 			gx_lsslot = -1
 			gx_matslot = -1
-			# matrix slot 0 = screen-space ortho (pixel coords -> vulkan NDC)
 			st_put[ 0, 0, 2.0 / 320.0, 0.0, 0.0, 0.0 ]
 			st_put[ 1, 0, 0.0, 2.0 / 240.0, 0.0, 0.0 ]
 			st_put[ 2, 0, 0.0, 0.0, 2.0, 0.0 ]
@@ -3502,10 +3385,6 @@ element n64 : trinity
 		if [ mi_intr & mi_mask ] cpu.c_cause = cpu.c_cause | 0x400
 		el cpu.c_cause = cpu.c_cause & (~u32[0x400])
 
-	# advance the VI line counter to the current cycle (ares VI::main). CPU clock =
-	# 187.5MHz (2/instr), NTSC video clock = 48.681818MHz. Each line consumes
-	# (quarterLineDuration+1) video-clocks (leap line at vcounter==1). VI interrupt
-	# raised at the coincidence line. Called on every V_CURRENT read and each step.
 	func vi_sync []
 		if [ (vi_ctrl & 3) == 0 ]                            # VI blanked (colorDepth 0)
 			while [ sys_clk > vi_line_clk ]                  # ares stops at clock==0, so strict
@@ -3564,8 +3443,6 @@ element n64 : trinity
 		cpu.pc  = 0x80000180
 		cpu.npc = 0x80000184
 
-	# raise a synchronous exception from inside exec (EPC = the faulting
-	# instruction, which re-executes if the OS returns)
 	func take_exc [ code: u32, cur: u32 ]
 		if [ dbg_esc < 40 ]
 			dbg_esc += 1
@@ -3576,9 +3453,6 @@ element n64 : trinity
 		cpu.pc  = 0x80000180
 		cpu.npc = 0x80000184
 
-	# Coprocessor Unusable (ExcCode 11): raised when a COP1/FPU instruction runs
-	# with Status.CU1 (bit 29) clear. libultra's handler sets CU1 and marks the
-	# thread an FPU user, enabling lazy FP context save/restore. Sets Cause.CE=1.
 	func take_cpu [ cur: u32 ]
 		cpu.c_cause = (cpu.c_cause & (~u32[0x7C])) | (11 << 2)
 		cpu.c_cause = (cpu.c_cause & (~u32[0x30000000])) | 0x10000000
@@ -3587,10 +3461,6 @@ element n64 : trinity
 		cpu.pc  = 0x80000180
 		cpu.npc = 0x80000184
 
-	# ---------------- virtual memory (KSEG0/1 direct + TLB) ----------------
-	# KUSEG/KSSEG go through the TLB (goddard maps its dynlist segment at
-	# 0x04000000 via osMapTLB); anything unmapped falls back to the physical
-	# mask so the pre-TLB boot path keeps working.
 	func vmap [ va: u32 ] -> u32
 		if [ va >= 0x80000000 && va < 0xA0000000 ]
 			dc_cached = true                                            # KSEG0 cached
@@ -3613,11 +3483,6 @@ element n64 : trinity
 		dc_cached = false
 		return va & 0x1FFFFFFF
 
-	# VR4300 D-cache timing (ref: ares dcache.cpp). 8KB direct-mapped, 16B lines, index = va[12:4].
-	# hit +1, line fill +40, dirty-line eviction writeback +40. Only cached KSEG0 (0x80-0x9F).
-	# ares charges DefaultReadCycles*2=40 count (20 our half-units) for each
-	# uncached RCP-register read; boot runs from IMEM uncached so every fetch
-	# and MMIO load pays it. cached reads go through dcache; writes cost 0.
 	func io_rcost [ va: u32, pa: u32 ] -> i32
 		if [ dc_cached ] return 0                                           # cached: dcache charged it
 		if [ pa >= 0x04000000 && pa < 0x04900000 ] return 20               # RSP/RDP/MI/VI/AI/PI/RI/SI regs
@@ -3626,7 +3491,6 @@ element n64 : trinity
 		if [ pa >= 0x1FD00000 && pa <= 0x7FFFFFFF ] return 270             # PI cart domain 2
 		return 0
 
-	# I-cache timing: cached (KSEG0) fetch miss fills at ares step(48*2)/2.
 	func icache [ va: u32, pa: u32 ]
 		if [ (va & 0xE0000000) != 0x80000000 ] return                       # KSEG1 uncached: io_rcost charged it
 		idx : i32 [ i32[ (va >> 5) & 0x1FF ] ]
@@ -3637,9 +3501,6 @@ element n64 : trinity
 		dbg_icm += 1
 		ic_tag[ idx ] = tag | 1
 
-	# CACHE instruction: mirror ares cost + cache-state change (interpreter-ipu CACHE).
-	# writebacks step(40*2)/2=40, icache fill step(48*2)/2=48; state kept so future
-	# dcache/icache hit/miss timing stays in lockstep with ares.
 	func cache_op [ cop: u32, va: u32 ]
 		if [ cop == 0x14 ]                                   # icache fill
 			ii : i32 [ i32[ (va >> 5) & 0x1FF ] ]
@@ -3757,7 +3618,6 @@ element n64 : trinity
 		wr_phys32[ p, u32[ v >> 32 ] ]
 		wr_phys32[ p + 4, u32[ v ] ]
 
-	# ---------------- FPU register file (FR=0 pairing) ----------------
 	func fget32 [ n: i32 ] -> u32
 		if [ cpu.c_status & 0x04000000 ] return u32[ cpu.fpr[ n ] ]
 		e : i32 [ n - (n & 1) ]
@@ -3798,10 +3658,6 @@ element n64 : trinity
 		up : cast @u64 [ @bb[0] ]
 		fset64[ n, up[ 0 ] ]
 
-	# map host IEEE exceptions to FCR31 cause (12-16) + sticky flags (2-6),
-	# honoring the enable bits (7-11). matches ares checkFPUExceptions.
-	# host rounding <- FCR31[1:0], scoped tight around emulated FP so
-	# our HLE gfx math always runs round-to-nearest
 	func rm_apply []
 		rm : u32 [ cpu.fcr31 & 3 ]
 		if [ rm == 1 ] fesetround[ 0xC00 ]
@@ -3831,8 +3687,6 @@ element n64 : trinity
 			cpu.fcr31 = cpu.fcr31 | 0x10000
 			if [ (en & 0x10) == 0 ] cpu.fcr31 = cpu.fcr31 | 0x40
 
-	# ============ ares-faithful FPU model (interpreter-fpu.cpp) ============
-	# bit reinterpret
 	func f32bits [ b: u32 ] -> f32
 		bb : local u32 [ 1 ] [ b ]
 		fp : cast @f32 [ @bb[ 0 ] ]
@@ -3850,7 +3704,6 @@ element n64 : trinity
 		up : cast @u64 [ @bb[ 0 ] ]
 		return up[ 0 ]
 
-	# FR=0 role accessors: fs even-masked, ft/fd raw index (fgr_s/fgr_t/fgr_d)
 	func fs32 [ n: i32 ] -> u32
 		if [ cpu.c_status & 0x04000000 ] return u32[ cpu.fpr[ n ] ]
 		return u32[ cpu.fpr[ n - (n & 1) ] ]
@@ -3866,7 +3719,6 @@ element n64 : trinity
 	func fd64 [ n: i32, v: u64 ]
 		cpu.fpr[ n ] = v
 
-	# FCR31 cause/enable/flag (bits: RM 0-1, flag 2-6, enable 7-11, cause 12-16, unimpl 17)
 	func fpe_unimpl [] -> bool
 		cpu.fcr31 = cpu.fcr31 | 0x20000
 		return true
@@ -3914,7 +3766,6 @@ element n64 : trinity
 		take_fpe[ cur ]
 		return false
 
-	# IEEE classification from raw bits (no compound && with bit-and)
 	func is_sub32 [ b: u32 ] -> bool
 		if [ ((b >> 23) & 0xFF) != 0 ] return false
 		return (b & 0x7FFFFF) != 0
@@ -4006,7 +3857,6 @@ element n64 : trinity
 		if [ v <= -9007199254740992.0 ] return fpe_unimpl_exc[ cur ]
 		return true
 
-	# post-op host-exception mapping (checkFPUExceptions); true=exception taken
 	func fchk [ cvt: bool, cur: u32 ] -> bool
 		exc : i32 [ fetestexcept[ 0x3D ] ]
 		if [ exc == 0 ] return false
@@ -4184,7 +4034,6 @@ element n64 : trinity
 	func fmov [ fdi: i32, fsi: i32 ]
 		fd64[ fdi, fs64[ fsi ] ]
 
-	# round to nearest, ties to even (VR4300 RN mode + round.w/round.l)
 	func rne [ x: f64 ] -> f64
 		f : f64 [ floor[ x ] ]
 		d : f64 [ x - f ]
@@ -4194,7 +4043,6 @@ element n64 : trinity
 		if [ (h - floor[ h ]) == 0.0 ] return f
 		return f + 1.0
 
-	# convert to integer honoring FCR31 rounding mode (cvt.w / cvt.l)
 	func fcvt_rm [ x: f64 ] -> f64
 		rm : u32 [ cpu.fcr31 & 3 ]
 		if [ rm == 0 ] return rne[ x ]
@@ -4259,7 +4107,6 @@ element n64 : trinity
 			if [ u64[ cpu.lo ] != oracle.rlo[] ] printf[ "  lo ours=%016llx ares=%016llx\n", u64[ cpu.lo ], oracle.rlo[] ]
 			fflush[ null ]                                   # flush before halting the process
 			exit[ 3 ]                                        # STOP on divergence — never continue
-		# agreed at pre-instruction cosim_seq: advance the validated checkpoint
 		if [ cosim_seq >= cosim_next && !cap_mode ]      # never checkpoint during capture
 			r9 : i32 [ ckpt_write[] ]
 			if [ (cosim_seq & 511) == 0 ] printf[ "n64 cosim: agree seq=%lld ckpt=%d\n", cosim_seq, r9 ]
@@ -4269,9 +4116,6 @@ element n64 : trinity
 		oracle.step[]
 		cosim_seq += 1
 
-	# validated-state checkpoint: cosim.seq (our cycle id) + cosim.ares (ares savestate).
-	# written only at agreed points, never on divergence — so a resume never re-runs
-	# already-validated states.
 	func ckpt_read_seq [] -> i64
 		f : @FILE [ fopen[ '/src/silver/foundry/n64/cosim.seq', 'rb' ] ]
 		if [ ! f ] return i64[ -1 ]
@@ -4280,7 +4124,6 @@ element n64 : trinity
 		fclose[ f ]
 		return v
 
-	# fresh boot instead of resume: --reset on the command line (or N64_COSIM_RESTART).
 	func reset_requested [] -> bool
 		if [ getenv[ 'N64_COSIM_RESTART' ] ] return true
 		f : @FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
@@ -4293,8 +4136,6 @@ element n64 : trinity
 				return true                          # 'reset' present in argv
 		return false
 
-	# 'loadstate' on the command line: load n64.state right after boot,
-	# so a run comes up directly at the saved gameplay point for debug.
 	func loadstate_requested [] -> bool
 		f : @FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
 		if [ ! f ] return false
@@ -4306,8 +4147,6 @@ element n64 : trinity
 				return true                          # 'loadst' present in argv
 		return false
 
-	# 'aresfb' on the command line: at cosim resume, dump both cores'
-	# framebuffers (ours + ares) from the matched frontier, then exit.
 	func aresfb_requested [] -> bool
 		f : @FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
 		if [ ! f ] return false
@@ -4319,8 +4158,6 @@ element n64 : trinity
 				return true                          # 'aresfb' present in argv
 		return false
 
-	# 'aresreb' on the command line: rebuild cosim.ares by stepping ares
-	# standalone from boot to the seq recorded in cosim.seq, then save + exit.
 	func aresrebuild_requested [] -> bool
 		f : @FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
 		if [ ! f ] return false
@@ -4332,8 +4169,6 @@ element n64 : trinity
 				return true                          # 'aresreb' present in argv
 		return false
 
-	# 'aresprin' on the command line: step ares to the princess-frame c_count
-	# and dump its RDP framebuffers for comparison with our HLE render.
 	func aresprin_requested [] -> bool
 		f : @FILE [ fopen[ '/proc/self/cmdline', 'rb' ] ]
 		if [ ! f ] return false
@@ -4356,8 +4191,6 @@ element n64 : trinity
 			fclose[ f ]
 		return 0
 
-	# our full machine state: CPU + memory + timing/interrupt regs. render (gx_*/
-	# tmem) and audio-DSP (a_*) state omitted — they don't feed the CPU lockstep.
 	func dump_atlas [ fn: cstr ] -> i32
 		f : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ ! f ] return 1
@@ -4383,7 +4216,6 @@ element n64 : trinity
 		fclose[ f ]
 		return 0
 
-	# dump the 16bpp 5551 framebuffer at org from ours or ares rdram
 	func dump_rd_fb [ fn: cstr, use_ares: bool, org: u32, w7: i32, h7: i32 ] -> i32
 		f : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ ! f ] return 1
@@ -4500,7 +4332,6 @@ element n64 : trinity
 				mi_check[]
 				cosim_asp = oracle.aspstat[]           # pre-instruction SP_STATUS (aligned to our SP_STATUS reads)
 				cosim_check[]
-		# pending interrupt (IE, not EXL/ERL, enabled + pending lines)
 		st : u32 [ cpu.c_status ]
 		if [ (st & 1) && !(st & 6) && (cpu.c_cause & st & 0xFF00) ]
 			take_int[]                                # ares: interrupt-taken is its OWN step —
@@ -4577,8 +4408,6 @@ element n64 : trinity
 		if [ dcyc > 200 ] dcyc = 0                            # guard: mtc0 COUNT write, not a cycle cost
 		step_cycle[ dcyc ]
 
-	# advance one Count cycle: clock, VI, timer-compare, deferred SI DMA.
-	# shared by the normal instruction path and the interrupt-taken step.
 	func step_cycle [ dcyc: u32 ]
 		sc : u32 [ cpu.c_count - c_sysbase ]                  # counts elapsed since last tick (wrap-safe)
 		c_sysbase = cpu.c_count
@@ -4592,9 +4421,6 @@ element n64 : trinity
 		c_cmp_prev = cpu.c_count
 		rcp_poll[]
 
-	# fire any SI/PI DMA whose deferred completion time has arrived. called at
-	# instruction end AND before a status read, so a poll samples the same
-	# completion instant ares does (it fires mid-instruction during a step()).
 	func rcp_poll []
 		if [ si_dma_p && cpu.c_count >= si_dma_at ]           # deferred SI DMA completion
 			si_dma_p  = false
@@ -5079,14 +4905,6 @@ element n64 : trinity
 			el [ fn == 36 ] ftoint[ fd, sv9, ab_a, 0, false, false, 4, false, cur ]
 			el [ fn == 37 ] ftoint[ fd, sv9, ab_a, 0, false, true, 4, false, cur ]
 			el [ fn >= 48 ] fcmp[ u64[ ab_a ], u64[ ab_b ], false, fn, cur ]
-			# COP1 fmt.S (rs=16) VR4300 cycle cost. base +1 charged in step[]; extra = latency-1.
-			# ref: ares interpreter-fpu.cpp step((lat-1)*2), Count = clocks>>1 (cpu.cpp:144)
-			#   fn0  add.s    lat3  +2   | fn8  round.l.s lat5 +4 | fn12 round.w.s lat5 +4
-			#   fn1  sub.s    lat3  +2   | fn9  trunc.l.s lat5 +4 | fn13 trunc.w.s lat5 +4
-			#   fn2  mul.s    lat5  +4   | fn10 ceil.l.s  lat5 +4 | fn14 ceil.w.s  lat5 +4
-			#   fn3  div.s    lat29 +28  | fn11 floor.l.s lat5 +4 | fn15 floor.w.s lat5 +4
-			#   fn4  sqrt.s   lat29 +28  | fn36 cvt.w.s   lat5 +4 | fn37 cvt.l.s   lat5 +4
-			#   fn5 abs.s / fn6 mov.s / fn7 neg.s / fn33 cvt.d.s / fn48-63 c.cond.s : lat1 +0
 			if [ fn == 3 || fn == 4 ] cpu.c_count += 28
 			el [ fn == 2 ] cpu.c_count += 4
 			el [ fn == 0 || fn == 1 ] cpu.c_count += 2
@@ -5142,12 +4960,6 @@ element n64 : trinity
 			el [ fn == 36 ] ftoint[ fd, dv9, 0, dd_a, true, false, 4, false, cur ]
 			el [ fn == 37 ] ftoint[ fd, dv9, 0, dd_a, true, true, 4, false, cur ]
 			el [ fn >= 48 ] fcmp[ dd_a, dd_b, true, fn, cur ]
-			# COP1 fmt.D (rs=17) VR4300 cycle cost. base +1 in step[]; extra = latency-1.
-			# ref: ares interpreter-fpu.cpp
-			#   fn0  add.d  lat3  +2  | fn2  mul.d   lat8  +7  | fn3  div.d  lat58 +57
-			#   fn1  sub.d  lat3  +2  | fn32 cvt.s.d lat2  +1  | fn4  sqrt.d lat58 +57
-			#   fn8-15 round/trunc/ceil/floor .l/.w lat5 +4    | fn36 cvt.w.d lat5 +4 | fn37 cvt.l.d lat5 +4
-			#   fn5 abs.d / fn6 mov.d / fn7 neg.d / fn48-63 c.cond.d : lat1 +0
 			if [ fn == 3 || fn == 4 ] cpu.c_count += 57
 			el [ fn == 2 ] cpu.c_count += 7
 			el [ fn == 0 || fn == 1 ] cpu.c_count += 2
@@ -5171,7 +4983,6 @@ element n64 : trinity
 			el [ fn == 33 ] fcvt_d_l[ fd, il, cur ]                               # cvt.d.l
 			cpu.c_count += 4                                   # cvt.s.l/cvt.d.l lat5 (ref: ares FCVT_S_L/FCVT_D_L)
 
-	# c.cond: ordered/unordered NaN handling + invalid exception (ares FC_*)
 	func fcmp [ ab: u64, bb: u64, is64: bool, fn: u32, cur: u32 ]
 		anan : bool [ false ]
 		bnan : bool [ false ]
@@ -5223,10 +5034,6 @@ element n64 : trinity
 
 	# ---------------- frame loop ----------------
 	func run_frame []
-		# 93.75MHz / 60 / 2 PClocks-per-instruction ≈ 781250 steps; Count
-		# increments 1 per step, matching the hardware Count rate exactly
-		# run one VI field: step until the cycle-accurate VI signals refresh (ares
-		# frames on vcounter==vstart>>1). Guard caps a pathological frame.
 		vi_refreshed = false
 		fstep : i32 [ 0 ]
 		while [ !vi_refreshed && fstep < 4000000 ]
@@ -5254,7 +5061,6 @@ element n64 : trinity
 				fwrite[ rdram, 1, 0x800000, gdf ]
 				fclose[ gdf ]
 				puts 'n64 dumped rdram to /tmp/n64_gd.bin'
-			# stack back-scan: plausible return addresses on thread5's stack
 			spb : u32 [ u32[ cpu.r[29] ] & 0x7FFFFF ]
 			for [ k: i32 0, k < 64, k += 1 ]
 				sv : u32 [ dr_r32[ spb + u32[ k * 4 ] ] ]
@@ -5266,7 +5072,6 @@ element n64 : trinity
 		if [ trace && (frames % 60) == 0 ]
 			printf[ "n64 f%u pc=%08X sp_stat=%X mi=%X/%X vi_org=%06X\n", frames, cpu.pc, sp_status, mi_intr, mi_mask, vi_origin ]
 
-	# publish the VI framebuffer (16bpp 5551 or 32bpp) for the render thread
 	func publish []
 		pub_lock.lock[]
 		if [ ss_used ]
@@ -5393,7 +5198,6 @@ element n64 : trinity
 		s = s + 'MI intr=${hx8[ mi_intr ]} mask=${hx8[ mi_mask ]}  VI origin=${hx8[ vi_origin ]} ctrl=${hx8[ vi_ctrl ]}\n'
 		return s
 
-	# ---------------- input (mirrors the other emulators) ----------------
 	public func on_key [ ev: Event ]
 		code : i32  [ ev.key.unicode ]
 		down : bool [ ev.key.state ]
@@ -5437,7 +5241,6 @@ element n64 : trinity
 		ux.will_animate = true
 		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
-	# ---------------- GPU renderer: pipeline setup + per-frame draw ----------------
 	func gxr_setup [ cv: Canvas ]
 		if [ r_render ] return
 		if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
@@ -5524,8 +5327,6 @@ element n64 : trinity
 		pub_lock.unlock[]
 		cv.draw_image[ screen_tex, rect [ x: vp.x, y: vp.y, w: vp.w, h: vp.h ] ]
 
-	# reload/exit teardown: stop the emulation thread DETERMINISTICALLY (before
-	# the module's code unloads — dealloc order can't be relied on for threads).
 	public func on_unload []
 		if [ emu_started ]
 			emu_stop = true

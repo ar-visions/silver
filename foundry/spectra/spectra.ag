@@ -27,9 +27,6 @@ import <mpg123min.h>
 import <torch_shim.h>
     -ltorch_shim
 
-# audio formats spectra claims. a module emits its extensions at build time
-# into {SILVER}/install/export/spectra.agi; orbiter reads that and hands us
-# the file — it has no per-format code of its own.
 export extensions ['.mp3']
 
 import net
@@ -37,16 +34,10 @@ import ai
 import trinity
 import vec
 
-# platform audio backend: CoreAudio (AudioQueue) on mac, ALSA elsewhere.
-# AudioOut is the shared surface — construct with prop pairs
-# (sample_rate/channels/buffer_size/device), open[], fill `buffer`
-# (interleaved S16), write[ frames ]. the blocking write paces an
-# emulation thread to real time. `active` is true after a good open.
 ifdef [ apple ]
     import <AudioToolbox/AudioToolbox.h>
         -framework AudioToolbox
 
-    # completion callback: user data points at the freed-buffer counter
     func aq_output_done [ user: handle, q: AudioQueueRef, b: AudioQueueBufferRef ] -> none
         c : @u64 [ user ]
         c[0] += 1
@@ -81,7 +72,6 @@ ifdef [ apple ]
             fmt.mBitsPerChannel   = 16
             err : i32 [ AudioQueueNewOutput[ @fmt, @aq_output_done, freed, null, null, 0, @queue ] ]
             if [ err != 0 ] return false
-            # prime all buffers with silence so playback paces immediately
             for [ i: i32 0, i < 4, i += 1 ]
                 b : AudioQueueBufferRef
                 AudioQueueAllocateBuffer[ queue, bytes, @b ]
@@ -97,7 +87,6 @@ ifdef [ apple ]
 
         func write [ frames: i32 ] -> none
             if [ ! active ] return
-            # block while the hardware ring is full — this paces the caller
             for [ used - freed[0] >= 4 ]
                 usleep[ 500 ]
             b     : AudioQueueBufferRef [ aq_bufs[ next ] ]
@@ -178,9 +167,6 @@ el
                 bins[i] = sqrt [ re[i] * re[i] + im[i] * im[i] ]
             return true
 
-        # discard any audio ALSA queued while we weren't reading (between
-        # takes the device stays open and accumulates — draining here means a
-        # new take captures FRESH audio, not the stale backlog)
         func drain []
             if [ !pcm ] return
             snd_pcm_drop    [ pcm ]
@@ -188,8 +174,6 @@ el
             snd_pcm_start   [ pcm ]
 
         func close []
-            # pcm is null when open[] failed (no capture device) — closing then
-            # segfaults inside alsa. null it after, so a second close is safe too.
             if [ !pcm ] return
             snd_pcm_close [ pcm ]
             pcm = null
@@ -288,8 +272,6 @@ func box_find [ b: @u8, s: i32, e: i32, cc: i64 ] -> i32
         o += adv
     return -1
 
-# esds descriptor chain: tag 5 payload is the raw ASC.
-# returns offset * 65536 + length, or -1
 func esds_asc [ b: @u8, s: i32, e: i32 ] -> i64
     q : i32 [ s ]
     while [ q < e ]
@@ -359,8 +341,6 @@ func caf_parse [ buf: @u8, fsz: i32 ] -> AacStream
         doff += psz
     return st
 
-# M4A/MP4: moov.trak.mdia.minf.stbl — esds config, stsz sizes,
-# stsc/stco chunk layout. Apple shipped these with a .caf name.
 func m4a_parse [ buf: @u8, fsz: i32 ] -> AacStream
     moov : i32 [ box_find[ buf, 0, fsz, 1836019574 ] ]
     if [ moov < 0 ] return null
@@ -393,7 +373,6 @@ func m4a_parse [ buf: @u8, fsz: i32 ] -> AacStream
     stsc : i32 [ box_find[ buf, stbl + 8, se, 1937011555 ] ]
     stco : i32 [ box_find[ buf, stbl + 8, se, 1937007471 ] ]
     if [ stsd < 0 || stsz < 0 || stsc < 0 || stco < 0 ] return null
-    # stsd first entry is the mp4a sample entry; esds is its child
     entry : i32 [ stsd + 16 ]
     entry_e : i32 [ entry + i32[ be32[ buf, entry ] ] ]
     esds : i32 [ box_find[ buf, entry + 36, entry_e, 1702061171 ] ]
@@ -431,7 +410,6 @@ func m4a_parse [ buf: @u8, fsz: i32 ] -> AacStream
     st.nvalid = 0
     return st
 
-# .wav (RIFF PCM S16) -> PCM. hand-parsed: fmt + data chunks only
 func wav_load [ p: path ] -> AudioClip
     fp : @FILE [ fopen[ '{p}', 'rb' ] ]
     if [ !fp ]
@@ -474,7 +452,6 @@ func wav_load [ p: path ] -> AudioClip
     clip.pcm = pcm
     return clip
 
-# .mp3 -> PCM via system libmpg123 (vendored decls: mpg123min.h)
 func mp3_load [ p: path ] -> AudioClip
     mpg123_init[]
     err9 : i32 [ 0 ]
@@ -517,7 +494,6 @@ func mp3_load [ p: path ] -> AudioClip
     puts 'mp3: {p} rate={clip.rate} ch={clip.channels} frames={clip.frames}'
     return clip
 
-# .caf or .m4a (Apple shipped m4a bytes under .caf names) -> PCM
 func caf_load [ p: path ] -> AudioClip
     fp : @FILE [ fopen[ '{p}', 'rb' ] ]
     if [ !fp ]
@@ -573,7 +549,6 @@ func caf_load [ p: path ] -> AudioClip
         memcpy[ @pcm[ wr ], smp, nb ]
         wr += ns
     NeAACDecClose[ h ]
-    # drop encoder priming; trim to the container's frame count if known
     start : i64 [ i64[ st.priming ] * ch ]
     total : i64 [ wr - start ]
     if [ st.nvalid > 0 ]
@@ -596,8 +571,6 @@ class Voice
     public loop   : bool
     public active : bool
 
-# tiny software mixer on its own thread; AudioOut's blocking
-# write paces it. play[] is safe from the UI thread.
 class AudioMixer
     public sample_rate : i32 [ 44100 ]
     public out    : AudioOut
@@ -618,7 +591,6 @@ class AudioMixer
         pthread_create[ tid, null, @mix_entry, a ]
         return true
 
-    # pitch: OpenAL AL_PITCH semantics — playback rate multiplier
     func play_p [ c: AudioClip, loop2: bool, gain2: f32, pitch2: f32 ]
         if [ !c || !out || !out.active ] return
         for [ v: Voice ] in voices
@@ -680,9 +652,6 @@ class AudioMixer
             out.write[ n ]
         out.close[]
 
-# iterative in-place radix-2, e^-i2pik/n forward — the same transform
-# the old recursive form computed, with ZERO allocations (that version
-# heap-allocated four buffers per level per call)
 func fft [ re: @f32, im: @f32, n: i32 ]
     if [ n <= 1 ]
         return
@@ -723,8 +692,6 @@ func fft [ re: @f32, im: @f32, n: i32 ]
                 wr = wn
         ln = ln * 2
 
-# heat colormap: black -> deep blue -> purple -> orange -> white
-# returns r*65536 + g*256 + b
 func heat [ t0: f32 ] -> i32
     t : f32 [ t0 ]
     if [ t < 0.0 ] t = 0.0
@@ -770,19 +737,9 @@ func heat [ t0: f32 ] -> i32
     b : i32 [ i32[ b0 + (b1 - b0) * f ] ]
     return r * 65536 + g * 256 + b
 
-# per-channel spectrograph, log-frequency 20Hz..10kHz, dB heat map.
-# channels stack top to bottom (L then R); time runs right.
-# gray: single-channel magnitude image (the MODEL input); false =
-# heat colormap rgba for human eyes. act (nullable): filled with the
-# per-column mean magnitude — the annotator's energy trace
 func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax: f32, gray: bool, act: @f32 ] -> bool
     if [ !c || c.frames < 4096 ] return false
     n : i32 [ 2048 ]
-    # the analysis window matches the LIVE stream's 42.7ms slice at
-    # ANY clip rate: wn samples of real signal, zero-padded into the
-    # 2048 fft, magnitudes scaled by the fill ratio. without this a
-    # 16k clip would get 128ms windows — 3x the temporal smear of
-    # what the mic stream produces, a real domain gap
     wn : i32 [ i32[ i64[ c.rate ] * 2048 / 48000 ] ]
     if [ wn > n ] wn = n
     if [ wn < 64 ] wn = 64
@@ -860,8 +817,6 @@ func spectrograph [ c: AudioClip, out2: path, w2: i32, h2: i32, fmin: f32, fmax:
     img2.png[ out2 ]
     return true
 
-# ---- whisper frontend -----------------------------------------------------
-# mono 16kHz, exactly 30s (480000 samples), f32 -1..1 (truncate / zero-pad)
 func whisper_pcm [ c: AudioClip ] -> @f32
     out9 : new f32 [ 480000 ]
     ch : i32 [ c.channels ]
@@ -893,17 +848,11 @@ func mel_hz [ m: f64 ] -> f64
     if [ m < 15.0 ] return 200.0 * m / 3.0
     return 1000.0 * exp[ 1.8562979903656263 / 27.0 * (m - 15.0) ]
 
-# whisper log-mel: n_fft 400 hop 160 periodic hann, center reflect pad,
-# 80 slaney mels 0..8kHz, log10, clamp to max-8, then (x+4)/4.
-# 400-pt DFT done directly (not radix-2) with mod-400 angle tables so
-# bin frequencies match whisper exactly. returns 3000 x 80 tensor.
 func whisper_mel [ c: AudioClip ] -> tensor
     pcm9 : whisper_pcm[ c ]
     nfft : i32 [ 400 ]
     nb   : i32 [ 201 ]
     hop9 : i32 [ 160 ]
-    # trim to the real audio + 0.5s tail (whisper pads to 30s, but the
-    # encoder handles shorter windows — 5x less work on a 6s clip)
     ratio9 : f64 [ f64[ c.rate ] / 16000.0 ]
     n16r : i64 [ i64[ f64[ c.frames ] / ratio9 ] ]
     if [ n16r > 480000 ] n16r = 480000
@@ -914,8 +863,6 @@ func whisper_mel [ c: AudioClip ] -> tensor
     win9 : new f32 [ 400 ]
     for [ i: i32 0, i < nfft, i += 1 ]
         win9[i] = f32[ 0.5 - 0.5 * cos[ 6.28318530717958648 * f64[ i ] / 400.0 ] ]
-    # angle = 2π/400 * ((b*i) mod 400) — exact for all b,i. expanded to
-    # contiguous per-bin rows so the dot products run 8-wide
     cs9 : new f32 [ 400 ]
     sn9 : new f32 [ 400 ]
     for [ i: i32 0, i < nfft, i += 1 ]
@@ -930,7 +877,6 @@ func whisper_mel [ c: AudioClip ] -> tensor
             mi : i32 [ (b * i) % 400 ]
             csf[b * 400 + i] = cs9[mi]
             snf[b * 400 + i] = sn9[mi]
-    # slaney filterbank: 82 mel points 0..8kHz, triangles over bins b*40Hz
     mhi : f64 [ hz_mel[ 8000.0 ] ]
     pts : new f64 [ 82 ]
     for [ k: i32 0, k < 82, k += 1 ]
@@ -967,8 +913,6 @@ func whisper_mel [ c: AudioClip ] -> tensor
             fr9[i] = pcm9[j] * win9[i]
         for [ b: i32 0, b < nb, b += 1 ]
             brow : i32 [ b * 400 ]
-            # self-contained blocks: accumulate via memory (ymm regs do
-            # not survive between asm blocks under -O2)
             for [ z2: i32 0, z2 < 8, z2 += 1 ]
                 acc8r[z2] = 0.0f
                 acc8i[z2] = 0.0f
@@ -1004,8 +948,6 @@ func whisper_mel [ c: AudioClip ] -> tensor
         mel_t.floats[i] = (v9 + 4.0f) / 4.0f
     return mel_t
 
-# render the 3000x80 mel as a heat map png: time right, low mel at
-# bottom, each mel row 3px tall (3000 x 240)
 func mel_png [ m: tensor, out2: path ] -> bool
     w2 : i32 [ i32[ m.tensor_shape[0] ] ]
     h2 : i32 [ 240 ]
@@ -1026,12 +968,6 @@ func mel_png [ m: tensor, out2: path ] -> bool
     img3.png[ out2 ]
     return true
 
-# LibriSpeech + MFA alignments -> our spectral set, BORN ANNOTATED:
-# reads {root}/{subset}-align.txt (one line per utterance: the
-# alignment file path, utt id, "comma,words", "comma,end,times" —
-# "" entries are silences), decodes the wav beside the alignment
-# file, writes {split}_{i}.png + .agi carrying wspans (start end per
-# word, in columns) — full word boundaries, no clicking, no CTC-only
 func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] -> i32
     Au.auto_free[ true ]
     root.hold[]
@@ -1122,15 +1058,7 @@ func libri_translate [ root: path, subset: string, outdir: path, limit: i32 ] ->
     puts 'libri_translate: {root} ({subset}) -> {outdir}: {n9} clips'
     return n9
 
-# schema-translate a Common Voice dir into our own spectral set:
-# {split}.tsv + en_{split}_0/*.mp3 -> {outdir}/{split}_{i}.png
-# (GRAY model input: 64 rows 150Hz..8kHz, one column per live-stream
-# window) + {split}_{i}.agi (sentence, speaker, age/gender/accents,
-# rate/frames/duration)
 func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> i32
-    # adopt everything alive now (the half-initialized app, args,
-    # rows) so the per-clip sweep below only frees loop garbage —
-    # the same true-then-false pattern trinity's run loop uses
     Au.auto_free[ true ]
     dataset.hold[]
     split.hold[]
@@ -1159,8 +1087,6 @@ func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> 
         c : caf_load[ mp ]
         if [ !c ] continue
         if [ c.frames < 4096 ] continue
-        # the LIVE cadence: one 2048 window per column at the 48k
-        # clock — training inputs generate exactly like the stream
         hop9 : i64 [ i64[ c.rate ] * 2048 / 48000 ]
         if [ hop9 < 1 ] hop9 = 1
         w9 : i32 [ i32[ (c.frames - 2048) / hop9 ] ]
@@ -1169,12 +1095,6 @@ func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> 
         op : path '{outdir}/{split}_{n9}.png'
         act9 : new f32 [ w9 ]
         if [ !spectrograph[ c, op, w9, 64, 150.0, 8000.0, true, act9 ] ] continue
-        # spectra AS ANNOTATOR: the live tracker's envelope (fast
-        # attack, slow release) segments sustained-energy sections —
-        # when section count matches word count, the trainer gets
-        # full word boundaries; otherwise it falls back to CTC.
-        # threshold ADAPTS per clip: recording levels vary 2x, so it
-        # sits 35% up this clip's own floor-to-peak envelope range
         emt9 : new f32 [ w9 ]
         ema9 : f32 [ 0.0 ]
         elo9 : f32 [ 1.0 ]
@@ -1209,16 +1129,11 @@ func cv_translate [ dataset: path, split: string, outdir: path, limit: i32 ] -> 
         ag.save[ body, null ]
         n9 += 1
         if [ (n9 % 100) == 0 ] puts 'cv_translate: {n9} translated'
-        # per-clip sweep: pcm, file buffers and images free here — a
-        # CLI loop never reaches trinity's per-frame auto_free
         Au.auto_free[ false ]
         if [ limit > 0 && n9 >= limit ] break
     puts 'cv_translate: {dataset} ({split}) -> {outdir}: {n9} clips'
     return n9
 
-# coverage: AudioOut plays Ode to Joy (Beethoven, public domain).
-# sustained writes far exceed the 4-buffer ring, so the blocking
-# pace path is exercised throughout.
 coverage test
     intern out   : AudioOut
     intern phase : f64
@@ -1252,7 +1167,6 @@ coverage test
         if [ ! out.active ]
             puts 'spectra test: open ok but active not set'
             return false
-        # melody as semitones from C4; time in half-beats (250ms, 120 bpm)
         st : array i32 [ 4,4,5,7, 7,5,4,2, 0,0,2,4, 4,2,2,  4,4,5,7, 7,5,4,2, 0,0,2,4, 2,0,0 ]
         bt : array i32 [ 2,2,2,2, 2,2,2,2, 2,2,2,2, 3,1,4,  2,2,2,2, 2,2,2,2, 2,2,2,2, 3,1,4 ]
         for [ n: i32 0, n < 30, n += 1 ]
@@ -1263,16 +1177,11 @@ coverage test
         return true
 
 
-# a word read out of the stream: a column span + its text, drawn in
-# the label lane under the waterfall with its span highlighted above
 class SpectWord
     public x0   : i32
     public x1   : i32
     public text : string
 
-# time-stretch WITHOUT pitch change (youtube 0.5x): SOLA — grains
-# overlap-added at a slower hop, each aligned to the output tail by
-# a short cross-correlation search. mono only; stereo returns as-is
 func stretch_clip [ c: AudioClip, factor: f32 ] -> AudioClip
     if [ !c || c.channels != 1 ] return c
     n : i32 [ c.rate * 30 / 1000 ]
@@ -1314,24 +1223,16 @@ func stretch_clip [ c: AudioClip, factor: f32 ] -> AudioClip
     s2.pcm = outp
     return s2
 
-# run the module by itself and it presents itself; importers still
-# dlopen the .so. CLI modes do their work and exit; a bare run opens
-# the ai whisper model class, aliased clear of the --whisper flag prop
 alias WhisperNet: whisper
 
-# one live transcription: raw mono 48k utterance in, text out. runs on
-# its own pthread so the render loop never blocks; the app polls done.
 class WhisperJob
     public model : WhisperNet
     public pcm  : @i16
     public n    : i64
     public done : bool
     public text : string
-    # the utterance's sweep-column span (st_abs units) for placement
     public c0   : i64
     public c1   : i64
-    # gpu path with a compute queue: the worker encodes AND decodes; the
-    # render thread only spawns. enc pre-set = legacy render-thread encode
     public enc  : tensor
     public gpu  : whisper_vk
 
@@ -1351,23 +1252,14 @@ func spectra_whisper_thread [ arg: handle ] -> handle
     j.done = true
     return null
 
-# a window with a live mic spectrum when a capture device is present
-# ---- dictation: a flat C-callable surface -----------------------------------
-# the capture loop used to live inside spectra's own app draw[], so it only ever
-# worked when spectra WAS the app. these are plain module functions: no trinity,
-# no element, no render loop — so the mic can be owned by whatever process
-# should outlive the app being dictated into (silver-host, not the app).
 struct DictState
     cap : spectra
     ok  : bool
     lvl : f32
     txt : string
-    # the same live-whisper machine the spectra app runs: 32s ring,
-    # level-gated utterance segmentation, worker-thread transcribe
     net    : WhisperNet
     gpu    : whisper_vk
     gpu_no : bool
-    # worker-thread gpu encode verified; false = encode on the caller
     gpu_thr : bool
     raw    : @i16
     wr    : i64
@@ -1378,20 +1270,13 @@ struct DictState
     job   : WhisperJob
     tid   : u64
     polls : i32
-    # cancel: discard everything this take produced (incl. a late job)
     drop    : bool
-    # this take's audio has already been sent to whisper (once, on stop)
     flushed : bool
     # rolling index for the per-utterance .wav dumps
     wavn    : i32
 
 intern dict : DictState
 
-# 0 = capturing, non-zero = no device. the record click loads EVERYTHING:
-# capture opens and whisper-small comes up right here, first time.
-# the device stays OPEN across takes — closing then reopening 'default'
-# fails intermittently (the second take never went live), so stop ends the
-# take, not the stream; a start just re-arms the segmenter.
 func dictation_start [] -> i32
     if [ !dict.cap ]
         dict.cap = spectra [ size: 2048, sample_rate: 48000, device: 'default' ]
@@ -1418,10 +1303,6 @@ func dictation_start [] -> i32
                 puts 'dictation: whisper load failed — capture only'
         el
             puts 'dictation: no whisper weights — capture only'
-    # HARD reset — every enable is a clean slate. a stale job pointer or a
-    # stuck quiet counter from the previous take blocked segmentation (poll
-    # gates on !dict.job), which is why the mic went dead after take one.
-    # drop ALSA's queued backlog so this take starts from live audio
     dict.cap.drain[]
     dict.job     = null
     dict.wr      = 0
@@ -1433,30 +1314,19 @@ func dictation_start [] -> i32
     puts 'dictation: capturing (fresh, backlog dropped)'
     return 0
 
-# end the TAKE — the device stays open (see dictation_start). the flush path
-# reads dict.ok to force the final utterance, so it is cleared by the caller
-# after the flush, not here.
 func dictation_stop [] -> none
-    # leave dict.state alone — dictation_flush forces the in-progress
-    # utterance (state==1) into the final job
     dict.lvl = 0.0
     puts 'dictation: take ended'
 
-# real teardown — close the mic (app exit / cancel keeps device for reuse,
-# so only call when the recorder is truly done)
 func dictation_release [] -> none
     if [ !dict.ok ] return
     dict.cap.close[]
     dict.ok = false
     puts 'dictation: released'
 
-# pull one buffer off the device. true when a frame was read — the caller may be
-# a render loop or a plain thread; nothing here needs a window.
 func dictation_poll [] -> bool
     if [ !dict.ok ] return false
     if [ !dict.cap.capture[] ] return false
-    # band energy — the spectra app's PROVEN detector: log-spaced bands
-    # 150Hz..8k summed, /24 per band, fast attack / slow release EMA
     fmin : f32 [ 150.0 ]
     fmax : f32 [ 8000.0 ]
     nyq  : f32 [ f32[ dict.cap.sample_rate ] * 0.5 ]
@@ -1481,9 +1351,6 @@ func dictation_poll [] -> bool
         dict.lvl = dict.lvl * 0.6 + en9 * 0.4
     el
         dict.lvl = dict.lvl * 0.88 + en9 * 0.12
-    # TAKE model: while the mic is on, only BUFFER audio — no per-pause
-    # transcription. the whole take transcribes ONCE on stop (dictation_flush),
-    # so nothing overlaps/doubles and nothing trails behind. cap 30s @ 48k.
     if [ dict.net && dict.raw ]
         ns5 : i64 [ dict.cap.size ]
         for [ i5: i64 0, i5 < ns5, i5 += 1 ]
@@ -1493,14 +1360,11 @@ func dictation_poll [] -> bool
         if [ dict.wr > 1440000 ] dict.wr = 1440000
     return true
 
-# spawn a whisper job over raw[a..b], on the GPU worker exactly like the demo
 func dict_spawn [ a: i64, b: i64 ]
     e5 : i64 [ b ]
     if [ e5 > dict.wr ] e5 = dict.wr
     n5 : i64 [ e5 - a ]
     if [ n5 <= 24000 ] return
-    # 1s of trailing SILENCE (whisper needs speech-then-silence to emit
-    # end-of-text; a take that ends mid-word otherwise loops the last phrase)
     pad5 : i64 [ 48000 ]
     tot5 : i64 [ n5 + pad5 ]
     buf5 : new i16 [ tot5 ]
@@ -1510,7 +1374,6 @@ func dict_spawn [ a: i64, b: i64 ]
         buf5[i6] = dict.raw[(a + i6) % 1536000]
     for [ i7: i64 n5, i7 < tot5, i7 += 1 ]
         buf5[i7] = 0
-    # dump the padded clip to a .wav so the input can be verified
     dict_write_wav[ buf5, tot5 ]
     j5 : WhisperJob [ model: dict.net, pcm: buf5, n: tot5 ]
     j5.hold[]
@@ -1520,7 +1383,6 @@ func dict_spawn [ a: i64, b: i64 ]
     pthread_create[ @dict.tid, null, @spectra_whisper_thread, cast handle [ j5 ] ]
     pthread_detach[ dict.tid ]
 
-# dump a mono 48k i16 utterance to /tmp/dict-<n>.wav for validation
 func dict_write_wav [ pcm: @i16, n: i64 ]
     p : string '/tmp/dict-{dict.wavn}.wav'
     dict.wavn += 1
@@ -1545,7 +1407,6 @@ func dict_write_wav [ pcm: @i16, n: i64 ]
     fclose[ fp ]
     puts 'dictation: wrote {p} ({n} samples)'
 
-# remove whisper's (music)/[BLANK_AUDIO] annotation spans from anywhere
 func strip_annotations [ s: string ] -> string
     if [ !s ] return s
     out : string ''
@@ -1561,9 +1422,6 @@ func strip_annotations [ s: string ] -> string
             out = '{out}{ch}'
     return out.trim[]
 
-# collect a finished utterance, APPEND its text to the take
-# collect the finished transcription — the take is exactly what whisper
-# returned (one pass over the whole recording), annotations stripped.
 func dictation_harvest []
     if [ !dict.job || !dict.job.done ] return
     t8 : string dict.job.text
@@ -1576,8 +1434,6 @@ func dictation_harvest []
             dict.txt.hold[]
     dict.job = null
 
-# mic OFF: transcribe the WHOLE take in ONE pass, then wait for it.
-# true once the transcript is ready. flushed guards against re-spawning.
 func dictation_flush [] -> bool
     if [ dict.job ]
         dictation_harvest[]
@@ -1599,12 +1455,9 @@ func dictation_cancel []
 func dictation_level [] -> f32
     return dict.lvl
 
-# what was heard so far — the host shows this for sign-off before it is sent
 func dictation_text [] -> string
     return dict.txt
 
-# build the gpu encoder EXACTLY as the spectra app does: whisper_vk from the
-# screen Canvas's vk, use it if valid. no parity gate, no fallback games.
 func dictation_gpu [ cv: Canvas ] -> bool
     if [ !dict.net || !cv ] return false
     if [ dict.gpu ] return true
@@ -1621,17 +1474,12 @@ func dictation_gpu [ cv: Canvas ] -> bool
     puts 'dictation: gpu encoder ready (threaded {dict.gpu_thr})'
     return true
 
-# claim the transcript: returns the accumulated text and clears it, so the
-# caller (orbiter) types each utterance into the agent exactly once
 func dictation_take [] -> string
     t : dict.txt
     if [ !t || t.count == 0 ] return null
     dict.txt = ''
     return t
 
-# ---- tts: a flat C-callable surface (sherpa-onnx, kokoro voices) ------------
-# same single-owner shape as dictation_*: plain module functions, no element,
-# so whatever process should speak (orbiter) owns the engine and the device.
 struct TtsState
     eng : @SherpaOnnxOfflineTts
     mix : AudioMixer
@@ -1639,8 +1487,6 @@ struct TtsState
 
 intern tts : TtsState
 
-# dir holds model.onnx, voices.bin, tokens.txt, espeak-ng-data.
-# 0 = ready; 1 = no model at dir; 2 = engine failed
 func tts_init [ dir: cstr ] -> i32
     if [ tts.ok ] return 0
     mdl : string '{dir}/model.onnx'
@@ -1670,8 +1516,6 @@ func tts_init [ dir: cstr ] -> i32
 func tts_ready [] -> bool
     return tts.ok
 
-# synthesize and play. generation blocks the caller (kokoro runs faster than
-# realtime on cpu); playback rides the mixer thread.
 func tts_say [ text: cstr, sid: i32, speed: f32 ] -> i32
     if [ !tts.ok ] return 1
     gc : SherpaOnnxGenerationConfig [ silence_scale: 0.2, speed: speed, sid: sid ]
@@ -1695,19 +1539,15 @@ func tts_say [ text: cstr, sid: i32, speed: f32 ] -> i32
         if [ !tts.mix.start[] ]
             tts.mix = null
             return 3
-    # the mixer voice borrows the clip; hold so it survives this call
     c.hold[]
     tts.mix.play[ c, false, 1.0 ]
     return 0
 
-# the element form, for a host that just wants to drop one in. it owns nothing:
-# the flat functions above hold the device, so there is a single owner.
 element Dictation
     # flip to start/stop the stream; the host owns the button
     public  active   : bool
     # what was heard so far — the host shows this for sign-off
     public  text     : string
-    # speech-band energy of the last frame (0..1), for a level readout
     public  level    : f32
     intern  was_on   : bool
 
@@ -1729,25 +1569,12 @@ element Dictation
     public func on_unload [ ]
         dictation_stop[]
 
-# spectra --file <caf/m4a/mp3> [--out png] [--img_w N] [--img_h N]
-# spectra --dataset <cv dir> --split dev --outdir <dir> [--limit N]
 element main : trinity
-    # the swapchain presents the LAST render's color; the Background
-    # chain provides it — an app without one has nothing to present
     public background : string [ 'Background' ]
-    # a host (orbiter) sizes an attached app with these — the standard set an
-    # app declares to be launchable in a pane.
     public width      : i32 [ 1280 ]
     public height     : i32 [ 720 ]
-    # the document — spectra's default (positional) argument, so orbiter hands
-    # us a claimed .mp3 with no flag at all. a `path` so with_cstrs normalizes
-    # a relative arg to absolute against the launch dir (cwd is the bundle).
     default file   : path
-    # --out makes --file a ONE-SHOT spectrograph render; without it, --file
-    # opens the player: the spectrograph is the scrub track and it plays.
     public out     : string
-    # player state: the decoded clip, its mixer voice, and the spectrograph
-    # drawn as the scrub track (playhead rides it; a click seeks).
     intern pclip   : AudioClip
     intern pmix    : AudioMixer
     intern pvoice  : Voice
@@ -1760,10 +1587,7 @@ element main : trinity
     public split   : string [ 'dev' ]
     public outdir  : string
     public limit   : i32 [ 0 ]
-    # --whisper <size>: fetch the real openai weights (safetensors)
-    # into models/whisper-<size>.safetensors, then exit
     public whisper : string
-    # --check: run the whisper self-test (reader/encode/decode) and exit
     public check   : bool
     intern cap     : spectra
     intern cap_ok  : bool
@@ -1773,7 +1597,6 @@ element main : trinity
     intern st_act  : @f32               # per-column speech-band energy
     intern st_ema  : f32                   # ~100ms running avg of energy
     intern st_words : array SpectWord      # read results land here
-    # live whisper: rolling mic ring + utterance state + worker job
     intern w_net   : WhisperNet
     intern w_raw   : @i16                  # 32s mono 48k ring
     intern w_wr    : i64                   # absolute samples written
@@ -1797,8 +1620,6 @@ element main : trinity
     intern voc_w   : array string          # vocab: words (same order)
     intern voc_n   : i32
     intern rd_q    : string                # the unnamed-word glyph
-    # --teach: read prompted sentences; the model force-aligns each
-    # take (the sentence is KNOWN) and writes self_{i} training clips
     public teach   : bool
     intern th_sent : string
     intern th_words : array string
@@ -1810,7 +1631,6 @@ element main : trinity
     intern th_i    : i32
     intern th_spans : @i32
     intern th_last : string                # last save announcement
-    # --annotate: play random translated clips, click word boundaries
     public annotate : bool
     intern ann_n    : i32                  # clips in outdir
     intern ann_id   : i32                  # current clip id
@@ -1854,8 +1674,6 @@ element main : trinity
         ann_img = Image [ uri: path '{outdir}/{img5}' ]
         ann_img.hold[]
         ann_tex = null
-        # half speed, same pitch (youtube 0.5x): the clip itself is
-        # SOLA-stretched 2x and plays at its normal rate
         ann_clip = stretch_clip[ caf_load[ path src5 ], 2.0 ]
         if [ ann_clip ] ann_clip.hold[]
         ann_pos = 0
@@ -1865,7 +1683,6 @@ element main : trinity
             ann_out.hold[]
             ann_out.open[]
 
-    # marks in column order (placed order preserved in ann_marks)
     func ann_sorted [ dst: @f32 ]
         for [ i7: i32 0, i7 < ann_nm, i7 += 1 ]
             v7 : f32 [ ann_marks[ i7 ] ]
@@ -1899,8 +1716,6 @@ element main : trinity
         ap.save[ body3, null ]
         puts 'annotate: {split}_{ann_id} marks: {mk3}'
 
-    # app-private storage (path.path_storage): downloaded models + the
-    # last-used model name. share stays static build resources.
     func whisper_weights [ nm: string ] -> path
         d : path.path_storage[ 'spectra' ]
         return path '{d}/whisper-{nm}.safetensors'
@@ -1909,7 +1724,6 @@ element main : trinity
         d : path.path_storage[ 'spectra' ]
         return path '{d}/whisper-vocab.json'
 
-    # the whisper model name last used, persisted across launches
     func saved_model [] -> string
         d : path.path_storage[ 'spectra' ]
         if [ !d ] return null
@@ -1978,7 +1792,6 @@ element main : trinity
                     sum9 += f64[ t9.floats[i9] ]
                 mean9 : f64 [ sum9 / f64[ n9c ] ]
                 puts 'spectra: whisper-{whisper} ok — {n9c} floats, mean {mean9}'
-                # encoder smoke: deterministic 8x80 mel through all 12 blocks
                 wsp : WhisperNet [ src: dst ]
                 if [ !wsp.valid ]
                     puts 'spectra: whisper model load failed'
@@ -2041,17 +1854,12 @@ element main : trinity
             if [ spectrograph[ c, path out, img_w, img_h, 20.0, 10000.0, false, null ] ]
                 puts 'spectrograph: {out}'
             exit[ 0 ]
-        # player: decode, render the spectrograph as the scrub track, and play.
-        # caf_load sniffs the container (ID3/MPEG sync -> mp3_load), so this is
-        # the same path for every audio format spectra claims.
         if [ file ]
             pclip = caf_load[ file ]
             if [ !pclip ]
                 puts 'spectra: cannot decode {file}'
                 exit[ 1 ]
             pclip.hold[]
-            # play FIRST — the spectrograph over a long clip is expensive and
-            # must not delay audio (a 30-min file made it 'sit there')
             pmix = AudioMixer [ sample_rate: pclip.rate ]
             pmix.hold[]
             if [ pmix.start[] ]
@@ -2066,9 +1874,6 @@ element main : trinity
         cap.hold[]
         cap_ok = cap.open[]
         if [ !cap_ok ] puts 'spectra: no capture device — window stays silent'
-        # live whisper: always load when the model is on disk (--whisper
-        # only picks a size / provisions). the draw loop segments
-        # utterances; a worker thread transcribes on each pause.
         if [ cap_ok ]
             wname : string [ whisper ]
             if [ !wname || wname.count == 0 ] wname = saved_model[]
@@ -2138,13 +1943,6 @@ element main : trinity
             th_pick[]
             puts 'teach: read each sentence aloud — silence ends the take (N skips)'
 
-    # live stream: 64 fft bands (150Hz..8kHz, the model's own range) in
-    # a 1024x64 sweep image, drawn as a 128px strip off the element
-    # bottom. columns advance left to right and wrap, painting over the
-    # last pass. the canvas clears every repaint, so history lives in
-    # the texture; ticks and word labels paint with the canvas
-    # the trainer's tokenizer, reproduced: fnv1a-32 of the lowercase
-    # word, % 4096 + 1; words outside the named vocab -> 4097 <other>
     func th_hash [ wd: string ] -> i32
         h : u32 [ 2166136261 ]
         cs : symbol [ wd.chars ]
@@ -2156,7 +1954,6 @@ element main : trinity
             if [ voc_tok[ v ] == t ] return t
         return 4097
 
-    # next prompt: a random short sentence from the translated set
     func th_pick []
         for [ true ]
             ann_seed = ann_seed * 6364136223846793005 + 1442695040888963407
@@ -2187,7 +1984,6 @@ element main : trinity
             th_quiet = 0
             return
 
-    # one finished take: force-align the known words, save the clip
     func th_save [ a0: i64, a1: i64 ]
         w6 : i32 [ i32[ a1 - a0 ] ]
         if [ w6 < 16 || w6 > 1000 ] return
@@ -2223,10 +2019,6 @@ element main : trinity
         puts 'teach: saved self_{th_i}'
         th_i += 1
 
-    # merge one read's word runs into st_words. the key is COLUMN
-    # OVERLAP in absolute stream position — an overlapping span is the
-    # same word instance re-read (newer wins: more right context);
-    # disjoint spans NEVER join, so repeated words stay separate
     func rd_merge [ base9: i32, n9: i32 ]
         i9 : i32 [ 0 ]
         for [ i9 < n9 ]
@@ -2283,8 +2075,6 @@ element main : trinity
                 keep.hold[]
                 st_words = keep
 
-    # annotate view: the clip's spectrogram large, audio looping,
-    # marks as green lines; words label their regions once counts fit
     func ann_draw [ w: Window ]
         ux.will_animate = true
         cv : w.screen
@@ -2367,8 +2157,6 @@ element main : trinity
                 ann_pick[]
                 return
         if [ ann_nm >= 256 ] return
-        # PLACED order: space replays from the last one put down and
-        # U undoes it; regions/save sort a copy
         ann_marks[ ann_nm ] = c5
         ann_nm += 1
 
@@ -2447,20 +2235,13 @@ element main : trinity
                 st_buf[ di + 3 ] = 255
                 if [ st_mag ]
                     st_mag[ b * sw9 + st_x ] = tv
-            # tracking state: ~100ms running average of band energy —
-            # green only when the sound STAYS continuous, one hot
-            # window alone decays before it crosses the threshold
             en9 = en9 / (f32[ nb ] * 24.0)
             if [ en9 > 1.0 ] en9 = 1.0
-            # fast attack, slow release: rising sound catches in ~100ms,
-            # the tail hangs on ~3x longer before the tick lets go
             if [ en9 > st_ema ]
                 st_ema = st_ema * 0.6 + en9 * 0.4
             el
                 st_ema = st_ema * 0.88 + en9 * 0.12
             st_act[ st_x ] = st_ema
-            # teach take machine: speech starts the take, ~0.9s of
-            # quiet ends it — align + save, then the next prompt
             if [ teach && th_ntk > 0 ]
                 if [ th_state == 0 ]
                     if [ st_ema > 0.12 ]
@@ -2476,8 +2257,6 @@ element main : trinity
                             th_pick[]
                     el
                         th_quiet = 0
-            # gpu engine: built lazily at first frame (pipeline compile is
-            # a one-time hitch), verified against the cpu encoder
             if [ w_net && !w_gtry && !teach ]
                 w_gtry = true
                 puts 'whisper: building gpu pipelines…'
@@ -2500,8 +2279,6 @@ element main : trinity
                     puts 'whisper: gpu encoder ready — parity gpu {sg / f64[ng]} cpu {sc / f64[ng]}'
                 el
                     puts 'whisper: gpu unavailable — cpu encoder'
-            # live whisper: ring the raw window in, segment utterances the
-            # same way the teach take machine does, hand a copy to a thread
             if [ w_net && w_raw && !teach ]
                 ns5 : i64 [ cap.size ]
                 for [ i5: i64 0, i5 < ns5, i5 += 1 ]
@@ -2516,8 +2293,6 @@ element main : trinity
                             w_act   = w_wr
                             w_quiet = 0
                     el
-                        # the utterance END is the last column the band-energy
-                        # gate held — the same detector that started the take
                         if [ st_ema > 0.10 ] w_act = w_wr
                         if [ st_ema < 0.08 ]
                             w_quiet += 1
@@ -2536,10 +2311,6 @@ element main : trinity
                                     buf5[i5] = w_raw[(w_start + i5) % 1536000]
                                 j5 : WhisperJob [ model: w_net, pcm: buf5, n: n5, c0: w_start / 2048, c1: e5 / 2048 ]
                                 j5.hold[]
-                                # gpu path: with a compute queue the WORKER
-                                # encodes (low priority, sliced submits) —
-                                # graphics never waits. no compute queue →
-                                # legacy render-thread encode
                                 if [ w_gpu ]
                                     if [ w_gpu.threaded[] ]
                                         j5.gpu = w_gpu
@@ -2581,8 +2352,6 @@ element main : trinity
             st_x = nx9
             st_abs += 1
             st_tex.upload[ st_buf, sw9 * nb * 4 ]
-            # interval read: every 12 columns (~0.5s) the reader takes
-            # the trailing window in ONE pass; words merge by span
             if [ rd_hnd && !w_net && st_mag && st_abs >= rd_next ]
                 rd_next = st_abs + 12
                 w7 : i32 [ (st_abs < 192) ? i32[ st_abs ] : 192 ]
@@ -2594,7 +2363,6 @@ element main : trinity
                     n7r : i32 [ ts_read_cols[ rd_hnd, rd_in, nb, w7, rd_out, 576 ] ]
                     if [ n7r > 0 ] rd_merge[ i32[ st_abs ] - w7, n7r ]
         cv.draw_image[ st_tex, rect [ x: 0.0, y: y0, w: bounds.w, h: strip ] ]
-        # busy hint; transcripts render anchored at their spans (st_words)
         if [ w_job ]
             cv.font_size[ 18 ]
             cv.fill_color[ '#9a9aa8' ]
@@ -2628,8 +2396,6 @@ element main : trinity
                 rect [ x: 20.0, y: bounds.h * 0.3 + 36.0, w: bounds.w - 40.0, h: 20.0 ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
             cv.paint[]
-        # found words drawn OVER the spectra graph at their spans
-        # (abs -> ring columns; seam-crossing spans skip one pass)
         for [ wi: i32 0, wi < st_words.count, wi += 1 ]
             sw2 : st_words[ wi ]
             if [ i64[ sw2.x0 ] < st_abs - i64[ sw9 ] ] continue
@@ -2644,18 +2410,3 @@ element main : trinity
                 rect [ x: wx0, y: y0 + 6.0, w: wx1 - wx0, h: 18.0 ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
             cv.paint[]
-#        half2: s.size / 2
-#        for [ true ]
-#            if [ s.capture[] ]
-#                for [ i: i32 0, i < half2, i += 1 ]
-#                    if [ i % 16 == 0 ]
-#                        printf "%5d Hz |", i * s.sample_rate / s.size
-#                        bar: i32 [ s.bins[i] * 50.0 ]
-#                        if [ bar > 50 ]
-#                            bar = 50
-#                        for [ j: i32 0, j < bar, j += 1 ]
-#                            printf "#"
-#                        printf "\n"
-#                printf "\033[%dA", half2 / 16
-#        s.close
-#        return 0

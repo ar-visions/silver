@@ -1,15 +1,8 @@
 
-# this applies to modules of module-name/module-name.ag
-# for these exports, it is only valid when there is a module-name/test.ag which runs it
 export 0.8.8
 
 import <stdio.h>
 
-# to-fix: array of struct — struct values are stack-allocated; array_push stores
-# a raw stack pointer which becomes dangling after the function returns.
-# on the second push/set the drop() in Au_assign reads garbage and crashes.
-# fix should be in silver codegen: when storing a struct into a persistent slot
-# (array element, map value, class member), emit a heap alloc + memcpy first.
 
 struct Point
     x : f32

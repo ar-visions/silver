@@ -6,16 +6,11 @@ class CSSLine
     public content : string
     public line    : i32
 
-# a `<Class> NAME [ params… ]` CSS definition: the captured body + its parameter names.
-# cls is the Layer class it instantiates (Layer, TermLayer, …). the def name doubles as
-# the layers-map id unless the use site binds it to another id (`layers.<id>: <name> […]`).
 class LayerDef
     public cls    : string
     public params : array string
     public body   : array CSSLine
 
-# one matched CSS block for the live inspector: the .css file + selector line. orbiter
-# uses these to open the style source for whatever UI element was clicked.
 class StyleHit
     public file : path
     public line : i32
@@ -41,11 +36,7 @@ class StyleEntry
     mutable bl        : StyleBlock
     manual instance  : object
     mutable line      : i32
-    # when set, `value` is the name of a field on the target element; the value
-    # is re-read from inst.<binding> every frame (not converted at parse time).
     mutable binding   : string
-    # resolved when a bound entry is registered on an instance:
-    # container.member_set(bound_mem, inst.member_object[bound_src]) each frame.
     mutable container : Au
     mutable bound_mem : Au_t
     mutable bound_src : Au_t
@@ -69,8 +60,6 @@ class StyleBlock
     mutable key       : string
     mutable property  : string
     mutable type_name : string
-    # source location of this block's selector (for the live CSS inspector) — the .css
-    # file it was parsed from and the 1-based line of its selector. stamped in process[].
     public  src_file  : path
     public  src_line  : i32
 
@@ -160,7 +149,6 @@ class StyleBlock
         ux      : Window [ n.ux ]
 
         for [ q: StyleQualifier ] in quals
-            q.hold[]
             cur = n
             best_this : i64 [ 0 ]
             while [ true ]
@@ -168,7 +156,6 @@ class StyleBlock
                 id_match    : bool   [ q.id && q.id == cur.id ]
                 id_reject   : bool   [ q.id && !id_match ]
 
-                # when cur has no parent we are at root — check app_object type instead
                 use_app    : bool [ !cur.parent && ux && ux.app_object ]
                 type_match : bool [ false ]
                 if [ ty_handle ]
@@ -176,10 +163,6 @@ class StyleBlock
                     if [ io_r ] type_match = true
                 type_reject : bool [ ty_handle && !type_match ]
 
-                # state pseudo-classes. q.states holds the full list (e.g.
-                # :hovered:pressed). ALL states must be truthy on this element
-                # for the selector to match. the q.oper path (state OP value)
-                # still uses the single q.state since op-mode takes one state.
                 state_match : bool [ score_state && q.state ]
                 if [ state_match ]
                     expect q.state.count > 0, 'null state'
@@ -227,9 +210,6 @@ class StyleBlock
 
 class Style
     public  css_path  : path
-    # live inspector cycle state: repeated cmd+clicks on the SAME element step through its
-    # array of matched blocks (a different element resets). lives here (not on Window — adding
-    # Window instance members breaks orbiter's import of trinity at vk.ag:1095).
     mutable inspect_el  : element
     mutable inspect_idx : i32
     public  members   : map StyleEntries[string]
@@ -297,16 +277,11 @@ class Style
 
         return ret
 
-    # LIVE CSS INSPECTOR: the rules whose FULL selector matches this element (so a shell
-    # button never picks up Editor's Option rules — context must match, not just the leaf
-    # type). most-specific first, so cmd+click lands on the button's own rule and cycling
-    # walks its remaining rules (base + :hover/:selected variants). each as {file, line}.
     func element_style_blocks [ n: element ] -> array StyleHit
         matched : array StyleBlock [ ]
         for [ block: StyleBlock ] in base
             if [ block.score[ n, false ] > 0 ]
                 matched.push[ block ]
-        # most-specific directly-matching rule first (highest selector score)
         i : i32 [ 0 ]
         while [ i < matched.count ]
             bestj : i32 [ i ]
@@ -325,7 +300,6 @@ class Style
             hits.push[ StyleHit [ file: b.src_file, line: b.src_line ] ]
         return hits
 
-    # substring replace (no word-boundary needed: the markers are `$name`, unambiguous).
     func css_replace [ s: string, from: string, to: string ] -> string
         if [ !s || !from || from.count == 0 ] return s
         out : string [ '' ]
@@ -341,7 +315,6 @@ class Style
                 i += 1
         return out
 
-    # parse `name [ a, b, c ]` → [name, a, b, c] (trimmed). no brackets → [name].
     func call_parse [ s: string ] -> array string
         out : array string [ ]
         pa  : num [ s.index_of[ '[' ] ]
@@ -357,9 +330,6 @@ class Style
                 out.push[ r.trim[] ]
         return out
 
-    # is `lc` a composition use of a plain Layer def? a use is a bare `name` or
-    # `name [ args ]` line — a property/pseudo line always carries ':' before any
-    # '[', a use never does.
     func layer_use [ defs: map LayerDef[string], lc: string ] -> array string
         if [ lc.count == 0 ] return null
         c0 : i8 [ lc.chars[0] ]
@@ -379,10 +349,6 @@ class Style
             res = css_replace[ res, '$' + d.params[pi], v ]
         return res
 
-    # instantiate a def at a use site: base props emitted at `at`; the def's `:state`
-    # sections hoist into `states` as nested pseudo-state sections re-opening the same
-    # `hdr` — same layer id across states, so prop transitions animate. states == null
-    # (use inside a state section) drops the def's own state sections.
     func layer_splice [ hdr: string, d: LayerDef, call: array string, at: i32, out: array CSSLine, states: array CSSLine ]
         in_st : bool [ false ]
         for [ bl: CSSLine ] in d.body
@@ -400,16 +366,6 @@ class Style
                 continue
             out.push[ CSSLine [ indent: at + bl.indent, content: txt, line: bl.line ] ]
 
-    # CSS Layers: `<Class> NAME [ p1, p2 ]` (indent 0) captures the indented block under
-    # it — layer props plus `:state` sections (at the def's own indent or body indent) —
-    # with `$p1`/`$p2` placeholders. <Class> is Layer or any Layer subclass. inside an
-    # element block:
-    #   layers.<id> [ v1, v2 ]           instantiates the def named by the id
-    #   layers.<id>: <def> [ v1, v2 ]    binds any def to the id
-    # expanding to the internal `layers.<id>:` block with args substituted; the def's
-    # `:state` sections hoist to nested pseudo-state sections after the block. a bare
-    # `<def> [ args ]` inside another def's body splices its props flat (composition).
-    # a pure pre-parse pass. the old `layers.<id>:` prop-block form is an error.
     func expand_layers [ lines: array CSSLine, src: path ] -> array CSSLine
         defs : map LayerDef [ string ] [ ]
         stripped : array CSSLine [ ]
@@ -441,7 +397,6 @@ class Style
                 di   : i32 [ lines[i].indent ]
                 base_in : i32 [ -1 ]
                 j : i32 [ i + 1 ]
-                # def body: indented lines, plus `:state` sections at the def's own indent
                 while [ j < lines.count ]
                     blc0 : string [ lines[j].content ]
                     st0  : bool [ lines[j].indent == di && blc0.count > 0 && blc0.chars[0] == ':' ]
@@ -467,8 +422,6 @@ class Style
                 continue
             stripped.push[ lines[i] ]
             i += 1
-        # instantiate uses inside element blocks; generated `:state` sections for a block
-        # flush before the next selector so they chain onto its existing state sections.
         out      : array CSSLine [ ]
         pending  : array CSSLine [ ]
         in_state : bool [ false ]
@@ -582,10 +535,6 @@ class Style
             bl.src_line = lines[i].line
             validate_block[ bl, errors ]
             base.push[ bl ]
-            # nested pseudo-state sections: an indent-0 line beginning with ':'
-            # inside the same braces (e.g. a bare `:focused`) expands into a
-            # separate `<selector><state>` block. lets states be written inline
-            # under their selector instead of as a repeated top-level rule.
             while [ end_idx < lines.count && lines[end_idx].indent == 0 ]
                 state_line : string [ lines[end_idx].content ]
                 if [ !state_line.count || state_line.chars[0] != ':' ]
@@ -648,9 +597,6 @@ class Style
             ty = ty.context
         return avail
 
-    # non-consuming mtime poll: true when the css file changed on disk but
-    # check_reload hasn't applied it yet. lets the idle render loop open its
-    # frame gate so a live css edit repaints without waiting for a mouse event.
     public func pending_reload [ ] -> bool
         if [ !css_path ] return false
         return mod_time != css_path.modified_time[ ]
@@ -697,17 +643,11 @@ struct XCoord
     relative : bool
     percent  : bool
     pixel    : bool
-    # `wc` = width from content. paired with a right anchor (e.g. r5px), the
-    # element is offset left by its computed width; with a left anchor it grows
-    # rightward. resolved in the layout pass.
     content  : bool
-    # a percent coord may carry a trailing +/- offset: `50%-2` (2 units) or `50%-2px`
-    # (2 px) — position at the percent, then nudge. pct_off is added on top of the percent.
     pct_off       : f32
     pct_off_pixel : bool
 
     construct [ sx: string ]
-        # first char as a STRING (mid), not string[unichar] — that ctr faults
         f : string [ (sx.count > 0) ? sx.mid[ 0, 1 ] : '' ]
         if [ f.chars[ 0 ] == '-' || isdigit[ f.chars[ 0 ] ] ]
             sx_r : string [ sx ]
@@ -727,8 +667,6 @@ struct XCoord
                 if [ sx_offset.chars[ sx_offset.count - 2 ] == 'p' ]
                     sx_offset = sx_offset.mid[ 0, sx_offset.count - 2 ]
                     pixel     = true
-            # percent, optionally with a trailing +/- offset: `50%`, `50%-2` (units),
-            # `50%-2px` (px — the px suffix above set `pixel`, which the offset adopts).
             pct_at : i32 [ sx_offset.index_of[ '%' ] ]
             if [ pct_at >= 0 ]
                 percent = true
@@ -748,23 +686,16 @@ struct XCoord
     func plot [ from: f32, vto: f32, left: @XCoord, left_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
         off  : f32 [ offset ]
-        # console grid: px has no sub-line resolution — a px coord > 16 (≈ one line)
-        # collapses to 1 unit (1 cell), anything smaller rounds away to 0.
         if [ console && pixel ]
             off  = (offset > 16.0) ? 1.0 : 0.0
             fc_m = fc
         val  : f32 [ mix[ off * fc_m, offset * (vto - from), f32[percent] ] ]
-        # a percent coord may carry a +/- nudge (`50%-2` = 50% minus 2 units; `-2px` = px)
         if [ percent && pct_off != 0.0 ]
             val += pct_off * ((pct_off_pixel) ? 1.0 : ((fc > 0.0) ? fc : 1.0))
         if [ x_type > XAlign.right ]
             expect (left.x_type <= XAlign.right), 'invalid left-operand (xcoord)'
             return left_val + val
         r : f32 [ (rel && relative) ? rel.w * relative : 0.0 ]
-        # left-flow only: `l<gap>+` advances past the previous sibling's right
-        # edge. a right-anchored relative coord (`r<gap>+`, right-flow) must NOT
-        # take this — its stacking is resolved post-sizing in layout_element,
-        # and adding last's extent here lands the element past the parent edge.
         if [ relative && last && x_type == XAlign.left ]
             r += last.x + last.w
         hsz : f32 [ (vto - from) / 2.0 ]
@@ -793,14 +724,11 @@ struct YCoord
     relative : bool
     percent  : bool
     pixel    : bool
-    # `hc` = height from content (offset up by computed height when bottom-anchored)
     content  : bool
-    # `50%-2` (units) / `50%-2px` (px): percent position plus a trailing +/- nudge.
     pct_off       : f32
     pct_off_pixel : bool
 
     construct [ sy: string ]
-        # first char as a STRING (mid), not string[unichar] — that ctr faults
         f : string [ (sy.count > 0) ? sy.mid[ 0, 1 ] : '' ]
         if [ f.chars[0] == '-' || isdigit[f.chars[0]]]
             sy_r : string [ sy ]
@@ -820,7 +748,6 @@ struct YCoord
                 if [ sy_offset.chars[ sy_offset.count - 2 ] == 'p' ]
                     sy_offset = sy_offset.mid[ 0, sy_offset.count - 2 ]
                     pixel     = true
-            # percent + optional trailing +/- offset: `50%`, `50%-2` (units), `50%-2px`.
             pct_at : i32 [ sy_offset.index_of[ '%' ] ]
             if [ pct_at >= 0 ]
                 percent = true
@@ -840,8 +767,6 @@ struct YCoord
     func plot [ from: f32, vto: f32, top: @YCoord, top_val: f32, rel: rect, last: rect, fc: f32, console: bool ] -> f32
         fc_m : f32 [ (fc > 0.0 && !pixel) ? fc : 1.0 ]
         off  : f32 [ offset ]
-        # console grid: px has no sub-line resolution — a px coord > 16 (≈ one line)
-        # collapses to 1 unit (1 cell), anything smaller rounds away to 0.
         if [ console && pixel ]
             off  = (offset > 16.0) ? 1.0 : 0.0
             fc_m = fc
@@ -852,8 +777,6 @@ struct YCoord
             expect top.y_type <= YAlign.bottom, 'invalid top-operand (ycoord)'
             return top_val + val
         r : f32 [ (rel && relative) ? rel.h * relative : 0.0 ]
-        # top-flow only — mirror of the x-axis rule: bottom-anchored relative
-        # coords resolve their stacking post-sizing in layout_element.
         if [ relative && last && y_type == YAlign.top ]
             r += last.y + last.h
         hsz : f32 [ (vto - from) / 2.0 ]
@@ -882,7 +805,6 @@ class Region
     public r   : XCoord
     public b   : YCoord
     public set : bool
-    # 'hw' in the height slot: height tracks the computed width (a square).
     public square : bool
 
     construct [ f: f32 ]
@@ -905,7 +827,6 @@ class Region
             l = XCoord [ aa[0] ]
             t = YCoord [ aa[1] ]
             r = XCoord [ aa[2] ]
-            # 'hw' in the height slot → height tracks the computed width (square)
             if [ aa[3] == 'hw' ]
                 square = true
                 b = YCoord [ y_type: YAlign.height, offset: 0.0 ]
@@ -924,14 +845,7 @@ class Region
         s : string[cs]
         construct [ s ]
 
-    # sx/sy: the container's spacing — the gap BETWEEN flowed siblings
-    # ([b1][gap][b2]); applies only when a `+` coord follows a previous
-    # sibling, never at the edges.
     func rectangle [ win: rect, rel: rect, last: rect, fc: f32, console: bool, sx: f32, sy: f32 ] -> rect
-        # right-anchored placement with a width slot ALWAYS includes the
-        # element's own width: x = cursor - inset - width. `r<gap>+` flows the
-        # cursor from the previous sibling's left edge; static `r<inset>`
-        # anchors the parent's right edge.
         if [ l.x_type == XAlign.right && r.x_type > XAlign.right ]
             gfc : f32 [ (fc > 0.0 && !l.pixel) ? fc : 1.0 ]
             gap : f32 [ l.offset * ((l.pixel) ? 1.0 : gfc) ]
@@ -946,8 +860,6 @@ class Region
         lv : f32 [ l.plot[ win.x, win.x + win.w, null,  0.0, rel, last, fc, console ] ]
         rv : f32 [ r.plot[ win.x, win.x + win.w, @l, lv,  rel, last, fc, console ] ]
         tv : f32 [ t.plot[ win.y, win.y + win.h, null,  0.0, rel, last, fc, console ] ]
-        # anchored edges respect the container's spacing: left/top anchors
-        # inset inward, exact right anchors pull in; flow gets it as the gap
         if [ l.x_type == XAlign.left  ] lv += sx
         if [ r.x_type == XAlign.right ] rv -= sx
         if [ t.y_type == YAlign.top   ] tv += sy
@@ -1226,8 +1138,6 @@ Mixable Shadow
     public color    : rgba
     public offset   : vec2f
 
-    # CSS-friendly constructors. format: "<color>" | "<color> <ox> <oy>" |
-    # "<color> <ox> <oy> <blur>".
     construct [ s: string ]
         aa : s.split[ ' ' ]
         if [ aa.count >= 1 ]
@@ -1377,7 +1287,6 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
         if [ !qq.count ]
             continue
         v : StyleQualifier[ bl:bl ]
-        v.hold[]
         result.push[ v ]
         parent_to_child : qq.split[ '/' ]
         processed : StyleQualifier [ null ]
@@ -1385,7 +1294,6 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
             q : parent_to_child[i].trim[]
             if [ processed ]
                 v.parent = StyleQualifier[ bl:bl ]
-                v.parent.hold[]
                 v = v.parent
             idot : q.index_of[ '.' ]
             icol : q.index_of[ ':' ]
@@ -1422,10 +1330,6 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
                         v.value = tail.mid[ istart, tail.count - istart ].trim[]
                         break
                 if [ !is_op ]
-                    # tail may contain multiple states joined by '&' — e.g.
-                    # ':hovered&pressed'. all states listed must be truthy
-                    # on the element for the selector to match. full boolean
-                    # expression trees (|, !, parens) come later.
                     v.states = tail.split[ '&' ]
                     for [ k: i64 0, k < v.states.count, k += 1 ]
                         s : v.states[k]
@@ -1436,7 +1340,6 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
         if [ anchored ]
             v.anchored = true
     p[0] = end
-    result.hold[]
     return result
 
 
@@ -1459,9 +1362,6 @@ func split_css [ code: string ] -> array CSSLine
             i  += 1
             ln += 1
             continue
-        # '#' at the START of a line (after the leading whitespace consumed above) is a
-        # comment — skip the line. a '#' mid-line is a hex color (e.g. label_color: #fff)
-        # and is untouched, since we only test the line's first non-space char here.
         if [ code.chars[i] == '#' ]
             while [ i < n && code.chars[i] != '\n' ]
                 i += 1
