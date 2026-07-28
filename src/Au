@@ -622,6 +622,154 @@ void lazy_init(global_init_fn fn, Au_t);
     decl_type(AA)\
     _Pragma("pack(pop)")
 
+#define declare_class_7\
+(AA, BB, CC, DD, EE, FF, GG, ...) \
+    typedef struct _##AA* AA; \
+    _Pragma("pack(push, 1)") \
+    struct AA##_fields { \
+        GG##_intern (GG, F, __VA_ARGS__) \
+        FF##_intern (FF, F, __VA_ARGS__) \
+        EE##_intern (EE, F, __VA_ARGS__) \
+        DD##_intern (DD, F, __VA_ARGS__) \
+        CC##_intern (CC, F, __VA_ARGS__) \
+        BB##_intern (BB, F, __VA_ARGS__) \
+        AA##_intern (AA, F, __VA_ARGS__) \
+        void* __none__; \
+    }; \
+    struct AA##_af { \
+        union { \
+            struct { \
+                GG##_intern (GG, AF, __VA_ARGS__) \
+                FF##_intern (FF, AF, __VA_ARGS__) \
+                EE##_intern (EE, AF, __VA_ARGS__) \
+                DD##_intern (DD, AF, __VA_ARGS__) \
+                CC##_intern (CC, AF, __VA_ARGS__) \
+                BB##_intern (BB, AF, __VA_ARGS__) \
+                AA##_intern (AA, AF, __VA_ARGS__) \
+                unsigned long __af_last:1; \
+            };                                    \
+            u64 _afbits[4]; \
+        }; \
+    }; \
+    typedef struct _##AA { \
+        struct _##AA##_f* au; \
+        struct AA##_af af_bits; \
+        GG##_intern (GG, INST_U, __VA_ARGS__) \
+        GG##_intern (GG, INST_L, __VA_ARGS__) \
+        u8 GG##_interns [0 GG##_intern (GG, ISIZE, __VA_ARGS__)]; \
+        FF##_intern (FF, INST_U, __VA_ARGS__) \
+        FF##_intern (FF, INST_L, __VA_ARGS__) \
+        u8 FF##_interns [0 FF##_intern (FF, ISIZE, __VA_ARGS__)]; \
+        EE##_intern (EE, INST_U, __VA_ARGS__) \
+        EE##_intern (EE, INST_L, __VA_ARGS__) \
+        u8 EE##_interns [0 EE##_intern (EE, ISIZE, __VA_ARGS__)]; \
+        DD##_intern (DD, INST_U, __VA_ARGS__) \
+        DD##_intern (DD, INST_L, __VA_ARGS__) \
+        u8 DD##_interns [0 DD##_intern (DD, ISIZE, __VA_ARGS__)]; \
+        CC##_intern (CC, INST_U, __VA_ARGS__) \
+        CC##_intern (CC, INST_L, __VA_ARGS__) \
+        u8 CC##_interns [0 CC##_intern (CC, ISIZE, __VA_ARGS__)]; \
+        BB##_intern (BB, INST_U, __VA_ARGS__) \
+        BB##_intern (BB, INST_L, __VA_ARGS__) \
+        u8 BB##_interns [0 BB##_intern (BB, ISIZE, __VA_ARGS__)]; \
+        AA##_intern (AA, INST_U, __VA_ARGS__) \
+        AA##_intern (AA, INST_L, __VA_ARGS__) \
+        u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
+    } *AA; \
+    AA##_schema (AA, DECL, __VA_ARGS__) \
+    typedef struct _##AA##_f { \
+        Au_f_members(AA) \
+        struct { void(*_ff)(); \
+            Au_schema(AA, METHOD, __VA_ARGS__) \
+            GG##_schema (AA, METHOD, __VA_ARGS__) \
+            FF##_schema (AA, METHOD, __VA_ARGS__) \
+            EE##_schema (AA, METHOD, __VA_ARGS__) \
+            DD##_schema (AA, METHOD, __VA_ARGS__) \
+            CC##_schema (AA, METHOD, __VA_ARGS__) \
+            BB##_schema (AA, METHOD, __VA_ARGS__) \
+            AA##_schema (AA, METHOD, __VA_ARGS__) \
+        } ft; \
+    } AA##_f, *AA##_ft; \
+    decl_type(AA)\
+    _Pragma("pack(pop)")
+
+#define declare_class_8\
+(AA, BB, CC, DD, EE, FF, GG, HH, ...) \
+    typedef struct _##AA* AA; \
+    _Pragma("pack(push, 1)") \
+    struct AA##_fields { \
+        HH##_intern (HH, F, __VA_ARGS__) \
+        GG##_intern (GG, F, __VA_ARGS__) \
+        FF##_intern (FF, F, __VA_ARGS__) \
+        EE##_intern (EE, F, __VA_ARGS__) \
+        DD##_intern (DD, F, __VA_ARGS__) \
+        CC##_intern (CC, F, __VA_ARGS__) \
+        BB##_intern (BB, F, __VA_ARGS__) \
+        AA##_intern (AA, F, __VA_ARGS__) \
+        void* __none__; \
+    }; \
+    struct AA##_af { \
+        union { \
+            struct { \
+                HH##_intern (HH, AF, __VA_ARGS__) \
+                GG##_intern (GG, AF, __VA_ARGS__) \
+                FF##_intern (FF, AF, __VA_ARGS__) \
+                EE##_intern (EE, AF, __VA_ARGS__) \
+                DD##_intern (DD, AF, __VA_ARGS__) \
+                CC##_intern (CC, AF, __VA_ARGS__) \
+                BB##_intern (BB, AF, __VA_ARGS__) \
+                AA##_intern (AA, AF, __VA_ARGS__) \
+                unsigned long __af_last:1; \
+            };                                    \
+            u64 _afbits[4]; \
+        }; \
+    }; \
+    typedef struct _##AA { \
+        struct _##AA##_f* au; \
+        struct AA##_af af_bits; \
+        HH##_intern (HH, INST_U, __VA_ARGS__) \
+        HH##_intern (HH, INST_L, __VA_ARGS__) \
+        u8 HH##_interns [0 HH##_intern (HH, ISIZE, __VA_ARGS__)]; \
+        GG##_intern (GG, INST_U, __VA_ARGS__) \
+        GG##_intern (GG, INST_L, __VA_ARGS__) \
+        u8 GG##_interns [0 GG##_intern (GG, ISIZE, __VA_ARGS__)]; \
+        FF##_intern (FF, INST_U, __VA_ARGS__) \
+        FF##_intern (FF, INST_L, __VA_ARGS__) \
+        u8 FF##_interns [0 FF##_intern (FF, ISIZE, __VA_ARGS__)]; \
+        EE##_intern (EE, INST_U, __VA_ARGS__) \
+        EE##_intern (EE, INST_L, __VA_ARGS__) \
+        u8 EE##_interns [0 EE##_intern (EE, ISIZE, __VA_ARGS__)]; \
+        DD##_intern (DD, INST_U, __VA_ARGS__) \
+        DD##_intern (DD, INST_L, __VA_ARGS__) \
+        u8 DD##_interns [0 DD##_intern (DD, ISIZE, __VA_ARGS__)]; \
+        CC##_intern (CC, INST_U, __VA_ARGS__) \
+        CC##_intern (CC, INST_L, __VA_ARGS__) \
+        u8 CC##_interns [0 CC##_intern (CC, ISIZE, __VA_ARGS__)]; \
+        BB##_intern (BB, INST_U, __VA_ARGS__) \
+        BB##_intern (BB, INST_L, __VA_ARGS__) \
+        u8 BB##_interns [0 BB##_intern (BB, ISIZE, __VA_ARGS__)]; \
+        AA##_intern (AA, INST_U, __VA_ARGS__) \
+        AA##_intern (AA, INST_L, __VA_ARGS__) \
+        u8 AA##_interns [0 AA##_intern (AA, ISIZE, __VA_ARGS__)]; \
+    } *AA; \
+    AA##_schema (AA, DECL, __VA_ARGS__) \
+    typedef struct _##AA##_f { \
+        Au_f_members(AA) \
+        struct { void(*_ff)(); \
+            Au_schema(AA, METHOD, __VA_ARGS__) \
+            HH##_schema (AA, METHOD, __VA_ARGS__) \
+            GG##_schema (AA, METHOD, __VA_ARGS__) \
+            FF##_schema (AA, METHOD, __VA_ARGS__) \
+            EE##_schema (AA, METHOD, __VA_ARGS__) \
+            DD##_schema (AA, METHOD, __VA_ARGS__) \
+            CC##_schema (AA, METHOD, __VA_ARGS__) \
+            BB##_schema (AA, METHOD, __VA_ARGS__) \
+            AA##_schema (AA, METHOD, __VA_ARGS__) \
+        } ft; \
+    } AA##_f, *AA##_ft; \
+    decl_type(AA)\
+    _Pragma("pack(pop)")
+
 #define arg_count_IMPL(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, N, ...) N
 #define arg_count(...) arg_count_IMPL(__VA_ARGS__, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0)
 
@@ -793,6 +941,7 @@ forward(any)
     M(AA,BB, i, guard,  public, Au,     instance_of,    Au, Au_t) \
     M(AA,BB, s, method, public, AA,     hold,           Au) \
     M(AA,BB, s, method, public, none,   drop,           Au) \
+    M(AA,BB, s, method, public, none,   slot_replace,   Au, Au, Au) \
     M(AA,BB, i, method, public, none,   hold_members) \
     M(AA,BB, i, method, public, none,   drop_members) \
     M(AA,BB, i, method, public, Au,     set_property,   symbol, Au) \
@@ -833,6 +982,8 @@ forward(any)
     M(AA,BB, s, method, public, none,   mix_structs,    Au_t, Au, Au, Au, f64) \
     M(AA,BB, i, method, public, Au,     member_ref,     Au_t) \
     M(AA,BB, s, method, public, none,   auto_free,      bool) \
+    M(AA,BB, s, method, public, bool,   quit_requested) \
+    M(AA,BB, s, method, public, none,   leak_report) \
     M(AA,BB, i, method, public, Au,     initialize) \
     M(AA,BB, s, method, public, none,   module_erase,   Au_t, symbol) \
     M(AA,BB, s, method, public, handle, live_window_get) \
@@ -2322,6 +2473,9 @@ void  au_main_args(int argc, cstrs argv); // silver-host stashes process argv fo
 void  au_apply_args(Au a);                // parse the stashed argv into app instance `a`
 int   au_argv_stop(void);                 // argv index after the default (positional) value
 cstrs au_argv(void);                      // the stashed process argv
+int   au_leaks(void);                     // --leaks top-N (0 = leak tracking off)
+none  au_leak_report(void);               // print the leak summary once (no-op when off)
+bool  quit_requested(void);               // first ctrl-c under --leaks: orderly-quit request
 void module_erase_silver(void);
 none validate_meta(Au_t actual, Au_t expected);
 

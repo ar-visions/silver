@@ -17,7 +17,7 @@ export PROJECT_NAME
 
 .PHONY: all bootstrap build clean debug release asan
 
-all: release
+all: debug
 
 debug:
 	$(MAKE) BUILD_ROOT=$(SILVER)/install/build CONFIG=debug build
