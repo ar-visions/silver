@@ -95,10 +95,18 @@ none leak_site_pop (Au);
 // site — stash it rather than unwinding a frame that may not exist
 static __thread void* leak_caller = null;
 
+// temporary --leaks accounting for objects born at orbiter.ag:181
+static i32 dbg181[8];
+static i32 dbg_add_since_drain;
+#define DBG181(h, k) do { if (au_leaks() && (h)->line >= 690 && (h)->line <= 725 && \
+    (h)->source && strstr((h)->source, "vk.ag")) \
+    __atomic_fetch_add(&dbg181[k], 1, __ATOMIC_SEQ_CST); } while (0)
+
 Au Au_hold(Au a) {
     if (a) {
         Au f = header(a);
-        if (f->managed == 0) return a; // refs of 0 is unmanaged memory (user managed)
+        if (f->managed == 0) { DBG181(f, 6); return a; } // refs of 0 is unmanaged memory (user managed)
+        DBG181(f, 1);
         __atomic_fetch_add((i32*)__builtin_assume_aligned(&f->refs, 4), 1, __ATOMIC_SEQ_CST);
         // --leaks: remember WHERE this hold came from, so an unbalanced one
         // can name its own call site at exit
@@ -2446,13 +2454,19 @@ int command_exec(command cmd, bool verbose) {
 __thread ARef af       = null;
 __thread int  af_count = 2; // managed == 1 means its not in the af vector, managed == 0 means we are not managed memory; hold and drop are null ops
 __thread int  af_size  = 0;
+// reset-pinned (auto_free[true] at refs=0): alive for the process, freed at exit
+#define AU_PINNED_BASE 0x7000000
+__thread ARef pinned_af    = null;
+__thread int  pinned_count = 0;
+__thread int  pinned_size  = 0;
 
 none Au_free(Au);
 
 none Au_drop(Au a) {
     if (!a) return;
     Au info = header(a);
-    if (!info->managed) return;
+    if (!info->managed) { DBG181(info, 7); return; }
+    DBG181(info, 2);
     i32 n = __atomic_sub_fetch((i32*)__builtin_assume_aligned(&info->refs, 4), 1, __ATOMIC_SEQ_CST);
     if (au_leaks()) leak_site_pop(info);
     if (n <= 0) {
@@ -2468,7 +2482,12 @@ none Au_drop(Au a) {
             return;
         }
 #endif
-        af[info->managed] = null;
+        if (info->managed > 1 && info->managed < af_size) {
+            if (af[info->managed] == info)
+                af[info->managed] = null;
+            else if (au_leaks() && af[info->managed])
+                __atomic_fetch_add(&dbg181[6], 1, __ATOMIC_SEQ_CST);
+        }
         Au_free(a);
     }
 }
@@ -2609,6 +2628,8 @@ typedef struct {
     num    count;
     num    bytes;
     num    held;
+    num    pinned;   // refs=0, managed=1: survived a reset/drain pass
+    num    undrained;// refs=0, managed>1: its af pool never processed it
 } leak_origin;
 
 static int leak_live_cmp(const void* A, const void* B) {
@@ -2635,6 +2656,8 @@ static num* lg_holder = null;
 // set is known; refs beyond this set are phantom holds with no owner
 static num* lg_efrom  = null;
 static num* lg_eto    = null;
+static u8*  lg_ekind  = null; // 0 = owned, 1 = manual/unmanaged borrow
+static cstr* lg_ename = null; // member/slot ident forming the edge
 static num  lg_ecount = 0;
 static num  lg_ecap   = 0;
 
@@ -2648,25 +2671,43 @@ static num lg_idx(Au h) {
     return -1;
 }
 
-static void lg_link(Au target_data, num from_i) {
+static void lg_link_k2(Au target_data, num from_i, u8 kind, cstr name) {
     if (!target_data) return;
     num t = lg_idx(header(target_data));
     if (t < 0 || t == from_i) return;
-    if (lg_holder[t] < 0) lg_holder[t] = from_i;
+    // only OWNED edges elect a holder; borrows are informational
+    if (!kind && lg_holder[t] < 0) lg_holder[t] = from_i;
     if (lg_ecount == lg_ecap) {
         lg_ecap  = lg_ecap ? lg_ecap * 2 : 8192;
         lg_efrom = realloc(lg_efrom, lg_ecap * sizeof(num));
         lg_eto   = realloc(lg_eto,   lg_ecap * sizeof(num));
+        lg_ekind = realloc(lg_ekind, lg_ecap * sizeof(u8));
+        lg_ename = realloc(lg_ename, lg_ecap * sizeof(cstr));
     }
     lg_efrom[lg_ecount] = from_i;
     lg_eto  [lg_ecount] = t;
+    lg_ekind[lg_ecount] = kind;
+    lg_ename[lg_ecount] = name;
     lg_ecount++;
 }
+static void lg_link_k(Au target_data, num from_i, u8 kind) {
+    lg_link_k2(target_data, from_i, kind, null);
+}
+static void lg_link(Au target_data, num from_i) {
+    lg_link_k2(target_data, from_i, 0, null);
+}
+
+none au_free_pinned(void);
 
 none au_leak_report(void) {
     static bool reported;
     if (reported || !leaks_top) return;
     reported = true;
+    au_free_pinned();
+    printf("--dbg181: alloc=%d hold=%d drop=%d free=%d hm=%d dm=%d "
+           "hold_unmanaged=%d drop_unmanaged=%d str-adds-after-last-drain=%d\n",
+        dbg181[0], dbg181[1], dbg181[2], dbg181[3], dbg181[4], dbg181[5],
+        dbg181[6], dbg181[7], dbg_add_since_drain);
     if (!leak_live) {
         printf("--leaks: no Au objects alive at exit\n");
         return;
@@ -2690,6 +2731,9 @@ none au_leak_report(void) {
         num  bytes = sizeof(struct _Au) + type->typesize * h->alloc;
         total_bytes += bytes;
         num held = h->refs > 0 ? 1 : 0;
+        num pin  = (h->refs <= 0 && h->managed >= AU_PINNED_BASE) ? 1 : 0;
+        num und  = (h->refs <= 0 && h->managed >  1 &&
+                    h->managed <  AU_PINNED_BASE) ? 1 : 0;
         leak_origin* o = on ? &origins[on - 1] : null;
         bool same = o && strcmp(o->type->ident, type->ident) == 0 &&
             o->line == h->line &&
@@ -2699,19 +2743,22 @@ none au_leak_report(void) {
             o->count++;
             o->bytes += bytes;
             o->held  += held;
+            o->pinned    += pin;
+            o->undrained += und;
         } else
-            origins[on++] = (leak_origin){ type, h->source, h->line, 1, bytes, held };
+            origins[on++] = (leak_origin){ type, h->source, h->line, 1, bytes, held, pin, und };
     }
     qsort(origins, on, sizeof(leak_origin), leak_origin_cmp);
 
     num top = leaks_top < on ? leaks_top : on;
     printf("--leaks: %lld Au objects alive at exit (%lld KB) from %lld init origins; top %lld:\n",
         (i64)n, (i64)(total_bytes / 1024), (i64)on, (i64)top);
-    printf("   count        held       bytes  type              init origin\n");
+    printf("   count        held      pinned   undrained       bytes  type              init origin\n");
     for (num i = 0; i < top; i++) {
         leak_origin* o = &origins[i];
-        printf("%8lld  %10lld  %10lld  %-16s  %s:%d\n",
-            (i64)o->count, (i64)o->held, (i64)o->bytes, o->type->ident,
+        printf("%8lld  %10lld  %10lld  %10lld  %10lld  %-16s  %s:%d\n",
+            (i64)o->count, (i64)o->held, (i64)o->pinned, (i64)o->undrained,
+            (i64)o->bytes, o->type->ident,
             o->source ? o->source : "(no source)", (int)o->line);
     }
     // ---- holder graph -------------------------------------------------
@@ -2743,11 +2790,14 @@ none au_leak_report(void) {
             for (num m = 0; m < w->members.count; m++) {
                 Au_t mem = (Au_t)w->members.origin[m];
                 if (mem->member_type != AU_MEMBER_VAR || mem->is_static) continue;
+                if (mem->is_override || mem->is_elaborate) continue;
                 if (!mem->type || is_inlay(mem) || !mem->type->is_class) continue;
                 // ownership edges only: weak/context point upward, never own
                 if (mem->meta.a == typeid(weak) || mem->is_context) continue;
-                if (mem->traits & AU_TRAIT_UNMANAGED) continue;
-                lg_link(*(Au*)((u8*)data + mem->offset), i);
+                // manual slots own via explicit hold; tag the edge kind
+                lg_link_k2(*(Au*)((u8*)data + mem->offset), i,
+                    (mem->traits & AU_TRAIT_UNMANAGED) ? 1 : 0,
+                    (cstr)mem->ident);
             }
             if (w->context == w) break;
         }
@@ -2760,6 +2810,7 @@ none au_leak_report(void) {
             list ls = (list)data;
             if (!ls->unmanaged)
                 for (item it = ls->first; it; it = it->next) {
+                    lg_link((Au)it, i);
                     lg_link(it->key, i);
                     lg_link(it->value, i);
                 }
@@ -2772,6 +2823,7 @@ none au_leak_report(void) {
             if (!mp->unmanaged && mp->hlist)
                 for (num b = 0; b < mp->hsize; b++)
                     for (item it = ((item*)mp->hlist)[b]; it; it = it->next) {
+                        lg_link((Au)it, i);
                         lg_link(it->key, i);
                         lg_link(it->value, i);
                     }
@@ -2789,16 +2841,23 @@ none au_leak_report(void) {
         // walk up, listing EVERY live reference at each level. a level whose
         // refs exceed its referrer count carries phantom holds — refs nothing
         // in the heap accounts for, i.e. the actual leak
-        num cur = rep, depth = 0;
+        num cur = rep, depth = 0, prev_cur = -1;
         while (depth < 24) {
             Au   hh = live[cur];
             num  nref = 0;
-            for (num e = 0; e < lg_ecount; e++) if (lg_eto[e] == cur) nref++;
-            printf("  %s%-14s refs=%d refs-found=%lld%s  %s:%d\n",
+            for (num e = 0; e < lg_ecount; e++)
+                if (lg_eto[e] == cur && !lg_ekind[e]) nref++;
+            cstr via = null;
+            if (prev_cur >= 0)
+                for (num e = 0; e < lg_ecount && !via; e++)
+                    if (lg_efrom[e] == cur && lg_eto[e] == prev_cur)
+                        via = lg_ename[e];
+            printf("  %s%-14s refs=%d refs-found=%lld%s  %s:%d %p%s%s\n",
                 depth ? "  held by " : "", ((Au_t)hh->au)->ident,
                 (int)hh->refs, (i64)nref,
                 (i64)hh->refs > nref ? "  <-- PHANTOM" : "",
-                hh->source ? hh->source : "?", hh->line);
+                hh->source ? hh->source : "?", hh->line, hh->data,
+                via ? " via ." : "", via ? via : "");
             // name the unbalanced hold: its call site was recorded at hold time
             if ((i64)hh->refs > nref) {
                 leak_ent* le = leak_find(hh);
@@ -2819,19 +2878,49 @@ none au_leak_report(void) {
                     }
                     printf("\n");
                 }
+                // raw scan: live objects containing this pointer anywhere
+                void* tgt = hh->data;
+                int bs = 0;
+                for (num k = 0; k < n && bs < 4; k++) {
+                    if (k == cur) continue;
+                    Au ok2 = live[k];
+                    Au_t ot = (Au_t)ok2->au;
+                    if (!ot || !ot->typesize) continue;
+                    if (ok2->data != (none*)&ok2[1]) continue;
+                    num words = (ot->typesize *
+                        (ok2->count ? ok2->count : 1)) / (num)sizeof(void*);
+                    void** dw = (void**)ok2->data;
+                    for (num wi = 0; wi < words; wi++)
+                        if (dw[wi] == tgt) {
+                            printf("          raw-scan: %s %s:%d word[%lld]\n",
+                                ot->ident, ok2->source ? ok2->source : "?",
+                                ok2->line, (i64)wi);
+                            bs++;
+                            break;
+                        }
+                }
+                if (!bs) printf("          raw-scan: not in any live object\n");
             }
             for (num e = 0, shown = 0; e < lg_ecount && shown < 4; e++)
                 if (lg_eto[e] == cur && lg_efrom[e] != holder[cur]) {
                     Au oh = live[lg_efrom[e]];
-                    printf("          also held by %-12s %s:%d\n",
+                    printf("          also held by %-12s %s:%d%s\n",
                         ((Au_t)oh->au)->ident,
-                        oh->source ? oh->source : "?", oh->line);
+                        oh->source ? oh->source : "?", oh->line,
+                        lg_ekind[e] ? " (manual)" : "");
                     shown++;
                 }
             if (holder[cur] < 0) {
-                printf("      ROOT — no live object points at this\n");
+                if (hh->refs <= 0)
+                    printf("      pool orphan — never held; %s\n",
+                        hh->managed >= AU_PINNED_BASE
+                            ? "pinned by auto_free[true] reset"
+                            : "af pool never drained (worker thread?)");
+                else
+                    printf("      ROOT — no live object points at this\n");
                 break;
             }
+            prev_cur = cur;
             cur = holder[cur];
             depth++;
         }
@@ -2901,7 +2990,18 @@ Au alloc_instance(Au_t type, int n_bytes, bool managed) {
 
 none Au_free(Au a);
 
+// exit: release everything the resets pinned (still refs=0 = pure garbage)
+none au_free_pinned(void) {
+    for (int i = 0; i < pinned_count; i++) {
+        Au a = pinned_af[i];
+        if (a && a->refs <= 0)
+            Au_free(&a[1]);
+    }
+    pinned_count = 0;
+}
+
 none auto_free(bool reset_only) {
+    dbg_add_since_drain = 0;
     // only managed objects go into af
     for (num i = 2; i < af_count; i++) {
         Au a = af[i];
@@ -2909,6 +3009,19 @@ none auto_free(bool reset_only) {
         if (a && a->refs == 0) {
             //print("auto freeing data from %s:%i", a->source, a->line);
             if (!reset_only) Au_free(&a[1]);
+            else {
+                // reset-pinned: keep alive for the run, free at exit
+                if (pinned_count >= pinned_size) {
+                    int ns = pinned_size ? pinned_size << 1 : 4096;
+                    ARef np = (ARef)calloc(sizeof(Au), ns);
+                    if (pinned_af) memcpy(np, pinned_af, pinned_count * sizeof(Au));
+                    free(pinned_af);
+                    pinned_af   = np;
+                    pinned_size = ns;
+                }
+                a->managed = AU_PINNED_BASE + pinned_count;
+                pinned_af[pinned_count++] = a;
+            }
         } else if (a)
             a->managed = 1; // says i am not in the list, but managed
     }
@@ -2983,6 +3096,15 @@ Au alloc(Au_t type, num count, shape shape_data, Au_t meta_a, Au meta_b, symbol 
     a->source     = (cstr)source;
     a->line       = line;
     a->sequence   = seq;
+    DBG181(a, 0);
+    if (au_leaks() && line == 5446 && source && strstr((cstr)source, "Au.c")) {
+        static int dbg_tid_prints;
+        if (dbg_tid_prints++ < 4) {
+            char nm[32] = { 0 };
+            pthread_getname_np(pthread_self(), nm, sizeof(nm));
+            printf("--dbg 5438-thread: %s\n", nm);
+        }
+    }
 
     if (!type->is_au_native && !source) {
         printf("warning: no source binding for allocation of type %s\n", type->ident);
@@ -3326,8 +3448,10 @@ none Au_hold_members(Au a) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t mem = (Au_t)type->members.origin[i];
             if (mem->member_type != AU_MEMBER_VAR) continue;
+            // override/elaborate reuse the base slot — walk it once
+            if (mem->is_override || mem->is_elaborate) continue;
             if (!mem->type || mem->is_unmanaged || mem->is_static || mem->type == typeid(ARef)) continue;
-            bool hold = (!is_inlay(mem) && mem->type->is_class) || mem->type->is_shaped;
+            bool hold = (!is_inlay(mem) && mem->type->is_class);
             if (!hold) continue;
             if (mem->meta.a == typeid(weak) || mem->is_context) continue;
             // literal-Au members opt out of lifecycle (e_assign never holds
@@ -3338,6 +3462,7 @@ none Au_hold_members(Au a) {
             if (!member_value) continue;
             Au hd = header(member_value);
             if (hd->managed) {
+                DBG181(hd, 4);
                 __atomic_fetch_add((i32*)__builtin_assume_aligned(&hd->refs, 4), 1, __ATOMIC_SEQ_CST);
                 if (au_leaks()) leak_site_push(hd, __builtin_return_address(0), null);
             }
@@ -3484,7 +3609,11 @@ none Au_drop_members(Au a) {
     // symmetric with hold_members for DEFERRED-init classes only: an
     // unmounted user-init template never ran hold_members, so no slot was
     // ever owned. everything else drops normally.
-    if (!(f->iflags & 0x01) && type && type->is_user_init) return;
+    if (!(f->iflags & 0x01) && type && type->is_user_init) {
+        if (au_leaks()) printf("--dbg skip-drop %s %s:%d\n", type->ident,
+            f->source ? f->source : "?", f->line);
+        return;
+    }
     #ifndef NDEBUG
     const char *type_ident = (type && type->ident) ? type->ident : "";
     if (au_skip_drop_check(type_ident, NULL)) return;
@@ -3492,8 +3621,10 @@ none Au_drop_members(Au a) {
     while (type != typeid(Au)) {
         for (num i = 0; i < type->members.count; i++) {
             Au_t m = (Au_t)type->members.origin[i];
+            if (m->is_override || m->is_elaborate) continue;
             if ((m->member_type == AU_MEMBER_VAR) &&
-                    !is_inlay(m) && m->type->is_class) {
+                    ((!is_inlay(m) && m->type->is_class) ||
+                     (m->is_shaped || m->type->is_shaped))) {
                 if (m->type == typeid(Au))
                     continue;
                 if (m->meta.a == typeid(weak))
@@ -3507,6 +3638,7 @@ none Au_drop_members(Au a) {
                 #endif
                 Au*  ref = (Au*)((u8*)a + m->offset);
                 Au info = head(*ref);
+                if (*ref) DBG181(info, 5);
                 Au_drop(*ref);
                 *ref = null;
             }
@@ -3688,6 +3820,11 @@ static Au au_arg_path(cstr value) {
 
 Au Au_with_cstrs(Au a, cstrs argv) {
     engage(argv);
+    // app object allocates before engage — register it retroactively
+    if (au_leaks()) leak_insert(header(a));
+    // the generated main drops the app at exit; own it from birth so
+    // auto_free drains never reap the live app at refs=0
+    Au_hold(a);
     if (!g_main_argv) g_main_argv = argv;
     int argc = argv[0] ? 1 : 0; // skip executable
     Au_t rtype = isa(a);
@@ -4666,6 +4803,7 @@ none store_dealloc(store a) {
         item n = null;
         for (item i = a->hlist[h]; i; i = n) {
             n = i->next;
+            if (!a->unmanaged) Au_drop(i->value);
             drop(i);
         }
     }
@@ -4686,11 +4824,13 @@ none store_set(store a, Au key, Au val) {
     item f = *loc;
     for (item i = f; i; i = i->next) {
         if (i->key == key) {
-            i->value = val;
+            Au prev = i->value;
+            i->value = a->unmanaged ? val : Au_hold(val);
+            if (!a->unmanaged) Au_drop(prev);
             return;
         }
     }
-    item i = item(key, key, value, val);
+    item i = (item)Au_hold((Au)item(key, key, value, a->unmanaged ? val : Au_hold(val)));
     if (f) {
         i->next = *loc;
         (*loc)->prev = i;
@@ -4714,6 +4854,7 @@ none store_rm(store a, Au key) {
             }
             
             a->count--;
+            if (!a->unmanaged) Au_drop(i->value);
             drop(i);
             return;
         }
@@ -5371,6 +5512,8 @@ none string_operator__assign_add(string a, string b) {
 }
 
 string string_operator__add(string a, string b) {
+    if (au_leaks())
+        __atomic_fetch_add(&dbg_add_since_drain, 1, __ATOMIC_SEQ_CST);
     string res = string(alloc, (a ? a->count : 0) + (b ? b->count : 0) + 1);
     concat(res, a);
     concat(res, b);
@@ -5587,6 +5730,11 @@ none Au_free(Au a) {
 
     // C-imported types are flat memory — no init/dealloc/hold/drop vtable.
     // just free the allocation and skip the chain walk entirely.
+    DBG181(aa, 3);
+    // pinned object freed early (held then released): clear its exit slot
+    if (aa->managed >= AU_PINNED_BASE && pinned_af &&
+        aa->managed - AU_PINNED_BASE < pinned_count)
+        pinned_af[aa->managed - AU_PINNED_BASE] = null;
     bool     is_c = aa->au && ((Au_t)aa->au)->is_c;
     // reference holder (`new Type[N]`): the held type's dealloc chain does
     // NOT apply to the holder's raw buffer; slots are user-managed refs.
@@ -8112,6 +8260,8 @@ typedef struct { callback fn; Au target; Au work; } au_spawn_t;
 static void* au_spawn_runner(void* data) {
     au_spawn_t* s = (au_spawn_t*)data;
     s->fn(s->target, s->work);
+    // thread exit: nothing else ever drains this __thread pool
+    auto_free(false);
     free(s);
     return null;
 }
@@ -8227,6 +8377,8 @@ static void* watch_runner(void* arg) {
         if (len > 0) {
             if (a->running && a->callback)
                 ((callback)a->callback)((Au)a->argument, null);
+            // callback boundary: this __thread pool has no other collector
+            auto_free(false);
         }
         usleep(200000); // 200ms tick — pause() takes effect within this window
     }

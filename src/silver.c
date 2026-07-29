@@ -855,6 +855,25 @@ void silver_parse(silver a) {
         etype_register((aether)a, (Au)m, (Au)hold(e_operand(a, _i32(au_consts[i].value), etypeid(i32))), false);
     }
 
+    // module-stem rust companion: <module>.rs binds automatically —
+    // cbindgen emits its extern "C" header, imported like a C header
+    string rs_stem = stem(a->module);
+    path rs_file = f(path, "%o/%o.rs", a->module_path, rs_stem);
+    if (exists(rs_file)) {
+        path gen = f(path, "%o/%o_rs.h", a->build_dir, rs_stem);
+        string cbg = f(string, "%o/bin/cbindgen", a->install);
+        if (!file_exists("%o", cbg)) cbg = string("cbindgen");
+        validate(exec(a->verbose, "%o --lang c -o %o %o", cbg, gen, rs_file) == 0,
+            "cbindgen failed for %o", rs_file);
+        import rs_mdl = import(
+            mod,           (aether)a,
+            external_name, f(string, "%o_rs", rs_stem),
+            module_source, rs_file,
+            is_au_rt,      false);
+        rs_mdl->include_paths = hold(a(gen));
+        push(a->imports, (Au)rs_mdl);
+    }
+
     // suppress body parsing during statement loop — register names only
     void* saved_prepare = a->prepare_record;
     a->prepare_record = null;
@@ -1084,7 +1103,7 @@ static void exporter(silver a) {
         string  hash        = command_run((command)hash_cmd, false);
 
         if (compare(hash, rev_parse) != 0)
-            vexec(true, "git-tag", "git -C %o tag -f %o", a->project_path, tag);
+            vexec(false, "git-tag", "git -C %o tag -f %o", a->project_path, tag);
     }
 
     // registry: {SILVER}/export/<module_name>.agi — one file per module,
@@ -1393,7 +1412,7 @@ void silver_init(silver a) {
         int fd = open(cstring(lk), O_CREAT | O_RDWR, 0644);
         if (fd >= 0) {
             if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
-                printf("silver: waiting for another build\n");
+                printf("silver: currently building in separate process, waiting for finish...\n");
                 fflush(stdout);
                 flock(fd, LOCK_EX);
             }
@@ -1838,9 +1857,10 @@ void silver_init(silver a) {
             bool target_apple = target_is_apple(a);
             path c_file = f(path, "%o/%o.c", a->module_path, m);
             path cc_file = f(path, "%o/%o.cc", a->module_path, m);
+            path rs_file = f(path, "%o/%o.rs", a->module_path, m);
             path mm_file = f(path, "%o/%o.mm", a->module_path, m);
-            path files[3] = {c_file, cc_file, mm_file};
-            int file_count = target_apple ? 3 : 2;
+            path files[4] = {c_file, cc_file, rs_file, mm_file};
+            int file_count = target_apple ? 4 : 3;
             for (int i = 0; i < file_count; i++)
                 if (exists(files[i])) {
                     if (!a->implements)
@@ -5806,9 +5826,21 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         cstr is_debug = "false";
         vexec(a->verbose, "gen", "%ogn gen %o --args='is_debug=%s is_official_build=true %o'", docker, build_f, is_debug, config);
         vexec(a->verbose, "ninja", "%oninja -C %o -j8", docker, build_f);
-    } else if (is_rust) { // todo: copy bin/lib after
+    } else if (is_rust) {
         vexec(a->verbose, "rust", "%ocargo build --release --manifest-path %o/Cargo.toml --target-dir %o",
               docker, project_f, build_f);
+        // cargo has no install step — stage artifacts into the prefix
+        exec(a->verbose, "cp -f %o/release/*.so %o/lib/ 2>/dev/null || true", build_f, install);
+        exec(a->verbose, "cp -f %o/release/*.a %o/lib/ 2>/dev/null || true", build_f, install);
+        // emit the C header for the crate's extern "C" surface
+        string cbg = f(string, "%o/bin/cbindgen", install);
+        if (!file_exists("%o", cbg))
+            cbg = command_exists("cbindgen") ? string("cbindgen") : null;
+        if (cbg) {
+            if (exec(a->verbose, "%o %o --output %o/include/%o.h", cbg, project_f, install, name) != 0)
+                print("cbindgen failed for %o — rust import has no header", name);
+        } else
+            print("cbindgen not found — rust import %o builds without a header", name);
     } else if (is_silver) { // build for Au-type projects
         silver sf = silver(debug_type, a->debug_type, debugmember, a->debugmember, module, silver_f, breakpoint, a->breakpoint, release, a->release,
             clean, a->clean, verbose, a->verbose, format, a->format, is_external, a->is_external ? a->is_external : a, is_child, a);
@@ -5886,8 +5918,18 @@ string compile_implements(silver a, array files, string cflags) {
     cstr   sysroot_flag = "";
 #endif
     each(files, path, i) {
-        string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
         string ext      = ext(i);
+        if (eq(ext, "rs")) {
+            // self-contained staticlib: no rust std linkage on our side
+            string a_name = f(string, "%o/lib%o_rs.a", a->build_dir, stem(i));
+            verify(exec(a->verbose, "rustc --crate-type=staticlib %s -O %o -o %o",
+                a->debug ? "-g" : "", i, a_name) == 0,
+                "failed to compile %o (rustc required)", i);
+            if (len(objs)) append(objs, " ");
+            concat(objs, a_name);
+            continue;
+        }
+        string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
         bool   is_cpp   = is_cpp_source_ext(a, ext);
         cstr   compiler = is_cpp ? "clang++" : "clang";
         cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
@@ -6063,8 +6105,17 @@ none silver_build_product(silver a) {
         // compile .c/.cc/.mm implementations inside docker
         string objs = string();
         each(a->implements, path, i) {
-            string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
             string ext      = ext(i);
+            if (eq(ext, "rs")) {
+                string a_name = f(string, "%o/lib%o_rs.a", a->build_dir, stem(i));
+                verify(exec(a->verbose, "%o rustc --crate-type=staticlib %s -O %o -o %o",
+                    docker_pre, a->debug ? "-g" : "", i, a_name) == 0,
+                    "failed to compile %o (rustc required; platform: %o)", i, a->platform);
+                if (len(objs)) append(objs, " ");
+                concat(objs, a_name);
+                continue;
+            }
+            string i_name   = f(string, "%o/%o.o", a->build_dir, filename(i));
             bool   is_cpp   = is_cpp_source_ext(a, ext);
             cstr   compiler = is_cpp ? "clang++" : "clang";
             cstr   std_flag = is_cpp ? "-std=c++17" : "-std=c11";
@@ -7292,6 +7343,14 @@ enode parse_import(silver a) {
             if (file_exists("%o", lib_check))
                 set(a->libs, (Au)project, (Au)_bool(true));
         }
+        // rust checkout: cbindgen wrote include/<project>.h — import it
+        // automatically when the user listed no headers
+        if (project && !len(includes) &&
+                file_exists("%o/checkout/%o/Cargo.toml", a->root_path, project)) {
+            path rust_h = f(path, "%o/include/%o.h", a->install, project);
+            if (file_exists("%o", rust_h))
+                push(includes, (Au)rust_h);
+        }
     } else if (module_source) {
         path module = parent_dir(module_source);
         read_g_link_libs(a, f(path, "%o/%o.g", module, stem(module_source)));
@@ -7411,6 +7470,15 @@ enode parse_import(silver a) {
         path   header = f(path, "%o/%o.h", dir, name);
         if (file_exists("%o", header))
             push(includes, (Au)string(header->chars));
+        else if (eq(ext, "rs")) {
+            // no hand-written header: cbindgen emits the extern "C" surface
+            path gen = f(path, "%o/%o.h", a->build_dir, name);
+            string cbg = f(string, "%o/bin/cbindgen", a->install);
+            if (!file_exists("%o", cbg)) cbg = string("cbindgen");
+            validate(exec(a->verbose, "%o --lang c -o %o %o", cbg, gen, module_source) == 0,
+                "cbindgen failed for %o", module_source);
+            push(includes, (Au)gen);
+        }
         if (!a->implements)
             a->implements = hold(array(2));
         push(a->implements, (Au)module_source);
