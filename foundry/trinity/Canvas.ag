@@ -763,6 +763,22 @@ shader CanvasText
     }
 
 
+class PathPoints
+    public pts    : new PathPt [ 256 ]
+    public count  : i32
+    public palloc : i32 [ 256 ]
+
+    func append [ pt: PathPt ]
+        if [ count >= palloc ]
+            na    : i32 [ palloc << 1 ]
+            grown : new PathPt [ na ]
+            memcpy[ grown, pts, sizeof[ PathPt ] * count ]
+            pts = grown
+            palloc = na
+        memcpy[ @pts[count], @pt, sizeof[ PathPt ] ]
+        count += 1
+
+
 class CanvasPath
     public points    : new PathPt [ 2048 ]
     public pcount    : i32
@@ -783,11 +799,6 @@ class CanvasPath
     intern cached_bh         : f32
     intern cached_valid      : bool
 
-    func dealloc [ ]
-        drop[ points ]
-        drop[ cached_points ]
-        drop[ cached_edges ]
-    
     func realloc_check [ ]
         if [ pcount < palloc ] return
         na    : i32 [ palloc << 1 ]
@@ -1197,8 +1208,6 @@ Render Canvas
             m.finish[ a, 0 ]
 
         text_shader = CanvasText [ vk: vk ]
-        tsv9 : Au.header[ text_shader.vert ]
-        puts 'POSTCON CanvasText vert refs={tsv9.refs}'
         text_members : new vertex_member_t [ 2 ]
         text_members[0].src    = typeid[ vec2f ]
         text_members[0].size   = 8
@@ -1210,34 +1219,31 @@ Render Canvas
         text_vcount : i32 [ text_max_verts ]
         text_mcount : i32 [ 2 ]
         text_vbo_ring = array Gpu [ alloc: text_ring_n ]
+
         for [ ri: i32 0, ri < text_ring_n, ri += 1 ]
             g : Gpu [ vk: vk, name: 'text',
                 members: text_members, member_count: text_mcount,
                 vertex_size: text_vsize, vertex_count: text_vcount ]
             g.sync[ w ]
             text_vbo_ring.push[ g ]
+        
         text_vbo = text_vbo_ring[ 0 ]
         text_render = Render [ vk: vk, w: w,
             color: a.color,
             width: width, height: height, load_existing: true ]
-        trh1 : Au.header[ text_render ]
-        puts 'TRREF birth {trh1.refs}'
+
         text_pipeline = Pipeline [ vk: vk, w: w, name: string 'text',
             r: text_render, s: text_shader, vbo: text_vbo,
             samplers: map Au[string] [ 'atlas': sdf_tex ],
             straight_alpha: true ]
         text_model = Model [ vk: vk, w: w, s: text_shader,
             samplers: map Au[string] [ 'atlas': sdf_tex ] ]
-        trh2 : Au.header[ text_render ]
-        puts 'TRREF post-pipeline {trh2.refs}'
+
         text_model.pipelines = array Pipeline [ alloc: 1 ]
         text_model.pipelines.push[ text_pipeline ]
         text_model.r = text_render
         text_render.models = array Model [ text_model ]
         text_vbo.vertex_count = 0
-        trh3 : Au.header[ text_render ]
-        puts 'TRREF post-wiring {trh3.refs}'
-
 
         path   = CanvasPath []
         states = array CanvasState []
@@ -1282,9 +1288,6 @@ Render Canvas
         
 
     func resize [ rw: i32, rh: i32 ] -> Canvas
-        if [ text_render ]
-            trh7 : Au.header[ text_render ]
-            puts 'TRREF resize-entry {trh7.refs}'
         content_w = rw
         content_h = rh
         s  : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
@@ -1311,11 +1314,8 @@ Render Canvas
         if [ text_render ]
             text_render.width  = width
             text_render.height = height
-            trh5 : Au.header[ text_render ]
-            puts 'TRREF pre-tr-update {trh5.refs}'
             text_render.update[]                     # text framebuffer over the shared color
-            trh6 : Au.header[ text_render ]
-            puts 'TRREF post-tr-update {trh6.refs}'
+
         if [ models ]
             for [ m: Model ] in models
                 m.rebind_model[]
@@ -1326,9 +1326,6 @@ Render Canvas
         blur_v_arr  = null
         blur_h_arr  = null
         vk.resize_us += epoch_micros[] - rz0
-        if [ text_render ]
-            trh4 : Au.header[ text_render ]
-            puts 'TRREF post-resize {trh4.refs}'
         return a
 
 
@@ -2227,7 +2224,7 @@ Render Canvas
             bx1 : f32 [ -999999.0 ]
             by1 : f32 [ -999999.0 ]
             for [ i: i32 0, i < n, i += 1 ]
-                pt : PathPt flat[i]
+                pt : PathPt flat.pts[i]
                 if [ pt.x < bx0 ]
                     bx0 = pt.x
                 if [ pt.y < by0 ]
@@ -2658,13 +2655,13 @@ func maxf [ x: f32, y: f32 ] -> f32
 
 # ---- bezier flattening ----
 
-func flatten_quad [ pts: array PathPt, x0: f32, y0: f32, cx: f32, cy: f32, x1: f32, y1: f32, tol: f32 ]
+func flatten_quad [ pts: PathPoints, x0: f32, y0: f32, cx: f32, cy: f32, x1: f32, y1: f32, tol: f32 ]
     # flatness: deviation of control point from chord midpoint
     mx : 0.5 * (x0 + x1) - cx
     my : 0.5 * (y0 + y1) - cy
     if [ mx * mx + my * my < tol * tol ]
         pt : PathPt [ cmd: path_cmd.line, x: x1, y: y1 ]
-        pts.push[ pt ]
+        pts.append[ pt ]
         return
 
     # de Casteljau at t=0.5
@@ -2679,7 +2676,7 @@ func flatten_quad [ pts: array PathPt, x0: f32, y0: f32, cx: f32, cy: f32, x1: f
     flatten_quad [ pts, abx, aby, bx, by, x1, y1, tol ]
 
 
-func flatten_cubic [ pts: array PathPt, x0: f32, y0: f32, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x1: f32, y1: f32, tol: f32 ]
+func flatten_cubic [ pts: PathPoints, x0: f32, y0: f32, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x1: f32, y1: f32, tol: f32 ]
     dx : x1 - x0
     dy : y1 - y0
     d2 : abs[ c1x - x0 - dx * 0.333 ] + abs[ c1y - y0 - dy * 0.333 ]
@@ -2687,7 +2684,7 @@ func flatten_cubic [ pts: array PathPt, x0: f32, y0: f32, c1x: f32, c1y: f32, c2
 
     if [ d2 + d3 < tol ]
         pt : PathPt [ cmd: path_cmd.line, x: x1, y: y1 ]
-        pts.push[ pt ]
+        pts.append[ pt ]
         return
 
     # de Casteljau at t=0.5 — midpoints, not weighted sums
@@ -2728,8 +2725,8 @@ func flatten_arc [ cp: CanvasPath, cx: f32, cy: f32, r: f32, angle0: f32, angle1
 
 
 # flatten all curves in path, return flat line-only path
-func path_flatten [ src: CanvasPath, tol: f32 ] -> array PathPt
-    flat : array PathPt [ alloc: 64 ]
+func path_flatten [ src: CanvasPath, tol: f32 ] -> PathPoints
+    flat : PathPoints [ ]
     n    : src.pcount
     px   : f32 [ 0.0 ]
     py   : f32 [ 0.0 ]
@@ -2739,12 +2736,12 @@ func path_flatten [ src: CanvasPath, tol: f32 ] -> array PathPt
         switch [ pt.cmd ]
         case path_cmd.move
             fpt : PathPt [ cmd: path_cmd.move, x: pt.x, y: pt.y ]
-            flat.push[ fpt ]
+            flat.append[ fpt ]
             px = pt.x
             py = pt.y
         case path_cmd.line
             fpt : PathPt [ cmd: path_cmd.line, x: pt.x, y: pt.y ]
-            flat.push[ fpt ]
+            flat.append[ fpt ]
             px = pt.x
             py = pt.y
         case path_cmd.quad
@@ -2757,7 +2754,7 @@ func path_flatten [ src: CanvasPath, tol: f32 ] -> array PathPt
             py = pt.y
         case path_cmd.close
             fpt : PathPt [ cmd: path_cmd.close, x: pt.x, y: pt.y ]
-            flat.push[ fpt ]
+            flat.append[ fpt ]
             px = pt.x
             py = pt.y
     return flat
@@ -2806,14 +2803,14 @@ func conic_gradient[ cx: f32, cy: f32, start_angle: f32 ] -> Gradient
 
 
 
-func sdf_extract_edges [ flat: array PathPt, count_out: @i32 ] -> @SDFEdge
+func sdf_extract_edges [ flat: PathPoints, count_out: @i32 ] -> @SDFEdge
     n     : flat.count
     cnt   : i32 [ 0 ]
     px    : f32 [ 0.0 ]
     py    : f32 [ 0.0 ]
     have_cursor : bool [ false ]
     for [ i: i32 0, i < n, i += 1 ]
-        pt : PathPt flat[i]
+        pt : PathPt flat.pts[i]
         if [ pt.cmd == path_cmd.move ]
             px = pt.x
             py = pt.y
@@ -2836,7 +2833,7 @@ func sdf_extract_edges [ flat: array PathPt, count_out: @i32 ] -> @SDFEdge
     py = 0.0
     have_cursor = false
     for [ i: i32 0, i < n, i += 1 ]
-        pt : PathPt flat[i]
+        pt : PathPt flat.pts[i]
         if [ pt.cmd == path_cmd.move ]
             px = pt.x
             py = pt.y
@@ -2894,7 +2891,7 @@ func sdf_winding [ edges: array SDFEdge, px: f32, py: f32 ] -> i32
     return wn
 
 
-func sdf_generate [ flat: array PathPt, bx: f32, by: f32, bw: f32, bh: f32, tw: i32, th: i32, pad: f32 ] -> @f32
+func sdf_generate [ flat: PathPoints, bx: f32, by: f32, bw: f32, bh: f32, tw: i32, th: i32, pad: f32 ] -> @f32
     ne    : i32 [ 0 ]
     edges : sdf_extract_edges [ flat, @ne ]
     if [ ne == 0 ]

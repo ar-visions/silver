@@ -1,0 +1,8 @@
+import <stdio.h>
+
+app rusttest
+    func init []
+        n : i32 [ 41 ]
+        s : cstr [ rust_bump[ @n ] ]
+        msg : string [ s ]
+        puts 'rust says {msg}, n = {n}'

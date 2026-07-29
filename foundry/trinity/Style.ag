@@ -129,9 +129,6 @@ class StyleBlock
                     filter_val = f32[ param.mid[ 7, param.count - 7 ].trim[] ]
                     param = null
                 trans : StyleTransition [ (param) ? StyleTransition[ param ] : null ]
-                if [ trans ]
-                    puts 'trans'
-                    trans = trans
                 expect member, 'member cannot be blank'
                 expect value,  'value cannot be blank'
                 entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: a, filter: filter_val ]

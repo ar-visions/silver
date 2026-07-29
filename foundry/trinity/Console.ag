@@ -275,14 +275,6 @@ class ConsoleSession
             return (hi - lo) > 24
         return false
 
-    func dump_cells [ ]
-        for [ r: i32 rows - 1, r >= 0, r -= 1 ]
-            c0 : i32 [ screen[ r * cols + 0 ].ch ]
-            if [ c0 < 128 ] continue
-            f0 : i32 [ screen[ r * cols + 0 ].fg ]
-            ln : string row_to_string[ r ]
-            puts 'GLYPH ch={c0} fg={f0} row={r} | {ln}'
-
     func line_count [] -> i32
         return scrollback.count + rows
 
@@ -726,26 +718,14 @@ class ConsoleSession
         if [ ocols != nc ]
             cc : i32 [ (ocols < nc) ? ocols : nc ]
             cr : i32 [ (orows < nr) ? orows : nr ]
-            tmp : array TermCell [ ]
-            for [ i: i32 0, i < cr * cc, i += 1 ]
-                tmp.push[ TermCell [ ] ]
+            n9  : i32 [ cr * cc ]
+            tmp : new TermCell [ n9 ]
+            rb : i64 [ cc * sizeof[ TermCell ] ]
             for [ r: i32 0, r < cr, r += 1 ]
-                for [ c: i32 0, c < cc, c += 1 ]
-                    s : i32 [ r * ocols + c ]
-                    d : i32 [ r * cc + c ]
-                    tmp[d].ch   = screen[s].ch
-                    tmp[d].fg   = screen[s].fg
-                    tmp[d].bg   = screen[s].bg
-                    tmp[d].attr = screen[s].attr
+                memcpy[ @tmp[ r * cc ], @screen[ r * ocols ], rb ]
             init_cells[ screen, rows * cols ]
             for [ r: i32 0, r < cr, r += 1 ]
-                for [ c: i32 0, c < cc, c += 1 ]
-                    s : i32 [ r * cc + c ]
-                    d : i32 [ r * nc + c ]
-                    screen[d].ch   = tmp[s].ch
-                    screen[d].fg   = tmp[s].fg
-                    screen[d].bg   = tmp[s].bg
-                    screen[d].attr = tmp[s].attr
+                memcpy[ @screen[ r * nc ], @tmp[ r * cc ], rb ]
         el [ nr > orows ]
             init_cells[ @screen[ orows * cols ], (nr - orows) * cols ]
         scroll_top = 0

@@ -254,7 +254,6 @@ abstract live_app media_app
         second : epoch_millis[] / 1000
         if [ next_second != second ]
             next_second = second
-            puts 'SAMP rcolor={vk.samp_rcolor} sdf={vk.samp_sdf} svg={vk.samp_svg} band={vk.samp_band} line={vk.samp_line} cons={vk.samp_cons} flist={vk.samp_flist} atlas={vk.samp_atlas} other={vk.samp_other} born={vk.render_allocs} died={vk.ring_frees} samplers={vk.sampler_count}'
             vk.pipe_draws   = 0
             vk.resize_us    = 0
             vk.resize_calls = 0
@@ -432,6 +431,16 @@ abstract live_app media_app
             if [ rwin.root ]
                 rwin.root.unload_tree[]
                 rwin.root.release_tree[]
+            if [ rwin.app_object ]
+                ao9 : cast element [ rwin.app_object ]
+                ao9.unload_tree[]
+                ao9.release_tree[]
+                ao9.elements = null
+            # lingering elements borrow these targets; free the GPU graph now
+            if [ rwin.element_targets ]
+                for [ tv: Au, tk: string ] in rwin.element_targets
+                    rt : cast Render [ tv ]
+                    if [ rt ] rt.models = null
         if [ vk ]
             vk.font_cache = null
             vk.shader_cache = null
@@ -461,7 +470,6 @@ abstract live_app media_app
             Au.live_vk_set[ handle[vk] ]
 
     func dealloc [ ]
-        puts 'DSTR Display dealloc runs'
         destroy[]
 
 
@@ -1112,6 +1120,7 @@ Display Window
         t_render      = 0
         t0 : i64 [ epoch_micros[] ]
         update_element[ root, render, restyle ]
+        render.drop[]
         t1 : i64 [ epoch_micros[] ]
         dt : i64 [ t1 - t0 ]
         restyle = false
@@ -1408,7 +1417,6 @@ Display Window
         f : find_target[ root, ev, capture ]
         ev.origin = f
         same_i : bool [ action_pressed == f ]
-        puts 'DBG rel f={f->id} ap={action_pressed->id} same={same_i} hov={f->hovered} btn={ev.mouse.button}'
         consumed_r : bool [ false ]
         for [ e: element* f, e && !consumed_r, e = e.parent ]
             ev.target = e
@@ -2423,9 +2431,7 @@ Display Window
         e.bounds.y = bounds.y
         e.bounds.w = bounds.w
         e.bounds.h = bounds.h
-        if [ getenv[ 'TRIN_BTNLOG' ] ]
-            if [ e inherits Button ]
-                puts 'BTNLOG {e.id} "{e.label}" x={e.bounds.x} y={e.bounds.y} w={e.bounds.w} h={e.bounds.h} parent={e.parent->id} pw={e.parent->bounds->w} px={e.parent->bounds->x}'
+
         if [ e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
         if [ e.transparency >= 1.0 ] return
         last_2 : element
@@ -2874,6 +2880,7 @@ class offscreen
         win : Window [ vk: vk, app_object: root, st: st,
             width: width, height: height, backbuffer: true, title: 'offscreen' ]
         w = win
+        Au.hold[ w ]
         root.vk = vk
         w.update*[]
         w.restyle = true
@@ -2883,8 +2890,6 @@ class offscreen
         if [ w ] w.draw[]
 
 abstract media_app trinity
-    func dealloc [ ]
-        puts 'DSTR trinity app dealloc runs'
     public root         : element
     public background   : string
     public title        : string
@@ -2913,6 +2918,9 @@ abstract media_app trinity
 
     func init []
         expect root, 'trinity requires a root element'
+        # app element is process-owned; holds must not pin it
+        rh9 : Au.header[ root ]
+        rh9.managed = 0
         rtn : typeid[ root ]
         host_log_setup[ rtn.ident ]
         startup_path = path.path_startup[]
@@ -2934,6 +2942,7 @@ abstract media_app trinity
             cwin : Window[ app_object: root, title:(title) ?? rt.ident,
                 width:width, height:height, background_type:background_type, text_mode: true ]
             w = cwin
+            Au.hold[ w ]
             cwin.console_input_open[]
             render *[]
             cwin.restyle = true
@@ -2949,6 +2958,7 @@ abstract media_app trinity
             hidden: hidden ]
         expect window.vk, "context didnt work"
         w = window
+        Au.hold[ w ]
         root.vk = window.vk
         w.update *[]
         render   *[]
@@ -2989,6 +2999,7 @@ abstract media_app trinity
                 width: aw, height: ah, background_type: background_type, backbuffer: true,
                 format: Pixel.rgba8 ]
             w = awin
+            Au.hold[ w ]
             root.vk = awin.vk
             w.update *[]
             render   *[]

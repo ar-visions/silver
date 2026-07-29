@@ -29,6 +29,7 @@ class shader
     intern vk_vert      : VkShaderModule
     intern vk_frag      : VkShaderModule
     intern vk_comp      : VkShaderModule
+    intern owns_modules : bool
     intern ctx          : array Au_t
 
     func context_chain [] -> array Au_t
@@ -323,17 +324,8 @@ class shader
         return index
 
     intern func reload [ ] -> bool
-        if [ vert ]
-            vh9 : Au.header[ vert ]
-            puts 'RLD-in  {name}: vert refs={vh9.refs}'
         paths:  array path [ vert, frag, comp ]
-        if [ vert ]
-            vh8 : Au.header[ vert ]
-            ph8 : Au.header[ paths ]
-            puts 'RLD-arr {name}: vert refs={vh8.refs} paths-refs={ph8.refs} pool-ix={ph8.managed}'
         values: new VkShaderModule[3] [ vk_vert, vk_frag, vk_comp ]
-        #values.hold[]
-        puts 'shader reload? {name}'
         found:      false
         recompiled: false
         for [ i: 0, i < 3, i += 1 ]
@@ -421,6 +413,7 @@ class shader
         comp = '{sdir}/{name}.comp'
         if [ !vk.shader_cache ]
             vk.shader_cache = store[]
+            vk.shader_cache.hold[]
             
         rty9: typeid[ a ]
         cached: shader [ vk.shader_cache.get[ rty9 ] ]
@@ -431,15 +424,11 @@ class shader
             return
         generate_shaders[ ]
         reload[ ]
+        owns_modules = true
         vk.shader_cache.set[ rty9, a ]
-        vhi : Au.header[ vert ]
-        puts 'SHINIT {name} vert refs={vhi.refs}'
 
     func dealloc [ ]
-        if [ !vk ] return
-        cached: shader [ vk.shader_cache.get[ typeid[ a ] ] ]
-        if [ cached != a ]
-            return
+        if [ !vk || !owns_modules ] return
         vkDestroyShaderModule[ vk.device, vk_vert, null ]
         vkDestroyShaderModule[ vk.device, vk_frag, null ]
         vkDestroyShaderModule[ vk.device, vk_comp, null ]

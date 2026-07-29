@@ -427,6 +427,8 @@ class orbiter_state
     public breakpoints : map string [string]
     # the selected project/target name, restored on next launch.
     public target      : string
+    # user width of the agent console pane, in pixels
+    public console_w   : i32
 
 class FmtWatch
     public proj  : string
@@ -508,6 +510,8 @@ element orbiter : trinity # implements compiler
     intern cycle_count      : i32
     intern cycle_adding     : bool [ true ]
     intern nav_panes        : array Navigate
+    intern console_w        : i32
+    intern console_w_save   : i32
     public pane_sizes       : array
     public band_sizes       : array
     public show_instruments : bool
@@ -649,20 +653,16 @@ element orbiter : trinity # implements compiler
             # the shell never auto-runs the app — relaunch is deliberate
             pending_run = -1
             active_pane = 0
-        orbit_sid = 'agent'
+        orbit_sid = agent_sid[]
         orbit_sid.hold[]
         if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
-        if [ !ed_sessions[ orbit_sid ] ]
+        if [ orbit_app && !ed_sessions[ orbit_sid ] ]
             pi9 : i32 [ editor_slots.count ]
             editor_slots += -1
             while [ pane_console.count <= pi9 ]
                 pane_console += ''
             pane_console[pi9] = orbit_sid
-            ns9 : ConsoleSession []
-            ns9.name = orbit_sid
-            ns9.launch_cmd = 'claude --model sonnet --dangerously-skip-permissions'
-            ed_sessions[orbit_sid] = ns9
-            ns9.start[]
+            ensure_console[ orbit_sid ]
         filter_text    = ''
         find_text      = ''
         findbar_open   = false
@@ -760,6 +760,8 @@ element orbiter : trinity # implements compiler
             out = out + dline + '\n'
             if [ st.target && st.target.count > 0 ]
                 out = out + '\t\ttarget: \'{st.target}\'\n'
+            if [ st.console_w > 0 ]
+                out = out + '\t\tconsole_w: {st.console_w}\n'
             if [ st.breakpoints && st.breakpoints.count > 0 ]
                 out = out + '\t\tbreakpoints:\n'
                 for [ cond: string, key: string ] in st.breakpoints
@@ -788,6 +790,7 @@ element orbiter : trinity # implements compiler
         st.docked      = docked
         st.breakpoints = breakpoints
         st.target      = active_target
+        st.console_w   = console_w
         save_states[]
 
     func restore_session []
@@ -796,6 +799,7 @@ element orbiter : trinity # implements compiler
         if [ !states || !ws ] return
         st : orbiter_state states[ws]
         if [ !st ] return
+        console_w = st.console_w
         # reopen tabs (populates the open_files pool)
         if [ st.tabs ]
             for [ i: i32 0, i < st.tabs.count, i += 1 ]
@@ -1038,15 +1042,22 @@ element orbiter : trinity # implements compiler
                 cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
         return cmd_str
 
+    # the agent console named in orbiter.agi; shell is not one
+    func agent_sid [] -> string
+        if [ consoles ]
+            for [ ci: ConsoleInstance, cname: string ] in consoles
+                if [ ci.kind != 'shell' ] return cname
+        return 'claude'
+
     func last_editor_pane [] -> i32
         for [ i: i32 editor_slots.count - 1, i >= 0, i -= 1 ]
             if [ i >= pane_console.count ] return i
-            if [ pane_console[i] != 'agent' ] return i
+            if [ pane_console[i] != orbit_sid ] return i
         return -1
 
     func agent_pane [] -> i32
         for [ i: i32 0, i < pane_console.count, i += 1 ]
-            if [ pane_console[i] == 'agent' ] return i
+            if [ pane_console[i] == orbit_sid ] return i
         return -1
 
     func ensure_console [ sid: string ] -> ConsoleSession
@@ -1063,12 +1074,7 @@ element orbiter : trinity # implements compiler
 
     func feed_agent [ text: string ] -> none
         if [ !consoles ] return
-        sid : string ''
-        for [ ci: ConsoleInstance, cname: string ] in consoles
-            if [ sid.count == 0 && ci.kind != 'shell' ]
-                sid = cname
-        if [ sid.count == 0 ] return
-        s : ConsoleSession ensure_console[ sid ]
+        s : ConsoleSession ensure_console[ agent_sid[] ]
         if [ !s ] return
         s.send_esc[ '[200~' ]
         s.write_input[ text ]
@@ -1160,7 +1166,7 @@ element orbiter : trinity # implements compiler
         if [ orbit_app ]
             orbit_send[ 'user {orbit_oc} {bd} {orbit_cc}' ]
             return
-        sa : ConsoleSession ensure_console[ 'agent' ]
+        sa : ConsoleSession ensure_console[ orbit_sid ]
         if [ sa ] sa.write_input[ '{bd}\r' ]
 
     public func draw [ w: Window ]
@@ -1503,9 +1509,11 @@ element orbiter : trinity # implements compiler
         if [ engaged && !is_resource ]
             els['magnify'] = LButton [ icon: 'magnify', selected: fb_on, manual_mode: true ]
 
+        psess9 : string (pane_ix < pane_console.count) ? pane_console[pane_ix] : ''
+        con9   : bool [ psess9 && psess9.count > 0 ]
         tnav : array string [ ]
         if [ editor_slots.count > 1 ] tnav.push[ 'undock' ]
-        if [ editor_slots.count < 4 ] tnav.push[ 'dock' ]
+        if [ editor_slots.count < 4 && !con9 ] tnav.push[ 'dock' ]
         if [ agent_pane[] < 0 && pane_ix == last_editor_pane[] ] tnav.push[ 'gear' ]
         wn9 : f32 [ f32[ tnav.count ] * 1.15 ]
         if [ tnav.count > 0 ]
@@ -1916,6 +1924,23 @@ element orbiter : trinity # implements compiler
         pv : element pane_view[ i ]
         if [ !pv || !pv.elements ] return null
         return pv.elements[ 'title' ]
+
+    func size_get [ arr: array, id: string ] -> f32
+        if [ !arr || !id ] return 0.0
+        for [ i: i32 0, i + 1 < arr.count, i += 2 ]
+            k : string [ arr[ i ] ]
+            if [ k && k.compare[ id ] == 0 ] return f32 [ arr[ i + 1 ] ]
+        return 0.0
+
+    func size_set [ arr: array, id: string, v: f32 ]
+        if [ !arr || !id ] return
+        for [ i: i32 0, i + 1 < arr.count, i += 2 ]
+            k : string [ arr[ i ] ]
+            if [ k && k.compare[ id ] == 0 ]
+                arr[ i + 1 ] = v
+                return
+        arr.push[ id ]
+        arr.push[ v ]
 
     func take_closed [ arr: array, id: string ] -> bool
         if [ !arr || !id ] return false
@@ -2500,9 +2525,9 @@ element orbiter : trinity # implements compiler
                 editor_slots += -1
                 pane_console  += ''
                 pn9 : i32 [ editor_slots.count - 1 ]
-                pane_console[ pn9 ] = 'agent'
+                pane_console[ pn9 ] = orbit_sid
                 active_pane = pn9
-                ensure_console[ 'agent' ]
+                ensure_console[ orbit_sid ]
             save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
@@ -2841,7 +2866,7 @@ element orbiter : trinity # implements compiler
                     w.will_animate = true
                     s.read_output[]
         if [ ed_sessions ]
-            ags : ConsoleSession ed_sessions[ 'agent' ]
+            ags : ConsoleSession ed_sessions[ orbit_sid ]
             if [ ags && ags.agent_busy[] ] busy_at = epoch_millis[]
             busy = (epoch_millis[] - busy_at) < 500
         if [ debuggers && ed_sessions ]
@@ -2864,6 +2889,20 @@ element orbiter : trinity # implements compiler
             pid  : 'pane{i}'
             pane_inner[pid] = EditorView [ pane_index: i, selected: (sp == pid) ]
         if [ !pane_sizes ] pane_sizes = array [ ]
+        ap9 : i32 [ agent_pane[] ]
+        if [ ap9 > 0 ]
+            key9 : string 'pane{ap9}'
+            cw9  : f32 [ size_get[ pane_sizes, key9 ] ]
+            if [ cw9 <= 0.0 && console_w > 0 ]
+                half9 : f32 [ ((bounds) ? bounds.w : 1200.0) * 0.5 ]
+                use9  : f32 [ f32[ console_w ] ]
+                size_set[ pane_sizes, key9, (use9 > half9) ? half9 : use9 ]
+            el [ cw9 > 0.0 && i32[ cw9 ] != console_w ]
+                console_w      = i32[ cw9 ]
+                console_w_save = 30
+        if [ console_w_save > 0 ]
+            console_w_save -= 1
+            if [ console_w_save == 0 ] save_session[]
         editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b0 }, inner: pane_inner,
             sizes: pane_sizes, deflt: 0.0, even: true, snap_close: true ]
 

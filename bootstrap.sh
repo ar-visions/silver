@@ -432,6 +432,16 @@ if ! [ -f "$NATIVE/bin/ninja" ]; then
     fi
 fi
 
+# ensure cbindgen is available (emits C headers for rust imports)
+if ! [ -f "$NATIVE/bin/cbindgen" ]; then
+    if command -v cbindgen >/dev/null 2>&1; then
+        ln -sf "$(command -v cbindgen)" "$NATIVE/bin/cbindgen"
+    elif command -v cargo >/dev/null 2>&1; then
+        cargo install cbindgen --root "$NATIVE" \
+            || echo "warning: cbindgen install failed; rust imports build headerless"
+    fi
+fi
+
 if ! [ -f "$NATIVE/bin/python3" ]; then
     if command -v python3 >/dev/null 2>&1; then
         ln -sf "$(command -v python3)" "$NATIVE/bin/python3"

@@ -718,7 +718,7 @@ class Layout
                 layout: VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 access: VK_ACCESS_MEMORY_READ_BIT,
                 stage: VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT ]
-        
+
         for [ i: 0, i < 7, i += 1 ]
             if [ defaults[i].layout == l ]
                 return defaults[i]
@@ -877,6 +877,7 @@ class vk_context
     # immediate vkDestroy inside it) runs provably out of flight
     func defer_drop [ o: Au ] -> none
         if [ ! defer_drops ] defer_drops = array DropDefer []
+        Au.hold[ o ]
         dd : DropDefer [ obj: o, defer_frame: frame_no ]
         defer_drops.push[ dd ]
 
@@ -917,6 +918,8 @@ class vk_context
             for [ dd: DropDefer ] in dwork
                 if [ frame_no - dd.defer_frame < 8 ]
                     defer_drops.push[ dd ]
+                el
+                    Au.drop[ dd.obj ]
             dwork.drop[]
 
     intern quad_m:    GltfModel
@@ -1609,6 +1612,9 @@ class uniforms
                 s.name.chars, vk.cur_ring, fp[0], fp[12], fp[30], fp[32], fp[37] ]
         b.update[ null ]
 
+    func dealloc [ ]
+        drop[ u_memory ]
+
     func init [ ]
         type_list:  array Au_t [ unmanaged: true ]
         # use the runtime type via the Au header — `typeid[ s ]` returns the
@@ -1892,6 +1898,9 @@ class Pipeline
         stage_flags: VK_SHADER_STAGE_VERTEX_BIT   | 
                      VK_SHADER_STAGE_FRAGMENT_BIT |
                      VK_SHADER_STAGE_COMPUTE_BIT
+        if [ shader_uniforms ]
+            vk.defer_drop[ shader_uniforms ]
+            Au.drop[ shader_uniforms ]
         shader_uniforms = uniforms [ vk: vk, s: s, node_model: default_model ]
         Au.hold[shader_uniforms]
         s_hdr: Au.header[ s ]
@@ -2331,6 +2340,8 @@ class Pipeline
         vkDeviceWaitIdle[ vk.device ]
 
     func dealloc [ ]
+        release[]
+        Au.drop[shader_uniforms]
         vkDestroyPipelineLayout[ vk.device, layout, null ]
         if [ vk_render ]
             vkDestroyPipeline[ vk.device, vk_render, null ]

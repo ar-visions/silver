@@ -3150,7 +3150,6 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
                     LLVMValueRef ld = LLVMBuildLoad2(B, ptr_ty, conv->value, "arg_ptr_load");
                     conv = enode(mod, a, autype, conv->autype, value, ld, loaded, true);
                 }
-
                 arg_values[index] = conv->value;
                 if (funcptr && arg_t)
                     arg_types[index] = lltype(arg_t);
@@ -4184,8 +4183,13 @@ void aether_apply_overrides(aether a, enode alloc) {
         cur = cur->context;
     }
     if (ov_any) mark_set(alloc, ov_masks);
-    if (a->emit_overrides)
+    if (a->emit_overrides) {
+        // construction-site stores are raw: hold_members owns them
+        bool saved = a->init_props_retain_skip;
+        a->init_props_retain_skip = true;
         ((void(*)(Au, Au))a->emit_overrides)((Au)a, (Au)alloc);
+        a->init_props_retain_skip = saved;
+    }
 }
 
 // assign default only if prop was not set by constructor
@@ -4240,6 +4244,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
         e_fn_call(a, ctr, a(alloc, ctr_input), false, false);
 
     // 2. set ALL props BEFORE init and mark fbits
+    bool saved_retain_skip = a->init_props_retain_skip;
     if (props) {
         a->init_props_retain_skip = true;
         pairs(props, i) {
@@ -4273,7 +4278,7 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
             }
         }
         if (masks_any) mark_set(alloc, masks);
-        a->init_props_retain_skip = false;
+        a->init_props_retain_skip = saved_retain_skip;
     }
 
     // 2b. verify required members were provided
@@ -4340,8 +4345,13 @@ enode aether_e_init(aether a, enode alloc, map props, efunc ctr, enode ctr_input
             e_fn_call(a, f_hold_members, a(alloc), false, false);
         }
 
-    } else {
+    } else if (!alloc->autype->is_user_init) {
         res = e_fn_call(a, f_initialize, a(alloc), false, false);
+    } else if (alloc->autype->is_class) {
+        // deferred init still owns its members from construction
+        efunc f_hold_members = (efunc)u(efunc,
+            find_member(etypeid(Au)->autype, "hold_members", AU_MEMBER_FUNC, 0, false));
+        e_fn_call(a, f_hold_members, a(alloc), false, false);
     }
     a->init_props = saved_init_props;
 
@@ -4863,6 +4873,10 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             alloc->meta_b   = hold(m->meta_b);
             if (alloc->autype->is_user_init) {
                 aether_apply_overrides(a, alloc);
+                // sweep owns raw override stores; marks drop_members
+                efunc f_hold_members = (efunc)u(efunc,
+                    find_member(etypeid(Au)->autype, "hold_members", AU_MEMBER_FUNC, 0, false));
+                e_fn_call(a, f_hold_members, a(alloc), false, false);
                 res = alloc;
             } else {
                 res = e_init(a, alloc, null, null, null);
@@ -4892,6 +4906,9 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
             alloc->meta_b   = hold(mdl->meta_b);
             if (alloc->autype->is_user_init) {
                 aether_apply_overrides(a, alloc);
+                efunc f_hold_members = (efunc)u(efunc,
+                    find_member(etypeid(Au)->autype, "hold_members", AU_MEMBER_FUNC, 0, false));
+                e_fn_call(a, f_hold_members, a(alloc), false, false);
                 res = alloc;
             } else {
                 res = e_init(a, alloc, null, ctr, input);
@@ -6706,6 +6723,10 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             a->skip_context_resolve = saved;
             inst->is_any = true;
             LLVMBuildStore(B, inst->value, inst_g);
+            // the module global owns the instance; live_destroy drops it
+            efunc fn_hold = (efunc)u(efunc,
+                find_member(etypeid(Au)->autype, "hold", AU_MEMBER_FUNC, 0, true));
+            e_fn_call(a, fn_hold, a(inst), false, false);
 
             if (!app_element) {
                 // parse the process argv (stashed by silver-host via au_main_args) into the
