@@ -2169,7 +2169,7 @@ element orbiter : trinity # implements compiler
         ed.nav_default = null
         if [ is_search && ed.src ]
             ed.nav_tools   = (ed.file_is_binary[ ed.src ]) ? view_tools_bin : view_tools
-            ed.nav_default = ed.handler_module_for[ ed.src ]
+            ed.nav_default = ed.default_view_for[ ed.src ]
         if [ is_search ]
             ed.lines = find_results
         el [ slot >= 0 && slot < open_files.count ]

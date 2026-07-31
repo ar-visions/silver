@@ -2512,6 +2512,17 @@ Control Editor
         ensure_export_registry[]
         return export_registry[ ext ]
 
+    # default action's name: peer handler module or hosted element
+    func default_view_for [ p: path ] -> string
+        hm : handler_module_for[ p ]
+        if [ hm ] return hm
+        ext : file_ext[ p ]
+        if [ ext.count == 0 ] return null
+        ensure_view_registry[]
+        t : view_registry[ ext ]
+        if [ t ] return '{t.ident}'
+        return null
+
     func launch_handler [ mod: string, p: path ]
         root : path.path_startup[]
         if [ !root ] return
@@ -2920,7 +2931,9 @@ Control Editor
         sel_col  = cl
 
     func on_press [ ev: Event ]
-        if [ run_view ]
+        # rail owns its presses, even over a running app view
+        rail9 : i32 [ tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ run_view && rail9 < 0 ]
             if [ app_view ]
                 if [ run_view.hit_minimize[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
                     toggle_app_view[]
@@ -2936,7 +2949,7 @@ Control Editor
         sbe : (layers) ? cast EditorLayer [ layers['content'] ] : null
         sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
         sbg : f32 [ (sbl && sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
-        if [ rview && sbe && sbl && sbl.scroll_max > 0.0 ]
+        if [ rview && rail9 < 0 && sbe && sbl && sbl.scroll_max > 0.0 ]
             sbx : f32 [ ev.mouse.pos.x - sbe.bounds.x ]
             if [ sbx > sbe.bounds.w - sbg ]
                 smy : f32 [ ev.mouse.pos.y - sbe.bounds.y - scroll.y ]
@@ -2951,7 +2964,7 @@ Control Editor
                     ux.will_animate = true
                 ev.no_default = true
                 return
-        if [ rview && !rview.view_text*[ rview.view_sel ] ]
+        if [ rview && rail9 < 0 && !rview.view_text*[ rview.view_sel ] ]
             if [ rview.view_press*[ ev ] ]
                 ev.no_default = true
                 return
