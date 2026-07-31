@@ -264,23 +264,7 @@ Orbiter PBR
 
         vec3 core_contrib = emit * v_color.r;
 
-        // plasma ring pulse — same tangent frame as Aura ring so angular phase matches
-        vec3  rng_o   = (ubo.model * vec4(0.0, -0.162, 0.0, 1.0)).xyz;
-        vec3  rng_d   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
-        vec3  rng_ref = abs(rng_d.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
-        vec3  rng_tg  = normalize(cross(rng_d, rng_ref));
-        vec3  rng_bn  = cross(rng_tg, rng_d);
-        float theta_p = ubo.time * 4.0;
-        vec3  pulse_world = rng_o + 0.522 * (cos(theta_p) * rng_tg + sin(theta_p) * rng_bn);
-        vec3  up_w         = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
-        float pulse_dist   = length(worldPos - pulse_world);
-        float pulse_att    = max(0.0, 1.0 - pulse_dist / 0.8);
-        pulse_att          = pulse_att * pulse_att;
-        vec3  L_pulse      = normalize(pulse_world - worldPos);
-        float source_dot   = abs(dot(N, L_pulse));
-        vec3  plasma_light = vec3(0.1, 0.2, 1.0) * source_dot * pulse_att * ubo.pulse_width * 0.088;
-
-        vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow + plasma_light;
+        vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow;
 
         // the thin hexagonal rim is the 'strip' material — the only near-black
         // violet on this model, so its albedo identifies it
@@ -664,20 +648,18 @@ Orbiter Plasma
 		vec3 N = normalize(v_normal + v_normal * wave * ubo.pulse_width * 0.2);
 
 		vec3  V    = normalize(v_eye_pos - v_world_pos);
-		vec3  L    = normalize(vec3(0.4, 0.8, -0.4));
-		vec3  H    = normalize(L + V);
-
-		float spec    = pow(max(0.0, dot(N, H)), 80.0);
 		float fresnel = pow(1.0 - max(0.0, dot(N, V)), 3.0);
 
-		vec3  col   = vec3(1.0) * (spec + fresnel * 0.25);
-		float alpha = clamp(fresnel * 0.55 + spec * 0.9, 0.0, 1.0);
+		vec3  col   = vec3(1.0) * (fresnel * 0.25);
+		float alpha = clamp(fresnel * 0.55, 0.0, 1.0);
 
 		fragColor = vec4(col, alpha);
 	}
 
 
 element Avatar
+    # style state: drives the :summoned CSS qualifier
+    public summoned          : bool
     intern target            : Render
     intern vol_target        : Render
     intern models            : map Model   [string]
@@ -706,7 +688,7 @@ element Avatar
     public body              : PBR [
         model_id: 'orbiter32',
         groups: ["outside","flower","separator"],
-        env_id: 'forest', pulse_width: 4.0, gamma: 2.2 ]
+        env_id: 'night', pulse_width: 4.0, gamma: 2.2 ]
     
     public core              : Core [
         model_id: 'orbiter32',
@@ -719,7 +701,7 @@ element Avatar
         pulse_width: 1.0 ]
     
     # flame stays 0 in every state — a build state turns it on
-    public aura              : Aura    [ model_id: 'uv-quad2', env_id: 'forest',
+    public aura              : Aura    [ model_id: 'uv-quad2', env_id: 'night',
         pulse_width: 0.4, pulse_height: 1.2, halo_height: 0.4,
         beam_fade: 2.2, beam_cone: 0.35, flame: 0.0 ]
     public expanded          : bool
@@ -747,6 +729,17 @@ element Avatar
     intern  mcache           : map GltfModel[string]
     intern  envcache         : map Texture[string]
     mutable env_on           : bool
+
+    # dismount: retire our render targets while they are still valid —
+    # a stale map entry double-frees on the next summon's map set
+    public func on_unload [ ]
+        wr9 : Window ux
+        if [ wr9 && wr9.element_targets ]
+            wr9.element_targets[ id ] = null
+            wr9.element_targets[ '{id}-vol' ] = null
+        target     = null
+        vol_target = null
+        super.on_unload[ ]
 
     func on_press [ ev: Event ]
         if [ docked ] return
@@ -820,6 +813,8 @@ element Avatar
                 expect gltf.exists[], 'model does not exist: {model_id}'
                 m.id = gltf.load[ typeid[ GltfModel ], null ]
                 mcache[model_id] = GltfModel[m.id]
+            # member set outside init: hold, or mcache death frees it
+            m.id.hold[]
 
             if [ sh.env_id ]
                 ekey9 : '{sh.name}:{sh.env_id}'
@@ -861,7 +856,7 @@ element Avatar
                     model.s = s
 
         if [ !aura ]
-            aura = Aura [ vk: vk, env_id: 'forest' ]
+            aura = Aura [ vk: vk, env_id: 'night' ]
             another : shaders['aura']
             another = another
 
@@ -897,6 +892,7 @@ element Avatar
                 reduce:      dscale < 2.0,
                 clear_color: clear_color,
                 models:      geo_models ]
+            target.owner = a
             w_ref.element_targets[ id ] = target
             target.wscale = 0.0
 
@@ -919,10 +915,13 @@ element Avatar
                 use_depth:   false,
                 clear_color: clear_color,
                 models:      vol_models ]
+            vol_target.owner = a
             w_ref.element_targets[ '{id}-vol' ] = vol_target
             vol_target.wscale = 0.0
 
     func draw [ w: Window ]
+        # spin only while summoned; slide transitions keep frames alive
+        animated = summoned
         create_target[]
         if [ !target && !vol_target ] return
 

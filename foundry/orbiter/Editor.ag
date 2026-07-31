@@ -20,6 +20,8 @@ class FindHit
     public session   : string
     public file      : path
     public line      : i32
+    # bordered trailing row: enters the title bar's create mode
+    public is_newfile : bool
 
 class VRow
     public src   : i32 [ -1 ]
@@ -915,14 +917,51 @@ Layer EditorLayer
         use.frame = editor.cl_frame
         return use
 
+    # left tool rail: vertical buttons, icon over title, 64px wide
+    # the extension's handler module leads as the default action
+    func draw_tools [ cv: Canvas, editor: Editor ]
+        if [ !editor.nav_tools || editor.nav_tools.count == 0 ] return
+        if [ !editor.ficons ] editor.ficons = FileIcons []
+        dxx  : f32 [ bounds.x + 2.0 ]
+        bas9 : i32 [ editor.tool_base[] ]
+        for [ ti: i32 0, ti < bas9 + editor.nav_tools.count, ti += 1 ]
+            tnm : string (bas9 == 1 && ti == 0) ? editor.nav_default : editor.nav_tools[ ti - bas9 ]
+            tyy : f32 [ bounds.y + 4.0 + f32[ ti ] * 68.0 ]
+            if [ ti == editor.tool_hover ]
+                cv.fill_color  [ rgba['#6cb6ff22'] ]
+                cv.stroke_color[ rgba['#6cb6ffcc'] ]
+            el
+                cv.fill_color  [ rgba['#10142088'] ]
+                cv.stroke_color[ rgba['#fff3'] ]
+            cv.stroke_width[ 1.0 ]
+            cv.rounded_rect[ dxx, tyy, 60.0, 64.0, 8.0, 8.0, 8.0, 8.0 ]
+            cv.paint       [ ]
+            cv.stroke_width[ 0.0 ]
+            tico : SVGModel editor.ficons.named[ tnm, 36 ]
+            if [ tico ]
+                cv.fill_color[ rgba['#ffffff'] ]
+                cv.stroke_color[ rgba['#ffffff'] ]
+                cv.draw_svg[ tico, dxx + 12.0, tyy + 6.0, 36.0, 36.0 ]
+            cv.font_size[ 11.0 ]
+            cv.fill_color[ rgba['#c9c4dd'] ]
+            cv.draw_text[ tnm, rect [ x: dxx, y: tyy + 44.0, w: 60.0, h: 16.0 ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+
     func draw [ cv: Canvas ]
         editor : Editor[ parent ]
         if [ !editor ] return
         sc : string [ (editor.src) ? '{editor.src}' : '' ]
         lc : string [ (editor.loaded_src) ? '{editor.loaded_src}' : '' ]
-        if [ sc.compare[ lc ] != 0 ]
+        dc : string [ (editor.diff_commit) ? editor.diff_commit : '' ]
+        ld : string [ (editor.loaded_diff) ? editor.loaded_diff : '' ]
+        if [ sc.compare[ lc ] != 0 || dc.compare[ ld ] != 0 ]
             editor.stopped = false
             editor.load_file[]
+        if [ editor.diff_commit && editor.diff_dirty ]
+            if [ epoch_millis[] - editor.diff_edit_ms > 400 ]
+                editor.diff_rebuild[ true ]
+            el
+                editor.ux.will_animate = true
         if [ editor.run_view ]
             editor.run_view.service[ cv ]
             if [ editor.app_view && !editor.show_hits ]
@@ -956,13 +995,13 @@ Layer EditorLayer
                     if [ hjd > 0.5 || hjd < 0.0 - 0.5 ]
                         editor.scroll_target = editor.scroll.y
                     if [ editor.pending_wheel != 0.0 ]
-                        editor.scroll_target = editor.scroll_target - editor.pending_wheel * hlh2 * 0.375
+                        editor.scroll_target = editor.scroll_target - editor.pending_wheel * hlh2 * 0.6
                         editor.pending_wheel = 0.0
                     if [ editor.scroll_target < 0.0 ] editor.scroll_target = 0.0
                     if [ editor.scroll_target > hms ] editor.scroll_target = hms
                     hdy : f32 [ editor.scroll_target - editor.scroll.y ]
                     if [ (hdy > 0.5) || (hdy < 0.0 - 0.5) ]
-                        editor.scroll.y = editor.scroll.y + hdy * 0.35
+                        editor.scroll.y = filter_n[ editor.scroll.y, editor.scroll_target, 0.14, editor.ux.frame_factor ]
                         parent.needs_frame = true
                         if [ editor.ux ] editor.ux.will_animate = true
                     el
@@ -1007,9 +1046,13 @@ Layer EditorLayer
             ndigits += 1
         if [ ndigits < 5 ] ndigits = 5
         gut_w   : f32 [ f32[ ndigits ] * cw_tm.w + 16.0 ]
+        # browse nav shows no line numbers: gutter is just the pin icon
+        if [ showing && hits && editor.nav_list ] gut_w = 24.0
         editor.gutter_w = gut_w
         if [ editor.scroll.x < 0.0 ] editor.scroll.x = 0.0
-        x0      : f32 [ bounds.x + gut_w - editor.scroll.x ]
+        # left tool rail pushes the nav content right by 64px
+        lin     : f32 [ (editor.nav_tools && editor.nav_tools.count > 0) ? 64.0 : 0.0 ]
+        x0      : f32 [ bounds.x + lin + gut_w - editor.scroll.x ]
         y0      : f32 [ bounds.y ]
         dbg_el  : element (editor.elements) ? editor.elements['dbg'] : null
         din     : f32 [ 0.0 ]
@@ -1047,7 +1090,7 @@ Layer EditorLayer
         grid_pins  : i32 [ 0 ]                # pinned-dock cell count
         grid_res   : i32 [ 0 ]               # result cell count
         if [ editor.grid_mode && editor.hits ]
-            gavail : f32 [ bounds.w - rin - 8.0 ]
+            gavail : f32 [ bounds.w - lin - rin - 8.0 ]
             grid_cols = i32[ gavail / grid_cw ]
             if [ grid_cols < 1 ] grid_cols = 1
             for [ li: i32 0, li < editor.hits.count, li += 1 ]
@@ -1073,13 +1116,13 @@ Layer EditorLayer
         max_scroll : f32 [ editor.content_h - vh ]
         if [ max_scroll < 0.0 ] max_scroll = 0.0
         if [ editor.pending_wheel != 0.0 ]
-            editor.scroll_target = editor.scroll_target - editor.pending_wheel * lh * 0.375
+            editor.scroll_target = editor.scroll_target - editor.pending_wheel * lh * 0.6
             editor.pending_wheel = 0.0
         if [ editor.scroll_target < 0.0 ] editor.scroll_target = 0.0
         if [ editor.scroll_target > max_scroll ] editor.scroll_target = max_scroll
         sdy : f32 [ editor.scroll_target - editor.scroll.y ]
         if [ (sdy > 0.5) || (sdy < 0.0 - 0.5) ]
-            editor.scroll.y = editor.scroll.y + sdy * 0.35
+            editor.scroll.y = filter_n[ editor.scroll.y, editor.scroll_target, 0.14, editor.ux.frame_factor ]
             parent.needs_frame = true
             if [ editor.ux ] editor.ux.will_animate = true
         el
@@ -1103,7 +1146,7 @@ Layer EditorLayer
                 if [ sy >= bounds.y && sy <= bounds.y + bounds.h ]
                     cv.fill_color  [ rgba['#ffffff30'] ]
                     cv.stroke_width[ 0.0 ]
-                    cv.rect_to     [ bounds.x + 8.0, round[ sy ], bounds.w - rin - 16.0, 1.0 ]
+                    cv.rect_to     [ bounds.x + lin + 8.0, round[ sy ], bounds.w - lin - rin - 16.0, 1.0 ]
                     cv.paint       [ ]
             for [ li: i32 0, li < editor.hits.count, li += 1 ]
                 h : FindHit editor.hits[ li ]
@@ -1115,7 +1158,7 @@ Layer EditorLayer
                 grow : i32 [ gidx / grid_cols ]
                 if [ is_pin ] pin_i += 1
                 el            res_i += 1
-                cx : f32 [ bounds.x + 4.0 + f32[ col ] * grid_cw ]
+                cx : f32 [ bounds.x + lin + 4.0 + f32[ col ] * grid_cw ]
                 cy : f32 [ ((is_pin) ? (y0 + f32[ grow ] * grid_ch) : (y0 + grid_resoff + f32[ grow ] * grid_ch)) - editor.scroll.y ]
                 if [ cy + grid_ch < bounds.y || cy > bounds.y + bounds.h ] continue
                 if [ li == editor.sel_line || li == editor.hover_line ]
@@ -1138,13 +1181,14 @@ Layer EditorLayer
                     dy  : f32 [ iy + (gth - dh) * 0.5 ]
                     cv.draw_image[ tex, rect [ x: dx, y: dy, w: dw, h: dh ] ]
                 el
-                    if [ !editor.folder_icon ]
-                        ffp : path 'images/folder.svg'
-                        if [ ffp.exists[] ] editor.folder_icon = SVGModel [ ffp ]
                     if [ !editor.file_icon ]
                         ffp2 : path 'images/file.svg'
                         if [ ffp2.exists[] ] editor.file_icon = SVGModel [ ffp2 ]
-                    ico : SVGModel [ (h.is_dir) ? editor.folder_icon : editor.file_icon ]
+                    if [ !editor.ficons ] editor.ficons = FileIcons []
+                    ico : SVGModel [ (h.is_dir) ? null : editor.file_icon ]
+                    if [ !h.is_dir ]
+                        mico : SVGModel editor.ficons.icon[ h.file.filename[], i32[ gth * 0.5 ] ]
+                        if [ mico ] ico = mico
                     if [ ico ]
                         hsz : f32 [ gth * 0.5 ]
                         # neutral tint (see list view) — icon shows authored colors
@@ -1156,6 +1200,7 @@ Layer EditorLayer
                 cv.fill_color[ (h.is_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
                 cv.draw_text[ h.text, rect [ x: cx + gm, y: ty, w: grid_cw - gm * 2.0, h: 16.0 ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            draw_tools[ cv, editor ]
             cv.clear_crop[ ]
             return
 
@@ -1171,7 +1216,7 @@ Layer EditorLayer
                 gh = (editor.single_line) ? lh - 2.0 : lh * 2.0 - 2.0
             hy : f32 [ y0 + f32[ gl ] * lh - editor.scroll.y ]
             if [ hy + gh >= bounds.y && hy <= bounds.y + bounds.h ]
-                glow_row[ cv, bounds.x + 1.0, hy + 1.0, bounds.w - rin - 2.0, gh ]
+                glow_row[ cv, bounds.x + lin + 1.0, hy + 1.0, bounds.w - lin - rin - 2.0, gh ]
 
         cv.stroke_width[ 0.0 ]
         num_fs  : i32 [ i32[ f32[ code_fs ] * 0.7 ] - 1 ]
@@ -1184,7 +1229,7 @@ Layer EditorLayer
             if [ yg > bounds.y + bounds.h ] break
             bsl  : i32  [ editor.row_src[ li ] ]
             rnum : i32  [ (showing && hits) ? hits[li].line : bsl + 1 ]
-            if [ !showing ]
+            if [ !showing && !editor.diff_commit ]
                 bp : editor.breakpoints['{editor.src}:{bsl + 1}']
                 if [ bp != null ]
                     cv.fill_color[ editor.bp_color[ bp ] ]
@@ -1284,6 +1329,20 @@ Layer EditorLayer
                     if [ slot.canvas && slot.hash == rhash ]
                         slot.frame = editor.cl_frame
                         break
+        if [ editor.diff_kinds ]
+            # diff tints batch as ONE paint per color — never per row
+            cv.stroke_width[ 0.0 ]
+            for [ dk8: i32 1, dk8 <= 2, dk8 += 1 ]
+                drew8 : bool [ false ]
+                cv.fill_color[ (dk8 == 2) ? rgba['#23461f55'] : rgba['#58202055'] ]
+                for [ li: i32 0, li < editor.line_count[], li += 1 ]
+                    if [ li >= editor.diff_kinds.count || editor.diff_kinds[li] != dk8 ] continue
+                    y8 : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
+                    if [ y8 + lh < bounds.y ] continue
+                    if [ y8 > bounds.y + bounds.h ] break
+                    cv.rect_to[ bounds.x, y8, bounds.w - rin, lh ]
+                    drew8 = true
+                if [ drew8 ] cv.paint[ ]
         for [ li: i32 0, li < editor.line_count[], li += 1 ]
             y : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
             if [ editor.row_header[ li ] ]
@@ -1293,32 +1352,47 @@ Layer EditorLayer
                 rh : f32 [ (single) ? lh : lh * 2.0 ]
                 if [ y + rh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
-                cv.save[ ]
-                cv.rounded[ 12.0, 12.0, 12.0, 12.0 ]
-                cv.fill_color[ (item_color) ? item_color : rgba['#2b3a5580'] ]
-                cv.rect_to[ bounds.x + 2.0, y + 2.0, bounds.w - rin - 4.0, rh - 4.0 ]
-                cv.paint[ ]
-                cv.restore[ ]
                 fhh : FindHit (editor.hits && li < editor.hits.count) ? editor.hits[ li ] : null
                 fnm : string (fhh) ? fhh.text : editor.line_get[ li ]
                 fdr : string (fhh) ? fhh.dir : ''
+                cv.save[ ]
+                cv.rounded[ 12.0, 12.0, 12.0, 12.0 ]
+                cv.fill_color[ (item_color) ? item_color : rgba['#2b3a5580'] ]
+                cv.rect_to[ bounds.x + lin + 2.0, y + 2.0, bounds.w - lin - rin - 4.0, rh - 4.0 ]
+                cv.paint[ ]
+                cv.restore[ ]
+                if [ fhh && fhh.is_newfile ]
+                    cv.save[ ]
+                    cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+                    cv.fill_color[ rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_color[ rgba['#fff3'] ]
+                    cv.rect_to[ bounds.x + lin + 2.0, y + 2.0, bounds.w - lin - rin - 4.0, rh - 4.0 ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    cv.fill_color[ rgba['#9a94b0'] ]
+                    cv.draw_text[ fnm,
+                        rect [ x: x0 + 8.0, y: y, w: bounds.w - rin - 16.0, h: rh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    continue
                 fis_dir : bool [ fhh->is_dir ]
                 if [ fis_dir && fnm->count > 0 ] fnm = '{fnm}/'
-                if [ !editor.folder_icon ]
-                    ffp : path 'images/folder.svg'
-                    if [ ffp.exists[] ] editor.folder_icon = SVGModel [ ffp ]
                 if [ !editor.file_icon ]
                     ffp2 : path 'images/file.svg'
                     if [ ffp2.exists[] ] editor.file_icon = SVGModel [ ffp2 ]
-                imdl : SVGModel [ (fis_dir) ? editor.folder_icon : editor.file_icon ]
-                tx0  : f32 [ x0 ]
+                if [ !editor.ficons ] editor.ficons = FileIcons []
+                imdl : SVGModel [ (fis_dir) ? null : editor.file_icon ]
+                if [ !fis_dir ]
+                    msz : i32 [ i32[ round[ lh * ((single) ? 0.7 : 1.0) ] ] ]
+                    mim : SVGModel editor.ficons.icon[ fnm, msz ]
+                    if [ mim ] imdl = mim
+                isz : f32 [ round[ lh * ((single) ? 0.7 : 1.0) ] ]
+                tx0  : f32 [ x0 + isz + 8.0 ]
                 if [ imdl ]
-                    isz : f32 [ round[ lh * ((single) ? 0.7 : 1.0) ] ]
                     iy  : f32 [ round[ y + (rh - isz) * 0.5 ] ]
                     cv.fill_color[ rgba['#ffffff'] ]
                     cv.stroke_color[ rgba['#ffffff'] ]
                     cv.draw_svg[ imdl, x0, iy, isz, isz ]
-                    tx0 = x0 + isz + 8.0
                 if [ single ]
                     cv.font_size[ code_fs ]
                     cv.fill_color[ (fis_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
@@ -1390,7 +1464,7 @@ Layer EditorLayer
             if [ sy >= bounds.y && sy <= bounds.y + bounds.h ]
                 cv.fill_color[ rgba['#ffffff30'] ]
                 cv.stroke_width[ 0.0 ]
-                cv.rect_to[ bounds.x + 6.0, round[ sy ], bounds.w - rin - 12.0, 1.0 ]
+                cv.rect_to[ bounds.x + lin + 6.0, round[ sy ], bounds.w - lin - rin - 12.0, 1.0 ]
                 cv.paint[ ]
 
         if [ !showing && editor.debug_vars ]
@@ -1536,11 +1610,12 @@ Layer EditorLayer
                 editor.filter_rect = null
                 editor.filter_next = false
 
-            sel_col_val  : rgba [ (sel_color)  ? sel_color  : rgba['#264f78'] ]
+            sel_col_val  : rgba [ (sel_color)  ? sel_color  : rgba['#425'] ]
 
             if [ has_sel ]
                 cv.save[ ]
-                cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
+                cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
+                cv.inner_glow[ rgba['#fff1'], 16.0 ]
                 pad : 2
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
                     y_row  : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
@@ -1647,16 +1722,30 @@ Layer EditorLayer
             el
                 editor.run_view.draw_side[ cv, bounds ]
 
+        draw_tools[ cv, editor ]
         cv.clear_crop[ ]
 
 
 Control Editor
-    content   : EditorLayer [ area: Region { l0 t2px r0 b2px }, label_height: 1.0,
-        line_color: rgba [ '#fff1' ], item_color: rgba [ '#2b3a5500' ], sel_color: rgba [ '#264f78' ],
-        hl_fill: rgba [ '#ff6a2e55' ], hl_grad: rgba [ '#c0381844' ],
-        hl_glow: rgba [ '#ff8a3a99' ], hl_text: rgba [ '#ffe6d2' ] ]
-    scrollbar : ScrollLayer [ overlay: true, area: Region { 8px }, thumb_color: '#fff4',
-        thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
+    style : CSS {
+        layers.content: EditorLayer
+            area: l0 t2px r0 b2px
+            label_height: 1.0
+            line_color: #4258
+            item_color: #2b3a5500
+            sel_color: #425
+            hl_fill: #ff6a2e55
+            hl_grad: #c0381844
+            hl_glow: #ff8a3a99
+            hl_text: #ffe6d2
+        layers.scrollbar: ScrollLayer
+            overlay: true
+            area: 8px
+            thumb_color: #fff4
+            thumb_w: 6.0
+            thumb_min_h: 32.0
+            thumb_radius: 4.0
+    }
     public  selected      : bool
     public  expanded      : bool
     public  show_hits     : bool
@@ -1676,10 +1765,23 @@ Control Editor
     public  show_nav      : bool
     public  editor_mode   : string
     public  src           : path
+    # commit hash this view diffs against; read-only stacked diff
+    public  diff_commit   : string
+    mutable loaded_diff   : string
+    # per-row diff kind: 0 context, 1 removed, 2 added
+    mutable diff_kinds    : array i32
+    # commit's file lines, cached for live re-diff while editing
+    mutable diff_base     : array string
+    mutable diff_dirty    : bool
+    mutable diff_edit_ms  : i64
     mutable loaded_src    : path
     mutable nav           : Navigate
     mutable pane_index    : i32 [ 0 ]
     mutable rview         : ResourceView
+    mutable hx_force      : bool
+    mutable nav_tools     : array string
+    mutable nav_default   : string
+    mutable tool_hover    : i32 [ -1 ]
     mutable stopped       : bool
     mutable run_view      : AppView
     mutable app_view      : bool
@@ -1691,8 +1793,8 @@ Control Editor
     mutable file_cache    : map FileBuf[string]
     mutable close_icon    : SVGModel
     mutable pin_icon      : SVGModel
-    mutable folder_icon   : SVGModel
     mutable file_icon     : SVGModel
+    mutable ficons        : FileIcons
     mutable was_showing   : bool
     mutable hover_gutter  : bool
     # true while dragging the scrollbar thumb
@@ -1857,6 +1959,23 @@ Control Editor
     func row_spacer [ i: i32 ] -> bool
         if [ show_hits && hits && i >= 0 && i < hits.count ] return hits[i].is_spacer
         return false
+
+    # default-action cell count: 1 when the extension has a handler
+    func tool_base [] -> i32
+        return (nav_default && nav_default.count > 0) ? 1 : 0
+
+    # left tool rail: cell index under the mouse, -1 off
+    func tool_hit [ mx: f32, my: f32 ] -> i32
+        if [ !nav_tools || nav_tools.count == 0 ] return -1
+        ele : (layers) ? cast EditorLayer [ layers['content'] ] : null
+        if [ !ele || !ele.bounds ] return -1
+        rx : f32 [ mx - ele.bounds.x ]
+        ry : f32 [ my - ele.bounds.y ]
+        if [ rx < 0.0 || rx > 64.0 ] return -1
+        if [ ry < 4.0 ] return -1
+        idx : i32 [ (ry - 4.0) / 68.0 ]
+        if [ idx < 0 || idx >= tool_base[] + nav_tools.count ] return -1
+        return idx
 
     func word_char [ c: i32 ] -> bool
         return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95
@@ -2143,7 +2262,7 @@ Control Editor
         lines.remove[ i ]
 
     func rec [ op: LineOp ]
-        if [ show_hits ] return
+        if [ show_hits || diff_commit ] return
         if [ !cur_group ]
             while [ hist && hist.count > hist_i ]
                 hist.pop[]
@@ -2166,15 +2285,32 @@ Control Editor
     func ed_set [ i: i32, val: string ]
         old : line_get[ i ]
         line_set[ i, val ]
+        if [ diff_commit ]
+            # touching a commit-only row adopts it into our file
+            if [ diff_kinds && i < diff_kinds.count && diff_kinds[i] == 1 ]
+                diff_kinds[i] = 2
+            diff_dirty   = true
+            diff_edit_ms = epoch_millis[]
+            return
         rec[ LineOp [ at: i, kind: 0, before: old, after: val ] ]
 
     func ed_insert [ i: i32, val: string ]     # val becomes line i (shifts the rest down)
         raw_insert[ i, val ]                    # inserts the line AND shifts regions down
+        if [ diff_commit ]
+            kinds_insert[ i ]
+            diff_dirty   = true
+            diff_edit_ms = epoch_millis[]
+            return
         rec[ LineOp [ at: i, kind: 1, after: val ] ]
 
     func ed_remove [ i: i32 ]
         old : line_get[ i ]
         raw_remove[ i ]                         # shifts regions up AND removes the line
+        if [ diff_commit ]
+            kinds_remove[ i ]
+            diff_dirty   = true
+            diff_edit_ms = epoch_millis[]
+            return
         rec[ LineOp [ at: i, kind: 2, before: old ] ]
 
     func apply_undo [ g: EditAction ]
@@ -2304,10 +2440,14 @@ Control Editor
             tp.save[ out, null ]
             return
         if [ !src ] return
-        out : string [ '' ]
+        out   : string [ '' ]
+        wrote : i32 [ 0 ]
         for [ i: i32 0, i < lines.count, i += 1 ]
-            if [ i > 0 ] out = out + '\n'
+            # diff view: commit-only rows are not ours to save
+            if [ diff_commit && diff_kinds && i < diff_kinds.count && diff_kinds[i] == 1 ] continue
+            if [ wrote > 0 ] out = out + '\n'
             out = out + line_get[ i ]
+            wrote += 1
         sp : path '{src}'
         sp.save[ out, null ]
 
@@ -2385,7 +2525,10 @@ Control Editor
         animated  = true
         pristine  = false
         no_scroll = true
-        if [ ux ] ux.restyle = true
+        focusable = true
+        if [ ux ]
+            ux.set_focus[ a ]
+            ux.restyle = true
 
     func file_is_binary [ p: path ] -> bool
         ps : '{p}'
@@ -2427,7 +2570,127 @@ Control Editor
         thumb_cache[ key ] = tex
         return tex
 
+    # our own line diff: LCS over the middle after prefix/suffix trim.
+    # kinds: 0 context, 1 removed (commit only), 2 added (our buffer)
+    func diff_against [ base: array string, cur: array string, out_k: array i32 ] -> list string
+        out : list string []
+        nb9 : i32 [ base.count ]
+        nc9 : i32 [ cur.count ]
+        p9  : i32 [ 0 ]
+        while [ p9 < nb9 && p9 < nc9 && base[ p9 ] == cur[ p9 ] ]
+            out.push[ base[ p9 ] ]
+            out_k.push[ 0 ]
+            p9 += 1
+        s9 : i32 [ 0 ]
+        while [ s9 < nb9 - p9 && s9 < nc9 - p9 && base[ nb9 - 1 - s9 ] == cur[ nc9 - 1 - s9 ] ]
+            s9 += 1
+        wa  : i32 [ nb9 - p9 - s9 ]
+        wb  : i32 [ nc9 - p9 - s9 ]
+        big : i64 [ i64[wa] * i64[wb] ]
+        if [ big > 25000000 ]
+            # window too large for the table: whole middle is a replace
+            for [ i: i32 0, i < wa, i += 1 ]
+                out.push[ base[ p9 + i ] ]
+                out_k.push[ 1 ]
+            for [ j: i32 0, j < wb, j += 1 ]
+                out.push[ cur[ p9 + j ] ]
+                out_k.push[ 2 ]
+        el [ wa > 0 || wb > 0 ]
+            st   : i32 [ wb + 1 ]
+            n_dp : i32 [ (wa + 1) * st ]
+            dp   : new i32 [ n_dp ]
+            for [ i: i32 wa, i >= 0, i -= 1 ]
+                for [ j: i32 wb, j >= 0, j -= 1 ]
+                    v9 : i32 [ 0 ]
+                    if [ i < wa && j < wb ]
+                        if [ base[ p9 + i ] == cur[ p9 + j ] ]
+                            v9 = dp[ (i + 1) * st + j + 1 ] + 1
+                        el
+                            d9 : i32 [ dp[ (i + 1) * st + j ] ]
+                            r9 : i32 [ dp[ i * st + j + 1 ] ]
+                            v9 = (d9 > r9) ? d9 : r9
+                    dp[ i * st + j ] = v9
+            i9 : i32 [ 0 ]
+            j9 : i32 [ 0 ]
+            while [ i9 < wa || j9 < wb ]
+                if [ i9 < wa && j9 < wb && base[ p9 + i9 ] == cur[ p9 + j9 ] ]
+                    out.push[ base[ p9 + i9 ] ]
+                    out_k.push[ 0 ]
+                    i9 += 1
+                    j9 += 1
+                el [ i9 < wa && (j9 >= wb || dp[ (i9 + 1) * st + j9 ] >= dp[ i9 * st + j9 + 1 ]) ]
+                    out.push[ base[ p9 + i9 ] ]
+                    out_k.push[ 1 ]
+                    i9 += 1
+                el
+                    out.push[ cur[ p9 + j9 ] ]
+                    out_k.push[ 2 ]
+                    j9 += 1
+        for [ t9: i32 0, t9 < s9, t9 += 1 ]
+            out.push[ base[ nb9 - s9 + t9 ] ]
+            out_k.push[ 0 ]
+        return out
+
+    # project the merged view back to the live buffer (rows the commit
+    # doesn't own), then re-diff — edits merge before your eyes
+    func diff_rebuild [ project: bool ]
+        key9 : '{src.absolute[]}'
+        fb9  : FileBuf file_cache[key9]
+        if [ !fb9 ]
+            fb9 = FileBuf []
+            nl9 : list string []
+            ft9 : string src.load[ typeid[string], null ]
+            if [ ft9 ]
+                pp9 : ft9.split["\n"]
+                for [ i: i32 0, i < pp9.count, i += 1 ]
+                    nl9.push[ pp9[i] ]
+            fb9.lines = nl9
+            fb9.mtime = src.modified_time[]
+            file_cache[key9] = fb9
+        if [ project && diff_kinds && lines ]
+            pj9 : list string []
+            n7  : i32 [ lines.count ]
+            for [ i: i32 0, i < n7, i += 1 ]
+                k7 : i32 [ (i < diff_kinds.count) ? diff_kinds[i] : 0 ]
+                if [ k7 != 1 ]
+                    s7 : string lines.value_by_index[ i ]
+                    pj9.push[ (s7) ? s7 : '' ]
+            fb9.lines = pj9
+            fb9.hist  = null
+        cur9 : array string [ alloc: 1024 ]
+        nb7  : i32 [ fb9.lines.count ]
+        for [ i: i32 0, i < nb7, i += 1 ]
+            cs8 : string fb9.lines.value_by_index[ i ]
+            cur9.push[ (cs8) ? cs8 : '' ]
+        dk9 : array i32 [ alloc: 1024 ]
+        ml9 : list string diff_against[ diff_base, cur9, dk9 ]
+        if [ ml9.count == 0 ]
+            ml9.push[ '' ]
+            dk9.push[ 0 ]
+        lines      = ml9
+        diff_kinds = dk9
+        diff_dirty = false
+        if [ sel_line >= lines.count ] sel_line = lines.count - 1
+        pristine = false
+
+    func kinds_insert [ at: i32 ]
+        if [ !diff_kinds ] return
+        diff_kinds.push[ 2 ]
+        for [ i: i32 diff_kinds.count - 1, i > at, i -= 1 ]
+            diff_kinds[i] = diff_kinds[ i - 1 ]
+        diff_kinds[at] = 2
+
+    func kinds_remove [ at: i32 ]
+        if [ !diff_kinds || at >= diff_kinds.count ] return
+        for [ i: i32 at, i < diff_kinds.count - 1, i += 1 ]
+            diff_kinds[i] = diff_kinds[ i + 1 ]
+        diff_kinds.pop[]
+
     func load_file []
+        ns9 : string [ (src) ? '{src}' : '' ]
+        ls9 : string [ (loaded_src) ? '{loaded_src}' : '' ]
+        # forced hex is per-file: a new file clears it
+        if [ ns9.compare[ ls9 ] != 0 ] hx_force = false
         loaded_src = src
         if [ !src ]
             if [ rview ] rview.release*[]
@@ -2445,7 +2708,7 @@ Control Editor
             rs : '{rview.src}'
             ss : '{src}'
             if [ rs.compare[ ss ] == 0 ] return
-        rv : ResourceView resource_view_for[ src ]
+        rv : ResourceView [ (hx_force) ? null : resource_view_for[ src ] ]
         if [ rv ]
             if [ rview ] rview.release*[]
             rview = rv
@@ -2458,12 +2721,12 @@ Control Editor
             content_h     = 0.0
             saved_scroll  = 0.0
             return
-        if [ !run_view && !stopped ]
+        if [ !run_view && !stopped && !hx_force ]
             hm : handler_module_for[ src ]
             if [ hm ]
                 launch_handler[ hm, src ]
                 return
-        if [ file_is_binary[ src ] ]
+        if [ hx_force || file_is_binary[ src ] ]
             if [ rview ] rview.release*[]
             hv : ResourceView [ ]
             hv.hx_on = true
@@ -2480,6 +2743,23 @@ Control Editor
         if [ rview ] rview.release*[]
         rview = null
         pristine = false
+        loaded_diff = diff_commit
+        diff_kinds  = null
+        diff_base   = null
+        diff_dirty  = false
+        if [ diff_commit && diff_commit.count > 0 ]
+            orb7 : cast orbiter [ ux.app_object ]
+            gr7  : path [ (orb7) ? orb7.project_root[] : src.directory[] ]
+            # base = this commit's file; ours = the LIVE buffer (unsaved edits count)
+            rp9  : string '{src.absolute[]}'
+            rt9  : string '{gr7}'
+            rel9 : string [ (rp9.count > rt9.count) ? rp9.mid[ rt9.count + 1, rp9.count - rt9.count - 1 ] : rp9 ]
+            diff_base = git_capture[ gr7, 'show {diff_commit}:{rel9}', true ]
+            diff_rebuild[ false ]
+            scroll.x      = 0.0
+            scroll.y      = 0.0
+            scroll_target = 0.0
+            return
         key   : '{src.absolute[]}'
         mtime : i64    [ src.modified_time[] ]
         buf   : FileBuf file_cache[key]
@@ -2520,6 +2800,11 @@ Control Editor
             if [ ux ] ux.restyle = true
             return
         if [ !src ] return
+        hm9 : handler_module_for[ src ]
+        if [ hm9 ]
+            stopped = false
+            launch_handler[ hm9, src ]
+            return
         puts 'toggle_app_run: starting {src}'
         stopped  = false
         nv : AppView [ ]
@@ -2573,9 +2858,10 @@ Control Editor
         if [ !hits ] return -1
         gcw  : f32 [ 140.0 ]
         gch  : f32 [ 178.0 ]
+        lin9 : f32 [ (nav_tools && nav_tools.count > 0) ? 64.0 : 0.0 ]
         cols : i32 [ (g_cols > 0) ? g_cols : 1 ]
-        ccol : i32 [ (mx - 4.0) / gcw ]
-        if [ my < 0.0 || ccol < 0 || ccol >= cols ] return -1
+        ccol : i32 [ (mx - lin9 - 4.0) / gcw ]
+        if [ my < 0.0 || mx < lin9 || ccol < 0 || ccol >= cols ] return -1
         pin_rows : i32 [ (g_pins + cols - 1) / cols ]
         pin_end  : f32 [ f32[ pin_rows ] * gch ]
         want_pin : bool [ false ]
@@ -2620,6 +2906,7 @@ Control Editor
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x - gutter_w ]
         raw   : i32 [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
         ln    : i32 [ snap_row[ raw ] ]
+        if [ show_hits && tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] >= 0 ] return
         if [ show_hits && (dragging || ev.key.shift) ]
             ln = clamp[ ln, group_start[ anchor_line ], group_end[ anchor_line ] ]
         vx    : f32 [ round[ (rel_x - row_indent[ ln ] + scroll.x) / cw ] ]
@@ -2759,6 +3046,7 @@ Control Editor
                 pristine = false
                 return
             if [ row_var[ vrl ] ] return
+            if [ diff_commit ] return    # diff rows don't map to file lines
             ln    : i32 [ row_src[ vrl ] ]
             key   : '{src}:{ln + 1}'
             cur   : breakpoints[key]
@@ -2809,6 +3097,12 @@ Control Editor
             hl = grid_hit_index[ rel_x, rel_y, ele.bounds.w ]
         el
             hl = clamp [ rel_y / lh, 0, line_count[] - 1 ]
+        th9 : i32 [ tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ th9 != tool_hover ]
+            tool_hover = th9
+            pristine = false
+            ux.will_animate = true
+        if [ th9 >= 0 ] hl = -1
         hg    : bool [ rel_x >= 0.0 && rel_x < gutter_w ]
         if [ rel_y < 0 ]
             hl  = -1
@@ -2835,10 +3129,11 @@ Control Editor
                 ux.will_animate = true
 
     func on_leave [ ev: Event ]
-        if [ hover_line != -1 || hover_gutter || hover_ann != -1 ]
+        if [ hover_line != -1 || hover_gutter || hover_ann != -1 || tool_hover != -1 ]
             hover_line   = -1
             hover_gutter = false
             hover_ann    = -1
+            tool_hover   = -1
             pristine = false
 
     func on_release [ ev: Event ]

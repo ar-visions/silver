@@ -143,7 +143,7 @@ class Image
         if [ res_bits ] info.data = null
 
     func copy[ ] -> Image
-        res: Image[ width:1, height:2, format:format, surface:surface ]
+        res: Image[ width:width, height:height, format:format, surface:surface, channels:channels ]
         memcpy res.vdata[], vdata[], byte_count[]
         return res
 

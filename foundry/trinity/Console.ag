@@ -1166,7 +1166,7 @@ func term_key [ s: ConsoleSession, ev: Event, vh: f32 ] -> bool
 
 element Console
     focusable  : true
-    cbase     : Layer [ fill_color: rgba [ '#202' ] ]
+    cbase     : Layer [ fill_color: rgba [ '#202a' ] ]
     content   : TermLayer [ area: Region { l8px t44px r8px b8px }, label_height: 1.0, label_size: 16 ]
     scrollbar : ScrollLayer [ overlay: true, area: Region { l8px t44px r8px b8px }, thumb_color: '#fff4',
         thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]

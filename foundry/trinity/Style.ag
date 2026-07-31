@@ -50,10 +50,24 @@ class StyleEntry
 alias StyleEntries   : array StyleEntry
 alias StyleEntryMap  : map   StyleEntry [ string ]
 
+# per-class embedded css: style : CSS { ... }
+class CSS : RType
+    public body  : symbol
+    public rtype : Au_t
+    construct [ t:symbol ]
+        info  : Au.header[ a ]
+        body  = t
+        rtype = info.meta_a
+    construct [ c:cstr ]
+        info  : Au.header[ a ]
+        body  = c
+        rtype = info.meta_a
+
 
 class StyleBlock
     mutable parent  : StyleBlock
     mutable quals   : array StyleQualifier
+    mutable invalid : bool
     public entries  : StyleEntryMap
     public blocks   : array StyleBlock
     public types    : array Au_t
@@ -141,6 +155,7 @@ class StyleBlock
 
 
     public func score [ n: element, score_state: bool ] -> i64
+        if [ invalid ] return 0
         best_sc : i64 [ 0 ]
         cur     : element [ n ]
         ux      : Window [ n.ux ]
@@ -148,32 +163,33 @@ class StyleBlock
         for [ q: StyleQualifier ] in quals
             cur = n
             best_this : i64 [ 0 ]
+            walk : StyleQualifier [ q ]
             while [ true ]
-                ty_handle   : handle [ q.ty ]
-                id_match    : bool   [ q.id && q.id == cur.id ]
-                id_reject   : bool   [ q.id && !id_match ]
+                ty_handle   : handle [ walk.ty ]
+                id_match    : bool   [ walk.id && walk.id == cur.id ]
+                id_reject   : bool   [ walk.id && !id_match ]
 
                 use_app    : bool [ !cur.parent && ux && ux.app_object ]
                 type_match : bool [ false ]
                 if [ ty_handle ]
-                    io_r : Au cur.instance_of[ q.ty ]
+                    io_r : Au cur.instance_of[ walk.ty ]
                     if [ io_r ] type_match = true
                 type_reject : bool [ ty_handle && !type_match ]
 
-                state_match : bool [ score_state && q.state ]
+                state_match : bool [ score_state && walk.state ]
                 if [ state_match ]
-                    expect q.state.count > 0, 'null state'
+                    expect walk.state.count > 0, 'null state'
                     if [ use_app && type_match ]
-                        state_val : ux.app_object.get_property[ q.state ]
+                        state_val : ux.app_object.get_property[ walk.state ]
                         state_match = state_val && Au.cast_bool [ state_val ]
                     el [ use_app ]
                         state_match = false
-                    el [ q.oper || !q.states || q.states.count <= 1 ]
-                        current : Au cur.get_property[ q.state ]
+                    el [ walk.oper || !walk.states || walk.states.count <= 1 ]
+                        current : Au cur.get_property[ walk.state ]
                         state_match = current && current.cast_bool[ ]
                     el
                         all_match : bool [ true ]
-                        for [ s : string ] in q.states
+                        for [ s : string ] in walk.states
                             if [ s.count == 0 ]
                                 continue
                             scurrent : Au cur.get_property[ s ]
@@ -182,20 +198,17 @@ class StyleBlock
                                 break
                         state_match = all_match
 
-                state_reject : bool [ score_state && q.state && !state_match ]
+                state_reject : bool [ score_state && walk.state && !state_match ]
                 if [ id_reject || type_reject || state_reject ]
-                    q.drop[]
                     return 0.0
                 sc : i64[ id_match ] << 1 | i64[ type_match ] | i64[ state_match ] << 2
                 best_this = max[ sc, best_this ]
-                if [ !q.parent ]
-                    if [ q.anchored && cur.parent ]
-                        q.drop[]
+                if [ !walk.parent ]
+                    if [ walk.anchored && cur.parent ]
                         return 0.0
                     break
-                q   = q.parent
-                cur = (cur.parent) ? cur.parent : cur
-            q.drop[]
+                walk = walk.parent
+                cur  = (cur.parent) ? cur.parent : cur
             best_sc = max[ best_sc, best_this ]
         return best_sc
 
@@ -218,6 +231,7 @@ class Style
     intern  loaded    : bool
     intern  visited   : array string
     intern  errors    : array string
+    intern  layer_defs : map LayerDef [ string ]
 
     func cache_block [ bl: StyleBlock, depth:int ]
         for [ e: StyleEntry, k: string ] in bl.entries
@@ -364,7 +378,7 @@ class Style
             out.push[ CSSLine [ indent: at + bl.indent, content: txt, line: bl.line ] ]
 
     func expand_layers [ lines: array CSSLine, src: path ] -> array CSSLine
-        defs : map LayerDef [ string ] [ ]
+        if [ !layer_defs ] layer_defs = map LayerDef [ string ] [ ]
         stripped : array CSSLine [ ]
         i : i32 [ 0 ]
         while [ i < lines.count ]
@@ -405,16 +419,16 @@ class Style
                     blc : string [ lines[j].content ]
                     if [ blc.count >= 7 && blc.mid[ 0, 7 ] == 'layers.' ]
                         errors.push[ '{src}:{lines[j].line}: layers inside a Layer are not allowed' ]
-                    cuse : layer_use[ defs, blc ]
+                    cuse : layer_use[ layer_defs, blc ]
                     if [ cuse ]
-                        du : defs[ cuse[0] ]
+                        du : layer_defs[ cuse[0] ]
                         for [ cl2: CSSLine ] in du.body
                             d.body.push[ CSSLine [ indent: rel + cl2.indent,
                                 content: layer_subst[ du, cuse, cl2.content ], line: cl2.line ] ]
                     el
                         d.body.push[ CSSLine [ indent: rel, content: blc, line: lines[j].line ] ]
                     j += 1
-                defs[ nm ] = d
+                layer_defs[ nm ] = d
                 i = j
                 continue
             stripped.push[ lines[i] ]
@@ -440,10 +454,15 @@ class Style
                 rest : lc2.mid[ 7, lc2.count - 7 ].trim[]
                 ci2 : num [ rest.index_of[ ':' ] ]
                 bi2 : num [ rest.index_of[ '[' ] ]
+                if [ bi2 < 0 ]
+                    # literal layers.<id>: block — properties on child lines
+                    out.push[ cl ]
+                    k2 += 1
+                    continue
                 if [ bi2 > 0 && (ci2 < 0 || bi2 < ci2) ]
                     # layers.<id> [ args ] — def named by the id
                     call2 : array string [ call_parse[ rest ] ]
-                    d2 : defs[ call2[0] ]
+                    d2 : layer_defs[ call2[0] ]
                     if [ !d2 ]
                         errors.push[ '{src}:{cl.line}: unknown Layer `{call2[0]}`' ]
                         k2 += 1
@@ -466,7 +485,7 @@ class Style
                     if [ alphaA && rc.index_of[ '[' ] > 0 ]
                         # layers.<id>: <def> [ args ] — bind any def to the id
                         callc : array string [ call_parse[ rc ] ]
-                        d3 : defs[ callc[0] ]
+                        d3 : layer_defs[ callc[0] ]
                         if [ !d3 ]
                             errors.push[ '{src}:{cl.line}: unknown Layer `{callc[0]}`' ]
                             k2 += 1
@@ -577,10 +596,47 @@ class Style
 
         return match
 
+    # pull an instance's embedded style member into base, once per type.
+    # null style is not memoized: defaults may not be applied yet
+    func integrate_instance [ n: element ] -> bool
+        sm : Au.find_member[ typeid[ n ], "style", AU_MEMBER_VAR, 0, true ]
+        if [ !sm ] return false
+        v : Au n.member_object[ sm ]
+        css : (v inherits CSS)
+        if [ !css ] return false
+        if [ !visited ] visited = array string []
+        if [ !errors  ] errors  = array string []
+        ty  : typeid[ n ]
+        key : 'type:{ty.ident}'
+        if [ visited.index_of[ key ] >= 0 ] return false
+        visited.push[ key ]
+        lines : array CSSLine [ split_css[ css.body ] ]
+        min_i : i32 [ 100000 ]
+        for [ cl: CSSLine ] in lines
+            if [ cl.indent < min_i ] min_i = cl.indent
+        code : '{ty.ident}\n'
+        for [ cl: CSSLine ] in lines
+            rel : i32 [ cl.indent - min_i ]
+            c0  : i8  [ (cl.content.count) ? cl.content.chars[0] : 0 ]
+            # states and Layer defs sit at top level; entries nest
+            top : bool [ rel == 0 && (c0 == ':' ||
+                (c0 >= 'A' && c0 <= 'Z' && cl.content.index_of[ '[' ] > 0)) ]
+            pad : i32 [ (top) ? 0 : 4 + rel ]
+            for [ sp: i32 0, sp < pad, sp += 1 ]
+                code = code + ' '
+            code = code + cl.content + '\n'
+        n0 : i32 [ base.count ]
+        process[ code, null ]
+        report_errors[]
+        for [ bi: i32 n0, bi < base.count, bi += 1 ]
+            cache_block[ base[bi], 0 ]
+        return true
+
     func compute [ n: element ] -> map StyleEntries[string]
         avail : map StyleEntries[string][]
         ty    : typeid[ n ]
         expect n inherits element, 'must inherit element'
+        integrate_instance[ n ]
         while [ ty != typeid[ Au ] ]
             all : array StyleEntry [ ]
             for [ m: i32 0, m < ty.members.count, m += 1 ]
@@ -599,13 +655,14 @@ class Style
         return mod_time != css_path.modified_time[ ]
 
     func check_reload [ ] -> bool
-        expect css_path, 'style not loaded with path'
+        if [ !css_path ] return false
         m : css_path.modified_time[ ]
         if [ mod_time != m ]
             mod_time = m
             base    = array StyleBlock [ ]
             visited = array string     [ ]
             errors  = array string     [ ]
+            layer_defs = map LayerDef [ string ] [ ]
             members = map StyleEntries[string] []
             process[ css_path.load[ typeid[ string ], null ], css_path ]
             cache_members[]
@@ -627,11 +684,12 @@ class Style
         loaded   = true
         reloaded = true
 
+    # app style: embedded per-class css only; a .css file is opt-in via path
     construct [ app_instance: element ]
-        app_type  : typeid app_instance
-        root_type : string app_type.ident
-        p         : path   'style/{root_type}.css'
-        construct [ p ]
+        base     = array StyleBlock [ ]
+        members  = map StyleEntries[string] []
+        loaded   = true
+        reloaded = true
 
 
 struct XCoord
@@ -843,6 +901,9 @@ class Region
         construct [ s ]
 
     func rectangle [ win: rect, rel: rect, last: rect, fc: f32, console: bool, sx: f32, sy: f32 ] -> rect
+        # unset region (no coords parsed) covers the full rect
+        if [ !set ]
+            return rect [ x: win.x, y: win.y, w: win.w, h: win.h ]
         if [ l.x_type == XAlign.right && r.x_type > XAlign.right ]
             gfc : f32 [ (fc > 0.0 && !l.pixel) ? fc : 1.0 ]
             gap : f32 [ l.offset * ((l.pixel) ? 1.0 : gfc) ]
@@ -1311,8 +1372,10 @@ func parse_qualifiers [ bl:StyleBlock, p: @cstr ] -> array StyleQualifier
                     v.type = q.trim[]
             if [ v.type ]
                 v.ty = Au.find_type[ v.type.chars, null ]
-                expect v.ty, 'type must exist: {v.type}'
-                if [ !processed && bl.types.index_of[ v.ty ] == -1 ]
+                if [ !v.ty ]
+                    puts 'style: unknown type {v.type} — block disabled'
+                    bl.invalid = true
+                if [ v.ty && !processed && bl.types.index_of[ v.ty ] == -1 ]
                     bl.types.push[ v.ty ]
             if [ tail ]
                 is_op : false

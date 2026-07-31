@@ -1776,6 +1776,14 @@ declare_enum(Key)
     enum_value(E,T,Y, dir,    2)
 declare_enum(Exists)
 
+#define FileType_module_ Au
+#define FileType_schema(E,T,Y,...) \
+    enum_value(E,T,Y, undefined, 0) \
+    enum_value(E,T,Y, ascii,     1) \
+    enum_value(E,T,Y, binary,    2) \
+    enum_value(E,T,Y, agnostic,  3)
+declare_enum(FileType)
+
 forward(array)
 
 #define vector_module_ Au

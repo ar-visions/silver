@@ -1,4 +1,5 @@
 export 0.8.8
+export extensions ['.smc', '.sfc']
 
 import trinity
 import img
@@ -101,6 +102,7 @@ class ppu_state
 	cg_toggle   	: bool
 	oamadd      	: u16                   # $2102/3 OAM word address (internal byte ptr = *2)
 	oamadd_reload	: u16
+	oam_rot     	: bool                  # $2103 bit7: OAM priority rotation
 	oam_latch   	: u8
 	oam_toggle  	: bool
 	ophct       	: u16                   # $213C latched H counter (dot)
@@ -240,9 +242,10 @@ ModelViewProject Mode7
 element asnes : trinity
 	public  width          	: i32    [ 1024 ]
 	public  height         	: i32    [ 896 ]
+	public  lock_aspect    	: bool   [ true ]
 	public  background     	: string [ 'Background' ]
 	public  spc_rom        	: path
-	public  rom            	: path
+	default rom            	: path
 	public  state          	: path             # --state <file>: boot then load this savestate
 	public  beep           	: bool
 	public  spcfile        	: path
@@ -1038,6 +1041,7 @@ element asnes : trinity
 		el [ r == 0x03 ]                                  # OAMADDH
 			ppu.oamadd_reload = ((u16[val] & 1) << 9) | (ppu.oamadd_reload & 0x1FF)
 			ppu.oamadd = ppu.oamadd_reload
+			ppu.oam_rot = (val & 0x80) != 0
 			ppu.oam_toggle = false
 		el [ r == 0x04 ]                                  # OAMDATA write
 			a : u16 [ ppu.oamadd & 0x3FF ]
@@ -1374,8 +1378,10 @@ element asnes : trinity
 		tbase : u32 [ (u32[obsel] << 13) & 0x6000 ]
 		nsel  : u32 [ (u32[obsel] >> 3) & 3 ]
 		bsize : u32 [ (u32[obsel] >> 5) & 7 ]
-		n : i32 [ 127 ]
-		while [ n >= 0 ]
+		fs : i32 [ (ppu.oam_rot) ? (i32[ppu.oamadd_reload >> 2] & 127) : 0 ]
+		k9 : i32 [ 127 ]
+		while [ k9 >= 0 ]
+			n     : i32 [ (fs + k9) & 127 ]
 			o     : i32 [ n * 4 ]
 			b0    : u8  [ ppu_ob[o] ]
 			b1    : u8  [ ppu_ob[o + 1] ]
@@ -1424,7 +1430,7 @@ element asnes : trinity
 								ppu.obj_idx[di]   = u8[n]
 						ox += 1
 				oy += 1
-			n -= 1
+			k9 -= 1
 
 	func ppu_obj_line [ y: i32, want_prio: u32, bright: u32 ]
 		base : i32 [ y * 256 ]
@@ -3534,6 +3540,13 @@ element asnes : trinity
 		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
 	public func paint [ cv: Canvas, vp: rect ]
+		ar9 : f32 [ 256.0 / 224.0 ]
+		fw9 : f32 [ vp.w ]
+		fh9 : f32 [ fw9 / ar9 ]
+		if [ fh9 > vp.h ]
+			fh9 = vp.h
+			fw9 = fh9 * ar9
+		vp = rect [ x: vp.x + (vp.w - fw9) * 0.5, y: vp.y + (vp.h - fh9) * 0.5, w: fw9, h: fh9 ]
 		bounds = vp                                # size basis for every scale below
 		if [ spctest ]
 			if [ !spc ] spc_test[]
@@ -3812,6 +3825,7 @@ element asnes : trinity
 		o = st_w8[ b, o, (ppu.cg_toggle) ? u8[1] : u8[0] ]
 		o = st_w16[ b, o, ppu.oamadd ]
 		o = st_w16[ b, o, ppu.oamadd_reload ]
+		o = st_w8[ b, o, (ppu.oam_rot) ? u8[1] : u8[0] ]
 		o = st_w8[ b, o, ppu.oam_latch ]
 		o = st_w8[ b, o, (ppu.oam_toggle) ? u8[1] : u8[0] ]
 		o = st_w8[ b, o, ppu.tm ]
@@ -4085,7 +4099,7 @@ element asnes : trinity
 		if [ !cpu || !spc ] return
 		wf : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ !wf ] return
-		mg : symbol [ 'ASNESSV1' ]
+		mg : symbol [ 'ASNESSV2' ]
 		fwrite[ mg, 1, 8, wf ]
 		pb : new u8 [ 1024 ]
 		memset[ pb, 0, 1024 ]
@@ -4139,6 +4153,7 @@ element asnes : trinity
 		o = st_w8[ b, o, (ppu.cg_toggle) ? u8[1] : u8[0] ]
 		o = st_w16[ b, o, ppu.oamadd ]
 		o = st_w16[ b, o, ppu.oamadd_reload ]
+		o = st_w8[ b, o, (ppu.oam_rot) ? u8[1] : u8[0] ]
 		o = st_w8[ b, o, ppu.oam_latch ]
 		o = st_w8[ b, o, (ppu.oam_toggle) ? u8[1] : u8[0] ]
 		o = st_w8[ b, o, ppu.tm ]
@@ -4238,7 +4253,7 @@ element asnes : trinity
 		if [ !rf ] return
 		hb : new u8 [ 8 ]
 		fread[ hb, 1, 8, rf ]
-		mg : symbol [ 'ASNESSV1' ]
+		mg : symbol [ 'ASNESSV2' ]
 		if [ memcmp[ hb, mg, 8 ] == 0 ]
 			pb : new u8 [ 1024 ]
 			fread[ pb, 1, 1024, rf ]
@@ -4329,6 +4344,8 @@ element asnes : trinity
 		o += 2
 		ppu.oamadd_reload = st_r16[ b, o ]
 		o += 2
+		ppu.oam_rot = b[o] != 0
+		o += 1
 		ppu.oam_latch = b[o]
 		o += 1
 		ppu.oam_toggle = b[o] != 0

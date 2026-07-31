@@ -122,8 +122,9 @@ class psg_state
 element rgen : trinity
 	public  width        : i32    [ 1280 ]   # 320 (H40) x4
 	public  height       : i32    [ 896 ]    # 224 x4
+	public  lock_aspect  : bool   [ true ]
 	public  background   : string [ 'Background' ]
-	public  rom          : path              # cartridge image
+	default rom          : path              # cartridge image
 	public  frames_exit  : i32               # auto-quit after N frames (0 = run forever)
 	public  resume       : bool              # boot into /tmp/rgen_state.bin
 	public  save_at      : i32               # auto-save state at frame N (0 = off)
@@ -578,6 +579,13 @@ element rgen : trinity
 		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
 	public func paint [ cv: Canvas, vp: rect ]
+		ar9 : f32 [ 10.0 / 7.0 ]
+		fw9 : f32 [ vp.w ]
+		fh9 : f32 [ fw9 / ar9 ]
+		if [ fh9 > vp.h ]
+			fh9 = vp.h
+			fw9 = fh9 * ar9
+		vp = rect [ x: vp.x + (vp.w - fw9) * 0.5, y: vp.y + (vp.h - fh9) * 0.5, w: fw9, h: fh9 ]
 		bounds = vp
 		if [ ! booted ] boot[]
 

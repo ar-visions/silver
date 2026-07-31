@@ -1,5 +1,6 @@
 # hello
 export 0.8.8
+export views ['git': FileType.ascii, 'hex': FileType.agnostic]
 
 # import silver modules
 import vec
@@ -10,9 +11,6 @@ import silver
 import project
 import dbg
 import spectra
-import asnes
-import knes
-import rgen
 
 # import c headers
 import <stdio.h>
@@ -31,19 +29,28 @@ ifdef [ linux ]
         -lutil
 
 # import our own sub-modules
+import FileIcons
 import Earth
 import Navigate
 import Editor
-import EmuView
 import NodeList
-import FileList
+import Git
 import Avatar
 
+# This is the EditorView
 element EditorView
     public selected   : bool
     public pane_index : i32
-    area : Region { l0 t0 r0 b0 }
-    bg   : Layer [ fill_color: rgba [ '#140d2a' ] ]
+    public is_console : bool
+
+    style : CSS {
+        area: l0 t0 r0 b0
+        layers.bg:
+            fill_color: #140d2acc
+        :is_console
+            layers.bg:
+                fill_color: #140d2a80
+    }
 
     func text_of [] -> Editor
         if [ !elements ] return null
@@ -53,14 +60,50 @@ element EditorView
         if [ !te || !(te inherits Editor) ] return null
         return Editor te
 
+    # file-create mode: state and behavior live on THIS view alone
+    mutable newfile      : bool
+    mutable newfile_text : string
+    mutable newfile_src  : path
+
+    func newfile_enter [ p: path ]
+        newfile      = true
+        newfile_text = ''
+        newfile_src  = p
+
+    func newfile_exit []
+        newfile      = false
+        newfile_text = ''
+
+    func newfile_exists [] -> bool
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb || !orb.nav_root ] return false
+        if [ !newfile_text || newfile_text.count == 0 ] return false
+        p9 : path '{orb.nav_root}/{newfile_text}'
+        return p9.exists[]
+
+    func newfile_commit []
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb || !newfile_text || newfile_text.count == 0 ] return
+        if [ newfile_exists[] ] return    # red name: no action
+        p9 : path '{orb.nav_root}/{newfile_text}'
+        e9 : string ''
+        p9.save[ e9, null ]
+        newfile_exit[]
+        orb.exit_finder[]
+        orb.open_file[ p9 ]
+
     public func render [] -> Elements
         orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return null
         pi  : i32 [ pane_index ]
         w   : Window ux
 
-        psess : string (pi < orb.pane_console.count) ? orb.pane_console[pi] : ''
+        psess : string (orb.agent_open && pi == orb.editor_slots.count) ? orb.orbit_sid :
+            ((pi < orb.pane_console.count) ? orb.pane_console[pi] : '')
         is_con : bool [ psess && psess.count > 0 ]
+        if [ is_console != is_con ]
+            is_console = is_con
+            pristine   = false
 
         slot : i32  [ (pi < orb.editor_slots.count) ? orb.editor_slots[pi] : -1 ]
         p    : path (slot >= 0 && slot < orb.open_files.count) ? orb.open_files[slot] : null
@@ -89,38 +132,54 @@ element EditorView
             ttl['ctx_copy'] = LabelButton [ label: 'context', manual_mode: true ]
             ttl['ctx_shot'] = LabelButton [ label: 'screen',  manual_mode: true ]
         tl : string [ (p) ? p.filename[] : 'Open' ]
+
         if [ is_con ]
             tl = psess
             phx : i32 [ tl.index_of[ '#' ] ]
             if [ phx > 0 ] tl = tl.mid[ 0, phx ]
+        
         if [ findbar_on ] tl = ''
+
+        # create mode self-heals when the pane's file changes under it
+        if [ newfile && newfile_src && p && '{newfile_src}' != '{p}' ] newfile_exit[]
+        if [ newfile ]
+            ttl['newfile_cancel'] = LButton [ icon: 'close', manual_mode: true ]
         els['title'] = EditorTitle [
             area: Region { l0 t0 r0 h1.3 }
             selected: !p
             focusable: true
             spacing_x: 0.2
             spacing_y: 0.2
-            edit: orb.find_text
-            label: tl
+            edit: (newfile) ? newfile_text : orb.find_text
+            label: (newfile) ? 'name new file' : tl
+            conflict: newfile && newfile_exists[]
             no_scroll: true
             elements: ttl
         ]
 
         app_running : bool [ (ed_live && ed_live.run_view && !ed_live.run_view.ended) ? true : false ]
-        run_ok : bool [ app_running && !is_con ]
+        app_pip     : bool [ (app_running && !ed_live.app_view) ? true : false ]
+        run_ok      : bool [ app_running && !is_con ]
+
         if [ !run_ok && p && !is_con ]
             fnm : p.filename[]
             if [ fnm.count >= 3 && fnm.mid[ fnm.count - 3, 3 ].compare[ '.ag' ] == 0 ] run_ok = true
+            # files with a registered handler app stay runnable (hex view keeps the band)
+            if [ !run_ok && ed_live && ed_live.handler_module_for[ p ] ] run_ok = true
+        
         vinner : Elements [ ]
 
         if [ is_con ]
-            orb.ensure_console[ psess ]
             vinner['text'] = Console [
                 session_id: psess, sessions: orb.ed_sessions, feed: null,
                 launch: orb.agent_cmd[ psess ], animated: true ]
+        el [ orb.editor_panel == 'git' ]
+            vinner['text'] = GitList [ file: p ]
         el
+            edels : Elements []
             vinner['text'] = Editor [
                 src: p
+                diff_commit: orb.diff_commit,
                 breakpoints: orb.breakpoints, code_font_size: orb.code_font_size,
                 nav: orb.nav_panes[ pi ], pane_index: pi,
                 debug_running: running, debugger: dbgr, debug_vars: orb.debug_vars,
@@ -131,14 +190,14 @@ element EditorView
                 nav_list: (searchable) ? orb.nav_showing : false, dock_rows: orb.nav_dock_rows,
                 grid_mode: (searchable) ? (orb.nav_showing && orb.grid_mode) : false,
                 hits: orb.find_hits,
-                find_query: (searchable && findbar_on) ? orb.findbar_text : '' ]
+                find_query: (searchable && findbar_on) ? orb.findbar_text : '',
+                elements: edels ]
 
         # the run band + console, INSIDE this tab
-        if [ run_ok ]
+        if [ run_ok && !app_pip ]
             emod : string [ (p) ? p.filename[] : 'app' ]
             di2  : i32    [ emod.index_of[ '.' ] ]
             if [ di2 > 0 ] emod = emod.mid[ 0, di2 ]
-            if [ !orb.ed_sessions ] orb.ed_sessions = map ConsoleSession [string] [ ]
             fels : Elements []
             if [ !app_running ]
                 fels['run'] = RunButton [ icon: 'play', manual_mode: true ]
@@ -148,14 +207,13 @@ element EditorView
                 fels['stop'] = RunButton [ icon: 'stop', manual_mode: true ]
             if [ orb.err_file && orb.err_line > 0 ]
                 fels['error'] = Option [ label: 'error {orb.err_line}', manual_mode: true ]
-            if [ orb.take_closed[ orb.dbg_sizes, 'callstack' ] ] orb.show_instruments = false
-            if [ orb.take_closed[ orb.dbg_sizes, 'fields' ] ]    orb.show_variables   = false
-            if [ orb.take_closed[ orb.dbg_sizes, 'avatar' ] ]    orb.show_orbiter     = false
             smask : i32 [ 0 ]
             if [ orb.show_instruments ] smask = smask | 1
             if [ orb.show_variables ]   smask = smask | 2
-            if [ orb.show_orbiter ]     smask = smask | 4
-            fels['instruments'] = TButtons [ buttons: [ 'callstack', 'fields', 'orbiter4' ], manual: true, sel_mask: smask, area: Region { r0+ t0 w3.5 h0.9 } ]
+            fels['instruments'] = TButtons [ 
+				buttons: [ 'callstack', 'fields' ],
+				manual: true, sel_mask: smask,
+				area: Region { r0+ t0 w2.4 h0.9 } ]
             cf2 : Elements []
             cf2['console_filter'] = element [ area: Region { r8px t4px w6 h32px }, label: emod, focusable: true, no_scroll: true ]
             runcmd : string [ (ed_live && ed_live.run_view) ? ed_live.run_view.cmd : null ]
@@ -167,59 +225,90 @@ element EditorView
             sp_inner['console'] = con
             if [ orb.show_instruments ] sp_inner['callstack'] = Callstack [ frames: orb.debug_frames[] ]
             if [ orb.show_variables ]   sp_inner['fields']    = Fields [ vars: orb.debug_vars ]
-            if [ orb.show_orbiter ]     sp_inner['avatar']    = OrbiterAvatar [ src_file: p, docked: true ]
-            if [ !orb.dbg_sizes ] orb.dbg_sizes = array [ ]
             bels['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, sizes: orb.dbg_sizes, inner: sp_inner, snap_close: true ]
             vinner['band'] = RunBand [ elements: bels ]
-        if [ !orb.band_sizes ] orb.band_sizes = array [ ]
         els['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
             inner: vinner, sizes: orb.band_sizes, deflt: 180.0 ]
         return els
 
 element EditorTitle
     public selected : bool
-    area  : Region { l0 t0 r0 h1.3 }
-    tbar  : Layer [ fill_color: rgba [ '#2480' ], inner_glow: Glow [ '#8af2 26' ],
-        stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
-    tface : Layer [ label_color: rgba [ '#fff' ], label_size: 19, editable: true,
-        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 52.0, y: 0.0 ] ]
-    tdiv  : Layer [ fill_color: rgba [ '#fff2' ], area: Region { l0 b0 r0 h1px } ]
+    # newfile mode: typed name collides with an existing file
+    public conflict : bool
+    mutable ficons  : FileIcons
+    style : CSS {
+        area: l0 t0 r0 h1.3
+        layers.tbar:
+            fill_color: #2480
+            inner_glow: #8af2 26
+            stroke_width: 0.5
+            stroke_color: #fff2
+        layers.tface:
+            label_color: #fff
+            label_size: 19
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 78.0 0.0
+        :conflict
+            layers.tface:
+                label_color: #e05e5e
+        layers.tdiv:
+            fill_color: #fff2
+            area: l0 b0 r0 h1px
+    }
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ !label || label.count == 0 ] return
+        if [ !ficons ] ficons = FileIcons []
+        mdl : SVGModel ficons.icon[ label, 20 ]
+        if [ !mdl ] return
+        cv  : Canvas [ w.screen ]
+        isz : f32 [ 20.0 ]
+        cv.fill_color[ '#ffffff' ]
+        cv.stroke_color[ '#ffffff' ]
+        cv.draw_svg[ mdl, 50.0, (bounds.h - isz) * 0.5, isz, isz ]
 
 
 Option NavButton
-    quiet  : Layer [ 
-		fill_color: rgba 	[ '#614' ],
-		radius: 	Radius 	[ '8' ],
-		inner_glow: Glow 	[ '#ccf2 16' ]
-    ]
-    hover  : Layer [
-		states: 	State.hovered,
-		fill_color: rgba [ '#826' ],
-		radius: 	Radius [ '8' ],
-		inner_glow: Glow [ '#fcc6 20' ]
-    ]
-    press  : Layer [
-        states:     State.pressed,
-        fill_color: rgba [ '#438' ],
-        radius:     Radius [ '8' ],
-        inner_glow: Glow [ '#ccf8 22' ]
-    ]
-    active : Layer [
-        states:     State.selected,
-        fill_color: rgba [ '#c8641e' ],
-        radius:     Radius [ '8' ],
-        inner_glow: Glow [ '#ffae5ea2 18' ]
-    ]
+    style : CSS {
+        layers.body:
+            fill_color: #614
+            radius: 8
+            inner_glow: #ccf2 16
+        :hovered
+            layers.body:
+                fill_color: #826
+                inner_glow: #fcc6 20
+        :pressed
+            layers.body:
+                fill_color: #438
+                inner_glow: #ccf8 22
+        :selected
+            layers.body:
+                fill_color: #c8641e
+                inner_glow: #ffae5ea2 18
+    }
 
 Avatar OrbiterAvatar
-    render_scale: 4.0
+    render_scale : f32 [ 4.0 ]
+
+    style : CSS {
+        area: r-14 b22 w12 h19, 700ms cubic outward
+        opacity: 0.0, 700ms cubic outward
+    :summoned
+        area: r-1 b22 w12 h19, 700ms cubic inward
+        opacity: 1.0, 700ms cubic inward
+    }
+    
+    
     public src_file : path
     eye_pos     : vec3f [ 0.0, 4.2, 0.0 ]
     target_pos  : vec3f [ 0.0, -0.3, 0.0 ]
     up_vec      : vec3f [ 0.0, 0.0, -1.0 ]
     fov         : f32   [ 24.0 ]
-    env_yaw     : f32   [ 0.0 ]
-    env_pitch   : f32   [ 0.0 ]
+    env_yaw     : f32   [ 0 ]
+    env_pitch   : f32   [ 0 ]
     blend_rings : f32   [ 0.2 ]
     blend_haze  : f32   [ 1.0 ]
     blend_bands : f32   [ 0.2 ]
@@ -250,11 +339,17 @@ Avatar OrbiterAvatar
     # how fast the rim crosses between dark and blue
     listen_amount : f32 [ 0.20 ]
     mutable listen_cur : f32
+    # summon slide: 0 = below the corner, 1 = at rest
+    summon_amount : f32 [ 0.14 ]
+    mutable summon_t : f32
 
+    # clicking the avatar dismisses it — same as the toggle off
     func on_click [ ev: Event ]
         if [ drag_moved ] return
         orb : orbiter [ ux.app_object ]
-        if [ orb ] orb.toggle_listen[ src_file ]
+        if [ orb ]
+            #orb.show_orbiter = false
+            if [ orb.listening[] ] orb.toggle_listen[ null ]
         ev.no_propagation = true
 
     # called each frame with the live State bitmask
@@ -301,7 +396,7 @@ Avatar OrbiterAvatar
     body : PBR [
         model_id: 'orbiter32',
         groups: ['outside','flower','separator'],
-        env_id: 'forest', pulse_width: 4.0, gamma: 2.2 ]
+        env_id: 'forest', pulse_width: 4.0, gamma: 1.88 ]
 
     core : Core [
         model_id: 'orbiter32',
@@ -314,96 +409,187 @@ Avatar OrbiterAvatar
         pulse_width: 1.0 ]
 
     aura : Aura [
-        model_id: 'uv-quad2', env_id: 'forest',
+        model_id: 'uv-quad2',
         pulse_width: 0.4, pulse_height: 1.2, halo_height: 0.4,
         beam_fade: 2.2, beam_cone: 0.35, flame: 0.0 ]
 
 
 
+# geometry-only tweaks stay code members; base css inherits through
 NavButton LabelButton
     area   : Region { r0+ t0 w2.2 h0.9 }
     tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
-LabelButton StatusLabel
-    disable : true
-    quiet   : Layer [ fill_color: rgba [ '#6611441a' ], stroke_width: 1.0,
-        stroke_color: rgba [ '#661144' ], radius: Radius [ '8' ] ]
 
 NavButton RButton
     area : Region { r0+ t0 w1.15 h0.9 }
 
+# bare modal icon: Option skips NavButton's body chrome entirely
+Option GitButton
+    area : Region { r0+ t0 w1.15 h0.9 }
+    style : CSS {
+        layers.iconl:
+            image_scale: 0.8
+    }
+
 NavButton LButton
     area : Region { l0+ t0 w1.15 h0.9 }
 
+NavButton OrbiterButton
+    area : Region { r0.6 b1.6 w1.2 h1.2 }
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 8
+            inner_glow: #0000 0
+            stroke_width: 1
+            stroke_color: #fff4
+        layers.iconl:
+            image_scale: 1.1
+        :hovered
+            layers.body:
+                fill_color: #0000
+                inner_glow: #0000 0
+                stroke_color: #fff8
+        :pressed
+            layers.body:
+                fill_color: #0000
+                inner_glow: #0000 0
+                stroke_color: #9cf8
+        :selected
+            layers.body:
+                fill_color: #0000
+                inner_glow: #0000 0
+                stroke_color: #2a6be0
+    }
+
 LButton RunButton
-    shifted : Layer [ states: State.shifted, fill_color: rgba [ '#26e' ],
-        radius: Radius [ '8' ], inner_glow: Glow [ '#9cf8 20' ] ]
-    running : Layer [ states: State.selected, fill_color: rgba [ '#c8641e' ],
-        radius: Radius [ '8' ], inner_glow: Glow [ '#ffae5ea2 18' ] ]
+    style : CSS {
+        layers.body:
+            fill_color: #614
+            radius: 8
+            inner_glow: #ccf2 16
+        :hovered
+            layers.body:
+                fill_color: #826
+                inner_glow: #fcc6 20
+        :pressed
+            layers.body:
+                fill_color: #438
+                inner_glow: #ccf8 22
+        :shifted
+            layers.body:
+                fill_color: #26e
+                inner_glow: #9cf8 20
+        :selected
+            layers.body:
+                fill_color: #c8641e
+                inner_glow: #ffae5ea2 18
+    }
 
 element PatternField
     public selected : bool
-    area : Region { r0+ t0 w7 h0.9 }
-    body : Layer [ states: State.selected, fill_color: rgba [ '#216' ], radius: Radius [ '8' ] ]
-    face : Layer [ label_color: rgba [ '#fff' ], label_size: 19, editable: true,
-        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 12.0, y: 0.0 ] ]
+    style : CSS {
+        area: r0+ t0 w7 h0.9
+        layers.body:
+            fill_color: #0000
+            radius: 8
+        layers.face:
+            label_color: #fff
+            label_size: 19
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 12.0 0.0
+        :selected
+            layers.body:
+                fill_color: #216
+    }
 
 element FindField
-    area : Region { l1.37 t0 r20 b0 }
-    face : Layer [ label_color: rgba [ '#fff6' ], label_size: 19, editable: true,
-        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 0.0, y: 0.0 ] ]
-    foc  : Layer [ states: State.focused, label_color: rgba [ '#ffff' ], label_size: 19, editable: true,
-        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 0.0, y: 0.0 ] ]
+    style : CSS {
+        area: l1.37 t0 r20 b0
+        layers.face:
+            label_color: #fff6
+            label_size: 19
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 0.0 0.0
+        :focused
+            layers.face:
+                label_color: #ffff
+    }
 
 # findbar replace input: right-flow slot before 'All'
 element ReplaceField
-    area : Region { r0+ t0 w6 h0.9 }
-    face : Layer [ label_color: rgba [ '#fff6' ], label_size: 14, editable: true,
-        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 10.0, y: 0.0 ] ]
-    foc  : Layer [ states: State.focused, label_color: rgba [ '#ffff' ], label_size: 14, editable: true,
-        label_align: vec2f [ x: 0.0, y: 0.5 ], label_offset: vec2f [ x: 10.0, y: 0.0 ] ]
+    style : CSS {
+        area: r0+ t0 w6 h0.9
+        layers.face:
+            label_color: #fff6
+            label_size: 14
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 10.0 0.0
+        :focused
+            layers.face:
+                label_color: #ffff
+    }
 
 Button PillButton
-    area   : Region { l6+px t3px w3 h1 }
-    body   : Layer [ fill_color: rgba [ '#114' ], fill_gradient: GradientType.linear,
-        fill_gradient_color: rgba [ '#315f' ], fill_gradient_angle: 90.0,
-        inner_glow: Glow [ '#ccf2 16' ], radius: Radius [ '8' ],
-        stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
-    hover  : Layer [
-            states:                 State.hovered,
-            fill_color:             rgba [ '#216' ],
-            fill_gradient:          GradientType.linear,
-            fill_gradient_color:    rgba [ '#327f' ],
-            fill_gradient_angle:    90.0,
-            inner_glow:             Glow [ '#ccf4 16' ],
-            radius:                 Radius [ '8' ]
-        ]
-    active : Layer [
-            states:                 State.selected,
-            fill_color:             rgba [ '#c8641e' ],
-            fill_gradient:          GradientType.linear,
-            fill_gradient_color:    rgba [ '#425f' ],
-            fill_gradient_angle:    90.0,
-            inner_glow:             Glow [ '#ffae5ea2 18' ],
-            radius:                 Radius [ '8' ]
-        ]
-    face   : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
-        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+    style : CSS {
+        area: l6+px t3px w3 h1
+        layers.body:
+            fill_color: #114
+            fill_gradient: linear
+            fill_gradient_color: #315f
+            fill_gradient_angle: 90.0
+            inner_glow: #ccf2 16
+            radius: 8
+            stroke_width: 0.5
+            stroke_color: #fff2
+        layers.face:
+            label_color: #fff
+            label_size: 14
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                fill_color: #216
+                fill_gradient_color: #327f
+                inner_glow: #ccf4 16
+        :selected
+            layers.body:
+                fill_color: #c8641e
+                fill_gradient_color: #425f
+                inner_glow: #ffae5ea2 18
+    }
 
 element RunBand
-    area : Region { l0 t0 r0 b0 }
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
 
 Console RunConsole
-    area    : Region { l0 t1.3 r0 b0 }
-    content : TermLayer [ area: Region { 8px }, label_height: 1.0, label_size: 16 ]
+    style : CSS {
+        area: l0 t1.3 r0 b0
+        layers.content: TermLayer
+            area: 8px
+            label_height: 1.0
+            label_size: 16
+    }
 
 
 Group ToolsHeader
-    area : Region { l0 t0 r0 h1.3 }
-    hbar : Layer [ fill_color: rgba [ '#2480' ], inner_glow: Glow [ '#8af2 26' ],
-        stroke_width: 0.5, stroke_color: rgba [ '#fff2' ] ]
-    hdiv : Layer [ fill_color: rgba [ '#fff2' ], area: Region { l0 b0px r0 h1px } ]
+    style : CSS {
+        area: l0 t0 r0 h1.3
+        layers.hbar:
+            fill_color: #2480
+            inner_glow: #8af2 26
+            stroke_width: 0.5
+            stroke_color: #fff2
+        layers.hdiv:
+            fill_color: #fff2
+            area: l0 b0px r0 h1px
+    }
 
 Option  ProjectTab
     public state : string
@@ -445,7 +631,7 @@ class FmtWatch
 element orbiter : trinity # implements compiler
     public width         : i32    [ 1888 ]
     public height        : i32    [ 888 ]
-    public background    : string [ 'Background' ]
+    public background    : string [ 'Earth' ]
     public live_reload   : bool   [ true ]
     public startup_path  : path
     default resource     : string
@@ -465,7 +651,7 @@ element orbiter : trinity # implements compiler
     # summoned shell bound its pane-0 AppView to the peer (once)
     intern orbit_bound    : bool
     # the agent tab's session id ('' = shell mode off)
-    intern orbit_sid      : string
+    public orbit_sid      : string
     # the one agent session is working — drives the avatar tilt
     public busy           : bool
     intern busy_at        : i64
@@ -499,6 +685,8 @@ element orbiter : trinity # implements compiler
     intern nav_dock_rows    : i32
     public editor_slots     : array i32
     intern pane_console     : array string
+    # the ai/agent console is separate state; always projected last
+    public agent_open       : bool
     intern console_seq      : i32
     intern pending_finder   : i32 [ -1 ]
     intern pending_run      : i32 [ -1 ]
@@ -517,13 +705,18 @@ element orbiter : trinity # implements compiler
     public show_instruments : bool
     # the variables panel — the other tab of the stack menu
     public show_variables   : bool
-    public show_orbiter     : bool [ true ]
+    # summon-only: never saved, never active at startup
+    intern show_orbiter     : bool
+    intern chord_shift      : bool
+    intern chord_meta       : bool
     intern listen_file      : path
     public dbg_sizes        : array
     public active_idx       : i32
     public config_side      : i32
     public active_panel  : string
     public editor_panel  : string
+    # commit hash the stacked diff view presents
+    public diff_commit   : string
     public active_target : string
     intern fmt_watch  : map FmtWatch [string]
     public show_avatar   : bool [ true ]
@@ -564,6 +757,10 @@ element orbiter : trinity # implements compiler
     intern err_file      : path
     intern err_line      : i32
     public nav_root      : path
+    # tool views mounted on the nav's left rail, from module exports
+    mutable view_tools     : array string
+    mutable view_tools_bin : array string
+    mutable view_mods      : map string [string]
     public browse_single : bool
     public show_pins     : bool [ true ]
     public grid_mode     : bool
@@ -574,6 +771,8 @@ element orbiter : trinity # implements compiler
 
     func init []
         au_live_set_defer[ 1 ]
+        # the syntax service rebuilds our own module — never self-reload
+        au_live_set_reload[ 0 ]
         breakpoints    = map string[string] []
 
         target_names   = array string []
@@ -657,11 +856,7 @@ element orbiter : trinity # implements compiler
         orbit_sid.hold[]
         if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
         if [ orbit_app && !ed_sessions[ orbit_sid ] ]
-            pi9 : i32 [ editor_slots.count ]
-            editor_slots += -1
-            while [ pane_console.count <= pi9 ]
-                pane_console += ''
-            pane_console[pi9] = orbit_sid
+            agent_open = true
             ensure_console[ orbit_sid ]
         filter_text    = ''
         find_text      = ''
@@ -947,7 +1142,7 @@ element orbiter : trinity # implements compiler
     func fmt_sync []
         if [ !fmt_watch ] fmt_watch = map FmtWatch [string] []
         if [ !open_files ] return
-        live : map bool [string] []
+        live : array string []
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             slot : i32 [ editor_slots[i] ]
             if [ slot < 0 || slot >= open_files.count ] continue
@@ -958,11 +1153,12 @@ element orbiter : trinity # implements compiler
             if [ fn.mid[ fn.count - 3, 3 ].compare[ '.ag' ] != 0 ] continue
             main : path fmt_main[ f ]
             k : string '{main}'
-            live[k] = true
+            if [ live.index_of[ k ] < 0 ] live += k
             if [ !fmt_watch[ k ] ] fmt_start[ main ]
         stale : array string []
-        for [ fw: FmtWatch, k: string ] in fmt_watch
-            if [ !live[ k ] ] stale += k
+        if [ fmt_watch.count > 0 ]
+            for [ fw: FmtWatch, k2: string ] in fmt_watch
+                if [ live.index_of[ k2 ] < 0 ] stale += k2
         for [ i: i32 0, i < stale.count, i += 1 ]
             fmt_stop[ stale[i] ]
 
@@ -1050,15 +1246,11 @@ element orbiter : trinity # implements compiler
         return 'claude'
 
     func last_editor_pane [] -> i32
-        for [ i: i32 editor_slots.count - 1, i >= 0, i -= 1 ]
-            if [ i >= pane_console.count ] return i
-            if [ pane_console[i] != orbit_sid ] return i
-        return -1
+        return editor_slots.count - 1
 
+    # the agent pane is derived: after all inline panes, when open
     func agent_pane [] -> i32
-        for [ i: i32 0, i < pane_console.count, i += 1 ]
-            if [ pane_console[i] == orbit_sid ] return i
-        return -1
+        return (agent_open) ? editor_slots.count : -1
 
     func ensure_console [ sid: string ] -> ConsoleSession
         if [ !sid || sid.count == 0 ] return null
@@ -1506,10 +1698,15 @@ element orbiter : trinity # implements compiler
         browse_open : bool [ menu_open && nav_showing ]
         engaged : bool [ browse_open || fb_on || tfoc ]
         # no close chip — Escape closes the finder
+        edp9 : Editor pane_at[ pane_ix ]
+        hx9  : bool [ edp9 && edp9.hx_force ]
+        if [ editor_panel != 'editor' || (diff_commit && diff_commit.count > 0) || hx9 ]
+            els['panel_close'] = LButton [ icon: 'close', manual_mode: true ]
         if [ engaged && !is_resource ]
             els['magnify'] = LButton [ icon: 'magnify', selected: fb_on, manual_mode: true ]
 
-        psess9 : string (pane_ix < pane_console.count) ? pane_console[pane_ix] : ''
+        psess9 : string (agent_open && pane_ix == editor_slots.count) ? orbit_sid :
+            ((pane_ix < pane_console.count) ? pane_console[pane_ix] : '')
         con9   : bool [ psess9 && psess9.count > 0 ]
         tnav : array string [ ]
         if [ editor_slots.count > 1 ] tnav.push[ 'undock' ]
@@ -1521,11 +1718,6 @@ element orbiter : trinity # implements compiler
 
         if [ menu_open && nav_showing && docked && docked.count > 0 ]
             els['pins'] = RButton [ icon: (show_pins) ? 'side_on' : 'side_off', selected: show_pins, manual_mode: true ]
-        if [ menu_open && nav_showing ]
-            els['grid'] = RButton [ icon: 'files', selected: grid_mode, manual_mode: true ]
-
-        if [ dbg_locked ]
-            els['active'] = StatusLabel [ label: 'active' ]
 
         if [ rv ]
             vel : Elements rv.title_elements*[]
@@ -1659,9 +1851,13 @@ element orbiter : trinity # implements compiler
             for [ iw: watch ] in index_watches
                 iw.pause[ ]
         index_cancel = true
+        # the worker owns file_index until it exits — join before freeing
+        while [ index_building ]
+            usleep[ 1000 ]
         index_task   = null
-        drop[ file_index ]
+        index_lock.lock[]
         file_index   = list string []
+        index_lock.unlock[]
         find_results = list string []
         ed_sessions  = map ConsoleSession [string] [ ]
         super.on_unload[ ]
@@ -1893,6 +2089,73 @@ element orbiter : trinity # implements compiler
                 if [ e inherits EditorView ] return e.id
         return 'pane0'
 
+    # modules register rail views in install/export/*.agi:
+    # views: ['name': ascii|binary|agnostic] — FileType applicability
+    func ensure_views []
+        if [ view_tools ] return
+        view_tools     = array string []
+        view_tools_bin = array string []
+        view_mods      = map string [string] []
+        asc9a : array string []
+        bin9a : array string []
+        any9a : array string []
+        root : path.path_startup[]
+        if [ root ]
+            d : path '{root}/install/export'
+            entries : array [ d.ls[ null, false ] ]
+            if [ entries ]
+                for [ e: path ] in entries
+                    ax : e.ext[]
+                    if [ !ax || !(ax == 'agi') ] continue
+                    mod   : string e.stem[]
+                    ftext : string e.load[ typeid[string], null ]
+                    if [ !ftext ] continue
+                    n2  : i32 [ i32[ ftext.count ] ]
+                    ls9 : i32 [ 0 ]
+                    for [ i: i32 0, i <= n2, i += 1 ]
+                        c : i32 [ (i < n2) ? ((i32 ftext.chars[i]) & 255) : 10 ]
+                        if [ c != 10 ] continue
+                        line : string ftext.mid[ ls9, i - ls9 ]
+                        ls9 = i + 1
+                        if [ !(line.index_of[ 'views:' ] == 0) ] continue
+                        ln2 : i32 [ i32[ line.count ] ]
+                        j   : i32 [ 0 ]
+                        while [ j < ln2 ]
+                            cq : i32 [ (i32 line.chars[j]) & 255 ]
+                            if [ cq != 39 ]
+                                j += 1
+                                continue
+                            k : i32 [ j + 1 ]
+                            while [ k < ln2 && ((i32 line.chars[k]) & 255) != 39 ] k += 1
+                            nm9 : string line.mid[ j + 1, k - j - 1 ]
+                            j = k + 1
+                            # optional ': member' up to the , or ] delimiter
+                            mem9 : string ''
+                            while [ j < ln2 ]
+                                cm : i32 [ (i32 line.chars[j]) & 255 ]
+                                if [ cm == 44 || cm == 93 || cm == 39 ] break
+                                if [ (cm >= 97 && cm <= 122) || (cm >= 65 && cm <= 90) ]
+                                    ks : i32 [ j ]
+                                    while [ j < ln2 ]
+                                        c2 : i32 [ (i32 line.chars[j]) & 255 ]
+                                        if [ !((c2 >= 97 && c2 <= 122) || (c2 >= 65 && c2 <= 90)) ] break
+                                        j += 1
+                                    mem9 = line.mid[ ks, j - ks ]
+                                    continue
+                                j += 1
+                            if [ nm9.count > 0 ]
+                                if [ mem9 == 'ascii' ]       asc9a.push[ nm9 ]
+                                el [ mem9 == 'binary' ]      bin9a.push[ nm9 ]
+                                el                           any9a.push[ nm9 ]
+                                view_mods[ nm9 ] = mod
+        for [ s: string ] in asc9a
+            view_tools.push[ s ]
+        for [ s: string ] in bin9a
+            view_tools_bin.push[ s ]
+        for [ s: string ] in any9a
+            view_tools.push[ s ]
+            view_tools_bin.push[ s ]
+
     func apply_pane [ ed: Editor, is_search: bool, slot: i32 ]
         if [ !ed ] return
         was_search : bool [ ed.finder_list ]
@@ -1901,6 +2164,12 @@ element orbiter : trinity # implements compiler
             ed.scroll.y      = 0.0
             ed.scroll_target = 0.0
         ed.finder_list = is_search
+        # code views only fit ascii files; binaries get hex alone
+        ed.nav_tools   = null
+        ed.nav_default = null
+        if [ is_search && ed.src ]
+            ed.nav_tools   = (ed.file_is_binary[ ed.src ]) ? view_tools_bin : view_tools
+            ed.nav_default = ed.handler_module_for[ ed.src ]
         if [ is_search ]
             ed.lines = find_results
         el [ slot >= 0 && slot < open_files.count ]
@@ -1956,6 +2225,18 @@ element orbiter : trinity # implements compiler
         return false
 
     func close_pane [ pi: i32 ]
+        if [ agent_open && pi == editor_slots.count ]
+            agent_open = false
+            if [ pane_sizes ]
+                for [ qa: i32 0, qa + 1 < pane_sizes.count, qa += 2 ]
+                    qk9 : string [ pane_sizes[ qa ] ]
+                    if [ qk9 && qk9.compare[ 'pane{pi}' ] == 0 ]
+                        pane_sizes.remove[ qa ]
+                        pane_sizes.remove[ qa ]
+                        break
+            if [ active_pane >= editor_slots.count ] active_pane = editor_slots.count - 1
+            save_session[]
+            return
         if [ editor_slots.count <= 1 || pi < 0 || pi >= editor_slots.count ] return
         pe : Editor pane_at[ pi ]
         if [ pe && pe.run_view ] pe.toggle_app_run[ false ]
@@ -2009,6 +2290,7 @@ element orbiter : trinity # implements compiler
 
     func run_search []
         win : ux
+        ensure_views[]
         sp     : string search_pane[]
         active : bool [ (find_text && find_text.count > 0) || (win && win.focus && win.focus.id == 'title') ]
         if [ active ]
@@ -2062,6 +2344,8 @@ element orbiter : trinity # implements compiler
                             if [ !e.is_dir[] ]
                                 push_file_hit[ e, grid_mode ]
                                 combined.push[ '{e}' ]
+                    # bottom of the results: bordered new-file row
+                    find_hits.push[ FindHit [ is_header: true, is_newfile: true, text: 'new file' ] ]
             find_results = combined
         nav_showing = active && find_hits && find_hits.count > 0
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
@@ -2077,6 +2361,15 @@ element orbiter : trinity # implements compiler
                 te : element title_at[ i ]
                 if [ te ] te.set_focus[]
         run_search[]
+
+    # the EditorView above a title target, when its create mode is active
+    func newfile_view [ t: element ] -> EditorView
+        for [ e9: element* t, e9, e9 = e9.parent ]
+            if [ e9 inherits EditorView ]
+                ev9 : EditorView e9
+                if [ ev9.newfile ] return ev9
+                return null
+        return null
 
     func open_file [ p: path ]
         open_in_pane[ p, active_pane ]
@@ -2254,16 +2547,6 @@ element orbiter : trinity # implements compiler
         if [ !ev.target ] return
         puts 'on_press: target={ev.target.id}'
         for [ e: element* ev.target, e, e = e.parent ]
-            if [ e inherits FileList ]
-                fl : FileList e
-                if [ fl.pending_open ]
-                    if [ ev.key.shift && editor_slots.count > 1 ]
-                        si : i32 [ (active_pane + 1 < editor_slots.count) ? active_pane + 1 : 0 ]
-                        open_in_pane[ fl.pending_open, si ]
-                    el
-                        open_file[ fl.pending_open ]
-                    fl.pending_open = null
-                    return
             if [ e inherits Console ]
                 co  : Console e
                 cid : string co.id
@@ -2278,7 +2561,50 @@ element orbiter : trinity # implements compiler
                         return
             if [ e inherits Editor ]
                 ed : Editor e
-                if [ ev.target == e && (was_finder || find_showing) && ed.sel_line >= 0 && ed.sel_line < find_hits.count ]
+                # right dock: instance the clicked view on the open file
+                if [ ev.target == e && (nav_showing || find_showing) && ed.nav_tools ]
+                    tl9 : i32 [ ed.tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+                    if [ tl9 >= 0 ]
+                        bas9 : i32 [ ed.tool_base[] ]
+                        if [ bas9 == 1 && tl9 == 0 ]
+                            # default action: reopen through the normal path
+                            ed.hx_force = false
+                            if [ ed.rview ] ed.rview.release*[]
+                            ed.rview = null
+                            ed.load_file[]
+                        el
+                            t9 : string ed.nav_tools[ tl9 - bas9 ]
+                            if [ t9 == 'git' ]
+                                editor_panel = 'git'
+                            el [ t9 == 'hex' ]
+                                # leaving the default view: close its running instance
+                                if [ ed.run_view ]
+                                    if [ ed.run_view.app_mod ] stop_debug[ ed.run_view.app_mod ]
+                                    ed.run_view.release*[]
+                                    ed.run_view = null
+                                    ed.app_view = false
+                                    ed.animated = false
+                                ed.hx_force = true
+                                if [ ed.rview ] ed.rview.release*[]
+                                ed.rview = null
+                                ed.load_file[]
+                            el
+                                # module-registered view: instance its app on the file
+                                m9 : string (view_mods) ? view_mods[ t9 ] : null
+                                if [ m9 && ed.src ]
+                                    if [ ed.run_view ]
+                                        if [ ed.run_view.app_mod ] stop_debug[ ed.run_view.app_mod ]
+                                        ed.run_view.release*[]
+                                        ed.run_view = null
+                                        ed.app_view = false
+                                        ed.animated = false
+                                    ed.launch_handler[ m9, ed.src ]
+                        exit_find_mode[]
+                        ev.no_default = true
+                        if [ ev.target ] ev.target.ux.restyle = true
+                        return
+                # hits are clickable only while the list is actually shown
+                if [ ev.target == e && (nav_showing || find_showing) && ed.sel_line >= 0 && ed.sel_line < find_hits.count ]
                     h : FindHit find_hits[ ed.sel_line ]
                     if [ h && h.is_spacer ]
                         ev.no_default = true
@@ -2298,6 +2624,17 @@ element orbiter : trinity # implements compiler
                         ed_sessions[sid] = ns
                         ns.start[]
                         exit_find_mode[]
+                        ev.no_default = true
+                        if [ ev.target ] ev.target.ux.restyle = true
+                        return
+                    if [ h && h.is_newfile ]
+                        for [ e9: element* ev.target, e9, e9 = e9.parent ]
+                            if [ e9 inherits EditorView ]
+                                ev9 : EditorView e9
+                                ev9.newfile_enter[ ed.src ]
+                                # label swap drops focus; re-take it after restyle
+                                pending_finder = ed.pane_index
+                                break
                         ev.no_default = true
                         if [ ev.target ] ev.target.ux.restyle = true
                         return
@@ -2357,9 +2694,6 @@ element orbiter : trinity # implements compiler
         if [ ev.target.id == 'fields' ]
             show_variables = !show_variables
             return
-        if [ ev.target.id == 'orbiter4' ]
-            show_orbiter = !show_orbiter
-            return
         puts 'on_press: {ev.target.id}'
         for [ i: i32 0, i < open_files.count, i += 1 ]
             key : string 'tab_{i}'
@@ -2379,6 +2713,35 @@ element orbiter : trinity # implements compiler
         
         if [ ev.target.id == 'git' ]
             editor_panel = (editor_panel == ev.target.id) ? 'editor' : ev.target.id
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+
+
+        if [ ev.target.id == 'newfile_cancel' ]
+            for [ e9: element* ev.target, e9, e9 = e9.parent ]
+                if [ e9 inherits EditorView ]
+                    ev9 : EditorView e9
+                    ev9.newfile_exit[]
+                    break
+            ev.no_default = true
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+
+        # [x] left of the title: leave git/diff/hex, back to the editor
+        if [ ev.target.id == 'panel_close' ]
+            editor_panel = 'editor'
+            diff_commit  = null
+            for [ e9: element* ev.target, e9, e9 = e9.parent ]
+                if [ e9 inherits EditorView ]
+                    evc : EditorView e9
+                    edc : Editor pane_at[ evc.pane_index ]
+                    if [ edc && edc.hx_force ]
+                        edc.hx_force = false
+                        if [ edc.rview ] edc.rview.release*[]
+                        edc.rview = null
+                        edc.load_file[]
+                    break
+            ev.no_default = true
             if [ ev.target ] ev.target.ux.restyle = true
             return
         
@@ -2433,13 +2796,6 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
 
-        if [ ev.target.id == 'grid' ]
-            grid_mode = !grid_mode
-            rekeep_listing[]
-            ev.no_default = true
-            force_update[]
-            return
-        
         if [ ev.target.id == 'title_close' ]
             exit_finder[]
             findbar_open = false
@@ -2515,18 +2871,15 @@ element orbiter : trinity # implements compiler
             puts 'on_press: DOCK handler reached'
             if [ editor_slots.count < 4 ]
                 editor_slots += -1
-                pane_console  += ''
+                pane_console += ''
                 active_pane = editor_slots.count - 1
             save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
             return
         if [ ev.target.id == 'gear' ]
-            if [ agent_pane[] < 0 && editor_slots.count < 4 ]
-                editor_slots += -1
-                pane_console  += ''
-                pn9 : i32 [ editor_slots.count - 1 ]
-                pane_console[ pn9 ] = orbit_sid
-                active_pane = pn9
+            if [ !agent_open && editor_slots.count < 4 ]
+                agent_open  = true
+                active_pane = editor_slots.count
                 ensure_console[ orbit_sid ]
             save_session[]
             if [ ev.target ] ev.target.ux.restyle = true
@@ -2593,12 +2946,6 @@ element orbiter : trinity # implements compiler
         if [ ev.target.id == 'filter' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
                 filter_text = filter_text + ev.key.text
-                fl : FileList ev.target.parent.elements['files']
-                if [ fl ]
-                    fl.find_text = filter_text
-                    fl.last_find = filter_text
-                    fl.build_visible[]
-                    fl.pristine  = false
                 uxw : Window ev.target.ux
                 if [ uxw ] uxw.will_animate = true
         # typing into the find/replace bar rows (each its own query)
@@ -2623,12 +2970,28 @@ element orbiter : trinity # implements compiler
         # typing into an editor's title (the finder/magnify control)
         if [ ev.target.id == 'title' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
+                nv9 : EditorView newfile_view[ ev.target ]
+                if [ nv9 ]
+                    nv9.newfile_text = nv9.newfile_text + ev.key.text
+                    ev.target.pristine = false
+                    if [ ev.target.ux ] ev.target.ux.restyle = true
+                    return
                 find_text = find_text + ev.key.text
                 ev.target.pristine = false
                 run_search[]
 
     
     func on_key [ ev: Event ]
+        # avatar shows only while cmd(+ctrl)+shift is HELD — no buttons
+        ku9 : i32 [ i32 ev.key.unicode ]
+        if [ ku9 == 340 || ku9 == 344 ] chord_shift = ev.key.state
+        if [ ku9 == 341 || ku9 == 345 || ku9 == 343 || ku9 == 347 ] chord_meta = ev.key.state
+        want9 : bool [ chord_shift && chord_meta ]
+        if [ want9 != show_orbiter ]
+            show_orbiter = want9
+            # summon starts the mic; dismiss stops and submits the take
+            if [ want9 != listening[] ] toggle_listen[ null ]
+            if [ ux ] ux.restyle = true
         if [ !ev.target ] return
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta) ]
             kc : i32 [ i32[ ev.key.unicode ] ]
@@ -2640,6 +3003,12 @@ element orbiter : trinity # implements compiler
                 focus_finder[]
                 ev.no_default = true
                 return
+        if [ ev.key.state && i32[ ev.key.unicode ] == 256 && (editor_panel != 'editor' || diff_commit) ]
+            editor_panel = 'editor'
+            diff_commit  = null
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
         if [ ev.key.state && i32[ ev.key.unicode ] == 256 && (findbar_open || find_showing || nav_showing) ]
             exit_find_mode[]
             ev.no_default = true
@@ -2657,12 +3026,6 @@ element orbiter : trinity # implements compiler
                 filter_text = ''
                 changed = true
             if [ changed ]
-                fl : FileList ev.target.parent.elements['files']
-                if [ fl ]
-                    fl.find_text = filter_text
-                    fl.last_find = filter_text
-                    fl.build_visible[]
-                    fl.pristine  = false
                 uxw : Window ev.target.ux
                 if [ uxw ] uxw.will_animate = true
 
@@ -2708,6 +3071,18 @@ element orbiter : trinity # implements compiler
         if [ ev.target.id == 'title' ]
             if [ !ev.key.state ] return
             k : i32 [ i32 ev.key.unicode ]
+            kv9 : EditorView newfile_view[ ev.target ]
+            if [ kv9 ]
+                if [ k == 259 && kv9.newfile_text && kv9.newfile_text.count > 0 ]    # Key.Backspace
+                    kv9.newfile_text = kv9.newfile_text.mid[ 0, kv9.newfile_text.count - 1 ]
+                el [ k == 257 ]    # Key.Enter — create unless the name exists
+                    kv9.newfile_commit[]
+                el [ k == 256 ]    # Key.Escape — no action
+                    kv9.newfile_exit[]
+                ev.target.pristine = false
+                if [ ev.target.ux ] ev.target.ux.restyle = true
+                ev.no_default = true
+                return
             if [ k == 259 ]    # Key.Backspace
                 if [ find_text && find_text.count > 0 ]
                     find_text = find_text.mid[ 0, find_text.count - 1 ]
@@ -2757,6 +3132,7 @@ element orbiter : trinity # implements compiler
     
     public func render [] -> Elements
         w : ux
+        if [ !w ] return null
 
         if [ orbit_app ] orbit_frame[ w ]
         mic_frame[]
@@ -2835,6 +3211,14 @@ element orbiter : trinity # implements compiler
                 edo.attach_app_run[ orbit_app ]
                 orbit_bound = true
 
+        # AVSOAK: auto summon/dismiss every 3s to reproduce the remount crash
+        if [ getenv[ 'AVSOAK' ] ]
+            sum9  : i64  [ Au.epoch_millis[] / 3000 ]
+            want9 : bool [ (sum9 & 1) == 1 ]
+            if [ want9 != show_orbiter ]
+                show_orbiter = want9
+                puts 'AVSOAK show={show_orbiter}'
+                if [ ux ] ux.restyle = true
         for [ pi2: i32 0, pi2 < editor_slots.count, pi2 += 1 ]
             edp : Editor pane_at[ pi2 ]
             if [ !edp || !edp.run_view ] continue
@@ -2879,16 +3263,19 @@ element orbiter : trinity # implements compiler
                 ds.feed_fd[ d.fifo_fd_err ]
 
         if [ editor_slots.count == 0 ] editor_slots += -1
-        for [ ci: i32 editor_slots.count - 1, ci >= 1, ci -= 1 ]
+        pane_total : i32 [ editor_slots.count + ((agent_open) ? 1 : 0) ]
+        for [ ci: i32 pane_total - 1, ci >= 1, ci -= 1 ]
             if [ take_closed[ pane_sizes, 'pane{ci}' ] ] close_pane[ ci ]
-        sp : string search_pane[]
         if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
-        editor_els : Elements []
-        pane_inner  : Elements []
-        for [ i: i32 0, i < editor_slots.count, i += 1 ]
-            pid  : 'pane{i}'
-            pane_inner[pid] = EditorView [ pane_index: i, selected: (sp == pid) ]
-        if [ !pane_sizes ] pane_sizes = array [ ]
+        if [ !pane_sizes ]  pane_sizes  = array [ ]
+        if [ !dbg_sizes ]   dbg_sizes   = array [ ]
+        if [ !band_sizes ]  band_sizes  = array [ ]
+        if [ take_closed[ dbg_sizes, 'callstack' ] ] show_instruments = false
+        if [ take_closed[ dbg_sizes, 'fields' ] ]    show_variables   = false
+        for [ pc: i32 0, pc < pane_console.count, pc += 1 ]
+            if [ pane_console[pc] && pane_console[pc].count > 0 ]
+                ensure_console[ pane_console[pc] ]
+        if [ agent_open ] ensure_console[ orbit_sid ]
         ap9 : i32 [ agent_pane[] ]
         if [ ap9 > 0 ]
             key9 : string 'pane{ap9}'
@@ -2903,9 +3290,20 @@ element orbiter : trinity # implements compiler
         if [ console_w_save > 0 ]
             console_w_save -= 1
             if [ console_w_save == 0 ] save_session[]
+        # projection: inline panes in order, then the agent console
+        sp         : string search_pane[]
+        pane_inner : Elements []
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            pid : 'pane{i}'
+            pane_inner[pid] = EditorView [ pane_index: i, selected: (sp == pid) ]
+        if [ agent_open ]
+            aid : 'pane{editor_slots.count}'
+            pane_inner[aid] = EditorView [ pane_index: editor_slots.count, selected: (sp == aid) ]
+        editor_els : Elements []
         editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b0 }, inner: pane_inner,
             sizes: pane_sizes, deflt: 0.0, even: true, snap_close: true ]
-
+        # one avatar, window-anchored; ALWAYS mounted, :summoned slides it in
+        editor_els['avatar'] = OrbiterAvatar [ topmost: true, summoned: show_orbiter ]
         return editor_els
 
     public func on_canvas [ cv: Canvas ]

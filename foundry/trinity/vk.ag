@@ -61,6 +61,8 @@ class samplerCube
 class Render
     context vk                             : vk_context
     context w                              : Display
+    # non-holding backref: pipeline skips when the owner isn't visible
+    mutable owner                          : element
     public  id                             : i32
     mutable wscale                         : f32
     mutable width                          : i32
@@ -2832,6 +2834,42 @@ class Buffer
         vkFreeCommandBuffers [ vk.device, vk.command_pool, 1, @cmd ]
         tx.transition [ prev ]
 
+    # readback of a single cube face / mip (validation)
+    func transfer_sub [ tx: Texture, mip: i32, layer: i32, w2: i32, h2: i32 ]
+        expect tx, "expected Texture"
+        buf: vk_buffer
+        cmd: VkCommandBuffer
+        vkAllocateCommandBuffers [ vk.device, VkCommandBufferAllocateInfo [
+            sType:              VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool:        vk.command_pool,
+            level:              VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount: 1 ], @cmd ]
+        vkBeginCommandBuffer [ cmd, VkCommandBufferBeginInfo [
+            sType: VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT ] ]
+        prev: VkImageLayout [ tx.vk_layout ]
+        tx.transition [ VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
+        vkCmdCopyImageToBuffer [ cmd, tx.vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1,
+            VkBufferImageCopy [
+                bufferOffset:      0,
+                bufferRowLength:   0,
+                bufferImageHeight: 0,
+                imageSubresource:  VkImageSubresourceLayers [
+                    aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                    mipLevel:       mip,
+                    baseArrayLayer: layer,
+                    layerCount:     1 ],
+                imageOffset: VkOffset3D [ x: 0, y: 0, z: 0 ],
+                imageExtent: VkExtent3D [ width: w2, height: h2, depth: 1 ] ] ]
+        vkEndCommandBuffer [ cmd ]
+        vkQueueSubmit [ vk.queue, 1, VkSubmitInfo [
+            sType:              VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            commandBufferCount: 1,
+            pCommandBuffers:    @cmd ], null ]
+        vkQueueWaitIdle [ vk.queue ]
+        vkFreeCommandBuffers [ vk.device, vk.command_pool, 1, @cmd ]
+        tx.transition [ prev ]
+
     func update [ d: ARef ]
         if [ !size ]
             return
@@ -3452,6 +3490,7 @@ Texture Display
     public touch_event          : EventDispatch
     public release_event        : EventDispatch
     public wheel_event          : EventDispatch
+    public lock_aspect          : bool
     intern resized              : bool
     # debounced resize: GLFW emits framebuffer_size continuously while dragging.
     # We don't recreate the swapchain on every callback (would hitch the frame).
@@ -3549,6 +3588,7 @@ Texture Display
             extent.height = h_new
 
         for [ r: Render, id: string ] in element_targets
+            if [ !r ] continue
             r.update[ ]
             if [ resized && r.models ]
                 for [ m: Model ] in r.models
@@ -3646,6 +3686,8 @@ Texture Display
             resize*[ width, height ]
 
         for [ r: Render, id: string ] in element_targets
+            if [ !r ] continue
+            if [ r.owner && (r.owner.hide || r.owner.opacity <= 0.0) ] continue
             r.draw*[]
             r.sync_fence*[]
 
@@ -3764,6 +3806,9 @@ Texture Display
             glfwSetDropCallback         [ glfw, @handle_glfw_drop ]
 
             glfwSetFramebufferSizeCallback [ glfw, @handle_glfw_framebuffer_size ]
+
+            # fixed-aspect apps (emulators): the WM may scale but never distort
+            if [ lock_aspect ] glfwSetWindowAspectRatio[ glfw, width, height ]
 
             # reuse persistent surface across hot-reloads — drivers disallow
             # creating a new surface for the same xcb window after destroying the old one
@@ -4179,6 +4224,28 @@ func get_required_extensions [ vk: vk_context ]
     for [ i: i32 0, i < count, i += 1 ]
         vk.instance_exts.push strdup[ result[i] ]
 
+
+# write every face x mip to /tmp for visual validation
+func environment_dump [ vk: vk_context, tx: Texture, size9: i32, mips: i32, tag: string ]
+    for [ f: 0, f < 6, f += 1 ]
+        for [ m: 0, m < mips, m += 1 ]
+            ms  : i32 max[ 1, size9 >> m ]
+            bsz : i32 [ ms * ms * 16 ]
+            b : Buffer [ vk: vk, size: bsz, u_dst: true,
+                m_host_visible: true, m_host_coherent: true, m_host_cached: true ]
+            b.transfer_sub[ tx, m, f, ms, ms ]
+            im  : Image [ width: ms, height: ms, format: Pixel.rgba8 ]
+            src : @f32 b.mmap[]
+            dst : @u8 im.vdata[]
+            npx : i32 [ ms * ms * 4 ]
+            for [ i: 0, i < npx, i += 1 ]
+                v : f32 src[i]
+                if [ v < 0.0 ] v = 0.0
+                if [ v > 1.0 ] v = 1.0
+                dst[i] = u8[ v * 255.0 ]
+            b.unmap[]
+            im.png[ path '/tmp/env_{tag}_f{f}_m{m}.png' ]
+    puts 'environment_dump: wrote /tmp/env_{tag}_f*_m*.png'
 
 func environment [ vk: vk_context, img: Image, r_axis: vec3f, rotation: f32 ] -> Texture
     ii:2

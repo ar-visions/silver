@@ -173,6 +173,7 @@ abstract live_app media_app
     intern  destroyed   : bool
     public  width       : i32
     public  height      : i32
+    public  lock_aspect : bool
     public  live_reload : bool [ true ]
     public  text_mode   : bool [ false ]
     public  screenshot  : path
@@ -187,6 +188,9 @@ abstract live_app media_app
     intern  share_tex1  : Texture
     intern  share_back  : i32
     intern  app_pid : i32
+    # aspect captured at init — resize requests are clamped to it
+    intern  aspect_w    : i32
+    intern  aspect_h    : i32
 
     public func parse_app_pid [] -> i32
         pe : getenv[ 'SILVER_ISOLATE_APP_PID' ]
@@ -360,6 +364,15 @@ abstract live_app media_app
                 el [ t == i32[ HM.resize ] ]
                     rw : i32 [ host_pa[] ]
                     rh : i32 [ host_pb[] ]
+                    # requests are advisory: a locked app answers at its aspect
+                    if [ lock_aspect && aspect_w > 0 && aspect_h > 0 && rw > 0 && rh > 0 ]
+                        fw9 : i32 [ rw ]
+                        fh9 : i32 [ fw9 * aspect_h / aspect_w ]
+                        if [ fh9 > rh ]
+                            fh9 = rh
+                            fw9 = fh9 * aspect_w / aspect_h
+                        rw = fw9
+                        rh = fh9
                     if [ rw > 0 && rh > 0 && (rw != wn.width || rh != wn.height) ]
                         vkQueueWaitIdle[ vk.queue ]
                         wn.resize[ rw, rh ]
@@ -437,10 +450,16 @@ abstract live_app media_app
                 ao9.release_tree[]
                 ao9.elements = null
             # lingering elements borrow these targets; free the GPU graph now
+            # and CLEAR the entries — the window outlives module reloads, and a
+            # stale Render dropped by the next module's map set is a double-free
             if [ rwin.element_targets ]
+                ks9 : array string [ alloc: 8 ]
                 for [ tv: Au, tk: string ] in rwin.element_targets
                     rt : cast Render [ tv ]
                     if [ rt ] rt.models = null
+                    ks9.push[ tk ]
+                for [ k9: string ] in ks9
+                    rwin.element_targets[ k9 ] = null
         if [ vk ]
             vk.font_cache = null
             vk.shader_cache = null
@@ -621,6 +640,9 @@ Display Window
             el [ ct.invalidate ]
                 ct.invalidate = false
                 should_trans = true
+            el [ ct.dbg_val != best.value ]
+                # state flip changed the target: re-arm from current
+                should_trans = true
         el [ inst.transitions ]
             inst.transitions.rm[ mem ]
 
@@ -644,8 +666,11 @@ Display Window
         float_count : i32 [ member.src.typesize / 4 ]
         dst_ptr     : @f32 [ value_holder.member_ref[ member ] ]
         is_f_color : bool [ strcmp[ member.ident, 'fill_color_pos' ] == 0 ]
+        # float mixing writes the slot in place: value types only —
+        # a class member slot is a pointer and would be smashed
+        inlay_val : bool [ (member.src.traits & (1 << 11)) == 0 ]
 
-        if [ best.binding ]
+        if [ best.binding && inlay_val ]
             src_m : Au.find_member[ typeid[ inst ], best.binding.chars, AU_MEMBER_VAR, 0, true ]
             if [ src_m ]
                 src_ptr : @f32 [ inst.member_ref[ src_m ] ]
@@ -661,7 +686,7 @@ Display Window
                 inst.pristine = false
             return
 
-        if [ best.filter > 0.0 ]
+        if [ best.filter > 0.0 && inlay_val ]
             target_ptr  : @f32 [ best.instance ]
             unset       : true
             for [ i: i32 0, i < float_count, i += 1 ]
@@ -743,6 +768,19 @@ Display Window
             inst.layers = map Layer[string] []
         if [ !style_avail ] return
 
+        # first styling: class members already set by .ag code stay code-owned
+        if [ !inst.code_styled ]
+            inst.code_styled = array string [ ]
+            for [ bty : typeid[ inst ], bty != typeid[ Au ], bty = bty.context ]
+                for [ bm: i32 0, bm < bty.members.count, bm += 1 ]
+                    bmem : Au_t bty.members.origin[bm]
+                    if [ bmem.member_type != AU_MEMBER_VAR ] continue
+                    if [ !bmem.src || !(bmem.src.traits & (1 << 11)) ] continue
+                    if [ strcmp[ bmem.ident, "elements" ] == 0 || strcmp[ bmem.ident, "layers" ] == 0 ] continue
+                    if [ strcmp[ bmem.ident, "style" ] == 0 ] continue
+                    bv : Au inst.member_object[ bmem ]
+                    if [ bv ] inst.code_styled.push[ string[ bmem.ident ] ]
+
         # create layers in the order they render
         cache_style[inst, style_avail, false, home_object]
         
@@ -784,11 +822,15 @@ Display Window
 
                         if [ !best.instance ]
                             if [ (layer_member.src.traits & (1 << 11)) && typeid[best.value] != typeid[array] ]
+                                # alloc is pool-managed: the entry must own it
                                 best.instance = Au.new_object[ layer_member.src, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
+                                best.instance.hold[]
                                 best.instance.set_context_from[ home_object ]
                                 best.instance.call_construct[ best.value ]
                             el
+                                # manual member: own the converted value
                                 best.instance = Au.__convert[ layer_member.src, best.value ]
+                                if [ best.instance ] best.instance.hold[]
 
                         cur : layer_inst.member_object[ layer_member ]
                         if [ !cur ]
@@ -797,6 +839,8 @@ Display Window
                         transition_or_set[ inst, layer_inst, cur, layer_member, best ]
 
                 el
+                    if [ inst.code_styled.index_of[ prop ] >= 0 ]
+                        continue
                     best : st.best_match[ inst, prop, entries ]
                     if [ !best ]
                         continue
@@ -814,6 +858,7 @@ Display Window
                                 obj.call_construct[ s ]
                                 dst_arr.push[ obj ]
                             best.instance = dst_arr
+                            best.instance.hold[]
                         el [ member.src == typeid[ Au_t ] ]
                             str : cast string [ best.value ]
                             found_type : Au.find_type[ str.chars, null ]
@@ -822,17 +867,30 @@ Display Window
                             continue
                         el
                             if [ member.src.traits & (1 << 11) ]
+                                # alloc is pool-managed: the entry must own it
                                 best.instance = Au.new_object[ member.src, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
+                                best.instance.hold[]
                                 best.instance.set_context_from[ home_object ]
                                 best.instance.call_construct[ best.value ]
                             el
+                                # manual member: own the converted value
                                 best.instance = Au.__convert[ member.src, best.value ]
+                                if [ best.instance ] best.instance.hold[]
 
                     cur : inst.member_object[ member ]
                     if [ !cur ]
                         cur = best.instance
 
                     transition_or_set[ inst, inst, cur, member, best ]
+
+        # icon layer stays topmost over style-created layers
+        if [ inst.layers ]
+            bic3 : Layer inst.layers[ 'iconl' ]
+            if [ bic3 ]
+                bic3.hold[]
+                inst.layers.rm[ 'iconl' ]
+                inst.layers[ string[ 'iconl' ] ] = bic3
+                bic3.drop[]
 
 
     public func animate []
@@ -932,6 +990,7 @@ Display Window
                 call_init = true
                 changed = true
             el
+                instance.parent = parent
                 ta0 : i64 [ epoch_micros[] ]
                 args_changed : bool apply_args[ instance, e ]
                 a.t_apply_args += epoch_micros[] - ta0
@@ -995,6 +1054,10 @@ Display Window
                     instance.initialized = true
                     instance.hold_members[]
                     instance.pristine = false
+                    # defaults exist only now: integrate embedded style, restyle
+                    if [ st && st.integrate_instance[ instance ] ]
+                        avail2 : st.compute[ instance ]
+                        apply_style[ instance, avail2, home_object ]
                     if [ instance.layers ]
                         bic2 : Layer instance.layers[ 'iconl' ]
                         if [ bic2 ]
@@ -1102,6 +1165,8 @@ Display Window
     public func update_all [ render: Elements ]
         if [ !root ]
             root    = element [ id: string[ 'root' ], ux:a ]
+            root.initialize[]
+            root.initialized = true
             root_styles = (st) ? st.compute[ root ] : null
             restyle = true
 
@@ -1173,7 +1238,7 @@ Display Window
             glfwSetCursor[ g, null ]
 
     public func find_target [ e: element, ev: Event, must: element ] -> element
-        if [ !e || !e.bounds || e.disable || e.ghost || e.hide || e.transparency >= 1.0 ]
+        if [ !e || !e.bounds || e.disable || e.ghost || e.hide || e.opacity <= 0.0 ]
             return null
         b : rect  [ e.bounds ]
         x : f32   [ ev.mouse.pos.x ]
@@ -1463,6 +1528,7 @@ Display Window
             background_type = type
             if [ background_type ]
                 bargs : map Au[string] [ ]
+                bargs['window'] = a
                 background = Au.construct_with[ background_type, bargs, null ]
                 background.window = a
                 if [ !background.color ]
@@ -1871,7 +1937,7 @@ Display Window
         e.bounds.w = f32 bw
         e.bounds.h = f32 bh
         if [ bw < 1 || bh < 1 ] return
-        if [ e.transparency >= 1.0 ] return
+        if [ e.opacity <= 0.0 ] return
 
         if [ e.layers ]
             for [ lau: Au, lk: string ] in e.layers
@@ -2433,7 +2499,7 @@ Display Window
         e.bounds.h = bounds.h
 
         if [ e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
-        if [ e.transparency >= 1.0 ] return
+        if [ e.opacity <= 0.0 ] return
         last_2 : element
         last_l : element
         last_r : element
@@ -2478,7 +2544,11 @@ Display Window
         if [ !e.parent && e != root ] return
         cv : (stage == CanvasType.screen) ? screen : compose
         if [ !e.bounds || e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
-        if [ e.transparency >= 1.0 ] return
+        if [ e.opacity <= 0.0 ] return
+        # opacity scales everything the element paints
+        cv.save[]
+        if [ e.opacity < 1.0 ]
+            cv.set_opacity[ cv.get_opacity[] * e.opacity ]
         margin_l : i32 [ 0 ]
         margin_t : i32 [ 0 ]
         margin_r : i32 [ 0 ]
@@ -2864,6 +2934,7 @@ Display Window
             draw_element[ ee, stage, last_2 ]
             last_2 = ee
             cv.restore[]
+        cv.restore[]
 
 
 class offscreen
@@ -2900,7 +2971,6 @@ abstract media_app trinity
     intern ifill        : f32 0
 
     func load_scene   [] return
-    func update_scene [] return
 
     func adopt [ name: string ]
         v : root.get_property[ name.chars ]
@@ -2929,6 +2999,10 @@ abstract media_app trinity
         adopt[ 'title' ]
         adopt[ 'width' ]
         adopt[ 'height' ]
+        adopt[ 'lock_aspect' ]
+        if [ lock_aspect ]
+            aspect_w = width
+            aspect_h = height
         adopt[ 'background' ]
         adopt[ 'text_mode' ]
         adopt[ 'hidden' ]
@@ -2939,7 +3013,7 @@ abstract media_app trinity
         background_type : Au.find_type[ background->chars, null ]
         if [ text_mode ]
             console_size[]
-            cwin : Window[ app_object: root, title:(title) ?? rt.ident,
+            cwin : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
                 width:width, height:height, background_type:background_type, text_mode: true ]
             w = cwin
             Au.hold[ w ]
@@ -2953,9 +3027,9 @@ abstract media_app trinity
                 at_start[ background_type, rt ]
                 Au.auto_free[ true ]
                 return
-        window : Window[ app_object: root, title:(title) ?? rt.ident,
+        window : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
             width:(width) ?? 1888, height:(height) ?? 888, background_type:background_type,
-            hidden: hidden ]
+            hidden: hidden, lock_aspect: lock_aspect ]
         expect window.vk, "context didnt work"
         w = window
         Au.hold[ w ]
@@ -2966,36 +3040,31 @@ abstract media_app trinity
         window.restyle = true
         Au.auto_free[ true ]
 
-    # 22
     func render[]
         if [ text_mode ]
-            update_scene*[]
             cwin : Window[w]
             cwin.draw_console[]
             frames += 1
             return
         window : Window[w]
-        wa : bool [ window.will_animate ]
         window.will_animate = false
-        if [ true ]
-            u0 : i64 [ epoch_micros[] ]
-            update_scene*[]
-            # headless hosts render alongside the window (no present)
-            if [ window.offscreens ]
-                for [ os_au: Au ] in window.offscreens
-                    os : offscreen [ os_au inherits offscreen ]
-                    if [ os ] os.frame[]
-            u1 : i64 [ epoch_micros[] ]
-            window.draw[]
-            vk.update_us += u1 - u0
-            vk.draw_us   += epoch_micros[] - u1
-            frames += 1
+        u0 : i64 [ epoch_micros[] ]
+        # headless hosts render alongside the window (no present)
+        if [ window.offscreens ]
+            for [ os_au: Au ] in window.offscreens
+                os : offscreen [ os_au inherits offscreen ]
+                if [ os ] os.frame[]
+        u1 : i64 [ epoch_micros[] ]
+        window.draw[]
+        vk.update_us += u1 - u0
+        vk.draw_us   += epoch_micros[] - u1
+        frames += 1
 
     ifdef [ linux ]
         func at_start [ background_type: Au_t, rt: Au_t ]
             aw : i32 [ (width)  ?? 1280 ]
             ah : i32 [ (height) ?? 720 ]
-            awin : Window[ app_object: root, title:(title) ?? rt.ident,
+            awin : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
                 width: aw, height: ah, background_type: background_type, backbuffer: true,
                 format: Pixel.rgba8 ]
             w = awin
@@ -3016,10 +3085,10 @@ Layer Children
     public scroll : vec2f
 
 Layer ScrollLayer
-    public thumb_color  : string
-    public thumb_w      : f32
-    public thumb_min_h  : f32
-    public thumb_radius : f32
+    public thumb_color  : string [ '#fff3' ]
+    public thumb_w      : f32 [ 6.0 ]
+    public thumb_min_h  : f32 [ 32.0 ]
+    public thumb_radius : f32 [ 4.0 ]
     mutable thumb_y_px  : f32
     mutable thumb_h_px  : f32
     mutable track_vis   : f32

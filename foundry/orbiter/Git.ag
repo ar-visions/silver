@@ -1,0 +1,189 @@
+extend orbiter
+import <stdio.h>
+
+# keep_ws keeps leading whitespace and blank lines (diff bodies)
+func git_capture [ root: path, args: string, keep_ws: bool ] -> array string
+    out : array string [ alloc: 128 ]
+    cmd : string 'git -C {root} {args} 2>/dev/null'
+    fh  : handle popen[ cmd.chars, "r" ]
+    if [ !fh ] return out
+    b : local i8 [ 1024 ]
+    while [ fgets[ @b[0], 1024, fh ] ]
+        ln0 : string[ @b[0] ]
+        if [ keep_ws ]
+            n9 : i32 [ ln0.count ]
+            while [ n9 > 0 ]
+                lc : i32 [ ln0.chars[ n9 - 1 ] ]
+                if [ lc != 10 && lc != 13 ] break
+                n9 -= 1
+            out.push[ ln0.mid[ 0, n9 ] ]
+        el
+            ln : ln0.trim[]
+            if [ ln.count > 0 ] out.push[ ln ]
+    pclose[ fh ]
+    return out
+
+class GitRow
+    public is_branch : bool
+    public current   : bool
+    public hash      : string
+    public text      : string
+    public when      : string
+
+Layer GitLayer
+    public label_size   : f32
+    public row_spacing  : f32
+    public sel_color    : string
+    public sel_grad     : string
+    public sel_glow     : string
+    public sel_text     : string
+    public branch_color : string
+    public text_color   : string
+    public hash_color   : string
+    public tag_color    : string
+
+    func draw [ cv: Canvas ]
+        gl : GitList[ parent ]
+        if [ !gl ] return
+        if [ !gl.rows ] gl.refresh[]
+        cv.font_size[ i32[label_size] ]
+        lh : f32 [ cv.get_line_height[] * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
+        n  : i32 [ gl.row_count[] ]
+        gl.row_height   = lh
+        gl.content_y    = bounds.y
+        gl.content_h    = f32[n] * lh
+        gl.view_h       = bounds.h
+        gl.scroll_speed = lh
+        x0  : f32 [ bounds.x ]
+        y0  : f32 [ bounds.y ]
+        wtx : f32 [ cv.transform_tx[] ]
+        wty : f32 [ cv.transform_ty[] ]
+        cv.set_crop[ wtx + bounds.x, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
+        cv.stroke_width[ 0.0 ]
+        hash_w : f32 [ 96.0 ]
+        tag_w  : f32 [ bounds.w * 0.30 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            y : f32 [ y0 + f32[i] * lh - gl.scroll.y ]
+            if [ y + lh < bounds.y ] continue
+            if [ y > bounds.y + bounds.h ] break
+            r : GitRow gl.rows[i]
+            hi : i32 [ (gl.hovered && gl.hover >= 0) ? gl.hover : gl.sel ]
+            if [ i == hi ]
+                cv.save[]
+                cv.rounded[ 6.0, 6.0, 6.0, 6.0 ]
+                cv.stroke_width[ 0.0 ]
+                cv.fill_color[ (sel_color) ? sel_color : '#ff6a2e55' ]
+                if [ sel_grad ]
+                    cv.fill_grad[ sel_grad ]
+                    cv.fill_color_pos[ x0 + 1.0, y + 1.0 ]
+                    cv.fill_grad_pos[ x0 + 1.0, y + lh - 1.0 ]
+                if [ sel_glow ] cv.inner_glow[ sel_glow, 14.0 ]
+                cv.rect_to[ x0 + 1.0, y + 1.0, bounds.w - 2.0, lh - 2.0 ]
+                cv.paint[]
+                cv.restore[]
+            hot : bool [ i == hi && sel_text ]
+            if [ r.is_branch ]
+                cv.fill_color[ (hot) ? sel_text : ((branch_color) ? branch_color : '#6fb3ff') ]
+                cv.draw_text[ r.text,
+                    rect [ x: x0 + 12.0, y: y, w: bounds.w * 0.62, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                cv.fill_color[ (tag_color) ? tag_color : '#77708a' ]
+                cv.draw_text[ (r.current) ? 'current' : 'branch',
+                    rect [ x: x0 + bounds.w - tag_w - 12.0, y: y, w: tag_w, h: lh ],
+                    vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            el
+                cv.fill_color[ (hash_color) ? hash_color : '#8f86a8' ]
+                cv.draw_text[ r.hash,
+                    rect [ x: x0 + 12.0, y: y, w: hash_w, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                cv.fill_color[ (hot) ? sel_text : ((text_color) ? text_color : '#d8d4e8') ]
+                cv.draw_text[ r.text,
+                    rect [ x: x0 + 12.0 + hash_w, y: y, w: bounds.w - hash_w - tag_w - 36.0, h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                cv.fill_color[ (tag_color) ? tag_color : '#77708a' ]
+                cv.draw_text[ r.when,
+                    rect [ x: x0 + bounds.w - tag_w - 12.0, y: y, w: tag_w, h: lh ],
+                    vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        cv.clear_crop[]
+
+NodeList GitList
+    style : CSS {
+        area: l0 t0 r0 b0
+        layers.content: GitLayer
+            area: l8px t6px r8px b6px
+            label_size: 16
+            row_spacing: 1.35
+            branch_color: #6fb3ff
+            text_color: #d8d4e8
+            hash_color: #8f86a8
+            tag_color: #77708a
+            sel_color: #ff6a2e55
+            sel_grad: #c0381844
+            sel_glow: #ff8a3a99
+            sel_text: #ffe6d2
+    }
+    public  root  : path
+    # commits are scoped to this file's changes
+    public  file  : path
+    mutable rows  : array GitRow
+    mutable hover : i32 [ -1 ]
+
+    func on_move [ ev: Event ]
+        if [ row_height <= 0.0 ] return
+        rel_y : f32 [ ev.mouse.pos.y - content_y ]
+        h9 : i32 [ (rel_y >= 0.0) ? i32[ rel_y / row_height ] : -1 ]
+        if [ h9 >= row_count[] ] h9 = -1
+        if [ h9 != hover ]
+            hover = h9
+            pristine = false
+            ux.will_animate = true
+
+    func row_count [] -> i32
+        if [ !rows ] return 0
+        return rows.count
+
+    func row_label [ i: i32 ] -> string
+        if [ !rows || i < 0 || i >= rows.count ] return ''
+        r : GitRow rows[i]
+        if [ r.is_branch ] return r.text
+        return '{r.hash} {r.text}'
+
+    func refresh []
+        rows = array GitRow [ alloc: 256 ]
+        bl : array string git_capture[ root, 'branch', false ]
+        for [ b: string ] in bl
+            cur : bool [ b.chars[0] == '*' ]
+            nm  : string [ (cur) ? b.mid[ 2, b.count - 2 ].trim[] : b ]
+            rows.push[ GitRow [ is_branch: true, current: cur, text: nm ] ]
+        fs9 : string [ (file) ? '-- {file.absolute[]}' : '' ]
+        cl : array string git_capture[ root, 'log --format=%h%x09%s%x09%cr {fs9}', false ]
+        for [ c: string ] in cl
+            f : array string [ c.split[ '\t' ] ]
+            if [ f.count < 2 ] continue
+            rows.push[ GitRow [
+                hash: f[0], text: f[1], when: (f.count > 2) ? f[2] : '' ] ]
+        if [ sel < 0 && rows.count > 0 ] sel = 0
+        pristine = false
+
+    func activate [ idx: i32 ]
+        if [ !rows || idx < 0 || idx >= rows.count ] return
+        r : GitRow rows[idx]
+        if [ r.is_branch ]
+            if [ r.current ] return
+            git_capture[ root, 'checkout {r.text}', false ]
+            refresh[]
+            return
+        # commit: reveal the editor, associated with this commit's diff
+        orb : orbiter [ ux.app_object ]
+        if [ orb ]
+            orb.diff_commit  = r.hash
+            orb.editor_panel = 'editor'
+            ux.restyle = true
+
+    func init []
+        if [ !root ]
+            orb : orbiter [ ux.app_object ]
+            if [ orb ] root = orb.project_root[]
+
+    func render [] -> Elements
+        return null

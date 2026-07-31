@@ -14,10 +14,21 @@ enum Theme
     auto:   2
 
 Button ClickButton
-    area  : Region { m0 m0 w3 h1 }
-    body  : Layer [ fill_color: rgba [ '#2e7d32' ], radius: Radius [ '8' ] ]
-    hover : Layer [ states: State.hovered, fill_color: rgba [ '#388e3c' ], radius: Radius [ '8' ] ]
-    face  : Layer [ label_color: rgba [ '#fff' ], label_size: 14, label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+    style : CSS {
+        area: l2 t2 w123px h64px
+        focusable: true
+        layers.body:
+            fill_color: #2e7d32
+            radius: 8
+        layers.face:
+            label_color: #fff
+            label_size: 14
+            label_align: 0.5 0.5
+    :hovered
+        layers.body:
+            fill_color: #388e3c
+            radius: 8
+    }
 
 element buttontest : trinity
     intern clicks     : i32    0

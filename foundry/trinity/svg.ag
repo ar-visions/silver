@@ -371,6 +371,16 @@ class SVGPathBuilder
 
         return (pos > s) ? f32 d.mid[ s, pos - s ].real_value[] : 0.0
 
+    # arc flags are single 0/1 chars; minified paths merge them with the next number
+    func read_flag [] -> i32
+        skip_sep[]
+        if [ pos >= n ] return 0
+        c : i32 d.chars[pos]
+        if [ c == '0' || c == '1' ]
+            pos += 1
+            return c - '0'
+        return i32 read_num[]
+
     func cmd_move [ xf: affine, x: f32, y: f32 ]
         tx : f32 xf.apply_x[ x, y ]
         ty : f32 xf.apply_y[ x, y ]
@@ -394,7 +404,9 @@ class SVGPathBuilder
     func cmd_cubic [ xf: affine, c1x: f32, c1y: f32, c2x: f32, c2y: f32, x: f32, y: f32 ]
         dc1x : f32 c1x - cx
         dc1y : f32 c1y - cy
-        if [ dc1x * dc1x + dc1y * dc1y < 0.0001 ]
+        dc2x : f32 c2x - x
+        dc2y : f32 c2y - y
+        if [ dc1x * dc1x + dc1y * dc1y < 0.0001 && dc2x * dc2x + dc2y * dc2y < 0.0001 ]
             cmd_line[ xf, x, y ]
             lx = c2x
             ly = c2y
@@ -605,8 +617,8 @@ class SVGPathBuilder
                 irx : f32 read_num[]
                 iry : f32 read_num[]
                 iph : f32 read_num[]
-                ila : i32 i32 read_num[]
-                isw : i32 i32 read_num[]
+                ila : i32 read_flag[]
+                isw : i32 read_flag[]
                 x   : f32 read_num[]
                 y : f32 read_num[]
                 do_arc[ xf, x, y, irx, iry, iph, ila, isw ]
@@ -614,8 +626,8 @@ class SVGPathBuilder
                 irx : f32 read_num[]
                 iry : f32 read_num[]
                 iph : f32 read_num[]
-                ila : i32 i32 read_num[]
-                isw : i32 i32 read_num[]
+                ila : i32 read_flag[]
+                isw : i32 read_flag[]
                 x   : f32 cx + read_num[]
                 y : f32 cy + read_num[]
                 do_arc[ xf, x, y, irx, iry, iph, ila, isw ]

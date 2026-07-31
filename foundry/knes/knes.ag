@@ -1,5 +1,6 @@
 
 export 0.8.8
+export extensions ['.nes']
 
 import trinity
 import vec
@@ -82,8 +83,9 @@ class nes_apu
 element knes : trinity
 	public  width        : i32    [ 1024 ]   # 256 x4
 	public  height       : i32    [ 896 ]    # 224 x4 (top/bottom 8 cropped)
+	public  lock_aspect  : bool   [ true ]
 	public  background   : string [ 'Background' ]
-	public  rom          : path
+	default rom          : path
 	public  frames_exit  : i32
 	public  resume       : bool
 	public  save_at      : i32
@@ -1783,6 +1785,13 @@ element knes : trinity
 		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
 	public func paint [ cv: Canvas, vp: rect ]
+		ar9 : f32 [ 8.0 / 7.0 ]
+		fw9 : f32 [ vp.w ]
+		fh9 : f32 [ fw9 / ar9 ]
+		if [ fh9 > vp.h ]
+			fh9 = vp.h
+			fw9 = fh9 * ar9
+		vp = rect [ x: vp.x + (vp.w - fw9) * 0.5, y: vp.y + (vp.h - fh9) * 0.5, w: fw9, h: fh9 ]
 		bounds = vp
 		if [ ! booted ] boot[]
 		if [ ! screen_tex ]

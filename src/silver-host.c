@@ -425,6 +425,17 @@ static int supervise_wait(int argc, char** argv, const char* appname,
             fprintf(stderr, "silver-host: peer frozen — signal %d (%s)\n",
                 fsig, strsignal(fsig));
             symbolize_crash_log(appname);
+            // no crash agent attached: nobody can inspect the freeze
+            if (!(g_shell_pid > 0 && kill(g_shell_pid, 0) == 0)) {
+                fprintf(stderr, "silver-host: no crash agent — closing\n");
+                kill(pid, SIGCONT);
+                waitpid(pid, &st, 0);
+                g_shm->app[0].state = 3;
+                slots_shutdown();
+                g_peer_pid = 0;
+                *exit_code = 128 + fsig;
+                return 0;
+            }
             continue;
         }
         if (r != pid) {                    // a hosted app or the shell exited

@@ -693,7 +693,7 @@ shader CanvasUI
         // 8-bit quantization dither — breaks up banding on soft gradients.
         float _d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 8.0;
         o_color.rgb += vec3((_d - 0.5) / 255.0) * c.xyz;
-        #o_color = vec4(0.0, 1.0, 0.0, 1.0);
+        //o_color = vec4(0.0, 1.0, 0.0, 1.0);
     }
 
 
@@ -1632,6 +1632,10 @@ Render Canvas
     func set_opacity [ o: f32 ]
         states[state_depth - 1].opacity = o
 
+    func get_opacity [] -> f32
+        if [ state_depth == 0 ] return 1.0
+        return states[state_depth - 1].opacity
+
     func set_blur_radius [ br: f32 ]
         states[state_depth - 1].blur_rad = br
 
@@ -1987,6 +1991,7 @@ Render Canvas
             if [ need_alloc ]
                 if [ mdl.cache ] mdl.cache.drop[]
                 mdl.cache = Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: cw4, height: ch4, reduce: false, load_existing: true, tag: 'svg' ]
+                mdl.cache.hold[]
                 mdl.cache.update[]
             mdl.cache.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
             mdl.cache_rw     = rw
@@ -2253,7 +2258,10 @@ Render Canvas
 
         if [ pcount == 5 && n == 4 ]
             setup_shader [ st, bx0, by0, bw, bh ]
-            ui_shader.radii = path.corner_radii
+            pr9 : vec4f [ path.corner_radii ]
+            # plain rect_to has no path radii — keep the state's cv.rounded
+            if [ pr9.x > 0.0 || pr9.y > 0.0 || pr9.z > 0.0 || pr9.w > 0.0 ]
+                ui_shader.radii = pr9
             ui_shader.fill_color = st.fill_color
             ui_shader.grad0   = image_uv
             ui_shader.mask_uv = mask_uv

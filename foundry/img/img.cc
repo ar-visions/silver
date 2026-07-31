@@ -96,7 +96,7 @@ none Image_init(Image a) {
         } else {
             i64 dims[] = { a->height, a->width, pixel_type->typesize };
             u8* bytes = (u8*)alloc2(pixel_type, component_type, shape_from(3, dims), __FILE__, __LINE__, 0);
-            info->data = (Au)bytes;
+            info->data = Au_hold((Au)bytes);
             a->pixels = bytes;
         }
         return;
@@ -146,7 +146,7 @@ none Image_init(Image a) {
 
         info->count = total_floats;
         info->scalar = (Au_t)_typeid(f32);
-        info->data = (Au)data;
+        info->data = Au_hold((Au)data);
         a->pixels = (u8*)data;
     } else if (string_eq(ext, "png")) {
         FILE* file = fopen(uri, "rb");
@@ -198,7 +198,7 @@ none Image_init(Image a) {
         /// Store in header
         info->count  = a->width * a->height * a->channels;
         info->scalar = (bit_depth == 16) ? (Au_t)_typeid(u16) : (Au_t)_typeid(u8);
-        info->data   = (Au)data;
+        info->data   = Au_hold((Au)data);
         a->pixel_size  = (bit_depth / 8) * a->channels;
         a->pixels = (u8*)data;
     }
