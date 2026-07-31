@@ -122,6 +122,7 @@ static u8 nib(char n) {
 
 rgba rgba_with_cstr(rgba a, cstr v) {
     symbol h = v;
+    if (!h || !h[0]) return a;
     a->a = 1.0f;
 
     if (h[0] == '#') {

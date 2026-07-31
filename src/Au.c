@@ -2474,8 +2474,9 @@ none Au_drop(Au a) {
         // freed headers carry the -8888 sentinel: a drop landing here is a
         // DOUBLE drop — name the object and its dropper instead of crashing
         if (n < -1000) {
-            fprintf(stderr, "DOUBLE-DROP on freed object %s:%i seq=%i — dropper:\n",
-                info->source ? info->source : "?", info->line, info->sequence);
+            // freed header: source may point at reused memory — never strlen it
+            fprintf(stderr, "DOUBLE-DROP on freed object src=%p line=%i seq=%i — dropper:\n",
+                (void*)info->source, info->line, info->sequence);
             void* frames[10];
             int nf = backtrace(frames, 10);
             backtrace_symbols_fd(frames + 1, nf - 1, 2);
@@ -4217,7 +4218,40 @@ Au __convert(Au_t type, Au value) {
     return formatter(type, false, null, (Au)false, 0, "%o", value);
 }
 
+static bool au_num_value(Au v, f64* out) {
+    Au_t t = isa(v);
+    if      (t == typeid(f32)) *out = *(f32*)v;
+    else if (t == typeid(f64)) *out = *(f64*)v;
+    else if (t == typeid(i32)) *out = *(i32*)v;
+    else if (t == typeid(i64)) *out = (f64)*(i64*)v;
+    else if (t == typeid(u32)) *out = *(u32*)v;
+    else if (t == typeid(u64)) *out = (f64)*(u64*)v;
+    else if (t == typeid(i16)) *out = *(i16*)v;
+    else if (t == typeid(u16)) *out = *(u16*)v;
+    else if (t == typeid(i8))  *out = *(i8*) v;
+    else if (t == typeid(u8))  *out = *(u8*) v;
+    else return false;
+    return true;
+}
+
 Au Au_mix(Au a, Au target, f64 amount) {
+    // numeric scalars mix directly — primitives register no operator members
+    f64 av, bv;
+    if (au_num_value(a, &av) && au_num_value(target, &bv)) {
+        f64  rv = av + (bv - av) * amount;
+        Au_t ty = isa(a);
+        if (ty == typeid(f32)) { f32 v = (f32)rv; return primitive(ty, &v); }
+        if (ty == typeid(f64)) return _f64(rv);
+        i64 iv = llround(rv);
+        if (ty == typeid(i32)) { i32 v = (i32)iv; return primitive(ty, &v); }
+        if (ty == typeid(i64)) return _i64(iv);
+        if (ty == typeid(u32)) { u32 v = (u32)iv; return primitive(ty, &v); }
+        if (ty == typeid(u64)) { u64 v = (u64)iv; return primitive(ty, &v); }
+        if (ty == typeid(i16)) { i16 v = (i16)iv; return primitive(ty, &v); }
+        if (ty == typeid(u16)) { u16 v = (u16)iv; return primitive(ty, &v); }
+        if (ty == typeid(i8))  { i8  v = (i8) iv; return primitive(ty, &v); }
+        if (ty == typeid(u8))  { u8  v = (u8) iv; return primitive(ty, &v); }
+    }
     Au t_val = _f64(amount);
     Au diff  = __op(OPType__sub, target, a);
     Au scale = __op(OPType__mul, diff, t_val);
@@ -5476,16 +5510,18 @@ none  string_append_count(string a, symbol b, i32 blen) {
     ((cstr)a->chars)[a->count] = 0;
 }
 
+static bool trim_ws(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+
 string string_trim(string a) {
     cstr s = cstring(a);
     int count = len(a);
-    while (*s == ' ') {
+    while (trim_ws(*s)) {
         s++;
         count--;
     }
-    while (count && s[count - 1] == ' ')
+    while (count && trim_ws(s[count - 1]))
         count--;
-    
+
     return string(chars, s, ref_length, count);
 }
 
@@ -9145,6 +9181,7 @@ define_class(line, Au)
 
 define_enum(OPType)
 define_enum(Exists)
+define_enum(FileType)
 define_enum(level)
 define_enum(Syntax)
 

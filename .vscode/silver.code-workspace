@@ -4,6 +4,9 @@
       "path": ".."
     },
 		{
+			"path": "../../ar-visions.github.io"
+		},
+		{
 			"path": "../../ark"
 		}
   ],

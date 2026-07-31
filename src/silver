@@ -14,6 +14,8 @@ declare_class(exports)
 #define silver_schema(X, Y, ...) \
     M(X, Y, i, prop,     public,  bool,   watch) \
     M(X, Y, i, prop,     public,  string, listen) \
+    M(X, Y, i, prop,     intern,  string, listen_key) \
+    M(X, Y, i, prop,     intern,  array,  listen_query) \
     M(X, Y, i, prop,     public,  bool,   clean) \
     M(X, Y, i, prop,     public,  bool,   link) \
     M(X, Y, i, prop,     public,  bool,   build) \

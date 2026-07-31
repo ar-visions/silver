@@ -867,6 +867,42 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     // value enode_init can't catch, since assign reuses an existing node.
     if (res) { res->is_assign = true; aether_emit_listen_value(a, res); }
 
+#ifndef NDEBUG
+    // --listen 'Class.member': print every compiled store to that member
+    if (a->watch_member && !a->no_build && res && res->value && L && L->autype &&
+        L->autype->member_type == AU_MEMBER_VAR && L->autype->context &&
+        L->autype->ident && strcmp(L->autype->ident, a->watch_member->chars) == 0 &&
+        ((Au_t)L->autype->context)->ident &&
+        strcmp(((Au_t)L->autype->context)->ident, a->watch_class->chars) == 0) {
+        LLVMMetadataRef dloc = LLVMGetCurrentDebugLocation2(B);
+        unsigned wline = dloc ? LLVMDILocationGetLine(dloc) : 0;
+        LLVMTypeRef  vt = LLVMTypeOf(res->value);
+        LLVMTypeKind vk = LLVMGetTypeKind(vt);
+        LLVMTypeRef  i32_ty = LLVMInt32TypeInContext(a->module_ctx);
+        LLVMTypeRef  dbl_ty = LLVMDoubleTypeInContext(a->module_ctx);
+        const char*  conv = "%p";
+        LLVMValueRef arg  = res->value;
+        if (vk == LLVMIntegerTypeKind) {
+            unsigned bits = LLVMGetIntTypeWidth(vt);
+            if      (bits <  32) { arg = LLVMBuildZExt(B, res->value, i32_ty, ""); conv = "%i"; }
+            else if (bits == 32) { conv = "%i"; }
+            else                 { conv = "%lli"; }
+        } else if (vk == LLVMFloatTypeKind)  { arg = LLVMBuildFPExt(B, res->value, dbl_ty, ""); conv = "%f"; }
+        else if   (vk == LLVMDoubleTypeKind) { conv = "%f"; }
+        char wmsg[256];
+        snprintf(wmsg, sizeof(wmsg), "WATCH %s.%s = %s @%u\n",
+            a->watch_class->chars, a->watch_member->chars, conv, wline);
+        LLVMTypeRef  i8ptr     = LLVMPointerTypeInContext(a->module_ctx, 0);
+        LLVMValueRef gstr      = LLVMBuildGlobalStringPtr(B, wmsg, "");
+        LLVMTypeRef  printf_ty = LLVMFunctionType(i32_ty, &i8ptr, 1, 1);
+        LLVMValueRef printf_fn = LLVMGetNamedFunction(a->module_ref, "printf");
+        if (!printf_fn)
+            printf_fn = LLVMAddFunction(a->module_ref, "printf", printf_ty);
+        LLVMValueRef wargs[] = { gstr, arg };
+        LLVMBuildCall2(B, printf_ty, printf_fn, wargs, 2, "");
+    }
+#endif
+
     /* ------------------------------------------------------------
      * Phase 6.5: mark AF bit for direct member field assignment
      * skip inside init bodies — those are default values, not user-set prop-pairs
@@ -3644,9 +3680,55 @@ void aether_init_listen(aether a) { }
 
 void aether_emit_listen_entry(aether a, const char* func_name) { }
 
+// query gate: an i1 slot the listen query stores into each statement;
+// prints branch on it so only matching scopes emit
+void aether_listen_gate_create(aether a) {
+    if (a->no_build || a->listen_gate) return;
+    if (!LLVMGetInsertBlock(B)) return;
+    LLVMTypeRef  i1 = LLVMInt1TypeInContext(a->module_ctx);
+    LLVMValueRef g  = LLVMBuildAlloca(B, i1, "listen_gate");
+    LLVMBuildStore(B, LLVMConstInt(i1, 0, 0), g);
+    a->listen_gate = g;
+}
+
+void aether_listen_gate_store(aether a, enode cond) {
+    if (a->no_build || !a->listen_gate || !cond || !cond->value) return;
+    LLVMValueRef v  = cond->value;
+    LLVMTypeRef  vt = LLVMTypeOf(v);
+    if (LLVMGetTypeKind(vt) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(vt) != 1)
+        v = LLVMBuildICmp(B, LLVMIntNE, v, LLVMConstInt(vt, 0, 0), "");
+    else if (LLVMGetTypeKind(vt) == LLVMPointerTypeKind)
+        v = LLVMBuildIsNotNull(B, v, "");
+    else if (LLVMGetTypeKind(vt) != LLVMIntegerTypeKind)
+        return;
+    LLVMBuildStore(B, v, (LLVMValueRef)a->listen_gate);
+}
+
+static LLVMBasicBlockRef listen_gate_open(aether a) {
+    if (!a->listen_gate) return null;
+    LLVMBasicBlockRef cur = LLVMGetInsertBlock(B);
+    if (!cur) return null;
+    LLVMValueRef      fn  = LLVMGetBasicBlockParent(cur);
+    LLVMBasicBlockRef pb  = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "listen_do");
+    LLVMBasicBlockRef mb  = LLVMAppendBasicBlockInContext(a->module_ctx, fn, "listen_done");
+    LLVMTypeRef       i1  = LLVMInt1TypeInContext(a->module_ctx);
+    LLVMValueRef      g   = LLVMBuildLoad2(B, i1, (LLVMValueRef)a->listen_gate, "");
+    LLVMBuildCondBr(B, g, pb, mb);
+    LLVMPositionBuilderAtEnd(B, pb);
+    return mb;
+}
+
+static void listen_gate_close(aether a, LLVMBasicBlockRef mb) {
+    if (!mb) return;
+    LLVMBuildBr(B, mb);
+    LLVMPositionBuilderAtEnd(B, mb);
+}
+
 void aether_emit_listen_line(aether a, const char* msg) {
-    if (!a->listen_active || a->no_build) return;
+    if (!a->listen_active || a->no_build || a->listen_emitting) return;
+    LLVMBasicBlockRef mb = listen_gate_open(a);
     emit_puts_str(a, msg);
+    listen_gate_close(a, mb);
 }
 
 // per-enode value trace (any listen_values target, including '*' now that the
@@ -3659,6 +3741,7 @@ void aether_emit_listen_line(aether a, const char* msg) {
 // C-vararg promotions printf needs (small ints -> i32, f32 -> double).
 void aether_emit_listen_value(aether a, enode n) {
     if (!a->listen_values || a->no_build)       return;
+    if (a->listen_emitting)                     return; // query eval must not trace itself
     if (!n || !n->value || !n->loaded)          return; // need the scalar value, not an address
     LLVMBasicBlockRef _ibb = LLVMGetInsertBlock(B);
     if (!_ibb)                                  return; // must be inside a function body
@@ -3697,6 +3780,7 @@ void aether_emit_listen_value(aether a, enode n) {
     const char* nm = (tk->chars && tk->chars[0]) ? tk->chars : "(value)";
     char full[300];
     snprintf(full, sizeof(full), "    %s = %s\n", nm, conv); // nm is token text (no '%'); conv is the spec
+    LLVMBasicBlockRef mb   = listen_gate_open(a);
     LLVMTypeRef  i8ptr     = LLVMPointerTypeInContext(a->module_ctx, 0);
     LLVMValueRef gstr      = LLVMBuildGlobalStringPtr(B, full, "");
     LLVMTypeRef  printf_ty = LLVMFunctionType(i32_ty, &i8ptr, 1, /*variadic*/1);
@@ -3705,16 +3789,23 @@ void aether_emit_listen_value(aether a, enode n) {
         printf_fn = LLVMAddFunction(a->module_ref, "printf", printf_ty);
     LLVMValueRef args[] = { gstr, arg };
     LLVMBuildCall2(B, printf_ty, printf_fn, args, 2, "");
+    listen_gate_close(a, mb);
 }
 
 bool aether_has_listen(aether a) { return a->listen_active; }
-void aether_clear_listen(aether a) { a->listen_active = false; a->listen_values = false; }
+void aether_clear_listen(aether a) {
+    a->listen_active = false;
+    a->listen_values = false;
+    a->listen_gate   = null;
+}
 
 #else
 
 bool aether_has_listen(aether a) { return false; }
 void aether_clear_listen(aether a) { }
 void aether_emit_listen_value(aether a, enode n) { }
+void aether_listen_gate_create(aether a) { }
+void aether_listen_gate_store(aether a, enode cond) { }
 
 #endif
 

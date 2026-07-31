@@ -165,6 +165,9 @@ forward(evar)
     M(X, Y, i, prop,     public,  bool,                     listen_active) \
     M(X, Y, i, prop,     public,  bool,                     listen_values) \
     M(X, Y, i, prop,     public,  bool,                     listen_emitting) \
+    M(X, Y, i, prop,     intern,  LLVMValueRef,             listen_gate,       as, ARef) \
+    M(X, Y, i, prop,     public,  string,                   watch_class) \
+    M(X, Y, i, prop,     public,  string,                   watch_member) \
     M(X, Y, i, prop,     intern,  token,                    listen_last_token, as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMExecutionEngineRef,   jit,                     as, ARef) \
     M(X, Y, i, prop,     intern,  LLVMBasicBlockRef,        current_if_block,        as, ARef) \

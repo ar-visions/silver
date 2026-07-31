@@ -24,6 +24,8 @@ void aether_emit_listen_entry(aether, const char*);
 void aether_emit_listen_line(aether, const char*);
 bool aether_has_listen(aether);
 void aether_clear_listen(aether);
+void aether_listen_gate_create(aether);
+void aether_listen_gate_store(aether, enode);
 etype evar_type(evar a);
 enode parse_import(silver a);
 enode parse_export(silver a);
@@ -47,6 +49,8 @@ extern __thread aether au_codegen_active;
 // list right before constructing the external silver(), and silver_init reads it at the
 // top into a->extensions (the prop-pair ctor is already at its 22-arg max).
 static array g_import_with = null;
+// --listen propagates to every imported module's compile
+static string g_listen = null;
 static void build_record(silver a, etype mrec);
 static void build_record_parse(silver a, etype mrec);
 static void build_record_implement(silver a, etype mrec);
@@ -1125,8 +1129,13 @@ static void exporter(silver a) {
                 int  off = snprintf(line, sizeof(line), "%s: [", ((string)j->key)->chars);
                 bool first = true;
                 each(vals, string, v) {
-                    off += snprintf(line + off, sizeof(line) - off, "%s'%s'",
-                                    first ? "" : ", ", v->chars);
+                    char* col = strchr(v->chars, ':');
+                    if (col)
+                        off += snprintf(line + off, sizeof(line) - off, "%s'%.*s': %s",
+                                        first ? "" : ", ", (int)(col - v->chars), v->chars, col + 1);
+                    else
+                        off += snprintf(line + off, sizeof(line) - off, "%s'%s'",
+                                        first ? "" : ", ", v->chars);
                     first = false;
                 }
                 snprintf(line + off, sizeof(line) - off, "]\n");
@@ -1357,6 +1366,9 @@ static path build_silver_host(silver a) {
 // fully-cached `silver <app>` still runs instead of silently building and exiting.
 // execvp replaces this process; returns only when there's nothing to run (library /
 // external sub-module / no host binary).
+// build-session lock (install/build/.silver.lock); held from init to run
+static int build_lock_fd = -1;
+
 static void silver_live_run(silver a) {
     // a failed build must NOT launch (or relaunch) the app. execvp'ing the host on an
     // error makes the host re-trigger `silver <app>`, which fails and re-execs — the
@@ -1397,6 +1409,12 @@ static void silver_live_run(silver a) {
         argv[i] = NULL;
         // --test: the app runs its expect tests, reports, and exits
         if (a->test) setenv("SILVER_EXPECT", "1", 1);
+        // release the build lock: the app must not hold it while running
+        if (build_lock_fd >= 0) {
+            flock(build_lock_fd, LOCK_UN);
+            (close)(build_lock_fd);
+            build_lock_fd = -1;
+        }
         execvp(argv[0], argv);
         fprintf(stderr, "execvp failed for %s: %s\n", argv[0], strerror(errno));
         _exit(1);
@@ -1409,12 +1427,12 @@ void silver_init(silver a) {
     // one build at a time: the root instance holds a lock for the session
     if (!a->is_external) {
         path lk = f(path, "%s/install/build/.silver.lock", SILVER);
-        int fd = open(cstring(lk), O_CREAT | O_RDWR, 0644);
-        if (fd >= 0) {
-            if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        build_lock_fd = open(cstring(lk), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
+        if (build_lock_fd >= 0) {
+            if (flock(build_lock_fd, LOCK_EX | LOCK_NB) != 0) {
                 printf("silver: currently building in separate process, waiting for finish...\n");
                 fflush(stdout);
-                flock(fd, LOCK_EX);
+                flock(build_lock_fd, LOCK_EX);
             }
         }
     }
@@ -1441,6 +1459,12 @@ void silver_init(silver a) {
         a->extensions = hold(g_import_with);
         g_import_with = null;
     }
+
+    // top-level --listen flows down; imports inherit it here
+    if (a->listen && !g_listen)
+        g_listen = (string)hold((Au)a->listen);
+    else if (!a->listen && g_listen)
+        a->listen = (string)hold((Au)g_listen);
 
     if (!keywords) silver_module();
 
@@ -2161,12 +2185,17 @@ static enode read_keywords(silver a, etype mdl_expect) {
     if (!next_is(a, "{"))
         return null;
     consume(a, Syntax__none); // consume {
-    array toks = array(16);
+    token open = element(a, -1);
+    array toks   = array(16);
+    array chunks = array(16); // first token of each chunk (line/indent)
     int depth = 1;
     for (;;) {
         token t = peek(a);
         if (!t) break;
-        if (eq(t, "}")) { depth--; consume(a, Syntax__none); if (depth == 0) break; }
+        if (eq(t, "}")) {
+            depth--;
+            if (depth == 0) { consume(a, Syntax__none); break; }
+        }
         if (eq(t, "{")) { depth++; }
         // compact neighboring tokens on the same line (like commit-id parsing). these are
         // the user/meta tokens inside the { } block (GLSL symbol/token descriptors) →
@@ -2178,7 +2207,8 @@ static enode read_keywords(silver a, etype mdl_expect) {
             concat(compacted, (string)nb);
             consume(a, Syntax__usertoken);
         }
-        push(toks, (Au)compacted);
+        push(toks,   (Au)compacted);
+        push(chunks, (Au)t);
     }
     Au_t target = (mdl_expect && mdl_expect->autype) ?
         au_arg_type((Au)mdl_expect->autype) : null;
@@ -2186,9 +2216,18 @@ static enode read_keywords(silver a, etype mdl_expect) {
         if (constructs_with(target, typeid(string)) ||
             constructs_with(target, typeid(cstr))   ||
             constructs_with(target, typeid(symbol))) {
+            // rebuild line/indent structure (css/glsl bodies are line-based)
             string joined = string(alloc, 64);
+            num prev_line = open ? open->line : 0;
             for (int i = 0; i < len(toks); i++) {
-                if (i) push(joined, ' ');
+                token ft = (token)chunks->origin[i];
+                if (ft->line != prev_line) {
+                    push(joined, '\n');
+                    for (num k = 0; k < ft->indent; k++)
+                        push(joined, ' ');
+                } else if (i)
+                    push(joined, ' ');
+                prev_line = ft->line;
                 concat(joined, (string)toks->origin[i]);
             }
             return (enode)e_create((aether)a, (etype)mdl_expect,
@@ -2787,6 +2826,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
     num     index       = 0;
     num     line_start  = 0;
     num     indent      = 0;
+    num     curly_depth = 0;
     bool    num_start   = 0;
     bool    cmode       = a->cmode || (len(a->tokens) && is_cmode(a));
     i32     chr0        = idx(input_string, index);
@@ -2823,8 +2863,8 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
         num_start = isdigit(chr) > 0;
 
 
-        // comments
-        if (!a->cmode && chr == '#') {
+        // comments; inside { } bodies '#' is data (css colors)
+        if (!a->cmode && chr == '#' && curly_depth == 0) {
             if (index + 1 < length && idx(input_string, index + 1) == '#') {
                 // multi-line
                 index += 2;
@@ -2873,6 +2913,10 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
             // we could merge these more generically
             if (a->cmode && len(name) == 1 && strncmp(&input_string->chars[index], "##", 2) == 0) {
                 name = string("##");
+            }
+            if (len(name) == 1) {
+                if      (name->chars[0] == '{')                curly_depth++;
+                else if (name->chars[0] == '}' && curly_depth) curly_depth--;
             }
             // lexical syntax: brackets/delimiters are punctuation, the rest are operators.
             i32    nc0 = name->chars[0];
@@ -4320,6 +4364,30 @@ static void parse_extension(silver a, path module_source, bool reset_imports) {
     a->module_file = saved_module_file;
 }
 
+// --listen 'Class.method [ expr ]' — re-evaluate the query each statement,
+// storing into the gate; listen prints emit only while the gate holds true
+static void silver_listen_requery(silver a) {
+    aether ae = (aether)a;
+    if (!a->listen_query || a->no_build) return;
+    array q = a->listen_query;
+    for (int i = 0; i < len(q); i++) {
+        token t = (token)q->origin[i];
+        char  c = t->chars[0];
+        if (!(isalpha(c) || c == '_')) continue;
+        if (i > 0 && !strcmp(((token)q->origin[i - 1])->chars, ".")) continue;
+        if (!strcmp(t->chars, "true") || !strcmp(t->chars, "false") ||
+            !strcmp(t->chars, "null")) continue;
+        if (!lexical(a->lexical, t->chars)) return; // out of scope: keep gate
+    }
+    aether_listen_gate_create(ae);
+    ae->listen_emitting = true;
+    push_tokens(a, (tokens)q, 0);
+    enode cond = parse_expression(a, etypeid(bool), false, true);
+    pop_tokens(a, false);
+    ae->listen_emitting = false;
+    aether_listen_gate_store(ae, cond);
+}
+
 enode parse_statement(silver a)
 {
     sequencer
@@ -4357,6 +4425,7 @@ enode parse_statement(silver a)
             a->statement_origin->line, a->statement_origin->column);
 #ifndef NDEBUG
     if (f && aether_has_listen((aether)a) && a->statement_origin && !a->no_build) {
+        silver_listen_requery(a);
         token tk = a->statement_origin;
         num   ln = tk->line;
         char  trace_msg[512];
@@ -6948,7 +7017,21 @@ enode parse_export(silver a) {
         for (;;) {
             string val = read_string(a);
             validate(val, "expected string value for export %o", area);
-            push(vals, (Au)interpolate(val, (Au)a));
+            string entry = interpolate(val, (Au)a);
+            // optional applicability tag: 'name': FileType.member
+            if (read_if(a, ":")) {
+                string ety = read_alpha(a);
+                validate(ety && strcmp(ety->chars, "FileType") == 0,
+                    "expected FileType enum for export %o", area);
+                validate(read_if(a, "."), "expected . after FileType");
+                string mem = read_alpha(a);
+                validate(mem, "expected FileType member");
+                Au_t ev = find_member(typeid(FileType), cstring(mem),
+                    AU_MEMBER_ENUMV, 0, false);
+                validate(ev, "unknown FileType member %o", mem);
+                entry = f(string, "%o:%o", entry, mem);
+            }
+            push(vals, (Au)entry);
             if (!read_if(a, ","))
                 break;
         }
@@ -7567,7 +7650,9 @@ enode assign_builder(silver a, enode targ, array post_const) { sequencer
     int level = a->expr_level;
     a->expr_level++;
     push_tokens(a, (tokens)post_const, 0);
-    enode expr = parse_expression(a, targ ? (etype)evar_type((evar)targ) : null, false, true);
+    // { tokens } defaults parse biased by the member's own type
+    bool kw = next_is(a, "{");
+    enode expr = parse_expression(a, targ ? (etype)evar_type((evar)targ) : null, kw, true);
     pop_tokens(a, false);
     a->expr_level = level;
     return expr;
@@ -8257,7 +8342,35 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
             else
                 snprintf(listen_key, sizeof(listen_key), "%s", fname);
             aether_clear_listen((aether)a);
-            if (a->listen && (strcmp(a->listen->chars, "*") == 0 || strcmp(a->listen->chars, listen_key) == 0)) {
+            // split '--listen "Class.method [ expr ]"' into key + query tokens, once
+            if (a->listen && !a->listen_key) {
+                cstr br = strchr(a->listen->chars, '[');
+                if (br) {
+                    cstr end = strrchr(a->listen->chars, ']');
+                    string key = trim(mid(a->listen, 0, (num)(br - a->listen->chars)));
+                    num    qat = (num)(br + 1 - a->listen->chars);
+                    num    qln = (end && end > br) ? (num)(end - br - 1)
+                                                   : (num)len(a->listen) - qat;
+                    string qtx = trim(mid(a->listen, qat, qln));
+                    a->listen_key = (string)hold(key);
+                    if (len(qtx)) {
+                        array q = array(alloc, 32);
+                        parse_tokens(a, (Au)qtx, q);
+                        a->listen_query = (array)hold(q);
+                    }
+                } else
+                    a->listen_key = (string)hold(a->listen);
+                // 'Class.name' also arms the member-write watch (aether checks
+                // VAR idents only, so function listens are unaffected)
+                cstr dot = strchr(a->listen_key->chars, '.');
+                if (dot) {
+                    aether ae2 = (aether)a;
+                    ae2->watch_class  = (string)hold(mid(a->listen_key, 0, (num)(dot - a->listen_key->chars)));
+                    ae2->watch_member = (string)hold(mid(a->listen_key, (num)(dot - a->listen_key->chars) + 1,
+                        (num)len(a->listen_key) - (num)(dot - a->listen_key->chars) - 1));
+                }
+            }
+            if (a->listen_key && (strcmp(a->listen_key->chars, "*") == 0 || strcmp(a->listen_key->chars, listen_key) == 0)) {
                 ((aether)a)->listen_active = true;
                 ((aether)a)->listen_values = true; // values everywhere, '*' included (heavy: full value trace)
             }
