@@ -5,6 +5,10 @@
 			"path": "."
 		},
 		{
+			"name": "ar-visions.github.io",
+			"path": "../ar-visions.github.io"
+		},
+		{
 			"name": "ark",
 			"path": "../ark"
 		}
