@@ -15,6 +15,13 @@ typedef LLVMMetadataRef LLVMScope;
 
 #include <aether/import>
 
+// serialize on aether's single-context emission lock
+void aether_emit_lock();
+void aether_emit_unlock();
+static void _emit_guard_end(char* g) { (void)g; aether_emit_unlock(); }
+#define emit_guard __attribute__((cleanup(_emit_guard_end))) \
+    char _emit_g_ = (aether_emit_lock(), (char)0); (void)_emit_g_
+
 // --- LLDB/DWARF debug info helpers ---
 
 #define B a->builder
@@ -60,6 +67,7 @@ void coverage_set_func_name(u32 func_id, char* name) {
 }
 
 void emit_coverage_register(aether a) {
+    emit_guard;
     if ((!a->coverage && !a->timing) || a->no_build) return;
 
     LLVMTypeRef ptr_type = LLVMPointerTypeInContext(a->module_ctx, 0);
@@ -118,6 +126,7 @@ void emit_coverage_register(aether a) {
 // emit probe when entering a statements block
 // called from statements initialization or push_scope
 void aether_emit_block_probe(aether a, u32 probe_id) {
+    emit_guard;
     if (!a->coverage) return;
     if (a->no_build) return;
 
@@ -178,6 +187,7 @@ void aether_emit_block_probe(aether a, u32 probe_id) {
 
 // read clock_gettime(CLOCK_MONOTONIC) and return nanosecond timestamp
 LLVMValueRef emit_clock_ns(aether a, cstr label) {
+    emit_guard;
     LLVMTypeRef i64t = LLVMInt64TypeInContext(a->module_ctx);
     LLVMTypeRef timespec_type = LLVMStructTypeInContext(
         a->module_ctx, (LLVMTypeRef[]){ i64t, i64t }, 2, false);
@@ -214,6 +224,7 @@ LLVMValueRef emit_func_timing_start(aether a, u32 func_id) {
 
 // emit timing end and accumulate elapsed time - FUNCTION LEVEL ONLY
 void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id) {
+    emit_guard;
     if (!a->timing || !start_ns || a->no_build) return;
 
     LLVMValueRef end_ns  = emit_clock_ns(a, "end_ns");
@@ -235,6 +246,7 @@ void emit_func_timing_end(aether a, LLVMValueRef start_ns, u32 func_id) {
 
 // this looks leaky, but isnt
 void report_coverage(aether a) {
+    emit_guard;
     if (!a->coverage) return;
 
     // create function type
@@ -252,6 +264,7 @@ void report_coverage(aether a) {
 
 // this works fine when re-initializing
 void init_coverage(aether a) {
+    emit_guard;
     if (!a->coverage && !a->timing) return;
 
     if (a->coverage) {

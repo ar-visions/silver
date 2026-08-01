@@ -1048,6 +1048,7 @@ u64 au_hash_ident(symbol s) {
 Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
     if (!mdl) return null;
     u64 fhash = f ? au_hash_ident(f) : 0;
+    bool au_is_expanding(Au_t m);
     do {
         // fast path: hash map lookup, then verify filters
         if (f && fhash && mdl->member_map) {
@@ -1056,7 +1057,7 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
             for (item it = s->hlist[idx]; it; it = it->next) {
                 if (it->key == (Au)(uintptr_t)fhash) {
                     Au_t au = (Au_t)it->value;
-                    if (au && au->ident && !au->is_expanding && strcmp(au->ident, f) == 0) {
+                    if (au && au->ident && !au_is_expanding(au) && strcmp(au->ident, f) == 0) {
                         if ((!member_type || au->member_type == member_type) &&
                             (!traits || (au->traits & traits) == traits))
                             return au;
@@ -1068,7 +1069,7 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
             // slow path: linear scan with filters
             for (int i = 0; i < mdl->members.count; i++) {
                 Au_t au = (Au_t)mdl->members.origin[i];
-                if (!au || au->is_expanding) continue;
+                if (!au || au_is_expanding(au)) continue;
                 if (!member_type || au->member_type == member_type) {
                     if (!traits || (au->traits & traits) == traits) {
                         if (!f || (au->ident && strcmp(au->ident, f) == 0))
@@ -1096,6 +1097,22 @@ Au_t find_context(array lex, int member_type, int traits) {
 
 Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type);
 
+// macro-recursion guard is per parse thread, never on the shared Au_t
+static __thread Au_t _expanding[64];
+static __thread int  _expanding_n = 0;
+
+bool au_is_expanding(Au_t m) {
+    for (int i = 0; i < _expanding_n; i++)
+        if (_expanding[i] == m) return true;
+    return false;
+}
+none au_expanding_push(Au_t m) {
+    if (_expanding_n < 64) _expanding[_expanding_n++] = m;
+}
+none au_expanding_pop() {
+    if (_expanding_n) _expanding_n--;
+}
+
 Au_t lexical(array lex, symbol f) {
     return lexical_traits(lex, f, 0, 0);
 }
@@ -1104,6 +1121,7 @@ Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) {
 
     bool top_set = false;
     bool top_Au  = false;
+    u64  fhash   = f ? au_hash_ident(f) : 0;
     for (int i = len(lex) - 1; i >= 0; i--) {
         Au_t au = (Au_t)lex->origin[i];
         if (!top_set) {
@@ -1117,6 +1135,18 @@ Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) {
                     if (m->ident && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)) && (!member_type || m->member_type == member_type))
                         return m;
                 }
+            // hash reject: name provably absent from this scope's members
+            if (fhash && au->member_map) {
+                store s = (store)au->member_map;
+                item it = s->hlist[((size_t)fhash >> 3) % s->hsize];
+                while (it && it->key != (Au)(uintptr_t)fhash) it = it->next;
+                if (!it) {
+                    if (!is_class((Au)au)) break;
+                    if (au->context == au) break;
+                    au = au->context;
+                    continue;
+                }
+            }
             for (int ii = 0; ii < au->members.count; ii++) {
                 Au_t m = (Au_t)au->members.origin[ii];
                 if (au->is_struct || au->is_class) {
@@ -1125,7 +1155,7 @@ Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) {
                             return m;
                     }
                 } else {
-                    if (m->ident && !m->is_expanding && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)) && (!member_type || m->member_type == member_type)) {
+                    if (m->ident && !au_is_expanding(m) && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)) && (!member_type || m->member_type == member_type)) {
                         // prefer functions over types when both exist with same name
                         if (m->member_type == AU_MEMBER_TYPE && !traits) {
                             Au_t func_match = null;
@@ -1231,8 +1261,46 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
     return func;
 }
 
+// member creation serializes: micro/member_map writers race scans
+static pthread_mutex_t def_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// insert into member_map keyed by ident_hash (raw — no Au object model)
+none au_member_map_insert(Au_t type, Au_t new_member) {
+    if (!type->member_map) {
+        int hsz = 0;
+        if (type->member_type == AU_MEMBER_MODULE || type->member_type == AU_MEMBER_NAMESPACE)
+            hsz = 1024;
+        else if (type->is_class || type->is_struct)
+            hsz = 256;
+        if (hsz) {
+            store s = calloc(1, sizeof(struct _store) + sizeof(struct _Au));
+            s->hsize = hsz;
+            s->hlist = (item*)calloc(hsz, sizeof(item));
+            type->member_map = (void*)s;
+        }
+    }
+    if (!type->member_map || !new_member->ident) return;
+    store s = (store)type->member_map;
+    size_t idx = ((size_t)new_member->ident_hash >> 3) % s->hsize;
+    for (item i = s->hlist[idx]; i; i = i->next) {
+        if (i->key == (Au)(uintptr_t)new_member->ident_hash) {
+            i->value = (Au)new_member;
+            return;
+        }
+    }
+    item ni = calloc(1, sizeof(struct _Au) + sizeof(struct _item));
+    ni = (item)(((struct _Au*)ni) + 1);
+    ni->key   = (Au)(uintptr_t)new_member->ident_hash;
+    ni->value = (Au)new_member;
+    ni->next  = s->hlist[idx];
+    if (s->hlist[idx]) s->hlist[idx]->prev = ni;
+    s->hlist[idx] = ni;
+    s->count++;
+}
+
 Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
     static int seq; seq++;
+    pthread_mutex_lock(&def_lock);
 
     struct _Au_combine* cur = calloc(1, sizeof(struct _Au_combine));
     cur->info.refs = 0;
@@ -1258,46 +1326,12 @@ Au_t def(Au_t type, symbol ident, u32 member_type, u64 traits) {
         Au_t new_member = (Au_t)micro_push(&type->members, (Au)&cur->type);
         new_member->context = type;
 
-        // create member_map on first member addition (raw alloc — Au may not be ready)
-        if (!type->member_map) {
-            int hsz = 0;
-            if (type->member_type == AU_MEMBER_MODULE || type->member_type == AU_MEMBER_NAMESPACE)
-                hsz = 1024;
-            else if (type->is_class || type->is_struct)
-                hsz = 256;
-            if (hsz) {
-                store s = calloc(1, sizeof(struct _store) + sizeof(struct _Au));
-                s->hsize = hsz;
-                s->hlist = (item*)calloc(hsz, sizeof(item));
-                type->member_map = (void*)s;
-            }
-        }
+        au_member_map_insert(type, new_member);
 
-        // insert into member_map keyed by ident_hash (raw — no Au object model)
-        if (type->member_map && ident) {
-            store s = (store)type->member_map;
-            size_t idx = ((size_t)new_member->ident_hash >> 3) % s->hsize;
-            // check for existing
-            for (item i = s->hlist[idx]; i; i = i->next) {
-                if (i->key == (Au)(uintptr_t)new_member->ident_hash) {
-                    i->value = (Au)new_member;
-                    goto member_map_done;
-                }
-            }
-            // allocate raw item
-            item ni = calloc(1, sizeof(struct _Au) + sizeof(struct _item));
-            ni = (item)(((struct _Au*)ni) + 1);
-            ni->key   = (Au)(uintptr_t)new_member->ident_hash;
-            ni->value = (Au)new_member;
-            ni->next  = s->hlist[idx];
-            if (s->hlist[idx]) s->hlist[idx]->prev = ni;
-            s->hlist[idx] = ni;
-            s->count++;
-            member_map_done:;
-        }
-
+        pthread_mutex_unlock(&def_lock);
         return new_member;
     }
+    pthread_mutex_unlock(&def_lock);
     return (Au_t)&cur->type;
 }
 
@@ -1923,6 +1957,7 @@ none push_type(Au_t type, Au_t to_mod) {
     }
 
     micro_push(&type->module->members, (Au)type);
+    au_member_map_insert(type->module, type);
 
     //type->af->re_alloc = 1024;
     //type->af->re = (object*)(Au*)calloc(1024, sizeof(Au));
@@ -2968,8 +3003,8 @@ Au alloc_instance(Au_t type, int n_bytes, bool managed) {
     //af && n_bytes == recycle_size;
 
     #ifndef NDEBUG
-    type->global_count++;
-    total_objects++;
+    __atomic_fetch_add(&type->global_count, 1, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&total_objects, 1, __ATOMIC_RELAXED);
     #endif
 
     a = calloc(1, n_bytes);
@@ -4853,14 +4888,18 @@ Au store_get(store a, Au key) {
     return null;
 }
 
+// writers serialize; get() stays lockless (head-publish insert)
+static pthread_mutex_t store_wlock = PTHREAD_MUTEX_INITIALIZER;
+
 none store_set(store a, Au key, Au val) {
+    pthread_mutex_lock(&store_wlock);
     item *loc = &a->hlist[((size_t)(uintptr_t)key >> 3) % a->hsize];
     item f = *loc;
     for (item i = f; i; i = i->next) {
         if (i->key == key) {
-            Au prev = i->value;
             i->value = a->unmanaged ? val : Au_hold(val);
-            if (!a->unmanaged) Au_drop(prev);
+            // prev ref leaks: a lockless reader may still hold it
+            pthread_mutex_unlock(&store_wlock);
             return;
         }
     }
@@ -4869,11 +4908,13 @@ none store_set(store a, Au key, Au val) {
         i->next = *loc;
         (*loc)->prev = i;
     }
-    *loc = i;
+    __atomic_store_n(loc, i, __ATOMIC_RELEASE);
     a->count++;
+    pthread_mutex_unlock(&store_wlock);
 }
 
 none store_rm(store a, Au key) {
+    pthread_mutex_lock(&store_wlock);
     item *loc = &a->hlist[((size_t)(uintptr_t)key >> 3) % a->hsize];
     item  f   = *loc;
     for (item i = f; i; i = i->next) {
@@ -4890,9 +4931,11 @@ none store_rm(store a, Au key) {
             a->count--;
             if (!a->unmanaged) Au_drop(i->value);
             drop(i);
+            pthread_mutex_unlock(&store_wlock);
             return;
         }
     }
+    pthread_mutex_unlock(&store_wlock);
 }
 
 
@@ -5803,10 +5846,10 @@ none Au_free(Au a) {
             if (tracing[i] == a)
                 tracing[i] = null;
 
-    if (--total_objects < 0)
+    if (__atomic_sub_fetch(&total_objects, 1, __ATOMIC_RELAXED) < 0)
         printf("total_objects < 0\n");
-    
-    if (--type->global_count < 0)
+
+    if (__atomic_sub_fetch(&type->global_count, 1, __ATOMIC_RELAXED) < 0)
         printf("global_count < 0 for type %s\n", type->ident);
     
     aa->refs = -8888;
