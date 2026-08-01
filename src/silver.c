@@ -10,6 +10,9 @@
 
 static void silver_module();
 Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type);
+bool au_is_expanding(Au_t m);
+none au_expanding_push(Au_t m);
+none au_expanding_pop();
 enode e_convert_or_cast(aether a, etype output, enode input);
 
 etype etype_prep(silver, Au_t);
@@ -701,6 +704,45 @@ static enode reverse_descent(silver a, etype expect) { sequencer
 
 static array parse_tokens(silver a, Au input, array output);
 
+Au   build_init_preamble(enode f, Au arg);
+void aether_emit_recover();
+aether aether_clone(aether, int);
+void build_fn(silver a, efunc fmem, callback preamble, callback postamble);
+
+typedef struct {
+    silver a;
+    array  work, wrec;
+    map    inits;
+    int    first, step;
+    string err;
+} fn_worker_t;
+
+static void* build_fn_worker(void* arg) {
+    fn_worker_t* w = (fn_worker_t*)arg;
+    silver a = w->a;
+    au_codegen_active = (aether)a;
+    attempt() {
+        int nwork = len(w->work);
+        for (int i = w->first; i < nwork; i += w->step) {
+            efunc    f2  = (efunc)w->work->origin[i];
+            etype    rec = (etype)w->wrec->origin[i];
+            callback pre = get(w->inits, (Au)f2) ? build_init_preamble : null;
+            if (rec) push_scope(a, (Au)rec, 27);
+            build_fn(a, f2, pre, null);
+            if (rec) pop_scope(a);
+        }
+    }
+    on_error() {
+        aether_emit_recover();
+        w->err   = _frame.message ? (string)hold((Au)_frame.message) : string("worker error");
+        a->error = true;
+    }
+    finally()
+    au_codegen_active = null;
+    // no pool drain: registry/type objects live past the worker
+    return null;
+}
+
 
 Au build_init_preamble(enode f, Au arg) {
     silver a = (silver)au_active(f->mod);
@@ -978,15 +1020,45 @@ void silver_parse(silver a) {
         }
     }
 
-    int nwork = len(work);
-    for (int i = 0; i < nwork; i++) {
-        progress_draw(a, 0.5 + 0.5 * (double)i / (double)nwork);
-        efunc    f2  = (efunc)work->origin[i];
-        etype    rec = (etype)wrec->origin[i];
-        callback pre = get(inits, (Au)f2) ? build_init_preamble : null;
-        if (rec) push_scope(a, (Au)rec, 27);
-        build_fn(a, f2, pre, null);
-        if (rec) pop_scope(a);
+    int nwork    = len(work);
+    silver aroot = a->is_external ? a->is_external : a;
+    int    njobs = a->jobs > 0 ? a->jobs : aroot->jobs;
+    int nthreads = njobs > 0 ? njobs : (int)sysconf(_SC_NPROCESSORS_ONLN) - 2;
+    if (nthreads > nwork) nthreads = nwork;
+    if (nthreads > 16)    nthreads = 16;
+
+    if (nthreads <= 1) {
+        for (int i = 0; i < nwork; i++) {
+            progress_draw(a, 0.5 + 0.5 * (double)i / (double)nwork);
+            efunc    f2  = (efunc)work->origin[i];
+            etype    rec = (etype)wrec->origin[i];
+            callback pre = get(inits, (Au)f2) ? build_init_preamble : null;
+            if (rec) push_scope(a, (Au)rec, 27);
+            build_fn(a, f2, pre, null);
+            if (rec) pop_scope(a);
+        }
+    } else {
+        fn_worker_t* ws = (fn_worker_t*)calloc(nthreads, sizeof(fn_worker_t));
+        pthread_t*   ts = (pthread_t*)  calloc(nthreads, sizeof(pthread_t));
+        for (int t = 0; t < nthreads; t++) {
+            ws[t].a     = (silver)aether_clone((aether)a, t + 1);
+            ws[t].work  = work;
+            ws[t].wrec  = wrec;
+            ws[t].inits = inits;
+            ws[t].first = t;
+            ws[t].step  = nthreads;
+            pthread_create(&ts[t], null, build_fn_worker, &ws[t]);
+        }
+        string werr = null;
+        for (int t = 0; t < nthreads; t++) {
+            pthread_join(ts[t], null);
+            if (ws[t].err && !werr) werr = ws[t].err;
+            if (ws[t].a->error) a->error = true;
+        }
+        free(ts);
+        // worker clones stay alive: dealloc would dispose shared LLVM state
+        free(ws);
+        if (werr) halt(werr, null);
     }
 
 
@@ -1942,6 +2014,7 @@ void silver_init(silver a) {
 
         }
         on_error() {
+            aether_emit_recover();
             mtime = current_time();
             a->error = true;
         }
@@ -3294,7 +3367,7 @@ string read_alpha_macrofilter(silver a, bool is_decl) {
             for (int ii = 0; ii < au->members.count; ii++) {
                 Au_t m = (Au_t)au->members.origin[ii];
                 if (m->ident && strcmp(m->ident, n->chars) == 0) {
-                    if (m->is_expanding) continue;
+                    if (au_is_expanding(m)) continue;
                     bool allow = true;
                     if (au->member_type == AU_MEMBER_MACRO) {
                         macro mac = u(macro, m);
@@ -3323,6 +3396,11 @@ enode enode_super(etype, enode);
 
 
 etype etype_create(silver, Au_t);
+
+// single shared context: nodes carry their value directly
+static enode worker_view(silver a, enode mem) {
+    return mem;
+}
 
 enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_mdl, bool in_ref) { static int seq = 0; seq++;
     token pk1 = peek(a);
@@ -3449,6 +3527,7 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     if (sm)
                         mem = access((enode)scope_mdl, alpha);
                 }
+                mem = worker_view(a, mem);
 
                 // first token + : means new declaration — but only at expression level 0
                 if (first && mem && next_is(a, ":") && a->expr_level == 0) {
@@ -5912,7 +5991,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             print("cbindgen not found — rust import %o builds without a header", name);
     } else if (is_silver) { // build for Au-type projects
         silver sf = silver(debug_type, a->debug_type, debugmember, a->debugmember, module, silver_f, breakpoint, a->breakpoint, release, a->release,
-            clean, a->clean, verbose, a->verbose, format, a->format, is_external, a->is_external ? a->is_external : a, is_child, a);
+            clean, a->clean, verbose, a->verbose, format, a->format, jobs, a->jobs, is_external, a->is_external ? a->is_external : a, is_child, a);
         validate(sf, "silver module compilation failed: %o", silver_f);
         // nest the imported module's node under THIS (its direct parent), keyed by the
         // child's source-file path → its node map; a->tree holds the reference so the
@@ -8314,6 +8393,8 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
     implement(f, false);
 
     if (f->has_code && (f->const_tokens || f->inline_return || f->body || preamble)) {
+        // each body build starts at statement level; drift never carries over
+        a->expr_level = 0;
         update_current_file((aether)a, f->source_file);
 
         if (f->target)
@@ -9222,23 +9303,21 @@ enode silver_parse_member_expr(silver a, enode mem, bool in_ref) { sequencer
             validate(read_if(a, close_br), "expected %s to end macro call", close_br);
         }
 
-        // expand macro (guard against recursion)
-        if (mac->expanding || mac->autype->is_expanding) {
+        // expand macro (guard against recursion, per parse thread)
+        if (au_is_expanding(mac->autype)) {
             pop_tokens(a, true);
             return mem;
         }
         token f = (token)first_element((array)mac->def);
         array exp = macro_expand(mac, args);
-        mac->expanding = true;
-        mac->autype->is_expanding = true;
+        au_expanding_push(mac->autype);
         push_tokens(a, (tokens)exp, 0);
         bool cmode = a->cmode;
         a->cmode = true;
         mem = parse_expression(a, null, false, true);
         a->cmode = cmode;
         pop_tokens(a, false);
-        mac->expanding = false;
-        mac->autype->is_expanding = false;
+        au_expanding_pop();
 
     } else if (mem) {
         if (is_func((Au)mem) || is_func_ptr((Au)mem) || is_lambda_call) {
