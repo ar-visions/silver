@@ -900,12 +900,14 @@ Display Window
 
         now          : i64 [ epoch_millis[] ]
         if [ !start_ms ] start_ms = now
-        time          = f64[ now - start_ms ] / 1000.0 / 10.0
+        time          = f64[ now - start_ms ] / 1000.0 / 1000.0
         raw : f32 [ (last_frame_ms > 0) ? f32[ now - last_frame_ms ] / 1000.0 : 0.016 ]
         frame_factor = (raw > 0.1) ? 1.0 : raw * 60.0
         #puts 'frame_factor: raw={raw}s frame_factor={frame_factor}'
         last_frame_ms = now
         frame_seq += 1
+        # background animates off the time just computed above
+        if [ background ] background.update*[]
         root.animate_within [ ]
 
     func update_element [ parent: element, rendered: map element[string], force: bool ]
@@ -1547,12 +1549,11 @@ Display Window
             expect (!background || background.render),
                 "no render object found on background"
 
-        if [ background ]
-            background.update*[]
-    
     func update [ ]
         if [ !background && background_type ]
             update_background[ background_type ]
+        # per frame: the background animates off window.time
+        if [ background ] background.update*[]
 
         glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.u8,    :width, :height ]).resize[ width, height ]
         screen   = (screen   || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
@@ -3307,8 +3308,13 @@ element Splitter
                 ids.push[ id ]
         return ids
 
+    # extent lives on the MOUNTED child; inner is rebuilt each frame
     func kid [ id: string ] -> element
-        if [ !inner || !id ] return null
+        if [ !id ] return null
+        if [ elements ]
+            m : element elements[ id ]
+            if [ m ] return m
+        if [ !inner ] return null
         return inner[ id ]
 
     # extent > 0 sized, == 0 unset, < 0 snapped closed
@@ -3333,7 +3339,9 @@ element Splitter
         if [ n == 0 ] return null
         if [ n != last_n ]
             last_n = n
-            for [ ce: element, ck: string ] in inner
+            for [ ri: i32 0, ri < n, ri += 1 ]
+                ce : element kid[ ids[ ri ] ]
+                if [ !ce ] continue
                 if [ even ] ce.extent = 0.0
                 ce.extent_shown = 0.0
             dbgf  = 20
@@ -3348,7 +3356,7 @@ element Splitter
         pos : f32 [ 0.0 ]
         for [ i: i32 0, i < n, i += 1 ]
             ch : element inner[ ids[ i ] ]
-            w  : f32 [ (i == 0) ? flex : shown_of[ ch, span, n ] ]
+            w  : f32 [ (i == 0) ? flex : shown_of[ kid[ ids[ i ] ], span, n ] ]
             # whole-pixel pane edges. a fractional edge on a translucent
             # background feathers into the gap and reads as a second line
             a0 : f32 [ round[ pos ] ]

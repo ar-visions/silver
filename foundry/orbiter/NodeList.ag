@@ -189,6 +189,158 @@ NodeList Fields
     func render [] -> Elements
         return null
 
+NodeList Toolbox
+    style : CSS {
+        area: l0 t0 r0 b0
+        layers.tbase:
+            fill_color: #141a24
+            area: l0 t0 r0 b0
+        layers.content: NodeLayer
+            area: l4px t2px r4px b2px
+            label_size: 15
+            row_spacing: 1.4
+            sel_color: #2f6b4a40
+            sel_radius: 6.0
+            text_color: #cfe
+    }
+    public items : array string
+
+    func row_count [] -> i32
+        if [ !items ] return 0
+        return items.count
+
+    func row_label [ i: i32 ] -> string
+        if [ !items || i < 0 || i >= items.count ] return ''
+        return items[i]
+
+    func activate [ idx: i32 ]
+        return
+
+    func render [] -> Elements
+        return null
+
+NodeList Props
+    style : CSS {
+        area: l0 t0 r0 b0
+        layers.pbase:
+            fill_color: #1a1420
+            area: l0 t0 r0 b0
+        layers.content: PropsLayer
+            area: l4px t2px r4px b2px
+            label_size: 15
+            row_spacing: 1.4
+            key_color: #d8a8c4
+            text_color: #e8cfe0
+            line_color: #ffffff18
+    }
+    public  target : element
+    intern  cur    : element
+    intern  keys   : array string
+    intern  vals   : array string
+
+    # members of the inspected element, base class first
+    func rebuild []
+        cur  = target
+        keys = array string []
+        vals = array string []
+        if [ !target ] return
+        tys : array Au_t []
+        for [ ty : typeid[ target ], ty != typeid[ Au ], ty = ty.context ]
+            tys.push[ ty ]
+        for [ ti: i32 tys.count - 1, ti >= 0, ti -= 1 ]
+            ty2 : Au_t tys[ti]
+            for [ mi: i32 0, mi < ty2.members.count, mi += 1 ]
+                mem : Au_t ty2.members.origin[mi]
+                if [ mem.member_type != AU_MEMBER_VAR ] continue
+                if [ !mem.src ] continue
+                keys.push[ string[ mem.ident ] ]
+                v : Au target.member_object[ mem ]
+                vals.push[ (v) ? '{v}' : '' ]
+
+    func row_count [] -> i32
+        if [ target != cur ] rebuild[]
+        if [ !keys ] return 0
+        return keys.count
+
+    func row_key [ i: i32 ] -> string
+        if [ !keys || i < 0 || i >= keys.count ] return ''
+        return keys[i]
+
+    func row_val [ i: i32 ] -> string
+        if [ !vals || i < 0 || i >= vals.count ] return ''
+        return vals[i]
+
+    func row_label [ i: i32 ] -> string
+        return '{row_key[ i ]}  {row_val[ i ]}'
+
+    func activate [ idx: i32 ]
+        return
+
+    func render [] -> Elements
+        return null
+
+Layer PropsLayer
+    public label_size  : f32
+    public row_spacing : f32
+    public key_color   : string
+    public text_color  : string
+    public line_color  : string
+
+    func draw [ cv: Canvas ]
+        pl : Props[ parent ]
+        if [ !pl ] return
+        cv.font_size[ i32[label_size] ]
+        lh : f32 [ cv.get_line_height[] * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
+        n  : i32 [ pl.row_count[] ]
+        f  : string pl.flt[]
+        mc : i32 [ 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ pl.row_match[ i, f ] ] mc += 1
+        pl.row_height   = lh
+        pl.content_y    = bounds.y
+        pl.content_h    = f32[mc] * lh
+        pl.view_h       = bounds.h
+        pl.scroll_speed = lh
+        x0   : f32 [ bounds.x ]
+        y0   : f32 [ bounds.y ]
+        colx : f32 [ round[ bounds.x + bounds.w * 0.45 ] ]
+        lc   : rgba [ (line_color) ? line_color : rgba['#ffffff18'] ]
+        wtx  : f32 [ cv.transform_tx[] ]
+        wty  : f32 [ cv.transform_ty[] ]
+        cv.set_crop[ wtx + bounds.x, wty + bounds.y, wtx + bounds.x + bounds.w, wty + bounds.y + bounds.h ]
+        cv.save[]
+        cv.plain[]
+        cv.hard_edge[]
+        cv.stroke_width[ 0.0 ]
+        # one column rule, full height, exactly 1px
+        cv.fill_color[ lc ]
+        cv.rect_to[ colx, bounds.y, 1.0, bounds.h ]
+        cv.paint[ ]
+        dr : i32 [ 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ !pl.row_match[ i, f ] ] continue
+            y : f32 [ round[ y0 + f32[dr] * lh - pl.scroll.y ] ]
+            dr += 1
+            if [ y + lh < bounds.y ] continue
+            if [ y > bounds.y + bounds.h ] break
+            if [ i == pl.sel ]
+                cv.fill_color[ rgba['#8c4a6440'] ]
+                cv.rect_to[ x0, y, bounds.w, lh ]
+                cv.paint[ ]
+            cv.fill_color[ lc ]
+            cv.rect_to[ x0, y + lh - 1.0, bounds.w, 1.0 ]
+            cv.paint[ ]
+            cv.fill_color[ (key_color) ? key_color : '#d8a8c4' ]
+            cv.draw_text[ pl.row_key[ i ],
+                rect [ x: x0 + 6.0, y: y, w: colx - x0 - 10.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            cv.fill_color[ (text_color) ? text_color : '#e8cfe0' ]
+            cv.draw_text[ pl.row_val[ i ],
+                rect [ x: colx + 6.0, y: y, w: bounds.x + bounds.w - colx - 10.0, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        cv.restore[]
+        cv.clear_crop[]
+
 Layer FieldsLayer
     public label_size  : f32
     public row_spacing : f32

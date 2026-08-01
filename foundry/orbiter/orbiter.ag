@@ -212,11 +212,12 @@ element EditorView
                 fels['error'] = Option [ label: 'error {orb.err_line}', manual_mode: true ]
             smask : i32 [ 0 ]
             if [ orb.show_instruments ] smask = smask | 1
-            if [ orb.show_variables ]   smask = smask | 2
-            fels['instruments'] = TButtons [ 
-				buttons: [ 'callstack', 'fields' ],
+            if [ orb.show_toolbox ]     smask = smask | 2
+            if [ orb.show_variables ]   smask = smask | 4
+            fels['instruments'] = TButtons [
+				buttons: [ 'callstack', 'toolbox', 'fields' ],
 				manual: true, sel_mask: smask,
-				area: Region { r0+ t0 w2.4 h0.9 } ]
+				area: Region { r0+ t0 w3.6 h0.9 } ]
             cf2 : Elements []
             cf2['console_filter'] = element [ area: Region { r8px t4px w6 h32px }, label: emod, focusable: true, no_scroll: true ]
             runcmd : string [ (ed_live && ed_live.run_view) ? ed_live.run_view.cmd : null ]
@@ -227,7 +228,11 @@ element EditorView
             sp_inner : Elements [ ]
             sp_inner['console'] = con
             if [ orb.show_instruments ] sp_inner['callstack'] = Callstack [ frames: orb.debug_frames[] ]
-            if [ orb.show_variables ]   sp_inner['fields']    = Fields [ vars: orb.debug_vars ]
+            if [ orb.show_toolbox ]     sp_inner['toolbox']   = Toolbox [ items: orb.toolbox_items[] ]
+            # one inspector: live frame while running, element props otherwise
+            if [ orb.show_variables ]
+                if [ running ] sp_inner['fields'] = Fields [ vars: orb.debug_vars ]
+                el             sp_inner['fields'] = Props  [ target: (w) ? w.focus : null ]
             bels['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, inner: sp_inner ]
             vinner['band'] = RunBand [ elements: bels ]
         els['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
@@ -792,6 +797,8 @@ element orbiter : trinity # implements compiler
     public browse_dir_size : i32 [ 16 ]
     public breakpoints   : map string[string]
     public code_font_size : i32 [ 19 ]
+    # append LAST: member order sets AF bit indices
+    public show_toolbox  : bool
 
     func init []
         au_live_set_defer[ 1 ]
@@ -2217,6 +2224,11 @@ element orbiter : trinity # implements compiler
         if [ !pv || !pv.elements ] return null
         return pv.elements[ 'title' ]
 
+    # placeable widgets; reflection over element subclasses later
+    func toolbox_items [] -> array string
+        return array string [ 'Button', 'LabelButton', 'Option', 'Check',
+            'Slider', 'ColorPicker', 'Tabs', 'TButtons', 'Splitter', 'NodeList' ]
+
     # depth-first id lookup; the tree nests once sides land
     func find_el [ e: element, id: string ] -> element
         if [ !e || !e.elements || !id ] return null
@@ -2677,6 +2689,9 @@ element orbiter : trinity # implements compiler
             return
         if [ ev.target.id == 'callstack' ]
             show_instruments = !show_instruments
+            return
+        if [ ev.target.id == 'toolbox' ]
+            show_toolbox = !show_toolbox
             return
         if [ ev.target.id == 'fields' ]
             show_variables = !show_variables

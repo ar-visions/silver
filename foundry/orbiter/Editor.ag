@@ -1113,10 +1113,12 @@ Layer EditorLayer
         fade_l : f32 [ 0.0 ]
         fade_t : f32 [ 0.0 ]
         fade_b : f32 [ 0.0 ]
+        fade_r : f32 [ 0.0 ]
         if [ !editor.grid_mode ]
             fade_l = (editor.scroll.x > 0.0) ? bounds.w / 8.0 : 0.0
             fade_t = (editor.scroll.y > 0.0) ? lh : 0.0
             fade_b = lh
+            fade_r = 48.0
 
         editor.lh_cache  = lh
         editor.cw_cache  = cw_tm.w
@@ -1414,7 +1416,7 @@ Layer EditorLayer
                         slot.frame = editor.cl_frame
                         break
         # composite the glyph canvas back through the edge fade
-        editor.text_blit[ cv, bounds, fade_t, fade_b, fade_l ]
+        editor.text_blit[ cv, bounds, fade_t, fade_r, fade_b, fade_l ]
         for [ li: i32 0, li < editor.line_count[], li += 1 ]
             y : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
             if [ editor.row_header[ li ] ]
@@ -1935,6 +1937,8 @@ Control Editor
     mutable dbg_open      : bool
     public  band_rows     : i32
     public  replacing     : bool
+    # append LAST: member order sets AF bit indices
+    mutable fade_r        : f32 [ -1.0 ]
 
     func bp_color [ cond: string ] -> rgba
         if [ cond && cond.count > 0 ] return rgba['#3b82f638']   # conditional
@@ -2801,11 +2805,11 @@ Control Editor
         return text_canvas
 
     # white keeps, black hides: a straight ramp on whichever edges fade
-    func text_blit [ cv: Canvas, b: rect, ft: f32, fb: f32, fl: f32 ]
+    func text_blit [ cv: Canvas, b: rect, ft: f32, fr: f32, fb: f32, fl: f32 ]
         if [ !text_canvas ] return
         tw : i32 [ text_canvas.content_w ]
         th : i32 [ text_canvas.content_h ]
-        if [ ft <= 0.0 && fb <= 0.0 && fl <= 0.0 ]
+        if [ ft <= 0.0 && fr <= 0.0 && fb <= 0.0 && fl <= 0.0 ]
             cv.draw_canvas[ text_canvas, b.x, b.y, f32[ tw ], f32[ th ] ]
             return
         if [ !fade_mask ]
@@ -2815,17 +2819,18 @@ Control Editor
         el [ fade_mask.content_w != tw || fade_mask.content_h != th ]
             fade_mask.resize[ tw, th ]
         if [ fade_mask.content_w != fade_w || fade_mask.content_h != fade_h
-             || ft != fade_t || fb != fade_b || fl != fade_l ]
+             || ft != fade_t || fr != fade_r || fb != fade_b || fl != fade_l ]
             fade_w = fade_mask.content_w
             fade_h = fade_mask.content_h
             fade_t = ft
+            fade_r = fr
             fade_b = fb
             fade_l = fl
             fade_mask.reset[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
             fade_mask.save[]
             fade_mask.glow_falloff[ 1.0 ]
             fade_mask.fill_color[ rgba['#fff'] ]
-            fade_mask.inner_glow_sides[ rgba['#000'], ft, 0.0, fb, fl ]
+            fade_mask.inner_glow_sides[ rgba['#000'], ft, fr, fb, fl ]
             fade_mask.stroke_width[ 0.0 ]
             fade_mask.rect_to[ 0.0, 0.0, f32[ tw ], f32[ th ] ]
             fade_mask.paint[]

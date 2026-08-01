@@ -124,10 +124,18 @@ typedef struct _micro_ {
 
 static inline struct _Au* micro_push(micro_* m, struct _Au* value) {
     if (m->count == m->alloc) {
-        m->alloc = m->alloc ? m->alloc * 2 : 8;
-        m->origin = (struct _Au**)realloc(m->origin, m->alloc * sizeof(struct _Au*));
+        // readers race scans: publish fresh block, leak old
+        i32 alloc = m->alloc ? m->alloc * 2 : 8;
+        struct _Au** next = (struct _Au**)malloc(alloc * sizeof(struct _Au*));
+        if (m->count)
+            memcpy(next, m->origin, m->count * sizeof(struct _Au*));
+        __asm__ __volatile__("" ::: "memory");
+        m->origin = next;
+        m->alloc  = alloc;
     }
-    m->origin[m->count++] = value;
+    m->origin[m->count] = value;
+    __asm__ __volatile__("" ::: "memory");
+    m->count++;
     return value;
 }
 

@@ -17,6 +17,13 @@ typedef LLVMMetadataRef LLVMScope;
 LLVMMetadataRef debug_scope(aether a);
 #define B a->builder
 
+// serialize on aether's single-context emission lock
+void aether_emit_lock();
+void aether_emit_unlock();
+static void _emit_guard_end(char* g) { (void)g; aether_emit_unlock(); }
+#define emit_guard __attribute__((cleanup(_emit_guard_end))) \
+    char _emit_g_ = (aether_emit_lock(), (char)0); (void)_emit_g_
+
 // ────────────────────────────────────────────────────────────────────────────
 // DWARF ATE (attribute type encoding) constants
 // ────────────────────────────────────────────────────────────────────────────
@@ -52,6 +59,7 @@ void            emit_debug_params     (aether a, efunc fn);
 
 // check if an LLVM type contains a scalable vector anywhere in its tree
 static bool has_scalable_vector(LLVMTypeRef ty) {
+    emit_guard;
     LLVMTypeKind kind = LLVMGetTypeKind(ty);
     if (kind == LLVMScalableVectorTypeKind)
         return true;
@@ -70,6 +78,7 @@ static bool has_scalable_vector(LLVMTypeRef ty) {
 LLVMTypeRef _lltype_slot(etype);
 
 static u32 bits_for_type(aether a, Au_t src) {
+    emit_guard;
     if (!src) return 64;
     etype et = u(etype, src);
     LLVMTypeRef et_ll = et ? _lltype_slot(et) : null;
@@ -84,6 +93,7 @@ static u32 bits_for_type(aether a, Au_t src) {
 
 // compute alignment in bits from an Au_t
 static u32 align_for_type(aether a, Au_t src) {
+    emit_guard;
     if (!src) return 64;
     etype et = u(etype, src);
     if (et && _lltype_slot(et) && LLVMTypeIsSized(_lltype_slot(et))) {
@@ -96,6 +106,7 @@ static u32 align_for_type(aether a, Au_t src) {
 
 // get pointer size in bits for target
 static u32 pointer_bits(aether a) {
+    emit_guard;
     return LLVMPointerSize(a->target_data) * 8;
 }
 
@@ -161,6 +172,7 @@ static int count_all_methods(Au_t type_au) {
 // debug_type_for - map an Au_t to a DWARF type metadata ref
 // ────────────────────────────────────────────────────────────────────────────
 LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
 
     //if (w) return null;
@@ -298,6 +310,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
 // debug_pointer_type - create a pointer type pointing to the underlying type
 // ────────────────────────────────────────────────────────────────────────────
 LLVMMetadataRef debug_pointer_type(aether a, Au_t type_au) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
     if (!type_au) return null;
 
@@ -339,6 +352,7 @@ LLVMMetadataRef debug_pointer_type(aether a, Au_t type_au) {
 // debug_funcptr_type - create a DW_TAG_pointer_type to a subroutine type
 // ────────────────────────────────────────────────────────────────────────────
 LLVMMetadataRef debug_funcptr_type(aether a, Au_t type_au) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
     if (!type_au) return null;
 
@@ -363,6 +377,7 @@ LLVMMetadataRef debug_funcptr_type(aether a, Au_t type_au) {
 // debug_array_type - create a DW_TAG_array_type for fixed-size arrays
 // ────────────────────────────────────────────────────────────────────────────
 LLVMMetadataRef debug_array_type(aether a, Au_t type_au) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
     if (!type_au || !type_au->src) return null;
 
@@ -386,6 +401,7 @@ LLVMMetadataRef debug_array_type(aether a, Au_t type_au) {
 // debug_typedef_type - create a DW_TAG_typedef for alias types
 // ────────────────────────────────────────────────────────────────────────────
 LLVMMetadataRef debug_typedef_type(aether a, Au_t type_au) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
     if (!type_au || !type_au->ident) return null;
 
@@ -406,6 +422,7 @@ LLVMMetadataRef debug_typedef_type(aether a, Au_t type_au) {
 // debug_enum_type - create a DW_TAG_enumeration_type with enumerators
 // ────────────────────────────────────────────────────────────────────────────
 LLVMMetadataRef debug_enum_type(aether a, Au_t type_au) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
     if (!type_au || !type_au->ident) return null;
 
@@ -491,6 +508,7 @@ LLVMMetadataRef debug_enum_type(aether a, Au_t type_au) {
 etype etype_prep(aether, Au_t);
 
 LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
     if (!type_au || !type_au->ident) return null;
 
@@ -815,6 +833,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
 // and parameter types come from the fn->args list.
 // ────────────────────────────────────────────────────────────────────────────
 LLVMMetadataRef debug_subroutine_type(aether a, Au_t fn_au, bool w) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
     if (!fn_au) return null;
 
@@ -871,6 +890,7 @@ static LLVMMetadataRef au_field_pointer_type(aether a, Au_t field_src,
                                               Au_t schema,
                                               LLVMMetadataRef schema_struct,
                                               cstr field_name) {
+    emit_guard;
     u32 ptr_bits = pointer_bits(a);
 
     // for Au_t fields: if we have a schema, the type descriptor fields
@@ -910,6 +930,7 @@ static LLVMMetadataRef au_field_pointer_type(aether a, Au_t field_src,
 }
 
 LLVMMetadataRef debug_au_header_type(aether a, Au_t schema) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
 
     LLVMMetadataRef schema_struct = schema ? debug_struct_type(a, schema, false) : null;
@@ -999,6 +1020,7 @@ LLVMMetadataRef debug_au_header_type(aether a, Au_t schema) {
 // this gives the debugger complete visibility into the runtime object model.
 // ────────────────────────────────────────────────────────────────────────────
 static LLVMMetadataRef debug_object_header_type(aether a, Au_t schema) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
 
     LLVMMetadataRef schema_struct = schema ? debug_struct_type(a, schema, false) : null;
@@ -1135,6 +1157,7 @@ static LLVMMetadataRef debug_object_header_type(aether a, Au_t schema) {
 //   }
 // ────────────────────────────────────────────────────────────────────────────
 static LLVMMetadataRef debug_combined_type(aether a, Au_t schema) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
     if (!schema) return null;
 
@@ -1192,6 +1215,7 @@ static LLVMMetadataRef debug_combined_type(aether a, Au_t schema) {
 // DI type if available.
 // ────────────────────────────────────────────────────────────────────────────
 void update_current_file(aether a, path source_file) {
+    emit_guard;
     if (!a->debug) return;
     if (source_file && source_file->chars &&
         a->module_file && a->module_file->chars &&
@@ -1206,6 +1230,7 @@ void update_current_file(aether a, path source_file) {
 }
 
 void emit_debug_function(aether a, efunc fn, bool w) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return;
     Au_t au = fn->autype;
     if (!au->ident) return;
@@ -1283,6 +1308,7 @@ void emit_debug_function(aether a, efunc fn, bool w) {
 // its debug info.
 // ────────────────────────────────────────────────────────────────────────────
 void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
+    emit_guard;
     if (!a->debug || !a->compile_unit || a->no_build) return;
     if (!var->autype || !var->autype->ident || !var->value) return;
     // synthetic functions (no parse origin_token) have no DISubprogram; a local scoped
@@ -1367,6 +1393,7 @@ void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
 // debugger visibility into the runtime type info.
 // ────────────────────────────────────────────────────────────────────────────
 void emit_debug_params(aether a, efunc fn) {
+    emit_guard;
     if (!a->debug || !a->compile_unit || a->no_build) return;
     if (!fn || !fn->value) return;
 
@@ -1518,6 +1545,7 @@ void emit_debug_params(aether a, efunc fn) {
 // visible in the debugger when examining the compile unit.
 // ────────────────────────────────────────────────────────────────────────────
 void emit_debug_global(aether a, Au_t var_au, LLVMValueRef global_val) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return;
     if (!var_au || !var_au->ident || !global_val) return;
 
@@ -1551,6 +1579,7 @@ void emit_debug_global(aether a, Au_t var_au, LLVMValueRef global_val) {
 // can step through field accesses.
 // ────────────────────────────────────────────────────────────────────────────
 void emit_debug_member_access(aether a, Au_t member, u32 line, u32 column) {
+    emit_guard;
     if (!a->debug || !a->compile_unit || a->no_build) return;
     if (!member) return;
 
@@ -1594,6 +1623,7 @@ void debug_emit_type_metadata(aether a, Au_t module_au) {
 // hierarchy and can display base class members correctly.
 // ────────────────────────────────────────────────────────────────────────────
 LLVMMetadataRef debug_emit_inheritance(aether a, Au_t derived, Au_t base) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
     if (!derived || !base) return null;
 
@@ -1617,6 +1647,7 @@ LLVMMetadataRef debug_emit_inheritance(aether a, Au_t derived, Au_t base) {
 // correctly so the debugger only shows them when the block is active.
 // ────────────────────────────────────────────────────────────────────────────
 LLVMMetadataRef debug_create_lexical_block(aether a, u32 line, u32 column) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
 
     LLVMMetadataRef parent_scope = debug_scope(a);
@@ -1636,6 +1667,7 @@ LLVMMetadataRef debug_create_lexical_block(aether a, u32 line, u32 column) {
 // and functions appear under their module name in the debugger.
 // ────────────────────────────────────────────────────────────────────────────
 LLVMMetadataRef debug_create_namespace(aether a, cstr name) {
+    emit_guard;
     if (!a->debug || !a->compile_unit) return null;
     if (!name) return null;
 
@@ -1656,6 +1688,7 @@ void debug_emit_local_alias(aether a, cstr alias_name,
                             LLVMValueRef value,
                             LLVMMetadataRef di_type,
                             u32 line) {
+    emit_guard;
     if (!a->debug || !a->compile_unit || a->no_build) return;
     if (!alias_name || !value || !di_type) return;
 
