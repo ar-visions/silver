@@ -57,8 +57,184 @@ class ResourceView
     mutable loaded : bool
     func extensions [] -> array string
         return array string [ ]
+    # rail name; '' = not user-selectable, keyed by class ident
+    func view_id [] -> string
+        return ''
+    # which files this view can open
+    func applies [] -> FileType
+        return FileType.agnostic
+    # a view built from elements composes here instead of painting
+    func view_element [] -> element
+        return null
+    # views that scroll in the pane report their extent; 0 = no scrolling
+    func content_height [ cv: Canvas, bounds: rect ] -> f32
+        return 0.0
+    func content_width [ cv: Canvas, bounds: rect ] -> f32
+        return 0.0
+    # the editor owns the scroll value; the view is told where it landed
+    func set_scroll [ x: f32, y: f32 ]
+        return
     func render [ cv: Canvas, bounds: rect ]
-        if [ !hx_on ] return
+        return
+    # drop held resources when the pane switches away or closes.
+    func release []
+        loaded = false
+    func is_app_host [] -> bool
+        return false
+    func restart [ clean: bool ]
+        return
+    func pause_toggle []
+        return
+    func is_paused [] -> bool
+        return false
+    func continuous [] -> bool
+        return false
+    func title_elements [] -> Elements
+        return null
+    func title_press [ tid: string, ev: Event ] -> bool
+        return false
+    mutable view_sel : i32
+    func views [] -> array string
+        return null
+    func view_unload [ which: i32 ]
+        return
+    func view_text [ which: i32 ] -> bool
+        return false
+    func view_lines [ which: i32 ] -> list string
+        return null
+    func commit_line [ text: string ] -> bool
+        return false
+    mutable vx : f32
+    mutable vy : f32
+    mutable vw : f32
+    mutable vh : f32
+    func view_press [ ev: Event ] -> bool
+        return false
+    func view_move [ ev: Event ] -> bool
+        return false
+    func view_release [ ev: Event ]
+        return
+    func view_undo [] -> bool
+        return false
+    func view_redo [] -> bool
+        return false
+    func context_request [] -> bool
+        return false
+    func context_feed [] -> string
+        return null
+    func on_key [ ev: Event ]
+        return
+    func thumbnail [ cv: Canvas ] -> Texture
+        return null
+
+ResourceView B16
+    func view_id [] -> string
+        return 'b16'
+    func applies [] -> FileType
+        return FileType.agnostic
+    mutable hx_fh     : handle
+    mutable hx_size   : i64
+    mutable hx_win    : ref u8         # 16KB read window over the file
+    mutable hx_woff   : i64 [ -1 ]     # window's byte offset (-1 = empty)
+    mutable hx_wlen   : i32
+    mutable hx_scroll : f32            # editor scroll.y, stashed pre-render
+    mutable hx_scroll_x : f32          # editor scroll.x, stashed pre-render
+    mutable hx_content_w : f32         # full row width (px) for h-scroll clamp
+    mutable hx_s0     : i64 [ -1 ]     # selection anchor (byte offset)
+    mutable hx_s1     : i64 [ -1 ]     # selection end (byte offset)
+    mutable hx_drag   : bool
+    mutable hx_hexx   : f32            # hex column x (stashed for hit-tests)
+    mutable hx_ascx   : f32            # ascii column x
+    mutable hx_cw     : f32
+    mutable hx_lh     : f32
+    func hx_open []
+        if [ hx_fh || !src ] return
+        ps : '{src}'
+        hx_fh = fopen[ ps.chars, "rb" ]
+        if [ !hx_fh ] return
+        fseek[ hx_fh, 0, 2 ]
+        hx_size = ftell[ hx_fh ]
+        fseek[ hx_fh, 0, 0 ]
+        hx_woff = -1
+    func hx_rows [] -> i64
+        hx_open[]
+        if [ hx_size <= 0 ] return 0
+        return (hx_size + 15) / 16
+    # slide the 16KB window so [off, off+need) is resident
+    func hx_window [ off: i64, need: i32 ] -> bool
+        if [ !hx_fh ] return false
+        if [ !hx_win ] hx_win = new u8 [ 16384 ]
+        if [ hx_woff >= 0 && off >= hx_woff && (off + i64[ need ]) <= (hx_woff + i64[ hx_wlen ]) ] return true
+        fseek[ hx_fh, off, 0 ]
+        rd : i64 [ fread[ hx_win, 1, 16384, hx_fh ] ]
+        hx_woff = off
+        hx_wlen = i32[ rd ]
+        return hx_wlen >= need
+    func hx_put [ b: ref u8, i: i32, v: i64, nd: i32 ] -> i32
+        j : i32 [ i ]
+        for [ k: i32 nd - 1, k >= 0, k -= 1 ]
+            d : i32 [ i32[ ((v >> (k * 4)) & 15) ] ]
+            b[ j ] = u8[ (d < 10) ? (48 + d) : (87 + d) ]
+            j += 1
+        return j
+    func hx_byte_at [ mx: f32, my: f32 ] -> i64
+        if [ hx_lh <= 0.0 || hx_cw <= 0.0 || hx_size <= 0 ] return -1
+        row : i64 [ i64[ (my - vy) / hx_lh ] ]
+        if [ row < 0 ] return -1
+        col : i32 [ -1 ]
+        if [ mx >= hx_hexx && mx < hx_ascx - hx_cw ]
+            ch : i32 [ i32[ (mx - hx_hexx) / hx_cw ] ]
+            if [ ch >= 25 ] ch -= 1
+            col = ch / 3
+        el [ mx >= hx_ascx && mx < hx_ascx + hx_cw * 16.0 ]
+            col = i32[ (mx - hx_ascx) / hx_cw ]
+        if [ col < 0 ] return -1
+        if [ col > 15 ] col = 15
+        bt : i64 [ row * 16 + i64[ col ] ]
+        if [ bt >= hx_size ] bt = hx_size - 1
+        return bt
+
+    func content_height [ cv: Canvas, bounds: rect ] -> f32
+        return f32[ hx_rows[] ] * round[ cv.get_line_height[] ]
+
+    func content_width [ cv: Canvas, bounds: rect ] -> f32
+        return hx_content_w
+
+    func set_scroll [ x: f32, y: f32 ]
+        hx_scroll_x = x
+        hx_scroll   = y
+
+    func release []
+        if [ hx_fh ]
+            fclose[ hx_fh ]
+            hx_fh = null
+        hx_woff = -1
+        loaded  = false
+
+    func view_press [ ev: Event ] -> bool
+        cy : f32 [ ev.mouse.pos.y - vy ]
+        if [ ev.mouse.pos.x < vx || ev.mouse.pos.x >= vx + vw ] return false
+        if [ cy < hx_scroll || cy >= hx_scroll + vh ] return false
+        bt : i64 [ hx_byte_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ bt < 0 ]
+            hx_s0 = -1
+            hx_s1 = -1
+            return true
+        hx_s0   = bt
+        hx_s1   = bt
+        hx_drag = true
+        return true
+
+    func view_move [ ev: Event ] -> bool
+        if [ !hx_drag ] return false
+        bt : i64 [ hx_byte_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ bt >= 0 ] hx_s1 = bt
+        return true
+
+    func view_release [ ev: Event ]
+        hx_drag = false
+
+    func render [ cv: Canvas, bounds: rect ]
         hx_open[]
         if [ !hx_fh || hx_size <= 0 ] return
         cwm : cv.measure_text[ '0' ]
@@ -152,137 +328,6 @@ class ResourceView
                 rect [ x: x_asc, y: yb + f32[ row ] * lh, w: cw * 16.0, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
         cv.paint [ ]
-    # drop held resources when the pane switches away or closes.
-    func release []
-        if [ hx_fh ]
-            fclose[ hx_fh ]
-            hx_fh = null
-        hx_woff = -1
-        loaded  = false
-    func is_app_host [] -> bool
-        return false
-    func restart [ clean: bool ]
-        return
-    func pause_toggle []
-        return
-    func is_paused [] -> bool
-        return false
-    func continuous [] -> bool
-        return false
-    func title_elements [] -> Elements
-        return null
-    func title_press [ tid: string, ev: Event ] -> bool
-        return false
-    mutable view_sel : i32
-    func views [] -> array string
-        return null
-    func view_unload [ which: i32 ]
-        return
-    func view_text [ which: i32 ] -> bool
-        return false
-    func view_lines [ which: i32 ] -> list string
-        return null
-    func commit_line [ text: string ] -> bool
-        return false
-    mutable vx : f32
-    mutable vy : f32
-    mutable vw : f32
-    mutable vh : f32
-    func view_press [ ev: Event ] -> bool
-        if [ !hx_on ] return false
-        cy : f32 [ ev.mouse.pos.y - vy ]
-        if [ ev.mouse.pos.x < vx || ev.mouse.pos.x >= vx + vw ] return false
-        if [ cy < hx_scroll || cy >= hx_scroll + vh ] return false
-        bt : i64 [ hx_byte_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
-        if [ bt < 0 ]
-            hx_s0 = -1
-            hx_s1 = -1
-            return true
-        hx_s0   = bt
-        hx_s1   = bt
-        hx_drag = true
-        return true
-    func view_move [ ev: Event ] -> bool
-        if [ !hx_on || !hx_drag ] return false
-        bt : i64 [ hx_byte_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
-        if [ bt >= 0 ] hx_s1 = bt
-        return true
-    func view_release [ ev: Event ]
-        hx_drag = false
-    func view_undo [] -> bool
-        return false
-    func view_redo [] -> bool
-        return false
-    func context_request [] -> bool
-        return false
-    func context_feed [] -> string
-        return null
-    func on_key [ ev: Event ]
-        return
-    func thumbnail [ cv: Canvas ] -> Texture
-        return null
-    mutable hx_on     : bool           # set by load_file's binary sniff
-    mutable hx_fh     : handle
-    mutable hx_size   : i64
-    mutable hx_win    : ref u8         # 16KB read window over the file
-    mutable hx_woff   : i64 [ -1 ]     # window's byte offset (-1 = empty)
-    mutable hx_wlen   : i32
-    mutable hx_scroll : f32            # editor scroll.y, stashed pre-render
-    mutable hx_scroll_x : f32          # editor scroll.x, stashed pre-render
-    mutable hx_content_w : f32         # full row width (px) for h-scroll clamp
-    mutable hx_s0     : i64 [ -1 ]     # selection anchor (byte offset)
-    mutable hx_s1     : i64 [ -1 ]     # selection end (byte offset)
-    mutable hx_drag   : bool
-    mutable hx_hexx   : f32            # hex column x (stashed for hit-tests)
-    mutable hx_ascx   : f32            # ascii column x
-    mutable hx_cw     : f32
-    mutable hx_lh     : f32
-    func hx_open []
-        if [ hx_fh || !src ] return
-        ps : '{src}'
-        hx_fh = fopen[ ps.chars, "rb" ]
-        if [ !hx_fh ] return
-        fseek[ hx_fh, 0, 2 ]
-        hx_size = ftell[ hx_fh ]
-        fseek[ hx_fh, 0, 0 ]
-        hx_woff = -1
-    func hx_rows [] -> i64
-        hx_open[]
-        if [ hx_size <= 0 ] return 0
-        return (hx_size + 15) / 16
-    # slide the 16KB window so [off, off+need) is resident
-    func hx_window [ off: i64, need: i32 ] -> bool
-        if [ !hx_fh ] return false
-        if [ !hx_win ] hx_win = new u8 [ 16384 ]
-        if [ hx_woff >= 0 && off >= hx_woff && (off + i64[ need ]) <= (hx_woff + i64[ hx_wlen ]) ] return true
-        fseek[ hx_fh, off, 0 ]
-        rd : i64 [ fread[ hx_win, 1, 16384, hx_fh ] ]
-        hx_woff = off
-        hx_wlen = i32[ rd ]
-        return hx_wlen >= need
-    func hx_put [ b: ref u8, i: i32, v: i64, nd: i32 ] -> i32
-        j : i32 [ i ]
-        for [ k: i32 nd - 1, k >= 0, k -= 1 ]
-            d : i32 [ i32[ ((v >> (k * 4)) & 15) ] ]
-            b[ j ] = u8[ (d < 10) ? (48 + d) : (87 + d) ]
-            j += 1
-        return j
-    func hx_byte_at [ mx: f32, my: f32 ] -> i64
-        if [ !hx_on || hx_lh <= 0.0 || hx_cw <= 0.0 || hx_size <= 0 ] return -1
-        row : i64 [ i64[ (my - vy) / hx_lh ] ]
-        if [ row < 0 ] return -1
-        col : i32 [ -1 ]
-        if [ mx >= hx_hexx && mx < hx_ascx - hx_cw ]
-            ch : i32 [ i32[ (mx - hx_hexx) / hx_cw ] ]
-            if [ ch >= 25 ] ch -= 1
-            col = ch / 3
-        el [ mx >= hx_ascx && mx < hx_ascx + hx_cw * 16.0 ]
-            col = i32[ (mx - hx_ascx) / hx_cw ]
-        if [ col < 0 ] return -1
-        if [ col > 15 ] col = 15
-        bt : i64 [ row * 16 + i64[ col ] ]
-        if [ bt >= hx_size ] bt = hx_size - 1
-        return bt
 
 ResourceView ImageView
     mutable tex : Texture
@@ -955,7 +1000,6 @@ Layer EditorLayer
         dc : string [ (editor.diff_commit) ? editor.diff_commit : '' ]
         ld : string [ (editor.loaded_diff) ? editor.loaded_diff : '' ]
         if [ sc.compare[ lc ] != 0 || dc.compare[ ld ] != 0 ]
-            editor.stopped = false
             editor.load_file[]
         if [ editor.diff_commit && editor.diff_dirty ]
             if [ epoch_millis[] - editor.diff_edit_ms > 400 ]
@@ -983,11 +1027,13 @@ Layer EditorLayer
                         return
         if [ editor.rview && !editor.show_hits ]
             if [ !editor.rview.view_text*[ editor.rview.view_sel ] ]
-                if [ editor.rview.hx_on ]
-                    hfs : i32 [ (editor.code_font_size > 0) ? editor.code_font_size : 15 ]
-                    cv.font_size[ hfs ]
-                    hlh2 : f32 [ round[ cv.get_line_height[] ] ]
-                    editor.content_h    = f32[ editor.rview.hx_rows[] ] * hlh2
+                hfs : i32 [ (editor.code_font_size > 0) ? editor.code_font_size : 15 ]
+                cv.font_size[ hfs ]
+                hlh2 : f32 [ round[ cv.get_line_height[] ] ]
+                # a view that reports an extent scrolls in the pane
+                vch : f32 [ editor.rview.content_height*[ cv, bounds ] ]
+                if [ vch > 0.0 ]
+                    editor.content_h    = vch
                     editor.scroll_speed = hlh2
                     hms : f32 [ editor.content_h - bounds.h ]
                     if [ hms < 0.0 ] hms = 0.0
@@ -1008,14 +1054,13 @@ Layer EditorLayer
                         editor.scroll.y = editor.scroll_target
                     if [ editor.scroll.y < 0.0 ] editor.scroll.y = 0.0
                     if [ editor.scroll.y > hms ] editor.scroll.y = hms
-                    editor.lh_cache = hlh2
-                    editor.hx_last_y       = editor.scroll.y
-                    editor.rview.hx_scroll = editor.scroll.y
-                    hxmx : f32 [ editor.rview.hx_content_w - bounds.w ]
+                    editor.lh_cache  = hlh2
+                    editor.hx_last_y = editor.scroll.y
+                    hxmx : f32 [ editor.rview.content_width*[ cv, bounds ] - bounds.w ]
                     if [ hxmx < 0.0 ] hxmx = 0.0
                     if [ editor.scroll.x < 0.0 ] editor.scroll.x = 0.0
                     if [ editor.scroll.x > hxmx ] editor.scroll.x = hxmx
-                    editor.rview.hx_scroll_x = editor.scroll.x
+                    editor.rview.set_scroll*[ editor.scroll.x, editor.scroll.y ]
                     hxf : f32 [ (editor.scroll.y > 0.0) ? 0.0 : 0.0 ]
                     hxl : f32 [ (editor.scroll.x > 0.0) ? 0.0 : 0.0 ]
                     # right fade is a fixed short edge, not width-proportional
@@ -1279,7 +1324,8 @@ Layer EditorLayer
                     cv.rect_to[ cx, yg + 1.0, 2.0, lh - 2.0 ]
                     cv.paint[ ]
                 cv.restore[ ]
-            if [ !(showing && editor.hover_gutter && editor.hover_line == li) ]
+            # removed rows have no file line: blank gutter
+            if [ rnum > 0 && !(showing && editor.hover_gutter && editor.hover_line == li) ]
                 cv.fill_color[ rgba['#ffffff80'] ]
                 cv.draw_text[ '{rnum}',
                     rect [ x: bounds.x, y: yg, w: gut_w - 6.0, h: lh ],
@@ -1330,19 +1376,29 @@ Layer EditorLayer
                         slot.frame = editor.cl_frame
                         break
         if [ editor.diff_kinds ]
-            # diff tints batch as ONE paint per color — never per row
+            # ONE rect per paint. batching rects into a single path misses the
+            # rect fast path and rasterizes through the half-res SDF window,
+            # which shifts rows off their y and bleeds red into green.
+            # coalescing runs keeps the paint count to the visible run count.
             cv.stroke_width[ 0.0 ]
-            for [ dk8: i32 1, dk8 <= 2, dk8 += 1 ]
-                drew8 : bool [ false ]
+            nl8 : i32 [ editor.line_count[] ]
+            nk8 : i32 [ editor.diff_kinds.count ]
+            li  : i32 [ 0 ]
+            while [ li < nl8 && li < nk8 ]
+                dk8 : i32 [ editor.diff_kinds[li] ]
+                if [ dk8 == 0 ]
+                    li += 1
+                    continue
+                rs : i32 [ li ]
+                while [ li < nl8 && li < nk8 && editor.diff_kinds[li] == dk8 ]
+                    li += 1
+                yt : f32 [ round[ y0 + f32[ rs ] * lh - editor.scroll.y ] ]
+                yb : f32 [ round[ y0 + f32[ li ] * lh - editor.scroll.y ] ]
+                if [ yb < bounds.y ] continue
+                if [ yt > bounds.y + bounds.h ] break
                 cv.fill_color[ (dk8 == 2) ? rgba['#23461f55'] : rgba['#58202055'] ]
-                for [ li: i32 0, li < editor.line_count[], li += 1 ]
-                    if [ li >= editor.diff_kinds.count || editor.diff_kinds[li] != dk8 ] continue
-                    y8 : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
-                    if [ y8 + lh < bounds.y ] continue
-                    if [ y8 > bounds.y + bounds.h ] break
-                    cv.rect_to[ bounds.x, y8, bounds.w - rin, lh ]
-                    drew8 = true
-                if [ drew8 ] cv.paint[ ]
+                cv.rect_to[ bounds.x, yt, bounds.w - rin, yb - yt ]
+                cv.paint[ ]
         for [ li: i32 0, li < editor.line_count[], li += 1 ]
             y : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
             if [ editor.row_header[ li ] ]
@@ -1480,7 +1536,7 @@ Layer EditorLayer
                 bv   : variable editor.debug_vars[ bk ]
                 summ : editor.var_summary[ bv ]
                 if [ !summ || summ.count == 0 ] continue
-                ya : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
+                ya : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
                 if [ ya + lh < bounds.y ] continue
                 if [ ya > bounds.y + bounds.h ] break
                 # expandable objects get a [+]/[-] toggle after the summary
@@ -1506,7 +1562,7 @@ Layer EditorLayer
         if [ editor.find_query && editor.find_query.count > 0 ]
             for [ li: i32 0, li < editor.line_count[], li += 1 ]
                 if [ editor.row_header[ li ] ] continue
-                y : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
+                y : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
                 ln : editor.line_get[ li ]
@@ -1618,7 +1674,7 @@ Layer EditorLayer
                 cv.inner_glow[ rgba['#fff1'], 16.0 ]
                 pad : 2
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
-                    y_row  : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
+                    y_row  : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
                     if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
@@ -1670,7 +1726,7 @@ Layer EditorLayer
                 tx : f32 [ cv.transform_tx[] ]
                 ty : f32 [ cv.transform_ty[] ]
                 for [ li: i32 start_line, li <= end_line, li += 1 ]
-                    y_row  : f32 [ y0 + f32[li] * lh - editor.scroll.y ]
+                    y_row  : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
                     if [ y_row + lh < bounds.y || y_row > bounds.y + bounds.h ] continue
                     is_sl  : bool [ li == start_line ]
                     is_el  : bool [ li == end_line ]
@@ -1689,14 +1745,14 @@ Layer EditorLayer
                         tx + crop_x + crop_w, ty + bounds.y + bounds.h ]
                     cv.fill_color[ '#fff' ]
                     cv.draw_text[ editor.display_of[ lnv ],
-                        rect [ x: bx, y: round[ y_row ], w: bounds.w - gut_w, h: lh ],
+                        rect [ x: bx, y: y_row, w: bounds.w - gut_w, h: lh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
                 cv.paint[ ]
                 cv.set_crop[ tx + bounds.x + gut_w, ty + bounds.y,
                     tx + bounds.x + bounds.w, ty + bounds.y + bounds.h ]
 
             if [ parent.focused ]
-                y_sel : f32 [ y0 + f32[editor.sel_line] * lh - editor.scroll.y ]
+                y_sel : f32 [ round[ y0 + f32[editor.sel_line] * lh - editor.scroll.y ] ]
                 if [ y_sel + lh >= bounds.y && y_sel <= bounds.y + bounds.h ]
                     use_fr : bool [ has_sel && editor.filter_rect ]
                     cx : f32
@@ -1770,6 +1826,8 @@ Control Editor
     mutable loaded_diff   : string
     # per-row diff kind: 0 context, 1 removed, 2 added
     mutable diff_kinds    : array i32
+    # display row -> real file line; -1 on removed rows (base only)
+    mutable diff_src      : array i32
     # commit's file lines, cached for live re-diff while editing
     mutable diff_base     : array string
     mutable diff_dirty    : bool
@@ -1778,16 +1836,19 @@ Control Editor
     mutable nav           : Navigate
     mutable pane_index    : i32 [ 0 ]
     mutable rview         : ResourceView
-    mutable hx_force      : bool
+    # the user's chosen view for this file; '' = default (first cell)
+    mutable view_name     : string
+    # '<view>|<file>' currently mounted; the only staleness check
+    mutable mounted       : string
     mutable nav_tools     : array string
     mutable nav_default   : string
     mutable tool_hover    : i32 [ -1 ]
-    mutable stopped       : bool
     mutable run_view      : AppView
     mutable app_view      : bool
     mutable session_view  : string
     mutable saved_scroll  : f32
     intern static view_registry : map Au_t[string]
+    intern static view_by_name  : map Au_t[string]
     intern static export_registry : map string[string]
     mutable lines         : list string
     mutable file_cache    : map FileBuf[string]
@@ -1915,7 +1976,9 @@ Control Editor
         flat_active = flat_rows.count > base
 
     # flat-row accessors (identity when no tree is open).
+    # a diff's rows are base+current merged: map back to the real file line
     func row_src [ vr: i32 ] -> i32
+        if [ diff_src && vr >= 0 && vr < diff_src.count ] return diff_src[ vr ]
         if [ !flat_active || !flat_rows || vr < 0 || vr >= flat_rows.count ] return vr
         r : VRow flat_rows[ vr ]
         return r.src
@@ -2460,9 +2523,12 @@ Control Editor
         if [ dot < 0 ] return ''
         return fn.mid[ dot, n - dot ]
 
+    # every ResourceView subclass registers itself: by extension for the
+    # default chain, by name for the rail
     func ensure_view_registry []
         if [ view_registry ] return
         view_registry = map Au_t[string] []
+        view_by_name  = map Au_t[string] []
         n    : i64 [ 0 ]
         subs : @Au_t [ Au.subclasses[ typeid[ ResourceView ], @n ] ]
         for [ i: i64 0, i < n, i += 1 ]
@@ -2473,6 +2539,15 @@ Control Editor
                     exts : probe.extensions*[]
                     for [ e: string ] in exts
                         view_registry[ e ] = t
+                    vid : string probe.view_id*[]
+                    if [ !vid || vid.count == 0 ] vid = '{t.ident}'
+                    view_by_name[ vid ] = t
+
+    # the type that renders a named view in-process, or null for a peer
+    func view_type [ nm: string ] -> Au_t
+        if [ !nm || nm.count == 0 ] return null
+        ensure_view_registry[]
+        return view_by_name[ nm ]
 
     func ensure_export_registry []
         if [ export_registry ] return
@@ -2680,9 +2755,26 @@ Control Editor
             dk9.push[ 0 ]
         lines      = ml9
         diff_kinds = dk9
+        rebuild_diff_src[]
         diff_dirty = false
         if [ sel_line >= lines.count ] sel_line = lines.count - 1
         pristine = false
+
+    # removed rows exist only in the base, so they consume no file line
+    func rebuild_diff_src []
+        if [ !diff_kinds ]
+            diff_src = null
+            return
+        n  : i32 [ diff_kinds.count ]
+        ds : array i32 [ alloc: (n > 0) ? n : 1 ]
+        s  : i32 [ 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ diff_kinds[i] == 1 ]
+                ds.push[ -1 ]
+            el
+                ds.push[ s ]
+                s += 1
+        diff_src = ds
 
     func kinds_insert [ at: i32 ]
         if [ !diff_kinds ] return
@@ -2690,72 +2782,92 @@ Control Editor
         for [ i: i32 diff_kinds.count - 1, i > at, i -= 1 ]
             diff_kinds[i] = diff_kinds[ i - 1 ]
         diff_kinds[at] = 2
+        rebuild_diff_src[]
 
     func kinds_remove [ at: i32 ]
         if [ !diff_kinds || at >= diff_kinds.count ] return
         for [ i: i32 at, i < diff_kinds.count - 1, i += 1 ]
             diff_kinds[i] = diff_kinds[ i + 1 ]
         diff_kinds.pop[]
+        rebuild_diff_src[]
+
+    # drop the in-pane view; the running app has its own lifetime
+    func close_view []
+        if [ rview ] rview.release*[]
+        rview    = null
+        animated = false
+
+    # stop the app this pane launched
+    func close_app []
+        if [ run_view ]
+            orb8 : cast orbiter [ ux.app_object ]
+            if [ orb8 && run_view.app_mod ] orb8.stop_debug[ run_view.app_mod ]
+            run_view.release*[]
+        run_view = null
+        app_view = false
+
+    # which view this pane should show: the user's pick, else the default
+    func resolve_view [] -> string
+        if [ view_name && view_name.count > 0 ] return view_name
+        d : string default_view_for[ src ]
+        if [ d && d.count > 0 ] return d
+        if [ file_is_binary[ src ] ] return 'b16'
+        return 'text'
+
+    # the only place a view is torn down or constructed
+    func mount [ want: string ]
+        sp9 : string [ (src) ? '{src}' : '' ]
+        dc9 : string [ (diff_commit) ? diff_commit : '' ]
+        key : string '{want}|{sp9}|{dc9}'
+        if [ mounted && mounted.compare[ key ] == 0 ] return
+        mounted = key
+        close_view[]
+        if [ want.compare[ 'text' ] == 0 ]
+            load_text[]
+            return
+        t : Au_t view_type[ want ]
+        if [ t ]
+            rview     = ResourceView [ Au.new_object[ t, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
+            rview.src = src
+            animated  = rview.continuous*[]     # emulator panes redraw every frame
+            lines     = list string []
+            pristine      = false
+            scroll.x      = 0.0
+            scroll.y      = 0.0
+            scroll_target = 0.0
+            content_h     = 0.0
+            saved_scroll  = 0.0
+            return
+        # a peer module owns this view: it runs as its own process
+        lines = list string []
+        lines.push[ '' ]
+        if [ run_view ] return
+        orbv : cast orbiter [ ux.app_object ]
+        m9   : string [ (orbv) ? orbv.view_module[ want ] : want ]
+        if [ m9 ] launch_handler[ m9, src ]
 
     func load_file []
         ns9 : string [ (src) ? '{src}' : '' ]
         ls9 : string [ (loaded_src) ? '{loaded_src}' : '' ]
-        # forced hex is per-file: a new file clears it
-        if [ ns9.compare[ ls9 ] != 0 ] hx_force = false
+        # a new file returns to the default view and drops the old file's app
+        if [ ns9.compare[ ls9 ] != 0 ]
+            view_name = ''
+            close_app[]
         loaded_src = src
         if [ !src ]
-            if [ rview ] rview.release*[]
-            rview    = null
-            if [ run_view ]
-                orb8 : cast orbiter [ ux.app_object ]
-                if [ orb8 && run_view.app_mod ] orb8.stop_debug[ run_view.app_mod ]
-                run_view.release*[]
-            run_view = null
-            app_view = false
-            lines    = list string []
+            mounted = null
+            close_view[]
+            close_app[]
+            lines = list string []
             lines.push[ '' ]
             return
-        if [ rview && rview.src ]
-            rs : '{rview.src}'
-            ss : '{src}'
-            if [ rs.compare[ ss ] == 0 ] return
-        rv : ResourceView [ (hx_force) ? null : resource_view_for[ src ] ]
-        if [ rv ]
-            if [ rview ] rview.release*[]
-            rview = rv
-            rview.src = src
-            animated = rview.continuous*[]         # emulator panes redraw every frame
-            lines = list string []
-            scroll.x      = 0.0
-            scroll.y      = 0.0
-            scroll_target = 0.0
-            content_h     = 0.0
-            saved_scroll  = 0.0
-            return
-        if [ !run_view && !stopped && !hx_force ]
-            hm : handler_module_for[ src ]
-            if [ hm ]
-                launch_handler[ hm, src ]
-                return
-        if [ hx_force || file_is_binary[ src ] ]
-            if [ rview ] rview.release*[]
-            hv : ResourceView [ ]
-            hv.hx_on = true
-            hv.src   = src
-            rview    = hv
-            pristine = false
-            lines    = list string []
-            scroll.x      = 0.0
-            scroll.y      = 0.0
-            scroll_target = 0.0
-            content_h     = 0.0
-            saved_scroll  = 0.0
-            return
-        if [ rview ] rview.release*[]
-        rview = null
+        mount[ resolve_view[] ]
+
+    func load_text []
         pristine = false
         loaded_diff = diff_commit
         diff_kinds  = null
+        diff_src    = null
         diff_base   = null
         diff_dirty  = false
         if [ diff_commit && diff_commit.count > 0 ]
@@ -2797,27 +2909,23 @@ Control Editor
         if [ run_view ]
             orb9 : cast orbiter [ ux.app_object ]
             if [ orb9 && run_view.app_mod ]
-                orb9.stop_debug[ run_view.app_mod ]
                 es9 : ConsoleSession (orb9.ed_sessions) ? orb9.ed_sessions[ 'ed:{run_view.app_mod}' ] : null
                 if [ es9 ] es9.print_text[ '\r\nstopped\r\n' ]
-            run_view.release*[]
-            run_view = null
-            app_view = false
-            animated = false
-            pristine = false
+            close_app[]
+            pristine  = false
             no_scroll = false
-            stopped  = true
+            # stopping is a view choice: show the text, do not relaunch
+            view_name = 'text'
             load_file[]
             if [ ux ] ux.restyle = true
             return
         if [ !src ] return
+        view_name = ''
         hm9 : handler_module_for[ src ]
         if [ hm9 ]
-            stopped = false
             launch_handler[ hm9, src ]
             return
         puts 'toggle_app_run: starting {src}'
-        stopped  = false
         nv : AppView [ ]
         nv.src   = src
         nv.clean_build = clean
@@ -2930,10 +3038,24 @@ Control Editor
         sel_line = ln
         sel_col  = cl
 
+    # rail press: default is the first cell; the user navigates from there
+    func press_tool [ idx: i32 ]
+        orb : cast orbiter [ ux.app_object ]
+        bas : i32 [ tool_base[] ]
+        nm  : string [ (bas == 1 && idx == 0) ? '' : nav_tools[ idx - bas ] ]
+        view_name = nm
+        load_file[]
+        if [ orb ] orb.exit_find_mode[]
+        if [ ux ] ux.restyle = true
+
     func on_press [ ev: Event ]
-        # rail owns its presses, even over a running app view
+        # the rail is first in line: nothing else may eat its press
         rail9 : i32 [ tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
-        if [ run_view && rail9 < 0 ]
+        if [ rail9 >= 0 ]
+            press_tool[ rail9 ]
+            ev.no_default = true
+            return
+        if [ run_view ]
             if [ app_view ]
                 if [ run_view.hit_minimize[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
                     toggle_app_view[]
@@ -2949,7 +3071,7 @@ Control Editor
         sbe : (layers) ? cast EditorLayer [ layers['content'] ] : null
         sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
         sbg : f32 [ (sbl && sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
-        if [ rview && rail9 < 0 && sbe && sbl && sbl.scroll_max > 0.0 ]
+        if [ rview && sbe && sbl && sbl.scroll_max > 0.0 ]
             sbx : f32 [ ev.mouse.pos.x - sbe.bounds.x ]
             if [ sbx > sbe.bounds.w - sbg ]
                 smy : f32 [ ev.mouse.pos.y - sbe.bounds.y - scroll.y ]
@@ -2964,7 +3086,7 @@ Control Editor
                     ux.will_animate = true
                 ev.no_default = true
                 return
-        if [ rview && rail9 < 0 && !rview.view_text*[ rview.view_sel ] ]
+        if [ rview && !rview.view_text*[ rview.view_sel ] ]
             if [ rview.view_press*[ ev ] ]
                 ev.no_default = true
                 return

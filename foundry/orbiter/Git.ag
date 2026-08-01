@@ -173,11 +173,14 @@ NodeList GitList
             git_capture[ root, 'checkout {r.text}', false ]
             refresh[]
             return
-        # commit: reveal the editor, associated with this commit's diff
+        # commit: leave this view, showing the editor on the commit's diff
         orb : orbiter [ ux.app_object ]
         if [ orb ]
-            orb.diff_commit  = r.hash
-            orb.editor_panel = 'editor'
+            orb.diff_commit = r.hash
+            ed : Editor orb.pane_of[ a ]
+            if [ ed ]
+                ed.view_name = ''
+                ed.load_file[]
             ux.restyle = true
 
     func init []
@@ -187,3 +190,12 @@ NodeList GitList
 
     func render [] -> Elements
         return null
+
+# the branch list + commit log, mounted as the pane's view
+ResourceView GitView
+    func view_id [] -> string
+        return 'git'
+    func applies [] -> FileType
+        return FileType.ascii
+    func view_element [] -> element
+        return GitList [ file: src ]

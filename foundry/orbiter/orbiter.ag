@@ -1,6 +1,6 @@
 # hello
 export 0.8.8
-export views ['git': FileType.ascii, 'hex': FileType.agnostic]
+export views ['git': FileType.ascii, 'b16': FileType.agnostic]
 
 # import silver modules
 import vec
@@ -164,7 +164,7 @@ element EditorView
         if [ !run_ok && p && !is_con ]
             fnm : p.filename[]
             if [ fnm.count >= 3 && fnm.mid[ fnm.count - 3, 3 ].compare[ '.ag' ] == 0 ] run_ok = true
-            # files with a registered handler app stay runnable (hex view keeps the band)
+            # files with a registered handler app stay runnable (b16 keeps the band)
             if [ !run_ok && ed_live && ed_live.handler_module_for[ p ] ] run_ok = true
         
         vinner : Elements [ ]
@@ -173,10 +173,12 @@ element EditorView
             vinner['text'] = Console [
                 session_id: psess, sessions: orb.ed_sessions, feed: null,
                 launch: orb.agent_cmd[ psess ], animated: true ]
-        el [ orb.editor_panel == 'git' ]
-            vinner['text'] = GitList [ file: p ]
         el
             edels : Elements []
+            # a composed view fills the editor; its lines stay empty
+            if [ ed_live && ed_live.rview ]
+                vel : element ed_live.rview.view_element*[]
+                if [ vel ] edels['view'] = vel
             vinner['text'] = Editor [
                 src: p
                 diff_commit: orb.diff_commit,
@@ -714,7 +716,6 @@ element orbiter : trinity # implements compiler
     public active_idx       : i32
     public config_side      : i32
     public active_panel  : string
-    public editor_panel  : string
     # commit hash the stacked diff view presents
     public diff_commit   : string
     public active_target : string
@@ -791,7 +792,6 @@ element orbiter : trinity # implements compiler
         for [ i: i32 0, i < 8, i += 1 ]
             nav_panes += Navigate []
         active_panel   = 'files'
-        editor_panel   = 'editor'
         active_target  = 'silver'
         restore_session[]
         nav_root       = project_root[]
@@ -1699,8 +1699,8 @@ element orbiter : trinity # implements compiler
         engaged : bool [ browse_open || fb_on || tfoc ]
         # no close chip — Escape closes the finder
         edp9 : Editor pane_at[ pane_ix ]
-        hx9  : bool [ edp9 && edp9.hx_force ]
-        if [ editor_panel != 'editor' || (diff_commit && diff_commit.count > 0) || hx9 ]
+        hx9  : bool [ edp9 && edp9.view_name && edp9.view_name.count > 0 ]
+        if [ (diff_commit && diff_commit.count > 0) || hx9 ]
             els['panel_close'] = LButton [ icon: 'close', manual_mode: true ]
         if [ engaged && !is_resource ]
             els['magnify'] = LButton [ icon: 'magnify', selected: fb_on, manual_mode: true ]
@@ -2164,7 +2164,7 @@ element orbiter : trinity # implements compiler
             ed.scroll.y      = 0.0
             ed.scroll_target = 0.0
         ed.finder_list = is_search
-        # code views only fit ascii files; binaries get hex alone
+        # code views only fit ascii files; binaries get b16 alone
         ed.nav_tools   = null
         ed.nav_default = null
         if [ is_search && ed.src ]
@@ -2260,6 +2260,14 @@ element orbiter : trinity # implements compiler
                         break
         if [ active_pane >= editor_slots.count ] active_pane = editor_slots.count - 1
         save_session[]
+
+    # the Editor of the pane an element lives in
+    func pane_of [ e: element ] -> Editor
+        for [ e9: element* e, e9, e9 = e9.parent ]
+            if [ e9 inherits EditorView ]
+                ev9 : EditorView e9
+                return pane_at[ ev9.pane_index ]
+        return null
 
     func pane_at [ i: i32 ] -> Editor
         pv : element pane_view[ i ]
@@ -2466,6 +2474,22 @@ element orbiter : trinity # implements compiler
             win.restyle      = true
             win.will_animate = true
 
+    # show a named view in a pane; '' returns it to the default
+    func set_pane_view [ ed: Editor, nm: string ]
+        if [ !ed ] return
+        ed.view_name = nm
+        ed.load_file[]
+        exit_find_mode[]
+
+    # the peer module that owns a view, or null when we host it ourselves
+    func view_module [ nm: string ] -> string
+        if [ !nm || nm.count == 0 ] return null
+        ensure_views[]
+        m9 : string (view_mods) ? view_mods[ nm ] : null
+        if [ !m9 ] m9 = nm
+        if [ m9 == 'orbiter' ] return null
+        return m9
+
     func exit_find_mode []
         findbar_open = false
         find_showing = false
@@ -2561,48 +2585,6 @@ element orbiter : trinity # implements compiler
                         return
             if [ e inherits Editor ]
                 ed : Editor e
-                # right dock: instance the clicked view on the open file
-                if [ ev.target == e && (nav_showing || find_showing) && ed.nav_tools ]
-                    tl9 : i32 [ ed.tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
-                    if [ tl9 >= 0 ]
-                        bas9 : i32 [ ed.tool_base[] ]
-                        if [ bas9 == 1 && tl9 == 0 ]
-                            # default action: reopen through the normal path
-                            ed.hx_force = false
-                            if [ ed.rview ] ed.rview.release*[]
-                            ed.rview = null
-                            ed.load_file[]
-                        el
-                            t9 : string ed.nav_tools[ tl9 - bas9 ]
-                            if [ t9 == 'git' ]
-                                editor_panel = 'git'
-                            el [ t9 == 'hex' ]
-                                # leaving the default view: close its running instance
-                                if [ ed.run_view ]
-                                    if [ ed.run_view.app_mod ] stop_debug[ ed.run_view.app_mod ]
-                                    ed.run_view.release*[]
-                                    ed.run_view = null
-                                    ed.app_view = false
-                                    ed.animated = false
-                                ed.hx_force = true
-                                if [ ed.rview ] ed.rview.release*[]
-                                ed.rview = null
-                                ed.load_file[]
-                            el
-                                # module-registered view: instance its app on the file
-                                m9 : string (view_mods) ? view_mods[ t9 ] : null
-                                if [ m9 && ed.src ]
-                                    if [ ed.run_view ]
-                                        if [ ed.run_view.app_mod ] stop_debug[ ed.run_view.app_mod ]
-                                        ed.run_view.release*[]
-                                        ed.run_view = null
-                                        ed.app_view = false
-                                        ed.animated = false
-                                    ed.launch_handler[ m9, ed.src ]
-                        exit_find_mode[]
-                        ev.no_default = true
-                        if [ ev.target ] ev.target.ux.restyle = true
-                        return
                 # hits are clickable only while the list is actually shown
                 if [ ev.target == e && (nav_showing || find_showing) && ed.sel_line >= 0 && ed.sel_line < find_hits.count ]
                     h : FindHit find_hits[ ed.sel_line ]
@@ -2712,7 +2694,8 @@ element orbiter : trinity # implements compiler
                 return
         
         if [ ev.target.id == 'git' ]
-            editor_panel = (editor_panel == ev.target.id) ? 'editor' : ev.target.id
+            edg : Editor pane_at[ active_pane ]
+            if [ edg ] set_pane_view[ edg, (edg.view_name == 'git') ? '' : 'git' ]
             if [ ev.target ] ev.target.ux.restyle = true
             return
 
@@ -2727,20 +2710,10 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             return
 
-        # [x] left of the title: leave git/diff/hex, back to the editor
+        # [x] left of the title: leave the chosen view and any diff
         if [ ev.target.id == 'panel_close' ]
-            editor_panel = 'editor'
-            diff_commit  = null
-            for [ e9: element* ev.target, e9, e9 = e9.parent ]
-                if [ e9 inherits EditorView ]
-                    evc : EditorView e9
-                    edc : Editor pane_at[ evc.pane_index ]
-                    if [ edc && edc.hx_force ]
-                        edc.hx_force = false
-                        if [ edc.rview ] edc.rview.release*[]
-                        edc.rview = null
-                        edc.load_file[]
-                    break
+            diff_commit = null
+            set_pane_view[ pane_of[ ev.target ], '' ]
             ev.no_default = true
             if [ ev.target ] ev.target.ux.restyle = true
             return
@@ -3003,9 +2976,11 @@ element orbiter : trinity # implements compiler
                 focus_finder[]
                 ev.no_default = true
                 return
-        if [ ev.key.state && i32[ ev.key.unicode ] == 256 && (editor_panel != 'editor' || diff_commit) ]
-            editor_panel = 'editor'
-            diff_commit  = null
+        eda : Editor pane_at[ active_pane ]
+        chosen : bool [ eda && eda.view_name && eda.view_name.count > 0 ]
+        if [ ev.key.state && i32[ ev.key.unicode ] == 256 && (chosen || diff_commit) ]
+            diff_commit = null
+            set_pane_view[ eda, '' ]
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
