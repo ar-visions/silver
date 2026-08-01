@@ -46,10 +46,10 @@ element EditorView
     style : CSS {
         area: l0 t0 r0 b0
         layers.bg:
-            fill_color: #140d2acc
+            fill_color: #140a2acc
         :is_console
             layers.bg:
-                fill_color: #140d2a80
+                fill_color: #140a2a80
     }
 
     func text_of [] -> Editor
@@ -116,6 +116,8 @@ element EditorView
         dbg_open  : bool [ ed_live->dbg_open ]
         searchable : bool [ orb.search_pane[] == id ]
         findbar_on : bool [ orb.findbar_open && orb.findbar_pane == id ]
+        if [ orb.find_showing ]
+            puts 'FIND show: pane={id} searchable={(searchable) ? 1 : 0} sp={orb.search_pane[]} hits={orb.find_hits->count}'
         menu_open  : bool [ searchable && (orb.find_showing || orb.nav_showing) ]
         is_res     : bool [ (ed_live && ed_live.rview) ? true : false ]
         if [ is_res ]
@@ -181,11 +183,10 @@ element EditorView
                 if [ vel ] edels['view'] = vel
             vinner['text'] = Editor [
                 src: p
-                diff_commit: orb.diff_commit,
                 breakpoints: orb.breakpoints, code_font_size: orb.code_font_size,
                 nav: orb.nav_panes[ pi ], pane_index: pi,
                 debug_running: running, debugger: dbgr, debug_vars: orb.debug_vars,
-                expanded: findbar_on, replacing: (findbar_on && orb.replace_open),
+                expanded: findbar_on, replacing: findbar_on,
                 show_hits: (searchable) ? (orb.find_showing || orb.nav_showing) : false,
                 single_line: (orb.nav_showing && orb.browse_single),
                 header_size: orb.browse_header_size, dir_size: orb.browse_dir_size,
@@ -227,10 +228,10 @@ element EditorView
             sp_inner['console'] = con
             if [ orb.show_instruments ] sp_inner['callstack'] = Callstack [ frames: orb.debug_frames[] ]
             if [ orb.show_variables ]   sp_inner['fields']    = Fields [ vars: orb.debug_vars ]
-            bels['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, sizes: orb.dbg_sizes, inner: sp_inner, snap_close: true ]
+            bels['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, inner: sp_inner ]
             vinner['band'] = RunBand [ elements: bels ]
         els['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
-            inner: vinner, sizes: orb.band_sizes, deflt: 180.0 ]
+            inner: vinner, deflt: 180.0, min_size: 44.0 ]
         return els
 
 element EditorTitle
@@ -497,12 +498,26 @@ element PatternField
         layers.body:
             fill_color: #0000
             radius: 8
+            stroke_width: 1
+            stroke_color: #fff1
         layers.face:
-            label_color: #fff
-            label_size: 19
+            label_color: #fff6
+            label_size: 16
             editable: true
             label_align: 0.0 0.5
             label_offset: 12.0 0.0
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+                stroke_color: #fff2
+            layers.face:
+                label_color: #ffff
+        :has_value
+            layers.body:
+                fill_color: #2f6b4a40
+                stroke_color: #fff2
+            layers.face:
+                label_color: #ffff
         :selected
             layers.body:
                 fill_color: #216
@@ -522,17 +537,31 @@ element FindField
                 label_color: #ffff
     }
 
-# findbar replace input: right-flow slot before 'All'
+# findbar replace input: right-flow slot left of 'files'
 element ReplaceField
     style : CSS {
         area: r0+ t0 w6 h0.9
+        layers.body:
+            fill_color: #0000
+            radius: 8
+            stroke_width: 1
+            stroke_color: #fff1
         layers.face:
             label_color: #fff6
-            label_size: 14
+            label_size: 16
             editable: true
             label_align: 0.0 0.5
             label_offset: 10.0 0.0
         :focused
+            layers.body:
+                fill_color: #8c4a6440
+                stroke_color: #fff2
+            layers.face:
+                label_color: #ffff
+        :has_value
+            layers.body:
+                fill_color: #8c4a6440
+                stroke_color: #fff2
             layers.face:
                 label_color: #ffff
     }
@@ -702,8 +731,6 @@ element orbiter : trinity # implements compiler
     intern nav_panes        : array Navigate
     intern console_w        : i32
     intern console_w_save   : i32
-    public pane_sizes       : array
-    public band_sizes       : array
     public show_instruments : bool
     # the variables panel — the other tab of the stack menu
     public show_variables   : bool
@@ -712,12 +739,10 @@ element orbiter : trinity # implements compiler
     intern chord_shift      : bool
     intern chord_meta       : bool
     intern listen_file      : path
-    public dbg_sizes        : array
     public active_idx       : i32
     public config_side      : i32
     public active_panel  : string
     # commit hash the stacked diff view presents
-    public diff_commit   : string
     public active_target : string
     intern fmt_watch  : map FmtWatch [string]
     public show_avatar   : bool [ true ]
@@ -732,8 +757,6 @@ element orbiter : trinity # implements compiler
     intern find_last_scope : string
     public replace_text  : string
     public pattern_text  : string
-    public find_in_file  : bool
-    public replace_open  : bool
     public find_showing  : bool
     public nav_showing   : bool
     public find_hits     : array FindHit
@@ -864,7 +887,6 @@ element orbiter : trinity # implements compiler
         findbar_text   = ''
         replace_text   = ''
         pattern_text   = ''
-        find_in_file   = true
         find_showing   = false
         find_hits      = array FindHit []
         search_dirs    = array path []
@@ -1700,7 +1722,8 @@ element orbiter : trinity # implements compiler
         # no close chip — Escape closes the finder
         edp9 : Editor pane_at[ pane_ix ]
         hx9  : bool [ edp9 && edp9.view_name && edp9.view_name.count > 0 ]
-        if [ (diff_commit && diff_commit.count > 0) || hx9 ]
+        dc9  : bool [ edp9 && edp9.diff_commit && edp9.diff_commit.count > 0 ]
+        if [ dc9 || hx9 ]
             els['panel_close'] = LButton [ icon: 'close', manual_mode: true ]
         if [ engaged && !is_resource ]
             els['magnify'] = LButton [ icon: 'magnify', selected: fb_on, manual_mode: true ]
@@ -1726,21 +1749,12 @@ element orbiter : trinity # implements compiler
                     els[vk] = ve
 
         if [ fb_on ]
-            els['replace_btn'] = LabelButton [ label: 'Replace', selected: replace_open, manual_mode: true ]
-            if [ replace_open ]
-                els['replace'] = ReplaceField [ label: 'replace', edit: replace_text, focusable: true ]
-                els['replace_all_action'] = LabelButton [ label: 'All', manual_mode: true ]
-        if [ fb_on ]
+            # right-flow: first inserted lands furthest right
+            els['replace'] = ReplaceField [ label: 'replace', edit: replace_text, focusable: true ]
             els['pattern'] = PatternField [
-                label: (hasfile) ? p.filename[] : 'Files',
-                edit: (find_in_file) ? '' : pattern_text,
-                selected: !find_in_file,
-                focusable: !find_in_file,
-                read_only: find_in_file,
-                elements: [
-                    'find_in_files': RButton [ icon: 'find_in_files', selected: !find_in_file, manual_mode: true ]
-                ]
-            ]
+                label: 'files (i.e *.ag)',
+                edit: pattern_text,
+                focusable: true ]
             els['find'] = FindField [ label: 'Find', edit: findbar_text, focusable: true ]
         return els
 
@@ -1887,6 +1901,10 @@ element orbiter : trinity # implements compiler
                         out.push[ matches[i] ]
         return out
 
+    # a file pattern IS the switch: set means search all files
+    func find_in_file [] -> bool
+        return !pattern_text || pattern_text.count == 0
+
     func run_find_in_files []
         find_hits = array FindHit []
         q : string findbar_text
@@ -1897,13 +1915,15 @@ element orbiter : trinity # implements compiler
             return
         a_slot : i32 [ (active_pane >= 0 && active_pane < editor_slots.count) ? editor_slots[active_pane] : -1 ]
         p : path (a_slot >= 0 && a_slot < open_files.count) ? open_files[a_slot] : null
-        scan_current : bool [ find_in_file && p ]
+        scan_current : bool [ find_in_file[] && p ]
         if [ scan_current ]
+            puts 'FIND bail: in-file mode, p={p}'
             find_showing = false
             return
         root : path '{startup_path}/foundry'
         find_scanned = 0
         walk_find[ root, q ]
+        puts 'FIND walk: root={root} scanned={find_scanned} hits={find_hits.count} sp={search_pane[]} fbpane={findbar_pane}'
         if [ find_hits.count == 0 ]
             find_hits.push[ FindHit [ is_header: true, text: 'No results in {find_scanned} files', dir: 'within foundry/', file: null ] ]
             find_hits.push[ FindHit [ is_header: true, text: '', file: null ] ]
@@ -2171,7 +2191,10 @@ element orbiter : trinity # implements compiler
             ed.nav_tools   = (ed.file_is_binary[ ed.src ]) ? view_tools_bin : view_tools
             ed.nav_default = ed.default_view_for[ ed.src ]
         if [ is_search ]
-            ed.lines = find_results
+            # the finder DISPLACES the pane's content, so nothing is mounted
+            # any more — clearing the key makes load_file rebuild on the way out
+            ed.lines   = find_results
+            ed.mounted = null
         el [ slot >= 0 && slot < open_files.count ]
             # any other pane with a file open: restore its content
             ed.src = open_files[slot]
@@ -2194,46 +2217,30 @@ element orbiter : trinity # implements compiler
         if [ !pv || !pv.elements ] return null
         return pv.elements[ 'title' ]
 
-    func size_get [ arr: array, id: string ] -> f32
-        if [ !arr || !id ] return 0.0
-        for [ i: i32 0, i + 1 < arr.count, i += 2 ]
-            k : string [ arr[ i ] ]
-            if [ k && k.compare[ id ] == 0 ] return f32 [ arr[ i + 1 ] ]
-        return 0.0
+    # depth-first id lookup; the tree nests once sides land
+    func find_el [ e: element, id: string ] -> element
+        if [ !e || !e.elements || !id ] return null
+        d : element e.elements[ id ]
+        if [ d ] return d
+        for [ ce: element, ck: string ] in e.elements
+            r : element find_el[ ce, id ]
+            if [ r ] return r
+        return null
 
-    func size_set [ arr: array, id: string, v: f32 ]
-        if [ !arr || !id ] return
-        for [ i: i32 0, i + 1 < arr.count, i += 2 ]
-            k : string [ arr[ i ] ]
-            if [ k && k.compare[ id ] == 0 ]
-                arr[ i + 1 ] = v
-                return
-        arr.push[ id ]
-        arr.push[ v ]
-
-    func take_closed [ arr: array, id: string ] -> bool
-        if [ !arr || !id ] return false
-        for [ i: i32 0, i + 1 < arr.count, i += 2 ]
-            k : string [ arr[ i ] ]
-            if [ k && k.compare[ id ] == 0 ]
-                v : f32 [ arr[ i + 1 ] ]
-                if [ v <= 0.0 ]
-                    arr.remove[ i ]
-                    arr.remove[ i ]
-                    return true
-                return false
-        return false
+    # extent < 0 means the user dragged this pane shut
+    func take_closed [ id: string ] -> bool
+        e : element find_el[ a, id ]
+        if [ !e || e.extent >= 0.0 ] return false
+        e.extent = 0.0
+        return true
 
     func close_pane [ pi: i32 ]
         if [ agent_open && pi == editor_slots.count ]
             agent_open = false
-            if [ pane_sizes ]
-                for [ qa: i32 0, qa + 1 < pane_sizes.count, qa += 2 ]
-                    qk9 : string [ pane_sizes[ qa ] ]
-                    if [ qk9 && qk9.compare[ 'pane{pi}' ] == 0 ]
-                        pane_sizes.remove[ qa ]
-                        pane_sizes.remove[ qa ]
-                        break
+            ae9 : element find_el[ a, 'pane{pi}' ]
+            if [ ae9 ]
+                ae9.extent       = 0.0
+                ae9.extent_shown = 0.0
             if [ active_pane >= editor_slots.count ] active_pane = editor_slots.count - 1
             save_session[]
             return
@@ -2245,19 +2252,13 @@ element orbiter : trinity # implements compiler
             pe.rview = null
         editor_slots.remove[ pi ]
         if [ pi < pane_console.count ] pane_console.remove[ pi ]
-        if [ pane_sizes ]
-            for [ qi: i32 0, qi + 1 < pane_sizes.count, qi += 2 ]
-                qk : string [ pane_sizes[ qi ] ]
-                if [ qk && qk.compare[ 'pane{pi}' ] == 0 ]
-                    pane_sizes.remove[ qi ]
-                    pane_sizes.remove[ qi ]
-                    break
-            for [ qj: i32 pi + 1, qj <= editor_slots.count, qj += 1 ]
-                for [ qi: i32 0, qi + 1 < pane_sizes.count, qi += 2 ]
-                    qk : string [ pane_sizes[ qi ] ]
-                    if [ qk && qk.compare[ 'pane{qj}' ] == 0 ]
-                        pane_sizes[ qi ] = 'pane{qj - 1}'
-                        break
+        # ids re-key by index next frame: extents follow their content
+        for [ qj: i32 pi + 1, qj <= editor_slots.count, qj += 1 ]
+            src9 : element find_el[ a, 'pane{qj}' ]
+            dst9 : element find_el[ a, 'pane{qj - 1}' ]
+            if [ src9 && dst9 ]
+                dst9.extent       = src9.extent
+                dst9.extent_shown = src9.extent_shown
         if [ active_pane >= editor_slots.count ] active_pane = editor_slots.count - 1
         save_session[]
 
@@ -2570,6 +2571,10 @@ element orbiter : trinity # implements compiler
     func on_press [ ev: Event ]
         if [ !ev.target ] return
         puts 'on_press: target={ev.target.id}'
+        # working in a pane makes it active: keys act where you are
+        epv : Editor pane_of[ ev.target ]
+        if [ epv && epv.pane_index >= 0 && epv.pane_index < editor_slots.count ]
+            active_pane = epv.pane_index
         for [ e: element* ev.target, e, e = e.parent ]
             if [ e inherits Console ]
                 co  : Console e
@@ -2712,8 +2717,9 @@ element orbiter : trinity # implements compiler
 
         # [x] left of the title: leave the chosen view and any diff
         if [ ev.target.id == 'panel_close' ]
-            diff_commit = null
-            set_pane_view[ pane_of[ ev.target ], '' ]
+            edx : Editor pane_of[ ev.target ]
+            if [ edx ] edx.diff_commit = null
+            set_pane_view[ edx, '' ]
             ev.no_default = true
             if [ ev.target ] ev.target.ux.restyle = true
             return
@@ -2789,19 +2795,6 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             return
         
-        if [ ev.target.id == 'replace_btn' ]
-            replace_open = !replace_open
-            if [ replace_open && ev.target.parent ]
-                re : element ev.target.parent.elements['replace']
-                if [ re ]
-                    re.sel_col    = re.edit->count
-                    re.anchor_col = re.sel_col
-                    re.set_focus[]
-            if [ ev.target ] ev.target.ux.restyle = true
-            ev.no_default = true
-            force_update[]
-            return
-        
         if [ ev.target.id == 'close_find' ]
             findbar_open = false
             find_showing = false
@@ -2811,35 +2804,12 @@ element orbiter : trinity # implements compiler
             return
         
         if [ ev.target.id == 'replace' ]
-            puts 'replace press: focusable={(ev.target.focusable) ? 1 : 0}'
             ev.target.sel_col    = ev.target.edit->count
             ev.target.anchor_col = ev.target.sel_col
             ev.target.set_focus[]
             force_update[]
             return
-        
-        if [ ev.target.id == 'find_in_files' ]
-            find_in_file = !find_in_file
-            pe : element ev.target.parent
-            if [ pe ]
-                if [ find_in_file ]
-                    pe.edit       = ''
-                    pe.sel_col    = 0
-                    pe.anchor_col = 0
-                    pe.release_focus[]
-                el
-                    pe.edit       = pattern_text
-                    pe.sel_col    = pattern_text->count
-                    pe.anchor_col = pe.sel_col
-                    pe.set_focus[]
-            run_find_in_files[]
-            ev.no_default = true
-            force_update[]
-            return
-        
-        if [ ev.target.id == 'replace_all_action' ]
-            return
-        
+
         if [ ev.target.id == 'dock' ]
             puts 'on_press: DOCK handler reached'
             if [ editor_slots.count < 4 ]
@@ -2976,16 +2946,21 @@ element orbiter : trinity # implements compiler
                 focus_finder[]
                 ev.no_default = true
                 return
-        eda : Editor pane_at[ active_pane ]
-        chosen : bool [ eda && eda.view_name && eda.view_name.count > 0 ]
-        if [ ev.key.state && i32[ ev.key.unicode ] == 256 && (chosen || diff_commit) ]
-            diff_commit = null
-            set_pane_view[ eda, '' ]
-            if [ ux ] ux.restyle = true
-            ev.no_default = true
-            return
+        # escape peels ONE layer per press, innermost first: the finder closes
+        # before the chosen view is given up
         if [ ev.key.state && i32[ ev.key.unicode ] == 256 && (findbar_open || find_showing || nav_showing) ]
             exit_find_mode[]
+            ev.no_default = true
+            return
+        # the pane the key came from wins; the active pane is the fallback
+        eda : Editor pane_of[ ev.target ]
+        if [ !eda ] eda = pane_at[ active_pane ]
+        chosen : bool [ eda && ((eda.view_name && eda.view_name.count > 0)
+                             || (eda.diff_commit && eda.diff_commit.count > 0)) ]
+        if [ ev.key.state && i32[ ev.key.unicode ] == 256 && chosen ]
+            eda.diff_commit = null
+            set_pane_view[ eda, '' ]
+            if [ ux ] ux.restyle = true
             ev.no_default = true
             return
 
@@ -3018,7 +2993,8 @@ element orbiter : trinity # implements compiler
                     if [ pattern_text && pattern_text.count > 0 ]
                         pattern_text = pattern_text.mid[ 0, pattern_text.count - 1 ]
             el [ k == 257 ]    # Key.Enter
-                in_file : bool [ find_in_file ]
+                in_file : bool [ find_in_file[] ]
+                puts 'FIND enter: tgt={ev.target.id} q="{findbar_text}" pat="{pattern_text}" in_file={(in_file) ? 1 : 0}'
                 if [ in_file ]
                     find_last_query = findbar_text
                     find_last_scope = ''
@@ -3240,25 +3216,20 @@ element orbiter : trinity # implements compiler
         if [ editor_slots.count == 0 ] editor_slots += -1
         pane_total : i32 [ editor_slots.count + ((agent_open) ? 1 : 0) ]
         for [ ci: i32 pane_total - 1, ci >= 1, ci -= 1 ]
-            if [ take_closed[ pane_sizes, 'pane{ci}' ] ] close_pane[ ci ]
+            if [ take_closed[ 'pane{ci}' ] ] close_pane[ ci ]
         if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
-        if [ !pane_sizes ]  pane_sizes  = array [ ]
-        if [ !dbg_sizes ]   dbg_sizes   = array [ ]
-        if [ !band_sizes ]  band_sizes  = array [ ]
-        if [ take_closed[ dbg_sizes, 'callstack' ] ] show_instruments = false
-        if [ take_closed[ dbg_sizes, 'fields' ] ]    show_variables   = false
         for [ pc: i32 0, pc < pane_console.count, pc += 1 ]
             if [ pane_console[pc] && pane_console[pc].count > 0 ]
                 ensure_console[ pane_console[pc] ]
         if [ agent_open ] ensure_console[ orbit_sid ]
         ap9 : i32 [ agent_pane[] ]
         if [ ap9 > 0 ]
-            key9 : string 'pane{ap9}'
-            cw9  : f32 [ size_get[ pane_sizes, key9 ] ]
-            if [ cw9 <= 0.0 && console_w > 0 ]
+            ape9 : element find_el[ a, 'pane{ap9}' ]
+            cw9  : f32 [ (ape9) ? ape9.extent : 0.0 ]
+            if [ ape9 && cw9 <= 0.0 && console_w > 0 ]
                 half9 : f32 [ ((bounds) ? bounds.w : 1200.0) * 0.5 ]
                 use9  : f32 [ f32[ console_w ] ]
-                size_set[ pane_sizes, key9, (use9 > half9) ? half9 : use9 ]
+                ape9.extent = (use9 > half9) ? half9 : use9
             el [ cw9 > 0.0 && i32[ cw9 ] != console_w ]
                 console_w      = i32[ cw9 ]
                 console_w_save = 30
@@ -3276,7 +3247,7 @@ element orbiter : trinity # implements compiler
             pane_inner[aid] = EditorView [ pane_index: editor_slots.count, selected: (sp == aid) ]
         editor_els : Elements []
         editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b0 }, inner: pane_inner,
-            sizes: pane_sizes, deflt: 0.0, even: true, snap_close: true ]
+            deflt: 0.0, even: true, snap_close: true ]
         # one avatar, window-anchored; ALWAYS mounted, :summoned slides it in
         editor_els['avatar'] = OrbiterAvatar [ topmost: true, summoned: show_orbiter ]
         return editor_els

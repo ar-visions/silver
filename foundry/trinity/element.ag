@@ -159,6 +159,9 @@ ielement element
     mutable sel_col         : i32 [ -1 ]
     mutable anchor_col      : i32 [ 0 ]
     mutable text_dragging   : bool
+    # own layout extent; the parent arranger reads and writes
+    public  extent          : f32
+    mutable extent_shown    : f32
 
     public func on_click   [ ev: Event ] return
     public func on_press   [ ev: Event ] return
@@ -225,6 +228,10 @@ ielement element
         ux.release_focus[ a ]
 
     public func draw [ w: Window ]
+        return
+
+    # runs AFTER children compose — chrome that must sit on top of them
+    public func draw_over [ w: Window ]
         return
 
     public func on_unload [ ]

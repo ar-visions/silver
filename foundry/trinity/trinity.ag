@@ -541,6 +541,7 @@ Display Window
     mutable r_view               : Render
 
     mutable test_element : element
+    mutable dbg_blit     : i32
 
     mutable is_setup             : bool
     mutable user_compose         : bool
@@ -2584,7 +2585,7 @@ Display Window
                 e.cache_canvas.resize[ ew, eh ]
                 e.pristine = false
             el
-                e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true, quantize: true ]
+                e.cache_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: ew, height: eh, load_existing: true, quantize: true, nearest: true ]
                 e.cache_canvas.update[]
                 e.pristine = false
             e.cache_w = ew
@@ -2702,16 +2703,24 @@ Display Window
                 sw_bot   : f32 [ layer.stroke_width->bottom ]
                 sw_left  : f32 [ (layer.stroke_width) ? layer.stroke_width.left   : 0.0 ]
                 sw_max   : f32 [ maxf[ maxf[ sw_top, sw_right ], maxf[ sw_bot, sw_left ] ] ]
-                sw_int : i32 [ i32 sw_max ]
-                crisp  : f32 [ ((sw_int % 2) == 1) ? 0.5 : 0.0 ]
-                if [ crisp > 0.0 ]
-                    draw_cv.translate    [ crisp, crisp ]
                 draw_cv.set_stroke_size  [ sw_max ]
                 draw_cv.set_stroke_cap   [ layer.stroke_cap  ]
                 draw_cv.set_stroke_join  [ layer.stroke_join ]
                 draw_cv.rounded          [ r_tl, r_tr, r_br, r_bl ]
                 draw_cv.stroke_sides     [ sw_top, sw_right, sw_bot, sw_left ]
-                draw_cv.rounded_rect     [ b.x, b.y, b.w, b.h, r_tl, r_tr, r_br, r_bl ]
+                # OVERDRAW: a square unstroked fill paints past its bounds so
+                # the canvas has no unpainted margin for a sample to land in.
+                # the cache texture is quantised up to 64px and never shrinks,
+                # so anything reaching past the fill reads transparent.
+                # ...and ONLY for a layer that fills the whole element. an
+                # inset layer would just grow past where it was asked to be.
+                full9 : bool [ b.w >= e.bounds.w - 0.01 && b.h >= e.bounds.h - 0.01 ]
+                ovr_px9 : f32 [ 2.0 ]
+                ovr9 : f32 [ (full9 && r_tl <= 0.0 && r_tr <= 0.0 && r_br <= 0.0 && r_bl <= 0.0
+                              && sw_max <= 0.0) ? 2.0 : 0.0 ]
+                draw_cv.rounded_rect     [ b.x - ovr9, b.y - ovr9,
+                                           b.w + ovr9 * 2.0, b.h + ovr9 * 2.0,
+                                           r_tl, r_tr, r_br, r_bl ]
                 draw_cv.fill_color       [ (layer.fill_color && layer.fill_color.a > 0.0) ? layer.fill_color : rgba [ '#00000000' ] ]
                 draw_cv.stroke_color     [ layer.stroke_color ]
                 fp_x : f32 [ layer.fill_color_pos.x * e.bounds.w ]
@@ -2896,6 +2905,10 @@ Display Window
                 cv.draw_canvas_masked[ e.cache_canvas, e.mask_canvas,
                     0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
             el
+                if [ dbg_blit < 14 ]
+                    dbg_blit += 1
+                    eid9 : string [ (e.id) ? e.id : '(noid)' ]
+                    puts 'BLIT {eid9} bx={e.bounds.x} bw={e.bounds.w} ew={ew} cw={e.cache_canvas.content_w} texw={e.cache_canvas.width} ox={e.cache_ox} tx={cv.transform_tx[]}'
                 cv.draw_canvas[ e.cache_canvas, 0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
             sbl : ScrollLayer (e.layers) ? cast ScrollLayer [ e.layers['scrollbar'] ] : null
             if [ sbl && sbl.ctype == stage && !sbl.hide ]
@@ -2934,6 +2947,14 @@ Display Window
             draw_element[ ee, stage, last_2 ]
             last_2 = ee
             cv.restore[]
+
+        # children are composed: anything drawn here lands ON TOP of them
+        if [ redraw ]
+            over_screen : hold[ a.screen ]
+            if [ stage == CanvasType.screen ] a.screen = target_cv
+            e.draw_over*[ a ]
+            a.screen = over_screen
+            drop[ over_screen ]
         cv.restore[]
 
 
@@ -3265,41 +3286,19 @@ element Splitter
     animated : true
     public inner       : map element [ string ]
     public vertical   : bool
-    public sizes      : array
-    public line_color : rgba [ '#fff2' ]     # the 1px divider line
+    public line_color : rgba [ '#222' ]     # the 1px divider line
     public bar        : f32 [ 6.0 ]          # divider grab half-width px
     public gap        : f32 [ 1.0 ]          # panes sit flush; the line IS the gap
     public inset      : f32 [ 0.0 ]          # leading inset (units) for each child
     public deflt      : f32 [ 320.0 ]        # unsaved-size fallback; 0 = even share
     public even       : bool                 # count change resets to even shares
+    public min_size   : f32 [ 40.0 ]         # drag floor for a sized pane, px
     public snap_close : bool
-    intern shown      : array                # eased sizes, paired like `sizes`
     intern drag_ix    : i32
     intern last_n     : i32
     intern dseam      : array f32            # divider px positions, hit-test + draw
     intern cursor_on  : bool                 # WE set the resize cursor; restore it
     intern dbgf       : i32                  # count-change debug frames left
-
-    func pair_index [ arr: array, id: string ] -> i32
-        if [ !arr || !id ] return -1
-        for [ i: i32 0, i + 1 < arr.count, i += 2 ]
-            k : string [ arr[ i ] ]
-            if [ k && k.compare[ id ] == 0 ] return i
-        return -1
-
-    func pair_get [ arr: array, id: string ] -> f32
-        ix : i32 [ pair_index[ arr, id ] ]
-        if [ ix < 0 ] return 0.0
-        return f32 [ arr[ ix + 1 ] ]
-
-    func pair_set [ arr: array, id: string, val: f32 ]
-        for [ i: i32 0, i + 1 < arr.count, i += 2 ]
-            k : string [ arr[ i ] ]
-            if [ k && k.compare[ id ] == 0 ]
-                arr[ i + 1 ] = val
-                return
-        arr.push[ id ]
-        arr.push[ val ]
 
     func order [] -> array string
         ids : array string [ ]
@@ -3308,48 +3307,52 @@ element Splitter
                 ids.push[ id ]
         return ids
 
-    func target_of [ id: string, span: f32, n: i32 ] -> f32
-        ix : i32 [ pair_index[ sizes, id ] ]
-        if [ ix >= 0 ]
-            v : f32 [ sizes[ ix + 1 ] ]
+    func kid [ id: string ] -> element
+        if [ !inner || !id ] return null
+        return inner[ id ]
+
+    # extent > 0 sized, == 0 unset, < 0 snapped closed
+    func target_of [ ch: element, span: f32, n: i32 ] -> f32
+        if [ ch ]
+            v : f32 [ ch.extent ]
             if [ v > 0.0 ] return v
-            if [ snap_close ] return 0.0
+            if [ v < 0.0 && snap_close ] return 0.0
         if [ deflt > 0.0 ] return deflt
         return (span - f32[ n - 1 ] * gap) / f32[ n ]
 
-    func shown_of [ id: string, span: f32, n: i32 ] -> f32
-        v : f32 [ pair_get[ shown, id ] ]
-        if [ v > 0.0 ] return v
-        t : f32 [ target_of[ id, span, n ] ]
-        pair_set[ shown, id, t ]
+    func shown_of [ ch: element, span: f32, n: i32 ] -> f32
+        if [ ch && ch.extent_shown > 0.0 ] return ch.extent_shown
+        t : f32 [ target_of[ ch, span, n ] ]
+        if [ ch ] ch.extent_shown = t
         return t
 
     func render [] -> Elements
         if [ !inner ] return null
-        if [ !sizes ] sizes = array [ ]
-        if [ !shown ] shown = array [ ]
         ids : array string [ order[] ]
         n   : i32 [ ids.count ]
         if [ n == 0 ] return null
         if [ n != last_n ]
             last_n = n
-            if [ even ] sizes = array [ ]
-            shown = array [ ]
+            for [ ce: element, ck: string ] in inner
+                if [ even ] ce.extent = 0.0
+                ce.extent_shown = 0.0
             dbgf  = 20
         span : f32 [ (bounds) ? ((vertical) ? bounds.h : bounds.w) : 1200.0 ]
         flex : f32 [ span - f32[ n - 1 ] * gap ]
         for [ i: i32 1, i < n, i += 1 ]
-            flex -= shown_of[ ids[ i ], span, n ]
+            flex -= shown_of[ kid[ ids[ i ] ], span, n ]
         if [ flex < 60.0 ] flex = 60.0
         ti   : string [ (inset > 0.0) ? '{inset}' : '0' ]
         out  : Elements [ ]
         dseam = array f32 [ ]
         pos : f32 [ 0.0 ]
         for [ i: i32 0, i < n, i += 1 ]
-            w  : f32 [ (i == 0) ? flex : shown_of[ ids[ i ], span, n ] ]
             ch : element inner[ ids[ i ] ]
-            a0 : f32 [ pos ]
-            a1 : f32 [ pos + w ]
+            w  : f32 [ (i == 0) ? flex : shown_of[ ch, span, n ] ]
+            # whole-pixel pane edges. a fractional edge on a translucent
+            # background feathers into the gap and reads as a second line
+            a0 : f32 [ round[ pos ] ]
+            a1 : f32 [ round[ pos + w ] ]
             if [ vertical ]
                 ch.area = Region [ 'l0 t{a0}px r0 t{a1}px' ]
             el
@@ -3364,7 +3367,8 @@ element Splitter
             out[ ids[ i ] ] = ch
             pos += w
             if [ i < n - 1 ]
-                mid : f32 [ pos + gap * 0.5 ]
+                # the gap IS the line: it starts where the pane really ended
+                mid : f32 [ round[ pos ] + gap * 0.5 ]
                 dseam.push[ mid ]
                 h0 : f32 [ mid - bar ]
                 h1 : f32 [ mid + bar ]
@@ -3382,12 +3386,14 @@ element Splitter
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         ids : array string [ order[] ]
         n   : i32 [ ids.count ]
-        if [ n == 0 || !shown ] return
+        if [ n == 0 ] return
         span   : f32 [ (vertical) ? bounds.h : bounds.w ]
         moving : bool [ false ]
         for [ i: i32 1, i < n, i += 1 ]
-            t : f32 [ target_of[ ids[ i ], span, n ] ]
-            v : f32 [ shown_of[ ids[ i ], span, n ] ]
+            ch : element kid[ ids[ i ] ]
+            if [ !ch ] continue
+            t : f32 [ target_of[ ch, span, n ] ]
+            v : f32 [ shown_of[ ch, span, n ] ]
             d : f32 [ t - v ]
             if [ d != 0.0 ]
                 if [ i != drag_ix || (d < 0.5 && d > -0.5) ]
@@ -3395,20 +3401,37 @@ element Splitter
                 el
                     v = filter_n[ v, t, 0.28, ux.frame_factor ]
                     moving = true
-                pair_set[ shown, ids[ i ], v ]
+                ch.extent_shown = v
         if [ moving ]
             pristine        = false
             ux.will_animate = true
-        if [ !dseam ] return
+
+    # the seam sits ON TOP of the panes. drawn in `draw` it lands UNDER them,
+    # and their translucent backgrounds re-tint it with whatever is behind
+    public func draw_over [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !dseam ] return
         cv : Canvas w.screen
+        # ONE plain rect, integer origin in SCREEN space, exactly 1px thick.
+        # plain[] drops inherited radii/glow/blur — all sticky paint state
+        cv.save[]
+        cv.plain[]
+        cv.hard_edge[]
         cv.fill_color[ line_color ]
+        stx : f32 [ cv.transform_tx[] ]
+        sty : f32 [ cv.transform_ty[] ]
+        # integers everywhere: whole-pixel origin, exactly 1px thick,
+        # whole-pixel length. no half-pixel anything
         for [ di: i32 0, di < dseam.count, di += 1 ]
-            m : f32 [ floor[ dseam[ di ] ] ]
             if [ vertical ]
-                cv.rounded_rect[ 0.0, m, bounds.w, 1.0, 0.0, 0.0, 0.0, 0.0 ]
+                my : f32 [ floor[ dseam[ di ] + sty ] - sty ]
+                mx : f32 [ floor[ stx ] - stx ]
+                cv.rect_to[ mx, my, round[ bounds.w ], 1.0 ]
             el
-                cv.rounded_rect[ m, 0.0, 1.0, bounds.h, 0.0, 0.0, 0.0, 0.0 ]
+                mx : f32 [ floor[ dseam[ di ] + stx ] - stx ]
+                my : f32 [ floor[ sty ] - sty ]
+                cv.rect_to[ mx, my, 1.0, round[ bounds.h ] ]
             cv.paint[ ]
+        cv.restore[]
 
     func on_press [ ev: Event ]
         if [ !bounds || !dseam ] return
@@ -3446,13 +3469,17 @@ element Splitter
         at   : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
         after : f32 [ 0.0 ]
         for [ i: i32 1, i < n, i += 1 ]
-            if [ i > drag_ix ] after += target_of[ ids[ i ], span, n ]
+            if [ i > drag_ix ] after += target_of[ kid[ ids[ i ] ], span, n ]
         gaps  : f32 [ f32[ n - 1 - drag_ix ] * gap ]
         trail : f32 [ span - after - gaps ]
         sz    : f32 [ trail - at ]
-        if [ sz < 40.0 ] sz = ((snap_close && sz < 20.0)) ? 0.0 : 40.0
+        closed : bool [ false ]
+        if [ sz < min_size ]
+            closed = snap_close && sz < 20.0
+            sz = (closed) ? 0.0 : min_size
         if [ sz > span - 60.0 ] sz = span - 60.0
-        pair_set[ sizes, ids[ drag_ix ], sz ]
+        dch : element kid[ ids[ drag_ix ] ]
+        if [ dch ] dch.extent = (closed) ? -1.0 : sz
         pristine        = false
         ux.will_animate = true
         ev.no_default   = true

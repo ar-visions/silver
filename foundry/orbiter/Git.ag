@@ -173,13 +173,14 @@ NodeList GitList
             git_capture[ root, 'checkout {r.text}', false ]
             refresh[]
             return
-        # commit: leave this view, showing the editor on the commit's diff
+        # commit: leave this view, showing the editor on the commit's diff.
+        # the diff belongs to THIS pane — other tabs keep their own
         orb : orbiter [ ux.app_object ]
         if [ orb ]
-            orb.diff_commit = r.hash
             ed : Editor orb.pane_of[ a ]
             if [ ed ]
-                ed.view_name = ''
+                ed.diff_commit = r.hash
+                ed.view_name   = ''
                 ed.load_file[]
             ux.restyle = true
 

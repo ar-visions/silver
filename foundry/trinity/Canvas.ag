@@ -12,6 +12,8 @@ enum DrawMode
     sdf_path    : 6
     image_r     : 7
     image_masked: 8
+    # plain axis-aligned rect: exact pixel/rect area, no distance field
+    rect        : 9
 
 # ---- path command tags ----
 enum path_cmd
@@ -243,7 +245,7 @@ shader CanvasUI
         // pad = 1px AA + blur (params.z) + half stroke width (params.x)
         // + max(0, fill_offset) so outward-expanded fill stays inside the quad
         // + max(0, stroke_offset) so an outward-shifted stroke band isn't clipped.
-        float pad      = 1.0 + ubo.params.z + ubo.params.x * 0.5
+        float pad      = 1.0 + max(ubo.params.z, 0.0) + ubo.params.x * 0.5
                              + max(ubo.fill_offset,   0.0)
                              + max(ubo.stroke_offset, 0.0);
         // extra pad for outer effects: radial glow reach + shadow reach + shadow offset magnitude.
@@ -313,7 +315,10 @@ shader CanvasUI
 
         vec2  center       = ubo.rect.xy + ubo.rect.zw * 0.5;
         vec2  half_size    = ubo.rect.zw * 0.5;
-        float dist         = sdf_rounded_rect(lpos, center, half_size, ubo.radii);
+        // v_pos already interpolates to the pixel CENTRE, so no offset here:
+        // +0.5 lands both neighbours on dist=0 = half coverage each
+        vec2  spos         = lpos;
+        float dist         = sdf_rounded_rect(spos, center, half_size, ubo.radii);
 
         // text: glyph-atlas coverage (atlas.r) tinted by fill_color.
         // NOTE: the normal text path renders through text_shader, NOT this branch,
@@ -323,11 +328,45 @@ shader CanvasUI
         // (transparent where the atlas is empty) instead of the old UV-debug viz
         // that flashed red/green around icons during a resize.
         // (former debug: o_color = vec4(uv.x, uv.y, atlas.r, 1.0) — red=uv.x.)
+        // exact area this pixel's square shares with the rect. an axis-aligned
+        // pixel-aligned blit gets 1.0 inside and 0.0 outside — the smoothstep
+        // below always leaves a partial edge column that shows the backdrop
+        float max_rr = max(max(ubo.radii.x, ubo.radii.y), max(ubo.radii.z, ubo.radii.w));
+        vec2  rp0    = ubo.rect.xy;
+        vec2  rp1    = ubo.rect.xy + ubo.rect.zw;
+        vec2  rlo    = max(spos - vec2(0.5), rp0);
+        vec2  rhi    = min(spos + vec2(0.5), rp1);
+        vec2  rov    = max(rhi - rlo, vec2(0.0));
+        float rect_cov = rov.x * rov.y;
+
+        // plain axis-aligned rect: NO distance field. coverage is the exact
+        // area this pixel's square shares with the rect, so a pixel-aligned
+        // 1px rect is 1.0 on its column and 0.0 on both neighbours — an SDF
+        // smoothstep always feathers ~1px past the edge and cannot do this.
+        if (mode == 9.0) {{
+            vec2 p0  = ubo.rect.xy;
+            vec2 p1  = ubo.rect.xy + ubo.rect.zw;
+            vec2 lo  = max(spos - vec2(0.5), p0);
+            vec2 hi  = min(spos + vec2(0.5), p1);
+            vec2 ov  = max(hi - lo, vec2(0.0));
+            float cov = ov.x * ov.y;
+            if (cov <= 0.0) discard;
+            // output is PREMULTIPLIED (src factor is ONE): rgb must carry
+            // alpha or a low-alpha fill adds its full colour instead
+            vec4  fc = ubo.fill_color;
+            float ca = fc.a * cov * opacity;
+            o_color  = vec4(fc.rgb * ca, ca);
+            return;
+        }}
+
         if (mode == 4.0) {{
             vec2  uv = (lpos - ubo.rect.xy) / ubo.rect.zw;
             uv       = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
             float a  = texture(atlas, uv).r;
-            float aa = 1.0 - smoothstep(-0.5, 0.5, dist);
+            // exact rect coverage: HARD clip. 1.0 would not clip at all and
+            // the padded quad smears the clamped edge texel 1px past the rect
+            float aa = (max_rr <= 0.0) ? step(0.5, rect_cov)
+                                       : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color  = vec4(ubo.fill_color.rgb, ubo.fill_color.a * a) * aa * opacity;
             return;
         }}
@@ -337,7 +376,8 @@ shader CanvasUI
             vec2 uv    = (lpos - ubo.rect.xy) / ubo.rect.zw;
             uv         = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
             vec4 texel = texture(image, uv);
-            float aa   = 1.0 - smoothstep(-0.5, 0.5, dist);
+            float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
+                                         : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = texel * aa * opacity;
             return;
         }}
@@ -351,7 +391,8 @@ shader CanvasUI
             vec2 uv_m  = mix(ubo.mask_uv.xy, ubo.mask_uv.zw, uv_rect);
             vec4 texel = texture(image, uv);
             float m    = texture(mask, uv_m).r;
-            float aa   = 1.0 - smoothstep(-0.5, 0.5, dist);
+            float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
+                                         : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = texel * m * aa * opacity;
             return;
         }}
@@ -361,7 +402,9 @@ shader CanvasUI
             vec2 uv  = (lpos - ubo.rect.xy) / ubo.rect.zw;
             uv       = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
             float l  = texture(image, uv).r;
-            float aa = 1.0 - smoothstep(-0.5, 0.5, dist);
+            // float aa = 1.0 - smoothstep(-0.5, 0.5, dist);  // soft edge column
+            float aa = (max_rr <= 0.0) ? step(0.5, rect_cov)
+                                       : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color  = vec4(l, l, l, 1.0) * aa * opacity;
             return;
         }}
@@ -393,7 +436,7 @@ shader CanvasUI
             float sw_b_p = ubo.stroke_sides.z, sw_l_p = ubo.stroke_sides.w;
             float stroke_cov;
             {{
-                vec2  rel_p = lpos - center;
+                vec2  rel_p = spos - center;
                 float dt_p  =  rel_p.y + half_size.y - pad_p;
                 float db_p  = -rel_p.y + half_size.y - pad_p;
                 float dr_p  = -rel_p.x + half_size.x - pad_p;
@@ -528,7 +571,9 @@ shader CanvasUI
         // pixel on each side of the edge regardless of any transform
         // (rotation/scale/zoom). blur extends the softening beyond that
         // base width for shadow/halo effects.
-        float w = fwidth(dist) + blur;
+        // a negative blur cancels the feather: hairlines need a hard edge,
+        // because a 1px shape is narrower than the 2px AA transition
+        float w = max(fwidth(dist) + blur, 0.0001);
 
         // combined fill + stroke in one pass:
         //   fill_cov   = 1 inside the shape shrunk inward by half-stroke
@@ -545,7 +590,7 @@ shader CanvasUI
         float dist_stroke = dist;
         float max_r = max(max(ubo.radii.x, ubo.radii.y), max(ubo.radii.z, ubo.radii.w));
         if (ubo.stroke_opts.x == 1.0 && max_r <= 0.0) {{
-            vec2 d_local = abs(lpos - center) - half_size;
+            vec2 d_local = abs(spos - center) - half_size;
             dist_stroke  = max(d_local.x, d_local.y);
         }}
         // fill_offset biases the SDF inward (negative = expand outward);
@@ -559,7 +604,7 @@ shader CanvasUI
         float fill_cov = 1.0 - smoothstep(-w, w, dist - ubo.fill_offset);
         float stroke_cov;
         {{
-            vec2  rel = lpos - center;
+            vec2  rel = spos - center;
             float dt  =  rel.y + half_size.y;
             float db  = -rel.y + half_size.y;
             float dr  = -rel.x + half_size.x;
@@ -587,9 +632,9 @@ shader CanvasUI
         float shadow_px = ubo.glow_params.w;
         // bevel side classification (top+left = lit, bottom+right = dark),
         // with a smoothstep band across the 45° diagonal so corners fade.
-        vec2  q_rel   = abs(lpos - center) - half_size;
-        float dy_r    = lpos.y - center.y;
-        float dx_r    = lpos.x - center.x;
+        vec2  q_rel   = abs(spos - center) - half_size;
+        float dy_r    = spos.y - center.y;
+        float dx_r    = spos.x - center.x;
         float band    = max(max(inner_px, shadow_px) * 0.5, 1.0);
         float horiz_w = smoothstep(-band, band, q_rel.y - q_rel.x);
         float h_lit   = (dy_r < 0.0) ? 1.0 : 0.0;
@@ -649,7 +694,7 @@ shader CanvasUI
             // perpendicular distance to that edge, so the fade runs parallel to
             // the edge (no rounded-rect SDF, no corner curvature). combine with
             // min → clean square corners, white center, black at the edges.
-            vec2  rel = lpos - center;
+            vec2  rel = spos - center;
             float dt  =  rel.y + half_size.y;   // dist from top edge
             float db  = -rel.y + half_size.y;   // dist from bottom edge
             float dr  = -rel.x + half_size.x;   // dist from right edge
@@ -665,7 +710,7 @@ shader CanvasUI
             bevel_p     = vec4(tint.rgb * alpha, alpha);
         }} else if ((inner_px > 0.0 || shadow_px > 0.0) && fill_cov > 0.0) {{
             float smooth_px    = max(inner_px, shadow_px);
-            float dist_g       = sdf_rounded_rect_glow(lpos, center, half_size, ubo.radii, smooth_px);
+            float dist_g       = sdf_rounded_rect_glow(spos, center, half_size, ubo.radii, smooth_px);
             float effective_px = mix(shadow_px, inner_px, lit_side);
             if (effective_px > 0.0) {{
                 float t     = clamp(-dist_g / effective_px, 0.0, 1.0);
@@ -690,9 +735,10 @@ shader CanvasUI
             _hsv.z = _hsv.z * ubo.glow_params2.w;
             o_color.rgb = hsv2rgb(_hsv) * o_color.a;
         }}
-        // 8-bit quantization dither — breaks up banding on soft gradients.
-        float _d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 8.0;
-        o_color.rgb += vec3((_d - 0.5) / 255.0) * c.xyz;
+        // 8-bit quantization dither — was ±4 levels of per-pixel hash noise on
+        // EVERY fragment, not the ±0.5 a quantization dither needs. off.
+        // float _d = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 8.0;
+        // o_color.rgb += vec3((_d - 0.5) / 255.0) * c.xyz;
         //o_color = vec4(0.0, 1.0, 0.0, 1.0);
     }
 
@@ -1966,6 +2012,37 @@ Render Canvas
     func stroke_offset [ v: f32 ]
         states[state_depth - 1].stroke_offset = v
 
+    # a flat fill with NO inherited effects. paint state is sticky and
+    # save[] copies it, so a hairline picks up whatever drew before it
+    func plain []
+        i : i32 [ state_depth - 1 ]
+        states[i].corner_radii        = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[i].stroke_width        = 0.0
+        states[i].stroke_sides        = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
+        states[i].blur_rad            = 0.0
+        states[i].opacity             = 1.0
+        states[i].fill_offset         = 0.0
+        states[i].stroke_offset       = 0.0
+        states[i].inner_glow_color    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[i].inner_glow_px       = 0.0
+        states[i].inner_glow_ofs      = vec2f [ 0.0, 0.0 ]
+        states[i].glow_sides          = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[i].inner_shadow_color  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[i].inner_shadow_px     = 0.0
+        states[i].stroke_shadow_color = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[i].outer_glow_color    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[i].outer_glow_px       = 0.0
+        states[i].outer_shadow_color  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[i].outer_shadow_px     = 0.0
+        states[i].outer_shadow_ofs    = vec2f [ 0.0, 0.0 ]
+        states[i].fill_grad           = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[i].stroke_grad         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+
+    # cancel the 1px AA feather. a hairline is narrower than the transition,
+    # so its two edges bleed into the neighbouring columns
+    func hard_edge []
+        states[state_depth - 1].blur_rad = -4.0
+
     func rounded [ tl: f32, tr: f32, br: f32, bl: f32 ]
         states[state_depth - 1].corner_radii = vec4f [ tl, tr, br, bl ]
 
@@ -2279,6 +2356,22 @@ Render Canvas
             img_mode : f32  [ (mask_override) ? DrawMode.image_masked
                             : ((is_r8) ? DrawMode.image_r : DrawMode.image) ]
             mode     : f32  [ (image_override) ? img_mode : DrawMode.solid ]
+            # exact-area rect: ONLY a flat filled rectangle. any gradient
+            # (shader gates on grad_c1.a), outline, radius, glow, shadow,
+            # blur or hue shift needs the SDF path's shaping
+            if [ !image_override ]
+                rr9 : vec4f [ ui_shader.radii ]
+                flat9 : bool [ rr9.x <= 0.0 && rr9.y <= 0.0 && rr9.z <= 0.0 && rr9.w <= 0.0
+                            && st.fill_grad.w <= 0.0 && st.stroke_grad.w <= 0.0
+                            && st.stroke_width <= 0.0
+                            && st.blur_rad <= 0.0 && st.fill_offset == 0.0
+                            && st.inner_glow_color.w <= 0.0 && st.inner_shadow_color.w <= 0.0
+                            && st.outer_glow_color.w <= 0.0 && st.outer_shadow_color.w <= 0.0
+                            && st.stroke_shadow_color.w <= 0.0
+                            && st.inner_glow_px <= 0.0 && st.inner_shadow_px <= 0.0
+                            && st.outer_glow_px <= 0.0 && st.outer_shadow_px <= 0.0
+                            && st.hue_shift == 0.0 ]
+                if [ flat9 ] mode = DrawMode.rect
             ui_shader.params = vec4f [ st.stroke_width, st.opacity, st.blur_rad, mode ]
             if [ image_override && models ]
                 for [ mi: i32 0, mi < models.count, mi += 1 ]

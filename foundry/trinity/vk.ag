@@ -71,6 +71,9 @@ class Render
     public  models                         : array Model
     public  clear_color                    : vec4f
     public  reduction                      : Texture
+    # UI canvases composite 1:1 — LINEAR resamples every edge across two
+    # pixels, which reads as a bright column beside any boundary
+    public  nearest                        : bool
     public  color                          : Texture
     public  depth                          : Texture
     # set to true to make this Render preserve existing color attachment
@@ -191,7 +194,8 @@ class Render
             ctag : string [ (tag) ? tag : 'rcolor' ]
             color = Texture [ vk: vk, w: w, width: width, height: height,
                 vk_format: w.surface_format.format, swap: !backbuffer,
-                surface: Surface.color, vk_image: vk_swap_image, tag: ctag ]
+                surface: Surface.color, vk_image: vk_swap_image, tag: ctag,
+                nearest: nearest ]
             if [ use_depth ]
                 depth = Texture [ vk: vk, w: w, width: width, height: height,
                     vk_format: VK_FORMAT_D32_SFLOAT, swap: !backbuffer, tag: 'rdepth' ]

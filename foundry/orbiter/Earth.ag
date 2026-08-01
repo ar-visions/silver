@@ -609,7 +609,7 @@ Background Earth
         models      = array Model [ earth_model, ocean_model, cloud_model ]
 
     func update[]
-        time : window.time
+        time : window.time * 64.0
         if [time == 0.0]
             time = -54.0
         altitude : f32 [ 0.063 ]
