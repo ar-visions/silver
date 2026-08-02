@@ -237,6 +237,8 @@ class shader
                     continue
 
                 #l : strlen[ glsl.body ]
+                expect glsl && glsl.body,
+                    'no GLSL body for {type.ident}.{method.ident}'
                 l : strlen[glsl.body]
                 expect l, 'body not set on function {method.ident}'
 
@@ -1171,12 +1173,6 @@ ModelViewProject Blur
         return exp(-(x * x) / (2.0 * sigma * sigma)) / (sqrt(2.0 * PI) * sigma);
     }
 
-    func hash12 [ p: vec2f ] -> GLSL float {
-        vec3 p3 = fract(vec3(p.xyx) * 0.1031);
-        p3 += dot(p3, p3.yzx + 33.33);
-        return fract((p3.x + p3.y) * p3.z);
-    }
-
     func fragment [] -> GLSL none {
         const int   kernel_size = 15;
         const float sigma = 3.0;
@@ -1193,8 +1189,12 @@ ModelViewProject Blur
             weight_sum  += 2.0 * w;
         }}
         vec3  c = (result / weight_sum).xyz;
-        // triangular dither ~1 LSB: breaks 8-bit gradient banding
-        float n = hash12(gl_FragCoord.xy) - hash12(gl_FragCoord.xy + 17.0);
+        // triangular dither ~2 LSB: breaks 8-bit gradient banding
+        vec3  h1 = fract(vec3(gl_FragCoord.xyx) * 0.1031);
+        h1 += dot(h1, h1.yzx + 33.33);
+        vec3  h2 = fract(vec3(gl_FragCoord.xyx + 17.0) * 0.1031);
+        h2 += dot(h2, h2.yzx + 33.33);
+        float n = fract((h1.x + h1.y) * h1.z) - fract((h2.x + h2.y) * h2.z);
         fragColor = vec4(c + n * (2.0 / 255.0), 1.0);
     }
 

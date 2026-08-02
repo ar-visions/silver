@@ -1065,8 +1065,9 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
                     }
                 }
             }
-        } else {
-            // slow path: linear scan with filters
+        }
+        {
+            // map miss is not proof of absence: always fall back to scan
             for (int i = 0; i < mdl->members.count; i++) {
                 Au_t au = (Au_t)mdl->members.origin[i];
                 if (!au || au_is_expanding(au)) continue;
@@ -1144,14 +1145,12 @@ Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) {
                 item it = __atomic_load_n(&s->hlist[((size_t)fhash >> 3) % s->hsize], __ATOMIC_ACQUIRE);
                 while (it && it->key != (Au)(uintptr_t)fhash)
                     it = __atomic_load_n(&it->next, __ATOMIC_ACQUIRE);
-                if (!it) {
-                    if (!is_class((Au)au)) break;
-                    if (au->context == au) break;
-                    au = au->context;
-                    continue;
+                // a miss means "not indexed", not "not present" — members
+                // added outside def_member never reach the map
+                if (it) {
+                    cand    = it;
+                    use_map = true;
                 }
-                cand    = it;
-                use_map = true;
             }
             item mit = cand;
             int  ii  = 0;
