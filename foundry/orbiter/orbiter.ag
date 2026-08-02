@@ -608,7 +608,6 @@ element RunBand
 
 Console RunConsole
     style : CSS {
-        area: l0 t1.3 r0 b0
         layers.content: TermLayer
             area: 8px
             label_height: 1.0
