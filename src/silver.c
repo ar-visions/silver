@@ -31,6 +31,8 @@ void aether_listen_gate_create(aether);
 void aether_listen_gate_store(aether, enode);
 etype evar_type(evar a);
 enode parse_import(silver a);
+path module_exists(silver a, array idents, bool binary_finary, bool* is_bin);
+static void bg_build_start(silver a, silver og, path module, map defs);
 enode parse_export(silver a);
 enode parse_return(silver a);
 enode parse_break(silver a);
@@ -924,6 +926,31 @@ void silver_parse(silver a) {
     // suppress body parsing during statement loop — register names only
     void* saved_prepare = a->prepare_record;
     a->prepare_record = null;
+
+    // the leading imports are known before we parse them: start the silver
+    // module builds now so they overlap the imports that follow. only the
+    // plain `import <name>` form — qualified and `with` forms stay serial.
+    push_current(a);
+    while (peek(a) && next_is(a, "import")) {
+        token it   = peek(a);
+        i64   line = it->line;
+        consume(a, Syntax__keyword);
+        token nm    = peek(a);
+        token after = element(a, 1);
+        bool  plain = nm && nm->chars && isalpha(nm->chars[0]) &&
+                      !(after && after->line == line);
+        if (plain) {
+            bool  is_bin = false;
+            path  m = module_exists(a, a(string(nm->chars)), true, &is_bin);
+            if (m && !is_bin && eq(ext(m), "ag") &&
+                compare(parent_dir(m), absolute(a->module)) != 0) {
+                silver og = a; while (og->is_external) og = og->is_external;
+                bg_build_start(a, og, m, a->defs);
+            }
+        }
+        while (peek(a) && peek(a)->line == line) consume(a, Syntax__none);
+    }
+    pop_tokens(a, false);
 
     i64 ntok = len(a->tokens);
     while (peek(a)) {
@@ -7229,6 +7256,60 @@ static void read_g_link_libs(silver a, path mg) {
     }
 }
 
+
+// ── background module builds ────────────────────────────────────────────────
+// the leading run of `import <name>` statements is known before parsing; the
+// silver modules among them build on their own threads so the work overlaps
+// the imports that follow. parse_import is unchanged in shape — it collects a
+// finished module here instead of constructing one itself.
+typedef struct bg_build {
+    path      module;      // the module's .ag
+    silver    a, og;       // importing instance and artifact keeper
+    map       defs;
+    silver    result;
+    pthread_t th;
+    bool      launched;
+    struct bg_build* next;
+} bg_build;
+
+static bg_build*       bg_list = null;
+static pthread_mutex_t bg_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void* bg_build_run(void* arg) {
+    bg_build* b = (bg_build*)arg;
+    b->result = silver(module, b->module, breakpoint, b->a->breakpoint,
+        verbose, b->a->verbose, is_external, b->og, is_child, b->a,
+        release, b->a->release, clean, b->a->clean, format, b->og->format,
+        defs, b->defs, debug_type, b->a->debug_type, debugmember, b->a->debugmember);
+    return null;
+}
+
+static void bg_build_start(silver a, silver og, path module, map defs) {
+    bg_build* b = (bg_build*)calloc(1, sizeof(bg_build));
+    b->module = (path)hold(module);
+    b->a = a; b->og = og; b->defs = defs;
+    pthread_mutex_lock(&bg_lock);
+    b->next = bg_list; bg_list = b;
+    pthread_mutex_unlock(&bg_lock);
+    b->launched = pthread_create(&b->th, null, bg_build_run, b) == 0;
+    if (!b->launched) bg_build_run(b);
+}
+
+// collect the module built for this path, waiting if it is still going
+static silver bg_build_take(path module) {
+    pthread_mutex_lock(&bg_lock);
+    bg_build* b = bg_list;
+    while (b && (!b->module || compare(b->module, module) != 0)) b = b->next;
+    pthread_mutex_unlock(&bg_lock);
+    if (!b) return null;
+    if (b->launched) { pthread_join(b->th, null); b->launched = false; }
+    silver r = b->result;
+    b->result = null;
+    drop(b->module);
+    b->module = null;
+    return r;
+}
+
 enode parse_import(silver a) {
     sequencer;
 
@@ -7548,10 +7629,13 @@ enode parse_import(silver a) {
                 // transient static (silver_init reads it at the top) — the prop-pair
                 // ctor is already at its 22-arg max, and the external builds in init.
                 g_import_with = with_exts;
-                silver external = silver(module, module, breakpoint, a->breakpoint,
-                    verbose, a->verbose, is_external, og, is_child, a, release, a->release, clean, a->clean,
-                    format, og->format,
-                    defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
+                // a prescanned import is already building: collect it
+                silver external = with_exts ? null : bg_build_take(module);
+                if (!external)
+                    external = silver(module, module, breakpoint, a->breakpoint,
+                        verbose, a->verbose, is_external, og, is_child, a, release, a->release, clean, a->clean,
+                        format, og->format,
+                        defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
                 g_import_with = null;
                 Au_t f2 = find_module("vulkan2");
                 // these should be the only two objects remaining.
