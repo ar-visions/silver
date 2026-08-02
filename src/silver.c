@@ -1632,54 +1632,18 @@ void silver_init(silver a) {
     //a->asan         = true;
 #endif
     a->exports      = map(hsize, 16);
-    // ONE module product home for both configs. the active-config stamp is
-    // the epoch: any product older than it belongs to the other config
     a->build_dir    = f(path, "%o/build", a->install);
     make_dir(a->build_dir);
 
-    // one active config per platform: module builds must match the cores
-    // make last built (the platform's lib dir is singular — mixing lies)
-    // a module MUST build in the same config as the cores it links (no mixing).
-    // so ADOPT the active-config stamp — never refuse. a plain `silver X` (from
-    // orbiter's launcher) then always matches, and --release --test still forces
-    // release for optimized testing (which needs release cores present anyway)
+    // a module builds in the config THIS compiler was built in; there is one
+    // silver on disk, so it is by definition the one last built
     if (!a->is_external && !(a->release && a->test)) {
-        path stamp = f(path, "%o/.active-config", a->install);
-        // explicit --release/--debug flips the config; else adopt.
-        // writing the stamp re-epochs every product (mtime compare)
-        bool  cfg_explicit = false;
-        bool  cfg_release  = false;
-        cstrs av   = au_argv();
-        int   stop = au_argv_stop();
-        for (int i = 1; av && av[i] && (stop <= 0 || i < stop); i++) {
-            if (strcmp(av[i], "--release") == 0) { cfg_explicit = true; cfg_release = true;  }
-            if (strcmp(av[i], "--debug")   == 0) { cfg_explicit = true; cfg_release = false; }
-        }
-        char sbuf[512] = { 0 };
-        if (file_exists("%o", stamp)) {
-            FILE* sf = fopen(stamp->chars, "r");
-            if (sf) {
-                fgets(sbuf, sizeof(sbuf), sf);
-                fclose(sf);
-            }
-        }
-        bool core_release = strstr(sbuf, "release") != NULL;
-        if (cfg_explicit) {
-            a->release = cfg_release;
-            a->debug   = !cfg_release;
-            if (!sbuf[0] || core_release != cfg_release) {
-                FILE* sf = fopen(stamp->chars, "w");
-                if (sf) {
-                    fputs(cfg_release ? "release\n" : "debug\n", sf);
-                    fclose(sf);
-                    printf("config switch: %s (module products re-epoch)\n",
-                        cfg_release ? "release" : "debug");
-                }
-            }
-        } else if (sbuf[0]) {
-            a->release = core_release;
-            a->debug   = !core_release;
-        }
+#ifdef CONFIG_RELEASE
+        a->release = true;
+#else
+        a->release = false;
+#endif
+        a->debug   = !a->release;
     }
     string n = string("test44");
     a->product_link = f(path, "%o/%o.product", a->build_dir, a->name);
@@ -1835,12 +1799,12 @@ void silver_init(silver a) {
     bool product_exists = file_exists("%o", a->product_link);
     u64  product_m      = product_exists ? modified_time(a->product_link) : 0;
 
-    // config epoch: products predating the stamp were built by the OTHER
-    // config — stale by definition in the one shared home
-    path cfg_stamp = f(path, "%o/.active-config", a->install);
-    u64  stamp_m   = file_exists("%o", cfg_stamp) ? modified_time(cfg_stamp) : 0;
+    // epoch: a product older than the compiler that built it is stale —
+    // this catches a config switch and any other compiler rebuild
+    path compiler   = f(path, "%o/build/silver", a->install);
+    u64  compiler_m = file_exists("%o", compiler) ? modified_time(compiler) : 0;
 
-    if (product_exists && product_m > module_file_m && product_m > stamp_m) {
+    if (product_exists && product_m > module_file_m && product_m > compiler_m) {
 
         if (file_exists("%o", a->artifacts_path) && modified_time(a->artifacts_path) > 0) {
             FILE *f = fopen(a->artifacts_path->chars, "r");
