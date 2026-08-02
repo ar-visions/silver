@@ -87,6 +87,7 @@ Au_t f_arg;
 
 extern "C" string Au_cast_string(Au a);
 extern "C" Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type);
+extern "C" none au_member_map_insert(Au_t type, Au_t new_member);
 
 // ============================================================================
 // Helper macros for the new API
@@ -94,6 +95,19 @@ extern "C" Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type)
 
 // Lookup a type by name in lexical scope
 #define au_lookup(N) lexical(e->lexical, N)
+
+// kind-filtered: a C name can be both a struct and a function (stat)
+#define au_lookup_type(N) lexical_traits(e->lexical, N, 0, AU_MEMBER_TYPE)
+#define au_lookup_func(N) lexical_traits(e->lexical, N, 0, AU_MEMBER_FUNC)
+
+// a model this module's own header imports minted; one lives in an import
+// namespace, one registered by an imported silver module does not
+static bool import_model(Au_t m) {
+    return m && m->context && m->context->member_type == AU_MEMBER_NAMESPACE;
+}
+
+#define prior_type(N) ({ Au_t _p = au_lookup_type(N); import_model(_p) ? _p : null; })
+#define prior_func(N) ({ Au_t _p = au_lookup_func(N); import_model(_p) ? _p : null; })
 
 // ============================================================================
 // Forward declarations
@@ -203,12 +217,7 @@ static std::vector<clang::NamedDecl*> namespace_stack(clang::NamedDecl *decl) {
 
 static Au_t _find_member(Au_t parent, symbol name) {
     if (!parent || !name) return null;
-    for (int i = 0; i < parent->members.count; i++) {
-        Au_t m = (Au_t)parent->members.origin[i];
-        if (m->ident && strcmp(m->ident, name) == 0)
-            return m;
-    }
-    return null;
+    return find_member(parent, name, 0, 0, false);
 }
 
 
@@ -356,10 +365,6 @@ static Au_t map_function_pointer(QualType pointee_qt, ASTContext& ctx, aether e,
 static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol use_name) {
     const Type* t = qt.getTypePtr();
 
-    if (use_name && strcmp(use_name, "jmp_buf") == 0) {
-        use_name = use_name;
-    }
-    
     // Strip elaborated type
     if (const ElaboratedType* et = dyn_cast<ElaboratedType>(t)) {
         return map_clang_type(et->getNamedType(), ctx, e, use_name);
@@ -368,7 +373,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     // Handle typedefs
     if (const TypedefType* tt = dyn_cast<TypedefType>(t)) {
         std::string name = tt->getDecl()->getName().str();
-        Au_t existing = name.length() ? au_lookup(name.c_str()) : null;
+        Au_t existing = name.length() ? au_lookup_type(name.c_str()) : null;
         if (name == "jmp_buf") {
             name = name;
         }
@@ -446,7 +451,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         QualType pointee = pt->getPointeeType();
         
         if (use_name) {
-            Au_t existing = au_lookup(use_name);
+            Au_t existing = au_lookup_type(use_name);
             if (existing) return existing;
         }
         
@@ -472,8 +477,8 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     if (auto* RT = dyn_cast<RecordType>(type)) {
         RecordDecl* decl = RT->getDecl();
         std::string name = decl->getNameAsString();
-        Au_t existing = name.length() ? au_lookup(name.c_str()) : null;
-        if (existing && existing->member_type == AU_MEMBER_TYPE) return existing;
+        Au_t existing = name.length() ? au_lookup_type(name.c_str()) : null;
+        if (existing) return existing;
 
         if (auto* CXX = dyn_cast<CXXRecordDecl>(decl)) {
             if (CXX->isCLike()) {
@@ -496,7 +501,7 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
     if (const EnumType* et = dyn_cast<EnumType>(type)) {
         EnumDecl* decl = et->getDecl();
         std::string name = decl->getNameAsString();
-        Au_t existing = name.length() ? au_lookup(name.c_str()) : null;
+        Au_t existing = name.length() ? au_lookup_type(name.c_str()) : null;
         return existing ? existing : create_enum(decl, ctx, e, get_name((NamedDecl*)decl));
     }
 
@@ -565,7 +570,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     symbol n = has_name ? name.c_str() : null;
     
     // Check if already exists as a complete type (not empty stub, not function/macro)
-    Au_t existing = has_name ? au_lookup(n) : null;
+    Au_t existing = has_name ? prior_type(n) : null;
     if (existing && existing->member_type == AU_MEMBER_TYPE && existing->members.count > 0) return existing;
 
     bool is_union = decl->isUnion();
@@ -602,7 +607,7 @@ static Au_t create_opaque_class(CXXRecordDecl* cxx, aether e) {
     std::string qname = cxx->getQualifiedNameAsString();
     symbol n = qname.c_str();
 
-    Au_t existing = au_lookup(n);
+    Au_t existing = au_lookup_type(n);
     if (existing) return existing;
 
     Au_t rec = def_class(aether_top_scope(e), n);
@@ -616,7 +621,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
     if (!cxx->isCompleteDefinition() || cxx->isDependentType() || cxx->isInvalidDecl())
         return create_opaque_class(cxx, e);
     
-    Au_t existing = au_lookup(n);
+    Au_t existing = au_lookup_type(n);
     if (existing) return existing;
 
     Au_t parent = aether_top_scope(e);
@@ -698,6 +703,10 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
 static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string name) {
     symbol n = name.length() ? name.c_str() : null;
 
+    // one C name, one model: a header reached from two imports maps once
+    Au_t prior = n ? prior_type(n) : null;
+    if (prior && prior->is_enum) return prior;
+
     Au_t parent = aether_top_scope(e);
     Au_t en = def_enum(parent, n, 0);
     //en->module = e->current_import->autype;
@@ -714,30 +723,14 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
         if (const_name == "VK_QUEUE_GRAPHICS_BIT") {
             n = n;
         }
+        if (lexical_traits(e->lexical, cn, 0, AU_MEMBER_ENUMV)) continue;
         llvm::APSInt val = ec->getInitVal();
         i32* value = (i32*)_i32(val.getSExtValue());
-        
+
         Au_t ev = def_enum_value(en, cn, (Au)value);
         ev->is_c = true;
         micro_push(&parent->members, (Au)ev);
-        // insert into parent's member_map for fast lookup
-        if (parent->member_map && ev->ident_hash) {
-            store s = (store)parent->member_map;
-            size_t idx = ((size_t)ev->ident_hash >> 3) % s->hsize;
-            item ni = (item)calloc(1, sizeof(struct _Au) + sizeof(struct _item));
-            ni = (item)(((struct _Au*)ni) + 1);
-            ni->key   = (Au)(uintptr_t)ev->ident_hash;
-            ni->value = (Au)ev;
-            ni->next  = s->hlist[idx];
-            if (s->hlist[idx]) s->hlist[idx]->prev = ni;
-            s->hlist[idx] = ni;
-            s->count++;
-
-            if (const_name == "VK_QUEUE_GRAPHICS_BIT") {
-                Au_t lookup = (Au_t)store_get(s, (Au)ev->ident_hash);
-                n = n;
-            }
-        }
+        au_member_map_insert(parent, ev);
     }
     
     array_pop(e->lexical);
@@ -746,17 +739,13 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
 
 static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string name) {
     symbol n = name.c_str();
-    
+
+    // one C name, one model: a header reached from two imports maps once
+    Au_t prior = prior_func(n);
+    if (prior) return prior;
+
     Au_t parent = aether_top_scope(e);
     Au_t fn = def(parent, n, AU_MEMBER_FUNC, AU_TRAIT_IS_C);
-    if (n && strcmp(n, "stat") == 0) {
-        int test2 = 2;
-        test2    += 2;
-    }
-    //fn->module = e->current_import->autype;
-    if (name.length() != 0 && name == "puts") {
-        fn = fn;
-    }
     // Return type
     fn->rtype = map_clang_type(decl->getReturnType(), ctx, e, null);
     if (!fn->rtype) fn->rtype = au_lookup("none");
@@ -837,10 +826,7 @@ static Au_t create_namespace(NamespaceDecl* ns, ASTContext& ctx, aether e) {
             if (existing)
                 return existing;
 
-            // todo: fix
-            Au_t ns_au = def_struct(cur, name);
-            //ns_au->module = e->current_import->autype;
-            return ns_au;
+            return def_struct(cur, name);
         } else {
             verify(existing, "expected namespace: %s", name);
             cur = existing;
@@ -864,7 +850,9 @@ public:
     
     bool VisitTypedefDecl(TypedefDecl* decl) {
         auto name = decl->getNameAsString();
-        
+
+        // one C name, one model: a header reached from two imports maps once
+        if (name.length() && prior_type(name.c_str())) return true;
 
         // Map the underlying type (the array/struct) to our system
         Au_t underlying = map_clang_type(decl->getUnderlyingType(), ctx, e, null);
@@ -944,11 +932,24 @@ public:
 // ============================================================================
 
 class AetherASTConsumer2 : public clang::ASTConsumer {
-    aether e;
+    aether       e;
+    bool         incremental = false;
 public:
     AetherASTConsumer2(aether e) : e(e) {}
 
+    // decls must be read as parsed; the pragma scope stack only names the
+    // current import while its headers are still being preprocessed
+    bool HandleTopLevelDecl(DeclGroupRef dg) override {
+        for (Decl* d: dg) {
+            incremental = true;
+            AetherDeclVisitor2 visitor(d->getASTContext(), e);
+            visitor.TraverseDecl(d);
+        }
+        return true;
+    }
+
     void HandleTranslationUnit(ASTContext& context) override {
+        if (incremental) return;
         AetherDeclVisitor2 visitor(context, e);
         visitor.TraverseDecl(context.getTranslationUnitDecl());
     }
@@ -1165,38 +1166,49 @@ void aether_import_models(aether a, Au_t, bool);
 // singular clang session per module to perform all imports
 extern "C" aether aether_clone(aether, int);
 
-// parse one import's headers: its own CompilerInstance, own thread.
-// the scope stack is per-thread — the pragma handler pushes this import's
-// namespace onto it, and the decl visitor reads the top of it
-static pthread_mutex_t import_scope_lock = PTHREAD_MUTEX_INITIALIZER;
+// a macro seen while preprocessing: text only, so the thread touches no model
+struct pending_macro {
+    std::string               name;
+    std::string               body;
+    std::vector<std::string>  params;
+    bool                      function_like = false;
+    bool                      va_args       = false;
+};
 
-static void import_parse_unit(aether a0, path c) {
-    // parse on a private scope stack, then publish this import's namespace
-    // to the parent so silver code after the imports can see its symbols
-    aether a = aether_clone(a0, 0);
-    int seed = a->lexical ? a->lexical->count : 0;
-    symbol compile_unit = c->chars;
-    auto DiagID(new DiagnosticIDs());
-    auto DiagOpts = new DiagnosticOptions();
-    TextDiagnosticPrinter *DiagPrinter = new TextDiagnosticPrinter(llvm::errs(), *DiagOpts);
-    auto Invocation = std::make_shared<CompilerInvocation>();
-    DiagnosticsEngine diags(DiagID, *DiagOpts, DiagPrinter);
+// one entry per thing the unit saw, in the order it saw it
+struct pending_item {
+    Decl* decl  = null;
+    int   macro = -1;
+};
+
+// one import's headers: parsed on its own thread, modelled in import order
+struct import_unit {
+    aether                     a;
+    import                     im;
+    path                       c;
+    std::string                clang_path;
+    std::vector<std::string>   args;
+    CompilerInstance*          ci = null;
+    std::vector<pending_macro> macros;
+    std::vector<pending_item>  items;
+};
+
+// clang argv for one unit; built serially because it allocates Au strings
+static void build_unit_args(aether a, import_unit* u) {
     path clang_path = f(path, "%o/bin/clang", a->install);
-    driver::Driver drv(clang_path->chars, llvm::sys::getDefaultTargetTriple(), diags);
+    u->clang_path = clang_path->chars;
 
-    std::vector<symbol> args = {
-        "clang",
-        "-x",
-        "c",
-        "-std=c11",
-        "-D_POSIX_C_SOURCE=200809L",
+    std::vector<std::string>& args = u->args;
+    args.push_back("clang");
+    args.push_back("-x");
+    args.push_back("c");
+    args.push_back("-std=c11");
+    args.push_back("-D_POSIX_C_SOURCE=200809L");
 #ifdef __APPLE__
-        "-D_DARWIN_C_SOURCE",
+    args.push_back("-D_DARWIN_C_SOURCE");
 #endif
-        "-fdiagnostics-show-option",
-        "-Wno-nullability-completeness"
-    };
-
+    args.push_back("-fdiagnostics-show-option");
+    args.push_back("-Wno-nullability-completeness");
     args.push_back("-w");
     args.push_back("-Wno-system-headers");
 
@@ -1225,48 +1237,104 @@ static void import_parse_unit(aether a0, path c) {
         symbol ident = all_paths[i].ident;
         array  paths = all_paths[i].paths;
         for (int ii = 0; ii < (paths ? paths->count : 0); ii++) {
-            path f = (path)paths->origin[ii];
+            path fp = (path)paths->origin[ii];
             args.push_back(ident);
-            args.push_back(f->chars);
+            args.push_back(fp->chars);
         }
     }
 
     if (a->framework_paths)
         for (int i = 0; i < a->framework_paths->count; i++) {
             path fw_path = (path)a->framework_paths->origin[i];
-            string arg = f(string, "-F%o", fw_path);
-            args.push_back(arg->chars);
+            string fw_arg = f(string, "-F%o", fw_path);
+            args.push_back(fw_arg->chars);
         }
-
-    /*
-    if (a->define_map) {
-        for (item it = a->define_map->first; it; it = it->next) {
-            Au key = it->key;
-            Au val = it->value;
-            char buf[256];
-            string skey = Au_cast_string(key);
-            if (isa(val) == typeid(bool)) {
-                snprintf(buf, 256, "-D%s", skey->chars);
-                args.push_back(strdup(buf));
-            } else {
-                string sval = Au_cast_string(val);
-                snprintf(buf, 256, "-D%s=%s", skey->chars, sval->chars);
-                args.push_back(strdup(buf));
-            }
-        }
-    }*/
 
     if (a->include_paths)
         for (int i = 0; i < a->include_paths->count; i++) {
             path inc_path = (path)a->include_paths->origin[i];
-            string arg = f(string, "%o", inc_path);
             args.push_back("-isystem");
-            args.push_back(arg->chars);
+            args.push_back(inc_path->chars);
         }
 
     args.push_back("-nostdinc++");
     args.push_back("-c");
-    args.push_back(compile_unit);
+    args.push_back(u->c->chars);
+}
+
+// parse-time only: records decls, never defines them
+class CollectConsumer : public clang::ASTConsumer {
+    import_unit* unit;
+public:
+    CollectConsumer(import_unit* unit) : unit(unit) {}
+
+    bool HandleTopLevelDecl(DeclGroupRef dg) override {
+        for (Decl* d: dg) {
+            pending_item it;
+            it.decl = d;
+            unit->items.push_back(it);
+        }
+        return true;
+    }
+};
+
+// parse-time only: records macro text, never defines them
+class MacroCollect : public clang::PPCallbacks {
+    import_unit*         unit;
+    clang::Preprocessor* PP;
+public:
+    MacroCollect(import_unit* unit, clang::Preprocessor* PP) : unit(unit), PP(PP) {}
+
+    void MacroDefined(const clang::Token &macroNameTok,
+                      const clang::MacroDirective *md) override {
+        const clang::MacroInfo *mi = md->getMacroInfo();
+        pending_macro pm;
+        pm.name = macroNameTok.getIdentifierInfo()->getName().str();
+#undef tokens
+        for (const auto &tok : mi->tokens()) {
+            std::string spelling = PP->getSpelling(tok);
+            // strip C integer suffixes (U, u, L, l, UL, ULL, etc.)
+            if (!spelling.empty() && (isdigit(spelling[0]) ||
+                (spelling[0] == '0' && spelling.size() > 1 && spelling[1] == 'x'))) {
+                while (!spelling.empty()) {
+                    char c = spelling.back();
+                    if (c == 'U' || c == 'u' || c == 'L' || c == 'l')
+                        spelling.pop_back();
+                    else
+                        break;
+                }
+            }
+            if (pm.body.length() > 0 && tok.hasLeadingSpace())
+                pm.body += " ";
+            pm.body += spelling;
+        }
+        pm.va_args       = mi->isVariadic();
+        pm.function_like = mi->isFunctionLike();
+        if (pm.function_like)
+            for (auto param : mi->params())
+                pm.params.push_back(param->getName().str());
+
+        pending_item it;
+        it.macro = (int)unit->macros.size();
+        unit->macros.push_back(pm);
+        unit->items.push_back(it);
+    }
+};
+
+static void import_parse_unit(import_unit* u) {
+    aether a = u->a;
+    path   c = u->c;
+    auto DiagID(new DiagnosticIDs());
+    auto DiagOpts = new DiagnosticOptions();
+    TextDiagnosticPrinter *DiagPrinter = new TextDiagnosticPrinter(llvm::errs(), *DiagOpts);
+    auto Invocation = std::make_shared<CompilerInvocation>();
+    DiagnosticsEngine diags(DiagID, *DiagOpts, DiagPrinter);
+    driver::Driver drv(u->clang_path.c_str(), llvm::sys::getDefaultTargetTriple(), diags);
+
+    // args were built serially; Au allocation is not safe from here
+    std::vector<symbol> args;
+    for (std::string& s : u->args)
+        args.push_back(s.c_str());
 
     std::unique_ptr<driver::Compilation> comp(
         drv.BuildCompilation(llvm::ArrayRef<symbol>(args)));
@@ -1318,63 +1386,96 @@ static void import_parse_unit(aether a0, path c) {
     Diags->setIgnoreAllWarnings(true);
     Diags->setSuppressSystemWarnings(true);
 
-    auto *silver_pragma = new SilverModulePragmaHandler(a);
-    compiler->getPreprocessor().AddPragmaHandler(silver_pragma);
-
-    aclang_cc instance = new0(aclang_cc,
-        mod, a, compiler, (handle)compiler, PP, (handle)&compiler->getPreprocessor());
     compiler->getPreprocessor().addPPCallbacks(
-        std::make_unique<MacroCollector2>(instance));
+        std::make_unique<MacroCollect>(u, &compiler->getPreprocessor()));
     compiler->createASTContext();
     ASTContext& ctx = compiler->getASTContext();
     compiler->getPreprocessor().getBuiltinInfo().initializeBuiltins(
         compiler->getPreprocessor().getIdentifierTable(),
         compiler->getPreprocessor().getLangOpts());
 
-    if (true) {
-        AetherASTConsumer2 consumer(a);
-        ParseAST(compiler->getPreprocessor(), &consumer, ctx);
-        verify(!Diags->hasErrorOccurred(), "failed to build import model for %o", c);
-        pthread_mutex_lock(&import_scope_lock);
-        for (int i = seed; i < a->lexical->count; i++)
-            aether_push_scope(a0, (Au)a->lexical->origin[i], 9);
-        pthread_mutex_unlock(&import_scope_lock);
-    } else {
-        /*
-        AetherEmitAction2 act(e);
-        compiler->ExecuteAction(act);
-        std::unique_ptr<llvm::Module> M = act.takeModule();
-        LLVMModuleRef cMod = M ? wrap(M.release()) : nullptr;
-        //(instance)->module = cMod;
-        LLVMLinkModules2(a->module_ref, cMod);
-        */
-    }
-
+    CollectConsumer consumer(u);
+    ParseAST(compiler->getPreprocessor(), &consumer, ctx);
+    verify(!Diags->hasErrorOccurred(), "failed to build import model for %o", c);
+    u->ci = compiler;
 }
 
-struct import_unit { aether a; path c; };
+static void build_macro(aether e, pending_macro& pm) {
+    symbol n = pm.name.c_str();
+    if (au_lookup(n)) return;
 
-static void* import_unit_run(void* arg) {
-    import_unit* u = (import_unit*)arg;
-    import_parse_unit(u->a, u->c);
+    string body_str    = new0(string, chars, (cstr)pm.body.c_str());
+    tokens body_tokens = new0(tokens, target, (Au)e, parser, e->parse_f, input, (Au)body_str);
+    array  params_array = nullptr;
+
+    if (pm.function_like) {
+        params_array = new0(array, alloc, (int)pm.params.size() + 1);
+        for (std::string& p : pm.params) {
+            Au    p_str  = (Au)new0(string, chars, (cstr)p.c_str());
+            array p_toks = (array)new0(tokens, target, (Au)e, parser, e->parse_f, input, p_str);
+            if (p_toks && p_toks->count > 0)
+                array_push(params_array, p_toks->origin[0]);
+        }
+    }
+
+    for (int i = 0; i < body_tokens->count; i++)
+        ((token)body_tokens->origin[i])->cmode = true;
+
+    macro m = new0(macro,
+        mod,        e,
+        autype,     def(aether_top_scope(e), n, AU_MEMBER_MACRO, AU_TRAIT_IS_C),
+        def,        (array)body_tokens,
+        params,     params_array,
+        va_args,    pm.va_args);
+}
+
+// model one parsed unit; runs in import order, so a name this unit needs from
+// an earlier import is already defined and gets reused rather than remade
+static void import_model_unit(aether e, import_unit* u) {
+    aether_push_scope(e, (Au)u->im, 1);
+    for (pending_item& it : u->items) {
+        if (it.decl) {
+            AetherDeclVisitor2 visitor(it.decl->getASTContext(), e);
+            visitor.TraverseDecl(it.decl);
+        } else {
+            build_macro(e, u->macros[it.macro]);
+        }
+    }
+}
+
+// worker pool: each thread takes the next unparsed unit
+struct unit_pool {
+    std::vector<import_unit*> units;
+    int                       next;
+    pthread_mutex_t           lock;
+};
+
+static void* unit_worker(void* arg) {
+    unit_pool* p = (unit_pool*)arg;
+    for (;;) {
+        pthread_mutex_lock(&p->lock);
+        int i = p->next < (int)p->units.size() ? p->next++ : -1;
+        pthread_mutex_unlock(&p->lock);
+        if (i < 0) break;
+        import_parse_unit(p->units[i]);
+    }
     return nullptr;
 }
 
 none aether_import_includes(aether a) {
-    // one translation unit for every import: a header pulled in by two imports
-    // must expand once, or its symbols register under two namespaces and name
-    // resolution changes
-    path c = f(path, "/tmp/silver_%i_import.c", (int)getpid());
-    string contents = new0(string, alloc, 1024);
-    bool any_new = false;
+    // one translation unit per import, so its headers register under its own
+    // namespace only; nested includes land in the import that pulled them
+    unit_pool pool;
+    pool.next = 0;
+    pthread_mutex_init(&pool.lock, null);
+
     each(a->imports, import, im) {
         if (!im->include_paths || !im->include_paths->count)
             continue;
         if (im->autype->is_closed)
             continue;
-        any_new = true;
         verify(im->external_name, "external_name (import identity) not set");
-        string_concat(contents, f(string, "#pragma silver_module %o\n", im->external_name));
+        string contents = new0(string, alloc, 1024);
         for (item i = im->define_map ? im->define_map->first : null; i; i = i->next) {
             if (isa(i->value) == typeid(bool))
                 string_concat(contents, f(string, "#define %o\n", i->key));
@@ -1385,11 +1486,35 @@ none aether_import_includes(aether a) {
             verify(ipath && path_exists(ipath), "include path does not exist: %o", ipath);
             string_concat(contents, f(string, "#include \"%o\"\n", ipath));
         }
-    }
-    if (!any_new) return;
-    path_save(c, (Au)contents, null);
+        // modules build concurrently; the name must be unique process-wide
+        static int      tu_seq;
+        static pthread_mutex_t tu_lock = PTHREAD_MUTEX_INITIALIZER;
+        pthread_mutex_lock(&tu_lock);
+        int tu_id = tu_seq++;
+        pthread_mutex_unlock(&tu_lock);
 
-    import_parse_unit(a, c);
+        import_unit* u = new import_unit();
+        u->a  = a;
+        u->im = im;
+        u->c  = f(path, "/tmp/silver_%i_import_%i.c", (int)getpid(), tu_id);
+        path_save(u->c, (Au)contents, null);
+        build_unit_args(a, u);
+        pool.units.push_back(u);
+    }
+    if (!pool.units.size()) return;
+
+    int max_threads = a->ncores ? a->ncores : 1;
+    int n_threads   = (int)pool.units.size();
+    if (n_threads > max_threads) n_threads = max_threads;
+    std::vector<pthread_t> threads(n_threads);
+    for (int i = 0; i < n_threads; i++)
+        if (pthread_create(&threads[i], null, unit_worker, &pool) != 0)
+            threads[i] = 0;
+    for (int i = 0; i < n_threads; i++)
+        if (threads[i]) pthread_join(threads[i], null);
+
+    for (import_unit* u : pool.units)
+        import_model_unit(a, u);
 
     // import each
     each(a->imports, import, im) {
