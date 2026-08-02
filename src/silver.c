@@ -703,6 +703,7 @@ static enode reverse_descent(silver a, etype expect) { sequencer
 }
 
 static array parse_tokens(silver a, Au input, array output);
+etype etype_ptr(aether a, Au_t au, enode eshape);
 
 Au   build_init_preamble(enode f, Au arg);
 void aether_emit_recover();
@@ -931,6 +932,7 @@ void silver_parse(silver a) {
         incremental_resolve(a);
     }
 
+
     /// resolve deferred aliases (types that weren't available during initial parse)
     /// multi-pass: aliases may depend on each other
     if (a->pending_aliases && len(a->pending_aliases)) {
@@ -1024,8 +1026,8 @@ void silver_parse(silver a) {
     silver aroot = a->is_external ? a->is_external : a;
     int    njobs = a->jobs > 0 ? a->jobs : aroot->jobs;
     int nthreads = njobs > 0 ? njobs : (int)sysconf(_SC_NPROCESSORS_ONLN) - 2;
-    if (nthreads > nwork) nthreads = nwork;
-    if (nthreads > 16)    nthreads = 16;
+    if (nthreads > nwork)     nthreads = nwork;
+    if (nthreads > AU_CORES)  nthreads = AU_CORES; // one context per worker
 
     if (nthreads <= 1) {
         for (int i = 0; i < nwork; i++) {
@@ -1041,7 +1043,7 @@ void silver_parse(silver a) {
         fn_worker_t* ws = (fn_worker_t*)calloc(nthreads, sizeof(fn_worker_t));
         pthread_t*   ts = (pthread_t*)  calloc(nthreads, sizeof(pthread_t));
         for (int t = 0; t < nthreads; t++) {
-            ws[t].a     = (silver)aether_clone((aether)a, t + 1);
+            ws[t].a     = (silver)aether_clone((aether)a, t);
             ws[t].work  = work;
             ws[t].wrec  = wrec;
             ws[t].inits = inits;
@@ -6312,10 +6314,10 @@ none silver_build_product(silver a) {
 
     } else {
 
-    {
-        path obj_path = f(path, "%o/%o.o", a->build_dir, a->name);
-        verify(emit_object(a, obj_path), ".o emission failed");
-    }
+    // worker cores emit their own objects alongside core 0's
+    path   obj_path  = f(path, "%o/%o.o", a->build_dir, a->name);
+    verify(emit_object(a, obj_path), ".o emission failed");
+    string core_objs = core_objects(a, obj_path);
 
     string cflags = a->asan ? string("-fsanitize=address") : string("");
 
@@ -6387,7 +6389,7 @@ none silver_build_product(silver a) {
     }
     if (a->is_library) unlink(a->product->chars);
 
-    verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o %o %s",
+    verify(exec(a->verbose, "%o/bin/%s %s %s %s %o %s %o/%o.o%o %o -o %o -L%o -L%o/lib -Wl,-rpath,%o -Wl,-rpath,%o/lib %o %o %o %s",
         install, linker, a->is_library ? shared : "", a->debug ? "-g" : "",
 
 #ifdef __linux__
@@ -6395,7 +6397,7 @@ none silver_build_product(silver a) {
 #else
         "",
 #endif
-        isysroot, cpp_pre, a->build_dir, a->name, objs,
+        isysroot, cpp_pre, a->build_dir, a->name, core_objs, objs,
         a->product,
         a->build_dir,
         install, a->build_dir, install, libs, cflags, fw_flags,
@@ -8392,7 +8394,8 @@ void build_fn(silver a, efunc f, callback preamble, callback postamble) { sequen
     // if there is no code, then this is an external c function; implement must do this
     implement(f, false);
 
-    if (f->has_code && (f->const_tokens || f->inline_return || f->body || preamble)) {
+    // a remote wrapper has no body of its own — it is the call to the user impl
+    if (f->has_code && (f->const_tokens || f->inline_return || f->body || f->remote_func || preamble)) {
         // each body build starts at statement level; drift never carries over
         a->expr_level = 0;
         update_current_file((aether)a, f->source_file);

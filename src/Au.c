@@ -1261,11 +1261,19 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
     return func;
 }
 
+static void au_member_map_unlock(int* x);
 // member creation serializes: micro/member_map writers race scans
 static pthread_mutex_t def_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // insert into member_map keyed by ident_hash (raw — no Au object model)
+// two writers into one bucket would lose an entry; readers stay lockless
+// because inserts publish at the head
+static pthread_mutex_t member_map_lock = PTHREAD_MUTEX_INITIALIZER;
+static void au_member_map_unlock(int* x) { (void)x; pthread_mutex_unlock(&member_map_lock); }
+
 none au_member_map_insert(Au_t type, Au_t new_member) {
+    __attribute__((cleanup(au_member_map_unlock)))
+        int _mm_ = (pthread_mutex_lock(&member_map_lock), 0); (void)_mm_;
     if (!type->member_map) {
         int hsz = 0;
         if (type->member_type == AU_MEMBER_MODULE || type->member_type == AU_MEMBER_NAMESPACE)
@@ -1956,7 +1964,9 @@ none push_type(Au_t type, Au_t to_mod) {
         m->module = type->module;
     }
 
+    pthread_mutex_lock(&def_lock);
     micro_push(&type->module->members, (Au)type);
+    pthread_mutex_unlock(&def_lock);
     au_member_map_insert(type->module, type);
 
     //type->af->re_alloc = 1024;
