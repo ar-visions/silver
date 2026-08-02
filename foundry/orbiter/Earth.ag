@@ -578,12 +578,17 @@ EarthShader CloudShader
     }
 
 
-Background Earth
+element Earth
     intern earth  : EarthShader
     intern ocean  : OceanShader
     intern cloud  : CloudShader
-    func init[]
-        vk        : window.vk
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    public color  : rgba
+
+    func build_models[]
+        built     = true
         gltf_path : path 'models/earth.gltf'
         gltf      : gltf_path.load[ typeid[ GltfModel ], null ]
         earth     = EarthShader [ vk: vk ]
@@ -603,13 +608,35 @@ Background Earth
             'bathymetry': Image [ uri: path 'textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
             'lights':     Image [ uri: path 'textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
         ]
-        earth_model : Model [ vk: vk, w: window, id: gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
-        ocean_model : Model [ vk: vk, w: window, id: gltf, s: ocean, samplers: earth_samplers, straight_alpha: true ]
-        cloud_model : Model [ vk: vk, w: window, id: gltf, s: cloud, samplers: earth_samplers, straight_alpha: true ]
+        earth_model : Model [ vk: vk, w: ux, id: gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
+        ocean_model : Model [ vk: vk, w: ux, id: gltf, s: ocean, samplers: earth_samplers, straight_alpha: true ]
+        cloud_model : Model [ vk: vk, w: ux, id: gltf, s: cloud, samplers: earth_samplers, straight_alpha: true ]
         models      = array Model [ earth_model, ocean_model, cloud_model ]
 
-    func update[]
-        time : window.time * 64.0
+    # own render pass, registered like Avatar's
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        if [ !bounds || bounds.w < 1.0 || bounds.h < 1.0 ] return
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            width:       i32[ bounds.w ],
+            height:      i32[ bounds.h ],
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.owner  = a
+        target.wscale = 0.0
+        ux.element_targets[ id ] = target
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built ] build_models[]
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        time : ux.time * 64.0
         if [time == 0.0]
             time = -54.0
         altitude : f32 [ 0.063 ]
@@ -617,7 +644,7 @@ Background Earth
         tilt     : f32 [ radians[ 50.0 ] ]
         aspect   : f32 [ 16.0 / 9.0 ]
 
-        time -= 0.0244 * window.frame_factor
+        time -= 0.0244 * ux.frame_factor
         orbit_a : radians[ time ]
         co      : cos[ orbit_a ]
         so      : sin[ orbit_a ]
@@ -670,7 +697,6 @@ Background Earth
         earth.cam_pos = _cam
         ocean.cam_pos = _cam
         cloud.cam_pos = _cam
-        window.time = time
 
 
 shader PurpleShader

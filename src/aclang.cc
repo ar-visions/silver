@@ -1163,34 +1163,18 @@ path aether_lookup_include(aether e, string include) {
 void aether_import_models(aether a, Au_t, bool);
 
 // singular clang session per module to perform all imports
-none aether_import_includes(aether a) {
+extern "C" aether aether_clone(aether, int);
 
-    // build source for all includes with pragma inbetween
-    path c = f(path, "/tmp/import.c");
-    string contents = new0(string, alloc, 1024);
-    bool any_new = false;
-    each(a->imports, import, im) {
-        if (!im->include_paths || !im->include_paths->count)
-            continue;
-        if (im->autype->is_closed)
-            continue;
-        any_new = true;
-        verify(im->external_name, "external_name (import identity) not set");
-        string_concat(contents, f(string, "#pragma silver_module %o\n", im->external_name));
-        for (item i = im->define_map ? im->define_map->first : null; i; i = i->next) {
-            if (isa(i->value) == typeid(bool))
-                string_concat(contents, f(string, "#define %o\n", i->key));
-            else
-                string_concat(contents, f(string, "#define %o %o\n", i->key, i->value));
-        }
-        each (im->include_paths, path, ipath) {
-            verify(ipath && path_exists(ipath), "include path does not exist: %o", ipath);
-            string_concat(contents, f(string, "#include \"%o\"\n", ipath));
-        }
-    }
-    if (!any_new) return;
-    path_save(c, (Au)contents, null);
+// parse one import's headers: its own CompilerInstance, own thread.
+// the scope stack is per-thread — the pragma handler pushes this import's
+// namespace onto it, and the decl visitor reads the top of it
+static pthread_mutex_t import_scope_lock = PTHREAD_MUTEX_INITIALIZER;
 
+static void import_parse_unit(aether a0, path c) {
+    // parse on a private scope stack, then publish this import's namespace
+    // to the parent so silver code after the imports can see its symbols
+    aether a = aether_clone(a0, 0);
+    int seed = a->lexical ? a->lexical->count : 0;
     symbol compile_unit = c->chars;
     auto DiagID(new DiagnosticIDs());
     auto DiagOpts = new DiagnosticOptions();
@@ -1351,6 +1335,10 @@ none aether_import_includes(aether a) {
         AetherASTConsumer2 consumer(a);
         ParseAST(compiler->getPreprocessor(), &consumer, ctx);
         verify(!Diags->hasErrorOccurred(), "failed to build import model for %o", c);
+        pthread_mutex_lock(&import_scope_lock);
+        for (int i = seed; i < a->lexical->count; i++)
+            aether_push_scope(a0, (Au)a->lexical->origin[i], 9);
+        pthread_mutex_unlock(&import_scope_lock);
     } else {
         /*
         AetherEmitAction2 act(e);
@@ -1362,13 +1350,52 @@ none aether_import_includes(aether a) {
         */
     }
 
+}
+
+struct import_unit { aether a; path c; };
+
+static void* import_unit_run(void* arg) {
+    import_unit* u = (import_unit*)arg;
+    import_parse_unit(u->a, u->c);
+    return nullptr;
+}
+
+none aether_import_includes(aether a) {
+    // one translation unit for every import: a header pulled in by two imports
+    // must expand once, or its symbols register under two namespaces and name
+    // resolution changes
+    path c = f(path, "/tmp/silver_%i_import.c", (int)getpid());
+    string contents = new0(string, alloc, 1024);
+    bool any_new = false;
+    each(a->imports, import, im) {
+        if (!im->include_paths || !im->include_paths->count)
+            continue;
+        if (im->autype->is_closed)
+            continue;
+        any_new = true;
+        verify(im->external_name, "external_name (import identity) not set");
+        string_concat(contents, f(string, "#pragma silver_module %o\n", im->external_name));
+        for (item i = im->define_map ? im->define_map->first : null; i; i = i->next) {
+            if (isa(i->value) == typeid(bool))
+                string_concat(contents, f(string, "#define %o\n", i->key));
+            else
+                string_concat(contents, f(string, "#define %o %o\n", i->key, i->value));
+        }
+        each (im->include_paths, path, ipath) {
+            verify(ipath && path_exists(ipath), "include path does not exist: %o", ipath);
+            string_concat(contents, f(string, "#include \"%o\"\n", ipath));
+        }
+    }
+    if (!any_new) return;
+    path_save(c, (Au)contents, null);
+
+    import_parse_unit(a, c);
+
     // import each
     each(a->imports, import, im) {
         aether_import_models(a, im->autype, false);
         im->autype->is_closed = true; // closed against new registrations
     }
-
-    //unlink(c->chars);
 }
 
 path aether_include(aether e, Au inc, string ns) {

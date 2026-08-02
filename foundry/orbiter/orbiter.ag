@@ -667,7 +667,7 @@ class FmtWatch
 element orbiter : trinity # implements compiler
     public width         : i32    [ 1888 ]
     public height        : i32    [ 888 ]
-    public background    : string [ 'Earth' ]
+    public background    : string
     public live_reload   : bool   [ true ]
     public startup_path  : path
     default resource     : string
@@ -3261,6 +3261,9 @@ element orbiter : trinity # implements compiler
             aid : 'pane{editor_slots.count}'
             pane_inner[aid] = EditorView [ pane_index: editor_slots.count, selected: (sp == aid) ]
         editor_els : Elements []
+        # first inserted paints first: the backdrop sits behind the panes
+        editor_els['earth'] = Earth [ area: Region { l0 t0 r0 b0 },
+            color: rgba [ r:0.022, g:0.088, b:0.122, a:1.0 ] ]
         editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b0 }, inner: pane_inner,
             deflt: 0.0, even: true, snap_close: true ]
         # one avatar, window-anchored; ALWAYS mounted, :summoned slides it in
