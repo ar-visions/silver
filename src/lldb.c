@@ -15,6 +15,14 @@ typedef LLVMMetadataRef LLVMScope;
 #include <aether/import>
 
 LLVMMetadataRef debug_scope(aether a);
+LLVMTargetDataRef ll_td(aether a);
+LLVMValueRef    _llvalue(enode n);
+void            lldebug_set(etype e, LLVMMetadataRef v);
+LLVMMetadataRef _lldebug   (etype e);
+void            llscope_set(etype e, LLVMMetadataRef v);
+LLVMMetadataRef _llscope   (etype e);
+void            lldbg_set  (enode n, LLVMMetadataRef v);
+LLVMMetadataRef _lldbg     (enode n);
 #define B a->builder
 
 // serialize on aether's single-context emission lock
@@ -83,7 +91,7 @@ static u32 bits_for_type(aether a, Au_t src) {
     etype et = u(etype, src);
     LLVMTypeRef et_ll = et ? _lltype_slot(et) : null;
     if (et && et_ll && LLVMTypeIsSized(et_ll)) {
-        u32 bits = LLVMABISizeOfType(a->target_data, et_ll) * 8;
+        u32 bits = LLVMABISizeOfType(ll_td(a), et_ll) * 8;
         if (bits) return bits;
     }
     if (src->abi_size) return src->abi_size;
@@ -97,7 +105,7 @@ static u32 align_for_type(aether a, Au_t src) {
     if (!src) return 64;
     etype et = u(etype, src);
     if (et && _lltype_slot(et) && LLVMTypeIsSized(_lltype_slot(et))) {
-        u32 align = LLVMABIAlignmentOfType(a->target_data, _lltype_slot(et)) * 8;
+        u32 align = LLVMABIAlignmentOfType(ll_td(a), _lltype_slot(et)) * 8;
         if (align) return align;
     }
     if (src->align_bits) return src->align_bits;
@@ -107,7 +115,7 @@ static u32 align_for_type(aether a, Au_t src) {
 // get pointer size in bits for target
 static u32 pointer_bits(aether a) {
     emit_guard;
-    return LLVMPointerSize(a->target_data) * 8;
+    return LLVMPointerSize(ll_td(a)) * 8;
 }
 
 // count instance (non-static) variable members in a single type level
@@ -196,8 +204,8 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
     bool is_complex = src->is_struct || src->is_class || src->is_enum ||
                       src->is_pointer || src->is_funcptr ||
                       (src->is_alias && src->src && src->src != src);
-    if (!is_complex && et && et->lldebug)
-        return et->lldebug;
+    if (!is_complex && et && _lldebug(et))
+        return _lldebug(et);
 
     LLVMMetadataRef result = null;
 
@@ -205,7 +213,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
     if (src->is_enum) {
         result = debug_enum_type(a, src);
         if (result) {
-            if (et) et->lldebug = result;
+            if (et) lldebug_set(et, result);
             return result;
         }
         // fall through to basic unsigned if enum emission failed
@@ -222,7 +230,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
             // don't cache pointer-wrapped types on et->lldebug:
             // debug_struct_type owns that slot for the raw struct.
             // only cache value-type structs here.
-            if (et && !src->is_class && !src->is_pointer) et->lldebug = result;
+            if (et && !src->is_class && !src->is_pointer) lldebug_set(et, result);
             return result;
         }
     }
@@ -240,7 +248,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
     if (src->is_funcptr) {
         result = debug_funcptr_type(a, src);
         if (result) {
-            if (et) et->lldebug = result;
+            if (et) lldebug_set(et, result);
             return result;
         }
     }
@@ -249,7 +257,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
     if (src->is_alias && src->src && src->src != src) {
         result = debug_typedef_type(a, src);
         if (result) {
-            if (et) et->lldebug = result;
+            if (et) lldebug_set(et, result);
             return result;
         }
     }
@@ -258,7 +266,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
     if (src == typeid(bool)) {
         result = LLVMDIBuilderCreateBasicType(
             a->dbg_builder, "bool", 4, 8, DW_ATE_boolean, LLVMDIFlagZero);
-        if (et) et->lldebug = result;
+        if (et) lldebug_set(et, result);
         return result;
     }
 
@@ -271,7 +279,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
         result = LLVMDIBuilderCreateBasicType(
             a->dbg_builder, name, name_len, bits,
             DW_ATE_float, LLVMDIFlagZero);
-        if (et) et->lldebug = result;
+        if (et) lldebug_set(et, result);
         return result;
     }
 
@@ -280,7 +288,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
         result = LLVMDIBuilderCreateBasicType(
             a->dbg_builder, name, name_len, bits,
             DW_ATE_signed, LLVMDIFlagZero);
-        if (et) et->lldebug = result;
+        if (et) lldebug_set(et, result);
         return result;
     }
 
@@ -289,7 +297,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
         result = LLVMDIBuilderCreateBasicType(
             a->dbg_builder, name, name_len, bits,
             DW_ATE_unsigned, LLVMDIFlagZero);
-        if (et) et->lldebug = result;
+        if (et) lldebug_set(et, result);
         return result;
     }
 
@@ -302,7 +310,7 @@ LLVMMetadataRef debug_type_for(aether a, Au_t src, bool w) {
     result = LLVMDIBuilderCreateBasicType(
         a->dbg_builder, name, name_len, bits,
         DW_ATE_address, LLVMDIFlagZero);
-    if (et) et->lldebug = result;
+    if (et) lldebug_set(et, result);
     return result;
 }
 
@@ -427,7 +435,7 @@ LLVMMetadataRef debug_enum_type(aether a, Au_t type_au) {
     if (!type_au || !type_au->ident) return null;
 
     etype et = u(etype, type_au);
-    if (et && et->lldebug) return et->lldebug;
+    if (et && _lldebug(et)) return _lldebug(et);
 
     int n_values = count_enum_values(type_au);
     u32 bits = bits_for_type(a, type_au);
@@ -443,7 +451,7 @@ LLVMMetadataRef debug_enum_type(aether a, Au_t type_au) {
             a->dbg_builder,
             type_au->ident, strlen(type_au->ident),
             bits, DW_ATE_float, LLVMDIFlagZero);
-        if (et) et->lldebug = result;
+        if (et) lldebug_set(et, result);
         return result;
     }
 
@@ -463,7 +471,7 @@ LLVMMetadataRef debug_enum_type(aether a, Au_t type_au) {
             a->dbg_builder,
             type_au->ident, strlen(type_au->ident),
             bits, DW_ATE_unsigned, LLVMDIFlagZero);
-        if (et) et->lldebug = result;
+        if (et) lldebug_set(et, result);
         return result;
     }
 
@@ -493,7 +501,7 @@ LLVMMetadataRef debug_enum_type(aether a, Au_t type_au) {
         underlying);
 
     free(enumerators);
-    if (et) et->lldebug = result;
+    if (et) lldebug_set(et, result);
     return result;
 }
 
@@ -517,7 +525,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
 
     // use lldebug as cache
     etype et = etype_prep(a, type_au);
-    if (et && et->lldebug) return et->lldebug;
+    if (et && _lldebug(et)) return _lldebug(et);
     
     cstr struct_name = type_au->ident;
     u32  name_len    = strlen(struct_name);
@@ -528,9 +536,9 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
 
     // if etype has an lltype, use it for accurate size
     if (!w && et && _lltype_slot(et) && !has_scalable_vector(_lltype_slot(et))) {
-        u32 ll_bits = LLVMABISizeOfType(a->target_data, _lltype_slot(et)) * 8;
+        u32 ll_bits = LLVMABISizeOfType(ll_td(a), _lltype_slot(et)) * 8;
         if (ll_bits) total_bits = ll_bits;
-        u32 ll_align = LLVMABIAlignmentOfType(a->target_data, _lltype_slot(et)) * 8;
+        u32 ll_align = LLVMABIAlignmentOfType(ll_td(a), _lltype_slot(et)) * 8;
         if (ll_align) align = ll_align;
     }
 
@@ -548,7 +556,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
         "", 0);
 
     // cache the forward declaration immediately to break recursion
-    if (et) et->lldebug = fwd_decl;
+    if (et) lldebug_set(et, fwd_decl);
 
     // ── count all members across the inheritance chain ──
     int total_vars    = count_all_instance_vars(type_au);
@@ -566,7 +574,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
             null, 0, 0, null,
             struct_name, name_len);
         LLVMMetadataReplaceAllUsesWith(fwd_decl, di_struct);
-        if (et) et->lldebug = di_struct;
+        if (et) lldebug_set(et, di_struct);
         return di_struct;
     }
 
@@ -763,7 +771,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
                         sv = true;
                 }
                 if (!sv)
-                    offset_bits = LLVMOffsetOfElement(a->target_data, _lltype_slot(et), m->member_index) * 8;
+                    offset_bits = LLVMOffsetOfElement(ll_td(a), _lltype_slot(et), m->member_index) * 8;
                 else
                     offset_bits = (u64)m->offset * 8;
             } else {
@@ -822,7 +830,7 @@ LLVMMetadataRef debug_struct_type(aether a, Au_t type_au, bool w) {
 
     // replace the forward declaration with the real type
     LLVMMetadataReplaceAllUsesWith(fwd_decl, di_struct);
-    if (et) et->lldebug = di_struct;
+    if (et) lldebug_set(et, di_struct);
     return di_struct;
 }
 
@@ -1173,7 +1181,7 @@ static LLVMMetadataRef debug_combined_type(aether a, Au_t schema) {
     u32 inst_bits = 0;
     etype et = u(etype, schema);
     if (et && _lltype_slot(et))
-        inst_bits = LLVMABISizeOfType(a->target_data, _lltype_slot(et)) * 8;
+        inst_bits = LLVMABISizeOfType(ll_td(a), _lltype_slot(et)) * 8;
     else if (schema->abi_size)
         inst_bits = schema->abi_size;
 
@@ -1293,11 +1301,11 @@ void emit_debug_function(aether a, efunc fn, bool w) {
         false);                 // is optimized
 
     etype et_fn = (etype)fn;
-    et_fn->llscope = sp;
+    llscope_set((etype)et_fn, sp);
     a->current_file = file_ref;
 
-    if (fn->value)
-        LLVMSetSubprogram(fn->value, sp);
+    if (_llvalue((enode)fn))
+        LLVMSetSubprogram(_llvalue((enode)fn), sp);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -1310,7 +1318,7 @@ void emit_debug_function(aether a, efunc fn, bool w) {
 void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
     emit_guard;
     if (!a->debug || !a->compile_unit || a->no_build) return;
-    if (!var->autype || !var->autype->ident || !var->value) return;
+    if (!var->autype || !var->autype->ident || !_llvalue((enode)var)) return;
     // synthetic functions (no parse origin_token) have no DISubprogram; a local scoped
     // to the compile unit would be an invalid DILocation scope — skip them.
     {
@@ -1369,7 +1377,7 @@ void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
     // dbg_declare requires an alloca (address of storage).
     // if var->value is already an alloca, use it directly.
     // otherwise create a shadow alloca to hold the value.
-    LLVMValueRef storage = var->value;
+    LLVMValueRef storage = _llvalue((enode)var);
     if (LLVMGetInstructionOpcode(storage) != LLVMAlloca) {
         char shadow_name[256];
         snprintf(shadow_name, sizeof(shadow_name), "%s.dbg", name);
@@ -1395,10 +1403,10 @@ void emit_debug_variable(aether a, enode var, u32 arg_no, u32 line) {
 void emit_debug_params(aether a, efunc fn) {
     emit_guard;
     if (!a->debug || !a->compile_unit || a->no_build) return;
-    if (!fn || !fn->value) return;
+    if (!fn || !_llvalue((enode)fn)) return;
 
     Au_t au = fn->autype;
-    LLVMMetadataRef scope = ((etype)fn)->llscope;
+    LLVMMetadataRef scope = _llscope((etype)fn);
     if (!scope) return;
 
     int arg_no = 1;
@@ -1490,7 +1498,7 @@ void emit_debug_params(aether a, efunc fn) {
             arg_no, a->file, 0, di_type,
             false, LLVMDIFlagZero);
 
-        LLVMValueRef param_val = LLVMGetParam(fn->value, llvm_param_idx);
+        LLVMValueRef param_val = LLVMGetParam(_llvalue((enode)fn), llvm_param_idx);
         LLVMTypeRef  param_ty  = LLVMTypeOf(param_val);
         char alloca_name[256];
         snprintf(alloca_name, sizeof(alloca_name), "%s.addr", name);
