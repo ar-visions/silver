@@ -51,13 +51,6 @@ else
 endif
 
 build: bootstrap
-	@stamp="$(SILVER)/install/.active-config"; \
-	if [ ! -f "$$stamp" ]; then \
-		echo "$(CONFIG)" > "$$stamp"; \
-	elif [ "$$(cat "$$stamp")" != "$(CONFIG)" ]; then \
-		echo "config switch: $$(cat "$$stamp") -> $(CONFIG) (ninja rehashes the cores)"; \
-		echo "$(CONFIG)" > "$$stamp"; \
-	fi
 	echo "$(NINJA) -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja"
 	$(NINJA) -j8 -v -C $(BUILD_ROOT) -f $(PROJECT_NAME).ninja
 	@ln -sfn "$(BUILD_ROOT)/silver" "$(SILVER)/install/bin/silver"; \

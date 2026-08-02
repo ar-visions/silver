@@ -228,7 +228,8 @@ def write_ninja(project, root, import_dir, build_dir, plat):
         base_flags.extend(["-fPIC", "-fvisibility=default"])
     
     global is_debug
-    opt_flags = ["-g", "-O0"] if is_debug else ["-O2"]
+    # the binary carries its own config; nothing on disk records it for us
+    opt_flags = ["-g", "-O0", "-DCONFIG_DEBUG"] if is_debug else ["-O2", "-DCONFIG_RELEASE"]
 
     if is_asan:
         opt_flags.extend(["-fsanitize=address"])
