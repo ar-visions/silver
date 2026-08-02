@@ -14,6 +14,8 @@ import <math.h>
 import <fenv.h>
 import <pthread.h>
 import <unistd.h>
+    +_DEFAULT_SOURCE
+    +_XOPEN_SOURCE=500
 
 import <reference/ares/ares_cosim.h>
 	-l/src/silver/foundry/n64/reference/ares/libares_cosim.a

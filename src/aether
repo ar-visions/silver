@@ -92,229 +92,229 @@ declare_class_2(statements, etype)
 forward(efunc)
 forward(evar)
 
-#define aether_schema(X, Y, ...) \
-    M(X, Y, i, prop,     public,  bool,                     component) \
-    M(X, Y, i, prop,     public,  string,                   name) \
-    M(X, Y, i, prop,     def,     path,                     module) \
-    M(X, Y, i, prop,     public,  path,                     module_file) \
-    M(X, Y, i, prop,     public,  path,                     root_path) \
-    M(X, Y, i, prop,     public,  path,                     module_path) \
-    M(X, Y, i, prop,     public,  path,                     project_path) \
-    M(X, Y, i, prop,     public,  bool,                     building_initializer) \
-    M(X, Y, i, prop,     public,  bool,                     init_props_retain_skip) \
-    M(X, Y, i, prop,     public,  bool,                     direct) \
-    M(X, Y, i, prop,     public,  bool,                     import_c) \
-    M(X, Y, i, prop,     public,  bool,                     release) \
-    M(X, Y, i, prop,     public,  bool,                     strip_expect) \
-    M(X, Y, i, prop,     public,  bool,                     debug) \
-    M(X, Y, i, prop,     public,  bool,                     asan) \
-    M(X, Y, i, prop,     public,  bool,                     coverage) \
-    M(X, Y, i, prop,     public,  bool,                     timing) \
-    M(X, Y, i, prop,     public,  i32,                      next_func_id) \
-    M(X, Y, i, prop,     public,  i32,                      next_probe_id) \
-    M(X, Y, i, prop,     public,  path,                     current_import) \
-    M(X, Y, i, prop,     public,  i32,                      expr_level) \
-    M(X, Y, i, prop,     public,  Au_t,                     import_module) \
-    M(X, Y, i, prop,     intern,  array,                    import_inits) \
-    M(X, Y, i, prop,     public,  Au_t,                     au_module) \
-    M(X, Y, i, prop,     public,  map,                      libs) \
-    M(X, Y, i, prop,     public,  map,                      frameworks) \
-    M(X, Y, i, prop,     public,  map,                      user_type_ids) \
-    M(X, Y, i, prop,     public,  array,                    lexical) \
-    M(X, Y, i, prop,     public,  bool,                     is_Au_import) \
-    M(X, Y, i, prop,     public,  bool,                     in_ref) \
-    M(X, Y, i, prop,     public,  array,                    sys_inc_paths) \
-    M(X, Y, i, prop,     public,  array,                    sys_exc_paths) \
-    M(X, Y, i, prop,     public,  array,                    include_paths) \
-    M(X, Y, i, prop,     public,  array,                    framework_paths) \
-    M(X, Y, i, prop,     public,  array,                    lib_paths) \
-    M(X, Y, i, prop,     public,  path,                     isysroot) \
-    M(X, Y, i, prop,     public,  path,                     resource_dir) \
-    M(X, Y, i, prop,     public,  path,                     isystem) \
-    M(X, Y, i, prop,     public,  bool,                     verbose) \
-    M(X, Y, i, prop,     public,  path,                     install) \
-    M(X, Y, i, prop,     public,  bool,                     is_library) \
-    M(X, Y, i, prop,     public,  bool,                     has_coverage) \
-    M(X, Y, i, prop,     public,  bool,                     is_live) \
-    M(X, Y, i, prop,     public,  bool,                     cmode) \
-    M(X, Y, i, prop,     public,  bool,                     no_build) \
-    M(X, Y, i, prop,     public,  bool,                     type_given) \
-    M(X, Y, i, prop,     public,  bool,                     skip_context_resolve) \
-    M(X, Y, i, prop,     public,  bool,                     deferred_hit) \
-    M(X, Y, i, prop,     public,  bool,                     no_const) \
-    M(X, Y, i, prop,     public,  bool,                     is_const_op) \
-    M(X, Y, i, prop,     public,  bool,                     iterator_guard) \
-    M(X, Y, i, prop,     public,  bool,                     debug_typeid) \
-    M(X, Y, i, prop,     public,  bool,                     is_delegate) \
-    M(X, Y, i, prop,     public,  array,                    setter_key_tokens) \
-    M(X, Y, i, prop,     public,  Au_t,                     setter_fn) \
-    M(X, Y, i, prop,     public,  i32,                      stack_test) \
-    M(X, Y, i, prop,     public,  enode,                    last_return) \
-    M(X, Y, i, prop,     public,  efunc,                    fn_init) \
-    M(X, Y, i, prop,     public,  callback,                 prepare_record) \
-    M(X, Y, i, prop,     public,  callback_extra,           emit_overrides) \
-    M(X, Y, i, prop,     public,  callback_extra,           parse_f) \
-    M(X, Y, i, prop,     public,  callback,                 parse_enode) \
-    M(X, Y, i, prop,     public,  callback,                 parse_expr) \
-    M(X, Y, i, prop,     public,  callback_extra,           read_etype) \
-    M(X, Y, i, prop,     intern,  LLVMTypeRef,              func_timing_lltype,      as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMValueRef,             func_timings_global,     as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMValueRef,             func_names_global,       as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMTypeRef,              clock_gettime_type,      as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMValueRef,             clock_gettime_fn,        as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMTypeRef,              coverage_probe_lltype,   as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMValueRef,             coverage_probes_global,  as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMValueRef,             coverage_seq_global,     as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMValueRef,             coverage_seq_local,      as, ARef) \
-    M(X, Y, i, prop,     public,  bool,                     listen_active) \
-    M(X, Y, i, prop,     public,  bool,                     listen_values) \
-    M(X, Y, i, prop,     public,  bool,                     listen_emitting) \
-    M(X, Y, i, prop,     intern,  LLVMValueRef,             listen_gate,       as, ARef) \
-    M(X, Y, i, prop,     public,  string,                   watch_class) \
-    M(X, Y, i, prop,     public,  string,                   watch_member) \
-    M(X, Y, i, prop,     intern,  token,                    listen_last_token, as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMExecutionEngineRef,   jit,                     as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMBasicBlockRef,        current_if_block,        as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMModuleRef,            module_ref,              as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMContextRef,           module_ctx,              as, ARef) \
-    M(X, Y, i, prop,     public,  i32,                      ncores) \
-    M(X, Y, i, prop,     intern,  array,                    ctxs) \
-    M(X, Y, i, prop,     intern,  array,                    mods) \
-    M(X, Y, i, prop,     intern,  array,                    dbgs) \
-    M(X, Y, i, prop,     intern,  array,                    files) \
-    M(X, Y, i, prop,     intern,  array,                    cus) \
-    M(X, Y, i, prop,     intern,  LLVMBuilderRef,           builder,                 as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMMetadataRef,          file,                    as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMMetadataRef,          current_file,            as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMMetadataRef,          compile_unit,            as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMDIBuilderRef,         dbg_builder,             as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMTargetRef,            target_ref,              as, ARef) \
-    M(X, Y, i, prop,     intern,  LLVMTargetDataRef,        target_data,             as, ARef) \
-    M(X, Y, i, array,    intern,  ARef,            AU_CORES, target_datas) \
-    M(X, Y, i, prop,     intern,  LLVMTargetMachineRef,     target_machine,          as, ARef) \
-    M(X, Y, i, array,    intern,  ARef,            AU_CORES, target_machines) \
-    M(X, Y, i, prop,     intern,  cstr,                     target_triple) \
-    M(X, Y, i, prop,     public,  token,                    statement_origin) \
-    M(X, Y, i, prop,     public,  store,                    registry) \
-    M(X, Y, i, prop,     public,  i32,                      core) \
-    M(X, Y, i, prop,     public,  aether,                   root, meta, weak) \
-    M(X, Y, i, prop,     public,  tokens,                   tokens) \
-    M(X, Y, i, prop,     public,  num,                      cursor) \
-    M(X, Y, i, prop,     public,  array,                    stack) \
-    M(X, Y, i, prop,     public,  Au_t,                     top) \
-    M(X, Y, i, prop,     public,  string,                   dbg_init) \
-    M(X, Y, i, prop,     public,  string,                   dbg_implement) \
-    M(X, Y, i, prop,     public,  string,                   break_id) \
-    M(X, Y, i, prop,     public,  map,                      init_props) \
-    M(X, Y, i, prop,     public,  handle,                   init_fbits) \
-    M(X, Y, i, prop,     public,  array,                    imports) \
-    M(X, Y, i, vargs,    public,  none,                     eprint, symbol) \
-    M(X, Y, i, method,   public,  none,                     e_vector_init, etype, enode, array) \
-    M(X, Y, i, method,   public,  none,                     e_setenv, symbol, symbol) \
-    M(X, Y, i, method,   public,  none,                     create_type_members, Au_t) \
-    M(X, Y, i, method,   public,  none,                     build_module_initializer, enode) \
-    M(X, Y, i, method,   public,  efunc,                    module_initializer) \
-    M(X, Y, i, method,   public,  none,                     import_Au, string, Au) \
-    M(X, Y, i, method,   public,  efunc,                    function, etype, string, etype, array, u8, u32, u8) \
-    M(X, Y, i, method,   public,  etype,                    record, etype, etype, string, u32) \
-    M(X, Y, i, method,   public,  none,                     reinit_startup) \
-    M(X, Y, i, method,   public,  none,                     unload_libs) \
-    M(X, Y, i, method,   public,  enode,                    e_alloc, etype) \
-    M(X, Y, i, method,   public,  bool,                     e_fn_return, Au) \
-    M(X, Y, i, method,   public,  none,                     e_cond_return, enode, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_null, etype) \
-    M(X, Y, i, method,   public,  enode,                    e_default_value, etype) \
-    M(X, Y, i, method,   public,  enode,                    e_builder, subprocedure) \
-    M(X, Y, i, method,   public,  none,                     build_user_initializer, etype) \
-    M(X, Y, i, method,   public,  none,                     emit_override_init, enode, Au_t) \
-    M(X, Y, i, method,   public,  enode,                    build_attrib_value, evar) \
-    M(X, Y, i, method,   public,  enode,                    e_subroutine, etype, array, subprocedure) \
-    M(X, Y, i, method,   public,  none,                     e_cmp_code, enode, comparison, enode, code, code) \
-    M(X, Y, i, method,   public,  enode,                    e_cmp, enode, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_cmp_op, OPType, enode, enode) \
-    M(X, Y, i, method,   public,  none,                     e_branch, code) \
-    M(X, Y, i, method,   public,  enode,                    e_expect, enode, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_expect_begin, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_expect_end, enode, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_fault, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_break, catcher) \
-    M(X, Y, i, method,   public,  enode,                    e_continue, catcher) \
-    M(X, Y, i, method,   public,  none,                     e_memcpy, enode, enode, Au_t) \
-    M(X, Y, i, method,   public,  enode,                    e_operand, Au, etype) \
-    M(X, Y, i, method,   public,  enode,                    e_short_circuit, OPType, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_op, OPType, string, Au, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_load, enode, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_typeid, etype) \
-    M(X, Y, i, method,   public,  enode,                    e_meta_ids, Au, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_eval, string) \
-    M(X, Y, i, method,   public,  enode,                    e_interpolate, string) \
-    M(X, Y, i, method,   public,  enode,                    e_const_array, etype, array) \
-    M(X, Y, i, method,   public,  enode,                    e_offset, enode, Au, bool) \
-    M(X, Y, i, method,   public,  enode,                    e_switch, enode, map, array, subprocedure, subprocedure) \
-    M(X, Y, i, method,   public,  enode,                    e_native_switch, enode, map, array, subprocedure, subprocedure) \
-    M(X, Y, i, method,   public,  enode,                    e_for, array, array, array, array, subprocedure, subprocedure, subprocedure, subprocedure, bool, enode, evar, evar, bool) \
-    M(X, Y, i, method,   public,  enode,                    e_if_else, array, array, subprocedure, subprocedure) \
-    M(X, Y, i, method,   public,  enode,                    e_init, enode, map, efunc, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_ternary, enode, enode, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_ternary_deferred, enode, array, array, subprocedure) \
-    M(X, Y, i, method,   public,  enode,                    e_coalesce_deferred, enode, array, subprocedure) \
-    M(X, Y, i, method,   public,  enode,                    e_primitive_convert, enode, etype) \
-    M(X, Y, i, method,   public,  enode,                    e_direct_cast, enode, etype) \
-    M(X, Y, i, method,   public,  enode,                    e_noop, etype) \
-    M(X, Y, i, method,   public,  enode,                    e_inherited_access, enode, Au_t) \
-    M(X, Y, i, method,   public,  enode,                    e_addr_of, enode, etype) \
-    M(X, Y, i, method,   public,  enode,                    e_bitwise_not, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_not, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_neg, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_max, enode, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_min, enode, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_abs, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_clamp, enode, enode, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_math, i32, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_math2, i32, enode, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_stack_array, etype, i32) \
-    M(X, Y, i, method,   public,  enode,                    e_stack_array_dynamic, etype, enode) \
-    M(X, Y, i, method,   public,  none,                     e_inc, enode, num) \
-    M(X, Y, i, method,   public,  none,                     e_print_node, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_or, Au, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_xor, Au, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_and, Au, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_add, Au, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_sub, Au, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_mul, Au, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_div, Au, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_create, etype, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_vector, etype, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_zero, enode) \
-    M(X, Y, i, method,   public,  enode,                    e_assign, enode, Au, OPType) \
-    M(X, Y, i, method,   public,  none,                     e_assign_if_null, enode, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_fn_call, efunc, array, bool, bool) \
-    M(X, Y, i, method,   public,  enode,                    lambda_fcall, efunc, array) \
-    M(X, Y, i, method,   public,  enode,                    e_is, enode, Au) \
-    M(X, Y, i, method,   public,  enode,                    e_inherits, enode, Au) \
-    M(X, Y, i, method,   public,  none,                     llflag, symbol, i32) \
-    M(X, Y, i, method,   public,  bool,                     emit, ARef, ARef) \
-    M(X, Y, i, method,   public,  bool,                     emit_object, path) \
-    M(X, Y, i, method,   public,  string,                   core_objects, path) \
-    M(X, Y, i, method,   public,  etype,                    return_type) \
-    M(X, Y, i, method,   public,  statements,               context_code) \
-    M(X, Y, i, method,   public,  efunc,                    context_func) \
-    M(X, Y, i, method,   public,  etype,                    context_class) \
-    M(X, Y, i, method,   public,  etype,                    context_struct) \
-    M(X, Y, i, method,   public,  etype,                    context_record) \
-    M(X, Y, i, method,   public,  etype,                    context_model, Au_t) \
-    M(X, Y, i, method,   public,  none,                     push_current) \
-    M(X, Y, i, method,   public,  none,                     push_tokens, tokens, num) \
-    M(X, Y, i, method,   public,  none,                     pop_tokens, bool) \
-    M(X, Y, i, method,   public,  path,                     lookup_include, string) \
-    M(X, Y, i, method,   public,  path,                     include, Au, string) \
-    M(X, Y, i, method,   public,  none,                     import_includes) \
-    M(X, Y, i, method,   public,  Au_t,                     top_scope) \
-    M(X, Y, i, method,   public,  none,                     push_scope, Au, i32) \
-    M(X, Y, i, method,   public,  Au_t,                     pop_scope) \
-    M(X, Y, i, method,   public,  enode,                    e_asm, array, array, etype, string) \
-    M(X, Y, i, override, method,  init) \
-    M(X, Y, i, override, method,  dealloc)
+#define aether_schema(A, U, ...) \
+    M(A,U,i, prop,     public,  bool,                     component) \
+    M(A,U,i, prop,     public,  string,                   name) \
+    M(A,U,i, prop,     def,     path,                     module) \
+    M(A,U,i, prop,     public,  path,                     module_file) \
+    M(A,U,i, prop,     public,  path,                     root_path) \
+    M(A,U,i, prop,     public,  path,                     module_path) \
+    M(A,U,i, prop,     public,  path,                     project_path) \
+    M(A,U,i, prop,     public,  bool,                     building_initializer) \
+    M(A,U,i, prop,     public,  bool,                     init_props_retain_skip) \
+    M(A,U,i, prop,     public,  bool,                     direct) \
+    M(A,U,i, prop,     public,  bool,                     import_c) \
+    M(A,U,i, prop,     public,  bool,                     release) \
+    M(A,U,i, prop,     public,  bool,                     strip_expect) \
+    M(A,U,i, prop,     public,  bool,                     debug) \
+    M(A,U,i, prop,     public,  bool,                     asan) \
+    M(A,U,i, prop,     public,  bool,                     coverage) \
+    M(A,U,i, prop,     public,  bool,                     timing) \
+    M(A,U,i, prop,     public,  i32,                      next_func_id) \
+    M(A,U,i, prop,     public,  i32,                      next_probe_id) \
+    M(A,U,i, prop,     public,  path,                     current_import) \
+    M(A,U,i, prop,     public,  i32,                      expr_level) \
+    M(A,U,i, prop,     public,  Au_t,                     import_module) \
+    M(A,U,i, prop,     intern,  array,                    import_inits) \
+    M(A,U,i, prop,     public,  Au_t,                     au_module) \
+    M(A,U,i, prop,     public,  map,                      libs) \
+    M(A,U,i, prop,     public,  map,                      frameworks) \
+    M(A,U,i, prop,     public,  map,                      user_type_ids) \
+    M(A,U,i, prop,     public,  array,                    lexical) \
+    M(A,U,i, prop,     public,  bool,                     is_Au_import) \
+    M(A,U,i, prop,     public,  bool,                     in_ref) \
+    M(A,U,i, prop,     public,  array,                    sys_inc_paths) \
+    M(A,U,i, prop,     public,  array,                    sys_exc_paths) \
+    M(A,U,i, prop,     public,  array,                    include_paths) \
+    M(A,U,i, prop,     public,  array,                    framework_paths) \
+    M(A,U,i, prop,     public,  array,                    lib_paths) \
+    M(A,U,i, prop,     public,  path,                     isysroot) \
+    M(A,U,i, prop,     public,  path,                     resource_dir) \
+    M(A,U,i, prop,     public,  path,                     isystem) \
+    M(A,U,i, prop,     public,  bool,                     verbose) \
+    M(A,U,i, prop,     public,  path,                     install) \
+    M(A,U,i, prop,     public,  bool,                     is_library) \
+    M(A,U,i, prop,     public,  bool,                     has_coverage) \
+    M(A,U,i, prop,     public,  bool,                     is_live) \
+    M(A,U,i, prop,     public,  bool,                     cmode) \
+    M(A,U,i, prop,     public,  bool,                     no_build) \
+    M(A,U,i, prop,     public,  bool,                     type_given) \
+    M(A,U,i, prop,     public,  bool,                     skip_context_resolve) \
+    M(A,U,i, prop,     public,  bool,                     deferred_hit) \
+    M(A,U,i, prop,     public,  bool,                     no_const) \
+    M(A,U,i, prop,     public,  bool,                     is_const_op) \
+    M(A,U,i, prop,     public,  bool,                     iterator_guard) \
+    M(A,U,i, prop,     public,  bool,                     debug_typeid) \
+    M(A,U,i, prop,     public,  bool,                     is_delegate) \
+    M(A,U,i, prop,     public,  array,                    setter_key_tokens) \
+    M(A,U,i, prop,     public,  Au_t,                     setter_fn) \
+    M(A,U,i, prop,     public,  i32,                      stack_test) \
+    M(A,U,i, prop,     public,  enode,                    last_return) \
+    M(A,U,i, prop,     public,  efunc,                    fn_init) \
+    M(A,U,i, prop,     public,  callback,                 prepare_record) \
+    M(A,U,i, prop,     public,  callback_extra,           emit_overrides) \
+    M(A,U,i, prop,     public,  callback_extra,           parse_f) \
+    M(A,U,i, prop,     public,  callback,                 parse_enode) \
+    M(A,U,i, prop,     public,  callback,                 parse_expr) \
+    M(A,U,i, prop,     public,  callback_extra,           read_etype) \
+    M(A,U,i, prop,     intern,  LLVMTypeRef,              func_timing_lltype,      as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMValueRef,             func_timings_global,     as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMValueRef,             func_names_global,       as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMTypeRef,              clock_gettime_type,      as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMValueRef,             clock_gettime_fn,        as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMTypeRef,              coverage_probe_lltype,   as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMValueRef,             coverage_probes_global,  as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMValueRef,             coverage_seq_global,     as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMValueRef,             coverage_seq_local,      as, ARef) \
+    M(A,U,i, prop,     public,  bool,                     listen_active) \
+    M(A,U,i, prop,     public,  bool,                     listen_values) \
+    M(A,U,i, prop,     public,  bool,                     listen_emitting) \
+    M(A,U,i, prop,     intern,  LLVMValueRef,             listen_gate,       as, ARef) \
+    M(A,U,i, prop,     public,  string,                   watch_class) \
+    M(A,U,i, prop,     public,  string,                   watch_member) \
+    M(A,U,i, prop,     intern,  token,                    listen_last_token, as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMExecutionEngineRef,   jit,                     as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMBasicBlockRef,        current_if_block,        as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMModuleRef,            module_ref,              as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMContextRef,           module_ctx,              as, ARef) \
+    M(A,U,i, prop,     public,  i32,                      ncores) \
+    M(A,U,i, prop,     intern,  array,                    ctxs) \
+    M(A,U,i, prop,     intern,  array,                    mods) \
+    M(A,U,i, prop,     intern,  array,                    dbgs) \
+    M(A,U,i, prop,     intern,  array,                    files) \
+    M(A,U,i, prop,     intern,  array,                    cus) \
+    M(A,U,i, prop,     intern,  LLVMBuilderRef,           builder,                 as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMMetadataRef,          file,                    as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMMetadataRef,          current_file,            as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMMetadataRef,          compile_unit,            as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMDIBuilderRef,         dbg_builder,             as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMTargetRef,            target_ref,              as, ARef) \
+    M(A,U,i, prop,     intern,  LLVMTargetDataRef,        target_data,             as, ARef) \
+    M(A,U,i, array,    intern,  ARef,            AU_CORES, target_datas) \
+    M(A,U,i, prop,     intern,  LLVMTargetMachineRef,     target_machine,          as, ARef) \
+    M(A,U,i, array,    intern,  ARef,            AU_CORES, target_machines) \
+    M(A,U,i, prop,     intern,  cstr,                     target_triple) \
+    M(A,U,i, prop,     public,  token,                    statement_origin) \
+    M(A,U,i, prop,     public,  store,                    registry) \
+    M(A,U,i, prop,     public,  i32,                      core) \
+    M(A,U,i, prop,     public,  aether,                   root, meta, weak) \
+    M(A,U,i, prop,     public,  tokens,                   tokens) \
+    M(A,U,i, prop,     public,  num,                      cursor) \
+    M(A,U,i, prop,     public,  array,                    stack) \
+    M(A,U,i, prop,     public,  Au_t,                     top) \
+    M(A,U,i, prop,     public,  string,                   dbg_init) \
+    M(A,U,i, prop,     public,  string,                   dbg_implement) \
+    M(A,U,i, prop,     public,  string,                   break_id) \
+    M(A,U,i, prop,     public,  map,                      init_props) \
+    M(A,U,i, prop,     public,  handle,                   init_fbits) \
+    M(A,U,i, prop,     public,  array,                    imports) \
+    M(A,U,i, vargs,    public,  none,                     eprint, symbol) \
+    M(A,U,i, method,   public,  none,                     e_vector_init, etype, enode, array) \
+    M(A,U,i, method,   public,  none,                     e_setenv, symbol, symbol) \
+    M(A,U,i, method,   public,  none,                     create_type_members, Au_t) \
+    M(A,U,i, method,   public,  none,                     build_module_initializer, enode) \
+    M(A,U,i, method,   public,  efunc,                    module_initializer) \
+    M(A,U,i, method,   public,  none,                     import_Au, string, Au) \
+    M(A,U,i, method,   public,  efunc,                    function, etype, string, etype, array, u8, u32, u8) \
+    M(A,U,i, method,   public,  etype,                    record, etype, etype, string, u32) \
+    M(A,U,i, method,   public,  none,                     reinit_startup) \
+    M(A,U,i, method,   public,  none,                     unload_libs) \
+    M(A,U,i, method,   public,  enode,                    e_alloc, etype) \
+    M(A,U,i, method,   public,  bool,                     e_fn_return, Au) \
+    M(A,U,i, method,   public,  none,                     e_cond_return, enode, Au) \
+    M(A,U,i, method,   public,  enode,                    e_null, etype) \
+    M(A,U,i, method,   public,  enode,                    e_default_value, etype) \
+    M(A,U,i, method,   public,  enode,                    e_builder, subprocedure) \
+    M(A,U,i, method,   public,  none,                     build_user_initializer, etype) \
+    M(A,U,i, method,   public,  none,                     emit_override_init, enode, Au_t) \
+    M(A,U,i, method,   public,  enode,                    build_attrib_value, evar) \
+    M(A,U,i, method,   public,  enode,                    e_subroutine, etype, array, subprocedure) \
+    M(A,U,i, method,   public,  none,                     e_cmp_code, enode, comparison, enode, code, code) \
+    M(A,U,i, method,   public,  enode,                    e_cmp, enode, enode) \
+    M(A,U,i, method,   public,  enode,                    e_cmp_op, OPType, enode, enode) \
+    M(A,U,i, method,   public,  none,                     e_branch, code) \
+    M(A,U,i, method,   public,  enode,                    e_expect, enode, enode) \
+    M(A,U,i, method,   public,  enode,                    e_expect_begin, enode) \
+    M(A,U,i, method,   public,  enode,                    e_expect_end, enode, enode) \
+    M(A,U,i, method,   public,  enode,                    e_fault, enode) \
+    M(A,U,i, method,   public,  enode,                    e_break, catcher) \
+    M(A,U,i, method,   public,  enode,                    e_continue, catcher) \
+    M(A,U,i, method,   public,  none,                     e_memcpy, enode, enode, Au_t) \
+    M(A,U,i, method,   public,  enode,                    e_operand, Au, etype) \
+    M(A,U,i, method,   public,  enode,                    e_short_circuit, OPType, enode) \
+    M(A,U,i, method,   public,  enode,                    e_op, OPType, string, Au, Au) \
+    M(A,U,i, method,   public,  enode,                    e_load, enode, enode) \
+    M(A,U,i, method,   public,  enode,                    e_typeid, etype) \
+    M(A,U,i, method,   public,  enode,                    e_meta_ids, Au, Au) \
+    M(A,U,i, method,   public,  enode,                    e_eval, string) \
+    M(A,U,i, method,   public,  enode,                    e_interpolate, string) \
+    M(A,U,i, method,   public,  enode,                    e_const_array, etype, array) \
+    M(A,U,i, method,   public,  enode,                    e_offset, enode, Au, bool) \
+    M(A,U,i, method,   public,  enode,                    e_switch, enode, map, array, subprocedure, subprocedure) \
+    M(A,U,i, method,   public,  enode,                    e_native_switch, enode, map, array, subprocedure, subprocedure) \
+    M(A,U,i, method,   public,  enode,                    e_for, array, array, array, array, subprocedure, subprocedure, subprocedure, subprocedure, bool, enode, evar, evar, bool) \
+    M(A,U,i, method,   public,  enode,                    e_if_else, array, array, subprocedure, subprocedure) \
+    M(A,U,i, method,   public,  enode,                    e_init, enode, map, efunc, enode) \
+    M(A,U,i, method,   public,  enode,                    e_ternary, enode, enode, enode) \
+    M(A,U,i, method,   public,  enode,                    e_ternary_deferred, enode, array, array, subprocedure) \
+    M(A,U,i, method,   public,  enode,                    e_coalesce_deferred, enode, array, subprocedure) \
+    M(A,U,i, method,   public,  enode,                    e_primitive_convert, enode, etype) \
+    M(A,U,i, method,   public,  enode,                    e_direct_cast, enode, etype) \
+    M(A,U,i, method,   public,  enode,                    e_noop, etype) \
+    M(A,U,i, method,   public,  enode,                    e_inherited_access, enode, Au_t) \
+    M(A,U,i, method,   public,  enode,                    e_addr_of, enode, etype) \
+    M(A,U,i, method,   public,  enode,                    e_bitwise_not, enode) \
+    M(A,U,i, method,   public,  enode,                    e_not, enode) \
+    M(A,U,i, method,   public,  enode,                    e_neg, enode) \
+    M(A,U,i, method,   public,  enode,                    e_max, enode, enode) \
+    M(A,U,i, method,   public,  enode,                    e_min, enode, enode) \
+    M(A,U,i, method,   public,  enode,                    e_abs, enode) \
+    M(A,U,i, method,   public,  enode,                    e_clamp, enode, enode, enode) \
+    M(A,U,i, method,   public,  enode,                    e_math, i32, enode) \
+    M(A,U,i, method,   public,  enode,                    e_math2, i32, enode, enode) \
+    M(A,U,i, method,   public,  enode,                    e_stack_array, etype, i32) \
+    M(A,U,i, method,   public,  enode,                    e_stack_array_dynamic, etype, enode) \
+    M(A,U,i, method,   public,  none,                     e_inc, enode, num) \
+    M(A,U,i, method,   public,  none,                     e_print_node, enode) \
+    M(A,U,i, method,   public,  enode,                    e_or, Au, Au) \
+    M(A,U,i, method,   public,  enode,                    e_xor, Au, Au) \
+    M(A,U,i, method,   public,  enode,                    e_and, Au, Au) \
+    M(A,U,i, method,   public,  enode,                    e_add, Au, Au) \
+    M(A,U,i, method,   public,  enode,                    e_sub, Au, Au) \
+    M(A,U,i, method,   public,  enode,                    e_mul, Au, Au) \
+    M(A,U,i, method,   public,  enode,                    e_div, Au, Au) \
+    M(A,U,i, method,   public,  enode,                    e_create, etype, Au) \
+    M(A,U,i, method,   public,  enode,                    e_vector, etype, enode) \
+    M(A,U,i, method,   public,  enode,                    e_zero, enode) \
+    M(A,U,i, method,   public,  enode,                    e_assign, enode, Au, OPType) \
+    M(A,U,i, method,   public,  none,                     e_assign_if_null, enode, Au) \
+    M(A,U,i, method,   public,  enode,                    e_fn_call, efunc, array, bool, bool) \
+    M(A,U,i, method,   public,  enode,                    lambda_fcall, efunc, array) \
+    M(A,U,i, method,   public,  enode,                    e_is, enode, Au) \
+    M(A,U,i, method,   public,  enode,                    e_inherits, enode, Au) \
+    M(A,U,i, method,   public,  none,                     llflag, symbol, i32) \
+    M(A,U,i, method,   public,  bool,                     emit, ARef, ARef) \
+    M(A,U,i, method,   public,  bool,                     emit_object, path) \
+    M(A,U,i, method,   public,  string,                   core_objects, path) \
+    M(A,U,i, method,   public,  etype,                    return_type) \
+    M(A,U,i, method,   public,  statements,               context_code) \
+    M(A,U,i, method,   public,  efunc,                    context_func) \
+    M(A,U,i, method,   public,  etype,                    context_class) \
+    M(A,U,i, method,   public,  etype,                    context_struct) \
+    M(A,U,i, method,   public,  etype,                    context_record) \
+    M(A,U,i, method,   public,  etype,                    context_model, Au_t) \
+    M(A,U,i, method,   public,  none,                     push_current) \
+    M(A,U,i, method,   public,  none,                     push_tokens, tokens, num) \
+    M(A,U,i, method,   public,  none,                     pop_tokens, bool) \
+    M(A,U,i, method,   public,  path,                     lookup_include, string) \
+    M(A,U,i, method,   public,  path,                     include, Au, string) \
+    M(A,U,i, method,   public,  none,                     import_includes) \
+    M(A,U,i, method,   public,  Au_t,                     top_scope) \
+    M(A,U,i, method,   public,  none,                     push_scope, Au, i32) \
+    M(A,U,i, method,   public,  Au_t,                     pop_scope) \
+    M(A,U,i, method,   public,  enode,                    e_asm, array, array, etype, string) \
+    M(A,U,i, override, method,  init) \
+    M(A,U,i, override, method,  dealloc)
 declare_class_3(aether, emodule, etype);
 
 #define tokens_data_module_ aether

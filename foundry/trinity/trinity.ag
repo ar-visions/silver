@@ -102,9 +102,6 @@ import Style
 import Canvas
 import Console
 
-ifdef [ linux ]
-	func usleep[u64]
-
 scalar sec : i64
     cast -> ns  [ a * 1000000000 ]
     cast -> ms  [ a * 1000 ]

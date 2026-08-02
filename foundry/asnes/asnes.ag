@@ -6,6 +6,8 @@ import img
 import vec
 import spectra
 import <unistd.h>
+    +_DEFAULT_SOURCE
+    +_XOPEN_SOURCE=500
 import <time.h>
 import <pthread.h>
 import <math.h>

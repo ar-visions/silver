@@ -1050,11 +1050,12 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
     u64 fhash = f ? au_hash_ident(f) : 0;
     bool au_is_expanding(Au_t m);
     do {
-        // fast path: hash map lookup, then verify filters
+        // the map holds every named member, so it answers named lookups alone
         if (f && fhash && mdl->member_map) {
             store s = (store)mdl->member_map;
             size_t idx = ((size_t)fhash >> 3) % s->hsize;
-            for (item it = s->hlist[idx]; it; it = it->next) {
+            for (item it = __atomic_load_n(&s->hlist[idx], __ATOMIC_ACQUIRE); it;
+                     it = __atomic_load_n(&it->next,      __ATOMIC_ACQUIRE)) {
                 if (it->key == (Au)(uintptr_t)fhash) {
                     Au_t au = (Au_t)it->value;
                     if (au && au->ident && !au_is_expanding(au) && strcmp(au->ident, f) == 0) {
@@ -1064,8 +1065,7 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
                     }
                 }
             }
-        }
-        {
+        } else {
             // slow path: linear scan with filters
             for (int i = 0; i < mdl->members.count; i++) {
                 Au_t au = (Au_t)mdl->members.origin[i];
@@ -1135,20 +1135,40 @@ Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) {
                     if (m->ident && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)) && (!member_type || m->member_type == member_type))
                         return m;
                 }
-            // hash reject: name provably absent from this scope's members
+            // the map holds every named member, so walk only this name's
+            // entries; without a map the members array is the only source
+            item cand    = null;
+            bool use_map = false;
             if (fhash && au->member_map) {
                 store s = (store)au->member_map;
-                item it = s->hlist[((size_t)fhash >> 3) % s->hsize];
-                while (it && it->key != (Au)(uintptr_t)fhash) it = it->next;
+                item it = __atomic_load_n(&s->hlist[((size_t)fhash >> 3) % s->hsize], __ATOMIC_ACQUIRE);
+                while (it && it->key != (Au)(uintptr_t)fhash)
+                    it = __atomic_load_n(&it->next, __ATOMIC_ACQUIRE);
                 if (!it) {
                     if (!is_class((Au)au)) break;
                     if (au->context == au) break;
                     au = au->context;
                     continue;
                 }
+                cand    = it;
+                use_map = true;
             }
-            for (int ii = 0; ii < au->members.count; ii++) {
-                Au_t m = (Au_t)au->members.origin[ii];
+            item mit = cand;
+            int  ii  = 0;
+            for (;;) {
+                Au_t m      = null;
+                item  m_rest = null;
+                if (use_map) {
+                    while (mit && mit->key != (Au)(uintptr_t)fhash)
+                        mit = __atomic_load_n(&mit->next, __ATOMIC_ACQUIRE);
+                    if (!mit) break;
+                    m      = (Au_t)mit->value;
+                    m_rest = __atomic_load_n(&mit->next, __ATOMIC_ACQUIRE);
+                    mit    = m_rest;
+                } else {
+                    if (ii >= au->members.count) break;
+                    m = (Au_t)au->members.origin[ii++];
+                }
                 if (au->is_struct || au->is_class) {
                     if (((au != typeid(Au) || top_Au) && au->member_type == AU_MEMBER_TYPE) || is_func((Au)m)) {
                         if (m->ident && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)) && (!member_type || m->member_type == member_type))
@@ -1157,13 +1177,25 @@ Au_t lexical_traits(array lex, symbol f, u64 traits, int member_type) {
                 } else {
                     if (m->ident && !au_is_expanding(m) && strcmp(m->ident, f) == 0 && (!traits || (m->traits & traits)) && (!member_type || m->member_type == member_type)) {
                         // prefer functions over types when both exist with same name
-                        if (m->member_type == AU_MEMBER_TYPE && !traits) {
+                        if (m->member_type == AU_MEMBER_TYPE && !traits && !member_type) {
                             Au_t func_match = null;
-                            for (int jj = ii + 1; jj < au->members.count; jj++) {
-                                Au_t mj = (Au_t)au->members.origin[jj];
-                                if (mj->ident && strcmp(mj->ident, f) == 0 && is_func((Au)mj)) {
-                                    func_match = mj;
-                                    break;
+                            if (use_map) {
+                                for (item jt = m_rest; jt;
+                                         jt = __atomic_load_n(&jt->next, __ATOMIC_ACQUIRE)) {
+                                    if (jt->key != (Au)(uintptr_t)fhash) continue;
+                                    Au_t mj = (Au_t)jt->value;
+                                    if (mj->ident && strcmp(mj->ident, f) == 0 && is_func((Au)mj)) {
+                                        func_match = mj;
+                                        break;
+                                    }
+                                }
+                            } else {
+                                for (int jj = ii; jj < au->members.count; jj++) {
+                                    Au_t mj = (Au_t)au->members.origin[jj];
+                                    if (mj->ident && strcmp(mj->ident, f) == 0 && is_func((Au)mj)) {
+                                        func_match = mj;
+                                        break;
+                                    }
                                 }
                             }
                             if (func_match) return func_match;
@@ -1290,19 +1322,21 @@ none au_member_map_insert(Au_t type, Au_t new_member) {
     if (!type->member_map || !new_member->ident) return;
     store s = (store)type->member_map;
     size_t idx = ((size_t)new_member->ident_hash >> 3) % s->hsize;
-    for (item i = s->hlist[idx]; i; i = i->next) {
-        if (i->key == (Au)(uintptr_t)new_member->ident_hash) {
-            i->value = (Au)new_member;
-            return;
-        }
-    }
     item ni = calloc(1, sizeof(struct _Au) + sizeof(struct _item));
     ni = (item)(((struct _Au*)ni) + 1);
     ni->key   = (Au)(uintptr_t)new_member->ident_hash;
     ni->value = (Au)new_member;
-    ni->next  = s->hlist[idx];
-    if (s->hlist[idx]) s->hlist[idx]->prev = ni;
-    s->hlist[idx] = ni;
+    // every member is kept; tail order matches the members array order.
+    // lock-free readers walk this chain, so the node must be fully
+    // written and published before the link that reveals it
+    item tail = s->hlist[idx];
+    if (!tail) {
+        __atomic_store_n(&s->hlist[idx], ni, __ATOMIC_RELEASE);
+    } else {
+        while (tail->next) tail = tail->next;
+        ni->prev = tail;
+        __atomic_store_n(&tail->next, ni, __ATOMIC_RELEASE);
+    }
     s->count++;
 }
 

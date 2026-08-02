@@ -9,6 +9,8 @@ import <stdio.h>
 import <stdlib.h>
 import <string.h>
 import <unistd.h>
+    +_DEFAULT_SOURCE
+    +_XOPEN_SOURCE=500
 import <pthread.h>
 import <math.h>
 

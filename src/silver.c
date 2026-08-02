@@ -2903,21 +2903,32 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
 
     a->source_raw = (string)hold(input_string);
 
-    list symbols = list();
     string special = string(".{}$,<>()![]/+*:=#~@|&^?`");
-    i32 special_ln = len(special);
-    for (int i = 0; i < special_ln; i++)
-        push(symbols, (Au)unicode_char((i32)special->chars[i]));
-    push(symbols, (Au)string(".."));
-    each(keywords, string, kw) push(symbols, (Au)kw);
-    each(assign, string, a) push(symbols, (Au)a);
-    each(compare, string, a) push(symbols, (Au)a);
-    pairs(operators, i) push(symbols, i->key);
-    sort(symbols, (ARef)sfn);
-    map mapping = map(hsize, 32);
-    for (item i = symbols->first; i; i = i->next) {
-        string sym = (string)i->value;
-        set(mapping, (Au)sym, (Au)sym);
+
+    // the symbol table is the same for every parse; build it once
+    static map             mapping;
+    static pthread_mutex_t mapping_lock = PTHREAD_MUTEX_INITIALIZER;
+    if (!mapping) {
+        pthread_mutex_lock(&mapping_lock);
+        if (!mapping) {
+            list symbols = list();
+            i32 special_ln = len(special);
+            for (int i = 0; i < special_ln; i++)
+                push(symbols, (Au)unicode_char((i32)special->chars[i]));
+            push(symbols, (Au)string(".."));
+            each(keywords, string, kw) push(symbols, (Au)kw);
+            each(assign, string, a) push(symbols, (Au)a);
+            each(compare, string, a) push(symbols, (Au)a);
+            pairs(operators, i) push(symbols, i->key);
+            sort(symbols, (ARef)sfn);
+            map m = map(hsize, 32);
+            for (item i = symbols->first; i; i = i->next) {
+                string sym = (string)i->value;
+                set(m, (Au)sym, (Au)sym);
+            }
+            mapping = (map)hold(m);
+        }
+        pthread_mutex_unlock(&mapping_lock);
     }
 
     array tokens = output;
