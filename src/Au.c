@@ -1050,7 +1050,8 @@ Au_t find_member(Au_t mdl, symbol f, int member_type, u64 traits, bool poly) {
     u64 fhash = f ? au_hash_ident(f) : 0;
     bool au_is_expanding(Au_t m);
     do {
-        // the map holds every named member, so it answers named lookups alone
+        // index only: insertion is not total, so a hit is a shortcut and a
+        // miss proves nothing — the scan below is the authority
         if (f && fhash && mdl->member_map) {
             store s = (store)mdl->member_map;
             size_t idx = ((size_t)fhash >> 3) % s->hsize;
@@ -1413,6 +1414,9 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     type->member_type       = member_type;
     memset(&type->members, 0, sizeof(micro));
     memset(&type->args,    0, sizeof(micro));
+    // members are gone; a surviving index would hand out freed entries.
+    // dropped, not freed — lock-free readers may still be walking it
+    type->member_map        = null;
     type->context           = context;
     type->src               = src;
     if (type->module && type->module != module) {
@@ -1558,14 +1562,14 @@ void au_compile_invoke(const char* name) {
 // so the app (orbiter) can surface a "reload ready" affordance and apply on the user's
 // terms. host calls *_set_pending / *_take_apply; app calls *_get_pending / *_request_apply.
 static int au_live_defer_flag   = 0;   // app -> host: stage changes, don't auto-reload
-static int au_live_pending_flag = 0;   // host -> app: a rebuilt module is staged & ready
+static int au_live_pending_flag = 0;   // host -> app: 0 none, 1 staged, 2 compiling
 static int au_live_apply_flag   = 0;   // app -> host: please recompile + hot-swap now
 static int au_live_reload_flag  = 1;   // app -> host: watch + reload at all (orbiter: off)
 void au_live_set_defer(int v)   { au_live_defer_flag = v ? 1 : 0; }   // the APP turns defer on
 int  au_live_get_defer()        { return au_live_defer_flag; }        // the host polls it
 void au_live_set_reload(int v)  { au_live_reload_flag = v ? 1 : 0; }  // the APP turns reload off
 int  au_live_get_reload()       { return au_live_reload_flag; }       // the host polls it
-void au_live_set_pending(int v) { au_live_pending_flag = v ? 1 : 0; }
+void au_live_set_pending(int v) { au_live_pending_flag = v; }
 int  au_live_get_pending()      { return au_live_pending_flag; }
 void au_live_request_apply()    { au_live_apply_flag = 1; }
 int  au_live_take_apply()       { int v = au_live_apply_flag; au_live_apply_flag = 0; return v; }
@@ -6125,6 +6129,12 @@ Au list_value_by_index(list a, Au at_index) {
     if (itype == typeid(sz)) {
         at = *(sz*)at_index;
     } else {
+        if (itype != typeid(i32)) {
+            fprintf(stderr, "invalid indexing type: %s (list count %i)\n",
+                itype ? itype->ident : "null", (int)a->count);
+            void* fr[32];
+            backtrace_symbols_fd(fr, backtrace(fr, 32), 2);
+        }
         assert(itype == typeid(i32), "invalid indexing type");
         at = (sz)*(i32*)at_index;
     }
@@ -7010,6 +7020,19 @@ path path_startup() {
     return startup_cwd_ ? startup_cwd_ : path_cwd();
 }
 
+// the install root. silver-host cd's to <install>/share/<name> before the
+// module runs, so cwd is that share dir and install is two up. if that
+// share dir is not there, cd_share never fired and cwd is the launch dir,
+// so return null rather than a confidently wrong path
+path path_install() {
+    path cwd = path_cwd();
+    path up  = f(path, "%o/../..", cwd);
+    path shr = f(path, "%o/share", up);
+    if (dir_exists("%o", shr))
+        return up;
+    return null;
+}
+
 Exists resource_exists(Au o) {
     Au_t type = isa(o);
     path  f = null;
@@ -7117,6 +7140,7 @@ static cstr read_indent(cstr i, i32* result) {
 static array read_lines(path f) {
     array  lines   = array(256);
     string content = (string)load(f, typeid(string), null);
+    if (!content) return lines;
     cstr   scan    = cstring(content);
 
     while (*scan) {
