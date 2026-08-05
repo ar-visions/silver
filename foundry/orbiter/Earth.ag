@@ -3244,8 +3244,8 @@ element Enceladus
             '#826':       '#3e5060',     # TButtons lit / nav selected
             '#625a':      '#268a',       # bottom status bar fill
             '#8af2':      '#8cf2',       # status bar inner glow
-            '#425':       '#26323c',     # editor selection color
-            '#44225588':  '#7a94aa33'    # editor line highlight
+            '#425':       '#16a8',     # editor selection color
+            '#44225588':  '#16a4'    # editor line highlight
         ]
 
     func draw [ w: Window ]

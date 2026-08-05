@@ -5655,8 +5655,15 @@ static array import_build_commands(array input, symbol sym) {
                 if (len(cmd))
                     append(cmd, " ");
                 concat(cmd, (string)t);
-            } else
+            } else {
+                // each > begins its OWN command: without this flush,
+                // consecutive > lines ran glued into one shell line
+                if (cmd) {
+                    push(res, (Au)cmd);
+                    cmd = null;
+                }
                 token_line = t->line;
+            }
         } else if (cmd) {
             token_line = -1;
             push(res, (Au)cmd);
@@ -7327,6 +7334,7 @@ enode parse_import(silver a) {
     // the run back, then require the scheme SEPARATOR, since a bare
     // "http" prefix would also match an identifier like httpMaster
     token utok = null;
+    bool  url_fetched = false;
     if (t && (eq(t, "https") || eq(t, "http"))) {
         push_current(a);
         utok = read_compacted(a);
@@ -7351,6 +7359,7 @@ enode parse_import(silver a) {
             vexec(a->verbose, "import-url", "curl -fL -o %o %o", part, url);
             verify(file_exists("%o", part), "import: fetch failed %o", url);
             vexec(a->verbose, "import-url", "mv %o %o", part, dest);
+            url_fetched = true;
         }
         a->import_file = hold(dest);
     }
@@ -7583,13 +7592,17 @@ enode parse_import(silver a) {
     // all_config exactly as a repo import reads them. a failing command
     // is an import error -- no hand-woven && chains in the .ag
     if (utok) {
-        array cmds = import_build_commands(all_config, ">");
-        each(cmds, string, cmd) {
-            string icmd = interpolate(cmd, (Au)a);
-            int    rc   = command_exec((command)icmd, a->verbose);
-            verify(rc == 0, "import: command failed (%i): %o", rc, icmd);
+        // cached file (hash hit) = commands already ran; skip them
+        if (url_fetched) {
+            array cmds = import_build_commands(all_config, ">");
+            each(cmds, string, cmd) {
+                string icmd = interpolate(cmd, (Au)a);
+                int    rc   = command_exec((command)icmd, a->verbose);
+                verify(rc == 0, "import: command failed (%i): %o", rc, icmd);
+            }
         }
-        return null;
+        // null reads as parse failure in the statement loop
+        return e_noop(a, null);
     }
 
     if (uri) {

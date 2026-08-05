@@ -19,7 +19,13 @@ import k2-fsa:sherpa-onnx/v1.13.4 <sherpa-onnx/c-api/c-api.h>
     -DSHERPA_ONNX_ENABLE_WEBSOCKET=OFF                                                                                    
     -DSHERPA_ONNX_ENABLE_BINARY=OFF                                                                                       
     -DBUILD_SHARED_LIBS=ON                                                                                                
-    -lsherpa-onnx-c-api                                                                                                             
+    -lsherpa-onnx-c-api
+
+import https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2
+    > mkdir -p {install}/models
+    > tar xjf {import_file} -C {install}/models
+    > rm -rf {install}/models/kokoro-en
+    > mv {install}/models/kokoro-en-v0_19 {install}/models/kokoro-en
 
 import <mpg123min.h>
     -l:libmpg123.so.0
@@ -1489,7 +1495,7 @@ intern tts : TtsState
 
 func tts_init [ dir: cstr ] -> i32
     if [ tts.ok ] return 0
-    # bootstrap.sh installs the model to install/models/kokoro-en.
+    # the url import installs the model to install/models/kokoro-en
     # callers pass '' and let spectra own where its own model lives
     inst   : path.path_install[]
     kokoro : '{inst}/models/kokoro-en'
