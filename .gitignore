@@ -17,6 +17,7 @@ uface.*
 foundry/hyperspace2/share/textures
 foundry/hyperspace2/models
 foundry/orion
+hires
 *.h5
 *.ares
 *.ours

@@ -8,6 +8,9 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 
+// silver free functions are not emitted into the generated header
+extern "C" Image jpeg_decode(path uri);
+
 // read Images without conversion; for .png and .exr
 // this facilitates grayscale maps, environment color, 
 // color maps, grayscale components for various PBR material attributes
@@ -104,7 +107,22 @@ none Image_init(Image a) {
 
     string ext = path_ext(a->uri);
     symbol uri = (symbol)a->uri->chars;
-    if (string_eq(ext, "exr")) {
+    if (string_eq(ext, "jpg") || string_eq(ext, "jpeg")) {
+        // baseline decode lives in silver (jpeg_decode in img.ag);
+        // adopt its pixels rather than copying the whole surface
+        Image src = jpeg_decode(a->uri);
+        assert (src);
+        Au src_header = header((Au)src);
+        a->width      = src->width;
+        a->height     = src->height;
+        a->channels   = 4;
+        a->format     = Pixel_rgba8;
+        a->pixel_size = 4;
+        info->count   = src_header->count;
+        info->scalar  = src_header->scalar;
+        info->data    = Au_hold(src_header->data);
+        a->pixels     = src->pixels;
+    } else if (string_eq(ext, "exr")) {
         using namespace OPENEXR_IMF_NAMESPACE;
         using namespace IMATH_NAMESPACE;
         using namespace Imath;

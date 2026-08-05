@@ -232,6 +232,35 @@ class Style
     intern  visited   : array string
     intern  errors    : array string
     intern  layer_defs : map LayerDef [ string ]
+    # every style value string resolves through this before it parses
+    mutable theme     : map string [string]
+
+    func themed [ v: Au ] -> Au
+        if [ !theme || !v ] return v
+        s : string [ v inherits string ]
+        if [ !s ] return v
+        r : string theme[ s ]
+        return (r) ? Au[ r ] : v
+
+    # canvas-drawn colors resolve through the same theme as style values
+    func theme_color [ s: string ] -> rgba
+        r : string (theme) ? theme[ s ] : null
+        return rgba [ (r) ? r : s ]
+
+    # parsed values cache on the entry; a theme swap must clear them.
+    # do NOT drop: elements hold these same objects as member values
+    func clear_block [ bl: StyleBlock ]
+        if [ !bl ] return
+        for [ e: StyleEntry, k: string ] in bl.entries
+            e.instance = null
+        for [ cb: StyleBlock ] in bl.blocks
+            clear_block[ cb ]
+
+    # a theme change is a style reload, nothing more
+    func set_theme [ t: map string [string] ]
+        theme = t
+        for [ bl: StyleBlock ] in base
+            clear_block[ bl ]
 
     func cache_block [ bl: StyleBlock, depth:int ]
         for [ e: StyleEntry, k: string ] in bl.entries

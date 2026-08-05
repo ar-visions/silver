@@ -1,5 +1,5 @@
+# backdrop scenes: Earth, Moon, Mars, Terra
 extend orbiter
-
 
 enum PurpleSurface
     color        : 0
@@ -320,7 +320,13 @@ EarthShader OceanShader
         float noise_y = fbm(offset + vec3(0.0, 500.0, 0.0), 0.0);
         float noise_z = fbm(offset + vec3(0.0, 0.0, 15.0), 0.0);
 
-        vec3 distortion = normalize(vec3(noise_x, noise_y, noise_z) * 2.0 - 1.0) * 0.084;
+        // fade the ripple once its cycle drops under a pixel: it dashes.
+        // gate on the TOP octave, not the base coordinate: fbm runs 6
+        // octaves from 0.1 doubling to 3.2, so the finest detail is at
+        // uv*1600, and 500 leaves it half-on while it is already aliasing
+        float d_px = fwidth(uv.x) * 1600.0;
+        float d_aa = clamp(1.0 - d_px, 0.0, 1.0);
+        vec3 distortion = normalize(vec3(noise_x, noise_y, noise_z) * 2.0 - 1.0) * 0.084 * d_aa;
         vec3 perturbed_normal = normalize(n_view + distortion);
 
         vec3 sun_dir  = normalize(vec3(0.2, 0.0, 0.8));
@@ -333,7 +339,9 @@ EarthShader OceanShader
         // fresnel boost makes grazing-angle water mirror-like.
         float spec    = pow(max(dot(perturbed_normal, half_dir), 0.0), 96.0);
         float fresnel = pow(1.0 - max(dot(perturbed_normal, view_dir), 0.0), 5.0);
-        spec          = (spec + fresnel * 0.3) * 3.0;
+        // gate on the true normal: a perturbed one sparkles past the terminator
+        float day_s   = smoothstep(-0.02, 0.12, dot(n_view, sun_dir));
+        spec          = (spec + fresnel * 0.3) * 3.0 * day_s;
 
         // === Textures ===
         const float kernel[7] = float[](
@@ -508,8 +516,10 @@ EarthShader CloudShader
         // aurora in reality spans ~100-400km altitude (0.016-0.063 units).
         // we march through that entire thick volume, NOT the thin cloud shell.
         // ray/sphere intersections give real slice; 12 samples along it.
-        vec3  ro      = ubo.cam_pos.xyz;
-        vec3  rd      = normalize(v_world_pos.xyz - ro);
+        // shells are earth-local; the sky earth is not at the origin
+        mat4  m_inv   = inverse(ubo.model);
+        vec3  ro      = (m_inv * vec4(ubo.cam_pos.xyz, 1.0)).xyz;
+        vec3  rd      = normalize((m_inv * v_world_pos).xyz - ro);
         float R_top   = 1.044;                         // aurora top (~400km)
         float R_bot   = 1.022;                         // aurora bottom (~90km)
         float R_earth = 1.000;
@@ -578,12 +588,22 @@ EarthShader CloudShader
     }
 
 
-Background Earth
+element Earth
+    frost : true
+    # eased camera distance / angle; p_set marks the first frame
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
     intern earth  : EarthShader
     intern ocean  : OceanShader
     intern cloud  : CloudShader
-    func init[]
-        vk        : window.vk
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    public color  : rgba [ r:0.022, g:0.088, b:0.122, a:1.0 ]
+
+    func build_models[]
+        built     = true
         gltf_path : path 'models/earth.gltf'
         gltf      : gltf_path.load[ typeid[ GltfModel ], null ]
         earth     = EarthShader [ vk: vk ]
@@ -603,21 +623,67 @@ Background Earth
             'bathymetry': Image [ uri: path 'textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
             'lights':     Image [ uri: path 'textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
         ]
-        earth_model : Model [ vk: vk, w: window, id: gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
-        ocean_model : Model [ vk: vk, w: window, id: gltf, s: ocean, samplers: earth_samplers, straight_alpha: true ]
-        cloud_model : Model [ vk: vk, w: window, id: gltf, s: cloud, samplers: earth_samplers, straight_alpha: true ]
+        earth_model : Model [ vk: vk, w: ux, id: gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
+        ocean_model : Model [ vk: vk, w: ux, id: gltf, s: ocean, samplers: earth_samplers, straight_alpha: true ]
+        cloud_model : Model [ vk: vk, w: ux, id: gltf, s: cloud, samplers: earth_samplers, straight_alpha: true ]
         models      = array Model [ earth_model, ocean_model, cloud_model ]
 
-    func update[]
-        time : window.time * 64.0
+    # own render pass; the window composites its color as the backdrop
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    # unregister only; we keep our ref so the GPU graph outlives the frame
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built ] build_models[]
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        # ux.time is KILOseconds: x64 advanced 0.016 deg a second, which
+        # is slower than the per-frame jitter that used to sit under it
+        time : ux.time * 1460.0
         if [time == 0.0]
             time = -54.0
-        altitude : f32 [ 0.063 ]
+        # a surface flyover: altitude above the ground, not eye distance.
+        # low is the original 0.063 -- the ladder only goes outward
+        a_t      : f32 [ (ux.orbit_mode == OrbitView.low)  ? 0.063 :
+                         (ux.orbit_mode == OrbitView.high) ? 0.200 : 0.600 ]
+        if [ e_cur == 0.0 ] e_cur = a_t
+        e_cur = filter_n[ e_cur, a_t, 0.08, ux.frame_factor ]
+        altitude : f32 [ e_cur ]
         eye_dist : f32 [ 1.0 + altitude ]
-        tilt     : f32 [ radians[ 50.0 ] ]
-        aspect   : f32 [ 16.0 / 9.0 ]
+        # aim, in degrees off NADIR. flat must be 0 or it points away
+        # from the planet centre and the body sits off-frame at far orbit
+        t_deg    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+                         (ux.angle_mode == ViewAngle.angled) ? 50.0 : 68.0 ]
+        if [ p_cur == 0.0 && !p_set ] p_cur = t_deg
+        p_set    = true
+        p_cur    = filter_n[ p_cur, t_deg, 0.08, ux.frame_factor ]
+        # set AFTER both eases, and OR them: whichever is still moving
+        # has to hold the frame skip off
+        ux.orbit_moving = abs[ e_cur - a_t ] > 0.0004 || abs[ p_cur - t_deg ] > 0.05
+        tilt     : f32 [ radians[ p_cur ] ]
+        # follow the window, never a fixed 16:9 -- a hardcoded aspect
+        # stretches the disc the moment the window is not that shape
+        aspect   : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
 
-        time -= 0.0244 * window.frame_factor
+        # NO per-frame nudge here: `time` is a local recomputed from
+        # ux.time every frame, so a -= cannot accumulate. all it did
+        # was add frame_factor's millisecond jitter on top
         orbit_a : radians[ time ]
         co      : cos[ orbit_a ]
         so      : sin[ orbit_a ]
@@ -670,6 +736,1106 @@ Background Earth
         earth.cam_pos = _cam
         ocean.cam_pos = _cam
         cloud.cam_pos = _cam
+
+
+# vantage the scenes share; each maps it to its own distance, since
+# a globe view and a surface flyover need very different numbers
+enum OrbitView
+    low  : 0
+    high : 1
+    far  : 2
+
+# how far off flat-on the camera sits. a globe scene reads it as pitch
+# above the equator; a surface flyover reads it as how far its aim
+# swings up toward the horizon
+enum ViewAngle
+    flat   : 0
+    angled : 1
+    steep  : 2
+
+enum MoonSurface
+    color  : 0
+    height : 1
+    cloud  : 2
+    jungle : 3
+
+ModelViewProject MoonShader
+    mutable gain     : f32
+    mutable regolith : f32
+    # relief from the height map; 0 leaves the normal alone
+    mutable relief   : f32
+    mutable cam_pos : vec4f
+
+    attrib color  : LayoutBinding [ type:typeid[ MoonSurface ], id:MoonSurface.color,  count:1, format: typeid[ rgba8 ] ]
+    attrib height : LayoutBinding [ type:typeid[ MoonSurface ], id:MoonSurface.height, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_normal     : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
+
+    attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye2    : vec3f [0.0f,  0.0f,  1.5f]
+        target2 : vec3f [0.0f,  0.0f,  0.0f]
+        up2     : vec3f [0.0f, -1.0f,  0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[70.0f], 1.0f, 0.1f, 100.0f]
+        view    = mat4f.look_at    [eye2, target2, up2]
+
+    func vertex[] -> GLSL none {
+        v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
+        mat3 nm     = transpose(inverse(mat3(ubo.model)));
+        v_normal    = normalize(nm * a_normal);
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func hash31 [ p: vec3f ] -> GLSL float {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+    }
+
+    # value noise; one octave, continent scale is set by the caller
+    func vnoise [ p: vec3f ] -> GLSL float {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        float n000 = hash31(i + vec3(0.0, 0.0, 0.0));
+        float n100 = hash31(i + vec3(1.0, 0.0, 0.0));
+        float n010 = hash31(i + vec3(0.0, 1.0, 0.0));
+        float n110 = hash31(i + vec3(1.0, 1.0, 0.0));
+        float n001 = hash31(i + vec3(0.0, 0.0, 1.0));
+        float n101 = hash31(i + vec3(1.0, 0.0, 1.0));
+        float n011 = hash31(i + vec3(0.0, 1.0, 1.0));
+        float n111 = hash31(i + vec3(1.0, 1.0, 1.0));
+        return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+                   mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+    }
+
+    func p_permute4 [ x: vec4f ] -> GLSL vec4f {
+        return mod((x * 34.0 + 1.0) * x, vec4(289.0));
+    }
+
+    func p_invsqrt4 [ r: vec4f ] -> GLSL vec4f {
+        return 1.79284291400159 - 0.85373472095314 * r;
+    }
+
+    # gradient noise. value noise interpolates CORNER VALUES, so its
+    # isocontours run along the lattice and any mask built on it cuts
+    # square edges. gradient noise interpolates corner GRADIENTS and
+    # is zero at every lattice point, so nothing aligns to the grid
+    func gnoise [ P: vec3f ] -> GLSL float {
+        vec3 Pi0 = mod(floor(P), vec3(289.0));
+        vec3 Pi1 = mod(Pi0 + vec3(1.0), vec3(289.0));
+        vec3 Pf0 = fract(P);
+        vec3 Pf1 = Pf0 - vec3(1.0);
+        vec4 ix  = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
+        vec4 iy  = vec4(Pi0.y, Pi0.y, Pi1.y, Pi1.y);
+        vec4 iz0 = vec4(Pi0.z);
+        vec4 iz1 = vec4(Pi1.z);
+        vec4 ixy  = p_permute4(p_permute4(ix) + iy);
+        vec4 ixy0 = p_permute4(ixy + iz0);
+        vec4 ixy1 = p_permute4(ixy + iz1);
+        vec4 gx0 = fract(ixy0 / 7.0) * 2.0 - 1.0;
+        vec4 gy0 = fract(floor(ixy0 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz0 = 1.0 - abs(gx0) - abs(gy0);
+        vec4 gx1 = fract(ixy1 / 7.0) * 2.0 - 1.0;
+        vec4 gy1 = fract(floor(ixy1 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz1 = 1.0 - abs(gx1) - abs(gy1);
+        vec4 sz0 = step(gz0, vec4(0.0));
+        gx0 -= sz0 * (step(0.0, gx0) - 0.5);
+        gy0 -= sz0 * (step(0.0, gy0) - 0.5);
+        vec4 sz1 = step(gz1, vec4(0.0));
+        gx1 -= sz1 * (step(0.0, gx1) - 0.5);
+        gy1 -= sz1 * (step(0.0, gy1) - 0.5);
+        vec3 g000 = vec3(gx0.x, gy0.x, gz0.x);
+        vec3 g100 = vec3(gx0.y, gy0.y, gz0.y);
+        vec3 g010 = vec3(gx0.z, gy0.z, gz0.z);
+        vec3 g110 = vec3(gx0.w, gy0.w, gz0.w);
+        vec3 g001 = vec3(gx1.x, gy1.x, gz1.x);
+        vec3 g101 = vec3(gx1.y, gy1.y, gz1.y);
+        vec3 g011 = vec3(gx1.z, gy1.z, gz1.z);
+        vec3 g111 = vec3(gx1.w, gy1.w, gz1.w);
+        vec4 nm0 = p_invsqrt4(vec4(dot(g000,g000), dot(g010,g010), dot(g100,g100), dot(g110,g110)));
+        g000 *= nm0.x; g010 *= nm0.y; g100 *= nm0.z; g110 *= nm0.w;
+        vec4 nm1 = p_invsqrt4(vec4(dot(g001,g001), dot(g011,g011), dot(g101,g101), dot(g111,g111)));
+        g001 *= nm1.x; g011 *= nm1.y; g101 *= nm1.z; g111 *= nm1.w;
+        float n000 = dot(g000, Pf0);
+        float n100 = dot(g100, vec3(Pf1.x, Pf0.y, Pf0.z));
+        float n010 = dot(g010, vec3(Pf0.x, Pf1.y, Pf0.z));
+        float n110 = dot(g110, vec3(Pf1.xy, Pf0.z));
+        float n001 = dot(g001, vec3(Pf0.xy, Pf1.z));
+        float n101 = dot(g101, vec3(Pf1.x, Pf0.y, Pf1.z));
+        float n011 = dot(g011, vec3(Pf0.x, Pf1.yz));
+        float n111 = dot(g111, Pf1);
+        vec3  fxyz = Pf0 * Pf0 * Pf0 * (Pf0 * (Pf0 * 6.0 - 15.0) + 10.0);
+        vec4  n_z  = mix(vec4(n000, n100, n010, n110), vec4(n001, n101, n011, n111), fxyz.z);
+        vec2  n_yz = mix(n_z.xy, n_z.zw, fxyz.y);
+        return mix(n_yz.x, n_yz.y, fxyz.x) * 0.5 + 0.5;
+    }
+
+    # three octaves on offset domains, over gradient noise
+    func fnoise [ p: vec3f ] -> GLSL float {
+        float a = gnoise(p);
+        float b = gnoise(p * 2.17 + vec3( 37.2, 11.7, 91.3));
+        float c = gnoise(p * 4.41 + vec3(-19.4, 63.1, 27.8));
+        return a * 0.56 + b * 0.30 + c * 0.14;
+    }
+
+    func fragment[] -> GLSL none {
+        vec3  n      = normalize(v_normal);
+        vec3  sun    = normalize(vec3(0.2, 0.0, 0.8));
+        // relief: tilt the normal by the height gradient, east/north basis
+        float e_uv   = 1.0 / 4096.0;
+        float h_l    = texture(height, v_uv + vec2(-e_uv, 0.0)).r;
+        float h_r    = texture(height, v_uv + vec2( e_uv, 0.0)).r;
+        float h_d    = texture(height, v_uv + vec2(0.0, -e_uv)).r;
+        float h_u    = texture(height, v_uv + vec2(0.0,  e_uv)).r;
+        vec3  t_e    = normalize(cross(vec3(0.0, 1.0, 0.0), n));
+        vec3  t_n    = cross(n, t_e);
+        vec3  bump   = t_e * (h_l - h_r) + t_n * (h_d - h_u);
+        float r_aa   = clamp(1.0 - fwidth(v_uv.x) * 4096.0, 0.0, 1.0);
+        n            = normalize(n + bump * ubo.relief * 24.0 * r_aa);
+        float ndl    = max(dot(n, sun), 0.0);
+        vec3  albedo = texture(color, v_uv).rgb;
+        // one blob spans most of the visible ground from low orbit
+        float g      = ubo.regolith;
+        float nz     = vnoise(normalize(v_world_pos.xyz) * 1.15);
+        float ctr    = 1.0 + g * (nz - 0.5) * 0.8;
+        vec3  alb    = clamp((albedo - 0.5) * ctr + 0.5, 0.0, 1.0);
+        alb          = mix(alb, alb * vec3(1.06, 0.99, 0.90), g * nz);
+        alb         *= (1.0 - 0.08 * g);
+        // regolith: no specular, a little ambient so the limb reads
+        vec3  lit    = alb * (0.05 + 0.95 * ndl) * ubo.gain;
+        fragColor    = vec4(lit / (1.0 + lit), 1.0);
+    }
+
+
+element Moon
+    frost : true
+    frost_sharp : true
+    # eased camera distance / angle; p_set marks the first frame
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
+    intern moon   : MoonShader
+    # the earth in the sky gets the Earth scene's full stack
+    intern earth  : EarthShader
+    intern ocean  : OceanShader
+    intern cloud  : CloudShader
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    public color  : rgba [ r:0.004, g:0.006, b:0.014, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf_path : path 'models/earth.gltf'
+        gltf      : gltf_path.load[ typeid[ GltfModel ], null ]
+        moon      = MoonShader  [ vk: vk ]
+        earth     = EarthShader [ vk: vk ]
+        ocean     = OceanShader [ vk: vk ]
+        cloud     = CloudShader [ vk: vk ]
+
+        # the ground: one map, lit flat with the regolith noise
+        moon_samplers : map Image [string] [
+            'color':  Image [ uri: path 'textures/moon-color-8192x4096.jpg',    surface: MoonSurface.color ],
+            'height': Image [ uri: path 'textures/moon-displace-2048x1024.png', surface: MoonSurface.height ]
+        ]
+        earth_samplers : map Image [string] [
+            'color':      Image [ uri: path 'textures/earth-color-8192x4096.png',      surface: EarthSurface.color ],
+            'normal':     Image [ uri: path 'textures/earth-normal-8192x4096.png',     surface: EarthSurface.normal ],
+            'elevation':  Image [ uri: path 'textures/earth-elevation-8192x4096.png',  surface: EarthSurface.elevation ],
+            'water':      Image [ uri: path 'textures/earth-water-8192x4096.png',      surface: EarthSurface.water ],
+            'water_blur': Image [ uri: path 'textures/earth-water-blur-8192x4096.png', surface: EarthSurface.water_blur ],
+            'cloud':      Image [ uri: path 'textures/earth-cloud-8192x4096.png',      surface: EarthSurface.cloud ],
+            'bathymetry': Image [ uri: path 'textures/earth-bathymetry-8192x4096.png', surface: EarthSurface.bathymetry ],
+            'lights':     Image [ uri: path 'textures/earth-lights-8192x4096.png',     surface: EarthSurface.lights ]
+        ]
+        moon_model  : Model [ vk: vk, w: ux, id: gltf, s: moon,  samplers: moon_samplers,  straight_alpha: true ]
+        earth_model : Model [ vk: vk, w: ux, id: gltf, s: earth, samplers: earth_samplers, straight_alpha: true ]
+        ocean_model : Model [ vk: vk, w: ux, id: gltf, s: ocean, samplers: earth_samplers, straight_alpha: true ]
+        cloud_model : Model [ vk: vk, w: ux, id: gltf, s: cloud, samplers: earth_samplers, straight_alpha: true ]
+        models      = array Model [ moon_model, earth_model, ocean_model, cloud_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    # unregister only; we keep our ref so the GPU graph outlives the frame
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # regolith: the editor's purples go gray under a lunar sky
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#1c1c20cc',
+            '#140a2a80':  '#1c1c2080',
+            '#4258':      '#8a8a8a22',
+            '#ff6a2e55':  '#9a9a9a55',
+            '#220022aa':  '#20202aaa',
+            '#614':       '#3c3c42',
+            '#413':       '#2e2e34',
+            '#826':       '#565660',
+            '#625a':      '#333a',
+            '#8af2':      '#8882',
+            '#425':       '#3a3a42',
+            '#44225588':  '#8a8a8a66'
+        ]
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built ] build_models[]
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        # ux.time is KILOseconds: x64 advanced 0.016 deg a second, which
+        # is slower than the per-frame jitter that used to sit under it
+        time : ux.time * 1460.0
+        if [time == 0.0]
+            time = -54.0
+        # a surface flyover: altitude above the ground, not eye distance.
+        # low is the original 0.063 -- the ladder only goes outward
+        a_t      : f32 [ (ux.orbit_mode == OrbitView.low)  ? 0.063 :
+                         (ux.orbit_mode == OrbitView.high) ? 0.200 : 0.600 ]
+        if [ e_cur == 0.0 ] e_cur = a_t
+        e_cur = filter_n[ e_cur, a_t, 0.08, ux.frame_factor ]
+        altitude : f32 [ e_cur ]
+        eye_dist : f32 [ 1.0 + altitude ]
+        # limb sits at 70.2; aim above it or there is no sky to fill
+        # off NADIR: flat is 0 so the body centres at any altitude. the
+        # limb sits at 70.2 at low orbit, so steep must clear it for sky
+        t_deg    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+                         (ux.angle_mode == ViewAngle.angled) ? 74.0 : 82.0 ]
+        if [ p_cur == 0.0 && !p_set ] p_cur = t_deg
+        p_set    = true
+        p_cur    = filter_n[ p_cur, t_deg, 0.08, ux.frame_factor ]
+        # set AFTER both eases, and OR them: whichever is still moving
+        # has to hold the frame skip off
+        ux.orbit_moving = abs[ e_cur - a_t ] > 0.0004 || abs[ p_cur - t_deg ] > 0.05
+        tilt     : f32 [ radians[ p_cur ] ]
+        # follow the window, never a fixed 16:9 -- a hardcoded aspect
+        # stretches the disc the moment the window is not that shape
+        aspect   : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+
+        # NO per-frame nudge here: `time` is a local recomputed from
+        # ux.time every frame, so a -= cannot accumulate. all it did
+        # was add frame_factor's millisecond jitter on top
+        orbit_a : radians[ time ]
+        co      : cos[ orbit_a ]
+        so      : sin[ orbit_a ]
+
+        ex_l  : f32 [ 0.0 ]
+        ey_l  : f32 [ 0.0 ]
+        ez_l  : f32 [ eye_dist ]
+        fx_l  : f32 [ -sin[ tilt ] ]
+        fy_l  : f32 [ 0.0 ]
+        fz_l  : f32 [ -cos[ tilt ] ]
+        tx_l  : f32 [ ex_l + fx_l * 2.0 ]
+        ty_l  : f32 [ ey_l + fy_l * 2.0 ]
+        tz_l  : f32 [ ez_l + fz_l * 2.0 ]
+        ux_l  : f32 [ 1.0 ]
+        uy_l  : f32 [ 0.0 ]
+        uz_l  : f32 [ 0.0 ]
+
+        _eye2    : vec3f [  co * ex_l + so * ez_l, ey_l, -so * ex_l + co * ez_l ]
+        _target2 : vec3f [  co * tx_l + so * tz_l, ty_l, -so * tx_l + co * tz_l ]
+        _up2     : vec3f [  co * ux_l + so * uz_l, uy_l, -so * ux_l + co * uz_l ]
+
+        _proj    : mat4f.perspective[ radians[ 60.0 ], aspect, 0.001, 10.0 ]
+        _view    : mat4f.look_at    [ _eye2, _target2, _up2 ]
+
+        # the moon holds the middle
+        mm : mat4f.identity[]
+        moon.model = mm
+        moon.view  = _view
+        moon.proj  = _proj
+        moon.gain  = 1.0
+        moon.regolith = 1.0
+        moon.relief   = 0.0
+
+        # fixed in the sky; the limb sits at 70.2 from straight down
+        rise   : f32 [ radians[ 14.0 ] ]
+        aim    : f32 [ tilt + rise ]
+        e_dist : f32 [ 6.0 ]
+        e_off  : vec3f [ -e_dist * sin[ aim ], 0.0, eye_dist - e_dist * cos[ aim ] ]
+        # world +y is the screen's x axis here; north must follow screen up
+        nx_l : f32 [ -cos[ tilt ] ]
+        nz_l : f32 [  sin[ tilt ] ]
+        n_x  : f32 [  co * nx_l + so * nz_l ]
+        n_z  : f32 [ -so * nx_l + co * nz_l ]
+        # 90 degrees about this carries the model's +y onto north
+        e_axis : vec4f [ n_z, 0.0, -n_x, radians[ 90.0 ] ]
+        q_axis : quatf [ e_axis ]
+        # ux.time counts kiloseconds: 6000 = one turn per minute
+        spin_d : f32 [ ux.time * 6000.0 ]
+        e_spin : vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ]
+        q_spin : quatf [ e_spin ]
+        e_sc   : vec3f [ 1.5, 1.5, 1.5 ]
+        em : mat4f.identity[]
+        em = em.translate[ e_off ]
+        em = em.rotate   [ q_axis ]
+        em = em.rotate   [ q_spin ]
+        em = em.scale    [ e_sc ]
+        earth.model = em
+        earth.view  = _view
+        earth.proj  = _proj
+        ocean.model = em
+        ocean.view  = _view
+        ocean.proj  = _proj
+        cloud.model = em
+        cloud.view  = _view
+        cloud.proj  = _proj
+
+        _cam2 : vec4f [ _eye2.x, _eye2.y, _eye2.z, 1.0 ]
+        moon.cam_pos  = _cam2
+        earth.cam_pos = _cam2
+        ocean.cam_pos = _cam2
+        cloud.cam_pos = _cam2
+        earth.time    = time
+        ocean.time    = time
+        cloud.time    = time
+
+
+MoonShader TerraShader
+    # sea level on mars-height; land is the mars color map, unaltered
+    mutable sea_level : f32
+    # more water at the equator, falling off toward the poles. sea_lat
+    # is how much is added at the equator, sea_curve the falloff shape:
+    # 1.0 is a straight ramp, higher keeps the extra water in the tropics
+    mutable sea_lat   : f32
+    mutable sea_curve : f32
+    # a very slight wander on the sea level itself, so coastlines are
+    # not a pure contour of the height map
+    mutable sea_noise : f32
+    mutable sea_scale : f32
+    # perlin scales picking between the two green and two water tones
+    mutable land_scale  : f32
+    mutable water_scale : f32
+    # forest patches: patch size, strength, and the altitude it dies at
+    mutable forest_scale : f32
+    mutable forest_amt   : f32
+    mutable tree_line    : f32
+    mutable veg_amt      : f32
+    # ground lifted near the equator, in height-map units (0.01 = 1%)
+    mutable eq_rise      : f32
+    # land bands above the waterline, in height-map units
+    mutable sand_band    : f32
+    mutable green_band   : f32
+    mutable sand_amt     : f32
+    mutable lush_curve   : f32
+    # how much cyan the equator takes, and how fast it falls off
+    mutable cyan_amt    : f32
+    mutable cyan_curve  : f32
+    # pink across the equatorial band: strength, and how far out it
+    # reaches as a fraction of pole distance (0.667 = two thirds)
+    mutable pink_amt    : f32
+    mutable pink_span   : f32
+    # keep this LOW: one lobe should span an ocean, not speckle it
+    mutable pink_scale  : f32
+    # depth at which the pink patches start showing (1 = deepest only)
+    mutable pink_deep   : f32
+    # sun glint: LOW power = wide and soft, high = a tight hot dot
+    mutable spec_power  : f32
+    mutable spec_amt    : f32
+    # the broad sheen under it; keep the amount low, it covers a lot
+    mutable wide_power  : f32
+    mutable wide_amt    : f32
+    # sheen on the vegetated land: tightness, strength, and the perlin
+    # that breaks it up. keep leaf_scale HIGH -- this is the fine detail
+    mutable leaf_power  : f32
+    mutable leaf_amt    : f32
+    mutable leaf_scale  : f32
+    # light blue at the equator: strength, patch scale, latitude falloff
+    mutable lblue_amt   : f32
+    mutable lblue_scale : f32
+    mutable lblue_curve : f32
+    # vertex displacement, in sphere radii, above the sea surface
+    mutable displace  : f32
+
+    attrib jungle : LayoutBinding [ type:typeid[ MoonSurface ], id:MoonSurface.jungle, count:1, format: typeid[ rgba8 ] ]
+
+    # how many times the tile wraps the globe. MUST stay a whole number:
+    # u = 0 and u = 1 have to land on the same texel or the dateline
+    # shows a seam straight down the map
+    mutable jungle_tiles : f32
+
+    attrib v_east  : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_north : VertexOutput [ type:typeid[ vec3f ] ]
+
+    func vertex[] -> GLSL none {
+        v_uv     = vec2(1.0 - a_uv.x, a_uv.y);
+        mat3 nm  = transpose(inverse(mat3(ubo.model)));
+        v_normal = normalize(nm * a_normal);
+
+        // tangent frame from the OBJECT normal, rotated like the normal.
+        // built from world +y it ignores the 25.2 deg axial tilt, so the
+        // relief is lit in a frame that does not turn with the surface
+        vec3 ax  = abs(a_normal.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3 o_e = normalize(cross(ax, a_normal));
+        vec3 o_n = normalize(cross(a_normal, o_e));
+        v_east   = normalize(nm * o_e);
+        v_north  = normalize(nm * o_n);
+
+        vec2  huv   = v_uv - vec2(0.0635, 0.0);
+        // must match the fragment stage exactly or the displaced coast
+        // sits away from the shaded one
+        float lat_r = (v_uv.y - 0.5) * 3.1415927;
+        float lon_r = v_uv.x * 6.2831853;
+        vec3  sp    = vec3(cos(lat_r) * cos(lon_r), sin(lat_r), cos(lat_r) * sin(lon_r));
+        float sea   = ubo.sea_level
+                    + ubo.sea_lat   * pow(max(cos(lat_r), 0.0), ubo.sea_curve)
+                    + ubo.sea_noise * (vnoise(sp * ubo.sea_scale) - 0.5);
+        // no derivatives in the vertex stage: must be an explicit lod
+        float hv    = textureLod(height, huv, 0.0).r;
+        // lift the ground itself near the equator so less of it floods
+        hv         += ubo.eq_rise * pow(max(cos(lat_r), 0.0), 1.5);
+        // the sea surface stays a clean sphere; only land rises out of
+        // it, so the ocean reads flat the way real water does
+        float d     = max(hv - sea, 0.0) * ubo.displace;
+
+        vec4  wpos  = ubo.model * vec4(a_pos + a_normal * d, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment[] -> GLSL none {
+        vec3  n0   = normalize(v_normal);
+        // the sun sits well off the view axis: a sun behind the camera
+        // lights the disc evenly and no relief anywhere can read
+        vec3  sun  = normalize(vec3(-0.56, 0.14, 0.82));
+        vec3  surf = texture(color, v_uv).rgb;
+        float lum  = dot(surf, vec3(0.299, 0.587, 0.114));
+
+        // the two maps use a different prime meridian: 22.9 deg of
+        // longitude, no latitude shift. registered on edge magnitude,
+        // which tracks crater rims and canyon walls, not albedo
+        vec2  huv  = v_uv - vec2(0.0635, 0.0);
+
+        // height arrives f32 and gaussian'd at load, so it can be
+        // differentiated tight — one texel — without banding
+        vec2  st   = max(fwidth(huv), vec2(1.0 / 8192.0, 1.0 / 4096.0));
+        float h    = texture(height, huv).r;
+        // object-space point from the uv, NOT from v_world_pos: world
+        // space turns with the model, so any noise keyed off it swims
+        // across the surface instead of staying pinned to the ground
+        float lat_r = (v_uv.y - 0.5) * 3.1415927;
+        float lon_r = v_uv.x * 6.2831853;
+        vec3  sp    = vec3(cos(lat_r) * cos(lon_r), sin(lat_r), cos(lat_r) * sin(lon_r));
+        float eq    = max(cos(lat_r), 0.0);
+
+        // must match the vertex stage exactly
+        float sea   = ubo.sea_level
+                    + ubo.sea_lat   * pow(eq, ubo.sea_curve)
+                    + ubo.sea_noise * (vnoise(sp * ubo.sea_scale) - 0.5);
+        // lift the ground itself near the equator so less of it floods
+        h          += ubo.eq_rise * pow(eq, 1.5);
+
+        float h_l  = texture(height, huv - vec2(st.x, 0.0)).r;
+        float h_r  = texture(height, huv + vec2(st.x, 0.0)).r;
+        float h_d  = texture(height, huv - vec2(0.0, st.y)).r;
+        float h_u  = texture(height, huv + vec2(0.0, st.y)).r;
+        float dhdu = (h_r - h_l) / (2.0 * st.x);
+        float dhdv = (h_u - h_d) / (2.0 * st.y);
+
+        // v_uv.x runs west, so the u slope tilts against east
+        vec3  t_e  = normalize(v_east);
+        vec3  t_n  = normalize(v_north);
+        vec3  bump = t_e * dhdu - t_n * dhdv;
+        vec3  n    = normalize(n0 - bump * ubo.relief * 0.030);
+
+        // shore: a wide band in height units. an edge cut at the screen
+        // footprint lands inside one 8-bit step and reads as a mask
+        float d_h  = sea - h;
+        float is_w = smoothstep(-0.014, 0.014, d_h);
+
+        // cast shadow: march the height map toward the sun. perturbing
+        // the normal only shades a slope by its own tilt -- it can never
+        // throw a shadow onto the ground beside it, so nothing sweeps
+        // when the planet turns. east is +u, north is -v, matching bump
+        float shade = 1.0;
+        vec3  s_t   = vec3(dot(sun, t_e), dot(sun, t_n), dot(sun, n0));
+        vec2  s_uv  = vec2(s_t.x, -s_t.y);
+        float s_len = length(s_uv);
+        if (s_len > 0.001 && s_t.z > 0.0) {
+            s_uv        /= s_len;
+            float tanel  = s_t.z / s_len;
+            // u shrinks toward the poles; v does not
+            float coslat = max(cos((v_uv.y - 0.5) * 3.1415927), 0.12);
+            vec2  arc_uv = vec2(6.2831853 * coslat, 3.1415927);
+            float occ    = 0.0;
+            float h0     = h * ubo.displace;
+            for (int i = 1; i <= 16; ++i) {
+                float t   = float(i) * 0.0022;
+                vec2  duv = s_uv * t;
+                float arc = length(duv * arc_uv);
+                float hs  = textureLod(height, huv + duv, 0.0).r * ubo.displace;
+                occ = max(occ, clamp((hs - (h0 + arc * tanel)) * 260.0, 0.0, 1.0));
+            }
+            shade = 1.0 - occ * 0.88;
+        }
+
+        // view vectors up here: the land sheen needs them too, not just
+        // the water, and they must be one shared definition
+        vec3  v_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        vec3  h_dir = normalize(sun + v_dir);
+        float nh    = max(dot(n0, h_dir), 0.0);
+        float day_s = smoothstep(-0.02, 0.12, dot(n0, sun));
+
+        // land keeps the relief; the sea takes a trace of it so the light
+        // still plays over the shelves instead of sitting dead flat
+        vec3  n_w   = normalize(mix(n0, n, 0.16));
+        float ndl_l = max(dot(n,   sun), 0.0) * shade;
+        float ndl_w = max(dot(n_w, sun), 0.0);
+
+        // land climbs in bands off the waterline: sand, then green,
+        // then the REAL mars colour map taking over as the top stop.
+        // the red is the albedo itself, not a tint standing in for it
+        float alt0  = h - sea;
+        float a_snd = ubo.sand_band;
+        float a_grn = a_snd + ubo.green_band;
+        float gn0   = clamp((fnoise(sp * ubo.land_scale) - 0.5) * 1.7 + 0.5, 0.0, 1.0);
+
+        vec3  c_snd = vec3(0.80, 0.72, 0.54);
+        vec3  c_grn = mix(vec3(0.17, 0.40, 0.15), vec3(0.36, 0.56, 0.22), gn0);
+
+        vec3  lnd   = c_snd;
+        lnd = mix(lnd, c_grn, smoothstep(0.0, a_snd, alt0) * pow(eq, ubo.lush_curve));
+        lnd = mix(lnd, surf,  smoothstep(a_snd, a_grn, alt0));
+
+        // growth follows the water: a green belt just above the shore
+        // that thins out with altitude, so the mids carry the colour
+        float alt  = h - sea;
+        float veg  = smoothstep(0.002, 0.035, alt)
+                   * (1.0 - smoothstep(0.050, 0.230, alt));
+        // two green levels, chosen by their own perlin: a deep growth
+        // and a paler scrub, so the belt is not one flat tone
+        float g_n  = clamp((fnoise(sp * ubo.land_scale) - 0.5) * 1.7 + 0.5, 0.0, 1.0);
+        vec3  g_lo = vec3(0.34, 0.47, 0.28);
+        vec3  g_hi = vec3(0.66, 0.68, 0.46);
+        vec3  moss = mix(g_lo, g_hi, g_n);
+        lnd        = mix(lnd, moss * (0.65 + 1.00 * lum), veg * ubo.veg_amt);
+
+        // forest in perlin patches laid over the elevation. three
+        // octaves so the edges are ragged instead of round blobs
+        float f_s  = ubo.forest_scale;
+        float f_n  = fnoise(sp * f_s);
+        // thins out climbing to the tree line, and toward the poles
+        float alt_f = 1.0 - smoothstep(ubo.tree_line * 0.45, ubo.tree_line, alt);
+        float lat_f = smoothstep(0.04, 0.42, eq);
+        // and it will not grow straight out of the surf
+        float sh_f  = smoothstep(0.0005, 0.010, alt);
+        float frst  = smoothstep(0.38, 0.68, f_n) * alt_f * lat_f * sh_f;
+
+        // the jungle tile, wrapped whole times around the globe so the
+        // dateline matches. v gets half the count: the map is 2:1, so
+        // equal counts would stretch every tile to twice its height
+        float j_u   = ubo.jungle_tiles;
+        float j_v   = ubo.jungle_tiles * 0.5;
+        // the tile is a photo, not a seamless one: warp the lookup so
+        // the repeat never lines up into a visible grid of squares
+        vec2  j_w   = vec2(fnoise(sp *  9.0),
+                           fnoise(sp * 11.3 + vec3(21.7, 5.3, 48.1))) - 0.5;
+        vec3  jung  = texture(jungle, vec2(v_uv.x * j_u, v_uv.y * j_v) + j_w * 3.0).rgb;
+        float j_lum = dot(jung, vec3(0.299, 0.587, 0.114));
+
+        vec3  t_lo  = vec3(0.15, 0.26, 0.13);
+        vec3  t_hi  = vec3(0.34, 0.45, 0.21);
+        vec3  tree  = mix(t_lo, t_hi, clamp((fnoise(sp * f_s * 3.3) - 0.5) * 1.7 + 0.5, 0.0, 1.0));
+        // canopy detail rides the tile's luminance; its chroma stays ours
+        tree        = tree * (0.55 + 1.05 * j_lum);
+        lnd         = mix(lnd, tree * (0.70 + 0.85 * lum), frst * ubo.forest_amt * 0.30);
+
+        // the first band of elevation above the water goes lush, and
+        // only near the equator. laid last so it owns the coastal strip
+        // a sandy strip right at the waterline, over everything else
+        float shore = 1.0 - smoothstep(0.0, ubo.sand_band, alt);
+        lnd         = mix(lnd, c_snd * (0.72 + 0.72 * lum), shore * ubo.sand_amt);
+
+        // canopy sheen: only the GREEN catches it, and a tight perlin
+        // breaks it into leaf-scale detail instead of a flat gloss.
+        // measured off the pixel's own green bias, so it tracks
+        // whatever the bands and the forest actually put down
+        float grn_w = clamp((lnd.g - 0.5 * (lnd.r + lnd.b)) * 6.0, 0.0, 1.0);
+        float leaf  = fnoise(sp * ubo.leaf_scale);
+        lnd        += vec3(0.62, 0.78, 0.55)
+                    * pow(nh, ubo.leaf_power) * day_s * grn_w
+                    * (0.25 + 1.15 * leaf) * ubo.leaf_amt;
+
+        // a lit body still bounces light into its own shade; a low floor
+        // drives every slope to full black and the contrast tears
+        lnd       *= 0.30 + 0.70 * ndl_l;
+
+        // sea: a narrow shelf at the coast, then open water. the seabed
+        // never fades out completely or the deep reads as flat paint
+        // clarity varies at continental scale only — one perlin lobe spans
+        // an ocean, so the water never picks up fine detail of its own
+        float clar = fnoise(sp * 1.7);
+        float dep  = clamp(d_h / 0.090, 0.0, 1.0);
+        dep        = clamp(dep * (0.70 + 0.62 * clar), 0.0, 1.0);
+        // two water tones on their own perlin: the violet and a deeper
+        // blue. shallow and deep stops are carried per tone, so the
+        // depth ramp stays a ramp instead of crossfading flat colours
+        // a gentle contrast stretch, NOT a smoothstep. thresholding this
+        // draws the noise's own isoline across the sea as a hard polygon
+        float w_n   = clamp((fnoise(sp * ubo.water_scale) - 0.5) * 1.7 + 0.5, 0.0, 1.0);
+        vec3  p_sh  = vec3(0.44, 0.38, 0.53);
+        vec3  p_dp  = vec3(0.38, 0.26, 0.46);
+        vec3  b_sh  = vec3(0.30, 0.42, 0.62);
+        vec3  b_dp  = vec3(0.11, 0.19, 0.42);
+        vec3  w_sh  = mix(p_sh, b_sh, w_n);
+        vec3  w_dp  = mix(p_dp, b_dp, w_n);
+        vec3  w_hue = mix(w_sh, w_dp, dep);
+
+        // the equator runs to cyan, falling off fast so it stays tropical
+        vec3  c_sh  = vec3(0.38, 0.68, 0.72);
+        vec3  c_dp  = vec3(0.09, 0.33, 0.45);
+        w_hue       = mix(w_hue, mix(c_sh, c_dp, dep),
+                          pow(eq, ubo.cyan_curve) * ubo.cyan_amt);
+
+        float t_lat = abs(v_uv.y - 0.5) * 2.0;
+
+        // light blue owns the equator. latitude drives it; the perlin
+        // only ragged-edges it so it is not a clean band of colour
+        float lb_n  = fnoise(sp * ubo.lblue_scale + vec3(51.3, 8.9, 33.4));
+        float lblue = pow(eq, ubo.lblue_curve) * (0.68 + 0.52 * lb_n);
+        lblue       = clamp(lblue, 0.0, 1.0);
+        vec3  l_sh  = vec3(0.56, 0.74, 0.88);
+        vec3  l_dp  = vec3(0.24, 0.43, 0.70);
+        w_hue       = mix(w_hue, mix(l_sh, l_dp, dep), lblue * ubo.lblue_amt);
+
+        // pink only where the water is DEEP, and only in patches. it
+        // goes on last so it reads over the light blue, not under it
+        // a balanced split: fnoise clusters near 0.5, so a narrow band
+        // across it hands roughly half the equator to pink. depth is a
+        // WEIGHT now, not a gate -- gating it killed the colour outright
+        float p_n   = fnoise(sp * ubo.pink_scale);
+        float pink  = smoothstep(0.475, 0.525, p_n)
+                    * (1.0 - smoothstep(0.0, ubo.pink_span, t_lat))
+                    * (0.45 + 0.55 * smoothstep(ubo.pink_deep, 1.0, dep));
+        vec3  k_sh  = vec3(0.88, 0.49, 0.62);
+        vec3  k_dp  = vec3(0.55, 0.19, 0.37);
+        w_hue       = mix(w_hue, mix(k_sh, k_dp, dep), pink * ubo.pink_amt);
+        // the seabed stays readable at depth; water tints it, never hides it.
+        // gain kept low or the shelf blooms into a white ring at the coast
+        float bedl = lum * (1.0 - 0.45 * dep);
+        vec3  wat  = w_hue * (0.34 + 1.25 * bedl);
+        wat       *= 0.26 + 0.74 * ndl_w;
+
+        // glint: tight only. the broad sheen term smeared a pale blob over
+        // a third of the ocean and read as a lamp, not sun on water
+        float glit  = 0.62 + 0.55 * fnoise(sp * 26.0);
+        float fres  = 0.02 + 0.98 * pow(1.0 - max(dot(n0, v_dir), 0.0), 5.0);
+        // two lobes. the exponent sets the angular size: the half-power
+        // half-angle is acos(0.5^(1/n)), so n=130 is about 6 deg and
+        // n=2.5 about 40 deg -- four times wider again
+        wat        += vec3(0.95, 0.92, 0.98)
+                    * pow(nh, ubo.spec_power) * day_s * glit * ubo.spec_amt;
+        wat        += vec3(0.72, 0.74, 0.86)
+                    * pow(nh, ubo.wide_power) * day_s * ubo.wide_amt;
+        // sky reflection climbs toward the limb
+        wat         = mix(wat, vec3(0.46, 0.43, 0.62) * day_s, fres * 0.26);
+
+        vec3  col  = mix(lnd, wat, is_w);
+
+        col        *= ubo.gain;
+        fragColor   = vec4(clamp(col, 0.0, 1.0), 1.0);
+    }
+
+
+# the sky shell: clouds, limb haze and the rim, drawn over the surface.
+# same construction as Earth's CloudShader — an offset sphere with the
+# cloud map prefiltered in the vertex stage and faded off the silhouette
+enum SkySurface
+    cloud : 0
+
+# its own enum and its own samplers map: a third LayoutBinding added to
+# an inherited shader lands on the parent's slot and reads the height map
+ModelViewProject TerraSky
+    mutable gain    : f32
+    mutable cam_pos : vec4f
+
+    attrib cloud : LayoutBinding [ type:typeid[ SkySurface ], id:SkySurface.cloud, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_normal     : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
+    attrib v_cloud_avg  : VertexOutput  [ type:typeid[ f32 ] ]
+
+    attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye2    : vec3f [0.0f,  0.0f,  1.5f]
+        target2 : vec3f [0.0f,  0.0f,  0.0f]
+        up2     : vec3f [0.0f, -1.0f,  0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[70.0f], 1.0f, 0.1f, 100.0f]
+        view    = mat4f.look_at    [eye2, target2, up2]
+
+    func vertex[] -> GLSL none {
+        v_uv     = vec2(1.0 - a_uv.x, a_uv.y);
+        mat3 nm  = transpose(inverse(mat3(ubo.model)));
+        v_normal = normalize(nm * a_normal);
+
+        // prefilter the cloud map so the fragment can normalise contrast
+        const float kernel[7] = float[](
+            0.006, 0.061, 0.242, 0.383, 0.242, 0.061, 0.006);
+        vec2  texel = 1.0 / vec2(textureSize(cloud, 0));
+        float c_avg = 0.0;
+        for (int i = -3; i <= 3; ++i) {
+            for (int j = -3; j <= 3; ++j) {
+                vec2 o = vec2(i, j) * texel * 2.0;
+                c_avg += texture(cloud, v_uv + o).r * kernel[i + 3] * kernel[j + 3];
+            }
+        }
+        v_cloud_avg = c_avg;
+
+        // just clear of the tallest displaced peak. any higher and the
+        // deck reads as a glass dome standing off the planet
+        vec3 shell  = a_pos + a_normal * 0.008;
+        vec4 wpos   = ubo.model * vec4(shell, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment[] -> GLSL none {
+        vec3  n     = normalize(v_normal);
+        vec3  sun   = normalize(vec3(-0.56, 0.14, 0.82));
+        vec3  v_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        float ndl   = max(dot(n, sun),   0.0);
+        float ndv   = max(dot(n, v_dir), 0.0);
+
+        // ramp the rim back to zero at the geometric limb, or the mesh
+        // edge pixels take a bright line along the jagged silhouette
+        float silh  = smoothstep(0.0, 0.24, ndv);
+        float limb  = pow(1.0 - ndv, 2.2) * silh;
+        float rim   = pow(1.0 - ndv, 5.0) * silh;
+
+        float c_amt = texture(cloud, v_uv).r / (2.0 - v_cloud_avg);
+        c_amt       = smoothstep(0.14, 0.66, c_amt);
+        // clouds thin out into the limb so they never stack on the haze
+        c_amt      *= clamp(1.0 - pow(1.0 - ndv, 0.9), 0.0, 1.0);
+
+        float day   = 0.16 + 0.84 * ndl;
+        vec3  c_col = vec3(0.88, 0.85, 0.90) * day;
+
+        // thin air scatters short wavelengths: violet on the limb, and
+        // it brightens hard where the line of sight grazes the terminator
+        vec3  air   = vec3(0.40, 0.34, 0.72) * (0.20 + 1.05 * ndl);
+        vec3  glow  = air * limb * 0.85 + air * rim * 0.55;
+
+        // straight_alpha multiplies by a in the blend, so emit unpremultiplied
+        // colour here: folding coverage into rgb too applies it squared
+        float a     = clamp(c_amt * 0.94 + (limb * 0.50 + rim * 0.35) * ndl, 0.0, 1.0);
+        vec3  col   = (c_col * c_amt * 0.94 + glow) / max(a, 0.001);
+        fragColor   = vec4(col, a);
+    }
+
+
+element Mars
+    frost : true
+    frost_sharp : true
+    # eased camera distance / angle; p_set marks the first frame
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
+    intern mars   : MoonShader
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    public color  : rgba [ r:0.010, g:0.005, b:0.006, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf_path : path 'models/earth.gltf'
+        gltf      : gltf_path.load[ typeid[ GltfModel ], null ]
+        mars      = MoonShader [ vk: vk ]
+
+        mars_samplers : map Image [string] [
+            'color':  Image [ uri: path 'textures/mars-color-8192x4096.jpg',  surface: MoonSurface.color ],
+            'height': Image [ uri: path 'textures/mars-height-8192x4096.png', surface: MoonSurface.height ]
+        ]
+        mars_model : Model [ vk: vk, w: ux, id: gltf, s: mars, samplers: mars_samplers, straight_alpha: true ]
+        models     = array Model [ mars_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    # unregister only; we keep our ref so the GPU graph outlives the frame
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # iron oxide: the editor's purples go rust under a martian sky
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#2a1512cc',   # editor pane background
+            '#140a2a80':  '#429a',   # console pane background
+            '#4258':      '#8a5a4a58',   # unused (line_color moved to #44225588)
+            '#ff6a2e55':  '#ff8a4a55',   # search highlight fill
+            '#220022aa':  '#2a1a16aa',   # run console base fill
+            '#614':       '#54281a',     # TButtons / nav rest fill
+            '#413':       '#3c1c10',     # TButtons hover fill
+            '#826':       '#7c3c22',     # TButtons lit / nav selected
+            '#625a':      '#531a',       # bottom status bar fill
+            '#8af2':      '#fa62',       # status bar inner glow
+            '#425':       '#52281e',     # editor selection color
+            '#44225588':  '#5a3a2e33'    # editor line highlight
+        ]
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built ] build_models[]
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        # follow the window, never a fixed 16:9 -- a hardcoded aspect
+        # stretches the disc the moment the window is not that shape
+        aspect : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        # a globe, not a surface: far enough for the whole disc
+        # Mars was authored as a whole-disc view, so its 2.70 is `far`
+        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 1.55 :
+                       (ux.orbit_mode == OrbitView.high) ? 2.05 : 2.70 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
+
+        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+                       (ux.angle_mode == ViewAngle.angled) ? 0.156 : 0.480 ]
+        if [ p_cur == 0.0 && p_t != 0.0 && !p_set ] p_cur = p_t
+        p_set  = true
+        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
+
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.002 || abs[ p_cur - p_t ] > 0.001
+        e_d    : f32 [ e_cur ]
+        _eye   : vec3f [ 0.0,  e_d * p_cur, e_d ]
+        _tgt   : vec3f [ 0.0,  0.0,  0.0  ]
+        # world +y reads up on screen only when up is negated
+        _up    : vec3f [ 0.0, -1.0,  0.0  ]
+
+        _proj  : mat4f.perspective[ radians[ 60.0 ], aspect, 0.01, 20.0 ]
+        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        # ux.time counts kiloseconds: 6000 = one turn per minute
+        spin_d : f32 [ ux.time * 6000.0 ]
+        m_spin : vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ]
+        q_spin : quatf [ m_spin ]
+        # 25.2 degrees of axial tilt, applied after the spin
+        m_axis : vec4f [ 0.0, 0.0, 1.0, radians[ 25.2 ] ]
+        q_axis : quatf [ m_axis ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_axis ]
+        mm = mm.rotate[ q_spin ]
+
+        mars.model = mm
+        mars.view  = _view
+        mars.proj  = _proj
+        mars.gain  = 2.0
+        mars.regolith = 0.0
+        mars.relief   = 1.0
+        mars.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+
+
+element Terra
+    frost : true
+    frost_sharp : true
+    frost_lift : 0.92
+    # eased camera distance / angle; p_set marks the first frame
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
+    intern terra  : TerraShader
+    intern sky    : TerraSky
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    public color  : rgba [ r:0.006, g:0.008, b:0.016, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf_path : path 'models/earth.gltf'
+        gltf      : gltf_path.load[ typeid[ GltfModel ], null ]
+        terra     = TerraShader [ vk: vk ]
+        sky       = TerraSky    [ vk: vk ]
+
+        # the height png is 8-bit: differentiating it draws contour rings.
+        # carry it to f32 and gaussian it once, here, not per fragment
+        h_src : Image [ uri: path 'textures/mars-height-8192x4096.png' ]
+        h_f32 : h_src.gray[].to_f32[ true ].gaussian[ 2.0 ]
+        h_f32.surface = MoonSurface.height
+        h_f32.linear  = true
+        h_f32.wrap_u  = true
+
+        # the mars maps only: color is the land, height sets the sea
+        terra_samplers : map Image [string] [
+            'color':  Image [ uri: path 'textures/mars-color-8192x4096.jpg',   surface: MoonSurface.color,  linear: true, wrap_u: true ],
+            'height': h_f32,
+            'jungle': Image [ uri: path 'textures/jungle.png', surface: MoonSurface.jungle, linear: true, wrap_u: true, wrap_v: true ]
+        ]
+        # the sky pass carries one sampler, on its own enum
+        sky_samplers : map Image [string] [
+            'cloud':  Image [ uri: path 'textures/earth-cloud-8192x4096.png',  surface: SkySurface.cloud, linear: true, wrap_u: true ]
+        ]
+        terra_model : Model [ vk: vk, w: ux, id: gltf, s: terra, samplers: terra_samplers, straight_alpha: true ]
+        sky_model   : Model [ vk: vk, w: ux, id: gltf, s: sky,   samplers: sky_samplers,   straight_alpha: true ]
+        models      = array Model [ terra_model, sky_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        # 2x supersample: the coast and the limb alias badly at 1x
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      (ux.frost_eff[] == 3) ? 2.0 : 1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    # unregister only; we keep our ref so the GPU graph outlives the frame
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # a living mars: the editor purples go to moss and wine.
+    # the pane fill is the backdrop dimmer, so it carries the #0008;
+    # the second layer keeps its original ratio to the first
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#101a',        # editor pane background
+            '#140a2a80':  '#0005',        # console pane background
+            '#4258':      '#c87a9a58',    # unused (line_color moved to #44225588)
+            '#ff6a2e55':  '#c8d05a55',    # search highlight fill
+            '#220022aa':  '#16221eaa'     # run console base fill
+        ]
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built ] build_models[]
+        create_target[]
+        # NOTE: wscale is fixed at create_target. resizing a live Render
+        # here destroys its image view while bound descriptor sets and
+        # an in-flight command buffer still reference it -- instant
+        # device loss the moment the frost stage is toggled
+        orbit[]
+
+    func orbit[]
+        # follow the window, never a fixed 16:9 -- a hardcoded aspect
+        # stretches the disc the moment the window is not that shape
+        aspect : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        # low is the 1.38 this scene already had; far shows the disc
+        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 1.38 :
+                       (ux.orbit_mode == OrbitView.high) ? 1.85 : 2.60 ]
+        # ease to it rather than cut; first frame snaps so we do not
+        # fly in from zero on mount
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
+
+        # pitch above the equator, as a rise over the eye distance.
+        # 0 is dead flat-on; the ladder tips the pole toward the camera
+        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+                       (ux.angle_mode == ViewAngle.angled) ? 0.094 : 0.420 ]
+        if [ p_cur == 0.0 && p_t != 0.0 && !p_set ] p_cur = p_t
+        p_set  = true
+        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
+
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.002 || abs[ p_cur - p_t ] > 0.001
+        e_d    : f32 [ e_cur ]
+        _eye   : vec3f [ 0.0,  e_d * p_cur, e_d ]
+        _tgt   : vec3f [ 0.0,  0.0,  0.0  ]
+        _up    : vec3f [ 0.0, -1.0,  0.0  ]
+
+        _proj  : mat4f.perspective[ radians[ 60.0 ], aspect, 0.01, 20.0 ]
+        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        # base angle brings Valles Marineris around; ux.time counts
+        # kiloseconds, so 4000 is roughly one turn in ninety seconds
+        spin_d : f32 [ 60.0 + ux.time * 4000.0 ]
+        m_spin : vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ]
+        q_spin : quatf [ m_spin ]
+        m_axis : vec4f [ 0.0, 0.0, 1.0, radians[ 25.2 ] ]
+        q_axis : quatf [ m_axis ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_axis ]
+        mm = mm.rotate[ q_spin ]
+
+        terra.model = mm
+        terra.view  = _view
+        terra.proj  = _proj
+        terra.gain  = 1.22
+        terra.regolith = 0.0
+        terra.relief   = 1.0
+        terra.sea_level = 0.302
+        terra.sea_lat   = 0.0
+        terra.sea_curve = 2.2
+        terra.sea_noise = 0.012
+        terra.sea_scale = 3.4
+        terra.land_scale  = 5.5
+        terra.water_scale = 2.8
+        # light blue carries the equator now, so cyan only seasons it
+        terra.cyan_amt    = 0.24
+        terra.cyan_curve  = 4.0
+        terra.pink_amt    = 0.85
+        terra.pink_span   = 0.90
+        terra.pink_scale  = 1.3
+        terra.pink_deep   = 0.25
+        terra.spec_power  = 130.0
+        terra.spec_amt    = 0.55
+        terra.wide_power  = 2.5
+        terra.wide_amt    = 0.13
+        terra.leaf_power  = 16.0
+        terra.leaf_amt    = 0.10
+        terra.leaf_scale  = 210.0
+        terra.lblue_amt   = 0.55
+        terra.lblue_scale = 2.3
+        terra.lblue_curve = 1.6
+        terra.forest_scale = 4.0
+        terra.forest_amt   = 0.80
+        terra.tree_line    = 0.20
+        terra.veg_amt      = 0.45
+        terra.jungle_tiles = 48.0
+        terra.eq_rise      = 0.010
+        terra.sand_band    = 0.008
+        terra.green_band   = 0.080
+        terra.sand_amt     = 0.80
+        terra.lush_curve   = 1.5
+        terra.displace  = 0.00875
+        terra.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+
+        sky.model   = mm
+        sky.view    = _view
+        sky.proj    = _proj
+        sky.gain    = 1.0
+        sky.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
 
 
 shader PurpleShader
@@ -939,3 +2105,1263 @@ shader Aura2
         beam.paint[]
 
  ##
+
+enum GaiaSurface
+    color : 0
+
+# sky sphere: viewed from INSIDE — no lighting, just the star map
+ModelViewProject GaiaShader
+    mutable gain : f32
+
+    attrib color : LayoutBinding [ type:typeid[ GaiaSurface ], id:GaiaSurface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_uv      : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye2    : vec3f [0.0f, 0.0f, 0.0f]
+        target2 : vec3f [0.0f, 0.0f, 1.0f]
+        up2     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[70.0f], 1.0f, 0.01f, 100.0f]
+        view    = mat4f.look_at    [eye2, target2, up2]
+
+    func vertex[] -> GLSL none {
+        v_uv        = a_uv;
+        gl_Position = ubo.proj * ubo.view * ubo.model * vec4(a_pos, 1.0);
+    }
+
+    func g_hash31 [ p: vec3f ] -> GLSL float {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+    }
+
+    func g_vnoise [ p: vec3f ] -> GLSL float {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        float n000 = g_hash31(i + vec3(0.0, 0.0, 0.0));
+        float n100 = g_hash31(i + vec3(1.0, 0.0, 0.0));
+        float n010 = g_hash31(i + vec3(0.0, 1.0, 0.0));
+        float n110 = g_hash31(i + vec3(1.0, 1.0, 0.0));
+        float n001 = g_hash31(i + vec3(0.0, 0.0, 1.0));
+        float n101 = g_hash31(i + vec3(1.0, 0.0, 1.0));
+        float n011 = g_hash31(i + vec3(0.0, 1.0, 1.0));
+        float n111 = g_hash31(i + vec3(1.0, 1.0, 1.0));
+        return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+                   mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+    }
+
+    func fragment[] -> GLSL none {
+        vec3 sky  = texture(color, v_uv).rgb;
+        // galactic band: full boost at the equator, falling to the poles
+        float band = 1.0 - abs(v_uv.y - 0.5) * 2.0;
+        float g    = ubo.gain * mix(0.5, 2.3, smoothstep(0.0, 1.0, band));
+        // violet cast: red and blue lifted over green
+        vec3 tint  = vec3(1.12, 0.90, 1.32);
+        // dust: a 2D slice of drifting 3D noise darkens the field.
+        // value noise cells ran 1/5 of the map wide and smoothstep drew
+        // their isoline as a hard diamond -- finer scales, four octaves
+        // on offset domains, and a soft stretch instead of a threshold
+        // six octaves, each on its own offset domain and drifting at
+        // its own rate, so no two share a cell boundary. the top one
+        // stops near 450 -- past that a cell is a pixel and it shimmers
+        float t9 = ubo.time * 0.03;
+        float d1 = g_vnoise(vec3(v_uv *  29.0, t9));
+        float d2 = g_vnoise(vec3(v_uv *  61.0 + vec2( 7.0,  3.0), t9 * 1.7));
+        float d3 = g_vnoise(vec3(v_uv * 127.0 + vec2(23.0, 11.0), t9 * 2.3));
+        float d4 = g_vnoise(vec3(v_uv * 251.0 + vec2( 5.0, 29.0), t9 * 3.1));
+        float d5 = g_vnoise(vec3(v_uv * 449.0 + vec2(31.0, 17.0), t9 * 4.3));
+        float dn = 0.30 * d1 + 0.24 * d2 + 0.19 * d3
+                 + 0.15 * d4 + 0.12 * d5;
+        // a third of the previous bite: 0.62 took 38% out of the field,
+        // this takes about 13%
+        float dust = mix(1.0, 0.873, clamp((dn - 0.5) * 1.9 + 0.5, 0.0, 1.0));
+        fragColor  = vec4(sky * tint * g * dust, 1.0);
+    }
+
+element MilkyWay
+    frost : true
+    frost_sharp : true
+    # eased field of view; orbit steps zoom the gaze, not a distance
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern gaia   : GaiaShader
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    public color  : rgba [ r:0.0, g:0.0, b:0.004, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf_path : path 'models/earth.gltf'
+        gltf      : gltf_path.load[ typeid[ GltfModel ], null ]
+        gaia      = GaiaShader [ vk: vk ]
+        gaia_samplers : map Image [string] [
+            'color': Image [ uri: path 'textures/gaia.png', surface: GaiaSurface.color ]
+        ]
+        gaia_model : Model [ vk: vk, w: ux, id: gltf, s: gaia, samplers: gaia_samplers,
+            straight_alpha: true, cull_none: true ]
+        models     = array Model [ gaia_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    # unregister only; we keep our ref so the GPU graph outlives the frame
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # deep space: near-black panes, starlight blues
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#0a0a1288',   # editor pane background
+            '#140a2a80':  '#418a',   # console pane background
+            '#ff6a2e55':  '#8a8ad455',   # search highlight fill
+            '#220022aa':  '#0e0e18aa',   # run console base fill
+            '#614':       '#424a',     # TButtons / nav rest fill
+            '#413':       '#424e',     # TButtons hover fill
+            '#826':       '#534e',     # TButtons lit / nav selected
+            '#625a':      '#4248',       # bottom status bar fill
+            '#8af2':      '#88a2',       # status bar inner glow
+            '#425':       '#4184',     # editor selection color
+            '#44225588':  '#8a8aaa11'    # editor line highlight
+        ]
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built ] build_models[]
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        aspect : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        # orbit steps become zoom: field of view narrows from far to low
+        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 45.0 :
+                       (ux.orbit_mode == OrbitView.high) ? 65.0 : 85.0 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
+
+        # angle steps pitch the gaze off the galactic plane
+        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+                       (ux.angle_mode == ViewAngle.angled) ? 0.35 : 0.80 ]
+        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.02 || abs[ p_cur - p_t ] > 0.001
+
+        _eye   : vec3f [ 0.0, 0.0, 0.0 ]
+        _tgt   : vec3f [ 0.0, p_cur, 1.0 ]
+        _up    : vec3f [ 0.0, -1.0, 0.0 ]
+        _proj  : mat4f.perspective[ radians[ e_cur ], aspect, 0.01, 20.0 ]
+        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        # ux.time counts kiloseconds: a slow drift across the sky
+        spin_d : f32 [ ux.time * 900.0 ]
+        m_spin : vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ]
+        q_spin : quatf [ m_spin ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_spin ]
+
+        gaia.model = mm
+        gaia.view  = _view
+        gaia.proj  = _proj
+        gaia.gain  = 1.3
+        gaia.time  = ux.time * 60000.0
+
+
+enum TitanSurface
+    color  : 0
+    height : 1
+    height2 : 2
+    nrm_a  : 3
+    nrm_b  : 4
+
+# Titan to spec: 1.45 bar N2, tholin haze — orange thickening at the
+# limb, detached bluish upper layer, seasonal north polar hood
+ModelViewProject TitanShader
+    mutable gain    : f32
+    mutable cam_pos : vec4f
+
+    attrib color : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_normal    : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_uv        : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye2    : vec3f [0.0f, 0.0f, 2.5f]
+        target2 : vec3f [0.0f, 0.0f, 0.0f]
+        up2     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
+        view    = mat4f.look_at    [eye2, target2, up2]
+
+    func vertex[] -> GLSL none {
+        v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
+        mat3 nm     = transpose(inverse(mat3(ubo.model)));
+        v_normal    = normalize(nm * a_normal);
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment[] -> GLSL none {
+        vec3  n        = normalize(v_normal);
+        // half phase: the sun sits off to the side for both bodies
+        vec3  sun      = normalize(vec3(0.85, -0.10, 0.15));
+        vec3  view_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        float mu       = clamp(dot(n, view_dir), 0.0, 1.0);
+        float h        = 1.0 - mu;
+        // surface reads at disc center, dissolving into haze mid-disc
+        float alb      = texture(color, v_uv).r;
+        vec3  surf     = mix(vec3(0.30, 0.17, 0.07), vec3(1.0, 0.70, 0.34), alb);
+        float sread    = (1.0 - smoothstep(0.0, 0.55, h)) * 0.45;
+        // haze body with the lensing bands near the limb — the
+        // classic cassini butterscotch, pale and creamy; the blue
+        // layer is a DARK thin rim, not a glow
+        vec3  warm     = vec3(0.95, 0.78, 0.54);
+        vec3  cream    = vec3(0.99, 0.90, 0.72);
+        vec3  blue     = vec3(0.20, 0.28, 0.58);
+        vec3  hazec    = mix(warm, cream, smoothstep(0.62, 0.84, h));
+        hazec          = mix(hazec, blue, smoothstep(0.86, 0.96, h));
+        // seasonal hood: haze thickens over the north pole
+        float hood     = smoothstep(0.78, 0.92, 1.0 - v_uv.y) * 0.35;
+        vec3  col      = mix(hazec, surf, clamp(sread - hood, 0.0, 1.0));
+        // terminator crosses the disc; the haze wraps it slightly
+        float wrap     = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
+        float ndl      = max(dot(n, sun), 0.0);
+        // wrapped haze light plus real diffuse so the ball reads round
+        float lit      = 0.55 * wrap * wrap + 0.45 * ndl;
+        col           *= (0.02 + 1.10 * lit) * ubo.gain;
+        // tangent path absorption dims the disc toward its edges
+        col           *= (0.78 + 0.22 * mu);
+        // sun side gets a faint cool cast in the upper haze
+        float sunside  = clamp(dot(n, sun), 0.0, 1.0);
+        col           += vec3(0.10, 0.15, 0.32) * (sunside * sunside)
+                       * smoothstep(0.60, 0.94, h) * 0.35 * ubo.gain;
+        // soft outer edge: exponential falloff like a real scale
+        // height — opaque core, then a long asymptotic feather
+        float t        = clamp((h - 0.74) / 0.23, 0.0, 1.0);
+        float a        = exp(-6.0 * t * t);
+        fragColor      = vec4(col, a);
+    }
+
+# the rings: a squashed sphere shaded radially from the strip
+# texture — model-space xz radius IS the ring coordinate
+ModelViewProject RingShader
+    mutable gain    : f32
+    mutable cam_pos : vec4f
+
+    attrib color : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_mpos      : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye2    : vec3f [0.0f, 0.0f, 2.5f]
+        target2 : vec3f [0.0f, 0.0f, 0.0f]
+        up2     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
+        view    = mat4f.look_at    [eye2, target2, up2]
+
+    func vertex[] -> GLSL none {
+        v_mpos      = a_pos;
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment[] -> GLSL none {
+        // D-ring inner edge at 74500/140220 of the F-ring outer
+        float rad = length(v_mpos.xz);
+        float r0  = 0.531;
+        float t   = (rad - r0) / (1.0 - r0);
+        if (t < 0.0 || t > 1.0) { fragColor = vec4(0.0); return; }
+        vec4  band = texture(color, vec2(t, 0.5));
+        vec3  sun  = normalize(vec3(0.85, -0.10, 0.15));
+        // the ring plane normal in world; both faces take light
+        vec3  pn   = normalize((ubo.model * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+        float ndl  = abs(dot(pn, sun));
+        // saturn's shadow: anti-sun side, within the ball's cylinder
+        vec3  ctr  = (ubo.model * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+        float rout = length((ubo.model * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
+        vec3  p    = v_world_pos.xyz - ctr;
+        vec3  q    = p - sun * dot(p, sun);
+        float rp   = 0.430 * rout;
+        float sh   = (dot(p, sun) < 0.0)
+                   ? mix(0.12, 1.0, smoothstep(rp * 0.96, rp * 1.04, length(q)))
+                   : 1.0;
+        vec3  col  = band.rgb * (0.03 + 0.97 * ndl) * sh * ubo.gain;
+        float a    = band.a * smoothstep(0.0, 0.012, t) * (1.0 - smoothstep(0.985, 1.0, t));
+        fragColor  = vec4(col, a);
+    }
+
+# saturn seen from titan: side-lit to the same half phase
+ModelViewProject SaturnShader
+    mutable gain    : f32
+    mutable cam_pos : vec4f
+
+    attrib color  : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.color,  count:1, format: typeid[ rgba8 ] ]
+    # the ring strip: its alpha at the sun-crossing radius IS the shadow
+    attrib height : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.height, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_normal    : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_uv        : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
+    attrib v_mpos      : VertexOutput [ type:typeid[ vec3f ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye2    : vec3f [0.0f, 0.0f, 2.5f]
+        target2 : vec3f [0.0f, 0.0f, 0.0f]
+        up2     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
+        view    = mat4f.look_at    [eye2, target2, up2]
+
+    func vertex[] -> GLSL none {
+        v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
+        v_mpos      = a_pos;
+        mat3 nm     = transpose(inverse(mat3(ubo.model)));
+        v_normal    = normalize(nm * a_normal);
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment[] -> GLSL none {
+        vec3  n        = normalize(v_normal);
+        vec3  sun      = normalize(vec3(0.85, -0.10, 0.15));
+        vec3  view_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        // ring shadow: trace this point toward the sun in MODEL space;
+        // where the ray crosses the equator inside the annulus, the
+        // ring strip's alpha at that radius blocks the light
+        vec3  sm  = normalize(transpose(mat3(ubo.model)) * sun);
+        float shad = 1.0;
+        if (abs(sm.y) > 1e-4) {{
+            float tr = -v_mpos.y / sm.y;
+            if (tr > 0.0) {{
+                vec3  q  = v_mpos + sm * tr;
+                float rr = length(q.xz) / 2.325;
+                float ur = (rr - 0.531) / 0.469;
+                if (ur > 0.0 && ur < 1.0) {{
+                    float ra = texture(height, vec2(ur, 0.5)).a;
+                    shad = 1.0 - ra * 0.85;
+                }}
+            }}
+        }}
+        // zonal winds: the equatorial jet plus alternating lobes —
+        // neighboring bands shear past each other like the real thing
+        float la = v_uv.y - 0.5;
+        float w  = 0.60 * exp(-la * la / 0.012)
+                 + 0.22 * cos(la * 43.98) * exp(-abs(la) * 1.8);
+        // flow ping-pong: two half-cycle phases crossfaded, so shear
+        // stays bounded and the bands slide forever without smearing
+        float t9 = ubo.time * 0.05;
+        float p0 = fract(t9);
+        float p1 = fract(t9 + 0.5);
+        float s0 = w * (p0 - 0.5) * 0.16;
+        float s1 = w * (p1 - 0.5) * 0.16;
+        float bl = abs(2.0 * p0 - 1.0);
+        vec3  alb = mix(texture(color, vec2(v_uv.x + s0, v_uv.y)).rgb,
+                        texture(color, vec2(v_uv.x + s1, v_uv.y)).rgb, bl);
+        // wrapped like the moon, or opposite phases read as broken
+        float wr9      = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
+        float ndl      = wr9 * wr9 * shad;
+        float mu       = clamp(dot(n, view_dir), 0.0, 1.0);
+        vec3  col      = alb * (0.08 + 0.92 * ndl) * ubo.gain;
+        // slight edge softening at this distance
+        float a        = smoothstep(0.0, 0.18, mu);
+        fragColor      = vec4(col, a);
+    }
+
+element Titan
+    frost : true
+    frost_sharp : true
+    # eased camera distance / angle; p_set marks the first frame
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
+    intern titan  : TitanShader
+    intern saturn : SaturnShader
+    intern rings  : RingShader
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    public color  : rgba [ r:0.004, g:0.003, b:0.006, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf_path : path 'models/earth.gltf'
+        gltf      : gltf_path.load[ typeid[ GltfModel ], null ]
+        titan     = TitanShader [ vk: vk ]
+        t_samplers : map Image [string] [
+            'color': Image [ uri: path 'textures/titan-color.png', surface: TitanSurface.color ]
+        ]
+        titan_model : Model [ vk: vk, w: ux, id: gltf, s: titan, samplers: t_samplers, straight_alpha: true ]
+        saturn    = SaturnShader [ vk: vk ]
+        s_samplers : map Image [string] [
+            'color': Image [ uri: path 'textures/saturn-color.png', surface: TitanSurface.color,
+                wrap_u: true ],
+            'height': Image [ uri: path 'textures/saturn-ring-alpha.png', surface: TitanSurface.height ]
+        ]
+        saturn_model : Model [ vk: vk, w: ux, id: gltf, s: saturn, samplers: s_samplers, straight_alpha: true ]
+        rings     = RingShader [ vk: vk ]
+        r_samplers : map Image [string] [
+            'color': Image [ uri: path 'textures/saturn-ring-alpha.png', surface: TitanSurface.color ]
+        ]
+        ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings, samplers: r_samplers,
+            straight_alpha: true ]
+        models = array Model [ saturn_model, ring_model, titan_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    # unregister only; we keep our ref so the GPU graph outlives the frame
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # tholin sky: the ui goes deep amber-brown under the haze
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#432a',       # editor pane background
+            '#140a2a80':  '#148a',       # console pane background
+            '#ff6a2e55':  '#ffb04a55',   # search highlight fill
+            '#220022aa':  '#1e1206aa',   # run console base fill
+            '#614':       '#4c3210',     # TButtons / nav rest fill
+            '#413':       '#38240c',     # TButtons hover fill
+            '#826':       '#6e4a18',     # TButtons lit / nav selected
+            '#625a':      '#5428',       # bottom status bar fill
+            '#8af2':      '#fc82',       # status bar inner glow
+            '#425':       '#18a8',     # editor selection color
+            '#44225588':  '#18a4'    # editor line highlight
+        ]
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built ] build_models[]
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        aspect : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        # pulled back: titan reads small with saturn owning the sky
+        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 2.60 :
+                       (ux.orbit_mode == OrbitView.high) ? 3.40 : 4.60 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
+
+        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+                       (ux.angle_mode == ViewAngle.angled) ? 0.156 : 0.480 ]
+        if [ p_cur == 0.0 && p_t != 0.0 && !p_set ] p_cur = p_t
+        p_set  = true
+        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
+
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.002 || abs[ p_cur - p_t ] > 0.001
+        e_d    : f32 [ e_cur ]
+        _eye   : vec3f [ 0.0,  e_d * p_cur, e_d ]
+        _tgt   : vec3f [ 0.0,  0.0,  0.0  ]
+        _up    : vec3f [ 0.0, -1.0,  0.0  ]
+
+        _proj  : mat4f.perspective[ radians[ 60.0 ], aspect, 0.01, 60.0 ]
+        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        # Titan turns once per 15.9 days — a gentle drift here
+        spin_d : f32 [ ux.time * 2400.0 ]
+        m_spin : vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ]
+        q_spin : quatf [ m_spin ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_spin ]
+
+        titan.model   = mm
+        titan.view    = _view
+        titan.proj    = _proj
+        titan.gain    = 1.15
+        titan.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+
+        # Saturn hangs huge in the sky, up and left, tidally fixed
+        s_off  : vec3f [ -8.0, -4.5, -20.0 ]
+        s_sc   : vec3f [ 10.5, 10.5, 10.5 ]
+        s_axis : vec4f [ 0.0, 0.0, 1.0, radians[ 26.7 ] ]
+        sq     : quatf [ s_axis ]
+        # tip the whole assembly toward the viewer: the ring plane
+        # opens into an ellipse instead of slicing the scene edge-on
+        s_tip  : vec4f [ 1.0, 0.0, 0.0, radians[ 20.0 ] ]
+        sq3    : quatf [ s_tip ]
+        s_spin : vec4f [ 0.0, 1.0, 0.0, radians[ ux.time * 9000.0 ] ]
+        sq2    : quatf [ s_spin ]
+        sm : mat4f.identity[]
+        sm = sm.translate[ s_off ]
+        sm = sm.rotate   [ sq3 ]
+        sm = sm.rotate   [ sq ]
+        sm = sm.rotate   [ sq2 ]
+        sm = sm.scale    [ s_sc ]
+        saturn.model    = sm
+        saturn.view     = _view
+        saturn.proj     = _proj
+        saturn.gain     = 1.9
+        saturn.cam_pos  = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        saturn.time     = ux.time * 60000.0
+
+        # rings share saturn's frame: F-ring outer = 2.325x the ball
+        r_sc : vec3f [ 24.4, 0.02, 24.4 ]
+        rm : mat4f.identity[]
+        rm = rm.translate[ s_off ]
+        rm = rm.rotate   [ sq3 ]
+        rm = rm.rotate   [ sq ]
+        rm = rm.scale    [ r_sc ]
+        rings.model   = rm
+        rings.view    = _view
+        rings.proj    = _proj
+        rings.gain    = 1.9
+        rings.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+
+
+# enceladus geysers: procedural jets fanning off the south cone
+# into a soft veil — a shell around the moon, nothing textured
+ModelViewProject PlumeShader
+    mutable gain    : f32
+    mutable cam_pos : vec4f
+
+    attrib color : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_mpos      : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye2    : vec3f [0.0f, 0.0f, 2.5f]
+        target2 : vec3f [0.0f, 0.0f, 0.0f]
+        up2     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
+        view    = mat4f.look_at    [eye2, target2, up2]
+
+    func vertex[] -> GLSL none {
+        v_mpos      = a_pos;
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func hash31 [ p: vec3f ] -> GLSL float {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+    }
+
+    func vnoise [ p: vec3f ] -> GLSL float {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        float n000 = hash31(i + vec3(0.0, 0.0, 0.0));
+        float n100 = hash31(i + vec3(1.0, 0.0, 0.0));
+        float n010 = hash31(i + vec3(0.0, 1.0, 0.0));
+        float n110 = hash31(i + vec3(1.0, 1.0, 0.0));
+        float n001 = hash31(i + vec3(0.0, 0.0, 1.0));
+        float n101 = hash31(i + vec3(1.0, 0.0, 1.0));
+        float n011 = hash31(i + vec3(0.0, 1.0, 1.0));
+        float n111 = hash31(i + vec3(1.0, 1.0, 1.0));
+        return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+                   mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+    }
+
+    func p_perm4 [ x: vec4f ] -> GLSL vec4f {
+        return mod((x * 34.0 + 1.0) * x, vec4(289.0));
+    }
+
+    func p_isqrt4 [ r: vec4f ] -> GLSL vec4f {
+        return 1.79284291400159 - 0.85373472095314 * r;
+    }
+
+    func p_gnoise [ P: vec3f ] -> GLSL float {
+        vec3 Pi0 = mod(floor(P), vec3(289.0));
+        vec3 Pi1 = mod(Pi0 + vec3(1.0), vec3(289.0));
+        vec3 Pf0 = fract(P);
+        vec3 Pf1 = Pf0 - vec3(1.0);
+        vec4 ix  = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
+        vec4 iy  = vec4(Pi0.y, Pi0.y, Pi1.y, Pi1.y);
+        vec4 iz0 = vec4(Pi0.z);
+        vec4 iz1 = vec4(Pi1.z);
+        vec4 ixy  = p_perm4(p_perm4(ix) + iy);
+        vec4 ixy0 = p_perm4(ixy + iz0);
+        vec4 ixy1 = p_perm4(ixy + iz1);
+        vec4 gx0 = fract(ixy0 / 7.0) * 2.0 - 1.0;
+        vec4 gy0 = fract(floor(ixy0 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz0 = 1.0 - abs(gx0) - abs(gy0);
+        vec4 gx1 = fract(ixy1 / 7.0) * 2.0 - 1.0;
+        vec4 gy1 = fract(floor(ixy1 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz1 = 1.0 - abs(gx1) - abs(gy1);
+        vec4 sz0 = step(gz0, vec4(0.0));
+        gx0 -= sz0 * (step(0.0, gx0) - 0.5);
+        gy0 -= sz0 * (step(0.0, gy0) - 0.5);
+        vec4 sz1 = step(gz1, vec4(0.0));
+        gx1 -= sz1 * (step(0.0, gx1) - 0.5);
+        gy1 -= sz1 * (step(0.0, gy1) - 0.5);
+        vec3 g000 = vec3(gx0.x, gy0.x, gz0.x);
+        vec3 g100 = vec3(gx0.y, gy0.y, gz0.y);
+        vec3 g010 = vec3(gx0.z, gy0.z, gz0.z);
+        vec3 g110 = vec3(gx0.w, gy0.w, gz0.w);
+        vec3 g001 = vec3(gx1.x, gy1.x, gz1.x);
+        vec3 g101 = vec3(gx1.y, gy1.y, gz1.y);
+        vec3 g011 = vec3(gx1.z, gy1.z, gz1.z);
+        vec3 g111 = vec3(gx1.w, gy1.w, gz1.w);
+        vec4 nm0 = p_isqrt4(vec4(dot(g000,g000), dot(g010,g010), dot(g100,g100), dot(g110,g110)));
+        g000 *= nm0.x; g010 *= nm0.y; g100 *= nm0.z; g110 *= nm0.w;
+        vec4 nm1 = p_isqrt4(vec4(dot(g001,g001), dot(g011,g011), dot(g101,g101), dot(g111,g111)));
+        g001 *= nm1.x; g011 *= nm1.y; g101 *= nm1.z; g111 *= nm1.w;
+        float n000 = dot(g000, Pf0);
+        float n100 = dot(g100, vec3(Pf1.x, Pf0.y, Pf0.z));
+        float n010 = dot(g010, vec3(Pf0.x, Pf1.y, Pf0.z));
+        float n110 = dot(g110, vec3(Pf1.xy, Pf0.z));
+        float n001 = dot(g001, vec3(Pf0.xy, Pf1.z));
+        float n101 = dot(g101, vec3(Pf1.x, Pf0.y, Pf1.z));
+        float n011 = dot(g011, vec3(Pf0.x, Pf1.yz));
+        float n111 = dot(g111, Pf1);
+        vec3  fxyz = Pf0 * Pf0 * Pf0 * (Pf0 * (Pf0 * 6.0 - 15.0) + 10.0);
+        vec4  n_z  = mix(vec4(n000, n100, n010, n110), vec4(n001, n101, n011, n111), fxyz.z);
+        vec2  n_yz = mix(n_z.xy, n_z.zw, fxyz.y);
+        return mix(n_yz.x, n_yz.y, fxyz.x) * 0.5 + 0.5;
+    }
+
+    # the surface's province field, verbatim — a vent only ignites in
+    # the darkest terrain, so placement is seeded by the image
+    func vent_weight [ pm: vec3f ] -> GLSL float {
+        float pv = p_gnoise(pm * 2.2 + vec3(5.0, 11.0, 3.0));
+        return 1.0 - smoothstep(0.30, 0.70, pv);
+    }
+
+    func fragment[] -> GLSL none {
+        // ray march through a field of vent cones: the quad is only
+        // screen coverage — the columns are computed in 3d along the
+        // view ray, so they stand in space and occlude correctly
+        // 4 vent clusters spread over the whole ball, 3 sources each;
+        // every jet fires along its surface normal — nearby cluster
+        // members diverge like a fan by geometry alone: the streaks
+        // a forest: 8 skewed fissure clusters over the whole ball —
+        // a ray through the planet's vicinity threads several jets
+        const float AZ[48]   = float[](0.38, 0.52, 0.63,  1.24, 1.31, 1.35,  2.16, 2.21, 2.24,  2.94, 3.05, 3.13,
+                                       3.78, 3.91, 4.02,  4.62, 4.68, 4.77,  5.40, 5.52, 5.60,  6.02, 6.10, 6.14,
+                                       0.90, 1.70, 2.60, 3.40, 4.30, 5.00, 5.90, 0.10,
+                                       1.68, 1.76, 1.83,  3.29, 3.36, 3.41,  4.08, 4.16, 4.24,  5.79, 5.86, 5.92,
+                                       0.65, 2.50, 3.60, 5.15);
+        const float LAT[48]  = float[](0.545, 0.585, 0.610,  -0.88, -0.82, -0.76,  -0.30, -0.19, -0.09,  0.86, 0.91, 0.98,
+                                       0.10, 0.17, 0.26,  -1.18, -1.12, -1.08,  -0.64, -0.72, -0.76,  0.30, 0.37, 0.41,
+                                       -0.45, 0.72, 0.45, -1.00, 0.62, -0.05, 0.95, -0.52,
+                                       0.34, 0.42, 0.47,  -0.58, -0.50, -0.45,  0.60, 0.68, 0.72,  -0.34, -0.26, -0.21,
+                                       -0.15, 0.78, 1.05, -0.95);
+        vec3 e_p0[48];
+        for (int i = 0; i < 48; i++) {{
+            float cl = cos(LAT[i]);
+            e_p0[i] = vec3(cl * sin(AZ[i]), sin(LAT[i]), cl * cos(AZ[i]));
+        }}
+        vec3  ro  = ubo.cam_pos.xyz;
+        vec3  rd  = normalize(v_world_pos.xyz - ro);
+        // one shell layer only: inside we see its far side, outside
+        // its near side — the guard stops the outside double-count
+        if (dot(ro, ro) >= 1.69 && !gl_FrontFacing) { fragColor = vec4(0.0); return; }
+        // the moon blocks the march past its surface
+        float b     = dot(ro, rd);
+        float c     = dot(ro, ro) - 1.0;
+        float dsc   = b * b - c;
+        float s_hit = (dsc > 0.0) ? (-b - sqrt(dsc)) : 1e9;
+        if (s_hit < 0.0) s_hit = 1e9;
+        // march the segment crossing the plume bounding sphere
+        // small jets (~1/8 former scale): stepping under-samples them,
+        // so each contributes its ANALYTIC ray integral at closest
+        // approach — the ray walks the 3d emitter list exactly
+        float sumc = 0.0;
+        float sumh = 0.0;
+        for (int i = 0; i < 48; i++) {{
+            vec3  p0 = e_p0[i];
+            vec3  w0 = ro - p0;
+            float aa = dot(rd, p0);
+            float d0 = dot(rd, w0);
+            float d1 = dot(p0, w0);
+            float dn = max(1.0 - aa * aa, 1e-4);
+            float s9 = (aa * d1 - d0) / dn;
+            float t9 = (d1 - aa * d0) / dn;
+            if (s9 < 0.02) continue;
+            // soft occlusion at the limb — nothing pops binary
+            float occ = 1.0 - smoothstep(s_hit - 0.10, s_hit + 0.10, s9);
+            if (occ <= 0.0) continue;
+            float tt  = max(t9, 0.0);
+            // soft emergence at the vent, pure attenuation outward —
+            // no end cut: the exp IS the ending
+            float env = smoothstep(-0.015, 0.025, t9) * exp(-9.0 * tt);
+            vec3  qp = w0 + s9 * rd - t9 * p0;
+            float d2 = dot(qp, qp);
+            // a real cone: the plume flares open as it rises
+            float sg = 0.008 + 0.10 * tt;
+            float gc = exp(-d2 / (sg * sg));
+            float gh = 0.30 * exp(-d2 / (9.0 * sg * sg));
+            float boost = 1.0 / sqrt(max(dn, 0.06));
+            // emission rides a 3d perlin field: each frame renders a
+            // moving cross-section — advected along the axis it ROLLS
+            // continuous modulation: |qp| never flips across the axis
+            // (the vector form did — hard wedge edges), the seed rides
+            // the source position, and time evolves the slice
+            float rq = length(qp);
+            float sd = dot(p0, vec3(37.7, 17.3, 29.1));
+            vec3  sp = vec3(rq * 30.0, sd, ubo.time * 0.15);
+            float n1 = vnoise(sp);
+            // azimuthal desync, faded to zero at the axis where the
+            // qp direction flips — continuous everywhere, async around
+            vec3  sq = qp * 24.0 + vec3(sd, ubo.time * 0.13, 0.0);
+            float n2 = vnoise(sq);
+            float aw = smoothstep(0.0, sg * 1.2, rq);
+            float nn = mix(n1, 0.45 * n1 + 0.55 * n2, aw);
+            float m  = 0.45 + 1.10 * (nn * nn * (3.0 - 2.0 * nn));
+            // fingers: the azimuthal perlin sharpened hard at the
+            // source, dissolving to a smooth column by half height
+            float fing = pow(clamp(n2, 0.0, 1.0), 3.0);
+            float fw   = exp(-4.6 * tt) * aw;
+            m *= mix(1.0, 0.20 + 2.4 * fing, fw);
+            // seeded by the surface: dark provinces erupt, bright ice
+            // stays quiet — placement emerges from the image field
+            float vw = vent_weight(p0);
+            float w9 = env * boost * occ * m * 0.30 * (0.22 + 0.78 * vw * vw);
+            sumc += gc * w9;
+            sumh += gh * w9;
+        }}
+        // soft horizon: a whisper-thin exponential atmosphere at the
+        // ray's closest approach — the lens hugs the limb tight
+        float tca = 0.0 - dot(ro, rd);
+        if (tca > 0.0) {{
+            vec3  pca  = ro + rd * tca;
+            float rc   = length(pca);
+            // outward: a long slow fade into space — the rim breathes
+            float od   = exp(-max(rc - 1.0, 0.0) / 0.014) * smoothstep(0.930, 0.995, rc);
+            // smooth occlusion: the binary cut stamped the analytic
+            // sphere's silhouette as a dark circle over the terrain
+            float dip  = clamp((1.0 - rc) / 0.060, 0.0, 1.0);
+            float hocc = mix(1.0, 0.60, dip);
+            vec3  sunh = normalize(vec3(0.85, -0.10, 0.15));
+            float hw   = clamp(dot(pca / max(rc, 1e-4), sunh) * 0.5 + 0.5, 0.0, 1.0);
+            // blaze where the graze kisses the surface: the light
+            // itself dissolves the terrain edge
+            float nearg = exp(-abs(rc - 1.0) / 0.010);
+            sumc += od * hocc * (0.10 + 0.40 * hw) * (1.0 + 2.5 * nearg);
+        }}
+        // pale ice spine wrapped in rich blue breadth
+        float tot = sumc + sumh;
+        vec3  icy = (vec3(0.85, 0.92, 1.0) * sumc + vec3(0.30, 0.50, 1.0) * sumh)
+                  / max(tot, 1e-5);
+        fragColor = vec4(icy, clamp(tot * ubo.gain, 0.0, 0.9));
+    }
+
+# the icy surface with the vent field casting light onto it —
+# emitter positions mirror PlumeShader's list exactly
+ModelViewProject EnceladusShader
+    mutable gain    : f32
+    mutable cam_pos : vec4f
+    # real geometry displacement, in sphere radii
+    mutable displace : f32
+
+    attrib height  : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.height,  count:1, format: typeid[ rgba8 ] ]
+    attrib detail2 : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.height2, count:1, format: typeid[ rgba8 ] ]
+    # baked offline from the two height maps: RG = normal xy, B = cavity
+    attrib nrmA    : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.nrm_a,   count:1, format: typeid[ rgba8 ] ]
+    attrib nrmB    : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.nrm_b,   count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_normal    : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_uv        : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+    # object-space point, so the noise stays pinned as the moon turns
+    attrib v_sp        : VertexOutput [ type:typeid[ vec3f ] ]
+    # the displacement height, carried down so the fragment never has
+    # to sample the map itself -- that is what shattered into speckle
+    attrib v_h         : VertexOutput [ type:typeid[ f32 ] ]
+
+    func e_perm4 [ x: vec4f ] -> GLSL vec4f {
+        return mod((x * 34.0 + 1.0) * x, vec4(289.0));
+    }
+
+    func e_isqrt4 [ r: vec4f ] -> GLSL vec4f {
+        return 1.79284291400159 - 0.85373472095314 * r;
+    }
+
+    # gradient noise: zero at every lattice point, so nothing it drives
+    # lines up with the grid the way value noise does
+    func e_gnoise [ P: vec3f ] -> GLSL float {
+        vec3 Pi0 = mod(floor(P), vec3(289.0));
+        vec3 Pi1 = mod(Pi0 + vec3(1.0), vec3(289.0));
+        vec3 Pf0 = fract(P);
+        vec3 Pf1 = Pf0 - vec3(1.0);
+        vec4 ix  = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
+        vec4 iy  = vec4(Pi0.y, Pi0.y, Pi1.y, Pi1.y);
+        vec4 iz0 = vec4(Pi0.z);
+        vec4 iz1 = vec4(Pi1.z);
+        vec4 ixy  = e_perm4(e_perm4(ix) + iy);
+        vec4 ixy0 = e_perm4(ixy + iz0);
+        vec4 ixy1 = e_perm4(ixy + iz1);
+        vec4 gx0 = fract(ixy0 / 7.0) * 2.0 - 1.0;
+        vec4 gy0 = fract(floor(ixy0 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz0 = 1.0 - abs(gx0) - abs(gy0);
+        vec4 gx1 = fract(ixy1 / 7.0) * 2.0 - 1.0;
+        vec4 gy1 = fract(floor(ixy1 / 7.0) / 7.0) * 2.0 - 1.0;
+        vec4 gz1 = 1.0 - abs(gx1) - abs(gy1);
+        vec4 sz0 = step(gz0, vec4(0.0));
+        gx0 -= sz0 * (step(0.0, gx0) - 0.5);
+        gy0 -= sz0 * (step(0.0, gy0) - 0.5);
+        vec4 sz1 = step(gz1, vec4(0.0));
+        gx1 -= sz1 * (step(0.0, gx1) - 0.5);
+        gy1 -= sz1 * (step(0.0, gy1) - 0.5);
+        vec3 g000 = vec3(gx0.x, gy0.x, gz0.x);
+        vec3 g100 = vec3(gx0.y, gy0.y, gz0.y);
+        vec3 g010 = vec3(gx0.z, gy0.z, gz0.z);
+        vec3 g110 = vec3(gx0.w, gy0.w, gz0.w);
+        vec3 g001 = vec3(gx1.x, gy1.x, gz1.x);
+        vec3 g101 = vec3(gx1.y, gy1.y, gz1.y);
+        vec3 g011 = vec3(gx1.z, gy1.z, gz1.z);
+        vec3 g111 = vec3(gx1.w, gy1.w, gz1.w);
+        vec4 nm0 = e_isqrt4(vec4(dot(g000,g000), dot(g010,g010), dot(g100,g100), dot(g110,g110)));
+        g000 *= nm0.x; g010 *= nm0.y; g100 *= nm0.z; g110 *= nm0.w;
+        vec4 nm1 = e_isqrt4(vec4(dot(g001,g001), dot(g011,g011), dot(g101,g101), dot(g111,g111)));
+        g001 *= nm1.x; g011 *= nm1.y; g101 *= nm1.z; g111 *= nm1.w;
+        float n000 = dot(g000, Pf0);
+        float n100 = dot(g100, vec3(Pf1.x, Pf0.y, Pf0.z));
+        float n010 = dot(g010, vec3(Pf0.x, Pf1.y, Pf0.z));
+        float n110 = dot(g110, vec3(Pf1.xy, Pf0.z));
+        float n001 = dot(g001, vec3(Pf0.xy, Pf1.z));
+        float n101 = dot(g101, vec3(Pf1.x, Pf0.y, Pf1.z));
+        float n011 = dot(g011, vec3(Pf0.x, Pf1.yz));
+        float n111 = dot(g111, Pf1);
+        vec3  fxyz = Pf0 * Pf0 * Pf0 * (Pf0 * (Pf0 * 6.0 - 15.0) + 10.0);
+        vec4  n_z  = mix(vec4(n000, n100, n010, n110), vec4(n001, n101, n011, n111), fxyz.z);
+        vec2  n_yz = mix(n_z.xy, n_z.zw, fxyz.y);
+        return mix(n_yz.x, n_yz.y, fxyz.x) * 0.5 + 0.5;
+    }
+
+    # the map patched in at three scales on offset domains, mixed by a
+    # large perlin. ONE straight equirect lookup pinches at the pole and
+    # reads as hair; this stops any single scale carrying the surface
+    func h_patch [ uv: vec2f, sp: vec3f ] -> GLSL float {
+        float w1 = e_gnoise(sp * 1.30);
+        float w2 = e_gnoise(sp * 2.70 + vec3(19.0, 7.0, 41.0));
+        // TWO different maps, each turned to its own angle and scale,
+        // so neither one's grain lines up with the other or with the
+        // equirect grid. the perlin picks which one owns each region
+        float c1 = cos(0.70);  float s1 = sin(0.70);
+        float c2 = cos(2.30);  float s2 = sin(2.30);
+        // meridian mirror-blend: the u-wrap lands mid-tile under
+        // these rotations — evaluate a half-turn clone and
+        // interpolate across the seam band
+        float sd  = min(uv.x, 1.0 - uv.x);
+        float sk  = smoothstep(0.0, 0.06, sd);
+        vec2  uvb = vec2(fract(uv.x + 0.5), uv.y);
+        vec2  ua  = mat2(c1, s1, -s1, c1) * uv  * 1.60 + vec2(0.13, 0.41);
+        vec2  ub  = mat2(c2, s2, -s2, c2) * uv  * 3.10 + vec2(0.61, 0.07);
+        vec2  ua2 = mat2(c1, s1, -s1, c1) * uvb * 1.60 + vec2(0.13, 0.41);
+        vec2  ub2 = mat2(c2, s2, -s2, c2) * uvb * 3.10 + vec2(0.61, 0.07);
+        float a  = mix(textureLod(height,  ua2, 0.0).r, textureLod(height,  ua, 0.0).r, sk);
+        float b  = mix(textureLod(detail2, ub2, 0.0).r, textureLod(detail2, ub, 0.0).r, sk);
+        return mix(a, b, smoothstep(0.30, 0.70, w1)) * (0.85 + 0.30 * w2);
+    }
+
+    func init[]
+        eye2    : vec3f [0.0f, 0.0f, 2.5f]
+        target2 : vec3f [0.0f, 0.0f, 0.0f]
+        up2     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
+        view    = mat4f.look_at    [eye2, target2, up2]
+
+    func vertex[] -> GLSL none {
+        v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
+        v_sp        = normalize(a_pos);
+        mat3 nm     = transpose(inverse(mat3(ubo.model)));
+        v_normal    = normalize(nm * a_normal);
+        // displace the SPHERE. the surface was a perfect ball before,
+        // with all its relief faked by a normal tilt -- which is what
+        // painted the hairline black and white over it
+        float hv    = h_patch(v_uv, v_sp);
+        v_h         = hv;
+        vec3  disp  = a_pos + a_normal * (hv - 0.5) * ubo.displace;
+        vec4 wpos   = ubo.model * vec4(disp, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment[] -> GLSL none {
+        const float AZ[48]   = float[](0.38, 0.52, 0.63,  1.24, 1.31, 1.35,  2.16, 2.21, 2.24,  2.94, 3.05, 3.13,
+                                       3.78, 3.91, 4.02,  4.62, 4.68, 4.77,  5.40, 5.52, 5.60,  6.02, 6.10, 6.14,
+                                       0.90, 1.70, 2.60, 3.40, 4.30, 5.00, 5.90, 0.10,
+                                       1.68, 1.76, 1.83,  3.29, 3.36, 3.41,  4.08, 4.16, 4.24,  5.79, 5.86, 5.92,
+                                       0.65, 2.50, 3.60, 5.15);
+        const float LAT[48]  = float[](0.545, 0.585, 0.610,  -0.88, -0.82, -0.76,  -0.30, -0.19, -0.09,  0.86, 0.91, 0.98,
+                                       0.10, 0.17, 0.26,  -1.18, -1.12, -1.08,  -0.64, -0.72, -0.76,  0.30, 0.37, 0.41,
+                                       -0.45, 0.72, 0.45, -1.00, 0.62, -0.05, 0.95, -0.52,
+                                       0.34, 0.42, 0.47,  -0.58, -0.50, -0.45,  0.60, 0.68, 0.72,  -0.34, -0.26, -0.21,
+                                       -0.15, 0.78, 1.05, -0.95);
+        vec3  n        = normalize(v_normal);
+        vec3  sun      = normalize(vec3(0.85, -0.10, 0.15));
+        vec3  view_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        float dist9 = length(ubo.cam_pos.xyz - v_world_pos.xyz);
+
+        // baked normal + cavity sampled with REAL mips (lod-0 is what
+        // speckled), through the same patch transforms as the mesh so
+        // shading always agrees with the displacement
+        float w1 = e_gnoise(v_sp * 1.30);
+        float c1 = cos(0.70);  float s1 = sin(0.70);
+        float c2 = cos(2.30);  float s2 = sin(2.30);
+        // same meridian mirror-blend as the mesh displacement
+        float sd  = min(v_uv.x, 1.0 - v_uv.x);
+        float sk  = smoothstep(0.0, 0.06, sd);
+        vec2  uvb = vec2(fract(v_uv.x + 0.5), v_uv.y);
+        vec2  ua  = mat2(c1, s1, -s1, c1) * v_uv * 1.60 + vec2(0.13, 0.41);
+        vec2  ub  = mat2(c2, s2, -s2, c2) * v_uv * 3.10 + vec2(0.61, 0.07);
+        vec2  ua2 = mat2(c1, s1, -s1, c1) * uvb  * 1.60 + vec2(0.13, 0.41);
+        vec2  ub2 = mat2(c2, s2, -s2, c2) * uvb  * 3.10 + vec2(0.61, 0.07);
+        vec4  pa = mix(texture(nrmA, ua2), texture(nrmA, ua), sk);
+        vec4  pb = mix(texture(nrmB, ub2), texture(nrmB, ub), sk);
+        float wA = smoothstep(0.30, 0.70, w1);
+        vec2  nxy = mix(pa.rg, pb.rg, wA) * 2.0 - 1.0;
+        float cav = mix(pa.b, pb.b, wA);
+        float dfade = 1.0 - smoothstep(0.9, 2.6, dist9);
+        if (dfade > 0.0) {{
+            vec3 t_e = normalize(cross(vec3(0.0, 1.0, 0.0), n));
+            vec3 t_n = cross(n, t_e);
+            n = normalize(n + (t_e * nxy.x + t_n * nxy.y) * 2.0 * dfade);
+        }}
+
+        // AO: the broad height term plus the baked cavity darkening
+        // scar field: proximity to ACTIVE vents (same seeding as the
+        // plume), driving the local deep-crack brushing
+        float scar9 = 0.0;
+        for (int i = 0; i < 48; i++) {{
+            float cl = cos(LAT[i]);
+            vec3  p0 = vec3(cl * sin(AZ[i]), sin(LAT[i]), cl * cos(AZ[i]));
+            float pv0 = e_gnoise(p0 * 2.2 + vec3(5.0, 11.0, 3.0));
+            float vw0 = 1.0 - smoothstep(0.30, 0.70, pv0);
+            vec3  dv0 = v_world_pos.xyz - p0;
+            scar9 += exp(-dot(dv0, dv0) / 0.045) * (0.10 + 0.90 * vw0 * vw0);
+        }}
+        scar9 = clamp(scar9, 0.0, 1.0);
+        // perlin-brushed deep cracks: the cavity source re-sampled
+        // tighter and rotated, patched in organically by the brush —
+        // floored so every emitting site visibly scars
+        float br  = e_gnoise(v_sp * 9.0 + vec3(2.0, 17.0, 8.0));
+        float brm = (0.35 + 0.65 * smoothstep(0.35, 0.75, br)) * scar9;
+        float cav2 = mix(texture(nrmA, ua2 * 3.7 + vec2(0.37, 0.71)).b,
+                         texture(nrmA, ua  * 3.7 + vec2(0.37, 0.71)).b, sk);
+        float ao = (0.88 + 0.12 * clamp(v_h, 0.0, 1.0)) * (1.0 - cav * 0.50 * dfade);
+        // base scar darkening plus crack accents: the cavity channel
+        // is sparse (mean 0.15), so gating everything on it hid it all
+        ao *= 1.0 - (0.28 + cav2 * 0.55) * brm;
+        // darker body: ridges pop against it and the cuts run deep
+        vec3  alb = mix(vec3(0.62, 0.66, 0.75), vec3(0.88, 0.90, 0.96),
+                        clamp(v_h, 0.0, 1.0));
+        alb = mix(alb, vec3(0.38, 0.48, 0.72), cav * 0.70 * dfade);
+        // large perlin provinces: broad dark terrain regions, not one
+        // uniform reflecting white — plus general contrast stretch
+        float pv = e_gnoise(v_sp * 2.2 + vec3(5.0, 11.0, 3.0));
+        alb *= 0.60 + 0.50 * smoothstep(0.25, 0.75, pv);
+        // the scarred ice around live vents runs deep glacial blue
+        alb = mix(alb, vec3(0.30, 0.42, 0.64), (0.30 + cav2 * 0.55) * brm);
+        // wrapped light: the night side dims, never goes void.
+        // squaring wr crushed the mids, and a 0.06 floor sent anything
+        // angled to black -- on the most reflective body in the system
+        // SAME response curve as saturn: equal geometry must show
+        // equal phase, or a full moon sits under a new saturn
+        float wr       = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
+        float lit      = wr * wr;
+        // silhouette alpha rides the SMOOTH geometric normal — the
+        // detail tilt drove it negative in patches and punched holes
+        float mu       = clamp(dot(normalize(v_normal), view_dir), 0.0, 1.0);
+        // night sweep: the dark side goes truly dark, and the deep
+        // ice answers — the ao/texture field becomes the light source
+        float night = 1.0 - smoothstep(0.10, 0.50, wr);
+        float amb   = mix(0.26, 0.02, night);
+        vec3  col   = alb * ao * (amb + 0.74 * lit) * ubo.gain;
+        // coverage tiers: ~5% of the surface glows at full strength,
+        // ~25% at an eighth, the rest stays dark ice
+        float gm    = e_gnoise(v_sp * 3.4 + vec3(7.0, 3.0, 23.0));
+        float gmask = 0.125 * smoothstep(0.50, 0.56, gm)
+                    + 0.875 * smoothstep(0.70, 0.78, gm);
+        // FAINT: thin ice glowing from beneath — only the deepest
+        // hollows, and only a glimmer, against a truly dark night
+        float sink = smoothstep(0.55, 0.95, clamp((0.5 - v_h) * 2.0, 0.0, 1.0));
+        vec3  iceglow = vec3(0.20, 0.45, 0.85) * sink * night * gmask;
+        col += iceglow * 0.18 * ubo.gain;
+        // fresnel ice light: the terrain limb keeps a soft lift
+        float fr = pow(1.0 - mu, 4.0);
+        col += vec3(0.70, 0.82, 1.00) * fr * (0.12 + 0.35 * lit) * ubo.gain;
+        // the outermost fragments — normals turned toward space —
+        // darken away, handing the silhouette to the horizon light
+        col *= 0.30 + 0.70 * smoothstep(0.0, 0.12, mu);
+        // the vents glow onto the ice around them, night side included
+        float gl9 = 0.0;
+        for (int i = 0; i < 48; i++) {{
+            float cl = cos(LAT[i]);
+            vec3  p0 = vec3(cl * sin(AZ[i]), sin(LAT[i]), cl * cos(AZ[i]));
+            // same seeding as the plume: quiet vents cast no glow
+            float pv = e_gnoise(p0 * 2.2 + vec3(5.0, 11.0, 3.0));
+            float vw = 1.0 - smoothstep(0.30, 0.70, pv);
+            vec3  dv = v_world_pos.xyz - p0;
+            gl9 += exp(-dot(dv, dv) / 0.0064) * (0.15 + 0.85 * vw * vw);
+        }}
+        col += vec3(0.55, 0.70, 0.95) * gl9 * 0.55;
+        // opaque to the edge: the marched horizon owns the softness —
+        // an alpha fade here reads as a dark ring against space
+        fragColor = vec4(col, 1.0);
+    }
+
+element Enceladus
+    frost : true
+    frost_sharp : true
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
+    intern enc    : EnceladusShader
+    intern sky    : GaiaShader
+    intern plume  : PlumeShader
+    intern saturn : SaturnShader
+    intern rings  : RingShader
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    public color  : rgba [ r:0.002, g:0.003, b:0.006, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf_path : path 'models/earth.gltf'
+        gltf      : gltf_path.load[ typeid[ GltfModel ], null ]
+        enc       = EnceladusShader [ vk: vk ]
+        e_samplers : map Image [string] [
+            'height': Image [ uri: path 'textures/enceladus-detail.png', surface: TitanSurface.height,
+                wrap_u: true, wrap_v: true ],
+            # a second, unrelated map so the surface is not one grain
+            'height2': Image [ uri: path 'textures/moon-displace-2048x1024.png', surface: TitanSurface.height2,
+                wrap_u: true, wrap_v: true ],
+            'nrm_a': Image [ uri: path 'textures/enceladus-na.png', surface: TitanSurface.nrm_a,
+                wrap_u: true, wrap_v: true ],
+            'nrm_b': Image [ uri: path 'textures/enceladus-nb.png', surface: TitanSurface.nrm_b,
+                wrap_u: true, wrap_v: true ]
+        ]
+        enc_model : Model [ vk: vk, w: ux, id: gltf, s: enc, samplers: e_samplers, straight_alpha: true ]
+        plume     = PlumeShader [ vk: vk ]
+        p_samplers : map Image [string] [
+            'color': Image [ uri: path 'textures/enceladus-color.png', surface: TitanSurface.color ]
+        ]
+        plume_model : Model [ vk: vk, w: ux, id: gltf, s: plume, samplers: p_samplers,
+            straight_alpha: true, cull_none: true, depth_no_test: true ]
+        saturn    = SaturnShader [ vk: vk ]
+        s_samplers : map Image [string] [
+            'color': Image [ uri: path 'textures/saturn-color.png', surface: TitanSurface.color,
+                wrap_u: true ],
+            'height': Image [ uri: path 'textures/saturn-ring-alpha.png', surface: TitanSurface.height ]
+        ]
+        saturn_model : Model [ vk: vk, w: ux, id: gltf, s: saturn, samplers: s_samplers, straight_alpha: true ]
+        rings     = RingShader [ vk: vk ]
+        r_samplers : map Image [string] [
+            'color': Image [ uri: path 'textures/saturn-ring-alpha.png', surface: TitanSurface.color ]
+        ]
+        ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings, samplers: r_samplers,
+            straight_alpha: true ]
+        sky       = GaiaShader [ vk: vk ]
+        sky_samplers : map Image [string] [
+            'color': Image [ uri: path 'textures/gaia.png', surface: GaiaSurface.color ]
+        ]
+        sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
+            straight_alpha: true, cull_none: true ]
+        models = array Model [ sky_model, saturn_model, ring_model, enc_model, plume_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    # unregister only; we keep our ref so the GPU graph outlives the frame
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # ice light: pale cold panes, glacier blue accents
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#000a',   # editor pane background
+            '#140a2a80':  '#0e141a80',   # console pane background
+            '#ff6a2e55':  '#7ac8e855',   # search highlight fill
+            '#220022aa':  '#0c1216aa',   # run console base fill
+            '#614':       '#28343e',     # TButtons / nav rest fill
+            '#413':       '#1e2830',     # TButtons hover fill
+            '#826':       '#3e5060',     # TButtons lit / nav selected
+            '#625a':      '#268a',       # bottom status bar fill
+            '#8af2':      '#8cf2',       # status bar inner glow
+            '#425':       '#26323c',     # editor selection color
+            '#44225588':  '#7a94aa33'    # editor line highlight
+        ]
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built ] build_models[]
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        # surface flyover like Earth's close shot: the ice fills the
+        # frame at low orbit and saturn hangs above the limb.
+        # negative rate: the gaze leads the motion — flying FORWARD
+        time : 0.0 - ux.time * 1460.0
+        if [ time == 0.0 ] time = -54.0
+        a_t      : f32 [ (ux.orbit_mode == OrbitView.low)  ? 0.25 :
+                         (ux.orbit_mode == OrbitView.high) ? 0.70 : 2.60 ]
+        if [ e_cur == 0.0 ] e_cur = a_t
+        e_cur = filter_n[ e_cur, a_t, 0.08, ux.frame_factor ]
+        altitude : f32 [ e_cur ]
+        eye_dist : f32 [ 1.0 + altitude ]
+        t_deg    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+                         (ux.angle_mode == ViewAngle.angled) ? 60.0 : 76.0 ]
+        if [ p_cur == 0.0 && !p_set ] p_cur = t_deg
+        p_set    = true
+        p_cur    = filter_n[ p_cur, t_deg, 0.08, ux.frame_factor ]
+        ux.orbit_moving = abs[ e_cur - a_t ] > 0.0004 || abs[ p_cur - t_deg ] > 0.05
+        tilt     : f32 [ radians[ p_cur ] ]
+        aspect   : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        orbit_a : radians[ time ]
+        co      : cos[ orbit_a ]
+        so      : sin[ orbit_a ]
+        ex_l  : f32 [ 0.0 ]
+        ey_l  : f32 [ 0.0 ]
+        ez_l  : f32 [ eye_dist ]
+        fx_l  : f32 [ -sin[ tilt ] ]
+        fy_l  : f32 [ 0.0 ]
+        fz_l  : f32 [ -cos[ tilt ] ]
+        tx_l  : f32 [ ex_l + fx_l * 2.0 ]
+        ty_l  : f32 [ ey_l + fy_l * 2.0 ]
+        tz_l  : f32 [ ez_l + fz_l * 2.0 ]
+        _eye   : vec3f [  co * ex_l + so * ez_l, ey_l, -so * ex_l + co * ez_l ]
+        _tgt   : vec3f [  co * tx_l + so * tz_l, ty_l, -so * tx_l + co * tz_l ]
+        _up    : vec3f [  co, 0.0, 0.0 - so ]
+
+        _proj  : mat4f.perspective[ radians[ 60.0 ], aspect, 0.001, 60.0 ]
+        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        enc.model   = mat4f.identity[]
+        enc.view    = _view
+        enc.proj    = _proj
+        enc.gain    = 1.5
+        enc.displace = 0.010
+        enc.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+
+        # the galaxy wraps the whole scene from a big inner sphere,
+        # tilted so the band cuts the sky diagonally
+        skq9 : vec4f [ 1.0, 0.0, 0.0, radians[ 45.0 ] ]
+        skq  : quatf [ skq9 ]
+        skm : mat4f.identity[]
+        skm = skm.rotate[ skq ]
+        skm = skm.scale [ vec3f [ 30.0, 30.0, 30.0 ] ]
+        sky.model = skm
+        sky.view  = _view
+        sky.proj  = _proj
+        sky.gain  = 0.45
+        sky.time  = ux.time * 60000.0
+
+        # the proxy: a shell just past jet reach — from inside its far
+        # side covers the WHOLE sky (no rim to cut a beam at any gaze),
+        # from outside its near side covers the planet region
+        hm : mat4f.identity[]
+        hm = hm.scale [ vec3f [ 1.30, 1.30, 1.30 ] ]
+        plume.model   = hm
+        plume.view    = _view
+        plume.proj    = _proj
+        plume.gain    = 1.0
+        plume.time    = ux.time * 60000.0
+        plume.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+
+        # saturn fixed in the sky above the limb, darker, near edge-on.
+        # the offset must ride the SAME orbit rotation as the eye or
+        # the camera walks away from it and it slides off-frame
+        rise   : f32 [ radians[ 14.0 ] ]
+        aim    : f32 [ tilt + rise ]
+        s_dist : f32 [ 24.0 ]
+        sx9    : f32 [ 0.0 - s_dist * sin[ aim ] ]
+        sz9    : f32 [ eye_dist - s_dist * cos[ aim ] ]
+        s_off  : vec3f [ co * sx9 + so * sz9, 0.0, (0.0 - so) * sx9 + co * sz9 ]
+        s_sc   : vec3f [ 8.5, 8.5, 8.5 ]
+        s_axis : vec4f [ 0.0, 0.0, 1.0, radians[ -22.0 ] ]
+        sq     : quatf [ s_axis ]
+        s_tip  : vec4f [ 1.0, 0.0, 0.0, radians[ 8.0 ] ]
+        sq3    : quatf [ s_tip ]
+        s_spin : vec4f [ 0.0, 1.0, 0.0, radians[ ux.time * 9000.0 ] ]
+        sq2    : quatf [ s_spin ]
+        sm : mat4f.identity[]
+        sm = sm.translate[ s_off ]
+        sm = sm.rotate   [ sq3 ]
+        sm = sm.rotate   [ sq ]
+        sm = sm.rotate   [ sq2 ]
+        sm = sm.scale    [ s_sc ]
+        saturn.model    = sm
+        saturn.view     = _view
+        saturn.proj     = _proj
+        saturn.gain     = 0.75
+        saturn.cam_pos  = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        saturn.time     = ux.time * 60000.0
+
+        r_sc : vec3f [ 19.8, 0.02, 19.8 ]
+        rm : mat4f.identity[]
+        rm = rm.translate[ s_off ]
+        rm = rm.rotate   [ sq3 ]
+        rm = rm.rotate   [ sq ]
+        rm = rm.scale    [ r_sc ]
+        rings.model   = rm
+        rings.view    = _view
+        rings.proj    = _proj
+        rings.gain    = 0.8
+        rings.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]

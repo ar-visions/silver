@@ -255,8 +255,7 @@ element crashman : trinity
                             break
                     if [ dup ] continue
                     spoken.push[ ut ]
-                    td2 : string '/src/silver/models/kokoro-en'
-                    if [ tts_init[ td2.chars ] == 0 ]
+                    if [ tts_init[ '' ] == 0 ]
                         tts_say[ ut.chars, 8, 1.0 ]
         if [ flushing ]
             if [ dictation_flush[] ]
@@ -268,8 +267,7 @@ element crashman : trinity
         if [ st && !reported && agent ]
             reported = true
             agent_send[ 'the app crashed: {st} — investigate.' ]
-            td : string '/src/silver/models/kokoro-en'
-            if [ tts_init[ td.chars ] == 0 ]
+            if [ tts_init[ '' ] == 0 ]
                 sp : string 'your app crashed with {st}. the report went to the agent.'
                 tts_say[ sp.chars, 8, 1.0 ]
         el [ !st ]

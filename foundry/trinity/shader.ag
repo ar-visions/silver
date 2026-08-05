@@ -500,7 +500,14 @@ ModelViewProject UVReduce
                 sum += texture(color, v_uv + offset);
             }}
         vec4 avg  = sum * (1.0 / 16.0);
-        fragColor = vec4((avg.rgb + avg.rgb * avg.a) / 2.0, avg.a);
+        vec3 c    = (avg.rgb + avg.rgb * avg.a) / 2.0;
+        // dither the quantized write: the blur chain magnifies steps
+        vec3  h1 = fract(vec3(gl_FragCoord.xyx) * 0.1031);
+        h1 += dot(h1, h1.yzx + 33.33);
+        vec3  h2 = fract(vec3(gl_FragCoord.xyx + 17.0) * 0.1031);
+        h2 += dot(h2, h2.yzx + 33.33);
+        float n = fract((h1.x + h1.y) * h1.z) - fract((h2.x + h2.y) * h2.z);
+        fragColor = vec4(c + n * (2.0 / 255.0), avg.a);
     }
 
 
@@ -1150,7 +1157,14 @@ ModelViewProject BlurV
             result      += texture(color, uv_coord - shift) * w;
             weight_sum  += 2.0 * w;
         }}
-        fragColor = vec4((result / weight_sum).xyz, 1.0);
+        vec3  c = (result / weight_sum).xyz;
+        // dither BEFORE the 8-bit write or the H pass inherits steps
+        vec3  h1 = fract(vec3(gl_FragCoord.xyx) * 0.1031);
+        h1 += dot(h1, h1.yzx + 33.33);
+        vec3  h2 = fract(vec3(gl_FragCoord.xyx + 17.0) * 0.1031);
+        h2 += dot(h2, h2.yzx + 33.33);
+        float n = fract((h1.x + h1.y) * h1.z) - fract((h2.x + h2.y) * h2.z);
+        fragColor = vec4(c + n * (2.0 / 255.0), 1.0);
     }
 
 
@@ -1177,8 +1191,8 @@ ModelViewProject Blur
         const int   kernel_size = 15;
         const float sigma = 3.0;
         vec2  uv_coord   = v_uv;
-        int   h          = textureSize(color, 0).y;
-        vec2  offset     = vec2(1.0 / float(h) * ubo.reduction_scale, 0.0);
+        int   w          = textureSize(color, 0).x;
+        vec2  offset     = vec2(1.0 / float(w) * ubo.reduction_scale, 0.0);
         float weight_sum = gaussian(0.0, sigma);
         vec4  result     = texture(color, uv_coord) * weight_sum;
         for (int i = 1; i <= kernel_size / 2; ++i) {{
@@ -2015,5 +2029,6 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive, msh: Mesh, s: sha
     pipe: Pipeline [ vk: vk, w: m.w, name: n->name,
         r: m.r, s: s, vbo: vbo, default_model: mdl_mat, src_node: n, render_id: render_id,
         material: material, samplers: use_samplers,
-        straight_alpha: sa, depth_no_write: transparent, cull_none: m.cull_none ]
+        straight_alpha: sa, depth_no_write: transparent, cull_none: m.cull_none,
+        depth_no_test: m.depth_no_test ]
     m.pipelines.push[ pipe ]

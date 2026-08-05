@@ -1624,18 +1624,26 @@ Render Canvas
     func clear_crop []
         states[state_depth - 1].crop = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
+    # both of these must write EVERY field in the glow family. paint
+    # state is sticky, so a field one sets and the other leaves alone
+    # carries over from whatever painted last
     func inner_glow [ color: rgba, px: f32 ]
         c : vec4f [ sk_color[ color ] ]
         states[state_depth - 1].inner_glow_color   = c
         states[state_depth - 1].inner_glow_px      = px
         states[state_depth - 1].inner_shadow_color = c
         states[state_depth - 1].inner_shadow_px    = px
+        # zero sides = the uniform path; a stale set would pin the glow
+        # to whichever edges the last inner_glow_sides asked for
+        states[state_depth - 1].glow_sides         = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
     func inner_glow_sides [ color: rgba, top: f32, right: f32, bottom: f32, left: f32 ]
         c : vec4f [ sk_color[ color ] ]
-        states[state_depth - 1].inner_glow_color = c
-        states[state_depth - 1].inner_glow_px    = maxf[ maxf[ top, right ], maxf[ bottom, left ] ]
-        states[state_depth - 1].glow_sides       = vec4f [ top, right, bottom, left ]
+        states[state_depth - 1].inner_glow_color   = c
+        states[state_depth - 1].inner_glow_px      = maxf[ maxf[ top, right ], maxf[ bottom, left ] ]
+        states[state_depth - 1].glow_sides         = vec4f [ top, right, bottom, left ]
+        states[state_depth - 1].inner_shadow_color = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        states[state_depth - 1].inner_shadow_px    = 0.0
 
     func inner_glow_offset [ x: f32, y: f32 ]
         states[state_depth - 1].inner_glow_ofs = vec2f [ x, y ]

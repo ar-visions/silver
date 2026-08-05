@@ -17,6 +17,7 @@ import <vk_mem_alloc.h>
 import <sys/stat.h>
 import <sys/ioctl.h>
 
+
 ifdef [ linux ]
 	import <sys/mman.h>
 	import <fcntl.h>
@@ -113,15 +114,6 @@ scalar ms : i64
 scalar ns : i64
     cast -> sec [ a / 1000000000 ]
     cast -> ms  [ a / 1000000 ]
-
-class Background
-    context window: Window
-    public color:  rgba
-    public render: Render
-    public models: array Model
-
-    func update[]
-        return
 
 enum HM
     none    : 0
@@ -514,8 +506,9 @@ Display Window
     public glyph                : Canvas
     public screen               : Canvas
 
-    public background            : Background
-    public background_type       : Au_t
+    # a backdrop element publishes its render target here; the blur/frost
+    # chain builds off it the first frame it appears
+    public backdrop              : Render
     mutable m_reduce             : Model
     mutable r_reduce             : Render
     mutable m_reduce0            : Model
@@ -530,6 +523,16 @@ Display Window
     mutable r_blur_v             : Render
     mutable m_blur               : Model
     mutable r_blur               : Render
+    # which stage feeds the panels: 0 frost, 1 blur, 2 soft, 3 raw
+    # -1 = follow the scene; the status bar sets it explicitly
+    # 0 frost, 1 blur, 2 soft, 3 raw
+    public  frost_mode           : i32 [ 0 ]
+    mutable frost_bound          : i32 [ -2 ]
+    # half-size blur; the sharp frost path uses it for the mid stage
+    mutable m_soft_v             : Model
+    mutable r_soft_v             : Render
+    mutable m_soft               : Model
+    mutable r_soft               : Render
     mutable m_frost_v            : Model
     mutable r_frost_v            : Render
     mutable m_frost              : Model
@@ -573,6 +576,26 @@ Display Window
     mutable alt                 : bool
     mutable time                : f64
     public st                   : Style
+
+    # frames between backdrop composite redraws. 0 or 1 = every frame
+    public  background_skip     : i32 [ 1 ]
+    # 0 low, 1 high, 2 far. each scene maps it to its own distance
+    public  orbit_mode          : i32
+    # 0 flat-on, 1 angled, 2 steep. mapped per scene like orbit_mode
+    public  angle_mode          : i32
+    # focus requested by element id, resolved in animate[]. an element
+    # created this frame does not exist yet when the request is made,
+    # and focus must never be applied from a render
+    public  focus_id            : string
+    # a scene sets this while its camera is still easing to the target;
+    # frame skipping is suspended for the duration or the move stutters
+    public  orbit_moving        : bool
+    # multiplier on how fast `time` advances. 1.0 = wall clock
+    public  time_scale          : f32 [ 1.0 ]
+    # wall-clock anchor for `time`: re-set whenever time_scale changes
+    intern  time_base           : f64
+    intern  time_anchor_ms      : i64
+    intern  time_scale_last     : f32
 
 
     func attempt_instance_write [ src: element, dst: element ]
@@ -824,10 +847,10 @@ Display Window
                                 best.instance = Au.new_object[ layer_member.src, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
                                 best.instance.hold[]
                                 best.instance.set_context_from[ home_object ]
-                                best.instance.call_construct[ best.value ]
+                                best.instance.call_construct[ st.themed[ best.value ] ]
                             el
                                 # manual member: own the converted value
-                                best.instance = Au.__convert[ layer_member.src, best.value ]
+                                best.instance = Au.__convert[ layer_member.src, st.themed[ best.value ] ]
                                 if [ best.instance ] best.instance.hold[]
 
                         cur : layer_inst.member_object[ layer_member ]
@@ -853,7 +876,7 @@ Display Window
                             for [ s: string ] in src_arr
                                 obj : Au.new_object[ meta_type, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
                                 obj.set_context_from[ home_object ]
-                                obj.call_construct[ s ]
+                                obj.call_construct[ st.themed[ s ] ]
                                 dst_arr.push[ obj ]
                             best.instance = dst_arr
                             best.instance.hold[]
@@ -869,10 +892,10 @@ Display Window
                                 best.instance = Au.new_object[ member.src, null, null, false, __FILE__, __LINE__, __SEQUENCE__ ]
                                 best.instance.hold[]
                                 best.instance.set_context_from[ home_object ]
-                                best.instance.call_construct[ best.value ]
+                                best.instance.call_construct[ st.themed[ best.value ] ]
                             el
                                 # manual member: own the converted value
-                                best.instance = Au.__convert[ member.src, best.value ]
+                                best.instance = Au.__convert[ member.src, st.themed[ best.value ] ]
                                 if [ best.instance ] best.instance.hold[]
 
                     cur : inst.member_object[ member ]
@@ -896,15 +919,39 @@ Display Window
             return
 
         now          : i64 [ epoch_millis[] ]
-        if [ !start_ms ] start_ms = now
-        time          = f64[ now - start_ms ] / 1000.0 / 1000.0
+        if [ !start_ms ]
+            start_ms        = now
+            last_frame_ms   = now
+            time_anchor_ms  = now
+            time_scale_last = time_scale
         raw : f32 [ (last_frame_ms > 0) ? f32[ now - last_frame_ms ] / 1000.0 : 0.016 ]
         frame_factor = (raw > 0.1) ? 1.0 : raw * 60.0
+        # DERIVE from the wall clock, never accumulate per frame:
+        # epoch_millis is whole milliseconds, so a per-frame delta
+        # quantises to 0/1/2 ms and the motion visibly jerks. anchor it
+        # instead, and re-anchor on a rate change so it cannot jump
+        if [ time_scale != time_scale_last ]
+            time_base       = time
+            time_anchor_ms  = now
+            time_scale_last = time_scale
+        time = time_base
+             + f64[ now - time_anchor_ms ] / 1000.0 / 1000.0 * f64[ time_scale ]
         #puts 'frame_factor: raw={raw}s frame_factor={frame_factor}'
         last_frame_ms = now
         frame_seq += 1
+
+        # deferred focus: runs here, after input and before any draw.
+        # NOT `focus_id && root` -- string && element is convertible, so
+        # it casts the element to a string and cast_string walks the
+        # tree's parent back-references until the stack is gone
+        if [ focus_id ]
+            if [ root ]
+                fe9 : focus_find[ root, focus_id ]
+                if [ fe9 ]
+                    set_focus[ fe9 ]
+                    focus_id = null
+
         # background animates off the time just computed above
-        if [ background ] background.update*[]
         root.animate_within [ ]
 
     func update_element [ parent: element, rendered: map element[string], force: bool ]
@@ -1105,6 +1152,25 @@ Display Window
                     parent.elements.rm[ id ]
                     break
 
+        # paint + hit order is insertion order: mirror what render[] declared,
+        # so a remount or a type swap cannot silently move an element
+        rkeys : array string [ ]
+        for [ e: element, id: string ] in rendered
+            rkeys.push[ id ]
+        same : bool [ true ]
+        ix   : i32  [ 0 ]
+        for [ e: element, id: string ] in parent.elements
+            if [ ix >= rkeys.count || rkeys[ ix ].compare[ id ] != 0 ]
+                same = false
+                break
+            ix += 1
+        if [ !same || ix != rkeys.count ]
+            ordered : Elements [ ]
+            for [ k: string ] in rkeys
+                inst : element parent.elements[ k ]
+                if [ inst ] ordered[ k ] = inst
+            parent.elements = ordered
+
     public func is_animating [] -> bool
         if [ !root ] return true
         if [ capture ] return true
@@ -1203,6 +1269,16 @@ Display Window
     public func release_capture [ e: element ]
         if [ capture && capture == e ]
             capture = null
+
+    # depth-first lookup by id, for the deferred focus above
+    intern func focus_find [ e: element, id: string ] -> element
+        if [ !e || !e.elements || !id ] return null
+        d9 : element e.elements[ id ]
+        if [ d9 ] return d9
+        for [ ce: element, ck: string ] in e.elements
+            r9 : element focus_find[ ce, id ]
+            if [ r9 ] return r9
+        return null
 
     public func set_focus [ e: element ]
         if [ focus != e ]
@@ -1428,6 +1504,9 @@ Display Window
             last_click_pos = world_m
         f : find_target[ root, ev, null ]
         ev.origin = f
+        fid9 : string [ (f && f.id) ? f.id : '(none)' ]
+        pid9 : string [ (f && f.parent && f.parent.id) ? f.parent.id : '(none)' ]
+        puts 'PRESS at {world_m.x},{world_m.y} -> {fid9} in {pid9}'
         if [ f && (ev.key.meta || ev.key.ctrl) ]
             if [ f.source && app_object ]
                 cur : array StyleHit [ ]
@@ -1520,38 +1599,65 @@ Display Window
                     l.on_release[ ev ]
                     break
     
-    func update_background[ type:Au_t ]
-        if [ !background || type != background_type ]
-            if [ background ]
-                drop background
-            
-            background_type = type
-            if [ background_type ]
-                bargs : map Au[string] [ ]
-                bargs['window'] = a
-                background = Au.construct_with[ background_type, bargs, null ]
-                background.window = a
-                if [ !background.color ]
-                    background.color = rgba[ r:0.022, g:0.088, b:0.122, a:1.0 ]
-                background.render = Render [ vk: a.vk, w: a, wscale: 1.0,
-                    #clear_color: vec4f [ 0.022, 0.088, 0.188, 1.0 ],
-                    clear_color: vec4f [
-                        background.color.r,
-                        background.color.g,
-                        background.color.b, 1.0 ],
-                    models: background.models ]
-            el
-                background = null
+    # unset follows the backdrop element's own frost_sharp
+    func frost_eff [ ] -> i32
+        if [ frost_mode >= 0 ] return frost_mode
+        if [ backdrop && backdrop.owner && backdrop.owner.frost_sharp ] return 1
+        return 0
 
-            expect (!background || background.render),
-                "no render object found on background"
+    # the four stages the panels can read, sharpest last
+    public func frost_name [ ] -> string
+        e : i32 [ frost_eff[] ]
+        if [ e == 1 ] return string 'blur'
+        if [ e == 2 ] return string 'soft'
+        if [ e == 3 ] return string 'raw'
+        return string 'frost'
+
+    public func frost_step [ d: i32 ]
+        frost_mode = (frost_eff[] + d + 4) % 4
+
+    func frost_src [ ] -> Render
+        e : i32 [ frost_eff[] ]
+        if [ e == 1 ] return r_blur
+        if [ e == 2 ] return r_soft
+        if [ e == 3 ] return r_reduce
+        return r_frost
+
+    func blur_src [ ] -> Render
+        e : i32 [ frost_eff[] ]
+        if [ e == 1 ] return r_soft
+        if [ e >= 2 ] return r_reduce
+        return r_blur
+
+    # whichever element declared frost owns the backdrop; no app rigging
+    func bind_backdrop [ ]
+        if [ !element_targets ] return
+        found : Render [ null ]
+        for [ r: Render, rid: string ] in element_targets
+            if [ r && r.owner && r.owner.frost ]
+                found = r
+                break
+        if [ !found ] return
+        # scene swaps replace the target: rebind, don't bind once
+        fresh : bool [ found != backdrop ]
+        if [ fresh ] backdrop = found
+        if [ !fresh && frost_eff[] == frost_bound ] return
+        if [ m_reduce && fresh ]
+            m_reduce.samplers[ 'color' ] = backdrop.color
+            m_reduce.rebind_model[]
+        if [ m_view ]
+            frost_bound = frost_eff[]
+            uxs : UXBackground [ m_view.s ]
+            if [ uxs ] uxs.dim_floor = backdrop.owner.frost_lift
+            if [ fresh ] m_view.samplers[ 'background' ] = backdrop.color
+            fr : frost_src[]
+            bl : blur_src[]
+            if [ fr ] m_view.samplers[ 'frost' ] = fr.color
+            if [ bl ] m_view.samplers[ 'blur'  ] = bl.color
+            m_view.rebind_model[]
 
     func update [ ]
-        if [ !background && background_type ]
-            update_background[ background_type ]
-        # per frame: the background animates off window.time
-        if [ background ] background.update*[]
-
+        bind_backdrop[]
         glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.u8,    :width, :height ]).resize[ width, height ]
         screen   = (screen   || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
         glyph   .update[]
@@ -1559,19 +1665,19 @@ Display Window
         glyph   .clear[ string[ "#000" ] ]
         screen  .clear[ string[ "#000" ] ]
 
-        if [ background ]
-            compose = (compose || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
-            compose.update[]
-            compose.clear[ string[ "#888" ] ]
+        compose = (compose || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
+        compose.update[]
+        compose.clear[ string[ "#888" ] ]
 
         if [ !is_setup ]
             is_setup = true
             ctx: vk_context[ a.vk ]
 
-            if [ background ]
-                background.render.update[]
+            # source is compose until a frost element publishes its target
+            if [ true ]
+                src9 : Texture [ (backdrop) ? backdrop.color : compose.color ]
 
-                m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': background.render.color ] ]
+                m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': src9 ] ]
                 r_reduce  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
 
                 m_reduce0 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce.color ] ]
@@ -1587,6 +1693,14 @@ Display Window
                 fbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 4.0 ]
                 m_blur    = Model  [ w: a, s: fbl, samplers: map Texture[string] [ 'color': r_blur_v.color ] ]
                 r_blur    = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_blur ] ]
+
+                sbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 2.0 ]
+                m_soft_v  = Model  [ w: a, s: sbv, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
+                r_soft_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_soft_v ] ]
+
+                sbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 2.0 ]
+                m_soft    = Model  [ w: a, s: sbl, samplers: map Texture[string] [ 'color': r_soft_v.color ] ]
+                r_soft    = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_soft ] ]
 
                 m_reduce2 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
                 r_reduce2 = Render [ vk: ctx, w: a, wscale: 0.125, models: array Model [ m_reduce2 ] ]
@@ -1604,7 +1718,7 @@ Display Window
 
                 m_view    = Model [ w: w, s: UXBackground [ vk: ctx, name: 'ux' ],
                     samplers: map Texture[string] [
-                        'background':     background.render.color,
+                        'background':     src9,
                         'frost':          r_frost.color,
                         'blur':           r_blur.color,
                         'compose':        compose.color
@@ -1620,13 +1734,15 @@ Display Window
                 ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
                 ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
 
+                # the backdrop draws itself as an element target, not here
                 list = array Render [
-                    background.render, r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
+                    r_reduce, r_reduce0, r_reduce1, r_blur_v, r_blur,
+                    r_soft_v, r_soft,
                     r_reduce2, r_reduce3, r_frost_v, r_frost,
                     r_view ]
                 for [ i: i32 0, i < list.count - 1, i += 1 ]
                     bg : Render list[i]
-                    bg.draw_interval = 16
+                    bg.draw_interval = background_skip
         el
             if [ list ]
                 for [ r: Render ] in list
@@ -1675,6 +1791,8 @@ Display Window
     func on_compose []
         if [ resizing ] return
         update_all      [ app_render[] ]
+        # a frost element publishes its target mid-frame, not on resize
+        bind_backdrop   [ ]
         if [ !ide_active ] animate [ ]
         if [ !compose ] return
         if [ true ] return
@@ -2497,6 +2615,7 @@ Display Window
         e.bounds.w = bounds.w
         e.bounds.h = bounds.h
 
+
         if [ e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ] return
         if [ e.opacity <= 0.0 ] return
         last_2 : element
@@ -2716,8 +2835,9 @@ Display Window
                 ovr_px9 : f32 [ 2.0 ]
                 ovr9 : f32 [ (full9 && r_tl <= 0.0 && r_tr <= 0.0 && r_br <= 0.0 && r_bl <= 0.0
                               && sw_max <= 0.0) ? 2.0 : 0.0 ]
-                draw_cv.rounded_rect     [ b.x - ovr9, b.y - ovr9,
-                                           b.w + ovr9 * 2.0, b.h + ovr9 * 2.0,
+                # x only: the seam is vertical, y would bleed upward
+                draw_cv.rounded_rect     [ b.x - ovr9, b.y,
+                                           b.w + ovr9 * 2.0, b.h,
                                            r_tl, r_tr, r_br, r_bl ]
                 draw_cv.fill_color       [ (layer.fill_color && layer.fill_color.a > 0.0) ? layer.fill_color : rgba [ '#00000000' ] ]
                 draw_cv.stroke_color     [ layer.stroke_color ]
@@ -2981,7 +3101,6 @@ class offscreen
 
 abstract media_app trinity
     public root         : element
-    public background   : string
     public title        : string
     public hidden       : bool
     public startup_path : path
@@ -3029,11 +3148,10 @@ abstract media_app trinity
         adopt[ 'shot_frame' ]
         adopt[ 'attach' ]
         rt : typeid[ root ]
-        background_type : Au.find_type[ background->chars, null ]
         if [ text_mode ]
             console_size[]
             cwin : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
-                width:width, height:height, background_type:background_type, text_mode: true ]
+                width:width, height:height, text_mode: true ]
             w = cwin
             Au.hold[ w ]
             cwin.console_input_open[]
@@ -3043,11 +3161,11 @@ abstract media_app trinity
             return
         ifdef [ linux ]
             if [ attach ]
-                at_start[ background_type, rt ]
+                at_start[ rt ]
                 Au.auto_free[ true ]
                 return
         window : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
-            width:(width) ?? 1888, height:(height) ?? 888, background_type:background_type,
+            width:(width) ?? 1888, height:(height) ?? 888,
             hidden: hidden, lock_aspect: lock_aspect ]
         expect window.vk, "context didnt work"
         w = window
@@ -3080,11 +3198,11 @@ abstract media_app trinity
         frames += 1
 
     ifdef [ linux ]
-        func at_start [ background_type: Au_t, rt: Au_t ]
+        func at_start [ rt: Au_t ]
             aw : i32 [ (width)  ?? 1280 ]
             ah : i32 [ (height) ?? 720 ]
             awin : Window[ app_object: root, title:(title) ?? rt.ident, st: Style [ root ],
-                width: aw, height: ah, background_type: background_type, backbuffer: true,
+                width: aw, height: ah, backbuffer: true,
                 format: Pixel.rgba8 ]
             w = awin
             Au.hold[ w ]
@@ -3199,6 +3317,10 @@ element TButtons
     intern  svg_cache : map SVGModel [string]
     intern  hover_ix  : i32 [ -1 ]
 
+    func tcol [ s: string ] -> rgba
+        if [ ux && ux.st ] return ux.st.theme_color[ s ]
+        return rgba [ s ]
+
     # the svg for a segment id, loaded on first use
     func seg_svg [ id: string ] -> SVGModel
         if [ !id ] return null
@@ -3232,18 +3354,21 @@ element TButtons
             bl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
             tr : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
             br : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
-            fcol : rgba [ '#614' ]
-            gc   : rgba [ '#ccf2' ]
-            gpx  : f32  [ 16.0 ]
+            fcol : tcol[ '#614' ]
+            # at rest there is NO glow: hover and the lit state are the
+            # only things that draw an edge, so nothing lingers when the
+            # cursor leaves
+            gc   : rgba [ '#0000' ]
+            gpx  : f32  [ 0.0 ]
             # hover brightens first, at half strength...
             if [ i == hover_ix ]
-                fcol = rgba [ '#413' ]
+                fcol = tcol[ '#413' ]
                 gc   = rgba [ '#fcc3' ]
                 gpx  = 18.0
             # ...then the toggled state always brightens over it
             lit : bool [ (sel_mask != 0) ? ((sel_mask & (1 << i)) != 0) : (i == selected) ]
             if [ lit ]
-                fcol = rgba [ '#826' ]
+                fcol = tcol[ '#826' ]
                 gc   = rgba [ '#fcc6' ]
                 gpx  = 18.0
             gl : f32 [ (i == 0)     ? gpx : 0.0 ]
@@ -3970,6 +4095,10 @@ element UXGenerics
 ModelViewProject UXBackground
     mutable low_color    : vec4f
     mutable high_color   : vec4f
+    mutable dim_floor    : f32
+    mutable _dpad0       : f32
+    mutable _dpad1       : f32
+    mutable _dpad2       : f32
 
     attrib background     : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.background,     count:1, format: typeid[ rgba8 ] ]
     attrib frost          : LayoutBinding [ type:typeid[ UXSurface ], id:UXSurface.frost,          count:1, format: typeid[ rgba8 ] ]
@@ -4012,6 +4141,8 @@ ModelViewProject UXBackground
     func fragment [] -> GLSL none {
         vec4  comp     = texture(compose,        v_uv);
         float luminance = 1.0 - ((comp.b - 0.5020) * 2.0);
+        // a backdrop element may ask to keep more of its own light
+        luminance = max(luminance, ubo.dim_floor);
         vec3  f;
         
         if (comp.r < 0.5020) {

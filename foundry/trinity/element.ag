@@ -214,6 +214,12 @@ ielement element
     # own layout extent; the parent arranger reads and writes
     public  extent       : f32
     mutable extent_shown : f32
+    # declares this element the backdrop: its target feeds the frost chain
+    public  frost        : bool
+    # frost from the quarter-size blur, not the 1/16 reduction
+    public  frost_sharp  : bool
+    # floor under the ui dimming; 0 keeps the ui's own value
+    public  frost_lift   : f32
 
     public func set_capture []
         ux.set_capture[ a ]
@@ -236,6 +242,10 @@ ielement element
 
     public func on_unload [ ]
         return
+
+    # style value overrides, keyed by the authored string
+    public func theme [ ] -> map string [string]
+        return null
 
     public func on_dictate [ on: bool ]
         return

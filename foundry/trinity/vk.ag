@@ -503,6 +503,8 @@ class Render
     # idempotent ring teardown: fences, semaphores, framebuffers, render
     # passes, command buffers — leaked rings exhaust vkCreateFence
     func destroy_ring [ ]
+        # a Render that never finished construction has no context
+        if [ !vk ] return
         vk.ring_frees += 1
         for [ i: 0, i < 2, i += 1 ]
             if [ vk_framebuffer[i] ]
@@ -1563,9 +1565,20 @@ class Gpu
                 if [ img ]
                     img.user = tx
             el
-                # this should handle primitive refs
+                # full mip chain: minification filters and the sampler's
+                # anisotropy only engage when mip_levels > 1
+                mips9 : i32 [ 1 ]
+                if [ img ]
+                    mx9 : i32 [ (img.width > img.height) ? img.width : img.height ]
+                    while [ mx9 > 1 ]
+                        mx9   = mx9 / 2
+                        mips9 += 1
                 tx = Texture [ vk: vk, sampler: sampler,
-                    surface: (img) ? img.surface : Surface.color ]
+                    mip_levels: mips9,
+                    surface: (img) ? img.surface : Surface.color,
+                    linear:  (img) ? img.linear  : false,
+                    wrap_u:  (img) ? img.wrap_u  : false,
+                    wrap_v:  (img) ? img.wrap_v  : false ]
                 if [ img ]
                     img.user = tx
 
@@ -1707,6 +1720,8 @@ class Pipeline
     public straight_alpha   : bool
     public cull_none        : bool
     public depth_no_write   : bool
+    # volumetrics that occlude in-shader: no depth test, no write
+    public depth_no_test    : bool
     intern resources        : array Gpu
     intern storage_textures : array Texture
     manual shader_uniforms  : uniforms
@@ -1932,9 +1947,20 @@ class Pipeline
         # walk shader schema — typeid[s] gives the static `shader` type; read
         # the runtime subclass from the Au object header instead.
         sh_hdr:        Au.header[ s ]
-        shader_schema: sh_hdr.au
         sch0 : i64 [ epoch_micros[] ]
-        while [ shader_schema && shader_schema != typeid[ shader ] ]
+        # BASE FIRST. shader.ag emits `layout(binding = N)` walking the
+        # chain base-first (context_chain reverses it), so binding N is
+        # counted from the base class down. walking derived-first here
+        # gives an attrib declared on a subclass binding 0 and shifts
+        # every inherited sampler, silently swapping the textures
+        sc_chain: array Au_t []
+        sc_walk:  Au_t [ sh_hdr.au ]
+        while [ sc_walk && sc_walk != typeid[ shader ] ]
+            sc_chain.push[ sc_walk ]
+            sc_walk = sc_walk.context
+        sc_chain = sc_chain.reverse[]
+
+        for [ shader_schema: Au_t ] in sc_chain
             for [ i: 0, i < shader_schema.members.count, i += 1 ]
                 mem: Au_t [ shader_schema.members.origin[i] ]
 
@@ -2032,7 +2058,6 @@ class Pipeline
                     set1_binds            += 1
                     storage_buffer_count  += 1
 
-            shader_schema = shader_schema.context
         vk.br_schema_us += epoch_micros[] - sch0
 
         # the pool / layouts / 128 descriptor sets are allocated ONCE per pipeline
@@ -2289,10 +2314,12 @@ class Pipeline
             ]
 
             dw: VkBool32 [ VK_TRUE ]
-            if [ depth_no_write ] dw = VK_FALSE
+            if [ depth_no_write || depth_no_test ] dw = VK_FALSE
+            dt: VkBool32 [ VK_TRUE ]
+            if [ depth_no_test ] dt = VK_FALSE
             depth_stencil: VkPipelineDepthStencilStateCreateInfo [
                 sType:                 VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-                depthTestEnable:       VK_TRUE,
+                depthTestEnable:       dt,
                 depthWriteEnable:      dw,
                 depthCompareOp:        VK_COMPARE_OP_LESS_OR_EQUAL,
                 depthBoundsTestEnable: VK_FALSE,
@@ -2409,6 +2436,7 @@ class Model
     # emit unpremultiplied alpha (e.g. cloud, text overlay).
     public straight_alpha   : bool
     public cull_none        : bool
+    public depth_no_test    : bool
     public transparent_s    : shader
     # non-skinned primitives (no JOINTS_0) use this shader instead of s;
     # driven by the node's world matrix (ubo.model) rather than a joint palette
@@ -2969,6 +2997,8 @@ class Texture
     public silly_test4      : bool
     public title            : string 'default title'
     public nearest          : bool   # sampler filters NEAREST (hard pixel edges) instead of linear
+    public wrap_u           : bool   # equirect maps repeat in longitude; clamping smears the seam
+    public wrap_v           : bool   # tiled detail textures repeat on both axes
     # allocate as an exportable dma-buf so other processes can import this
     # exact GPU memory (cross-process shared Vulkan texture)
     public shareable        : bool
@@ -3337,12 +3367,17 @@ class Texture
                 expect res == VK_SUCCESS, "Failed to create VkImageView"
             if [ !vk_sampler ]
                 address_mode: VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE
+                # longitude wraps, latitude does not: v must stay clamped
+                mode_u: VkSamplerAddressMode [ (wrap_u) ?
+                    VK_SAMPLER_ADDRESS_MODE_REPEAT : address_mode ]
+                mode_v: VkSamplerAddressMode [ (wrap_v) ?
+                    VK_SAMPLER_ADDRESS_MODE_REPEAT : address_mode ]
                 samplerInfo: VkSamplerCreateInfo [
                     sType:                   VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                     magFilter:               (nearest) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
                     minFilter:               (nearest) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
-                    addressModeU:            address_mode,
-                    addressModeV:            address_mode,
+                    addressModeU:            mode_u,
+                    addressModeV:            mode_v,
                     addressModeW:            address_mode,
                     anisotropyEnable:        (ansio > 0) ? VK_TRUE : VK_FALSE,
                     maxAnisotropy:           ansio,
@@ -3632,7 +3667,6 @@ Texture Display
             if [ !swap_model ]
                 top: last_render[]
                 expect top, "last_render must be set"
-                ii:2
                 samplers : map Au[string] [
                     "color": top
                 ]
@@ -4102,7 +4136,8 @@ intern func handle_glfw_key [ win: @GLFWwindow, key: i32, scan_code: i32, action
     w.ev.clear[]
     w.ev.key.unicode   = key
     w.ev.key.scan_code = scan_code
-    w.ev.key.state     = action == GLFW_PRESS || action == GLFW_REPEAT
+    # 1 = press, 2 = repeat, 0 = release — repeats stay truthy
+    w.ev.key.state     = (action == GLFW_PRESS) ? 1 : (action == GLFW_REPEAT) ? 2 : 0
     w.ev.key.meta      = (mods & GLFW_MOD_SUPER)   != 0
     w.ev.key.shift     = (mods & GLFW_MOD_SHIFT)   != 0
     w.ev.key.alt       = (mods & GLFW_MOD_ALT)     != 0

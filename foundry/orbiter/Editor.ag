@@ -5,9 +5,11 @@ import <signal.h>
 class FileBuf
     public lines : list string
     public mtime : i64 [ 0 ] # test
-	
+
     public hist       : list EditAction
     public hist_i     : i32 [ 0 ]
+    # history index of the last buffer<->disk agreement (save/reload)
+    public sync_i     : i32 [ 0 ]
     public regions    : array ColorRegion
     public reg_off    : array i32
 
@@ -36,6 +38,9 @@ class LineOp
 
 class EditAction
     public ops : array LineOp
+    # set = whole-buffer swap (disk reload); ops are unused then
+    public full_before : list string
+    public full_after  : list string
     public sl0 : i32 [ 0 ]   # caret line/col before the group
     public sc0 : i32 [ 0 ]
     public sl1 : i32 [ 0 ]   # caret line/col after the group
@@ -1291,12 +1296,27 @@ Layer EditorLayer
                     cv.fill_color[ (line_color) ? line_color : rgba['#ffffff18'] ]
                     if [ showing ]
                         cv.rounded_rect[
-							bounds.x + 1.0, yg + 1.0, 
-							bounds.w - rin - 3.0, 
+							bounds.x + 1.0, yg + 1.0,
+							bounds.w - rin - 3.0,
 							lh - 2.0, 3.0, 3.0, 3.0, 3.0 ]
                     el
                         cv.rect_to[ bounds.x, yg, bounds.w - rin - 1.0, lh ]
                     cv.paint[ ]
+                    # 1px rules just outside the band, top and bottom
+                    if [ !showing && (li == lo || li == hi) ]
+                        cv.save[ ]
+                        cv.plain[ ]
+                        cv.hard_edge[ ]
+                        cv.stroke_width[ 0.0 ]
+                        cv.fill_color[ rgba['#ffffff11'] ]
+                        bw9 : f32 [ bounds.w - rin - 1.0 ]
+                        if [ li == lo ]
+                            cv.rect_to[ bounds.x, yg - 1.0, bw9, 1.0 ]
+                            cv.paint[ ]
+                        if [ li == hi ]
+                            cv.rect_to[ bounds.x, yg + lh, bw9, 1.0 ]
+                            cv.paint[ ]
+                        cv.restore[ ]
             cv.fill_color[ rgba['#ffffff08'] ]
             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
             cv.paint[ ]
@@ -1398,8 +1418,10 @@ Layer EditorLayer
                 bnd : EdLineCache code_band[ cv, editor, bs, br, cmt_b, lh, cw_tm.w, code_fs ]
                 if [ bnd && bnd.canvas ]
                     by : f32 [ y0 + f32[ bs ] * lh - editor.scroll.y ]
+                    # native size: scaling to br*lh compresses the rows
+                    # and selected-text overdraw no longer lines up
                     tcv.draw_canvas[ bnd.canvas, x0 + tox, round[ by ] + toy,
-                        f32[ bnd.canvas.content_w ], f32[ br ] * lh ]
+                        f32[ bnd.canvas.content_w ], f32[ bnd.canvas.content_h ] ]
             tcv.paint[ ]
         el [ editor.code_lines ]
             for [ rli: i32 0, rli < editor.line_count[], rli += 1 ]
@@ -1421,7 +1443,15 @@ Layer EditorLayer
             y : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
             if [ editor.row_header[ li ] ]
                 if [ editor.row_cont[ li ] ] continue
-                if [ editor.row_spacer[ li ] ] continue
+                if [ editor.row_spacer[ li ] ]
+                    if [ y + lh < bounds.y || y > bounds.y + bounds.h ] continue
+                    cv.save[ ]
+                    cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
+                    cv.fill_color[ rgba['#fff2'] ]
+                    cv.rect_to[ bounds.x + lin + 2.0, round[ y + lh * 0.5 ], bounds.w - lin - rin - 4.0, 1.0 ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    continue
                 single : bool [ editor.single_line ]
                 rh : f32 [ (single) ? lh : lh * 2.0 ]
                 if [ y + rh < bounds.y ] continue
@@ -1529,7 +1559,8 @@ Layer EditorLayer
                 msl   : i32 [ editor.row_src[ li ] ]
                 slc   : code_slot[ cv, editor, msl, ln, cmt_c, lh, cw_tm.w, code_fs ]
                 if [ slc && slc.canvas ]
-                    cv.draw_canvas[ slc.canvas, x0, round[ y ], f32[ slc.canvas.content_w ], lh ]
+                    cv.draw_canvas[ slc.canvas, x0, round[ y ],
+                        f32[ slc.canvas.content_w ], f32[ slc.canvas.content_h ] ]
         cv.paint[ ]
 
         if [ editor.nav_list && editor.dock_rows > 0 && editor.dock_rows < editor.line_count[] ]
@@ -1734,7 +1765,7 @@ Layer EditorLayer
                         editor.filter_next = true
 
                     cv.fill_color  [ sel_col_val ]
-                    cv.stroke_color[ rgba['#fff1'] ]
+                    cv.stroke_color[ rgba['#fff2'] ]
                     cv.stroke_width[ 0.5 ]
                     cv.rect_to     [ rr.x, rr.y - 0.5, rr.w, rr.h + 1 ]
                     cv.paint       [ ]
@@ -1805,7 +1836,7 @@ Control Editor
         layers.content: EditorLayer
             area: l0 t2px r0 b2px
             label_height: 1.0
-            line_color: #4258
+            line_color: #44225588
             item_color: #2b3a5500
             sel_color: #425
             hl_fill: #ff6a2e55
@@ -1890,6 +1921,7 @@ Control Editor
     mutable sel_col       : i32 [ 0 ]
     mutable tab_w         : i32 [ 4 ]
     mutable fmt_mtime     : i64 [ 0 ]
+    mutable disk_ms       : i64 [ 0 ]
     mutable scroll_target : f32 [ 0.0 ]
     mutable pending_wheel : f32 [ 0.0 ]
     mutable hx_last_y     : f32 [ 0.0 ]
@@ -2406,7 +2438,19 @@ Control Editor
             return
         rec[ LineOp [ at: i, kind: 2, before: old ] ]
 
+    func swap_lines [ to: list string ]
+        while [ lines.count > 0 ] lines.pop[]
+        for [ s: string ] in to
+            lines.push[ s ]
+
     func apply_undo [ g: EditAction ]
+        if [ g.full_before ]
+            swap_lines[ g.full_before ]
+            sel_line    = g.sl0
+            sel_col     = g.sc0
+            anchor_line = g.sl0
+            anchor_col  = g.sc0
+            return
         for [ k: i32 g.ops.count - 1, k >= 0, k -= 1 ]
             op : LineOp g.ops[ k ]
             if [ op.kind == 0 ]
@@ -2421,6 +2465,13 @@ Control Editor
         anchor_col  = g.sc0
 
     func apply_redo [ g: EditAction ]
+        if [ g.full_after ]
+            swap_lines[ g.full_after ]
+            sel_line    = g.sl1
+            sel_col     = g.sc1
+            anchor_line = g.sl1
+            anchor_col  = g.sc1
+            return
         for [ k: i32 0, k < g.ops.count, k += 1 ]
             op : LineOp g.ops[ k ]
             if [ op.kind == 0 ]
@@ -2543,6 +2594,11 @@ Control Editor
             wrote += 1
         sp : path '{src}'
         sp.save[ out, null ]
+        # stamp the cache or our own save reads as an external change
+        buf9 : FileBuf file_cache[ '{src.absolute[]}' ]
+        if [ buf9 ]
+            buf9.mtime  = src.modified_time[]
+            buf9.sync_i = hist_i
 
     func file_ext [ p: path ] -> string
         fn  : string p.filename[]
@@ -2923,6 +2979,153 @@ Control Editor
         m9   : string [ (orbv) ? orbv.view_module[ want ] : want ]
         if [ m9 ] launch_handler[ m9, src ]
 
+    # a disk change (agents editing) becomes ONE undo item: the buffer
+    # swaps to disk content; cmd+Z restores what was here before
+    func reload_from_disk []
+        if [ !src || diff_commit || show_hits || flat_active || !hist ] return
+        key : '{src.absolute[]}'
+        buf : FileBuf file_cache[ key ]
+        if [ !buf ] return
+        mt : i64 [ src.modified_time[] ]
+        if [ mt == buf.mtime ] return
+        buf.mtime = mt
+        ftext : string src.load[ typeid[string], null ]
+        if [ !ftext ] return
+        before9 : list string []
+        for [ s: string ] in lines
+            before9.push[ s ]
+        after9 : list string []
+        parts : ftext.split["\n"]
+        for [ i: i32 0, i < parts.count, i += 1 ]
+            after9.push[ parts[i] ]
+        g : EditAction []
+        g.full_before = before9
+        g.full_after  = after9
+        g.sl0 = sel_line
+        g.sc0 = sel_col
+        g.sl1 = clamp[ sel_line, 0, after9.count - 1 ]
+        g.sc1 = sel_col
+        # unsaved groups since the last sync replay on top afterwards
+        sy9  : i32 [ (buf.sync_i >= 0) ? buf.sync_i : 0 ]
+        rep9 : array EditAction []
+        if [ hist_i - sy9 <= 64 ]
+            for [ k9: i32 sy9, k9 < hist_i, k9 += 1 ]
+                gg9 : EditAction hist.value_by_index[ k9 ]
+                if [ gg9 && !gg9.full_after && gg9.ops && gg9.ops.count > 0 ]
+                    rep9.push[ gg9 ]
+        while [ hist.count > hist_i ]
+            hist.pop[]
+        hist.push[ g ]
+        hist_i = hist.count
+        buf.sync_i = hist.count
+        touch_hist[]
+        cur_group = null
+        edit_kind = -1
+        swap_lines[ after9 ]
+        if [ sel_line >= lines.count ]    sel_line    = lines.count - 1
+        if [ anchor_line >= lines.count ] anchor_line = lines.count - 1
+        # walk oldest-first; the first group that fails to anchor stops it
+        t9 : array i32 []
+        for [ gg9: EditAction ] in rep9
+            for [ op: LineOp ] in gg9.ops
+                t9.push[ op.at ]
+        lastl9 : i32 [ -1 ]
+        lastc9 : i32 [ 0 ]
+        for [ gg9: EditAction ] in rep9
+            d9 : i32 [ replay_offset[ gg9, before9, t9 ] ]
+            if [ d9 == -100000 ] break
+            replay_group[ gg9, d9 ]
+            lastl9 = gg9.sl1 + d9
+            lastc9 = gg9.sc1
+        if [ lastl9 >= 0 ]
+            sel_line    = clamp[ lastl9, 0, lines.count - 1 ]
+            sel_col     = lastc9
+            anchor_line = sel_line
+            anchor_col  = sel_col
+        pristine = false
+        if [ ux ] ux.will_animate = true
+
+    func check_disk []
+        now : i64 [ epoch_millis[] ]
+        if [ now - disk_ms < 500 ] return
+        disk_ms = now
+        reload_from_disk[]
+
+    func op_touched [ t9: array i32, ln9: i32 ] -> bool
+        for [ v9: i32 ] in t9
+            if [ v9 == ln9 ] return true
+        return false
+
+    # every set/remove 'before' must match the buffer verbatim at d;
+    # untouched neighbor lines must match too (wider fingerprint)
+    func op_anchors [ g: EditAction, d: i32, old9: list string, t9: array i32 ] -> bool
+        n9    : i32 [ lines.count ]
+        no9   : i32 [ old9.count ]
+        seen9 : bool [ false ]
+        for [ op: LineOp ] in g.ops
+            if [ op.kind == 1 ]
+                if [ op.at + d < 0 || op.at + d > n9 ] return false
+                continue
+            seen9 = true
+            at9 : i32 [ op.at + d ]
+            if [ at9 < 0 || at9 >= n9 ] return false
+            ln9  : string lines.value_by_index[ at9 ]
+            cmp9 : string [ (op.before) ? op.before : '' ]
+            if [ !ln9 ] ln9 = ''
+            if [ ln9.compare[ cmp9 ] != 0 ] return false
+            up9 : i32 [ op.at - 1 ]
+            au9 : i32 [ at9 - 1 ]
+            if [ up9 >= 0 && up9 < no9 && !op_touched[ t9, up9 ] ]
+                if [ au9 < 0 ] return false
+                a9 : string lines.value_by_index[ au9 ]
+                b9 : string old9.value_by_index[ up9 ]
+                if [ !a9 ] a9 = ''
+                if [ !b9 ] b9 = ''
+                if [ a9.compare[ b9 ] != 0 ] return false
+            dn9 : i32 [ op.at + 1 ]
+            ad9 : i32 [ at9 + 1 ]
+            if [ dn9 >= 0 && dn9 < no9 && !op_touched[ t9, dn9 ] ]
+                if [ ad9 >= n9 ] return false
+                c9 : string lines.value_by_index[ ad9 ]
+                e9 : string old9.value_by_index[ dn9 ]
+                if [ !c9 ] c9 = ''
+                if [ !e9 ] e9 = ''
+                if [ c9.compare[ e9 ] != 0 ] return false
+        # insert-only groups carry no context: trust position 0 only
+        if [ !seen9 && d != 0 ] return false
+        return true
+
+    # the offset must be UNIQUE in the window; two candidates means
+    # the file is locally self-similar — the reload stands, undo has it
+    func replay_offset [ g: EditAction, old9: list string, t9: array i32 ] -> i32
+        found9 : i32 [ -100000 ]
+        nf9    : i32 [ 0 ]
+        for [ d9: i32 0 - 64, d9 <= 64, d9 += 1 ]
+            if [ op_anchors[ g, d9, old9, t9 ] ]
+                nf9 += 1
+                if [ nf9 > 1 ] return -100000
+                found9 = d9
+        return found9
+
+    # re-record the group's ops at offset d as a fresh history item
+    func replay_group [ g: EditAction, d: i32 ]
+        cur_group = null
+        edit_kind = -1
+        pend_sl0  = g.sl0 + d
+        pend_sc0  = g.sc0
+        for [ op: LineOp ] in g.ops
+            if [ op.kind == 0 ]
+                ed_set[ op.at + d, op.after ]
+            el [ op.kind == 1 ]
+                ed_insert[ op.at + d, op.after ]
+            el
+                ed_remove[ op.at + d ]
+        if [ cur_group ]
+            cur_group.sl1 = g.sl1 + d
+            cur_group.sc1 = g.sc1
+        cur_group = null
+        edit_kind  = -1
+
     func load_file []
         ns9 : string [ (src) ? '{src}' : '' ]
         ls9 : string [ (loaded_src) ? '{loaded_src}' : '' ]
@@ -2980,6 +3183,7 @@ Control Editor
         buf.mtime = mtime
         lines = new_lines
         buf.hist = null
+        buf.sync_i = 0
         swap_history[ buf ]
 
     func toggle_app_run [ clean: bool ]
@@ -3618,6 +3822,9 @@ Control Editor
 
         edits_locked : bool [ row_header[ row ] || flat_active ]
 
+        # printables arrive via on_char — they must not collapse the anchor
+        if [ key != 257 && key != 258 && key != 259 && !(key >= 262 && key <= 265) ] return
+
         if [ key == 257 ]    # Key.Enter
             if [ show_hits || edits_locked ] return
             begin_edit[ 1 ]
@@ -3700,4 +3907,3 @@ Control Editor
             anchor_col  = sel_col
         ensure_caret_visible[]
         pristine = false
-

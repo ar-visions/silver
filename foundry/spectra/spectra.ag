@@ -1489,10 +1489,15 @@ intern tts : TtsState
 
 func tts_init [ dir: cstr ] -> i32
     if [ tts.ok ] return 0
-    mdl : string '{dir}/model.onnx'
-    vcs : string '{dir}/voices.bin'
-    tks : string '{dir}/tokens.txt'
-    dd  : string '{dir}/espeak-ng-data'
+    # bootstrap.sh installs the model to install/models/kokoro-en.
+    # callers pass '' and let spectra own where its own model lives
+    inst   : path.path_install[]
+    kokoro : '{inst}/models/kokoro-en'
+    if [ dir && dir[0] ] kokoro = dir
+    mdl : string '{kokoro}/model.onnx'
+    vcs : string '{kokoro}/voices.bin'
+    tks : string '{kokoro}/tokens.txt'
+    dd  : string '{kokoro}/espeak-ng-data'
     mp  : path '{mdl}'
     if [ !mp.exists[] ]
         puts 'tts: no model at {mdl}'
@@ -1509,7 +1514,7 @@ func tts_init [ dir: cstr ] -> i32
     if [ !tts.eng ]
         puts 'tts: engine failed'
         return 2
-    puts 'tts: ready ({dir})'
+    puts 'tts: ready ({kokoro})'
     tts.ok = true
     return 0
 

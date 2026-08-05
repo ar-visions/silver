@@ -1,4 +1,5 @@
 import <stdio.h>
+import img
 
 class Thing
     public tag : i32
@@ -88,3 +89,18 @@ app reftest
         arA = null
         Au.auto_free[ false ]
         puts 'Q member-array reap   refs={hA.refs} (expect 2 — LEAK if 3)'
+
+
+expect func test_jpeg_decode [] -> bool
+    p : path '/src/silver/foundry/orbiter/textures/mars-color-8192x4096.jpg'
+    if [ !p.exists[] ]
+        puts 'jpeg: no test file'
+        return true
+    im : Image [ uri: p ]
+    puts 'jpeg: decoded {im.width}x{im.height} ch={im.channels}'
+    if [ im.width != 8192 || im.height != 4096 ] return false
+    px : @u8 im.vdata[]
+    for [ k: i32 0, k < 5, k += 1 ]
+        o : i32 [ (1700 * 8192 + 3400 + k * 97) * 4 ]
+        puts 'px{k}: r={(i32 px[o]) & 255} g={(i32 px[o+1]) & 255} b={(i32 px[o+2]) & 255} a={(i32 px[o+3]) & 255}'
+    return true

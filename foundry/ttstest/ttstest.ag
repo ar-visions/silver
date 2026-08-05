@@ -9,7 +9,8 @@ app ttstest
     public wait  : i32
 
     func init []
-        d : string ((dir && dir.count > 0) ? dir : string '/src/silver/models/kokoro-en')
+        # '' lets spectra resolve install/models/kokoro-en itself
+        d : string ((dir && dir.count > 0) ? dir : string '')
         t : string ((text && text.count > 0) ? text : string 'orbiter here.')
         rc : i32 [ tts_init[ d.chars ] ]
         if [ rc != 0 ]

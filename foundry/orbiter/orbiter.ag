@@ -1,7 +1,7 @@
 # hello
 export 0.8.8
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
-
+export scenes ['Earth', 'Moon', 'Mars', 'Terra', 'MilkyWay', 'Titan', 'Europa', 'Enceladus', 'Uranus', 'Neptune', 'Pluto']
 # import silver modules
 import vec
 import img
@@ -432,6 +432,147 @@ NavButton LabelButton
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
 
+# staged live-reload: small button at the left of the bottom status bar
+Option ReloadButton
+    tlabel : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
+        label_align: vec2f [ x: 0.5, y: 0.5 ],
+        label_overflow: Overflow.ellipsis ]
+    style : CSS {
+        area: l8px t2px w80px h18px
+        layers.body:
+            fill_color: #c8641e
+            radius: 4
+            inner_glow: #ffae5ea2 12
+        :hovered
+            layers.body:
+                fill_color: #e0762a
+                inner_glow: #ffc98aa2 16
+        :pressed
+            layers.body:
+                fill_color: #a04d16
+    }
+
+# center of the status bar: hides everything above it but the scene
+Option HideToggle
+    tlabel : Layer [ label_color: rgba [ '#fff9' ], label_size: 13,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+    style : CSS {
+        area: l50%-20px t2px w40px h18px
+        layers.body:
+            fill_color: #0000
+            radius: 4
+            inner_glow: #0000 0
+        :hovered
+            layers.body:
+                fill_color: #fff2
+                inner_glow: #ccf4 10
+        :pressed
+            layers.body:
+                fill_color: #fff4
+    }
+
+# non-clickable chip in the same spot: what the reload is doing right now
+element ReloadStatus
+    style : CSS {
+        area: l8px t2px w110px h18px
+        layers.body:
+            fill_color: #6b4a14
+            radius: 4
+            inner_glow: #ffae5e52 10
+        layers.face:
+            label_color: #ffda
+            label_size: 14
+            label_align: 0.5 0.5
+    }
+
+# same tab, build failed: click jumps to the error line
+Option ErrorButton
+    tlabel : Layer [ label_color: rgba [ '#fff' ], label_size: 16,
+        label_align: vec2f [ x: 0.5, y: 0.5 ],
+        label_overflow: Overflow.ellipsis ]
+    style : CSS {
+        area: l50%-5 t0 w10 h1.4
+        layers.body:
+            fill_color: #d94a6a
+            radius: 0 0 8 8
+            inner_glow: #ff8fa8a2 18
+        :hovered
+            layers.body:
+                fill_color: #ec5f7e
+                inner_glow: #ffb0c2a2 22
+        :pressed
+            layers.body:
+                fill_color: #ad3852
+    }
+
+# window-wide strip; the pane splitter stops above it
+Group StatusBar
+    style : CSS {
+        area: l0 b22px r0 h22px
+        layers.sbar:
+            fill_color: #625a
+            inner_glow: #8af2 26
+            stroke_width: 0.5
+            stroke_color: #fff2
+        layers.sdiv:
+            fill_color: #fff2
+            area: l0 t0px r0 h1px
+    }
+
+# scene stepper arrow; icon is images/left.svg | right.svg
+Option SceneArrow
+    area : Region { r0+ t2px w18px h18px }
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 4
+            # declared here or :hovered's glow has nothing to revert to
+            inner_glow: #0000 0
+        layers.iconl:
+            image_color: #fffa
+            image_scale: 0.9
+        :hovered
+            layers.body:
+                fill_color: #fff2
+                inner_glow: #ccf4 10
+            layers.iconl:
+                image_color: #ffff
+        :pressed
+            layers.body:
+                fill_color: #c8641e
+                inner_glow: #ffae5ea2 12
+            layers.iconl:
+                image_color: #ffff
+                image_scale: 0.75
+    }
+
+element SceneName
+    style : CSS {
+        area: r0+ t0px w84px b0px
+        layers.body:
+            fill_color: #0000
+            radius: 4
+            area: l0 t2px r0 b2px
+            # declared here or :hovered's glow has nothing to revert to
+            inner_glow: #0000 0
+        layers.face:
+            label_color: #fffc
+            label_size: 14
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                fill_color: #fff2
+                inner_glow: #ccf4 10
+            layers.face:
+                label_color: #ffff
+        :pressed
+            layers.body:
+                fill_color: #c8641e
+                inner_glow: #ffae5ea2 12
+            layers.face:
+                label_color: #ffff
+    }
+
 NavButton RButton
     area : Region { r0+ t0 w1.15 h0.9 }
 
@@ -478,7 +619,7 @@ LButton RunButton
     style : CSS {
         layers.body:
             fill_color: #614
-            radius: 8
+            radius: 6
             inner_glow: #ccf2 16
         :hovered
             layers.body:
@@ -506,7 +647,7 @@ element PatternField
             fill_color: #0000
             radius: 8
             stroke_width: 1
-            stroke_color: #fff1
+            stroke_color: #fff2
         layers.face:
             label_color: #fff6
             label_size: 16
@@ -552,7 +693,7 @@ element ReplaceField
             fill_color: #0000
             radius: 8
             stroke_width: 1
-            stroke_color: #fff1
+            stroke_color: #fff2
         layers.face:
             label_color: #fff6
             label_size: 16
@@ -608,6 +749,8 @@ element RunBand
 
 Console RunConsole
     style : CSS {
+        layers.cbase: Layer
+            fill_color: #220022aa
         layers.content: TermLayer
             area: 8px
             label_height: 1.0
@@ -646,6 +789,13 @@ func au_stdout_orig[] -> i32
 class orbiter_state
     public tabs        : array path
     public panes       : array path
+    # per pane: 'sel_line,sel_col,anchor_line,anchor_col'
+    public pane_sel    : array string
+    # committed backdrop scene + status bar stepper indices
+    public scene       : string
+    public speed_ix    : i32
+    public orbit_ix    : i32
+    public angle_ix    : i32
     public docked      : array path
     public breakpoints : map string [string]
     # the selected project/target name, restored on next launch.
@@ -668,7 +818,6 @@ class FmtWatch
 element orbiter : trinity # implements compiler
     public width         : i32    [ 1888 ]
     public height        : i32    [ 888 ]
-    public background    : string [ 'Earth' ]
     public live_reload   : bool   [ true ]
     public startup_path  : path
     default resource     : string
@@ -742,8 +891,6 @@ element orbiter : trinity # implements compiler
     public show_variables   : bool
     # summon-only: never saved, never active at startup
     intern show_orbiter     : bool
-    intern chord_shift      : bool
-    intern chord_meta       : bool
     intern listen_file      : path
     public active_idx       : i32
     public config_side      : i32
@@ -758,6 +905,10 @@ element orbiter : trinity # implements compiler
     public find_text     : string
     public findbar_open  : bool
     public findbar_pane  : string
+    # restored caret/selection, applied once each editor loads
+    intern pending_sel   : array string
+    # the status bar's center toggle: scene-only viewing
+    intern hide_ui       : bool
     public findbar_text  : string
     intern find_last_query : string
     intern find_last_scope : string
@@ -800,6 +951,20 @@ element orbiter : trinity # implements compiler
     public code_font_size : i32 [ 19 ]
     # append LAST: member order sets AF bit indices
     public show_toolbox  : bool
+    # module whose build set err_file; only it may clear
+    intern err_mod       : string
+    # index into scene_list[]; the bottom bar steps it
+    intern scene_ix      : i32
+    intern scene_names   : array string
+    public scene_load    : string
+    intern scene_el      : element
+    intern scene_el_nm   : string
+    # index into speed_list[]; 0 is subtle, the default
+    intern speed_ix      : i32
+    # index into orbit_list[]; 0 is low-orbit, the default
+    intern orbit_ix      : i32
+    # index into angle_list[]; 0 is angled, each scene's authored view
+    intern angle_ix      : i32
 
     func init []
         au_live_set_defer[ 1 ]
@@ -983,6 +1148,16 @@ element orbiter : trinity # implements compiler
                 for [ t: path ] in st.docked
                     dline = dline + ' {t}'
             out = out + dline + '\n'
+            sline : string '\t\tpane_sel:'
+            if [ st.pane_sel ]
+                for [ s: string ] in st.pane_sel
+                    sline = sline + ' {s}'
+            out = out + sline + '\n'
+            if [ st.scene && st.scene.count > 0 ]
+                out = out + '\t\tscene: \'{st.scene}\'\n'
+            out = out + '\t\tspeed_ix: {st.speed_ix}\n'
+            out = out + '\t\torbit_ix: {st.orbit_ix}\n'
+            out = out + '\t\tangle_ix: {st.angle_ix}\n'
             if [ st.target && st.target.count > 0 ]
                 out = out + '\t\ttarget: \'{st.target}\'\n'
             if [ st.console_w > 0 ]
@@ -1007,11 +1182,19 @@ element orbiter : trinity # implements compiler
             if [ open_files[i] ] tabs.push[ open_files[i] ]
         st.tabs        = tabs
         panes : array path []
+        sels9 : array string []
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             slot : i32 [ editor_slots[i] ]
             if [ slot >= 0 && slot < open_files.count && open_files[slot] ]
                 panes.push[ open_files[slot] ]
+                e9 : Editor pane_at[ i ]
+                sels9.push[ (e9) ? '{e9.sel_line},{e9.sel_col},{e9.anchor_line},{e9.anchor_col}' : '0,0,0,0' ]
         st.panes       = panes
+        st.pane_sel    = sels9
+        st.scene       = scene_loaded[]
+        st.speed_ix    = speed_ix
+        st.orbit_ix    = orbit_ix
+        st.angle_ix    = angle_ix
         st.docked      = docked
         st.breakpoints = breakpoints
         st.target      = active_target
@@ -1043,6 +1226,7 @@ element orbiter : trinity # implements compiler
                 if [ p ] editor_slots += file_slot[ p ]
             if [ editor_slots.count == 0 ] editor_slots += -1
             active_pane = 0
+            if [ st.pane_sel ] pending_sel = st.pane_sel
 
         el [ st.tabs && open_files.count > 0 && editor_slots.count > 0 ]
             editor_slots[0] = 0
@@ -1054,6 +1238,16 @@ element orbiter : trinity # implements compiler
         # restore the selected project
         if [ st.target && st.target.count > 0 ]
             active_target = st.target
+        # restore the backdrop scene + stepper positions
+        if [ st.scene && st.scene.count > 0 ]
+            scene_load = st.scene
+            scene_load.hold[]
+            sl9 : array string [ scene_list[] ]
+            for [ i: i32 0, i < sl9.count, i += 1 ]
+                if [ sl9[i] == st.scene ] scene_ix = i
+        speed_ix = st.speed_ix
+        orbit_ix = st.orbit_ix
+        angle_ix = st.angle_ix
 
     func load_settings []
         sp  : agi_path[]
@@ -1218,22 +1412,36 @@ element orbiter : trinity # implements compiler
                     code : i32 [ (st >> 8) & 0xFF ]
                     sig  : i32 [ st & 0x7F ]
                     if [ sig != 0 ]
-                        puts 'syntax: {name} CRASHED (signal {sig}) — see /tmp/orbiter-fmt-{name}.log'
+                        puts 'syntax: {name} CRASHED (signal {sig}) — see /tmp/orbiter-fmt-{fw.proj}.log'
                     el [ code != 0 ]
-                        puts 'syntax: {name} build FAILED (code {code}) — see /tmp/orbiter-fmt-{name}.log'
+                        puts 'syntax: {name} build FAILED (code {code}) — see /tmp/orbiter-fmt-{fw.proj}.log'
                         # jump the editor to silver's first emitted error location
-                        jump_to_error[ '/tmp/orbiter-fmt-{name}.log' ]
+                        err_mod = name
+                        jump_to_error[ '/tmp/orbiter-fmt-{fw.proj}.log' ]
                     el
                         puts 'syntax: {name} language service finished'
+                        # only the module that failed may clear its own error
+                        if [ err_mod && err_mod == name ]
+                            err_file = null
+                            err_line = 0
+                            err_mod  = null
                     fw.pid = 0
             if [ fw.map && fw.map.count > 0 ]
                 mp : path fw.map
                 if [ mp.exists[] ]
                     m : mp.modified_time[]
+                    # a map older than its source describes text that is
+                    # already gone: its line/col ranges land on the wrong
+                    # spans. leave the last good colouring until the
+                    # service catches up
+                    fresh : bool [ true ]
+                    if [ fw.file ]
+                        sm2 : i64 [ fw.file.modified_time[] ]
+                        fresh = m >= sm2
                     applied : bool [ false ]
                     for [ i: i32 0, i < editor_slots.count, i += 1 ]
                         ed : Editor pane_at[ i ]
-                        if [ ed && ed.fmt_mtime < m ]
+                        if [ fresh && ed && ed.fmt_mtime < m ]
                             ed.load_format[ fw.map ]
                             ed.fmt_mtime = m
                             ed.pristine = false
@@ -1408,8 +1616,7 @@ element orbiter : trinity # implements compiler
         w.will_animate = true
         if [ !orbit_voice_tested ]
             orbit_voice_tested = true
-            tdv : string '/src/silver/models/kokoro-en'
-            rcv : i32 [ tts_init[ tdv.chars ] ]
+            rcv : i32 [ tts_init[ '' ] ]
             puts 'voice-test: tts_init rc {rcv}'
             if [ rcv == 0 ]
                 vt9 : string 'orbiter voice is working'
@@ -1461,8 +1668,7 @@ element orbiter : trinity # implements compiler
                         break
                 if [ dup ] continue
                 orbit_spoken.push[ ut ]
-                td2 : string '/src/silver/models/kokoro-en'
-                rc2 : i32 [ tts_init[ td2.chars ] ]
+                rc2 : i32 [ tts_init[ '' ] ]
                 puts 'speak-scan: voicing "{ut}" (tts_init rc {rc2})'
                 if [ rc2 == 0 ]
                     tts_say[ ut.chars, 8, 1.0 ]
@@ -1470,8 +1676,7 @@ element orbiter : trinity # implements compiler
         if [ st && !orbit_reported ]
             orbit_reported = true
             orbit_send[ 'the app crashed: {st} — investigate.' ]
-            td : string '/src/silver/models/kokoro-en'
-            if [ tts_init[ td.chars ] == 0 ]
+            if [ tts_init[ '' ] == 0 ]
                 sp : string 'the app crashed with {st}.'
                 tts_say[ sp.chars, 8, 1.0 ]
         el [ !st ]
@@ -1865,6 +2070,7 @@ element orbiter : trinity # implements compiler
         index_dirty = true
 
     public func on_unload [ ]
+        save_session[]
         if [ debuggers ]
             for [ d: dbg, name: string ] in debuggers
                 if [ d && d.active ] d.stop[]
@@ -2099,6 +2305,8 @@ element orbiter : trinity # implements compiler
             ln : string parts[i]
             if [ ln.index_of[ q ] >= 0 ]
                 if [ !header_added ]
+                    if [ find_hits.count > 0 ]
+                        find_hits.push[ FindHit [ is_header: true, is_spacer: true, text: '' ] ]
                     fn  : string p.filename[]
                     drs : string '{p.directory[]}'
                     sp  : string '{startup_path}'
@@ -2115,6 +2323,9 @@ element orbiter : trinity # implements compiler
         if [ win && win.focus && win.focus.id == 'title' ]
             for [ e: element* win.focus, e, e = e.parent ]
                 if [ e inherits EditorView ] return e.id
+        # an open findbar owns the search — results land in ITS pane
+        if [ findbar_open && findbar_pane && findbar_pane.count > 0 ]
+            return findbar_pane
         return 'pane0'
 
     # modules register rail views in install/export/*.agi:
@@ -2224,6 +2435,164 @@ element orbiter : trinity # implements compiler
         pv : element pane_view[ i ]
         if [ !pv || !pv.elements ] return null
         return pv.elements[ 'title' ]
+
+    # scene classes modules register in install/export/*.agi
+    func ensure_scenes []
+        if [ scene_names ] return
+        scene_names = array string []
+        root : path.path_startup[]
+        if [ !root ] return
+        d : path '{root}/install/export'
+        entries : array [ d.ls[ null, false ] ]
+        if [ !entries ] return
+        for [ e: path ] in entries
+            ax : e.ext[]
+            if [ !ax || !(ax == 'agi') ] continue
+            ftext : string e.load[ typeid[string], null ]
+            if [ !ftext ] continue
+            n2  : i32 [ i32[ ftext.count ] ]
+            ls9 : i32 [ 0 ]
+            for [ i: i32 0, i <= n2, i += 1 ]
+                c : i32 [ (i < n2) ? ((i32 ftext.chars[i]) & 255) : 10 ]
+                if [ c != 10 ] continue
+                line : string ftext.mid[ ls9, i - ls9 ]
+                ls9 = i + 1
+                if [ !(line.index_of[ 'scenes:' ] == 0) ] continue
+                ln2 : i32 [ i32[ line.count ] ]
+                j   : i32 [ 0 ]
+                while [ j < ln2 ]
+                    cq : i32 [ (i32 line.chars[j]) & 255 ]
+                    if [ cq != 39 ]
+                        j += 1
+                        continue
+                    k : i32 [ j + 1 ]
+                    while [ k < ln2 && ((i32 line.chars[k]) & 255) != 39 ] k += 1
+                    nm9 : string line.mid[ j + 1, k - j - 1 ]
+                    j = k + 1
+                    if [ nm9.count > 0 ] scene_names.push[ nm9 ]
+
+    # backdrop scenes the bottom bar steps through
+    func scene_list [] -> array string
+        ensure_scenes[]
+        return scene_names
+
+    func scene_name [] -> string
+        sl : array string [ scene_list[] ]
+        if [ sl.count == 0 ] return ''
+        ix : i32 [ scene_ix % sl.count ]
+        if [ ix < 0 ] ix = 0
+        return sl[ ix ]
+
+    # built once per scene: new_object is pool-managed, so hold it
+    func scene_element [] -> element
+        nm : scene_loaded[]
+        if [ !nm || nm.count == 0 ] return null
+        if [ scene_el && scene_el_nm && scene_el_nm.compare[ nm ] == 0 ] return scene_el
+        st : Au.find_type[ nm.chars, null ]
+        if [ !st ]
+            puts 'scene: no class for {nm}'
+            return null
+        # unmount does not call on_unload: unregister the outgoing target
+        if [ scene_el && scene_el.id && ux && ux.element_targets ]
+            ux.element_targets.rm[ scene_el.id ]
+        e : element [ Au.new_object[ st, null, null, true,
+            __FILE__, __LINE__, __SEQUENCE__ ] ]
+        if [ !e ] return null
+        e.hold[]
+        e.area = Region [ 'l0 t0 r0 b0' ]
+        scene_el    = e
+        scene_el_nm = string [ nm ]
+        scene_el_nm.hold[]
+        puts 'scene: built {nm}'
+        # the scene retints the ui; null theme restores the authored values
+        if [ ux && ux.st ]
+            ux.st.set_theme[ e.theme*[] ]
+            ux.restyle = true
+        return e
+
+    # the mounted scene; the label click sets it from the browsed one
+    func scene_loaded [] -> string
+        if [ scene_load && scene_load.count > 0 ] return scene_load
+        sl : array string [ scene_list[] ]
+        if [ sl.count == 0 ] return ''
+        return sl[ 0 ]
+
+    func scene_step [ d: i32 ]
+        sl : array string [ scene_list[] ]
+        if [ sl.count == 0 ] return
+        scene_ix = (scene_ix + d + sl.count) % sl.count
+
+    # vantage; each scene maps it to its own distance
+    func orbit_list [] -> array string
+        return array string [ 'low-orbit', 'high-orbit', 'far-orbit' ]
+
+    func orbit_name [] -> string
+        ol : array string [ orbit_list[] ]
+        return ol[ orbit_ix % ol.count ]
+
+    func orbit_step [ d: i32 ]
+        ol : array string [ orbit_list[] ]
+        orbit_ix = (orbit_ix + d + ol.count) % ol.count
+        if [ ux ] ux.orbit_mode = orbit_ix % 3
+
+    # camera angle; each scene maps it to pitch or to aim tilt
+    func angle_list [] -> array string
+        return array string [ 'angled', 'flat-on', 'steep' ]
+
+    func angle_name [] -> string
+        al : array string [ angle_list[] ]
+        return al[ angle_ix % al.count ]
+
+    # the list is ordered for the UI; this maps it to ViewAngle
+    func angle_value [] -> i32
+        ix : i32 [ angle_ix % 3 ]
+        return (ix == 0) ? 1 : (ix == 1) ? 0 : 2
+
+    func angle_step [ d: i32 ]
+        al : array string [ angle_list[] ]
+        angle_ix = (angle_ix + d + al.count) % al.count
+        if [ ux ] ux.angle_mode = angle_value[]
+
+    # backdrop speed: frame skipping and the time step together.
+    # subtle is FIRST so the zero default lands on it
+    func speed_list [] -> array string
+        return array string [ 'subtle', 'slow', 'medium', 'fast', 'ludacrous' ]
+
+    func speed_name [] -> string
+        sl : array string [ speed_list[] ]
+        return sl[ speed_ix % sl.count ]
+
+    func speed_step [ d: i32 ]
+        sl : array string [ speed_list[] ]
+        speed_ix = (speed_ix + d + sl.count) % sl.count
+        speed_apply[]
+
+    # subtle draws 1 frame in 4, slow 1 in 2, medium every frame. the
+    # rates fall by 4x a step, so subtle is a quarter of slow
+    func speed_apply []
+        if [ !ux ] return
+        # a camera easing between orbits must not skip frames or the
+        # move lands in visible steps instead of a glide
+        if [ ux.orbit_moving ]
+            ux.background_skip = 1
+            return
+        ix : i32 [ speed_ix % 5 ]
+        switch [ ix ]
+            case 1
+                ux.background_skip = 2
+                ux.time_scale      = 1.0 / 16.0
+            case 2
+                ux.background_skip = 1
+                ux.time_scale      = 1.0 / 4.0
+            case 3
+                ux.background_skip = 1
+                ux.time_scale      = 1.0
+            case 4
+                ux.background_skip = 1
+                ux.time_scale      = 4.0
+            default
+                ux.background_skip = 4
+                ux.time_scale      = 1.0 / 64.0
 
     # placeable widgets; reflection over element subclasses later
     func toolbox_items [] -> array string
@@ -2505,6 +2874,7 @@ element orbiter : trinity # implements compiler
         return m9
 
     func exit_find_mode []
+        sp9 : string search_pane[]
         findbar_open = false
         find_showing = false
         find_text    = ''
@@ -2513,10 +2883,17 @@ element orbiter : trinity # implements compiler
         if [ win && win.focus ]
             win.focus.edit = ''
             win.release_focus[ win.focus ]
+        # esc lands focus on the editor the search was working in
+        pi9 : i32 [ (sp9 && sp9.count > 4) ? sp9.mid[ 4, sp9.count - 4 ].real_value[] : 0 ]
+        ed9 : Editor pane_at[ pi9 ]
+        if [ win && ed9 ] win.set_focus[ ed9 ]
         force_update[]
 
     func open_find []
         findbar_open = true
+        # the field is built later this frame; ask the window to focus
+        # it by id and let animate[] resolve it before the next draw
+        if [ ux ] ux.focus_id = 'find'
         findbar_pane = 'pane{active_pane}'
         ed : Editor pane_at[ active_pane ]
         if [ ed ]
@@ -2690,6 +3067,43 @@ element orbiter : trinity # implements compiler
             return
         if [ ev.target.id == 'callstack' ]
             show_instruments = !show_instruments
+            return
+        if [ ev.target.id == 'scene_prev' ]
+            scene_step[ -1 ]
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'scene_next' ]
+            scene_step[ 1 ]
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'frost_name' ]
+            ux.frost_step[ 1 ]
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'speed_name' ]
+            speed_step[ 1 ]
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'orbit_name' ]
+            orbit_step[ 1 ]
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'angle_name' ]
+            angle_step[ 1 ]
+            ev.no_default = true
+            return
+        # the arrows only browse; the label commits what you landed on
+        if [ ev.target.id == 'scene_name' ]
+            scene_load = scene_name[]
+            scene_load.hold[]
+            save_session[]
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'ui_hide' ]
+            hide_ui = !hide_ui
+            force_update[]
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
             return
         if [ ev.target.id == 'toolbox' ]
             show_toolbox = !show_toolbox
@@ -2941,16 +3355,6 @@ element orbiter : trinity # implements compiler
 
     
     func on_key [ ev: Event ]
-        # avatar shows only while cmd(+ctrl)+shift is HELD — no buttons
-        ku9 : i32 [ i32 ev.key.unicode ]
-        if [ ku9 == 340 || ku9 == 344 ] chord_shift = ev.key.state
-        if [ ku9 == 341 || ku9 == 345 || ku9 == 343 || ku9 == 347 ] chord_meta = ev.key.state
-        want9 : bool [ chord_shift && chord_meta ]
-        if [ want9 != show_orbiter ]
-            show_orbiter = want9
-            # summon starts the mic; dismiss stops and submits the take
-            if [ want9 != listening[] ] toggle_listen[ null ]
-            if [ ux ] ux.restyle = true
         if [ !ev.target ] return
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta) ]
             kc : i32 [ i32[ ev.key.unicode ] ]
@@ -2960,6 +3364,14 @@ element orbiter : trinity # implements compiler
                 return
             if [ kc == 71 ]    # 'G'
                 focus_finder[]
+                ev.no_default = true
+                return
+            if [ kc == 96 ]    # '`' — summon/dismiss the orbiter helper
+                if [ ev.key.state == 1 ]    # key repeats must not re-toggle
+                    show_orbiter = !show_orbiter
+                    # summon starts the mic; dismiss stops and submits the take
+                    if [ show_orbiter != listening[] ] toggle_listen[ null ]
+                    if [ ux ] ux.restyle = true
                 ev.no_default = true
                 return
         # escape peels ONE layer per press, innermost first: the finder closes
@@ -3262,12 +3674,67 @@ element orbiter : trinity # implements compiler
             aid : 'pane{editor_slots.count}'
             pane_inner[aid] = EditorView [ pane_index: editor_slots.count, selected: (sp == aid) ]
         editor_els : Elements []
-        editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b0 }, inner: pane_inner,
-            deflt: 0.0, even: true, snap_close: true ]
+        # the committed scene, not the browsed one; frost marks it backdrop
+        sname9 : scene_loaded[]
+        # built once per scene: a fresh element each frame churns its Render
+        se9 : scene_element[]
+        # stable key: a per-scene key re-appends last and covers the ui
+        if [ se9 ] editor_els['scene'] = se9
+        # hide keeps the panes mounted at opacity 0 — no unmount churn
+        editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b22px }, inner: pane_inner,
+            deflt: 0.0, even: true, snap_close: true,
+            opacity: (hide_ui) ? 0.0 : 1.0 ]
+        # right-flow: first inserted sits furthest right
+        sels : Elements []
+        sels['scene_next'] = SceneArrow [ icon: 'right',
+            area: Region { r8px t2px w18px h18px }, manual_mode: true ]
+        sels['scene_name'] = SceneName  [ label: scene_name[].lcase[] ]
+        sels['scene_prev'] = SceneArrow [ icon: 'left', manual_mode: true ]
+        sels['frost_name'] = SceneName  [ label: ux.frost_name[] ]
+        speed_apply[]
+        sels['speed_name'] = SceneName  [ label: speed_name[] ]
+        if [ ux ] ux.orbit_mode = orbit_ix % 3
+        sels['orbit_name'] = SceneName  [ label: orbit_name[] ]
+        if [ ux ] ux.angle_mode = angle_value[]
+        sels['angle_name'] = SceneName  [ label: angle_name[] ]
+        # left of the bar: staged reload button, or the live compile status
+        lp9 : au_live_get_pending[]
+        if [ lp9 == 2 ]
+            sels['reload_busy']  = ReloadStatus [ label: 'compiling...' ]
+        el [ lp9 == 1 ]
+            sels['reload_ready'] = ReloadButton [ label: 'reload', manual_mode: true ]
+        # dead center: scene-only toggle
+        sels['ui_hide'] = HideToggle [ label: '-', manual_mode: true ]
+        editor_els['status'] = StatusBar [ elements: sels ]
         # one avatar, window-anchored; ALWAYS mounted, :summoned slides it in
         editor_els['avatar'] = OrbiterAvatar [ topmost: true, summoned: show_orbiter ]
+        # one tab off the top edge: build errors only
+        if [ !hide_ui && err_file && err_line > 0 ]
+            editor_els['error'] = ErrorButton [
+                label: 'error {err_file.filename[]}:{err_line}',
+                topmost: true, manual_mode: true ]
         return editor_els
 
     public func on_canvas [ cv: Canvas ]
         super.on_canvas[ cv ]
         cv.sync_fence[ ]
+        # disk watch runs here: layer draws skip pristine editors
+        for [ i9: i32 0, i9 < editor_slots.count, i9 += 1 ]
+            e9 : Editor pane_at[ i9 ]
+            if [ !e9 ] continue
+            e9.check_disk[]
+            if [ pending_sel && i9 < pending_sel.count ]
+                ps9 : string pending_sel[i9]
+                if [ ps9 && ps9.count > 0 && e9.lines && e9.lines.count > 1 ]
+                    pr9 : array string ps9.split[',']
+                    if [ pr9.count >= 4 ]
+                        l9  : i32 [ pr9[0].real_value[] ]
+                        c9  : i32 [ pr9[1].real_value[] ]
+                        al9 : i32 [ pr9[2].real_value[] ]
+                        ac9 : i32 [ pr9[3].real_value[] ]
+                        e9.sel_line    = clamp[ l9,  0, e9.lines.count - 1 ]
+                        e9.sel_col     = c9
+                        e9.anchor_line = clamp[ al9, 0, e9.lines.count - 1 ]
+                        e9.anchor_col  = ac9
+                        e9.ensure_caret_visible[]
+                    pending_sel[i9] = ''
