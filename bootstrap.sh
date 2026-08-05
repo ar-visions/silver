@@ -611,23 +611,6 @@ else
     exec $SHELL -l
 fi
 
-# ---- models ------------------------------------------------------------
-# kokoro-82M (hexgrad, Apache 2.0) packaged by k2-fsa/sherpa-onnx.
-# spectra's tts_init loads model.onnx from here; it is required
-KOKORO_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2"
-if [ ! -f "$IMPORT/models/kokoro-en/model.onnx" ]; then
-    mkdir -p "$IMPORT/models"
-    (
-        cd "$IMPORT/models"
-        echo "fetching kokoro-en (330MB model, one time)"
-        curl -L -o kokoro-en-v0_19.tar.bz2 "$KOKORO_URL"
-        tar xjf kokoro-en-v0_19.tar.bz2
-        # the release unpacks as kokoro-en-v0_19; the code wants kokoro-en
-        [ -d kokoro-en-v0_19 ] && mv kokoro-en-v0_19 kokoro-en
-        rm -f kokoro-en-v0_19.tar.bz2
-    )
-fi
-
 (
     cd $SILVER
     python3 src/import.py --import $IMPORT --$TYPE $ASAN --project-path $PROJECT_PATH --build-path $BUILD --project-name $PROJECT_NAME $SDK
