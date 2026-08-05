@@ -2869,11 +2869,15 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
 
     string special = string(".{}$,<>()![]/+*:=#~@|&^?`");
 
-    // the symbol table is the same for every parse; build it once
-    static map             mapping;
+    // the symbol table is the same for every parse; build it once. modules
+    // parse on their own threads, so the map must be fully built before the
+    // pointer that reveals it becomes visible
+    static map             _mapping;
     static pthread_mutex_t mapping_lock = PTHREAD_MUTEX_INITIALIZER;
+    map mapping = __atomic_load_n(&_mapping, __ATOMIC_ACQUIRE);
     if (!mapping) {
         pthread_mutex_lock(&mapping_lock);
+        mapping = __atomic_load_n(&_mapping, __ATOMIC_ACQUIRE);
         if (!mapping) {
             list symbols = list();
             i32 special_ln = len(special);
@@ -2891,6 +2895,7 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                 set(m, (Au)sym, (Au)sym);
             }
             mapping = (map)hold(m);
+            __atomic_store_n(&_mapping, mapping, __ATOMIC_RELEASE);
         }
         pthread_mutex_unlock(&mapping_lock);
     }
@@ -7314,7 +7319,43 @@ enode parse_import(silver a) {
     string  name         = null;
     array   with_exts    = null;   // `import M with ext…` — ext.ag paths in THIS dir
 
-    if (t && isalpha(t->chars[0])) {
+    // a url import is a FILE, never a repo: nothing is cloned, configured
+    // or built. it lands in install/imports as <hash>-<stem>, so two
+    // images.zip from different urls cannot collide. the file existing IS
+    // the cache. the path is published as {import_file} for the > lines.
+    // the lexer splits on ':' so the peeked token is only "https" -- glue
+    // the run back, then require the scheme SEPARATOR, since a bare
+    // "http" prefix would also match an identifier like httpMaster
+    token utok = null;
+    if (t && (eq(t, "https") || eq(t, "http"))) {
+        push_current(a);
+        utok = read_compacted(a);
+        bool ok = utok && (strncmp(utok->chars, "https://", 8) == 0 ||
+                           strncmp(utok->chars, "http://",  7) == 0);
+        pop_tokens(a, ok);   // keep the read only if it really is a url
+        if (!ok) utok = null;
+    }
+    if (utok) {
+        string url  = string(utok->chars);
+        cstr   sl   = strrchr(url->chars, '/');
+        string stem = string(sl ? sl + 1 : url->chars);
+        path   idir = f(path, "%o/imports", a->install);
+        make_dir(idir);
+        path   dest = f(path, "%o/%08llx-%o", idir,
+                        (u64)(Au_hash((Au)url) & 0xffffffff), stem);
+        if (!file_exists("%o", dest)) {
+            // fetch beside it and move on success. curl writing the final
+            // name directly leaves a partial file when it fails, and
+            // 'file exists' is the cache signal -- it would never retry
+            path part = f(path, "%o.part", dest);
+            vexec(a->verbose, "import-url", "curl -fL -o %o %o", part, url);
+            verify(file_exists("%o", part), "import: fetch failed %o", url);
+            vexec(a->verbose, "import-url", "mv %o %o", part, dest);
+        }
+        a->import_file = hold(dest);
+    }
+
+    if (!utok && t && isalpha(t->chars[0])) {
         bool   cont     = false;
         service  = a->git_service;
         user     = a->git_owner;
@@ -7537,6 +7578,19 @@ enode parse_import(silver a) {
 
     validate(!with_exts || (module_source && !is_codegen),
         "import with: only valid for a silver module (not a C header, git dep, or codegen)");
+
+    // a url import has no checkout: run only its `>` commands, read from
+    // all_config exactly as a repo import reads them. a failing command
+    // is an import error -- no hand-woven && chains in the .ag
+    if (utok) {
+        array cmds = import_build_commands(all_config, ">");
+        each(cmds, string, cmd) {
+            string icmd = interpolate(cmd, (Au)a);
+            int    rc   = command_exec((command)icmd, a->verbose);
+            verify(rc == 0, "import: command failed (%i): %o", rc, icmd);
+        }
+        return null;
+    }
 
     if (uri) {
         checkout(a, path(uri->chars), (string)commit,

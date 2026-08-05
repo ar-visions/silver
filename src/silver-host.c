@@ -812,17 +812,6 @@ static int rebuild_blocking(const char* name, int clean) {
     return rebuild_status(rc, name);
 }
 
-// recompile via the in-process compiler if the app published one, else shell out to silver.
-static int do_recompile(void* handle, const char* name) {
-    au_compile_ready_fn  ready_fn  = (au_compile_ready_fn) dlsym(handle,  "au_compile_ready");
-    au_compile_invoke_fn invoke_fn = (au_compile_invoke_fn)dlsym(handle, "au_compile_invoke");
-    if (ready_fn && ready_fn() && invoke_fn) {
-        invoke_fn(name);   // in-process compiler reports its own errors
-        return 0;
-    }
-    return rebuild_blocking(name, 0);
-}
-
 int main(int argc, char** argv) {
     printf("silver-host main\n");
 
@@ -1003,6 +992,7 @@ int main(int argc, char** argv) {
     time_t last_mtime = file_mtime(product);
     int host_pending = 0;   // defer mode: a source change is staged, awaiting the app's go
     pid_t compile_pid = 0;  // async recompile in flight — the app keeps running while it builds
+    int apply_compile = 0;  // the in-flight compile was user-requested (defer apply)
 
     while (do_frame && do_frame()) {
         // isolated child died? publish the verdict for orbiter to render.
@@ -1021,10 +1011,14 @@ int main(int argc, char** argv) {
         // since it edits its own dependencies and would reload ITSELF otherwise.
         int reload_off = no_reload || (get_reload && !get_reload());
 
-        // watch source files — when any .ag/.c changes
+        // watch source files — when any .ag/.c changes.
+        // defer must still watch: reload_off only means "never swap the
+        // module out from under the app on its own". staging is what
+        // raises the reload tab, and skipping the watch entirely left
+        // pending stuck at 0 so the tab could never appear.
         int force = 0;
         int changed = 0;
-        if (!reload_off)
+        if (!reload_off || defer)
         for (int i = 0; i < nsr; i++) {
             if (file_mtime(srcs[i].path) != srcs[i].mtime) {
                 fprintf(stdout, "%s: source changed: %s\n", name, srcs[i].path);
@@ -1039,6 +1033,7 @@ int main(int argc, char** argv) {
                 // stage it: signal the app a reload is pending; recompile only on its request
                 host_pending = 1;
                 if (set_pending) set_pending(1);
+                fprintf(stderr, "%s: reload staged — waiting for apply\n", name);
             } else if (!compile_pid) {
                 // recompile in the BACKGROUND — the app keeps running while silver
                 // builds; the reap below reloads the instant the build lands (the
@@ -1059,37 +1054,62 @@ int main(int argc, char** argv) {
             if (r == compile_pid) {
                 compile_pid = 0;
                 if (rebuild_status(st, name) == 0) {
+                    if (apply_compile && set_pending) set_pending(0);
+                    apply_compile = 0;
                     force = 1;   // good build → save + reload below
                 } else {
                     // a failed recompile must NOT swap in a broken module or take the app
                     // down — keep the live instance running on the last good build.
+                    // a user-requested compile re-arms the reload button to retry.
+                    if (apply_compile) {
+                        host_pending = 1;
+                        if (set_pending) set_pending(1);
+                    }
+                    apply_compile = 0;
                     fprintf(stderr, "%s: recompile FAILED — keeping the running build "
                         "(fix the errors above; the app stays up)\n", name);
                 }
             } else if (r < 0) {
                 compile_pid = 0;
+                if (apply_compile) {
+                    host_pending = 1;
+                    if (set_pending) set_pending(1);
+                }
+                apply_compile = 0;
             }
         }
 
-        // defer mode: the app asked us to apply the staged change → recompile + reload now
+        // defer mode: the app asked us to apply the staged change. compile
+        // ASYNC — the app keeps rendering, pending=2 shows it compiling.
+        // when an external build already left a fresh product, skip straight
+        // to the swap.
         if (defer && host_pending && take_apply && take_apply()) {
             host_pending = 0;
-            if (set_pending) set_pending(0);
-            int rc = do_recompile(handle, name);
-            for (int j = 0; j < nsr; j++)
-                srcs[j].mtime = file_mtime(srcs[j].path);
-            if (rc == 0) {
+            if (!sources_newer(product, srcs, nsr)) {
+                if (set_pending) set_pending(0);
+                fprintf(stderr, "%s: apply requested — product fresh, reloading\n", name);
                 force = 1;
-            } else {
-                fprintf(stderr, "%s: recompile FAILED — keeping the running build\n", name);
+            } else if (!compile_pid) {
+                fprintf(stderr, "%s: apply requested — recompiling\n", name);
+                if (set_pending) set_pending(2);
+                apply_compile = 1;
+                compile_pid = rebuild_spawn(name, 0);
+                if (compile_pid < 0) {
+                    compile_pid = 0;
+                    apply_compile = 0;
+                    host_pending = 1;
+                    if (set_pending) set_pending(1);
+                }
             }
         }
 
         // watch product symlink — reload when .so is relinked (external builds).
         // while our own compile is in flight the product relinks BEFORE silver
         // finishes — the reap above owns that reload, so stand down until then.
+        // force bypasses reload_off: it only arises from a good build the user
+        // asked for (defer apply) — reload_off gates only self-initiated swaps
         time_t cur = file_mtime(product);
-        if (!reload_off && (force || (!compile_pid && cur != last_mtime))) {
+        if (force || (!reload_off && !compile_pid && cur != last_mtime)) {
             last_mtime = cur;
             fprintf(stderr, "%s: reloading\n", name);
 

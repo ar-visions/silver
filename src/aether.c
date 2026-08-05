@@ -10152,13 +10152,20 @@ void llvm_reinit(aether a) {
     if (LLVMGetTargetFromTriple(a->target_triple, &a->target_ref, &err))
         fault("error: %s", err);
     // a target machine carries per-compilation state: one per core
-    for (int i = 0; i < AU_CORES; i++)
+    for (int i = 0; i < AU_CORES; i++) {
         a->target_machines[i] = (ARef)LLVMCreateTargetMachine(
             a->target_ref, a->target_triple,
             a->debug ? "generic" : "x86-64-v3",
             a->debug ? "" : "+avx2,+fma",
             a->debug ? LLVMCodeGenLevelNone : LLVMCodeGenLevelAggressive,
             LLVMRelocPIC, LLVMCodeModelDefault);
+        // FastISel (the -O0 fast path) segfaults in X86FastISel on
+        // instructions it cannot select, and the emit worker takes the
+        // build down silently. EnableFastISel=0 alone is not enough --
+        // llvm force-picks it at CodeGenLevelNone -- so debug builds
+        // at Less, where the full selector always runs
+        LLVMSetTargetMachineFastISel((LLVMTargetMachineRef)a->target_machines[i], 0);
+    }
     a->target_machine = (LLVMTargetMachineRef)a->target_machines[0];
     // DataLayout caches struct layouts as it answers size queries — one per core
     for (int i = 0; i < AU_CORES; i++)
