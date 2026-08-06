@@ -725,7 +725,6 @@ element Avatar
     public  env_pitch        : f32
     intern  spoke_cv         : Canvas
     intern  rim_cv           : Canvas
-    intern  spoke_dumped     : bool
     intern  mcache           : map GltfModel[string]
     intern  envcache         : map Texture[string]
     mutable env_on           : bool
@@ -1021,12 +1020,6 @@ element Avatar
             spoke_cv.sync_fence[]
             # 5 = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             spoke_cv.color.transition[ 5 ]
-            if [ !spoke_dumped ]
-                spoke_dumped = true
-                spoke_cv.sync_fence[]
-                sd9 : Image [ spoke_cv.color ]
-                sd9.png[ path '/tmp/spoke_cv.png' ]
-                puts 'SPOKEDUMP wrote /tmp/spoke_cv.png'
 
         if [ rim_cv ]
             rim_cv.update[]

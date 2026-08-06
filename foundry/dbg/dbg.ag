@@ -54,6 +54,9 @@ class dbg
     public   fifo_fd_out : i32
     public   fifo_fd_err : i32
     public   active      : bool
+    # set_breakpoint results live here: unheld, the pool drain deallocs
+    # them and breakpoint_dealloc deletes them out of lldb
+    public   bps         : array
 
     intern   impl        : handle
 

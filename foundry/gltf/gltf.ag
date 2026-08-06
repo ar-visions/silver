@@ -696,6 +696,13 @@ class GltfModel
     public scene:            u64
     public asset:            AssetDesc
 
+    # gltf uris resolve relative to the gltf file itself
+    static func open [ p: path ] -> GltfModel
+        GltfBuffer.set_base[ p.parent_dir[] ]
+        m : p.load[ typeid[ GltfModel ], null ]
+        GltfBuffer.set_base[ null ]
+        return m
+
     func texture_uri [ ti: TextureInfo ] -> path
         if [ !ti || !textures ] return null
         if [ ti.index < 0 || ti.index >= textures.count ] return null

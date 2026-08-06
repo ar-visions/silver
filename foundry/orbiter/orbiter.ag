@@ -1,7 +1,6 @@
 # hello
 export 0.8.8
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
-export scenes ['Earth', 'Moon', 'Mars', 'Terra', 'MilkyWay', 'Titan', 'Europa', 'Enceladus', 'Uranus', 'Neptune', 'Pluto']
 # import silver modules
 import vec
 import img
@@ -21,6 +20,7 @@ import <unistd.h>
     +_DEFAULT_SOURCE
     +_XOPEN_SOURCE=500
 import <fcntl.h>
+import <dlfcn.h>
 import <signal.h>
 import <sys/wait.h>
 ifdef [ apple ]
@@ -32,7 +32,6 @@ ifdef [ linux ]
 
 # import our own sub-modules
 import FileIcons
-import Earth
 import Navigate
 import Editor
 import NodeList
@@ -210,6 +209,9 @@ element EditorView
                 app_paused : bool [ ed_live.run_view.is_paused*[] ]
                 fels['run']  = RunButton [ icon: (app_paused) ? 'play' : 'pause', selected: app_paused, manual_mode: true ]
                 fels['stop'] = RunButton [ icon: 'stop', manual_mode: true ]
+                fels['steps'] = StepButtons [ buttons: [ 'step_next', 'step_in', 'step_out' ], manual: true ]
+            fels['args'] = ArgsField [ label: 'arguments', edit: ed_live->run_args,
+                focusable: true ]
             if [ orb.err_file && orb.err_line > 0 ]
                 fels['error'] = Option [ label: 'error {orb.err_line}', manual_mode: true ]
             smask : i32 [ 0 ]
@@ -671,6 +673,34 @@ element PatternField
                 fill_color: #216
     }
 
+# step over / into / out, left-flow after the stop button
+TButtons StepButtons
+    style : CSS {
+        area: l0+ t0 w3.6 h0.9
+    }
+
+# run arguments for the pane's app; sits in the run band header
+element ArgsField
+    style : CSS {
+        area: l0+ t0 w8 h0.9
+        layers.body:
+            fill_color: #0000
+            radius: 8
+            stroke_width: 1
+            stroke_color: #fff2
+        layers.face:
+            label_color: #fff6
+            label_size: 13
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 10.0 0.0
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+            layers.face:
+                label_color: #ffff
+    }
+
 element FindField
     style : CSS {
         area: l1.37 t0 r20 b0
@@ -796,12 +826,15 @@ class orbiter_state
     public speed_ix    : i32
     public orbit_ix    : i32
     public angle_ix    : i32
+    public frost_ix    : i32
     public docked      : array path
     public breakpoints : map string [string]
     # the selected project/target name, restored on next launch.
     public target      : string
     # user width of the agent console pane, in pixels
     public console_w   : i32
+    # user height of the run band under the editor, in pixels
+    public band_h      : i32
 
 class FmtWatch
     public proj  : string
@@ -820,7 +853,10 @@ element orbiter : trinity # implements compiler
     public height        : i32    [ 888 ]
     public live_reload   : bool   [ true ]
     public startup_path  : path
-    default resource     : string
+    # the whole argv tail: the thing we open, then the module's own args.
+    # split in init — resource keeps the first token, module_args the rest
+    default module_args  : string
+    intern resource      : string
     public log           : string
     intern tee_started   : bool
     intern cap_fd        : i32 [ -1 ]
@@ -886,6 +922,8 @@ element orbiter : trinity # implements compiler
     intern nav_panes        : array Navigate
     intern console_w        : i32
     intern console_w_save   : i32
+    intern band_h           : i32
+    intern band_h_save      : i32
     public show_instruments : bool
     # the variables panel — the other tab of the stack menu
     public show_variables   : bool
@@ -912,6 +950,7 @@ element orbiter : trinity # implements compiler
     public findbar_text  : string
     intern find_last_query : string
     intern find_last_scope : string
+    intern find_scan_mt  : i64
     public replace_text  : string
     public pattern_text  : string
     public find_showing  : bool
@@ -956,15 +995,29 @@ element orbiter : trinity # implements compiler
     # index into scene_list[]; the bottom bar steps it
     intern scene_ix      : i32
     intern scene_names   : array string
+    # which exported module carries each scene class
+    intern scene_mods      : map string [string]
+    intern scene_build_pid : i32 [ -1 ]
+    intern scene_build_nm  : string
+    # lldb attach runs on a worker; it hands the finished dbg back here
+    # and the main thread publishes it into debuggers on the next frame
+    # kept in a list: reassigning one async drops it, and drop joins the thread
+    intern attach_tasks    : array async
+    intern attach_pending  : dbg
+    intern attach_mod      : string
+    intern attach_av       : AppView
+    intern frame_no9       : i32
     public scene_load    : string
     intern scene_el      : element
     intern scene_el_nm   : string
     # index into speed_list[]; 0 is subtle, the default
     intern speed_ix      : i32
-    # index into orbit_list[]; 0 is low-orbit, the default
-    intern orbit_ix      : i32
-    # index into angle_list[]; 0 is angled, each scene's authored view
-    intern angle_ix      : i32
+    # index into orbit_list[]; high-orbit is the default
+    intern orbit_ix      : i32 [ 1 ]
+    # index into angle_list[]; flat-on is the default
+    intern angle_ix      : i32 [ 1 ]
+    # frost stage 0..3 (frost/blur/soft/raw), pushed to ux.frost_mode
+    intern frost_ix      : i32
 
     func init []
         au_live_set_defer[ 1 ]
@@ -991,6 +1044,15 @@ element orbiter : trinity # implements compiler
         active_target  = 'silver'
         restore_session[]
         nav_root       = project_root[]
+        # first token is ours to open; everything after belongs to the module
+        if [ module_args && module_args.count > 0 ]
+            sp9 : i32 [ i32[ module_args.index_of[ ' ' ] ] ]
+            if [ sp9 > 0 ]
+                resource    = module_args.mid[ 0, sp9 ]
+                module_args = module_args.mid[ sp9 + 1, module_args.count - sp9 - 1 ]
+            el
+                resource    = module_args
+                module_args = ''
         ae : getenv[ 'SILVER_ISOLATE_APP' ]
         if [ ae ]
             orbit_app = string [ ae ]
@@ -1022,30 +1084,25 @@ element orbiter : trinity # implements compiler
                     active_pane = 0
                     active_idx  = ri
             el
-                mp : path '{startup_path}/foundry/{resource}/{resource}.ag'
-                if [ mp.exists[] ]
-                    mi : i32 [ file_slot[ mp ] ]
+                bp : path '{startup_path}/install/build/{resource}'
+                if [ bp.exists[] ]
+                    # open the module's SOURCE and host it in the pane. exec'ing
+                    # the binary here gave it its own window instead of a texture
+                    sp8 : path '{startup_path}/foundry/{resource}/{resource}.ag'
+                    op8 : path [ (sp8.exists[]) ? sp8 : bp ]
+                    bi : i32 [ file_slot[ op8 ] ]
                     if [ editor_slots.count == 0 ] editor_slots += -1
-                    editor_slots[0] = mi
+                    editor_slots[0] = bi
                     active_pane   = 0
-                    active_idx    = mi
+                    active_idx    = bi
                     active_target = resource
-                    nav_root      = path '{startup_path}/foundry/{resource}'
-                    # open + select only — running is deliberate (the run chip)
-                el
-                    bp : path '{startup_path}/install/build/{resource}'
-                    if [ bp.exists[] ]
-                        bi : i32 [ file_slot[ bp ] ]
-                        if [ editor_slots.count == 0 ] editor_slots += -1
-                        editor_slots[0] = bi
-                        active_pane   = 0
-                        active_idx    = bi
-                        active_target = resource
-                        dbg_start     = true
+                    if [ sp8.exists[] ]
+                        pending_run = 0
                     el
-                        puts 'orbiter: no such resource {resource}'
+                        dbg_start = true
+                el
+                    puts 'orbiter: no such resource {resource}'
         if [ orbit_app ]
-            # the shell never auto-runs the app — relaunch is deliberate
             pending_run = -1
             active_pane = 0
         orbit_sid = agent_sid[]
@@ -1158,10 +1215,13 @@ element orbiter : trinity # implements compiler
             out = out + '\t\tspeed_ix: {st.speed_ix}\n'
             out = out + '\t\torbit_ix: {st.orbit_ix}\n'
             out = out + '\t\tangle_ix: {st.angle_ix}\n'
+            out = out + '\t\tfrost_ix: {st.frost_ix}\n'
             if [ st.target && st.target.count > 0 ]
                 out = out + '\t\ttarget: \'{st.target}\'\n'
             if [ st.console_w > 0 ]
                 out = out + '\t\tconsole_w: {st.console_w}\n'
+            if [ st.band_h > 0 ]
+                out = out + '\t\tband_h: {st.band_h}\n'
             if [ st.breakpoints && st.breakpoints.count > 0 ]
                 out = out + '\t\tbreakpoints:\n'
                 for [ cond: string, key: string ] in st.breakpoints
@@ -1195,10 +1255,12 @@ element orbiter : trinity # implements compiler
         st.speed_ix    = speed_ix
         st.orbit_ix    = orbit_ix
         st.angle_ix    = angle_ix
+        st.frost_ix    = frost_ix
         st.docked      = docked
         st.breakpoints = breakpoints
         st.target      = active_target
         st.console_w   = console_w
+        st.band_h      = band_h
         save_states[]
 
     func restore_session []
@@ -1208,6 +1270,7 @@ element orbiter : trinity # implements compiler
         st : orbiter_state states[ws]
         if [ !st ] return
         console_w = st.console_w
+        band_h    = st.band_h
         # reopen tabs (populates the open_files pool)
         if [ st.tabs ]
             for [ i: i32 0, i < st.tabs.count, i += 1 ]
@@ -1248,6 +1311,7 @@ element orbiter : trinity # implements compiler
         speed_ix = st.speed_ix
         orbit_ix = st.orbit_ix
         angle_ix = st.angle_ix
+        frost_ix = st.frost_ix
 
     func load_settings []
         sp  : agi_path[]
@@ -1763,11 +1827,28 @@ element orbiter : trinity # implements compiler
         if [ i + 2 >= n ] return false
         return b[i + 2] == 84
 
+    # lldb attach loads the whole binary's symbols — seconds of work that used
+    # to run inside update_all and hold the first paint. it goes to a worker;
+    # only the debuggers publish stays on the main thread
     func attach_appview [ av: AppView, pid: i32 ]
         if [ av.attached ] return
-        av.attached = true
+        av.attached  = true
+        av.attaching = true
+        av.note      = 'attaching debugger'
+        w8 : array []
+        w8.push[ av ]
+        if [ !attach_tasks ] attach_tasks = array async [ ]
+        attach_tasks.push[ async [ target: a, work_fn: @attach_work, work: w8 ] ]
+
+    func attach_work [ arg: object ]
+        av : AppView [ arg ]
+        if [ !av ] return
+        pid : i32 [ host_app_pid[ av.slot ] ]
         mod : string av.app_mod
-        if [ !mod || mod.count == 0 ] return
+        if [ !mod || mod.count == 0 || pid <= 0 ]
+            av.attaching = false
+            av.note      = ''
+            return
         loc : path
         ps  : string '{startup_path}/install/build/{mod}'
         l   : path [ ps.chars ]
@@ -1778,21 +1859,38 @@ element orbiter : trinity # implements compiler
             if [ l2.exists[] ] loc = l2
         if [ !loc ]
             puts 'attach_appview: no binary for {mod}'
+            av.attaching = false
+            av.note      = ''
             return
-        if [ !debuggers ] debuggers = map dbg [string] []
         d : dbg [ location: loc, target: a, auto_start: false ]
         d.attach[ pid ]
         if [ !d.active ]
             kill[ pid, SIGCONT ]
             puts 'attach_appview: attach failed — {mod} pid={pid} continued undebugged'
+            av.attaching = false
+            av.note      = ''
             return
-        debuggers[ mod ] = d
-        active_target = mod
         sync_breakpoints[ d ]
         d.cont[]
         # clear the pre-init SIGSTOP group-stop; cont alone won't
         kill[ pid, SIGCONT ]
         puts 'attach_appview: attached {mod} pid={pid}'
+        attach_mod     = mod
+        attach_av      = av
+        attach_pending = d
+
+    # the worker never touches debuggers/active_target — the map is read by
+    # the paint thread, so the finished debugger lands here instead
+    func attach_publish []
+        if [ !attach_pending ] return
+        if [ !debuggers ] debuggers = map dbg [string] []
+        debuggers[ attach_mod ] = attach_pending
+        active_target  = attach_mod
+        if [ attach_av ]
+            attach_av.attaching = false
+            attach_av.note      = ''
+        attach_pending = null
+        attach_av      = null
 
     func sync_breakpoints [ d: dbg ]
         if [ !breakpoints || !d ] return
@@ -1802,7 +1900,9 @@ element orbiter : trinity # implements compiler
             bsrc : string key.mid[ 0, idx ]
             blin : i32 [ key.mid[ idx + 1, key.count - idx - 1 ].real_value[] ]
             if [ blin <= 0 ] continue
-            d.set_breakpoint[ path [ bsrc ], u32[ blin ], 0 ]
+            if [ !d.bps ] d.bps = array []
+            bp9 : d.set_breakpoint[ path [ bsrc ], u32[ blin ], 0 ]
+            if [ bp9 ] d.bps.push[ bp9 ]
 
     func dbg_on_stdout [ buf: iobuffer ] -> Au
         return null
@@ -1948,6 +2048,7 @@ element orbiter : trinity # implements compiler
         if [ editor_slots.count > 1 ] tnav.push[ 'undock' ]
         if [ editor_slots.count < 4 && !con9 ] tnav.push[ 'dock' ]
         if [ agent_pane[] < 0 && pane_ix == last_editor_pane[] ] tnav.push[ 'gear' ]
+        if [ agent_open && pane_ix == editor_slots.count ] tnav.push[ 'collapse' ]
         wn9 : f32 [ f32[ tnav.count ] * 1.15 ]
         if [ tnav.count > 0 ]
             els['tabnav'] = TButtons [ buttons: tnav, manual: true, area: Region [ 'r0+ t0 w{wn9} h0.9' ] ]
@@ -2134,12 +2235,13 @@ element orbiter : trinity # implements compiler
             puts 'FIND bail: in-file mode, p={p}'
             find_showing = false
             return
-        root : path '{startup_path}/foundry'
+        root : path project_root[]
         find_scanned = 0
+        find_scan_mt = 0
         walk_find[ root, q ]
         puts 'FIND walk: root={root} scanned={find_scanned} hits={find_hits.count} sp={search_pane[]} fbpane={findbar_pane}'
         if [ find_hits.count == 0 ]
-            find_hits.push[ FindHit [ is_header: true, text: 'No results in {find_scanned} files', dir: 'within foundry/', file: null ] ]
+            find_hits.push[ FindHit [ is_header: true, text: 'No results in {find_scanned} files', dir: 'within {root}', file: null ] ]
             find_hits.push[ FindHit [ is_header: true, text: '', file: null ] ]
         find_showing = true
         sp : string search_pane[]
@@ -2148,6 +2250,104 @@ element orbiter : trinity # implements compiler
             if [ e && sp == 'pane{i}' ]
                 e.sel_line    = -1
                 e.anchor_line = -1
+
+
+    func str_replace_all [ s: string, find: string, rep: string ] -> string                                     
+        fn : i32 [ find->count ]                                                                                
+        if [ fn == 0 ] return s                                                                                 
+        out : string [ '' ]                                                                                     
+        i   : i32 [ 0 ]                                                                                         
+        n   : i32 [ s->count ]                                                                                  
+        while [ i < n ]                                                                                         
+            rem : string s.mid[ i, n - i ]                                                                      
+            rel : i32 [ rem.index_of[ find ] ]                                                                  
+            if [ rel < 0 ]                                                                                      
+                out = out + rem                                                                                 
+                break                                                                                           
+            out = out + rem.mid[ 0, rel ] + rep                                                                 
+            i   = i + rel + fn                                                                                  
+        return out                                                                                              
+                                                                                                                
+    # replace applies what is on screen — it never rescans                                                      
+    func run_replace []                                                                                         
+        q : string findbar_text                                                                                 
+        if [ !q || q.count == 0 ] return                                                                        
+        r : string [ (replace_text) ? replace_text : '' ]                                                       
+        if [ find_in_file[] ]                                                                                   
+            replace_in_pane[ q, r ]                                                                             
+            return                                                                                              
+        replace_in_hits[ q, r ]                                                                                 
+                                                                                                                
+    func replace_in_pane [ q: string, r: string ]                                                               
+        sp : string search_pane[]                                                                               
+        ed : Editor null                                                                                        
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]                                                        
+            e : Editor pane_at[ i ]                                                                             
+            if [ e && sp == 'pane{i}' ] ed = e                                                                  
+        if [ !ed ] ed = pane_at[ active_pane ]                                                                  
+        if [ !ed ] return                                                                                       
+        n   : i32 [ ed.line_count[] ]                                                                           
+        cnt : i32 [ 0 ]                                                                                         
+        for [ li: i32 0, li < n, li += 1 ]                                                                      
+            ln : string ed.line_get[ li ]                                                                       
+            if [ !ln || ln.index_of[ q ] < 0 ] continue                                                         
+            ed.ed_set[ li, str_replace_all[ ln, q, r ] ]                                                        
+            cnt += 1                                                                                            
+        puts 'REPLACE in-file: {cnt} lines'                                                                     
+        ed.pristine = false                                                                                     
+        if [ ux ] ux.will_animate = true                                                                        
+                                                                                                                
+    # walks the surviving hits only: struck-out rows never come back
+    func replace_in_hits [ q: string, r: string ]
+        if [ !find_hits || find_hits.count == 0 ] return
+        seen  : array string []
+        files : i32 [ 0 ]
+        cnt   : i32 [ 0 ]
+        skip  : i32 [ 0 ]
+        for [ i: i32 0, i < find_hits.count, i += 1 ]
+            h : FindHit find_hits[i]
+            if [ !h || h.is_header || !h.file ] continue
+            key : string '{h.file}'
+            dup : bool [ false ]
+            for [ s: string ] in seen
+                if [ s == key ] dup = true
+            if [ dup ] continue
+            seen.push[ key ]
+            ftext : string [ h.file.load[ typeid[string], null ] ]
+            if [ !ftext ] continue
+            parts : array string [ ftext.split["\n"] ]
+            hitn  : i32 [ 0 ]
+            for [ j: i32 i, j < find_hits.count, j += 1 ]
+                g : FindHit find_hits[j]
+                if [ !g || g.is_header || !g.file ] continue
+                gk  : string '{g.file}'
+                if [ gk != key ] continue
+                idx : i32 [ g.line - 1 ]                                                                        
+                if [ idx < 0 || idx >= parts.count ]                                                            
+                    skip += 1                                                                                   
+                    continue                                                                                    
+                # the scanned line must still be the file's line                                                
+                if [ parts[idx] != g.text ]                                                                     
+                    skip += 1                                                                                   
+                    continue                                                                                    
+                nl : str_replace_all[ parts[idx], q, r ]
+                parts[idx] = nl
+                g.text     = nl
+                hitn += 1                                                                                       
+            if [ hitn == 0 ] continue                                                                           
+            out : string [ '' ]                                                                                 
+            for [ j: i32 0, j < parts.count, j += 1 ]                                                           
+                if [ j > 0 ] out = out + '\n'                                                                   
+                out = out + parts[j]                                                                            
+            fp : path '{key}'                                                                                   
+            fp.save[ out, null ]
+            # our own writes are not staleness — keep curation intact
+            mt9 : fp.modified_time[]
+            if [ mt9 > find_scan_mt ] find_scan_mt = mt9                                                                                
+            files += 1                                                                                          
+            cnt   += hitn                                                                                       
+        puts 'REPLACE: {cnt} lines in {files} files, {skip} stale skipped'                                      
+        if [ ux ] ux.will_animate = true 
 
     func next_match []
         sp : string search_pane[]
@@ -2290,10 +2490,31 @@ element orbiter : trinity # implements compiler
         for [ i: i32 0, i < entries.count, i += 1 ]
             e : path entries[i]
             if [ e.is_dir[] ]
+                dn : string e.filename[]
+                if [ dn == 'checkout' || dn == '.git' ] continue
                 walk_find[ e, q ]
             el [ glob_pass[ e ] ]
                 find_scanned += 1
+                mt : e.modified_time[]
+                if [ mt > find_scan_mt ] find_scan_mt = mt
                 scan_file_hits[ e, q ]
+
+    # newest mtime in scope: newer than the scan = results stale
+    func tree_mtime [ dir: path ] -> i64
+        r : i64 [ 0 ]
+        entries : array [ dir.ls[ null, false ] ]
+        if [ !entries ] return r
+        for [ i: i32 0, i < entries.count, i += 1 ]
+            e : path entries[i]
+            if [ e.is_dir[] ]
+                dn : string e.filename[]
+                if [ dn == 'checkout' || dn == '.git' ] continue
+                mt : tree_mtime[ e ]
+                if [ mt > r ] r = mt
+            el [ glob_pass[ e ] ]
+                mt : e.modified_time[]
+                if [ mt > r ] r = mt
+        return r
 
     func scan_file_hits [ p: path, q: string ]
         if [ !p || !p.exists[] ] return
@@ -2440,6 +2661,7 @@ element orbiter : trinity # implements compiler
     func ensure_scenes []
         if [ scene_names ] return
         scene_names = array string []
+        scene_mods  = map string [string] []
         root : path.path_startup[]
         if [ !root ] return
         d : path '{root}/install/export'
@@ -2469,7 +2691,9 @@ element orbiter : trinity # implements compiler
                     while [ k < ln2 && ((i32 line.chars[k]) & 255) != 39 ] k += 1
                     nm9 : string line.mid[ j + 1, k - j - 1 ]
                     j = k + 1
-                    if [ nm9.count > 0 ] scene_names.push[ nm9 ]
+                    if [ nm9.count > 0 ]
+                        scene_names.push[ nm9 ]
+                        scene_mods[ nm9 ] = e.stem[]
 
     # backdrop scenes the bottom bar steps through
     func scene_list [] -> array string
@@ -2483,12 +2707,42 @@ element orbiter : trinity # implements compiler
         if [ ix < 0 ] ix = 0
         return sl[ ix ]
 
+    # load the exporting module; spawn a rebuild when its lib is stale
+    func scene_module_ensure [ nm: string ]
+        mod : string (scene_mods) ? scene_mods[ nm ] : null
+        if [ !mod || mod.count == 0 ] return
+        if [ !startup_path ] startup_path = path.path_startup[]
+        lib : path '{startup_path}/install/build/lib{mod}.so'
+        src : path '{startup_path}/foundry/{mod}/{mod}.ag'
+        stale : bool [ !lib.exists[] || (src.exists[] && src.modified_time[] > lib.modified_time[]) ]
+        if [ stale ]
+            if [ scene_build_pid > 0 ] return
+            puts 'scenes: building {mod}'
+            cmd : 'cd {startup_path} && unset IMPORT && exec ./install/bin/silver --build {mod} > /tmp/orbiter-scenes.log 2>&1'
+            fd  : i32 [ -1 ]
+            pid : i32 [ forkpty[ @fd, null, null, null ] ]
+            if [ pid == 0 ]
+                dashc : string '-c'
+                execl[ '/bin/bash', 'bash', dashc.chars, cmd.chars, null ]
+                _exit[ 1 ]
+            el [ pid > 0 ]
+                scene_build_pid = pid
+                scene_build_nm  = string [ mod ]
+                scene_build_nm.hold[]
+            return
+        # fresh lib: pull it in — module init registers its types
+        h : dlopen[ lib.chars, 258 ]
+        if [ !h ] puts 'scenes: dlopen failed for {lib}'
+
     # built once per scene: new_object is pool-managed, so hold it
     func scene_element [] -> element
         nm : scene_loaded[]
         if [ !nm || nm.count == 0 ] return null
         if [ scene_el && scene_el_nm && scene_el_nm.compare[ nm ] == 0 ] return scene_el
         st : Au.find_type[ nm.chars, null ]
+        if [ !st ]
+            scene_module_ensure[ nm ]
+            st = Au.find_type[ nm.chars, null ]
         if [ !st ]
             puts 'scene: no class for {nm}'
             return null
@@ -2515,6 +2769,8 @@ element orbiter : trinity # implements compiler
         if [ scene_load && scene_load.count > 0 ] return scene_load
         sl : array string [ scene_list[] ]
         if [ sl.count == 0 ] return ''
+        for [ s: string ] in sl
+            if [ s == 'MilkyWay' ] return s
         return sl[ 0 ]
 
     func scene_step [ d: i32 ]
@@ -2679,11 +2935,19 @@ element orbiter : trinity # implements compiler
         if [ !browse_single ]
             find_hits.push[ FindHit [ is_header: true, is_dir: true, text: '', file: p ] ]
 
+    # arrowing into the list moves focus off the title; the menu stays
+    func list_focused [] -> bool
+        win : ux
+        if [ !win || !win.focus ] return false
+        if [ !(win.focus inherits Editor) ] return false
+        ed9 : Editor win.focus
+        return ed9.show_hits || ed9.finder_list
+
     func run_search []
         win : ux
         ensure_views[]
         sp     : string search_pane[]
-        active : bool [ (find_text && find_text.count > 0) || (win && win.focus && win.focus.id == 'title') ]
+        active : bool [ (find_text && find_text.count > 0) || (win && win.focus && win.focus.id == 'title') || list_focused[] ]
         if [ active ]
             combined : list string []
             find_hits = array FindHit []
@@ -2913,6 +3177,7 @@ element orbiter : trinity # implements compiler
 
     func focus_finder []
         te : element title_at[ active_pane ]
+        puts 'focus_finder: pane={active_pane} te={(te) ? 1 : 0}'
         if [ te ] te.set_focus[]
         force_update[]
 
@@ -2958,6 +3223,57 @@ element orbiter : trinity # implements compiler
         h : StyleHit hits[ 0 ]
         if [ h.file ] open_at_line[ h.file, active_pane, h.line ]
 
+    # activate a hits row: click and Return share this
+    func hit_activate [ ed: Editor, row: i32, dbl: bool ] -> bool
+        if [ !ed || row < 0 || row >= find_hits.count ] return false
+        h : FindHit find_hits[ row ]
+        if [ !h || h.is_spacer ] return true
+        if [ h.session && h.session.count > 0 ]
+            cpi : i32 [ ed.pane_index ]
+            while [ pane_console.count <= cpi ]
+                pane_console += ''
+            console_seq += 1
+            sid : string '{h.session}#{console_seq}'
+            pane_console[cpi] = sid
+            active_pane = cpi
+            if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
+            ns : ConsoleSession []
+            ns.name = sid
+            ns.launch_cmd = agent_cmd[ sid ]
+            ed_sessions[sid] = ns
+            ns.start[]
+            exit_find_mode[]
+            return true
+        if [ h.is_newfile ]
+            for [ e9: element* ed, e9, e9 = e9.parent ]
+                if [ e9 inherits EditorView ]
+                    ev9 : EditorView e9
+                    ev9.newfile_enter[ ed.src ]
+                    # label swap drops focus; re-take it after restyle
+                    pending_finder = ed.pane_index
+                    break
+            return true
+        if [ h.is_dir && h.file ]
+            nav_root  = h.file
+            ed.sel_line      = -1
+            ed.anchor_line   = -1
+            ed.hover_line    = -1
+            ed.scroll.y      = 0.0
+            ed.scroll_target = 0.0
+            run_search[]
+            te : element title_at[ ed.pane_index ]
+            if [ te ] te.set_focus[]
+            return true
+        if [ !h.is_header && h.line > 0 && h.file ]
+            if [ dbl ] open_at_line[ h.file, ed.pane_index, h.line ]
+            return true
+        if [ h.file ]
+            # browse file link / result filename header → open the file
+            open_in_pane[ h.file, ed.pane_index ]
+            exit_finder[]
+            return true
+        return false
+
     func on_press [ ev: Event ]
         if [ !ev.target ] return
         puts 'on_press: target={ev.target.id}'
@@ -2982,60 +3298,11 @@ element orbiter : trinity # implements compiler
                 ed : Editor e
                 # hits are clickable only while the list is actually shown
                 if [ ev.target == e && (nav_showing || find_showing) && ed.sel_line >= 0 && ed.sel_line < find_hits.count ]
-                    h : FindHit find_hits[ ed.sel_line ]
-                    if [ h && h.is_spacer ]
-                        ev.no_default = true
-                        return
-                    if [ h && h.session && h.session.count > 0 ]
-                        cpi : i32 [ ed.pane_index ]
-                        while [ pane_console.count <= cpi ]
-                            pane_console += ''
-                        console_seq += 1
-                        sid : string '{h.session}#{console_seq}'
-                        pane_console[cpi] = sid
-                        active_pane = cpi
-                        if [ !ed_sessions ] ed_sessions = map ConsoleSession [string] [ ]
-                        ns : ConsoleSession []
-                        ns.name = sid
-                        ns.launch_cmd = agent_cmd[ sid ]
-                        ed_sessions[sid] = ns
-                        ns.start[]
-                        exit_find_mode[]
+                    dbl : bool [ ev.mouse.double_click && last_hit_row == ed.sel_line ]
+                    last_hit_row = ed.sel_line
+                    if [ hit_activate[ ed, ed.sel_line, dbl ] ]
                         ev.no_default = true
                         if [ ev.target ] ev.target.ux.restyle = true
-                        return
-                    if [ h && h.is_newfile ]
-                        for [ e9: element* ev.target, e9, e9 = e9.parent ]
-                            if [ e9 inherits EditorView ]
-                                ev9 : EditorView e9
-                                ev9.newfile_enter[ ed.src ]
-                                # label swap drops focus; re-take it after restyle
-                                pending_finder = ed.pane_index
-                                break
-                        ev.no_default = true
-                        if [ ev.target ] ev.target.ux.restyle = true
-                        return
-                    if [ h && h.is_dir && h.file ]
-                        nav_root  = h.file
-                        ed.sel_line      = -1
-                        ed.anchor_line   = -1
-                        ed.hover_line    = -1
-                        ed.scroll.y      = 0.0
-                        ed.scroll_target = 0.0
-                        run_search[]
-                        te : element title_at[ ed.pane_index ]
-                        if [ te ] te.set_focus[]
-                        ev.no_default = true
-                        if [ ev.target ] ev.target.ux.restyle = true
-                    el [ h && !h.is_header && h.line > 0 && h.file ]
-                        pi  : i32 [ ed.pane_index ]
-                        dbl : bool [ ev.mouse.double_click && last_hit_row == ed.sel_line ]
-                        last_hit_row = ed.sel_line
-                        if [ dbl ] open_at_line[ h.file, pi, h.line ]
-                        ev.no_default = true
-                    el [ h && h.file ]
-                        # browse file link / result filename header → open the file
-                        open_in_pane[ h.file, ed.pane_index ]
                     return
         # avatar pane titlebar toggle: hide/show the 3D avatar view
         if [ ev.target.id == 'avatar_hide' ]
@@ -3077,7 +3344,9 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         if [ ev.target.id == 'frost_name' ]
-            ux.frost_step[ 1 ]
+            frost_ix = (frost_ix + 1) % 4
+            ux.frost_mode = frost_ix
+            save_session[]
             ev.no_default = true
             return
         if [ ev.target.id == 'speed_name' ]
@@ -3145,11 +3414,15 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             return
 
-        # [x] left of the title: leave the chosen view and any diff
+        # [x] left of the title: leave the chosen view and any diff.
+        # a running app stops and lands on its source, never relaunches
         if [ ev.target.id == 'panel_close' ]
             edx : Editor pane_of[ ev.target ]
             if [ edx ] edx.diff_commit = null
-            set_pane_view[ edx, '' ]
+            if [ edx && edx.run_view ]
+                edx.toggle_app_run[ false ]
+            el
+                set_pane_view[ edx, '' ]
             ev.no_default = true
             if [ ev.target ] ev.target.ux.restyle = true
             return
@@ -3205,6 +3478,19 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
 
+        # StepButtons renames itself to the pressed segment; it sits in the run
+        # band header, so the press lands here and not on the Editor
+        if [ ev.target.id == 'step_next' || ev.target.id == 'step_in' ||
+             ev.target.id == 'step_out' ]
+            d5 : dbg active_debugger[]
+            if [ d5 ]
+                if [ ev.target.id == 'step_next' ] d5.step_over[]
+                el [ ev.target.id == 'step_in' ]   d5.step_into[]
+                el                                 d5.step_out[]
+            ev.no_default = true
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+
         if [ ev.target.id == 'title_close' ]
             exit_finder[]
             findbar_open = false
@@ -3255,6 +3541,12 @@ element orbiter : trinity # implements compiler
                 active_pane = editor_slots.count
                 ensure_console[ orbit_sid ]
             save_session[]
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'collapse' ]
+            ap8 : i32 [ agent_pane[] ]
+            if [ ap8 >= 0 ] close_pane[ ap8 ]
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
@@ -3340,6 +3632,15 @@ element orbiter : trinity # implements compiler
                 ev.target.pristine = false
                 uxw : Window ev.target.ux
                 if [ uxw ] uxw.will_animate = true
+        # run args live on the pane's editor, not on us
+        if [ ev.target.id == 'args' ]
+            if [ ev.key.text && ev.key.text.count > 0 ]
+                eda : Editor pane_of[ ev.target ]
+                if [ eda ]
+                    eda.run_args = (eda.run_args) ? eda.run_args + ev.key.text : ev.key.text
+                    ev.target.pristine = false
+                    uxw : Window ev.target.ux
+                    if [ uxw ] uxw.will_animate = true
         # typing into an editor's title (the finder/magnify control)
         if [ ev.target.id == 'title' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
@@ -3353,16 +3654,15 @@ element orbiter : trinity # implements compiler
                 ev.target.pristine = false
                 run_search[]
 
-    
     func on_key [ ev: Event ]
-        if [ !ev.target ] return
+        # global chords need no focus target
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta) ]
             kc : i32 [ i32[ ev.key.unicode ] ]
             if [ kc == 70 ]    # 'F'
                 open_find[]
                 ev.no_default = true
                 return
-            if [ kc == 71 ]    # 'G'
+            if [ kc == 71 || kc == 79 ]    # 'G' / 'O' — focus the title
                 focus_finder[]
                 ev.no_default = true
                 return
@@ -3392,6 +3692,14 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
 
+        if [ !ev.target ] return
+        # Return in the list opens the highlighted row
+        if [ ev.key.state && i32[ ev.key.unicode ] == 257 && (nav_showing || find_showing) && ev.target inherits Editor ]
+            edr : Editor ev.target
+            if [ edr.hover_line >= 0 && hit_activate[ edr, edr.hover_line, true ] ]
+                ev.no_default = true
+                if [ ux ] ux.restyle = true
+                return
         if [ ev.target.id == 'filter' ]
             if [ !ev.key.state ] return
             k : i32 [ i32 ev.key.unicode ]
@@ -3407,9 +3715,38 @@ element orbiter : trinity # implements compiler
                 uxw : Window ev.target.ux
                 if [ uxw ] uxw.will_animate = true
 
+        if [ ev.target.id == 'args' ]
+            if [ !ev.key.state ] return
+            ka : i32 [ i32 ev.key.unicode ]
+            eda : Editor pane_of[ ev.target ]
+            if [ eda && ka == 259 && eda.run_args && eda.run_args.count > 0 ]
+                eda.run_args = eda.run_args.mid[ 0, eda.run_args.count - 1 ]
+                ev.target.pristine = false
+                if [ ev.target.ux ] ev.target.ux.will_animate = true
+                ev.no_default = true
+            return
+
         if [ ev.target.id == 'find' || ev.target.id == 'replace' || ev.target.id == 'pattern' ]
             if [ !ev.key.state ] return
             k : i32 [ i32 ev.key.unicode ]
+            if [ (ev.key.ctrl || ev.key.meta) && (k == 67 || k == 86 || k == 88) ]    # C / V / X
+                w9  : Window ev.target.ux
+                cur : string [ (ev.target.id == 'find') ? findbar_text : ((ev.target.id == 'replace') ? replace_text : pattern_text) ]
+                if [ k != 86 && w9 && cur && cur.count > 0 ] w9.set_clipboard[ cur ]
+                if [ k == 88 ] cur = ''
+                if [ k == 86 && w9 ]
+                    clip : string w9.get_clipboard[]
+                    if [ clip ]
+                        nl9 : i32 [ clip.index_of[ '\n' ] ]
+                        if [ nl9 >= 0 ] clip = clip.mid[ 0, nl9 ]
+                        if [ clip.count > 0 ] cur = cur + clip
+                if [ ev.target.id == 'find' ]         findbar_text = cur
+                el [ ev.target.id == 'replace' ]      replace_text = cur
+                el                                    pattern_text = cur
+                ev.target.pristine = false
+                if [ ev.target.ux ] ev.target.ux.will_animate = true
+                ev.no_default = true
+                return
             if [ k == 259 ]    # Key.Backspace
                 if [ ev.target.id == 'find' ]
                     if [ findbar_text && findbar_text.count > 0 ]
@@ -3423,7 +3760,9 @@ element orbiter : trinity # implements compiler
             el [ k == 257 ]    # Key.Enter
                 in_file : bool [ find_in_file[] ]
                 puts 'FIND enter: tgt={ev.target.id} q="{findbar_text}" pat="{pattern_text}" in_file={(in_file) ? 1 : 0}'
-                if [ in_file ]
+                if [ ev.target.id == 'replace' ]
+                    run_replace[]
+                el [ in_file ]
                     find_last_query = findbar_text
                     find_last_scope = ''
                     find_file_next[]
@@ -3432,6 +3771,8 @@ element orbiter : trinity # implements compiler
                     last_scope : string [ (find_last_scope) ? find_last_scope : '' ]
                     scope_same : bool [ cur_scope.compare[ last_scope ] == 0 ]
                     same : bool [ scope_same && find_showing && find_hits && find_hits.count > 0 && find_last_query && findbar_text && find_last_query.compare[ findbar_text ] == 0 ]
+                    # files changed since the scan: the results lie — rescan
+                    if [ same && tree_mtime[ project_root[] ] > find_scan_mt ] same = false
                     if [ same ]
                         next_match[]
                     el
@@ -3451,6 +3792,26 @@ element orbiter : trinity # implements compiler
             if [ !ev.key.state ] return
             k : i32 [ i32 ev.key.unicode ]
             kv9 : EditorView newfile_view[ ev.target ]
+            if [ (ev.key.ctrl || ev.key.meta) && (k == 67 || k == 86 || k == 88) ]    # C / V / X
+                w9  : Window ev.target.ux
+                cur : string [ (kv9) ? kv9.newfile_text : find_text ]
+                if [ k != 86 && w9 && cur && cur.count > 0 ] w9.set_clipboard[ cur ]
+                if [ k == 88 ] cur = ''
+                if [ k == 86 && w9 ]
+                    clip : string w9.get_clipboard[]
+                    if [ clip ]
+                        nl9 : i32 [ clip.index_of[ '\n' ] ]
+                        if [ nl9 >= 0 ] clip = clip.mid[ 0, nl9 ]
+                        if [ clip.count > 0 ] cur = cur + clip
+                if [ kv9 ]
+                    kv9.newfile_text = cur
+                el
+                    find_text = cur
+                    if [ k != 67 ] run_search[]
+                ev.target.pristine = false
+                if [ ev.target.ux ] ev.target.ux.restyle = true
+                ev.no_default = true
+                return
             if [ kv9 ]
                 if [ k == 259 && kv9.newfile_text && kv9.newfile_text.count > 0 ]    # Key.Backspace
                     kv9.newfile_text = kv9.newfile_text.mid[ 0, kv9.newfile_text.count - 1 ]
@@ -3499,6 +3860,20 @@ element orbiter : trinity # implements compiler
                     first_s    : string find_results.value_by_index[ 0 ]
                     first_path : path [ first_s.chars ]
                     open_file[ first_path ]
+            el [ k == 264 ]    # Key.Down — enter the nav list when it shows
+                if [ nav_showing ]
+                    sp8 : string search_pane[]
+                    ed8 : Editor null
+                    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                        e8 : Editor pane_at[ i ]
+                        if [ e8 && sp8 == 'pane{i}' ] ed8 = e8
+                    if [ !ed8 ] ed8 = pane_at[ active_pane ]
+                    if [ ed8 ]
+                        ed8.hover_line = -1
+                        ed8.hover_step[ 1 ]
+                        ed8.set_focus[]
+                        ed8.pristine = false
+                    ev.no_default = true
             el [ k == 258 ]    # Key.Tab — toggle single-line / double-header density
                 browse_single = !browse_single
                 ev.target.pristine = false
@@ -3568,7 +3943,7 @@ element orbiter : trinity # implements compiler
                     if [ ffe ]
                         ffe.set_focus[]
                         pending_findfocus = false
-        fin_now : bool   [ (w.focus && w.focus.id == 'title') || (find_text && find_text.count > 0) ]
+        fin_now : bool   [ (w.focus && w.focus.id == 'title') || (find_text && find_text.count > 0) || list_focused[] ]
         sp_now  : string search_pane[]
         if [ fin_now != was_finder || sp_now != was_search_pane ]
             run_search[]
@@ -3598,6 +3973,7 @@ element orbiter : trinity # implements compiler
                 show_orbiter = want9
                 puts 'AVSOAK show={show_orbiter}'
                 if [ ux ] ux.restyle = true
+        attach_publish[]
         for [ pi2: i32 0, pi2 < editor_slots.count, pi2 += 1 ]
             edp : Editor pane_at[ pi2 ]
             if [ !edp || !edp.run_view ] continue
@@ -3664,6 +4040,28 @@ element orbiter : trinity # implements compiler
         if [ console_w_save > 0 ]
             console_w_save -= 1
             if [ console_w_save == 0 ] save_session[]
+        for [ bi: i32 0, bi < editor_slots.count, bi += 1 ]
+            pe9 : element find_el[ a, 'pane{bi}' ]
+            if [ !pe9 ] continue
+            be9 : element find_el[ pe9, 'band' ]
+            if [ !be9 ] continue
+            bh9 : f32 [ be9.extent ]
+            if [ bh9 <= 0.0 && band_h > 0 ]
+                half8 : f32 [ ((bounds) ? bounds.h : 900.0) * 0.5 ]
+                use8  : f32 [ f32[ band_h ] ]
+                be9.extent = (use8 > half8) ? half8 : use8
+            el [ bh9 > 0.0 && i32[ bh9 ] != band_h ]
+                band_h      = i32[ bh9 ]
+                band_h_save = 30
+        if [ band_h_save > 0 ]
+            band_h_save -= 1
+            if [ band_h_save == 0 ] save_session[]
+        frame_no9 += 1
+        if [ frame_no9 <= 30 ] puts 'frame {frame_no9} at {Au.epoch_millis[]}'
+        if [ scene_build_pid > 0 && host_pid_alive[ scene_build_pid ] == 0 ]
+            scene_build_pid = -1
+            puts 'scenes: {scene_build_nm} build finished'
+            if [ ux ] ux.restyle = true
         # projection: inline panes in order, then the agent console
         sp         : string search_pane[]
         pane_inner : Elements []
@@ -3690,6 +4088,7 @@ element orbiter : trinity # implements compiler
             area: Region { r8px t2px w18px h18px }, manual_mode: true ]
         sels['scene_name'] = SceneName  [ label: scene_name[].lcase[] ]
         sels['scene_prev'] = SceneArrow [ icon: 'left', manual_mode: true ]
+        if [ ux ] ux.frost_mode = frost_ix
         sels['frost_name'] = SceneName  [ label: ux.frost_name[] ]
         speed_apply[]
         sels['speed_name'] = SceneName  [ label: speed_name[] ]

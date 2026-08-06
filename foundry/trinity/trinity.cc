@@ -300,6 +300,80 @@ static void* host_log_thread(void* a) {
     }
     return 0;
 }
+// ===========================================================================
+// agent socket — debug builds only (the .ag side gates on `debug`). a LOCAL
+// unix stream socket at $XDG_RUNTIME_DIR/trinity-<app>.sock speaking a line
+// protocol; the .ag side authors real Events into the same dispatch GLFW
+// uses, so an agent driving it is indistinguishable from a mouse.
+// ===========================================================================
+#include <sys/socket.h>
+#include <sys/un.h>
+
+static int  g_agent_srv = -1;
+static int  g_agent_cli = -1;
+static char g_agent_buf[8192];
+static int  g_agent_len = 0;
+
+extern "C" int agent_sock_open(const char* name) {
+    if (g_agent_srv >= 0) return 1;
+    if (!name || !*name)  return 0;
+    const char* rt = getenv("XDG_RUNTIME_DIR");
+    char pathb[256];
+    snprintf(pathb, sizeof(pathb), "%s/trinity-%s.sock",
+             (rt && *rt) ? rt : "/tmp", name);
+    unlink(pathb);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0) return 0;
+    struct sockaddr_un su;
+    memset(&su, 0, sizeof(su));
+    su.sun_family = AF_UNIX;
+    strncpy(su.sun_path, pathb, sizeof(su.sun_path) - 1);
+    if (bind(fd, (struct sockaddr*)&su, sizeof(su)) != 0 || listen(fd, 1) != 0) {
+        close(fd);
+        return 0;
+    }
+    g_agent_srv = fd;
+    fprintf(stderr, "trinity: agent socket %s\n", pathb);
+    return 1;
+}
+
+// one complete line per call (newline stripped); 0 = nothing pending
+extern "C" int agent_sock_line(char* out, int cap) {
+    if (g_agent_srv < 0 || !out || cap < 2) return 0;
+    if (g_agent_cli < 0) {
+        g_agent_cli = accept4(g_agent_srv, 0, 0, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (g_agent_cli < 0) return 0;
+        g_agent_len = 0;
+    }
+    for (;;) {
+        for (int i = 0; i < g_agent_len; i++) {
+            if (g_agent_buf[i] != '\n') continue;
+            int n = (i < cap - 1) ? i : cap - 1;
+            memcpy(out, g_agent_buf, n);
+            out[n] = 0;
+            memmove(g_agent_buf, g_agent_buf + i + 1, g_agent_len - i - 1);
+            g_agent_len -= i + 1;
+            return n;
+        }
+        int room = (int)sizeof(g_agent_buf) - g_agent_len;
+        if (room <= 0) { g_agent_len = 0; return 0; }
+        int r = (int)recv(g_agent_cli, g_agent_buf + g_agent_len, room, 0);
+        if (r > 0) { g_agent_len += r; continue; }
+        if (r == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+            close(g_agent_cli);
+            g_agent_cli = -1;
+            g_agent_len = 0;
+        }
+        return 0;
+    }
+}
+
+extern "C" void agent_sock_reply(const char* s) {
+    if (g_agent_cli < 0 || !s || !*s) return;
+    ssize_t w = send(g_agent_cli, s, strlen(s), MSG_NOSIGNAL);
+    (void)w;
+}
+
 extern "C" void host_log_setup(const char* name) {
     if (g_log_done || !name || !*name) return;
     g_log_done = 1;
@@ -357,4 +431,7 @@ extern "C" void host_app_stop(int s)                               { }
 extern "C" int  host_app_verdict(int s)                            { return 0; }
 extern "C" void host_app_pause(int s)                              { }
 extern "C" void host_app_resume(int s)                             { }
+extern "C" int  agent_sock_open(const char* name)                  { return 0; }
+extern "C" int  agent_sock_line(char* out, int cap)                { return 0; }
+extern "C" void agent_sock_reply(const char* s)                    { }
 #endif

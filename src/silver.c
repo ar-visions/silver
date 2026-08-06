@@ -3,6 +3,7 @@
 #include <execinfo.h>
 #include <ports.h>
 #include <sys/file.h>   // flock — serialize external-checkout builds across processes
+#include <sys/wait.h>   // export funcs run forked; the build waits on them
 #include <fcntl.h>
 #include <dlfcn.h>      // coverage libraries run in-process after build
 
@@ -1522,6 +1523,42 @@ static void silver_live_run(silver a) {
     }
 }
 
+// export funcs are installation: run the product under SILVER_EXPORT
+// (module init runs them, then exits 0) and wait — the build is not
+// complete until the module's assets are baked. same launch as --test.
+static void silver_run_exports(silver a) {
+    if (a->error || a->is_external) return;
+    bool any = false;
+    members(a->autype, mem)
+        if (mem->member_type == AU_MEMBER_FUNC &&
+            mem->access_type == interface_export) any = true;
+    if (!any) return;
+    bool lib = a->is_library && !((aether)a)->is_live;
+    path bin = a->live_binary ? a->live_binary : a->product;
+    if (!bin || !file_exists("%o", bin)) return;
+    // exports write into the module's own share bundle
+    path share = f(path, "%o/share/%o", a->install, a->name);
+    make_dir(share);
+    print("[%o] export: running %o", a->name, bin);
+    pid_t pid = fork();
+    if (pid == 0) {
+        setenv("SILVER_EXPORT", "1", 1);
+        chdir(share->chars);
+        if (lib) {
+            // a library has no main: module init runs exports, exits 0
+            void* h = dlopen(bin->chars, RTLD_NOW);
+            _exit(h ? 0 : 1);
+        }
+        char* argv[2] = { bin->chars, NULL };
+        execvp(argv[0], argv);
+        _exit(1);
+    }
+    int st = 0;
+    waitpid(pid, &st, 0);
+    verify(WIFEXITED(st) && WEXITSTATUS(st) == 0,
+        "export funcs failed for %o", a->name);
+}
+
 void silver_init(silver a) {
     hold(a);
 
@@ -2002,6 +2039,8 @@ void silver_init(silver a) {
             // running app isn't needlessly relinked and the watcher isn't disturbed; only an
             // actually-changed module rebuilds (which the host would rebuild anyway).
             build_product(a);
+
+            silver_run_exports(a);
 
             exporter(a);
 
@@ -4611,7 +4650,18 @@ enode parse_statement(silver a)
     u64 traits = 0;
     interface access = interface_undefined;
 
-    if (rec_top && read_if(a, "mutable")) {
+    // export func: tagged to run under SILVER_EXPORT after module
+    // init; every other export form parses in silver_read_def
+    if (!rec_top && next_is(a, "export")) {
+        token nx = element(a, 1);
+        if (nx && nx->chars && strcmp(nx->chars, "func") == 0) {
+            consume(a, Syntax__keyword);
+            access = interface_export;
+        }
+    }
+    if (access == interface_export) {
+        // tagged above; skip the access chain
+    } else if (rec_top && read_if(a, "mutable")) {
         access = interface_mutable;
         traits = AU_TRAIT_IS_FLUX;
     } else if (rec_top && read_if(a, "manual")) {
@@ -4629,7 +4679,9 @@ enode parse_statement(silver a)
         /// and it is the separator — everything after belongs to the program.
         access = interface_public;
         traits = AU_TRAIT_IS_DEFAULT;
-    } else
+    } else if (!next_is(a, "export"))
+        // export is an interface value only via the export-func
+        // branch above; manifest exports must not read as access
         access = read_enum(a, interface_undefined, typeid(interface));
     bool has_access = access != interface_undefined;
     if (access == interface_intern && next_is(a, "")) {
@@ -4751,7 +4803,8 @@ enode parse_statement(silver a)
         } else {
             mem->autype->access_type = (u8)access;
         }
-        if (access == interface_expect || !!(traits & AU_TRAIT_IS_CONTEXT))
+        if (access == interface_expect || access == interface_export ||
+            !!(traits & AU_TRAIT_IS_CONTEXT))
             mem->autype->is_required = true;
         mem->autype->is_context = access == interface_context;
     }
@@ -6469,7 +6522,8 @@ none silver_build_product(silver a) {
     // deploy resource files into share/{app-name}/ — ALWAYS symlink, both
     // configs. copying froze a snapshot that could desync from source (a
     // .gltf and its .bin drifting apart); one source of truth removes that
-    if (len(a->resources) && (!a->is_library || ((aether)a)->is_live)) {
+    // libraries deploy too: exported scenes/plugins carry their own assets
+    if (len(a->resources)) {
         path share = f(path, "%o/share/%o", install, a->name);
         make_dir(share);
         each(a->resources, path, res) {

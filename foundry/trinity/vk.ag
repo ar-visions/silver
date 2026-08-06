@@ -3554,6 +3554,8 @@ Texture Display
     # create the glfw window invisible (batch generation: full pipeline,
     # nothing on screen)
     public hidden               : bool
+    # the window is mapped by the first present, not by glfwCreateWindow
+    intern shown                : bool
 
 
     func last_render [] -> Render
@@ -3783,6 +3785,10 @@ Texture Display
                 el
                     expect result == VK_SUCCESS, "present"
                     swap_render_current.sync_fence[]
+                    # real pixels are on the surface now — safe to map
+                    if [ !shown && !hidden && glfw ]
+                        shown = true
+                        glfwShowWindow[ glfw ]
 
 
     cast -> Image
@@ -3826,7 +3832,10 @@ Texture Display
             glfw = handle Au.live_window_get[]
             if [ !glfw ]
                 glfwWindowHint[ GLFW_CLIENT_API, GLFW_NO_API ]
-                if [ hidden ] glfwWindowHint[ GLFW_VISIBLE, GLFW_FALSE ]
+                # born invisible: mapping it before the ux shaders are built
+                # and a frame is presented shows a hole cut in the desktop.
+                # the first present calls glfwShowWindow
+                glfwWindowHint[ GLFW_VISIBLE, GLFW_FALSE ]
                 glfw = glfwCreateWindow[ width, height, title.chars, null, null ]
                 expect glfw, "Failed to create GLFW window"
                 Au.live_window_set[ glfw ]

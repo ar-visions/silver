@@ -379,7 +379,9 @@ ResourceView ImageView
 ResourceView AppView
     mutable slot       : i32 [ -1 ]  # our channel slot at silver-host
     mutable app_mod    : string      # module name (orbiter resolves its binary to attach)
+    mutable module_args : string     # orbiter's tail args, forwarded to the module
     public  attached   : bool        # orbiter has attached lldb to this app's pid
+    public  attaching  : bool        # lldb attach is running on a worker
     mutable tex0       : Texture     # the app's shared surface pair, imported
     mutable tex1       : Texture
     mutable gen        : i32         # generation of the imported surface
@@ -586,6 +588,8 @@ ResourceView AppView
             msg = '{note} — F5 or click to restart'
         el [ paused ]
             msg = (note && note.count > 0) ? '{note} — F5 to relaunch' : 'paused — F8 or click to resume'
+        el [ attaching ]
+            msg = 'attaching debugger to {app_mod}…'
         cv.font_size[ 16 ]
         cv.fill_color[ '#dddddd' ]
         cv.draw_text[ msg, rect [ x: bounds.x, y: bounds.y + 16.0, w: bounds.w, h: 24.0 ],
@@ -626,7 +630,10 @@ ResourceView AppView
         di  : i32 [ fn.index_of[ '.' ] ]
         mod : (di > 0) ? fn.mid[ 0, di ] : fn
         mark : string [ (clean_build) ? '!*' : '!' ]
-        req : string [ (doc) ? '{mark}{mod} {doc}' : '{mark}{mod}' ]
+        # flags BEFORE the doc: Au_with_cstrs stops parsing at the first
+        # positional, so a trailing flag would never reach the app's schema
+        ma9 : string [ (module_args && module_args.count > 0) ? '{module_args} ' : '' ]
+        req : string [ (doc) ? '{mark}{mod} {ma9}{doc}' : '{mark}{mod} {ma9}' ]
         app_mod = mod
         slot = host_app_request[ req.chars ]
         if [ slot < 0 ]
@@ -1683,6 +1690,8 @@ Layer EditorLayer
                 isz : f32 [ round[ lh * 0.5 ] ]
                 iox : f32 [ round[ bounds.x + (gut_w - isz) * 0.5 ] ]
                 ioy : f32 [ round[ hy + (lh - isz) * 0.5 ] ]
+                cv.fill_color[ rgba['#ffffff'] ]
+                cv.stroke_color[ rgba['#ffffff'] ]
                 cv.draw_svg[ editor.close_icon, iox, ioy, isz, isz ]
                 cv.paint[ ]
 
@@ -1800,7 +1809,8 @@ Layer EditorLayer
                 cv.set_crop[ tx + bounds.x + gut_w, ty + bounds.y,
                     tx + bounds.x + bounds.w, ty + bounds.y + bounds.h ]
 
-            if [ parent.focused ]
+            # lists are not text editors: never draw a caret there
+            if [ parent.focused && !in_list ]
                 y_sel : f32 [ round[ y0 + f32[editor.sel_line] * lh - editor.scroll.y ] ]
                 if [ y_sel + lh >= bounds.y && y_sel <= bounds.y + bounds.h ]
                     use_fr : bool [ has_sel && editor.filter_rect ]
@@ -1901,6 +1911,8 @@ Control Editor
     mutable nav_default   : string
     mutable tool_hover    : i32 [ -1 ]
     mutable run_view      : AppView
+    # args the ArgsField edits; handed to the AppView on launch
+    mutable run_args      : string
     mutable app_view      : bool
     mutable session_view  : string
     mutable saved_scroll  : f32
@@ -2158,6 +2170,25 @@ Control Editor
         n : i32 [ line_count[] ]
         while [ r < n && row_header[ r ] ] r += 1
         return r
+
+    # arrows drive the list highlight exactly as the mouse does
+    func hover_step [ d: i32 ]
+        n : i32 [ line_count[] ]
+        r : i32 [ hover_line ]
+        while [ true ]
+            r += d
+            if [ r < 0 || r >= n ] return
+            if [ row_spacer[ r ] ] continue
+            if [ row_cont[ r ] ] continue
+            break
+        hover_line = r
+        lh9 : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
+        top : f32 [ f32[ r ] * lh9 ]
+        vh9 : f32 [ (bounds) ? bounds.h : 600.0 ]
+        if [ top < scroll_target ] scroll_target = top
+        el [ top + lh9 > scroll_target + vh9 ] scroll_target = top + lh9 - vh9
+        pristine = false
+        if [ ux ] ux.will_animate = true
 
     func group_start [ ln: i32 ] -> i32
         r : i32 [ ln ]
@@ -2691,6 +2722,9 @@ Control Editor
         nv : AppView [ ]
         nv.src = path '{root}/foundry/{mod}/{mod}.ag'
         nv.doc = p
+        orb9 : cast orbiter [ ux.app_object ]
+        if [ !run_args && orb9 ] run_args = orb9.module_args
+        nv.module_args = run_args
         nv.start[]
         run_view  = nv
         app_view  = true
@@ -3210,6 +3244,9 @@ Control Editor
         nv : AppView [ ]
         nv.src   = src
         nv.clean_build = clean
+        orb8 : cast orbiter [ ux.app_object ]
+        if [ !run_args && orb8 ] run_args = orb8.module_args
+        nv.module_args = run_args
         nv.start[]                     # serve socket + build the run command
         run_view = nv
         app_view = true
@@ -3386,6 +3423,19 @@ Control Editor
                 ev.no_default = true
                 return
             if [ ev.target.id == 'dbg_step_out' ]
+                debugger.step_out[]
+                ev.no_default = true
+                return
+            # StepButtons renames itself to the pressed segment
+            if [ ev.target.id == 'step_next' ]
+                debugger.step_over[]
+                ev.no_default = true
+                return
+            if [ ev.target.id == 'step_in' ]
+                debugger.step_into[]
+                ev.no_default = true
+                return
+            if [ ev.target.id == 'step_out' ]
                 debugger.step_out[]
                 ev.no_default = true
                 return
@@ -3873,16 +3923,22 @@ Control Editor
             end_edit[]
 
         el [ key == 265 ]    # Key.Up
-            np : i32 [ prev_editable[ sel_line - 1 ] ]
-            if [ np >= 0 ]
-                sel_line = np
-                sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
+            if [ finder_list || show_hits ]
+                hover_step[ -1 ]
+            el
+                np : i32 [ prev_editable[ sel_line - 1 ] ]
+                if [ np >= 0 ]
+                    sel_line = np
+                    sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
 
         el [ key == 264 ]    # Key.Down
-            np : i32 [ next_editable[ sel_line + 1 ] ]
-            if [ np < line_count[] ]
-                sel_line = np
-                sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
+            if [ finder_list || show_hits ]
+                hover_step[ 1 ]
+            el
+                np : i32 [ next_editable[ sel_line + 1 ] ]
+                if [ np < line_count[] ]
+                    sel_line = np
+                    sel_col = clamp[ sel_col, 0, line_get[ sel_line ].count ]
 
         el [ key == 263 ]    # Key.Left
             if [ col > 0 ]

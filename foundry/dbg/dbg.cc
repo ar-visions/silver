@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <signal.h>
 //#include <unistd.h>
 //#include <features.h>
 #include <lldb/API/LLDB.h>
@@ -108,10 +109,18 @@ Au dbg_poll(dbg debug) {
             // breakpoint, or the process exits. breakpoint stops are ALWAYS honored
             // (the user asked for them), even if somehow outside .ag.
             bool is_step = (reason == lldb::eStopReasonPlanComplete);
+            // ONLY the pre-init park resumes itself; a real signal (SEGV,
+            // ABRT, BUS...) must surface or we debug right past the crash
+            bool is_sig  = false;
+            if (reason == lldb::eStopReasonSignal &&
+                thread.GetStopReasonDataCount() > 0) {
+                u64 sig = thread.GetStopReasonDataAtIndex(0);
+                is_sig = (sig == SIGSTOP || sig == SIGCONT);
+            }
             int  fl = 0; while (file_path[fl]) fl++;
             bool is_ag = line_entry.IsValid() && line > 0 && fl >= 3 &&
                          file_path[fl-3] == '.' && file_path[fl-2] == 'a' && file_path[fl-1] == 'g';
-            if (is_step && !is_ag) {
+            if ((is_step || is_sig) && !is_ag) {
                 S(debug)->process.Continue();   // running stays true; poll catches next stop
                 continue;
             }

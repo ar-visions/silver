@@ -3582,6 +3582,11 @@ element asnes : trinity
 			cv.draw_image[ screen_tex, dst ]
 			return
 		if [ !cpu || !pub_valid ]
+			# no video yet: the console screen is black, not transparent
+			cv.fill_color[ '#000' ]
+			cv.stroke_width[ 0.0 ]
+			cv.rect_to[ vp.x, vp.y, vp.w, vp.h ]
+			cv.paint[]
 			return
 		pub_lock.lock[]
 		if [ !screen_tex ]
