@@ -787,7 +787,9 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     // a strong ref would either create cycles or extend lifetime upward; they
     // are weak by definition. Members whose literal type is `Au` (the generic
     // bag-of-anything base) also opt out — generics require manual hold/drop.
+    // C types carry no Au header: holding one reads fake refcounts
     bool  is_class_set = L->autype && L->autype->src && L->autype->src->is_class &&
+        !L->autype->src->is_c &&
         !(L->autype->traits & AU_TRAIT_UNMANAGED) &&
         !L->autype->is_context &&
         L->autype->src != typeid(Au);
@@ -960,10 +962,20 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
             if (!res->loaded && LLVMGetInstructionOpcode(store_val) == LLVMGetElementPtr) {
                 bool skip = res->autype->elements > 0 ||
                     (is_struct(res->autype) && is_opaque((Au)au_ancestor(au_arg_type((Au)res->autype))));
+                // an ELEMENT read from a sized array into a scalar
+                // slot is not array decay — the value must load, or
+                // the pointer bits land in the scalar (vec4f[arr[i]])
+                if (skip && res->autype->elements > 0 &&
+                    res->autype->src && res->autype->src->is_primitive &&
+                    L->autype && !L->autype->is_pointer &&
+                    au_arg_type((Au)L->autype)->elements == 0)
+                    skip = false;
                 if (!skip) {
-                    etype rt = u(etype, res->autype);
-                    if (!rt || !_lltype_slot(rt)) rt = u(etype, au_arg_type((Au)res->autype));
-                    if (!rt || !_lltype_slot(rt)) rt = etype_prep(a, au_arg_type((Au)res->autype));
+                    Au_t rau = (res->autype->elements > 0 && res->autype->src)
+                        ? res->autype->src : res->autype;
+                    etype rt = u(etype, rau);
+                    if (!rt || !_lltype_slot(rt)) rt = u(etype, au_arg_type((Au)rau));
+                    if (!rt || !_lltype_slot(rt)) rt = etype_prep(a, au_arg_type((Au)rau));
                     if (rt && _lltype_slot(rt)) {
                         LLVMTypeRef load_ty = _lltype_slot(rt);
                         // if L is a pointer-sized alloca but rt is a large struct,
@@ -2164,6 +2176,9 @@ enode aether_e_eval(aether a, string value) { sequencer
     }
     push_tokens(a, (tokens)t, 0);
     enode n = (enode)a->parse_expr((Au)a, null); // this should not output i32 (2nd time)
+    // an unloaded primitive GEP converts as a cstr, not as its value
+    if (n && !n->loaded && is_prim(n->autype))
+        n = e_load(a, n, null);
     enode s = e_create(a, etypeid(string), (Au)n);
     pop_tokens(a, false);
     return s;
@@ -5182,8 +5197,21 @@ etype get_etype(enode n) {
 
 enode aether_e_create(aether a, etype mdl, Au args) { sequencer
     emit_guard;
-    
+
     enode input = (enode)instanceof(args, enode);
+
+    // a function input to u64 can mean one thing: its token hash
+    Au_t fau = input && input->autype ? input->autype : null;
+    if (fau && fau->is_pointer && fau->src && fau->src->member_type == AU_MEMBER_FUNC)
+        fau = fau->src;   // @func arrives as a pointer to the func
+    if (input && fau && fau->member_type == AU_MEMBER_FUNC &&
+        mdl && mdl->autype == typeid(u64)) {
+        efunc ef = (efunc)u(efunc, fau);
+        u64 h = 0xcbf29ce484222325ull;
+        if (ef && ef->body) each(ef->body, token, t)
+            for (symbol c = t->chars; c && *c; c++) { h ^= (u8)*c; h *= 0x100000001b3ull; }
+        return e_operand(a, _u64(h), etypeid(u64));
+    }
 
 
     etype base = base_model(mdl);
@@ -5605,6 +5633,26 @@ enode aether_e_create(aether a, etype mdl, Au args) { sequencer
                         LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
                         LLVMValueRef ld = LLVMBuildLoad2(B, ptr_ty, _llvalue((enode)value), "field_ptr_load");
                         value = with_value(ld, enode(mod, a, autype, value->autype, loaded, true));
+                    }
+                    // unloaded ELEMENT GEP from a sized array (or through a
+                    // pointer) feeding a primitive field: the GEP points at
+                    // one element — load it, or the pointer bits land in
+                    // the field (vec4f [ arr[i], ... ] built from garbage)
+                    if (!value->loaded && m->src && m->src->is_primitive &&
+                        value->autype && value->autype->src &&
+                        (value->autype->elements > 0 || value->autype->src->is_pointer ||
+                         value->autype->src->elements > 0) &&
+                        _llvalue((enode)value) &&
+                        LLVMGetInstructionOpcode(_llvalue((enode)value)) == LLVMGetElementPtr) {
+                        Au_t ea = value->autype->src;
+                        if (ea && ea->is_pointer && ea->src) ea = ea->src;
+                        if (ea && ea->is_primitive) {
+                            etype et = u(etype, ea);
+                            if (!et) et = etype_prep(a, ea);
+                            LLVMValueRef ld = LLVMBuildLoad2(B, _lltype_slot(et),
+                                _llvalue((enode)value), "field_elem_load");
+                            value = with_value(ld, enode(mod, a, autype, ea, loaded, true));
+                        }
                     }
                     if (all_const && !LLVMIsConstant(_llvalue((enode)value)))
                         all_const = false;
@@ -7222,6 +7270,8 @@ static void set_global_construct(aether a, efunc fn) {
 }
 
 static void emit_expect_exit(aether a);
+static void emit_export_exit(aether a);
+static void emit_export_funcs(aether a, Au_t module_base, efunc f);
 
 static void build_entrypoint(aether a, efunc module_init_fn) {
     emit_guard;
@@ -7285,6 +7335,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
             push_scope(a, (Au)ctor_fn, 11);
             e_fn_call(a, module_init_fn, null, false, false);
             emit_expect_exit(a);
+            emit_export_exit(a);
 
             bool saved = a->skip_context_resolve;
             a->skip_context_resolve = true;
@@ -7558,6 +7609,7 @@ static void build_entrypoint(aether a, efunc module_init_fn) {
     push_scope(a, (Au)main_fn, 10);
     e_fn_call(a, module_init_fn, null, false, false);
     emit_expect_exit(a);
+    emit_export_exit(a);
 
     // call engage
     efunc Au_engage = u(efunc, find_member(typeid(Au), "engage", AU_MEMBER_FUNC, 0, false));
@@ -9064,6 +9116,103 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
     pop_scope(a);
 }
 
+static bool is_export_fn(Au_t mem) {
+    return mem->member_type == AU_MEMBER_FUNC &&
+           mem->access_type == interface_export;
+}
+
+// SILVER_EXPORT ran the module's export funcs: report and exit 0.
+// export funcs live in EVERY build — release bakes at full speed
+static void emit_export_exit(aether a) {
+    emit_guard;
+    LLVMTypeRef  i8p       = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef  getenv_ty = LLVMFunctionType(i8p, &i8p, 1, 0);
+    LLVMValueRef getenv_fn = LLVMGetNamedFunction(a->module_ref, "getenv");
+    if (!getenv_fn)
+        getenv_fn = LLVMAddFunction(a->module_ref, "getenv", getenv_ty);
+    LLVMValueRef key   = LLVMBuildGlobalStringPtr(B, "SILVER_EXPORT", "");
+    LLVMValueRef env   = LLVMBuildCall2(B, getenv_ty, getenv_fn, &key, 1, "export_env");
+    LLVMValueRef isset = LLVMBuildICmp(B, LLVMIntNE, env, LLVMConstNull(i8p), "export_on");
+    LLVMValueRef fnv   = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
+    LLVMBasicBlockRef bb_exit = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "export.exit");
+    LLVMBasicBlockRef bb_go   = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "export.go");
+    LLVMBuildCondBr(B, isset, bb_exit, bb_go);
+    LLVMPositionBuilderAtEnd(B, bb_exit);
+    char buf[256];
+    snprintf(buf, sizeof(buf), "[%s] export: complete", a->autype->ident);
+    emit_expect_puts(a, buf);
+    LLVMTypeRef  i32_ty  = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMTypeRef  exit_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), &i32_ty, 1, 0);
+    LLVMValueRef exit_fn = LLVMGetNamedFunction(a->module_ref, "exit");
+    if (!exit_fn)
+        exit_fn = LLVMAddFunction(a->module_ref, "exit", exit_ty);
+    LLVMValueRef zero = LLVMConstInt(i32_ty, 0, 0);
+    LLVMBuildCall2(B, exit_ty, exit_fn, &zero, 1, "");
+    LLVMBuildUnreachable(B);
+    LLVMPositionBuilderAtEnd(B, bb_go);
+}
+
+// module init tail: run export funcs when SILVER_EXPORT is set —
+// artifact producers, no pass/fail verification
+static void emit_export_funcs(aether a, Au_t module_base, efunc f) {
+    emit_guard;
+    bool any = false;
+    members(module_base, mem)
+        if (is_export_fn(mem)) any = true;
+    if (!any) return;
+    push_scope(a, (Au)f, 13);
+    LLVMTypeRef  i8p       = LLVMPointerTypeInContext(a->module_ctx, 0);
+    LLVMTypeRef  getenv_ty = LLVMFunctionType(i8p, &i8p, 1, 0);
+    LLVMValueRef getenv_fn = LLVMGetNamedFunction(a->module_ref, "getenv");
+    if (!getenv_fn)
+        getenv_fn = LLVMAddFunction(a->module_ref, "getenv", getenv_ty);
+    LLVMValueRef key   = LLVMBuildGlobalStringPtr(B, "SILVER_EXPORT", "");
+    LLVMValueRef env   = LLVMBuildCall2(B, getenv_ty, getenv_fn, &key, 1, "export_env");
+    LLVMValueRef isset = LLVMBuildICmp(B, LLVMIntNE, env, LLVMConstNull(i8p), "export_on");
+    LLVMValueRef fnv   = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
+    LLVMBasicBlockRef bb_run  = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "export.run");
+    LLVMBasicBlockRef bb_skip = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "export.skip");
+    LLVMBuildCondBr(B, isset, bb_run, bb_skip);
+    LLVMPositionBuilderAtEnd(B, bb_run);
+    efunc fn_drop = (efunc)u(efunc,
+        find_member(etypeid(Au)->autype, "drop", AU_MEMBER_FUNC, 0, false));
+    members(module_base, mem) {
+        if (!is_export_fn(mem)) continue;
+        efunc tf = (efunc)u(efunc, mem);
+        if (!tf) continue;
+        char buf[512];
+        // args must all be default-constructible classes
+        bool constructible = true;
+        arg_list(mem, arg) {
+            etype at = etype_prep(a, au_arg_type((Au)arg));
+            if (!at || !is_class(at)) { constructible = false; break; }
+        }
+        if (!constructible) {
+            snprintf(buf, sizeof(buf), "[%s] export: %s skipped (args not constructible)",
+                module_base->ident, mem->ident);
+            emit_expect_puts(a, buf);
+            continue;
+        }
+        tf->used = true;
+        etype_implement((etype)tf, false);
+        snprintf(buf, sizeof(buf), "[%s] export: %s", module_base->ident, mem->ident);
+        emit_expect_puts(a, buf);
+        array vals = array(alloc, 8);
+        arg_list(mem, arg) {
+            etype at = etype_prep(a, au_arg_type((Au)arg));
+            enode inst = e_init(a, e_alloc(a, at), null, null, null);
+            push(vals, (Au)inst);
+        }
+        e_fn_call(a, tf, len(vals) ? vals : null, false, false);
+        if (fn_drop)
+            each(vals, Au, v)
+                e_fn_call(a, fn_drop, a((enode)v), false, false);
+    }
+    LLVMBuildBr(B, bb_skip);
+    LLVMPositionBuilderAtEnd(B, bb_skip);
+    pop_scope(a);
+}
+
 none aether_build_module_initializer(aether a, enode init) {
     emit_guard;
     Au_t au = init->autype;
@@ -9530,6 +9679,7 @@ none aether_build_module_initializer(aether a, enode init) {
     }
     pop_scope(a);
     emit_expect_tests(a, module_base, f);
+    emit_export_funcs(a, module_base, f);
     build_entrypoint(a, f);
 }
 
@@ -9988,6 +10138,8 @@ static void strip_unbuilt_functions(LLVMModuleRef m) {
     }
 }
 
+static bool module_has_body(LLVMModuleRef m);
+
 bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
     emit_guard;
     path* ll = (path*)ref_ll;
@@ -10020,6 +10172,20 @@ bool aether_emit(aether a, ARef ref_ll, ARef ref_bc) {
         fprintf(stderr, "dumped to /tmp/crashing.ll\n");
         fflush(stderr);
         return false;
+    }
+
+    // worker cores emit unverified otherwise: bad IR reaches ISel and
+    // segfaults with no dump — verify each and name the .ll on failure
+    for (int ci = 1; ci < ll_n(a); ci++) {
+        LLVMModuleRef m = ll_mod(a, ci);
+        if (!module_has_body(m)) continue;
+        if (LLVMVerifyModule(m, LLVMPrintMessageAction, &err)) {
+            path cl = form(path, "%o/build/%o.core%i.ll", a->install, a, ci);
+            LLVMPrintModuleToFile(m, cstring(cl), &err);
+            fprintf(stderr, "LLVM verify failed on core %i — dumped %s\n", ci, cstring(cl));
+            fflush(stderr);
+            return false;
+        }
     }
     verify (!LLVMPrintModuleToFile(a->module_ref, cstring(*ll), &err), "print-to-module: %s (path: %s)", err ? err : "unknown", cstring(*ll));
     //printf("wrote %s\n", cstring(*ll));
@@ -11144,8 +11310,11 @@ enode aether_e_math(aether a, i32 op, enode val) {
     }
 
     if (!is_arr) {
-        // scalar
+        // scalar; e_create's identity shortcut can hand back an
+        // unloaded GEP (array element) — the intrinsic needs the value
         enode v = e_create(a, elem_ty, (Au)val);
+        if (!v->loaded && is_prim(v->autype))
+            v = e_load(a, v, null);
         LLVMValueRef args[] = { _llvalue((enode)v) };
         LLVMTypeRef fn_ty = LLVMFunctionType(lt, &lt, 1, 0);
         LLVMValueRef result = LLVMBuildCall2(B, fn_ty, math_fn, args, 1, "math_op");
@@ -11201,6 +11370,8 @@ enode aether_e_math2(aether a, i32 op, enode L, enode R) {
     etype common = determine_rtype(a, OPType__add, (etype)L, (etype)R);
     L = e_create(a, common, (Au)L);
     R = e_create(a, common, (Au)R);
+    if (!L->loaded && is_prim(L->autype)) L = e_load(a, L, null);
+    if (!R->loaded && is_prim(R->autype)) R = e_load(a, R, null);
 
     Au_t elem_au = common->autype;
     LLVMTypeRef lt = lltype(common);

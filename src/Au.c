@@ -4008,7 +4008,16 @@ Au Au_with_cstrs(Au a, cstrs argv) {
             Au   conv = null;
             if (def && def->src == typeid(path))
                 conv = au_arg_path(arg);
-            else if (def)
+            else if (def && def->src == typeid(string)) {
+                // a string default takes the ENTIRE remainder, so an app can
+                // hand the tail to whatever program it launches
+                string all = string(alloc, 64);
+                for (int k = argc; argv[k]; k++) {
+                    if (k > argc) append(all, " ");
+                    append(all, argv[k]);
+                }
+                conv = (Au)all;
+            } else if (def)
                 conv = convert(def->type, (Au)string(arg));
             if  (conv) Au_set_property(a, def->ident, (Au)conv);
             // the default value is the separator: everything after it
@@ -4406,6 +4415,7 @@ none serialize(Au_t type, string res, Au a) {
         if      (type == typeid(bool)) len = sprintf(buf, "%s", *(bool*)a ? "true" : "false");
         else if (type == typeid(i64)) len = sprintf(buf, "%lld", *(i64*)a);
         else if (type == typeid(num)) len = sprintf(buf, "%lld", *(i64*)a);
+        else if (type == typeid(sz))  len = sprintf(buf, "%lld", *(sz*) a);
         else if (type == typeid(i32)) len = sprintf(buf, "%d",   *(i32*)a);
         else if (type == typeid(i16)) len = sprintf(buf, "%hd",  *(i16*)a);
         else if (type == typeid(i8))  len = sprintf(buf, "%hhd", *(i8*) a);
@@ -5770,6 +5780,13 @@ string string_with_i64(string a, i64 value) {
     a->alloc = 64;
     a->chars = calloc(a->alloc, 1);
     a->count = snprintf(a->chars, 64, "%lli", value);
+    return a;
+}
+
+string string_with_u64(string a, u64 value) {
+    a->alloc = 64;
+    a->chars = calloc(a->alloc, 1);
+    a->count = snprintf(a->chars, 64, "%llu", value);
     return a;
 }
 

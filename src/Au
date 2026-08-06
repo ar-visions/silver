@@ -1171,7 +1171,8 @@ declare_class(collective)
     enum_value       (E,T,Y, expect,     6) \
     enum_value       (E,T,Y, abstract,   7) \
     enum_value       (E,T,Y, context,    8) \
-    enum_value       (E,T,Y, keyword,    9)
+    enum_value       (E,T,Y, keyword,    9) \
+    enum_value       (E,T,Y, export,     10)
 declare_enum(interface)
 
 #define comparison_module_ Au
@@ -1946,6 +1947,7 @@ declare_class(ipart)
     M(AA,BB, i, ctr,     public, symbol) \
     M(AA,BB, i, ctr,     public, cstr) \
     M(AA,BB, i, ctr,     public, i64) \
+    M(AA,BB, i, ctr,     public, u64) \
     M(AA,BB, i, ctr,     public, f64) \
     M(AA,BB, i, ctr,     public, unichar) \
     M(AA,BB, i, operator, public, none,   _assign_add,  string) \

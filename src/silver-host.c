@@ -196,9 +196,20 @@ static void spawn_slot_app(int k, const char* bindir) {
     strncpy(name, (const char*)ap->name, sizeof(name) - 1);
     name[sizeof(name) - 1] = 0;
     if (!name[0]) { ap->state = 3; return; }
-    // "module [default-arg]": the arg (a document path) rides the spawn argv
+    // "module [args...]": everything after the module rides the spawn argv
     char* arg = strchr(name, ' ');
     if (arg) { *arg = 0; arg++; }
+    // split the tail on spaces — an app may take several args, not just a doc
+    #define MAX_APP_ARGS 32
+    char* app_args[MAX_APP_ARGS];
+    int   n_app_args = 0;
+    for (char* p = arg; p && *p && n_app_args < MAX_APP_ARGS; ) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        app_args[n_app_args++] = p;
+        while (*p && *p != ' ') p++;
+        if (*p) *p++ = 0;
+    }
     // leading markers: '!' = debug (the app self-stops before init so orbiter
     // can attach lldb); '*' = clean (full --clean rebuild before the spawn).
     int   dbg = 0, clean = 0;
@@ -223,7 +234,13 @@ static void spawn_slot_app(int k, const char* bindir) {
         ap->state = 3;
         return;
     }
-    char* cargv[] = { bin, "--attach", "shm", arg, NULL };
+    char* cargv[MAX_APP_ARGS + 4];
+    int   ca = 0;
+    cargv[ca++] = bin;
+    cargv[ca++] = (char*)"--attach";
+    cargv[ca++] = (char*)"shm";
+    for (int i = 0; i < n_app_args; i++) cargv[ca++] = app_args[i];
+    cargv[ca] = NULL;
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     if (g_isolate_cwd[0]) posix_spawn_file_actions_addchdir_np(&fa, g_isolate_cwd);
