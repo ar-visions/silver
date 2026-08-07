@@ -227,8 +227,9 @@ static void spawn_slot_app(int k, const char* bindir) {
     { char lp[256]; snprintf(lp, sizeof(lp), "/tmp/%s.log", nm);
       int lfd = open(lp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
       if (lfd >= 0) close(lfd); }
-    struct stat st;
-    if ((clean || stat(bin, &st) != 0) && rebuild_blocking(nm, clean) != 0) {
+    // always build before a run: the host has no staleness view of a slot
+    // app's sources, and silver's own cache no-ops when nothing changed
+    if (rebuild_blocking(nm, clean) != 0) {
         fprintf(stderr, "silver-host: %s build failed — slot %d dead\n", name, k);
         ap->verdict = -1000;
         ap->state = 3;
