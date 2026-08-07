@@ -47,10 +47,10 @@ element EditorView
     style : CSS {
         area: l0 t0 r0 b0
         layers.bg:
-            fill_color: #140a2acc
+            fill_color: #1b0b33cc
         :is_console
             layers.bg:
-                fill_color: #140a2a80
+                fill_color: #1b0b3388
     }
 
     func text_of [] -> Editor

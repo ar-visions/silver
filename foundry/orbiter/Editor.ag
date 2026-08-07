@@ -520,6 +520,10 @@ ResourceView AppView
     func draw_pip [ cv: Canvas, bounds: rect ]
         ft : front[]
         if [ !ft || !have_frame ] return
+        # the pip owns no fit rect. leaving a stale one from a previous
+        # maximised run would let view_press claim presses over nothing
+        fitw = 0.0
+        fith = 0.0
         ar : f32 [ f32[ aw ] / f32[ ah ] ]
         pw : f32 [ bounds.w * 0.30 ]
         ph : f32 [ pw / ar ]
@@ -732,6 +736,10 @@ ResourceView AppView
 Layer EditorLayer
     mutable sel_color      : rgba
     mutable line_color     : rgba
+    # the 1px rules that bound the selected band, top and bottom
+    mutable line_edge      : rgba
+    # the gutter tint carried across the selected row
+    mutable line_gutter    : rgba
     mutable item_color     : rgba
     mutable hl_fill        : rgba
     mutable hl_grad        : rgba
@@ -1316,7 +1324,7 @@ Layer EditorLayer
                         cv.plain[ ]
                         cv.hard_edge[ ]
                         cv.stroke_width[ 0.0 ]
-                        cv.fill_color[ rgba['#ffffff11'] ]
+                        cv.fill_color[ (line_edge) ? line_edge : rgba['#ffffff22'] ]
                         bw9 : f32 [ bounds.w - rin - 1.0 ]
                         if [ li == lo ]
                             cv.rect_to[ bounds.x, yg - 1.0, bw9, 1.0 ]
@@ -1325,7 +1333,7 @@ Layer EditorLayer
                             cv.rect_to[ bounds.x, yg + lh, bw9, 1.0 ]
                             cv.paint[ ]
                         cv.restore[ ]
-            cv.fill_color[ rgba['#ffffff08'] ]
+            cv.fill_color[ (line_gutter) ? line_gutter : rgba['#ffffff08'] ]
             cv.rect_to[ bounds.x + 2.0, yg + 1.0, gut_w - 4.0, lh - 2.0 ]
             cv.paint[ ]
             if [ !showing && stop_vrow == li ]
@@ -1844,7 +1852,9 @@ Control Editor
         layers.content: EditorLayer
             area: l0 t2px r0 b2px
             label_height: 1.0
-            line_color: #44225588
+            line_color: #5c2f9955
+            line_edge: #fff2
+            line_gutter: #ffffff08
             item_color: #2b3a5500
             sel_color: #425
             hl_fill: #ff6a2e55
@@ -3470,11 +3480,21 @@ Control Editor
                     if [ ux ] ux.set_focus[ a ]
                     ev.no_default = true
                     return
-            el [ run_view.hit_pip[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
-                toggle_app_view[]
-                if [ ux ] ux.set_focus[ a ]
-                ev.no_default = true
-                return
+            el
+                # SIDE-PANEL mode draws through draw_frame, so its fit
+                # rect is live and the app is fully visible -- but this
+                # branch only ever tested the pip, so every click on a
+                # side-hosted app went nowhere. view_press bounds-checks
+                # itself against fitw, so the pip case still falls past
+                if [ run_view.view_press*[ ev ] ]
+                    if [ ux ] ux.set_focus[ a ]
+                    ev.no_default = true
+                    return
+                if [ run_view.hit_pip[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+                    toggle_app_view[]
+                    if [ ux ] ux.set_focus[ a ]
+                    ev.no_default = true
+                    return
         sbe : (layers) ? cast EditorLayer [ layers['content'] ] : null
         sbl : ScrollLayer (layers) ? cast ScrollLayer [ layers['scrollbar'] ] : null
         sbg : f32 [ (sbl && sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
@@ -3622,7 +3642,8 @@ Control Editor
         pristine = false
 
     func on_move [ ev: Event ]
-        if [ run_view && app_view ]
+        # not just when maximised: the side panel forwards hover too
+        if [ run_view ]
             if [ run_view.view_move*[ ev ] ] return
         if [ !scroll_dragging && rview && rview.view_move*[ ev ] ]
             pristine = false

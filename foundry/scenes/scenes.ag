@@ -1,6 +1,6 @@
 # backdrop scenes: exported for any app to read in at runtime
 export 0.1.0
-export scenes ['Earth', 'Moon', 'Mars', 'Terra', 'Olympus', 'MilkyWay', 'Titan', 'Europa', 'Enceladus', 'Uranus', 'Neptune', 'Pluto']
+export scenes ['Earth', 'Moon', 'Mars', 'Terra', 'MilkyWay', 'Titan', 'Europa', 'Enceladus', 'Uranus', 'Neptune', 'Pluto']
 
 import vec
 import img
@@ -1156,445 +1156,6 @@ element Moon
         cloud.time    = time
 
 
-MoonShader TerraShader
-    # sea level on mars-height; land is the mars color map, unaltered
-    mutable sea_level : f32
-    # more water at the equator, falling off toward the poles. sea_lat
-    # is how much is added at the equator, sea_curve the falloff shape:
-    # 1.0 is a straight ramp, higher keeps the extra water in the tropics
-    mutable sea_lat   : f32
-    mutable sea_curve : f32
-    # a very slight wander on the sea level itself, so coastlines are
-    # not a pure contour of the height map
-    mutable sea_noise : f32
-    mutable sea_scale : f32
-    # perlin scales picking between the two green and two water tones
-    mutable land_scale  : f32
-    mutable water_scale : f32
-    # forest patches: patch size, strength, and the altitude it dies at
-    mutable forest_scale : f32
-    mutable forest_amt   : f32
-    mutable tree_line    : f32
-    mutable veg_amt      : f32
-    # ground lifted near the equator, in height-map units (0.01 = 1%)
-    mutable eq_rise      : f32
-    # land bands above the waterline, in height-map units
-    mutable sand_band    : f32
-    mutable green_band   : f32
-    mutable sand_amt     : f32
-    mutable lush_curve   : f32
-    # how much cyan the equator takes, and how fast it falls off
-    mutable cyan_amt    : f32
-    mutable cyan_curve  : f32
-    # pink across the equatorial band: strength, and how far out it
-    # reaches as a fraction of pole distance (0.667 = two thirds)
-    mutable pink_amt    : f32
-    mutable pink_span   : f32
-    # keep this LOW: one lobe should span an ocean, not speckle it
-    mutable pink_scale  : f32
-    # depth at which the pink patches start showing (1 = deepest only)
-    mutable pink_deep   : f32
-    # sun glint: LOW power = wide and soft, high = a tight hot dot
-    mutable spec_power  : f32
-    mutable spec_amt    : f32
-    # the broad sheen under it; keep the amount low, it covers a lot
-    mutable wide_power  : f32
-    mutable wide_amt    : f32
-    # sheen on the vegetated land: tightness, strength, and the perlin
-    # that breaks it up. keep leaf_scale HIGH -- this is the fine detail
-    mutable leaf_power  : f32
-    mutable leaf_amt    : f32
-    mutable leaf_scale  : f32
-    # light blue at the equator: strength, patch scale, latitude falloff
-    mutable lblue_amt   : f32
-    mutable lblue_scale : f32
-    mutable lblue_curve : f32
-    # vertex displacement, in sphere radii, above the sea surface
-    mutable displace  : f32
-
-    attrib jungle : LayoutBinding [ type:typeid[ MoonSurface ], id:MoonSurface.jungle, count:1, format: typeid[ rgba8 ] ]
-
-    # how many times the tile wraps the globe. MUST stay a whole number:
-    # u = 0 and u = 1 have to land on the same texel or the dateline
-    # shows a seam straight down the map
-    mutable jungle_tiles : f32
-
-    attrib v_east  : VertexOutput [ type:typeid[ vec3f ] ]
-    attrib v_north : VertexOutput [ type:typeid[ vec3f ] ]
-
-    func vertex[] -> GLSL none {
-        v_uv     = vec2(1.0 - a_uv.x, a_uv.y);
-        mat3 nm  = transpose(inverse(mat3(ubo.model)));
-        v_normal = normalize(nm * a_normal);
-
-        // tangent frame from the OBJECT normal, rotated like the normal.
-        // built from world +y it ignores the 25.2 deg axial tilt, so the
-        // relief is lit in a frame that does not turn with the surface
-        vec3 ax  = abs(a_normal.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
-        vec3 o_e = normalize(cross(ax, a_normal));
-        vec3 o_n = normalize(cross(a_normal, o_e));
-        v_east   = normalize(nm * o_e);
-        v_north  = normalize(nm * o_n);
-
-        vec2  huv   = v_uv - vec2(0.0635, 0.0);
-        // must match the fragment stage exactly or the displaced coast
-        // sits away from the shaded one
-        float lat_r = (v_uv.y - 0.5) * 3.1415927;
-        float lon_r = v_uv.x * 6.2831853;
-        vec3  sp    = vec3(cos(lat_r) * cos(lon_r), sin(lat_r), cos(lat_r) * sin(lon_r));
-        float sea   = ubo.sea_level
-                    + ubo.sea_lat   * pow(max(cos(lat_r), 0.0), ubo.sea_curve)
-                    + ubo.sea_noise * (vnoise(sp * ubo.sea_scale) - 0.5);
-        // no derivatives in the vertex stage: must be an explicit lod
-        float hv    = textureLod(height, huv, 0.0).r;
-        // lift the ground itself near the equator so less of it floods
-        hv         += ubo.eq_rise * pow(max(cos(lat_r), 0.0), 1.5);
-        // the sea surface stays a clean sphere; only land rises out of
-        // it, so the ocean reads flat the way real water does
-        float d     = max(hv - sea, 0.0) * ubo.displace;
-
-        vec4  wpos  = ubo.model * vec4(a_pos + a_normal * d, 1.0);
-        v_world_pos = wpos;
-        gl_Position = ubo.proj * ubo.view * wpos;
-    }
-
-    func fragment[] -> GLSL none {
-        vec3  n0   = normalize(v_normal);
-        // the sun sits well off the view axis: a sun behind the camera
-        // lights the disc evenly and no relief anywhere can read
-        vec3  sun  = normalize(vec3(-0.56, 0.14, 0.82));
-        vec3  surf = texture(color, v_uv).rgb;
-        float lum  = dot(surf, vec3(0.299, 0.587, 0.114));
-
-        // the two maps use a different prime meridian: 22.9 deg of
-        // longitude, no latitude shift. registered on edge magnitude,
-        // which tracks crater rims and canyon walls, not albedo
-        vec2  huv  = v_uv - vec2(0.0635, 0.0);
-
-        // height arrives f32 and gaussian'd at load, so it can be
-        // differentiated tight — one texel — without banding
-        vec2  st   = max(fwidth(huv), vec2(1.0 / 8192.0, 1.0 / 4096.0));
-        float h    = texture(height, huv).r;
-        // object-space point from the uv, NOT from v_world_pos: world
-        // space turns with the model, so any noise keyed off it swims
-        // across the surface instead of staying pinned to the ground
-        float lat_r = (v_uv.y - 0.5) * 3.1415927;
-        float lon_r = v_uv.x * 6.2831853;
-        vec3  sp    = vec3(cos(lat_r) * cos(lon_r), sin(lat_r), cos(lat_r) * sin(lon_r));
-        float eq    = max(cos(lat_r), 0.0);
-
-        // must match the vertex stage exactly
-        float sea   = ubo.sea_level
-                    + ubo.sea_lat   * pow(eq, ubo.sea_curve)
-                    + ubo.sea_noise * (vnoise(sp * ubo.sea_scale) - 0.5);
-        // lift the ground itself near the equator so less of it floods
-        h          += ubo.eq_rise * pow(eq, 1.5);
-
-        float h_l  = texture(height, huv - vec2(st.x, 0.0)).r;
-        float h_r  = texture(height, huv + vec2(st.x, 0.0)).r;
-        float h_d  = texture(height, huv - vec2(0.0, st.y)).r;
-        float h_u  = texture(height, huv + vec2(0.0, st.y)).r;
-        float dhdu = (h_r - h_l) / (2.0 * st.x);
-        float dhdv = (h_u - h_d) / (2.0 * st.y);
-
-        // v_uv.x runs west, so the u slope tilts against east
-        vec3  t_e  = normalize(v_east);
-        vec3  t_n  = normalize(v_north);
-        vec3  bump = t_e * dhdu - t_n * dhdv;
-        vec3  n    = normalize(n0 - bump * ubo.relief * 0.030);
-
-        // shore: a wide band in height units. an edge cut at the screen
-        // footprint lands inside one 8-bit step and reads as a mask
-        float d_h  = sea - h;
-        float is_w = smoothstep(-0.014, 0.014, d_h);
-
-        // cast shadow: march the height map toward the sun. perturbing
-        // the normal only shades a slope by its own tilt -- it can never
-        // throw a shadow onto the ground beside it, so nothing sweeps
-        // when the planet turns. east is +u, north is -v, matching bump
-        float shade = 1.0;
-        vec3  s_t   = vec3(dot(sun, t_e), dot(sun, t_n), dot(sun, n0));
-        vec2  s_uv  = vec2(s_t.x, -s_t.y);
-        float s_len = length(s_uv);
-        if (s_len > 0.001 && s_t.z > 0.0) {
-            s_uv        /= s_len;
-            float tanel  = s_t.z / s_len;
-            // u shrinks toward the poles; v does not
-            float coslat = max(cos((v_uv.y - 0.5) * 3.1415927), 0.12);
-            vec2  arc_uv = vec2(6.2831853 * coslat, 3.1415927);
-            float occ    = 0.0;
-            float h0     = h * ubo.displace;
-            for (int i = 1; i <= 16; ++i) {
-                float t   = float(i) * 0.0022;
-                vec2  duv = s_uv * t;
-                float arc = length(duv * arc_uv);
-                float hs  = textureLod(height, huv + duv, 0.0).r * ubo.displace;
-                occ = max(occ, clamp((hs - (h0 + arc * tanel)) * 260.0, 0.0, 1.0));
-            }
-            shade = 1.0 - occ * 0.88;
-        }
-
-        // view vectors up here: the land sheen needs them too, not just
-        // the water, and they must be one shared definition
-        vec3  v_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
-        vec3  h_dir = normalize(sun + v_dir);
-        float nh    = max(dot(n0, h_dir), 0.0);
-        float day_s = smoothstep(-0.02, 0.12, dot(n0, sun));
-
-        // land keeps the relief; the sea takes a trace of it so the light
-        // still plays over the shelves instead of sitting dead flat
-        vec3  n_w   = normalize(mix(n0, n, 0.16));
-        float ndl_l = max(dot(n,   sun), 0.0) * shade;
-        float ndl_w = max(dot(n_w, sun), 0.0);
-
-        // land climbs in bands off the waterline: sand, then green,
-        // then the REAL mars colour map taking over as the top stop.
-        // the red is the albedo itself, not a tint standing in for it
-        float alt0  = h - sea;
-        float a_snd = ubo.sand_band;
-        float a_grn = a_snd + ubo.green_band;
-        float gn0   = clamp((fnoise(sp * ubo.land_scale) - 0.5) * 1.7 + 0.5, 0.0, 1.0);
-
-        vec3  c_snd = vec3(0.80, 0.72, 0.54);
-        vec3  c_grn = mix(vec3(0.17, 0.40, 0.15), vec3(0.36, 0.56, 0.22), gn0);
-
-        vec3  lnd   = c_snd;
-        lnd = mix(lnd, c_grn, smoothstep(0.0, a_snd, alt0) * pow(eq, ubo.lush_curve));
-        lnd = mix(lnd, surf,  smoothstep(a_snd, a_grn, alt0));
-
-        // growth follows the water: a green belt just above the shore
-        // that thins out with altitude, so the mids carry the colour
-        float alt  = h - sea;
-        float veg  = smoothstep(0.002, 0.035, alt)
-                   * (1.0 - smoothstep(0.050, 0.230, alt));
-        // two green levels, chosen by their own perlin: a deep growth
-        // and a paler scrub, so the belt is not one flat tone
-        float g_n  = clamp((fnoise(sp * ubo.land_scale) - 0.5) * 1.7 + 0.5, 0.0, 1.0);
-        vec3  g_lo = vec3(0.34, 0.47, 0.28);
-        vec3  g_hi = vec3(0.66, 0.68, 0.46);
-        vec3  moss = mix(g_lo, g_hi, g_n);
-        lnd        = mix(lnd, moss * (0.65 + 1.00 * lum), veg * ubo.veg_amt);
-
-        // forest in perlin patches laid over the elevation. three
-        // octaves so the edges are ragged instead of round blobs
-        float f_s  = ubo.forest_scale;
-        float f_n  = fnoise(sp * f_s);
-        // thins out climbing to the tree line, and toward the poles
-        float alt_f = 1.0 - smoothstep(ubo.tree_line * 0.45, ubo.tree_line, alt);
-        float lat_f = smoothstep(0.04, 0.42, eq);
-        // and it will not grow straight out of the surf
-        float sh_f  = smoothstep(0.0005, 0.010, alt);
-        float frst  = smoothstep(0.38, 0.68, f_n) * alt_f * lat_f * sh_f;
-
-        // the jungle tile, wrapped whole times around the globe so the
-        // dateline matches. v gets half the count: the map is 2:1, so
-        // equal counts would stretch every tile to twice its height
-        float j_u   = ubo.jungle_tiles;
-        float j_v   = ubo.jungle_tiles * 0.5;
-        // the tile is a photo, not a seamless one: warp the lookup so
-        // the repeat never lines up into a visible grid of squares
-        vec2  j_w   = vec2(fnoise(sp *  9.0),
-                           fnoise(sp * 11.3 + vec3(21.7, 5.3, 48.1))) - 0.5;
-        vec3  jung  = texture(jungle, vec2(v_uv.x * j_u, v_uv.y * j_v) + j_w * 3.0).rgb;
-        float j_lum = dot(jung, vec3(0.299, 0.587, 0.114));
-
-        vec3  t_lo  = vec3(0.15, 0.26, 0.13);
-        vec3  t_hi  = vec3(0.34, 0.45, 0.21);
-        vec3  tree  = mix(t_lo, t_hi, clamp((fnoise(sp * f_s * 3.3) - 0.5) * 1.7 + 0.5, 0.0, 1.0));
-        // canopy detail rides the tile's luminance; its chroma stays ours
-        tree        = tree * (0.55 + 1.05 * j_lum);
-        lnd         = mix(lnd, tree * (0.70 + 0.85 * lum), frst * ubo.forest_amt * 0.30);
-
-        // the first band of elevation above the water goes lush, and
-        // only near the equator. laid last so it owns the coastal strip
-        // a sandy strip right at the waterline, over everything else
-        float shore = 1.0 - smoothstep(0.0, ubo.sand_band, alt);
-        lnd         = mix(lnd, c_snd * (0.72 + 0.72 * lum), shore * ubo.sand_amt);
-
-        // canopy sheen: only the GREEN catches it, and a tight perlin
-        // breaks it into leaf-scale detail instead of a flat gloss.
-        // measured off the pixel's own green bias, so it tracks
-        // whatever the bands and the forest actually put down
-        float grn_w = clamp((lnd.g - 0.5 * (lnd.r + lnd.b)) * 6.0, 0.0, 1.0);
-        float leaf  = fnoise(sp * ubo.leaf_scale);
-        lnd        += vec3(0.62, 0.78, 0.55)
-                    * pow(nh, ubo.leaf_power) * day_s * grn_w
-                    * (0.25 + 1.15 * leaf) * ubo.leaf_amt;
-
-        // a lit body still bounces light into its own shade; a low floor
-        // drives every slope to full black and the contrast tears
-        lnd       *= 0.30 + 0.70 * ndl_l;
-
-        // sea: a narrow shelf at the coast, then open water. the seabed
-        // never fades out completely or the deep reads as flat paint
-        // clarity varies at continental scale only — one perlin lobe spans
-        // an ocean, so the water never picks up fine detail of its own
-        float clar = fnoise(sp * 1.7);
-        float dep  = clamp(d_h / 0.090, 0.0, 1.0);
-        dep        = clamp(dep * (0.70 + 0.62 * clar), 0.0, 1.0);
-        // two water tones on their own perlin: the violet and a deeper
-        // blue. shallow and deep stops are carried per tone, so the
-        // depth ramp stays a ramp instead of crossfading flat colours
-        // a gentle contrast stretch, NOT a smoothstep. thresholding this
-        // draws the noise's own isoline across the sea as a hard polygon
-        float w_n   = clamp((fnoise(sp * ubo.water_scale) - 0.5) * 1.7 + 0.5, 0.0, 1.0);
-        vec3  p_sh  = vec3(0.44, 0.38, 0.53);
-        vec3  p_dp  = vec3(0.38, 0.26, 0.46);
-        vec3  b_sh  = vec3(0.30, 0.42, 0.62);
-        vec3  b_dp  = vec3(0.11, 0.19, 0.42);
-        vec3  w_sh  = mix(p_sh, b_sh, w_n);
-        vec3  w_dp  = mix(p_dp, b_dp, w_n);
-        vec3  w_hue = mix(w_sh, w_dp, dep);
-
-        // the equator runs to cyan, falling off fast so it stays tropical
-        vec3  c_sh  = vec3(0.38, 0.68, 0.72);
-        vec3  c_dp  = vec3(0.09, 0.33, 0.45);
-        w_hue       = mix(w_hue, mix(c_sh, c_dp, dep),
-                          pow(eq, ubo.cyan_curve) * ubo.cyan_amt);
-
-        float t_lat = abs(v_uv.y - 0.5) * 2.0;
-
-        // light blue owns the equator. latitude drives it; the perlin
-        // only ragged-edges it so it is not a clean band of colour
-        float lb_n  = fnoise(sp * ubo.lblue_scale + vec3(51.3, 8.9, 33.4));
-        float lblue = pow(eq, ubo.lblue_curve) * (0.68 + 0.52 * lb_n);
-        lblue       = clamp(lblue, 0.0, 1.0);
-        vec3  l_sh  = vec3(0.56, 0.74, 0.88);
-        vec3  l_dp  = vec3(0.24, 0.43, 0.70);
-        w_hue       = mix(w_hue, mix(l_sh, l_dp, dep), lblue * ubo.lblue_amt);
-
-        // pink only where the water is DEEP, and only in patches. it
-        // goes on last so it reads over the light blue, not under it
-        // a balanced split: fnoise clusters near 0.5, so a narrow band
-        // across it hands roughly half the equator to pink. depth is a
-        // WEIGHT now, not a gate -- gating it killed the colour outright
-        float p_n   = fnoise(sp * ubo.pink_scale);
-        float pink  = smoothstep(0.475, 0.525, p_n)
-                    * (1.0 - smoothstep(0.0, ubo.pink_span, t_lat))
-                    * (0.45 + 0.55 * smoothstep(ubo.pink_deep, 1.0, dep));
-        vec3  k_sh  = vec3(0.88, 0.49, 0.62);
-        vec3  k_dp  = vec3(0.55, 0.19, 0.37);
-        w_hue       = mix(w_hue, mix(k_sh, k_dp, dep), pink * ubo.pink_amt);
-        // the seabed stays readable at depth; water tints it, never hides it.
-        // gain kept low or the shelf blooms into a white ring at the coast
-        float bedl = lum * (1.0 - 0.45 * dep);
-        vec3  wat  = w_hue * (0.34 + 1.25 * bedl);
-        wat       *= 0.26 + 0.74 * ndl_w;
-
-        // glint: tight only. the broad sheen term smeared a pale blob over
-        // a third of the ocean and read as a lamp, not sun on water
-        float glit  = 0.62 + 0.55 * fnoise(sp * 26.0);
-        float fres  = 0.02 + 0.98 * pow(1.0 - max(dot(n0, v_dir), 0.0), 5.0);
-        // two lobes. the exponent sets the angular size: the half-power
-        // half-angle is acos(0.5^(1/n)), so n=130 is about 6 deg and
-        // n=2.5 about 40 deg -- four times wider again
-        wat        += vec3(0.95, 0.92, 0.98)
-                    * pow(nh, ubo.spec_power) * day_s * glit * ubo.spec_amt;
-        wat        += vec3(0.72, 0.74, 0.86)
-                    * pow(nh, ubo.wide_power) * day_s * ubo.wide_amt;
-        // sky reflection climbs toward the limb
-        wat         = mix(wat, vec3(0.46, 0.43, 0.62) * day_s, fres * 0.26);
-
-        vec3  col  = mix(lnd, wat, is_w);
-
-        col        *= ubo.gain;
-        fragColor   = vec4(clamp(col, 0.0, 1.0), 1.0);
-    }
-
-
-# the sky shell: clouds, limb haze and the rim, drawn over the surface.
-# same construction as Earth's CloudShader — an offset sphere with the
-# cloud map prefiltered in the vertex stage and faded off the silhouette
-enum SkySurface
-    cloud : 0
-
-# its own enum and its own samplers map: a third LayoutBinding added to
-# an inherited shader lands on the parent's slot and reads the height map
-ModelViewProject TerraSky
-    mutable gain    : f32
-    mutable cam_pos : vec4f
-
-    attrib cloud : LayoutBinding [ type:typeid[ SkySurface ], id:SkySurface.cloud, count:1, format: typeid[ rgba8 ] ]
-
-    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
-    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
-    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
-
-    attrib v_normal     : VertexOutput  [ type:typeid[ vec3f ] ]
-    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
-    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
-    attrib v_cloud_avg  : VertexOutput  [ type:typeid[ f32 ] ]
-
-    attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
-
-    func init[]
-        eye2    : vec3f [0.0f,  0.0f,  1.5f]
-        target2 : vec3f [0.0f,  0.0f,  0.0f]
-        up2     : vec3f [0.0f, -1.0f,  0.0f]
-        model   = mat4f.identity   []
-        proj    = mat4f.perspective[radians[70.0f], 1.0f, 0.1f, 100.0f]
-        view    = mat4f.look_at    [eye2, target2, up2]
-
-    func vertex[] -> GLSL none {
-        v_uv     = vec2(1.0 - a_uv.x, a_uv.y);
-        mat3 nm  = transpose(inverse(mat3(ubo.model)));
-        v_normal = normalize(nm * a_normal);
-
-        // prefilter the cloud map so the fragment can normalise contrast
-        const float kernel[7] = float[](
-            0.006, 0.061, 0.242, 0.383, 0.242, 0.061, 0.006);
-        vec2  texel = 1.0 / vec2(textureSize(cloud, 0));
-        float c_avg = 0.0;
-        for (int i = -3; i <= 3; ++i) {
-            for (int j = -3; j <= 3; ++j) {
-                vec2 o = vec2(i, j) * texel * 2.0;
-                c_avg += texture(cloud, v_uv + o).r * kernel[i + 3] * kernel[j + 3];
-            }
-        }
-        v_cloud_avg = c_avg;
-
-        // just clear of the tallest displaced peak. any higher and the
-        // deck reads as a glass dome standing off the planet
-        vec3 shell  = a_pos + a_normal * 0.008;
-        vec4 wpos   = ubo.model * vec4(shell, 1.0);
-        v_world_pos = wpos;
-        gl_Position = ubo.proj * ubo.view * wpos;
-    }
-
-    func fragment[] -> GLSL none {
-        vec3  n     = normalize(v_normal);
-        vec3  sun   = normalize(vec3(-0.56, 0.14, 0.82));
-        vec3  v_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
-        float ndl   = max(dot(n, sun),   0.0);
-        float ndv   = max(dot(n, v_dir), 0.0);
-
-        // ramp the rim back to zero at the geometric limb, or the mesh
-        // edge pixels take a bright line along the jagged silhouette
-        float silh  = smoothstep(0.0, 0.24, ndv);
-        float limb  = pow(1.0 - ndv, 2.2) * silh;
-        float rim   = pow(1.0 - ndv, 5.0) * silh;
-
-        float c_amt = texture(cloud, v_uv).r / (2.0 - v_cloud_avg);
-        c_amt       = smoothstep(0.14, 0.66, c_amt);
-        // clouds thin out into the limb so they never stack on the haze
-        c_amt      *= clamp(1.0 - pow(1.0 - ndv, 0.9), 0.0, 1.0);
-
-        float day   = 0.16 + 0.84 * ndl;
-        vec3  c_col = vec3(0.88, 0.85, 0.90) * day;
-
-        // thin air scatters short wavelengths: violet on the limb, and
-        // it brightens hard where the line of sight grazes the terminator
-        vec3  air   = vec3(0.40, 0.34, 0.72) * (0.20 + 1.05 * ndl);
-        vec3  glow  = air * limb * 0.85 + air * rim * 0.55;
-
-        // straight_alpha multiplies by a in the blend, so emit unpremultiplied
-        // colour here: folding coverage into rgb too applies it squared
-        float a     = clamp(c_amt * 0.94 + (limb * 0.50 + rim * 0.35) * ndl, 0.0, 1.0);
-        vec3  col   = (c_col * c_amt * 0.94 + glow) / max(a, 0.001);
-        fragColor   = vec4(col, a);
-    }
-
-
 element Mars
     frost : true
     frost_sharp : true
@@ -1729,553 +1290,6 @@ element Mars
 # steel, glass and tire parts each keep their own tone with no map.
 # lit by the same sun vector the terra surface uses, or the monument
 # would hold noon while the ground under it turns into night
-ModelViewProject CyberTruck
-    attrib color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:1, format: typeid[ rgba8 ] ]
-
-    attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
-    attrib a_normal  : VertexInput    [ type:typeid[ vec3f ] ]
-    attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
-
-    attrib v_normal  : VertexOutput   [ type:typeid[ vec3f ] ]
-    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
-    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
-
-    func init [ ]
-        model = mat4f.identity[]
-        view  = mat4f.identity[]
-        proj  = mat4f.identity[]
-
-    func vertex [] -> GLSL none {
-        mat3 nm     = transpose(inverse(mat3(ubo.model)));
-        v_normal    = normalize(nm * a_normal);
-        v_uv        = a_uv;
-        gl_Position = ubo.proj * ubo.view * ubo.model * vec4(a_pos, 1.0);
-    }
-
-    func fragment [] -> GLSL none {
-        vec3  n   = normalize(v_normal);
-        vec3  sun = normalize(vec3(-0.56, 0.14, 0.82));
-        float d   = max(dot(n, sun), 0.0);
-        // stainless: a tight highlight over a dim body, so the facets
-        // read as flat sheets instead of a soft diffuse lump
-        vec3  h   = normalize(sun + vec3(0.0, 0.0, 1.0));
-        float sp  = pow(max(dot(n, h), 0.0), 48.0);
-        vec4  c   = texture(color, v_uv);
-        vec3  lit = c.rgb * (0.16 + d * 0.92) + vec3(sp * 0.38);
-        fragColor = vec4(lit, 1.0);
-    }
-
-
-element Terra
-    frost : true
-    frost_sharp : true
-    frost_lift : 0.92
-    # eased camera distance / angle; p_set marks the first frame
-    intern e_cur  : f32
-    intern p_cur  : f32
-    intern p_set  : bool
-    intern terra  : TerraShader
-    intern sky    : TerraSky
-    intern truck  : CyberTruck
-    intern models : array Model
-    intern target : Render
-    intern built  : bool
-    # async load: worker decodes, draw waits on ready for vk work
-    intern ready     : bool
-    intern loading   : bool
-    intern load_task : async
-    public color  : rgba [ r:0.006, g:0.008, b:0.016, a:1.0 ]
-
-    func build_models[]
-        built     = true
-        gltf_path : path '../scenes/models/earth.gltf'
-        gltf      : GltfModel.open[ gltf_path ]
-        terra     = TerraShader [ vk: vk ]
-        sky       = TerraSky    [ vk: vk ]
-
-        # the height png is 8-bit: differentiating it draws contour rings.
-        # carry it to f32 and gaussian it once, here, not per fragment
-        h_src : Image [ uri: path '../scenes/textures/mars-height-8192x4096.png' ]
-        h_f32 : h_src.gray[].to_f32[ true ].gaussian[ 2.0 ]
-        h_f32.surface = MoonSurface.height
-        h_f32.linear  = true
-        h_f32.wrap_u  = true
-
-        # the mars maps only: color is the land, height sets the sea
-        terra_samplers : map Image [string] [
-            'color':  Image [ uri: path '../scenes/textures/mars-color-8192x4096.jpg',   surface: MoonSurface.color,  linear: true, wrap_u: true ],
-            'height': h_f32,
-            'jungle': Image [ uri: path '../scenes/textures/jungle.png', surface: MoonSurface.jungle, linear: true, wrap_u: true, wrap_v: true ]
-        ]
-        # the sky pass carries one sampler, on its own enum
-        sky_samplers : map Image [string] [
-            'cloud':  Image [ uri: path '../scenes/textures/earth-cloud-8192x4096.png',  surface: SkySurface.cloud, linear: true, wrap_u: true ]
-        ]
-        terra_model : Model [ vk: vk, w: ux, id: gltf, s: terra, samplers: terra_samplers, straight_alpha: true ]
-        sky_model   : Model [ vk: vk, w: ux, id: gltf, s: sky,   samplers: sky_samplers,   straight_alpha: true ]
-
-        # Low Poly Tesla Cybertruck by kulonee (sketchfab.com/ynesolefru),
-        # Sketchfab Standard license — see models/cybertruck/license.txt
-        truck_gltf  : GltfModel.open[ path '../scenes/models/cybertruck/scene.gltf' ]
-        truck       = CyberTruck [ vk: vk ]
-        truck_model : Model [ vk: vk, w: ux, id: truck_gltf, s: truck ]
-
-        # truck before sky: the cloud shell blends over it
-        models      = array Model [ terra_model, truck_model, sky_model ]
-
-    func create_target[]
-        if [ target || !models || models.count == 0 ] return
-        # 2x supersample: the coast and the limb alias badly at 1x
-        target = Render [
-            vk:          vk,
-            w:           ux,
-            wscale:      (ux.frost_eff[] == 3) ? 2.0 : 1.0,
-            use_depth:   true,
-            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
-            models:      models ]
-        target.hold[]
-        target.owner  = a
-        ux.element_targets[ id ] = target
-
-    # unregister only; we keep our ref so the GPU graph outlives the frame
-    public func on_unload [ ]
-        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
-
-    # a living mars: the editor purples go to moss and wine.
-    # the pane fill is the backdrop dimmer, so it carries the #0008;
-    # the second layer keeps its original ratio to the first
-    public func theme [ ] -> map string [string]
-        return map string [string] [
-            '#140a2acc':  '#101a',        # editor pane background
-            '#140a2a80':  '#0005',        # console pane background
-            '#4258':      '#c87a9a58',    # unused (line_color moved to #44225588)
-            '#ff6a2e55':  '#c8d05a55',    # search highlight fill
-            '#220022aa':  '#16221eaa'     # run console base fill
-        ]
-
-    func load_bg [ arg: object ]
-        t0 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg start at {t0}'
-        build_models[]
-        t1 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg done in {t1 - t0}ms at {t1}'
-        ready = true
-
-    func draw [ w: Window ]
-        animated = true
-        if [ !built && !loading ]
-            loading = true
-            w9 : array []
-            w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
-        if [ !ready ] return
-        create_target[]
-        # NOTE: wscale is fixed at create_target. resizing a live Render
-        # here destroys its image view while bound descriptor sets and
-        # an in-flight command buffer still reference it -- instant
-        # device loss the moment the frost stage is toggled
-        orbit[]
-
-    func orbit[]
-        # follow the window, never a fixed 16:9 -- a hardcoded aspect
-        # stretches the disc the moment the window is not that shape
-        aspect : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
-        # low is the 1.38 this scene already had; far shows the disc
-        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 1.38 :
-                       (ux.orbit_mode == OrbitView.high) ? 1.85 : 2.60 ]
-        # ease to it rather than cut; first frame snaps so we do not
-        # fly in from zero on mount
-        if [ e_cur == 0.0 ] e_cur = e_t
-        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
-
-        # pitch above the equator, as a rise over the eye distance.
-        # 0 is dead flat-on; the ladder tips the pole toward the camera
-        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
-                       (ux.angle_mode == ViewAngle.angled) ? 0.094 : 0.420 ]
-        if [ p_cur == 0.0 && p_t != 0.0 && !p_set ] p_cur = p_t
-        p_set  = true
-        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
-
-        ux.orbit_moving = abs[ e_cur - e_t ] > 0.002 || abs[ p_cur - p_t ] > 0.001
-        e_d    : f32 [ e_cur ]
-        _eye   : vec3f [ 0.0,  e_d * p_cur, e_d ]
-        _tgt   : vec3f [ 0.0,  0.0,  0.0  ]
-        _up    : vec3f [ 0.0, -1.0,  0.0  ]
-
-        _proj  : mat4f.perspective[ radians[ 60.0 ], aspect, 0.01, 20.0 ]
-        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
-
-        # base angle brings Valles Marineris around; ux.time counts
-        # kiloseconds, so 4000 is roughly one turn in ninety seconds
-        spin_d : f32 [ 60.0 + ux.time * 4000.0 ]
-        m_spin : vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ]
-        q_spin : quatf [ m_spin ]
-        m_axis : vec4f [ 0.0, 0.0, 1.0, radians[ 25.2 ] ]
-        q_axis : quatf [ m_axis ]
-        mm : mat4f.identity[]
-        mm = mm.rotate[ q_axis ]
-        mm = mm.rotate[ q_spin ]
-
-        terra.model = mm
-        terra.view  = _view
-        terra.proj  = _proj
-
-        # parked on the upper flank of Olympus Mons, three degrees south
-        # of the caldera. the summit is the height map's global maximum,
-        # at mesh uv 0.8705, 0.4012 -- the shader flips u, so that is
-        # 0.1295 in map space, and the flank here still stands well clear
-        # of the 0.302 sea. lat/lon below are that point on the sphere
-        t_lat : f32 [ radians[   14.78 ] ]
-        t_lon : f32 [ radians[ -133.38 ] ]
-        tcl : f32 [ cos[ t_lat ] ]
-        tnx : f32 [ tcl * cos[ t_lon ] ]
-        tny : f32 [ sin[ t_lat ] ]
-        tnz : f32 [ tcl * sin[ t_lon ] ]
-        # 0.0375 sphere radii of truck, against a 0.177 Olympus Mons
-        t_len : f32 [ 0.0375 ]
-        # a straight hull on a round planet lifts its ends by the sag over
-        # its own length. sink half of that, so nose and tail hang as far
-        # above the ground as the middle sits under it. derived, not typed:
-        # a hardcoded sink is only right for the length it was measured at
-        t_gnd : f32 [ 1.00211 ]
-        t_hl  : f32 [ t_len * 0.5 ]
-        t_sag : f32 [ t_gnd - sqrt[ t_gnd * t_gnd - t_hl * t_hl ] ]
-        t_rad : f32 [ t_gnd - t_sag * 0.5 ]
-        # stand the model's own up axis on the surface normal: turn
-        # about y cross n, by the angle between them
-        tax : f32 [ tnz ]
-        taz : f32 [ 0.0 - tnx ]
-        tal : f32 [ sqrt[ tax * tax + taz * taz ] ]
-        if [ tal > 0.0 ]
-            tax = tax / tal
-            taz = taz / tal
-        q_up : quatf [ vec4f [ tax, 0.0, taz, acos[ tny ] ] ]
-        # 6.53 model units long, measured off the gltf's world bounds
-        t_scl : f32 [ t_len / 6.53 ]
-        tmm : mat4f.identity[]
-        tmm = tmm.translate[ vec3f [ tnx * t_rad, tny * t_rad, tnz * t_rad ] ]
-        tmm = tmm.rotate[ q_up ]
-        tmm = tmm.scale[ vec3f [ t_scl, t_scl, t_scl ] ]
-        # under mm, so it turns with the planet instead of sliding over it
-        truck.model = mm.mul[ tmm ]
-        truck.view  = _view
-        truck.proj  = _proj
-
-        terra.gain  = 1.22
-        terra.regolith = 0.0
-        terra.relief   = 1.0
-        terra.sea_level = 0.302
-        terra.sea_lat   = 0.0
-        terra.sea_curve = 2.2
-        terra.sea_noise = 0.012
-        terra.sea_scale = 3.4
-        terra.land_scale  = 5.5
-        terra.water_scale = 2.8
-        # light blue carries the equator now, so cyan only seasons it
-        terra.cyan_amt    = 0.24
-        terra.cyan_curve  = 4.0
-        terra.pink_amt    = 0.85
-        terra.pink_span   = 0.90
-        terra.pink_scale  = 1.3
-        terra.pink_deep   = 0.25
-        terra.spec_power  = 130.0
-        terra.spec_amt    = 0.55
-        terra.wide_power  = 2.5
-        terra.wide_amt    = 0.13
-        terra.leaf_power  = 16.0
-        terra.leaf_amt    = 0.10
-        terra.leaf_scale  = 210.0
-        terra.lblue_amt   = 0.55
-        terra.lblue_scale = 2.3
-        terra.lblue_curve = 1.6
-        terra.forest_scale = 4.0
-        terra.forest_amt   = 0.80
-        terra.tree_line    = 0.20
-        terra.veg_amt      = 0.45
-        terra.jungle_tiles = 48.0
-        terra.eq_rise      = 0.010
-        terra.sand_band    = 0.008
-        terra.green_band   = 0.080
-        terra.sand_amt     = 0.80
-        terra.lush_curve   = 1.5
-        terra.displace  = 0.00875
-        terra.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
-
-        sky.model   = mm
-        sky.view    = _view
-        sky.proj    = _proj
-        sky.gain    = 1.0
-        sky.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
-
-
-shader PurpleShader
-    mutable model   : mat4f
-    mutable view    : mat4f
-    mutable proj    : mat4f
-    mutable cam_pos : vec4f
-    
-    attrib  color : LayoutBinding [ type:typeid[ PurpleSurface ], id:PurpleSurface.color, count:1, format: typeid[ rgba8 ] ]
-    attrib  cloud : LayoutBinding [ type:typeid[ PurpleSurface ], id:PurpleSurface.cloud, count:1, format: typeid[ rgba8 ] ]
-    
-    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
-    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
-    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
-
-    attrib v_normal     : VertexOutput  [ type:typeid[ vec3f ] ]
-    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
-    attrib v_tangent    : VertexOutput  [ type:typeid[ vec3f ] ]
-    attrib v_bitangent  : VertexOutput  [ type:typeid[ vec3f ] ]
-    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
-
-    attrib outColor     : FragmentOutput[ type:typeid[ vec4f ] ]
-
-
-    func init[]
-        fov_deg : f32 60.0f
-        aspect  : f32 1920.0f / 1080.0f
-        near    : f32 0.1f
-        far     : f32 100.0f
-        eye2    : vec3f [0.0f,  0.0f,  1.5f]
-        target2 : vec3f [0.0f,  0.0f,  0.0f]
-        up2     : vec3f [0.0f, -1.0f,  0.0f]
-        model   = mat4f.identity   []
-        proj    = mat4f.perspective[radians[70.0f], 1.0f, 0.1f, 100.0f]
-        view    = mat4f.look_at    [eye2, target2, up2]
-
-
-    func rotateY [ angle: f32 ] -> GLSL mat3f {
-        float c = cos(angle);
-        float s = sin(angle);
-        return mat3(
-            vec3(c, 0.0, -s),
-            vec3(0.0, 1.0, 0.0),
-            vec3(s, 0.0, c)
-        );
-    }
-
-    func sdf_sphere [ p: vec3f, radius: f32, squash: f32 ] -> GLSL float {
-        // squash factor < 1.0 flattens vertically
-        vec3 q = vec3(p.x, p.y / squash, p.z);
-        return length(q) - radius;
-    }
-
-    func sdf_cylinder [ p: vec3f, h: f32, r: f32 ] -> GLSL float {
-        vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h);
-        return min(max(d.x, d.y), 0.0) + length(max(d, vec2(0.0)));
-    }
-
-    # permutation function
-    func permute4 [ x: vec4f ] -> GLSL vec4f {
-        return mod((x * 34.0 + 1.0) * x, vec4(289.0));
-    }
-
-    # fast inverse sqrt
-    func taylorInvSqrt4 [ r: vec4f ] -> GLSL vec4f {
-        return 1.79284291400159 - 0.85373472095314 * r;
-    }
-
-    # smootherstep fade curve
-    func fade [ t: vec3f ] -> GLSL vec3f {
-        return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-    }
-
-    # basic perlin 3D noise
-    func perlin3D [ P: vec3f ] -> GLSL float {
-        vec3 Pi0 = mod(floor(P), vec3(289.0));
-        vec3 Pi1 = mod(Pi0 + vec3(1.0), vec3(289.0));
-        vec3 Pf0 = fract(P);
-        vec3 Pf1 = Pf0 - vec3(1.0);
-
-        vec4 ix = vec4(Pi0.x, Pi1.x, Pi0.x, Pi1.x);
-        vec4 iy = vec4(Pi0.y, Pi0.y, Pi1.y, Pi1.y);
-        vec4 iz0 = vec4(Pi0.z);
-        vec4 iz1 = vec4(Pi1.z);
-
-        vec4 ixy = permute4(permute4(ix) + iy);
-        vec4 ixy0 = permute4(ixy + iz0);
-        vec4 ixy1 = permute4(ixy + iz1);
-
-        vec4 gx0 = fract(ixy0 / 7.0) * 2.0 - 1.0;
-        vec4 gy0 = fract(floor(ixy0 / 7.0) / 7.0) * 2.0 - 1.0;
-        vec4 gz0 = 1.0 - abs(gx0) - abs(gy0);
-
-        vec4 gx1 = fract(ixy1 / 7.0) * 2.0 - 1.0;
-        vec4 gy1 = fract(floor(ixy1 / 7.0) / 7.0) * 2.0 - 1.0;
-        vec4 gz1 = 1.0 - abs(gx1) - abs(gy1);
-
-        vec4 sz0 = step(gz0, vec4(0.0));
-        gx0 -= sz0 * (step(0.0, gx0) - 0.5);
-        gy0 -= sz0 * (step(0.0, gy0) - 0.5);
-
-        vec4 sz1 = step(gz1, vec4(0.0));
-        gx1 -= sz1 * (step(0.0, gx1) - 0.5);
-        gy1 -= sz1 * (step(0.0, gy1) - 0.5);
-
-        vec3 g000 = vec3(gx0.x, gy0.x, gz0.x);
-        vec3 g100 = vec3(gx0.y, gy0.y, gz0.y);
-        vec3 g010 = vec3(gx0.z, gy0.z, gz0.z);
-        vec3 g110 = vec3(gx0.w, gy0.w, gz0.w);
-        vec3 g001 = vec3(gx1.x, gy1.x, gz1.x);
-        vec3 g101 = vec3(gx1.y, gy1.y, gz1.y);
-        vec3 g011 = vec3(gx1.z, gy1.z, gz1.z);
-        vec3 g111 = vec3(gx1.w, gy1.w, gz1.w);
-
-        vec4 norm0 = taylorInvSqrt4(vec4(dot(g000, g000), dot(g010, g010), dot(g100, g100), dot(g110, g110)));
-        g000 *= norm0.x;
-        g010 *= norm0.y;
-        g100 *= norm0.z;
-        g110 *= norm0.w;
-        vec4 norm1 = taylorInvSqrt4(vec4(dot(g001, g001), dot(g011, g011), dot(g101, g101), dot(g111, g111)));
-        g001 *= norm1.x;
-        g011 *= norm1.y;
-        g101 *= norm1.z;
-        g111 *= norm1.w;
-
-        float n000 = dot(g000, Pf0);
-        float n100 = dot(g100, vec3(Pf1.x, Pf0.y, Pf0.z));
-        float n010 = dot(g010, vec3(Pf0.x, Pf1.y, Pf0.z));
-        float n110 = dot(g110, vec3(Pf1.xy, Pf0.z));
-        float n001 = dot(g001, vec3(Pf0.xy, Pf1.z));
-        float n101 = dot(g101, vec3(Pf1.x, Pf0.y, Pf1.z));
-        float n011 = dot(g011, vec3(Pf0.x, Pf1.yz));
-        float n111 = dot(g111, Pf1);
-
-        vec3 fade_xyz = fade(Pf0);
-        vec4 n_z = mix(vec4(n000, n100, n010, n110), vec4(n001, n101, n011, n111), fade_xyz.z);
-        vec2 n_yz = mix(n_z.xy, n_z.zw, fade_xyz.y);
-        float n_xyz = mix(n_yz.x, n_yz.y, fade_xyz.x);
-
-        return n_xyz * 0.5 + 0.5;
-    }
-
-    # fractal brownian motion (fbm) using perlin noise
-    func fbm [ pos: vec3f, y_translate: f32 ] -> GLSL float {
-        float value = 0.0;
-        float amplitude = 0.5;
-        float frequency = 0.1;
-        for (int i = 0; i < 6; ++i) {
-            value += amplitude * perlin3D(pos * frequency + vec3(0.0, y_translate * 11.0, 0.0));
-            amplitude *= 0.5;
-            frequency *= 2.0;
-        }
-        return value;
-    }
-
-    func fragment [] -> GLSL none {
-        vec2 uv = v_uv;
-
-        // === Lighting setup ===
-        vec3  normal   = normalize(v_normal);
-        vec3  sun_dir  = normalize(vec3(0.2, 0.0, 0.8)); // fixed light source
-        vec3  view_dir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
-
-        // animated FBM-based distortion
-        float t          = ubo.time * 0.2; // pass this as uniform in seconds
-        vec3  offset     = vec3(uv * 10.0, t * 0.3) * 5.0;
-        float noise_x    = fbm(offset + vec3(100.0 + (1.0 - (uv.y - 0.5)) * 100.0, 0.0, 0.0), 0.0);
-        float noise_y    = fbm(offset + vec3(0.0, 500.0, 0.0), 0.0);
-        float noise_z    = fbm(offset + vec3(0.0, 0.0, 15.0), 0.0);
-
-        vec3  distortion = normalize(vec3(noise_x, noise_y, noise_z) * 2.0 - 1.0) * 0.188;
-
-        float NdotL      = max(dot(normal, sun_dir), 0.0);
-        vec3  half_dir   = normalize(view_dir);
-        float spec       = pow(max(dot(normal, half_dir), 0.0) * 0.9, 12.0); // shininess
-
-        float edge_fade   = pow(1.0 - dot(normal, view_dir), 2.0);
-        vec3 s1           = vec3(1.0) * spec  * 10.4;
-        s1 += vec3(0.3, 0.0, 0.6) * edge_fade;
-
-        vec3  color1   = texture(color, uv).rgb;
-        vec3  cloud1   = texture(color, uv).rgb;
-        outColor       = vec4(distortion + s1 * color1 + cloud1, 1.0);
-    }
-
-    func vertex[] -> GLSL none {
-        const float M_PI = 3.1415926535897932384;
-
-        v_uv        = vec2(1.0 - a_uv.x, a_uv.y);
-        float theta = v_uv.x * 2.0 * M_PI; // longitude
-        float phi   = v_uv.y * M_PI;       // latitude
-
-        // Tangent: derivative of position w.r.t. u (around equator)
-        v_tangent = normalize(vec3(-sin(theta), 0.0, cos(theta)));
-
-        // Bitangent: derivative w.r.t. v (from pole to pole)
-        v_bitangent = normalize(cross(v_tangent, a_pos)); // orthogonalized
-
-        // Correctly rotate normal into world space
-        mat3 normal_matrix = transpose(inverse(mat3(ubo.model)));
-        v_normal    = normalize(normal_matrix * a_normal);
-        v_tangent   = normalize(normal_matrix * v_tangent);
-        v_bitangent = normalize(normal_matrix * v_bitangent);
-
-        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
-        v_world_pos = wpos;
-        gl_Position = ubo.proj * ubo.view * wpos;
-    }
-
-
-##
-shader Aura2
-    mutable model          : mat4f
-    mutable view           : mat4f
-    mutable proj           : mat4f
-    mutable v_model        : mat4f
-    mutable v_view         : mat4f
-    mutable v_proj         : mat4f
-    mutable time           : f32
-    mutable thrust         : f32
-    mutable magnitude      : f32
-    mutable colors         : f32
-    mutable halo_space     : f32
-    mutable halo_separate  : f32
-    mutable halo_attenuate : f32
-    mutable halo_thickness : f32
-    mutable pad0           : f32
-    mutable pad1           : f32
-    mutable pad2           : f32
-    public  cv             : Canvas
-    public  core           : Canvas
-    public  beam           : Canvas
-    intern  w              : Window
-
-    attrib  color : LayoutBinding [ type:typeid[ Surface ], id:Surface.color, count:2, format: typeid[ rgba8 ] ]
-
-    func init []
-        cv_size : i32 [ 128 ]
-
-        cv   = Canvas [ vk: vk, format: Pixel.rgba8, width: cv_size, height: cv_size ]
-        core = Canvas [ vk: vk, format: Pixel.rgba8, width: cv_size, height: cv_size ]
-        beam = Canvas [ vk: vk, format: Pixel.rgba8, width: cv_size, height: cv_size ]
-
-        # outer color
-        core.clear[ '#0000' ]
-        core.rect_to[ 0, 0, 800, 800 ]
-        core.fill_color[ '#f00' ]
-        core.paint[]
-
-        # inner core
-        core.arc[ 400.0, 400.0, 100.0, 0.0, 360.0 ]
-        core.fill_color[ '#a0f' ]
-        core.paint[]
-
-        # core mantle
-        core.arc[ 400.0, 400.0, 40.0, 0.0, 360.0 ]
-        core.fill_color[ '#aff' ]
-        core.paint[]
-
-        # beam
-        beam.clear[ '#0000' ]
-        beam.rect_to[ 0, 0, 800, 800 ]
-        beam.fill_color[ '#00f' ]
-        beam.paint[]
-        beam.arc[ 400.0, 400.0, 40.0, 0.0, 360.0 ]
-        beam.fill_color[ '#aff' ]
-        beam.paint[]
-
- ##
-
 enum GaiaSurface
     color : 0
 
@@ -2707,8 +1721,16 @@ ModelViewProject SaturnShader
         float s0 = w * (p0 - 0.5) * 0.16;
         float s1 = w * (p1 - 0.5) * 0.16;
         float bl = abs(2.0 * p0 - 1.0);
-        vec3  alb = mix(texture(color, vec2(v_uv.x + s0, v_uv.y)).rgb,
-                        texture(color, vec2(v_uv.x + s1, v_uv.y)).rgb, bl);
+        // a CONTINUOUS spin under the shear. the ping-pong above is
+        // bounded by design -- it shears back and forth and never
+        // travels -- so on its own nothing on this planet actually
+        // moves. this is the drift everything rides, albedo and storms
+        // alike, and it is why the plasma looked pinned
+        float spin9 = ubo.time * 0.0090;
+        vec2  bu0 = vec2(v_uv.x + spin9 + s0, v_uv.y);
+        vec2  bu1 = vec2(v_uv.x + spin9 + s1, v_uv.y);
+        vec3  alb = mix(texture(color, bu0).rgb,
+                        texture(color, bu1).rgb, bl);
         // wrapped like the moon, or opposite phases read as broken
         float wr9      = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
         float ndl      = wr9 * wr9 * shad;
@@ -3088,13 +2110,16 @@ ModelViewProject PlumeShader
             float od   = exp(-max(rc - 1.0, 0.0) / 0.014) * smoothstep(0.930, 0.995, rc);
             // smooth occlusion: the binary cut stamped the analytic
             // sphere's silhouette as a dark circle over the terrain
-            float dip  = clamp((1.0 - rc) / 0.060, 0.0, 1.0);
-            float hocc = mix(1.0, 0.60, dip);
+            float dip  = clamp((1.0 - rc) / 0.018, 0.0, 1.0);
+            float hocc = mix(1.0, 0.35, dip);
             vec3  sunh = normalize(vec3(0.85, -0.10, 0.15));
             float hw   = clamp(dot(pca / max(rc, 1e-4), sunh) * 0.5 + 0.5, 0.0, 1.0);
             // blaze where the graze kisses the surface: the light
             // itself dissolves the terrain edge
-            float nearg = exp(-abs(rc - 1.0) / 0.010);
+            // asymmetric on purpose: wide going out into space, tight
+            // going in, or the rim glow lies over the terrain as fog
+            float nearg = exp(-(max(rc - 1.0, 0.0) / 0.020
+                              + max(1.0 - rc, 0.0) / 0.0035));
             sumc += od * hocc * (0.10 + 0.40 * hw) * (1.0 + 2.5 * nearg);
         }}
         // pale ice spine wrapped in rich blue breadth
@@ -3771,6 +2796,25 @@ func eu_bake_ao [ H: @f32, AO: @f32, w: i32, h: i32, hscale: f32 ]
 ModelViewProject JupiterShader
     mutable gain    : f32
     mutable cam_pos : vec4f
+    # the two discharge colours, picked between per region. jupiter
+    # runs sodium orange against hydrogen blue; neptune wants white
+    mutable pc_a    : vec4f
+    mutable pc_b    : vec4f
+    # xy scales the discharge noise. equal is blobs; x well under y
+    # draws every cell out along the wind into a streak
+    mutable pstr    : vec4f
+    # x = noise threshold, y = pulse rate, z = duty exponent. neptune
+    # wants rarer cells that fire briefly; jupiter wants the opposite
+    mutable pctl    : vec4f
+    # the crosswind: x = shear amplitude, y = equatorial jet width,
+    # z = lobe frequency, w = lobe amplitude. jupiter's profile dies
+    # outside 18 degrees of the equator, which leaves most of a disk
+    # standing still
+    mutable wctl    : vec4f
+    # x = jet amplitude, y = lobe decay, z = ping-pong rate. with wctl
+    # this is the whole wind model, so one planet can be handed
+    # another's verbatim
+    mutable wctl2   : vec4f
 
     attrib color : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.color, count:1, format: typeid[ rgba8 ] ]
     # baked sobel contrast of the color map: where storms live
@@ -3868,36 +2912,65 @@ ModelViewProject JupiterShader
         // zonal winds: a hot equatorial jet plus thin alternating
         // lobes — jupiter runs more bands than saturn
         float la = v_uv.y - 0.5;
-        float w  = 0.55 * exp(-la * la / 0.010)
-                 + 0.25 * cos(la * 56.55) * exp(-abs(la) * 1.6);
+        float w  = ubo.wctl2.x * exp(-la * la / ubo.wctl.y)
+                 + ubo.wctl.w * cos(la * ubo.wctl.z) * exp(-abs(la) * ubo.wctl2.y);
         // flow ping-pong: two half-cycle phases crossfaded, so shear
         // stays bounded and the bands slide forever without smearing
-        float t9 = ubo.time * 0.0125;
+        float t9 = ubo.time * ubo.wctl2.z;
         float p0 = fract(t9);
         float p1 = fract(t9 + 0.5);
-        float s0 = w * (p0 - 0.5) * 0.16;
-        float s1 = w * (p1 - 0.5) * 0.16;
+        float s0 = w * (p0 - 0.5) * ubo.wctl.x;
+        float s1 = w * (p1 - 0.5) * ubo.wctl.x;
         float bl = abs(2.0 * p0 - 1.0);
-        vec3  alb = mix(texture(color, vec2(v_uv.x + s0, v_uv.y)).rgb,
-                        texture(color, vec2(v_uv.x + s1, v_uv.y)).rgb, bl);
+        // a CONTINUOUS spin under the shear. the ping-pong above is
+        // bounded by design -- it shears back and forth and never
+        // travels -- so on its own nothing on this planet actually
+        // moves. this is the drift everything rides, albedo and storms
+        // alike, and it is why the plasma looked pinned
+        float spin9 = ubo.time * 0.0090;
+        vec2  bu0 = vec2(v_uv.x + spin9 + s0, v_uv.y);
+        vec2  bu1 = vec2(v_uv.x + spin9 + s1, v_uv.y);
+        vec3  alb = mix(texture(color, bu0).rgb,
+                        texture(color, bu1).rgb, bl);
         float wr9      = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
         float ndl      = wr9 * wr9;
         float mu       = clamp(dot(n, view_dir), 0.0, 1.0);
         vec3  col      = alb * (0.08 + 0.92 * ndl) * ubo.gain;
-        // thunderstorm plasma: rare drifting perlin peaks fade in
-        // and out, gated to the baked sobel contrast of the bands
-        float sob   = texture(height, v_uv).r;
-        float st9   = jp_gnoise(vec3(v_uv * 22.0, ubo.time * 0.030));
-        float flash = smoothstep(0.82, 0.94, st9);
-        float st2   = jp_gnoise(vec3(v_uv * 47.0 + 7.0, ubo.time * 0.055));
-        flash *= 0.55 + 0.45 * st2;
-        col += vec3(0.72, 0.80, 1.00) * flash * smoothstep(0.25, 0.75, sob) * 2.2;
+        // NIGHT-SIDE PLASMA. the storm map is baked: sobel edge max'd
+        // with band darkness, already gaussian'd. one read here
+        // the SAME uv the albedo used -- spin and shear both
+        vec2  ju0 = bu0;
+        vec2  ju1 = bu1;
+        float sob = smoothstep(0.10, 0.72,
+                        mix(texture(height, ju0).r, texture(height, ju1).r, bl));
+
+        // GRADIENT noise clusters hard around 0.5, so a raw 0.8 cut
+        // fires on almost nothing -- stretch first, then threshold
+        vec2  ps9 = ubo.pstr.xy;
+        float st9 = mix(jp_gnoise(vec3(ju0 * 18.0 * ps9, ubo.time * 0.030)),
+                        jp_gnoise(vec3(ju1 * 18.0 * ps9, ubo.time * 0.030)), bl);
+        float st2 = mix(jp_gnoise(vec3(ju0 * 41.0 * ps9 + 7.0, ubo.time * 0.055)),
+                        jp_gnoise(vec3(ju1 * 41.0 * ps9 + 7.0, ubo.time * 0.055)), bl);
+        st9 = clamp((st9 - 0.5) * 3.4 + 0.5, 0.0, 1.0);
+        st2 = clamp((st2 - 0.5) * 3.0 + 0.5, 0.0, 1.0);
+        float flash = smoothstep(ubo.pctl.x, ubo.pctl.x + 0.32, st9)
+                    * (0.45 + 0.55 * st2);
+
+        // cells pulse on their own clocks, and a wave runs the bands so
+        // fronts sweep rather than the planet blinking as one
+        float pls = 0.5 + 0.5 * sin(ubo.time * ubo.pctl.y + st2 * 21.0 + ju0.y * 60.0);
+        float wv  = 0.5 + 0.5 * sin(ju0.x * 34.0 - ubo.time * 0.24 + st2 * 4.0);
+        flash *= (0.10 + 0.90 * pow(pls, ubo.pctl.z)) * smoothstep(0.15, 0.85, wv);
+
+        // ORANGE or BLUE by region, sodium and hydrogen at depth
+        float hue = jp_gnoise(vec3(ju0 * 5.0 + 31.0, ubo.time * 0.012));
+        vec3  pc  = mix(ubo.pc_a.rgb, ubo.pc_b.rgb, smoothstep(0.42, 0.58, hue));
+        float night = 1.0 - smoothstep(0.015, 0.28, ndl);
+        col += pc * flash * sob * night * 4.2;
         float a        = smoothstep(0.0, 0.18, mu);
         fragColor      = vec4(col, a);
     }
 
-# the patched ice: displaced by the baked equirect height, lit by
-# the baked AO and normals, rust rising in the cavities
 ModelViewProject EuropaShader
     mutable gain     : f32
     mutable cam_pos  : vec4f
@@ -4711,8 +3784,11 @@ element Europa
         jh : i32 [ ji.height ]
         jl : new f32 [ jw * jh ]
         eu_lum[ ji, jl ]
-        sbi : Image [ width: jw, height: jh, format: Pixel.rgba8, linear: true, wrap_u: true ]
-        sd : @u8 [ sbi.vdata[] ]
+        # the sobel edge, then MAX'd with how dark the band is: the
+        # edges give skinny beams along the shear lines and nothing
+        # between them, and the deep belts fill that out. baked here,
+        # so the shader stays one texture read
+        jg : new f32 [ jw * jh ]
         for [ y: i32 0, y < jh, y += 1 ]
             ym : i32 [ (y > 0) ? y - 1 : 0 ]
             yp : i32 [ (y < jh - 1) ? y + 1 : jh - 1 ]
@@ -4723,11 +3799,26 @@ element Europa
                 gy : f32 [ jl[ yp * jw + x ] - jl[ ym * jw + x ] ]
                 mg : f32 [ sqrt[ gx * gx + gy * gy ] * 4.0 ]
                 if [ mg > 1.0 ] mg = 1.0
-                b4 : i32 [ (y * jw + x) * 4 ]
-                sd[ b4 ]     = u8[ mg * 255.0 ]
-                sd[ b4 + 1 ] = 0
-                sd[ b4 + 2 ] = 0
-                sd[ b4 + 3 ] = 255
+                # distance BELOW 0.2 luminance, negatives clamped off
+                dk : f32 [ (0.2 - jl[ y * jw + x ]) / 0.2 ]
+                if [ dk < 0.0 ] dk = 0.0
+                if [ dk > 1.0 ] dk = 1.0
+                jg[ y * jw + x ] = (mg > dk) ? mg : dk
+        # gaussian it here too -- the shader was paying five taps a
+        # pixel for a blur that never changes
+        jt : new f32 [ jw * jh ]
+        eu_blur[ jg, jt, jw, jh, 4 ]
+        sbi : Image [ width: jw, height: jh, format: Pixel.rgba8, linear: true, wrap_u: true ]
+        sd : @u8 [ sbi.vdata[] ]
+        for [ i: i32 0, i < jw * jh, i += 1 ]
+            v9 : f32 [ jg[ i ] ]
+            if [ v9 < 0.0 ] v9 = 0.0
+            if [ v9 > 1.0 ] v9 = 1.0
+            b4 : i32 [ i * 4 ]
+            sd[ b4 ]     = u8[ v9 * 255.0 ]
+            sd[ b4 + 1 ] = 0
+            sd[ b4 + 2 ] = 0
+            sd[ b4 + 3 ] = 255
         jup = JupiterShader [ vk: vk ]
         j_samplers : map Image [string] [
             'color': Image [ uri: path '../scenes/textures/jupiter-color.png', surface: TitanSurface.color,
@@ -4923,11 +4014,19 @@ element Europa
         jup.proj     = _proj
         jup.gain     = 0.75
         jup.cam_pos  = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # sodium orange against hydrogen blue -- the uniforms default to
+        # black, so an unset palette means no discharges at all
+        jup.pc_a     = vec4f [ 1.00, 0.46, 0.13, 1.0 ]
+        jup.pc_b     = vec4f [ 0.30, 0.60, 1.00, 1.0 ]
+        jup.pstr     = vec4f [ 1.0, 1.0, 0.0, 0.0 ]
+        jup.pctl     = vec4f [ 0.69, 0.9, 2.0, 0.0 ]
+        jup.wctl     = vec4f [ 0.16, 0.010, 56.55, 0.25 ]
+        jup.wctl2    = vec4f [ 0.55, 1.6, 0.0125, 0.0 ]
         jup.time     = ux.time * 60000.0
 
 
 # ======================================================================
-# Olympus: a GROUND STAGE on Mars, not a globe. mars-height carries the
+# Terra: a GROUND STAGE on Mars, not a globe. mars-height carries the
 # real geography and the clone patches add the resolution it does not
 # have -- 8192 across the planet is 400m a texel, which is a smooth
 # ramp at walking distance. its own enum: a binding added to an
@@ -5301,6 +4400,45 @@ func mars_bake_mola [] -> bool
 # far it tilts the normal. 2048 tiles over 21300km of equator is a
 # 10.4km tile, so its own 2048 texels land at 5m each -- against MOLA's
 # 2600m, which is what makes the surface mush from 13km up
+# how thick the air is. 0.04 was invisible: at ground distances of
+# 0.05-0.3 sphere radii it gave about one percent opacity
+# how high the dust shell stands, and the scale height it thins over.
+# 0.020 radii is 68km of atmosphere; it fades to nothing over 7km
+# the shell must stand far enough out that rays grazing ITS surface
+# already carry no alpha -- roughly five scale heights. at the low
+# rungs the eye sits inside it, which is fine: it is a closed sky
+func mars_atm_h [] -> f32
+    return 0.300
+# TIGHT. 0.045 spread the glow 150km up and made a purple band; this
+# hugs the horizon and is gone within ~40km
+func mars_atm_fall [] -> f32
+    return 0.0075
+func mars_atm_gain [] -> f32
+    return 0.62
+
+# the cloud deck, in sphere radii. the low rung flies at 0.050, so a
+# deck topping out at 0.030 puts the craft just above it -- which is
+# the vantage that shows a cloudscape rather than a ceiling
+func mars_cld_lo [] -> f32
+    return 0.0060
+func mars_cld_hi [] -> f32
+    return 0.0250
+# how much sky is covered. 0.52 leaves real gaps to fly between
+# MEASURED against the baked field, not assumed. coverage is the
+# threshold 1-cov on a worley distribution whose mean is 0.478, so it
+# is nothing like linear in area: 0.50 covers 42% of the volume, 0.40
+# covers 16%, and 0.155 covers 0.02% -- which is why the sky emptied.
+# 0.369 is a true quarter of what 0.50 gave
+func mars_cld_cov [] -> f32
+    return 0.460
+# 3.4 draws a lobe out to roughly three times its width along the
+# equator. 1.0 would be round, unsheared cloud
+func mars_cld_wind [] -> f32
+    return 3.4
+
+func mars_haze [] -> f32
+    return 0.85
+
 func mars_dtile [] -> f32
     return 2048.0
 # the gate spans 0.10 to 2.00 on its own, so this stays at unity and
@@ -5319,6 +4457,19 @@ func mars_dh [] -> f32
 # the shading disagree with the silhouette
 func mars_relief [] -> f32
     return 3.0
+
+# SEA LEVEL, in packed height units (the same 0..1 the height map
+# stores). Valles floor reads 0.154, the plateau above it 0.384 and
+# Olympus 0.942, so 0.22 at the poles rising to 0.32 at the equator
+# floods the canyon system and the northern lowlands while leaving
+# every plateau dry
+func mars_sea_l0 [] -> f32
+    return 0.22
+# the equatorial bias: warm ground fills easier, so the sea stands
+# higher there. this is the whole reason the valley is a sea and the
+# polar basins are not
+func mars_sea_bias [] -> f32
+    return 0.10
 
 # ONE tileable rock material for the whole planet: normal in RG,
 # cavity in B, roughness in A. this is the slot a real terrain PBR
@@ -5597,6 +4748,445 @@ func mars_edge_map []
             return
     if [ mars_bake_edge[] ] sp.save[ stamp, null ]
 
+# RIVERS. not painted noise -- real drainage. every texel in the
+# Valles box sends its water to its lowest neighbour, and the cells are
+# walked from the highest down so each one hands its whole upstream
+# area on before its turn to give. that is what makes a river network
+# dendritic instead of wormy: tributaries MERGE and get wider.
+#
+# R = water, G = sand bank, and only inside the canyon -- the plateau
+# above the rim drains off the box and carries nothing
+func mars_bake_river [] -> bool
+    pk : Image [ uri: path '../scenes/baked/mars-pk.png' ]
+    if [ pk.width == 0 ]
+        puts 'mars: no height map — cannot cut rivers'
+        return false
+    W9 : i32 [ pk.width ]
+    H9 : i32 [ pk.height ]
+    pd : @u8 [ pk.vdata[] ]
+    ps : i32 [ pk.pixel_size ]
+    x0 : i32 [ i32[ mars_vu0[] * f32[ W9 ] ] ]
+    x1 : i32 [ i32[ mars_vu1[] * f32[ W9 ] ] ]
+    y0 : i32 [ i32[ mars_vv0[] * f32[ H9 ] ] ]
+    y1 : i32 [ i32[ mars_vv1[] * f32[ H9 ] ] ]
+    bw : i32 [ x1 - x0 ]
+    bh : i32 [ y1 - y0 ]
+    nb : i32 [ bw * bh ]
+    puts 'mars: cutting rivers over {bw}x{bh}'
+    T : new i32 [ nb ]
+    for [ y: i32 0, y < bh, y += 1 ]
+        for [ x: i32 0, x < bw, x += 1 ]
+            b2 : i32 [ ((y + y0) * W9 + (x + x0)) * ps ]
+            T[ y * bw + x ] = i32[ pd[ b2 ] ] * 256 + i32[ pd[ b2 + 3 ] ]
+
+    # counting sort by packed height, HIGHEST first. 65536 buckets is
+    # one pass -- a comparison sort over two million cells is not
+    cnt : new i32 [ 65536 ]
+    for [ i: i32 0, i < nb, i += 1 ] cnt[ T[i] ] += 1
+    fill : new i32 [ 65536 ]
+    run : i32 [ 0 ]
+    for [ v: i32 65535, v >= 0, v -= 1 ]
+        fill[ v ] = run
+        run += cnt[ v ]
+    ord : new i32 [ nb ]
+    for [ i: i32 0, i < nb, i += 1 ]
+        ord[ fill[ T[i] ] ] = i
+        fill[ T[i] ] += 1
+
+    # every cell starts owning its own rainfall, then gives the lot to
+    # its lowest neighbour on the way down
+    acc : new f32 [ nb ]
+    for [ i: i32 0, i < nb, i += 1 ] acc[ i ] = 1.0
+    for [ k: i32 0, k < nb, k += 1 ]
+        i : i32 [ ord[ k ] ]
+        x : i32 [ i % bw ]
+        y : i32 [ i / bw ]
+        lo : i32 [ T[ i ] ]
+        bi : i32 [ 0 - 1 ]
+        for [ dy: i32 0 - 1, dy <= 1, dy += 1 ]
+            ny : i32 [ y + dy ]
+            if [ ny >= 0 && ny < bh ]
+                for [ dx: i32 0 - 1, dx <= 1, dx += 1 ]
+                    nx : i32 [ x + dx ]
+                    if [ (dx != 0 || dy != 0) && nx >= 0 && nx < bw ]
+                        j : i32 [ ny * bw + nx ]
+                        if [ T[ j ] < lo ]
+                            lo = T[ j ]
+                            bi = j
+        if [ bi >= 0 ] acc[ bi ] += acc[ i ]
+
+    # a river's WIDTH goes as the log of its catchment, which is why a
+    # linear threshold gives either a hairline or a flood
+    # MEASURED, not assumed: the largest catchment in the box came out
+    # at ~2500 cells, not the tens of thousands a drainage this size
+    # would carry, because a real DEM is full of closed hollows and
+    # flow dies in every one. so the scale is set from what the terrain
+    # actually produced -- a 300 threshold left 487 water texels in the
+    # whole canyon
+    hi9 : i32 [ i32[ 0.30 * 65535.0 ] ]
+    amx : f32 [ 1.0 ]
+    for [ i: i32 0, i < nb, i += 1 ]
+        if [ acc[ i ] > amx ] amx = acc[ i ]
+    puts 'mars: largest catchment {amx} cells'
+    riv : new f32 [ nb ]
+    thr : f32 [ 24.0 ]
+    lt : f32 [ log[ thr ] ]
+    ls : f32 [ log[ amx ] - lt ]
+    if [ ls < 0.5 ] ls = 0.5
+    for [ i: i32 0, i < nb, i += 1 ]
+        r9 : f32 [ 0.0 ]
+        # only inside the canyon: above the rim the water leaves the box
+        if [ acc[ i ] > thr && T[ i ] < hi9 ]
+            r9 = (log[ acc[ i ] ] - lt) / ls
+            if [ r9 < 0.0 ] r9 = 0.0
+            if [ r9 > 1.0 ] r9 = 1.0
+        riv[ i ] = r9
+
+    # banks: how close the sand reaches. spread the water outward a few
+    # times, keeping the largest -- a cheap distance field
+    bank : new f32 [ nb ]
+    tmp2 : new f32 [ nb ]
+    for [ i: i32 0, i < nb, i += 1 ] bank[ i ] = riv[ i ]
+    for [ p9: i32 0, p9 < 7, p9 += 1 ]
+        for [ y: i32 0, y < bh, y += 1 ]
+            for [ x: i32 0, x < bw, x += 1 ]
+                i : i32 [ y * bw + x ]
+                m9 : f32 [ bank[ i ] ]
+                xm : i32 [ (x > 0) ? x - 1 : 0 ]
+                xp : i32 [ (x < bw - 1) ? x + 1 : bw - 1 ]
+                ym : i32 [ (y > 0) ? y - 1 : 0 ]
+                yp : i32 [ (y < bh - 1) ? y + 1 : bh - 1 ]
+                if [ bank[ y * bw + xm ] > m9 ] m9 = bank[ y * bw + xm ]
+                if [ bank[ y * bw + xp ] > m9 ] m9 = bank[ y * bw + xp ]
+                if [ bank[ ym * bw + x ] > m9 ] m9 = bank[ ym * bw + x ]
+                if [ bank[ yp * bw + x ] > m9 ] m9 = bank[ yp * bw + x ]
+                tmp2[ i ] = m9 * 0.86
+        for [ i: i32 0, i < nb, i += 1 ]
+            bank[ i ] = (riv[i] > tmp2[i]) ? riv[i] : tmp2[i]
+
+    rv : Image [ width: W9, height: H9, format: Pixel.rgba8, linear: true, wrap_u: true ]
+    rd : @u8 [ rv.vdata[] ]
+    n9 : i32 [ W9 * H9 ]
+    for [ i: i32 0, i < n9, i += 1 ]
+        b4 : i32 [ i * 4 ]
+        rd[ b4 ] = 0
+        rd[ b4 + 1 ] = 0
+        rd[ b4 + 2 ] = 0
+        rd[ b4 + 3 ] = 255
+    nriv : i32 [ 0 ]
+    for [ y: i32 0, y < bh, y += 1 ]
+        for [ x: i32 0, x < bw, x += 1 ]
+            i : i32 [ y * bw + x ]
+            b4 : i32 [ ((y + y0) * W9 + (x + x0)) * 4 ]
+            rd[ b4 ]     = u8[ riv[ i ] * 255.0 ]
+            rd[ b4 + 1 ] = u8[ bank[ i ] * 255.0 ]
+            if [ riv[ i ] > 0.05 ] nriv += 1
+    bd : path '../scenes/baked'
+    bd.make_dir[]
+    rv.png[ path '../scenes/baked/mars-rv.png' ]
+    puts 'mars: rivers written, {nriv} water texels'
+    return true
+
+func mars_river_map []
+    h1 : u64 [ @mars_bake_river ]
+    h2 : u64 [ @mars_vu0 ]
+    h3 : u64 [ @mars_vu1 ]
+    h4 : u64 [ @mars_vv0 ]
+    h5 : u64 [ @mars_vv1 ]
+    stamp : string '{h1}-{h2}-{h3}-{h4}-{h5}'
+    sp : path '../scenes/baked/mars-rv.hash'
+    rvp : path '../scenes/baked/mars-rv.png'
+    if [ sp.exists[] && rvp.exists[] ]
+        old : string [ sp.load[ typeid[string], null ] ]
+        if [ old && old == stamp ]
+            puts 'mars: rivers current ({stamp})'
+            return
+    if [ mars_bake_river[] ] sp.save[ stamp, null ]
+
+# CLOUD VOLUME. the shape of a real cloud comes from WORLEY noise
+# inverted -- cellular distance fields give the billowing cauliflower
+# lobes that value noise simply cannot make, however it is octaved.
+# this bakes a 64^3 volume as an 8x8 slice atlas:
+#   R = billow base (worley fbm, 4/8/16 cells)
+#   G,B,A = single-octave worley at 8/16/32, for edge erosion
+# every octave wraps its cell indices, so the volume tiles in all
+# three axes and can be sampled endlessly across the sky
+func cl_hash [ ix: i32, iy: i32, iz: i32, sd: i32 ] -> f32
+    h : i32 [ ix * 374761393 + iy * 668265263 + iz * 2147483647 + sd * 1274126177 ]
+    h = (h ^ (h >> 13)) * 1274126177
+    h = h ^ (h >> 16)
+    hu : i32 [ h & 8388607 ]
+    return f32[ hu ] / 8388608.0
+
+# nearest feature-point distance, cells wrapped so the field tiles
+func cl_worley [ px: f32, py: f32, pz: f32, nc: i32, sd: i32 ] -> f32
+    fx : f32 [ px * f32[ nc ] ]
+    fy : f32 [ py * f32[ nc ] ]
+    fz : f32 [ pz * f32[ nc ] ]
+    ix : i32 [ i32[ floor[ fx ] ] ]
+    iy : i32 [ i32[ floor[ fy ] ] ]
+    iz : i32 [ i32[ floor[ fz ] ] ]
+    best : f32 [ 9.0 ]
+    for [ dz: i32 0 - 1, dz <= 1, dz += 1 ]
+        for [ dy: i32 0 - 1, dy <= 1, dy += 1 ]
+            for [ dx: i32 0 - 1, dx <= 1, dx += 1 ]
+                cx : i32 [ (ix + dx) % nc ]
+                cy : i32 [ (iy + dy) % nc ]
+                cz : i32 [ (iz + dz) % nc ]
+                if [ cx < 0 ] cx = cx + nc
+                if [ cy < 0 ] cy = cy + nc
+                if [ cz < 0 ] cz = cz + nc
+                ox : f32 [ f32[ ix + dx ] + cl_hash[ cx, cy, cz, sd ] ]
+                oy : f32 [ f32[ iy + dy ] + cl_hash[ cx, cy, cz, sd + 7 ] ]
+                oz : f32 [ f32[ iz + dz ] + cl_hash[ cx, cy, cz, sd + 19 ] ]
+                ddx : f32 [ ox - fx ]
+                ddy : f32 [ oy - fy ]
+                ddz : f32 [ oz - fz ]
+                d2 : f32 [ ddx * ddx + ddy * ddy + ddz * ddz ]
+                if [ d2 < best ] best = d2
+    d : f32 [ sqrt[ best ] ]
+    if [ d > 1.0 ] d = 1.0
+    # INVERTED: near a feature point is dense, which is the lobe
+    return 1.0 - d
+
+func mars_bake_cloud [] -> bool
+    n : i32 [ 64 ]
+    gw : i32 [ n * 8 ]
+    gh : i32 [ n * 8 ]
+    puts 'mars: baking {n}^3 cloud volume as {gw}x{gh} atlas'
+    im : Image [ width: gw, height: gh, format: Pixel.rgba8, linear: true, wrap_u: true, wrap_v: true ]
+    dd : @u8 [ im.vdata[] ]
+    inv : f32 [ 1.0 / f32[ n ] ]
+    for [ z: i32 0, z < n, z += 1 ]
+        sx : i32 [ (z % 8) * n ]
+        sy : i32 [ (z / 8) * n ]
+        pz : f32 [ (f32[ z ] + 0.5) * inv ]
+        for [ y: i32 0, y < n, y += 1 ]
+            py : f32 [ (f32[ y ] + 0.5) * inv ]
+            for [ x: i32 0, x < n, x += 1 ]
+                px : f32 [ (f32[ x ] + 0.5) * inv ]
+                w4 : f32 [ cl_worley[ px, py, pz, 4,  11 ] ]
+                w8 : f32 [ cl_worley[ px, py, pz, 8,  23 ] ]
+                w16 : f32 [ cl_worley[ px, py, pz, 16, 37 ] ]
+                w32 : f32 [ cl_worley[ px, py, pz, 32, 53 ] ]
+                base : f32 [ w4 * 0.625 + w8 * 0.250 + w16 * 0.125 ]
+                if [ base < 0.0 ] base = 0.0
+                if [ base > 1.0 ] base = 1.0
+                o : i32 [ ((sy + y) * gw + (sx + x)) * 4 ]
+                dd[ o ]     = u8[ base * 255.0 ]
+                dd[ o + 1 ] = u8[ w8  * 255.0 ]
+                dd[ o + 2 ] = u8[ w16 * 255.0 ]
+                dd[ o + 3 ] = u8[ w32 * 255.0 ]
+    bd : path '../scenes/baked'
+    bd.make_dir[]
+    im.png[ path '../scenes/baked/mars-cld.png' ]
+    puts 'mars: cloud volume written'
+    return true
+
+func mars_cloud_map []
+    h1 : u64 [ @mars_bake_cloud ]
+    h2 : u64 [ @cl_worley ]
+    h3 : u64 [ @cl_hash ]
+    stamp : string '{h1}-{h2}-{h3}'
+    sp : path '../scenes/baked/mars-cld.hash'
+    cp : path '../scenes/baked/mars-cld.png'
+    if [ sp.exists[] && cp.exists[] ]
+        old : string [ sp.load[ typeid[string], null ] ]
+        if [ old && old == stamp ]
+            puts 'mars: cloud volume current ({stamp})'
+            return
+    if [ mars_bake_cloud[] ] sp.save[ stamp, null ]
+
+# NEPTUNE, composed rather than sourced: saturn's smooth banded poles
+# with jupiter's turbulent middle set between them, then driven deep
+# blue. jupiter's band is FLIPPED in latitude and MIRRORED in longitude
+# so it does not read as jupiter, and the great red spot is warped by a
+# swirl about its own centre into a different storm entirely
+func nep_lerp [ a: f32, b: f32, t: f32 ] -> f32
+    return a + (b - a) * t
+
+func neptune_bake [] -> bool
+    si : Image [ uri: path '../scenes/textures/saturn-color.png' ]
+    if [ si.width == 0 ]
+        puts 'neptune: saturn plate missing'
+        return false
+    w9 : i32 [ si.width ]
+    h9 : i32 [ si.height ]
+    puts 'neptune: composing {w9}x{h9} from saturn alone'
+    sp9 : i32 [ si.pixel_size ]
+    sdat : @u8 [ si.vdata[] ]
+    im : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true, wrap_u: true ]
+    od : @u8 [ im.vdata[] ]
+    # THE GREAT DARK SPOT, ours rather than jupiter's borrowed one: an
+    # ellipse laid down with a brush whose edge is broken by perlin, so
+    # it reads as a storm the bands are wrapping around instead of a
+    # painted oval. wide and shallow, the way a banded planet holds one
+    du0 : f32 [ 0.34 ]
+    dv0 : f32 [ 0.385 ]
+    for [ y: i32 0, y < h9, y += 1 ]
+        v : f32 [ (f32[ y ] + 0.5) / f32[ h9 ] ]
+        for [ x: i32 0, x < w9, x += 1 ]
+            u : f32 [ (f32[ x ] + 0.5) / f32[ w9 ] ]
+            sb : i32 [ (y * w9 + x) * sp9 ]
+            r9 : f32 [ f32[ sdat[ sb ] ] / 255.0 ]
+            g9 : f32 [ f32[ sdat[ sb + 1 ] ] / 255.0 ]
+            b9 : f32 [ f32[ sdat[ sb + 2 ] ] / 255.0 ]
+            l9 : f32 [ r9 * 0.299 + g9 * 0.587 + b9 * 0.114 ]
+            cv9 : f32 [ (r9 - b9) * 0.5 ]
+
+            # the spot: distance in an ellipse three times wider than
+            # tall, with the boundary pushed in and out by two octaves
+            dxx : f32 [ u - du0 ]
+            if [ dxx > 0.5 ] dxx = dxx - 1.0
+            if [ dxx < 0.0 - 0.5 ] dxx = dxx + 1.0
+            dyy : f32 [ v - dv0 ]
+            # 36 degrees of longitude across is not a storm, it is a
+            # continent. 7x tighter puts it near jupiter's spot, and the
+            # perlin wobble has to shrink with it or it swamps the shape
+            rr : f32 [ sqrt[ dxx * dxx * 440.0 + dyy * dyy * 3100.0 ] ]
+            nb1 : f32 [ eu_gnoise[ u * 34.0, v * 34.0, 3.0 ] ]
+            nb2 : f32 [ eu_gnoise[ u * 88.0 + 5.0, v * 88.0 + 11.0, 17.0 ] ]
+            rr = rr + (nb1 - 0.5) * 0.30 + (nb2 - 0.5) * 0.12
+            spot : f32 [ 1.0 - eu_sstep[ 0.30, 0.72, rr ] ]
+            # a bright collar on its trailing edge, the way a dark storm
+            # drags methane cloud around itself
+            coll : f32 [ eu_sstep[ 0.62, 0.86, rr ] * (1.0 - eu_sstep[ 0.86, 1.10, rr ]) ]
+            l9 = l9 * (1.0 - spot * 0.62) + coll * 0.16
+
+            # DEEP BLUE: structure as luminance, hue carried in code --
+            # tinting saturn's ochre would leave it fighting through
+            nr : f32 [ l9 * 0.20 + cv9 * 0.10 ]
+            ng : f32 [ l9 * 0.46 + cv9 * 0.06 ]
+            nb : f32 [ l9 * 0.92 + 0.06 ]
+            if [ nr < 0.0 ] nr = 0.0
+            if [ ng < 0.0 ] ng = 0.0
+            if [ nb > 1.0 ] nb = 1.0
+            ob : i32 [ (y * w9 + x) * 4 ]
+            od[ ob ]     = u8[ nr * 255.0 ]
+            od[ ob + 1 ] = u8[ ng * 255.0 ]
+            od[ ob + 2 ] = u8[ nb * 255.0 ]
+            od[ ob + 3 ] = 255
+    bd : path '../scenes/baked'
+    bd.make_dir[]
+    im.png[ path '../scenes/baked/neptune-color.png' ]
+    puts 'neptune: colour map written'
+    return true
+
+# the storm mask for neptune: CONTRAST of the cloud field only -- no
+# sobel. neptune has no shear lines to speak of, so the discharges sit
+# where the cloud deck itself is most differentiated, and the whole
+# thing is blurred far softer than jupiter's
+func neptune_storm [] -> bool
+    ci : Image [ uri: path '../scenes/baked/neptune-color.png' ]
+    if [ ci.width == 0 ] return false
+    w9 : i32 [ ci.width ]
+    h9 : i32 [ ci.height ]
+    n9 : i32 [ w9 * h9 ]
+    L : new f32 [ n9 ]
+    eu_lum[ ci, L ]
+    # ELONGATED basis. a streak lying along the wind is a horizontal
+    # band, and a horizontal band shows itself as a strong VERTICAL
+    # gradient -- so weighting dy far over dx finds exactly those and
+    # ignores the upright features that would read as tall
+    S : new f32 [ n9 ]
+    for [ y: i32 0, y < h9, y += 1 ]
+        ym : i32 [ (y > 0) ? y - 1 : 0 ]
+        yp : i32 [ (y < h9 - 1) ? y + 1 : h9 - 1 ]
+        for [ x: i32 0, x < w9, x += 1 ]
+            xm : i32 [ (x > 0) ? x - 1 : w9 - 1 ]
+            xp : i32 [ (x < w9 - 1) ? x + 1 : 0 ]
+            gx : f32 [ L[ y * w9 + xp ] - L[ y * w9 + xm ] ]
+            gy : f32 [ L[ yp * w9 + x ] - L[ ym * w9 + x ] ]
+            if [ gx < 0.0 ] gx = 0.0 - gx
+            if [ gy < 0.0 ] gy = 0.0 - gy
+            v9 : f32 [ (gy * 5.0 + gx * 0.35) * 7.0 ]
+            if [ v9 > 1.0 ] v9 = 1.0
+            # AGAINST THE BRIGHT BLUES. jupiter's storms sit in its dark
+            # belts, so that map max'd with darkness -- neptune is the
+            # other way round: the bright methane cloud IS the weather,
+            # and the deep blue between is clear air
+            br : f32 [ (L[ y * w9 + x ] - 0.34) / 0.30 ]
+            if [ br < 0.0 ] br = 0.0
+            if [ br > 1.0 ] br = 1.0
+            S[ y * w9 + x ] = v9 * (0.12 + 0.88 * br)
+    # and SMEAR it along the wind: a wide box in x only, so the mask
+    # comes out as ribbons running with the bands instead of blobs.
+    # an isotropic blur would round every streak back into a dot
+    SM : new f32 [ n9 ]
+    br : i32 [ 26 ]
+    inv : f32 [ 1.0 / f32[ br * 2 + 1 ] ]
+    for [ y: i32 0, y < h9, y += 1 ]
+        row : i32 [ y * w9 ]
+        acc : f32 [ 0.0 ]
+        for [ k: i32 0 - br, k <= br, k += 1 ]
+            xx : i32 [ k ]
+            if [ xx < 0 ] xx = xx + w9
+            acc += S[ row + xx ]
+        for [ x: i32 0, x < w9, x += 1 ]
+            SM[ row + x ] = acc * inv
+            xo : i32 [ x - br ]
+            if [ xo < 0 ] xo = xo + w9
+            xn : i32 [ x + br + 1 ]
+            if [ xn >= w9 ] xn = xn - w9
+            acc = acc - S[ row + xo ] + S[ row + xn ]
+    # a touch of vertical softening only -- enough to kill the single
+    # texel line, not enough to make them tall
+    T : new f32 [ n9 ]
+    eu_blur[ SM, T, w9, h9, 2 ]
+    # NORMALISE to what the field actually produced. a fixed gain after
+    # a wide smear left the map flat -- mean 51 of 255 with a max of 76,
+    # no contrast to select a streak with
+    # normalise to a HIGH PERCENTILE, not the max. the pole rows clamp
+    # their vertical gradient and produce a handful of extreme values;
+    # scaling to those left the whole visible body down at a sixth of
+    # its range. a 4096-bucket histogram finds the 99th cheaply
+    hb : new i32 [ 4096 ]
+    for [ i: i32 0, i < n9, i += 1 ]
+        bi : i32 [ i32[ SM[ i ] * 4095.0 ] ]
+        if [ bi < 0 ] bi = 0
+        if [ bi > 4095 ] bi = 4095
+        hb[ bi ] += 1
+    want : i32 [ i32[ f32[ n9 ] * 0.99 ] ]
+    run9 : i32 [ 0 ]
+    mx9 : f32 [ 1.0 ]
+    for [ bi: i32 0, bi < 4096, bi += 1 ]
+        run9 += hb[ bi ]
+        if [ run9 >= want ]
+            mx9 = f32[ bi ] / 4095.0
+            break
+    if [ mx9 < 0.0005 ] mx9 = 0.0005
+    puts 'neptune: streak p99 {mx9}'
+    im : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true, wrap_u: true ]
+    od : @u8 [ im.vdata[] ]
+    for [ i: i32 0, i < n9, i += 1 ]
+        v9 : f32 [ SM[ i ] / mx9 ]
+        if [ v9 > 1.0 ] v9 = 1.0
+        b4 : i32 [ i * 4 ]
+        od[ b4 ]     = u8[ v9 * 255.0 ]
+        od[ b4 + 1 ] = 0
+        od[ b4 + 2 ] = 0
+        od[ b4 + 3 ] = 255
+    im.png[ path '../scenes/baked/neptune-storm.png' ]
+    puts 'neptune: streak map written'
+    return true
+
+func neptune_maps []
+    h1 : u64 [ @neptune_bake ]
+    h2 : u64 [ @neptune_storm ]
+    stamp : string '{h1}-{h2}'
+    sp : path '../scenes/baked/neptune.hash'
+    cp : path '../scenes/baked/neptune-color.png'
+    stp : path '../scenes/baked/neptune-storm.png'
+    if [ sp.exists[] && cp.exists[] && stp.exists[] ]
+        old : string [ sp.load[ typeid[string], null ] ]
+        if [ old && old == stamp ]
+            puts 'neptune: colour map current ({stamp})'
+            return
+    if [ neptune_bake[] && neptune_storm[] ] sp.save[ stamp, null ]
+
+export func neptune_export []
+    neptune_maps[]
+
 export func mars_maps []
     # EVERY function the output depends on, not just the two big ones.
     # a stamp over the bake alone stayed identical when a constant
@@ -5624,12 +5214,16 @@ export func mars_maps []
             puts 'mars: baked maps current ({stamp})'
             mars_detail_map[]
             mars_edge_map[]
+            mars_river_map[]
+            mars_cloud_map[]
             return
     # stamp ONLY on success: saving it after a failed bake caches the
     # failure forever, and the next build reports everything current
     if [ mars_bake_mola[] ] sp.save[ stamp, null ]
     mars_detail_map[]
     mars_edge_map[]
+    mars_river_map[]
+    mars_cloud_map[]
 
 # the rock material shares NO input with the MOLA bake, so it carries
 # its own stamp: touching one must not re-read 2GB of tiles for the other
@@ -5650,7 +5244,7 @@ func mars_detail_map []
     if [ mars_bake_detail[] ] sp.save[ stamp, null ]
 
 # no colour map: it has shadows baked into it and fights every light
-enum OlympusSurface
+enum TerraSurface
     height  : 0
     nrm     : 1
     detail  : 2
@@ -5659,8 +5253,9 @@ enum OlympusSurface
     veg_a   : 5
     veg_b   : 6
     veg_c   : 7
+    river   : 8
 
-ModelViewProject OlympusShader
+ModelViewProject TerraShader
     # unpack scale for the baked height, and the slope range the baked
     # normal encodes. both must match what mars_bake wrote
     mutable hmax     : f32
@@ -5678,15 +5273,20 @@ ModelViewProject OlympusShader
     mutable hdist    : f32
     # how far the rock material displaces the mesh, in sphere radii
     mutable dh       : f32
+    # sea level at the poles, and how much higher it stands at the
+    # equator. both in packed height units
+    mutable sea_l0   : f32
+    mutable sea_bias : f32
 
-    attrib height  : LayoutBinding [ type:typeid[ OlympusSurface ], id:OlympusSurface.height, count:1, format: typeid[ rgba8 ] ]
-    attrib nrm     : LayoutBinding [ type:typeid[ OlympusSurface ], id:OlympusSurface.nrm,    count:1, format: typeid[ rgba8 ] ]
-    attrib detail  : LayoutBinding [ type:typeid[ OlympusSurface ], id:OlympusSurface.detail, count:1, format: typeid[ rgba8 ] ]
-    attrib edge    : LayoutBinding [ type:typeid[ OlympusSurface ], id:OlympusSurface.edge,   count:1, format: typeid[ rgba8 ] ]
-    attrib color   : LayoutBinding [ type:typeid[ OlympusSurface ], id:OlympusSurface.color,  count:1, format: typeid[ rgba8 ] ]
-    attrib veg_a   : LayoutBinding [ type:typeid[ OlympusSurface ], id:OlympusSurface.veg_a,  count:1, format: typeid[ rgba8 ] ]
-    attrib veg_b   : LayoutBinding [ type:typeid[ OlympusSurface ], id:OlympusSurface.veg_b,  count:1, format: typeid[ rgba8 ] ]
-    attrib veg_c   : LayoutBinding [ type:typeid[ OlympusSurface ], id:OlympusSurface.veg_c,  count:1, format: typeid[ rgba8 ] ]
+    attrib height  : LayoutBinding [ type:typeid[ TerraSurface ], id:TerraSurface.height, count:1, format: typeid[ rgba8 ] ]
+    attrib nrm     : LayoutBinding [ type:typeid[ TerraSurface ], id:TerraSurface.nrm,    count:1, format: typeid[ rgba8 ] ]
+    attrib detail  : LayoutBinding [ type:typeid[ TerraSurface ], id:TerraSurface.detail, count:1, format: typeid[ rgba8 ] ]
+    attrib edge    : LayoutBinding [ type:typeid[ TerraSurface ], id:TerraSurface.edge,   count:1, format: typeid[ rgba8 ] ]
+    attrib color   : LayoutBinding [ type:typeid[ TerraSurface ], id:TerraSurface.color,  count:1, format: typeid[ rgba8 ] ]
+    attrib veg_a   : LayoutBinding [ type:typeid[ TerraSurface ], id:TerraSurface.veg_a,  count:1, format: typeid[ rgba8 ] ]
+    attrib veg_b   : LayoutBinding [ type:typeid[ TerraSurface ], id:TerraSurface.veg_b,  count:1, format: typeid[ rgba8 ] ]
+    attrib veg_c   : LayoutBinding [ type:typeid[ TerraSurface ], id:TerraSurface.veg_c,  count:1, format: typeid[ rgba8 ] ]
+    attrib river   : LayoutBinding [ type:typeid[ TerraSurface ], id:TerraSurface.river,  count:1, format: typeid[ rgba8 ] ]
 
     attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
     attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
@@ -5727,6 +5327,37 @@ ModelViewProject OlympusShader
         float h11 = q11.r * 65280.0 + q11.a * 255.0;
         float hh  = mix(mix(h00, h10, fr.x), mix(h01, h11, fr.x), fr.y);
         return hh / 65535.0 * ubo.hmax;
+    }
+
+    # PERLIN BRUSH. fed by the sphere position, never uv -- that is
+    # continuous over the whole planet, with no meridian seam and no
+    # pole where the cells collapse. e_gnoise belongs to the enceladus
+    # shader and is not in scope here
+    func o_hash [ p: vec3f ] -> GLSL float {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+    }
+
+    func o_noise [ p: vec3f ] -> GLSL float {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(mix(o_hash(i + vec3(0.0, 0.0, 0.0)), o_hash(i + vec3(1.0, 0.0, 0.0)), u.x),
+                       mix(o_hash(i + vec3(0.0, 1.0, 0.0)), o_hash(i + vec3(1.0, 1.0, 0.0)), u.x), u.y),
+                   mix(mix(o_hash(i + vec3(0.0, 0.0, 1.0)), o_hash(i + vec3(1.0, 0.0, 1.0)), u.x),
+                       mix(o_hash(i + vec3(0.0, 1.0, 1.0)), o_hash(i + vec3(1.0, 1.0, 1.0)), u.x), u.y), u.z);
+    }
+
+    # four octaves, each shifted so the lattice never prints
+    func o_fbm [ p: vec3f ] -> GLSL float {
+        float s = 0.0;
+        float a = 0.5;
+        vec3  q = p;
+        for (int i = 0; i < 4; i++) {{
+            s += a * o_noise(q);
+            q  = q * 2.03 + vec3(11.3, 7.7, 3.1);
+            a  = a * 0.5;
+        }}
+        return s;
     }
 
 
@@ -5862,11 +5493,141 @@ ModelViewProject OlympusShader
         // everything read as flat and the detail sat at its floor
         vec4  ee9 = texture(edge, v_uv);
         float aug = clamp(ee9.r * 0.55 + ee9.g * 0.30 + ee9.b * 0.15, 0.0, 1.0);
-        float rug = clamp(length(sl) / 0.12, 0.0, 1.0);
+        // NORMALISED slope. sl is already multiplied by smax, and
+        // smax carries the 3x relief look-control -- so every fixed
+        // threshold below was silently 3x too sensitive the moment
+        // relief moved. dividing it back out gives the raw map value
+        // in 0..1, and these gates mean the same thing at any relief.
+        // this is what emptied the valley: flat0 hit zero on the canyon
+        // floor, which zeroed basin, which killed sand and water
+        float slope0 = length(sl) / max(ubo.smax, 1e-6);
+        float rug = clamp(slope0 / 0.08, 0.0, 1.0);
+        // the planting needs its own texture BEFORE the normal is set.
+        // a canyon floor is dead flat, so the slope gate drops the rock
+        // material to its 0.10 floor exactly where the forest sits --
+        // which is why the wooded ground came out smooth and lifeless
+        float flat0 = 1.0 - clamp(slope0 / 0.20, 0.0, 1.0);
+        // EVERYTHING keys off the sea now. raw elevation was the right
+        // datum when there was no water; with an ocean, what governs
+        // planting, treeline and snow is height ABOVE SEA LEVEL -- and
+        // the sea itself tilts with latitude, so a fixed elevation band
+        // no longer means the same climate at two different latitudes
+        float tg9  = v_h / max(ubo.hmax, 1e-6);
+        float sea9 = ubo.sea_l0 + ubo.sea_bias * cos(asin(clamp(sp.y, -1.0, 1.0)));
+        float asl  = tg9 - sea9;
+        float lowl  = 1.0 - smoothstep(0.0, 0.30, asl);
+        float brush  = o_fbm(sp * 6.0);
+        float b_fine = o_fbm(sp * 19.0 + vec3(19.0, 5.0, 31.0));
+        float cover = clamp((0.45 + 0.55 * lowl) * flat0 * flat0
+                            * (0.40 + 1.20 * brush) - 0.15, 0.0, 1.0);
+        cover *= 1.0 - aug * 0.45;
+        // WET LOWLANDS, as a CONTINUOUS field. the drainage network on
+        // its own was a hairline -- 1% of the box, pixels of it at
+        // this altitude. this is one big perlin over the whole basin
+        // floor, about half of it wet, with the flow map only LEANING
+        // it so the real channels sit wettest inside each patch.
+        // sp * 1.5 is a very large patch: whole reaches of valley, not
+        // a stipple
+        vec4  rv9   = texture(river, v_uv);
+        // VERY soft: sp * 0.62 makes one patch span a large part of
+        // the whole canyon system, so the wet ground arrives as broad
+        // washes instead of a stipple you have to look for
+        float wperl = o_fbm(sp * 0.62 + vec3(41.0, 13.0, 7.0));
+        // the whole canyon FLOOR is basin, not just its deepest reaches
+        // -- and gated by FLATNESS, because sand does not lie on a
+        // cliff and water certainly does not stand on one
+        // reaches much further UP the valley -- 0.28 kept it pinned to
+        // the deepest floor, so most of the canyon never qualified
+        float basin = smoothstep(0.08, 0.44, lowl) * flat0 * flat0;
+        // -0.75, not -0.30. the field used to average 0.85, which is
+        // past the sand threshold everywhere -- so the floor was sand
+        // wall to wall and there was no green left beside it for the
+        // eye to read a transition against. this centres it so all
+        // three bands get real ground
+        float wetf  = clamp(basin * (wperl * 2.30 - 0.62), 0.0, 1.0);
+        // the CHANNEL is water in its own right, not a nudge on the
+        // perlin. the bake's accumulation tops out at 94/255, so as a
+        // lean it could never cross the water threshold -- rescaled to
+        // its real range it carves the drainage straight through the
+        // sand, which is the reflective thread the flats were missing
+        // the drainage BIASES the field, it does not punch water in on
+        // its own. maxing it straight into wet drew 2600m-wide threads
+        // with a hard smoothstep edge -- that was the aliasing, and it
+        // left water with no sand around it. folded into wetf instead,
+        // every pool is automatically rimmed by sand, because sand and
+        // water are two thresholds on the SAME field
+        float chan  = smoothstep(0.05, 0.30, rv9.r) * basin;
+        wetf = clamp(wetf + chan * 0.40, 0.0, 1.0);
+        // THREE bands on one field, in order, with real width each:
+        // green below 0.28, sand from 0.28 to 0.56, water above 0.60.
+        // sand used to start at 0.02 and finish by 0.30 -- saturated
+        // before the water band even began, so it read as the floor's
+        // base colour rather than as a shore
+        // wide, soft ramps: a shore is a gradient, not a contour
+        float sand  = smoothstep(0.16, 0.54, wetf);
+        float wet   = smoothstep(0.56, 0.94, wetf);
+        cover *= (1.0 - wet) * (1.0 - sand * 0.95);
+
+        // SDF TO THE SHORE. (ground - sea) is a height difference, and
+        // dividing it by the local slope turns it into a HORIZONTAL
+        // distance -- so the beach keeps its width whether the shore
+        // shelves gently or drops off a cliff. that is the whole point
+        // of a distance field over a height threshold: a plain height
+        // band would be kilometres wide on a flat and vanish on a wall
+        float dsh  = asl * ubo.hmax / max(length(sl), 0.0020);
+        // reaches about 2km inland and the same distance out
+        float beach = 1.0 - smoothstep(0.0, 0.00060, abs(dsh));
+        // 80% of the shoreline is beach; the other fifth runs to rock
+        float bmask = smoothstep(0.34, 0.46, o_fbm(sp * 5.5 + vec3(61.0, 17.0, 5.0)));
+        beach *= bmask;
+        // THE SEABED IS SAND, all of it. `wet` is the terrain's own
+        // perlin field, not the real sea -- the sea is the shell, so
+        // the ground under it was never told it was submerged and kept
+        // its rock. the water is transparent in the shallows, so that
+        // rock was showing straight through
+        float seabed = 1.0 - smoothstep(-0.00060, 0.00060, dsh);
+        sand   = max(sand, max(beach, seabed));
+        cover *= (1.0 - beach) * (1.0 - seabed);
+
+        // GREEN ONLY NEAR WATER. growth needs the water it grows beside,
+        // so cover falls away with distance from the shoreline -- and
+        // dsh is already a horizontal distance in metres, so this is a
+        // real reach inland rather than an elevation guess. a perlin
+        // section then decides WHICH stretches of coast are green at
+        // all; the rest of the planet is left as bare mars
+        float reach = 1.0 - smoothstep(0.0, 0.0080, max(dsh, 0.0));
+        float vsec  = smoothstep(0.28, 0.64, o_fbm(sp * 2.1 + vec3(13.0, 47.0, 29.0)));
+        cover *= reach * vsec;
+        // and NOTHING grows high up, whatever the shoreline says. a
+        // steep coast keeps dsh small a long way up a cliff, so reach
+        // alone would run grass right up the wall. asl is height above
+        // sea: full growth under 1.4km, gone by 5.2km, bare mars above
+        cover *= 1.0 - smoothstep(0.020, 0.075, asl);
+
+        // SNOW -- the reverse of the lowlands. cold high ground holds
+        // ice, and it caps the planting rather than replacing it. steep
+        // faces shed it, same as sand cannot lie on a cliff
+        float high9 = 1.0 - lowl;
+        float snowf = clamp(smoothstep(0.42, 0.80, high9)
+                          * (0.45 + 1.05 * o_fbm(sp * 2.6 + vec3(7.0, 29.0, 17.0)))
+                          - 0.18, 0.0, 1.0) * flat0;
         // a TWENTYFOLD span: a tenth on dead flat ground, double where
-        // the surface actually moves. the edge map only trims it
+        // the surface actually moves. the edge map only trims it, and
+        // canopy carries relief of its own however flat the ground is
+        // SMOOTH the wet ground. sand flat and standing water have no
+        // scree and no rock grain -- leaving the material on them is
+        // what made the canyon floor read as blown-out white rubble.
+        // water goes fully flat so it can behave like glass
+        float smooth9 = (1.0 - sand * 0.88) * (1.0 - wet) * (1.0 - snowf * 0.70);
         n = normalize(n + (ea * dxy.x + no * dxy.y)
-                        * ubo.damp * (0.10 + 1.90 * rug) * (0.55 + 0.45 * aug));
+                        * ubo.damp * (0.10 + 1.90 * rug + 1.30 * cover)
+                        * (0.55 + 0.45 * aug) * smooth9);
+
+        // NO carve here. the bank field is a dilated 8-bit map that
+        // steps about 14% per texel, so any real gain turns every step
+        // into a cliff -- at 26 it shattered the whole floor into
+        // facets. a groove would have to come from a smooth distance
+        // field, not from this one
 
         mat3 nmm = transpose(inverse(mat3(ubo.model)));
         vec3 nw = normalize(nmm * n);
@@ -5879,41 +5640,27 @@ ModelViewProject OlympusShader
         vec3  c_rock = vec3(0.26, 0.16, 0.11);
         vec3  c_dust = vec3(0.64, 0.43, 0.28);
         float crest = clamp(cav * 0.5 + 0.5, 0.0, 1.0);
-        float flat9 = 1.0 - clamp(length(sl) / 0.30, 0.0, 1.0);
-        vec3  bare  = texture(color, v_uv).rgb;
+        float flat9 = 1.0 - clamp(slope0 / 0.20, 0.0, 1.0);
+        vec3  marsc = texture(color, v_uv).rgb;
+        float marsl = dot(marsc, vec3(0.333));
+        vec3  bare  = marsc;
         bare = mix(bare, mix(c_rock, c_dust, flat9 * (0.35 + 0.65 * crest)), 0.45);
         bare *= 0.78 + 0.44 * crest;
         bare = mix(bare, vec3(dot(bare, vec3(0.35, 0.48, 0.17))), rgh * 0.25);
 
-        // WHERE it grows. deep ground holds water and air, slope sheds
-        // both -- so altitude and steepness decide, and a perlin brush
-        // wanders the boundary so it never reads as a contour line.
-        // v_h is the packed ground height: low is a basin floor
-        float lowl = 1.0 - smoothstep(0.10, 0.62, v_h / max(ubo.hmax, 1e-6));
-        float hold = flat9 * flat9;
-        // the brush is the detail tile read very slowly -- it is
-        // already a multi-octave patched field, so it wanders the way
-        // perlin would with no second noise to carry. e_gnoise lives
-        // on the enceladus shader and is not in scope here.
-        // TWO independent fields: one decides where cover reaches, the
-        // other which patch scale owns the ground. sharing one would
-        // lock the planting boundary to the texture change
-        float brush  = texture(detail, duv * ubo.dtile * 0.0045 + vec2(0.19, 0.63)).b * 0.60
-                     + texture(detail, duv * ubo.dtile * 0.0180 + vec2(0.71, 0.29)).b * 0.40;
-        float b_fine = texture(detail, duv * ubo.dtile * 0.0091 + vec2(0.47, 0.11)).b * 0.55
-                     + texture(detail, duv * ubo.dtile * 0.0330 + vec2(0.23, 0.87)).b * 0.45;
-        // the plateau is planted too, just not forested, so the low
-        // ground only leans the odds -- it does not gate cover off
-        float cover = clamp((0.45 + 0.55 * lowl) * hold * (0.40 + 1.20 * brush)
-                            - 0.15, 0.0, 1.0);
-        cover *= 1.0 - aug * 0.45;
+        // WHERE it grows -- lowl, brush, b_fine and cover were all
+        // worked out above, because the normal needed cover before the
+        // lighting ran. deep ground holds water and air, slope sheds
+        // both, and the perlin brush wanders the boundary so it never
+        // reads as a contour line
 
-        // THREE tiers by distance. sand is the far base, grass the
-        // middle, canopy only near -- each one's own tiling rate, and
-        // crossfaded so no tier pops as the craft closes
+        // ELEVATION picks the planting, not distance. the canyon floor
+        // is the deepest, warmest, densest air on the planet and it
+        // takes the forest; the plateau above the rim gets grass. lowl
+        // reads about 0.97 on the Valles floor against 0.43 up top,
+        // so the band between them is where the treeline sits
         vec2  vuv = duv * ubo.dtile;
-        float t_c = 1.0 - smoothstep(0.010, 0.055, dist);
-        float t_b = (1.0 - smoothstep(0.045, 0.180, dist)) * (1.0 - t_c * 0.55);
+        float treeline = smoothstep(0.62, 0.90, lowl);
 
         // STOCHASTIC PATCHING. one tap at one rate repeats on a grid,
         // which is what you were looking at. three taps at scales that
@@ -5923,48 +5670,735 @@ ModelViewProject OlympusShader
         // a scale that varies per pixel multiplies its own gradient by
         // uv -- about 3000 here -- and aliases, the same way the
         // downslope rotation did
+        // FAR larger patches: 0.180 put 737 plates around the equator,
+        // a 29km stamp that reads as uniform mush. these run 65 to 320,
+        // so a plate covers 100-330km and its features are legible.
+        // each tap also gets its OWN fixed rotation -- scale alone left
+        // every copy square to the grid, which is the column look.
+        // fixed, never per-pixel: a turning coordinate aliases
+        mat2 r0 = mat2( 1.0000,  0.0000,  0.0000, 1.0000);
+        mat2 r1 = mat2( 0.4258,  0.9048, -0.9048, 0.4258);
+        mat2 r2 = mat2(-0.7859,  0.6184, -0.6184,-0.7859);
         float k1 = smoothstep(0.28, 0.72, brush);
         float k2 = smoothstep(0.34, 0.78, b_fine);
-        vec3  gA = texture(veg_b, vuv * 0.180 + vec2(0.13, 0.41)).rgb;
-        vec3  gB = texture(veg_b, vuv * 0.4884 + vec2(0.61, 0.07)).rgb;
-        vec3  gC = texture(veg_b, vuv * 1.3171 + vec2(0.29, 0.83)).rgb;
+        vec3  gA = texture(veg_b, r0 * vuv * 0.0160 + vec2(0.13, 0.41)).rgb;
+        vec3  gB = texture(veg_b, r1 * vuv * 0.0290 + vec2(0.61, 0.07)).rgb;
+        vec3  gC = texture(veg_b, r2 * vuv * 0.0521 + vec2(0.29, 0.83)).rgb;
         vec3  v_gras = mix(mix(gA, gB, k1), gC, k2 * 0.65);
-        vec3  cA = texture(veg_c, vuv * 0.640 + vec2(0.37, 0.71)).rgb;
-        vec3  cB = texture(veg_c, vuv * 1.7363 + vec2(0.07, 0.53)).rgb;
-        vec3  cC = texture(veg_c, vuv * 4.6823 + vec2(0.83, 0.19)).rgb;
+        vec3  cA = texture(veg_c, r1 * vuv * 0.0240 + vec2(0.37, 0.71)).rgb;
+        vec3  cB = texture(veg_c, r2 * vuv * 0.0434 + vec2(0.07, 0.53)).rgb;
+        vec3  cC = texture(veg_c, r0 * vuv * 0.0781 + vec2(0.83, 0.19)).rgb;
         vec3  v_tree = mix(mix(cA, cB, k2), cC, k1 * 0.60);
-        vec3  v_sand = texture(veg_a, vuv * 0.035).rgb;
-        // sand is 0.849 coherent at -57 degrees: its dune ripples would
-        // print one diagonal over the whole planet. take its LEVEL only
-        // and carry the hue ourselves, so no direction can survive
-        vec3  c_base = vec3(0.42, 0.50, 0.30) * (0.55 + 0.90 * dot(v_sand, vec3(0.33)));
+        // SAND gets the same three-tap treatment as the planting, and
+        // three rotations on top. it measures 0.849 coherent at -57
+        // degrees -- by far the most directional plate we own -- so
+        // only its LEVEL is taken and the hue is carried in code. no
+        // single tap can print its dune direction across the planet
+        float sA = dot(texture(veg_a, r1 * vuv * 0.0090 + vec2(0.11, 0.37)).rgb, vec3(0.333));
+        float sB = dot(texture(veg_a, r2 * vuv * 0.0163 + vec2(0.53, 0.19)).rgb, vec3(0.333));
+        float sC = dot(texture(veg_a, r0 * vuv * 0.0294 + vec2(0.29, 0.71)).rgb, vec3(0.333));
+        float slv = mix(mix(sA, sB, k2), sC, k1 * 0.60);
+        // sand, not chalk. 0.82 x (0.60 + 0.70) reached 1.1 before the
+        // 1.25 diffuse gain even touched it, which is why the floor
+        // burned out to white
+        // ONE perlin mask for all three, so the bare ground that breaks
+        // through the snow is the same ground that breaks through the
+        // planting and the sand. how much each KEEPS of the mars map
+        // differs: sand 10, planting 50, snow 70
+        float mmix = smoothstep(0.30, 0.74, o_fbm(sp * 3.3 + vec3(53.0, 11.0, 23.0)));
+        vec3  c_sand = vec3(0.60, 0.53, 0.40) * (0.72 + 0.42 * slv);
+        c_sand = mix(c_sand, marsc, mmix * 0.10);
+        // the base under the planting: barely tinted, and carrying the
+        // map's own colour. it was 0.42/0.50/0.30 -- green in its own
+        // right, so even bare ground read as grass
+        vec3  c_base = marsc * (0.85 + 0.55 * slv) * vec3(0.92, 1.00, 0.86);
+        // sand base underneath, grass wherever cover takes hold, and
+        // the forest only down in the valley. the brush wobbles the
+        // treeline so it wanders instead of ringing the canyon at one
+        // exact contour
         vec3  veg = c_base;
-        veg = mix(veg, v_gras, t_b);
-        veg = mix(veg, v_tree, t_c * smoothstep(0.25, 0.75, cover));
+        veg = mix(veg, v_gras, smoothstep(0.12, 0.52, cover));
+        veg = mix(veg, v_tree, treeline * smoothstep(0.20, 0.60, cover)
+                             * (0.55 + 0.45 * b_fine));
+        // the planting does not erase the planet. the mars map's own
+        // light and dark provinces show THROUGH it -- multiplied in, so
+        // bright terrain carries bright growth, plus a little of its
+        // colour straight so the ground keeps its identity under green
+        // MOSTLY the mars map. multiplying against its full COLOUR
+        // carries every crater, streak and dark province through the
+        // planting -- taking only its luminance flattened all that to
+        // one featureless wash. the 2.05 lifts it back out of the
+        // darkening a straight multiply costs
+        veg *= marsc * 2.05 + 0.06;
+        // MOSTLY mars, everywhere -- not only inside the perlin
+        // patches. a floor of 55% bare ground with the patches taking
+        // it to 90%, so the planting reads as a tint over martian
+        // terrain rather than as a green surface of its own
+        veg = mix(veg, marsc * (0.95 + 0.30 * slv), 0.55 + 0.35 * mmix);
         vec3  base = mix(bare, veg, cover);
+        // grass gives way to sand, and the channel bed is sand as well
+        // so the water reads as riverbed underneath and not as rock
+        base = mix(base, c_sand * (0.86 + 0.28 * crest), max(sand, wet));
+        // the SHORE is pale, washed sand -- brighter and less red than
+        // the dry inland sand, or a beach is the same tan as the ground
+        // behind it and reads as nothing at all. wet sand darkens right
+        // at the waterline the way a tide line does
+        vec3 c_shore = vec3(0.80, 0.74, 0.62) * (0.78 + 0.34 * slv);
+        c_shore = mix(c_shore, marsc, mmix * 0.10);
+        c_shore *= 1.0 - 0.34 * (1.0 - smoothstep(0.0, 0.00022, abs(dsh)));
+        base = mix(base, c_shore, beach);
+        // ice over the top. the sand plate's own grain stands in for
+        // snow texture -- it is the only fine granular thing we own,
+        // and taken as level only it carries no direction
+        vec3 c_snow = vec3(0.84, 0.89, 0.97) * (0.80 + 0.32 * slv);
+        // same rule as the planting: snow lying thin lets the ground's
+        // own colour through, so the provinces stay legible under it
+        c_snow *= 0.72 + 0.62 * marsl;
+        // same perlin, so the rock that breaks through the snow is the
+        // rock that breaks through the planting further down
+        c_snow = mix(c_snow, marsc * 0.92, mmix * 0.70);
+        base = mix(base, c_snow, snowf);
 
         // a grazing sun throws long shadow: the terminator on a slope is
         // hard, so keep the ambient low or the shadows turn to grey mud
         // gain under 1: the map is already a bright albedo, and pushing
         // it past full white flattens every ridge into paper
         vec3 lit = base * (0.16 + ndl * 1.25);
-        // dust forward-scatters hard toward a low sun, which is the
-        // orange wash that fills the canyons in the reference
+
+        // GRASS SHINE. living leaf is waxy and throws a broad sheen,
+        // and its own texture says where -- flat lawn glares, deep
+        // canopy swallows it
+        vec3  gvd = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        vec3  ghv = normalize(sun + gvd);
+        float gsp = pow(max(dot(nw, ghv), 0.0), 26.0);
+        lit += vec3(0.62, 0.72, 0.44) * gsp * cover * (1.0 - sand) * 0.55
+             * (0.35 + 0.65 * dot(veg, vec3(0.333)));
+
+        // ICE SHEEN. glazed snow is a half-mirror: a tight highlight
+        // plus a fresnel rim, so it flares as the ground turns away
+        float isp  = pow(max(dot(nw, ghv), 0.0), 140.0);
+        float ifr  = 0.04 + 0.96 * pow(1.0 - max(dot(nw, gvd), 0.0), 5.0);
+        lit += (vec3(1.00, 1.00, 1.06) * isp * 0.85
+             +  vec3(0.62, 0.72, 0.92) * ifr * 0.16) * snowf;
+
+        // WATER. the channel is a surface of its own: the rock material
+        // gets flattened out of the normal so it can reflect, the bed
+        // shows through the shallows, and the sun leaves a hard
+        // highlight because still water is very nearly a mirror
+        if (wet > 0.001) {{
+            // GLASS. the surface is the sphere's own normal, with only
+            // a trace of the terrain left in it -- still water is flat
+            // however rough its bed, and any grain here kills the
+            // mirror. so the look is carried by reflection and fresnel,
+            // not by a diffuse term
+            vec3  wn   = normalize(mix(n, sp, 0.985));
+            vec3  wnw  = normalize(nmm * wn);
+            vec3  wvd  = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+            vec3  hv   = normalize(sun + wvd);
+            float spec = pow(max(dot(wnw, hv), 0.0), 900.0);
+            float wndl = max(dot(wnw, sun), 0.0);
+            // schlick: looked at flat, water is nearly all reflection,
+            // and a canyon floor seen from orbit is a very flat look
+            float fres = 0.02 + 0.98 * pow(1.0 - max(dot(wnw, wvd), 0.0), 5.0);
+            // purplish blue, deepening where the catchment is largest
+            // shallows stay purplish blue; the deep runs RED. this is
+            // iron-laden water over red rock, not an earth ocean
+            vec3  shal = vec3(0.31, 0.30, 0.58);
+            vec3  mid9 = vec3(0.30, 0.17, 0.36);
+            vec3  deep = vec3(0.42, 0.11, 0.12);
+            float dpt9 = smoothstep(0.15, 0.95, wetf);
+            vec3  wcol = mix(shal, mid9, smoothstep(0.0, 0.55, dpt9));
+            wcol = mix(wcol, deep, smoothstep(0.45, 1.0, dpt9));
+            // the sky it mirrors, warmed toward the sun like the haze
+            vec3  sky  = mix(vec3(0.30, 0.31, 0.52), vec3(1.05, 0.80, 0.58),
+                             pow(max(dot(-wvd, sun), 0.0), 3.0));
+            vec3  wlit = wcol * (0.14 + wndl * 0.55) * (1.0 - fres)
+                       + sky * fres * 1.15
+                       + vec3(1.00, 0.97, 1.05) * spec * 5.0;
+            lit = mix(lit, wlit, wet);
+        }}
+
+        // ATMOSPHERE. mars air is loaded with suspended dust, and it
+        // forward-scatters hard: looking away from the sun it is deep
+        // iron red, across it a dusty orange, and straight into it a
+        // yellow gold. one three-stop ramp on the scattering angle
         vec3 vd = normalize(v_world_pos.xyz - ubo.cam_pos.xyz);
         float fw = max(dot(vd, sun), 0.0);
         float fs = pow(fw, 6.0);
-        // haze builds with distance, and much faster looking into the sun
-        float hz = 1.0 - exp(-dist * ubo.haze * (1.0 + fs * 5.0));
-        vec3 dust = mix(vec3(0.44, 0.26, 0.16), vec3(1.30, 0.86, 0.56), fs);
+        // FOG BY DISTANCE, not by sun angle. yellow gold only close in,
+        // through brown red across the middle, into purple at range --
+        // one continuous ramp, so the ground and the shell above it
+        // never paint two separate arcs
+        float fd = clamp(dist / 0.55, 0.0, 1.0);
+        // the far haze is the same warm white-gold as the sunlit cloud,
+        // NOT purple. purple belongs above the horizon, in space --
+        // down here it read as a bruise across the distance
+        vec3 dust = mix(vec3(1.30, 0.98, 0.56), vec3(1.02, 0.72, 0.44),
+                        smoothstep(0.0, 0.40, fd));
+        dust = mix(dust, vec3(0.92, 0.74, 0.58), smoothstep(0.35, 1.0, fd));
+        // looking into the sun still lifts it, but only in brightness
+        dust *= 1.0 + 0.85 * fs;
+        // FOG pools in the basins: the column of air above a canyon
+        // floor is far deeper than over a plateau, and dust settles
+        // into it. asl is height above sea, so this thickens downward
+        float fogl = 1.0 - smoothstep(-0.02, 0.14, asl);
+        float hz = 1.0 - exp(-dist * ubo.haze * (1.0 + fs * 4.0)
+                                  * (0.55 + 1.60 * fogl));
         vec3 outc = mix(lit, dust, clamp(hz, 0.0, 1.0));
+
+        // LIMB GLOW. at the horizon the line of sight grazes the entire
+        // depth of the dust column, so the air lights up exactly where
+        // the ground runs out. the crossfade IS the softness: geometry
+        // fades DOWN by mu while the dust flares UP through the same
+        // band. mu collapses to zero in the last fraction of a percent
+        // of the projected radius, so the fade has to start at mid-band
+        // or it spans no pixels at all
+        vec3  vdir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        vec3  nsp  = normalize(nmm * sp);
+        float mu   = clamp(dot(nsp, vdir), 0.0, 1.0);
+        // MIX, never add. adding leaves the terrain underneath still
+        // showing, so craters and ridges print their shapes through the
+        // glow. mixing to full replaces them -- at the rim there is
+        // nothing but air, which is what a deep atmosphere looks like
+        float limb = smoothstep(0.30, 0.03, mu);
+        // the near band is the same dust as the haze; the outermost
+        // fade goes purple, the way a thick sky does at its top
+        // terrain stays OPAQUE to its edge and simply DARKENS by mu.
+        // the shell above flares up through the same band -- that
+        // crossfade is the softness, and it is why the ground must not
+        // try to paint its own rim colour here
+        outc *= 0.30 + 0.70 * smoothstep(0.0, 0.12, mu);
+
         fragColor = vec4(outc, 1.0);
     }
 
 
-element Olympus
+# THE SKY SHELL. the rim glow on the ground can only light fragments
+# that HAVE ground, so it stops dead at the silhouette. this is the
+# same carpet mesh a third time, lifted to a shell above the surface,
+# so there is geometry ABOVE the limb to carry the fade into space.
+#
+# its opacity comes from the ray's CLOSEST APPROACH to the planet --
+# the classic optical-depth trick. a ray grazing the surface travels
+# through the whole dust column and is opaque; one passing high above
+# barely clips it. that is what fades the fuzz out to black, and it
+# costs a dot product and an exp
+enum TerraCloudSurface
+    volume  : 0
+
+ModelViewProject TerraSkyShader
+    mutable sun_dir  : vec4f
+    mutable cam_pos  : vec4f
+    mutable eye_m    : vec4f
+    mutable hdist    : f32
+    mutable atm_h    : f32
+    mutable atm_fall : f32
+    mutable atm_gain : f32
+    # the cloud deck: base and top radius, coverage, and wind phase
+    mutable cld_lo   : f32
+    mutable cld_hi   : f32
+    mutable cld_cov  : f32
+    mutable cld_time : f32
+    # how hard the wind shears the deck along the equator
+    mutable cld_wind : f32
+
+    attrib volume  : LayoutBinding [ type:typeid[ TerraCloudSurface ], id:TerraCloudSurface.volume, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_normal     : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib v_sp         : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
+    attrib v_h          : VertexOutput  [ type:typeid[ f32   ] ]
+
+    attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        float rn = length(a_pos.xz);
+        vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
+        vec3  up_m = normalize(ubo.eye_m.xyz);
+        vec3  ax9  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3  t_e  = normalize(cross(ax9, up_m));
+        vec3  t_n  = cross(up_m, t_e);
+        // THE WHOLE SPHERE, not a cap. the carpet is a polar grid, so
+        // mapping its radius across a half-turn wraps it into a closed
+        // shell with NO mesh boundary anywhere. a cap ends somewhere,
+        // and wherever it ended the alpha was still 0.06 -- that was
+        // the hard line straight across the sky
+        float s9   = (rn / 1.35) * 3.14159265;
+        vec3  dir  = normalize(up_m * cos(s9) + (t_e * pd.x + t_n * pd.y) * sin(s9));
+        v_uv     = a_uv;
+        v_sp     = dir;
+        v_normal = dir;
+        v_h      = 0.0;
+        vec4 wpos = ubo.model * vec4(dir * (1.0 + ubo.atm_h), 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func c_hash [ p: vec3f ] -> GLSL float {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+    }
+
+    func c_remap [ x: f32, a: f32, b: f32, c: f32, d: f32 ] -> GLSL float {
+        return c + (clamp(x, a, b) - a) / max(b - a, 1e-5) * (d - c);
+    }
+
+    # henyey-greenstein: real droplets scatter FORWARD, which is the
+    # silver lining you get looking toward the sun through a cloud edge
+    func c_hg [ ct: f32, g: f32 ] -> GLSL float {
+        float g2 = g * g;
+        return (1.0 - g2) / (12.566371 * pow(1.0 + g2 - 2.0 * g * ct, 1.5));
+    }
+
+    # one z-slice of the baked 64^3 volume out of its 8x8 atlas. the
+    # 63/64 inset stops bilinear bleeding a neighbouring slice in
+    func c_slice [ uv: vec2f, z: f32 ] -> GLSL vec4f {
+        float zi = mod(z, 64.0);
+        vec2  t  = (uv * 63.0 + 0.5) / 512.0;
+        return texture(volume, vec2(mod(zi, 8.0) * 0.125 + t.x,
+                                    floor(zi / 8.0) * 0.125 + t.y));
+    }
+
+    # trilinear: bilinear is free inside a slice, the z lerp by hand
+    func c_vol [ p: vec3f ] -> GLSL vec4f {
+        vec3  q  = fract(p);
+        float zf = q.z * 64.0 - 0.5;
+        float z0 = floor(zf);
+        return mix(c_slice(q.xy, z0), c_slice(q.xy, z0 + 1.0), zf - z0);
+    }
+
+    # DENSITY, built the way the volumetric-cloud papers do it: a
+    # billow base cut by coverage, then ERODED at its edges by the
+    # high-frequency octaves. the erosion makes wisps and torn
+    # shoulders; without it every cloud is a smooth blob
+    func c_dens [ p: vec3f ] -> GLSL float {
+        float r = length(p);
+        float h = (r - (1.0 + ubo.cld_lo)) / max(ubo.cld_hi - ubo.cld_lo, 1e-5);
+        if (h < 0.0 || h > 1.0) return 0.0;
+        // anvil profile: flat base, widest low, feathering at the top
+        // FLAT base: cut on hard at the deck floor so the underside is
+        // a plane, the way a real cloud base condenses at one altitude
+        float prof = smoothstep(0.0, 0.035, h) * (1.0 - smoothstep(0.62, 1.0, h));
+        // and FOUR TIMES the material at the base. a deck of even
+        // density top to bottom is a slab -- real cloud carries its
+        // mass low and thins upward, which is what gives a cloudscape
+        // its weight and lets the crowns read as crowns
+        // TEN to one, base to top. the base has to be the body of the
+        // thing and the crown a remnant of it
+        prof *= mix(1.0, 0.10, h);
+        // WIND SHEAR. scaling the POLAR component makes the field vary
+        // fast in latitude and slow in longitude, so every lobe is
+        // drawn out east-west and the deck bands parallel to the
+        // equator -- which is what a prevailing wind does to cloud.
+        // it stretches the shapes rather than resizing them
+        vec3  ps = vec3(p.x, p.y * ubo.cld_wind, p.z);
+        // 1.2, not 3.0. the threshold only ever keeps the PEAK of each
+        // worley lobe, so a 282km lobe was surviving as a core a
+        // fraction that size -- spikes with no footprint. a 706km lobe
+        // leaves a base worth the name even after the cut
+        vec3  q = ps * 1.2 + vec3(ubo.cld_time, ubo.cld_time * 0.05, ubo.cld_time * 0.6);
+        vec4  v = c_vol(q);
+        // coverage cuts the RAW field; the profile attenuates AFTER.
+        // cutting `v.r * prof` instead made the height profile push
+        // samples across the threshold, so the deck's own taper became
+        // a hard in/out surface in 3D -- that is what tore
+        float base = c_remap(v.r, 1.0 - ubo.cld_cov, 1.0, 0.0, 1.0);
+        if (base <= 0.001) return 0.0;
+        float d = base * prof;
+        if (d <= 0.001) return 0.0;
+        // erosion strengthens with height, so bases stay solid and the
+        // crowns tear into cauliflower
+        vec4  hf = c_vol(q * 2.9 + vec3(19.3, 7.1, 11.7));
+        // (q already carries the shear, so the erosion runs WITH the
+        // bands rather than cutting across them)
+        float ero = hf.g * 0.625 + hf.b * 0.250 + hf.a * 0.125;
+        // barely eroded at the base, heavily at the crown: that is what
+        // keeps bottoms flat and breaks the tops into scattered heads
+        // nothing at all at the base -- erosion there is what was
+        // trimming the footprint away as fast as coverage made it
+        d = c_remap(d, ero * (0.02 + 0.80 * h), 1.0, 0.0, 1.0);
+        return clamp(d, 0.0, 1.0);
+    }
+
+    func fragment [] -> GLSL none {
+        // THE ENCELADUS METHOD. the model transform is a pure rotation,
+        // so the planet centre is the world origin and the ray's
+        // closest approach is one dot product. everything comes from
+        // that radius: a ray grazing the surface crosses the whole dust
+        // column, one passing high above barely clips it
+        vec3  ro = ubo.cam_pos.xyz;
+        vec3  rd = normalize(v_world_pos.xyz - ro);
+        float tca = 0.0 - dot(ro, rd);
+        float glow = 0.0;
+        float hw = 0.0;
+        float rch = 0.0;
+        vec3  sunw = normalize(ubo.sun_dir.xyz);
+        if (tca > 0.0) {{
+            vec3  pca = ro + rd * tca;
+            float rc  = length(pca);
+            rch = clamp((rc - 1.0) / 0.016, 0.0, 1.0);
+            // outward, a long slow fade into space. the smoothstep is a
+            // SMOOTH occlusion ramp -- a binary cut stamps the analytic
+            // sphere's silhouette as a hard circle offset from the real
+            // displaced terrain edge
+            float od = exp(-max(rc - 1.0, 0.0) / ubo.atm_fall)
+                     * smoothstep(0.976, 0.997, rc);
+            // and smoothed again by penetration depth going inward
+            float dip  = clamp((1.0 - rc) / 0.018, 0.0, 1.0);
+            float hocc = mix(1.0, 0.35, dip);
+            hw = clamp(dot(pca / max(rc, 1e-4), sunw) * 0.5 + 0.5, 0.0, 1.0);
+            // the blaze where the graze kisses the surface: this is
+            // what DISSOLVES the terrain edge, so no ridge or crater
+            // prints its shape through the rim
+            // asymmetric on purpose: wide going out into space, tight
+            // going in, or the rim glow lies over the terrain as fog
+            float nearg = exp(-(max(rc - 1.0, 0.0) / 0.012
+                              + max(1.0 - rc, 0.0) / 0.0035));
+            glow = od * hocc * (0.16 + 0.52 * hw) * (1.0 + 5.0 * nearg);
+            // THIN THE FLOOR. holding full opacity right down onto the
+            // limb is what gives it a thick base -- easing it off there
+            // lifts the whole visible band up off the horizon
+            glow *= 0.30 + 0.70 * smoothstep(0.0, 0.34, rch);
+        }}
+        float fw = max(dot(rd, sunw), 0.0);
+        // the same air as the ground haze: gold into the sun, iron red
+        // away from it -- and purple where it thins out to nothing
+        // ONE colour, and the ALPHA does the fading. tinting toward
+        // purple as it thinned just painted a solid purple band up
+        // there -- the air has to thin to NOTHING, and that is a fade
+        // to transparent, not a fade to another colour
+        // THREE stops now. a transparent yellow sits on the horizon
+        // itself, the warm white-gold you liked is lifted above it, and
+        // purple takes over only as the whole thing dies into space
+        vec3 col = mix(vec3(1.36, 1.06, 0.42), vec3(1.18, 0.86, 0.56),
+                       smoothstep(0.0, 0.40, rch));
+        col = mix(col, vec3(0.40, 0.20, 0.58), smoothstep(0.44, 1.0, rch));
+        col *= 1.0 + 0.80 * pow(fw, 4.0);
+        float atma = clamp(glow * ubo.atm_gain, 0.0, 0.58);
+
+        // ---- VOLUMETRIC CLOUDS ----
+        // the deck is a spherical shell. clip the ray to it, march, and
+        // light each sample by marching a few steps toward the sun --
+        // that self-shadowing is what gives a cloud its shape. flat
+        // billboards cannot do it at any resolution
+        float r0 = 1.0 + ubo.cld_lo;
+        float r1 = 1.0 + ubo.cld_hi;
+        float bq = dot(ro, rd);
+        float c1 = dot(ro, ro) - r1 * r1;
+        float c0 = dot(ro, ro) - r0 * r0;
+        float cg = dot(ro, ro) - 1.0;
+        float d1 = bq * bq - c1;
+        vec3  cL = vec3(0.0);
+        float Tr = 1.0;
+        if (d1 > 0.0) {{
+            float s1 = sqrt(d1);
+            float tn = -bq - s1;
+            float tf = -bq + s1;
+            // inside the outer shell already: start at the eye
+            if (tn < 0.0) tn = 0.0;
+            // the inner sphere and the planet both cut the march short
+            float d0 = bq * bq - c0;
+            if (d0 > 0.0) {{
+                float t0 = -bq - sqrt(d0);
+                if (t0 > tn) tf = min(tf, t0);
+            }}
+            float dg = bq * bq - cg;
+            if (dg > 0.0) {{
+                float tg = -bq - sqrt(dg);
+                if (tg > 0.0) tf = min(tf, tg);
+            }}
+            // a grazing ray crosses the deck for an enormous distance;
+            // spreading a fixed step count over it makes dt huge and
+            // the march prints as stair-stepped bands. cap the segment
+            tf = min(tf, tn + 0.42);
+            if (tf > tn) {{
+                // FIXED STEP SIZE, not a fixed count. a count spread
+                // over a grazing crossing gave 30km steps against 3km
+                // features -- that is the speckle. a constant step
+                // samples every ray at the same rate and simply runs
+                // out of budget on the long ones, by which point they
+                // are opaque anyway
+                // EIGHT TIMES the tests. the step is three times finer
+                // and the budget eight times longer -- affordable only
+                // because empty air is skipped at triple stride below,
+                // and most of the deck is empty
+                // UNIFORM stride. the adaptive skip made neighbouring
+                // pixels land on different sample positions and take
+                // different step counts, so two pixels looking at one
+                // cloud disagreed -- that is noise by construction
+                float dt = (ubo.cld_hi - ubo.cld_lo) / 40.0;
+                const int STEPS = 640;
+                float jit = c_hash(vec3(gl_FragCoord.xy, 7.3));
+                // MODEL space: the craft holds station while the planet
+                // turns, so a field sampled in WORLD space sits still
+                // relative to the camera -- the clouds were painted on
+                // the lens. the planet's frame is what we fly through
+                mat3 wm = transpose(mat3(ubo.model));
+                vec3 sunm = wm * sunw;
+                // forward scattering: strong lobe plus a wide one, the
+                // usual two-term fit to real droplet phase
+                float ct = dot(normalize(rd), sunw);
+                float ph = max(c_hg(ct, 0.76), c_hg(ct, -0.22) * 0.55);
+                // YELLOW where the sun strikes, through GREY in the
+                // body, to PURPLE in shadow and along the base. the
+                // ramp runs on how much light reached the sample, so
+                // it is lighting doing it, not a height gradient
+                vec3 c_lit = vec3(1.35, 1.12, 0.58);
+                vec3 c_mid = vec3(0.62, 0.60, 0.63);
+                vec3 c_shd = vec3(0.34, 0.22, 0.48);
+                vec3 sunc = mix(c_lit, vec3(1.18, 0.72, 0.36),
+                                smoothstep(0.35, 0.0, abs(sunw.y)));
+                // ambient: purple sky above, dusty violet bounce below
+                vec3 amb_t = vec3(0.40, 0.33, 0.55);
+                vec3 amb_b = vec3(0.30, 0.20, 0.40);
+                float tc = tn + jit * dt;
+                for (int i = 0; i < STEPS; i++) {{
+                    if (tc > tf) break;
+                    vec3  p = wm * (ro + rd * tc);
+                    tc += dt;
+                    float d = c_dens(p);
+                    // clear air costs one sample and three steps of
+                    // ground: the fine rate is spent only inside cloud
+                    if (d > 0.0004) {{
+                        // light march toward the sun: this self-shadow
+                        // is what gives a cloud an inside
+                        float lstep = (ubo.cld_hi - ubo.cld_lo) * 0.22;
+                        float ls = c_dens(p + sunm * lstep)
+                                 + c_dens(p + sunm * lstep * 2.2)
+                                 + c_dens(p + sunm * lstep * 4.0)
+                                 + c_dens(p + sunm * lstep * 7.0) * 0.5;
+                        float dep = ls * lstep;
+                        // beer-powder: a cloud edge is BRIGHTER than
+                        // its face, which single beer cannot express
+                        float beer = exp(-dep * 52.0);
+                        float powd = 1.0 - exp(-d * 9.0);
+                        float hh = clamp((length(p) - (1.0 + ubo.cld_lo))
+                                       / max(ubo.cld_hi - ubo.cld_lo, 1e-5), 0.0, 1.0);
+                        vec3  amb = mix(amb_b, amb_t, hh);
+                        // beer is how much sun survived to here: 1 at a
+                        // sunlit face, 0 deep inside. that is the axis
+                        // the yellow-grey-purple ramp belongs on
+                        // crowns go WHITE, not yellow -- the yellow is
+                        // the low sun on their flanks
+                        vec3  crown = mix(sunc, vec3(1.42, 1.36, 1.22), hh * hh);
+                        vec3  body = mix(c_shd, c_mid, smoothstep(0.02, 0.35, beer));
+                        body = mix(body, crown, smoothstep(0.30, 0.85, beer));
+                        // and the base sits in its own shadow: purple,
+                        // deepening the lower in the deck it lies
+                        body = mix(body, c_shd, (1.0 - hh) * (1.0 - hh) * 0.72);
+                        vec3  sc  = body * (0.55 + powd * ph * 2.2) + amb * (0.30 + 0.55 * hh);
+                        // DENSER: they were see-through at any depth
+                        float aa  = 1.0 - exp(-d * dt * 210.0);
+                        cL += Tr * aa * sc;
+                        Tr *= 1.0 - aa;
+                        if (Tr < 0.015) break;
+                    }}
+                }}
+            }}
+        }}
+        float cloud_a = 1.0 - Tr;
+        // clouds sit UNDER the limb glow: the air is above the deck
+        // PREMULTIPLIED, and the model is set straight_alpha:false so
+        // the pipeline blends with SRC=ONE. the march already produces
+        // premultiplied values -- cL accumulates as Tr*a*colour -- so
+        // dividing it back out only to have the blender multiply it in
+        // again blows the colour up wherever alpha is near zero, which
+        // is precisely a cloud's edge. that was the tearing
+        vec3  outc = cL + col * atma * Tr;
+        float outa = clamp(cloud_a + atma * Tr, 0.0, 1.0);
+        fragColor = vec4(outc, outa);
+    }
+
+
+enum TerraWaterSurface
+    height  : 0
+
+# A REAL WATER SURFACE. the terraformed sea is a shell of its own at
+# sea-level radius, riding the same carpet mesh as the ground, and the
+# waterline is where that shell passes through the terrain -- not a
+# threshold painted on rock. that is what gives a true shore, real
+# depth, and an ocean that fills basins instead of following noise
+ModelViewProject TerraWaterShader
+    mutable hmax     : f32
+    mutable sun_dir  : vec4f
+    mutable cam_pos  : vec4f
+    mutable haze     : f32
+    mutable eye_m    : vec4f
+    mutable hdist    : f32
+    mutable sea_l0   : f32
+    mutable sea_bias : f32
+
+    attrib height  : LayoutBinding [ type:typeid[ TerraWaterSurface ], id:TerraWaterSurface.height, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_normal     : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib v_sp         : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
+    attrib v_h          : VertexOutput  [ type:typeid[ f32   ] ]
+
+    attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    # same four-tap decode the ground uses: the 16 bits live across R
+    # and A, and bilinear on the low byte ramps backwards at every wrap
+    func w_ground [ uv: vec2f ] -> GLSL float {
+        vec2  ts = vec2(8192.0, 4096.0);
+        vec2  pp = uv * ts - 0.5;
+        vec2  fr = fract(pp);
+        vec2  b0 = (floor(pp) + 0.5) / ts;
+        vec2  e1 = 1.0 / ts;
+        vec4  q00 = textureLod(height, b0, 0.0);
+        vec4  q10 = textureLod(height, b0 + vec2(e1.x, 0.0), 0.0);
+        vec4  q01 = textureLod(height, b0 + vec2(0.0, e1.y), 0.0);
+        vec4  q11 = textureLod(height, b0 + e1, 0.0);
+        float h00 = q00.r * 65280.0 + q00.a * 255.0;
+        float h10 = q10.r * 65280.0 + q10.a * 255.0;
+        float h01 = q01.r * 65280.0 + q01.a * 255.0;
+        float h11 = q11.r * 65280.0 + q11.a * 255.0;
+        return mix(mix(h00, h10, fr.x), mix(h01, h11, fr.x), fr.y) / 65535.0;
+    }
+
+    # sea level stands HIGHER at the equator: warm ground fills easier,
+    # and that bias is the whole reason the valley is a sea while the
+    # polar basins stay dry
+    func w_sea [ dy: f32 ] -> GLSL float {
+        return ubo.sea_l0 + ubo.sea_bias * cos(asin(clamp(dy, -1.0, 1.0)));
+    }
+
+    func vertex [] -> GLSL none {
+        float rn = length(a_pos.xz);
+        vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
+        vec3  up_m = normalize(ubo.eye_m.xyz);
+        vec3  ax9  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3  t_e  = normalize(cross(ax9, up_m));
+        vec3  t_n  = cross(up_m, t_e);
+        float s9   = rn * ubo.hdist;
+        vec3  dir  = normalize(up_m * cos(s9) + (t_e * pd.x + t_n * pd.y) * sin(s9));
+
+        float lon0 = atan(ubo.eye_m.z, ubo.eye_m.x);
+        float dl   = atan(dir.z, dir.x) - lon0;
+        if (dl >  3.14159265) dl -= 6.28318531;
+        if (dl < -3.14159265) dl += 6.28318531;
+        vec2 uv = vec2(0.5 + (lon0 + dl) / 6.28318531,
+                       0.5 - asin(clamp(dir.y, -1.0, 1.0)) / 3.14159265);
+
+        v_uv     = uv;
+        v_sp     = dir;
+        mat3 nm  = transpose(inverse(mat3(ubo.model)));
+        v_normal = normalize(nm * dir);
+        // the shell sits at SEA level, flat as water is
+        float sg = w_sea(dir.y) * ubo.hmax;
+        v_h      = sg;
+        vec4 wpos = ubo.model * vec4(dir * (1.0 + sg), 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment [] -> GLSL none {
+        vec3  sp = normalize(v_sp);
+        float tg = w_ground(v_uv);
+        float sea = w_sea(sp.y);
+        // ABOVE the waterline there is no sea here. cutting the shell
+        // per pixel is what makes the shore follow the real contour
+        // instead of a painted threshold
+        float depth = sea - tg;
+        // a MARGIN, not zero. at exactly the waterline the sea shell and
+        // the ground are coplanar, and the depth test alternates between
+        // them pixel by pixel -- that is the dashed contour. 0.0012 of
+        // packed height is ~80m of water, thin enough to see nothing
+        if (depth <= 0.0012) discard;
+
+        mat3 nmm = transpose(inverse(mat3(ubo.model)));
+        vec3 nw  = normalize(nmm * sp);
+        vec3 sun = normalize(ubo.sun_dir.xyz);
+        vec3 vdw = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        vec3 hv  = normalize(sun + vdw);
+
+        // shallows purplish blue, the deep running RED -- iron water
+        // over red rock, not an earth ocean
+        float dn   = clamp(depth / 0.16, 0.0, 1.0);
+        // cyan through the body, greener where it shallows out, and a
+        // deep teal at the bottom rather than an ocean navy
+        vec3  shal = vec3(0.34, 0.74, 0.60);
+        vec3  mid9 = vec3(0.13, 0.56, 0.66);
+        vec3  deep = vec3(0.03, 0.17, 0.30);
+        vec3  wcol = mix(shal, mid9, smoothstep(0.00, 0.45, dn));
+        wcol = mix(wcol, deep, smoothstep(0.40, 1.00, dn));
+        // the bed used to be FAKED by brightening the water colour in
+        // the shallows. it is real now: the shell blends, so the actual
+        // terrain underneath shows through wherever the water is thin
+
+        // FOAM where the sea runs out onto the shore -- the same
+        // contour the terrain puts its beach on, read from the other side
+        float foam = 1.0 - smoothstep(0.0, 0.0055, depth);
+        wcol = mix(wcol, vec3(0.78, 0.74, 0.80), foam * foam * 0.70);
+
+        float ndl  = max(dot(nw, sun), 0.0);
+        float spec = pow(max(dot(nw, hv), 0.0), 700.0);
+        float fres = 0.02 + 0.98 * pow(1.0 - max(dot(nw, vdw), 0.0), 5.0);
+        vec3  sky  = mix(vec3(0.32, 0.31, 0.55), vec3(1.05, 0.80, 0.58),
+                         pow(max(dot(-vdw, sun), 0.0), 3.0));
+        vec3  lit  = wcol * (0.16 + ndl * 0.72) * (1.0 - fres * 0.75)
+                   + sky * fres * 0.38
+                   + vec3(1.00, 0.97, 1.05) * spec * 4.5;
+
+        // the same air as the ground, and the sea lies at the very
+        // bottom of it -- so it always carries the thick-layer factor
+        float dist = length(v_world_pos.xyz - ubo.cam_pos.xyz);
+        vec3  vdd = normalize(v_world_pos.xyz - ubo.cam_pos.xyz);
+        float fw = max(dot(vdd, sun), 0.0);
+        float fs = pow(fw, 6.0);
+        float fd = clamp(dist / 0.55, 0.0, 1.0);
+        // the far haze is the same warm white-gold as the sunlit cloud,
+        // NOT purple. purple belongs above the horizon, in space --
+        // down here it read as a bruise across the distance
+        vec3 dust = mix(vec3(1.30, 0.98, 0.56), vec3(1.02, 0.72, 0.44),
+                        smoothstep(0.0, 0.40, fd));
+        dust = mix(dust, vec3(0.92, 0.74, 0.58), smoothstep(0.35, 1.0, fd));
+        dust *= 1.0 + 0.85 * fs;
+        float hz = 1.0 - exp(-dist * ubo.haze * (1.0 + fs * 4.0) * 2.05);
+        vec3  outc = mix(lit, dust, clamp(hz, 0.0, 1.0));
+        // the sea takes the same limb treatment, or the water edge
+        // stays hard while the land beside it goes soft
+        float mu = clamp(dot(nw, vdw), 0.0, 1.0);
+        outc *= 0.30 + 0.70 * smoothstep(0.0, 0.12, mu);
+
+        // TRANSPARENT AT THE EDGES. thin water hides nothing, so the
+        // shore fades out over the bed instead of ending on a hard
+        // colour boundary -- and it means the beach reads continuously
+        // from dry sand, through wet sand, into water
+        // FOUR TIMES the reach. this band is the shallows, and it has
+        // to span real ground -- at 0.014 the bed only showed for the
+        // last kilometre of depth, which is a rim, not a shallow
+        float wa = smoothstep(0.0, 0.056, depth);
+        fragColor = vec4(outc, clamp(wa, 0.0, 1.0));
+    }
+
+
+element Terra
     frost : true
     frost_sharp : true
-    intern olymp  : OlympusShader
+    intern olymp  : TerraShader
+    intern owater : TerraWaterShader
+    intern osky   : TerraSkyShader
+    intern gsky   : GaiaShader
     intern models : array Model
     intern target : Render
     intern built  : bool
@@ -6108,16 +6542,17 @@ element Olympus
 
     func build_models[]
         built = true
-        puts 'OLY build_models: start'
+        puts 'TERRA build_models: start'
         o_gltf : build_carpet[]
         o_gltf.hold[]
         o_gltf.compute_worlds[]
-        puts 'OLY build_models: sphere built'
-        olymp = OlympusShader [ vk: vk ]
+        puts 'TERRA build_models: sphere built'
+        olymp = TerraShader [ vk: vk ]
         pkp : path '../scenes/baked/mars-pk.png'
         nkp : path '../scenes/baked/mars-nk.png'
         dnp : path '../scenes/baked/mars-dn.png'
         ekp : path '../scenes/baked/mars-ek.png'
+        rvp : path '../scenes/baked/mars-rv.png'
         if [ !pkp.exists[] || !nkp.exists[] ]
             puts 'mars: no baked maps — baking live (SILVER_EXPORT=1 bakes at build)'
             mars_bake_mola[]
@@ -6127,22 +6562,62 @@ element Olympus
         if [ !ekp.exists[] ]
             puts 'mars: no edge map — baking live'
             mars_bake_edge[]
+        if [ !rvp.exists[] ]
+            puts 'mars: no river map — baking live'
+            mars_bake_river[]
         # data maps MUST be linear or the sampler re-linearizes them and
         # the whole surface drops below its real height
         o_samplers : map Image [string] [
-            'height': Image [ uri: pkp, surface: OlympusSurface.height, linear: true, wrap_u: true ],
-            'nrm':    Image [ uri: nkp, surface: OlympusSurface.nrm,    linear: true, wrap_u: true ],
-            'detail': Image [ uri: dnp, surface: OlympusSurface.detail, linear: true, wrap_u: true, wrap_v: true ],
-            'edge':   Image [ uri: ekp, surface: OlympusSurface.edge,   linear: true, wrap_u: true ],
-            'color':  Image [ uri: path '../scenes/textures/mars-color-8192x4096.jpg', surface: OlympusSurface.color, linear: true, wrap_u: true ],
-            'veg_a':  Image [ uri: path '../scenes/textures/mars-veg-sand.png',   surface: OlympusSurface.veg_a, linear: true, wrap_u: true, wrap_v: true ],
-            'veg_b':  Image [ uri: path '../scenes/textures/mars-veg-grass.png',  surface: OlympusSurface.veg_b, linear: true, wrap_u: true, wrap_v: true ],
-            'veg_c':  Image [ uri: path '../scenes/textures/mars-veg-forest.png', surface: OlympusSurface.veg_c, linear: true, wrap_u: true, wrap_v: true ]
+            'height': Image [ uri: pkp, surface: TerraSurface.height, linear: true, wrap_u: true ],
+            'nrm':    Image [ uri: nkp, surface: TerraSurface.nrm,    linear: true, wrap_u: true ],
+            'detail': Image [ uri: dnp, surface: TerraSurface.detail, linear: true, wrap_u: true, wrap_v: true ],
+            'edge':   Image [ uri: ekp, surface: TerraSurface.edge,   linear: true, wrap_u: true ],
+            'color':  Image [ uri: path '../scenes/textures/mars-color-8192x4096.jpg', surface: TerraSurface.color, linear: true, wrap_u: true ],
+            'veg_a':  Image [ uri: path '../scenes/textures/mars-veg-sand.png',   surface: TerraSurface.veg_a, linear: true, wrap_u: true, wrap_v: true ],
+            'veg_b':  Image [ uri: path '../scenes/textures/mars-veg-grass.png',  surface: TerraSurface.veg_b, linear: true, wrap_u: true, wrap_v: true ],
+            'veg_c':  Image [ uri: path '../scenes/textures/mars-veg-forest.png', surface: TerraSurface.veg_c, linear: true, wrap_u: true, wrap_v: true ],
+            'river':  Image [ uri: rvp, surface: TerraSurface.river, linear: true, wrap_u: true ]
         ]
-        puts 'OLY build_models: maps loaded'
-        o_model : Model [ vk: vk, w: ux, id: o_gltf, s: olymp, samplers: o_samplers, straight_alpha: true ]
-        models  = array Model [ o_model ]
-        puts 'OLY build_models: done, {models.count} model(s)'
+        puts 'TERRA build_models: maps loaded'
+        # the projection y-flip reverses triangle winding, so back-face
+        # culling would cull the whole carpet
+        o_model : Model [ vk: vk, w: ux, id: o_gltf, s: olymp, samplers: o_samplers,
+            straight_alpha: true, cull_none: true ]
+        # the sea rides the SAME carpet, one shell higher. it needs only
+        # the height map: everything else it works out per pixel
+        owater = TerraWaterShader [ vk: vk ]
+        w_samplers : map Image [string] [
+            'height': Image [ uri: pkp, surface: TerraWaterSurface.height, linear: true, wrap_u: true ]
+        ]
+        w_model : Model [ vk: vk, w: ux, id: o_gltf, s: owater, samplers: w_samplers,
+            straight_alpha: true, cull_none: true ]
+        # the sky shell needs no maps at all -- it works entirely from
+        # the ray's geometry. drawn LAST so it lays over both surfaces
+        osky = TerraSkyShader [ vk: vk ]
+        cldp : path '../scenes/baked/mars-cld.png'
+        if [ !cldp.exists[] ]
+            puts 'mars: no cloud volume — baking live'
+            mars_bake_cloud[]
+        # the volume tiles on all three axes, so both axes wrap
+        s_samplers : map Image [string] [
+            'volume': Image [ uri: cldp, surface: TerraCloudSurface.volume,
+                linear: true, wrap_u: true, wrap_v: true ]
+        ]
+        # PREMULTIPLIED: a volumetric march accumulates premultiplied
+        # colour by construction, so the blender must not scale it again
+        s_model : Model [ vk: vk, w: ux, id: o_gltf, s: osky, samplers: s_samplers,
+            straight_alpha: false, cull_none: true, depth_no_test: true ]
+        # the galaxy behind everything, same plate the saturn scenes use
+        gsky = GaiaShader [ vk: vk ]
+        g_gltf : GltfModel.open[ path '../scenes/models/earth.gltf' ]
+        g_samplers : map Image [string] [
+            'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
+        ]
+        g_model : Model [ vk: vk, w: ux, id: g_gltf, s: gsky, samplers: g_samplers,
+            straight_alpha: true, cull_none: true ]
+        # backdrop FIRST, then ground, sea, and the air over both
+        models  = array Model [ g_model, o_model, w_model, s_model ]
+        puts 'TERRA build_models: done, {models.count} model(s)'
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -6195,9 +6670,12 @@ element Olympus
 
         # the spin has to come FIRST now: the craft's latitude is a
         # function of how far along the canyon it has flown
-        # 184.39 puts the craft at the trunk's western end; 900 per
-        # kilosecond is the drift east along it
-        spin_d : f32 [ 184.39 + ux.time * 900.0 ]
+        # 184.39 sat at u=0.275 -- already 400km INSIDE the trunk, which
+        # measures 0.2557..0.4099. 173 starts at u=0.245, just short of
+        # the western end, so the canyon opens ahead instead of being
+        # half behind us. the drift below stays anchored to 184.39, so
+        # starting earlier simply begins it further north, on the axis
+        spin_d : f32 [ 173.0 + ux.time * 900.0 ]
 
         # the craft rides over Valles Marineris' own latitude while the
         # planet turns under it -- that IS the flight, no path needed
@@ -6224,23 +6702,39 @@ element Olympus
         # Y x c is the direction the GROUND flows. the craft travels the
         # other way, so forward is the negative of it -- aiming along
         # the flow puts you on the stern watching the wake
-        gx : f32 [ 0.0 - cz ]
-        gy : f32 [ 0.0 ]
-        gz : f32 [ cx ]
-        gl : f32 [ sqrt[ gx * gx + gz * gz ] ]
+        # the planet's spin axis in WORLD space is TILTED: mm applies
+        # the 25.2 about Z and then spins about Y, so the axis the
+        # ground actually turns on is Rz(25.2) * Y, not Y. taking Y
+        # aimed the camera 25.6 degrees off the true travel direction,
+        # which is what every "look further right" was chasing
+        axr : f32 [ radians[ 25.2 ] ]
+        wx : f32 [ 0.0 - sin[ axr ] ]
+        wy : f32 [ cos[ axr ] ]
+        wz : f32 [ 0.0 ]
+        # ground flow is w x c; the craft travels the other way
+        gx : f32 [ 0.0 - (wy * cz - wz * cy) ]
+        gy : f32 [ 0.0 - (wz * cx - wx * cz) ]
+        gz : f32 [ 0.0 - (wx * cy - wy * cx) ]
+        gl : f32 [ sqrt[ gx * gx + gy * gy + gz * gz ] ]
         if [ gl > 0.0 ]
             gx = gx / gl
+            gy = gy / gl
             gz = gz / gl
 
         # yaw 15 degrees to starboard, about the SCREEN up (-c, the same
         # inversion look_at gets), so right here means right on screen.
         # g is horizontal and c is radial, so their cross is already unit
-        yaw : f32 [ radians[ 25.0 ] ]
+        # ZERO. g is the true travel direction now, so any yaw at all is
+        # aim pointed away from where the craft is going
+        yaw : f32 [ radians[ 0.0 ] ]
         yc : f32 [ cos[ yaw ] ]
         ys : f32 [ sin[ yaw ] ]
-        rx : f32 [ 0.0 - (gy * cz - gz * cy) ]
-        ry : f32 [ 0.0 - (gz * cx - gx * cz) ]
-        rz : f32 [ 0.0 - (gx * cy - gy * cx) ]
+        # sign flipped: look_at is given -c as its up, which inverts the
+        # screen, so cross(g, -c) came out as screen LEFT. every degree
+        # of "right" yaw was pushing the canyon further right instead
+        rx : f32 [ gy * cz - gz * cy ]
+        ry : f32 [ gz * cx - gx * cz ]
+        rz : f32 [ gx * cy - gy * cx ]
         gx2 : f32 [ gx * yc + rx * ys ]
         gy2 : f32 [ gy * yc + ry * ys ]
         gz2 : f32 [ gz * yc + rz * ys ]
@@ -6259,12 +6753,18 @@ element Olympus
         dy : f32 [ gy * pc - cy * ps ]
         dz : f32 [ gz * pc - cz * ps ]
         _tgt : vec3f [ _eye.x + dx, _eye.y + dy, _eye.z + dz ]
-        # screen up is the negated local up, same inversion the globe
-        # scenes make with world +y
-        _up : vec3f [ 0.0 - cx, 0.0 - cy, 0.0 - cz ]
+        # THE up, not its negative. mat4f.perspective is GL handed
+        # (m[1][1] is +ifov) and the viewport height is positive, so
+        # vulkan renders it upside down; negating up rolled the camera
+        # 180 to cancel that, which negates RIGHT as well and leaves the
+        # whole image horizontally MIRRORED. that is why every yaw
+        # correction went the wrong way. flip the projection's y
+        # instead and keep the true up
+        _up : vec3f [ cx, cy, cz ]
         # near must be tight: at 13km altitude a 0.002 near plane clips
         # the ground out from under the craft
         _proj : mat4f.perspective[ radians[ 55.0 ], aspect, 0.00005, 24.0 ]
+        _proj.m[5] = 0.0 - _proj.m[5]
         _view : mat4f.look_at[ _eye, _tgt, _up ]
 
         # 160 degrees puts Valles Marineris (290E) square in front at
@@ -6284,10 +6784,12 @@ element Olympus
         # wrong height and the shading disagrees with the silhouette
         olymp.hmax     = mars_hmax[] * mars_relief[]
         olymp.smax     = mars_smax[] * mars_relief[]
-        olymp.haze     = 0.04
+        olymp.haze     = mars_haze[]
         olymp.dtile    = mars_dtile[]
         olymp.damp     = mars_damp[]
         olymp.dh       = mars_dh[]
+        olymp.sea_l0   = mars_sea_l0[]
+        olymp.sea_bias = mars_sea_bias[]
         # the carpet is laid out around the craft, so the shader needs
         # the eye in MODEL space -- the planet turns, the craft does not
         mi : mat4f [ mm.inverse[] ]
@@ -6313,7 +6815,200 @@ element Olympus
         sc : f32 [ cos[ sel ] ]
         ss : f32 [ sin[ sel ] ]
         olymp.sun_dir = vec4f [ gx * sc + cx * ss, gy * sc + cy * ss, gz * sc + cz * ss, 0.0 ]
+
+        # the sea shell shares the craft frame exactly, or its waterline
+        # would sit on different ground than the terrain it cuts. set
+        # LAST: it copies eye_m, hdist and sun_dir, all worked out above
+        owater.model    = mm
+        owater.view     = _view
+        owater.proj     = _proj
+        owater.hmax     = olymp.hmax
+        owater.haze     = olymp.haze
+        owater.cam_pos  = olymp.cam_pos
+        owater.sun_dir  = olymp.sun_dir
+        owater.eye_m    = olymp.eye_m
+        owater.hdist    = olymp.hdist
+        owater.sea_l0   = mars_sea_l0[]
+        owater.sea_bias = mars_sea_bias[]
+
+        osky.model    = mm
+        osky.view     = _view
+        osky.proj     = _proj
+        osky.cam_pos  = olymp.cam_pos
+        osky.sun_dir  = olymp.sun_dir
+        osky.eye_m    = olymp.eye_m
+        osky.hdist    = olymp.hdist
+        osky.atm_h    = mars_atm_h[]
+        osky.atm_fall = mars_atm_fall[]
+        osky.atm_gain = mars_atm_gain[]
+        osky.cld_lo   = mars_cld_lo[]
+        osky.cld_hi   = mars_cld_hi[]
+        osky.cld_cov  = mars_cld_cov[]
+        osky.cld_wind = mars_cld_wind[]
+        # ux.time counts kiloseconds, so this drifts the deck slowly
+        osky.cld_time = ux.time * 3.0
+
+        # the galaxy wraps the scene from a big inner sphere, tilted so
+        # the band cuts the sky diagonally. scale 12, NOT the 30 the
+        # saturn scenes use: this camera's far plane is 24, and a shell
+        # past it is clipped away entirely
+        gskq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ 45.0 ] ] ]
+        gskm : mat4f.identity[]
+        gskm = gskm.rotate[ gskq ]
+        gskm = gskm.scale[ vec3f [ 12.0, 12.0, 12.0 ] ]
+        gsky.model = gskm
+        gsky.view  = _view
+        gsky.proj  = _proj
+        gsky.gain  = 0.45
+        gsky.time  = ux.time * 60000.0
         dbg_n += 1
         if [ dbg_n < 3 ]
-            puts 'OLY mode={i32[ ux.orbit_mode ]} e_cur={e_cur} hmax={olymp.hmax} smax={olymp.smax}'
-            puts 'OLY eye={_eye.x},{_eye.y},{_eye.z} eye_m={em.x},{em.y},{em.z},{em.w} hdist={olymp.hdist} e_r={e_r}'
+            puts 'TERRA mode={i32[ ux.orbit_mode ]} e_cur={e_cur} hmax={olymp.hmax} smax={olymp.smax}'
+            puts 'TERRA eye={_eye.x},{_eye.y},{_eye.z} eye_m={em.x},{em.y},{em.z},{em.w} hdist={olymp.hdist} e_r={e_r}'
+# NEPTUNE. the ball is composed, not sourced: saturn's poles, jupiter's
+# middle flipped and mirrored with its great spot swirled into another
+# shape, driven deep blue. the discharges here are WHITE cloud forming
+# along the wind, off an elongated streak basis rather than a sobel
+element Neptune
+    frost : true
+    frost_sharp : true
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
+    intern nept   : JupiterShader
+    intern sky    : GaiaShader
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    intern ready     : bool
+    intern loading   : bool
+    intern load_task : async
+    public color  : rgba [ r:0.001, g:0.002, b:0.006, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf_path : path '../scenes/models/earth.gltf'
+        gltf      : GltfModel.open[ gltf_path ]
+        cp : path '../scenes/baked/neptune-color.png'
+        st : path '../scenes/baked/neptune-storm.png'
+        if [ !cp.exists[] || !st.exists[] ]
+            puts 'neptune: no baked maps — composing live'
+            neptune_bake[]
+            neptune_storm[]
+        nept = JupiterShader [ vk: vk ]
+        n_samplers : map Image [string] [
+            'color':  Image [ uri: cp, surface: TitanSurface.color,  linear: true, wrap_u: true ],
+            'height': Image [ uri: st, surface: TitanSurface.height, linear: true, wrap_u: true ]
+        ]
+        nept_model : Model [ vk: vk, w: ux, id: gltf, s: nept, samplers: n_samplers,
+            straight_alpha: true ]
+        sky = GaiaShader [ vk: vk ]
+        sky_samplers : map Image [string] [
+            'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
+        ]
+        sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
+            straight_alpha: true, cull_none: true ]
+        models = array Model [ sky_model, nept_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    func load_bg [ arg: object ]
+        build_models[]
+        ready = true
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built && !loading ]
+            loading = true
+            w9 : array []
+            w9.push[ a ]
+            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+        if [ !ready ] return
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        aspect : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 1.95 :
+                       (ux.orbit_mode == OrbitView.high) ? 2.55 :
+                       (ux.orbit_mode == OrbitView.far)  ? 3.60 : 5.20 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
+        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+                       (ux.angle_mode == ViewAngle.angled) ? 0.156 : 0.480 ]
+        if [ p_cur == 0.0 && p_t != 0.0 && !p_set ] p_cur = p_t
+        p_set  = true
+        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.002 || abs[ p_cur - p_t ] > 0.001
+
+        e_d    : f32 [ e_cur ]
+        _eye   : vec3f [ 0.0,  e_d * p_cur, e_d ]
+        _tgt   : vec3f [ 0.0,  0.0,  0.0  ]
+        _up    : vec3f [ 0.0, -1.0,  0.0  ]
+        _proj  : mat4f.perspective[ radians[ 55.0 ], aspect, 0.01, 90.0 ]
+        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        # neptune turns in 16 hours: the fastest deck in the system
+        # SATURN'S rate exactly
+        spin_d : f32 [ ux.time * 9000.0 ]
+        q_spin : quatf [ vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ] ]
+        # a heavy tilt runs the bands diagonally across the disk, and
+        # counter-moving bands are only readable when they lie flat
+        q_tilt : quatf [ vec4f [ 0.0, 0.0, 1.0, radians[ 8.0 ] ] ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_tilt ]
+        mm = mm.rotate[ q_spin ]
+        nept.model   = mm
+        nept.view    = _view
+        nept.proj    = _proj
+        nept.gain    = 1.05
+        nept.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # WHITE cloud, not plasma: methane ice condensing on the night
+        # side, with the faintest cyan where it thins
+        nept.pc_a = vec4f [ 1.00, 1.00, 1.00, 1.0 ]
+        nept.pc_b = vec4f [ 0.78, 0.92, 1.00, 1.0 ]
+        # drawn out 6:1 along the wind: these are streaks of cloud
+        # forming on the deck, not discrete strikes
+        nept.pstr = vec4f [ 0.28, 1.70, 0.0, 0.0 ]
+        # rarer, and OFF far more than on: threshold up from 0.69, and
+        # a 6th-power duty so each streak is a brief bloom rather than
+        # a light left burning
+        nept.pctl = vec4f [ 0.84, 2.6, 6.0, 0.0 ]
+        # SATURN'S WIND, verbatim. these are the exact constants out of
+        # SaturnShader: 0.60 jet at 0.012 width, 0.22 lobes at 43.98
+        # with a 1.8 decay, 0.16 shear, and its 0.05 ping-pong rate
+        # saturn's profile, with the lobes carrying further out and
+        # the shear doubled -- saturn reads its counter-motion against
+        # a ring plane and a hard band structure; neptune's deck is
+        # smooth, so the same numbers show nothing at all on it
+        nept.wctl  = vec4f [ 0.34, 0.012, 43.98, 0.46 ]
+        nept.wctl2 = vec4f [ 0.60, 1.1, 0.05, 0.0 ]
+        # WITHOUT THIS the shader sees time 0 -- no wind shift, no spin,
+        # no noise evolution. the pattern freezes onto the surface and
+        # simply rotates with the ball, which is exactly what it did
+        nept.time = ux.time * 60000.0
+
+        skq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ 45.0 ] ] ]
+        skm : mat4f.identity[]
+        skm = skm.rotate[ skq ]
+        skm = skm.scale [ vec3f [ 30.0, 30.0, 30.0 ] ]
+        sky.model = skm
+        sky.view  = _view
+        sky.proj  = _proj
+        sky.gain  = 0.45
+        sky.time  = ux.time * 60000.0
+
