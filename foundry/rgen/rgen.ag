@@ -120,6 +120,9 @@ class psg_state
 	noise_lfsr     : u16               # 16-bit shift register
 	latch          : u8                # last-latched register (channel + type)
 
+class test22
+	var2 : i32 [ 2 ]
+	var4 : i64 [ 2 ]
 
 element rgen : trinity
 	public  width        : i32    [ 1280 ]   # 320 (H40) x4
@@ -233,6 +236,11 @@ element rgen : trinity
 	mutable frames       : u32
 
 	func init []
+		test2 : 22
+		test2 += 4
+
+		t : test22[]
+
 		animated   = true                    # emulator: repaint every frame, never cache-skip (NOT style-owned `volatile`)
 		focusable  = true
 		if [ volume == 0.0 ] volume = 0.25

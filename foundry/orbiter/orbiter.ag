@@ -112,8 +112,8 @@ element EditorView
         dbgr    : dbg orb.active_debugger[]
         running : bool [ (dbgr) ? true : false ]
         ed_live : Editor text_of[]
-        armed   : bool [ ed_live->edit_armed ]
-        locked  : bool [ running && !armed ]
+        # the editor is never locked while debugging; the run band steps
+        locked  : bool [ false ]
         dbg_open  : bool [ ed_live->dbg_open ]
         searchable : bool [ orb.search_pane[] == id ]
         findbar_on : bool [ orb.findbar_open && orb.findbar_pane == id ]
@@ -134,6 +134,9 @@ element EditorView
         if [ is_con ]
             ttl['ctx_copy'] = LabelButton [ label: 'context', manual_mode: true ]
             ttl['ctx_shot'] = LabelButton [ label: 'screen',  manual_mode: true ]
+        # inserted last so right-flow puts it left of the title's controls
+        if [ ed_live && ed_live.run_view && !ed_live.run_view.ended ]
+            ttl['gotosrc'] = BandSource [ label: 'active', manual_mode: true ]
         tl : string [ (p) ? p.filename[] : 'Open' ]
 
         if [ is_con ]
@@ -202,6 +205,11 @@ element EditorView
             emod : string [ (p) ? p.filename[] : 'app' ]
             di2  : i32    [ emod.index_of[ '.' ] ]
             if [ di2 > 0 ] emod = emod.mid[ 0, di2 ]
+            # a running app owns the band: navigating source must not re-bind
+            # its label, its console session or its arguments
+            bsrc : path [ (ed_live) ? ed_live.band_src[] : p ]
+            if [ ed_live && ed_live.run_view && ed_live.run_view.app_mod ]
+                emod = ed_live.run_view.app_mod
             fels : Elements []
             if [ !app_running ]
                 fels['run'] = RunButton [ icon: 'play', manual_mode: true ]
@@ -210,7 +218,7 @@ element EditorView
                 fels['run']  = RunButton [ icon: (app_paused) ? 'play' : 'pause', selected: app_paused, manual_mode: true ]
                 fels['stop'] = RunButton [ icon: 'stop', manual_mode: true ]
                 fels['steps'] = StepButtons [ buttons: [ 'step_next', 'step_in', 'step_out' ], manual: true ]
-            fels['args'] = ArgsField [ label: 'arguments', edit: ed_live->run_args,
+            fels['args'] = ArgsField [ label: 'arguments', edit: orb.file_args[ bsrc ],
                 focusable: true ]
             if [ orb.err_file && orb.err_line > 0 ]
                 fels['error'] = Option [ label: 'error {orb.err_line}', manual_mode: true ]
@@ -221,6 +229,7 @@ element EditorView
             fels['instruments'] = TButtons [
 				buttons: [ 'callstack', 'toolbox', 'fields' ],
 				manual: true, sel_mask: smask,
+				rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
 				area: Region { r0+ t0 w3.6 h0.9 } ]
             cf2 : Elements []
             cf2['console_filter'] = element [ area: Region { r8px t4px w6 h32px }, label: emod, focusable: true, no_scroll: true ]
@@ -442,13 +451,13 @@ Option ReloadButton
     style : CSS {
         area: l8px t2px w80px h18px
         layers.body:
-            fill_color: #c8641e
+            fill_color: #0000
             radius: 4
-            inner_glow: #ffae5ea2 12
+            inner_glow: #0000 0
         :hovered
             layers.body:
-                fill_color: #e0762a
-                inner_glow: #ffc98aa2 16
+                fill_color: #c8641e
+                inner_glow: #ffae5ea2 16
         :pressed
             layers.body:
                 fill_color: #a04d16
@@ -673,8 +682,16 @@ element PatternField
                 fill_color: #216
     }
 
-# step over / into / out, left-flow after the stop button
+# jump the pane back to the source of the app being debugged. lives on the
+# title, inserted last so right-flow lands it left of the title's controls
+LabelButton BandSource
+    area : Region { r0+ t0 w2.5 h0.9 }
+
+# step over / into / out, left-flow after the stop button.
+# rest glow matches RunButton so the strip reads with play/stop
 TButtons StepButtons
+    rest_glow : rgba [ '#ccf2' ]
+    rest_px   : f32  [ 16.0 ]
     style : CSS {
         area: l0+ t0 w3.6 h0.9
     }
@@ -816,7 +833,16 @@ func au_live_request_apply[] -> none
 func au_capture_stdout[] -> i32
 func au_stdout_orig[] -> i32
 
+# per-source-file state; arguments is the first field, more to come
+class file_state
+    public args        : string
+
+# the states file is one 'states:' block — this is what string_agi writes
+class states_file
+    public states      : map orbiter_state [string]
+
 class orbiter_state
+    public files       : map file_state [string]
     public tabs        : array path
     public panes       : array path
     # per pane: 'sel_line,sel_col,anchor_line,anchor_col'
@@ -857,6 +883,8 @@ element orbiter : trinity # implements compiler
     # split in init — resource keeps the first token, module_args the rest
     default module_args  : string
     intern resource      : string
+    # per-source-file state, keyed by path; persisted with the session
+    public file_states   : map file_state [string]
     public log           : string
     intern tee_started   : bool
     intern cap_fd        : i32 [ -1 ]
@@ -955,6 +983,9 @@ element orbiter : trinity # implements compiler
     public pattern_text  : string
     public find_showing  : bool
     public nav_showing   : bool
+    # the user dismissed the finder: focus lands on the editor, which still
+    # carries show_hits, so list_focused would revive the list forever
+    intern finder_off    : bool
     public find_hits     : array FindHit
     public search_dirs   : array path
     public file_index    : list string
@@ -1184,49 +1215,30 @@ element orbiter : trinity # implements compiler
         if [ !txt || txt.count == 0 ] return
         Au.parse_agi[ null, txt.chars, a ]
 
+    # reflection writes the whole tree; adding a state field is a declaration
+    # and nothing else. Au.parse_agi on load is the exact inverse
     func save_states []
         sp : states_path[]
         if [ !sp || !states ] return
-        out : string 'states:\n'
-        for [ st: orbiter_state, ws: string ] in states
-            out = out + '\t\'{ws}\': orbiter_state\n'
-            line : string '\t\ttabs:'
-            if [ st.tabs ]
-                for [ t: path ] in st.tabs
-                    line = line + ' {t}'
-            out = out + line + '\n'
-            pline : string '\t\tpanes:'
-            if [ st.panes ]
-                for [ t: path ] in st.panes
-                    pline = pline + ' {t}'
-            out = out + pline + '\n'
-            dline : string '\t\tdocked:'
-            if [ st.docked ]
-                for [ t: path ] in st.docked
-                    dline = dline + ' {t}'
-            out = out + dline + '\n'
-            sline : string '\t\tpane_sel:'
-            if [ st.pane_sel ]
-                for [ s: string ] in st.pane_sel
-                    sline = sline + ' {s}'
-            out = out + sline + '\n'
-            if [ st.scene && st.scene.count > 0 ]
-                out = out + '\t\tscene: \'{st.scene}\'\n'
-            out = out + '\t\tspeed_ix: {st.speed_ix}\n'
-            out = out + '\t\torbit_ix: {st.orbit_ix}\n'
-            out = out + '\t\tangle_ix: {st.angle_ix}\n'
-            out = out + '\t\tfrost_ix: {st.frost_ix}\n'
-            if [ st.target && st.target.count > 0 ]
-                out = out + '\t\ttarget: \'{st.target}\'\n'
-            if [ st.console_w > 0 ]
-                out = out + '\t\tconsole_w: {st.console_w}\n'
-            if [ st.band_h > 0 ]
-                out = out + '\t\tband_h: {st.band_h}\n'
-            if [ st.breakpoints && st.breakpoints.count > 0 ]
-                out = out + '\t\tbreakpoints:\n'
-                for [ cond: string, key: string ] in st.breakpoints
-                    out = out + '\t\t\t\'{key}\': \'{cond}\'\n'
-        sp.save[ out, null ]
+        sf : states_file []
+        sf.states = states
+        sp.save[ Au.string_agi[ sf ], null ]
+
+    # per-file state, created on first touch
+    func fstate [ p: path ] -> file_state
+        if [ !p ] return null
+        if [ !file_states ] file_states = map file_state [string] []
+        k9 : string '{p}'
+        fs : file_state file_states[ k9 ]
+        if [ !fs ]
+            fs = file_state []
+            file_states[ k9 ] = fs
+        return fs
+
+    func file_args [ p: path ] -> string
+        if [ !p || !file_states ] return ''
+        fs : file_state file_states[ '{p}' ]
+        return (fs && fs.args) ? fs.args : ''
 
     func save_session []
         ws : workspace_key[]
@@ -1261,6 +1273,7 @@ element orbiter : trinity # implements compiler
         st.target      = active_target
         st.console_w   = console_w
         st.band_h      = band_h
+        st.files       = file_states
         save_states[]
 
     func restore_session []
@@ -1271,6 +1284,7 @@ element orbiter : trinity # implements compiler
         if [ !st ] return
         console_w = st.console_w
         band_h    = st.band_h
+        if [ st.files ] file_states = st.files
         # reopen tabs (populates the open_files pool)
         if [ st.tabs ]
             for [ i: i32 0, i < st.tabs.count, i += 1 ]
@@ -1935,10 +1949,22 @@ element orbiter : trinity # implements compiler
                     ed.scroll.y = top - vh * 0.4
                     if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
                     ed.scroll_target = ed.scroll.y
-                ed.edit_armed = false
                 ed.pristine  = false
         dv : active_debugger[]
-        if [ dv ] debug_vars = dv.read_locals[]
+        # args and locals are disjoint in lldb; the func line needs the args.
+        # locals go FIRST: base_var_at takes the first name that matches, and
+        # 'a' (self) is an argument that would otherwise shadow every line
+        if [ dv ]
+            lc9 : array dv.read_locals[]
+            ag9 : array dv.read_arguments[]
+            all9 : array []
+            if [ lc9 ]
+                for [ v9: variable ] in lc9
+                    all9.push[ v9 ]
+            if [ ag9 ]
+                for [ v9: variable ] in ag9
+                    all9.push[ v9 ]
+            debug_vars = all9
         win : ux
         win.will_animate = true
 
@@ -1948,7 +1974,6 @@ element orbiter : trinity # implements compiler
             if [ ed ]
                 ed.stop_line  = -1
                 ed.stop_col   = -1
-                ed.edit_armed = false
                 ed.pristine   = false
         # no live frame anymore → drop the inspected variables.
         debug_vars = null
@@ -2051,7 +2076,9 @@ element orbiter : trinity # implements compiler
         if [ agent_open && pane_ix == editor_slots.count ] tnav.push[ 'collapse' ]
         wn9 : f32 [ f32[ tnav.count ] * 1.15 ]
         if [ tnav.count > 0 ]
-            els['tabnav'] = TButtons [ buttons: tnav, manual: true, area: Region [ 'r0+ t0 w{wn9} h0.9' ] ]
+            els['tabnav'] = TButtons [ buttons: tnav, manual: true,
+                rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                area: Region [ 'r0+ t0 w{wn9} h0.9' ] ]
 
         if [ menu_open && nav_showing && docked && docked.count > 0 ]
             els['pins'] = RButton [ icon: (show_pins) ? 'side_on' : 'side_off', selected: show_pins, manual_mode: true ]
@@ -2947,7 +2974,9 @@ element orbiter : trinity # implements compiler
         win : ux
         ensure_views[]
         sp     : string search_pane[]
-        active : bool [ (find_text && find_text.count > 0) || (win && win.focus && win.focus.id == 'title') || list_focused[] ]
+        title_focus : bool [ (win && win.focus && win.focus.id == 'title') ? true : false ]
+        if [ title_focus || (find_text && find_text.count > 0) ] finder_off = false
+        active : bool [ !finder_off && (title_focus || (find_text && find_text.count > 0) || list_focused[]) ]
         if [ active ]
             combined : list string []
             find_hits = array FindHit []
@@ -3036,6 +3065,10 @@ element orbiter : trinity # implements compiler
                 nav_panes[ pi ].record[ pi, '{cur.src.absolute[]}', cur.sel_line, cur.sel_col, cur.scroll.y ]
         idx : i32 [ file_slot[ p ] ]
         if [ pi >= 0 && pi < editor_slots.count ]
+            # showing source demotes a running app to pip: the pane's keys
+            # are the editor's again, so the file stays editable
+            cur2 : Editor pane_at[ pi ]
+            if [ cur2 && cur2.run_view ] cur2.app_view = false
             editor_slots[pi] = idx
             if [ pi < pane_console.count ] pane_console[pi] = ''
             active_pane = pi
@@ -3142,11 +3175,14 @@ element orbiter : trinity # implements compiler
         findbar_open = false
         find_showing = false
         find_text    = ''
-        find_results = list string []
+        finder_off   = true
         win : ux
         if [ win && win.focus ]
             win.focus.edit = ''
             win.release_focus[ win.focus ]
+        # rebuild with the finder off — apply_pane is what puts each pane's
+        # file back and drops the nav tools row
+        run_search[]
         # esc lands focus on the editor the search was working in
         pi9 : i32 [ (sp9 && sp9.count > 4) ? sp9.mid[ 4, sp9.count - 4 ].real_value[] : 0 ]
         ed9 : Editor pane_at[ pi9 ]
@@ -3154,6 +3190,7 @@ element orbiter : trinity # implements compiler
         force_update[]
 
     func open_find []
+        finder_off   = false
         findbar_open = true
         # the field is built later this frame; ask the window to focus
         # it by id and let animate[] resolve it before the next draw
@@ -3176,8 +3213,8 @@ element orbiter : trinity # implements compiler
         force_update[]
 
     func focus_finder []
+        finder_off = false
         te : element title_at[ active_pane ]
-        puts 'focus_finder: pane={active_pane} te={(te) ? 1 : 0}'
         if [ te ] te.set_focus[]
         force_update[]
 
@@ -3491,6 +3528,20 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             return
 
+        # back to the source of the app this band is running
+        if [ ev.target.id == 'gotosrc' ]
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits EditorView ]
+                    ev6 : EditorView e
+                    ed6 : Editor pane_at[ ev6.pane_index ]
+                    if [ ed6 ]
+                        bs6 : path ed6.band_src[]
+                        if [ bs6 ] open_in_pane[ bs6, ev6.pane_index ]
+                    break
+            ev.no_default = true
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+
         if [ ev.target.id == 'title_close' ]
             exit_finder[]
             findbar_open = false
@@ -3632,12 +3683,14 @@ element orbiter : trinity # implements compiler
                 ev.target.pristine = false
                 uxw : Window ev.target.ux
                 if [ uxw ] uxw.will_animate = true
-        # run args live on the pane's editor, not on us
+        # run args are per source file, kept in the session state
         if [ ev.target.id == 'args' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
                 eda : Editor pane_of[ ev.target ]
-                if [ eda ]
-                    eda.run_args = (eda.run_args) ? eda.run_args + ev.key.text : ev.key.text
+                fs9 : file_state (eda) ? fstate[ eda.band_src[] ] : null
+                if [ fs9 ]
+                    fs9.args = (fs9.args) ? fs9.args + ev.key.text : ev.key.text
+                    save_session[]
                     ev.target.pristine = false
                     uxw : Window ev.target.ux
                     if [ uxw ] uxw.will_animate = true
@@ -3717,10 +3770,12 @@ element orbiter : trinity # implements compiler
 
         if [ ev.target.id == 'args' ]
             if [ !ev.key.state ] return
-            ka : i32 [ i32 ev.key.unicode ]
+            ka  : i32 [ i32 ev.key.unicode ]
             eda : Editor pane_of[ ev.target ]
-            if [ eda && ka == 259 && eda.run_args && eda.run_args.count > 0 ]
-                eda.run_args = eda.run_args.mid[ 0, eda.run_args.count - 1 ]
+            fs9 : file_state (eda) ? fstate[ eda.band_src[] ] : null
+            if [ fs9 && ka == 259 && fs9.args && fs9.args.count > 0 ]
+                fs9.args = fs9.args.mid[ 0, fs9.args.count - 1 ]
+                save_session[]
                 ev.target.pristine = false
                 if [ ev.target.ux ] ev.target.ux.will_animate = true
                 ev.no_default = true

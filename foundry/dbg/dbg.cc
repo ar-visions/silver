@@ -120,6 +120,11 @@ Au dbg_poll(dbg debug) {
             int  fl = 0; while (file_path[fl]) fl++;
             bool is_ag = line_entry.IsValid() && line > 0 && fl >= 3 &&
                          file_path[fl-3] == '.' && file_path[fl-2] == 'a' && file_path[fl-1] == 'g';
+            printf("dbg stop: reason=%d sig=%lld ag=%d at %s:%u\n", (int)reason,
+                (long long)(thread.GetStopReasonDataCount() > 0
+                    ? thread.GetStopReasonDataAtIndex(0) : -1),
+                (int)is_ag, file_path, line);
+            fflush(stdout);
             if ((is_step || is_sig) && !is_ag) {
                 S(debug)->process.Continue();   // running stays true; poll catches next stop
                 continue;
@@ -392,7 +397,11 @@ array read_children_depth(dbg debug, lldb::SBValue value, int depth) {
         // leaf: don't recurse into it (a char* has one child per byte — slow + noisy).
         const char* csm  = child.GetSummary();
         bool        leaf = (csm && csm[0]);
-        array ar = (depth > 0 && !leaf && child.GetNumChildren() > 0)
+        // a null pointer still reports the pointee's fields; reading them
+        // gives garbage and the row expands into nonsense
+        bool        nul  = child.TypeIsPointerType() &&
+                           child.GetValueAsUnsigned(0) == 0;
+        array ar = (depth > 0 && !leaf && !nul && child.GetNumChildren() > 0)
             ? hold(read_children_depth(debug, child, depth - 1))
             : hold(new0(array, alloc, 32));
         variable v = new0(variable,
@@ -421,12 +430,17 @@ array dbg_read_vars(dbg debug, array result, lldb::SBValueList vars) {
         string name = hold(f(string, "%s", nm ? nm : ""));
         string type = hold(f(string, "%s", tp ? tp : ""));
         string val  = render_value(value);
+        bool   nul  = value.TypeIsPointerType() &&
+                      value.GetValueAsUnsigned(0) == 0;
+        array  kids = null;
+        if (nul) kids = new0(array, alloc, 1);
+        else     kids = read_children(debug, value);
         variable v  = new0(variable,
             debug,      debug,
             name,       name,
             type,       type,
             value,      val,
-            children,   hold(read_children(debug, value))
+            children,   hold(kids)
         );
         array_qpush(result, (Au)hold(v));
     }

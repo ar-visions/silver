@@ -509,7 +509,8 @@ ResourceView AppView
             fith = fh
             cv.draw_image[ ft, rect [ x: fitx, y: fity, w: fitw, h: fith ] ]
             draw_minimize[ cv, bounds ]
-        if [ ended || paused ]
+        # no frame yet: say what it is doing instead of drawing nothing
+        if [ ended || paused || !have_frame ]
             overlay[ cv, bounds ]
 
     func render [ cv: Canvas, bounds: rect ]
@@ -867,7 +868,7 @@ Layer EditorLayer
             if [ editor.row_header[ li ] || editor.row_var[ li ] ]
                 h = (h ^ 1) * 1099511628211
                 continue
-            ln : editor.line_get[ li ]
+            ln : editor.draw_line[ li ]
             if [ ln.count == 0 ]
                 h = (h ^ 2) * 1099511628211
                 continue
@@ -883,7 +884,7 @@ Layer EditorLayer
             li : i32 [ bs + k ]
             if [ li >= editor.line_count[] ] break
             if [ editor.row_header[ li ] || editor.row_var[ li ] ] continue
-            ln : editor.line_get[ li ]
+            ln : editor.draw_line[ li ]
             if [ ln.count == 0 ] continue
             has_code = true
             cwi : i32 [ i32[ ceil[ f32[ editor.display_of[ ln ].count ] * cw + cw ] ] ]
@@ -917,7 +918,7 @@ Layer EditorLayer
             li : i32 [ bs + k ]
             if [ li >= editor.line_count[] ] break
             if [ editor.row_header[ li ] || editor.row_var[ li ] ] continue
-            ln : editor.line_get[ li ]
+            ln : editor.draw_line[ li ]
             ll : i32 [ ln.count ]
             if [ ll == 0 ] continue
             editor.text_lines_frame += 1
@@ -1564,7 +1565,7 @@ Layer EditorLayer
             if [ editor.band_rows == 1 ]
                 cmt_c : rgba['#7a8290']
                 msl   : i32 [ editor.row_src[ li ] ]
-                slc   : code_slot[ cv, editor, msl, ln, cmt_c, lh, cw_tm.w, code_fs ]
+                slc   : code_slot[ cv, editor, msl, editor.draw_line[ li ], cmt_c, lh, cw_tm.w, code_fs ]
                 if [ slc && slc.canvas ]
                     cv.draw_canvas[ slc.canvas, x0, round[ y ],
                         f32[ slc.canvas.content_w ], f32[ slc.canvas.content_h ] ]
@@ -1587,9 +1588,8 @@ Layer EditorLayer
                 if [ editor.row_var[ li ] ] continue   # virtual field rows drawn already
                 bsl : i32 [ editor.row_src[ li ] ]
                 if [ bsl < 0 ] continue
-                bk  : i32 [ editor.base_var_at[ bsl ] ]
-                if [ bk < 0 ] continue
-                bv   : variable editor.debug_vars[ bk ]
+                bv   : variable editor.base_var_of[ bsl ]
+                if [ !bv ] continue
                 summ : editor.var_summary[ bv ]
                 if [ !summ || summ.count == 0 ] continue
                 ya : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
@@ -1597,16 +1597,14 @@ Layer EditorLayer
                 if [ ya > bounds.y + bounds.h ] break
                 # expandable objects get a [+]/[-] toggle after the summary
                 tog : (editor.var_expandable[ bv ]) ? ((bv.expanded) ? '  [-]' : '  [+]') : ''
-                ln2 : editor.line_get[ li ]
-                aw  : f32 [ cv.measure_text[ ln2 ].w ]
-                ax  : f32 [ x0 + aw + 24.0 ]
+                ax   : f32 [ x0 + f32[ editor.ann_col[ li ] ] * cw_tm.w ]
                 if [ editor.hover_ann == li ]
                     cv.save[ ]
                     cv.rounded[ 5.0, 5.0, 5.0, 5.0 ]
                     cv.stroke_width[ 0.0 ]
                     cv.fill_color[ rgba['#2f7a4a44'] ]
                     cv.inner_glow[ rgba['#5fd08abb'], 10.0 ]
-                    cv.rect_to[ ax - 8.0, ya + 2.0, bounds.x + bounds.w - rin - ax + 4.0, lh - 4.0 ]
+                    cv.rect_to[ ax - cw_tm.w, ya + 2.0, bounds.x + bounds.w - rin - ax + 4.0, lh - 4.0 ]
                     cv.paint[ ]
                     cv.restore[ ]
                     cv.fill_color[ rgba['#6a9955cc'] ]
@@ -1911,8 +1909,6 @@ Control Editor
     mutable nav_default   : string
     mutable tool_hover    : i32 [ -1 ]
     mutable run_view      : AppView
-    # args the ArgsField edits; handed to the AppView on launch
-    mutable run_args      : string
     mutable app_view      : bool
     mutable session_view  : string
     mutable saved_scroll  : f32
@@ -1932,6 +1928,8 @@ Control Editor
     mutable sel_line      : i32 [ -1 ]
     mutable sel_col       : i32 [ 0 ]
     mutable tab_w         : i32 [ 4 ]
+    # currently expanded variables, outermost first
+    mutable open_chain    : array
     mutable fmt_mtime     : i64 [ 0 ]
     mutable disk_ms       : i64 [ 0 ]
     mutable scroll_target : f32 [ 0.0 ]
@@ -1961,7 +1959,6 @@ Control Editor
     mutable flat_rows     : array VRow
     mutable flat_active   : bool
     mutable hover_ann     : i32 [ -1 ]
-    mutable edit_armed    : bool
     mutable lh_cache      : f32 [ 0.0 ]
     mutable cw_cache      : f32 [ 0.0 ]
     mutable anchor_line   : i32 [ 0 ]
@@ -1988,27 +1985,95 @@ Control Editor
         if [ cond && cond.count > 0 ] return rgba['#3b82f638']   # conditional
         return rgba['#e5394538']                                 # plain
 
-    func base_var_at [ bli: i32 ] -> i32
-        if [ !debug_vars || bli < 0 || bli >= lines.count ] return -1
-        if [ stop_line >= 0 && bli > stop_line ] return -1
+    # does this line declare v — 'name' followed by ':'
+    func line_declares [ ltext: string, bli: i32, v: variable ] -> bool
+        if [ !v || !v.name || v.name.count == 0 ] return false
+        nm  : string v.name
+        pos : i32 [ ltext.index_of[ nm ] ]
+        if [ pos < 0 ] return false
+        if [ pos > 0 ]
+            pc : i32 [ ltext[ pos - 1 ] ]
+            if [ (pc >= 97 && pc <= 122) || (pc >= 65 && pc <= 90) || (pc >= 48 && pc <= 57) || pc == 95 ] return false
+        j : i32 [ pos + nm.count ]
+        while [ j < ltext.count && (ltext[j] == 32 || ltext[j] == 9) ]
+            j += 1
+        if [ j >= ltext.count || ltext[j] != 58 ] return false
+        if [ stop_line >= 0 && bli == stop_line && stop_col >= 0 && stop_col <= pos ] return false
+        return true
+
+    # the variable a line declares: a local or arg, else a member of self.
+    # member lines carry their own value rather than making you expand 'a'
+    func base_var_of [ bli: i32 ] -> variable
+        if [ !debug_vars || bli < 0 || bli >= lines.count ] return null
+        if [ stop_line >= 0 && bli > stop_line ] return null
         line : string lines.value_by_index[ bli ]
-        if [ !line || line.count == 0 ] return -1
+        if [ !line || line.count == 0 ] return null
         for [ k: i32 0, k < debug_vars.count, k += 1 ]
             v : variable debug_vars[k]
-            if [ !v || !v.name || v.name.count == 0 ] continue
-            nm  : string v.name
-            pos : i32 [ line.index_of[ nm ] ]
-            if [ pos < 0 ] continue
-            if [ pos > 0 ]
-                pc : i32 [ line[ pos - 1 ] ]
-                if [ (pc >= 97 && pc <= 122) || (pc >= 65 && pc <= 90) || (pc >= 48 && pc <= 57) || pc == 95 ] continue
-            j : i32 [ pos + nm.count ]
-            while [ j < line.count && (line[j] == 32 || line[j] == 9) ]
-                j += 1
-            if [ j < line.count && line[j] == 58 ]
-                if [ stop_line >= 0 && bli == stop_line && stop_col >= 0 && stop_col <= pos ] return -1
-                return k
-        return -1
+            if [ line_declares[ line, bli, v ] ] return v
+        for [ k: i32 0, k < debug_vars.count, k += 1 ]
+            sv : variable debug_vars[k]
+            # count first: an empty string's chars are null, and compare
+            # goes straight to strcmp
+            if [ !sv || !sv.name || sv.name.count != 1 ] continue
+            if [ sv.name[0] != 97 ] continue                  # 'a' — self
+            if [ !sv.children ] continue
+            for [ ci: i32 0, ci < sv.children.count, ci += 1 ]
+                cv9 : variable sv.children[ci]
+                if [ line_declares[ line, bli, cv9 ] ] return cv9
+        return null
+
+    # one expansion open at a time, unless it nests inside the open one.
+    # the chain is outermost-first; esc collapses the innermost
+    func expand_only [ v9: variable ]
+        if [ !v9 ] return
+        if [ !open_chain ] open_chain = array []
+        nested : bool [ false ]
+        if [ open_chain.count > 0 ]
+            lastv : variable open_chain[ open_chain.count - 1 ]
+            if [ lastv && lastv.children ]
+                for [ ci: i32 0, ci < lastv.children.count, ci += 1 ]
+                    if [ lastv.children[ci] == v9 ] nested = true
+        if [ !nested ]
+            for [ i9: i32 0, i9 < open_chain.count, i9 += 1 ]
+                ov : variable open_chain[i9]
+                if [ ov ] ov.expanded = false
+            open_chain = array []
+        v9.expanded = true
+        open_chain.push[ v9 ]
+
+    func collapse_last [] -> bool
+        if [ !open_chain || open_chain.count == 0 ] return false
+        lv : variable open_chain[ open_chain.count - 1 ]
+        if [ lv ] lv.expanded = false
+        open_chain.remove[ open_chain.count - 1 ]
+        return true
+
+    # collapse v and anything the chain opened under it
+    func collapse_from [ v9: variable ]
+        if [ !open_chain ] return
+        for [ i9: i32 0, i9 < open_chain.count, i9 += 1 ]
+            if [ open_chain[i9] == v9 ]
+                while [ open_chain.count > i9 ]
+                    ov : variable open_chain[ open_chain.count - 1 ]
+                    if [ ov ] ov.expanded = false
+                    open_chain.remove[ open_chain.count - 1 ]
+                return
+        v9.expanded = false
+
+    # the line AS DRAWN: a debug annotation takes the comment's place, so
+    # the comment is never rendered. hash, measure and draw must all use this
+    func draw_line [ vr: i32 ] -> string
+        s : string line_get[ vr ]
+        if [ !debug_vars || !s || s.count == 0 ] return s
+        if [ !base_var_of[ row_src[ vr ] ] ] return s
+        return code_only[ s ]
+
+    # cell column where a row's annotation starts: first tab stop past the
+    # code, with any existing comment excluded
+    func ann_col [ vr: i32 ] -> i32
+        s : string display_of[ code_only[ line_get[ vr ] ] ]
+        return (s.count / tab_w + 1) * tab_w
 
     func var_summary [ v: variable ] -> string
         if [ !v ] return ''
@@ -2042,9 +2107,9 @@ Control Editor
         base : i32 [ lines.count ]
         for [ bli: i32 0, bli < base, bli += 1 ]
             flat_rows.push[ VRow [ src: bli ] ]
-            k : i32 [ base_var_at[ bli ] ]
-            if [ k >= 0 ]
-                splice_var[ debug_vars[ k ], 1 ]
+            bv9 : variable base_var_of[ bli ]
+            if [ bv9 ]
+                splice_var[ bv9, 1 ]
         flat_active = flat_rows.count > base
 
     # flat-row accessors (identity when no tree is open).
@@ -2172,12 +2237,13 @@ Control Editor
         return r
 
     # arrows drive the list highlight exactly as the mouse does
-    func hover_step [ d: i32 ]
+    # false when it ran off the end — the caller decides where focus goes
+    func hover_step [ d: i32 ] -> bool
         n : i32 [ line_count[] ]
         r : i32 [ hover_line ]
         while [ true ]
             r += d
-            if [ r < 0 || r >= n ] return
+            if [ r < 0 || r >= n ] return false
             if [ row_spacer[ r ] ] continue
             if [ row_cont[ r ] ] continue
             break
@@ -2238,6 +2304,18 @@ Control Editor
             if [ vx < v + (adv + 1) / 2 ] return i
             v += adv
         return s.count
+
+    # the code before a trailing '#' comment, with the gap trimmed. a debug
+    # annotation replaces the comment on that line rather than colliding
+    func code_only [ s: string ] -> string
+        if [ !s ] return s
+        for [ i: i32 0, i < s.count, i += 1 ]
+            if [ s[i] == 35 ]
+                e : i32 [ i ]
+                while [ e > 0 && (s[e - 1] == 32 || s[e - 1] == 9) ]
+                    e -= 1
+                return s.mid[ 0, e ]
+        return s
 
     func display_of [ s: string ] -> string
         ht : bool [ false ]
@@ -2723,8 +2801,9 @@ Control Editor
         nv.src = path '{root}/foundry/{mod}/{mod}.ag'
         nv.doc = p
         orb9 : cast orbiter [ ux.app_object ]
-        if [ !run_args && orb9 ] run_args = orb9.module_args
-        nv.module_args = run_args
+        if [ orb9 ]
+            fa9 : string orb9.file_args[ p ]
+            nv.module_args = (fa9 && fa9.count > 0) ? fa9 : orb9.module_args
         nv.start[]
         run_view  = nv
         app_view  = true
@@ -2963,6 +3042,12 @@ Control Editor
         if [ rview ] rview.release*[]
         rview    = null
         animated = false
+
+    # while an app runs, the run band belongs to IT — not to whatever file
+    # the pane has navigated to (stepping into another module moves the pane)
+    func band_src [] -> path
+        if [ run_view && run_view.src ] return run_view.src
+        return src
 
     # stop the app this pane launched
     func close_app []
@@ -3245,8 +3330,9 @@ Control Editor
         nv.src   = src
         nv.clean_build = clean
         orb8 : cast orbiter [ ux.app_object ]
-        if [ !run_args && orb8 ] run_args = orb8.module_args
-        nv.module_args = run_args
+        if [ orb8 ]
+            fa8 : string orb8.file_args[ src ]
+            nv.module_args = (fa8 && fa8.count > 0) ? fa8 : orb8.module_args
         nv.start[]                     # serve socket + build the run command
         run_view = nv
         app_view = true
@@ -3442,8 +3528,6 @@ Control Editor
         if [ ev.target != a ]
             return
         is_dbl : bool [ ev.mouse.double_click ]
-        if [ debug_running && !edit_armed && is_dbl ]
-            edit_armed = true
         ele   : (layers) ? cast EditorLayer [ layers['content'] ] : null
         rel_x : f32 [ (ele) ? ev.mouse.pos.x - ele.bounds.x : 0.0 ]
         dbg_el : element (elements) ? elements['dbg'] : null
@@ -3458,18 +3542,19 @@ Control Editor
                 rv  : variable row_var[ cln ]
                 if [ rv ]
                     if [ var_expandable[ rv ] ]
-                        rv.expanded = !rv.expanded
+                        if [ rv.expanded ] collapse_from[ rv ]
+                        el                 expand_only[ rv ]
                         pristine = false
                         ux.will_animate = true
                         return
                 el
-                    bk : i32 [ base_var_at[ row_src[ cln ] ] ]
-                    if [ bk >= 0 ]
-                        bv : variable debug_vars[ bk ]
+                    bv : variable base_var_of[ row_src[ cln ] ]
+                    if [ bv ]
                         if [ var_expandable[ bv ] ]
-                            axp : f32 [ gutter_w + f32[ line_get[ cln ].count ] * cwp + 24.0 ]
+                            axp : f32 [ gutter_w + f32[ ann_col[ cln ] ] * cwp ]
                             if [ rel_x > axp ]
-                                bv.expanded = !bv.expanded
+                                if [ bv.expanded ] collapse_from[ bv ]
+                                el                 expand_only[ bv ]
                                 pristine = false
                                 ux.will_animate = true
                                 return
@@ -3575,10 +3660,10 @@ Control Editor
             hg = false
         ha : i32 [ -1 ]
         if [ hl >= 0 && row_var[ hl ] == null ]
-            bkh : i32 [ base_var_at[ row_src[ hl ] ] ]
-            if [ bkh >= 0 && var_expandable[ debug_vars[ bkh ] ] ]
+            bvh : variable base_var_of[ row_src[ hl ] ]
+            if [ bvh && var_expandable[ bvh ] ]
                 cwh : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
-                axh : f32 [ gutter_w + f32[ line_get[ hl ].count ] * cwh + 24.0 ]
+                axh : f32 [ gutter_w + f32[ ann_col[ hl ] ] * cwh ]
                 if [ rel_x > axh ] ha = hl
         if [ ha != hover_ann ]
             hover_ann = ha
@@ -3636,7 +3721,6 @@ Control Editor
         ux.will_animate = true
 
     func on_char [ ev: Event ]
-        if [ debug_running && !edit_armed ] return
         if [ flat_active ] return
         if [ line_count[] <= 0 ] return
         if [ sel_line < 0 ] sel_line = 0
@@ -3763,10 +3847,13 @@ Control Editor
         pristine      = false
 
     func on_key [ ev: Event ]
-        if [ run_view && app_view && !ev.key.ctrl && !ev.key.meta ]
+        # the finder owns the keyboard while it is up: forwarding to the app
+        # ate escape, so the list could not be closed
+        ui_keys : bool [ nav_list || show_hits ]
+        if [ run_view && app_view && !ui_keys && !ev.key.ctrl && !ev.key.meta ]
             run_view.on_key*[ ev ]
             return
-        if [ rview && !ev.key.ctrl && !ev.key.meta ]
+        if [ rview && !ui_keys && !ev.key.ctrl && !ev.key.meta ]
             if [ rview.continuous*[] ]
                 rview.on_key*[ ev ]
                 return
@@ -3782,16 +3869,10 @@ Control Editor
         if [ mk == 297 && run_view ]
             run_view.pause_toggle*[]
             return
-        if [ debug_running && !edit_armed ]
-            k : i32 [ ev.key.unicode ]
-            if [ k == 256 ]    # Key.Escape — leave active mode, back to editing
-                edit_armed = true
-                return
-            if [ debugger ]
-                if [ k == 67 ] debugger.cont[]        # Key.C
-                if [ k == 83 ] debugger.step_over[]   # Key.S
-                if [ k == 73 ] debugger.step_into[]   # Key.I
-                if [ k == 79 ] debugger.step_out[]    # Key.O
+        # escape collapses the innermost open field expansion
+        if [ ev.key.unicode == 256 && collapse_last[] ]
+            pristine = false
+            if [ ux ] ux.will_animate = true
             return
 
         if [ (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83 ]    # Key.S
@@ -3924,7 +4005,11 @@ Control Editor
 
         el [ key == 265 ]    # Key.Up
             if [ finder_list || show_hits ]
-                hover_step[ -1 ]
+                # off the top of the list: focus goes back to the title
+                if [ !hover_step[ -1 ] ]
+                    hover_line = -1
+                    orb5 : cast orbiter [ ux.app_object ]
+                    if [ orb5 ] orb5.focus_finder[]
             el
                 np : i32 [ prev_editable[ sel_line - 1 ] ]
                 if [ np >= 0 ]

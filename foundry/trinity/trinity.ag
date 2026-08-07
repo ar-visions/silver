@@ -3465,6 +3465,9 @@ element TButtons
     public  selected  : i32 [ -1 ]
     public  sel_mask  : i32
     public  seg_radius : f32 [ 8.0 ]
+    # rest-state edge, off by default; set to match neighboring buttons
+    public  rest_glow  : rgba
+    public  rest_px    : f32
     intern  svg_cache : map SVGModel [string]
     intern  hover_ix  : i32 [ -1 ]
 
@@ -3509,8 +3512,8 @@ element TButtons
             # at rest there is NO glow: hover and the lit state are the
             # only things that draw an edge, so nothing lingers when the
             # cursor leaves
-            gc   : rgba [ '#0000' ]
-            gpx  : f32  [ 0.0 ]
+            gc   : rgba [ rest_glow ]
+            gpx  : f32  [ rest_px ]
             # hover brightens first, at half strength...
             if [ i == hover_ix ]
                 fcol = tcol[ '#413' ]
