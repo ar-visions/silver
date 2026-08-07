@@ -3455,6 +3455,7 @@ Control Editor
     func on_press [ ev: Event ]
         # the rail is first in line: nothing else may eat its press
         rail9 : i32 [ tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        puts 'EDPRESS rv={(run_view) ? 1 : 0} av={(app_view) ? 1 : 0} rail={rail9} hits={(show_hits) ? 1 : 0}'
         if [ rail9 >= 0 ]
             press_tool[ rail9 ]
             ev.no_default = true
@@ -3466,10 +3467,12 @@ Control Editor
                     ev.no_default = true
                     return
                 if [ run_view.view_press*[ ev ] ]
+                    if [ ux ] ux.set_focus[ a ]
                     ev.no_default = true
                     return
             el [ run_view.hit_pip[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
                 toggle_app_view[]
+                if [ ux ] ux.set_focus[ a ]
                 ev.no_default = true
                 return
         sbe : (layers) ? cast EditorLayer [ layers['content'] ] : null
@@ -3721,6 +3724,7 @@ Control Editor
         ux.will_animate = true
 
     func on_char [ ev: Event ]
+        if [ run_view && app_view && !nav_list && !show_hits ] return
         if [ flat_active ] return
         if [ line_count[] <= 0 ] return
         if [ sel_line < 0 ] sel_line = 0

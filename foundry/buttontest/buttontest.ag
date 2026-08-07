@@ -17,17 +17,21 @@ Button ClickButton
     style : CSS {
         area: l2 t2 w123px h64px
         focusable: true
+        opacity:1.0
         layers.body:
-            fill_color: #2e7d32
+            fill_color: #fff
             radius: 8
+            opacity:1.0
         layers.face:
-            label_color: #fff
+            label_color: #000
             label_size: 14
             label_align: 0.5 0.5
+            opacity:1.0
     :hovered
         layers.body:
-            fill_color: #388e3c
+            fill_color: #00f
             radius: 8
+            opacity:1.0
     }
 
 element buttontest : trinity
@@ -46,7 +50,6 @@ element buttontest : trinity
     public tint       : rgba [ '#e0508c' ]
     # public f32 becomes a range slider (0..1)
     public volume     : f32 [ 0.7 ]
-    public opacity    : f32 [ 0.35 ]
 
     public func on_click [ ev: Event ]
         e : cast element [ ev.origin ]

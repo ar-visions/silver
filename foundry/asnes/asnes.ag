@@ -15,7 +15,6 @@ import <stdio.h>
 import <stdlib.h>
 import <string.h>
 
-
 struct dsp_channel
 	pos       		: u16
 	frac      		: u16

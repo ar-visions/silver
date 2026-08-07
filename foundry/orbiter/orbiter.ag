@@ -1914,6 +1914,8 @@ element orbiter : trinity # implements compiler
             bsrc : string key.mid[ 0, idx ]
             blin : i32 [ key.mid[ idx + 1, key.count - idx - 1 ].real_value[] ]
             if [ blin <= 0 ] continue
+            # an empty source (':1' in a stale state file) binds anywhere
+            if [ !bsrc || bsrc.count == 0 ] continue
             if [ !d.bps ] d.bps = array []
             bp9 : d.set_breakpoint[ path [ bsrc ], u32[ blin ], 0 ]
             if [ bp9 ] d.bps.push[ bp9 ]
@@ -2807,7 +2809,7 @@ element orbiter : trinity # implements compiler
 
     # vantage; each scene maps it to its own distance
     func orbit_list [] -> array string
-        return array string [ 'low-orbit', 'high-orbit', 'far-orbit' ]
+        return array string [ 'low-orbit', 'high-orbit', 'far-orbit', 'wide-orbit' ]
 
     func orbit_name [] -> string
         ol : array string [ orbit_list[] ]
@@ -2816,7 +2818,9 @@ element orbiter : trinity # implements compiler
     func orbit_step [ d: i32 ]
         ol : array string [ orbit_list[] ]
         orbit_ix = (orbit_ix + d + ol.count) % ol.count
-        if [ ux ] ux.orbit_mode = orbit_ix % 3
+        # the list's own length, never a literal: a fourth vantage that
+        # wraps back to the first is a silently missing camera
+        if [ ux ] ux.orbit_mode = orbit_ix % ol.count
 
     # camera angle; each scene maps it to pitch or to aim tilt
     func angle_list [] -> array string
@@ -3065,10 +3069,6 @@ element orbiter : trinity # implements compiler
                 nav_panes[ pi ].record[ pi, '{cur.src.absolute[]}', cur.sel_line, cur.sel_col, cur.scroll.y ]
         idx : i32 [ file_slot[ p ] ]
         if [ pi >= 0 && pi < editor_slots.count ]
-            # showing source demotes a running app to pip: the pane's keys
-            # are the editor's again, so the file stays editable
-            cur2 : Editor pane_at[ pi ]
-            if [ cur2 && cur2.run_view ] cur2.app_view = false
             editor_slots[pi] = idx
             if [ pi < pane_console.count ] pane_console[pi] = ''
             active_pane = pi
@@ -3779,6 +3779,13 @@ element orbiter : trinity # implements compiler
                 ev.target.pristine = false
                 if [ ev.target.ux ] ev.target.ux.will_animate = true
                 ev.no_default = true
+            # escape clears the field: a wrong value had no way out but backspace
+            el [ fs9 && ka == 256 ]
+                fs9.args = ''
+                save_session[]
+                ev.target.pristine = false
+                if [ ev.target.ux ] ev.target.ux.will_animate = true
+                ev.no_default = true
             return
 
         if [ ev.target.id == 'find' || ev.target.id == 'replace' || ev.target.id == 'pattern' ]
@@ -4147,7 +4154,7 @@ element orbiter : trinity # implements compiler
         sels['frost_name'] = SceneName  [ label: ux.frost_name[] ]
         speed_apply[]
         sels['speed_name'] = SceneName  [ label: speed_name[] ]
-        if [ ux ] ux.orbit_mode = orbit_ix % 3
+        if [ ux ] ux.orbit_mode = orbit_ix % orbit_list[].count
         sels['orbit_name'] = SceneName  [ label: orbit_name[] ]
         if [ ux ] ux.angle_mode = angle_value[]
         sels['angle_name'] = SceneName  [ label: angle_name[] ]

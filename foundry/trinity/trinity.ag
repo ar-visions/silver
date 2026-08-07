@@ -296,6 +296,7 @@ abstract live_app media_app
             if [ !scv ] return
             tx : Texture [ scv.color ]
             if [ !tx || !tx.vk_image ] return
+            #puts 'WSIZE win={wn.width}x{wn.height} pend={wn.pending_w}x{wn.pending_h} scv={scv.width}x{scv.height} tex={tx.width}x{tx.height}'
             if [ !share_tex0 || share_tex0.width != tx.width || share_tex0.height != tx.height ]
                 share_tex0 = Texture [ vk: vk, w: wn, width: tx.width, height: tx.height,
                     vk_format: tx.vk_format, shareable: true ]
@@ -315,6 +316,7 @@ abstract live_app media_app
             for [ i: i32 0, i < 64, i += 1 ]
                 t : i32 [ host_poll[ 1 ] ]
                 if [ t == 0 ] break
+                puts 'HOSTMSG slot={host_slot[]} t={t} a={host_pa[]} b={host_pb[]}'
                 if [ t == i32[ HM.close ] ] return false
                 if [ t == i32[ HM.key ] ]
                     wn.ev.clear[]
