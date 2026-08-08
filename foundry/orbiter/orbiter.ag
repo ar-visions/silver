@@ -47,10 +47,10 @@ element EditorView
     style : CSS {
         area: l0 t0 r0 b0
         layers.bg:
-            fill_color: #1b0b33cc
+            fill_color: #140a2acc
         :is_console
             layers.bg:
-                fill_color: #1b0b3388
+                fill_color: #140a2a80
     }
 
     func text_of [] -> Editor
@@ -449,7 +449,7 @@ Option ReloadButton
         label_align: vec2f [ x: 0.5, y: 0.5 ],
         label_overflow: Overflow.ellipsis ]
     style : CSS {
-        area: l8px t2px w80px h18px
+        area: l8px t2px w96px h22px
         layers.body:
             fill_color: #0000
             radius: 4
@@ -468,7 +468,7 @@ Option HideToggle
     tlabel : Layer [ label_color: rgba [ '#fff9' ], label_size: 13,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
     style : CSS {
-        area: l50%-20px t2px w40px h18px
+        area: l50%-24px t2px w48px h22px
         layers.body:
             fill_color: #0000
             radius: 4
@@ -502,7 +502,7 @@ Option ErrorButton
         label_align: vec2f [ x: 0.5, y: 0.5 ],
         label_overflow: Overflow.ellipsis ]
     style : CSS {
-        area: l50%-5 t0 w10 h1.4
+        area: l50%-6 t0 w12 h1.68
         layers.body:
             fill_color: #d94a6a
             radius: 0 0 8 8
@@ -559,7 +559,7 @@ Option SceneArrow
 
 element SceneName
     style : CSS {
-        area: r0+ t0px w84px b0px
+        area: r0+ t0px w101px b0px
         layers.body:
             fill_color: #0000
             radius: 4
@@ -693,7 +693,7 @@ TButtons StepButtons
     rest_glow : rgba [ '#ccf2' ]
     rest_px   : f32  [ 16.0 ]
     style : CSS {
-        area: l0+ t0 w3.6 h0.9
+        area: l0+ t0 w4.32 h1.08
     }
 
 # run arguments for the pane's app; sits in the run band header
@@ -763,7 +763,7 @@ element ReplaceField
 
 Button PillButton
     style : CSS {
-        area: l6+px t3px w3 h1
+        area: l6+px t3px w3.6 h1.2
         layers.body:
             fill_color: #114
             fill_gradient: linear
@@ -1047,7 +1047,7 @@ element orbiter : trinity # implements compiler
     intern orbit_ix      : i32 [ 1 ]
     # index into angle_list[]; flat-on is the default
     intern angle_ix      : i32 [ 1 ]
-    # frost stage 0..3 (frost/blur/soft/raw), pushed to ux.frost_mode
+    # frost stage 0..2 (frost/blur/clear), pushed to ux.frost_mode
     intern frost_ix      : i32
 
     func init []
@@ -1325,7 +1325,9 @@ element orbiter : trinity # implements compiler
         speed_ix = st.speed_ix
         orbit_ix = st.orbit_ix
         angle_ix = st.angle_ix
-        frost_ix = st.frost_ix
+        # sessions saved when there were four stages can hold a 3, which
+        # now wraps past clear and reads as frost
+        frost_ix = st.frost_ix % 3
 
     func load_settings []
         sp  : agi_path[]
@@ -2854,32 +2856,30 @@ element orbiter : trinity # implements compiler
         speed_ix = (speed_ix + d + sl.count) % sl.count
         speed_apply[]
 
-    # subtle draws 1 frame in 4, slow 1 in 2, medium every frame. the
-    # rates fall by 4x a step, so subtle is a quarter of slow
+    # DRAWS PER SECOND, not a frame count. the panel can be 160hz, so
+    # 1-in-4 is not a rate -- it is whatever the panel happens to run
     func speed_apply []
         if [ !ux ] return
-        # a camera easing between orbits must not skip frames or the
-        # move lands in visible steps instead of a glide
-        if [ ux.orbit_moving ]
-            ux.background_skip = 1
-            return
+        # the orbit_moving exemption lives in animate[] now, per frame.
+        # returning early here left background_hz stuck at 0 whenever a
+        # speed was picked mid-glide
         ix : i32 [ speed_ix % 5 ]
         switch [ ix ]
             case 1
-                ux.background_skip = 2
-                ux.time_scale      = 1.0 / 16.0
+                ux.background_hz = 16.0
+                ux.time_scale    = 1.0 / 16.0
             case 2
-                ux.background_skip = 1
-                ux.time_scale      = 1.0 / 4.0
+                ux.background_hz = 30.0
+                ux.time_scale    = 1.0 / 4.0
             case 3
-                ux.background_skip = 1
-                ux.time_scale      = 1.0
+                ux.background_hz = 60.0
+                ux.time_scale    = 1.0
             case 4
-                ux.background_skip = 1
-                ux.time_scale      = 4.0
+                ux.background_hz = 60.0
+                ux.time_scale    = 4.0
             default
-                ux.background_skip = 4
-                ux.time_scale      = 1.0 / 64.0
+                ux.background_hz = 4.0
+                ux.time_scale    = 1.0 / 64.0
 
     # placeable widgets; reflection over element subclasses later
     func toolbox_items [] -> array string
@@ -3381,7 +3381,7 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         if [ ev.target.id == 'frost_name' ]
-            frost_ix = (frost_ix + 1) % 4
+            frost_ix = (frost_ix + 1) % 3
             ux.frost_mode = frost_ix
             save_session[]
             ev.no_default = true
@@ -4147,7 +4147,7 @@ element orbiter : trinity # implements compiler
         # right-flow: first inserted sits furthest right
         sels : Elements []
         sels['scene_next'] = SceneArrow [ icon: 'right',
-            area: Region { r8px t2px w18px h18px }, manual_mode: true ]
+            area: Region { r8px t2px w22px h22px }, manual_mode: true ]
         sels['scene_name'] = SceneName  [ label: scene_name[].lcase[] ]
         sels['scene_prev'] = SceneArrow [ icon: 'left', manual_mode: true ]
         if [ ux ] ux.frost_mode = frost_ix

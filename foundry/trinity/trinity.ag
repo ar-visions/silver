@@ -711,8 +711,8 @@ Display Window
     mutable time                : f64
     public st                   : Style
 
-    # frames between backdrop composite redraws. 0 or 1 = every frame
-    public  background_skip     : i32 [ 1 ]
+    # backdrop composite redraws per second. 0 = every frame
+    public  background_hz       : f32
     # 0 low, 1 high, 2 far. each scene maps it to its own distance
     public  orbit_mode          : i32
     # 0 flat-on, 1 angled, 2 steep. mapped per scene like orbit_mode
@@ -1073,6 +1073,19 @@ Display Window
         #puts 'frame_factor: raw={raw}s frame_factor={frame_factor}'
         last_frame_ms = now
         frame_seq += 1
+
+        # the draw rate is chosen at RUNTIME, so it has to be pushed
+        # every frame. update[] only runs on resize, so setting it
+        # there latched whatever rate happened to be live at startup
+        # and no speed change ever reached the renders again.
+        # r_view is last and never throttled -- it is the screen
+        if [ list && list.count > 1 ]
+            # a camera easing between orbits draws every frame or the
+            # move lands in visible steps instead of a glide
+            hz9 : f32 [ (orbit_moving) ? 0.0 : background_hz ]
+            for [ i: i32 0, i < list.count - 1, i += 1 ]
+                bg9 : Render list[i]
+                bg9.draw_hz = hz9
 
         # deferred focus: runs here, after input and before any draw.
         # NOT `focus_id && root` -- string && element is convertible, so
@@ -1746,22 +1759,24 @@ Display Window
         if [ backdrop && backdrop.owner && backdrop.owner.frost_sharp ] return 1
         return 0
 
-    # the four stages the panels can read, sharpest last
+    # the three stages the panels can read, sharpest last. soft and raw
+    # both showed the original render and were one stage in practice,
+    # so they are one in name too: clear.
+    # r_reduce is NOT a reduction -- it is wscale 1.0 off the backdrop,
+    # a full-res pass-through. it only heads the chain that reduces
     public func frost_name [ ] -> string
         e : i32 [ frost_eff[] ]
         if [ e == 1 ] return string 'blur'
-        if [ e == 2 ] return string 'soft'
-        if [ e == 3 ] return string 'raw'
+        if [ e == 2 ] return string 'clear'
         return string 'frost'
 
     public func frost_step [ d: i32 ]
-        frost_mode = (frost_eff[] + d + 4) % 4
+        frost_mode = (frost_eff[] + d + 3) % 3
 
     func frost_src [ ] -> Render
         e : i32 [ frost_eff[] ]
         if [ e == 1 ] return r_blur
-        if [ e == 2 ] return r_soft
-        if [ e == 3 ] return r_reduce
+        if [ e == 2 ] return r_reduce
         return r_frost
 
     func blur_src [ ] -> Render
@@ -1883,9 +1898,6 @@ Display Window
                     r_soft_v, r_soft,
                     r_reduce2, r_reduce3, r_frost_v, r_frost,
                     r_view ]
-                for [ i: i32 0, i < list.count - 1, i += 1 ]
-                    bg : Render list[i]
-                    bg.draw_interval = background_skip
         el
             if [ list ]
                 for [ r: Render ] in list

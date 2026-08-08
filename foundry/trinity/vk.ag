@@ -87,15 +87,19 @@ class Render
     # and skip the depth texture entirely — halving texture churn on
     # resize.
     public  use_depth                      : bool
-    # draw only every N frames (0 or 1 = every frame). for slow-moving
-    # backgrounds that don't need per-frame updates.
-    public  draw_interval                  : i32
+    # cap this render to N draws per second (0 = every frame). a frame
+    # COUNT cannot express a rate: 1-in-4 is 15fps on a 60hz panel and
+    # 40 on a 160hz one. wall clock is the only display-independent
+    # way to say 'four times a second'
+    public  draw_hz                        : f32
+    # wall-clock ms of the last draw, for the rate gate above
+    intern  last_draw_ms                   : i64
     # the owning element's live State mask — gates models whose shader
     # declares `states` (Layer-style mouse states for shader passes)
     mutable state_mask                     : i32
-    # set once this render has drawn at least once — the throttle must never skip
-    # the FIRST draw (else a throttled background never appears on load until the
-    # global draw_seq happens to align with the interval).
+    # set once this render has drawn at least once — the rate gate must
+    # never skip the FIRST draw, or a throttled background stays blank
+    # until its first interval elapses
     intern  has_drawn                      : bool
     intern  reduce_model                   : Model
     # ring of command buffers + fences so consecutive draws[] don't have to fence
@@ -3505,7 +3509,6 @@ Texture Display
     
     intern surface_caps         : @VkSurfaceCapabilitiesKHR
     intern swap_render_current  : Render
-    intern draw_seq             : i32
     intern surface_format       : VkSurfaceFormatKHR
     intern present_mode         : VkPresentModeKHR
     intern extent               : VkExtent2D
@@ -3706,7 +3709,6 @@ Texture Display
 
     func draw [ ]
         win : cast Window [ a ]
-        draw_seq += 1
         if [ pending_w > 0 && pending_h > 0 ]
             now: f64 [ glfwGetTime[] ]
             if [ now - last_resize_t >= resize_debounce_s ]
@@ -3715,7 +3717,6 @@ Texture Display
                 pending_w     = 0
                 pending_h     = 0
                 last_resize_t = 0.0
-                draw_seq      = -1
 
         # recreate a SUBOPTIMAL/stale swapchain here at the TOP of draw — BEFORE
         # on_compose redraws — so the resized canvases are repainted before we
@@ -3733,13 +3734,16 @@ Texture Display
 
         on_compose*[]
 
+        now_ms : i64 [ epoch_millis[] ]
         for [ r: Render ] in list
-            interval : i32 [ r.draw_interval ]
-            if [ interval > 1 && r.has_drawn && draw_seq % interval != 0 ]
-                continue
+            hz : f32 [ r.draw_hz ]
+            if [ hz > 0.0 && r.has_drawn ]
+                due : i64 [ i64[ 1000.0 / hz ] ]
+                if [ now_ms - r.last_draw_ms < due ] continue
             r.draw*[]
             r.sync_fence*[]
-            r.has_drawn = true
+            r.has_drawn    = true
+            r.last_draw_ms = now_ms
 
         on_screen*[]
 

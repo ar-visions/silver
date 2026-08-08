@@ -1454,6 +1454,7 @@ element MilkyWay
             '#44225588':  '#8a8aaa11'    # editor line highlight
         ]
 
+
     func load_bg [ arg: object ]
         t0 : i64 [ Au.epoch_millis[] ]
         puts 'scene load_bg start at {t0}'
@@ -1597,6 +1598,10 @@ ModelViewProject TitanShader
 ModelViewProject RingShader
     mutable gain    : f32
     mutable cam_pos : vec4f
+    # x = the strip's inner radius over its outer, so t maps radius.
+    # y = the planet's radius over that same outer, which is the
+    # cylinder its shadow casts. both were saturn's numbers inline
+    mutable rgeo    : vec4f
 
     attrib color : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.color, count:1, format: typeid[ rgba8 ] ]
 
@@ -1625,9 +1630,9 @@ ModelViewProject RingShader
     }
 
     func fragment[] -> GLSL none {
-        // D-ring inner edge at 74500/140220 of the F-ring outer
+        // saturn: D-ring inner at 74500/140220 of the F-ring outer
         float rad = length(v_mpos.xz);
-        float r0  = 0.531;
+        float r0  = ubo.rgeo.x;
         float t   = (rad - r0) / (1.0 - r0);
         if (t < 0.0 || t > 1.0) { fragColor = vec4(0.0); return; }
         vec4  band = texture(color, vec2(t, 0.5));
@@ -1640,7 +1645,7 @@ ModelViewProject RingShader
         float rout = length((ubo.model * vec4(1.0, 0.0, 0.0, 0.0)).xyz);
         vec3  p    = v_world_pos.xyz - ctr;
         vec3  q    = p - sun * dot(p, sun);
-        float rp   = 0.430 * rout;
+        float rp   = ubo.rgeo.y * rout;
         float sh   = (dot(p, sun) < 0.0)
                    ? mix(0.12, 1.0, smoothstep(rp * 0.96, rp * 1.04, length(q)))
                    : 1.0;
@@ -1721,14 +1726,11 @@ ModelViewProject SaturnShader
         float s0 = w * (p0 - 0.5) * 0.16;
         float s1 = w * (p1 - 0.5) * 0.16;
         float bl = abs(2.0 * p0 - 1.0);
-        // a CONTINUOUS spin under the shear. the ping-pong above is
-        // bounded by design -- it shears back and forth and never
-        // travels -- so on its own nothing on this planet actually
-        // moves. this is the drift everything rides, albedo and storms
-        // alike, and it is why the plasma looked pinned
-        float spin9 = ubo.time * 0.0090;
-        vec2  bu0 = vec2(v_uv.x + spin9 + s0, v_uv.y);
-        vec2  bu1 = vec2(v_uv.x + spin9 + s1, v_uv.y);
+        // NO uniform spin here. any shift added at every latitude is
+        // common motion, and the eye reads the largest common motion
+        // as the whole planet turning -- it buries the shear
+        vec2  bu0 = vec2(v_uv.x + s0, v_uv.y);
+        vec2  bu1 = vec2(v_uv.x + s1, v_uv.y);
         vec3  alb = mix(texture(color, bu0).rgb,
                         texture(color, bu1).rgb, bl);
         // wrapped like the moon, or opposite phases read as broken
@@ -1908,6 +1910,10 @@ element Titan
         rings.proj    = _proj
         rings.gain    = 1.9
         rings.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # SATURN'S OWN, the two numbers that were inline in the
+        # shader: D-ring inner 74500 over F-ring outer 140220, and
+        # the ball's 60268 over that same outer
+        rings.rgeo    = vec4f [ 0.531, 0.430, 0.0, 0.0 ]
 
 
 # enceladus geysers: procedural jets fanning off the south cone
@@ -2619,6 +2625,10 @@ element Enceladus
         rings.proj    = _proj
         rings.gain    = 0.8
         rings.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # SATURN'S OWN, the two numbers that were inline in the
+        # shader: D-ring inner 74500 over F-ring outer 140220, and
+        # the ball's 60268 over that same outer
+        rings.rgeo    = vec4f [ 0.531, 0.430, 0.0, 0.0 ]
 
 # europa bake: cpu gradient perlin, quintic fade, mod-289 lattice
 func eu_perm [ x: f32 ] -> f32
@@ -2922,18 +2932,23 @@ ModelViewProject JupiterShader
         float s0 = w * (p0 - 0.5) * ubo.wctl.x;
         float s1 = w * (p1 - 0.5) * ubo.wctl.x;
         float bl = abs(2.0 * p0 - 1.0);
-        // a CONTINUOUS spin under the shear. the ping-pong above is
-        // bounded by design -- it shears back and forth and never
-        // travels -- so on its own nothing on this planet actually
-        // moves. this is the drift everything rides, albedo and storms
-        // alike, and it is why the plasma looked pinned
-        float spin9 = ubo.time * 0.0090;
-        vec2  bu0 = vec2(v_uv.x + spin9 + s0, v_uv.y);
-        vec2  bu1 = vec2(v_uv.x + spin9 + s1, v_uv.y);
+        // NO uniform spin here. any shift added at every latitude is
+        // common motion, and the eye reads the largest common motion
+        // as the whole planet turning -- it buries the shear
+        vec2  bu0 = vec2(v_uv.x + s0, v_uv.y);
+        vec2  bu1 = vec2(v_uv.x + s1, v_uv.y);
         vec3  alb = mix(texture(color, bu0).rgb,
                         texture(color, bu1).rgb, bl);
-        float wr9      = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
-        float ndl      = wr9 * wr9;
+        // LAMBERT, the same law earth and the moon use here. a sphere
+        // under a distant sun falls off as the cosine of the incidence
+        // angle: flat near the sub-solar point, steepest at 90. the
+        // old 0.5 wrap spread that fade over the WHOLE globe, so
+        // nothing was ever fully lit; 8.0 collapsed it to a cut.
+        // the 0.06 is jupiter's own departure -- an atmosphere deep
+        // enough to carry light about four degrees past the geometric
+        // terminator. no square: that is gamma, not illumination
+        float lam9     = dot(n, sun);
+        float ndl      = clamp((lam9 + 0.06) / 1.06, 0.0, 1.0);
         float mu       = clamp(dot(n, view_dir), 0.0, 1.0);
         vec3  col      = alb * (0.08 + 0.92 * ndl) * ubo.gain;
         // NIGHT-SIDE PLASMA. the storm map is baked: sobel edge max'd
@@ -2944,13 +2959,29 @@ ModelViewProject JupiterShader
         float sob = smoothstep(0.10, 0.72,
                         mix(texture(height, ju0).r, texture(height, ju1).r, bl));
 
+        // the noise rides ju0/ju1, which already carry the wind as a
+        // BOUNDED shear. an offset that grows with time and varies by
+        // latitude does not move the field, it shears it: after ten
+        // minutes neighbouring latitudes are hundreds of noise cells
+        // apart and every feature is one pixel tall
         // GRADIENT noise clusters hard around 0.5, so a raw 0.8 cut
         // fires on almost nothing -- stretch first, then threshold
         vec2  ps9 = ubo.pstr.xy;
-        float st9 = mix(jp_gnoise(vec3(ju0 * 18.0 * ps9, ubo.time * 0.030)),
-                        jp_gnoise(vec3(ju1 * 18.0 * ps9, ubo.time * 0.030)), bl);
-        float st2 = mix(jp_gnoise(vec3(ju0 * 41.0 * ps9 + 7.0, ubo.time * 0.055)),
-                        jp_gnoise(vec3(ju1 * 41.0 * ps9 + 7.0, ubo.time * 0.055)), bl);
+        // THE UV SEAM. gradient noise on raw u is discontinuous at the
+        // wrap: x runs 0 to 18 across the map and those are different
+        // lattice cells, so the field does not meet itself. sampled
+        // around a CIRCLE in longitude it closes. radius is the old
+        // cell count over two pi, so the features are the same size
+        float a90 = ju0.x * 6.28318530718;
+        float a91 = ju1.x * 6.28318530718;
+        float r90 = 2.8648 * ps9.x;
+        float r91 = 6.5254 * ps9.x;
+        float sy9 = 18.0 * ps9.y;
+        float sy8 = 41.0 * ps9.y;
+        float st9 = mix(jp_gnoise(vec3(cos(a90) * r90, sin(a90) * r90, ju0.y * sy9 + ubo.time * 0.030)),
+                        jp_gnoise(vec3(cos(a91) * r90, sin(a91) * r90, ju1.y * sy9 + ubo.time * 0.030)), bl);
+        float st2 = mix(jp_gnoise(vec3(cos(a90) * r91 + 7.0, sin(a90) * r91 + 7.0, ju0.y * sy8 + ubo.time * 0.055)),
+                        jp_gnoise(vec3(cos(a91) * r91 + 7.0, sin(a91) * r91 + 7.0, ju1.y * sy8 + ubo.time * 0.055)), bl);
         st9 = clamp((st9 - 0.5) * 3.4 + 0.5, 0.0, 1.0);
         st2 = clamp((st2 - 0.5) * 3.0 + 0.5, 0.0, 1.0);
         float flash = smoothstep(ubo.pctl.x, ubo.pctl.x + 0.32, st9)
@@ -2958,15 +2989,46 @@ ModelViewProject JupiterShader
 
         // cells pulse on their own clocks, and a wave runs the bands so
         // fronts sweep rather than the planet blinking as one
-        float pls = 0.5 + 0.5 * sin(ubo.time * ubo.pctl.y + st2 * 21.0 + ju0.y * 60.0);
-        float wv  = 0.5 + 0.5 * sin(ju0.x * 34.0 - ubo.time * 0.24 + st2 * 4.0);
-        flash *= (0.10 + 0.90 * pow(pls, ubo.pctl.z)) * smoothstep(0.15, 0.85, wv);
+        // wctl2.w is how many pulse phases fit down the latitude. it
+        // has to sit near the CELL count -- 60 against 10 cells is 6
+        // phases inside one cell, which prints the cell as stripes
+        float pls = 0.5 + 0.5 * sin(ubo.time * ubo.pctl.y + st2 * 21.0
+                                  + ju0.y * ubo.wctl2.w);
+        // 31.4159 is FIVE whole cycles. 34.0 was 5.41, so the wave
+        // jumped 0.41 of a cycle across the seam
+        float wv  = 0.5 + 0.5 * sin(ju0.x * 31.4159265 - ubo.time * 0.24 + st2 * 4.0);
+        // pc_a.w is PERMANENCE: 0 is an event that fires and dies, 1 is
+        // a standing feature that only breathes. lightning is the
+        // first; a cloud deck is the second, and it was being switched
+        // on and off like a strike
+        float prm = ubo.pc_a.w;
+        float flr = mix(0.10, 1.00, prm);
+        float wvg = mix(smoothstep(0.15, 0.85, wv), 1.0, prm);
+        flash *= (flr + (1.0 - flr) * pow(pls, ubo.pctl.z)) * wvg;
 
         // ORANGE or BLUE by region, sodium and hydrogen at depth
-        float hue = jp_gnoise(vec3(ju0 * 5.0 + 31.0, ubo.time * 0.012));
+        float hue = jp_gnoise(vec3(cos(a90) * 0.7958 + 31.0, sin(a90) * 0.7958 + 31.0,
+                                   ju0.y * 5.0 + ubo.time * 0.012));
         vec3  pc  = mix(ubo.pc_a.rgb, ubo.pc_b.rgb, smoothstep(0.42, 0.58, hue));
+        // pctl.w = how much of this is night-only. 1 is a discharge
+        // seen against the dark side; 0 is weather, lit right across
         float night = 1.0 - smoothstep(0.015, 0.28, ndl);
-        col += pc * flash * sob * night * 4.2;
+        // WEATHER DOES NOT GLOW. cloud is lit by the same sun as the
+        // deck under it, so it takes the same light term -- at HALF
+        // strength, so it still reads through the terminator instead
+        // of vanishing with the surface. a flat 1.0 here was what lit
+        // the night side as brightly as the day
+        float lit9  = 0.08 + 0.92 * ndl;
+        // 0.85, not 0.5. half the darkening still left cloud at 0.54
+        // of full on the night side, which is a glow -- this puts it
+        // at 0.22, dim but not gone
+        float gate  = mix(mix(1.0, lit9, 0.85), night, ubo.pctl.w);
+        float amt   = flash * sob * gate;
+        // TWO ways to land it, and a planet picks one. pstr.z adds a
+        // discharge colour on top; pstr.w instead lifts the albedo
+        // already there toward white, and never past pstr.w itself
+        col += pc * amt * ubo.pstr.z;
+        col  = mix(col, vec3(1.0), min(amt, 1.0) * ubo.pstr.w);
         float a        = smoothstep(0.0, 0.18, mu);
         fragColor      = vec4(col, a);
     }
@@ -3811,7 +3873,7 @@ element Europa
         sbi : Image [ width: jw, height: jh, format: Pixel.rgba8, linear: true, wrap_u: true ]
         sd : @u8 [ sbi.vdata[] ]
         for [ i: i32 0, i < jw * jh, i += 1 ]
-            v9 : f32 [ jg[ i ] ]
+            v9 : f32 [ jt[ i ] ]
             if [ v9 < 0.0 ] v9 = 0.0
             if [ v9 > 1.0 ] v9 = 1.0
             b4 : i32 [ i * 4 ]
@@ -3889,7 +3951,7 @@ element Europa
     func orbit[]
         # surface flyover like enceladus: ice fills the frame at low
         # orbit and jupiter hangs above the limb ahead
-        time : 0.0 - ux.time * 1460.0
+        time : 0.0 - ux.time * 730.0
         if [ time == 0.0 ] time = -54.0
         a_t      : f32 [ (ux.orbit_mode == OrbitView.low)  ? 0.25 :
                          (ux.orbit_mode == OrbitView.high) ? 0.70 : 2.60 ]
@@ -4001,7 +4063,10 @@ element Europa
         sq     : quatf [ s_axis ]
         s_tip  : vec4f [ 1.0, 0.0, 0.0, radians[ 8.0 ] ]
         sq3    : quatf [ s_tip ]
-        s_spin : vec4f [ 0.0, 1.0, 0.0, radians[ ux.time * 6000.0 ] ]
+        # ONE EIGHTH the old 6000: a gas giant that turned once every
+        # fifteen seconds at ludacrous, while its lit face took minutes
+        # to move, read as a spinning ball under a fixed lamp
+        s_spin : vec4f [ 0.0, 1.0, 0.0, radians[ ux.time * 375.0 ] ]
         sq2    : quatf [ s_spin ]
         sm : mat4f.identity[]
         sm = sm.translate[ s_off ]
@@ -4016,12 +4081,24 @@ element Europa
         jup.cam_pos  = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
         # sodium orange against hydrogen blue -- the uniforms default to
         # black, so an unset palette means no discharges at all
-        jup.pc_a     = vec4f [ 1.00, 0.46, 0.13, 1.0 ]
+        # w 0.0 = an EVENT. lightning fires and dies; this is the
+        # behaviour that lane was hardcoded to before it existed
+        jup.pc_a     = vec4f [ 1.00, 0.46, 0.13, 0.0 ]
         jup.pc_b     = vec4f [ 0.30, 0.60, 1.00, 1.0 ]
-        jup.pstr     = vec4f [ 1.0, 1.0, 0.0, 0.0 ]
-        jup.pctl     = vec4f [ 0.69, 0.9, 2.0, 0.0 ]
+        # z = additive discharge gain, w = lift toward white (unused).
+        # pctl.w 1.0 keeps this a NIGHT-side effect; wctl2.w 60.0 is
+        # the pulse frequency down the latitude, as it has always been
+        jup.pstr     = vec4f [ 1.0, 1.0, 4.2, 0.0 ]
+        # x is the discharge threshold. MEASURED against the actual
+        # noise, not guessed: 0.69 fires on 0.062 of the disk and
+        # 0.871 on 0.0078, which is an eighth of the storms. the
+        # relation is nowhere near linear -- 0.80 is only a third off
+        jup.pctl     = vec4f [ 0.871, 0.9, 2.0, 1.0 ]
         jup.wctl     = vec4f [ 0.16, 0.010, 56.55, 0.25 ]
-        jup.wctl2    = vec4f [ 0.55, 1.6, 0.0125, 0.0 ]
+        # z is the band ping-pong rate, a QUARTER of the old 0.0125.
+        # at ludacrous that was shearing back and forth about three
+        # times a second, which reads as the deck spinning, not wind
+        jup.wctl2    = vec4f [ 0.55, 1.6, 0.0015625, 60.0 ]
         jup.time     = ux.time * 60000.0
 
 
@@ -5010,11 +5087,19 @@ func neptune_bake [] -> bool
     if [ si.width == 0 ]
         puts 'neptune: saturn plate missing'
         return false
+    ji : Image [ uri: path '../scenes/textures/jupiter-color.png' ]
+    if [ ji.width == 0 ]
+        puts 'neptune: jupiter plate missing'
+        return false
     w9 : i32 [ si.width ]
     h9 : i32 [ si.height ]
-    puts 'neptune: composing {w9}x{h9} from saturn alone'
+    jw : i32 [ ji.width ]
+    jh : i32 [ ji.height ]
+    puts 'neptune: composing {w9}x{h9} saturn with {jw}x{jh} jupiter patches'
     sp9 : i32 [ si.pixel_size ]
     sdat : @u8 [ si.vdata[] ]
+    jp9 : i32 [ ji.pixel_size ]
+    jdat : @u8 [ ji.vdata[] ]
     im : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true, wrap_u: true ]
     od : @u8 [ im.vdata[] ]
     # THE GREAT DARK SPOT, ours rather than jupiter's borrowed one: an
@@ -5053,6 +5138,44 @@ func neptune_bake [] -> bool
             coll : f32 [ eu_sstep[ 0.62, 0.86, rr ] * (1.0 - eu_sstep[ 0.86, 1.10, rr ]) ]
             l9 = l9 * (1.0 - spot * 0.62) + coll * 0.16
 
+            # JUPITER PATCHES. saturn's deck is smooth to the point of
+            # being featureless; jupiter's is the turbulence we want.
+            # the mask is perlin sampled around a CIRCLE in longitude,
+            # so it closes at the seam instead of cutting a hard line
+            # ELONGATED along the wind. the circle radius sets how many
+            # noise cells fit around the equator, so 1.6 is 10 cells of
+            # 410 texels; 16 in latitude is 128 texels. that is a patch
+            # three times wider than tall, lying WITH the bands
+            ang : f32 [ u * 6.28318530718 ]
+            mx9 : f32 [ cos[ ang ] * 1.6 + 6.0 ]
+            my9 : f32 [ sin[ ang ] * 1.6 + 6.0 ]
+            pm1 : f32 [ eu_gnoise[ mx9, my9, v * 16.0 ] ]
+            # a finer turn breaks the blob edge, kept flat as well so it
+            # frays the patch into ribbons instead of vertical fingers
+            pm2 : f32 [ eu_gnoise[ mx9 * 2.6 + 19.0, my9 * 2.6 + 7.0, v * 34.0 ] ]
+            pm9 : f32 [ pm1 + (pm2 - 0.5) * 0.18 ]
+            patch : f32 [ eu_sstep[ 0.44, 0.64, pm9 ] ]
+            # FLIPPED in latitude and MIRRORED in longitude, so the
+            # borrowed bands do not line up with anything jupiter reads
+            # as. both plates are 4096x2048, so this is a direct index
+            jx : i32 [ i32[ (1.0 - u) * f32[ jw ] ] ]
+            jy : i32 [ i32[ (1.0 - v) * f32[ jh ] ] ]
+            if [ jx < 0 ] jx = 0
+            if [ jx >= jw ] jx = jw - 1
+            if [ jy < 0 ] jy = 0
+            if [ jy >= jh ] jy = jh - 1
+            jb : i32 [ (jy * jw + jx) * jp9 ]
+            jl9 : f32 [ (f32[ jdat[ jb ] ] * 0.299
+                       + f32[ jdat[ jb + 1 ] ] * 0.587
+                       + f32[ jdat[ jb + 2 ] ] * 0.114) / 255.0 ]
+            # stretched about its own mid grey: jupiter's belts flatten
+            # out once the ochre is gone, and flat is what we came here
+            # to fix
+            jl9 = (jl9 - 0.5) * 1.35 + 0.5
+            if [ jl9 < 0.0 ] jl9 = 0.0
+            if [ jl9 > 1.0 ] jl9 = 1.0
+            l9 = l9 + (jl9 - l9) * patch * 0.80
+
             # DEEP BLUE: structure as luminance, hue carried in code --
             # tinting saturn's ochre would leave it fighting through
             nr : f32 [ l9 * 0.20 + cv9 * 0.10 ]
@@ -5072,10 +5195,50 @@ func neptune_bake [] -> bool
     puts 'neptune: colour map written'
     return true
 
-# the storm mask for neptune: CONTRAST of the cloud field only -- no
-# sobel. neptune has no shear lines to speak of, so the discharges sit
-# where the cloud deck itself is most differentiated, and the whole
-# thing is blurred far softer than jupiter's
+# separable running box, wrapping in x and clamping in y. eu_blur is
+# a 3x3 kernel run N times -- four passes is a sigma of 1.6 texels,
+# which is nothing at all on a plate 4096 across. result lands in S
+func nep_box [ S: @f32, T: @f32, w: i32, h: i32, rx: i32, ry: i32 ]
+    ivx : f32 [ 1.0 / f32[ rx * 2 + 1 ] ]
+    ivy : f32 [ 1.0 / f32[ ry * 2 + 1 ] ]
+    for [ y: i32 0, y < h, y += 1 ]
+        row : i32 [ y * w ]
+        acc : f32 [ 0.0 ]
+        for [ k: i32 0 - rx, k <= rx, k += 1 ]
+            xx : i32 [ k ]
+            if [ xx < 0 ] xx = xx + w
+            acc += S[ row + xx ]
+        for [ x: i32 0, x < w, x += 1 ]
+            T[ row + x ] = acc * ivx
+            xo : i32 [ x - rx ]
+            if [ xo < 0 ] xo = xo + w
+            xn : i32 [ x + rx + 1 ]
+            if [ xn >= w ] xn = xn - w
+            acc = acc - S[ row + xo ] + S[ row + xn ]
+    for [ x: i32 0, x < w, x += 1 ]
+        acc : f32 [ 0.0 ]
+        for [ k: i32 0 - ry, k <= ry, k += 1 ]
+            yy : i32 [ k ]
+            if [ yy < 0 ] yy = 0
+            if [ yy >= h ] yy = h - 1
+            acc += T[ yy * w + x ]
+        for [ y: i32 0, y < h, y += 1 ]
+            S[ y * w + x ] = acc * ivy
+            yo : i32 [ y - ry ]
+            if [ yo < 0 ] yo = 0
+            yn : i32 [ y + ry + 1 ]
+            if [ yn >= h ] yn = h - 1
+            acc = acc - T[ yo * w + x ] + T[ yn * w + x ]
+
+# the storm mask for neptune: jupiter's tone term, but taken off a
+# BLURRED plate. jupiter reads darkness where neptune reads brightness
+# -- its bright methane cloud IS the weather.
+#
+# the blur is the whole point. thresholding the plate directly gave
+# features a median FOUR texels tall running the full circumference,
+# which is what the hairlines were; widening the ramp only made them
+# more numerous, never thicker. blurred at radius 16 first, the same
+# threshold gives a median of 86 texels and a p90 of 349
 func neptune_storm [] -> bool
     ci : Image [ uri: path '../scenes/baked/neptune-color.png' ]
     if [ ci.width == 0 ] return false
@@ -5084,10 +5247,11 @@ func neptune_storm [] -> bool
     n9 : i32 [ w9 * h9 ]
     L : new f32 [ n9 ]
     eu_lum[ ci, L ]
-    # ELONGATED basis. a streak lying along the wind is a horizontal
-    # band, and a horizontal band shows itself as a strong VERTICAL
-    # gradient -- so weighting dy far over dx finds exactly those and
-    # ignores the upright features that would read as tall
+    # JUPITER'S BAKE, line for line: an isotropic sobel MAX'd with a
+    # tone term, then one light gaussian. the structure has to come
+    # off the plate itself -- perlin alone gives smears, not cloud.
+    # 14, not jupiter's 4: the blue mapping packs this plate into
+    # luminance 0.16-0.44, so its gradients are a third of jupiter's
     S : new f32 [ n9 ]
     for [ y: i32 0, y < h9, y += 1 ]
         ym : i32 [ (y > 0) ? y - 1 : 0 ]
@@ -5097,69 +5261,25 @@ func neptune_storm [] -> bool
             xp : i32 [ (x < w9 - 1) ? x + 1 : 0 ]
             gx : f32 [ L[ y * w9 + xp ] - L[ y * w9 + xm ] ]
             gy : f32 [ L[ yp * w9 + x ] - L[ ym * w9 + x ] ]
-            if [ gx < 0.0 ] gx = 0.0 - gx
-            if [ gy < 0.0 ] gy = 0.0 - gy
-            v9 : f32 [ (gy * 5.0 + gx * 0.35) * 7.0 ]
-            if [ v9 > 1.0 ] v9 = 1.0
-            # AGAINST THE BRIGHT BLUES. jupiter's storms sit in its dark
-            # belts, so that map max'd with darkness -- neptune is the
-            # other way round: the bright methane cloud IS the weather,
-            # and the deep blue between is clear air
-            br : f32 [ (L[ y * w9 + x ] - 0.34) / 0.30 ]
-            if [ br < 0.0 ] br = 0.0
-            if [ br > 1.0 ] br = 1.0
-            S[ y * w9 + x ] = v9 * (0.12 + 0.88 * br)
-    # and SMEAR it along the wind: a wide box in x only, so the mask
-    # comes out as ribbons running with the bands instead of blobs.
-    # an isotropic blur would round every streak back into a dot
-    SM : new f32 [ n9 ]
-    br : i32 [ 26 ]
-    inv : f32 [ 1.0 / f32[ br * 2 + 1 ] ]
-    for [ y: i32 0, y < h9, y += 1 ]
-        row : i32 [ y * w9 ]
-        acc : f32 [ 0.0 ]
-        for [ k: i32 0 - br, k <= br, k += 1 ]
-            xx : i32 [ k ]
-            if [ xx < 0 ] xx = xx + w9
-            acc += S[ row + xx ]
-        for [ x: i32 0, x < w9, x += 1 ]
-            SM[ row + x ] = acc * inv
-            xo : i32 [ x - br ]
-            if [ xo < 0 ] xo = xo + w9
-            xn : i32 [ x + br + 1 ]
-            if [ xn >= w9 ] xn = xn - w9
-            acc = acc - S[ row + xo ] + S[ row + xn ]
-    # a touch of vertical softening only -- enough to kill the single
-    # texel line, not enough to make them tall
+            # 30, not 14. MEASURED: sobel alone peaked at 0.69 of a
+            # map the shader reads through smoothstep[0.10, 0.72], so
+            # only 0.3% of it ever cleared half. 30 saturates the
+            # strongest shear lines and puts ~7% over that gate
+            mg : f32 [ sqrt[ gx * gx + gy * gy ] * 30.0 ]
+            if [ mg > 1.0 ] mg = 1.0
+            # SOBEL ONLY. max'ing this with a brightness term filled
+            # broad areas, and a broad mask lets the perlin paint open
+            # blobs while the edges stand alone as closed loops --
+            # fingerprints. edges alone confine every flash to a shear
+            # line, so what draws is a streak running with the band
+            S[ y * w9 + x ] = mg
     T : new f32 [ n9 ]
-    eu_blur[ SM, T, w9, h9, 2 ]
-    # NORMALISE to what the field actually produced. a fixed gain after
-    # a wide smear left the map flat -- mean 51 of 255 with a max of 76,
-    # no contrast to select a streak with
-    # normalise to a HIGH PERCENTILE, not the max. the pole rows clamp
-    # their vertical gradient and produce a handful of extreme values;
-    # scaling to those left the whole visible body down at a sixth of
-    # its range. a 4096-bucket histogram finds the 99th cheaply
-    hb : new i32 [ 4096 ]
-    for [ i: i32 0, i < n9, i += 1 ]
-        bi : i32 [ i32[ SM[ i ] * 4095.0 ] ]
-        if [ bi < 0 ] bi = 0
-        if [ bi > 4095 ] bi = 4095
-        hb[ bi ] += 1
-    want : i32 [ i32[ f32[ n9 ] * 0.99 ] ]
-    run9 : i32 [ 0 ]
-    mx9 : f32 [ 1.0 ]
-    for [ bi: i32 0, bi < 4096, bi += 1 ]
-        run9 += hb[ bi ]
-        if [ run9 >= want ]
-            mx9 = f32[ bi ] / 4095.0
-            break
-    if [ mx9 < 0.0005 ] mx9 = 0.0005
-    puts 'neptune: streak p99 {mx9}'
+    eu_blur[ S, T, w9, h9, 4 ]
     im : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true, wrap_u: true ]
     od : @u8 [ im.vdata[] ]
     for [ i: i32 0, i < n9, i += 1 ]
-        v9 : f32 [ SM[ i ] / mx9 ]
+        v9 : f32 [ T[ i ] ]
+        if [ v9 < 0.0 ] v9 = 0.0
         if [ v9 > 1.0 ] v9 = 1.0
         b4 : i32 [ i * 4 ]
         od[ b4 ]     = u8[ v9 * 255.0 ]
@@ -5167,22 +5287,290 @@ func neptune_storm [] -> bool
         od[ b4 + 2 ] = 0
         od[ b4 + 3 ] = 255
     im.png[ path '../scenes/baked/neptune-storm.png' ]
-    puts 'neptune: streak map written'
+    puts 'neptune: storm map written'
+    return true
+
+# the ring strip, computed rather than sourced -- neptune has no
+# photograph to cut one from. it is read radially only, so one row is
+# the whole ring system: x is radius, alpha is how much it blocks.
+#
+# REAL RADII, in km, against neptune's 24764 equatorial radius. the
+# strip spans 40900 to 64500 so Adams lands inside the shader's outer
+# edge fade instead of being clipped by it:
+#   Galle      41900, ~2000 wide, dust, the faintest of them
+#   Le Verrier 53200, ~113 wide
+#   Lassell    53200-57200, a broad faint sheet bridging two narrows
+#   Arago      57200, narrow
+#   Galatea    61953, an unnamed thread at the shepherd's orbit
+#   Adams      62933, ~35 wide, the brightest
+func nep_ring_r0 [] -> f32
+    return 40900.0
+func nep_ring_r1 [] -> f32
+    return 64500.0
+
+# a soft-shouldered band: flat across its width, gaussian off the ends
+func nep_band [ km: f32, c: f32, hw: f32, soft: f32 ] -> f32
+    d : f32 [ km - c ]
+    if [ d < 0.0 ] d = 0.0 - d
+    if [ d <= hw ] return 1.0
+    e : f32 [ (d - hw) / soft ]
+    return exp[ 0.0 - e * e ]
+
+func neptune_rings [] -> bool
+    w9 : i32 [ 2048 ]
+    h9 : i32 [ 4 ]
+    r0 : f32 [ nep_ring_r0[] ]
+    r1 : f32 [ nep_ring_r1[] ]
+    im : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true ]
+    od : @u8 [ im.vdata[] ]
+    for [ x: i32 0, x < w9, x += 1 ]
+        t  : f32 [ (f32[ x ] + 0.5) / f32[ w9 ] ]
+        km : f32 [ r0 + t * (r1 - r0) ]
+        # each ring's optical depth, scaled so the faint ones survive
+        # the 8-bit strip. voyager measured Adams and Le Verrier as
+        # the only two that read at all; the rest are dust
+        a9 : f32 [ 0.0 ]
+        # the named rings, every shoulder ~3x softer than a hard edge
+        a9 += nep_band[ km, 41900.0, 1000.0, 1800.0 ] * 0.10
+        a9 += nep_band[ km, 53200.0,   60.0,  420.0 ] * 0.55
+        a9 += nep_band[ km, 55200.0, 2000.0,  900.0 ] * 0.06
+        a9 += nep_band[ km, 57200.0,   50.0,  380.0 ] * 0.18
+        a9 += nep_band[ km, 61953.0,   40.0,  350.0 ] * 0.05
+        a9 += nep_band[ km, 62933.0,   25.0,  340.0 ] * 0.85
+        # minor threads flanking the two bright ones, softer again --
+        # no hard width at all, just a wide gaussian either side
+        a9 += nep_band[ km, 52150.0,    0.0,  620.0 ] * 0.11
+        a9 += nep_band[ km, 54300.0,    0.0,  680.0 ] * 0.09
+        a9 += nep_band[ km, 61750.0,    0.0,  700.0 ] * 0.12
+        a9 += nep_band[ km, 63950.0,    0.0,  640.0 ] * 0.10
+        if [ a9 > 1.0 ] a9 = 1.0
+        # dark and near neutral, a touch warm -- voyager saw grey dust,
+        # not saturn's bright ice
+        cr : f32 [ 0.66 ]
+        cg : f32 [ 0.63 ]
+        cb : f32 [ 0.61 ]
+        for [ y: i32 0, y < h9, y += 1 ]
+            b4 : i32 [ (y * w9 + x) * 4 ]
+            od[ b4 ]     = u8[ cr * 255.0 ]
+            od[ b4 + 1 ] = u8[ cg * 255.0 ]
+            od[ b4 + 2 ] = u8[ cb * 255.0 ]
+            od[ b4 + 3 ] = u8[ a9 * 255.0 ]
+    bd : path '../scenes/baked'
+    bd.make_dir[]
+    im.png[ path '../scenes/baked/neptune-ring.png' ]
+    puts 'neptune: ring strip written'
     return true
 
 func neptune_maps []
     h1 : u64 [ @neptune_bake ]
     h2 : u64 [ @neptune_storm ]
-    stamp : string '{h1}-{h2}'
+    h3 : u64 [ @neptune_rings ]
+    stamp : string '{h1}-{h2}-{h3}'
     sp : path '../scenes/baked/neptune.hash'
     cp : path '../scenes/baked/neptune-color.png'
     stp : path '../scenes/baked/neptune-storm.png'
-    if [ sp.exists[] && cp.exists[] && stp.exists[] ]
+    rgp : path '../scenes/baked/neptune-ring.png'
+    if [ sp.exists[] && cp.exists[] && stp.exists[] && rgp.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
             puts 'neptune: colour map current ({stamp})'
             return
-    if [ neptune_bake[] && neptune_storm[] ] sp.save[ stamp, null ]
+    if [ neptune_bake[] && neptune_storm[] && neptune_rings[] ] sp.save[ stamp, null ]
+
+# ======================================================================
+# URANUS. the plate is saturn's band structure INTERPOLATED into more
+# bands than it has: latitude is folded back and forth several times
+# over the source, so one pass of saturn's belts becomes several, and
+# two folds at different phases are lerped together so the repeat does
+# not read. then driven pale cyan -- methane eats the red end, which is
+# the whole reason the planet is that colour
+func ur_fold [ t: f32 ] -> f32
+    x : f32 [ t - floor[ t ] ]
+    if [ x > 0.5 ] x = 1.0 - x
+    return x * 2.0
+
+func uranus_bake [] -> bool
+    si : Image [ uri: path '../scenes/textures/saturn-color.png' ]
+    if [ si.width == 0 ]
+        puts 'uranus: saturn plate missing'
+        return false
+    w9 : i32 [ si.width ]
+    h9 : i32 [ si.height ]
+    sp9 : i32 [ si.pixel_size ]
+    sdat : @u8 [ si.vdata[] ]
+    puts 'uranus: folding {w9}x{h9} of saturn into more bands'
+    im : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true, wrap_u: true ]
+    od : @u8 [ im.vdata[] ]
+    for [ y: i32 0, y < h9, y += 1 ]
+        v : f32 [ (f32[ y ] + 0.5) / f32[ h9 ] ]
+        # 3.5 folds of the source across the disk. the fold mirrors, so
+        # the seam at each turn is continuous rather than a cut
+        fa : f32 [ ur_fold[ v * 3.5 ] ]
+        fb : f32 [ ur_fold[ v * 2.5 + 0.37 ] ]
+        # keep both folds off the polar rows, where equirect smears
+        ya : i32 [ i32[ (0.06 + fa * 0.88) * f32[ h9 ] ] ]
+        yb : i32 [ i32[ (0.06 + fb * 0.88) * f32[ h9 ] ] ]
+        if [ ya < 0 ] ya = 0
+        if [ ya >= h9 ] ya = h9 - 1
+        if [ yb < 0 ] yb = 0
+        if [ yb >= h9 ] yb = h9 - 1
+        for [ x: i32 0, x < w9, x += 1 ]
+            u : f32 [ (f32[ x ] + 0.5) / f32[ w9 ] ]
+            # the second fold is read half a turn away in longitude so
+            # the two never carry the same storm
+            xb : i32 [ (x + w9 / 2) % w9 ]
+            ba : i32 [ (ya * w9 + x)  * sp9 ]
+            bb : i32 [ (yb * w9 + xb) * sp9 ]
+            la : f32 [ (f32[ sdat[ ba ] ] * 0.299 + f32[ sdat[ ba + 1 ] ] * 0.587
+                      + f32[ sdat[ ba + 2 ] ] * 0.114) / 255.0 ]
+            lb : f32 [ (f32[ sdat[ bb ] ] * 0.299 + f32[ sdat[ bb + 1 ] ] * 0.587
+                      + f32[ sdat[ bb + 2 ] ] * 0.114) / 255.0 ]
+            # a slow wander decides which fold leads, so the mix itself
+            # is not a constant blend of two repeating things
+            ang : f32 [ u * 6.28318530718 ]
+            mx9 : f32 [ cos[ ang ] * 1.3 + 5.0 ]
+            my9 : f32 [ sin[ ang ] * 1.3 + 5.0 ]
+            wq : f32 [ eu_gnoise[ mx9, my9, v * 5.0 ] ]
+            l9 : f32 [ nep_lerp[ la, lb, eu_sstep[ 0.35, 0.65, wq ] ] ]
+            # NO contrast pull. saturn's belts are the whole point of
+            # sourcing from it, and flattening them to 0.30 -- then
+            # 0.62 -- threw away the thing we came for. the pale look
+            # comes from the high colour floors below, not from
+            # destroying the luminance that carries the bands
+            # PALE CYAN with a high floor. methane absorbs red, so the
+            # red channel carries least and blue-green carry most
+            nr : f32 [ 0.30 + l9 * 0.42 ]
+            ng : f32 [ 0.50 + l9 * 0.42 ]
+            nb : f32 [ 0.52 + l9 * 0.40 ]
+            if [ nr > 1.0 ] nr = 1.0
+            if [ ng > 1.0 ] ng = 1.0
+            if [ nb > 1.0 ] nb = 1.0
+            ob : i32 [ (y * w9 + x) * 4 ]
+            od[ ob ]     = u8[ nr * 255.0 ]
+            od[ ob + 1 ] = u8[ ng * 255.0 ]
+            od[ ob + 2 ] = u8[ nb * 255.0 ]
+            od[ ob + 3 ] = 255
+    bd : path '../scenes/baked'
+    bd.make_dir[]
+    im.png[ path '../scenes/baked/uranus-color.png' ]
+    puts 'uranus: colour map written'
+    return true
+
+# the same sobel neptune uses, on uranus' own plate
+func uranus_storm [] -> bool
+    ci : Image [ uri: path '../scenes/baked/uranus-color.png' ]
+    if [ ci.width == 0 ] return false
+    w9 : i32 [ ci.width ]
+    h9 : i32 [ ci.height ]
+    n9 : i32 [ w9 * h9 ]
+    L : new f32 [ n9 ]
+    eu_lum[ ci, L ]
+    S : new f32 [ n9 ]
+    for [ y: i32 0, y < h9, y += 1 ]
+        ym : i32 [ (y > 0) ? y - 1 : 0 ]
+        yp : i32 [ (y < h9 - 1) ? y + 1 : h9 - 1 ]
+        for [ x: i32 0, x < w9, x += 1 ]
+            xm : i32 [ (x > 0) ? x - 1 : w9 - 1 ]
+            xp : i32 [ (x < w9 - 1) ? x + 1 : 0 ]
+            gx : f32 [ L[ y * w9 + xp ] - L[ y * w9 + xm ] ]
+            gy : f32 [ L[ yp * w9 + x ] - L[ ym * w9 + x ] ]
+            # 60, not neptune's 30: the contrast pull-out above leaves
+            # gradients half what that plate carries
+            mg : f32 [ sqrt[ gx * gx + gy * gy ] * 60.0 ]
+            if [ mg > 1.0 ] mg = 1.0
+            S[ y * w9 + x ] = mg
+    T : new f32 [ n9 ]
+    eu_blur[ S, T, w9, h9, 4 ]
+    im : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true, wrap_u: true ]
+    od : @u8 [ im.vdata[] ]
+    for [ i: i32 0, i < n9, i += 1 ]
+        v9 : f32 [ T[ i ] ]
+        if [ v9 < 0.0 ] v9 = 0.0
+        if [ v9 > 1.0 ] v9 = 1.0
+        b4 : i32 [ i * 4 ]
+        od[ b4 ]     = u8[ v9 * 255.0 ]
+        od[ b4 + 1 ] = 0
+        od[ b4 + 2 ] = 0
+        od[ b4 + 3 ] = 255
+    im.png[ path '../scenes/baked/uranus-storm.png' ]
+    puts 'uranus: storm map written'
+    return true
+
+# URANUS' RINGS: thirteen of them, narrow and dark, epsilon brightest.
+# radii in km against the 25559 equatorial radius. every band is FOUR
+# TIMES the width neptune's got -- these are drawn to be seen
+func ur_ring_r0 [] -> f32
+    return 37000.0
+func ur_ring_r1 [] -> f32
+    return 53000.0
+
+func uranus_rings [] -> bool
+    w9 : i32 [ 2048 ]
+    h9 : i32 [ 4 ]
+    r0 : f32 [ ur_ring_r0[] ]
+    r1 : f32 [ ur_ring_r1[] ]
+    im : Image [ width: w9, height: h9, format: Pixel.rgba8, linear: true ]
+    od : @u8 [ im.vdata[] ]
+    for [ x: i32 0, x < w9, x += 1 ]
+        t  : f32 [ (f32[ x ] + 0.5) / f32[ w9 ] ]
+        km : f32 [ r0 + t * (r1 - r0) ]
+        a9 : f32 [ 0.0 ]
+        # the soft shoulders have to stay UNDER the gaps between rings.
+        # rings 6, 5 and 4 sit only ~370 km apart and do merge -- that
+        # is real -- but 1400 km shoulders merged the whole system into
+        # one annulus at full alpha, which is not
+        # zeta, the inner dust sheet
+        a9 += nep_band[ km, 39600.0, 1600.0,  700.0 ] * 0.06
+        # the narrow inner three: 6, 5, 4
+        a9 += nep_band[ km, 41837.0,  180.0,  190.0 ] * 0.13
+        a9 += nep_band[ km, 42234.0,  180.0,  190.0 ] * 0.14
+        a9 += nep_band[ km, 42571.0,  180.0,  190.0 ] * 0.15
+        # alpha and beta
+        a9 += nep_band[ km, 44718.0,  240.0,  250.0 ] * 0.26
+        a9 += nep_band[ km, 45661.0,  240.0,  250.0 ] * 0.28
+        # eta, gamma, delta
+        a9 += nep_band[ km, 47176.0,  200.0,  210.0 ] * 0.20
+        a9 += nep_band[ km, 47627.0,  200.0,  210.0 ] * 0.24
+        a9 += nep_band[ km, 48300.0,  200.0,  210.0 ] * 0.26
+        # lambda, then EPSILON -- the widest and brightest by far
+        a9 += nep_band[ km, 50024.0,  140.0,  180.0 ] * 0.10
+        a9 += nep_band[ km, 51149.0,  520.0,  620.0 ] * 0.90
+        if [ a9 > 1.0 ] a9 = 1.0
+        # darker than neptune's. uranus' rings are among the least
+        # reflective surfaces in the solar system -- charcoal, not ice
+        cr : f32 [ 0.55 ]
+        cg : f32 [ 0.56 ]
+        cb : f32 [ 0.58 ]
+        for [ y: i32 0, y < h9, y += 1 ]
+            b4 : i32 [ (y * w9 + x) * 4 ]
+            od[ b4 ]     = u8[ cr * 255.0 ]
+            od[ b4 + 1 ] = u8[ cg * 255.0 ]
+            od[ b4 + 2 ] = u8[ cb * 255.0 ]
+            od[ b4 + 3 ] = u8[ a9 * 255.0 ]
+    bd : path '../scenes/baked'
+    bd.make_dir[]
+    im.png[ path '../scenes/baked/uranus-ring.png' ]
+    puts 'uranus: ring strip written'
+    return true
+
+func uranus_maps []
+    h1 : u64 [ @uranus_bake ]
+    h2 : u64 [ @uranus_storm ]
+    h3 : u64 [ @uranus_rings ]
+    stamp : string '{h1}-{h2}-{h3}'
+    sp : path '../scenes/baked/uranus.hash'
+    cp : path '../scenes/baked/uranus-color.png'
+    stp : path '../scenes/baked/uranus-storm.png'
+    rgp : path '../scenes/baked/uranus-ring.png'
+    if [ sp.exists[] && cp.exists[] && stp.exists[] && rgp.exists[] ]
+        old : string [ sp.load[ typeid[string], null ] ]
+        if [ old && old == stamp ]
+            puts 'uranus: maps current ({stamp})'
+            return
+    if [ uranus_bake[] && uranus_storm[] && uranus_rings[] ] sp.save[ stamp, null ]
+
+export func uranus_export []
+    uranus_maps[]
 
 export func neptune_export []
     neptune_maps[]
@@ -6624,7 +7012,7 @@ element Terra
         target = Render [
             vk:          vk,
             w:           ux,
-            wscale:      (ux.frost_eff[] == 3) ? 2.0 : 1.0,
+            wscale:      (ux.frost_eff[] == 2) ? 2.0 : 1.0,
             use_depth:   true,
             clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
             models:      models ]
@@ -6869,6 +7257,191 @@ element Terra
 # middle flipped and mirrored with its great spot swirled into another
 # shape, driven deep blue. the discharges here are WHITE cloud forming
 # along the wind, off an elongated streak basis rather than a sobel
+# URANUS, ON ITS SIDE. 97.77 degrees of axial tilt is the whole
+# identity of this planet: the pole faces the sun, and the rings stand
+# up as a hoop rather than lying flat across the disk
+element Uranus
+    frost : true
+    frost_sharp : true
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
+    intern uran   : JupiterShader
+    intern rings  : RingShader
+    intern sky    : GaiaShader
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    intern ready     : bool
+    intern loading   : bool
+    intern load_task : async
+    public color  : rgba [ r:0.002, g:0.004, b:0.005, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf_path : path '../scenes/models/earth.gltf'
+        gltf      : GltfModel.open[ gltf_path ]
+        cp : path '../scenes/baked/uranus-color.png'
+        st : path '../scenes/baked/uranus-storm.png'
+        rg : path '../scenes/baked/uranus-ring.png'
+        if [ !cp.exists[] || !st.exists[] || !rg.exists[] ]
+            puts 'uranus: no baked maps — composing live'
+            uranus_bake[]
+            uranus_storm[]
+            uranus_rings[]
+        uran = JupiterShader [ vk: vk ]
+        u_samplers : map Image [string] [
+            'color':  Image [ uri: cp, surface: TitanSurface.color,  linear: true, wrap_u: true ],
+            'height': Image [ uri: st, surface: TitanSurface.height, linear: true, wrap_u: true ]
+        ]
+        uran_model : Model [ vk: vk, w: ux, id: gltf, s: uran, samplers: u_samplers,
+            straight_alpha: true ]
+        rings = RingShader [ vk: vk ]
+        r_samplers : map Image [string] [
+            'color': Image [ uri: rg, surface: TitanSurface.color, linear: true ]
+        ]
+        ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings, samplers: r_samplers,
+            straight_alpha: true ]
+        sky = GaiaShader [ vk: vk ]
+        sky_samplers : map Image [string] [
+            'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
+        ]
+        sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
+            straight_alpha: true, cull_none: true ]
+        models = array Model [ sky_model, uran_model, ring_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    func load_bg [ arg: object ]
+        build_models[]
+        ready = true
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built && !loading ]
+            loading = true
+            w9 : array []
+            w9.push[ a ]
+            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+        if [ !ready ] return
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        aspect : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 2.20 :
+                       (ux.orbit_mode == OrbitView.high) ? 2.90 :
+                       (ux.orbit_mode == OrbitView.far)  ? 4.10 : 5.80 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
+        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
+                       (ux.angle_mode == ViewAngle.angled) ? 0.156 : 0.480 ]
+        if [ p_cur == 0.0 && p_t != 0.0 && !p_set ] p_cur = p_t
+        p_set  = true
+        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.002 || abs[ p_cur - p_t ] > 0.001
+
+        e_d    : f32 [ e_cur ]
+        # TOWARD THE SUNLIT POLE. the 97.77 tilt about z carries the
+        # spin axis to about (-0.99, -0.14, 0), so the ring plane holds
+        # y and z -- a camera at (0, y, z) sits INSIDE that plane and
+        # sees the hoop edge-on as a line. 35 degrees off it opens the
+        # ellipse to 0.57 of its width.
+        # the sign is POSITIVE x: the sun sits at (0.85, -0.10, 0.15),
+        # so leaning to -x put the camera over the night pole and the
+        # planet came up dark
+        pl9    : f32 [ radians[ 35.0 ] ]
+        _eye   : vec3f [ e_d * sin[ pl9 ], e_d * p_cur, e_d * cos[ pl9 ] ]
+        _tgt   : vec3f [ 0.0,  0.0,  0.0  ]
+        _up    : vec3f [ 0.0, -1.0,  0.0  ]
+        _proj  : mat4f.perspective[ radians[ 55.0 ], aspect, 0.01, 90.0 ]
+        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        # uranus turns in 17 hours, and RETROGRADE -- negative rate
+        spin_d : f32 [ 0.0 - ux.time * 8400.0 ]
+        q_spin : quatf [ vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ] ]
+        # 97.77 DEGREES. this is the planet's whole character: the axis
+        # lies in its orbital plane, so it rolls rather than spins
+        q_tilt : quatf [ vec4f [ 0.0, 0.0, 1.0, radians[ 97.77 ] ] ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_tilt ]
+        mm = mm.rotate[ q_spin ]
+        uran.model   = mm
+        uran.view    = _view
+        uran.proj    = _proj
+        uran.gain    = 1.15
+        uran.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # white cloud, as neptune. uranus shows even less of it
+        # w 0.85 = STANDING. uranus' streaks are a permanent deck that
+        # only breathes, not a field of strikes switching on and off
+        uran.pc_a = vec4f [ 1.00, 1.00, 1.00, 0.85 ]
+        uran.pc_b = vec4f [ 1.00, 1.00, 1.00, 1.0 ]
+        # TWENTY TIMES the streaks. count goes as the square of the
+        # scale, so 4.47 each way is 80 cells around against 18 --
+        # 6400 of them where there were 324
+        uran.pstr = vec4f [ 4.47, 4.47, 0.0, 0.38 ]
+        uran.pctl = vec4f [ 0.74, 0.00325, 1.0, 0.0 ]
+        # the deck barely moves -- uranus has the least visible weather
+        # of the four giants, so the shear is a third of neptune's
+        uran.wctl  = vec4f [ 0.12, 0.014, 38.00, 0.30 ]
+        uran.wctl2 = vec4f [ 0.42, 1.3, 0.0015625, 14.0 ]
+        uran.time  = ux.time * 60000.0
+
+        # the rings take the tilt and NOT the spin, so they stand as a
+        # hoop. outer 53000 km over uranus' 25559 is 2.074 ball radii,
+        # drawn a little tighter as neptune's are
+        r_sc : vec3f [ 1.92, 0.002, 1.92 ]
+        rm : mat4f.identity[]
+        rm = rm.rotate[ q_tilt ]
+        rm = rm.scale [ r_sc ]
+        rings.model   = rm
+        rings.view    = _view
+        rings.proj    = _proj
+        rings.gain    = 0.70
+        rings.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # inner 37000 over outer 53000, and the ball over the drawn outer
+        rings.rgeo    = vec4f [ 0.6981, 0.5208, 0.0, 0.0 ]
+
+        skq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ 45.0 ] ] ]
+        skm : mat4f.identity[]
+        skm = skm.rotate[ skq ]
+        skm = skm.scale [ vec3f [ 30.0, 30.0, 30.0 ] ]
+        sky.model = skm
+        sky.view  = _view
+        sky.proj  = _proj
+        sky.gain  = 0.45
+        sky.time  = ux.time * 60000.0
+
+    # pale cyan light: the editor's purples go to methane blue-green
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#08161acc',   # editor pane background
+            '#140a2a80':  '#0a1a1e88',   # console pane background
+            '#ff6a2e55':  '#7fd6cc55',   # search highlight fill
+            '#220022aa':  '#0a1a1caa',   # run console base fill
+            '#614':       '#2a4a4a',     # TButtons / nav rest fill
+            '#413':       '#22403f',     # TButtons hover fill
+            '#826':       '#3f6f6a',     # TButtons lit / nav selected
+            '#625a':      '#28484a',     # bottom status bar fill
+            '#8af2':      '#8ad0d2',     # status bar inner glow
+            '#425':       '#2c5250',     # editor selection color
+            '#44225588':  '#8ad0cc11'    # editor line highlight
+        ]
+
 element Neptune
     frost : true
     frost_sharp : true
@@ -6876,6 +7449,7 @@ element Neptune
     intern p_cur  : f32
     intern p_set  : bool
     intern nept   : JupiterShader
+    intern rings  : RingShader
     intern sky    : GaiaShader
     intern models : array Model
     intern target : Render
@@ -6891,10 +7465,12 @@ element Neptune
         gltf      : GltfModel.open[ gltf_path ]
         cp : path '../scenes/baked/neptune-color.png'
         st : path '../scenes/baked/neptune-storm.png'
-        if [ !cp.exists[] || !st.exists[] ]
+        rg : path '../scenes/baked/neptune-ring.png'
+        if [ !cp.exists[] || !st.exists[] || !rg.exists[] ]
             puts 'neptune: no baked maps — composing live'
             neptune_bake[]
             neptune_storm[]
+            neptune_rings[]
         nept = JupiterShader [ vk: vk ]
         n_samplers : map Image [string] [
             'color':  Image [ uri: cp, surface: TitanSurface.color,  linear: true, wrap_u: true ],
@@ -6902,13 +7478,19 @@ element Neptune
         ]
         nept_model : Model [ vk: vk, w: ux, id: gltf, s: nept, samplers: n_samplers,
             straight_alpha: true ]
+        rings = RingShader [ vk: vk ]
+        r_samplers : map Image [string] [
+            'color': Image [ uri: rg, surface: TitanSurface.color, linear: true ]
+        ]
+        ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings, samplers: r_samplers,
+            straight_alpha: true ]
         sky = GaiaShader [ vk: vk ]
         sky_samplers : map Image [string] [
             'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
         ]
         sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
             straight_alpha: true, cull_none: true ]
-        models = array Model [ sky_model, nept_model ]
+        models = array Model [ sky_model, nept_model, ring_model ]
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -6977,17 +7559,24 @@ element Neptune
         nept.proj    = _proj
         nept.gain    = 1.05
         nept.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
-        # WHITE cloud, not plasma: methane ice condensing on the night
-        # side, with the faintest cyan where it thins
-        nept.pc_a = vec4f [ 1.00, 1.00, 1.00, 1.0 ]
-        nept.pc_b = vec4f [ 0.78, 0.92, 1.00, 1.0 ]
-        # drawn out 6:1 along the wind: these are streaks of cloud
-        # forming on the deck, not discrete strikes
-        nept.pstr = vec4f [ 0.28, 1.70, 0.0, 0.0 ]
-        # rarer, and OFF far more than on: threshold up from 0.69, and
-        # a 6th-power duty so each streak is a brief bloom rather than
-        # a light left burning
-        nept.pctl = vec4f [ 0.84, 2.6, 6.0, 0.0 ]
+        # JUPITER'S EFFECT, only white. the mix-to-white path ignores
+        # these two entirely, so they are here to say what colour it is
+        # w 0.0 keeps neptune exactly as it was -- events, not standing
+        nept.pc_a = vec4f [ 1.00, 1.00, 1.00, 0.0 ]
+        nept.pc_b = vec4f [ 1.00, 1.00, 1.00, 1.0 ]
+        # UNSTRETCHED, jupiter's own 1.0/1.0. the 0.35/1.40 bias drew
+        # every perlin cell into an 8:1 smear, which is what read as
+        # fake -- shape has to come off the sobel, not the noise.
+        # z 0 adds no colour; w 0.50 lifts the blue halfway to white
+        nept.pstr = vec4f [ 1.0, 1.0, 0.0, 0.50 ]
+        # jupiter's threshold, rate and duty verbatim. w 0.0 lights the
+        # whole disk instead of only the dark side
+        # y is the pulse rate. nept.time advances 240 a second at
+        # ludacrous, so the old 0.9 ran the fade at 34 HERTZ -- a
+        # strobe above the frame rate, aliasing rather than fading.
+        # 0.0065 is a four second cycle. z 1.0 leaves pow[] a plain
+        # sine, the gentlest ramp there is in and out
+        nept.pctl = vec4f [ 0.69, 0.00325, 1.0, 0.0 ]
         # SATURN'S WIND, verbatim. these are the exact constants out of
         # SaturnShader: 0.60 jet at 0.012 width, 0.22 lobes at 43.98
         # with a 1.8 decay, 0.16 shear, and its 0.05 ping-pong rate
@@ -6995,12 +7584,36 @@ element Neptune
         # the shear doubled -- saturn reads its counter-motion against
         # a ring plane and a hard band structure; neptune's deck is
         # smooth, so the same numbers show nothing at all on it
+        # z 0.0125 is jupiter's ping-pong rate, not saturn's 0.05 --
+        # 0.05 shears the deck back and forth three times a SECOND,
+        # which is jitter rather than wind. w 18.0 keeps the pulse
+        # broader than the 25 cells now down the latitude; any finer
+        # than the cell and it prints the cell as stripes
         nept.wctl  = vec4f [ 0.34, 0.012, 43.98, 0.46 ]
-        nept.wctl2 = vec4f [ 0.60, 1.1, 0.05, 0.0 ]
+        nept.wctl2 = vec4f [ 0.60, 1.1, 0.0125, 18.0 ]
         # WITHOUT THIS the shader sees time 0 -- no wind shift, no spin,
         # no noise evolution. the pattern freezes onto the surface and
         # simply rotates with the ball, which is exactly what it did
         nept.time = ux.time * 60000.0
+
+        # the rings share the ball's tilt but NOT its spin -- a ring
+        # system does not turn with the planet under it. true scale is
+        # 64500 km over neptune's 24764, or 2.604 ball radii; drawn a
+        # bit closer in than that so they sit against the disk
+        r_sc : vec3f [ 2.25, 0.002, 2.25 ]
+        rm : mat4f.identity[]
+        rm = rm.rotate[ q_tilt ]
+        rm = rm.scale [ r_sc ]
+        rings.model   = rm
+        rings.view    = _view
+        rings.proj    = _proj
+        # faint. voyager needed long exposures to see these at all
+        rings.gain    = 0.75
+        rings.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # x is inner 40900 over outer 64500, unchanged by the scale.
+        # y is the ball over the ring outer, which the pull-in DID
+        # change: 1.0 / 2.25, not 1.0 / 2.604
+        rings.rgeo    = vec4f [ 0.6341, 0.4444, 0.0, 0.0 ]
 
         skq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ 45.0 ] ] ]
         skm : mat4f.identity[]

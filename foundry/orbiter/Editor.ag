@@ -1852,7 +1852,7 @@ Control Editor
         layers.content: EditorLayer
             area: l0 t2px r0 b2px
             label_height: 1.0
-            line_color: #5c2f9955
+            line_color: #44225588
             line_edge: #fff2
             line_gutter: #ffffff08
             item_color: #2b3a5500
