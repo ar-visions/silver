@@ -2972,16 +2972,26 @@ ModelViewProject JupiterShader
         // lattice cells, so the field does not meet itself. sampled
         // around a CIRCLE in longitude it closes. radius is the old
         // cell count over two pi, so the features are the same size
-        float a90 = ju0.x * 6.28318530718;
-        float a91 = ju1.x * 6.28318530718;
+        // pc_b.w DRIFTS THE FIELD IN LONGITUDE. rotating the sample
+        // circle is still a circle, so this travels without ever
+        // breaking the seam -- and it is the axis weather actually
+        // moves along. the time term used to sit on the third axis
+        // instead, which carries LATITUDE, so the whole field crept
+        // down the map
+        float dx9 = ubo.time * ubo.pc_b.w;
+        float a90 = (ju0.x + dx9) * 6.28318530718;
+        float a91 = (ju1.x + dx9) * 6.28318530718;
         float r90 = 2.8648 * ps9.x;
         float r91 = 6.5254 * ps9.x;
         float sy9 = 18.0 * ps9.y;
         float sy8 = 41.0 * ps9.y;
-        float st9 = mix(jp_gnoise(vec3(cos(a90) * r90, sin(a90) * r90, ju0.y * sy9 + ubo.time * 0.030)),
-                        jp_gnoise(vec3(cos(a91) * r90, sin(a91) * r90, ju1.y * sy9 + ubo.time * 0.030)), bl);
-        float st2 = mix(jp_gnoise(vec3(cos(a90) * r91 + 7.0, sin(a90) * r91 + 7.0, ju0.y * sy8 + ubo.time * 0.055)),
-                        jp_gnoise(vec3(cos(a91) * r91 + 7.0, sin(a91) * r91 + 7.0, ju1.y * sy8 + ubo.time * 0.055)), bl);
+        // the third axis keeps only a slow BOIL -- a fifth of what it
+        // carried. it is the latitude axis, so anything fast on it
+        // reads as the field sinking rather than evolving
+        float st9 = mix(jp_gnoise(vec3(cos(a90) * r90, sin(a90) * r90, ju0.y * sy9 + ubo.time * 0.006)),
+                        jp_gnoise(vec3(cos(a91) * r90, sin(a91) * r90, ju1.y * sy9 + ubo.time * 0.006)), bl);
+        float st2 = mix(jp_gnoise(vec3(cos(a90) * r91 + 7.0, sin(a90) * r91 + 7.0, ju0.y * sy8 + ubo.time * 0.010)),
+                        jp_gnoise(vec3(cos(a91) * r91 + 7.0, sin(a91) * r91 + 7.0, ju1.y * sy8 + ubo.time * 0.010)), bl);
         st9 = clamp((st9 - 0.5) * 3.4 + 0.5, 0.0, 1.0);
         st2 = clamp((st2 - 0.5) * 3.0 + 0.5, 0.0, 1.0);
         float flash = smoothstep(ubo.pctl.x, ubo.pctl.x + 0.32, st9)
@@ -4084,7 +4094,9 @@ element Europa
         # w 0.0 = an EVENT. lightning fires and dies; this is the
         # behaviour that lane was hardcoded to before it existed
         jup.pc_a     = vec4f [ 1.00, 0.46, 0.13, 0.0 ]
-        jup.pc_b     = vec4f [ 0.30, 0.60, 1.00, 1.0 ]
+        # w is longitude drift. 0.00015 is a lap every 28 seconds at
+        # ludacrous -- storms carried by the wind, not racing it
+        jup.pc_b     = vec4f [ 0.30, 0.60, 1.00, 0.00015 ]
         # z = additive discharge gain, w = lift toward white (unused).
         # pctl.w 1.0 keeps this a NIGHT-side effect; wctl2.w 60.0 is
         # the pulse frequency down the latitude, as it has always been
@@ -5437,11 +5449,28 @@ func uranus_bake [] -> bool
             # 0.62 -- threw away the thing we came for. the pale look
             # comes from the high colour floors below, not from
             # destroying the luminance that carries the bands
-            # PALE CYAN with a high floor. methane absorbs red, so the
-            # red channel carries least and blue-green carry most
-            nr : f32 [ 0.30 + l9 * 0.42 ]
-            ng : f32 [ 0.50 + l9 * 0.42 ]
-            nb : f32 [ 0.52 + l9 * 0.40 ]
+            # TWO ALBEDO BASES, blended by an ENORMOUS patch. the
+            # circle radius is 0.35, so barely two cells reach around
+            # the whole equator -- this is a hemisphere-scale wash,
+            # not a feature. it decides which of the two the ground
+            # colour is, and everything above rides on top of it
+            bx9 : f32 [ cos[ ang ] * 0.35 + 12.0 ]
+            by9 : f32 [ sin[ ang ] * 0.35 + 12.0 ]
+            sky9 : f32 [ eu_sstep[ 0.36, 0.70, eu_gnoise[ bx9, by9, v * 1.1 ] ] ]
+            # base A: PALE CYAN. methane absorbs red, so red carries
+            # least and blue-green carry most
+            ar : f32 [ 0.30 + l9 * 0.42 ]
+            ag : f32 [ 0.50 + l9 * 0.42 ]
+            ab : f32 [ 0.52 + l9 * 0.40 ]
+            # base B: the same, 20% MORE SKY BLUE. 0.52 x 1.20 is the
+            # blue floor; red and green come down a little so it reads
+            # bluer rather than merely brighter
+            br9 : f32 [ 0.26 + l9 * 0.40 ]
+            bg9 : f32 [ 0.46 + l9 * 0.40 ]
+            bb9 : f32 [ 0.624 + l9 * 0.42 ]
+            nr : f32 [ nep_lerp[ ar, br9, sky9 ] ]
+            ng : f32 [ nep_lerp[ ag, bg9, sky9 ] ]
+            nb : f32 [ nep_lerp[ ab, bb9, sky9 ] ]
             if [ nr > 1.0 ] nr = 1.0
             if [ ng > 1.0 ] ng = 1.0
             if [ nb > 1.0 ] nb = 1.0
@@ -7389,7 +7418,9 @@ element Uranus
         # w 0.85 = STANDING. uranus' streaks are a permanent deck that
         # only breathes, not a field of strikes switching on and off
         uran.pc_a = vec4f [ 1.00, 1.00, 1.00, 0.85 ]
-        uran.pc_b = vec4f [ 1.00, 1.00, 1.00, 1.0 ]
+        # w 0.0006 is a lap every 7 seconds at ludacrous: the streaks
+        # ZOOM around the x axis rather than creeping down the y
+        uran.pc_b = vec4f [ 1.00, 1.00, 1.00, 0.0006 ]
         # TWENTY TIMES the streaks. count goes as the square of the
         # scale, so 4.47 each way is 80 cells around against 18 --
         # 6400 of them where there were 324
@@ -7563,7 +7594,8 @@ element Neptune
         # these two entirely, so they are here to say what colour it is
         # w 0.0 keeps neptune exactly as it was -- events, not standing
         nept.pc_a = vec4f [ 1.00, 1.00, 1.00, 0.0 ]
-        nept.pc_b = vec4f [ 1.00, 1.00, 1.00, 1.0 ]
+        # w 0.00015, the same gentle carry jupiter gets
+        nept.pc_b = vec4f [ 1.00, 1.00, 1.00, 0.00015 ]
         # UNSTRETCHED, jupiter's own 1.0/1.0. the 0.35/1.40 bias drew
         # every perlin cell into an 8:1 smear, which is what read as
         # fake -- shape has to come off the sobel, not the noise.
