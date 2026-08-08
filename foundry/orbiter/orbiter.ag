@@ -220,8 +220,10 @@ element EditorView
                 fels['steps'] = StepButtons [ buttons: [ 'step_next', 'step_in', 'step_out' ], manual: true ]
             fels['args'] = ArgsField [ label: 'arguments', edit: orb.file_args[ bsrc ],
                 focusable: true ]
+            # id stays 'error': on_press already routes it to goto_error
             if [ orb.err_file && orb.err_line > 0 ]
-                fels['error'] = Option [ label: 'error {orb.err_line}', manual_mode: true ]
+                fels['error'] = BandError [
+                    label: '{orb.err_file.filename[]}:{orb.err_line}', manual_mode: true ]
             smask : i32 [ 0 ]
             if [ orb.show_instruments ] smask = smask | 1
             if [ orb.show_toolbox ]     smask = smask | 2
@@ -516,6 +518,27 @@ Option ErrorButton
                 fill_color: #ad3852
     }
 
+# the same error, centered on the run band. l50% is an ABSOLUTE anchor,
+# so it holds the middle whatever the l0+/r0+ runs either side of it do
+Option BandError
+    tlabel : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
+        label_align: vec2f [ x: 0.5, y: 0.5 ],
+        label_overflow: Overflow.ellipsis ]
+    style : CSS {
+        area: l50%-5 t0 w10 h0.9
+        layers.body:
+            fill_color: #d94a6a
+            radius: 6
+            inner_glow: #ff8fa8a2 14
+        :hovered
+            layers.body:
+                fill_color: #ec5f7e
+                inner_glow: #ffb0c2a2 18
+        :pressed
+            layers.body:
+                fill_color: #ad3852
+    }
+
 # window-wide strip; the pane splitter stops above it
 Group StatusBar
     style : CSS {
@@ -693,7 +716,7 @@ TButtons StepButtons
     rest_glow : rgba [ '#ccf2' ]
     rest_px   : f32  [ 16.0 ]
     style : CSS {
-        area: l0+ t0 w4.32 h1.08
+        area: l0+ t0 w4.32 h0.9
     }
 
 # run arguments for the pane's app; sits in the run band header
@@ -707,7 +730,7 @@ element ArgsField
             stroke_color: #fff2
         layers.face:
             label_color: #fff6
-            label_size: 13
+            label_size: 15
             editable: true
             label_align: 0.0 0.5
             label_offset: 10.0 0.0

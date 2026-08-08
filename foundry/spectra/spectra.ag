@@ -192,6 +192,9 @@ el
         public active      : bool
         public buffer      : @i16
         public pcm_handle  : @snd_pcm_t
+        intern xruns       : i64
+        intern shorts      : i64
+        intern writes      : i64
 
         func open [] -> bool
             buffer = calloc[ 1, buffer_size * channels * 2 ]
@@ -213,6 +216,15 @@ el
             snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params, @bufsz ]
             snd_pcm_hw_params_set_period_size_near[ pcm_handle, params, @persz, null ]
             ok : bool [ snd_pcm_hw_params[ pcm_handle, params ] >= 0 ]
+            # what we ASKED for is not what we got. all three of these
+            # are in/out and were being discarded, so a device that
+            # refused 32kHz would silently be fed at the wrong rate
+            arate : i32 [ 0 ]
+            adir  : i32 [ 0 ]
+            snd_pcm_hw_params_get_rate[ params, @arate, @adir ]
+            printf[ "AudioOut: asked %d Hz buf %ld per %ld -> got %d Hz buf %ld per %ld\n",
+                sample_rate, i64[ buffer_size * 2 ], i64[ buffer_size / 4 ],
+                arate, i64[ bufsz ], i64[ persz ] ]
             free[ params ]
             if [ ok ]
                 perr : i32 [ snd_pcm_prepare[ pcm_handle ] ]
@@ -226,8 +238,18 @@ el
             if [ ! pcm_handle ] return
             wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
             if [ wr < 0 ]
+                # every recover is an xrun, and an xrun is an audible click
+                xruns += 1
+                printf[ "AudioOut: xrun %ld (%s) after %ld writes\n",
+                    xruns, snd_strerror[ i32[ wr ] ], writes ]
                 snd_pcm_recover[ pcm_handle, wr, 0 ]
                 snd_pcm_writei[ pcm_handle, buffer, frames ]
+            el [ wr < i64[ frames ] ]
+                # a SHORT write drops the remainder on the floor: the
+                # positive return was being ignored entirely
+                shorts += 1
+                printf[ "AudioOut: short write %ld of %d (count %ld)\n", wr, frames, shorts ]
+            writes += 1
 
         func close []
             if [ pcm_handle ]

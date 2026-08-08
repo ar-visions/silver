@@ -1156,136 +1156,6 @@ element Moon
         cloud.time    = time
 
 
-element Mars
-    frost : true
-    frost_sharp : true
-    # eased camera distance / angle; p_set marks the first frame
-    intern e_cur  : f32
-    intern p_cur  : f32
-    intern p_set  : bool
-    intern mars   : MoonShader
-    intern models : array Model
-    intern target : Render
-    intern built  : bool
-    # async load: worker decodes, draw waits on ready for vk work
-    intern ready     : bool
-    intern loading   : bool
-    intern load_task : async
-    public color  : rgba [ r:0.010, g:0.005, b:0.006, a:1.0 ]
-
-    func build_models[]
-        built     = true
-        gltf_path : path '../scenes/models/earth.gltf'
-        gltf      : GltfModel.open[ gltf_path ]
-        mars      = MoonShader [ vk: vk ]
-
-        mars_samplers : map Image [string] [
-            'color':  Image [ uri: path '../scenes/textures/mars-color-8192x4096.jpg',  surface: MoonSurface.color ],
-            'height': Image [ uri: path '../scenes/textures/mars-height-8192x4096.png', surface: MoonSurface.height ]
-        ]
-        mars_model : Model [ vk: vk, w: ux, id: gltf, s: mars, samplers: mars_samplers, straight_alpha: true ]
-        models     = array Model [ mars_model ]
-
-    func create_target[]
-        if [ target || !models || models.count == 0 ] return
-        target = Render [
-            vk:          vk,
-            w:           ux,
-            wscale:      1.0,
-            use_depth:   true,
-            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
-            models:      models ]
-        target.hold[]
-        target.owner  = a
-        ux.element_targets[ id ] = target
-
-    # unregister only; we keep our ref so the GPU graph outlives the frame
-    public func on_unload [ ]
-        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
-
-    # iron oxide: the editor's purples go rust under a martian sky
-    public func theme [ ] -> map string [string]
-        return map string [string] [
-            '#140a2acc':  '#4108',   # editor pane background
-            '#140a2a80':  '#429a',   # console pane background
-            '#4258':      '#8a5a4a58',   # unused (line_color moved to #44225588)
-            '#ff6a2e55':  '#ff8a4a55',   # search highlight fill
-            '#220022aa':  '#2a1a16aa',   # run console base fill
-            '#614':       '#54281a',     # TButtons / nav rest fill
-            '#413':       '#3c1c10',     # TButtons hover fill
-            '#826':       '#7c3c22',     # TButtons lit / nav selected
-            '#625a':      '#408a',       # bottom status bar fill
-            '#8af2':      '#fa62',       # status bar inner glow
-            '#425':       '#52281e',     # editor selection color
-            '#44225588':  '#5a3a2e33'    # editor line highlight
-        ]
-
-    func load_bg [ arg: object ]
-        t0 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg start at {t0}'
-        build_models[]
-        t1 : i64 [ Au.epoch_millis[] ]
-        puts 'scene load_bg done in {t1 - t0}ms at {t1}'
-        ready = true
-
-    func draw [ w: Window ]
-        animated = true
-        if [ !built && !loading ]
-            loading = true
-            w9 : array []
-            w9.push[ a ]
-            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
-        if [ !ready ] return
-        create_target[]
-        orbit[]
-
-    func orbit[]
-        # follow the window, never a fixed 16:9 -- a hardcoded aspect
-        # stretches the disc the moment the window is not that shape
-        aspect : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
-        # a globe, not a surface: far enough for the whole disc
-        # Mars was authored as a whole-disc view, so its 2.70 is `far`
-        e_t    : f32 [ (ux.orbit_mode == OrbitView.low)  ? 1.55 :
-                       (ux.orbit_mode == OrbitView.high) ? 2.05 : 2.70 ]
-        if [ e_cur == 0.0 ] e_cur = e_t
-        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
-
-        p_t    : f32 [ (ux.angle_mode == ViewAngle.flat)   ? 0.0 :
-                       (ux.angle_mode == ViewAngle.angled) ? 0.156 : 0.480 ]
-        if [ p_cur == 0.0 && p_t != 0.0 && !p_set ] p_cur = p_t
-        p_set  = true
-        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
-
-        ux.orbit_moving = abs[ e_cur - e_t ] > 0.002 || abs[ p_cur - p_t ] > 0.001
-        e_d    : f32 [ e_cur ]
-        _eye   : vec3f [ 0.0,  e_d * p_cur, e_d ]
-        _tgt   : vec3f [ 0.0,  0.0,  0.0  ]
-        # world +y reads up on screen only when up is negated
-        _up    : vec3f [ 0.0, -1.0,  0.0  ]
-
-        _proj  : mat4f.perspective[ radians[ 60.0 ], aspect, 0.01, 20.0 ]
-        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
-
-        # ux.time counts kiloseconds: 6000 = one turn per minute
-        spin_d : f32 [ ux.time * 6000.0 ]
-        m_spin : vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ]
-        q_spin : quatf [ m_spin ]
-        # 25.2 degrees of axial tilt, applied after the spin
-        m_axis : vec4f [ 0.0, 0.0, 1.0, radians[ 25.2 ] ]
-        q_axis : quatf [ m_axis ]
-        mm : mat4f.identity[]
-        mm = mm.rotate[ q_axis ]
-        mm = mm.rotate[ q_spin ]
-
-        mars.model = mm
-        mars.view  = _view
-        mars.proj  = _proj
-        mars.gain  = 2.0
-        mars.regolith = 0.0
-        mars.relief   = 1.0
-        mars.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
-
-
 # gltf material colors arrive as 1x1 textures on Surface.color, so the
 # steel, glass and tire parts each keep their own tone with no map.
 # lit by the same sun vector the terra surface uses, or the monument
@@ -2825,6 +2695,18 @@ ModelViewProject JupiterShader
     # this is the whole wind model, so one planet can be handed
     # another's verbatim
     mutable wctl2   : vec4f
+    # a LIVE albedo tint, MULTIPLIED onto the texture colour. rgb is
+    # the per-channel factor, w how far the blend is ever allowed to
+    # go. driven by its own drifting perlin, so unlike a baked patch
+    # it comes and goes with the weather
+    mutable tint    : vec4f
+    # FIRE ON THE PLATE at the poles: rgb the DEEP colour, w its
+    # strength. a ring burnt into the surface itself -- this is what
+    # the marched aurora above it is standing on
+    mutable pfire   : vec4f
+    # the pale end of that fire. the ring runs between the two along
+    # its length, so it is never one flat colour
+    mutable pfire2  : vec4f
 
     attrib color : LayoutBinding [ type:typeid[ TitanSurface ], id:TitanSurface.color, count:1, format: typeid[ rgba8 ] ]
     # baked sobel contrast of the color map: where storms live
@@ -2939,6 +2821,41 @@ ModelViewProject JupiterShader
         vec2  bu1 = vec2(v_uv.x + s1, v_uv.y);
         vec3  alb = mix(texture(color, bu0).rgb,
                         texture(color, bu1).rgb, bl);
+        // THE LIVE TINT, multiplied onto that colour. this was baked
+        // into the plate, which meant it could never move -- here it
+        // drifts. three things decide it, the same three the bake
+        // used, but now on a clock:
+        //   a slow perlin says WHERE, sampled on a circle so it
+        //   closes at the seam and drifting on its own third axis
+        //   band darkness says HOW MUCH -- it collects in the belts
+        //   two latitude waves thicken it along y
+        float tl9 = dot(alb, vec3(0.299, 0.587, 0.114));
+        float tdk = 1.0 - smoothstep(0.60, 0.75, tl9);
+        float tbn = 0.5 + 0.35 * sin(bu0.y * 38.0 + 0.7)
+                        + 0.15 * sin(bu0.y * 91.0 + 2.1);
+        // EAST-WEST STRETCHED, hard. the circle radius sets how many
+        // cells fit around the equator and the third axis how many
+        // fit down the latitude -- 0.55 is only 3.5 around, 16 is
+        // sixteen down. that is 104 degrees of longitude against 11
+        // of latitude, a 9:1 draw along the wind. it was 0.8:1 before,
+        // very slightly TALLER than wide
+        // the clock goes on LONGITUDE, never on the third axis. that
+        // axis carries latitude, so a time term there walks the whole
+        // field from pole to pole -- which is the north-to-south
+        // sweep, and nothing in an atmosphere migrates that way.
+        // rotating the sample circle drifts it east instead, and a
+        // rotated circle is still a circle, so the seam stays closed
+        float tag = (bu0.x + ubo.time * 0.00007) * 6.28318530718;
+        float tpn = jp_gnoise(vec3(cos(tag) * 0.55, sin(tag) * 0.55,
+                                   bu0.y * 16.0));
+        // the latitude bands GATE it. adding them instead let the
+        // perlin's own floor tint the whole ball, which is the glob:
+        // outside a band there is now no tint at all, and the perlin
+        // only decides how much of one shows WITHIN it
+        float tgb = smoothstep(0.42, 0.78, tbn);
+        float tw9 = smoothstep(0.455, 0.545, tpn)
+                  * (0.15 + 0.85 * tdk) * tgb;
+        alb = mix(alb, alb * ubo.tint.rgb, clamp(tw9, 0.0, 1.0) * ubo.tint.w);
         // LAMBERT, the same law earth and the moon use here. a sphere
         // under a distant sun falls off as the cosine of the incidence
         // angle: flat near the sub-solar point, steepest at 90. the
@@ -2950,7 +2867,11 @@ ModelViewProject JupiterShader
         float lam9     = dot(n, sun);
         float ndl      = clamp((lam9 + 0.06) / 1.06, 0.0, 1.0);
         float mu       = clamp(dot(n, view_dir), 0.0, 1.0);
-        vec3  col      = alb * (0.08 + 0.92 * ndl) * ubo.gain;
+        // cam_pos.w scales the ambient floor -- how much albedo shows
+        // where no sun reaches. at 1.0 this is the 0.08 it has always
+        // been; higher keeps the unlit pole from going to black
+        float amb9     = 0.08 * ubo.cam_pos.w;
+        vec3  col      = alb * (amb9 + (1.0 - amb9) * ndl) * ubo.gain;
         // NIGHT-SIDE PLASMA. the storm map is baked: sobel edge max'd
         // with band darkness, already gaussian'd. one read here
         // the SAME uv the albedo used -- spin and shear both
@@ -3039,6 +2960,49 @@ ModelViewProject JupiterShader
         // already there toward white, and never past pstr.w itself
         col += pc * amt * ubo.pstr.z;
         col  = mix(col, vec3(1.0), min(amt, 1.0) * ubo.pstr.w);
+
+        // FIRE AT THE POLES, on the plate itself. the texture is
+        // equirect and the model spins about y, so the pole is just
+        // v near 0 or 1 -- no axis maths, and it lands ON the surface
+        // rather than in a shell above it. a RING at 17 degrees off
+        // the pole, matching the oval the marched aurora rides, so
+        // the glow above is standing on the burn below
+        float pv9 = min(bu0.y, 1.0 - bu0.y);
+        // THIN. 0.030 was 5.4 degrees of latitude, a zone broad
+        // enough for the noise to mottle across -- 0.013 is 2.3, a
+        // line, but a soft-shouldered one rather than a wire
+        float pd9 = (pv9 - 0.094) / 0.013;
+        // and a HOLE: nothing at all inside 10.8 degrees, so the pole
+        // carries none of this and it can only ever read as a ring
+        float prg = exp(-pd9 * pd9) * smoothstep(0.060, 0.080, pv9);
+        if (prg > 0.002 && ubo.pfire.w > 0.0) {{
+            // the clock rides LONGITUDE. the third axis here is
+            // colatitude, and a time term on it would drag the fire
+            // toward the pole
+            float pag = (bu0.x + ubo.time * 0.00012) * 6.28318530718;
+            // EAST-WEST STRETCHED like the tint's. radius 1.4 is 8.8
+            // cells around, 41 degrees of longitude each, against 46
+            // down the latitude at 2 degrees -- a 21:1 draw, so these
+            // are clouds lying ALONG the ring, not spokes across it
+            float pn1 = jp_gnoise(vec3(cos(pag) * 1.4,       sin(pag) * 1.4,       pv9 * 46.0));
+            float pn2 = jp_gnoise(vec3(cos(pag) * 3.6 + 5.0, sin(pag) * 3.6 + 5.0, pv9 * 100.0));
+            // CONTINUOUS, swelling and thinning. a 0.04 window on
+            // the noise snapped between full and nothing and left cut
+            // crescents -- 0.40 to 0.58 ramps over four times the
+            // range, and the 0.28 floor keeps the ring joined all the
+            // way round so it never actually breaks
+            float pseg = 0.28 + 0.72 * smoothstep(0.40, 0.58, pn1);
+            // TWO COLOURS along its length. the fine octave picks
+            // between the deep orange and the pale, so the ring runs
+            // hot and cool along itself instead of reading as one
+            // painted band
+            float pmx  = smoothstep(0.40, 0.62, pn2);
+            vec3  pcol = mix(ubo.pfire.rgb, ubo.pfire2.rgb, pmx);
+            // a light brightness texture on top, never to nothing
+            float ptx  = 0.78 + 0.22 * pmx;
+            col += pcol * prg * pseg * ptx * ubo.pfire.w;
+        }}
+
         float a        = smoothstep(0.0, 0.18, mu);
         fragColor      = vec4(col, a);
     }
@@ -4111,6 +4075,10 @@ element Europa
         # at ludacrous that was shearing back and forth about three
         # times a second, which reads as the deck spinning, not wind
         jup.wctl2    = vec4f [ 0.55, 1.6, 0.0015625, 60.0 ]
+        # w 0.0: jupiter takes no live tint at all
+        jup.tint     = vec4f [ 1.0, 1.0, 1.0, 0.0 ]
+        jup.pfire    = vec4f [ 1.0, 0.6, 0.2, 0.0 ]
+        jup.pfire2   = vec4f [ 1.0, 0.9, 0.7, 0.0 ]
         jup.time     = ux.time * 60000.0
 
 
@@ -4498,10 +4466,11 @@ func mars_bake_mola [] -> bool
 # rungs the eye sits inside it, which is fine: it is a closed sky
 func mars_atm_h [] -> f32
     return 0.300
-# TIGHT. 0.045 spread the glow 150km up and made a purple band; this
-# hugs the horizon and is gone within ~40km
+# the colour ramp is measured in THIS, not in a fixed radius, so the
+# band keeps its proportions and simply reaches further as it grows.
+# 0.0075 was gone within ~40km; 0.018 carries the air to ~100km
 func mars_atm_fall [] -> f32
-    return 0.0075
+    return 0.018
 func mars_atm_gain [] -> f32
     return 0.62
 
@@ -4527,6 +4496,11 @@ func mars_cld_wind [] -> f32
 
 func mars_haze [] -> f32
     return 0.85
+
+# the BARE planet's air, which is nothing like the terraformed one:
+# 0.85 was tuned for a wet Terra and buried the real mars in fog
+func mars_bare_haze [] -> f32
+    return 0.34
 
 func mars_dtile [] -> f32
     return 2048.0
@@ -4569,13 +4543,21 @@ func mars_sea_bias [] -> f32
 # over one output tile and no seam can print at any tiling frequency.
 # free rotation would break that, which is why there is none here
 func mars_bake_detail [] -> bool
-    # sources chosen by MEASURED structure-tensor coherence, because
-    # Mars has no grain direction and a source that does prints its own
-    # across the whole planet. stardunes ran 0.482 at -42 degrees --
-    # that was the diagonal streaking -- and granite 0.335 at 0, which
-    # banded it horizontally. these three are the flattest we own:
-    # scratch 0.012, metal4 0.042, fracture 0.056
-    names : array string [ 'europa-scratch', 'europa-metal4', 'europa-fracture', 'europa-caldera' ]
+    # the three grey europa plates were chosen by MEASURED structure-
+    # tensor coherence, because Mars has no grain direction and a source
+    # that does prints its own across the whole planet. stardunes ran
+    # 0.482 at -42 degrees -- that was the diagonal streaking -- and
+    # granite 0.335 at 0, which banded it horizontally. these three are
+    # the flattest we own: scratch 0.012, metal4 0.042, fracture 0.056.
+    #
+    # they are FINE GRAIN and nothing else, which is why a whole planet
+    # of them read as one material. sand and the two stone plates carry
+    # the structure they lack -- rubble, fracture and vein -- and they
+    # own the provinces below. every plate is normalised to a common
+    # mean and spread first, or the height steps where one hands over
+    # 3 is the SELECTOR, never blended in
+    names : array string [ 'europa-scratch.png', 'europa-metal4.png', 'europa-fracture.png',
+        'europa-caldera.png', 'mars-veg-sand.png', 'mars-stone.png', 'mars-stone2.png' ]
     ns : i32 [ names.count ]
     sw : new i32 [ ns ]
     sh : new i32 [ ns ]
@@ -4583,7 +4565,7 @@ func mars_bake_detail [] -> bool
     imgs : array Image []
     total : i32 [ 0 ]
     for [ i: i32 0, i < ns, i += 1 ]
-        p9 : path '../scenes/textures/{names[i]}.png'
+        p9 : path '../scenes/textures/{names[i]}'
         im : Image [ uri: p9 ]
         if [ im.width == 0 ]
             puts 'mars: detail source {names[i]} missing'
@@ -4597,10 +4579,30 @@ func mars_bake_detail [] -> bool
     for [ i: i32 0, i < ns, i += 1 ]
         si : Image imgs[i]
         eu_lum[ si, @SB[ so[i] ] ]
+    # COMMON mean and spread. a plate that sits brighter or flatter than
+    # its neighbour would otherwise step the height at every province
+    # boundary, which reads as a patchwork of shelves rather than rock
+    for [ i: i32 0, i < ns, i += 1 ]
+        pn : i32 [ sw[i] * sh[i] ]
+        pp : @f32 [ @SB[ so[i] ] ]
+        psum : f32 [ 0.0 ]
+        for [ k: i32 0, k < pn, k += 1 ] psum += pp[ k ]
+        pmu : f32 [ psum / f32[ pn ] ]
+        pvar : f32 [ 0.0 ]
+        for [ k: i32 0, k < pn, k += 1 ]
+            pd9 : f32 [ pp[ k ] - pmu ]
+            pvar += pd9 * pd9
+        psig : f32 [ sqrt[ pvar / f32[ pn ] ] ]
+        if [ psig < 0.000001 ] psig = 0.000001
+        for [ k: i32 0, k < pn, k += 1 ] pp[ k ] = (pp[ k ] - pmu) / psig * 0.18 + 0.5
+        puts 'mars: plate {names[i]} mean {pmu} sigma {psig}'
     g0 : @f32 [ @SB[ so[0] ] ]
     g1 : @f32 [ @SB[ so[1] ] ]
     g2 : @f32 [ @SB[ so[2] ] ]
     g3 : @f32 [ @SB[ so[3] ] ]
+    g4 : @f32 [ @SB[ so[4] ] ]
+    g5 : @f32 [ @SB[ so[5] ] ]
+    g6 : @f32 [ @SB[ so[6] ] ]
 
     w9 : i32 [ 2048 ]
     h9 : i32 [ 2048 ]
@@ -4611,22 +4613,36 @@ func mars_bake_detail [] -> bool
         v : f32 [ f32[ y ] / f32[ h9 ] ]
         for [ x: i32 0, x < w9, x += 1 ]
             u : f32 [ f32[ x ] / f32[ w9 ] ]
-            # the selector decides which source owns each region, read
-            # at its own even scale so it tiles with everything else
+            # THREE selector fields, each an even scale on its own axis
+            # order, so the provinces they cut never line up with each
+            # other or with the tile grid
             s1 : f32 [ eu_bilin[ g3, sw[3], sh[3], u * 2.0 + 0.13, v * 2.0 + 0.41 ] ]
             s2 : f32 [ eu_bilin[ g3, sw[3], sh[3], v * 6.0 + 0.61, u * 6.0 + 0.07 ] ]
+            s3 : f32 [ eu_bilin[ g3, sw[3], sh[3], u * 10.0 + 0.29, v * 10.0 + 0.83 ] ]
+            # SAND takes the largest share, the two stone plates the
+            # next, the grey grain what is left. the plates are all
+            # normalised to one spread, so a province change swaps the
+            # STRUCTURE without moving the height
+            f_st : f32 [ eu_sstep[ 0.44, 0.60, s1 ] ]
+            f_rk : f32 [ eu_sstep[ 0.68, 0.84, s1 ] ]
             acc : f32 [ 0.0 ]
-            # granite is the rock grain, scratch the fracture, dunes the
-            # wind ripple. each on its own even scale and axis order so
-            # no two line up with each other or with the tile grid
             for [ oi: i32 0, oi < 4, oi += 1 ]
                 oc : f32 [ (oi == 0) ? 1.0 : ((oi == 1) ? 3.0 : ((oi == 2) ? 9.0 : 27.0)) ]
                 wt : f32 [ (oi == 0) ? 1.0 : ((oi == 1) ? 0.52 : ((oi == 2) ? 0.27 : 0.13)) ]
-                pa : f32 [ eu_bilin[ g0, sw[0], sh[0], u * 4.0 * oc + 0.13, v * 4.0 * oc + 0.41 ] ]
-                pb : f32 [ eu_bilin[ g1, sw[1], sh[1], v * 2.0 * oc + 0.61, u * 2.0 * oc + 0.07 ] ]
-                pc : f32 [ eu_bilin[ g2, sw[2], sh[2], u * 6.0 * oc + 0.29, v * 6.0 * oc + 0.83 ] ]
-                ab : f32 [ pa + (pb - pa) * eu_sstep[ 0.30, 0.70, s1 ] ]
-                cc : f32 [ ab + (pc - ab) * eu_sstep[ 0.35, 0.75, s2 ] ]
+                # regolith, blown into ripple
+                p_sa : f32 [ eu_bilin[ g4, sw[4], sh[4], u * 4.0 * oc + 0.13, v * 4.0 * oc + 0.41 ] ]
+                # rough rubble, and veined rock that breaks in sheets
+                p_s1 : f32 [ eu_bilin[ g5, sw[5], sh[5], v * 2.0 * oc + 0.61, u * 2.0 * oc + 0.07 ] ]
+                p_s2 : f32 [ eu_bilin[ g6, sw[6], sh[6], u * 6.0 * oc + 0.29, v * 6.0 * oc + 0.83 ] ]
+                # the grey plates: fine grain the stone has none of
+                p_a  : f32 [ eu_bilin[ g0, sw[0], sh[0], v * 8.0 * oc + 0.37, u * 8.0 * oc + 0.19 ] ]
+                p_b  : f32 [ eu_bilin[ g1, sw[1], sh[1], u * 10.0 * oc + 0.71, v * 10.0 * oc + 0.53 ] ]
+                p_c  : f32 [ eu_bilin[ g2, sw[2], sh[2], v * 12.0 * oc + 0.11, u * 12.0 * oc + 0.67 ] ]
+                st : f32 [ p_s1 + (p_s2 - p_s1) * eu_sstep[ 0.34, 0.74, s2 ] ]
+                rk : f32 [ p_a + (p_b - p_a) * eu_sstep[ 0.30, 0.70, s2 ] ]
+                rk = rk + (p_c - rk) * eu_sstep[ 0.36, 0.78, s3 ]
+                cc : f32 [ p_sa + (st - p_sa) * f_st ]
+                cc = cc + (rk - cc) * f_rk
                 acc += (cc - 0.5) * wt
             D[ y * w9 + x ] = acc
 
@@ -5449,28 +5465,14 @@ func uranus_bake [] -> bool
             # 0.62 -- threw away the thing we came for. the pale look
             # comes from the high colour floors below, not from
             # destroying the luminance that carries the bands
-            # TWO ALBEDO BASES, blended by an ENORMOUS patch. the
-            # circle radius is 0.35, so barely two cells reach around
-            # the whole equator -- this is a hemisphere-scale wash,
-            # not a feature. it decides which of the two the ground
-            # colour is, and everything above rides on top of it
-            bx9 : f32 [ cos[ ang ] * 0.35 + 12.0 ]
-            by9 : f32 [ sin[ ang ] * 0.35 + 12.0 ]
-            sky9 : f32 [ eu_sstep[ 0.36, 0.70, eu_gnoise[ bx9, by9, v * 1.1 ] ] ]
-            # base A: PALE CYAN. methane absorbs red, so red carries
-            # least and blue-green carry most
-            ar : f32 [ 0.30 + l9 * 0.42 ]
-            ag : f32 [ 0.50 + l9 * 0.42 ]
-            ab : f32 [ 0.52 + l9 * 0.40 ]
-            # base B: the same, 20% MORE SKY BLUE. 0.52 x 1.20 is the
-            # blue floor; red and green come down a little so it reads
-            # bluer rather than merely brighter
-            br9 : f32 [ 0.26 + l9 * 0.40 ]
-            bg9 : f32 [ 0.46 + l9 * 0.40 ]
-            bb9 : f32 [ 0.624 + l9 * 0.42 ]
-            nr : f32 [ nep_lerp[ ar, br9, sky9 ] ]
-            ng : f32 [ nep_lerp[ ag, bg9, sky9 ] ]
-            nb : f32 [ nep_lerp[ ab, bb9, sky9 ] ]
+            # PALE CYAN, and nothing else. methane absorbs red, so
+            # red carries least and blue-green carry most.
+            # the blue variance USED to be baked in here as a second
+            # base. it moved into the shader: a plate cannot drift,
+            # and the whole point is that it moves with the weather
+            nr : f32 [ 0.30 + l9 * 0.42 ]
+            ng : f32 [ 0.50 + l9 * 0.42 ]
+            nb : f32 [ 0.52 + l9 * 0.40 ]
             if [ nr > 1.0 ] nr = 1.0
             if [ ng > 1.0 ] ng = 1.0
             if [ nb > 1.0 ] nb = 1.0
@@ -6462,7 +6464,10 @@ ModelViewProject TerraSkyShader
         if (tca > 0.0) {{
             vec3  pca = ro + rd * tca;
             float rc  = length(pca);
-            rch = clamp((rc - 1.0) / 0.016, 0.0, 1.0);
+            // in SCALE HEIGHTS, not a fixed radius: the colour ramp has
+            // to travel with the alpha or extending the air just parks
+            // a solid purple band out where it used to fade
+            rch = clamp((rc - 1.0) / (ubo.atm_fall * 2.13), 0.0, 1.0);
             // outward, a long slow fade into space. the smoothstep is a
             // SMOOTH occlusion ramp -- a binary cut stamps the analytic
             // sphere's silhouette as a hard circle offset from the real
@@ -6809,6 +6814,137 @@ ModelViewProject TerraWaterShader
     }
 
 
+# a UNIFORM globe spends its triangles where nobody is looking. at
+# 3072x1536 that was 9.4M triangles, 252MB, and STILL only 6.93km a
+# quad -- fifteen times coarser than the MOLA data underneath it,
+# so nothing under 7km could ever reach the silhouette.
+#
+# from altitude h the entire visible planet is the spherical cap out
+# to the horizon arc, and nothing past it shows except peaks tall
+# enough to clear the bulge. so a polar grid CENTRED ON THE CRAFT
+# covers everything the globe did, with the rings packed under the
+# camera: 573k triangles, 16MB, and about a metre a quad up close.
+#
+# ring radius is stored as a FRACTION of the horizon arc, so the
+# vertex shader scales it by altitude and the mesh never rebuilds
+func carpet_steps [] -> i32
+    return 1024
+# rings grow by this fraction near the craft...
+func carpet_grow [] -> f32
+    return 0.0296
+# ...but a step NEVER exceeds this, which is a quarter of the
+# height map's 2600m texel. past a texel the mesh undersamples the
+# map, and a map sliding under an undersampled mesh is the ripple
+func carpet_cap [] -> f32
+    return 0.00215
+# the innermost ring, and how far past the horizon the outer one
+# reaches -- 1.35 catches peaks standing above it
+func carpet_rmin [] -> f32
+    return 0.0004
+func carpet_rmax [] -> f32
+    return 1.35
+
+func build_carpet [] -> GltfModel
+    na : i32 [ carpet_steps[] ]
+    n1 : i32 [ na + 1 ]
+    # ring radii first: geometric while the steps are small, then
+    # CAPPED so no step ever outruns a height-map texel
+    rmn9 : f32 [ carpet_rmin[] ]
+    rmx9 : f32 [ carpet_rmax[] ]
+    cap9 : f32 [ carpet_cap[] ]
+    gro9 : f32 [ carpet_grow[] ]
+    RR : new f32 [ 4096 ]
+    RR[ 0 ] = 0.0
+    kk : i32 [ 1 ]
+    rc : f32 [ rmn9 ]
+    while [ rc < rmx9 && kk < 4095 ]
+        RR[ kk ] = rc
+        kk += 1
+        st9 : f32 [ rc * gro9 ]
+        if [ st9 > cap9 ] st9 = cap9
+        rc = rc + st9
+    RR[ kk ] = rmx9
+    kk += 1
+    m1 : i32 [ kk ]
+    nr : i32 [ kk - 1 ]
+    puts 'CARPET rings={nr} steps={na} tris={nr * na * 2}'
+    nv : i32 [ n1 * m1 ]
+    nv3 : i32 [ nv * 3 ]
+    nv2 : i32 [ nv * 2 ]
+    ni : i32 [ na * nr * 6 ]
+    vb : i32 [ nv3 * 4 ]
+    tb : i32 [ nv2 * 4 ]
+    ib : i32 [ ni * 4 ]
+    tsz : i32 [ vb + vb + tb + ib ]
+    data : new u8 [ tsz ]
+    pf : @f32 [ data ]
+    ip : @data[ vb + vb + tb ]
+    iu : @u32 [ ip ]
+    for [ ir: i32 0, ir <= nr, ir += 1 ]
+        # ring 0 collapses to the point under the craft; its quads
+        # are degenerate and cost nothing
+        rn : f32 [ RR[ ir ] ]
+        for [ ia: i32 0, ia <= na, ia += 1 ]
+            th : f32 [ f32[ ia ] * 6.2831853 / f32[ na ] ]
+            vi : i32 [ ir * n1 + ia ]
+            i3 : i32 [ vi * 3 ]
+            # the plane offset from the craft, in horizon fractions.
+            # the shader wraps it onto the sphere
+            pf[ i3 ]     = rn * cos[ th ]
+            pf[ i3 + 1 ] = 0.0
+            pf[ i3 + 2 ] = rn * sin[ th ]
+            pf[ nv3 + i3 ]     = 0.0
+            pf[ nv3 + i3 + 1 ] = 1.0
+            pf[ nv3 + i3 + 2 ] = 0.0
+            # uv comes from the wrapped direction, per vertex, in
+            # the shader -- there is none to store here
+            i2 : i32 [ nv3 * 2 + vi * 2 ]
+            pf[ i2 ]     = 0.0
+            pf[ i2 + 1 ] = 0.0
+    k : i32 [ 0 ]
+    # SAME order as the globe's. the opposite order renders only a
+    # strip just past the tangent point -- the back of the bulge,
+    # seen because everything nearer was facing away and culled
+    for [ ir: i32 0, ir < nr, ir += 1 ]
+        for [ ia: i32 0, ia < na, ia += 1 ]
+            i0 : i32 [ ir * n1 + ia ]
+            iu[ k ]     = u32[ i0 ]
+            iu[ k + 1 ] = u32[ i0 + n1 ]
+            iu[ k + 2 ] = u32[ i0 + 1 ]
+            iu[ k + 3 ] = u32[ i0 + 1 ]
+            iu[ k + 4 ] = u32[ i0 + n1 ]
+            iu[ k + 5 ] = u32[ i0 + n1 + 1 ]
+            k += 6
+    bufs : array GltfBuffer [ ]
+    bufs += GltfBuffer [ byteLength: u64[ tsz ], data: data ]
+    views : array BufferView [ ]
+    views += BufferView [ buffer: 0, byteOffset: 0,            byteLength: vb ]
+    views += BufferView [ buffer: 0, byteOffset: vb,           byteLength: vb ]
+    views += BufferView [ buffer: 0, byteOffset: vb + vb,      byteLength: tb ]
+    views += BufferView [ buffer: 0, byteOffset: vb + vb + tb, byteLength: ib ]
+    accs : array Accessor [ ]
+    accs += Accessor [ bufferView: 0, componentType: ComponentType.FLOAT, type: CompoundType.VEC3, count: nv ]
+    accs += Accessor [ bufferView: 1, componentType: ComponentType.FLOAT, type: CompoundType.VEC3, count: nv ]
+    accs += Accessor [ bufferView: 2, componentType: ComponentType.FLOAT, type: CompoundType.VEC2, count: nv ]
+    accs += Accessor [ bufferView: 3, componentType: ComponentType.UNSIGNED_INT, type: CompoundType.SCALAR, count: ni ]
+    am : map i64 [ string ] [ ]
+    am[ 'POSITION' ]   = i64[ 0 ]
+    am[ 'NORMAL' ]     = i64[ 1 ]
+    am[ 'TEXCOORD_0' ] = i64[ 2 ]
+    prs : array Primitive [ ]
+    prs += Primitive [ name: 'olympus', attributes: am, indices: u64[ 3 ], material: 0, mode: Mode.TRIANGLES ]
+    mshs : array Mesh [ ]
+    mshs += Mesh [ name: 'olympus', primitives: prs ]
+    nds : array Node [ ]
+    nds += Node [ name: 'olympus', mesh: 0 ]
+    sn : array i64 [ ]
+    sn += 0
+    scns : array Scene [ ]
+    scns += Scene [ name: 'scene', nodes: sn ]
+    gm : GltfModel [ nodes: nds, meshes: mshs, scenes: scns, scene: 0,
+        buffers: bufs, bufferViews: views, accessors: accs ]
+    return gm
+
 element Terra
     frost : true
     frost_sharp : true
@@ -6825,137 +6961,6 @@ element Terra
     intern e_cur  : f32
     intern dbg_n  : i32
     public color  : rgba [ r:0.004, g:0.003, b:0.004, a:1.0 ]
-
-    # a UNIFORM globe spends its triangles where nobody is looking. at
-    # 3072x1536 that was 9.4M triangles, 252MB, and STILL only 6.93km a
-    # quad -- fifteen times coarser than the MOLA data underneath it,
-    # so nothing under 7km could ever reach the silhouette.
-    #
-    # from altitude h the entire visible planet is the spherical cap out
-    # to the horizon arc, and nothing past it shows except peaks tall
-    # enough to clear the bulge. so a polar grid CENTRED ON THE CRAFT
-    # covers everything the globe did, with the rings packed under the
-    # camera: 573k triangles, 16MB, and about a metre a quad up close.
-    #
-    # ring radius is stored as a FRACTION of the horizon arc, so the
-    # vertex shader scales it by altitude and the mesh never rebuilds
-    func carpet_steps [] -> i32
-        return 1024
-    # rings grow by this fraction near the craft...
-    func carpet_grow [] -> f32
-        return 0.0296
-    # ...but a step NEVER exceeds this, which is a quarter of the
-    # height map's 2600m texel. past a texel the mesh undersamples the
-    # map, and a map sliding under an undersampled mesh is the ripple
-    func carpet_cap [] -> f32
-        return 0.00215
-    # the innermost ring, and how far past the horizon the outer one
-    # reaches -- 1.35 catches peaks standing above it
-    func carpet_rmin [] -> f32
-        return 0.0004
-    func carpet_rmax [] -> f32
-        return 1.35
-
-    func build_carpet [] -> GltfModel
-        na : i32 [ carpet_steps[] ]
-        n1 : i32 [ na + 1 ]
-        # ring radii first: geometric while the steps are small, then
-        # CAPPED so no step ever outruns a height-map texel
-        rmn9 : f32 [ carpet_rmin[] ]
-        rmx9 : f32 [ carpet_rmax[] ]
-        cap9 : f32 [ carpet_cap[] ]
-        gro9 : f32 [ carpet_grow[] ]
-        RR : new f32 [ 4096 ]
-        RR[ 0 ] = 0.0
-        kk : i32 [ 1 ]
-        rc : f32 [ rmn9 ]
-        while [ rc < rmx9 && kk < 4095 ]
-            RR[ kk ] = rc
-            kk += 1
-            st9 : f32 [ rc * gro9 ]
-            if [ st9 > cap9 ] st9 = cap9
-            rc = rc + st9
-        RR[ kk ] = rmx9
-        kk += 1
-        m1 : i32 [ kk ]
-        nr : i32 [ kk - 1 ]
-        puts 'CARPET rings={nr} steps={na} tris={nr * na * 2}'
-        nv : i32 [ n1 * m1 ]
-        nv3 : i32 [ nv * 3 ]
-        nv2 : i32 [ nv * 2 ]
-        ni : i32 [ na * nr * 6 ]
-        vb : i32 [ nv3 * 4 ]
-        tb : i32 [ nv2 * 4 ]
-        ib : i32 [ ni * 4 ]
-        tsz : i32 [ vb + vb + tb + ib ]
-        data : new u8 [ tsz ]
-        pf : @f32 [ data ]
-        ip : @data[ vb + vb + tb ]
-        iu : @u32 [ ip ]
-        for [ ir: i32 0, ir <= nr, ir += 1 ]
-            # ring 0 collapses to the point under the craft; its quads
-            # are degenerate and cost nothing
-            rn : f32 [ RR[ ir ] ]
-            for [ ia: i32 0, ia <= na, ia += 1 ]
-                th : f32 [ f32[ ia ] * 6.2831853 / f32[ na ] ]
-                vi : i32 [ ir * n1 + ia ]
-                i3 : i32 [ vi * 3 ]
-                # the plane offset from the craft, in horizon fractions.
-                # the shader wraps it onto the sphere
-                pf[ i3 ]     = rn * cos[ th ]
-                pf[ i3 + 1 ] = 0.0
-                pf[ i3 + 2 ] = rn * sin[ th ]
-                pf[ nv3 + i3 ]     = 0.0
-                pf[ nv3 + i3 + 1 ] = 1.0
-                pf[ nv3 + i3 + 2 ] = 0.0
-                # uv comes from the wrapped direction, per vertex, in
-                # the shader -- there is none to store here
-                i2 : i32 [ nv3 * 2 + vi * 2 ]
-                pf[ i2 ]     = 0.0
-                pf[ i2 + 1 ] = 0.0
-        k : i32 [ 0 ]
-        # SAME order as the globe's. the opposite order renders only a
-        # strip just past the tangent point -- the back of the bulge,
-        # seen because everything nearer was facing away and culled
-        for [ ir: i32 0, ir < nr, ir += 1 ]
-            for [ ia: i32 0, ia < na, ia += 1 ]
-                i0 : i32 [ ir * n1 + ia ]
-                iu[ k ]     = u32[ i0 ]
-                iu[ k + 1 ] = u32[ i0 + n1 ]
-                iu[ k + 2 ] = u32[ i0 + 1 ]
-                iu[ k + 3 ] = u32[ i0 + 1 ]
-                iu[ k + 4 ] = u32[ i0 + n1 ]
-                iu[ k + 5 ] = u32[ i0 + n1 + 1 ]
-                k += 6
-        bufs : array GltfBuffer [ ]
-        bufs += GltfBuffer [ byteLength: u64[ tsz ], data: data ]
-        views : array BufferView [ ]
-        views += BufferView [ buffer: 0, byteOffset: 0,            byteLength: vb ]
-        views += BufferView [ buffer: 0, byteOffset: vb,           byteLength: vb ]
-        views += BufferView [ buffer: 0, byteOffset: vb + vb,      byteLength: tb ]
-        views += BufferView [ buffer: 0, byteOffset: vb + vb + tb, byteLength: ib ]
-        accs : array Accessor [ ]
-        accs += Accessor [ bufferView: 0, componentType: ComponentType.FLOAT, type: CompoundType.VEC3, count: nv ]
-        accs += Accessor [ bufferView: 1, componentType: ComponentType.FLOAT, type: CompoundType.VEC3, count: nv ]
-        accs += Accessor [ bufferView: 2, componentType: ComponentType.FLOAT, type: CompoundType.VEC2, count: nv ]
-        accs += Accessor [ bufferView: 3, componentType: ComponentType.UNSIGNED_INT, type: CompoundType.SCALAR, count: ni ]
-        am : map i64 [ string ] [ ]
-        am[ 'POSITION' ]   = i64[ 0 ]
-        am[ 'NORMAL' ]     = i64[ 1 ]
-        am[ 'TEXCOORD_0' ] = i64[ 2 ]
-        prs : array Primitive [ ]
-        prs += Primitive [ name: 'olympus', attributes: am, indices: u64[ 3 ], material: 0, mode: Mode.TRIANGLES ]
-        mshs : array Mesh [ ]
-        mshs += Mesh [ name: 'olympus', primitives: prs ]
-        nds : array Node [ ]
-        nds += Node [ name: 'olympus', mesh: 0 ]
-        sn : array i64 [ ]
-        sn += 0
-        scns : array Scene [ ]
-        scns += Scene [ name: 'scene', nodes: sn ]
-        gm : GltfModel [ nodes: nds, meshes: mshs, scenes: scns, scene: 0,
-            buffers: bufs, bufferViews: views, accessors: accs ]
-        return gm
 
     func build_models[]
         built = true
@@ -7282,10 +7287,785 @@ element Terra
         if [ dbg_n < 3 ]
             puts 'TERRA mode={i32[ ux.orbit_mode ]} e_cur={e_cur} hmax={olymp.hmax} smax={olymp.smax}'
             puts 'TERRA eye={_eye.x},{_eye.y},{_eye.z} eye_m={em.x},{em.y},{em.z},{em.w} hdist={olymp.hdist} e_r={e_r}'
+# MARS, THE PLANET AS IT IS. same carpet mesh and same MOLA maps as
+# Terra, but nothing is terraformed: no sea, no planting, no rivers,
+# no snow and no cloud deck. only the map's own iron colour, the rock
+# material over it, and the dust atmosphere above
+enum MarsSurface
+    height  : 0
+    nrm     : 1
+    detail  : 2
+    edge    : 3
+    color   : 4
+
+ModelViewProject MarsShader
+    # unpack scale for the baked height, and the slope range the baked
+    # normal encodes. both must match what mars_bake wrote
+    mutable hmax     : f32
+    mutable smax     : f32
+    mutable sun_dir  : vec4f
+    mutable cam_pos  : vec4f
+    mutable haze     : f32
+    # how many times the rock material repeats across the equator, and
+    # how far it tilts the normal
+    mutable dtile    : f32
+    mutable damp     : f32
+    # the craft in MODEL space, and the horizon arc in radians: the
+    # carpet mesh is laid out relative to both
+    mutable eye_m    : vec4f
+    mutable hdist    : f32
+    # how far the rock material displaces the mesh, in sphere radii
+    mutable dh       : f32
+
+    attrib height  : LayoutBinding [ type:typeid[ MarsSurface ], id:MarsSurface.height, count:1, format: typeid[ rgba8 ] ]
+    attrib nrm     : LayoutBinding [ type:typeid[ MarsSurface ], id:MarsSurface.nrm,    count:1, format: typeid[ rgba8 ] ]
+    attrib detail  : LayoutBinding [ type:typeid[ MarsSurface ], id:MarsSurface.detail, count:1, format: typeid[ rgba8 ] ]
+    attrib edge    : LayoutBinding [ type:typeid[ MarsSurface ], id:MarsSurface.edge,   count:1, format: typeid[ rgba8 ] ]
+    attrib color   : LayoutBinding [ type:typeid[ MarsSurface ], id:MarsSurface.color,  count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_normal     : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib v_sp         : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
+    attrib v_h          : VertexOutput  [ type:typeid[ f32   ] ]
+
+    attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    # the bake, unpacked. 16 bits across R and A, scaled by hmax.
+    # the hardware interpolates those two bytes INDEPENDENTLY, so
+    # everywhere the low byte wraps 255->0 it ramps backwards across a
+    # whole texel and the ground ripples like water. decode four
+    # texels FIRST, then interpolate
+    func m_ground [ uv: vec2f ] -> GLSL float {
+        vec2  ts = vec2(8192.0, 4096.0);
+        vec2  pp = uv * ts - 0.5;
+        vec2  fr = fract(pp);
+        vec2  b0 = (floor(pp) + 0.5) / ts;
+        vec2  e1 = 1.0 / ts;
+        vec4  q00 = textureLod(height, b0, 0.0);
+        vec4  q10 = textureLod(height, b0 + vec2(e1.x, 0.0), 0.0);
+        vec4  q01 = textureLod(height, b0 + vec2(0.0, e1.y), 0.0);
+        vec4  q11 = textureLod(height, b0 + e1, 0.0);
+        float h00 = q00.r * 65280.0 + q00.a * 255.0;
+        float h10 = q10.r * 65280.0 + q10.a * 255.0;
+        float h01 = q01.r * 65280.0 + q01.a * 255.0;
+        float h11 = q11.r * 65280.0 + q11.a * 255.0;
+        float hh  = mix(mix(h00, h10, fr.x), mix(h01, h11, fr.x), fr.y);
+        return hh / 65535.0 * ubo.hmax;
+    }
+
+    func vertex [] -> GLSL none {
+        // the mesh arrives as a FLAT polar grid centred on the craft,
+        // its radius a fraction of the horizon arc. wrap it onto the
+        // sphere here, so altitude rescales it and nothing rebuilds
+        float rn = length(a_pos.xz);
+        vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
+        vec3  up_m = normalize(ubo.eye_m.xyz);
+        vec3  ax9  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3  t_e  = normalize(cross(ax9, up_m));
+        vec3  t_n  = cross(up_m, t_e);
+        float s9   = rn * ubo.hdist;
+        vec3  dir  = normalize(up_m * cos(s9) + (t_e * pd.x + t_n * pd.y) * sin(s9));
+
+        // longitude measured FROM the craft, never absolute: that is
+        // what keeps the +/-pi meridian from splitting a triangle
+        float lon0 = atan(ubo.eye_m.z, ubo.eye_m.x);
+        float dl   = atan(dir.z, dir.x) - lon0;
+        if (dl >  3.14159265) dl -= 6.28318531;
+        if (dl < -3.14159265) dl += 6.28318531;
+        vec2 uv = vec2(0.5 + (lon0 + dl) / 6.28318531,
+                       0.5 - asin(clamp(dir.y, -1.0, 1.0)) / 3.14159265);
+
+        v_uv     = uv;
+        v_sp     = dir;
+        mat3 nm  = transpose(inverse(mat3(ubo.model)));
+        v_normal = normalize(nm * dir);
+        float g  = m_ground(uv);
+        v_h      = g;
+
+        // patch geometry WHERE THE EDGES ARE. the integral image says
+        // how much structure the colour map holds around this point;
+        // busy ground earns high frequency, dead flat plains stay flat
+        vec4  ee = textureLod(edge, uv, 0.0);
+        float aug = clamp(ee.r * 0.55 + ee.g * 0.30 + ee.b * 0.15, 0.0, 1.0);
+        vec2  vsl  = (textureLod(nrm, uv, 0.0).rg * 2.0 - 1.0) * ubo.smax;
+        float vrug = clamp(length(vsl) / 0.12, 0.0, 1.0);
+        float vclat = sqrt(max(1.0 - dir.y * dir.y, 0.0025));
+        vec2  duv   = vec2(uv.x * vclat * 2.0, uv.y);
+        float dsum = 0.0;
+        float dw   = 0.0;
+        float dfq  = ubo.dtile / 256.0;
+        float dwt  = 1.0;
+        for (int i = 0; i < 3; i++) {{
+            float an = 0.61 * float(i);
+            float ca = cos(an);
+            float sa = sin(an);
+            vec2  ru = mat2(ca, sa, -sa, ca) * duv * dfq + vec2(0.37, 0.71) * float(i);
+            dsum += (textureLod(detail, ru, 0.0).b * 2.0 - 1.0) * dwt;
+            dw   += dwt;
+            dfq  *= 3.0;
+            dwt  *= 0.78;
+        }}
+        vec3 disp = dir * (1.0 + g + dsum / dw * ubo.dh
+                                   * (0.10 + 1.90 * vrug) * (0.55 + 0.45 * aug));
+        vec4 wpos = ubo.model * vec4(disp, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment [] -> GLSL none {
+        vec3 sp = normalize(v_sp);
+        // the mesh normal is the ball's and would light this flat. the
+        // bake carries the real surface slope at 8192 across, far finer
+        // than any mesh we can afford to displace
+        vec3 ax = abs(sp.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3 ea = normalize(cross(ax, sp));
+        vec3 no = normalize(cross(sp, ea));
+        vec2 sl = (texture(nrm, v_uv).rg * 2.0 - 1.0) * ubo.smax;
+        vec3 n = normalize(sp - ea * sl.x - no * sl.y);
+
+        // MOLA is 2600m a texel, so from 13km up the ground is pure
+        // bilinear mush. the rock material fills the whole span below
+        // that -- SIX octaves from 1300m a texel down to 5m.
+        // SHADING ONLY: the silhouette stays MOLA's
+        float dist = length(v_world_pos.xyz - ubo.cam_pos.xyz);
+        float clat = sqrt(max(1.0 - sp.y * sp.y, 0.0025));
+        vec2  duv  = vec2(v_uv.x * clat * 2.0, v_uv.y);
+        vec2  dxy  = vec2(0.0);
+        float cav  = 0.0;
+        float rgh  = 0.0;
+        float wsum = 0.0;
+        float fq = ubo.dtile / 256.0;
+        float wt = 1.0;
+        for (int i = 0; i < 6; i++) {{
+            // each octave on its own angle and origin, or the ladder
+            // stacks into one self-similar pattern instead of terrain
+            float an = 0.61 * float(i);
+            float ca = cos(an);
+            float sa = sin(an);
+            vec2  ru = mat2(ca, sa, -sa, ca) * duv * fq + vec2(0.37, 0.71) * float(i);
+            vec4  dv = texture(detail, ru);
+            dxy  += (dv.rg * 2.0 - 1.0) * wt;
+            // B is the material's height: below its own mean is a
+            // crevice, above it is a crest catching the light
+            cav  += (dv.b * 2.0 - 1.0) * wt;
+            rgh  += dv.a * wt;
+            wsum += wt;
+            fq *= 3.0;
+            wt *= 0.78;
+        }}
+        dxy /= wsum;
+        cav /= wsum;
+        rgh /= wsum;
+        vec4  ee9 = texture(edge, v_uv);
+        float aug = clamp(ee9.r * 0.55 + ee9.g * 0.30 + ee9.b * 0.15, 0.0, 1.0);
+        // NORMALISED slope: sl already carries smax, and smax carries
+        // the relief look-control, so divide it back out
+        float slope0 = length(sl) / max(ubo.smax, 1e-6);
+        float rug = clamp(slope0 / 0.08, 0.0, 1.0);
+        n = normalize(n + (ea * dxy.x + no * dxy.y)
+                        * ubo.damp * (0.10 + 1.90 * rug)
+                        * (0.55 + 0.45 * aug));
+
+        mat3 nmm = transpose(inverse(mat3(ubo.model)));
+        vec3 nw = normalize(nmm * n);
+
+        vec3 sun = normalize(ubo.sun_dir.xyz);
+        float ndl = max(dot(nw, sun), 0.0);
+        // BARE MARS. the colour map is the albedo; the rock material
+        // only shades it -- crests catch the light, crevices hold dark.
+        // RUST, not soil: 0.64/0.43/0.28 was a tan with as much green
+        // in it as an earth desert, and that is what read as brown
+        vec3  c_rock = vec3(0.30, 0.13, 0.085);
+        vec3  c_dust = vec3(0.74, 0.34, 0.21);
+        float crest = clamp(cav * 0.5 + 0.5, 0.0, 1.0);
+        float flat9 = 1.0 - clamp(slope0 / 0.20, 0.0, 1.0);
+        vec3  marsc = texture(color, v_uv).rgb;
+        vec3  base  = marsc;
+        base = mix(base, mix(c_rock, c_dust, flat9 * (0.35 + 0.65 * crest)), 0.45);
+        base *= 0.78 + 0.44 * crest;
+        // the map itself is a brown plate, and it carries over half the
+        // result -- so tilt the whole thing to iron rather than leaving
+        // the map to drag the new rock colours back toward soil
+        base *= vec3(1.10, 0.87, 0.79);
+        // and hold the colour: bleeding to grey by roughness was taking
+        // the red back out exactly where the material is strongest
+        base = mix(base, vec3(dot(base, vec3(0.35, 0.48, 0.17))), rgh * 0.12);
+
+        // a grazing sun throws long shadow: the terminator on a slope is
+        // hard, so keep the ambient low or the shadows turn to grey mud
+        vec3 lit = base * (0.16 + ndl * 1.25);
+
+        // ATMOSPHERE. mars air is loaded with suspended iron dust and
+        // it forward-scatters hard, but it reddens rather than gilds:
+        // salmon close in, dusty rose across the middle, and a cooler
+        // red at range. one three-stop ramp on distance
+        vec3 vd = normalize(v_world_pos.xyz - ubo.cam_pos.xyz);
+        float fw = max(dot(vd, sun), 0.0);
+        float fs = pow(fw, 6.0);
+        float fd = clamp(dist / 0.55, 0.0, 1.0);
+        vec3 dust = mix(vec3(1.26, 0.74, 0.60), vec3(1.02, 0.56, 0.48),
+                        smoothstep(0.0, 0.40, fd));
+        dust = mix(dust, vec3(0.88, 0.58, 0.56), smoothstep(0.35, 1.0, fd));
+        dust *= 1.0 + 0.85 * fs;
+        // HAZE POOLS IN THE BASINS: the column of air over a canyon
+        // floor is far deeper than over a plateau, and dust settles
+        // into it. elevation is the datum here, there being no sea
+        float tg9  = v_h / max(ubo.hmax, 1e-6);
+        float fogl = 1.0 - smoothstep(0.02, 0.40, tg9);
+        float hz = 1.0 - exp(-dist * ubo.haze * (1.0 + fs * 4.0)
+                                  * (0.55 + 1.60 * fogl));
+        vec3 outc = mix(lit, dust, clamp(hz, 0.0, 1.0));
+
+        // THE DUST POOL. suspended dust settles into the deepest ground
+        // and sits there, so a canyon floor is full of it whatever the
+        // range. the haze above is a DISTANCE term and clears to
+        // nothing up close, which left the valley bare from overhead --
+        // this is elevation only. the packed height reads 0.154 on the
+        // Valles floor against 0.384 on the plateau, so a band of
+        // 0.10..0.26 fills the trunk and the northern basins and stops
+        // at the rim. same dust colour as the air, because it IS the air
+        float pool = 1.0 - smoothstep(0.10, 0.26, tg9);
+        outc = mix(outc, dust, pool * (0.30 + 0.45 * fd));
+
+        // LIMB. terrain stays OPAQUE to its edge and simply DARKENS by
+        // mu; the sky shell above flares up through the same band, and
+        // that crossfade is the softness
+        vec3  vdir = normalize(ubo.cam_pos.xyz - v_world_pos.xyz);
+        vec3  nsp  = normalize(nmm * sp);
+        float mu   = clamp(dot(nsp, vdir), 0.0, 1.0);
+        outc *= 0.30 + 0.70 * smoothstep(0.0, 0.12, mu);
+
+        fragColor = vec4(outc, 1.0);
+    }
+
+
+# THE SKY SHELL, dust only. the rim glow on the ground can only light
+# fragments that HAVE ground, so it stops dead at the silhouette. this
+# is the same carpet mesh a second time, lifted to a shell above the
+# surface, so there is geometry ABOVE the limb to carry the fade into
+# space. no cloud march here -- mars keeps its air and nothing else
+ModelViewProject MarsSkyShader
+    mutable sun_dir  : vec4f
+    mutable cam_pos  : vec4f
+    mutable eye_m    : vec4f
+    mutable hdist    : f32
+    mutable atm_h    : f32
+    mutable atm_fall : f32
+    mutable atm_gain : f32
+
+    attrib a_pos        : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_normal     : VertexInput   [ type:typeid[ vec3f ] ]
+    attrib a_uv         : VertexInput   [ type:typeid[ vec2f ] ]
+
+    attrib v_normal     : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_uv         : VertexOutput  [ type:typeid[ vec2f ] ]
+    attrib v_sp         : VertexOutput  [ type:typeid[ vec3f ] ]
+    attrib v_world_pos  : VertexOutput  [ type:typeid[ vec4f ] ]
+
+    attrib fragColor    : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        float rn = length(a_pos.xz);
+        vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
+        vec3  up_m = normalize(ubo.eye_m.xyz);
+        vec3  ax9  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3  t_e  = normalize(cross(ax9, up_m));
+        vec3  t_n  = cross(up_m, t_e);
+        // THE WHOLE SPHERE, not a cap. the carpet is a polar grid, so
+        // mapping its radius across a half-turn wraps it into a closed
+        // shell with NO mesh boundary anywhere
+        float s9   = (rn / 1.35) * 3.14159265;
+        vec3  dir  = normalize(up_m * cos(s9) + (t_e * pd.x + t_n * pd.y) * sin(s9));
+        v_uv     = a_uv;
+        v_sp     = dir;
+        v_normal = dir;
+        vec4 wpos = ubo.model * vec4(dir * (1.0 + ubo.atm_h), 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment [] -> GLSL none {
+        // THE ENCELADUS METHOD. the model transform is a pure rotation,
+        // so the planet centre is the world origin and the ray's
+        // closest approach is one dot product. everything comes from
+        // that radius: a ray grazing the surface crosses the whole dust
+        // column, one passing high above barely clips it
+        vec3  ro = ubo.cam_pos.xyz;
+        vec3  rd = normalize(v_world_pos.xyz - ro);
+        float tca = 0.0 - dot(ro, rd);
+        float glow = 0.0;
+        float hw = 0.0;
+        float rch = 0.0;
+        vec3  sunw = normalize(ubo.sun_dir.xyz);
+        if (tca > 0.0) {{
+            vec3  pca = ro + rd * tca;
+            float rc  = length(pca);
+            // in SCALE HEIGHTS, not a fixed radius: the colour ramp has
+            // to travel with the alpha or extending the air just parks
+            // a solid purple band out where it used to fade
+            rch = clamp((rc - 1.0) / (ubo.atm_fall * 2.13), 0.0, 1.0);
+            // outward, a long slow fade into space. the smoothstep is a
+            // SMOOTH occlusion ramp -- a binary cut stamps the analytic
+            // sphere's silhouette as a hard circle offset from the real
+            // displaced terrain edge
+            float od = exp(-max(rc - 1.0, 0.0) / ubo.atm_fall)
+                     * smoothstep(0.976, 0.997, rc);
+            float dip  = clamp((1.0 - rc) / 0.018, 0.0, 1.0);
+            float hocc = mix(1.0, 0.35, dip);
+            hw = clamp(dot(pca / max(rc, 1e-4), sunw) * 0.5 + 0.5, 0.0, 1.0);
+            // the blaze where the graze kisses the surface: this is
+            // what DISSOLVES the terrain edge, so no ridge or crater
+            // prints its shape through the rim
+            float nearg = exp(-(max(rc - 1.0, 0.0) / 0.012
+                              + max(1.0 - rc, 0.0) / 0.0035));
+            glow = od * hocc * (0.16 + 0.52 * hw) * (1.0 + 5.0 * nearg);
+            // THIN THE FLOOR, or the band sits thick on the horizon
+            glow *= 0.30 + 0.70 * smoothstep(0.0, 0.34, rch);
+        }}
+        float fw = max(dot(rd, sunw), 0.0);
+        // PINK-RED, not Terra's gold. suspended iron dust reddens the
+        // whole column: salmon on the horizon itself, dusty rose above
+        // it, and a red-violet as the last of it dies into space
+        vec3 col = mix(vec3(1.34, 0.66, 0.52), vec3(1.10, 0.54, 0.50),
+                       smoothstep(0.0, 0.40, rch));
+        col = mix(col, vec3(0.52, 0.20, 0.34), smoothstep(0.44, 1.0, rch));
+        col *= 1.0 + 0.80 * pow(fw, 4.0);
+        float atma = clamp(glow * ubo.atm_gain, 0.0, 0.58);
+        // PREMULTIPLIED: the model is set straight_alpha:false, so the
+        // pipeline blends with SRC=ONE
+        fragColor = vec4(col * atma, atma);
+    }
+
+
+element Mars
+    frost : true
+    frost_sharp : true
+    intern surf   : MarsShader
+    intern msky   : MarsSkyShader
+    intern gsky   : GaiaShader
+    intern models : array Model
+    intern target : Render
+    intern built  : bool
+    intern ready     : bool
+    intern loading   : bool
+    intern load_task : async
+    intern e_cur  : f32
+    public color  : rgba [ r:0.010, g:0.005, b:0.006, a:1.0 ]
+
+    func build_models[]
+        built = true
+        o_gltf : build_carpet[]
+        o_gltf.hold[]
+        o_gltf.compute_worlds[]
+        surf = MarsShader [ vk: vk ]
+        pkp : path '../scenes/baked/mars-pk.png'
+        nkp : path '../scenes/baked/mars-nk.png'
+        dnp : path '../scenes/baked/mars-dn.png'
+        ekp : path '../scenes/baked/mars-ek.png'
+        if [ !pkp.exists[] || !nkp.exists[] ]
+            puts 'mars: no baked maps — baking live (SILVER_EXPORT=1 bakes at build)'
+            mars_bake_mola[]
+        if [ !dnp.exists[] ]
+            puts 'mars: no rock detail — baking live'
+            mars_bake_detail[]
+        if [ !ekp.exists[] ]
+            puts 'mars: no edge map — baking live'
+            mars_bake_edge[]
+        # data maps MUST be linear or the sampler re-linearizes them and
+        # the whole surface drops below its real height
+        o_samplers : map Image [string] [
+            'height': Image [ uri: pkp, surface: MarsSurface.height, linear: true, wrap_u: true ],
+            'nrm':    Image [ uri: nkp, surface: MarsSurface.nrm,    linear: true, wrap_u: true ],
+            'detail': Image [ uri: dnp, surface: MarsSurface.detail, linear: true, wrap_u: true, wrap_v: true ],
+            'edge':   Image [ uri: ekp, surface: MarsSurface.edge,   linear: true, wrap_u: true ],
+            'color':  Image [ uri: path '../scenes/textures/mars-color-8192x4096.jpg', surface: MarsSurface.color, linear: true, wrap_u: true ]
+        ]
+        # the projection y-flip reverses triangle winding, so back-face
+        # culling would cull the whole carpet
+        o_model : Model [ vk: vk, w: ux, id: o_gltf, s: surf, samplers: o_samplers,
+            straight_alpha: true, cull_none: true ]
+        # the air shell needs no maps at all -- it works entirely from
+        # the ray's geometry. drawn LAST so it lays over the surface
+        msky = MarsSkyShader [ vk: vk ]
+        s_model : Model [ vk: vk, w: ux, id: o_gltf, s: msky,
+            straight_alpha: false, cull_none: true, depth_no_test: true ]
+        # the galaxy behind everything, same plate the saturn scenes use
+        gsky = GaiaShader [ vk: vk ]
+        g_gltf : GltfModel.open[ path '../scenes/models/earth.gltf' ]
+        g_samplers : map Image [string] [
+            'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
+        ]
+        g_model : Model [ vk: vk, w: ux, id: g_gltf, s: gsky, samplers: g_samplers,
+            straight_alpha: true, cull_none: true ]
+        # backdrop FIRST, then ground, and the air over it
+        models  = array Model [ g_model, o_model, s_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        target = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      (ux.frost_eff[] == 2) ? 2.0 : 1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        target.hold[]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    # unregister only; we keep our ref so the GPU graph outlives the frame
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    # iron oxide: the editor's purples go rust under a martian sky
+    public func theme [ ] -> map string [string]
+        return map string [string] [
+            '#140a2acc':  '#4108',   # editor pane background
+            '#140a2a80':  '#429a',   # console pane background
+            '#4258':      '#8a5a4a58',   # unused (line_color moved to #44225588)
+            '#ff6a2e55':  '#ff8a4a55',   # search highlight fill
+            '#220022aa':  '#2a1a16aa',   # run console base fill
+            '#614':       '#54281a',     # TButtons / nav rest fill
+            '#413':       '#3c1c10',     # TButtons hover fill
+            '#826':       '#7c3c22',     # TButtons lit / nav selected
+            '#625a':      '#408a',       # bottom status bar fill
+            '#8af2':      '#fa62',       # status bar inner glow
+            '#425':       '#52281e',     # editor selection color
+            '#44225588':  '#5a3a2e33'    # editor line highlight
+        ]
+
+    func load_bg [ arg: object ]
+        build_models[]
+        ready = true
+
+    func draw [ w: Window ]
+        animated = true
+        if [ !built && !loading ]
+            loading = true
+            w9 : array []
+            w9.push[ a ]
+            load_task = async [ target: a, work_fn: @load_bg, work: w9 ]
+        if [ !ready ] return
+        create_target[]
+        orbit[]
+
+    func orbit[]
+        aspect : f32 [ (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        # ALTITUDE above the datum, not orbit distance: this is a craft
+        # over the deck. 0.050 is 170km, 0.130 holds the whole Valles
+        # trunk inside the horizon at once
+        e_t : f32 [ (ux.orbit_mode == OrbitView.low)  ? 0.050 :
+                    (ux.orbit_mode == OrbitView.high) ? 0.130 :
+                    (ux.orbit_mode == OrbitView.far)  ? 0.340 : 0.800 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.06, ux.frame_factor ]
+
+        # the spin comes FIRST: the craft's latitude is a function of
+        # how far along the canyon it has flown
+        spin_d : f32 [ 173.0 + ux.time * 900.0 ]
+
+        # the craft rides over Valles Marineris' own latitude while the
+        # planet turns under it -- that IS the flight, no path needed.
+        # MEASURED off mars-pk: lat = -0.03489 * lon - 12.388, and the
+        # 25.2 tilt means model latitude is not world latitude, so the
+        # drift is stated in world terms: -0.0387 per degree of spin
+        vlat : f32 [ radians[ -10.718 - 0.0387 * (spin_d - 184.39) ] ]
+        cx : f32 [ 0.0 ]
+        cy : f32 [ sin[ vlat ] ]
+        cz : f32 [ cos[ vlat ] ]
+        e_r : f32 [ 1.0 + e_cur ]
+        _eye : vec3f [ cx * e_r, cy * e_r, cz * e_r ]
+
+        # the planet's spin axis in WORLD space is TILTED: mm applies
+        # the 25.2 about Z and then spins about Y, so the axis the
+        # ground actually turns on is Rz(25.2) * Y, not Y
+        axr : f32 [ radians[ 25.2 ] ]
+        wx : f32 [ 0.0 - sin[ axr ] ]
+        wy : f32 [ cos[ axr ] ]
+        wz : f32 [ 0.0 ]
+        # ground flow is w x c; the craft travels the other way
+        gx : f32 [ 0.0 - (wy * cz - wz * cy) ]
+        gy : f32 [ 0.0 - (wz * cx - wx * cz) ]
+        gz : f32 [ 0.0 - (wx * cy - wy * cx) ]
+        gl : f32 [ sqrt[ gx * gx + gy * gy + gz * gz ] ]
+        if [ gl > 0.0 ]
+            gx = gx / gl
+            gy = gy / gl
+            gz = gz / gl
+
+        # the horizon sits BELOW local horizontal by the dip angle, and
+        # from this low that is only a few degrees. six degrees past it
+        # drops the limb into the upper third
+        dip : f32 [ acos[ 1.0 / e_r ] ]
+        pit : f32 [ dip + radians[ 6.0 ] ]
+        pc : f32 [ cos[ pit ] ]
+        ps : f32 [ sin[ pit ] ]
+        dx : f32 [ gx * pc - cx * ps ]
+        dy : f32 [ gy * pc - cy * ps ]
+        dz : f32 [ gz * pc - cz * ps ]
+        _tgt : vec3f [ _eye.x + dx, _eye.y + dy, _eye.z + dz ]
+        # THE up, not its negative: negating it mirrors the image
+        # horizontally. flip the projection's y instead
+        _up : vec3f [ cx, cy, cz ]
+        # near must be tight: at 13km altitude a 0.002 near plane clips
+        # the ground out from under the craft
+        _proj : mat4f.perspective[ radians[ 55.0 ], aspect, 0.00005, 24.0 ]
+        _proj.m[5] = 0.0 - _proj.m[5]
+        _view : mat4f.look_at[ _eye, _tgt, _up ]
+
+        q_spin : quatf [ vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ] ]
+        q_axis : quatf [ vec4f [ 0.0, 0.0, 1.0, radians[ 25.2 ] ] ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_axis ]
+        mm = mm.rotate[ q_spin ]
+
+        surf.model = mm
+        surf.view  = _view
+        surf.proj  = _proj
+        # must match what mars_bake packed, or the terrain reads at the
+        # wrong height and the shading disagrees with the silhouette
+        surf.hmax     = mars_hmax[] * mars_relief[]
+        surf.smax     = mars_smax[] * mars_relief[]
+        surf.haze     = mars_bare_haze[]
+        surf.dtile    = mars_dtile[]
+        surf.damp     = mars_damp[]
+        surf.dh       = mars_dh[]
+        # the carpet is laid out around the craft, so the shader needs
+        # the eye in MODEL space -- the planet turns, the craft does not
+        mi : mat4f [ mm.inverse[] ]
+        # by hand, NOT mi.mul_v4: a C function returning a 16-byte
+        # all-float struct comes back in two registers, and the call
+        # reads one float from each -- x and z arrive, y and w never
+        # get written
+        emx : f32 [ mi.m[0] * _eye.x + mi.m[4] * _eye.y + mi.m[8]  * _eye.z + mi.m[12] ]
+        emy : f32 [ mi.m[1] * _eye.x + mi.m[5] * _eye.y + mi.m[9]  * _eye.z + mi.m[13] ]
+        emz : f32 [ mi.m[2] * _eye.x + mi.m[6] * _eye.y + mi.m[10] * _eye.z + mi.m[14] ]
+        em : vec4f [ emx, emy, emz, 1.0 ]
+        surf.eye_m = em
+        # the arc from under the craft to the horizon: everything
+        # visible lies inside it, which is why the cap is enough
+        surf.hdist = acos[ 1.0 / e_r ]
+        surf.cam_pos  = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # the sun sits low, dead ahead, and stays there as the craft
+        # flies: that is what backlights the dust and rakes every wall
+        sel : f32 [ radians[ 15.0 ] ]
+        sc : f32 [ cos[ sel ] ]
+        ss : f32 [ sin[ sel ] ]
+        surf.sun_dir = vec4f [ gx * sc + cx * ss, gy * sc + cy * ss, gz * sc + cz * ss, 0.0 ]
+
+        msky.model    = mm
+        msky.view     = _view
+        msky.proj     = _proj
+        msky.cam_pos  = surf.cam_pos
+        msky.sun_dir  = surf.sun_dir
+        msky.eye_m    = surf.eye_m
+        msky.hdist    = surf.hdist
+        msky.atm_h    = mars_atm_h[]
+        msky.atm_fall = mars_atm_fall[]
+        msky.atm_gain = mars_atm_gain[]
+
+        # the galaxy wraps the scene from a big inner sphere, tilted so
+        # the band cuts the sky diagonally. scale 12, NOT the 30 the
+        # saturn scenes use: this camera's far plane is 24, and a shell
+        # past it is clipped away entirely
+        gskq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ 45.0 ] ] ]
+        gskm : mat4f.identity[]
+        gskm = gskm.rotate[ gskq ]
+        gskm = gskm.scale[ vec3f [ 12.0, 12.0, 12.0 ] ]
+        gsky.model = gskm
+        gsky.view  = _view
+        gsky.proj  = _proj
+        gsky.gain  = 0.45
+        gsky.time  = ux.time * 60000.0
+
+
 # NEPTUNE. the ball is composed, not sourced: saturn's poles, jupiter's
 # middle flipped and mirrored with its great spot swirled into another
 # shape, driven deep blue. the discharges here are WHITE cloud forming
 # along the wind, off an elongated streak basis rather than a sobel
+# THE AURORA: enceladus' march, aimed at a magnetic axis instead of a
+# vent list. a shell above the cloud top, emitting only in a RING at a
+# fixed colatitude -- so it is a glowing edge from the side, and when
+# the pole comes round it opens into a circle with a dark centre. the
+# inner edge is the whole point; a cap would just be a bright pole
+ModelViewProject AuroraShader
+    mutable gain    : f32
+    mutable cam_pos : vec4f
+    # xyz = the magnetic axis in WORLD space, w = the oval's
+    # colatitude off that axis, in radians
+    mutable maxis   : vec4f
+    # x = shell inner radius, y = outer, z = oval half width in
+    # radians, w = how hard the curtains bite
+    mutable ashell  : vec4f
+    # the two ends of the emission: inner edge and outer skirt
+    mutable c_in    : vec4f
+    mutable c_out   : vec4f
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_mpos      : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye2    : vec3f [0.0f, 0.0f, 2.5f]
+        target2 : vec3f [0.0f, 0.0f, 0.0f]
+        up2     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity   []
+        proj    = mat4f.perspective[radians[60.0f], 1.0f, 0.01f, 100.0f]
+        view    = mat4f.look_at    [eye2, target2, up2]
+
+    func vertex[] -> GLSL none {
+        v_mpos      = a_pos;
+        vec4 wpos   = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func a_hash31 [ p: vec3f ] -> GLSL float {
+        return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+    }
+
+    func a_vnoise [ p: vec3f ] -> GLSL float {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        vec3 u = f * f * (3.0 - 2.0 * f);
+        float n000 = a_hash31(i + vec3(0.0, 0.0, 0.0));
+        float n100 = a_hash31(i + vec3(1.0, 0.0, 0.0));
+        float n010 = a_hash31(i + vec3(0.0, 1.0, 0.0));
+        float n110 = a_hash31(i + vec3(1.0, 1.0, 0.0));
+        float n001 = a_hash31(i + vec3(0.0, 0.0, 1.0));
+        float n101 = a_hash31(i + vec3(1.0, 0.0, 1.0));
+        float n011 = a_hash31(i + vec3(0.0, 1.0, 1.0));
+        float n111 = a_hash31(i + vec3(1.0, 1.0, 1.0));
+        return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+                   mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+    }
+
+    func fragment[] -> GLSL none {
+        vec3  ro = ubo.cam_pos.xyz;
+        vec3  rd = normalize(v_world_pos.xyz - ro);
+        // one shell layer only: from outside we want the near face,
+        // from inside the far one, or every ray counts twice
+        if (dot(ro, ro) >= 1.69 && !gl_FrontFacing) { fragColor = vec4(0.0); return; }
+        // the ball stops the march at its own surface
+        float b     = dot(ro, rd);
+        float c     = dot(ro, ro) - 1.0;
+        float dsc   = b * b - c;
+        float s_hit = (dsc > 0.0) ? (-b - sqrt(dsc)) : 1e9;
+        if (s_hit < 0.0) s_hit = 1e9;
+        // the segment of the ray inside the shell
+        float ri  = ubo.ashell.x;
+        float rou = ubo.ashell.y;
+        float cc  = dot(ro, ro) - rou * rou;
+        float dd  = b * b - cc;
+        if (dd <= 0.0) { fragColor = vec4(0.0); return; }
+        float sq = sqrt(dd);
+        float t0 = max(-b - sq, 0.0);
+        float t1 = min(-b + sq, s_hit);
+        if (t1 <= t0) { fragColor = vec4(0.0); return; }
+
+        vec3  ax  = normalize(ubo.maxis.xyz);
+        float ovc = ubo.maxis.w;
+        float ovw = ubo.ashell.z;
+        // any two vectors square to the axis, to measure azimuth by
+        vec3  up9 = (abs(ax.y) < 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        vec3  ex9 = normalize(cross(up9, ax));
+        vec3  ey9 = cross(ax, ex9);
+
+        float sin9 = 0.0;
+        float sou9 = 0.0;
+        float dt   = (t1 - t0) / 32.0;
+        for (int i = 0; i < 32; i++) {{
+            vec3  p = ro + rd * (t0 + (float(i) + 0.5) * dt);
+            float r = length(p);
+            // fades in off the cloud top, out at the shell's ceiling
+            float sh = smoothstep(ri - 0.015, ri + 0.020, r)
+                     * (1.0 - smoothstep(rou - 0.14, rou, r));
+            if (sh <= 0.0) continue;
+            vec3  pn = p / max(r, 1e-4);
+            // BOTH poles: the abs folds the southern oval onto the
+            // northern one, and they are symmetric anyway
+            float ca  = abs(dot(pn, ax));
+            float col = acos(clamp(ca, 0.0, 1.0));
+            // the ring. gaussian about a colatitude, so it has an
+            // INNER edge as much as an outer -- the pole is dark
+            float dv   = (col - ovc) / ovw;
+            float ring = exp(-dv * dv);
+            // a HINT of purple around the oval, and nowhere else --
+            // it is keyed to the same colatitude, so it exists at the
+            // poles only. 0.10, not the 0.34 that washed the pole out
+            float dh   = (col - ovc) / (ovw * 2.6);
+            float halo = exp(-dh * dh) * 0.10;
+            if (ring + halo < 0.002) continue;
+            // curtains: azimuth about the axis, several rates so the
+            // structure never repeats around the oval
+            float az = atan(dot(pn, ey9), dot(pn, ex9));
+            float cu = 0.55
+                     + 0.28 * sin(az *  7.0 + ubo.time * 0.11)
+                     + 0.20 * sin(az * 13.0 - ubo.time * 0.17 + 1.7)
+                     + 0.14 * sin(az * 23.0 + ubo.time * 0.23 + 4.1);
+            cu = clamp(cu, 0.0, 1.6);
+            // TEXTURE, not curtains. sampled on a circle in azimuth so
+            // it closes, and across colatitude too, so the oval breaks
+            // into blobs instead of running as one smooth band. this
+            // is what makes it read as an aurora rather than a ring
+            vec2  ac9 = vec2(cos(az), sin(az));
+            float pt1 = a_vnoise(vec3(ac9 * 3.0,        col * 34.0 + ubo.time * 0.04));
+            float pt2 = a_vnoise(vec3(ac9 * 7.5 + 11.0, col * 72.0 + ubo.time * 0.07));
+            float tex = smoothstep(0.22, 0.74, 0.62 * pt1 + 0.38 * pt2);
+            // fine radial striations across the band. an INTEGER count
+            // of cycles, or the seam at +/- pi cuts them
+            float str = 0.62 + 0.38 * sin(az * 40.0 + pt1 * 11.0);
+            // MIXED with the smooth curtains, not replacing them. all
+            // texture and the volume turns to grit; none and it is a
+            // featureless band
+            cu = cu * mix(1.0, (0.22 + 1.60 * tex) * str, 0.62);
+            cu = mix(1.0, cu, ubo.ashell.w);
+            // rays stand UP the field line: brighter low, thinning out
+            float hh = clamp((r - ri) / max(rou - ri, 1e-4), 0.0, 1.0);
+            float ray = exp(-2.1 * hh);
+            float w9  = ring * sh * cu * ray * dt;
+            // the inner edge burns hardest; the skirt carries outward
+            sin9 += w9 * (1.0 - smoothstep(0.0, 1.0, hh));
+            sou9 += w9 * smoothstep(0.0, 1.0, hh);
+            // the halo is ALL skirt -- it is the purple, and it does
+            // not take the curtains or it would just be a wider oval
+            sou9 += halo * sh * ray * dt;
+        }}
+        // the limb itself: a thin glow at the ray's closest approach,
+        // so the planet keeps an edge even where no oval is turned
+        // toward us. this is the 'glowing edge' the oval sits inside
+        float rc  = length(ro - rd * b);
+        float lg  = exp(-max(rc - 1.0, 0.0) / 0.030)
+                  * smoothstep(0.945, 0.998, rc);
+
+        float tot = sin9 + sou9;
+        vec3  col = ubo.c_in.rgb * sin9 + ubo.c_out.rgb * sou9
+                  + ubo.c_in.rgb * lg * 0.35;
+        float a   = clamp((tot * 2.4 + lg * 0.30) * ubo.gain, 0.0, 1.0);
+        if (a <= 0.001) { fragColor = vec4(0.0); return; }
+        fragColor = vec4(col * ubo.gain, a);
+    }
+
 # URANUS, ON ITS SIDE. 97.77 degrees of axial tilt is the whole
 # identity of this planet: the pole faces the sun, and the rings stand
 # up as a hoop rather than lying flat across the disk
@@ -7296,6 +8076,7 @@ element Uranus
     intern p_cur  : f32
     intern p_set  : bool
     intern uran   : JupiterShader
+    intern aur    : AuroraShader
     intern rings  : RingShader
     intern sky    : GaiaShader
     intern models : array Model
@@ -7331,13 +8112,18 @@ element Uranus
         ]
         ring_model : Model [ vk: vk, w: ux, id: gltf, s: rings, samplers: r_samplers,
             straight_alpha: true ]
+        aur = AuroraShader [ vk: vk ]
+        # marched shell, so it must not depth-test against the ball it
+        # wraps, and both faces are needed
+        aur_model : Model [ vk: vk, w: ux, id: gltf, s: aur,
+            straight_alpha: true, cull_none: true, depth_no_test: true ]
         sky = GaiaShader [ vk: vk ]
         sky_samplers : map Image [string] [
             'color': Image [ uri: path '../scenes/textures/gaia.png', surface: GaiaSurface.color ]
         ]
         sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky, samplers: sky_samplers,
             straight_alpha: true, cull_none: true ]
-        models = array Model [ sky_model, uran_model, ring_model ]
+        models = array Model [ sky_model, uran_model, ring_model, aur_model ]
 
     func create_target[]
         if [ target || !models || models.count == 0 ] return
@@ -7413,7 +8199,9 @@ element Uranus
         uran.view    = _view
         uran.proj    = _proj
         uran.gain    = 1.15
-        uran.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # w 3.0 lifts the ambient floor from 0.08 to 0.24, so the pole
+        # that faces away still carries a quarter of its albedo
+        uran.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 3.0 ]
         # white cloud, as neptune. uranus shows even less of it
         # w 0.85 = STANDING. uranus' streaks are a permanent deck that
         # only breathes, not a field of strikes switching on and off
@@ -7430,7 +8218,49 @@ element Uranus
         # of the four giants, so the shear is a third of neptune's
         uran.wctl  = vec4f [ 0.12, 0.014, 38.00, 0.30 ]
         uran.wctl2 = vec4f [ 0.42, 1.3, 0.0015625, 14.0 ]
+        # a MULTIPLY on the texture colour: red and green cut, blue
+        # left alone, so pale cyan goes deep blue by subtraction and
+        # never clips. w 0.85 is the ceiling -- the perlin swings it
+        # from no colour at all up to this
+        uran.tint  = vec4f [ 0.66, 0.84, 1.00, 0.85 ]
+        # SODIUM GOLD burnt into the plate at the poles. this is the
+        # source the blue-violet shell above it is powered by, so it
+        # sits at the same 17 degrees off the pole the oval does
+        # DEEP fiery orange, and a warm pale to run against it. the
+        # old 0.62 green was closer to gold than fire; 0.42 is the
+        # orange itself. w 0.72 burns it harder
+        uran.pfire  = vec4f [ 1.00, 0.42, 0.07, 0.72 ]
+        uran.pfire2 = vec4f [ 1.00, 0.88, 0.66, 1.0 ]
         uran.time  = ux.time * 60000.0
+
+        # THE AURORA. the shell is a plain sphere at the world origin
+        # like the ball, so the march needs no inverse -- the magnetic
+        # axis is handed in as a world vector instead.
+        # rotating y by the 97.77 tilt about z lands the pole here.
+        # uranus' real magnetic axis is a further 59 degrees off its
+        # rotation axis and offset a third of a radius from centre, so
+        # its true aurorae are lopsided patches; this is the tidy
+        # version, on the rotational pole
+        ta9 : f32 [ radians[ 97.77 ] ]
+        am : mat4f.identity[]
+        am = am.scale[ vec3f [ 1.34, 1.34, 1.34 ] ]
+        aur.model   = am
+        aur.view    = _view
+        aur.proj    = _proj
+        aur.gain    = 1.0
+        aur.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        # w is the oval's colatitude: 17 degrees off the pole, so the
+        # centre stays dark and the ring reads as a ring
+        aur.maxis   = vec4f [ 0.0 - sin[ ta9 ], cos[ ta9 ], 0.0, radians[ 17.0 ] ]
+        # shell from just above the cloud top to 1.34; the oval is 5.5
+        # degrees wide; curtains at 0.85 of full bite
+        aur.ashell  = vec4f [ 1.005, 1.34, radians[ 5.5 ], 0.85 ]
+        # hydrogen, not oxygen: uranus glows blue-violet, never green.
+        # the inner edge is back to blue; only the outer skirt and the
+        # halo carry purple, so the colour shows at the poles alone
+        aur.c_in    = vec4f [ 0.42, 0.86, 1.00, 1.0 ]
+        aur.c_out   = vec4f [ 0.62, 0.30, 1.00, 1.0 ]
+        aur.time    = ux.time * 60000.0
 
         # the rings take the tilt and NOT the spin, so they stand as a
         # hoop. outer 53000 km over uranus' 25559 is 2.074 ball radii,
@@ -7447,9 +8277,19 @@ element Uranus
         # inner 37000 over outer 53000, and the ball over the drawn outer
         rings.rgeo    = vec4f [ 0.6981, 0.5208, 0.0, 0.0 ]
 
-        skq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ 45.0 ] ] ]
+        # THE GALAXY, aimed into frame. the band lies on the sphere's
+        # equator, so what matters is where its plane normal points
+        # against the view. at 45 about x that normal is (0, .71, .71)
+        # and this camera looks along about (-.57, 0, -.82) -- 35
+        # degrees apart, outside a 55 degree lens, so the band sat off
+        # screen entirely. 20 about x then 15 about z brings the
+        # normal to about (-.24, .91, .34), which is 8 degrees off
+        # centre: the band crosses the shot, diagonally, behind uranus
+        skq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ 20.0 ] ] ]
+        skr : quatf [ vec4f [ 0.0, 0.0, 1.0, radians[ 15.0 ] ] ]
         skm : mat4f.identity[]
         skm = skm.rotate[ skq ]
+        skm = skm.rotate[ skr ]
         skm = skm.scale [ vec3f [ 30.0, 30.0, 30.0 ] ]
         sky.model = skm
         sky.view  = _view
@@ -7469,7 +8309,7 @@ element Uranus
             '#826':       '#3f6f6a',     # TButtons lit / nav selected
             '#625a':      '#28484a',     # bottom status bar fill
             '#8af2':      '#8ad0d2',     # status bar inner glow
-            '#425':       '#2c5250',     # editor selection color
+            '#425':       '#5c7250',     # editor selection color
             '#44225588':  '#8ad0cc11'    # editor line highlight
         ]
 
@@ -7623,6 +8463,10 @@ element Neptune
         # than the cell and it prints the cell as stripes
         nept.wctl  = vec4f [ 0.34, 0.012, 43.98, 0.46 ]
         nept.wctl2 = vec4f [ 0.60, 1.1, 0.0125, 18.0 ]
+        # w 0.0: neptune is already blue; nothing to push it toward
+        nept.tint  = vec4f [ 1.0, 1.0, 1.0, 0.0 ]
+        nept.pfire = vec4f [ 1.0, 0.6, 0.2, 0.0 ]
+        nept.pfire2 = vec4f [ 1.0, 0.9, 0.7, 0.0 ]
         # WITHOUT THIS the shader sees time 0 -- no wind shift, no spin,
         # no noise evolution. the pattern freezes onto the surface and
         # simply rotates with the ball, which is exactly what it did
@@ -7656,4 +8500,3 @@ element Neptune
         sky.proj  = _proj
         sky.gain  = 0.45
         sky.time  = ux.time * 60000.0
-

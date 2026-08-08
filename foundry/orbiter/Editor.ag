@@ -113,6 +113,12 @@ class ResourceView
     mutable vy : f32
     mutable vw : f32
     mutable vh : f32
+    # the owner's scroll at draw time. find_target folds scroll INTO
+    # ev.mouse.pos, so on_press gets CONTENT space -- right for text,
+    # wrong for a hosted app, which never scrolls with the source. the
+    # fit rect is viewport space, so the scroll comes back out first
+    mutable vsx : f32
+    mutable vsy : f32
     func view_press [ ev: Event ] -> bool
         return false
     func view_move [ ev: Event ] -> bool
@@ -672,11 +678,11 @@ ResourceView AppView
         if [ paused ]
             pause_toggle[]
             return true
-        puts 'view_press: pos={ev.mouse.pos.x},{ev.mouse.pos.y} fit={fitx},{fity} {fitw}x{fith} ready={ready} slot={slot}'
         if [ !ready || slot < 0 || fitw <= 0.0 ] return false
-        bx : f32 [ (ev.mouse.pos.x - fitx) / fitw * f32[ aw ] ]
-        by : f32 [ (ev.mouse.pos.y - fity) / fith * f32[ ah ] ]
-        puts 'view_press: app-coords {bx},{by} of {aw}x{ah}'
+        px : f32 [ ev.mouse.pos.x - vsx ]
+        py : f32 [ ev.mouse.pos.y - vsy ]
+        bx : f32 [ (px - fitx) / fitw * f32[ aw ] ]
+        by : f32 [ (py - fity) / fith * f32[ ah ] ]
         if [ bx < 0.0 || by < 0.0 || bx >= f32[ aw ] || by >= f32[ ah ] ] return false
         host_post2[ slot, 1, i32[ HM.press ],   i32[ bx ], i32[ by ], ev.mouse.button ]
         host_post2[ slot, 1, i32[ HM.release ], i32[ bx ], i32[ by ], ev.mouse.button ]
@@ -684,8 +690,10 @@ ResourceView AppView
 
     func view_move [ ev: Event ] -> bool
         if [ ended || !ready || slot < 0 || fitw <= 0.0 ] return false
-        bx : f32 [ (ev.mouse.pos.x - fitx) / fitw * f32[ aw ] ]
-        by : f32 [ (ev.mouse.pos.y - fity) / fith * f32[ ah ] ]
+        px : f32 [ ev.mouse.pos.x - vsx ]
+        py : f32 [ ev.mouse.pos.y - vsy ]
+        bx : f32 [ (px - fitx) / fitw * f32[ aw ] ]
+        by : f32 [ (py - fity) / fith * f32[ ah ] ]
         if [ bx < 0.0 || by < 0.0 || bx >= f32[ aw ] || by >= f32[ ah ] ] return false
         host_post2[ slot, 1, i32[ HM.move ], i32[ bx ], i32[ by ], 0 ]
         return true
@@ -1039,6 +1047,8 @@ Layer EditorLayer
                 editor.run_view.vy = b2.y
                 editor.run_view.vw = b2.w
                 editor.run_view.vh = b2.h
+                editor.run_view.vsx = editor.scroll.x
+                editor.run_view.vsy = editor.scroll.y
                 if [ editor.run_view.fade_us != 0 ]
                     fal : f32 [ f32[ epoch_micros[] - editor.run_view.fade_us ] / 400000.0 ]
                     if [ fal >= 1.0 ]
@@ -1093,6 +1103,8 @@ Layer EditorLayer
                 editor.rview.vy = bounds.y
                 editor.rview.vw = bounds.w
                 editor.rview.vh = bounds.h
+                editor.rview.vsx = editor.scroll.x
+                editor.rview.vsy = editor.scroll.y
                 editor.rview.render*[ cv, bounds ]
                 return
         if [ !editor.lines ] return
@@ -1177,7 +1189,10 @@ Layer EditorLayer
             editor.g_pins    = grid_pins
             editor.g_resoff  = grid_resoff
         el
-            editor.content_h = f32[ editor.line_count[] ] * lh
+            # four lines of trailing air: the last line sat flush on the
+            # bottom edge. every row loop stops at line_count[], so these
+            # rows draw nothing — no text, no gutter number
+            editor.content_h = f32[ editor.line_count[] + 4 ] * lh
         editor.scroll_speed = (editor.grid_mode) ? grid_ch : lh
 
         vh : f32 [ bounds.h ]
@@ -3472,7 +3487,7 @@ Control Editor
             return
         if [ run_view ]
             if [ app_view ]
-                if [ run_view.hit_minimize[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+                if [ run_view.hit_minimize[ ev.mouse.pos.x - run_view.vsx, ev.mouse.pos.y - run_view.vsy ] ]
                     toggle_app_view[]
                     ev.no_default = true
                     return
@@ -3490,7 +3505,7 @@ Control Editor
                     if [ ux ] ux.set_focus[ a ]
                     ev.no_default = true
                     return
-                if [ run_view.hit_pip[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+                if [ run_view.hit_pip[ ev.mouse.pos.x - run_view.vsx, ev.mouse.pos.y - run_view.vsy ] ]
                     toggle_app_view[]
                     if [ ux ] ux.set_focus[ a ]
                     ev.no_default = true

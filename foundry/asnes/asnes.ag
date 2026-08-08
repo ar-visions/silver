@@ -1,5 +1,5 @@
 export 0.8.8
-export extensions ['.smc', '.sfc']
+export extensions ['.smc', '.sfc', '.spc']
 
 import trinity
 import img
@@ -396,6 +396,7 @@ element asnes : trinity
 	mutable hsetup_arm     	: bool              # setup two-edge pipeline state (reference hardware arms dmaActive one edge before running)
 	mutable hsetup_pend    	: bool              # HDMA setup deferred to its true dot (reference hardware hdmaSetupPosition = 12 + dmaCounter at frame start), fired from the cycle-start edge
 	mutable emu_ms30       	: i64               # wall ms spent in run_rom_frame per 30-frame window (ASNES_CYCLOG)
+	mutable drop30         	: i64               # samples the drain mixed PAST the frame cap and threw away
 	mutable emu_started    	: bool              # emulation thread spawned (decoupled from the render loop)
 	mutable emu_stop       	: bool              # ask the emulation thread to exit (dealloc)
 	mutable emu_running    	: bool              # emulation thread liveness (dealloc waits on it)
@@ -523,6 +524,8 @@ element asnes : trinity
 	mutable pub_cgadsub    	: new u8  [ 224 ]
 	mutable pub_coldata    	: new u16 [ 224 ]
 	mutable itv_ms30       	: i64               # wall ms between on_render entries per 30-frame window
+	mutable itv_max30      	: i64               # WORST single interval in that window: a 64ms alsa ring dies to one stall, not to an average
+	mutable emu_max30      	: i64               # worst single frame's emulation cost in that window
 	mutable last_entry     	: i64
 	mutable sline          	: i32               # per-line register snapshot cursor: row y latches at the START of hardware line y+1 (dot 0+), BEFORE that line's IRQ handler writes — mid-line sampling caught the fzero horizon handler half-done (new scroll, old mode = one noise line)
 	mutable hline          	: i32               # HDMA/snapshot line cursor — advanced mid-instruction in cpu_tick at the exact master dot (L*1364+1104), reset per frame
@@ -2742,6 +2745,7 @@ element asnes : trinity
 				spc.audio_sub -= 32
 				mix_one_sample[ (spc.audio_done < tgt) ? spc.audio_done : -1 ]
 				if [ spc.audio_done < tgt ] spc.audio_done += 1
+				el drop30 += 1
 
 	func mix_one_sample [ i: i32 ]
 			apply_latches[]
@@ -2906,13 +2910,20 @@ element asnes : trinity
 				spc.audio_buffer[i * 2]     = i16[ left  * 32000 * volume ]
 				spc.audio_buffer[i * 2 + 1] = i16[ right * 32000 * volume ]
 
-	func generate_audio [ sps: i32 ]
+	func generate_audio [ run_cpu: bool ]
 		if [ ! audio || ! audio.active ] return
 		to_write : sz [ audio_slice_size[] ]
 		if [ to_write <= 0 ] return
 		for [ i: i32 0, i < to_write, i += 1 ]
-			for [ k: i32 0, k < sps, k += 1 ]
-				spc_step[]
+			# ONE sample every 32 SPC cycles: 1.024MHz over 32kHz, the
+			# same ratio spc_drain paces the rom path on. a fixed
+			# INSTRUCTION count instead ran the driver at whatever the
+			# average opcode happened to cost -- about four cycles, so
+			# sixteen of them spent 64 cycles a sample and played 2x
+			if [ run_cpu ]
+				while [ spc.audio_sub < 32 ]
+					spc.audio_sub += spc_step[]
+				spc.audio_sub -= 32
 			mix_one_sample[ i ]
 		flush_audio[ to_write ]
 
@@ -3423,6 +3434,9 @@ element asnes : trinity
 	func init []
 		animated   = true                          # emulator: repaint every frame, never cache-skip (NOT style-owned `volatile`)
 		focusable  = true
+		# a .spc is an APU snapshot, not a cartridge. paint dispatches
+		# on spcfile BEFORE rom, so this is the whole routing
+		if [ rom && rom.ext[] == 'spc' ] spcfile = rom
 		if [ volume == 0.0 ] volume = 0.22         # default playback volume (keep prop-pair override)
 		smooth = true                              # [ true ] initializer doesn't apply on element publics
 
@@ -3554,11 +3568,11 @@ element asnes : trinity
 			return
 		if [ beep ]
 			if [ !spc ] audio_test[]
-			generate_audio[ 0 ]
+			generate_audio[ false ]
 			return
 		if [ spcfile ]
 			if [ !spc ] load_spc[]
-			generate_audio[ 16 ]
+			generate_audio[ true ]
 			return
 		if [ rom && !cpu && !putest ] load[]
 		if [ cpu && !emu_started ]
@@ -4547,7 +4561,10 @@ element asnes : trinity
 
 	func emu_tick []
 		now_e : i64 [ wall_ms[] ]
-		if [ last_entry != 0 ] itv_ms30 += now_e - last_entry
+		if [ last_entry != 0 ]
+			d9 : i64 [ now_e - last_entry ]
+			itv_ms30 += d9
+			if [ d9 > itv_max30 ] itv_max30 = d9
 		last_entry = now_e
 		df : symbol [ getenv[ 'ASNES_DUMP_FRAME' ] ]
 		if [ df && dbg_frames == atoi[ df ] ]
@@ -4655,12 +4672,17 @@ element asnes : trinity
 			run_rom_frame_boot[]
 		el
 			run_rom_frame[]
-		emu_ms30 += wall_ms[] - t_emu
+		e9 : i64 [ wall_ms[] - t_emu ]
+		emu_ms30 += e9
+		if [ e9 > emu_max30 ] emu_max30 = e9
 		dbg_frames += 1
 		if [ getenv[ 'ASNES_CYCLOG' ] && (dbg_frames % 30) == 0 ]
-			printf[ "CYCF frame %u cyc_total=%ld carry=%d adone=%d emu_ms=%ld itv_ms=%ld\n", dbg_frames, cpu_cycles, frame_carry, spc.audio_done, emu_ms30, itv_ms30 ]
+			printf[ "CYCF frame %u cyc_total=%ld carry=%d adone=%d emu_ms=%ld itv_ms=%ld emu_max=%ld itv_max=%ld drop=%ld\n", dbg_frames, cpu_cycles, frame_carry, spc.audio_done, emu_ms30, itv_ms30, emu_max30, itv_max30, drop30 ]
 			emu_ms30 = 0
 			itv_ms30 = 0
+			emu_max30 = 0
+			itv_max30 = 0
+			drop30 = 0
 		sf : symbol [ getenv[ 'ASNES_SHOTAT' ] ]
 		if [ sf && dbg_frames == atoi[ sf ] ]
 			df : symbol [ getenv[ 'ASNES_DUMP_FILE' ] ]

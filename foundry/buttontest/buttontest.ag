@@ -42,9 +42,9 @@ element buttontest : trinity
     public background : string [ 'Background' ]
     public title      : string [ 'buttontest' ]
     public wireframe  : bool
-    public paused     : bool [ true ]
+    public paused     : bool   [ true ]
     public show_grid  : bool
-    public vsync      : bool [ true ]
+    public vsync      : bool   [ true ]
     public quality    : Quality [ Quality.medium ]
     public theme      : Theme [ Theme.dark ]
     public tint       : rgba [ '#e0508c' ]
