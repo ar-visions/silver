@@ -1231,9 +1231,11 @@ static Au_t _push_arg(Au_t type, bool add_arg) {
     return au;
 }
 
-Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b, i32 index, i32 access) {
+Au_t def_prop(Au_t context, symbol ident, Au_t type, u64 traits, u32 offset, u32 abi_size, ARef value, Au_t meta_a, Au meta_b, i32 index, i32 access, symbol source, i32 src_line) {
     Au_t prop = def(context, ident, AU_MEMBER_VAR, traits);
     prop->access_type = (interface)access;
+    if (source) prop->source = cstr_copy((cstr)source);
+    prop->src_line  = src_line;
     verify(type, "def_prop: src/type is null for %s.%s", context->ident, ident);
     prop->type      = type;
     prop->offset    = offset;
@@ -1279,8 +1281,10 @@ Au_t def_meta(Au_t context, symbol ident, Au_t arg) {
 
 Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
         u32 access_type, u32 operator_type, u64 traits, ARef value, symbol alt, i32 index,
-        Au_t meta_a, Au meta_b) {
+        Au_t meta_a, Au meta_b, symbol source, i32 src_line) {
     Au_t func = def(type, ident, AU_MEMBER_TYPE, traits);
+    if (source) func->source = cstr_copy((cstr)source);
+    func->src_line      = src_line;
     func->rtype         = rtype;
     func->member_type   = member_type;
     func->operator_type = operator_type;
@@ -1410,7 +1414,7 @@ lambda lambda_instance(Au_t au, callback fn, Au target, Au context) {
     return a;
 }
 
-Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize, i32 icount) {
+Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, i32 member_type, u64 traits, u64 typesize, u64 isize, i32 icount, symbol source, i32 src_line) {
     type->member_type       = member_type;
     memset(&type->members, 0, sizeof(micro));
     memset(&type->args,    0, sizeof(micro));
@@ -1425,6 +1429,10 @@ Au_t emplace_type(Au_t type, Au_t context, Au_t src, Au_t module, symbol ident, 
     }
     type->module            = module;
     type->ident             = cstr_copy((cstr)ident);
+    // where it was declared. the compiler stamps its own Au_t while
+    // parsing, but THIS is the record typeid() hands out at runtime
+    if (source) type->source = cstr_copy((cstr)source);
+    type->src_line          = src_line;
     type->traits            = traits;
     if (!type->typesize)
         type->typesize      = typesize;
@@ -1938,6 +1946,8 @@ none push_type(Au_t type, Au_t to_mod) {
         def_member(au_t, "ptr",           typeid(Au_t), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, ptr);
         def_member(au_t, "ident",         typeid(cstr), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, ident);
         def_member(au_t, "alt",           typeid(cstr), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, alt);
+        def_member(au_t, "source",        typeid(cstr), AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, source);
+        def_member(au_t, "src_line",      typeid(i32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, src_line);
         def_member(au_t, "table_size",    typeid(u32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, table_size);
         def_member(au_t, "abi_size",      typeid(u32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, abi_size);
         def_member(au_t, "align_bits",    typeid(u32),  AU_MEMBER_VAR, 0)->offset = offsetof(struct _Au_f, align_bits);
@@ -6703,10 +6713,10 @@ array path_read_format(path a) {
     if (!f) return out;
     u32 magic = 0, ver = 0;
     if (fread(&magic, 4, 1, f) != 1 || fread(&ver, 4, 1, f) != 1 ||
-        magic != 0x53464D54u || ver != 2u) { fclose(f); return out; }
+        magic != SILVER_FMT_MAGIC || ver != SILVER_FMT_VERSION) { fclose(f); return out; }
     for (;;) {
         u32 tag = 0;
-        if (fread(&tag, 4, 1, f) != 1 || tag != 0xC0DEFACEu) break;  // 0 = clean end
+        if (fread(&tag, 4, 1, f) != 1 || tag != SILVER_FMT_SECTION) break;  // 0 = clean end
         u32 plen = 0;
         if (fread(&plen, 4, 1, f) != 1) break;
         char* p = malloc((size_t)plen + 1);
@@ -6717,14 +6727,30 @@ array path_read_format(path a) {
         fmt_file ff = fmt_file(
             source, string(p), mtime, mt, tokens, array(alloc, ntok ? ntok : 1));
         free(p);
-        bool ok = true;
-        for (u32 t = 0; t < ntok; t++) {
-            u32 rec[4];
-            if (fread(rec, 4, 4, f) != 4) { ok = false; break; }
+        bool   ok = true;
+        u32    np = 0;
+        char** dp = null;
+        if (fread(&np, 4, 1, f) != 1) ok = false;
+        if (ok && np) dp = calloc(np, sizeof(char*));
+        for (u32 i = 0; ok && i < np; i++) {
+            u32 pl = 0;
+            if (fread(&pl, 4, 1, f) != 1) { ok = false; break; }
+            char* pb = malloc((size_t)pl + 1);
+            if (fread(pb, 1, pl, f) != pl) { free(pb); ok = false; break; }
+            pb[pl] = 0;
+            dp[i] = pb;
+        }
+        for (u32 t = 0; ok && t < ntok; t++) {
+            u32 rec[6];
+            if (fread(rec, 4, 6, f) != 6) { ok = false; break; }
+            cstr ds = (dp && rec[4] > 0 && rec[4] <= np) ? dp[rec[4] - 1] : null;
             push(ff->tokens, (Au)fmt_token(
                 line,   (num)rec[0], column, (num)rec[1],
-                length, (num)rec[2], syntax, (Syntax)rec[3]));
+                length, (num)rec[2], syntax, (Syntax)rec[3],
+                decl_source, ds ? string(ds) : null, decl_line, (num)rec[5]));
         }
+        for (u32 i = 0; i < np; i++) if (dp && dp[i]) free(dp[i]);
+        free(dp);
         push(out, (Au)ff);
         if (!ok) break;
     }

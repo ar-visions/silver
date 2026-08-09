@@ -193,6 +193,8 @@ typedef struct _Au_t {
     Au_t            ptr; // a cache location for the type's pointer
     char*           ident;
     char*           alt;
+    cstr            source;   // file this type/member was declared in
+    i32             src_line; // and the line within it (1-based, 0 = unknown)
     u32             table_size;
     u32             abi_size;
     u32             align_bits;

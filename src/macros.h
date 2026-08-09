@@ -24,6 +24,10 @@
     _N_ARGS_a_10(TYPE,a,b,c,d,e,f,g,h,i,j), TC_a(k)
 #define _N_ARGS_a_12(TYPE, a,b,c,d,e,f,g,h,i,j,k,l) \
     _N_ARGS_a_11(TYPE,a,b,c,d,e,f,g,h,i,j,k), TC_a(l)
+#define _N_ARGS_a_13(TYPE, a,b,c,d,e,f,g,h,i,j,k,l,m) \
+    _N_ARGS_a_12(TYPE,a,b,c,d,e,f,g,h,i,j,k,l), TC_a(m)
+#define _N_ARGS_a_14(TYPE, a,b,c,d,e,f,g,h,i,j,k,l,m,n) \
+    _N_ARGS_a_13(TYPE,a,b,c,d,e,f,g,h,i,j,k,l,m), TC_a(n)
 #define _N_ARGS_HELPER2_a(TYPE,N,...) _COMBINE_a(_N_ARGS_a_,N)(TYPE, ## __VA_ARGS__)
 #define _N_ARGS_a(TYPE,...)          _N_ARGS_HELPER2_a(TYPE, _ARG_COUNT_a(__VA_ARGS__), ## __VA_ARGS__)
 #define a(...) array_of(_N_ARGS_a(a, ## __VA_ARGS__), null)
