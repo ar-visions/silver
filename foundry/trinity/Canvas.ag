@@ -14,6 +14,8 @@ enum DrawMode
     image_masked: 8
     # plain axis-aligned rect: exact pixel/rect area, no distance field
     rect        : 9
+    # vector reconstruction sampled at the destination pixel
+    image_vec   : 10
 
 # ---- path command tags ----
 enum path_cmd
@@ -279,6 +281,47 @@ shader CanvasUI
         gl_Position = vec4(ndc, 0.0, 1.0);
     }
 
+    # different coverage = different plane; never one shape
+    func cv_eq [ a: vec4f, b: vec4f ] -> GLSL float {
+        if (abs(a.a - b.a) > 0.5) return 0.0;
+        return (distance(a, b) < 0.02) ? 1.0 : 0.0;
+    }
+
+    # 45-degree corner cuts solved at this destination pixel.
+    # w is the pixel footprint: fwidth is fragment-only, so it comes in
+    func cv_vector [ uv: vec2f, w: f32 ] -> GLSL vec4f {
+        ivec2 ts = textureSize(image, 0);
+        vec2  pt = uv * vec2(ts);
+        ivec2 ip = ivec2(floor(pt));
+        vec2  fp = fract(pt);
+        ivec2 mx = ts - 1;
+        vec4 E = texelFetch(image, clamp(ip,                ivec2(0), mx), 0);
+        vec4 U = texelFetch(image, clamp(ip + ivec2( 0,-1), ivec2(0), mx), 0);
+        vec4 D = texelFetch(image, clamp(ip + ivec2( 0, 1), ivec2(0), mx), 0);
+        vec4 L = texelFetch(image, clamp(ip + ivec2(-1, 0), ivec2(0), mx), 0);
+        vec4 R = texelFetch(image, clamp(ip + ivec2( 1, 0), ivec2(0), mx), 0);
+        float ud = cv_eq(U, D);
+        float lr = cv_eq(L, R);
+        vec4  c  = E;
+        if (cv_eq(L, U) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(L, E) < 0.5) {{
+            float d = fp.x + fp.y;
+            c = mix(L, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
+        }}
+        if (cv_eq(R, U) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(R, E) < 0.5) {{
+            float d = (1.0 - fp.x) + fp.y;
+            c = mix(R, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
+        }}
+        if (cv_eq(L, D) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(L, E) < 0.5) {{
+            float d = fp.x + (1.0 - fp.y);
+            c = mix(L, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
+        }}
+        if (cv_eq(R, D) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(R, E) < 0.5) {{
+            float d = (1.0 - fp.x) + (1.0 - fp.y);
+            c = mix(R, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
+        }}
+        return c;
+    }
+
     # ---- fragment shader ----
     func fragment [] -> GLSL none {
 
@@ -379,6 +422,20 @@ shader CanvasUI
             float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                          : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = texel * aa * opacity;
+            return;
+        }}
+
+        // image_vec: the filter runs here, at the destination pixel, with
+        // this texture as its only input -- no intermediate raster
+        if (mode == 10.0) {{
+            vec2 uv    = (lpos - ubo.rect.xy) / ubo.rect.zw;
+            uv         = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
+            vec2 vpt   = uv * vec2(textureSize(image, 0));
+            float vw   = max(fwidth(vpt.x + vpt.y), 1e-5);
+            vec4 texel = cv_vector(uv, vw);
+            float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
+                                         : 1.0 - smoothstep(-0.5, 0.5, dist);
+            o_color    = vec4(texel.rgb * texel.a, texel.a) * aa * opacity;
             return;
         }}
 
@@ -1161,6 +1218,7 @@ Render Canvas
     intern sdf_tex       : Texture
     intern image_override : Texture
     intern mask_override  : Texture
+    intern vec_override   : bool
     intern image_dirty   : new bool [ 64 ]
     public  content_w     : i32
     public  content_h     : i32
@@ -2196,6 +2254,12 @@ Render Canvas
                     p.rebind_mask[ sdf_tex ]
 
     # paint `tex` into `dst` using the full texture as source.
+    # same as draw_image, reconstructing edges as it samples
+    func draw_image_vec [ tex: Texture, dst: rect ]
+        vec_override = true
+        draw_image[ tex, dst ]
+        vec_override = false
+
     func draw_image [ tex: Texture, dst: rect ]
         image_override = tex
         path.clear[]
@@ -2361,7 +2425,8 @@ Render Canvas
             sgrad_mode : f32 [ (st.stroke_grad_radial) ? 2.0 : (st.stroke_grad_mirror) ? 1.0 : 0.0 ]
             ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, fgrad_mode, sgrad_mode ]
             is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
-            img_mode : f32  [ (mask_override) ? DrawMode.image_masked
+            img_mode : f32  [ (vec_override)  ? DrawMode.image_vec
+                            : (mask_override) ? DrawMode.image_masked
                             : ((is_r8) ? DrawMode.image_r : DrawMode.image) ]
             mode     : f32  [ (image_override) ? img_mode : DrawMode.solid ]
             # exact-area rect: ONLY a flat filled rectangle. any gradient

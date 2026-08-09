@@ -263,6 +263,7 @@ element asnes : trinity
 	public  putest         	: bool             # display-pipeline test: CPU buffer -> Texture -> screen
 	public  volume         	: f32              # playback volume 0..1 (adjustable; default 0.22)
 	public  bind           	: bool             # --bind: ask for each button, write binds.agi
+	mutable dump_req       	: bool             # '9': write each layer plane to /tmp
 	mutable binds          	: snes_binds
 	mutable bind_ix        	: i32              # button the wizard is asking for
 	mutable bnames         	: array string     # wizard order
@@ -452,11 +453,13 @@ element asnes : trinity
 	mutable spr_anchor     	: i32               # plane the sprite population follows: 0=BG1 1=BG2
 	mutable lay_out        	: @u32           # ppu_bg_line layer target (valid when lay_en)
 	mutable lay_en         	: bool              # ppu_bg_line writes to lay_out, not the composed planes
+	mutable lay_bd         	: new u32 [ 73728 ] # backdrop plane: its own layer, never under tiles
 	mutable lay_bg1        	: new u32 [ 73728 ] # provenance layers, 288x256: 16px overscan bleed
 	mutable lay_bg2        	: new u32 [ 73728 ]
 	mutable lay_bg3        	: new u32 [ 73728 ]
 	mutable lay_sw         	: new u32 [ 57344 ] # world sprites (ride BG1)
 	mutable lay_ss         	: new u32 [ 57344 ] # screen sprites (pinned)
+	mutable pub_layb       	: new u32 [ 73728 ]
 	mutable pub_lay1       	: new u32 [ 73728 ]
 	mutable pub_lay2       	: new u32 [ 73728 ]
 	mutable pub_lay3       	: new u32 [ 73728 ]
@@ -464,6 +467,7 @@ element asnes : trinity
 	mutable pub_lays       	: new u32 [ 57344 ]
 	mutable pub_layered    	: bool              # this frame published provenance layers
 	mutable pub_b3hi       	: bool              # BGMODE bit3 at rep line: BG3 rides above sprites
+	mutable layb_tex       	: Texture
 	mutable lay1_tex       	: Texture
 	mutable lay2_tex       	: Texture
 	mutable lay3_tex       	: Texture
@@ -1582,6 +1586,7 @@ element asnes : trinity
 	func ppu_render_layers [ frame_b3: bool ]
 		use_shot = shot_valid
 		for [ i: i32 0, i < 73728, i += 1 ]
+			lay_bd[i]  = 0
 			lay_bg1[i] = 0
 			lay_bg2[i] = 0
 			lay_bg3[i] = 0
@@ -1589,8 +1594,7 @@ element asnes : trinity
 			lay_sw[i]  = 0
 			lay_ss[i]  = 0
 		bg : u16 [ ppu_cgram_color[ 0 ] ]
-		blay : @u32 [ lay_bg3 ]                     # backdrop rides the first-drawn layer
-		if [ frame_b3 ] blay = lay_bg2
+		blay : @u32 [ lay_bd ]                      # backdrop owns a plane; no layer carries it
 		for [ y: i32 -16, y < 240, y += 1 ]
 			yr : i32 [ y ]
 			if [ yr < 0 ] yr = 0
@@ -3548,9 +3552,25 @@ element asnes : trinity
 			if   [ code == 45 ] volume = clamp[ volume - 0.02, 0.0, 1.0 ]
 			el [ code == 61 || code == 43 ] volume = clamp[ volume + 0.02, 0.0, 1.0 ]
 			if [ code == 45 || code == 61 || code == 43 ] puts 'asnes volume {volume}'
+			if [ code == 57 ] dump_req = true              # '9' -> dump layer planes
 			if [ code == 80 ] save_req = true              # 'P' -> save savestate
 			if [ code == 76 ] load_req = true              # 'L' -> load savestate
 			if [ code == 32 ] paused = !paused             # Space pause/resume
+
+	func dump_layer [ buf: @u32, w9: i32, h9: i32, nm: string ]
+		im : Image [ width: w9, height: h9, format: Pixel.rgba8, surface: Surface.color ]
+		memcpy[ im.vdata[], buf, w9 * h9 * 4 ]
+		im.png[ path '/tmp/asnes-{nm}.png' ]
+
+	func dump_layers []
+		dump_req = false
+		dump_layer[ pub_layb, 288, 256, 'bd' ]
+		dump_layer[ pub_lay1, 288, 256, 'bg1' ]
+		dump_layer[ pub_lay2, 288, 256, 'bg2' ]
+		dump_layer[ pub_lay3, 288, 256, 'bg3' ]
+		dump_layer[ pub_layw, 256, 224, 'spw' ]
+		dump_layer[ pub_lays, 256, 224, 'sps' ]
+		puts 'asnes: layers written to /tmp/asnes-*.png'
 
 	func paint_bind [ cv: Canvas, vp: rect ]
 		cv.fill_color[ '#000' ]
@@ -3606,44 +3626,24 @@ element asnes : trinity
 			ses_shader = SuperEagle [ vk: cv.vk, name: 'supereagle' ]
 			ses_model  = Model [ w: cv.w, s: ses_shader, samplers: map Texture[string] [ 'color': lays_tex ] ]
 			ses_render = Render [ vk: cv.vk, w: cv.w, wscale: 0.5, models: array Model [ ses_model ] ]
-		if [ vec ]
-			vsc_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
-			occ_model  = Model [ w: cv.w, s: vsc_shader, samplers: map Texture[string] [ 'color': screen_tex ] ]
-			occ_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ occ_model ] ]
-			vs1_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
-			oc1_model  = Model [ w: cv.w, s: vs1_shader, samplers: map Texture[string] [ 'color': lay1_tex ] ]
-			oc1_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc1_model ] ]
-			vs2_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
-			oc2_model  = Model [ w: cv.w, s: vs2_shader, samplers: map Texture[string] [ 'color': lay2_tex ] ]
-			oc2_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc2_model ] ]
-			vs3_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
-			oc3_model  = Model [ w: cv.w, s: vs3_shader, samplers: map Texture[string] [ 'color': lay3_tex ] ]
-			oc3_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc3_model ] ]
-			vsw_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
-			ocw_model  = Model [ w: cv.w, s: vsw_shader, samplers: map Texture[string] [ 'color': layw_tex ] ]
-			ocw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocw_model ] ]
-			vss_shader = VectorScale [ vk: cv.vk, name: 'vectorscale' ]
-			ocs_model  = Model [ w: cv.w, s: vss_shader, samplers: map Texture[string] [ 'color': lays_tex ] ]
-			ocs_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocs_model ] ]
-		el
-			psc_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
-			occ_model  = Model [ w: cv.w, s: psc_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se_render.color : screen_tex ] ]
-			occ_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ occ_model ] ]
-			ps1_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
-			oc1_model  = Model [ w: cv.w, s: ps1_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se1_render.color : lay1_tex ] ]
-			oc1_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc1_model ] ]
-			ps2_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
-			oc2_model  = Model [ w: cv.w, s: ps2_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se2_render.color : lay2_tex ] ]
-			oc2_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc2_model ] ]
-			ps3_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
-			oc3_model  = Model [ w: cv.w, s: ps3_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se3_render.color : lay3_tex ] ]
-			oc3_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc3_model ] ]
-			psw_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
-			ocw_model  = Model [ w: cv.w, s: psw_shader, samplers: map Texture[string] [ 'color': (se_2d) ? sew_render.color : layw_tex ] ]
-			ocw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocw_model ] ]
-			pss_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
-			ocs_model  = Model [ w: cv.w, s: pss_shader, samplers: map Texture[string] [ 'color': (se_2d) ? ses_render.color : lays_tex ] ]
-			ocs_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocs_model ] ]
+		psc_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+		occ_model  = Model [ w: cv.w, s: psc_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se_render.color : screen_tex ] ]
+		occ_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ occ_model ] ]
+		ps1_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+		oc1_model  = Model [ w: cv.w, s: ps1_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se1_render.color : lay1_tex ] ]
+		oc1_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc1_model ] ]
+		ps2_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+		oc2_model  = Model [ w: cv.w, s: ps2_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se2_render.color : lay2_tex ] ]
+		oc2_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc2_model ] ]
+		ps3_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+		oc3_model  = Model [ w: cv.w, s: ps3_shader, samplers: map Texture[string] [ 'color': (se_2d) ? se3_render.color : lay3_tex ] ]
+		oc3_render = Render [ vk: cv.vk, w: cv.w, width: lw2, height: lh2, models: array Model [ oc3_model ] ]
+		psw_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+		ocw_model  = Model [ w: cv.w, s: psw_shader, samplers: map Texture[string] [ 'color': (se_2d) ? sew_render.color : layw_tex ] ]
+		ocw_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocw_model ] ]
+		pss_shader = PixelSharp [ vk: cv.vk, name: 'pixelsharp' ]
+		ocs_model  = Model [ w: cv.w, s: pss_shader, samplers: map Texture[string] [ 'color': (se_2d) ? ses_render.color : lays_tex ] ]
+		ocs_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0, models: array Model [ ocs_model ] ]
 
 	func lay_off [ v: f32, t: i64, p: i64, now: i64, sc: f32 ] -> f32
 		if [ v == 0.0 || p <= 0 ] return 0.0
@@ -3720,6 +3720,7 @@ element asnes : trinity
 		scaled : bool [ vec || se_2d || blocky ]
 		if [ lay_on || scaled ]
 			if [ !lay1_tex ]
+				layb_tex = Texture [ vk: cv.vk, w: cv.w, width: 288, height: 256, linear: true ]
 				lay1_tex = Texture [ vk: cv.vk, w: cv.w, width: 288, height: 256, linear: true ]
 				lay2_tex = Texture [ vk: cv.vk, w: cv.w, width: 288, height: 256, linear: true ]
 				lay3_tex = Texture [ vk: cv.vk, w: cv.w, width: 288, height: 256, linear: true ]
@@ -3727,12 +3728,14 @@ element asnes : trinity
 				lays_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
 				lay_on = true                          # settle fresh textures with one upload
 			if [ lay_on ]
+				layb_tex.upload[ pub_layb, 288 * 256 * 4 ]
 				lay1_tex.upload[ pub_lay1, 288 * 256 * 4 ]
 				lay2_tex.upload[ pub_lay2, 288 * 256 * 4 ]
 				lay3_tex.upload[ pub_lay3, 288 * 256 * 4 ]
 				layw_tex.upload[ pub_layw, 256 * 224 * 4 ]
 				lays_tex.upload[ pub_lays, 256 * 224 * 4 ]
 			lay_on = smooth && pub_layered
+			if [ dump_req ] dump_layers[]
 		g1dx : f32 [ bgg_dx[0] ]
 		g1dy : f32 [ bgg_dy[0] ]
 		g1t  : i64 [ bgg_t[0] ]
@@ -3779,7 +3782,7 @@ element asnes : trinity
 			m7_render.draw[]
 			m7_render.flush_submit[]
 		pub_lock.unlock[]
-		if [ scaled ]
+		if [ scaled && !vec ]                          # vec filters at paint time
 			if [ !occ_render ] scaler_setup[ cv ]
 			if [ se_2d && ! vec ]
 				if [ lay_on && !m7_active ]
@@ -3850,7 +3853,19 @@ element asnes : trinity
 				owx = o2x
 				owy = o2y
 			rw : rect [ x: vp.x + owx, y: vp.y + owy, w: vp.w, h: vp.h ]
-			if [ scaled ]
+			# this plane carries real tile art, not a flat color: filter it
+			rb : rect [ x: vp.x - 16.0 * g_scx, y: vp.y - 16.0 * g_scy, w: 288.0 * g_scx, h: 256.0 * g_scy ]
+			if [ vec ] cv.draw_image_vec[ layb_tex, rb ]
+			el        cv.draw_image[ layb_tex, rb ]
+			if [ vec ]
+				# each plane reconstructed as it paints: its texture, its shape
+				if [ !b3 ] cv.draw_image_vec[ lay3_tex, r3 ]
+				cv.draw_image_vec[ lay2_tex, r2 ]
+				cv.draw_image_vec[ lay1_tex, r1 ]
+				cv.draw_image_vec[ layw_tex, rw ]
+				if [ b3 ] cv.draw_image_vec[ lay3_tex, r3 ]
+				cv.draw_image_vec[ lays_tex, out ]
+			el [ scaled ]
 				if [ !b3 ]
 					oc3_render.sync_fence[]
 					cv.draw_image[ oc3_render.color, r3 ]
@@ -3872,6 +3887,8 @@ element asnes : trinity
 				cv.draw_image[ layw_tex, rw ]
 				if [ b3 ] cv.draw_image[ lay3_tex, r3 ]
 				cv.draw_image[ lays_tex, out ]
+		el [ vec ]
+			cv.draw_image_vec[ screen_tex, out ]
 		el [ scaled ]
 			occ_render.sync_fence[]
 			cv.draw_image[ occ_render.color, out ]
@@ -4832,11 +4849,9 @@ element asnes : trinity
 			if [ g_dv > 48 || g_dv < -48 ] g_dv = 0
 			rdh[gb] = g_dh
 			rdv[gb] = g_dv
-		lay_frame : bool [ false ]
-		if [ smooth && (line_mode[180] & 7) <= 1 ]
-			for [ gb: i32 0, gb < 3, gb += 1 ]
-				if [ rdh[gb] != 0 || rdv[gb] != 0 ] lay_frame = true
-				if [ bgg_dx[gb] != 0.0 || bgg_dy[gb] != 0.0 ] lay_frame = true
+		# every frame the mode allows: a still screen must filter per plane
+		# too, or standing still falls back to the fused composite
+		lay_frame : bool [ smooth && (line_mode[180] & 7) <= 1 ]
 		frame_b3 : bool [ (line_mode[180] & 0x08) != 0 ]
 		if [ getenv[ 'ASNES_GLIDE' ] && dbg_bgr < 40 ]
 			for [ gb: i32 0, gb < 4, gb += 1 ]
@@ -4851,6 +4866,7 @@ element asnes : trinity
 		if [ lay_frame ] ppu_render_layers[ frame_b3 ]
 		pub_lock.lock[]
 		if [ lay_frame ]
+			memcpy[ pub_layb, lay_bd,  294912 ]
 			memcpy[ pub_lay1, lay_bg1, 294912 ]
 			memcpy[ pub_lay2, lay_bg2, 294912 ]
 			memcpy[ pub_lay3, lay_bg3, 294912 ]

@@ -820,7 +820,9 @@ ModelViewProject VectorScale
         gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
     }
 
+    # different coverage = different plane; never one shape
     func vs_eq [ a: vec4f, b: vec4f ] -> GLSL float {
+        if (abs(a.a - b.a) > 0.5) return 0.0;
         return (distance(a, b) < 0.02) ? 1.0 : 0.0;
     }
 
