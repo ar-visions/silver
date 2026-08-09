@@ -22,6 +22,7 @@
 #include <clang/AST/Type.h>
 #include <clang/AST/Decl.h>
 #include <clang/AST/DeclCXX.h>
+#include <clang/Basic/SourceManager.h>
 #include <clang/AST/Mangle.h>
 #include <clang/AST/RecordLayout.h>
 #include <clang/Frontend/CompilerInstance.h>
@@ -112,6 +113,17 @@ static bool import_model(Au_t m) {
 // ============================================================================
 // Forward declarations
 // ============================================================================
+
+// where a C declaration actually lives. clang knows it exactly; nothing
+// captured it before, so every imported type reported no origin at all.
+// first writer wins, matching how silver stamps its own declarations
+static void stamp_decl(Au_t m, const clang::Decl* d, ASTContext& ctx) {
+    if (!m || !d || m->source) return;
+    clang::PresumedLoc pl = ctx.getSourceManager().getPresumedLoc(d->getLocation());
+    if (pl.isInvalid() || !pl.getFilename()) return;
+    m->source   = cstr_copy((cstr)pl.getFilename());
+    m->src_line = (i32)pl.getLine();
+}
 
 static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol use_name);
 static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::string name);
@@ -555,6 +567,7 @@ static void set_fields(RecordDecl* decl, ASTContext& ctx, aether e, Au_t rec) {
             }
             
             Au_t m = def_member(rec, field_name.c_str(), mapped, AU_MEMBER_VAR, AU_TRAIT_IS_C | AU_TRAIT_IPROP);
+            stamp_decl(m, field, ctx);
             uint64_t offset_bits = layout.getFieldOffset(field->getFieldIndex());
             //m->module = e->current_import->autype;
             m->offset = offset_bits / 8;
@@ -579,6 +592,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     // Incomplete definition → opaque
     if (!decl->isCompleteDefinition() || decl->isInvalidDecl() || decl->isDependentType()) {
         Au_t opaque = def_type(parent, n, AU_TRAIT_STRUCT | AU_TRAIT_IS_C);
+        stamp_decl(opaque, decl, ctx);
         //opaque->module = e->current_import->autype;
         opaque->src = au_lookup("ARef");
         return opaque;
@@ -588,6 +602,7 @@ static Au_t create_record(RecordDecl* decl, ASTContext& ctx, aether e, std::stri
     u32 traits = is_union ? AU_TRAIT_UNION : AU_TRAIT_STRUCT;
     Au_t rec = (existing && existing->member_type == AU_MEMBER_TYPE && existing->members.count == 0 && existing->is_c) ?
         existing : def_type(parent, n, traits | AU_TRAIT_IS_C);
+    stamp_decl(rec, decl, ctx);
     rec->traits |= traits | AU_TRAIT_IS_C;
     rec->is_struct = true;
     rec->src = null; // clear opaque stub's ARef src
@@ -626,6 +641,7 @@ static Au_t create_class(CXXRecordDecl* cxx, ASTContext& ctx, aether e, std::str
 
     Au_t parent = aether_top_scope(e);
     Au_t rec = def_class(parent, n);
+    stamp_decl(rec, cxx, ctx);
     //rec->module = e->current_import->autype;
     aether_push_scope(e, (Au)rec, 4);
     
@@ -709,6 +725,7 @@ static Au_t create_enum(EnumDecl* decl, ASTContext& ctx, aether e, std::string n
 
     Au_t parent = aether_top_scope(e);
     Au_t en = def_enum(parent, n, 0);
+    stamp_decl(en, decl, ctx);
     //en->module = e->current_import->autype;
     en->is_c = true;
     en->src = au_lookup("i32");
@@ -746,6 +763,7 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
 
     Au_t parent = aether_top_scope(e);
     Au_t fn = def(parent, n, AU_MEMBER_FUNC, AU_TRAIT_IS_C);
+    stamp_decl(fn, decl, ctx);
     // Return type
     fn->rtype = map_clang_type(decl->getReturnType(), ctx, e, null);
     if (!fn->rtype) fn->rtype = au_lookup("none");

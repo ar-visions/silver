@@ -120,6 +120,17 @@ enode ternary_expr_builder(silver a, array expr_tokens, Au unused);
 
 token silver_element(silver, num);
 
+// where a type or member was declared. the token already knows its own
+// file and line, so a definition never has to be told
+static void stamp_source(Au_t m, token t) {
+    if (!m || !t || !t->source) return;
+    // FIRST writer wins: the declaration is parsed once, and whatever
+    // sees the record later is a use, not an origin
+    if (m->source) return;
+    m->source   = cstr_copy((cstr)t->source->chars);
+    m->src_line = (i32)t->line;
+}
+
 
 static map operators;
 static array keywords;
@@ -1314,10 +1325,8 @@ static void prepare_record_cb(Au a_au, Au t_au) {
 // the section path is the symlink-resolved absolute identity of the source file, so the
 // caller matches a buffer regardless of how it opened it — we don't mess with identities.
 // reader: read a u32 — C0DEFACE = section follows, 0 = clean end, EOF-before-either = truncated.
-#define SILVER_FMT_VERSION  2u            // v2: each section carries the source mtime
-#define SILVER_FMT_MAGIC    0x53464D54u   // 'SFMT'
-#define SILVER_FMT_SECTION  0xC0DEFACEu
-#define SILVER_FMT_END      0x00000000u
+// SILVER_FMT_* live in the Au header: the reader is in Au.c and a version
+// that moved on only one side is exactly the failure this prevents
 
 static void fmt_u32(FILE* f, u32 v) { fwrite(&v, 4, 1, f); }
 
@@ -1362,7 +1371,18 @@ static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
     cstr cp = (ff->source && len(ff->source)) ? ff->source->chars : "";
     u32  cl = (u32)strlen(cp);
     u32  n  = ff->tokens ? (u32)len(ff->tokens) : 0;
-    u32  total = 4 + 4 + cl + 8 + 4 + n * 16;
+    cstr* dp = calloc(n ? n : 1, sizeof(cstr));
+    u32   np = 0;
+    if (ff->tokens) each(ff->tokens, fmt_token, tk) {
+        if (!tk->decl_source) continue;
+        bool have = false;
+        for (u32 i = 0; i < np; i++) if (strcmp(dp[i], tk->decl_source->chars) == 0) { have = true; break; }
+        if (!have) dp[np++] = tk->decl_source->chars;
+    }
+    u32 ptotal = 4;
+    for (u32 i = 0; i < np; i++) ptotal += 4 + (u32)strlen(dp[i]);
+
+    u32  total = 4 + 4 + cl + 8 + 4 + ptotal + n * 24;
     unsigned char* b = malloc(total);
     u32 o = 0;
     #define SP(v) do { u32 _v = (u32)(v); memcpy(b + o, &_v, 4); o += 4; } while (0)
@@ -1371,10 +1391,22 @@ static unsigned char* fmt_serialize(fmt_file ff, u32* out_total) {
     memcpy(b + o, cp, cl); o += cl;
     i64 mt = ff->mtime; memcpy(b + o, &mt, 8); o += 8;
     SP(n);
+    SP(np);
+    for (u32 i = 0; i < np; i++) {
+        u32 pl = (u32)strlen(dp[i]);
+        SP(pl);
+        memcpy(b + o, dp[i], pl); o += pl;
+    }
     if (ff->tokens) each(ff->tokens, fmt_token, tk) {
+        i32 px = 0;
+        if (tk->decl_source)
+            for (u32 i = 0; i < np; i++)
+                if (strcmp(dp[i], tk->decl_source->chars) == 0) { px = (i32)i + 1; break; }
         SP(tk->line); SP(tk->column); SP(tk->length); SP(tk->syntax);
+        SP(px); SP(tk->decl_line);
     }
     #undef SP
+    free(dp);
     *out_total = total;
     return b;
 }
@@ -1427,7 +1459,29 @@ void silver_write_fmt(silver a, array toks) {
     // overwrite with the (possibly under-classified) tokens of a skipped-body parse.
     if (fmt_current(cp, mt)) return;
     u32  n  = (u32)len(toks);
-    u32  total = 4 + 4 + cl + 8 + 4 + n * 16;   // tag + pathlen + path + mtime(8) + count + records
+
+    // EXTERNALS. a token whose identifier resolves to a declaration in
+    // another file: record which token, where it lives, and its kind.
+    // never the Au_t itself -- the whole point is that jumping needs a
+    // file and a line, and serializing type records is what costs
+    // a POTENTIAL declaration per token, resolved by name: a type, or a
+    // member of this module (which covers free functions). the map only
+    // ever offers a candidate -- the editor is free to find nothing
+    // declaring files interned once; each token names one by index. the
+    // Au_t was stamped on the token as it parsed -- nothing resolves here
+    cstr* dp = calloc(n ? n : 1, sizeof(cstr));
+    u32   np = 0;
+    each(toks, token, t) {
+        Au_t d = t->decl;
+        if (!d || !d->source || d->src_line <= 0) continue;
+        bool have = false;
+        for (u32 i = 0; i < np; i++) if (strcmp(dp[i], d->source) == 0) { have = true; break; }
+        if (!have) dp[np++] = d->source;
+    }
+    u32 ptotal = 4;
+    for (u32 i = 0; i < np; i++) ptotal += 4 + (u32)strlen(dp[i]);
+
+    u32  total = 4 + 4 + cl + 8 + 4 + ptotal + n * 24;
     unsigned char* b = malloc(total);
     u32 o = 0;
     #define FMT_PUT(v) do { u32 _v = (u32)(v); memcpy(b + o, &_v, 4); o += 4; } while (0)
@@ -1436,13 +1490,29 @@ void silver_write_fmt(silver a, array toks) {
     memcpy(b + o, cp, cl); o += cl;
     memcpy(b + o, &mt, 8); o += 8;              // i64 source mtime
     FMT_PUT(n);
+    FMT_PUT(np);
+    for (u32 i = 0; i < np; i++) {
+        u32 pl = (u32)strlen(dp[i]);
+        FMT_PUT(pl);
+        memcpy(b + o, dp[i], pl); o += pl;
+    }
     each(toks, token, t) {
+        Au_t d = t->decl;
+        i32  px = 0, dln = 0;                   // 1-based; 0 = resolves nowhere
+        if (d && d->source && d->src_line > 0) {
+            for (u32 i = 0; i < np; i++)
+                if (strcmp(dp[i], d->source) == 0) { px = (i32)i + 1; break; }
+            dln = d->src_line;
+        }
         FMT_PUT(t->line);
         FMT_PUT(t->column);
         FMT_PUT(len(t));
         FMT_PUT(t->syntax);
+        FMT_PUT(px);
+        FMT_PUT(dln);
     }
     #undef FMT_PUT
+    free(dp);
     fmt_put(cp, b, total, mt);
 }
 
@@ -3553,6 +3623,14 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     if (!mem && f && f->target) {
                         mem = (enode)rlookup((aether)a, alpha);
                         //mem = (enode)elookup(alpha->chars);
+                        // stamp at the RESOLUTION: this branch is where a
+                        // free/C function lands, and it never reaches the
+                        // classification below
+                        if (mem && mem->autype) {
+                            token rt9 = element(a, -1);
+                            if (rt9 && rt9->chars && strcmp(rt9->chars, alpha->chars) == 0)
+                                rt9->decl = mem->autype;
+                        }
 
                         if (mem && !mem->autype->is_static && mem->autype->member_type != AU_MEMBER_TYPE) {
                             etype ftarg = etype_resolve((etype)f->target);
@@ -3612,6 +3690,11 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                         validate(!existing || existing->member_type == AU_MEMBER_DECL, "duplicate member: %o", alpha);
                     }
                     Au_t m = def_member(top, alpha->chars, null, AU_MEMBER_DECL, 0); // this is promoted to different sorts of members based on syntax
+                    // alpha is the NAME, not the token. only stamp when the
+                    // cursor's last token really is that identifier
+                    token a_tok = element(a, -1);
+                    if (a_tok && a_tok->chars && strcmp(a_tok->chars, alpha->chars) == 0)
+                        stamp_source(m, a_tok);
                     mem = (enode)edecl(mod, (aether)a, autype, m);
                     break;
                 }
@@ -3664,7 +3747,12 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                 if      (is_func((Au)mem) || instanceof(mem, macro))   sk = Syntax__function;
                 else if (mt->member_type == AU_MEMBER_TYPE)            sk = Syntax__type;
                 else if (!first && mt->member_type == AU_MEMBER_VAR)   sk = Syntax__property;
-                if (sk != Syntax__none) pkzip->syntax = sk;
+                // the identifier's OWN token, not the one peeked before it
+                // was consumed -- pkzip trails the cursor on a chain
+                token idt = element(a, -1);
+                if (!idt || !idt->chars || !alpha ||
+                    strcmp(idt->chars, alpha->chars) != 0) idt = pkzip;
+                if (sk != Syntax__none) { idt->syntax = sk; idt->decl = mt; }
             }
 
             // setter intercept
@@ -4790,6 +4878,13 @@ enode parse_statement(silver a)
     validate(!(is_lambda|def_func) || mem,
         "expected member identifier to follow function or lambda");
 
+    // entry is the first token of this definition -- funcs, constructs,
+    // casts, operators and accessors all come through here.
+    // context == top means it is DECLARED here; a mere reference to an
+    // imported type must never claim to be its origin
+    if (mem && mem->autype && mem->autype->context == top)
+        stamp_source(mem->autype, entry);
+
     validate(!is_static || mem,
         "expected member identifier to follow static");
 
@@ -5380,8 +5475,10 @@ static etype read_named_model(silver a) {
     // it resolved to a model (not a var) → this name is a TYPE; color it as such. when read
     // at a nested etype_level (a meta/generic argument, e.g. the `string` in map element[string]),
     // give it the unique _meta kind instead of a plain type ref.
-    if (mdl && name_tok)
+    if (mdl && name_tok) {
         name_tok->syntax = a->etype_level > 0 ? Syntax__meta : Syntax__type;
+        name_tok->decl   = mdl->autype;
+    }
     pop_tokens(a, mdl != null); /// save if we are returning a model
     return mdl;
 }
@@ -7424,6 +7521,10 @@ enode parse_import(silver a) {
         user     = a->git_owner;
         project  = null;
         aa       = expect_alpha(a); // value of t
+        // the module name is a NAMESPACE, not a plain identifier; the
+        // editor keys navigation off this kind
+        token aa_tok = element(a, -1);
+        if (aa_tok) aa_tok->syntax = Syntax__namespace;
         bb       = read_if(a, ":") ? expect_alpha(a) : null;
         cc       = bb && read_if(a, ":") ? expect_alpha(a) : null;
 
@@ -10127,12 +10228,16 @@ etype silver_read_def(silver a, interface access) {
         consume(a, Syntax__keyword);
         string  alias_name = read_alpha(a);
         validate(alias_name, "expected name after alias");
+        // hold the name token: the cursor is well past it by the time
+        // the alias type is made
+        token   alias_tok = element(a, -1);
         validate(read_if(a, ":"), "expected ':' after alias name");
 
         bool    is_ref = read_if(a, "ref") != null || read_if(a, "@") != null;
 
         Au_t    top = top_scope(a);
         Au_t    alias_au = def(top, alias_name->chars, AU_MEMBER_TYPE, AU_TRAIT_ALIAS);
+        stamp_source(alias_au, alias_tok);
         alias_au->is_pointer = is_ref;
 
         // try immediate resolution — check all type tokens are consumed
@@ -10175,9 +10280,12 @@ etype silver_read_def(silver a, interface access) {
     consume(a, parent_named ? Syntax__parent : Syntax__keyword);
     string n = read_alpha(a);
     validate(n, "expected alpha-numeric identity, found %o", next(a, Syntax__none));
+    // the name token is where this definition LIVES; hold it, the cursor
+    // moves on long before the type is made
+    token def_name_tok = element(a, -1);
     // the record's own name gets its own unique kind (_classname), distinct from a type ref.
     if (is_class || is_struct) {
-        token name_tok = element(a, -1);
+        token name_tok = def_name_tok;
         if (name_tok) name_tok->syntax = Syntax__classname;
     }
 
@@ -10197,6 +10305,7 @@ etype silver_read_def(silver a, interface access) {
 
         mdl = record(a, (etype)a, is_class, n,
             is_struct ? AU_TRAIT_STRUCT : AU_TRAIT_CLASS);
+        if (mdl) stamp_source(mdl->autype, def_name_tok);
         if (access == interface_abstract) {
             mdl->autype->is_abstract = true;
             mdl->autype->access_type = interface_public;
@@ -10275,6 +10384,7 @@ etype silver_read_def(silver a, interface access) {
 
         Au_t enum_au = def(top_scope(a),
             n->chars, AU_MEMBER_TYPE, AU_TRAIT_ENUM);
+        stamp_source(enum_au, def_name_tok);
         enum_au->access_type = access;
         enum_au->src = store->autype;
         if (meta_a) enum_au->meta.a = (Au_t)meta_a;
