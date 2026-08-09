@@ -1535,16 +1535,16 @@ element hyperspace : trinity
                 rv_finish[]
             el
                 ann_exit[]
-            ev.stop_propagation[]
+            ev.stop[]
             return
         if [ fullscreen && mode == 'review' ]
             if [ ev.key.unicode == 32 ]
                 rv_next[ false ]
-                ev.stop_propagation[]
+                ev.stop[]
                 return
             if [ ev.key.unicode == 120 || ev.key.unicode == 88 ]
                 rv_next[ true ]
-                ev.stop_propagation[]
+                ev.stop[]
                 return
         if [ ev.key.unicode == 32 && fullscreen && mode == 'auto' ]
             if [ au_phase == 0 ]
@@ -1563,13 +1563,13 @@ element hyperspace : trinity
                     redo = null
                 el
                     au_new_position[]
-            ev.stop_propagation[]
+            ev.stop[]
             return
         if [ ev.key.unicode == 32 && fullscreen && (mode == 'pupils' || mode == 'last' || mode == 'eyes') ]
             # SPACE: skip this frame, write nothing
             ann_sub = 0
             ann_advance[]
-            ev.stop_propagation[]
+            ev.stop[]
             return
         if [ (ev.key.unicode == 81 || ev.key.unicode == 113) && fullscreen && mode == 'last' ]
             if [ !ts_refine ]
@@ -1621,15 +1621,15 @@ element hyperspace : trinity
                             ann_qcx = cursor_pos.x
                             ann_qcy = cursor_pos.y
                             ann_qset = true
-            ev.stop_propagation[]
+            ev.stop[]
             return
         if [ ev.key.unicode == 32 && fullscreen && mode == 'record' ]
             capture[]
             advance[]
-            ev.stop_propagation[]
+            ev.stop[]
         if [ ev.key.unicode == 32 && fullscreen && mode == 'test' ]
             tb_dump = true
-            ev.stop_propagation[]
+            ev.stop[]
         if [ (ev.key.unicode == 99 || ev.key.unicode == 67) && fullscreen && mode == 'test' ]
             if [ ob_sc > 0.01 ]
                 r0 : f32 [ sqrt[ 0.3048 * 0.3048 + cam_dy_m * cam_dy_m ] ]
@@ -1646,7 +1646,7 @@ element hyperspace : trinity
                     th : f32 [ acos[ ac ] - ph ]
                     cam_tilt = th * 57.29578
                 puts 'calibrated at 1ft: cam_k = {cam_k}, cam_tilt = {cam_tilt} degrees'
-            ev.stop_propagation[]
+            ev.stop[]
 
     func ann_click [ ev: Event ]
         if [ !ann_tex || ann_rect.w <= 0.0 ] return
@@ -2628,10 +2628,10 @@ element hyperspace : trinity
                 au_dy = ny7
                 au_tx = nx7
                 au_ty = ny7
-                ev.stop_propagation[]
+                ev.stop[]
                 return
             if [ mode != 'record' ] ann_click[ ev ]
-            ev.stop_propagation[]
+            ev.stop[]
             return
         e : cast element [ ev.origin ]
         if [ !e ] return
@@ -2675,7 +2675,7 @@ element hyperspace : trinity
             start_movie[]
         el [ e.id == 'testbed' ]
             start_testbed[]
-        ev.stop_propagation[]
+        ev.stop[]
 
     public func render [] -> Elements
         e : Elements [ ]

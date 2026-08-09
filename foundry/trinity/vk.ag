@@ -3852,6 +3852,7 @@ Texture Display
             glfwSetKeyCallback          [ glfw, @handle_glfw_key ]
             glfwSetMouseButtonCallback  [ glfw, @handle_glfw_mouse ]
             glfwSetCursorPosCallback    [ glfw, @handle_glfw_cursor ]
+            glfwSetCursorEnterCallback  [ glfw, @handle_glfw_enter ]
             glfwSetCharCallback         [ glfw, @handle_glfw_char ]
             glfwSetScrollCallback       [ glfw, @handle_glfw_scroll ]
             glfwSetDropCallback         [ glfw, @handle_glfw_drop ]
@@ -4237,6 +4238,13 @@ intern func handle_glfw_drop [ win: @GLFWwindow, count: i32, paths: @symbol ]
         s = s + p.shell_escape[]
     w.ev.key.text = s
     w.drop_event[ w.ev ]
+
+
+intern func handle_glfw_enter [ win: @GLFWwindow, entered: i32 ]
+    w: cast Window [ glfwGetWindowUserPointer[ win ] ]
+    if [ entered != 0 ] return
+    w.ev.clear[]
+    w.clear_hover[ w.ev ]
 
 
 intern func handle_glfw_cursor [ win: @GLFWwindow, x: f64, y: f64 ]

@@ -57,7 +57,7 @@ element buttontest : trinity
         if [ e.id == 'hello' ]
             clicks += 1
             puts 'button clicked! count={clicks}'
-        ev.stop_propagation[]
+        ev.stop[]
 
     public func render [] -> Elements
         return Elements [

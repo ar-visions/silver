@@ -179,6 +179,7 @@ ielement element
         pristine = false
         ux.will_animate = true
     public func on_key     [ ev: Event ] return
+    public func on_pad     [ ev: Event ] return
     public func on_char    [ ev: Event ] return
     public func on_drop    [ ev: Event ] return
     public func on_inspect [ hits: array StyleHit ] return
@@ -399,6 +400,12 @@ struct KeyboardState
     alt       : bool
     ctrl      : bool
     text      : string
+
+# button = index, 1000+ = axis direction, 2000+ = hat direction
+struct PadState
+    pad       : i32
+    button    : i32
+    state     : i32
 
 
 enum Blend
@@ -640,6 +647,7 @@ class Event
     mutable origin         : element
     mutable mouse          : MouseState
     mutable key            : KeyboardState
+    mutable pad            : PadState
     mutable no_default     : bool
     mutable no_propagation : bool
 
@@ -652,7 +660,7 @@ class Event
     func should_propagate [ ] -> bool
         return !no_propagation
 
-    func stop_propagation [ ] -> bool
+    func stop [ ] -> bool
         no_propagation = true
         return true
 
@@ -660,6 +668,9 @@ class Event
         target         = null
         origin         = null
         key            = []
+        pad            = []
+        pad.pad        = -1
+        pad.button     = -1
         no_default     = false
         no_propagation = false
         mouse.state    = -1

@@ -248,6 +248,8 @@ abstract live_app media_app
             usleep[ 16000 ]
             return !Au.quit_requested[]
         glfwPollEvents[]
+        pwn : Window [ w ]
+        pwn.pad_pump[]
         ifdef [ linux ]
             if [ debug ] agent_pump[]
         second : epoch_millis[] / 1000
@@ -441,7 +443,7 @@ abstract live_app media_app
                     if [ r9 ] return r9
             return null
 
-        func agent_press [ wn: Window, x9: f32, y9: f32, b9: i32, st: i32 ]
+        func agent_press [ wn: Window, x9: f32, y9: f32, b9: i32, st: i32, md: i32 ]
             wn.ev.clear[]
             wn.mouse.x = f64[ x9 ]
             wn.mouse.y = f64[ y9 ]
@@ -449,6 +451,12 @@ abstract live_app media_app
             wn.ev.mouse.pos.y  = y9
             wn.ev.mouse.button = b9
             wn.ev.mouse.state  = st
+            # same mod bits the key command uses: a modifier-click is a
+            # real interaction and the socket could not express one
+            wn.ev.key.shift = (md & 1) != 0
+            wn.ev.key.ctrl  = (md & 2) != 0
+            wn.ev.key.alt   = (md & 4) != 0
+            wn.ev.key.meta  = (md & 8) != 0
             if [ st == 1 ] wn.press_event[ wn.ev ]
             el             wn.release_event[ wn.ev ]
 
@@ -482,8 +490,9 @@ abstract live_app media_app
                     px : f32 [ f32[ parts[1].real_value[] ] ]
                     py : f32 [ f32[ parts[2].real_value[] ] ]
                     pb : i32 [ (parts.count >= 4) ? i32[ parts[3].integer_value[] ] : 0 ]
-                    if [ cmd != 'release' ] agent_press[ wn, px, py, pb, 1 ]
-                    if [ cmd != 'press' ]   agent_press[ wn, px, py, pb, 0 ]
+                    pm : i32 [ (parts.count >= 5) ? i32[ parts[4].integer_value[] ] : 0 ]
+                    if [ cmd != 'release' ] agent_press[ wn, px, py, pb, 1, pm ]
+                    if [ cmd != 'press' ]   agent_press[ wn, px, py, pb, 0, pm ]
                 el [ cmd == 'tap' && parts.count >= 2 ]
                     te : element agent_find[ wn.root, parts[1] ]
                     if [ te ]
@@ -521,6 +530,17 @@ abstract live_app media_app
                     if [ cmd == 'keytap' ]
                         wn.ev.key.state = 0
                         wn.key_event[ wn.ev ]
+                el [ (cmd == 'pad' || cmd == 'padtap') && parts.count >= 2 ]
+                    pb9 : i32 [ i32[ parts[1].integer_value[] ] ]
+                    ps9 : i32 [ (cmd == 'pad' && parts.count >= 3) ? i32[ parts[2].integer_value[] ] : 1 ]
+                    wn.ev.clear[]
+                    wn.ev.pad.pad    = 0
+                    wn.ev.pad.button = pb9
+                    wn.ev.pad.state  = ps9
+                    wn.pad_event[ wn.ev ]
+                    if [ cmd == 'padtap' ]
+                        wn.ev.pad.state = 0
+                        wn.pad_event[ wn.ev ]
                 el [ cmd == 'text' && line.count > 5 ]
                     wn.ev.clear[]
                     wn.ev.key.text = line.mid[ 5, line.count - 5 ]
@@ -620,6 +640,9 @@ class CursorPos
 
 Display Window
     mutable app_object          : element*
+    # per joystick: 32 buttons, 16 axes x 2 signs, 4 hats x 4 directions
+    mutable pad_state           : new u8 [ 16 * 96 ]
+    mutable pad_said            : bool
     mutable ide_active        : bool
     mutable dict_on             : bool
     mutable dict_live           : bool
@@ -998,6 +1021,28 @@ Display Window
                         continue
                     best : st.best_match[ inst, prop, entries ]
                     if [ !best ]
+                        continue
+
+                    # a UNIT resolves against this element, so it can never
+                    # ride best.instance -- that is shared by every element
+                    # the selector matches, and fc is per element. px is
+                    # the odd one out: the scalars it lands on are all
+                    # fc-denominated downstream, so divide it back out
+                    # SCALARS ONLY. a Region member like 'area: 8px' owns
+                    # the whole string and parses the unit itself
+                    if [ best.unit && member.src == typeid[ f32 ] ]
+                        sv : cast string [ best.value ]
+                        nv : f32 [ f32 sv.real_value[] ]
+                        # fc is ZERO here: style applies before layout_element
+                        # ever sets it. 22.0 is the same base layout starts
+                        # from, so px means px on the very first frame too --
+                        # without it a 1px spacing read as one fc unit, 22px,
+                        # and pushed the whole right-hand run off the bar
+                        if [ best.unit == 'px' ]
+                            fcv : f32 [ (inst.fc > 0.0) ? inst.fc : 22.0 ]
+                            nv = nv / fcv
+                        uv : Au.__convert[ member.src, nv ]
+                        if [ uv ] inst.member_set[ member, uv ]
                         continue
 
                     if [ !best.instance ]
@@ -1525,6 +1570,54 @@ Display Window
             for [ ce: element, ck: string ] in e.elements
                 dirty_tree[ ce ]
 
+    # one control changed level; the first pass only records the resting state
+    func pad_emit [ j: i32, slot: i32, code: i32, on: u8 ]
+        if [ on == pad_state[ j * 96 + slot ] ] return
+        pad_state[ j * 96 + slot ] = on
+        if [ !pad_said ] return
+        ev.clear[]
+        ev.pad.pad    = j
+        ev.pad.button = code
+        ev.pad.state  = i32[ on ]
+        pad_event[ ev ]
+
+    # joysticks are polled, not called back. a d-pad is an axis pair on
+    # most gamepads and a hat on others, so all three are read here
+    public func pad_pump [ ]
+        for [ j: i32 0, j < 16, j += 1 ]
+            if [ !glfwJoystickPresent[ j ] ] continue
+            nb : i32 [ 0 ]
+            b  : @u8 [ glfwGetJoystickButtons[ j, @nb ] ]
+            na : i32 [ 0 ]
+            ax : @f32 [ glfwGetJoystickAxes[ j, @na ] ]
+            nh : i32 [ 0 ]
+            ht : @u8 [ glfwGetJoystickHats[ j, @nh ] ]
+            if [ !pad_said ]
+                nmp : symbol [ glfwGetJoystickName[ j ] ]
+                puts 'pad: joystick {j} buttons {nb} axes {na} hats {nh} name {(nmp) ? string[ nmp ] : string["?"]}'
+            if [ b ]
+                if [ nb > 32 ] nb = 32
+                for [ i: i32 0, i < nb, i += 1 ]
+                    pad_emit[ j, i, i, b[i] ]
+            if [ ax ]
+                if [ na > 16 ] na = 16
+                for [ i: i32 0, i < na, i += 1 ]
+                    v : f32 [ ax[i] ]
+                    pad_emit[ j, 32 + i * 2,     1000 + i * 2,     (v < -0.5) ? u8[1] : u8[0] ]
+                    pad_emit[ j, 32 + i * 2 + 1, 1000 + i * 2 + 1, (v >  0.5) ? u8[1] : u8[0] ]
+            if [ ht ]
+                if [ nh > 4 ] nh = 4
+                for [ i: i32 0, i < nh, i += 1 ]
+                    hv : i32 [ i32[ ht[i] ] ]
+                    for [ d: i32 0, d < 4, d += 1 ]
+                        pad_emit[ j, 64 + i * 4 + d, 2000 + i * 4 + d, ((hv >> d) & 1) ? u8[1] : u8[0] ]
+        pad_said = true
+
+    public func pad_event [ ev: Event ]
+        ev.target = focus
+        if [ focus && focus.on_pad*[ ev ] ] return
+        if [ app_object ] app_object.on_pad*[ ev ]
+
     public func key_event [ ev: Event ]
         s2 : bool [ ev.key.shift ]
         if [ ev.key.unicode == 340 || ev.key.unicode == 344 ] s2 = (ev.key.state) ? true : false
@@ -1563,6 +1656,26 @@ Display Window
                 if [ l.editable ]
                     l.on_char[ ev ]
                     break
+
+    # the cursor left the window entirely. GLFW stops sending motion at
+    # the edge, so without this the last element keeps its hover lit --
+    # same leave path move_event runs, just with nothing to hand it to.
+    # CAPTURE is left alone on purpose: a drag that wanders outside is
+    # still that drag, and it has to survive coming back in
+    public func clear_hover [ ev: Event ]
+        prev : element [ hovered ]
+        if [ !prev ] return
+        hovered       = null
+        prev.hovered  = false
+        prev.pristine = false
+        restyle       = true
+        leave_consumed : bool [ false ]
+        for [ e: element* prev, e && !leave_consumed, e = e.parent ]
+            ev.target = e
+            if [ e.on_leave*[ ev ] ] leave_consumed = true
+        if [ !leave_consumed && app_object ]
+            ev.target = prev
+            app_object.on_leave*[ ev ]
 
     public func move_event [ ev: Event ]
         orig_pos : vec2f [ ev.mouse.pos ]
@@ -1658,14 +1771,6 @@ Display Window
     public func press_route [ f: element, ev: Event ]
         release_capture[ capture ]
         ev.origin = f
-        if [ f && (ev.key.meta || ev.key.ctrl) ]
-            if [ f.source && app_object ]
-                cur : array StyleHit [ ]
-                cur.push[ StyleHit [ file: path '{f.source}', line: f.line ] ]
-                app_object.on_inspect*[ cur ]
-            ev.no_propagation = true
-            ev.no_default     = true
-            return
         element_pos : vec2f [ ev.mouse.pos ]
         consumed_p : bool [ false ]
         for [ e: element* f, e, e = e.parent ]
@@ -1676,6 +1781,18 @@ Display Window
             ev.mouse.pos.y += e.bounds.y - e.scroll.y
             if [ ev.no_propagation ]
                 break
+
+        # the style inspector is the FALLBACK for a modifier click, never
+        # the first claim: an element with its own ctrl/cmd gesture (the
+        # editor's goto-definition) sets no_default and keeps it
+        if [ f && (ev.key.meta || ev.key.ctrl) && !ev.no_default ]
+            if [ f.source && app_object ]
+                cur : array StyleHit [ ]
+                cur.push[ StyleHit [ file: path '{f.source}', line: f.line ] ]
+                app_object.on_inspect*[ cur ]
+            ev.no_propagation = true
+            ev.no_default     = true
+            return
 
         au : typeid[ f ]
         # app
@@ -3871,7 +3988,7 @@ Control Tabs
                 value = member_value[ mem ]
                 if [ bound ] bound[0] = value
                 if [ ux ] ux.restyle = true
-                ev.stop_propagation[]
+                ev.stop[]
                 return
 
     func render [] -> Elements
@@ -3914,7 +4031,7 @@ Control Slider
 
     func on_press [ ev: Event ]
         write[ ev.mouse.pos.x ]
-        ev.stop_propagation[]
+        ev.stop[]
 
     func on_move [ ev: Event ]
         if [ pressed ] write[ ev.mouse.pos.x ]
@@ -4093,7 +4210,7 @@ element IDEOverlay
     func on_press [ ev: Event ]
         set_focus[]
         post_mouse[ ev, i32[ HM.press ] ]
-        ev.stop_propagation[]
+        ev.stop[]
 
     func on_release [ ev: Event ]
         post_mouse[ ev, i32[ HM.release ] ]
@@ -4182,7 +4299,7 @@ element UXGenerics
         if [ e.id == 'tab' ]
             show_console = !show_console
             if [ ux ] ux.restyle = true
-            ev.stop_propagation[]
+            ev.stop[]
         el [ e.id == 'dictate' ]
             if [ ev.key.shift ]
                 if [ ux ] ux.ide_open[]
@@ -4198,16 +4315,16 @@ element UXGenerics
                     puts 'app: host_dictate_set {(recording) ? 1 : 0}'
                 if [ target ] target.on_dictate*[ recording ]
             if [ ux ] ux.restyle = true
-            ev.stop_propagation[]
+            ev.stop[]
         el [ e.id == 'close' || e.id == 'uxgenerics' ]
             show_console = false
             if [ ux ] ux.restyle = true
-            ev.stop_propagation[]
+            ev.stop[]
         el [ ColorPicker (e) && e.parent ]
             rid : string e.parent.id
             expanded = (expanded == rid) ? '' : rid
             if [ ux ] ux.restyle = true
-            ev.stop_propagation[]
+            ev.stop[]
 
     func render [] -> Elements
         user_events = show_console   # closed = pass-through, shown = modal

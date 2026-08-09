@@ -51,6 +51,13 @@ class ColorRegion
     public col   : i32 [ 0 ]
     public len   : i32 [ 0 ]
     public color : rgba
+    # the token's own kind, not just its colour: navigation needs to
+    # tell a module name from an ordinary identifier
+    public kind  : i32 [ 0 ]
+    # where this token was declared, straight from the syntax map. a C
+    # function is not a type, so no registry lookup can find it
+    public dsrc  : string
+    public dline : i32 [ 0 ]
 
 class EdLineCache
     mutable canvas : Canvas
@@ -1472,6 +1479,37 @@ Layer EditorLayer
         editor.text_blit[ cv, bounds, fade_t, fade_r, fade_b, fade_l ]
         for [ li: i32 0, li < editor.line_count[], li += 1 ]
             y : f32 [ round[ y0 + f32[li] * lh - editor.scroll.y ] ]
+            # ctrl/cmd held: outline every token that resolves, so the
+            # jump targets announce themselves. drawn HERE, in the blit,
+            # never into the line canvas -- that is cached by text hash
+            # and the outline would survive the key coming back up
+            if [ editor.mod_down && !editor.show_hits && !editor.row_header[ li ] ]
+                if [ y + lh >= bounds.y && y <= bounds.y + bounds.h ]
+                    ln9  : editor.line_get[ li ]
+                    msl9 : i32 [ editor.row_src[ li ] ]
+                    nrg9 : i32 [ editor.line_reg_count[ msl9 ] ]
+                    for [ ri9: i32 0, ri9 < nrg9, ri9 += 1 ]
+                        cr9 : ColorRegion editor.line_reg[ msl9, ri9 ]
+                        c09 : i32 [ cr9.col ]
+                        sl9 : i32 [ cr9.len ]
+                        if [ c09 < 0 || sl9 <= 0 ] continue
+                        if [ c09 + sl9 > ln9.count ] continue
+                        w9 : ln9.mid[ c09, sl9 ]
+                        # the map already resolved this token. a module
+                        # name is the one case it cannot -- that is a file
+                        ok9 : bool [ cr9.dsrc && cr9.dline > 0 ]
+                        if [ cr9.kind == 14 ] ok9 = editor.module_path[ w9 ] != null
+                        if [ !ok9 ] continue
+                        tx9 : f32 [ f32[ editor.display_of[ ln9.mid[ 0, c09 ] ].count ] * cw_tm.w ]
+                        ww9 : f32 [ f32[ editor.display_of[ w9 ].count ] * cw_tm.w ]
+                        cv.save[ ]
+                        cv.rounded[ 3.0, 3.0, 3.0, 3.0 ]
+                        cv.fill_color[ rgba['#3b6fe022'] ]
+                        cv.stroke_width[ 1.0 ]
+                        cv.stroke_color[ rgba['#8cf9'] ]
+                        cv.rect_to[ x0 + tx9 - 1.0, y + 1.0, ww9 + 2.0, lh - 2.0 ]
+                        cv.paint[ ]
+                        cv.restore[ ]
             if [ editor.row_header[ li ] ]
                 if [ editor.row_cont[ li ] ] continue
                 if [ editor.row_spacer[ li ] ]
@@ -1947,6 +1985,8 @@ Control Editor
     mutable file_icon     : SVGModel
     mutable ficons        : FileIcons
     mutable was_showing   : bool
+    # ctrl/cmd is held: resolvable symbols outline as clickable targets
+    mutable mod_down      : bool
     mutable hover_gutter  : bool
     # true while dragging the scrollbar thumb
     mutable scroll_dragging : bool
@@ -2222,6 +2262,48 @@ Control Editor
         while [ b < n - 1 && word_char[ i32[ ln[b + 1] ] ] ] b += 1
         return ln.mid[ a, b - a + 1 ]
 
+    # the modifier is only known from events we actually receive, and a
+    # key RELEASE may never reach us (focus, or consumed upstream). mouse
+    # moves carry live modifier state and keep arriving, so the flag
+    # corrects itself instead of sticking on
+    func note_mod [ ev: Event ]
+        md9 : bool [ ev.key.ctrl || ev.key.meta ]
+        # GLFW reports mods as they stood BEFORE the event, so pressing
+        # ctrl/cmd itself arrives with its own bit still clear. take the
+        # keycode's own state for those, or the outline waits for the
+        # next event that happens to carry the flag
+        k9 : i32 [ ev.key.unicode ]
+        if [ k9 == 341 || k9 == 345 || k9 == 343 || k9 == 347 ]
+            md9 = ev.key.state != 0
+        if [ md9 == mod_down ] return
+        mod_down = md9
+        pristine = false
+        if [ ux ] ux.will_animate = true
+
+    # the region under a column, or null. regions come straight from the
+    # format map, so this carries the compiler's own classification AND
+    # the declaration site it resolved to
+    func region_at [ ml: i32, col: i32 ] -> ColorRegion
+        n9 : i32 [ line_reg_count[ ml ] ]
+        for [ ri: i32 0, ri < n9, ri += 1 ]
+            cr : ColorRegion line_reg[ ml, ri ]
+            if [ col >= cr.col && col < cr.col + cr.len ] return cr
+        return null
+
+    # a module's own source: a sibling of the file that imports it, or
+    # its foundry directory. nothing else knows where a module lives
+    func module_path [ nm: string ] -> path
+        if [ !nm || nm.count == 0 ] return null
+        if [ src ]
+            sib : path '{src.directory[]}/{nm}.ag'
+            if [ sib.exists[] ] return sib
+        sp : path.path_startup[]
+        if [ sp ]
+            fp : path '{sp}/foundry/{nm}/{nm}.ag'
+            if [ fp.exists[] ] return fp
+        return null
+
+
     func select_word []
         if [ sel_line < 0 || sel_line >= line_count[] ] return
         if [ row_header[ sel_line ] ] return
@@ -2469,7 +2551,7 @@ Control Editor
                 tk : fmt_token ff.tokens[ti]
                 tl : i32 [ (i32 tk.line) - 1 ]
                 if [ tl < 0 ] tl = 0
-                buf.regions.push[ ColorRegion [ line: tl, col: i32 tk.column, len: i32 tk.length, color: fmt_theme[ i32 tk.syntax ] ] ]
+                buf.regions.push[ ColorRegion [ line: tl, col: i32 tk.column, len: i32 tk.length, color: fmt_theme[ i32 tk.syntax ], kind: i32 tk.syntax, dsrc: tk.decl_source, dline: i32 tk.decl_line ] ]
                 if [ tl + 1 > mx ] mx = tl + 1
             buf.reg_off = array i32 []
             ci : i32 [ 0 ]
@@ -3434,27 +3516,29 @@ Control Editor
             gi += 1
         return -1
 
-    func place_cursor [ ev: Event ] -> none
+    # true means the click was CONSUMED (a definition jump); the caller
+    # must not then place a caret or arm a drag in the file we just left
+    func place_cursor [ ev: Event ] -> bool
         ele   : (layers) ? cast EditorLayer [ layers['content'] ] : null
-        if [ !ele ] return
+        if [ !ele ] return false
         # nothing to place the cursor on (e.g. all results removed)
         if [ line_count[] <= 0 ]
             sel_line = -1
-            return
+            return false
         lh    : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
         rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
-        if [ rel_y < 0.0 ] return
+        if [ rel_y < 0.0 ] return false
         if [ grid_mode && show_hits && hits ]
             gli : i32 [ grid_hit_index[ ev.mouse.pos.x - ele.bounds.x, rel_y, ele.bounds.w ] ]
             if [ gli >= 0 ]
                 sel_line    = gli
                 anchor_line = gli
-            return
+            return false
         rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x - gutter_w ]
         raw   : i32 [ clamp [ rel_y / lh, 0, line_count[] - 1 ] ]
         ln    : i32 [ snap_row[ raw ] ]
-        if [ show_hits && tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] >= 0 ] return
+        if [ show_hits && tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] >= 0 ] return false
         if [ show_hits && (dragging || ev.key.shift) ]
             ln = clamp[ ln, group_start[ anchor_line ], group_end[ anchor_line ] ]
         vx    : f32 [ round[ (rel_x - row_indent[ ln ] + scroll.x) / cw ] ]
@@ -3466,6 +3550,42 @@ Control Editor
                 nav.record[ pane_index, '{src.absolute[]}', sel_line, sel_col, scroll.y ]
         sel_line = ln
         sel_col  = cl
+
+        # cmd/ctrl click -> the definition, straight off the type record.
+        # Au_t carries source/src_line now, so nothing here reads text.
+        # only types LOADED in this process resolve: orbiter's own
+        # sources and its imports, not an unrelated module's
+        if [ ev.key.ctrl || ev.key.meta ]
+            w9  : cursor_token[]
+            ob9 : cast orbiter [ ux.app_object ]
+            if [ ob9 && w9 && w9.count > 0 ]
+                cr8 : region_at[ row_src[ ln ], cl ]
+                # a module name navigates to the module itself -- that is
+                # a FILE, the one thing the map cannot resolve for us
+                if [ cr8 && cr8.kind == 14 ]
+                    mp9 : module_path[ w9 ]
+                    if [ mp9 ]
+                        if [ nav && src ]
+                            nav.record[ pane_index, '{src.absolute[]}', ln, cl, scroll.y ]
+                        ob9.open_at_line[ mp9, pane_index, 1 ]
+                        ev.no_default = true
+                        return true
+                # everything else the compiler already resolved: a type,
+                # a silver function, or a C function out of a header
+                if [ cr8 && cr8.dsrc && cr8.dline > 0 ]
+                    # drop a nav point BEFORE leaving, or there is no
+                    # way back from wherever the definition lives
+                    if [ nav && src ]
+                        nav.record[ pane_index, '{src.absolute[]}', ln, cl, scroll.y ]
+                    ob9.open_at_line[ path '{cr8.dsrc}', pane_index, cr8.dline ]
+                    ev.no_default = true
+                    return true
+            # a modifier click in here is OURS whether or not it resolved.
+            # falling through hands it to the style inspector, and cmd
+            # does not mean 'inspect this element' inside the editor
+            ev.no_default = true
+            return true
+        return false
 
     # rail press: default is the first cell; the user navigates from there
     func press_tool [ idx: i32 ]
@@ -3646,13 +3766,15 @@ Control Editor
             pristine = false
             return
         if [ !ev.key.shift ]
-            place_cursor[ ev ]
+            # a definition jump consumed the click: we are in another
+            # file now, so no anchor and no drag from the one we left
+            if [ place_cursor[ ev ] ] return
             anchor_line = sel_line
             anchor_col  = sel_col
             # double-click selects the whole word under the caret
             if [ is_dbl ] select_word[]
         el
-            place_cursor[ ev ]
+            if [ place_cursor[ ev ] ] return
         dragging = true
         pristine = false
 
@@ -3875,6 +3997,11 @@ Control Editor
         if [ !np ] return
         same : bool [ '{src.absolute[]}' == np.path ]
         if [ !same ]
+            # through the PANE, not by assigning src: orbiter owns which
+            # file a pane holds, and setting src alone left it pointing
+            # at the old one, so the line landed in the wrong file
+            ob9 : cast orbiter [ ux.app_object ]
+            if [ ob9 ] ob9.bind_pane[ path '{np.path}', pane_index ]
             src = path '{np.path}'
             load_file[]
         sel_line      = np.line
@@ -3887,6 +4014,7 @@ Control Editor
         pristine      = false
 
     func on_key [ ev: Event ]
+        note_mod[ ev ]
         # the finder owns the keyboard while it is up: forwarding to the app
         # ate escape, so the list could not be closed
         ui_keys : bool [ nav_list || show_hits ]

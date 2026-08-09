@@ -9309,7 +9309,9 @@ none aether_build_module_initializer(aether a, enode init) {
         _u64(module_base->traits),
         _u64(module_base->typesize),
         _u64(module_isize),
-        _i32(module_icount)
+        _i32(module_icount),
+        module_base->source ? (Au)const_string(chars, module_base->source) : (Au)e_null(a, etypeid(symbol)),
+        _i32(module_base->src_line)
     ), false, false);
 
     // define public functions at the module level; this effectively imports
@@ -9342,7 +9344,9 @@ none aether_build_module_initializer(aether a, enode init) {
                 mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr)),
                 _i32(mem->member_index),
                 mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
-                mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au))
+                mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au)),
+                mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
+                _i32(mem->src_line)
             ), false, false);
 
             arg_list(mem, arg) {
@@ -9392,7 +9396,9 @@ none aether_build_module_initializer(aether a, enode init) {
                 mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                 e_meta_b,
                 _i32(fbits_index(mem->context, mem) + 1), // AF-bit slot (1-based; 0=unset)
-                _i32(mem->access_type)
+                _i32(mem->access_type),
+                mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
+                _i32(mem->src_line)
             ), false, false);
         }
     }
@@ -9477,7 +9483,9 @@ none aether_build_module_initializer(aether a, enode init) {
             _u64(tau->traits),
             _u64(mdl->autype->typesize),
             _u64(isize),
-            _i32(icount)
+            _i32(icount),
+            tau->source ? (Au)const_string(chars, tau->source) : (Au)e_null(a, etypeid(symbol)),
+            _i32(tau->src_line)
         ), false, false);
 
         // export class meta (e.g. GLSL<Au>)
@@ -9519,7 +9527,9 @@ none aether_build_module_initializer(aether a, enode init) {
                     mem->alt ? (Au)const_string(chars, mem->alt) : (Au)e_null(a, etypeid(cstr)),
                     _i32(mem->member_index),
                     mem->meta.a ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
-                    mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au))
+                    mem->meta.b ? e_typeid(a, u(etype, (Au_t)mem->meta.b)) : e_null(a, etypeid(Au)),
+                    mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
+                    _i32(mem->src_line)
                 ), false, false);
 
                 // structs have no vtable — skip function pointer slot assignment
@@ -9613,7 +9623,9 @@ none aether_build_module_initializer(aether a, enode init) {
                         ? e_typeid(a, u(etype, mem->meta.a)) : e_null(a, etypeid(Au_t)),
                     e_meta_b,
                     _i32(fbits_index(mem->context, mem) + 1), // AF-bit slot (1-based; 0=unset)
-                    _i32(mem->access_type)
+                    _i32(mem->access_type),
+                    mem->source ? (Au)const_string(chars, mem->source) : (Au)e_null(a, etypeid(symbol)),
+                    _i32(mem->src_line)
                 ), false, false);
             } else if (mem->member_type == AU_MEMBER_ENUMV) {
                 static int seq = 0;

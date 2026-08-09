@@ -39,7 +39,7 @@ element CrashBtn
             cm.do_relaunch[]
         el [ kind && kind == 'shot' ]
             cm.paste_shot[]
-        ev.stop_propagation[]
+        ev.stop[]
 
 CrashBtn BackBtn
     area : Region [ 'r8px t8px w104px h22px' ]

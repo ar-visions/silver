@@ -215,15 +215,20 @@ element EditorView
                 fels['run'] = RunButton [ icon: 'play', manual_mode: true ]
             el
                 app_paused : bool [ ed_live.run_view.is_paused*[] ]
-                fels['run']  = RunButton [ icon: (app_paused) ? 'play' : 'pause', selected: app_paused, manual_mode: true ]
-                fels['stop'] = RunButton [ icon: 'stop', manual_mode: true ]
+                # STOP takes play's own slot, so turning the app off never
+                # moves the mouse. pause is its own button, to the right
+                fels['stop']  = RunButton [ icon: 'stop', manual_mode: true ]
+                fels['pause'] = RunButton [ icon: (app_paused) ? 'play' : 'pause',
+                    selected: app_paused, manual_mode: true ]
                 fels['steps'] = StepButtons [ buttons: [ 'step_next', 'step_in', 'step_out' ], manual: true ]
             fels['args'] = ArgsField [ label: 'arguments', edit: orb.file_args[ bsrc ],
                 focusable: true ]
-            # id stays 'error': on_press already routes it to goto_error
+            # the error of the app WE ARE RUNNING, not orbiter's own
             if [ orb.err_file && orb.err_line > 0 ]
-                fels['error'] = BandError [
-                    label: '{orb.err_file.filename[]}:{orb.err_line}', manual_mode: true ]
+                fels['our_app_error'] = AppError [
+                    label: (orb.err_msg && orb.err_msg.count > 0)
+                        ? '{orb.err_file.filename[]}:{orb.err_line}  {orb.err_msg}'
+                        : '{orb.err_file.filename[]}:{orb.err_line}', manual_mode: true ]
             smask : i32 [ 0 ]
             if [ orb.show_instruments ] smask = smask | 1
             if [ orb.show_toolbox ]     smask = smask | 2
@@ -451,7 +456,7 @@ Option ReloadButton
         label_align: vec2f [ x: 0.5, y: 0.5 ],
         label_overflow: Overflow.ellipsis ]
     style : CSS {
-        area: l8px t2px w96px h22px
+        area: l1px t0px w96px h18px
         layers.body:
             fill_color: #0000
             radius: 4
@@ -470,7 +475,7 @@ Option HideToggle
     tlabel : Layer [ label_color: rgba [ '#fff9' ], label_size: 13,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
     style : CSS {
-        area: l50%-24px t2px w48px h22px
+        area: l50%-24px t0px w48px h18px
         layers.body:
             fill_color: #0000
             radius: 4
@@ -520,29 +525,37 @@ Option ErrorButton
 
 # the same error, centered on the run band. l50% is an ABSOLUTE anchor,
 # so it holds the middle whatever the l0+/r0+ runs either side of it do
-Option BandError
+Option AppError
     tlabel : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ],
         label_overflow: Overflow.ellipsis ]
     style : CSS {
-        area: l50%-5 t0 w10 h0.9
+        area: l50%-11 t0 w22 h0.9
         layers.body:
-            fill_color: #d94a6a
+            fill_color: #822
             radius: 6
-            inner_glow: #ff8fa8a2 14
+            stroke_width: 2
+            stroke_color: #faa4
+            inner_glow: #0000 0
         :hovered
             layers.body:
-                fill_color: #ec5f7e
-                inner_glow: #ffb0c2a2 18
+                fill_color: #a33
+                stroke_color: #c44
+                inner_glow: #f66c4 12
         :pressed
             layers.body:
-                fill_color: #ad3852
+                fill_color: #611
+                stroke_color: #a22
     }
 
-# window-wide strip; the pane splitter stops above it
+# window-wide strip; the pane splitter stops above it.
+# the bar owns every gap in here, edges included, instead of each
+# control carrying its own l8px/r0 offset
 Group StatusBar
     style : CSS {
         area: l0 b22px r0 h22px
+        spacing_x: 1px
+        spacing_y: 2px
         layers.sbar:
             fill_color: #625a
             inner_glow: #8af2 26
@@ -555,7 +568,9 @@ Group StatusBar
 
 # scene stepper arrow; icon is images/left.svg | right.svg
 Option SceneArrow
-    area : Region { r0+ t2px w18px h18px }
+    # NO hand-written t2px: the bar's spacing owns every gap now, and
+    # 2px on top of it put an 18px icon at y=6 in a 22px bar
+    area : Region { r0+ t0px w18px h18px }
     style : CSS {
         layers.body:
             fill_color: #0000
@@ -1030,6 +1045,7 @@ element orbiter : trinity # implements compiler
     public compile_log   : list string
     intern err_file      : path
     intern err_line      : i32
+    intern err_msg       : string
     public nav_root      : path
     # tool views mounted on the nav's left rail, from module exports
     mutable view_tools     : array string
@@ -1527,6 +1543,7 @@ element orbiter : trinity # implements compiler
                         if [ err_mod && err_mod == name ]
                             err_file = null
                             err_line = 0
+                            err_msg  = null
                             err_mod  = null
                     fw.pid = 0
             if [ fw.map && fw.map.count > 0 ]
@@ -3085,11 +3102,10 @@ element orbiter : trinity # implements compiler
     func open_file [ p: path ]
         open_in_pane[ p, active_pane ]
 
-    func open_in_pane [ p: path, pi: i32 ]
-        if [ pi >= 0 && pi < editor_slots.count && pi < nav_panes.count ]
-            cur : Editor pane_at[ pi ]
-            if [ cur && cur.src ]
-                nav_panes[ pi ].record[ pi, '{cur.src.absolute[]}', cur.sel_line, cur.sel_col, cur.scroll.y ]
+    # point a pane at a file and nothing else. no nav record: walking the
+    # history has to land without pushing a point, since record truncates
+    # the forward stack the walk is moving through
+    public func bind_pane [ p: path, pi: i32 ]
         idx : i32 [ file_slot[ p ] ]
         if [ pi >= 0 && pi < editor_slots.count ]
             editor_slots[pi] = idx
@@ -3098,6 +3114,13 @@ element orbiter : trinity # implements compiler
         active_idx = idx
         exit_finder[]
         save_session[]
+
+    func open_in_pane [ p: path, pi: i32 ]
+        if [ pi >= 0 && pi < editor_slots.count && pi < nav_panes.count ]
+            cur : Editor pane_at[ pi ]
+            if [ cur && cur.src ]
+                nav_panes[ pi ].record[ pi, '{cur.src.absolute[]}', cur.sel_line, cur.sel_col, cur.scroll.y ]
+        bind_pane[ p, pi ]
 
     public func open_at [ fp: path, lno: i32, col: i32 ] -> bool
         open_in_pane[ fp, 0 ]
@@ -3141,10 +3164,40 @@ element orbiter : trinity # implements compiler
             li += 1
         if [ ls.count == 0 ] return
         ln : i32 [ atoi[ ls.chars ] ]
+        # the file:line row ends with the COMPILER's own source location,
+        # never the sentence -- that is the line underneath it. walk to
+        # the newline, then take the row after it
+        me : i32 [ li ]
+        while [ me < content.count ]
+            if [ ((i32 content.chars[ me ]) & 255) == 10 ] break
+            me += 1
+        ms : i32 [ me + 1 ]
+        # the log carries ansi colour: skip any ESC [ ... m runs first
+        while [ ms < content.count && ((i32 content.chars[ ms ]) & 255) == 27 ]
+            while [ ms < content.count && ((i32 content.chars[ ms ]) & 255) != 109 ]
+                ms += 1
+            ms += 1
+        mend : i32 [ ms ]
+        while [ mend < content.count ]
+            c3 : i32 [ (i32 content.chars[ mend ]) & 255 ]
+            if [ c3 == 10 || c3 == 13 ] break
+            mend += 1
+        msg : string [ (ms < mend) ? content.mid[ ms, mend - ms ].trim[] : '' ]
         err_file = path '{fp}'
         err_file.hold[]
         err_line = ln
+        err_msg  = msg
+        err_msg.hold[]
         open_at_line[ err_file, active_pane, ln ]
+
+    # is the current error from a module we are RUNNING in a pane?
+    # the top tab is for code ORBITER ITSELF reloads. anything else --
+    # a file merely open in a pane -- belongs to that app's run band
+    func err_is_own [] -> bool
+        if [ !err_mod ] return false
+        ot  : typeid[ a ]
+        own : string [ ot.ident ]
+        return err_mod == own
 
     func goto_error []
         if [ !err_file || err_line <= 0 ] return
@@ -3170,6 +3223,10 @@ element orbiter : trinity # implements compiler
             ed.scroll_target = ed.scroll.y
         ed.saved_scroll = ed.scroll.y
         ed.pristine = false
+        # the ARRIVAL is its own nav point: landing on a definition has
+        # to be somewhere you can come back to, not just somewhere you left
+        if [ ed.nav && ed.src ]
+            ed.nav.record[ pi, '{ed.src.absolute[]}', ed.sel_line, ed.sel_col, ed.scroll.y ]
 
     func force_update []
         win : ux
@@ -3374,7 +3431,7 @@ element orbiter : trinity # implements compiler
             au_live_request_apply[]
             ev.no_default = true
             return
-        if [ ev.target.id == 'error' ]
+        if [ ev.target.id == 'error' || ev.target.id == 'our_app_error' ]
             goto_error[]
             ev.no_default = true
             return
@@ -3517,6 +3574,27 @@ element orbiter : trinity # implements compiler
                         el
                             # shift+click = build-run --clean
                             ed.toggle_app_run[ ev.key.shift ]
+                    break
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        # pause/resume ONLY: the play button no longer does double duty
+        if [ ev.target.id == 'pause' ]
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits EditorView ]
+                    ev3 : EditorView e
+                    ed3 : Editor pane_at[ ev3.pane_index ]
+                    if [ ed3 && ed3.run_view ]
+                        av3 : AppView ed3.run_view
+                        if [ av3.ended ]
+                            av3.ended = false
+                            av3.note = ''
+                        el
+                            av3.pause_toggle*[]
+                        # paused -> back to the source, running -> the app.
+                        # toggle_app_view owns the reload, so go through it
+                        want : bool [ !av3.paused ]
+                        if [ ed3.app_view != want ] ed3.toggle_app_view[]
                     break
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
@@ -4192,8 +4270,9 @@ element orbiter : trinity # implements compiler
         editor_els['status'] = StatusBar [ elements: sels ]
         # one avatar, window-anchored; ALWAYS mounted, :summoned slides it in
         editor_els['avatar'] = OrbiterAvatar [ topmost: true, summoned: show_orbiter ]
-        # one tab off the top edge: build errors only
-        if [ !hide_ui && err_file && err_line > 0 ]
+        # one tab off the top edge: ORBITER'S OWN state. an error from an
+        # app we happen to be running belongs to that app's run band
+        if [ !hide_ui && err_file && err_line > 0 && err_is_own[] ]
             editor_els['error'] = ErrorButton [
                 label: 'error {err_file.filename[]}:{err_line}',
                 topmost: true, manual_mode: true ]

@@ -50,7 +50,7 @@ Option NodeList
         pristine = false
 
     func on_press [ ev: Event ]
-        ev.stop_propagation[]
+        ev.stop[]
         rel_y : f32 [ ev.mouse.pos.y - content_y ]
         if [ rel_y < 0.0 ] return
         idx   : i32 [ visible_index[ i32[ rel_y / row_height ], flt[] ] ]

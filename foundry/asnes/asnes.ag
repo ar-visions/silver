@@ -240,6 +240,15 @@ ModelViewProject Mode7
 	}
 
 
+# one SNES button: a keyboard code or a joystick button, -1 = unbound
+class snes_bind
+	public key : i32 [ -1 ]
+	public pad : i32 [ -1 ]
+
+class snes_binds
+	public buttons : map snes_bind [string]
+
+
 element asnes : trinity
 	public  width          	: i32    [ 1024 ]
 	public  height         	: i32    [ 896 ]
@@ -253,6 +262,11 @@ element asnes : trinity
 	public  spctest        	: bool
 	public  putest         	: bool             # display-pipeline test: CPU buffer -> Texture -> screen
 	public  volume         	: f32              # playback volume 0..1 (adjustable; default 0.22)
+	public  bind           	: bool             # --bind: ask for each button, write binds.agi
+	mutable binds          	: snes_binds
+	mutable bind_ix        	: i32              # button the wizard is asking for
+	mutable bnames         	: array string     # wizard order
+	mutable bbits          	: array i32        # pad1 bit per name in bnames
 	mutable screen_tex     	: Texture
 	mutable m7_src         	: Texture          # 1024x1024 RGBA: unpacked Mode-7 plane (palette applied)
 	mutable m7_mat         	: Texture          # 256x1 rgba32f: per-scanline { originX, originY, a, c }
@@ -3439,23 +3453,93 @@ element asnes : trinity
 		if [ rom && rom.ext[] == 'spc' ] spcfile = rom
 		if [ volume == 0.0 ] volume = 0.22         # default playback volume (keep prop-pair override)
 		smooth = true                              # [ true ] initializer doesn't apply on element publics
+		bnames = array string [ 'Up', 'Down', 'Left', 'Right', 'A', 'B', 'X', 'Y', 'L', 'R', 'Select', 'Start' ]
+		bbits  = array i32    [ 11, 10, 9, 8, 7, 15, 6, 14, 5, 4, 13, 12 ]
+		load_binds[]
+		if [ bind ]
+			binds   = snes_binds [ ]
+			binds.buttons = map snes_bind [string] []
+			bind_ix = 0
+
+	func binds_path [] -> path
+		d : path.path_storage[ 'asnes' ]
+		if [ !d ] return null
+		return path '{d}/binds.agi'
+
+	func load_binds []
+		p : binds_path[]
+		if [ !p || !p.exists[] ] return
+		txt : string [ p.load[ typeid[string], null ] ]
+		if [ !txt || txt.count == 0 ] return
+		binds = cast snes_binds [ Au.parse_agi[ typeid[ snes_binds ], txt.chars, null ] ]
+
+	func save_binds []
+		p : binds_path[]
+		if [ !p || !binds ] return
+		p.save[ Au.string_agi[ binds ], null ]
+		puts 'asnes: bindings written to {p}'
+
+	# store what the user just pressed and move to the next button
+	func bind_capture [ key: i32, pad: i32 ]
+		if [ !binds || bind_ix >= bnames.count ] return
+		sb : snes_bind [ ]
+		sb.key = key
+		sb.pad = pad
+		binds.buttons[ bnames[ bind_ix ] ] = sb
+		bind_ix += 1
+		if [ bind_ix >= bnames.count ]
+			save_binds[]
+			bind = false
+
+	func bit_for_name [ nm: string ] -> i32
+		for [ i: i32 0, i < bnames.count, i += 1 ]
+			if [ bnames[i] == nm ] return bbits[i]
+		return -1
+
+	func bind_key_bit [ code: i32 ] -> i32
+		if [ !binds || !binds.buttons ] return -1
+		for [ v: snes_bind, k: string ] in binds.buttons
+			if [ v && v.key == code ] return bit_for_name[ k ]
+		return -1
+
+	func bind_pad_bit [ btn: i32 ] -> i32
+		if [ !binds || !binds.buttons ] return -1
+		for [ v: snes_bind, k: string ] in binds.buttons
+			if [ v && v.pad == btn ] return bit_for_name[ k ]
+		return -1
+
+	public func on_pad [ ev: Event ]
+		if [ bind ]
+			if [ ev.pad.state ] bind_capture[ -1, ev.pad.button ]
+			return
+		bit : i32 [ bind_pad_bit[ ev.pad.button ] ]
+		if [ bit >= 0 ]
+			m : u16 [ u16[1 << bit] ]
+			if [ ev.pad.state ] pad1 = pad1 | m
+			el pad1 = pad1 & (~m)
 
 	public func on_key [ ev: Event ]
 		code : i32  [ ev.key.unicode ]
 		down : bool [ ev.key.state ]
-		bit  : i32  [ -1 ]
-		if   [ code == 87 ]  bit = 11                   # W  Up
-		el [ code == 83 ]  bit = 10                   # S  Down
-		el [ code == 65 ]  bit = 9                    # A  Left
-		el [ code == 68 ]  bit = 8                    # D  Right
-		el [ code == 47 ]  bit = 15                   # /  B
-		el [ code == 39 ]  bit = 14                   # '  Y
-		el [ code == 46 ]  bit = 7                    # .  A
-		el [ code == 59 ]  bit = 6                    # ;  X
-		el [ code == 257 ] bit = 12                   # Enter  Start
-		el [ code == 340 || code == 344 ] bit = 13    # Shift  Select
-		el [ code == 81 ]  bit = 5                    # Q  L
-		el [ code == 69 ]  bit = 4                    # E  R
+		if [ bind ]
+			if [ down ]
+				if [ code == 256 ] bind = false     # esc leaves the rest unbound
+				el bind_capture[ code, -1 ]
+			return
+		bit  : i32  [ bind_key_bit[ code ] ]
+		if [ bit < 0 ]
+			if   [ code == 87 ]  bit = 11                   # W  Up
+			el [ code == 83 ]  bit = 10                   # S  Down
+			el [ code == 65 ]  bit = 9                    # A  Left
+			el [ code == 68 ]  bit = 8                    # D  Right
+			el [ code == 47 ]  bit = 15                   # /  B
+			el [ code == 39 ]  bit = 14                   # '  Y
+			el [ code == 46 ]  bit = 7                    # .  A
+			el [ code == 59 ]  bit = 6                    # ;  X
+			el [ code == 257 ] bit = 12                   # Enter  Start
+			el [ code == 340 || code == 344 ] bit = 13    # Shift  Select
+			el [ code == 81 ]  bit = 5                    # Q  L
+			el [ code == 69 ]  bit = 4                    # E  R
 		if [ bit >= 0 ]
 			m : u16 [ u16[1 << bit] ]
 			if [ down ] pad1 = pad1 | m
@@ -3467,6 +3551,29 @@ element asnes : trinity
 			if [ code == 80 ] save_req = true              # 'P' -> save savestate
 			if [ code == 76 ] load_req = true              # 'L' -> load savestate
 			if [ code == 32 ] paused = !paused             # Space pause/resume
+
+	func paint_bind [ cv: Canvas, vp: rect ]
+		cv.fill_color[ '#000' ]
+		cv.stroke_width[ 0.0 ]
+		cv.rect_to[ vp.x, vp.y, vp.w, vp.h ]
+		cv.paint[]
+		nm : string [ (bind_ix < bnames.count) ? bnames[ bind_ix ] : '' ]
+		cv.font_size[ 20 ]
+		cv.fill_color[ '#7fb2ff' ]
+		cv.draw_text[ 'press the button you want for',
+			rect [ x: vp.x, y: vp.y + vp.h * 0.30, w: vp.w, h: 30.0 ],
+			vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+		cv.font_size[ 72 ]
+		cv.fill_color[ '#ffffff' ]
+		cv.draw_text[ nm,
+			rect [ x: vp.x, y: vp.y + vp.h * 0.42, w: vp.w, h: 90.0 ],
+			vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+		cv.font_size[ 15 ]
+		cv.fill_color[ '#8a8a8a' ]
+		cv.draw_text[ '{bind_ix + 1} of {bnames.count}    controller or keyboard    esc to stop',
+			rect [ x: vp.x, y: vp.y + vp.h * 0.62, w: vp.w, h: 24.0 ],
+			vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+		cv.paint[]
 
 	func m7_setup [ cv: Canvas ]
 		msz  : i32 [ (vec_m7) ? 2048 : 1024 ]
@@ -3563,6 +3670,9 @@ element asnes : trinity
 			fw9 = fh9 * ar9
 		vp = rect [ x: vp.x + (vp.w - fw9) * 0.5, y: vp.y + (vp.h - fh9) * 0.5, w: fw9, h: fh9 ]
 		bounds = vp                                # size basis for every scale below
+		if [ bind ]
+			paint_bind[ cv, vp ]
+			return
 		if [ spctest ]
 			if [ !spc ] spc_test[]
 			return

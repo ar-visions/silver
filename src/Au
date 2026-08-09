@@ -150,6 +150,8 @@ typedef double                 *ref_f64;
     Au_t            ptr; \
     char*           ident; \
     char*           alt; \
+    cstr            source; \
+    i32             src_line; \
     u32             table_size; \
     u32             abi_size; \
     u32             align_bits; \
@@ -950,13 +952,13 @@ forward(any)
     M(AA,BB, i, method, public, Au,     get_property_by_type,   Au_t) \
     M(AA,BB, i, method, public, Au,     vrealloc,       sz) \
     M(AA,BB, i, method, public, Au_t,   meta_index,     i32) \
-    M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, i32, u64, u64, u64, i32) \
+    M(AA,BB, s, method, public, Au_t,   emplace_type, Au_t, Au_t, Au_t, Au_t, symbol, i32, u64, u64, u64, i32, symbol, i32) \
     M(AA,BB, s, method, public, Au_t,   def,            Au_t, symbol, u32, u64) \
-    M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef, symbol, i32, Au_t, Au) \
+    M(AA,BB, s, method, public, Au_t,   def_func,       Au_t, symbol, Au_t, u32, u32, u32, u64, ARef, symbol, i32, Au_t, Au, symbol, i32) \
     M(AA,BB, s, method, public, Au_t,   def_arg,        Au_t, symbol, Au_t, u64) \
     M(AA,BB, s, method, public, Au_t,   def_test,       Au_t, ARef) \
     M(AA,BB, s, method, public, Au_t,   def_meta,       Au_t, symbol, Au_t) \
-    M(AA,BB, s, method, public, Au_t,   def_prop,       Au_t, symbol, Au_t, u64, u32, u32, ARef, Au_t, Au, i32, i32) \
+    M(AA,BB, s, method, public, Au_t,   def_prop,       Au_t, symbol, Au_t, u64, u32, u32, ARef, Au_t, Au, i32, i32, symbol, i32) \
     M(AA,BB, s, method, public, Au_t,   def_type,       Au_t, symbol, u64) \
     M(AA,BB, s, method, public, Au_t,   def_member,     Au_t, symbol, Au_t, u32, u64) \
     M(AA,BB, s, method, public, Au_t,   def_class,      Au_t, symbol) \
@@ -2050,6 +2052,7 @@ declare_enum(Syntax)
     M(AA,BB, i, prop,    public, string, annotation) \
     M(AA,BB, i, prop,    public, Au,     literal) \
     M(AA,BB, i, prop,    public, Syntax, syntax) \
+    M(AA,BB, i, prop,    public, Au_t,   decl, meta, weak) \
     M(AA,BB, i, prop,    public, bool,   cmode) \
     M(AA,BB, i, prop,    public, bool,   neighbor) \
     M(AA,BB, i, method,  public, Au_t,   get_type) \
@@ -2076,11 +2079,21 @@ declare_class_4(const_tokens, tokens, array, collective)
 
 // one colored token in a silver --format (.f) map: position + Syntax kind.
 #define fmt_token_module_ Au
+// the .f wire format. ONE definition: the writer lives in silver.c and the
+// reader in Au.c, and a version that moved on only one side would either
+// reject every map or silently misparse it
+#define SILVER_FMT_VERSION  3u            // v3: tokens carry their declaration site
+#define SILVER_FMT_MAGIC    0x53464D54u   // 'SFMT'
+#define SILVER_FMT_SECTION  0xC0DEFACEu
+#define SILVER_FMT_END      0x00000000u
+
 #define fmt_token_schema(AA,BB,...) \
     M(AA,BB, i, prop, public, num,    line) \
     M(AA,BB, i, prop, public, num,    column) \
     M(AA,BB, i, prop, public, num,    length) \
-    M(AA,BB, i, prop, public, Syntax, syntax)
+    M(AA,BB, i, prop, public, Syntax, syntax) \
+    M(AA,BB, i, prop, public, string, decl_source) \
+    M(AA,BB, i, prop, public, num,    decl_line)
 declare_class(fmt_token)
 
 // one file's section of the map: canonical source path, its mtime, and its tokens.

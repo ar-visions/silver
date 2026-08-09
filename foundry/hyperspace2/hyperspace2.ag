@@ -4903,13 +4903,13 @@ element hyperspace2 : trinity
         if [ rec_mode == 'record' ]
             rec_mode = ''
             puts 'record: stopped at {rec_i} pairs'
-            ev.stop_propagation[]
+            ev.stop[]
             return
         if [ rec_mode == 'bench' ]
             rec_mode = ''
             ux.set_fullscreen[ false ]
             puts 'benchmark: stopped at {bench_i} pairs'
-            ev.stop_propagation[]
+            ev.stop[]
             return
         if [ rec_mode == 'annotate' ]
             if [ ann_tex && ann_rect.w > 0.0 ]
@@ -4929,25 +4929,25 @@ element hyperspace2 : trinity
                     ann_refresh_marks[]
                     ann_ext = ev.key.shift
                     ann_seek[ true ]
-            ev.stop_propagation[]
+            ev.stop[]
             return
         oe : cast element [ ev.origin ]
         if [ !oe ] return
         if [ oe.id == 'record' ]
             start_record[ false ]
-            ev.stop_propagation[]
+            ev.stop[]
         el [ oe.id == 'noise' ]
             start_record[ true ]
-            ev.stop_propagation[]
+            ev.stop[]
         el [ oe.id == 'plot-oc' ]
             start_annotate[]
-            ev.stop_propagation[]
+            ev.stop[]
         el [ oe.id == 'testbed' ]
             start_test[]
-            ev.stop_propagation[]
+            ev.stop[]
         el [ oe.id == 'bench' ]
             start_bench[]
-            ev.stop_propagation[]
+            ev.stop[]
 
     public func on_overlay [ cv: Canvas ]
         sw : f32 [ f32[ ux.width ] ]

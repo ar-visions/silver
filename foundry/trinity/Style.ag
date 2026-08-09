@@ -32,6 +32,10 @@ class Text
 class StyleEntry
     mutable member    : string
     mutable value     : string
+    # registered unit split off the value at parse time, or null.
+    # it resolves per ELEMENT, never on this entry -- entries are
+    # shared by every element the selector matches, and fc is not
+    mutable unit      : string
     mutable trans     : StyleTransition
     mutable bl        : StyleBlock
     manual instance  : object
@@ -145,6 +149,8 @@ class StyleBlock
                 trans : StyleTransition [ (param) ? StyleTransition[ param ] : null ]
                 expect member, 'member cannot be blank'
                 expect value,  'value cannot be blank'
+                # split a registered unit off the number while the string
+                # is still here. arrays and quoted values are left alone
                 entries[ member ] = StyleEntry [ member: member, value: value, trans: trans, bl: a, filter: filter_val ]
                 sc += 1
                 ws[ @sc ]
@@ -1262,6 +1268,18 @@ func parse_css_px [ s: string ] -> f32
         t = t.mid[ 0, t.count - 2 ]
     return f32 t.real_value[]
 
+# REGISTERED UNITS. a scalar may carry one and the unit says what the
+# number is measured in; bare means fc, which is what every width and
+# spacing in the codebase already is. returns null when there is none.
+# is_numeric is what keeps this off region strings -- 'w96px h18px'
+# ends in px too, but what precedes it is not a number
+func css_unit_of [ s: string ] -> string
+    units : array string [ 'px', 'fc' ]
+    for [ u: string ] in units
+        if [ s.count > u.count && s.ends_with[ u ] ]
+            if [ s.mid[ 0, s.count - u.count ].is_numeric[] ] return u
+    return null
+
 Mixable Radius
     public tl : f32
     public tr : f32
@@ -1576,7 +1594,13 @@ func parse_block_body [ bl: StyleBlock, lines: array CSSLine, first: i32, last: 
         trans : (param) ? StyleTransition[ param ] : null
         is_bind : bool [ value_s && value_s.count >= 2 && value_s.chars[0] == '{' && value_s.chars[value_s.count - 1] == '}' ]
         bname   : string [ (is_bind) ? value_s.mid[ 1, value_s.count - 2 ].trim[] : null ]
-        se : StyleEntry [ member: member, value: value, trans: trans, bl: bl, line: lines[j].line, binding: bname, filter: filter_val ]
+        # NOTE the unit, never strip it. 'area: 8px' is a Region built
+        # from this very string -- rewriting it to '8' fed a bare float
+        # to Region's f32 construct and moved the scrollbar off its edge.
+        # only a genuinely scalar member reads the unit, at apply time
+        unit_val : string [ null ]
+        if [ value_s && !is_bind ] unit_val = css_unit_of[ value_s ]
+        se : StyleEntry [ member: member, value: value, unit: unit_val, trans: trans, bl: bl, line: lines[j].line, binding: bname, filter: filter_val ]
         bl.entries[ member ] = se
         j += 1
 

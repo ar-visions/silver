@@ -2175,7 +2175,7 @@ element main : trinity
     public func on_click [ ev: Event ]
         if [ !annotate || !ann_img ] return
         if [ ann_rw < 1.0 ] return
-        ev.stop_propagation[]
+        ev.stop[]
         mx : f32 [ ev.mouse.pos.x - bounds.x ]
         cols : f32 [ f32[ ann_img.width ] ]
         c5 : f32 [ (mx - ann_rx) / ann_rw * cols ]
