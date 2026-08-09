@@ -300,22 +300,32 @@ shader CanvasUI
         vec4 D = texelFetch(image, clamp(ip + ivec2( 0, 1), ivec2(0), mx), 0);
         vec4 L = texelFetch(image, clamp(ip + ivec2(-1, 0), ivec2(0), mx), 0);
         vec4 R = texelFetch(image, clamp(ip + ivec2( 1, 0), ivec2(0), mx), 0);
+        // corner diagonals: a line running THROUGH a corner must not be cut,
+        // or a 1-texel diagonal gets bevelled from both sides into a hole
+        vec4 LU = texelFetch(image, clamp(ip + ivec2(-1,-1), ivec2(0), mx), 0);
+        vec4 RU = texelFetch(image, clamp(ip + ivec2( 1,-1), ivec2(0), mx), 0);
+        vec4 LD = texelFetch(image, clamp(ip + ivec2(-1, 1), ivec2(0), mx), 0);
+        vec4 RD = texelFetch(image, clamp(ip + ivec2( 1, 1), ivec2(0), mx), 0);
         float ud = cv_eq(U, D);
         float lr = cv_eq(L, R);
         vec4  c  = E;
-        if (cv_eq(L, U) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(L, E) < 0.5) {{
+        if (cv_eq(L, U) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(L, E) < 0.5
+            && cv_eq(LU, E) < 0.5) {{
             float d = fp.x + fp.y;
             c = mix(L, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
         }}
-        if (cv_eq(R, U) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(R, E) < 0.5) {{
+        if (cv_eq(R, U) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(R, E) < 0.5
+            && cv_eq(RU, E) < 0.5) {{
             float d = (1.0 - fp.x) + fp.y;
             c = mix(R, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
         }}
-        if (cv_eq(L, D) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(L, E) < 0.5) {{
+        if (cv_eq(L, D) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(L, E) < 0.5
+            && cv_eq(LD, E) < 0.5) {{
             float d = fp.x + (1.0 - fp.y);
             c = mix(L, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
         }}
-        if (cv_eq(R, D) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(R, E) < 0.5) {{
+        if (cv_eq(R, D) > 0.5 && lr < 0.5 && ud < 0.5 && cv_eq(R, E) < 0.5
+            && cv_eq(RD, E) < 0.5) {{
             float d = (1.0 - fp.x) + (1.0 - fp.y);
             c = mix(R, c, clamp((d - 0.5) / w + 0.5, 0.0, 1.0));
         }}

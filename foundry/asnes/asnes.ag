@@ -1583,6 +1583,57 @@ element asnes : trinity
 			spr_prevy[n] = cury[n]
 		use_shot = false
 
+	func sprite_find [ par: @i32, x: i32 ] -> i32
+		r : i32 [ x ]
+		while [ par[r] != r ] r = par[r]
+		p : i32 [ x ]
+		while [ par[p] != p ]
+			nx : i32 [ par[p] ]
+			par[p] = r
+			p = nx
+		return r
+
+	func sprite_union [ par: @i32, s1: i32, s2: i32 ]
+		ra : i32 [ sprite_find[ par, s1 ] ]
+		rb : i32 [ sprite_find[ par, s2 ] ]
+		if [ ra != rb ] par[ra] = rb
+
+	# OBJs whose pixels touch must ride one plane. split across planes,
+	# each side sees the other as empty and bevels its own silhouette
+	func union_sprites []
+		par : local i32 [ 128 ]
+		cnt : local i32 [ 128 ]
+		ws  : local i32 [ 128 ]
+		ss  : local i32 [ 128 ]
+		for [ n: i32 0, n < 128, n += 1 ]
+			par[n] = n
+			cnt[n] = 0
+			ws[n]  = 0
+			ss[n]  = 0
+		for [ y: i32 0, y < 224, y += 1 ]
+			base : i32 [ y * 256 ]
+			for [ x: i32 0, x < 256, x += 1 ]
+				i : i32 [ base + x ]
+				if [ ppu.obj_color[i] == 0 ] continue
+				oa : i32 [ i32[ ppu.obj_idx[i] ] ]
+				cnt[oa] += 1
+				if [ x + 1 < 256 && ppu.obj_color[i + 1] != 0 ]
+					ob : i32 [ i32[ ppu.obj_idx[i + 1] ] ]
+					if [ oa != ob ] sprite_union[ @par[0], oa, ob ]
+				if [ y + 1 < 224 && ppu.obj_color[i + 256] != 0 ]
+					oc : i32 [ i32[ ppu.obj_idx[i + 256] ] ]
+					if [ oa != oc ] sprite_union[ @par[0], oa, oc ]
+		for [ n: i32 0, n < 128, n += 1 ]
+			if [ cnt[n] == 0 ] continue
+			r : i32 [ sprite_find[ @par[0], n ] ]
+			if [ spr_world[n] != 0 ] ws[r] += cnt[n]
+			el                       ss[r] += cnt[n]
+		# the bigger side of a touching group decides for all of it
+		for [ n: i32 0, n < 128, n += 1 ]
+			if [ cnt[n] == 0 ] continue
+			r : i32 [ sprite_find[ @par[0], n ] ]
+			spr_world[n] = (ws[r] > ss[r]) ? u8[1] : u8[0]
+
 	func ppu_render_layers [ frame_b3: bool ]
 		use_shot = shot_valid
 		for [ i: i32 0, i < 73728, i += 1 ]
@@ -4863,6 +4914,7 @@ element asnes : trinity
 			printf[ "BGLIDE f%u d1=%d,%d d2=%d,%d d3=%d,%d b3hi=%d\n",
 				dbg_frames, rdh[0], rdv[0], rdh[1], rdv[1], rdh[2], rdv[2], (frame_b3) ? 1 : 0 ]
 		classify_sprites[ rdh[0], rdv[0], rdh[1], rdv[1] ]
+		union_sprites[]
 		if [ lay_frame ] ppu_render_layers[ frame_b3 ]
 		pub_lock.lock[]
 		if [ lay_frame ]
