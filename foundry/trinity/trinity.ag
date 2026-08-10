@@ -124,6 +124,8 @@ enum HM
     move    : 5
     key     : 6
     text    : 7
+    # deltas ride as hundredths; position comes from the last move
+    wheel   : 8
     resize  : 9
     close   : 10
     shell   : 11
@@ -143,6 +145,7 @@ func host_pb          [] -> i32
 func host_pc          [] -> i32
 func host_tex_publish [ slot: i32, side: i32, fd0: i32, fd1: i32, w2: i32, h2: i32, fmt: i32 ]
 func host_tex_gen     [ slot: i32, side: i32 ] -> i32
+func host_tex_clear   [ slot: i32, side: i32 ]
 func host_tex_flip    [ slot: i32, side: i32, front: i32 ]
 func host_tex_front   [ slot: i32, side: i32 ] -> i32
 func host_tex_pull    [ slot: i32, side: i32, which: i32, w2: @i32, h2: @i32, fmt: @i32 ] -> i32
@@ -154,9 +157,15 @@ func host_app_verdict [ slot: i32 ] -> i32
 func host_app_pause   [ slot: i32 ]
 func host_app_resume  [ slot: i32 ]
 func au_live_set_reload [ on: i32 ]
+func au_mem_fraction  [] -> f32
+func au_mem_rss       [] -> i64
+func au_mem_virt      [] -> i64
+func au_mem_phys      [] -> i64
 func agent_sock_open  [ nm: cstr ] -> i32
 func agent_sock_line  [ buf: @i8, cap: i32 ] -> i32
 func agent_sock_reply [ s: cstr ]
+func agent_sock_send  [ nm: cstr, txt: cstr ] -> i32
+func agent_sock_ask   [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
 
 abstract live_app media_app
     context w           : Display*
@@ -167,12 +176,15 @@ abstract live_app media_app
     public  width       : i32
     public  height      : i32
     public  lock_aspect : bool
+    # playback gain 0..1, driven by the shell's slider over the socket
+    public  volume      : f32  [ 1.0 ]
     public  live_reload : bool [ true ]
     public  text_mode   : bool [ false ]
     public  screenshot  : path
     # --shot-frame N: which frame to capture (default 60)
     public  shot_frame  : i32 [ 60 ]
     intern  shot_frames : i32
+    intern  path_said   : bool
     intern  next_second : i64
     intern  frames      : i32
     public  attach      : path
@@ -180,6 +192,26 @@ abstract live_app media_app
     intern  share_tex0  : Texture
     intern  share_tex1  : Texture
     intern  share_back  : i32
+    # one shared surface per instrument, on side 2 + its slot. a toggled
+    # off slot keeps its place, so a live instrument's side never moves
+    intern  instr_slots : array string
+    intern  instr_cv    : map Canvas  [string]
+    intern  instr_t0    : map Texture [string]
+    intern  instr_t1    : map Texture [string]
+    intern  instr_bk    : map i32     [string]
+    # 1 = this instrument paints a view; 1 = it keeps writing to the log
+    intern  instr_view  : map i32     [string]
+    intern  instr_logs  : map i32     [string]
+    # 1 = its descriptor is live for the shell to pull
+    intern  instr_pub   : map i32     [string]
+    # the WIDTH the shell gives this instrument. the height is ours
+    intern  instr_w     : map i32     [string]
+    intern  instr_ms    : i64
+    # test-pattern accounting: publish count and the last interval
+    intern  instr_n     : i64
+    intern  instr_dt    : i64
+    # the built-in memory instrument's samples, oldest first
+    intern  mem_hist    : array f32
     intern  app_pid : i32
     # aspect captured at init — resize requests are clamped to it
     intern  aspect_w    : i32
@@ -214,6 +246,14 @@ abstract live_app media_app
         return em
 
     func frame [ ] -> bool
+        if [ !path_said ]
+            path_said = true
+            fp8 : fopen[ '/tmp/hostapp-path.log', 'a' ]
+            if [ fp8 ]
+                fprintf[ fp8, "app=%s attach=%d isolate=%d slot=%d\n",
+                    getenv[ 'SILVER_APP' ], (attach) ? 1 : 0,
+                    (getenv[ 'SILVER_ISOLATE_APP' ]) ? 1 : 0, host_slot[] ]
+                fclose[ fp8 ]
         if [ w ]
             bwn : Window [ w ]
             if [ !attach ]
@@ -230,6 +270,7 @@ abstract live_app media_app
                 render*[]
                 share_publish[ 1 ]
                 ide_pump[]
+                if [ debug ] agent_pump[]
                 Au.auto_free[ false ]
                 usleep[ 4000 ]
                 if [ app_pid == 0 ] app_pid = parse_app_pid[]
@@ -238,7 +279,11 @@ abstract live_app media_app
             if [ attach ]
                 render*[]
                 share_publish[ 0 ]
+                instr_publish[]
                 alive : bool [ attach_pump[] ]
+                # hosted apps return before the main loop's pump, so the
+                # agent socket would never open for the ones we host
+                if [ debug ] agent_pump[]
                 Au.auto_free[ false ]
                 usleep[ 4000 ]
                 return alive && !Au.quit_requested[]
@@ -267,6 +312,7 @@ abstract live_app media_app
             vk.paint_calls  = 0
             vk.sdf_hit      = 0
             vk.sdf_miss     = 0
+            vk.sdf_rect     = 0
             vk.geom_us      = 0
             vk.render_allocs = 0
             vk.ring_frees    = 0
@@ -278,6 +324,7 @@ abstract live_app media_app
             wp9 : Window [ w ]
             sup9 : bool [ getenv[ 'SILVER_ISOLATE_CHILD' ] != null ]
             if [ (wp9.ide_asked || sup9) && !wp9.ide_active ] share_publish[ 0 ]
+            instr_publish[]
         if [ screenshot ]
             shot_frames += 1
             if [ shot_frames >= shot_frame ]
@@ -313,12 +360,316 @@ abstract live_app media_app
             host_tex_flip[ host_slot[], side, share_back ]
             share_back = 1 - share_back
 
+        # every instrument this app offers, in a fixed order — its index
+        # IS its surface side. nothing is toggled off, so a name never
+        # moves and the shell can address a side without asking
+        func instr_list [] -> array string
+            if [ instr_slots && instr_slots.count > 0 ] return instr_slots
+            wn : Window [ w ]
+            ao : element [ cast element [ wn.app_object ] ]
+            ns : array string []
+            vl : array [ (ao) ? ao.instruments*[] : null ]
+            mem : bool [ false ]
+            tst : bool [ false ]
+            if [ vl ]
+                for [ i: i32 0, i < vl.count, i += 1 ]
+                    e9 : '{vl[i]}'
+                    if [ e9.compare[ 'memory' ] == 0 ] mem = true
+                    if [ e9.compare[ 'test' ]   == 0 ] tst = true
+                    ns.push[ e9 ]
+            if [ !mem ] ns.push[ 'memory' ]
+            if [ !tst ] ns.push[ 'test' ]
+            while [ ns.count > 8 ] ns.remove[ ns.count - 1 ]
+            instr_slots = ns
+            return instr_slots
+
+        # a missing key is not a zero: reading one dereferences null
+        func instr_has [ m: map i32 [string], nm: string ] -> bool
+            if [ !m || !nm ] return false
+            if [ !m.contains[ nm ] ] return false
+            return m[ nm ] != 0
+
+        # every instrument as 'name:side:log'. side is -1 when it has no
+        # view, which is the normal case — a view is only an option
+        func instr_state [] -> string
+            rs : string [ '' ]
+            sl : array [ instr_list[] ]
+            if [ !sl ] return rs
+            for [ i: i32 0, i < sl.count, i += 1 ]
+                nm : string sl[i]
+                if [ !nm || nm.count == 0 ] continue
+                sd : i32 [ (instr_has[ instr_view, nm ]) ? 2 + i : -1 ]
+                lg : i32 [ (instr_has[ instr_logs, nm ]) ? 1 : 0 ]
+                e9 : '{nm}:{sd}:{lg}'
+                rs = (rs.count == 0) ? e9 : '{rs} {e9}'
+            return rs
+
+        # shift+click on the shell's button: keep writing this one to the
+        # app log even while nobody is looking at its pane
+        func instr_log_toggle [ nm: string ]
+            if [ !nm || nm.count == 0 ] return
+            if [ !instr_logs ] instr_logs = map i32 [string] []
+            instr_logs[ nm ] = (instr_has[ instr_logs, nm ]) ? 0 : 1
+
+        # the entries an instrument reads right now. the app answers for
+        # its own; we answer for the memory one every app gets free
+        func instr_read [ nm: string ] -> array string
+            wn : Window [ w ]
+            ao : element [ cast element [ wn.app_object ] ]
+            ls : array [ (ao) ? ao.read_instrument*[ nm ] : null ]
+            if [ ls ] return ls
+            # nm is a PARAMETER: == against a literal is false here
+            if [ nm.compare[ 'memory' ] == 0 ] return mem_lines[]
+            if [ nm.compare[ 'test' ]   == 0 ] return test_lines[]
+            return null
+
+        func mem_lines [] -> array string
+            ls : array string []
+            if [ !mem_hist || mem_hist.count == 0 ] return ls
+            f9 : f32 [ mem_hist[ mem_hist.count - 1 ] ]
+            pk : f32 [ 0.0 ]
+            lo : f32 [ f9 ]
+            for [ i: i32 0, i < mem_hist.count, i += 1 ]
+                if [ mem_hist[i] > pk ] pk = mem_hist[i]
+                if [ mem_hist[i] < lo ] lo = mem_hist[i]
+            dl : f32 [ f9 - mem_hist[0] ]
+            c8 : i32 [ i32[ f9 ] / 1024 ]
+            p8 : i32 [ i32[ pk ] / 1024 ]
+            l8 : i32 [ i32[ lo ] / 1024 ]
+            ls.push[ 'rss      {c8} MB  ({i32[ f9 ]} KB)' ]
+            ls.push[ 'peak     {p8} MB' ]
+            ls.push[ 'low      {l8} MB' ]
+            ls.push[ 'drift    {i32[ dl ]} KB over {mem_hist.count}' ]
+            vt8 : i64 [ au_mem_virt[] ]
+            ph8 : i64 [ au_mem_phys[] ]
+            vm8 : i64 [ vt8 / 1048576 ]
+            pm8 : i64 [ ph8 / 1048576 ]
+            ls.push[ 'virt     {vm8} MB' ]
+            ls.push[ 'phys     {pm8} MB' ]
+            return ls
+
+        # the unit-test pattern. every publish advances the marching block
+        # by one cell, so a still frame shows the phase and two frames N
+        # seconds apart show the true rate. the 1px border sits on the
+        # exact texture edge — if it is clipped or soft, we are scaling
+        func paint_test [ cv: Canvas, r: rect ]
+            cv.stroke_width[ 0.0 ]
+            cells : i32 [ 8 ]
+            cw9 : f32 [ r.w / f32[ cells ] ]
+            ph9 : i32 [ i32[ instr_n % i64[ cells ] ] ]
+            for [ i: i32 0, i < cells, i += 1 ]
+                cv.fill_color[ (i % 2 == 0) ? rgba [ '#1b1b28' ] : rgba [ '#23233a' ] ]
+                cv.rect_to[ r.x + f32[i] * cw9, r.y + 20.0, cw9, r.h - 40.0 ]
+                cv.paint[]
+            cv.fill_color[ rgba [ '#7fff5f' ] ]
+            cv.rect_to[ r.x + f32[ ph9 ] * cw9, r.y + 20.0, cw9, r.h - 40.0 ]
+            cv.paint[]
+            # corner markers: red = top-left, blue = bottom-right
+            cv.fill_color[ rgba [ '#ff3b30' ] ]
+            cv.rect_to[ r.x, r.y, 8.0, 8.0 ]
+            cv.paint[]
+            cv.fill_color[ rgba [ '#3b7bff' ] ]
+            cv.rect_to[ r.x + r.w - 8.0, r.y + r.h - 8.0, 8.0, 8.0 ]
+            cv.paint[]
+            # a 1px frame on the true edge of the surface
+            cv.fill_color[ rgba [ '#ffffff' ] ]
+            cv.rect_to[ r.x, r.y, r.w, 1.0 ]
+            cv.paint[]
+            cv.rect_to[ r.x, r.y + r.h - 1.0, r.w, 1.0 ]
+            cv.paint[]
+            cv.rect_to[ r.x, r.y, 1.0, r.h ]
+            cv.paint[]
+            cv.rect_to[ r.x + r.w - 1.0, r.y, 1.0, r.h ]
+            cv.paint[]
+
+        func test_lines [] -> array string
+            ls : array string []
+            hz : i64 [ (instr_dt > 0) ? (1000 / instr_dt) : 0 ]
+            ls.push[ 'publishes  {instr_n}' ]
+            ls.push[ 'interval   {instr_dt} ms' ]
+            ls.push[ 'rate       {hz} hz' ]
+            return ls
+
+        # the free instrument every app gets: this process's resident set
+        # as a share of physical ram, one sample per publish
+        func paint_memory [ cv: Canvas, r: rect ]
+            if [ !mem_hist || mem_hist.count == 0 ] return
+            f9 : f32 [ mem_hist[ mem_hist.count - 1 ] ]
+            pk : f32 [ 0.0 ]
+            lo : f32 [ f9 ]
+            for [ i: i32 0, i < mem_hist.count, i += 1 ]
+                if [ mem_hist[i] > pk ] pk = mem_hist[i]
+                if [ mem_hist[i] < lo ] lo = mem_hist[i]
+            # scale to the BAND the samples occupy, not to zero — resident
+            # size barely moves, so a zero-based graph is a flat line
+            span : f32 [ pk - lo ]
+            if [ span < 64.0 ] span = 64.0
+            base : f32 [ lo - span * 0.25 ]
+            top  : f32 [ pk + span * 0.25 ]
+            rng  : f32 [ top - base ]
+            gx : f32 [ r.x + 6.0 ]
+            gy : f32 [ r.y + 30.0 ]
+            gw : f32 [ r.w - 12.0 ]
+            gh : f32 [ r.h - 38.0 ]
+            cv.stroke_width[ 0.0 ]
+            cv.fill_color[ rgba [ '#0d0b14' ] ]
+            cv.rect_to[ gx, gy, gw, gh ]
+            cv.paint[]
+            # a bar is at least ONE pixel. gw/180 is under a pixel in a
+            # narrow pane, and drawing bw-1.0 made it negative — that is
+            # why the graph was two stray lines
+            bw : f32 [ gw / 180.0 ]
+            if [ bw < 1.0 ] bw = 1.0
+            wp : f32 [ (bw > 2.0) ? bw - 1.0 : bw ]
+            cv.fill_color[ rgba [ '#7fb2ff' ] ]
+            py : f32 [ -1.0 ]
+            for [ i: i32 0, i < mem_hist.count, i += 1 ]
+                # newest at the RIGHT edge; anything older than the pane
+                # is simply off the left
+                bx : f32 [ gx + gw - f32[ mem_hist.count - i ] * bw ]
+                if [ bx < gx ]
+                    py = -1.0
+                    continue
+                bh : f32 [ gh * ((mem_hist[i] - base) / rng) ]
+                if [ bh < 1.0 ] bh = 1.0
+                yy : f32 [ gy + gh - bh ]
+                # the LINE only, nothing filled — and joined to the last
+                # sample, or a step leaves a gap between the two levels
+                if [ py >= 0.0 && py != yy ]
+                    y0 : f32 [ (py < yy) ? py : yy ]
+                    y1 : f32 [ (py < yy) ? yy : py ]
+                    cv.rect_to[ bx, y0, 1.5, y1 - y0 + 1.5 ]
+                    cv.paint[]
+                cv.rect_to[ bx, yy, wp, 1.5 ]
+                cv.paint[]
+                py = yy
+            cv.font_size[ 11 ]
+            cv.fill_color[ rgba [ '#cfd6e4' ] ]
+            cur9 : i32 [ i32[ f9 ] / 1024 ]
+            pkm9 : i32 [ i32[ pk ] / 1024 ]
+            lom9 : i32 [ i32[ lo ] / 1024 ]
+            cv.draw_text[ '{cur9} MB  peak {pkm9}  low {lom9}',
+                rect [ x: gx, y: r.y + 3.0, w: gw, h: 13.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            cv.paint[]
+            vt9 : i64 [ au_mem_virt[] ]
+            vm9 : i64 [ vt9 / 1048576 ]
+            cv.fill_color[ rgba [ '#8a83a0' ] ]
+            cv.draw_text[ 'virt {vm9}  n {mem_hist.count}',
+                rect [ x: gx, y: r.y + 16.0, w: gw, h: 13.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            cv.paint[]
+
+        # instruments are inspectors, not the game: they sample at 8hz, on
+        # their OWN surfaces, so nothing here touches the app's frame
+        func instr_publish []
+            sl9 : array [ instr_list[] ]
+            if [ !sl9 || sl9.count == 0 ] return
+            now : i64 [ epoch_millis[] ]
+            if [ instr_ms != 0 && now - instr_ms < 125 ] return
+            if [ instr_ms != 0 ] instr_dt = now - instr_ms
+            instr_n += 1
+            instr_ms = now
+            if [ !mem_hist ] mem_hist = array f32 []
+            # KILOBYTES resident. the fraction-of-total-ram this used to
+            # sample is ~0.001 here, which draws as a flat line
+            rss9 : i64 [ au_mem_rss[] ]
+            kb9  : i64 [ rss9 / 1024 ]
+            mem_hist.push[ f32[ kb9 ] ]
+            while [ mem_hist.count > 180 ] mem_hist.remove[ 0 ]
+            wn : Window [ w ]
+            ao : element [ cast element [ wn.app_object ] ]
+            if [ !instr_view ] instr_view = map i32 [string] []
+            for [ i: i32 0, i < sl9.count, i += 1 ]
+                # HOLD it: this is a borrow, and we call into app code
+                # below. anything it allocates can reclaim the name, and
+                # the next compare then reads freed memory
+                nm : string sl9[i]
+                if [ !nm || nm.count == 0 ] continue
+                nm.hold[]
+                # logging writes the entries to the app log, pane or no pane
+                if [ instr_has[ instr_logs, nm ] ]
+                    ls : array [ instr_read[ nm ] ]
+                    if [ ls ]
+                        for [ k: i32 0, k < ls.count, k += 1 ]
+                            puts '[{nm}] {ls[k]}'
+                if [ !instr_cv ] instr_cv = map Canvas [string] []
+                # the shell says the width; the app says the height
+                if [ !instr_w ] instr_w = map i32 [string] []
+                iw : i32 [ (instr_w.contains[ nm ]) ? instr_w[ nm ] : 150 ]
+                if [ iw < 16 ] iw = 16
+                ih : i32 [ (ao) ? ao.instrument_height*[ nm, iw ] : 0 ]
+                if [ ih <= 0 ] ih = (nm == 'memory') ? 120 : (nm == 'test') ? 84 : iw
+                if [ ih < 16 ] ih = 16
+                cvi : instr_cv[ nm ]
+                if [ !cvi ]
+                    cvi = Canvas [ w: wn, vk: vk, format: Pixel.rgba8,
+                        width: iw, height: ih, load_existing: true ]
+                    cvi.update[]
+                    instr_cv[ nm ] = cvi
+                el [ cvi.width != iw || cvi.height != ih ]
+                    cvi.resize[ iw, ih ]
+                r9 : rect [ x: 0.0, y: 0.0, w: f32[ iw ], h: f32[ ih ] ]
+                cvi.reset[ vec4f [ 0.04, 0.03, 0.06, 1.0 ] ]
+                drew : bool [ (ao) ? ao.paint_instrument*[ cvi, nm, r9 ] : false ]
+                if [ !drew && nm == 'memory' ]
+                    paint_memory[ cvi, r9 ]
+                    drew = true
+                if [ !drew && nm == 'test' ]
+                    paint_test[ cvi, r9 ]
+                    drew = true
+                # no view is the normal case: the entries stand alone, and
+                # the shell must not be left pulling a surface we never fill
+                if [ !drew ]
+                    if [ instr_has[ instr_view, nm ] ]
+                        instr_view[ nm ] = 0
+                        if [ instr_pub ] instr_pub[ nm ] = 0
+                        host_tex_clear[ host_slot[], 2 + i ]
+                    nm.drop[]
+                    continue
+                instr_view[ nm ] = 1
+                # the paints are BATCHED into the canvas ring and text is
+                # a SECOND render that nothing fences. submit and wait for
+                # both, or the copy takes whatever fraction had landed
+                cvi.sync_all[]
+                instr_share[ nm, 2 + i, cvi ]
+                nm.drop[]
+
+        func instr_share [ nm: string, side: i32, cvi: Canvas ]
+            tx : Texture [ cvi.color ]
+            if [ !tx || !tx.vk_image ] return
+            if [ !instr_t0 ] instr_t0 = map Texture [string] []
+            if [ !instr_t1 ] instr_t1 = map Texture [string] []
+            if [ !instr_bk ] instr_bk = map i32 [string] []
+            if [ !instr_pub ] instr_pub = map i32 [string] []
+            t0 : instr_t0[ nm ]
+            if [ !t0 || t0.width != tx.width || t0.height != tx.height ]
+                wn : Window [ w ]
+                t0 = Texture [ vk: vk, w: wn, width: tx.width, height: tx.height,
+                    vk_format: tx.vk_format, shareable: true ]
+                t1 : Texture [ vk: vk, w: wn, width: tx.width, height: tx.height,
+                    vk_format: tx.vk_format, shareable: true ]
+                instr_t0[ nm ] = t0
+                instr_t1[ nm ] = t1
+                instr_bk[ nm ] = 0
+                instr_pub[ nm ] = 0
+            # a cleared descriptor MUST be republished. the textures survive
+            # a toggle, so size alone would never publish it again
+            if [ !instr_has[ instr_pub, nm ] ]
+                instr_pub[ nm ] = 1
+                host_tex_publish[ host_slot[], side, instr_t0[ nm ].shared_fd,
+                    instr_t1[ nm ].shared_fd, tx.width, tx.height, i32[ tx.vk_format ] ]
+            bk : i32 [ (instr_bk.contains[ nm ]) ? instr_bk[ nm ] : 0 ]
+            bt : Texture [ (bk == 0) ? instr_t0[ nm ] : instr_t1[ nm ] ]
+            vk.copy_image[ tx, bt ]
+            host_tex_flip[ host_slot[], side, bk ]
+            instr_bk[ nm ] = 1 - bk
+
         func attach_pump [] -> bool
             wn : Window [ w ]
             for [ i: i32 0, i < 64, i += 1 ]
                 t : i32 [ host_poll[ 1 ] ]
                 if [ t == 0 ] break
-                puts 'HOSTMSG slot={host_slot[]} t={t} a={host_pa[]} b={host_pb[]}'
                 if [ t == i32[ HM.close ] ] return false
                 if [ t == i32[ HM.key ] ]
                     wn.ev.clear[]
@@ -360,6 +711,16 @@ abstract live_app media_app
                     wn.ev.mouse.pos.x = f32[ host_pa[] ]
                     wn.ev.mouse.pos.y = f32[ host_pb[] ]
                     wn.move_event[ wn.ev ]
+                el [ t == i32[ HM.wheel ] ]
+                    wn.ev.clear[]
+                    wn.ev.mouse.pos = [ wn.mouse.x, wn.mouse.y ]
+                    wn.ev.mouse.wheel_delta = [ host_pa[] / 100.0, host_pb[] / 100.0 ]
+                    m7 : i32 [ host_pc[] ]
+                    wn.ev.key.shift = (m7 & 1) != 0
+                    wn.ev.key.ctrl  = (m7 & 2) != 0
+                    wn.ev.key.alt   = (m7 & 4) != 0
+                    wn.ev.key.meta  = (m7 & 8) != 0
+                    wn.wheel_event[ wn.ev ]
                 el [ t == i32[ HM.resize ] ]
                     rw : i32 [ host_pa[] ]
                     rh : i32 [ host_pb[] ]
@@ -541,6 +902,77 @@ abstract live_app media_app
                     if [ cmd == 'padtap' ]
                         wn.ev.pad.state = 0
                         wn.pad_event[ wn.ev ]
+                el [ cmd == 'instruments' ]
+                    av8 : cast element [ wn.app_object ]
+                    vl8 : array [ (av8) ? av8.instruments*[] : null ]
+                    rs8 : ''
+                    mem8 : bool [ false ]
+                    tst8 : bool [ false ]
+                    if [ vl8 ]
+                        for [ i: i32 0, i < vl8.count, i += 1 ]
+                            if [ '{vl8[i]}' == 'memory' ] mem8 = true
+                            if [ '{vl8[i]}' == 'test' ]   tst8 = true
+                            rs8 = (i == 0) ? '{vl8[i]}' : '{rs8} {vl8[i]}'
+                    # every app gets the memory graph and the test pattern;
+                    # listing either name overrides ours
+                    if [ !mem8 ] rs8 = (rs8.count == 0) ? 'memory' : '{rs8} memory'
+                    if [ !tst8 ] rs8 = (rs8.count == 0) ? 'test' : '{rs8} test'
+                    agent_sock_reply[ '{rs8}\n' ]
+                    continue
+                # the shell's slider. an app with its own volume gets it too
+                el [ cmd == 'volume' ]
+                    av7 : cast element [ wn.app_object ]
+                    vm7 : Au_t [ (av7) ? find_member[ typeid[ av7 ], 'volume',
+                        AU_MEMBER_VAR, 0, true ] : null ]
+                    if [ parts.count >= 2 ]
+                        volume = f32[ parts[1].real_value[] ]
+                        if [ vm7 ]
+                            cv7 : Au.convert[ vm7.src, parts[1] ]
+                            if [ cv7 ] av7.set_property[ 'volume', cv7 ]
+                    # reply with what the APP holds when it owns one
+                    rv7 : f32 [ volume ]
+                    if [ vm7 ] rv7 = f32[ av7.member_object[ vm7 ] ]
+                    agent_sock_reply[ '{rv7}\n' ]
+                    continue
+                # the shell letterboxes only an app that locked its aspect
+                el [ cmd == 'aspect' ]
+                    agent_sock_reply[ (lock_aspect) ? '1\n' : '0\n' ]
+                    continue
+                # the shell's WIDTH for one instrument, in pixels
+                el [ cmd == 'instr-width' && parts.count >= 3 ]
+                    if [ !instr_w ] instr_w = map i32 [string] []
+                    instr_w[ parts[1] ] = i32[ parts[2].integer_value[] ]
+                el [ cmd == 'instr-log' && parts.count >= 2 ]
+                    instr_log_toggle[ parts[1] ]
+                    agent_sock_reply[ '{instr_state[]}\n' ]
+                    continue
+                el [ cmd == 'instr' ]
+                    agent_sock_reply[ '{instr_state[]}\n' ]
+                    continue
+                # the enumeration itself — one entry per line
+                el [ cmd == 'instr-read' && parts.count >= 2 ]
+                    lr8 : array [ instr_read[ parts[1] ] ]
+                    rr8 : ''
+                    if [ lr8 ]
+                        for [ i: i32 0, i < lr8.count, i += 1 ]
+                            rr8 = '{rr8}{lr8[i]}\n'
+                    agent_sock_reply[ '{rr8}\n' ]
+                    continue
+                el [ cmd == 'app' && line.count > 4 ]
+                    aa8 : cast element [ wn.app_object ]
+                    if [ aa8 ] aa8.on_agent*[ line.mid[ 4, line.count - 4 ] ]
+                    el ok9 = false
+                el [ cmd == 'set' && parts.count >= 3 ]
+                    ao8 : cast element [ wn.app_object ]
+                    sm8 : Au_t [ (ao8) ? find_member[ typeid[ ao8 ], parts[1].chars,
+                        AU_MEMBER_VAR, 0, true ] : null ]
+                    if [ sm8 ]
+                        # the member's own type does the conversion, so a
+                        # bool prop takes a bool and an i32 takes an i32
+                        cv8 : Au.convert[ sm8.src, parts[2] ]
+                        if [ cv8 ] ao8.set_property[ parts[1].chars, cv8 ]
+                        el ok9 = false
+                    el ok9 = false
                 el [ cmd == 'text' && line.count > 5 ]
                     wn.ev.clear[]
                     wn.ev.key.text = line.mid[ 5, line.count - 5 ]
@@ -2089,7 +2521,6 @@ Display Window
         if [ !screen ] return
         vk.defer_tick[]
         if [ resizing ] return
-        vk.sync_paints = bool[ capture && (capture inherits Splitter) ]
         screen.save[]
 
         app_object.on_canvas*[ screen ]
@@ -3270,7 +3701,7 @@ Display Window
         if [ e.cache_canvas && !e.animated && stage == CanvasType.screen ]
             if [ mask_on ]
                 glow_changed : bool [ e.mask_bg.x != e.mask_glow.x || e.mask_bg.y != e.mask_glow.y || e.mask_bg.z != e.mask_glow.z || e.mask_bg.w != e.mask_glow.w ]
-                if [ !e.mask_canvas || e.mask_w != ew || e.mask_h != eh || glow_changed || vk.sync_paints ]
+                if [ !e.mask_canvas || e.mask_w != ew || e.mask_h != eh || glow_changed ]
                     mcs : f32 [ (a.scale > 0.0) ? a.scale : 1.0 ]
                     if [ !e.mask_canvas ]
                         e.mask_canvas = Canvas [ w: a, vk: vk, format: Pixel.rgba8, width: i32[ e.cache_canvas.width / mcs ], height: i32[ e.cache_canvas.height / mcs ], load_existing: true, quantize: true ]
@@ -3592,6 +4023,8 @@ element TButtons
     animated : true
     public  buttons   : array string  # segment ids, e.g. [ 'minus', 'plus' ]
     public  icons     : bool [ true ] # ids resolve to images/<id>.svg
+    # per-segment icon name when the id is not the file name
+    public  icon_ids  : array string
     public  manual    : bool          # actions, not toggles — no latched selection
     public  selected  : i32 [ -1 ]
     public  sel_mask  : i32
@@ -3600,19 +4033,27 @@ element TButtons
     public  rest_glow  : rgba
     public  rest_px    : f32
     intern  svg_cache : map SVGModel [string]
+    intern  svg_miss  : map i32      [string]
     intern  hover_ix  : i32 [ -1 ]
 
     func tcol [ s: string ] -> rgba
         if [ ux && ux.st ] return ux.st.theme_color[ s ]
         return rgba [ s ]
 
-    # the svg for a segment id, loaded on first use
+    # the svg for a segment id, loaded on first use. a segment with no
+    # icon file draws its name instead, so any id can be a button
     func seg_svg [ id: string ] -> SVGModel
         if [ !id ] return null
         if [ !svg_cache ] svg_cache = map SVGModel [string] [ ]
+        if [ !svg_miss ] svg_miss = map i32 [string] [ ]
+        if [ svg_miss.contains[ id ] ] return null
         m9 : SVGModel svg_cache[ id ]
         if [ !m9 ]
-            m9 = SVGModel [ 'images/{id}.svg' ]
+            p9 : path 'images/{id}.svg'
+            if [ !p9.exists[] ]
+                svg_miss[ id ] = 1
+                return null
+            m9 = SVGModel [ p9 ]
             svg_cache[ id ] = m9
         return m9
 
@@ -3659,17 +4100,30 @@ element TButtons
             gl : f32 [ (i == 0)     ? gpx : 0.0 ]
             gr : f32 [ (i == n - 1) ? gpx : 0.0 ]
             cv.fill_color[ fcol ]
-            cv.inner_glow_sides[ gc, gpx, gr, gpx, gl ]
+            # radius FIRST: the glow follows the corners only if it knows them
+            cv.rounded[ tl, tr, br, bl ]
+            # a segment owning BOTH ends takes the uniform path, the one
+            # the css layers use — sides pin the glow and lose the corners
+            if [ gl > 0.0 && gr > 0.0 ] cv.inner_glow[ gc, gpx ]
+            el                          cv.inner_glow_sides[ gc, gpx, gr, gpx, gl ]
             cv.rounded_rect[ x, 0.0, seg_w, bounds.h, tl, tr, br, bl ]
             cv.paint[ ]
             cv.inner_glow_sides[ rgba [ '#0000' ], 0.0, 0.0, 0.0, 0.0 ]
-            sv9 : SVGModel (icons) ? seg_svg[ buttons[ i ] ] : null
+            # both are STATE: leaving the radius set clips the icon after it
+            cv.rounded[ 0.0, 0.0, 0.0, 0.0 ]
+            ic9 : string [ (icon_ids && i < icon_ids.count) ? icon_ids[i] : buttons[i] ]
+            sv9 : SVGModel (icons) ? seg_svg[ ic9 ] : null
             if [ sv9 ]
                 isz : f32 [ bounds.h * 0.55 ]
                 ix  : f32 [ x + (seg_w - isz) * 0.5 ]
                 iy  : f32 [ (bounds.h - isz) * 0.5 ]
                 cv.fill_color[ rgba [ '#fff' ] ]
                 cv.draw_svg[ sv9, ix, iy, isz, isz ]
+            el
+                cv.font_size[ bounds.h * 0.40 ]
+                cv.fill_color[ rgba [ '#fff' ] ]
+                cv.draw_text[ buttons[ i ], rect [ x: x, y: 0.0, w: seg_w, h: bounds.h ],
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
         dvy : f32 [ bounds.h * 0.2 ]
         dvh : f32 [ bounds.h * 0.6 ]
         for [ i: i32 1, i < n, i += 1 ]
@@ -3963,6 +4417,63 @@ Button Option
 
     func render[] -> Elements
         return null
+
+# utility: a horizontal 0..1 slider. click or drag anywhere on the track
+Control VolumeSlider
+    public value    : f32 [ 0.5 ]
+    intern dragging : bool
+    intern vol_inset : f32 [ 7.0 ]     # track inset = widest knob radius
+
+    func set_from_x [ x: f32 ]
+        tw9 : f32 [ bounds.w - vol_inset * 2.0 ]
+        if [ tw9 <= 0.0 ] return
+        v9 : f32 [ clamp[ (x - vol_inset) / tw9, 0.0, 1.0 ] ]
+        if [ v9 == value ] return
+        value    = v9
+        pristine = false
+        if [ ux ] ux.will_animate = true
+
+    public func on_press [ ev: Event ]
+        dragging = true
+        ux.set_capture[ a ]
+        set_from_x[ ev.mouse.pos.x ]
+        ev.no_default     = true
+        ev.no_propagation = true
+
+    public func on_move [ ev: Event ]
+        if [ !dragging ] return
+        set_from_x[ ev.mouse.pos.x ]
+        ev.no_propagation = true
+
+    public func on_release [ ev: Event ]
+        dragging = false
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ bounds.w <= 0.0 ] return
+        cv : Canvas [ w.screen ]
+        cv.stroke_width[ 0.0 ]
+        # inset is CONSTANT (vol_inset) so the drawn knob and the hit math
+        # agree; only the drawn radius grows on hover
+        kr : f32 [ (hovered || dragging) ? 7.0 : 5.5 ]
+        th : f32 [ 3.0 ]
+        cy : f32 [ bounds.h * 0.5 ]
+        ty : f32 [ cy - th * 0.5 ]
+        x0 : f32 [ vol_inset ]
+        tw : f32 [ bounds.w - vol_inset * 2.0 ]
+        if [ tw <= 0.0 ] return
+        cv.fill_color[ '#ffffff33' ]
+        cv.rounded_rect[ x0, ty, tw, th, th * 0.5, th * 0.5, th * 0.5, th * 0.5 ]
+        cv.paint[]
+        fw : f32 [ tw * clamp[ value, 0.0, 1.0 ] ]
+        if [ fw > 0.5 ]
+            cv.fill_color[ '#ffffff' ]
+            cv.rounded_rect[ x0, ty, fw, th, th * 0.5, th * 0.5, th * 0.5, th * 0.5 ]
+            cv.paint[]
+        kx : f32 [ x0 + fw - kr ]
+        cv.fill_color[ '#ffffff' ]
+        cv.rounded_rect[ kx, cy - kr, kr * 2.0, kr * 2.0, kr, kr, kr, kr ]
+        cv.paint[]
 
 element Toolbar
     func render[] -> Elements

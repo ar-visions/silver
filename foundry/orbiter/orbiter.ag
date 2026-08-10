@@ -38,6 +38,18 @@ import NodeList
 import Git
 import Avatar
 
+# the editor under a pane's split. 'text' is the editor/instruments
+# split, and the editor keeps key 'text' inside it
+func editor_under [ spl: element ] -> Editor
+    if [ !spl || !spl.elements ] return null
+    te : element spl.elements[ 'text' ]
+    if [ !te ] return null
+    if [ te inherits Editor ] return Editor te
+    if [ !te.elements ] return null
+    ve : element te.elements[ 'text' ]
+    if [ !ve || !(ve inherits Editor) ] return null
+    return Editor ve
+
 # This is the EditorView
 element EditorView
     public selected   : bool
@@ -55,11 +67,7 @@ element EditorView
 
     func text_of [] -> Editor
         if [ !elements ] return null
-        spl : element elements[ 'split' ]
-        if [ !spl || !spl.elements ] return null
-        te : element spl.elements[ 'text' ]
-        if [ !te || !(te inherits Editor) ] return null
-        return Editor te
+        return editor_under[ elements[ 'split' ] ]
 
     # file-create mode: state and behavior live on THIS view alone
     mutable newfile      : bool
@@ -93,176 +101,289 @@ element EditorView
         orb.exit_finder[]
         orb.open_file[ p9 ]
 
-    public func render [] -> Elements
-        orb : cast orbiter [ ux.app_object ]
-        if [ !orb ] return null
-        pi  : i32 [ pane_index ]
-        w   : Window ux
+    func orb [] -> orbiter
+        return cast orbiter [ ux.app_object ]
 
-        psess : string (orb.agent_open && pi == orb.editor_slots.count) ? orb.orbit_sid :
-            ((pi < orb.pane_console.count) ? orb.pane_console[pi] : '')
-        is_con : bool [ psess && psess.count > 0 ]
-        if [ is_console != is_con ]
-            is_console = is_con
-            pristine   = false
+    # the console session this pane holds; '' when it holds a file
+    func psess [] -> string
+        o : orb[]
+        if [ !o ] return ''
+        if [ o.agent_open && pane_index == o.editor_slots.count ] return o.orbit_sid
+        return (pane_index < o.pane_console.count) ? o.pane_console[pane_index] : ''
 
-        slot : i32  [ (pi < orb.editor_slots.count) ? orb.editor_slots[pi] : -1 ]
-        p    : path (slot >= 0 && slot < orb.open_files.count) ? orb.open_files[slot] : null
+    func file [] -> path
+        o : orb[]
+        if [ !o ] return null
+        s : i32 [ (pane_index < o.editor_slots.count) ? o.editor_slots[pane_index] : -1 ]
+        return (s >= 0 && s < o.open_files.count) ? o.open_files[s] : null
 
-        dbgr    : dbg orb.active_debugger[]
-        running : bool [ (dbgr) ? true : false ]
-        ed_live : Editor text_of[]
+    func rview [] -> AppView
+        e : Editor text_of[]
+        return (e) ? e.run_view : null
+
+    func app_running [] -> bool
+        r : rview[]
+        return (r && !r.ended) ? true : false
+
+    # the app view owns the pane alone: no band, no accordion under it
+    func app_solo [] -> bool
+        e : Editor text_of[]
+        return (app_running[] && e.app_view) ? true : false
+
+    func app_pip [] -> bool
+        e : Editor text_of[]
+        return (app_running[] && !e.app_view) ? true : false
+
+    func searchable [] -> bool
+        o : orb[]
+        return (o) ? (o.search_pane[] == id) : false
+
+    func findbar_on [] -> bool
+        o : orb[]
+        return (o) ? (o.findbar_open && o.findbar_pane == id) : false
+
+    func menu_open [] -> bool
+        o : orb[]
+        if [ !o || !searchable[] ] return false
+        return o.find_showing || o.nav_showing
+
+    # .ag files and anything with a registered handler keep the run band
+    func run_ok [] -> bool
+        if [ psess[].count > 0 ] return false
+        if [ app_running[] ] return true
+        p : file[]
+        if [ !p ] return false
+        f : p.filename[]
+        if [ f.count >= 3 && f.mid[ f.count - 3, 3 ].compare[ '.ag' ] == 0 ] return true
+        e : Editor text_of[]
+        return (e && e.handler_module_for[ p ]) ? true : false
+
+    # a running app owns the band label; source navigation must not re-bind it
+    func band_mod [] -> string
+        r : rview[]
+        if [ r && r.app_mod ] return r.app_mod
+        p : file[]
+        if [ !p ] return 'app'
+        m : p.filename[]
+        d : i32 [ m.index_of[ '.' ] ]
+        return (d > 0) ? m.mid[ 0, d ] : m
+
+    # args belong to the DOC a handler opened, not the handler's own source
+    func args_src [] -> path
+        r : rview[]
+        if [ r && r.doc ] return r.doc
+        e : Editor text_of[]
+        return (e) ? e.band_src[] : file[]
+
+    func title_text [] -> string
+        if [ findbar_on[] ] return ''
+        s : psess[]
+        if [ s.count > 0 ]
+            h : i32 [ s.index_of[ '#' ] ]
+            return (h > 0) ? s.mid[ 0, h ] : s
+        p : file[]
+        return (p) ? p.filename[] : 'Open'
+
+    func title_hint [] -> string
+        e : Editor text_of[]
+        if [ !e || !e.view_name || e.view_name.count == 0 ] return ''
+        return (e.view_name != 'text') ? e.view_name : ''
+
+    func title_els [] -> Elements
+        o : orb[]
+        w : Window ux
+        e : Editor text_of[]
+        tfoc : bool [ (w && w.focus && w.focus.id == 'title' && w.focus.parent == a) ? true : false ]
         # the editor is never locked while debugging; the run band steps
-        locked  : bool [ false ]
-        dbg_open  : bool [ ed_live->dbg_open ]
-        searchable : bool [ orb.search_pane[] == id ]
-        findbar_on : bool [ orb.findbar_open && orb.findbar_pane == id ]
-        if [ orb.find_showing ]
-            puts 'FIND show: pane={id} searchable={(searchable) ? 1 : 0} sp={orb.search_pane[]} hits={orb.find_hits->count}'
-        menu_open  : bool [ searchable && (orb.find_showing || orb.nav_showing) ]
-        is_res     : bool [ (ed_live && ed_live.rview) ? true : false ]
-        if [ is_res ]
-            cfeed : ed_live.rview.context_feed*[]
-            if [ cfeed ] orb.feed_agent[ cfeed ]
-        tfoc : bool [ false ]
-        if [ w && w.focus ]
-            if [ w.focus.id == 'title' && w.focus.parent == a ] tfoc = true
-
-        els : Elements []
-        ttl : Elements orb.title_nav[ p, null, false, w, locked, dbg_open, menu_open,
-            is_res, ed_live->rview, findbar_on, tfoc, pi ]
-        if [ is_con ]
-            ttl['ctx_copy'] = LabelButton [ label: 'context', manual_mode: true ]
-            ttl['ctx_shot'] = LabelButton [ label: 'screen',  manual_mode: true ]
+        t : Elements o.title_nav[ file[], null, false, w, false, e->dbg_open, menu_open[],
+            (e && e.rview) ? true : false, e->rview, findbar_on[], tfoc, pane_index ]
+        if [ psess[].count > 0 ]
+            t['ctx_copy'] = LabelButton [ label: 'context', manual_mode: true ]
+            t['ctx_shot'] = LabelButton [ label: 'screen',  manual_mode: true ]
         # inserted last so right-flow puts it left of the title's controls
-        if [ ed_live && ed_live.run_view && !ed_live.run_view.ended ]
-            ttl['gotosrc'] = BandSource [ label: 'active', manual_mode: true ]
-        tl : string [ (p) ? p.filename[] : 'Open' ]
-
-        if [ is_con ]
-            tl = psess
-            phx : i32 [ tl.index_of[ '#' ] ]
-            if [ phx > 0 ] tl = tl.mid[ 0, phx ]
-        
-        if [ findbar_on ] tl = ''
-
-        # create mode self-heals when the pane's file changes under it
-        if [ newfile && newfile_src && p && '{newfile_src}' != '{p}' ] newfile_exit[]
+        if [ e && e.run_view && !e.run_view.ended ]
+            t['gotosrc'] = BandSource [ label: 'active', manual_mode: true ]
         if [ newfile ]
-            ttl['newfile_cancel'] = LButton [ icon: 'close', manual_mode: true ]
-        els['title'] = EditorTitle [
-            area: Region { l0 t0 r0 h1.3 }
-            selected: !p
-            focusable: true
-            spacing_x: 0.2
-            spacing_y: 0.2
-            edit: (newfile) ? newfile_text : orb.find_text
-            label: (newfile) ? 'name new file' : tl
-            conflict: newfile && newfile_exists[]
-            no_scroll: true
-            elements: ttl
-        ]
+            t['newfile_cancel'] = LButton [ icon: 'close', manual_mode: true ]
+        return t
 
-        app_running : bool [ (ed_live && ed_live.run_view && !ed_live.run_view.ended) ? true : false ]
-        app_pip     : bool [ (app_running && !ed_live.app_view) ? true : false ]
-        run_ok      : bool [ app_running && !is_con ]
-
-        if [ !run_ok && p && !is_con ]
-            fnm : p.filename[]
-            if [ fnm.count >= 3 && fnm.mid[ fnm.count - 3, 3 ].compare[ '.ag' ] == 0 ] run_ok = true
-            # files with a registered handler app stay runnable (b16 keeps the band)
-            if [ !run_ok && ed_live && ed_live.handler_module_for[ p ] ] run_ok = true
-        
-        vinner : Elements [ ]
-
-        if [ is_con ]
-            vinner['text'] = Console [
-                session_id: psess, sessions: orb.ed_sessions, feed: null,
-                launch: orb.agent_cmd[ psess ], animated: true ]
+    func text_els [] -> Elements
+        o : orb[]
+        e : Editor text_of[]
+        t : Elements [ ]
+        s : psess[]
+        if [ s.count > 0 ]
+            t['text'] = Console [ session_id: s, sessions: o.ed_sessions, feed: null,
+                launch: o.agent_cmd[ s ], animated: true ]
         el
             edels : Elements []
             # a composed view fills the editor; its lines stay empty
-            if [ ed_live && ed_live.rview ]
-                vel : element ed_live.rview.view_element*[]
+            if [ e && e.rview ]
+                vel : element e.rview.view_element*[]
                 if [ vel ] edels['view'] = vel
-            vinner['text'] = Editor [
-                src: p
-                breakpoints: orb.breakpoints, code_font_size: orb.code_font_size,
-                nav: orb.nav_panes[ pi ], pane_index: pi,
-                debug_running: running, debugger: dbgr, debug_vars: orb.debug_vars,
-                expanded: findbar_on, replacing: findbar_on,
-                show_hits: (searchable) ? (orb.find_showing || orb.nav_showing) : false,
-                single_line: (orb.nav_showing && orb.browse_single),
-                header_size: orb.browse_header_size, dir_size: orb.browse_dir_size,
-                nav_list: (searchable) ? orb.nav_showing : false, dock_rows: orb.nav_dock_rows,
-                grid_mode: (searchable) ? (orb.nav_showing && orb.grid_mode) : false,
-                hits: orb.find_hits,
-                find_query: (searchable && findbar_on) ? orb.findbar_text : '',
+            dbgr : dbg o.active_debugger[]
+            t['text'] = Editor [
+                src: file[]
+                breakpoints: o.breakpoints, code_font_size: o.code_font_size,
+                nav: o.nav_panes[ pane_index ], pane_index: pane_index,
+                debug_running: (dbgr) ? true : false, debugger: dbgr, debug_vars: o.debug_vars,
+                expanded: findbar_on[], replacing: findbar_on[],
+                show_hits: (searchable[]) ? (o.find_showing || o.nav_showing) : false,
+                single_line: (o.nav_showing && o.browse_single),
+                header_size: o.browse_header_size, dir_size: o.browse_dir_size,
+                nav_list: (searchable[]) ? o.nav_showing : false, dock_rows: o.nav_dock_rows,
+                grid_mode: (searchable[]) ? (o.nav_showing && o.grid_mode) : false,
+                hits: o.find_hits,
+                find_query: (searchable[] && findbar_on[]) ? o.findbar_text : '',
                 elements: edels ]
+        # NOT keyed 'instruments' — that is the TButton's id, and on_press
+        # dispatches on id, so the column would close on every click
+        if [ o.show_instr_col ] t['instr_col'] = InstrumentColumn [ ]
+        return t
 
-        # the run band + console, INSIDE this tab
-        if [ run_ok && !app_pip ]
-            emod : string [ (p) ? p.filename[] : 'app' ]
-            di2  : i32    [ emod.index_of[ '.' ] ]
-            if [ di2 > 0 ] emod = emod.mid[ 0, di2 ]
-            # a running app owns the band: navigating source must not re-bind
-            # its label, its console session or its arguments
-            bsrc : path [ (ed_live) ? ed_live.band_src[] : p ]
-            if [ ed_live && ed_live.run_view && ed_live.run_view.app_mod ]
-                emod = ed_live.run_view.app_mod
-            fels : Elements []
-            if [ !app_running ]
-                fels['run'] = RunButton [ icon: 'play', manual_mode: true ]
-            el
-                app_paused : bool [ ed_live.run_view.is_paused*[] ]
-                # STOP takes play's own slot, so turning the app off never
-                # moves the mouse. pause is its own button, to the right
-                fels['stop']  = RunButton [ icon: 'stop', manual_mode: true ]
-                fels['pause'] = RunButton [ icon: (app_paused) ? 'play' : 'pause',
-                    selected: app_paused, manual_mode: true ]
-                fels['steps'] = StepButtons [ buttons: [ 'step_next', 'step_in', 'step_out' ], manual: true ]
-            fels['args'] = ArgsField [ label: 'arguments', edit: orb.file_args[ bsrc ],
-                focusable: true ]
-            # the error of the app WE ARE RUNNING, not orbiter's own
-            if [ orb.err_file && orb.err_line > 0 ]
-                fels['our_app_error'] = AppError [
-                    label: (orb.err_msg && orb.err_msg.count > 0)
-                        ? '{orb.err_file.filename[]}:{orb.err_line}  {orb.err_msg}'
-                        : '{orb.err_file.filename[]}:{orb.err_line}', manual_mode: true ]
-            smask : i32 [ 0 ]
-            if [ orb.show_instruments ] smask = smask | 1
-            if [ orb.show_toolbox ]     smask = smask | 2
-            if [ orb.show_variables ]   smask = smask | 4
-            fels['instruments'] = TButtons [
-				buttons: [ 'callstack', 'toolbox', 'fields' ],
-				manual: true, sel_mask: smask,
-				rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
-				area: Region { r0+ t0 w3.6 h0.9 } ]
-            cf2 : Elements []
-            cf2['console_filter'] = element [ area: Region { r8px t4px w6 h32px }, label: emod, focusable: true, no_scroll: true ]
-            runcmd : string [ (ed_live && ed_live.run_view) ? ed_live.run_view.cmd : null ]
-            bels : Elements []
-            bels['tools']   = ToolsHeader [ spacing_x: 0.2, spacing_y: 0.2, topmost: true, elements: fels ]
-            con : RunConsole [ session_id: 'ed:{emod}', sessions: orb.ed_sessions,
-                feed: null, run_line: runcmd, animated: true, elements: cf2 ]
-            sp_inner : Elements [ ]
-            sp_inner['console'] = con
-            if [ orb.show_instruments ] sp_inner['callstack'] = Callstack [ frames: orb.debug_frames[] ]
-            if [ orb.show_toolbox ]     sp_inner['toolbox']   = Toolbox [ items: orb.toolbox_items[] ]
-            # one inspector: live frame while running, element props otherwise
-            if [ orb.show_variables ]
-                if [ running ] sp_inner['fields'] = Fields [ vars: orb.debug_vars ]
-                el             sp_inner['fields'] = Props  [ target: (w) ? w.focus : null ]
-            bels['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, inner: sp_inner ]
-            vinner['band'] = RunBand [ elements: bels ]
+    # ONE middle slot: the error of the app WE ARE RUNNING, or what it is
+    # doing while we wait. an error wins the slot
+    func band_status [] -> string
+        o : orb[]
+        if [ o.err_file && o.err_line > 0 ]
+            return (o.err_msg && o.err_msg.count > 0)
+                ? '{o.err_file.filename[]}:{o.err_line}  {o.err_msg}'
+                : '{o.err_file.filename[]}:{o.err_line}'
+        r : rview[]
+        if [ !r ] return ''
+        s : r.status_text[]
+        return (s) ? s : ''
+
+    # ONE button for the whole instruments column. the stack inside it
+    # picks which instrument, never this bar
+    func instr_buttons [] -> TButtons
+        o : orb[]
+        r : rview[]
+        ibtn : array string [ 'callstack' ]
+        iico : array string [ 'callstack' ]
+        smask : i32 [ 0 ]
+        if [ o.show_instruments ] smask = smask | 1
+        if [ r && r.instr_names && r.instr_names.count > 0 ]
+            if [ o.show_instr_col ] smask = smask | (1 << ibtn.count)
+            ibtn.push[ 'instruments' ]
+            iico.push[ 'chart' ]
+        if [ app_running[] ]
+            if [ app_pip[] ] smask = smask | (1 << ibtn.count)
+            ibtn.push[ 'pip' ]
+            iico.push[ 'undock' ]
+        iw : f32 [ 1.2 * f32[ ibtn.count ] ]
+        return TButtons [ buttons: ibtn, icon_ids: iico,
+            manual: true, sel_mask: smask,
+            rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+            area: Region [ 'r0+ t0 w{iw} h0.9' ] ]
+
+    func tool_els [] -> Elements
+        o : orb[]
+        e : Editor text_of[]
+        t : Elements []
+        if [ !app_running[] ]
+            t['run'] = RunButton [ icon: 'play', manual_mode: true ]
+        el
+            # STOP takes play's own slot, so turning the app off never
+            # moves the mouse. pause is its own button, to the right
+            t['stop']  = RunButton [ icon: 'stop', manual_mode: true ]
+            t['pause'] = RunButton [ icon: (e.run_view.is_paused*[]) ? 'play' : 'pause',
+                selected: e.run_view.is_paused*[], manual_mode: true ]
+            t['steps'] = StepButtons [ buttons: [ 'step_next', 'step_in', 'step_out' ], manual: true ]
+        t['args'] = ArgsField [ label: 'arguments',
+            edit: o.file_args[ args_src[] ], focusable: true ]
+        if [ band_status[].count > 0 ]
+            t['our_app_error'] = AppError [ label: band_status[], manual_mode: true,
+                info: !(o.err_file && o.err_line > 0) ]
+        t['instruments'] = instr_buttons[]
+        # no value: prop on the slider — it is re-applied every rebuild
+        # and would stamp over the drag. mute follows it in the flow
+        if [ app_running[] ]
+            t['volume'] = VolumeSlider [ area: Region { r0+ t0.15 w4 h0.6 } ]
+            t['mute']   = SoundButton [ icon: (o.app_muted) ? 'mute' : 'volume',
+                manual_mode: true ]
+        return t
+
+    func band_els [] -> Elements
+        o : orb[]
+        e : Editor text_of[]
+        t : Elements []
+        t['tools'] = ToolsHeader [ spacing_x: 0.2, spacing_y: 0.2, topmost: true,
+            elements: tool_els[] ]
+        # the app view keeps the play/args bar but nothing under it
+        if [ app_solo[] ] return t
+        cf : Elements []
+        cf['console_filter'] = element [ area: Region { r8px t4px w6 h32px },
+            label: band_mod[], focusable: true, no_scroll: true ]
+        inner : Elements [ ]
+        inner['console'] = RunConsole [ session_id: 'ed:{band_mod[]}',
+            sessions: o.ed_sessions, feed: null,
+            run_line: (e && e.run_view) ? e.run_view.cmd : null,
+            animated: true, elements: cf ]
+        # the callstack is orbiter's own, and the ONLY thing that joins the
+        # console here. instruments live in their column
+        if [ o.show_instruments ] inner['callstack'] = Callstack [ frames: o.debug_frames[] ]
+        # console alone fills; console + callstack is an even split
+        t['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, inner: inner, deflt: 0.0 ]
+        return t
+
+    func pane_els [] -> Elements
+        t : Elements [ ]
+        # the editor and the instruments column are the two sides of ONE
+        # split. it is mounted ALWAYS, even with the column hidden — a
+        # wrapper that comes and goes re-parents the editor, and a new
+        # editor loses run_view and unmounts the whole band
+        # 100px floor, and 0 snaps it off the way any other pane does
+        t['text'] = Splitter [ area: Region { l0 t0 r0 b0 },
+            inner: text_els[], deflt: 150.0, min_size: 100.0, snap_close: true ]
+        # the run band + console, INSIDE this tab. pip keeps the band: the
+        # app shrinks into the editor and its instruments stay open
+        if [ run_ok[] ] t['band'] = RunBand [ elements: band_els[] ]
+        return t
+
+    # render is projection only; everything it needs it asks for
+    func settle []
+        o : orb[]
+        is_con : bool [ psess[].count > 0 ]
+        if [ is_console != is_con ]
+            is_console = is_con
+            pristine   = false
+        if [ o.find_showing ]
+            puts 'FIND show: pane={id} searchable={(searchable[]) ? 1 : 0} sp={o.search_pane[]} hits={o.find_hits->count}'
+        e : Editor text_of[]
+        if [ e && e.rview ]
+            cfeed : e.rview.context_feed*[]
+            if [ cfeed ] o.feed_agent[ cfeed ]
+        # create mode self-heals when the pane's file changes under it
+        p : file[]
+        if [ newfile && newfile_src && p && '{newfile_src}' != '{p}' ] newfile_exit[]
+
+    public func render [] -> Elements
+        if [ !orb[] ] return null
+        settle[]
+        els : Elements []
+        els['title'] = EditorTitle [
+            area: Region { l0 t0 r0 h1.3 }
+            selected: !file[]
+            focusable: true
+            spacing_x: 0.2
+            spacing_y: 0.2
+            edit: (newfile) ? newfile_text : orb[].find_text
+            label: (newfile) ? 'name new file' : title_text[]
+            conflict: newfile && newfile_exists[]
+            no_scroll: true
+            hint: title_hint[]
+            elements: title_els[] ]
         els['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
-            inner: vinner, deflt: 180.0, min_size: 44.0 ]
+            inner: pane_els[], deflt: (app_solo[]) ? 44.0 : 180.0, min_size: 44.0 ]
         return els
 
 element EditorTitle
     public selected : bool
     # newfile mode: typed name collides with an existing file
     public conflict : bool
+    # painted after the name, never part of the editable label
+    public hint     : string
     mutable ficons  : FileIcons
     style : CSS {
         area: l0 t0 r0 h1.3
@@ -289,13 +410,25 @@ element EditorTitle
         if [ w.draw_stage != CanvasType.screen ] return
         if [ !label || label.count == 0 ] return
         if [ !ficons ] ficons = FileIcons []
-        mdl : SVGModel ficons.icon[ label, 20 ]
-        if [ !mdl ] return
         cv  : Canvas [ w.screen ]
-        isz : f32 [ 20.0 ]
-        cv.fill_color[ '#ffffff' ]
-        cv.stroke_color[ '#ffffff' ]
-        cv.draw_svg[ mdl, 50.0, (bounds.h - isz) * 0.5, isz, isz ]
+        mdl : SVGModel ficons.icon[ label, 20 ]
+        if [ mdl ]
+            isz : f32 [ 20.0 ]
+            cv.fill_color[ '#ffffff' ]
+            cv.stroke_color[ '#ffffff' ]
+            cv.draw_svg[ mdl, 50.0, (bounds.h - isz) * 0.5, isz, isz ]
+        # the view we are in, trailing the name. painted, so the label
+        # stays the editable field and this can never be selected
+        if [ hint && hint.count > 0 ]
+            cv.font_size[ 19 ]
+            m9 : cv.measure_text[ label ]
+            cv.font_size[ 13 ]
+            cv.fill_color[ '#ffffff66' ]
+            cv.stroke_width[ 0.0 ]
+            cv.draw_text[ hint,
+                rect [ x: 78.0 + m9.w + 16.0, y: 0.0, w: bounds.w, h: bounds.h ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            cv.paint[]
 
 
 Option NavButton
@@ -526,6 +659,8 @@ Option ErrorButton
 # the same error, centered on the run band. l50% is an ABSOLUTE anchor,
 # so it holds the middle whatever the l0+/r0+ runs either side of it do
 Option AppError
+    # the same slot says what the app is DOING when there is no error
+    public info : bool
     tlabel : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ],
         label_overflow: Overflow.ellipsis ]
@@ -537,6 +672,11 @@ Option AppError
             stroke_width: 2
             stroke_color: #faa4
             inner_glow: #0000 0
+        :info
+            layers.body:
+                fill_color: #234
+                stroke_color: #7fb2ff55
+                inner_glow: #7fb2ff33 12
         :hovered
             layers.body:
                 fill_color: #a33
@@ -686,6 +826,13 @@ LButton RunButton
             layers.body:
                 fill_color: #c8641e
                 inner_glow: #ffae5ea2 18
+    }
+
+RunButton SoundButton
+    style : CSS {
+        area: r0+ t0.15 w1.4 h0.6
+        layers.body:
+			image_scale: 1.2
     }
 
 element PatternField
@@ -862,8 +1009,6 @@ Option  ProjectTab
 
 func au_space_clear[] -> none
 
-func au_mem_fraction[] -> f32
-
 func au_live_set_defer[ on: i32 ] -> none
 func au_live_get_pending[]   -> i32
 func au_live_request_apply[] -> none
@@ -1024,6 +1169,11 @@ element orbiter : trinity # implements compiler
     # the user dismissed the finder: focus lands on the editor, which still
     # carries show_hits, so list_focused would revive the list forever
     intern finder_off    : bool
+    # app bar volume, pushed to the running app when it moves
+    public app_volume    : f32 [ 0.5 ]
+    # mute holds the slider where it is and sends the app a zero
+    public app_muted     : bool
+    intern app_vol_sent  : f32 [ -1.0 ]
     public find_hits     : array FindHit
     public search_dirs   : array path
     public file_index    : list string
@@ -1059,7 +1209,7 @@ element orbiter : trinity # implements compiler
     public breakpoints   : map string[string]
     public code_font_size : i32 [ 19 ]
     # append LAST: member order sets AF bit indices
-    public show_toolbox  : bool
+    public show_instr_col : bool
     # module whose build set err_file; only it may clear
     intern err_mod       : string
     # index into scene_list[]; the bottom bar steps it
@@ -1153,6 +1303,9 @@ element orbiter : trinity # implements compiler
                     editor_slots[0] = ri
                     active_pane = 0
                     active_idx  = ri
+                    # the arg we were handed at startup is this file's arg
+                    fs8 : file_state fstate[ rp ]
+                    if [ fs8 ] fs8.args = '{rp}'
             el
                 bp : path '{startup_path}/install/build/{resource}'
                 if [ bp.exists[] ]
@@ -1865,7 +2018,8 @@ element orbiter : trinity # implements compiler
         if [ !debuggers ] debuggers = map dbg [string] []
         d : dbg [ location: loc, target: a, auto_start: false ]
         debuggers[name] = d
-        sync_breakpoints[ d ]
+        sdir9 : '{startup_path}/foundry/{name}'
+        sync_breakpoints[ d, sdir9 ]
         d.start[]
 
     # attach before the child's PR_SET_PTRACER fails under yama
@@ -1926,7 +2080,11 @@ element orbiter : trinity # implements compiler
             av.attaching = false
             av.note      = ''
             return
-        sync_breakpoints[ d ]
+        adir9 : string [ '' ]
+        if [ av.src ]
+            ap9 : av.src.parent_dir[]
+            if [ ap9 ] adir9 = '{ap9}'
+        sync_breakpoints[ d, adir9 ]
         d.cont[]
         # clear the pre-init SIGSTOP group-stop; cont alone won't
         kill[ pid, SIGCONT ]
@@ -1937,6 +2095,37 @@ element orbiter : trinity # implements compiler
 
     # the worker never touches debuggers/active_target — the map is read by
     # the paint thread, so the finished debugger lands here instead
+    # the app bar's slider is the truth; push it only when it moves
+    func sync_volume []
+        vs9 : find_volume[]
+        if [ !vs9 ] return
+        # the app answered its own gain: the slider takes it, once
+        for [ pa9: i32 0, pa9 < editor_slots.count, pa9 += 1 ]
+            ea9 : Editor pane_at[ pa9 ]
+            if [ !ea9 || !ea9.run_view ] continue
+            if [ ea9.run_view.app_vol < 0.0 ] continue
+            vs9.value    = ea9.run_view.app_vol
+            app_volume   = vs9.value
+            app_vol_sent = app_volume
+            vs9.pristine = false
+            ea9.run_view.app_vol = -1.0
+            return
+        app_volume = vs9.value
+        out9 : f32 [ (app_muted) ? 0.0 : app_volume ]
+        if [ out9 == app_vol_sent ] return
+        app_vol_sent = out9
+        for [ pi9: i32 0, pi9 < editor_slots.count, pi9 += 1 ]
+            ed9 : Editor pane_at[ pi9 ]
+            if [ !ed9 || !ed9.run_view ] continue
+            if [ !ed9.run_view.app_mod ] continue
+            agent_sock_send[ ed9.run_view.app_mod.chars, 'volume {out9}\n' ]
+
+    # the slider sits under EditorView > split > band > tools, not on Editor
+    func find_volume [] -> VolumeSlider
+        ve9 : element find_el[ a, 'volume' ]
+        if [ !ve9 ] return null
+        return VolumeSlider [ ve9 ]
+
     func attach_publish []
         if [ !attach_pending ] return
         if [ !debuggers ] debuggers = map dbg [string] []
@@ -1948,7 +2137,10 @@ element orbiter : trinity # implements compiler
         attach_pending = null
         attach_av      = null
 
-    func sync_breakpoints [ d: dbg ]
+    # mdir = the debugged module's own source directory. a breakpoint from
+    # another module resolves to an unrelated address here and parks the
+    # process forever (a hosted app then never pumps, resizes or paints)
+    func sync_breakpoints [ d: dbg, mdir: string ]
         if [ !breakpoints || !d ] return
         for [ cond: string, key: string ] in breakpoints
             idx : i32 [ key.rindex_of[ ':' ] ]
@@ -1958,9 +2150,28 @@ element orbiter : trinity # implements compiler
             if [ blin <= 0 ] continue
             # an empty source (':1' in a stale state file) binds anywhere
             if [ !bsrc || bsrc.count == 0 ] continue
+            if [ mdir && mdir.count > 0 ]
+                bpath9 : path [ bsrc.chars ]
+                bd9    : bpath9.parent_dir[]
+                if [ !bd9 ] continue
+                if [ '{bd9}' != mdir ] continue
             if [ !d.bps ] d.bps = array []
             bp9 : d.set_breakpoint[ path [ bsrc ], u32[ blin ], 0 ]
             if [ bp9 ] d.bps.push[ bp9 ]
+
+    # attaching lldb parks the app in ptrace-stop: one frame, no input, no
+    # resize. only debug a module the user actually set a breakpoint in
+    func module_has_breakpoints [ mdir: string ] -> bool
+        if [ !breakpoints || !mdir || mdir.count == 0 ] return false
+        for [ cond: string, key: string ] in breakpoints
+            idx : i32 [ key.rindex_of[ ':' ] ]
+            if [ idx <= 0 ] continue
+            bsrc : string key.mid[ 0, idx ]
+            if [ !bsrc || bsrc.count == 0 ] continue
+            bpp8 : path [ bsrc.chars ]
+            bd8  : bpp8.parent_dir[]
+            if [ bd8 && '{bd8}' == mdir ] return true
+        return false
 
     func dbg_on_stdout [ buf: iobuffer ] -> Au
         return null
@@ -2103,7 +2314,10 @@ element orbiter : trinity # implements compiler
         engaged : bool [ browse_open || fb_on || tfoc ]
         # no close chip — Escape closes the finder
         edp9 : Editor pane_at[ pane_ix ]
-        hx9  : bool [ edp9 && edp9.view_name && edp9.view_name.count > 0 ]
+        # the chip closes a view the user PICKED. the file's own natural
+        # view (text, or a byte view for a binary format) closes to nothing
+        hx9  : bool [ edp9 && edp9.view_name && edp9.view_name.count > 0
+                      && edp9.view_name != edp9.fallback_view_for[ edp9.src ] ]
         dc9  : bool [ edp9 && edp9.diff_commit && edp9.diff_commit.count > 0 ]
         if [ dc9 || hx9 ]
             els['panel_close'] = LButton [ icon: 'close', manual_mode: true ]
@@ -2921,11 +3135,6 @@ element orbiter : trinity # implements compiler
                 ux.background_hz = 4.0
                 ux.time_scale    = 1.0 / 64.0
 
-    # placeable widgets; reflection over element subclasses later
-    func toolbox_items [] -> array string
-        return array string [ 'Button', 'LabelButton', 'Option', 'Check',
-            'Slider', 'ColorPicker', 'Tabs', 'TButtons', 'Splitter', 'NodeList' ]
-
     # depth-first id lookup; the tree nests once sides land
     func find_el [ e: element, id: string ] -> element
         if [ !e || !e.elements || !id ] return null
@@ -2982,11 +3191,7 @@ element orbiter : trinity # implements compiler
     func pane_at [ i: i32 ] -> Editor
         pv : element pane_view[ i ]
         if [ !pv || !pv.elements ] return null
-        spl : element pv.elements[ 'split' ]
-        if [ !spl || !spl.elements ] return null
-        te : element spl.elements[ 'text' ]
-        if [ !te || !(te inherits Editor) ] return null
-        return Editor te
+        return editor_under[ pv.elements[ 'split' ] ]
 
     func push_file_hit [ p: path, show_dir: bool ]
         fn  : string p.filename[]
@@ -3032,13 +3237,7 @@ element orbiter : trinity # implements compiler
                     push_file_hit[ p, true ]
                     combined.push[ '{p}' ]
             el
-                # orbiter.agi consoles first — at the very top, above pins.
-                if [ consoles ]
-                    for [ ci: ConsoleInstance, sk: string ] in consoles
-                        sfp : path 'session:{sk}'
-                        find_hits.push[ FindHit [ is_header: true, session: sk, text: sk, dir: 'console', file: sfp ] ]
-                        if [ !browse_single ]
-                            find_hits.push[ FindHit [ is_header: true, session: sk, text: '', dir: 'console', file: sfp ] ]
+                # consoles are not files and do not belong in this list
                 if [ docked && show_pins ]
                     for [ i: i32 0, i < docked.count, i += 1 ]
                         dp : path docked[i]
@@ -3427,6 +3626,11 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             force_update[]
             return
+        if [ ev.target.id == 'mute' ]
+            app_muted = !app_muted
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
         if [ ev.target.id == 'reload_ready' ]
             au_live_request_apply[]
             ev.no_default = true
@@ -3451,6 +3655,22 @@ element orbiter : trinity # implements compiler
             return
         if [ ev.target.id == 'callstack' ]
             show_instruments = !show_instruments
+            return
+        if [ ev.target.id == 'instruments' ]
+            show_instr_col = !show_instr_col
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        # pip shrinks the app into the editor; its instruments stay open
+        if [ ev.target.id == 'pip' ]
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits EditorView ]
+                    ev6 : EditorView e
+                    ed6 : Editor pane_at[ ev6.pane_index ]
+                    if [ ed6 ] ed6.toggle_app_view[]
+                    break
+            if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
             return
         if [ ev.target.id == 'scene_prev' ]
             scene_step[ -1 ]
@@ -3490,12 +3710,6 @@ element orbiter : trinity # implements compiler
             force_update[]
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
-            return
-        if [ ev.target.id == 'toolbox' ]
-            show_toolbox = !show_toolbox
-            return
-        if [ ev.target.id == 'fields' ]
-            show_variables = !show_variables
             return
         puts 'on_press: {ev.target.id}'
         for [ i: i32 0, i < open_files.count, i += 1 ]
@@ -4137,6 +4351,7 @@ element orbiter : trinity # implements compiler
                 puts 'AVSOAK show={show_orbiter}'
                 if [ ux ] ux.restyle = true
         attach_publish[]
+        sync_volume[]
         for [ pi2: i32 0, pi2 < editor_slots.count, pi2 += 1 ]
             edp : Editor pane_at[ pi2 ]
             if [ !edp || !edp.run_view ] continue
@@ -4144,7 +4359,17 @@ element orbiter : trinity # implements compiler
             if [ !av.attached && av.slot >= 0 ]
                 apid : i32 [ host_app_pid[ av.slot ] ]
                 if [ apid > 0 ]
-                    if [ proc_stopped[ apid ] ] attach_appview[ av, apid ]
+                    if [ proc_stopped[ apid ] ]
+                        adir8 : string [ '' ]
+                        if [ av.src ]
+                            ap8 : av.src.parent_dir[]
+                            if [ ap8 ] adir8 = '{ap8}'
+                        if [ module_has_breakpoints[ adir8 ] ]
+                            attach_appview[ av, apid ]
+                        el
+                            # no breakpoints here: let it run, never trace it
+                            kill[ apid, SIGCONT ]
+                            av.attached = true
             if [ !edp.run_view.cmd ] continue
             if [ edp.run_view.dispatched ] continue
             edp.run_view.dispatched = true

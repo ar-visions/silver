@@ -52,6 +52,7 @@ enum {
 
 #define HM_SLOTS  1024
 #define HOST_APPS 8
+#define HOST_TEX  10
 typedef struct { int32_t type, a, b, c; } HostMsg;
 typedef struct { volatile uint32_t head, tail; HostMsg m[HM_SLOTS]; } HostRing;
 // a cross-process shared Vulkan surface: TWO textures + a front index, so a
@@ -66,8 +67,8 @@ typedef struct {
 typedef struct {
     HostRing  to_ide;      // toward the ide/consumer side
     HostRing  to_app;      // toward the app side (input, resize, close)
-    SharedTex app_tex;     // the app's screen texture
-    SharedTex ide_tex;     // orbiter's screen texture (summon overlay)
+    // 0 = the app's screen, 1 = orbiter's overlay, 2.. = one per instrument
+    SharedTex tex[HOST_TEX];
     volatile int32_t app_pid;   // process bound to this slot
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
     volatile int32_t verdict;   // 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
@@ -135,15 +136,23 @@ extern "C" void host_post(int ring, int type, int a, int b, int c) {
 }
 extern "C" int host_poll(int ring) { return host_poll2(host_slot(), ring); }
 
-// publish this process's shared surface (side 0 = app, 1 = ide): both
-// texture fds at once. the fds stay open here for the textures' whole
-// life; consumers pull dups.
+// one published surface of a slot, or null when the index is out of range
+static SharedTex* host_tex_at(int slot, int side) {
+    HostShared* hs = host_shared();
+    if (!hs || slot < 0 || slot >= HOST_APPS)  return 0;
+    if (side < 0 || side >= HOST_TEX)          return 0;
+    return &hs->app[slot].tex[side];
+}
+
+// publish this process's shared surface (side 0 = app, 1 = ide, 2.. =
+// instruments): both texture fds at once. the fds stay open here for the
+// textures' whole life; consumers pull dups.
 extern "C" void host_tex_publish(int slot, int side, int fd0, int fd1, int w, int h, int fmt) {
     HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS) return;
+    SharedTex*  t  = host_tex_at(slot, side);
+    if (!hs || !t) return;
     // let any same-uid consumer pull our fds (yama scope 1 blocks otherwise)
     prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
-    SharedTex* t = side ? &hs->app[slot].ide_tex : &hs->app[slot].app_tex;
     t->pid    = (int)getpid();
     t->fd0    = fd0;
     t->fd1    = fd1;
@@ -156,36 +165,43 @@ extern "C" void host_tex_publish(int slot, int side, int fd0, int fd1, int w, in
     if (!side) hs->app[slot].state = 2;
 }
 
+// retire a surface: gen 0 is how a consumer reads "this one is gone"
+extern "C" void host_tex_clear(int slot, int side) {
+    SharedTex* t = host_tex_at(slot, side);
+    if (!t) return;
+    t->front = -1;
+    t->fd0   = -1;
+    t->fd1   = -1;
+    __sync_synchronize();
+    t->gen = 0;
+}
+
 extern "C" int host_tex_gen(int slot, int side) {
-    HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS) return 0;
-    SharedTex* t = side ? &hs->app[slot].ide_tex : &hs->app[slot].app_tex;
+    SharedTex* t = host_tex_at(slot, side);
+    if (!t) return 0;
     return t->gen;
 }
 
 // producer: this texture now holds a COMPLETE frame — show it
 extern "C" void host_tex_flip(int slot, int side, int front) {
-    HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS) return;
-    SharedTex* t = side ? &hs->app[slot].ide_tex : &hs->app[slot].app_tex;
+    SharedTex* t = host_tex_at(slot, side);
+    if (!t) return;
     __sync_synchronize();
     t->front = front;
 }
 
 // consumer: which of the two textures holds the newest complete frame
 extern "C" int host_tex_front(int slot, int side) {
-    HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS) return -1;
-    SharedTex* t = side ? &hs->app[slot].ide_tex : &hs->app[slot].app_tex;
+    SharedTex* t = host_tex_at(slot, side);
+    if (!t) return -1;
     return t->front;
 }
 
 // duplicate one published texture fd (which = 0/1) out of its owner.
 // returns a LOCAL fd (caller owns it; vulkan import consumes it) or -1.
 extern "C" int host_tex_pull(int slot, int side, int which, int* w, int* h, int* fmt) {
-    HostShared* hs = host_shared();
-    if (!hs || slot < 0 || slot >= HOST_APPS) return -1;
-    SharedTex* t = side ? &hs->app[slot].ide_tex : &hs->app[slot].app_tex;
+    SharedTex* t = host_tex_at(slot, side);
+    if (!t) return -1;
     int fd = which ? t->fd1 : t->fd0;
     if (t->gen <= 0 || t->pid <= 0 || fd < 0) return -1;
     if (w)   *w   = t->width;
@@ -207,8 +223,7 @@ extern "C" int host_app_request(const char* nm) {
     for (int i = 1; i < HOST_APPS; i++) {
         HostApp* ap = &hs->app[i];
         if (ap->state == 0 || ap->state == 3) {
-            memset((void*)&ap->app_tex, 0, sizeof(SharedTex));
-            memset((void*)&ap->ide_tex, 0, sizeof(SharedTex));
+            memset((void*)ap->tex, 0, sizeof(ap->tex));
             ap->to_ide.tail = ap->to_ide.head;
             ap->to_app.tail = ap->to_app.head;
             ap->app_pid = 0;
@@ -337,6 +352,66 @@ extern "C" int agent_sock_open(const char* name) {
     return 1;
 }
 
+// client: ask a running app one line and read its reply. 0 = nobody home
+extern "C" int agent_sock_ask(const char* name, const char* line,
+                              char* out, int cap) {
+    if (!name || !*name || !line || !out || cap < 2) return 0;
+    const char* rt = getenv("XDG_RUNTIME_DIR");
+    char pathb[256];
+    snprintf(pathb, sizeof(pathb), "%s/trinity-%s.sock",
+             (rt && *rt) ? rt : "/tmp", name);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return 0;
+    struct sockaddr_un su;
+    memset(&su, 0, sizeof(su));
+    su.sun_family = AF_UNIX;
+    strncpy(su.sun_path, pathb, sizeof(su.sun_path) - 1);
+    if (connect(fd, (struct sockaddr*)&su, sizeof(su)) != 0) {
+        close(fd);
+        return 0;
+    }
+    size_t n = strlen(line);
+    if (write(fd, line, n) != (ssize_t)n) { close(fd); return 0; }
+    // the app answers on its next frame; wait briefly rather than spin
+    struct timeval tv;
+    tv.tv_sec  = 0;
+    tv.tv_usec = 250000;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    int got = 0;
+    while (got < cap - 1) {
+        int r = (int)recv(fd, out + got, cap - 1 - got, 0);
+        if (r <= 0) break;
+        got += r;
+        if (memchr(out, '\n', got)) break;
+    }
+    close(fd);
+    out[got] = 0;
+    return got;
+}
+
+// client: hand one line to an app that is already running. 0 = nobody home
+extern "C" int agent_sock_send(const char* name, const char* line) {
+    if (!name || !*name || !line || !*line) return 0;
+    const char* rt = getenv("XDG_RUNTIME_DIR");
+    char pathb[256];
+    snprintf(pathb, sizeof(pathb), "%s/trinity-%s.sock",
+             (rt && *rt) ? rt : "/tmp", name);
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return 0;
+    struct sockaddr_un su;
+    memset(&su, 0, sizeof(su));
+    su.sun_family = AF_UNIX;
+    strncpy(su.sun_path, pathb, sizeof(su.sun_path) - 1);
+    if (connect(fd, (struct sockaddr*)&su, sizeof(su)) != 0) {
+        close(fd);
+        return 0;
+    }
+    size_t  n = strlen(line);
+    ssize_t w = write(fd, line, n);
+    close(fd);
+    return (w == (ssize_t)n) ? 1 : 0;
+}
+
 // one complete line per call (newline stripped); 0 = nothing pending
 extern "C" int agent_sock_line(char* out, int cap) {
     if (g_agent_srv < 0 || !out || cap < 2) return 0;
@@ -421,6 +496,7 @@ extern "C" int  host_pb(void)                                      { return 0; }
 extern "C" int  host_pc(void)                                      { return 0; }
 extern "C" void host_tex_publish(int s, int sd, int f0, int f1, int w, int h, int f) { }
 extern "C" int  host_tex_gen(int s, int sd)                        { return 0; }
+extern "C" void host_tex_clear(int s, int sd)                      { }
 extern "C" void host_tex_flip(int s, int sd, int fr)               { }
 extern "C" int  host_tex_front(int s, int sd)                      { return -1; }
 extern "C" int  host_tex_pull(int s, int sd, int wh, int* w, int* h, int* f) { return -1; }
@@ -434,4 +510,6 @@ extern "C" void host_app_resume(int s)                             { }
 extern "C" int  agent_sock_open(const char* name)                  { return 0; }
 extern "C" int  agent_sock_line(char* out, int cap)                { return 0; }
 extern "C" void agent_sock_reply(const char* s)                    { }
+extern "C" int  agent_sock_send(const char* nm, const char* ln)    { return 0; }
+extern "C" int  agent_sock_ask(const char* nm, const char* ln, char* o, int c) { return 0; }
 #endif

@@ -1742,6 +1742,43 @@ void au_space_clear(void) {
 // resident set size as a fraction of total physical RAM. reads /proc/self/statm
 // (field 2 = resident pages) and sysconf for page size + physical page count.
 // returns 0 when it can't be determined so callers treat that as "no guard".
+// resident / virtual size in bytes, straight from /proc/self/statm. the
+// fraction below is only useful against total ram; a graph wants bytes
+static void au_mem_pages(long* size_pages, long* rss_pages) {
+    *size_pages = 0;
+    *rss_pages  = 0;
+    FILE* f = fopen("/proc/self/statm", "r");
+    if (!f) return;
+    if (fscanf(f, "%ld %ld", size_pages, rss_pages) < 2) {
+        *size_pages = 0;
+        *rss_pages  = 0;
+    }
+    fclose(f);
+}
+
+i64 au_mem_rss(void) {
+    long sz = 0, rss = 0;
+    au_mem_pages(&sz, &rss);
+    long page = sysconf(_SC_PAGESIZE);
+    if (rss <= 0 || page <= 0) return 0;
+    return (i64)rss * (i64)page;
+}
+
+i64 au_mem_virt(void) {
+    long sz = 0, rss = 0;
+    au_mem_pages(&sz, &rss);
+    long page = sysconf(_SC_PAGESIZE);
+    if (sz <= 0 || page <= 0) return 0;
+    return (i64)sz * (i64)page;
+}
+
+i64 au_mem_phys(void) {
+    long page = sysconf(_SC_PAGESIZE);
+    long phys = sysconf(_SC_PHYS_PAGES);
+    if (page <= 0 || phys <= 0) return 0;
+    return (i64)phys * (i64)page;
+}
+
 float au_mem_fraction(void) {
     FILE* f = fopen("/proc/self/statm", "r");
     if (!f) return 0.0f;

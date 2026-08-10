@@ -25,18 +25,19 @@ static void symbolize_crash_log(const char* appname);
 // ONE anonymous memfd (RAM-backed shared memory, no filesystem name, no
 // socket, no file — EVER) created by this process and inherited by every
 // child we spawn (SILVER_SHM_FD). it holds a table of app slots: two message
-// rings + two shared-texture descriptors each. apps publish the dma-buf fd
+// rings + a row of shared-texture descriptors each. apps publish the dma-buf fd
 // of the screen texture they already render into; consumers pull it with
 // pidfd_getfd and import the same GPU memory. this process only spawns and
 // reaps — it never touches pixels or fds. layout MIRRORS trinity.cc.
 #define HM_SLOTS   1024
 #define HOST_APPS  8
+#define HOST_TEX   10
 typedef struct { int32_t type, a, b, c; } HostMsg;
 typedef struct { volatile uint32_t head, tail; HostMsg m[HM_SLOTS]; } HostRing;
 typedef struct { volatile int32_t pid, fd0, fd1, front, gen, width, height, format; } SharedTex;
 typedef struct {
     HostRing  to_ide, to_app;
-    SharedTex app_tex, ide_tex;
+    SharedTex tex[HOST_TEX];    // 0 app screen, 1 ide overlay, 2.. instruments
     volatile int32_t app_pid;   // process bound to this slot
     volatile int32_t state;     // 0 free, 1 spawn requested, 2 live, 3 exited
     volatile int32_t verdict;   // 0 unset, >0 exit code+1, <0 -signal, -1000 build failed
@@ -1039,7 +1040,10 @@ int main(int argc, char** argv) {
         if (!reload_off || defer)
         for (int i = 0; i < nsr; i++) {
             if (file_mtime(srcs[i].path) != srcs[i].mtime) {
-                fprintf(stdout, "%s: source changed: %s\n", name, srcs[i].path);
+                // the mtime is only consumed when we act on it, so a build
+                // already in flight would re-announce this every frame
+                if (!compile_pid)
+                    fprintf(stdout, "%s: source changed: %s\n", name, srcs[i].path);
                 changed = 1;
             }
         }

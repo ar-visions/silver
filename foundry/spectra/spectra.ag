@@ -33,7 +33,8 @@ import <mpg123min.h>
 import <torch_shim.h>
     -ltorch_shim
 
-export extensions ['.mp3']
+export extensions ['.mp3': FileType.binary, '.wav': FileType.binary,
+                   '.flac': FileType.binary, '.ogg': FileType.binary]
 
 import net
 import ai

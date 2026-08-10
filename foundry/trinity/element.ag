@@ -257,6 +257,25 @@ ielement element
     public func on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
         return
 
+    # APPEND ONLY below: method order is vtable slot order, and modules
+    # loaded at runtime (scenes) are not rebuilt when this file changes
+    # a raw agent line the shell forwarded; the app owns what it means
+    public func on_agent   [ s: string ] return
+    # the instruments this instance can show. the shell asks, never guesses
+    public func instruments [] -> array string
+        return null
+    # an instrument IS this enumeration: the entries it reads right now.
+    # the shell samples it while the instrument is on
+    public func read_instrument [ nm: string ] -> array string
+        return null
+    # the shell dictates the width; the height is OURS to say
+    public func instrument_height [ nm: string, iw: i32 ] -> i32
+        return 0
+    # a view is only an option on top of the enumeration. false = no view,
+    # so the instrument shows its entries alone
+    public func paint_instrument [ cv: Canvas, nm: string, r: rect ] -> bool
+        return false
+
     func unload_tree [ ]
         on_unload*[]
         for [ ee: element, k: string ] in elements

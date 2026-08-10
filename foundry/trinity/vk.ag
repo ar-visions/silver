@@ -814,12 +814,6 @@ class vk_context
     # Canvas.paint before rebind) so a pipeline's descriptor/uniform ring picks the
     # same slot as the render's command buffer/fence — no per-call signature threading.
     public  cur_ring            : i32
-    # force every paint to sync_fence (drain) instead of batching through the ring. set
-    # during an interactive layout change (seam/split drag) where the batched ring's per-slot
-    # UBO/UV (each composite's cache-area crop) can desync across the many composites a single
-    # frame issues. a drag is rare + brief, so the synchronous path's cost is invisible there
-    # while the ring keeps scroll/idle fast. cleared as soon as the drag ends.
-    public  sync_paints         : bool
     public  queue_family_index  : i32 -1
     public  rt_support          : bool
     public  instance_exts       : array cstr [ alloc:128, unmanaged:true ]
@@ -858,6 +852,7 @@ class vk_context
     public  pipe_draws          : i32
     public  sdf_hit             : i32
     public  sdf_miss            : i32
+    public  sdf_rect            : i32
     public  geom_us             : i64
     public  render_allocs       : i32
     # deferred GPU-buffer destruction: a buffer queued here is destroyed only

@@ -189,6 +189,133 @@ NodeList Fields
     func render [] -> Elements
         return null
 
+# ONE column, right of the editor, holding every live instrument. the
+# stack at the top selects which one shows; only that one is drawn
+Option InstrumentColumn
+    # the app publishes on its own clock, so this must repaint on ours.
+    # without it the pane only redraws when input dirties it, which is
+    # why it appeared to update on clicks and hovers
+    animated : true
+    style : CSS {
+        area: l0 t0 r0 b0
+        layers.ibase:
+            fill_color: #14121c
+            area: l0 t0 r0 b0
+    }
+    mutable rows     : map array [string]
+    mutable ask_ms   : i64
+    # while the split is being dragged the width changes every frame, and
+    # each change makes the app rebuild every instrument canvas. sit out
+    # the drag: titles only, then come back once the width holds still
+    mutable last_w   : f32
+    mutable settle   : i64
+
+    func row_h [] -> f32
+        return 22.0
+
+    # found at draw time, never passed in: taking it as a prop would make
+    # the pane's shape depend on what is read back out of the pane
+    func app [] -> AppView
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb ] return null
+        for [ e: element* a, e, e = e.parent ]
+            if [ e inherits EditorView ]
+                ev9 : EditorView e
+                ed9 : Editor orb.pane_at[ ev9.pane_index ]
+                if [ !ed9 || !ed9.run_view ] return null
+                return AppView ed9.run_view
+        return null
+
+    # the y each instrument's title sits at, so press and draw agree
+    func title_y [ av: AppView, ix: i32 ] -> f32
+        y9 : f32 [ 0.0 ]
+        for [ i: i32 0, i < ix, i += 1 ]
+            nm : string av.instr_names[i]
+            y9 += row_h[]
+            ft : av.instr_front[ nm ]
+            if [ ft ] y9 += f32[ ft.height ]
+            el      y9 += body_h[ av, nm ]
+        return y9
+
+    func body_h [ av: AppView, nm: string ] -> f32
+        rw : array [ (rows) ? rows[ nm ] : null ]
+        if [ !rw || rw.count == 0 ] return 0.0
+        return f32[ rw.count ] * 16.0 + 4.0
+
+    # a title toggles that one's logging. nothing here turns an
+    # instrument off — they are ALL shown, always
+    func on_press [ ev: Event ]
+        av : app[]
+        if [ !av || !av.instr_names ] return
+        for [ i: i32 0, i < av.instr_names.count, i += 1 ]
+            ty : f32 [ title_y[ av, i ] ]
+            if [ ev.mouse.pos.y >= ty && ev.mouse.pos.y < ty + row_h[] ]
+                av.instr_toggle[ av.instr_names[i], true ]
+                pristine = false
+                ev.no_default = true
+                return
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        av : app[]
+        if [ !bounds || !av || !av.instr_names ] return
+        cv : Canvas w.screen
+        n  : i32 [ av.instr_names.count ]
+        rh : f32 [ row_h[] ]
+        cv.stroke_width[ 0.0 ]
+        now : i64 [ epoch_millis[] ]
+        if [ bounds.w != last_w ]
+            last_w = bounds.w
+            settle = now
+        sizing : bool [ now - settle < 200 ]
+        # the entries of every instrument, re-asked twice a second
+        if [ !sizing && (ask_ms == 0 || now - ask_ms > 500) ]
+            ask_ms = now
+            if [ !rows ] rows = map array [string] []
+            for [ i: i32 0, i < n, i += 1 ]
+                nk : string av.instr_names[i]
+                rows[ nk ] = av.instr_entries[ nk ]
+        y9 : f32 [ 0.0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            nm : string av.instr_names[i]
+            if [ y9 > bounds.h ] break
+            # the title: the ONE thing you can click, and it logs
+            cv.fill_color[ rgba [ '#2a2340' ] ]
+            cv.rect_to[ 0.0, y9, bounds.w, rh - 1.0 ]
+            cv.paint[]
+            cv.font_size[ 13 ]
+            cv.fill_color[ rgba [ '#e8e2f5' ] ]
+            cv.draw_text[ nm, rect [ x: 8.0, y: y9, w: bounds.w - 26.0, h: rh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            if [ av.instr_is_logging[ nm ] ]
+                cv.fill_color[ rgba [ '#ff6b6b' ] ]
+                cv.rounded_rect[ bounds.w - 15.0, y9 + 8.0, 6.0, 6.0, 3.0, 3.0, 3.0, 3.0 ]
+                cv.paint[]
+            y9 += rh
+            # mid-drag: the title band only. asking for a new width here
+            # would rebuild every canvas in the app on every frame
+            if [ sizing ] continue
+            # we give the width, the app gives the height: its own size
+            av.instr_width[ nm, i32[ bounds.w ] ]
+            ft : av.instr_front[ nm ]
+            if [ ft ]
+                th : f32 [ f32[ ft.height ] ]
+                if [ y9 + th > bounds.h ] th = bounds.h - y9
+                if [ th > 0.0 ]
+                    cv.draw_image[ ft, rect [ x: 0.0, y: y9, w: f32[ ft.width ], h: th ] ]
+                    y9 += th
+                continue
+            rw : array [ (rows) ? rows[ nm ] : null ]
+            if [ !rw ] continue
+            cv.font_size[ 12 ]
+            cv.fill_color[ rgba [ '#cfd6e4' ] ]
+            for [ k: i32 0, k < rw.count, k += 1 ]
+                if [ y9 > bounds.h - 12.0 ] break
+                cv.draw_text[ '{rw[k]}', rect [ x: 8.0, y: y9, w: bounds.w - 12.0, h: 15.0 ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                y9 += 15.0
+            y9 += 4.0
+
 NodeList Toolbox
     style : CSS {
         area: l0 t0 r0 b0

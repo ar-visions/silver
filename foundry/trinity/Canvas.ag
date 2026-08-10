@@ -16,6 +16,8 @@ enum DrawMode
     rect        : 9
     # vector reconstruction sampled at the destination pixel
     image_vec   : 10
+    # box-average the source footprint when shrinking
+    image_min   : 11
 
 # ---- path command tags ----
 enum path_cmd
@@ -332,6 +334,26 @@ shader CanvasUI
         return c;
     }
 
+    # one bilinear tap reads 2x2 texels however far the image shrinks, so a
+    # 30% thumbnail drops 90% of them and shimmers. average the footprint
+    func cv_minify [ uv: vec2f, fp: vec2f ] -> GLSL vec4f {
+        ivec2 ts = textureSize(image, 0);
+        vec2  pt = uv * vec2(ts);
+        int nx = int(clamp(ceil(fp.x), 1.0, 6.0));
+        int ny = int(clamp(ceil(fp.y), 1.0, 6.0));
+        vec4  acc = vec4(0.0);
+        float n   = 0.0;
+        for (int j = 0; j < ny; j++) {{
+            for (int i = 0; i < nx; i++) {{
+                vec2 o = (vec2(float(i), float(j)) + 0.5) / vec2(float(nx), float(ny)) - 0.5;
+                ivec2 sp = clamp(ivec2(floor(pt + o * fp)), ivec2(0), ts - 1);
+                acc += texelFetch(image, sp, 0);
+                n   += 1.0;
+            }}
+        }}
+        return acc / max(n, 1.0);
+    }
+
     # ---- fragment shader ----
     func fragment [] -> GLSL none {
 
@@ -446,6 +468,19 @@ shader CanvasUI
             float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                          : 1.0 - smoothstep(-0.5, 0.5, dist);
             o_color    = vec4(texel.rgb * texel.a, texel.a) * aa * opacity;
+            return;
+        }}
+
+        // image_min: shrinking. average every source texel under this pixel
+        if (mode == 11.0) {{
+            vec2 uv    = (lpos - ubo.rect.xy) / ubo.rect.zw;
+            uv         = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
+            vec2 mpt   = uv * vec2(textureSize(image, 0));
+            vec2 fp    = max(vec2(fwidth(mpt.x), fwidth(mpt.y)), vec2(1.0));
+            vec4 texel = cv_minify(uv, fp);
+            float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
+                                         : 1.0 - smoothstep(-0.5, 0.5, dist);
+            o_color    = texel * aa * opacity;
             return;
         }}
 
@@ -911,6 +946,9 @@ class CanvasPath
     intern cached_bw         : f32
     intern cached_bh         : f32
     intern cached_valid      : bool
+    # an axis-aligned rect needs only its bounds: the shader takes the
+    # radii, and the edge list it would build is never read
+    public is_rect           : bool
 
     func realloc_check [ ]
         if [ pcount < palloc ] return
@@ -932,6 +970,7 @@ class CanvasPath
         cursor_x = 0.0
         cursor_y = 0.0
         is_closed = false
+        is_rect   = false
         corner_radii = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
 
@@ -943,12 +982,14 @@ class CanvasPath
         cursor_x = x
         cursor_y = y
         is_closed = false
+        is_rect   = false
 
     func line_to [ x: f32, y: f32 ]
         pt : PathPt [ cmd: path_cmd.line, x: x, y: y ]
         append[ pt ]
         cursor_x = x
         cursor_y = y
+        is_rect  = false
 
     func quad_to [ cx: f32, cy: f32, x: f32, y: f32 ]
         pt : PathPt [ cmd: path_cmd.quad, x: x, y: y, cx1: cx, cy1: cy ]
@@ -1023,6 +1064,7 @@ class CanvasPath
         line_to [ x + w, y + h ]
         line_to [ x, y + h ]
         close_path
+        is_rect = true
 
     func add_rounded_rect [ x: f32, y: f32, w: f32, h: f32, tl: f32, tr: f32, br: f32, bl: f32 ]
         half2 : f32 [ minf[ w, h ] * 0.5 ]
@@ -1032,6 +1074,7 @@ class CanvasPath
         line_to [ x + w, y + h ]
         line_to [ x,     y + h ]
         close_path
+        is_rect = true
 
     func close_path []
         if [ !is_closed ]
@@ -1043,6 +1086,7 @@ class CanvasPath
         start_x = 0.0
         start_y = 0.0
         is_closed = false
+        is_rect = false
         corner_radii = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
 # gradient stop: color at a position [0..1]
@@ -1229,6 +1273,7 @@ Render Canvas
     intern image_override : Texture
     intern mask_override  : Texture
     intern vec_override   : bool
+    intern min_override   : bool
     intern image_dirty   : new bool [ 64 ]
     public  content_w     : i32
     public  content_h     : i32
@@ -1371,7 +1416,14 @@ Render Canvas
     func flush []
         #update[]
         draw[]
-        if [ vk.sync_paints ] sync_fence[]
+
+    # submit and WAIT for both passes. text is its own Render layered on
+    # our color and it is never fenced, so anyone reading the texture
+    # straight after a paint gets the shapes without the text
+    func sync_all []
+        draw[]
+        sync_fence[]
+        if [ text_render ] text_render.sync_fence[]
 
     func reset [ c: vec4f ]
         if [ !color || !color.vk_image ]
@@ -1419,7 +1471,8 @@ Render Canvas
         if [ qw == width && qh == height ] return a  # capacity unchanged — no realloc
         rz0 : i64 [ epoch_micros[] ]
         vk.resize_calls += 1
-        vkDeviceWaitIdle[ vk.device ]
+        # no global stall: update[] below fences THIS render's own frame
+        # before it tears down attachments, which is all we are racing
         width  = qw
         height = qh 
         update[]                                     # Render: color/depth + framebuffers
@@ -2270,6 +2323,18 @@ Render Canvas
         draw_image[ tex, dst ]
         vec_override = false
 
+    # same as draw_image, box-averaging the footprint when it shrinks
+    func draw_image_min [ tex: Texture, dst: rect ]
+        min_override = true
+        draw_image[ tex, dst ]
+        min_override = false
+
+    # dst shows only the u0,v0..u1,v1 sub-rect of tex
+    func draw_image_crop [ tex: Texture, dst: rect, u0: f32, v0: f32, u1: f32, v1: f32 ]
+        image_uv = vec4f [ u0, v0, u1, v1 ]
+        draw_image[ tex, dst ]
+        image_uv = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+
     func draw_image [ tex: Texture, dst: rect ]
         image_override = tex
         path.clear[]
@@ -2356,7 +2421,10 @@ Render Canvas
         st   : states[state_depth - 1]
         cache_hit : bool [ false ]
         pcount    : i32  [ path.pcount ]
-        if [ pcount > 0 && path.cached_valid && path.cached_pcount == pcount ]
+        # a rect reads its bounds off its own corners. flattening it and
+        # extracting edges builds a list the rect branch never looks at
+        fast_rect : bool [ path.is_rect && pcount == 5 ]
+        if [ !fast_rect && pcount > 0 && path.cached_valid && path.cached_pcount == pcount ]
             cache_hit = memcmp[ path.points, path.cached_points,
                 sizeof[ PathPt ] * pcount ] == 0
 
@@ -2367,12 +2435,21 @@ Render Canvas
         edges : @SDFEdge
         n     : i32
 
-        if [ cache_hit ]
+        if [ fast_rect ]
+            vk.sdf_rect += 1
+            p0 : PathPt path.points[0]
+            p2 : PathPt path.points[2]
+            bx0 = minf[ p0.x, p2.x ]
+            by0 = minf[ p0.y, p2.y ]
+            bw  = maxf[ p0.x, p2.x ] - bx0
+            bh  = maxf[ p0.y, p2.y ] - by0
+            n   = 4
+        el [ cache_hit ]
             vk.sdf_hit += 1
-            bx0 = path.cached_bx0
-            by0 = path.cached_by0
-            bw  = path.cached_bw
-            bh  = path.cached_bh
+            bx0   = path.cached_bx0
+            by0   = path.cached_by0
+            bw    = path.cached_bw
+            bh    = path.cached_bh
             edges = path.cached_edges
             n     = path.cached_edge_count
         el
@@ -2436,6 +2513,7 @@ Render Canvas
             ui_shader.stroke_opts = vec4f [ f32 i32 st.stroke_join, f32 i32 st.stroke_cap, fgrad_mode, sgrad_mode ]
             is_r8    : bool [ image_override && image_override.pixel_format == Pixel.u8 ]
             img_mode : f32  [ (vec_override)  ? DrawMode.image_vec
+                            : (min_override)  ? DrawMode.image_min
                             : (mask_override) ? DrawMode.image_masked
                             : ((is_r8) ? DrawMode.image_r : DrawMode.image) ]
             mode     : f32  [ (image_override) ? img_mode : DrawMode.solid ]
@@ -2489,6 +2567,8 @@ Render Canvas
                 cmod_grow.samplers = map Au[string] [ 'edges': edge_buf, 'sdf_out': sdf_tex ]
                 cmod_grow.rebind_model[]
                 path.cached_valid = false
+            # a hit means OUR edges are still the ones in the shared
+            # buffer — the cache only hits on the immediately prior shape
             if [ !cache_hit ]
                 edge_data : @f32 [ edge_buf.data ]
                 for [ ei: i32 0, ei < ne, ei += 1 ]

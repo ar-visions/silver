@@ -1,5 +1,5 @@
 export 0.8.8
-export extensions ['.smc', '.sfc', '.spc']
+export extensions ['.smc': FileType.binary, '.sfc': FileType.binary, '.spc': FileType.binary]
 
 import trinity
 import img
@@ -264,6 +264,25 @@ element asnes : trinity
 	public  volume         	: f32              # playback volume 0..1 (adjustable; default 0.22)
 	public  bind           	: bool             # --bind: ask for each button, write binds.agi
 	mutable dump_req       	: bool             # '9': write each layer plane to /tmp
+	# the F-key rom view: '' = the game alone. shell instruments are separate
+	public  view           	: string [ '' ]
+	mutable chr_tex        	: Texture
+	mutable chr_buf        	: new u32 [ 256 * 1024 ]  # 2bpp fills all 4096 tiles
+	mutable chr_h          	: i32                     # rows currently in chr_tex
+	mutable chr_have       	: bool                    # chr_tex holds a decode
+	# built text, not rebuilt per frame. R refreshes, as does any change
+	mutable vrows          	: array string
+	mutable vhead          	: string
+	mutable vhave          	: bool
+	mutable vbuilt         	: string           # which view vrows belongs to
+	# built rows per view name: several can be up, none rebuild per frame
+	mutable vcache         	: map array [string]
+	mutable vheads         	: map string [string]
+	mutable chr_pal        	: i32              # palette row the tile grid decodes with
+	mutable chr_bpp        	: i32 [ 4 ]
+	mutable chr_base       	: i32              # first tile of the grid
+	mutable ram_off        	: i32              # first byte of the ram dump
+	mutable obj_off        	: i32              # first OAM entry shown
 	mutable binds          	: snes_binds
 	mutable bind_ix        	: i32              # button the wizard is asking for
 	mutable bnames         	: array string     # wizard order
@@ -411,6 +430,10 @@ element asnes : trinity
 	mutable hsetup_arm     	: bool              # setup two-edge pipeline state (reference hardware arms dmaActive one edge before running)
 	mutable hsetup_pend    	: bool              # HDMA setup deferred to its true dot (reference hardware hdmaSetupPosition = 12 + dmaCounter at frame start), fired from the cycle-start edge
 	mutable emu_ms30       	: i64               # wall ms spent in run_rom_frame per 30-frame window (ASNES_CYCLOG)
+	mutable cls_us30       	: i64               # wall us in classify_sprites per 30-frame window
+	mutable uni_us30       	: i64               # wall us in union_sprites per 30-frame window
+	mutable lay_us30       	: i64               # wall us in ppu_render_layers per 30-frame window
+	mutable pub_us30       	: i64               # wall us in the publish memcpys per 30-frame window
 	mutable drop30         	: i64               # samples the drain mixed PAST the frame cap and threw away
 	mutable emu_started    	: bool              # emulation thread spawned (decoupled from the render loop)
 	mutable emu_stop       	: bool              # ask the emulation thread to exit (dealloc)
@@ -467,6 +490,10 @@ element asnes : trinity
 	mutable pub_lays       	: new u32 [ 57344 ]
 	mutable pub_layered    	: bool              # this frame published provenance layers
 	mutable pub_b3hi       	: bool              # BGMODE bit3 at rep line: BG3 rides above sprites
+	mutable lay_hash       	: u32               # inputs hash of the last plane build
+	mutable lay_gen        	: u32               # bumped each plane rebuild
+	mutable pub_lay_gen    	: u32               # published plane generation
+	mutable tex_lay_gen    	: u32               # generation the lay textures hold
 	mutable layb_tex       	: Texture
 	mutable lay1_tex       	: Texture
 	mutable lay2_tex       	: Texture
@@ -522,6 +549,8 @@ element asnes : trinity
 	mutable pub_framebuf   	: new u32 [ 57344 ]  # published CPU-composited frame (render thread uploads this, never ppu.framebuf)
 	mutable pub_vram       	: new u8  [ 65536 ]  # published VRAM for the m7 GPU bake
 	mutable pub_cgram      	: new u8  [ 512 ]
+	mutable pub_oam        	: new u8  [ 0x220 ]  # published OAM for the sprite view
+	mutable pub_wram       	: new u8  [ 0x20000 ]# published 128K work RAM for the ram view
 	mutable pub_m7a        	: new i16 [ 224 ]    # published per-line m7 matrices for the GPU pass
 	mutable pub_m7b        	: new i16 [ 224 ]
 	mutable pub_m7c        	: new i16 [ 224 ]
@@ -2796,6 +2825,11 @@ element asnes : trinity
 		clock_gettime[ 1, tsp ]
 		return tsp[0] * 1000 + tsp[1] / 1000000
 
+	func wall_us [] -> i64
+		tsp : local i64 [ 2 ]
+		clock_gettime[ 1, tsp ]
+		return tsp[0] * 1000000 + tsp[1] / 1000
+
 	func audio_slice_size [] -> sz
 		to_write : sz [ spc.sample_rate / 60 ]
 		if [ to_write > spc.buffer_size ] to_write = spc.buffer_size
@@ -3521,6 +3555,12 @@ element asnes : trinity
 		if [ !d ] return null
 		return path '{d}/binds.agi'
 
+	func state_path [] -> path
+		d : path.path_storage[ 'asnes' ]
+		if [ !d ] return path '/tmp/asnes.state'
+		nm : string [ (rom) ? rom.filename[] : 'asnes' ]
+		return path '{d}/{nm}.state'
+
 	func load_binds []
 		p : binds_path[]
 		if [ !p || !p.exists[] ] return
@@ -3563,6 +3603,31 @@ element asnes : trinity
 			if [ v && v.pad == btn ] return bit_for_name[ k ]
 		return -1
 
+	# what this instance can show. the shell asks; it never hardcodes
+	public func instruments [] -> array string
+		return array string [ 'chr', 'pal', 'obj', 'ram', 'spc', 'regs', 'hdr' ]
+
+	# the rows behind a rom view — the instrument IS this enumeration
+	public func read_instrument [ nm: string ] -> array string
+		if [ !nm || nm.count == 0 ] return null
+		if [ !(nm == 'obj' || nm == 'ram' || nm == 'spc'
+			|| nm == 'hdr' || nm == 'regs') ] return null
+		if [ !vcache ] vcache = map array [string] []
+		if [ !vheads ] vheads = map string [string] []
+		rows : vcache[ nm ]
+		if [ !rows ]
+			view_build[ nm ]
+			vcache[ nm ] = vrows
+			vheads[ nm ] = vhead
+			rows = vrows
+		return rows
+
+	# chr and pal are pictures, so those two also carry a view
+	public func paint_instrument [ cv: Canvas, nm: string, r: rect ] -> bool
+		if [ !nm || nm.count == 0 ] return false
+		if [ nm == 'memory' ] return false
+		return paint_view[ cv, r, nm ]
+
 	public func on_pad [ ev: Event ]
 		if [ bind ]
 			if [ ev.pad.state ] bind_capture[ -1, ev.pad.button ]
@@ -3604,6 +3669,38 @@ element asnes : trinity
 			el [ code == 61 || code == 43 ] volume = clamp[ volume + 0.02, 0.0, 1.0 ]
 			if [ code == 45 || code == 61 || code == 43 ] puts 'asnes volume {volume}'
 			if [ code == 57 ] dump_req = true              # '9' -> dump layer planes
+			# F1..F7 pick a rom view, F1 returns to the game
+			if [ code == 290 ] view = ''
+			if [ code == 291 ] view = 'chr'
+			if [ code == 292 ] view = 'pal'
+			if [ code == 293 ] view = 'obj'
+			if [ code == 294 ] view = 'ram'
+			if [ code == 295 ] view = 'spc'
+			if [ code == 296 ] view = 'regs'
+			if [ code == 297 ] view = 'hdr'
+			if [ code >= 290 && code <= 297 ] vhave = false
+			if [ view && view.count > 0 ]
+				pg : i32 [ (code == 266) ? 0 - 1 : ((code == 267) ? 1 : 0) ]
+				if [ code == 82 ]                        # R: refresh
+					chr_have = false
+					vhave    = false
+					vcache   = null
+					vheads   = null
+				if [ view == 'chr' ]
+					if [ code == 263 ]
+						chr_pal  = (chr_pal + 7) & 7
+						chr_have = false
+					if [ code == 262 ]
+						chr_pal  = (chr_pal + 1) & 7
+						chr_have = false
+				el [ view == 'ram' ]
+					if [ pg ]
+						ram_off = clamp[ ram_off + pg * 0x400, 0, 0x1FC00 ]
+						vhave   = false
+				el [ view == 'obj' ]
+					if [ pg ]
+						obj_off = clamp[ obj_off + pg * 32, 0, 96 ]
+						vhave   = false
 			if [ code == 80 ] save_req = true              # 'P' -> save savestate
 			if [ code == 76 ] load_req = true              # 'L' -> load savestate
 			if [ code == 32 ] paused = !paused             # Space pause/resume
@@ -3622,6 +3719,253 @@ element asnes : trinity
 		dump_layer[ pub_layw, 256, 224, 'spw' ]
 		dump_layer[ pub_lays, 256, 224, 'sps' ]
 		puts 'asnes: layers written to /tmp/asnes-*.png'
+
+	# ---- rom views -------------------------------------------------
+	func vtext [ cv: Canvas, s: string, x: f32, y: f32, col: string ]
+		cv.fill_color[ col ]
+		cv.draw_text[ s, rect [ x: x, y: y, w: 1200.0, h: 16.0 ],
+			vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+
+	func hex2 [ v: i32 ] -> string
+		d : '0123456789ABCDEF'
+		return '{d.mid[ (v >> 4) & 15, 1 ]}{d.mid[ v & 15, 1 ]}'
+
+	func hex4 [ v: i32 ] -> string
+		return '{hex2[ (v >> 8) & 255 ]}{hex2[ v & 255 ]}'
+
+	func cg_rgba [ ix: i32 ] -> u32
+		lo : i32 [ i32[ pub_cgram[ (ix * 2) & 511 ] ] ]
+		hi : i32 [ i32[ pub_cgram[ (ix * 2 + 1) & 511 ] ] ]
+		v  : i32 [ lo | (hi << 8) ]
+		r  : u32 [ u32[ ((v      ) & 31) * 255 / 31 ] ]
+		g  : u32 [ u32[ ((v >>  5) & 31) * 255 / 31 ] ]
+		b  : u32 [ u32[ ((v >> 10) & 31) * 255 / 31 ] ]
+		return 0xFF000000 | (b << 16) | (g << 8) | r
+
+	# the same entry as a canvas colour string
+	func cg_hex [ ix: i32 ] -> string
+		lo : i32 [ i32[ pub_cgram[ (ix * 2) & 511 ] ] ]
+		hi : i32 [ i32[ pub_cgram[ (ix * 2 + 1) & 511 ] ] ]
+		v  : i32 [ lo | (hi << 8) ]
+		return '#{hex2[ ((v) & 31) * 255 / 31 ]}{hex2[ ((v >> 5) & 31) * 255 / 31 ]}{hex2[ ((v >> 10) & 31) * 255 / 31 ]}'
+
+	func view_header [ cv: Canvas, vp: rect, nm: string ]
+		# translucent: the game keeps running behind what you inspect
+		cv.fill_color[ '#0b0f18e6' ]
+		cv.stroke_width[ 0.0 ]
+		cv.rect_to[ vp.x, vp.y, vp.w, vp.h ]
+		cv.paint[]
+		cv.font_size[ 15 ]
+		vtext[ cv, nm, vp.x + 14.0, vp.y + 16.0, '#7fb2ff' ]
+		cv.font_size[ 13 ]
+
+	# CGRAM: 16 rows of 16, the palettes everything else indexes into
+	func view_pal [ cv: Canvas, vp: rect ]
+		view_header[ cv, vp, 'palette — CGRAM 256 entries, BGR555' ]
+		sw : f32 [ (vp.w - 40.0) / 16.0 ]
+		if [ sw > 34.0 ] sw = 34.0
+		for [ r: i32 0, r < 16, r += 1 ]
+			for [ c: i32 0, c < 16, c += 1 ]
+				ix : i32 [ r * 16 + c ]
+				px : f32 [ vp.x + 20.0 + f32[c] * sw ]
+				py : f32 [ vp.y + 40.0 + f32[r] * sw ]
+				cv.fill_color[ cg_hex[ ix ] ]
+				cv.stroke_width[ 0.0 ]
+				cv.rect_to[ px, py, sw - 2.0, sw - 2.0 ]
+				cv.paint[]
+			vtext[ cv, '{hex2[ r * 16 ]}', vp.x + 20.0 + 16.0 * sw + 8.0,
+				vp.y + 40.0 + f32[r] * sw + sw * 0.5, '#8a8a8a' ]
+
+	# character data straight out of VRAM, decoded with a chosen palette.
+	# ALL of it: 64K is 2048 tiles at 4bpp, which fits without paging
+	func view_chr [ cv: Canvas, vp: rect ]
+		view_header[ cv, vp, 'tiles — all VRAM  {chr_bpp}bpp  palette {chr_pal}   [ left/right: palette   R: refresh ]' ]
+		words : i32 [ (chr_bpp == 2) ? 16 : ((chr_bpp == 4) ? 32 : 64) ]
+		ntile : i32 [ 65536 / words ]
+		rows  : i32 [ ntile / 32 ]
+		th : i32 [ rows * 8 ]
+		if [ th > 1024 ] th = 1024
+		if [ th < 8 ] th = 8
+		# built once, not per frame: decoding 4096 tiles and uploading a
+		# megabyte on the game's render path starves it. R rebuilds
+		if [ chr_have ]
+			chr_draw[ cv, vp, th ]
+			return
+		chr_have = true
+		for [ i: i32 0, i < 262144, i += 1 ] chr_buf[i] = 0
+		for [ t: i32 0, t < ntile, t += 1 ]
+			ta : i32 [ t * words ]
+			if [ ta + words > 65536 ] break
+			tx : i32 [ (t & 31) * 8 ]
+			ty : i32 [ (t >> 5) * 8 ]
+			if [ ty + 8 > 1024 ] break
+			for [ y: i32 0, y < 8, y += 1 ]
+				b0 : i32 [ i32[ pub_vram[ ta + y * 2 ] ] ]
+				b1 : i32 [ i32[ pub_vram[ ta + y * 2 + 1 ] ] ]
+				b2 : i32 [ 0 ]
+				b3 : i32 [ 0 ]
+				if [ chr_bpp >= 4 ]
+					b2 = i32[ pub_vram[ ta + 16 + y * 2 ] ]
+					b3 = i32[ pub_vram[ ta + 16 + y * 2 + 1 ] ]
+				for [ x: i32 0, x < 8, x += 1 ]
+					bit : i32 [ 7 - x ]
+					idx : i32 [ ((b0 >> bit) & 1) | (((b1 >> bit) & 1) << 1)
+						| (((b2 >> bit) & 1) << 2) | (((b3 >> bit) & 1) << 3) ]
+					col : u32 [ 0xFF101010 ]
+					if [ idx ] col = cg_rgba[ chr_pal * 16 + idx ]
+					chr_buf[ (ty + y) * 256 + tx + x ] = col
+		if [ !chr_tex || chr_h != th ]
+			chr_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: th, linear: false ]
+			chr_h   = th
+		chr_tex.upload[ chr_buf, 256 * th * 4 ]
+		chr_draw[ cv, vp, th ]
+
+	# fit the whole sheet in the pane, keeping tiles square
+	func chr_draw [ cv: Canvas, vp: rect, th: i32 ]
+		if [ !chr_tex ] return
+		aw9 : f32 [ vp.w - 40.0 ]
+		ah9 : f32 [ vp.h - 60.0 ]
+		sc9 : f32 [ aw9 / 256.0 ]
+		if [ f32[ th ] * sc9 > ah9 ] sc9 = ah9 / f32[ th ]
+		cv.draw_image[ chr_tex, rect [ x: vp.x + 20.0, y: vp.y + 44.0,
+			w: 256.0 * sc9, h: f32[ th ] * sc9 ] ]
+
+	# the 128 OAM entries as the PPU sees them
+	func build_obj []
+		vhead = 'sprites — OAM 128 entries   [ arrows: page   R: refresh ]'
+		vrows.push[ '  #   x    y   tile  pal pri size' ]
+		for [ i: i32 0, i < 32, i += 1 ]
+			n : i32 [ obj_off + i ]
+			if [ n >= 128 ] break
+			o  : i32 [ n * 4 ]
+			xl : i32 [ i32[ pub_oam[ o ] ] ]
+			yv : i32 [ i32[ pub_oam[ o + 1 ] ] ]
+			t0 : i32 [ i32[ pub_oam[ o + 2 ] ] ]
+			at : i32 [ i32[ pub_oam[ o + 3 ] ] ]
+			hb : i32 [ i32[ pub_oam[ 512 + (n >> 2) ] ] ]
+			sh : i32 [ (hb >> ((n & 3) * 2)) & 3 ]
+			xf : i32 [ xl | ((sh & 1) << 8) ]
+			big : (sh & 2) ? 'lg' : 'sm'
+			pal : i32 [ (at >> 1) & 7 ]
+			pri : i32 [ (at >> 4) & 3 ]
+			tn  : i32 [ t0 | ((at & 1) << 8) ]
+			vrows.push[ '{n}   {xf}   {yv}   {hex4[tn]}   {pal}   {pri}  {big}' ]
+
+	# 128K work RAM: where lives, health and timers live
+	func build_ram []
+		vhead = 'work ram — $7E0000 + {hex4[ ram_off ]}   [ arrows: page   R: refresh ]'
+		cb : local i8 [ 2 ]
+		for [ r: i32 0, r < 48, r += 1 ]
+			base : i32 [ ram_off + r * 16 ]
+			if [ base + 16 > 0x20000 ] break
+			ln : '{hex2[ (base >> 16) & 255 ]}{hex4[ base & 0xFFFF ]}  '
+			as : ''
+			for [ c: i32 0, c < 16, c += 1 ]
+				b : i32 [ i32[ pub_wram[ base + c ] ] ]
+				ln = '{ln}{hex2[b]} '
+				cb[0] = (b >= 32 && b < 127) ? i8[b] : i8[46]
+				cb[1] = 0
+				as = '{as}{string[ @cb[0] ]}'
+			vrows.push[ '{ln}  {as}' ]
+
+	# the 8 DSP voices
+	func build_spc []
+		vhead = 'audio — SPC700 voices   [ R: refresh ]'
+		if [ !spc ]
+			vrows.push[ 'no apu state' ]
+			return
+		vrows.push[ ' voice  state   env    pos   active' ]
+		for [ v: i32 0, v < 8, v += 1 ]
+			ch : dsp_channel [ spc.channels[v] ]
+			st : 'attack'
+			if [ ch.env_state == 1 ] st = 'decay'
+			if [ ch.env_state == 2 ] st = 'sustain'
+			if [ ch.env_state == 3 ] st = 'release'
+			vrows.push[ '  {v}     {st}    {ch.envelope}   {ch.pos}    {(ch.active) ? 1 : 0}' ]
+
+	# cart header: the front door
+	func build_hdr []
+		vhead = 'cartridge header'
+		if [ !cpu || !cpu.memory ]
+			vrows.push[ 'no cart loaded' ]
+			return
+		base : i32 [ (is_hirom) ? 0xFFC0 : 0x7FC0 ]
+		nm   : ''
+		nb   : local i8 [ 2 ]
+		for [ i: i32 0, i < 21, i += 1 ]
+			c : i32 [ i32[ rom_at[ base + i ] ] ]
+			if [ c >= 32 && c < 127 ]
+				nb[0] = i8[c]
+				nb[1] = 0
+				nm = '{nm}{string[ @nb[0] ]}'
+		rs : i32 [ i32[ rom_at[ base + 0x17 ] ] ]
+		sr : i32 [ i32[ rom_at[ base + 0x18 ] ] ]
+		vrows.push[ 'title      {nm}' ]
+		vrows.push[ 'mapping    {(is_hirom) ? "HiROM" : "LoROM"}' ]
+		vrows.push[ 'rom size   {1 << rs} KB' ]
+		vrows.push[ 'sram size  {(sr) ? (1 << sr) : 0} KB' ]
+		vrows.push[ 'reset      ${hex4[ i32[ rom_at[ base + 0x3C ] ] | (i32[ rom_at[ base + 0x3D ] ] << 8) ]}' ]
+		vrows.push[ 'nmi        ${hex4[ i32[ rom_at[ base + 0x2A ] ] | (i32[ rom_at[ base + 0x2B ] ] << 8) ]}' ]
+
+	func rom_at [ off: i32 ] -> u8
+		if [ !cpu || !cpu.memory ] return u8[0]
+		return cpu.memory[ off ]
+
+	# per-line PPU state the frame was actually drawn with
+	func build_regs []
+		vhead = 'registers — PPU state at line 180   [ R: refresh ]'
+		md : i32 [ i32[ pub_mode[ 180 ] ] ]
+		vrows.push[ 'BGMODE     {md & 7}   (BG3 priority {(md & 8) ? 1 : 0})' ]
+		vrows.push[ 'INIDISP    ${hex2[ i32[ pub_inidisp ] ]}   brightness {i32[ pub_inidisp ] & 15}' ]
+		vrows.push[ 'M7SEL      ${hex2[ i32[ pub_m7sel ] ]}' ]
+		vrows.push[ 'M7 origin  {pub_m7x}, {pub_m7y}' ]
+		vrows.push[ 'layers     {(pub_layered) ? "decomposed" : "composited"}' ]
+		if [ cpu ] vrows.push[ 'cpu pc     ${hex2[ i32[ cpu.pbr ] ]}:{hex4[ i32[ cpu.pc ] ]}' ]
+
+	# false = not one of ours, so the caller shows the game instead of
+	# a blank pane. an unknown name must never cost you the picture
+	# text is BUILT once into vrows, then only drawn. nothing on the
+	# game's render path allocates or formats per frame
+	# the name is a PARAMETER: painting an instrument must never write
+	# the view member, whose old string the caller is still holding
+	func view_build [ vn: string ]
+		vrows = array string []
+		vhead = ''
+		if      [ vn == 'obj'  ] build_obj []
+		el [ vn == 'ram'  ] build_ram []
+		el [ vn == 'spc'  ] build_spc []
+		el [ vn == 'hdr'  ] build_hdr []
+		el [ vn == 'regs' ] build_regs[]
+		vhave  = true
+		vbuilt = vn
+
+	func paint_view [ cv: Canvas, vp: rect, vn: string ] -> bool
+		if [ !vn || vn.count == 0 ] return false
+		if [ vn == 'pal' ]
+			view_pal[ cv, vp ]
+			cv.paint[]
+			return true
+		if [ vn == 'chr' ]
+			view_chr[ cv, vp ]
+			cv.paint[]
+			return true
+		if [ !(vn == 'obj' || vn == 'ram' || vn == 'spc'
+			|| vn == 'hdr' || vn == 'regs') ] return false
+		if [ !vcache ] vcache = map array [string] []
+		if [ !vheads ] vheads = map string [string] []
+		rows9 : array vcache[ vn ]
+		if [ !rows9 ]
+			view_build[ vn ]
+			vcache[ vn ] = vrows
+			vheads[ vn ] = vhead
+			rows9 = vrows
+		view_header[ cv, vp, vheads[ vn ] ]
+		for [ i: i32 0, i < rows9.count, i += 1 ]
+			ry9 : f32 [ vp.y + 50.0 + f32[i] * 15.0 ]
+			if [ ry9 > vp.y + vp.h - 6.0 ] break
+			vtext[ cv, rows9[i], vp.x + 20.0, ry9, '#cfd6e4' ]
+		cv.paint[]
+		return true
 
 	func paint_bind [ cv: Canvas, vp: rect ]
 		cv.fill_color[ '#000' ]
@@ -3761,6 +4105,7 @@ element asnes : trinity
 			cv.stroke_width[ 0.0 ]
 			cv.rect_to[ vp.x, vp.y, vp.w, vp.h ]
 			cv.paint[]
+			paint_view[ cv, vp, view ]
 			return
 		pub_lock.lock[]
 		if [ !screen_tex ]
@@ -3778,13 +4123,15 @@ element asnes : trinity
 				layw_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
 				lays_tex = Texture [ vk: cv.vk, w: cv.w, width: 256, height: 224, linear: true ]
 				lay_on = true                          # settle fresh textures with one upload
-			if [ lay_on ]
+				tex_lay_gen = 0xFFFFFFFF
+			if [ lay_on && tex_lay_gen != pub_lay_gen ]
 				layb_tex.upload[ pub_layb, 288 * 256 * 4 ]
 				lay1_tex.upload[ pub_lay1, 288 * 256 * 4 ]
 				lay2_tex.upload[ pub_lay2, 288 * 256 * 4 ]
 				lay3_tex.upload[ pub_lay3, 288 * 256 * 4 ]
 				layw_tex.upload[ pub_layw, 256 * 224 * 4 ]
 				lays_tex.upload[ pub_lays, 256 * 224 * 4 ]
+				tex_lay_gen = pub_lay_gen
 			lay_on = smooth && pub_layered
 			if [ dump_req ] dump_layers[]
 		g1dx : f32 [ bgg_dx[0] ]
@@ -3945,6 +4292,10 @@ element asnes : trinity
 			cv.draw_image[ occ_render.color, out ]
 		el
 			cv.draw_image[ screen_tex, out ]
+		# a shell-toggled instrument owns its own surface, not this pane.
+		# only the F-key view still paints over the running game
+		if [ view && view.count > 0 ]
+			if [ !paint_view[ cv, vp, view ] ] view = ''
 
 	func state_hash [] -> u32
 		h : u32 [ 2166136261 ]
@@ -3972,6 +4323,44 @@ element asnes : trinity
 		while [ i < n ]
 			h = (h ^ u32[p[off + i]]) * 16777619
 			i += 1
+		return h
+
+	func fnv_mix16 [ h0: u32, p: @u16, n: i32 ] -> u32
+		h : u32 [ h0 ]
+		i : i32 [ 0 ]
+		while [ i < n ]
+			h = (h ^ u32[p[i]]) * 16777619
+			i += 1
+		return h
+
+	# everything the decomposed planes are built from
+	func lay_inputs_hash [] -> u32
+		h : u32 [ fnv_range[ ppu.vram, 0, 0x10000 ] ]
+		h = (h ^ fnv_range[ ppu.cgram, 0, 0x200 ]) * 16777619
+		h = (h ^ fnv_range[ ppu.oam, 0, 0x220 ]) * 16777619
+		h = (h ^ u32[ ppu.obsel ]) * 16777619
+		h = (h ^ fnv_range[ line_mode, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_tm, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_ts, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_inidisp, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_bgsc, 0, 896 ]) * 16777619
+		h = (h ^ fnv_range[ line_nba, 0, 448 ]) * 16777619
+		h = (h ^ fnv_range[ line_cgadsub, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_cgwsel, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_wobjsel, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_wobjlog, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_wh0, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_wh1, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_wh2, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_wh3, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_tmw, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_tsw, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_w12sel, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_w34sel, 0, 224 ]) * 16777619
+		h = (h ^ fnv_range[ line_wbglog, 0, 224 ]) * 16777619
+		h = fnv_mix16[ h, line_h, 896 ]
+		h = fnv_mix16[ h, line_v, 896 ]
+		h = fnv_mix16[ h, line_coldata, 224 ]
 		return h
 
 	func emit_sigs [ tag: symbol ]
@@ -4823,7 +5212,7 @@ element asnes : trinity
 				if [ fns ]
 					ppu_screenshot[ fns ]
 					write_snapshot[ '/tmp/asnes_blob.bin' ]
-				exit[ 0 ]
+					exit[ 0 ]
 		ab : symbol [ getenv[ 'ASNES_AUTO_START' ] ]
 		if [ ab && cpu ]
 			if [ dbg_frames >= 120 && dbg_frames <= 131 ] pad1 = pad1 | 0x1000
@@ -4840,11 +5229,13 @@ element asnes : trinity
 				exit[ 0 ]
 		if [ save_req ]
 			save_req = false
-			save_state[ '/tmp/asnes.state' ]
+			sp : state_path[]
+			save_state[ sp.chars ]
+			puts 'asnes: state saved to {sp}'
 			write_snapshot[ '/tmp/asnes_snap.bin' ]
 		if [ load_req ]
 			load_req = false
-			load_state[ '/tmp/asnes.state' ]
+			load_state[ state_path[].chars ]
 		t_emu : i64 [ wall_ms[] ]
 		if [ dbg_frames < 28 ]
 			run_rom_frame_boot[]
@@ -4855,7 +5246,11 @@ element asnes : trinity
 		if [ e9 > emu_max30 ] emu_max30 = e9
 		dbg_frames += 1
 		if [ getenv[ 'ASNES_CYCLOG' ] && (dbg_frames % 30) == 0 ]
-			printf[ "CYCF frame %u cyc_total=%ld carry=%d adone=%d emu_ms=%ld itv_ms=%ld emu_max=%ld itv_max=%ld drop=%ld\n", dbg_frames, cpu_cycles, frame_carry, spc.audio_done, emu_ms30, itv_ms30, emu_max30, itv_max30, drop30 ]
+			printf[ "CYCF frame %u cyc_total=%ld carry=%d adone=%d emu_ms=%ld itv_ms=%ld emu_max=%ld itv_max=%ld drop=%ld cls_us=%ld uni_us=%ld lay_us=%ld pub_us=%ld\n", dbg_frames, cpu_cycles, frame_carry, spc.audio_done, emu_ms30, itv_ms30, emu_max30, itv_max30, drop30, cls_us30, uni_us30, lay_us30, pub_us30 ]
+			cls_us30 = 0
+			uni_us30 = 0
+			lay_us30 = 0
+			pub_us30 = 0
 			emu_ms30 = 0
 			itv_ms30 = 0
 			emu_max30 = 0
@@ -4913,22 +5308,41 @@ element asnes : trinity
 		if [ getenv[ 'ASNES_GLIDE' ] && lay_frame && (dbg_frames % 15) == 0 ]
 			printf[ "BGLIDE f%u d1=%d,%d d2=%d,%d d3=%d,%d b3hi=%d\n",
 				dbg_frames, rdh[0], rdv[0], rdh[1], rdv[1], rdh[2], rdv[2], (frame_b3) ? 1 : 0 ]
+		t_c9 : i64 [ wall_us[] ]
 		classify_sprites[ rdh[0], rdv[0], rdh[1], rdv[1] ]
-		union_sprites[]
-		if [ lay_frame ] ppu_render_layers[ frame_b3 ]
-		pub_lock.lock[]
+		t_u9 : i64 [ wall_us[] ]
+		# planes rebuild only when their inputs changed; a still
+		# screen keeps the cached planes and skips the whole build
+		lay_build : bool [ false ]
 		if [ lay_frame ]
+			h9 : u32 [ lay_inputs_hash[] ]
+			lay_build = h9 != lay_hash || lay_gen == 0
+			lay_hash  = h9
+		if [ lay_build ] union_sprites[]
+		t_l9 : i64 [ wall_us[] ]
+		if [ lay_build ]
+			ppu_render_layers[ frame_b3 ]
+			lay_gen += 1
+		t_p9 : i64 [ wall_us[] ]
+		cls_us30 += t_u9 - t_c9
+		uni_us30 += t_l9 - t_u9
+		lay_us30 += t_p9 - t_l9
+		pub_lock.lock[]
+		if [ lay_build ]
 			memcpy[ pub_layb, lay_bd,  294912 ]
 			memcpy[ pub_lay1, lay_bg1, 294912 ]
 			memcpy[ pub_lay2, lay_bg2, 294912 ]
 			memcpy[ pub_lay3, lay_bg3, 294912 ]
 			memcpy[ pub_layw, lay_sw,  229376 ]
 			memcpy[ pub_lays, lay_ss,  229376 ]
+		pub_lay_gen = lay_gen
 		pub_layered = lay_frame
 		pub_b3hi    = frame_b3
 		memcpy[ pub_framebuf, ppu.framebuf, 229376 ]
 		memcpy[ pub_vram,  ppu.vram,  65536 ]
 		memcpy[ pub_cgram, ppu.cgram, 512 ]
+		memcpy[ pub_oam,   ppu.oam,   0x220 ]
+		if [ cpu && cpu.memory ] memcpy[ pub_wram, @cpu.memory[ 0x7E0000 ], 0x20000 ]
 		memcpy[ pub_m7a, line_m7a, 448 ]
 		memcpy[ pub_m7b, line_m7b, 448 ]
 		memcpy[ pub_m7c, line_m7c, 448 ]
@@ -4950,6 +5364,7 @@ element asnes : trinity
 		pub_m7x     = frame_m7x
 		pub_m7y     = frame_m7y
 		pub_valid   = true
+		pub_us30 += wall_us[] - t_p9
 		g_hc : i32 [ sx13[ i32[ pub_m7x ] ] ]
 		g_vc : i32 [ sx13[ i32[ pub_m7y ] ] ]
 		g_ho : i32 [ sx13[ i32[ pub_m7hofs ] ] ]

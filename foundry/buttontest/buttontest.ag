@@ -51,6 +51,40 @@ element buttontest : trinity
     # public f32 becomes a range slider (0..1)
     public volume     : f32 [ 0.7 ]
 
+    # 'clicks' is entries only; 'bars' also carries a view
+    public func instruments [] -> array string
+        return array string [ 'clicks', 'bars' ]
+
+    public func read_instrument [ nm: string ] -> array string
+        if [ !nm ] return null
+        if [ nm.compare[ 'clicks' ] == 0 ]
+            ls : array string []
+            ls.push[ 'clicks     {clicks}' ]
+            ls.push[ 'volume     {volume}' ]
+            ls.push[ 'paused     {(paused) ? 1 : 0}' ]
+            return ls
+        if [ nm.compare[ 'bars' ] == 0 ]
+            bs : array string []
+            bs.push[ 'bars       {clicks % 8}' ]
+            return bs
+        return null
+
+    # the shell gives the width; this is the height we want at it
+    public func instrument_height [ nm: string, iw: i32 ] -> i32
+        if [ nm.compare[ 'bars' ] == 0 ] return 110
+        return 0
+
+    public func paint_instrument [ cv: Canvas, nm: string, r: rect ] -> bool
+        if [ !nm || nm.compare[ 'bars' ] != 0 ] return false
+        cv.stroke_width[ 0.0 ]
+        bw : f32 [ (r.w - 16.0) / 8.0 ]
+        for [ i: i32 0, i < 8, i += 1 ]
+            bh : f32 [ 10.0 + f32[ (clicks + i) % 8 ] * ((r.h - 20.0) / 8.0) ]
+            cv.fill_color[ rgba [ '#7fb2ff' ] ]
+            cv.rect_to[ r.x + 8.0 + f32[i] * bw, r.y + r.h - bh - 8.0, bw - 2.0, bh ]
+            cv.paint[]
+        return true
+
     public func on_click [ ev: Event ]
         e : cast element [ ev.origin ]
         if [ !e ] return

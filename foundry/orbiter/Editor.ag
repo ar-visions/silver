@@ -130,6 +130,8 @@ class ResourceView
         return false
     func view_move [ ev: Event ] -> bool
         return false
+    func view_wheel [ ev: Event ] -> bool
+        return false
     func view_release [ ev: Event ]
         return
     func view_undo [] -> bool
@@ -406,7 +408,7 @@ ResourceView AppView
     mutable pend_h     : i32
     mutable req_w      : i32
     mutable req_h      : i32
-    mutable settle     : i32
+    mutable pend_us    : i64
     mutable started    : bool
     mutable ready      : bool
     mutable ended       : bool
@@ -421,6 +423,27 @@ ResourceView AppView
     mutable fity       : f32
     mutable fitw       : f32
     mutable fith       : f32
+    # the app locked its aspect: letterbox it. otherwise clip
+    mutable locked     : bool
+    # the gain the app started at; -1 until it answers, then adopted once
+    mutable app_vol    : f32 [ -1.0 ]
+    # what the running instance says it can show, asked once
+    mutable instr_names : array string
+    mutable instr_ask   : bool
+    # the instruments actually up, and the surface each one publishes
+    mutable instr_live  : array string
+    mutable instr_side  : map i32     [string]
+    mutable instr_logs  : map i32     [string]
+    mutable instr_gen   : map i32     [string]
+    mutable instr_pw    : map i32     [string]
+    mutable instr_ms    : i64
+    mutable instr_ak    : i64
+    mutable itex0       : map Texture [string]
+    mutable itex1       : map Texture [string]
+    mutable dbg_nw     : i32
+    mutable dbg_nh     : i32
+    mutable dbg_aw     : i32
+    mutable dbg_ah     : i32
     mutable pipx       : f32
     mutable pipy       : f32
     mutable pipw       : f32
@@ -466,6 +489,12 @@ ResourceView AppView
             f9 : i32
             fd0 : i32 [ host_tex_pull[ slot, 0, 0, @w9, @h9, @f9 ] ]
             fd1 : i32 [ host_tex_pull[ slot, 0, 1, @w9, @h9, @f9 ] ]
+            if [ fd0 < 0 || fd1 < 0 ]
+                fq9 : fopen[ '/tmp/orbiter-resz.log', 'a' ]
+                if [ fq9 ]
+                    fprintf[ fq9, "PULL FAIL gen=%d->%d fd0=%d fd1=%d %dx%d slot=%d\n",
+                        gen, g9, fd0, fd1, w9, h9, slot ]
+                    fclose[ fq9 ]
             if [ fd0 >= 0 && fd1 >= 0 ]
                 if [ tex0 ]
                     tex0.drop[]
@@ -485,21 +514,58 @@ ResourceView AppView
                 if [ dw9 < 0 ] dw9 = 0 - dw9
                 if [ dh9 < 0 ] dh9 = 0 - dh9
                 if [ fade_us == 0 && dw9 <= 2 && dh9 <= 2 ] fade_us = epoch_micros[]
-                puts 'appview: imported surface {aw}x{ah} (slot {slot})'
+
+        # ask what it offers. KEEP asking until it answers — the app opens
+        # its agent socket a moment after it is ready, and a one-shot ask
+        # that lands in that gap leaves the bar with no instruments button
+        if [ ready && !instr_ask && app_mod && app_mod.count > 0 ]
+            ak9 : i64 [ epoch_millis[] ]
+            if [ instr_ak == 0 || ak9 - instr_ak > 500 ]
+                instr_ak = ak9
+                vb8 : local i8 [ 512 ]
+                if [ agent_sock_ask[ app_mod.chars, 'instruments\n', @vb8[0], 512 ] > 0 ]
+                    vs8 : string [ @vb8[0] ]
+                    vt8 : string vs8.trim[]
+                    if [ vt8 && vt8.count > 0 ]
+                        instr_names = vt8.split[ ' ' ]
+                        instr_ask   = true
+                        if [ agent_sock_ask[ app_mod.chars, 'aspect\n', @vb8[0], 512 ] > 0 ]
+                            la8 : string [ @vb8[0] ]
+                            locked = la8.trim[] == '1'
+                        # the app's own gain seeds the slider, once
+                        if [ agent_sock_ask[ app_mod.chars, 'volume\n', @vb8[0], 512 ] > 0 ]
+                            lv8 : string [ @vb8[0] ]
+                            app_vol = f32[ lv8.trim[].real_value[] ]
+        instr_service[ cv ]
         if [ ready && fade_us == 0 && seen_us != 0 ]
             if [ epoch_micros[] - seen_us > 1500000 ] fade_us = epoch_micros[]
         nw : i32[ vw ]
         nh : i32[ vh ]
+        if [ nw != dbg_nw || nh != dbg_nh || aw != dbg_aw || ah != dbg_ah ]
+            dbg_nw = nw
+            dbg_nh = nh
+            dbg_aw = aw
+            dbg_ah = ah
+            fz9 : fopen[ '/tmp/orbiter-resz.log', 'a' ]
+            if [ fz9 ]
+                fprintf[ fz9, "RESZ view=%dx%d actual=%dx%d req=%dx%d pend=%dx%d ready=%d slot=%d gen=%d shared=%d\n",
+                    nw, nh, aw, ah, req_w, req_h, pend_w, pend_h, (ready) ? 1 : 0, slot,
+                    gen, host_tex_gen[ slot, 0 ] ]
+                fclose[ fz9 ]
         if [ ready && nw > 0 && nh > 0 ]
             if [ nw != pend_w || nh != pend_h ]
-                pend_w = nw
-                pend_h = nh
-                settle = 0
+                pend_w  = nw
+                pend_h  = nh
+                pend_us = epoch_micros[]
             el [ nw != aw || nh != ah ]
-                settle += 1
-                if [ settle >= 6 && (nw != req_w || nh != req_h) ]
+                # 150ms of a held size before the peer is told to resize
+                if [ epoch_micros[] - pend_us > 150000 && (nw != req_w || nh != req_h) ]
                     req_w = nw
                     req_h = nh
+                    fs9 : fopen[ '/tmp/orbiter-resz.log', 'a' ]
+                    if [ fs9 ]
+                        fprintf[ fs9, "RESZ send %dx%d slot=%d\n", nw, nh, slot ]
+                        fclose[ fs9 ]
                     host_post2[ slot, 1, i32[ HM.resize ], nw, nh, 0 ]
 
     func front [] -> Texture
@@ -507,21 +573,137 @@ ResourceView AppView
         if [ fr < 0 || !tex0 ] return null
         return (fr == 0) ? tex0 : tex1
 
+    # 'name:side:log' from the app, straight into our live state. side is
+    # -1 for the usual case: an instrument that is entries and no view
+    func instr_apply [ s: string ]
+        instr_live = array string []
+        if [ !instr_side ] instr_side = map i32 [string] []
+        if [ !instr_logs ] instr_logs = map i32 [string] []
+        if [ !s ] return
+        t9 : string s.trim[]
+        if [ t9.count == 0 ] return
+        ps : array string [ t9.split[ ' ' ] ]
+        for [ i: i32 0, i < ps.count, i += 1 ]
+            f9 : array string [ ps[i].split[ ':' ] ]
+            if [ f9.count < 3 ] continue
+            nm : string f9[0]
+            instr_live.push[ nm ]
+            instr_side[ nm ] = i32[ f9[1].integer_value[] ]
+            instr_logs[ nm ] = i32[ f9[2].integer_value[] ]
+
+    # a missing key is not a zero: reading one dereferences null
+    func instr_num [ m: map i32 [string], nm: string, dflt: i32 ] -> i32
+        if [ !m || !nm ] return dflt
+        if [ !m.contains[ nm ] ] return dflt
+        return m[ nm ]
+
+    func instr_is_logging [ nm: string ] -> bool
+        return instr_num[ instr_logs, nm, 0 ] != 0
+
+    # the ONLY toggle: logging for one instrument. the reply is state
+    func instr_toggle [ nm: string, logging: bool ]
+        if [ !app_mod || !nm || nm.count == 0 ] return
+        cb : local i8 [ 512 ]
+        if [ agent_sock_ask[ app_mod.chars, 'instr-log {nm}\n', @cb[0], 512 ] > 0 ]
+            instr_apply[ string [ @cb[0] ] ]
+
+    # pull each instrument's own surface. gen 0 means it has none
+    func instr_service [ cv: Canvas ]
+        # nothing toggles any more, so the state has to be asked for
+        nw9 : i64 [ epoch_millis[] ]
+        if [ app_mod && (instr_ms == 0 || nw9 - instr_ms > 1000) ]
+            instr_ms = nw9
+            sb : local i8 [ 1024 ]
+            if [ agent_sock_ask[ app_mod.chars, 'instr\n', @sb[0], 1024 ] > 0 ]
+                instr_apply[ string [ @sb[0] ] ]
+        if [ !instr_live || instr_live.count == 0 ] return
+        if [ !itex0 ]     itex0     = map Texture [string] []
+        if [ !itex1 ]     itex1     = map Texture [string] []
+        if [ !instr_gen ] instr_gen = map i32 [string] []
+        for [ i: i32 0, i < instr_live.count, i += 1 ]
+            nm : string instr_live[i]
+            sd : i32 [ instr_num[ instr_side, nm, -1 ] ]
+            if [ sd < 2 ] continue
+            g9 : i32 [ host_tex_gen[ slot, sd ] ]
+            if [ g9 == instr_num[ instr_gen, nm, -1 ] ] continue
+            if [ g9 <= 0 ]
+                instr_gen[ nm ] = 0
+                continue
+            w9 : i32
+            h9 : i32
+            f9 : i32
+            fd0 : i32 [ host_tex_pull[ slot, sd, 0, @w9, @h9, @f9 ] ]
+            fd1 : i32 [ host_tex_pull[ slot, sd, 1, @w9, @h9, @f9 ] ]
+            if [ fd0 < 0 || fd1 < 0 ] continue
+            e0 : itex0[ nm ]
+            if [ e0 ]
+                e0.drop[]
+                itex1[ nm ].drop[]
+            t0 : cv.vk.import_shared_tex[ fd0, w9, h9, f9, cv.w ]
+            t1 : cv.vk.import_shared_tex[ fd1, w9, h9, f9, cv.w ]
+            t0.hold[]
+            t1.hold[]
+            itex0[ nm ] = t0
+            itex1[ nm ] = t1
+            instr_gen[ nm ] = g9
+
+    # the completed frame of one instrument, or null when it has no view
+    func instr_front [ nm: string ] -> Texture
+        if [ !instr_side || !itex0 || !nm ] return null
+        sd : i32 [ instr_num[ instr_side, nm, -1 ] ]
+        if [ sd < 2 ] return null
+        fr : i32 [ host_tex_front[ slot, sd ] ]
+        if [ fr < 0 || !itex0[ nm ] ] return null
+        return (fr == 0) ? itex0[ nm ] : itex1[ nm ]
+
+    # we say the width; the height is the app's own. only on a change —
+    # this runs on the draw path
+    func instr_width [ nm: string, iw: i32 ]
+        if [ !app_mod || !nm || iw <= 0 ] return
+        if [ !instr_pw ] instr_pw = map i32 [string] []
+        if [ instr_num[ instr_pw, nm, -1 ] == iw ] return
+        instr_pw[ nm ] = iw
+        agent_sock_send[ app_mod.chars, 'instr-width {nm} {iw}\n' ]
+
+    # the entries themselves, asked of the running instance
+    func instr_entries [ nm: string ] -> array string
+        if [ !app_mod || !nm || nm.count == 0 ] return null
+        rb : local i8 [ 8192 ]
+        if [ agent_sock_ask[ app_mod.chars, 'instr-read {nm}\n', @rb[0], 8192 ] <= 0 ] return null
+        rs : string [ @rb[0] ]
+        rt : string rs.trim[]
+        if [ rt.count == 0 ] return null
+        return rt.split[ '\n' ]
+
     func draw_frame [ cv: Canvas, bounds: rect ]
         ft : front[]
         if [ ft && have_frame ]
-            ar : f32 [ f32[ aw ] / f32[ ah ] ]
-            fw : f32 [ bounds.w ]
-            fh : f32 [ fw / ar ]
-            if [ fh > bounds.h ]
-                fh = bounds.h
-                fw = fh * ar
-            fitx = bounds.x + (bounds.w - fw) * 0.5
-            fity = bounds.y + (bounds.h - fh) * 0.5
-            fitw = fw
-            fith = fh
-            cv.draw_image[ ft, rect [ x: fitx, y: fity, w: fitw, h: fith ] ]
-            draw_minimize[ cv, bounds ]
+            if [ locked ]
+                ar : f32 [ f32[ aw ] / f32[ ah ] ]
+                fw : f32 [ bounds.w ]
+                fh : f32 [ fw / ar ]
+                if [ fh > bounds.h ]
+                    fh = bounds.h
+                    fw = fh * ar
+                fitx = bounds.x + (bounds.w - fw) * 0.5
+                fity = bounds.y + (bounds.h - fh) * 0.5
+                fitw = fw
+                fith = fh
+                pipw = 0.0
+                piph = 0.0
+                cv.draw_image[ ft, rect [ x: fitx, y: fity, w: fitw, h: fith ] ]
+            el
+                # native pixels cropped to the pane until the resize lands
+                fitx = bounds.x
+                fity = bounds.y
+                fitw = f32[ aw ]
+                fith = f32[ ah ]
+                cw : f32 [ (bounds.w < fitw) ? bounds.w : fitw ]
+                ch : f32 [ (bounds.h < fith) ? bounds.h : fith ]
+                pipw = 0.0
+                piph = 0.0
+                cv.draw_image_crop[ ft, rect [ x: fitx, y: fity, w: cw, h: ch ],
+                    0.0, 0.0, cw / fitw, ch / fith ]
         # no frame yet: say what it is doing instead of drawing nothing
         if [ ended || paused || !have_frame ]
             overlay[ cv, bounds ]
@@ -544,60 +726,22 @@ ResourceView AppView
         pipy = bounds.y + bounds.h - ph - 16.0
         pipw = pw
         piph = ph
-        cv.draw_image[ ft, rect [ x: pipx, y: pipy, w: pipw, h: piph ] ]
-
-    func draw_side [ cv: Canvas, bounds: rect ]
-        sw : f32 [ bounds.w * 0.36 ]
-        sx : f32 [ bounds.x + bounds.w - sw ]
-        sy : f32 [ bounds.y ]
-        sh : f32 [ bounds.h ]
-        hh : f32 [ 26.0 ]
-        # column background
-        cv.fill_color[ '#0e1626' ]
-        cv.stroke_width[ 0.0 ]
-        cv.rect_to[ sx, sy, sw, sh ]
-        cv.paint[]
-        hlf : f32 [ sh * 0.5 ]
-        # --- app section: [title] then the live app view ---
-        ay : f32 [ sy + hlf ]
-        cv.fill_color[ '#1c2840' ]
-        cv.rect_to[ sx, ay, sw, hh ]
-        cv.paint[]
-        cv.fill_color[ '#cfe' ]
-        cv.draw_text[ 'app', rect [ x: sx + 8.0, y: ay, w: sw - 16.0, h: hh ],
-            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
-        appr : rect [ x: sx, y: ay + hh, w: sw, h: hlf - hh ]
-        draw_frame[ cv, appr ]
-
-    mutable collapse_icon : SVGModel
-    mutable mnx : f32
-    mutable mny : f32
-    func draw_minimize [ cv: Canvas, bounds: rect ]
-        mnx = bounds.x + bounds.w - 68.0
-        mny = bounds.y + bounds.h - 52.0
-        cv.save[]
-        cv.fill_color[ rgba [ '#fff1' ] ]
-        cv.stroke_color[ rgba [ '#fff2' ] ]
-        cv.stroke_width[ 1.0 ]
-        cv.rounded_rect[ mnx, mny, 40.0, 40.0, 8.0, 8.0, 8.0, 8.0 ]
-        cv.paint[]
-        if [ !collapse_icon ]
-            cip : path 'images/collapse.svg'
-            if [ cip.exists[] ] collapse_icon = SVGModel [ cip ]
-        if [ collapse_icon ]
-            cv.fill_color[ rgba [ '#ffffff' ] ]
-            cv.stroke_color[ rgba [ '#ffffff' ] ]
-            cv.draw_svg[ collapse_icon, mnx + 10.0, mny + 10.0, 20.0, 20.0 ]
-        cv.restore[]
-
-    # the minimize chip's rect (pane lower-right) is the hotspot
-    func hit_minimize [ x: f32, y: f32 ] -> bool
-        if [ fitw <= 0.0 ] return false
-        return x >= mnx && y >= mny && x <= mnx + 40.0 && y <= mny + 40.0
+        cv.draw_image_min[ ft, rect [ x: pipx, y: pipy, w: pipw, h: piph ] ]
 
     func hit_pip [ x: f32, y: f32 ] -> bool
         if [ pipw <= 0.0 ] return false
         return x >= pipx && y >= pipy && x <= pipx + pipw && y <= pipy + piph
+
+    # what the shell should SAY about this app right now. null once it is
+    # up and drawing — waiting blind is the thing this exists to stop
+    func status_text [] -> string
+        if [ ended ]     return (note && note.count > 0) ? note : 'exited'
+        if [ paused ]    return (note && note.count > 0) ? note : 'paused'
+        if [ attaching ] return 'attaching debugger to {app_mod}...'
+        st7 : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
+        if [ st7 == 1 ]  return 'compiling {app_mod}...'
+        if [ !ready ]    return 'starting {app_mod}...'
+        return null
 
     func overlay [ cv: Canvas, bounds: rect ]
         st9 : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
@@ -659,7 +803,6 @@ ResourceView AppView
             note = 'no silver-host supervisor'
             return
         cmd = 'tail -n +1 -F /tmp/{mod}.log'
-        puts 'appview: requested {mod} (slot {slot})'
 
     func on_key [ ev: Event ]
         k9 : i32 [ i32[ ev.key.unicode ] ]
@@ -678,6 +821,12 @@ ResourceView AppView
         act : i32 [ (ev.key.state) ? 1 : 0 ]
         host_post2[ slot, 1, i32[ HM.key ], i32[ ev.key.unicode ], act, mods ]
 
+    # where the app is on screen right now: maximised draws through the
+    # fit rect, small through the pip. one of them is live, never both
+    func view_rect [] -> rect
+        if [ fitw > 0.0 ] return rect [ x: fitx, y: fity, w: fitw, h: fith ]
+        return rect [ x: pipx, y: pipy, w: pipw, h: piph ]
+
     func view_press [ ev: Event ] -> bool
         if [ ended ]
             restart[ false ]
@@ -685,24 +834,60 @@ ResourceView AppView
         if [ paused ]
             pause_toggle[]
             return true
-        if [ !ready || slot < 0 || fitw <= 0.0 ] return false
+        if [ !ready || slot < 0 ] return false
+        r9 : view_rect[]
+        if [ r9.w <= 0.0 ] return false
         px : f32 [ ev.mouse.pos.x - vsx ]
         py : f32 [ ev.mouse.pos.y - vsy ]
-        bx : f32 [ (px - fitx) / fitw * f32[ aw ] ]
-        by : f32 [ (py - fity) / fith * f32[ ah ] ]
+        bx : f32 [ (px - r9.x) / r9.w * f32[ aw ] ]
+        by : f32 [ (py - r9.y) / r9.h * f32[ ah ] ]
         if [ bx < 0.0 || by < 0.0 || bx >= f32[ aw ] || by >= f32[ ah ] ] return false
-        host_post2[ slot, 1, i32[ HM.press ],   i32[ bx ], i32[ by ], ev.mouse.button ]
-        host_post2[ slot, 1, i32[ HM.release ], i32[ bx ], i32[ by ], ev.mouse.button ]
+        host_post2[ slot, 1, i32[ HM.press ], i32[ bx ], i32[ by ], ev.mouse.button ]
         return true
 
-    func view_move [ ev: Event ] -> bool
-        if [ ended || !ready || slot < 0 || fitw <= 0.0 ] return false
+    # the button stays down until the real release, or the app can never
+    # see a drag: it would get down+up before the mouse ever moved
+    func view_release [ ev: Event ]
+        if [ ended || !ready || slot < 0 ] return
+        r9 : view_rect[]
+        if [ r9.w <= 0.0 ] return
         px : f32 [ ev.mouse.pos.x - vsx ]
         py : f32 [ ev.mouse.pos.y - vsy ]
-        bx : f32 [ (px - fitx) / fitw * f32[ aw ] ]
-        by : f32 [ (py - fity) / fith * f32[ ah ] ]
+        bx : f32 [ (px - r9.x) / r9.w * f32[ aw ] ]
+        by : f32 [ (py - r9.y) / r9.h * f32[ ah ] ]
+        host_post2[ slot, 1, i32[ HM.release ], i32[ bx ], i32[ by ], ev.mouse.button ]
+
+    func view_move [ ev: Event ] -> bool
+        if [ ended || !ready || slot < 0 ] return false
+        r9 : view_rect[]
+        if [ r9.w <= 0.0 ] return false
+        px : f32 [ ev.mouse.pos.x - vsx ]
+        py : f32 [ ev.mouse.pos.y - vsy ]
+        bx : f32 [ (px - r9.x) / r9.w * f32[ aw ] ]
+        by : f32 [ (py - r9.y) / r9.h * f32[ ah ] ]
         if [ bx < 0.0 || by < 0.0 || bx >= f32[ aw ] || by >= f32[ ah ] ] return false
         host_post2[ slot, 1, i32[ HM.move ], i32[ bx ], i32[ by ], 0 ]
+        return true
+
+    func view_wheel [ ev: Event ] -> bool
+        if [ ended || !ready || slot < 0 ] return false
+        r9 : view_rect[]
+        if [ r9.w <= 0.0 ] return false
+        px : f32 [ ev.mouse.pos.x - vsx ]
+        py : f32 [ ev.mouse.pos.y - vsy ]
+        bx : f32 [ (px - r9.x) / r9.w * f32[ aw ] ]
+        by : f32 [ (py - r9.y) / r9.h * f32[ ah ] ]
+        if [ bx < 0.0 || by < 0.0 || bx >= f32[ aw ] || by >= f32[ ah ] ] return false
+        mods : i32 [ 0 ]
+        if [ ev.key.shift ] mods = mods | 1
+        if [ ev.key.ctrl ]  mods = mods | 2
+        if [ ev.key.alt ]   mods = mods | 4
+        if [ ev.key.meta ]  mods = mods | 8
+        # the app scrolls at the cursor, so place it before the notch
+        host_post2[ slot, 1, i32[ HM.move ], i32[ bx ], i32[ by ], 0 ]
+        host_post2[ slot, 1, i32[ HM.wheel ],
+            i32[ ev.mouse.wheel_delta.x * 100.0 ],
+            i32[ ev.mouse.wheel_delta.y * 100.0 ], mods ]
         return true
 
     func pause_toggle []
@@ -1008,13 +1193,19 @@ Layer EditorLayer
         for [ ti: i32 0, ti < bas9 + editor.nav_tools.count, ti += 1 ]
             tnm : string (bas9 == 1 && ti == 0) ? editor.nav_default : editor.nav_tools[ ti - bas9 ]
             tyy : f32 [ bounds.y + 4.0 + f32[ ti ] * 68.0 ]
-            if [ ti == editor.tool_hover ]
+            # the view you are IN reads as a border, not a hover tint
+            act9 : bool [ editor.view_name && editor.view_name.count > 0
+                          && editor.view_name == tnm ]
+            if [ act9 ]
+                cv.fill_color  [ rgba['#6cb6ff33'] ]
+                cv.stroke_color[ rgba['#8fd0ff'] ]
+            el [ ti == editor.tool_hover ]
                 cv.fill_color  [ rgba['#6cb6ff22'] ]
                 cv.stroke_color[ rgba['#6cb6ffcc'] ]
             el
                 cv.fill_color  [ rgba['#10142088'] ]
                 cv.stroke_color[ rgba['#fff3'] ]
-            cv.stroke_width[ 1.0 ]
+            cv.stroke_width[ (act9) ? 2.0 : 1.0 ]
             cv.rounded_rect[ dxx, tyy, 60.0, 64.0, 8.0, 8.0, 8.0, 8.0 ]
             cv.paint       [ ]
             cv.stroke_width[ 0.0 ]
@@ -1891,10 +2082,7 @@ Layer EditorLayer
             cv.restore[ ]
 
         if [ editor.run_view && !editor.app_view && !editor.show_hits ]
-            if [ editor.run_view.slot == 0 ]
-                editor.run_view.draw_pip[ cv, bounds ]
-            el
-                editor.run_view.draw_side[ cv, bounds ]
+            editor.run_view.draw_pip[ cv, bounds ]
 
         draw_tools[ cv, editor ]
         cv.clear_crop[ ]
@@ -1978,6 +2166,9 @@ Control Editor
     intern static view_registry : map Au_t[string]
     intern static view_by_name  : map Au_t[string]
     intern static export_registry : map string[string]
+    # ext -> the FileType its owning module exported (ascii/binary/agnostic)
+    intern static export_ftype    : map string[string]
+    intern static bin_view_cached : string
     mutable lines         : list string
     mutable file_cache    : map FileBuf[string]
     mutable close_icon    : SVGModel
@@ -2854,6 +3045,7 @@ Control Editor
     func ensure_export_registry []
         if [ export_registry ] return
         export_registry = map string[string] []
+        export_ftype    = map string[string] []
         root : path.path_startup[]
         if [ !root ] return
         d : path '{root}/install/export'
@@ -2880,6 +3072,23 @@ Control Editor
                                     ex3 : ftext.mid[ q0, i - q0 ]
                                     export_registry[ ex3 ] = mod
                                     q0 = 0 - 1
+                                    # optional ': FileType' the module declared
+                                    j3 : i32 [ i + 1 ]
+                                    while [ j3 < n2 ]
+                                        c3 : i32 [ (i32 ftext.chars[j3]) & 255 ]
+                                        if [ c3 == 32 || c3 == 58 ]
+                                            j3 += 1
+                                            continue
+                                        break
+                                    if [ j3 > i + 1 && j3 < n2 ]
+                                        k3 : i32 [ j3 ]
+                                        while [ k3 < n2 ]
+                                            c4 : i32 [ (i32 ftext.chars[k3]) & 255 ]
+                                            if [ c4 >= 97 && c4 <= 122 ]
+                                                k3 += 1
+                                                continue
+                                            break
+                                        if [ k3 > j3 ] export_ftype[ ex3 ] = ftext.mid[ j3, k3 - j3 ]
                             i += 1
 
     # exported handler module for a file's extension, or null
@@ -2888,6 +3097,31 @@ Control Editor
         if [ ext.count == 0 ] return null
         ensure_export_registry[]
         return export_registry[ ext ]
+
+    # a named view that can render bytes, asked of the views themselves
+    func binary_view_name [] -> string
+        if [ bin_view_cached && bin_view_cached.count > 0 ] return bin_view_cached
+        ensure_view_registry[]
+        for [ t: Au_t, nm: string ] in view_by_name
+            if [ !nm || nm.count == 0 ] continue
+            probe : ResourceView [ Au.new_object[ t, null, null, true, __FILE__, __LINE__, __SEQUENCE__ ] ]
+            if [ !probe ] continue
+            ft : probe.applies*[]
+            if [ ft == FileType.binary || ft == FileType.agnostic ]
+                bin_view_cached = nm
+                return nm
+        return 'text'
+
+    # what to show with nothing launched. the owning module exported
+    # whether its format is binary; never sniff, never key off the ext
+    func fallback_view_for [ p: path ] -> string
+        if [ !p ] return 'text'
+        ensure_export_registry[]
+        ext : file_ext[ p ]
+        if [ ext.count == 0 ] return 'text'
+        ft : string export_ftype[ ext ]
+        if [ ft && ft == 'binary' ] return binary_view_name[]
+        return 'text'
 
     # default action's name: peer handler module or hosted element
     func default_view_for [ p: path ] -> string
@@ -2900,10 +3134,11 @@ Control Editor
         if [ t ] return '{t.ident}'
         return null
 
-    func launch_handler [ mod: string, p: path ]
+    # vw names the rail view the module should open with; '' = its default
+    func launch_handler [ mod: string, p: path, vw: string ]
         root : path.path_startup[]
         if [ !root ] return
-        puts 'launch_handler: {mod} for {p}'
+        puts 'launch_handler: {mod} for {p} view={vw}'
         nv : AppView [ ]
         nv.src = path '{root}/foundry/{mod}/{mod}.ag'
         nv.doc = p
@@ -2911,6 +3146,9 @@ Control Editor
         if [ orb9 ]
             fa9 : string orb9.file_args[ p ]
             nv.module_args = (fa9 && fa9.count > 0) ? fa9 : orb9.module_args
+        if [ vw && vw.count > 0 ]
+            nv.module_args = (nv.module_args && nv.module_args.count > 0)
+                ? '{nv.module_args} --view {vw}' : '--view {vw}'
         nv.start[]
         run_view  = nv
         app_view  = true
@@ -3200,10 +3438,15 @@ Control Editor
         # a peer module owns this view: it runs as its own process
         lines = list string []
         lines.push[ '' ]
-        if [ run_view ] return
         orbv : cast orbiter [ ux.app_object ]
-        m9   : string [ (orbv) ? orbv.view_module[ want ] : want ]
-        if [ m9 ] launch_handler[ m9, src ]
+        # want is either a registered view name or the module's own name
+        # (the default action). only a real view travels as --view
+        ow9  : string [ (orbv) ? orbv.view_module[ want ] : null ]
+        m9   : string [ (ow9 && ow9.count > 0) ? ow9 : want ]
+        # one instance for any given viewer, always new: picking a view
+        # closes whatever was running and launches with it
+        if [ run_view ] close_app[]
+        if [ m9 ] launch_handler[ m9, src, (ow9 && ow9.count > 0) ? want : '' ]
 
     # a disk change (agents editing) becomes ONE undo item: the buffer
     # swaps to disk content; cmd+Z restores what was here before
@@ -3421,8 +3664,9 @@ Control Editor
             close_app[]
             pristine  = false
             no_scroll = false
-            # stopping is a view choice: show the text, do not relaunch
-            view_name = 'text'
+            # stopping is a view choice: show the file, do not relaunch.
+            # a binary format lands in a byte view, not in text
+            view_name = fallback_view_for[ src ]
             load_file[]
             if [ ux ] ux.restyle = true
             return
@@ -3430,7 +3674,7 @@ Control Editor
         view_name = ''
         hm9 : handler_module_for[ src ]
         if [ hm9 ]
-            launch_handler[ hm9, src ]
+            launch_handler[ hm9, src, '' ]
             return
         puts 'toggle_app_run: starting {src}'
         nv : AppView [ ]
@@ -3607,10 +3851,8 @@ Control Editor
             return
         if [ run_view ]
             if [ app_view ]
-                if [ run_view.hit_minimize[ ev.mouse.pos.x - run_view.vsx, ev.mouse.pos.y - run_view.vsy ] ]
-                    toggle_app_view[]
-                    ev.no_default = true
-                    return
+                # the pip toggle is a button on the app bar, not a chip
+                # in the corner: every press here belongs to the app
                 if [ run_view.view_press*[ ev ] ]
                     if [ ux ] ux.set_focus[ a ]
                     ev.no_default = true
@@ -3621,6 +3863,13 @@ Control Editor
                 # branch only ever tested the pip, so every click on a
                 # side-hosted app went nowhere. view_press bounds-checks
                 # itself against fitw, so the pip case still falls past
+                # double click on the small view maximises it; single
+                # clicks and drags belong to the app itself
+                if [ ev.mouse.double_click ]
+                    if [ run_view.hit_pip[ ev.mouse.pos.x - run_view.vsx, ev.mouse.pos.y - run_view.vsy ] ]
+                        toggle_app_view[]
+                        ev.no_default = true
+                        return
                 if [ run_view.view_press*[ ev ] ]
                     if [ ux ] ux.set_focus[ a ]
                     ev.no_default = true
@@ -3849,6 +4098,7 @@ Control Editor
             pristine = false
 
     func on_release [ ev: Event ]
+        if [ run_view ] run_view.view_release*[ ev ]
         if [ rview ] rview.view_release*[ ev ]
         dragging        = false
         scroll_dragging = false
@@ -3858,6 +4108,7 @@ Control Editor
             ux.will_animate = true
 
     func on_wheel [ ev: Event ]
+        if [ run_view && run_view.view_wheel*[ ev ] ] return
         lh : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         if [ ev.key.shift ]
             cw : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
