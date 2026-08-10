@@ -2491,6 +2491,9 @@ void au_space_begin(void* owner);
 void au_space_end(void* owner);
 void au_space_clear(void);
 float au_mem_fraction(void); // resident set size as a fraction of total physical RAM (0..1); 0 if unknown
+i64   au_mem_rss(void);      // resident set size in BYTES; 0 if unknown
+i64   au_mem_virt(void);     // virtual size in BYTES; 0 if unknown
+i64   au_mem_phys(void);     // total physical RAM in BYTES; 0 if unknown
 int   au_capture_stdout(void); // redirect stdout/stderr to a pipe; returns non-blocking read fd
 int   au_stdout_orig(void);    // dup of the real stdout saved by au_capture_stdout (-1 if not captured)
 void  au_main_args(int argc, cstrs argv); // silver-host stashes process argv for the app
