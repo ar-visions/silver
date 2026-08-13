@@ -1,0 +1,123 @@
+export 0.1.0
+
+import vec
+import img
+import gltf
+import trinity
+import hyperspace
+
+import <stdio.h>
+import <stdlib.h>
+
+# hypercube: the head-coupled 3d demo. hyperspace does the work —
+# EyeTrack runs the find/target/look models, Cube3D renders the
+# scene through the off-axis frustum at the tracked eye.
+element Cube3D
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    expect model_path : path
+    public eye_x : f32
+    public eye_y : f32
+    public eye_z : f32 [ -0.45 ]
+    public scr_w : f32 [ 0.708 ]
+    public scr_h : f32 [ 0.398 ]
+    mutable vshader : ViewerLit
+    mutable vmodel  : Model
+    mutable vrender : Render
+    mutable gmodel  : GltfModel
+
+    func dealloc []
+        puts 'hypercube: Cube3D dealloc'
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas [ w.screen ]
+        if [ !vrender ]
+            puts 'hypercube: Cube3D creates target'
+            vshader = ViewerLit [ vk: cv.vk, name: 'viewer' ]
+            vshader.hold[]
+            gmodel = GltfModel [ model_path.load[ typeid[ GltfModel ], null ] ]
+            expect gmodel, 'cube.gltf did not load'
+            gmodel.hold[]
+            vmodel = Model [ vk: cv.vk, w: w, s: vshader, rigid_s: vshader, cull_none: true ]
+            vmodel.hold[]
+            vmodel.id = gmodel
+            # native resolution: wscale 1 tracks the display in device pixels
+            vrender = Render [ vk: cv.vk, w: w, wscale: 1.0, use_depth: true, tag: 'hypercube', clear_color: vec4f [ 0.06, 0.08, 0.12, 1.0 ], models: array Model [ vmodel ] ]
+            vrender.hold[]
+            w.element_targets[ 'hc_{id}' ] = vrender
+        # off-axis frustum from the tracked eye: work in flipped z
+        # (viewer at +z looking down -z, screen plane z 0)
+        n9 : f32 [ 0.05 ]
+        ezp : f32 [ 0.0 - eye_z ]
+        if [ ezp < 0.08 ] ezp = 0.08
+        k9 : f32 [ n9 / ezp ]
+        l9 : f32 [ (0.0 - scr_w * 0.5 - eye_x) * k9 ]
+        r9 : f32 [ (scr_w * 0.5 - eye_x) * k9 ]
+        # eye space runs y-down (view negates y), so bottom/top of
+        # the frustum swap around the eye height
+        b9 : f32 [ (eye_y - scr_h * 0.5) * k9 ]
+        t9 : f32 [ (eye_y + scr_h * 0.5) * k9 ]
+        pj : mat4f [ mat4f.frustum[ l9, r9, b9, t9, n9, 10.0 ] ]
+        vw : mat4f [ mat4f.identity[] ]
+        vw = vw.translate[ vec3f [ 0.0 - eye_x, 0.0 - eye_y, 0.0 - ezp ] ]
+        # negate the view's y row: the house convention (see Avatar)
+        vw.m[1] = 0.0 - vw.m[1]
+        vw.m[5] = 0.0 - vw.m[5]
+        vw.m[9] = 0.0 - vw.m[9]
+        vw.m[13] = 0.0 - vw.m[13]
+        md : mat4f [ mat4f.identity[] ]
+        md = md.translate[ vec3f [ 0.0, 0.0, -0.051 ] ]
+        md = md.scale[ vec3f [ 0.045, 0.045, 0.045 ] ]
+        vshader.model = md
+        vshader.view  = vw
+        vshader.proj  = pj
+        vrender.update[]
+        cv.fill_color[ rgba [ '#0066ff' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        cv.draw_image[ vrender.color, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+
+element hypercube : trinity
+    public width      : i32    [ 1024 ]
+    public height     : i32    [ 1024 ]
+    public title      : string [ 'hypercube' ]
+    public device     : string [ '/dev/video2' ]
+    public models_dir : path   [ path '/src/silver/foundry/hyperspace/models' ]
+    public top        : CameraView             # auto-binds to e['top']
+    mutable trk    : EyeTrack
+    mutable seeded : bool
+
+    public func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        if [ !trk ] return
+        if [ ev.key.unicode == 88 ] trk.flip = 0.0 - trk.flip
+        if [ ev.key.unicode == 82 ] trk.retrack[]
+        if [ ev.key.unicode == 265 ] trk.bias_y += 0.0127
+        if [ ev.key.unicode == 264 ] trk.bias_y -= 0.0127
+
+    public func on_overlay [ cv: Canvas ]
+        if [ !trk ] return
+        v8 : top
+        if [ v8 && v8.camera ]
+            gr8 : v8.frame_image[]
+            if [ gr8 ] trk.track[ gr8 ]
+
+    public func render [] -> Elements
+        if [ !seeded ]
+            seeded = true
+            ux.set_fullscreen[ true ]
+            trk = EyeTrack [ mdir: models_dir ]
+            trk.hold[]
+            puts 'hypercube: x = flip parallax, arrows = y bias, esc = quit'
+        e : Elements [ ]
+        top9 : CamTop [ device: device, animated: true, paint_off: true ]
+        e['top'] = top9
+        tex9 : f32 [ (trk && trk.live) ? trk.eye_x : 0.0 ]
+        tey9 : f32 [ (trk && trk.live) ? trk.eye_y : 0.0 ]
+        tez9 : f32 [ (trk && trk.live) ? trk.eye_z : -0.45 ]
+        cube9 : Cube3D [ model_path: path 'models/cube.gltf',
+            eye_x: tex9, eye_y: tey9, eye_z: tez9, animated: true ]
+        e['cube3d'] = cube9
+        return e

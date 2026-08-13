@@ -348,7 +348,6 @@ extern "C" int agent_sock_open(const char* name) {
         return 0;
     }
     g_agent_srv = fd;
-    fprintf(stderr, "trinity: agent socket %s\n", pathb);
     return 1;
 }
 

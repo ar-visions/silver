@@ -341,7 +341,11 @@ element EditorView
         if [ run_ok[] ] t['band'] = RunBand [ elements: band_els[] ]
         return t
 
-    # render is projection only; everything it needs it asks for
+    # reconciliation runs on the frame hook, never in render
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        settle[]
+
     func settle []
         o : orb[]
         is_con : bool [ psess[].count > 0 ]
@@ -359,24 +363,22 @@ element EditorView
         if [ newfile && newfile_src && p && '{newfile_src}' != '{p}' ] newfile_exit[]
 
     public func render [] -> Elements
-        if [ !orb[] ] return null
-        settle[]
-        els : Elements []
-        els['title'] = EditorTitle [
-            area: Region { l0 t0 r0 h1.3 }
-            selected: !file[]
-            focusable: true
-            spacing_x: 0.2
-            spacing_y: 0.2
-            edit: (newfile) ? newfile_text : orb[].find_text
-            label: (newfile) ? 'name new file' : title_text[]
-            conflict: newfile && newfile_exists[]
-            no_scroll: true
-            hint: title_hint[]
-            elements: title_els[] ]
-        els['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
-            inner: pane_els[], deflt: (app_solo[]) ? 44.0 : 180.0, min_size: 44.0 ]
-        return els
+        return (!orb[]) ? null : Elements [
+            'title' : EditorTitle [
+                area: Region { l0 t0 r0 h1.3 }
+                selected: !file[]
+                focusable: true
+                spacing_x: 0.2
+                spacing_y: 0.2
+                edit: (newfile) ? newfile_text : orb[].find_text
+                label: (newfile) ? 'name new file' : title_text[]
+                conflict: newfile && newfile_exists[]
+                no_scroll: true
+                hint: title_hint[]
+                elements: title_els[] ],
+            'split' : Splitter [ area: Region { l0 t1.3 r0 b0 }, vertical: true,
+                inner: pane_els[], deflt: (app_solo[]) ? 44.0 : 180.0,
+                min_size: 44.0 ] ]
 
 element EditorTitle
     public selected : bool
@@ -461,8 +463,8 @@ Avatar OrbiterAvatar
         area: r-1 b22 w12 h19, 700ms cubic inward
         opacity: 1.0, 700ms cubic inward
     }
-    
-    
+
+
     public src_file : path
     eye_pos     : vec3f [ 0.0, 4.2, 0.0 ]
     target_pos  : vec3f [ 0.0, -0.3, 0.0 ]
@@ -1871,10 +1873,6 @@ element orbiter : trinity # implements compiler
             return
         sa : ConsoleSession ensure_console[ orbit_sid ]
         if [ sa ] sa.write_input[ '{bd}\r' ]
-
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen ] return
-        if [ orbit_cap_on ] dictation_gpu[ Canvas w.screen ]
 
     func orbit_frame [ w: Window ]
         if [ attach ]
@@ -4261,10 +4259,9 @@ element orbiter : trinity # implements compiler
                 ev.target.pristine = false
                 if [ ev.target.ux ] ev.target.ux.restyle = true
     
-    public func render [] -> Elements
-        w : ux
-        if [ !w ] return null
-
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ orbit_cap_on ] dictation_gpu[ Canvas w.screen ]
         if [ orbit_app ] orbit_frame[ w ]
         mic_frame[]
 
@@ -4450,58 +4447,59 @@ element orbiter : trinity # implements compiler
             scene_build_pid = -1
             puts 'scenes: {scene_build_nm} build finished'
             if [ ux ] ux.restyle = true
-        # projection: inline panes in order, then the agent console
-        sp         : string search_pane[]
-        pane_inner : Elements []
-        for [ i: i32 0, i < editor_slots.count, i += 1 ]
-            pid : 'pane{i}'
-            pane_inner[pid] = EditorView [ pane_index: i, selected: (sp == pid) ]
-        if [ agent_open ]
-            aid : 'pane{editor_slots.count}'
-            pane_inner[aid] = EditorView [ pane_index: editor_slots.count, selected: (sp == aid) ]
-        editor_els : Elements []
-        # the committed scene, not the browsed one; frost marks it backdrop
-        sname9 : scene_loaded[]
-        # built once per scene: a fresh element each frame churns its Render
-        se9 : scene_element[]
-        # stable key: a per-scene key re-appends last and covers the ui
-        if [ se9 ] editor_els['scene'] = se9
-        # hide keeps the panes mounted at opacity 0 — no unmount churn
-        editor_els['panes'] = Splitter [ area: Region { l0 t0 r0 b22px }, inner: pane_inner,
-            deflt: 0.0, even: true, snap_close: true,
-            opacity: (hide_ui) ? 0.0 : 1.0 ]
-        # right-flow: first inserted sits furthest right
-        sels : Elements []
-        sels['scene_next'] = SceneArrow [ icon: 'right',
-            area: Region { r8px t2px w22px h22px }, manual_mode: true ]
-        sels['scene_name'] = SceneName  [ label: scene_name[].lcase[] ]
-        sels['scene_prev'] = SceneArrow [ icon: 'left', manual_mode: true ]
         if [ ux ] ux.frost_mode = frost_ix
-        sels['frost_name'] = SceneName  [ label: ux.frost_name[] ]
         speed_apply[]
-        sels['speed_name'] = SceneName  [ label: speed_name[] ]
         if [ ux ] ux.orbit_mode = orbit_ix % orbit_list[].count
-        sels['orbit_name'] = SceneName  [ label: orbit_name[] ]
         if [ ux ] ux.angle_mode = angle_value[]
-        sels['angle_name'] = SceneName  [ label: angle_name[] ]
-        # left of the bar: staged reload button, or the live compile status
-        lp9 : au_live_get_pending[]
-        if [ lp9 == 2 ]
-            sels['reload_busy']  = ReloadStatus [ label: 'compiling...' ]
-        el [ lp9 == 1 ]
-            sels['reload_ready'] = ReloadButton [ label: 'reload', manual_mode: true ]
-        # dead center: scene-only toggle
-        sels['ui_hide'] = HideToggle [ label: '-', manual_mode: true ]
-        editor_els['status'] = StatusBar [ elements: sels ]
-        # one avatar, window-anchored; ALWAYS mounted, :summoned slides it in
-        editor_els['avatar'] = OrbiterAvatar [ topmost: true, summoned: show_orbiter ]
-        # one tab off the top edge: ORBITER'S OWN state. an error from an
-        # app we happen to be running belongs to that app's run band
-        if [ !hide_ui && err_file && err_line > 0 && err_is_own[] ]
-            editor_els['error'] = ErrorButton [
-                label: 'error {err_file.filename[]}:{err_line}',
-                topmost: true, manual_mode: true ]
-        return editor_els
+
+    # projection: inline panes in order, then the agent console
+    func pane_views [] -> Elements
+        t : Elements []
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            t['pane{i}'] = EditorView [ pane_index: i,
+                selected: (search_pane[] == 'pane{i}') ]
+        if [ agent_open ]
+            t['pane{editor_slots.count}'] = EditorView [
+                pane_index: editor_slots.count,
+                selected: (search_pane[] == 'pane{editor_slots.count}') ]
+        return t
+
+    # right-flow: first inserted sits furthest right.
+    # reload_busy/ready: staged reload button, or live compile status.
+    # ui_hide sits dead center: scene-only toggle
+    func status_els [] -> Elements
+        return Elements [
+            'scene_next'  : SceneArrow [ icon: 'right',
+                area: Region { r8px t2px w22px h22px }, manual_mode: true ],
+            'scene_name'  : SceneName  [ label: scene_name[].lcase[] ],
+            'scene_prev'  : SceneArrow [ icon: 'left', manual_mode: true ],
+            'frost_name'  : SceneName  [ label: ux.frost_name[] ],
+            'speed_name'  : SceneName  [ label: speed_name[] ],
+            'orbit_name'  : SceneName  [ label: orbit_name[] ],
+            'angle_name'  : SceneName  [ label: angle_name[] ],
+            'reload_busy' : (au_live_get_pending[] == 2)
+                ? ReloadStatus [ label: 'compiling...' ] : null,
+            'reload_ready': (au_live_get_pending[] == 1)
+                ? ReloadButton [ label: 'reload', manual_mode: true ] : null,
+            'ui_hide'     : HideToggle [ label: '-', manual_mode: true ] ]
+
+    # scene: built once per scene — a fresh element each frame churns its
+    # Render; a per-scene key re-appends last and covers the ui.
+    # panes: hide keeps them mounted at opacity 0 — no unmount churn.
+    # avatar: ALWAYS mounted, window-anchored; :summoned slides it in.
+    # error: ORBITER'S OWN state, one tab off the top edge — an error from
+    # an app we happen to be running belongs to that app's run band
+    public func render [] -> Elements
+        return (!ux) ? null : Elements [
+            'scene'  : scene_element[],
+            'panes'  : Splitter [ area: Region { l0 t0 r0 b22px },
+                inner: pane_views[], deflt: 0.0, even: true, snap_close: true,
+                opacity: (hide_ui) ? 0.0 : 1.0 ],
+            'status' : StatusBar [ elements: status_els[] ],
+            'avatar' : OrbiterAvatar [ topmost: true, summoned: show_orbiter ],
+            'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])
+                ? ErrorButton [ label: 'error {err_file.filename[]}:{err_line}',
+                    topmost: true, manual_mode: true ] : null ]
 
     public func on_canvas [ cv: Canvas ]
         super.on_canvas[ cv ]

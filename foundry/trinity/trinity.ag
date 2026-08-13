@@ -208,8 +208,6 @@ abstract live_app media_app
     intern  instr_w     : map i32     [string]
     intern  instr_ms    : i64
     # test-pattern accounting: publish count and the last interval
-    intern  instr_n     : i64
-    intern  instr_dt    : i64
     # the built-in memory instrument's samples, oldest first
     intern  mem_hist    : array f32
     intern  app_pid : i32
@@ -328,10 +326,13 @@ abstract live_app media_app
         if [ screenshot ]
             shot_frames += 1
             if [ shot_frames >= shot_frame ]
-                im : Image [ w.last_render[].color ]
-                im.png[ screenshot ]
-                puts 'screenshot: {screenshot}'
-                exit[ 0 ]
+                # no render yet (hidden window, early frame): wait, not crash
+                lr8 : w.last_render[]
+                if [ lr8 && lr8.color ]
+                    im : Image [ lr8.color ]
+                    im.png[ screenshot ]
+                    puts 'screenshot: {screenshot}'
+                    exit[ 0 ]
         Au.auto_free[false]
         afp9 : path 'afprobe'
         afh9 : Au.header[ afp9 ]
@@ -354,7 +355,6 @@ abstract live_app media_app
                 share_back = 0
                 host_tex_publish[ host_slot[], side, share_tex0.shared_fd, share_tex1.shared_fd,
                     tx.width, tx.height, i32[ tx.vk_format ] ]
-                puts 'share: published {tx.width}x{tx.height} (fds {share_tex0.shared_fd},{share_tex1.shared_fd}, side {side})'
             bt : (share_back == 0) ? share_tex0 : share_tex1
             vk.copy_image[ tx, bt ]
             host_tex_flip[ host_slot[], side, share_back ]
@@ -370,15 +370,12 @@ abstract live_app media_app
             ns : array string []
             vl : array [ (ao) ? ao.instruments*[] : null ]
             mem : bool [ false ]
-            tst : bool [ false ]
             if [ vl ]
                 for [ i: i32 0, i < vl.count, i += 1 ]
                     e9 : '{vl[i]}'
                     if [ e9.compare[ 'memory' ] == 0 ] mem = true
-                    if [ e9.compare[ 'test' ]   == 0 ] tst = true
                     ns.push[ e9 ]
             if [ !mem ] ns.push[ 'memory' ]
-            if [ !tst ] ns.push[ 'test' ]
             while [ ns.count > 8 ] ns.remove[ ns.count - 1 ]
             instr_slots = ns
             return instr_slots
@@ -420,7 +417,6 @@ abstract live_app media_app
             if [ ls ] return ls
             # nm is a PARAMETER: == against a literal is false here
             if [ nm.compare[ 'memory' ] == 0 ] return mem_lines[]
-            if [ nm.compare[ 'test' ]   == 0 ] return test_lines[]
             return null
 
         func mem_lines [] -> array string
@@ -446,48 +442,6 @@ abstract live_app media_app
             pm8 : i64 [ ph8 / 1048576 ]
             ls.push[ 'virt     {vm8} MB' ]
             ls.push[ 'phys     {pm8} MB' ]
-            return ls
-
-        # the unit-test pattern. every publish advances the marching block
-        # by one cell, so a still frame shows the phase and two frames N
-        # seconds apart show the true rate. the 1px border sits on the
-        # exact texture edge — if it is clipped or soft, we are scaling
-        func paint_test [ cv: Canvas, r: rect ]
-            cv.stroke_width[ 0.0 ]
-            cells : i32 [ 8 ]
-            cw9 : f32 [ r.w / f32[ cells ] ]
-            ph9 : i32 [ i32[ instr_n % i64[ cells ] ] ]
-            for [ i: i32 0, i < cells, i += 1 ]
-                cv.fill_color[ (i % 2 == 0) ? rgba [ '#1b1b28' ] : rgba [ '#23233a' ] ]
-                cv.rect_to[ r.x + f32[i] * cw9, r.y + 20.0, cw9, r.h - 40.0 ]
-                cv.paint[]
-            cv.fill_color[ rgba [ '#7fff5f' ] ]
-            cv.rect_to[ r.x + f32[ ph9 ] * cw9, r.y + 20.0, cw9, r.h - 40.0 ]
-            cv.paint[]
-            # corner markers: red = top-left, blue = bottom-right
-            cv.fill_color[ rgba [ '#ff3b30' ] ]
-            cv.rect_to[ r.x, r.y, 8.0, 8.0 ]
-            cv.paint[]
-            cv.fill_color[ rgba [ '#3b7bff' ] ]
-            cv.rect_to[ r.x + r.w - 8.0, r.y + r.h - 8.0, 8.0, 8.0 ]
-            cv.paint[]
-            # a 1px frame on the true edge of the surface
-            cv.fill_color[ rgba [ '#ffffff' ] ]
-            cv.rect_to[ r.x, r.y, r.w, 1.0 ]
-            cv.paint[]
-            cv.rect_to[ r.x, r.y + r.h - 1.0, r.w, 1.0 ]
-            cv.paint[]
-            cv.rect_to[ r.x, r.y, 1.0, r.h ]
-            cv.paint[]
-            cv.rect_to[ r.x + r.w - 1.0, r.y, 1.0, r.h ]
-            cv.paint[]
-
-        func test_lines [] -> array string
-            ls : array string []
-            hz : i64 [ (instr_dt > 0) ? (1000 / instr_dt) : 0 ]
-            ls.push[ 'publishes  {instr_n}' ]
-            ls.push[ 'interval   {instr_dt} ms' ]
-            ls.push[ 'rate       {hz} hz' ]
             return ls
 
         # the free instrument every app gets: this process's resident set
@@ -567,8 +521,6 @@ abstract live_app media_app
             if [ !sl9 || sl9.count == 0 ] return
             now : i64 [ epoch_millis[] ]
             if [ instr_ms != 0 && now - instr_ms < 125 ] return
-            if [ instr_ms != 0 ] instr_dt = now - instr_ms
-            instr_n += 1
             instr_ms = now
             if [ !mem_hist ] mem_hist = array f32 []
             # KILOBYTES resident. the fraction-of-total-ram this used to
@@ -599,7 +551,7 @@ abstract live_app media_app
                 iw : i32 [ (instr_w.contains[ nm ]) ? instr_w[ nm ] : 150 ]
                 if [ iw < 16 ] iw = 16
                 ih : i32 [ (ao) ? ao.instrument_height*[ nm, iw ] : 0 ]
-                if [ ih <= 0 ] ih = (nm == 'memory') ? 120 : (nm == 'test') ? 84 : iw
+                if [ ih <= 0 ] ih = (nm == 'memory') ? 120 : iw
                 if [ ih < 16 ] ih = 16
                 cvi : instr_cv[ nm ]
                 if [ !cvi ]
@@ -614,9 +566,6 @@ abstract live_app media_app
                 drew : bool [ (ao) ? ao.paint_instrument*[ cvi, nm, r9 ] : false ]
                 if [ !drew && nm == 'memory' ]
                     paint_memory[ cvi, r9 ]
-                    drew = true
-                if [ !drew && nm == 'test' ]
-                    paint_test[ cvi, r9 ]
                     drew = true
                 # no view is the normal case: the entries stand alone, and
                 # the shell must not be left pulling a surface we never fill
@@ -907,16 +856,13 @@ abstract live_app media_app
                     vl8 : array [ (av8) ? av8.instruments*[] : null ]
                     rs8 : ''
                     mem8 : bool [ false ]
-                    tst8 : bool [ false ]
                     if [ vl8 ]
                         for [ i: i32 0, i < vl8.count, i += 1 ]
                             if [ '{vl8[i]}' == 'memory' ] mem8 = true
-                            if [ '{vl8[i]}' == 'test' ]   tst8 = true
                             rs8 = (i == 0) ? '{vl8[i]}' : '{rs8} {vl8[i]}'
-                    # every app gets the memory graph and the test pattern;
-                    # listing either name overrides ours
+                    # every app gets the memory graph; listing the name
+                    # overrides ours
                     if [ !mem8 ] rs8 = (rs8.count == 0) ? 'memory' : '{rs8} memory'
-                    if [ !tst8 ] rs8 = (rs8.count == 0) ? 'test' : '{rs8} test'
                     agent_sock_reply[ '{rs8}\n' ]
                     continue
                 # the shell's slider. an app with its own volume gets it too
@@ -1586,16 +1532,18 @@ Display Window
 
         # mark for umount
         for [ e:element, id:string ] in parent.elements
-            e.flags |= 1
+            if [ e ] e.flags |= 1
 
         # count rendered children for positional flags
         total_rendered : i32 [ 0 ]
         for [ e:element, id:string ] in rendered
-            total_rendered += 1
+            if [ e ] total_rendered += 1
 
         # iterate through rendered elements
         child_pos : i32 [ 0 ]
         for [ e:element, id:string ] in rendered
+            # a null child means absent: its instance unmounts in the sweep
+            if [ !e ] continue
             instance  : element* parent.elements[ id ]
             changed   : bool [ false ]
             new_inst  : false
@@ -1622,7 +1570,7 @@ Display Window
                 new_inst         = true
                 ndbg : handle [ fopen[ "/tmp/spl.txt", "a" ] ]
                 if [ ndbg ]
-                    fputs[ 'NEW {id} parent={parent.id}\n', ndbg ]
+                    fputs[ 'NEW {id} parent={parent.id} brand_new={brand_new} count={parent.elements.count}\n', ndbg ]
                     fclose[ ndbg ]
                 if [ !instance ]
                     instance = e
@@ -1729,12 +1677,6 @@ Display Window
                     if [ st && st.integrate_instance[ instance ] ]
                         avail2 : st.compute[ instance ]
                         apply_style[ instance, avail2, home_object ]
-                    if [ instance.layers ]
-                        bic2 : Layer instance.layers[ 'iconl' ]
-                        if [ bic2 ]
-                            bh2 : Au.header[ bic2 ]
-                            puts 'ICONL post-pop refs={bh2.refs}'
-
             inst    : typeid[ instance ]
             tr0 : i64 [ epoch_micros[] ]
             rendered_map : Elements instance.render*[]
@@ -1750,6 +1692,10 @@ Display Window
         while [ retry ]
             retry = false
             for [ e:element, id:string ] in parent.elements
+                if [ !e ]
+                    retry = true
+                    parent.elements.rm[ id ]
+                    break
                 if [ e.flags & 1 ]
                     udbg : handle [ fopen[ "/tmp/spl.txt", "a" ] ]
                     if [ udbg ]
@@ -1780,7 +1726,7 @@ Display Window
         # so a remount or a type swap cannot silently move an element
         rkeys : array string [ ]
         for [ e: element, id: string ] in rendered
-            rkeys.push[ id ]
+            if [ e ] rkeys.push[ id ]
         same : bool [ true ]
         ix   : i32  [ 0 ]
         for [ e: element, id: string ] in parent.elements
@@ -2024,9 +1970,6 @@ Display Window
             ax : @f32 [ glfwGetJoystickAxes[ j, @na ] ]
             nh : i32 [ 0 ]
             ht : @u8 [ glfwGetJoystickHats[ j, @nh ] ]
-            if [ !pad_said ]
-                nmp : symbol [ glfwGetJoystickName[ j ] ]
-                puts 'pad: joystick {j} buttons {nb} axes {na} hats {nh} name {(nmp) ? string[ nmp ] : string["?"]}'
             if [ b ]
                 if [ nb > 32 ] nb = 32
                 for [ i: i32 0, i < nb, i += 1 ]
@@ -2058,6 +2001,8 @@ Display Window
             if [ root ] dirty_tree[ root ]
             will_animate = true
         ev.target = focus
+        if [ ev.key.scan_code == 9 ]
+            exit[ 0 ]
         if [ focus && focus.on_key*[ ev ] ] return
         # esc while dictating CANCELS the take — nothing submits
         if [ ev.key.unicode == 256 && ev.key.state && dict_on ]
@@ -2078,6 +2023,9 @@ Display Window
                 if [ l.editable ]
                     l.on_key[ ev ]
                     break
+        if [ ev.key.unicode == 256 && ev.key.state && !ev.no_default && glfw ]
+            if [ fs_active ] set_fullscreen[ false ]
+            glfwSetWindowShouldClose[ glfw, 1 ]
 
     public func drop_event [ ev: Event ]
         ev.target = focus
@@ -2365,14 +2313,23 @@ Display Window
 
     func update [ ]
         bind_backdrop[]
-        glyph    = (glyph    || Canvas [ w:a, vk: vk, format: Pixel.u8,    :width, :height ]).resize[ width, height ]
-        screen   = (screen   || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
+        if [ !glyph ]
+            glyph = Canvas [ w:a, vk: vk, format: Pixel.u8, :width, :height ]
+            glyph.hold[]
+        if [ !screen ]
+            screen = Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]
+            screen.hold[]
+        glyph.resize[ width, height ]
+        screen.resize[ width, height ]
         glyph   .update[]
         screen  .update[]
         glyph   .clear[ string[ "#000" ] ]
         screen  .clear[ string[ "#000" ] ]
 
-        compose = (compose || Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]).resize[ width, height ]
+        if [ !compose ]
+            compose = Canvas [ w:a, vk: vk, format: Pixel.rgba8, load_existing: true, :width, :height ]
+            compose.hold[]
+        compose.resize[ width, height ]
         compose.update[]
         compose.clear[ string[ "#888" ] ]
 
@@ -2386,44 +2343,74 @@ Display Window
 
                 m_reduce  = Model  [ w: a, samplers: map Texture[string] [ 'color': src9 ] ]
                 r_reduce  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_reduce ] ]
+                m_reduce.hold[]
+                r_reduce.hold[]
 
                 m_reduce0 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce.color ] ]
                 r_reduce0 = Render [ vk: ctx, w: a, wscale: 0.5, models: array Model [ m_reduce0 ] ]
+                m_reduce0.hold[]
+                r_reduce0.hold[]
 
                 m_reduce1 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
                 r_reduce1 = Render [ vk: ctx, w: a, wscale: 0.25, models: array Model [ m_reduce1 ] ]
+                m_reduce1.hold[]
+                r_reduce1.hold[]
 
                 fbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 4.0 ]
+                fbv.hold[]
                 m_blur_v  = Model  [ w: a, s: fbv, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
                 r_blur_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_blur_v ] ]
+                m_blur_v.hold[]
+                r_blur_v.hold[]
 
                 fbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 4.0 ]
+                fbl.hold[]
                 m_blur    = Model  [ w: a, s: fbl, samplers: map Texture[string] [ 'color': r_blur_v.color ] ]
                 r_blur    = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_blur ] ]
+                m_blur.hold[]
+                r_blur.hold[]
 
                 sbv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 2.0 ]
+                sbv.hold[]
                 m_soft_v  = Model  [ w: a, s: sbv, samplers: map Texture[string] [ 'color': r_reduce0.color ] ]
                 r_soft_v  = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_soft_v ] ]
+                m_soft_v.hold[]
+                r_soft_v.hold[]
 
                 sbl : Blur [ vk: ctx, name: 'blur', reduction_scale: 2.0 ]
+                sbl.hold[]
                 m_soft    = Model  [ w: a, s: sbl, samplers: map Texture[string] [ 'color': r_soft_v.color ] ]
                 r_soft    = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_soft ] ]
+                m_soft.hold[]
+                r_soft.hold[]
 
                 m_reduce2 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce1.color ] ]
                 r_reduce2 = Render [ vk: ctx, w: a, wscale: 0.125, models: array Model [ m_reduce2 ] ]
+                m_reduce2.hold[]
+                r_reduce2.hold[]
 
                 m_reduce3 = Model  [ w: a, samplers: map Texture[string] [ 'color': r_reduce2.color ] ]
                 r_reduce3 = Render [ vk: ctx, w: a, wscale: 0.0625, models: array Model [ m_reduce3 ] ]
+                m_reduce3.hold[]
+                r_reduce3.hold[]
 
                 bv : BlurV [ vk: ctx, name: 'blur-v', reduction_scale: 16.0 ]
+                bv.hold[]
                 m_frost_v = Model  [ w: a,   s: bv, samplers: map Texture[string] [ 'color': r_reduce3.color ] ]
                 r_frost_v = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_frost_v ] ]
+                m_frost_v.hold[]
+                r_frost_v.hold[]
 
                 bl : Blur [ vk: ctx, name: 'blur', reduction_scale: 16.0 ]
+                bl.hold[]
                 m_frost   = Model  [ w: a,   s: bl, samplers: map Texture[string] [ 'color': r_frost_v.color ] ]
                 r_frost   = Render [ vk: ctx, w: a, wscale: 1.0, models: array Model [ m_frost ] ]
+                m_frost.hold[]
+                r_frost.hold[]
 
-                m_view    = Model [ w: w, s: UXBackground [ vk: ctx, name: 'ux' ],
+                ux9 : UXBackground [ vk: ctx, name: 'ux' ]
+                ux9.hold[]
+                m_view    = Model [ w: w, s: ux9,
                     samplers: map Texture[string] [
                         'background':     src9,
                         'frost':          r_frost.color,
@@ -2436,8 +2423,10 @@ Display Window
                     color: screen.color,
                     wscale: 1.0, clear_color: vec4f [ 1.0, 1.0, 1.0, 1.0 ],
                     models: array Model [ m_view ] ]
+                m_view.hold[]
+                r_view.hold[]
 
-                ux_shader : UXBackground [ m_view.s ]
+                ux_shader : UXBackground [ ux9 ]
                 ux_shader.low_color  = vec4f [ 0.0, 0.1, 0.2, 1.0 ]
                 ux_shader.high_color = vec4f [ 1.0, 0.8, 0.8, 1.0 ]
 
@@ -2451,6 +2440,25 @@ Display Window
             if [ list ]
                 for [ r: Render ] in list
                     r.update[]
+                if [ resizing ]
+                    r_view.color = screen.color
+                    r_view.update[]
+                    src9 : Texture [ (backdrop) ? backdrop.color : compose.color ]
+                    m_reduce .samplers['color'] = src9
+                    m_reduce0.samplers['color'] = r_reduce.color
+                    m_reduce1.samplers['color'] = r_reduce0.color
+                    m_blur_v .samplers['color'] = r_reduce1.color
+                    m_blur   .samplers['color'] = r_blur_v.color
+                    m_soft_v .samplers['color'] = r_reduce0.color
+                    m_soft   .samplers['color'] = r_soft_v.color
+                    m_reduce2.samplers['color'] = r_reduce1.color
+                    m_reduce3.samplers['color'] = r_reduce2.color
+                    m_frost_v.samplers['color'] = r_reduce3.color
+                    m_frost  .samplers['color'] = r_frost_v.color
+                    m_view.samplers['background'] = src9
+                    m_view.samplers['frost']      = r_frost.color
+                    m_view.samplers['blur']       = r_blur.color
+                    m_view.samplers['compose']    = compose.color
                 for [ r: Render ] in list
                     if [ r.models ]
                         for [ m: Model ] in r.models
@@ -3738,8 +3746,6 @@ Display Window
             el
                 if [ dbg_blit < 14 ]
                     dbg_blit += 1
-                    eid9 : string [ (e.id) ? e.id : '(noid)' ]
-                    puts 'BLIT {eid9} bx={e.bounds.x} bw={e.bounds.w} ew={ew} cw={e.cache_canvas.content_w} texw={e.cache_canvas.width} ox={e.cache_ox} tx={cv.transform_tx[]}'
                 cv.draw_canvas[ e.cache_canvas, 0.0 - f32 [ e.cache_ox ], 0.0 - f32 [ e.cache_oy ], f32 [ ew ], f32 [ eh ] ]
             sbl : ScrollLayer (e.layers) ? cast ScrollLayer [ e.layers['scrollbar'] ] : null
             if [ sbl && sbl.ctype == stage && !sbl.hide ]

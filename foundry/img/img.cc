@@ -168,7 +168,10 @@ none Image_init(Image a) {
         a->pixels = (u8*)data;
     } else if (string_eq(ext, "png")) {
         FILE* file = fopen(uri, "rb");
-        assert (file);
+        if (!file) {
+            fprintf(stderr, "Image: cannot open %s\n", uri);
+            return;
+        }
 
         png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
         assert (png);

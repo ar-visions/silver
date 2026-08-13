@@ -141,6 +141,7 @@ class Render
     intern  vk_render_pass                 : new VkRenderPass  [2]
     intern  last_width                     : i32
     intern  last_height                    : i32
+    intern  fb_color_view                  : VkImageView
     # creation-site tag; propagates to this render's textures (SAMP)
     public  tag                            : string
 
@@ -160,8 +161,12 @@ class Render
             exit[ 0 ]
         expect width <= 16384 && height <= 16384, 'Render.update: corrupt dimensions {width}x{height}'
 
+        # same dims is not enough: if the color view was replaced
+        # (canvas retarget, swap rebuild) the framebuffer holds a
+        # DEAD view and the next begin faults in the driver
         if [ width == last_width && height == last_height ]
-            return
+            if [ !color || color.vk_image_view == fb_color_view ]
+                return
 
         # wait for this Render's own in-flight frame before tearing down
         # its attachments / framebuffers. replaces the global vkDeviceWaitIdle
@@ -241,6 +246,7 @@ class Render
             ], null, @vk_framebuffer[i] ]
 
             expect result == VK_SUCCESS, "Failed to create framebuffer"
+        fb_color_view = color.vk_image_view
 
     # open a command buffer for this canvas's batch (once; idempotent while recording).
     func begin_record [ ]
@@ -492,6 +498,9 @@ class Render
         flush_submit[]
         # a slot with no pending submit has an unsignalable fence — nothing to wait
         if [ ring_primed[ring_last] == 0 ] return
+        if [ !vk_fences[ring_last] ]
+            puts 'sync_fence on TORN-DOWN render tag={tag} {width}x{height} — zombie registration'
+            return
         t0: i64 [ epoch_micros[] ]
         result: vkWaitForFences[ vk.device, 1, @vk_fences[ring_last], VK_TRUE, UINT64_MAX ]
         vk.sync_us    += epoch_micros[] - t0
@@ -499,7 +508,7 @@ class Render
         if [ result != VK_SUCCESS ]
             rc9 : i32 [ cast i32 [ result ] ]
             puts 'fence wait failed: id {id} {width}x{height} result {rc9} slot {ring_last}'
-        expect result == VK_SUCCESS, "fence wait failed"
+         expect result == VK_SUCCESS, "fence wait failed"
         # the wait drained every in-flight submit (command buffers run in submit order, so
         # ring_last done ⟹ all prior done): every slot is free now, rewind the ring to 0.
         draw_slot = 0
@@ -533,6 +542,14 @@ class Render
                 vk_command_buffers[ci] = null
 
     func dealloc [ ]
+        # a dead render must never stay registered: the display
+        # drives element_targets every frame
+        if [ w && w.element_targets ]
+            dead9 : array string [ ]
+            for [ r9: Render, k9: string ] in w.element_targets
+                if [ r9 == a ] dead9 += k9
+            for [ k9: string ] in dead9
+                w.element_targets[ k9 ] = null
         destroy_ring[]
 
 
@@ -1443,7 +1460,6 @@ class vk_context
                 ]
                 cres : vkCreateCommandPool[ device, cpool_info, null, @compute_pool ]
                 expect cres == VK_SUCCESS, "failed to create compute pool"
-                puts 'vk: compute queue ready (family {compute_family} index {compute_index}, low priority)'
 
     intern func create_mipmaps [ vk_image: VkImage, w: i32, h: i32, mips: i32, layers: i32 ] 
         if [ mips > 1 ]
@@ -1988,6 +2004,7 @@ class Pipeline
                     if [ strcmp[ mem.ident, 'atlas' ] == 0 ]
                         atlas_slot = set1_binds
                     
+                    printf[ "DESCW shader=%s member=%s view=%p sampler=%p\n", s.name.chars, mem.ident, res.tx.vk_image_view, res.tx.vk_sampler ]
                     image_infos[set1_binds] = VkDescriptorImageInfo [
                         sampler:     res.tx.vk_sampler,
                         imageView:   res.tx.vk_image_view,
@@ -3062,7 +3079,7 @@ class Texture
     func transition [ new_layout: i32 ]
         if [ vk_layout != new_layout ]
             is_d32 : bool [ vk_format == VK_FORMAT_D32_SFLOAT ]
-            vk.transition_image_layout[ vk_image, VK_IMAGE_LAYOUT_UNDEFINED, new_layout,
+            vk.transition_image_layout[ vk_image, vk_layout, new_layout,
                 0, mip_levels, 0, layer_count, vk_format == VK_FORMAT_D32_SFLOAT ]
             vk_layout = new_layout
 
@@ -3073,14 +3090,15 @@ class Texture
     # layout tracking.
     
     func transition_in [ f: handle, new_layout: i32 ]
+        src: Layout.find[ vk_layout ]
         dst: Layout.find[ new_layout ]
-        expect dst, "layout not found"
+        expect src && dst, "layout not found"
         expect vk_image, "Texture.transition_in: vk_image is null (texture not initialized)"
         is_depth: bool [ vk_format == VK_FORMAT_D32_SFLOAT ]
         barrier: VkImageMemoryBarrier [
             sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             pNext:               null,
-            oldLayout:           VK_IMAGE_LAYOUT_UNDEFINED,
+            oldLayout:           vk_layout,
             newLayout:           new_layout,
             srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
             dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
@@ -3092,7 +3110,7 @@ class Texture
                 baseArrayLayer: 0,
                 layerCount:     layer_count
             ],
-            srcAccessMask:       VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            srcAccessMask:       src.access | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             dstAccessMask:       dst.access
         ]
         cmd: VkCommandBuffer [ f ]
@@ -3102,7 +3120,7 @@ class Texture
         # finished sampling the shared sdf_tex (a WAR hazard), so batched paints
         # clobbered each other and only the last paint's shape survived. covering
         # fragment+compute+color-output serializes compute-write vs prior-draw-read.
-        src_stage : i32 [ VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
+        src_stage : i32 [ src.stage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
         vkCmdPipelineBarrier[ cmd, src_stage, dst.stage, 0, 0, null, 0, null, 1, @barrier ]
         vk_layout = new_layout
 
@@ -3422,6 +3440,7 @@ class Texture
     # the GPU resources at teardown without depending on the Au refcount.
     func release_gpu [ ]
         if [ vk_sampler || vk_image_view || (!swap && vk_image) ]
+            printf[ "TEXREL tag=%s %dx%d view=%p sampler=%p\n", (tag) ? tag.chars : '-', width, height, vk_image_view, vk_sampler ]
             # hand the handles to the deferred queue — an in-flight submit
             # may still sample them (immediate destroy = fast-close SIGTRAP)
             td : TexDefer [ ]
@@ -3757,7 +3776,6 @@ Texture Display
                 # instead of the app's final render while the shell is up
                 shell9 : Au [ (shell_tex && shell_tex.vk_image) ? Au[ shell_tex ] : Au[ last_render[] ] ]
                 if [ shell9 != shell_bound ]
-                    puts 'swap: presenting {(shell_tex) ? "orbiter" : "app"}'
                     swap_model.samplers = map Au[string] [ "color": shell9 ]
                     swap_model.rebind_model[]
                     shell_bound = shell9
@@ -4506,4 +4524,3 @@ func placeholder_image [ sampler: object, size: i32, fill: @u8, sampler_size: @i
         sampler_size = s * sizeof[ rgba8 ]
     el
         fault "sampler data required"
-

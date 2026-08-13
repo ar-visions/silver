@@ -1671,7 +1671,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
                 if [ mtch ]
                     tc0.edata[ ei*4 + 3 ] = -1
                     nmark += 1
-        if [ nmark > 0 ] puts 'subdiv: {name} creased edges marked={nmark}'
     for [ lv: i32 1, lv < levels, lv += 1 ]
         prev : topos[ lv - 1 ]
         topos += subdiv_next_topo[ prev, true ]
@@ -1688,7 +1687,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         c3 : i32 [ t0.qcorn[ f*4 + 3 ] ]
         bad : bool [ (c0 == c1) || (c0 == c2) || (c0 == c3) || (c1 == c2) || (c1 == c3) || (c2 == c3) ]
         if [ bad ] ndegen += 1
-    puts 'subdiv health: {name} welded={t0.nv} quads={t0.nf} boundary_edges={t0.n_bound} nonmanifold_edges={t0.n_nonman} degenerate_quads={ndegen}'
     out_bytes : i32 [ nout * vsz ]
     obuf : Buffer [ vk: m.vk, size: out_bytes, u_storage: true, u_vertex: true, m_host_visible: true, m_host_coherent: true ]
     odata : @i8 [ obuf.data ]
@@ -1899,7 +1897,6 @@ func subdiv_build [ m: Model, base: Gpu, sems_of: @i32, render_id: i32, name: st
         npipe.dispatch_z = 1
         npipe.run_once = m.subdiv_once
         m.pipelines.push[ npipe ]
-    puts 'subdiv: {name} levels={levels} verts {vc} -> {nout} tris {tc} -> {oic / 3}'
     g : Gpu [ vk: m.vk, name: name,
         members: base.members, member_count: mc,
         vertex_size: vsz, vertex_count: nout,

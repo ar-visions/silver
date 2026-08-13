@@ -1322,11 +1322,6 @@ Render Canvas
             for [ r: Render ] in blur_h_arr
                 release_render_gpu[ r ]
 
-    func dealloc [ ]
-        if [ text_render ]
-            thd : Au.header[ text_render ]
-            puts 'Canvas dealloc text_render refs={thd.refs}'
-
     func init [ ]
         clear_color = vec4f [ 0.0, 0.0, 0.0, 1.0 ]
         cur_xform   = affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0, ty: 0.0 ]
@@ -1888,12 +1883,15 @@ Render Canvas
 
     func arc [ cx: f32, cy: f32, radius: f32, start_angle: f32, end_angle: f32 ]
         st : states[state_depth - 1]
-        path.add_arc [
-            st.transform.apply_x [ cx, cy ],
-            st.transform.apply_y [ cx, cy ],
-            radius * st.transform.ma,
-            start_angle, end_angle
-        ]
+        tx : st.transform.apply_x [ cx, cy ]
+        ty : st.transform.apply_y [ cx, cy ]
+        tr : radius * st.transform.ma
+        # full circle on an empty path: the analytic rounded-rect SDF
+        # (radius = half size), never the polyline edge list
+        if [ path.pcount == 0 && end_angle - start_angle >= 6.28 ]
+            path.add_rounded_rect [ tx - tr, ty - tr, tr * 2.0, tr * 2.0, tr, tr, tr, tr ]
+            return
+        path.add_arc [ tx, ty, tr, start_angle, end_angle ]
 
     func draw_text_pass [ display: string, tm: TextMetrics, pen_x_in: f32, pen_y_in: f32 ]
         if [ !font.atlas ]
@@ -2451,6 +2449,7 @@ Render Canvas
             bw    = path.cached_bw
             bh    = path.cached_bh
             edges = path.cached_edges
+            Au.hold[ edges ]
             n     = path.cached_edge_count
         el
             vk.sdf_miss += 1
@@ -2481,6 +2480,7 @@ Render Canvas
             memcpy[ path.cached_points, path.points, sizeof[ PathPt ] * pcount ]
             path.cached_pcount = pcount
             path.cached_edges      = edges
+            Au.hold[ edges ]
             path.cached_edge_count = n
             path.cached_bx0   = bx0
             path.cached_by0   = by0

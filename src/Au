@@ -924,7 +924,7 @@ forward(any)
     M(AA,BB, i, prop, Au_public, i32,       sequence) \
     M(AA,BB, i, prop, Au_public, i64,       alloc) \
     M(AA,BB, i, prop, Au_public, i64,       count) \
-    M(AA,BB, i, prop, Au_public, u32,       iflags) \
+    M(AA,BB, i, prop, Au_public, u64,       iflags) \
     M(AA,BB, i, prop, Au_public, Au_t, meta_a) \
     M(AA,BB, i, prop, Au_public, Au,   meta_b) \
     M(AA,BB, i, method, public, i32,    compare, AA) \
@@ -2388,6 +2388,7 @@ declare_class(rect)
     i_struct_static (O, Y, O,        identity) \
     i_struct_static (O, Y, O,        perspective, f32, f32, f32, f32) \
     i_struct_static (O, Y, O,        ortho,      f32, f32, f32, f32, f32, f32) \
+    i_struct_static (O, Y, O,        frustum,    f32, f32, f32, f32, f32, f32) \
     i_struct_static_3(O, Y, O,       look_at,    vec3f) \
     i_struct_method_1(O, Y, O,       scale,      vec3f) \
     i_struct_method_1(O, Y, O,       translate,  vec3f) \

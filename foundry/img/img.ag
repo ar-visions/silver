@@ -341,7 +341,6 @@ class Image
                 png_write_info png2, info
                 rows : new png_bytep [ sizeof png_bytep * height ]
                 data2 : @u8 vdata[]
-                printf["%s, dims = %i %i\n", image_uri.chars, width, height]
                 for [ y : 0, y < height, y += 1 ]
                     rows[y] = @data2 [ y * width * channels ]
 

@@ -607,6 +607,7 @@ class Layer
             parent.edit = ''
             parent.sel_col = 0
             parent.anchor_col = 0
+            ev.prevent_default[]
         parent.pristine = false
 
     func draw [ cv: Canvas ]
