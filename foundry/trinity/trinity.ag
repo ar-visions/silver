@@ -47,6 +47,7 @@ import KhronosGroup:Vulkan-Utility-Libraries/vulkan-sdk-1.4.341.0
 
 import KhronosGroup:Vulkan-ValidationLayers/vulkan-sdk-1.4.341.0
     -DVULKAN_HEADERS_INSTALL_DIR={install}
+    >> sed -i 's|"library_path": "libVkLayer_khronos_validation.so"|"library_path": "../../../lib/libVkLayer_khronos_validation.so"|' {install}/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json
 
 import KhronosGroup:glslang/715c850
     -DVULKAN_HEADERS_INSTALL_DIR={install}
@@ -72,6 +73,7 @@ import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h>
     -lpng -lz
     -DFT_DISABLE_BROTLI=TRUE
     -DFT_DISABLE_BZIP2=TRUE
+    -DFT_DISABLE_HARFBUZZ=TRUE
 
 import PixarAnimationStudios:OpenSubdiv/v3_7_0
     -I{install}/include
