@@ -3,6 +3,18 @@
 #include <execinfo.h>
 #include <dlfcn.h>
 
+// pack(1) declares every field 1-aligned, so clang cannot see that
+// these atomically accessed fields are naturally aligned; the asserts
+// below are the real check.
+#pragma clang diagnostic ignored "-Watomic-alignment"
+
+_Static_assert(sizeof(struct _Au) % 8 == 0,
+    "Au header size must keep the object body 8-aligned");
+_Static_assert(offsetof(struct _item, next) % 8 == 0,
+    "item.next must be 8-aligned for __atomic ops");
+_Static_assert(offsetof(struct _Au_t, global_count) % 4 == 0,
+    "Au_t.global_count must be 4-aligned for __atomic ops");
+
 int seq;
 
 const char* silver_listen;
@@ -3606,7 +3618,6 @@ Au Au_set_property(Au a, symbol name, Au value) {
     Au_t m = find_member(type, (cstr)name, AU_MEMBER_VAR, 0, true);
     /// a persisted .agi outlives the schema that wrote it; skip dropped fields
     if (!m) {
-        print("set_property: no member %s on %s (skipped)", name, type->ident);
         return value;
     }
     member_set(a, m, value);

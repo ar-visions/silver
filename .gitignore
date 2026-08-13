@@ -59,3 +59,6 @@ export
 sessions
 cache
 *.res
+foundry/hyperspace/share/textures/eye/*.png
+foundry/hyperspace/share/textures/head/*.png
+.gitignore

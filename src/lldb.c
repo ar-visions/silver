@@ -1047,7 +1047,7 @@ static LLVMMetadataRef debug_object_header_type(aether a, Au_t schema) {
         { "sequence",     32,       DW_ATE_signed,   offsetof(struct _object, sequence) * 8,     false },
         { "alloc",        64,       DW_ATE_signed,   offsetof(struct _object, alloc) * 8,        false },
         { "count",        64,       DW_ATE_signed,   offsetof(struct _object, count) * 8,        false },
-        { "iflags",       32,       DW_ATE_unsigned,  offsetof(struct _object, iflags) * 8,      false },
+        { "iflags",       64,       DW_ATE_unsigned,  offsetof(struct _object, iflags) * 8,      false },
     };
     int n_fields = sizeof(fields) / sizeof(fields[0]);
 

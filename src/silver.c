@@ -9172,6 +9172,7 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
 
     // Lazy-initialized containers
     map   imap   = null;
+    map   inames = null;
     array iarray = null;
     shape s      = is_mdl_collective ? instanceof(mdl->meta_b, shape) : null;
     int shape_stride = (s && s->count > 1) ? s->data[s->count - 1] : 0;
@@ -9213,13 +9214,13 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         } else if (is_mdl_map) {
             // map with string keys: read literal and convert to runtime string
             token t = peek(a);
-            string name = (string)read_literal(a, typeid(string));
+            name = (string)read_literal(a, typeid(string));
             validate(name, "expected literal string key");
             k = (Au)e_create(a, key ? key : etypeid(string), (Au)name);
             is_enode_key = true;
         } else {
             token t = peek(a);
-            string name = (string)read_literal(a, typeid(string));
+            name = (string)read_literal(a, typeid(string));
             validate(name, "expected literal string");
             k = (Au)const_string(chars, name->chars);
         }
@@ -9281,7 +9282,13 @@ enode parse_object(silver a, etype mdl, bool within_expr) { sequencer
         // -- Insert --
         if (is_fields) {
             validate(v, "expected value after key %o", k);
-            validate(!get(imap, k), "duplicate key %o", k);
+            // enode keys hash alike; literal keys dedupe by text
+            if (is_enode_key && name) {
+                if (!inames) inames = map(assorted, true);
+                validate(!get(inames, (Au)name), "duplicate key %o", name);
+                set(inames, (Au)name, (Au)name);
+            } else
+                validate(!get(imap, k), "duplicate key %o", k);
             set(imap, k, v); // k's are both strings and enode -- this is so we can eval into both map, struct and class props
         } else {
             push(iarray, k);
