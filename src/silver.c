@@ -33,6 +33,8 @@ void aether_listen_gate_store(aether, enode);
 etype evar_type(evar a);
 enode parse_import(silver a);
 path module_exists(silver a, array idents, bool binary_finary, bool* is_bin);
+// per-session module cache: bool = building, path = finished product
+static map silver_compiled = null;
 static void bg_build_start(silver a, silver og, path module, map defs);
 enode parse_export(silver a);
 enode parse_return(silver a);
@@ -1913,8 +1915,12 @@ void silver_init(silver a) {
 
     if (product_exists && product_m > module_file_m && product_m > compiler_m) {
 
-        if (file_exists("%o", a->artifacts_path) && modified_time(a->artifacts_path) > 0) {
-            FILE *f = fopen(a->artifacts_path->chars, "r");
+        // .source, not .artifacts: the writer sends .ag/.c/.cc to .source and
+        // everything else to .artifacts, so .artifacts holds ONLY .so/.a — which
+        // the loop below skips. reading it made newest always 0, so a changed
+        // dependency source never invalidated this product
+        if (file_exists("%o", a->source_path) && modified_time(a->source_path) > 0) {
+            FILE *f = fopen(a->source_path->chars, "r");
             u64 newest = 0;
             if (f) {
                 char buf[4096];
@@ -1958,15 +1964,21 @@ void silver_init(silver a) {
 
     a->mod = (aether)a;
     // prevent duplicate compilation in a session
-    static map silver_compiled = null;
     if (!silver_compiled) silver_compiled = hold(hold(map(hsize, 16)));
-    if (get(silver_compiled, (Au)a->name)) {
-        a->product = hold(absolute(a->product_link));
+    // the session cache stores the FINISHED product, set on completion below.
+    // it used to store a bool set at build START, so a second instance could
+    // not tell "in progress" from "done": it returned early with whatever the
+    // product link pointed at — an empty path mid-build (which reached
+    // dlopen("") and surfaced as a bogus "did not register"), or a stale
+    // product, which is why a changed source never rebuilt.
+    Au cached_product = get(silver_compiled, (Au)a->name);
+    if (cached_product && instanceof(cached_product, path)) {
+        a->product = hold((path)cached_product);
         return;
     }
     if (!update_product) {
         a->product = hold(absolute(a->product_link));
-        set(silver_compiled, (Au)a->name, (Au)_bool(true));
+        set(silver_compiled, (Au)a->name, (Au)a->product);
         module_erase(a->autype, null);
         // silver-host.c is the LIVE-app launcher ONLY — a plain app has its own
         // main, so never build the host for it (it would overwrite the real exe).
@@ -1981,6 +1993,9 @@ void silver_init(silver a) {
         return;
     }
 
+    // in-progress marker: a bool means "building", so a concurrent instance
+    // falls through and builds rather than taking a stale/empty product. the
+    // finished path replaces it once the product exists.
     set(silver_compiled, (Au)a->name, (Au)_bool(true));
 
     verify(dir_exists("%o", a->install), "silver-import location not found");
@@ -6017,6 +6032,20 @@ static bool is_branchy(string n) {
 
 string command_run(command cmd, bool verbose);
 
+// >> commands patch the INSTALLED tree, so they belong to every path that
+// leaves the import satisfied — including the cached one, which returns
+// before the build ever runs
+static none run_import_commands(silver a, array cmds, path in_dir) {
+    if (!cmds || !len(cmds)) return;
+    path cw = path_cwd();
+    cd(in_dir);
+    each(cmds, string, cmd) {
+        string icmd = interpolate(cmd, (Au)a);
+        command_exec((command)icmd, a->verbose);
+    }
+    cd(cw);
+}
+
 static none checkout(silver a, path uri, string commit, array prebuild, array postbuild, string conf, string env) {
     path    install     = a->install;
     string  s           = cast(string, uri);
@@ -6094,6 +6123,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     if (file_exists("%o", token)) {
         string s = (string)load(token, typeid(string), null);
         if (s && eq(s, config->chars)) {
+            run_import_commands(a, postbuild, build_f);
             if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
             return; // cached / built / error, etc
         }
@@ -6209,15 +6239,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             verify(exec(a->verbose, "%o%o (cd %o && make PREFIX=%o -f %o install)", docker, env, project_f, install, Makefile) == 0, "make");
     }
 
-    if (postbuild && len(postbuild)) {
-        path cw = path_cwd();
-        cd(build_f);
-        each(postbuild, string, cmd) {
-            string icmd = interpolate(cmd, (Au)a);
-            command_exec((command)icmd, a->verbose);
-        }
-        cd(cw);
-    }
+    run_import_commands(a, postbuild, build_f);
 
     save(token, (Au)config, null);
     if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
@@ -6378,6 +6400,9 @@ none silver_build_product(silver a) {
     if (a->product) drop(a->product);
 
     a->product = hold(product);
+    // completion: replaces the in-progress bool so later instances of this
+    // module in the same session get the product that was actually built
+    if (silver_compiled) set(silver_compiled, (Au)a->name, (Au)a->product);
     collect_mm_frameworks(a, a->implements);
 
     // platform dispatch: compile and link inside docker for non-native targets
@@ -7437,7 +7462,11 @@ static void bg_build_start(silver a, silver og, path module, map defs) {
 static silver bg_build_take(path module) {
     pthread_mutex_lock(&bg_lock);
     bg_build* b = bg_list;
-    while (b && (!b->module || compare(b->module, module) != 0)) b = b->next;
+    // match canonically: the prescan and the import can spell the same module
+    // differently, and a miss here silently builds a second instance that
+    // short-circuits on silver_compiled and yields an empty product
+    path want = absolute(module);
+    while (b && (!b->module || compare(absolute(b->module), want) != 0)) b = b->next;
     pthread_mutex_unlock(&bg_lock);
     if (!b) return null;
     if (b->launched) { pthread_join(b->th, null); b->launched = false; }
